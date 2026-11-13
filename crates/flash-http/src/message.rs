@@ -191,6 +191,8 @@ pub struct Response {
     pub file: Option<FileBody>,
     /// The body is streamed: no `Content-Length` is added.
     pub(crate) streaming: bool,
+    /// Trailer fields sent after the body (HTTP/2; ignored on HTTP/1).
+    pub trailers: Option<Headers>,
 }
 
 /// A byte range of an open file used as a response body.
@@ -213,6 +215,7 @@ impl Response {
             body: Vec::new(),
             file: None,
             streaming: false,
+            trailers: None,
         }
     }
 

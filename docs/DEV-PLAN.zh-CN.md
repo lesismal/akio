@@ -137,10 +137,12 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] HTTP/2（`flash-http`，与 HTTP/1 共用 `Service`/`Context`）：帧、流、双向流控、HPACK（`loona-hpack`）、h2c（先验与 `Upgrade`）、TLS ALPN `h2`、server push（`ctx.push`）、双向流式 body、GOAWAY 优雅关闭；h2spec strict 147/147（CI job `h2spec`）；curl 互通（先验、upgrade、POST）；`h2client::H2Client`（多路复用、流控、push、TLS）。顺带发现：rustls 单次写入明文超过 64 KiB 会失败，`flash-tls` 现按记录大小分段加密
 - [x] `flash-mux`：首字节嗅探（TLS、HTTP/1、HTTP/2 preface、SOCKS4/5、前缀、自定义规则、fallback）；被选中的 acceptor 像自己 accept 的连接一样接管（回放已读字节、逻辑池回调、优雅关闭）
 - [x] `flash-arpc`：lesismal/arpc 线协议；双向调用、notify、带超时的异步调用、detach 后应答、stream、广播（共享同一帧）、客户端重连；与 fib 的 Go arpc 双向互通已验证（`tools/interop/arpc/run.sh`）。未做：中间件/编解码链、客户端连接池
-- [ ] `flash-grpc`：一元 + 流式、metadata、deadline、interceptor、gzip；codec 可插拔（prost）
+- [x] `flash-grpc`：基于 flash-http 的 HTTP/2，支持一元、服务端/客户端流与双向流（服务端可与普通 HTTP 共用端口），metadata 头与 trailers、trailers-only 错误、deadline（`grpc-timeout`）、拦截器、双向 gzip、消息大小限制、prost 辅助（feature `prost`）；客户端基于 `H2Client::open`（新增的流式请求 API）。与 grpc-go v1.85 双向互通已验证（`tools/interop/grpc/run.sh`）
 - [x] `flash-socks`：SOCKS5（无认证 / 用户名密码，IPv4/IPv6/域名在逻辑池中解析）、SOCKS4/4a、HTTP `CONNECT` 代理（通过 `Context::upgrade_raw`）；回调到回调的转发，双向背压（核心新增 `Conn::on_drain`；它暴露了一个在 loop 之外清空队列时丢失唤醒的问题，已修复）。未做：SOCKS BIND / UDP ASSOCIATE、Linux `splice` 路径
-- [ ] 测试：与 curl/nghttp2/grpc-go/tonic 互通
-- **交付**：`examples/grpc`、`examples/proxy`
+- [x] 测试：与 curl（h2 先验、h2c upgrade）、h2spec、grpc-go、fib 的 Go arpc 互通。未测：nghttp2 工具、tonic
+- **交付**：`examples/grpc`、`examples/proxy`（对应 `crates/flash-grpc/examples/grpc-interop.rs` 与 `crates/flash-socks` 的测试）
+
+> M4 状态：**已完成。** HTTP/2（h2spec 147/147）、flash-mux、flash-socks、flash-arpc（与 Go 互通）、flash-grpc（与 grpc-go 互通）。
 
 ### M5 QUIC/H3 + KCP + eBPF（8–10 周）
 - [ ] `flash-quic`/`flash-h3`：基于 sans-io QUIC 核心（quinn-proto/quiche 评估后定），QPACK，WebSocket over H3；与 curl/quiche 互通

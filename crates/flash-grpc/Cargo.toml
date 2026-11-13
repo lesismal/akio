@@ -1,0 +1,21 @@
+[package]
+name = "flash-grpc"
+description = "flash network library: gRPC over flash-http's HTTP/2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash = { path = "../flash" }
+flash-http = { path = "../flash-http" }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+prost = { version = "0.13", optional = true }
+
+[features]
+# Typed helpers for prost-generated messages.
+prost = ["dep:prost"]
+
+[lints]
+workspace = true

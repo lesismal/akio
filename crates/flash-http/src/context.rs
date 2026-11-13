@@ -399,30 +399,7 @@ impl Context {
         let out = self.responder.take()?;
         self.detached = true;
         self.status = Some(status);
-        let mut resp = Response::new(status);
-        resp.headers = headers;
-        resp.streaming = true;
-        match out {
-            Out::H1(r) => {
-                let chunked = r.version == Version::Http11 && r.keep_alive;
-                if chunked {
-                    resp.headers.set("Transfer-Encoding", "chunked");
-                }
-                self.fin.apply(&mut resp);
-                let mut head = Vec::with_capacity(192);
-                resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
-                Some(BodyStream(Inner::H1 {
-                    stream: r.slot.stream(head),
-                    chunked,
-                    keep_alive: r.keep_alive,
-                    head_only: r.head_only,
-                }))
-            }
-            Out::H2(r) => {
-                self.fin.apply(&mut resp);
-                r.start_stream(resp).map(|s| BodyStream(Inner::H2(s)))
-            }
-        }
+        start_stream(out, &mut self.fin, status, headers)
     }
 
     /// Server push (HTTP/2): promises `GET path` to the client and serves it with the same
@@ -572,6 +549,38 @@ impl Detached {
     pub fn respond(mut self, resp: Response) {
         self.responder.send(resp, &mut self.fin);
     }
+
+    /// Starts a streamed response, as [`Context::stream_response`] does, from any thread.
+    pub fn stream_response(mut self, status: u16, headers: Headers) -> Option<BodyStream> {
+        start_stream(self.responder, &mut self.fin, status, headers)
+    }
+}
+
+fn start_stream(out: Out, fin: &mut Finish, status: u16, headers: Headers) -> Option<BodyStream> {
+    let mut resp = Response::new(status);
+    resp.headers = headers;
+    resp.streaming = true;
+    match out {
+        Out::H1(r) => {
+            let chunked = r.version == Version::Http11 && r.keep_alive;
+            if chunked {
+                resp.headers.set("Transfer-Encoding", "chunked");
+            }
+            fin.apply(&mut resp);
+            let mut head = Vec::with_capacity(192);
+            resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
+            Some(BodyStream(Inner::H1 {
+                stream: r.slot.stream(head),
+                chunked,
+                keep_alive: r.keep_alive,
+                head_only: r.head_only,
+            }))
+        }
+        Out::H2(r) => {
+            fin.apply(&mut resp);
+            r.start_stream(resp).map(|s| BodyStream(Inner::H2(s)))
+        }
+    }
 }
 
 /// A response body being written in pieces; see [`Context::stream_response`].
@@ -637,6 +646,32 @@ impl BodyStream {
                 stream.finish(!keep_alive);
             }
             Inner::H2(s) => s.finish(),
+        }
+    }
+
+    /// Like [`finish`](Self::finish), with trailer fields after the body (HTTP/2 trailers, or
+    /// the chunked trailer section on HTTP/1.1).
+    pub fn finish_with_trailers(self, trailers: Headers) {
+        match self.0 {
+            Inner::H1 {
+                stream,
+                chunked,
+                keep_alive,
+                head_only,
+            } => {
+                if chunked && !head_only {
+                    let mut t = b"0\r\n".to_vec();
+                    for (n, v) in trailers.iter() {
+                        t.extend_from_slice(
+                            format!("{n}: {}\r\n", v.replace(['\r', '\n'], "")).as_bytes(),
+                        );
+                    }
+                    t.extend_from_slice(b"\r\n");
+                    let _ = stream.write(t);
+                }
+                stream.finish(!keep_alive);
+            }
+            Inner::H2(s) => s.finish_with(Some(trailers)),
         }
     }
 }

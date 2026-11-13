@@ -373,11 +373,15 @@ impl Core {
         }
         let block = self.encode_headers(Some(resp.status), &resp.headers);
         let no_body = head_only || bodyless || len == 0;
-        self.write_header_block(ty::HEADERS, sid, &[], &block, no_body);
+        let trailers = resp.trailers.take().filter(|_| !head_only);
+        self.write_header_block(ty::HEADERS, sid, &[], &block, no_body && trailers.is_none());
         let st = self.streams.get_mut(&sid).expect("stream still present");
         st.head_sent = true;
-        if no_body {
+        st.trailers = trailers;
+        if no_body && st.trailers.is_none() {
             st.sent_end = true;
+        } else if no_body {
+            st.end_pending = true;
         } else {
             match resp.file.take() {
                 Some(FileBody { file, offset, len }) => {
@@ -1283,13 +1287,18 @@ impl H2Stream {
         })
     }
 
-    pub(crate) fn finish(mut self) {
+    pub(crate) fn finish(self) {
+        self.finish_with(None);
+    }
+
+    pub(crate) fn finish_with(mut self, trailers: Option<Headers>) {
         self.done = true;
         if let Some(core) = self.core.upgrade() {
             let mut c = lock(&core);
             if let Some(st) = c.streams.get_mut(&self.sid) {
                 if !self.head_only {
                     st.end_pending = true;
+                    st.trailers = trailers;
                 }
             }
             c.flush_stream(self.sid);

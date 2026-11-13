@@ -56,6 +56,64 @@ impl Default for H2Options {
 }
 
 type Callback = Box<dyn FnOnce(Outcome) + Send>;
+type EventCb = Box<dyn FnMut(H2Event<'_>) + Send>;
+
+/// What a streamed request ([`H2Client::open`]) reports as the response arrives.
+pub enum H2Event<'a> {
+    /// The response head.
+    Head {
+        /// Status code.
+        status: u16,
+        /// Header fields.
+        headers: &'a Headers,
+    },
+    /// Body bytes, as they arrive.
+    Data(&'a [u8]),
+    /// Trailer fields.
+    Trailers(&'a Headers),
+    /// The response is complete.
+    End,
+    /// The stream failed (reset, connection lost).
+    Error(ClientError),
+}
+
+/// Request body still to be produced for a streamed request.
+struct UpShared {
+    q: Mutex<(VecDeque<Vec<u8>>, bool)>,
+    sid: Mutex<Option<u32>>,
+}
+
+/// The request body of a streamed request: write pieces, then finish. Usable from any thread.
+pub struct H2Upload {
+    conn: Conn<H2Conn>,
+    up: Arc<UpShared>,
+}
+
+impl H2Upload {
+    fn kick(&self) -> bool {
+        let up = self.up.clone();
+        self.conn
+            .spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.pump(c, &up))
+            .is_ok()
+    }
+
+    /// Queues body bytes. `false` if the connection is gone.
+    pub fn write(&self, data: &[u8]) -> bool {
+        self.up
+            .q
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .0
+            .push_back(data.to_vec());
+        self.kick()
+    }
+
+    /// Ends the request body.
+    pub fn finish(&self) -> bool {
+        self.up.q.lock().unwrap_or_else(|p| p.into_inner()).1 = true;
+        self.kick()
+    }
+}
 
 /// A connection to an HTTP/2 server. Cheap to clone.
 #[derive(Clone)]
@@ -123,6 +181,46 @@ impl H2Client {
             if let Some((_, cb)) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
                 cb(Err(ClientError::Closed));
             }
+        }
+    }
+
+    /// Starts a request whose body is written afterwards through the returned [`H2Upload`] and
+    /// whose response is reported piece by piece to `on_event` (gRPC streaming, uploads of
+    /// unknown size). `req.body`, if any, is sent first.
+    pub fn open(
+        &self,
+        mut req: ClientRequest,
+        on_event: impl FnMut(H2Event<'_>) + Send + 'static,
+    ) -> H2Upload {
+        let up = Arc::new(UpShared {
+            q: Mutex::new((VecDeque::new(), false)),
+            sid: Mutex::new(None),
+        });
+        let first = std::mem::take(&mut req.body);
+        if !first.is_empty() {
+            up.q.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .0
+                .push_back(first);
+        }
+        let slot = Arc::new(Mutex::new(Some((req, Box::new(on_event) as EventCb))));
+        let (s2, up2) = (slot.clone(), up.clone());
+        let queued = self.conn.spawn_blocking(
+            || (),
+            move |h: &mut H2Conn, c, ()| {
+                if let Some((req, ev)) = s2.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                    h.start_full(c, req, None, Some((up2, ev)));
+                }
+            },
+        );
+        if queued.is_err() {
+            if let Some((_, mut ev)) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                ev(H2Event::Error(ClientError::Closed));
+            }
+        }
+        H2Upload {
+            conn: self.conn.clone(),
+            up,
         }
     }
 
@@ -204,6 +302,10 @@ struct CStream {
     /// Request body still to send.
     upload: VecDeque<u8>,
     upload_done: bool,
+    /// More request body may still be written (streamed requests).
+    upload_open: bool,
+    /// Streamed requests report the response here instead of buffering it.
+    events: Option<EventCb>,
     head_only: bool,
     /// For pushed streams: the path promised, and the stream that carried the promise.
     pushed_path: Option<String>,
@@ -258,13 +360,32 @@ impl H2Conn {
     }
 
     fn start(&mut self, c: &Conn<Self>, req: ClientRequest, cb: Callback) {
+        self.start_full(c, req, Some(cb), None);
+    }
+
+    fn start_full(
+        &mut self,
+        c: &Conn<Self>,
+        req: ClientRequest,
+        cb: Option<Callback>,
+        streaming: Option<(Arc<UpShared>, EventCb)>,
+    ) {
+        let fail =
+            |cb: Option<Callback>, streaming: Option<(Arc<UpShared>, EventCb)>, e: ClientError| {
+                if let Some(cb) = cb {
+                    cb(Err(e));
+                } else if let Some((_, mut ev)) = streaming {
+                    ev(H2Event::Error(e));
+                }
+            };
         if self.dead || self.goaway {
-            return cb(Err(ClientError::Closed));
+            return fail(cb, streaming, ClientError::Closed);
         }
         let pu = match parse_url(&req.url) {
             Ok(p) => p,
-            Err(e) => return cb(Err(e)),
+            Err(e) => return fail(cb, streaming, e),
         };
+        let is_stream = streaming.is_some();
         let sid = self.next_id;
         self.next_id += 2;
         let mut list: Vec<(Vec<u8>, Vec<u8>)> = vec![
@@ -296,6 +417,7 @@ impl H2Conn {
             list.push((n.into_bytes(), v.replace(['\r', '\n'], "").into_bytes()));
         }
         if !has_cl
+            && !is_stream
             && (!req.body.is_empty()
                 || matches!(req.method, Method::Post | Method::Put | Method::Patch))
         {
@@ -311,10 +433,15 @@ impl H2Conn {
             .enc
             .encode(list.iter().map(|(n, v)| (n.as_slice(), v.as_slice())));
         let mut out = Vec::new();
-        self.header_block(&mut out, ty::HEADERS, sid, &[], &block, req.body.is_empty());
+        let end_now = req.body.is_empty() && !is_stream;
+        self.header_block(&mut out, ty::HEADERS, sid, &[], &block, end_now);
         let head_only = req.method == Method::Head;
+        let (up, events) = match streaming {
+            Some((u, e)) => (Some(u), Some(e)),
+            None => (None, None),
+        };
         let mut st = CStream {
-            cb: Some(cb),
+            cb,
             status: 0,
             headers: Headers::new(),
             body: Vec::new(),
@@ -325,16 +452,47 @@ impl H2Conn {
             recv_window: i64::from(self.opts.initial_window),
             upload: req.body.into(),
             upload_done: false,
+            upload_open: is_stream,
+            events,
             head_only,
             pushed_path: None,
             parent: None,
             pending_pushes: 0,
             pushed: Vec::new(),
         };
-        st.upload_done = st.upload.is_empty();
+        st.upload_done = st.upload.is_empty() && !is_stream;
         self.streams.insert(sid, st);
         self.send_upload(sid, &mut out);
         let _ = c.send_owned(out);
+        if let Some(up) = up {
+            *up.sid.lock().unwrap_or_else(|p| p.into_inner()) = Some(sid);
+            self.pump(c, &up);
+        }
+    }
+
+    /// Moves what an [`H2Upload`] queued into its stream and sends what the windows allow.
+    fn pump(&mut self, c: &Conn<Self>, up: &Arc<UpShared>) {
+        let Some(sid) = *up.sid.lock().unwrap_or_else(|p| p.into_inner()) else {
+            return; // not started yet: the start drains the queue
+        };
+        let (chunks, finished) = {
+            let mut q = up.q.lock().unwrap_or_else(|p| p.into_inner());
+            (std::mem::take(&mut q.0), q.1)
+        };
+        let Some(st) = self.streams.get_mut(&sid) else {
+            return;
+        };
+        for ch in chunks {
+            st.upload.extend(ch);
+        }
+        if finished {
+            st.upload_open = false;
+        }
+        let mut out = Vec::new();
+        self.send_upload(sid, &mut out);
+        if !out.is_empty() {
+            let _ = c.send_owned(out);
+        }
     }
 
     fn header_block(
@@ -382,16 +540,24 @@ impl H2Conn {
             if st.upload_done {
                 return;
             }
+            if st.upload.is_empty() {
+                if st.upload_open {
+                    return; // wait for more body
+                }
+                st.upload_done = true;
+                frame(out, ty::DATA, flag::END_STREAM, sid, &[]);
+                return;
+            }
             let allow = st
                 .send_window
                 .min(self.conn_send)
                 .min(self.remote_max_frame as i64);
-            if allow <= 0 && !st.upload.is_empty() {
+            if allow <= 0 {
                 return;
             }
-            let n = st.upload.len().min(allow.max(0) as usize);
+            let n = st.upload.len().min(allow as usize);
             let data: Vec<u8> = st.upload.drain(..n).collect();
-            let last = st.upload.is_empty();
+            let last = st.upload.is_empty() && !st.upload_open;
             st.send_window -= n as i64;
             self.conn_send -= n as i64;
             if last {
@@ -436,6 +602,8 @@ impl H2Conn {
         for (_, mut s) in self.streams.drain() {
             if let Some(cb) = s.cb.take() {
                 cb(Err(msg(&e)));
+            } else if let Some(ev) = s.events.as_mut() {
+                ev(H2Event::Error(msg(&e)));
             }
         }
     }
@@ -459,6 +627,10 @@ impl H2Conn {
             return;
         }
         let mut st = self.streams.remove(&sid).expect("present");
+        if let Some(ev) = st.events.as_mut() {
+            ev(H2Event::End);
+            return;
+        }
         let resp = ClientResponse {
             status: st.status,
             reason: String::new(),
@@ -532,6 +704,8 @@ impl H2Conn {
                     recv_window: i64::from(self.opts.initial_window),
                     upload: VecDeque::new(),
                     upload_done: true,
+                    upload_open: false,
+                    events: None,
                     head_only: false,
                     pushed_path: Some(path),
                     parent: Some(sid),
@@ -560,8 +734,17 @@ impl H2Conn {
             }
             st.got_head = true;
             st.status = status;
+            if let Some(ev) = st.events.as_mut() {
+                ev(H2Event::Head {
+                    status,
+                    headers: &hs,
+                });
+            }
             st.headers = hs;
         } else {
+            if let Some(ev) = st.events.as_mut() {
+                ev(H2Event::Trailers(&hs));
+            }
             st.trailers = hs;
         }
         if end_stream {
@@ -650,6 +833,11 @@ impl H2Conn {
                     } else {
                         0
                     };
+                    if let Some(ev) = s.events.as_mut() {
+                        ev(H2Event::Error(ClientError::Protocol(
+                            "stream reset by the server",
+                        )));
+                    }
                     if let Some(cb) = s.cb.take() {
                         cb(Err(ClientError::Protocol(if code == err::REFUSED_STREAM {
                             "stream refused"
@@ -678,7 +866,10 @@ impl H2Conn {
                 self.conn_recv += i64::from(total);
                 if let Some(st) = self.streams.get_mut(&sid) {
                     if !st.head_only && start <= end {
-                        st.body.extend_from_slice(&p[start..end]);
+                        match st.events.as_mut() {
+                            Some(ev) => ev(H2Event::Data(&p[start..end])),
+                            None => st.body.extend_from_slice(&p[start..end]),
+                        }
                     }
                     st.recv_window -= i64::from(total);
                     if flags & flag::END_STREAM == 0 {
