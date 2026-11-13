@@ -5,6 +5,8 @@ use std::sync::Arc;
 use flash_core::{Acceptor, Conn, Error, Handler};
 use flash_ws::WsSession;
 
+use crate::h2::{H2Config, H2Session, PREFACE};
+
 use crate::{
     context::{BodyEvent, BodyMode, Context, Service},
     message::{Headers, Request, Response, Version},
@@ -18,6 +20,9 @@ pub struct HttpConfig {
     pub max_header_bytes: usize,
     /// Largest request body accepted; else 413. Bodies are buffered in memory.
     pub max_body_bytes: usize,
+    /// HTTP/2 settings, or `None` to serve HTTP/1 only. HTTP/2 is detected from the client
+    /// preface (prior knowledge, and TLS with ALPN `h2`) or an `Upgrade: h2c` request.
+    pub h2: Option<H2Config>,
 }
 
 impl Default for HttpConfig {
@@ -25,6 +30,7 @@ impl Default for HttpConfig {
         HttpConfig {
             max_header_bytes: 64 << 10,
             max_body_bytes: 1 << 20,
+            h2: Some(H2Config::default()),
         }
     }
 }
@@ -58,15 +64,16 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             buf: Vec::new(),
             state: State::Head,
             ws: None,
+            h2: None,
+            started: false,
         }
     }
 
     fn on_shutdown(&self, c: &Conn<Session<S>>) {
-        // The close goes into the response order: it happens after every response still being
-        // prepared (possibly on the pool) has been written, and right away on an idle connection.
-        match c.reserve_response() {
-            Ok(slot) => slot.fill_close(Vec::new()),
-            Err(_) => c.close_after_send(),
+        // Run on the handler (it knows whether this is HTTP/1 or HTTP/2).
+        let ok = c.spawn_blocking(|| (), |h: &mut Session<S>, c, ()| h.shutdown(c));
+        if ok.is_err() {
+            h1_shutdown(c);
         }
     }
 }
@@ -105,12 +112,68 @@ pub struct Session<S> {
     state: State,
     /// Set once a request was upgraded to WebSocket; the connection then speaks only that.
     ws: Option<WsSession>,
+    /// Set once the connection speaks HTTP/2.
+    h2: Option<H2Session<S>>,
+    /// Some bytes have been seen (the HTTP/2 preface is only looked for at the very start).
+    started: bool,
+}
+
+/// HTTP/1 shutdown: the close goes into the response order, so it happens after every response
+/// still being prepared (possibly on the pool) has been written, and right away when idle.
+fn h1_shutdown<S: Service>(c: &Conn<Session<S>>) {
+    match c.reserve_response() {
+        Ok(slot) => slot.fill_close(Vec::new()),
+        Err(_) => c.close_after_send(),
+    }
 }
 
 impl<S: Service> Handler for Session<S> {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if let Some(h2) = &self.h2 {
+            return h2.on_data(data);
+        }
         if let Some(ws) = &mut self.ws {
             return ws.on_data(data);
+        }
+        if !self.started {
+            // HTTP/2 with prior knowledge starts with a fixed 24-byte preface.
+            if let Some(cfg) = self.cfg.h2.clone() {
+                let mut seen = std::mem::take(&mut self.buf);
+                seen.extend_from_slice(data);
+                let n = seen.len().min(PREFACE.len());
+                if PREFACE[..n] == seen[..n] {
+                    if seen.len() >= PREFACE.len() {
+                        self.started = true;
+                        self.h2 = Some(H2Session::new(
+                            c.inner().clone(),
+                            cfg,
+                            self.service.clone(),
+                            c.peer_addr(),
+                            &seen,
+                            None,
+                        ));
+                    } else {
+                        self.buf = seen; // wait for the rest of the preface
+                    }
+                    return;
+                }
+                // Neither the HTTP/2 preface nor the start of a known HTTP/1 method after a whole
+                // preface's worth of bytes: a client that meant HTTP/2 and got it wrong. Say so in
+                // HTTP/2 terms (GOAWAY PROTOCOL_ERROR) and hang up.
+                if seen.len() >= PREFACE.len() && !starts_with_http1_method(&seen) {
+                    let goaway = [
+                        0, 0, 8, 7, 0, 0, 0, 0, 0, // GOAWAY on stream 0, 8 bytes
+                        0, 0, 0, 0, 0, 0, 0, 1, // last stream 0, PROTOCOL_ERROR
+                    ];
+                    let _ = c.send(&goaway);
+                    c.close_after_send();
+                    self.state = State::Closed;
+                    self.started = true;
+                    return;
+                }
+                self.buf = seen[..seen.len() - data.len()].to_vec();
+            }
+            self.started = true;
         }
         if matches!(self.state, State::Closed) {
             return;
@@ -130,6 +193,9 @@ impl<S: Service> Handler for Session<S> {
     }
 
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {
+        if let Some(h2) = &self.h2 {
+            h2.on_close();
+        }
         if let Some(ws) = &mut self.ws {
             ws.on_transport_closed();
         }
@@ -137,6 +203,13 @@ impl<S: Service> Handler for Session<S> {
 }
 
 impl<S: Service> Session<S> {
+    fn shutdown(&mut self, c: &Conn<Self>) {
+        match &self.h2 {
+            Some(h2) => h2.shutdown(),
+            None => h1_shutdown(c),
+        }
+    }
+
     /// Consumes as many whole requests as `src` holds. Returns the bytes used.
     fn process(&mut self, c: &Conn<Self>, src: &[u8]) -> usize {
         let mut pos = 0;
@@ -292,6 +365,7 @@ impl<S: Service> Session<S> {
         let keep_alive = match head.version {
             Version::Http11 => !h.has_token("connection", "close"),
             Version::Http10 => h.has_token("connection", "keep-alive"),
+            Version::Http2 => true,
         };
         let te = h.get("transfer-encoding");
         let cl = h.get_all("content-length").collect::<Vec<_>>();
@@ -369,6 +443,24 @@ impl<S: Service> Session<S> {
     }
 
     fn dispatch(&mut self, c: &Conn<Self>, req: Request, keep_alive: bool) {
+        if self.cfg.h2.is_some() && req.body.is_empty() {
+            if let Some(settings) = h2c_settings(&req) {
+                // HTTP/2 takes the connection over: no HTTP/1 response slot is needed.
+                let _ = c.send(
+                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n",
+                );
+                let cfg = self.cfg.h2.clone().unwrap_or_default();
+                self.h2 = Some(H2Session::new(
+                    c.inner().clone(),
+                    cfg,
+                    self.service.clone(),
+                    c.peer_addr(),
+                    &[],
+                    Some((req, settings)),
+                ));
+                return;
+            }
+        }
         let Ok(slot) = c.reserve_response() else {
             self.state = State::Closed;
             return;
@@ -403,4 +495,38 @@ impl<S: Service> Session<S> {
             slot.fill_close(out);
         }
     }
+}
+
+/// The decoded `HTTP2-Settings` of an `Upgrade: h2c` request, if it is one.
+fn h2c_settings(req: &Request) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let h = &req.headers;
+    if !h.has_token("upgrade", "h2c") || !h.has_token("connection", "upgrade") {
+        return None;
+    }
+    let mut all = h.get_all("http2-settings");
+    let v = all.next()?;
+    if all.next().is_some() {
+        return None;
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(v.trim().trim_end_matches('='))
+        .ok()?;
+    (bytes.len() % 6 == 0).then_some(bytes)
+}
+
+fn starts_with_http1_method(b: &[u8]) -> bool {
+    [
+        &b"GET "[..],
+        b"HEAD ",
+        b"POST ",
+        b"PUT ",
+        b"DELETE ",
+        b"PATCH ",
+        b"OPTIONS ",
+        b"CONNECT ",
+        b"TRACE ",
+    ]
+    .iter()
+    .any(|m| b.starts_with(m))
 }

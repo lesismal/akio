@@ -133,6 +133,8 @@ pub enum Version {
     Http10,
     /// HTTP/1.1
     Http11,
+    /// HTTP/2 (requests that arrived on an h2 stream).
+    Http2,
 }
 
 /// A parsed request, with its body fully received.
@@ -335,6 +337,10 @@ thread_local! {
 }
 
 /// The current time as an IMF-fixdate, cached for the current second.
+pub(crate) fn http_date_now() -> String {
+    http_date()
+}
+
 fn http_date() -> String {
     let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)

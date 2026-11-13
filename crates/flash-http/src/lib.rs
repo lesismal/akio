@@ -35,6 +35,8 @@
 pub mod client;
 mod context;
 pub mod files;
+mod h2;
+pub mod h2client;
 pub mod message;
 pub mod middleware;
 mod parse;
@@ -45,6 +47,7 @@ pub use context::{
     BodyEvent, BodyMode, BodyStream, Context, Detached, Middleware, Service, Streaming, WsOptions,
 };
 pub use flash_ws as ws;
+pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version};
 pub use router::Router;
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};

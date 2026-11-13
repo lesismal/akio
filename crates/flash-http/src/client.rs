@@ -80,6 +80,8 @@ pub struct ClientResponse {
     pub body: Vec<u8>,
     /// Trailer fields of a chunked body.
     pub trailers: Headers,
+    /// Responses the server pushed with this one (HTTP/2 only; empty otherwise).
+    pub pushed: Vec<(String, ClientResponse)>,
 }
 
 /// Why a request failed.
@@ -112,14 +114,32 @@ type Callback = Box<dyn FnOnce(Result<ClientResponse, ClientError>) + Send>;
 
 /// The result of [`Client::send`]: wait for it, or `.await` it.
 pub struct ResponseFuture {
-    shared: Arc<FutureShared>,
+    pub(crate) shared: Arc<FutureShared>,
 }
 
-type Outcome = Result<ClientResponse, ClientError>;
+pub(crate) type Outcome = Result<ClientResponse, ClientError>;
 
-struct FutureShared {
+pub(crate) struct FutureShared {
     slot: Mutex<(Option<Outcome>, Option<Waker>)>,
     cv: Condvar,
+}
+
+impl FutureShared {
+    pub(crate) fn new() -> Arc<FutureShared> {
+        Arc::new(FutureShared {
+            slot: Mutex::new((None, None)),
+            cv: Condvar::new(),
+        })
+    }
+
+    pub(crate) fn complete(&self, r: Outcome) {
+        let mut g = self.slot.lock().unwrap_or_else(|p| p.into_inner());
+        g.0 = Some(r);
+        if let Some(w) = g.1.take() {
+            w.wake();
+        }
+        self.cv.notify_all();
+    }
 }
 
 impl ResponseFuture {
@@ -169,19 +189,19 @@ impl Future for ResponseFuture {
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
-struct Key {
-    host: String,
-    port: u16,
-    tls: bool,
+pub(crate) struct Key {
+    pub(crate) host: String,
+    pub(crate) port: u16,
+    pub(crate) tls: bool,
 }
 
-struct ParsedUrl {
-    key: Key,
-    target: String,
-    host_header: String,
+pub(crate) struct ParsedUrl {
+    pub(crate) key: Key,
+    pub(crate) target: String,
+    pub(crate) host_header: String,
 }
 
-fn parse_url(url: &str) -> Result<ParsedUrl, ClientError> {
+pub(crate) fn parse_url(url: &str) -> Result<ParsedUrl, ClientError> {
     let bad = || ClientError::InvalidUrl(url.to_owned());
     let (tls, rest) = if let Some(r) = url.strip_prefix("http://") {
         (false, r)
@@ -633,6 +653,7 @@ impl ClientConn {
                             headers,
                             body: Vec::new(),
                             trailers: Headers::new(),
+                            pushed: Vec::new(),
                         });
                     }
                     match next {

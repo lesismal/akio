@@ -156,7 +156,13 @@ impl Transport for RustlsTransport {
     }
 
     fn seal(&mut self, plain: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
-        self.conn.writer().write_all(plain)?;
+        // rustls accepts plaintext only while its pending-records buffer is below a limit
+        // (64 KiB by default), so a big write goes in as record-sized pieces, draining the
+        // records after each.
+        for piece in plain.chunks(16 << 10) {
+            self.conn.writer().write_all(piece)?;
+            self.drain_records(out)?;
+        }
         self.drain_records(out)
     }
 

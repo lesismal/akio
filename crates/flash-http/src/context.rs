@@ -3,6 +3,8 @@
 use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 use flash_core::{Part, ResponseSlot, ResponseStream};
+
+use crate::h2::{H2Responder, H2Stream};
 use flash_ws::{WsConfig, WsHandler, deflate::PmdParams};
 
 use crate::message::{Headers, Method, Request, Response, Version};
@@ -88,6 +90,26 @@ struct Responder {
     head_only: bool,
 }
 
+/// Where a response goes: an HTTP/1 ordered slot, or an HTTP/2 stream.
+enum Out {
+    H1(Responder),
+    H2(H2Responder),
+}
+
+impl Out {
+    fn send(self, mut resp: Response, fin: &mut Finish) -> u16 {
+        match self {
+            Out::H1(r) => r.send(resp, fin),
+            Out::H2(r) => {
+                fin.apply(&mut resp);
+                let status = resp.status;
+                r.send(resp);
+                status
+            }
+        }
+    }
+}
+
 /// What is applied to a response on its way out.
 struct Finish {
     extra: Headers,
@@ -149,7 +171,7 @@ pub struct Context {
     params: Vec<(String, String)>,
     locals: Vec<(String, String)>,
     fin: Finish,
-    responder: Option<Responder>,
+    responder: Option<Out>,
     status: Option<u16>,
     detached: bool,
     upgrade: Option<PendingUpgrade>,
@@ -181,12 +203,12 @@ impl Context {
         let head_only = req.method == Method::Head;
         let req = Arc::new(req);
         Context {
-            responder: Some(Responder {
+            responder: Some(Out::H1(Responder {
                 slot,
                 version: req.version,
                 keep_alive,
                 head_only,
-            }),
+            })),
             fin: Finish {
                 extra: Headers::new(),
                 filters: Vec::new(),
@@ -201,6 +223,28 @@ impl Context {
             detached: false,
             upgrade: None,
             sink: None,
+        }
+    }
+
+    /// A context for a request on an HTTP/2 stream.
+    pub(crate) fn new_h2(req: Request, responder: H2Responder) -> Context {
+        let req = Arc::new(req);
+        Context {
+            fin: Finish {
+                extra: Headers::new(),
+                filters: Vec::new(),
+                started: Instant::now(),
+                time_header: None,
+                req: req.clone(),
+            },
+            req,
+            params: Vec::new(),
+            locals: Vec::new(),
+            status: None,
+            detached: false,
+            upgrade: None,
+            sink: None,
+            responder: Some(Out::H2(responder)),
         }
     }
 
@@ -349,25 +393,44 @@ impl Context {
     /// `None` if a response was already started. Write from any thread; dropping the stream
     /// without [`BodyStream::finish`] closes the connection.
     pub fn stream_response(&mut self, status: u16, headers: Headers) -> Option<BodyStream> {
-        let r = self.responder.take()?;
+        let out = self.responder.take()?;
         self.detached = true;
         self.status = Some(status);
-        let chunked = r.version == Version::Http11 && r.keep_alive;
         let mut resp = Response::new(status);
         resp.headers = headers;
         resp.streaming = true;
-        if chunked {
-            resp.headers.set("Transfer-Encoding", "chunked");
+        match out {
+            Out::H1(r) => {
+                let chunked = r.version == Version::Http11 && r.keep_alive;
+                if chunked {
+                    resp.headers.set("Transfer-Encoding", "chunked");
+                }
+                self.fin.apply(&mut resp);
+                let mut head = Vec::with_capacity(192);
+                resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
+                Some(BodyStream(Inner::H1 {
+                    stream: r.slot.stream(head),
+                    chunked,
+                    keep_alive: r.keep_alive,
+                    head_only: r.head_only,
+                }))
+            }
+            Out::H2(r) => {
+                self.fin.apply(&mut resp);
+                r.start_stream(resp).map(|s| BodyStream(Inner::H2(s)))
+            }
         }
-        self.fin.apply(&mut resp);
-        let mut head = Vec::with_capacity(192);
-        resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
-        Some(BodyStream {
-            stream: r.slot.stream(head),
-            chunked,
-            keep_alive: r.keep_alive,
-            head_only: r.head_only,
-        })
+    }
+
+    /// Server push (HTTP/2): promises `GET path` to the client and serves it with the same
+    /// service on a new stream. `false` when the connection is not HTTP/2, the client disabled
+    /// push, or the connection is shutting down.
+    pub fn push(&mut self, path: &str) -> bool {
+        let authority = self.req.headers.get("host").unwrap_or("").to_owned();
+        match &self.responder {
+            Some(Out::H2(r)) => r.push(path, &authority),
+            _ => false,
+        }
     }
 
     /// Turns this request into a WebSocket connection served by `handler`.
@@ -385,6 +448,10 @@ impl Context {
         let h = &r.headers;
         if r.method != Method::Get || r.version != Version::Http11 {
             self.text(400, "WebSocket upgrade needs GET over HTTP/1.1");
+            return false;
+        }
+        if matches!(self.responder, Some(Out::H2(_))) {
+            self.text(400, "WebSocket over HTTP/2 is not supported");
             return false;
         }
         if !h.has_token("connection", "upgrade") || !h.has_token("upgrade", "websocket") {
@@ -430,7 +497,7 @@ impl Context {
             }
         }
         // The connection continues as WebSocket whatever the request said about keep-alive.
-        if let Some(r) = self.responder.as_mut() {
+        if let Some(Out::H1(r)) = self.responder.as_mut() {
             r.keep_alive = true;
         }
         self.respond(resp);
@@ -458,7 +525,7 @@ pub struct Detached {
     req: Arc<Request>,
     params: Vec<(String, String)>,
     fin: Finish,
-    responder: Responder,
+    responder: Out,
 }
 
 impl Detached {
@@ -482,40 +549,68 @@ impl Detached {
 }
 
 /// A response body being written in pieces; see [`Context::stream_response`].
-pub struct BodyStream {
-    stream: ResponseStream,
-    chunked: bool,
-    keep_alive: bool,
-    head_only: bool,
+pub struct BodyStream(Inner);
+
+enum Inner {
+    H1 {
+        stream: ResponseStream,
+        chunked: bool,
+        keep_alive: bool,
+        head_only: bool,
+    },
+    H2(H2Stream),
 }
 
 impl BodyStream {
     /// Appends body bytes. `Err` means the connection is gone or too far behind: stop producing.
     pub fn write(&self, data: &[u8]) -> flash_core::Result<()> {
-        if data.is_empty() || self.head_only {
-            return Ok(());
+        match &self.0 {
+            Inner::H1 {
+                stream,
+                chunked,
+                head_only,
+                ..
+            } => {
+                if data.is_empty() || *head_only {
+                    return Ok(());
+                }
+                let mut out = Vec::with_capacity(data.len() + 16);
+                if *chunked {
+                    out.extend_from_slice(format!("{:x}\r\n", data.len()).as_bytes());
+                    out.extend_from_slice(data);
+                    out.extend_from_slice(b"\r\n");
+                } else {
+                    out.extend_from_slice(data);
+                }
+                stream.write(out)
+            }
+            Inner::H2(s) => s.write(data),
         }
-        let mut out = Vec::with_capacity(data.len() + 16);
-        if self.chunked {
-            out.extend_from_slice(format!("{:x}\r\n", data.len()).as_bytes());
-            out.extend_from_slice(data);
-            out.extend_from_slice(b"\r\n");
-        } else {
-            out.extend_from_slice(data);
-        }
-        self.stream.write(out)
     }
 
     /// Bytes written but not yet on the wire, for pacing the producer.
     pub fn queued_bytes(&self) -> usize {
-        self.stream.queued_bytes()
+        match &self.0 {
+            Inner::H1 { stream, .. } => stream.queued_bytes(),
+            Inner::H2(s) => s.queued_bytes(),
+        }
     }
 
     /// Completes the body (the final chunk) and lets later responses go out.
     pub fn finish(self) {
-        if self.chunked && !self.head_only {
-            let _ = self.stream.write(b"0\r\n\r\n".to_vec());
+        match self.0 {
+            Inner::H1 {
+                stream,
+                chunked,
+                keep_alive,
+                head_only,
+            } => {
+                if chunked && !head_only {
+                    let _ = stream.write(b"0\r\n\r\n".to_vec());
+                }
+                stream.finish(!keep_alive);
+            }
+            Inner::H2(s) => s.finish(),
         }
-        self.stream.finish(!self.keep_alive);
     }
 }

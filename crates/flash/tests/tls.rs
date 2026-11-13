@@ -333,3 +333,38 @@ fn local_close_after_send_ends_with_close_notify() {
     assert_eq!(all, b"bye");
     stop(&e);
 }
+
+/// One `send` bigger than rustls's 64 KiB pending-record limit used to fail with WriteZero.
+#[test]
+fn a_single_large_send_over_tls() {
+    struct Big;
+    impl Handler for Big {
+        fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
+            let data: Vec<u8> = (0..700_000).map(|i| (i % 251) as u8).collect();
+            assert!(c.send(&data).is_ok());
+            c.close_after_send();
+        }
+    }
+    let p = pki();
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(Tls::server(
+                    server_cfg(&p, &[]),
+                    fn_acceptor(|_c: &Conn<Big>| Big),
+                )),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let mut c = tls_client(e.local_addrs()[0], client_cfg(&p.cert, &[]));
+    c.write_all(b"go").unwrap();
+    let mut all = Vec::new();
+    c.read_to_end(&mut all).unwrap();
+    assert_eq!(all.len(), 700_000);
+    assert!(all.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
+    stop(&e);
+}

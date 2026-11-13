@@ -134,7 +134,7 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 > M3 status: **feature-complete except the comparison report** (moved to the benchmark pass): h1 server with streaming and sendfile, router, 9 middlewares, static files, flash-ws with Autobahn at 100% (core 298+3 informational, permessage-deflate 216/216), h1 client. Examples: `crates/flash-http/examples/{hello,ws-chat,ws-echo}.rs`.
 
 ### M4 HTTP/2 + multi-protocol (8–10 weeks)
-- [ ] HTTP/2: frames/streams/flow control, HPACK, h2c (prior knowledge + Upgrade), server push, h2spec in CI; h2 client
+- [x] HTTP/2 (`flash-http`, same `Service`/`Context` as HTTP/1): frames, streams, flow control both ways, HPACK (`loona-hpack`), h2c by prior knowledge and `Upgrade`, TLS ALPN `h2`, server push (`ctx.push`), streamed bodies both ways, GOAWAY graceful shutdown; h2spec strict 147/147 (CI job `h2spec`); curl interop (prior knowledge, upgrade, POST); `h2client::H2Client` (multiplexing, flow control, push, TLS). Found on the way: rustls refuses >64 KiB of plaintext per write, `flash-tls` now seals in record-sized pieces
 - [ ] `flash-mux`: first-bytes sniffing (HTTP/TLS/SOCKS/custom)
 - [ ] `flash-arpc`: wire-compatible, two-way calls, notify, stream, broadcast, reconnect
 - [ ] `flash-grpc`: unary + streaming, metadata, deadline, interceptor, gzip; pluggable codec (prost)
