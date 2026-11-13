@@ -149,8 +149,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "flash-mux"
+version = "0.0.0"
+dependencies = [
+ "flash",
+ "flash-core",
+ "flash-http",
+ "rcgen",
+]
+
+[[package]]
 name = "flash-pool"
 version = "0.0.0"
+
+[[package]]
+name = "flash-socks"
+version = "0.0.0"
+dependencies = [
+ "flash",
+ "flash-core",
+ "flash-http",
+]
 
 [[package]]
 name = "flash-sys"

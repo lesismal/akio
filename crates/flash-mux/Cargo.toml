@@ -1,0 +1,19 @@
+[package]
+name = "flash-mux"
+description = "flash network library: several protocols on one port, told apart by their first bytes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash-core = { path = "../flash-core" }
+
+[dev-dependencies]
+flash = { path = "../flash" }
+flash-http = { path = "../flash-http" }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+
+[lints]
+workspace = true

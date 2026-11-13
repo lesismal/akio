@@ -25,10 +25,10 @@ use std::{io, net::SocketAddr, sync::Arc};
 pub use flash_tls as tls;
 
 pub use flash_core::{
-    Acceptor, Config, Conn, Error, FnAcceptor, Handler, PoolConfig, PoolStats, ResponseSlot,
-    Result, SlowCallback, SlowHook, fn_acceptor,
+    Acceptor, Config, Conn, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, PoolConfig,
+    PoolStats, ResponseSlot, Result, SlowCallback, SlowHook, fn_acceptor,
 };
-use flash_core::{DynAcceptor, Group, Pool};
+use flash_core::{Group, Pool};
 
 /// I/O backend of one listener (ADR-004).
 #[derive(Clone, Debug, Default)]
@@ -119,6 +119,13 @@ impl Listener {
     /// Attaches the acceptor that serves this listener.
     pub fn serve<A: Acceptor>(mut self, acceptor: A) -> Self {
         self.acceptor = Some(Arc::new(acceptor));
+        self
+    }
+
+    /// Attaches a type-erased acceptor (for protocol multiplexers such as `flash-mux`).
+    #[doc(hidden)]
+    pub fn serve_dyn(mut self, acceptor: Arc<dyn DynAcceptor>) -> Self {
+        self.acceptor = Some(acceptor);
         self
     }
 }
@@ -288,6 +295,28 @@ fn unsupported(what: &str) -> io::Error {
         io::ErrorKind::Unsupported,
         format!("{what} is not supported"),
     )
+}
+
+/// A late-bound handle to an [`Engine`], for services that need to dial (proxies, clients
+/// inside handlers) but are built before the engine. Holds the engine weakly.
+#[derive(Clone, Default)]
+pub struct EngineRef(Arc<std::sync::OnceLock<std::sync::Weak<Engine>>>);
+
+impl EngineRef {
+    /// An empty handle; call [`set`](Self::set) once the engine exists.
+    pub fn new() -> EngineRef {
+        EngineRef::default()
+    }
+
+    /// Points the handle at `engine`. Later calls are ignored.
+    pub fn set(&self, engine: &Arc<Engine>) {
+        let _ = self.0.set(Arc::downgrade(engine));
+    }
+
+    /// The engine, if set and still alive.
+    pub fn get(&self) -> Option<Arc<Engine>> {
+        self.0.get().and_then(std::sync::Weak::upgrade)
+    }
 }
 
 /// A set of listeners, each served by its own backend group of I/O threads.

@@ -1,0 +1,16 @@
+[package]
+name = "flash-socks"
+description = "flash network library: SOCKS5/4/4a and HTTP CONNECT proxies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash = { path = "../flash" }
+flash-core = { path = "../flash-core" }
+flash-http = { path = "../flash-http" }
+
+[lints]
+workspace = true

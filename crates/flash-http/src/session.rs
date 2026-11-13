@@ -64,6 +64,7 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             buf: Vec::new(),
             state: State::Head,
             ws: None,
+            raw: None,
             h2: None,
             started: false,
         }
@@ -112,6 +113,8 @@ pub struct Session<S> {
     state: State,
     /// Set once a request was upgraded to WebSocket; the connection then speaks only that.
     ws: Option<WsSession>,
+    /// Set once a request handed the connection over as raw bytes.
+    raw: Option<(crate::raw::RawConn, Box<dyn crate::raw::RawHandler>)>,
     /// Set once the connection speaks HTTP/2.
     h2: Option<H2Session<S>>,
     /// Some bytes have been seen (the HTTP/2 preface is only looked for at the very start).
@@ -134,6 +137,9 @@ impl<S: Service> Handler for Session<S> {
         }
         if let Some(ws) = &mut self.ws {
             return ws.on_data(data);
+        }
+        if let Some((rc, h)) = &mut self.raw {
+            return h.on_data(rc, data);
         }
         if !self.started {
             // HTTP/2 with prior knowledge starts with a fixed 24-byte preface.
@@ -199,6 +205,9 @@ impl<S: Service> Handler for Session<S> {
         if let Some(ws) = &mut self.ws {
             ws.on_transport_closed();
         }
+        if let Some((_, h)) = &mut self.raw {
+            h.on_close();
+        }
     }
 }
 
@@ -217,6 +226,12 @@ impl<S: Service> Session<S> {
             // After an upgrade whatever follows the handshake request is WebSocket data.
             if let Some(ws) = &mut self.ws {
                 ws.on_data(&src[pos..]);
+                return src.len();
+            }
+            if let Some((rc, h)) = &mut self.raw {
+                if pos < src.len() {
+                    h.on_data(rc, &src[pos..]);
+                }
                 return src.len();
             }
             match &mut self.state {
@@ -469,6 +484,12 @@ impl<S: Service> Session<S> {
         self.service.call(&mut ctx);
         if !ctx.responded() && !ctx.is_detached() {
             ctx.respond(Response::text(500, "handler did not respond"));
+        }
+        if let Some(mut h) = ctx.take_raw() {
+            let rc = crate::raw::RawConn(c.inner().clone());
+            h.on_open(&rc);
+            self.raw = Some((rc, h));
+            return;
         }
         if let Some(up) = ctx.take_upgrade() {
             let mut ws = WsSession::new(c.inner().clone(), &up.cfg, up.pmd, up.handler);

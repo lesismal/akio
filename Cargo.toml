@@ -11,6 +11,8 @@ members = [
     "crates/flash-tls",
     "crates/flash-http",
     "crates/flash-ws",
+    "crates/flash-mux",
+    "crates/flash-socks",
     "crates/flash",
     "tools/echo-bench",
 ]

@@ -175,6 +175,7 @@ pub struct Context {
     status: Option<u16>,
     detached: bool,
     upgrade: Option<PendingUpgrade>,
+    raw: Option<Box<dyn crate::raw::RawHandler>>,
     sink: Option<Sink>,
 }
 
@@ -222,6 +223,7 @@ impl Context {
             status: None,
             detached: false,
             upgrade: None,
+            raw: None,
             sink: None,
         }
     }
@@ -243,6 +245,7 @@ impl Context {
             status: None,
             detached: false,
             upgrade: None,
+            raw: None,
             sink: None,
             responder: Some(Out::H2(responder)),
         }
@@ -507,6 +510,29 @@ impl Context {
             pmd,
         });
         true
+    }
+
+    /// Hands the connection over to `handler` as a plain byte stream once this request is
+    /// dispatched: nothing is sent for the request (the handler writes whatever the protocol
+    /// needs, such as `HTTP/1.1 200 Connection Established`). HTTP/1 only; `false` otherwise.
+    pub fn upgrade_raw(&mut self, handler: impl crate::raw::RawHandler) -> bool {
+        match self.responder.take() {
+            Some(Out::H1(r)) => {
+                // Keep the response order: earlier pipelined answers still go out first.
+                r.slot.fill(Vec::new());
+                self.detached = true;
+                self.raw = Some(Box::new(handler));
+                true
+            }
+            other => {
+                self.responder = other;
+                false
+            }
+        }
+    }
+
+    pub(crate) fn take_raw(&mut self) -> Option<Box<dyn crate::raw::RawHandler>> {
+        self.raw.take()
     }
 
     pub(crate) fn take_upgrade(&mut self) -> Option<PendingUpgrade> {

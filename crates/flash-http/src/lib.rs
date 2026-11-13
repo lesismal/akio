@@ -40,6 +40,7 @@ pub mod h2client;
 pub mod message;
 pub mod middleware;
 mod parse;
+pub mod raw;
 mod router;
 mod session;
 

@@ -135,10 +135,10 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### M4 HTTP/2 + multi-protocol (8–10 weeks)
 - [x] HTTP/2 (`flash-http`, same `Service`/`Context` as HTTP/1): frames, streams, flow control both ways, HPACK (`loona-hpack`), h2c by prior knowledge and `Upgrade`, TLS ALPN `h2`, server push (`ctx.push`), streamed bodies both ways, GOAWAY graceful shutdown; h2spec strict 147/147 (CI job `h2spec`); curl interop (prior knowledge, upgrade, POST); `h2client::H2Client` (multiplexing, flow control, push, TLS). Found on the way: rustls refuses >64 KiB of plaintext per write, `flash-tls` now seals in record-sized pieces
-- [ ] `flash-mux`: first-bytes sniffing (HTTP/TLS/SOCKS/custom)
+- [x] `flash-mux`: first-bytes sniffing (TLS, HTTP/1, HTTP/2 preface, SOCKS4/5, prefixes, custom rules, fallback); the chosen acceptor owns the connection as if it had accepted it (replayed bytes, pool completions, graceful shutdown)
 - [ ] `flash-arpc`: wire-compatible, two-way calls, notify, stream, broadcast, reconnect
 - [ ] `flash-grpc`: unary + streaming, metadata, deadline, interceptor, gzip; pluggable codec (prost)
-- [ ] `flash-socks` + HTTP CONNECT proxy: callback-to-callback relay, two-way backpressure; splice path on Linux
+- [x] `flash-socks`: SOCKS5 (no auth / username+password, IPv4/IPv6/domain resolved on the pool), SOCKS4/4a, HTTP `CONNECT` proxy (via `Context::upgrade_raw`); callback-to-callback relay with two-way backpressure (`Conn::on_drain`, new in core; it exposed a lost-wake-up when a queue emptied outside the loop's flush, fixed). Not done: SOCKS BIND / UDP ASSOCIATE, a Linux `splice` path
 - [ ] Tests: interop with curl/nghttp2/grpc-go/tonic
 - **Deliverable**: `examples/grpc`, `examples/proxy`
 

@@ -121,6 +121,8 @@ struct WriteState {
     file_bytes: u64,
     corked: bool,
     close_after_send: bool,
+    /// Called once the queue is empty again (see [`Conn::on_drain`]).
+    drain: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl WriteState {
@@ -245,6 +247,8 @@ pub struct ConnInner {
     state: AtomicU8,
     hold: AtomicBool,
     write: Mutex<WriteState>,
+    /// A drain waiter whose condition was met while the write lock was held; run right after.
+    drained: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     ordered: Mutex<Ordered>,
     sock: Sock,
     link: Arc<dyn LoopLink>,
@@ -268,6 +272,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             write: Mutex::new(WriteState::default()),
+            drained: Mutex::new(None),
             ordered: Mutex::new(Ordered::default()),
             sock: Sock::Tcp(stream),
             link,
@@ -296,6 +301,7 @@ impl ConnInner {
                 datagram: true,
                 ..WriteState::default()
             }),
+            drained: Mutex::new(None),
             ordered: Mutex::new(Ordered::default()),
             sock: Sock::Udp {
                 sock,
@@ -371,19 +377,44 @@ impl ConnInner {
     pub fn uncork_flush(&self) -> io::Result<()> {
         let mut w = self.lock();
         w.corked = false;
-        self.write_locked(&mut w).map(drop)
+        let r = self.write_locked(&mut w).map(drop);
+        drop(w);
+        self.run_drained();
+        r
     }
 
     /// Loop side: writes as much queued data as the socket takes. `Ok(true)` when empty.
     pub fn flush_queue(&self) -> io::Result<bool> {
         let mut w = self.lock();
-        self.write_locked(&mut w)
+        let r = self.write_locked(&mut w);
+        drop(w);
+        self.run_drained();
+        r
+    }
+
+    /// Calls `f` once everything queued has been written (right away if nothing is queued),
+    /// or when the connection closes. Replaces an earlier waiter. For flow control between
+    /// connections: pause reading one side until the other has drained.
+    pub fn on_drain(&self, f: Box<dyn FnOnce() + Send>) {
+        let mut w = self.lock();
+        if w.queue.is_empty() || !self.is_open() {
+            drop(w);
+            return f();
+        }
+        w.drain = Some(f);
     }
 
     /// Loop side: the connection is gone; drop queued output.
     pub fn mark_closed(&self) {
         self.state.store(CLOSED, Ordering::Release);
-        self.lock().clear();
+        let waiter = {
+            let mut w = self.lock();
+            w.clear();
+            w.drain.take()
+        };
+        if let Some(f) = waiter {
+            f();
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, WriteState> {
@@ -392,8 +423,32 @@ impl ConnInner {
         self.write.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Writes queued chunks with `writev` until the queue is empty or the socket is full.
+    /// Writes queued chunks until the queue is empty or the socket is full. When it empties, a
+    /// drain waiter is moved aside; callers run it with [`run_drained`](Self::run_drained) once
+    /// the write lock is released.
     fn write_locked(&self, w: &mut WriteState) -> io::Result<bool> {
+        let r = self.write_queue(w);
+        if matches!(r, Ok(true)) {
+            if let Some(f) = w.drain.take() {
+                *self.drained.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+            }
+        }
+        r
+    }
+
+    fn run_drained(&self) {
+        let f = self
+            .drained
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(f) = f {
+            f();
+        }
+    }
+
+    /// Writes queued chunks with `writev` until the queue is empty or the socket is full.
+    fn write_queue(&self, w: &mut WriteState) -> io::Result<bool> {
         const MAX_IOV: usize = 16;
         if w.datagram {
             while let Some(c) = w.queue.front() {
@@ -622,6 +677,7 @@ impl ConnInner {
             }
         }
         drop(w);
+        self.run_drained();
         if need_wake {
             self.link.wake_conn(self.id);
         }
@@ -636,7 +692,11 @@ impl ConnInner {
         let mut w = self.lock();
         w.corked = false;
         match self.write_locked(&mut w) {
-            Ok(true) => Ok(()),
+            Ok(true) => {
+                drop(w);
+                self.run_drained();
+                Ok(())
+            }
             Ok(false) => {
                 drop(w);
                 self.link.wake_conn(self.id);
@@ -841,6 +901,7 @@ impl ConnInner {
         }
         let need_wake = was_empty && !w.corked;
         drop(w);
+        self.run_drained();
         if need_wake {
             self.link.wake_conn(self.id);
         }
@@ -1011,6 +1072,14 @@ impl<H> Conn<H> {
     /// Pauses (`true`) or resumes (`false`) reading from the peer.
     pub fn hold_reads(&self, hold: bool) {
         self.inner.hold_reads(hold)
+    }
+
+    /// Calls `f` once everything queued on this connection has been written (right away if
+    /// nothing is), or when it closes. Typical use, relaying between two connections: when the
+    /// outgoing side's queue grows, `hold_reads(true)` on the incoming side and resume it from
+    /// `on_drain` of the outgoing one.
+    pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
+        self.inner.on_drain(Box::new(f))
     }
 
     /// The type-erased connection state, for protocol crates that outlive the handler type
