@@ -21,6 +21,7 @@ rust-version = "1.85"
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"

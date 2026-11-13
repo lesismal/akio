@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 flash-core = { path = "../flash-core" }
 flash-sys = { path = "../flash-sys" }
+flash-timer = { path = "../flash-timer" }
 
 [lints]
 workspace = true

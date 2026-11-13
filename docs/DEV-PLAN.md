@@ -93,10 +93,12 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 - [x] Backpressure: write watermark, `hold_reads`, `max_pending_bytes`; graceful shutdown
 - [x] Async dial (client connections)
 - [x] kqueue reactor (shared logic; develop/debug on macOS)
-- [ ] Tests: unit, `loom` (send/close races), echo load, 10k/100k-connection stability, fd leak detection
+- [x] Tests: unit, `loom` (cork/send/close races, 5 models, run in CI), 5,000 simultaneous connections + 20×500 connect/close cycles with fd-leak check (macOS and Linux)
+- [x] Idle timeout wired into the loop (`Config::idle_timeout`, timer wheel per I/O thread)
+- [ ] Not done, carried to later milestones: 100k-connection run, read/write timeouts, echo comparison against fib/tokio/monoio on dedicated Linux hardware
 - **Deliverable**: `examples/echo`, echo benchmark report v0
 
-> M1 status: core engine implemented and tested on Linux (epoll) and macOS (kqueue). **Open before M1 can close:** `loom` model of the send/close races, 10k/100k-connection and fd-leak tests, and the echo comparison against fib/tokio/monoio (the std-only `echo-bench` client is thread-per-connection and saturates before the server does; a better load generator is needed). Timers are a standalone wheel, not yet wired into the loop (idle/read/write timeouts). `Conn::spawn_blocking` is M2.
+> M1 status: **closed except the items above.** Verified on Linux (epoll) and macOS (kqueue): 12 engine tests, 2 stress tests, 5 loom models (a deliberately broken `mark_closed` makes the loom model fail, so it does explore the race). `echo-bench` now multiplexes connections over a few client threads; on one macOS machine flash and a 4-thread tokio echo both land at ~105–115k req/s, i.e. the client is still the bottleneck, so this run says "same class" but cannot rank them. The fib comparison needs fib to have a plain TCP echo (it has none yet) and a two-machine Linux setup; it moves to the benchmark report in M2. `Conn::spawn_blocking` is M2.
 
 ### M2 Multi-backend + logical pool + UDP + TLS (6–8 weeks)
 - [ ] `flash-pool`: adaptive thread pool, bounded queue, overload policy, metrics

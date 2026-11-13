@@ -3,15 +3,15 @@ use std::{
     io::{self, IoSlice, Write},
     marker::PhantomData,
     net::{SocketAddr, TcpStream},
-    sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicU8, Ordering},
-    },
+    sync::Arc,
 };
 
 use flash_buf::SharedBuf;
 
-use crate::{Config, Error, Handler, Result};
+use crate::{
+    Config, Error, Handler, Result,
+    sync::{AtomicBool, AtomicU8, Mutex, MutexGuard, Ordering},
+};
 
 const OPEN: u8 = 0;
 const CLOSING: u8 = 1;
@@ -513,5 +513,169 @@ impl<H: Handler> Conn<H> {
         D: FnOnce(&mut H, &Conn<H>, R) + Send + 'static,
     {
         unimplemented!("M2")
+    }
+}
+
+/// Loom models of the send / close / cork protocols. Run with
+/// `RUSTFLAGS="--cfg loom" cargo test -p flash-core --lib --release -- loom`.
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use std::{
+        io::Read,
+        net::{TcpListener, TcpStream},
+        sync::atomic::{AtomicUsize, Ordering as StdOrd},
+    };
+
+    use loom::thread;
+
+    use super::*;
+
+    /// Records what the connection asks of its loop.
+    #[derive(Default)]
+    struct FakeLink {
+        wakes: AtomicUsize,
+        closes: AtomicUsize,
+    }
+
+    impl LoopLink for FakeLink {
+        fn wake_conn(&self, _id: u64) {
+            self.wakes.fetch_add(1, StdOrd::SeqCst);
+        }
+        fn close_conn(&self, _id: u64, _err: Option<io::Error>) {
+            self.closes.fetch_add(1, StdOrd::SeqCst);
+        }
+    }
+
+    /// A connected nonblocking socket plus its (undrained) peer.
+    fn socket_pair() -> (TcpStream, TcpStream) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let c = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (s, _) = l.accept().unwrap();
+        s.set_nonblocking(true).unwrap();
+        (s, c)
+    }
+
+    fn conn(stream: TcpStream, link: Arc<FakeLink>) -> Arc<ConnInner> {
+        let a = stream.local_addr().unwrap();
+        ConnInner::new(1, stream, a, a, link, Arc::new(Config::default()))
+    }
+
+    /// Whatever interleaving of a corking loop and a sender, every accepted byte is written once
+    /// the loop uncorks: no lost data, no lost wakeup.
+    #[test]
+    fn loom_cork_vs_send_loses_nothing() {
+        let (s, peer) = socket_pair();
+        peer.set_nonblocking(true).unwrap();
+        loom::model(move || {
+            let link = Arc::new(FakeLink::default());
+            let c = conn(s.try_clone().unwrap(), link.clone());
+            let sender = {
+                let c = c.clone();
+                thread::spawn(move || c.send(b"abc").unwrap())
+            };
+            c.set_corked(true);
+            c.uncork_flush().unwrap();
+            sender.join().unwrap();
+            // Nothing may remain queued: either the sender wrote directly or uncork flushed it,
+            // or (sender ran after uncork) it wrote directly because the queue was empty.
+            assert_eq!(c.queued_bytes(), 0);
+            let mut sink = [0u8; 16];
+            let mut got = 0;
+            while let Ok(n) = (&peer).read(&mut sink) {
+                if n == 0 {
+                    break;
+                }
+                got += n;
+            }
+            assert_eq!(got % 3, 0);
+        });
+    }
+
+    /// If a send is queued behind the cork and the loop never uncorks, the sender must have
+    /// requested no wakeup (the loop owns the flush); once uncorked data goes out.
+    #[test]
+    fn loom_send_queued_while_corked_then_flushed() {
+        let (s, _peer) = socket_pair();
+        loom::model(move || {
+            let link = Arc::new(FakeLink::default());
+            let c = conn(s.try_clone().unwrap(), link.clone());
+            c.set_corked(true);
+            let t = {
+                let c = c.clone();
+                thread::spawn(move || c.send(b"xy").unwrap())
+            };
+            t.join().unwrap();
+            assert_eq!(c.queued_bytes(), 2);
+            assert_eq!(link.wakes.load(StdOrd::SeqCst), 0);
+            c.uncork_flush().unwrap();
+            assert_eq!(c.queued_bytes(), 0);
+        });
+    }
+
+    /// Concurrent `close` calls schedule exactly one loop close; later sends fail.
+    #[test]
+    fn loom_close_is_scheduled_once() {
+        let (s, _peer) = socket_pair();
+        loom::model(move || {
+            let link = Arc::new(FakeLink::default());
+            let c = conn(s.try_clone().unwrap(), link.clone());
+            let ts: Vec<_> = (0..2)
+                .map(|_| {
+                    let c = c.clone();
+                    thread::spawn(move || c.close())
+                })
+                .collect();
+            for t in ts {
+                t.join().unwrap();
+            }
+            assert_eq!(link.closes.load(StdOrd::SeqCst), 1);
+            assert!(!c.is_open());
+            assert!(matches!(c.send(b"x"), Err(Error::Closed)));
+        });
+    }
+
+    /// `send` racing `close` + the loop's `mark_closed`: never panics, and after `mark_closed`
+    /// nothing stays queued and sends fail.
+    #[test]
+    fn loom_send_vs_close_and_mark_closed() {
+        let (s, _peer) = socket_pair();
+        loom::model(move || {
+            let link = Arc::new(FakeLink::default());
+            let c = conn(s.try_clone().unwrap(), link.clone());
+            c.set_corked(true); // force the queued path to race with clear()
+            let sender = {
+                let c = c.clone();
+                thread::spawn(move || {
+                    let _ = c.send(b"data");
+                })
+            };
+            c.close();
+            c.mark_closed();
+            sender.join().unwrap();
+            // A send that won the lock before mark_closed is cleared by it; one after is rejected.
+            assert!(matches!(c.send(b"z"), Err(Error::Closed)));
+            assert_eq!(c.queued_bytes(), 0, "data queued after mark_closed");
+        });
+    }
+
+    /// `close_after_send` racing `send`: the loop is always asked to re-evaluate afterwards.
+    #[test]
+    fn loom_close_after_send_requests_wakeup() {
+        let (s, _peer) = socket_pair();
+        loom::model(move || {
+            let link = Arc::new(FakeLink::default());
+            let c = conn(s.try_clone().unwrap(), link.clone());
+            let t = {
+                let c = c.clone();
+                thread::spawn(move || {
+                    let _ = c.send(b"hi");
+                })
+            };
+            c.close_after_send();
+            t.join().unwrap();
+            assert!(c.close_after_send_requested());
+            assert!(link.wakes.load(StdOrd::SeqCst) >= 1);
+            assert!(matches!(c.send(b"x"), Err(Error::Closed)));
+        });
     }
 }

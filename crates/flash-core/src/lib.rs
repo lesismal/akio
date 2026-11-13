@@ -13,6 +13,7 @@ mod conn;
 mod error;
 mod group;
 mod handler;
+mod sync;
 
 pub use config::Config;
 pub use conn::{Conn, ConnInner, LoopLink};

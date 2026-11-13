@@ -495,3 +495,58 @@ fn unsupported_backends_are_rejected_by_build() {
         Some(std::io::ErrorKind::Unsupported)
     );
 }
+
+#[test]
+fn idle_timeout_closes_silent_connections_only() {
+    struct H(Arc<Mutex<Vec<std::io::ErrorKind>>>);
+    impl Handler for H {
+        fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+            let _ = c.send(data);
+        }
+        fn on_close(&mut self, _c: &Conn<Self>, err: Option<Error>) {
+            if let Some(Error::Io(e)) = err {
+                self.0.lock().unwrap().push(e.kind());
+            }
+        }
+    }
+    let kinds = Arc::new(Mutex::new(Vec::new()));
+    let k = kinds.clone();
+    let e = Engine::builder()
+        .config(Config {
+            idle_timeout: Some(Duration::from_millis(300)),
+            ..cfg()
+        })
+        .listen(
+            Listener::tcp(localhost())
+                .threads(2)
+                .serve(fn_acceptor(move |_c: &Conn<H>| H(k.clone()))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let mut silent = connect(addr);
+    let mut chatty = connect(addr);
+    // `chatty` keeps talking past several timeout periods; `silent` never does.
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < Duration::from_millis(1000) {
+        chatty.write_all(b"x").unwrap();
+        let mut b = [0u8; 1];
+        chatty.read_exact(&mut b).unwrap();
+        thread::sleep(Duration::from_millis(50));
+    }
+    // The silent connection was closed by the server (EOF), after roughly the timeout.
+    let mut b = [0u8; 1];
+    assert_eq!(
+        silent.read(&mut b).unwrap(),
+        0,
+        "idle connection should be closed"
+    );
+    assert_eq!(*kinds.lock().unwrap(), vec![std::io::ErrorKind::TimedOut]);
+    // The chatty one is still alive.
+    chatty.write_all(b"y").unwrap();
+    let mut b = [0u8; 1];
+    chatty.read_exact(&mut b).unwrap();
+    assert_eq!(&b, b"y");
+    stop(&e);
+}

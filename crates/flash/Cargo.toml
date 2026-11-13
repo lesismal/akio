@@ -13,3 +13,6 @@ flash-epoll = { path = "../flash-epoll" }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+libc = "0.2"

@@ -12,6 +12,10 @@ pub struct Config {
     pub max_queued_bytes: usize,
     /// `listen(2)` backlog.
     pub backlog: i32,
+    /// Close a connection (with `ErrorKind::TimedOut`) when the peer has sent nothing for this
+    /// long. `None` (the default) disables it. Resolution is about a millisecond; only inbound
+    /// data counts as activity.
+    pub idle_timeout: Option<Duration>,
     /// After `shutdown`, connections still open after this long are closed forcibly.
     pub shutdown_timeout: Duration,
 }
@@ -23,6 +27,7 @@ impl Default for Config {
             write_high_watermark: 256 << 10,
             max_queued_bytes: 64 << 20,
             backlog: 1024,
+            idle_timeout: None,
             shutdown_timeout: Duration::from_secs(10),
         }
     }

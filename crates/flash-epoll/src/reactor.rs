@@ -14,6 +14,7 @@ use std::{
 
 use flash_core::{Config, ConnInner, DynAcceptor, DynHandler, Error, LoopLink};
 use flash_sys::{Event, Poller, Waker};
+use flash_timer::{TimerId, Wheel};
 
 const WAKER: u64 = 0;
 const LISTENER: u64 = 1;
@@ -98,6 +99,9 @@ struct LoopConn {
     bp: bool,
     /// Peer sent EOF; we are only draining output.
     eof: bool,
+    /// Wheel tick of the last inbound data (idle timeout).
+    last_active: u64,
+    idle_timer: Option<TimerId>,
 }
 
 enum Slot {
@@ -117,6 +121,9 @@ pub(crate) struct Loop {
     scratch: Vec<u8>,
     cfg: Arc<Config>,
     draining: Option<Instant>,
+    /// Idle-timeout timers (connection ids); empty unless `Config::idle_timeout` is set.
+    wheel: Wheel<u64>,
+    epoch: Instant,
 }
 
 fn panic_error() -> Error {
@@ -142,6 +149,8 @@ impl Loop {
             scratch: vec![0; cfg.read_buffer],
             cfg,
             draining: None,
+            wheel: Wheel::new(0),
+            epoch: Instant::now(),
         })
     }
 
@@ -149,7 +158,12 @@ impl Loop {
         CURRENT_LOOP.with(|c| c.set(self.shared.uid));
         let mut events: Vec<Event> = Vec::with_capacity(1024);
         loop {
-            let timeout = self.draining.map(|_| Duration::from_millis(50));
+            let mut timeout = self.draining.map(|_| Duration::from_millis(50));
+            if let Some(next) = self.wheel.next_deadline() {
+                // Round up: waking a hair late is fine, spinning on a not-yet-due tick is not.
+                let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
+                timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
+            }
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout) {
                 eprintln!("flash: poller error: {e}");
@@ -163,6 +177,7 @@ impl Loop {
                 }
             }
             self.drain_cmds();
+            self.fire_timers();
             if let Some(deadline) = self.draining {
                 if self.slots.is_empty() {
                     break;
@@ -174,6 +189,46 @@ impl Loop {
                     }
                     break;
                 }
+            }
+        }
+    }
+
+    // ---- timers ---------------------------------------------------------------------------
+
+    fn tick(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
+    }
+
+    fn arm_idle(&mut self, id: u64, at: u64) -> Option<TimerId> {
+        self.cfg.idle_timeout?;
+        if self.wheel.is_empty() {
+            // The wheel's clock stops while it is empty; catch it up so the next `advance`
+            // does not replay the idle period tick by tick.
+            self.wheel.advance(self.tick(), drop);
+        }
+        Some(self.wheel.schedule(at, id))
+    }
+
+    fn fire_timers(&mut self) {
+        let Some(idle) = self.cfg.idle_timeout else {
+            return;
+        };
+        let idle = idle.as_millis().max(1) as u64;
+        let now = self.tick();
+        let mut due = Vec::new();
+        self.wheel.advance(now, |id| due.push(id));
+        for id in due {
+            let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+                continue;
+            };
+            lc.idle_timer = None;
+            let expires = lc.last_active + idle;
+            if expires <= now {
+                let e = io::Error::new(io::ErrorKind::TimedOut, "idle timeout");
+                self.finalize(id, Some(Error::Io(e)));
+            } else {
+                // Traffic arrived since this timer was set: sleep until the new expiry.
+                lc.idle_timer = Some(self.wheel.schedule(expires, id));
             }
         }
     }
@@ -290,6 +345,12 @@ impl Loop {
             inner.mark_closed();
             return;
         }
+        let now = self.tick();
+        let idle = self
+            .cfg
+            .idle_timeout
+            .map_or(0, |d| d.as_millis().max(1) as u64);
+        let idle_timer = self.arm_idle(id, now + idle);
         self.slots.insert(
             id,
             Slot::Conn(LoopConn {
@@ -300,6 +361,8 @@ impl Loop {
                 reg_write: false,
                 bp: false,
                 eof: false,
+                last_active: now,
+                idle_timer,
             }),
         );
         // `on_open` may already have queued output or closed the connection.
@@ -404,6 +467,7 @@ impl Loop {
             Panic,
         }
         let mut done = Done::No;
+        let now = self.epoch.elapsed().as_millis() as u64;
         {
             let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
                 return;
@@ -418,6 +482,7 @@ impl Loop {
                         break;
                     }
                     Ok(n) => {
+                        lc.last_active = now;
                         lc.inner.set_corked(true);
                         let r = catch_unwind(AssertUnwindSafe(|| {
                             lc.handler.on_data(&self.scratch[..n])
@@ -494,6 +559,9 @@ impl Loop {
             // A dialing slot being closed by id is not possible: ids are not exposed before open.
             return;
         };
+        if let Some(t) = lc.idle_timer.take() {
+            self.wheel.cancel(t);
+        }
         self.poller.delete(lc.inner.stream().as_raw_fd());
         lc.inner.mark_closed();
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);
