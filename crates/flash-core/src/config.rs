@@ -43,6 +43,9 @@ pub struct Config {
     pub slow_callback_threshold: Option<Duration>,
     /// Where slow callbacks are reported (default: stderr).
     pub slow_hook: Option<SlowHook>,
+    /// UDP: a peer that sent nothing for this long is dropped (its `on_close` runs) so idle peers
+    /// do not accumulate. `idle_timeout`, when set and shorter, wins.
+    pub udp_idle_timeout: Duration,
     /// After `shutdown`, connections still open after this long are closed forcibly.
     pub shutdown_timeout: Duration,
 }
@@ -57,6 +60,7 @@ impl Default for Config {
             idle_timeout: None,
             slow_callback_threshold: Some(Duration::from_millis(100)),
             slow_hook: None,
+            udp_idle_timeout: Duration::from_secs(60),
             shutdown_timeout: Duration::from_secs(10),
         }
     }

@@ -32,6 +32,11 @@ thread_local! {
     static CURRENT_LOOP: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Marks the calling thread as the loop of `shared` (posts from it need no wake-up).
+pub(crate) fn set_current_loop(shared: &LoopShared) {
+    CURRENT_LOOP.with(|c| c.set(shared.uid));
+}
+
 pub(crate) enum Cmd {
     Wake(u64),
     Close(u64, Option<io::Error>),
@@ -79,7 +84,11 @@ impl LoopShared {
         }
     }
 
-    fn take(&self) -> Vec<Cmd> {
+    pub(crate) fn waker(&self) -> &Waker {
+        &self.waker
+    }
+
+    pub(crate) fn take(&self) -> Vec<Cmd> {
         self.wake_pending.store(false, Ordering::Release);
         std::mem::take(&mut *self.cmds.lock().unwrap_or_else(|p| p.into_inner()))
     }

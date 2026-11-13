@@ -7,10 +7,14 @@
 
 mod net;
 mod poller;
+#[cfg(target_os = "linux")]
+mod udp;
 mod waker;
 
-pub use net::{connect_nonblocking, listen};
+pub use net::{connect_nonblocking, listen, listen_udp};
 pub use poller::{Event, Poller};
+#[cfg(target_os = "linux")]
+pub use udp::RecvBatch;
 #[cfg(target_os = "linux")]
 pub use waker::EventFd;
 pub use waker::Waker;

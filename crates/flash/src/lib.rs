@@ -65,6 +65,7 @@ pub enum Accel {
 /// One bound address with its own acceptor, backend and I/O threads.
 pub struct Listener {
     addr: SocketAddr,
+    udp: bool,
     backend: Backend,
     accel: Accel,
     threads: usize,
@@ -76,10 +77,24 @@ impl Listener {
     pub fn tcp(addr: SocketAddr) -> Self {
         Listener {
             addr,
+            udp: false,
             backend: Backend::default(),
             accel: Accel::default(),
             threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
             acceptor: None,
+        }
+    }
+
+    /// A UDP listener on `addr`. Every distinct peer address becomes a connection: the acceptor's
+    /// `on_open` runs on its first datagram, `on_data` once per datagram (boundaries are kept),
+    /// `Conn::send` sends one datagram to that peer, and a peer silent for
+    /// `Config::udp_idle_timeout` is closed. Served by the epoll/kqueue backend; on Linux the
+    /// threads share the port via `SO_REUSEPORT` (one peer always lands on the same thread), on
+    /// other systems a single thread serves it.
+    pub fn udp(addr: SocketAddr) -> Self {
+        Listener {
+            udp: true,
+            ..Listener::tcp(addr)
         }
     }
 
@@ -155,6 +170,26 @@ impl EngineBuilder {
             let acceptor = l.acceptor.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
             })?;
+            if l.udp {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                {
+                    if let Backend::IoUring(u) = &l.backend {
+                        if u.strict {
+                            return Err(unsupported("UDP on the io_uring backend"));
+                        }
+                    }
+                    groups.push(Box::new(flash_epoll::UdpGroup::bind(
+                        l.addr,
+                        acceptor,
+                        l.threads,
+                        self.cfg.clone(),
+                        pool.clone(),
+                    )?));
+                    continue;
+                }
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                return Err(unsupported("UDP on this platform"));
+            }
             match l.backend {
                 Backend::Epoll => {
                     #[cfg(any(target_os = "linux", target_os = "macos"))]

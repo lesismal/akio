@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     io::{self, IoSlice, Write},
     marker::PhantomData,
-    net::{SocketAddr, TcpStream},
+    net::{SocketAddr, TcpStream, UdpSocket},
     sync::Arc,
 };
 
@@ -83,6 +83,8 @@ pub trait Transport: Send + 'static {
 
 #[derive(Default)]
 struct WriteState {
+    /// UDP: every chunk is one datagram; never coalesced, never partially written.
+    datagram: bool,
     transport: Option<Box<dyn Transport>>,
     queue: VecDeque<Chunk>,
     queued: usize,
@@ -94,7 +96,9 @@ impl WriteState {
     fn push_copy(&mut self, data: &[u8]) {
         self.queued += data.len();
         // Coalesce small writes into the tail buffer: fewer iovecs per writev.
-        if let Some(Chunk {
+        if self.datagram {
+            // Datagram boundaries must survive.
+        } else if let Some(Chunk {
             bytes: Bytes::Owned(v),
             ..
         }) = self.queue.back_mut()
@@ -151,6 +155,15 @@ struct Ordered {
     ready: VecDeque<Option<Vec<u8>>>,
 }
 
+/// The socket under a connection: its own TCP stream, or a peer on a shared UDP socket.
+enum Sock {
+    Tcp(TcpStream),
+    Udp {
+        sock: Arc<UdpSocket>,
+        peer: SocketAddr,
+    },
+}
+
 /// Type-erased shared connection state: socket, lifecycle, send queue and its lock (ADR-002).
 ///
 /// Public only so that backend crates can drive it; applications use [`Conn`].
@@ -161,7 +174,7 @@ pub struct ConnInner {
     hold: AtomicBool,
     write: Mutex<WriteState>,
     ordered: Mutex<Ordered>,
-    stream: TcpStream,
+    sock: Sock,
     link: Arc<dyn LoopLink>,
     cfg: Arc<Config>,
     local: SocketAddr,
@@ -184,7 +197,34 @@ impl ConnInner {
             hold: AtomicBool::new(false),
             write: Mutex::new(WriteState::default()),
             ordered: Mutex::new(Ordered::default()),
-            stream,
+            sock: Sock::Tcp(stream),
+            link,
+            cfg,
+            local,
+            peer,
+        })
+    }
+
+    /// A "connection" to `peer` over the UDP socket `sock` shared with other peers. Each `send`
+    /// is one datagram to `peer`; reads are delivered by the backend as whole datagrams.
+    pub fn new_udp(
+        id: u64,
+        sock: Arc<UdpSocket>,
+        local: SocketAddr,
+        peer: SocketAddr,
+        link: Arc<dyn LoopLink>,
+        cfg: Arc<Config>,
+    ) -> Arc<ConnInner> {
+        Arc::new(ConnInner {
+            id,
+            state: AtomicU8::new(OPEN),
+            hold: AtomicBool::new(false),
+            write: Mutex::new(WriteState {
+                datagram: true,
+                ..WriteState::default()
+            }),
+            ordered: Mutex::new(Ordered::default()),
+            sock: Sock::Udp { sock, peer },
             link,
             cfg,
             local,
@@ -196,8 +236,24 @@ impl ConnInner {
         self.id
     }
 
+    /// The TCP stream. Only call on connections created with [`ConnInner::new`].
     pub fn stream(&self) -> &TcpStream {
-        &self.stream
+        match &self.sock {
+            Sock::Tcp(s) => s,
+            Sock::Udp { .. } => unreachable!("stream() on a UDP connection"),
+        }
+    }
+
+    fn tcp(&self) -> &TcpStream {
+        self.stream()
+    }
+
+    /// Writes `data` to the socket (for UDP: as one datagram to the peer).
+    fn raw_write(&self, data: &[u8]) -> io::Result<usize> {
+        match &self.sock {
+            Sock::Tcp(s) => (&*s).write(data),
+            Sock::Udp { sock, peer } => sock.send_to(data, peer),
+        }
     }
 
     pub fn is_open(&self) -> bool {
@@ -251,6 +307,21 @@ impl ConnInner {
     /// Writes queued chunks with `writev` until the queue is empty or the socket is full.
     fn write_locked(&self, w: &mut WriteState) -> io::Result<bool> {
         const MAX_IOV: usize = 16;
+        if w.datagram {
+            while let Some(c) = w.queue.front() {
+                match self.raw_write(c.rest()) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    // A datagram the network refuses (too big, unreachable) is dropped, as UDP
+                    // does; it must not wedge the datagrams behind it.
+                    Err(_) => {}
+                }
+                let n = c.rest().len();
+                w.consume(n);
+            }
+            return Ok(true);
+        }
         while !w.queue.is_empty() {
             let n = {
                 let mut iov: [IoSlice<'_>; MAX_IOV] = [IoSlice::new(&[]); MAX_IOV];
@@ -259,7 +330,7 @@ impl ConnInner {
                     *slot = IoSlice::new(c.rest());
                     k += 1;
                 }
-                match (&self.stream).write_vectored(&iov[..k]) {
+                match self.tcp().write_vectored(&iov[..k]) {
                     Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
                     Ok(n) => n,
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
@@ -284,6 +355,10 @@ impl ConnInner {
 
     /// A write failed on a non-loop path: schedule the close and report it.
     fn fail(&self, e: io::Error) -> Error {
+        if matches!(self.sock, Sock::Udp { .. }) {
+            // A refused datagram does not end a UDP "connection".
+            return Error::Io(e);
+        }
         if self
             .state
             .compare_exchange(OPEN, CLOSING, Ordering::AcqRel, Ordering::Acquire)
@@ -315,7 +390,7 @@ impl ConnInner {
         // Fast path: nothing queued and not corked -> write straight to the socket.
         if was_empty && !w.corked {
             loop {
-                match (&self.stream).write(data) {
+                match self.raw_write(data) {
                     Ok(n) if n == data.len() => return Ok(()),
                     Ok(n) => data = &data[n..],
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -359,7 +434,7 @@ impl ConnInner {
         let mut off = 0;
         if was_empty && !w.corked {
             loop {
-                match (&self.stream).write(&data[off..]) {
+                match self.raw_write(&data[off..]) {
                     Ok(n) => {
                         off += n;
                         if off == data.len() {

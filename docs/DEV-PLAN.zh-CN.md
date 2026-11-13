@@ -107,13 +107,14 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] `flash-uring`：multishot accept 与 recv、provided buffer ring、cooperative/deferred task-run + single-issuer 的 ring、eventfd 唤醒、内核探测（5.19+）并自动降级到 epoll（`UringConfig::strict` 可改为拒绝）。写路径走共享的“直接 `write` + 队列”逻辑，积压部分用 `poll(POLLOUT)`
 - [ ] `flash-uring`：暂未使用（有测量依据再做）：registered files、`SEND_ZC`、`MSG_RING` 唤醒、基于 ring 的发送
 - [x] **每 listener 选择后端**：Engine 内多后端并存、线程组独立配置（已测试：同一 Engine 里 epoll + io_uring 两个 listener）；不支持的组合返回明确错误
-- [ ] UDP：每 peer 一连接、`recvmmsg/sendmmsg`、GRO/GSO；`DatagramsHandler` 批量接口
+- [x] UDP（服务端）：`Listener::udp`；每个 peer 地址一个 `Conn`，沿用普通 `Handler`（每个数据报一次 `on_data`，`send` 即发一个数据报，可在任意线程调用），空闲淘汰（`Config::udp_idle_timeout`），优雅关闭不等待排空，`spawn_blocking` 与 `close_after_send` 可用；Linux 上每线程一个 `SO_REUSEPORT` socket（同一 peer 固定在一个线程），其他系统单线程；Linux 上用 `recvmmsg` 批量收。已在 macOS 与 Linux 测试
+- [ ] UDP 未完成：`sendmmsg`、GRO/GSO、客户端 API（从 listener socket 向新 peer 发送，或拨号 UDP）、无连接的批量 `DatagramsHandler`、基于 io_uring 的 UDP（io_uring listener 请求目前由 epoll 服务）、peer 数量上限
 - [x] `flash-tls`：rustls 以 sans-io 方式通过 `Conn` 之下的 `Transport` 层驱动（服务端与客户端；`Tls::server` / `Tls::client` 包装任意 acceptor，handler 看到明文），握手在 IO 线程内完成，握手期间发送的应用数据先缓存，`close_after_send` 发送 close_notify，`tls_info`（ALPN、SNI、版本）。会话票据、SNI 证书选择、客户端认证、版本：通过 rustls 自己的配置。已在 epoll 与 io_uring 上测试：echo（3 MiB）、ALPN/SNI、明文垃圾数据与不受信证书的客户端、TLS 上的 `spawn_blocking` + 有序槽、flash 拨 flash
 - [ ] kTLS 评估（未开始）；TLS 1.3 early data 与客户端证书辅助函数留给 rustls 配置
 - [x] 测试：整套 engine/offload/stress 测试在 epoll 与 io_uring 上都跑（`FLASH_TEST_BACKEND=uring`，Linux CI 也跑）；跨后端混合 listener。另已完成：阻塞投递测试（IO 线程不被阻塞、完成回调在 IO 线程且带 handler 状态、池满、连接提前关闭、有序、槽丢弃、慢回调）
 - **交付**：`examples/blocking-offload`（已完成）、后端对比 benchmark 报告
 
-> M2 状态：逻辑池与 io_uring 已完成；21 个 engine/offload/stress 测试在 Linux（内核 6.12，Docker）上两种后端都通过，重复运行无失败。**io_uring 与 epoll 对比（同一台 Docker 虚拟机，echo，64 B，客户端同机）：** 服务端 4 线程/256 连接时两者都被客户端限制（各约 80–100 万 req/s，无法排名）；服务端 1 线程/512 连接（受服务端限制）时 epoll 为 41.6 万和 49.2 万，io_uring 为 52.7 万和 53.8 万，io_uring 领先约 10–25%。最初的 io_uring 实现每收到一段数据都重新提交一次 `PROVIDE_BUFFERS`，只有 epoll 的约 60%；改用 buffer ring 归还缓冲（写内存而不是提交请求）后差距消失。数据来自与客户端共用 CPU 的虚拟机，只能作方向参考，不是正式 benchmark 报告。**M2 剩余：** UDP、benchmark 报告（TLS 已完成，尚无 TLS 吞吐测量）。
+> M2 状态：逻辑池与 io_uring 已完成；21 个 engine/offload/stress 测试在 Linux（内核 6.12，Docker）上两种后端都通过，重复运行无失败。**io_uring 与 epoll 对比（同一台 Docker 虚拟机，echo，64 B，客户端同机）：** 服务端 4 线程/256 连接时两者都被客户端限制（各约 80–100 万 req/s，无法排名）；服务端 1 线程/512 连接（受服务端限制）时 epoll 为 41.6 万和 49.2 万，io_uring 为 52.7 万和 53.8 万，io_uring 领先约 10–25%。最初的 io_uring 实现每收到一段数据都重新提交一次 `PROVIDE_BUFFERS`，只有 epoll 的约 60%；改用 buffer ring 归还缓冲（写内存而不是提交请求）后差距消失。数据来自与客户端共用 CPU 的虚拟机，只能作方向参考，不是正式 benchmark 报告。**M2 剩余：** benchmark 报告（TLS 与 UDP 已完成，两者都还没有吞吐测量）。
 
 ### M3 HTTP/1 + WebSocket（6–8 周）
 - [ ] `flash-http` h1：sans-io 解析（pipelining、chunked、trailers、streaming body、Expect: 100）、`Context`/`Respond`、`sendfile`

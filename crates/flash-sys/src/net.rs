@@ -51,6 +51,11 @@ fn sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
 
 /// Creates a non-blocking, close-on-exec TCP socket of the family of `addr`.
 fn socket(addr: &SocketAddr) -> io::Result<OwnedFd> {
+    socket_of(addr, libc::SOCK_STREAM)
+}
+
+/// As [`socket`], with an explicit socket type (`SOCK_STREAM` / `SOCK_DGRAM`).
+fn socket_of(addr: &SocketAddr, ty: libc::c_int) -> io::Result<OwnedFd> {
     let domain = if addr.is_ipv4() {
         libc::AF_INET
     } else {
@@ -59,16 +64,12 @@ fn socket(addr: &SocketAddr) -> io::Result<OwnedFd> {
     #[cfg(target_os = "linux")]
     let fd = cvt(unsafe {
         // SAFETY: plain syscall with valid constant arguments.
-        libc::socket(
-            domain,
-            libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
-            0,
-        )
+        libc::socket(domain, ty | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0)
     })?;
     #[cfg(not(target_os = "linux"))]
     let fd = {
         // SAFETY: plain syscall with valid constant arguments.
-        let fd = cvt(unsafe { libc::socket(domain, libc::SOCK_STREAM, 0) })?;
+        let fd = cvt(unsafe { libc::socket(domain, ty, 0) })?;
         crate::poller::set_nonblock_cloexec(fd)?;
         fd
     };
@@ -113,6 +114,24 @@ pub fn listen(addr: SocketAddr, reuseport: bool, backlog: i32) -> io::Result<Tcp
     // SAFETY: plain syscall on an owned fd.
     cvt(unsafe { libc::listen(raw, backlog) })?;
     Ok(TcpListener::from(fd))
+}
+
+/// Binds a non-blocking UDP socket on `addr` with `SO_REUSEADDR`, and `SO_REUSEPORT` when
+/// `reuseport` is set (on Linux the kernel then spreads peers over the sockets by 4-tuple hash).
+pub fn listen_udp(addr: SocketAddr, reuseport: bool) -> io::Result<std::net::UdpSocket> {
+    let fd = socket_of(&addr, libc::SOCK_DGRAM)?;
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    setsockopt_int(raw, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;
+    if reuseport {
+        setsockopt_int(raw, libc::SOL_SOCKET, libc::SO_REUSEPORT, 1)?;
+    }
+    if let SocketAddr::V6(_) = addr {
+        setsockopt_int(raw, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0).ok();
+    }
+    let (ss, len) = sockaddr(&addr);
+    // SAFETY: `ss` is a valid sockaddr of `len` bytes.
+    cvt(unsafe { libc::bind(raw, &ss as *const _ as *const libc::sockaddr, len) })?;
+    Ok(std::net::UdpSocket::from(fd))
 }
 
 /// Starts a non-blocking connect. The stream becomes writable when the connect finished; check

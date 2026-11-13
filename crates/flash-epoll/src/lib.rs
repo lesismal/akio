@@ -13,5 +13,7 @@
 
 mod group;
 mod reactor;
+mod udp;
 
 pub use group::EpollGroup;
+pub use udp::UdpGroup;
