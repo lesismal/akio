@@ -61,8 +61,29 @@ impl Chunk {
     }
 }
 
+/// A byte-stream transformation layered under a connection, such as TLS (see `flash-tls`).
+///
+/// Everything the application `send`s is passed through [`seal`](Transport::seal) before it
+/// reaches the socket, and everything read from the socket through [`recv`](Transport::recv)
+/// before it reaches `on_data`. All calls happen under the connection's write lock, in wire
+/// order, and must not block or call back into the connection.
+pub trait Transport: Send + 'static {
+    /// Consumes bytes read from the peer. Appends decoded application bytes to `plain` and any
+    /// bytes that must go to the peer (handshake records, alerts) to `out`. On error, what was
+    /// appended to `out` is still sent before the connection closes.
+    fn recv(&mut self, cipher: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()>;
+    /// Encodes application bytes for the wire, appending to `out`. May append nothing while the
+    /// transport is not ready yet (it must keep the bytes and emit them from a later call).
+    fn seal(&mut self, plain: &[u8], out: &mut Vec<u8>) -> io::Result<()>;
+    /// The application is done sending: append the closing record(s), if any, to `out`.
+    fn shutdown(&mut self, out: &mut Vec<u8>);
+    /// For downcasting to the concrete transport.
+    fn as_any(&mut self) -> &mut dyn std::any::Any;
+}
+
 #[derive(Default)]
 struct WriteState {
+    transport: Option<Box<dyn Transport>>,
     queue: VecDeque<Chunk>,
     queued: usize,
     corked: bool,
@@ -279,8 +300,18 @@ impl ConnInner {
         }
         let mut w = self.lock();
         self.check_sendable(&w, data.len())?;
+        let sealed = match self.seal(&mut w, data) {
+            Ok(s) => s,
+            Err(e) => {
+                drop(w);
+                return Err(self.fail(e));
+            }
+        };
+        let mut data = sealed.as_deref().unwrap_or(data);
+        if data.is_empty() {
+            return Ok(()); // the transport is holding the bytes until it is ready
+        }
         let was_empty = w.queue.is_empty();
-        let mut data = data;
         // Fast path: nothing queued and not corked -> write straight to the socket.
         if was_empty && !w.corked {
             loop {
@@ -313,6 +344,17 @@ impl ConnInner {
         }
         let mut w = self.lock();
         self.check_sendable(&w, data.len())?;
+        let data = match self.seal(&mut w, &data) {
+            Ok(Some(sealed)) => sealed,
+            Ok(None) => data,
+            Err(e) => {
+                drop(w);
+                return Err(self.fail(e));
+            }
+        };
+        if data.is_empty() {
+            return Ok(());
+        }
         let was_empty = w.queue.is_empty();
         let mut off = 0;
         if was_empty && !w.corked {
@@ -352,12 +394,21 @@ impl ConnInner {
         }
         let mut w = self.lock();
         self.check_sendable(&w, data.len())?;
+        let bytes = match self.seal(&mut w, &data) {
+            Ok(Some(sealed)) if sealed.is_empty() => return Ok(()),
+            Ok(Some(sealed)) => Bytes::Owned(sealed),
+            Ok(None) => Bytes::Shared(data),
+            Err(e) => {
+                drop(w);
+                return Err(self.fail(e));
+            }
+        };
         let was_empty = w.queue.is_empty();
-        w.queued += data.len();
-        w.queue.push_back(Chunk {
-            bytes: Bytes::Shared(data),
-            off: 0,
-        });
+        w.queued += match &bytes {
+            Bytes::Owned(v) => v.len(),
+            Bytes::Shared(s) => s.len(),
+        };
+        w.queue.push_back(Chunk { bytes, off: 0 });
         let need_wake = was_empty && !w.corked;
         if !w.corked {
             // Try to push it out right away.
@@ -410,6 +461,11 @@ impl ConnInner {
             return;
         }
         w.close_after_send = true;
+        if let Some(t) = w.transport.as_mut() {
+            let mut out = Vec::new();
+            t.shutdown(&mut out);
+            self.queue_raw(&mut w, out);
+        }
         drop(w);
         self.link.wake_conn(self.id);
     }
@@ -443,6 +499,67 @@ impl ConnInner {
         }
     }
 
+    /// Installs the transport layer. Call once, before any data flows.
+    pub fn set_transport(&self, t: Box<dyn Transport>) {
+        self.lock().transport = Some(t);
+    }
+
+    /// Whether a transport layer is installed.
+    pub fn has_transport(&self) -> bool {
+        self.lock().transport.is_some()
+    }
+
+    /// Runs `f` on the transport under the write lock.
+    pub fn with_transport<R>(&self, f: impl FnOnce(&mut dyn Transport) -> R) -> Option<R> {
+        let mut w = self.lock();
+        w.transport.as_mut().map(|t| f(&mut **t))
+    }
+
+    /// Loop side: feeds bytes read from the socket through the transport. Decoded bytes are
+    /// appended to `plain`; output for the peer is queued (and flushed by the loop).
+    pub fn transport_recv(&self, cipher: &[u8], plain: &mut Vec<u8>) -> io::Result<()> {
+        let mut w = self.lock();
+        let Some(t) = w.transport.as_mut() else {
+            plain.extend_from_slice(cipher);
+            return Ok(());
+        };
+        let mut out = Vec::new();
+        let r = t.recv(cipher, plain, &mut out);
+        let wake = self.queue_raw(&mut w, out);
+        drop(w);
+        if wake {
+            self.link.wake_conn(self.id);
+        }
+        r
+    }
+
+    /// Queues bytes that are already encoded for the wire. Returns whether the loop must be
+    /// woken to flush them.
+    fn queue_raw(&self, w: &mut WriteState, out: Vec<u8>) -> bool {
+        if out.is_empty() {
+            return false;
+        }
+        let was_empty = w.queue.is_empty();
+        w.queued += out.len();
+        w.queue.push_back(Chunk {
+            bytes: Bytes::Owned(out),
+            off: 0,
+        });
+        was_empty && !w.corked
+    }
+
+    /// Encodes `data` through the transport if there is one.
+    fn seal(&self, w: &mut WriteState, data: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        match w.transport.as_mut() {
+            None => Ok(None),
+            Some(t) => {
+                let mut out = Vec::with_capacity(data.len() + 64);
+                t.seal(data, &mut out)?;
+                Ok(Some(out))
+            }
+        }
+    }
+
     pub fn local_addr(&self) -> SocketAddr {
         self.local
     }
@@ -459,7 +576,7 @@ impl ConnInner {
 /// returns [`Error::Closed`]; it never panics or touches a recycled fd. The socket's file
 /// descriptor is released when the connection is closed *and* every handle has been dropped.
 pub struct Conn<H> {
-    inner: Arc<ConnInner>,
+    pub(crate) inner: Arc<ConnInner>,
     // `fn() -> H` keeps the handle Send + Sync regardless of H.
     _h: PhantomData<fn() -> H>,
 }
@@ -546,6 +663,11 @@ impl<H> Conn<H> {
     /// Pauses (`true`) or resumes (`false`) reading from the peer.
     pub fn hold_reads(&self, hold: bool) {
         self.inner.hold_reads(hold)
+    }
+
+    /// Runs `f` on the connection's [`Transport`] (e.g. to read TLS details), if it has one.
+    pub fn with_transport<R>(&self, f: impl FnOnce(&mut dyn Transport) -> R) -> Option<R> {
+        self.inner.with_transport(f)
     }
 }
 

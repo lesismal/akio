@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{Conn, ConnInner, Error, Task, conn::Completion};
+use crate::{Conn, ConnInner, Error, Task, Transport, conn::Completion};
 
 /// Per-connection state *and* event callbacks (ADR-003).
 ///
@@ -30,6 +30,12 @@ pub trait Acceptor: Send + Sync + 'static {
 
     /// The engine is shutting down: end the connection when convenient (optional).
     fn on_shutdown(&self, _c: &Conn<Self::Handler>) {}
+
+    /// A [`Transport`] to layer under each connection of this acceptor (TLS, for example), created
+    /// before `on_open`. The default is none: plain TCP.
+    fn transport(&self) -> Option<Box<dyn Transport>> {
+        None
+    }
 }
 
 /// An [`Acceptor`] built from a closure; see [`fn_acceptor`].
@@ -84,11 +90,28 @@ struct HandlerBox<H: Handler> {
     h: H,
     // Created once at open: callbacks borrow it, so no Arc clone per callback.
     conn: Conn<H>,
+    /// A transport layer is installed: bytes read must be decoded before `on_data`.
+    secured: bool,
+    plain: Vec<u8>,
 }
 
 impl<H: Handler> DynHandler for HandlerBox<H> {
     fn on_data(&mut self, data: &[u8]) {
-        self.h.on_data(&self.conn, data)
+        if !self.secured {
+            return self.h.on_data(&self.conn, data);
+        }
+        let mut plain = std::mem::take(&mut self.plain);
+        plain.clear();
+        match self.conn.inner.transport_recv(data, &mut plain) {
+            Ok(()) => {
+                if !plain.is_empty() {
+                    self.h.on_data(&self.conn, &plain);
+                }
+            }
+            // Whatever the transport produced (an alert) is flushed, then the connection ends.
+            Err(_) => self.conn.close_after_send(),
+        }
+        self.plain = plain;
     }
     fn on_close(&mut self, err: Option<Error>) {
         self.h.on_close(&self.conn, err)
@@ -103,8 +126,22 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
 impl<A: Acceptor> DynAcceptor for A {
     fn on_open(&self, inner: &Arc<ConnInner>) -> Box<dyn DynHandler> {
         let conn = Conn::<A::Handler>::new(inner.clone());
+        let secured = match Acceptor::transport(self) {
+            Some(t) => {
+                inner.set_transport(t);
+                // Lets a client transport send its opening records right away.
+                let _ = inner.transport_recv(&[], &mut Vec::new());
+                true
+            }
+            None => false,
+        };
         let h = Acceptor::on_open(self, &conn);
-        Box::new(HandlerBox { h, conn })
+        Box::new(HandlerBox {
+            h,
+            conn,
+            secured,
+            plain: Vec::new(),
+        })
     }
     fn on_shutdown(&self, inner: &Arc<ConnInner>) {
         Acceptor::on_shutdown(self, &Conn::<A::Handler>::new(inner.clone()))

@@ -21,6 +21,9 @@
 
 use std::{io, net::SocketAddr, sync::Arc};
 
+/// TLS (rustls): wrap an acceptor in [`tls::Tls`] to serve or dial over TLS.
+pub use flash_tls as tls;
+
 pub use flash_core::{
     Acceptor, Config, Conn, Error, FnAcceptor, Handler, PoolConfig, PoolStats, ResponseSlot,
     Result, SlowCallback, SlowHook, fn_acceptor,

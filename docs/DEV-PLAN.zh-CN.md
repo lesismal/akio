@@ -108,11 +108,12 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [ ] `flash-uring`：暂未使用（有测量依据再做）：registered files、`SEND_ZC`、`MSG_RING` 唤醒、基于 ring 的发送
 - [x] **每 listener 选择后端**：Engine 内多后端并存、线程组独立配置（已测试：同一 Engine 里 epoll + io_uring 两个 listener）；不支持的组合返回明确错误
 - [ ] UDP：每 peer 一连接、`recvmmsg/sendmmsg`、GRO/GSO；`DatagramsHandler` 批量接口
-- [ ] `flash-tls`：rustls sans-io 驱动、握手在 IO 线程内、会话票据、SNI、ALPN；kTLS 评估
+- [x] `flash-tls`：rustls 以 sans-io 方式通过 `Conn` 之下的 `Transport` 层驱动（服务端与客户端；`Tls::server` / `Tls::client` 包装任意 acceptor，handler 看到明文），握手在 IO 线程内完成，握手期间发送的应用数据先缓存，`close_after_send` 发送 close_notify，`tls_info`（ALPN、SNI、版本）。会话票据、SNI 证书选择、客户端认证、版本：通过 rustls 自己的配置。已在 epoll 与 io_uring 上测试：echo（3 MiB）、ALPN/SNI、明文垃圾数据与不受信证书的客户端、TLS 上的 `spawn_blocking` + 有序槽、flash 拨 flash
+- [ ] kTLS 评估（未开始）；TLS 1.3 early data 与客户端证书辅助函数留给 rustls 配置
 - [x] 测试：整套 engine/offload/stress 测试在 epoll 与 io_uring 上都跑（`FLASH_TEST_BACKEND=uring`，Linux CI 也跑）；跨后端混合 listener。另已完成：阻塞投递测试（IO 线程不被阻塞、完成回调在 IO 线程且带 handler 状态、池满、连接提前关闭、有序、槽丢弃、慢回调）
 - **交付**：`examples/blocking-offload`（已完成）、后端对比 benchmark 报告
 
-> M2 状态：逻辑池与 io_uring 已完成；21 个 engine/offload/stress 测试在 Linux（内核 6.12，Docker）上两种后端都通过，重复运行无失败。**io_uring 与 epoll 对比（同一台 Docker 虚拟机，echo，64 B，客户端同机）：** 服务端 4 线程/256 连接时两者都被客户端限制（各约 80–100 万 req/s，无法排名）；服务端 1 线程/512 连接（受服务端限制）时 epoll 为 41.6 万和 49.2 万，io_uring 为 52.7 万和 53.8 万，io_uring 领先约 10–25%。最初的 io_uring 实现每收到一段数据都重新提交一次 `PROVIDE_BUFFERS`，只有 epoll 的约 60%；改用 buffer ring 归还缓冲（写内存而不是提交请求）后差距消失。数据来自与客户端共用 CPU 的虚拟机，只能作方向参考，不是正式 benchmark 报告。**M2 剩余：** UDP、TLS、benchmark 报告。
+> M2 状态：逻辑池与 io_uring 已完成；21 个 engine/offload/stress 测试在 Linux（内核 6.12，Docker）上两种后端都通过，重复运行无失败。**io_uring 与 epoll 对比（同一台 Docker 虚拟机，echo，64 B，客户端同机）：** 服务端 4 线程/256 连接时两者都被客户端限制（各约 80–100 万 req/s，无法排名）；服务端 1 线程/512 连接（受服务端限制）时 epoll 为 41.6 万和 49.2 万，io_uring 为 52.7 万和 53.8 万，io_uring 领先约 10–25%。最初的 io_uring 实现每收到一段数据都重新提交一次 `PROVIDE_BUFFERS`，只有 epoll 的约 60%；改用 buffer ring 归还缓冲（写内存而不是提交请求）后差距消失。数据来自与客户端共用 CPU 的虚拟机，只能作方向参考，不是正式 benchmark 报告。**M2 剩余：** UDP、benchmark 报告（TLS 已完成，尚无 TLS 吞吐测量）。
 
 ### M3 HTTP/1 + WebSocket（6–8 周）
 - [ ] `flash-http` h1：sans-io 解析（pipelining、chunked、trailers、streaming body、Expect: 100）、`Context`/`Respond`、`sendfile`
