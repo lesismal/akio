@@ -202,13 +202,16 @@ mod tests {
     #[test]
     fn fires_at_deadline_across_levels() {
         let mut w = Wheel::new(0);
-        let ds = [
-            1u64, 5, 63, 64, 65, 200, 4095, 4096, 5000, 300_000, 20_000_000,
-        ];
-        for &d in &ds {
+        // Miri is ~1000x slower: keep the far deadlines for native runs only.
+        let ds: &[u64] = if cfg!(miri) {
+            &[1, 5, 63, 64, 65, 130]
+        } else {
+            &[1, 5, 63, 64, 65, 200, 4095, 4096, 5000, 300_000, 20_000_000]
+        };
+        for &d in ds {
             w.schedule(d, d);
         }
-        let got = run(&mut w, 20_000_001);
+        let got = run(&mut w, ds[ds.len() - 1] + 1);
         assert_eq!(got.len(), ds.len());
         for (t, v) in got {
             assert_eq!(t, v, "timer {v} fired at {t}");
@@ -264,10 +267,10 @@ mod tests {
         let mut model: Vec<(u64, u64, Option<TimerId>)> = vec![];
         let mut id = 0;
         let mut fired = vec![];
-        let ticks: u64 = if cfg!(miri) { 1_500 } else { 20_000 };
+        let ticks: u64 = if cfg!(miri) { 150 } else { 20_000 };
         for t in 1..=ticks {
             for _ in 0..(rnd() % 3) {
-                let dl = t + rnd() % 70_000;
+                let dl = t + rnd() % if cfg!(miri) { 300 } else { 70_000 };
                 id += 1;
                 model.push((dl, id, Some(w.schedule(dl, id))));
             }
