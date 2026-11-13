@@ -134,7 +134,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 > M3 状态：**除对比报告外功能已完成**（报告移到 benchmark 阶段）：支持流式与 sendfile 的 h1 服务端、router、9 个中间件、静态文件、通过 Autobahn 全部用例的 flash-ws（核心 298 项 + 3 项 informational，permessage-deflate 216/216）、h1 客户端。示例：`crates/flash-http/examples/{hello,ws-chat,ws-echo}.rs`。
 
 ### M4 HTTP/2 + 多协议（8–10 周）
-- [ ] HTTP/2：帧/流/流控、HPACK、h2c（先验 + Upgrade）、server push、h2spec 进 CI；h2 客户端
+- [x] HTTP/2（`flash-http`，与 HTTP/1 共用 `Service`/`Context`）：帧、流、双向流控、HPACK（`loona-hpack`）、h2c（先验与 `Upgrade`）、TLS ALPN `h2`、server push（`ctx.push`）、双向流式 body、GOAWAY 优雅关闭；h2spec strict 147/147（CI job `h2spec`）；curl 互通（先验、upgrade、POST）；`h2client::H2Client`（多路复用、流控、push、TLS）。顺带发现：rustls 单次写入明文超过 64 KiB 会失败，`flash-tls` 现按记录大小分段加密
 - [ ] `flash-mux`：首字节嗅探（HTTP/TLS/SOCKS/自定义）
 - [ ] `flash-arpc`：线协议兼容、双向调用、notify、stream、广播、重连
 - [ ] `flash-grpc`：一元 + 流式、metadata、deadline、interceptor、gzip；codec 可插拔（prost）
