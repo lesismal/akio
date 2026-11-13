@@ -127,11 +127,11 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] 中间件：响应时间、compress（gzip/deflate）、etag + 304、csrf（双重提交 cookie）、按 IP 的令牌桶限流。尚未提供 brotli（还没引入 brotli 依赖）
 - [x] 静态文件（`files::Files`）：路径安全、MIME、ETag/Last-Modified/304、单段 Range、index 文件、预压缩 `.br`/`.gz` 同名文件、带 stat 间隔的内存缓存、大文件用 `sendfile`。基于 inotify 的变更跟踪未做（用 stat 间隔代替）
 - [x] `flash-ws`：RFC 6455 + permessage-deflate（context takeover、服务端窗口位数）、`PreparedMessage` 广播、子协议、Origin 检查、关闭握手；Autobahn|Testsuite：核心 298 项 OK + 3 项 informational，permessage-deflate 216/216 OK，由 `tools/autobahn/run.sh` 在 CI 中运行。Autobahn 发现了 miniz_oxide 的一个 deflate bug（flate2 现改用 zlib-rs）
-- [ ] HTTP/1 异步客户端（回调 / future 两种结果通道）
-- [ ] 与 hyper、fib 的 HTTP/1 对比报告（plaintext、pipelined、json）
+- [x] HTTP/1 异步客户端（`client::Client`）：回调、`ResponseFuture`（`wait`、`wait_timeout`、`.await`）、按主机复用 keep-alive 连接（复用的连接已失效时重试一次）、chunked/以关闭为界的 body、通过 `flash::tls` 支持 HTTPS、地址回退（先 ::1 再 127.0.0.1）。未做：重定向、单请求超时、把 DNS 解析移出调用线程
+- [ ] 与 hyper、fib 的 HTTP/1 对比报告（plaintext、pipelined、json）：放到功能阶段结束后的统一 benchmark 阶段
 - **交付**：`examples/http`、`examples/ws-chat`
 
-> M3 状态：第一部分已完成（h1 服务端、router、四个中间件；9 个 socket 级测试 + 14 个单元测试，macOS 与 Linux、epoll 与 io_uring 都通过）。**M3 剩余：** WebSocket（`flash-ws`）、静态文件/`sendfile`、流式 body、更多中间件、HTTP/1 客户端、对比报告；目前还没有测过 HTTP 吞吐。示例：`crates/flash-http/examples/hello.rs`。
+> M3 状态：**除对比报告外功能已完成**（报告移到 benchmark 阶段）：支持流式与 sendfile 的 h1 服务端、router、9 个中间件、静态文件、通过 Autobahn 全部用例的 flash-ws（核心 298 项 + 3 项 informational，permessage-deflate 216/216）、h1 客户端。示例：`crates/flash-http/examples/{hello,ws-chat,ws-echo}.rs`。
 
 ### M4 HTTP/2 + 多协议（8–10 周）
 - [ ] HTTP/2：帧/流/流控、HPACK、h2c（先验 + Upgrade）、server push、h2spec 进 CI；h2 客户端

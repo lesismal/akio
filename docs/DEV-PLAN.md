@@ -127,11 +127,11 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 - [x] Middleware: response time, compress (gzip/deflate), etag + 304, csrf (double-submit cookie), per-IP token-bucket limiter. Brotli is not offered (no brotli dependency yet)
 - [x] Static files (`files::Files`): path safety, MIME, ETag/Last-Modified/304, single ranges, index files, pre-compressed `.br`/`.gz` twins, in-memory cache with a stat interval, `sendfile` for big files. inotify-based change tracking is not done (stat interval instead)
 - [x] `flash-ws`: RFC 6455 + permessage-deflate (context takeover, server window bits), `PreparedMessage` broadcast, subprotocols, origin check, close handshake; Autobahn|Testsuite: 298 OK + 3 informational (core), 216/216 OK (permessage-deflate), run in CI by `tools/autobahn/run.sh`. A miniz_oxide deflate bug found by Autobahn (flate2 now uses zlib-rs)
-- [ ] HTTP/1 async client (callback and future result channels)
-- [ ] HTTP/1 comparison report vs hyper and fib (plaintext, pipelined, json)
+- [x] HTTP/1 async client (`client::Client`): callbacks, `ResponseFuture` (`wait`, `wait_timeout`, `.await`), keep-alive reuse per host with one retry when a reused connection turns out dead, chunked/close-delimited bodies, HTTPS via `flash::tls`, address fallback (::1 then 127.0.0.1). Not done: redirects, per-request timeout, DNS off the calling thread
+- [ ] HTTP/1 comparison report vs hyper and fib (plaintext, pipelined, json): moves to the unified benchmark pass after the feature phase
 - **Deliverable**: `examples/http`, `examples/ws-chat`
 
-> M3 status: first slice done (h1 server, router, four middlewares; 9 socket-level tests + 14 unit tests, macOS and Linux, epoll and io_uring). **Remaining in M3:** WebSocket (`flash-ws`), static files/`sendfile`, streaming bodies, more middleware, the HTTP/1 client, and the comparison report; no HTTP throughput has been measured yet. Example: `crates/flash-http/examples/hello.rs`.
+> M3 status: **feature-complete except the comparison report** (moved to the benchmark pass): h1 server with streaming and sendfile, router, 9 middlewares, static files, flash-ws with Autobahn at 100% (core 298+3 informational, permessage-deflate 216/216), h1 client. Examples: `crates/flash-http/examples/{hello,ws-chat,ws-echo}.rs`.
 
 ### M4 HTTP/2 + multi-protocol (8–10 weeks)
 - [ ] HTTP/2: frames/streams/flow control, HPACK, h2c (prior knowledge + Upgrade), server push, h2spec in CI; h2 client

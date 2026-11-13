@@ -9,12 +9,13 @@ rust-version.workspace = true
 
 [dependencies]
 flash-core = { path = "../flash-core" }
+flash = { path = "../flash" }
 httparse = "1"
 flash-ws = { path = "../flash-ws" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [dev-dependencies]
-flash = { path = "../flash" }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [lints]

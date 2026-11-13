@@ -32,6 +32,7 @@
 //! Not yet implemented: streaming request/response bodies (bodies are buffered, within limits),
 //! `sendfile`/static files, regexp route parameters, an HTTP client.
 
+pub mod client;
 mod context;
 pub mod files;
 pub mod message;
