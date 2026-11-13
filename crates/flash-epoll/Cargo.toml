@@ -1,0 +1,15 @@
+[package]
+name = "flash-epoll"
+description = "flash network library: flash-epoll"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash-core = { path = "../flash-core" }
+flash-sys = { path = "../flash-sys" }
+
+[lints]
+workspace = true

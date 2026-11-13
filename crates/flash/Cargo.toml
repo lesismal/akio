@@ -1,0 +1,15 @@
+[package]
+name = "flash"
+description = "flash network library: flash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash-core = { path = "../flash-core" }
+flash-epoll = { path = "../flash-epoll" }
+
+[lints]
+workspace = true

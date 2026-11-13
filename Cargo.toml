@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/flash-sys",
+    "crates/flash-buf",
+    "crates/flash-timer",
+    "crates/flash-pool",
+    "crates/flash-core",
+    "crates/flash-epoll",
+    "crates/flash",
+    "tools/echo-bench",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/lesismal/flash"
+rust-version = "1.85"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"

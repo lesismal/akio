@@ -78,11 +78,11 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 每个任务以 `[ ]` 标记，括号内为产出物。每个里程碑结束需通过 **DoD（见 ROADMAP 第 4 节）+ benchmark 报告 + CHANGELOG**。
 
 ### M0 立项与骨架（1–2 周）
-- [ ] workspace + `rust-toolchain.toml` + `rustfmt/clippy` 配置 + LICENSE
-- [ ] CI：Linux x86_64/aarch64 + macOS；`fmt / clippy -D warnings / test / miri(纯 Rust crate) / loom`
-- [ ] ADR-001 线程模型；ADR-002 Conn 锁模型与生命周期；ADR-003 Handler 与每连接状态类型；ADR-004 后端抽象 `Reactor` trait；ADR-005 依赖策略；ADR-006 eBPF 的定位
-- [ ] 原型：对比 2–3 种 `Handler` API 形态，选定
-- [ ] benchmark 脚手架：echo 客户端压测工具 + 对照实现（fib、tokio、monoio）
+- [x] workspace + `rust-toolchain.toml` + `rustfmt/clippy` 配置 + LICENSE
+- [x] CI：Linux x86_64/aarch64 + macOS；`fmt / clippy -D warnings / test / miri(纯 Rust crate) / loom`
+- [x] ADR-001 线程模型；ADR-002 Conn 锁模型与生命周期；ADR-003 Handler 与每连接状态类型；ADR-004 后端抽象 `Reactor` trait；ADR-005 依赖策略；ADR-006 eBPF 的定位
+- [x] 原型：对比 2–3 种 `Handler` API 形态，选定
+- [x] benchmark 脚手架：echo 客户端压测工具 + 对照实现（fib、tokio、monoio）
 
 ### M1 核心引擎：epoll + kqueue（4–6 周）
 - [ ] `flash-sys`：epoll、eventfd、`accept4`、`writev`、`sendfile`、`splice`、`SO_REUSEPORT`、非阻塞 socket 选项

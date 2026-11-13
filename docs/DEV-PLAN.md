@@ -78,11 +78,11 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone must pass its **DoD (ROADMAP section 4) + a benchmark report + a CHANGELOG entry**.
 
 ### M0 Kick-off and skeleton (1–2 weeks)
-- [ ] workspace + `rust-toolchain.toml` + `rustfmt/clippy` config + LICENSE
-- [ ] CI: Linux x86_64/aarch64 + macOS; `fmt / clippy -D warnings / test / miri (pure-Rust crates) / loom`
-- [ ] ADR-001 threading model; ADR-002 Conn lock model and lifecycle; ADR-003 Handler and per-connection state type; ADR-004 backend abstraction `Reactor` trait; ADR-005 dependency policy; ADR-006 role of eBPF
-- [ ] Prototype 2–3 `Handler` API shapes and choose one
-- [ ] Benchmark scaffold: echo load tool + reference implementations (fib, tokio, monoio)
+- [x] workspace + `rust-toolchain.toml` + `rustfmt/clippy` config + LICENSE
+- [x] CI: Linux x86_64/aarch64 + macOS; `fmt / clippy -D warnings / test / miri (pure-Rust crates) / loom`
+- [x] ADR-001 threading model; ADR-002 Conn lock model and lifecycle; ADR-003 Handler and per-connection state type; ADR-004 backend abstraction `Reactor` trait; ADR-005 dependency policy; ADR-006 role of eBPF
+- [x] Prototype 2–3 `Handler` API shapes and choose one
+- [x] Benchmark scaffold: echo load tool + reference implementations (fib, tokio, monoio)
 
 ### M1 Core engine: epoll + kqueue (4–6 weeks)
 - [ ] `flash-sys`: epoll, eventfd, `accept4`, `writev`, `sendfile`, `splice`, `SO_REUSEPORT`, non-blocking socket options

@@ -1,0 +1,16 @@
+[package]
+name = "flash-core"
+description = "flash network library: flash-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash-buf = { path = "../flash-buf" }
+flash-timer = { path = "../flash-timer" }
+flash-pool = { path = "../flash-pool" }
+
+[lints]
+workspace = true
