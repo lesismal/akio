@@ -71,6 +71,8 @@ fn tls_client(
 ) -> StreamOwned<ClientConnection, TcpStream> {
     let tcp = TcpStream::connect(addr).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    tcp.set_write_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     let conn = ClientConnection::new(cfg, ServerName::try_from("localhost").unwrap()).unwrap();
     StreamOwned::new(conn, tcp)
 }
@@ -129,7 +131,10 @@ fn echo_over_tls_small_and_large() {
             sent += n;
         }
         // Read what has come back so far (blocks until at least one record arrives).
-        if sent - got.len() >= 256 << 10 || sent == data.len() {
+        // Keep the outstanding amount well below the kernel socket buffers (macOS has small
+        // ones): a client that stops reading while the server's echo cannot be written, and a
+        // server that pauses reading because of that backpressure, would deadlock each other.
+        if sent - got.len() >= 64 << 10 || sent == data.len() {
             let n = c.read(&mut buf).unwrap();
             got.extend_from_slice(&buf[..n]);
         }
