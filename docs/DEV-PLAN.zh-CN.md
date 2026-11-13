@@ -136,7 +136,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### M4 HTTP/2 + 多协议（8–10 周）
 - [x] HTTP/2（`flash-http`，与 HTTP/1 共用 `Service`/`Context`）：帧、流、双向流控、HPACK（`loona-hpack`）、h2c（先验与 `Upgrade`）、TLS ALPN `h2`、server push（`ctx.push`）、双向流式 body、GOAWAY 优雅关闭；h2spec strict 147/147（CI job `h2spec`）；curl 互通（先验、upgrade、POST）；`h2client::H2Client`（多路复用、流控、push、TLS）。顺带发现：rustls 单次写入明文超过 64 KiB 会失败，`flash-tls` 现按记录大小分段加密
 - [x] `flash-mux`：首字节嗅探（TLS、HTTP/1、HTTP/2 preface、SOCKS4/5、前缀、自定义规则、fallback）；被选中的 acceptor 像自己 accept 的连接一样接管（回放已读字节、逻辑池回调、优雅关闭）
-- [ ] `flash-arpc`：线协议兼容、双向调用、notify、stream、广播、重连
+- [x] `flash-arpc`：lesismal/arpc 线协议；双向调用、notify、带超时的异步调用、detach 后应答、stream、广播（共享同一帧）、客户端重连；与 fib 的 Go arpc 双向互通已验证（`tools/interop/arpc/run.sh`）。未做：中间件/编解码链、客户端连接池
 - [ ] `flash-grpc`：一元 + 流式、metadata、deadline、interceptor、gzip；codec 可插拔（prost）
 - [x] `flash-socks`：SOCKS5（无认证 / 用户名密码，IPv4/IPv6/域名在逻辑池中解析）、SOCKS4/4a、HTTP `CONNECT` 代理（通过 `Context::upgrade_raw`）；回调到回调的转发，双向背压（核心新增 `Conn::on_drain`；它暴露了一个在 loop 之外清空队列时丢失唤醒的问题，已修复）。未做：SOCKS BIND / UDP ASSOCIATE、Linux `splice` 路径
 - [ ] 测试：与 curl/nghttp2/grpc-go/tonic 互通

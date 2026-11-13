@@ -13,6 +13,7 @@ members = [
     "crates/flash-ws",
     "crates/flash-mux",
     "crates/flash-socks",
+    "crates/flash-arpc",
     "crates/flash",
     "tools/echo-bench",
 ]

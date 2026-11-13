@@ -1,0 +1,16 @@
+[package]
+name = "flash-arpc"
+description = "flash network library: arpc (wire-compatible with lesismal/arpc and fib/arpc)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash = { path = "../flash" }
+flash-core = { path = "../flash-core" }
+flash-buf = { path = "../flash-buf" }
+
+[lints]
+workspace = true

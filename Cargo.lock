@@ -112,6 +112,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "flash-arpc"
+version = "0.0.0"
+dependencies = [
+ "flash",
+ "flash-buf",
+ "flash-core",
+]
+
+[[package]]
 name = "flash-buf"
 version = "0.0.0"
 
