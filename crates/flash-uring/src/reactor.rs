@@ -17,7 +17,7 @@ use flash_core::{
 };
 use flash_sys::EventFd;
 use flash_timer::{TimerId, Wheel};
-use io_uring::{IoUring, cqueue, opcode, squeue, types};
+use io_uring::{IoUring, cqueue, opcode, squeue, types, types::BufRingEntry};
 
 use crate::UringOptions;
 
@@ -29,6 +29,7 @@ const OP_WAKE: u64 = 4;
 const OP_OTHER: u64 = 5;
 
 const BGID: u16 = 0;
+/// Provided buffers per loop; a power of two (the buffer ring is indexed with a mask).
 const BUF_COUNT: u16 = 1024;
 const MAX_BUF: usize = 16 << 10;
 
@@ -41,6 +42,103 @@ thread_local! {
 
 fn ud(id: u64, op: u64) -> u64 {
     (id << 4) | op
+}
+
+/// Creates a ring with the cheapest setup the kernel accepts: cooperative task-run, a single
+/// issuer and deferred task-run (6.1+); anything less if that is refused. The returned flag says
+/// the ring starts disabled and must be enabled by the thread that will drive it (single-issuer
+/// rings belong to the thread that enables them, and rings are built on another thread).
+pub(crate) fn make_ring(entries: u32, sqpoll: bool) -> io::Result<(IoUring, bool)> {
+    let cq = entries.saturating_mul(4);
+    if sqpoll {
+        let mut b = IoUring::builder();
+        b.setup_cqsize(cq).setup_sqpoll(1000);
+        return Ok((b.build(entries)?, false));
+    }
+    let mut b = IoUring::builder();
+    b.setup_cqsize(cq)
+        .setup_coop_taskrun()
+        .setup_single_issuer()
+        .setup_defer_taskrun()
+        .setup_r_disabled();
+    if let Ok(r) = b.build(entries) {
+        return Ok((r, true));
+    }
+    let mut b = IoUring::builder();
+    b.setup_cqsize(cq).setup_coop_taskrun();
+    if let Ok(r) = b.build(entries) {
+        return Ok((r, false));
+    }
+    let mut b = IoUring::builder();
+    b.setup_cqsize(cq);
+    Ok((b.build(entries)?, false))
+}
+
+/// The provided-buffer ring: page-aligned memory shared with the kernel. Returning a buffer is a
+/// plain memory write plus a tail bump, with no submission entry and no syscall.
+pub(crate) struct BufRing {
+    base: *mut BufRingEntry,
+    tail: u16,
+}
+
+const RING_BYTES: usize = BUF_COUNT as usize * std::mem::size_of::<BufRingEntry>();
+
+impl BufRing {
+    fn layout() -> std::alloc::Layout {
+        std::alloc::Layout::from_size_align(RING_BYTES, 4096).expect("valid layout")
+    }
+
+    pub(crate) fn new() -> io::Result<BufRing> {
+        // SAFETY: the layout has non-zero size.
+        let base = unsafe { std::alloc::alloc_zeroed(Self::layout()) }.cast::<BufRingEntry>();
+        if base.is_null() {
+            return Err(io::ErrorKind::OutOfMemory.into());
+        }
+        Ok(BufRing { base, tail: 0 })
+    }
+
+    /// Registers the ring with the kernel as buffer group `BGID`.
+    pub(crate) fn register(&self, ring: &IoUring) -> io::Result<()> {
+        // SAFETY: `base` points to `BUF_COUNT` zeroed, page-aligned entries that stay allocated
+        // until `self` is dropped, which happens after the io_uring instance that holds the
+        // registration (see field order in `Loop`).
+        unsafe {
+            ring.submitter()
+                .register_buf_ring_with_flags(self.base as u64, BUF_COUNT, BGID, 0)
+        }
+    }
+
+    /// Makes buffer `bid` (a `size`-byte slot at `area + bid * size`) available to the kernel.
+    fn give(&mut self, area: *mut u8, size: usize, bid: u16) {
+        let idx = (self.tail & (BUF_COUNT - 1)) as usize;
+        // SAFETY: `idx < BUF_COUNT`, so the entry is inside the allocation; `bid < BUF_COUNT`
+        // keeps the buffer address inside `area`. Only this thread writes entries, and the
+        // kernel reads an entry only after the tail store below publishes it.
+        unsafe {
+            let e = &mut *self.base.add(idx);
+            e.set_addr(area.add(bid as usize * size) as u64);
+            e.set_len(size as u32);
+            e.set_bid(bid);
+        }
+        self.tail = self.tail.wrapping_add(1);
+    }
+
+    /// Publishes everything given since the last call.
+    fn publish(&self) {
+        // SAFETY: `tail` points at the ring's tail field inside the allocation; it is a `u16`
+        // shared with the kernel, which the protocol says to store with release ordering.
+        unsafe {
+            let t = BufRingEntry::tail(self.base) as *const std::sync::atomic::AtomicU16;
+            (*t).store(self.tail, Ordering::Release);
+        }
+    }
+}
+
+impl Drop for BufRing {
+    fn drop(&mut self) {
+        // SAFETY: allocated in `new` with the same layout.
+        unsafe { std::alloc::dealloc(self.base.cast(), Self::layout()) };
+    }
 }
 
 pub(crate) enum Cmd {
@@ -139,9 +237,14 @@ enum Slot {
 
 pub(crate) struct Loop {
     ring: IoUring,
+    /// Declared after `ring` so the kernel's registration is gone before the memory is freed.
+    buf_ring: BufRing,
+    needs_enable: bool,
     shared: Arc<LoopShared>,
     listener: Option<(TcpListener, Arc<dyn DynAcceptor>)>,
     accept_armed: bool,
+    /// After a failed accept (EMFILE...) do not re-arm before this instant.
+    accept_retry_at: Option<Instant>,
     wake_buf: Box<[u8; 8]>,
     wake_armed: bool,
     /// Provided buffers: `BUF_COUNT` slots of `buf_size` bytes. Never reallocated.
@@ -183,21 +286,19 @@ impl Loop {
         } else {
             opts.entries
         };
-        let mut b = IoUring::builder();
-        b.setup_cqsize(entries.saturating_mul(4));
-        if opts.sqpoll {
-            b.setup_sqpoll(1000);
-        }
-        let ring = b.build(entries)?;
+        let (ring, needs_enable) = make_ring(entries, opts.sqpoll)?;
         if let Some((l, _)) = &listener {
             l.set_nonblocking(true)?;
         }
         let buf_size = cfg.read_buffer.clamp(512, MAX_BUF);
-        let mut lp = Loop {
+        Ok(Loop {
             ring,
+            buf_ring: BufRing::new()?,
+            needs_enable,
             shared,
             listener,
             accept_armed: false,
+            accept_retry_at: None,
             wake_buf: Box::new([0; 8]),
             wake_armed: false,
             bufs: vec![0; buf_size * BUF_COUNT as usize],
@@ -208,14 +309,22 @@ impl Loop {
             wheel: Wheel::new(0),
             epoch: Instant::now(),
             cqes: Vec::with_capacity(1024),
-        };
-        // Hand the whole buffer area to the kernel in one request.
-        let e =
-            opcode::ProvideBuffers::new(lp.bufs.as_mut_ptr(), buf_size as i32, BUF_COUNT, BGID, 0)
-                .build()
-                .user_data(ud(0, OP_OTHER));
-        lp.push(e);
-        Ok(lp)
+        })
+    }
+
+    /// Runs on the I/O thread before the first submission: takes ownership of the ring (when it
+    /// was created disabled) and hands the buffer ring to the kernel.
+    fn init(&mut self) -> io::Result<()> {
+        if self.needs_enable {
+            self.ring.submitter().register_enable_rings()?;
+        }
+        self.buf_ring.register(&self.ring)?;
+        let area = self.bufs.as_mut_ptr();
+        for bid in 0..BUF_COUNT {
+            self.buf_ring.give(area, self.buf_size, bid);
+        }
+        self.buf_ring.publish();
+        Ok(())
     }
 
     /// Queues an entry, submitting first if the submission queue is full.
@@ -231,13 +340,10 @@ impl Loop {
         }
     }
 
-    fn provide(&mut self, bid: u16) {
-        // SAFETY (pointer arithmetic): `bid < BUF_COUNT`, so the slot lies inside `bufs`.
-        let ptr = self.bufs[bid as usize * self.buf_size..].as_mut_ptr();
-        let e = opcode::ProvideBuffers::new(ptr, self.buf_size as i32, 1, BGID, bid)
-            .build()
-            .user_data(ud(0, OP_OTHER));
-        self.push(e);
+    /// Returns a receive buffer to the kernel (no syscall; published with `publish`).
+    fn give_back(&mut self, bid: u16) {
+        let area = self.bufs.as_mut_ptr();
+        self.buf_ring.give(area, self.buf_size, bid);
     }
 
     fn tick(&self) -> u64 {
@@ -246,12 +352,20 @@ impl Loop {
 
     pub(crate) fn run(&mut self) {
         CURRENT_LOOP.with(|c| c.set(self.shared.uid));
+        if let Err(e) = self.init() {
+            eprintln!("flash: io_uring init failed: {e}");
+            return;
+        }
         loop {
             self.arm_loop_ops();
             let mut timeout = self.draining.map(|_| Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
                 timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
+            }
+            if let Some(t) = self.accept_retry_at {
+                let left = t.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
+                timeout = Some(timeout.map_or(left, |x| x.min(left)));
             }
             let res = match timeout {
                 Some(t) => {
@@ -341,7 +455,8 @@ impl Loop {
             self.push(e);
             self.wake_armed = true;
         }
-        if !self.accept_armed && self.draining.is_none() {
+        let backoff_over = self.accept_retry_at.is_none_or(|t| Instant::now() >= t);
+        if !self.accept_armed && self.draining.is_none() && backoff_over {
             if let Some((l, _)) = &self.listener {
                 let e = opcode::AcceptMulti::new(types::Fd(l.as_raw_fd()))
                     .build()
@@ -371,8 +486,9 @@ impl Loop {
         }
         if res < 0 {
             if res != -libc::ECANCELED && res != -libc::EINTR {
-                // e.g. EMFILE: avoid a hot loop by leaving it disarmed for one iteration.
+                // e.g. EMFILE: retry in a moment instead of spinning.
                 eprintln!("flash: accept: {}", io::Error::from_raw_os_error(-res));
+                self.accept_retry_at = Some(Instant::now() + Duration::from_millis(100));
             }
             return;
         }
@@ -450,7 +566,8 @@ impl Loop {
             // ENOBUFS/ECANCELED/EINTR end the multishot; `refresh` re-arms it if still wanted.
         }
         if let Some(bid) = bid {
-            self.provide(bid);
+            self.give_back(bid);
+            self.buf_ring.publish();
         }
         for elapsed in slow_hits {
             self.report_slow("on_data", id, elapsed);

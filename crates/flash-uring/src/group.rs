@@ -9,7 +9,7 @@ use std::{
 };
 
 use flash_core::{Config, DynAcceptor, Group, Pool};
-use io_uring::{IoUring, opcode};
+use io_uring::opcode;
 
 use crate::reactor::{Cmd, Loop, LoopShared};
 
@@ -43,15 +43,21 @@ pub fn probe() -> Result<(), String> {
     if (maj, min) < (5, 19) {
         return Err(format!("kernel {rel} is older than 5.19"));
     }
-    let ring = IoUring::new(8).map_err(|e| format!("io_uring_setup: {e}"))?;
+    let (ring, _) =
+        crate::reactor::make_ring(8, false).map_err(|e| format!("io_uring_setup: {e}"))?;
     let mut probe = io_uring::Probe::new();
     ring.submitter()
         .register_probe(&mut probe)
         .map_err(|e| format!("probe: {e}"))?;
+    // The same setup the loops use, including a buffer ring (the registration must succeed on
+    // the thread that owns a single-issuer ring, hence the enable call).
+    ring.submitter().register_enable_rings().ok();
+    crate::reactor::BufRing::new()
+        .and_then(|b| b.register(&ring))
+        .map_err(|e| format!("buffer ring: {e}"))?;
     for (name, code) in [
         ("accept", opcode::AcceptMulti::CODE),
         ("recv", opcode::RecvMulti::CODE),
-        ("provide_buffers", opcode::ProvideBuffers::CODE),
         ("poll_add", opcode::PollAdd::CODE),
         ("async_cancel", opcode::AsyncCancel::CODE),
         ("read", opcode::Read::CODE),
