@@ -86,3 +86,37 @@ impl Waker {
         }
     }
 }
+
+/// A bare Linux eventfd for backends that wait on it with their own mechanism (io_uring reads it
+/// with a submitted `Read`). `wake` may be called from any thread.
+#[cfg(target_os = "linux")]
+pub struct EventFd {
+    fd: OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+impl EventFd {
+    /// Creates a non-blocking, close-on-exec eventfd.
+    pub fn new() -> io::Result<EventFd> {
+        // SAFETY: plain syscall; the fd is owned by the returned OwnedFd.
+        let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fd was just created and is owned by nobody else.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        Ok(EventFd { fd })
+    }
+
+    /// The raw descriptor (for `Read` submissions).
+    pub fn as_raw_fd(&self) -> RawFd {
+        self.fd.as_raw_fd()
+    }
+
+    /// Increments the counter, completing a pending read of the eventfd.
+    pub fn wake(&self) {
+        let one: u64 = 1;
+        // SAFETY: writes 8 bytes from a live u64. EAGAIN (counter saturated) is fine.
+        unsafe { libc::write(self.fd.as_raw_fd(), (&raw const one).cast(), 8) };
+    }
+}

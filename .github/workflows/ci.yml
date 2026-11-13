@@ -25,6 +25,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      - name: Tests on the io_uring backend (Linux only)
+        if: runner.os == 'Linux'
+        run: cargo test -p flash
+        env:
+          FLASH_TEST_BACKEND: uring
 
   miri:
     # Pure-Rust crates only; crates with OS syscalls are excluded.

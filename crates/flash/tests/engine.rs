@@ -2,6 +2,8 @@
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
+mod common;
+
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -13,7 +15,7 @@ use std::{
     time::Duration,
 };
 
-use flash::{Backend, Config, Conn, Engine, Error, Handler, Listener, fn_acceptor};
+use flash::{Config, Conn, Engine, Error, Handler, Listener, fn_acceptor};
 
 /// Tests keep client sockets open while stopping; don't wait the default 10 s for them.
 fn cfg() -> Config {
@@ -51,6 +53,7 @@ fn echo_engine(threads: usize) -> Engine {
         .config(cfg())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(threads)
                 .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
         )
@@ -96,6 +99,7 @@ fn large_payload_survives_backpressure() {
         .config(cfg)
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
         )
@@ -128,12 +132,15 @@ fn send_from_other_threads_arrives_in_order() {
     let reg = conns.clone();
     let e = Engine::builder()
         .config(cfg())
-        .listen(Listener::tcp(localhost()).threads(2).serve(fn_acceptor(
-            move |c: &Conn<Collect>| {
-                reg.lock().unwrap().push(c.clone());
-                Collect
-            },
-        )))
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(2)
+                .serve(fn_acceptor(move |c: &Conn<Collect>| {
+                    reg.lock().unwrap().push(c.clone());
+                    Collect
+                })),
+        )
         .build()
         .unwrap();
     e.start().unwrap();
@@ -191,6 +198,7 @@ fn close_after_send_flushes_everything_then_eof() {
         .config(cfg())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(|_c: &Conn<Bye>| Bye)),
         )
@@ -223,12 +231,15 @@ fn on_close_runs_exactly_once_per_connection() {
     let (o2, c2) = (opened.clone(), closed.clone());
     let e = Engine::builder()
         .config(cfg())
-        .listen(Listener::tcp(localhost()).threads(2).serve(fn_acceptor(
-            move |_c: &Conn<Counting>| {
-                o2.fetch_add(1, Ordering::SeqCst);
-                Counting { closed: c2.clone() }
-            },
-        )))
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(2)
+                .serve(fn_acceptor(move |_c: &Conn<Counting>| {
+                    o2.fetch_add(1, Ordering::SeqCst);
+                    Counting { closed: c2.clone() }
+                })),
+        )
         .build()
         .unwrap();
     e.start().unwrap();
@@ -270,6 +281,7 @@ fn handler_panic_closes_only_that_connection() {
         .config(cfg())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(|_c: &Conn<Panicky>| Panicky)),
         )
@@ -312,6 +324,7 @@ fn hold_reads_pauses_until_resumed() {
         .config(cfg())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(|_c: &Conn<Holder>| Holder)),
         )
@@ -355,7 +368,12 @@ fn graceful_shutdown_notifies_and_waits_for_close() {
     let e = Arc::new(
         Engine::builder()
             .config(cfg())
-            .listen(Listener::tcp(localhost()).threads(2).serve(PoliteAcceptor))
+            .listen(
+                Listener::tcp(localhost())
+                    .backend(common::backend())
+                    .threads(2)
+                    .serve(PoliteAcceptor),
+            )
             .build()
             .unwrap(),
     );
@@ -395,6 +413,7 @@ fn dial_connects_and_runs_handler() {
         .config(cfg())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
         )
@@ -461,9 +480,14 @@ fn send_reports_overload_beyond_queue_limit() {
     };
     let e = Engine::builder()
         .config(cfg)
-        .listen(Listener::tcp(localhost()).threads(1).serve(fn_acceptor(
-            move |_c: &Conn<Flood>| Flood { outcome: o.clone() },
-        )))
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<Flood>| Flood {
+                    outcome: o.clone(),
+                })),
+        )
         .build()
         .unwrap();
     e.start().unwrap();
@@ -481,12 +505,12 @@ fn send_reports_overload_beyond_queue_limit() {
 }
 
 #[test]
-fn unsupported_backends_are_rejected_by_build() {
+fn unsupported_acceleration_is_rejected_by_build() {
     let r = Engine::builder()
         .config(cfg())
         .listen(
             Listener::tcp(localhost())
-                .backend(Backend::IoUring(Default::default()))
+                .accel(flash::Accel::Ebpf)
                 .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
         )
         .build();
@@ -518,6 +542,7 @@ fn idle_timeout_closes_silent_connections_only() {
         })
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(2)
                 .serve(fn_acceptor(move |_c: &Conn<H>| H(k.clone()))),
         )
@@ -548,5 +573,40 @@ fn idle_timeout_closes_silent_connections_only() {
     let mut b = [0u8; 1];
     chatty.read_exact(&mut b).unwrap();
     assert_eq!(&b, b"y");
+    stop(&e);
+}
+
+/// Two listeners of one engine, each on its own backend, serving independently.
+#[cfg(target_os = "linux")]
+#[test]
+fn listeners_can_use_different_backends_in_one_engine() {
+    use flash::{Backend, UringConfig};
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(Backend::Epoll)
+                .threads(2)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .listen(
+            Listener::tcp(localhost())
+                .backend(Backend::IoUring(UringConfig {
+                    strict: true,
+                    ..Default::default()
+                }))
+                .threads(2)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    for addr in e.local_addrs() {
+        let mut c = connect(addr);
+        c.write_all(b"hello").unwrap();
+        let mut b = [0u8; 5];
+        c.read_exact(&mut b).unwrap();
+        assert_eq!(&b, b"hello");
+    }
     stop(&e);
 }

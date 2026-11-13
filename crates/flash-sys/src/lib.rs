@@ -11,4 +11,6 @@ mod waker;
 
 pub use net::{connect_nonblocking, listen};
 pub use poller::{Event, Poller};
+#[cfg(target_os = "linux")]
+pub use waker::EventFd;
 pub use waker::Waker;

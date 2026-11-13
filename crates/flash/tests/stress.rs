@@ -2,6 +2,8 @@
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
+mod common;
+
 use std::{
     io::{Read, Write},
     net::TcpStream,
@@ -118,6 +120,7 @@ fn churn(n: usize, rounds: usize) {
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .backend(common::backend())
                 .threads(4)
                 .serve(EchoAcceptor(counters.clone())),
         )

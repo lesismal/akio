@@ -104,14 +104,15 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 - [x] `flash-pool`: adaptive thread pool (grows on demand to a max, idle threads retire), bounded queue, overload = `Error::Overloaded`, stats
 - [x] `Conn::spawn_blocking` + callback re-posted to the I/O thread (skipped if the connection closed or `work` panicked); ordered response slots (`reserve_response`; an unfilled dropped slot closes the connection)
 - [x] Slow-callback detection (`Config::slow_callback_threshold`, default 100 ms; `slow_hook` or stderr). Metrics export is still open
-- [ ] `flash-uring`: multishot accept/recv, provided buffer ring, registered files, `SEND_ZC`, `MSG_RING` cross-thread wakeup; kernel feature probing and automatic fallback
-- [ ] **Per-listener backend**: several backends in one Engine with independently configured thread groups; config validation and clear errors
+- [x] `flash-uring` v1: multishot accept and recv, legacy provided buffers, eventfd wake-up, kernel probe (5.19+) with automatic fallback to epoll (`UringConfig::strict` to refuse). Writes still go through the shared direct-`write`/queue path with a `poll(POLLOUT)` for the backlog
+- [ ] `flash-uring` v2 (performance): provided-buffer *ring*, registered files, `SEND_ZC`, `MSG_RING` wake-up, batching. Needed: in the first measurement io_uring reached only ~60% of epoll's echo throughput (see status)
+- [x] **Per-listener backend**: several backends in one Engine with independently configured thread groups (tested: epoll + io_uring listeners in one engine); unsupported combinations return clear errors
 - [ ] UDP: one connection per peer, `recvmmsg/sendmmsg`, GRO/GSO; batched `DatagramsHandler` interface
 - [ ] `flash-tls`: rustls sans-io driving, handshake on the I/O thread, session tickets, SNI, ALPN; evaluate kTLS
-- [ ] Tests: the same echo test matrix on epoll and io_uring; mixed-backend listeners. Done so far: blocking-offload tests (I/O thread not stalled, completion on I/O thread with handler state, pool full, connection closed early, ordering, slot drop, slow callback)
+- [x] Tests: the whole engine/offload/stress suite runs on epoll and on io_uring (`FLASH_TEST_BACKEND=uring`, also in CI on Linux); mixed-backend listeners. Also done: blocking-offload tests (I/O thread not stalled, completion on I/O thread with handler state, pool full, connection closed early, ordering, slot drop, slow callback)
 - **Deliverable**: `examples/blocking-offload` (done), backend comparison benchmark report
 
-> M2 status: logical pool slice done and verified on macOS and Linux. **Remaining in M2:** io_uring backend, per-listener mixed backends (the `Group` abstraction already allows it; needs a second backend to be meaningful), UDP, TLS, benchmark report.
+> M2 status: logical pool and io_uring v1 done; all 20 engine/offload/stress tests pass on both backends on Linux (kernel 6.12, Docker), repeated runs without failures. **Measured, not good yet:** on the same Docker VM (4 server threads, 256 connections, 64 B, client on the same machine) epoll gave ~0.95–1.01M req/s and io_uring ~0.61M, repeatably. Likely causes: one extra `PROVIDE_BUFFERS` submission per received chunk, and writes not using the ring. That is what v2 is for; the client shares the CPUs so absolute numbers mean little, the ratio is the finding. **Remaining in M2:** io_uring v2, UDP, TLS, benchmark report.
 
 ### M3 HTTP/1 + WebSocket (6–8 weeks)
 - [ ] `flash-http` h1: sans-io parser (pipelining, chunked, trailers, streaming body, Expect: 100), `Context`/`Respond`, `sendfile`

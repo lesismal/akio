@@ -11,6 +11,9 @@ rust-version.workspace = true
 flash-core = { path = "../flash-core" }
 flash-epoll = { path = "../flash-epoll" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+flash-uring = { path = "../flash-uring" }
+
 [lints]
 workspace = true
 

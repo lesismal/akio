@@ -2,6 +2,8 @@
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
+mod common;
+
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -79,17 +81,19 @@ fn blocking_work_does_not_stall_the_io_thread_and_completes_on_it() {
     let on_io = Arc::new(AtomicBool::new(false));
     let o = on_io.clone();
     // One I/O thread: if blocking work ran inline, `other` below would have to wait for it.
-    let e =
-        Engine::builder()
-            .config(quick())
-            .listen(Listener::tcp(localhost()).threads(1).serve(fn_acceptor(
-                move |_c: &Conn<Slow>| Slow {
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<Slow>| Slow {
                     done_count: 0,
                     on_io_thread: o.clone(),
-                },
-            )))
-            .build()
-            .unwrap();
+                })),
+        )
+        .build()
+        .unwrap();
     e.start().unwrap();
     let addr = e.local_addrs()[0];
     let mut worker = connect(addr);
@@ -140,6 +144,7 @@ fn completion_is_skipped_when_the_connection_closed_meanwhile() {
         .config(quick())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(move |_c: &Conn<H>| H(r.clone(), f.clone()))),
         )
@@ -190,6 +195,7 @@ fn pool_overload_is_reported_to_the_caller() {
         })
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(move |_c: &Conn<H>| H(res.clone()))),
         )
@@ -236,6 +242,7 @@ fn ordered_slots_keep_pipelined_responses_in_request_order() {
         .config(quick())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(2)
                 .serve(fn_acceptor(|_c: &Conn<H>| H)),
         )
@@ -263,6 +270,7 @@ fn dropping_an_unfilled_slot_closes_the_connection() {
         .config(quick())
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(|_c: &Conn<H>| H)),
         )
@@ -299,6 +307,7 @@ fn slow_callbacks_are_reported_and_fast_ones_are_not() {
         })
         .listen(
             Listener::tcp(localhost())
+                .backend(common::backend())
                 .threads(1)
                 .serve(fn_acceptor(|_c: &Conn<H>| H)),
         )

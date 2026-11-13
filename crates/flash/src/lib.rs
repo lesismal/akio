@@ -33,7 +33,8 @@ pub enum Backend {
     /// epoll on Linux, kqueue on macOS. The default.
     #[default]
     Epoll,
-    /// io_uring (M2). Selecting it today makes `build` fail with `Unsupported`.
+    /// io_uring (Linux 5.19+). Where the kernel lacks it the listener falls back to epoll, unless
+    /// [`UringConfig::strict`] is set, in which case `build` fails with `Unsupported`.
     IoUring(UringConfig),
 }
 
@@ -44,6 +45,8 @@ pub struct UringConfig {
     pub entries: u32,
     /// Use a kernel SQ polling thread.
     pub sqpoll: bool,
+    /// Fail `build` instead of falling back to epoll when io_uring is unavailable.
+    pub strict: bool,
 }
 
 /// Acceleration/steering layer, orthogonal to [`Backend`] (ADR-006).
@@ -161,8 +164,45 @@ impl EngineBuilder {
                     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                     return Err(unsupported("the epoll/kqueue backend on this platform"));
                 }
-                Backend::IoUring(_) => {
-                    return Err(unsupported("the io_uring backend (planned for M2)"));
+                Backend::IoUring(u) => {
+                    #[cfg(target_os = "linux")]
+                    match flash_uring::probe() {
+                        Ok(()) => groups.push(Box::new(flash_uring::UringGroup::bind(
+                            Some((l.addr, acceptor)),
+                            l.threads,
+                            self.cfg.clone(),
+                            pool.clone(),
+                            flash_uring::UringOptions {
+                                entries: u.entries,
+                                sqpoll: u.sqpoll,
+                            },
+                        )?)),
+                        Err(why) if u.strict => {
+                            return Err(unsupported(&format!("the io_uring backend ({why})")));
+                        }
+                        Err(why) => {
+                            eprintln!("flash: io_uring unavailable ({why}); using epoll");
+                            groups.push(Box::new(flash_epoll::EpollGroup::bind(
+                                Some((l.addr, acceptor)),
+                                l.threads,
+                                self.cfg.clone(),
+                                pool.clone(),
+                            )?));
+                        }
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        if u.strict {
+                            return Err(unsupported("the io_uring backend on this platform"));
+                        }
+                        eprintln!("flash: io_uring is Linux-only; using epoll/kqueue");
+                        groups.push(Box::new(flash_epoll::EpollGroup::bind(
+                            Some((l.addr, acceptor)),
+                            l.threads,
+                            self.cfg.clone(),
+                            pool.clone(),
+                        )?));
+                    }
                 }
             }
         }

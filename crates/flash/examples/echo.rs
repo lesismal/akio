@@ -1,6 +1,6 @@
-//! TCP echo server: `cargo run --release -p flash --example echo -- 127.0.0.1:7000 [threads]`
+//! TCP echo server: `cargo run --release -p flash --example echo -- 127.0.0.1:7000 [threads] [uring]`
 
-use flash::{Conn, Engine, Handler, Listener, fn_acceptor};
+use flash::{Backend, Conn, Engine, Handler, Listener, fn_acceptor};
 
 struct Echo;
 
@@ -20,6 +20,9 @@ fn main() -> std::io::Result<()> {
     let mut l = Listener::tcp(addr).serve(fn_acceptor(|_c: &Conn<Echo>| Echo));
     if let Some(n) = args.next() {
         l = l.threads(n.parse().expect("threads"));
+    }
+    if args.next().as_deref() == Some("uring") {
+        l = l.backend(Backend::IoUring(Default::default()));
     }
     let engine = Engine::builder().listen(l).build()?;
     println!("echo listening on {:?}", engine.local_addrs());

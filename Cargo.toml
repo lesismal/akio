@@ -7,6 +7,7 @@ members = [
     "crates/flash-pool",
     "crates/flash-core",
     "crates/flash-epoll",
+    "crates/flash-uring",
     "crates/flash",
     "tools/echo-bench",
 ]

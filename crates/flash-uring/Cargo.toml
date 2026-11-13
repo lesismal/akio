@@ -1,0 +1,18 @@
+[package]
+name = "flash-uring"
+description = "flash network library: flash-uring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+flash-core = { path = "../flash-core" }
+flash-sys = { path = "../flash-sys" }
+flash-timer = { path = "../flash-timer" }
+io-uring = "0.7"
+libc = "0.2"
+
+[lints]
+workspace = true
