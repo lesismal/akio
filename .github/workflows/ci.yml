@@ -29,12 +29,15 @@ jobs:
   miri:
     # Pure-Rust crates only; crates with OS syscalls are excluded.
     runs-on: ubuntu-latest
+    env:
+      # rust-toolchain.toml pins stable; override it for this job.
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
-      - run: cargo miri test -p flash-timer -p flash-pool -p flash-core
+      - run: cargo miri test -p flash-timer -p flash-buf -p flash-core
 
   loom:
     # Activated in M1 once the Conn send queue / close state machine exists.

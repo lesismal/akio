@@ -264,7 +264,8 @@ mod tests {
         let mut model: Vec<(u64, u64, Option<TimerId>)> = vec![];
         let mut id = 0;
         let mut fired = vec![];
-        for t in 1..=20_000u64 {
+        let ticks: u64 = if cfg!(miri) { 1_500 } else { 20_000 };
+        for t in 1..=ticks {
             for _ in 0..(rnd() % 3) {
                 let dl = t + rnd() % 70_000;
                 id += 1;
@@ -284,7 +285,7 @@ mod tests {
             let m = model.iter().find(|m| m.1 == *v).unwrap();
             assert_eq!(m.0, *t, "timer {v} fired at wrong tick");
         }
-        let due = model.iter().filter(|m| m.0 <= 20_000).count();
+        let due = model.iter().filter(|m| m.0 <= ticks).count();
         assert_eq!(fired.len(), due);
     }
 }
