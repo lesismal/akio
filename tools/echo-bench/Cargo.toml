@@ -5,5 +5,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# `tls` mode (rustls, certificate verification off: this is a load generator).
+tls = ["dep:rustls"]
+
+[dependencies]
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"], optional = true }
+
 [lints]
 workspace = true

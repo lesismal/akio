@@ -51,6 +51,9 @@ dependencies = [
 [[package]]
 name = "echo-bench"
 version = "0.0.0"
+dependencies = [
+ "rustls",
+]
 
 [[package]]
 name = "find-msvc-tools"
