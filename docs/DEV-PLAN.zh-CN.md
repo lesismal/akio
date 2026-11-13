@@ -146,7 +146,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### M5 QUIC/H3 + KCP + eBPF（8–10 周）
 - [ ] `flash-quic`/`flash-h3`：基于 sans-io QUIC 核心（quinn-proto/quiche 评估后定），QPACK，WebSocket over H3；与 curl/quiche 互通
-- [ ] `flash-kcp`：兼容 skywind3000/kcp 与 kcp-go（加密、XOR、FEC）、按需 flush
+- [x] `flash-kcp`：兼容 skywind3000/kcp 与 kcp-go（加密、XOR、FEC）、按需 flush —— sans-io 的 KCP 核心（移植自 fib），kcp-go 的 Reed–Solomon FEC（klauspost 矩阵），加密 none/xor/aes/aes-128/aes-192/aes-128-gcm；UDP listener 上的 `KcpServer` acceptor（按对端建会话、会话替换、`max_sessions`）、`dial`、在 I/O 线程回调的 `KcpHandler`，按 `next_flush` 驱动的共享定时线程；dead-link 关闭；与 kcp-go v5 双向互通，覆盖六种加密/FEC 组合，并经过每 7 个丢 1 个数据报的中继（`tools/interop/kcp/run.sh`）
 - [ ] `flash-ebpf`：aya 加载 REUSEPORT 选择程序（CPU 亲和/一致性哈希）、sockmap/`sk_msg` relay、可选 XDP 限速；无特权或内核不支持时降级
 - [ ] 测试：eBPF 程序在 CI 容器（privileged）与本地 VM 双环境跑
 - **交付**：`examples/h3`、`examples/kcp`、eBPF 加速 benchmark

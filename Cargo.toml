@@ -15,6 +15,7 @@ members = [
     "crates/flash-socks",
     "crates/flash-arpc",
     "crates/flash-grpc",
+    "crates/flash-kcp",
     "crates/flash",
     "tools/echo-bench",
 ]

@@ -146,7 +146,7 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### M5 QUIC/H3 + KCP + eBPF (8–10 weeks)
 - [ ] `flash-quic`/`flash-h3`: on a sans-io QUIC core (quinn-proto/quiche, decided after evaluation), QPACK, WebSocket over H3; interop with curl/quiche
-- [ ] `flash-kcp`: compatible with skywind3000/kcp and kcp-go (crypt, XOR, FEC), flush on demand
+- [x] `flash-kcp`: compatible with skywind3000/kcp and kcp-go (crypt, XOR, FEC), flush on demand — sans-io KCP core (port of fib's), kcp-go Reed–Solomon FEC (klauspost matrix), crypts none/xor/aes/aes-128/aes-192/aes-128-gcm; `KcpServer` acceptor on a UDP listener (per-peer sessions, conversation replacement, `max_sessions`), `dial`, `KcpHandler` callbacks on the I/O thread, one shared timer thread driven by `next_flush`; dead-link close; interop with kcp-go v5 both directions for six crypt/FEC combinations, also through a relay dropping every 7th datagram (`tools/interop/kcp/run.sh`)
 - [ ] `flash-ebpf`: load REUSEPORT selection programs via aya (CPU affinity / consistent hash), sockmap/`sk_msg` relay, optional XDP rate limiting; degrade without privileges or kernel support
 - [ ] Tests: eBPF programs run in both a CI container (privileged) and a local VM
 - **Deliverable**: `examples/h3`, `examples/kcp`, eBPF acceleration benchmark
