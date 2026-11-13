@@ -101,15 +101,17 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 > M1 状态：**除上述未完成项外已收尾。** 在 Linux（epoll）与 macOS（kqueue）上验证：12 个引擎测试、2 个压力测试、5 个 loom 模型（故意写坏 `mark_closed` 后 loom 模型会失败，说明它确实在探索这个竞争）。`echo-bench` 现在把连接复用到少量客户端线程上；在同一台 macOS 机器上，flash 与 4 线程 tokio echo 都是约 10.5–11.5 万 req/s，也就是客户端仍是瓶颈，这次结果只能说明“同一量级”，无法排名。与 fib 的对比需要 fib 先有一个纯 TCP echo（目前没有）以及两台 Linux 机器，顺延到 M2 的 benchmark 报告。`Conn::spawn_blocking` 属于 M2。
 
 ### M2 多后端 + 逻辑池 + UDP + TLS（6–8 周）
-- [ ] `flash-pool`：自适应线程池、有界队列、过载策略、指标
-- [ ] `Conn::spawn_blocking` + 回调回投 IO 线程；有序应答槽；连接关闭期间的完成回调语义
-- [ ] 慢回调检测（阈值、日志/指标）
+- [x] `flash-pool`：自适应线程池（按需增长到上限，空闲线程退出）、有界队列、过载返回 `Error::Overloaded`、统计
+- [x] `Conn::spawn_blocking` + 回调回投 IO 线程（连接已关闭或 `work` panic 时跳过）；有序应答槽（`reserve_response`；未填充就被丢弃的槽会关闭连接）
+- [x] 慢回调检测（`Config::slow_callback_threshold`，默认 100 ms；`slow_hook` 或 stderr）。指标导出仍待做
 - [ ] `flash-uring`：multishot accept/recv、provided buffer ring、registered files、`SEND_ZC`、`MSG_RING` 跨线程唤醒；内核特性探测与自动降级
 - [ ] **每 listener 选择后端**：Engine 内多后端并存、线程组独立配置；配置校验与错误提示
 - [ ] UDP：每 peer 一连接、`recvmmsg/sendmmsg`、GRO/GSO；`DatagramsHandler` 批量接口
 - [ ] `flash-tls`：rustls sans-io 驱动、握手在 IO 线程内、会话票据、SNI、ALPN；kTLS 评估
-- [ ] 测试：同一套 echo 测试矩阵跑 epoll/io_uring；跨后端混合 listener；阻塞投递压测（池满、连接提前关闭）
-- **交付**：`examples/blocking-offload`、后端对比 benchmark 报告
+- [ ] 测试：同一套 echo 测试矩阵跑 epoll/io_uring；跨后端混合 listener。已完成：阻塞投递测试（IO 线程不被阻塞、完成回调在 IO 线程且带 handler 状态、池满、连接提前关闭、有序、槽丢弃、慢回调）
+- **交付**：`examples/blocking-offload`（已完成）、后端对比 benchmark 报告
+
+> M2 状态：逻辑池这一块已完成，并在 macOS 与 Linux 上验证。**M2 剩余：** io_uring 后端、每 listener 混合后端（`Group` 抽象已支持，但要有第二个后端才有意义）、UDP、TLS、benchmark 报告。
 
 ### M3 HTTP/1 + WebSocket（6–8 周）
 - [ ] `flash-http` h1：sans-io 解析（pipelining、chunked、trailers、streaming body、Expect: 100）、`Context`/`Respond`、`sendfile`

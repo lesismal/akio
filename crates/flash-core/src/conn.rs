@@ -9,7 +9,7 @@ use std::{
 use flash_buf::SharedBuf;
 
 use crate::{
-    Config, Error, Handler, Result,
+    Config, Error, Handler, Pool, Result,
     sync::{AtomicBool, AtomicU8, Mutex, MutexGuard, Ordering},
 };
 
@@ -27,7 +27,20 @@ pub trait LoopLink: Send + Sync {
     fn wake_conn(&self, id: u64);
     /// Ask the loop to close connection `id` (running `on_close` with `err`).
     fn close_conn(&self, id: u64, err: Option<io::Error>);
+    /// Runs `task` on connection `id`'s handler, on its owning I/O thread (dropped if the
+    /// connection is gone). Used for `spawn_blocking` completions.
+    fn post_task(&self, id: u64, task: Task);
+    /// The logical pool, if the engine has one.
+    fn pool(&self) -> Option<&Pool> {
+        None
+    }
 }
+
+/// A type-erased completion for a connection's handler (see [`LoopLink::post_task`]).
+pub type Task = Box<dyn std::any::Any + Send>;
+
+/// What a [`Task`] holds for handler type `H`.
+pub(crate) type Completion<H> = Box<dyn FnOnce(&mut H, &Conn<H>) + Send>;
 
 enum Bytes {
     Owned(Vec<u8>),
@@ -108,6 +121,15 @@ impl WriteState {
     }
 }
 
+/// Responses reserved in request order, possibly filled out of order (see [`ResponseSlot`]).
+#[derive(Default)]
+struct Ordered {
+    /// Sequence number of `ready[0]`.
+    head: u64,
+    next: u64,
+    ready: VecDeque<Option<Vec<u8>>>,
+}
+
 /// Type-erased shared connection state: socket, lifecycle, send queue and its lock (ADR-002).
 ///
 /// Public only so that backend crates can drive it; applications use [`Conn`].
@@ -117,6 +139,7 @@ pub struct ConnInner {
     state: AtomicU8,
     hold: AtomicBool,
     write: Mutex<WriteState>,
+    ordered: Mutex<Ordered>,
     stream: TcpStream,
     link: Arc<dyn LoopLink>,
     cfg: Arc<Config>,
@@ -139,6 +162,7 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             write: Mutex::new(WriteState::default()),
+            ordered: Mutex::new(Ordered::default()),
             stream,
             link,
             cfg,
@@ -396,6 +420,29 @@ impl ConnInner {
         }
     }
 
+    /// Reserves the next response position. Call in request order (on the I/O thread).
+    pub fn reserve(&self) -> u64 {
+        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        o.ready.push_back(None);
+        o.next += 1;
+        o.next - 1
+    }
+
+    /// Fills reserved position `seq`; everything now contiguous from the front is sent in order.
+    pub fn fill(&self, seq: u64, data: Vec<u8>) {
+        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let i = (seq - o.head) as usize;
+        o.ready[i] = Some(data);
+        // The lock is held across the sends: two threads finishing neighbouring slots must not
+        // interleave their writes.
+        while let Some(Some(_)) = o.ready.front() {
+            if let Some(Some(d)) = o.ready.pop_front() {
+                o.head += 1;
+                let _ = self.send_owned(d);
+            }
+        }
+    }
+
     pub fn local_addr(&self) -> SocketAddr {
         self.local
     }
@@ -505,14 +552,67 @@ impl<H> Conn<H> {
 impl<H: Handler> Conn<H> {
     /// Runs `work` on the logical pool, then runs `done` **on this connection's owning I/O
     /// thread** with exclusive access to the handler. If the connection closed meanwhile, `done`
-    /// is skipped. Returns [`Error::Overloaded`] when the pool is full. (Implemented in M2.)
-    pub fn spawn_blocking<R, W, D>(&self, _work: W, _done: D) -> Result<()>
+    /// is skipped; so it is if `work` panics. Returns [`Error::Overloaded`] when the pool's queue
+    /// is full and [`Error::Closed`] when the connection or the pool is closed.
+    pub fn spawn_blocking<R, W, D>(&self, work: W, done: D) -> Result<()>
     where
         R: Send + 'static,
         W: FnOnce() -> R + Send + 'static,
         D: FnOnce(&mut H, &Conn<H>, R) + Send + 'static,
     {
-        unimplemented!("M2")
+        if !self.inner.is_open() {
+            return Err(Error::Closed);
+        }
+        let Some(pool) = self.inner.link.pool() else {
+            return Err(Error::Closed);
+        };
+        let inner = self.inner.clone();
+        let job = Box::new(move || {
+            let r = work();
+            let f: Completion<H> = Box::new(move |h, c| done(h, c, r));
+            let task: Task = Box::new(f);
+            inner.link.post_task(inner.id, task);
+        });
+        pool.try_execute(job).map_err(|_| Error::Overloaded)
+    }
+
+    /// Reserves the next response position on this connection. Responses are written in
+    /// reservation order no matter in which order the slots are filled, which keeps pipelined
+    /// protocols correct when requests finish out of order on the pool. Reserve on the I/O
+    /// thread (in `on_data`), move the slot into the work closure, and [`fill`](ResponseSlot::fill)
+    /// it there. Dropping an unfilled slot closes the connection (the stream would otherwise
+    /// stall behind the missing response).
+    pub fn reserve_response(&self) -> Result<ResponseSlot> {
+        if !self.inner.is_open() {
+            return Err(Error::Closed);
+        }
+        Ok(ResponseSlot {
+            seq: self.inner.reserve(),
+            inner: Some(self.inner.clone()),
+        })
+    }
+}
+
+/// A reserved, ordered response position; see [`Conn::reserve_response`].
+pub struct ResponseSlot {
+    seq: u64,
+    inner: Option<Arc<ConnInner>>,
+}
+
+impl ResponseSlot {
+    /// Supplies the response bytes. Safe to call from any thread.
+    pub fn fill(mut self, data: Vec<u8>) {
+        if let Some(inner) = self.inner.take() {
+            inner.fill(self.seq, data);
+        }
+    }
+}
+
+impl Drop for ResponseSlot {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            inner.close();
+        }
     }
 }
 
@@ -544,6 +644,7 @@ mod loom_tests {
         fn close_conn(&self, _id: u64, _err: Option<io::Error>) {
             self.closes.fetch_add(1, StdOrd::SeqCst);
         }
+        fn post_task(&self, _id: u64, _task: Task) {}
     }
 
     /// A connected nonblocking socket plus its (undrained) peer.

@@ -101,15 +101,17 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 > M1 status: **closed except the items above.** Verified on Linux (epoll) and macOS (kqueue): 12 engine tests, 2 stress tests, 5 loom models (a deliberately broken `mark_closed` makes the loom model fail, so it does explore the race). `echo-bench` now multiplexes connections over a few client threads; on one macOS machine flash and a 4-thread tokio echo both land at ~105–115k req/s, i.e. the client is still the bottleneck, so this run says "same class" but cannot rank them. The fib comparison needs fib to have a plain TCP echo (it has none yet) and a two-machine Linux setup; it moves to the benchmark report in M2. `Conn::spawn_blocking` is M2.
 
 ### M2 Multi-backend + logical pool + UDP + TLS (6–8 weeks)
-- [ ] `flash-pool`: adaptive thread pool, bounded queue, overload policy, metrics
-- [ ] `Conn::spawn_blocking` + callback re-posted to the I/O thread; ordered response slots; semantics of completion callbacks after the connection closed
-- [ ] Slow-callback detection (threshold, logs/metrics)
+- [x] `flash-pool`: adaptive thread pool (grows on demand to a max, idle threads retire), bounded queue, overload = `Error::Overloaded`, stats
+- [x] `Conn::spawn_blocking` + callback re-posted to the I/O thread (skipped if the connection closed or `work` panicked); ordered response slots (`reserve_response`; an unfilled dropped slot closes the connection)
+- [x] Slow-callback detection (`Config::slow_callback_threshold`, default 100 ms; `slow_hook` or stderr). Metrics export is still open
 - [ ] `flash-uring`: multishot accept/recv, provided buffer ring, registered files, `SEND_ZC`, `MSG_RING` cross-thread wakeup; kernel feature probing and automatic fallback
 - [ ] **Per-listener backend**: several backends in one Engine with independently configured thread groups; config validation and clear errors
 - [ ] UDP: one connection per peer, `recvmmsg/sendmmsg`, GRO/GSO; batched `DatagramsHandler` interface
 - [ ] `flash-tls`: rustls sans-io driving, handshake on the I/O thread, session tickets, SNI, ALPN; evaluate kTLS
-- [ ] Tests: the same echo test matrix on epoll and io_uring; mixed-backend listeners; blocking-offload stress (pool full, connection closed early)
-- **Deliverable**: `examples/blocking-offload`, backend comparison benchmark report
+- [ ] Tests: the same echo test matrix on epoll and io_uring; mixed-backend listeners. Done so far: blocking-offload tests (I/O thread not stalled, completion on I/O thread with handler state, pool full, connection closed early, ordering, slot drop, slow callback)
+- **Deliverable**: `examples/blocking-offload` (done), backend comparison benchmark report
+
+> M2 status: logical pool slice done and verified on macOS and Linux. **Remaining in M2:** io_uring backend, per-listener mixed backends (the `Group` abstraction already allows it; needs a second backend to be meaningful), UDP, TLS, benchmark report.
 
 ### M3 HTTP/1 + WebSocket (6–8 weeks)
 - [ ] `flash-http` h1: sans-io parser (pipelining, chunked, trailers, streaming body, Expect: 100), `Context`/`Respond`, `sendfile`

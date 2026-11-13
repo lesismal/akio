@@ -1,4 +1,25 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
+
+/// What the slow-callback detector reports.
+#[derive(Clone, Copy, Debug)]
+pub struct SlowCallback {
+    /// Which callback ran long.
+    pub kind: &'static str,
+    /// Connection it ran for.
+    pub conn_id: u64,
+    /// How long it took.
+    pub elapsed: Duration,
+}
+
+/// Receives [`SlowCallback`] reports on the I/O thread that ran the callback.
+#[derive(Clone)]
+pub struct SlowHook(pub Arc<dyn Fn(&SlowCallback) + Send + Sync>);
+
+impl std::fmt::Debug for SlowHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SlowHook(..)")
+    }
+}
 
 /// Tunables shared by all connections of an engine.
 #[derive(Clone, Debug)]
@@ -16,6 +37,12 @@ pub struct Config {
     /// long. `None` (the default) disables it. Resolution is about a millisecond; only inbound
     /// data counts as activity.
     pub idle_timeout: Option<Duration>,
+    /// A handler callback (`on_data`, `on_close`, a `spawn_blocking` completion) that runs longer
+    /// than this blocks its I/O thread and every other connection on it: it is reported to
+    /// `slow_hook`, or printed to stderr when there is none. `None` disables the check.
+    pub slow_callback_threshold: Option<Duration>,
+    /// Where slow callbacks are reported (default: stderr).
+    pub slow_hook: Option<SlowHook>,
     /// After `shutdown`, connections still open after this long are closed forcibly.
     pub shutdown_timeout: Duration,
 }
@@ -28,6 +55,8 @@ impl Default for Config {
             max_queued_bytes: 64 << 20,
             backlog: 1024,
             idle_timeout: None,
+            slow_callback_threshold: Some(Duration::from_millis(100)),
+            slow_hook: None,
             shutdown_timeout: Duration::from_secs(10),
         }
     }

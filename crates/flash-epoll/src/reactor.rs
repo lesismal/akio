@@ -12,7 +12,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flash_core::{Config, ConnInner, DynAcceptor, DynHandler, Error, LoopLink};
+use flash_core::{
+    Config, ConnInner, DynAcceptor, DynHandler, Error, LoopLink, Pool, SlowCallback, Task,
+};
 use flash_sys::{Event, Poller, Waker};
 use flash_timer::{TimerId, Wheel};
 
@@ -33,6 +35,7 @@ thread_local! {
 pub(crate) enum Cmd {
     Wake(u64),
     Close(u64, Option<io::Error>),
+    Task(u64, Task),
     Shutdown,
     Dial {
         stream: TcpStream,
@@ -48,15 +51,17 @@ pub(crate) struct LoopShared {
     waker: Waker,
     cmds: Mutex<Vec<Cmd>>,
     wake_pending: AtomicBool,
+    pool: Arc<Pool>,
 }
 
 impl LoopShared {
-    pub(crate) fn new(poller: &Poller) -> io::Result<Arc<LoopShared>> {
+    pub(crate) fn new(poller: &Poller, pool: Arc<Pool>) -> io::Result<Arc<LoopShared>> {
         Ok(Arc::new(LoopShared {
             uid: NEXT_LOOP_UID.fetch_add(1, Ordering::Relaxed),
             waker: Waker::new(poller, WAKER)?,
             cmds: Mutex::new(Vec::new()),
             wake_pending: AtomicBool::new(false),
+            pool,
         }))
     }
 
@@ -86,6 +91,12 @@ impl LoopLink for LoopShared {
     }
     fn close_conn(&self, id: u64, err: Option<io::Error>) {
         self.post(Cmd::Close(id, err));
+    }
+    fn post_task(&self, id: u64, task: Task) {
+        self.post(Cmd::Task(id, task));
+    }
+    fn pool(&self) -> Option<&Pool> {
+        Some(&self.pool)
     }
 }
 
@@ -193,6 +204,61 @@ impl Loop {
         }
     }
 
+    // ---- callbacks ------------------------------------------------------------------------
+
+    /// Reports a callback that ran longer than `Config::slow_callback_threshold`.
+    fn check_slow(&self, kind: &'static str, id: u64, started: Option<Instant>) {
+        let (Some(t0), Some(limit)) = (started, self.cfg.slow_callback_threshold) else {
+            return;
+        };
+        let elapsed = t0.elapsed();
+        if elapsed >= limit {
+            self.report_slow(kind, id, elapsed);
+        }
+    }
+
+    fn report_slow(&self, kind: &'static str, id: u64, elapsed: Duration) {
+        let limit = self.cfg.slow_callback_threshold.unwrap_or_default();
+        let rep = SlowCallback {
+            kind,
+            conn_id: id,
+            elapsed,
+        };
+        match &self.cfg.slow_hook {
+            Some(h) => (h.0)(&rep),
+            None => eprintln!(
+                "flash: slow callback: {kind} on connection {id} blocked its I/O thread for \
+                 {elapsed:?} (limit {limit:?}); move blocking work to Conn::spawn_blocking"
+            ),
+        }
+    }
+
+    fn timing(&self) -> Option<Instant> {
+        self.cfg.slow_callback_threshold.map(|_| Instant::now())
+    }
+
+    /// Runs a `spawn_blocking` completion on the connection's handler.
+    fn on_task(&mut self, id: u64, task: Task) {
+        let t0 = self.timing();
+        let mut failed = None;
+        {
+            let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+                return; // connection closed meanwhile: the completion is dropped
+            };
+            lc.inner.set_corked(true);
+            if catch_unwind(AssertUnwindSafe(|| lc.handler.run_task(task))).is_err() {
+                failed = Some(panic_error());
+            } else if let Err(e) = lc.inner.uncork_flush() {
+                failed = Some(Error::Io(e));
+            }
+        }
+        self.check_slow("spawn_blocking completion", id, t0);
+        match failed {
+            Some(e) => self.finalize(id, Some(e)),
+            None => self.refresh(id),
+        }
+    }
+
     // ---- timers ---------------------------------------------------------------------------
 
     fn tick(&self) -> u64 {
@@ -245,6 +311,7 @@ impl Loop {
                 match cmd {
                     Cmd::Wake(id) => self.on_wake(id),
                     Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
+                    Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
                     Cmd::Dial {
                         stream,
@@ -467,6 +534,8 @@ impl Loop {
             Panic,
         }
         let mut done = Done::No;
+        let slow = self.cfg.slow_callback_threshold.is_some();
+        let mut slow_hits: Vec<Duration> = Vec::new();
         let now = self.epoch.elapsed().as_millis() as u64;
         {
             let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
@@ -484,9 +553,16 @@ impl Loop {
                     Ok(n) => {
                         lc.last_active = now;
                         lc.inner.set_corked(true);
+                        let t0 = slow.then(Instant::now);
                         let r = catch_unwind(AssertUnwindSafe(|| {
                             lc.handler.on_data(&self.scratch[..n])
                         }));
+                        if let (Some(t0), Some(limit)) = (t0, self.cfg.slow_callback_threshold) {
+                            let elapsed = t0.elapsed();
+                            if elapsed >= limit {
+                                slow_hits.push(elapsed);
+                            }
+                        }
                         if r.is_err() {
                             done = Done::Panic;
                             break;
@@ -518,6 +594,9 @@ impl Loop {
                 // Peer is done sending: finish writing what we owe, then close.
                 lc.inner.close_after_send();
             }
+        }
+        for elapsed in slow_hits {
+            self.report_slow("on_data", id, elapsed);
         }
         match done {
             Done::No => self.refresh(id),
@@ -565,6 +644,8 @@ impl Loop {
         self.poller.delete(lc.inner.stream().as_raw_fd());
         lc.inner.mark_closed();
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);
+        let t0 = self.timing();
         let _ = catch_unwind(AssertUnwindSafe(|| lc.handler.on_close(err)));
+        self.check_slow("on_close", id, t0);
     }
 }

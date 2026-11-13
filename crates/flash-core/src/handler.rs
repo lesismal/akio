@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{Conn, ConnInner, Error};
+use crate::{Conn, ConnInner, Error, Task, conn::Completion};
 
 /// Per-connection state *and* event callbacks (ADR-003).
 ///
@@ -69,6 +69,8 @@ where
 pub trait DynHandler: Send {
     fn on_data(&mut self, data: &[u8]);
     fn on_close(&mut self, err: Option<Error>);
+    /// Runs a `spawn_blocking` completion posted by [`Conn::spawn_blocking`].
+    fn run_task(&mut self, task: Task);
 }
 
 /// Type-erased acceptor. `#[doc(hidden)]`: backend-facing.
@@ -90,6 +92,11 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
     }
     fn on_close(&mut self, err: Option<Error>) {
         self.h.on_close(&self.conn, err)
+    }
+    fn run_task(&mut self, task: Task) {
+        if let Ok(f) = task.downcast::<Completion<H>>() {
+            (*f)(&mut self.h, &self.conn)
+        }
     }
 }
 

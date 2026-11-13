@@ -21,8 +21,11 @@
 
 use std::{io, net::SocketAddr, sync::Arc};
 
-pub use flash_core::{Acceptor, Config, Conn, Error, FnAcceptor, Handler, Result, fn_acceptor};
-use flash_core::{DynAcceptor, Group};
+pub use flash_core::{
+    Acceptor, Config, Conn, Error, FnAcceptor, Handler, PoolConfig, PoolStats, ResponseSlot,
+    Result, SlowCallback, SlowHook, fn_acceptor,
+};
+use flash_core::{DynAcceptor, Group, Pool};
 
 /// I/O backend of one listener (ADR-004).
 #[derive(Clone, Debug, Default)]
@@ -105,6 +108,7 @@ pub struct EngineBuilder {
     listeners: Vec<Listener>,
     client_threads: usize,
     cfg: Config,
+    pool: PoolConfig,
 }
 
 impl EngineBuilder {
@@ -127,9 +131,17 @@ impl EngineBuilder {
         self
     }
 
+    /// Sizes the logical pool that runs [`Conn::spawn_blocking`] work (default: no threads until
+    /// used, up to 8 per core, 65,536 queued jobs).
+    pub fn pool(mut self, pool: PoolConfig) -> Self {
+        self.pool = pool;
+        self
+    }
+
     /// Validates the configuration, binds every listener and prepares the I/O threads.
     pub fn build(self) -> io::Result<Engine> {
         let mut groups: Vec<Box<dyn Group>> = Vec::new();
+        let pool = Pool::new(self.pool.clone());
         for l in self.listeners {
             if matches!(l.accel, Accel::Ebpf) {
                 return Err(unsupported("eBPF acceleration (planned for M5)"));
@@ -144,6 +156,7 @@ impl EngineBuilder {
                         Some((l.addr, acceptor)),
                         l.threads,
                         self.cfg.clone(),
+                        pool.clone(),
                     )?));
                     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                     return Err(unsupported("the epoll/kqueue backend on this platform"));
@@ -159,9 +172,10 @@ impl EngineBuilder {
                 None,
                 self.client_threads,
                 self.cfg.clone(),
+                pool.clone(),
             )?));
         }
-        Ok(Engine { groups })
+        Ok(Engine { groups, pool })
     }
 }
 
@@ -178,6 +192,7 @@ fn unsupported(what: &str) -> io::Error {
 /// [`dial`](Engine::dial) from other threads while [`run`](Engine::run) blocks.
 pub struct Engine {
     groups: Vec<Box<dyn Group>>,
+    pool: Arc<Pool>,
 }
 
 impl Engine {
@@ -199,6 +214,14 @@ impl Engine {
     /// Blocks until [`shutdown`](Self::shutdown) has completed.
     pub fn wait(&self) {
         self.groups.iter().for_each(|g| g.join());
+        // I/O threads are gone, so no completion can be delivered any more: stop the pool.
+        self.pool.shutdown();
+        self.pool.join();
+    }
+
+    /// Counters of the logical pool.
+    pub fn pool_stats(&self) -> PoolStats {
+        self.pool.stats()
     }
 
     /// `start` + `wait`.

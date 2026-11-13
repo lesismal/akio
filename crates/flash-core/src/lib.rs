@@ -15,8 +15,9 @@ mod group;
 mod handler;
 mod sync;
 
-pub use config::Config;
-pub use conn::{Conn, ConnInner, LoopLink};
+pub use config::{Config, SlowCallback, SlowHook};
+pub use conn::{Conn, ConnInner, LoopLink, ResponseSlot, Task};
 pub use error::{Error, Result};
+pub use flash_pool::{Pool, PoolConfig, PoolStats};
 pub use group::Group;
 pub use handler::{Acceptor, DynAcceptor, DynHandler, FnAcceptor, Handler, fn_acceptor};

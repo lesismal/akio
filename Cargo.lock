@@ -55,6 +55,7 @@ name = "flash-core"
 version = "0.0.0"
 dependencies = [
  "flash-buf",
+ "flash-pool",
  "loom",
 ]
 

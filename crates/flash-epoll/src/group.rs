@@ -8,7 +8,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use flash_core::{Config, DynAcceptor, Group};
+use flash_core::{Config, DynAcceptor, Group, Pool};
 use flash_sys::Poller;
 
 use crate::reactor::{Cmd, Loop, LoopShared};
@@ -32,6 +32,7 @@ impl EpollGroup {
         listen: Option<(SocketAddr, Arc<dyn DynAcceptor>)>,
         threads: usize,
         cfg: Config,
+        pool: Arc<Pool>,
     ) -> io::Result<EpollGroup> {
         let threads = threads.max(1);
         let cfg = Arc::new(cfg);
@@ -56,7 +57,7 @@ impl EpollGroup {
         let mut loops = Vec::with_capacity(threads);
         for l in listeners {
             let poller = Poller::new()?;
-            let sh = LoopShared::new(&poller)?;
+            let sh = LoopShared::new(&poller, pool.clone())?;
             let acceptor = listen.as_ref().map(|(_, a)| a.clone());
             loops.push(Loop::new(poller, sh.clone(), l.zip(acceptor), cfg.clone())?);
             shared.push(sh);
