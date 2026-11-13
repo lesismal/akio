@@ -252,8 +252,9 @@ mod tests {
             }))
             .unwrap();
         }
-        wait_until(|| n.load(Ordering::SeqCst) == 500);
-        assert_eq!(p.stats().completed, 500);
+        // `completed` is bumped after the job returns, so wait on it, not on the job's own effect.
+        wait_until(|| p.stats().completed == 500);
+        assert_eq!(n.load(Ordering::SeqCst), 500);
         p.shutdown();
         p.join();
     }
