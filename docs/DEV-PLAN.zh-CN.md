@@ -118,8 +118,10 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 > M2 状态：逻辑池与 io_uring 已完成；21 个 engine/offload/stress 测试在 Linux（内核 6.12，Docker）上两种后端都通过，重复运行无失败。**io_uring 与 epoll 对比（同一台 Docker 虚拟机，echo，64 B，客户端同机）：** 服务端 4 线程/256 连接时两者都被客户端限制（各约 80–100 万 req/s，无法排名）；服务端 1 线程/512 连接（受服务端限制）时 epoll 为 41.6 万和 49.2 万，io_uring 为 52.7 万和 53.8 万，io_uring 领先约 10–25%。最初的 io_uring 实现每收到一段数据都重新提交一次 `PROVIDE_BUFFERS`，只有 epoll 的约 60%；改用 buffer ring 归还缓冲（写内存而不是提交请求）后差距消失。数据来自与客户端共用 CPU 的虚拟机，只能作方向参考，不是正式 benchmark 报告。**M2 已完成。** benchmark 报告：[BENCHMARKS.zh-CN.md](BENCHMARKS.zh-CN.md)。概要：TCP echo 与 fib、tokio 同一量级（所有测过的负载都领先 fib；64 连接与 16 KiB 落后 tokio 约 15%，512 连接领先），该环境下 io_uring 并不比 epoll 快，逻辑池相对在 I/O 线程里阻塞约恢复 58 倍。
 
 ### M3 HTTP/1 + WebSocket（6–8 周）
-- [ ] `flash-http` h1：sans-io 解析（pipelining、chunked、trailers、streaming body、Expect: 100）、`Context`/`Respond`、`sendfile`
-- [ ] Router（静态 > regexp 参数 > 参数 > 通配，405/Allow，Mount/Group）；零分配路由 benchmark
+- [x] `flash-http` h1 服务端：`httparse` 解析请求头，自写增量 chunked 解码器（扩展、trailers、任意切分），流水线且按序应答（有序槽），keep-alive/`Connection: close`/HTTP/1.0，`Expect: 100-continue`，限制（头大小、body 大小、头数量），防请求走私（CL+TE、重复 CL），`Context` 支持 `detach()` 之后在任意线程完成应答，优雅关闭时让在途应答先完成。已在 epoll 与 io_uring 上测试
+- [ ] h1 未完成：流式请求/响应 body（目前整体缓冲，受限制约束）、`sendfile`、HTTP/1 over TLS 的测试（`Tls` 包装可组合，但这里没测）、路径与参数的百分号解码
+- [x] Router：静态 > `:param` > `*通配`，带回溯，405 与 `Allow`，HEAD 走 GET 路由，`nest`，每个 router 自己的 layer，自定义 fallback；重复/冲突路由在注册时 panic
+- [ ] Router 未完成：正则参数、零分配路由（目前每个请求分配一个 `Vec` 和若干 `String`）及其 benchmark
 - [x] 中间件：recover、request id、CORS（预检）、访问日志
 - [ ] 中间件未完成：responsetime、compress、csrf、etag、limiter
 - [ ] 静态文件缓存（预压缩 `.br/.gz`、inotify 跟随变更）
