@@ -26,7 +26,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
-      - run: cargo test --workspace
+      - name: cargo test
+        # One test at a time, so a hang shows which test it is; the step timeout keeps the log.
+        timeout-minutes: 8
+        run: cargo test --workspace -- --test-threads=1
       - name: Tests on the io_uring backend (Linux only)
         if: runner.os == 'Linux'
         run: cargo test -p flash
