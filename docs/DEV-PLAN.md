@@ -118,14 +118,19 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 > M2 status: logical pool and io_uring done; all 21 engine/offload/stress tests pass on both backends on Linux (kernel 6.12, Docker), repeated runs without failures. **io_uring vs epoll, same Docker VM, echo, 64 B, client on the same machine:** with 4 server threads / 256 connections both are client-bound (~0.8–1.0M req/s each, no ranking possible); with 1 server thread / 512 connections (server-bound) epoll gave 416k and 492k, io_uring 527k and 538k, i.e. io_uring about 10–25% ahead. The first io_uring implementation, which re-submitted a `PROVIDE_BUFFERS` request per received chunk, reached only ~60% of epoll; returning buffers through a buffer ring (a memory write instead of a submission) removed that gap. Numbers come from a VM shared with the client; treat them as direction, not as a benchmark report. **M2 is complete.** Benchmark report: [BENCHMARKS.md](BENCHMARKS.md). In short: TCP echo in the same class as fib and tokio (ahead of fib everywhere measured, behind tokio by ~15% at 64 connections and 16 KiB, ahead at 512), io_uring not faster than epoll in that setup, the logical pool recovers ~58× over blocking inline.
 
 ### M3 HTTP/1 + WebSocket (6–8 weeks)
-- [ ] `flash-http` h1: sans-io parser (pipelining, chunked, trailers, streaming body, Expect: 100), `Context`/`Respond`, `sendfile`
-- [ ] Router (static > regexp param > param > catch-all, 405/Allow, Mount/Group); allocation-free routing benchmark
-- [ ] Middleware: recover, logger, requestid, responsetime, compress, cors, csrf, etag, limiter
+- [x] `flash-http` h1 server: `httparse` head parsing, own incremental chunked decoder (extensions, trailers, any split), pipelining with in-order responses (ordered slots), keep-alive/`Connection: close`/HTTP/1.0, `Expect: 100-continue`, limits (header size, body size, header count), smuggling guards (CL+TE, duplicate CL), `Context` with `detach()` for responses finished later from any thread, graceful shutdown that lets in-flight responses finish. Tested on epoll and io_uring
+- [ ] h1 not done: streaming request/response bodies (bodies are buffered within limits), `sendfile`, HTTP/1 over TLS tests (the `Tls` wrapper composes, untested here), percent-decoding of paths and params
+- [x] Router: static > `:param` > `*wildcard`, backtracking, 405 with `Allow`, HEAD from GET, `nest`, per-router layers, custom fallback; duplicate/conflicting routes panic at registration
+- [ ] Router not done: regexp parameters, allocation-free routing (it allocates a `Vec` and `String`s per request) and its benchmark
+- [x] Middleware: recover, request id, CORS (preflight), access logger
+- [ ] Middleware not done: responsetime, compress, csrf, etag, limiter
 - [ ] Static file cache (pre-compressed `.br/.gz`, inotify-based change tracking)
 - [ ] `flash-ws`: RFC 6455 + permessage-deflate, `PreparedMessage` broadcast, Autobahn in CI
 - [ ] HTTP/1 async client (callback and future result channels)
 - [ ] HTTP/1 comparison report vs hyper and fib (plaintext, pipelined, json)
 - **Deliverable**: `examples/http`, `examples/ws-chat`
+
+> M3 status: first slice done (h1 server, router, four middlewares; 9 socket-level tests + 14 unit tests, macOS and Linux, epoll and io_uring). **Remaining in M3:** WebSocket (`flash-ws`), static files/`sendfile`, streaming bodies, more middleware, the HTTP/1 client, and the comparison report; no HTTP throughput has been measured yet. Example: `crates/flash-http/examples/hello.rs`.
 
 ### M4 HTTP/2 + multi-protocol (8–10 weeks)
 - [ ] HTTP/2: frames/streams/flow control, HPACK, h2c (prior knowledge + Upgrade), server push, h2spec in CI; h2 client

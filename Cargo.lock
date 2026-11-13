@@ -96,6 +96,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "flash-http"
+version = "0.0.0"
+dependencies = [
+ "flash",
+ "flash-core",
+ "httparse",
+]
+
+[[package]]
 name = "flash-pool"
 version = "0.0.0"
 
@@ -154,6 +163,12 @@ dependencies = [
  "libc",
  "wasi",
 ]
+
+[[package]]
+name = "httparse"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
 name = "io-uring"

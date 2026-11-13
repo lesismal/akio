@@ -1,0 +1,18 @@
+[package]
+name = "flash-http"
+description = "flash network library: HTTP/1.1 server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash-core = { path = "../flash-core" }
+httparse = "1"
+
+[dev-dependencies]
+flash = { path = "../flash" }
+
+[lints]
+workspace = true

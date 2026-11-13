@@ -120,12 +120,15 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### M3 HTTP/1 + WebSocket（6–8 周）
 - [ ] `flash-http` h1：sans-io 解析（pipelining、chunked、trailers、streaming body、Expect: 100）、`Context`/`Respond`、`sendfile`
 - [ ] Router（静态 > regexp 参数 > 参数 > 通配，405/Allow，Mount/Group）；零分配路由 benchmark
-- [ ] 中间件：recover、logger、requestid、responsetime、compress、cors、csrf、etag、limiter
+- [x] 中间件：recover、request id、CORS（预检）、访问日志
+- [ ] 中间件未完成：responsetime、compress、csrf、etag、limiter
 - [ ] 静态文件缓存（预压缩 `.br/.gz`、inotify 跟随变更）
 - [ ] `flash-ws`：RFC 6455 + permessage-deflate、`PreparedMessage` 广播、Autobahn 进 CI
 - [ ] HTTP/1 异步客户端（回调 / future 两种结果通道）
 - [ ] 与 hyper、fib 的 HTTP/1 对比报告（plaintext、pipelined、json）
 - **交付**：`examples/http`、`examples/ws-chat`
+
+> M3 状态：第一部分已完成（h1 服务端、router、四个中间件；9 个 socket 级测试 + 14 个单元测试，macOS 与 Linux、epoll 与 io_uring 都通过）。**M3 剩余：** WebSocket（`flash-ws`）、静态文件/`sendfile`、流式 body、更多中间件、HTTP/1 客户端、对比报告；目前还没有测过 HTTP 吞吐。示例：`crates/flash-http/examples/hello.rs`。
 
 ### M4 HTTP/2 + 多协议（8–10 周）
 - [ ] HTTP/2：帧/流/流控、HPACK、h2c（先验 + Upgrade）、server push、h2spec 进 CI；h2 客户端

@@ -152,7 +152,8 @@ struct Ordered {
     /// Sequence number of `ready[0]`.
     head: u64,
     next: u64,
-    ready: VecDeque<Option<Vec<u8>>>,
+    /// `(bytes, close_after)`: the connection ends once these bytes (and all before) are out.
+    ready: VecDeque<Option<(Vec<u8>, bool)>>,
 }
 
 /// The socket under a connection: its own TCP stream, or a peer on a shared UDP socket.
@@ -594,16 +595,19 @@ impl ConnInner {
     }
 
     /// Fills reserved position `seq`; everything now contiguous from the front is sent in order.
-    pub fn fill(&self, seq: u64, data: Vec<u8>) {
+    pub fn fill(&self, seq: u64, data: Vec<u8>, close_after: bool) {
         let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
         let i = (seq - o.head) as usize;
-        o.ready[i] = Some(data);
+        o.ready[i] = Some((data, close_after));
         // The lock is held across the sends: two threads finishing neighbouring slots must not
         // interleave their writes.
         while let Some(Some(_)) = o.ready.front() {
-            if let Some(Some(d)) = o.ready.pop_front() {
+            if let Some(Some((d, close_after))) = o.ready.pop_front() {
                 o.head += 1;
                 let _ = self.send_owned(d);
+                if close_after {
+                    self.close_after_send();
+                }
             }
         }
     }
@@ -834,7 +838,15 @@ impl ResponseSlot {
     /// Supplies the response bytes. Safe to call from any thread.
     pub fn fill(mut self, data: Vec<u8>) {
         if let Some(inner) = self.inner.take() {
-            inner.fill(self.seq, data);
+            inner.fill(self.seq, data, false);
+        }
+    }
+
+    /// Like [`fill`](Self::fill), and the connection is closed once these bytes (and every
+    /// earlier response) have been written. For `Connection: close` style endings.
+    pub fn fill_close(mut self, data: Vec<u8>) {
+        if let Some(inner) = self.inner.take() {
+            inner.fill(self.seq, data, true);
         }
     }
 }
