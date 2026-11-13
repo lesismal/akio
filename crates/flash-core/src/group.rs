@@ -17,6 +17,20 @@ pub trait Group: Send + Sync {
     fn join(&self);
     /// Starts a non-blocking connect to `addr` served by `acceptor`; `on_error` is called
     /// (on an I/O thread, or inline) if the connection cannot be established.
+    /// Starts a UDP "connection" to `addr` with its own socket, served by `acceptor`. Only UDP
+    /// groups implement it.
+    fn dial_udp(
+        &self,
+        _addr: SocketAddr,
+        _acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        on_error(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this listener does not support UDP dial",
+        ));
+    }
+
     fn dial(
         &self,
         addr: SocketAddr,

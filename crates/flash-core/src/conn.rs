@@ -161,6 +161,9 @@ enum Sock {
     Udp {
         sock: Arc<UdpSocket>,
         peer: SocketAddr,
+        /// The socket is `connect`ed to `peer` (a dialed client): use `send`, not `send_to`
+        /// (BSD rejects `sendto` on a connected socket).
+        connected: bool,
     },
 }
 
@@ -210,6 +213,7 @@ impl ConnInner {
     pub fn new_udp(
         id: u64,
         sock: Arc<UdpSocket>,
+        connected: bool,
         local: SocketAddr,
         peer: SocketAddr,
         link: Arc<dyn LoopLink>,
@@ -224,7 +228,11 @@ impl ConnInner {
                 ..WriteState::default()
             }),
             ordered: Mutex::new(Ordered::default()),
-            sock: Sock::Udp { sock, peer },
+            sock: Sock::Udp {
+                sock,
+                peer,
+                connected,
+            },
             link,
             cfg,
             local,
@@ -252,7 +260,17 @@ impl ConnInner {
     fn raw_write(&self, data: &[u8]) -> io::Result<usize> {
         match &self.sock {
             Sock::Tcp(s) => (&*s).write(data),
-            Sock::Udp { sock, peer } => sock.send_to(data, peer),
+            Sock::Udp {
+                sock,
+                peer,
+                connected,
+            } => {
+                if *connected {
+                    sock.send(data)
+                } else {
+                    sock.send_to(data, peer)
+                }
+            }
         }
     }
 
@@ -313,6 +331,19 @@ impl ConnInner {
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    // A dialed peer that answered with ICMP "port unreachable" is gone.
+                    Err(e)
+                        if e.kind() == io::ErrorKind::ConnectionRefused
+                            && matches!(
+                                self.sock,
+                                Sock::Udp {
+                                    connected: true,
+                                    ..
+                                }
+                            ) =>
+                    {
+                        return Err(e);
+                    }
                     // A datagram the network refuses (too big, unreachable) is dropped, as UDP
                     // does; it must not wedge the datagrams behind it.
                     Err(_) => {}
@@ -355,9 +386,12 @@ impl ConnInner {
 
     /// A write failed on a non-loop path: schedule the close and report it.
     fn fail(&self, e: io::Error) -> Error {
-        if matches!(self.sock, Sock::Udp { .. }) {
-            // A refused datagram does not end a UDP "connection".
-            return Error::Io(e);
+        if let Sock::Udp { connected, .. } = self.sock {
+            // A refused datagram does not end a UDP "connection"; a dialed one learns from an ICMP
+            // "port unreachable" that nobody is there, and that ends it.
+            if !(connected && e.kind() == io::ErrorKind::ConnectionRefused) {
+                return Error::Io(e);
+            }
         }
         if self
             .state

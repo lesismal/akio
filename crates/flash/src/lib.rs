@@ -128,6 +128,7 @@ impl Listener {
 pub struct EngineBuilder {
     listeners: Vec<Listener>,
     client_threads: usize,
+    udp_client_threads: usize,
     cfg: Config,
     pool: PoolConfig,
 }
@@ -152,6 +153,13 @@ impl EngineBuilder {
         self
     }
 
+    /// Adds `n` I/O threads for connections made with [`Engine::dial_udp`]. Without it, UDP
+    /// dials run on the threads of the last UDP listener added (and fail if there is none).
+    pub fn udp_client_threads(mut self, n: usize) -> Self {
+        self.udp_client_threads = n;
+        self
+    }
+
     /// Sizes the logical pool that runs [`Conn::spawn_blocking`] work (default: no threads until
     /// used, up to 8 per core, 65,536 queued jobs).
     pub fn pool(mut self, pool: PoolConfig) -> Self {
@@ -163,6 +171,7 @@ impl EngineBuilder {
     pub fn build(self) -> io::Result<Engine> {
         let mut groups: Vec<Box<dyn Group>> = Vec::new();
         let pool = Pool::new(self.pool.clone());
+        let mut udp_last: Option<usize> = None;
         for l in self.listeners {
             if matches!(l.accel, Accel::Ebpf) {
                 return Err(unsupported("eBPF acceleration (planned for M5)"));
@@ -178,9 +187,9 @@ impl EngineBuilder {
                             return Err(unsupported("UDP on the io_uring backend"));
                         }
                     }
+                    udp_last = Some(groups.len());
                     groups.push(Box::new(flash_epoll::UdpGroup::bind(
-                        l.addr,
-                        acceptor,
+                        Some((l.addr, acceptor)),
                         l.threads,
                         self.cfg.clone(),
                         pool.clone(),
@@ -253,7 +262,24 @@ impl EngineBuilder {
                 pool.clone(),
             )?));
         }
-        Ok(Engine { groups, pool })
+        let mut udp_client = udp_last;
+        if self.udp_client_threads > 0 {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                udp_client = Some(groups.len());
+                groups.push(Box::new(flash_epoll::UdpGroup::bind(
+                    None,
+                    self.udp_client_threads,
+                    self.cfg.clone(),
+                    pool.clone(),
+                )?));
+            }
+        }
+        Ok(Engine {
+            groups,
+            pool,
+            udp_client,
+        })
     }
 }
 
@@ -271,6 +297,7 @@ fn unsupported(what: &str) -> io::Error {
 pub struct Engine {
     groups: Vec<Box<dyn Group>>,
     pool: Arc<Pool>,
+    udp_client: Option<usize>,
 }
 
 impl Engine {
@@ -314,6 +341,27 @@ impl Engine {
     /// close before forcing the rest. Returns immediately; use [`wait`](Self::wait) to block.
     pub fn shutdown(&self) {
         self.groups.iter().for_each(|g| g.shutdown());
+    }
+
+    /// Starts a UDP "connection" to `addr`: a socket of its own (so its own local port) that only
+    /// exchanges datagrams with `addr`. `acceptor.on_open` runs on an I/O thread right away (UDP
+    /// has no handshake), `on_data` once per datagram received, `Conn::send` sends one datagram,
+    /// and an ICMP "port unreachable" or `Config::udp_idle_timeout` of silence closes it. On
+    /// failure to create the socket `on_error` is called. Needs [`EngineBuilder::udp_client_threads`]
+    /// or a UDP listener. The engine must have been [`start`](Self::start)ed.
+    pub fn dial_udp<A: Acceptor>(
+        &self,
+        addr: SocketAddr,
+        acceptor: A,
+        on_error: impl FnOnce(io::Error) + Send + 'static,
+    ) {
+        match self.udp_client.and_then(|i| self.groups.get(i)) {
+            Some(g) => g.dial_udp(addr, Arc::new(acceptor), Box::new(on_error)),
+            None => on_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no UDP I/O threads (use udp_client_threads or a UDP listener)",
+            )),
+        }
     }
 
     /// Connects to `addr` without blocking. When established, `acceptor.on_open` runs on an I/O

@@ -130,11 +130,11 @@ fn echo_over_tls_small_and_large() {
             c.write_all(&data[sent..sent + n]).unwrap();
             sent += n;
         }
-        // Read what has come back so far (blocks until at least one record arrives).
-        // Keep the outstanding amount well below the kernel socket buffers (macOS has small
-        // ones): a client that stops reading while the server's echo cannot be written, and a
-        // server that pauses reading because of that backpressure, would deadlock each other.
-        if sent - got.len() >= 64 << 10 || sent == data.len() {
+        // Read back until at most 64 KiB is outstanding. One `read` returns at most one TLS
+        // record, which can be less than was just written, so this must be a loop: otherwise the
+        // outstanding amount grows, the client's write blocks on full socket buffers, and the
+        // server (reads paused by backpressure) waits for the client to read: a deadlock.
+        while sent - got.len() >= 64 << 10 || (sent == data.len() && got.len() < data.len()) {
             let n = c.read(&mut buf).unwrap();
             got.extend_from_slice(&buf[..n]);
         }

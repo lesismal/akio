@@ -42,6 +42,11 @@ pub(crate) enum Cmd {
     Close(u64, Option<io::Error>),
     Task(u64, Task),
     Shutdown,
+    /// UDP only: a client connection with its own connected socket.
+    DialUdp {
+        sock: std::net::UdpSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+    },
     Dial {
         stream: TcpStream,
         addr: SocketAddr,
@@ -322,6 +327,8 @@ impl Loop {
                     Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
                     Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
+                    // Only UDP loops are sent these.
+                    Cmd::DialUdp { .. } => {}
                     Cmd::Dial {
                         stream,
                         addr,
