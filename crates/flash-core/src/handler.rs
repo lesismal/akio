@@ -1,4 +1,6 @@
-use crate::{Conn, Error};
+use std::sync::Arc;
+
+use crate::{Conn, ConnInner, Error};
 
 /// Per-connection state *and* event callbacks (ADR-003).
 ///
@@ -6,23 +8,24 @@ use crate::{Conn, Error};
 /// connection's owning I/O thread, so it must be `Send` (it moves there once) but need **not** be
 /// `Sync`. Callbacks run inline on the I/O thread and **must not block**; offload blocking work
 /// with [`Conn::spawn_blocking`].
+///
+/// Everything sent from inside a callback is coalesced and written when the callback returns.
+/// A panic in a callback closes that connection (and is reported to `on_close`).
 pub trait Handler: Send + Sized + 'static {
     /// Bytes arrived. `data` is only valid for the duration of the call.
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]);
 
-    /// The peer hung up while a callback of this connection was still running (optional).
-    fn on_hangup(&mut self, _c: &Conn<Self>) {}
-
-    /// The connection closed; called exactly once, after every earlier `on_data`.
+    /// The connection closed; called exactly once, after every earlier `on_data`. `err` is `None`
+    /// for an orderly close (peer EOF after pending output drained, or a local close).
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {}
 }
 
-/// Creates a [`Handler`] for each accepted connection. Shared by all I/O threads, hence `Sync`.
+/// Creates a [`Handler`] for each accepted or dialed connection. Shared by all I/O threads.
 pub trait Acceptor: Send + Sync + 'static {
     /// The per-connection handler type.
     type Handler: Handler;
 
-    /// A connection was accepted; return its handler.
+    /// A connection was established; return its handler. Runs on the owning I/O thread.
     fn on_open(&self, c: &Conn<Self::Handler>) -> Self::Handler;
 
     /// The engine is shutting down: end the connection when convenient (optional).
@@ -58,5 +61,45 @@ where
     type Handler = H;
     fn on_open(&self, c: &Conn<H>) -> H {
         (self.f)(c)
+    }
+}
+
+/// Type-erased handler stored by a backend's loop. `#[doc(hidden)]`: backend-facing.
+#[doc(hidden)]
+pub trait DynHandler: Send {
+    fn on_data(&mut self, data: &[u8]);
+    fn on_close(&mut self, err: Option<Error>);
+}
+
+/// Type-erased acceptor. `#[doc(hidden)]`: backend-facing.
+#[doc(hidden)]
+pub trait DynAcceptor: Send + Sync {
+    fn on_open(&self, inner: &Arc<ConnInner>) -> Box<dyn DynHandler>;
+    fn on_shutdown(&self, inner: &Arc<ConnInner>);
+}
+
+struct HandlerBox<H: Handler> {
+    h: H,
+    // Created once at open: callbacks borrow it, so no Arc clone per callback.
+    conn: Conn<H>,
+}
+
+impl<H: Handler> DynHandler for HandlerBox<H> {
+    fn on_data(&mut self, data: &[u8]) {
+        self.h.on_data(&self.conn, data)
+    }
+    fn on_close(&mut self, err: Option<Error>) {
+        self.h.on_close(&self.conn, err)
+    }
+}
+
+impl<A: Acceptor> DynAcceptor for A {
+    fn on_open(&self, inner: &Arc<ConnInner>) -> Box<dyn DynHandler> {
+        let conn = Conn::<A::Handler>::new(inner.clone());
+        let h = Acceptor::on_open(self, &conn);
+        Box::new(HandlerBox { h, conn })
+    }
+    fn on_shutdown(&self, inner: &Arc<ConnInner>) {
+        Acceptor::on_shutdown(self, &Conn::<A::Handler>::new(inner.clone()))
     }
 }

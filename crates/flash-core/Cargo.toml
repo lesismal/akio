@@ -9,8 +9,6 @@ rust-version.workspace = true
 
 [dependencies]
 flash-buf = { path = "../flash-buf" }
-flash-timer = { path = "../flash-timer" }
-flash-pool = { path = "../flash-pool" }
 
 [lints]
 workspace = true

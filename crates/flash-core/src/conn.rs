@@ -1,17 +1,417 @@
-use std::{marker::PhantomData, net::SocketAddr, sync::Arc};
+use std::{
+    collections::VecDeque,
+    io::{self, IoSlice, Write},
+    marker::PhantomData,
+    net::{SocketAddr, TcpStream},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
+};
 
-use crate::{Handler, Result};
+use flash_buf::SharedBuf;
 
-/// Type-erased shared connection state (send queue + lock, state bits, owner loop). Built in M1.
-pub(crate) struct ConnInner {}
+use crate::{Config, Error, Handler, Result};
+
+const OPEN: u8 = 0;
+const CLOSING: u8 = 1;
+const CLOSED: u8 = 2;
+
+/// How a connection reaches its owning I/O loop. Implemented by backends.
+///
+/// Implementations must make `wake_conn` / `close_conn` cheap, callable from any thread
+/// (including the loop's own, from inside callbacks) and never call user code.
+pub trait LoopLink: Send + Sync {
+    /// Ask the loop to re-evaluate connection `id`: flush queued output, apply read/write
+    /// interest, and close it if `close_after_send` has drained.
+    fn wake_conn(&self, id: u64);
+    /// Ask the loop to close connection `id` (running `on_close` with `err`).
+    fn close_conn(&self, id: u64, err: Option<io::Error>);
+}
+
+enum Bytes {
+    Owned(Vec<u8>),
+    Shared(SharedBuf),
+}
+
+struct Chunk {
+    bytes: Bytes,
+    off: usize,
+}
+
+impl Chunk {
+    fn rest(&self) -> &[u8] {
+        match &self.bytes {
+            Bytes::Owned(v) => &v[self.off..],
+            Bytes::Shared(s) => &s[self.off..],
+        }
+    }
+}
+
+#[derive(Default)]
+struct WriteState {
+    queue: VecDeque<Chunk>,
+    queued: usize,
+    corked: bool,
+    close_after_send: bool,
+}
+
+impl WriteState {
+    fn push_copy(&mut self, data: &[u8]) {
+        self.queued += data.len();
+        // Coalesce small writes into the tail buffer: fewer iovecs per writev.
+        if let Some(Chunk {
+            bytes: Bytes::Owned(v),
+            ..
+        }) = self.queue.back_mut()
+        {
+            if v.capacity() - v.len() >= data.len() {
+                v.extend_from_slice(data);
+                return;
+            }
+        }
+        let mut v = flash_buf::get(data.len());
+        v.extend_from_slice(data);
+        self.queue.push_back(Chunk {
+            bytes: Bytes::Owned(v),
+            off: 0,
+        });
+    }
+
+    fn consume(&mut self, mut n: usize) {
+        self.queued -= n;
+        while n > 0 {
+            let front = self.queue.front_mut().expect("consumed more than queued");
+            let left = front.rest().len();
+            if n < left {
+                front.off += n;
+                return;
+            }
+            n -= left;
+            if let Some(Chunk {
+                bytes: Bytes::Owned(v),
+                ..
+            }) = self.queue.pop_front()
+            {
+                flash_buf::put(v);
+            }
+        }
+    }
+
+    fn clear(&mut self) {
+        for c in self.queue.drain(..) {
+            if let Bytes::Owned(v) = c.bytes {
+                flash_buf::put(v);
+            }
+        }
+        self.queued = 0;
+    }
+}
+
+/// Type-erased shared connection state: socket, lifecycle, send queue and its lock (ADR-002).
+///
+/// Public only so that backend crates can drive it; applications use [`Conn`].
+#[doc(hidden)]
+pub struct ConnInner {
+    id: u64,
+    state: AtomicU8,
+    hold: AtomicBool,
+    write: Mutex<WriteState>,
+    stream: TcpStream,
+    link: Arc<dyn LoopLink>,
+    cfg: Arc<Config>,
+    local: SocketAddr,
+    peer: SocketAddr,
+}
+
+#[doc(hidden)]
+impl ConnInner {
+    pub fn new(
+        id: u64,
+        stream: TcpStream,
+        local: SocketAddr,
+        peer: SocketAddr,
+        link: Arc<dyn LoopLink>,
+        cfg: Arc<Config>,
+    ) -> Arc<ConnInner> {
+        Arc::new(ConnInner {
+            id,
+            state: AtomicU8::new(OPEN),
+            hold: AtomicBool::new(false),
+            write: Mutex::new(WriteState::default()),
+            stream,
+            link,
+            cfg,
+            local,
+            peer,
+        })
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn stream(&self) -> &TcpStream {
+        &self.stream
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.state.load(Ordering::Acquire) == OPEN
+    }
+
+    pub fn read_held(&self) -> bool {
+        self.hold.load(Ordering::Acquire)
+    }
+
+    pub fn queued_bytes(&self) -> usize {
+        self.lock().queued
+    }
+
+    /// True once `close_after_send` was requested.
+    pub fn close_after_send_requested(&self) -> bool {
+        self.lock().close_after_send
+    }
+
+    /// Loop side: coalesce writes (`true`) or stop coalescing (`false`, call [`flush_queue`]).
+    pub fn set_corked(&self, corked: bool) {
+        self.lock().corked = corked;
+    }
+
+    /// Loop side: end of a callback. Uncorks and writes what the callback queued.
+    /// Returns `Err` if the socket failed.
+    pub fn uncork_flush(&self) -> io::Result<()> {
+        let mut w = self.lock();
+        w.corked = false;
+        self.write_locked(&mut w).map(drop)
+    }
+
+    /// Loop side: writes as much queued data as the socket takes. `Ok(true)` when empty.
+    pub fn flush_queue(&self) -> io::Result<bool> {
+        let mut w = self.lock();
+        self.write_locked(&mut w)
+    }
+
+    /// Loop side: the connection is gone; drop queued output.
+    pub fn mark_closed(&self) {
+        self.state.store(CLOSED, Ordering::Release);
+        self.lock().clear();
+    }
+
+    fn lock(&self) -> MutexGuard<'_, WriteState> {
+        // A poisoned lock only means a user callback panicked elsewhere; the queue is still
+        // consistent because it is never mutated across a callback.
+        self.write.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Writes queued chunks with `writev` until the queue is empty or the socket is full.
+    fn write_locked(&self, w: &mut WriteState) -> io::Result<bool> {
+        const MAX_IOV: usize = 16;
+        while !w.queue.is_empty() {
+            let n = {
+                let mut iov: [IoSlice<'_>; MAX_IOV] = [IoSlice::new(&[]); MAX_IOV];
+                let mut k = 0;
+                for (slot, c) in iov.iter_mut().zip(w.queue.iter()) {
+                    *slot = IoSlice::new(c.rest());
+                    k += 1;
+                }
+                match (&self.stream).write_vectored(&iov[..k]) {
+                    Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                    Ok(n) => n,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            };
+            w.consume(n);
+        }
+        Ok(true)
+    }
+
+    fn check_sendable(&self, w: &WriteState, extra: usize) -> Result<()> {
+        if !self.is_open() || w.close_after_send {
+            return Err(Error::Closed);
+        }
+        if w.queued + extra > self.cfg.max_queued_bytes {
+            return Err(Error::Overloaded);
+        }
+        Ok(())
+    }
+
+    /// A write failed on a non-loop path: schedule the close and report it.
+    fn fail(&self, e: io::Error) -> Error {
+        if self
+            .state
+            .compare_exchange(OPEN, CLOSING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.link.close_conn(self.id, Some(e));
+        }
+        Error::Closed
+    }
+
+    pub fn send(&self, data: &[u8]) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut w = self.lock();
+        self.check_sendable(&w, data.len())?;
+        let was_empty = w.queue.is_empty();
+        let mut data = data;
+        // Fast path: nothing queued and not corked -> write straight to the socket.
+        if was_empty && !w.corked {
+            loop {
+                match (&self.stream).write(data) {
+                    Ok(n) if n == data.len() => return Ok(()),
+                    Ok(n) => data = &data[n..],
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        drop(w);
+                        return Err(self.fail(e));
+                    }
+                }
+            }
+        }
+        w.push_copy(data);
+        let need_wake = was_empty && !w.corked;
+        drop(w);
+        if need_wake {
+            self.link.wake_conn(self.id);
+        }
+        Ok(())
+    }
+
+    pub fn send_owned(&self, data: Vec<u8>) -> Result<()> {
+        // A direct write is attempted first; only the unwritten tail is queued (copy-free for the
+        // whole buffer when it does not fit and the queue is empty).
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut w = self.lock();
+        self.check_sendable(&w, data.len())?;
+        let was_empty = w.queue.is_empty();
+        let mut off = 0;
+        if was_empty && !w.corked {
+            loop {
+                match (&self.stream).write(&data[off..]) {
+                    Ok(n) => {
+                        off += n;
+                        if off == data.len() {
+                            return Ok(());
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        drop(w);
+                        return Err(self.fail(e));
+                    }
+                }
+            }
+        }
+        w.queued += data.len() - off;
+        w.queue.push_back(Chunk {
+            bytes: Bytes::Owned(data),
+            off,
+        });
+        let need_wake = was_empty && !w.corked;
+        drop(w);
+        if need_wake {
+            self.link.wake_conn(self.id);
+        }
+        Ok(())
+    }
+
+    pub fn send_shared(&self, data: SharedBuf) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut w = self.lock();
+        self.check_sendable(&w, data.len())?;
+        let was_empty = w.queue.is_empty();
+        w.queued += data.len();
+        w.queue.push_back(Chunk {
+            bytes: Bytes::Shared(data),
+            off: 0,
+        });
+        let need_wake = was_empty && !w.corked;
+        if !w.corked {
+            // Try to push it out right away.
+            if let Err(e) = self.write_locked(&mut w) {
+                drop(w);
+                return Err(self.fail(e));
+            }
+        }
+        drop(w);
+        if need_wake {
+            self.link.wake_conn(self.id);
+        }
+        Ok(())
+    }
+
+    pub fn cork(&self) {
+        self.lock().corked = true;
+    }
+
+    pub fn flush(&self) -> Result<()> {
+        let mut w = self.lock();
+        w.corked = false;
+        match self.write_locked(&mut w) {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                drop(w);
+                self.link.wake_conn(self.id);
+                Ok(())
+            }
+            Err(e) => {
+                drop(w);
+                Err(self.fail(e))
+            }
+        }
+    }
+
+    pub fn close(&self) {
+        if self
+            .state
+            .compare_exchange(OPEN, CLOSING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            self.link.close_conn(self.id, None);
+        }
+    }
+
+    pub fn close_after_send(&self) {
+        let mut w = self.lock();
+        if w.close_after_send {
+            return;
+        }
+        w.close_after_send = true;
+        drop(w);
+        self.link.wake_conn(self.id);
+    }
+
+    pub fn hold_reads(&self, hold: bool) {
+        if self.hold.swap(hold, Ordering::AcqRel) != hold {
+            self.link.wake_conn(self.id);
+        }
+    }
+
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local
+    }
+
+    pub fn peer_addr(&self) -> SocketAddr {
+        self.peer
+    }
+}
 
 /// A cloneable, thread-safe handle to a connection (ADR-002).
 ///
 /// `Conn<H>` is `Send + Sync + Clone` for **any** `H` (the type parameter only types the
 /// completion callbacks of [`Conn::spawn_blocking`]). Using a handle after the connection closed
-/// returns [`Error::Closed`](crate::Error::Closed); it never panics or touches a recycled fd.
+/// returns [`Error::Closed`]; it never panics or touches a recycled fd. The socket's file
+/// descriptor is released when the connection is closed *and* every handle has been dropped.
 pub struct Conn<H> {
-    #[allow(dead_code)]
     inner: Arc<ConnInner>,
     // `fn() -> H` keeps the handle Send + Sync regardless of H.
     _h: PhantomData<fn() -> H>,
@@ -26,55 +426,86 @@ impl<H> Clone for Conn<H> {
     }
 }
 
-impl<H: Handler> Conn<H> {
-    /// Copies `data` into the send queue (or writes it directly when the queue is empty).
-    pub fn send(&self, _data: &[u8]) -> Result<()> {
-        unimplemented!("M1")
+impl<H> Conn<H> {
+    pub(crate) fn new(inner: Arc<ConnInner>) -> Self {
+        Conn {
+            inner,
+            _h: PhantomData,
+        }
     }
 
-    /// Like [`send`](Self::send) but takes ownership, avoiding a copy.
-    pub fn send_owned(&self, _data: Vec<u8>) -> Result<()> {
-        unimplemented!("M1")
+    /// Process-unique connection id.
+    pub fn id(&self) -> u64 {
+        self.inner.id()
     }
 
-    /// Starts coalescing writes until [`flush`](Self::flush) (or the end of the callback).
-    pub fn cork(&self) {
-        unimplemented!("M1")
+    /// Whether the connection is still open for sending.
+    pub fn is_open(&self) -> bool {
+        self.inner.is_open()
     }
 
-    /// Flushes corked output.
-    pub fn flush(&self) -> Result<()> {
-        unimplemented!("M1")
-    }
-
-    /// Closes the connection now.
-    pub fn close(&self) {
-        unimplemented!("M1")
-    }
-
-    /// Closes after everything queued has been sent.
-    pub fn close_after_send(&self) {
-        unimplemented!("M1")
-    }
-
-    /// Pauses (`true`) or resumes (`false`) reading from the peer.
-    pub fn hold_reads(&self, _hold: bool) {
-        unimplemented!("M1")
+    /// Bytes accepted by `send*` but not yet written to the socket.
+    pub fn queued_bytes(&self) -> usize {
+        self.inner.queued_bytes()
     }
 
     /// Local address.
     pub fn local_addr(&self) -> SocketAddr {
-        unimplemented!("M1")
+        self.inner.local_addr()
     }
 
     /// Peer address.
     pub fn peer_addr(&self) -> SocketAddr {
-        unimplemented!("M1")
+        self.inner.peer_addr()
     }
 
+    /// Writes `data` now if the socket takes it, queues the rest (copying). Never blocks.
+    /// Fails with `Closed` after close, `Overloaded` beyond `Config::max_queued_bytes`.
+    pub fn send(&self, data: &[u8]) -> Result<()> {
+        self.inner.send(data)
+    }
+
+    /// Like [`send`](Self::send) but takes ownership, avoiding a copy of what must be queued.
+    pub fn send_owned(&self, data: Vec<u8>) -> Result<()> {
+        self.inner.send_owned(data)
+    }
+
+    /// Like [`send`](Self::send) with a reference-counted buffer, for broadcast.
+    pub fn send_shared(&self, data: SharedBuf) -> Result<()> {
+        self.inner.send_shared(data)
+    }
+
+    /// Coalesces writes until [`flush`](Self::flush). Inside `on_data` this is already the
+    /// default: everything sent during a callback leaves in one `writev` when it returns.
+    pub fn cork(&self) {
+        self.inner.cork()
+    }
+
+    /// Ends corking and writes queued output.
+    pub fn flush(&self) -> Result<()> {
+        self.inner.flush()
+    }
+
+    /// Closes the connection, discarding unsent data. `on_close` runs on the I/O thread.
+    pub fn close(&self) {
+        self.inner.close()
+    }
+
+    /// Closes once everything queued has been written; further sends fail with `Closed`.
+    pub fn close_after_send(&self) {
+        self.inner.close_after_send()
+    }
+
+    /// Pauses (`true`) or resumes (`false`) reading from the peer.
+    pub fn hold_reads(&self, hold: bool) {
+        self.inner.hold_reads(hold)
+    }
+}
+
+impl<H: Handler> Conn<H> {
     /// Runs `work` on the logical pool, then runs `done` **on this connection's owning I/O
     /// thread** with exclusive access to the handler. If the connection closed meanwhile, `done`
-    /// is skipped. Returns [`Error::Overloaded`](crate::Error::Overloaded) when the pool is full.
+    /// is skipped. Returns [`Error::Overloaded`] when the pool is full. (Implemented in M2.)
     pub fn spawn_blocking<R, W, D>(&self, _work: W, _done: D) -> Result<()>
     where
         R: Send + 'static,

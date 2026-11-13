@@ -85,16 +85,18 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] benchmark 脚手架：echo 客户端压测工具 + 对照实现（fib、tokio、monoio）
 
 ### M1 核心引擎：epoll + kqueue（4–6 周）
-- [ ] `flash-sys`：epoll、eventfd、`accept4`、`writev`、`sendfile`、`splice`、`SO_REUSEPORT`、非阻塞 socket 选项
-- [ ] `flash-buf`：size-class 池、线程本地缓存、`SharedBuf` 引用计数缓冲
-- [ ] `flash-timer`：时间轮（连接读写超时、空闲超时、用户定时器）
-- [ ] `flash-core`：`Engine/Listener/Reactor/Handler/Conn`；每 IO 线程事件循环；accept 分发；命令队列 + eventfd 唤醒
-- [ ] `Conn` 跨线程路径：发送队列、直写优先、唤醒 loop、关闭状态机、generation 防误操作
-- [ ] 背压：写水位、`hold_reads`、`max_pending_bytes`；优雅关闭
-- [ ] 异步 dial（客户端连接）
-- [ ] kqueue reactor（共享逻辑，macOS 可开发/调试）
+- [x] `flash-sys`：epoll、eventfd、`accept4`、`writev`、`sendfile`、`splice`、`SO_REUSEPORT`、非阻塞 socket 选项
+- [x] `flash-buf`：size-class 池、线程本地缓存、`SharedBuf` 引用计数缓冲
+- [x] `flash-timer`：时间轮（连接读写超时、空闲超时、用户定时器）
+- [x] `flash-core`：`Engine/Listener/Reactor/Handler/Conn`；每 IO 线程事件循环；accept 分发；命令队列 + eventfd 唤醒
+- [x] `Conn` 跨线程路径：发送队列、直写优先、唤醒 loop、关闭状态机、generation 防误操作
+- [x] 背压：写水位、`hold_reads`、`max_pending_bytes`；优雅关闭
+- [x] 异步 dial（客户端连接）
+- [x] kqueue reactor（共享逻辑，macOS 可开发/调试）
 - [ ] 测试：单元、`loom`（发送/关闭竞争）、echo 压测、10k/100k 连接稳定性、fd 泄漏检测
 - **交付**：`examples/echo`，echo benchmark 报告 v0
+
+> M1 状态：核心引擎已实现，并在 Linux（epoll）与 macOS（kqueue）上测试通过。**M1 收尾前仍待完成：** 发送/关闭竞争的 `loom` 模型、1 万/10 万连接与 fd 泄漏测试、与 fib/tokio/monoio 的 echo 对比（纯 std 的 `echo-bench` 客户端是一连接一线程，客户端先于服务端饱和，需要更好的压测器）。定时器目前是独立的时间轮，尚未接入 loop（空闲/读写超时）。`Conn::spawn_blocking` 属于 M2。
 
 ### M2 多后端 + 逻辑池 + UDP + TLS（6–8 周）
 - [ ] `flash-pool`：自适应线程池、有界队列、过载策略、指标

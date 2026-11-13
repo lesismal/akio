@@ -1,15 +1,21 @@
 #![forbid(unsafe_code)]
-//! flash core API: `Engine`, `Listener`, `Handler`, `Conn`.
+//! flash core: connections, handlers and the backend-facing traits.
 //!
-//! **M0 status:** this is the API *prototype* chosen in ADR-003. Types and signatures are real and
-//! compile-checked (see `tests/api.rs`); bodies are `unimplemented!()` until M1.
+//! * [`Handler`] and [`Acceptor`] are what applications implement.
+//! * [`Conn`] is the cloneable, thread-safe connection handle.
+//! * [`Config`] holds the tunables.
+//! * `Group`, `ConnInner`, `LoopLink`, `DynAcceptor`, `DynHandler`: backend-facing plumbing
+//!   (hidden from the docs); backends such as `flash-epoll` implement them and the `flash` crate
+//!   composes them into an `Engine`.
 
+mod config;
 mod conn;
-mod engine;
 mod error;
+mod group;
 mod handler;
 
-pub use conn::Conn;
-pub use engine::{Accel, Backend, Engine, EngineBuilder, Listener, UringConfig};
+pub use config::Config;
+pub use conn::{Conn, ConnInner, LoopLink};
 pub use error::{Error, Result};
-pub use handler::{Acceptor, FnAcceptor, Handler, fn_acceptor};
+pub use group::Group;
+pub use handler::{Acceptor, DynAcceptor, DynHandler, FnAcceptor, Handler, fn_acceptor};

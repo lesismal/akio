@@ -85,16 +85,18 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 - [x] Benchmark scaffold: echo load tool + reference implementations (fib, tokio, monoio)
 
 ### M1 Core engine: epoll + kqueue (4–6 weeks)
-- [ ] `flash-sys`: epoll, eventfd, `accept4`, `writev`, `sendfile`, `splice`, `SO_REUSEPORT`, non-blocking socket options
-- [ ] `flash-buf`: size-class pool, thread-local cache, ref-counted `SharedBuf`
-- [ ] `flash-timer`: timer wheel (connection read/write/idle timeouts, user timers)
-- [ ] `flash-core`: `Engine/Listener/Reactor/Handler/Conn`; per-I/O-thread event loop; accept distribution; command queue + eventfd wakeup
-- [ ] Cross-thread `Conn` path: send queue, direct-write-first, loop wakeup, close state machine, generation guard
-- [ ] Backpressure: write watermark, `hold_reads`, `max_pending_bytes`; graceful shutdown
-- [ ] Async dial (client connections)
-- [ ] kqueue reactor (shared logic; develop/debug on macOS)
+- [x] `flash-sys`: epoll, eventfd, `accept4`, `writev`, `sendfile`, `splice`, `SO_REUSEPORT`, non-blocking socket options
+- [x] `flash-buf`: size-class pool, thread-local cache, ref-counted `SharedBuf`
+- [x] `flash-timer`: timer wheel (connection read/write/idle timeouts, user timers)
+- [x] `flash-core`: `Engine/Listener/Reactor/Handler/Conn`; per-I/O-thread event loop; accept distribution; command queue + eventfd wakeup
+- [x] Cross-thread `Conn` path: send queue, direct-write-first, loop wakeup, close state machine, generation guard
+- [x] Backpressure: write watermark, `hold_reads`, `max_pending_bytes`; graceful shutdown
+- [x] Async dial (client connections)
+- [x] kqueue reactor (shared logic; develop/debug on macOS)
 - [ ] Tests: unit, `loom` (send/close races), echo load, 10k/100k-connection stability, fd leak detection
 - **Deliverable**: `examples/echo`, echo benchmark report v0
+
+> M1 status: core engine implemented and tested on Linux (epoll) and macOS (kqueue). **Open before M1 can close:** `loom` model of the send/close races, 10k/100k-connection and fd-leak tests, and the echo comparison against fib/tokio/monoio (the std-only `echo-bench` client is thread-per-connection and saturates before the server does; a better load generator is needed). Timers are a standalone wheel, not yet wired into the loop (idle/read/write timeouts). `Conn::spawn_blocking` is M2.
 
 ### M2 Multi-backend + logical pool + UDP + TLS (6–8 weeks)
 - [ ] `flash-pool`: adaptive thread pool, bounded queue, overload policy, metrics
