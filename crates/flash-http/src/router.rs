@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use crate::{
-    context::{Context, Middleware, Service},
-    message::{Method, Response},
+    context::{BodyMode, Context, Middleware, Service},
+    message::{Method, Request, Response},
 };
 
 struct Route {
@@ -30,6 +30,10 @@ struct Layered {
 impl Service for Layered {
     fn call(&self, ctx: &mut Context) {
         self.mw.handle(ctx, &*self.next);
+    }
+
+    fn body_mode(&self, req: &Request) -> BodyMode {
+        self.next.body_mode(req)
     }
 }
 
@@ -240,35 +244,61 @@ impl Router {
     }
 }
 
-impl Service for Router {
-    fn call(&self, ctx: &mut Context) {
-        let path = ctx.path().to_owned();
+/// Where a request goes.
+enum Resolved<'a> {
+    Route(&'a Route, Vec<(String, String)>),
+    /// The path exists, the method does not: the allowed methods.
+    NotAllowed(String),
+    NotFound,
+}
+
+impl Router {
+    fn resolve<'a>(&'a self, path: &str, method: &Method) -> Resolved<'a> {
         let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut params = Vec::new();
         let Some(routes) = Router::find(&self.root, &segs, &mut params) else {
-            return self.fallback.call(ctx);
+            return Resolved::NotFound;
         };
-        let method = ctx.method().clone();
-        let route = routes.iter().find(|r| r.method == method).or_else(|| {
+        let route = routes.iter().find(|r| &r.method == method).or_else(|| {
             // HEAD is answered by the GET route (the body is dropped when encoding).
-            (method == Method::Head)
+            (*method == Method::Head)
                 .then(|| routes.iter().find(|r| r.method == Method::Get))
                 .flatten()
         });
         match route {
-            Some(r) => {
-                ctx.set_params(params);
-                r.svc.call(ctx);
-            }
+            Some(r) => Resolved::Route(r, params),
             None => {
                 let mut allow: Vec<&str> = routes.iter().map(|r| r.method.as_str()).collect();
                 if routes.iter().any(|r| r.method == Method::Get) {
                     allow.push("HEAD");
                 }
                 allow.sort_unstable();
-                ctx.set_local(ALLOW, allow.join(", "));
+                Resolved::NotAllowed(allow.join(", "))
+            }
+        }
+    }
+}
+
+impl Service for Router {
+    fn call(&self, ctx: &mut Context) {
+        let path = ctx.path().to_owned();
+        match self.resolve(&path, &ctx.method().clone()) {
+            Resolved::Route(r, params) => {
+                ctx.set_params(params);
+                r.svc.call(ctx);
+            }
+            Resolved::NotAllowed(allow) => {
+                ctx.set_local(ALLOW, allow);
                 self.fallback.call(ctx);
             }
+            Resolved::NotFound => self.fallback.call(ctx),
+        }
+    }
+
+    fn body_mode(&self, req: &Request) -> BodyMode {
+        match self.resolve(req.path(), &req.method) {
+            Resolved::Route(r, _) => r.svc.body_mode(req),
+            _ => self.fallback.body_mode(req),
         }
     }
 }

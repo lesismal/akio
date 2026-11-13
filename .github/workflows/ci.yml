@@ -55,3 +55,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: RUSTFLAGS="--cfg loom" cargo test -p flash-core --lib --release -- loom
+
+  autobahn:
+    # RFC 6455 / RFC 7692 conformance: the Autobahn|Testsuite fuzzing client against ws-echo.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p flash-http --example ws-echo
+      - name: Autobahn (core protocol)
+        run: tools/autobahn/run.sh base
+      - name: Autobahn (permessage-deflate)
+        run: tools/autobahn/run.sh pmd
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autobahn-reports
+          path: /tmp/autobahn-*/

@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use flash_core::{Acceptor, Conn, Error, Handler};
+use flash_ws::WsSession;
 
 use crate::{
-    context::{Context, Service},
+    context::{BodyEvent, BodyMode, Context, Service},
     message::{Headers, Request, Response, Version},
     parse::{ChunkDecoder, ChunkError, Head, ParseError, parse_head},
 };
@@ -56,6 +57,7 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             cfg: self.cfg.clone(),
             buf: Vec::new(),
             state: State::Head,
+            ws: None,
         }
     }
 
@@ -76,11 +78,19 @@ enum Kind {
 
 enum State {
     Head,
+    /// A buffered body being collected before dispatch.
     Body {
-        head: Head,
+        req: Request,
         kind: Kind,
         body: Vec<u8>,
         keep_alive: bool,
+    },
+    /// A streamed body: the service already runs and receives chunks through its sink.
+    Stream {
+        ctx: Box<Context>,
+        kind: Kind,
+        keep_alive: bool,
+        scratch: Vec<u8>,
     },
     /// No more requests are read (`Connection: close`, or a protocol error).
     Closed,
@@ -93,10 +103,15 @@ pub struct Session<S> {
     /// Bytes of an incomplete head, carried over to the next `on_data`.
     buf: Vec<u8>,
     state: State,
+    /// Set once a request was upgraded to WebSocket; the connection then speaks only that.
+    ws: Option<WsSession>,
 }
 
 impl<S: Service> Handler for Session<S> {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if let Some(ws) = &mut self.ws {
+            return ws.on_data(data);
+        }
         if matches!(self.state, State::Closed) {
             return;
         }
@@ -114,7 +129,11 @@ impl<S: Service> Handler for Session<S> {
         }
     }
 
-    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {}
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {
+        if let Some(ws) = &mut self.ws {
+            ws.on_transport_closed();
+        }
+    }
 }
 
 impl<S: Service> Session<S> {
@@ -122,6 +141,11 @@ impl<S: Service> Session<S> {
     fn process(&mut self, c: &Conn<Self>, src: &[u8]) -> usize {
         let mut pos = 0;
         loop {
+            // After an upgrade whatever follows the handshake request is WebSocket data.
+            if let Some(ws) = &mut self.ws {
+                ws.on_data(&src[pos..]);
+                return src.len();
+            }
             match &mut self.state {
                 State::Closed => return src.len(),
                 State::Head => {
@@ -183,10 +207,62 @@ impl<S: Service> Session<S> {
                         return pos; // need more bytes
                     }
                     let State::Body {
-                        head,
+                        mut req,
                         kind,
                         body,
                         keep_alive,
+                    } = std::mem::replace(&mut self.state, State::Head)
+                    else {
+                        unreachable!()
+                    };
+                    if let Kind::Chunked(dec) = kind {
+                        req.trailers = dec.trailers();
+                    }
+                    req.body = body;
+                    self.dispatch(c, req, keep_alive);
+                }
+                State::Stream {
+                    ctx, kind, scratch, ..
+                } => {
+                    let rest = &src[pos..];
+                    let done = match kind {
+                        Kind::Length(left) => {
+                            let n = rest.len().min(*left);
+                            if n > 0 {
+                                ctx.deliver(BodyEvent::Chunk(&rest[..n]));
+                            }
+                            *left -= n;
+                            pos += n;
+                            *left == 0
+                        }
+                        Kind::Chunked(dec) => {
+                            scratch.clear();
+                            match dec.feed(rest, scratch, usize::MAX) {
+                                Ok(n) => {
+                                    pos += n;
+                                    if !scratch.is_empty() {
+                                        ctx.deliver(BodyEvent::Chunk(scratch));
+                                    }
+                                    dec.is_done()
+                                }
+                                Err(_) => {
+                                    // Framing error mid-stream: the request cannot be answered
+                                    // normally any more.
+                                    self.state = State::Closed;
+                                    c.close();
+                                    return src.len();
+                                }
+                            }
+                        }
+                    };
+                    if !done {
+                        return pos;
+                    }
+                    let State::Stream {
+                        mut ctx,
+                        kind,
+                        keep_alive,
+                        ..
                     } = std::mem::replace(&mut self.state, State::Head)
                     else {
                         unreachable!()
@@ -195,7 +271,13 @@ impl<S: Service> Session<S> {
                         Kind::Chunked(dec) => dec.trailers(),
                         Kind::Length(_) => Headers::new(),
                     };
-                    self.dispatch(c, head, body, trailers, keep_alive);
+                    ctx.deliver(BodyEvent::End(&trailers));
+                    if !ctx.responded() && !ctx.is_detached() {
+                        ctx.respond(Response::text(500, "handler did not respond"));
+                    }
+                    if !keep_alive {
+                        self.state = State::Closed;
+                    }
                 }
             }
         }
@@ -213,6 +295,7 @@ impl<S: Service> Session<S> {
         };
         let te = h.get("transfer-encoding");
         let cl = h.get_all("content-length").collect::<Vec<_>>();
+        let mut declared = 0usize;
         let kind = match (te, cl.is_empty()) {
             (Some(_), false) => return self.fail(c, 400), // request smuggling vector
             (Some(te), true) => {
@@ -232,60 +315,74 @@ impl<S: Service> Session<S> {
                         _ => return self.fail(c, 400),
                     }
                 }
-                let n = len.unwrap_or(0);
-                if n > self.cfg.max_body_bytes {
-                    return self.fail(c, 413);
-                }
-                (n > 0).then_some(Kind::Length(n))
+                declared = len.unwrap_or(0);
+                (declared > 0).then_some(Kind::Length(declared))
             }
             (None, true) => None,
         };
-        match kind {
-            None => self.dispatch(c, head, Vec::new(), Headers::new(), keep_alive),
-            Some(kind) => {
-                if head.version == Version::Http11
-                    && head
-                        .headers
-                        .get("expect")
-                        .is_some_and(|e| e.eq_ignore_ascii_case("100-continue"))
-                {
-                    let _ = c.send(b"HTTP/1.1 100 Continue\r\n\r\n");
-                }
-                self.state = State::Body {
-                    head,
-                    kind,
-                    body: Vec::new(),
-                    keep_alive,
-                };
-            }
-        }
-    }
-
-    fn dispatch(
-        &mut self,
-        c: &Conn<Self>,
-        head: Head,
-        body: Vec<u8>,
-        trailers: Headers,
-        keep_alive: bool,
-    ) {
-        let Ok(slot) = c.reserve_response() else {
-            self.state = State::Closed;
-            return;
-        };
+        let expect_continue = head.version == Version::Http11
+            && head
+                .headers
+                .get("expect")
+                .is_some_and(|e| e.eq_ignore_ascii_case("100-continue"));
         let req = Request {
             method: head.method,
             target: head.target,
             version: head.version,
             headers: head.headers,
-            trailers,
-            body,
+            trailers: Headers::new(),
+            body: Vec::new(),
             peer: c.peer_addr(),
+        };
+        let Some(kind) = kind else {
+            return self.dispatch(c, req, keep_alive);
+        };
+        let stream = self.service.body_mode(&req) == BodyMode::Stream;
+        if !stream && declared > self.cfg.max_body_bytes {
+            return self.fail(c, 413);
+        }
+        if expect_continue {
+            let _ = c.send(b"HTTP/1.1 100 Continue\r\n\r\n");
+        }
+        if !stream {
+            self.state = State::Body {
+                req,
+                kind,
+                body: Vec::new(),
+                keep_alive,
+            };
+            return;
+        }
+        // Streamed: run the service now, feed it the body as it arrives.
+        let Ok(slot) = c.reserve_response() else {
+            self.state = State::Closed;
+            return;
+        };
+        let mut ctx = Box::new(Context::new(req, slot, keep_alive));
+        self.service.call(&mut ctx);
+        self.state = State::Stream {
+            ctx,
+            kind,
+            keep_alive,
+            scratch: Vec::new(),
+        };
+    }
+
+    fn dispatch(&mut self, c: &Conn<Self>, req: Request, keep_alive: bool) {
+        let Ok(slot) = c.reserve_response() else {
+            self.state = State::Closed;
+            return;
         };
         let mut ctx = Context::new(req, slot, keep_alive);
         self.service.call(&mut ctx);
         if !ctx.responded() && !ctx.is_detached() {
             ctx.respond(Response::text(500, "handler did not respond"));
+        }
+        if let Some(up) = ctx.take_upgrade() {
+            let mut ws = WsSession::new(c.inner().clone(), &up.cfg, up.pmd, up.handler);
+            ws.open();
+            self.ws = Some(ws);
+            return;
         }
         if !keep_alive {
             self.state = State::Closed;

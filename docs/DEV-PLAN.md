@@ -119,13 +119,14 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### M3 HTTP/1 + WebSocket (6–8 weeks)
 - [x] `flash-http` h1 server: `httparse` head parsing, own incremental chunked decoder (extensions, trailers, any split), pipelining with in-order responses (ordered slots), keep-alive/`Connection: close`/HTTP/1.0, `Expect: 100-continue`, limits (header size, body size, header count), smuggling guards (CL+TE, duplicate CL), `Context` with `detach()` for responses finished later from any thread, graceful shutdown that lets in-flight responses finish. Tested on epoll and io_uring
-- [ ] h1 not done: streaming request/response bodies (bodies are buffered within limits), `sendfile`, HTTP/1 over TLS tests (the `Tls` wrapper composes, untested here), percent-decoding of paths and params
+- [x] Streaming: request bodies via `Streaming(svc)` + `ctx.on_body` (chunks, trailers, no size limit), response bodies via `ctx.stream_response` (chunked / close-delimited, ordered behind earlier pipelined responses); `sendfile(2)` for file bodies (read through memory over TLS); core support: `ResponseStream`, `Part::File`
+- [ ] h1 not done: HTTP/1 over TLS tests (the `Tls` wrapper composes, untested here), percent-decoding of route parameters (`percent_decode` is provided)
 - [x] Router: static > `:param` > `*wildcard`, backtracking, 405 with `Allow`, HEAD from GET, `nest`, per-router layers, custom fallback; duplicate/conflicting routes panic at registration
 - [ ] Router not done: regexp parameters, allocation-free routing (it allocates a `Vec` and `String`s per request) and its benchmark
 - [x] Middleware: recover, request id, CORS (preflight), access logger
-- [ ] Middleware not done: responsetime, compress, csrf, etag, limiter
-- [ ] Static file cache (pre-compressed `.br/.gz`, inotify-based change tracking)
-- [ ] `flash-ws`: RFC 6455 + permessage-deflate, `PreparedMessage` broadcast, Autobahn in CI
+- [x] Middleware: response time, compress (gzip/deflate), etag + 304, csrf (double-submit cookie), per-IP token-bucket limiter. Brotli is not offered (no brotli dependency yet)
+- [x] Static files (`files::Files`): path safety, MIME, ETag/Last-Modified/304, single ranges, index files, pre-compressed `.br`/`.gz` twins, in-memory cache with a stat interval, `sendfile` for big files. inotify-based change tracking is not done (stat interval instead)
+- [x] `flash-ws`: RFC 6455 + permessage-deflate (context takeover, server window bits), `PreparedMessage` broadcast, subprotocols, origin check, close handshake; Autobahn|Testsuite: 298 OK + 3 informational (core), 216/216 OK (permessage-deflate), run in CI by `tools/autobahn/run.sh`. A miniz_oxide deflate bug found by Autobahn (flate2 now uses zlib-rs)
 - [ ] HTTP/1 async client (callback and future result channels)
 - [ ] HTTP/1 comparison report vs hyper and fib (plaintext, pipelined, json)
 - **Deliverable**: `examples/http`, `examples/ws-chat`

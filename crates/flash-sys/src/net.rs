@@ -150,3 +150,42 @@ pub fn connect_nonblocking(addr: SocketAddr) -> io::Result<TcpStream> {
     }
     Ok(TcpStream::from(fd))
 }
+
+/// Sends up to `count` bytes of `file` starting at `offset` to the socket `out` without copying
+/// through user space. `Ok(n)` bytes were sent; `WouldBlock` when the socket is full.
+pub fn sendfile(out: RawFd, file: RawFd, offset: u64, count: usize) -> io::Result<usize> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut off = offset as libc::off_t;
+        // SAFETY: plain syscall; `off` outlives the call and is the only pointer passed.
+        let n = unsafe { libc::sendfile(out, file, &mut off, count) };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(n as usize)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut len = count as libc::off_t;
+        // SAFETY: plain syscall; `len` is read and written by the kernel and outlives the call.
+        let r = unsafe {
+            libc::sendfile(
+                file,
+                out,
+                offset as libc::off_t,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if r < 0 {
+            let e = io::Error::last_os_error();
+            // A full socket with part of the data already sent reports the progress in `len`.
+            if len > 0 && e.kind() == io::ErrorKind::WouldBlock {
+                return Ok(len as usize);
+            }
+            return Err(e);
+        }
+        Ok(len as usize)
+    }
+}

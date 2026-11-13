@@ -1,6 +1,6 @@
 //! Requests, responses, headers.
 
-use std::{net::SocketAddr, time::SystemTime};
+use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
 /// An HTTP request method.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -185,6 +185,21 @@ pub struct Response {
     pub headers: Headers,
     /// The body.
     pub body: Vec<u8>,
+    /// A file to send after the head instead of `body` (sent with `sendfile(2)` on plain TCP).
+    pub file: Option<FileBody>,
+    /// The body is streamed: no `Content-Length` is added.
+    pub(crate) streaming: bool,
+}
+
+/// A byte range of an open file used as a response body.
+#[derive(Clone, Debug)]
+pub struct FileBody {
+    /// The open file.
+    pub file: Arc<std::fs::File>,
+    /// First byte to send.
+    pub offset: u64,
+    /// Number of bytes to send.
+    pub len: u64,
 }
 
 impl Response {
@@ -194,7 +209,22 @@ impl Response {
             status,
             headers: Headers::new(),
             body: Vec::new(),
+            file: None,
+            streaming: false,
         }
+    }
+
+    /// A response whose body is `len` bytes of `file` from `offset`.
+    pub fn from_file(status: u16, content_type: &str, file: FileBody) -> Response {
+        let mut r = Response::new(status);
+        r.headers.set("Content-Type", content_type);
+        r.file = Some(file);
+        r
+    }
+
+    /// Body length, whichever way the body is held.
+    pub fn body_len(&self) -> u64 {
+        self.file.as_ref().map_or(self.body.len() as u64, |f| f.len)
     }
 
     /// A `text/plain; charset=utf-8` response.
@@ -237,8 +267,8 @@ impl Response {
             out.extend_from_slice(b"\r\n");
         }
         let bodyless = self.status < 200 || self.status == 204 || self.status == 304;
-        if self.headers.get("Content-Length").is_none() && !bodyless {
-            let _ = write!(out, "Content-Length: {}\r\n", self.body.len());
+        if self.headers.get("Content-Length").is_none() && !bodyless && !self.streaming {
+            let _ = write!(out, "Content-Length: {}\r\n", self.body_len());
         }
         if self.headers.get("Date").is_none() {
             out.extend_from_slice(b"Date: ");
@@ -319,7 +349,7 @@ fn http_date() -> String {
 }
 
 /// Formats seconds since the Unix epoch as `Sun, 06 Nov 1994 08:49:37 GMT`.
-pub(crate) fn format_http_date(secs: u64) -> String {
+pub fn format_http_date(secs: u64) -> String {
     const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -416,5 +446,38 @@ mod tests {
         assert!(s.contains("Connection: close\r\n"));
         assert!(s.contains("Content-Length: 2\r\n"));
         assert!(s.ends_with("\r\n\r\n"), "HEAD has no body");
+    }
+}
+
+/// Decodes `%XX` escapes (and nothing else, so `+` stays `+`). `None` if an escape is malformed
+/// or the result is not UTF-8.
+pub fn percent_decode(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = std::str::from_utf8(b.get(i + 1..i + 3)?).ok()?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+#[cfg(test)]
+mod percent_tests {
+    use super::*;
+
+    #[test]
+    fn percent_decoding() {
+        assert_eq!(percent_decode("a%20b%2Fc+d").as_deref(), Some("a b/c+d"));
+        assert_eq!(percent_decode("%E2%82%AC").as_deref(), Some("€"));
+        assert_eq!(percent_decode("100%"), None);
+        assert_eq!(percent_decode("%zz"), None);
+        assert_eq!(percent_decode("%ff"), None, "not UTF-8");
     }
 }

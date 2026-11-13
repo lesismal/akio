@@ -1,8 +1,9 @@
 //! The per-request [`Context`] and the [`Service`] / [`Middleware`] traits.
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc, time::Instant};
 
-use flash_core::ResponseSlot;
+use flash_core::{Part, ResponseSlot, ResponseStream};
+use flash_ws::{WsConfig, WsHandler, deflate::PmdParams};
 
 use crate::message::{Headers, Method, Request, Response, Version};
 
@@ -14,7 +15,46 @@ pub trait Service: Send + Sync + 'static {
     /// Handles `ctx`. It must either respond, or detach the context and respond later; if it
     /// does neither, the client gets a 500.
     fn call(&self, ctx: &mut Context);
+
+    /// How the request body should be delivered for `req` (whose head is complete and whose body
+    /// is not). The default buffers it (within `HttpConfig::max_body_bytes`) before `call`.
+    fn body_mode(&self, _req: &Request) -> BodyMode {
+        BodyMode::Buffered
+    }
 }
+
+/// How a request body reaches the service.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BodyMode {
+    /// Fully received (and size-limited) before `call`; the body is `ctx.body()`.
+    Buffered,
+    /// `call` runs as soon as the head is parsed; register [`Context::on_body`] to receive the
+    /// chunks as they arrive. No size limit applies: the sink decides what to do with the data.
+    Stream,
+}
+
+/// Marks a service as taking its request body as a stream; see [`BodyMode::Stream`].
+pub struct Streaming<S>(pub S);
+
+impl<S: Service> Service for Streaming<S> {
+    fn call(&self, ctx: &mut Context) {
+        self.0.call(ctx)
+    }
+    fn body_mode(&self, _req: &Request) -> BodyMode {
+        BodyMode::Stream
+    }
+}
+
+/// A piece of a streamed request body; see [`Context::on_body`].
+pub enum BodyEvent<'a> {
+    /// More body bytes.
+    Chunk(&'a [u8]),
+    /// The body is complete; chunked bodies may carry trailer fields.
+    End(&'a Headers),
+}
+
+type Sink = Box<dyn FnMut(&mut Context, BodyEvent<'_>) + Send>;
+type Filter = Box<dyn FnOnce(&mut Response, &Request) + Send>;
 
 impl<F> Service for F
 where
@@ -48,20 +88,56 @@ struct Responder {
     head_only: bool,
 }
 
-impl Responder {
-    fn send(self, mut resp: Response, extra: &Headers) -> u16 {
-        for (n, v) in extra.iter() {
+/// What is applied to a response on its way out.
+struct Finish {
+    extra: Headers,
+    filters: Vec<Filter>,
+    started: Instant,
+    time_header: Option<String>,
+    req: Arc<Request>,
+}
+
+impl Finish {
+    /// Runs the filters, then adds the extra headers the response did not set.
+    fn apply(&mut self, resp: &mut Response) {
+        for f in self.filters.drain(..) {
+            f(resp, &self.req);
+        }
+        for (n, v) in self.extra.iter() {
             if resp.headers.get(n).is_none() {
                 resp.headers.append(n, v);
             }
         }
+        if let Some(h) = &self.time_header {
+            resp.headers.set(
+                h.clone(),
+                format!("{:.3}ms", self.started.elapsed().as_secs_f64() * 1e3),
+            );
+        }
+    }
+}
+
+impl Responder {
+    fn send(self, mut resp: Response, fin: &mut Finish) -> u16 {
+        fin.apply(&mut resp);
         let status = resp.status;
-        let mut out = Vec::with_capacity(160 + resp.body.len());
-        resp.encode(self.version, self.keep_alive, self.head_only, &mut out);
-        if self.keep_alive {
-            self.slot.fill(out);
-        } else {
-            self.slot.fill_close(out);
+        let mut head = Vec::with_capacity(192 + resp.body.len());
+        resp.encode(self.version, self.keep_alive, self.head_only, &mut head);
+        let bodyless = status < 200 || status == 204 || status == 304;
+        match resp.file {
+            Some(f) if !self.head_only && !bodyless => self.slot.fill_parts(
+                vec![
+                    Part::Bytes(head),
+                    Part::File {
+                        file: f.file,
+                        offset: f.offset,
+                        len: f.len,
+                    },
+                ],
+                !self.keep_alive,
+            ),
+            _ if self.keep_alive => self.slot.fill(head),
+            _ => self.slot.fill_close(head),
         }
         status
     }
@@ -72,15 +148,38 @@ pub struct Context {
     req: Arc<Request>,
     params: Vec<(String, String)>,
     locals: Vec<(String, String)>,
-    extra: Headers,
+    fin: Finish,
     responder: Option<Responder>,
     status: Option<u16>,
     detached: bool,
+    upgrade: Option<PendingUpgrade>,
+    sink: Option<Sink>,
+}
+
+/// A WebSocket upgrade accepted by [`Context::upgrade_websocket`], applied by the session.
+pub(crate) struct PendingUpgrade {
+    pub handler: Box<dyn WsHandler>,
+    pub cfg: WsConfig,
+    pub pmd: Option<PmdParams>,
+}
+
+/// Options for [`Context::upgrade_websocket`].
+#[derive(Clone, Debug, Default)]
+pub struct WsOptions {
+    /// Message limits and compression.
+    pub config: WsConfig,
+    /// Subprotocols the server speaks, in no particular order; the client's first choice among
+    /// them is selected.
+    pub protocols: Vec<String>,
+    /// If set, a request with an `Origin` header is refused with 403 unless this returns true for
+    /// it. Requests without `Origin` (non-browser clients) are not affected.
+    pub origin_allowed: Option<fn(&str) -> bool>,
 }
 
 impl Context {
     pub(crate) fn new(req: Request, slot: ResponseSlot, keep_alive: bool) -> Context {
         let head_only = req.method == Method::Head;
+        let req = Arc::new(req);
         Context {
             responder: Some(Responder {
                 slot,
@@ -88,12 +187,20 @@ impl Context {
                 keep_alive,
                 head_only,
             }),
-            req: Arc::new(req),
+            fin: Finish {
+                extra: Headers::new(),
+                filters: Vec::new(),
+                started: Instant::now(),
+                time_header: None,
+                req: req.clone(),
+            },
+            req,
             params: Vec::new(),
             locals: Vec::new(),
-            extra: Headers::new(),
             status: None,
             detached: false,
+            upgrade: None,
+            sink: None,
         }
     }
 
@@ -156,7 +263,37 @@ impl Context {
     /// Adds a header to the response, whenever and however it is sent, unless the response sets
     /// that header itself.
     pub fn add_response_header(&mut self, name: &str, value: impl Into<String>) {
-        self.extra.set(name, value);
+        self.fin.extra.set(name, value);
+    }
+
+    /// Registers a function that edits the response just before it is sent (compression, ETags).
+    /// Filters run in registration order, on the thread that sends the response.
+    pub fn add_response_filter(
+        &mut self,
+        f: impl FnOnce(&mut Response, &Request) + Send + 'static,
+    ) {
+        self.fin.filters.push(Box::new(f));
+    }
+
+    /// Adds `header: <elapsed>ms` (time since the request was dispatched) to the response.
+    pub fn set_response_time_header(&mut self, header: &str) {
+        self.fin.time_header = Some(header.to_owned());
+    }
+
+    /// Receives a streamed request body (see [`BodyMode::Stream`]). The sink is called with each
+    /// chunk and finally with `End`; it may respond (early, too) or detach the context.
+    pub fn on_body(&mut self, f: impl FnMut(&mut Context, BodyEvent<'_>) + Send + 'static) {
+        self.sink = Some(Box::new(f));
+    }
+
+    /// Delivers a body event to the sink, if any.
+    pub(crate) fn deliver(&mut self, ev: BodyEvent<'_>) {
+        if let Some(mut sink) = self.sink.take() {
+            sink(self, ev);
+            if self.sink.is_none() {
+                self.sink = Some(sink);
+            }
+        }
     }
 
     /// Whether a response has been sent (or the context detached).
@@ -172,7 +309,7 @@ impl Context {
     /// Sends `resp`. Only the first response counts; later calls are ignored.
     pub fn respond(&mut self, resp: Response) {
         if let Some(r) = self.responder.take() {
-            self.status = Some(r.send(resp, &self.extra));
+            self.status = Some(r.send(resp, &mut self.fin));
         }
     }
 
@@ -195,9 +332,118 @@ impl Context {
         Some(Detached {
             req: self.req.clone(),
             params: std::mem::take(&mut self.params),
-            extra: self.extra.clone(),
+            fin: Finish {
+                extra: std::mem::take(&mut self.fin.extra),
+                filters: std::mem::take(&mut self.fin.filters),
+                started: self.fin.started,
+                time_header: self.fin.time_header.take(),
+                req: self.req.clone(),
+            },
             responder,
         })
+    }
+
+    /// Starts a response whose body is produced piece by piece (server-sent events, large
+    /// generated downloads). `headers` are sent with the head; the framing is `chunked` on
+    /// keep-alive HTTP/1.1 and close-delimited otherwise. Response filters do not apply.
+    /// `None` if a response was already started. Write from any thread; dropping the stream
+    /// without [`BodyStream::finish`] closes the connection.
+    pub fn stream_response(&mut self, status: u16, headers: Headers) -> Option<BodyStream> {
+        let r = self.responder.take()?;
+        self.detached = true;
+        self.status = Some(status);
+        let chunked = r.version == Version::Http11 && r.keep_alive;
+        let mut resp = Response::new(status);
+        resp.headers = headers;
+        resp.streaming = true;
+        if chunked {
+            resp.headers.set("Transfer-Encoding", "chunked");
+        }
+        self.fin.apply(&mut resp);
+        let mut head = Vec::with_capacity(192);
+        resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
+        Some(BodyStream {
+            stream: r.slot.stream(head),
+            chunked,
+            keep_alive: r.keep_alive,
+            head_only: r.head_only,
+        })
+    }
+
+    /// Turns this request into a WebSocket connection served by `handler`.
+    ///
+    /// Validates the handshake (`GET`, HTTP/1.1, `Upgrade`/`Connection` tokens, version 13, a
+    /// well-formed key, the origin policy), answers `101 Switching Protocols` and switches the
+    /// connection to WebSocket; the handler's `on_open` runs right away. Returns `false` after
+    /// answering a bad handshake itself (400, 403 or 426), in which case the connection stays
+    /// HTTP. Do not pipeline requests behind an upgrade request.
+    pub fn upgrade_websocket(&mut self, handler: impl WsHandler, opts: &WsOptions) -> bool {
+        if self.responder.is_none() {
+            return false;
+        }
+        let r = self.req.clone();
+        let h = &r.headers;
+        if r.method != Method::Get || r.version != Version::Http11 {
+            self.text(400, "WebSocket upgrade needs GET over HTTP/1.1");
+            return false;
+        }
+        if !h.has_token("connection", "upgrade") || !h.has_token("upgrade", "websocket") {
+            self.text(400, "missing Upgrade: websocket");
+            return false;
+        }
+        if h.get("sec-websocket-version") != Some("13") {
+            self.respond(
+                Response::text(426, "unsupported WebSocket version")
+                    .header("Sec-WebSocket-Version", "13"),
+            );
+            return false;
+        }
+        let Some(key) = h
+            .get("sec-websocket-key")
+            .filter(|k| flash_ws::valid_key(k))
+        else {
+            self.text(400, "bad Sec-WebSocket-Key");
+            return false;
+        };
+        if let (Some(allowed), Some(origin)) = (opts.origin_allowed, h.get("origin")) {
+            if !allowed(origin) {
+                self.text(403, "origin not allowed");
+                return false;
+            }
+        }
+        let mut resp = Response::new(101)
+            .header("Upgrade", "websocket")
+            .header("Connection", "Upgrade")
+            .header("Sec-WebSocket-Accept", flash_ws::accept_key(key));
+        if let Some(p) =
+            flash_ws::select_subprotocol(h.get_all("sec-websocket-protocol"), &opts.protocols)
+        {
+            resp = resp.header("Sec-WebSocket-Protocol", p);
+        }
+        let mut pmd = None;
+        if opts.config.permessage_deflate {
+            if let Some((params, header)) =
+                flash_ws::deflate::negotiate(h.get_all("sec-websocket-extensions"))
+            {
+                resp = resp.header("Sec-WebSocket-Extensions", header);
+                pmd = Some(params);
+            }
+        }
+        // The connection continues as WebSocket whatever the request said about keep-alive.
+        if let Some(r) = self.responder.as_mut() {
+            r.keep_alive = true;
+        }
+        self.respond(resp);
+        self.upgrade = Some(PendingUpgrade {
+            handler: Box::new(handler),
+            cfg: opts.config.clone(),
+            pmd,
+        });
+        true
+    }
+
+    pub(crate) fn take_upgrade(&mut self) -> Option<PendingUpgrade> {
+        self.upgrade.take()
     }
 
     /// Whether [`detach`](Self::detach) was called.
@@ -211,7 +457,7 @@ impl Context {
 pub struct Detached {
     req: Arc<Request>,
     params: Vec<(String, String)>,
-    extra: Headers,
+    fin: Finish,
     responder: Responder,
 }
 
@@ -230,7 +476,46 @@ impl Detached {
     }
 
     /// Sends the response. Safe from any thread.
-    pub fn respond(self, resp: Response) {
-        self.responder.send(resp, &self.extra);
+    pub fn respond(mut self, resp: Response) {
+        self.responder.send(resp, &mut self.fin);
+    }
+}
+
+/// A response body being written in pieces; see [`Context::stream_response`].
+pub struct BodyStream {
+    stream: ResponseStream,
+    chunked: bool,
+    keep_alive: bool,
+    head_only: bool,
+}
+
+impl BodyStream {
+    /// Appends body bytes. `Err` means the connection is gone or too far behind: stop producing.
+    pub fn write(&self, data: &[u8]) -> flash_core::Result<()> {
+        if data.is_empty() || self.head_only {
+            return Ok(());
+        }
+        let mut out = Vec::with_capacity(data.len() + 16);
+        if self.chunked {
+            out.extend_from_slice(format!("{:x}\r\n", data.len()).as_bytes());
+            out.extend_from_slice(data);
+            out.extend_from_slice(b"\r\n");
+        } else {
+            out.extend_from_slice(data);
+        }
+        self.stream.write(out)
+    }
+
+    /// Bytes written but not yet on the wire, for pacing the producer.
+    pub fn queued_bytes(&self) -> usize {
+        self.stream.queued_bytes()
+    }
+
+    /// Completes the body (the final chunk) and lets later responses go out.
+    pub fn finish(self) {
+        if self.chunked && !self.head_only {
+            let _ = self.stream.write(b"0\r\n\r\n".to_vec());
+        }
+        self.stream.finish(!self.keep_alive);
     }
 }

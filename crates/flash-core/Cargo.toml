@@ -11,6 +11,9 @@ rust-version.workspace = true
 flash-buf = { path = "../flash-buf" }
 flash-pool = { path = "../flash-pool" }
 
+[target.'cfg(unix)'.dependencies]
+flash-sys = { path = "../flash-sys" }
+
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
 

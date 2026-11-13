@@ -1,0 +1,18 @@
+[package]
+name = "flash-ws"
+description = "flash network library: WebSocket (RFC 6455)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash-core = { path = "../flash-core" }
+flash-buf = { path = "../flash-buf" }
+sha1 = "0.10"
+base64 = "0.22"
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+
+[lints]
+workspace = true

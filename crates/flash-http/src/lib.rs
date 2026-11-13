@@ -26,17 +26,24 @@
 //! engine.run().unwrap();
 //! ```
 //!
+//! WebSocket: [`Context::upgrade_websocket`] switches a request to a `flash_ws::WsHandler` (re-exported
+//! as [`ws`]), with subprotocols, an origin check and `permessage-deflate`.
+//!
 //! Not yet implemented: streaming request/response bodies (bodies are buffered, within limits),
-//! `sendfile`/static files, regexp route parameters, an HTTP client, WebSocket upgrade.
+//! `sendfile`/static files, regexp route parameters, an HTTP client.
 
 mod context;
+pub mod files;
 pub mod message;
 pub mod middleware;
 mod parse;
 mod router;
 mod session;
 
-pub use context::{Context, Detached, Middleware, Service};
-pub use message::{Headers, Method, Request, Response, Version};
+pub use context::{
+    BodyEvent, BodyMode, BodyStream, Context, Detached, Middleware, Service, Streaming, WsOptions,
+};
+pub use flash_ws as ws;
+pub use message::{FileBody, Headers, Method, Request, Response, Version};
 pub use router::Router;
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};

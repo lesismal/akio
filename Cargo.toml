@@ -10,6 +10,7 @@ members = [
     "crates/flash-uring",
     "crates/flash-tls",
     "crates/flash-http",
+    "crates/flash-ws",
     "crates/flash",
     "tools/echo-bench",
 ]

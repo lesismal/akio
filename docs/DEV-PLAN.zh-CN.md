@@ -119,13 +119,14 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### M3 HTTP/1 + WebSocket（6–8 周）
 - [x] `flash-http` h1 服务端：`httparse` 解析请求头，自写增量 chunked 解码器（扩展、trailers、任意切分），流水线且按序应答（有序槽），keep-alive/`Connection: close`/HTTP/1.0，`Expect: 100-continue`，限制（头大小、body 大小、头数量），防请求走私（CL+TE、重复 CL），`Context` 支持 `detach()` 之后在任意线程完成应答，优雅关闭时让在途应答先完成。已在 epoll 与 io_uring 上测试
-- [ ] h1 未完成：流式请求/响应 body（目前整体缓冲，受限制约束）、`sendfile`、HTTP/1 over TLS 的测试（`Tls` 包装可组合，但这里没测）、路径与参数的百分号解码
+- [x] 流式：请求 body 通过 `Streaming(svc)` + `ctx.on_body`（分块、trailers、无大小限制），响应 body 通过 `ctx.stream_response`（chunked / 以关闭为界，排在更早的流水线响应之后）；文件 body 用 `sendfile(2)`（TLS 下经内存读取）；核心支持：`ResponseStream`、`Part::File`
+- [ ] h1 未完成：HTTP/1 over TLS 的测试（`Tls` 包装可组合，但这里没测）、路由参数的百分号解码（已提供 `percent_decode`）
 - [x] Router：静态 > `:param` > `*通配`，带回溯，405 与 `Allow`，HEAD 走 GET 路由，`nest`，每个 router 自己的 layer，自定义 fallback；重复/冲突路由在注册时 panic
 - [ ] Router 未完成：正则参数、零分配路由（目前每个请求分配一个 `Vec` 和若干 `String`）及其 benchmark
 - [x] 中间件：recover、request id、CORS（预检）、访问日志
-- [ ] 中间件未完成：responsetime、compress、csrf、etag、limiter
-- [ ] 静态文件缓存（预压缩 `.br/.gz`、inotify 跟随变更）
-- [ ] `flash-ws`：RFC 6455 + permessage-deflate、`PreparedMessage` 广播、Autobahn 进 CI
+- [x] 中间件：响应时间、compress（gzip/deflate）、etag + 304、csrf（双重提交 cookie）、按 IP 的令牌桶限流。尚未提供 brotli（还没引入 brotli 依赖）
+- [x] 静态文件（`files::Files`）：路径安全、MIME、ETag/Last-Modified/304、单段 Range、index 文件、预压缩 `.br`/`.gz` 同名文件、带 stat 间隔的内存缓存、大文件用 `sendfile`。基于 inotify 的变更跟踪未做（用 stat 间隔代替）
+- [x] `flash-ws`：RFC 6455 + permessage-deflate（context takeover、服务端窗口位数）、`PreparedMessage` 广播、子协议、Origin 检查、关闭握手；Autobahn|Testsuite：核心 298 项 OK + 3 项 informational，permessage-deflate 216/216 OK，由 `tools/autobahn/run.sh` 在 CI 中运行。Autobahn 发现了 miniz_oxide 的一个 deflate bug（flate2 现改用 zlib-rs）
 - [ ] HTTP/1 异步客户端（回调 / future 两种结果通道）
 - [ ] 与 hyper、fib 的 HTTP/1 对比报告（plaintext、pipelined、json）
 - **交付**：`examples/http`、`examples/ws-chat`

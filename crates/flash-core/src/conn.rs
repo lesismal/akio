@@ -45,6 +45,13 @@ pub(crate) type Completion<H> = Box<dyn FnOnce(&mut H, &Conn<H>) + Send>;
 enum Bytes {
     Owned(Vec<u8>),
     Shared(SharedBuf),
+    /// `len` bytes of `file` from `start`, sent with `sendfile(2)` (never copied into memory).
+    #[cfg(unix)]
+    File {
+        file: Arc<std::fs::File>,
+        start: u64,
+        len: u64,
+    },
 }
 
 struct Chunk {
@@ -57,6 +64,28 @@ impl Chunk {
         match &self.bytes {
             Bytes::Owned(v) => &v[self.off..],
             Bytes::Shared(s) => &s[self.off..],
+            #[cfg(unix)]
+            Bytes::File { .. } => &[],
+        }
+    }
+
+    /// Bytes still to send (file bytes included).
+    fn remaining(&self) -> usize {
+        match &self.bytes {
+            #[cfg(unix)]
+            Bytes::File { len, .. } => (*len as usize) - self.off,
+            _ => self.rest().len(),
+        }
+    }
+
+    fn is_file(&self) -> bool {
+        #[cfg(unix)]
+        {
+            matches!(self.bytes, Bytes::File { .. })
+        }
+        #[cfg(not(unix))]
+        {
+            false
         }
     }
 }
@@ -88,6 +117,8 @@ struct WriteState {
     transport: Option<Box<dyn Transport>>,
     queue: VecDeque<Chunk>,
     queued: usize,
+    /// Bytes of queued file chunks: they use no memory, so they are not in `queued`.
+    file_bytes: u64,
     corked: bool,
     close_after_send: bool,
 }
@@ -117,10 +148,15 @@ impl WriteState {
     }
 
     fn consume(&mut self, mut n: usize) {
-        self.queued -= n;
         while n > 0 {
             let front = self.queue.front_mut().expect("consumed more than queued");
-            let left = front.rest().len();
+            let left = front.remaining();
+            let step = n.min(left);
+            if front.is_file() {
+                self.file_bytes -= step as u64;
+            } else {
+                self.queued -= step;
+            }
             if n < left {
                 front.off += n;
                 return;
@@ -143,17 +179,49 @@ impl WriteState {
             }
         }
         self.queued = 0;
+        self.file_bytes = 0;
     }
+}
+
+/// One piece of a response written in order (see [`ResponseSlot::fill_parts`]).
+pub enum Part {
+    /// Bytes to send.
+    Bytes(Vec<u8>),
+    /// `len` bytes of a file from `offset`, sent with `sendfile(2)` where the transport allows.
+    #[cfg(unix)]
+    File {
+        /// The open file.
+        file: Arc<std::fs::File>,
+        /// First byte to send.
+        offset: u64,
+        /// Number of bytes to send.
+        len: u64,
+    },
+}
+
+/// A response position that is open for writing: head-of-line responses are streamed.
+struct Stream {
+    /// Output held back until every earlier response has been written.
+    pending: Vec<u8>,
+    live: bool,
+    finished: bool,
+    close: bool,
+}
+
+enum Entry {
+    Empty,
+    /// Complete; the flag closes the connection once it and everything before is out.
+    Ready(Vec<Part>, bool),
+    Stream(Stream),
 }
 
 /// Responses reserved in request order, possibly filled out of order (see [`ResponseSlot`]).
 #[derive(Default)]
 struct Ordered {
-    /// Sequence number of `ready[0]`.
+    /// Sequence number of `entries[0]`.
     head: u64,
     next: u64,
-    /// `(bytes, close_after)`: the connection ends once these bytes (and all before) are out.
-    ready: VecDeque<Option<(Vec<u8>, bool)>>,
+    entries: VecDeque<Entry>,
 }
 
 /// The socket under a connection: its own TCP stream, or a peer on a shared UDP socket.
@@ -284,7 +352,8 @@ impl ConnInner {
     }
 
     pub fn queued_bytes(&self) -> usize {
-        self.lock().queued
+        let w = self.lock();
+        w.queued + w.file_bytes as usize
     }
 
     /// True once `close_after_send` was requested.
@@ -355,10 +424,33 @@ impl ConnInner {
             return Ok(true);
         }
         while !w.queue.is_empty() {
+            #[cfg(unix)]
+            if let Some(Chunk {
+                bytes: Bytes::File { file, start, len },
+                off,
+            }) = w.queue.front()
+            {
+                use std::os::fd::AsRawFd;
+                let out = self.tcp().as_raw_fd();
+                let (pos, left) = (start + *off as u64, (*len as usize) - *off);
+                match flash_sys::sendfile(out, file.as_raw_fd(), pos, left) {
+                    Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()), // file shrank
+                    Ok(n) => {
+                        w.consume(n);
+                        continue;
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) => return Err(e),
+                }
+            }
             let n = {
                 let mut iov: [IoSlice<'_>; MAX_IOV] = [IoSlice::new(&[]); MAX_IOV];
                 let mut k = 0;
                 for (slot, c) in iov.iter_mut().zip(w.queue.iter()) {
+                    if c.is_file() {
+                        break; // the file goes out with sendfile once the bytes before it did
+                    }
                     *slot = IoSlice::new(c.rest());
                     k += 1;
                 }
@@ -517,6 +609,8 @@ impl ConnInner {
         w.queued += match &bytes {
             Bytes::Owned(v) => v.len(),
             Bytes::Shared(s) => s.len(),
+            #[cfg(unix)]
+            Bytes::File { .. } => 0,
         };
         w.queue.push_back(Chunk { bytes, off: 0 });
         let need_wake = was_empty && !w.corked;
@@ -589,27 +683,168 @@ impl ConnInner {
     /// Reserves the next response position. Call in request order (on the I/O thread).
     pub fn reserve(&self) -> u64 {
         let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
-        o.ready.push_back(None);
+        o.entries.push_back(Entry::Empty);
         o.next += 1;
         o.next - 1
     }
 
     /// Fills reserved position `seq`; everything now contiguous from the front is sent in order.
     pub fn fill(&self, seq: u64, data: Vec<u8>, close_after: bool) {
+        self.fill_parts(seq, vec![Part::Bytes(data)], close_after);
+    }
+
+    /// Like [`fill`](Self::fill) with several parts, some of which may be files.
+    pub fn fill_parts(&self, seq: u64, parts: Vec<Part>, close_after: bool) {
         let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
         let i = (seq - o.head) as usize;
-        o.ready[i] = Some((data, close_after));
-        // The lock is held across the sends: two threads finishing neighbouring slots must not
-        // interleave their writes.
-        while let Some(Some(_)) = o.ready.front() {
-            if let Some(Some((d, close_after))) = o.ready.pop_front() {
-                o.head += 1;
-                let _ = self.send_owned(d);
-                if close_after {
-                    self.close_after_send();
+        o.entries[i] = Entry::Ready(parts, close_after);
+        self.advance(&mut o);
+    }
+
+    /// Opens position `seq` for streaming with `head` as its first bytes.
+    pub fn stream_open(&self, seq: u64, head: Vec<u8>) {
+        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let i = (seq - o.head) as usize;
+        o.entries[i] = Entry::Stream(Stream {
+            pending: head,
+            live: false,
+            finished: false,
+            close: false,
+        });
+        self.advance(&mut o);
+    }
+
+    /// Writes to a streaming position. Written straight to the socket when it is first in line,
+    /// held in memory (up to `max_queued_bytes`) until earlier responses are out otherwise.
+    pub fn stream_write(&self, seq: u64, data: Vec<u8>) -> Result<()> {
+        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let i = (seq - o.head) as usize;
+        let max = self.cfg.max_queued_bytes;
+        match o.entries.get_mut(i) {
+            Some(Entry::Stream(s)) if !s.finished => {
+                if i == 0 && s.live {
+                    return self.send_owned(data);
                 }
+                if s.pending.len() + data.len() > max {
+                    return Err(Error::Overloaded);
+                }
+                s.pending.extend_from_slice(&data);
+                Ok(())
+            }
+            _ => Err(Error::Closed),
+        }
+    }
+
+    /// Ends a streaming position; later responses may go out.
+    pub fn stream_finish(&self, seq: u64, close_after: bool) {
+        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let i = (seq - o.head) as usize;
+        if let Some(Entry::Stream(s)) = o.entries.get_mut(i) {
+            s.finished = true;
+            s.close = close_after;
+        }
+        self.advance(&mut o);
+    }
+
+    /// Sends everything that is now first in line. The lock is held across the sends: threads
+    /// finishing neighbouring positions must not interleave their writes.
+    fn advance(&self, o: &mut Ordered) {
+        loop {
+            match o.entries.front_mut() {
+                Some(Entry::Ready(..)) => {
+                    let Some(Entry::Ready(parts, close_after)) = o.entries.pop_front() else {
+                        unreachable!()
+                    };
+                    o.head += 1;
+                    for p in parts {
+                        let _ = self.send_part(p);
+                    }
+                    if close_after {
+                        self.close_after_send();
+                    }
+                }
+                Some(Entry::Stream(s)) => {
+                    if !s.live {
+                        s.live = true;
+                        if !s.pending.is_empty() {
+                            let d = std::mem::take(&mut s.pending);
+                            let _ = self.send_owned(d);
+                        }
+                    }
+                    if !s.finished {
+                        return; // later responses wait for this stream to end
+                    }
+                    let close = s.close;
+                    o.entries.pop_front();
+                    o.head += 1;
+                    if close {
+                        self.close_after_send();
+                    }
+                }
+                _ => return,
             }
         }
+    }
+
+    fn send_part(&self, p: Part) -> Result<()> {
+        match p {
+            Part::Bytes(b) => self.send_owned(b),
+            #[cfg(unix)]
+            Part::File { file, offset, len } => self.send_file(file, offset, len),
+        }
+    }
+
+    /// Queues `len` bytes of `file` from `offset` to be sent with `sendfile(2)` (read through
+    /// memory when the connection has a transport such as TLS). Not for UDP.
+    #[cfg(unix)]
+    pub fn send_file(&self, file: Arc<std::fs::File>, offset: u64, len: u64) -> Result<()> {
+        use std::os::unix::fs::FileExt;
+        if len == 0 {
+            return Ok(());
+        }
+        if matches!(self.sock, Sock::Udp { .. }) {
+            return Err(Error::Io(io::ErrorKind::Unsupported.into()));
+        }
+        if self.has_transport() {
+            // Records must be sealed: pass the file through memory in blocks.
+            let (mut pos, mut left) = (offset, len);
+            while left > 0 {
+                let mut buf = vec![0u8; left.min(64 << 10) as usize];
+                let n = file.read_at(&mut buf, pos).map_err(Error::Io)?;
+                if n == 0 {
+                    return Err(Error::Io(io::ErrorKind::UnexpectedEof.into()));
+                }
+                buf.truncate(n);
+                self.send_owned(buf)?;
+                pos += n as u64;
+                left -= n as u64;
+            }
+            return Ok(());
+        }
+        let mut w = self.lock();
+        self.check_sendable(&w, 0)?;
+        let was_empty = w.queue.is_empty();
+        w.file_bytes += len;
+        w.queue.push_back(Chunk {
+            bytes: Bytes::File {
+                file,
+                start: offset,
+                len,
+            },
+            off: 0,
+        });
+        if !w.corked {
+            if let Err(e) = self.write_locked(&mut w) {
+                drop(w);
+                return Err(self.fail(e));
+            }
+        }
+        let need_wake = was_empty && !w.corked;
+        drop(w);
+        if need_wake {
+            self.link.wake_conn(self.id);
+        }
+        Ok(())
     }
 
     /// Installs the transport layer. Call once, before any data flows.
@@ -778,6 +1013,13 @@ impl<H> Conn<H> {
         self.inner.hold_reads(hold)
     }
 
+    /// The type-erased connection state, for protocol crates that outlive the handler type
+    /// (a WebSocket session keeps sending after the HTTP handler it started from is gone).
+    #[doc(hidden)]
+    pub fn inner(&self) -> &Arc<ConnInner> {
+        &self.inner
+    }
+
     /// Runs `f` on the connection's [`Transport`] (e.g. to read TLS details), if it has one.
     pub fn with_transport<R>(&self, f: impl FnOnce(&mut dyn Transport) -> R) -> Option<R> {
         self.inner.with_transport(f)
@@ -847,6 +1089,62 @@ impl ResponseSlot {
     pub fn fill_close(mut self, data: Vec<u8>) {
         if let Some(inner) = self.inner.take() {
             inner.fill(self.seq, data, true);
+        }
+    }
+
+    /// Supplies the response as several parts (bytes and files), optionally closing after them.
+    pub fn fill_parts(mut self, parts: Vec<Part>, close_after: bool) {
+        if let Some(inner) = self.inner.take() {
+            inner.fill_parts(self.seq, parts, close_after);
+        }
+    }
+
+    /// Starts a streamed response: `head` goes out when this position is first in line, then
+    /// [`ResponseStream::write`] appends as the body is produced.
+    pub fn stream(mut self, head: Vec<u8>) -> ResponseStream {
+        let inner = self.inner.take().expect("slot not yet used");
+        inner.stream_open(self.seq, head);
+        ResponseStream {
+            inner: Some(inner),
+            seq: self.seq,
+        }
+    }
+}
+
+/// A response being written piece by piece; see [`ResponseSlot::stream`]. Dropping it without
+/// [`finish`](Self::finish) closes the connection (the framing cannot be completed).
+pub struct ResponseStream {
+    inner: Option<Arc<ConnInner>>,
+    seq: u64,
+}
+
+impl ResponseStream {
+    /// Appends bytes. Fails with `Overloaded` when too much is held back or queued, and `Closed`
+    /// when the connection is gone: stop producing then.
+    pub fn write(&self, data: Vec<u8>) -> Result<()> {
+        match &self.inner {
+            Some(i) => i.stream_write(self.seq, data),
+            None => Err(Error::Closed),
+        }
+    }
+
+    /// Bytes accepted but not yet written to the socket, for pacing the producer.
+    pub fn queued_bytes(&self) -> usize {
+        self.inner.as_ref().map_or(0, |i| i.queued_bytes())
+    }
+
+    /// Ends the response; later pipelined responses may go out.
+    pub fn finish(mut self, close_after: bool) {
+        if let Some(i) = self.inner.take() {
+            i.stream_finish(self.seq, close_after);
+        }
+    }
+}
+
+impl Drop for ResponseStream {
+    fn drop(&mut self) {
+        if let Some(i) = self.inner.take() {
+            i.stream_finish(self.seq, true);
         }
     }
 }
