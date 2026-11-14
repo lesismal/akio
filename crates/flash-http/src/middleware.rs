@@ -1,4 +1,5 @@
-//! Ready-made [`Middleware`](crate::Middleware): recover, request id, CORS, access log.
+//! Ready-made [`Middleware`]: recover, request id, CORS, logger, response time, compress, ETag,
+//! CSRF and a per-IP rate limiter. Metrics and the structured access log are in [`crate::observe`].
 
 use std::{
     collections::HashMap,

@@ -21,6 +21,9 @@
 //!
 //! Not implemented: server push, a QPACK dynamic table, extended CONNECT (WebSocket over
 //! HTTP/3), streamed request bodies.
+//!
+//! Guide: [QUIC and HTTP/3](https://lesismal.github.io/flash/en/protocols/quic-h3.html)
+//! (中文: [QUIC 与 HTTP/3](https://lesismal.github.io/flash/zh-CN/protocols/quic-h3.html)).
 
 mod client;
 mod frame;

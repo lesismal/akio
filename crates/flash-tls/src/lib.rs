@@ -23,6 +23,9 @@
 //! let acceptor = Tls::server(Arc::new(cfg), flash_core::fn_acceptor(|_c: &flash_core::Conn<Echo>| Echo));
 //! # let _ = acceptor;
 //! ```
+//!
+//! Guide: [TLS](https://lesismal.github.io/flash/en/protocols/tls.html)
+//! (中文: [TLS](https://lesismal.github.io/flash/zh-CN/protocols/tls.html)).
 
 use std::{
     any::Any,

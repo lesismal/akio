@@ -8,11 +8,15 @@
 //!   a `REUSEPORT_SOCKARRAY` (privileged) for CPU steering. Without either, the kernel's default
 //!   4-tuple hash stays in place. The facade wires this to `Listener::accel(Accel::Ebpf(..))`.
 //! * **sockmap relay** ([`Relay`]): splices two TCP sockets in the kernel (`SOCKHASH` +
-//!   `sk_skb` stream verdict) for proxies; privileged, Linux 5.13+.
+//!   `sk_skb` stream verdict) for proxies; privileged, and Linux 6.15+ by default (older
+//!   kernels can lose relayed data, see [`relay::MIN_KERNEL`]).
 //!
 //! Programs are hand-assembled (a dozen instructions each) and loaded with raw `bpf(2)` calls,
 //! so building flash needs neither a BPF toolchain nor nightly Rust, and no `aya`/libbpf.
 //! Off Linux everything compiles and reports `Unsupported`.
+//!
+//! Guide: [eBPF steering](https://lesismal.github.io/flash/en/concepts/engine.html#acceleration-ebpf-steering)
+//! (中文: [eBPF 分流](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
 
 pub mod cbpf;
 mod ebpf;

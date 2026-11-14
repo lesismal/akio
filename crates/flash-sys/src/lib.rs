@@ -1,8 +1,12 @@
 //! Thin, audited `unsafe` wrappers over OS primitives: a readiness [`Poller`] (epoll on Linux,
 //! kqueue on macOS), a cross-thread [`Waker`], and socket helpers (`SO_REUSEPORT` listeners,
-//! non-blocking connect).
+//! non-blocking connect, `sendfile`) and, on Linux, batched datagram I/O (`recvmmsg` /
+//! `sendmmsg` with UDP GRO / GSO).
 //!
 //! All `unsafe` in the network stack's hot path lives here, each block with a `SAFETY:` note.
+//!
+//! Guide: [Architecture](https://lesismal.github.io/flash/en/architecture.html)
+//! (中文: [架构](https://lesismal.github.io/flash/zh-CN/architecture.html)).
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 mod net;

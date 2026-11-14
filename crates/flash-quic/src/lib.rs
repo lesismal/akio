@@ -33,6 +33,9 @@
 //!     .unwrap();
 //! engine.run().unwrap();
 //! ```
+//!
+//! Guide: [QUIC and HTTP/3](https://lesismal.github.io/flash/en/protocols/quic-h3.html)
+//! (中文: [QUIC 与 HTTP/3](https://lesismal.github.io/flash/zh-CN/protocols/quic-h3.html)).
 
 mod timer;
 
