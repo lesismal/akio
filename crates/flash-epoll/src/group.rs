@@ -8,7 +8,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use flash_core::{Config, DynAcceptor, Group, Pool};
+use flash_core::{Config, DynAcceptor, Group, LoopMeta, Pool};
 use flash_sys::Poller;
 
 use crate::reactor::{Cmd, Loop, LoopShared};
@@ -35,6 +35,7 @@ impl EpollGroup {
         pool: Arc<Pool>,
     ) -> io::Result<EpollGroup> {
         let threads = threads.max(1);
+        cfg.telemetry.bind(&cfg);
         let cfg = Arc::new(cfg);
 
         // One listener per loop (Linux, SO_REUSEPORT) or clones of one (elsewhere).
@@ -55,9 +56,15 @@ impl EpollGroup {
 
         let mut shared = Vec::with_capacity(threads);
         let mut loops = Vec::with_capacity(threads);
-        for l in listeners {
+        let listener = listen.as_ref().map(|_| addr);
+        for (thread, l) in listeners.into_iter().enumerate() {
             let poller = Poller::new()?;
-            let sh = LoopShared::new(&poller, pool.clone())?;
+            let meta = LoopMeta {
+                backend: crate::reactor::BACKEND,
+                listener,
+                thread,
+            };
+            let sh = LoopShared::new(&poller, pool.clone(), &cfg, meta)?;
             let acceptor = listen.as_ref().map(|(_, a)| a.clone());
             loops.push(Loop::new(poller, sh.clone(), l.zip(acceptor), cfg.clone())?);
             shared.push(sh);
@@ -84,6 +91,10 @@ impl Group for EpollGroup {
             return Ok(());
         }
         let loops = std::mem::take(&mut *self.pending.lock().unwrap());
+        // Running from now on: requests posted before a thread is first scheduled are queued.
+        for s in &self.shared {
+            s.stats.set_running(true);
+        }
         let mut handles = self.threads.lock().unwrap();
         for (i, mut l) in loops.into_iter().enumerate() {
             let h = std::thread::Builder::new()

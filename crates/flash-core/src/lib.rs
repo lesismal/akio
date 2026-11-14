@@ -14,6 +14,7 @@ mod error;
 mod group;
 mod handler;
 mod sync;
+pub mod telemetry;
 
 pub use config::{Config, SlowCallback, SlowHook};
 pub use conn::{Conn, ConnInner, LoopLink, Part, ResponseSlot, ResponseStream, Task, Transport};
@@ -21,3 +22,7 @@ pub use error::{Error, Result};
 pub use flash_pool::{Pool, PoolConfig, PoolStats};
 pub use group::Group;
 pub use handler::{Acceptor, DynAcceptor, DynHandler, FnAcceptor, Handler, fn_acceptor};
+pub use telemetry::{
+    ConnInfo, Live, LoopCounters, LoopMeta, LoopMetrics, LoopStats, Metrics, ReloadReport,
+    SlowRecord, Telemetry,
+};

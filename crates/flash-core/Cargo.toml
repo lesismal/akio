@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 flash-buf = { path = "../flash-buf" }
 flash-pool = { path = "../flash-pool" }
+log = { version = "0.4.21", features = ["kv"] }
 
 [target.'cfg(unix)'.dependencies]
 flash-sys = { path = "../flash-sys" }

@@ -8,7 +8,7 @@ use std::{
     thread::JoinHandle,
 };
 
-use flash_core::{Config, DynAcceptor, Group, Pool};
+use flash_core::{Config, DynAcceptor, Group, LoopMeta, Pool};
 use io_uring::opcode;
 
 use crate::reactor::{Cmd, Loop, LoopShared};
@@ -89,6 +89,7 @@ impl UringGroup {
         opts: UringOptions,
     ) -> io::Result<UringGroup> {
         let threads = threads.max(1);
+        cfg.telemetry.bind(&cfg);
         let cfg = Arc::new(cfg);
         let mut listeners: Vec<Option<TcpListener>> = (0..threads).map(|_| None).collect();
         let mut addr = SocketAddr::from(([0, 0, 0, 0], 0));
@@ -102,8 +103,14 @@ impl UringGroup {
         }
         let mut shared = Vec::with_capacity(threads);
         let mut loops = Vec::with_capacity(threads);
-        for l in listeners {
-            let sh = LoopShared::new(pool.clone())?;
+        let listener = listen.as_ref().map(|_| addr);
+        for (thread, l) in listeners.into_iter().enumerate() {
+            let meta = LoopMeta {
+                backend: "io_uring",
+                listener,
+                thread,
+            };
+            let sh = LoopShared::new(pool.clone(), &cfg, meta)?;
             let acceptor = listen.as_ref().map(|(_, a)| a.clone());
             loops.push(Loop::new(sh.clone(), l.zip(acceptor), cfg.clone(), &opts)?);
             shared.push(sh);
@@ -129,6 +136,10 @@ impl Group for UringGroup {
             return Ok(());
         }
         let loops = std::mem::take(&mut *self.pending.lock().unwrap());
+        // Running from now on: requests posted before a thread is first scheduled are queued.
+        for s in &self.shared {
+            s.stats.set_running(true);
+        }
         let mut handles = self.threads.lock().unwrap();
         for (i, mut l) in loops.into_iter().enumerate() {
             let h = std::thread::Builder::new()

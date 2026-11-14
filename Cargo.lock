@@ -217,6 +217,7 @@ dependencies = [
  "flash-tls",
  "flash-uring",
  "libc",
+ "log",
  "rcgen",
 ]
 
@@ -240,6 +241,7 @@ dependencies = [
  "flash-buf",
  "flash-pool",
  "flash-sys",
+ "log",
  "loom",
 ]
 
@@ -250,6 +252,7 @@ dependencies = [
  "flash-core",
  "flash-sys",
  "flash-timer",
+ "log",
 ]
 
 [[package]]
@@ -285,6 +288,7 @@ dependencies = [
  "flash-ws",
  "flate2",
  "httparse",
+ "log",
  "loona-hpack",
  "rcgen",
 ]
@@ -366,6 +370,7 @@ dependencies = [
  "flash-timer",
  "io-uring",
  "libc",
+ "log",
 ]
 
 [[package]]

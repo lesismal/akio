@@ -11,6 +11,7 @@ rust-version.workspace = true
 flash-core = { path = "../flash-core" }
 flash-sys = { path = "../flash-sys" }
 flash-timer = { path = "../flash-timer" }
+log = "0.4.21"
 
 [lints]
 workspace = true

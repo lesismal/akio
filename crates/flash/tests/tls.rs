@@ -368,3 +368,29 @@ fn a_single_large_send_over_tls() {
     assert!(all.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
     stop(&e);
 }
+
+#[test]
+fn failed_handshakes_are_counted_and_tls_shows_in_the_connection_table() {
+    let p = pki();
+    let e = echo_engine(&p, &[]);
+    let addr = e.local_addrs()[0];
+    // A good client: its row says "tls".
+    let mut good = tls_client(addr, client_cfg(&p.cert, &[]));
+    good.write_all(b"ok").unwrap();
+    let mut b = [0u8; 2];
+    good.read_exact(&mut b).unwrap();
+    let rows = e.connections(Duration::from_secs(5));
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].transport, Some("tls"));
+    // Plain HTTP to a TLS port: the handshake fails.
+    let mut bad = TcpStream::connect(addr).unwrap();
+    bad.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    bad.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut sink = Vec::new();
+    let _ = bad.read_to_end(&mut sink); // the alert, then EOF
+    let m = e.metrics();
+    assert_eq!(m.total.handshake_failures, 1);
+    assert_eq!(m.total.transport_errors, 0);
+    drop(good);
+    stop(&e);
+}

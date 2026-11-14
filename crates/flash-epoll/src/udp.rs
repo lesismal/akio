@@ -21,7 +21,10 @@ use std::{
     time::{Duration, Instant},
 };
 
-use flash_core::{Config, ConnInner, DynAcceptor, DynHandler, Error, Group, Pool, Task};
+use flash_core::{
+    Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, Group, LoopMeta, Pool, Task,
+    telemetry::LoopCmd,
+};
 use flash_sys::{Event, Poller};
 use flash_timer::{TimerId, Wheel};
 
@@ -47,6 +50,9 @@ struct Peer {
     addr: SocketAddr,
     last_active: u64,
     timer: Option<TimerId>,
+    /// Tick when it opened, and bytes received (connection table).
+    opened: u64,
+    bytes_in: u64,
 }
 
 struct UdpLoop {
@@ -131,6 +137,12 @@ impl UdpLoop {
     }
 
     fn run(&mut self) {
+        self.run_inner();
+        self.shared.stats.set_running(false);
+        drop(self.shared.take());
+    }
+
+    fn run_inner(&mut self) {
         crate::reactor::set_current_loop(&self.shared);
         let mut events: Vec<Event> = Vec::with_capacity(64);
         loop {
@@ -144,6 +156,8 @@ impl UdpLoop {
                 eprintln!("flash: poller error: {e}");
                 break;
             }
+            self.shared.stats.iterations.add_local(1);
+            self.shared.stats.events.add_local(events.len() as u64);
             for ev in &events {
                 match ev.token {
                     WAKER => self.shared.waker().drain(),
@@ -244,12 +258,14 @@ impl UdpLoop {
                 None => return,
             },
         };
-        let t0 = self.cfg.slow_callback_threshold.map(|_| Instant::now());
+        let t0 = self.cfg.telemetry.timing();
         let now = self.tick();
         let Some(p) = self.conns.get_mut(&id) else {
             return;
         };
         p.last_active = now;
+        p.bytes_in += data.len() as u64;
+        self.shared.stats.datagram_in(data.len());
         let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
         self.check_slow("on_data", id, t0);
         if r.is_err() {
@@ -259,6 +275,7 @@ impl UdpLoop {
 
     fn open(&mut self, peer: SocketAddr) -> Option<u64> {
         let (sock, local, acceptor) = (self.sock.clone()?, self.local?, self.acceptor.clone()?);
+        self.cfg.telemetry.conn_opened(false);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let inner = ConnInner::new_udp(
             id,
@@ -273,9 +290,11 @@ impl UdpLoop {
             Ok(h) => h,
             Err(_) => {
                 inner.mark_closed();
+                self.cfg.telemetry.conn_closed();
                 return None;
             }
         };
+        self.shared.stats.accepted.add_local(1);
         let now = self.tick();
         if self.wheel.is_empty() {
             self.wheel.advance(now, drop);
@@ -293,6 +312,8 @@ impl UdpLoop {
                 addr: peer,
                 last_active: now,
                 timer,
+                opened: now,
+                bytes_in: 0,
             },
         );
         // `on_open` may already have queued datagrams or closed the connection.
@@ -332,6 +353,8 @@ impl UdpLoop {
                 return;
             }
         };
+        self.cfg.telemetry.conn_opened(false);
+        self.shared.stats.dialed.add_local(1);
         let now = self.tick();
         if self.wheel.is_empty() {
             self.wheel.advance(now, drop);
@@ -348,6 +371,8 @@ impl UdpLoop {
                 addr: peer,
                 last_active: now,
                 timer,
+                opened: now,
+                bytes_in: 0,
             },
         );
         self.on_wake(id);
@@ -362,12 +387,14 @@ impl UdpLoop {
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
             match sock.recv(&mut buf) {
                 Ok(n) => {
-                    let t0 = self.cfg.slow_callback_threshold.map(|_| Instant::now());
+                    let t0 = self.cfg.telemetry.timing();
                     let now = self.tick();
                     let Some(p) = self.conns.get_mut(&id) else {
                         return;
                     };
                     p.last_active = now;
+                    p.bytes_in += n as u64;
+                    self.shared.stats.datagram_in(n);
                     let data = &buf[..n];
                     let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
                     self.check_slow("on_data", id, t0);
@@ -469,9 +496,11 @@ impl UdpLoop {
             self.wheel.cancel(t);
         }
         p.inner.mark_closed();
-        let t0 = self.cfg.slow_callback_threshold.map(|_| Instant::now());
+        let t0 = self.cfg.telemetry.timing();
         let _ = catch_unwind(AssertUnwindSafe(|| p.handler.on_close(err)));
         self.check_slow("on_close", id, t0);
+        self.shared.stats.closed.add_local(1);
+        self.cfg.telemetry.conn_closed();
         self.update_interest();
     }
 
@@ -487,6 +516,8 @@ impl UdpLoop {
                     Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
                     Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
+                    Cmd::Core(LoopCmd::Inspect(reply)) => reply(self.inspect()),
+                    Cmd::Core(LoopCmd::Reload) => {}
                     Cmd::DialUdp { sock, acceptor } => self.open_client(sock, acceptor),
                     Cmd::Dial { on_error, .. } => on_error(io::Error::new(
                         io::ErrorKind::Unsupported,
@@ -497,11 +528,37 @@ impl UdpLoop {
         }
     }
 
+    /// The connection table rows of this loop.
+    fn inspect(&self) -> Vec<ConnInfo> {
+        let now = self.tick();
+        self.conns
+            .iter()
+            .map(|(&id, p)| {
+                let (bytes_out, queued_bytes, transport, udp) = p.inner.debug_state();
+                ConnInfo {
+                    id,
+                    peer: p.addr,
+                    local: p.inner.local_addr(),
+                    owner: self.shared.stats.meta().clone(),
+                    age: Duration::from_millis(now.saturating_sub(p.opened)),
+                    idle: Duration::from_millis(now.saturating_sub(p.last_active)),
+                    bytes_in: p.bytes_in,
+                    bytes_out,
+                    queued_bytes,
+                    read_held: p.inner.read_held(),
+                    backpressure: false,
+                    transport,
+                    udp,
+                }
+            })
+            .collect()
+    }
+
     fn begin_shutdown(&mut self) {
         if self.draining.is_some() {
             return;
         }
-        self.draining = Some(Instant::now() + self.cfg.shutdown_timeout);
+        self.draining = Some(Instant::now() + self.cfg.telemetry.live().shutdown_timeout());
         if let Some(sock) = &self.sock {
             self.poller.delete(sock.as_raw_fd());
             // Re-add for writing only if something is still waiting for socket space.
@@ -526,7 +583,7 @@ impl UdpLoop {
     }
 
     fn on_task(&mut self, id: u64, task: Task) {
-        let t0 = self.cfg.slow_callback_threshold.map(|_| Instant::now());
+        let t0 = self.cfg.telemetry.timing();
         let Some(p) = self.conns.get_mut(&id) else {
             return; // peer dropped meanwhile: the completion is skipped
         };
@@ -550,6 +607,7 @@ impl UdpLoop {
             p.timer = None;
             let expires = p.last_active + idle;
             if expires <= now {
+                self.shared.stats.idle_timeouts.add_local(1);
                 let e = io::Error::new(io::ErrorKind::TimedOut, "idle timeout");
                 self.finalize(id, Some(Error::Io(e)));
             } else {
@@ -559,25 +617,9 @@ impl UdpLoop {
     }
 
     fn check_slow(&self, kind: &'static str, id: u64, started: Option<Instant>) {
-        let (Some(t0), Some(limit)) = (started, self.cfg.slow_callback_threshold) else {
-            return;
-        };
-        let elapsed = t0.elapsed();
-        if elapsed < limit {
-            return;
-        }
-        let rep = flash_core::SlowCallback {
-            kind,
-            conn_id: id,
-            elapsed,
-        };
-        match &self.cfg.slow_hook {
-            Some(h) => (h.0)(&rep),
-            None => eprintln!(
-                "flash: slow callback: {kind} on peer {id} blocked its I/O thread for \
-                 {elapsed:?} (limit {limit:?}); move blocking work to Conn::spawn_blocking"
-            ),
-        }
+        self.cfg
+            .telemetry
+            .callback_done(&self.shared.stats, kind, id, started);
     }
 }
 
@@ -606,6 +648,7 @@ impl UdpGroup {
             Some(_) if !cfg!(target_os = "linux") => 1,
             _ => threads.max(1),
         };
+        cfg.telemetry.bind(&cfg);
         let cfg = Arc::new(cfg);
         let mut bound = SocketAddr::from(([0, 0, 0, 0], 0));
         let mut socks: Vec<Option<(UdpSocket, Arc<dyn DynAcceptor>)>> =
@@ -620,9 +663,15 @@ impl UdpGroup {
         }
         let mut shared = Vec::new();
         let mut loops = Vec::new();
-        for server in socks {
+        let listener = (bound.port() != 0).then_some(bound);
+        for (thread, server) in socks.into_iter().enumerate() {
             let poller = Poller::new()?;
-            let sh = LoopShared::new(&poller, pool.clone())?;
+            let meta = LoopMeta {
+                backend: "udp",
+                listener,
+                thread,
+            };
+            let sh = LoopShared::new(&poller, pool.clone(), &cfg, meta)?;
             loops.push(UdpLoop::new(poller, sh.clone(), server, cfg.clone())?);
             shared.push(sh);
         }
@@ -647,6 +696,10 @@ impl Group for UdpGroup {
             return Ok(());
         }
         let loops = std::mem::take(&mut *self.pending.lock().unwrap());
+        // Running from now on: requests posted before a thread is first scheduled are queued.
+        for s in &self.shared {
+            s.stats.set_running(true);
+        }
         let mut handles = self.threads.lock().unwrap();
         for (i, mut l) in loops.into_iter().enumerate() {
             handles.push(
