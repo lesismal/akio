@@ -10,6 +10,24 @@ All notable changes to flash are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `flash-dpdk` (experimental, M6): a kernel-bypass backend. A userspace TCP/IP stack (smoltcp,
+  IPv4) runs on flash I/O threads over a DPDK port (EAL init from `EalConfig`, one rx/tx queue
+  pair and one thread per queue, mbuf rx/tx bursts, RSS with ARP fanned out between queues), a
+  Linux TAP interface, an AF_PACKET socket or an in-process `MemoryWire`. UDP listeners deliver one
+  datagram per `on_data` and TCP listeners a byte stream, with `dial` / `dial_udp`, backpressure,
+  idle timeouts, telemetry and graceful shutdown, so protocol crates (flash-kcp, ...) run
+  unchanged. Listeners on the same device share its stack and threads.
+- `flash`: cargo features `dpdk` (`Backend::Dpdk(DpdkConfig)`, re-export `flash::dpdk`) and
+  `dpdk-pmd` (also DPDK ports; links libdpdk found with pkg-config). Experimental: outside the
+  semver promise (docs/api-stability.md).
+- `flash-core` (backend-facing, `#[doc(hidden)]`): `ConnInner::new_virtual` and
+  `ConnInner::drain_output` for connections whose bytes a userspace stack moves.
+- `tools/dpdk/` (Dockerfile + `test.sh`) and the heavy CI job `dpdk`: builds against the
+  distribution's DPDK and runs UDP/TCP echo against the kernel stack over DPDK's `net_tap` PMD
+  (one and two queues), over smoltcp's TAP device and over AF_PACKET on a veth pair.
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 First release candidate of 1.0: the API is frozen for review. The public API of every crate is

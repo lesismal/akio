@@ -32,6 +32,12 @@ pub use flash_tls as tls;
 /// the in-kernel sockmap [`ebpf::Relay`] for proxies.
 pub use flash_ebpf as ebpf;
 
+/// Kernel bypass (experimental, cargo feature `dpdk`): configuration of [`Backend::Dpdk`], a
+/// userspace TCP/IP stack over DPDK ports (feature `dpdk-pmd`), TAP, AF_PACKET or in-memory
+/// devices.
+#[cfg(feature = "dpdk")]
+pub use flash_dpdk as dpdk;
+
 pub use flash_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, Error, FnAcceptor, Handler, Live, LoopCounters,
     LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, ResponseSlot,
@@ -52,6 +58,12 @@ pub enum Backend {
     /// io_uring (Linux 5.19+). Where the kernel lacks it the listener falls back to epoll, unless
     /// [`UringConfig::strict`] is set, in which case `build` fails with `Unsupported`.
     IoUring(UringConfig),
+    /// Kernel bypass (experimental, cargo feature `dpdk`): a userspace TCP/IP stack (smoltcp)
+    /// over a DPDK port, TAP, AF_PACKET or in-memory device; see [`dpdk`]. TCP and UDP
+    /// listeners, `dial` and `dial_udp` (IPv4). Listeners naming the same device share its
+    /// stack and I/O threads (one per queue), so `Listener::threads` does not apply.
+    #[cfg(feature = "dpdk")]
+    Dpdk(dpdk::DpdkConfig),
 }
 
 /// io_uring tuning. `#[non_exhaustive]`: start from `UringConfig::default()` and set fields.
@@ -262,6 +274,20 @@ impl EngineBuilder {
             let acceptor = l.acceptor.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
             })?;
+            #[cfg(feature = "dpdk")]
+            if let Backend::Dpdk(d) = &l.backend {
+                if l.udp {
+                    udp_last = Some(groups.len());
+                }
+                groups.push(Box::new(flash_dpdk::DpdkGroup::bind(
+                    Some((l.addr, acceptor)),
+                    l.udp,
+                    d,
+                    self.cfg.clone(),
+                    pool.clone(),
+                )?));
+                continue;
+            }
             if l.udp {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
@@ -294,6 +320,8 @@ impl EngineBuilder {
                     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                     return Err(unsupported("the epoll/kqueue backend on this platform"));
                 }
+                #[cfg(feature = "dpdk")]
+                Backend::Dpdk(_) => {} // served above
                 Backend::IoUring(u) => {
                     #[cfg(target_os = "linux")]
                     match flash_uring::probe() {

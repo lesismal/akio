@@ -24,7 +24,7 @@ fi
 # Publishable library crates (tools/ and fuzz/ are not published).
 all=(flash-sys flash-buf flash-timer flash-pool flash-core flash-epoll flash-uring flash-tls
     flash-http flash-ws flash-mux flash-socks flash-arpc flash-grpc flash-kcp flash-quic flash-h3
-    flash-ebpf flash)
+    flash-ebpf flash-dpdk flash)
 if [ "$#" -gt 0 ]; then
     crates=("$@")
 else

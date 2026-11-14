@@ -17,10 +17,18 @@ flash-core = { workspace = true }
 flash-epoll = { workspace = true }
 flash-ebpf = { workspace = true }
 flash-tls = { workspace = true }
+flash-dpdk = { workspace = true, optional = true }
 log = { version = "0.4.21", features = ["kv"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 flash-uring = { workspace = true }
+
+[features]
+# Experimental (outside the semver promise, docs/api-stability.md): `Backend::Dpdk`, the
+# userspace TCP/IP stack over TAP / AF_PACKET / in-memory devices.
+dpdk = ["dep:flash-dpdk"]
+# Also DPDK ports (`flash::dpdk::Device::Dpdk`): links libdpdk, found with pkg-config (Linux).
+dpdk-pmd = ["dpdk", "flash-dpdk/pmd"]
 
 [lints]
 workspace = true

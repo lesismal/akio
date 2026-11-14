@@ -1,0 +1,84 @@
+pub mod flash_dpdk
+#[non_exhaustive] pub enum flash_dpdk::Device
+pub flash_dpdk::Device::AfPacket(alloc::string::String)
+pub flash_dpdk::Device::Dpdk(flash_dpdk::EalConfig)
+pub flash_dpdk::Device::Memory(flash_dpdk::MemoryPort)
+pub flash_dpdk::Device::Tap(alloc::string::String)
+impl core::clone::Clone for flash_dpdk::Device
+pub fn flash_dpdk::Device::clone(&self) -> Self
+impl core::fmt::Debug for flash_dpdk::Device
+pub fn flash_dpdk::Device::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_dpdk::Device
+impl core::marker::Sync for flash_dpdk::Device
+impl core::marker::Unpin for flash_dpdk::Device
+impl core::panic::unwind_safe::RefUnwindSafe for flash_dpdk::Device
+impl core::panic::unwind_safe::UnwindSafe for flash_dpdk::Device
+#[non_exhaustive] pub struct flash_dpdk::DpdkConfig
+pub flash_dpdk::DpdkConfig::address: core::net::ip_addr::Ipv4Addr
+pub flash_dpdk::DpdkConfig::busy_poll: bool
+pub flash_dpdk::DpdkConfig::device: flash_dpdk::Device
+pub flash_dpdk::DpdkConfig::gateway: core::option::Option<core::net::ip_addr::Ipv4Addr>
+pub flash_dpdk::DpdkConfig::mac: core::option::Option<[u8; 6]>
+pub flash_dpdk::DpdkConfig::mtu: usize
+pub flash_dpdk::DpdkConfig::prefix_len: u8
+pub flash_dpdk::DpdkConfig::tcp_backlog: usize
+pub flash_dpdk::DpdkConfig::tcp_buffer: usize
+pub flash_dpdk::DpdkConfig::udp_buffer: usize
+impl flash_dpdk::DpdkConfig
+pub fn flash_dpdk::DpdkConfig::new(flash_dpdk::Device, core::net::ip_addr::Ipv4Addr) -> flash_dpdk::DpdkConfig
+impl core::clone::Clone for flash_dpdk::DpdkConfig
+pub fn flash_dpdk::DpdkConfig::clone(&self) -> Self
+impl core::fmt::Debug for flash_dpdk::DpdkConfig
+pub fn flash_dpdk::DpdkConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_dpdk::DpdkConfig
+impl core::marker::Sync for flash_dpdk::DpdkConfig
+impl core::marker::Unpin for flash_dpdk::DpdkConfig
+impl core::panic::unwind_safe::RefUnwindSafe for flash_dpdk::DpdkConfig
+impl core::panic::unwind_safe::UnwindSafe for flash_dpdk::DpdkConfig
+pub struct flash_dpdk::DpdkGroup
+impl flash_dpdk::DpdkGroup
+pub fn flash_dpdk::DpdkGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn flash_core::handler::DynAcceptor>)>, bool, &flash_dpdk::DpdkConfig, flash_core::config::Config, alloc::rcs::arc::Arc<flash_pool::Pool>) -> core::io::error::Result<flash_dpdk::DpdkGroup>
+impl core::fmt::Debug for flash_dpdk::DpdkGroup
+pub fn flash_dpdk::DpdkGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_dpdk::DpdkGroup
+impl core::marker::Sync for flash_dpdk::DpdkGroup
+impl core::marker::Unpin for flash_dpdk::DpdkGroup
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_dpdk::DpdkGroup
+impl !core::panic::unwind_safe::UnwindSafe for flash_dpdk::DpdkGroup
+#[non_exhaustive] pub struct flash_dpdk::EalConfig
+pub flash_dpdk::EalConfig::args: alloc::vec::Vec<alloc::string::String>
+pub flash_dpdk::EalConfig::descriptors: u16
+pub flash_dpdk::EalConfig::mbufs: u32
+pub flash_dpdk::EalConfig::port: alloc::string::String
+pub flash_dpdk::EalConfig::queues: u16
+impl core::clone::Clone for flash_dpdk::EalConfig
+pub fn flash_dpdk::EalConfig::clone(&self) -> Self
+impl core::default::Default for flash_dpdk::EalConfig
+pub fn flash_dpdk::EalConfig::default() -> Self
+impl core::fmt::Debug for flash_dpdk::EalConfig
+pub fn flash_dpdk::EalConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_dpdk::EalConfig
+impl core::marker::Sync for flash_dpdk::EalConfig
+impl core::marker::Unpin for flash_dpdk::EalConfig
+impl core::panic::unwind_safe::RefUnwindSafe for flash_dpdk::EalConfig
+impl core::panic::unwind_safe::UnwindSafe for flash_dpdk::EalConfig
+pub struct flash_dpdk::MemoryPort
+impl core::clone::Clone for flash_dpdk::MemoryPort
+pub fn flash_dpdk::MemoryPort::clone(&self) -> Self
+impl core::fmt::Debug for flash_dpdk::MemoryPort
+pub fn flash_dpdk::MemoryPort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_dpdk::MemoryPort
+impl core::marker::Sync for flash_dpdk::MemoryPort
+impl core::marker::Unpin for flash_dpdk::MemoryPort
+impl core::panic::unwind_safe::RefUnwindSafe for flash_dpdk::MemoryPort
+impl core::panic::unwind_safe::UnwindSafe for flash_dpdk::MemoryPort
+#[non_exhaustive] pub struct flash_dpdk::MemoryWire
+impl flash_dpdk::MemoryWire
+pub fn flash_dpdk::MemoryWire::new() -> (flash_dpdk::MemoryPort, flash_dpdk::MemoryPort)
+impl core::fmt::Debug for flash_dpdk::MemoryWire
+pub fn flash_dpdk::MemoryWire::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_dpdk::MemoryWire
+impl core::marker::Sync for flash_dpdk::MemoryWire
+impl core::marker::Unpin for flash_dpdk::MemoryWire
+impl core::panic::unwind_safe::RefUnwindSafe for flash_dpdk::MemoryWire
+impl core::panic::unwind_safe::UnwindSafe for flash_dpdk::MemoryWire

@@ -39,6 +39,7 @@ different handler types, backends and thread counts can live in one engine.
 |---|---|---|
 | `Backend::Epoll` | Linux (epoll), macOS (kqueue) | The default. Each Linux thread binds its own `SO_REUSEPORT` socket and the kernel spreads connections; on macOS the threads share one listening socket. |
 | `Backend::IoUring(UringConfig)` | Linux 5.19+ | Multishot accept and recv, a provided-buffer ring per thread (idle connections hold no buffer), single-issuer rings. If the kernel lacks it the listener falls back to epoll with a warning, unless `UringConfig::strict` is set. |
+| `Backend::Dpdk(DpdkConfig)` | Linux (DPDK, TAP, AF_PACKET); any platform for the in-memory wire | Experimental, cargo feature `dpdk` (`dpdk-pmd` for DPDK ports). Kernel bypass: a userspace TCP/IP stack on its own I/O threads, one per NIC queue, shared by every listener on the device. See [Kernel bypass (DPDK)](../dpdk.md). |
 
 UDP listeners are always served by the readiness backend (epoll/kqueue): with `recvmmsg` /
 `sendmmsg` and GSO the batching that io_uring would bring is already there. Asking for

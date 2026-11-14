@@ -30,6 +30,7 @@
 - [Configuration reference](configuration.md)
 - [Observability and hot reload](observability.md)
 - [Performance tuning](performance.md)
+- [Kernel bypass (DPDK)](dpdk.md)
 - [Troubleshooting and FAQ](troubleshooting.md)
 
 # Migration guides

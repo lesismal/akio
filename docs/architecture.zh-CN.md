@@ -19,6 +19,7 @@ flowchart BT
     epoll["flash-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
     uring["flash-uring<br/>io_uring 线程组"]
     ebpf["flash-ebpf<br/>reuseport 分流、sockmap 转发"]
+    dpdk["flash-dpdk（实验性）<br/>基于 DPDK / TAP 的用户态 TCP/IP（smoltcp）"]
     tls["flash-tls<br/>rustls Transport"]
     facade["flash<br/>Engine、Listener、Backend、Accel"]
     http["flash-http<br/>h1、h2、Router、中间件、<br/>静态文件、客户端、observe"]
@@ -40,11 +41,13 @@ flowchart BT
     sys --> uring
     timer --> uring
     core --> ebpf
+    core --> dpdk
     sys --> ebpf
     core --> tls
     epoll --> facade
     uring --> facade
     ebpf --> facade
+    dpdk -.->|feature dpdk| facade
     tls --> facade
     facade --> ws
     facade --> http
@@ -61,8 +64,8 @@ flowchart BT
 
 - **依赖方向是单向的**：`sys → buf/timer/pool → core → 后端 → flash → 协议`。协议 crate 依赖
   `flash-core` 的公开 trait 和 `flash` facade，从不依赖具体后端。
-- **`unsafe` 被限制在** `flash-sys`、`flash-uring`（ring 与 buffer ring 内存）和 `flash-ebpf`
-  （原始 `bpf(2)`）中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
+- **`unsafe` 被限制在** `flash-sys`、`flash-uring`（ring 与 buffer ring 内存）、`flash-ebpf`
+  （原始 `bpf(2)`）和 `flash-dpdk`（DPDK FFI）中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（请求头用 httparse，chunked 解码器自研）、HTTP/2 分帧与
   HPACK（loona-hpack）、WebSocket 分帧与 permessage-deflate、KCP、QPACK 与 HTTP/3 分帧，都是

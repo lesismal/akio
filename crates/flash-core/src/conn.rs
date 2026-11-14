@@ -553,6 +553,12 @@ enum Sock {
         /// (BSD rejects `sendto` on a connected socket).
         connected: bool,
     },
+    /// No kernel socket: a userspace network stack (`flash-dpdk`) owns the wire. Writes are
+    /// never attempted from `send`; everything is queued and the owning loop moves it into the
+    /// stack with [`ConnInner::drain_output`]. `datagram`: UDP semantics (one chunk, one datagram).
+    Virtual {
+        datagram: bool,
+    },
 }
 
 /// Type-erased shared connection state: socket, lifecycle, send queue and its lock (ADR-002).
@@ -638,6 +644,94 @@ impl ConnInner {
         })
     }
 
+    /// A connection of a userspace network stack: there is no kernel socket. `send` only queues
+    /// (and wakes the loop); the loop hands the queued bytes to its stack with
+    /// [`drain_output`](Self::drain_output). `datagram`: every chunk is one datagram (UDP).
+    pub fn new_virtual(
+        id: u64,
+        datagram: bool,
+        local: SocketAddr,
+        peer: SocketAddr,
+        link: Arc<dyn LoopLink>,
+        cfg: Arc<Config>,
+    ) -> Arc<ConnInner> {
+        Arc::new(ConnInner {
+            id,
+            state: AtomicU8::new(OPEN),
+            hold: AtomicBool::new(false),
+            write: Mutex::new(WriteState {
+                datagram,
+                stats: link.stats(),
+                ..WriteState::default()
+            }),
+            drained: Mutex::new(None),
+            ordered: Mutex::new(None),
+            sock: Sock::Virtual { datagram },
+            link,
+            cfg,
+            local,
+            peer,
+        })
+    }
+
+    /// Loop side, userspace stacks ([`new_virtual`](Self::new_virtual)): hands queued output to
+    /// `sink` in order. For a datagram connection every call is one whole datagram and any
+    /// non-zero return consumes it (a stack that cannot ever send it drops it, as UDP does);
+    /// for a stream, `sink` returns how many bytes it took. A return of 0 means "full, try
+    /// later" and stops. `Ok(true)` once the queue is empty.
+    pub fn drain_output(&self, sink: &mut dyn FnMut(&[u8]) -> usize) -> io::Result<bool> {
+        let mut w = self.lock();
+        let r = Self::drain_virtual(&mut w, sink);
+        if matches!(r, Ok(true)) {
+            if let Some(f) = w.drain.take() {
+                *self.drained.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+            }
+        }
+        drop(w);
+        self.run_drained();
+        r
+    }
+
+    fn drain_virtual(w: &mut WriteState, sink: &mut dyn FnMut(&[u8]) -> usize) -> io::Result<bool> {
+        if w.datagram {
+            loop {
+                let Some(d) = w.datagrams().next() else {
+                    return Ok(true);
+                };
+                if sink(d) == 0 {
+                    return Ok(false);
+                }
+                w.sent_datagrams(1);
+            }
+        }
+        while let Some(front) = w.queue.front() {
+            #[cfg(unix)]
+            if let Bytes::File { file, start, len } = &front.bytes {
+                use std::os::unix::fs::FileExt;
+                let (pos, left) = (start + front.off as u64, (*len as usize) - front.off);
+                let mut buf = vec![0u8; left.min(16 << 10)];
+                let n = file.read_at(&mut buf, pos)?;
+                if n == 0 {
+                    return Err(io::ErrorKind::UnexpectedEof.into()); // file shrank
+                }
+                let took = sink(&buf[..n]);
+                if took == 0 {
+                    return Ok(false);
+                }
+                w.wrote(took);
+                w.consume(took);
+                continue;
+            }
+            let took = sink(front.rest());
+            if took == 0 {
+                return Ok(false);
+            }
+            w.wrote(took);
+            w.consume(took);
+        }
+        Ok(true)
+    }
+
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -646,7 +740,9 @@ impl ConnInner {
     pub fn stream(&self) -> &TcpStream {
         match &self.sock {
             Sock::Tcp(s) => s,
-            Sock::Udp { .. } => unreachable!("stream() on a UDP connection"),
+            Sock::Udp { .. } | Sock::Virtual { .. } => {
+                unreachable!("stream() on a connection without a TCP socket")
+            }
         }
     }
 
@@ -654,7 +750,7 @@ impl ConnInner {
     pub fn tcp_stream(&self) -> Option<&TcpStream> {
         match &self.sock {
             Sock::Tcp(s) => Some(s),
-            Sock::Udp { .. } => None,
+            Sock::Udp { .. } | Sock::Virtual { .. } => None,
         }
     }
 
@@ -677,7 +773,17 @@ impl ConnInner {
                     sock.send_to(data, peer)
                 }
             }
+            // The loop moves the bytes into the userspace stack (`drain_output`).
+            Sock::Virtual { .. } => Err(io::ErrorKind::WouldBlock.into()),
         }
+    }
+
+    /// One send is one datagram (UDP, or a userspace stack's UDP).
+    fn is_datagram_sock(&self) -> bool {
+        matches!(
+            self.sock,
+            Sock::Udp { .. } | Sock::Virtual { datagram: true }
+        )
     }
 
     pub fn is_open(&self) -> bool {
@@ -781,6 +887,10 @@ impl ConnInner {
     /// Writes queued chunks with `writev` until the queue is empty or the socket is full.
     fn write_queue(&self, w: &mut WriteState) -> io::Result<bool> {
         const MAX_IOV: usize = 16;
+        if matches!(self.sock, Sock::Virtual { .. }) {
+            // Only the owning loop writes (`drain_output`).
+            return Ok(w.queue.is_empty());
+        }
         if w.datagram {
             #[cfg(target_os = "linux")]
             {
@@ -884,7 +994,9 @@ impl ConnInner {
                 peer,
                 connected,
             } => ((!connected).then_some(peer), sock.as_raw_fd()),
-            Sock::Tcp(_) => unreachable!("datagram queue on a TCP connection"),
+            Sock::Tcp(_) | Sock::Virtual { .. } => {
+                unreachable!("datagram queue on a connection without a UDP socket")
+            }
         }
     }
 
@@ -896,7 +1008,7 @@ impl ConnInner {
         let mut w = self.lock();
         if !w.datagram || w.transport.is_some() || seg == 0 || seg >= data.len() {
             drop(w);
-            if seg == 0 || !matches!(self.sock, Sock::Udp { .. }) {
+            if seg == 0 || !self.is_datagram_sock() {
                 return self.send_owned(data);
             }
             for d in data.chunks(seg) {
@@ -1372,7 +1484,7 @@ impl ConnInner {
         if len == 0 {
             return Ok(());
         }
-        if matches!(self.sock, Sock::Udp { .. }) {
+        if self.is_datagram_sock() {
             return Err(Error::Io(io::ErrorKind::Unsupported.into()));
         }
         if self.has_transport() {

@@ -38,6 +38,7 @@
 |---|---|---|
 | `Backend::Epoll` | Linux（epoll）、macOS（kqueue） | 默认后端。Linux 上每个线程绑定自己的 `SO_REUSEPORT` socket，由内核分发新连接；macOS 上各线程共享一个监听 socket。 |
 | `Backend::IoUring(UringConfig)` | Linux 5.19+ | multishot accept 与 recv，每线程一个 provided-buffer ring（空闲连接不占读缓冲），single-issuer ring。内核不支持时该 listener 回退到 epoll 并打印警告，除非设置了 `UringConfig::strict`。 |
+| `Backend::Dpdk(DpdkConfig)` | Linux（DPDK、TAP、AF_PACKET）；内存链路可在任意平台使用 | 实验性，cargo feature `dpdk`（DPDK 端口需 `dpdk-pmd`）。内核旁路：用户态 TCP/IP 协议栈运行在自己的 I/O 线程上，每个网卡队列一个线程，同一设备上的所有 listener 共享。见[内核旁路（DPDK）](../dpdk.md)。 |
 
 UDP listener 总是由就绪通知后端（epoll/kqueue）服务：有了 `recvmmsg` / `sendmmsg` 和 GSO，
 io_uring 能带来的批量化已经具备了。对 UDP listener 指定 `IoUring { strict: true }` 会让

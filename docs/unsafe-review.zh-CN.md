@@ -13,6 +13,7 @@ flash 是网络库：它的内存安全缺陷就是其使用者的远程代码�
 | `flash-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg |
 | `flash-uring` | `#![deny(unsafe_code)]`，仅 `group` 与 `reactor` 模块允许 | io_uring 提交项指向内核异步写入的内存 |
 | `flash-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
+| `flash-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 模块允许 | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst），以及 `Sendable`（把 smoltcp 不是 `Send` 的 TAP / AF_PACKET 设备移交给其 I/O 线程） |
 | 其它所有 crate（`flash`、`flash-core`、`flash-buf`、`flash-timer`、`flash-pool`、`flash-epoll`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`tools/echo-bench`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
@@ -71,11 +72,12 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | Crate | 块 | `unsafe fn` | `unsafe impl` | 测试/示例/基准 |
 |---|---:|---:|---:|---:|
 | flash | 0 | 0 | 0 | 12 |
+| flash-dpdk | 15 | 0 | 2 | 0 |
 | flash-ebpf | 11 | 3 | 0 | 1 |
 | flash-http | 0 | 0 | 0 | 8 |
 | flash-sys | 51 | 0 | 3 | 0 |
 | flash-uring | 18 | 1 | 1 | 0 |
-| **合计** | **80** | **4** | **4** | **21** |
+| **合计** | **95** | **4** | **6** | **21** |
 
 按用途：
 
@@ -87,6 +89,7 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | `flash-sys/src/udp.rs` | 15 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | iovec 位于同一分配内（大小经检查）；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
 | `flash-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
 | `flash-uring/src/group.rs` | 3 | 探测内核版本用的 `uname` | `utsname` 置零；内核以 NUL 结尾 `release` |
+| `flash-dpdk/src/pmd.rs` | 15、`impl Send for Queue`、`impl Send for Sendable` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；smoltcp TAP / raw socket 设备的 `Sendable` | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 与 `Sendable` 设备同一时刻只被一个线程使用（一次性移交给其 I/O 线程） |
 | `flash-ebpf/src/sys.rs` | 11，3 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段在调用期间存活；键/值大小由 `Map<K, V>` 固定 |
 
 ## 6. 1.0 审查结论

@@ -10,6 +10,22 @@ flash 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增
+
+- `flash-dpdk`（实验性，M6）：内核旁路后端。用户态 TCP/IP 协议栈（smoltcp，IPv4）运行在 flash 的
+  I/O 线程上，底层可以是 DPDK 端口（按 `EalConfig` 初始化 EAL，每个 rx/tx 队列对一个线程，mbuf
+  批量收发，多队列时用 RSS 并在队列间扇出 ARP）、Linux TAP 接口、AF_PACKET socket 或进程内的
+  `MemoryWire`。UDP listener 每次 `on_data` 交付一个数据报，TCP listener 交付字节流，支持
+  `dial` / `dial_udp`、背压、空闲超时、遥测与优雅关闭，因此协议 crate（flash-kcp 等）无需修改即可
+  运行。同一设备上的多个 listener 共享该设备的协议栈与线程。
+- `flash`：cargo feature `dpdk`（`Backend::Dpdk(DpdkConfig)`，再导出 `flash::dpdk`）与 `dpdk-pmd`
+  （同时支持 DPDK 端口；通过 pkg-config 查找并链接 libdpdk）。实验性：不在 semver 承诺范围内
+  （docs/api-stability.zh-CN.md）。
+- `flash-core`（面向后端，`#[doc(hidden)]`）：`ConnInner::new_virtual` 与
+  `ConnInner::drain_output`，供由用户态协议栈搬运字节的连接使用。
+- `tools/dpdk/`（Dockerfile + `test.sh`）与重型 CI 任务 `dpdk`：基于发行版的 DPDK 构建，并通过
+  DPDK 的 `net_tap` PMD（单队列与双队列）smoltcp 的 TAP 设备以及 veth 对上的 AF_PACKET，与内核协议栈互测 UDP/TCP echo。
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 1.0 的第一个发布候选版：API 冻结以供评审。每个 crate 的公开 API 记录在 `api/<crate>.txt` 中，并在
