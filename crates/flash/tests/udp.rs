@@ -495,3 +495,142 @@ fn dial_udp_without_udp_threads_is_an_error() {
     );
     assert_eq!(failed.load(Ordering::SeqCst), 1);
 }
+
+#[test]
+fn bursts_from_many_peers_are_echoed_intact() {
+    // Many peers, many datagrams each: replies are batched across peers (sendmmsg on Linux).
+    let e = echo_engine(2);
+    let addr = e.local_addrs()[0];
+    let clients: Vec<UdpSocket> = (0..20).map(|_| client(addr)).collect();
+    for round in 0..5u8 {
+        for (i, c) in clients.iter().enumerate() {
+            for k in 0..8u8 {
+                c.send(&[i as u8, round, k, 7, 7, 7]).unwrap();
+            }
+        }
+        for (i, c) in clients.iter().enumerate() {
+            let mut got: Vec<Vec<u8>> = (0..8).map(|_| recv(c)).collect();
+            got.sort();
+            let want: Vec<Vec<u8>> = (0..8u8).map(|k| vec![i as u8, round, k, 7, 7, 7]).collect();
+            assert_eq!(got, want);
+        }
+    }
+    stop(&e);
+}
+
+/// Replies to any datagram with `send_segments`: 5 datagrams of 1000 bytes and one of 300.
+struct Segs;
+impl Handler for Segs {
+    fn on_data(&mut self, c: &Conn<Self>, d: &[u8]) {
+        let mut out = Vec::new();
+        for i in 0..6u8 {
+            let len = if i == 5 { 300 } else { 1000 };
+            out.extend(std::iter::repeat_n(d[0].wrapping_add(i), len));
+        }
+        c.send_segments(out, 1000).unwrap();
+    }
+}
+
+fn segs_server() -> Engine {
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(Listener::udp(localhost()).serve(fn_acceptor(|_c: &Conn<Segs>| Segs)))
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    e
+}
+
+fn check_segs(got: &[Vec<u8>], base: u8) {
+    assert_eq!(got.len(), 6, "datagram count");
+    for (i, d) in got.iter().enumerate() {
+        let len = if i == 5 { 300 } else { 1000 };
+        assert_eq!(d.len(), len);
+        assert!(d.iter().all(|&b| b == base.wrapping_add(i as u8)));
+    }
+}
+
+#[test]
+fn send_segments_delivers_separate_datagrams() {
+    let e = segs_server();
+    let c = client(e.local_addrs()[0]);
+    c.send(&[10]).unwrap();
+    let got: Vec<Vec<u8>> = (0..6).map(|_| recv(&c)).collect();
+    check_segs(&got, 10);
+    stop(&e);
+}
+
+#[test]
+fn dialed_connection_splits_coalesced_receives() {
+    // The server sends with GSO; the dialed socket has GRO on (Linux): the kernel may hand the
+    // client one coalesced buffer, which must still arrive as six `on_data` calls.
+    struct Collect(Arc<Mutex<Vec<Vec<u8>>>>);
+    impl Handler for Collect {
+        fn on_data(&mut self, _c: &Conn<Self>, d: &[u8]) {
+            self.0.lock().unwrap().push(d.to_vec());
+        }
+    }
+    struct Dial(Arc<Mutex<Vec<Vec<u8>>>>);
+    impl Acceptor for Dial {
+        type Handler = Collect;
+        fn on_open(&self, c: &Conn<Collect>) -> Collect {
+            c.send(&[40]).unwrap();
+            Collect(self.0.clone())
+        }
+    }
+    let server = segs_server();
+    let client = Engine::builder()
+        .config(Config {
+            udp_gro: true,
+            ..cfg()
+        })
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    client.start().unwrap();
+    let got = Arc::new(Mutex::new(Vec::new()));
+    client.dial_udp(server.local_addrs()[0], Dial(got.clone()), |e| {
+        panic!("{e}")
+    });
+    wait_for("six datagrams", || got.lock().unwrap().len() >= 6);
+    thread::sleep(Duration::from_millis(50));
+    check_segs(&got.lock().unwrap(), 40);
+    stop(&client);
+    stop(&server);
+}
+
+#[test]
+fn peer_cap_drops_new_peers_and_counts_them() {
+    let e = Engine::builder()
+        .config(Config {
+            udp_max_peers: Some(2),
+            ..cfg()
+        })
+        .listen(
+            Listener::udp(localhost())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let (a, b, c) = (client(addr), client(addr), client(addr));
+    for s in [&a, &b] {
+        s.send(b"in").unwrap();
+        assert_eq!(recv(s), b"in");
+    }
+    c.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    c.send(b"out").unwrap();
+    c.send(b"out").unwrap();
+    let mut buf = [0u8; 16];
+    assert!(c.recv(&mut buf).is_err(), "a third peer must be refused");
+    // Known peers still work.
+    a.send(b"again").unwrap();
+    assert_eq!(recv(&a), b"again");
+    let st = e.udp_stats();
+    assert_eq!(st.peers, 2);
+    assert_eq!(st.rejected, 2);
+    stop(&e);
+}

@@ -31,7 +31,8 @@ pub use flash_ebpf as ebpf;
 pub use flash_core::{
     Acceptor, Config, Conn, ConnInfo, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, Live,
     LoopCounters, LoopMeta, LoopMetrics, Metrics, PoolConfig, PoolStats, ReloadReport,
-    ResponseSlot, Result, SlowCallback, SlowHook, SlowRecord, Telemetry, fn_acceptor, telemetry,
+    ResponseSlot, Result, SlowCallback, SlowHook, SlowRecord, Telemetry, UdpStats, fn_acceptor,
+    telemetry,
 };
 use flash_core::{Group, Pool, telemetry::log_or_stderr};
 
@@ -476,6 +477,17 @@ impl Engine {
     /// Counters of the logical pool.
     pub fn pool_stats(&self) -> PoolStats {
         self.pool.stats()
+    }
+
+    /// Peer counters of the UDP listeners, summed (see `Config::udp_max_peers`).
+    pub fn udp_stats(&self) -> UdpStats {
+        self.groups
+            .iter()
+            .map(|g| g.udp_stats())
+            .fold(UdpStats::default(), |a, b| UdpStats {
+                peers: a.peers + b.peers,
+                rejected: a.rejected + b.rejected,
+            })
     }
 
     /// `start` + `wait`.

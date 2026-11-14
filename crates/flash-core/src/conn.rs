@@ -49,6 +49,9 @@ pub(crate) type Completion<H> = Box<dyn FnOnce(&mut H, &Conn<H>) + Send>;
 enum Bytes {
     Owned(Vec<u8>),
     Shared(SharedBuf),
+    /// UDP: consecutive datagrams of `.1` bytes each (the last may be shorter), see
+    /// [`Conn::send_segments`].
+    Segmented(Vec<u8>, usize),
     /// `len` bytes of `file` from `start`, sent with `sendfile(2)` (never copied into memory).
     #[cfg(unix)]
     File {
@@ -68,6 +71,7 @@ impl Chunk {
         match &self.bytes {
             Bytes::Owned(v) => &v[self.off..],
             Bytes::Shared(s) => &s[self.off..],
+            Bytes::Segmented(v, _) => &v[self.off..],
             #[cfg(unix)]
             Bytes::File { .. } => &[],
         }
@@ -186,7 +190,12 @@ impl WriteState {
                 return;
             }
         }
-        let mut v = flash_buf::get(data.len());
+        // A datagram buffer is never appended to: allocate it exactly, not a whole size class.
+        let mut v = if self.datagram {
+            Vec::with_capacity(data.len())
+        } else {
+            flash_buf::get(data.len())
+        };
         v.extend_from_slice(data);
         self.queue.push_back(Chunk {
             bytes: Bytes::Owned(v),
@@ -213,7 +222,7 @@ impl WriteState {
             }
             n -= left;
             if let Some(Chunk {
-                bytes: Bytes::Owned(v),
+                bytes: Bytes::Owned(v) | Bytes::Segmented(v, _),
                 ..
             }) = self.queue.pop_front()
             {
@@ -222,15 +231,189 @@ impl WriteState {
         }
     }
 
+    /// UDP: the datagrams queued, in order.
+    fn datagrams(&self) -> impl Iterator<Item = &[u8]> {
+        self.queue.iter().flat_map(|c| {
+            let rest = c.rest();
+            let seg = match c.bytes {
+                Bytes::Segmented(_, seg) => seg,
+                _ => rest.len().max(1),
+            };
+            rest.chunks(seg)
+        })
+    }
+
+    /// UDP: drops the first `k` queued datagrams (sent or refused).
+    fn consume_datagrams(&mut self, k: usize) {
+        for _ in 0..k {
+            let Some(front) = self.queue.front_mut() else {
+                return;
+            };
+            let left = front.rest().len();
+            let step = match front.bytes {
+                Bytes::Segmented(_, seg) => seg.min(left),
+                _ => left,
+            };
+            self.consume(step);
+        }
+    }
+
+    /// UDP: the first `k` queued datagrams reached the socket: counts and drops them.
+    fn sent_datagrams(&mut self, k: usize) {
+        for _ in 0..k {
+            let Some(front) = self.queue.front() else {
+                return;
+            };
+            let left = front.rest().len();
+            let step = match front.bytes {
+                Bytes::Segmented(_, seg) => seg.min(left),
+                _ => left,
+            };
+            self.wrote(step);
+            self.consume(step);
+        }
+    }
+
     fn clear(&mut self) {
         for c in self.queue.drain(..) {
-            if let Bytes::Owned(v) = c.bytes {
+            if let Bytes::Owned(v) | Bytes::Segmented(v, _) = c.bytes {
                 flash_buf::put(v);
             }
         }
         self.sub_queued(self.queued);
         self.file_bytes = 0;
     }
+}
+
+/// One connection's datagram queue taking part in [`send_datagrams`].
+#[cfg(target_os = "linux")]
+struct DgramItem<'a, 'g> {
+    inner: &'a ConnInner,
+    w: &'g mut WriteState,
+    /// What [`ConnInner::flush_queue`] would return; set by `send_datagrams`.
+    res: Option<io::Result<bool>>,
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    static SEND_BATCH: std::cell::RefCell<flash_sys::SendBatch> =
+        std::cell::RefCell::new(flash_sys::SendBatch::new());
+}
+
+/// Sends the datagrams queued in `items` (which share one socket) with `sendmmsg`, merging runs
+/// of equal-size datagrams to one peer into a single GSO message when the kernel supports it.
+/// Datagrams the network refuses are dropped, as in the one-at-a-time path. Sets every item's
+/// `res`.
+#[cfg(target_os = "linux")]
+fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
+    use flash_sys::{MAX_GSO_BYTES, MAX_GSO_SEGMENTS, SEND_BATCH as CAP};
+    const EIO: i32 = 5;
+    const EINVAL: i32 = 22;
+
+    /// Drops the datagrams of the first `done` messages from their queues.
+    fn apply(items: &mut [DgramItem<'_, '_>], map: &[(usize, usize)]) {
+        for &(k, cnt) in map {
+            items[k].w.sent_datagrams(cnt);
+        }
+    }
+
+    let Some(first) = items.first() else {
+        return;
+    };
+    let fd = first.inner.udp_target().1;
+    SEND_BATCH.with(|sb| {
+        let mut sb = sb.borrow_mut();
+        // Per message: (item, datagrams in it).
+        let mut map: Vec<(usize, usize)> = Vec::with_capacity(CAP);
+        loop {
+            let mut parts: Vec<&[u8]> = Vec::with_capacity(MAX_GSO_SEGMENTS);
+            let gso = flash_sys::gso_enabled();
+            map.clear();
+            let mut b = sb.batch();
+            'fill: for (k, it) in items.iter().enumerate() {
+                if it.res.is_some() {
+                    continue;
+                }
+                let dest = it.inner.udp_target().0;
+                let (mut seg, mut total) = (0, 0);
+                let mut iter = it.w.datagrams().peekable();
+                while let Some(d) = iter.next() {
+                    if parts.is_empty() {
+                        (seg, total) = (d.len(), 0);
+                    }
+                    parts.push(d);
+                    total += d.len();
+                    // Only the last datagram of a GSO message may be shorter than the others.
+                    let joins = gso
+                        && d.len() == seg
+                        && parts.len() < MAX_GSO_SEGMENTS
+                        && iter
+                            .peek()
+                            .is_some_and(|n| n.len() <= seg && total + n.len() <= MAX_GSO_BYTES);
+                    if joins {
+                        continue;
+                    }
+                    let g = if parts.len() > 1 { seg } else { 0 };
+                    let pushed = b.push(dest, &parts, g);
+                    let cnt = parts.len();
+                    parts.clear();
+                    if !pushed {
+                        break 'fill;
+                    }
+                    map.push((k, cnt));
+                }
+            }
+            if map.is_empty() {
+                break;
+            }
+            // Messages from the front that were sent or dropped.
+            let mut done = 0;
+            // The socket is full: stop here.
+            let mut full = false;
+            let mut failed: Option<(usize, io::Error)> = None;
+            while done < map.len() {
+                match b.send(fd, done) {
+                    Ok(0) => {
+                        full = true;
+                        break;
+                    }
+                    Ok(n) => done += n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        full = true;
+                        break;
+                    }
+                    Err(e) if b.is_gso(done) && matches!(e.raw_os_error(), Some(EIO | EINVAL)) => {
+                        // The kernel or the device cannot segment: never try again.
+                        flash_sys::disable_gso();
+                        break;
+                    }
+                    Err(e) => {
+                        let k = map[done].0;
+                        if items[k].inner.fatal_datagram_error(&e) {
+                            failed = Some((k, e));
+                            break;
+                        }
+                        // Refused (too big, unreachable): drop it and go on.
+                        done += 1;
+                    }
+                }
+            }
+            // `b` (borrowing the queues) is done with; drop what went out.
+            apply(items, &map[..done]);
+            if let Some((k, e)) = failed {
+                items[k].res = Some(Err(e));
+            }
+            if full {
+                break;
+            }
+        }
+        for it in items.iter_mut() {
+            if it.res.is_none() {
+                it.res = Some(Ok(it.w.queue.is_empty()));
+            }
+        }
+    });
 }
 
 /// One piece of a response written in order (see [`ResponseSlot::fill_parts`]).
@@ -511,33 +694,35 @@ impl ConnInner {
     fn write_queue(&self, w: &mut WriteState) -> io::Result<bool> {
         const MAX_IOV: usize = 16;
         if w.datagram {
-            while let Some(c) = w.queue.front() {
-                let r = self.raw_write(c.rest());
-                let len = c.rest().len();
-                match r {
-                    Ok(n) => w.wrote(n),
+            #[cfg(target_os = "linux")]
+            {
+                let mut items = [DgramItem {
+                    inner: self,
+                    w,
+                    res: None,
+                }];
+                send_datagrams(&mut items);
+                return items[0].res.take().expect("result set");
+            }
+            #[cfg(not(target_os = "linux"))]
+            loop {
+                let Some(d) = w.datagrams().next() else {
+                    return Ok(true);
+                };
+                match self.raw_write(d) {
+                    Ok(_) => {
+                        w.sent_datagrams(1);
+                        continue;
+                    }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                    // A dialed peer that answered with ICMP "port unreachable" is gone.
-                    Err(e)
-                        if e.kind() == io::ErrorKind::ConnectionRefused
-                            && matches!(
-                                self.sock,
-                                Sock::Udp {
-                                    connected: true,
-                                    ..
-                                }
-                            ) =>
-                    {
-                        return Err(e);
-                    }
+                    Err(e) if self.fatal_datagram_error(&e) => return Err(e),
                     // A datagram the network refuses (too big, unreachable) is dropped, as UDP
                     // does; it must not wedge the datagrams behind it.
                     Err(_) => {}
                 }
-                w.consume(len);
+                w.consume_datagrams(1);
             }
-            return Ok(true);
         }
         while !w.queue.is_empty() {
             #[cfg(unix)]
@@ -586,6 +771,120 @@ impl ConnInner {
             w.consume(n);
         }
         Ok(true)
+    }
+
+    /// A dialed peer that answered with ICMP "port unreachable" is gone; any other refused
+    /// datagram is only dropped.
+    fn fatal_datagram_error(&self, e: &io::Error) -> bool {
+        e.kind() == io::ErrorKind::ConnectionRefused
+            && matches!(
+                self.sock,
+                Sock::Udp {
+                    connected: true,
+                    ..
+                }
+            )
+    }
+
+    /// UDP: where datagrams go (`None` on a connected socket) and the socket's fd.
+    #[cfg(target_os = "linux")]
+    fn udp_target(&self) -> (Option<&SocketAddr>, std::os::fd::RawFd) {
+        use std::os::fd::AsRawFd;
+        match &self.sock {
+            Sock::Udp {
+                sock,
+                peer,
+                connected,
+            } => ((!connected).then_some(peer), sock.as_raw_fd()),
+            Sock::Tcp(_) => unreachable!("datagram queue on a TCP connection"),
+        }
+    }
+
+    /// Queues `data` as consecutive datagrams of `seg` bytes (see [`Conn::send_segments`]).
+    pub fn send_segments(&self, data: Vec<u8>, seg: usize) -> Result<()> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut w = self.lock();
+        if !w.datagram || w.transport.is_some() || seg == 0 || seg >= data.len() {
+            drop(w);
+            if seg == 0 || !matches!(self.sock, Sock::Udp { .. }) {
+                return self.send_owned(data);
+            }
+            for d in data.chunks(seg) {
+                self.send(d)?;
+            }
+            return Ok(());
+        }
+        self.check_sendable(&w, data.len())?;
+        let was_empty = w.queue.is_empty();
+        w.add_queued(data.len());
+        w.queue.push_back(Chunk {
+            bytes: Bytes::Segmented(data, seg),
+            off: 0,
+        });
+        if w.corked {
+            return Ok(());
+        }
+        let r = self.write_locked(&mut w);
+        let blocked = !w.queue.is_empty();
+        drop(w);
+        self.run_drained();
+        match r {
+            Err(e) => Err(self.fail(e)),
+            Ok(_) => {
+                if blocked && was_empty {
+                    self.link.wake_conn(self.id);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Loop side, UDP: uncorks every connection in `conns` and flushes their queued datagrams
+    /// together, with as few `sendmmsg` calls as possible (they must share one socket). `out`
+    /// receives one result per connection, as [`flush_queue`](Self::flush_queue) would return.
+    pub fn flush_datagram_peers(conns: &[&ConnInner], out: &mut Vec<io::Result<bool>>) {
+        out.clear();
+        #[cfg(target_os = "linux")]
+        {
+            // Only this (loop) thread ever holds more than one connection's write lock, so taking
+            // them all at once cannot deadlock.
+            let mut guards: Vec<MutexGuard<'_, WriteState>> =
+                conns.iter().map(|c| c.lock()).collect();
+            let mut items: Vec<DgramItem<'_, '_>> = conns
+                .iter()
+                .zip(guards.iter_mut())
+                .map(|(c, g)| {
+                    g.corked = false;
+                    DgramItem {
+                        inner: c,
+                        w: g,
+                        res: None,
+                    }
+                })
+                .collect();
+            send_datagrams(&mut items);
+            for it in &mut items {
+                let r = it.res.take().unwrap_or(Ok(true));
+                if matches!(r, Ok(true)) {
+                    if let Some(f) = it.w.drain.take() {
+                        *it.inner.drained.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+                    }
+                }
+                out.push(r);
+            }
+            drop(items);
+            drop(guards);
+            for c in conns {
+                c.run_drained();
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        for c in conns {
+            c.set_corked(false);
+            out.push(c.flush_queue());
+        }
     }
 
     fn check_sendable(&self, w: &WriteState, extra: usize) -> Result<()> {
@@ -738,7 +1037,7 @@ impl ConnInner {
         };
         let was_empty = w.queue.is_empty();
         let n = match &bytes {
-            Bytes::Owned(v) => v.len(),
+            Bytes::Owned(v) | Bytes::Segmented(v, _) => v.len(),
             Bytes::Shared(s) => s.len(),
             #[cfg(unix)]
             Bytes::File { .. } => 0,
@@ -1151,6 +1450,15 @@ impl<H> Conn<H> {
     /// Like [`send`](Self::send) with a reference-counted buffer, for broadcast.
     pub fn send_shared(&self, data: SharedBuf) -> Result<()> {
         self.inner.send_shared(data)
+    }
+
+    /// UDP: sends `data` as consecutive datagrams of `segment_size` bytes each (the last may be
+    /// shorter), in one go: with UDP GSO (one syscall, segmented by the kernel or the NIC) where
+    /// Linux supports it, else in a `sendmmsg` batch, else one by one. This is what QUIC stacks
+    /// produce when asked for several datagrams at once (quinn-proto's `Transmit::segment_size`).
+    /// On a TCP connection it is [`send_owned`](Self::send_owned).
+    pub fn send_segments(&self, data: Vec<u8>, segment_size: usize) -> Result<()> {
+        self.inner.send_segments(data, segment_size)
     }
 
     /// Coalesces writes until [`flush`](Self::flush). Inside `on_data` this is already the
