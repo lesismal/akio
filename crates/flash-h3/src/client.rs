@@ -195,7 +195,7 @@ fn fields_to_response(fields: qpack::Fields) -> Option<Response> {
 }
 
 impl ClientConn {
-    fn fail_all(&mut self, why: String) {
+    fn fail_all(&self, why: String) {
         let mut st = lock(&self.st);
         st.closed = Some(why.clone());
         let mut cbs: Vec<Callback> = st.queue.drain(..).map(|(_, cb)| cb).collect();
@@ -208,7 +208,7 @@ impl ClientConn {
 
     /// Feeds a response stream; returns the callback to run, if the response is complete.
     fn on_resp(
-        &mut self,
+        &self,
         id: StreamId,
         data: &[u8],
         fin: bool,

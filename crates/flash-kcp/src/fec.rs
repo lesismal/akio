@@ -2,11 +2,11 @@
 
 use crate::rs::Rs;
 
-pub const HEADER: usize = 6; // seqid(4) type(2)
-pub const HEADER_PLUS2: usize = HEADER + 2;
-pub const TYPE_DATA: u16 = 0xf1;
-pub const TYPE_PARITY: u16 = 0xf2;
-pub const TYPE_OOB: u16 = 0xf3;
+pub(crate) const HEADER: usize = 6; // seqid(4) type(2)
+pub(crate) const HEADER_PLUS2: usize = HEADER + 2;
+pub(crate) const TYPE_DATA: u16 = 0xf1;
+pub(crate) const TYPE_PARITY: u16 = 0xf2;
+pub(crate) const TYPE_OOB: u16 = 0xf3;
 const MAX_SETS: i64 = 3;
 const ENCODE_LATENCY_MS: i64 = 500;
 
@@ -14,7 +14,7 @@ fn diff(a: u32, b: u32) -> i32 {
     a.wrapping_sub(b) as i32
 }
 
-pub struct Encoder {
+pub(crate) struct Encoder {
     rs: Rs,
     paws: u32,
     next: u32,
@@ -26,7 +26,7 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    pub fn new(data: usize, parity: usize) -> Option<Encoder> {
+    pub(crate) fn new(data: usize, parity: usize) -> Option<Encoder> {
         let rs = Rs::new(data, parity)?;
         let total = (data + parity) as u32;
         Some(Encoder {
@@ -43,7 +43,7 @@ impl Encoder {
 
     /// Stamps the FEC header at the start of `pkt` (`HEADER_PLUS2` bytes reserved) and returns
     /// the parity datagrams (FEC header + shard) the packet completes.
-    pub fn add(&mut self, pkt: &mut [u8], now_ms: i64) -> Vec<Vec<u8>> {
+    pub(crate) fn add(&mut self, pkt: &mut [u8], now_ms: i64) -> Vec<Vec<u8>> {
         pkt[..4].copy_from_slice(&self.next.to_le_bytes());
         pkt[4..6].copy_from_slice(&TYPE_DATA.to_le_bytes());
         let size = (pkt.len() - HEADER) as u16;
@@ -67,7 +67,7 @@ impl Encoder {
             return Vec::new();
         }
         self.started = true;
-        for s in self.shards.iter_mut() {
+        for s in &mut self.shards {
             s.resize(size, 0);
         }
         self.rs.encode(&mut self.shards);
@@ -90,7 +90,7 @@ struct Set {
     done: bool,
 }
 
-pub struct Decoder {
+pub(crate) struct Decoder {
     rs: Rs,
     total: u32,
     paws: u32,
@@ -99,7 +99,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    pub fn new(data: usize, parity: usize) -> Option<Decoder> {
+    pub(crate) fn new(data: usize, parity: usize) -> Option<Decoder> {
         let rs = Rs::new(data, parity)?;
         let total = (data + parity) as u32;
         Some(Decoder {
@@ -113,7 +113,7 @@ impl Decoder {
 
     /// Takes a datagram (FEC header first); returns the data packets it lets us recover (each
     /// with its 2-byte size prefix).
-    pub fn decode(&mut self, b: &[u8]) -> Vec<Vec<u8>> {
+    pub(crate) fn decode(&mut self, b: &[u8]) -> Vec<Vec<u8>> {
         let seqid = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
         let is_data = u16::from_le_bytes([b[4], b[5]]) == TYPE_DATA;
         if seqid >= self.paws {

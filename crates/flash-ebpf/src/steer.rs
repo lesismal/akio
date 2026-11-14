@@ -108,8 +108,8 @@ pub fn slot_table(n: usize) -> [u8; SLOTS] {
     let m = SLOTS as u64;
     let perm: Vec<(u64, u64)> = (0..n as u32)
         .map(|i| {
-            let offset = fin(i ^ 0x5bd1_e995) as u64 % m;
-            let skip = fin(i.wrapping_mul(SEED) ^ 0x2545_f491) as u64 % (m - 1) + 1;
+            let offset = u64::from(fin(i ^ 0x5bd1_e995)) % m;
+            let skip = u64::from(fin(i.wrapping_mul(SEED) ^ 0x2545_f491)) % (m - 1) + 1;
             (offset, skip)
         })
         .collect();
@@ -145,7 +145,7 @@ fn words(key: HashKey, peer: SocketAddr, local: SocketAddr) -> Vec<u32> {
             .collect(),
     };
     if key == HashKey::SrcIpPort {
-        w.push(((peer.port() as u32) << 16) | local.port() as u32);
+        w.push((u32::from(peer.port()) << 16) | u32::from(local.port()));
     }
     w
 }

@@ -12,6 +12,7 @@
 //!   handler model.
 //!
 //! The server-side HTTP upgrade lives in `flash-http` (`Context::upgrade_websocket`).
+#![warn(clippy::unwrap_used)]
 
 pub mod client;
 pub mod deflate;

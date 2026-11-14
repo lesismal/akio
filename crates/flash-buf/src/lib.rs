@@ -4,6 +4,7 @@
 //!   the hot path takes no lock. Buffers freed on another thread simply join that thread's cache
 //!   (bounded), which is fine for the producer/consumer split of send queues.
 //! * [`SharedBuf`] is a cheaply clonable, immutable buffer for broadcast (`send_shared`).
+#![warn(clippy::unwrap_used)]
 
 use std::{cell::RefCell, ops::Deref, sync::Arc};
 

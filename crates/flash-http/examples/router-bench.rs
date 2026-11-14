@@ -208,12 +208,12 @@ mod old {
     }
 
     #[derive(Default)]
-    pub struct Router {
+    pub(crate) struct Router {
         root: Node,
     }
 
     impl Router {
-        pub fn insert(&mut self, method: Method, path: &str) {
+        pub(crate) fn insert(&mut self, method: Method, path: &str) {
             let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
             let mut node = &mut self.root;
             for seg in &segs {
@@ -278,7 +278,7 @@ mod old {
             })
         }
 
-        pub fn lookup(&self, method: &Method, path: &str) -> Option<Vec<(String, String)>> {
+        pub(crate) fn lookup(&self, method: &Method, path: &str) -> Option<Vec<(String, String)>> {
             let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
             let mut params = Vec::new();
             let routes = Self::find(&self.root, &segs, &mut params)?;

@@ -10,6 +10,7 @@
 //!
 //! Handlers run on the connection's I/O thread and must not block; the [`Sink`] they get answers
 //! from any thread, so slow work goes to the logical pool or another thread.
+#![warn(clippy::unwrap_used)]
 
 pub mod codec;
 
@@ -635,7 +636,7 @@ impl Service for GrpcServer {
         }
         let mut on_msg = open(&md, sink.clone());
         let mut deframer = Deframer::new(self.max_message.unwrap_or(DEFAULT_MAX_MESSAGE), req_gzip);
-        let sink2 = sink.clone();
+        let sink2 = sink;
         ctx.on_body(move |_ctx, ev| match ev {
             BodyEvent::Chunk(b) => {
                 if sink2.is_finished() {

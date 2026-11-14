@@ -267,7 +267,7 @@ impl Service for DefaultFallback {
     fn call(&self, ctx: &mut Context) {
         match ctx.local(ALLOW).map(str::to_owned) {
             Some(allow) => {
-                ctx.respond(Response::text(405, "Method Not Allowed").header("Allow", allow))
+                ctx.respond(Response::text(405, "Method Not Allowed").header("Allow", allow));
             }
             None => ctx.text(404, "Not Found"),
         }

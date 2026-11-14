@@ -352,7 +352,7 @@ impl Kcp {
         if diff(sn, self.snd_una) < 0 || diff(sn, self.snd_nxt) >= 0 {
             return;
         }
-        for s in self.snd_buf.iter_mut() {
+        for s in &mut self.snd_buf {
             if diff(sn, s.sn) < 0 {
                 break;
             }

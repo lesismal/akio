@@ -4,6 +4,7 @@
 //! The wheel is single-threaded and clock-agnostic: the owner maps wall time to integer ticks
 //! (flash uses milliseconds), calls [`Wheel::advance`], and sleeps until [`Wheel::next_deadline`].
 //! Scheduling and cancelling are O(1); advancing is amortised O(1) per tick plus O(fired).
+#![warn(clippy::unwrap_used)]
 
 const LEVELS: usize = 4;
 const SLOTS: usize = 64;

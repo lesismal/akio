@@ -21,6 +21,7 @@
 //!
 //! Not implemented: server push, a QPACK dynamic table, extended CONNECT (WebSocket over
 //! HTTP/3), streamed request bodies.
+#![warn(clippy::unwrap_used)]
 
 mod client;
 mod frame;

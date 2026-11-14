@@ -33,6 +33,7 @@
 //!     .unwrap();
 //! engine.run().unwrap();
 //! ```
+#![warn(clippy::unwrap_used)]
 
 mod timer;
 
@@ -626,7 +627,7 @@ impl Ep {
         match ev {
             None => {}
             Some(qp::DatagramEvent::Response(t)) => {
-                self.transmit(t.destination, t.segment_size, buf[..t.size].to_vec())
+                self.transmit(t.destination, t.segment_size, buf[..t.size].to_vec());
             }
             Some(qp::DatagramEvent::ConnectionEvent(h, ce)) => {
                 let c = lock(&self.conns).get(&h).cloned();

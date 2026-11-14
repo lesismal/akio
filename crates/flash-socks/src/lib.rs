@@ -6,6 +6,7 @@
 //! Supported: SOCKS5 `CONNECT` with no authentication or username/password (RFC 1929), IPv4,
 //! IPv6 and domain names (resolved on the logical pool); SOCKS4 and 4a `CONNECT`; HTTP
 //! `CONNECT host:port`. Not supported: SOCKS `BIND` and `UDP ASSOCIATE`, a Linux `splice` path.
+#![warn(clippy::unwrap_used)]
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
@@ -64,7 +65,8 @@ impl Acceptor for UpstreamAcceptor {
     type Handler = Upstream;
     fn on_open(&self, c: &Conn<Upstream>) -> Upstream {
         *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
-        if let Some(f) = self.on_up.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let taken = self.on_up.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(f) = taken {
             f(c.inner());
         }
         Upstream {
@@ -100,7 +102,8 @@ fn try_dial(
     fail: OnFail,
 ) {
     let (Some(e), Some(&addr)) = (engine, addrs.get(i)) else {
-        if let Some(f) = fail.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let taken = fail.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(f) = taken {
             f();
         }
         return;
@@ -451,12 +454,12 @@ impl Handler for SocksSession {
     }
 
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<flash::Error>) {
-        if let Some(up) = self
+        let taken = self
             .upstream
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .take()
-        {
+            .take();
+        if let Some(up) = taken {
             up.close_after_send();
         }
     }
@@ -556,12 +559,12 @@ impl RawHandler for Tunnel {
     }
 
     fn on_close(&mut self) {
-        if let Some(up) = self
+        let taken = self
             .upstream
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .take()
-        {
+            .take();
+        if let Some(up) = taken {
             up.close_after_send();
         }
     }

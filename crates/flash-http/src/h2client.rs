@@ -135,7 +135,8 @@ impl H2Client {
         let fail = {
             let ready = ready.clone();
             move |e: io::Error| {
-                if let Some(cb) = ready.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let taken = ready.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(cb) = taken {
                     cb(Err(e));
                 }
             }
@@ -172,13 +173,15 @@ impl H2Client {
         let queued = self.conn.spawn_blocking(
             || (),
             move |h: &mut H2Conn, c, ()| {
-                if let Some((req, cb)) = s2.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some((req, cb)) = taken {
                     h.start(c, req, cb);
                 }
             },
         );
         if queued.is_err() {
-            if let Some((_, cb)) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let taken = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some((_, cb)) = taken {
                 cb(Err(ClientError::Closed));
             }
         }
@@ -208,13 +211,15 @@ impl H2Client {
         let queued = self.conn.spawn_blocking(
             || (),
             move |h: &mut H2Conn, c, ()| {
-                if let Some((req, ev)) = s2.lock().unwrap_or_else(|p| p.into_inner()).take() {
+                let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some((req, ev)) = taken {
                     h.start_full(c, req, None, Some((up2, ev)));
                 }
             },
         );
         if queued.is_err() {
-            if let Some((_, mut ev)) = slot.lock().unwrap_or_else(|p| p.into_inner()).take() {
+            let taken = slot.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some((_, mut ev)) = taken {
                 ev(H2Event::Error(ClientError::Closed));
             }
         }
@@ -282,7 +287,8 @@ impl Acceptor for H2Acceptor {
             frame(&mut out, ty::WINDOW_UPDATE, 0, 0, &extra.to_be_bytes());
         }
         let _ = c.send_owned(out);
-        if let Some(cb) = self.ready.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let taken = self.ready.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(cb) = taken {
             cb(Ok(H2Client { conn: c.clone() }));
         }
         h
@@ -397,7 +403,7 @@ impl H2Conn {
                     .to_vec(),
             ),
             (b":authority".to_vec(), pu.host_header.clone().into_bytes()),
-            (b":path".to_vec(), pu.target.clone().into_bytes()),
+            (b":path".to_vec(), pu.target.into_bytes()),
         ];
         let mut has_cl = false;
         for (n, v) in req.headers.iter() {
@@ -663,9 +669,8 @@ impl H2Conn {
         block: Vec<u8>,
         end_stream: bool,
     ) {
-        let list = match self.dec.decode(&block) {
-            Ok(l) => l,
-            Err(_) => return self.conn_error(c, err::COMPRESSION, "bad header block"),
+        let Ok(list) = self.dec.decode(&block) else {
+            return self.conn_error(c, err::COMPRESSION, "bad header block");
         };
         if let Some(pid) = promised {
             // A pushed request: remember which path it is for.
@@ -779,7 +784,7 @@ impl H2Conn {
                             }
                         }
                         5 if (DEFAULT_FRAME..(1 << 24)).contains(&v) => {
-                            self.remote_max_frame = v as usize
+                            self.remote_max_frame = v as usize;
                         }
                         _ => {}
                     }

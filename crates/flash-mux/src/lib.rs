@@ -19,6 +19,7 @@
 //! accepted by it directly: the sniffed bytes are replayed to it, `spawn_blocking` completions and
 //! graceful shutdown reach it. Protocols where the server speaks first cannot be told apart this
 //! way; give them their own port.
+#![warn(clippy::unwrap_used)]
 
 use std::{
     collections::HashMap,

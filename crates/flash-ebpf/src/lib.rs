@@ -13,6 +13,7 @@
 //! Programs are hand-assembled (a dozen instructions each) and loaded with raw `bpf(2)` calls,
 //! so building flash needs neither a BPF toolchain nor nightly Rust, and no `aya`/libbpf.
 //! Off Linux everything compiles and reports `Unsupported`.
+#![warn(clippy::unwrap_used)]
 
 pub mod cbpf;
 mod ebpf;
@@ -43,7 +44,7 @@ pub fn probe() -> Probe {
     #[cfg(target_os = "linux")]
     {
         let group = || -> std::io::Result<Vec<std::net::TcpListener>> {
-            let a = flash_sys::listen("127.0.0.1:0".parse().unwrap(), true, 16)?;
+            let a = flash_sys::listen(std::net::SocketAddr::from(([127, 0, 0, 1], 0)), true, 16)?;
             let addr = a.local_addr()?;
             Ok(vec![a, flash_sys::listen(addr, true, 16)?])
         };

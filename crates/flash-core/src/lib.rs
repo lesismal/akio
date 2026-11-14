@@ -7,6 +7,7 @@
 //! * `Group`, `ConnInner`, `LoopLink`, `DynAcceptor`, `DynHandler`: backend-facing plumbing
 //!   (hidden from the docs); backends such as `flash-epoll` implement them and the `flash` crate
 //!   composes them into an `Engine`.
+#![warn(clippy::unwrap_used)]
 
 mod config;
 mod conn;

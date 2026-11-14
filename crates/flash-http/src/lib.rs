@@ -32,6 +32,7 @@
 //! Routing ([`Router`]) is allocation-free and supports static, regexp (`{id:[0-9]+}`, default
 //! `regex` feature), plain (`:id`) and wildcard (`*rest`) segments, in that order of precedence;
 //! parameters are percent-decoded once ([`Context::param`], raw in [`Context::param_raw`]).
+#![warn(clippy::unwrap_used)]
 
 pub mod client;
 mod context;

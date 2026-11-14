@@ -4,6 +4,7 @@
 //!
 //! I/O threads never block; code that must block (databases, files, slow RPC) is handed to this
 //! pool and its result is brought back to the connection's I/O thread by `flash-core`.
+#![warn(clippy::unwrap_used)]
 
 use std::{
     collections::VecDeque,

@@ -57,7 +57,7 @@ impl Handler for Slow {
             let _ = c.send(data);
             return;
         }
-        let ms = data[0] as u64;
+        let ms = u64::from(data[0]);
         c.spawn_blocking(
             move || {
                 thread::sleep(Duration::from_millis(ms * 10));
@@ -226,7 +226,7 @@ fn ordered_slots_keep_pipelined_responses_in_request_order() {
             // One request per byte, pipelined in a single segment. Later requests finish first.
             for &b in data {
                 let slot = c.reserve_response().unwrap();
-                let delay = (20 - b as u64) * 5;
+                let delay = (20 - u64::from(b)) * 5;
                 c.spawn_blocking(
                     move || {
                         thread::sleep(Duration::from_millis(delay));

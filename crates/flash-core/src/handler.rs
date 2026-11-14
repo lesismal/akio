@@ -111,17 +111,17 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
             // Whatever the transport produced (an alert) is flushed, then the connection ends.
             Err(_) => {
                 self.conn.inner.note_transport_error();
-                self.conn.close_after_send()
+                self.conn.close_after_send();
             }
         }
         self.plain = plain;
     }
     fn on_close(&mut self, err: Option<Error>) {
-        self.h.on_close(&self.conn, err)
+        self.h.on_close(&self.conn, err);
     }
     fn run_task(&mut self, task: Task) {
         if let Ok(f) = task.downcast::<Completion<H>>() {
-            (*f)(&mut self.h, &self.conn)
+            (*f)(&mut self.h, &self.conn);
         }
     }
 }
@@ -147,6 +147,6 @@ impl<A: Acceptor> DynAcceptor for A {
         })
     }
     fn on_shutdown(&self, inner: &Arc<ConnInner>) {
-        Acceptor::on_shutdown(self, &Conn::<A::Handler>::new(inner.clone()))
+        Acceptor::on_shutdown(self, &Conn::<A::Handler>::new(inner.clone()));
     }
 }

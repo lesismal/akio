@@ -93,7 +93,8 @@ fn main() -> std::io::Result<()> {
         *cpu.lock().unwrap() = None;
         rx.send(b"cpu").unwrap();
         loop {
-            if let Some(t) = *cpu.lock().unwrap() {
+            let taken = *cpu.lock().unwrap();
+            if let Some(t) = taken {
                 return t;
             }
             std::thread::sleep(Duration::from_millis(1));

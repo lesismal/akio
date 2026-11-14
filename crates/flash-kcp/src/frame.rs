@@ -3,7 +3,7 @@
 use crate::crypt::Crypt;
 use crate::fec;
 
-pub struct Framer {
+pub(crate) struct Framer {
     enc: Option<fec::Encoder>,
     dec: Option<fec::Decoder>,
     /// Packets the FEC recovered.
@@ -12,7 +12,7 @@ pub struct Framer {
 
 impl Framer {
     /// Either shard count at zero turns FEC off, as in kcp-go.
-    pub fn new(data: usize, parity: usize) -> Option<Framer> {
+    pub(crate) fn new(data: usize, parity: usize) -> Option<Framer> {
         if data == 0 || parity == 0 {
             return Some(Framer {
                 enc: None,
@@ -28,7 +28,7 @@ impl Framer {
     }
 
     /// Bytes the framing adds to a KCP packet.
-    pub fn overhead(&self, crypt: Option<&Crypt>) -> usize {
+    pub(crate) fn overhead(&self, crypt: Option<&Crypt>) -> usize {
         let c = crypt.map_or(0, |c| c.header() + c.trailer());
         c + if self.enc.is_some() {
             fec::HEADER_PLUS2
@@ -38,7 +38,7 @@ impl Framer {
     }
 
     /// Frames a KCP packet into its datagram and any parity datagrams it completes.
-    pub fn encode(
+    pub(crate) fn encode(
         &mut self,
         crypt: Option<&Crypt>,
         p: &[u8],
@@ -73,7 +73,7 @@ impl Framer {
 
     /// Passes the KCP packets of an opened datagram to `input`: its own and those its FEC
     /// recovers. FEC shards from a peer are read even without FEC of our own (parity ignored).
-    pub fn decode(&mut self, b: &[u8], input: &mut dyn FnMut(&[u8])) {
+    pub(crate) fn decode(&mut self, b: &[u8], input: &mut dyn FnMut(&[u8])) {
         let ty = u16::from_le_bytes([b[4], b[5]]);
         match ty {
             fec::TYPE_DATA | fec::TYPE_PARITY => {
@@ -101,7 +101,7 @@ impl Framer {
 }
 
 /// Decrypts a datagram, `None` if it fails its check or is too short to be anything.
-pub fn open(crypt: Option<&Crypt>, b: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn open(crypt: Option<&Crypt>, b: &[u8]) -> Option<Vec<u8>> {
     let o = match crypt {
         Some(c) => c.open(b.to_vec())?,
         None => b.to_vec(),
@@ -110,7 +110,7 @@ pub fn open(crypt: Option<&Crypt>, b: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The conversation, command and sequence number of an opened datagram's first segment.
-pub fn peek(b: &[u8]) -> Option<(u32, u8, u32)> {
+pub(crate) fn peek(b: &[u8]) -> Option<(u32, u8, u32)> {
     let b = match u16::from_le_bytes([b[4], b[5]]) {
         fec::TYPE_DATA => b.get(fec::HEADER_PLUS2..)?,
         fec::TYPE_PARITY | fec::TYPE_OOB => return None,

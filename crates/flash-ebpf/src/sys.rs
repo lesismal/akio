@@ -43,8 +43,8 @@ fn bpf<T>(cmd: libc::c_long, attr: &mut T) -> io::Result<libc::c_int> {
         libc::syscall(
             libc::SYS_bpf,
             cmd,
-            attr as *mut T as *mut c_void,
-            std::mem::size_of::<T>(),
+            std::ptr::from_mut::<T>(attr).cast::<c_void>(),
+            size_of::<T>(),
         )
     };
     cvt(r as libc::c_int)
@@ -95,8 +95,8 @@ pub(crate) fn map_update<K, V>(map: RawFd, key: &K, value: &V) -> io::Result<()>
     let mut a = MapElem {
         map_fd: map as u32,
         _pad: 0,
-        key: key as *const K as u64,
-        value: value as *const V as u64,
+        key: std::ptr::from_ref::<K>(key) as u64,
+        value: std::ptr::from_ref::<V>(value) as u64,
         flags: 0,
     };
     bpf(BPF_MAP_UPDATE_ELEM, &mut a).map(drop)
@@ -107,7 +107,7 @@ pub(crate) fn map_delete<K>(map: RawFd, key: &K) -> io::Result<()> {
     let mut a = MapElem {
         map_fd: map as u32,
         _pad: 0,
-        key: key as *const K as u64,
+        key: std::ptr::from_ref::<K>(key) as u64,
         value: 0,
         flags: 0,
     };
@@ -197,8 +197,8 @@ fn setsockopt<T>(fd: RawFd, name: libc::c_int, v: &T) -> io::Result<()> {
             fd,
             libc::SOL_SOCKET,
             name,
-            v as *const T as *const c_void,
-            std::mem::size_of::<T>() as libc::socklen_t,
+            std::ptr::from_ref::<T>(v).cast::<c_void>(),
+            size_of::<T>() as libc::socklen_t,
         )
     })
     .map(drop)
@@ -227,15 +227,15 @@ pub(crate) fn attach_reuseport_ebpf(fd: RawFd, prog: RawFd) -> io::Result<()> {
 /// `SO_COOKIE`: the socket's unique, never reused 64-bit id.
 pub(crate) fn socket_cookie(fd: RawFd) -> io::Result<u64> {
     let mut v = 0u64;
-    let mut len = std::mem::size_of::<u64>() as libc::socklen_t;
+    let mut len = size_of::<u64>() as libc::socklen_t;
     // SAFETY: `v` and `len` are valid for writes and `len` holds the size of `v`.
     cvt(unsafe {
         libc::getsockopt(
             fd,
             libc::SOL_SOCKET,
             SO_COOKIE,
-            &mut v as *mut u64 as *mut c_void,
-            &mut len,
+            (&raw mut v).cast::<c_void>(),
+            &raw mut len,
         )
     })?;
     Ok(v)

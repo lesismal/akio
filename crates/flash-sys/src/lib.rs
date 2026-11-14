@@ -4,6 +4,7 @@
 //!
 //! All `unsafe` in the network stack's hot path lives here, each block with a `SAFETY:` note.
 #![cfg(any(target_os = "linux", target_os = "macos"))]
+#![warn(clippy::unwrap_used)]
 
 mod net;
 mod poller;

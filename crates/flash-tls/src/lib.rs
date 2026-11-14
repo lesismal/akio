@@ -23,6 +23,7 @@
 //! let acceptor = Tls::server(Arc::new(cfg), flash_core::fn_acceptor(|_c: &flash_core::Conn<Echo>| Echo));
 //! # let _ = acceptor;
 //! ```
+#![warn(clippy::unwrap_used)]
 
 use std::{
     any::Any,
@@ -74,7 +75,7 @@ impl<A: Acceptor> Acceptor for Tls<A> {
     }
 
     fn on_shutdown(&self, c: &Conn<A::Handler>) {
-        self.inner.on_shutdown(c)
+        self.inner.on_shutdown(c);
     }
 
     fn transport(&self) -> Option<Box<dyn Transport>> {

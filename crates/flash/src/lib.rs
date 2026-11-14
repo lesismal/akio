@@ -18,6 +18,7 @@
 //!     .unwrap();
 //! engine.run().unwrap();
 //! ```
+#![warn(clippy::unwrap_used)]
 
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
@@ -337,7 +338,7 @@ impl EngineBuilder {
                 groups.push(Box::new(flash_epoll::UdpGroup::bind(
                     None,
                     self.udp_client_threads,
-                    self.cfg.clone(),
+                    self.cfg,
                     pool.clone(),
                 )?));
             }

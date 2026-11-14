@@ -10,6 +10,7 @@
 //! * Write: `send` tries the socket directly (from any thread); the rest is queued and written by
 //!   the owning loop when the socket becomes writable.
 //! * Backpressure: reads pause while a connection's queue exceeds the high watermark.
+#![warn(clippy::unwrap_used)]
 
 mod group;
 mod reactor;

@@ -1,6 +1,6 @@
 //! Closed-loop echo load generator, so the same tool drives flash, fib, tokio...
 //!
-//! usage: echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]
+//! usage: `echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]`
 //!
 //! `mode` is `tcp`, `udp`, or `tls` (build with `--features tls`; the server certificate is not
 //! verified). Connections are spread over a few client threads; each thread sends one message on
@@ -195,12 +195,12 @@ fn main() {
                 let mut buf = vec![0u8; size.max(1)];
                 let (mut n, mut l) = (0u64, 0u64);
                 'run: while !stop.load(Ordering::Relaxed) {
-                    for s in socks.iter_mut() {
+                    for s in &mut socks {
                         if s.send(&msg).is_err() {
                             break 'run;
                         }
                     }
-                    for s in socks.iter_mut() {
+                    for s in &mut socks {
                         match s.recv(&mut buf) {
                             Ok(true) => n += 1,
                             Ok(false) => l += 1,

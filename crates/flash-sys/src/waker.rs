@@ -26,7 +26,7 @@ impl Waker {
         };
         #[cfg(not(target_os = "linux"))]
         let w = {
-            let mut fds = [0 as libc::c_int; 2];
+            let mut fds: [libc::c_int; 2] = [0; 2];
             // SAFETY: `fds` has room for the two descriptors pipe(2) writes.
             if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
                 return Err(io::Error::last_os_error());
@@ -61,7 +61,7 @@ impl Waker {
         unsafe {
             libc::write(
                 self.write_fd(),
-                &one as *const _ as *const libc::c_void,
+                (&raw const one).cast::<libc::c_void>(),
                 len,
             )
         };
@@ -75,7 +75,7 @@ impl Waker {
             let n = unsafe {
                 libc::read(
                     self.read.as_raw_fd(),
-                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.as_mut_ptr().cast::<libc::c_void>(),
                     buf.len(),
                 )
             };
