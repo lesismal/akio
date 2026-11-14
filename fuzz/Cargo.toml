@@ -194,3 +194,24 @@ path = "fuzz_targets/rtp_depacketize.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mpegts_demux"
+path = "fuzz_targets/mpegts_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_listener"
+path = "fuzz_targets/srt_listener.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_conn"
+path = "fuzz_targets/srt_conn.rs"
+test = false
+doc = false
+bench = false
