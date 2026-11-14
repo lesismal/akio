@@ -1,0 +1,23 @@
+[book]
+title = "flash 指南"
+description = "flash：Rust 的事件驱动、每核一线程网络库"
+authors = ["The flash authors"]
+language = "zh-CN"
+src = "src"
+
+[build]
+# 两种语言都构建到 target/book/ 下（已被 git 忽略），见 book/README.zh-CN.md。
+build-dir = "../../target/book/zh-CN"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/lesismal/flash"
+edit-url-template = "https://github.com/lesismal/flash/edit/main/book/zh-CN/{path}"
+site-url = "/flash/zh-CN/"
+additional-js = ["mermaid-init.js"]
+
+[output.html.playground]
+runnable = false
+
+[output.html.search]
+enable = true

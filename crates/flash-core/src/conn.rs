@@ -1111,6 +1111,14 @@ impl ConnInner {
         self.link.wake_conn(self.id);
     }
 
+    /// Loop side: the peer finished sending (EOF). Close once everything queued *and* every
+    /// response reserved before now has been written: the close takes the next response
+    /// position, so pipelined requests still being answered (on the pool, say) are not cut off.
+    pub fn close_after_responses(&self) {
+        let seq = self.reserve();
+        self.fill_parts(seq, Vec::new(), true);
+    }
+
     pub fn hold_reads(&self, hold: bool) {
         if self.hold.swap(hold, Ordering::AcqRel) != hold {
             self.link.wake_conn(self.id);
@@ -1194,7 +1202,8 @@ impl ConnInner {
                     };
                     o.head += 1;
                     for p in parts {
-                        let _ = self.send_part(p);
+                        let r = self.send_part(p);
+                        self.ordered_sent(r);
                     }
                     if close_after {
                         self.close_after_send();
@@ -1205,7 +1214,8 @@ impl ConnInner {
                         s.live = true;
                         if !s.pending.is_empty() {
                             let d = std::mem::take(&mut s.pending);
-                            let _ = self.send_owned(d);
+                            let r = self.send_owned(d);
+                            self.ordered_sent(r);
                         }
                     }
                     if !s.finished {
@@ -1219,6 +1229,21 @@ impl ConnInner {
                     }
                 }
                 _ => return,
+            }
+        }
+    }
+
+    /// A response in the ordered stream could not be queued (over `max_queued_bytes`): it
+    /// cannot be dropped without corrupting or stalling the stream, so the connection ends.
+    fn ordered_sent(&self, r: Result<()>) {
+        if let Err(Error::Overloaded) = r {
+            if self
+                .state
+                .compare_exchange(OPEN, CLOSING, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let e = io::Error::other("ordered response over max_queued_bytes");
+                self.link.close_conn(self.id, Some(e));
             }
         }
     }

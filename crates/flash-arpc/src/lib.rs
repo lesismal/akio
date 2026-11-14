@@ -23,8 +23,14 @@
 //!     .unwrap();
 //! engine.run().unwrap();
 //! ```
+//!
+//! Guide: [arpc](https://lesismal.github.io/flash/en/protocols/arpc.html)
+//! (中文: [arpc](https://lesismal.github.io/flash/zh-CN/protocols/arpc.html)).
 #![warn(clippy::unwrap_used)]
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod proto;
 
 use std::{

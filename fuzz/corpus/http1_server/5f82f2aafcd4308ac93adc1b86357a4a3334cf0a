@@ -1,0 +1,13 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, Hpgration: Upgrade, Hpgrade, HTTP2-Settings
+Upgrade: h3c
+HTTP2-SUpgrade: websocketettings: AAMAAABde, HTTP2-Cettings
+Upgrade: h3c
+HTTP2-SUpgrade: wettings: AAMAAABks
+Upgrade: h2c
+HTTP2-est: h
+Connection: Uprade, Hpgrade, HTTP2-Settings
+Upgrade: h3c
+HTTP2-SUpgrade: websocketeSttings: AAMAAABkAA_PAQ._
+

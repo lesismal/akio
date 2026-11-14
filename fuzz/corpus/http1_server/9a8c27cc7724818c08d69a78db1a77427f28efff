@@ -1,0 +1,11 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HUpgrade: h2c
+HTTP2-Settfngs: A;MAAAB%kAAtings
+Upgradst: h
+Connection: Upgrade, HTTP1-Settings
+Upgrade: h3c
+HTTP2-Settfngs: A;MAAAB%kAAtings
+Upgrade: h2c
+HTTP2-Settfngs:  h2Qe: h2QAAP__
+

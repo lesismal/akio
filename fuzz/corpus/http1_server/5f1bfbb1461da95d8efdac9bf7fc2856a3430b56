@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+ost: h
+Connection: Upgrade, HTTade, HTTP2-Settingsings
+Upgrade: h2c
+HTTP2-Settings: AonnectAMAAP__
+

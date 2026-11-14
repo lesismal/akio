@@ -1,0 +1,9 @@
+GET / HTTP/1.1
+Host: 
+Upe: h2c
+HTTP2-Settings: Ah
+Connection: Upgrade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAAAkAAABMQAAP__
+
+нннннннннннннннннннннннню€€€€€€€ннн

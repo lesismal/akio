@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Settgins
+Upgrade:h2c
+
+ннннннннннннGbн/mnннннн

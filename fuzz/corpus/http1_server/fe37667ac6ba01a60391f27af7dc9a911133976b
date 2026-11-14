@@ -1,0 +1,8 @@
+GET /ws HTTP/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: Upgrade
+Sec-WebSocket-Key: dGhSBubcket
+ConnectPGETion: Upgrade
+Sec-Webolc-WebSocket-Protocol: chat
+

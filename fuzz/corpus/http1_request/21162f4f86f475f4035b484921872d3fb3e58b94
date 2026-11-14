@@ -1,0 +1,7 @@
+GET /ws HTTP/1.1
+Hostr: websocket
+Con: websocket
+CoKey:dGhlIH 12
+y: dGhlIH 13
+ecotlcoo: chat]
+

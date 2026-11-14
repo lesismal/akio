@@ -1,0 +1,48 @@
+GET / HTTP/1.1
+Host:TTP/0.1
+Hostnnection: UpgrTTP2ings: AAMAAP__pgrade: h2c h
+Connection: Upgn: Upgrade, HTTade, #HTTP2-Settition: UpgrTTP2ings: TRACE __pgr2c h
+Connection: Upgn: Upgrade, HTTade, #HTTP2-Settition: UpgrTTP2ings: TRACE __pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settinngs
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settings: AAMAAP__pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Sett-ings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,___;_______________Expect: 100-continue__onnection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos:: Upgrade, HTTade___________________s: AAMAAP__pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settinngs
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settings: AAMAAP__pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,___;______________________________________pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Seitngts
+Upgrade: h2c
+HTTP2-Settinos:: Upgradade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settinngs
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settings: AAMAAP__pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Sett-ings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,___;_______________Expect: 100-continue__onnection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos:: Upgrade, HTTade___________________s: AAMAAP__pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settinngs
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settings: AAMAAP__pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,___;______________________________________pgrade: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Seitngts
+Upgrade: h2c
+HTTP2-Settinos:: Upgrade, HTTade_______________________/stream______
+

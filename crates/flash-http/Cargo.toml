@@ -22,10 +22,14 @@ regex = { version = "1", optional = true }
 default = ["regex"]
 ## Regexp route parameters (`/users/{id:[0-9]+}`).
 regex = ["dep:regex"]
+# Fuzz entry points for `fuzz/` (`flash_http::fuzzing`); not a public API.
+fuzzing = ["flash-core/fuzzing"]
 
 [dev-dependencies]
+flash-core = { path = "../flash-core", features = ["fuzzing"] }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+libc = "0.2"
 
 [lints]
 workspace = true

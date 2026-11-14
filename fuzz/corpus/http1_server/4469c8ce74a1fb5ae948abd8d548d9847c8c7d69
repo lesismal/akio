@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP1-Setts
+Upgrade: h2c
+HTTP2-Settfngs: A;M
+Upgrade: h2Q[AP__
+

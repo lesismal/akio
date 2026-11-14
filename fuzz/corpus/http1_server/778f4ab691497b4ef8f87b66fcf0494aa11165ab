@@ -1,0 +1,8 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, Hpgrade, HTTP2-Sings
+Upgrade: h3c
+HTTP2-Settings: AAMAAABks
+Upgrade: h2c
+HTT2etS-Ptings: AAMAAABkAA_PAQ._
+

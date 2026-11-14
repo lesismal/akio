@@ -1,0 +1,6 @@
+GET ws HTTP/1.1
+Hosign: n: Upgrade
+Se:  / HTTP/1.1
+Ho:1
+
+h

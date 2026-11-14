@@ -228,12 +228,14 @@ fn responses_with_continuation_padding_priority_and_ping() {
 
 #[test]
 fn rst_stream_and_goaway_fail_the_affected_requests() {
-    let (e, c, t) = setup(H2Options::default(), |srv| {
+    let (got5, saw5) = mpsc::channel();
+    let (e, c, t) = setup(H2Options::default(), move |srv| {
         let (s1, _) = srv.request();
         srv.send(RST_STREAM, 0, s1, &7u32.to_be_bytes()); // REFUSED_STREAM
         let (s3, _) = srv.request();
         srv.send(RST_STREAM, 0, s3, &2u32.to_be_bytes()); // INTERNAL_ERROR
         let (s5, _) = srv.request();
+        got5.send(()).unwrap();
         let (s7, _) = srv.request();
         // GOAWAY: stream 5 was processed, stream 7 was not.
         let mut p = s5.to_be_bytes().to_vec();
@@ -248,9 +250,12 @@ fn rst_stream_and_goaway_fail_the_affected_requests() {
     assert!(e1.to_string().contains("refused"), "{e1}");
     let e3 = c.send(get("/3")).wait().unwrap_err();
     assert!(e3.to_string().contains("reset"), "{e3}");
+    // Requests start in submission order only per round trip: wait until /5 is on the wire.
     let f5 = c.send(get("/5"));
+    saw5.recv_timeout(Duration::from_secs(5)).unwrap();
     let f7 = c.send(get("/7"));
-    assert!(matches!(f7.wait(), Err(ClientError::Closed)));
+    let r7 = f7.wait();
+    assert!(matches!(r7, Err(ClientError::Closed)), "{r7:?}");
     assert_eq!(f5.wait().unwrap().body, b"five");
     stop(&e, t);
 }

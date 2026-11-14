@@ -1,0 +1,22 @@
+GET / HTTP/1.1
+Host:TTP/P__pgrade: ings
+Upgrade: h4c
+HTTP2-Settinos: AAMAAP,_-Settinngs
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,_-Settings/0.1
+HosCtost: _no_contextSec-WebSockNNECT example+cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Host: example: example.comHEAD ebSoc+NNECT examplele.comHE exa2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,______________________
+HTTP2-Settinos: AAMAAP,_________________+cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Host: exa2-Settings
+Upgrade: h2c
+HTTP2-Settinos: AAMAAP,______________________
+HTTP2-Settinos: AAMAAP,_____________________________________________
+

@@ -1,0 +1,9 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host:
+Connection: Upgrade, HTTa@e, HTTP2-Settings
+Upgrade: h2c h
+Connection: UdHTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____oooooooooooooooooooooooo____________________________________Sec-WebSocHEAD ket; server_no_context_takeover-Extensions: permessage-deflate______
+

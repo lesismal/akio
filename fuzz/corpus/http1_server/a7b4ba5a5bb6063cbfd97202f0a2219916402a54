@@ -1,0 +1,43 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-VersioSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=n: : websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dG:1.1
+hExpect: ;=pecP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-VersioSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=n: : websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dG:1.1
+hExpect: ;=pect web HTTP/1.1
+zost: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-UebSocket-Key:/ws HTTP/1.1
+zost: h
+Upgradea:2.1
+hExpect: TP/1.1
+zost: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-UebSocket-Key:/ws HTTP/1.1
+zost: h
+Upgradea:2.1
+hExpect: ;=pect webs;=pect wehl@HNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WabSocket-Ede: webso13
+Sec-WabSocket-Ede: websoYket
+zost: h
+UConnection: Upgrade
+Sec-WebSocket-Knnection: Upgrade, HTTP2-Settings
+Upgrade: h2c
+XTTP2-Settings: AAMAey: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version#: 13
+Sec-WabSockextensions: /pushssage-deflate; client_max_window_bits
+
+ÅÖ7˙!=-üMQ/detachc-WebS

@@ -12,10 +12,17 @@ flash = { path = "../flash" }
 flash-http = { path = "../flash-http" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 prost = { version = "0.13", optional = true }
+flash-core = { path = "../flash-core", optional = true }
 
 [features]
 # Typed helpers for prost-generated messages.
 prost = ["dep:prost"]
+# Fuzz entry points for `fuzz/` (`flash_grpc::fuzzing`); not a public API.
+fuzzing = ["dep:flash-core", "flash-core/fuzzing", "flash-http/fuzzing"]
+
+[dev-dependencies]
+flash-core = { path = "../flash-core", features = ["fuzzing"] }
+flash-http = { path = "../flash-http", features = ["fuzzing"] }
 
 [lints]
 workspace = true

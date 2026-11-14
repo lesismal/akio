@@ -1,0 +1,10 @@
+HTTP/1.1 101 Switchtcloos
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Set-Extensions: perm
+Sec-WebSocketYEensions: perm
+Sec-WebSocketYExtensions: pebsockgrade
+Sen-WebSocket-Accept: ssikgrade
+Sen-WebSocket-Accept: s3ponnection:ssagts=0
+

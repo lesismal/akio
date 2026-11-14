@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host:TTP/h: 
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____oooooooooooooooooooooooo_____________________, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgrade, HTTade, H_____:_______________
+

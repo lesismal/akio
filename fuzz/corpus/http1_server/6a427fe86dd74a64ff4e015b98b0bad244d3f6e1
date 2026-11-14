@@ -1,0 +1,8 @@
+GPUTPOST Ceno/p HTTP/1.1
+Host: h
+Transfer-Endig:ET / HTTP/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+

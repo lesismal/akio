@@ -1,0 +1,4 @@
+GET /a?b=c HTTP/1.0
+User-Agent: x
+Accept: */*
+

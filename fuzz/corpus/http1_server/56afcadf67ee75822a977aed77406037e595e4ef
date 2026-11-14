@@ -1,0 +1,16 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: Upgrade, HT-Settings
+Uperade: h2c h
+Connection: Upg 1
+Contt-Length: 2
+Contnte-Length:0 1
+Contnte-Length:02ettings: A_ent-Length: 1
+Contt-Lontt-Length-Length: 1
+Contt-Lengtt-Length: 1
+Contt-Length: 1
+Contnte-Length:02hunh: 1
+Contnte-Length:02hunength:02hunh: 1
+ContnteContnte-Length:02hu_________MAAP______________________Sec-WebSocket-Extensions: permessage-
+

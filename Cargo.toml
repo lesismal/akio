@@ -22,6 +22,8 @@ members = [
     "crates/flash",
     "tools/echo-bench",
 ]
+# The cargo-fuzz project is its own (nightly-only) workspace.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"
@@ -95,7 +97,6 @@ debug_assert_with_mut_call = "warn"
 derive_partial_eq_without_eq = "warn"
 iter_on_empty_collections = "warn"
 iter_on_single_items = "warn"
-needless_collect = "warn"
 needless_pass_by_ref_mut = "warn"
 nonstandard_macro_braces = "warn"
 or_fun_call = "warn"

@@ -1,0 +1,5 @@
+GET /ws HTTP/1.1
+Hospgrade: websocken: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Fersion: 1Îòõ¬šœÒ¨ebSocket-Protocol: chat
+

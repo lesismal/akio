@@ -1,0 +1,83 @@
+# flash
+
+English | [简体中文](README.zh-CN.md)
+
+flash is an event-driven, thread-per-core network library for Rust, the Rust counterpart of the
+Go library [fib](https://github.com/lesismal/fib). Callbacks run inline on the connection's I/O
+thread, a cloneable `Conn` handle can be used from any thread, blocking work goes to an explicit
+logical pool, and each listener picks its own backend (epoll/kqueue or io_uring) with optional
+eBPF steering. There is no async runtime.
+
+**Documentation:** [the flash book](https://lesismal.github.io/flash/en/) ·
+[architecture](docs/architecture.md) · [migration from fib, tokio, hyper/axum](https://lesismal.github.io/flash/en/migration/from-fib.html) ·
+API reference: `cargo doc --workspace --no-deps --open`
+
+## Features
+
+| Area | What is there |
+|---|---|
+| Engine | per-listener backends: epoll (Linux), kqueue (macOS), io_uring (Linux 5.19+, falls back to epoll); thread-per-core I/O threads; `SO_REUSEPORT` accept distribution; eBPF/classic-BPF steering (`Accel::Ebpf`) and an in-kernel sockmap relay |
+| Connections | `Conn` is `Clone + Send + Sync`; non-blocking `send` from any thread with direct writes, corking, `writev`, `sendfile`; backpressure (watermarks, `hold_reads`, `on_drain`, `max_queued_bytes`); idle timeouts; async dial; graceful shutdown |
+| Blocking work | adaptive bounded logical pool, `Conn::spawn_blocking` with completions back on the I/O thread, ordered response slots, slow-callback detection |
+| UDP | one `Conn` per peer, `recvmmsg`/`sendmmsg`, UDP GSO/GRO, peer caps, UDP dial |
+| TLS | rustls as a connection transport (server and client, ALPN, SNI) |
+| HTTP | HTTP/1.1 and HTTP/2 (h2spec 147/147) on one port, pipelining, streaming both ways, Router (static/regexp/param/wildcard), 9 middlewares, static files with `sendfile`, HTTP/1 and HTTP/2 clients |
+| WebSocket | server and client, permessage-deflate, Autobahn 100% (server and client) |
+| HTTP/3 and QUIC | quinn-proto based QUIC, HTTP/3 serving the same `Router`, H3 client; interop with quic-go and fib |
+| RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
+| Proxies | SOCKS5/4/4a, HTTP CONNECT, port sharing by first-byte sniffing (flash-mux) |
+| KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |
+| Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings |
+
+Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
+## Quick start
+
+```toml
+[dependencies]
+flash = { git = "https://github.com/lesismal/flash" }
+```
+
+```rust
+use flash::{Conn, Engine, Handler, Listener, fn_acceptor};
+
+struct Echo;
+
+impl Handler for Echo {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        let _ = c.send(data); // non-blocking, inline on the I/O thread
+    }
+}
+
+fn main() -> std::io::Result<()> {
+    let engine = Engine::builder()
+        .listen(Listener::tcp("127.0.0.1:7000".parse().unwrap())
+            .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)))
+        .build()?;
+    engine.run()
+}
+```
+
+More: `cargo run -p flash --example guide-basics`, `cargo run -p flash-http --example hello`,
+and the other `guide-*` examples listed in the book's
+[Getting started](https://lesismal.github.io/flash/en/getting-started.html).
+
+## Status
+
+Milestones M0–M5 are done and production observability (M6) is in place; DPDK, chaos tests and
+the M7 protocols (media, WebRTC, BitTorrent) are not. Linux is the first-class platform; macOS is
+for development; Windows is not supported. Plan and progress: [docs/ROADMAP.md](docs/ROADMAP.md),
+[docs/DEV-PLAN.md](docs/DEV-PLAN.md), design decisions in [docs/adr](docs/adr/README.md).
+
+## Building the docs
+
+```console
+$ cargo install mdbook --locked --version 0.4.52
+$ book/build.sh          # checks and compiles every snippet, builds target/book/{en,zh-CN}
+```
+
+See [book/README.md](book/README.md).
+
+## License
+
+MIT

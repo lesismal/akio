@@ -1,0 +1,4 @@
+GET / HTTP/1.1
+st:h
+Content-Length: 1
+Content-Len/: 0

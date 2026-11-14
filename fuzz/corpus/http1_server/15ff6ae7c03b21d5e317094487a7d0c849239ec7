@@ -1,0 +1,18 @@
+GET / HTTP/1.1
+Host:TTP/1.11.1
+HOst: h
+Connection: UHost: , HTTa h
+cojnectoon: UpgradeP2-1.11.1
+HOst: h
+Connection: THost: , HTTade,  h
+Connectoon: Upgrade, HTTade, HTTP1-Set
+HOst: h
+Connection: UHost: , HTTade,  h
+Connection: Up.1
+Host:UTP/1.1
+HOst: h
+Connection: UHost: , HTTade,ction: Upgrade, dTHTae, HTTP2-S HTTade,  h
+Connection: UHost: , HTTade,ction: Upgrade, dTHTae, HTTP2-Setti HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Sedtings: AAMAAP__
+

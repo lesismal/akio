@@ -1,0 +1,5 @@
+GET ws HTTP/1.1
+Hgst: h
+U: w
+C: U
+Snt-b2t

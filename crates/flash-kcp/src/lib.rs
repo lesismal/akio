@@ -25,11 +25,17 @@
 //!     .unwrap();
 //! engine.start().unwrap();
 //! ```
+//!
+//! Guide: [KCP](https://lesismal.github.io/flash/en/protocols/kcp.html)
+//! (中文: [KCP](https://lesismal.github.io/flash/zh-CN/protocols/kcp.html)).
 #![warn(clippy::unwrap_used)]
 
 pub mod crypt;
 mod fec;
 mod frame;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod kcp;
 mod rs;
 

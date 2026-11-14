@@ -1,0 +1,14 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+ConnectPGETion: Upgrade
+Sec-WebSocket-c-WebSocket-Version: 12
+Se: websocket
+ConnectPGETion:aaa: h
+Upgrade: websocket
+ConnectPGETion: Upgrade
+Sec-WebSocket-c-WebSocket-Version: 12
+Se: websocket
+ConnectPGETiol:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ebSolc-WebSocket-Protocol: chat
+l: chat
+

@@ -270,6 +270,7 @@ name = "flash-grpc"
 version = "0.0.0"
 dependencies = [
  "flash",
+ "flash-core",
  "flash-http",
  "flate2",
  "prost",
@@ -298,6 +299,7 @@ dependencies = [
  "flash-ws",
  "flate2",
  "httparse",
+ "libc",
  "log",
  "loona-hpack",
  "rcgen",

@@ -1,0 +1,15 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, pgrade: h2c
+HTTP2-Settfnge: h2c
+HTTP2-Settfngs: A;Mpgrade, HTTP1-SettingsCCCCgrade: hHTTP1-Settings
+Upgrade: h2c
+HTTP2-Settfnge: h2c
+HTTP2-Settfngs: A;MAAAB%kAAtings
+UCCCCCCCpgrade: h2Qe: h2QAAPon: Upgrade, HTTP1-SettingsCCCCgrade: h2c
+HTTP2-Settfnge: h2ade: h2Qe: h2QAAPon: Upgrade, HTTP1-SettingsCCCCgrade: h2c
+HTTP2-Settfnge: h2c
+HTTP2-Settfngs: A;MAAAB%kAAtingsc
+HTTP2-Settfngs: A;MAAAB%kAAtings
+UCCCCCCCpgrade:																													
+

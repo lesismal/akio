@@ -1,0 +1,41 @@
+?HTTP/1.1 200 HTTP200 ¹HTTP/1.1 200 OK
+CpExpect: 05P/1.1 100nuif
+
+HTTP/1.1 204 No Ce
+
+HTTP/1.1 204 No ONNECT  OK
+CpExpect: 05P/1.1 100inue
+
+HTTP/1.1 204 No Cif
+
+HTTP/1.1 204 No Ce
+
+HTTP/1.1 204 No Cš‘‹šHTTP/1.1 200 HTTPCONN100inue
+
+HTTP/1.1 204 OK
+CpExpect: 05P/1.1 10!0in}e
+
+HTTP/1.1 204 No Cš‘‹/1.1 200 OK
+CpExpect: 05P/1.1 100nuif
+
+HTTP/1.1 204 No Ce
+
+HTTP/1.1 204 No Cš‘‹šHTTP/1.1 100inue
+
+HTTP/1.1 204 OK
+CpExpect: 05P/1.1 100in}e
+
+HTTP/1.1 204 No Cš‘‹/1.1 200 OK
+CpExpect: 05P/1.1 100nuif
+
+HTTP/1.1 204 No Ce
+
+HTTP/1.1 204 N t OK
+CpExpect: 05P/1.1 100in}e
+
+HTTP/1.1 204 No Cš‘‹/1.1 200 OK
+CpExpect: 05P/1.1 100nuif
+
+HTTP/1.1 204 No 
+
+HTTP/1.1 204 No Cš‘‹šnt Cnt Ctonin

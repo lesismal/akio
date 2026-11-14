@@ -1,0 +1,61 @@
+GE+ /ws HTTP/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: )ST /Connect@on: ol: P/1.1
+Host: h
+Conngth: et
+ConnectPGETion: UUpgrade- HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /GE+ /ws HTTP/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: )ST /Connect@on: ol: P/1.1
+Host: h
+Conngth: et
+ConnectPGETion: UUpgrade- HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Connect@onueh2c
+HTTP2-Settings: A;MAAABOST /Connect@on: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: ol: P/1.1
+Host: h
+ContentUpgrade: websocketctPGETion: UUpgrade, HTT: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: olcUUpgrade, HTTP1-Settings
+Upgrade: Expect: 200-continueh2c
+HTTP2-Settings: A;MAAABOST /Connec
+HTTP1-Settings: A;MAAAB)ST /Connect@on: ol: P/0.1
+Host: h
+Conngth: et
+ConnectPGETion: UUpgrade- HTTP1Connect@onueh2c
+HTTP2-Settings: A;MAAABOST /Co/1.1
+Host: h
+ContentUpgrade: websocketctPGETion: UUpgrade, HTT: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: olcUUpgra00-continueh2c
+HTTP2-Settings: A;MAAABOST /Connec
+HTTP1-Settings: A;MAAAB)ST /Connect@on: ol: P/0.1
+Host: h
+Conngth: et
+ConnectPGETion: UUpgrade- HTTP1ConnectConnection: Upgrade, HTTP2-SettingsT /Connect@on: UpgradeHo=de: h2c
+HTTP1-SetSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==tings: A;MAAA=OST /Connect@on: ol: P/1.1
+Host: h
+ContentUpgrade: websocketctPGETion: UUpgrade, HTT: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: olcUUpgrade, HTTP1-Settings
+Upgrade: Expect: 200-continueh2c
+HTTP2-Settings: A;MAAABOST /Connec
+HTTP1-Settings: A;MAAAB)ST /Connect@on: ol: P/1.1
+Host: h
+Conngth: et
+ConnectPGETion: UUpde, HTTP1-Settings
+Upgrade: Expect: 200-continueh2c
+HTTP2-Settings: A;MAAABOST /Connec
+HTTP1-Settings: A;MAAAB)ST /Connect@on: ol: P/1.1
+Host: h
+Conngth: et
+ConnectPGETion: UUpgrade- HTTP1-Settings
+Upgrade: h2BOST /Connect@on: ol: P/1.1
+Host: h
+ContentUpgrade: websocketctPGETion: UUpgrade, HTT: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: olc/1.1
+Host: h
+Content-Length: et
+ConSec-WebSocket-Protocol: chatnectPGETion: UUpgrade, HThat
+

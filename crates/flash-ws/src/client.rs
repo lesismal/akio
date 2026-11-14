@@ -502,7 +502,12 @@ impl ClientConn {
         let Some(plan) = self.plan.clone() else {
             return;
         };
-        match check_response(&plan, &self.buf) {
+        match check_response(
+            &plan.expected_accept,
+            &plan.protocols,
+            plan.pmd.as_ref(),
+            &self.buf,
+        ) {
             Ok(None) => {
                 if self.buf.len() > MAX_HEAD {
                     self.plan = None;
@@ -547,14 +552,19 @@ impl ClientConn {
     }
 }
 
-struct Accepted {
-    head_len: usize,
+pub(crate) struct Accepted {
+    pub(crate) head_len: usize,
     pmd: Option<crate::deflate::PmdParams>,
     protocol: Option<String>,
 }
 
 /// Validates the server's handshake response; `Ok(None)` while it is incomplete.
-fn check_response(plan: &Plan, buf: &[u8]) -> Result<Option<Accepted>, WsClientError> {
+pub(crate) fn check_response(
+    expected_accept: &str,
+    protocols: &[String],
+    pmd: Option<&PmdOffer>,
+    buf: &[u8],
+) -> Result<Option<Accepted>, WsClientError> {
     let mut storage = [httparse::EMPTY_HEADER; 64];
     let mut r = httparse::Response::new(&mut storage);
     let head_len = match r.parse(buf) {
@@ -586,20 +596,20 @@ fn check_response(plan: &Plan, buf: &[u8]) -> Result<Option<Accepted>, WsClientE
         return Err(WsClientError::Handshake("missing Connection: Upgrade"));
     }
     let mut accept = values("sec-websocket-accept");
-    if accept.next() != Some(plan.expected_accept.as_str()) || accept.next().is_some() {
+    if accept.next() != Some(expected_accept) || accept.next().is_some() {
         return Err(WsClientError::Handshake("wrong Sec-WebSocket-Accept"));
     }
     let mut protos = values("sec-websocket-protocol");
     let protocol = match (protos.next(), protos.next()) {
         (None, _) => None,
-        (Some(p), None) if plan.protocols.iter().any(|o| o == p) => Some(p.to_owned()),
+        (Some(p), None) if protocols.iter().any(|o| o == p) => Some(p.to_owned()),
         _ => {
             return Err(WsClientError::Handshake(
                 "server selected a subprotocol that was not offered",
             ));
         }
     };
-    let pmd = match &plan.pmd {
+    let pmd = match pmd {
         Some(offer) => offer
             .accept_response(values("sec-websocket-extensions"))
             .map_err(WsClientError::Handshake)?,

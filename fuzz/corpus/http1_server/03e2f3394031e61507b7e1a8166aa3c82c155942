@@ -1,0 +1,20 @@
+PGET / HTTP/1.1
+Host: h
+Connectn: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings:Sec-WebSocket-Version: 26graa1
+Host: h
+Connection: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Setting3: A;MAAABOS1 HTTP1-Settin
+Conrade: h2c
+HTTP2-Setting3: A;MAAABOST /rsion: 26graa1
+Host: h
+Connection: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Setting3: A;MAAABOS1.1
+Host: h
+Conrade: h2c0
+HTTP2-Setting3: A;MAAABOST /ColnecettingsadeHo=th: 0
+
+/bc

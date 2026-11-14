@@ -1,0 +1,8 @@
+ET / HTTP/1.1
+Host: h
+Connection: Upgrade, Hpgrade, HTTP1-Settings
+Upgrade: h3c
+HTTP2-Settings: AAMAAABks
+Upgrade: h2c
++TTP2-Settings: AAMAAABPAQ._
+
