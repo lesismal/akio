@@ -22,6 +22,7 @@ flash-mux = { path = "../crates/flash-mux", features = ["fuzzing"] }
 flash-kcp = { path = "../crates/flash-kcp", features = ["fuzzing"] }
 flash-h3 = { path = "../crates/flash-h3", features = ["fuzzing"] }
 flash-ebpf = { path = "../crates/flash-ebpf", features = ["fuzzing"] }
+flash-media = { path = "../crates/flash-media", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -169,6 +170,27 @@ bench = false
 [[bin]]
 name = "cbpf_steer"
 path = "fuzz_targets/cbpf_steer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpegts_demux"
+path = "fuzz_targets/mpegts_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_listener"
+path = "fuzz_targets/srt_listener.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_conn"
+path = "fuzz_targets/srt_conn.rs"
 test = false
 doc = false
 bench = false
