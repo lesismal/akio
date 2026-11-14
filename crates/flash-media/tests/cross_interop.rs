@@ -29,7 +29,14 @@ fn have(tool: &str) -> bool {
 
 fn ffprobe(args: &[&str], url: &str) -> String {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-show_entries", "stream=codec_name,width,height", "-of", "csv=p=0"])
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "stream=codec_name,width,height",
+            "-of",
+            "csv=p=0",
+        ])
         .args(args)
         .arg(url)
         .output()
@@ -39,8 +46,23 @@ fn ffprobe(args: &[&str], url: &str) -> String {
 
 fn publish(args: &[&str]) -> Child {
     Command::new("ffmpeg")
-        .args(["-v", "error", "-re", "-f", "lavfi", "-i", "testsrc=size=320x240:rate=25", "-f", "lavfi", "-i", "sine=sample_rate=48000"])
-        .args(["-t", "15", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-g", "25", "-bf", "0", "-c:a", "aac"])
+        .args([
+            "-v",
+            "error",
+            "-re",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc=size=320x240:rate=25",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=sample_rate=48000",
+        ])
+        .args([
+            "-t", "15", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-g", "25", "-bf", "0", "-c:a",
+            "aac",
+        ])
         .args(args)
         .stdin(Stdio::null())
         .spawn()
@@ -71,9 +93,15 @@ fn ffmpeg_across_protocols() {
         .hls(Hls::new(hub.clone(), hcfg));
     let engine = Arc::new(
         Engine::builder()
-            .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(RtmpServer::new(hub.clone(), RtmpConfig::default())))
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .serve(RtmpServer::new(hub.clone(), RtmpConfig::default())),
+            )
             .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(rtsp))
-            .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(serve(Router::new().get("/*path", media))))
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .serve(serve(Router::new().get("/*path", media))),
+            )
             .build()
             .unwrap(),
     );
@@ -82,16 +110,31 @@ fn ffmpeg_across_protocols() {
     let (rtmp, rtsp, http) = (a[0], a[1], a[2]);
 
     // RTSP in.
-    let mut p = publish(&["-f", "rtsp", "-rtsp_transport", "tcp", &format!("rtsp://{rtsp}/live/a")]);
+    let mut p = publish(&[
+        "-f",
+        "rtsp",
+        "-rtsp_transport",
+        "tcp",
+        &format!("rtsp://{rtsp}/live/a"),
+    ]);
     wait_live(&hub, "live/a");
     for (args, url) in [
-        (vec!["-rw_timeout", "5000000"], format!("rtmp://{rtmp}/live/a")),
+        (
+            vec!["-rw_timeout", "5000000"],
+            format!("rtmp://{rtmp}/live/a"),
+        ),
         (vec![], format!("http://{http}/live/a.flv")),
         (vec![], format!("http://{http}/live/a/index.m3u8")),
-        (vec!["-rtsp_transport", "udp"], format!("rtsp://{rtsp}/live/a")),
+        (
+            vec!["-rtsp_transport", "udp"],
+            format!("rtsp://{rtsp}/live/a"),
+        ),
     ] {
         let probe = ffprobe(&args, &url);
-        assert!(probe.contains("h264,320,240") && probe.contains("aac"), "{url}: {probe:?}");
+        assert!(
+            probe.contains("h264,320,240") && probe.contains("aac"),
+            "{url}: {probe:?}"
+        );
     }
     let _ = p.kill();
     let _ = p.wait();
@@ -101,7 +144,10 @@ fn ffmpeg_across_protocols() {
     wait_live(&hub, "live/b");
     let url = format!("rtsp://{rtsp}/live/b");
     let probe = ffprobe(&["-rtsp_transport", "tcp"], &url);
-    assert!(probe.contains("h264,320,240") && probe.contains("aac"), "{url}: {probe:?}");
+    assert!(
+        probe.contains("h264,320,240") && probe.contains("aac"),
+        "{url}: {probe:?}"
+    );
     let _ = p.kill();
     let _ = p.wait();
     engine.shutdown();

@@ -33,6 +33,7 @@ $ cargo doc --workspace --no-deps --open
 | `flash-socks` | SOCKS4/4a/5 与 HTTP CONNECT 代理 | [SOCKS](protocols/socks.md) |
 | `flash-mux` | 一个端口上的多种协议 | [协议复用](protocols/mux.md) |
 | `flash-kcp` | KCP（兼容 kcp-go） | [KCP](protocols/kcp.md) |
+| `flash-media` | 流媒体：hub、RTMP、RTSP、SRT、FLV、HTTP-FLV、WS-FLV、HLS、WHIP/WHEP 信令 | [流媒体](protocols/media.md) |
 
 设计记录：[docs/adr](https://github.com/lesismal/flash/tree/main/docs/adr)。计划与状态：
 [docs/ROADMAP.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/ROADMAP.zh-CN.md)、

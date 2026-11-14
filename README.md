@@ -27,6 +27,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
 | Proxies | SOCKS5/4/4a, HTTP CONNECT, port sharing by first-byte sniffing (flash-mux) |
 | KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |
+| Streaming media | flash-media: one stream hub (GOP cache, slow-player dropping, auth hooks, stats) behind RTMP (digest handshake, Enhanced RTMP H.265/Opus), RTSP server (TCP and UDP, record and play), SRT live (ARQ, TSBPD, AES encryption, caller push/pull), HTTP-FLV, WS-FLV, HLS (MPEG-TS, LL-HLS parts, blocking reload) and WHIP/WHEP signalling; interop-tested with ffmpeg |
 | Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings |
 
 Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).

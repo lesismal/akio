@@ -17,6 +17,7 @@ block, and its "send" handles are usable from any thread.
 | `flash-socks` | `Socks::new(engine_ref)`, `connect_proxy(engine_ref)` | – | [SOCKS and CONNECT](socks.md) |
 | `flash-mux` | `Mux::new().route(rule, acceptor)` + `serve_any` | – | [Multiplexing](mux.md) |
 | `flash-kcp` | `KcpServer::new(cfg, factory)` on a UDP listener | `flash_kcp::dial` | [KCP](kcp.md) |
+| `flash-media` | `RtmpServer`, `RtspServer`, `SrtServer` (UDP), `MediaHttp` / `WhipServer` (flash-http services) around one `Hub` | `srt::dial` / `push` / `pull` | [Streaming media](media.md) |
 
 Interoperability is tested against reference implementations: h2spec (147/147), Autobahn
 (WebSocket server and client), grpc-go, quic-go and fib (HTTP/3), kcp-go, and fib's Go arpc;

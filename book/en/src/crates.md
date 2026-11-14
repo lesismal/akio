@@ -34,6 +34,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.md
 | `flash-socks` | SOCKS4/4a/5 and HTTP CONNECT proxies | [SOCKS](protocols/socks.md) |
 | `flash-mux` | several protocols on one port | [Multiplexing](protocols/mux.md) |
 | `flash-kcp` | KCP (kcp-go compatible) | [KCP](protocols/kcp.md) |
+| `flash-media` | streaming media: hub, RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS, WHIP/WHEP signalling | [Streaming media](protocols/media.md) |
 
 Design records: [docs/adr](https://github.com/lesismal/flash/tree/main/docs/adr). Plan and
 status: [docs/ROADMAP.md](https://github.com/lesismal/flash/blob/main/docs/ROADMAP.md),

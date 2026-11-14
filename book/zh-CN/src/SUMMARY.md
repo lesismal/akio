@@ -24,6 +24,9 @@
   - [SOCKS 与 HTTP CONNECT 代理](protocols/socks.md)
   - [协议复用](protocols/mux.md)
   - [KCP](protocols/kcp.md)
+  - [流媒体：hub、RTMP、HTTP-FLV、HLS](protocols/media.md)
+    - [RTSP 与 WHIP/WHEP](protocols/media-rtsp.md)
+    - [SRT](protocols/media-srt.md)
 
 # 运维
 

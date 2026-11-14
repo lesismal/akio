@@ -10,6 +10,27 @@ flash 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增
+
+- `flash-media`（M7 流媒体），新 crate：一个流 hub，周围是 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV、HLS
+  以及 WHIP/WHEP 信令。
+  - `hub`：按路径区分的流，一个推流者多个订阅者，用于秒开的 GOP 缓存，`Dropper`（慢播放者丢帧至下一个
+    关键帧），推流 / 播放鉴权钩子，轨道未知前先预留路径，等待（重新）推流者，`Timeline` 时间戳规整，
+    按流统计。
+  - RTMP 服务端：简单握手与 Flash digest 握手、chunk 流、推流 / 播放、Enhanced RTMP（H.265 `hvc1`、
+    Opus）；AMF0 / AMF3；FLV 封装 / 解封装（传统与增强 tag）。
+  - HTTP-FLV 与 WS-FLV 播放（`HttpFlv`），MPEG-TS 分段的 HLS，支持 LL-HLS 分片、预加载提示与阻塞式刷新
+    （`Hls`），同时分发二者的 `MediaHttp`；MPEG-TS 封装器。
+  - RTSP 1.0 服务端（ANNOUNCE/RECORD、DESCRIBE/SETUP/PLAY，支持 TCP 交织与 UDP，Digest/Basic 鉴权），
+    H.264/H.265/AAC/Opus/G.711 的 RTP 打包与解包（为带 B 帧的视频推算解码时间），SDP，以及带
+    `WebRtcEngine` 集成 trait 的 WHIP/WHEP HTTP 信令。
+  - SRT live 模式（HSv5 主叫/监听、ARQ、TSBPD、基于密码的 AES-CTR 加密、stream ID 访问控制），提供基于
+    hub 的 `SrtServer` 与 `srt::dial` / `push` / `pull`；增量式 MPEG-TS 解复用器（`mpegts::demux`）。
+  - 已与作为推流端和播放端的 ffmpeg / ffprobe 互通测试（SRT 在 Docker 中使用 libsrt）；模糊测试目标
+    `rtmp_server`、`flv_demux`、`amf_decode`、`rtsp_server`、`sdp_parse`、`rtp_depacketize`、
+    `mpegts_demux`、`srt_listener`、`srt_conn`。
+- `flash_ws::WsSender::queued_bytes`，供向慢速对端推流的生产者控制节奏。
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 1.0 的第一个发布候选版：API 冻结以供评审。每个 crate 的公开 API 记录在 `api/<crate>.txt` 中，并在

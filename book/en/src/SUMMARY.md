@@ -24,6 +24,9 @@
   - [SOCKS and HTTP CONNECT proxies](protocols/socks.md)
   - [Protocol multiplexing](protocols/mux.md)
   - [KCP](protocols/kcp.md)
+  - [Streaming media: hub, RTMP, HTTP-FLV, HLS](protocols/media.md)
+    - [RTSP and WHIP/WHEP](protocols/media-rtsp.md)
+    - [SRT](protocols/media-srt.md)
 
 # Operations
 

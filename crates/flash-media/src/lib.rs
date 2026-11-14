@@ -4,6 +4,20 @@
 //!
 //! Every protocol converts what it receives into the canonical packets of [`av`] and muxes
 //! from them, so one publisher plays over every other protocol.
+//!
+//! * [`hub`]: streams by path, one publisher and many subscribers, GOP cache, slow-player
+//!   dropping ([`hub::Dropper`]), auth hooks, waiting for publishers, [`hub::Timeline`], stats.
+//! * Ingest and egress: [`rtmp::RtmpServer`], [`rtsp::RtspServer`], [`srt::SrtServer`] (and
+//!   the [`srt`] caller), [`httpflv::HttpFlv`] (HTTP-FLV and WS-FLV), [`hls::Hls`] (with LL-HLS),
+//!   [`http::MediaHttp`] dispatching the HTTP formats, [`whip::WhipServer`] (signalling).
+//! * Formats and codecs: [`flv`], [`mpegts`], [`rtp`], [`sdp`], [`amf`], [`codec`].
+//!
+//! Guide: [Streaming media](https://lesismal.github.io/flash/en/protocols/media.html),
+//! [RTSP and WHIP/WHEP](https://lesismal.github.io/flash/en/protocols/media-rtsp.html),
+//! [SRT](https://lesismal.github.io/flash/en/protocols/media-srt.html)
+//! (中文: [流媒体](https://lesismal.github.io/flash/zh-CN/protocols/media.html)、
+//! [RTSP 与 WHIP/WHEP](https://lesismal.github.io/flash/zh-CN/protocols/media-rtsp.html)、
+//! [SRT](https://lesismal.github.io/flash/zh-CN/protocols/media-srt.html)).
 #![warn(clippy::unwrap_used)]
 
 pub mod amf;

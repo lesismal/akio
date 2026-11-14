@@ -64,17 +64,36 @@ mod tests {
 
     fn cmd(vals: &[Value], sid: u32) -> Vec<u8> {
         let mut out = Vec::new();
-        chunk::write_message(&mut out, &Message::new(3, chunk::COMMAND_AMF0, sid, 0, amf::encode(vals)), 128);
+        chunk::write_message(
+            &mut out,
+            &Message::new(3, chunk::COMMAND_AMF0, sid, 0, amf::encode(vals)),
+            128,
+        );
         out
     }
 
     fn rtmp_seeds() -> Vec<Vec<u8>> {
         let mut publish = cmd(
-            &[Value::from("connect"), Value::Number(1.0), Value::object([("app", Value::from("live"))])],
+            &[
+                Value::from("connect"),
+                Value::Number(1.0),
+                Value::object([("app", Value::from("live"))]),
+            ],
             0,
         );
-        publish.extend(cmd(&[Value::from("createStream"), Value::Number(2.0), Value::Null], 0));
-        publish.extend(cmd(&[Value::from("publish"), Value::Number(3.0), Value::Null, Value::from("s")], 1));
+        publish.extend(cmd(
+            &[Value::from("createStream"), Value::Number(2.0), Value::Null],
+            0,
+        ));
+        publish.extend(cmd(
+            &[
+                Value::from("publish"),
+                Value::Number(3.0),
+                Value::Null,
+                Value::from("s"),
+            ],
+            1,
+        ));
         let mut media = publish.clone();
         // A few tags of the sample (sequence headers and the first frames).
         let tags = Demuxer::new().feed(SAMPLE).unwrap_or_default();
@@ -84,13 +103,29 @@ mod tests {
                 9 => chunk::VIDEO,
                 _ => chunk::DATA_AMF0,
             };
-            chunk::write_message(&mut media, &Message::new(4, mt, 1, t.ts, t.body.clone()), 128);
+            chunk::write_message(
+                &mut media,
+                &Message::new(4, mt, 1, t.ts, t.body.clone()),
+                128,
+            );
         }
         let mut play = cmd(
-            &[Value::from("connect"), Value::Number(1.0), Value::object([("app", Value::from("live"))])],
+            &[
+                Value::from("connect"),
+                Value::Number(1.0),
+                Value::object([("app", Value::from("live"))]),
+            ],
             0,
         );
-        play.extend(cmd(&[Value::from("play"), Value::Number(2.0), Value::Null, Value::from("s")], 1));
+        play.extend(cmd(
+            &[
+                Value::from("play"),
+                Value::Number(2.0),
+                Value::Null,
+                Value::from("s"),
+            ],
+            1,
+        ));
         let mut v = Vec::new();
         for w in [publish, media, play] {
             v.push([&[0u8][..], &w].concat());

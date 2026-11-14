@@ -31,6 +31,7 @@ flowchart BT
     quic["flash-quic<br/>quinn-proto"]
     h3[flash-h3]
     kcp[flash-kcp]
+    media["flash-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
     pool --> core
@@ -58,6 +59,7 @@ flowchart BT
     quic --> h3
     http --> h3
     facade --> kcp
+    http --> media
 ```
 
 - **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → flash →
