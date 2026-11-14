@@ -121,7 +121,8 @@ impl Out {
 struct Finish {
     extra: Headers,
     filters: Vec<Filter>,
-    started: Instant,
+    /// Set with the time header: reading the clock for every request costs.
+    started: Option<Instant>,
     time_header: Option<String>,
     req: Arc<Request>,
 }
@@ -140,7 +141,10 @@ impl Finish {
         if let Some(h) = &self.time_header {
             resp.headers.set(
                 h.clone(),
-                format!("{:.3}ms", self.started.elapsed().as_secs_f64() * 1e3),
+                format!(
+                    "{:.3}ms",
+                    self.started.map_or(0.0, |s| s.elapsed().as_secs_f64()) * 1e3
+                ),
             );
         }
     }
@@ -220,7 +224,7 @@ impl Context {
             fin: Finish {
                 extra: Headers::new(),
                 filters: Vec::new(),
-                started: Instant::now(),
+                started: None,
                 time_header: None,
                 req: req.clone(),
             },
@@ -248,7 +252,7 @@ impl Context {
             fin: Finish {
                 extra: Headers::new(),
                 filters: Vec::new(),
-                started: Instant::now(),
+                started: None,
                 time_header: None,
                 req: req.clone(),
             },
@@ -271,7 +275,7 @@ impl Context {
             fin: Finish {
                 extra: Headers::new(),
                 filters: Vec::new(),
-                started: Instant::now(),
+                started: None,
                 time_header: None,
                 req: req.clone(),
             },
@@ -350,7 +354,7 @@ impl Context {
 
     /// Adds a header to the response, whenever and however it is sent, unless the response sets
     /// that header itself.
-    pub fn add_response_header(&mut self, name: &str, value: impl Into<String>) {
+    pub fn add_response_header(&mut self, name: &str, value: impl AsRef<str>) {
         self.fin.extra.set(name, value);
     }
 
@@ -363,9 +367,11 @@ impl Context {
         self.fin.filters.push(Box::new(f));
     }
 
-    /// Adds `header: <elapsed>ms` (time since the request was dispatched) to the response.
+    /// Adds `header: <elapsed>ms` (time since this call; at dispatch for the `response_time`
+    /// middleware) to the response.
     pub fn set_response_time_header(&mut self, header: &str) {
         self.fin.time_header = Some(header.to_owned());
+        self.fin.started.get_or_insert_with(Instant::now);
     }
 
     /// Receives a streamed request body (see [`BodyMode::Stream`]). The sink is called with each

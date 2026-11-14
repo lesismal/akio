@@ -33,7 +33,12 @@ pub(crate) fn parse_head(buf: &[u8]) -> Result<Option<(Head, usize)>, ParseError
                 Some(1) => Version::Http11,
                 _ => return Err(ParseError::Version),
             };
-            let mut headers = Headers::new();
+            let bytes = req
+                .headers
+                .iter()
+                .map(|h| h.name.len() + h.value.len())
+                .sum();
+            let mut headers = Headers::with_capacity(req.headers.len(), bytes);
             for h in req.headers.iter() {
                 // Header values must be text we can hand out as `&str`.
                 let v = std::str::from_utf8(h.value).map_err(|_| ParseError::Bad)?;

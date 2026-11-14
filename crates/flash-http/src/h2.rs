@@ -916,6 +916,10 @@ impl Core {
     /// A whole header block arrived: decode it (always: HPACK state must stay in step), then treat
     /// it as request headers or trailers.
     fn headers_complete(&mut self, sid: u32, block: Vec<u8>, end_stream: bool) -> R<Vec<Action>> {
+        // Huffman strings are decoded here (loona-hpack's decoder is very slow at it).
+        let Ok(block) = crate::hpack::strip_huffman(&block) else {
+            return Err(Fail::Conn(err::COMPRESSION));
+        };
         let decoded = catch_unwind(AssertUnwindSafe(|| self.dec.decode(&block)));
         let list = match decoded {
             Ok(Ok(l)) => l,

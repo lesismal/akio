@@ -13,7 +13,6 @@ flash-core = { path = "../flash-core" }
 flash-http = { path = "../flash-http" }
 flash-quic = { path = "../flash-quic" }
 bytes = "1"
-loona-hpack = "0.4"
 
 [dev-dependencies]
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

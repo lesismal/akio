@@ -1,5 +1,8 @@
-//! tokio reference server: `tokio-ref <tcp|tls|udp> <addr> <threads> [echo|block-inline|block-pool [ms]]`
-//! (same handlers as flash's `bench-server`).
+//! tokio reference server: `tokio-ref <tcp|tls|udp|ws> <addr> <threads> [echo|block-inline|block-pool [ms]]`
+//! (same handlers as flash's `bench-server`; `ws` is a tokio-tungstenite echo server).
+//!
+//! `TOKIO_REF_BUF` sets the per-connection read buffer (default 65536, the size flash's I/O
+//! threads read with); memory runs use a smaller one, as a memory-conscious tokio server would.
 
 use std::{sync::Arc, time::Duration};
 
@@ -16,7 +19,7 @@ enum Mode {
 }
 
 async fn handle<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, mode: Mode) {
-    let mut b = vec![0u8; 65536];
+    let mut b = vec![0u8; buf_size()];
     loop {
         let n = match s.read(&mut b).await {
             Ok(0) | Err(_) => return,
@@ -39,6 +42,25 @@ async fn handle<S: AsyncRead + AsyncWrite + Unpin>(mut s: S, mode: Mode) {
             }
         };
         if s.write_all(&reply).await.is_err() {
+            return;
+        }
+    }
+}
+
+fn buf_size() -> usize {
+    std::env::var("TOKIO_REF_BUF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(65536)
+}
+
+async fn ws_echo(s: tokio::net::TcpStream) {
+    use futures_util::{SinkExt, StreamExt};
+    let Ok(mut ws) = tokio_tungstenite::accept_async(s).await else {
+        return;
+    };
+    while let Some(Ok(m)) = ws.next().await {
+        if (m.is_text() || m.is_binary()) && ws.send(m).await.is_err() {
             return;
         }
     }
@@ -85,6 +107,10 @@ fn main() {
         loop {
             let (s, _) = l.accept().await.unwrap();
             s.set_nodelay(true).ok();
+            if proto == "ws" {
+                tokio::spawn(ws_echo(s));
+                continue;
+            }
             match acceptor.clone() {
                 Some(acc) => {
                     tokio::spawn(async move {

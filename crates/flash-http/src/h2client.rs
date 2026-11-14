@@ -663,9 +663,12 @@ impl H2Conn {
         block: Vec<u8>,
         end_stream: bool,
     ) {
-        let list = match self.dec.decode(&block) {
-            Ok(l) => l,
-            Err(_) => return self.conn_error(c, err::COMPRESSION, "bad header block"),
+        let list = match crate::hpack::strip_huffman(&block)
+            .ok()
+            .and_then(|b| self.dec.decode(&b).ok())
+        {
+            Some(l) => l,
+            None => return self.conn_error(c, err::COMPRESSION, "bad header block"),
         };
         if let Some(pid) = promised {
             // A pushed request: remember which path it is for.
@@ -725,7 +728,7 @@ impl H2Conn {
             if n == b":status" {
                 status = v.parse().unwrap_or(0);
             } else if n.first() != Some(&b':') {
-                hs.append(String::from_utf8_lossy(n).into_owned(), v);
+                hs.append(String::from_utf8_lossy(n), v);
             }
         }
         if !st.got_head {

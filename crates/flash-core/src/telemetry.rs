@@ -133,6 +133,8 @@ loop_counters! {
     accept_errors: "counter", "flash_accept_errors_total", "accept(2) failures.";
     /// Connections closed by the idle timeout.
     idle_timeouts: "counter", "flash_idle_timeouts_total", "Connections closed by the idle timeout.";
+    /// Connections closed by the write timeout.
+    write_timeouts: "counter", "flash_write_timeouts_total", "Connections closed by the write timeout.";
     /// Bytes read from sockets.
     bytes_in: "counter", "flash_read_bytes_total", "Bytes read from sockets.";
     /// Successful reads (UDP: datagrams received).
@@ -657,6 +659,37 @@ impl Telemetry {
         } else {
             Some(Instant::now())
         }
+    }
+
+    /// Whether callbacks are timed (a slow-callback threshold is set). Backend-facing.
+    #[doc(hidden)]
+    #[inline]
+    pub fn timing_enabled(&self) -> bool {
+        self.live.slow_ns.load(Ordering::Relaxed) != 0
+    }
+
+    /// Like [`callback_done`](Self::callback_done) for a timed callback, returning the instant
+    /// it finished, so a backend can start timing the next callback from it instead of reading
+    /// the clock again (the clock is a real cost per request on some VMs). Backend-facing.
+    #[doc(hidden)]
+    #[inline]
+    pub fn callback_done_at(
+        &self,
+        stats: &LoopStats,
+        kind: &'static str,
+        id: u64,
+        t0: Instant,
+    ) -> Instant {
+        let end = Instant::now();
+        let elapsed = end.saturating_duration_since(t0);
+        stats.callbacks.add_local(1);
+        stats.callback_ns.add_local(elapsed.as_nanos() as u64);
+        if let Some(limit) = self.live.slow_callback_threshold() {
+            if elapsed >= limit {
+                self.report_slow(stats, kind, id, elapsed, limit);
+            }
+        }
+        end
     }
 
     /// Accounts a finished callback started at `t0` and reports it if it was slow.
