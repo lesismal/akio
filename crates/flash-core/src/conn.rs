@@ -9,7 +9,7 @@ use std::{
 use flash_buf::SharedBuf;
 
 use crate::{
-    Config, Error, Handler, Pool, Result,
+    Config, Error, Handler, LoopStats, Pool, Result,
     sync::{AtomicBool, AtomicU8, Mutex, MutexGuard, Ordering},
 };
 
@@ -32,6 +32,10 @@ pub trait LoopLink: Send + Sync {
     fn post_task(&self, id: u64, task: Task);
     /// The logical pool, if the engine has one.
     fn pool(&self) -> Option<&Pool> {
+        None
+    }
+    /// Counters of the owning I/O thread, if the backend keeps them.
+    fn stats(&self) -> Option<Arc<LoopStats>> {
         None
     }
 }
@@ -108,6 +112,14 @@ pub trait Transport: Send + 'static {
     fn shutdown(&mut self, out: &mut Vec<u8>);
     /// For downcasting to the concrete transport.
     fn as_any(&mut self) -> &mut dyn std::any::Any;
+    /// Short name for the connection table (`"tls"`, ...).
+    fn name(&self) -> &'static str {
+        "custom"
+    }
+    /// Whether the transport is still negotiating (a failure now counts as a failed handshake).
+    fn handshaking(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Default)]
@@ -123,11 +135,44 @@ struct WriteState {
     close_after_send: bool,
     /// Called once the queue is empty again (see [`Conn::on_drain`]).
     drain: Option<Box<dyn FnOnce() + Send>>,
+    /// Bytes written to the socket so far.
+    sent: u64,
+    /// Counters of the owning I/O thread.
+    stats: Option<Arc<LoopStats>>,
 }
 
 impl WriteState {
+    /// `n` bytes reached the socket in one write.
+    #[inline]
+    fn wrote(&mut self, n: usize) {
+        self.sent += n as u64;
+        if let Some(s) = &self.stats {
+            s.bytes_out.add(n as u64);
+            s.writes.add(1);
+            if self.datagram {
+                s.datagrams_out.add(1);
+            }
+        }
+    }
+
+    #[inline]
+    fn add_queued(&mut self, n: usize) {
+        self.queued += n;
+        if let Some(s) = &self.stats {
+            s.queued_bytes.add(n as u64);
+        }
+    }
+
+    #[inline]
+    fn sub_queued(&mut self, n: usize) {
+        self.queued -= n;
+        if let Some(s) = &self.stats {
+            s.queued_bytes.sub(n as u64);
+        }
+    }
+
     fn push_copy(&mut self, data: &[u8]) {
-        self.queued += data.len();
+        self.add_queued(data.len());
         // Coalesce small writes into the tail buffer: fewer iovecs per writev.
         if self.datagram {
             // Datagram boundaries must survive.
@@ -154,13 +199,16 @@ impl WriteState {
             let front = self.queue.front_mut().expect("consumed more than queued");
             let left = front.remaining();
             let step = n.min(left);
-            if front.is_file() {
-                self.file_bytes -= step as u64;
-            } else {
-                self.queued -= step;
-            }
+            let file = front.is_file();
             if n < left {
                 front.off += n;
+            }
+            if file {
+                self.file_bytes -= step as u64;
+            } else {
+                self.sub_queued(step);
+            }
+            if n < left {
                 return;
             }
             n -= left;
@@ -180,7 +228,7 @@ impl WriteState {
                 flash_buf::put(v);
             }
         }
-        self.queued = 0;
+        self.sub_queued(self.queued);
         self.file_bytes = 0;
     }
 }
@@ -271,7 +319,10 @@ impl ConnInner {
             id,
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
-            write: Mutex::new(WriteState::default()),
+            write: Mutex::new(WriteState {
+                stats: link.stats(),
+                ..WriteState::default()
+            }),
             drained: Mutex::new(None),
             ordered: Mutex::new(Ordered::default()),
             sock: Sock::Tcp(stream),
@@ -299,6 +350,7 @@ impl ConnInner {
             hold: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 datagram: true,
+                stats: link.stats(),
                 ..WriteState::default()
             }),
             drained: Mutex::new(None),
@@ -460,8 +512,10 @@ impl ConnInner {
         const MAX_IOV: usize = 16;
         if w.datagram {
             while let Some(c) = w.queue.front() {
-                match self.raw_write(c.rest()) {
-                    Ok(_) => {}
+                let r = self.raw_write(c.rest());
+                let len = c.rest().len();
+                match r {
+                    Ok(n) => w.wrote(n),
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     // A dialed peer that answered with ICMP "port unreachable" is gone.
@@ -481,8 +535,7 @@ impl ConnInner {
                     // does; it must not wedge the datagrams behind it.
                     Err(_) => {}
                 }
-                let n = c.rest().len();
-                w.consume(n);
+                w.consume(len);
             }
             return Ok(true);
         }
@@ -499,6 +552,7 @@ impl ConnInner {
                 match flash_sys::sendfile(out, file.as_raw_fd(), pos, left) {
                     Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()), // file shrank
                     Ok(n) => {
+                        w.wrote(n);
                         w.consume(n);
                         continue;
                     }
@@ -519,12 +573,16 @@ impl ConnInner {
                 }
                 match self.tcp().write_vectored(&iov[..k]) {
                     Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
-                    Ok(n) => n,
+                    Ok(n) => {
+                        // The slices borrow `w.queue`; account after they are gone.
+                        n
+                    }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(e) => return Err(e),
                 }
             };
+            w.wrote(n);
             w.consume(n);
         }
         Ok(true)
@@ -534,7 +592,10 @@ impl ConnInner {
         if !self.is_open() || w.close_after_send {
             return Err(Error::Closed);
         }
-        if w.queued + extra > self.cfg.max_queued_bytes {
+        if w.queued + extra > self.cfg.telemetry.live().max_queued_bytes() {
+            if let Some(s) = &w.stats {
+                s.overloaded.add(1);
+            }
             return Err(Error::Overloaded);
         }
         Ok(())
@@ -581,8 +642,14 @@ impl ConnInner {
         if was_empty && !w.corked {
             loop {
                 match self.raw_write(data) {
-                    Ok(n) if n == data.len() => return Ok(()),
-                    Ok(n) => data = &data[n..],
+                    Ok(n) if n == data.len() => {
+                        w.wrote(n);
+                        return Ok(());
+                    }
+                    Ok(n) => {
+                        w.wrote(n);
+                        data = &data[n..];
+                    }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) => {
@@ -626,6 +693,7 @@ impl ConnInner {
             loop {
                 match self.raw_write(&data[off..]) {
                     Ok(n) => {
+                        w.wrote(n);
                         off += n;
                         if off == data.len() {
                             return Ok(());
@@ -640,7 +708,7 @@ impl ConnInner {
                 }
             }
         }
-        w.queued += data.len() - off;
+        w.add_queued(data.len() - off);
         w.queue.push_back(Chunk {
             bytes: Bytes::Owned(data),
             off,
@@ -669,12 +737,13 @@ impl ConnInner {
             }
         };
         let was_empty = w.queue.is_empty();
-        w.queued += match &bytes {
+        let n = match &bytes {
             Bytes::Owned(v) => v.len(),
             Bytes::Shared(s) => s.len(),
             #[cfg(unix)]
             Bytes::File { .. } => 0,
         };
+        w.add_queued(n);
         w.queue.push_back(Chunk { bytes, off: 0 });
         let need_wake = was_empty && !w.corked;
         if !w.corked {
@@ -787,7 +856,7 @@ impl ConnInner {
     pub fn stream_write(&self, seq: u64, data: Vec<u8>) -> Result<()> {
         let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
         let i = (seq - o.head) as usize;
-        let max = self.cfg.max_queued_bytes;
+        let max = self.cfg.telemetry.live().max_queued_bytes();
         match o.entries.get_mut(i) {
             Some(Entry::Stream(s)) if !s.finished => {
                 if i == 0 && s.live {
@@ -957,7 +1026,7 @@ impl ConnInner {
             return false;
         }
         let was_empty = w.queue.is_empty();
-        w.queued += out.len();
+        w.add_queued(out.len());
         w.queue.push_back(Chunk {
             bytes: Bytes::Owned(out),
             off: 0,
@@ -979,6 +1048,34 @@ impl ConnInner {
 
     pub fn local_addr(&self) -> SocketAddr {
         self.local
+    }
+
+    /// For the connection table: bytes written, bytes queued, transport name, UDP or not.
+    pub fn debug_state(&self) -> (u64, usize, Option<&'static str>, bool) {
+        let w = self.lock();
+        (
+            w.sent,
+            w.queued + w.file_bytes as usize,
+            w.transport.as_ref().map(|t| t.name()),
+            w.datagram,
+        )
+    }
+
+    /// The transport failed: counts it as a failed handshake or a transport error.
+    pub fn note_transport_error(&self) {
+        let w = self.lock();
+        if let Some(s) = &w.stats {
+            if w.transport.as_ref().is_some_and(|t| t.handshaking()) {
+                s.handshake_failures.add(1);
+            } else {
+                s.transport_errors.add(1);
+            }
+        }
+    }
+
+    /// The engine's telemetry hub.
+    pub fn telemetry(&self) -> &Arc<crate::Telemetry> {
+        &self.cfg.telemetry
     }
 
     pub fn peer_addr(&self) -> SocketAddr {

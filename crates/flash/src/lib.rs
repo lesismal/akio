@@ -19,7 +19,7 @@
 //! engine.run().unwrap();
 //! ```
 
-use std::{io, net::SocketAddr, sync::Arc};
+use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
 /// TLS (rustls): wrap an acceptor in [`tls::Tls`] to serve or dial over TLS.
 pub use flash_tls as tls;
@@ -29,10 +29,11 @@ pub use flash_tls as tls;
 pub use flash_ebpf as ebpf;
 
 pub use flash_core::{
-    Acceptor, Config, Conn, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, PoolConfig,
-    PoolStats, ResponseSlot, Result, SlowCallback, SlowHook, fn_acceptor,
+    Acceptor, Config, Conn, ConnInfo, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, Live,
+    LoopCounters, LoopMeta, LoopMetrics, Metrics, PoolConfig, PoolStats, ReloadReport,
+    ResponseSlot, Result, SlowCallback, SlowHook, SlowRecord, Telemetry, fn_acceptor, telemetry,
 };
-use flash_core::{Group, Pool};
+use flash_core::{Group, Pool, telemetry::log_or_stderr};
 
 /// I/O backend of one listener (ADR-004).
 #[derive(Clone, Debug, Default)]
@@ -215,9 +216,16 @@ impl EngineBuilder {
     }
 
     /// Validates the configuration, binds every listener and prepares the I/O threads.
-    pub fn build(self) -> io::Result<Engine> {
+    pub fn build(mut self) -> io::Result<Engine> {
+        if self.cfg.telemetry.is_bound() {
+            // Another engine adopted this config's hub: metrics must not mix.
+            self.cfg.telemetry = Telemetry::new();
+        }
+        let telemetry = self.cfg.telemetry.clone();
+        telemetry.bind(&self.cfg);
         let mut groups: Vec<Box<dyn Group>> = Vec::new();
         let pool = Pool::new(self.pool.clone());
+        telemetry.set_pool(&pool);
         let mut udp_last: Option<usize> = None;
         // Each listener adds exactly one group, at index `groups.len()` when it starts.
         let mut accels: Vec<Accel> = Vec::new();
@@ -275,7 +283,10 @@ impl EngineBuilder {
                             return Err(unsupported(&format!("the io_uring backend ({why})")));
                         }
                         Err(why) => {
-                            eprintln!("flash: io_uring unavailable ({why}); using epoll");
+                            log_or_stderr(
+                                log::Level::Warn,
+                                format_args!("io_uring unavailable ({why}); using epoll"),
+                            );
                             groups.push(Box::new(flash_epoll::EpollGroup::bind(
                                 Some((l.addr, acceptor)),
                                 l.threads,
@@ -289,7 +300,10 @@ impl EngineBuilder {
                         if u.strict {
                             return Err(unsupported("the io_uring backend on this platform"));
                         }
-                        eprintln!("flash: io_uring is Linux-only; using epoll/kqueue");
+                        log_or_stderr(
+                            log::Level::Warn,
+                            format_args!("io_uring is Linux-only; using epoll/kqueue"),
+                        );
                         groups.push(Box::new(flash_epoll::EpollGroup::bind(
                             Some((l.addr, acceptor)),
                             l.threads,
@@ -332,6 +346,7 @@ impl EngineBuilder {
             pool,
             udp_client,
             accel,
+            telemetry,
         })
     }
 }
@@ -392,6 +407,7 @@ pub struct Engine {
     pool: Arc<Pool>,
     udp_client: Option<usize>,
     accel: Vec<AccelStatus>,
+    telemetry: Arc<Telemetry>,
 }
 
 impl Engine {
@@ -412,7 +428,41 @@ impl Engine {
 
     /// Spawns the I/O threads and returns immediately. Idempotent.
     pub fn start(&self) -> io::Result<()> {
-        self.groups.iter().try_for_each(|g| g.start())
+        self.groups.iter().try_for_each(|g| g.start())?;
+        log::info!(target: "flash", listeners:? = self.local_addrs(); "engine started");
+        Ok(())
+    }
+
+    /// Metrics, debug snapshots and live settings of this engine.
+    pub fn telemetry(&self) -> &Arc<Telemetry> {
+        &self.telemetry
+    }
+
+    /// A metrics snapshot: per-thread counters, totals, open connections, pool statistics.
+    /// [`Metrics::to_prometheus`] renders it for a Prometheus scrape.
+    pub fn metrics(&self) -> Metrics {
+        self.telemetry.metrics()
+    }
+
+    /// The connection table (see [`Telemetry::connections`]). Do not call it from an I/O
+    /// thread's callback.
+    pub fn connections(&self, timeout: Duration) -> Vec<ConnInfo> {
+        self.telemetry.connections(timeout)
+    }
+
+    /// The most recent slow callbacks, oldest first.
+    pub fn slow_callbacks(&self) -> Vec<SlowRecord> {
+        self.telemetry.slow_callbacks()
+    }
+
+    /// Applies the runtime-changeable settings of `cfg` without a restart: `idle_timeout`,
+    /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
+    /// `max_connections`, `shutdown_timeout` and `log_level`. Open connections pick up the new
+    /// idle timeout and watermark right away. Settings fixed at build time (`read_buffer`,
+    /// `backlog`, `udp_idle_timeout`, listeners, backends, thread and pool sizes) are reported in
+    /// [`ReloadReport::ignored`] when they differ.
+    pub fn reload(&self, cfg: &Config) -> ReloadReport {
+        self.telemetry.reload(cfg)
     }
 
     /// Blocks until [`shutdown`](Self::shutdown) has completed.
@@ -439,6 +489,7 @@ impl Engine {
     /// open connections, and the engine waits (up to `Config::shutdown_timeout`) for them to
     /// close before forcing the rest. Returns immediately; use [`wait`](Self::wait) to block.
     pub fn shutdown(&self) {
+        log::info!(target: "flash", open_connections = self.telemetry.open_connections(); "engine shutting down");
         self.groups.iter().for_each(|g| g.shutdown());
     }
 

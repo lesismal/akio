@@ -109,7 +109,10 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
                 }
             }
             // Whatever the transport produced (an alert) is flushed, then the connection ends.
-            Err(_) => self.conn.close_after_send(),
+            Err(_) => {
+                self.conn.inner.note_transport_error();
+                self.conn.close_after_send()
+            }
         }
         self.plain = plain;
     }

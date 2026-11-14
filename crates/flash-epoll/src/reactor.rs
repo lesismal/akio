@@ -13,7 +13,8 @@ use std::{
 };
 
 use flash_core::{
-    Config, ConnInner, DynAcceptor, DynHandler, Error, LoopLink, Pool, SlowCallback, Task,
+    Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, LoopLink, LoopStats, Pool, Task,
+    telemetry::{LoopCmd, log_or_stderr},
 };
 use flash_sys::{Event, Poller, Waker};
 use flash_timer::{TimerId, Wheel};
@@ -42,6 +43,8 @@ pub(crate) enum Cmd {
     Close(u64, Option<io::Error>),
     Task(u64, Task),
     Shutdown,
+    /// From the engine's telemetry hub (connection table, live-settings reload).
+    Core(LoopCmd),
     /// UDP only: a client connection with its own connected socket.
     DialUdp {
         sock: std::net::UdpSocket,
@@ -62,17 +65,35 @@ pub(crate) struct LoopShared {
     cmds: Mutex<Vec<Cmd>>,
     wake_pending: AtomicBool,
     pool: Arc<Pool>,
+    pub(crate) stats: Arc<LoopStats>,
 }
 
 impl LoopShared {
-    pub(crate) fn new(poller: &Poller, pool: Arc<Pool>) -> io::Result<Arc<LoopShared>> {
-        Ok(Arc::new(LoopShared {
+    /// A loop's shared half, registered with `cfg`'s telemetry hub.
+    pub(crate) fn new(
+        poller: &Poller,
+        pool: Arc<Pool>,
+        cfg: &Config,
+        meta: flash_core::LoopMeta,
+    ) -> io::Result<Arc<LoopShared>> {
+        let sh = Arc::new(LoopShared {
             uid: NEXT_LOOP_UID.fetch_add(1, Ordering::Relaxed),
             waker: Waker::new(poller, WAKER)?,
             cmds: Mutex::new(Vec::new()),
             wake_pending: AtomicBool::new(false),
             pool,
-        }))
+            stats: Arc::new(LoopStats::new(meta)),
+        });
+        let weak = Arc::downgrade(&sh);
+        cfg.telemetry.register_loop(
+            sh.stats.clone(),
+            Box::new(move |c| {
+                if let Some(sh) = weak.upgrade() {
+                    sh.post(Cmd::Core(c));
+                }
+            }),
+        );
+        Ok(sh)
     }
 
     pub(crate) fn post(&self, cmd: Cmd) {
@@ -112,7 +133,17 @@ impl LoopLink for LoopShared {
     fn pool(&self) -> Option<&Pool> {
         Some(&self.pool)
     }
+    fn stats(&self) -> Option<Arc<LoopStats>> {
+        Some(self.stats.clone())
+    }
 }
+
+/// Backend name for metrics labels.
+pub(crate) const BACKEND: &str = if cfg!(target_os = "linux") {
+    "epoll"
+} else {
+    "kqueue"
+};
 
 struct LoopConn {
     inner: Arc<ConnInner>,
@@ -127,6 +158,9 @@ struct LoopConn {
     /// Wheel tick of the last inbound data (idle timeout).
     last_active: u64,
     idle_timer: Option<TimerId>,
+    /// Wheel tick when it opened, and bytes read (connection table).
+    opened: u64,
+    bytes_in: u64,
 }
 
 enum Slot {
@@ -180,6 +214,13 @@ impl Loop {
     }
 
     pub(crate) fn run(&mut self) {
+        self.run_inner();
+        self.shared.stats.set_running(false);
+        // Pending telemetry requests are dropped, which answers them (as "nothing").
+        drop(self.shared.take());
+    }
+
+    fn run_inner(&mut self) {
         CURRENT_LOOP.with(|c| c.set(self.shared.uid));
         let mut events: Vec<Event> = Vec::with_capacity(1024);
         loop {
@@ -191,9 +232,11 @@ impl Loop {
             }
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout) {
-                eprintln!("flash: poller error: {e}");
+                log_or_stderr(log::Level::Error, format_args!("poller error: {e}"));
                 break;
             }
+            self.shared.stats.iterations.add_local(1);
+            self.shared.stats.events.add_local(events.len() as u64);
             for ev in &events {
                 match ev.token {
                     WAKER => self.shared.waker.drain(),
@@ -220,35 +263,15 @@ impl Loop {
 
     // ---- callbacks ------------------------------------------------------------------------
 
-    /// Reports a callback that ran longer than `Config::slow_callback_threshold`.
+    /// Accounts a callback (and reports it if it ran longer than the slow-callback threshold).
     fn check_slow(&self, kind: &'static str, id: u64, started: Option<Instant>) {
-        let (Some(t0), Some(limit)) = (started, self.cfg.slow_callback_threshold) else {
-            return;
-        };
-        let elapsed = t0.elapsed();
-        if elapsed >= limit {
-            self.report_slow(kind, id, elapsed);
-        }
-    }
-
-    fn report_slow(&self, kind: &'static str, id: u64, elapsed: Duration) {
-        let limit = self.cfg.slow_callback_threshold.unwrap_or_default();
-        let rep = SlowCallback {
-            kind,
-            conn_id: id,
-            elapsed,
-        };
-        match &self.cfg.slow_hook {
-            Some(h) => (h.0)(&rep),
-            None => eprintln!(
-                "flash: slow callback: {kind} on connection {id} blocked its I/O thread for \
-                 {elapsed:?} (limit {limit:?}); move blocking work to Conn::spawn_blocking"
-            ),
-        }
+        self.cfg
+            .telemetry
+            .callback_done(&self.shared.stats, kind, id, started);
     }
 
     fn timing(&self) -> Option<Instant> {
-        self.cfg.slow_callback_threshold.map(|_| Instant::now())
+        self.cfg.telemetry.timing()
     }
 
     /// Runs a `spawn_blocking` completion on the connection's handler.
@@ -280,7 +303,9 @@ impl Loop {
     }
 
     fn arm_idle(&mut self, id: u64, at: u64) -> Option<TimerId> {
-        self.cfg.idle_timeout?;
+        if self.cfg.telemetry.live().idle_ms() == 0 {
+            return None;
+        }
         if self.wheel.is_empty() {
             // The wheel's clock stops while it is empty; catch it up so the next `advance`
             // does not replay the idle period tick by tick.
@@ -290,10 +315,10 @@ impl Loop {
     }
 
     fn fire_timers(&mut self) {
-        let Some(idle) = self.cfg.idle_timeout else {
+        let idle = self.cfg.telemetry.live().idle_ms();
+        if self.wheel.is_empty() {
             return;
-        };
-        let idle = idle.as_millis().max(1) as u64;
+        }
         let now = self.tick();
         let mut due = Vec::new();
         self.wheel.advance(now, |id| due.push(id));
@@ -302,8 +327,12 @@ impl Loop {
                 continue;
             };
             lc.idle_timer = None;
+            if idle == 0 {
+                continue; // disabled at runtime: the timer is just dropped
+            }
             let expires = lc.last_active + idle;
             if expires <= now {
+                self.shared.stats.idle_timeouts.add_local(1);
                 let e = io::Error::new(io::ErrorKind::TimedOut, "idle timeout");
                 self.finalize(id, Some(Error::Io(e)));
             } else {
@@ -327,6 +356,7 @@ impl Loop {
                     Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
                     Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
+                    Cmd::Core(c) => self.on_core(c),
                     // Only UDP loops are sent these.
                     Cmd::DialUdp { .. } => {}
                     Cmd::Dial {
@@ -340,11 +370,71 @@ impl Loop {
         }
     }
 
+    fn on_core(&mut self, c: LoopCmd) {
+        match c {
+            LoopCmd::Inspect(reply) => {
+                let now = self.tick();
+                let infos = self
+                    .slots
+                    .iter()
+                    .filter_map(|(id, s)| match s {
+                        Slot::Conn(lc) => Some(self.info(*id, lc, now)),
+                        Slot::Connecting { .. } => None,
+                    })
+                    .collect();
+                reply(infos);
+            }
+            LoopCmd::Reload => self.on_reload(),
+        }
+    }
+
+    fn info(&self, id: u64, lc: &LoopConn, now: u64) -> ConnInfo {
+        let (bytes_out, queued_bytes, transport, udp) = lc.inner.debug_state();
+        ConnInfo {
+            id,
+            peer: lc.inner.peer_addr(),
+            local: lc.inner.local_addr(),
+            owner: self.shared.stats.meta().clone(),
+            age: Duration::from_millis(now.saturating_sub(lc.opened)),
+            idle: Duration::from_millis(now.saturating_sub(lc.last_active)),
+            bytes_in: lc.bytes_in,
+            bytes_out,
+            queued_bytes,
+            read_held: lc.inner.read_held(),
+            backpressure: lc.bp,
+            transport,
+            udp,
+        }
+    }
+
+    /// Live settings changed: re-arm idle timers for the new timeout and re-evaluate
+    /// backpressure against the new watermark.
+    fn on_reload(&mut self) {
+        let idle = self.cfg.telemetry.live().idle_ms();
+        let ids: Vec<u64> = self.slots.keys().copied().collect();
+        if self.wheel.is_empty() && idle != 0 {
+            self.wheel.advance(self.tick(), drop);
+        }
+        for &id in &ids {
+            if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+                if let Some(t) = lc.idle_timer.take() {
+                    self.wheel.cancel(t);
+                }
+                if idle != 0 {
+                    lc.idle_timer = Some(self.wheel.schedule(lc.last_active + idle, id));
+                }
+            }
+        }
+        for id in ids {
+            self.refresh(id);
+        }
+    }
+
     fn begin_shutdown(&mut self) {
         if self.draining.is_some() {
             return;
         }
-        self.draining = Some(Instant::now() + self.cfg.shutdown_timeout);
+        self.draining = Some(Instant::now() + self.cfg.telemetry.live().shutdown_timeout());
         if let Some((l, _)) = self.listener.take() {
             self.poller.delete(l.as_raw_fd());
         }
@@ -386,20 +476,27 @@ impl Loop {
             match l.accept() {
                 Ok((stream, peer)) => {
                     let acceptor = acceptor.clone();
-                    self.open(stream, peer, acceptor);
+                    self.open(stream, peer, acceptor, false);
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
                     // e.g. EMFILE: level-triggered, so we will be called again; avoid a hot loop.
-                    eprintln!("flash: accept: {e}");
+                    self.shared.stats.accept_errors.add_local(1);
+                    log_or_stderr(log::Level::Warn, format_args!("accept: {e}"));
                     return;
                 }
             }
         }
     }
 
-    fn open(&mut self, stream: TcpStream, peer: SocketAddr, acceptor: Arc<dyn DynAcceptor>) {
+    fn open(
+        &mut self,
+        stream: TcpStream,
+        peer: SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+        dialed: bool,
+    ) {
         if stream.set_nonblocking(true).is_err() {
             return;
         }
@@ -407,6 +504,12 @@ impl Loop {
         let Ok(local) = stream.local_addr() else {
             return;
         };
+        let tel = self.cfg.telemetry.clone();
+        if !tel.conn_opened(!dialed) {
+            self.shared.stats.rejected.add_local(1);
+            log::debug!(target: "flash", peer:% = peer; "connection refused: max_connections reached");
+            return; // dropping the stream closes it
+        }
         let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
         let fd = stream.as_raw_fd();
         let inner = ConnInner::new(
@@ -421,18 +524,20 @@ impl Loop {
             Ok(h) => h,
             Err(_) => {
                 inner.mark_closed();
+                tel.conn_closed();
                 return;
             }
         };
         if self.poller.add(fd, id, true, false).is_err() {
             inner.mark_closed();
+            tel.conn_closed();
             return;
         }
+        let st = &self.shared.stats;
+        if dialed { &st.dialed } else { &st.accepted }.add_local(1);
+        log::trace!(target: "flash", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
         let now = self.tick();
-        let idle = self
-            .cfg
-            .idle_timeout
-            .map_or(0, |d| d.as_millis().max(1) as u64);
+        let idle = self.cfg.telemetry.live().idle_ms();
         let idle_timer = self.arm_idle(id, now + idle);
         self.slots.insert(
             id,
@@ -446,6 +551,8 @@ impl Loop {
                 eof: false,
                 last_active: now,
                 idle_timer,
+                opened: now,
+                bytes_in: 0,
             }),
         );
         // `on_open` may already have queued output or closed the connection.
@@ -498,7 +605,7 @@ impl Loop {
         match result {
             Ok((_, peer)) => {
                 // `open` re-registers the stream under a fresh id.
-                self.open(stream, peer, acceptor);
+                self.open(stream, peer, acceptor, true);
             }
             Err(e) => {
                 if let Some(f) = on_error {
@@ -550,8 +657,7 @@ impl Loop {
             Panic,
         }
         let mut done = Done::No;
-        let slow = self.cfg.slow_callback_threshold.is_some();
-        let mut slow_hits: Vec<Duration> = Vec::new();
+        let high = self.cfg.telemetry.live().write_high_watermark();
         let now = self.epoch.elapsed().as_millis() as u64;
         {
             let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
@@ -568,17 +674,16 @@ impl Loop {
                     }
                     Ok(n) => {
                         lc.last_active = now;
+                        lc.bytes_in += n as u64;
+                        let st = &self.shared.stats;
+                        st.reads.add_local(1);
+                        st.bytes_in.add_local(n as u64);
                         lc.inner.set_corked(true);
-                        let t0 = slow.then(Instant::now);
+                        let t0 = self.cfg.telemetry.timing();
                         let r = catch_unwind(AssertUnwindSafe(|| {
                             lc.handler.on_data(&self.scratch[..n])
                         }));
-                        if let (Some(t0), Some(limit)) = (t0, self.cfg.slow_callback_threshold) {
-                            let elapsed = t0.elapsed();
-                            if elapsed >= limit {
-                                slow_hits.push(elapsed);
-                            }
-                        }
+                        self.cfg.telemetry.callback_done(st, "on_data", id, t0);
                         if r.is_err() {
                             done = Done::Panic;
                             break;
@@ -592,7 +697,7 @@ impl Loop {
                         if n < self.scratch.len()
                             || !lc.inner.is_open()
                             || lc.inner.read_held()
-                            || lc.inner.queued_bytes() >= self.cfg.write_high_watermark
+                            || lc.inner.queued_bytes() >= high
                         {
                             break;
                         }
@@ -611,9 +716,6 @@ impl Loop {
                 lc.inner.close_after_send();
             }
         }
-        for elapsed in slow_hits {
-            self.report_slow("on_data", id, elapsed);
-        }
         match done {
             Done::No => self.refresh(id),
             Done::Eof => self.on_wake(id),
@@ -624,12 +726,15 @@ impl Loop {
 
     /// Recomputes the poller interest of a connection from its queue and flags.
     fn refresh(&mut self, id: u64) {
-        let high = self.cfg.write_high_watermark;
+        let high = self.cfg.telemetry.live().write_high_watermark();
         let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
             return;
         };
         let q = lc.inner.queued_bytes();
         if q >= high {
+            if !lc.bp {
+                self.shared.stats.backpressure.add_local(1);
+            }
             lc.bp = true;
         } else if q <= high / 4 {
             lc.bp = false;
@@ -661,7 +766,12 @@ impl Loop {
         lc.inner.mark_closed();
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);
         let t0 = self.timing();
+        if log::log_enabled!(target: "flash", log::Level::Trace) {
+            log::trace!(target: "flash", conn_id = id, peer:% = lc.inner.peer_addr(), error:? = err; "connection closed");
+        }
         let _ = catch_unwind(AssertUnwindSafe(|| lc.handler.on_close(err)));
         self.check_slow("on_close", id, t0);
+        self.shared.stats.closed.add_local(1);
+        self.cfg.telemetry.conn_closed();
     }
 }

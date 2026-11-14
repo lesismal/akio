@@ -1,5 +1,12 @@
 use std::{sync::Arc, time::Duration};
 
+use crate::Telemetry;
+
+pub(crate) const DEFAULT_WRITE_HIGH_WATERMARK: usize = 256 << 10;
+pub(crate) const DEFAULT_MAX_QUEUED_BYTES: usize = 64 << 20;
+pub(crate) const DEFAULT_SLOW_CALLBACK: Duration = Duration::from_millis(100);
+pub(crate) const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// What the slow-callback detector reports.
 #[derive(Clone, Copy, Debug)]
 pub struct SlowCallback {
@@ -48,20 +55,38 @@ pub struct Config {
     pub udp_idle_timeout: Duration,
     /// After `shutdown`, connections still open after this long are closed forcibly.
     pub shutdown_timeout: Duration,
+    /// Accepted connections beyond this many open ones (engine-wide, dialed connections and UDP
+    /// peers included in the count) are closed right after `accept`. 0 (the default) = no limit.
+    pub max_connections: usize,
+    /// When set, the engine calls `log::set_max_level` with it (flash logs through the `log`
+    /// facade under the `flash` target; install any `log` backend to see them).
+    pub log_level: Option<log::LevelFilter>,
+    /// Metrics, debug snapshots and live settings of the engine built with this config (see
+    /// [`Telemetry`]). Grab a clone before building the engine to wire up a metrics endpoint.
+    /// A config whose telemetry an engine already adopted gets a fresh one at the next `build`.
+    ///
+    /// Reloadable at runtime (`Engine::reload` / [`Telemetry::reload`]): `idle_timeout`,
+    /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
+    /// `max_connections`, `shutdown_timeout`, `log_level`. Fixed at build time: `read_buffer`,
+    /// `backlog`, `udp_idle_timeout`.
+    pub telemetry: Arc<Telemetry>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             read_buffer: 64 << 10,
-            write_high_watermark: 256 << 10,
-            max_queued_bytes: 64 << 20,
+            write_high_watermark: DEFAULT_WRITE_HIGH_WATERMARK,
+            max_queued_bytes: DEFAULT_MAX_QUEUED_BYTES,
             backlog: 1024,
             idle_timeout: None,
-            slow_callback_threshold: Some(Duration::from_millis(100)),
+            slow_callback_threshold: Some(DEFAULT_SLOW_CALLBACK),
             slow_hook: None,
             udp_idle_timeout: Duration::from_secs(60),
-            shutdown_timeout: Duration::from_secs(10),
+            shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+            max_connections: 0,
+            log_level: None,
+            telemetry: Telemetry::new(),
         }
     }
 }

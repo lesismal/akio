@@ -11,6 +11,7 @@ rust-version.workspace = true
 flash-core = { path = "../flash-core" }
 flash = { path = "../flash" }
 httparse = "1"
+log = { version = "0.4.21", features = ["kv"] }
 base64 = "0.22"
 loona-hpack = "0.4"
 flash-ws = { path = "../flash-ws" }

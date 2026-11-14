@@ -110,6 +110,12 @@ impl Transport for Failed {
     fn as_any(&mut self) -> &mut dyn Any {
         self
     }
+    fn name(&self) -> &'static str {
+        "tls"
+    }
+    fn handshaking(&self) -> bool {
+        true
+    }
 }
 
 struct RustlsTransport {
@@ -173,6 +179,14 @@ impl Transport for RustlsTransport {
 
     fn as_any(&mut self) -> &mut dyn Any {
         self
+    }
+
+    fn name(&self) -> &'static str {
+        "tls"
+    }
+
+    fn handshaking(&self) -> bool {
+        self.conn.is_handshaking()
     }
 }
 
