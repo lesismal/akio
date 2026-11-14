@@ -95,7 +95,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] kqueue reactor（共享逻辑，macOS 可开发/调试）
 - [x] 测试：单元、`loom`（cork/发送/关闭竞争，5 个模型，已进 CI）、5000 个同时连接 + 20×500 次连接/关闭循环并检查 fd 泄漏（macOS 与 Linux）
 - [x] 空闲超时已接入 loop（`Config::idle_timeout`，每个 I/O 线程一个时间轮）
-- [ ] 未完成，顺延到后续里程碑：10 万连接测试、读/写超时、在专用 Linux 机器上与 fib/tokio/monoio 的 echo 对比
+- [x] M1 遗留项已在基准测试阶段完成：10 万连接测试（10 万空闲连接约 55 MB）、`Config::write_timeout`（输出无进展时以 `TimedOut` 关闭；`idle_timeout` 充当读超时）、与 fib/tokio 的 echo 对比（`docs/BENCHMARKS.md`）。未完成：与 monoio 对比、在专用（非共享）Linux 机器上测量
 - **交付**：`examples/echo`，echo benchmark 报告 v0
 
 > M1 状态：**除上述未完成项外已收尾。** 在 Linux（epoll）与 macOS（kqueue）上验证：12 个引擎测试、2 个压力测试、5 个 loom 模型（故意写坏 `mark_closed` 后 loom 模型会失败，说明它确实在探索这个竞争）。`echo-bench` 现在把连接复用到少量客户端线程上；在同一台 macOS 机器上，flash 与 4 线程 tokio echo 都是约 10.5–11.5 万 req/s，也就是客户端仍是瓶颈，这次结果只能说明“同一量级”，无法排名。与 fib 的对比需要 fib 先有一个纯 TCP echo（目前没有）以及两台 Linux 机器，顺延到 M2 的 benchmark 报告。`Conn::spawn_blocking` 属于 M2。
@@ -129,7 +129,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] `flash-ws`：RFC 6455 + permessage-deflate（context takeover、服务端窗口位数）、`PreparedMessage` 广播、子协议、Origin 检查、关闭握手；Autobahn|Testsuite：核心 298 项 OK + 3 项 informational，permessage-deflate 216/216 OK，由 `tools/autobahn/run.sh` 在 CI 中运行。Autobahn 发现了 miniz_oxide 的一个 deflate bug（flate2 现改用 zlib-rs）
 - [x] WebSocket 客户端（`flash_ws::client::dial`/`connect`）：通过 `flash::tls` 支持 `ws://`/`wss://`（SNI、自定义 rustls 配置），多地址回退，握手校验（key/accept、子协议、Origin、自定义头），握手与关闭超时，permessage-deflate 协商并遵从服务端选择，帧掩码、符合 RFC 的关闭握手、分片发送。Autobahn 客户端测试（`tools/autobahn/run.sh client`）：517 个用例 514 OK + 3 informational，no-context-takeover 补充轮 216/216；与 fib 的 Go websocket 服务端互通。未完成：系统根证书、代理、重定向、引擎关闭时发送 1001
 - [x] HTTP/1 异步客户端（`client::Client`）：回调、`ResponseFuture`（`wait`、`wait_timeout`、`.await`）、按主机复用 keep-alive 连接（复用的连接已失效时重试一次）、chunked/以关闭为界的 body、通过 `flash::tls` 支持 HTTPS、地址回退（先 ::1 再 127.0.0.1）。未做：重定向、单请求超时、把 DNS 解析移出调用线程
-- [ ] 与 hyper、fib 的 HTTP/1 对比报告（plaintext、pipelined、json）：放到功能阶段结束后的统一 benchmark 阶段
+- [x] 统一基准测试报告（`docs/BENCHMARKS.md`、`tools/bench`：Docker 镜像、wrk/h2load/echo-bench、10k/100k 连接内存、perf 剖析、与其他版本的 A/B；新增 hyper-ref，扩展 tokio-ref/fib-ref）：HTTP/1.1 plaintext/pipelined/JSON、h2c、TCP/UDP/TLS/WebSocket echo，对比 hyper、tokio、tokio-tungstenite、fib。优化：自研 HPACK Huffman 解码（h2c 29 万 → 187 万请求/秒，×6.4）、HTTP/1.1 热路径（plaintext +4–9%，pipelined +17%）、每连接内存（keep-alive 1.6 → 0.9 KB，WebSocket 2.1 → 1.7 KB）。pipelined HTTP/1.1（约 0.8×）与 h2c 仍落后于 fib；数据来自共享、噪声较大的主机
 - **交付**：`examples/http`、`examples/ws-chat`
 
 > M3 状态：**除对比报告外功能已完成**（报告移到 benchmark 阶段）：支持流式与 sendfile 的 h1 服务端、router、9 个中间件、静态文件、通过 Autobahn 全部用例的 flash-ws（核心 298 项 + 3 项 informational，permessage-deflate 216/216）、h1 客户端。示例：`crates/flash-http/examples/{hello,ws-chat,ws-echo}.rs`。
