@@ -132,6 +132,10 @@ pub struct PmdParams {
     pub client_no_context_takeover: bool,
     /// Window the server compresses with (9..=15); echoed in the response when below 15.
     pub server_max_window_bits: u8,
+    /// Window the client compresses with (8..=15). A server ignores it (it inflates with a full
+    /// window); a client that was told 8 sends its messages uncompressed, since zlib cannot
+    /// produce raw deflate with a 256-byte window.
+    pub client_max_window_bits: u8,
 }
 
 impl Default for PmdParams {
@@ -140,7 +144,101 @@ impl Default for PmdParams {
             server_no_context_takeover: false,
             client_no_context_takeover: false,
             server_max_window_bits: 15,
+            client_max_window_bits: 15,
         }
+    }
+}
+
+/// What a client puts in its `permessage-deflate` offer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PmdOffer {
+    /// Promise not to use context takeover when compressing (`client_no_context_takeover`):
+    /// less memory on the server, worse compression.
+    pub client_no_context_takeover: bool,
+    /// Ask the server to compress without context takeover (`server_no_context_takeover`).
+    pub server_no_context_takeover: bool,
+    /// Ask the server to compress with a smaller window (`server_max_window_bits`, 9..=15).
+    pub server_max_window_bits: Option<u8>,
+}
+
+impl PmdOffer {
+    /// The `Sec-WebSocket-Extensions` value of the offer. `client_max_window_bits` is always
+    /// offered: this side can compress with any window the server picks.
+    pub fn header(&self) -> String {
+        let mut h = String::from("permessage-deflate; client_max_window_bits");
+        if self.client_no_context_takeover {
+            h.push_str("; client_no_context_takeover");
+        }
+        if self.server_no_context_takeover {
+            h.push_str("; server_no_context_takeover");
+        }
+        if let Some(b) = self.server_max_window_bits {
+            h.push_str(&format!("; server_max_window_bits={}", b.clamp(9, 15)));
+        }
+        h
+    }
+
+    /// Checks the server's `Sec-WebSocket-Extensions` answer to this offer. `Ok(None)`: the
+    /// server declined compression. Fails when the answer is not a valid acceptance: an
+    /// extension that was not offered, an unknown or repeated parameter, a bad window size, or a
+    /// request of the offer that the server ignored.
+    pub fn accept_response<'a>(
+        &self,
+        header_values: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Option<PmdParams>, &'static str> {
+        let mut found: Option<PmdParams> = None;
+        for value in header_values {
+            for ext in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
+                let mut parts = ext.split(';').map(str::trim);
+                if parts.next() != Some("permessage-deflate") {
+                    return Err("server accepted an extension that was not offered");
+                }
+                if found.is_some() {
+                    return Err("permessage-deflate accepted twice");
+                }
+                let mut p = PmdParams::default();
+                let mut seen = [false; 4];
+                for param in parts {
+                    let (name, val) = match param.split_once('=') {
+                        Some((n, v)) => (n.trim(), Some(v.trim().trim_matches('"'))),
+                        None => (param, None),
+                    };
+                    let idx = match name {
+                        "server_no_context_takeover" => 0,
+                        "client_no_context_takeover" => 1,
+                        "server_max_window_bits" => 2,
+                        "client_max_window_bits" => 3,
+                        _ => return Err("unknown permessage-deflate parameter"),
+                    };
+                    if std::mem::replace(&mut seen[idx], true) {
+                        return Err("repeated permessage-deflate parameter");
+                    }
+                    let bits = |v: Option<&str>| match v.map(str::parse::<u8>) {
+                        Some(Ok(b @ 8..=15)) => Ok(b),
+                        _ => Err("bad permessage-deflate window size"),
+                    };
+                    match (idx, val) {
+                        (0, None) => p.server_no_context_takeover = true,
+                        (1, None) => p.client_no_context_takeover = true,
+                        (2, v) => p.server_max_window_bits = bits(v)?,
+                        (3, v) => p.client_max_window_bits = bits(v)?,
+                        _ => return Err("bad permessage-deflate parameter value"),
+                    }
+                }
+                if self.server_no_context_takeover && !p.server_no_context_takeover {
+                    return Err("server ignored server_no_context_takeover");
+                }
+                if let Some(b) = self.server_max_window_bits {
+                    if p.server_max_window_bits > b.clamp(9, 15) {
+                        return Err("server window larger than requested");
+                    }
+                }
+                // The offer promised it: compress without history whatever the server said.
+                p.client_no_context_takeover |= self.client_no_context_takeover;
+                found = Some(p);
+            }
+        }
+        Ok(found)
     }
 }
 
@@ -318,5 +416,59 @@ mod tests {
         assert!(negotiate(["x-webkit-deflate-frame"]).is_none());
         assert!(negotiate(["permessage-deflate; bogus"]).is_none());
         assert!(negotiate(std::iter::empty()).is_none());
+    }
+
+    #[test]
+    fn client_offer_and_response() {
+        let o = PmdOffer::default();
+        assert_eq!(o.header(), "permessage-deflate; client_max_window_bits");
+        let full = PmdOffer {
+            client_no_context_takeover: true,
+            server_no_context_takeover: true,
+            server_max_window_bits: Some(10),
+        };
+        assert_eq!(
+            full.header(),
+            "permessage-deflate; client_max_window_bits; client_no_context_takeover; \
+             server_no_context_takeover; server_max_window_bits=10"
+        );
+        assert_eq!(o.accept_response(std::iter::empty()), Ok(None));
+        assert_eq!(
+            o.accept_response(["permessage-deflate"]),
+            Ok(Some(PmdParams::default()))
+        );
+        let p = o
+            .accept_response([
+                "permessage-deflate; client_max_window_bits=9; server_no_context_takeover",
+            ])
+            .unwrap()
+            .unwrap();
+        assert_eq!(p.client_max_window_bits, 9);
+        assert!(p.server_no_context_takeover && !p.client_no_context_takeover);
+        let p = full
+            .accept_response([
+                "permessage-deflate; server_no_context_takeover; server_max_window_bits=9",
+            ])
+            .unwrap()
+            .unwrap();
+        assert!(p.client_no_context_takeover, "promised in the offer");
+        assert_eq!(p.server_max_window_bits, 9);
+        for bad in [
+            "x-webkit-deflate-frame",
+            "permessage-deflate; bogus",
+            "permessage-deflate; client_max_window_bits=16",
+            "permessage-deflate; client_max_window_bits",
+            "permessage-deflate; server_no_context_takeover; server_no_context_takeover",
+            "permessage-deflate, permessage-deflate",
+        ] {
+            assert!(o.accept_response([bad]).is_err(), "{bad}");
+        }
+        // The server must honour what the offer asked of it.
+        assert!(full.accept_response(["permessage-deflate"]).is_err());
+        assert!(
+            full.accept_response(["permessage-deflate; server_no_context_takeover"])
+                .is_err(),
+            "window 15 > 10"
+        );
     }
 }

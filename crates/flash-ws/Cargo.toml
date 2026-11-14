@@ -13,6 +13,13 @@ flash-buf = { path = "../flash-buf" }
 sha1 = "0.10"
 base64 = "0.22"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+flash = { path = "../flash" }
+httparse = "1"
+getrandom = "0.2"
+
+[dev-dependencies]
+flash-http = { path = "../flash-http" }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 
 [lints]
 workspace = true

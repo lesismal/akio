@@ -392,7 +392,7 @@ impl Decoder {
 }
 
 /// XORs `data` with the mask, where `data[0]` is byte `pos` of the payload.
-fn unmask(data: &mut [u8], mask: [u8; 4], pos: usize) {
+pub(crate) fn unmask(data: &mut [u8], mask: [u8; 4], pos: usize) {
     let mut m = mask;
     m.rotate_left(pos % 4);
     // Eight bytes at a time, then the tail.
@@ -445,6 +445,33 @@ pub fn encode_frame(opcode: Opcode, fin: bool, rsv1: bool, payload: &[u8], out: 
         }
     }
     out.extend_from_slice(payload);
+}
+
+/// Appends one masked (client → server) frame to `out`, masking the payload with `key`.
+pub fn encode_frame_masked(
+    opcode: Opcode,
+    fin: bool,
+    rsv1: bool,
+    payload: &[u8],
+    key: [u8; 4],
+    out: &mut Vec<u8>,
+) {
+    out.push((u8::from(fin) << 7) | (u8::from(rsv1) << 6) | opcode as u8);
+    match payload.len() {
+        n if n < 126 => out.push(0x80 | n as u8),
+        n if n < 65_536 => {
+            out.push(0x80 | 126);
+            out.extend_from_slice(&(n as u16).to_be_bytes());
+        }
+        n => {
+            out.push(0x80 | 127);
+            out.extend_from_slice(&(n as u64).to_be_bytes());
+        }
+    }
+    out.extend_from_slice(&key);
+    let start = out.len();
+    out.extend_from_slice(payload);
+    unmask(&mut out[start..], key, 0);
 }
 
 /// Encodes a close frame body: status code and reason (truncated to fit a control frame).
@@ -652,6 +679,37 @@ mod tests {
         let p = close_payload(1000, &"é".repeat(100));
         assert!(p.len() <= 125);
         assert!(std::str::from_utf8(&p[2..]).is_ok());
+    }
+
+    #[test]
+    fn masked_frames_decode_on_the_server_side() {
+        for len in [0usize, 5, 125, 126, 65_535, 65_536, 70_001] {
+            let payload: Vec<u8> = (0..len).map(|i| (i % 253) as u8).collect();
+            let mut wire = Vec::new();
+            encode_frame_masked(
+                Opcode::Binary,
+                true,
+                false,
+                &payload,
+                [9, 8, 7, 6],
+                &mut wire,
+            );
+            assert_eq!(
+                decode_split(&wire, 1000).unwrap(),
+                vec![Event::Binary(payload)]
+            );
+        }
+        // And unmasked server frames decode on the client side.
+        let mut wire = Vec::new();
+        encode_frame(Opcode::Text, true, false, b"hi", &mut wire);
+        let mut d = Decoder::new(Role::Client, 1 << 20, None);
+        let mut out = Vec::new();
+        d.decode(&wire, &mut out).unwrap();
+        assert_eq!(out, vec![Event::Text("hi".into())]);
+        let mut wire = Vec::new();
+        encode_frame_masked(Opcode::Text, true, false, b"hi", [1, 2, 3, 4], &mut wire);
+        let mut d = Decoder::new(Role::Client, 1 << 20, None);
+        assert_eq!(d.decode(&wire, &mut out).unwrap_err().code, close::PROTOCOL);
     }
 
     #[test]

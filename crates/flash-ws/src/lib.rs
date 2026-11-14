@@ -8,11 +8,16 @@
 //! * [`WsSession`] drives a connection and calls a [`WsHandler`]; [`WsSender`] sends from any
 //!   thread; [`PreparedMessage`] encodes a broadcast once.
 //!
-//! The HTTP upgrade itself lives in `flash-http` (`Context::upgrade_websocket`).
+//! * [`client`]: dial `ws://` / `wss://` URLs on a `flash::Engine` and serve them with the same
+//!   handler model.
+//!
+//! The server-side HTTP upgrade lives in `flash-http` (`Context::upgrade_websocket`).
 
+pub mod client;
 pub mod deflate;
 pub mod protocol;
 mod session;
+mod timer;
 
 pub use session::{
     INTERNAL_ERROR, Message, PreparedMessage, WsConfig, WsHandler, WsSender, WsSession, accept_key,

@@ -1,13 +1,18 @@
 //! The WebSocket connection driver and the application-facing types.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use flash_buf::SharedBuf;
 use flash_core::{ConnInner, Error, Result};
 
 use crate::{
     deflate::{Deflater, Inflater, PmdParams},
-    protocol::{Decoder, Event, Opcode, Role, close, close_payload, encode_frame},
+    protocol::{
+        Decoder, Event, Opcode, Role, close, close_payload, encode_frame, encode_frame_masked,
+    },
 };
 
 /// A complete WebSocket message.
@@ -62,6 +67,51 @@ struct Tx {
     deflater: Option<Deflater>,
     compress_min: usize,
     closed: bool,
+    /// Client side: frames are masked with keys from this generator.
+    mask: Option<MaskGen>,
+    /// Client side: after the close handshake, how long to wait for the server to close the TCP
+    /// connection before closing it from this side.
+    close_timeout: Duration,
+    /// The subprotocol agreed in the handshake (client side).
+    protocol: Option<String>,
+}
+
+impl Tx {
+    /// Appends one frame, masked on the client side.
+    fn frame(&mut self, op: Opcode, fin: bool, rsv1: bool, payload: &[u8], out: &mut Vec<u8>) {
+        match self.mask.as_mut() {
+            Some(m) => encode_frame_masked(op, fin, rsv1, payload, m.next_key(), out),
+            None => encode_frame(op, fin, rsv1, payload, out),
+        }
+    }
+}
+
+/// Masking keys: a SplitMix64 stream seeded from the operating system's random source, one per
+/// connection (RFC 6455 section 10.3 asks for unpredictable keys; they only protect against
+/// cache poisoning by a peer that could predict them).
+struct MaskGen(u64);
+
+impl MaskGen {
+    fn new() -> MaskGen {
+        let mut seed = [0u8; 8];
+        if getrandom::getrandom(&mut seed).is_err() {
+            // Practically unreachable; still never hand out a constant stream.
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos() as u64);
+            seed = t.to_le_bytes();
+        }
+        MaskGen(u64::from_le_bytes(seed))
+    }
+
+    fn next_key(&mut self) -> [u8; 4] {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z as u32).to_ne_bytes()
+    }
 }
 
 /// Sends on a WebSocket connection. Cheap to clone, usable from any thread; frames from different
@@ -100,18 +150,16 @@ impl PreparedMessage {
 }
 
 impl WsSender {
-    pub(crate) fn new(
-        conn: Arc<ConnInner>,
-        pmd: Option<PmdParams>,
-        compress_min: usize,
-    ) -> WsSender {
+    fn new(conn: Arc<ConnInner>, deflater: Option<Deflater>, compress_min: usize) -> WsSender {
         WsSender {
             conn,
             tx: Arc::new(Mutex::new(Tx {
-                deflater: pmd
-                    .map(|p| Deflater::new(p.server_no_context_takeover, p.server_max_window_bits)),
+                deflater,
                 compress_min,
                 closed: false,
+                mask: None,
+                close_timeout: Duration::ZERO,
+                protocol: None,
             })),
         }
     }
@@ -120,7 +168,8 @@ impl WsSender {
         self.tx.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn send_data(&self, op: Opcode, payload: &[u8]) -> Result<()> {
+    /// Sends one message, split into frames of at most `frame` payload bytes (0: one frame).
+    fn send_data(&self, op: Opcode, payload: &[u8], frame: usize) -> Result<()> {
         // The lock is held across the send so compressed frames, whose compressor state depends
         // on order, reach the wire in the order they were compressed.
         let mut tx = self.lock();
@@ -128,16 +177,29 @@ impl WsSender {
             return Err(Error::Closed);
         }
         let compress_min = tx.compress_min;
-        let mut out;
-        match tx.deflater.as_mut() {
+        let compressed;
+        let (body, rsv1): (&[u8], bool) = match tx.deflater.as_mut() {
             Some(d) if payload.len() >= compress_min => {
-                let c = d.deflate(payload);
-                out = Vec::with_capacity(c.len() + 10);
-                encode_frame(op, true, true, &c, &mut out);
+                compressed = d.deflate(payload);
+                (&compressed, true)
             }
-            _ => {
-                out = Vec::with_capacity(payload.len() + 10);
-                encode_frame(op, true, false, payload, &mut out);
+            _ => (payload, false),
+        };
+        let frame = if frame == 0 { body.len().max(1) } else { frame };
+        let frames = body.len().div_ceil(frame).max(1);
+        let mut out = Vec::with_capacity(body.len() + 14 * frames);
+        if body.is_empty() {
+            tx.frame(op, true, rsv1, body, &mut out);
+        } else {
+            for (i, piece) in body.chunks(frame).enumerate() {
+                let first = i == 0;
+                tx.frame(
+                    if first { op } else { Opcode::Continue },
+                    i + 1 == frames,
+                    rsv1 && first,
+                    piece,
+                    &mut out,
+                );
             }
         }
         self.conn.send_owned(out)
@@ -145,31 +207,60 @@ impl WsSender {
 
     /// Sends a text message.
     pub fn send_text(&self, text: &str) -> Result<()> {
-        self.send_data(Opcode::Text, text.as_bytes())
+        self.send_data(Opcode::Text, text.as_bytes(), 0)
     }
 
     /// Sends a binary message.
     pub fn send_binary(&self, data: &[u8]) -> Result<()> {
-        self.send_data(Opcode::Binary, data)
+        self.send_data(Opcode::Binary, data, 0)
+    }
+
+    /// Sends a text message as a sequence of frames of at most `frame_bytes` payload each
+    /// (after compression, when negotiated). The frames leave together; this is about the wire
+    /// format (for peers or intermediaries with frame size limits), not streaming.
+    pub fn send_text_fragmented(&self, text: &str, frame_bytes: usize) -> Result<()> {
+        self.send_data(Opcode::Text, text.as_bytes(), frame_bytes.max(1))
+    }
+
+    /// Binary counterpart of [`send_text_fragmented`](Self::send_text_fragmented).
+    pub fn send_binary_fragmented(&self, data: &[u8], frame_bytes: usize) -> Result<()> {
+        self.send_data(Opcode::Binary, data, frame_bytes.max(1))
     }
 
     /// Sends a message prepared once for many connections.
     pub fn send_prepared(&self, m: &PreparedMessage) -> Result<()> {
-        let tx = self.lock();
+        let mut tx = self.lock();
         if tx.closed {
             return Err(Error::Closed);
+        }
+        if tx.mask.is_some() {
+            // A client must mask every frame with a fresh key: re-encode the payload.
+            let f = &m.frame[..];
+            let at = match f[1] & 0x7f {
+                126 => 4,
+                127 => 10,
+                _ => 2,
+            };
+            let op = if f[0] & 0x0f == Opcode::Text as u8 {
+                Opcode::Text
+            } else {
+                Opcode::Binary
+            };
+            let mut out = Vec::with_capacity(f.len() + 4);
+            tx.frame(op, true, false, &f[at..], &mut out);
+            return self.conn.send_owned(out);
         }
         // Held across the send for ordering against compressed frames, like `send_data`.
         self.conn.send_shared(m.frame.clone())
     }
 
     fn control(&self, op: Opcode, payload: &[u8]) -> Result<()> {
-        let tx = self.lock();
+        let mut tx = self.lock();
         if tx.closed {
             return Err(Error::Closed);
         }
-        let mut out = Vec::with_capacity(payload.len() + 2);
-        encode_frame(
+        let mut out = Vec::with_capacity(payload.len() + 6);
+        tx.frame(
             op,
             true,
             false,
@@ -189,14 +280,22 @@ impl WsSender {
         self.control(Opcode::Pong, payload)
     }
 
-    /// Sends a close frame and closes the connection once it is written. Later sends fail.
+    /// Starts the close handshake with `code` and `reason`; later sends fail. A server closes
+    /// the connection once the frame is written. A client waits for the server's close frame
+    /// (reported to [`WsHandler::on_close`]) and for the server to end the TCP connection, as
+    /// RFC 6455 section 7.1.1 asks, up to the dial options' `close_timeout`.
     pub fn close(&self, code: u16, reason: &str) {
-        self.close_with(Some(code), reason);
+        self.close_with(Some(code), reason, false);
     }
 
-    fn close_with(&self, code: Option<u16>, reason: &str) {
+    /// Sends a close frame unless one was sent. `drop_tcp`: close the transport once it is
+    /// written even on the client side (failing the connection after a protocol error).
+    fn close_with(&self, code: Option<u16>, reason: &str, drop_tcp: bool) {
         let mut tx = self.lock();
         if tx.closed {
+            if drop_tcp {
+                self.conn.close_after_send();
+            }
             return;
         }
         tx.closed = true;
@@ -204,10 +303,25 @@ impl WsSender {
             Some(c) => close_payload(c, reason),
             None => Vec::new(),
         };
-        let mut out = Vec::with_capacity(payload.len() + 2);
-        encode_frame(Opcode::Close, true, false, &payload, &mut out);
+        let mut out = Vec::with_capacity(payload.len() + 6);
+        tx.frame(Opcode::Close, true, false, &payload, &mut out);
         let _ = self.conn.send_owned(out);
-        self.conn.close_after_send();
+        if tx.mask.is_none() || drop_tcp {
+            self.conn.close_after_send();
+        } else {
+            let weak = Arc::downgrade(&self.conn);
+            crate::timer::after(tx.close_timeout, move || {
+                if let Some(c) = weak.upgrade() {
+                    c.close();
+                }
+            });
+        }
+    }
+
+    /// The subprotocol the server selected (client side; `None` on the server side, where the
+    /// application chose it).
+    pub fn subprotocol(&self) -> Option<String> {
+        self.lock().protocol.clone()
     }
 
     /// Whether the connection can still send.
@@ -234,10 +348,42 @@ impl WsSession {
         handler: Box<dyn WsHandler>,
     ) -> WsSession {
         let inflater = pmd.map(|p| Inflater::new(p.client_no_context_takeover));
+        let deflater =
+            pmd.map(|p| Deflater::new(p.server_no_context_takeover, p.server_max_window_bits));
         WsSession {
             decoder: Decoder::new(Role::Server, cfg.max_message_bytes, inflater),
             handler,
-            sender: WsSender::new(conn, pmd, cfg.compress_min_bytes),
+            sender: WsSender::new(conn, deflater, cfg.compress_min_bytes),
+            events: Vec::new(),
+            ended: false,
+        }
+    }
+
+    /// The client side of a connection whose handshake agreed `pmd` and `protocol`.
+    pub(crate) fn client(
+        conn: Arc<ConnInner>,
+        cfg: &WsConfig,
+        pmd: Option<PmdParams>,
+        handler: Box<dyn WsHandler>,
+        protocol: Option<String>,
+        close_timeout: Duration,
+    ) -> WsSession {
+        let inflater = pmd.map(|p| Inflater::new(p.server_no_context_takeover));
+        // A window of 8 bits cannot be produced by zlib: send uncompressed (always allowed).
+        let deflater = pmd
+            .filter(|p| p.client_max_window_bits >= 9)
+            .map(|p| Deflater::new(p.client_no_context_takeover, p.client_max_window_bits));
+        let sender = WsSender::new(conn, deflater, cfg.compress_min_bytes);
+        {
+            let mut tx = sender.lock();
+            tx.mask = Some(MaskGen::new());
+            tx.close_timeout = close_timeout;
+            tx.protocol = protocol;
+        }
+        WsSession {
+            decoder: Decoder::new(Role::Client, cfg.max_message_bytes, inflater),
+            handler,
+            sender,
             events: Vec::new(),
             ended: false,
         }
@@ -268,8 +414,9 @@ impl WsSession {
                 }
                 Event::Pong(p) => self.handler.on_pong(&self.sender, &p),
                 Event::Close { code, reason } => {
-                    // Echo the status (or an empty close), then end.
-                    self.sender.close_with(code, "");
+                    // Echo the status (or an empty close), then end. A server closes the
+                    // transport; a client waits for the server to do so.
+                    self.sender.close_with(code, "", false);
                     self.end(code, &reason);
                 }
             }
@@ -277,7 +424,7 @@ impl WsSession {
         self.events = events;
         if let Err(e) = res {
             if !self.ended {
-                self.sender.close(e.code, e.reason);
+                self.sender.close_with(Some(e.code), e.reason, true);
                 self.end(Some(e.code), e.reason);
             }
         }
