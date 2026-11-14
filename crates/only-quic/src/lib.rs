@@ -142,6 +142,10 @@ struct Shared {
     events: Mutex<VecDeque<proto::Event>>,
     handler: Mutex<Option<Box<dyn QuicHandler>>>,
     done: AtomicBool,
+    /// Datagrams to send, in the order the state machine produced them; queued under the
+    /// state lock, sent outside it by one thread at a time (`sending`).
+    outq: Mutex<VecDeque<proto::Transmit>>,
+    sending: AtomicBool,
 }
 
 /// A QUIC connection. Cheap to clone and usable from any thread.
@@ -179,6 +183,8 @@ impl Connection {
             events: Mutex::new(VecDeque::new()),
             handler: Mutex::new(None),
             done: AtomicBool::new(false),
+            outq: Mutex::new(VecDeque::new()),
+            sending: AtomicBool::new(false),
         }))
     }
 
@@ -314,8 +320,9 @@ impl Connection {
             let now = Instant::now();
             let State { conn, armed, lost } = &mut *st;
             if transmit {
+                let mut q = lock(&self.0.outq);
                 while let Some(t) = conn.poll_transmit(now, MAX_DATAGRAMS) {
-                    ep.transmit(t.dest, t.segment_size, t.data);
+                    q.push_back(t);
                 }
             }
             let mut evs = lock(&self.0.events);
@@ -358,10 +365,32 @@ impl Connection {
                 }
             }
         }
+        if transmit {
+            self.send_queued();
+        }
         if drained {
             lock(&ep.conns).remove(&self.0.h);
         }
         queued
+    }
+
+    /// Sends the queued datagrams; if another thread is already sending them, it sends ours
+    /// too (the queue keeps the wire order without holding the state lock over syscalls).
+    fn send_queued(&self) {
+        loop {
+            if self.0.sending.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            loop {
+                let t = lock(&self.0.outq).pop_front();
+                let Some(t) = t else { break };
+                self.0.ep.transmit(t.dest, t.segment_size, t.data);
+            }
+            self.0.sending.store(false, Ordering::Release);
+            if lock(&self.0.outq).is_empty() {
+                return;
+            }
+        }
     }
 
     /// Runs queued events through the handler, one deliverer at a time (a nested or concurrent

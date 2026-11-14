@@ -330,8 +330,9 @@ impl Endpoint {
                 }
             }
             EndpointEvent::HandshakeDone => {
+                // The client's original destination ID stays routed until the connection is
+                // gone: a late retransmitted Initial must not start a second connection.
                 self.handshaking.remove(&h);
-                self.initial.retain(|_, v| *v != h);
             }
             EndpointEvent::Drained => {
                 self.handshaking.remove(&h);

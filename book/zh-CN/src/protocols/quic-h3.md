@@ -4,7 +4,8 @@
 （RFC 9000、9001、9002）及数据报（RFC 9221），运行在 only 的 UDP 引擎上；`only-h3` 在其上实现
 HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 quic-go 做过双向互通测试（流与
 数据报的原生 QUIC 回显，含 Retry、密钥更新与 150 MB 传输：`tools/interop/quic/run.sh`），HTTP/3
-则与 quic-go 以及 fib 自己的 QUIC/HTTP/3 双向互通（`tools/interop/h3/run.sh`）。
+则与 quic-go 以及 fib 自己的 QUIC/HTTP/3 双向互通（`tools/interop/h3/run.sh`）；ngtcp2 与 OpenSSL 3.5
+的 QUIC 实现作为我方服务端的客户端在 Docker 中验证（`tools/interop/quic/docker.sh`）。
 
 ## QUIC
 

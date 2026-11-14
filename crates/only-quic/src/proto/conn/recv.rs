@@ -840,9 +840,10 @@ impl Connection {
             if p.mtu_probe {
                 self.on_mtu_probe_lost(p.size);
             } else {
-                self.stats.lost_packets += 1;
-                self.stats.lost_bytes += u64::from(p.size);
                 if p.in_flight {
+                    // Lost ACK-only packets are not counted: nothing is resent for them.
+                    self.stats.lost_packets += 1;
+                    self.stats.lost_bytes += u64::from(p.size);
                     latest_lost = Some(latest_lost.map_or(p.time, |l| l.max(p.time)));
                 }
                 if p.ack_eliciting && self.first_rtt_sample.is_some_and(|f| p.time >= f) {

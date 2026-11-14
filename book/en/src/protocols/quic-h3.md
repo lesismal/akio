@@ -5,7 +5,8 @@ crate as a sans-io state machine on `only-tls` and `only-crypto`, running on `on
 `only-h3` implements HTTP/3 (RFC 9114) and QPACK on top and serves any only-http `Service`.
 Interop is tested in both directions with quic-go (raw QUIC echo of streams and datagrams,
 with Retry, key updates and a 150 MB transfer: `tools/interop/quic/run.sh`) and, for HTTP/3,
-with quic-go and fib's QUIC/HTTP/3 (`tools/interop/h3/run.sh`).
+with quic-go and fib's QUIC/HTTP/3 (`tools/interop/h3/run.sh`); ngtcp2 and OpenSSL 3.5's QUIC
+stack are checked as clients of our servers in Docker (`tools/interop/quic/docker.sh`).
 
 ## QUIC
 

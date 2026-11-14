@@ -216,7 +216,9 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
 - 测试：RFC 9001 附录 A 向量、各组件的单元测试，以及模拟网络（丢包、乱序、重复、MTU、断网、虚拟时钟）上
   的握手、大块传输、多流、迁移、密钥更新、Retry、会话恢复、重置与超时测试；与 quic-go 的原生 QUIC 双向互通
   （新增 `tools/interop/quic/run.sh`：流与数据报，然后是 Retry、密钥更新与 150 MB 的流）以及与 quic-go、
-  fib 的 HTTP/3 双向互通（`tools/interop/h3/run.sh`）；fuzz 目标 `quic_packet`、`quic_frame`、
+  fib 的 HTTP/3 双向互通（`tools/interop/h3/run.sh`）；在 Docker 中以 ngtcp2 1.11（通过 libcurl-gnutls）
+  和 OpenSSL 3.5 的 QUIC（curl、libcurl、`openssl s_client -quic`）作为我方服务端的客户端（新增
+  `tools/interop/quic/docker.sh`）；fuzz 目标 `quic_packet`、`quic_frame`、
   `quic_conn`，并回放语料。
 - 性能（与 quinn-proto 版本对比，同一个回环基准 `crates/only-h3/examples/quic-bench.rs`）：PERF_ZH
 

@@ -106,6 +106,8 @@ active migration (the API has no way to rebind), preferred_address (parsed, not 
   keep-alive; close before and after the handshake; datagrams; reset and stop; a 4-second
   blackout; NewReno.
 - Interop: `tools/interop/quic/run.sh` (quic-go raw QUIC echo of streams and datagrams, both
-  directions, with Retry, key updates and 150 MB) and `tools/interop/h3/run.sh` (HTTP/3 with
-  quic-go and fib, both directions).
+  directions, with Retry, key updates and 150 MB), `tools/interop/h3/run.sh` (HTTP/3 with
+  quic-go and fib, both directions) and `tools/interop/quic/docker.sh` (ngtcp2 through
+  libcurl-gnutls and OpenSSL 3.5's QUIC through curl, libcurl and `openssl s_client -quic`, as
+  clients of our HTTP/3 and echo servers, in Debian's `rust:1` image).
 - Fuzz targets `quic_packet`, `quic_frame`, `quic_conn`, with corpus replay tests on stable.

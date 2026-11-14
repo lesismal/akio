@@ -395,6 +395,10 @@ pub struct Connection {
     streams_blocked: [bool; 2],
     tx_max_data: u64,
     tx_data: u64,
+    /// Stream bytes sent and not acknowledged (bounded by `TransportConfig::send_window`).
+    pub(crate) stream_unacked: u64,
+    /// New stream data waits for the send window.
+    window_blocked: bool,
     rx_max_data: u64,
     rx_data: u64,
     rx_delivered: u64,
@@ -510,6 +514,8 @@ impl Connection {
             streams_blocked: [false, false],
             tx_max_data: 0,
             tx_data: 0,
+            stream_unacked: 0,
+            window_blocked: false,
             rx_max_data,
             rx_data: 0,
             rx_delivered: 0,
@@ -1011,6 +1017,7 @@ impl Connection {
             s.probes = 0;
         }
         self.bytes_in_flight = 0;
+        self.stream_unacked = 0;
         self.buffered.clear();
     }
 

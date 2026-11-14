@@ -437,7 +437,13 @@ impl Connection {
             }
             self.send_queue.pop_front();
             self.dequeued(raw);
-            let credit = self.tx_max_data.saturating_sub(self.tx_data);
+            // New data is bounded by the peer's MAX_DATA and by our send window.
+            let window = self
+                .cfg
+                .transport
+                .send_window
+                .saturating_sub(self.stream_unacked);
+            let credit = self.tx_max_data.saturating_sub(self.tx_data).min(window);
             let Some(snd) = self.streams.get_mut(&raw).and_then(|s| s.send.as_mut()) else {
                 continue;
             };
@@ -456,8 +462,10 @@ impl Connection {
                 // Blocked by flow control: tell the peer once per limit.
                 if snd.buf.blocked_at(snd.max_data) {
                     self.pending.stream_data_blocked.insert(raw);
-                } else if snd.buf.unsent() > 0 && credit == 0 {
+                } else if snd.buf.unsent() > 0 && self.tx_data >= self.tx_max_data {
                     self.pending.data_blocked = true;
+                } else if snd.buf.unsent() > 0 && window == 0 {
+                    self.window_blocked = true;
                 }
                 continue;
             };
@@ -468,7 +476,12 @@ impl Connection {
             let again = snd
                 .buf
                 .wants_send(snd.max_data.min(snd.buf.sent() + credit - new));
+            if !again && snd.buf.unsent() > 0 && new >= window {
+                // The send window ran out: acknowledgments queue the stream again.
+                self.window_blocked = true;
+            }
             self.tx_data += new;
+            self.stream_unacked += new;
             frames.push(SentFrame::Stream {
                 id: raw,
                 off: r.start,

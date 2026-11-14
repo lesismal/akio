@@ -118,13 +118,20 @@ impl SendBuf {
         }
     }
 
-    pub fn on_ack(&mut self, r: Range<u64>, fin: bool) {
+    /// Bytes sent but not acknowledged from the front.
+    pub fn unacked(&self) -> u64 {
+        self.sent - self.base.min(self.sent)
+    }
+
+    /// Records an acknowledgment; returns how far the acknowledged front moved.
+    pub fn on_ack(&mut self, r: Range<u64>, fin: bool) -> u64 {
+        let old_base = self.base;
         if fin {
             self.fin_acked = true;
             self.fin_lost = false;
         }
         if r.start >= r.end {
-            return;
+            return 0;
         }
         self.lost.remove(r.clone());
         self.acked.insert(r);
@@ -149,6 +156,7 @@ impl SendBuf {
                 }
             }
         }
+        self.base - old_base
     }
 
     pub fn on_lost(&mut self, r: Range<u64>, fin: bool) {
@@ -185,14 +193,16 @@ impl SendBuf {
         self.fin && self.fin_acked && self.base == self.end
     }
 
-    /// Drops all data (after a reset).
-    pub fn clear(&mut self) {
+    /// Drops all data (after a reset); returns the bytes that were sent but not acknowledged.
+    pub fn clear(&mut self) -> u64 {
+        let unacked = self.unacked();
         self.chunks.clear();
         self.base = self.end;
         self.sent = self.end;
         self.acked.clear();
         self.lost.clear();
         self.fin_lost = false;
+        unacked
     }
 }
 
@@ -202,6 +212,8 @@ pub struct RecvBuf {
     /// Next offset to deliver.
     read: u64,
     pending: BTreeMap<u64, Bytes>,
+    /// An in-order chunk taken without reassembly, not popped yet (already counted in `read`).
+    ready: Option<Bytes>,
     buffered: u64,
     pub final_size: Option<u64>,
     /// The highest offset received.
@@ -255,6 +267,12 @@ impl RecvBuf {
         if data.is_empty() {
             return Ok(());
         }
+        if offset == self.read && self.pending.is_empty() && self.ready.is_none() {
+            // In order with nothing buffered (the common case): no reassembly needed.
+            self.read += data.len() as u64;
+            self.ready = Some(data);
+            return Ok(());
+        }
         match self.pending.get(&offset) {
             Some(old) if old.len() >= data.len() => {}
             Some(old) => {
@@ -271,6 +289,9 @@ impl RecvBuf {
 
     /// The next in-order chunk.
     pub fn pop(&mut self) -> Option<Bytes> {
+        if let Some(d) = self.ready.take() {
+            return Some(d);
+        }
         loop {
             let (&off, _) = self.pending.iter().next()?;
             if off > self.read {
@@ -378,6 +399,12 @@ mod tests {
         assert!(r.insert(0, Bytes::from_static(b"a"), true).is_err());
         r.insert(5, Bytes::from_static(b"xy"), false).unwrap();
         r.insert(5, Bytes::from_static(b"xyz"), false).unwrap();
-        assert_eq!(r.buffered(), 6);
+        // "abc" arrived in order and waits outside the reassembly buffer.
+        assert_eq!(r.buffered(), 3);
+        assert_eq!(r.pop().unwrap(), "abc");
+        assert_eq!(r.pop(), None);
+        r.insert(3, Bytes::from_static(b"de"), false).unwrap();
+        assert_eq!(r.pop().unwrap(), "de");
+        assert_eq!(r.pop().unwrap(), "xyz");
     }
 }

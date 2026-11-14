@@ -1015,3 +1015,84 @@ fn bad_certificate_is_a_crypto_error() {
         c.closed
     );
 }
+
+#[test]
+fn small_send_window() {
+    let (s, tls) = certs();
+    let t = TransportConfig {
+        send_window: 16 * 1024,
+        ..TransportConfig::default()
+    };
+    let mut sim = Sim::new(27, ConnConfig::new(t.clone(), true), s, false);
+    sim.link.loss = 0.02;
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    bulk(
+        &mut sim,
+        h,
+        &[300_000, 1000, 50_000],
+        Duration::from_secs(60),
+    );
+    assert!(sim.cconn(h).stream_unacked <= 16 * 1024);
+}
+
+/// CPU cost of the core alone: a bulk transfer over an ideal in-memory link (no sockets).
+/// `cargo test --release -p only-quic --lib -- --ignored core_throughput --nocapture`
+#[test]
+#[ignore = "benchmark"]
+fn core_throughput() {
+    let (mut sim, tls) = Sim::default_pair(28);
+    sim.link.delay = Duration::from_micros(50);
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    let n = 256 << 20;
+    let id = sim.cconn(h).open(Dir::Bi).expect("stream");
+    let body = Bytes::from(vec![0x5au8; n]);
+    sim.cconn(h).write(id, body).expect("write");
+    sim.cconn(h).finish(id).expect("finish");
+    let start = Instant::now();
+    let mut got = 0usize;
+    let ok = sim.run_until(Duration::from_secs(600), |s| {
+        let sh = s.server_handle().expect("server");
+        for e in s.events(true, sh) {
+            if let Event::StreamData(_, d, fin) = e {
+                got += d.len();
+                if fin {
+                    return true;
+                }
+            }
+        }
+        false
+    });
+    let el = start.elapsed().as_secs_f64();
+    assert!(ok && got == n);
+    let st = sim.cconn(h).stats();
+    println!(
+        "core: {} MB in {el:.2}s wall = {:.0} Mbit/s ({} packets, {:.2} us/packet both sides)",
+        n >> 20,
+        (n * 8) as f64 / el / 1e6,
+        st.sent_packets,
+        el * 1e6 / st.sent_packets as f64
+    );
+}
+
+#[test]
+fn late_initial_does_not_start_a_second_connection() {
+    let (mut sim, tls) = Sim::default_pair(29);
+    let h = sim.connect(
+        &tls,
+        ConnConfig::new(TransportConfig::default(), true),
+        Vec::new(),
+    );
+    let now = sim.now;
+    let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
+    let from = sim.client.addr;
+    sim.deliver(true, from, first.clone());
+    let ok = sim.run_until(Duration::from_secs(10), |s| {
+        s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
+    });
+    assert!(ok);
+    // The handshake is confirmed; the client's first Initial arrives again, late.
+    sim.run_until(Duration::from_millis(200), |_| false);
+    sim.deliver(true, from, first);
+    sim.run_until(Duration::from_millis(200), |_| false);
+    assert_eq!(sim.server.conns.len(), 1);
+}

@@ -250,7 +250,9 @@ depends on rustls any more. The API is the same apart from the payload type (mig
   streams, migration, key updates, Retry, resumption, resets and timeouts; interop with quic-go
   in both directions as raw QUIC (`tools/interop/quic/run.sh`, new: streams and datagrams, then
   Retry, key updates and a 150 MB stream) and as HTTP/3 with quic-go and fib
-  (`tools/interop/h3/run.sh`); fuzz targets `quic_packet`, `quic_frame`, `quic_conn` with corpus
+  (`tools/interop/h3/run.sh`); in Docker, ngtcp2 1.11 (through libcurl-gnutls) and OpenSSL 3.5's
+  QUIC (curl, libcurl, `openssl s_client -quic`) as clients of our servers
+  (`tools/interop/quic/docker.sh`, new); fuzz targets `quic_packet`, `quic_frame`, `quic_conn` with corpus
   replays.
 - Performance against the quinn-proto version, same loopback benchmark
   (`crates/only-h3/examples/quic-bench.rs`): PERF_EN

@@ -156,7 +156,8 @@ impl Connection {
         }
         let final_size = snd.buf.sent();
         snd.reset = Some((code, final_size, false));
-        snd.buf.clear();
+        let dropped = snd.buf.clear();
+        self.stream_unacked = self.stream_unacked.saturating_sub(dropped);
         self.pending.reset_stream.insert(raw);
         Ok(())
     }
@@ -432,7 +433,8 @@ impl Connection {
             // Answer with RESET_STREAM (RFC 9000 section 3.5).
             let final_size = snd.buf.sent();
             snd.reset = Some((code, final_size, false));
-            snd.buf.clear();
+            let dropped = snd.buf.clear();
+            self.stream_unacked = self.stream_unacked.saturating_sub(dropped);
             self.pending.reset_stream.insert(raw);
         }
         self.events
@@ -483,7 +485,15 @@ impl Connection {
         if snd.reset.is_some() {
             return;
         }
-        snd.buf.on_ack(off..off + len, fin);
+        let moved = snd.buf.on_ack(off..off + len, fin);
+        self.stream_unacked = self.stream_unacked.saturating_sub(moved);
+        if self.window_blocked && self.stream_unacked < self.cfg.transport.send_window {
+            self.window_blocked = false;
+            self.requeue_all_streams();
+        }
+        let Some(snd) = self.streams.get_mut(&raw).and_then(|s| s.send.as_mut()) else {
+            return;
+        };
         if snd.buf.all_acked() {
             self.maybe_free(raw);
         }

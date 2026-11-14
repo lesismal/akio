@@ -87,5 +87,7 @@ engine.run().unwrap();
   自动更新；ChaCha20 与 AES-256 套件；Retry；NEW_TOKEN 与会话恢复；版本协商；无状态重置；空闲超时与保活；
   握手前后的关闭；数据报；重置与停止；4 秒断网；NewReno。
 - 互通：`tools/interop/quic/run.sh`（与 quic-go 的原生 QUIC 流与数据报回显，双向，含 Retry、密钥更新与
-  150 MB 传输）和 `tools/interop/h3/run.sh`（与 quic-go、fib 的 HTTP/3 双向互通）。
+  150 MB 传输）、`tools/interop/h3/run.sh`（与 quic-go、fib 的 HTTP/3 双向互通），以及
+  `tools/interop/quic/docker.sh`（在 Debian 的 `rust:1` 镜像中，以通过 libcurl-gnutls 的 ngtcp2 和通过
+  curl、libcurl、`openssl s_client -quic` 的 OpenSSL 3.5 QUIC 作为我方 HTTP/3 与回显服务端的客户端）。
 - 模糊测试目标 `quic_packet`、`quic_frame`、`quic_conn`，并在 stable 上回放语料。
