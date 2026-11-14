@@ -71,12 +71,17 @@ impl TurnEnv for NullEnv {
         stun_message(data);
     }
     fn send_to_peer(&mut self, _relay: SocketAddr, _peer: SocketAddr, _data: &[u8]) {}
-    fn open_relay(&mut self, _client: SocketAddr, ip: IpAddr) -> io::Result<SocketAddr> {
+    fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
         self.next_port = self.next_port.wrapping_add(1);
-        if self.next_port % 5 == 0 {
+        if self.next_port % 7 == 0 {
             return Err(io::Error::other("no ports"));
         }
-        Ok(SocketAddr::new(ip, 50000 + self.next_port))
+        let port = if addr.port() == 0 {
+            50000 + self.next_port
+        } else {
+            addr.port()
+        };
+        Ok(SocketAddr::new(addr.ip(), port))
     }
     fn close_relay(&mut self, _relay: SocketAddr) {}
 }

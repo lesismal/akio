@@ -654,6 +654,7 @@ dependencies = [
  "ctr",
  "dimpl",
  "flash",
+ "flash-core",
  "flash-turn",
  "getrandom 0.2.17",
  "hmac",

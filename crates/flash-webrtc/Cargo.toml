@@ -12,6 +12,10 @@ documentation = "https://docs.rs/flash-webrtc"
 keywords = ["webrtc", "ice", "dtls", "srtp", "sctp"]
 categories = ["network-programming", "multimedia"]
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_webrtc::fuzzing`); not a public API.
+fuzzing = []
+
 [dependencies]
 flash = { workspace = true }
 flash-turn = { workspace = true }
@@ -26,6 +30,9 @@ sha2 = "0.10"
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 getrandom = "0.2"
 log = "0.4"
+
+[dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
 
 [lints]
 workspace = true

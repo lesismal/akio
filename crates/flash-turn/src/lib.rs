@@ -46,7 +46,7 @@ pub mod stun;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -143,14 +143,14 @@ impl TurnEnv for Env<'_> {
         }
     }
 
-    fn open_relay(&mut self, _client: SocketAddr, ip: IpAddr) -> io::Result<SocketAddr> {
+    fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
         let engine = self
             .0
             .engine
             .get()
             .and_then(Weak::upgrade)
             .ok_or_else(|| io::Error::other("TurnServer::set_engine was not called"))?;
-        let b = engine.bind_udp(SocketAddr::new(ip, 0), RelayAcceptor(self.0.me.clone()))?;
+        let b = engine.bind_udp(addr, RelayAcceptor(self.0.me.clone()))?;
         let addr = b.local_addr();
         lock(&self.0.relays).insert(addr, b);
         Ok(addr)

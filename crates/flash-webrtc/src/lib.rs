@@ -55,6 +55,9 @@
 #![warn(clippy::unwrap_used)]
 
 mod crypto;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 mod timer;
 
 use std::collections::{HashMap, VecDeque};

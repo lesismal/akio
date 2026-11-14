@@ -22,8 +22,9 @@ pub trait TurnEnv {
     fn send_to_client(&mut self, client: SocketAddr, data: &[u8]);
     /// Sends `data` from the relay socket bound at `relay` to `peer`.
     fn send_to_peer(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8]);
-    /// Opens a relay socket on `ip` (any free port) for `client`, returning its bound address.
-    fn open_relay(&mut self, client: SocketAddr, ip: IpAddr) -> io::Result<SocketAddr>;
+    /// Opens a relay socket for `client` bound on `addr` (port 0: any free port), returning
+    /// its bound address.
+    fn open_relay(&mut self, client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr>;
     /// Closes the relay socket bound at `relay`.
     fn close_relay(&mut self, relay: SocketAddr);
 }
@@ -208,6 +209,8 @@ pub struct TurnCore {
     cfg: TurnConfig,
     allocs: HashMap<SocketAddr, Allocation>,
     by_relay: HashMap<SocketAddr, SocketAddr>,
+    /// Relays set aside by `EVEN-PORT` with the R bit, by `RESERVATION-TOKEN`.
+    reservations: HashMap<[u8; 8], (SocketAddr, Instant)>,
     nonce_key: [u8; 32],
     epoch: Instant,
     stats: TurnStats,
@@ -223,6 +226,10 @@ impl fmt::Debug for TurnCore {
 
 struct Reject(u16, &'static str);
 
+/// How long a port reserved by `EVEN-PORT` waits for its `RESERVATION-TOKEN` (RFC 8656: about
+/// 30 seconds).
+const RESERVATION_LIFETIME: Duration = Duration::from_secs(30);
+
 impl TurnCore {
     /// A server with `cfg`.
     pub fn new(cfg: TurnConfig) -> TurnCore {
@@ -232,6 +239,7 @@ impl TurnCore {
             cfg,
             allocs: HashMap::new(),
             by_relay: HashMap::new(),
+            reservations: HashMap::new(),
             nonce_key,
             epoch: Instant::now(),
             stats: TurnStats::default(),
@@ -429,6 +437,17 @@ impl TurnCore {
     /// Frees expired allocations (closing their relays), permissions and channels. Call it
     /// about once a second.
     pub fn handle_timeout(&mut self, now: Instant, env: &mut dyn TurnEnv) {
+        let stale: Vec<[u8; 8]> = self
+            .reservations
+            .iter()
+            .filter(|(_, (_, e))| *e <= now)
+            .map(|(t, _)| *t)
+            .collect();
+        for t in stale {
+            if let Some((r, _)) = self.reservations.remove(&t) {
+                env.close_relay(r);
+            }
+        }
         let dead: Vec<SocketAddr> = self
             .allocs
             .iter()
@@ -456,6 +475,9 @@ impl TurnCore {
 
     /// Removes every allocation (closing the relays): server shutdown.
     pub fn close_all(&mut self, env: &mut dyn TurnEnv) {
+        for (_, (r, _)) in self.reservations.drain() {
+            env.close_relay(r);
+        }
         let all: Vec<SocketAddr> = self.allocs.keys().copied().collect();
         for c in all {
             self.remove(c, env);
@@ -616,8 +638,10 @@ impl TurnCore {
         if t.len() != 4 || t[0] != 17 {
             return Err(Reject(442, "Unsupported Transport Protocol"));
         }
-        if m.has(attr::RESERVATION_TOKEN) || m.has(attr::EVEN_PORT) {
-            return Err(Reject(508, "Insufficient Capacity"));
+        let token = m.get(attr::RESERVATION_TOKEN);
+        let even = m.get(attr::EVEN_PORT);
+        if token.is_some() && (even.is_some() || m.has(attr::REQUESTED_ADDRESS_FAMILY)) {
+            return Err(Reject(400, "Bad Request"));
         }
         if let Some(f) = m.get(attr::REQUESTED_ADDRESS_FAMILY) {
             let want_v6 = match f.first() {
@@ -637,9 +661,37 @@ impl TurnCore {
         {
             return Err(Reject(486, "Allocation Quota Reached"));
         }
-        let relay = env
-            .open_relay(client, self.cfg.relay_ip)
-            .map_err(|_| Reject(508, "Insufficient Capacity"))?;
+        let full = || Reject(508, "Insufficient Capacity");
+        let mut reserved = None;
+        let relay = match (token, even) {
+            // The port an earlier EVEN-PORT allocation set aside.
+            (Some(t), _) => {
+                let t: [u8; 8] = t.try_into().map_err(|_| Reject(400, "Bad Request"))?;
+                match self.reservations.remove(&t) {
+                    Some((r, exp)) if exp > now => r,
+                    Some((r, _)) => {
+                        env.close_relay(r);
+                        return Err(full());
+                    }
+                    None => return Err(full()),
+                }
+            }
+            (None, Some(e)) => {
+                let reserve = e.first().is_some_and(|b| b & 0x80 != 0);
+                let (r, next) = self.open_even(client, reserve, env).ok_or_else(full)?;
+                if let Some(next) = next {
+                    let mut t = [0u8; 8];
+                    crate::fill_random(&mut t);
+                    self.reservations
+                        .insert(t, (next, now + RESERVATION_LIFETIME));
+                    reserved = Some(t);
+                }
+                r
+            }
+            (None, None) => env
+                .open_relay(client, SocketAddr::new(self.cfg.relay_ip, 0))
+                .map_err(|_| full())?,
+        };
         let public = SocketAddr::new(
             self.cfg.public_ip.unwrap_or_else(|| relay.ip()),
             relay.port(),
@@ -660,11 +712,42 @@ impl TurnCore {
             },
         );
         self.by_relay.insert(relay, client);
-        Ok(self
+        let mut b = self
             .base(m, Class::Success)
             .xor_addr(attr::XOR_RELAYED_ADDRESS, public)
             .u32(attr::LIFETIME, life.as_secs() as u32)
-            .xor_addr(attr::XOR_MAPPED_ADDRESS, client))
+            .xor_addr(attr::XOR_MAPPED_ADDRESS, client);
+        if let Some(t) = reserved {
+            b = b.attr(attr::RESERVATION_TOKEN, &t);
+        }
+        Ok(b)
+    }
+
+    /// Opens a relay on an even port and, with `reserve`, the odd port above it too (RFC 8656
+    /// section 7.2, `EVEN-PORT`). Gives up after a few tries.
+    fn open_even(
+        &mut self,
+        client: SocketAddr,
+        reserve: bool,
+        env: &mut dyn TurnEnv,
+    ) -> Option<(SocketAddr, Option<SocketAddr>)> {
+        for _ in 0..32 {
+            let r = env
+                .open_relay(client, SocketAddr::new(self.cfg.relay_ip, 0))
+                .ok()?;
+            if r.port() % 2 != 0 || r.port() == u16::MAX {
+                env.close_relay(r);
+                continue;
+            }
+            if !reserve {
+                return Some((r, None));
+            }
+            match env.open_relay(client, SocketAddr::new(r.ip(), r.port() + 1)) {
+                Ok(next) => return Some((r, Some(next))),
+                Err(_) => env.close_relay(r),
+            }
+        }
+        None
     }
 
     fn lifetime(&self, m: &Message<'_>) -> Duration {

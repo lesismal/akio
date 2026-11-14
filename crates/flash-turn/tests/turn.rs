@@ -180,6 +180,45 @@ fn allocate_permission_send_data_channel_refresh() {
 }
 
 #[test]
+fn even_port_with_reservation_token() {
+    let (engine, turn, addr) = server();
+    let mut rtp = Client::new(addr, "wonderland");
+    let resp = rtp.request(Method::ALLOCATE, |b| {
+        b.u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+            .attr(attr::EVEN_PORT, &[0x80])
+    });
+    let m = Message::parse(&resp).unwrap();
+    assert_eq!(m.class(), Class::Success, "{:?}", m.error_code());
+    let relay = m.get_xor_addr(attr::XOR_RELAYED_ADDRESS).unwrap();
+    assert_eq!(relay.port() % 2, 0);
+    let token = m.get(attr::RESERVATION_TOKEN).unwrap().to_vec();
+    assert_eq!(token.len(), 8);
+
+    // Another client claims the reserved odd port with the token.
+    let mut rtcp = Client::new(addr, "wonderland");
+    let resp = rtcp.request(Method::ALLOCATE, |b| {
+        b.u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+            .attr(attr::RESERVATION_TOKEN, &token)
+    });
+    let m = Message::parse(&resp).unwrap();
+    assert_eq!(m.class(), Class::Success, "{:?}", m.error_code());
+    assert_eq!(
+        m.get_xor_addr(attr::XOR_RELAYED_ADDRESS).unwrap().port(),
+        relay.port() + 1
+    );
+    // The token is spent.
+    let mut third = Client::new(addr, "wonderland");
+    let resp = third.request(Method::ALLOCATE, |b| {
+        b.u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+            .attr(attr::RESERVATION_TOKEN, &token)
+    });
+    assert_eq!(Message::parse(&resp).unwrap().error_code().unwrap().0, 508);
+    assert_eq!(turn.stats().allocations, 2);
+    engine.shutdown();
+    engine.wait();
+}
+
+#[test]
 fn wrong_password_and_unsupported_transport() {
     let (engine, turn, addr) = server();
     let mut c = Client::new(addr, "wrong");

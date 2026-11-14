@@ -22,6 +22,8 @@ flash-mux = { path = "../crates/flash-mux", features = ["fuzzing"] }
 flash-kcp = { path = "../crates/flash-kcp", features = ["fuzzing"] }
 flash-h3 = { path = "../crates/flash-h3", features = ["fuzzing"] }
 flash-ebpf = { path = "../crates/flash-ebpf", features = ["fuzzing"] }
+flash-turn = { path = "../crates/flash-turn", features = ["fuzzing"] }
+flash-webrtc = { path = "../crates/flash-webrtc", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -169,6 +171,27 @@ bench = false
 [[bin]]
 name = "cbpf_steer"
 path = "fuzz_targets/cbpf_steer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stun_message"
+path = "fuzz_targets/stun_message.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "turn_server"
+path = "fuzz_targets/turn_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "webrtc_sdp"
+path = "fuzz_targets/webrtc_sdp.rs"
 test = false
 doc = false
 bench = false
