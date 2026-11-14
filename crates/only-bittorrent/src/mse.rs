@@ -6,7 +6,7 @@
 
 use std::fmt;
 
-use sha1::{Digest, Sha1};
+use only_crypto::hash::Sha1;
 
 use crate::metainfo::InfoHash;
 
@@ -133,7 +133,7 @@ fn hash(parts: &[&[u8]]) -> [u8; 20] {
     for p in parts {
         h.update(p);
     }
-    h.finalize().into()
+    h.finalize()
 }
 
 fn random_pad() -> Vec<u8> {

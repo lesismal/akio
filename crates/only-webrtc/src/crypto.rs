@@ -1,6 +1,6 @@
 //! The pure-Rust crypto provider for str0m: DTLS 1.2/1.3 by `dimpl` on RustCrypto, SRTP
 //! (AES-CM-SHA1-80, AEAD-AES-128-GCM, AEAD-AES-256-GCM), STUN HMAC-SHA1 and SHA-256
-//! fingerprints, and a self-signed ECDSA P-256 certificate generator.
+//! fingerprints on `only-crypto`, and a self-signed ECDSA P-256 certificate generator.
 //!
 //! Adapted from `str0m-rust-crypto` 0.6 (MIT OR Apache-2.0, by the str0m authors). That crate
 //! generates certificates with `rcgen` on `aws-lc-rs` (a C library); here the certificate is
@@ -9,15 +9,12 @@
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use aes_gcm::aead::generic_array::GenericArray;
-use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes128Gcm, Aes256Gcm, Nonce};
-use ctr::cipher::{KeyIvInit, StreamCipher};
-use hmac::{Hmac, Mac};
+use only_crypto::aes::Aes;
+use only_crypto::gcm::AesGcm;
+use only_crypto::mac::Hmac;
 use p256::ecdsa::signature::Signer;
 use p256::ecdsa::{Signature, SigningKey};
 use p256::pkcs8::EncodePrivateKey;
-use sha2::Digest;
 
 use str0m::config::{CryptoProvider, DtlsCert};
 use str0m::crypto::dtls::{
@@ -29,7 +26,7 @@ use str0m::crypto::{
     SupportedAeadAes256Gcm, SupportedAes128CmSha1_80,
 };
 
-/// The crypto provider every `Rtc` made by this crate uses (pure Rust: RustCrypto + dimpl).
+/// The crypto provider every `Rtc` made by this crate uses (pure Rust: only-crypto + dimpl).
 pub(crate) fn crypto_provider() -> Arc<CryptoProvider> {
     static SRTP: Srtp = Srtp;
     static SHA1_HMAC: Sha1Hmac = Sha1Hmac;
@@ -252,12 +249,11 @@ struct Sha1Hmac;
 
 impl Sha1HmacProvider for Sha1Hmac {
     fn sha1_hmac(&self, key: &[u8], payloads: &[&[u8]]) -> [u8; 20] {
-        let mut mac =
-            <Hmac<sha1::Sha1> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+        let mut mac = Hmac::<only_crypto::hash::Sha1>::new(key);
         for p in payloads {
             mac.update(p);
         }
-        mac.finalize().into_bytes().into()
+        mac.finalize()
     }
 }
 
@@ -266,17 +262,13 @@ struct Sha256;
 
 impl Sha256Provider for Sha256 {
     fn sha256(&self, data: &[u8]) -> [u8; 32] {
-        sha2::Sha256::digest(data).into()
+        only_crypto::hash::Sha256::digest(data)
     }
 }
 
 // ---- SRTP ----
 
-type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
-
-struct CmCipher {
-    key: [u8; 16],
-}
+struct CmCipher(Aes);
 
 impl std::fmt::Debug for CmCipher {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -291,9 +283,11 @@ impl Aes128CmSha1_80Cipher for CmCipher {
         input: &[u8],
         output: &mut [u8],
     ) -> Result<(), CryptoError> {
-        let mut c = Aes128Ctr::new(&self.key.into(), iv.into());
-        output[..input.len()].copy_from_slice(input);
-        c.apply_keystream(&mut output[..input.len()]);
+        let out = output
+            .get_mut(..input.len())
+            .ok_or_else(|| CryptoError::Other("AES-CM: output too small".into()))?;
+        out.copy_from_slice(input);
+        self.0.apply_ctr(iv, out);
         Ok(())
     }
 
@@ -307,9 +301,9 @@ impl Aes128CmSha1_80Cipher for CmCipher {
     }
 }
 
-fn gcm_seal<C: Aead>(
-    c: &C,
-    iv: &[u8],
+fn gcm_seal(
+    c: &AesGcm,
+    iv: &[u8; 12],
     aad: &[u8],
     input: &[u8],
     output: &mut [u8],
@@ -319,28 +313,28 @@ fn gcm_seal<C: Aead>(
             "SRTP AEAD: AAD shorter than 12 octets".into(),
         ));
     }
-    let ct = c
-        .encrypt(Nonce::from_slice(iv), Payload { msg: input, aad })
-        .map_err(|e| CryptoError::Other(format!("AES-GCM encrypt: {e:?}")))?;
-    output
-        .get_mut(..ct.len())
-        .ok_or_else(|| CryptoError::Other("AES-GCM: output too small".into()))?
-        .copy_from_slice(&ct);
+    let n = input.len();
+    let out = output
+        .get_mut(..n + 16)
+        .ok_or_else(|| CryptoError::Other("AES-GCM: output too small".into()))?;
+    out[..n].copy_from_slice(input);
+    let tag = c.encrypt_in_place_detached(iv, aad, &mut out[..n]);
+    out[n..].copy_from_slice(&tag);
     Ok(())
 }
 
-fn gcm_open<C: Aead>(
-    c: &C,
-    iv: &[u8],
+fn gcm_open(
+    c: &AesGcm,
+    iv: &[u8; 12],
     aads: &[&[u8]],
     input: &[u8],
     output: &mut [u8],
 ) -> Result<usize, CryptoError> {
-    if input.len() < 16 {
+    let Some(n) = input.len().checked_sub(16) else {
         return Err(CryptoError::Other(
             "AES-GCM: input shorter than the tag".into(),
         ));
-    }
+    };
     let joined;
     let aad = if aads.len() == 1 {
         aads[0]
@@ -348,17 +342,16 @@ fn gcm_open<C: Aead>(
         joined = aads.concat();
         &joined
     };
-    let pt = c
-        .decrypt(Nonce::from_slice(iv), Payload { msg: input, aad })
-        .map_err(|e| CryptoError::Other(format!("AES-GCM decrypt: {e:?}")))?;
-    output
-        .get_mut(..pt.len())
-        .ok_or_else(|| CryptoError::Other("AES-GCM: output too small".into()))?
-        .copy_from_slice(&pt);
-    Ok(pt.len())
+    let out = output
+        .get_mut(..n)
+        .ok_or_else(|| CryptoError::Other("AES-GCM: output too small".into()))?;
+    out.copy_from_slice(&input[..n]);
+    c.decrypt_in_place_detached(iv, aad, out, &input[n..])
+        .map_err(|e| CryptoError::Other(format!("AES-GCM decrypt: {e}")))?;
+    Ok(n)
 }
 
-struct Gcm128(Aes128Gcm);
+struct Gcm128(AesGcm);
 
 impl std::fmt::Debug for Gcm128 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -388,7 +381,7 @@ impl AeadAes128GcmCipher for Gcm128 {
     }
 }
 
-struct Gcm256(Aes256Gcm);
+struct Gcm256(AesGcm);
 
 impl std::fmt::Debug for Gcm256 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -423,7 +416,7 @@ struct Cm;
 
 impl SupportedAes128CmSha1_80 for Cm {
     fn create_cipher(&self, key: [u8; 16], _encrypt: bool) -> Box<dyn Aes128CmSha1_80Cipher> {
-        Box::new(CmCipher { key })
+        Box::new(CmCipher(Aes::new128(&key)))
     }
 }
 
@@ -432,7 +425,7 @@ struct G128;
 
 impl SupportedAeadAes128Gcm for G128 {
     fn create_cipher(&self, key: [u8; 16], _encrypt: bool) -> Box<dyn AeadAes128GcmCipher> {
-        Box::new(Gcm128(Aes128Gcm::new(GenericArray::from_slice(&key))))
+        Box::new(Gcm128(AesGcm::with_cipher(Aes::new128(&key))))
     }
 }
 
@@ -441,7 +434,7 @@ struct G256;
 
 impl SupportedAeadAes256Gcm for G256 {
     fn create_cipher(&self, key: [u8; 32], _encrypt: bool) -> Box<dyn AeadAes256GcmCipher> {
-        Box::new(Gcm256(Aes256Gcm::new(GenericArray::from_slice(&key))))
+        Box::new(Gcm256(AesGcm::with_cipher(Aes::new256(&key))))
     }
 }
 
@@ -449,19 +442,12 @@ impl SupportedAeadAes256Gcm for G256 {
 struct Srtp;
 
 /// AES-ECB of one block plus the PKCS#7 padding block, as the SRTP key derivation wants.
-fn ecb_round<
-    C: aes::cipher::BlockEncrypt + aes::cipher::BlockSizeUser<BlockSize = aes::cipher::consts::U16>,
->(
-    c: &C,
-    input: &[u8],
-    output: &mut [u8],
-) {
-    let mut b1 = *GenericArray::from_slice(&input[..16]);
-    c.encrypt_block(&mut b1);
-    output[..16].copy_from_slice(&b1);
-    let mut b2 = GenericArray::from([0x10u8; 16]);
-    c.encrypt_block(&mut b2);
-    output[16..32].copy_from_slice(&b2);
+fn ecb_round(c: &Aes, input: &[u8], output: &mut [u8]) {
+    let mut b = [[0u8; 16], [0x10u8; 16]];
+    b[0].copy_from_slice(&input[..16]);
+    c.encrypt_blocks(&mut b);
+    output[..16].copy_from_slice(&b[0]);
+    output[16..32].copy_from_slice(&b[1]);
 }
 
 impl SrtpProvider for Srtp {
@@ -475,18 +461,16 @@ impl SrtpProvider for Srtp {
         &G256
     }
     fn srtp_aes_128_ecb_round(&self, key: &[u8], input: &[u8], output: &mut [u8]) {
-        ecb_round(
-            &aes::Aes128::new(GenericArray::from_slice(key)),
-            input,
-            output,
-        );
+        let Ok(c) = Aes::new(&key[..16]) else {
+            return;
+        };
+        ecb_round(&c, input, output);
     }
     fn srtp_aes_256_ecb_round(&self, key: &[u8], input: &[u8], output: &mut [u8]) {
-        ecb_round(
-            &aes::Aes256::new(GenericArray::from_slice(key)),
-            input,
-            output,
-        );
+        let Ok(c) = Aes::new(&key[..32]) else {
+            return;
+        };
+        ecb_round(&c, input, output);
     }
 }
 
@@ -503,6 +487,55 @@ mod tests {
         let t = der::time_for_test(2_524_608_000);
         assert_eq!(t[0], 0x18);
         assert_eq!(t[2..], *b"20500101000000Z");
+    }
+
+    /// RFC 3711 appendix B.2 (AES-CM keystream) and the SRTP providers' plumbing.
+    #[test]
+    fn srtp_primitives() {
+        let key = [
+            0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,
+            0x4f, 0x3c,
+        ];
+        let iv = [
+            0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa, 0xfb, 0xfc, 0xfd,
+            0x00, 0x00,
+        ];
+        let mut c = Cm.create_cipher(key, true);
+        let mut out = [0u8; 48];
+        c.encrypt(&iv, &[0u8; 48], &mut out).unwrap();
+        assert_eq!(
+            out[..16],
+            [
+                0xe0, 0x3e, 0xad, 0x09, 0x35, 0xc9, 0x5e, 0x80, 0xe1, 0x66, 0xb1, 0x6d, 0xd9, 0x2b,
+                0x4e, 0xb4
+            ]
+        );
+        assert_eq!(
+            out[32..],
+            [
+                0x41, 0xe9, 0x5b, 0x3b, 0xb0, 0xa2, 0xe8, 0xdd, 0x47, 0x79, 0x01, 0xe4, 0xfc, 0xa8,
+                0x94, 0xc0
+            ]
+        );
+
+        let mut g = G128.create_cipher(key, true);
+        let aad = [7u8; 12];
+        let mut sealed = [0u8; 21];
+        g.encrypt(&[1; 12], &aad, b"hello", &mut sealed).unwrap();
+        let mut opened = [0u8; 5];
+        let n = g
+            .decrypt(&[1; 12], &[&aad[..4], &aad[4..]], &sealed, &mut opened)
+            .unwrap();
+        assert_eq!(&opened[..n], b"hello");
+        sealed[0] ^= 1;
+        assert!(g.decrypt(&[1; 12], &[&aad], &sealed, &mut opened).is_err());
+        assert!(g.encrypt(&[1; 12], &aad[..11], b"x", &mut [0; 17]).is_err());
+
+        let mut ecb = [0u8; 32];
+        Srtp.srtp_aes_128_ecb_round(&key, &[0; 16], &mut ecb);
+        let mut b = [0u8; 16];
+        Aes::new128(&key).encrypt_block(&mut b);
+        assert_eq!(ecb[..16], b);
     }
 
     #[test]

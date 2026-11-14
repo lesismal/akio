@@ -24,14 +24,8 @@ only = { workspace = true }
 only-turn = { workspace = true }
 str0m = { version = "=0.24.1", default-features = false }
 dimpl = { version = "0.7.6", default-features = false, features = ["rust-crypto"] }
-aes = "0.8"
-aes-gcm = "0.10"
-ctr = "0.9"
-hmac = "0.12"
-sha1 = "0.10"
-sha2 = "0.10"
+only-crypto = { workspace = true }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
-getrandom = "0.2"
 log = "0.4"
 
 [dev-dependencies]

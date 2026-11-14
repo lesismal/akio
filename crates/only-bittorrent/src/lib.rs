@@ -46,7 +46,7 @@ pub mod wire;
 
 /// Fills `b` with random bytes from the operating system (a fixed pattern if that fails).
 pub(crate) fn rand_fill(b: &mut [u8]) {
-    if getrandom::getrandom(b).is_err() {
+    if only_crypto::rand::fill_random(b).is_err() {
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64);

@@ -5,7 +5,7 @@
 
 use std::fmt::{self, Write as _};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+use only_crypto::base64::STANDARD as B64;
 
 use crate::{
     av::{Codec, Track},

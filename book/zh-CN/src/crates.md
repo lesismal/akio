@@ -7,7 +7,7 @@ $ cargo doc --workspace --no-deps --open
 ```
 
 公开 crate 从 1.0.0 起遵循 semver；`only-pool`、`only-buf`、`only-timer`、`only-sys`、
-`only-epoll` 和 `only-uring` 是内部实现 crate，其自身 API 可能在任何发布中变化（请通过 `only` /
+`only-epoll`、`only-uring` 和 `only-crypto` 是内部实现 crate，其自身 API 可能在任何发布中变化（请通过 `only` /
 `only-core` 使用）。标记为 `#[doc(hidden)]` 的条目同样不受保护。详见
 [docs/api-stability.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/api-stability.zh-CN.md)，
 变更记录：[CHANGELOG.zh-CN.md](https://github.com/lesismal/only/blob/main/CHANGELOG.zh-CN.md)。
@@ -19,7 +19,8 @@ $ cargo doc --workspace --no-deps --open
 | `only-pool` | 逻辑（阻塞任务）线程池 | [阻塞任务](concepts/blocking.md) |
 | `only-buf` | 分级缓冲池、`SharedBuf` | [架构](architecture.md) |
 | `only-timer` | I/O 事件循环使用的分层时间轮 | [架构](architecture.md) |
-| `only-sys` | 经过审查的 `unsafe` 系统调用封装（poller、唤醒器、socket、批量 UDP） | [架构](architecture.md) |
+| `only-sys` | 经过审查的 `unsafe` 系统调用封装（poller、唤醒器、socket、批量 UDP、系统随机数） | [架构](architecture.md) |
+| `only-crypto` | 协议 crate 使用的无依赖密码学：SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、常数时间 AES（CTR、GCM）、ChaCha20-Poly1305、base64、随机数 | [架构](architecture.md) |
 | `only-epoll` | epoll / kqueue 后端、UDP 线程组 | [Engine 与后端](concepts/engine.md) |
 | `only-uring` | io_uring 后端 | [Engine 与后端](concepts/engine.md) |
 | `only-ebpf` | `SO_REUSEPORT` 分流、sockmap 转发 | [Engine 与后端](concepts/engine.md) |

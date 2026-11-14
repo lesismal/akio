@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
-use sha1::{Digest, Sha1};
+use only_crypto::hash::Sha1;
 
 use crate::bencode::{self, Value};
 
@@ -58,7 +58,7 @@ impl fmt::Display for InfoHash {
 }
 
 pub(crate) fn sha1(data: &[u8]) -> [u8; 20] {
-    Sha1::digest(data).into()
+    Sha1::digest(data)
 }
 
 pub(crate) fn hex(b: &[u8]) -> String {

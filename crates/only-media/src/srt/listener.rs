@@ -8,7 +8,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use sha2::{Digest, Sha256};
+use only_crypto::hash::Sha256;
 
 use super::{
     conn::{Config, Conn, RejectReason, rand_u32, socket_id_of},
@@ -92,9 +92,9 @@ impl Listener {
 
     fn cookie(&self, addr: SocketAddr, bucket: u64) -> u32 {
         let mut h = Sha256::new();
-        h.update(self.secret);
+        h.update(&self.secret);
         h.update(addr.to_string().as_bytes());
-        h.update(bucket.to_be_bytes());
+        h.update(&bucket.to_be_bytes());
         let s = h.finalize();
         match u32::from_be_bytes([s[0], s[1], s[2], s[3]]) {
             0 => 1,

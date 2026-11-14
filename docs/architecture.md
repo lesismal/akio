@@ -13,6 +13,7 @@ explanation is in the [book](https://lesismal.github.io/only/en/).
 ```mermaid
 flowchart BT
     sys["only-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
+    crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG"]
     buf["only-buf<br/>size-class pool, SharedBuf"]
     timer["only-timer<br/>timer wheel"]
     pool["only-pool<br/>logical pool"]
@@ -67,12 +68,24 @@ flowchart BT
     facade --> turn
     turn --> webrtc
     http --> media
+    sys --> crypto
+    crypto --> ws
+    crypto --> http
+    crypto --> kcp
+    crypto --> turn
+    crypto --> webrtc
+    crypto --> media
 ```
 
 - **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → only →
   protocols`. Protocol crates depend on `only-core`'s public traits and the ``only`` facade,
   never on a specific backend.
-- **`unsafe` is confined** to `only-sys`, `only-uring` (ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`) and `only-dpdk` (the DPDK FFI),
+- **Cryptography is in-house**: `only-crypto` (std only; `unsafe` only for the AES-NI / ARMv8
+  AES instructions, with a constant-time portable fallback; the random syscall is in `only-sys`) provides the hashes, MACs, KDFs, CRC-32, constant-time AES-CTR/GCM,
+  ChaCha20-Poly1305, base64 and randomness the protocol crates need (KCP crypt, STUN/TURN,
+  WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent); TLS, QUIC and DTLS still use rustls /
+  quinn-proto / dimpl until the later waves of the DEV-PLAN.
+- **`unsafe` is confined** to `only-sys`, `only-uring` (ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (httparse for the head, an own chunked decoder),

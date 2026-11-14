@@ -10,8 +10,8 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use hmac::{Hmac, Mac};
-use sha1::Sha1;
+use only_crypto::hash::Sha1;
+use only_crypto::mac::Hmac;
 
 use crate::auth::AuthFn;
 use crate::stun::{Class, Message, MessageBuilder, Method, attr, is_channel_data, is_stun};
@@ -278,11 +278,10 @@ impl TurnCore {
     }
 
     fn nonce_mac(&self, exp: u64, client: SocketAddr) -> String {
-        let mut mac =
-            <Hmac<Sha1> as Mac>::new_from_slice(&self.nonce_key).expect("HMAC takes any key");
+        let mut mac = Hmac::<Sha1>::new(&self.nonce_key);
         mac.update(&exp.to_be_bytes());
         mac.update(client.to_string().as_bytes());
-        mac.finalize().into_bytes()[..8]
+        mac.finalize()[..8]
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect()

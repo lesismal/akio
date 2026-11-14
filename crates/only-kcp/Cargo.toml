@@ -15,12 +15,7 @@ categories = ["network-programming"]
 [dependencies]
 only = { workspace = true }
 only-core = { workspace = true }
-aes = "0.8"
-aes-gcm = "0.10"
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
-sha1 = "0.10"
-crc32fast = "1"
-getrandom = "0.2"
+only-crypto = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_kcp::fuzzing`); not a public API.

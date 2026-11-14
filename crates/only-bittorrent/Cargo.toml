@@ -17,8 +17,7 @@ only = { workspace = true }
 only-core = { workspace = true }
 only-pool = { workspace = true }
 only-http = { workspace = true }
-sha1 = "0.10"
-getrandom = "0.2"
+only-crypto = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_bittorrent::fuzzing`); not a public API.

@@ -700,7 +700,7 @@ pub fn dial<H: KcpHandler>(
     handler: H,
 ) -> std::io::Result<Session> {
     let mut b = [0u8; 4];
-    getrandom::getrandom(&mut b).map_err(|e| std::io::Error::other(e.to_string()))?;
+    only_crypto::rand::fill_random(&mut b)?;
     dial_conv(engine, addr, u32::from_le_bytes(b), cfg, handler)
 }
 

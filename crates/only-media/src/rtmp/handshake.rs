@@ -2,8 +2,8 @@
 //! (HMAC-SHA256 under Adobe's player and server keys) that Flash and Adobe-derived clients
 //! check.
 
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
+use only_crypto::hash::Sha256;
+use only_crypto::mac::Hmac;
 
 /// Size of C1/S1/C2/S2.
 pub const SIZE: usize = 1536;
@@ -28,8 +28,7 @@ impl std::fmt::Display for HandshakeError {
 impl std::error::Error for HandshakeError {}
 
 fn mac(key: &[u8]) -> Hmac<Sha256> {
-    // HMAC accepts keys of any length.
-    <Hmac<Sha256> as Mac>::new_from_slice(key).unwrap_or_else(|_| unreachable!())
+    Hmac::new(key)
 }
 
 fn digest_offset(b: &[u8], scheme: usize) -> usize {
@@ -42,7 +41,7 @@ fn digest(key: &[u8], b: &[u8], off: usize) -> [u8; 32] {
     let mut m = mac(key);
     m.update(&b[..off]);
     m.update(&b[off + 32..]);
-    m.finalize().into_bytes().into()
+    m.finalize()
 }
 
 fn find_digest(b: &[u8], key: &[u8]) -> Option<(usize, [u8; 32])> {
@@ -57,7 +56,7 @@ fn find_digest(b: &[u8], key: &[u8]) -> Option<(usize, [u8; 32])> {
 }
 
 fn random(b: &mut [u8]) {
-    if getrandom::getrandom(b).is_err() {
+    if only_crypto::rand::fill_random(b).is_err() {
         // Not security relevant: the handshake bytes only need to look random.
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -84,10 +83,10 @@ fn answer(b: &mut [u8], key: &[u8], peer_digest: &[u8]) {
     random(&mut b[..SIZE - 32]);
     let mut tmp = mac(key);
     tmp.update(peer_digest);
-    let k = tmp.finalize().into_bytes();
+    let k = tmp.finalize();
     let mut m = mac(&k);
     m.update(&b[..SIZE - 32]);
-    let d = m.finalize().into_bytes();
+    let d = m.finalize();
     b[SIZE - 32..].copy_from_slice(&d);
 }
 
@@ -156,10 +155,10 @@ mod tests {
         assert_eq!(c2.len(), SIZE);
         let mut tmp = mac(FP_KEY);
         tmp.update(&d);
-        let k = tmp.finalize().into_bytes();
+        let k = tmp.finalize();
         let mut m = mac(&k);
         m.update(&c2[..SIZE - 32]);
-        assert_eq!(m.finalize().into_bytes()[..], c2[SIZE - 32..]);
+        assert_eq!(m.finalize()[..], c2[SIZE - 32..]);
     }
 
     #[test]

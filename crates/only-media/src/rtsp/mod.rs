@@ -243,7 +243,7 @@ impl Acceptor for RtspServer {
 
 fn random_hex(n: usize) -> String {
     let mut b = vec![0u8; n];
-    let _ = getrandom::getrandom(&mut b);
+    let _ = only_crypto::rand::fill_random(&mut b);
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

@@ -26,6 +26,19 @@ only-turn = { path = "../crates/only-turn", features = ["fuzzing"] }
 only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
 only-media = { path = "../crates/only-media", features = ["fuzzing"] }
 only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
+only-crypto = { path = "../crates/only-crypto" }
+# Reference implementations for the only-crypto differential targets (crypto_*): the crates
+# only-crypto replaced in the libraries stay here as fuzz-only dependencies.
+sha1 = "0.10"
+sha2 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+aes = "0.8"
+aes-gcm = "0.10"
+ctr = "0.9"
+crc32fast = "1"
+base64 = "0.22"
+chacha20poly1305 = "0.10"
 
 [profile.release]
 debug = 1
@@ -299,6 +312,27 @@ bench = false
 [[bin]]
 name = "bt_mse"
 path = "fuzz_targets/bt_mse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_hash"
+path = "fuzz_targets/crypto_hash.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_aead"
+path = "fuzz_targets/crypto_aead.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_base64"
+path = "fuzz_targets/crypto_base64.rs"
 test = false
 doc = false
 bench = false

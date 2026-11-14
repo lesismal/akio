@@ -8,8 +8,9 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use hmac::{Hmac, Mac};
-use sha1::Sha1;
+use only_crypto::crc::Crc32;
+use only_crypto::hash::{Md5, Sha1};
+use only_crypto::mac::Hmac;
 
 /// The magic cookie of every RFC 5389+ message.
 pub const MAGIC_COOKIE: u32 = 0x2112_A442;
@@ -362,7 +363,7 @@ impl<'a> Message<'a> {
             return false;
         }
         let mac = integrity(&self.raw[..off], off + 24 - HEADER_LEN, key);
-        constant_time_eq(&mac, &self.raw[v..v + 20])
+        only_crypto::ct_eq(&mac, &self.raw[v..v + 20])
     }
 
     /// Verifies `FINGERPRINT`. `false` when it is absent or wrong.
@@ -378,21 +379,17 @@ impl<'a> Message<'a> {
     }
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 /// HMAC-SHA1 over `prefix` with its length field replaced by `len`.
 fn integrity(prefix: &[u8], len: usize, key: &[u8]) -> [u8; 20] {
-    let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(key).expect("HMAC takes any key length");
+    let mut mac = Hmac::<Sha1>::new(key);
     mac.update(&prefix[..2]);
     mac.update(&(len as u16).to_be_bytes());
     mac.update(&prefix[4..]);
-    mac.finalize().into_bytes().into()
+    mac.finalize()
 }
 
 fn fingerprint(prefix: &[u8], len: usize) -> u32 {
-    let mut h = crc32fast::Hasher::new();
+    let mut h = Crc32::new();
     h.update(&prefix[..2]);
     h.update(&(len as u16).to_be_bytes());
     h.update(&prefix[4..]);
@@ -472,14 +469,13 @@ fn encode_addr(a: SocketAddr, xor: Option<&[u8; 12]>) -> Vec<u8> {
 /// The long-term credential key of RFC 8489 section 9.2.2: `MD5(username ":" realm ":"
 /// password)`.
 pub fn long_term_key(username: &str, realm: &str, password: &str) -> [u8; 16] {
-    use md5::Digest;
-    let mut h = md5::Md5::new();
+    let mut h = Md5::new();
     h.update(username.as_bytes());
     h.update(b":");
     h.update(realm.as_bytes());
     h.update(b":");
     h.update(password.as_bytes());
-    h.finalize().into()
+    h.finalize()
 }
 
 /// Writes a STUN message.

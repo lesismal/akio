@@ -18,11 +18,7 @@ fuzzing = []
 
 [dependencies]
 only = { workspace = true }
-hmac = "0.12"
-sha1 = "0.10"
-md-5 = "0.10"
-crc32fast = "1"
-getrandom = "0.2"
+only-crypto = { workspace = true }
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }

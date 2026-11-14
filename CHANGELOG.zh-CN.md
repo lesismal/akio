@@ -59,6 +59,21 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
 | `Error::Rtc(str0m::RtcError)`、`impl From<str0m::RtcError> for Error` | `Error::Rtc(only_webrtc::RtcError)`；新增 `Error::InvalidCandidate` |
 | `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
 
+### 变更：自研密码学（`only-crypto`，DEV-PLAN 第 A 波）
+
+- 新的内部 crate `only-crypto`（只依赖 std，除 AES-NI / ARMv8 AES 模块外 `#![deny(unsafe_code)]`）：SHA-1、
+  SHA-224/256、SHA-384/512、MD5、HMAC、HKDF、PBKDF2、CRC-32 / CRC-32C、AES-128/192/256（检测到 CPU
+  指令时使用指令，否则使用常数时间 fixsliced 软件实现）及 CTR、带常数时间 GHASH 的 AES-GCM、ChaCha20-Poly1305、base64（严格解码）、操作系统随机数与
+  ChaCha20 生成器。用 NIST CAVP、RFC 与 Wycheproof 向量测试，并（在测试与模糊测试目标中）与被替代的
+  crate 交叉比对。
+- `only-kcp`、`only-turn`、`only-ws`、`only-http`、`only-media`、`only-bittorrent` 和
+  `only-webrtc` 改用它，不再依赖 sha1、sha2、md-5、hmac、pbkdf2、aes、aes-gcm、ctr、crc32fast、
+  base64 与 getrandom（它们只作为 dev / fuzz 的参照实现保留，在第 D 波之前仍经由 str0m/dimpl 间接存在）。
+  公开 API 与线上格式不变（KCP 加密，包括旧实现封装的“黄金”数据报；TURN MESSAGE-INTEGRITY/FINGERPRINT；
+  WebSocket accept key；BitTorrent info hash 与 MSE；SRT 密钥包装与 AES-CTR；RTMP digest 握手；SRTP）。
+- `only-sys`（内部，`#[doc(hidden)]`）：基于 `getrandom(2)` / `getentropy(2)` 的 `fill_random`，
+  回退到 `/dev/urandom`。
+
 ### 新增
 
 - `only-prefork`（M6，可选）：用多个 worker 进程服务同一个程序。supervisor 以 N 个 worker 的身份重新执行

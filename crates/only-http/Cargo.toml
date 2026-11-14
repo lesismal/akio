@@ -17,7 +17,7 @@ only-core = { workspace = true }
 only = { workspace = true }
 httparse = "1"
 log = { version = "0.4.21", features = ["kv"] }
-base64 = "0.22"
+only-crypto = { workspace = true }
 loona-hpack = "0.4"
 only-ws = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
