@@ -172,6 +172,13 @@ builds (`BASE_DIR`, 5 rounds × 5 s for HTTP, 3 rounds for the rest; the earlier
 TCP echo throughput was unchanged within noise (64 B × 64: 511k → 517k; 64 B × 1024: 1.01M →
 1.01M). TLS memory was unchanged (8.5 KB per connection, mostly rustls' own buffers).
 
+After merging the later `main` (chaos fixes, lints, fuzzing), the same A/B against the pre-merge
+build showed HTTP/1.1 plaintext unchanged (1.11M vs 1.12M) and memory unchanged (within 10 bytes
+per connection), but h2c 9% slower (1.82M → 1.67M): the h2 session now drops finished streams after
+releasing its lock, through a `Vec` that was allocated afresh for every finished stream. Reusing a
+per-thread spare buffer for it brought h2c back level with the pre-merge build (1.39M vs 1.41M in
+a busier moment of the host).
+
 ### New: write timeout
 
 `Config::write_timeout` (default off): a connection that has output queued and makes no write
