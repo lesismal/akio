@@ -1,0 +1,8 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Secket-Key: dGhlIHN
+Sec-WebSocket-Version: 12
+Slc-WebSocket-Protocol: chat
+

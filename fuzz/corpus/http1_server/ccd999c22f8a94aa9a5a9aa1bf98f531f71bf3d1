@@ -1,0 +1,18 @@
+PRI /Ceno/p HTTP/1.1
+Upgrade: web
+Connon: 
+Sec-WebSockexe-nEsttions: pGET /ws HUpgrade: h2cTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: 
+Sec-WebSocket-Extensimns: perm/ws HTT
+Connection: 
+Sec-WebSocket-Extensions: permessage
+Host: h
+UPpgrade: websocket
+Connection: 
+Set-Extensions: permHTTP/1.1 200 OK
+essage-deflate; clidK
+c-Webnt_maHost: x_
+
+ÅÖ6Socket-Fers˙!io

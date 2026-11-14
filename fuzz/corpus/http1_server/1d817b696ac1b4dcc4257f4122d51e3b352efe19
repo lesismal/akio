@@ -1,0 +1,4 @@
+GET /raw HTTP/1.1
+Host: h
+
+raSec-WebSocket-Key: dGhlIHNhbXBsZb25jZQ; server_ovsZSBuÿÿÿcves

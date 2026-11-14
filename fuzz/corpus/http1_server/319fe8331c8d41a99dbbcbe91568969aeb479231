@@ -1,0 +1,13 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade,de: h3c
+HTTP2-Settings: AAMAAABks
+Upgr-Settings: AAMAAABks
+Upgrade: h2c
+HTTP2-eSttings: AAMAAABks
+Upgrade: h2c
+HTTP2-eSttings: AAMAAABkAA_PA: AAMAAABkAA_PAQade: h2c
+HTTP2-eSttings: AAMAAABks
+Upgrade: h2c
+HTTP2-eSttings: AAMAAABkAA_PA: AAMAAABkAA_PAQ._
+

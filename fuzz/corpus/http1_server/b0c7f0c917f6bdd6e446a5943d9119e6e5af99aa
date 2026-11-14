@@ -1,0 +1,11 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+HOst: h
+Connection: UHost: , HT,: ,pgrade, T,: , HT,  h
+Connection: Upgrade,   h
+oCnnection: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Sedtings: AAMAAPings
+Upgrade: h2c
+HTTP2-Sedtings: AAMAAP__
+

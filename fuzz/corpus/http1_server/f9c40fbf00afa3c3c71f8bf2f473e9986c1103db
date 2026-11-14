@@ -1,0 +1,35 @@
+GET /ws HTTP/1.1
+Host: b h	
+U!grade: websocket
+Connection: UXPOPOST /TP/1.1
+ngtst: h	
+Upgrade: websocket
+Connection: UXPOST /TP/1.socket
+Connection: UXonnection: UXPO h	
+U!gnection: UXPOPOST /TP/1.1
+ngtst: h	
+Upgrade: websocket
+Connection: UXPOST /TP/1.socket
+Connection: UXonnection: UXPO h	
+U!grade: websocket
+Connection: UXPOPOST /TP/1.1
+ngtst: ket
+Connection: UXonnection: UXPO h	
+U!grade: websocket
+Connection: UXPOPOST /TP/1.1
+ngtst: ade: websocket
+Connection: UXPOST /Trade: websocket
+Connection: UXPOPOST /TP/1.1
+ngtst: ket
+Connection: UXonnection: UXPO h	
+U!grade: websocket
+Connection: UXPOPOST /TP/1.1
+ngtst: h	
+Upgrade: websocket
+Connection: UXPOST /TP/1.h	
+Upgrade: websocket
+Connection: UXPTOTPS //1.1
+ngth: 1
+
+`bc
+

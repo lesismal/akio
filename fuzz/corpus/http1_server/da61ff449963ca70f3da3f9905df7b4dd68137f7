@@ -1,0 +1,14 @@
+GET / HTTP/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+Connection:  / HTTP/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+ConnHTTP2-Settings: e: h
+
+GEclose
+

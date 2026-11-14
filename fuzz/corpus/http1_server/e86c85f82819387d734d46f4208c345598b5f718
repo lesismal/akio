@@ -1,0 +1,8 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, tings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP_________________ABks
+Upgrade: h2c
++TTP2-Settings: AAMAAABkAA_PAQ._
+

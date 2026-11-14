@@ -1,0 +1,10 @@
+GET / HTTP/1.1
+Host: h
+Connection:Upgrade, TTaHde, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAGGET /ws HTTP/1.1
+Host: h
+Upgrade: web
+
+MAAP_
+ho…7

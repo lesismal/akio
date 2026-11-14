@@ -1,0 +1,13 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Ses: /pushssa9e-deflateow_bits
+
+cşÿÿÿ-WebSocket-Extensions:  websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHN/pushssage-deflateow_bits
+
+…7ú!=ŸMQX‰€8ú!=c-WebS

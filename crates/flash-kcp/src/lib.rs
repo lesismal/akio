@@ -32,6 +32,9 @@
 pub mod crypt;
 mod fec;
 mod frame;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod kcp;
 mod rs;
 

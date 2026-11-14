@@ -1,0 +1,3 @@
+GET / HTTP/1.1
+HHost:
+Sec-Socketcct-pAOo=ab

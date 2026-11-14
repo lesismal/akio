@@ -1,0 +1,7 @@
+HTTP/1.1 101 Swiclient_n3p1rade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSocket-Extensions: permessaeg-otocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSock-Acetcept: s3pPL’’late; cliPrx
+

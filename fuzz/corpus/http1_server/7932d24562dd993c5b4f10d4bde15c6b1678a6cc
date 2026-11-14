@@ -1,0 +1,5 @@
+GE+ /ws HTTP/1.1
+Host: Th
+Upgrade: websocoket
+Connectiot-Key: dGhlIchat
+

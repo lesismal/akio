@@ -1,0 +1,15 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlINhHbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=eWbSocket-Extensions: /PATCH pushssageGETPebsocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlINhHbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=eWbSocket-Extensions: /PATCH pushssageGETPUT-deflate; clieSnt^_max_window_bits
+
+ÅÖ7˙!=üMQßUT-deflate; clieSnt^_max_window_bits
+
+ÅÖ7˙!=üMQß8˙!=c-Web/sseS

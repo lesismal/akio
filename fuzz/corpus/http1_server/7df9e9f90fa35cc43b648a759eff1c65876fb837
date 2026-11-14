@@ -1,0 +1,42 @@
+GE+ /ws HTTP/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HTTP1-Settings
+Upgrade: Expect: 100-continueh2c
+HTTP2-Settings: A;MAAABOST /Connect@on: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: ol: P/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Connect@onueh2c
+HTTP2-Settings: A;MAAABOST /Connect@on: Upgrade Expect: 100-c@on: ol: P/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Connect@onueh2c
+HTTP2-Settings: A;MAAABOST /Connect@on: Upgrade Expect: 100-continueh2c
+HTTP2-Settings: A;MAAABOST /Connect@on: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: ol: P/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgraP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Connect@onueh2c
+HTTP2-Settings: AHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: oontinueh2c
+HTTP2-Settings: A;MAAABOST /Connect@on: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: ol: P/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Connect@onueh2c
+HTTP2-Settings: AHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: ol: P/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HTT: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: olchat
+

@@ -1,0 +1,3 @@
+GET /a?b/sse=c HTTP/1.0
+User-Agent:/*
+

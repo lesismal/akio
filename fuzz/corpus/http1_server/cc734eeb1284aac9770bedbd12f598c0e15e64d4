@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host:TTnection: Upgrade, HT-Settings
+Uperade: h2c h
+Connection: Upgrade, e, HT- HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____ooooooooooooooooooooooooooooooooooooo______________________________ooo____________________________________Sec-WebSocke|-Extensions: ypermessage-deflate______
+

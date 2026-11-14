@@ -27,6 +27,9 @@
 //! Guide: [arpc](https://lesismal.github.io/flash/en/protocols/arpc.html)
 //! (中文: [arpc](https://lesismal.github.io/flash/zh-CN/protocols/arpc.html)).
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod proto;
 
 use std::{

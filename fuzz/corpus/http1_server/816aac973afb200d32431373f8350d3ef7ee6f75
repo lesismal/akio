@@ -1,0 +1,19 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: 1, HTTP1-Settings
+Upgrade:ngs
+Upgrade: h4c
+HTTP2-Settings: AAMAAP___66666io.: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settiion: Upgrade, HTtadePTHTTade,adUpgrade; server_no_context_takeover: -2c h
+Connection: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settiion: Upgrade, HT, TH____ HTTade,adnection: U, HTTP1-Set/wsgs
+Upgradtion: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settiion: Upgrade, HTtade, HTTP____ HTTade,adUpgrade; server_no_context_takeover: -2c h
+Connection: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settiion: Upgrade, HTtadm, HTTP____ HTTade,ade, HTTP____ HTTade, HTTP___(____
+

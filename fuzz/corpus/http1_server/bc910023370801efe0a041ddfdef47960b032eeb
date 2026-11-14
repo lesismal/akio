@@ -1,0 +1,18 @@
+GE+ /ws HTTP/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HTTP1-Settings
+Upgrade: Expect: 200-continueh2c
+HTTP2-Settings: A;MAAABOST /Connec
+HTTP1-Settings: A;MAAAB)ST /Connect@on: ol: P/1.1
+Host: h
+Conngth: et
+ConnectPGETion: UUpgrade- HTTP1-Settings
+Upgrade: h2c
+HTTP2-S: et
+ConnectPGETion: UUpgrade, HTT: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: olc/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HThat
+

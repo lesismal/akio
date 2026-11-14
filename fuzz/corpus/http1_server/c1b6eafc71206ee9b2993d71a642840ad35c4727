@@ -1,0 +1,13 @@
+GET /ws HTTP/1.1
+Host: h; server_no_contermessage-deflate; client_max_TTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-SettTP/1.1
+Host: h; server_no_contermessage-deflate; client_max_TTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Settings
+Upgrade: h2,,,,,,,,,,,,,,,,,,,,,,,c
+HTTP2-Settings: AAMAAings
+Upgrade: h2,,,,,,,,,,,,,,,,,,,,,,,c
+HTTP2-Settings: AAMAAABkAwindow_bits
+
+…3ú!=ŸMQX‰€7ú!=

@@ -20,6 +20,9 @@
 
 pub mod cbpf;
 mod ebpf;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod relay;
 mod steer;
 #[cfg(target_os = "linux")]

@@ -1,0 +1,27 @@
+CONNECT example+com:442 HTTP/1.1
+Host:uuuuuuuuuuuuuuuu"example.com:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Hos0:"42 HTTP/1.1
+Host:"example.com:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Hoxample.com:; H;cP/1.1
+Hosp: h
+
+raw byteoePPPno/p HTTP/1.1
+Host:m:443 HTTexample.com:; H;cP/1.1
+Host: h
+
+raw byteo1
+Host: h
+
+1.1 101 Switching Protocols
+m:443 HTTCONNECT com:; H;cP/1.1
+Host: h
+
+rPOSTGET =/Ceno/p HTTP/1.1
+Host: h
+Transfer-Endig:nco Mose hdGhlIHNhbXBsZSa

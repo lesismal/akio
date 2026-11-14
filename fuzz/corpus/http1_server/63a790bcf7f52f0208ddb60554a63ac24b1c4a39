@@ -1,0 +1,12 @@
+PGET / HTTP/1.1
+Host: h
+Connectn: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings:on:pgraa1
+Host: h
+Connection: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settmngs: A;MAAABOST /Connect@on: U=de: h2c
+HTTP2-Settings: A;MAAABOST /Connect@on: UpgradeHo=th: 0
+
+/bc

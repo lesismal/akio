@@ -1,0 +1,9 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Setti
+HTTP2-Setvings: A HTTP2-%Setti
+HTTP2-Setvings:
+HTTP2-Setvings: AAMAAABks
+Upgrade: h2c
+HTTP2-Settings: AAMAAABkDAA_AAABkAA_PAQ._
+

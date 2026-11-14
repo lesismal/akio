@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: Upgrade, HTTade, HTTP2-Setts
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____oooooooooooooooooooooooo____________________________________Sec-WebSocket; server_no_context_takeover-Extensions: permessage-deflate______
+

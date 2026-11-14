@@ -1,0 +1,20 @@
+GET /Ceno/detach/p HTTP/1.1
+xtnoi: Upgrade
+Sec-UebSocket-Key:/ws HTTP/1.1
+ost: h
+Upgradea:1.1
+hExpect: ;=pect web HTTP/1.1
+zost: h
+Upgrade: websockPOST :/ws HTTP/1.1
+zost: h
+Upgradea:2.1
+hExpect: TP/1.1
+zost: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-UebSocket-Key:/ws HT
+zost: h
+Upgradea:2.1
+hExpect: ;=pect ost: h
+Upgraden: 1GET ec-Wsocket
+ConttŒ~‹‹ˆtttttttt························e h: h?*

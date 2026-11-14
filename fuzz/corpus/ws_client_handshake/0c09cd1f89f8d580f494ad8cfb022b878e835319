@@ -1,0 +1,4 @@
+HTTP/1.1 101 So=
+Sec-WebSocketcket-Extensions: Apere
+Sec-WebSocketcket-Extensions:_i
+

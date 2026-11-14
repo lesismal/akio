@@ -12,5 +12,12 @@ flash = { path = "../flash" }
 flash-core = { path = "../flash-core" }
 flash-http = { path = "../flash-http" }
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_socks::fuzzing`); not a public API.
+fuzzing = ["flash-core/fuzzing"]
+
+[dev-dependencies]
+flash-core = { path = "../flash-core", features = ["fuzzing"] }
+
 [lints]
 workspace = true

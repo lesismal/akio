@@ -1,0 +1,9 @@
+HTTP/1.1 101 Swotocols
+Upgrade: websocket
+Connection: de: webrocket
+Connection: Upgrade
+Sec-WebSockeT-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSocket-Protocol:ceOo=
+Sec-WebSocket-Protocol: chT-Accept:0t
+
+frames

@@ -22,6 +22,8 @@ members = [
     "crates/flash",
     "tools/echo-bench",
 ]
+# The cargo-fuzz project is its own (nightly-only) workspace.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.0.0"
