@@ -298,6 +298,7 @@ dependencies = [
  "flash-ws",
  "flate2",
  "httparse",
+ "libc",
  "log",
  "loona-hpack",
  "rcgen",

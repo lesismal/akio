@@ -26,6 +26,7 @@ regex = ["dep:regex"]
 [dev-dependencies]
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+libc = "0.2"
 
 [lints]
 workspace = true
