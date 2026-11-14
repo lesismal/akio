@@ -53,7 +53,7 @@ Mixing ordered slots with plain sends: `Conn::send` is not held behind reserved 
 
 The kernel lacks it (older than 5.19, or disabled by `kernel.io_uring_disabled` / a seccomp
 profile, as in many containers): flash logs `io_uring unavailable (...); using epoll`. Set
-`UringConfig { strict: true, .. }` to fail instead.
+`UringConfig::strict` to fail instead.
 
 ## eBPF steering shows `Degraded`
 

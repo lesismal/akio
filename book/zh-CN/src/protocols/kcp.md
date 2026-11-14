@@ -54,5 +54,5 @@
 | `data_shards`、`parity_shards` | 0、0 | kcp-go 的 Reed–Solomon FEC（kcptun 用 10/3）；任一为 0 即关闭 |
 | `write_queue` | 0 | 等待的段超过此数后 `send` 失败（0 = 发送窗口的两倍） |
 
-`Config::fast()` 即 kcptun 的 "fast3"：nodelay、10 ms 间隔、2 次重复 ACK 后重传、无拥塞控制。
+`KcpConfig::fast()` 即 kcptun 的 "fast3"：nodelay、10 ms 间隔、2 次重复 ACK 后重传、无拥塞控制。
 密钥按已派生的形式传入：kcptun 用 PBKDF2-SHA1 从口令派生（salt 为 `kcp-go`，4096 轮，32 字节）。

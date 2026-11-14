@@ -49,7 +49,7 @@
 
 内核不支持（早于 5.19，或被 `kernel.io_uring_disabled` / seccomp 配置禁用，许多容器中就是
 如此）：flash 会记录 `io_uring unavailable (...); using epoll`。设置
-`UringConfig { strict: true, .. }` 则改为报错。
+`UringConfig::strict = true` 则改为报错。
 
 ## eBPF 分流显示 `Degraded`
 

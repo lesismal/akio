@@ -20,7 +20,7 @@ each serves the other's calls with the `Routes` it was given.
 | `handle(method, Fn(&mut Context))` | serve calls and notifies of `method`; `""` is the fallback for unknown methods (otherwise they get "method not found") |
 | `handle_stream(method, open)` | serve streams the peer opens: `open(&Stream)` returns the `FnMut(&Stream, StreamEvent)` that receives `Message(bytes)` and `Eof` |
 | `on_connected(Fn(&Peer))`, `on_disconnected(Fn(&Peer))` | connection events |
-| `max_body(n)` | longest method + payload accepted (64 MiB); longer closes the connection |
+| `max_body_bytes(n)` | longest method + payload accepted (64 MiB); longer closes the connection |
 
 In a handler, `Context` gives `method()`, `body()`, `is_notify()`, `peer()`, and answers with
 `write(payload)` or `error(text)`, or `detach()` → `Responder` (`write` / `error` later, from any

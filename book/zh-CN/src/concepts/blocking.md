@@ -52,12 +52,12 @@ arpc 式分帧），先预留位置：
 线程池是全 engine 共享的，按需创建、自适应（`flash_pool`）：
 
 ```rust,ignore
-EngineBuilder::pool(PoolConfig {
-    min_threads: 0,                      // 空闲时也保留的线程数
-    max_threads: cores * 8 (至少 8),     // 按需启动
-    queue_capacity: 65_536,              // 超出后：Error::Overloaded
-    keep_alive: Duration::from_secs(30), // 超过 min_threads 的空闲线程退出
-})
+let mut pool = PoolConfig::default();       // #[non_exhaustive]：在默认值上修改字段
+pool.min_threads = 0;                       // 空闲时也保留的线程数
+pool.max_threads = cores * 8 (至少 8);      // 按需启动
+pool.queue_capacity = 65_536;               // 超出后：Error::Overloaded
+pool.keep_alive = Duration::from_secs(30);  // 超过 min_threads 的空闲线程退出
+EngineBuilder::pool(pool)
 ```
 
 以上是默认值。`Engine::pool_stats()`（以及指标端点）报告线程数、空闲线程、队列长度、已完成、

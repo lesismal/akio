@@ -20,7 +20,7 @@ Registering methods (`path` is `/package.Service/Method`):
 | `bidi(path, open)` | `Fn(&Metadata, Sink) -> OnMessage` | the general form: `OnMessage` gets `Some(msg)` per request, then `None` at half-close |
 
 Other settings: `interceptor(Fn(&Metadata) -> Result<(), Status>)` runs before every call (an
-`Err` ends it with that status), `max_message(n)` (default 4 MiB), `compress(bool)` (gzip
+`Err` ends it with that status), `max_message_bytes(n)` (default 4 MiB), `compress(bool)` (gzip
 responses for clients that accept it; gzip requests are always accepted).
 
 The `Sink` answers, from any thread: `send(msg) -> bool`, `set_header`, `set_trailer`,

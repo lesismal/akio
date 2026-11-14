@@ -55,12 +55,12 @@ the stream would otherwise stall forever behind the missing response. A plain `C
 The pool is engine-wide, created lazily and adaptive (`flash_pool`):
 
 ```rust,ignore
-EngineBuilder::pool(PoolConfig {
-    min_threads: 0,                      // kept alive when idle
-    max_threads: cores * 8 (at least 8), // started on demand
-    queue_capacity: 65_536,              // beyond it: Error::Overloaded
-    keep_alive: Duration::from_secs(30), // idle threads above min_threads retire
-})
+let mut pool = PoolConfig::default();       // #[non_exhaustive]: set fields on the default
+pool.min_threads = 0;                       // kept alive when idle
+pool.max_threads = cores * 8 (at least 8);  // started on demand
+pool.queue_capacity = 65_536;               // beyond it: Error::Overloaded
+pool.keep_alive = Duration::from_secs(30);  // idle threads above min_threads retire
+EngineBuilder::pool(pool)
 ```
 
 Those are the defaults. `Engine::pool_stats()` (and the metrics endpoint) report threads, idle

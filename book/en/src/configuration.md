@@ -2,7 +2,12 @@
 
 All configuration is plain Rust values: structs with public fields and `Default`, builders with
 methods. There is no configuration file format; load yours (TOML, env, flags) and map it onto
-these types. **Reloadable** means `Engine::reload(&Config)` applies it to the running engine,
+these types.
+
+Every config struct is `#[non_exhaustive]` so that settings can be added in minor releases
+without breaking you: start from `Default` (or a preset such as `KcpConfig::fast()`) and assign
+the fields you need, as below. Struct literals (`Config { .. }`) do not compile outside flash
+([API stability](https://github.com/lesismal/flash/blob/main/docs/api-stability.md)). **Reloadable** means `Engine::reload(&Config)` applies it to the running engine,
 including open connections ([Observability and hot reload](observability.md)).
 
 ```rust,ignore

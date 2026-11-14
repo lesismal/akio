@@ -20,7 +20,7 @@
 | `bidi(path, open)` | `Fn(&Metadata, Sink) -> OnMessage` | 通用形式：每个请求消息调用一次 `OnMessage(Some(msg))`，半关闭时调用 `None` |
 
 其他设置：`interceptor(Fn(&Metadata) -> Result<(), Status>)` 在每次调用前执行（返回 `Err`
-时以该状态结束调用），`max_message(n)`（默认 4 MiB），`compress(bool)`（对接受 gzip 的客户端
+时以该状态结束调用），`max_message_bytes(n)`（默认 4 MiB），`compress(bool)`（对接受 gzip 的客户端
 压缩响应；gzip 压缩的请求总是被接受）。
 
 `Sink` 可在任何线程上答复：`send(msg) -> bool`、`set_header`、`set_trailer`、
