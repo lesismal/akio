@@ -124,6 +124,9 @@ fn allocate_permission_send_data_channel_refresh() {
     // Without a permission the peer's datagrams are dropped.
     let peer = sock();
     peer.send_to(b"too early", relay).unwrap();
+    // Let the relay socket's thread see (and drop) it before the permission exists: one
+    // that arrives after CreatePermission is relayed, as RFC 8656 says.
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     let pa = peer.local_addr().unwrap();
     let resp = c.request(Method::CREATE_PERMISSION, |b| {
