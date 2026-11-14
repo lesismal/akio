@@ -159,6 +159,60 @@ nothing uses it yet, so no behaviour changes.
   (`tools/interop/dtls/run.sh`), and in memory with `dimpl` (`tests/dimpl.rs`); fuzz targets
   `dtls_record` and `dtls_handshake` with corpus replays. Not implemented: DTLS 1.3 (RFC 9147),
   connection IDs, session resumption, PSK.
+### Changed: own TLS 1.3 and 1.2 in `only-tls` (DEV-PLAN wave C; no more rustls, ring)
+
+`only-tls` now implements TLS itself, from the RFCs, on `only-crypto` and `only-x509`
+(`#![forbid(unsafe_code)]`, no third-party dependencies). The covered API is unchanged
+(`api/only-tls.txt` is identical): `ServerConfig` / `ClientConfig` builders, `Certificate`,
+`PrivateKey`, `RootCerts`, `Error`, `Tls`, `TlsInfo`, `tls_info`; only-http (HTTP/1.1, HTTP/2 by
+ALPN), only-ws (`wss://`), only-socks, only-grpc and only-mux run on it unchanged.
+
+- TLS 1.3 (RFC 8446): full handshake both sides, HelloRetryRequest (with cookie echo), key
+  schedule, KeyUpdate (answered, and sent proactively before the AES-GCM record limit),
+  NewSessionTicket and PSK resumption (`psk_dhe_ke`; stateless tickets with
+  `session_tickets(true)`, single-use cached tickets with the session cache), client
+  certificates, middlebox compatibility mode, 0-RTT rejected (skipped as RFC 8446 4.2.10 says).
+- TLS 1.2 (RFC 5246 + RFC 7627 extended master secret + RFC 5746 renegotiation indication,
+  renegotiation refused with a `no_renegotiation` warning): ECDHE with ECDSA, Ed25519 or RSA
+  certificates and AEAD suites only, resumption by session ID and by RFC 5077 tickets, client
+  certificates; the RFC 8446 downgrade sentinel is set and checked.
+- Suites: TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256 and the six
+  ECDHE-ECDSA/RSA AES-GCM / ChaCha20-Poly1305 TLS 1.2 suites. Groups X25519, secp256r1,
+  secp384r1. Signatures ECDSA P-256/P-384, Ed25519, RSA-PSS (rsae) and RSA PKCS#1 v1.5 (TLS 1.2
+  and certificates). Extensions: SNI, ALPN, supported_versions, key_share, signature_algorithms,
+  psk_key_exchange_modes, pre_shared_key, early_data, cookie, extended_master_secret,
+  renegotiation_info, session_ticket, ec_point_formats; unknown ones ignored.
+- Record layer: 16 KiB fragments, TLS 1.3 inner content types and padding, strict state
+  machines, handshake messages reassembled across records (and refused across key changes),
+  close_notify, alerts, bounded warning alerts; certificates verified with `only-x509`
+  (chain, validity, EKU, DNS names and IP addresses); `insecure_skip_verify` unchanged.
+- QUIC-facing core (`only_tls::quic`, `#[doc(hidden)]`, internal): the same TLS 1.3 machines
+  without records, driven per encryption level (handshake bytes in and out, traffic secrets per
+  level, quic_transport_parameters, ALPN required, no compatibility mode, RFC 9001 key
+  derivation helpers with its Appendix A vectors), ready for the in-house QUIC of wave D. Until
+  then only-quic keeps quinn-proto, whose rustls configuration it now builds itself from the
+  only-tls configs (rustls stays a dependency of only-quic only).
+- Tests: RFC 8448 traces (simple 1-RTT, resumption binder, HelloRetryRequest: key schedule,
+  transcript, Finished, records byte for byte), in-memory handshakes over every suite, group,
+  key type and version, resumption, client authentication, fragmentation down to one byte,
+  KeyUpdate, downgrade detection and negative cases; interop matrix
+  (`tools/interop/tls/run.sh`, 107 cases: OpenSSL `s_server`/`s_client`, Go `crypto/tls` both
+  ways, curl with HTTP/1.1 and HTTP/2), a TLS leg in `tools/interop/grpc/run.sh`, rustls clients
+  in `only`'s TLS tests; tlsfuzzer against the server (`tools/interop/tls/tlsfuzzer.sh`: 33
+  applicable TLS 1.3 / 1.2 scripts, 985 probes, 5 known and documented failures); fuzz targets
+  `tls_server`, `tls_client`, `tls_record` with corpus replays.
+- Performance (Apple M4 Pro, 2 server threads, rustls client): full handshakes about 0.7x
+  rustls+ring (P-256 ECDSA and X25519 in `only-crypto` are slower than ring's assembly), small
+  records on par, bulk throughput about 0.45x (`only-crypto`'s GHASH is portable; PMULL /
+  PCLMULQDQ is a wave A follow-up).
+
+Migration: the `unstable` feature of only-tls (and `only/unstable` for TLS) no longer exposes
+anything: `only::tls::rustls`, `ServerConfig::from_rustls` / `as_rustls` and
+`ClientConfig::from_rustls` / `as_rustls` are removed (they were outside the semver promise).
+`ServerConfigBuilder::build` now also fails when the private key does not belong to the
+certificate. rcgen and rustls left the dev-dependencies of only-tls, only-http, only-ws,
+only-mux, only-h3, only-quic and only-grpc (test certificates come from `only-x509`); `only`
+keeps a rustls client in its TLS tests as an interop peer.
 
 ### Changed: in-house HTTP codecs (no more httparse, loona-hpack, regex)
 

@@ -333,11 +333,11 @@ fn h2c_upgrade_from_http1() {
 
 #[test]
 fn tls_with_alpn_h2_and_http1_on_the_same_listener() {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-    let cert = ck.cert.der().clone();
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
     let scfg = only::tls::ServerConfig::builder(
-        vec![only::tls::Certificate::from_der(cert.to_vec())],
-        only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+        vec![only::tls::Certificate::from_der(cert.clone())],
+        only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
     )
     .alpn(["h2", "http/1.1"])
     .build()
@@ -345,9 +345,7 @@ fn tls_with_alpn_h2_and_http1_on_the_same_listener() {
     let e = start(Tls::server(scfg, serve(app())));
     let addr = e.local_addrs()[0];
     let mut roots = only::tls::RootCerts::empty();
-    roots
-        .add(&only::tls::Certificate::from_der(cert.to_vec()))
-        .unwrap();
+    roots.add(&only::tls::Certificate::from_der(cert)).unwrap();
     let ccfg = only::tls::ClientConfig::builder()
         .roots(roots)
         .alpn(["h2"])

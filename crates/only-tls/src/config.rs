@@ -1,17 +1,19 @@
 //! The configuration types: certificates, keys, root stores, server and client configs, and
-//! the error type. They hide the TLS implementation (rustls today), so it can be upgraded or
-//! replaced without breaking this API; raw access is behind the `unstable` cargo feature.
+//! the error type. They hide the TLS implementation (this crate's own, in `proto`), so it can
+//! change without breaking this API.
 
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
-use rustls::crypto::CryptoProvider;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::server::{ClientHello, ResolvesServerCert};
-use rustls::sign::CertifiedKey;
+use only_crypto::pkey;
+
+use crate::proto::common::{CertKey, ClientSettings, ServerSettings};
+use crate::proto::kx::{DEFAULT_GROUPS, Group};
+use crate::proto::session::{ClientCache, SessionCache, Ticketer};
+use crate::proto::suites::{self, Suite};
 
 /// A TLS configuration or certificate problem.
 pub struct Error {
@@ -70,21 +72,6 @@ impl From<Error> for io::Error {
     }
 }
 
-/// The crypto provider every config is built with (ring).
-pub(crate) fn provider() -> Arc<CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
-}
-
-static TLS13_ONLY: &[&rustls::SupportedProtocolVersion] = &[&rustls::version::TLS13];
-
-fn versions(tls13_only: bool) -> &'static [&'static rustls::SupportedProtocolVersion] {
-    if tls13_only {
-        TLS13_ONLY
-    } else {
-        rustls::DEFAULT_VERSIONS
-    }
-}
-
 fn alpn_list<I, P>(protocols: I) -> Vec<Vec<u8>>
 where
     I: IntoIterator<Item = P>,
@@ -97,7 +84,7 @@ where
 
 /// An X.509 certificate (DER).
 #[derive(Clone, PartialEq, Eq)]
-pub struct Certificate(CertificateDer<'static>);
+pub struct Certificate(Vec<u8>);
 
 impl fmt::Debug for Certificate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -110,22 +97,18 @@ impl fmt::Debug for Certificate {
 impl Certificate {
     /// A certificate from its DER encoding (not validated until it is used).
     pub fn from_der(der: impl Into<Vec<u8>>) -> Certificate {
-        Certificate(CertificateDer::from(der.into()))
+        Certificate(der.into())
     }
 
     /// Every `CERTIFICATE` block of a PEM file, in order (a chain: leaf first). Fails when
     /// there is none or a block does not decode.
     pub fn from_pem(pem: &[u8]) -> Result<Vec<Certificate>, Error> {
-        let mut out = Vec::new();
-        for c in CertificateDer::pem_slice_iter(pem) {
-            out.push(Certificate(
-                c.map_err(|e| Error::wrap("bad PEM certificate", e))?,
-            ));
-        }
-        if out.is_empty() {
+        let blocks = only_crypto::pem::decode_label(pem, "CERTIFICATE")
+            .map_err(|e| Error::wrap("bad PEM certificate", e))?;
+        if blocks.is_empty() {
             return Err(Error::new("no certificate in PEM input"));
         }
-        Ok(out)
+        Ok(blocks.into_iter().map(Certificate).collect())
     }
 
     /// The DER encoding.
@@ -134,14 +117,21 @@ impl Certificate {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyFormat {
+    Pkcs8,
+    Any,
+}
+
 /// A private key (PKCS#8, PKCS#1 RSA or SEC1 EC; DER). Its `Debug` output does not show the
 /// key.
-pub struct PrivateKey(PrivateKeyDer<'static>);
+#[derive(Clone)]
+pub struct PrivateKey(KeyBytes);
 
-impl Clone for PrivateKey {
-    fn clone(&self) -> Self {
-        PrivateKey(self.0.clone_key())
-    }
+#[derive(Clone)]
+struct KeyBytes {
+    der: Vec<u8>,
+    format: KeyFormat,
 }
 
 impl fmt::Debug for PrivateKey {
@@ -151,36 +141,53 @@ impl fmt::Debug for PrivateKey {
 }
 
 impl PrivateKey {
-    /// A PKCS#8 key (`BEGIN PRIVATE KEY`, what most tools produce today) from its DER encoding.
+    /// A PKCS#8 key (`BEGIN PRIVATE KEY`, what most tools produce today) from its DER encoding
+    /// (checked when a configuration is built).
     pub fn from_pkcs8_der(der: impl Into<Vec<u8>>) -> PrivateKey {
-        PrivateKey(PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(der.into())))
+        PrivateKey(KeyBytes {
+            der: der.into(),
+            format: KeyFormat::Pkcs8,
+        })
     }
 
     /// A key from its DER encoding, guessing the format (PKCS#8, PKCS#1 or SEC1).
     pub fn from_der(der: impl Into<Vec<u8>>) -> Result<PrivateKey, Error> {
-        PrivateKeyDer::try_from(der.into())
-            .map(PrivateKey)
-            .map_err(|e| Error::new(format!("unrecognised private key: {e}")))
+        let der = der.into();
+        pkey::PrivateKey::from_der(&der).map_err(|e| Error::wrap("unrecognised private key", e))?;
+        Ok(PrivateKey(KeyBytes {
+            der,
+            format: KeyFormat::Any,
+        }))
     }
 
     /// The first private key of a PEM file (`PRIVATE KEY`, `RSA PRIVATE KEY` or
     /// `EC PRIVATE KEY`).
     pub fn from_pem(pem: &[u8]) -> Result<PrivateKey, Error> {
-        PrivateKeyDer::from_pem_slice(pem)
-            .map(PrivateKey)
-            .map_err(|e| Error::wrap("no usable private key in PEM input", e))
+        let blocks = only_crypto::pem::decode(pem)
+            .map_err(|e| Error::wrap("no usable private key in PEM input", e))?;
+        for (label, der) in blocks {
+            if matches!(
+                label.as_str(),
+                "PRIVATE KEY" | "RSA PRIVATE KEY" | "EC PRIVATE KEY"
+            ) {
+                return PrivateKey::from_der(der);
+            }
+        }
+        Err(Error::new("no usable private key in PEM input"))
+    }
+
+    pub(crate) fn parse(&self) -> Result<pkey::PrivateKey, Error> {
+        let r = match self.0.format {
+            KeyFormat::Pkcs8 => pkey::PrivateKey::from_pkcs8_der(&self.0.der),
+            KeyFormat::Any => pkey::PrivateKey::from_der(&self.0.der),
+        };
+        r.map_err(|e| Error::wrap("private key", e))
     }
 }
 
 /// Trust anchors: the CAs a peer's certificate must chain to.
-#[derive(Clone)]
-pub struct RootCerts(rustls::RootCertStore);
-
-impl Default for RootCerts {
-    fn default() -> Self {
-        RootCerts::empty()
-    }
-}
+#[derive(Clone, Default)]
+pub struct RootCerts(only_x509::RootStore);
 
 impl fmt::Debug for RootCerts {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -193,14 +200,15 @@ impl fmt::Debug for RootCerts {
 impl RootCerts {
     /// No roots.
     pub fn empty() -> RootCerts {
-        RootCerts(rustls::RootCertStore::empty())
+        RootCerts(only_x509::RootStore::new())
     }
 
     /// Adds a CA certificate.
     pub fn add(&mut self, cert: &Certificate) -> Result<(), Error> {
-        self.0
-            .add(cert.0.clone())
-            .map_err(|e| Error::wrap("bad root certificate", e))
+        let c = only_x509::Certificate::from_der(cert.0.clone())
+            .map_err(|e| Error::wrap("bad root certificate", e))?;
+        self.0.add(c);
+        Ok(())
     }
 
     /// Adds every certificate of a PEM file; returns how many.
@@ -221,7 +229,71 @@ impl RootCerts {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    fn ders(&self) -> Vec<Vec<u8>> {
+        self.0.roots().iter().map(|c| c.as_der().to_vec()).collect()
+    }
 }
+
+fn suites_from_ids(ids: &[u16]) -> Result<Vec<&'static Suite>, Error> {
+    ids.iter()
+        .map(|id| suites::by_id(*id).ok_or_else(|| Error::new(format!("unknown suite {id:#06x}"))))
+        .collect()
+}
+
+fn groups_from_ids(ids: &[u16]) -> Result<Vec<Group>, Error> {
+    ids.iter()
+        .map(|id| Group::from_id(*id).ok_or_else(|| Error::new(format!("unknown group {id:#06x}"))))
+        .collect()
+}
+
+/// The configuration as given, for the QUIC crate's still rustls-based handshake (until the
+/// in-house QUIC replaces it). Not a public API.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct ServerParts {
+    /// Default chain (DER, leaf first) and its key (PKCS#8 DER).
+    pub chain: Vec<Vec<u8>>,
+    /// PKCS#8 DER.
+    pub key_pkcs8: Vec<u8>,
+    /// SNI name, chain, PKCS#8 key.
+    pub sni: Vec<(String, Vec<Vec<u8>>, Vec<u8>)>,
+    /// ALPN protocols.
+    pub alpn: Vec<Vec<u8>>,
+    /// Client-auth roots (DER) and whether a certificate is required.
+    pub client_auth: Option<(Vec<Vec<u8>>, bool)>,
+    /// Session cache entries.
+    pub session_cache: usize,
+    /// Stateless tickets.
+    pub tickets: bool,
+    /// TLS 1.3 only.
+    pub tls13_only: bool,
+}
+
+/// See [`ServerParts`]. Not a public API.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct ClientParts {
+    /// Roots (DER).
+    pub roots: Vec<Vec<u8>>,
+    /// ALPN protocols.
+    pub alpn: Vec<Vec<u8>>,
+    /// Client chain and PKCS#8 key.
+    pub client_cert: Option<(Vec<Vec<u8>>, Vec<u8>)>,
+    /// Skip verification.
+    pub insecure: bool,
+    /// Send SNI.
+    pub sni: bool,
+    /// Resume sessions.
+    pub resumption: bool,
+    /// TLS 1.3 only.
+    pub tls13_only: bool,
+}
+
+/// Keeps the configs `Send + Sync` but neither `UnwindSafe` nor `RefUnwindSafe`, as they were
+/// when they wrapped rustls (`api/only-tls.txt`): promising those auto traits now would forbid
+/// unwind-unsafe state (a callback, a cache) in a later release.
+type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
 
 // ---- server ----
 
@@ -229,13 +301,15 @@ impl RootCerts {
 /// and other servers take. Cheap to clone. Build one with [`ServerConfig::builder`].
 #[derive(Clone)]
 pub struct ServerConfig {
-    inner: Arc<rustls::ServerConfig>,
+    pub(crate) inner: Arc<ServerSettings>,
+    parts: Arc<ServerParts>,
+    _reserved: NotUnwindSafe,
 }
 
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ServerConfig")
-            .field("alpn", &self.inner.alpn_protocols)
+            .field("alpn", &self.inner.alpn)
             .finish_non_exhaustive()
     }
 }
@@ -252,33 +326,23 @@ impl ServerConfig {
             session_cache: 256,
             tickets: false,
             tls13_only: false,
+            tls12_only: false,
+            suites: None,
+            groups: None,
+            force_hrr: false,
+            tickets13: 2,
         }
     }
 
     /// The ALPN protocols offered, in preference order.
     pub fn alpn_protocols(&self) -> &[Vec<u8>] {
-        &self.inner.alpn_protocols
+        &self.inner.alpn
     }
 
-    /// Wraps a rustls configuration. **Unstable** (cargo feature `unstable`, outside the semver
-    /// promise): rustls's types change with its versions.
-    #[cfg(feature = "unstable")]
-    pub fn from_rustls(config: impl Into<Arc<rustls::ServerConfig>>) -> ServerConfig {
-        ServerConfig {
-            inner: config.into(),
-        }
-    }
-
-    /// The rustls configuration. **Unstable** (cargo feature `unstable`).
-    #[cfg(feature = "unstable")]
-    pub fn as_rustls(&self) -> &Arc<rustls::ServerConfig> {
-        &self.inner
-    }
-
-    /// For the other crates of this workspace (QUIC); not a public API.
+    /// The configuration as given (QUIC's rustls bridge); not a public API.
     #[doc(hidden)]
-    pub fn __rustls(&self) -> &Arc<rustls::ServerConfig> {
-        &self.inner
+    pub fn __parts(&self) -> &ServerParts {
+        &self.parts
     }
 }
 
@@ -293,6 +357,11 @@ pub struct ServerConfigBuilder {
     session_cache: usize,
     tickets: bool,
     tls13_only: bool,
+    tls12_only: bool,
+    suites: Option<Vec<u16>>,
+    groups: Option<Vec<u16>>,
+    force_hrr: bool,
+    tickets13: usize,
 }
 
 impl fmt::Debug for ServerConfigBuilder {
@@ -366,75 +435,130 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Tests and interop tools: TLS 1.2 only.
+    #[doc(hidden)]
+    pub fn __tls12_only(mut self, yes: bool) -> Self {
+        self.tls12_only = yes;
+        self
+    }
+
+    /// Tests and interop tools: the cipher suites, by IANA code, in preference order.
+    #[doc(hidden)]
+    pub fn __suites(mut self, ids: &[u16]) -> Self {
+        self.suites = Some(ids.to_vec());
+        self
+    }
+
+    /// Tests and interop tools: the groups, by IANA code, in preference order.
+    #[doc(hidden)]
+    pub fn __groups(mut self, ids: &[u16]) -> Self {
+        self.groups = Some(ids.to_vec());
+        self
+    }
+
+    /// Tests: always answer the first ClientHello with a HelloRetryRequest.
+    #[doc(hidden)]
+    pub fn __force_hello_retry(mut self, yes: bool) -> Self {
+        self.force_hrr = yes;
+        self
+    }
+
+    /// Tests: how many TLS 1.3 tickets to send after a handshake (default 2).
+    #[doc(hidden)]
+    pub fn __tickets13(mut self, n: usize) -> Self {
+        self.tickets13 = n;
+        self
+    }
+
     /// Checks the certificates and key and builds the configuration.
     pub fn build(self) -> Result<ServerConfig, Error> {
-        let p = provider();
-        let b = rustls::ServerConfig::builder_with_provider(p.clone())
-            .with_protocol_versions(versions(self.tls13_only))
-            .map_err(|e| Error::wrap("protocol versions", e))?;
-        let b = match self.client_auth {
-            None => b.with_no_client_auth(),
-            Some((roots, required)) => {
-                let v = rustls::server::WebPkiClientVerifier::builder_with_provider(
-                    Arc::new(roots.0),
-                    p.clone(),
-                );
-                let v = if required {
-                    v
-                } else {
-                    v.allow_unauthenticated()
-                };
-                let v = v
-                    .build()
-                    .map_err(|e| Error::wrap("client authentication roots", e))?;
-                b.with_client_cert_verifier(v)
+        if self.chain.is_empty() {
+            return Err(Error::new("empty certificate chain"));
+        }
+        let certified = |chain: &[Certificate], key: &PrivateKey| -> Result<CertKey, Error> {
+            let k = key.parse()?;
+            let leaf = only_x509::Certificate::from_der(chain[0].0.clone())
+                .map_err(|e| Error::wrap("bad certificate", e))?;
+            let pk = leaf
+                .public_key()
+                .map_err(|e| Error::wrap("certificate public key", e))?;
+            if pk != k.public_key() {
+                return Err(Error::new("private key does not match the certificate"));
             }
+            Ok(CertKey {
+                chain: chain.iter().map(|c| c.0.clone()).collect(),
+                key: k,
+            })
         };
-        let certified = |chain: Vec<Certificate>, key: PrivateKey| -> Result<_, Error> {
-            let signing = p
-                .key_provider
-                .load_private_key(key.0)
-                .map_err(|e| Error::wrap("private key", e))?;
-            Ok(Arc::new(CertifiedKey::new(
-                chain.into_iter().map(|c| c.0).collect(),
-                signing,
-            )))
-        };
-        let default = certified(self.chain, self.key)?;
+        if self.client_auth.as_ref().is_some_and(|(r, _)| r.is_empty()) {
+            return Err(Error::new("client authentication roots: no roots"));
+        }
+        let default = certified(&self.chain, &self.key)?;
         let mut by_name = HashMap::new();
-        for (name, chain, key) in self.sni {
-            by_name.insert(name, certified(chain, key)?);
+        let mut sni_parts = Vec::new();
+        for (name, chain, key) in &self.sni {
+            if chain.is_empty() {
+                return Err(Error::new("empty certificate chain"));
+            }
+            let ck = certified(chain, key)?;
+            sni_parts.push((name.clone(), ck.chain.clone(), ck.key.to_pkcs8_der()));
+            by_name.insert(name.clone(), Arc::new(ck));
         }
-        let mut cfg = b.with_cert_resolver(Arc::new(Resolver { default, by_name }));
-        cfg.alpn_protocols = self.alpn;
-        cfg.session_storage = if self.session_cache == 0 {
-            Arc::new(rustls::server::NoServerSessionStorage {})
-        } else {
-            rustls::server::ServerSessionMemoryCache::new(self.session_cache)
+        let mut suites = match &self.suites {
+            Some(ids) => suites_from_ids(ids)?,
+            None => suites::ALL.to_vec(),
         };
-        if self.tickets {
-            cfg.ticketer = rustls::crypto::ring::Ticketer::new()
-                .map_err(|e| Error::wrap("session tickets", e))?;
+        if self.tls13_only {
+            suites.retain(|s| s.is_tls13());
         }
+        if self.tls12_only {
+            suites.retain(|s| !s.is_tls13());
+        }
+        if suites.is_empty() {
+            return Err(Error::new("no cipher suites left"));
+        }
+        let groups = match &self.groups {
+            Some(ids) => groups_from_ids(ids)?,
+            None => DEFAULT_GROUPS.to_vec(),
+        };
+        if groups.is_empty() {
+            return Err(Error::new("no groups"));
+        }
+        let ticketer = if self.tickets {
+            Some(Ticketer::new().ok_or_else(|| Error::new("no randomness for tickets"))?)
+        } else {
+            None
+        };
+        let parts = ServerParts {
+            chain: default.chain.clone(),
+            key_pkcs8: default.key.to_pkcs8_der(),
+            sni: sni_parts,
+            alpn: self.alpn.clone(),
+            client_auth: self.client_auth.as_ref().map(|(r, req)| (r.ders(), *req)),
+            session_cache: self.session_cache,
+            tickets: self.tickets,
+            tls13_only: self.tls13_only,
+        };
+        let settings = ServerSettings {
+            cert: Arc::new(default),
+            sni: by_name,
+            alpn: self.alpn,
+            client_auth: self.client_auth.map(|(r, req)| (Arc::new(r.0), req)),
+            cache: (self.session_cache > 0).then(|| SessionCache::new(self.session_cache)),
+            ticketer,
+            tls12: suites.iter().any(|s| !s.is_tls13()),
+            tls13: suites.iter().any(|s| s.is_tls13()),
+            suites,
+            groups,
+            tickets13: self.tickets13,
+            ticket_lifetime: 6 * 3600,
+            force_hrr: self.force_hrr,
+        };
         Ok(ServerConfig {
-            inner: Arc::new(cfg),
+            inner: Arc::new(settings),
+            parts: Arc::new(parts),
+            _reserved: PhantomData,
         })
-    }
-}
-
-/// The default chain, or the one registered for the SNI name.
-#[derive(Debug)]
-struct Resolver {
-    default: Arc<CertifiedKey>,
-    by_name: HashMap<String, Arc<CertifiedKey>>,
-}
-
-impl ResolvesServerCert for Resolver {
-    fn resolve(&self, hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        let named = hello
-            .server_name()
-            .and_then(|n| self.by_name.get(&n.to_ascii_lowercase()));
-        Some(named.unwrap_or(&self.default).clone())
     }
 }
 
@@ -444,13 +568,15 @@ impl ResolvesServerCert for Resolver {
 /// WebSocket and QUIC clients take. Cheap to clone. Build one with [`ClientConfig::builder`].
 #[derive(Clone)]
 pub struct ClientConfig {
-    inner: Arc<rustls::ClientConfig>,
+    pub(crate) inner: Arc<ClientSettings>,
+    parts: Arc<ClientParts>,
+    _reserved: NotUnwindSafe,
 }
 
 impl fmt::Debug for ClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientConfig")
-            .field("alpn", &self.inner.alpn_protocols)
+            .field("alpn", &self.inner.alpn)
             .finish_non_exhaustive()
     }
 }
@@ -467,33 +593,21 @@ impl ClientConfig {
             sni: true,
             resumption: true,
             tls13_only: false,
+            tls12_only: false,
+            suites: None,
+            groups: None,
         }
     }
 
     /// The ALPN protocols asked for, in preference order.
     pub fn alpn_protocols(&self) -> &[Vec<u8>] {
-        &self.inner.alpn_protocols
+        &self.inner.alpn
     }
 
-    /// Wraps a rustls configuration. **Unstable** (cargo feature `unstable`, outside the semver
-    /// promise).
-    #[cfg(feature = "unstable")]
-    pub fn from_rustls(config: impl Into<Arc<rustls::ClientConfig>>) -> ClientConfig {
-        ClientConfig {
-            inner: config.into(),
-        }
-    }
-
-    /// The rustls configuration. **Unstable** (cargo feature `unstable`).
-    #[cfg(feature = "unstable")]
-    pub fn as_rustls(&self) -> &Arc<rustls::ClientConfig> {
-        &self.inner
-    }
-
-    /// For the other crates of this workspace (QUIC); not a public API.
+    /// The configuration as given (QUIC's rustls bridge); not a public API.
     #[doc(hidden)]
-    pub fn __rustls(&self) -> &Arc<rustls::ClientConfig> {
-        &self.inner
+    pub fn __parts(&self) -> &ClientParts {
+        &self.parts
     }
 }
 
@@ -507,6 +621,9 @@ pub struct ClientConfigBuilder {
     sni: bool,
     resumption: bool,
     tls13_only: bool,
+    tls12_only: bool,
+    suites: Option<Vec<u16>>,
+    groups: Option<Vec<u16>>,
 }
 
 impl fmt::Debug for ClientConfigBuilder {
@@ -519,7 +636,7 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("sni", &self.sni)
             .field("resumption", &self.resumption)
             .field("tls13_only", &self.tls13_only)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -571,81 +688,91 @@ impl ClientConfigBuilder {
         self
     }
 
+    /// Tests and interop tools: TLS 1.2 only.
+    #[doc(hidden)]
+    pub fn __tls12_only(mut self, yes: bool) -> Self {
+        self.tls12_only = yes;
+        self
+    }
+
+    /// Tests and interop tools: the cipher suites, by IANA code, in preference order.
+    #[doc(hidden)]
+    pub fn __suites(mut self, ids: &[u16]) -> Self {
+        self.suites = Some(ids.to_vec());
+        self
+    }
+
+    /// Tests and interop tools: the groups, by IANA code; a key share goes for the first.
+    #[doc(hidden)]
+    pub fn __groups(mut self, ids: &[u16]) -> Self {
+        self.groups = Some(ids.to_vec());
+        self
+    }
+
     /// Builds the configuration.
     pub fn build(self) -> Result<ClientConfig, Error> {
-        let p = provider();
-        let b = rustls::ClientConfig::builder_with_provider(p.clone())
-            .with_protocol_versions(versions(self.tls13_only))
-            .map_err(|e| Error::wrap("protocol versions", e))?;
-        let b = if self.insecure {
-            b.dangerous()
-                .with_custom_certificate_verifier(Arc::new(AnyCert(p)))
-        } else {
-            b.with_root_certificates(self.roots.0)
+        let cert = match &self.client_cert {
+            None => None,
+            Some((chain, key)) => {
+                if chain.is_empty() {
+                    return Err(Error::new("empty client certificate chain"));
+                }
+                Some(Arc::new(CertKey {
+                    chain: chain.iter().map(|c| c.0.clone()).collect(),
+                    key: key
+                        .parse()
+                        .map_err(|e| Error::wrap("client certificate", e))?,
+                }))
+            }
         };
-        let mut cfg = match self.client_cert {
-            None => b.with_no_client_auth(),
-            Some((chain, key)) => b
-                .with_client_auth_cert(chain.into_iter().map(|c| c.0).collect(), key.0)
-                .map_err(|e| Error::wrap("client certificate", e))?,
+        let mut suites = match &self.suites {
+            Some(ids) => suites_from_ids(ids)?,
+            None => suites::ALL.to_vec(),
         };
-        cfg.alpn_protocols = self.alpn;
-        cfg.enable_sni = self.sni;
-        if !self.resumption {
-            cfg.resumption = rustls::client::Resumption::disabled();
+        if self.tls13_only {
+            suites.retain(|s| s.is_tls13());
         }
+        if self.tls12_only {
+            suites.retain(|s| !s.is_tls13());
+        }
+        if suites.is_empty() {
+            return Err(Error::new("no cipher suites left"));
+        }
+        let groups = match &self.groups {
+            Some(ids) => groups_from_ids(ids)?,
+            None => DEFAULT_GROUPS.to_vec(),
+        };
+        if groups.is_empty() {
+            return Err(Error::new("no groups"));
+        }
+        let parts = ClientParts {
+            roots: self.roots.ders(),
+            alpn: self.alpn.clone(),
+            client_cert: cert
+                .as_ref()
+                .map(|c| (c.chain.clone(), c.key.to_pkcs8_der())),
+            insecure: self.insecure,
+            sni: self.sni,
+            resumption: self.resumption,
+            tls13_only: self.tls13_only,
+        };
+        let settings = ClientSettings {
+            roots: Arc::new(self.roots.0),
+            insecure: self.insecure,
+            alpn: self.alpn,
+            cert,
+            sni: self.sni,
+            cache: self.resumption.then(ClientCache::new),
+            tls12: suites.iter().any(|s| !s.is_tls13()),
+            tls13: suites.iter().any(|s| s.is_tls13()),
+            suites,
+            groups,
+        };
         Ok(ClientConfig {
-            inner: Arc::new(cfg),
+            inner: Arc::new(settings),
+            parts: Arc::new(parts),
+            _reserved: PhantomData,
         })
-    }
-}
-
-/// Accepts every server certificate (signatures are still checked).
-#[derive(Debug)]
-struct AnyCert(Arc<CryptoProvider>);
-
-impl rustls::client::danger::ServerCertVerifier for AnyCert {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
     }
 }
 

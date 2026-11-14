@@ -49,10 +49,10 @@ impl QuicHandler for Client {
 // ANCHOR_END: client
 
 fn main() -> std::io::Result<()> {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-        .map_err(std::io::Error::other)?;
-    let cert = only::tls::Certificate::from_der(ck.cert.der().to_vec());
-    let key = only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let ck =
+        only_x509::generate_simple_self_signed(["localhost"]).map_err(std::io::Error::other)?;
+    let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
 
     // ANCHOR: engine
     let server_cfg = only_quic::server_config(vec![cert.clone()], key, &[b"echo"])

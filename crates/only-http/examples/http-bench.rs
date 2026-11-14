@@ -74,11 +74,11 @@ fn main() -> std::io::Result<()> {
         });
     let l = Listener::tcp(addr).backend(backend).threads(threads);
     let l = if a.get(3).map(String::as_str) == Some("tls") {
-        let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .map_err(std::io::Error::other)?;
+        let ck =
+            only_x509::generate_simple_self_signed(["localhost"]).map_err(std::io::Error::other)?;
         let cfg = ServerConfig::builder(
-            vec![Certificate::from_der(ck.cert.der().to_vec())],
-            PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+            vec![Certificate::from_der(ck.0.as_der().to_vec())],
+            PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
         )
         .alpn(["h2", "http/1.1"])
         .build()?;

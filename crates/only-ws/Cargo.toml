@@ -26,7 +26,7 @@ fuzzing = ["only-core/fuzzing"]
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }
 only-http = { workspace = true }
-rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+only-x509 = { workspace = true }
 
 [lints]
 workspace = true

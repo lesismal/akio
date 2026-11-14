@@ -1,4 +1,4 @@
-//! HTTP/1.1 over TLS (`only_tls::Tls` wrapping `serve`), driven by a blocking rustls client:
+//! HTTP/1.1 over TLS (`only_tls::Tls` wrapping `serve`), driven by a blocking client (only-tls's own, over a `TcpStream`):
 //! keep-alive, pipelining, large bodies both ways, chunked bodies both ways, static files (the
 //! `sendfile` path goes through memory under TLS) and a WebSocket upgrade.
 #![allow(missing_docs)]
@@ -8,7 +8,6 @@ use std::{
     collections::HashMap,
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    sync::Arc,
     thread,
     time::Duration,
 };
@@ -83,7 +82,7 @@ fn app(dir: &std::path::Path) -> Router {
 
 struct Server {
     engine: Engine,
-    client_cfg: Arc<rustls::ClientConfig>,
+    client_cfg: only::tls::ClientConfig,
     dir: std::path::PathBuf,
 }
 
@@ -102,11 +101,11 @@ fn start(name: &str) -> Server {
     std::fs::write(dir.join("small.txt"), "small file over tls").unwrap();
     std::fs::write(dir.join("large.bin"), pattern(2 << 20)).unwrap();
 
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-    let cert = ck.cert.der().clone();
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
     let scfg = only::tls::ServerConfig::builder(
-        vec![only::tls::Certificate::from_der(cert.to_vec())],
-        only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+        vec![only::tls::Certificate::from_der(cert.clone())],
+        only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
     )
     // The server offers h2 too; these clients ask for http/1.1 only.
     .alpn(["h2", "http/1.1"])
@@ -129,22 +128,23 @@ fn start(name: &str) -> Server {
         .build()
         .unwrap();
     engine.start().unwrap();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(cert).unwrap();
-    let mut ccfg = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    ccfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    let mut roots = only::tls::RootCerts::empty();
+    roots.add(&only::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = only::tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["http/1.1"])
+        .build()
+        .unwrap();
     Server {
         engine,
-        client_cfg: Arc::new(ccfg),
+        client_cfg: ccfg,
         dir,
     }
 }
 
 /// A blocking TLS client connection with a read buffer.
 struct Conn {
-    tls: rustls::StreamOwned<rustls::ClientConnection, TcpStream>,
+    tls: only::tls::stream::Stream<TcpStream>,
     buf: Vec<u8>,
 }
 
@@ -168,10 +168,8 @@ impl Conn {
         tcp.set_write_timeout(Some(Duration::from_secs(10)))
             .unwrap();
         tcp.set_nodelay(true).unwrap();
-        let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-        let conn = rustls::ClientConnection::new(s.client_cfg.clone(), name).unwrap();
         Conn {
-            tls: rustls::StreamOwned::new(conn, tcp),
+            tls: only::tls::stream::Stream::client(&s.client_cfg, "localhost", tcp).unwrap(),
             buf: Vec::new(),
         }
     }
@@ -262,7 +260,7 @@ fn keep_alive_and_pipelining_over_tls() {
         assert_eq!(r.body, format!("hello n{i}").as_bytes());
     }
     assert_eq!(
-        c.tls.conn.alpn_protocol(),
+        c.tls.conn().alpn(),
         Some(&b"http/1.1"[..]),
         "h1 was negotiated"
     );

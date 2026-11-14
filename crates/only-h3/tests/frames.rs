@@ -103,9 +103,9 @@ impl QuicHandler for Raw {
 }
 
 fn setup() -> (Arc<Engine>, SocketAddr) {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert = only::tls::Certificate::from_der(ck.cert.der().to_vec());
-    let key = only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
     let app = Router::new()
         .get("/", |ctx: &mut Context| ctx.text(200, "root"))
         .post("/echo", |ctx: &mut Context| {

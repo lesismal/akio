@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! TLS for `only`, on top of [rustls](https://docs.rs/rustls) driven sans-io.
+//! TLS 1.3 and 1.2 for `only`, implemented in this crate without third-party dependencies: the
+//! protocol is written from the RFCs on `only-crypto` and `only-x509`, sans-io.
 //!
 //! Wrap any [`Acceptor`] in [`Tls::server`] (or [`Tls::client`] for [`dial`](../only/struct.Engine.html))
 //! and its handlers see **plaintext**: `on_data` receives decrypted bytes and `Conn::send*` encrypts.
@@ -9,10 +10,15 @@
 //!
 //! Configure with this crate's own types: [`ServerConfig::builder`] (certificate chain and key
 //! from PEM or DER, SNI-selected chains, ALPN, client authentication, session resumption) and
-//! [`ClientConfig::builder`] (roots, ALPN, client certificate, SNI). The TLS implementation
-//! (rustls today) stays out of the public API, so upgrading it is not a breaking change; the
-//! `unstable` cargo feature adds `from_rustls` / `as_rustls` and re-exports `rustls`, outside
-//! the semver promise. [`tls_info`] reads what was negotiated.
+//! [`ClientConfig::builder`] (roots, ALPN, client certificate, SNI). The protocol internals stay
+//! out of the public API. [`tls_info`] reads what was negotiated.
+//!
+//! Protocol coverage: TLS 1.3 (RFC 8446: full and PSK-resumed handshakes, HelloRetryRequest,
+//! KeyUpdate, client certificates; 0-RTT is rejected) and TLS 1.2 (RFC 5246 with ECDHE and AEAD
+//! suites only, extended master secret, renegotiation indication with renegotiation refused,
+//! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384;
+//! ECDSA, Ed25519 and RSA (PSS; PKCS#1 v1.5 in TLS 1.2) certificates verified with
+//! `only-x509`; SNI and ALPN.
 //!
 //! ```no_run
 //! use only_tls::{Certificate, PrivateKey, ServerConfig, Tls};
@@ -31,24 +37,44 @@
 //! (中文: [TLS](https://lesismal.github.io/only/zh-CN/protocols/tls.html)).
 #![warn(clippy::unwrap_used)]
 
-use std::{
-    any::Any,
-    io::{self, Read, Write},
-    sync::Arc,
-};
+use std::{any::Any, io};
 
 use only_core::{Acceptor, Conn, Transport};
-use rustls::{ClientConnection, Connection, ServerConnection};
 
 mod config;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
+mod proto;
+#[doc(hidden)]
+pub mod quic;
+#[doc(hidden)]
+pub mod stream;
 
 pub use config::{
     Certificate, ClientConfig, ClientConfigBuilder, Error, PrivateKey, RootCerts, ServerConfig,
     ServerConfigBuilder,
 };
-/// The TLS implementation. **Unstable** (cargo feature `unstable`): outside the semver promise.
-#[cfg(feature = "unstable")]
-pub use rustls;
+#[doc(hidden)]
+pub use config::{ClientParts, ServerParts};
+
+/// The protocol core, for tests, fuzzing and interop tools. **Not** a public API.
+#[doc(hidden)]
+pub mod __proto {
+    pub use crate::proto::alert::{Alert, Fatal};
+    pub use crate::proto::suites;
+    pub use crate::proto::{Connection, Group, Keys, Level};
+
+    /// A client connection (the ClientHello is queued for the first `recv`/`seal`).
+    pub fn client(cfg: &crate::ClientConfig, name: &str) -> Result<Connection, Fatal> {
+        Connection::client(cfg.inner.clone(), name)
+    }
+
+    /// A server connection.
+    pub fn server(cfg: &crate::ServerConfig) -> Connection {
+        Connection::server(cfg.inner.clone())
+    }
+}
 
 /// Wraps an acceptor so that its connections speak TLS.
 pub struct Tls<A> {
@@ -63,18 +89,15 @@ impl<A> std::fmt::Debug for Tls<A> {
 }
 
 enum Mode {
-    Server(Arc<rustls::ServerConfig>),
-    Client(
-        Arc<rustls::ClientConfig>,
-        rustls::pki_types::ServerName<'static>,
-    ),
+    Server(ServerConfig),
+    Client(ClientConfig, String),
 }
 
 impl<A: Acceptor> Tls<A> {
     /// Serves TLS with `config`; `inner` handles the decrypted connection.
     pub fn server(config: ServerConfig, inner: A) -> Self {
         Tls {
-            mode: Mode::Server(config.__rustls().clone()),
+            mode: Mode::Server(config),
             inner,
         }
     }
@@ -82,10 +105,14 @@ impl<A: Acceptor> Tls<A> {
     /// Connects with TLS to `server_name` (for certificate verification and SNI), for
     /// connections made with `Engine::dial`.
     pub fn client(config: ClientConfig, server_name: &str, inner: A) -> io::Result<Self> {
-        let name = rustls::pki_types::ServerName::try_from(server_name.to_owned())
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        only_x509::ServerName::parse(server_name).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("invalid server name: {e}"),
+            )
+        })?;
         Ok(Tls {
-            mode: Mode::Client(config.__rustls().clone(), name),
+            mode: Mode::Client(config, server_name.to_owned()),
             inner,
         })
     }
@@ -104,15 +131,13 @@ impl<A: Acceptor> Acceptor for Tls<A> {
 
     fn transport(&self) -> Option<Box<dyn Transport>> {
         let conn = match &self.mode {
-            Mode::Server(cfg) => ServerConnection::new(cfg.clone()).map(Connection::Server),
-            Mode::Client(cfg, name) => {
-                ClientConnection::new(cfg.clone(), name.clone()).map(Connection::Client)
-            }
+            Mode::Server(cfg) => Ok(proto::Connection::server(cfg.inner.clone())),
+            Mode::Client(cfg, name) => proto::Connection::client(cfg.inner.clone(), name),
         };
         match conn {
-            Ok(conn) => Some(Box::new(RustlsTransport { conn })),
+            Ok(conn) => Some(Box::new(TlsTransport { conn })),
             Err(e) => {
-                eprintln!("only-tls: cannot start TLS session: {e}");
+                only_log::warn!(target: "only::tls", "cannot start TLS session: {e}");
                 // No transport would mean plaintext; refuse by installing a dead one.
                 Some(Box::new(Failed))
             }
@@ -143,63 +168,26 @@ impl Transport for Failed {
     }
 }
 
-struct RustlsTransport {
-    conn: Connection,
+struct TlsTransport {
+    conn: proto::Connection,
 }
 
-impl RustlsTransport {
-    /// Moves every record rustls has ready into `out`.
-    fn drain_records(&mut self, out: &mut Vec<u8>) -> io::Result<()> {
-        while self.conn.wants_write() {
-            self.conn.write_tls(out)?;
-        }
-        Ok(())
-    }
+fn io_err(e: proto::Fatal) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, e)
 }
 
-impl Transport for RustlsTransport {
+impl Transport for TlsTransport {
     fn recv(&mut self, cipher: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()> {
-        let mut rd = cipher;
-        let mut tmp = [0u8; 16 << 10];
         // An empty input still gives a client the chance to emit its first flight.
-        loop {
-            if !rd.is_empty() {
-                self.conn.read_tls(&mut rd)?;
-                if let Err(e) = self.conn.process_new_packets() {
-                    // rustls queued an alert; send it before the connection is closed.
-                    let _ = self.drain_records(out);
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-                }
-                loop {
-                    match self.conn.reader().read(&mut tmp) {
-                        Ok(0) => break, // close_notify: the transport FIN follows
-                        Ok(n) => plain.extend_from_slice(&tmp[..n]),
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-            if rd.is_empty() {
-                break;
-            }
-        }
-        self.drain_records(out)
+        self.conn.recv(cipher, plain, out).map_err(io_err)
     }
 
     fn seal(&mut self, plain: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
-        // rustls accepts plaintext only while its pending-records buffer is below a limit
-        // (64 KiB by default), so a big write goes in as record-sized pieces, draining the
-        // records after each.
-        for piece in plain.chunks(16 << 10) {
-            self.conn.writer().write_all(piece)?;
-            self.drain_records(out)?;
-        }
-        self.drain_records(out)
+        self.conn.seal(plain, out).map_err(io_err)
     }
 
     fn shutdown(&mut self, out: &mut Vec<u8>) {
-        self.conn.send_close_notify();
-        let _ = self.drain_records(out);
+        self.conn.close(out);
     }
 
     fn as_any(&mut self) -> &mut dyn Any {
@@ -211,7 +199,7 @@ impl Transport for RustlsTransport {
     }
 
     fn handshaking(&self) -> bool {
-        self.conn.is_handshaking()
+        self.conn.handshaking()
     }
 }
 
@@ -232,15 +220,12 @@ pub struct TlsInfo {
 /// TLS details of `c`, or `None` if it is not a TLS connection.
 pub fn tls_info<H>(c: &Conn<H>) -> Option<TlsInfo> {
     c.with_transport(|t| {
-        let t = t.as_any().downcast_mut::<RustlsTransport>()?;
+        let t = t.as_any().downcast_mut::<TlsTransport>()?;
         Some(TlsInfo {
-            handshaking: t.conn.is_handshaking(),
-            alpn: t.conn.alpn_protocol().map(<[u8]>::to_vec),
-            server_name: match &t.conn {
-                Connection::Server(s) => s.server_name().map(str::to_owned),
-                Connection::Client(_) => None,
-            },
-            version: t.conn.protocol_version().map(|v| format!("{v:?}")),
+            handshaking: t.conn.handshaking(),
+            alpn: t.conn.alpn().map(<[u8]>::to_vec),
+            server_name: t.conn.server_name().map(str::to_owned),
+            version: t.conn.version_name().map(str::to_owned),
         })
     })
     .flatten()
@@ -272,9 +257,14 @@ mod tests {
     fn client_transport_starts_handshaking() {
         let acc = only_core::fn_acceptor(|_c: &Conn<Nop>| Nop);
         let tls = Tls::client(client_cfg(), "localhost", acc).unwrap();
-        let t = tls.transport().unwrap();
+        let mut t = tls.transport().unwrap();
         assert_eq!(t.name(), "tls");
         assert!(t.handshaking());
+        // The first call emits the ClientHello.
+        let (mut plain, mut out) = (Vec::new(), Vec::new());
+        t.recv(&[], &mut plain, &mut out).unwrap();
+        assert_eq!(out[0], 22);
+        assert!(t.as_any().downcast_mut::<TlsTransport>().is_some());
     }
 
     #[test]

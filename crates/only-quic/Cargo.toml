@@ -17,6 +17,9 @@ only = { workspace = true }
 only-core = { workspace = true }
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-ring"] }
 bytes = "1"
+# quinn-proto's TLS: rustls configs built from only-tls's (src/rustls_bridge.rs), until the
+# in-house QUIC drives only-tls's own TLS 1.3 (docs/DEV-PLAN.md wave D).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring"] }
 
 [features]
 # Raw access to quinn-proto (`only_quic::proto`, `ServerConfig::from_quinn` ...): outside the
@@ -24,7 +27,7 @@ bytes = "1"
 unstable = []
 
 [dev-dependencies]
-rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+only-x509 = { workspace = true }
 
 [lints]
 workspace = true

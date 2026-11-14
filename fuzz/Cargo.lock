@@ -876,6 +876,7 @@ dependencies = [
  "only-mux",
  "only-protobuf",
  "only-socks",
+ "only-tls",
  "only-turn",
  "only-webrtc",
  "only-ws",
@@ -971,6 +972,7 @@ dependencies = [
  "only",
  "only-core",
  "quinn-proto",
+ "rustls",
 ]
 
 [[package]]
@@ -995,7 +997,9 @@ name = "only-tls"
 version = "1.0.0-rc.1"
 dependencies = [
  "only-core",
- "rustls",
+ "only-crypto",
+ "only-log",
+ "only-x509",
 ]
 
 [[package]]

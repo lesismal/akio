@@ -27,10 +27,10 @@ struct Pki {
 }
 
 fn pki() -> Pki {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
     Pki {
-        cert: ck.cert.der().clone(),
-        key: ck.key_pair.serialize_der(),
+        cert: CertificateDer::from(ck.0.as_der().to_vec()),
+        key: ck.1.to_pkcs8_der(),
     }
 }
 

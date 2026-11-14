@@ -5,7 +5,6 @@
 use std::{
     io::{Read, Write},
     net::TcpStream,
-    sync::Arc,
     time::Duration,
 };
 
@@ -36,11 +35,11 @@ fn read_some(s: &mut TcpStream) -> Vec<u8> {
 
 #[test]
 fn tls_http1_http2_custom_prefix_and_fallback_share_a_port() {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-    let cert = ck.cert.der().clone();
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = ck.0.as_der().to_vec();
     let scfg = only::tls::ServerConfig::builder(
-        vec![only::tls::Certificate::from_der(cert.to_vec())],
-        only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+        vec![only::tls::Certificate::from_der(cert.clone())],
+        only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
     )
     .build()
     .unwrap();
@@ -109,19 +108,15 @@ fn tls_http1_http2_custom_prefix_and_fallback_share_a_port() {
     assert_eq!(read_some(&mut s), b"raw:\x01\x02hello");
 
     // TLS.
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(cert).unwrap();
-    let ccfg = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let mut roots = only::tls::RootCerts::empty();
+    roots.add(&only::tls::Certificate::from_der(cert)).unwrap();
+    let ccfg = only::tls::ClientConfig::builder()
+        .roots(roots)
+        .build()
+        .unwrap();
     let tcp = TcpStream::connect(addr).unwrap();
     tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let conn = rustls::ClientConnection::new(
-        Arc::new(ccfg),
-        rustls::pki_types::ServerName::try_from("localhost").unwrap(),
-    )
-    .unwrap();
-    let mut tls = rustls::StreamOwned::new(conn, tcp);
+    let mut tls = only::tls::stream::Stream::client(&ccfg, "localhost", tcp).unwrap();
     tls.write_all(b"secret").unwrap();
     let mut b = [0u8; 10];
     tls.read_exact(&mut b).unwrap();

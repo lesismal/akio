@@ -136,7 +136,7 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 - **缓冲区 id 只归还一次。** `give_back` 只对完成事件携带的 `bid` 执行，因此在外的条目最多 `BUF_COUNT` 个，tail 所在槽位绝不会是内核正在读取的条目。现在还有范围断言兜底（F7）。
 - **`unsafe impl Send`**：`Poller`（kevent 的 `udata` 只是 token，从不解引用）、`RecvBatch`（指针指向自身的堆缓冲区，随结构体一起移动）、`SendBatch`（批次之间指针悬空，但每次发送前都从存活的 `Batch<'d>` 重建）和 `Loop`（在一个线程上构建，之后归其 I/O 线程所有；SQE 指针指向不会移动的堆内存）。它们都没有实现 `Sync`。
 - **信任内核提供数据的布局**：sockaddr 地址族、`cmsg_len`、`msg_len`（已截断）、CQE 缓冲区 id（现已做范围检查）。这是内核 ABI 契约。
-- **含 `unsafe` 的依赖**（`rustls`/`ring`、`quinn-proto`、RustCrypto）被信任，并由 `cargo deny`/`cargo audit` 跟踪。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。`libc` 与 `io-uring` crate 已从各库中移除（wave B）：由 `only_sys::ffi` 与 `only-uring` 的 `ring` 取代（`libc` 仍是 dev-dependency，用于布局对比测试和仅测试用的调用）。
+- **含 `unsafe` 的依赖**（仅 only-quic 使用的 `quinn-proto` 及其内部的 `rustls`/`ring`；str0m）被信任，并由 `cargo deny`/`cargo audit` 跟踪。TLS 本身是自研的 `only-tls`（`#![forbid(unsafe_code)]`，第 C 波），基于 `only-crypto` 与 `only-x509`，因此所有 TCP 协议的 TLS 记录层与握手代码中，除 `only-crypto` 的 AES 指令模块外没有任何 `unsafe`。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。`libc` 与 `io-uring` crate 已从各库中移除（wave B）：由 `only_sys::ffi` 与 `only-uring` 的 `ring` 取代（`libc` 仍是 dev-dependency，用于布局对比测试和仅测试用的调用）。
 
 ## 7. 验证结果（本次审查）
 

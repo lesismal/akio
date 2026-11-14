@@ -48,6 +48,7 @@
 //! (中文: [QUIC 与 HTTP/3](https://lesismal.github.io/only/zh-CN/protocols/quic-h3.html)).
 #![warn(clippy::unwrap_used)]
 
+mod rustls_bridge;
 mod timer;
 mod types;
 
@@ -878,7 +879,7 @@ pub fn server_config_from(tls: &tls::ServerConfig) -> Result<ServerConfig, Error
 }
 
 fn server_from_rustls(tls: &tls::ServerConfig, early_data: bool) -> Result<ServerConfig, Error> {
-    let mut r = (**tls.__rustls()).clone();
+    let mut r = rustls_bridge::server(tls).map_err(config_err)?;
     // QUIC allows only "no 0-RTT" or "any amount".
     r.max_early_data_size = if early_data { u32::MAX } else { 0 };
     let q = qp::crypto::rustls::QuicServerConfig::try_from(r).map_err(config_err)?;
@@ -898,7 +899,7 @@ pub fn client_config(roots: tls::RootCerts, alpn: &[&[u8]]) -> Result<ClientConf
 
 /// A client config from a TLS configuration (roots, ALPN protocols, client certificate).
 pub fn client_config_from(tls: &tls::ClientConfig) -> Result<ClientConfig, Error> {
-    let r = (**tls.__rustls()).clone();
+    let r = rustls_bridge::client(tls).map_err(config_err)?;
     let q = qp::crypto::rustls::QuicClientConfig::try_from(r).map_err(config_err)?;
     Ok(ClientConfig(qp::ClientConfig::new(Arc::new(q))))
 }

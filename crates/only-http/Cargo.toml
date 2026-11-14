@@ -29,10 +29,8 @@ regex = []
 fuzzing = ["only-core/fuzzing"]
 
 [dev-dependencies]
-# A raw rustls client drives some tests (the library API hides rustls).
-rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 only-core = { workspace = true, features = ["fuzzing"] }
-rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+only-x509 = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 libc = "0.2"
 

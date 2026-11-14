@@ -10,10 +10,10 @@ use only_h3::{H3Client, H3Config};
 use only_http::{Context, Router};
 
 fn main() -> std::io::Result<()> {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-        .map_err(std::io::Error::other)?;
-    let cert = only::tls::Certificate::from_der(ck.cert.der().to_vec());
-    let key = only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let ck =
+        only_x509::generate_simple_self_signed(["localhost"]).map_err(std::io::Error::other)?;
+    let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
 
     // ANCHOR: server
     // The same Router (and middleware) you serve over HTTP/1 and HTTP/2.
