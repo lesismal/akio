@@ -414,15 +414,14 @@ impl WsHandler for Notify {
 }
 
 fn new_key() -> String {
-    use base64::Engine;
     let mut k = [0u8; 16];
-    if getrandom::getrandom(&mut k).is_err() {
+    if only_crypto::rand::fill_random(&mut k).is_err() {
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         k = t.to_le_bytes();
     }
-    base64::engine::general_purpose::STANDARD.encode(k)
+    only_crypto::base64::STANDARD.encode(k)
 }
 
 fn build_request(u: &WsUrl, key: &str, opts: &DialOptions, pmd: Option<&PmdOffer>) -> Vec<u8> {

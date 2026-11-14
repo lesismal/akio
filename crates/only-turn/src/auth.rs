@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use hmac::{Hmac, Mac};
-use sha1::Sha1;
+use only_crypto::hash::Sha1;
+use only_crypto::mac::Hmac;
 
 use crate::stun::long_term_key;
 
@@ -57,27 +57,12 @@ pub fn ephemeral_credentials(secret: &[u8], user: &str, ttl: Duration) -> (Strin
 }
 
 fn rest_password(secret: &[u8], username: &str) -> String {
-    let mut mac = <Hmac<Sha1> as Mac>::new_from_slice(secret).expect("HMAC takes any key length");
-    mac.update(username.as_bytes());
-    base64(&mac.finalize().into_bytes())
+    base64(&Hmac::<Sha1>::mac(secret, username.as_bytes()))
 }
 
 /// Standard base64 with padding.
 fn base64(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for c in data.chunks(3) {
-        let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
-        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
-        for i in 0..4 {
-            if i <= c.len() {
-                out.push(char::from(T[((n >> (18 - 6 * i)) & 63) as usize]));
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
+    only_crypto::base64::STANDARD.encode(data)
 }
 
 #[cfg(test)]

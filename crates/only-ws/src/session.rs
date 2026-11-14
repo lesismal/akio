@@ -93,7 +93,7 @@ struct MaskGen(u64);
 impl MaskGen {
     fn new() -> MaskGen {
         let mut seed = [0u8; 8];
-        if getrandom::getrandom(&mut seed).is_err() {
+        if only_crypto::rand::fill_random(&mut seed).is_err() {
             // Practically unreachable; still never hand out a constant stream.
             let t = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -466,18 +466,15 @@ impl WsSession {
 
 /// `Sec-WebSocket-Accept` for a client's `Sec-WebSocket-Key`.
 pub fn accept_key(key: &str) -> String {
-    use base64::Engine;
-    use sha1::{Digest, Sha1};
-    let mut h = Sha1::new();
+    let mut h = only_crypto::hash::Sha1::new();
     h.update(key.trim().as_bytes());
     h.update(b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    base64::engine::general_purpose::STANDARD.encode(h.finalize())
+    only_crypto::base64::STANDARD.encode(h.finalize())
 }
 
 /// Whether `key` is a valid `Sec-WebSocket-Key` (base64 of 16 bytes).
 pub fn valid_key(key: &str) -> bool {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
+    only_crypto::base64::STANDARD
         .decode(key.trim())
         .is_ok_and(|v| v.len() == 16)
 }

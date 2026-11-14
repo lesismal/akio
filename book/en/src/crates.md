@@ -7,7 +7,7 @@ $ cargo doc --workspace --no-deps --open
 ```
 
 The public crates follow semver from 1.0.0; `only-pool`, `only-buf`, `only-timer`,
-`only-sys`, `only-epoll` and `only-uring` are internal implementation crates whose own APIs may
+`only-sys`, `only-epoll`, `only-uring` and `only-crypto` are internal implementation crates whose own APIs may
 change in any release (use them through `only` / `only-core`). Items marked `#[doc(hidden)]`
 are not covered either. Details:
 [docs/api-stability.md](https://github.com/lesismal/only/blob/main/docs/api-stability.md),
@@ -20,7 +20,8 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 | `only-pool` | the logical (blocking-work) pool | [Blocking work](concepts/blocking.md) |
 | `only-buf` | size-class buffer pool, `SharedBuf` | [Architecture](architecture.md) |
 | `only-timer` | hierarchical timer wheel used by the I/O loops | [Architecture](architecture.md) |
-| `only-sys` | audited `unsafe` syscall wrappers (poller, waker, sockets, batched UDP) | [Architecture](architecture.md) |
+| `only-sys` | audited `unsafe` syscall wrappers (poller, waker, sockets, batched UDP, OS randomness) | [Architecture](architecture.md) |
+| `only-crypto` | dependency-free crypto for the protocol crates: SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32, constant-time AES (CTR, GCM), ChaCha20-Poly1305, base64, randomness | [Architecture](architecture.md) |
 | `only-epoll` | epoll / kqueue backend, UDP groups | [Engine and backends](concepts/engine.md) |
 | `only-uring` | io_uring backend | [Engine and backends](concepts/engine.md) |
 | `only-ebpf` | `SO_REUSEPORT` steering, sockmap relay | [Engine and backends](concepts/engine.md) |

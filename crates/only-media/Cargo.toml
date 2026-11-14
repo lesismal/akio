@@ -16,14 +16,7 @@ categories = ["network-programming", "multimedia"]
 only = { workspace = true }
 only-core = { workspace = true }
 only-http = { workspace = true }
-hmac = "0.12"
-sha2 = "0.10"
-md-5 = "0.10"
-aes = "0.8"
-pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
-sha1 = "0.10"
-base64 = "0.22"
-getrandom = "0.2"
+only-crypto = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_media::fuzzing`); not a public API.

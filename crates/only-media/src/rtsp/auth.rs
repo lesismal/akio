@@ -1,7 +1,7 @@
 //! RTSP authentication: Digest (RFC 2617, MD5, as RTSP clients speak it) and Basic.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-use md5::{Digest as _, Md5};
+use only_crypto::base64::STANDARD as B64;
+use only_crypto::hash::Md5;
 
 fn md5_hex(s: &str) -> String {
     let d = Md5::digest(s.as_bytes());

@@ -62,6 +62,22 @@ Raw access moved behind new `unstable` cargo features (`only`, `only-tls`, `only
 | `Error::Rtc(str0m::RtcError)`, `impl From<str0m::RtcError> for Error` | `Error::Rtc(only_webrtc::RtcError)`; new `Error::InvalidCandidate` |
 | `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
 
+### Changed: in-house cryptography (`only-crypto`, DEV-PLAN wave A)
+
+- New internal crate `only-crypto` (std only, `#![deny(unsafe_code)]` except its AES-NI / ARMv8
+  AES module): SHA-1, SHA-224/256, SHA-384/512, MD5, HMAC, HKDF, PBKDF2, CRC-32 / CRC-32C,
+  AES-128/192/256 (CPU instructions when detected, else constant-time fixsliced software) with CTR, AES-GCM with a constant-time GHASH, ChaCha20-Poly1305, base64 (strict decoding), OS
+  randomness and a ChaCha20 generator. Tested against NIST CAVP, RFC and Wycheproof vectors and
+  cross-checked (tests and fuzz targets) against the crates it replaces.
+- `only-kcp`, `only-turn`, `only-ws`, `only-http`, `only-media`, `only-bittorrent` and
+  `only-webrtc` use it instead of sha1, sha2, md-5, hmac, pbkdf2, aes, aes-gcm, ctr, crc32fast,
+  base64 and getrandom (those remain dev-/fuzz-only references, and transitively under
+  str0m/dimpl until wave D). Public APIs and wire formats are unchanged (KCP crypt incl. golden
+  datagrams sealed by the old code, TURN MESSAGE-INTEGRITY/FINGERPRINT, WebSocket accept keys,
+  BitTorrent info hashes and MSE, SRT key wrap and AES-CTR, RTMP digest handshake, SRTP).
+- `only-sys` (internal, `#[doc(hidden)]`): `fill_random` over `getrandom(2)` / `getentropy(2)`
+  with a `/dev/urandom` fallback.
+
 ### Added
 
 - `only-prefork` (M6, optional): serve one program from several worker processes. A supervisor

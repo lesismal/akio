@@ -1,0 +1,436 @@
+pub mod only_crypto
+pub mod only_crypto::aes
+pub struct only_crypto::aes::Aes(_)
+impl only_crypto::aes::Aes
+pub fn only_crypto::aes::Aes::apply_ctr(&self, &[u8; 16], &mut [u8])
+pub fn only_crypto::aes::Aes::decrypt_block(&self, &mut [u8; 16])
+pub fn only_crypto::aes::Aes::decrypt_blocks(&self, &mut [[u8; 16]])
+pub fn only_crypto::aes::Aes::encrypt_block(&self, &mut [u8; 16])
+pub fn only_crypto::aes::Aes::encrypt_blocks(&self, &mut [[u8; 16]])
+pub fn only_crypto::aes::Aes::key_len(&self) -> usize
+pub fn only_crypto::aes::Aes::new(&[u8]) -> core::result::Result<only_crypto::aes::Aes, only_crypto::Error>
+pub fn only_crypto::aes::Aes::new128(&[u8; 16]) -> only_crypto::aes::Aes
+pub fn only_crypto::aes::Aes::new192(&[u8; 24]) -> only_crypto::aes::Aes
+pub fn only_crypto::aes::Aes::new256(&[u8; 32]) -> only_crypto::aes::Aes
+impl core::clone::Clone for only_crypto::aes::Aes
+pub fn only_crypto::aes::Aes::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::aes::Aes
+pub fn only_crypto::aes::Aes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::aes::Aes
+impl core::marker::Sync for only_crypto::aes::Aes
+impl core::marker::Unpin for only_crypto::aes::Aes
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::aes::Aes
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::aes::Aes
+pub mod only_crypto::base64
+#[non_exhaustive] pub enum only_crypto::base64::DecodeError
+pub only_crypto::base64::DecodeError::InvalidByte(usize, u8)
+pub only_crypto::base64::DecodeError::InvalidLastSymbol(usize, u8)
+pub only_crypto::base64::DecodeError::InvalidLength(usize)
+pub only_crypto::base64::DecodeError::InvalidPadding
+impl core::clone::Clone for only_crypto::base64::DecodeError
+pub fn only_crypto::base64::DecodeError::clone(&self) -> Self
+impl core::cmp::Eq for only_crypto::base64::DecodeError
+impl core::cmp::PartialEq for only_crypto::base64::DecodeError
+pub fn only_crypto::base64::DecodeError::eq(&self, &Self) -> bool
+impl core::error::Error for only_crypto::base64::DecodeError
+impl core::fmt::Debug for only_crypto::base64::DecodeError
+pub fn only_crypto::base64::DecodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_crypto::base64::DecodeError
+pub fn only_crypto::base64::DecodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_crypto::base64::DecodeError
+impl core::marker::StructuralPartialEq for only_crypto::base64::DecodeError
+impl core::marker::Send for only_crypto::base64::DecodeError
+impl core::marker::Sync for only_crypto::base64::DecodeError
+impl core::marker::Unpin for only_crypto::base64::DecodeError
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::base64::DecodeError
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::base64::DecodeError
+pub struct only_crypto::base64::Engine
+impl only_crypto::base64::Engine
+pub fn only_crypto::base64::Engine::decode(&self, impl core::convert::AsRef<[u8]>) -> core::result::Result<alloc::vec::Vec<u8>, only_crypto::base64::DecodeError>
+pub fn only_crypto::base64::Engine::decode_to(&self, impl core::convert::AsRef<[u8]>, &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_crypto::base64::DecodeError>
+pub fn only_crypto::base64::Engine::encode(&self, impl core::convert::AsRef<[u8]>) -> alloc::string::String
+pub fn only_crypto::base64::Engine::encode_to(&self, impl core::convert::AsRef<[u8]>, &mut alloc::string::String)
+pub const fn only_crypto::base64::Engine::encoded_len(&self, usize) -> usize
+impl core::clone::Clone for only_crypto::base64::Engine
+pub fn only_crypto::base64::Engine::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::base64::Engine
+pub fn only_crypto::base64::Engine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_crypto::base64::Engine
+impl core::marker::Send for only_crypto::base64::Engine
+impl core::marker::Sync for only_crypto::base64::Engine
+impl core::marker::Unpin for only_crypto::base64::Engine
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::base64::Engine
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::base64::Engine
+pub const only_crypto::base64::STANDARD: only_crypto::base64::Engine
+pub const only_crypto::base64::STANDARD_NO_PAD: only_crypto::base64::Engine
+pub const only_crypto::base64::URL_SAFE: only_crypto::base64::Engine
+pub const only_crypto::base64::URL_SAFE_NO_PAD: only_crypto::base64::Engine
+pub mod only_crypto::chacha
+pub struct only_crypto::chacha::ChaCha20
+impl only_crypto::chacha::ChaCha20
+pub fn only_crypto::chacha::ChaCha20::apply_keystream(&mut self, &mut [u8])
+pub fn only_crypto::chacha::ChaCha20::new(&[u8; 32], &[u8; 12], u32) -> Self
+impl core::clone::Clone for only_crypto::chacha::ChaCha20
+pub fn only_crypto::chacha::ChaCha20::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::chacha::ChaCha20
+pub fn only_crypto::chacha::ChaCha20::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::chacha::ChaCha20
+impl core::marker::Sync for only_crypto::chacha::ChaCha20
+impl core::marker::Unpin for only_crypto::chacha::ChaCha20
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::chacha::ChaCha20
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::chacha::ChaCha20
+pub struct only_crypto::chacha::ChaCha20Poly1305
+impl only_crypto::chacha::ChaCha20Poly1305
+pub fn only_crypto::chacha::ChaCha20Poly1305::decrypt(&self, &[u8; 12], &[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, only_crypto::Error>
+pub fn only_crypto::chacha::ChaCha20Poly1305::decrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::chacha::ChaCha20Poly1305::decrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::chacha::ChaCha20Poly1305::encrypt(&self, &[u8; 12], &[u8], &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_crypto::chacha::ChaCha20Poly1305::encrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>)
+pub fn only_crypto::chacha::ChaCha20Poly1305::encrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8]) -> [u8; 16]
+pub fn only_crypto::chacha::ChaCha20Poly1305::new(&[u8; 32]) -> Self
+impl core::clone::Clone for only_crypto::chacha::ChaCha20Poly1305
+pub fn only_crypto::chacha::ChaCha20Poly1305::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::chacha::ChaCha20Poly1305
+pub fn only_crypto::chacha::ChaCha20Poly1305::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::chacha::ChaCha20Poly1305
+impl core::marker::Sync for only_crypto::chacha::ChaCha20Poly1305
+impl core::marker::Unpin for only_crypto::chacha::ChaCha20Poly1305
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::chacha::ChaCha20Poly1305
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::chacha::ChaCha20Poly1305
+pub struct only_crypto::chacha::Poly1305
+impl only_crypto::chacha::Poly1305
+pub fn only_crypto::chacha::Poly1305::finalize(self) -> [u8; 16]
+pub fn only_crypto::chacha::Poly1305::mac(&[u8; 32], &[u8]) -> [u8; 16]
+pub fn only_crypto::chacha::Poly1305::new(&[u8; 32]) -> Self
+pub fn only_crypto::chacha::Poly1305::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::chacha::Poly1305
+pub fn only_crypto::chacha::Poly1305::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::chacha::Poly1305
+pub fn only_crypto::chacha::Poly1305::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::chacha::Poly1305
+impl core::marker::Sync for only_crypto::chacha::Poly1305
+impl core::marker::Unpin for only_crypto::chacha::Poly1305
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::chacha::Poly1305
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::chacha::Poly1305
+pub const only_crypto::chacha::KEY_LEN: usize
+pub const only_crypto::chacha::NONCE_LEN: usize
+pub const only_crypto::chacha::TAG_LEN: usize
+pub mod only_crypto::crc
+pub struct only_crypto::crc::Crc32
+impl only_crypto::crc::Crc32
+pub fn only_crypto::crc::Crc32::finalize(&self) -> u32
+pub const fn only_crypto::crc::Crc32::new() -> Self
+pub fn only_crypto::crc::Crc32::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::crc::Crc32
+pub fn only_crypto::crc::Crc32::clone(&self) -> Self
+impl core::default::Default for only_crypto::crc::Crc32
+pub fn only_crypto::crc::Crc32::default() -> Self
+impl core::fmt::Debug for only_crypto::crc::Crc32
+pub fn only_crypto::crc::Crc32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::crc::Crc32
+impl core::marker::Sync for only_crypto::crc::Crc32
+impl core::marker::Unpin for only_crypto::crc::Crc32
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::crc::Crc32
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::crc::Crc32
+pub struct only_crypto::crc::Crc32c
+impl only_crypto::crc::Crc32c
+pub fn only_crypto::crc::Crc32c::finalize(&self) -> u32
+pub const fn only_crypto::crc::Crc32c::new() -> Self
+pub fn only_crypto::crc::Crc32c::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::crc::Crc32c
+pub fn only_crypto::crc::Crc32c::clone(&self) -> Self
+impl core::default::Default for only_crypto::crc::Crc32c
+pub fn only_crypto::crc::Crc32c::default() -> Self
+impl core::fmt::Debug for only_crypto::crc::Crc32c
+pub fn only_crypto::crc::Crc32c::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::crc::Crc32c
+impl core::marker::Sync for only_crypto::crc::Crc32c
+impl core::marker::Unpin for only_crypto::crc::Crc32c
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::crc::Crc32c
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::crc::Crc32c
+pub fn only_crypto::crc::crc32(&[u8]) -> u32
+pub fn only_crypto::crc::crc32c(&[u8]) -> u32
+pub mod only_crypto::gcm
+pub struct only_crypto::gcm::AesGcm
+impl only_crypto::gcm::AesGcm
+pub fn only_crypto::gcm::AesGcm::decrypt(&self, &[u8; 12], &[u8], &[u8]) -> core::result::Result<alloc::vec::Vec<u8>, only_crypto::Error>
+pub fn only_crypto::gcm::AesGcm::decrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::gcm::AesGcm::decrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8], &[u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::gcm::AesGcm::encrypt(&self, &[u8; 12], &[u8], &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_crypto::gcm::AesGcm::encrypt_in_place(&self, &[u8; 12], &[u8], &mut alloc::vec::Vec<u8>)
+pub fn only_crypto::gcm::AesGcm::encrypt_in_place_detached(&self, &[u8; 12], &[u8], &mut [u8]) -> [u8; 16]
+pub fn only_crypto::gcm::AesGcm::new(&[u8]) -> core::result::Result<only_crypto::gcm::AesGcm, only_crypto::Error>
+pub fn only_crypto::gcm::AesGcm::with_cipher(only_crypto::aes::Aes) -> only_crypto::gcm::AesGcm
+impl core::clone::Clone for only_crypto::gcm::AesGcm
+pub fn only_crypto::gcm::AesGcm::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::gcm::AesGcm
+pub fn only_crypto::gcm::AesGcm::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::gcm::AesGcm
+impl core::marker::Sync for only_crypto::gcm::AesGcm
+impl core::marker::Unpin for only_crypto::gcm::AesGcm
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::gcm::AesGcm
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::gcm::AesGcm
+pub const only_crypto::gcm::NONCE_LEN: usize
+pub const only_crypto::gcm::TAG_LEN: usize
+pub mod only_crypto::hash
+pub struct only_crypto::hash::Md5
+impl only_crypto::hash::Md5
+pub fn only_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
+impl only_crypto::hash::Md5
+pub fn only_crypto::hash::Md5::finalize(self) -> [u8; 16]
+pub const fn only_crypto::hash::Md5::new() -> Self
+pub fn only_crypto::hash::Md5::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::hash::Md5
+pub fn only_crypto::hash::Md5::clone(&self) -> Self
+impl core::default::Default for only_crypto::hash::Md5
+pub fn only_crypto::hash::Md5::default() -> Self
+impl core::fmt::Debug for only_crypto::hash::Md5
+pub fn only_crypto::hash::Md5::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_crypto::hash::Hash for only_crypto::hash::Md5
+pub type only_crypto::hash::Md5::Output = [u8; 16]
+pub const only_crypto::hash::Md5::BLOCK_LEN: usize
+pub const only_crypto::hash::Md5::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
+pub fn only_crypto::hash::Md5::finalize(self) -> [u8; 16]
+pub fn only_crypto::hash::Md5::update(&mut self, &[u8])
+impl core::marker::Send for only_crypto::hash::Md5
+impl core::marker::Sync for only_crypto::hash::Md5
+impl core::marker::Unpin for only_crypto::hash::Md5
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::hash::Md5
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::hash::Md5
+pub struct only_crypto::hash::Sha1
+impl only_crypto::hash::Sha1
+pub fn only_crypto::hash::Sha1::digest(&[u8]) -> [u8; 20]
+impl only_crypto::hash::Sha1
+pub fn only_crypto::hash::Sha1::finalize(self) -> [u8; 20]
+pub const fn only_crypto::hash::Sha1::new() -> Self
+pub fn only_crypto::hash::Sha1::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::hash::Sha1
+pub fn only_crypto::hash::Sha1::clone(&self) -> Self
+impl core::default::Default for only_crypto::hash::Sha1
+pub fn only_crypto::hash::Sha1::default() -> Self
+impl core::fmt::Debug for only_crypto::hash::Sha1
+pub fn only_crypto::hash::Sha1::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_crypto::hash::Hash for only_crypto::hash::Sha1
+pub type only_crypto::hash::Sha1::Output = [u8; 20]
+pub const only_crypto::hash::Sha1::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha1::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha1::digest(&[u8]) -> [u8; 20]
+pub fn only_crypto::hash::Sha1::finalize(self) -> [u8; 20]
+pub fn only_crypto::hash::Sha1::update(&mut self, &[u8])
+impl core::marker::Send for only_crypto::hash::Sha1
+impl core::marker::Sync for only_crypto::hash::Sha1
+impl core::marker::Unpin for only_crypto::hash::Sha1
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::hash::Sha1
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::hash::Sha1
+pub struct only_crypto::hash::Sha224(_)
+impl only_crypto::hash::Sha224
+pub fn only_crypto::hash::Sha224::digest(&[u8]) -> [u8; 28]
+impl only_crypto::hash::Sha224
+pub fn only_crypto::hash::Sha224::finalize(self) -> [u8; 28]
+pub const fn only_crypto::hash::Sha224::new() -> Self
+pub fn only_crypto::hash::Sha224::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::hash::Sha224
+pub fn only_crypto::hash::Sha224::clone(&self) -> Self
+impl core::default::Default for only_crypto::hash::Sha224
+pub fn only_crypto::hash::Sha224::default() -> Self
+impl core::fmt::Debug for only_crypto::hash::Sha224
+pub fn only_crypto::hash::Sha224::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_crypto::hash::Hash for only_crypto::hash::Sha224
+pub type only_crypto::hash::Sha224::Output = [u8; 28]
+pub const only_crypto::hash::Sha224::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha224::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha224::digest(&[u8]) -> [u8; 28]
+pub fn only_crypto::hash::Sha224::finalize(self) -> [u8; 28]
+pub fn only_crypto::hash::Sha224::update(&mut self, &[u8])
+impl core::marker::Send for only_crypto::hash::Sha224
+impl core::marker::Sync for only_crypto::hash::Sha224
+impl core::marker::Unpin for only_crypto::hash::Sha224
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::hash::Sha224
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::hash::Sha224
+pub struct only_crypto::hash::Sha256(_)
+impl only_crypto::hash::Sha256
+pub fn only_crypto::hash::Sha256::digest(&[u8]) -> [u8; 32]
+impl only_crypto::hash::Sha256
+pub fn only_crypto::hash::Sha256::finalize(self) -> [u8; 32]
+pub const fn only_crypto::hash::Sha256::new() -> Self
+pub fn only_crypto::hash::Sha256::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::hash::Sha256
+pub fn only_crypto::hash::Sha256::clone(&self) -> Self
+impl core::default::Default for only_crypto::hash::Sha256
+pub fn only_crypto::hash::Sha256::default() -> Self
+impl core::fmt::Debug for only_crypto::hash::Sha256
+pub fn only_crypto::hash::Sha256::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_crypto::hash::Hash for only_crypto::hash::Sha256
+pub type only_crypto::hash::Sha256::Output = [u8; 32]
+pub const only_crypto::hash::Sha256::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha256::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha256::digest(&[u8]) -> [u8; 32]
+pub fn only_crypto::hash::Sha256::finalize(self) -> [u8; 32]
+pub fn only_crypto::hash::Sha256::update(&mut self, &[u8])
+impl core::marker::Send for only_crypto::hash::Sha256
+impl core::marker::Sync for only_crypto::hash::Sha256
+impl core::marker::Unpin for only_crypto::hash::Sha256
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::hash::Sha256
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::hash::Sha256
+pub struct only_crypto::hash::Sha384(_)
+impl only_crypto::hash::Sha384
+pub fn only_crypto::hash::Sha384::digest(&[u8]) -> [u8; 48]
+impl only_crypto::hash::Sha384
+pub fn only_crypto::hash::Sha384::finalize(self) -> [u8; 48]
+pub const fn only_crypto::hash::Sha384::new() -> Self
+pub fn only_crypto::hash::Sha384::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::hash::Sha384
+pub fn only_crypto::hash::Sha384::clone(&self) -> Self
+impl core::default::Default for only_crypto::hash::Sha384
+pub fn only_crypto::hash::Sha384::default() -> Self
+impl core::fmt::Debug for only_crypto::hash::Sha384
+pub fn only_crypto::hash::Sha384::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_crypto::hash::Hash for only_crypto::hash::Sha384
+pub type only_crypto::hash::Sha384::Output = [u8; 48]
+pub const only_crypto::hash::Sha384::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha384::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha384::digest(&[u8]) -> [u8; 48]
+pub fn only_crypto::hash::Sha384::finalize(self) -> [u8; 48]
+pub fn only_crypto::hash::Sha384::update(&mut self, &[u8])
+impl core::marker::Send for only_crypto::hash::Sha384
+impl core::marker::Sync for only_crypto::hash::Sha384
+impl core::marker::Unpin for only_crypto::hash::Sha384
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::hash::Sha384
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::hash::Sha384
+pub struct only_crypto::hash::Sha512(_)
+impl only_crypto::hash::Sha512
+pub fn only_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
+impl only_crypto::hash::Sha512
+pub fn only_crypto::hash::Sha512::finalize(self) -> [u8; 64]
+pub const fn only_crypto::hash::Sha512::new() -> Self
+pub fn only_crypto::hash::Sha512::update(&mut self, &[u8])
+impl core::clone::Clone for only_crypto::hash::Sha512
+pub fn only_crypto::hash::Sha512::clone(&self) -> Self
+impl core::default::Default for only_crypto::hash::Sha512
+pub fn only_crypto::hash::Sha512::default() -> Self
+impl core::fmt::Debug for only_crypto::hash::Sha512
+pub fn only_crypto::hash::Sha512::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_crypto::hash::Hash for only_crypto::hash::Sha512
+pub type only_crypto::hash::Sha512::Output = [u8; 64]
+pub const only_crypto::hash::Sha512::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha512::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
+pub fn only_crypto::hash::Sha512::finalize(self) -> [u8; 64]
+pub fn only_crypto::hash::Sha512::update(&mut self, &[u8])
+impl core::marker::Send for only_crypto::hash::Sha512
+impl core::marker::Sync for only_crypto::hash::Sha512
+impl core::marker::Unpin for only_crypto::hash::Sha512
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::hash::Sha512
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::hash::Sha512
+pub trait only_crypto::hash::Hash: core::clone::Clone + core::default::Default + core::fmt::Debug
+pub type only_crypto::hash::Hash::Output: core::convert::AsRef<[u8]> + core::convert::AsMut<[u8]> + core::marker::Copy + core::cmp::Eq + core::fmt::Debug + core::marker::Send + core::marker::Sync + 'static
+pub const only_crypto::hash::Hash::BLOCK_LEN: usize
+pub const only_crypto::hash::Hash::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Hash::digest(&[u8]) -> Self::Output
+pub fn only_crypto::hash::Hash::finalize(self) -> Self::Output
+pub fn only_crypto::hash::Hash::update(&mut self, &[u8])
+impl only_crypto::hash::Hash for only_crypto::hash::Md5
+pub type only_crypto::hash::Md5::Output = [u8; 16]
+pub const only_crypto::hash::Md5::BLOCK_LEN: usize
+pub const only_crypto::hash::Md5::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Md5::digest(&[u8]) -> [u8; 16]
+pub fn only_crypto::hash::Md5::finalize(self) -> [u8; 16]
+pub fn only_crypto::hash::Md5::update(&mut self, &[u8])
+impl only_crypto::hash::Hash for only_crypto::hash::Sha1
+pub type only_crypto::hash::Sha1::Output = [u8; 20]
+pub const only_crypto::hash::Sha1::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha1::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha1::digest(&[u8]) -> [u8; 20]
+pub fn only_crypto::hash::Sha1::finalize(self) -> [u8; 20]
+pub fn only_crypto::hash::Sha1::update(&mut self, &[u8])
+impl only_crypto::hash::Hash for only_crypto::hash::Sha224
+pub type only_crypto::hash::Sha224::Output = [u8; 28]
+pub const only_crypto::hash::Sha224::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha224::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha224::digest(&[u8]) -> [u8; 28]
+pub fn only_crypto::hash::Sha224::finalize(self) -> [u8; 28]
+pub fn only_crypto::hash::Sha224::update(&mut self, &[u8])
+impl only_crypto::hash::Hash for only_crypto::hash::Sha256
+pub type only_crypto::hash::Sha256::Output = [u8; 32]
+pub const only_crypto::hash::Sha256::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha256::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha256::digest(&[u8]) -> [u8; 32]
+pub fn only_crypto::hash::Sha256::finalize(self) -> [u8; 32]
+pub fn only_crypto::hash::Sha256::update(&mut self, &[u8])
+impl only_crypto::hash::Hash for only_crypto::hash::Sha384
+pub type only_crypto::hash::Sha384::Output = [u8; 48]
+pub const only_crypto::hash::Sha384::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha384::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha384::digest(&[u8]) -> [u8; 48]
+pub fn only_crypto::hash::Sha384::finalize(self) -> [u8; 48]
+pub fn only_crypto::hash::Sha384::update(&mut self, &[u8])
+impl only_crypto::hash::Hash for only_crypto::hash::Sha512
+pub type only_crypto::hash::Sha512::Output = [u8; 64]
+pub const only_crypto::hash::Sha512::BLOCK_LEN: usize
+pub const only_crypto::hash::Sha512::OUTPUT_LEN: usize
+pub fn only_crypto::hash::Sha512::digest(&[u8]) -> [u8; 64]
+pub fn only_crypto::hash::Sha512::finalize(self) -> [u8; 64]
+pub fn only_crypto::hash::Sha512::update(&mut self, &[u8])
+pub mod only_crypto::kdf
+pub fn only_crypto::kdf::hkdf<H: only_crypto::hash::Hash>(&[u8], &[u8], &[u8], &mut [u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::kdf::hkdf_expand<H: only_crypto::hash::Hash>(&[u8], &[u8], &mut [u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::kdf::hkdf_extract<H: only_crypto::hash::Hash>(&[u8], &[u8]) -> <H as only_crypto::hash::Hash>::Output
+pub fn only_crypto::kdf::pbkdf2_hmac<H: only_crypto::hash::Hash>(&[u8], &[u8], u32, &mut [u8])
+pub mod only_crypto::mac
+pub struct only_crypto::mac::Hmac<H: only_crypto::hash::Hash>
+impl<H: only_crypto::hash::Hash> only_crypto::mac::Hmac<H>
+pub fn only_crypto::mac::Hmac<H>::chain(self, &[u8]) -> Self
+pub fn only_crypto::mac::Hmac<H>::finalize(self) -> <H as only_crypto::hash::Hash>::Output
+pub fn only_crypto::mac::Hmac<H>::mac(&[u8], &[u8]) -> <H as only_crypto::hash::Hash>::Output
+pub fn only_crypto::mac::Hmac<H>::new(&[u8]) -> Self
+pub fn only_crypto::mac::Hmac<H>::update(&mut self, &[u8])
+pub fn only_crypto::mac::Hmac<H>::verify(self, &[u8]) -> bool
+impl<H: core::clone::Clone + only_crypto::hash::Hash> core::clone::Clone for only_crypto::mac::Hmac<H>
+pub fn only_crypto::mac::Hmac<H>::clone(&self) -> Self
+impl<H: only_crypto::hash::Hash> core::fmt::Debug for only_crypto::mac::Hmac<H>
+pub fn only_crypto::mac::Hmac<H>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<H> core::marker::Send for only_crypto::mac::Hmac<H> where H: core::marker::Send + core::marker::Send
+impl<H> core::marker::Sync for only_crypto::mac::Hmac<H> where H: core::marker::Sync + core::marker::Sync
+impl<H> core::marker::Unpin for only_crypto::mac::Hmac<H> where H: core::marker::Unpin + core::marker::Unpin
+impl<H> core::panic::unwind_safe::RefUnwindSafe for only_crypto::mac::Hmac<H> where H: core::panic::unwind_safe::RefUnwindSafe + core::panic::unwind_safe::RefUnwindSafe
+impl<H> core::panic::unwind_safe::UnwindSafe for only_crypto::mac::Hmac<H> where H: core::panic::unwind_safe::UnwindSafe + core::panic::unwind_safe::UnwindSafe
+pub mod only_crypto::rand
+pub struct only_crypto::rand::ChaChaRng
+impl only_crypto::rand::ChaChaRng
+pub fn only_crypto::rand::ChaChaRng::fill(&mut self, &mut [u8])
+pub fn only_crypto::rand::ChaChaRng::from_os() -> core::io::error::Result<Self>
+pub fn only_crypto::rand::ChaChaRng::from_seed([u8; 32]) -> Self
+pub fn only_crypto::rand::ChaChaRng::next_u32(&mut self) -> u32
+pub fn only_crypto::rand::ChaChaRng::next_u64(&mut self) -> u64
+impl core::clone::Clone for only_crypto::rand::ChaChaRng
+pub fn only_crypto::rand::ChaChaRng::clone(&self) -> Self
+impl core::fmt::Debug for only_crypto::rand::ChaChaRng
+pub fn only_crypto::rand::ChaChaRng::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_crypto::rand::ChaChaRng
+impl core::marker::Sync for only_crypto::rand::ChaChaRng
+impl core::marker::Unpin for only_crypto::rand::ChaChaRng
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::rand::ChaChaRng
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::rand::ChaChaRng
+pub fn only_crypto::rand::fill_random(&mut [u8]) -> core::io::error::Result<()>
+#[non_exhaustive] pub enum only_crypto::Error
+pub only_crypto::Error::InvalidLength
+pub only_crypto::Error::Verification
+impl core::clone::Clone for only_crypto::Error
+pub fn only_crypto::Error::clone(&self) -> Self
+impl core::cmp::Eq for only_crypto::Error
+impl core::cmp::PartialEq for only_crypto::Error
+pub fn only_crypto::Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_crypto::Error
+impl core::fmt::Debug for only_crypto::Error
+pub fn only_crypto::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_crypto::Error
+pub fn only_crypto::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_crypto::Error
+impl core::marker::StructuralPartialEq for only_crypto::Error
+impl core::marker::Send for only_crypto::Error
+impl core::marker::Sync for only_crypto::Error
+impl core::marker::Unpin for only_crypto::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_crypto::Error
+impl core::panic::unwind_safe::UnwindSafe for only_crypto::Error
+pub fn only_crypto::ct_eq(&[u8], &[u8]) -> bool

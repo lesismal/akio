@@ -161,7 +161,7 @@ pub struct Packetizer {
 
 fn random_u32() -> u32 {
     let mut b = [0u8; 4];
-    let _ = getrandom::getrandom(&mut b);
+    let _ = only_crypto::rand::fill_random(&mut b);
     u32::from_be_bytes(b)
 }
 

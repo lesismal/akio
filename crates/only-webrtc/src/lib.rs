@@ -172,7 +172,7 @@ impl std::error::Error for Error {
 }
 
 pub(crate) fn fill_random(buf: &mut [u8]) {
-    if getrandom::getrandom(buf).is_err() {
+    if only_crypto::rand::fill_random(buf).is_err() {
         let mut x = Instant::now().elapsed().as_nanos() as u64 ^ 0x9e37_79b9_7f4a_7c15;
         for b in buf {
             x ^= x << 13;

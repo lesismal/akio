@@ -12,6 +12,7 @@
 ```mermaid
 flowchart BT
     sys["only-sys<br/>unsafe 系统调用：epoll/kqueue、<br/>eventfd/pipe、socket、recvmmsg/sendmmsg"]
+    crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数"]
     buf["only-buf<br/>分级缓冲池、SharedBuf"]
     timer["only-timer<br/>时间轮"]
     pool["only-pool<br/>逻辑线程池"]
@@ -66,12 +67,24 @@ flowchart BT
     facade --> turn
     turn --> webrtc
     http --> media
+    sys --> crypto
+    crypto --> ws
+    crypto --> http
+    crypto --> kcp
+    crypto --> turn
+    crypto --> webrtc
+    crypto --> media
 ```
 
 - **依赖方向是单向的**：`sys → buf/timer/pool → core → 后端 → only → 协议`。协议 crate 依赖
   `only-core` 的公开 trait 和 `only` facade，从不依赖具体后端。
+- **密码学自研**：`only-crypto`（只依赖 std；`unsafe` 只用于 AES-NI / ARMv8 AES 指令，并有常数时间的可移植回退；
+  随机数系统调用在 `only-sys` 中）提供协议
+  crate 需要的哈希、MAC、KDF、CRC-32、常数时间 AES-CTR/GCM、ChaCha20-Poly1305、base64 与随机数
+  （KCP 加密、STUN/TURN、WebSocket 握手、SRTP、SRT、RTMP、BitTorrent）；TLS、QUIC 与 DTLS 在
+  DEV-PLAN 后续各波之前仍使用 rustls / quinn-proto / dimpl。
 - **`unsafe` 被限制在** `only-sys`、`only-uring`（ring 与 buffer ring 内存）、`only-ebpf`
-  （原始 `bpf(2)`）和 `only-dpdk`（DPDK FFI）中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
+  （原始 `bpf(2)`）、`only-dpdk`（DPDK FFI）和 `only-crypto` 的 AES 指令模块中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（请求头用 httparse，chunked 解码器自研）、HTTP/2 分帧与
   HPACK（loona-hpack）、WebSocket 分帧与 permessage-deflate、KCP、QPACK 与 HTTP/3 分帧，都是

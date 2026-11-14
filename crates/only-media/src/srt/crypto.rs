@@ -1,8 +1,6 @@
 //! SRT encryption (section 6): keying material messages, the RFC 3394 key wrap under a
 //! PBKDF2-HMAC-SHA1 key encrypting key, and AES-CTR payload encryption.
 
-use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
-
 use super::packet::{KK_EVEN, KK_ODD};
 
 pub(crate) const KM_HEADER_SIZE: usize = 16;
@@ -15,59 +13,26 @@ const PBKDF2_ITER: u32 = 2048;
 pub(crate) const KM_STATE_BADSECRET: u32 = 4;
 
 /// AES with any of the three key sizes.
-#[derive(Clone)]
-pub(crate) enum Aes {
-    A128(aes::Aes128),
-    A192(aes::Aes192),
-    A256(aes::Aes256),
-}
-
-impl std::fmt::Debug for Aes {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Aes")
-    }
-}
+#[derive(Clone, Debug)]
+pub(crate) struct Aes(only_crypto::aes::Aes);
 
 impl Aes {
     pub(crate) fn new(key: &[u8]) -> Option<Aes> {
-        Some(match key.len() {
-            16 => Aes::A128(aes::Aes128::new_from_slice(key).ok()?),
-            24 => Aes::A192(aes::Aes192::new_from_slice(key).ok()?),
-            32 => Aes::A256(aes::Aes256::new_from_slice(key).ok()?),
-            _ => return None,
-        })
+        only_crypto::aes::Aes::new(key).ok().map(Aes)
     }
 
     fn encrypt(&self, b: &mut [u8; 16]) {
-        let blk = GenericArray::from_mut_slice(b);
-        match self {
-            Aes::A128(c) => c.encrypt_block(blk),
-            Aes::A192(c) => c.encrypt_block(blk),
-            Aes::A256(c) => c.encrypt_block(blk),
-        }
+        self.0.encrypt_block(b);
     }
 
     fn decrypt(&self, b: &mut [u8; 16]) {
-        let blk = GenericArray::from_mut_slice(b);
-        match self {
-            Aes::A128(c) => c.decrypt_block(blk),
-            Aes::A192(c) => c.decrypt_block(blk),
-            Aes::A256(c) => c.decrypt_block(blk),
-        }
+        self.0.decrypt_block(b);
     }
 
     /// XORs `data` with the CTR keystream starting at counter block `iv` (128-bit big-endian
     /// increment).
     fn ctr(&self, iv: [u8; 16], data: &mut [u8]) {
-        let mut ctr = u128::from_be_bytes(iv);
-        for chunk in data.chunks_mut(16) {
-            let mut ks = ctr.to_be_bytes();
-            self.encrypt(&mut ks);
-            for (d, k) in chunk.iter_mut().zip(ks) {
-                *d ^= k;
-            }
-            ctr = ctr.wrapping_add(1);
-        }
+        self.0.apply_ctr(&iv, data);
     }
 }
 
@@ -90,7 +55,7 @@ pub(crate) enum KmError {
 }
 
 pub(crate) fn random(buf: &mut [u8]) {
-    if getrandom::getrandom(buf).is_err() {
+    if only_crypto::rand::fill_random(buf).is_err() {
         // No OS randomness: still produce distinct values (not secure, never expected).
         let t = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -103,7 +68,7 @@ pub(crate) fn random(buf: &mut [u8]) {
 
 pub(crate) fn derive_kek(passphrase: &str, salt: &[u8; KM_SALT_SIZE], key_len: usize) -> Vec<u8> {
     let mut out = vec![0u8; key_len];
-    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(
+    only_crypto::kdf::pbkdf2_hmac::<only_crypto::hash::Sha1>(
         passphrase.as_bytes(),
         &salt[KM_SALT_SIZE - 8..],
         PBKDF2_ITER,

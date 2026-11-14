@@ -865,12 +865,11 @@ dependencies = [
 name = "only-bittorrent"
 version = "1.0.0-rc.1"
 dependencies = [
- "getrandom 0.2.17",
  "only",
  "only-core",
+ "only-crypto",
  "only-http",
  "only-pool",
- "sha1",
 ]
 
 [[package]]
@@ -886,6 +885,25 @@ dependencies = [
  "only-buf",
  "only-pool",
  "only-sys",
+]
+
+[[package]]
+name = "only-crypto"
+version = "1.0.0-rc.1"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "base64",
+ "chacha20poly1305",
+ "crc32fast",
+ "ctr",
+ "hkdf",
+ "hmac",
+ "md-5",
+ "only-sys",
+ "pbkdf2",
+ "sha1",
+ "sha2",
 ]
 
 [[package]]
@@ -947,7 +965,6 @@ dependencies = [
 name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
- "base64",
  "flate2",
  "httparse",
  "libc",
@@ -955,6 +972,7 @@ dependencies = [
  "loona-hpack",
  "only",
  "only-core",
+ "only-crypto",
  "only-ws",
  "rcgen",
  "regex",
@@ -965,31 +983,19 @@ dependencies = [
 name = "only-kcp"
 version = "1.0.0-rc.1"
 dependencies = [
- "aes",
- "aes-gcm",
- "crc32fast",
- "getrandom 0.2.17",
  "only",
  "only-core",
- "pbkdf2",
- "sha1",
+ "only-crypto",
 ]
 
 [[package]]
 name = "only-media"
 version = "1.0.0-rc.1"
 dependencies = [
- "aes",
- "base64",
- "getrandom 0.2.17",
- "hmac",
- "md-5",
  "only",
  "only-core",
+ "only-crypto",
  "only-http",
- "pbkdf2",
- "sha1",
- "sha2",
 ]
 
 [[package]]
@@ -1061,13 +1067,9 @@ dependencies = [
 name = "only-turn"
 version = "1.0.0-rc.1"
 dependencies = [
- "crc32fast",
- "getrandom 0.2.17",
- "hmac",
- "md-5",
  "only",
  "only-core",
- "sha1",
+ "only-crypto",
 ]
 
 [[package]]
@@ -1086,19 +1088,13 @@ dependencies = [
 name = "only-webrtc"
 version = "1.0.0-rc.1"
 dependencies = [
- "aes",
- "aes-gcm",
- "ctr",
  "dimpl",
- "getrandom 0.2.17",
- "hmac",
  "log",
  "only",
  "only-core",
+ "only-crypto",
  "only-turn",
  "p256",
- "sha1",
- "sha2",
  "str0m",
 ]
 
@@ -1106,16 +1102,14 @@ dependencies = [
 name = "only-ws"
 version = "1.0.0-rc.1"
 dependencies = [
- "base64",
  "flate2",
- "getrandom 0.2.17",
  "httparse",
  "only",
  "only-buf",
  "only-core",
+ "only-crypto",
  "only-http",
  "rcgen",
- "sha1",
 ]
 
 [[package]]

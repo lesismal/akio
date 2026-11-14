@@ -15,12 +15,10 @@ categories = ["network-programming", "web-programming::websocket"]
 [dependencies]
 only-core = { workspace = true }
 only-buf = { workspace = true }
-sha1 = "0.10"
-base64 = "0.22"
+only-crypto = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 only = { workspace = true }
 httparse = "1"
-getrandom = "0.2"
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_ws::fuzzing`); not a public API.

@@ -214,7 +214,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn random_id() -> String {
     let mut b = [0u8; 16];
-    let _ = getrandom::getrandom(&mut b);
+    let _ = only_crypto::rand::fill_random(&mut b);
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

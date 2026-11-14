@@ -533,7 +533,6 @@ impl<S: Service> Session<S> {
 
 /// The decoded `HTTP2-Settings` of an `Upgrade: h2c` request, if it is one.
 fn h2c_settings(req: &Request) -> Option<Vec<u8>> {
-    use base64::Engine;
     let h = &req.headers;
     if !h.has_token("upgrade", "h2c") || !h.has_token("connection", "upgrade") {
         return None;
@@ -543,7 +542,7 @@ fn h2c_settings(req: &Request) -> Option<Vec<u8>> {
     if all.next().is_some() {
         return None;
     }
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+    let bytes = only_crypto::base64::URL_SAFE_NO_PAD
         .decode(v.trim().trim_end_matches('='))
         .ok()?;
     (bytes.len() % 6 == 0).then_some(bytes)

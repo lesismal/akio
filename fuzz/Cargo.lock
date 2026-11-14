@@ -774,12 +774,11 @@ dependencies = [
 name = "only-bittorrent"
 version = "1.0.0-rc.1"
 dependencies = [
- "getrandom 0.2.17",
  "only",
  "only-core",
+ "only-crypto",
  "only-http",
  "only-pool",
- "sha1",
 ]
 
 [[package]]
@@ -794,6 +793,13 @@ dependencies = [
  "loom",
  "only-buf",
  "only-pool",
+ "only-sys",
+]
+
+[[package]]
+name = "only-crypto"
+version = "1.0.0-rc.1"
+dependencies = [
  "only-sys",
 ]
 
@@ -820,9 +826,18 @@ dependencies = [
 name = "only-fuzz"
 version = "0.0.0"
 dependencies = [
+ "aes",
+ "aes-gcm",
+ "base64",
+ "chacha20poly1305",
+ "crc32fast",
+ "ctr",
+ "hmac",
  "libfuzzer-sys",
+ "md-5",
  "only-arpc",
  "only-bittorrent",
+ "only-crypto",
  "only-ebpf",
  "only-grpc",
  "only-h3",
@@ -834,6 +849,8 @@ dependencies = [
  "only-turn",
  "only-webrtc",
  "only-ws",
+ "sha1",
+ "sha2",
 ]
 
 [[package]]
@@ -861,13 +878,13 @@ dependencies = [
 name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
- "base64",
  "flate2",
  "httparse",
  "log",
  "loona-hpack",
  "only",
  "only-core",
+ "only-crypto",
  "only-ws",
  "regex",
 ]
@@ -876,31 +893,19 @@ dependencies = [
 name = "only-kcp"
 version = "1.0.0-rc.1"
 dependencies = [
- "aes",
- "aes-gcm",
- "crc32fast",
- "getrandom 0.2.17",
  "only",
  "only-core",
- "pbkdf2",
- "sha1",
+ "only-crypto",
 ]
 
 [[package]]
 name = "only-media"
 version = "1.0.0-rc.1"
 dependencies = [
- "aes",
- "base64",
- "getrandom 0.2.17",
- "hmac",
- "md-5",
  "only",
  "only-core",
+ "only-crypto",
  "only-http",
- "pbkdf2",
- "sha1",
- "sha2",
 ]
 
 [[package]]
@@ -956,12 +961,8 @@ dependencies = [
 name = "only-turn"
 version = "1.0.0-rc.1"
 dependencies = [
- "crc32fast",
- "getrandom 0.2.17",
- "hmac",
- "md-5",
  "only",
- "sha1",
+ "only-crypto",
 ]
 
 [[package]]
@@ -980,18 +981,12 @@ dependencies = [
 name = "only-webrtc"
 version = "1.0.0-rc.1"
 dependencies = [
- "aes",
- "aes-gcm",
- "ctr",
  "dimpl",
- "getrandom 0.2.17",
- "hmac",
  "log",
  "only",
+ "only-crypto",
  "only-turn",
  "p256",
- "sha1",
- "sha2",
  "str0m",
 ]
 
@@ -999,14 +994,12 @@ dependencies = [
 name = "only-ws"
 version = "1.0.0-rc.1"
 dependencies = [
- "base64",
  "flate2",
- "getrandom 0.2.17",
  "httparse",
  "only",
  "only-buf",
  "only-core",
- "sha1",
+ "only-crypto",
 ]
 
 [[package]]
@@ -1037,16 +1030,6 @@ dependencies = [
  "elliptic-curve",
  "primeorder",
  "sha2",
-]
-
-[[package]]
-name = "pbkdf2"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
-dependencies = [
- "digest",
- "hmac",
 ]
 
 [[package]]

@@ -56,7 +56,7 @@ pub use crate::auth::{AuthFn, ephemeral_auth, ephemeral_credentials, static_auth
 pub use crate::core::{PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default};
 
 pub(crate) fn fill_random(buf: &mut [u8]) {
-    if getrandom::getrandom(buf).is_err() {
+    if only_crypto::rand::fill_random(buf).is_err() {
         // No OS randomness: fall back to a time-seeded mix (never expected in practice).
         let mut x = Instant::now().elapsed().as_nanos() as u64 ^ 0x9e37_79b9_7f4a_7c15;
         for b in buf {
