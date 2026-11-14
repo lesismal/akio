@@ -39,6 +39,7 @@ fn timeout_ms(t: Option<Duration>) -> libc::c_int {
 }
 
 /// Level-triggered readiness poller: epoll on Linux, kqueue on macOS.
+#[derive(Debug)]
 pub struct Poller {
     fd: OwnedFd,
     #[cfg(target_os = "linux")]

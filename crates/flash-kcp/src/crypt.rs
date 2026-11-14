@@ -40,6 +40,12 @@ enum Kind {
 /// A packet encryption scheme, as kcp-go names them.
 pub struct Crypt(Kind);
 
+impl std::fmt::Debug for Crypt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Crypt").finish_non_exhaustive()
+    }
+}
+
 impl Crypt {
     /// `name` as kcptun spells it: `none`, `xor`, `aes` (32-byte key), `aes-128` (16),
     /// `aes-192` (24), `aes-128-gcm` (16). The key is already derived (kcptun uses

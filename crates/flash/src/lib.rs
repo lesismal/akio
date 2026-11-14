@@ -118,6 +118,12 @@ pub struct Listener {
     acceptor: Option<Arc<dyn DynAcceptor>>,
 }
 
+impl std::fmt::Debug for Listener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listener").finish_non_exhaustive()
+    }
+}
+
 impl Listener {
     /// A TCP listener on `addr` (port 0 picks a free port; see [`Engine::local_addrs`]).
     pub fn tcp(addr: SocketAddr) -> Self {
@@ -145,24 +151,28 @@ impl Listener {
     }
 
     /// Chooses this listener's backend.
+    #[must_use]
     pub fn backend(mut self, b: Backend) -> Self {
         self.backend = b;
         self
     }
 
     /// Chooses this listener's acceleration layer.
+    #[must_use]
     pub fn accel(mut self, a: Accel) -> Self {
         self.accel = a;
         self
     }
 
     /// Number of I/O threads for this listener (default: one per core).
+    #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = n.max(1);
         self
     }
 
     /// Attaches the acceptor that serves this listener.
+    #[must_use]
     pub fn serve<A: Acceptor>(mut self, acceptor: A) -> Self {
         self.acceptor = Some(Arc::new(acceptor));
         self
@@ -170,6 +180,7 @@ impl Listener {
 
     /// Attaches a type-erased acceptor (for protocol multiplexers such as `flash-mux`).
     #[doc(hidden)]
+    #[must_use]
     pub fn serve_dyn(mut self, acceptor: Arc<dyn DynAcceptor>) -> Self {
         self.acceptor = Some(acceptor);
         self
@@ -177,7 +188,7 @@ impl Listener {
 }
 
 /// Builds an [`Engine`].
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct EngineBuilder {
     listeners: Vec<Listener>,
     client_threads: usize,
@@ -188,6 +199,7 @@ pub struct EngineBuilder {
 
 impl EngineBuilder {
     /// Adds a listener.
+    #[must_use]
     pub fn listen(mut self, l: Listener) -> Self {
         self.listeners.push(l);
         self
@@ -195,12 +207,14 @@ impl EngineBuilder {
 
     /// Adds `n` I/O threads that only serve connections made with [`Engine::dial`]. Without it,
     /// dialed connections run on the threads of the last listener added.
+    #[must_use]
     pub fn client_threads(mut self, n: usize) -> Self {
         self.client_threads = n;
         self
     }
 
     /// Replaces the default [`Config`].
+    #[must_use]
     pub fn config(mut self, cfg: Config) -> Self {
         self.cfg = cfg;
         self
@@ -208,6 +222,7 @@ impl EngineBuilder {
 
     /// Adds `n` I/O threads for connections made with [`Engine::dial_udp`]. Without it, UDP
     /// dials run on the threads of the last UDP listener added (and fail if there is none).
+    #[must_use]
     pub fn udp_client_threads(mut self, n: usize) -> Self {
         self.udp_client_threads = n;
         self
@@ -215,6 +230,7 @@ impl EngineBuilder {
 
     /// Sizes the logical pool that runs [`Conn::spawn_blocking`] work (default: no threads until
     /// used, up to 8 per core, 65,536 queued jobs).
+    #[must_use]
     pub fn pool(mut self, pool: PoolConfig) -> Self {
         self.pool = pool;
         self
@@ -383,7 +399,7 @@ fn unsupported(what: &str) -> io::Error {
 
 /// A late-bound handle to an [`Engine`], for services that need to dial (proxies, clients
 /// inside handlers) but are built before the engine. Holds the engine weakly.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineRef(Arc<std::sync::OnceLock<std::sync::Weak<Engine>>>);
 
 impl EngineRef {
@@ -413,6 +429,12 @@ pub struct Engine {
     udp_client: Option<usize>,
     accel: Vec<AccelStatus>,
     telemetry: Arc<Telemetry>,
+}
+
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine").finish_non_exhaustive()
+    }
 }
 
 impl Engine {

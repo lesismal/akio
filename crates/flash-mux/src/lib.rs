@@ -65,6 +65,12 @@ pub enum Rule {
     Custom(Matcher),
 }
 
+impl std::fmt::Debug for Rule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rule").finish_non_exhaustive()
+    }
+}
+
 const METHODS: [&[u8]; 9] = [
     b"GET ",
     b"HEAD ",
@@ -155,6 +161,12 @@ struct Inner {
 #[derive(Clone)]
 pub struct Mux(Arc<Inner>);
 
+impl std::fmt::Debug for Mux {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mux").finish_non_exhaustive()
+    }
+}
+
 impl Default for Mux {
     fn default() -> Self {
         Mux::new()
@@ -177,12 +189,14 @@ impl Mux {
     }
 
     /// Adds a route; routes are tried in order.
+    #[must_use]
     pub fn route<A: Acceptor>(mut self, rule: Rule, acceptor: A) -> Mux {
         self.inner_mut().routes.push((rule, Arc::new(acceptor)));
         self
     }
 
     /// Adds a route to a type-erased acceptor (another `Mux`, for instance).
+    #[must_use]
     pub fn route_dyn(mut self, rule: Rule, acceptor: Arc<dyn DynAcceptor>) -> Mux {
         self.inner_mut().routes.push((rule, acceptor));
         self
@@ -190,12 +204,14 @@ impl Mux {
 
     /// Where connections go that match nothing (or that decide nothing within `max_sniff`
     /// bytes). Without a fallback they are closed.
+    #[must_use]
     pub fn fallback<A: Acceptor>(mut self, acceptor: A) -> Mux {
         self.inner_mut().fallback = Some(Arc::new(acceptor));
         self
     }
 
     /// How many bytes to look at before giving up and using the fallback (default 64).
+    #[must_use]
     pub fn max_sniff(mut self, n: usize) -> Mux {
         self.inner_mut().max_sniff = n.max(1);
         self

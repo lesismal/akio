@@ -36,6 +36,12 @@ pub struct Wheel<T> {
     len: usize,
 }
 
+impl<T> std::fmt::Debug for Wheel<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Wheel").finish_non_exhaustive()
+    }
+}
+
 impl<T> Wheel<T> {
     /// A wheel whose clock starts at tick `now`.
     pub fn new(now: u64) -> Self {

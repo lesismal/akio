@@ -47,6 +47,12 @@ pub struct FnAcceptor<H, F> {
     _h: std::marker::PhantomData<fn() -> H>,
 }
 
+impl<H, F> std::fmt::Debug for FnAcceptor<H, F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FnAcceptor").finish_non_exhaustive()
+    }
+}
+
 /// Wraps `f` as an [`Acceptor`].
 pub fn fn_acceptor<H, F>(f: F) -> FnAcceptor<H, F>
 where

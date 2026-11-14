@@ -136,6 +136,12 @@ pub struct Decoder {
     inflater: Option<Inflater>,
 }
 
+impl std::fmt::Debug for Decoder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Decoder").finish_non_exhaustive()
+    }
+}
+
 impl Decoder {
     /// A decoder that accepts messages up to `max_message` bytes (after decompression).
     pub fn new(role: Role, max_message: usize, inflater: Option<Inflater>) -> Decoder {

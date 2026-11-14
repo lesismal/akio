@@ -287,6 +287,12 @@ pub struct Router {
     fallback: Arc<dyn Service>,
 }
 
+impl std::fmt::Debug for Router {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Router").finish_non_exhaustive()
+    }
+}
+
 impl Default for Router {
     fn default() -> Self {
         Router::new()
@@ -310,6 +316,7 @@ impl Router {
     /// # Panics
     /// On a duplicate route, a parameter name that conflicts with a sibling, a wildcard that is
     /// not last, or an invalid regexp (or any regexp without the `regex` feature).
+    #[must_use]
     pub fn route(mut self, method: Method, path: &str, svc: impl Service) -> Router {
         self.insert(method, path.to_owned(), Arc::new(svc));
         self
@@ -388,32 +395,39 @@ impl Router {
     }
 
     /// `GET path`.
+    #[must_use]
     pub fn get(self, path: &str, svc: impl Service) -> Router {
         self.route(Method::Get, path, svc)
     }
     /// `POST path`.
+    #[must_use]
     pub fn post(self, path: &str, svc: impl Service) -> Router {
         self.route(Method::Post, path, svc)
     }
     /// `PUT path`.
+    #[must_use]
     pub fn put(self, path: &str, svc: impl Service) -> Router {
         self.route(Method::Put, path, svc)
     }
     /// `DELETE path`.
+    #[must_use]
     pub fn delete(self, path: &str, svc: impl Service) -> Router {
         self.route(Method::Delete, path, svc)
     }
     /// `PATCH path`.
+    #[must_use]
     pub fn patch(self, path: &str, svc: impl Service) -> Router {
         self.route(Method::Patch, path, svc)
     }
     /// `OPTIONS path`.
+    #[must_use]
     pub fn options(self, path: &str, svc: impl Service) -> Router {
         self.route(Method::Options, path, svc)
     }
 
     /// Replaces the answer for unknown paths and wrong methods. The 405 `Allow` list is in
     /// `ctx.local("flash.allow")` when the path exists.
+    #[must_use]
     pub fn fallback(mut self, svc: impl Service) -> Router {
         self.fallback = Arc::new(svc);
         self
@@ -421,6 +435,7 @@ impl Router {
 
     /// Wraps every route registered so far, and the fallback, in `mw` (the last layer added is
     /// the outermost). Routes added later are not wrapped.
+    #[must_use]
     pub fn layer(mut self, mw: impl Middleware) -> Router {
         let mw: Arc<dyn Middleware> = Arc::new(mw);
         let wrap = |svc: Arc<dyn Service>| -> Arc<dyn Service> {
@@ -440,6 +455,7 @@ impl Router {
 
     /// Mounts `other` under `prefix` (`/api` + `/users/:id` = `/api/users/:id`). `other`'s layers
     /// stay in effect for its routes.
+    #[must_use]
     pub fn nest(mut self, prefix: &str, other: Router) -> Router {
         let prefix = prefix.trim_end_matches('/');
         for (m, p, svc) in other.registered {

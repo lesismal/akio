@@ -93,6 +93,12 @@ pub struct Pool {
     rejected: AtomicU64,
 }
 
+impl std::fmt::Debug for Pool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pool").finish_non_exhaustive()
+    }
+}
+
 impl Pool {
     /// Creates a pool. No thread starts until work arrives (except `min_threads`, started here).
     pub fn new(mut cfg: PoolConfig) -> Arc<Pool> {

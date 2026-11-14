@@ -77,6 +77,12 @@ pub enum H2Event<'a> {
     Error(ClientError),
 }
 
+impl<'a> std::fmt::Debug for H2Event<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H2Event").finish_non_exhaustive()
+    }
+}
+
 /// Request body still to be produced for a streamed request.
 struct UpShared {
     q: Mutex<(VecDeque<Vec<u8>>, bool)>,
@@ -87,6 +93,12 @@ struct UpShared {
 pub struct H2Upload {
     conn: Conn<H2Conn>,
     up: Arc<UpShared>,
+}
+
+impl std::fmt::Debug for H2Upload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H2Upload").finish_non_exhaustive()
+    }
 }
 
 impl H2Upload {
@@ -116,7 +128,7 @@ impl H2Upload {
 }
 
 /// A connection to an HTTP/2 server. Cheap to clone.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct H2Client {
     conn: Conn<H2Conn>,
 }
@@ -337,6 +349,12 @@ pub struct H2Conn {
     cont: Option<(u32, Option<u32>, Vec<u8>, bool)>,
     goaway: bool,
     dead: bool,
+}
+
+impl std::fmt::Debug for H2Conn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H2Conn").finish_non_exhaustive()
+    }
 }
 
 fn window_update(out: &mut Vec<u8>, sid: u32, inc: u32) {

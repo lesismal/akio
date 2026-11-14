@@ -128,6 +128,7 @@ pub fn ping() -> Vec<u8> {
 pub struct FrameError(pub &'static str);
 
 /// Incremental decoder.
+#[derive(Debug)]
 pub struct Decoder {
     buf: Vec<u8>,
     max_body: usize,

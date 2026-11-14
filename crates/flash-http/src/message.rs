@@ -302,6 +302,7 @@ impl Response {
     }
 
     /// Sets a header, replacing earlier ones of that name.
+    #[must_use]
     pub fn header(mut self, name: &str, value: impl AsRef<str>) -> Response {
         self.headers.set(name, value);
         self

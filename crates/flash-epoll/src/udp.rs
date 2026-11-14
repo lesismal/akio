@@ -806,6 +806,12 @@ pub struct UdpGroup {
     stats: Arc<Stats>,
 }
 
+impl std::fmt::Debug for UdpGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpGroup").finish_non_exhaustive()
+    }
+}
+
 impl UdpGroup {
     /// Binds `addr` and prepares `threads` loops. On Linux every loop gets its own
     /// `SO_REUSEPORT` socket and the kernel keeps each peer on one loop; elsewhere UDP cannot be

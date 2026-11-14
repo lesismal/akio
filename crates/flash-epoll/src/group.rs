@@ -27,6 +27,12 @@ pub struct EpollGroup {
     cfg: Arc<Config>,
 }
 
+impl std::fmt::Debug for EpollGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EpollGroup").finish_non_exhaustive()
+    }
+}
+
 impl EpollGroup {
     /// Binds `listen` (if any) and prepares `threads` loops. Nothing runs until [`Group::start`].
     ///

@@ -38,6 +38,12 @@ pub enum BodyMode {
 /// Marks a service as taking its request body as a stream; see [`BodyMode::Stream`].
 pub struct Streaming<S>(pub S);
 
+impl<S> std::fmt::Debug for Streaming<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Streaming").finish_non_exhaustive()
+    }
+}
+
 impl<S: Service> Service for Streaming<S> {
     fn call(&self, ctx: &mut Context) {
         self.0.call(ctx);
@@ -53,6 +59,12 @@ pub enum BodyEvent<'a> {
     Chunk(&'a [u8]),
     /// The body is complete; chunked bodies may carry trailer fields.
     End(&'a Headers),
+}
+
+impl<'a> std::fmt::Debug for BodyEvent<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyEvent").finish_non_exhaustive()
+    }
 }
 
 type Sink = Box<dyn FnMut(&mut Context, BodyEvent<'_>) + Send>;
@@ -188,6 +200,12 @@ pub struct Context {
     upgrade: Option<PendingUpgrade>,
     raw: Option<Box<dyn crate::raw::RawHandler>>,
     sink: Option<Sink>,
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context").finish_non_exhaustive()
+    }
 }
 
 /// A WebSocket upgrade accepted by [`Context::upgrade_websocket`], applied by the session.
@@ -579,6 +597,12 @@ pub struct Detached {
     responder: Out,
 }
 
+impl std::fmt::Debug for Detached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Detached").finish_non_exhaustive()
+    }
+}
+
 impl Detached {
     /// The request.
     pub fn req(&self) -> &Request {
@@ -639,6 +663,12 @@ fn start_stream(out: Out, fin: &mut Finish, status: u16, headers: Headers) -> Op
 
 /// A response body being written in pieces; see [`Context::stream_response`].
 pub struct BodyStream(Inner);
+
+impl std::fmt::Debug for BodyStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyStream").finish_non_exhaustive()
+    }
+}
 
 enum Inner {
     H1 {

@@ -122,9 +122,15 @@ pub struct WsSender {
     tx: Arc<Mutex<Tx>>,
 }
 
+impl std::fmt::Debug for WsSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsSender").finish_non_exhaustive()
+    }
+}
+
 /// A message encoded once, to be sent to many connections ([`WsSender::send_prepared`]). It is
 /// sent uncompressed, which every peer accepts.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PreparedMessage {
     frame: SharedBuf,
 }
@@ -337,6 +343,12 @@ pub struct WsSession {
     sender: WsSender,
     events: Vec<Event>,
     ended: bool,
+}
+
+impl std::fmt::Debug for WsSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsSession").finish_non_exhaustive()
+    }
 }
 
 impl WsSession {

@@ -38,7 +38,7 @@ pub use telemetry::{
 /// instead of SipHash on every event. Ids are not attacker-chosen, so no DoS-resistant hash is
 /// needed. Backend-facing.
 #[doc(hidden)]
-#[derive(Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct IdHasher(u64);
 
 impl std::hash::Hasher for IdHasher {

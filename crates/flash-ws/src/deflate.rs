@@ -12,6 +12,7 @@ pub enum InflateError {
 }
 
 /// Decompresses messages.
+#[derive(Debug)]
 pub struct Inflater {
     d: Decompress,
     reset_each_message: bool,
@@ -71,6 +72,7 @@ impl Inflater {
 }
 
 /// Compresses messages.
+#[derive(Debug)]
 pub struct Deflater {
     c: Compress,
     reset_each_message: bool,

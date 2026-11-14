@@ -144,6 +144,12 @@ pub struct Socks {
     allow_socks4: bool,
 }
 
+impl std::fmt::Debug for Socks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Socks").finish_non_exhaustive()
+    }
+}
+
 impl Socks {
     /// A server that dials through `engine`.
     pub fn new(engine: EngineRef) -> Socks {
@@ -155,6 +161,7 @@ impl Socks {
     }
 
     /// Requires SOCKS5 username/password authentication (and turns SOCKS4, which has none, off).
+    #[must_use]
     pub fn auth(mut self, check: impl Fn(&str, &str) -> bool + Send + Sync + 'static) -> Socks {
         self.auth = Some(Arc::new(check));
         self.allow_socks4 = false;
@@ -180,6 +187,12 @@ pub struct SocksSession {
     st: St,
     buf: Vec<u8>,
     upstream: UpstreamSlot,
+}
+
+impl std::fmt::Debug for SocksSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SocksSession").finish_non_exhaustive()
+    }
 }
 
 impl Acceptor for Socks {

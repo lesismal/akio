@@ -54,7 +54,7 @@ pub use kcp::{Kcp, KcpError};
 use frame::Framer;
 
 /// A session's settings; both sides should agree on the KCP knobs, and must on FEC and crypt.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// KCP `nodelay`: 0 normal, 1 fast retransmission timing.
     pub nodelay: i32,
@@ -193,6 +193,12 @@ struct Shared {
 /// A KCP conversation with one peer. Cheap to clone and usable from any thread.
 #[derive(Clone)]
 pub struct Session(Arc<Shared>);
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session").finish_non_exhaustive()
+    }
+}
 
 impl Session {
     fn new(
@@ -548,6 +554,12 @@ struct ServerShared {
 /// with sequence number 0); a peer opening another conversation that way replaces its session.
 pub struct KcpServer(Arc<ServerShared>);
 
+impl std::fmt::Debug for KcpServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KcpServer").finish_non_exhaustive()
+    }
+}
+
 impl KcpServer {
     /// A server whose sessions get handlers from `factory`.
     pub fn new<H: KcpHandler, F>(cfg: Config, factory: F) -> Result<KcpServer, String>
@@ -564,6 +576,7 @@ impl KcpServer {
     }
 
     /// Bounds the open sessions (0, the default, is unlimited).
+    #[must_use]
     pub fn max_sessions(mut self, n: usize) -> KcpServer {
         if let Some(s) = Arc::get_mut(&mut self.0) {
             s.max_sessions = n;
@@ -592,6 +605,12 @@ impl Acceptor for KcpServer {
 pub struct Udp {
     server: Option<Arc<ServerShared>>,
     session: Option<Session>,
+}
+
+impl std::fmt::Debug for Udp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Udp").finish_non_exhaustive()
+    }
 }
 
 impl Udp {

@@ -61,6 +61,7 @@ impl ClientRequest {
     }
 
     /// Adds a header.
+    #[must_use]
     pub fn header(mut self, name: &str, value: &str) -> ClientRequest {
         self.headers.append(name, value);
         self
@@ -115,6 +116,12 @@ type Callback = Box<dyn FnOnce(Result<ClientResponse, ClientError>) + Send>;
 /// The result of [`Client::send`]: wait for it, or `.await` it.
 pub struct ResponseFuture {
     pub(crate) shared: Arc<FutureShared>,
+}
+
+impl std::fmt::Debug for ResponseFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseFuture").finish_non_exhaustive()
+    }
 }
 
 pub(crate) type Outcome = Result<ClientResponse, ClientError>;
@@ -269,6 +276,12 @@ pub struct Client {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").finish_non_exhaustive()
+    }
+}
+
 impl Client {
     /// A client that runs its connections on `engine` (built with `client_threads(n)`, or with a
     /// listener whose threads may host them). The engine must be started.
@@ -283,6 +296,7 @@ impl Client {
     }
 
     /// Enables `https://` with the given rustls client configuration.
+    #[must_use]
     pub fn with_tls(self, cfg: Arc<rustls::ClientConfig>) -> Client {
         Client {
             inner: Arc::new(Inner {
@@ -497,6 +511,12 @@ pub struct ClientConn {
     client: Option<Client>,
     key: Option<Key>,
     received_any: bool,
+}
+
+impl std::fmt::Debug for ClientConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientConn").finish_non_exhaustive()
+    }
 }
 
 impl ClientConn {

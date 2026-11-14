@@ -59,6 +59,8 @@ unused_qualifications = "warn"
 unused_lifetimes = "warn"
 redundant_lifetimes = "warn"
 unused_import_braces = "warn"
+# 1.0 API conventions (docs/api-stability.md): every public type is `Debug`.
+missing_debug_implementations = "warn"
 
 # Clippy: the default groups plus a curated set of pedantic / nursery / restriction lints that
 # catch real mistakes or keep the code uniform without much noise. `unwrap_used` is enabled
@@ -71,6 +73,8 @@ undocumented_unsafe_blocks = "deny"
 missing_safety_doc = "deny"
 unnecessary_safety_comment = "warn"
 unnecessary_safety_doc = "warn"
+# 1.0 API conventions: builder methods returning `Self` are `#[must_use]`.
+return_self_not_must_use = "warn"
 # restriction
 dbg_macro = "warn"
 todo = "warn"

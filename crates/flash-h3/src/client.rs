@@ -40,6 +40,12 @@ pub struct H3Client {
     authority: String,
 }
 
+impl std::fmt::Debug for H3Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H3Client").finish_non_exhaustive()
+    }
+}
+
 impl H3Client {
     /// Connects to `addr`, verifying it as `server_name`, with a QUIC client config offering
     /// ALPN `h3` (for example `flash_quic::client_config(roots, &[b"h3"])`). The engine needs

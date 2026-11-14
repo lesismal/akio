@@ -114,6 +114,12 @@ pub struct Kcp {
     pub stats: [u64; 4],
 }
 
+impl std::fmt::Debug for Kcp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Kcp").finish_non_exhaustive()
+    }
+}
+
 impl Kcp {
     /// Conversation `conv`.
     pub fn new(conv: u32) -> Kcp {
