@@ -120,9 +120,9 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### M3 HTTP/1 + WebSocket（6–8 周）
 - [x] `flash-http` h1 服务端：`httparse` 解析请求头，自写增量 chunked 解码器（扩展、trailers、任意切分），流水线且按序应答（有序槽），keep-alive/`Connection: close`/HTTP/1.0，`Expect: 100-continue`，限制（头大小、body 大小、头数量），防请求走私（CL+TE、重复 CL），`Context` 支持 `detach()` 之后在任意线程完成应答，优雅关闭时让在途应答先完成。已在 epoll 与 io_uring 上测试
 - [x] 流式：请求 body 通过 `Streaming(svc)` + `ctx.on_body`（分块、trailers、无大小限制），响应 body 通过 `ctx.stream_response`（chunked / 以关闭为界，排在更早的流水线响应之后）；文件 body 用 `sendfile(2)`（TLS 下经内存读取）；核心支持：`ResponseStream`、`Part::File`
-- [ ] h1 未完成：HTTP/1 over TLS 的测试（`Tls` 包装可组合，但这里没测）、路由参数的百分号解码（已提供 `percent_decode`）
+- [x] h1 后续：HTTP/1 over TLS 测试（`tests/tls.rs`：keep-alive、pipelining、大请求体与 chunked、静态文件、WebSocket 升级）；路由参数在分发时只做一次百分号解码（`Context::param`），原始值可通过 `param_raw` 获取。静态文件：`If-Match`/`If-Unmodified-Since`（412）、按时间比较的 `If-Modified-Since`、`If-Range`，大文件缓存已打开的文件句柄和元数据（`max_open_files`）。未完成：多段 Range 响应、打开文件缓存的淘汰
 - [x] Router：静态 > `:param` > `*通配`，带回溯，405 与 `Allow`，HEAD 走 GET 路由，`nest`，每个 router 自己的 layer，自定义 fallback；重复/冲突路由在注册时 panic
-- [ ] Router 未完成：正则参数、零分配路由（目前每个请求分配一个 `Vec` 和若干 `String`）及其 benchmark
+- [x] Router 后续：查找过程零分配（参数位置内联存储，参数名与路由树共享），新增 `Router::lookup`/`RouteMatch`；`examples/router-bench.rs` 用 52 条 GitHub 风格路由测试：每次查找约 30 ns、0 次分配，旧实现约 130 ns、4.4 次。正则参数 `{id:[0-9]+}`（默认开启的 `regex` feature），另支持 `{id}`/`{*rest}`；优先级：静态 > 正则 > 普通参数 > 通配符，支持回溯。未完成：段内部分匹配（`/{name}.txt`）
 - [x] 中间件：recover、request id、CORS（预检）、访问日志
 - [x] 中间件：响应时间、compress（gzip/deflate）、etag + 304、csrf（双重提交 cookie）、按 IP 的令牌桶限流。尚未提供 brotli（还没引入 brotli 依赖）
 - [x] 静态文件（`files::Files`）：路径安全、MIME、ETag/Last-Modified/304、单段 Range、index 文件、预压缩 `.br`/`.gz` 同名文件、带 stat 间隔的内存缓存、大文件用 `sendfile`。基于 inotify 的变更跟踪未做（用 stat 间隔代替）
