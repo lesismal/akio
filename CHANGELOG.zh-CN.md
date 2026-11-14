@@ -71,6 +71,18 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
   activation）；内部的 `EpollGroup::bind_listener` / `UringGroup::bind_listener`。
 - `only-sys`（内部）：`process` 模块（在 `pre_exec` 中让子进程继承 fd、设置 CPU 亲和性与父进程退出信号，
   `take_inherited_fd`、`reserve_reuseport`、self-pipe 方式的 `signal_pipe`、`kill`）。
+- `only-deflate`（内部，DEV-PLAN“不依赖第三方”第 A 波）：纯安全 Rust、无依赖的 DEFLATE、zlib 与 gzip，
+  替代 `only-ws`（permessage-deflate）、`only-http`（压缩中间件）与 `only-grpc`（gzip 消息）中的
+  `flate2`/`zlib-rs`。流式 `Inflater`（任意拆分输入、有界输出、窗口 2^8..2^15、与 zlib 相同的编码检查）
+  与 `Deflater`（哈希链、惰性匹配、zlib 级别 0..=9、限长动态 Huffman、固定或存储块、同步/完全刷新、
+  窗口 2^8..2^15），以及 Adler-32 与 CRC-32。与 zlib-rs 和 `gzip(1)` 双向互通；模糊测试目标
+  `deflate_inflate`（与 zlib-rs 差分）和 `deflate_roundtrip`；Miri 运行其测试，Miri 任务重新运行
+  only-grpc 的 gzip 测试（docs/unsafe-review.zh-CN.md 中 zlib-rs 的别名问题不再适用）。其他 crate 的公开
+  API 不变。
+- `only-ws`：permessage-deflate 支持 8 位窗口。服务端接受 `server_max_window_bits=8`（以前会拒绝该提议），
+  被告知 `client_max_window_bits=8` 的客户端会压缩（以前发送未压缩消息）；此时压缩器把距离限制在
+  250 字节以内。`deflate::Deflater`、`deflate::Inflater` 与 `protocol::Decoder` 现在实现 `UnwindSafe`
+  （不再持有 zlib-rs 状态）。
 
 ### 修复
 

@@ -14,6 +14,7 @@ flowchart BT
     sys["only-sys<br/>unsafe 系统调用：epoll/kqueue、<br/>eventfd/pipe、socket、recvmmsg/sendmmsg"]
     buf["only-buf<br/>分级缓冲池、SharedBuf"]
     timer["only-timer<br/>时间轮"]
+    deflate["only-deflate<br/>DEFLATE、zlib、gzip"]
     pool["only-pool<br/>逻辑线程池"]
     core["only-core<br/>Conn、ConnInner、Handler、Acceptor、<br/>Transport、Telemetry、Group trait"]
     epoll["only-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
@@ -53,6 +54,9 @@ flowchart BT
     dpdk -.->|feature dpdk| facade
     tls --> facade
     facade --> ws
+    deflate --> ws
+    deflate --> http
+    deflate --> grpc
     facade --> http
     ws --> http
     http --> grpc
@@ -74,7 +78,7 @@ flowchart BT
   （原始 `bpf(2)`）和 `only-dpdk`（DPDK FFI）中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（请求头用 httparse，chunked 解码器自研）、HTTP/2 分帧与
-  HPACK（loona-hpack）、WebSocket 分帧与 permessage-deflate、KCP、QPACK 与 HTTP/3 分帧，都是
+  HPACK（loona-hpack）、WebSocket 分帧与 permessage-deflate（DEFLATE 来自自研的 `only-deflate`）、KCP、QPACK 与 HTTP/3 分帧，都是
   由 only 喂入字节的状态机；TLS 是 rustls，QUIC 是 quinn-proto，WebRTC 是 str0m，都以 sans-io
   方式驱动（ADR-005），并隐藏在 only 自己的类型之后，因此升级或替换它们不会破坏 API
   （docs/api-stability.zh-CN.md）。

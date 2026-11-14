@@ -167,7 +167,8 @@ Accepted (documented, no change needed now):
 - **Kernel-provided data is trusted for layout**: sockaddr family, `cmsg_len`, `msg_len`
   (clamped), CQE buffer ids (now range-checked). This is the kernel ABI contract.
 - **Dependencies with `unsafe`** (`libc`, `io-uring`, `rustls`/`ring`, `quinn-proto`,
-  RustCrypto, `flate2` with `zlib-rs`) are trusted and tracked with `cargo deny`/`cargo audit`.
+  RustCrypto) are trusted and tracked with `cargo deny`/`cargo audit`. DEFLATE/zlib/gzip is the
+  own `only-deflate` (`#![forbid(unsafe_code)]`), which replaced `flate2` with `zlib-rs`.
 
 ## 7. Verification results (this review)
 
@@ -203,16 +204,18 @@ Accepted (documented, no change needed now):
 | only-ws | 15 of 20 pass; the other 5 (permessage-deflate round trips and exhaustive split loops) do not finish within 5-15 min under Miri |
 | only-core, only-quic | no unit tests outside loom / integration tests |
 | only-ebpf | does not finish within 15 min (its unit tests run a cBPF interpreter over large input sets; safe code, the `sys` module is not exercised) |
-| **only-grpc** | **UB reported in a dependency**: `tests::framing_and_gzip` fails in `zlib_rs::allocate::zfree_rust` while dropping a `flate2::write::GzEncoder` (`zlib_rs::stable::Deflate::drop` -> `deflate::end` deallocates memory that a protected `&mut` function argument still covers). Reproduces under Tree Borrows. `zlib-rs` 0.6.8 is the latest release; `only` itself has no `unsafe` on that path. |
+| only-deflate | pass (all unit tests; the corpus replays are skipped in CI like elsewhere) |
+| only-grpc | pass, including `tests::framing_and_gzip` since gzip moved to only-deflate (below) |
+| only-grpc (before wave A, flate2 + zlib-rs) | **UB reported in a dependency**: `tests::framing_and_gzip` fails in `zlib_rs::allocate::zfree_rust` while dropping a `flate2::write::GzEncoder` (`zlib_rs::stable::Deflate::drop` -> `deflate::end` deallocates memory that a protected `&mut` function argument still covers). Reproduces under Tree Borrows. `zlib-rs` 0.6.8 is the latest release; `only` itself has no `unsafe` on that path. |
 
-The `zlib-rs` finding is an aliasing-model violation inside the dependency, not an observed
-memory corruption; it should be reported upstream (trifectatech/zlib-rs) with the reproduction
-above. Until it is fixed the CI Miri job skips `framing_and_gzip` and the deflate round trips; it
-also skips the `fuzzing::` corpus-replay tests (minutes per crate under Miri; the fuzz job runs
-those inputs natively).
-`flate2` was moved from `miniz_oxide` to `zlib-rs` because of a real data-loss bug in the former
-(see the WebSocket notes), so switching back is not an option; the C `zlib` backend would hide
-the code from Miri entirely.
+The `zlib-rs` finding was an aliasing-model violation inside the dependency, not an observed
+memory corruption (worth reporting upstream to trifectatech/zlib-rs with the reproduction above).
+It no longer applies to `only`: DEV-PLAN wave A replaced `flate2`/`zlib-rs` with the pure safe
+Rust `only-deflate`, so the CI Miri job runs `framing_and_gzip` again, and also only-deflate's
+own tests and only-ws's permessage-deflate round trips. It still skips the `fuzzing::`
+corpus-replay tests (minutes per crate under Miri; the fuzz job runs those inputs natively).
+(`flate2` had been moved from `miniz_oxide` to `zlib-rs` because of a real data-loss bug in the
+former, see the WebSocket notes; only-deflate has regression tests for that class of bug.)
 
 ### Sanitizers
 

@@ -11,7 +11,10 @@ fn main() -> std::io::Result<()> {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let addr = a[1].parse().expect("address");
     if a[0] == "server" {
+        // Responses are gzip-compressed for clients that accept it (grpc-go does once its
+        // gzip compressor is registered).
         let s = GrpcServer::new()
+            .compress(true)
             .unary("/test.Echo/Unary", |md, req, sink| {
                 if let Some(u) = md.get("x-user") {
                     println!("metadata x-user={u}");
@@ -75,6 +78,18 @@ fn main() -> std::io::Result<()> {
     let (msgs, st) = c.collect("/test.Echo/Chat", vec![b"x".to_vec(), b"y".to_vec()], o());
     assert_eq!(st.code, Code::Ok);
     assert_eq!(msgs, [b"re:x".to_vec(), b"re:y".to_vec()]);
+    // gzip both ways: only compresses the requests, grpc-go answers in kind.
+    let h2z = H2Client::dial_blocking(&e, addr, None, H2Options::default())?;
+    let cz = GrpcClient::new(h2z, &format!("http://{addr}")).compress(true);
+    let text = b"gzip me, grpc-go! ".repeat(50_000);
+    assert_eq!(cz.unary("/test.Echo/Unary", &text, o()).unwrap(), text);
+    let (msgs, st) = cz.collect("/test.Echo/Chat", vec![b"zz".to_vec(), text.clone()], o());
+    assert_eq!(st.code, Code::Ok);
+    assert_eq!(
+        msgs,
+        [b"re:zz".to_vec(), [b"re:".as_slice(), &text].concat()]
+    );
+    println!("gzip OK");
     println!("OK");
     Ok(())
 }

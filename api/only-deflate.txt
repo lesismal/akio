@@ -1,0 +1,205 @@
+pub mod only_deflate
+#[non_exhaustive] pub enum only_deflate::Error
+pub only_deflate::Error::BadBlockType
+pub only_deflate::Error::BadDistance
+pub only_deflate::Error::BadHeader
+pub only_deflate::Error::BadHuffmanCode
+pub only_deflate::Error::BadStoredLength
+pub only_deflate::Error::BadSymbol
+pub only_deflate::Error::ChecksumMismatch
+pub only_deflate::Error::DictionaryRequired
+pub only_deflate::Error::TooLarge
+pub only_deflate::Error::Truncated
+impl core::clone::Clone for only_deflate::Error
+pub fn only_deflate::Error::clone(&self) -> Self
+impl core::cmp::Eq for only_deflate::Error
+impl core::cmp::PartialEq for only_deflate::Error
+pub fn only_deflate::Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_deflate::Error
+impl core::fmt::Debug for only_deflate::Error
+pub fn only_deflate::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_deflate::Error
+pub fn only_deflate::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_deflate::Error
+pub fn only_deflate::Error::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_deflate::Error
+impl core::marker::StructuralPartialEq for only_deflate::Error
+impl core::marker::Send for only_deflate::Error
+impl core::marker::Sync for only_deflate::Error
+impl core::marker::Unpin for only_deflate::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Error
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Error
+pub enum only_deflate::Flush
+pub only_deflate::Flush::Finish
+pub only_deflate::Flush::Full
+pub only_deflate::Flush::None
+pub only_deflate::Flush::Sync
+impl core::clone::Clone for only_deflate::Flush
+pub fn only_deflate::Flush::clone(&self) -> Self
+impl core::cmp::Eq for only_deflate::Flush
+impl core::cmp::PartialEq for only_deflate::Flush
+pub fn only_deflate::Flush::eq(&self, &Self) -> bool
+impl core::default::Default for only_deflate::Flush
+pub fn only_deflate::Flush::default() -> Self
+impl core::fmt::Debug for only_deflate::Flush
+pub fn only_deflate::Flush::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_deflate::Flush
+pub fn only_deflate::Flush::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_deflate::Flush
+impl core::marker::StructuralPartialEq for only_deflate::Flush
+impl core::marker::Send for only_deflate::Flush
+impl core::marker::Sync for only_deflate::Flush
+impl core::marker::Unpin for only_deflate::Flush
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Flush
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Flush
+pub enum only_deflate::Format
+pub only_deflate::Format::Gzip
+pub only_deflate::Format::Raw
+pub only_deflate::Format::Zlib
+impl core::clone::Clone for only_deflate::Format
+pub fn only_deflate::Format::clone(&self) -> Self
+impl core::cmp::Eq for only_deflate::Format
+impl core::cmp::PartialEq for only_deflate::Format
+pub fn only_deflate::Format::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_deflate::Format
+pub fn only_deflate::Format::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_deflate::Format
+pub fn only_deflate::Format::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_deflate::Format
+impl core::marker::StructuralPartialEq for only_deflate::Format
+impl core::marker::Send for only_deflate::Format
+impl core::marker::Sync for only_deflate::Format
+impl core::marker::Unpin for only_deflate::Format
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Format
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Format
+pub struct only_deflate::Adler32
+impl only_deflate::Adler32
+pub const fn only_deflate::Adler32::finish(&self) -> u32
+pub const fn only_deflate::Adler32::from_value(u32) -> only_deflate::Adler32
+pub const fn only_deflate::Adler32::new() -> only_deflate::Adler32
+pub fn only_deflate::Adler32::update(&mut self, &[u8])
+impl core::clone::Clone for only_deflate::Adler32
+pub fn only_deflate::Adler32::clone(&self) -> Self
+impl core::cmp::Eq for only_deflate::Adler32
+impl core::cmp::PartialEq for only_deflate::Adler32
+pub fn only_deflate::Adler32::eq(&self, &Self) -> bool
+impl core::default::Default for only_deflate::Adler32
+pub fn only_deflate::Adler32::default() -> Self
+impl core::fmt::Debug for only_deflate::Adler32
+pub fn only_deflate::Adler32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_deflate::Adler32
+impl core::marker::StructuralPartialEq for only_deflate::Adler32
+impl core::marker::Send for only_deflate::Adler32
+impl core::marker::Sync for only_deflate::Adler32
+impl core::marker::Unpin for only_deflate::Adler32
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Adler32
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Adler32
+pub struct only_deflate::Crc32
+impl only_deflate::Crc32
+pub const fn only_deflate::Crc32::finish(&self) -> u32
+pub const fn only_deflate::Crc32::from_value(u32) -> only_deflate::Crc32
+pub const fn only_deflate::Crc32::new() -> only_deflate::Crc32
+pub fn only_deflate::Crc32::update(&mut self, &[u8])
+impl core::clone::Clone for only_deflate::Crc32
+pub fn only_deflate::Crc32::clone(&self) -> Self
+impl core::cmp::Eq for only_deflate::Crc32
+impl core::cmp::PartialEq for only_deflate::Crc32
+pub fn only_deflate::Crc32::eq(&self, &Self) -> bool
+impl core::default::Default for only_deflate::Crc32
+pub fn only_deflate::Crc32::default() -> Self
+impl core::fmt::Debug for only_deflate::Crc32
+pub fn only_deflate::Crc32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_deflate::Crc32
+impl core::marker::StructuralPartialEq for only_deflate::Crc32
+impl core::marker::Send for only_deflate::Crc32
+impl core::marker::Sync for only_deflate::Crc32
+impl core::marker::Unpin for only_deflate::Crc32
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Crc32
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Crc32
+pub struct only_deflate::Deflater
+impl only_deflate::Deflater
+pub fn only_deflate::Deflater::compress(&mut self, &[u8], &mut alloc::vec::Vec<u8>, only_deflate::Flush)
+pub fn only_deflate::Deflater::is_finished(&self) -> bool
+pub fn only_deflate::Deflater::new(only_deflate::Format, only_deflate::Level) -> only_deflate::Deflater
+pub fn only_deflate::Deflater::reset(&mut self)
+pub fn only_deflate::Deflater::total_in(&self) -> u64
+pub fn only_deflate::Deflater::with_window_bits(only_deflate::Format, only_deflate::Level, u8) -> only_deflate::Deflater
+impl core::fmt::Debug for only_deflate::Deflater
+pub fn only_deflate::Deflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_deflate::Deflater
+impl core::marker::Sync for only_deflate::Deflater
+impl core::marker::Unpin for only_deflate::Deflater
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Deflater
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Deflater
+pub struct only_deflate::Inflater
+impl only_deflate::Inflater
+pub fn only_deflate::Inflater::decompress(&mut self, &[u8], &mut [u8]) -> core::result::Result<only_deflate::Progress, only_deflate::Error>
+pub fn only_deflate::Inflater::decompress_vec(&mut self, &[u8], &mut alloc::vec::Vec<u8>, usize) -> core::result::Result<only_deflate::Progress, only_deflate::Error>
+pub fn only_deflate::Inflater::is_done(&self) -> bool
+pub fn only_deflate::Inflater::new(only_deflate::Format) -> only_deflate::Inflater
+pub fn only_deflate::Inflater::reset(&mut self)
+pub fn only_deflate::Inflater::reset_keep_window(&mut self)
+pub fn only_deflate::Inflater::total_in(&self) -> u64
+pub fn only_deflate::Inflater::total_out(&self) -> u64
+pub fn only_deflate::Inflater::with_window_bits(only_deflate::Format, u8) -> only_deflate::Inflater
+impl core::fmt::Debug for only_deflate::Inflater
+pub fn only_deflate::Inflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_deflate::Inflater
+impl core::marker::Sync for only_deflate::Inflater
+impl core::marker::Unpin for only_deflate::Inflater
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Inflater
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Inflater
+pub struct only_deflate::Level(_)
+impl only_deflate::Level
+pub const only_deflate::Level::BEST: only_deflate::Level
+pub const only_deflate::Level::DEFAULT: only_deflate::Level
+pub const only_deflate::Level::FASTEST: only_deflate::Level
+pub const only_deflate::Level::NONE: only_deflate::Level
+pub const fn only_deflate::Level::get(self) -> u8
+pub const fn only_deflate::Level::new(u32) -> only_deflate::Level
+impl core::clone::Clone for only_deflate::Level
+pub fn only_deflate::Level::clone(&self) -> Self
+impl core::cmp::Eq for only_deflate::Level
+impl core::cmp::Ord for only_deflate::Level
+pub fn only_deflate::Level::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_deflate::Level
+pub fn only_deflate::Level::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_deflate::Level
+pub fn only_deflate::Level::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for only_deflate::Level
+pub fn only_deflate::Level::default() -> Self
+impl core::fmt::Debug for only_deflate::Level
+pub fn only_deflate::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_deflate::Level
+pub fn only_deflate::Level::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_deflate::Level
+impl core::marker::StructuralPartialEq for only_deflate::Level
+impl core::marker::Send for only_deflate::Level
+impl core::marker::Sync for only_deflate::Level
+impl core::marker::Unpin for only_deflate::Level
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Level
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Level
+#[non_exhaustive] pub struct only_deflate::Progress
+pub only_deflate::Progress::consumed: usize
+pub only_deflate::Progress::done: bool
+pub only_deflate::Progress::produced: usize
+impl core::clone::Clone for only_deflate::Progress
+pub fn only_deflate::Progress::clone(&self) -> Self
+impl core::cmp::Eq for only_deflate::Progress
+impl core::cmp::PartialEq for only_deflate::Progress
+pub fn only_deflate::Progress::eq(&self, &Self) -> bool
+impl core::default::Default for only_deflate::Progress
+pub fn only_deflate::Progress::default() -> Self
+impl core::fmt::Debug for only_deflate::Progress
+pub fn only_deflate::Progress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_deflate::Progress
+impl core::marker::StructuralPartialEq for only_deflate::Progress
+impl core::marker::Send for only_deflate::Progress
+impl core::marker::Sync for only_deflate::Progress
+impl core::marker::Unpin for only_deflate::Progress
+impl core::panic::unwind_safe::RefUnwindSafe for only_deflate::Progress
+impl core::panic::unwind_safe::UnwindSafe for only_deflate::Progress
+pub fn only_deflate::adler32(&[u8]) -> u32
+pub fn only_deflate::compress(only_deflate::Format, only_deflate::Level, &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_deflate::crc32(&[u8]) -> u32
+pub fn only_deflate::decompress(only_deflate::Format, &[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, only_deflate::Error>

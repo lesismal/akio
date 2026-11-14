@@ -15,6 +15,7 @@ flowchart BT
     sys["only-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
     buf["only-buf<br/>size-class pool, SharedBuf"]
     timer["only-timer<br/>timer wheel"]
+    deflate["only-deflate<br/>DEFLATE, zlib, gzip"]
     pool["only-pool<br/>logical pool"]
     core["only-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
     epoll["only-epoll<br/>epoll / kqueue groups, UDP groups"]
@@ -54,6 +55,9 @@ flowchart BT
     dpdk -.->|feature dpdk| facade
     tls --> facade
     facade --> ws
+    deflate --> ws
+    deflate --> http
+    deflate --> grpc
     facade --> http
     ws --> http
     http --> grpc
@@ -76,7 +80,7 @@ flowchart BT
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (httparse for the head, an own chunked decoder),
-  HTTP/2 framing and HPACK (loona-hpack), WebSocket framing and permessage-deflate, KCP, QPACK
+  HTTP/2 framing and HPACK (loona-hpack), WebSocket framing and permessage-deflate (DEFLATE from the own `only-deflate`), KCP, QPACK
   and HTTP/3 framing are state machines fed bytes by `only`; TLS is rustls, QUIC is
   quinn-proto and WebRTC is str0m, all driven sans-io (ADR-005) and hidden behind `only`'s own
   types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).

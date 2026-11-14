@@ -179,6 +179,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### 长期目标：去掉所有三方依赖
 - [ ] 逐个自研库中用到的所有三方依赖，每一项保持相同的公开 API（API 快照不变），以已知答案测试向量、互通与模糊测试作为门禁。顺序（每一波依赖前一波）：
   - [ ] 第 A 波：`only-crypto`（SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC32、AES、CTR、GCM、ChaCha20-Poly1305、base64、系统随机数）替代 sha1/sha2/md-5/hmac/pbkdf2/aes/aes-gcm/ctr/crc32fast/base64/getrandom；自研 HTTP/1 解析、HPACK 与正则引擎替代 httparse/loona-hpack/regex；自研 deflate/zlib/gzip 替代 flate2；自研用户态 TCP/IP 栈替代 smoltcp；自研 protobuf 运行时替代 prost
+    - [x] Deflate：`only-deflate`（纯安全 Rust，无依赖）替代 only-ws、only-http、only-grpc 中的 flate2/zlib-rs：raw DEFLATE、zlib 与 gzip 的流式解压（任意拆分输入、有界输出、窗口 2^8..2^15、与 zlib 相同的编码检查）与压缩（哈希链、惰性匹配、zlib 级别、限长动态 Huffman、固定或存储块、同步/完全刷新、窗口 2^8..2^15，因此 permessage-deflate 现在也支持 8 位窗口）。与 zlib-rs 和 `gzip(1)` 双向互通、与 zlib-rs 差分模糊测试、Autobahn permessage-deflate 服务端与客户端用例、与 grpc-go 的 gRPC gzip 互通、Miri（zlib-rs 的别名问题随之消失，only-grpc 的 gzip 测试重新在 Miri 下运行）。级别 1/6/9 的压缩率与 zlib-rs 相当或更好；解压吞吐为 zlib-rs 的 0.75-0.85 倍，压缩为 0.25-0.6 倍（无 SIMD、无 `unsafe`）；permessage-deflate 回显吞吐（仅压缩部分）在 64 B 消息时为 zlib-rs 的 1.2 倍，0.5-64 KiB 时为 0.5-0.7 倍
   - [ ] 第 B 波：公钥密码学（X25519、P-256 ECDH/ECDSA、Ed25519、RSA PKCS#1/PSS 验签）与 ASN.1/X.509；自研日志门面替代 `log`（可选 `log` 桥接）；自研系统调用与 io_uring 绑定替代 libc/io-uring
   - [ ] 第 C 波：自研 TLS 1.2/1.3 与 DTLS 替代 rustls（及 ring）
   - [ ] 第 D 波：自研 QUIC 替代 quinn-proto（及 bytes）；自研 WebRTC 栈（ICE、DTLS-SRTP、SCTP、RTP/RTCP）替代 str0m/dimpl/p256

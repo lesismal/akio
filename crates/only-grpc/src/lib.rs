@@ -23,7 +23,6 @@ pub mod fuzzing;
 
 use std::{
     collections::HashMap,
-    io::{Read, Write},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -161,9 +160,14 @@ pub const DEFAULT_MAX_MESSAGE: usize = 4 << 20;
 
 fn frame(msg: &[u8], gzip: bool) -> Vec<u8> {
     let (flag, body) = if gzip {
-        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        let _ = e.write_all(msg);
-        (1u8, e.finish().unwrap_or_default())
+        (
+            1u8,
+            only_deflate::compress(
+                only_deflate::Format::Gzip,
+                only_deflate::Level::DEFAULT,
+                msg,
+            ),
+        )
     } else {
         (0, msg.to_vec())
     };
@@ -218,17 +222,16 @@ impl Deframer {
                         "compressed message without grpc-encoding",
                     ));
                 }
-                let mut d = flate2::read::GzDecoder::new(body).take(self.max as u64 + 1);
-                let mut v = Vec::new();
-                d.read_to_end(&mut v)
-                    .map_err(|_| Status::new(Code::Internal, "bad gzip message"))?;
-                if v.len() > self.max {
-                    return Err(Status::new(
-                        Code::ResourceExhausted,
-                        "message larger than the limit",
-                    ));
+                match only_deflate::decompress(only_deflate::Format::Gzip, body, self.max) {
+                    Ok(v) => v,
+                    Err(only_deflate::Error::TooLarge) => {
+                        return Err(Status::new(
+                            Code::ResourceExhausted,
+                            "message larger than the limit",
+                        ));
+                    }
+                    Err(_) => return Err(Status::new(Code::Internal, "bad gzip message")),
                 }
-                v
             } else {
                 body.to_vec()
             };

@@ -26,6 +26,9 @@ only-turn = { path = "../crates/only-turn", features = ["fuzzing"] }
 only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
 only-media = { path = "../crates/only-media", features = ["fuzzing"] }
 only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
+only-deflate = { path = "../crates/only-deflate", features = ["fuzzing"] }
+# Differential oracle for the deflate targets only (zlib-rs).
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [profile.release]
 debug = 1
@@ -299,6 +302,20 @@ bench = false
 [[bin]]
 name = "bt_mse"
 path = "fuzz_targets/bt_mse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deflate_inflate"
+path = "fuzz_targets/deflate_inflate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deflate_roundtrip"
+path = "fuzz_targets/deflate_roundtrip.rs"
 test = false
 doc = false
 bench = false

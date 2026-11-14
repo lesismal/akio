@@ -405,7 +405,9 @@ fn dialed_udp_connections_talk_to_a_only_server_from_their_own_ports() {
     let logs: Vec<Arc<Log>> = (0..30).map(|_| Arc::new(Log::default())).collect();
     for (i, log) in logs.iter().enumerate() {
         let msg = format!("ping-{i}").into_bytes();
-        client.dial_udp(addr, CliAcceptor(log.clone(), msg.into()), |e| panic!("dial: {e}"));
+        client.dial_udp(addr, CliAcceptor(log.clone(), msg.into()), |e| {
+            panic!("dial: {e}")
+        });
     }
     for (i, log) in logs.iter().enumerate() {
         wait_for("echo", || !log.got.lock().unwrap().is_empty());
@@ -463,7 +465,9 @@ fn dialed_connection_can_send_from_another_thread_and_closes_cleanly() {
     let addr = server.local_addrs()[0];
     let client = client_engine(1);
     let log = Arc::new(Log::default());
-    client.dial_udp(addr, CliAcceptor(log.clone(), b""[..].into()), |e| panic!("{e}"));
+    client.dial_udp(addr, CliAcceptor(log.clone(), b""[..].into()), |e| {
+        panic!("{e}")
+    });
     wait_for("conn", || !log.conns.lock().unwrap().is_empty());
     let conn = log.conns.lock().unwrap()[0].clone();
     let t = thread::spawn({

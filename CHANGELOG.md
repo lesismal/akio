@@ -77,6 +77,21 @@ Raw access moved behind new `unstable` cargo features (`only`, `only-tls`, `only
   `UringGroup::bind_listener`.
 - `only-sys` (internal): `process` module (child fd inheritance, CPU affinity and parent-death
   signal in `pre_exec`, `take_inherited_fd`, `reserve_reuseport`, a self-pipe `signal_pipe`, `kill`).
+- `only-deflate` (internal, DEV-PLAN "no third-party dependencies", wave A): DEFLATE, zlib and
+  gzip in pure safe Rust without dependencies, replacing `flate2`/`zlib-rs` in `only-ws`
+  (permessage-deflate), `only-http` (compression middleware) and `only-grpc` (gzip messages).
+  Streaming `Inflater` (any input split, bounded output, windows 2^8..2^15, zlib's code checks)
+  and `Deflater` (hash chains, lazy matching, zlib levels 0..=9, length-limited dynamic Huffman,
+  fixed or stored blocks, sync/full flush, windows 2^8..2^15), Adler-32 and CRC-32. Interop both
+  ways with zlib-rs and `gzip(1)`; fuzz targets `deflate_inflate` (differential against zlib-rs)
+  and `deflate_roundtrip`; Miri runs its tests, and the Miri job runs the only-grpc gzip test
+  again (the zlib-rs aliasing report in docs/unsafe-review.md no longer applies). Public APIs of
+  the other crates are unchanged.
+- `only-ws`: permessage-deflate with a window of 8 bits. A server accepts
+  `server_max_window_bits=8` (it used to decline such an offer) and a client told
+  `client_max_window_bits=8` compresses (it used to send uncompressed); the compressor keeps
+  distances within 250 bytes there. `deflate::Deflater`, `deflate::Inflater` and
+  `protocol::Decoder` are now `UnwindSafe` (they no longer hold zlib-rs state).
 
 ### Fixed
 

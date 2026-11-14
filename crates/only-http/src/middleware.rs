@@ -3,7 +3,6 @@
 
 use std::{
     collections::HashMap,
-    io::Write,
     net::IpAddr,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
@@ -195,20 +194,17 @@ pub fn compress(cfg: Compress) -> impl Middleware {
                 {
                     return;
                 }
-                let level = flate2::Compression::new(cfg.level.min(9));
-                let out = if enc == "gzip" {
-                    let mut e = flate2::write::GzEncoder::new(Vec::new(), level);
-                    e.write_all(&resp.body).and_then(|()| e.finish())
+                let level = only_deflate::Level::new(cfg.level);
+                let format = if enc == "gzip" {
+                    only_deflate::Format::Gzip
                 } else {
-                    let mut e = flate2::write::ZlibEncoder::new(Vec::new(), level);
-                    e.write_all(&resp.body).and_then(|()| e.finish())
+                    only_deflate::Format::Zlib
                 };
-                if let Ok(body) = out {
-                    if body.len() < resp.body.len() {
-                        resp.body = body;
-                        resp.headers.set("Content-Encoding", enc);
-                        resp.headers.remove("Content-Length");
-                    }
+                let body = only_deflate::compress(format, level, &resp.body);
+                if body.len() < resp.body.len() {
+                    resp.body = body;
+                    resp.headers.set("Content-Encoding", enc);
+                    resp.headers.remove("Content-Length");
                 }
                 resp.headers.set("Vary", "Accept-Encoding");
             });

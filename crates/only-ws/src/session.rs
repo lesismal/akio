@@ -388,10 +388,8 @@ impl WsSession {
         close_timeout: Duration,
     ) -> WsSession {
         let inflater = pmd.map(|p| Inflater::new(p.server_no_context_takeover));
-        // A window of 8 bits cannot be produced by zlib: send uncompressed (always allowed).
-        let deflater = pmd
-            .filter(|p| p.client_max_window_bits >= 9)
-            .map(|p| Deflater::new(p.client_no_context_takeover, p.client_max_window_bits));
+        let deflater =
+            pmd.map(|p| Deflater::new(p.client_no_context_takeover, p.client_max_window_bits));
         let sender = WsSender::new(conn, deflater, cfg.compress_min_bytes);
         {
             let mut tx = sender.lock();

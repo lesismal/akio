@@ -206,11 +206,10 @@ jobs:
         run: cargo test -p only-http --no-default-features -- --test-threads=1
 
   miri:
-    # Pure-Rust code only (Miri cannot run syscalls): the core crates, the protocol crates'
-    # unit tests and the syscall-free io_uring buffer-ring tests. Skipped: only-grpc's gzip
-    # test (zlib-rs 0.6.8 violates Stacked/Tree Borrows in its Deflate drop, see
-    # docs/unsafe-review.md) and tests too slow under Miri (deflate round trips, exhaustive
-    # split loops, only-ebpf's interpreter sweeps).
+    # Pure-Rust code only (Miri cannot run syscalls): the core crates, only-deflate, the
+    # protocol crates' unit tests and the syscall-free io_uring buffer-ring tests. Skipped: tests
+    # too slow under Miri (only-ws's large deflate round trips, exhaustive split loops,
+    # only-ebpf's interpreter sweeps).
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -232,10 +231,12 @@ jobs:
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
         run: "cargo miri test -p only-socks --lib -- --skip fuzzing::"
-      - run: "cargo miri test -p only-grpc --lib -- --skip framing_and_gzip --skip fuzzing::"
+      - run: "cargo miri test -p only-deflate --lib -- --skip fuzzing::"
+      - run: "cargo miri test -p only-grpc --lib -- --skip fuzzing::"
       - run: >-
           cargo miri test -p only-ws --lib --
           protocol:: session:: client:: deflate::tests::negotiation deflate::tests::client_offer
+          deflate::tests::roundtrip_with_and_without_context_takeover
           --skip messages_survive_any_split --skip fuzzing::
       - name: io_uring buffer ring (kernel-shared memory, no syscalls)
         run: cargo miri test -p only-uring --lib -- buf_ring kernel_buf

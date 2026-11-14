@@ -798,6 +798,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-deflate"
+version = "1.0.0-rc.1"
+
+[[package]]
 name = "only-ebpf"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -820,9 +824,11 @@ dependencies = [
 name = "only-fuzz"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "libfuzzer-sys",
  "only-arpc",
  "only-bittorrent",
+ "only-deflate",
  "only-ebpf",
  "only-grpc",
  "only-h3",
@@ -840,9 +846,9 @@ dependencies = [
 name = "only-grpc"
 version = "1.0.0-rc.1"
 dependencies = [
- "flate2",
  "only",
  "only-core",
+ "only-deflate",
  "only-http",
 ]
 
@@ -862,12 +868,12 @@ name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
  "base64",
- "flate2",
  "httparse",
  "log",
  "loona-hpack",
  "only",
  "only-core",
+ "only-deflate",
  "only-ws",
  "regex",
 ]
@@ -1000,12 +1006,12 @@ name = "only-ws"
 version = "1.0.0-rc.1"
 dependencies = [
  "base64",
- "flate2",
  "getrandom 0.2.17",
  "httparse",
  "only",
  "only-buf",
  "only-core",
+ "only-deflate",
  "sha1",
 ]
 
