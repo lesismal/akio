@@ -154,7 +154,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### M6 DPDK + 生产化（6–8 周）
 - [ ] `flash-dpdk`：EAL 初始化、mbuf 收发、用户态 TCP/IP 栈选型与集成（先 UDP，再 TCP）、与 Engine 线程组对接
-- [ ] 生产化：指标（Prometheus 风格）、结构化日志、运行时 debug/pprof 等价物（连接表、队列深度、慢回调）、配置热更新
+- [x] 生产化：每个 I/O 线程的 relaxed 计数器（连接、字节、读写次数、UDP 数据报、发送队列字节、背压/过载、TLS 握手失败、循环迭代/事件/回调耗时、慢回调）及池统计，`Engine::metrics()` 输出 Prometheus 文本或 JSON；基于 `log` 门面的结构化日志（带键值，无 logger 时回退 stderr，`Config::log_level`）；运行时调试：由事件循环收集的连接表、慢回调环形缓冲、线程循环统计；flash-http 提供 `metrics_handler`、`HttpMetrics`（状态码分类、延迟直方图）、`access_log`、可用 token 保护的 `debug_handler`；`Engine::reload`/`Live` 热更新（空闲超时、慢回调阈值/钩子、队列上限、高水位、新增 `max_connections`、关闭超时、日志级别）。未完成：`tracing` feature、读缓冲/backlog/线程数/UDP 空闲超时的热更新、按路由的 HTTP 标签、在空闲机器上测量开销
 - [x] 混沌测试：为引擎（`flash/tests/chaos.rs`）、fd 耗尽（`chaos_fd.rs`）、TLS（`chaos_tls.rs`）和 HTTP/WebSocket（`flash-http/tests/chaos.rs`）新增带种子、可复现的测试：RST 中断、半关闭、慢读与不读客户端、逻辑池饱和、EMFILE、负载下关闭；校验 `on_close` 恰好一次、无卡死、队列有界、无 fd 泄漏。默认只跑少量种子，`FLASH_CHAOS=1 FLASH_CHAOS_SECS=300` 进行浸泡（macOS、Linux epoll 与 io_uring 均无违规）。修复的 bug：EOF 截断未完成的有序响应；超限有序响应被静默丢弃；epoll 在 EMFILE 时空转；io_uring 漏掉数据之后的 RST；io_uring 可能复用仍被未提交 SQE 引用的 fd
 - [ ] Prefork（可选）
 - **交付**：长稳（≥72h）报告
@@ -168,7 +168,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### 1.0 稳定化
 - [ ] API 审阅与冻结、semver 策略、弃用流程
 - [ ] 全量 fuzz 语料与覆盖率报告、`cargo-audit/deny`、unsafe 审查清单
-- [ ] 文档站 + 迁移指南（从 fib / tokio / hyper）+ 架构文档
+- [x] 文档站 + 迁移指南 + 架构文档：mdBook `book/en` 与 `book/zh-CN`（快速上手、核心概念、每个协议一章、配置参考、可观测性与热更新、性能调优、故障排查），由 `book/build.sh` 构建；所有代码片段来自 14 个可运行的 `guide-*` 示例；从 fib、tokio、hyper/axum 迁移的指南；带 Mermaid 图的 `docs/architecture.md`；各 crate 的 rustdoc 链接到对应章节；根目录 README。未完成：Pages 部署、在 Linux 上运行这些示例
 
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。
