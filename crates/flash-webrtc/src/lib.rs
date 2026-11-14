@@ -448,11 +448,15 @@ impl Peer {
 
     /// Polls str0m until it returns a timeout: datagrams are sent, events delivered, the timer
     /// armed.
+    ///
+    /// Datagrams are sent and events queued while the state lock is held: two threads driving
+    /// one peer (an I/O thread with a datagram, an application thread sending) must not reorder
+    /// what str0m produced in order.
     fn drive(&self) {
-        let mut tx: Vec<(SocketAddr, Vec<u8>)> = Vec::new();
+        let hub = self.0.hub.upgrade();
         let mut evs = Vec::new();
         let mut died = false;
-        let close_on_disconnect = self.0.hub.upgrade().is_some_and(|h| h.close_on_disconnect);
+        let close_on_disconnect = hub.as_ref().is_some_and(|h| h.close_on_disconnect);
         {
             let mut st = lock(&self.0.state);
             if st.closed {
@@ -475,7 +479,11 @@ impl Peer {
                         }
                         break;
                     }
-                    Ok(Output::Transmit(t)) => tx.push((t.destination, t.contents.to_vec())),
+                    Ok(Output::Transmit(t)) => {
+                        if let Some(hub) = &hub {
+                            hub.transmit(self.0.id, t.destination, &t.contents);
+                        }
+                    }
                     Ok(Output::Event(e)) => {
                         let dead = matches!(e, Event::Closed)
                             || (close_on_disconnect
@@ -502,14 +510,9 @@ impl Peer {
                 st.rtc.disconnect();
                 st.closed = true;
             }
-        }
-        if let Some(hub) = self.0.hub.upgrade() {
-            for (dest, data) in tx {
-                hub.transmit(self.0.id, dest, &data);
+            if !evs.is_empty() {
+                lock(&self.0.events).extend(evs);
             }
-        }
-        if !evs.is_empty() {
-            lock(&self.0.events).extend(evs);
         }
         if died {
             self.finish();

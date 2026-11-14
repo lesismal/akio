@@ -271,6 +271,49 @@ fn media_echo_between_two_full_ice_endpoints() {
 }
 
 #[test]
+fn echoes_stay_in_order_while_an_app_thread_sends() {
+    // The application thread drives the peer (sends) while the I/O thread drives it with the
+    // echoes coming back: events and datagrams must keep str0m's order.
+    let (e, _) = engine_with(None);
+    let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let (tx, rx) = channel();
+    let mut ch = None;
+    let (pa, offer) = a
+        .create_offer(Probe(Mutex::new(tx)), |api| {
+            ch = Some(api.add_channel("o".into()));
+        })
+        .unwrap();
+    let (_pb, answer) = b.accept_offer(&offer, Echo).unwrap();
+    pa.accept_answer(&answer).unwrap();
+    let ch = ch.unwrap();
+    wait(&rx, "open", |g| matches!(g, Got::Open(..)));
+    const N: usize = 500;
+    let sender = {
+        std::thread::spawn(move || {
+            for i in 0..N {
+                let m = (i as u32).to_be_bytes();
+                while !pa.send(ch, &m, true).unwrap() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        })
+    };
+    let mut next = 0u32;
+    while (next as usize) < N {
+        if let Got::Data(_, d, _) = wait(&rx, "echo", |g| matches!(g, Got::Data(..))) {
+            assert_eq!(d, next.to_be_bytes(), "echo out of order");
+            next += 1;
+        }
+    }
+    sender.join().unwrap();
+    a.close();
+    b.close();
+    e.shutdown();
+    e.wait();
+}
+
+#[test]
 fn srflx_candidate_from_a_flash_stun_server() {
     let e = Arc::new(
         Engine::builder()

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # flash-webrtc / flash-turn <-> pion (webrtc v4, turn v5): data channels and RTP media in both
 # offer directions, PLI, WebRTC through a flash TURN relay, and the pion/turn client against
-# flash-turn. Needs Go. With COTURN=1 also runs coturn's turnutils_uclient against flash-turn,
-# both in Docker (the flash TURN server is built for Linux in rust:1).
+# flash-turn; and fib's Go WebRTC (data channels, both directions) when the fib checkout is
+# next to flash (or at $FIB_DIR). Needs Go. With COTURN=1 also runs coturn's turnutils_uclient
+# against flash-turn, both in Docker (the flash TURN server is built for Linux in rust:1).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$ROOT" && cargo build -q --release -p flash-webrtc --example webrtc-interop
@@ -27,6 +28,21 @@ echo "== pion over a flash TURN relay (relay-only policy) to the flash server"
 $GO client-turn 127.0.0.1:9501 127.0.0.1:9503 alice wonderland
 echo "== pion/turn client against flash-turn"
 $GO turn-raw 127.0.0.1:9503 alice wonderland
+
+FIB_DIR=${FIB_DIR:-$ROOT/../fib}
+if [ -d "$FIB_DIR/webrtc" ]; then
+  echo "== fib (Go, lesismal/fib/webrtc) <-> flash, both directions"
+  W=$(mktemp -d)
+  printf 'go 1.27.3\n\nuse %s\n\nreplace github.com/lesismal/fib => %s\n' \
+    "$ROOT/tools/interop/webrtc/fib" "$(cd "$FIB_DIR" && pwd)" > "$W/go.work"
+  (cd "$ROOT/tools/interop/webrtc/fib" && GOWORK="$W/go.work" go build -o /tmp/webrtc-fib .)
+  /tmp/webrtc-fib server 127.0.0.1:9504 & PIDS="$PIDS $!"
+  sleep 1
+  /tmp/webrtc-fib client-dc 127.0.0.1:9501
+  $RS client 127.0.0.1:9504 dc
+else
+  echo "== fib: skipped (no checkout at $FIB_DIR; set FIB_DIR)"
+fi
 
 if [ "${COTURN:-0}" = 1 ]; then
   echo "== coturn turnutils_uclient against flash-turn (Docker)"

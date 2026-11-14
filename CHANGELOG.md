@@ -30,7 +30,8 @@ All notable changes to flash are documented here. The format follows
   1.2/1.3 with fingerprint verification, SRTP (AES-CM, AES-GCM), SCTP data channels (reliable or
   not, ordered or not), RTP/RTCP with NACK, PLI/FIR, TWCC. A pure-Rust crypto provider
   (RustCrypto and `dimpl`, no C toolchain). Interop with pion (data channels and media in both
-  offer directions, through a flash TURN relay); `tools/interop/webrtc/run.sh`.
+  offer directions, through a flash TURN relay) and with fib's Go WebRTC (data channels);
+  `tools/interop/webrtc/run.sh`.
 - Fuzz targets `stun_message`, `turn_server` and `webrtc_sdp`.
 
 ## [1.0.0-rc.1] - 2026-11-14

@@ -13,7 +13,8 @@ Two crates:
 - `flash-turn` has the STUN codec, a STUN server and a TURN server (RFC 8656 over UDP).
 
 Interop is tested against pion (Go) in both offer directions, for data channels and media,
-directly and through a flash TURN relay, and the TURN server against the pion/turn client and
+directly and through a flash TURN relay, against fib's Go WebRTC (data channels, both
+directions), and the TURN server against the pion/turn client and
 coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn).
 
 ## A server, a TURN server and a client on one engine

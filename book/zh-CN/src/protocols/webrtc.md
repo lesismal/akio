@@ -11,7 +11,8 @@
   （RustCrypto 加 `dimpl` DTLS 栈：不需要 C 工具链，也不需要 OpenSSL）。
 - `flash-turn` 提供 STUN 编解码、STUN 服务器和 TURN 服务器（UDP 上的 RFC 8656）。
 
-互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 flash TURN 中继；TURN
+互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 flash TURN 中继；还有 fib
+的 Go 版 WebRTC（数据通道，双向）；TURN
 服务器则与 pion/turn 客户端和 coturn 的 `turnutils_uclient` 互通（`tools/interop/webrtc/run.sh`，
 `COTURN=1` 时包括 coturn）。
 

@@ -38,7 +38,7 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // from WHIP/W
 ```
 
 Interop with pion (data channels and media in both offer directions, also through a flash TURN
-relay): `tools/interop/webrtc/run.sh`. STUN and TURN servers are in
+relay) and with fib's Go WebRTC: `tools/interop/webrtc/run.sh`. STUN and TURN servers are in
 [`flash-turn`](../flash-turn/README.md).
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/flash/en/protocols/webrtc.html).

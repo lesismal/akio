@@ -200,7 +200,10 @@ fn client(http: &str, what: &str) {
     if what == "dc" {
         for i in 0..100 {
             let msg = format!("flash message {i}");
-            peer.send(ch, msg.as_bytes(), i % 2 == 0).expect("send");
+            // `Ok(false)`: the SCTP send buffer is full; wait for it to drain and retry.
+            while !peer.send(ch, msg.as_bytes(), i % 2 == 0).expect("send") {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
         let mut n = 0;
         while n < 100 {

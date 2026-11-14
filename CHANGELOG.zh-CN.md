@@ -27,7 +27,8 @@ flash 的所有重要变更都记录在这里。格式遵循
   （任意线程）可在数据通道上发送、写媒体、请求关键帧、重新协商；`PeerHandler` 回调对每个 peer
   逐个执行。DTLS 1.2/1.3 与指纹校验、SRTP（AES-CM、AES-GCM）、SCTP 数据通道（可靠或不可靠、
   有序或无序）、带 NACK、PLI/FIR、TWCC 的 RTP/RTCP。纯 Rust 加密实现（RustCrypto 与 `dimpl`，
-  无需 C 工具链）。与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 flash TURN 中继）；
+  无需 C 工具链）。与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 flash TURN 中继），并与 fib
+  的 Go 版 WebRTC 互通（数据通道）；
   `tools/interop/webrtc/run.sh`。
 - 模糊测试目标 `stun_message`、`turn_server` 与 `webrtc_sdp`。
 

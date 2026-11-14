@@ -37,7 +37,7 @@ let offer: String = todo!("the remote SDP offer");
 let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP/WHEP、WebSocket 等
 ```
 
-与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 flash TURN 中继）：
+与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 flash TURN 中继），也与 fib 的 Go 版 WebRTC 互通：
 `tools/interop/webrtc/run.sh`。STUN 与 TURN 服务器在 [`flash-turn`](../flash-turn/README.zh-CN.md)。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/flash/zh-CN/protocols/webrtc.html)。
