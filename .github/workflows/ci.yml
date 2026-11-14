@@ -437,11 +437,17 @@ jobs:
       RUSTFLAGS: -D warnings -Zsanitizer=${{ matrix.san }}
       RUSTDOCFLAGS: -Zsanitizer=${{ matrix.san }}
       TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+      ASAN_OPTIONS: symbolize=1:fast_unwind_on_malloc=0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src
+          components: rust-src, llvm-tools
+      - name: Symbolizer for sanitizer reports
+        run: |
+          sym=$(find "$(rustc --print sysroot)" -name llvm-symbolizer -type f | head -1)
+          echo "ASAN_SYMBOLIZER_PATH=$sym" >> "$GITHUB_ENV"
+          echo "TSAN_SYMBOLIZER_PATH=$sym" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: sanitizer-${{ matrix.san }}
