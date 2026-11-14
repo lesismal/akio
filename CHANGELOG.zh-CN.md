@@ -40,6 +40,25 @@ flash 的所有重要变更都记录在这里。格式遵循
   `ConnInner::drain_output`，供由用户态协议栈搬运字节的连接使用。
 - `tools/dpdk/`（Dockerfile + `test.sh`）与重型 CI 任务 `dpdk`：基于发行版的 DPDK 构建，并通过
   DPDK 的 `net_tap` PMD（单队列与双队列）smoltcp 的 TAP 设备以及 veth 对上的 AF_PACKET，与内核协议栈互测 UDP/TCP echo。
+- `Engine::bind_udp` 与 `UdpBinding`（flash、flash-core）：在引擎运行中绑定的非连接 UDP socket，
+  像 UDP 监听器一样服务（每个对端地址一个连接），并可用 `UdpBinding::send_to` 向任意地址发送。
+  ICE agent 与 TURN 中继需要它。
+- `flash-turn`（新 crate）：STUN 编解码（RFC 8489，含 TURN 与 ICE 属性、`MESSAGE-INTEGRITY`、
+  `FINGERPRINT`）、`StunServer`，以及 UDP 上的 TURN 中继 `TurnServer`（RFC 8656）：长期凭据的分配
+  （`static_auth`，以及用于 TURN REST API 的 `ephemeral_auth`）、权限、通道、Send/Data 指示、刷新、
+  `EVEN-PORT` 与 `RESERVATION-TOKEN`、无状态 nonce、配额，以及默认拒绝私有与回环对端的对端策略；
+  `TurnCore` 是同一服务器的 sans-io 状态机。互通：pion/turn 客户端与 coturn 的
+  `turnutils_uclient`。
+- `flash-webrtc`（新 crate）：基于 sans-io 的 `str0m` 0.24、跑在 flash UDP 上的 WebRTC。
+  `RtcServer` 服务一个 UDP 监听器（默认 ICE-lite，按 ICE 用户名与源地址分流各 peer）；`Endpoint`
+  在 `bind_udp` socket 上运行完整 ICE agent，可从 STUN 服务器获取 server-reflexive 候选。`Peer`
+  （任意线程）可在数据通道上发送、写媒体、请求关键帧、重新协商；`PeerHandler` 回调对每个 peer
+  逐个执行。DTLS 1.2/1.3 与指纹校验、SRTP（AES-CM、AES-GCM）、SCTP 数据通道（可靠或不可靠、
+  有序或无序）、带 NACK、PLI/FIR、TWCC 的 RTP/RTCP。纯 Rust 加密实现（RustCrypto 与 `dimpl`，
+  无需 C 工具链）。与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 flash TURN 中继），并与 fib
+  的 Go 版 WebRTC 互通（数据通道）；
+  `tools/interop/webrtc/run.sh`。
+- 模糊测试目标 `stun_message`、`turn_server` 与 `webrtc_sdp`。
 
 ## [1.0.0-rc.1] - 2026-11-14
 

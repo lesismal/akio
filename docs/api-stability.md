@@ -27,7 +27,7 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 
 | Tier | Crates | Promise |
 |---|---|---|
-| Public | `flash`, `flash-core`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-ebpf`, `flash-prefork` | Full semver for their public API (below). |
+| Public | `flash`, `flash-core`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-ebpf`, `flash-prefork`, `flash-turn`, `flash-webrtc` | Full semver for their public API (below). |
 | Internal | `flash-sys`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-uring` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `flash` / `flash-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `flash-core` and `flash`. |
 | Experimental | `flash-dpdk`, and the `dpdk` / `dpdk-pmd` features of `flash` (`Backend::Dpdk`, `flash::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/flash-dpdk.txt` only makes changes visible. |
 
@@ -59,7 +59,8 @@ minor releases; removed or renamed only in a major one).
 
 Some public signatures use types of other crates: `rustls` (re-exported as `flash::tls::rustls`,
 `flash_quic::rustls`), `quinn-proto` (`flash_quic::proto`), `bytes`, `log` (`Config::log_level`)
-and, with the `prost` feature, `prost`. Upgrading one of these to a semver-incompatible version is a
+and, with the `prost` feature, `prost`; `str0m` (re-exported as `flash_webrtc::str0m`, whose types
+`flash-webrtc` signatures use). Upgrading one of these to a semver-incompatible version is a
 breaking change for flash and happens only in a major release. Use the re-exports so your build
 always uses the versions flash was built with.
 

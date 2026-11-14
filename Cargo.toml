@@ -21,6 +21,8 @@ members = [
     "crates/flash-ebpf",
     "crates/flash-prefork",
     "crates/flash-dpdk",
+    "crates/flash-turn",
+    "crates/flash-webrtc",
     "crates/flash",
     "tools/echo-bench",
 ]
@@ -60,6 +62,8 @@ flash-socks = { path = "crates/flash-socks", version = "=1.0.0-rc.1" }
 flash-mux = { path = "crates/flash-mux", version = "=1.0.0-rc.1" }
 flash-ebpf = { path = "crates/flash-ebpf", version = "=1.0.0-rc.1" }
 flash-dpdk = { path = "crates/flash-dpdk", version = "=1.0.0-rc.1" }
+flash-turn = { path = "crates/flash-turn", version = "=1.0.0-rc.1" }
+flash-webrtc = { path = "crates/flash-webrtc", version = "=1.0.0-rc.1" }
 flash = { path = "crates/flash", version = "=1.0.0-rc.1" }
 flash-prefork = { path = "crates/flash-prefork", version = "=1.0.0-rc.1" }
 

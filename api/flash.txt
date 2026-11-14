@@ -25,6 +25,7 @@ pub use flash::SlowHook
 pub use flash::SlowRecord
 pub use flash::Telemetry
 pub use flash::Transport
+pub use flash::UdpBinding
 pub use flash::UdpStats
 pub use flash::ebpf
 pub use flash::fn_acceptor
@@ -93,6 +94,7 @@ impl core::panic::unwind_safe::UnwindSafe for flash::EbpfConfig
 pub struct flash::Engine
 impl flash::Engine
 pub fn flash::Engine::accel_status(&self) -> &[flash::AccelStatus]
+pub fn flash::Engine::bind_udp<A: flash_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<flash_core::group::UdpBinding>
 pub fn flash::Engine::builder() -> flash::EngineBuilder
 pub fn flash::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<flash_core::telemetry::ConnInfo>
 pub fn flash::Engine::dial<A: flash_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)

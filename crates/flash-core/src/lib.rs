@@ -35,7 +35,7 @@ pub use flash_pool::Pool;
 pub use flash_pool::{PoolConfig, PoolStats};
 #[doc(hidden)]
 pub use group::Group;
-pub use group::UdpStats;
+pub use group::{UdpBinding, UdpStats};
 pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
 #[doc(hidden)]
 pub use handler::{DynAcceptor, DynHandler};

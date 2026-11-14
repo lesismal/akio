@@ -9,8 +9,9 @@ name: CI
 #   Best effort:               test-macos (macOS runners are often not scheduled for capacity;
 #                              a job that never starts is not a code failure)
 #   Heavy (push to main, nightly schedule, manual run, or a PR labelled `full-ci`):
-#                              interop (Go peers: arpc, grpc, kcp, h3), fuzz (all targets, 5 min
-#                              each), sanitizers (ASan + TSan on the core and backend tests),
+#                              interop (Go peers: arpc, grpc, kcp, h3, webrtc + coturn), fuzz
+#                              (all targets, 5 min each), sanitizers (ASan + TSan on the core
+#                              and backend tests)
 #                              dpdk (flash-dpdk with libdpdk: net_tap / TAP against the kernel)
 #   Deploy (push to main):     book-deploy (GitHub Pages)
 #   ci-ok:                     one status to require in branch protection.
@@ -337,13 +338,14 @@ jobs:
       - run: tools/h2spec/run.sh
 
   interop:
-    # Against Go peers: fib's arpc, grpc-go, kcp-go, quic-go + fib's HTTP/3. The arpc and h3
-    # suites build against the fib checkout next to flash (../../../../fib from each suite).
+    # Against Go peers: fib's arpc, grpc-go, kcp-go, quic-go + fib's HTTP/3, pion (WebRTC and TURN,
+    # plus coturn's turnutils_uclient in Docker). The arpc and h3 suites build against the fib
+    # checkout next to flash (../../../../fib from each suite).
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       fail-fast: false
       matrix:
-        suite: [arpc, grpc, kcp, h3]
+        suite: [arpc, grpc, kcp, h3, webrtc]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -365,6 +367,8 @@ jobs:
           shared-key: interop-${{ matrix.suite }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Interop (${{ matrix.suite }})
+        env:
+          COTURN: ${{ matrix.suite == 'webrtc' && '1' || '0' }}
         run: flash/tools/interop/${{ matrix.suite }}/run.sh
 
   dpdk:

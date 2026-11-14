@@ -561,6 +561,20 @@ impl core::marker::Sync for flash_core::telemetry::Telemetry
 impl core::marker::Unpin for flash_core::telemetry::Telemetry
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Telemetry
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Telemetry
+pub struct flash_core::UdpBinding
+impl flash_core::UdpBinding
+pub fn flash_core::UdpBinding::close(&self)
+pub fn flash_core::UdpBinding::local_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn flash_core::UdpBinding::send_to(&self, &[u8], core::net::socket_addr::SocketAddr) -> core::io::error::Result<()>
+impl core::clone::Clone for flash_core::UdpBinding
+pub fn flash_core::UdpBinding::clone(&self) -> Self
+impl core::fmt::Debug for flash_core::UdpBinding
+pub fn flash_core::UdpBinding::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_core::UdpBinding
+impl core::marker::Sync for flash_core::UdpBinding
+impl core::marker::Unpin for flash_core::UdpBinding
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_core::UdpBinding
+impl !core::panic::unwind_safe::UnwindSafe for flash_core::UdpBinding
 #[non_exhaustive] pub struct flash_core::UdpStats
 pub flash_core::UdpStats::peers: usize
 pub flash_core::UdpStats::rejected: u64

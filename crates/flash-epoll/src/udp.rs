@@ -67,6 +67,20 @@ struct Peer {
     bytes_in: u64,
     /// Corked for the receive batch being processed (its replies leave together at the end).
     in_batch: bool,
+    /// The run-time bound socket (`Cmd::BindUdp`) this peer belongs to, if any.
+    bind: Option<u64>,
+}
+
+/// An unconnected socket bound at run time (`Engine::bind_udp`), served like the listener
+/// socket: one peer per remote address.
+struct Bound {
+    sock: Arc<UdpSocket>,
+    local: SocketAddr,
+    acceptor: Arc<dyn DynAcceptor>,
+    peers: HashMap<SocketAddr, u64>,
+    /// Peers with datagrams waiting for socket space.
+    blocked: HashSet<u64>,
+    write_reg: bool,
 }
 
 /// Counters shared by the loops of one UDP group.
@@ -85,6 +99,8 @@ struct UdpLoop {
     acceptor: Option<Arc<dyn DynAcceptor>>,
     peers: HashMap<SocketAddr, u64>,
     conns: flash_core::IdMap<Peer>,
+    /// Sockets bound at run time, by poll token.
+    binds: HashMap<u64, Bound>,
     /// Server-socket peers with datagrams waiting for socket space.
     blocked: HashSet<u64>,
     /// Dialed connections with datagrams waiting for socket space.
@@ -151,6 +167,7 @@ impl UdpLoop {
             acceptor,
             peers: HashMap::new(),
             conns: Default::default(),
+            binds: HashMap::new(),
             blocked: HashSet::new(),
             blocked_own: HashSet::new(),
             want_write: false,
@@ -209,10 +226,18 @@ impl UdpLoop {
                     WAKER => self.shared.waker().drain(),
                     SOCK => {
                         if ev.readable {
-                            self.on_readable();
+                            self.recv_on(None);
                         }
                         if ev.writable {
                             self.flush_blocked();
+                        }
+                    }
+                    id if self.binds.contains_key(&id) => {
+                        if ev.readable {
+                            self.recv_on(Some(id));
+                        }
+                        if ev.writable {
+                            self.flush_bound(id);
                         }
                     }
                     id => {
@@ -230,12 +255,18 @@ impl UdpLoop {
             if let Some(deadline) = self.draining {
                 // Datagrams have no stream to drain: once handlers had their `on_shutdown` and
                 // nothing is waiting for socket space, everything left is closed.
-                if (self.blocked.is_empty() && self.blocked_own.is_empty())
+                if (self.blocked.is_empty()
+                    && self.blocked_own.is_empty()
+                    && self.binds.values().all(|b| b.blocked.is_empty()))
                     || Instant::now() >= deadline
                 {
                     let ids: Vec<u64> = self.conns.keys().copied().collect();
                     for id in ids {
                         self.finalize(id, None);
+                    }
+                    let binds: Vec<u64> = self.binds.keys().copied().collect();
+                    for id in binds {
+                        self.unbind(id);
                     }
                     break;
                 }
@@ -245,9 +276,17 @@ impl UdpLoop {
 
     // ---- receive --------------------------------------------------------------------------
 
+    /// The socket datagrams of `src` arrive on: the listener socket (`None`) or a bound one.
+    fn src_sock(&self, src: Option<u64>) -> Option<Arc<UdpSocket>> {
+        match src {
+            None => self.sock.clone(),
+            Some(b) => self.binds.get(&b).map(|b| b.sock.clone()),
+        }
+    }
+
     #[cfg(target_os = "linux")]
-    fn on_readable(&mut self) {
-        let Some(sock) = self.sock.clone() else {
+    fn recv_on(&mut self, src: Option<u64>) {
+        let Some(sock) = self.src_sock(src) else {
             return;
         };
         let mut batch = self.batch.take().unwrap_or_else(|| new_batch(&self.cfg));
@@ -267,10 +306,10 @@ impl UdpLoop {
                     if seg > 0 && seg < data.len() {
                         // GRO coalesced several datagrams of this peer: restore the boundaries.
                         for d in data.chunks(seg) {
-                            self.on_datagram(peer, d);
+                            self.on_datagram(src, peer, d);
                         }
                     } else {
-                        self.on_datagram(peer, data);
+                        self.on_datagram(src, peer, data);
                     }
                 }
             }
@@ -312,14 +351,17 @@ impl UdpLoop {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn on_readable(&mut self) {
-        let Some(sock) = self.sock.clone() else {
+    fn recv_on(&mut self, src: Option<u64>) {
+        let Some(sock) = self.src_sock(src) else {
             return;
         };
-        let mut buf = self.scratch.take().expect("scratch present");
+        let mut buf = self
+            .scratch
+            .take()
+            .unwrap_or_else(|| vec![0u8; self.cfg.read_buffer]);
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
             match sock.recv_from(&mut buf) {
-                Ok((n, peer)) => self.on_datagram(peer, &buf[..n]),
+                Ok((n, peer)) => self.on_datagram(src, peer, &buf[..n]),
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
@@ -332,13 +374,17 @@ impl UdpLoop {
         self.flush_touched();
     }
 
-    fn on_datagram(&mut self, peer: SocketAddr, data: &[u8]) {
+    fn on_datagram(&mut self, src: Option<u64>, peer: SocketAddr, data: &[u8]) {
         if self.draining.is_some() {
             return;
         }
-        let id = match self.peers.get(&peer) {
-            Some(&id) => id,
-            None => match self.open(peer) {
+        let known = match src {
+            None => self.peers.get(&peer).copied(),
+            Some(b) => self.binds.get(&b).and_then(|b| b.peers.get(&peer).copied()),
+        };
+        let id = match known {
+            Some(id) => id,
+            None => match self.open(src, peer) {
                 Some(id) => id,
                 None => return,
             },
@@ -364,14 +410,22 @@ impl UdpLoop {
         }
     }
 
-    fn open(&mut self, peer: SocketAddr) -> Option<u64> {
-        let (sock, local, acceptor) = (self.sock.clone()?, self.local?, self.acceptor.clone()?);
+    fn open(&mut self, bind: Option<u64>, peer: SocketAddr) -> Option<u64> {
+        let (sock, local, acceptor) = match bind {
+            None => (self.sock.clone()?, self.local?, self.acceptor.clone()?),
+            Some(b) => {
+                let b = self.binds.get(&b)?;
+                (b.sock.clone(), b.local, b.acceptor.clone())
+            }
+        };
         // Admission: `udp_max_peers` bounds the peers of the whole listener (all its loops).
-        let before = self.stats.peers.fetch_add(1, Ordering::Relaxed);
-        if self.cfg.udp_max_peers.is_some_and(|max| before >= max) {
-            self.stats.peers.fetch_sub(1, Ordering::Relaxed);
-            self.stats.rejected.fetch_add(1, Ordering::Relaxed);
-            return None;
+        if bind.is_none() {
+            let before = self.stats.peers.fetch_add(1, Ordering::Relaxed);
+            if self.cfg.udp_max_peers.is_some_and(|max| before >= max) {
+                self.stats.peers.fetch_sub(1, Ordering::Relaxed);
+                self.stats.rejected.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
         }
         self.cfg.telemetry.conn_opened(false);
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
@@ -385,7 +439,9 @@ impl UdpLoop {
             self.cfg.clone(),
         );
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
-            self.stats.peers.fetch_sub(1, Ordering::Relaxed);
+            if bind.is_none() {
+                self.stats.peers.fetch_sub(1, Ordering::Relaxed);
+            }
             inner.mark_closed();
             self.cfg.telemetry.conn_closed();
             return None;
@@ -396,7 +452,14 @@ impl UdpLoop {
             self.wheel.advance(now, drop);
         }
         let timer = Some(self.wheel.schedule(now + self.idle_ms(), id));
-        self.peers.insert(peer, id);
+        match bind.and_then(|b| self.binds.get_mut(&b)) {
+            Some(b) => {
+                b.peers.insert(peer, id);
+            }
+            None => {
+                self.peers.insert(peer, id);
+            }
+        }
         self.conns.insert(
             id,
             Peer {
@@ -411,6 +474,7 @@ impl UdpLoop {
                 opened: now,
                 bytes_in: 0,
                 in_batch: false,
+                bind,
             },
         );
         // `on_open` may already have queued datagrams or closed the connection.
@@ -472,6 +536,7 @@ impl UdpLoop {
                 opened: now,
                 bytes_in: 0,
                 in_batch: false,
+                bind: None,
             },
         );
         self.on_wake(id);
@@ -613,16 +678,89 @@ impl UdpLoop {
                             }
                         }
                     }
-                    None => {
-                        if empty {
-                            self.blocked.remove(&id);
-                        } else {
-                            self.blocked.insert(id);
+                    None => match p.bind {
+                        Some(b) => self.bound_blocked(b, id, !empty),
+                        None => {
+                            if empty {
+                                self.blocked.remove(&id);
+                            } else {
+                                self.blocked.insert(id);
+                            }
+                            self.update_interest();
                         }
-                        self.update_interest();
-                    }
+                    },
                 }
             }
+        }
+    }
+
+    /// Tracks whether bound-socket peer `id` waits for socket space, and the socket's write
+    /// interest.
+    fn bound_blocked(&mut self, bind: u64, id: u64, blocked: bool) {
+        let Some(b) = self.binds.get_mut(&bind) else {
+            return;
+        };
+        if blocked {
+            b.blocked.insert(id);
+        } else {
+            b.blocked.remove(&id);
+        }
+        let want = !b.blocked.is_empty();
+        if want != b.write_reg {
+            b.write_reg = want;
+            let _ = self
+                .poller
+                .modify(b.sock.as_raw_fd(), bind, self.draining.is_none(), want);
+        }
+    }
+
+    fn flush_bound(&mut self, bind: u64) {
+        let ids: Vec<u64> = match self.binds.get(&bind) {
+            Some(b) => b.blocked.iter().copied().collect(),
+            None => return,
+        };
+        for id in ids {
+            self.on_wake(id);
+        }
+    }
+
+    fn open_bound(&mut self, id: u64, sock: Arc<UdpSocket>, acceptor: Arc<dyn DynAcceptor>) {
+        if self.draining.is_some() {
+            return;
+        }
+        let Ok(local) = sock.local_addr() else {
+            return;
+        };
+        #[cfg(target_os = "linux")]
+        if gro_ok(&self.cfg) {
+            flash_sys::enable_gro(sock.as_raw_fd());
+        }
+        if self.poller.add(sock.as_raw_fd(), id, true, false).is_err() {
+            return;
+        }
+        self.binds.insert(
+            id,
+            Bound {
+                sock,
+                local,
+                acceptor,
+                peers: HashMap::new(),
+                blocked: HashSet::new(),
+                write_reg: false,
+            },
+        );
+    }
+
+    fn unbind(&mut self, id: u64) {
+        let Some(b) = self.binds.get(&id) else {
+            return;
+        };
+        let peers: Vec<u64> = b.peers.values().copied().collect();
+        for p in peers {
+            self.finalize(p, None);
+        }
+        if let Some(b) = self.binds.remove(&id) {
+            self.poller.delete(b.sock.as_raw_fd());
         }
     }
 
@@ -656,11 +794,18 @@ impl UdpLoop {
                 self.poller.delete(sock.as_raw_fd());
                 self.blocked_own.remove(&id);
             }
-            None => {
-                self.peers.remove(&p.addr);
-                self.blocked.remove(&id);
-                self.stats.peers.fetch_sub(1, Ordering::Relaxed);
-            }
+            None => match p.bind.and_then(|b| self.binds.get_mut(&b)) {
+                Some(b) => {
+                    b.peers.remove(&p.addr);
+                    b.blocked.remove(&id);
+                }
+                None if p.bind.is_some() => {}
+                None => {
+                    self.peers.remove(&p.addr);
+                    self.blocked.remove(&id);
+                    self.stats.peers.fetch_sub(1, Ordering::Relaxed);
+                }
+            },
         }
         if let Some(t) = p.timer.take() {
             self.wheel.cancel(t);
@@ -689,6 +834,8 @@ impl UdpLoop {
                     Cmd::Core(LoopCmd::Inspect(reply)) => reply(self.inspect()),
                     Cmd::Core(LoopCmd::Reload) => {}
                     Cmd::DialUdp { sock, acceptor } => self.open_client(sock, acceptor),
+                    Cmd::BindUdp { id, sock, acceptor } => self.open_bound(id, sock, acceptor),
+                    Cmd::Unbind(id) => self.unbind(id),
                     Cmd::Dial { on_error, .. } => on_error(io::Error::new(
                         io::ErrorKind::Unsupported,
                         "dial is not supported on a UDP listener",
@@ -727,6 +874,13 @@ impl UdpLoop {
                 let _ = self.poller.add(sock.as_raw_fd(), SOCK, false, true);
                 self.want_write = true;
             }
+        }
+        for (&id, b) in &mut self.binds {
+            // Keep only write interest, for peers still waiting for socket space.
+            b.write_reg = !b.blocked.is_empty();
+            let _ = self
+                .poller
+                .modify(b.sock.as_raw_fd(), id, false, b.write_reg);
         }
         let ids: Vec<u64> = self.conns.keys().copied().collect();
         for id in ids {
@@ -927,6 +1081,31 @@ impl Group for UdpGroup {
             io::ErrorKind::Unsupported,
             "use dial_udp for UDP groups",
         ));
+    }
+
+    fn bind_udp(
+        &self,
+        sock: UdpSocket,
+        acceptor: Arc<dyn DynAcceptor>,
+    ) -> io::Result<flash_core::UdpBinding> {
+        sock.set_nonblocking(true)?;
+        let local = sock.local_addr()?;
+        let sock = Arc::new(sock);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let i = self.rr.fetch_add(1, Ordering::Relaxed) % self.shared.len();
+        let shared = self.shared[i].clone();
+        shared.post(Cmd::BindUdp {
+            id,
+            sock: sock.clone(),
+            acceptor,
+        });
+        let closed = AtomicBool::new(false);
+        let closer = Arc::new(move || {
+            if !closed.swap(true, Ordering::AcqRel) {
+                shared.post(Cmd::Unbind(id));
+            }
+        });
+        Ok(flash_core::UdpBinding::new(sock, local, closer))
     }
 
     fn dial_udp(
