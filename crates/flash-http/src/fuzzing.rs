@@ -233,7 +233,7 @@ pub(crate) mod seeds {
         v
     }
 
-    pub fn requests() -> Vec<&'static [u8]> {
+    pub(crate) fn requests() -> Vec<&'static [u8]> {
         vec![
             b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n",
             b"GET /a?b=c HTTP/1.0\r\nUser-Agent: x\r\nAccept: */*\r\n\r\n",
@@ -259,11 +259,11 @@ pub(crate) mod seeds {
         ]
     }
 
-    pub fn http1_request() -> Vec<Vec<u8>> {
+    pub(crate) fn http1_request() -> Vec<Vec<u8>> {
         requests().into_iter().map(<[u8]>::to_vec).collect()
     }
 
-    pub fn http1_server() -> Vec<Vec<u8>> {
+    pub(crate) fn http1_server() -> Vec<Vec<u8>> {
         let mut v = Vec::new();
         for r in requests() {
             v.push(with(0, r));
@@ -276,7 +276,7 @@ pub(crate) mod seeds {
         v
     }
 
-    pub fn http1_chunked() -> Vec<Vec<u8>> {
+    pub(crate) fn http1_chunked() -> Vec<Vec<u8>> {
         let bodies: [&[u8]; 6] = [
             b"4\r\nbody\r\n0\r\n\r\n",
             b"4;name=val\r\nbody\r\nA\r\n0123456789\r\n0\r\nTrailer: x\r\nOther: y\r\n\r\n",
@@ -297,7 +297,7 @@ pub(crate) mod seeds {
     }
 
     /// RFC 7541 appendix C header blocks (with and without Huffman), split by `data[0]`.
-    pub fn hpack() -> Vec<Vec<u8>> {
+    pub(crate) fn hpack() -> Vec<Vec<u8>> {
         let c2: &[u8] = &[
             0x82, 0x86, 0x84, 0x41, 0x0f, b'w', b'w', b'w', b'.', b'e', b'x', b'a', b'm', b'p',
             b'l', b'e', b'.', b'c', b'o', b'm',
@@ -342,7 +342,7 @@ pub(crate) mod seeds {
         out
     }
 
-    pub fn h2_server() -> Vec<Vec<u8>> {
+    pub(crate) fn h2_server() -> Vec<Vec<u8>> {
         let mut v = Vec::new();
         let mut enc = loona_hpack::Encoder::new();
         let get = enc.encode([
@@ -391,7 +391,7 @@ pub(crate) mod seeds {
         v
     }
 
-    pub fn http1_client() -> Vec<Vec<u8>> {
+    pub(crate) fn http1_client() -> Vec<Vec<u8>> {
         let resp: [&[u8]; 8] = [
             b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\nX: y\r\n\r\n",
@@ -435,12 +435,24 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds::http1_request().iter().for_each(|s| http1_request(s));
-        seeds::http1_chunked().iter().for_each(|s| http1_chunked(s));
-        seeds::hpack().iter().for_each(|s| hpack(s));
-        seeds::http1_client().iter().for_each(|s| http1_client(s));
-        seeds::http1_server().iter().for_each(|s| http1_server(s));
-        seeds::h2_server().iter().for_each(|s| h2_server(s));
+        for s in &seeds::http1_request() {
+            http1_request(s);
+        }
+        for s in &seeds::http1_chunked() {
+            http1_chunked(s);
+        }
+        for s in &seeds::hpack() {
+            hpack(s);
+        }
+        for s in &seeds::http1_client() {
+            http1_client(s);
+        }
+        for s in &seeds::http1_server() {
+            http1_server(s);
+        }
+        for s in &seeds::h2_server() {
+            h2_server(s);
+        }
     }
 
     /// Regression: a handler that pushes from every request (including pushed ones) used to

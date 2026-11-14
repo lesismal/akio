@@ -49,7 +49,7 @@ impl Handler for Session {
 // ANCHOR_END: handler
 
 impl Session {
-    fn handle_line(&mut self, c: &Conn<Self>, line: &[u8]) {
+    fn handle_line(&self, c: &Conn<Self>, line: &[u8]) {
         match line {
             // ANCHOR: offload
             b"slow\n" => {

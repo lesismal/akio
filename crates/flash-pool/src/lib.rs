@@ -7,6 +7,7 @@
 //!
 //! Guide: [Blocking work: the logical pool](https://lesismal.github.io/flash/en/concepts/blocking.html)
 //! (中文: [阻塞任务：逻辑线程池](https://lesismal.github.io/flash/zh-CN/concepts/blocking.html)).
+#![warn(clippy::unwrap_used)]
 
 use std::{
     collections::VecDeque,

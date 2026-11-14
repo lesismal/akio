@@ -412,7 +412,7 @@ impl Service for Files {
         };
         let mut headers = Headers::new();
         headers.set("ETag", etag.clone());
-        headers.set("Last-Modified", last_modified.clone());
+        headers.set("Last-Modified", last_modified);
         headers.set("Accept-Ranges", "bytes");
         if let Some(cc) = &self.cache_control {
             headers.set("Cache-Control", cc.clone());

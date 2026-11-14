@@ -140,7 +140,9 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds().iter().for_each(|s| mux_sniff(s));
+        for s in &seeds() {
+            mux_sniff(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p flash-mux --lib write_fuzz_seeds -- --ignored`.

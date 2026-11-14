@@ -28,7 +28,7 @@ fn main() -> std::io::Result<()> {
     let engine = Engine::builder().udp_client_threads(1).build()?;
     engine.start()?;
     engine.dial_udp("127.0.0.1:7002".parse().expect("address"), Hello, |e| {
-        eprintln!("dial failed: {e}")
+        eprintln!("dial failed: {e}");
     });
     std::thread::sleep(Duration::from_millis(500));
     engine.shutdown();

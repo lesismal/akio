@@ -142,7 +142,7 @@ mod seeds {
         ])
     }
 
-    pub fn qpack_decode() -> Vec<Vec<u8>> {
+    pub(super) fn qpack_decode() -> Vec<Vec<u8>> {
         let mut v: Vec<Vec<u8>> = vec![
             [&[0u8][..], &get()].concat(),
             [
@@ -171,7 +171,7 @@ mod seeds {
         v
     }
 
-    pub fn h3_request() -> Vec<Vec<u8>> {
+    pub(super) fn h3_request() -> Vec<Vec<u8>> {
         let mut a = Vec::new();
         put_frame(&mut a, frame::HEADERS, &get());
         let mut b = Vec::new();
@@ -209,7 +209,7 @@ mod seeds {
         ]
     }
 
-    pub fn h3_frame() -> Vec<Vec<u8>> {
+    pub(super) fn h3_frame() -> Vec<Vec<u8>> {
         let ctrl = crate::control_stream_preamble(1 << 16);
         let mut more = ctrl.clone();
         put_frame(&mut more, frame::GOAWAY, &[0]);
@@ -251,9 +251,15 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds::h3_frame().iter().for_each(|s| h3_frame(s));
-        seeds::qpack_decode().iter().for_each(|s| qpack_decode(s));
-        seeds::h3_request().iter().for_each(|s| h3_request(s));
+        for s in &seeds::h3_frame() {
+            h3_frame(s);
+        }
+        for s in &seeds::qpack_decode() {
+            qpack_decode(s);
+        }
+        for s in &seeds::h3_request() {
+            h3_request(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p flash-h3 --lib write_fuzz_seeds -- --ignored`.

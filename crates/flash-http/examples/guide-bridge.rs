@@ -46,7 +46,7 @@ fn block_on<F: Future>(fut: F) -> F::Output {
     struct Unpark(thread::Thread);
     impl Wake for Unpark {
         fn wake(self: Arc<Self>) {
-            self.0.unpark()
+            self.0.unpark();
         }
     }
     let waker = Waker::from(Arc::new(Unpark(thread::current())));

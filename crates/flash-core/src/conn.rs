@@ -244,7 +244,7 @@ impl WriteState {
     }
 
     /// UDP: drops the first `k` queued datagrams (sent or refused).
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(target_os = "linux"))] // Linux goes through `send_datagrams`
     fn consume_datagrams(&mut self, k: usize) {
         for _ in 0..k {
             let Some(front) = self.queue.front_mut() else {
@@ -1490,7 +1490,7 @@ impl<H> Conn<H> {
     /// Coalesces writes until [`flush`](Self::flush). Inside `on_data` this is already the
     /// default: everything sent during a callback leaves in one `writev` when it returns.
     pub fn cork(&self) {
-        self.inner.cork()
+        self.inner.cork();
     }
 
     /// Ends corking and writes queued output.
@@ -1500,17 +1500,17 @@ impl<H> Conn<H> {
 
     /// Closes the connection, discarding unsent data. `on_close` runs on the I/O thread.
     pub fn close(&self) {
-        self.inner.close()
+        self.inner.close();
     }
 
     /// Closes once everything queued has been written; further sends fail with `Closed`.
     pub fn close_after_send(&self) {
-        self.inner.close_after_send()
+        self.inner.close_after_send();
     }
 
     /// Pauses (`true`) or resumes (`false`) reading from the peer.
     pub fn hold_reads(&self, hold: bool) {
-        self.inner.hold_reads(hold)
+        self.inner.hold_reads(hold);
     }
 
     /// Calls `f` once everything queued on this connection has been written (right away if
@@ -1518,7 +1518,7 @@ impl<H> Conn<H> {
     /// outgoing side's queue grows, `hold_reads(true)` on the incoming side and resume it from
     /// `on_drain` of the outgoing one.
     pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
-        self.inner.on_drain(Box::new(f))
+        self.inner.on_drain(Box::new(f));
     }
 
     /// The type-erased connection state, for protocol crates that outlive the handler type

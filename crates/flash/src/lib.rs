@@ -21,6 +21,7 @@
 //!
 //! Guide: [Concepts](https://lesismal.github.io/flash/en/concepts/index.html), [Getting started](https://lesismal.github.io/flash/en/getting-started.html)
 //! (中文: [核心概念](https://lesismal.github.io/flash/zh-CN/concepts/index.html)、[快速上手](https://lesismal.github.io/flash/zh-CN/getting-started.html)).
+#![warn(clippy::unwrap_used)]
 
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
@@ -340,7 +341,7 @@ impl EngineBuilder {
                 groups.push(Box::new(flash_epoll::UdpGroup::bind(
                     None,
                     self.udp_client_threads,
-                    self.cfg.clone(),
+                    self.cfg,
                     pool.clone(),
                 )?));
             }

@@ -15,6 +15,7 @@
 //!
 //! Guide: [WebSocket](https://lesismal.github.io/flash/en/protocols/websocket.html)
 //! (中文: [WebSocket](https://lesismal.github.io/flash/zh-CN/protocols/websocket.html)).
+#![warn(clippy::unwrap_used)]
 
 pub mod client;
 pub mod deflate;

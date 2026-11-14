@@ -18,10 +18,10 @@ fn main() -> std::io::Result<()> {
             })
             .handle("/fail", |ctx| ctx.error("rust failed"))
             .handle("/note", |ctx| {
-                println!("notify: {}", String::from_utf8_lossy(ctx.body()))
+                println!("notify: {}", String::from_utf8_lossy(ctx.body()));
             })
             .handle_stream("/upper", |_s| {
-                |s: &flash_arpc::Stream, ev: StreamEvent| match ev {
+                |s: &flash_arpc::Stream, ev: StreamEvent<'_>| match ev {
                     StreamEvent::Message(m) => {
                         s.send(&m.to_ascii_uppercase());
                     }

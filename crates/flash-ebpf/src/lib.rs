@@ -17,6 +17,7 @@
 //!
 //! Guide: [eBPF steering](https://lesismal.github.io/flash/en/concepts/engine.html#acceleration-ebpf-steering)
 //! (中文: [eBPF 分流](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
+#![warn(clippy::unwrap_used)]
 
 pub mod cbpf;
 mod ebpf;
@@ -50,7 +51,7 @@ pub fn probe() -> Probe {
     #[cfg(target_os = "linux")]
     {
         let group = || -> std::io::Result<Vec<std::net::TcpListener>> {
-            let a = flash_sys::listen("127.0.0.1:0".parse().unwrap(), true, 16)?;
+            let a = flash_sys::listen(std::net::SocketAddr::from(([127, 0, 0, 1], 0)), true, 16)?;
             let addr = a.local_addr()?;
             Ok(vec![a, flash_sys::listen(addr, true, 16)?])
         };

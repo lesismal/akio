@@ -73,7 +73,7 @@ pub(crate) mod seeds {
     use crate::deflate::Deflater;
     use crate::protocol::{Opcode, close_payload, encode_frame, encode_frame_masked};
 
-    pub fn ws_frames() -> Vec<Vec<u8>> {
+    pub(crate) fn ws_frames() -> Vec<Vec<u8>> {
         let key = [0x37, 0xfa, 0x21, 0x3d];
         let mut v = Vec::new();
         // Server role: masked frames.
@@ -98,7 +98,14 @@ pub(crate) mod seeds {
             v.push(x);
         }
         let mut big = Vec::new();
-        encode_frame_masked(Opcode::Binary, true, false, &[1u8; 70_000], key, &mut big);
+        encode_frame_masked(
+            Opcode::Binary,
+            true,
+            false,
+            &vec![1u8; 70_000],
+            key,
+            &mut big,
+        );
         v.push([&[0u8, 200][..], &big[..64]].concat());
         // Client role: unmasked frames.
         let mut c = Vec::new();
@@ -132,7 +139,7 @@ pub(crate) mod seeds {
         v
     }
 
-    pub fn ws_client_handshake() -> Vec<Vec<u8>> {
+    pub(crate) fn ws_client_handshake() -> Vec<Vec<u8>> {
         let base = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n";
         let mut v = Vec::new();
         v.push([&[0u8][..], format!("{base}\r\n").as_bytes()].concat());
@@ -191,10 +198,12 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds::ws_frames().iter().for_each(|s| ws_frames(s));
-        seeds::ws_client_handshake()
-            .iter()
-            .for_each(|s| ws_client_handshake(s));
+        for s in &seeds::ws_frames() {
+            ws_frames(s);
+        }
+        for s in &seeds::ws_client_handshake() {
+            ws_client_handshake(s);
+        }
         // The sample handshake is accepted.
         let ok = &seeds::ws_client_handshake()[0];
         assert!(matches!(

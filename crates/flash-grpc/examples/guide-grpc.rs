@@ -23,7 +23,7 @@ fn main() -> std::io::Result<()> {
             sink.finish(Status::ok());
         })
         .unary("/demo.Greeter/Fail", |_md, _req, sink| {
-            sink.finish(Status::new(Code::InvalidArgument, "no thanks"))
+            sink.finish(Status::new(Code::InvalidArgument, "no thanks"));
         })
         .server_stream("/demo.Greeter/Count", |_md, req, sink| {
             // `sink` is usable from any thread: move slow producers off the I/O thread.

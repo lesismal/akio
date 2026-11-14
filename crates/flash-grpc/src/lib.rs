@@ -13,6 +13,7 @@
 //!
 //! Guide: [gRPC](https://lesismal.github.io/flash/en/protocols/grpc.html)
 //! (中文: [gRPC](https://lesismal.github.io/flash/zh-CN/protocols/grpc.html)).
+#![warn(clippy::unwrap_used)]
 
 pub mod codec;
 #[cfg(any(test, feature = "fuzzing"))]
@@ -649,7 +650,7 @@ impl Service for GrpcServer {
         }
         let mut on_msg = open(&md, sink.clone());
         let mut deframer = Deframer::new(self.max_message.unwrap_or(DEFAULT_MAX_MESSAGE), req_gzip);
-        let sink2 = sink.clone();
+        let sink2 = sink;
         ctx.on_body(move |_ctx, ev| match ev {
             BodyEvent::Chunk(b) => {
                 if sink2.is_finished() {

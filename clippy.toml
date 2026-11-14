@@ -1,0 +1,4 @@
+# Unit tests (`#[test]` / `#[cfg(test)]`) may unwrap; library code may not (see lib.rs lints).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true

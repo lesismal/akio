@@ -24,36 +24,36 @@ use crate::{
 pub(crate) const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 pub(crate) mod err {
-    pub const NO_ERROR: u32 = 0;
-    pub const PROTOCOL: u32 = 1;
-    pub const INTERNAL: u32 = 2;
-    pub const FLOW_CONTROL: u32 = 3;
-    pub const STREAM_CLOSED: u32 = 5;
-    pub const FRAME_SIZE: u32 = 6;
-    pub const REFUSED_STREAM: u32 = 7;
-    pub const COMPRESSION: u32 = 9;
-    pub const ENHANCE: u32 = 11;
+    pub(crate) const NO_ERROR: u32 = 0;
+    pub(crate) const PROTOCOL: u32 = 1;
+    pub(crate) const INTERNAL: u32 = 2;
+    pub(crate) const FLOW_CONTROL: u32 = 3;
+    pub(crate) const STREAM_CLOSED: u32 = 5;
+    pub(crate) const FRAME_SIZE: u32 = 6;
+    pub(crate) const REFUSED_STREAM: u32 = 7;
+    pub(crate) const COMPRESSION: u32 = 9;
+    pub(crate) const ENHANCE: u32 = 11;
 }
 
 pub(crate) mod ty {
-    pub const DATA: u8 = 0;
-    pub const HEADERS: u8 = 1;
-    pub const PRIORITY: u8 = 2;
-    pub const RST_STREAM: u8 = 3;
-    pub const SETTINGS: u8 = 4;
-    pub const PUSH_PROMISE: u8 = 5;
-    pub const PING: u8 = 6;
-    pub const GOAWAY: u8 = 7;
-    pub const WINDOW_UPDATE: u8 = 8;
-    pub const CONTINUATION: u8 = 9;
+    pub(crate) const DATA: u8 = 0;
+    pub(crate) const HEADERS: u8 = 1;
+    pub(crate) const PRIORITY: u8 = 2;
+    pub(crate) const RST_STREAM: u8 = 3;
+    pub(crate) const SETTINGS: u8 = 4;
+    pub(crate) const PUSH_PROMISE: u8 = 5;
+    pub(crate) const PING: u8 = 6;
+    pub(crate) const GOAWAY: u8 = 7;
+    pub(crate) const WINDOW_UPDATE: u8 = 8;
+    pub(crate) const CONTINUATION: u8 = 9;
 }
 
 pub(crate) mod flag {
-    pub const END_STREAM: u8 = 0x1;
-    pub const ACK: u8 = 0x1;
-    pub const END_HEADERS: u8 = 0x4;
-    pub const PADDED: u8 = 0x8;
-    pub const PRIORITY: u8 = 0x20;
+    pub(crate) const END_STREAM: u8 = 0x1;
+    pub(crate) const ACK: u8 = 0x1;
+    pub(crate) const END_HEADERS: u8 = 0x4;
+    pub(crate) const PADDED: u8 = 0x8;
+    pub(crate) const PRIORITY: u8 = 0x20;
 }
 
 pub(crate) const MAX_WINDOW: i64 = (1 << 31) - 1;
@@ -436,7 +436,7 @@ impl Core {
     /// Writes as much pending DATA as the windows allow, then finishes the stream if it is done.
     fn flush_stream(&mut self, sid: u32) {
         loop {
-            let max = self.remote.max_frame as i64;
+            let max = i64::from(self.remote.max_frame);
             let Some(st) = self.streams.get_mut(&sid) else {
                 return;
             };
@@ -947,9 +947,8 @@ impl Core {
     /// it as request headers or trailers.
     fn headers_complete(&mut self, sid: u32, block: Vec<u8>, end_stream: bool) -> R<Vec<Action>> {
         let decoded = catch_unwind(AssertUnwindSafe(|| self.dec.decode(&block)));
-        let list = match decoded {
-            Ok(Ok(l)) => l,
-            _ => return Err(Fail::Conn(err::COMPRESSION)),
+        let Ok(Ok(list)) = decoded else {
+            return Err(Fail::Conn(err::COMPRESSION));
         };
         if let Some((s, code)) = self.pending_rst.take() {
             if s == sid {
@@ -979,12 +978,9 @@ impl Core {
             self.frame_refuse(sid);
             return Ok(Vec::new());
         }
-        let req = match self.build_request(&list) {
-            Ok(r) => r,
-            Err(()) => {
-                self.rst_new(sid, err::PROTOCOL);
-                return Ok(Vec::new());
-            }
+        let Ok(req) = self.build_request(&list) else {
+            self.rst_new(sid, err::PROTOCOL);
+            return Ok(Vec::new());
         };
         self.open_peer += 1;
         let state = if end_stream {

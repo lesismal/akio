@@ -180,7 +180,7 @@ pub(crate) mod seeds {
         (ab, ba)
     }
 
-    pub fn kcp_input() -> Vec<Vec<u8>> {
+    pub(crate) fn kcp_input() -> Vec<Vec<u8>> {
         let (ab, ba) = conversation(false);
         let (sab, _) = conversation(true);
         let mut rev = ab.clone();
@@ -205,7 +205,7 @@ pub(crate) mod seeds {
         out
     }
 
-    pub fn kcp_frame() -> Vec<Vec<u8>> {
+    pub(crate) fn kcp_frame() -> Vec<Vec<u8>> {
         let mut v = Vec::new();
         for c in 0..7u8 {
             let mut dg = framed(c, 3, 2);
@@ -216,13 +216,13 @@ pub(crate) mod seeds {
         v
     }
 
-    pub fn kcp_fec() -> Vec<Vec<u8>> {
+    pub(crate) fn kcp_fec() -> Vec<Vec<u8>> {
         let mut dg = framed(6, 4, 2);
         dg.remove(0);
         vec![[&[3u8, 1][..], &join(&dg)].concat()]
     }
 
-    pub fn kcp_crypt() -> Vec<Vec<u8>> {
+    pub(crate) fn kcp_crypt() -> Vec<Vec<u8>> {
         let mut v = Vec::new();
         for c in 0..6u8 {
             let k = crypt(c).unwrap();
@@ -252,10 +252,18 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds::kcp_input().iter().for_each(|s| kcp_input(s));
-        seeds::kcp_fec().iter().for_each(|s| kcp_fec(s));
-        seeds::kcp_crypt().iter().for_each(|s| kcp_crypt(s));
-        seeds::kcp_frame().iter().for_each(|s| kcp_frame(s));
+        for s in &seeds::kcp_input() {
+            kcp_input(s);
+        }
+        for s in &seeds::kcp_fec() {
+            kcp_fec(s);
+        }
+        for s in &seeds::kcp_crypt() {
+            kcp_crypt(s);
+        }
+        for s in &seeds::kcp_frame() {
+            kcp_frame(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p flash-kcp --lib write_fuzz_seeds -- --ignored`.

@@ -7,6 +7,7 @@
 //!
 //! Guide: [Architecture](https://lesismal.github.io/flash/en/architecture.html)
 //! (中文: [架构](https://lesismal.github.io/flash/zh-CN/architecture.html)).
+#![warn(clippy::unwrap_used)]
 
 const LEVELS: usize = 4;
 const SLOTS: usize = 64;

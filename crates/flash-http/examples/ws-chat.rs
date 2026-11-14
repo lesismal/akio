@@ -71,7 +71,7 @@ fn main() -> std::io::Result<()> {
     let next = Arc::new(AtomicU64::new(1));
     let app = Router::new()
         .get("/", |ctx: &mut Context| {
-            ctx.bytes(200, "text/html; charset=utf-8", PAGE.as_bytes().to_vec())
+            ctx.bytes(200, "text/html; charset=utf-8", PAGE.as_bytes().to_vec());
         })
         .get("/chat", move |ctx: &mut Context| {
             let member = Member {

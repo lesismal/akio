@@ -119,7 +119,7 @@ fn mul_add(c: u8, input: &[u8], out: &mut [u8]) {
 }
 
 /// An encoder/decoder for `data` + `parity` shards.
-pub struct Rs {
+pub(crate) struct Rs {
     pub data: usize,
     pub parity: usize,
     m: Matrix,
@@ -127,7 +127,7 @@ pub struct Rs {
 
 impl Rs {
     /// 1..=255 data and parity shards, 256 at most in all.
-    pub fn new(data: usize, parity: usize) -> Option<Rs> {
+    pub(crate) fn new(data: usize, parity: usize) -> Option<Rs> {
         if data == 0 || parity == 0 || data + parity > 256 {
             return None;
         }
@@ -144,11 +144,11 @@ impl Rs {
     }
 
     /// Fills the parity shards (indices `data..`) from the data shards; all of equal length.
-    pub fn encode(&self, shards: &mut [Vec<u8>]) {
+    pub(crate) fn encode(&self, shards: &mut [Vec<u8>]) {
         for p in 0..self.parity {
             let (dat, par) = shards.split_at_mut(self.data);
             let out = &mut par[p];
-            out.iter_mut().for_each(|b| *b = 0);
+            out.fill(0);
             let row = &self.m[self.data + p];
             for (d, shard) in dat.iter().enumerate() {
                 mul_add(row[d], shard, out);
@@ -157,7 +157,7 @@ impl Rs {
     }
 
     /// Rebuilds the missing data shards (`None`) from any `data` present ones of `size` bytes.
-    pub fn reconstruct(&self, shards: &mut [Option<Vec<u8>>], size: usize) -> bool {
+    pub(crate) fn reconstruct(&self, shards: &mut [Option<Vec<u8>>], size: usize) -> bool {
         let rows: Vec<usize> = (0..shards.len())
             .filter(|&i| shards[i].is_some())
             .take(self.data)

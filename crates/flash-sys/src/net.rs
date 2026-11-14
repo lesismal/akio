@@ -17,7 +17,7 @@ pub(crate) fn sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::sock
     let len = match addr {
         SocketAddr::V4(a) => {
             // SAFETY: sockaddr_in fits in sockaddr_storage and shares its alignment.
-            let sin = unsafe { &mut *(&mut ss as *mut _ as *mut libc::sockaddr_in) };
+            let sin = unsafe { &mut *(&raw mut ss).cast::<libc::sockaddr_in>() };
             sin.sin_family = libc::AF_INET as libc::sa_family_t;
             sin.sin_port = a.port().to_be();
             sin.sin_addr = libc::in_addr {
@@ -25,13 +25,13 @@ pub(crate) fn sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::sock
             };
             #[cfg(target_os = "macos")]
             {
-                sin.sin_len = mem::size_of::<libc::sockaddr_in>() as u8;
+                sin.sin_len = size_of::<libc::sockaddr_in>() as u8;
             }
-            mem::size_of::<libc::sockaddr_in>()
+            size_of::<libc::sockaddr_in>()
         }
         SocketAddr::V6(a) => {
             // SAFETY: as above for sockaddr_in6.
-            let sin6 = unsafe { &mut *(&mut ss as *mut _ as *mut libc::sockaddr_in6) };
+            let sin6 = unsafe { &mut *(&raw mut ss).cast::<libc::sockaddr_in6>() };
             sin6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
             sin6.sin6_port = a.port().to_be();
             sin6.sin6_flowinfo = a.flowinfo();
@@ -41,9 +41,9 @@ pub(crate) fn sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::sock
             sin6.sin6_scope_id = a.scope_id();
             #[cfg(target_os = "macos")]
             {
-                sin6.sin6_len = mem::size_of::<libc::sockaddr_in6>() as u8;
+                sin6.sin6_len = size_of::<libc::sockaddr_in6>() as u8;
             }
-            mem::size_of::<libc::sockaddr_in6>()
+            size_of::<libc::sockaddr_in6>()
         }
     };
     (ss, len as libc::socklen_t)
@@ -89,8 +89,8 @@ fn setsockopt_int(
             fd,
             level,
             name,
-            &v as *const _ as *const libc::c_void,
-            mem::size_of::<libc::c_int>() as libc::socklen_t,
+            (&raw const v).cast::<libc::c_void>(),
+            size_of::<libc::c_int>() as libc::socklen_t,
         )
     })
     .map(drop)
@@ -110,7 +110,7 @@ pub fn listen(addr: SocketAddr, reuseport: bool, backlog: i32) -> io::Result<Tcp
     }
     let (ss, len) = sockaddr(&addr);
     // SAFETY: `ss` is a valid sockaddr of `len` bytes.
-    cvt(unsafe { libc::bind(raw, &ss as *const _ as *const libc::sockaddr, len) })?;
+    cvt(unsafe { libc::bind(raw, (&raw const ss).cast::<libc::sockaddr>(), len) })?;
     // SAFETY: plain syscall on an owned fd.
     cvt(unsafe { libc::listen(raw, backlog) })?;
     Ok(TcpListener::from(fd))
@@ -130,7 +130,7 @@ pub fn listen_udp(addr: SocketAddr, reuseport: bool) -> io::Result<std::net::Udp
     }
     let (ss, len) = sockaddr(&addr);
     // SAFETY: `ss` is a valid sockaddr of `len` bytes.
-    cvt(unsafe { libc::bind(raw, &ss as *const _ as *const libc::sockaddr, len) })?;
+    cvt(unsafe { libc::bind(raw, (&raw const ss).cast::<libc::sockaddr>(), len) })?;
     Ok(std::net::UdpSocket::from(fd))
 }
 
@@ -141,7 +141,7 @@ pub fn connect_nonblocking(addr: SocketAddr) -> io::Result<TcpStream> {
     let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
     let (ss, len) = sockaddr(&addr);
     // SAFETY: `ss` is a valid sockaddr of `len` bytes.
-    let r = unsafe { libc::connect(raw, &ss as *const _ as *const libc::sockaddr, len) };
+    let r = unsafe { libc::connect(raw, (&raw const ss).cast::<libc::sockaddr>(), len) };
     if r < 0 {
         let e = io::Error::last_os_error();
         if e.raw_os_error() != Some(libc::EINPROGRESS) {
@@ -158,7 +158,7 @@ pub fn sendfile(out: RawFd, file: RawFd, offset: u64, count: usize) -> io::Resul
     {
         let mut off = offset as libc::off_t;
         // SAFETY: plain syscall; `off` outlives the call and is the only pointer passed.
-        let n = unsafe { libc::sendfile(out, file, &mut off, count) };
+        let n = unsafe { libc::sendfile(out, file, &raw mut off, count) };
         if n < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -173,7 +173,7 @@ pub fn sendfile(out: RawFd, file: RawFd, offset: u64, count: usize) -> io::Resul
                 file,
                 out,
                 offset as libc::off_t,
-                &mut len,
+                &raw mut len,
                 std::ptr::null_mut(),
                 0,
             )

@@ -36,6 +36,7 @@
 //!
 //! Guide: [QUIC and HTTP/3](https://lesismal.github.io/flash/en/protocols/quic-h3.html)
 //! (中文: [QUIC 与 HTTP/3](https://lesismal.github.io/flash/zh-CN/protocols/quic-h3.html)).
+#![warn(clippy::unwrap_used)]
 
 mod timer;
 
@@ -236,6 +237,9 @@ impl Connection {
             return Err(Error::Closed);
         }
         let State { conn, pending, .. } = &mut *st;
+        if !can_send(conn, id) {
+            return Err(Error::UnknownStream);
+        }
         let p = pending.entry(id).or_default();
         if p.fin {
             return Err(Error::UnknownStream);
@@ -257,6 +261,9 @@ impl Connection {
     pub fn finish(&self, id: StreamId) -> Result<(), Error> {
         let mut st = lock(&self.0.state);
         let State { conn, pending, .. } = &mut *st;
+        if !can_send(conn, id) {
+            return Err(Error::UnknownStream);
+        }
         let p = pending.entry(id).or_default();
         p.fin = true;
         let r = flush_stream(conn, id, p);
@@ -271,6 +278,9 @@ impl Connection {
     /// Abandons sending on a stream (`RESET_STREAM`), dropping what is queued.
     pub fn reset(&self, id: StreamId, code: u32) -> Result<(), Error> {
         let mut st = lock(&self.0.state);
+        if !can_send(&st.conn, id) {
+            return Err(Error::UnknownStream);
+        }
         st.pending.remove(&id);
         let r = st
             .conn
@@ -285,6 +295,9 @@ impl Connection {
     /// Asks the peer to stop sending on a stream (`STOP_SENDING`).
     pub fn stop(&self, id: StreamId, code: u32) -> Result<(), Error> {
         let mut st = lock(&self.0.state);
+        if !can_recv(&st.conn, id) {
+            return Err(Error::UnknownStream);
+        }
         let r = st
             .conn
             .recv_stream(id)
@@ -474,6 +487,16 @@ impl timer::Due for Shared {
     }
 }
 
+/// Whether `id` has a send side here (quinn panics on a peer's unidirectional stream).
+fn can_send(conn: &qp::Connection, id: StreamId) -> bool {
+    id.dir() == Dir::Bi || id.initiator() == conn.side()
+}
+
+/// Whether `id` has a receive side here (not one of our own unidirectional streams).
+fn can_recv(conn: &qp::Connection, id: StreamId) -> bool {
+    id.dir() == Dir::Bi || id.initiator() != conn.side()
+}
+
 /// Hands a stream's queued bytes to quinn; finishes it when they are all taken and `fin` is
 /// set.
 fn flush_stream(conn: &mut qp::Connection, id: StreamId, p: &mut Pending) -> Result<(), Error> {
@@ -629,7 +652,7 @@ impl Ep {
         match ev {
             None => {}
             Some(qp::DatagramEvent::Response(t)) => {
-                self.transmit(t.destination, t.segment_size, buf[..t.size].to_vec())
+                self.transmit(t.destination, t.segment_size, buf[..t.size].to_vec());
             }
             Some(qp::DatagramEvent::ConnectionEvent(h, ce)) => {
                 let c = lock(&self.conns).get(&h).cloned();

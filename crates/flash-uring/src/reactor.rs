@@ -85,7 +85,7 @@ pub(crate) struct BufRing {
     tail: u16,
 }
 
-const RING_BYTES: usize = BUF_COUNT as usize * std::mem::size_of::<BufRingEntry>();
+const RING_BYTES: usize = BUF_COUNT as usize * size_of::<BufRingEntry>();
 
 impl BufRing {
     fn layout() -> std::alloc::Layout {
@@ -132,7 +132,7 @@ impl BufRing {
         // SAFETY: `tail` points at the ring's tail field inside the allocation; it is a `u16`
         // shared with the kernel, which the protocol says to store with release ordering.
         unsafe {
-            let t = BufRingEntry::tail(self.base) as *const std::sync::atomic::AtomicU16;
+            let t = BufRingEntry::tail(self.base).cast::<std::sync::atomic::AtomicU16>();
             (*t).store(self.tail, Ordering::Release);
         }
     }
@@ -660,13 +660,10 @@ impl Loop {
             self.shared.clone(),
             self.cfg.clone(),
         );
-        let handler = match catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) {
-            Ok(h) => h,
-            Err(_) => {
-                inner.mark_closed();
-                tel.conn_closed();
-                return;
-            }
+        let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
+            inner.mark_closed();
+            tel.conn_closed();
+            return;
         };
         let st = &self.shared.stats;
         if dialed { &st.dialed } else { &st.accepted }.add_local(1);

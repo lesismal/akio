@@ -25,10 +25,10 @@ fn raise_nofile() -> u64 {
     };
     // SAFETY: `lim` is a valid, writable rlimit for the duration of both calls.
     unsafe {
-        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim), 0);
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim), 0);
         lim.rlim_cur = lim.rlim_max.min(65_536);
-        libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
-        libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim);
+        libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim);
+        libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim);
     }
     lim.rlim_cur
 }
@@ -49,7 +49,7 @@ fn connect_rst_on_close(addr: std::net::SocketAddr) -> TcpStream {
             libc::SOL_SOCKET,
             libc::SO_LINGER,
             (&raw const l).cast(),
-            std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            size_of::<libc::linger>() as libc::socklen_t,
         )
     };
     assert_eq!(rc, 0);

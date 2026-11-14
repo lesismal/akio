@@ -68,7 +68,9 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds().iter().for_each(|s| socks_request(s));
+        for s in &seeds() {
+            socks_request(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p flash-socks --lib write_fuzz_seeds -- --ignored`.

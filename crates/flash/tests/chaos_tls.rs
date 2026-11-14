@@ -93,7 +93,7 @@ fn set_linger0(s: &TcpStream) {
             libc::SOL_SOCKET,
             libc::SO_LINGER,
             (&raw const l).cast(),
-            std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            size_of::<libc::linger>() as libc::socklen_t,
         );
     }
 }

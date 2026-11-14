@@ -129,7 +129,9 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds().iter().for_each(|s| cbpf_steer(s));
+        for s in &seeds() {
+            cbpf_steer(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p flash-ebpf --lib write_fuzz_seeds -- --ignored`.

@@ -22,6 +22,7 @@
 //!
 //! Guide: [Protocol multiplexing](https://lesismal.github.io/flash/en/protocols/mux.html)
 //! (中文: [协议复用](https://lesismal.github.io/flash/zh-CN/protocols/mux.html)).
+#![warn(clippy::unwrap_used)]
 
 use std::{
     collections::HashMap,

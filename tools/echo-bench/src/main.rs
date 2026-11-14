@@ -103,7 +103,7 @@ mod tls {
         }
     }
 
-    pub fn config() -> Arc<rustls::ClientConfig> {
+    pub(crate) fn config() -> Arc<rustls::ClientConfig> {
         let provider = rustls::crypto::ring::default_provider();
         let schemes = provider
             .signature_verification_algorithms
@@ -195,12 +195,12 @@ fn main() {
                 let mut buf = vec![0u8; size.max(1)];
                 let (mut n, mut l) = (0u64, 0u64);
                 'run: while !stop.load(Ordering::Relaxed) {
-                    for s in socks.iter_mut() {
+                    for s in &mut socks {
                         if s.send(&msg).is_err() {
                             break 'run;
                         }
                     }
-                    for s in socks.iter_mut() {
+                    for s in &mut socks {
                         match s.recv(&mut buf) {
                             Ok(true) => n += 1,
                             Ok(false) => l += 1,

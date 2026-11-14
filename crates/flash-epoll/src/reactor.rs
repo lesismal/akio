@@ -557,13 +557,10 @@ impl Loop {
             self.shared.clone(),
             self.cfg.clone(),
         );
-        let handler = match catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) {
-            Ok(h) => h,
-            Err(_) => {
-                inner.mark_closed();
-                tel.conn_closed();
-                return;
-            }
+        let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
+            inner.mark_closed();
+            tel.conn_closed();
+            return;
         };
         if self.poller.add(fd, id, true, false).is_err() {
             inner.mark_closed();
@@ -718,7 +715,7 @@ impl Loop {
                         lc.inner.set_corked(true);
                         let t0 = self.cfg.telemetry.timing();
                         let r = catch_unwind(AssertUnwindSafe(|| {
-                            lc.handler.on_data(&self.scratch[..n])
+                            lc.handler.on_data(&self.scratch[..n]);
                         }));
                         self.cfg.telemetry.callback_done(st, "on_data", id, t0);
                         if r.is_err() {

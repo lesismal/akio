@@ -384,14 +384,11 @@ impl UdpLoop {
             self.shared.clone(),
             self.cfg.clone(),
         );
-        let handler = match catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) {
-            Ok(h) => h,
-            Err(_) => {
-                self.stats.peers.fetch_sub(1, Ordering::Relaxed);
-                inner.mark_closed();
-                self.cfg.telemetry.conn_closed();
-                return None;
-            }
+        let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
+            self.stats.peers.fetch_sub(1, Ordering::Relaxed);
+            inner.mark_closed();
+            self.cfg.telemetry.conn_closed();
+            return None;
         };
         self.shared.stats.accepted.add_local(1);
         let now = self.tick();
@@ -449,13 +446,10 @@ impl UdpLoop {
             self.cfg.clone(),
         );
         let acc = acceptor.clone();
-        let handler = match catch_unwind(AssertUnwindSafe(|| acc.on_open(&inner))) {
-            Ok(h) => h,
-            Err(_) => {
-                self.poller.delete(sock.as_raw_fd());
-                inner.mark_closed();
-                return;
-            }
+        let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acc.on_open(&inner))) else {
+            self.poller.delete(sock.as_raw_fd());
+            inner.mark_closed();
+            return;
         };
         self.cfg.telemetry.conn_opened(false);
         self.shared.stats.dialed.add_local(1);
@@ -844,7 +838,7 @@ impl UdpGroup {
             socks
                 .iter()
                 .flatten()
-                .map(|(s, _)| std::os::fd::AsRawFd::as_raw_fd(s))
+                .map(|(s, _)| AsRawFd::as_raw_fd(s))
                 .collect()
         } else {
             Vec::new()
@@ -902,12 +896,12 @@ impl Group for UdpGroup {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        let loops = std::mem::take(&mut *self.pending.lock().unwrap());
+        let loops = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()));
         // Running from now on: requests posted before a thread is first scheduled are queued.
         for s in &self.shared {
             s.stats.set_running(true);
         }
-        let mut handles = self.threads.lock().unwrap();
+        let mut handles = self.threads.lock().unwrap_or_else(|p| p.into_inner());
         for (i, mut l) in loops.into_iter().enumerate() {
             handles.push(
                 std::thread::Builder::new()
@@ -925,7 +919,7 @@ impl Group for UdpGroup {
     }
 
     fn join(&self) {
-        let handles = std::mem::take(&mut *self.threads.lock().unwrap());
+        let handles = std::mem::take(&mut *self.threads.lock().unwrap_or_else(|p| p.into_inner()));
         for h in handles {
             let _ = h.join();
         }

@@ -114,9 +114,9 @@ fn raise_nofile() {
     };
     // SAFETY: `lim` is a valid, writable rlimit for the duration of both calls.
     unsafe {
-        libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim);
+        libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim);
         lim.rlim_cur = lim.rlim_max.min(65_536);
-        libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim);
     }
 }
 
@@ -133,7 +133,7 @@ fn set_linger0(s: &TcpStream) {
             libc::SOL_SOCKET,
             libc::SO_LINGER,
             (&raw const l).cast(),
-            std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            size_of::<libc::linger>() as libc::socklen_t,
         );
     }
 }
@@ -481,12 +481,9 @@ fn client(addr: SocketAddr, seed: u64, st: &Stats, tally: &ClientTally) {
         mode as char,
         body.len()
     );
-    let mut s = match TcpStream::connect(addr) {
-        Ok(s) => s,
-        Err(_) => {
-            tally.connect_errors.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
+    let Ok(mut s) = TcpStream::connect(addr) else {
+        tally.connect_errors.fetch_add(1, Ordering::Relaxed);
+        return;
     };
     let local = s.local_addr().unwrap();
     if std::env::var_os("FLASH_CHAOS_TRACE").is_some() {

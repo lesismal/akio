@@ -13,6 +13,7 @@
 //!
 //! Guide: [Engine, listeners and backends](https://lesismal.github.io/flash/en/concepts/engine.html)
 //! (中文: [Engine、Listener 与后端](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
+#![warn(clippy::unwrap_used)]
 
 mod group;
 mod reactor;

@@ -84,7 +84,7 @@ fn main() -> std::io::Result<()> {
     let (tx, rx) = mpsc::channel();
     let acceptor = Tls::client(Arc::new(client_cfg), "localhost", Hello(tx))?;
     engine.dial(engine.local_addrs()[0], acceptor, |e| {
-        eprintln!("dial: {e}")
+        eprintln!("dial: {e}");
     });
     println!("{}", rx.recv_timeout(Duration::from_secs(5)).expect("echo"));
     // ANCHOR_END: client

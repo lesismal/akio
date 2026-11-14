@@ -100,7 +100,7 @@ fn streams_datagrams_and_close() {
     let mut want = HashMap::new();
     for i in 0..20usize {
         let id = c.open_bi().expect("stream");
-        let body: Vec<u8> = (0..1 + i * 5000).map(|j| (i + j) as u8).collect();
+        let body: Vec<u8> = (0..=(i * 5000)).map(|j| (i + j) as u8).collect();
         c.send(id, body.clone()).unwrap();
         c.finish(id).unwrap();
         want.insert(id, body);

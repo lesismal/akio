@@ -65,7 +65,9 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds().iter().for_each(|s| arpc_decoder(s));
+        for s in &seeds() {
+            arpc_decoder(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p flash-arpc --lib write_fuzz_seeds -- --ignored`.

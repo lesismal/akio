@@ -41,6 +41,7 @@
 //!
 //! Guide: [HTTP servers](https://lesismal.github.io/flash/en/protocols/http-server.html), [Routing, middleware and static files](https://lesismal.github.io/flash/en/protocols/http-routing.html), [HTTP clients](https://lesismal.github.io/flash/en/protocols/http-clients.html), [Observability](https://lesismal.github.io/flash/en/observability.html)
 //! (中文: [HTTP 服务端](https://lesismal.github.io/flash/zh-CN/protocols/http-server.html)、[路由、中间件与静态文件](https://lesismal.github.io/flash/zh-CN/protocols/http-routing.html)、[HTTP 客户端](https://lesismal.github.io/flash/zh-CN/protocols/http-clients.html)、[可观测性](https://lesismal.github.io/flash/zh-CN/observability.html)).
+#![warn(clippy::unwrap_used)]
 
 pub mod client;
 mod context;

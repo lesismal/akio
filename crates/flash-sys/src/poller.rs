@@ -83,7 +83,7 @@ impl Poller {
             u64: token,
         };
         // SAFETY: `ev` is a valid epoll_event for the duration of the call.
-        if unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), op, fd, &mut ev) } < 0 {
+        if unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), op, fd, &raw mut ev) } < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
@@ -221,9 +221,9 @@ impl Poller {
     pub fn wait(&mut self, out: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<()> {
         let ts = timeout.map(|d| libc::timespec {
             tv_sec: d.as_secs() as libc::time_t,
-            tv_nsec: d.subsec_nanos() as _,
+            tv_nsec: d.subsec_nanos().into(),
         });
-        let tsp = ts.as_ref().map_or(std::ptr::null(), |t| t as *const _);
+        let tsp = ts.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
         // SAFETY: `buf` has BATCH initialised entries; `tsp` is null or points to a live timespec.
         let n = unsafe {
             libc::kevent(

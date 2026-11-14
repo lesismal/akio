@@ -28,6 +28,7 @@
 //!
 //! Guide: [KCP](https://lesismal.github.io/flash/en/protocols/kcp.html)
 //! (中文: [KCP](https://lesismal.github.io/flash/zh-CN/protocols/kcp.html)).
+#![warn(clippy::unwrap_used)]
 
 pub mod crypt;
 mod fec;
@@ -294,7 +295,7 @@ impl Session {
         let State { kcp, fr, out, .. } = st;
         let crypt = self.0.cfg.crypt.as_deref();
         kcp.flush(now, &mut |p| {
-            fr.encode(crypt, p, i64::from(now), &mut |d| out.push(d))
+            fr.encode(crypt, p, i64::from(now), &mut |d| out.push(d));
         });
     }
 
@@ -593,7 +594,7 @@ pub struct Udp {
 }
 
 impl Udp {
-    fn start(&mut self, c: &Conn<Udp>, conv: u32) -> Option<Session> {
+    fn start(&self, c: &Conn<Udp>, conv: u32) -> Option<Session> {
         let srv = self.server.as_ref()?;
         if srv.max_sessions > 0 && srv.sessions.load(Ordering::Relaxed) >= srv.max_sessions {
             return None;
@@ -691,7 +692,7 @@ pub fn dial_conv<H: KcpHandler>(
     *lock(&s.0.handler) = Some(Box::new(handler));
     let failed = s.clone();
     engine.dial_udp(addr, Client(s.clone()), move |_e| {
-        failed.close_with(CloseReason::Transport)
+        failed.close_with(CloseReason::Transport);
     });
     Ok(s)
 }

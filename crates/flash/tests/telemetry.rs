@@ -103,13 +103,13 @@ fn echo_engine(cfg: Config, threads: usize) -> (Engine, SocketAddr) {
 /// Metrics once `done` holds (up to 5 s): a reply reaches the client a moment before the
 /// server thread records the write that sent it.
 fn settled(e: &Engine, done: impl Fn(&flash::Metrics) -> bool) -> flash::Metrics {
-    let until = std::time::Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(5);
     loop {
         let m = e.metrics();
-        if done(&m) || std::time::Instant::now() > until {
+        if done(&m) || Instant::now() > until {
             return m;
         }
-        std::thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(5));
     }
 }
 

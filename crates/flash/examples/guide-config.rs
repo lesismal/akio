@@ -72,7 +72,7 @@ fn main() -> std::io::Result<()> {
         idle_timeout: Some(Duration::from_secs(300)),
         slow_callback_threshold: Some(Duration::from_millis(10)),
         slow_hook: Some(SlowHook(Arc::new(|s| {
-            eprintln!("slow {} on conn {}: {:?}", s.kind, s.conn_id, s.elapsed)
+            eprintln!("slow {} on conn {}: {:?}", s.kind, s.conn_id, s.elapsed);
         }))),
         shutdown_timeout: Duration::from_secs(10),
         max_connections: 0, // 0 = unlimited
@@ -164,7 +164,7 @@ fn main() -> std::io::Result<()> {
     // ANCHOR_END: observe
 
     // ANCHOR: reload
-    let mut next = cfg.clone();
+    let mut next = cfg;
     next.idle_timeout = Some(Duration::from_secs(30));
     next.max_connections = 10_000;
     next.read_buffer = 128 << 10; // fixed at build time: reported, not applied

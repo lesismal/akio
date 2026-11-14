@@ -68,7 +68,7 @@ fn pin_to_cpu(cpu: usize) -> bool {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
         libc::CPU_ZERO(&mut set);
         libc::CPU_SET(cpu, &mut set);
-        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0
+        libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) == 0
     }
 }
 
@@ -134,7 +134,7 @@ fn ebpf_cpu_steering_with_a_socket_array() {
     let fds: Vec<i32> = g.iter().map(|l| l.as_raw_fd()).collect();
     let info = attach_reuseport(&fds, Steering::Cpu, AttachOptions { ebpf: true }).unwrap();
     if info.tier != Tier::Ebpf {
-        let why = info.ebpf_unavailable.clone().unwrap_or_default();
+        let why = info.ebpf_unavailable.unwrap_or_default();
         privileged::<()>("eBPF reuseport", Err(std::io::Error::other(why)));
     }
     check_cpu_steering(&g);

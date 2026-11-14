@@ -168,8 +168,12 @@ mod tests {
 
     #[test]
     fn seeds_run_clean() {
-        seeds_framing().iter().for_each(|s| grpc_framing(s));
-        seeds_server().iter().for_each(|s| grpc_server(s));
+        for s in &seeds_framing() {
+            grpc_framing(s);
+        }
+        for s in &seeds_server() {
+            grpc_server(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p flash-grpc --lib write_fuzz_seeds -- --ignored`.

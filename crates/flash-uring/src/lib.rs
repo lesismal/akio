@@ -1,6 +1,6 @@
 //! The io_uring backend (Linux 5.19+).
 //!
-//! One [`UringGroup`] serves one listener with a set of I/O threads, each owning a ring.
+//! One `UringGroup` serves one listener with a set of I/O threads, each owning a ring.
 //!
 //! * Accept: per-thread `SO_REUSEPORT` listeners, each with one multishot `accept` in flight.
 //! * Read: one multishot `recv` per connection, fed from a per-thread *provided-buffer ring*, so
@@ -17,6 +17,7 @@
 //! Guide: [Engine, listeners and backends](https://lesismal.github.io/flash/en/concepts/engine.html)
 //! (中文: [Engine、Listener 与后端](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
 #![cfg(target_os = "linux")]
+#![warn(clippy::unwrap_used)]
 mod group;
 mod reactor;
 

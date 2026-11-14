@@ -66,13 +66,13 @@ fn nofile() -> libc::rlimit {
         rlim_max: 0,
     };
     // SAFETY: `lim` is valid and writable.
-    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) };
+    unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) };
     lim
 }
 
 fn set_nofile(lim: libc::rlimit) {
     // SAFETY: `lim` is a valid rlimit.
-    let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) };
+    let rc = unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) };
     assert_eq!(rc, 0, "setrlimit: {}", io::Error::last_os_error());
 }
 
@@ -81,7 +81,7 @@ fn cpu_time() -> Duration {
     // SAFETY: `ru` is plain old data, fully written by getrusage.
     let ru = unsafe {
         let mut ru: libc::rusage = std::mem::zeroed();
-        libc::getrusage(libc::RUSAGE_SELF, &mut ru);
+        libc::getrusage(libc::RUSAGE_SELF, &raw mut ru);
         ru
     };
     let tv = |t: libc::timeval| {
@@ -104,7 +104,7 @@ impl Pending {
     fn connect(self, addr: std::net::SocketAddrV4) -> TcpStream {
         let sa = libc::sockaddr_in {
             #[cfg(target_os = "macos")]
-            sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,
+            sin_len: size_of::<libc::sockaddr_in>() as u8,
             sin_family: libc::AF_INET as libc::sa_family_t,
             sin_port: addr.port().to_be(),
             sin_addr: libc::in_addr {
@@ -117,7 +117,7 @@ impl Pending {
             libc::connect(
                 self.0,
                 (&raw const sa).cast(),
-                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                size_of::<libc::sockaddr_in>() as libc::socklen_t,
             )
         };
         assert_eq!(rc, 0, "connect: {}", io::Error::last_os_error());
@@ -190,7 +190,7 @@ fn accept_survives_fd_exhaustion_and_resumes() {
     // While stuck at EMFILE the engine must not spin on the listener.
     let (c0, w0) = (cpu_time(), Instant::now());
     thread::sleep(Duration::from_secs(1));
-    let (cpu, wall) = (cpu_time() - c0, w0.elapsed());
+    let (cpu, wall) = (cpu_time().checked_sub(c0).unwrap(), w0.elapsed());
     eprintln!("fd exhaustion: {stalled_at} accepted at the limit, cpu {cpu:?} over {wall:?}");
 
     // Free descriptors by finishing served clients: the engine must resume accepting.
@@ -206,7 +206,7 @@ fn accept_survives_fd_exhaustion_and_resumes() {
             "only {done} of {CLIENTS} clients served (accepted {})",
             counters.opened.load(Ordering::SeqCst)
         );
-        for slot in clients.iter_mut() {
+        for slot in &mut clients {
             let Some(s) = slot else { continue };
             match s.read(&mut b) {
                 Ok(1) => {

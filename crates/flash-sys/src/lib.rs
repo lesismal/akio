@@ -8,6 +8,7 @@
 //! Guide: [Architecture](https://lesismal.github.io/flash/en/architecture.html)
 //! (中文: [架构](https://lesismal.github.io/flash/zh-CN/architecture.html)).
 #![cfg(any(target_os = "linux", target_os = "macos"))]
+#![warn(clippy::unwrap_used)]
 
 mod net;
 mod poller;
