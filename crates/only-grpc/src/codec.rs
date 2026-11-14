@@ -1,10 +1,15 @@
 //! Message codecs. gRPC carries bytes; [`encode`] and [`decode`] convert any type implementing
 //! this crate's [`Message`] trait.
 //!
-//! With the `prost` cargo feature, every prost message (`prost::Message + Default`) implements
-//! [`Message`]. That adapter names prost's types, so the `prost` feature is **outside the semver
-//! promise** (docs/api-stability.md): a prost upgrade may come in a minor release. Without the
-//! feature, implement [`Message`] for your types with any serializer.
+//! * Protobuf: generate the messages from `.proto` files with `only-protobuf-build` in `build.rs`
+//!   (no `protoc`, no third-party crates). With services in the files, or `Config::grpc(true)`,
+//!   every generated message implements [`Message`], and typed server traits and clients are
+//!   generated too (book chapter "gRPC").
+//! * Anything else: implement [`Message`] with any serializer (below).
+//! * Deprecated: the `prost` cargo feature makes every prost message (`prost::Message +
+//!   Default`) implement [`Message`]. It still works, but new code should use `only-protobuf`; the
+//!   adapter names prost's types, so the feature is **outside the semver promise**
+//!   (docs/api-stability.md) and may be removed in a minor release once nothing needs it.
 //!
 //! ```
 //! use only_grpc::{Code, Status, codec::{self, Message}};

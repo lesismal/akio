@@ -24,7 +24,7 @@
 
 | 级别 | Crate | 承诺 |
 |---|---|---|
-| 公开 | `only`、`only-core`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-kcp`、`only-quic`、`only-h3`、`only-ebpf`、`only-prefork`、`only-turn`、`only-webrtc`、`only-media` | 其公开 API（见下）完整遵循 semver。 |
+| 公开 | `only`、`only-core`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-ebpf`、`only-prefork`、`only-turn`、`only-webrtc`、`only-media` | 其公开 API（见下）完整遵循 semver。 |
 | 内部 | `only-sys`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-uring` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `only` / `only-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `only-core` 和 `only` 中的再导出受到保护。 |
 | 实验性 | `only-dpdk`，以及 `only` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`only::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/only-dpdk.txt` 只用于让变化可见。 |
 
@@ -48,7 +48,8 @@ trait（`Send`、`Sync`、`Unpin`、`UnwindSafe`）。
   `RtcConfig::with_str0m`、`OtherEvent::as_str0m` 等）。被封装的 crate 升级时它们的签名就会变化，
   这可能发生在次版本中。任何暂时无法承诺的公开内容都放进 `#[doc(hidden)]` 或 `unstable` 之后，
   绝不悄悄进入受保护的 API。
-- `only-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`）：它用到 prost 的类型，
+- `only-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`；已弃用，推荐改用
+  `only-protobuf`，其生成的消息直接实现该 trait）：它用到 prost 的类型，
   因此 prost 升级可能出现在次版本中。
 - `Display` 输出、日志消息和 panic 消息的具体文本。
 - 文档中注明未指定的行为，以及性能特征。

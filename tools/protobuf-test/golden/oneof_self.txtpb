@@ -1,0 +1,2 @@
+# test.all.AllTypes
+c_self { c_string: "" o_nested { child { child {} } } }

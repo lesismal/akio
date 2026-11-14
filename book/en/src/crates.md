@@ -32,6 +32,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 | `only-quic` | QUIC on quinn-proto | [QUIC and HTTP/3](protocols/quic-h3.md) |
 | `only-h3` | HTTP/3 and QPACK | [QUIC and HTTP/3](protocols/quic-h3.md) |
 | `only-grpc` | gRPC server and client | [gRPC](protocols/grpc.md) |
+| `only-protobuf`, `only-protobuf-build` | protobuf runtime, and the `.proto` code generator for `build.rs` (no protoc, gRPC stubs) | [gRPC](protocols/grpc.md) |
 | `only-arpc` | arpc (lesismal/arpc wire format) | [arpc](protocols/arpc.md) |
 | `only-socks` | SOCKS4/4a/5 and HTTP CONNECT proxies | [SOCKS](protocols/socks.md) |
 | `only-mux` | several protocols on one port | [Multiplexing](protocols/mux.md) |

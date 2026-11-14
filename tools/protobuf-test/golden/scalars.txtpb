@@ -1,0 +1,24 @@
+# test.all.AllTypes
+f_int32: -42
+f_int64: -9000000000
+f_uint32: 4294967295
+f_uint64: 18446744073709551615
+f_sint32: -2147483648
+f_sint64: -9223372036854775808
+f_fixed32: 123456
+f_fixed64: 9876543210
+f_sfixed32: -5
+f_sfixed64: -6
+f_float: -0.0
+f_double: 3.5
+f_bool: true
+f_string: "h\303\251llo \342\234\223"
+f_bytes: "\000\001\377"
+f_enum: COLOR_NEGATIVE
+f_nested { a: 7 type: "kw" deep: DEEP_ONE child { a: 8 } }
+f_shared { id: "s" values: [1, -1] }
+o_int32: 0
+o_string: ""
+o_enum: COLOR_UNSPECIFIED
+o_nested {}
+max_field_number: 1

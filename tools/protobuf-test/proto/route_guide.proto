@@ -1,0 +1,49 @@
+// The messages and service of grpc-go's route_guide example (examples/route_guide), in proto3
+// (the original uses edition 2023 with implicit presence: the same wire format).
+syntax = "proto3";
+
+package routeguide;
+
+// Interface exported by the server.
+service RouteGuide {
+  // A simple RPC: the feature at a position.
+  rpc GetFeature(Point) returns (Feature) {}
+  // A server-to-client streaming RPC: the features inside a rectangle.
+  rpc ListFeatures(Rectangle) returns (stream Feature) {}
+  // A client-to-server streaming RPC: a summary of a route.
+  rpc RecordRoute(stream Point) returns (RouteSummary) {}
+  // A bidirectional streaming RPC: route notes.
+  rpc RouteChat(stream RouteNote) returns (stream RouteNote) {}
+}
+
+// A latitude-longitude pair in E7 representation.
+message Point {
+  int32 latitude = 1;
+  int32 longitude = 2;
+}
+
+// A latitude-longitude rectangle, as two diagonally opposite points.
+message Rectangle {
+  Point lo = 1;
+  Point hi = 2;
+}
+
+// A feature names something at a given point.
+message Feature {
+  string name = 1;
+  Point location = 2;
+}
+
+// A message sent while at a given point.
+message RouteNote {
+  Point location = 1;
+  string message = 2;
+}
+
+// Received in response to a RecordRoute rpc.
+message RouteSummary {
+  int32 point_count = 1;
+  int32 feature_count = 2;
+  int32 distance = 3;
+  int32 elapsed_time = 4;
+}

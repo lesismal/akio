@@ -17,7 +17,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 | `only-uring` | `#![deny(unsafe_code)]`, allowed in `group` and `reactor` only | io_uring submission entries point into memory the kernel writes asynchronously |
 | `only-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
 | `only-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` only | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts), and `Sendable` (moves smoltcp's `!Send` TAP / AF_PACKET devices to their I/O thread) |
-| every other crate (`only`, `only-core`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-kcp`, `only-quic`, `only-h3`, `only-turn`, `only-webrtc`, `only-media`, `tools/echo-bench`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
+| every other crate (`only`, `only-core`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-turn`, `only-webrtc`, `only-media`, `tools/echo-bench`, `tools/protobuf-test`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
 Tests, examples and benches are separate crates; they may use `unsafe` for test-only libc calls
 (`setrlimit`, `SO_LINGER`, CPU affinity, a counting allocator), held to the same comment rule.

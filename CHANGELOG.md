@@ -64,6 +64,26 @@ Raw access moved behind new `unstable` cargo features (`only`, `only-tls`, `only
 
 ### Added
 
+- `only-protobuf` and `only-protobuf-build` (DEV-PLAN "no third-party dependencies", wave A):
+  an in-house protobuf runtime and code generator replacing prost, with no dependencies.
+  - `only-protobuf`: the wire format, `Message` (encode, decode, merge, length-delimited),
+    open enums (`Enumeration`), unknown-field preservation (`UnknownFields`), `Name`, bounded
+    decoding (100 nesting levels, checked lengths, UTF-8; a field with an unexpected wire type
+    is kept as an unknown field, as in C++ and Go), and `well_known` (`Empty`, `Timestamp`,
+    `Duration`, `Any`, wrappers, `FieldMask`, `Struct` / `Value` / `ListValue`, with `std`
+    conversions and `Any::pack` / `unpack`). Encodes byte for byte as protoc's C++ runtime.
+  - `only-protobuf-build`: a `.proto` parser (proto3 and proto2: messages, nested types, enums,
+    `optional`, `required`, `repeated`, `map`, `oneof`, defaults, packages, imports, built-in
+    well-known types) and Rust generator for `build.rs` (`compile(&["x.proto"], out_dir)`,
+    `Config`), no `protoc`. Services become `only-grpc` stubs: a `<service>_server` trait with
+    `register`, and a typed `<service>_client`; messages then implement
+    `only_grpc::codec::Message`.
+  - Checked against golden encodings from protoc, differentially against prost (tests and the
+    `protobuf_diff` fuzz target), and with grpc-go's generated route_guide / helloworld code in
+    both directions (`tools/interop/grpc/run.sh`, new `tools/protobuf-test`).
+- `only-grpc`: `Sink::send_message` and `ClientSink::send_message` (encode a `codec::Message`
+  and send it), and the re-export `only_grpc::Headers`.
+
 - `only-prefork` (M6, optional): serve one program from several worker processes. A supervisor
   re-executes the current binary as N workers (no fork after threads), each running its own
   `Engine`; listeners are shared with `SO_REUSEPORT` (Linux default) or inherited from the
@@ -77,6 +97,11 @@ Raw access moved behind new `unstable` cargo features (`only`, `only-tls`, `only
   `UringGroup::bind_listener`.
 - `only-sys` (internal): `process` module (child fd inheritance, CPU affinity and parent-death
   signal in `pre_exec`, `take_inherited_fd`, `reserve_reuseport`, a self-pipe `signal_pipe`, `kill`).
+
+### Deprecated
+
+- The `prost` feature of `only-grpc` (outside the semver promise): it still works; use
+  `only-protobuf` / `only-protobuf-build` instead. It may be removed in a minor release.
 
 ### Fixed
 

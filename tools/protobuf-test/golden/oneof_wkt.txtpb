@@ -1,0 +1,7 @@
+# test.all.AllTypes
+c_nested { a: 1 }
+recursive { f_int32: 1 recursive { f_string: "deep" } }
+ts { seconds: 1700000000 nanos: 5 }
+any { [type.googleapis.com/test.common.Shared] { id: "inside" } }
+st { fields { key: "n" value { number_value: 1.5 } } }
+wrapped { value: 0 }

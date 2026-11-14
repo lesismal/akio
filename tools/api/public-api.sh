@@ -23,7 +23,8 @@ fi
 
 # Publishable library crates (tools/ and fuzz/ are not published).
 all=(only-sys only-buf only-timer only-pool only-core only-epoll only-uring only-tls
-    only-http only-ws only-mux only-socks only-arpc only-grpc only-kcp only-quic only-h3
+    only-http only-ws only-mux only-socks only-arpc only-grpc only-protobuf only-protobuf-build
+    only-kcp only-quic only-h3
     only-ebpf only-prefork only-dpdk only-turn only-webrtc only-media only-bittorrent only)
 if [ "$#" -gt 0 ]; then
     crates=("$@")

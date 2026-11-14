@@ -26,6 +26,10 @@ only-turn = { path = "../crates/only-turn", features = ["fuzzing"] }
 only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
 only-media = { path = "../crates/only-media", features = ["fuzzing"] }
 only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
+only-protobuf = { path = "../crates/only-protobuf" }
+# Generated test messages and the prost mirror for the differential target `protobuf_diff`.
+protobuf-test = { path = "../tools/protobuf-test" }
+prost = "0.13"
 
 [profile.release]
 debug = 1
@@ -299,6 +303,13 @@ bench = false
 [[bin]]
 name = "bt_mse"
 path = "fuzz_targets/bt_mse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protobuf_diff"
+path = "fuzz_targets/protobuf_diff.rs"
 test = false
 doc = false
 bench = false

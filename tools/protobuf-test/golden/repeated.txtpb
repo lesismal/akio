@@ -1,0 +1,13 @@
+# test.all.AllTypes
+r_int32: [1, -1, 300]
+r_sint64: [-1, 1, -300]
+r_fixed32: [1, 4294967295]
+r_double: [0.5, -0.0, inf]
+r_bool: [true, false]
+r_enum: [COLOR_RED, COLOR_NEGATIVE]
+r_int32_unpacked: [5, -5]
+r_string: ["a", "", "c"]
+r_bytes: ["", "x"]
+r_nested { a: 1 }
+r_nested {}
+r_uint64: [0, 18446744073709551615]

@@ -61,6 +61,25 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
 
 ### 新增
 
+- `only-protobuf` 与 `only-protobuf-build`（DEV-PLAN“不依赖第三方”第 A 批）：自研的 protobuf
+  运行时与代码生成器，取代 prost，没有任何依赖。
+  - `only-protobuf`：线格式、`Message`（编码、解码、合并、长度前缀分帧）、开放枚举
+    （`Enumeration`）、保留未知字段（`UnknownFields`）、`Name`、有界解码（最多 100 层嵌套、检查
+    长度、检查 UTF-8；线类型不符的字段作为未知字段保留，与 C++、Go 一致），以及 `well_known`
+    （`Empty`、`Timestamp`、`Duration`、`Any`、包装类型、`FieldMask`、`Struct` / `Value` /
+    `ListValue`，含与 `std` 类型的转换和 `Any::pack` / `unpack`）。编码结果与 protoc 的 C++
+    运行时逐字节一致。
+  - `only-protobuf-build`：`.proto` 解析器（proto3 与 proto2：消息、嵌套类型、枚举、`optional`、
+    `required`、`repeated`、`map`、`oneof`、默认值、package、import、内置 well-known 类型）与供
+    `build.rs` 使用的 Rust 代码生成器（`compile(&["x.proto"], out_dir)`、`Config`），不需要
+    `protoc`。service 生成 `only-grpc` 桩代码：`<service>_server` 中的 trait 与 `register`，以及
+    类型化的 `<service>_client`；此时消息也实现 `only_grpc::codec::Message`。
+  - 用 protoc 生成的黄金编码、与 prost 的差分（测试与 fuzz 目标 `protobuf_diff`），以及与 grpc-go
+    自带的 route_guide / helloworld 生成代码双向互通（`tools/interop/grpc/run.sh`，新增
+    `tools/protobuf-test`）做了验证。
+- `only-grpc`：`Sink::send_message` 与 `ClientSink::send_message`（编码一个 `codec::Message` 后
+  发送），以及重导出 `only_grpc::Headers`。
+
 - `only-prefork`（M6，可选）：用多个 worker 进程服务同一个程序。supervisor 以 N 个 worker 的身份重新执行
   当前二进制（不在多线程之后 fork），每个 worker 运行自己的 `Engine`；监听套接字通过 `SO_REUSEPORT`
   共享（Linux 默认），或从 supervisor 继承（`ListenMode::Inherit`，macOS 默认；重启与重载期间不拒绝任何
@@ -71,6 +90,11 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
   activation）；内部的 `EpollGroup::bind_listener` / `UringGroup::bind_listener`。
 - `only-sys`（内部）：`process` 模块（在 `pre_exec` 中让子进程继承 fd、设置 CPU 亲和性与父进程退出信号，
   `take_inherited_fd`、`reserve_reuseport`、self-pipe 方式的 `signal_pipe`、`kill`）。
+
+### 弃用
+
+- `only-grpc` 的 `prost` feature（不在 semver 承诺之内）：仍可使用，请改用 `only-protobuf` /
+  `only-protobuf-build`。它可能在某个 minor 版本中移除。
 
 ### 修复
 

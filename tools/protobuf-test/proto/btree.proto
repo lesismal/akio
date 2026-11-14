@@ -1,0 +1,12 @@
+// Compiled with `btree_maps(true)` and `unknown_fields(false)`.
+syntax = "proto3";
+
+package test.btree;
+
+message Sorted {
+  map<string, int32> m = 1;
+  Empty e = 2;
+  repeated Empty list = 3;
+
+  message Empty {}
+}
