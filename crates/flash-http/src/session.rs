@@ -380,7 +380,7 @@ impl<S: Service> Session<S> {
         let keep_alive = match head.version {
             Version::Http11 => !h.has_token("connection", "close"),
             Version::Http10 => h.has_token("connection", "keep-alive"),
-            Version::Http2 => true,
+            Version::Http2 | Version::Http3 => true,
         };
         let te = h.get("transfer-encoding");
         let cl = h.get_all("content-length").collect::<Vec<_>>();

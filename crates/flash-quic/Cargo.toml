@@ -1,0 +1,21 @@
+[package]
+name = "flash-quic"
+description = "flash network library: QUIC (on quinn-proto) over flash UDP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flash = { path = "../flash" }
+flash-core = { path = "../flash-core" }
+quinn-proto = { version = "0.11", default-features = false, features = ["rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+bytes = "1"
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+
+[lints]
+workspace = true

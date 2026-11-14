@@ -1,0 +1,186 @@
+//! HTTP/3 framing (RFC 9114 §7) and QUIC variable-length integers.
+
+pub(crate) const DATA: u64 = 0x0;
+pub(crate) const HEADERS: u64 = 0x1;
+pub(crate) const CANCEL_PUSH: u64 = 0x3;
+pub(crate) const SETTINGS: u64 = 0x4;
+pub(crate) const PUSH_PROMISE: u64 = 0x5;
+pub(crate) const GOAWAY: u64 = 0x7;
+pub(crate) const MAX_PUSH_ID: u64 = 0xd;
+
+/// Stream types of unidirectional streams.
+pub(crate) const STREAM_CONTROL: u64 = 0x0;
+pub(crate) const STREAM_PUSH: u64 = 0x1;
+pub(crate) const STREAM_QPACK_ENCODER: u64 = 0x2;
+pub(crate) const STREAM_QPACK_DECODER: u64 = 0x3;
+
+pub(crate) const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x1;
+pub(crate) const SETTINGS_MAX_FIELD_SECTION_SIZE: u64 = 0x6;
+pub(crate) const SETTINGS_QPACK_BLOCKED_STREAMS: u64 = 0x7;
+
+/// HTTP/3 error codes.
+pub mod code {
+    /// No error.
+    pub const NO_ERROR: u32 = 0x100;
+    /// Generic protocol error.
+    pub const GENERAL_PROTOCOL_ERROR: u32 = 0x101;
+    /// Internal error.
+    pub const INTERNAL_ERROR: u32 = 0x102;
+    /// A stream of a type not allowed, or a second critical stream.
+    pub const STREAM_CREATION_ERROR: u32 = 0x103;
+    /// A critical stream closed.
+    pub const CLOSED_CRITICAL_STREAM: u32 = 0x104;
+    /// A frame not allowed where it came.
+    pub const FRAME_UNEXPECTED: u32 = 0x105;
+    /// A malformed frame.
+    pub const FRAME_ERROR: u32 = 0x106;
+    /// The peer is generating too much load.
+    pub const EXCESSIVE_LOAD: u32 = 0x107;
+    /// Bad identifier.
+    pub const ID_ERROR: u32 = 0x108;
+    /// Bad SETTINGS.
+    pub const SETTINGS_ERROR: u32 = 0x109;
+    /// No SETTINGS first on the control stream.
+    pub const MISSING_SETTINGS: u32 = 0x10a;
+    /// The request was not processed.
+    pub const REQUEST_REJECTED: u32 = 0x10b;
+    /// The request was cancelled.
+    pub const REQUEST_CANCELLED: u32 = 0x10c;
+    /// The request stream ended early.
+    pub const REQUEST_INCOMPLETE: u32 = 0x10d;
+    /// A malformed message.
+    pub const MESSAGE_ERROR: u32 = 0x10e;
+    /// QPACK could not decode a field section.
+    pub const QPACK_DECOMPRESSION_FAILED: u32 = 0x200;
+}
+
+pub(crate) fn put_varint(out: &mut Vec<u8>, v: u64) {
+    if v < 1 << 6 {
+        out.push(v as u8);
+    } else if v < 1 << 14 {
+        out.extend_from_slice(&(v as u16 | 0x4000).to_be_bytes());
+    } else if v < 1 << 30 {
+        out.extend_from_slice(&(v as u32 | 0x8000_0000).to_be_bytes());
+    } else {
+        out.extend_from_slice(&(v | 0xc000_0000_0000_0000).to_be_bytes());
+    }
+}
+
+/// A varint at the start of `b` and its length; `None` if incomplete.
+pub(crate) fn get_varint(b: &[u8]) -> Option<(u64, usize)> {
+    let first = *b.first()?;
+    let n = 1usize << (first >> 6);
+    let raw = b.get(..n)?;
+    let mut v = u64::from(first & 0x3f);
+    for &x in &raw[1..] {
+        v = (v << 8) | u64::from(x);
+    }
+    Some((v, n))
+}
+
+/// Appends a frame.
+pub(crate) fn put_frame(out: &mut Vec<u8>, ty: u64, payload: &[u8]) {
+    put_varint(out, ty);
+    put_varint(out, payload.len() as u64);
+    out.extend_from_slice(payload);
+}
+
+/// Bytes of a stream, split into frames as they complete.
+#[derive(Default)]
+pub(crate) struct Reader {
+    buf: Vec<u8>,
+    pos: usize,
+}
+
+impl Reader {
+    pub(crate) fn push(&mut self, data: &[u8]) {
+        if self.pos > 0 && self.pos == self.buf.len() {
+            self.buf.clear();
+            self.pos = 0;
+        } else if self.pos > 64 * 1024 {
+            self.buf.drain(..self.pos);
+            self.pos = 0;
+        }
+        self.buf.extend_from_slice(data);
+    }
+
+    /// Bytes not yet taken.
+    pub(crate) fn rest(&self) -> &[u8] {
+        &self.buf[self.pos..]
+    }
+
+    /// Takes a varint off the front.
+    pub(crate) fn varint(&mut self) -> Option<u64> {
+        let (v, n) = get_varint(self.rest())?;
+        self.pos += n;
+        Some(v)
+    }
+
+    /// The next complete frame; `Err(len)` with the length of a frame header announcing more
+    /// than `max` payload bytes.
+    pub(crate) fn frame(&mut self, max: u64) -> Result<Option<(u64, Vec<u8>)>, u64> {
+        let r = self.rest();
+        let Some((ty, a)) = get_varint(r) else {
+            return Ok(None);
+        };
+        let Some((len, b)) = get_varint(&r[a..]) else {
+            return Ok(None);
+        };
+        if len > max {
+            return Err(len);
+        }
+        let end = a + b + len as usize;
+        if r.len() < end {
+            return Ok(None);
+        }
+        let payload = r[a + b..end].to_vec();
+        self.pos += end;
+        Ok(Some((ty, payload)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn varints_and_frames() {
+        for v in [
+            0u64,
+            63,
+            64,
+            16383,
+            16384,
+            (1 << 30) - 1,
+            1 << 30,
+            (1 << 62) - 1,
+        ] {
+            let mut b = Vec::new();
+            put_varint(&mut b, v);
+            assert_eq!(get_varint(&b), Some((v, b.len())));
+        }
+        let mut wire = Vec::new();
+        put_frame(&mut wire, HEADERS, b"abc");
+        put_frame(&mut wire, 0x21, b"");
+        put_frame(&mut wire, DATA, &[7; 300]);
+        let mut r = Reader::default();
+        let mut got = Vec::new();
+        for ch in wire.chunks(7) {
+            r.push(ch);
+            while let Some(f) = r.frame(1000).unwrap() {
+                got.push(f);
+            }
+        }
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[2].1.len(), 300);
+        let mut r = Reader::default();
+        r.push(&wire[5..]);
+        let _ = r.frame(10);
+        let mut r = Reader::default();
+        let mut big = Vec::new();
+        put_varint(&mut big, DATA);
+        put_varint(&mut big, 5000);
+        r.push(&big);
+        assert_eq!(r.frame(1000), Err(5000));
+    }
+}

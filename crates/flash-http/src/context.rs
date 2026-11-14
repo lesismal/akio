@@ -94,6 +94,7 @@ struct Responder {
 enum Out {
     H1(Responder),
     H2(H2Responder),
+    Ext(Box<dyn crate::transport::ResponseSink>),
 }
 
 impl Out {
@@ -101,6 +102,12 @@ impl Out {
         match self {
             Out::H1(r) => r.send(resp, fin),
             Out::H2(r) => {
+                fin.apply(&mut resp);
+                let status = resp.status;
+                r.send(resp);
+                status
+            }
+            Out::Ext(r) => {
                 fin.apply(&mut resp);
                 let status = resp.status;
                 r.send(resp);
@@ -225,6 +232,35 @@ impl Context {
             upgrade: None,
             raw: None,
             sink: None,
+        }
+    }
+
+    /// A context whose response goes to a transport outside this crate.
+    pub(crate) fn new_ext(req: Request, sink: Box<dyn crate::transport::ResponseSink>) -> Context {
+        let mut c = Context::new_h2_like(req);
+        c.responder = Some(Out::Ext(sink));
+        c
+    }
+
+    fn new_h2_like(req: Request) -> Context {
+        let req = Arc::new(req);
+        Context {
+            fin: Finish {
+                extra: Headers::new(),
+                filters: Vec::new(),
+                started: Instant::now(),
+                time_header: None,
+                req: req.clone(),
+            },
+            req,
+            params: Vec::new(),
+            locals: Vec::new(),
+            status: None,
+            detached: false,
+            upgrade: None,
+            raw: None,
+            sink: None,
+            responder: None,
         }
     }
 
@@ -430,7 +466,7 @@ impl Context {
             self.text(400, "WebSocket upgrade needs GET over HTTP/1.1");
             return false;
         }
-        if matches!(self.responder, Some(Out::H2(_))) {
+        if matches!(self.responder, Some(Out::H2(_) | Out::Ext(_))) {
             self.text(400, "WebSocket over HTTP/2 is not supported");
             return false;
         }
@@ -580,6 +616,10 @@ fn start_stream(out: Out, fin: &mut Finish, status: u16, headers: Headers) -> Op
             fin.apply(&mut resp);
             r.start_stream(resp).map(|s| BodyStream(Inner::H2(s)))
         }
+        Out::Ext(r) => {
+            fin.apply(&mut resp);
+            r.start_stream(resp).map(|s| BodyStream(Inner::Ext(s)))
+        }
     }
 }
 
@@ -594,6 +634,7 @@ enum Inner {
         head_only: bool,
     },
     H2(H2Stream),
+    Ext(Box<dyn crate::transport::BodySink>),
 }
 
 impl BodyStream {
@@ -620,6 +661,7 @@ impl BodyStream {
                 stream.write(out)
             }
             Inner::H2(s) => s.write(data),
+            Inner::Ext(s) => s.write(data),
         }
     }
 
@@ -628,6 +670,7 @@ impl BodyStream {
         match &self.0 {
             Inner::H1 { stream, .. } => stream.queued_bytes(),
             Inner::H2(s) => s.queued_bytes(),
+            Inner::Ext(s) => s.queued_bytes(),
         }
     }
 
@@ -646,6 +689,7 @@ impl BodyStream {
                 stream.finish(!keep_alive);
             }
             Inner::H2(s) => s.finish(),
+            Inner::Ext(s) => s.finish(None),
         }
     }
 
@@ -672,6 +716,7 @@ impl BodyStream {
                 stream.finish(!keep_alive);
             }
             Inner::H2(s) => s.finish_with(Some(trailers)),
+            Inner::Ext(s) => s.finish(Some(trailers)),
         }
     }
 }

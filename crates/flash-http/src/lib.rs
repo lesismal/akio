@@ -43,6 +43,7 @@ mod parse;
 pub mod raw;
 mod router;
 mod session;
+pub mod transport;
 
 pub use context::{
     BodyEvent, BodyMode, BodyStream, Context, Detached, Middleware, Service, Streaming, WsOptions,

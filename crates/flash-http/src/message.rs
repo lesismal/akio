@@ -135,6 +135,8 @@ pub enum Version {
     Http11,
     /// HTTP/2 (requests that arrived on an h2 stream).
     Http2,
+    /// HTTP/3 (requests that arrived on a QUIC stream, see `flash-h3`).
+    Http3,
 }
 
 /// A parsed request, with its body fully received.
@@ -340,7 +342,7 @@ thread_local! {
 }
 
 /// The current time as an IMF-fixdate, cached for the current second.
-pub(crate) fn http_date_now() -> String {
+pub fn http_date_now() -> String {
     http_date()
 }
 

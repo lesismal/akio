@@ -145,7 +145,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 > M4 状态：**已完成。** HTTP/2（h2spec 147/147）、flash-mux、flash-socks、flash-arpc（与 Go 互通）、flash-grpc（与 grpc-go 互通）。
 
 ### M5 QUIC/H3 + KCP + eBPF（8–10 周）
-- [ ] `flash-quic`/`flash-h3`：基于 sans-io QUIC 核心（quinn-proto/quiche 评估后定），QPACK，WebSocket over H3；与 curl/quiche 互通
+- [x] `flash-quic`/`flash-h3`：基于 sans-io QUIC 核心（quinn-proto/quiche 评估后定），QPACK，WebSocket over H3；与 curl/quiche 互通 —— 选定 quinn-proto 0.11。`flash-quic`：每个 UDP listener 一个 `quinn_proto::Endpoint`（按连接 ID 路由，支持连接迁移），`QuicServer` acceptor 与 `dial`，`QuicHandler` 回调（流、reset、stop-sending、datagram、关闭）每连接串行执行，非阻塞写入（按流排队、`Writable` 时续写），共享定时线程，rustls（ring）配置辅助函数。`flash-h3`：HTTP/3 帧、QPACK（静态表 + 字面量，动态表容量为 0，支持 Huffman 解码）、控制流/QPACK 流及其错误规则；通过新增的 `flash_http::transport` 钩子在 H3 上运行任意 `flash_http::Service`（同一个 `Context`，含 `detach`、`stream_response`、trailers），body/字段段限制（413/431），`H3Client`。与 quic-go v0.62 及 fib 自身的 QUIC/HTTP/3 双向互通（`tools/interop/h3/run.sh`）。未完成：curl/quiche 互通（手头没有支持 HTTP/3 的构建）、H3 上的 WebSocket（扩展 CONNECT）、QPACK 动态表、服务器推送、流式请求体
 - [x] `flash-kcp`：兼容 skywind3000/kcp 与 kcp-go（加密、XOR、FEC）、按需 flush —— sans-io 的 KCP 核心（移植自 fib），kcp-go 的 Reed–Solomon FEC（klauspost 矩阵），加密 none/xor/aes/aes-128/aes-192/aes-128-gcm；UDP listener 上的 `KcpServer` acceptor（按对端建会话、会话替换、`max_sessions`）、`dial`、在 I/O 线程回调的 `KcpHandler`，按 `next_flush` 驱动的共享定时线程；dead-link 关闭；与 kcp-go v5 双向互通，覆盖六种加密/FEC 组合，并经过每 7 个丢 1 个数据报的中继（`tools/interop/kcp/run.sh`）
 - [ ] `flash-ebpf`：aya 加载 REUSEPORT 选择程序（CPU 亲和/一致性哈希）、sockmap/`sk_msg` relay、可选 XDP 限速；无特权或内核不支持时降级
 - [ ] 测试：eBPF 程序在 CI 容器（privileged）与本地 VM 双环境跑
