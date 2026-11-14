@@ -1,0 +1,31 @@
+[package]
+name = "flash-turn"
+description = "flash STUN and TURN servers (RFC 8489, RFC 8656) over flash UDP sockets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/flash-turn"
+keywords = ["turn", "stun", "webrtc", "nat", "relay"]
+categories = ["network-programming"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`flash_turn::fuzzing`); not a public API.
+fuzzing = []
+
+[dependencies]
+flash = { workspace = true }
+hmac = "0.12"
+sha1 = "0.10"
+md-5 = "0.10"
+crc32fast = "1"
+getrandom = "0.2"
+
+[dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true
