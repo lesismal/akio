@@ -269,3 +269,55 @@ fn media_echo_between_two_full_ice_endpoints() {
     e.shutdown();
     e.wait();
 }
+
+#[test]
+fn srflx_candidate_from_a_flash_stun_server() {
+    let e = Arc::new(
+        Engine::builder()
+            .udp_client_threads(1)
+            .listen(
+                Listener::udp("127.0.0.1:0".parse().unwrap())
+                    .threads(1)
+                    .serve(flash_turn::StunServer::new()),
+            )
+            .build()
+            .unwrap(),
+    );
+    e.start().unwrap();
+    let stun = e.local_addrs()[0];
+    let ep = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let mapped = ep.gather_srflx(stun, T).unwrap();
+    // On loopback the reflexive address is the socket itself.
+    assert_eq!(Some(mapped), ep.local_addr());
+    // A silent server times out.
+    let dead = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let err = ep
+        .gather_srflx(dead.local_addr().unwrap(), Duration::from_millis(300))
+        .unwrap_err();
+    assert!(matches!(err, flash_webrtc::Error::Timeout), "{err}");
+    ep.close();
+    e.shutdown();
+    e.wait();
+}
+
+#[test]
+fn a_peer_that_never_connects_is_closed() {
+    let server = RtcServer::new(vec!["127.0.0.1:9".parse().unwrap()])
+        .connect_timeout(Some(Duration::from_millis(300)));
+    let (e, _) = engine_with(Some(server.clone()));
+    let ep = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let (tx, rx) = channel();
+    let (_client, offer) = ep
+        .create_offer(Echo, |api| {
+            api.add_channel("x".into());
+        })
+        .unwrap();
+    // The answer never reaches the client: nothing connects.
+    let (_p, _answer) = server.accept_offer(&offer, Probe(Mutex::new(tx))).unwrap();
+    assert_eq!(server.peers(), 1);
+    wait(&rx, "closed", |g| matches!(g, Got::Closed));
+    assert_eq!(server.peers(), 0);
+    ep.close();
+    e.shutdown();
+    e.wait();
+}

@@ -726,7 +726,7 @@ impl TurnCore {
     /// Opens a relay on an even port and, with `reserve`, the odd port above it too (RFC 8656
     /// section 7.2, `EVEN-PORT`). Gives up after a few tries.
     fn open_even(
-        &mut self,
+        &self,
         client: SocketAddr,
         reserve: bool,
         env: &mut dyn TurnEnv,

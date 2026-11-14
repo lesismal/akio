@@ -195,6 +195,8 @@ struct State {
     armed: Option<Instant>,
     pending: Option<SdpPendingOffer>,
     closed: bool,
+    /// Closed if not connected by then (cleared once connected).
+    connect_by: Option<Instant>,
 }
 
 struct Shared {
@@ -241,6 +243,7 @@ impl Peer {
                 armed: None,
                 pending: None,
                 closed: false,
+                connect_by: hub.connect_timeout.map(|d| Instant::now() + d),
             }),
             events: Mutex::new(VecDeque::new()),
             handler: Mutex::new(Some(handler)),
@@ -455,9 +458,16 @@ impl Peer {
             if st.closed {
                 return;
             }
-            loop {
+            if st.rtc.is_connected() {
+                st.connect_by = None;
+            } else if st.connect_by.is_some_and(|d| d <= Instant::now()) {
+                log::debug!(target: "flash_webrtc", "peer {}: not connected in time", self.0.id);
+                died = true;
+            }
+            while !died {
                 match st.rtc.poll_output() {
                     Ok(Output::Timeout(t)) => {
+                        let t = st.connect_by.map_or(t, |d| d.min(t));
                         if st.armed.is_none_or(|a| t < a) {
                             st.armed = Some(t);
                             let target: Weak<dyn timer::Due> = self.0.me.clone();
@@ -591,6 +601,7 @@ struct Hub {
     tx: Tx,
     ice_lite: bool,
     close_on_disconnect: bool,
+    connect_timeout: Option<Duration>,
     config: Box<ConfigFn>,
     candidates: Mutex<Vec<Candidate>>,
     peers: Mutex<HashMap<u64, Peer>>,
@@ -605,6 +616,7 @@ impl Hub {
             tx,
             ice_lite,
             close_on_disconnect: true,
+            connect_timeout: Some(Duration::from_secs(30)),
             config: Box::new(rtc_config),
             candidates: Mutex::new(candidates),
             peers: Mutex::new(HashMap::new()),
@@ -663,7 +675,8 @@ impl Hub {
     }
 
     fn remove(&self, id: u64) {
-        if let Some(p) = lock(&self.peers).remove(&id) {
+        let p = lock(&self.peers).remove(&id);
+        if let Some(p) = p {
             lock(&self.by_ufrag).remove(&p.0.ufrag);
         }
         lock(&self.by_addr).retain(|_, v| *v != id);
@@ -830,6 +843,14 @@ impl RtcServer {
     #[must_use]
     pub fn close_on_disconnect(mut self, yes: bool) -> Self {
         self.hub_mut().close_on_disconnect = yes;
+        self
+    }
+
+    /// Closes a peer that is not connected (ICE and DTLS up) this long after it was created
+    /// (default 30 seconds; `None` waits forever). Call before cloning.
+    #[must_use]
+    pub fn connect_timeout(mut self, t: Option<Duration>) -> Self {
+        self.hub_mut().connect_timeout = t;
         self
     }
 
@@ -1009,7 +1030,7 @@ impl Endpoint {
         let mapped = r?;
         let base = lock(&self.0.candidates)
             .first()
-            .map_or(b.local_addr(), Candidate::addr);
+            .map_or_else(|| b.local_addr(), Candidate::addr);
         if let Ok(c) = Candidate::server_reflexive(mapped, base, "udp") {
             let mut cs = lock(&self.0.candidates);
             if !cs.iter().any(|x| x.addr() == mapped) {
@@ -1036,6 +1057,14 @@ impl Endpoint {
     #[must_use]
     pub fn close_on_disconnect(mut self, yes: bool) -> Self {
         self.hub_mut().close_on_disconnect = yes;
+        self
+    }
+
+    /// Closes a peer that is not connected (ICE and DTLS up) this long after it was created
+    /// (default 30 seconds; `None` waits forever). Call before cloning.
+    #[must_use]
+    pub fn connect_timeout(mut self, t: Option<Duration>) -> Self {
+        self.hub_mut().connect_timeout = t;
         self
     }
 

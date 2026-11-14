@@ -28,6 +28,13 @@ ignore = [
     # time 0.3.47, needs Rust 1.88 and would break the MSRV (1.85) check of the test targets.
     # Drop this once the MSRV reaches 1.88 or rcgen no longer pulls time.
     { id = "RUSTSEC-2026-0009", reason = "dev-only via rcgen; fix needs Rust 1.88 > MSRV" },
+    # crypto-bigint 0.5.5: some operations meant to be constant time may branch on secrets,
+    # depending on compiler and CPU. Reached through p256/p384 0.13 (elliptic-curve 0.13), which
+    # flash-webrtc's DTLS stack (dimpl 0.7 on RustCrypto) uses for ECDHE and ECDSA. The fix is
+    # crypto-bigint 0.7.6, i.e. elliptic-curve 0.14: blocked until dimpl moves to p256 0.14.
+    # DTLS keys are ephemeral per connection (the certificate key per peer), which limits what
+    # a remote timing attack across the network could collect. Revisit on every str0m upgrade.
+    { id = "RUSTSEC-2026-0387", reason = "via dimpl 0.7 -> p256 0.13; fix needs elliptic-curve 0.14" },
 ]
 
 [licenses]
@@ -62,6 +69,12 @@ skip = [
     { crate = "getrandom@0.2", reason = "ring 0.17 and RustCrypto crypto-common 0.1" },
     { crate = "rand_core@0.6", reason = "RustCrypto crypto-common 0.1 (flash-kcp ciphers)" },
     { crate = "cpufeatures@0.2", reason = "RustCrypto 0.10-era crates; quinn-proto's chacha20 uses 0.3" },
+    # str0m 0.24 / dimpl 0.7 (flash-webrtc) use rand 0.9 and the chacha20 0.9 of
+    # chacha20poly1305 0.10, while quinn-proto has moved to rand 0.10 / chacha20 0.10.
+    { crate = "rand@0.9", reason = "str0m 0.24 and dimpl 0.7 (flash-webrtc)" },
+    { crate = "rand_core@0.9", reason = "rand 0.9 (str0m, dimpl)" },
+    { crate = "getrandom@0.3", reason = "rand_core 0.9 (str0m, dimpl)" },
+    { crate = "chacha20@0.9", reason = "chacha20poly1305 0.10 via dimpl 0.7" },
     # loona-hpack 0.4 (HPACK) still uses thiserror 1; quinn-proto uses thiserror 2.
     { crate = "thiserror@1", reason = "loona-hpack 0.4" },
     { crate = "thiserror-impl@1", reason = "loona-hpack 0.4" },
