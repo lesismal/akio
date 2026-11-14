@@ -220,3 +220,52 @@ pub fn tls_info<H>(c: &Conn<H>) -> Option<TlsInfo> {
     })
     .flatten()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Nop;
+    impl flash_core::Handler for Nop {
+        fn on_data(&mut self, _: &Conn<Self>, _: &[u8]) {}
+    }
+
+    fn client_cfg() -> Arc<ClientConfig> {
+        Arc::new(
+            ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth(),
+        )
+    }
+
+    #[test]
+    fn invalid_server_name_is_rejected() {
+        let acc = flash_core::fn_acceptor(|_c: &Conn<Nop>| Nop);
+        let Err(e) = Tls::client(client_cfg(), "not a valid name!", acc) else {
+            panic!("accepted an invalid name");
+        };
+        assert_eq!(e.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn client_transport_starts_handshaking() {
+        let acc = flash_core::fn_acceptor(|_c: &Conn<Nop>| Nop);
+        let tls = Tls::client(client_cfg(), "localhost", acc).unwrap();
+        let t = tls.transport().unwrap();
+        assert_eq!(t.name(), "tls");
+        assert!(t.handshaking());
+    }
+
+    #[test]
+    fn failed_transport_refuses_everything() {
+        let mut f = Failed;
+        let (mut a, mut b) = (Vec::new(), Vec::new());
+        assert!(f.recv(b"x", &mut a, &mut b).is_err());
+        assert!(f.seal(b"x", &mut a).is_err());
+        f.shutdown(&mut a);
+        assert!(a.is_empty());
+        assert_eq!(f.name(), "tls");
+        assert!(f.handshaking());
+        assert!(f.as_any().downcast_mut::<Failed>().is_some());
+    }
+}
