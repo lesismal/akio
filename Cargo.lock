@@ -334,6 +334,16 @@ name = "flash-pool"
 version = "1.0.0-rc.1"
 
 [[package]]
+name = "flash-prefork"
+version = "1.0.0-rc.1"
+dependencies = [
+ "flash",
+ "flash-http",
+ "flash-sys",
+ "log",
+]
+
+[[package]]
 name = "flash-quic"
 version = "1.0.0-rc.1"
 dependencies = [

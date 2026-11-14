@@ -473,7 +473,7 @@ jobs:
           cargo semver-checks check-release
           -p flash -p flash-core -p flash-tls -p flash-http -p flash-ws -p flash-mux
           -p flash-socks -p flash-arpc -p flash-grpc -p flash-kcp -p flash-quic -p flash-h3
-          -p flash-ebpf
+          -p flash-ebpf -p flash-prefork
 
   sanitizers:
     # AddressSanitizer and ThreadSanitizer over the core, syscall and backend tests (epoll and

@@ -1,0 +1,167 @@
+pub mod flash_prefork
+#[non_exhaustive] pub enum flash_prefork::CpuPinning
+pub flash_prefork::CpuPinning::None
+pub flash_prefork::CpuPinning::PerWorker
+pub flash_prefork::CpuPinning::Sets(alloc::vec::Vec<alloc::vec::Vec<usize>>)
+impl core::clone::Clone for flash_prefork::CpuPinning
+pub fn flash_prefork::CpuPinning::clone(&self) -> Self
+impl core::cmp::Eq for flash_prefork::CpuPinning
+impl core::cmp::PartialEq for flash_prefork::CpuPinning
+pub fn flash_prefork::CpuPinning::eq(&self, &Self) -> bool
+impl core::default::Default for flash_prefork::CpuPinning
+pub fn flash_prefork::CpuPinning::default() -> Self
+impl core::fmt::Debug for flash_prefork::CpuPinning
+pub fn flash_prefork::CpuPinning::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_prefork::CpuPinning
+impl core::marker::Send for flash_prefork::CpuPinning
+impl core::marker::Sync for flash_prefork::CpuPinning
+impl core::marker::Unpin for flash_prefork::CpuPinning
+impl core::panic::unwind_safe::RefUnwindSafe for flash_prefork::CpuPinning
+impl core::panic::unwind_safe::UnwindSafe for flash_prefork::CpuPinning
+#[non_exhaustive] pub enum flash_prefork::ListenMode
+pub flash_prefork::ListenMode::Auto
+pub flash_prefork::ListenMode::Inherit
+pub flash_prefork::ListenMode::ReusePort
+impl core::clone::Clone for flash_prefork::ListenMode
+pub fn flash_prefork::ListenMode::clone(&self) -> Self
+impl core::cmp::Eq for flash_prefork::ListenMode
+impl core::cmp::PartialEq for flash_prefork::ListenMode
+pub fn flash_prefork::ListenMode::eq(&self, &Self) -> bool
+impl core::default::Default for flash_prefork::ListenMode
+pub fn flash_prefork::ListenMode::default() -> Self
+impl core::fmt::Debug for flash_prefork::ListenMode
+pub fn flash_prefork::ListenMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_prefork::ListenMode
+impl core::marker::StructuralPartialEq for flash_prefork::ListenMode
+impl core::marker::Send for flash_prefork::ListenMode
+impl core::marker::Sync for flash_prefork::ListenMode
+impl core::marker::Unpin for flash_prefork::ListenMode
+impl core::panic::unwind_safe::RefUnwindSafe for flash_prefork::ListenMode
+impl core::panic::unwind_safe::UnwindSafe for flash_prefork::ListenMode
+pub struct flash_prefork::Controller
+impl flash_prefork::Controller
+pub fn flash_prefork::Controller::reload(&self)
+pub fn flash_prefork::Controller::shutdown(&self)
+impl core::clone::Clone for flash_prefork::Controller
+pub fn flash_prefork::Controller::clone(&self) -> Self
+impl core::fmt::Debug for flash_prefork::Controller
+pub fn flash_prefork::Controller::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_prefork::Controller
+impl core::marker::Sync for flash_prefork::Controller
+impl core::marker::Unpin for flash_prefork::Controller
+impl core::panic::unwind_safe::RefUnwindSafe for flash_prefork::Controller
+impl core::panic::unwind_safe::UnwindSafe for flash_prefork::Controller
+pub struct flash_prefork::Prefork
+impl flash_prefork::Prefork
+pub fn flash_prefork::Prefork::args<I, S>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<std::ffi::os_str::OsStr>
+pub fn flash_prefork::Prefork::backlog(self, i32) -> Self
+pub fn flash_prefork::Prefork::env(self, impl core::convert::AsRef<std::ffi::os_str::OsStr>, impl core::convert::AsRef<std::ffi::os_str::OsStr>) -> Self
+pub fn flash_prefork::Prefork::handle_signals(self, bool) -> Self
+pub fn flash_prefork::Prefork::listen(self, core::net::socket_addr::SocketAddr) -> Self
+pub fn flash_prefork::Prefork::mode(self, flash_prefork::ListenMode) -> Self
+pub fn flash_prefork::Prefork::new() -> flash_prefork::Prefork
+pub fn flash_prefork::Prefork::pin_cpus(self, flash_prefork::CpuPinning) -> Self
+pub fn flash_prefork::Prefork::program(self, impl core::convert::AsRef<std::path::Path>) -> Self
+pub fn flash_prefork::Prefork::ready_timeout(self, core::time::Duration) -> Self
+pub fn flash_prefork::Prefork::restart_backoff(self, core::time::Duration, core::time::Duration) -> Self
+pub fn flash_prefork::Prefork::run<F>(self, F) -> core::io::error::Result<()> where F: core::ops::function::FnOnce(flash_prefork::Worker) -> core::io::error::Result<()>
+pub fn flash_prefork::Prefork::shutdown_timeout(self, core::time::Duration) -> Self
+pub fn flash_prefork::Prefork::spawn(self) -> core::io::error::Result<flash_prefork::Supervisor>
+pub fn flash_prefork::Prefork::workers(self, usize) -> Self
+impl core::clone::Clone for flash_prefork::Prefork
+pub fn flash_prefork::Prefork::clone(&self) -> Self
+impl core::default::Default for flash_prefork::Prefork
+pub fn flash_prefork::Prefork::default() -> Self
+impl core::fmt::Debug for flash_prefork::Prefork
+pub fn flash_prefork::Prefork::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_prefork::Prefork
+impl core::marker::Sync for flash_prefork::Prefork
+impl core::marker::Unpin for flash_prefork::Prefork
+impl core::panic::unwind_safe::RefUnwindSafe for flash_prefork::Prefork
+impl core::panic::unwind_safe::UnwindSafe for flash_prefork::Prefork
+#[non_exhaustive] pub struct flash_prefork::Status
+pub flash_prefork::Status::generation: u64
+pub flash_prefork::Status::reloads: u64
+pub flash_prefork::Status::restarts: u64
+pub flash_prefork::Status::stopping: bool
+pub flash_prefork::Status::workers: alloc::vec::Vec<flash_prefork::WorkerInfo>
+impl flash_prefork::Status
+pub fn flash_prefork::Status::serving(&self) -> alloc::vec::Vec<&flash_prefork::WorkerInfo>
+impl core::clone::Clone for flash_prefork::Status
+pub fn flash_prefork::Status::clone(&self) -> Self
+impl core::cmp::Eq for flash_prefork::Status
+impl core::cmp::PartialEq for flash_prefork::Status
+pub fn flash_prefork::Status::eq(&self, &Self) -> bool
+impl core::default::Default for flash_prefork::Status
+pub fn flash_prefork::Status::default() -> Self
+impl core::fmt::Debug for flash_prefork::Status
+pub fn flash_prefork::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_prefork::Status
+impl core::marker::Send for flash_prefork::Status
+impl core::marker::Sync for flash_prefork::Status
+impl core::marker::Unpin for flash_prefork::Status
+impl core::panic::unwind_safe::RefUnwindSafe for flash_prefork::Status
+impl core::panic::unwind_safe::UnwindSafe for flash_prefork::Status
+pub struct flash_prefork::Supervisor
+impl flash_prefork::Supervisor
+pub fn flash_prefork::Supervisor::addrs(&self) -> &[core::net::socket_addr::SocketAddr]
+pub fn flash_prefork::Supervisor::controller(&self) -> flash_prefork::Controller
+pub fn flash_prefork::Supervisor::reload(&self)
+pub fn flash_prefork::Supervisor::shutdown(&self)
+pub fn flash_prefork::Supervisor::status(&self) -> flash_prefork::Status
+pub fn flash_prefork::Supervisor::wait(self) -> core::io::error::Result<()>
+impl core::fmt::Debug for flash_prefork::Supervisor
+pub fn flash_prefork::Supervisor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for flash_prefork::Supervisor
+pub fn flash_prefork::Supervisor::drop(&mut self)
+impl core::marker::Send for flash_prefork::Supervisor
+impl core::marker::Sync for flash_prefork::Supervisor
+impl core::marker::Unpin for flash_prefork::Supervisor
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_prefork::Supervisor
+impl !core::panic::unwind_safe::UnwindSafe for flash_prefork::Supervisor
+pub struct flash_prefork::Worker
+impl flash_prefork::Worker
+pub fn flash_prefork::Worker::addrs(&self) -> &[core::net::socket_addr::SocketAddr]
+pub fn flash_prefork::Worker::from_env() -> core::io::error::Result<core::option::Option<flash_prefork::Worker>>
+pub fn flash_prefork::Worker::generation(&self) -> u64
+pub fn flash_prefork::Worker::index(&self) -> usize
+pub fn flash_prefork::Worker::is_supervised(&self) -> bool
+pub fn flash_prefork::Worker::listener(&self, usize) -> core::io::error::Result<flash::Listener>
+pub fn flash_prefork::Worker::mode(&self) -> flash_prefork::ListenMode
+pub fn flash_prefork::Worker::ready(&self)
+pub fn flash_prefork::Worker::serve(&self, &flash::Engine) -> core::io::error::Result<()>
+pub fn flash_prefork::Worker::stop_requested(&self) -> bool
+pub fn flash_prefork::Worker::wait_for_stop(&self)
+pub fn flash_prefork::Worker::wait_for_stop_timeout(&self, core::time::Duration) -> bool
+pub fn flash_prefork::Worker::workers(&self) -> usize
+impl core::fmt::Debug for flash_prefork::Worker
+pub fn flash_prefork::Worker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_prefork::Worker
+impl core::marker::Sync for flash_prefork::Worker
+impl core::marker::Unpin for flash_prefork::Worker
+impl core::panic::unwind_safe::RefUnwindSafe for flash_prefork::Worker
+impl core::panic::unwind_safe::UnwindSafe for flash_prefork::Worker
+#[non_exhaustive] pub struct flash_prefork::WorkerInfo
+pub flash_prefork::WorkerInfo::draining: bool
+pub flash_prefork::WorkerInfo::generation: u64
+pub flash_prefork::WorkerInfo::index: usize
+pub flash_prefork::WorkerInfo::pid: u32
+pub flash_prefork::WorkerInfo::ready: bool
+impl core::clone::Clone for flash_prefork::WorkerInfo
+pub fn flash_prefork::WorkerInfo::clone(&self) -> Self
+impl core::cmp::Eq for flash_prefork::WorkerInfo
+impl core::cmp::PartialEq for flash_prefork::WorkerInfo
+pub fn flash_prefork::WorkerInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_prefork::WorkerInfo
+pub fn flash_prefork::WorkerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_prefork::WorkerInfo
+impl core::marker::Send for flash_prefork::WorkerInfo
+impl core::marker::Sync for flash_prefork::WorkerInfo
+impl core::marker::Unpin for flash_prefork::WorkerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for flash_prefork::WorkerInfo
+impl core::panic::unwind_safe::UnwindSafe for flash_prefork::WorkerInfo
+pub const flash_prefork::DEFAULT_READY_TIMEOUT: core::time::Duration
+pub const flash_prefork::DEFAULT_RESTART_MAX: core::time::Duration
+pub const flash_prefork::DEFAULT_RESTART_MIN: core::time::Duration
+pub const flash_prefork::DEFAULT_SHUTDOWN_TIMEOUT: core::time::Duration
+pub fn flash_prefork::is_worker() -> bool

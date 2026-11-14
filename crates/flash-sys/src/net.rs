@@ -121,6 +121,21 @@ pub fn listen(addr: SocketAddr, reuseport: bool, backlog: i32) -> io::Result<Tcp
     Ok(TcpListener::from(fd))
 }
 
+/// Binds a TCP socket on `addr` with `SO_REUSEADDR` and `SO_REUSEPORT`, without listening.
+pub(crate) fn bind_reuseport(addr: SocketAddr) -> io::Result<TcpListener> {
+    let fd = socket(&addr)?;
+    let raw = std::os::fd::AsRawFd::as_raw_fd(&fd);
+    setsockopt_int(raw, libc::SOL_SOCKET, libc::SO_REUSEADDR, 1)?;
+    setsockopt_int(raw, libc::SOL_SOCKET, libc::SO_REUSEPORT, 1)?;
+    if let SocketAddr::V6(_) = addr {
+        setsockopt_int(raw, libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0).ok();
+    }
+    let (ss, len) = sockaddr(&addr);
+    // SAFETY: `ss` is a valid sockaddr of `len` bytes.
+    cvt(unsafe { libc::bind(raw, (&raw const ss).cast::<libc::sockaddr>(), len) })?;
+    Ok(TcpListener::from(fd))
+}
+
 /// Binds a non-blocking UDP socket on `addr` with `SO_REUSEADDR`, and `SO_REUSEPORT` when
 /// `reuseport` is set (on Linux the kernel then spreads peers over the sockets by 4-tuple hash).
 pub fn listen_udp(addr: SocketAddr, reuseport: bool) -> io::Result<std::net::UdpSocket> {

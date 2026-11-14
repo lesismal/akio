@@ -30,6 +30,7 @@
 - [配置参考](configuration.md)
 - [可观测性与热更新](observability.md)
 - [性能调优](performance.md)
+- [多进程服务（prefork）](prefork.md)
 - [故障排查与常见问题](troubleshooting.md)
 
 # 迁移指南

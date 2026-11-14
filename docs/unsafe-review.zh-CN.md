@@ -10,7 +10,7 @@ flash 是网络库：它的内存安全缺陷就是其使用者的远程代码�
 
 | Crate | 状态 | 原因 |
 |---|---|---|
-| `flash-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg |
+| `flash-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号） |
 | `flash-uring` | `#![deny(unsafe_code)]`，仅 `group` 与 `reactor` 模块允许 | io_uring 提交项指向内核异步写入的内存 |
 | `flash-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
 | 其它所有 crate（`flash`、`flash-core`、`flash-buf`、`flash-timer`、`flash-pool`、`flash-epoll`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`tools/echo-bench`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
@@ -73,16 +73,17 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | flash | 0 | 0 | 0 | 12 |
 | flash-ebpf | 11 | 3 | 0 | 1 |
 | flash-http | 0 | 0 | 0 | 8 |
-| flash-sys | 51 | 0 | 3 | 0 |
+| flash-sys | 68 | 1 | 3 | 0 |
 | flash-uring | 18 | 1 | 1 | 0 |
-| **合计** | **80** | **4** | **4** | **21** |
+| **合计** | **97** | **5** | **4** | **21** |
 
 按用途：
 
 | 位置 | 数量 | 用途 | 主要不变式 |
 |---|---:|---|---|
-| `flash-sys/src/net.rs` | 14 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage` | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
+| `flash-sys/src/net.rs` | 16 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage` | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
 | `flash-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
+| `flash-sys/src/process.rs` | 15，`unsafe fn errno_location` | prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `flash-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `flash-sys/src/udp.rs` | 15 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | iovec 位于同一分配内（大小经检查）；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
 | `flash-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |

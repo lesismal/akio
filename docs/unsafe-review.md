@@ -13,7 +13,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 
 | Crate | Status | Why |
 |---|---|---|
-| `flash-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls: epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg |
+| `flash-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls: epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, process plumbing for prefork (`pre_exec`, signals) |
 | `flash-uring` | `#![deny(unsafe_code)]`, allowed in `group` and `reactor` only | io_uring submission entries point into memory the kernel writes asynchronously |
 | `flash-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
 | every other crate (`flash`, `flash-core`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `tools/echo-bench`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
@@ -115,16 +115,17 @@ contain no `unsafe`.
 | flash | 0 | 0 | 0 | 12 |
 | flash-ebpf | 11 | 3 | 0 | 1 |
 | flash-http | 0 | 0 | 0 | 8 |
-| flash-sys | 51 | 0 | 3 | 0 |
+| flash-sys | 68 | 1 | 3 | 0 |
 | flash-uring | 18 | 1 | 1 | 0 |
-| **total** | **80** | **4** | **4** | **21** |
+| **total** | **97** | **5** | **4** | **21** |
 
 By purpose:
 
 | Where | Count | Purpose | Main invariants |
 |---|---:|---|---|
-| `flash-sys/src/net.rs` | 14 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` -> `sockaddr_storage` | sockaddr length matches family; fd owned before any fallible step |
+| `flash-sys/src/net.rs` | 16 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` -> `sockaddr_storage` | sockaddr length matches family; fd owned before any fallible step |
 | `flash-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
+| `flash-sys/src/process.rs` | 15, `unsafe fn errno_location` | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
 | `flash-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
 | `flash-sys/src/udp.rs` | 15 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
 | `flash-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |

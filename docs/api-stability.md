@@ -27,7 +27,7 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 
 | Tier | Crates | Promise |
 |---|---|---|
-| Public | `flash`, `flash-core`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-ebpf` | Full semver for their public API (below). |
+| Public | `flash`, `flash-core`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-ebpf`, `flash-prefork` | Full semver for their public API (below). |
 | Internal | `flash-sys`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-uring` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `flash` / `flash-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `flash-core` and `flash`. |
 
 `tools/` and `fuzz/` are not published.

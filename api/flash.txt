@@ -155,6 +155,7 @@ pub fn flash::Listener::backend(self, flash::Backend) -> Self
 pub fn flash::Listener::serve<A: flash_core::handler::Acceptor>(self, A) -> Self
 pub fn flash::Listener::serve_any(self, impl core::convert::Into<flash_core::handler::AnyAcceptor>) -> Self
 pub fn flash::Listener::tcp(core::net::socket_addr::SocketAddr) -> Self
+pub fn flash::Listener::tcp_from_std(std::net::tcp::TcpListener) -> Self
 pub fn flash::Listener::threads(self, usize) -> Self
 pub fn flash::Listener::udp(core::net::socket_addr::SocketAddr) -> Self
 impl core::fmt::Debug for flash::Listener
