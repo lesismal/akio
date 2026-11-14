@@ -26,6 +26,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | RPC | gRPC（unary 与流式，与 grpc-go 互通），arpc（与 lesismal/arpc 和 fib 线路兼容） |
 | 代理 | SOCKS5/4/4a、HTTP CONNECT、按首字节嗅探的端口复用（flash-mux） |
 | KCP | 与 skywind3000/kcp 和 kcp-go 线路兼容（FEC、加密） |
+| WebRTC、STUN、TURN | 基于 str0m 的 WebRTC（ICE-lite 服务端与完整 ICE agent、DTLS-SRTP、数据通道、RTP/RTCP 媒体），纯 Rust 加密栈；STUN 与 TURN 服务器；与 pion、coturn 互通 |
 | 运维 | Prometheus 指标、连接表、慢回调记录、JSON 调试端点、基于 `log` 的结构化日志、运行时设置热更新 |
 
 实测性能（单台机器，请先看注意事项）：[docs/BENCHMARKS.zh-CN.md](docs/BENCHMARKS.zh-CN.md)。

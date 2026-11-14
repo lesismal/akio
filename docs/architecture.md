@@ -31,6 +31,8 @@ flowchart BT
     quic["flash-quic<br/>quinn-proto"]
     h3[flash-h3]
     kcp[flash-kcp]
+    turn["flash-turn<br/>STUN, TURN"]
+    webrtc["flash-webrtc<br/>str0m"]
 
     buf --> core
     pool --> core
@@ -58,6 +60,8 @@ flowchart BT
     quic --> h3
     http --> h3
     facade --> kcp
+    facade --> turn
+    turn --> webrtc
 ```
 
 - **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → flash →

@@ -1,4 +1,6 @@
 # cargo-audit configuration; keep in sync with the [advisories] ignore list in deny.toml.
 [advisories]
 # time 0.3.45 via rcgen (dev-dependency only); the fix needs Rust 1.88 > MSRV 1.85.
-ignore = ["RUSTSEC-2026-0009"]
+# crypto-bigint 0.5.5 via dimpl 0.7 -> p256 0.13 (flash-webrtc DTLS); the fix needs
+# elliptic-curve 0.14 (see deny.toml).
+ignore = ["RUSTSEC-2026-0009", "RUSTSEC-2026-0387"]

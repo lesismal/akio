@@ -30,6 +30,8 @@ flowchart BT
     quic["flash-quic<br/>quinn-proto"]
     h3[flash-h3]
     kcp[flash-kcp]
+    turn["flash-turn<br/>STUN, TURN"]
+    webrtc["flash-webrtc<br/>str0m"]
 
     buf --> core
     pool --> core
@@ -57,6 +59,8 @@ flowchart BT
     quic --> h3
     http --> h3
     facade --> kcp
+    facade --> turn
+    turn --> webrtc
 ```
 
 - **依赖方向是单向的**：`sys → buf/timer/pool → core → 后端 → flash → 协议`。协议 crate 依赖

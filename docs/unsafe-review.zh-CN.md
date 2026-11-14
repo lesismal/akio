@@ -13,7 +13,7 @@ flash 是网络库：它的内存安全缺陷就是其使用者的远程代码�
 | `flash-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg |
 | `flash-uring` | `#![deny(unsafe_code)]`，仅 `group` 与 `reactor` 模块允许 | io_uring 提交项指向内核异步写入的内存 |
 | `flash-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
-| 其它所有 crate（`flash`、`flash-core`、`flash-buf`、`flash-timer`、`flash-pool`、`flash-epoll`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`tools/echo-bench`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
+| 其它所有 crate（`flash`、`flash-core`、`flash-buf`、`flash-timer`、`flash-pool`、`flash-epoll`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`flash-turn`、`flash-webrtc`、`tools/echo-bench`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
 

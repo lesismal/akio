@@ -10,6 +10,29 @@ All notable changes to flash are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `Engine::bind_udp` and `UdpBinding` (flash, flash-core): an unconnected UDP socket bound
+  while the engine runs, served like a UDP listener (one connection per peer address), that
+  sends to any address with `UdpBinding::send_to`. What ICE agents and TURN relays need.
+- `flash-turn` (new crate): the STUN codec (RFC 8489, with the TURN and ICE attributes,
+  `MESSAGE-INTEGRITY`, `FINGERPRINT`), `StunServer`, and `TurnServer`, a TURN relay over UDP
+  (RFC 8656): allocations with long-term credentials (`static_auth`, `ephemeral_auth` for the
+  TURN REST API), permissions, channels, Send/Data indications, refresh, `EVEN-PORT` and
+  `RESERVATION-TOKEN`, stateless nonces, quotas, and a peer policy refusing private and
+  loopback peers by default; `TurnCore` is the same server as a sans-io state machine. Interop:
+  pion/turn client and coturn's `turnutils_uclient`.
+- `flash-webrtc` (new crate): WebRTC on the sans-io `str0m` 0.24 over flash UDP. `RtcServer`
+  serves a UDP listener (ICE-lite by default, peers demultiplexed by ICE username and source
+  address); `Endpoint` runs a full ICE agent on a `bind_udp` socket, with server-reflexive
+  candidates from a STUN server. `Peer` (any thread) sends on data channels, writes media,
+  requests keyframes, renegotiates; `PeerHandler` callbacks run one at a time per peer. DTLS
+  1.2/1.3 with fingerprint verification, SRTP (AES-CM, AES-GCM), SCTP data channels (reliable or
+  not, ordered or not), RTP/RTCP with NACK, PLI/FIR, TWCC. A pure-Rust crypto provider
+  (RustCrypto and `dimpl`, no C toolchain). Interop with pion (data channels and media in both
+  offer directions, through a flash TURN relay); `tools/interop/webrtc/run.sh`.
+- Fuzz targets `stun_message`, `turn_server` and `webrtc_sdp`.
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 First release candidate of 1.0: the API is frozen for review. The public API of every crate is

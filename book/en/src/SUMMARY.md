@@ -24,6 +24,7 @@
   - [SOCKS and HTTP CONNECT proxies](protocols/socks.md)
   - [Protocol multiplexing](protocols/mux.md)
   - [KCP](protocols/kcp.md)
+  - [WebRTC, STUN and TURN](protocols/webrtc.md)
 
 # Operations
 

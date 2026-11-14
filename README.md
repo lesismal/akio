@@ -27,6 +27,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
 | Proxies | SOCKS5/4/4a, HTTP CONNECT, port sharing by first-byte sniffing (flash-mux) |
 | KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |
+| WebRTC, STUN, TURN | str0m-based WebRTC (ICE-lite server and full ICE agent, DTLS-SRTP, data channels, RTP/RTCP media) on a pure-Rust crypto stack; STUN and TURN servers; interop with pion and coturn |
 | Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings |
 
 Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
