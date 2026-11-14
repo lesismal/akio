@@ -1,8 +1,10 @@
-// gRPC interop peer (grpc-go) for only-grpc, with a pass-through bytes codec so no generated
-// code is needed:
+// gRPC interop peer (grpc-go) for only-grpc. The `test.Echo` methods carry raw bytes (a
+// pass-through codec, no generated code); route_guide and helloworld use grpc-go's own
+// generated code (google.golang.org/grpc/examples) against only-protobuf messages (pb.go):
 //
-//	go run . server 127.0.0.1:9200
-//	go run . client 127.0.0.1:9201
+//	go run . server 127.0.0.1:9200     # test.Echo + routeguide.RouteGuide + helloworld.Greeter
+//	go run . client 127.0.0.1:9201     # raw-bytes calls against only-grpc
+//	go run . pbclient 127.0.0.1:9203   # generated-stub calls against only-protobuf messages
 package main
 
 import (
@@ -20,13 +22,28 @@ import (
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
+// rawCodec passes `*[]byte` through and marshals protobuf messages with the official runtime.
 type rawCodec struct{}
 
-func (rawCodec) Marshal(v any) ([]byte, error)      { return *(v.(*[]byte)), nil }
-func (rawCodec) Unmarshal(b []byte, v any) error    { *(v.(*[]byte)) = append([]byte(nil), b...); return nil }
-func (rawCodec) Name() string                        { return "proto" }
+func (rawCodec) Marshal(v any) ([]byte, error) {
+	if b, ok := v.(*[]byte); ok {
+		return *b, nil
+	}
+	return proto.Marshal(v.(proto.Message))
+}
+
+func (rawCodec) Unmarshal(b []byte, v any) error {
+	if p, ok := v.(*[]byte); ok {
+		*p = append([]byte(nil), b...)
+		return nil
+	}
+	return proto.Unmarshal(b, v.(proto.Message))
+}
+
+func (rawCodec) Name() string { return "proto" }
 
 func init() { encoding.RegisterCodec(rawCodec{}) }
 
@@ -76,7 +93,11 @@ func chat(srv any, st grpc.ServerStream) error {
 var desc = grpc.ServiceDesc{
 	ServiceName: "test.Echo",
 	HandlerType: (*svc)(nil),
-	Methods:     []grpc.MethodDesc{{MethodName: "Unary", Handler: unary}},
+	Methods: []grpc.MethodDesc{
+		{MethodName: "Unary", Handler: unary},
+		{MethodName: "Struct", Handler: echoStruct},
+		{MethodName: "Any", Handler: echoAny},
+	},
 	Streams: []grpc.StreamDesc{
 		{StreamName: "Count", Handler: count, ServerStreams: true},
 		{StreamName: "Chat", Handler: chat, ServerStreams: true, ClientStreams: true},
@@ -90,6 +111,10 @@ func fail(what string, args ...any) {
 
 func main() {
 	mode, addr := os.Args[1], os.Args[2]
+	if mode == "pbclient" {
+		pbClient(addr)
+		return
+	}
 	if mode == "server" {
 		l, err := net.Listen("tcp", addr)
 		if err != nil {
@@ -97,6 +122,7 @@ func main() {
 		}
 		s := grpc.NewServer()
 		s.RegisterService(&desc, struct{}{})
+		registerPB(s)
 		fmt.Println("ready")
 		_ = s.Serve(l)
 		return

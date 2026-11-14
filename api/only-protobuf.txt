@@ -1,0 +1,1488 @@
+pub mod only_protobuf
+pub mod only_protobuf::encoding
+pub enum only_protobuf::encoding::WireType
+pub only_protobuf::encoding::WireType::EndGroup = 4
+pub only_protobuf::encoding::WireType::Fixed32 = 5
+pub only_protobuf::encoding::WireType::Fixed64 = 1
+pub only_protobuf::encoding::WireType::Len = 2
+pub only_protobuf::encoding::WireType::StartGroup = 3
+pub only_protobuf::encoding::WireType::Varint = 0
+impl only_protobuf::encoding::WireType
+pub const fn only_protobuf::encoding::WireType::from_u8(u8) -> core::option::Option<only_protobuf::encoding::WireType>
+impl core::clone::Clone for only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::WireType::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::encoding::WireType
+impl core::cmp::PartialEq for only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::WireType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::WireType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::WireType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_protobuf::encoding::WireType
+impl core::marker::StructuralPartialEq for only_protobuf::encoding::WireType
+impl core::marker::Send for only_protobuf::encoding::WireType
+impl core::marker::Sync for only_protobuf::encoding::WireType
+impl core::marker::Unpin for only_protobuf::encoding::WireType
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::WireType
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::WireType
+pub struct only_protobuf::encoding::Bool
+impl core::clone::Clone for only_protobuf::encoding::Bool
+pub fn only_protobuf::encoding::Bool::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Bool
+pub fn only_protobuf::encoding::Bool::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Bool
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Bool
+pub type only_protobuf::encoding::Bool::Value = bool
+pub const only_protobuf::encoding::Bool::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Bool::encode(&bool, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Bool::is_default(&bool) -> bool
+pub fn only_protobuf::encoding::Bool::len(&bool) -> usize
+pub fn only_protobuf::encoding::Bool::merge(&mut bool, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Bool
+impl core::marker::Sync for only_protobuf::encoding::Bool
+impl core::marker::Unpin for only_protobuf::encoding::Bool
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Bool
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Bool
+pub struct only_protobuf::encoding::BytesCodec
+impl core::clone::Clone for only_protobuf::encoding::BytesCodec
+pub fn only_protobuf::encoding::BytesCodec::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::BytesCodec
+pub fn only_protobuf::encoding::BytesCodec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::BytesCodec
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::BytesCodec
+pub type only_protobuf::encoding::BytesCodec::Value = alloc::vec::Vec<u8>
+pub const only_protobuf::encoding::BytesCodec::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::BytesCodec::encode(&alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::BytesCodec::is_default(&alloc::vec::Vec<u8>) -> bool
+pub fn only_protobuf::encoding::BytesCodec::len(&alloc::vec::Vec<u8>) -> usize
+pub fn only_protobuf::encoding::BytesCodec::merge(&mut alloc::vec::Vec<u8>, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::BytesCodec
+impl core::marker::Sync for only_protobuf::encoding::BytesCodec
+impl core::marker::Unpin for only_protobuf::encoding::BytesCodec
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::BytesCodec
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::BytesCodec
+pub struct only_protobuf::encoding::Double
+impl core::clone::Clone for only_protobuf::encoding::Double
+pub fn only_protobuf::encoding::Double::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Double
+pub fn only_protobuf::encoding::Double::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Double
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Double
+pub type only_protobuf::encoding::Double::Value = f64
+pub const only_protobuf::encoding::Double::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Double::encode(&f64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Double::is_default(&f64) -> bool
+pub fn only_protobuf::encoding::Double::len(&f64) -> usize
+pub fn only_protobuf::encoding::Double::merge(&mut f64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Double
+impl core::marker::Sync for only_protobuf::encoding::Double
+impl core::marker::Unpin for only_protobuf::encoding::Double
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Double
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Double
+pub struct only_protobuf::encoding::EnumCodec<E>(_)
+impl<E: core::fmt::Debug> core::fmt::Debug for only_protobuf::encoding::EnumCodec<E>
+pub fn only_protobuf::encoding::EnumCodec<E>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<E: only_protobuf::Enumeration> only_protobuf::encoding::Codec for only_protobuf::encoding::EnumCodec<E>
+pub type only_protobuf::encoding::EnumCodec<E>::Value = E
+pub const only_protobuf::encoding::EnumCodec<E>::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::EnumCodec<E>::encode(&E, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::EnumCodec<E>::is_default(&E) -> bool
+pub fn only_protobuf::encoding::EnumCodec<E>::len(&E) -> usize
+pub fn only_protobuf::encoding::EnumCodec<E>::merge(&mut E, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl<E> core::marker::Send for only_protobuf::encoding::EnumCodec<E> where core::marker::PhantomData<E>: core::marker::Send
+impl<E> core::marker::Sync for only_protobuf::encoding::EnumCodec<E> where core::marker::PhantomData<E>: core::marker::Sync
+impl<E> core::marker::Unpin for only_protobuf::encoding::EnumCodec<E> where core::marker::PhantomData<E>: core::marker::Unpin
+impl<E> core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::EnumCodec<E> where core::marker::PhantomData<E>: core::panic::unwind_safe::RefUnwindSafe
+impl<E> core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::EnumCodec<E> where core::marker::PhantomData<E>: core::panic::unwind_safe::UnwindSafe
+pub struct only_protobuf::encoding::Fixed32
+impl core::clone::Clone for only_protobuf::encoding::Fixed32
+pub fn only_protobuf::encoding::Fixed32::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Fixed32
+pub fn only_protobuf::encoding::Fixed32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Fixed32
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Fixed32
+pub type only_protobuf::encoding::Fixed32::Value = u32
+pub const only_protobuf::encoding::Fixed32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Fixed32::encode(&u32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Fixed32::is_default(&u32) -> bool
+pub fn only_protobuf::encoding::Fixed32::len(&u32) -> usize
+pub fn only_protobuf::encoding::Fixed32::merge(&mut u32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Fixed32
+impl core::marker::Sync for only_protobuf::encoding::Fixed32
+impl core::marker::Unpin for only_protobuf::encoding::Fixed32
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Fixed32
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Fixed32
+pub struct only_protobuf::encoding::Fixed64
+impl core::clone::Clone for only_protobuf::encoding::Fixed64
+pub fn only_protobuf::encoding::Fixed64::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Fixed64
+pub fn only_protobuf::encoding::Fixed64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Fixed64
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Fixed64
+pub type only_protobuf::encoding::Fixed64::Value = u64
+pub const only_protobuf::encoding::Fixed64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Fixed64::encode(&u64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Fixed64::is_default(&u64) -> bool
+pub fn only_protobuf::encoding::Fixed64::len(&u64) -> usize
+pub fn only_protobuf::encoding::Fixed64::merge(&mut u64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Fixed64
+impl core::marker::Sync for only_protobuf::encoding::Fixed64
+impl core::marker::Unpin for only_protobuf::encoding::Fixed64
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Fixed64
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Fixed64
+pub struct only_protobuf::encoding::Float
+impl core::clone::Clone for only_protobuf::encoding::Float
+pub fn only_protobuf::encoding::Float::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Float
+pub fn only_protobuf::encoding::Float::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Float
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Float
+pub type only_protobuf::encoding::Float::Value = f32
+pub const only_protobuf::encoding::Float::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Float::encode(&f32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Float::is_default(&f32) -> bool
+pub fn only_protobuf::encoding::Float::len(&f32) -> usize
+pub fn only_protobuf::encoding::Float::merge(&mut f32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Float
+impl core::marker::Sync for only_protobuf::encoding::Float
+impl core::marker::Unpin for only_protobuf::encoding::Float
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Float
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Float
+pub struct only_protobuf::encoding::Int32
+impl core::clone::Clone for only_protobuf::encoding::Int32
+pub fn only_protobuf::encoding::Int32::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Int32
+pub fn only_protobuf::encoding::Int32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Int32
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Int32
+pub type only_protobuf::encoding::Int32::Value = i32
+pub const only_protobuf::encoding::Int32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Int32::encode(&i32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Int32::is_default(&i32) -> bool
+pub fn only_protobuf::encoding::Int32::len(&i32) -> usize
+pub fn only_protobuf::encoding::Int32::merge(&mut i32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Int32
+impl core::marker::Sync for only_protobuf::encoding::Int32
+impl core::marker::Unpin for only_protobuf::encoding::Int32
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Int32
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Int32
+pub struct only_protobuf::encoding::Int64
+impl core::clone::Clone for only_protobuf::encoding::Int64
+pub fn only_protobuf::encoding::Int64::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Int64
+pub fn only_protobuf::encoding::Int64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Int64
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Int64
+pub type only_protobuf::encoding::Int64::Value = i64
+pub const only_protobuf::encoding::Int64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Int64::encode(&i64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Int64::is_default(&i64) -> bool
+pub fn only_protobuf::encoding::Int64::len(&i64) -> usize
+pub fn only_protobuf::encoding::Int64::merge(&mut i64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Int64
+impl core::marker::Sync for only_protobuf::encoding::Int64
+impl core::marker::Unpin for only_protobuf::encoding::Int64
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Int64
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Int64
+pub struct only_protobuf::encoding::MessageCodec<M>(_)
+impl<M: core::fmt::Debug> core::fmt::Debug for only_protobuf::encoding::MessageCodec<M>
+pub fn only_protobuf::encoding::MessageCodec<M>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<M: only_protobuf::Message> only_protobuf::encoding::Codec for only_protobuf::encoding::MessageCodec<M>
+pub type only_protobuf::encoding::MessageCodec<M>::Value = M
+pub const only_protobuf::encoding::MessageCodec<M>::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::MessageCodec<M>::encode(&M, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::MessageCodec<M>::is_default(&M) -> bool
+pub fn only_protobuf::encoding::MessageCodec<M>::len(&M) -> usize
+pub fn only_protobuf::encoding::MessageCodec<M>::merge(&mut M, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl<M> core::marker::Send for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::marker::Send
+impl<M> core::marker::Sync for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::marker::Sync
+impl<M> core::marker::Unpin for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::marker::Unpin
+impl<M> core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::panic::unwind_safe::RefUnwindSafe
+impl<M> core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::MessageCodec<M> where core::marker::PhantomData<M>: core::panic::unwind_safe::UnwindSafe
+pub struct only_protobuf::encoding::Reader<'a>
+impl<'a> only_protobuf::encoding::Reader<'a>
+pub const fn only_protobuf::encoding::Reader<'a>::depth(&self) -> u32
+pub const fn only_protobuf::encoding::Reader<'a>::is_empty(&self) -> bool
+pub fn only_protobuf::encoding::Reader<'a>::nested(&mut self) -> core::result::Result<only_protobuf::encoding::Reader<'a>, only_protobuf::DecodeError>
+pub const fn only_protobuf::encoding::Reader<'a>::new(&'a [u8]) -> only_protobuf::encoding::Reader<'a>
+pub fn only_protobuf::encoding::Reader<'a>::read_bytes(&mut self) -> core::result::Result<&'a [u8], only_protobuf::DecodeError>
+pub fn only_protobuf::encoding::Reader<'a>::read_fixed32(&mut self) -> core::result::Result<u32, only_protobuf::DecodeError>
+pub fn only_protobuf::encoding::Reader<'a>::read_fixed64(&mut self) -> core::result::Result<u64, only_protobuf::DecodeError>
+pub fn only_protobuf::encoding::Reader<'a>::read_tag(&mut self) -> core::result::Result<(u32, only_protobuf::encoding::WireType), only_protobuf::DecodeError>
+pub fn only_protobuf::encoding::Reader<'a>::read_varint(&mut self) -> core::result::Result<u64, only_protobuf::DecodeError>
+pub const fn only_protobuf::encoding::Reader<'a>::remaining(&self) -> &'a [u8]
+pub fn only_protobuf::encoding::Reader<'a>::skip_field(&mut self, u32, only_protobuf::encoding::WireType) -> core::result::Result<&'a [u8], only_protobuf::DecodeError>
+impl<'a> core::clone::Clone for only_protobuf::encoding::Reader<'a>
+pub fn only_protobuf::encoding::Reader<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for only_protobuf::encoding::Reader<'a>
+pub fn only_protobuf::encoding::Reader<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for only_protobuf::encoding::Reader<'a>
+impl<'a> core::marker::Sync for only_protobuf::encoding::Reader<'a>
+impl<'a> core::marker::Unpin for only_protobuf::encoding::Reader<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Reader<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Reader<'a>
+pub struct only_protobuf::encoding::Sfixed32
+impl core::clone::Clone for only_protobuf::encoding::Sfixed32
+pub fn only_protobuf::encoding::Sfixed32::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Sfixed32
+pub fn only_protobuf::encoding::Sfixed32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Sfixed32
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sfixed32
+pub type only_protobuf::encoding::Sfixed32::Value = i32
+pub const only_protobuf::encoding::Sfixed32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sfixed32::encode(&i32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sfixed32::is_default(&i32) -> bool
+pub fn only_protobuf::encoding::Sfixed32::len(&i32) -> usize
+pub fn only_protobuf::encoding::Sfixed32::merge(&mut i32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Sfixed32
+impl core::marker::Sync for only_protobuf::encoding::Sfixed32
+impl core::marker::Unpin for only_protobuf::encoding::Sfixed32
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Sfixed32
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Sfixed32
+pub struct only_protobuf::encoding::Sfixed64
+impl core::clone::Clone for only_protobuf::encoding::Sfixed64
+pub fn only_protobuf::encoding::Sfixed64::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Sfixed64
+pub fn only_protobuf::encoding::Sfixed64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Sfixed64
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sfixed64
+pub type only_protobuf::encoding::Sfixed64::Value = i64
+pub const only_protobuf::encoding::Sfixed64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sfixed64::encode(&i64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sfixed64::is_default(&i64) -> bool
+pub fn only_protobuf::encoding::Sfixed64::len(&i64) -> usize
+pub fn only_protobuf::encoding::Sfixed64::merge(&mut i64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Sfixed64
+impl core::marker::Sync for only_protobuf::encoding::Sfixed64
+impl core::marker::Unpin for only_protobuf::encoding::Sfixed64
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Sfixed64
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Sfixed64
+pub struct only_protobuf::encoding::Sint32
+impl core::clone::Clone for only_protobuf::encoding::Sint32
+pub fn only_protobuf::encoding::Sint32::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Sint32
+pub fn only_protobuf::encoding::Sint32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Sint32
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sint32
+pub type only_protobuf::encoding::Sint32::Value = i32
+pub const only_protobuf::encoding::Sint32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sint32::encode(&i32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sint32::is_default(&i32) -> bool
+pub fn only_protobuf::encoding::Sint32::len(&i32) -> usize
+pub fn only_protobuf::encoding::Sint32::merge(&mut i32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Sint32
+impl core::marker::Sync for only_protobuf::encoding::Sint32
+impl core::marker::Unpin for only_protobuf::encoding::Sint32
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Sint32
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Sint32
+pub struct only_protobuf::encoding::Sint64
+impl core::clone::Clone for only_protobuf::encoding::Sint64
+pub fn only_protobuf::encoding::Sint64::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Sint64
+pub fn only_protobuf::encoding::Sint64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Sint64
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sint64
+pub type only_protobuf::encoding::Sint64::Value = i64
+pub const only_protobuf::encoding::Sint64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sint64::encode(&i64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sint64::is_default(&i64) -> bool
+pub fn only_protobuf::encoding::Sint64::len(&i64) -> usize
+pub fn only_protobuf::encoding::Sint64::merge(&mut i64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Sint64
+impl core::marker::Sync for only_protobuf::encoding::Sint64
+impl core::marker::Unpin for only_protobuf::encoding::Sint64
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Sint64
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Sint64
+pub struct only_protobuf::encoding::StringCodec
+impl core::clone::Clone for only_protobuf::encoding::StringCodec
+pub fn only_protobuf::encoding::StringCodec::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::StringCodec
+pub fn only_protobuf::encoding::StringCodec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::StringCodec
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::StringCodec
+pub type only_protobuf::encoding::StringCodec::Value = alloc::string::String
+pub const only_protobuf::encoding::StringCodec::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::StringCodec::encode(&alloc::string::String, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::StringCodec::is_default(&alloc::string::String) -> bool
+pub fn only_protobuf::encoding::StringCodec::len(&alloc::string::String) -> usize
+pub fn only_protobuf::encoding::StringCodec::merge(&mut alloc::string::String, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::StringCodec
+impl core::marker::Sync for only_protobuf::encoding::StringCodec
+impl core::marker::Unpin for only_protobuf::encoding::StringCodec
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::StringCodec
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::StringCodec
+pub struct only_protobuf::encoding::Uint32
+impl core::clone::Clone for only_protobuf::encoding::Uint32
+pub fn only_protobuf::encoding::Uint32::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Uint32
+pub fn only_protobuf::encoding::Uint32::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Uint32
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Uint32
+pub type only_protobuf::encoding::Uint32::Value = u32
+pub const only_protobuf::encoding::Uint32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Uint32::encode(&u32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Uint32::is_default(&u32) -> bool
+pub fn only_protobuf::encoding::Uint32::len(&u32) -> usize
+pub fn only_protobuf::encoding::Uint32::merge(&mut u32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Uint32
+impl core::marker::Sync for only_protobuf::encoding::Uint32
+impl core::marker::Unpin for only_protobuf::encoding::Uint32
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Uint32
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Uint32
+pub struct only_protobuf::encoding::Uint64
+impl core::clone::Clone for only_protobuf::encoding::Uint64
+pub fn only_protobuf::encoding::Uint64::clone(&self) -> Self
+impl core::fmt::Debug for only_protobuf::encoding::Uint64
+pub fn only_protobuf::encoding::Uint64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::encoding::Uint64
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Uint64
+pub type only_protobuf::encoding::Uint64::Value = u64
+pub const only_protobuf::encoding::Uint64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Uint64::encode(&u64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Uint64::is_default(&u64) -> bool
+pub fn only_protobuf::encoding::Uint64::len(&u64) -> usize
+pub fn only_protobuf::encoding::Uint64::merge(&mut u64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl core::marker::Send for only_protobuf::encoding::Uint64
+impl core::marker::Sync for only_protobuf::encoding::Uint64
+impl core::marker::Unpin for only_protobuf::encoding::Uint64
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::encoding::Uint64
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::encoding::Uint64
+pub const only_protobuf::encoding::MAX_FIELD_NUMBER: u32
+pub const only_protobuf::encoding::RECURSION_LIMIT: u32
+pub trait only_protobuf::encoding::Codec
+pub type only_protobuf::encoding::Codec::Value
+pub const only_protobuf::encoding::Codec::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Codec::encode(&Self::Value, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Codec::is_default(&Self::Value) -> bool
+pub fn only_protobuf::encoding::Codec::len(&Self::Value) -> usize
+pub fn only_protobuf::encoding::Codec::merge(&mut Self::Value, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Bool
+pub type only_protobuf::encoding::Bool::Value = bool
+pub const only_protobuf::encoding::Bool::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Bool::encode(&bool, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Bool::is_default(&bool) -> bool
+pub fn only_protobuf::encoding::Bool::len(&bool) -> usize
+pub fn only_protobuf::encoding::Bool::merge(&mut bool, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::BytesCodec
+pub type only_protobuf::encoding::BytesCodec::Value = alloc::vec::Vec<u8>
+pub const only_protobuf::encoding::BytesCodec::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::BytesCodec::encode(&alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::BytesCodec::is_default(&alloc::vec::Vec<u8>) -> bool
+pub fn only_protobuf::encoding::BytesCodec::len(&alloc::vec::Vec<u8>) -> usize
+pub fn only_protobuf::encoding::BytesCodec::merge(&mut alloc::vec::Vec<u8>, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Double
+pub type only_protobuf::encoding::Double::Value = f64
+pub const only_protobuf::encoding::Double::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Double::encode(&f64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Double::is_default(&f64) -> bool
+pub fn only_protobuf::encoding::Double::len(&f64) -> usize
+pub fn only_protobuf::encoding::Double::merge(&mut f64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Fixed32
+pub type only_protobuf::encoding::Fixed32::Value = u32
+pub const only_protobuf::encoding::Fixed32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Fixed32::encode(&u32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Fixed32::is_default(&u32) -> bool
+pub fn only_protobuf::encoding::Fixed32::len(&u32) -> usize
+pub fn only_protobuf::encoding::Fixed32::merge(&mut u32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Fixed64
+pub type only_protobuf::encoding::Fixed64::Value = u64
+pub const only_protobuf::encoding::Fixed64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Fixed64::encode(&u64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Fixed64::is_default(&u64) -> bool
+pub fn only_protobuf::encoding::Fixed64::len(&u64) -> usize
+pub fn only_protobuf::encoding::Fixed64::merge(&mut u64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Float
+pub type only_protobuf::encoding::Float::Value = f32
+pub const only_protobuf::encoding::Float::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Float::encode(&f32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Float::is_default(&f32) -> bool
+pub fn only_protobuf::encoding::Float::len(&f32) -> usize
+pub fn only_protobuf::encoding::Float::merge(&mut f32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Int32
+pub type only_protobuf::encoding::Int32::Value = i32
+pub const only_protobuf::encoding::Int32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Int32::encode(&i32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Int32::is_default(&i32) -> bool
+pub fn only_protobuf::encoding::Int32::len(&i32) -> usize
+pub fn only_protobuf::encoding::Int32::merge(&mut i32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Int64
+pub type only_protobuf::encoding::Int64::Value = i64
+pub const only_protobuf::encoding::Int64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Int64::encode(&i64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Int64::is_default(&i64) -> bool
+pub fn only_protobuf::encoding::Int64::len(&i64) -> usize
+pub fn only_protobuf::encoding::Int64::merge(&mut i64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sfixed32
+pub type only_protobuf::encoding::Sfixed32::Value = i32
+pub const only_protobuf::encoding::Sfixed32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sfixed32::encode(&i32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sfixed32::is_default(&i32) -> bool
+pub fn only_protobuf::encoding::Sfixed32::len(&i32) -> usize
+pub fn only_protobuf::encoding::Sfixed32::merge(&mut i32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sfixed64
+pub type only_protobuf::encoding::Sfixed64::Value = i64
+pub const only_protobuf::encoding::Sfixed64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sfixed64::encode(&i64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sfixed64::is_default(&i64) -> bool
+pub fn only_protobuf::encoding::Sfixed64::len(&i64) -> usize
+pub fn only_protobuf::encoding::Sfixed64::merge(&mut i64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sint32
+pub type only_protobuf::encoding::Sint32::Value = i32
+pub const only_protobuf::encoding::Sint32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sint32::encode(&i32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sint32::is_default(&i32) -> bool
+pub fn only_protobuf::encoding::Sint32::len(&i32) -> usize
+pub fn only_protobuf::encoding::Sint32::merge(&mut i32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Sint64
+pub type only_protobuf::encoding::Sint64::Value = i64
+pub const only_protobuf::encoding::Sint64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Sint64::encode(&i64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Sint64::is_default(&i64) -> bool
+pub fn only_protobuf::encoding::Sint64::len(&i64) -> usize
+pub fn only_protobuf::encoding::Sint64::merge(&mut i64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::StringCodec
+pub type only_protobuf::encoding::StringCodec::Value = alloc::string::String
+pub const only_protobuf::encoding::StringCodec::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::StringCodec::encode(&alloc::string::String, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::StringCodec::is_default(&alloc::string::String) -> bool
+pub fn only_protobuf::encoding::StringCodec::len(&alloc::string::String) -> usize
+pub fn only_protobuf::encoding::StringCodec::merge(&mut alloc::string::String, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Uint32
+pub type only_protobuf::encoding::Uint32::Value = u32
+pub const only_protobuf::encoding::Uint32::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Uint32::encode(&u32, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Uint32::is_default(&u32) -> bool
+pub fn only_protobuf::encoding::Uint32::len(&u32) -> usize
+pub fn only_protobuf::encoding::Uint32::merge(&mut u32, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::encoding::Codec for only_protobuf::encoding::Uint64
+pub type only_protobuf::encoding::Uint64::Value = u64
+pub const only_protobuf::encoding::Uint64::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::Uint64::encode(&u64, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::Uint64::is_default(&u64) -> bool
+pub fn only_protobuf::encoding::Uint64::len(&u64) -> usize
+pub fn only_protobuf::encoding::Uint64::merge(&mut u64, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl<E: only_protobuf::Enumeration> only_protobuf::encoding::Codec for only_protobuf::encoding::EnumCodec<E>
+pub type only_protobuf::encoding::EnumCodec<E>::Value = E
+pub const only_protobuf::encoding::EnumCodec<E>::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::EnumCodec<E>::encode(&E, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::EnumCodec<E>::is_default(&E) -> bool
+pub fn only_protobuf::encoding::EnumCodec<E>::len(&E) -> usize
+pub fn only_protobuf::encoding::EnumCodec<E>::merge(&mut E, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl<M: only_protobuf::Message> only_protobuf::encoding::Codec for only_protobuf::encoding::MessageCodec<M>
+pub type only_protobuf::encoding::MessageCodec<M>::Value = M
+pub const only_protobuf::encoding::MessageCodec<M>::WIRE_TYPE: only_protobuf::encoding::WireType
+pub fn only_protobuf::encoding::MessageCodec<M>::encode(&M, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::MessageCodec<M>::is_default(&M) -> bool
+pub fn only_protobuf::encoding::MessageCodec<M>::len(&M) -> usize
+pub fn only_protobuf::encoding::MessageCodec<M>::merge(&mut M, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::encoding::accepts<C: only_protobuf::encoding::Codec>(only_protobuf::encoding::WireType) -> bool
+pub fn only_protobuf::encoding::accepts_repeated<C: only_protobuf::encoding::Codec>(only_protobuf::encoding::WireType) -> bool
+pub fn only_protobuf::encoding::check_wire_type<C: only_protobuf::encoding::Codec>(u32, only_protobuf::encoding::WireType) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::encoding::encode_implicit<C: only_protobuf::encoding::Codec>(u32, &<C as only_protobuf::encoding::Codec>::Value, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::encode_map<'a, K, V>(u32, impl core::iter::traits::collect::IntoIterator<Item = (&'a <K as only_protobuf::encoding::Codec>::Value, &'a <V as only_protobuf::encoding::Codec>::Value)>, &mut alloc::vec::Vec<u8>) where K: only_protobuf::encoding::Codec, V: only_protobuf::encoding::Codec, <K as only_protobuf::encoding::Codec>::Value: 'a, <V as only_protobuf::encoding::Codec>::Value: 'a
+pub fn only_protobuf::encoding::encode_optional<C: only_protobuf::encoding::Codec>(u32, core::option::Option<&<C as only_protobuf::encoding::Codec>::Value>, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::encode_packed<C: only_protobuf::encoding::Codec>(u32, &[<C as only_protobuf::encoding::Codec>::Value], &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::encode_repeated<C: only_protobuf::encoding::Codec>(u32, &[<C as only_protobuf::encoding::Codec>::Value], &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::encode_required<C: only_protobuf::encoding::Codec>(u32, &<C as only_protobuf::encoding::Codec>::Value, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::encoding::implicit_len<C: only_protobuf::encoding::Codec>(u32, &<C as only_protobuf::encoding::Codec>::Value) -> usize
+pub fn only_protobuf::encoding::map_len<'a, K, V>(u32, impl core::iter::traits::collect::IntoIterator<Item = (&'a <K as only_protobuf::encoding::Codec>::Value, &'a <V as only_protobuf::encoding::Codec>::Value)>) -> usize where K: only_protobuf::encoding::Codec, V: only_protobuf::encoding::Codec, <K as only_protobuf::encoding::Codec>::Value: 'a, <V as only_protobuf::encoding::Codec>::Value: 'a
+pub fn only_protobuf::encoding::merge_boxed<C: only_protobuf::encoding::Codec>(u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>, &mut core::option::Option<alloc::boxed::Box<<C as only_protobuf::encoding::Codec>::Value>>) -> core::result::Result<(), only_protobuf::DecodeError> where <C as only_protobuf::encoding::Codec>::Value: core::default::Default
+pub fn only_protobuf::encoding::merge_map<K, V>(u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>, &mut impl core::iter::traits::collect::Extend<(<K as only_protobuf::encoding::Codec>::Value, <V as only_protobuf::encoding::Codec>::Value)>) -> core::result::Result<(), only_protobuf::DecodeError> where K: only_protobuf::encoding::Codec, V: only_protobuf::encoding::Codec, <K as only_protobuf::encoding::Codec>::Value: core::default::Default, <V as only_protobuf::encoding::Codec>::Value: core::default::Default
+pub fn only_protobuf::encoding::merge_optional<C: only_protobuf::encoding::Codec>(u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>, &mut core::option::Option<<C as only_protobuf::encoding::Codec>::Value>) -> core::result::Result<(), only_protobuf::DecodeError> where <C as only_protobuf::encoding::Codec>::Value: core::default::Default
+pub fn only_protobuf::encoding::merge_repeated<C: only_protobuf::encoding::Codec>(u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>, &mut alloc::vec::Vec<<C as only_protobuf::encoding::Codec>::Value>) -> core::result::Result<(), only_protobuf::DecodeError> where <C as only_protobuf::encoding::Codec>::Value: core::default::Default
+pub fn only_protobuf::encoding::merge_value<C: only_protobuf::encoding::Codec>(u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>, &mut <C as only_protobuf::encoding::Codec>::Value) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::encoding::optional_len<C: only_protobuf::encoding::Codec>(u32, core::option::Option<&<C as only_protobuf::encoding::Codec>::Value>) -> usize
+pub fn only_protobuf::encoding::packed_len<C: only_protobuf::encoding::Codec>(u32, &[<C as only_protobuf::encoding::Codec>::Value]) -> usize
+pub fn only_protobuf::encoding::put_bytes(&mut alloc::vec::Vec<u8>, &[u8])
+pub fn only_protobuf::encoding::put_tag(&mut alloc::vec::Vec<u8>, u32, only_protobuf::encoding::WireType)
+pub fn only_protobuf::encoding::put_varint(&mut alloc::vec::Vec<u8>, u64)
+pub fn only_protobuf::encoding::repeated_len<C: only_protobuf::encoding::Codec>(u32, &[<C as only_protobuf::encoding::Codec>::Value]) -> usize
+pub fn only_protobuf::encoding::required_len<C: only_protobuf::encoding::Codec>(u32, &<C as only_protobuf::encoding::Codec>::Value) -> usize
+pub const fn only_protobuf::encoding::tag_len(u32) -> usize
+pub const fn only_protobuf::encoding::unzigzag32(u32) -> i32
+pub const fn only_protobuf::encoding::unzigzag64(u64) -> i64
+pub const fn only_protobuf::encoding::varint_len(u64) -> usize
+pub const fn only_protobuf::encoding::zigzag32(i32) -> u32
+pub const fn only_protobuf::encoding::zigzag64(i64) -> u64
+pub mod only_protobuf::well_known
+pub mod only_protobuf::well_known::value
+pub enum only_protobuf::well_known::value::Kind
+pub only_protobuf::well_known::value::Kind::BoolValue(bool)
+pub only_protobuf::well_known::value::Kind::ListValue(only_protobuf::well_known::ListValue)
+pub only_protobuf::well_known::value::Kind::NullValue(only_protobuf::well_known::NullValue)
+pub only_protobuf::well_known::value::Kind::NumberValue(f64)
+pub only_protobuf::well_known::value::Kind::StringValue(alloc::string::String)
+pub only_protobuf::well_known::value::Kind::StructValue(only_protobuf::well_known::Struct)
+impl core::clone::Clone for only_protobuf::well_known::value::Kind
+pub fn only_protobuf::well_known::value::Kind::clone(&self) -> Self
+impl core::cmp::PartialEq for only_protobuf::well_known::value::Kind
+pub fn only_protobuf::well_known::value::Kind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_protobuf::well_known::value::Kind
+pub fn only_protobuf::well_known::value::Kind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::value::Kind
+impl core::marker::Send for only_protobuf::well_known::value::Kind
+impl core::marker::Sync for only_protobuf::well_known::value::Kind
+impl core::marker::Unpin for only_protobuf::well_known::value::Kind
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::value::Kind
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::value::Kind
+pub struct only_protobuf::well_known::Any
+pub only_protobuf::well_known::Any::type_url: alloc::string::String
+pub only_protobuf::well_known::Any::value: alloc::vec::Vec<u8>
+impl only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::is<M: only_protobuf::Name>(&self) -> bool
+pub fn only_protobuf::well_known::Any::pack<M: only_protobuf::Message + only_protobuf::Name>(&M) -> only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::unpack<M: only_protobuf::Message + only_protobuf::Name>(&self) -> core::result::Result<core::option::Option<M>, only_protobuf::DecodeError>
+impl core::clone::Clone for only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::Any
+impl core::cmp::PartialEq for only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Any
+impl only_protobuf::Message for only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::clear(&mut self)
+pub fn only_protobuf::well_known::Any::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Any::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Any::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Any::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Any::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Any::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Any
+pub const only_protobuf::well_known::Any::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Any::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Any
+impl core::marker::Sync for only_protobuf::well_known::Any
+impl core::marker::Unpin for only_protobuf::well_known::Any
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Any
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Any
+pub struct only_protobuf::well_known::BoolValue
+pub only_protobuf::well_known::BoolValue::value: bool
+impl core::clone::Clone for only_protobuf::well_known::BoolValue
+pub fn only_protobuf::well_known::BoolValue::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::BoolValue
+impl core::cmp::PartialEq for only_protobuf::well_known::BoolValue
+pub fn only_protobuf::well_known::BoolValue::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::BoolValue
+pub fn only_protobuf::well_known::BoolValue::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::BoolValue
+pub fn only_protobuf::well_known::BoolValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::BoolValue
+impl only_protobuf::Message for only_protobuf::well_known::BoolValue
+pub fn only_protobuf::well_known::BoolValue::clear(&mut self)
+pub fn only_protobuf::well_known::BoolValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BoolValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BoolValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BoolValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::BoolValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::BoolValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::BoolValue
+pub const only_protobuf::well_known::BoolValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::BoolValue::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::BoolValue
+impl core::marker::Sync for only_protobuf::well_known::BoolValue
+impl core::marker::Unpin for only_protobuf::well_known::BoolValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::BoolValue
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::BoolValue
+pub struct only_protobuf::well_known::BytesValue
+pub only_protobuf::well_known::BytesValue::value: alloc::vec::Vec<u8>
+impl core::clone::Clone for only_protobuf::well_known::BytesValue
+pub fn only_protobuf::well_known::BytesValue::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::BytesValue
+impl core::cmp::PartialEq for only_protobuf::well_known::BytesValue
+pub fn only_protobuf::well_known::BytesValue::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::BytesValue
+pub fn only_protobuf::well_known::BytesValue::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::BytesValue
+pub fn only_protobuf::well_known::BytesValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::BytesValue
+impl only_protobuf::Message for only_protobuf::well_known::BytesValue
+pub fn only_protobuf::well_known::BytesValue::clear(&mut self)
+pub fn only_protobuf::well_known::BytesValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BytesValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BytesValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BytesValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::BytesValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::BytesValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::BytesValue
+pub const only_protobuf::well_known::BytesValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::BytesValue::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::BytesValue
+impl core::marker::Sync for only_protobuf::well_known::BytesValue
+impl core::marker::Unpin for only_protobuf::well_known::BytesValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::BytesValue
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::BytesValue
+pub struct only_protobuf::well_known::DoubleValue
+pub only_protobuf::well_known::DoubleValue::value: f64
+impl core::clone::Clone for only_protobuf::well_known::DoubleValue
+pub fn only_protobuf::well_known::DoubleValue::clone(&self) -> Self
+impl core::cmp::PartialEq for only_protobuf::well_known::DoubleValue
+pub fn only_protobuf::well_known::DoubleValue::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::DoubleValue
+pub fn only_protobuf::well_known::DoubleValue::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::DoubleValue
+pub fn only_protobuf::well_known::DoubleValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::DoubleValue
+impl only_protobuf::Message for only_protobuf::well_known::DoubleValue
+pub fn only_protobuf::well_known::DoubleValue::clear(&mut self)
+pub fn only_protobuf::well_known::DoubleValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::DoubleValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::DoubleValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::DoubleValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::DoubleValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::DoubleValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::DoubleValue
+pub const only_protobuf::well_known::DoubleValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::DoubleValue::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::DoubleValue
+impl core::marker::Sync for only_protobuf::well_known::DoubleValue
+impl core::marker::Unpin for only_protobuf::well_known::DoubleValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::DoubleValue
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::DoubleValue
+pub struct only_protobuf::well_known::Duration
+pub only_protobuf::well_known::Duration::nanos: i32
+pub only_protobuf::well_known::Duration::seconds: i64
+impl core::clone::Clone for only_protobuf::well_known::Duration
+pub fn only_protobuf::well_known::Duration::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::Duration
+impl core::cmp::PartialEq for only_protobuf::well_known::Duration
+pub fn only_protobuf::well_known::Duration::eq(&self, &Self) -> bool
+impl core::convert::TryFrom<core::time::Duration> for only_protobuf::well_known::Duration
+pub type only_protobuf::well_known::Duration::Error = only_protobuf::well_known::OutOfRangeError
+pub fn only_protobuf::well_known::Duration::try_from(core::time::Duration) -> core::result::Result<only_protobuf::well_known::Duration, only_protobuf::well_known::OutOfRangeError>
+impl core::convert::TryFrom<only_protobuf::well_known::Duration> for core::time::Duration
+pub type core::time::Duration::Error = only_protobuf::well_known::OutOfRangeError
+pub fn core::time::Duration::try_from(only_protobuf::well_known::Duration) -> core::result::Result<core::time::Duration, only_protobuf::well_known::OutOfRangeError>
+impl core::default::Default for only_protobuf::well_known::Duration
+pub fn only_protobuf::well_known::Duration::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Duration
+pub fn only_protobuf::well_known::Duration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Duration
+impl only_protobuf::Message for only_protobuf::well_known::Duration
+pub fn only_protobuf::well_known::Duration::clear(&mut self)
+pub fn only_protobuf::well_known::Duration::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Duration::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Duration::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Duration::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Duration::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Duration::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Duration
+pub const only_protobuf::well_known::Duration::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Duration::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Duration
+impl core::marker::Sync for only_protobuf::well_known::Duration
+impl core::marker::Unpin for only_protobuf::well_known::Duration
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Duration
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Duration
+pub struct only_protobuf::well_known::Empty
+impl core::clone::Clone for only_protobuf::well_known::Empty
+pub fn only_protobuf::well_known::Empty::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::Empty
+impl core::cmp::PartialEq for only_protobuf::well_known::Empty
+pub fn only_protobuf::well_known::Empty::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::Empty
+pub fn only_protobuf::well_known::Empty::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Empty
+pub fn only_protobuf::well_known::Empty::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Empty
+impl only_protobuf::Message for only_protobuf::well_known::Empty
+pub fn only_protobuf::well_known::Empty::clear(&mut self)
+pub fn only_protobuf::well_known::Empty::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Empty::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Empty::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Empty::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Empty::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Empty::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Empty
+pub const only_protobuf::well_known::Empty::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Empty::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Empty
+impl core::marker::Sync for only_protobuf::well_known::Empty
+impl core::marker::Unpin for only_protobuf::well_known::Empty
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Empty
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Empty
+pub struct only_protobuf::well_known::FieldMask
+pub only_protobuf::well_known::FieldMask::paths: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for only_protobuf::well_known::FieldMask
+pub fn only_protobuf::well_known::FieldMask::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::FieldMask
+impl core::cmp::PartialEq for only_protobuf::well_known::FieldMask
+pub fn only_protobuf::well_known::FieldMask::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::FieldMask
+pub fn only_protobuf::well_known::FieldMask::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::FieldMask
+pub fn only_protobuf::well_known::FieldMask::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::FieldMask
+impl only_protobuf::Message for only_protobuf::well_known::FieldMask
+pub fn only_protobuf::well_known::FieldMask::clear(&mut self)
+pub fn only_protobuf::well_known::FieldMask::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FieldMask::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FieldMask::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FieldMask::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::FieldMask::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::FieldMask::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::FieldMask
+pub const only_protobuf::well_known::FieldMask::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::FieldMask::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::FieldMask
+impl core::marker::Sync for only_protobuf::well_known::FieldMask
+impl core::marker::Unpin for only_protobuf::well_known::FieldMask
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::FieldMask
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::FieldMask
+pub struct only_protobuf::well_known::FloatValue
+pub only_protobuf::well_known::FloatValue::value: f32
+impl core::clone::Clone for only_protobuf::well_known::FloatValue
+pub fn only_protobuf::well_known::FloatValue::clone(&self) -> Self
+impl core::cmp::PartialEq for only_protobuf::well_known::FloatValue
+pub fn only_protobuf::well_known::FloatValue::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::FloatValue
+pub fn only_protobuf::well_known::FloatValue::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::FloatValue
+pub fn only_protobuf::well_known::FloatValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::FloatValue
+impl only_protobuf::Message for only_protobuf::well_known::FloatValue
+pub fn only_protobuf::well_known::FloatValue::clear(&mut self)
+pub fn only_protobuf::well_known::FloatValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FloatValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FloatValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FloatValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::FloatValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::FloatValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::FloatValue
+pub const only_protobuf::well_known::FloatValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::FloatValue::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::FloatValue
+impl core::marker::Sync for only_protobuf::well_known::FloatValue
+impl core::marker::Unpin for only_protobuf::well_known::FloatValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::FloatValue
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::FloatValue
+pub struct only_protobuf::well_known::Int32Value
+pub only_protobuf::well_known::Int32Value::value: i32
+impl core::clone::Clone for only_protobuf::well_known::Int32Value
+pub fn only_protobuf::well_known::Int32Value::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::Int32Value
+impl core::cmp::PartialEq for only_protobuf::well_known::Int32Value
+pub fn only_protobuf::well_known::Int32Value::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::Int32Value
+pub fn only_protobuf::well_known::Int32Value::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Int32Value
+pub fn only_protobuf::well_known::Int32Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Int32Value
+impl only_protobuf::Message for only_protobuf::well_known::Int32Value
+pub fn only_protobuf::well_known::Int32Value::clear(&mut self)
+pub fn only_protobuf::well_known::Int32Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int32Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int32Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int32Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Int32Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Int32Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Int32Value
+pub const only_protobuf::well_known::Int32Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Int32Value::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Int32Value
+impl core::marker::Sync for only_protobuf::well_known::Int32Value
+impl core::marker::Unpin for only_protobuf::well_known::Int32Value
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Int32Value
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Int32Value
+pub struct only_protobuf::well_known::Int64Value
+pub only_protobuf::well_known::Int64Value::value: i64
+impl core::clone::Clone for only_protobuf::well_known::Int64Value
+pub fn only_protobuf::well_known::Int64Value::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::Int64Value
+impl core::cmp::PartialEq for only_protobuf::well_known::Int64Value
+pub fn only_protobuf::well_known::Int64Value::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::Int64Value
+pub fn only_protobuf::well_known::Int64Value::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Int64Value
+pub fn only_protobuf::well_known::Int64Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Int64Value
+impl only_protobuf::Message for only_protobuf::well_known::Int64Value
+pub fn only_protobuf::well_known::Int64Value::clear(&mut self)
+pub fn only_protobuf::well_known::Int64Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int64Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int64Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int64Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Int64Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Int64Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Int64Value
+pub const only_protobuf::well_known::Int64Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Int64Value::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Int64Value
+impl core::marker::Sync for only_protobuf::well_known::Int64Value
+impl core::marker::Unpin for only_protobuf::well_known::Int64Value
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Int64Value
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Int64Value
+pub struct only_protobuf::well_known::ListValue
+pub only_protobuf::well_known::ListValue::values: alloc::vec::Vec<only_protobuf::well_known::Value>
+impl core::clone::Clone for only_protobuf::well_known::ListValue
+pub fn only_protobuf::well_known::ListValue::clone(&self) -> Self
+impl core::cmp::PartialEq for only_protobuf::well_known::ListValue
+pub fn only_protobuf::well_known::ListValue::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::ListValue
+pub fn only_protobuf::well_known::ListValue::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::ListValue
+pub fn only_protobuf::well_known::ListValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::ListValue
+impl only_protobuf::Message for only_protobuf::well_known::ListValue
+pub fn only_protobuf::well_known::ListValue::clear(&mut self)
+pub fn only_protobuf::well_known::ListValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::ListValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::ListValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::ListValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::ListValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::ListValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::ListValue
+pub const only_protobuf::well_known::ListValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::ListValue::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::ListValue
+impl core::marker::Sync for only_protobuf::well_known::ListValue
+impl core::marker::Unpin for only_protobuf::well_known::ListValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::ListValue
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::ListValue
+pub struct only_protobuf::well_known::NullValue(pub i32)
+impl only_protobuf::well_known::NullValue
+pub const only_protobuf::well_known::NullValue::NULL_VALUE: only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::from_name(&str) -> core::option::Option<only_protobuf::well_known::NullValue>
+impl core::clone::Clone for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::NullValue
+impl core::cmp::Ord for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<i32> for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::from(i32) -> Self
+impl core::convert::From<only_protobuf::well_known::NullValue> for i32
+pub fn i32::from(only_protobuf::well_known::NullValue) -> Self
+impl core::default::Default for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_protobuf::well_known::NullValue
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::NullValue
+impl only_protobuf::Enumeration for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::from_i32(i32) -> Self
+pub fn only_protobuf::well_known::NullValue::name(self) -> core::option::Option<&'static str>
+pub fn only_protobuf::well_known::NullValue::value(self) -> i32
+impl core::marker::Send for only_protobuf::well_known::NullValue
+impl core::marker::Sync for only_protobuf::well_known::NullValue
+impl core::marker::Unpin for only_protobuf::well_known::NullValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::NullValue
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::NullValue
+pub struct only_protobuf::well_known::OutOfRangeError
+impl core::clone::Clone for only_protobuf::well_known::OutOfRangeError
+pub fn only_protobuf::well_known::OutOfRangeError::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::OutOfRangeError
+impl core::cmp::PartialEq for only_protobuf::well_known::OutOfRangeError
+pub fn only_protobuf::well_known::OutOfRangeError::eq(&self, &Self) -> bool
+impl core::error::Error for only_protobuf::well_known::OutOfRangeError
+impl core::fmt::Debug for only_protobuf::well_known::OutOfRangeError
+pub fn only_protobuf::well_known::OutOfRangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_protobuf::well_known::OutOfRangeError
+pub fn only_protobuf::well_known::OutOfRangeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_protobuf::well_known::OutOfRangeError
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::OutOfRangeError
+impl core::marker::Send for only_protobuf::well_known::OutOfRangeError
+impl core::marker::Sync for only_protobuf::well_known::OutOfRangeError
+impl core::marker::Unpin for only_protobuf::well_known::OutOfRangeError
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::OutOfRangeError
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::OutOfRangeError
+pub struct only_protobuf::well_known::StringValue
+pub only_protobuf::well_known::StringValue::value: alloc::string::String
+impl core::clone::Clone for only_protobuf::well_known::StringValue
+pub fn only_protobuf::well_known::StringValue::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::StringValue
+impl core::cmp::PartialEq for only_protobuf::well_known::StringValue
+pub fn only_protobuf::well_known::StringValue::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::StringValue
+pub fn only_protobuf::well_known::StringValue::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::StringValue
+pub fn only_protobuf::well_known::StringValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::StringValue
+impl only_protobuf::Message for only_protobuf::well_known::StringValue
+pub fn only_protobuf::well_known::StringValue::clear(&mut self)
+pub fn only_protobuf::well_known::StringValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::StringValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::StringValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::StringValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::StringValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::StringValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::StringValue
+pub const only_protobuf::well_known::StringValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::StringValue::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::StringValue
+impl core::marker::Sync for only_protobuf::well_known::StringValue
+impl core::marker::Unpin for only_protobuf::well_known::StringValue
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::StringValue
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::StringValue
+pub struct only_protobuf::well_known::Struct
+pub only_protobuf::well_known::Struct::fields: std::collections::hash::map::HashMap<alloc::string::String, only_protobuf::well_known::Value>
+impl core::clone::Clone for only_protobuf::well_known::Struct
+pub fn only_protobuf::well_known::Struct::clone(&self) -> Self
+impl core::cmp::PartialEq for only_protobuf::well_known::Struct
+pub fn only_protobuf::well_known::Struct::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::Struct
+pub fn only_protobuf::well_known::Struct::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Struct
+pub fn only_protobuf::well_known::Struct::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Struct
+impl only_protobuf::Message for only_protobuf::well_known::Struct
+pub fn only_protobuf::well_known::Struct::clear(&mut self)
+pub fn only_protobuf::well_known::Struct::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Struct::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Struct::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Struct::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Struct::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Struct::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Struct
+pub const only_protobuf::well_known::Struct::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Struct::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Struct
+impl core::marker::Sync for only_protobuf::well_known::Struct
+impl core::marker::Unpin for only_protobuf::well_known::Struct
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Struct
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Struct
+pub struct only_protobuf::well_known::Timestamp
+pub only_protobuf::well_known::Timestamp::nanos: i32
+pub only_protobuf::well_known::Timestamp::seconds: i64
+impl only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::now() -> only_protobuf::well_known::Timestamp
+impl core::clone::Clone for only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::Timestamp
+impl core::cmp::PartialEq for only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::eq(&self, &Self) -> bool
+impl core::convert::From<std::time::SystemTime> for only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::from(std::time::SystemTime) -> only_protobuf::well_known::Timestamp
+impl core::convert::TryFrom<only_protobuf::well_known::Timestamp> for std::time::SystemTime
+pub type std::time::SystemTime::Error = only_protobuf::well_known::OutOfRangeError
+pub fn std::time::SystemTime::try_from(only_protobuf::well_known::Timestamp) -> core::result::Result<std::time::SystemTime, only_protobuf::well_known::OutOfRangeError>
+impl core::default::Default for only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Timestamp
+impl only_protobuf::Message for only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::clear(&mut self)
+pub fn only_protobuf::well_known::Timestamp::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Timestamp::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Timestamp::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Timestamp::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Timestamp::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Timestamp::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Timestamp
+pub const only_protobuf::well_known::Timestamp::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Timestamp::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Timestamp
+impl core::marker::Sync for only_protobuf::well_known::Timestamp
+impl core::marker::Unpin for only_protobuf::well_known::Timestamp
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Timestamp
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Timestamp
+pub struct only_protobuf::well_known::UInt32Value
+pub only_protobuf::well_known::UInt32Value::value: u32
+impl core::clone::Clone for only_protobuf::well_known::UInt32Value
+pub fn only_protobuf::well_known::UInt32Value::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::UInt32Value
+impl core::cmp::PartialEq for only_protobuf::well_known::UInt32Value
+pub fn only_protobuf::well_known::UInt32Value::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::UInt32Value
+pub fn only_protobuf::well_known::UInt32Value::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::UInt32Value
+pub fn only_protobuf::well_known::UInt32Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::UInt32Value
+impl only_protobuf::Message for only_protobuf::well_known::UInt32Value
+pub fn only_protobuf::well_known::UInt32Value::clear(&mut self)
+pub fn only_protobuf::well_known::UInt32Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt32Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt32Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt32Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::UInt32Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::UInt32Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::UInt32Value
+pub const only_protobuf::well_known::UInt32Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::UInt32Value::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::UInt32Value
+impl core::marker::Sync for only_protobuf::well_known::UInt32Value
+impl core::marker::Unpin for only_protobuf::well_known::UInt32Value
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::UInt32Value
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::UInt32Value
+pub struct only_protobuf::well_known::UInt64Value
+pub only_protobuf::well_known::UInt64Value::value: u64
+impl core::clone::Clone for only_protobuf::well_known::UInt64Value
+pub fn only_protobuf::well_known::UInt64Value::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::well_known::UInt64Value
+impl core::cmp::PartialEq for only_protobuf::well_known::UInt64Value
+pub fn only_protobuf::well_known::UInt64Value::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::UInt64Value
+pub fn only_protobuf::well_known::UInt64Value::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::UInt64Value
+pub fn only_protobuf::well_known::UInt64Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::UInt64Value
+impl only_protobuf::Message for only_protobuf::well_known::UInt64Value
+pub fn only_protobuf::well_known::UInt64Value::clear(&mut self)
+pub fn only_protobuf::well_known::UInt64Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt64Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt64Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt64Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::UInt64Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::UInt64Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::UInt64Value
+pub const only_protobuf::well_known::UInt64Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::UInt64Value::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::UInt64Value
+impl core::marker::Sync for only_protobuf::well_known::UInt64Value
+impl core::marker::Unpin for only_protobuf::well_known::UInt64Value
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::UInt64Value
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::UInt64Value
+pub struct only_protobuf::well_known::Value
+pub only_protobuf::well_known::Value::kind: core::option::Option<only_protobuf::well_known::value::Kind>
+impl core::clone::Clone for only_protobuf::well_known::Value
+pub fn only_protobuf::well_known::Value::clone(&self) -> Self
+impl core::cmp::PartialEq for only_protobuf::well_known::Value
+pub fn only_protobuf::well_known::Value::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::well_known::Value
+pub fn only_protobuf::well_known::Value::default() -> Self
+impl core::fmt::Debug for only_protobuf::well_known::Value
+pub fn only_protobuf::well_known::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::well_known::Value
+impl only_protobuf::Message for only_protobuf::well_known::Value
+pub fn only_protobuf::well_known::Value::clear(&mut self)
+pub fn only_protobuf::well_known::Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Name for only_protobuf::well_known::Value
+pub const only_protobuf::well_known::Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Value::type_url() -> alloc::string::String
+impl core::marker::Send for only_protobuf::well_known::Value
+impl core::marker::Sync for only_protobuf::well_known::Value
+impl core::marker::Unpin for only_protobuf::well_known::Value
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::well_known::Value
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::well_known::Value
+pub macro only_protobuf::include_proto!
+#[non_exhaustive] pub enum only_protobuf::DecodeErrorKind
+pub only_protobuf::DecodeErrorKind::InvalidTag
+pub only_protobuf::DecodeErrorKind::InvalidUtf8
+pub only_protobuf::DecodeErrorKind::RecursionLimit
+pub only_protobuf::DecodeErrorKind::Truncated
+pub only_protobuf::DecodeErrorKind::UnbalancedGroup
+pub only_protobuf::DecodeErrorKind::VarintOverflow
+pub only_protobuf::DecodeErrorKind::WireTypeMismatch
+impl core::clone::Clone for only_protobuf::DecodeErrorKind
+pub fn only_protobuf::DecodeErrorKind::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::DecodeErrorKind
+impl core::cmp::PartialEq for only_protobuf::DecodeErrorKind
+pub fn only_protobuf::DecodeErrorKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_protobuf::DecodeErrorKind
+pub fn only_protobuf::DecodeErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_protobuf::DecodeErrorKind
+pub fn only_protobuf::DecodeErrorKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_protobuf::DecodeErrorKind
+impl core::marker::StructuralPartialEq for only_protobuf::DecodeErrorKind
+impl core::marker::Send for only_protobuf::DecodeErrorKind
+impl core::marker::Sync for only_protobuf::DecodeErrorKind
+impl core::marker::Unpin for only_protobuf::DecodeErrorKind
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::DecodeErrorKind
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::DecodeErrorKind
+pub struct only_protobuf::DecodeError
+impl only_protobuf::DecodeError
+pub fn only_protobuf::DecodeError::field(&self) -> core::option::Option<u32>
+pub fn only_protobuf::DecodeError::in_field(self, u32) -> only_protobuf::DecodeError
+pub fn only_protobuf::DecodeError::kind(&self) -> only_protobuf::DecodeErrorKind
+pub const fn only_protobuf::DecodeError::new(only_protobuf::DecodeErrorKind) -> only_protobuf::DecodeError
+impl core::clone::Clone for only_protobuf::DecodeError
+pub fn only_protobuf::DecodeError::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::DecodeError
+impl core::cmp::PartialEq for only_protobuf::DecodeError
+pub fn only_protobuf::DecodeError::eq(&self, &Self) -> bool
+impl core::error::Error for only_protobuf::DecodeError
+impl core::fmt::Debug for only_protobuf::DecodeError
+pub fn only_protobuf::DecodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_protobuf::DecodeError
+pub fn only_protobuf::DecodeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_protobuf::DecodeError
+impl core::marker::Send for only_protobuf::DecodeError
+impl core::marker::Sync for only_protobuf::DecodeError
+impl core::marker::Unpin for only_protobuf::DecodeError
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::DecodeError
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::DecodeError
+pub struct only_protobuf::UnknownFields
+impl only_protobuf::UnknownFields
+pub fn only_protobuf::UnknownFields::as_bytes(&self) -> &[u8]
+pub fn only_protobuf::UnknownFields::clear(&mut self)
+pub fn only_protobuf::UnknownFields::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::UnknownFields::encoded_len(&self) -> usize
+pub fn only_protobuf::UnknownFields::is_empty(&self) -> bool
+pub fn only_protobuf::UnknownFields::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub const fn only_protobuf::UnknownFields::new() -> only_protobuf::UnknownFields
+impl core::clone::Clone for only_protobuf::UnknownFields
+pub fn only_protobuf::UnknownFields::clone(&self) -> Self
+impl core::cmp::Eq for only_protobuf::UnknownFields
+impl core::cmp::PartialEq for only_protobuf::UnknownFields
+pub fn only_protobuf::UnknownFields::eq(&self, &Self) -> bool
+impl core::default::Default for only_protobuf::UnknownFields
+pub fn only_protobuf::UnknownFields::default() -> Self
+impl core::fmt::Debug for only_protobuf::UnknownFields
+pub fn only_protobuf::UnknownFields::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_protobuf::UnknownFields
+pub fn only_protobuf::UnknownFields::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for only_protobuf::UnknownFields
+impl core::marker::Send for only_protobuf::UnknownFields
+impl core::marker::Sync for only_protobuf::UnknownFields
+impl core::marker::Unpin for only_protobuf::UnknownFields
+impl core::panic::unwind_safe::RefUnwindSafe for only_protobuf::UnknownFields
+impl core::panic::unwind_safe::UnwindSafe for only_protobuf::UnknownFields
+pub trait only_protobuf::Enumeration: core::marker::Copy + core::default::Default
+pub fn only_protobuf::Enumeration::from_i32(i32) -> Self
+pub fn only_protobuf::Enumeration::name(self) -> core::option::Option<&'static str>
+pub fn only_protobuf::Enumeration::value(self) -> i32
+impl only_protobuf::Enumeration for only_protobuf::well_known::NullValue
+pub fn only_protobuf::well_known::NullValue::from_i32(i32) -> Self
+pub fn only_protobuf::well_known::NullValue::name(self) -> core::option::Option<&'static str>
+pub fn only_protobuf::well_known::NullValue::value(self) -> i32
+pub trait only_protobuf::Message: core::default::Default
+pub fn only_protobuf::Message::clear(&mut self)
+pub fn only_protobuf::Message::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::Message::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::Message::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::Message::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::Message::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::Message::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::Message::encoded_len(&self) -> usize
+pub fn only_protobuf::Message::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::Message::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::Message::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Any
+pub fn only_protobuf::well_known::Any::clear(&mut self)
+pub fn only_protobuf::well_known::Any::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Any::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Any::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Any::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Any::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Any::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Any::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::BoolValue
+pub fn only_protobuf::well_known::BoolValue::clear(&mut self)
+pub fn only_protobuf::well_known::BoolValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BoolValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BoolValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BoolValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::BoolValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::BoolValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BoolValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::BytesValue
+pub fn only_protobuf::well_known::BytesValue::clear(&mut self)
+pub fn only_protobuf::well_known::BytesValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BytesValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BytesValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::BytesValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::BytesValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::BytesValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::BytesValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::DoubleValue
+pub fn only_protobuf::well_known::DoubleValue::clear(&mut self)
+pub fn only_protobuf::well_known::DoubleValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::DoubleValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::DoubleValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::DoubleValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::DoubleValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::DoubleValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::DoubleValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Duration
+pub fn only_protobuf::well_known::Duration::clear(&mut self)
+pub fn only_protobuf::well_known::Duration::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Duration::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Duration::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Duration::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Duration::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Duration::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Duration::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Empty
+pub fn only_protobuf::well_known::Empty::clear(&mut self)
+pub fn only_protobuf::well_known::Empty::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Empty::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Empty::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Empty::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Empty::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Empty::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Empty::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::FieldMask
+pub fn only_protobuf::well_known::FieldMask::clear(&mut self)
+pub fn only_protobuf::well_known::FieldMask::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FieldMask::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FieldMask::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FieldMask::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::FieldMask::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::FieldMask::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FieldMask::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::FloatValue
+pub fn only_protobuf::well_known::FloatValue::clear(&mut self)
+pub fn only_protobuf::well_known::FloatValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FloatValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FloatValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::FloatValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::FloatValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::FloatValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::FloatValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Int32Value
+pub fn only_protobuf::well_known::Int32Value::clear(&mut self)
+pub fn only_protobuf::well_known::Int32Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int32Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int32Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int32Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Int32Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Int32Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int32Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Int64Value
+pub fn only_protobuf::well_known::Int64Value::clear(&mut self)
+pub fn only_protobuf::well_known::Int64Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int64Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int64Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Int64Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Int64Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Int64Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Int64Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::ListValue
+pub fn only_protobuf::well_known::ListValue::clear(&mut self)
+pub fn only_protobuf::well_known::ListValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::ListValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::ListValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::ListValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::ListValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::ListValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::ListValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::StringValue
+pub fn only_protobuf::well_known::StringValue::clear(&mut self)
+pub fn only_protobuf::well_known::StringValue::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::StringValue::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::StringValue::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::StringValue::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::StringValue::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::StringValue::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::StringValue::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Struct
+pub fn only_protobuf::well_known::Struct::clear(&mut self)
+pub fn only_protobuf::well_known::Struct::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Struct::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Struct::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Struct::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Struct::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Struct::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Struct::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Timestamp
+pub fn only_protobuf::well_known::Timestamp::clear(&mut self)
+pub fn only_protobuf::well_known::Timestamp::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Timestamp::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Timestamp::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Timestamp::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Timestamp::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Timestamp::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Timestamp::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::UInt32Value
+pub fn only_protobuf::well_known::UInt32Value::clear(&mut self)
+pub fn only_protobuf::well_known::UInt32Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt32Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt32Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt32Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::UInt32Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::UInt32Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt32Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::UInt64Value
+pub fn only_protobuf::well_known::UInt64Value::clear(&mut self)
+pub fn only_protobuf::well_known::UInt64Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt64Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt64Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::UInt64Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::UInt64Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::UInt64Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::UInt64Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+impl only_protobuf::Message for only_protobuf::well_known::Value
+pub fn only_protobuf::well_known::Value::clear(&mut self)
+pub fn only_protobuf::well_known::Value::decode(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::decode_length_delimited(&[u8]) -> core::result::Result<Self, only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::encode(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Value::encode_length_delimited(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Value::encode_raw(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_protobuf::well_known::Value::encode_to_vec(&self) -> alloc::vec::Vec<u8>
+pub fn only_protobuf::well_known::Value::encoded_len(&self) -> usize
+pub fn only_protobuf::well_known::Value::merge(&mut self, &[u8]) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::merge_field(&mut self, u32, only_protobuf::encoding::WireType, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub fn only_protobuf::well_known::Value::merge_from(&mut self, &mut only_protobuf::encoding::Reader<'_>) -> core::result::Result<(), only_protobuf::DecodeError>
+pub trait only_protobuf::Name
+pub const only_protobuf::Name::FULL_NAME: &'static str
+pub fn only_protobuf::Name::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Any
+pub const only_protobuf::well_known::Any::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Any::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::BoolValue
+pub const only_protobuf::well_known::BoolValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::BoolValue::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::BytesValue
+pub const only_protobuf::well_known::BytesValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::BytesValue::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::DoubleValue
+pub const only_protobuf::well_known::DoubleValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::DoubleValue::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Duration
+pub const only_protobuf::well_known::Duration::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Duration::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Empty
+pub const only_protobuf::well_known::Empty::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Empty::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::FieldMask
+pub const only_protobuf::well_known::FieldMask::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::FieldMask::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::FloatValue
+pub const only_protobuf::well_known::FloatValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::FloatValue::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Int32Value
+pub const only_protobuf::well_known::Int32Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Int32Value::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Int64Value
+pub const only_protobuf::well_known::Int64Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Int64Value::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::ListValue
+pub const only_protobuf::well_known::ListValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::ListValue::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::StringValue
+pub const only_protobuf::well_known::StringValue::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::StringValue::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Struct
+pub const only_protobuf::well_known::Struct::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Struct::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Timestamp
+pub const only_protobuf::well_known::Timestamp::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Timestamp::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::UInt32Value
+pub const only_protobuf::well_known::UInt32Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::UInt32Value::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::UInt64Value
+pub const only_protobuf::well_known::UInt64Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::UInt64Value::type_url() -> alloc::string::String
+impl only_protobuf::Name for only_protobuf::well_known::Value
+pub const only_protobuf::well_known::Value::FULL_NAME: &'static str
+pub fn only_protobuf::well_known::Value::type_url() -> alloc::string::String

@@ -47,6 +47,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -387,6 +393,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "either"
+version = "1.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
+
+[[package]]
 name = "elliptic-curve"
 version = "0.13.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -614,6 +626,15 @@ dependencies = [
  "str0m-proto",
  "subtle",
  "tracing",
+]
+
+[[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
 ]
 
 [[package]]
@@ -845,10 +866,13 @@ dependencies = [
  "only-kcp",
  "only-media",
  "only-mux",
+ "only-protobuf",
  "only-socks",
  "only-turn",
  "only-webrtc",
  "only-ws",
+ "prost",
+ "protobuf-test",
  "sha1",
  "sha2",
 ]
@@ -917,6 +941,14 @@ dependencies = [
 
 [[package]]
 name = "only-pool"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "only-protobuf"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "only-protobuf-build"
 version = "1.0.0-rc.1"
 
 [[package]]
@@ -1111,6 +1143,40 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "prost"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2796faa41db3ec313a31f7624d9286acf277b52de526150b7e69f3debf891ee5"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
+dependencies = [
+ "anyhow",
+ "itertools",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "protobuf-test"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only",
+ "only-grpc",
+ "only-http",
+ "only-protobuf",
+ "only-protobuf-build",
 ]
 
 [[package]]

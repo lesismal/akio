@@ -51,9 +51,88 @@ server-streaming 方法就是这样做的）。
 ## 消息
 
 消息是字节。`only_grpc::codec::{encode, decode}` 可转换任何实现了 `codec::Message`
-（`encode_to` / `decode_from`）的类型，因此任意序列化方式都能接入。启用 `prost` feature 后，所有
-prost 生成的消息都实现了它；该适配器用到 prost 的类型，所以这个 feature 不在 semver 承诺之内
-（prost 升级可能出现在 minor 版本中）。
+（`encode_to` / `decode_from`）的类型，因此任意序列化方式都能接入。对 protobuf，`only` 有自己的
+运行时和代码生成器，不需要 `protoc`，也没有第三方 crate：
+
+- `only-protobuf`：线格式、`Message` trait、开放枚举、未知字段、well-known 类型（`Timestamp`、
+  `Duration`、`Any`、`Struct`、包装类型 ...）。
+- `only-protobuf-build`：供 `build.rs` 使用的 `.proto` 解析器与 Rust 代码生成器。支持 proto3 与
+  proto2 的消息、枚举、`optional`、`repeated`、`map`、`oneof`、嵌套与递归类型、package、import；
+  service 生成基于 `only-grpc` 的类型化服务端 trait 与客户端。
+
+### 不用 prost 定义消息
+
+依赖：`only-protobuf` 与 `only-grpc`，并在 `[build-dependencies]` 中加入 `only-protobuf-build`。
+然后在 `build.rs` 中（取自 `tools/protobuf-test`，其 `proto/` 目录包含 grpc-go 的 route_guide 与
+helloworld 定义）：
+
+```rust,ignore
+{{#include ../../../../tools/protobuf-test/build.rs:build}}
+```
+
+每个 protobuf package 在 `OUT_DIR` 中生成一个文件，作为模块引入。引用其他 package 的类型时写作
+`super::other::Type`，因此模块要按 package 嵌套（`test.all` -> `pub mod test { pub mod all { .. } }`）：
+
+```rust,ignore
+pub mod routeguide {
+    only_protobuf::include_proto!("routeguide");
+}
+```
+
+`.proto` 构造对应的 Rust 代码：
+
+| `.proto` | Rust |
+|---|---|
+| `message Point { int32 latitude = 1; }` | `pub struct Point { pub latitude: i32, pub unknown_fields: UnknownFields }`（`Clone`、`PartialEq`、`Debug`、`Default`；不含浮点数时还有 `Eq`） |
+| `string`、`bytes` | `String`、`Vec<u8>` |
+| 消息类型字段、proto3 `optional`、proto2 `optional` | `Option<T>`（递归时为 `Option<Box<T>>`）；proto2 默认值通过 getter 获取（`p.a()`） |
+| `repeated T` / `map<K, V>` | `Vec<T>` / `HashMap<K, V>`（`Config::btree_maps(true)` 时为 `BTreeMap`） |
+| `oneof kind { .. }` | `pub kind: Option<point::Kind>`，枚举位于消息对应的模块中 |
+| `enum Corpus { CORPUS_WEB = 1; }` | `pub struct Corpus(pub i32)`，常量 `Corpus::WEB`：开放枚举，未知数值得以保留 |
+| `Outer` 中嵌套的 `message Inner` | `outer::Inner` |
+| `google.protobuf.Timestamp` ... | `only_protobuf::well_known::Timestamp` ... |
+
+消息会保留未知字段并在编码时写回（`Config::unknown_fields(false)` 去掉该成员，结构体字面量就不再
+需要 `..Default::default()`）。编码结果与 protoc 的 C++ 运行时逐字节一致；解码有界（最多 100 层
+嵌套、检查长度、检查 UTF-8）。
+
+### Service
+
+对 `service RouteGuide`，生成器写出 `route_guide_server`，其中有一个待实现的 trait：
+
+```rust,ignore
+{{#include ../../../../tools/protobuf-test/src/service.rs:server}}
+```
+
+一元方法返回响应；服务端流方法拿到 `Sink`（可在任意线程使用；先 `sink.send_message(&m)`，再
+`finish`）；客户端流方法在客户端半关闭后拿到全部请求；双向流方法返回一个接收每条请求的函数。
+`register` 把所有方法注册到 `GrpcServer`，可以与原始字节方法并存：
+
+```rust,ignore
+{{#include ../../../../tools/protobuf-test/src/service.rs:register}}
+```
+
+`route_guide_client::RouteGuideClient` 包装一个 `GrpcClient`：
+
+```rust,ignore
+let rg = RouteGuideClient::new(grpc_client);
+let feature = rg.get_feature(&point, CallOptions::default())?;           // 一元
+let features = rg.list_features(&rect, CallOptions::default())?;         // Vec<Feature>
+let summary = rg.record_route(&points, CallOptions::default())?;         // 客户端流
+let sink = rg.route_chat(CallOptions::default(), |note| { /* 每条响应 */ }, |status, _| {});
+sink.send_message(&note);
+sink.close_send();
+```
+
+一元调用和收集型调用会阻塞；双向流调用不会。无法解码的请求以 `INVALID_ARGUMENT` 应答。互通：
+`tools/interop/grpc/run.sh` 让这些桩代码与 grpc-go 自带的 route_guide、helloworld 生成代码以及
+`google.golang.org/protobuf` 的 well-known 类型双向互通。
+
+### prost（已弃用）
+
+启用 `prost` feature 后，所有 prost 生成的消息都实现 `codec::Message`。它仍然可用，但已弃用，
+推荐改用 `only-protobuf`；它用到 prost 的类型，所以这个 feature 不在 semver 承诺之内（prost 升级
+或移除该 feature 可能出现在 minor 版本中）。
 
 未提供：服务端反射（reflection）、标准健康检查服务、客户端负载均衡。互通测试只针对 grpc-go
 （未测 tonic）。

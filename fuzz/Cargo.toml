@@ -39,6 +39,10 @@ ctr = "0.9"
 crc32fast = "1"
 base64 = "0.22"
 chacha20poly1305 = "0.10"
+only-protobuf = { path = "../crates/only-protobuf" }
+# Generated test messages and the prost mirror for the differential target `protobuf_diff`.
+protobuf-test = { path = "../tools/protobuf-test" }
+prost = "0.13"
 
 [profile.release]
 debug = 1
@@ -333,6 +337,13 @@ bench = false
 [[bin]]
 name = "crypto_base64"
 path = "fuzz_targets/crypto_base64.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protobuf_diff"
+path = "fuzz_targets/protobuf_diff.rs"
 test = false
 doc = false
 bench = false

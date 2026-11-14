@@ -179,6 +179,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### 长期目标：去掉所有三方依赖
 - [ ] 逐个自研库中用到的所有三方依赖，每一项保持相同的公开 API（API 快照不变），以已知答案测试向量、互通与模糊测试作为门禁。顺序（每一波依赖前一波）：
   - [ ] 第 A 波：[x] `only-crypto`（SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC32、AES、CTR、GCM、ChaCha20-Poly1305、base64、系统随机数）替代 sha1/sha2/md-5/hmac/pbkdf2/aes/aes-gcm/ctr/crc32fast/base64/getrandom（已完成：AES 使用 AES-NI / ARMv8 AES，并有常数时间 fixsliced 回退，ctmul64 GHASH，NIST CAVP / RFC / Wycheproof 向量，与旧 crate 的差分测试和模糊测试目标；only-kcp、-turn、-ws、-http、-media、-bittorrent 与 -webrtc 已迁移，线上格式经证明不变；后续：SHA-NI / ARMv8 SHA、PMULL / PCLMULQDQ GHASH 与 CRC32 指令，因为可移植的 SHA-1 约为旧 crate 加速速度的一半，CRC-32 只有其一小部分）；自研 HTTP/1 解析、HPACK 与正则引擎替代 httparse/loona-hpack/regex；自研 deflate/zlib/gzip 替代 flate2；自研用户态 TCP/IP 栈替代 smoltcp；自研 protobuf 运行时替代 prost
+    - [x] protobuf：`only-protobuf`（运行时：线格式、消息、开放枚举、未知字段、well-known 类型；无依赖）与 `only-protobuf-build`（自研 `.proto` 解析器与供 `build.rs` 使用的代码生成器，不需要 protoc / syn / quote；生成 only-grpc 服务桩代码）。用 protoc 生成的黄金编码、与 prost 的差分测试和 fuzz 目标 `protobuf_diff`、与 grpc-go 自带 route_guide / helloworld 生成代码的互通（`tools/interop/grpc/run.sh`）做了验证。only-grpc 的 `prost` feature 已弃用（保留，不在 semver 内）。未做：group、extension、edition、JSON 映射、反射
   - [ ] 第 B 波：公钥密码学（X25519、P-256 ECDH/ECDSA、Ed25519、RSA PKCS#1/PSS 验签）与 ASN.1/X.509；自研日志门面替代 `log`（可选 `log` 桥接）；自研系统调用与 io_uring 绑定替代 libc/io-uring
   - [ ] 第 C 波：自研 TLS 1.2/1.3 与 DTLS 替代 rustls（及 ring）
   - [ ] 第 D 波：自研 QUIC 替代 quinn-proto（及 bytes）；自研 WebRTC 栈（ICE、DTLS-SRTP、SCTP、RTP/RTCP）替代 str0m/dimpl/p256

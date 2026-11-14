@@ -20,8 +20,8 @@ prost = { version = "0.13", optional = true }
 only-core = { workspace = true, optional = true }
 
 [features]
-# `codec::Message` for prost-generated messages. Outside the semver promise (names prost types,
-# docs/api-stability.md).
+# Deprecated (use only-protobuf / only-protobuf-build): `codec::Message` for prost-generated
+# messages. Outside the semver promise (names prost types, docs/api-stability.md).
 prost = ["dep:prost"]
 # Fuzz entry points for `fuzz/` (`only_grpc::fuzzing`); not a public API.
 fuzzing = ["dep:only-core", "only-core/fuzzing", "only-http/fuzzing"]

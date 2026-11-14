@@ -32,6 +32,7 @@ $ cargo doc --workspace --no-deps --open
 | `only-quic` | 基于 quinn-proto 的 QUIC | [QUIC 与 HTTP/3](protocols/quic-h3.md) |
 | `only-h3` | HTTP/3 与 QPACK | [QUIC 与 HTTP/3](protocols/quic-h3.md) |
 | `only-grpc` | gRPC 服务端与客户端 | [gRPC](protocols/grpc.md) |
+| `only-protobuf`、`only-protobuf-build` | protobuf 运行时，以及供 `build.rs` 使用的 `.proto` 代码生成器（无需 protoc，生成 gRPC 桩代码） | [gRPC](protocols/grpc.md) |
 | `only-arpc` | arpc（lesismal/arpc 线路格式） | [arpc](protocols/arpc.md) |
 | `only-socks` | SOCKS4/4a/5 与 HTTP CONNECT 代理 | [SOCKS](protocols/socks.md) |
 | `only-mux` | 一个端口上的多种协议 | [协议复用](protocols/mux.md) |

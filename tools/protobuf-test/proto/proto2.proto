@@ -1,0 +1,34 @@
+// proto2: explicit presence, defaults, required fields, unpacked repeated fields.
+syntax = "proto2";
+
+package test.p2;
+
+// The first value is the default (not 0).
+enum Level {
+  LOW = 1;
+  HIGH = 2;
+}
+
+message P2 {
+  optional int32 a = 1 [default = 42];
+  optional string s = 2 [default = "hello \"x\""];
+  optional bytes b = 3 [default = "\001\002"];
+  optional Level level = 4 [default = HIGH];
+  optional double d = 5 [default = -inf];
+  optional float f = 6 [default = 1.5];
+  required int64 req = 7;
+  required string req_s = 8 [default = "rs"];
+  repeated int32 unpacked = 9;
+  repeated int32 packed = 10 [packed = true];
+  optional P2 child = 11;
+  optional bool flag = 12;
+  optional uint64 big = 13 [default = 0xFFFFFFFFFFFFFFFF];
+  optional sint32 neg = 14 [default = -0x10];
+  optional Level plain_level = 15;
+  map<int32, string> m = 16;
+  extensions 100 to 199;
+}
+
+extend P2 {
+  optional int32 ext = 100;
+}

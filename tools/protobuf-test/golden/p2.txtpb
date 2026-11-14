@@ -1,0 +1,12 @@
+# test.p2.P2
+a: 0
+s: ""
+level: LOW
+req: -1
+req_s: ""
+unpacked: [1, 2]
+packed: [3, 4]
+child { req: 5 req_s: "c" }
+flag: false
+m { key: 1 value: "one" }
+[test.p2.ext]: 9

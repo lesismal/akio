@@ -1,0 +1,7 @@
+# test.all.AllTypes
+m_string_int32 { key: "k" value: -1 }
+m_int64_string { key: -5 value: "v" }
+m_bool_nested { key: true value { a: 3 } }
+m_uint32_enum { key: 0 value: COLOR_GREEN }
+m_sint32_bytes { key: -1 value: "" }
+m_fixed64_double { key: 7 value: 0 }

@@ -1,0 +1,21 @@
+[package]
+name = "only-protobuf-build"
+description = "only protobuf code generator: parses .proto files and writes Rust messages and only-grpc stubs from build.rs, without protoc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-protobuf-build"
+keywords = ["protobuf", "protocol-buffers", "codegen", "grpc", "build"]
+categories = ["encoding", "development-tools::build-utils"]
+
+[dependencies]
+
+[dev-dependencies]
+only-protobuf = { workspace = true }
+
+[lints]
+workspace = true

@@ -16,6 +16,8 @@ members = [
     "crates/only-socks",
     "crates/only-arpc",
     "crates/only-grpc",
+    "crates/only-protobuf",
+    "crates/only-protobuf-build",
     "crates/only-kcp",
     "crates/only-quic",
     "crates/only-h3",
@@ -28,6 +30,7 @@ members = [
     "crates/only-bittorrent",
     "crates/only",
     "tools/echo-bench",
+    "tools/protobuf-test",
 ]
 # The cargo-fuzz project is its own (nightly-only) workspace.
 exclude = ["fuzz"]
@@ -62,6 +65,8 @@ only-h3 = { path = "crates/only-h3", version = "=1.0.0-rc.1" }
 only-kcp = { path = "crates/only-kcp", version = "=1.0.0-rc.1" }
 only-grpc = { path = "crates/only-grpc", version = "=1.0.0-rc.1" }
 only-arpc = { path = "crates/only-arpc", version = "=1.0.0-rc.1" }
+only-protobuf = { path = "crates/only-protobuf", version = "=1.0.0-rc.1" }
+only-protobuf-build = { path = "crates/only-protobuf-build", version = "=1.0.0-rc.1" }
 only-socks = { path = "crates/only-socks", version = "=1.0.0-rc.1" }
 only-mux = { path = "crates/only-mux", version = "=1.0.0-rc.1" }
 only-ebpf = { path = "crates/only-ebpf", version = "=1.0.0-rc.1" }

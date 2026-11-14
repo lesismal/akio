@@ -1024,6 +1024,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-protobuf"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "only-protobuf-build"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only-protobuf",
+]
+
+[[package]]
 name = "only-quic"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -1270,6 +1281,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "protobuf-test"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only",
+ "only-grpc",
+ "only-http",
+ "only-protobuf",
+ "only-protobuf-build",
+ "prost",
 ]
 
 [[package]]
