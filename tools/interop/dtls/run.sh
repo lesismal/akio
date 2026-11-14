@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# only-dtls interop, both directions each:
+#   - OpenSSL `s_client -dtls1_2` / `s_server -dtls1_2` (openssl.sh) inside the rust:1 Docker
+#     image, with `-use_srtp` and `-keymatexport` compared byte for byte; LOCAL_OPENSSL=1 uses
+#     the host's openssl instead.
+#   - pion/dtls v3 (Go; pion/main.go): every SRTP profile, ECDSA and RSA suites, keying
+#     material compared.
+# The str0m `dimpl` stack is covered by `cargo test -p only-dtls --test dimpl`.
+set -eu
+ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+W=$(mktemp -d)
+PIDS=""
+trap 'kill $PIDS 2>/dev/null || true; rm -rf "$W"' EXIT
+
+echo "== OpenSSL"
+if [ "${LOCAL_OPENSSL:-0}" = 1 ]; then
+  cargo build -q --release -p only-dtls --example dtls-interop --manifest-path "$ROOT/Cargo.toml"
+  "$ROOT/tools/interop/dtls/openssl.sh" "$ROOT/target/release/examples/dtls-interop" "$W/openssl"
+else
+  docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
+    -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c \
+    'cargo build -q --release -p only-dtls --example dtls-interop &&
+     tools/interop/dtls/openssl.sh /tmp/t/release/examples/dtls-interop /tmp/openssl'
+fi
+
+echo "== pion/dtls"
+cargo build -q --release -p only-dtls --example dtls-interop --manifest-path "$ROOT/Cargo.toml"
+RS=$ROOT/target/release/examples/dtls-interop
+(cd "$ROOT/tools/interop/dtls/pion" && GOFLAGS=-mod=mod go build -o "$W/pion" .)
+GO=$W/pion
+cd "$W"
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout ec.key -out ec.pem \
+  -days 30 -subj /CN=pion-ec 2>/dev/null
+openssl req -x509 -newkey rsa:2048 -nodes -keyout rsa.key -out rsa.pem -days 30 \
+  -subj /CN=pion-rsa 2>/dev/null
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout only.key \
+  -out only.pem -days 30 -subj /CN=only 2>/dev/null
+fp() { echo "sha-256 $(openssl x509 -in "$1" -noout -fingerprint -sha256 | cut -d= -f2)"; }
+fail() { echo "FAIL: $*"; for f in "$W"/*.log; do echo "--- $f"; cat "$f"; done; exit 1; }
+port=25430
+same_material() {
+  local a b
+  a=$(sed -n 's/^SRTP_MATERIAL //p' "$1")
+  b=$(sed -n 's/^SRTP_MATERIAL //p' "$2")
+  [ -n "$a" ] && [ "$a" = "$b" ]
+}
+suite_of() { sed -n 's/^CONNECTED suite=\([^ ]*\).*/\1/p' "$1"; }
+
+for profile in SRTP_AEAD_AES_128_GCM SRTP_AEAD_AES_256_GCM SRTP_AES128_CM_SHA1_80 SRTP_AES128_CM_SHA1_32; do
+  for kind in ec rsa; do
+    suite=TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+    [ "$kind" = rsa ] && suite=TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+    [ "$profile" = SRTP_AES128_CM_SHA1_32 ] && [ "$kind" = ec ] &&
+      suite=TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+    name=$profile-$kind
+    # pion server, only-dtls client.
+    port=$((port + 1))
+    "$GO" server "127.0.0.1:$port" "$kind.pem" "$kind.key" "$profile" "$suite" >"ps-$name.log" 2>&1 &
+    PIDS="$PIDS $!"
+    sleep 0.5
+    "$RS" client "127.0.0.1:$port" --cert only.pem --key only.key --srtp "$profile" \
+      --fingerprint "$(fp "$kind.pem")" --message "hello from only-dtls" >"oc-$name.log" 2>&1 ||
+      fail "$name: only-dtls client"
+    sleep 0.3
+    same_material "oc-$name.log" "ps-$name.log" || fail "$name: keying material differs"
+    grep -q "^RECV hello from only-dtls" "oc-$name.log" || fail "$name: no echo"
+    grep -q "peer=$(fp only.pem)" "ps-$name.log" || fail "$name: pion saw another certificate"
+    echo "ok   pion server <- only-dtls client: $name ($(suite_of "oc-$name.log"))"
+    # only-dtls server, pion client.
+    port=$((port + 1))
+    "$RS" server "127.0.0.1:$port" --cert "$kind.pem" --key "$kind.key" --srtp "$profile" \
+      --suite "$suite" --fingerprint "$(fp only.pem)" >"os-$name.log" 2>&1 &
+    PIDS="$PIDS $!"
+    sleep 0.5
+    "$GO" client "127.0.0.1:$port" only.pem only.key "$profile" >"pc-$name.log" 2>&1 ||
+      fail "$name: pion client"
+    sleep 0.3
+    same_material "os-$name.log" "pc-$name.log" || fail "$name: keying material differs"
+    grep -q "^RECV hello from pion" "pc-$name.log" || fail "$name: no echo at pion"
+    grep -q "^RECV hello from pion" "os-$name.log" || fail "$name: no data at only-dtls"
+    echo "ok   pion client -> only-dtls server: $name ($(suite_of "os-$name.log"))"
+  done
+done
+echo "dtls interop: all passed"

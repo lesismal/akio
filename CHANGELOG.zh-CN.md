@@ -119,6 +119,31 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
   密钥（RSA-PSS、P-384、Ed25519）、与 rcgen 和 rustls-webpki 互通、构造的反例证书链；模糊测试目标
   `x509_parse` 与 `crypto_sig_verify`（与 ring 差分），并有语料回放测试。
 
+### 新增：自研 DTLS 1.2（新的 `only-dtls`，DEV-PLAN 第 C 波）
+
+自研 WebRTC 协议栈的 DTLS 层（第 D 波将用它替代 str0m 的 `dimpl`）；目前还没有代码使用它，因此行为不变。
+
+- 新的内部 crate `only-dtls`（`#![forbid(unsafe_code)]`，只依赖 `only-crypto` 与 `only-x509`）：
+  sans-io 的 DTLS 1.2（RFC 6347）`Connection`，可作任一角色，由 `handle_datagram`、`poll_transmit`、
+  `poll_event`、`poll_timeout` / `handle_timeout` 与 `send_application_data` 驱动。记录层支持 epoch、
+  48 位序列号与 64 条记录的防重放窗口；握手消息按配置的 MTU 分片并支持乱序重组；按指数退避重传
+  flight（RFC 6347 §4.2.4），对端重发上一 flight 时也重传；无状态的 HMAC-SHA-256 HelloVerifyRequest
+  cookie（`HelloVerifier` 供在证明返回可达性之前不分配任何状态的监听方使用）。
+- 密码套件 `TLS_ECDHE_{ECDSA,RSA}_WITH_{AES_128_GCM_SHA256, AES_256_GCM_SHA384,
+  CHACHA20_POLY1305_SHA256}`，群 X25519 / P-256 / P-384，ECDSA、Ed25519、RSA-PSS 与 RSA PKCS#1 签名；
+  扩展主密钥（RFC 7627，默认必需）；拒绝重协商（RFC 5746）。
+- WebRTC：`Config::webrtc`，自签名证书的双向认证，可由 `PeerVerifier::Fingerprints`（SDP
+  `a=fingerprint`）、回调校验或交给调用方；`Identity::generate_self_signed`、`Fingerprint`（SDP 格式）、
+  `use_srtp`（RFC 5764）支持 `SRTP_AEAD_AES_128_GCM`、`SRTP_AEAD_AES_256_GCM`、
+  `SRTP_AES128_CM_HMAC_SHA1_80/32`，SRTP 主密钥随 `Event::Connected` 给出，以及 RFC 5705 导出器
+  （`export_keying_material`）。
+- 测试：在 MTU 256、25% 丢包、重复与乱序的模拟链路上握手，每个套件配合 ECDSA P-256/P-384、Ed25519 与
+  RSA 证书，负面用例（错误指纹、重放、篡改记录、错误 cookie、超时、缺少客户端证书、无共同套件）；
+  与 OpenSSL `s_client`/`s_server -dtls1_2`（Docker 中的 3.5 与 4.1；`-use_srtp` 与 `-keymatexport`
+  的密钥一致）和 pion/dtls v3 双向互通（`tools/interop/dtls/run.sh`），并在内存中与 `dimpl` 互通
+  （`tests/dimpl.rs`）；fuzz 目标 `dtls_record` 与 `dtls_handshake` 及语料回放测试。未实现：DTLS 1.3
+  （RFC 9147）、连接 ID、会话恢复、PSK。
+
 ### 变更：自研 HTTP 编解码（不再依赖 httparse、loona-hpack、regex）
 
 DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。

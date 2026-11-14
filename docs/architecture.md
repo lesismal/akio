@@ -15,6 +15,7 @@ flowchart BT
     sys["only-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
     crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG,<br/>X25519, Ed25519, P-256/P-384, RSA, DER/PEM"]
     x509["only-x509<br/>certificates, chain validation, generation"]
+    dtls["only-dtls<br/>sans-io DTLS 1.2, DTLS-SRTP"]
     buf["only-buf<br/>size-class pool, SharedBuf"]
     timer["only-timer<br/>timer wheel"]
     deflate["only-deflate<br/>DEFLATE, zlib, gzip"]
@@ -77,6 +78,8 @@ flowchart BT
     http --> media
     sys --> crypto
     crypto --> x509
+    x509 --> dtls
+    crypto --> dtls
     crypto --> ws
     crypto --> http
     crypto --> kcp
@@ -96,6 +99,12 @@ flowchart BT
   `only-x509` (certificate parsing, chain validation, generation) builds on; TLS, QUIC and DTLS
   still use rustls / quinn-proto / dimpl until the later waves of the DEV-PLAN, which will move
   them onto these two crates.
+- **DTLS is in-house too, not yet wired in**: `only-dtls` (`#![forbid(unsafe_code)]`, on
+  `only-crypto` and `only-x509` only) is a sans-io DTLS 1.2 client/server with DTLS-SRTP
+  (`use_srtp`, RFC 5705 exporter) and fingerprint-pinned self-signed certificates, driven like
+  `only-quic` drives its state machine (`handle_datagram` / `poll_transmit` / `poll_event` /
+  `poll_timeout` / `handle_timeout`, no threads or clocks). The WebRTC stack of wave D will use
+  it in place of str0m's `dimpl`; until then `only-webrtc` is unchanged.
 - **`unsafe` is confined** to `only-sys` (which also holds the workspace's own OS bindings, `only_sys::ffi`, in place of the `libc` crate), `only-uring` (its own io_uring binding, ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.

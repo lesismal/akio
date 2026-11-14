@@ -820,6 +820,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-dtls"
+version = "1.0.0-rc.1"
+dependencies = [
+ "dimpl",
+ "only-crypto",
+ "only-x509",
+]
+
+[[package]]
 name = "only-ebpf"
 version = "1.0.0-rc.1"
 dependencies = [
