@@ -339,14 +339,15 @@ jobs:
       - run: tools/h2spec/run.sh
 
   interop:
-    # Against Go peers: fib's arpc, grpc-go, kcp-go, quic-go + fib's HTTP/3, pion (WebRTC and TURN,
-    # plus coturn's turnutils_uclient in Docker). The arpc and h3 suites build against the fib
-    # checkout next to this repository (../../../../fib from each suite).
+    # Against Go peers: fib's arpc, grpc-go, kcp-go, quic-go (raw QUIC echo and HTTP/3) + fib's
+    # HTTP/3, pion (WebRTC and TURN, plus coturn's turnutils_uclient in Docker). The arpc and h3
+    # suites build against the fib checkout next to this repository (../../../../fib from each
+    # suite).
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       fail-fast: false
       matrix:
-        suite: [arpc, grpc, kcp, h3, webrtc]
+        suite: [arpc, grpc, kcp, h3, quic, webrtc]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

@@ -136,15 +136,21 @@ fn client(addr: SocketAddr, args: &[String]) {
     }
     let mut want = HashMap::new();
     for i in 0..50 {
-        let id = c.open_bi().unwrap_or_else(|| fail("no stream credit".into()));
+        let id = c
+            .open_bi()
+            .unwrap_or_else(|| fail("no stream credit".into()));
         let body = pattern(i * 3000, i);
-        c.send(id, body.clone()).unwrap_or_else(|e| fail(format!("send: {e}")));
-        c.finish(id).unwrap_or_else(|e| fail(format!("finish: {e}")));
+        c.send(id, body.clone())
+            .unwrap_or_else(|e| fail(format!("send: {e}")));
+        c.finish(id)
+            .unwrap_or_else(|e| fail(format!("finish: {e}")));
         want.insert(id, body);
     }
     while !want.is_empty() {
         if let Got::Stream(id, b) = next(30) {
-            let w = want.remove(&id).unwrap_or_else(|| fail(format!("unknown stream {id}")));
+            let w = want
+                .remove(&id)
+                .unwrap_or_else(|| fail(format!("unknown stream {id}")));
             if b != w {
                 let at = b.iter().zip(&w).position(|(x, y)| x != y).unwrap_or(0);
                 let end = (at + 16).min(b.len()).min(w.len());
@@ -176,9 +182,13 @@ fn client(addr: SocketAddr, args: &[String]) {
         let mb: usize = mb.parse().expect("bulk");
         let body = pattern(mb << 20, 3);
         let start = Instant::now();
-        let id = c.open_bi().unwrap_or_else(|| fail("no stream credit".into()));
-        c.send(id, body.clone()).unwrap_or_else(|e| fail(format!("send: {e}")));
-        c.finish(id).unwrap_or_else(|e| fail(format!("finish: {e}")));
+        let id = c
+            .open_bi()
+            .unwrap_or_else(|| fail("no stream credit".into()));
+        c.send(id, body.clone())
+            .unwrap_or_else(|e| fail(format!("send: {e}")));
+        c.finish(id)
+            .unwrap_or_else(|e| fail(format!("finish: {e}")));
         loop {
             if let Got::Stream(sid, b) = next(300) {
                 if sid == id {

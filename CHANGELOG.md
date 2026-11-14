@@ -214,6 +214,60 @@ certificate. rcgen and rustls left the dev-dependencies of only-tls, only-http, 
 only-mux, only-h3, only-quic and only-grpc (test certificates come from `only-x509`); `only`
 keeps a rustls client in its TLS tests as an interop peer.
 
+### Changed: own QUIC v1 in `only-quic` (DEV-PLAN wave D; no more quinn-proto, rustls, bytes)
+
+`only-quic` now implements QUIC itself, from RFC 9000, 9001 and 9002 plus RFC 9221 datagrams, as
+a sans-io core on `only-tls` (its record-free TLS 1.3, `only_tls::quic`) and `only-crypto`
+(`#![forbid(unsafe_code)]`, no third-party dependencies). quinn-proto, the rustls inside it
+(with ring) and the `bytes` crate left only-quic and only-h3; no library of the workspace
+depends on rustls any more. The API is the same apart from the payload type (migration below):
+`QuicServer`, `dial`, `Connection`, `QuicHandler`, `ServerConfig` / `ClientConfig` /
+`TransportConfig`, `StreamId`, `ConnectionError`, `ConnectionStats`; only-h3's API is unchanged
+(`api/only-h3.txt` is identical).
+
+- Packets: long and short headers, the three packet number spaces, packet number encoding,
+  header protection (AES, ChaCha20), AES-128/256-GCM and ChaCha20-Poly1305 packet protection,
+  coalesced packets, Initial and path-validation padding, Version Negotiation, Retry with the
+  integrity tag, stateless resets (sent for unknown connection IDs, detected by token), 1-RTT
+  key updates (started every few million packets, followed when the peer starts one).
+- Frames: every RFC 9000 frame and DATAGRAM, with the per-packet-type rules; streams with stream
+  and connection flow control, stream limits (MAX_STREAMS in batches), BLOCKED frames, final
+  size checks, RESET_STREAM in answer to STOP_SENDING.
+- Recovery (RFC 9002): RTT estimation, packet and time threshold loss detection, probe timeouts
+  and handshake anti-deadlock probes, persistent congestion, NewReno and CUBIC (RFC 9438),
+  pacing, the 3x anti-amplification limit, ACK delay rules, idle timeout, keep-alive, path MTU
+  discovery up to 1452 bytes.
+- Endpoint: routing by connection ID (8-byte IDs issued with NEW_CONNECTION_ID, retired and
+  replaced), Retry under handshake load, NEW_TOKEN address validation (tokens kept per server
+  name in `ClientConfig`), migration with path validation (`ServerConfig::migration(false)`
+  refuses it), transport parameter and connection ID checks, session resumption by ticket
+  (`server_config` enables tickets).
+- I/O: full-size datagrams leave in GSO batches (`Conn::send_segments`, up to 10); writes made
+  from a connection's own callbacks are corked and leave with the acknowledgments once the
+  callback returns, so an HTTP/3 response's headers, body and FIN usually share one packet.
+- Tests: RFC 9001 Appendix A vectors, unit tests per component and a simulated network (loss,
+  reordering, duplication, MTU, blackouts, virtual clock) for handshakes, bulk transfers, many
+  streams, migration, key updates, Retry, resumption, resets and timeouts; interop with quic-go
+  in both directions as raw QUIC (`tools/interop/quic/run.sh`, new: streams and datagrams, then
+  Retry, key updates and a 150 MB stream) and as HTTP/3 with quic-go and fib
+  (`tools/interop/h3/run.sh`); fuzz targets `quic_packet`, `quic_frame`, `quic_conn` with corpus
+  replays.
+- Performance against the quinn-proto version, same loopback benchmark
+  (`crates/only-h3/examples/quic-bench.rs`): PERF_EN
+
+Migration: stream and datagram payloads are `only_quic::Bytes` instead of `bytes::Bytes`, the
+only signature change (`QuicHandler::on_stream_data`, `QuicHandler::on_datagram`,
+`Connection::send` and `Connection::send_datagram` take `impl Into<only_quic::Bytes>`). It has
+the same shape (reference counted; `new`, `from_static`, `copy_from_slice`, `slice`,
+`split_to`, `split_off`, `truncate`, `advance`, `Deref<Target = [u8]>`, `From<Vec<u8>>`,
+`From<&'static [u8]>`, `From<&'static str>`, `From<String>`, `Vec<u8>: From<Bytes>`), so code
+usually only changes its import: `use bytes::Bytes;` becomes `use only_quic::Bytes;`. The
+`unstable` feature of only-quic is reserved and empty: `only_quic::proto`,
+`ServerConfig::from_quinn` / `as_quinn_mut` and `ClientConfig::from_quinn` / `as_quinn_mut` are
+removed (they were outside the semver promise). `Congestion::Bbr` (experimental) runs CUBIC.
+`Connection::queued_bytes` counts bytes not sent yet. Not implemented: 0-RTT, sending ECN marks,
+client-initiated migration, preferred_address, QUIC v2.
+
 ### Changed: in-house HTTP codecs (no more httparse, loona-hpack, regex)
 
 DEV-PLAN "no third-party dependencies", wave A. The public API is unchanged.

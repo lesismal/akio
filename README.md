@@ -24,7 +24,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | TLS | rustls as a connection transport (server and client, ALPN, SNI) |
 | HTTP | HTTP/1.1 and HTTP/2 (h2spec 147/147) on one port, pipelining, streaming both ways, Router (static/regexp/param/wildcard), 9 middlewares, static files with `sendfile`, HTTP/1 and HTTP/2 clients |
 | WebSocket | server and client, permessage-deflate, Autobahn 100% (server and client) |
-| HTTP/3 and QUIC | quinn-proto based QUIC, HTTP/3 serving the same `Router`, H3 client; interop with quic-go and fib |
+| HTTP/3 and QUIC | own QUIC v1 (RFC 9000/9001/9002, datagrams, migration, Retry, key updates, GSO), HTTP/3 serving the same `Router`, H3 client; interop with quic-go and fib |
 | RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
 | Proxies | SOCKS5/4/4a, HTTP CONNECT, port sharing by first-byte sniffing (only-mux) |
 | KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |

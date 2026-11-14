@@ -91,10 +91,9 @@ builds naming it keep working).
 - only-ws client: `DialOptions::tls` for `wss://`.
 - only-http clients: `Client::with_tls(cfg)`, `H2Client::dial(.., Some((cfg, name)), ..)`.
 - QUIC and HTTP/3 use TLS 1.3 inside QUIC: see `only_quic::server_config` and
-  `server_config_from(&tls_config)`. Until the in-house QUIC (DEV-PLAN wave D) they run
-  quinn-proto, which uses rustls; `only-quic` builds that configuration from the same
-  `only::tls` configs, so nothing changes for users. The record-free TLS 1.3 core the new QUIC
-  will drive already exists inside `only-tls` (internal API).
+  `server_config_from(&tls_config)`. `only-quic`'s own QUIC (DEV-PLAN wave D) drives the
+  record-free TLS 1.3 core inside `only-tls` (internal API) with the same `only::tls`
+  configurations.
 
 ## Not done
 

@@ -21,6 +21,7 @@ only-socks = { path = "../crates/only-socks", features = ["fuzzing"] }
 only-mux = { path = "../crates/only-mux", features = ["fuzzing"] }
 only-kcp = { path = "../crates/only-kcp", features = ["fuzzing"] }
 only-h3 = { path = "../crates/only-h3", features = ["fuzzing"] }
+only-quic = { path = "../crates/only-quic", features = ["fuzzing"] }
 only-ebpf = { path = "../crates/only-ebpf", features = ["fuzzing"] }
 only-turn = { path = "../crates/only-turn", features = ["fuzzing"] }
 only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
@@ -476,6 +477,27 @@ bench = false
 [[bin]]
 name = "tls_record"
 path = "fuzz_targets/tls_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_packet"
+path = "fuzz_targets/quic_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_frame"
+path = "fuzz_targets/quic_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_conn"
+path = "fuzz_targets/quic_conn.rs"
 test = false
 doc = false
 bench = false

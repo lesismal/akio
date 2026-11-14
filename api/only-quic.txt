@@ -105,6 +105,74 @@ impl core::marker::Sync for only_quic::Side
 impl core::marker::Unpin for only_quic::Side
 impl core::panic::unwind_safe::RefUnwindSafe for only_quic::Side
 impl core::panic::unwind_safe::UnwindSafe for only_quic::Side
+pub struct only_quic::Bytes
+impl only_quic::Bytes
+pub fn only_quic::Bytes::advance(&mut self, usize)
+pub fn only_quic::Bytes::clear(&mut self)
+pub fn only_quic::Bytes::copy_from_slice(&[u8]) -> only_quic::Bytes
+pub const fn only_quic::Bytes::from_static(&'static [u8]) -> only_quic::Bytes
+pub fn only_quic::Bytes::is_empty(&self) -> bool
+pub fn only_quic::Bytes::len(&self) -> usize
+pub const fn only_quic::Bytes::new() -> only_quic::Bytes
+pub fn only_quic::Bytes::slice(&self, impl core::ops::range::RangeBounds<usize>) -> only_quic::Bytes
+pub fn only_quic::Bytes::split_off(&mut self, usize) -> only_quic::Bytes
+pub fn only_quic::Bytes::split_to(&mut self, usize) -> only_quic::Bytes
+pub fn only_quic::Bytes::truncate(&mut self, usize)
+impl core::borrow::Borrow<[u8]> for only_quic::Bytes
+pub fn only_quic::Bytes::borrow(&self) -> &[u8]
+impl core::clone::Clone for only_quic::Bytes
+pub fn only_quic::Bytes::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::Bytes
+impl core::cmp::Ord for only_quic::Bytes
+pub fn only_quic::Bytes::cmp(&self, &only_quic::Bytes) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_quic::Bytes
+pub fn only_quic::Bytes::eq(&self, &only_quic::Bytes) -> bool
+impl core::cmp::PartialEq<&[u8]> for only_quic::Bytes
+pub fn only_quic::Bytes::eq(&self, &&[u8]) -> bool
+impl core::cmp::PartialEq<&str> for only_quic::Bytes
+pub fn only_quic::Bytes::eq(&self, &&str) -> bool
+impl core::cmp::PartialEq<[u8]> for only_quic::Bytes
+pub fn only_quic::Bytes::eq(&self, &[u8]) -> bool
+impl core::cmp::PartialEq<alloc::vec::Vec<u8>> for only_quic::Bytes
+pub fn only_quic::Bytes::eq(&self, &alloc::vec::Vec<u8>) -> bool
+impl core::cmp::PartialEq<str> for only_quic::Bytes
+pub fn only_quic::Bytes::eq(&self, &str) -> bool
+impl core::cmp::PartialOrd for only_quic::Bytes
+pub fn only_quic::Bytes::partial_cmp(&self, &only_quic::Bytes) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::AsRef<[u8]> for only_quic::Bytes
+pub fn only_quic::Bytes::as_ref(&self) -> &[u8]
+impl core::convert::From<&'static [u8]> for only_quic::Bytes
+pub fn only_quic::Bytes::from(&'static [u8]) -> only_quic::Bytes
+impl core::convert::From<&'static str> for only_quic::Bytes
+pub fn only_quic::Bytes::from(&'static str) -> only_quic::Bytes
+impl core::convert::From<alloc::boxed::Box<[u8]>> for only_quic::Bytes
+pub fn only_quic::Bytes::from(alloc::boxed::Box<[u8]>) -> only_quic::Bytes
+impl core::convert::From<alloc::string::String> for only_quic::Bytes
+pub fn only_quic::Bytes::from(alloc::string::String) -> only_quic::Bytes
+impl core::convert::From<alloc::vec::Vec<u8>> for only_quic::Bytes
+pub fn only_quic::Bytes::from(alloc::vec::Vec<u8>) -> only_quic::Bytes
+impl core::convert::From<only_quic::Bytes> for alloc::vec::Vec<u8>
+pub fn alloc::vec::Vec<u8>::from(only_quic::Bytes) -> alloc::vec::Vec<u8>
+impl core::default::Default for only_quic::Bytes
+pub fn only_quic::Bytes::default() -> only_quic::Bytes
+impl core::fmt::Debug for only_quic::Bytes
+pub fn only_quic::Bytes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_quic::Bytes
+pub fn only_quic::Bytes::hash<H: core::hash::Hasher>(&self, &mut H)
+impl core::iter::traits::collect::FromIterator<u8> for only_quic::Bytes
+pub fn only_quic::Bytes::from_iter<T: core::iter::traits::collect::IntoIterator<Item = u8>>(T) -> only_quic::Bytes
+impl core::ops::deref::Deref for only_quic::Bytes
+pub type only_quic::Bytes::Target = [u8]
+pub fn only_quic::Bytes::deref(&self) -> &[u8]
+impl<'a> core::iter::traits::collect::IntoIterator for &'a only_quic::Bytes
+pub type &'a only_quic::Bytes::IntoIter = core::slice::iter::Iter<'a, u8>
+pub type &'a only_quic::Bytes::Item = &'a u8
+pub fn &'a only_quic::Bytes::into_iter(self) -> Self::IntoIter
+impl core::marker::Send for only_quic::Bytes
+impl core::marker::Sync for only_quic::Bytes
+impl core::marker::Unpin for only_quic::Bytes
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::Bytes
+impl core::panic::unwind_safe::UnwindSafe for only_quic::Bytes
 pub struct only_quic::ClientConfig(_)
 impl only_quic::ClientConfig
 pub fn only_quic::ClientConfig::transport(self, &only_quic::TransportConfig) -> Self
@@ -129,8 +197,8 @@ pub fn only_quic::Connection::queued_bytes(&self, only_quic::StreamId) -> usize
 pub fn only_quic::Connection::remote_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn only_quic::Connection::reset(&self, only_quic::StreamId, u32) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::rtt(&self) -> core::time::Duration
-pub fn only_quic::Connection::send(&self, only_quic::StreamId, impl core::convert::Into<bytes::bytes::Bytes>) -> core::result::Result<(), only_quic::Error>
-pub fn only_quic::Connection::send_datagram(&self, impl core::convert::Into<bytes::bytes::Bytes>) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::send(&self, only_quic::StreamId, impl core::convert::Into<only_quic::Bytes>) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::send_datagram(&self, impl core::convert::Into<only_quic::Bytes>) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::server_name(&self) -> core::option::Option<alloc::string::String>
 pub fn only_quic::Connection::stats(&self) -> only_quic::ConnectionStats
 pub fn only_quic::Connection::stop(&self, only_quic::StreamId, u32) -> core::result::Result<(), only_quic::Error>
@@ -280,8 +348,8 @@ impl core::panic::unwind_safe::UnwindSafe for only_quic::UdpStats
 pub trait only_quic::QuicHandler: core::marker::Send + 'static
 pub fn only_quic::QuicHandler::on_close(&mut self, &only_quic::Connection, only_quic::ConnectionError)
 pub fn only_quic::QuicHandler::on_connected(&mut self, &only_quic::Connection)
-pub fn only_quic::QuicHandler::on_datagram(&mut self, &only_quic::Connection, bytes::bytes::Bytes)
-pub fn only_quic::QuicHandler::on_stream_data(&mut self, &only_quic::Connection, only_quic::StreamId, bytes::bytes::Bytes, bool)
+pub fn only_quic::QuicHandler::on_datagram(&mut self, &only_quic::Connection, only_quic::Bytes)
+pub fn only_quic::QuicHandler::on_stream_data(&mut self, &only_quic::Connection, only_quic::StreamId, only_quic::Bytes, bool)
 pub fn only_quic::QuicHandler::on_stream_opened(&mut self, &only_quic::Connection, only_quic::StreamId)
 pub fn only_quic::QuicHandler::on_stream_reset(&mut self, &only_quic::Connection, only_quic::StreamId, u64)
 pub fn only_quic::QuicHandler::on_stream_stopped(&mut self, &only_quic::Connection, only_quic::StreamId, u64)

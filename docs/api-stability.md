@@ -46,12 +46,12 @@ Not covered:
   `only_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
 - the `fuzzing` cargo features and the `fuzzing` modules they enable (entry points for `fuzz/`).
 - the `unstable` cargo features (`only`, `only-tls`, `only-quic`, `only-webrtc`) and
-  everything they enable: raw access to the wrapped dependencies (`only_quic::proto`,
-  `from_quinn` / `as_quinn_mut`, `only_webrtc::str0m`, `Peer::with_rtc`,
-  `RtcConfig::with_str0m`, `OtherEvent::as_str0m` ...). Since only-tls runs its own TLS
-  (DEV-PLAN wave C), its `unstable` feature enables nothing: it is kept, reserved and empty, so
-  that `only/unstable` keeps building, and `only::tls::rustls`, `from_rustls` and `as_rustls`
-  are gone. Their signatures change whenever the wrapped crate is upgraded,
+  everything they enable: raw access to the wrapped dependencies (`only_webrtc::str0m`,
+  `Peer::with_rtc`, `RtcConfig::with_str0m`, `OtherEvent::as_str0m` ...). Since only-tls runs
+  its own TLS (DEV-PLAN wave C) and only-quic its own QUIC (wave D), their `unstable` features
+  enable nothing: they are kept, reserved and empty, so that `only/unstable` keeps building;
+  `only::tls::rustls`, `from_rustls`, `as_rustls`, `only_quic::proto`, `from_quinn` and
+  `as_quinn_mut` are gone. Their signatures change whenever the wrapped crate is upgraded,
   which may happen in a minor release. Anything public that cannot be promised yet goes under
   `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
 - the `prost` feature of `only-grpc` (the `codec::Message` implementation for prost messages;
@@ -72,17 +72,18 @@ minor releases; removed or renamed only in a major one).
 
 ### Public dependencies
 
-The covered API uses types of only one other crate: `bytes` (`Bytes` in the QUIC and stream
-APIs), at 1.x for years. Upgrading it to a semver-incompatible version is a breaking change for
-`only` and happens only in a major release. Logging uses the workspace's own facade `only-log`
+The covered API uses types of no other crate. The `bytes` crate's `Bytes`, which the QUIC API
+used to carry stream and datagram payloads, was replaced by `only_quic::Bytes` (same shape:
+reference counted, `slice`, `split_to`, `from_static`, `From<Vec<u8>>` ...) when only-quic got
+its own QUIC (DEV-PLAN wave D; see the CHANGELOG migration notes). Logging uses the workspace's own facade `only-log`
 (`only::log`, `Config::log_level: Option<only::log::LevelFilter>`); `log` is a dependency
 only with the `log` cargo feature, which is outside the promise (above). The log targets
 (`only`, `only_http::access`, `only_webrtc`) and key names in the observability chapter are
 kept like metric names: added in minor releases, renamed or removed only in a major one.
 
 TLS is implemented in `only-tls` itself (on `only-crypto` and `only-x509`), with no
-third-party dependency. The pre-1.0 dependencies that still do protocol work (quinn-proto, with
-rustls inside it for QUIC's TLS 1.3 until the in-house QUIC of wave D; str0m; prost) are
+third-party dependency, and so is QUIC in `only-quic` (on `only-tls` and `only-crypto`). The
+pre-1.0 dependencies that still do protocol work (str0m; prost) are
 **wrapped**: the covered API uses `only`'s own types instead (`only::tls::{ServerConfig,
 ClientConfig, Certificate, PrivateKey, RootCerts, Error}`, `only_quic::{ServerConfig,
 ClientConfig, TransportConfig, StreamId, Dir, Side, ConnectionError, ConnectionStats}`,

@@ -205,7 +205,7 @@ Accepted (documented, no change needed now):
   not move). None of them implements `Sync`.
 - **Kernel-provided data is trusted for layout**: sockaddr family, `cmsg_len`, `msg_len`
   (clamped), CQE buffer ids (now range-checked). This is the kernel ABI contract.
-- **Dependencies with `unsafe`** (`quinn-proto` with `rustls`/`ring` inside it, used by only-quic only; str0m) are trusted and tracked with `cargo deny`/`cargo audit`. TLS itself is the own `only-tls` (`#![forbid(unsafe_code)]`, wave C) on `only-crypto` and `only-x509`, so the TLS record and handshake code of every TCP protocol carries no `unsafe` outside `only-crypto`'s AES-instruction module. DEFLATE/zlib/gzip is the
+- **Dependencies with `unsafe`** (str0m) are trusted and tracked with `cargo deny`/`cargo audit`. TLS itself is the own `only-tls` (`#![forbid(unsafe_code)]`, wave C) on `only-crypto` and `only-x509`, so the TLS record and handshake code of every TCP protocol carries no `unsafe` outside `only-crypto`'s AES-instruction module; QUIC is the own `only-quic` (`#![forbid(unsafe_code)]`, wave D, replacing `quinn-proto` with `rustls`/`ring` inside it), so packet protection, frames, streams and recovery of QUIC and HTTP/3 carry none either. DEFLATE/zlib/gzip is the
   own `only-deflate` (`#![forbid(unsafe_code)]`), which replaced `flate2` with `zlib-rs`. The
   `libc` and `io-uring` crates are gone from the libraries (wave B): `only_sys::ffi` and
   `only-uring`'s `ring` replace them (`libc` stays a dev-dependency, for the layout comparison
@@ -243,7 +243,8 @@ Accepted (documented, no change needed now):
 | only-kcp | pass (5 tests, 4-6 min) |
 | only-uring (`buf_ring`, `kernel_buf` tests) | pass (3): the kernel-shared memory code of F5-F7 |
 | only-ws | 15 of 20 pass; the other 5 (permessage-deflate round trips and exhaustive split loops) do not finish within 5-15 min under Miri |
-| only-core, only-quic | no unit tests outside loom / integration tests |
+| only-core | no unit tests outside loom / integration tests |
+| only-quic (own QUIC since wave D) | not run under Miri: `#![forbid(unsafe_code)]` with no `unsafe` of its own; its unit, simulated-network and corpus replay tests run natively |
 | only-ebpf | does not finish within 15 min (its unit tests run a cBPF interpreter over large input sets; safe code, the `sys` module is not exercised) |
 | only-deflate | pass (all unit tests; the corpus replays are skipped in CI like elsewhere) |
 | only-grpc | pass, including `tests::framing_and_gzip` since gzip moved to only-deflate (below) |

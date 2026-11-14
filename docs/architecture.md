@@ -34,7 +34,7 @@ flowchart BT
     arpc[only-arpc]
     socks[only-socks]
     mux[only-mux]
-    quic["only-quic<br/>quinn-proto"]
+    quic["only-quic<br/>QUIC v1, sans-io"]
     h3[only-h3]
     kcp[only-kcp]
     turn["only-turn<br/>STUN, TURN"]
@@ -97,9 +97,9 @@ flowchart BT
   WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent), plus the public-key algorithms and key
   formats (X25519, Ed25519, ECDH/ECDSA P-256/P-384, RSA PKCS#1/PSS, DER/PEM, PKCS#8) that
   `only-x509` (certificate parsing, chain validation, generation) builds on. TLS 1.2/1.3 runs on
-  these two crates in `only-tls` (wave C); QUIC and DTLS still use quinn-proto (with rustls
-  inside) / dimpl until the later waves of the DEV-PLAN, which will move them onto them too
-  (`only_tls::quic` is the record-free TLS 1.3 core the in-house QUIC will drive).
+  these two crates in `only-tls` (wave C), and QUIC in `only-quic` on `only-tls`'s
+  record-free TLS 1.3 core (`only_tls::quic`) and `only-crypto` (wave D); DTLS in WebRTC still
+  uses dimpl until the WebRTC part of wave D moves it onto them too.
 - **DTLS is in-house too, not yet wired in**: `only-dtls` (`#![forbid(unsafe_code)]`, on
   `only-crypto` and `only-x509` only) is a sans-io DTLS 1.2 client/server with DTLS-SRTP
   (`use_srtp`, RFC 5705 exporter) and fingerprint-pinned self-signed certificates, driven like
@@ -112,8 +112,10 @@ flowchart BT
 - **Sans-io protocol cores**: HTTP/1 parsing (own zero-copy incremental head parser and chunked
   decoder), HTTP/2 framing and HPACK (own), WebSocket framing and permessage-deflate (DEFLATE from the own `only-deflate`), KCP, QPACK
   and HTTP/3 framing are state machines fed bytes by `only`; so is TLS (own record layer and
-  TLS 1.3 / 1.2 handshake machines in `only-tls`). QUIC is quinn-proto and WebRTC is str0m,
-  driven sans-io (ADR-005) and hidden behind `only`'s own types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).
+  TLS 1.3 / 1.2 handshake machines in `only-tls`) and QUIC (`only-quic`'s own packets,
+  frames, streams, recovery, connection-ID routing endpoint: datagrams in, datagrams out,
+  timers passed in). WebRTC is str0m, driven sans-io (ADR-005) and hidden behind `only`'s own
+  types, so it can be upgraded or replaced without breaking the API (docs/api-stability.md).
 - The facade `only` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
   composes backend groups into an `Engine`.
 

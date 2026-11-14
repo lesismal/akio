@@ -169,7 +169,9 @@ fn h3(secs: u64, conc: usize) {
     let app = Router::new().get("/", |ctx: &mut Context| ctx.text(200, "hello h3"));
     let quic = only_h3::server_config(certs, key).expect("config");
     let s = Engine::builder()
-        .listen(Listener::udp("127.0.0.1:0".parse().expect("addr")).serve(only_h3::serve(quic, app)))
+        .listen(
+            Listener::udp("127.0.0.1:0".parse().expect("addr")).serve(only_h3::serve(quic, app)),
+        )
         .build()
         .expect("engine");
     s.start().expect("start");

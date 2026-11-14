@@ -871,6 +871,28 @@ impl Connection {
         })
     }
 
+    /// A 1-RTT packet with `payload` as its frames, protected with this side's keys: lets the
+    /// fuzzer reach the frame handlers of the peer.
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn forge_1rtt(&mut self, payload: &[u8]) -> Option<Vec<u8>> {
+        self.one_rtt.as_ref()?;
+        let sp = &mut self.spaces[2];
+        let pn = sp.next_pn;
+        sp.next_pn += 1;
+        let pnl = pn_len(pn, sp.largest_acked);
+        let dcid = self.remote_cid();
+        let k = self.one_rtt.as_ref()?;
+        let mut buf = Vec::with_capacity(payload.len() + 64);
+        let b = PacketBuilder::short(&mut buf, &dcid, k.phase, pn, pnl);
+        buf.extend_from_slice(payload);
+        let min = b.pn_offset + b.pn_len + b.min_payload();
+        if buf.len() < min {
+            buf.resize(min, 0);
+        }
+        b.finish(&mut buf, &k.local, &k.local_hp);
+        Some(buf)
+    }
+
     // ---- datagrams ----
 
     /// The largest DATAGRAM payload that fits a packet now.

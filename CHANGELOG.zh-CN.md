@@ -189,6 +189,48 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
 的 dev-dependencies 中移除（测试证书改由 `only-x509` 生成）；`only` 的 TLS 测试保留 rustls 客户端作为
 互通对端。
 
+### 变更：`only-quic` 自研 QUIC v1（DEV-PLAN 第 D 波；不再依赖 quinn-proto、rustls、bytes）
+
+`only-quic` 现在依据 RFC 9000、9001、9002 以及 RFC 9221 数据报自行实现 QUIC，是基于 `only-tls`
+（其不经记录层的 TLS 1.3，`only_tls::quic`）与 `only-crypto` 的 sans-io 核心
+（`#![forbid(unsafe_code)]`，无第三方依赖）。quinn-proto、其内部的 rustls（及 ring）以及 `bytes` crate
+已从 only-quic 和 only-h3 中移除；工作区里已没有库依赖 rustls。除负载类型外 API 不变（迁移见下）：
+`QuicServer`、`dial`、`Connection`、`QuicHandler`、`ServerConfig` / `ClientConfig` /
+`TransportConfig`、`StreamId`、`ConnectionError`、`ConnectionStats`；only-h3 的 API 不变
+（`api/only-h3.txt` 完全相同）。
+
+- 数据包：长/短包头、三个包号空间、包号编码、包头保护（AES、ChaCha20）、AES-128/256-GCM 与
+  ChaCha20-Poly1305 包保护、合并数据包、Initial 与路径验证的填充、版本协商、带完整性标签的 Retry、无状态
+  重置（对未知连接 ID 发送，按令牌识别）、1-RTT 密钥更新（每几百万个包发起一次，对端发起时跟随）。
+- 帧：RFC 9000 的全部帧以及 DATAGRAM，并遵守按包类型的限制；流级与连接级流量控制、流数量上限
+  （MAX_STREAMS 批量下发）、BLOCKED 帧、最终大小检查、以 RESET_STREAM 回应 STOP_SENDING。
+- 丢包恢复（RFC 9002）：RTT 估计、按包序与时间阈值的丢包检测、探测超时与握手防死锁探测、持续拥塞、
+  NewReno 与 CUBIC（RFC 9438）、pacing、3 倍放大限制、ACK 延迟规则、空闲超时、保活、探测到 1452 字节的
+  路径 MTU 发现。
+- Endpoint：按连接 ID 路由（8 字节 ID，用 NEW_CONNECTION_ID 下发、退役后补充）、握手压力大时使用 Retry、
+  NEW_TOKEN 地址验证（令牌按服务器名保存在 `ClientConfig` 中）、经路径验证的迁移
+  （`ServerConfig::migration(false)` 拒绝迁移）、传输参数与连接 ID 校验、基于票据的会话恢复
+  （`server_config` 开启票据）。
+- I/O：满尺寸的数据报成批地用 GSO 发出（`Conn::send_segments`，最多 10 个）；在连接自身回调中发起的写入
+  先攒起来，回调返回后与 ACK 一起发出，因此 HTTP/3 响应的头、体与 FIN 通常在同一个包里。
+- 测试：RFC 9001 附录 A 向量、各组件的单元测试，以及模拟网络（丢包、乱序、重复、MTU、断网、虚拟时钟）上
+  的握手、大块传输、多流、迁移、密钥更新、Retry、会话恢复、重置与超时测试；与 quic-go 的原生 QUIC 双向互通
+  （新增 `tools/interop/quic/run.sh`：流与数据报，然后是 Retry、密钥更新与 150 MB 的流）以及与 quic-go、
+  fib 的 HTTP/3 双向互通（`tools/interop/h3/run.sh`）；fuzz 目标 `quic_packet`、`quic_frame`、
+  `quic_conn`，并回放语料。
+- 性能（与 quinn-proto 版本对比，同一个回环基准 `crates/only-h3/examples/quic-bench.rs`）：PERF_ZH
+
+迁移：流与数据报负载改为 `only_quic::Bytes`（原为 `bytes::Bytes`），这是唯一的签名变化
+（`QuicHandler::on_stream_data`、`QuicHandler::on_datagram`，以及接受 `impl Into<only_quic::Bytes>` 的
+`Connection::send` 与 `Connection::send_datagram`）。它的形状相同（引用计数；`new`、`from_static`、
+`copy_from_slice`、`slice`、`split_to`、`split_off`、`truncate`、`advance`、`Deref<Target = [u8]>`、
+`From<Vec<u8>>`、`From<&'static [u8]>`、`From<&'static str>`、`From<String>`、`Vec<u8>: From<Bytes>`），
+通常只需改导入：`use bytes::Bytes;` 改为 `use only_quic::Bytes;`。only-quic 的 `unstable` feature 保留且为空：
+`only_quic::proto`、`ServerConfig::from_quinn` / `as_quinn_mut` 与 `ClientConfig::from_quinn` /
+`as_quinn_mut` 已移除（它们本就不在 semver 承诺之内）。`Congestion::Bbr`（实验性）实际运行 CUBIC。
+`Connection::queued_bytes` 统计尚未发出的字节数。未实现：0-RTT、发送 ECN 标记、客户端主动迁移、
+preferred_address、QUIC v2。
+
 ### 变更：自研 HTTP 编解码（不再依赖 httparse、loona-hpack、regex）
 
 DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。

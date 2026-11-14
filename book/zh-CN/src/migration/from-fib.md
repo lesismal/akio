@@ -91,7 +91,7 @@ Data: func(c *fib.Connection, data []byte) {
 |---|---|---|
 | `tls`（crypto/tls 握手，自有记录层） | `only::tls`（底层为 rustls） | `ServerConfig` / `ClientConfig` 构建器；暂无 kTLS |
 | `websocket` | `only-ws`（+ `Context::upgrade_websocket`） | 只交付完整消息（不按帧交付）；不支持基于 HTTP/2 或 HTTP/3 的 WebSocket；客户端停机时尚不发送 1001 |
-| `http3`（自有 QUIC） | `only-quic`（quinn-proto）+ `only-h3` | 无 QPACK 动态表、无推送、客户端无 Alt-Svc 自动切换 |
+| `http3`（自有 QUIC） | `only-quic`（自研 QUIC）+ `only-h3` | 无 QPACK 动态表、无推送、客户端无 Alt-Svc 自动切换 |
 | `grpc` | `only-grpc` | 字节或实现 `codec::Message` 的类型（prost 需启用 feature）；没有对应 protoc-gen-go-grpc 的代码生成器 |
 | `arpc` | `only-arpc` | 线路格式相同；无中间件 / coder 链 |
 | `socks` | `only-socks` | 只支持 CONNECT（无 BIND / UDP ASSOCIATE）；客户端不能经 SOCKS 拨号 |

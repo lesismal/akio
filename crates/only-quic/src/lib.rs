@@ -54,7 +54,7 @@ mod proto;
 mod timer;
 mod types;
 
-#[cfg(feature = "fuzzing")]
+#[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
 
@@ -524,6 +524,7 @@ impl QuicServer {
     where
         F: Fn(&Connection) -> H + Send + Sync + 'static,
     {
+        let config = config.0;
         let mut cfg = proto::ConnConfig::new(config.transport, config.migration);
         if let Some(n) = config.key_update {
             cfg.key_update_interval = n;
@@ -634,6 +635,7 @@ pub fn dial<H: QuicHandler>(
     config: ClientConfig,
     handler: H,
 ) -> Result<Connection, Error> {
+    let config = config.0;
     let token = lock(&config.tokens)
         .get(server_name)
         .cloned()
@@ -643,14 +645,7 @@ pub fn dial<H: QuicHandler>(
     if let Some(n) = config.key_update {
         cfg.key_update_interval = n;
     }
-    let (h, conn) = endpoint.connect(
-        Instant::now(),
-        cfg,
-        &config.tls,
-        server_name,
-        addr,
-        token,
-    )?;
+    let (h, conn) = endpoint.connect(Instant::now(), cfg, &config.tls, server_name, addr, token)?;
     let ep = Arc::new(Ep::new(
         endpoint,
         None,

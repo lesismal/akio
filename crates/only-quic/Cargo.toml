@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-readme.workspace = true
+readme = "README.md"
 homepage.workspace = true
 documentation = "https://docs.rs/only-quic"
 keywords = ["quic", "udp", "network", "http3"]
@@ -17,6 +17,7 @@ only = { workspace = true }
 only-core = { workspace = true }
 only-tls = { workspace = true }
 only-crypto = { workspace = true }
+only-x509 = { workspace = true, optional = true }
 
 [features]
 # Reserved (docs/api-stability.md): it used to expose the wrapped quinn-proto; the QUIC
@@ -24,7 +25,7 @@ only-crypto = { workspace = true }
 # still builds.
 unstable = []
 # Fuzz entry points for `fuzz/` (`only_quic::fuzzing`); not a public API.
-fuzzing = []
+fuzzing = ["dep:only-x509"]
 
 [dev-dependencies]
 only-x509 = { workspace = true }

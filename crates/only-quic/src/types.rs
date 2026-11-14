@@ -277,7 +277,10 @@ pub(crate) type TokenStore = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 /// A QUIC server configuration: TLS (see [`server_config`](crate::server_config)) plus
 /// transport settings. Cheap to clone.
 #[derive(Clone)]
-pub struct ServerConfig {
+pub struct ServerConfig(pub(crate) ServerInner);
+
+#[derive(Clone)]
+pub(crate) struct ServerInner {
     pub(crate) tls: only_tls::ServerConfig,
     pub(crate) transport: TransportConfig,
     pub(crate) migration: bool,
@@ -293,26 +296,26 @@ impl fmt::Debug for ServerConfig {
 
 impl ServerConfig {
     pub(crate) fn new(tls: only_tls::ServerConfig) -> ServerConfig {
-        ServerConfig {
+        ServerConfig(ServerInner {
             tls,
             transport: TransportConfig::default(),
             migration: true,
             retry: false,
             key_update: None,
-        }
+        })
     }
 
     /// Uses `transport` for every connection.
     #[must_use]
     pub fn transport(mut self, transport: &TransportConfig) -> Self {
-        self.transport = transport.clone();
+        self.0.transport = transport.clone();
         self
     }
 
     /// Whether clients may migrate to a new address (default `true`).
     #[must_use]
     pub fn migration(mut self, yes: bool) -> Self {
-        self.migration = yes;
+        self.0.migration = yes;
         self
     }
 
@@ -321,7 +324,7 @@ impl ServerConfig {
     #[doc(hidden)]
     #[must_use]
     pub fn retry(mut self, yes: bool) -> Self {
-        self.retry = yes;
+        self.0.retry = yes;
         self
     }
 
@@ -330,7 +333,7 @@ impl ServerConfig {
     #[doc(hidden)]
     #[must_use]
     pub fn key_update_interval(mut self, packets: u64) -> Self {
-        self.key_update = Some(packets.max(1));
+        self.0.key_update = Some(packets.max(1));
         self
     }
 }
@@ -339,7 +342,10 @@ impl ServerConfig {
 /// transport settings. Cheap to clone; clones share the address-validation tokens servers
 /// hand out (NEW_TOKEN), which later connections to the same server name present.
 #[derive(Clone)]
-pub struct ClientConfig {
+pub struct ClientConfig(pub(crate) ClientInner);
+
+#[derive(Clone)]
+pub(crate) struct ClientInner {
     pub(crate) tls: only_tls::ClientConfig,
     pub(crate) transport: TransportConfig,
     pub(crate) tokens: TokenStore,
@@ -354,18 +360,18 @@ impl fmt::Debug for ClientConfig {
 
 impl ClientConfig {
     pub(crate) fn new(tls: only_tls::ClientConfig) -> ClientConfig {
-        ClientConfig {
+        ClientConfig(ClientInner {
             tls,
             transport: TransportConfig::default(),
             tokens: Arc::new(Mutex::new(HashMap::new())),
             key_update: None,
-        }
+        })
     }
 
     /// Uses `transport` for connections dialed with this configuration.
     #[must_use]
     pub fn transport(mut self, transport: &TransportConfig) -> Self {
-        self.transport = transport.clone();
+        self.0.transport = transport.clone();
         self
     }
 
@@ -374,7 +380,7 @@ impl ClientConfig {
     #[doc(hidden)]
     #[must_use]
     pub fn key_update_interval(mut self, packets: u64) -> Self {
-        self.key_update = Some(packets.max(1));
+        self.0.key_update = Some(packets.max(1));
         self
     }
 }
