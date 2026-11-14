@@ -175,7 +175,7 @@ impl Responder {
 /// One request being handled, and the means to answer it.
 pub struct Context {
     req: Arc<Request>,
-    params: Vec<(String, String)>,
+    params: crate::router::Params,
     locals: Vec<(String, String)>,
     fin: Finish,
     responder: Option<Out>,
@@ -225,7 +225,7 @@ impl Context {
                 req: req.clone(),
             },
             req,
-            params: Vec::new(),
+            params: Default::default(),
             locals: Vec::new(),
             status: None,
             detached: false,
@@ -253,7 +253,7 @@ impl Context {
                 req: req.clone(),
             },
             req,
-            params: Vec::new(),
+            params: Default::default(),
             locals: Vec::new(),
             status: None,
             detached: false,
@@ -276,7 +276,7 @@ impl Context {
                 req: req.clone(),
             },
             req,
-            params: Vec::new(),
+            params: Default::default(),
             locals: Vec::new(),
             status: None,
             detached: false,
@@ -317,15 +317,20 @@ impl Context {
         self.req.peer
     }
 
-    /// A route parameter (`:id` or `*rest`) matched by the router.
+    /// A route parameter (`:id`, `{id:re}` or `*rest`) matched by the router, percent-decoded
+    /// (once, at dispatch; a value with a malformed escape or invalid UTF-8 is returned as sent).
+    /// A decoded wildcard may contain `/` that was sent as `%2F`: use
+    /// [`param_raw`](Self::param_raw) where segment boundaries matter.
     pub fn param(&self, name: &str) -> Option<&str> {
-        self.params
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
+        self.params.get(name, self.req.path())
     }
 
-    pub(crate) fn set_params(&mut self, params: Vec<(String, String)>) {
+    /// A route parameter exactly as it appears in the request path (not percent-decoded).
+    pub fn param_raw(&self, name: &str) -> Option<&str> {
+        self.params.raw(name, self.req.path())
+    }
+
+    pub(crate) fn set_params(&mut self, params: crate::router::Params) {
         self.params = params;
     }
 
@@ -414,7 +419,7 @@ impl Context {
         self.detached = true;
         Some(Detached {
             req: self.req.clone(),
-            params: std::mem::take(&mut self.params),
+            params: std::mem::take(&mut self.params).boxed(),
             fin: Finish {
                 extra: std::mem::take(&mut self.fin.extra),
                 filters: std::mem::take(&mut self.fin.filters),
@@ -562,7 +567,8 @@ impl Context {
 /// responding closes the connection.
 pub struct Detached {
     req: Arc<Request>,
-    params: Vec<(String, String)>,
+    /// Boxed (and only when there are parameters) to keep `Detached` small.
+    params: Option<Box<crate::router::Params>>,
     fin: Finish,
     responder: Out,
 }
@@ -573,12 +579,14 @@ impl Detached {
         &self.req
     }
 
-    /// A route parameter.
+    /// A route parameter, percent-decoded (see [`Context::param`]).
     pub fn param(&self, name: &str) -> Option<&str> {
-        self.params
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, v)| v.as_str())
+        self.params.as_ref()?.get(name, self.req.path())
+    }
+
+    /// A route parameter as sent (see [`Context::param_raw`]).
+    pub fn param_raw(&self, name: &str) -> Option<&str> {
+        self.params.as_ref()?.raw(name, self.req.path())
     }
 
     /// Sends the response. Safe from any thread.

@@ -29,8 +29,9 @@
 //! WebSocket: [`Context::upgrade_websocket`] switches a request to a `flash_ws::WsHandler` (re-exported
 //! as [`ws`]), with subprotocols, an origin check and `permessage-deflate`.
 //!
-//! Not yet implemented: streaming request/response bodies (bodies are buffered, within limits),
-//! `sendfile`/static files, regexp route parameters, an HTTP client.
+//! Routing ([`Router`]) is allocation-free and supports static, regexp (`{id:[0-9]+}`, default
+//! `regex` feature), plain (`:id`) and wildcard (`*rest`) segments, in that order of precedence;
+//! parameters are percent-decoded once ([`Context::param`], raw in [`Context::param_raw`]).
 
 pub mod client;
 mod context;
@@ -51,5 +52,5 @@ pub use context::{
 pub use flash_ws as ws;
 pub use h2::H2Config;
 pub use message::{FileBody, Headers, Method, Request, Response, Version};
-pub use router::Router;
+pub use router::{RouteMatch, Router};
 pub use session::{HttpAcceptor, HttpConfig, Session, serve, serve_with};

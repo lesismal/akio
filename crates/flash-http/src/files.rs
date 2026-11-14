@@ -5,7 +5,10 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant, SystemTime},
 };
 
@@ -18,24 +21,36 @@ use crate::{
 /// (`router.get("/static/*path", Files::new("public"))`, parameter name `path`) or use it as the
 /// router fallback (then the request path is used).
 ///
-/// * `GET`/`HEAD`, `ETag` + `Last-Modified` with `304`, single `Range` requests (`206`/`416`).
+/// * `GET`/`HEAD`, `ETag` + `Last-Modified`; `If-None-Match` / `If-Modified-Since` answer `304`,
+///   `If-Match` / `If-Unmodified-Since` answer `412`; single `Range` requests (`206`/`416`),
+///   honoured only while `If-Range` (an entity tag or a date) still matches.
 /// * `index.html` for directories; `..` and other escapes are refused. Symlinks are followed.
 /// * `file.ext.br` / `file.ext.gz` next to `file.ext` are served to clients that accept them.
 /// * Files up to [`max_cached_bytes`](Files::max_cached_bytes) are cached in memory and
 ///   re-checked against the disk at most every [`check_interval`](Files::check_interval);
-///   larger ones are opened per request and sent with `sendfile`. A cache miss reads the file on
-///   the I/O thread: keep cached files small.
+///   larger ones are sent with `sendfile` from a handle kept open (with its metadata) for up to
+///   [`max_open_files`](Files::max_open_files) files, under the same re-check rule, so a hit
+///   costs no `stat`/`open`. A cache miss reads the file on the I/O thread: keep cached files
+///   small.
 pub struct Files {
     root: PathBuf,
     index: String,
     max_cached: u64,
     check_interval: Duration,
     cache_control: Option<String>,
+    max_open: usize,
+    open_files: AtomicUsize,
     cache: Mutex<HashMap<PathBuf, Arc<Cached>>>,
 }
 
+/// The content of a cache entry: the bytes of a small file, or an open handle to a large one.
+enum Body {
+    Mem(Vec<u8>),
+    File(Arc<fs::File>),
+}
+
 struct Cached {
-    data: Vec<u8>,
+    body: Body,
     len: u64,
     mtime: SystemTime,
     checked: Mutex<Instant>,
@@ -52,6 +67,8 @@ impl Files {
             max_cached: 256 << 10,
             check_interval: Duration::from_secs(5),
             cache_control: None,
+            max_open: 64,
+            open_files: AtomicUsize::new(0),
             cache: Mutex::new(HashMap::new()),
         }
     }
@@ -65,6 +82,14 @@ impl Files {
     /// Largest file kept in memory (default 256 KiB; 0 disables the cache).
     pub fn max_cached_bytes(mut self, n: u64) -> Files {
         self.max_cached = n;
+        self
+    }
+
+    /// How many files larger than [`max_cached_bytes`](Files::max_cached_bytes) keep an open
+    /// handle and their metadata cached (default 64; 0 opens such files per request). Each
+    /// holds a file descriptor while the `Files` lives.
+    pub fn max_open_files(mut self, n: usize) -> Files {
+        self.max_open = n;
         self
     }
 
@@ -83,7 +108,7 @@ impl Files {
     /// The path below the root asked for, or `None` if it is unsafe.
     fn relative(ctx: &Context) -> Option<PathBuf> {
         let raw = ctx
-            .param("path")
+            .param_raw("path")
             .map_or_else(|| ctx.path().to_owned(), str::to_owned);
         let decoded = percent_decode(&raw)?;
         let mut rel = PathBuf::new();
@@ -133,9 +158,11 @@ impl Files {
         (format!("\"{len:x}-{secs:x}\""), format_http_date(secs))
     }
 
-    /// The cached copy of `path` (reading it if absent or stale), when the file is small enough.
+    /// The cached copy of `path` (reading or opening it if absent or stale), when the file is
+    /// small enough to keep in memory or an open-file slot is available.
     fn cached(&self, path: &Path, md: &fs::Metadata) -> Option<Arc<Cached>> {
-        if md.len() > self.max_cached {
+        let big = md.len() > self.max_cached;
+        if big && self.max_open == 0 {
             return None;
         }
         let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -150,20 +177,41 @@ impl Files {
                 return Some(c.clone());
             }
         }
-        let data = fs::read(path).ok()?;
-        let (etag, last_modified) = Self::meta_validators(data.len() as u64, mtime);
+        let (body, len) = if big {
+            let f = fs::File::open(path).ok()?;
+            // The metadata of the handle itself: the path may have been replaced since `md`.
+            let fmd = f.metadata().ok()?;
+            if fmd.len() != md.len() || fmd.modified().ok() != Some(mtime) {
+                return None;
+            }
+            (Body::File(Arc::new(f)), md.len())
+        } else {
+            let data = fs::read(path).ok()?;
+            let n = data.len() as u64;
+            (Body::Mem(data), n)
+        };
+        let (etag, last_modified) = Self::meta_validators(len, mtime);
         let c = Arc::new(Cached {
-            len: data.len() as u64,
-            data,
+            len,
+            body,
             mtime,
             checked: Mutex::new(Instant::now()),
             etag,
             last_modified,
         });
-        self.cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(path.to_owned(), c.clone());
+        let mut g = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+        let was_file = g.get(path).is_some_and(|o| matches!(o.body, Body::File(_)));
+        if big && !was_file {
+            if self.open_files.load(Ordering::Relaxed) >= self.max_open {
+                // No slot: serve this response from the handle, without caching it.
+                drop(g);
+                return Some(c);
+            }
+            self.open_files.fetch_add(1, Ordering::Relaxed);
+        } else if !big && was_file {
+            self.open_files.fetch_sub(1, Ordering::Relaxed);
+        }
+        g.insert(path.to_owned(), c.clone());
         Some(c)
     }
 
@@ -179,6 +227,69 @@ impl Files {
             < self.check_interval;
         ok.then(|| c.clone())
     }
+}
+
+/// What a response describes: from a cache entry or from fresh metadata.
+struct Served {
+    len: u64,
+    etag: String,
+    last_modified: String,
+    mtime: SystemTime,
+    /// An in-memory cache entry.
+    data: Option<Arc<Cached>>,
+    /// An open file to send from.
+    file: Option<Arc<fs::File>>,
+}
+
+impl From<Arc<Cached>> for Served {
+    fn from(c: Arc<Cached>) -> Served {
+        let mut s = Served {
+            len: c.len,
+            etag: c.etag.clone(),
+            last_modified: c.last_modified.clone(),
+            mtime: c.mtime,
+            data: None,
+            file: None,
+        };
+        match &c.body {
+            Body::File(f) => s.file = Some(f.clone()),
+            Body::Mem(_) => s.data = Some(c),
+        }
+        s
+    }
+}
+
+fn unix_secs(t: SystemTime) -> u64 {
+    t.duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Parses an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the format senders must use) to
+/// seconds since the Unix epoch.
+fn parse_http_date(s: &str) -> Option<u64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let mut it = s.trim().split(' ');
+    it.next()?.strip_suffix(',')?;
+    let d: i64 = it.next()?.parse().ok()?;
+    let mon = it.next()?;
+    let m = MONTHS.iter().position(|&m| m == mon)? as i64 + 1;
+    let y: i64 = it.next()?.parse().ok()?;
+    let mut hms = it.next()?.split(':').map(|v| v.parse::<i64>().ok());
+    let (h, mi, sec) = (hms.next()??, hms.next()??, hms.next()??);
+    if it.next() != Some("GMT") || it.next().is_some() || !(1..=31).contains(&d) {
+        return None;
+    }
+    // Days from civil (Howard Hinnant).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    u64::try_from(days * 86_400 + h * 3600 + mi * 60 + sec).ok()
 }
 
 /// Parses a single `bytes=` range against a file of `len` bytes. `Err(())`: unsatisfiable.
@@ -261,39 +372,40 @@ impl Service for Files {
         }
         let mime = Files::mime(&path);
         // Everything below describes `serve` (possibly the compressed twin).
-        let (len, etag, last_modified, data, file) =
-            if let Some(c) = cached.filter(|_| encoding.is_none()) {
-                (
-                    c.len,
-                    c.etag.clone(),
-                    c.last_modified.clone(),
-                    Some(c),
-                    None,
-                )
-            } else {
-                let md = match (md, encoding) {
-                    (Some(m), None) => m,
-                    _ => match fs::metadata(&serve) {
-                        Ok(m) => m,
-                        Err(_) => return ctx.text(404, "Not Found"),
-                    },
-                };
-                let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                let (etag, lm) = Files::meta_validators(md.len(), mtime);
-                match self.cached(&serve, &md) {
-                    Some(c) => (
-                        c.len,
-                        c.etag.clone(),
-                        c.last_modified.clone(),
-                        Some(c),
-                        None,
-                    ),
-                    None => match fs::File::open(&serve) {
-                        Ok(f) => (md.len(), etag, lm, None, Some(Arc::new(f))),
-                        Err(_) => return ctx.text(404, "Not Found"),
-                    },
-                }
+        let Served {
+            len,
+            etag,
+            last_modified,
+            mtime,
+            data,
+            file,
+        } = if let Some(c) = cached.filter(|_| encoding.is_none()) {
+            Served::from(c)
+        } else {
+            let md = match (md, encoding) {
+                (Some(m), None) => m,
+                _ => match fs::metadata(&serve) {
+                    Ok(m) => m,
+                    Err(_) => return ctx.text(404, "Not Found"),
+                },
             };
+            let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+            let (etag, lm) = Files::meta_validators(md.len(), mtime);
+            match self.cached(&serve, &md) {
+                Some(c) => Served::from(c),
+                None => match fs::File::open(&serve) {
+                    Ok(f) => Served {
+                        len: md.len(),
+                        etag,
+                        last_modified: lm,
+                        mtime,
+                        data: None,
+                        file: Some(Arc::new(f)),
+                    },
+                    Err(_) => return ctx.text(404, "Not Found"),
+                },
+            }
+        };
         let etag = match encoding {
             Some(e) => format!("{}-{e}\"", &etag[..etag.len() - 1]),
             None => etag,
@@ -310,23 +422,53 @@ impl Service for Files {
         }
         headers.set("Vary", "Accept-Encoding");
         // Conditional requests.
-        let inm = ctx.header("if-none-match");
-        let not_modified = match inm {
+        // RFC 9110 section 13.2.2 order: If-Match / If-Unmodified-Since, then If-None-Match /
+        // If-Modified-Since, then If-Range.
+        let mtime_secs = unix_secs(mtime);
+        let precondition_failed = match ctx.header("if-match") {
+            Some(v) => !v.split(',').any(|t| {
+                let t = t.trim();
+                t == "*" || t == etag // strong comparison
+            }),
+            None => ctx
+                .header("if-unmodified-since")
+                .and_then(parse_http_date)
+                .is_some_and(|d| mtime_secs > d),
+        };
+        if precondition_failed {
+            let mut r = Response::new(412);
+            r.headers.set("ETag", etag);
+            return ctx.respond(r);
+        }
+        let not_modified = match ctx.header("if-none-match") {
             Some(v) => v.split(',').any(|t| {
                 let t = t.trim();
                 t == "*" || t.trim_start_matches("W/") == etag
             }),
-            None => ctx.header("if-modified-since") == Some(last_modified.as_str()),
+            None => ctx
+                .header("if-modified-since")
+                .and_then(parse_http_date)
+                .is_some_and(|d| mtime_secs <= d),
         };
         if not_modified {
             let mut r = Response::new(304);
             r.headers = headers;
             return ctx.respond(r);
         }
+        // `If-Range`: the range applies only while the client's copy is current (a strong entity
+        // tag, or exactly the modification date); otherwise the whole file is sent.
+        let range_ok = ctx.header("if-range").is_none_or(|v| {
+            let v = v.trim();
+            if v.starts_with('"') || v.starts_with("W/") {
+                v == etag
+            } else {
+                parse_http_date(v) == Some(mtime_secs)
+            }
+        });
         // Ranges (GET only).
         let mut status = 200;
         let (mut offset, mut count) = (0, len);
-        if !head {
+        if !head && range_ok {
             if let Some(h) = ctx.header("range") {
                 match parse_range(h, len) {
                     Ok(Some((a, b))) => {
@@ -346,7 +488,10 @@ impl Service for Files {
         }
         let mut resp = match (data, file) {
             (Some(c), _) => {
-                let body = c.data[offset as usize..(offset + count) as usize].to_vec();
+                let Body::Mem(bytes) = &c.body else {
+                    return ctx.text(500, "Internal Server Error");
+                };
+                let body = bytes[offset as usize..(offset + count) as usize].to_vec();
                 Response::with_body(status, mime, body)
             }
             (None, Some(f)) => Response::from_file(
@@ -374,6 +519,20 @@ impl Service for Files {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_dates_round_trip() {
+        assert_eq!(
+            parse_http_date("Sun, 06 Nov 1994 08:49:37 GMT"),
+            Some(784_111_777)
+        );
+        for secs in [0, 951_782_400, 1_700_000_000, 4_102_444_800] {
+            assert_eq!(parse_http_date(&format_http_date(secs)), Some(secs));
+        }
+        assert_eq!(parse_http_date("Sunday, 06-Nov-94 08:49:37 GMT"), None);
+        assert_eq!(parse_http_date("Sun, 06 Nov 1994 08:49:37 UTC"), None);
+        assert_eq!(parse_http_date("garbage"), None);
+    }
 
     #[test]
     fn range_parsing() {
