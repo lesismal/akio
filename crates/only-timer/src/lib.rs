@@ -5,8 +5,8 @@
 //! (`only` uses milliseconds), calls [`Wheel::advance`], and sleeps until [`Wheel::next_deadline`].
 //! Scheduling and cancelling are O(1); advancing is amortised O(1) per tick plus O(fired).
 //!
-//! Guide: [Architecture](https://lesismal.github.io/flash/en/architecture.html)
-//! (中文: [架构](https://lesismal.github.io/flash/zh-CN/architecture.html)).
+//! Guide: [Architecture](https://lesismal.github.io/only/en/architecture.html)
+//! (中文: [架构](https://lesismal.github.io/only/zh-CN/architecture.html)).
 #![warn(clippy::unwrap_used)]
 
 const LEVELS: usize = 4;

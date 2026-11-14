@@ -20,8 +20,8 @@
 //! graceful shutdown reach it. Protocols where the server speaks first cannot be told apart this
 //! way; give them their own port.
 //!
-//! Guide: [Protocol multiplexing](https://lesismal.github.io/flash/en/protocols/mux.html)
-//! (中文: [协议复用](https://lesismal.github.io/flash/zh-CN/protocols/mux.html)).
+//! Guide: [Protocol multiplexing](https://lesismal.github.io/only/en/protocols/mux.html)
+//! (中文: [协议复用](https://lesismal.github.io/only/zh-CN/protocols/mux.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{

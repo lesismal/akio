@@ -12,8 +12,8 @@
 //! Handlers run on the connection's I/O thread and must not block; the [`Sink`] they get answers
 //! from any thread, so slow work goes to the logical pool or another thread.
 //!
-//! Guide: [gRPC](https://lesismal.github.io/flash/en/protocols/grpc.html)
-//! (中文: [gRPC](https://lesismal.github.io/flash/zh-CN/protocols/grpc.html)).
+//! Guide: [gRPC](https://lesismal.github.io/only/en/protocols/grpc.html)
+//! (中文: [gRPC](https://lesismal.github.io/only/zh-CN/protocols/grpc.html)).
 #![warn(clippy::unwrap_used)]
 
 pub mod codec;

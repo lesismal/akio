@@ -7,8 +7,8 @@
 //! IPv6 and domain names (resolved on the logical pool); SOCKS4 and 4a `CONNECT`; HTTP
 //! `CONNECT host:port`. Not supported: SOCKS `BIND` and `UDP ASSOCIATE`, a Linux `splice` path.
 //!
-//! Guide: [SOCKS and HTTP CONNECT proxies](https://lesismal.github.io/flash/en/protocols/socks.html)
-//! (中文: [SOCKS 与 HTTP CONNECT 代理](https://lesismal.github.io/flash/zh-CN/protocols/socks.html)).
+//! Guide: [SOCKS and HTTP CONNECT proxies](https://lesismal.github.io/only/en/protocols/socks.html)
+//! (中文: [SOCKS 与 HTTP CONNECT 代理](https://lesismal.github.io/only/zh-CN/protocols/socks.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{

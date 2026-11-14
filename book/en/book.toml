@@ -11,8 +11,8 @@ build-dir = "../../target/book/en"
 create-missing = false
 
 [output.html]
-git-repository-url = "https://github.com/lesismal/flash"
-edit-url-template = "https://github.com/lesismal/flash/edit/main/book/en/{path}"
+git-repository-url = "https://github.com/lesismal/only"
+edit-url-template = "https://github.com/lesismal/only/edit/main/book/en/{path}"
 site-url = "/only/en/"
 additional-js = ["mermaid-init.js"]
 

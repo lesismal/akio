@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-BitTorrent on [`only`](https://github.com/lesismal/flash): bencoding, .torrent files and magnet
+BitTorrent on [`only`](https://github.com/lesismal/only): bencoding, .torrent files and magnet
 links, HTTP and UDP trackers (client and server), the peer wire protocol with the Fast extension,
 the extension protocol, metadata exchange, PEX and Message Stream Encryption, uTP with LEDBAT,
 the mainline DHT, and a client that downloads and seeds with all of them on one `only` engine
@@ -37,4 +37,4 @@ println!("{:?}", t.stats());
 | `client` | `Client`, `Torrent`, rarest-first picker, endgame, choking, storage on the pool | – |
 
 Not done yet: BitTorrent v2/hybrid (BEP 52), web seeds, LSD, BEP 44, IPv6 DHT, fast-resume files,
-rate limits. Guide: [BitTorrent](https://lesismal.github.io/flash/en/protocols/bittorrent.html).
+rate limits. Guide: [BitTorrent](https://lesismal.github.io/only/en/protocols/bittorrent.html).

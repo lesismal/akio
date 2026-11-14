@@ -10,8 +10,8 @@ The public crates follow semver from 1.0.0; `only-pool`, `only-buf`, `only-timer
 `only-sys`, `only-epoll` and `only-uring` are internal implementation crates whose own APIs may
 change in any release (use them through `only` / `only-core`). Items marked `#[doc(hidden)]`
 are not covered either. Details:
-[docs/api-stability.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.md),
-changes: [CHANGELOG.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.md).
+[docs/api-stability.md](https://github.com/lesismal/only/blob/main/docs/api-stability.md),
+changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md).
 
 | Crate | Role | Book chapter |
 |---|---|---|
@@ -41,7 +41,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.md
 | `only-media` | streaming media: hub, RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS, WHIP/WHEP signalling | [Streaming media](protocols/media.md) |
 | `only-bittorrent` | BitTorrent: trackers, peer wire + MSE, uTP, DHT, client (libtorrent and aria2 compatible) | [BitTorrent](protocols/bittorrent.md) |
 
-Design records: [docs/adr](https://github.com/lesismal/flash/tree/main/docs/adr). Plan and
-status: [docs/ROADMAP.md](https://github.com/lesismal/flash/blob/main/docs/ROADMAP.md),
-[docs/DEV-PLAN.md](https://github.com/lesismal/flash/blob/main/docs/DEV-PLAN.md). Benchmarks:
-[docs/BENCHMARKS.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.md).
+Design records: [docs/adr](https://github.com/lesismal/only/tree/main/docs/adr). Plan and
+status: [docs/ROADMAP.md](https://github.com/lesismal/only/blob/main/docs/ROADMAP.md),
+[docs/DEV-PLAN.md](https://github.com/lesismal/only/blob/main/docs/DEV-PLAN.md). Benchmarks:
+[docs/BENCHMARKS.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md).

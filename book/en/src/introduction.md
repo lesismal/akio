@@ -58,6 +58,6 @@ can run it (`cargo run -p <crate> --example <name>`).
 `only` is approaching 1.0. Linux is the first-class platform (epoll, io_uring, eBPF); macOS uses
 kqueue and is meant for development. Windows is not supported. What is done and what is not is
 tracked milestone by milestone in
-[docs/DEV-PLAN.md](https://github.com/lesismal/flash/blob/main/docs/DEV-PLAN.md); measured
+[docs/DEV-PLAN.md](https://github.com/lesismal/only/blob/main/docs/DEV-PLAN.md); measured
 performance is in
-[docs/BENCHMARKS.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.md).
+[docs/BENCHMARKS.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md).

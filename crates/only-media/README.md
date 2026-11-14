@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-Streaming media for [`only`](https://github.com/lesismal/flash): one stream hub with RTMP,
+Streaming media for [`only`](https://github.com/lesismal/only): one stream hub with RTMP,
 RTSP, SRT, HTTP-FLV, WS-FLV, HLS and WHIP/WHEP signalling around it. Every protocol converts to
 and from the canonical packets of `only_media::av`, so a stream published with one protocol
 plays with every other.
@@ -41,9 +41,9 @@ engine.run().unwrap();
 
 Interoperability is tested with ffmpeg / ffprobe as publisher and player for every protocol
 (SRT in Docker with libsrt); the commands and results are in the book chapters:
-[Streaming media](https://lesismal.github.io/flash/en/protocols/media.html),
-[RTSP and WHIP/WHEP](https://lesismal.github.io/flash/en/protocols/media-rtsp.html),
-[SRT](https://lesismal.github.io/flash/en/protocols/media-srt.html).
+[Streaming media](https://lesismal.github.io/only/en/protocols/media.html),
+[RTSP and WHIP/WHEP](https://lesismal.github.io/only/en/protocols/media-rtsp.html),
+[SRT](https://lesismal.github.io/only/en/protocols/media-srt.html).
 
 Not supported yet: fMP4 HLS and HLS encryption, RTMP and RTSP clients (relays), SRT
 rendezvous, WebRTC media (the WebRTC crate plugs into `whip::WebRtcEngine`), AV1 / VP9,

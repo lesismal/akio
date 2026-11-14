@@ -5,8 +5,8 @@ English | [简体中文](architecture.zh-CN.md)
 This document describes how `only` is built: the crates and their dependencies, the threading and
 locking model, what happens on a read and a write on each backend, how memory is managed, how
 protocols are layered, and how connections and engines end. The decisions behind it are recorded
-in the [ADRs](https://github.com/lesismal/flash/tree/main/docs/adr); the user-facing
-explanation is in the [book](https://lesismal.github.io/flash/en/).
+in the [ADRs](https://github.com/lesismal/only/tree/main/docs/adr); the user-facing
+explanation is in the [book](https://lesismal.github.io/only/en/).
 
 ## 1. Crates
 

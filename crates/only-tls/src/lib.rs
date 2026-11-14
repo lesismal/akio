@@ -27,8 +27,8 @@
 //! # let _ = acceptor;
 //! ```
 //!
-//! Guide: [TLS](https://lesismal.github.io/flash/en/protocols/tls.html)
-//! (中文: [TLS](https://lesismal.github.io/flash/zh-CN/protocols/tls.html)).
+//! Guide: [TLS](https://lesismal.github.io/only/en/protocols/tls.html)
+//! (中文: [TLS](https://lesismal.github.io/only/zh-CN/protocols/tls.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{

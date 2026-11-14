@@ -14,7 +14,7 @@ release for 3 months after a new minor release.
 **Please do not open a public issue, pull request or discussion for a security problem.**
 
 Report it privately through GitHub's
-[private vulnerability reporting](https://github.com/lesismal/flash/security/advisories/new)
+[private vulnerability reporting](https://github.com/lesismal/only/security/advisories/new)
 ("Security" tab -> "Report a vulnerability"). Include:
 
 - the affected crate(s), version or commit, OS/kernel and backend (epoll, kqueue, io_uring);

@@ -5,8 +5,8 @@
 //! I/O threads never block; code that must block (databases, files, slow RPC) is handed to this
 //! pool and its result is brought back to the connection's I/O thread by `only-core`.
 //!
-//! Guide: [Blocking work: the logical pool](https://lesismal.github.io/flash/en/concepts/blocking.html)
-//! (中文: [阻塞任务：逻辑线程池](https://lesismal.github.io/flash/zh-CN/concepts/blocking.html)).
+//! Guide: [Blocking work: the logical pool](https://lesismal.github.io/only/en/concepts/blocking.html)
+//! (中文: [阻塞任务：逻辑线程池](https://lesismal.github.io/only/zh-CN/concepts/blocking.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{

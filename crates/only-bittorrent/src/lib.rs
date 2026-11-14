@@ -26,8 +26,8 @@
 //! t.wait_complete(Duration::from_secs(3600));
 //! ```
 //!
-//! Guide: [BitTorrent](https://lesismal.github.io/flash/en/protocols/bittorrent.html)
-//! (中文: [BitTorrent](https://lesismal.github.io/flash/zh-CN/protocols/bittorrent.html)).
+//! Guide: [BitTorrent](https://lesismal.github.io/only/en/protocols/bittorrent.html)
+//! (中文: [BitTorrent](https://lesismal.github.io/only/zh-CN/protocols/bittorrent.html)).
 #![warn(clippy::unwrap_used)]
 
 pub mod bencode;

@@ -12,12 +12,12 @@
 //!   [`http::MediaHttp`] dispatching the HTTP formats, [`whip::WhipServer`] (signalling).
 //! * Formats and codecs: [`flv`], [`mpegts`], [`rtp`], [`sdp`], [`amf`], [`codec`].
 //!
-//! Guide: [Streaming media](https://lesismal.github.io/flash/en/protocols/media.html),
-//! [RTSP and WHIP/WHEP](https://lesismal.github.io/flash/en/protocols/media-rtsp.html),
-//! [SRT](https://lesismal.github.io/flash/en/protocols/media-srt.html)
-//! (中文: [流媒体](https://lesismal.github.io/flash/zh-CN/protocols/media.html)、
-//! [RTSP 与 WHIP/WHEP](https://lesismal.github.io/flash/zh-CN/protocols/media-rtsp.html)、
-//! [SRT](https://lesismal.github.io/flash/zh-CN/protocols/media-srt.html)).
+//! Guide: [Streaming media](https://lesismal.github.io/only/en/protocols/media.html),
+//! [RTSP and WHIP/WHEP](https://lesismal.github.io/only/en/protocols/media-rtsp.html),
+//! [SRT](https://lesismal.github.io/only/en/protocols/media-srt.html)
+//! (中文: [流媒体](https://lesismal.github.io/only/zh-CN/protocols/media.html)、
+//! [RTSP 与 WHIP/WHEP](https://lesismal.github.io/only/zh-CN/protocols/media-rtsp.html)、
+//! [SRT](https://lesismal.github.io/only/zh-CN/protocols/media-srt.html)).
 #![warn(clippy::unwrap_used)]
 
 pub mod amf;

@@ -9,8 +9,8 @@
 //!   (docs/api-stability.md); backends such as `only-epoll` implement them and the `only`
 //!   crate composes them into an `Engine`.
 //!
-//! Guide: [Handlers, acceptors and `Conn`](https://lesismal.github.io/flash/en/concepts/handlers.html)
-//! (中文: [Handler、Acceptor 与 `Conn`](https://lesismal.github.io/flash/zh-CN/concepts/handlers.html)).
+//! Guide: [Handlers, acceptors and `Conn`](https://lesismal.github.io/only/en/concepts/handlers.html)
+//! (中文: [Handler、Acceptor 与 `Conn`](https://lesismal.github.io/only/zh-CN/concepts/handlers.html)).
 #![warn(clippy::unwrap_used)]
 
 mod config;

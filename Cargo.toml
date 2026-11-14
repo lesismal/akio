@@ -35,10 +35,10 @@ exclude = ["fuzz"]
 version = "1.0.0-rc.1"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/lesismal/flash"
+repository = "https://github.com/lesismal/only"
 rust-version = "1.85"
 readme = "README.md"
-homepage = "https://lesismal.github.io/flash/"
+homepage = "https://lesismal.github.io/only/"
 
 [workspace.dependencies]
 # Workspace crates: a path for local builds plus the version crates.io resolves once published

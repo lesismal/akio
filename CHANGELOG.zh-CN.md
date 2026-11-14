@@ -26,7 +26,7 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 | `flash_media::srt` 中的别名 `FlashConn` | `OnlyConn` |
 | API 快照 `api/flash-*.txt`、工具的 Docker 镜像与卷 `flash-*` | `api/only-*.txt`、`only-*` |
 
-在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/flash` 的 URL。
+在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
 ### 变更（破坏性，1.0.0 之前）：封装 1.0 之前的依赖
 
@@ -273,5 +273,5 @@ DynHandler}` 再导出、`only_http::transport`、`only_ws::WsSession`、
 `only-timer`、`only-pool`、`only-epoll` 和 `only-uring` 是内部 crate，自身不作 semver 承诺
 （见 docs/api-stability.zh-CN.md）。
 
-[Unreleased]: https://github.com/lesismal/flash/compare/v1.0.0-rc.1...HEAD
-[1.0.0-rc.1]: https://github.com/lesismal/flash/releases/tag/v1.0.0-rc.1
+[Unreleased]: https://github.com/lesismal/only/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/lesismal/only/releases/tag/v1.0.0-rc.1

@@ -3,7 +3,7 @@
 Callbacks run on the I/O thread, so a callback that blocks for 5 ms stalls every connection on
 that thread for 5 ms. The benchmark report shows what that costs: four I/O threads that block
 5 ms per request serve about 550 requests per second; the same work moved to the logical pool
-serves about 32,000 ([BENCHMARKS](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.md)).
+serves about 32,000 ([BENCHMARKS](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md)).
 
 `only` does not guess which code blocks. **You move blocking work explicitly**, and the result
 comes back to the connection's own thread.

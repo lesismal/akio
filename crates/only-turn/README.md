@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-STUN and TURN servers for [`only`](https://github.com/lesismal/flash), over `only` UDP sockets.
+STUN and TURN servers for [`only`](https://github.com/lesismal/only), over `only` UDP sockets.
 
 - `stun`: the STUN message codec (RFC 8489) with the TURN (RFC 8656) and ICE (RFC 8445)
   attributes, `MESSAGE-INTEGRITY` (HMAC-SHA1), `FINGERPRINT`, long-term keys.
@@ -34,4 +34,4 @@ engine.run().unwrap();
 Interop: the pion/turn client and coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`,
 `COTURN=1`), and pion WebRTC peers relayed to a `only` WebRTC server.
 
-Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/flash/en/protocols/webrtc.html).
+Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

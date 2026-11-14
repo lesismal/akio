@@ -10,7 +10,7 @@ only 尚未发布 1.0。在 1.0.0 发布之前，只有 `main` 分支的最新�
 
 **请不要通过公开的 issue、pull request 或 discussion 报告安全问题。**
 
-请通过 GitHub 的[私密漏洞报告](https://github.com/lesismal/flash/security/advisories/new)（“Security”标签页 -> “Report a vulnerability”）私下提交，并尽量包含：
+请通过 GitHub 的[私密漏洞报告](https://github.com/lesismal/only/security/advisories/new)（“Security”标签页 -> “Report a vulnerability”）私下提交，并尽量包含：
 
 - 受影响的 crate、版本或提交、操作系统/内核版本以及后端（epoll、kqueue、io_uring）；
 - 问题描述及其影响（内存安全、拒绝服务、协议走私、信息泄露……）；

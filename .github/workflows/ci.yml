@@ -487,7 +487,7 @@ jobs:
       - name: Published baseline?
         id: baseline
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'only-ci (github.com/lesismal/flash)' \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'only-ci (github.com/lesismal/only)' \
             https://crates.io/api/v1/crates/only-core/1.0.0)
           echo "published=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "only-core 1.0.0 on crates.io: HTTP $code"

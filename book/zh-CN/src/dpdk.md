@@ -1,7 +1,7 @@
 # 内核旁路（DPDK）
 
 > **实验性。** `Backend::Dpdk` 与 `only::dpdk` 模块不在 semver 承诺范围内
-> （[docs/api-stability.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.zh-CN.md)），
+> （[docs/api-stability.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/api-stability.zh-CN.md)），
 > 可能在任何发布中变化。
 
 `Backend::Dpdk` 让 listener 运行在**用户态 TCP/IP 协议栈**上，而不是内核协议栈：only 的 I/O

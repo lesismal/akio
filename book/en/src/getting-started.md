@@ -13,8 +13,8 @@ need: `only` is the engine, the others are protocols.
 
 ```toml
 [dependencies]
-only      = { git = "https://github.com/lesismal/flash" }
-only-http = { git = "https://github.com/lesismal/flash" }   # HTTP/1.1, HTTP/2, Router
+only      = { git = "https://github.com/lesismal/only" }
+only-http = { git = "https://github.com/lesismal/only" }   # HTTP/1.1, HTTP/2, Router
 # only-ws, only-grpc, only-arpc, only-socks, only-mux,
 # only-quic, only-h3, only-kcp: same form
 ```

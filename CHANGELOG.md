@@ -27,7 +27,7 @@ the entries below already use the new names.
 | `flash_media::srt` alias `FlashConn` | `OnlyConn` |
 | API snapshots `api/flash-*.txt`, tool Docker images and volumes `flash-*` | `api/only-*.txt`, `only-*` |
 
-The GitHub repository and the documentation site keep their `lesismal/flash` URLs until the
+The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
@@ -297,5 +297,5 @@ Versioning: all crates are at `1.0.0-rc.1` and depend on each other with exact (
 `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll` and `only-uring` are internal
 crates without a semver promise of their own (see docs/api-stability.md).
 
-[Unreleased]: https://github.com/lesismal/flash/compare/v1.0.0-rc.1...HEAD
-[1.0.0-rc.1]: https://github.com/lesismal/flash/releases/tag/v1.0.0-rc.1
+[Unreleased]: https://github.com/lesismal/only/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/lesismal/only/releases/tag/v1.0.0-rc.1

@@ -4,8 +4,8 @@
 
 本文描述 only 是如何构建的：各个 crate 及其依赖关系、线程与加锁模型、在每种后端上一次读和
 一次写的过程、内存如何管理、协议如何分层，以及连接和 engine 如何结束。背后的决策记录在
-[ADR](https://github.com/lesismal/flash/tree/main/docs/adr) 中；面向使用者的说明见
-[指南](https://lesismal.github.io/flash/zh-CN/)。
+[ADR](https://github.com/lesismal/only/tree/main/docs/adr) 中；面向使用者的说明见
+[指南](https://lesismal.github.io/only/zh-CN/)。
 
 ## 1. crate
 

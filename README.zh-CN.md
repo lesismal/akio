@@ -7,8 +7,8 @@ Rust 对应物。回调直接在连接所属的 I/O 线程上执行，可克隆�
 阻塞任务交给显式的逻辑线程池，每个 listener 独立选择后端（epoll/kqueue 或 io_uring），并可选
 eBPF 分流。没有异步运行时。（原名 *flash*，在 1.0.0 之前更名，见 [CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)。）
 
-**文档：** [only 指南](https://lesismal.github.io/flash/zh-CN/) ·
-[架构](docs/architecture.zh-CN.md) · [从 fib、tokio、hyper/axum 迁移](https://lesismal.github.io/flash/zh-CN/migration/from-fib.html) ·
+**文档：** [only 指南](https://lesismal.github.io/only/zh-CN/) ·
+[架构](docs/architecture.zh-CN.md) · [从 fib、tokio、hyper/axum 迁移](https://lesismal.github.io/only/zh-CN/migration/from-fib.html) ·
 API 参考：`cargo doc --workspace --no-deps --open`
 
 ## 功能
@@ -37,7 +37,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 
 ```toml
 [dependencies]
-only = { git = "https://github.com/lesismal/flash" }
+only = { git = "https://github.com/lesismal/only" }
 ```
 
 ```rust
@@ -61,7 +61,7 @@ fn main() -> std::io::Result<()> {
 ```
 
 更多示例：`cargo run -p only --example guide-basics`、`cargo run -p only-http --example hello`，
-以及指南[快速上手](https://lesismal.github.io/flash/zh-CN/getting-started.html)中列出的其他
+以及指南[快速上手](https://lesismal.github.io/only/zh-CN/getting-started.html)中列出的其他
 `guide-*` 示例。
 
 ## 状态

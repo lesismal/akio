@@ -15,8 +15,8 @@
 //! so building `only` needs neither a BPF toolchain nor nightly Rust, and no `aya`/libbpf.
 //! Off Linux everything compiles and reports `Unsupported`.
 //!
-//! Guide: [eBPF steering](https://lesismal.github.io/flash/en/concepts/engine.html#acceleration-ebpf-steering)
-//! (中文: [eBPF 分流](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
+//! Guide: [eBPF steering](https://lesismal.github.io/only/en/concepts/engine.html#acceleration-ebpf-steering)
+//! (中文: [eBPF 分流](https://lesismal.github.io/only/zh-CN/concepts/engine.html)).
 #![warn(clippy::unwrap_used)]
 // `unsafe` is confined to `sys` (raw bpf(2) and socket options); see docs/unsafe-review.md.
 #![deny(unsafe_code)]

@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-The kernel-bypass backend of [`only`](https://github.com/lesismal/flash) (**experimental**): a
+The kernel-bypass backend of [`only`](https://github.com/lesismal/only) (**experimental**): a
 userspace TCP/IP stack ([smoltcp](https://docs.rs/smoltcp), IPv4) driven by `only` I/O threads,
 over
 
@@ -24,7 +24,7 @@ UDP listeners deliver one datagram per `on_data`, TCP listeners a byte stream; `
 `dial_udp`, backpressure, idle timeouts, telemetry and graceful shutdown work as on the kernel
 backends, so protocol crates (only-kcp, ...) run unchanged.
 
-- Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/flash/en/dpdk.html)
+- Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/only/en/dpdk.html)
 - Example: `cargo run -p only-dpdk --example guide-dpdk`
 - Tests: `cargo test -p only-dpdk` (memory wire, any platform); `tools/dpdk/test.sh` (Docker:
   DPDK `net_tap` and TAP against the Linux kernel stack)

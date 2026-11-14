@@ -55,8 +55,8 @@
 //!
 //! Supported on Linux and macOS.
 //!
-//! Guide: [Multi-process serving (prefork)](https://lesismal.github.io/flash/en/prefork.html)
-//! (中文: [多进程服务（prefork）](https://lesismal.github.io/flash/zh-CN/prefork.html)).
+//! Guide: [Multi-process serving (prefork)](https://lesismal.github.io/only/en/prefork.html)
+//! (中文: [多进程服务（prefork）](https://lesismal.github.io/only/zh-CN/prefork.html)).
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 #![warn(clippy::unwrap_used)]
 

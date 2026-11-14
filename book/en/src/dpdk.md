@@ -1,7 +1,7 @@
 # Kernel bypass (DPDK)
 
 > **Experimental.** `Backend::Dpdk` and the `only::dpdk` module are outside the semver promise
-> ([docs/api-stability.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.md))
+> ([docs/api-stability.md](https://github.com/lesismal/only/blob/main/docs/api-stability.md))
 > and may change in any release.
 
 `Backend::Dpdk` runs a listener on a **userspace TCP/IP stack** instead of the kernel's: `only`

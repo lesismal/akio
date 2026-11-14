@@ -9,8 +9,8 @@ $ cargo doc --workspace --no-deps --open
 公开 crate 从 1.0.0 起遵循 semver；`only-pool`、`only-buf`、`only-timer`、`only-sys`、
 `only-epoll` 和 `only-uring` 是内部实现 crate，其自身 API 可能在任何发布中变化（请通过 `only` /
 `only-core` 使用）。标记为 `#[doc(hidden)]` 的条目同样不受保护。详见
-[docs/api-stability.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.zh-CN.md)，
-变更记录：[CHANGELOG.zh-CN.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.zh-CN.md)。
+[docs/api-stability.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/api-stability.zh-CN.md)，
+变更记录：[CHANGELOG.zh-CN.md](https://github.com/lesismal/only/blob/main/CHANGELOG.zh-CN.md)。
 
 | crate | 作用 | 指南章节 |
 |---|---|---|
@@ -40,7 +40,7 @@ $ cargo doc --workspace --no-deps --open
 | `only-media` | 流媒体：hub、RTMP、RTSP、SRT、FLV、HTTP-FLV、WS-FLV、HLS、WHIP/WHEP 信令 | [流媒体](protocols/media.md) |
 | `only-bittorrent` | BitTorrent：tracker、peer wire + MSE、uTP、DHT、客户端（兼容 libtorrent 和 aria2） | [BitTorrent](protocols/bittorrent.md) |
 
-设计记录：[docs/adr](https://github.com/lesismal/flash/tree/main/docs/adr)。计划与状态：
-[docs/ROADMAP.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/ROADMAP.zh-CN.md)、
-[docs/DEV-PLAN.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/DEV-PLAN.zh-CN.md)。
-基准测试：[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.zh-CN.md)。
+设计记录：[docs/adr](https://github.com/lesismal/only/tree/main/docs/adr)。计划与状态：
+[docs/ROADMAP.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/ROADMAP.zh-CN.md)、
+[docs/DEV-PLAN.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/DEV-PLAN.zh-CN.md)。
+基准测试：[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)。

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-[only](https://github.com/lesismal/flash) 的流媒体组件：一个流 hub，周围是 RTMP、RTSP、SRT、
+[only](https://github.com/lesismal/only) 的流媒体组件：一个流 hub，周围是 RTMP、RTSP、SRT、
 HTTP-FLV、WS-FLV、HLS 以及 WHIP/WHEP 信令。每个协议都与 `only_media::av` 的规范包互相转换，因此用任一
 协议推上来的流都能用其它所有协议播放。
 
@@ -39,9 +39,9 @@ engine.run().unwrap();
 ```
 
 每个协议都以 ffmpeg / ffprobe 作为推流端和播放端做了互通测试（SRT 在带 libsrt 的 Docker 中），命令与
-结果见书中章节：[流媒体](https://lesismal.github.io/flash/zh-CN/protocols/media.html)、
-[RTSP 与 WHIP/WHEP](https://lesismal.github.io/flash/zh-CN/protocols/media-rtsp.html)、
-[SRT](https://lesismal.github.io/flash/zh-CN/protocols/media-srt.html)。
+结果见书中章节：[流媒体](https://lesismal.github.io/only/zh-CN/protocols/media.html)、
+[RTSP 与 WHIP/WHEP](https://lesismal.github.io/only/zh-CN/protocols/media-rtsp.html)、
+[SRT](https://lesismal.github.io/only/zh-CN/protocols/media-srt.html)。
 
 暂不支持：fMP4 HLS 与 HLS 加密、RTMP 与 RTSP 客户端（转推/拉流）、SRT rendezvous、WebRTC 媒体
 （WebRTC crate 通过 `whip::WebRtcEngine` 接入）、AV1 / VP9、录制、转码。

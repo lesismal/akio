@@ -11,5 +11,5 @@
 | Shutdown is graceful: stop accepting, notify, drain, force after a timeout. | [Lifecycle and shutdown](lifecycle.md) |
 
 The snippets in these chapters come from
-[`crates/only/examples/guide-basics.rs`](https://github.com/lesismal/flash/blob/main/crates/only/examples/guide-basics.rs)
+[`crates/only/examples/guide-basics.rs`](https://github.com/lesismal/only/blob/main/crates/only/examples/guide-basics.rs)
 (run it with `cargo run -p only --example guide-basics`).

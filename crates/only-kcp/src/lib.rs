@@ -27,8 +27,8 @@
 //! engine.start().unwrap();
 //! ```
 //!
-//! Guide: [KCP](https://lesismal.github.io/flash/en/protocols/kcp.html)
-//! (中文: [KCP](https://lesismal.github.io/flash/zh-CN/protocols/kcp.html)).
+//! Guide: [KCP](https://lesismal.github.io/only/en/protocols/kcp.html)
+//! (中文: [KCP](https://lesismal.github.io/only/zh-CN/protocols/kcp.html)).
 #![warn(clippy::unwrap_used)]
 
 pub mod crypt;

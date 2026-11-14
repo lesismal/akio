@@ -42,5 +42,5 @@ Mermaid 图由 `mermaid-init.js` 在浏览器中渲染（从 jsDelivr 加载）�
 - 在同一个提交中同时修改**两种语言**的章节；两边的文件树必须保持一致。
 - 新代码放进示例程序，用锚点标记，并在两本书中引用。
 - 内容要与 `docs/DEV-PLAN.zh-CN.md`（已完成的内容）和代码保持一致；未完成的要说明。
-- 文档 CI 任务部署后发布在 `https://lesismal.github.io/flash/`（`/en/`、`/zh-CN/`）；crate 级
+- 文档 CI 任务部署后发布在 `https://lesismal.github.io/only/`（`/en/`、`/zh-CN/`）；crate 级
   rustdoc 的链接指向这里。

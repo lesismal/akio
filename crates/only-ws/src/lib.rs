@@ -13,8 +13,8 @@
 //!
 //! The server-side HTTP upgrade lives in `only-http` (`Context::upgrade_websocket`).
 //!
-//! Guide: [WebSocket](https://lesismal.github.io/flash/en/protocols/websocket.html)
-//! (中文: [WebSocket](https://lesismal.github.io/flash/zh-CN/protocols/websocket.html)).
+//! Guide: [WebSocket](https://lesismal.github.io/only/en/protocols/websocket.html)
+//! (中文: [WebSocket](https://lesismal.github.io/only/zh-CN/protocols/websocket.html)).
 #![warn(clippy::unwrap_used)]
 
 pub mod client;

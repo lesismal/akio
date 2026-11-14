@@ -2,7 +2,7 @@
 
 [中文](README.zh-CN.md)
 
-WebRTC for [`only`](https://github.com/lesismal/flash): the sans-io
+WebRTC for [`only`](https://github.com/lesismal/only): the sans-io
 [str0m](https://github.com/algesten/str0m) state machine driven over `only` UDP sockets.
 
 - **ICE**: ICE-lite server (`RtcServer` on a `Listener::udp`, all peers on one port) and a full
@@ -43,4 +43,4 @@ Interop with pion (data channels and media in both offer directions, also throug
 relay) and with fib's Go WebRTC: `tools/interop/webrtc/run.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
-Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/flash/en/protocols/webrtc.html).
+Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

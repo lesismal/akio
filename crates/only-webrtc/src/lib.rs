@@ -54,8 +54,8 @@
 //! # let _ = answer_sdp;
 //! ```
 //!
-//! Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/flash/en/protocols/webrtc.html)
-//! (中文: [WebRTC、STUN 与 TURN](https://lesismal.github.io/flash/zh-CN/protocols/webrtc.html)).
+//! Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html)
+//! (中文: [WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)).
 #![warn(clippy::unwrap_used)]
 
 mod crypto;

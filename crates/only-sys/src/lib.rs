@@ -5,8 +5,8 @@
 //!
 //! All `unsafe` in the network stack's hot path lives here, each block with a comment stating the invariant it relies on.
 //!
-//! Guide: [Architecture](https://lesismal.github.io/flash/en/architecture.html)
-//! (中文: [架构](https://lesismal.github.io/flash/zh-CN/architecture.html)).
+//! Guide: [Architecture](https://lesismal.github.io/only/en/architecture.html)
+//! (中文: [架构](https://lesismal.github.io/only/zh-CN/architecture.html)).
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 #![warn(clippy::unwrap_used)]
 

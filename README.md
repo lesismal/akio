@@ -9,8 +9,8 @@ logical pool, and each listener picks its own backend (epoll/kqueue or io_uring)
 eBPF steering. There is no async runtime. (Formerly named *flash*; renamed before 1.0.0, see
 [CHANGELOG.md](CHANGELOG.md).)
 
-**Documentation:** [the `only` book](https://lesismal.github.io/flash/en/) ·
-[architecture](docs/architecture.md) · [migration from fib, tokio, hyper/axum](https://lesismal.github.io/flash/en/migration/from-fib.html) ·
+**Documentation:** [the `only` book](https://lesismal.github.io/only/en/) ·
+[architecture](docs/architecture.md) · [migration from fib, tokio, hyper/axum](https://lesismal.github.io/only/en/migration/from-fib.html) ·
 API reference: `cargo doc --workspace --no-deps --open`
 
 ## Features
@@ -39,7 +39,7 @@ Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/B
 
 ```toml
 [dependencies]
-only = { git = "https://github.com/lesismal/flash" }
+only = { git = "https://github.com/lesismal/only" }
 ```
 
 ```rust
@@ -64,7 +64,7 @@ fn main() -> std::io::Result<()> {
 
 More: `cargo run -p only --example guide-basics`, `cargo run -p only-http --example hello`,
 and the other `guide-*` examples listed in the book's
-[Getting started](https://lesismal.github.io/flash/en/getting-started.html).
+[Getting started](https://lesismal.github.io/only/en/getting-started.html).
 
 ## Status
 

@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-运行在 [only](https://github.com/lesismal/flash) 上的 BitTorrent：bencode 编码、.torrent 文件与
+运行在 [only](https://github.com/lesismal/only) 上的 BitTorrent：bencode 编码、.torrent 文件与
 磁力链接、HTTP 和 UDP tracker（客户端与服务端）、带 Fast 扩展、扩展协议、元数据交换、PEX 和消息流
 加密的 peer wire 协议、带 LEDBAT 的 uTP、主线 DHT，以及一个在同一个 only engine、同一个端口号上
 用上述全部能力下载和做种的客户端。与 libtorrent 和 aria2 线路兼容
@@ -36,4 +36,4 @@ println!("{:?}", t.stats());
 | `client` | `Client`、`Torrent`、最稀有优先选片、残局模式、choke、在逻辑池上读写存储 | – |
 
 尚未实现：BitTorrent v2/混合种子（BEP 52）、web seed、LSD、BEP 44、IPv6 DHT、快速续传文件、限速。
-指南：[BitTorrent](https://lesismal.github.io/flash/zh-CN/protocols/bittorrent.html)。
+指南：[BitTorrent](https://lesismal.github.io/only/zh-CN/protocols/bittorrent.html)。

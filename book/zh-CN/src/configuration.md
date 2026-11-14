@@ -6,7 +6,7 @@
 所有配置结构体都是 `#[non_exhaustive]`，这样新设置可以在次版本中加入而不破坏你的代码：从
 `Default`（或 `KcpConfig::fast()` 这样的预设）开始，再给需要的字段赋值，如下例。在 only 之外
 不能用结构体字面量（`Config { .. }`）构造它们
-（[API 稳定性](https://github.com/lesismal/flash/blob/main/docs/api-stability.zh-CN.md)）。
+（[API 稳定性](https://github.com/lesismal/only/blob/main/docs/api-stability.zh-CN.md)）。
 **可热更新**表示 `Engine::reload(&Config)` 会把它应用到运行中的 engine，包括已打开的连接
 （[可观测性与热更新](observability.md)）。
 

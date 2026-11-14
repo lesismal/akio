@@ -28,8 +28,8 @@
 //! * With several queues, the NIC's RSS keeps a flow on one queue; ARP frames are copied to every
 //!   queue so each stack resolves its neighbours.
 //!
-//! Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/flash/en/dpdk.html)
-//! (中文: [内核旁路（DPDK）](https://lesismal.github.io/flash/zh-CN/dpdk.html)).
+//! Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/only/en/dpdk.html)
+//! (中文: [内核旁路（DPDK）](https://lesismal.github.io/only/zh-CN/dpdk.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{

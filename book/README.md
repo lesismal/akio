@@ -44,5 +44,5 @@ renders the same blocks natively.
 - Put new code in an example, mark it with anchors, and include it in both books.
 - Keep statements in line with `docs/DEV-PLAN.md` (what is done) and the code; say what is not
   done.
-- Published at `https://lesismal.github.io/flash/` (`/en/`, `/zh-CN/`) once the docs CI job
+- Published at `https://lesismal.github.io/only/` (`/en/`, `/zh-CN/`) once the docs CI job
   deploys it; crate-level rustdoc links point there.

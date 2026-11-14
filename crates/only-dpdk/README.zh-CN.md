@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-[only](https://github.com/lesismal/flash) 的内核旁路后端（**实验性**）：由 only I/O 线程驱动的
+[only](https://github.com/lesismal/only) 的内核旁路后端（**实验性**）：由 only I/O 线程驱动的
 用户态 TCP/IP 协议栈（[smoltcp](https://docs.rs/smoltcp)，IPv4），底层可以是
 
 - **DPDK** 端口（feature `pmd`，Linux，通过 `pkg-config` 链接 libdpdk）：按 `EalConfig` 初始化
@@ -22,7 +22,7 @@ let listener = Listener::udp("10.0.0.2:7000".parse()?).backend(Backend::Dpdk(cfg
 UDP listener 每次 `on_data` 交付一个数据报，TCP listener 交付字节流；`dial`、`dial_udp`、背压、
 空闲超时、遥测与优雅关闭的行为与内核后端一致，因此协议 crate（only-kcp 等）无需修改即可运行。
 
-- 指南：[内核旁路（DPDK）](https://lesismal.github.io/flash/zh-CN/dpdk.html)
+- 指南：[内核旁路（DPDK）](https://lesismal.github.io/only/zh-CN/dpdk.html)
 - 示例：`cargo run -p only-dpdk --example guide-dpdk`
 - 测试：`cargo test -p only-dpdk`（内存链路，任意平台）；`tools/dpdk/test.sh`（Docker：DPDK
   `net_tap` 与 TAP，以 Linux 内核协议栈为对端）

@@ -1,7 +1,7 @@
 # Performance tuning
 
 Measure before tuning. The numbers quoted here come from
-[docs/BENCHMARKS.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.md): one
+[docs/BENCHMARKS.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md): one
 Docker VM on a laptop-class Mac, loopback, 4 server threads. Treat them as direction, not as a
 ranking. In that report `only`'s TCP echo was in the same class as tokio and ahead of fib (ahead
 of tokio at 512 connections, about 15% behind at 64 connections and at 16 KiB messages), UDP

@@ -3,7 +3,7 @@
 回调在 I/O 线程上执行，所以一个阻塞 5 ms 的回调会让该线程上的所有连接停顿 5 ms。基准报告
 显示了代价：四个 I/O 线程每个请求阻塞 5 ms，每秒只能处理约 550 个请求；把同样的工作挪到
 逻辑线程池后约为 32,000
-（[BENCHMARKS](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.zh-CN.md)）。
+（[BENCHMARKS](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)）。
 
 only 不去猜哪些代码会阻塞。**由你显式地移走阻塞任务**，结果再回到连接自己的线程。
 

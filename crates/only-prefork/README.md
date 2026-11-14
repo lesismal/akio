@@ -117,4 +117,4 @@ implemented yet.
 Linux and macOS. The supervisor and workers are plain processes: no fork after threads, no
 signal-unsafe work in the child before `exec` (only `fcntl`, `prctl`, `sched_setaffinity`).
 
-Guide: [Multi-process serving (prefork)](https://lesismal.github.io/flash/en/prefork.html).
+Guide: [Multi-process serving (prefork)](https://lesismal.github.io/only/en/prefork.html).

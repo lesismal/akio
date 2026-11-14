@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-[only](https://github.com/lesismal/flash) 的 WebRTC：在 only UDP socket 上驱动 sans-io 的
+[only](https://github.com/lesismal/only) 的 WebRTC：在 only UDP socket 上驱动 sans-io 的
 [str0m](https://github.com/algesten/str0m) 状态机。
 
 - **ICE**：ICE-lite 服务端（`Listener::udp` 上的 `RtcServer`，所有 peer 共用一个端口）与完整 ICE
@@ -42,4 +42,4 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 与 pion 互通（两种 offer 方向的数据通道与媒体，以及经 only TURN 中继），也与 fib 的 Go 版 WebRTC 互通：
 `tools/interop/webrtc/run.sh`。STUN 与 TURN 服务器在 [`only-turn`](../only-turn/README.zh-CN.md)。
 
-指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/flash/zh-CN/protocols/webrtc.html)。
+指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

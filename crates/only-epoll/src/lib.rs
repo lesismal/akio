@@ -12,8 +12,8 @@
 //!   the owning loop when the socket becomes writable.
 //! * Backpressure: reads pause while a connection's queue exceeds the high watermark.
 //!
-//! Guide: [Engine, listeners and backends](https://lesismal.github.io/flash/en/concepts/engine.html)
-//! (中文: [Engine、Listener 与后端](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
+//! Guide: [Engine, listeners and backends](https://lesismal.github.io/only/en/concepts/engine.html)
+//! (中文: [Engine、Listener 与后端](https://lesismal.github.io/only/zh-CN/concepts/engine.html)).
 #![warn(clippy::unwrap_used)]
 
 mod group;

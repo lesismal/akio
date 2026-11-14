@@ -172,7 +172,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] 文档站 + 迁移指南 + 架构文档：mdBook `book/en` 与 `book/zh-CN`（快速上手、核心概念、每个协议一章、配置参考、可观测性与热更新、性能调优、故障排查），由 `book/build.sh` 构建；所有代码片段来自 14 个可运行的 `guide-*` 示例；从 fib、tokio、hyper/axum 迁移的指南；带 Mermaid 图的 `docs/architecture.md`；各 crate 的 rustdoc 链接到对应章节；根目录 README。未完成：Pages 部署、在 Linux 上运行这些示例
 
 ### 1.0.0 发布决定（2026-11-14）
-- [x] 项目更名为 **only**：crate 改为 `only`、`only-core`、`only-http` 等（crates.io 上 `flash` 已被占用），涉及代码、文档、手册、工具与 CI：目录与包名 `crates/only-*`、代码路径 `only_*`、环境变量 `ONLY_*`、指标 `only_*`、日志 target 与线程名 `only*`、快照 `api/only-*.txt`、Docker 镜像、两本手册与全部文档；GitHub 仓库与 Pages 的 URL（`lesismal/flash`）在仓库改名前保持不变；对照表见 CHANGELOG
+- [x] 项目更名为 **only**：crate 改为 `only`、`only-core`、`only-http` 等（crates.io 上 `flash` 已被占用），涉及代码、文档、手册、工具与 CI：目录与包名 `crates/only-*`、代码路径 `only_*`、环境变量 `ONLY_*`、指标 `only_*`、日志 target 与线程名 `only*`、快照 `api/only-*.txt`、Docker 镜像、两本手册与全部文档；GitHub 仓库已改名为 `lesismal/only`（Pages 为 `lesismal.github.io/only`）；对照表见 CHANGELOG
 - [x] 将尚未 1.0 的公开依赖（rustls、quinn-proto、prost、str0m）封装在项目自己的类型之后，原始访问只在 `unstable` feature 中提供，使升级它们不再是破坏性变更：`tls::{ServerConfig, ClientConfig}` 构建器（PEM/DER 证书与私钥、按 SNI 选证书、ALPN、客户端认证、会话缓存与票据、根证书、仅测试用的跳过验证）与 `tls::Error`，供 TLS、HTTP/HTTP-2 客户端、WebSocket 客户端、QUIC 与 HTTP/3 使用；自有 QUIC `ServerConfig` / `ClientConfig` / `TransportConfig`、`StreamId` / `Dir` / `Side`、`ConnectionError`、`ConnectionStats`；gRPC 的 `codec::Message` trait，prost 适配器在 `prost` feature 之后（不在 semver 内）；自有 WebRTC id、媒体、事件、候选、`RtcConfig` 与 `SdpChanges`，`Peer::with_rtc` 移到 `unstable` 之后；API 快照中不再含 rustls/quinn/prost/str0m 类型；迁移表见 CHANGELOG
 - 回调名保持各协议自己的术语（QUIC 的 `on_connected`、WebSocket 的 `on_open` 等）
 

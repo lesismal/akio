@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-[only](https://github.com/lesismal/flash) 的 STUN 与 TURN 服务器，运行在 only UDP socket 上。
+[only](https://github.com/lesismal/only) 的 STUN 与 TURN 服务器，运行在 only UDP socket 上。
 
 - `stun`：STUN 消息编解码（RFC 8489），含 TURN（RFC 8656）与 ICE（RFC 8445）属性、
   `MESSAGE-INTEGRITY`（HMAC-SHA1）、`FINGERPRINT`、长期凭据密钥。
@@ -33,4 +33,4 @@ engine.run().unwrap();
 互通：pion/turn 客户端与 coturn 的 `turnutils_uclient`（`tools/interop/webrtc/run.sh`，
 `COTURN=1`），以及经中继连到 only WebRTC 服务器的 pion WebRTC peer。
 
-指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/flash/zh-CN/protocols/webrtc.html)。
+指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

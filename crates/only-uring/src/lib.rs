@@ -14,8 +14,8 @@
 //!
 //! Not used: `SEND_ZC`, registered files, `MSG_RING` wake-up.
 //!
-//! Guide: [Engine, listeners and backends](https://lesismal.github.io/flash/en/concepts/engine.html)
-//! (中文: [Engine、Listener 与后端](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
+//! Guide: [Engine, listeners and backends](https://lesismal.github.io/only/en/concepts/engine.html)
+//! (中文: [Engine、Listener 与后端](https://lesismal.github.io/only/zh-CN/concepts/engine.html)).
 #![cfg(target_os = "linux")]
 #![warn(clippy::unwrap_used)]
 // `unsafe` is confined to the modules that talk to the kernel; see docs/unsafe-review.md.

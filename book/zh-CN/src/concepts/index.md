@@ -11,5 +11,5 @@ only 的核心很小，所有协议 crate 都遵守几条规则。学一次就�
 | 停机是优雅的：停止接收、通知、排空、超时后强制关闭。 | [生命周期与停机](lifecycle.md) |
 
 这些章节的代码片段来自
-[`crates/only/examples/guide-basics.rs`](https://github.com/lesismal/flash/blob/main/crates/only/examples/guide-basics.rs)
+[`crates/only/examples/guide-basics.rs`](https://github.com/lesismal/only/blob/main/crates/only/examples/guide-basics.rs)
 （运行：`cargo run -p only --example guide-basics`）。

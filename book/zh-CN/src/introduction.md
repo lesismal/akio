@@ -52,6 +52,6 @@ Rust 对应物：功能面相同，但用 Rust 的方式实现：用所有权代
 
 only 正在接近 1.0。Linux 是第一等平台（epoll、io_uring、eBPF）；macOS 使用 kqueue，
 用于开发。不支持 Windows。已完成和未完成的内容按里程碑记录在
-[docs/DEV-PLAN.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/DEV-PLAN.zh-CN.md)；
+[docs/DEV-PLAN.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/DEV-PLAN.zh-CN.md)；
 实测性能见
-[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.zh-CN.md)。
+[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)。

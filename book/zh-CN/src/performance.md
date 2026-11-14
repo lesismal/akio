@@ -1,7 +1,7 @@
 # 性能调优
 
 先测量，再调优。这里引用的数据来自
-[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.zh-CN.md)：
+[docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)：
 一台笔记本级 Mac 上的 Docker 虚拟机、回环网络、4 个服务端线程。把它们当作方向参考，而不是
 排名。在那份报告中，only 的 TCP echo 与 tokio 同一量级、领先 fib（512 连接时领先 tokio，
 64 连接和 16 KiB 消息时落后约 15%），UDP echo 与 fib 持平，把 5 ms 的阻塞工作移到逻辑线程池

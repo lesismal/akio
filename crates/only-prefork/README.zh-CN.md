@@ -102,4 +102,4 @@ API，会记录一条警告）。
 Linux 与 macOS。supervisor 和 worker 都是普通进程：不在多线程之后 fork，子进程在 `exec` 之前不做任何非
 异步信号安全的工作（只有 `fcntl`、`prctl`、`sched_setaffinity`）。
 
-手册：[多进程服务（prefork）](https://lesismal.github.io/flash/zh-CN/prefork.html)。
+手册：[多进程服务（prefork）](https://lesismal.github.io/only/zh-CN/prefork.html)。
