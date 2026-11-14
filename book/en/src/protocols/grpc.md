@@ -50,8 +50,10 @@ Serving it: `flash_http::serve(grpc)` on its own, or as the `fallback` (or a rou
 
 ## Messages
 
-Messages are bytes. With the `prost` feature, `flash_grpc::codec` converts prost-generated
-messages; any other serializer works by encoding to `Vec<u8>` yourself.
+Messages are bytes. `flash_grpc::codec::{encode, decode}` convert any type implementing
+`codec::Message` (`encode_to` / `decode_from`), so any serializer plugs in. With the `prost`
+feature every prost-generated message implements it; that adapter names prost's types, so the
+feature is outside the semver promise (a prost upgrade may come in a minor release).
 
 Not provided: server reflection, the standard health-checking service, client-side load
 balancing. Interop has been run against grpc-go only (not tonic).

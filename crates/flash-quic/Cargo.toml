@@ -16,8 +16,12 @@ categories = ["network-programming"]
 flash = { workspace = true }
 flash-core = { workspace = true }
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-ring"] }
-rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 bytes = "1"
+
+[features]
+# Raw access to quinn-proto (`flash_quic::proto`, `ServerConfig::from_quinn` ...): outside the
+# semver promise (docs/api-stability.md).
+unstable = []
 
 [dev-dependencies]
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

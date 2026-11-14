@@ -1,9 +1,132 @@
 pub mod flash_tls
-pub use flash_tls::rustls
+pub struct flash_tls::Certificate(_)
+impl flash_tls::Certificate
+pub fn flash_tls::Certificate::as_der(&self) -> &[u8]
+pub fn flash_tls::Certificate::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> flash_tls::Certificate
+pub fn flash_tls::Certificate::from_pem(&[u8]) -> core::result::Result<alloc::vec::Vec<flash_tls::Certificate>, flash_tls::Error>
+impl core::clone::Clone for flash_tls::Certificate
+pub fn flash_tls::Certificate::clone(&self) -> Self
+impl core::cmp::Eq for flash_tls::Certificate
+impl core::cmp::PartialEq for flash_tls::Certificate
+pub fn flash_tls::Certificate::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_tls::Certificate
+pub fn flash_tls::Certificate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_tls::Certificate
+impl core::marker::Send for flash_tls::Certificate
+impl core::marker::Sync for flash_tls::Certificate
+impl core::marker::Unpin for flash_tls::Certificate
+impl core::panic::unwind_safe::RefUnwindSafe for flash_tls::Certificate
+impl core::panic::unwind_safe::UnwindSafe for flash_tls::Certificate
+pub struct flash_tls::ClientConfig
+impl flash_tls::ClientConfig
+pub fn flash_tls::ClientConfig::alpn_protocols(&self) -> &[alloc::vec::Vec<u8>]
+pub fn flash_tls::ClientConfig::builder() -> flash_tls::ClientConfigBuilder
+impl core::clone::Clone for flash_tls::ClientConfig
+pub fn flash_tls::ClientConfig::clone(&self) -> Self
+impl core::fmt::Debug for flash_tls::ClientConfig
+pub fn flash_tls::ClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_tls::ClientConfig
+impl core::marker::Sync for flash_tls::ClientConfig
+impl core::marker::Unpin for flash_tls::ClientConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_tls::ClientConfig
+impl !core::panic::unwind_safe::UnwindSafe for flash_tls::ClientConfig
+pub struct flash_tls::ClientConfigBuilder
+impl flash_tls::ClientConfigBuilder
+pub fn flash_tls::ClientConfigBuilder::alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
+pub fn flash_tls::ClientConfigBuilder::build(self) -> core::result::Result<flash_tls::ClientConfig, flash_tls::Error>
+pub fn flash_tls::ClientConfigBuilder::client_cert(self, alloc::vec::Vec<flash_tls::Certificate>, flash_tls::PrivateKey) -> Self
+pub fn flash_tls::ClientConfigBuilder::insecure_skip_verify(self) -> Self
+pub fn flash_tls::ClientConfigBuilder::resumption(self, bool) -> Self
+pub fn flash_tls::ClientConfigBuilder::roots(self, flash_tls::RootCerts) -> Self
+pub fn flash_tls::ClientConfigBuilder::sni(self, bool) -> Self
+pub fn flash_tls::ClientConfigBuilder::tls13_only(self, bool) -> Self
+impl core::fmt::Debug for flash_tls::ClientConfigBuilder
+pub fn flash_tls::ClientConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_tls::ClientConfigBuilder
+impl core::marker::Sync for flash_tls::ClientConfigBuilder
+impl core::marker::Unpin for flash_tls::ClientConfigBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for flash_tls::ClientConfigBuilder
+impl core::panic::unwind_safe::UnwindSafe for flash_tls::ClientConfigBuilder
+pub struct flash_tls::Error
+impl core::convert::From<flash_tls::Error> for core::io::error::Error
+pub fn core::io::error::Error::from(flash_tls::Error) -> core::io::error::Error
+impl core::error::Error for flash_tls::Error
+pub fn flash_tls::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for flash_tls::Error
+pub fn flash_tls::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_tls::Error
+pub fn flash_tls::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_tls::Error
+impl core::marker::Sync for flash_tls::Error
+impl core::marker::Unpin for flash_tls::Error
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_tls::Error
+impl !core::panic::unwind_safe::UnwindSafe for flash_tls::Error
+pub struct flash_tls::PrivateKey(_)
+impl flash_tls::PrivateKey
+pub fn flash_tls::PrivateKey::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<flash_tls::PrivateKey, flash_tls::Error>
+pub fn flash_tls::PrivateKey::from_pem(&[u8]) -> core::result::Result<flash_tls::PrivateKey, flash_tls::Error>
+pub fn flash_tls::PrivateKey::from_pkcs8_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> flash_tls::PrivateKey
+impl core::clone::Clone for flash_tls::PrivateKey
+pub fn flash_tls::PrivateKey::clone(&self) -> Self
+impl core::fmt::Debug for flash_tls::PrivateKey
+pub fn flash_tls::PrivateKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_tls::PrivateKey
+impl core::marker::Sync for flash_tls::PrivateKey
+impl core::marker::Unpin for flash_tls::PrivateKey
+impl core::panic::unwind_safe::RefUnwindSafe for flash_tls::PrivateKey
+impl core::panic::unwind_safe::UnwindSafe for flash_tls::PrivateKey
+pub struct flash_tls::RootCerts(_)
+impl flash_tls::RootCerts
+pub fn flash_tls::RootCerts::add(&mut self, &flash_tls::Certificate) -> core::result::Result<(), flash_tls::Error>
+pub fn flash_tls::RootCerts::add_pem(&mut self, &[u8]) -> core::result::Result<usize, flash_tls::Error>
+pub fn flash_tls::RootCerts::empty() -> flash_tls::RootCerts
+pub fn flash_tls::RootCerts::is_empty(&self) -> bool
+pub fn flash_tls::RootCerts::len(&self) -> usize
+impl core::clone::Clone for flash_tls::RootCerts
+pub fn flash_tls::RootCerts::clone(&self) -> Self
+impl core::default::Default for flash_tls::RootCerts
+pub fn flash_tls::RootCerts::default() -> Self
+impl core::fmt::Debug for flash_tls::RootCerts
+pub fn flash_tls::RootCerts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_tls::RootCerts
+impl core::marker::Sync for flash_tls::RootCerts
+impl core::marker::Unpin for flash_tls::RootCerts
+impl core::panic::unwind_safe::RefUnwindSafe for flash_tls::RootCerts
+impl core::panic::unwind_safe::UnwindSafe for flash_tls::RootCerts
+pub struct flash_tls::ServerConfig
+impl flash_tls::ServerConfig
+pub fn flash_tls::ServerConfig::alpn_protocols(&self) -> &[alloc::vec::Vec<u8>]
+pub fn flash_tls::ServerConfig::builder(alloc::vec::Vec<flash_tls::Certificate>, flash_tls::PrivateKey) -> flash_tls::ServerConfigBuilder
+impl core::clone::Clone for flash_tls::ServerConfig
+pub fn flash_tls::ServerConfig::clone(&self) -> Self
+impl core::fmt::Debug for flash_tls::ServerConfig
+pub fn flash_tls::ServerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_tls::ServerConfig
+impl core::marker::Sync for flash_tls::ServerConfig
+impl core::marker::Unpin for flash_tls::ServerConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_tls::ServerConfig
+impl !core::panic::unwind_safe::UnwindSafe for flash_tls::ServerConfig
+pub struct flash_tls::ServerConfigBuilder
+impl flash_tls::ServerConfigBuilder
+pub fn flash_tls::ServerConfigBuilder::alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
+pub fn flash_tls::ServerConfigBuilder::build(self) -> core::result::Result<flash_tls::ServerConfig, flash_tls::Error>
+pub fn flash_tls::ServerConfigBuilder::client_auth_optional(self, flash_tls::RootCerts) -> Self
+pub fn flash_tls::ServerConfigBuilder::client_auth_required(self, flash_tls::RootCerts) -> Self
+pub fn flash_tls::ServerConfigBuilder::session_cache(self, usize) -> Self
+pub fn flash_tls::ServerConfigBuilder::session_tickets(self, bool) -> Self
+pub fn flash_tls::ServerConfigBuilder::sni_cert(self, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<flash_tls::Certificate>, flash_tls::PrivateKey) -> Self
+pub fn flash_tls::ServerConfigBuilder::tls13_only(self, bool) -> Self
+impl core::fmt::Debug for flash_tls::ServerConfigBuilder
+pub fn flash_tls::ServerConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_tls::ServerConfigBuilder
+impl core::marker::Sync for flash_tls::ServerConfigBuilder
+impl core::marker::Unpin for flash_tls::ServerConfigBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for flash_tls::ServerConfigBuilder
+impl core::panic::unwind_safe::UnwindSafe for flash_tls::ServerConfigBuilder
 pub struct flash_tls::Tls<A>
 impl<A: flash_core::handler::Acceptor> flash_tls::Tls<A>
-pub fn flash_tls::Tls<A>::client(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str, A) -> core::io::error::Result<Self>
-pub fn flash_tls::Tls<A>::server(alloc::rcs::arc::Arc<rustls::server::server_conn::ServerConfig>, A) -> Self
+pub fn flash_tls::Tls<A>::client(flash_tls::ClientConfig, &str, A) -> core::io::error::Result<Self>
+pub fn flash_tls::Tls<A>::server(flash_tls::ServerConfig, A) -> Self
 impl<A: flash_core::handler::Acceptor> flash_core::handler::Acceptor for flash_tls::Tls<A>
 pub type flash_tls::Tls<A>::Handler = <A as flash_core::handler::Acceptor>::Handler
 pub fn flash_tls::Tls<A>::on_open(&self, &flash_core::conn::Conn<<A as flash_core::handler::Acceptor>::Handler>) -> <A as flash_core::handler::Acceptor>::Handler

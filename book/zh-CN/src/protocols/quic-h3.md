@@ -38,10 +38,15 @@
 `alpn`、`server_name`、`rtt`、`stats`、`is_closed`。写永不阻塞：`send` 把流控允许的部分交给
 quinn，其余按 stream 暂存，等对端给出额度；用 `queued_bytes` 控制生产者节奏。
 
-配置辅助函数（TLS 1.3，`ring` 实现）：`server_config(certs, key, alpn)`、
-`server_config_from(rustls::ServerConfig)`、`client_config(roots, alpn)`、
-`client_config_from(rustls::ClientConfig)`，以及仅用于测试的 `client_config_insecure(alpn)`。
-`quinn_proto` 以 `flash_quic::proto` 重新导出，用于传输参数（`TransportConfig`）。
+配置（TLS 1.3）：`server_config(certs, key, alpn)`（使用 `flash::tls::Certificate` /
+`PrivateKey`）、`server_config_from(&flash::tls::ServerConfig)`、`client_config(roots, alpn)`
+（使用 `flash::tls::RootCerts`）、`client_config_from(&flash::tls::ClientConfig)`，以及仅用于测试
+的 `client_config_insecure(alpn)`。它们返回 flash 自己的 `ServerConfig` / `ClientConfig`；
+`.transport(&TransportConfig)` 设置流数量上限、窗口、空闲超时、keep-alive、MTU 探测与拥塞控制
+算法，`ServerConfig::migration(bool)` 控制客户端迁移。`StreamId`、`Dir`、`Side`、
+`ConnectionError` 与 `ConnectionStats` 也是 flash 的类型，quinn-proto 不出现在 API 中；
+`unstable` cargo feature（不在 semver 承诺内）把它重新导出为 `flash_quic::proto`，并提供
+`from_quinn` / `as_quinn_mut`。
 `QuicServer::connections()` 和 `close_all(code, reason)` 在停机时有用。
 
 ## HTTP/3

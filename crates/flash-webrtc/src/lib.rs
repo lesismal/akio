@@ -1,12 +1,13 @@
 #![forbid(unsafe_code)]
-//! WebRTC for flash, on the sans-io [`str0m`] state machine, over flash UDP sockets.
+//! WebRTC for flash, on the sans-io [str0m](https://docs.rs/str0m) state machine, over flash UDP
+//! sockets.
 //!
 //! str0m does ICE (full agent and ICE-lite, consent freshness), DTLS-SRTP (DTLS 1.2/1.3,
 //! certificate fingerprint verification, SRTP/SRTCP AES-CM-SHA1-80 and AEAD-AES-GCM), SCTP data
 //! channels (DCEP; reliable or not, ordered or not), RTP/RTCP media (packetization of Opus, VP8,
 //! VP9, H.264, H.265 and AV1, NACK and RTX, PLI/FIR, TWCC and bandwidth estimation, sender and
 //! receiver reports) and SDP offer/answer. This crate drives it with flash I/O threads and a
-//! shared timer thread, and plugs in a pure-Rust crypto provider ([`crypto_provider`]: RustCrypto
+//! shared timer thread, and plugs in a pure-Rust crypto provider (RustCrypto
 //! and the `dimpl` DTLS stack, no C toolchain).
 //!
 //! Two ways to put peers on the network:
@@ -23,8 +24,11 @@
 //! Each peer is a [`Peer`] (cheap to clone, usable from any thread) with a [`PeerHandler`].
 //! A peer's callbacks run one at a time, in order, on the I/O thread that read the datagram, on
 //! the timer thread or on the thread that called a [`Peer`] method; they must not block.
-//! Everything str0m offers stays reachable: [`Peer::with_rtc`] runs a closure on the `Rtc`
-//! (then drives it), [`PeerHandler::on_event`] sees every event.
+//!
+//! The API uses this crate's own types ([`ChannelId`], [`Mid`], [`MediaData`], [`RtcConfig`],
+//! [`SdpChanges`] ...), so upgrading str0m is not a breaking change. The `unstable` cargo feature
+//! re-exports `str0m` and adds `Peer::with_rtc` (any str0m API on a peer), outside the semver
+//! promise.
 //!
 //! ```no_run
 //! use flash::{Engine, Listener};
@@ -59,6 +63,7 @@ mod crypto;
 #[doc(hidden)]
 pub mod fuzzing;
 mod timer;
+mod types;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -73,17 +78,48 @@ use flash::{Acceptor, Conn, Engine, Handler, UdpBinding};
 use flash_turn::stun;
 use str0m::change::{SdpAnswer, SdpApi, SdpOffer, SdpPendingOffer};
 use str0m::net::{Protocol, Receive};
-use str0m::{Input, Output, Rtc, RtcError};
+use str0m::{Candidate as SCandidate, Event as SEvent, IceConnectionState as SIce};
+use str0m::{Input, Output, Rtc};
 
-pub use crate::crypto::{crypto_provider, generate_certificate};
-pub use str0m;
-pub use str0m::channel::{ChannelConfig, ChannelId, Reliability};
-pub use str0m::media::{
-    Direction, Frequency, KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, Pt,
+use crate::crypto::crypto_provider;
+use crate::types::Own;
+pub use crate::types::{
+    Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, Frequency, IceConnectionState,
+    KeyframeRequest, KeyframeRequestKind, MediaAdded, MediaData, MediaKind, MediaTime, Mid,
+    OtherEvent, Pt, Reliability, RtcConfig, RtpPacket, SdpChanges,
 };
-pub use str0m::rtp::RtpPacket;
-pub use str0m::{Candidate, Event, IceConnectionState, RtcConfig};
+/// The WebRTC implementation. **Unstable** (cargo feature `unstable`): outside the semver
+/// promise.
+#[cfg(feature = "unstable")]
+pub use str0m;
+
+/// The crypto provider every peer uses (pure Rust: RustCrypto + dimpl). **Unstable** (cargo
+/// feature `unstable`).
+#[cfg(feature = "unstable")]
+pub fn crypto_provider_str0m() -> Arc<str0m::crypto::CryptoProvider> {
+    crypto_provider()
+}
+
+/// The WebRTC stack refused an operation.
+pub struct RtcError(str0m::RtcError);
+
+impl fmt::Debug for RtcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Display for RtcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for RtcError {}
+
+pub(crate) fn rtc_err(e: str0m::RtcError) -> Error {
+    Error::Rtc(RtcError(e))
+}
 
 /// Errors of [`Peer`], [`RtcServer`] and [`Endpoint`] calls.
 #[derive(Debug)]
@@ -91,7 +127,7 @@ pub use str0m::{Candidate, Event, IceConnectionState, RtcConfig};
 pub enum Error {
     /// An SDP offer or answer did not parse.
     Sdp(String),
-    /// str0m refused the operation.
+    /// The WebRTC stack refused the operation.
     Rtc(RtcError),
     /// The peer is closed.
     Closed,
@@ -105,6 +141,8 @@ pub enum Error {
     Io(io::Error),
     /// No answer from the STUN server in time.
     Timeout,
+    /// A candidate could not be made from these addresses.
+    InvalidCandidate(String),
 }
 
 impl fmt::Display for Error {
@@ -118,6 +156,7 @@ impl fmt::Display for Error {
             Error::NoPendingOffer => f.write_str("webrtc: no offer pending"),
             Error::Io(e) => write!(f, "webrtc: {e}"),
             Error::Timeout => f.write_str("webrtc: timed out"),
+            Error::InvalidCandidate(e) => write!(f, "webrtc: invalid candidate: {e}"),
         }
     }
 }
@@ -129,12 +168,6 @@ impl std::error::Error for Error {
             Error::Io(e) => Some(e),
             _ => None,
         }
-    }
-}
-
-impl From<RtcError> for Error {
-    fn from(e: RtcError) -> Error {
-        Error::Rtc(e)
     }
 }
 
@@ -154,10 +187,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// A str0m configuration with this crate's crypto provider: the starting point for
-/// [`RtcServer::config`] and [`Endpoint::config`] (enable codecs, RTP mode, BWE, ...).
+/// The default peer configuration: the starting point for [`RtcServer::config`] and
+/// [`Endpoint::config`] (codecs, RTP mode, BWE, ...).
 pub fn rtc_config() -> RtcConfig {
-    Rtc::builder().set_crypto_provider(crypto_provider())
+    RtcConfig(Rtc::builder().set_crypto_provider(crypto_provider()))
 }
 
 /// The application side of a peer. Every method has a default.
@@ -182,7 +215,7 @@ pub trait PeerHandler: Send + 'static {
     fn on_rtp(&mut self, _p: &Peer, _packet: &RtpPacket) {}
     /// The remote peer asks for a keyframe (PLI or FIR).
     fn on_keyframe_request(&mut self, _p: &Peer, _req: &KeyframeRequest) {}
-    /// Any other str0m event: statistics, bandwidth estimates, sender reports, raw packets ...
+    /// Any other event: buffered amount low, statistics, bandwidth estimates ...
     fn on_event(&mut self, _p: &Peer, _event: &Event) {}
     /// The peer is closed; called once, last.
     fn on_close(&mut self, _p: &Peer) {}
@@ -211,7 +244,7 @@ struct Shared {
 }
 
 enum Ev {
-    Rtc(Box<Event>),
+    Rtc(Box<SEvent>),
     Close,
 }
 
@@ -274,7 +307,13 @@ impl Peer {
 
     /// Runs `f` on the str0m `Rtc` (any of its APIs), then drives it: outputs are sent and
     /// events delivered after `f` returns. Do not call other `Peer` methods from `f`.
+    /// **Unstable** (cargo feature `unstable`, outside the semver promise).
+    #[cfg(feature = "unstable")]
     pub fn with_rtc<R>(&self, f: impl FnOnce(&mut Rtc) -> R) -> Result<R, Error> {
+        self.with_rtc_inner(f)
+    }
+
+    fn with_rtc_inner<R>(&self, f: impl FnOnce(&mut Rtc) -> R) -> Result<R, Error> {
         let r = {
             let mut st = lock(&self.0.state);
             if st.closed {
@@ -289,8 +328,8 @@ impl Peer {
     /// Sends a message on data channel `id` (`binary`, or UTF-8 text). `Ok(false)` when the
     /// channel's buffer is full (see `ChannelBufferedAmountLow` in [`PeerHandler::on_event`]).
     pub fn send(&self, id: ChannelId, data: &[u8], binary: bool) -> Result<bool, Error> {
-        self.with_rtc(|rtc| match rtc.channel(id) {
-            Some(mut ch) => ch.write(binary, data).map_err(Error::Rtc),
+        self.with_rtc_inner(|rtc| match rtc.channel(id.0) {
+            Some(mut ch) => ch.write(binary, data).map_err(rtc_err),
             None => Err(Error::UnknownChannel),
         })?
     }
@@ -299,24 +338,27 @@ impl Peer {
     /// connection that already has an SCTP association (any data channel negotiated) it opens
     /// at once and the result carries no offer; otherwise the returned SDP offer must reach
     /// the remote peer and its answer come back through [`accept_answer`](Self::accept_answer).
-    pub fn open_channel(&self, cfg: ChannelConfig) -> Result<(ChannelId, Option<String>), Error> {
+    pub fn open_channel(&self, cfg: &ChannelConfig) -> Result<(ChannelId, Option<String>), Error> {
         let mut id = None;
         let offer = self.renegotiate(|api| id = Some(api.add_channel_with_config(cfg)))?;
         Ok((id.ok_or(Error::Closed)?, offer))
     }
 
-    /// Changes the session through str0m's SDP API (add media or channels, change directions,
-    /// ICE restart ...). Returns the offer to send when the change needs negotiation (then
-    /// call [`accept_answer`](Self::accept_answer) with the answer), `None` when it applied
+    /// Changes the session (add media or channels, change directions, ICE restart ...).
+    /// Returns the offer to send when the change needs negotiation (then call
+    /// [`accept_answer`](Self::accept_answer) with the answer), `None` when it applied
     /// directly.
-    pub fn renegotiate(&self, f: impl FnOnce(&mut SdpApi<'_>)) -> Result<Option<String>, Error> {
+    pub fn renegotiate(
+        &self,
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
+    ) -> Result<Option<String>, Error> {
         let offer = {
             let mut st = lock(&self.0.state);
             if st.closed {
                 return Err(Error::Closed);
             }
             let mut api = st.rtc.sdp_api();
-            f(&mut api);
+            f(&mut SdpChanges(&mut api));
             match api.apply() {
                 Some((offer, pending)) => {
                     st.pending = Some(pending);
@@ -341,7 +383,7 @@ impl Peer {
             st.rtc.sdp_api().accept_answer(pending, answer)
         };
         self.drive();
-        r.map_err(Error::Rtc)
+        r.map_err(rtc_err)
     }
 
     /// Accepts a (re-)offer from the remote peer and returns the answer.
@@ -355,14 +397,13 @@ impl Peer {
             st.rtc.sdp_api().accept_offer(offer)
         };
         self.drive();
-        Ok(r?.to_sdp_string())
+        Ok(r.map_err(rtc_err)?.to_sdp_string())
     }
 
     /// Adds a trickled remote ICE candidate (`candidate:...` or `a=candidate:...`).
     pub fn add_remote_candidate(&self, candidate: &str) -> Result<(), Error> {
-        let s = candidate.trim().trim_start_matches("a=");
-        let c = Candidate::from_sdp_string(s).map_err(|e| Error::Sdp(e.to_string()))?;
-        self.with_rtc(|rtc| rtc.add_remote_candidate(c))
+        let c = Candidate::parse(candidate)?;
+        self.with_rtc_inner(|rtc| rtc.add_remote_candidate(c.0))
     }
 
     /// Writes one media sample (a frame: an Opus packet, a VP8 frame, H.264 access unit ...)
@@ -377,26 +418,27 @@ impl Peer {
         rtp_time: MediaTime,
         data: &[u8],
     ) -> Result<(), Error> {
-        self.with_rtc(|rtc| match rtc.writer(mid) {
-            Some(w) => w.write(pt, wallclock, rtp_time, data).map_err(Error::Rtc),
+        self.with_rtc_inner(|rtc| match rtc.writer(mid.0) {
+            Some(w) => w
+                .write(pt.own(), wallclock, rtp_time.to_str0m(), data)
+                .map_err(rtc_err),
             None => Err(Error::UnknownMedia),
         })?
     }
 
-    /// The payload type negotiated on `mid` for a codec, e.g. `Codec::Vp8` (see
-    /// [`str0m::format::Codec`]).
-    pub fn payload_type(&self, mid: Mid, codec: str0m::format::Codec) -> Option<Pt> {
+    /// The payload type negotiated on `mid` for a codec, e.g. [`Codec::Vp8`].
+    pub fn payload_type(&self, mid: Mid, codec: Codec) -> Option<Pt> {
         let mut st = lock(&self.0.state);
-        let w = st.rtc.writer(mid)?;
+        let w = st.rtc.writer(mid.0)?;
         w.payload_params()
-            .find(|p| p.spec().codec == codec)
-            .map(str0m::format::PayloadParams::pt)
+            .find(|p| codec.matches(p.spec().codec))
+            .map(|p| p.pt().own())
     }
 
     /// Asks the remote sender of `mid` for a keyframe (PLI or FIR).
     pub fn request_keyframe(&self, mid: Mid, kind: KeyframeRequestKind) -> Result<(), Error> {
-        self.with_rtc(|rtc| match rtc.writer(mid) {
-            Some(mut w) => w.request_keyframe(None, kind).map_err(Error::Rtc),
+        self.with_rtc_inner(|rtc| match rtc.writer(mid.0) {
+            Some(mut w) => w.request_keyframe(None, kind.own()).map_err(rtc_err),
             None => Err(Error::UnknownMedia),
         })?
     }
@@ -485,11 +527,9 @@ impl Peer {
                         }
                     }
                     Ok(Output::Event(e)) => {
-                        let dead = matches!(e, Event::Closed)
+                        let dead = matches!(e, SEvent::Closed)
                             || (close_on_disconnect
-                                && e == Event::IceConnectionStateChange(
-                                    IceConnectionState::Disconnected,
-                                ));
+                                && e == SEvent::IceConnectionStateChange(SIce::Disconnected));
                         evs.push(Ev::Rtc(Box::new(e)));
                         if dead {
                             died = true;
@@ -556,18 +596,21 @@ impl Peer {
         }
     }
 
-    fn dispatch(&self, h: &mut dyn PeerHandler, e: Event) {
+    fn dispatch(&self, h: &mut dyn PeerHandler, e: SEvent) {
         match e {
-            Event::IceConnectionStateChange(s) => h.on_ice_state(self, s),
-            Event::Connected => h.on_connected(self),
-            Event::ChannelOpen(id, label) => h.on_channel_open(self, id, &label),
-            Event::ChannelData(d) => h.on_channel_data(self, d.id, &d.data, d.binary),
-            Event::ChannelClose(id) => h.on_channel_close(self, id),
-            Event::MediaAdded(m) => h.on_media_added(self, &m),
-            Event::MediaData(d) => h.on_media_data(self, &d),
-            Event::RtpPacket(p) => h.on_rtp(self, &p),
-            Event::KeyframeRequest(k) => h.on_keyframe_request(self, &k),
-            other => h.on_event(self, &other),
+            SEvent::IceConnectionStateChange(s) => h.on_ice_state(self, s.own()),
+            SEvent::Connected => h.on_connected(self),
+            SEvent::ChannelOpen(id, label) => h.on_channel_open(self, ChannelId(id), &label),
+            SEvent::ChannelData(d) => h.on_channel_data(self, ChannelId(d.id), &d.data, d.binary),
+            SEvent::ChannelClose(id) => h.on_channel_close(self, ChannelId(id)),
+            SEvent::MediaAdded(m) => h.on_media_added(self, &m.own()),
+            SEvent::MediaData(d) => h.on_media_data(self, &d.own()),
+            SEvent::RtpPacket(p) => h.on_rtp(self, &p.own()),
+            SEvent::KeyframeRequest(k) => h.on_keyframe_request(self, &k.own()),
+            SEvent::ChannelBufferedAmountLow(id) => {
+                h.on_event(self, &Event::ChannelBufferedAmountLow(ChannelId(id)));
+            }
+            other => h.on_event(self, &Event::Other(OtherEvent(Box::new(other)))),
         }
     }
 }
@@ -606,7 +649,7 @@ struct Hub {
     close_on_disconnect: bool,
     connect_timeout: Option<Duration>,
     config: Box<ConfigFn>,
-    candidates: Mutex<Vec<Candidate>>,
+    candidates: Mutex<Vec<SCandidate>>,
     peers: Mutex<HashMap<u64, Peer>>,
     by_ufrag: Mutex<HashMap<String, u64>>,
     by_addr: Mutex<HashMap<SocketAddr, u64>>,
@@ -614,7 +657,7 @@ struct Hub {
 }
 
 impl Hub {
-    fn new(tx: Tx, ice_lite: bool, candidates: Vec<Candidate>) -> Hub {
+    fn new(tx: Tx, ice_lite: bool, candidates: Vec<SCandidate>) -> Hub {
         Hub {
             tx,
             ice_lite,
@@ -631,6 +674,7 @@ impl Hub {
 
     fn new_rtc(&self) -> Rtc {
         let mut rtc = (self.config)()
+            .0
             .set_crypto_provider(crypto_provider())
             .set_ice_lite(self.ice_lite)
             .build(Instant::now());
@@ -654,7 +698,7 @@ impl Hub {
     ) -> Result<(Peer, String), Error> {
         let offer = SdpOffer::from_sdp_string(offer).map_err(|e| Error::Sdp(e.to_string()))?;
         let mut rtc = self.new_rtc();
-        let answer = rtc.sdp_api().accept_offer(offer)?;
+        let answer = rtc.sdp_api().accept_offer(offer).map_err(rtc_err)?;
         let p = self.register(rtc, handler);
         p.drive();
         Ok((p, answer.to_sdp_string()))
@@ -663,11 +707,11 @@ impl Hub {
     fn create_offer(
         self: &Arc<Hub>,
         handler: Box<dyn PeerHandler>,
-        f: impl FnOnce(&mut SdpApi<'_>),
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
         let mut rtc = self.new_rtc();
-        let mut api = rtc.sdp_api();
-        f(&mut api);
+        let mut api: SdpApi<'_> = rtc.sdp_api();
+        f(&mut SdpChanges(&mut api));
         let (offer, pending) = api
             .apply()
             .ok_or_else(|| Error::Sdp("an offer needs at least one media or channel".into()))?;
@@ -711,7 +755,7 @@ impl Hub {
         }
         lock(&self.candidates)
             .iter()
-            .map(Candidate::addr)
+            .map(SCandidate::addr)
             .find(|a| a.port() == local.port() && a.is_ipv4() == local.is_ipv4())
             .unwrap_or(local)
     }
@@ -788,10 +832,10 @@ impl Handler for RtcUdp {
     }
 }
 
-fn host_candidates(addrs: &[SocketAddr]) -> Vec<Candidate> {
+fn host_candidates(addrs: &[SocketAddr]) -> Vec<SCandidate> {
     addrs
         .iter()
-        .filter_map(|a| Candidate::host(*a, "udp").ok())
+        .filter_map(|a| SCandidate::host(*a, "udp").ok())
         .collect()
 }
 
@@ -825,8 +869,8 @@ impl RtcServer {
         Arc::get_mut(&mut self.0).expect("configure the server before cloning it")
     }
 
-    /// Builds every peer's str0m configuration with `f` (start from [`rtc_config`]); the
-    /// crypto provider and the ICE mode are set over it. Call before cloning the server.
+    /// Builds every peer's configuration with `f` (start from [`rtc_config`]); the crypto
+    /// provider and the ICE mode are set over it. Call before cloning the server.
     #[must_use]
     pub fn config(mut self, f: impl Fn() -> RtcConfig + Send + Sync + 'static) -> Self {
         self.hub_mut().config = Box::new(f);
@@ -867,13 +911,12 @@ impl RtcServer {
         self.0.accept_offer(offer, Box::new(handler))
     }
 
-    /// Starts a new peer with an offer made by `f` through str0m's SDP API (add media, data
-    /// channels); returns the peer and the SDP offer. Hand the answer to
-    /// [`Peer::accept_answer`].
+    /// Starts a new peer with an offer made by `f` (add media, data channels); returns the
+    /// peer and the SDP offer. Hand the answer to [`Peer::accept_answer`].
     pub fn create_offer<H: PeerHandler>(
         &self,
         handler: H,
-        f: impl FnOnce(&mut SdpApi<'_>),
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
         self.0.create_offer(Box::new(handler), f)
     }
@@ -994,13 +1037,17 @@ impl Endpoint {
 
     /// The local candidates new peers start with.
     pub fn candidates(&self) -> Vec<Candidate> {
-        lock(&self.0.candidates).clone()
+        lock(&self.0.candidates)
+            .iter()
+            .cloned()
+            .map(Candidate)
+            .collect()
     }
 
     /// Adds a local candidate for new peers (another host address of the socket, or a
     /// server-reflexive or relayed one learnt elsewhere).
     pub fn add_candidate(&self, c: Candidate) {
-        lock(&self.0.candidates).push(c);
+        lock(&self.0.candidates).push(c.0);
     }
 
     /// Asks the STUN server at `stun_server` for this socket's public (server-reflexive)
@@ -1033,8 +1080,8 @@ impl Endpoint {
         let mapped = r?;
         let base = lock(&self.0.candidates)
             .first()
-            .map_or_else(|| b.local_addr(), Candidate::addr);
-        if let Ok(c) = Candidate::server_reflexive(mapped, base, "udp") {
+            .map_or_else(|| b.local_addr(), SCandidate::addr);
+        if let Ok(c) = SCandidate::server_reflexive(mapped, base, "udp") {
             let mut cs = lock(&self.0.candidates);
             if !cs.iter().any(|x| x.addr() == mapped) {
                 cs.push(c);
@@ -1047,8 +1094,8 @@ impl Endpoint {
         Arc::get_mut(&mut self.0).expect("configure the endpoint before cloning it")
     }
 
-    /// Builds every peer's str0m configuration with `f` (start from [`rtc_config`]). Call
-    /// before cloning the endpoint.
+    /// Builds every peer's configuration with `f` (start from [`rtc_config`]). Call before
+    /// cloning the endpoint.
     #[must_use]
     pub fn config(mut self, f: impl Fn() -> RtcConfig + Send + Sync + 'static) -> Self {
         self.hub_mut().config = Box::new(f);
@@ -1071,13 +1118,12 @@ impl Endpoint {
         self
     }
 
-    /// Starts a new peer with an offer made by `f` through str0m's SDP API; returns the peer
-    /// and the SDP offer (with this endpoint's candidates). Hand the answer to
-    /// [`Peer::accept_answer`].
+    /// Starts a new peer with an offer made by `f`; returns the peer and the SDP offer (with
+    /// this endpoint's candidates). Hand the answer to [`Peer::accept_answer`].
     pub fn create_offer<H: PeerHandler>(
         &self,
         handler: H,
-        f: impl FnOnce(&mut SdpApi<'_>),
+        f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
         self.0.create_offer(Box::new(handler), f)
     }

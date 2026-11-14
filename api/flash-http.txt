@@ -21,7 +21,7 @@ impl flash_http::client::Client
 pub fn flash_http::client::Client::new(alloc::rcs::arc::Arc<flash::Engine>) -> flash_http::client::Client
 pub fn flash_http::client::Client::request(&self, flash_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<flash_http::client::ClientResponse, flash_http::client::ClientError>) + core::marker::Send + 'static)
 pub fn flash_http::client::Client::send(&self, flash_http::client::ClientRequest) -> flash_http::client::ResponseFuture
-pub fn flash_http::client::Client::with_tls(self, alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>) -> flash_http::client::Client
+pub fn flash_http::client::Client::with_tls(self, flash_tls::config::ClientConfig) -> flash_http::client::Client
 impl core::clone::Clone for flash_http::client::Client
 pub fn flash_http::client::Client::clone(&self) -> Self
 impl core::fmt::Debug for flash_http::client::Client
@@ -130,8 +130,8 @@ impl<'a> !core::panic::unwind_safe::UnwindSafe for flash_http::h2client::H2Event
 pub struct flash_http::h2client::H2Client
 impl flash_http::h2client::H2Client
 pub fn flash_http::h2client::H2Client::close(&self)
-pub fn flash_http::h2client::H2Client::dial(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str)>, flash_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<flash_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
-pub fn flash_http::h2client::H2Client::dial_blocking(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str)>, flash_http::h2client::H2Options) -> core::io::error::Result<flash_http::h2client::H2Client>
+pub fn flash_http::h2client::H2Client::dial(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(flash_tls::config::ClientConfig, &str)>, flash_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<flash_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
+pub fn flash_http::h2client::H2Client::dial_blocking(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(flash_tls::config::ClientConfig, &str)>, flash_http::h2client::H2Options) -> core::io::error::Result<flash_http::h2client::H2Client>
 pub fn flash_http::h2client::H2Client::is_open(&self) -> bool
 pub fn flash_http::h2client::H2Client::open(&self, flash_http::client::ClientRequest, impl core::ops::function::FnMut(flash_http::h2client::H2Event<'_>) + core::marker::Send + 'static) -> flash_http::h2client::H2Upload
 pub fn flash_http::h2client::H2Client::request(&self, flash_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<flash_http::client::ClientResponse, flash_http::client::ClientError>) + core::marker::Send + 'static)

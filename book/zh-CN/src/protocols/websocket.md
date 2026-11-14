@@ -78,5 +78,5 @@ pub trait WsHandler: Send + 'static {
 
 ## 尚未完成
 
-客户端：系统根证书（请提供 rustls 配置）、代理、重定向、engine 停机时发送 1001（目前连接以
+客户端：系统根证书（请自行加载到 `flash::tls::RootCerts`）、代理、重定向、engine 停机时发送 1001（目前连接以
 1006 结束）。服务端：基于 HTTP/2 或 HTTP/3 的 WebSocket（extended CONNECT）。

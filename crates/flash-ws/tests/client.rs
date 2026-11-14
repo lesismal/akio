@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 
-use flash::{Backend, Config, Engine, Listener, UringConfig, tls::rustls};
+use flash::{Backend, Config, Engine, Listener, UringConfig};
 use flash_http::{Context, Router, WsOptions, serve};
 use flash_ws::{
     Message, WsConfig, WsHandler, WsSender,
@@ -35,7 +35,7 @@ fn backend() -> Backend {
 
 /// An engine serving `router` on one listener. Dials without `client_threads` run on the
 /// listener's threads, so the client is exercised on the selected backend too.
-fn start_with(router: Router, tls: Option<Arc<rustls::ServerConfig>>) -> (Arc<Engine>, u16) {
+fn start_with(router: Router, tls: Option<flash::tls::ServerConfig>) -> (Arc<Engine>, u16) {
     let l = Listener::tcp("127.0.0.1:0".parse().unwrap())
         .backend(backend())
         .threads(2);
@@ -500,24 +500,21 @@ fn handshake_failures() {
 fn wss_with_sni_and_custom_roots() {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        ck.key_pair.serialize_der(),
-    ));
-    let scfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
+    let scfg = flash::tls::ServerConfig::builder(
+        vec![flash::tls::Certificate::from_der(cert.to_vec())],
+        flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+    )
+    .build()
+    .unwrap();
+    let (e, port) = start_with(echo_router(WsOptions::default(), None), Some(scfg));
+    let mut roots = flash::tls::RootCerts::empty();
+    roots
+        .add(&flash::tls::Certificate::from_der(cert.to_vec()))
         .unwrap();
-    let (e, port) = start_with(
-        echo_router(WsOptions::default(), None),
-        Some(Arc::new(scfg)),
-    );
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(cert).unwrap();
-    let ccfg = Arc::new(
-        rustls::ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth(),
-    );
+    let ccfg = flash::tls::ClientConfig::builder()
+        .roots(roots)
+        .build()
+        .unwrap();
     let mut opts = DialOptions::default();
     opts.tls = Some(ccfg.clone());
     // `localhost` may resolve to ::1 first: the client falls back to 127.0.0.1.

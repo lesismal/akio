@@ -71,8 +71,8 @@ impl QuicHandler for Client {
 
 fn setup() -> (Arc<Engine>, SocketAddr, mpsc::Receiver<String>) {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(ck.key_pair.serialize_der().into());
+    let cert = flash::tls::Certificate::from_der(ck.cert.der().to_vec());
+    let key = flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
     let cfg = flash_quic::server_config(vec![cert], key, &[b"ctl"]).unwrap();
     let (tx, rx) = mpsc::channel();
     let names = Arc::new(Mutex::new(tx));
@@ -184,22 +184,111 @@ fn errors_format_and_idle_server_handle() {
     ] {
         assert_eq!(e.to_string(), want);
     }
-    let e = Error::Connect(quinn_proto::ConnectError::EndpointStopping);
+    let e = Error::Connect("endpoint stopping".into());
     assert!(e.to_string().starts_with("quic: connect: "), "{e}");
     // Bad key material is a config error.
     let r = flash_quic::server_config(
-        vec![rustls::pki_types::CertificateDer::from(vec![1, 2, 3])],
-        rustls::pki_types::PrivateKeyDer::Pkcs8(vec![4, 5, 6].into()),
+        vec![flash::tls::Certificate::from_der(vec![1, 2, 3])],
+        flash::tls::PrivateKey::from_pkcs8_der(vec![4, 5, 6]),
         &[b"x"],
     );
     assert!(matches!(r, Err(Error::Config(_))));
     // A server that is not serving yet has no connections; closing all is a no-op.
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(ck.key_pair.serialize_der().into());
-    let cfg = flash_quic::server_config(vec![ck.cert.der().clone()], key, &[b"x"]).unwrap();
+    let key = flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let cfg = flash_quic::server_config(
+        vec![flash::tls::Certificate::from_der(ck.cert.der().to_vec())],
+        key,
+        &[b"x"],
+    )
+    .unwrap();
     let s = QuicServer::new(cfg, |_c: &Connection| Ctl {
         names: Arc::new(Mutex::new(mpsc::channel().0)),
     });
     assert_eq!(s.connections(), 0);
     s.close_all(0, b"");
+}
+
+/// Configurations built from `flash::tls` configs, with transport settings, verifying the
+/// server certificate against real roots.
+#[test]
+fn configs_from_tls_with_transport_settings() {
+    use flash::tls;
+    use flash_quic::{Congestion, Dir, Side, TransportConfig};
+
+    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert = tls::Certificate::from_der(ck.cert.der().to_vec());
+    let key = tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let stls = tls::ServerConfig::builder(vec![cert.clone()], key)
+        .alpn(["ctl"])
+        .build()
+        .unwrap();
+    let mut t = TransportConfig::default();
+    t.max_concurrent_bidi_streams = 2;
+    t.keep_alive_interval = Some(Duration::from_millis(500));
+    t.congestion = Congestion::NewReno;
+    let scfg = flash_quic::server_config_from(&stls)
+        .unwrap()
+        .transport(&t)
+        .migration(false);
+    assert!(format!("{scfg:?}").contains("ServerConfig"));
+    let (tx, _rx) = mpsc::channel();
+    let names = Arc::new(Mutex::new(tx));
+    let server = QuicServer::new(scfg, move |_c: &Connection| Ctl {
+        names: names.clone(),
+    });
+    let e = Engine::builder()
+        .listen(Listener::udp("127.0.0.1:0".parse().unwrap()).serve(server))
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+
+    let mut roots = tls::RootCerts::empty();
+    roots.add(&cert).unwrap();
+    let ctls = tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["ctl"])
+        .build()
+        .unwrap();
+    let ccfg = flash_quic::client_config_from(&ctls)
+        .unwrap()
+        .transport(&TransportConfig::default());
+    assert!(format!("{ccfg:?}").contains("ClientConfig"));
+    let (tx, rx) = mpsc::channel();
+    let c = flash_quic::dial(&e, addr, "localhost", ccfg, Client(tx)).unwrap();
+    assert_eq!(next(&rx, |g| *g == Got::Connected), Got::Connected);
+    // The server allows two bidirectional streams at once.
+    let a = c.open_bi().unwrap();
+    let b = c.open_bi().unwrap();
+    assert!(c.open_bi().is_none());
+    assert_eq!(
+        (a.initiator(), a.dir(), a.index(), b.index()),
+        (Side::Client, Dir::Bi, 0, 1)
+    );
+    assert_eq!(StreamId::new(Side::Client, Dir::Bi, 1), b);
+    assert!(c.stats().sent_packets > 0);
+    c.close(0, b"");
+
+    // A name the certificate does not cover fails the handshake.
+    let mut roots = tls::RootCerts::empty();
+    roots.add(&cert).unwrap();
+    let cfg = flash_quic::client_config(roots, &[b"ctl"]).unwrap();
+    let (tx, rx) = mpsc::channel();
+    struct Closed(mpsc::Sender<flash_quic::ConnectionError>);
+    impl QuicHandler for Closed {
+        fn on_stream_data(&mut self, _c: &Connection, _id: StreamId, _d: Bytes, _fin: bool) {}
+        fn on_close(&mut self, _c: &Connection, r: flash_quic::ConnectionError) {
+            let _ = self.0.send(r);
+        }
+    }
+    let _c = flash_quic::dial(&e, addr, "other.test", cfg, Closed(tx)).unwrap();
+    let r = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert!(
+        matches!(r, flash_quic::ConnectionError::TransportError { .. }),
+        "{r}"
+    );
+    e.shutdown();
+    e.wait();
 }

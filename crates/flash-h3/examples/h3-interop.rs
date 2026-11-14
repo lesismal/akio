@@ -27,9 +27,8 @@ fn main() {
     let addr = a[2].parse().expect("addr");
     if a[1] == "server" {
         let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("cert");
-        let cert = ck.cert.der().clone();
-        let key =
-            flash_quic::rustls::pki_types::PrivateKeyDer::Pkcs8(ck.key_pair.serialize_der().into());
+        let cert = flash::tls::Certificate::from_der(ck.cert.der().to_vec());
+        let key = flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
         let app = Router::new()
             .get("/", |ctx: &mut Context| ctx.text(200, "hello h3"))
             .get("/user/:id", |ctx: &mut Context| {

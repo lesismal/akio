@@ -12,9 +12,17 @@ documentation = "https://docs.rs/flash-tls"
 keywords = ["tls", "rustls", "network", "server", "client"]
 categories = ["network-programming", "cryptography"]
 
+[features]
+# Raw access to the TLS implementation (`pub use rustls`, `ServerConfig::from_rustls` ...):
+# outside the semver promise (docs/api-stability.md).
+unstable = []
+
 [dependencies]
 flash-core = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

@@ -30,11 +30,21 @@ coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for cotu
   endpoint). Datagrams are routed to peers by the ICE username of the first check, then by
   source address.
 - Builder methods (call them before cloning): `config(|| rtc_config()...)` builds every peer's
-  str0m `RtcConfig` (codecs, RTP mode, BWE...), `ice_lite(false)` for a full agent,
+  `RtcConfig` (codecs, RTP mode, BWE, statistics...), `ice_lite(false)` for a full agent,
   `close_on_disconnect(bool)` (default true: a peer whose consent expires is closed),
   `connect_timeout(Some(d))` (default 30 s: an accepted offer that never connects is dropped).
 - `TurnServer::new(TurnConfig::new(realm, auth, relay_ip))` serves TURN and STUN on another UDP
   listener. Relay sockets are bound at run time, so it needs the engine: `set_engine(&engine)`.
+
+## Types
+
+The API uses flash's own types: `ChannelId`, `ChannelConfig`, `Mid`, `Pt`, `Codec`,
+`MediaKind`, `Direction`, `MediaTime` / `Frequency`, `MediaData`, `MediaAdded`, `RtpPacket`,
+`KeyframeRequest`, `Candidate`, `IceConnectionState`, `RtcConfig`, `SdpChanges`, `Event`. str0m,
+which does the work underneath, is not part of the API, so upgrading it is not a breaking
+change. The `unstable` cargo feature (outside the semver promise) re-exports
+`flash_webrtc::str0m`, adds `Peer::with_rtc` (any str0m API on a peer), `RtcConfig::with_str0m`
+and `OtherEvent::as_str0m`.
 
 ## Peers and handlers
 
@@ -45,8 +55,8 @@ coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for cotu
 `PeerHandler` has a default for every callback: `on_ice_state`, `on_connected`,
 `on_channel_open` / `on_channel_data` / `on_channel_close`, `on_media_added`, `on_media_data`
 (depacketized samples, the default frame mode), `on_rtp` (RTP mode), `on_keyframe_request`
-(PLI/FIR from the remote), `on_event` (everything else str0m reports: statistics, bandwidth
-estimates, sender reports...), `on_close`. A peer's callbacks run one at a time, in order, on
+(PLI/FIR from the remote), `on_event` (`Event::ChannelBufferedAmountLow`, and `Event::Other`
+for statistics, bandwidth estimates, sender reports...), `on_close`. A peer's callbacks run one at a time, in order, on
 the I/O thread that read the datagram, on the timer thread, or on the thread that called a
 `Peer` method; they must not block.
 
@@ -56,12 +66,12 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 |---|---|
 | `send(channel, data, binary)` | a data channel message (`Ok(false)`: buffer full) |
 | `open_channel(cfg)` | a new channel; no renegotiation once one channel exists |
-| `write_media(mid, pt, wallclock, rtp_time, data)` | one sample (str0m packetizes it) |
+| `write_media(mid, pt, wallclock, rtp_time, data)` | one sample (packetized for you) |
 | `payload_type(mid, codec)` | the negotiated payload type of a codec |
 | `request_keyframe(mid, kind)` | PLI or FIR to the remote sender |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | SDP changes after the first exchange |
 | `add_remote_candidate(line)` | trickle ICE |
-| `with_rtc(f)` | any str0m API, then the peer is driven |
+| `with_rtc(f)` | any str0m API, then the peer is driven (cargo feature `unstable` only) |
 | `close()` | DTLS close notify, then `on_close` |
 
 ## A full ICE client: `Endpoint`
@@ -79,8 +89,8 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 local port that sends checks to every remote candidate. The host candidate is `addr`, or the
 address of the default-route interface when `addr` is unspecified. `gather_srflx(stun, timeout)`
 asks a STUN server for the public address and adds it as a server-reflexive candidate (it
-blocks: never call it from a callback). `create_offer(handler, |sdp| ...)` takes str0m's
-`SdpApi` to add channels and media; `accept_offer` answers a remote offer. An `Endpoint` talks
+blocks: never call it from a callback). `create_offer(handler, |sdp| ...)` gets an
+`SdpChanges` to add channels and media; `accept_offer` answers a remote offer. An `Endpoint` talks
 to ICE-lite servers, to browsers and pion, and to other `Endpoint`s.
 
 ## TURN

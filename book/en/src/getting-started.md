@@ -19,7 +19,7 @@ flash-http = { git = "https://github.com/lesismal/flash" }   # HTTP/1.1, HTTP/2,
 # flash-quic, flash-h3, flash-kcp: same form
 ```
 
-TLS (`flash::tls`, on rustls) and eBPF steering (`flash::ebpf`) are part of the `flash` crate.
+TLS (`flash::tls`) and eBPF steering (`flash::ebpf`) are part of the `flash` crate.
 
 ## A TCP echo server
 

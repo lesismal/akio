@@ -173,7 +173,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### 1.0.0 发布决定（2026-11-14）
 - [ ] 项目更名为 **only**：crate 改为 `only`、`only-core`、`only-http` 等（crates.io 上 `flash` 已被占用），涉及代码、文档、手册、工具与 CI
-- [ ] 将尚未 1.0 的公开依赖（rustls、quinn-proto、prost、str0m）封装在项目自己的类型之后，原始访问只在 `unstable` feature 中提供，使升级它们不再是破坏性变更
+- [x] 将尚未 1.0 的公开依赖（rustls、quinn-proto、prost、str0m）封装在项目自己的类型之后，原始访问只在 `unstable` feature 中提供，使升级它们不再是破坏性变更：`tls::{ServerConfig, ClientConfig}` 构建器（PEM/DER 证书与私钥、按 SNI 选证书、ALPN、客户端认证、会话缓存与票据、根证书、仅测试用的跳过验证）与 `tls::Error`，供 TLS、HTTP/HTTP-2 客户端、WebSocket 客户端、QUIC 与 HTTP/3 使用；自有 QUIC `ServerConfig` / `ClientConfig` / `TransportConfig`、`StreamId` / `Dir` / `Side`、`ConnectionError`、`ConnectionStats`；gRPC 的 `codec::Message` trait，prost 适配器在 `prost` feature 之后（不在 semver 内）；自有 WebRTC id、媒体、事件、候选、`RtcConfig` 与 `SdpChanges`，`Peer::with_rtc` 移到 `unstable` 之后；API 快照中不再含 rustls/quinn/prost/str0m 类型；迁移表见 CHANGELOG
 - 回调名保持各协议自己的术语（QUIC 的 `on_connected`、WebSocket 的 `on_open` 等）
 
 ### 长期目标：去掉所有三方依赖

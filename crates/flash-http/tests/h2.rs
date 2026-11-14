@@ -10,10 +10,7 @@ use std::{
     time::Duration,
 };
 
-use flash::{
-    Backend, Config, Engine, Listener, UringConfig,
-    tls::{Tls, rustls},
-};
+use flash::{Backend, Config, Engine, Listener, UringConfig, tls::Tls};
 use flash_http::{
     BodyEvent, Context, Headers, Router, Streaming,
     client::ClientRequest,
@@ -338,29 +335,26 @@ fn h2c_upgrade_from_http1() {
 fn tls_with_alpn_h2_and_http1_on_the_same_listener() {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        ck.key_pair.serialize_der(),
-    ));
-    let mut scfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
-        .unwrap();
-    scfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let e = start(Tls::server(Arc::new(scfg), serve(app())));
-    let addr = e.local_addrs()[0];
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(cert).unwrap();
-    let mut ccfg = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    ccfg.alpn_protocols = vec![b"h2".to_vec()];
-    let c = H2Client::dial_blocking(
-        &e,
-        addr,
-        Some((Arc::new(ccfg), "localhost")),
-        H2Options::default(),
+    let scfg = flash::tls::ServerConfig::builder(
+        vec![flash::tls::Certificate::from_der(cert.to_vec())],
+        flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
     )
+    .alpn(["h2", "http/1.1"])
+    .build()
     .unwrap();
+    let e = start(Tls::server(scfg, serve(app())));
+    let addr = e.local_addrs()[0];
+    let mut roots = flash::tls::RootCerts::empty();
+    roots
+        .add(&flash::tls::Certificate::from_der(cert.to_vec()))
+        .unwrap();
+    let ccfg = flash::tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["h2"])
+        .build()
+        .unwrap();
+    let c =
+        H2Client::dial_blocking(&e, addr, Some((ccfg, "localhost")), H2Options::default()).unwrap();
     let url = format!("https://localhost:{}", addr.port());
     let r = c
         .send(ClientRequest::get(&format!("{url}/hello")))

@@ -9,10 +9,7 @@ use std::{
     time::Duration,
 };
 
-use flash::{
-    Config, Conn, Engine, Handler, Listener, fn_acceptor,
-    tls::{Tls, rustls},
-};
+use flash::{Config, Conn, Engine, Handler, Listener, fn_acceptor, tls::Tls};
 use flash_http::{
     Context, Router,
     client::ClientRequest,
@@ -41,20 +38,16 @@ fn read_some(s: &mut TcpStream) -> Vec<u8> {
 fn tls_http1_http2_custom_prefix_and_fallback_share_a_port() {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        ck.key_pair.serialize_der(),
-    ));
-    let scfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
-        .unwrap();
+    let scfg = flash::tls::ServerConfig::builder(
+        vec![flash::tls::Certificate::from_der(cert.to_vec())],
+        flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+    )
+    .build()
+    .unwrap();
     let mux = Mux::new()
         .route(
             Rule::Tls,
-            Tls::server(
-                Arc::new(scfg),
-                fn_acceptor(|_c: &Conn<Prefixed>| Prefixed(b"tls:")),
-            ),
+            Tls::server(scfg, fn_acceptor(|_c: &Conn<Prefixed>| Prefixed(b"tls:"))),
         )
         .route(
             Rule::Http,

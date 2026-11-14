@@ -7,20 +7,23 @@
 //! never blocks; application bytes sent during the handshake are held back and go out as soon as
 //! it completes.
 //!
-//! Everything rustls offers is configured through its own `ServerConfig` / `ClientConfig`:
-//! certificates and SNI-based selection (`ResolvesServerCert`), ALPN (`alpn_protocols`), session
-//! tickets (`ticketer`), client authentication, protocol versions. [`tls_info`] reads what was
-//! negotiated.
+//! Configure with this crate's own types: [`ServerConfig::builder`] (certificate chain and key
+//! from PEM or DER, SNI-selected chains, ALPN, client authentication, session resumption) and
+//! [`ClientConfig::builder`] (roots, ALPN, client certificate, SNI). The TLS implementation
+//! (rustls today) stays out of the public API, so upgrading it is not a breaking change; the
+//! `unstable` cargo feature adds `from_rustls` / `as_rustls` and re-exports `rustls`, outside
+//! the semver promise. [`tls_info`] reads what was negotiated.
 //!
 //! ```no_run
-//! use std::sync::Arc;
-//! use flash_tls::{Tls, rustls};
-//! # fn certs() -> (Vec<rustls::pki_types::CertificateDer<'static>>, rustls::pki_types::PrivateKeyDer<'static>) { unimplemented!() }
+//! use flash_tls::{Certificate, PrivateKey, ServerConfig, Tls};
 //! # struct Echo; impl flash_core::Handler for Echo { fn on_data(&mut self, _: &flash_core::Conn<Self>, _: &[u8]) {} }
-//! let (chain, key) = certs();
-//! let mut cfg = rustls::ServerConfig::builder().with_no_client_auth().with_single_cert(chain, key).unwrap();
-//! cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-//! let acceptor = Tls::server(Arc::new(cfg), flash_core::fn_acceptor(|_c: &flash_core::Conn<Echo>| Echo));
+//! let chain = Certificate::from_pem(&std::fs::read("cert.pem").unwrap()).unwrap();
+//! let key = PrivateKey::from_pem(&std::fs::read("key.pem").unwrap()).unwrap();
+//! let cfg = ServerConfig::builder(chain, key)
+//!     .alpn(["h2", "http/1.1"])
+//!     .build()
+//!     .unwrap();
+//! let acceptor = Tls::server(cfg, flash_core::fn_acceptor(|_c: &flash_core::Conn<Echo>| Echo));
 //! # let _ = acceptor;
 //! ```
 //!
@@ -35,8 +38,17 @@ use std::{
 };
 
 use flash_core::{Acceptor, Conn, Transport};
+use rustls::{ClientConnection, Connection, ServerConnection};
+
+mod config;
+
+pub use config::{
+    Certificate, ClientConfig, ClientConfigBuilder, Error, PrivateKey, RootCerts, ServerConfig,
+    ServerConfigBuilder,
+};
+/// The TLS implementation. **Unstable** (cargo feature `unstable`): outside the semver promise.
+#[cfg(feature = "unstable")]
 pub use rustls;
-use rustls::{ClientConfig, ClientConnection, Connection, ServerConfig, ServerConnection};
 
 /// Wraps an acceptor so that its connections speak TLS.
 pub struct Tls<A> {
@@ -51,26 +63,29 @@ impl<A> std::fmt::Debug for Tls<A> {
 }
 
 enum Mode {
-    Server(Arc<ServerConfig>),
-    Client(Arc<ClientConfig>, rustls::pki_types::ServerName<'static>),
+    Server(Arc<rustls::ServerConfig>),
+    Client(
+        Arc<rustls::ClientConfig>,
+        rustls::pki_types::ServerName<'static>,
+    ),
 }
 
 impl<A: Acceptor> Tls<A> {
     /// Serves TLS with `config`; `inner` handles the decrypted connection.
-    pub fn server(config: Arc<ServerConfig>, inner: A) -> Self {
+    pub fn server(config: ServerConfig, inner: A) -> Self {
         Tls {
-            mode: Mode::Server(config),
+            mode: Mode::Server(config.__rustls().clone()),
             inner,
         }
     }
 
     /// Connects with TLS to `server_name` (for certificate verification and SNI), for
     /// connections made with `Engine::dial`.
-    pub fn client(config: Arc<ClientConfig>, server_name: &str, inner: A) -> io::Result<Self> {
+    pub fn client(config: ClientConfig, server_name: &str, inner: A) -> io::Result<Self> {
         let name = rustls::pki_types::ServerName::try_from(server_name.to_owned())
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         Ok(Tls {
-            mode: Mode::Client(config, name),
+            mode: Mode::Client(config.__rustls().clone(), name),
             inner,
         })
     }
@@ -240,12 +255,8 @@ mod tests {
         fn on_data(&mut self, _: &Conn<Self>, _: &[u8]) {}
     }
 
-    fn client_cfg() -> Arc<ClientConfig> {
-        Arc::new(
-            ClientConfig::builder()
-                .with_root_certificates(rustls::RootCertStore::empty())
-                .with_no_client_auth(),
-        )
+    fn client_cfg() -> ClientConfig {
+        ClientConfig::builder().build().unwrap()
     }
 
     #[test]

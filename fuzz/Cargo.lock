@@ -614,7 +614,6 @@ dependencies = [
  "flash",
  "flash-core",
  "quinn-proto",
- "rustls",
 ]
 
 [[package]]

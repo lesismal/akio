@@ -95,7 +95,7 @@ impl QuicHandler for Raw {
     }
     fn on_close(&mut self, _c: &Connection, r: ConnectionError) {
         let code = match r {
-            ConnectionError::ApplicationClosed(a) => Some(a.error_code.into_inner()),
+            ConnectionError::ApplicationClosed { code, .. } => Some(code),
             _ => None,
         };
         let _ = self.0.send(Got::Closed(code));
@@ -104,9 +104,8 @@ impl QuicHandler for Raw {
 
 fn setup() -> (Arc<Engine>, SocketAddr) {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert = ck.cert.der().clone();
-    let key =
-        flash_quic::rustls::pki_types::PrivateKeyDer::Pkcs8(ck.key_pair.serialize_der().into());
+    let cert = flash::tls::Certificate::from_der(ck.cert.der().to_vec());
+    let key = flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
     let app = Router::new()
         .get("/", |ctx: &mut Context| ctx.text(200, "root"))
         .post("/echo", |ctx: &mut Context| {

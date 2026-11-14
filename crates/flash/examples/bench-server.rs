@@ -8,13 +8,12 @@
 //! * `block-pool`: do the same sleep on the logical pool with `spawn_blocking` and reply from
 //!   the completion callback.
 
-use std::{sync::Arc, thread, time::Duration};
+use std::{thread, time::Duration};
 
 use flash::{
     Acceptor, Backend, Conn, Engine, Handler, Listener, PoolConfig, fn_acceptor,
-    tls::{Tls, rustls},
+    tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
-use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
 struct Echo;
 impl Handler for Echo {
@@ -50,7 +49,7 @@ impl Handler for Pooled {
 fn serve<A: Acceptor>(
     l: Listener,
     a: A,
-    tls: Option<Arc<rustls::ServerConfig>>,
+    tls: Option<ServerConfig>,
     pool_threads: usize,
 ) -> std::io::Result<()> {
     let l = match tls {
@@ -90,12 +89,12 @@ fn main() -> std::io::Result<()> {
         .then(|| {
             let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
                 .map_err(std::io::Error::other)?;
-            let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der()));
-            rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_single_cert(vec![ck.cert.der().clone()], key)
-                .map(Arc::new)
-                .map_err(std::io::Error::other)
+            ServerConfig::builder(
+                vec![Certificate::from_der(ck.cert.der().to_vec())],
+                PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+            )
+            .build()
+            .map_err(std::io::Error::from)
         })
         .transpose()?;
     let l = if a[0] == "udp" {

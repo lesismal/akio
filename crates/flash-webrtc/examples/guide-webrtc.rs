@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, rx) = mpsc::channel();
     let (peer, offer) = ep.create_offer(Hello(tx), |sdp| {
-        sdp.add_channel("chat".into());
+        sdp.add_channel("chat");
     })?;
     // Signalling: in a real application the offer travels over HTTP (WHIP/WHEP), a WebSocket ...
     let (_server_peer, answer) = server.accept_offer(&offer, Echo)?;

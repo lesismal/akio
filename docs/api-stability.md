@@ -45,8 +45,15 @@ Not covered:
   `DynAcceptor`, `DynHandler`, `LoopStats`, `Pool`, `flash_http::transport`, `flash_ws::WsSession`,
   `flash_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
 - the `fuzzing` cargo features and the `fuzzing` modules they enable (entry points for `fuzz/`).
-- an `unstable` cargo feature, should one be added: anything public that cannot be promised yet
-  goes under `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
+- the `unstable` cargo features (`flash`, `flash-tls`, `flash-quic`, `flash-webrtc`) and
+  everything they enable: raw access to the wrapped dependencies (`flash::tls::rustls`,
+  `ServerConfig::from_rustls` / `as_rustls`, `flash_quic::proto`, `from_quinn` /
+  `as_quinn_mut`, `flash_webrtc::str0m`, `Peer::with_rtc`, `RtcConfig::with_str0m`,
+  `OtherEvent::as_str0m` ...). Their signatures change whenever the wrapped crate is upgraded,
+  which may happen in a minor release. Anything public that cannot be promised yet goes under
+  `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
+- the `prost` feature of `flash-grpc` (the `codec::Message` implementation for prost messages):
+  it names prost's types, so a prost upgrade may come in a minor release.
 - the exact text of `Display` output, log messages and panic messages.
 - behaviour documented as unspecified, and performance characteristics.
 
@@ -57,12 +64,18 @@ minor releases; removed or renamed only in a major one).
 
 ### Public dependencies
 
-Some public signatures use types of other crates: `rustls` (re-exported as `flash::tls::rustls`,
-`flash_quic::rustls`), `quinn-proto` (`flash_quic::proto`), `bytes`, `log` (`Config::log_level`)
-and, with the `prost` feature, `prost`; `str0m` (re-exported as `flash_webrtc::str0m`, whose types
-`flash-webrtc` signatures use). Upgrading one of these to a semver-incompatible version is a
-breaking change for flash and happens only in a major release. Use the re-exports so your build
-always uses the versions flash was built with.
+The covered API uses types of only two other crates: `bytes` (`Bytes` in the QUIC and stream
+APIs) and `log` (`Config::log_level`), both at 1.x / 0.4 for years. Upgrading one of them to a
+semver-incompatible version is a breaking change for flash and happens only in a major release.
+
+The pre-1.0 dependencies that do the protocol work (rustls, quinn-proto, str0m, prost) are
+**wrapped**: the covered API uses flash's own types instead (`flash::tls::{ServerConfig,
+ClientConfig, Certificate, PrivateKey, RootCerts, Error}`, `flash_quic::{ServerConfig,
+ClientConfig, TransportConfig, StreamId, Dir, Side, ConnectionError, ConnectionStats}`,
+`flash_webrtc::{ChannelId, Mid, Pt, Codec, MediaData, RtcConfig, SdpChanges, Event, ...}`,
+`flash_grpc::codec::Message`). Upgrading them, or replacing them with in-house implementations,
+is not a breaking change. They are reachable only through the `unstable` features and the
+`prost` feature above, which are excluded from the promise.
 
 ## 3. What counts as breaking
 

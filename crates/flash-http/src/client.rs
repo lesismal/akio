@@ -19,7 +19,7 @@ use std::{
 
 use flash::{
     Acceptor, Conn, Engine, Handler,
-    tls::{Tls, rustls},
+    tls::{ClientConfig as TlsClientConfig, Tls},
 };
 
 use crate::{
@@ -277,7 +277,7 @@ struct Pending {
 
 struct Inner {
     engine: Arc<Engine>,
-    tls: Option<Arc<rustls::ClientConfig>>,
+    tls: Option<TlsClientConfig>,
     idle: Mutex<HashMap<Key, Vec<Conn<ClientConn>>>>,
 }
 
@@ -306,9 +306,9 @@ impl Client {
         }
     }
 
-    /// Enables `https://` with the given rustls client configuration.
+    /// Enables `https://` with the given TLS client configuration.
     #[must_use]
-    pub fn with_tls(self, cfg: Arc<rustls::ClientConfig>) -> Client {
+    pub fn with_tls(self, cfg: TlsClientConfig) -> Client {
         Client {
             inner: Arc::new(Inner {
                 engine: self.inner.engine.clone(),

@@ -42,8 +42,14 @@ trait（`Send`、`Sync`、`Unpin`、`UnwindSafe`）。
   `Pool`、`flash_http::transport`、`flash_ws::WsSession`、`flash_ebpf::cbpf`、`Conn::inner`、
   遥测辅助函数等），可能在任何发布中变化。
 - `fuzzing` cargo feature 及其启用的 `fuzzing` 模块（`fuzz/` 的入口）。
-- 将来若增加 `unstable` cargo feature：任何暂时无法承诺的公开内容都放进 `#[doc(hidden)]` 或
-  `unstable` 之后，绝不悄悄进入受保护的 API。
+- `unstable` cargo feature（`flash`、`flash-tls`、`flash-quic`、`flash-webrtc`）及其启用的一切：
+  直接访问被封装的依赖（`flash::tls::rustls`、`ServerConfig::from_rustls` / `as_rustls`、
+  `flash_quic::proto`、`from_quinn` / `as_quinn_mut`、`flash_webrtc::str0m`、`Peer::with_rtc`、
+  `RtcConfig::with_str0m`、`OtherEvent::as_str0m` 等）。被封装的 crate 升级时它们的签名就会变化，
+  这可能发生在次版本中。任何暂时无法承诺的公开内容都放进 `#[doc(hidden)]` 或 `unstable` 之后，
+  绝不悄悄进入受保护的 API。
+- `flash-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`）：它用到 prost 的类型，
+  因此 prost 升级可能出现在次版本中。
 - `Display` 输出、日志消息和 panic 消息的具体文本。
 - 文档中注明未指定的行为，以及性能特征。
 
@@ -53,11 +59,17 @@ WebSocket、arpc、gRPC、KCP、SOCKS 保持互通），Prometheus 指标的名�
 
 ### 公开依赖
 
-一些公开签名用到了其他 crate 的类型：`rustls`（再导出为 `flash::tls::rustls`、
-`flash_quic::rustls`）、`quinn-proto`（`flash_quic::proto`）、`bytes`、`log`（`Config::log_level`），
-以及启用 `prost` feature 时的 `prost`；还有 `str0m`（再导出为 `flash_webrtc::str0m`，`flash-webrtc` 的
-签名使用其类型）。把它们升级到 semver 不兼容的版本对 flash 而言是破坏性变更，
-只在主版本中进行。请使用这些再导出，以保证你的构建使用与 flash 相同的版本。
+受保护的 API 只用到另外两个 crate 的类型：`bytes`（QUIC 与流式 API 中的 `Bytes`）和 `log`
+（`Config::log_level`），二者多年来一直是 1.x / 0.4。把它们升级到 semver 不兼容的版本对 flash
+而言是破坏性变更，只在主版本中进行。
+
+承担协议工作的 1.0 之前的依赖（rustls、quinn-proto、str0m、prost）都已**被封装**：受保护的 API
+改用 flash 自己的类型（`flash::tls::{ServerConfig, ClientConfig, Certificate, PrivateKey,
+RootCerts, Error}`、`flash_quic::{ServerConfig, ClientConfig, TransportConfig, StreamId, Dir,
+Side, ConnectionError, ConnectionStats}`、`flash_webrtc::{ChannelId, Mid, Pt, Codec, MediaData,
+RtcConfig, SdpChanges, Event, ...}`、`flash_grpc::codec::Message`）。升级它们，或用自研实现替换
+它们，都不是破坏性变更。只有通过上面的 `unstable` feature 与 `prost` feature 才能访问它们，而这些
+feature 不在承诺之内。
 
 ## 3. 什么算破坏性变更
 

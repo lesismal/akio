@@ -6,7 +6,8 @@
 //! * Unary, server-streaming, client-streaming and bidirectional calls.
 //! * Metadata (headers and trailers), deadlines (`grpc-timeout`), interceptors, gzip message
 //!   compression, status codes and messages.
-//! * Messages are bytes; with the `prost` feature, [`codec`] converts prost messages.
+//! * Messages are bytes; [`codec`] converts types implementing [`codec::Message`] (prost
+//!   messages with the `prost` feature, which is outside the semver promise).
 //!
 //! Handlers run on the connection's I/O thread and must not block; the [`Sink`] they get answers
 //! from any thread, so slow work goes to the logical pool or another thread.

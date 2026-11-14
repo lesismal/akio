@@ -31,6 +31,8 @@ regex = ["dep:regex"]
 fuzzing = ["flash-core/fuzzing"]
 
 [dev-dependencies]
+# A raw rustls client drives some tests (the library API hides rustls).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 flash-core = { workspace = true, features = ["fuzzing"] }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }

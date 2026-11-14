@@ -25,7 +25,8 @@
 
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
-/// TLS (rustls): wrap an acceptor in [`tls::Tls`] to serve or dial over TLS.
+/// TLS: wrap an acceptor in [`tls::Tls`] to serve or dial over TLS (configs: [`tls::ServerConfig`],
+/// [`tls::ClientConfig`]).
 pub use flash_tls as tls;
 
 /// BPF acceleration (ADR-006): `SO_REUSEPORT` steering programs (used by [`Accel::Ebpf`]) and

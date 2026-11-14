@@ -173,7 +173,7 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### 1.0.0 release decisions (2026-11-14)
 - [ ] Rename the project to **only**: crates `only`, `only-core`, `only-http`, … (the crates.io name `flash` is taken), across code, docs, book, tools and CI
-- [ ] Wrap the pre-1.0 public dependencies (rustls, quinn-proto, prost, str0m) behind the project's own types, keeping raw access only in an `unstable` feature, so upgrading them is not a breaking change
+- [x] Wrap the pre-1.0 public dependencies (rustls, quinn-proto, prost, str0m) behind the project's own types, keeping raw access only in an `unstable` feature, so upgrading them is not a breaking change: `tls::{ServerConfig, ClientConfig}` builders (PEM/DER certificates and keys, SNI chains, ALPN, client auth, session cache and tickets, roots, insecure-for-tests) and `tls::Error` used by TLS, HTTP/HTTP-2 clients, WebSocket client, QUIC and HTTP/3; own QUIC `ServerConfig` / `ClientConfig` / `TransportConfig`, `StreamId` / `Dir` / `Side`, `ConnectionError`, `ConnectionStats`; gRPC `codec::Message` trait with the prost adapter behind the `prost` feature (outside semver); own WebRTC ids, media, events, candidates, `RtcConfig` and `SdpChanges`, `Peer::with_rtc` behind `unstable`; snapshots contain no rustls/quinn/prost/str0m type; migration table in CHANGELOG
 - Callback names stay domain-specific (`on_connected` for QUIC, `on_open` for WebSocket, …)
 
 ### Long term: no third-party dependencies

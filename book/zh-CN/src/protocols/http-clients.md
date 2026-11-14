@@ -10,7 +10,7 @@
 {{#include ../../../../crates/flash-http/examples/guide-http.rs:client}}
 ```
 
-- `Client::new(Arc<Engine>)`，克隆开销很小。`with_tls(Arc<rustls::ClientConfig>)` 启用
+- `Client::new(Arc<Engine>)`，克隆开销很小。`with_tls(flash::tls::ClientConfig)` 启用
   `https://`。
 - `ClientRequest::get(url)`、`ClientRequest::post(url, body)`、`.header(name, value)`；也可以
   自己填 `method`、`url`、`headers`、`body`。`Host`、`Content-Length` 和 `Connection` 会自动添加。

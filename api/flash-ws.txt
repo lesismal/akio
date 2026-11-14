@@ -26,7 +26,7 @@ pub flash_ws::client::DialOptions::origin: core::option::Option<alloc::string::S
 pub flash_ws::client::DialOptions::pmd: flash_ws::deflate::PmdOffer
 pub flash_ws::client::DialOptions::protocols: alloc::vec::Vec<alloc::string::String>
 pub flash_ws::client::DialOptions::server_name: core::option::Option<alloc::string::String>
-pub flash_ws::client::DialOptions::tls: core::option::Option<alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>>
+pub flash_ws::client::DialOptions::tls: core::option::Option<flash_tls::config::ClientConfig>
 impl core::clone::Clone for flash_ws::client::DialOptions
 pub fn flash_ws::client::DialOptions::clone(&self) -> Self
 impl core::default::Default for flash_ws::client::DialOptions

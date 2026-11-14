@@ -50,8 +50,10 @@ server-streaming 方法就是这样做的）。
 
 ## 消息
 
-消息是字节。启用 `prost` feature 后，`flash_grpc::codec` 负责与 prost 生成的消息互相转换；
-其他序列化方式只需自己编码成 `Vec<u8>` 即可。
+消息是字节。`flash_grpc::codec::{encode, decode}` 可转换任何实现了 `codec::Message`
+（`encode_to` / `decode_from`）的类型，因此任意序列化方式都能接入。启用 `prost` feature 后，所有
+prost 生成的消息都实现了它；该适配器用到 prost 的类型，所以这个 feature 不在 semver 承诺之内
+（prost 升级可能出现在 minor 版本中）。
 
 未提供：服务端反射（reflection）、标准健康检查服务、客户端负载均衡。互通测试只针对 grpc-go
 （未测 tonic）。

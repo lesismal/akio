@@ -7,7 +7,7 @@ use std::{sync::mpsc, time::Duration};
 
 use bytes::Bytes;
 use flash::{Engine, Listener};
-use flash_quic::{Connection, QuicHandler, QuicServer, StreamId, rustls};
+use flash_quic::{Connection, QuicHandler, QuicServer, StreamId};
 
 // ANCHOR: server
 /// Per-connection handler; callbacks run one at a time, in order, and must not block.
@@ -51,8 +51,8 @@ impl QuicHandler for Client {
 fn main() -> std::io::Result<()> {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()])
         .map_err(std::io::Error::other)?;
-    let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(ck.key_pair.serialize_der().into());
+    let cert = flash::tls::Certificate::from_der(ck.cert.der().to_vec());
+    let key = flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
 
     // ANCHOR: engine
     let server_cfg = flash_quic::server_config(vec![cert.clone()], key, &[b"echo"])
@@ -66,8 +66,8 @@ fn main() -> std::io::Result<()> {
         .build()?;
     engine.start()?;
 
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(cert).map_err(std::io::Error::other)?;
+    let mut roots = flash::tls::RootCerts::empty();
+    roots.add(&cert).map_err(std::io::Error::other)?;
     let client_cfg = flash_quic::client_config(roots, &[b"echo"])
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let (tx, rx) = mpsc::channel();

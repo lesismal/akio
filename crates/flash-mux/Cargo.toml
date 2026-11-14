@@ -20,6 +20,8 @@ flash-core = { workspace = true }
 fuzzing = ["flash-core/fuzzing"]
 
 [dev-dependencies]
+# A raw rustls client drives some tests (the library API hides rustls).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 flash-core = { workspace = true, features = ["fuzzing"] }
 flash = { workspace = true }
 flash-http = { workspace = true }

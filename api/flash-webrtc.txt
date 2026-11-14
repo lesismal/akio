@@ -1,34 +1,61 @@
 pub mod flash_webrtc
-pub use flash_webrtc::Candidate
-pub use flash_webrtc::ChannelConfig
-pub use flash_webrtc::ChannelId
-pub use flash_webrtc::Direction
-pub use flash_webrtc::Event
-pub use flash_webrtc::Frequency
-pub use flash_webrtc::IceConnectionState
-pub use flash_webrtc::KeyframeRequest
-pub use flash_webrtc::KeyframeRequestKind
-pub use flash_webrtc::MediaAdded
-pub use flash_webrtc::MediaData
-pub use flash_webrtc::MediaKind
-pub use flash_webrtc::MediaTime
-pub use flash_webrtc::Mid
-pub use flash_webrtc::Pt
-pub use flash_webrtc::Reliability
-pub use flash_webrtc::RtcConfig
-pub use flash_webrtc::RtpPacket
-pub use flash_webrtc::str0m
+#[non_exhaustive] pub enum flash_webrtc::Codec
+pub flash_webrtc::Codec::Av1
+pub flash_webrtc::Codec::G722
+pub flash_webrtc::Codec::H264
+pub flash_webrtc::Codec::H265
+pub flash_webrtc::Codec::Opus
+pub flash_webrtc::Codec::Pcma
+pub flash_webrtc::Codec::Pcmu
+pub flash_webrtc::Codec::Vp8
+pub flash_webrtc::Codec::Vp9
+impl core::clone::Clone for flash_webrtc::Codec
+pub fn flash_webrtc::Codec::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::Codec
+impl core::cmp::PartialEq for flash_webrtc::Codec
+pub fn flash_webrtc::Codec::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::Codec
+pub fn flash_webrtc::Codec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::Codec
+pub fn flash_webrtc::Codec::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::Codec
+impl core::marker::StructuralPartialEq for flash_webrtc::Codec
+impl core::marker::Send for flash_webrtc::Codec
+impl core::marker::Sync for flash_webrtc::Codec
+impl core::marker::Unpin for flash_webrtc::Codec
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Codec
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Codec
+pub enum flash_webrtc::Direction
+pub flash_webrtc::Direction::Inactive
+pub flash_webrtc::Direction::RecvOnly
+pub flash_webrtc::Direction::SendOnly
+pub flash_webrtc::Direction::SendRecv
+impl core::clone::Clone for flash_webrtc::Direction
+pub fn flash_webrtc::Direction::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::Direction
+impl core::cmp::PartialEq for flash_webrtc::Direction
+pub fn flash_webrtc::Direction::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::Direction
+pub fn flash_webrtc::Direction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::Direction
+pub fn flash_webrtc::Direction::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::Direction
+impl core::marker::StructuralPartialEq for flash_webrtc::Direction
+impl core::marker::Send for flash_webrtc::Direction
+impl core::marker::Sync for flash_webrtc::Direction
+impl core::marker::Unpin for flash_webrtc::Direction
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Direction
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Direction
 #[non_exhaustive] pub enum flash_webrtc::Error
 pub flash_webrtc::Error::Closed
+pub flash_webrtc::Error::InvalidCandidate(alloc::string::String)
 pub flash_webrtc::Error::Io(core::io::error::Error)
 pub flash_webrtc::Error::NoPendingOffer
-pub flash_webrtc::Error::Rtc(str0m::error::RtcError)
+pub flash_webrtc::Error::Rtc(flash_webrtc::RtcError)
 pub flash_webrtc::Error::Sdp(alloc::string::String)
 pub flash_webrtc::Error::Timeout
 pub flash_webrtc::Error::UnknownChannel
 pub flash_webrtc::Error::UnknownMedia
-impl core::convert::From<str0m::error::RtcError> for flash_webrtc::Error
-pub fn flash_webrtc::Error::from(str0m::error::RtcError) -> flash_webrtc::Error
 impl core::error::Error for flash_webrtc::Error
 pub fn flash_webrtc::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for flash_webrtc::Error
@@ -40,17 +67,170 @@ impl core::marker::Sync for flash_webrtc::Error
 impl core::marker::Unpin for flash_webrtc::Error
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Error
 impl !core::panic::unwind_safe::UnwindSafe for flash_webrtc::Error
+#[non_exhaustive] pub enum flash_webrtc::Event
+pub flash_webrtc::Event::ChannelBufferedAmountLow(flash_webrtc::ChannelId)
+pub flash_webrtc::Event::Other(flash_webrtc::OtherEvent)
+impl core::fmt::Debug for flash_webrtc::Event
+pub fn flash_webrtc::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_webrtc::Event
+impl core::marker::Sync for flash_webrtc::Event
+impl core::marker::Unpin for flash_webrtc::Event
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Event
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Event
+#[non_exhaustive] pub enum flash_webrtc::IceConnectionState
+pub flash_webrtc::IceConnectionState::Checking
+pub flash_webrtc::IceConnectionState::Completed
+pub flash_webrtc::IceConnectionState::Connected
+pub flash_webrtc::IceConnectionState::Disconnected
+pub flash_webrtc::IceConnectionState::New
+impl core::clone::Clone for flash_webrtc::IceConnectionState
+pub fn flash_webrtc::IceConnectionState::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::IceConnectionState
+impl core::cmp::PartialEq for flash_webrtc::IceConnectionState
+pub fn flash_webrtc::IceConnectionState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::IceConnectionState
+pub fn flash_webrtc::IceConnectionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::IceConnectionState
+pub fn flash_webrtc::IceConnectionState::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::IceConnectionState
+impl core::marker::StructuralPartialEq for flash_webrtc::IceConnectionState
+impl core::marker::Send for flash_webrtc::IceConnectionState
+impl core::marker::Sync for flash_webrtc::IceConnectionState
+impl core::marker::Unpin for flash_webrtc::IceConnectionState
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::IceConnectionState
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::IceConnectionState
+pub enum flash_webrtc::KeyframeRequestKind
+pub flash_webrtc::KeyframeRequestKind::Fir
+pub flash_webrtc::KeyframeRequestKind::Pli
+impl core::clone::Clone for flash_webrtc::KeyframeRequestKind
+pub fn flash_webrtc::KeyframeRequestKind::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::KeyframeRequestKind
+impl core::cmp::PartialEq for flash_webrtc::KeyframeRequestKind
+pub fn flash_webrtc::KeyframeRequestKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::KeyframeRequestKind
+pub fn flash_webrtc::KeyframeRequestKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::KeyframeRequestKind
+pub fn flash_webrtc::KeyframeRequestKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::KeyframeRequestKind
+impl core::marker::StructuralPartialEq for flash_webrtc::KeyframeRequestKind
+impl core::marker::Send for flash_webrtc::KeyframeRequestKind
+impl core::marker::Sync for flash_webrtc::KeyframeRequestKind
+impl core::marker::Unpin for flash_webrtc::KeyframeRequestKind
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::KeyframeRequestKind
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::KeyframeRequestKind
+pub enum flash_webrtc::MediaKind
+pub flash_webrtc::MediaKind::Audio
+pub flash_webrtc::MediaKind::Video
+impl core::clone::Clone for flash_webrtc::MediaKind
+pub fn flash_webrtc::MediaKind::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::MediaKind
+impl core::cmp::PartialEq for flash_webrtc::MediaKind
+pub fn flash_webrtc::MediaKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::MediaKind
+pub fn flash_webrtc::MediaKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::MediaKind
+pub fn flash_webrtc::MediaKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::MediaKind
+impl core::marker::StructuralPartialEq for flash_webrtc::MediaKind
+impl core::marker::Send for flash_webrtc::MediaKind
+impl core::marker::Sync for flash_webrtc::MediaKind
+impl core::marker::Unpin for flash_webrtc::MediaKind
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::MediaKind
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::MediaKind
+#[non_exhaustive] pub enum flash_webrtc::Reliability
+pub flash_webrtc::Reliability::MaxPacketLifetime
+pub flash_webrtc::Reliability::MaxPacketLifetime::lifetime: u16
+pub flash_webrtc::Reliability::MaxRetransmits
+pub flash_webrtc::Reliability::MaxRetransmits::retransmits: u16
+pub flash_webrtc::Reliability::Reliable
+impl core::clone::Clone for flash_webrtc::Reliability
+pub fn flash_webrtc::Reliability::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::Reliability
+impl core::cmp::PartialEq for flash_webrtc::Reliability
+pub fn flash_webrtc::Reliability::eq(&self, &Self) -> bool
+impl core::default::Default for flash_webrtc::Reliability
+pub fn flash_webrtc::Reliability::default() -> Self
+impl core::fmt::Debug for flash_webrtc::Reliability
+pub fn flash_webrtc::Reliability::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_webrtc::Reliability
+impl core::marker::StructuralPartialEq for flash_webrtc::Reliability
+impl core::marker::Send for flash_webrtc::Reliability
+impl core::marker::Sync for flash_webrtc::Reliability
+impl core::marker::Unpin for flash_webrtc::Reliability
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Reliability
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Reliability
+pub struct flash_webrtc::Candidate(_)
+impl flash_webrtc::Candidate
+pub fn flash_webrtc::Candidate::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn flash_webrtc::Candidate::host(core::net::socket_addr::SocketAddr) -> core::result::Result<flash_webrtc::Candidate, flash_webrtc::Error>
+pub fn flash_webrtc::Candidate::parse(&str) -> core::result::Result<flash_webrtc::Candidate, flash_webrtc::Error>
+pub fn flash_webrtc::Candidate::relayed(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::result::Result<flash_webrtc::Candidate, flash_webrtc::Error>
+pub fn flash_webrtc::Candidate::server_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::result::Result<flash_webrtc::Candidate, flash_webrtc::Error>
+pub fn flash_webrtc::Candidate::to_sdp(&self) -> alloc::string::String
+impl core::clone::Clone for flash_webrtc::Candidate
+pub fn flash_webrtc::Candidate::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::Candidate
+impl core::cmp::PartialEq for flash_webrtc::Candidate
+pub fn flash_webrtc::Candidate::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::Candidate
+pub fn flash_webrtc::Candidate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_webrtc::Candidate
+impl core::marker::Send for flash_webrtc::Candidate
+impl core::marker::Sync for flash_webrtc::Candidate
+impl core::marker::Unpin for flash_webrtc::Candidate
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Candidate
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Candidate
+#[non_exhaustive] pub struct flash_webrtc::ChannelConfig
+pub flash_webrtc::ChannelConfig::label: alloc::string::String
+pub flash_webrtc::ChannelConfig::negotiated: core::option::Option<u16>
+pub flash_webrtc::ChannelConfig::ordered: bool
+pub flash_webrtc::ChannelConfig::protocol: alloc::string::String
+pub flash_webrtc::ChannelConfig::reliability: flash_webrtc::Reliability
+impl flash_webrtc::ChannelConfig
+pub fn flash_webrtc::ChannelConfig::new(impl core::convert::Into<alloc::string::String>) -> flash_webrtc::ChannelConfig
+impl core::clone::Clone for flash_webrtc::ChannelConfig
+pub fn flash_webrtc::ChannelConfig::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::ChannelConfig
+impl core::cmp::PartialEq for flash_webrtc::ChannelConfig
+pub fn flash_webrtc::ChannelConfig::eq(&self, &Self) -> bool
+impl core::default::Default for flash_webrtc::ChannelConfig
+pub fn flash_webrtc::ChannelConfig::default() -> Self
+impl core::fmt::Debug for flash_webrtc::ChannelConfig
+pub fn flash_webrtc::ChannelConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_webrtc::ChannelConfig
+impl core::marker::Send for flash_webrtc::ChannelConfig
+impl core::marker::Sync for flash_webrtc::ChannelConfig
+impl core::marker::Unpin for flash_webrtc::ChannelConfig
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::ChannelConfig
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::ChannelConfig
+pub struct flash_webrtc::ChannelId(_)
+impl core::clone::Clone for flash_webrtc::ChannelId
+pub fn flash_webrtc::ChannelId::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::ChannelId
+impl core::cmp::PartialEq for flash_webrtc::ChannelId
+pub fn flash_webrtc::ChannelId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::ChannelId
+pub fn flash_webrtc::ChannelId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::ChannelId
+pub fn flash_webrtc::ChannelId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::ChannelId
+impl core::marker::StructuralPartialEq for flash_webrtc::ChannelId
+impl core::marker::Send for flash_webrtc::ChannelId
+impl core::marker::Sync for flash_webrtc::ChannelId
+impl core::marker::Unpin for flash_webrtc::ChannelId
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::ChannelId
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::ChannelId
 pub struct flash_webrtc::Endpoint(_)
 impl flash_webrtc::Endpoint
 pub fn flash_webrtc::Endpoint::accept_offer<H: flash_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(flash_webrtc::Peer, alloc::string::String), flash_webrtc::Error>
-pub fn flash_webrtc::Endpoint::add_candidate(&self, is::candidate::Candidate)
+pub fn flash_webrtc::Endpoint::add_candidate(&self, flash_webrtc::Candidate)
 pub fn flash_webrtc::Endpoint::bind(&flash::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<flash_webrtc::Endpoint, flash_webrtc::Error>
-pub fn flash_webrtc::Endpoint::candidates(&self) -> alloc::vec::Vec<is::candidate::Candidate>
+pub fn flash_webrtc::Endpoint::candidates(&self) -> alloc::vec::Vec<flash_webrtc::Candidate>
 pub fn flash_webrtc::Endpoint::close(&self)
 pub fn flash_webrtc::Endpoint::close_on_disconnect(self, bool) -> Self
-pub fn flash_webrtc::Endpoint::config(self, impl core::ops::function::Fn() -> str0m::config_mod::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn flash_webrtc::Endpoint::config(self, impl core::ops::function::Fn() -> flash_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn flash_webrtc::Endpoint::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
-pub fn flash_webrtc::Endpoint::create_offer<H: flash_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut str0m::change::sdp::SdpApi<'_>)) -> core::result::Result<(flash_webrtc::Peer, alloc::string::String), flash_webrtc::Error>
+pub fn flash_webrtc::Endpoint::create_offer<H: flash_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut flash_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(flash_webrtc::Peer, alloc::string::String), flash_webrtc::Error>
 pub fn flash_webrtc::Endpoint::gather_srflx(&self, core::net::socket_addr::SocketAddr, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, flash_webrtc::Error>
 pub fn flash_webrtc::Endpoint::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn flash_webrtc::Endpoint::peers(&self) -> usize
@@ -63,6 +243,144 @@ impl core::marker::Sync for flash_webrtc::Endpoint
 impl core::marker::Unpin for flash_webrtc::Endpoint
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Endpoint
 impl !core::panic::unwind_safe::UnwindSafe for flash_webrtc::Endpoint
+pub struct flash_webrtc::Frequency(_)
+impl flash_webrtc::Frequency
+pub const flash_webrtc::Frequency::EIGHT_KHZ: flash_webrtc::Frequency
+pub const flash_webrtc::Frequency::FORTY_EIGHT_KHZ: flash_webrtc::Frequency
+pub const flash_webrtc::Frequency::NINETY_KHZ: flash_webrtc::Frequency
+pub fn flash_webrtc::Frequency::get(self) -> u32
+pub fn flash_webrtc::Frequency::new(u32) -> core::option::Option<flash_webrtc::Frequency>
+impl core::clone::Clone for flash_webrtc::Frequency
+pub fn flash_webrtc::Frequency::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::Frequency
+impl core::cmp::Ord for flash_webrtc::Frequency
+pub fn flash_webrtc::Frequency::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for flash_webrtc::Frequency
+pub fn flash_webrtc::Frequency::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for flash_webrtc::Frequency
+pub fn flash_webrtc::Frequency::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for flash_webrtc::Frequency
+pub fn flash_webrtc::Frequency::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::Frequency
+pub fn flash_webrtc::Frequency::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::Frequency
+impl core::marker::StructuralPartialEq for flash_webrtc::Frequency
+impl core::marker::Send for flash_webrtc::Frequency
+impl core::marker::Sync for flash_webrtc::Frequency
+impl core::marker::Unpin for flash_webrtc::Frequency
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Frequency
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Frequency
+#[non_exhaustive] pub struct flash_webrtc::KeyframeRequest
+pub flash_webrtc::KeyframeRequest::kind: flash_webrtc::KeyframeRequestKind
+pub flash_webrtc::KeyframeRequest::mid: flash_webrtc::Mid
+pub flash_webrtc::KeyframeRequest::rid: core::option::Option<alloc::string::String>
+impl core::clone::Clone for flash_webrtc::KeyframeRequest
+pub fn flash_webrtc::KeyframeRequest::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::KeyframeRequest
+impl core::cmp::PartialEq for flash_webrtc::KeyframeRequest
+pub fn flash_webrtc::KeyframeRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::KeyframeRequest
+pub fn flash_webrtc::KeyframeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_webrtc::KeyframeRequest
+impl core::marker::Send for flash_webrtc::KeyframeRequest
+impl core::marker::Sync for flash_webrtc::KeyframeRequest
+impl core::marker::Unpin for flash_webrtc::KeyframeRequest
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::KeyframeRequest
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::KeyframeRequest
+#[non_exhaustive] pub struct flash_webrtc::MediaAdded
+pub flash_webrtc::MediaAdded::direction: flash_webrtc::Direction
+pub flash_webrtc::MediaAdded::kind: flash_webrtc::MediaKind
+pub flash_webrtc::MediaAdded::mid: flash_webrtc::Mid
+impl core::clone::Clone for flash_webrtc::MediaAdded
+pub fn flash_webrtc::MediaAdded::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::MediaAdded
+impl core::cmp::PartialEq for flash_webrtc::MediaAdded
+pub fn flash_webrtc::MediaAdded::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::MediaAdded
+pub fn flash_webrtc::MediaAdded::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_webrtc::MediaAdded
+impl core::marker::Send for flash_webrtc::MediaAdded
+impl core::marker::Sync for flash_webrtc::MediaAdded
+impl core::marker::Unpin for flash_webrtc::MediaAdded
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::MediaAdded
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::MediaAdded
+#[non_exhaustive] pub struct flash_webrtc::MediaData
+pub flash_webrtc::MediaData::codec: core::option::Option<flash_webrtc::Codec>
+pub flash_webrtc::MediaData::contiguous: bool
+pub flash_webrtc::MediaData::data: alloc::rcs::arc::Arc<[u8]>
+pub flash_webrtc::MediaData::mid: flash_webrtc::Mid
+pub flash_webrtc::MediaData::network_time: std::time::Instant
+pub flash_webrtc::MediaData::pt: flash_webrtc::Pt
+pub flash_webrtc::MediaData::rid: core::option::Option<alloc::string::String>
+pub flash_webrtc::MediaData::time: flash_webrtc::MediaTime
+impl core::clone::Clone for flash_webrtc::MediaData
+pub fn flash_webrtc::MediaData::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::MediaData
+impl core::cmp::PartialEq for flash_webrtc::MediaData
+pub fn flash_webrtc::MediaData::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::MediaData
+pub fn flash_webrtc::MediaData::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_webrtc::MediaData
+impl core::marker::Send for flash_webrtc::MediaData
+impl core::marker::Sync for flash_webrtc::MediaData
+impl core::marker::Unpin for flash_webrtc::MediaData
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::MediaData
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::MediaData
+pub struct flash_webrtc::MediaTime
+impl flash_webrtc::MediaTime
+pub fn flash_webrtc::MediaTime::as_duration(self) -> core::time::Duration
+pub fn flash_webrtc::MediaTime::new(u64, flash_webrtc::Frequency) -> flash_webrtc::MediaTime
+pub fn flash_webrtc::MediaTime::rate(self) -> flash_webrtc::Frequency
+pub fn flash_webrtc::MediaTime::ticks(self) -> u64
+impl core::clone::Clone for flash_webrtc::MediaTime
+pub fn flash_webrtc::MediaTime::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::MediaTime
+impl core::cmp::PartialEq for flash_webrtc::MediaTime
+pub fn flash_webrtc::MediaTime::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::MediaTime
+pub fn flash_webrtc::MediaTime::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::MediaTime
+pub fn flash_webrtc::MediaTime::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::MediaTime
+impl core::marker::StructuralPartialEq for flash_webrtc::MediaTime
+impl core::marker::Send for flash_webrtc::MediaTime
+impl core::marker::Sync for flash_webrtc::MediaTime
+impl core::marker::Unpin for flash_webrtc::MediaTime
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::MediaTime
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::MediaTime
+pub struct flash_webrtc::Mid(_)
+impl flash_webrtc::Mid
+pub fn flash_webrtc::Mid::as_str(&self) -> &str
+impl core::clone::Clone for flash_webrtc::Mid
+pub fn flash_webrtc::Mid::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::Mid
+impl core::cmp::Ord for flash_webrtc::Mid
+pub fn flash_webrtc::Mid::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for flash_webrtc::Mid
+pub fn flash_webrtc::Mid::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for flash_webrtc::Mid
+pub fn flash_webrtc::Mid::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for flash_webrtc::Mid
+pub fn flash_webrtc::Mid::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_webrtc::Mid
+pub fn flash_webrtc::Mid::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::Mid
+pub fn flash_webrtc::Mid::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::Mid
+impl core::marker::StructuralPartialEq for flash_webrtc::Mid
+impl core::marker::Send for flash_webrtc::Mid
+impl core::marker::Sync for flash_webrtc::Mid
+impl core::marker::Unpin for flash_webrtc::Mid
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Mid
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Mid
+pub struct flash_webrtc::OtherEvent(_)
+impl core::fmt::Debug for flash_webrtc::OtherEvent
+pub fn flash_webrtc::OtherEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_webrtc::OtherEvent
+impl core::marker::Sync for flash_webrtc::OtherEvent
+impl core::marker::Unpin for flash_webrtc::OtherEvent
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::OtherEvent
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::OtherEvent
 pub struct flash_webrtc::Peer(_)
 impl flash_webrtc::Peer
 pub fn flash_webrtc::Peer::accept_answer(&self, &str) -> core::result::Result<(), flash_webrtc::Error>
@@ -73,13 +391,12 @@ pub fn flash_webrtc::Peer::id(&self) -> u64
 pub fn flash_webrtc::Peer::is_closed(&self) -> bool
 pub fn flash_webrtc::Peer::is_connected(&self) -> bool
 pub fn flash_webrtc::Peer::local_ufrag(&self) -> &str
-pub fn flash_webrtc::Peer::open_channel(&self, str0m::sctp::ChannelConfig) -> core::result::Result<(str0m::channel::ChannelId, core::option::Option<alloc::string::String>), flash_webrtc::Error>
-pub fn flash_webrtc::Peer::payload_type(&self, str0m::rtp_::id::Mid, str0m::format::codec::Codec) -> core::option::Option<str0m::rtp_::id::Pt>
-pub fn flash_webrtc::Peer::renegotiate(&self, impl core::ops::function::FnOnce(&mut str0m::change::sdp::SdpApi<'_>)) -> core::result::Result<core::option::Option<alloc::string::String>, flash_webrtc::Error>
-pub fn flash_webrtc::Peer::request_keyframe(&self, str0m::rtp_::id::Mid, str0m::media::event::KeyframeRequestKind) -> core::result::Result<(), flash_webrtc::Error>
-pub fn flash_webrtc::Peer::send(&self, str0m::channel::ChannelId, &[u8], bool) -> core::result::Result<bool, flash_webrtc::Error>
-pub fn flash_webrtc::Peer::with_rtc<R>(&self, impl core::ops::function::FnOnce(&mut str0m::Rtc) -> R) -> core::result::Result<R, flash_webrtc::Error>
-pub fn flash_webrtc::Peer::write_media(&self, str0m::rtp_::id::Mid, str0m::rtp_::id::Pt, std::time::Instant, str0m::rtp_::mtime::MediaTime, &[u8]) -> core::result::Result<(), flash_webrtc::Error>
+pub fn flash_webrtc::Peer::open_channel(&self, &flash_webrtc::ChannelConfig) -> core::result::Result<(flash_webrtc::ChannelId, core::option::Option<alloc::string::String>), flash_webrtc::Error>
+pub fn flash_webrtc::Peer::payload_type(&self, flash_webrtc::Mid, flash_webrtc::Codec) -> core::option::Option<flash_webrtc::Pt>
+pub fn flash_webrtc::Peer::renegotiate(&self, impl core::ops::function::FnOnce(&mut flash_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<core::option::Option<alloc::string::String>, flash_webrtc::Error>
+pub fn flash_webrtc::Peer::request_keyframe(&self, flash_webrtc::Mid, flash_webrtc::KeyframeRequestKind) -> core::result::Result<(), flash_webrtc::Error>
+pub fn flash_webrtc::Peer::send(&self, flash_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, flash_webrtc::Error>
+pub fn flash_webrtc::Peer::write_media(&self, flash_webrtc::Mid, flash_webrtc::Pt, std::time::Instant, flash_webrtc::MediaTime, &[u8]) -> core::result::Result<(), flash_webrtc::Error>
 impl core::clone::Clone for flash_webrtc::Peer
 pub fn flash_webrtc::Peer::clone(&self) -> Self
 impl core::fmt::Debug for flash_webrtc::Peer
@@ -89,14 +406,75 @@ impl core::marker::Sync for flash_webrtc::Peer
 impl core::marker::Unpin for flash_webrtc::Peer
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Peer
 impl !core::panic::unwind_safe::UnwindSafe for flash_webrtc::Peer
+pub struct flash_webrtc::Pt(_)
+impl flash_webrtc::Pt
+pub fn flash_webrtc::Pt::get(self) -> u8
+impl core::clone::Clone for flash_webrtc::Pt
+pub fn flash_webrtc::Pt::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::Pt
+impl core::cmp::Ord for flash_webrtc::Pt
+pub fn flash_webrtc::Pt::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for flash_webrtc::Pt
+pub fn flash_webrtc::Pt::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for flash_webrtc::Pt
+pub fn flash_webrtc::Pt::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<flash_webrtc::Pt> for u8
+pub fn u8::from(flash_webrtc::Pt) -> u8
+impl core::convert::From<u8> for flash_webrtc::Pt
+pub fn flash_webrtc::Pt::from(u8) -> flash_webrtc::Pt
+impl core::fmt::Debug for flash_webrtc::Pt
+pub fn flash_webrtc::Pt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_webrtc::Pt
+pub fn flash_webrtc::Pt::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_webrtc::Pt
+impl core::marker::StructuralPartialEq for flash_webrtc::Pt
+impl core::marker::Send for flash_webrtc::Pt
+impl core::marker::Sync for flash_webrtc::Pt
+impl core::marker::Unpin for flash_webrtc::Pt
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::Pt
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::Pt
+pub struct flash_webrtc::RtcConfig(_)
+impl flash_webrtc::RtcConfig
+pub fn flash_webrtc::RtcConfig::clear_codecs(self) -> Self
+pub fn flash_webrtc::RtcConfig::enable_av1(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::enable_bwe(self, core::option::Option<u64>) -> Self
+pub fn flash_webrtc::RtcConfig::enable_h264(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::enable_h265(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::enable_opus(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::enable_pcma(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::enable_pcmu(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::enable_vp8(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::enable_vp9(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::set_reordering_size(self, usize, usize) -> Self
+pub fn flash_webrtc::RtcConfig::set_rtp_mode(self, bool) -> Self
+pub fn flash_webrtc::RtcConfig::set_sctp_max_buffered_amount(self, usize) -> Self
+pub fn flash_webrtc::RtcConfig::set_stats_interval(self, core::option::Option<core::time::Duration>) -> Self
+impl core::fmt::Debug for flash_webrtc::RtcConfig
+pub fn flash_webrtc::RtcConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_webrtc::RtcConfig
+impl core::marker::Sync for flash_webrtc::RtcConfig
+impl core::marker::Unpin for flash_webrtc::RtcConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::RtcConfig
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::RtcConfig
+pub struct flash_webrtc::RtcError(_)
+impl core::error::Error for flash_webrtc::RtcError
+impl core::fmt::Debug for flash_webrtc::RtcError
+pub fn flash_webrtc::RtcError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_webrtc::RtcError
+pub fn flash_webrtc::RtcError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_webrtc::RtcError
+impl core::marker::Sync for flash_webrtc::RtcError
+impl core::marker::Unpin for flash_webrtc::RtcError
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::RtcError
+impl !core::panic::unwind_safe::UnwindSafe for flash_webrtc::RtcError
 pub struct flash_webrtc::RtcServer(_)
 impl flash_webrtc::RtcServer
 pub fn flash_webrtc::RtcServer::accept_offer<H: flash_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(flash_webrtc::Peer, alloc::string::String), flash_webrtc::Error>
 pub fn flash_webrtc::RtcServer::close_all(&self)
 pub fn flash_webrtc::RtcServer::close_on_disconnect(self, bool) -> Self
-pub fn flash_webrtc::RtcServer::config(self, impl core::ops::function::Fn() -> str0m::config_mod::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn flash_webrtc::RtcServer::config(self, impl core::ops::function::Fn() -> flash_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn flash_webrtc::RtcServer::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
-pub fn flash_webrtc::RtcServer::create_offer<H: flash_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut str0m::change::sdp::SdpApi<'_>)) -> core::result::Result<(flash_webrtc::Peer, alloc::string::String), flash_webrtc::Error>
+pub fn flash_webrtc::RtcServer::create_offer<H: flash_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut flash_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(flash_webrtc::Peer, alloc::string::String), flash_webrtc::Error>
 pub fn flash_webrtc::RtcServer::ice_lite(self, bool) -> Self
 pub fn flash_webrtc::RtcServer::new(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> flash_webrtc::RtcServer
 pub fn flash_webrtc::RtcServer::peers(&self) -> usize
@@ -113,18 +491,54 @@ impl core::marker::Sync for flash_webrtc::RtcServer
 impl core::marker::Unpin for flash_webrtc::RtcServer
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::RtcServer
 impl !core::panic::unwind_safe::UnwindSafe for flash_webrtc::RtcServer
+#[non_exhaustive] pub struct flash_webrtc::RtpPacket
+pub flash_webrtc::RtpPacket::marker: bool
+pub flash_webrtc::RtpPacket::payload: alloc::rcs::arc::Arc<[u8]>
+pub flash_webrtc::RtpPacket::pt: flash_webrtc::Pt
+pub flash_webrtc::RtpPacket::received: std::time::Instant
+pub flash_webrtc::RtpPacket::rtp_time: u32
+pub flash_webrtc::RtpPacket::seq_no: u64
+pub flash_webrtc::RtpPacket::ssrc: u32
+pub flash_webrtc::RtpPacket::time: flash_webrtc::MediaTime
+impl core::clone::Clone for flash_webrtc::RtpPacket
+pub fn flash_webrtc::RtpPacket::clone(&self) -> Self
+impl core::cmp::Eq for flash_webrtc::RtpPacket
+impl core::cmp::PartialEq for flash_webrtc::RtpPacket
+pub fn flash_webrtc::RtpPacket::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_webrtc::RtpPacket
+pub fn flash_webrtc::RtpPacket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_webrtc::RtpPacket
+impl core::marker::Send for flash_webrtc::RtpPacket
+impl core::marker::Sync for flash_webrtc::RtpPacket
+impl core::marker::Unpin for flash_webrtc::RtpPacket
+impl core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::RtpPacket
+impl core::panic::unwind_safe::UnwindSafe for flash_webrtc::RtpPacket
+pub struct flash_webrtc::SdpChanges<'a, 'b>(_)
+impl flash_webrtc::SdpChanges<'_, '_>
+pub fn flash_webrtc::SdpChanges<'_, '_>::add_channel(&mut self, impl core::convert::Into<alloc::string::String>) -> flash_webrtc::ChannelId
+pub fn flash_webrtc::SdpChanges<'_, '_>::add_channel_with_config(&mut self, &flash_webrtc::ChannelConfig) -> flash_webrtc::ChannelId
+pub fn flash_webrtc::SdpChanges<'_, '_>::add_media(&mut self, flash_webrtc::MediaKind, flash_webrtc::Direction, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> flash_webrtc::Mid
+pub fn flash_webrtc::SdpChanges<'_, '_>::has_changes(&self) -> bool
+pub fn flash_webrtc::SdpChanges<'_, '_>::ice_restart(&mut self, bool)
+pub fn flash_webrtc::SdpChanges<'_, '_>::set_direction(&mut self, flash_webrtc::Mid, flash_webrtc::Direction)
+pub fn flash_webrtc::SdpChanges<'_, '_>::stop_media(&mut self, flash_webrtc::Mid)
+impl core::fmt::Debug for flash_webrtc::SdpChanges<'_, '_>
+pub fn flash_webrtc::SdpChanges<'_, '_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a, 'b> core::marker::Send for flash_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> core::marker::Sync for flash_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> core::marker::Unpin for flash_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> !core::panic::unwind_safe::RefUnwindSafe for flash_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> !core::panic::unwind_safe::UnwindSafe for flash_webrtc::SdpChanges<'a, 'b>
 pub trait flash_webrtc::PeerHandler: core::marker::Send + 'static
-pub fn flash_webrtc::PeerHandler::on_channel_close(&mut self, &flash_webrtc::Peer, str0m::channel::ChannelId)
-pub fn flash_webrtc::PeerHandler::on_channel_data(&mut self, &flash_webrtc::Peer, str0m::channel::ChannelId, &[u8], bool)
-pub fn flash_webrtc::PeerHandler::on_channel_open(&mut self, &flash_webrtc::Peer, str0m::channel::ChannelId, &str)
+pub fn flash_webrtc::PeerHandler::on_channel_close(&mut self, &flash_webrtc::Peer, flash_webrtc::ChannelId)
+pub fn flash_webrtc::PeerHandler::on_channel_data(&mut self, &flash_webrtc::Peer, flash_webrtc::ChannelId, &[u8], bool)
+pub fn flash_webrtc::PeerHandler::on_channel_open(&mut self, &flash_webrtc::Peer, flash_webrtc::ChannelId, &str)
 pub fn flash_webrtc::PeerHandler::on_close(&mut self, &flash_webrtc::Peer)
 pub fn flash_webrtc::PeerHandler::on_connected(&mut self, &flash_webrtc::Peer)
-pub fn flash_webrtc::PeerHandler::on_event(&mut self, &flash_webrtc::Peer, &str0m::Event)
-pub fn flash_webrtc::PeerHandler::on_ice_state(&mut self, &flash_webrtc::Peer, is::agent::IceConnectionState)
-pub fn flash_webrtc::PeerHandler::on_keyframe_request(&mut self, &flash_webrtc::Peer, &str0m::media::event::KeyframeRequest)
-pub fn flash_webrtc::PeerHandler::on_media_added(&mut self, &flash_webrtc::Peer, &str0m::media::event::MediaAdded)
-pub fn flash_webrtc::PeerHandler::on_media_data(&mut self, &flash_webrtc::Peer, &str0m::media::event::MediaData)
-pub fn flash_webrtc::PeerHandler::on_rtp(&mut self, &flash_webrtc::Peer, &str0m::streams::RtpPacket)
-pub fn flash_webrtc::crypto_provider() -> alloc::rcs::arc::Arc<str0m_proto::crypto::provider::CryptoProvider>
-pub fn flash_webrtc::generate_certificate() -> core::option::Option<dimpl::DtlsCertificate>
-pub fn flash_webrtc::rtc_config() -> str0m::config_mod::RtcConfig
+pub fn flash_webrtc::PeerHandler::on_event(&mut self, &flash_webrtc::Peer, &flash_webrtc::Event)
+pub fn flash_webrtc::PeerHandler::on_ice_state(&mut self, &flash_webrtc::Peer, flash_webrtc::IceConnectionState)
+pub fn flash_webrtc::PeerHandler::on_keyframe_request(&mut self, &flash_webrtc::Peer, &flash_webrtc::KeyframeRequest)
+pub fn flash_webrtc::PeerHandler::on_media_added(&mut self, &flash_webrtc::Peer, &flash_webrtc::MediaAdded)
+pub fn flash_webrtc::PeerHandler::on_media_data(&mut self, &flash_webrtc::Peer, &flash_webrtc::MediaData)
+pub fn flash_webrtc::PeerHandler::on_rtp(&mut self, &flash_webrtc::Peer, &flash_webrtc::RtpPacket)
+pub fn flash_webrtc::rtc_config() -> flash_webrtc::RtcConfig

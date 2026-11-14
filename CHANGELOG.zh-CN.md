@@ -10,6 +10,37 @@ flash 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更（破坏性，1.0.0 之前）：封装 1.0 之前的依赖
+
+rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保护的 API 中，因此 1.0.0 之后
+升级它们（或用自研代码替换）不是破坏性变更。直接访问移到新的 `unstable` cargo feature 之后（`flash`、
+`flash-tls`、`flash-quic`、`flash-webrtc`），与 `flash-grpc` 的 `prost` feature 一样不在 semver 承诺之内
+（docs/api-stability.zh-CN.md，“公开依赖”）。
+
+| 之前 | 之后 |
+|---|---|
+| `flash::tls::rustls`（再导出） | 仅 `unstable` feature |
+| `rustls::ServerConfig::builder()...with_single_cert(chain, key)` + `alpn_protocols` | `flash::tls::ServerConfig::builder(chain, key).alpn([..]).build()?`（另有 `sni_cert`、`client_auth_required` / `_optional`、`session_cache`、`session_tickets`、`tls13_only`） |
+| `rustls::ClientConfig::builder().with_root_certificates(roots)...` | `flash::tls::ClientConfig::builder().roots(roots).alpn([..]).build()?`（另有 `client_cert`、`sni`、`resumption`、`tls13_only`、`insecure_skip_verify`） |
+| `CertificateDer`、`PrivateKeyDer`、`RootCertStore` | `flash::tls::{Certificate, PrivateKey, RootCerts}`（`from_pem`、`from_der`、`from_pkcs8_der`） |
+| `Tls::server(Arc<rustls::ServerConfig>, a)`、`Tls::client(Arc<rustls::ClientConfig>, ..)` | `Tls::server(ServerConfig, a)`、`Tls::client(ClientConfig, ..)` |
+| `Client::with_tls(Arc<rustls::ClientConfig>)`、`H2Client::dial(.., Some((Arc<..>, name)), ..)`、`DialOptions::tls: Option<Arc<..>>` | 同上，改用 `flash::tls::ClientConfig` |
+| `flash_quic::{proto, rustls}` 再导出、`VarInt` | 仅 `unstable` feature（`proto`）；删除 `VarInt` |
+| `flash_quic::{StreamId, Dir, ConnectionError, TransportConfig}`（quinn 的类型） | flash 自己的类型（另有 `Side`、`Congestion`、`UdpStats`）；`ConnectionError` 的变体改为结构体形式（`ApplicationClosed { code, reason }`、`TransportError { code, reason }`） |
+| `Connection::stats() -> quinn_proto::ConnectionStats` | `ConnectionStats`（`udp_tx`、`udp_rx`、`rtt`、`cwnd`、`lost_packets` 等） |
+| `server_config(Vec<CertificateDer>, PrivateKeyDer, alpn) -> quinn_proto::ServerConfig` | `server_config(Vec<Certificate>, PrivateKey, alpn) -> flash_quic::ServerConfig`（`.transport(&TransportConfig)`、`.migration(bool)`） |
+| `server_config_from(rustls::ServerConfig)`、`client_config(RootCertStore, ..)`、`client_config_from(rustls::ClientConfig)` | `server_config_from(&flash::tls::ServerConfig)`、`client_config(RootCerts, ..)`、`client_config_from(&flash::tls::ClientConfig)` |
+| `Error::Connect(quinn_proto::ConnectError)` | `Error::Connect(String)` |
+| `flash_h3::server_config(Vec<CertificateDer>, PrivateKeyDer)`、`serve(quinn_proto::ServerConfig, ..)`、`H3Client::dial(.., quinn_proto::ClientConfig)` | `Certificate` / `PrivateKey`、`flash_quic::ServerConfig`、`flash_quic::ClientConfig` |
+| `flash_grpc::codec::{encode, decode}` 约束为 `prost::Message` | 约束为 `flash_grpc::codec::Message`（`encode_to`、`decode_from`）；`prost` feature 为 prost 消息实现它 |
+| `flash_webrtc::str0m` 再导出、`Peer::with_rtc`、`crypto_provider`、`generate_certificate` | 仅 `unstable` feature（`str0m`、`with_rtc`、`crypto_provider_str0m`）；`generate_certificate` 改为内部函数 |
+| str0m 的 `ChannelId`、`ChannelConfig`、`Reliability`、`Mid`、`Pt`、`MediaKind`、`Direction`、`Frequency`、`MediaTime`、`MediaData`、`MediaAdded`、`KeyframeRequest(Kind)`、`RtpPacket`、`Candidate`、`IceConnectionState`、`RtcConfig`、`Event` | 同名的 flash 自有类型（`ChannelConfig` 为 `#[non_exhaustive]`：先 `ChannelConfig::new(label)` 再设置字段；`MediaData::data` / `RtpPacket::payload` 为 `Arc<[u8]>`） |
+| `create_offer(h, \|api: &mut SdpApi\| ..)`、`renegotiate(..)`；`api.add_channel(label.into())`、`api.add_media(kind, dir, None, None, None)` | `SdpChanges`：`add_channel(label)`、`add_channel_with_config(&cfg)`、`add_media(kind, dir, None, None)`、`set_direction`、`stop_media`、`ice_restart` |
+| `Peer::open_channel(ChannelConfig)`、`payload_type(mid, str0m::format::Codec)` | `open_channel(&ChannelConfig)`、`payload_type(mid, flash_webrtc::Codec)` |
+| `PeerHandler::on_event(&str0m::Event)` | `on_event(&Event)`：`Event::ChannelBufferedAmountLow(id)` 或 `Event::Other(OtherEvent)` |
+| `Error::Rtc(str0m::RtcError)`、`impl From<str0m::RtcError> for Error` | `Error::Rtc(flash_webrtc::RtcError)`；新增 `Error::InvalidCandidate` |
+| `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
+
 ### 新增
 
 - `flash-prefork`（M6，可选）：用多个 worker 进程服务同一个程序。supervisor 以 N 个 worker 的身份重新执行

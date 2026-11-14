@@ -10,6 +10,38 @@ All notable changes to flash are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
+
+rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so
+upgrading them (or replacing them with in-house code) is not a breaking change after 1.0.0.
+Raw access moved behind new `unstable` cargo features (`flash`, `flash-tls`, `flash-quic`,
+`flash-webrtc`), outside the semver promise like the `prost` feature of `flash-grpc`
+(docs/api-stability.md, "Public dependencies").
+
+| Before | After |
+|---|---|
+| `flash::tls::rustls` (re-export) | `unstable` feature only |
+| `rustls::ServerConfig::builder()...with_single_cert(chain, key)` + `alpn_protocols` | `flash::tls::ServerConfig::builder(chain, key).alpn([..]).build()?` (also `sni_cert`, `client_auth_required` / `_optional`, `session_cache`, `session_tickets`, `tls13_only`) |
+| `rustls::ClientConfig::builder().with_root_certificates(roots)...` | `flash::tls::ClientConfig::builder().roots(roots).alpn([..]).build()?` (also `client_cert`, `sni`, `resumption`, `tls13_only`, `insecure_skip_verify`) |
+| `CertificateDer`, `PrivateKeyDer`, `RootCertStore` | `flash::tls::{Certificate, PrivateKey, RootCerts}` (`from_pem`, `from_der`, `from_pkcs8_der`) |
+| `Tls::server(Arc<rustls::ServerConfig>, a)`, `Tls::client(Arc<rustls::ClientConfig>, ..)` | `Tls::server(ServerConfig, a)`, `Tls::client(ClientConfig, ..)` |
+| `Client::with_tls(Arc<rustls::ClientConfig>)`, `H2Client::dial(.., Some((Arc<..>, name)), ..)`, `DialOptions::tls: Option<Arc<..>>` | the same with `flash::tls::ClientConfig` |
+| `flash_quic::{proto, rustls}` re-exports, `VarInt` | `unstable` feature only (`proto`); `VarInt` removed |
+| `flash_quic::{StreamId, Dir, ConnectionError, TransportConfig}` (quinn's) | flash's own types (plus `Side`, `Congestion`, `UdpStats`); `ConnectionError` variants are struct-like (`ApplicationClosed { code, reason }`, `TransportError { code, reason }`) |
+| `Connection::stats() -> quinn_proto::ConnectionStats` | `ConnectionStats` (`udp_tx`, `udp_rx`, `rtt`, `cwnd`, `lost_packets` ...) |
+| `server_config(Vec<CertificateDer>, PrivateKeyDer, alpn) -> quinn_proto::ServerConfig` | `server_config(Vec<Certificate>, PrivateKey, alpn) -> flash_quic::ServerConfig` (`.transport(&TransportConfig)`, `.migration(bool)`) |
+| `server_config_from(rustls::ServerConfig)`, `client_config(RootCertStore, ..)`, `client_config_from(rustls::ClientConfig)` | `server_config_from(&flash::tls::ServerConfig)`, `client_config(RootCerts, ..)`, `client_config_from(&flash::tls::ClientConfig)` |
+| `Error::Connect(quinn_proto::ConnectError)` | `Error::Connect(String)` |
+| `flash_h3::server_config(Vec<CertificateDer>, PrivateKeyDer)`, `serve(quinn_proto::ServerConfig, ..)`, `H3Client::dial(.., quinn_proto::ClientConfig)` | `Certificate` / `PrivateKey`, `flash_quic::ServerConfig`, `flash_quic::ClientConfig` |
+| `flash_grpc::codec::{encode, decode}` bound on `prost::Message` | bound on `flash_grpc::codec::Message` (`encode_to`, `decode_from`); the `prost` feature implements it for prost messages |
+| `flash_webrtc::str0m` re-export, `Peer::with_rtc`, `crypto_provider`, `generate_certificate` | `unstable` feature only (`str0m`, `with_rtc`, `crypto_provider_str0m`); `generate_certificate` is internal |
+| str0m's `ChannelId`, `ChannelConfig`, `Reliability`, `Mid`, `Pt`, `MediaKind`, `Direction`, `Frequency`, `MediaTime`, `MediaData`, `MediaAdded`, `KeyframeRequest(Kind)`, `RtpPacket`, `Candidate`, `IceConnectionState`, `RtcConfig`, `Event` | flash's own types of the same names (`ChannelConfig` is `#[non_exhaustive]`: `ChannelConfig::new(label)` then set fields; `MediaData::data` / `RtpPacket::payload` are `Arc<[u8]>`) |
+| `create_offer(h, \|api: &mut SdpApi\| ..)`, `renegotiate(..)`; `api.add_channel(label.into())`, `api.add_media(kind, dir, None, None, None)` | `SdpChanges`: `add_channel(label)`, `add_channel_with_config(&cfg)`, `add_media(kind, dir, None, None)`, `set_direction`, `stop_media`, `ice_restart` |
+| `Peer::open_channel(ChannelConfig)`, `payload_type(mid, str0m::format::Codec)` | `open_channel(&ChannelConfig)`, `payload_type(mid, flash_webrtc::Codec)` |
+| `PeerHandler::on_event(&str0m::Event)` | `on_event(&Event)`: `Event::ChannelBufferedAmountLow(id)` or `Event::Other(OtherEvent)` |
+| `Error::Rtc(str0m::RtcError)`, `impl From<str0m::RtcError> for Error` | `Error::Rtc(flash_webrtc::RtcError)`; new `Error::InvalidCandidate` |
+| `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
+
 ### Added
 
 - `flash-prefork` (M6, optional): serve one program from several worker processes. A supervisor

@@ -29,11 +29,16 @@ flash-uring = { workspace = true }
 dpdk = ["dep:flash-dpdk"]
 # Also DPDK ports (`flash::dpdk::Device::Dpdk`): links libdpdk, found with pkg-config (Linux).
 dpdk-pmd = ["dpdk", "flash-dpdk/pmd"]
+# Raw access to wrapped dependencies (`flash::tls::rustls`, `from_rustls` ...): outside the
+# semver promise (docs/api-stability.md).
+unstable = ["flash-tls/unstable"]
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+# A raw rustls client drives some tests (the library API hides rustls).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 libc = "0.2"
 flash-core = { workspace = true }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

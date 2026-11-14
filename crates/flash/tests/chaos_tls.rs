@@ -26,11 +26,11 @@ use std::{
 
 use flash::{
     Acceptor, Config, Conn, Engine, Error, Handler, Listener,
-    tls::{Tls, rustls},
+    tls::{self as ftls, Tls},
 };
 use rustls::{
-    ClientConfig, ClientConnection, RootCertStore, ServerConfig, StreamOwned,
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+    ClientConfig, ClientConnection, RootCertStore, StreamOwned,
+    pki_types::{CertificateDer, ServerName},
 };
 
 const STALL: Duration = Duration::from_secs(15);
@@ -206,25 +206,26 @@ impl Acceptor for SrvAcceptor {
 }
 
 struct Pki {
-    server: Arc<ServerConfig>,
+    server: ftls::ServerConfig,
     client: Arc<ClientConfig>,
 }
 
 fn pki() -> Pki {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert: CertificateDer<'static> = ck.cert.der().clone();
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der()));
-    let server = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
-        .unwrap();
+    let server = ftls::ServerConfig::builder(
+        vec![ftls::Certificate::from_der(cert.to_vec())],
+        ftls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+    )
+    .build()
+    .unwrap();
     let mut roots = RootCertStore::empty();
     roots.add(cert).unwrap();
     let client = ClientConfig::builder()
         .with_root_certificates(roots)
         .with_no_client_auth();
     Pki {
-        server: Arc::new(server),
+        server,
         client: Arc::new(client),
     }
 }

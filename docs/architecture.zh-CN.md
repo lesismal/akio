@@ -75,8 +75,9 @@ flowchart BT
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（请求头用 httparse，chunked 解码器自研）、HTTP/2 分帧与
   HPACK（loona-hpack）、WebSocket 分帧与 permessage-deflate、KCP、QPACK 与 HTTP/3 分帧，都是
-  由 flash 喂入字节的状态机；TLS 是 rustls，QUIC 是 quinn-proto，两者都以 sans-io 方式驱动
-  （ADR-005）。
+  由 flash 喂入字节的状态机；TLS 是 rustls，QUIC 是 quinn-proto，WebRTC 是 str0m，都以 sans-io
+  方式驱动（ADR-005），并隐藏在 flash 自己的类型之后，因此升级或替换它们不会破坏 API
+  （docs/api-stability.zh-CN.md）。
 - facade `flash` 重新导出核心 API（`Conn`、`Handler`、`Acceptor`、`Config` 等），并把后端线程组
   组合成 `Engine`。
 

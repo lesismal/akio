@@ -38,20 +38,24 @@
 
 ## 配置
 
-一切都通过 rustls 自己的 `ServerConfig` / `ClientConfig` 配置，它们以 `flash::tls::rustls`
-重新导出：
+配置使用 flash 自己的类型；底层的 TLS 实现（rustls，编译时内置 `ring` 加密实现）不属于 API，
+因此升级它不是破坏性变更。`Certificate::from_pem` / `from_der`、`PrivateKey::from_pem` /
+`from_der` / `from_pkcs8_der` 与 `RootCerts` 负责加载证书材料。
 
-| 需求 | rustls 设置 |
-|---|---|
-| 证书链与私钥 | `with_single_cert(chain, key)` |
-| 按 SNI 选择多张证书 | `with_cert_resolver(..)`（`ResolvesServerCert`） |
-| ALPN（`h2`、`http/1.1`、自定义） | `config.alpn_protocols` |
-| 会话恢复 | `config.ticketer`、`config.session_storage` |
-| 客户端证书 | `with_client_cert_verifier(..)` / `with_client_auth_cert(..)` |
-| 协议版本 | `builder_with_protocol_versions(..)` |
+| 需求 | 服务端：`ServerConfig::builder(chain, key)` | 客户端：`ClientConfig::builder()` |
+|---|---|---|
+| 证书 | 证书链与私钥；按 SNI 名称用 `.sni_cert(name, chain, key)` | `.client_cert(chain, key)` |
+| 信任 | `.client_auth_required(roots)` / `.client_auth_optional(roots)` | `.roots(roots)` |
+| ALPN（`h2`、`http/1.1`、自定义） | `.alpn(["h2", "http/1.1"])` | `.alpn([..])` |
+| 会话恢复 | `.session_cache(entries)`、`.session_tickets(true)` | `.resumption(false)` 关闭 |
+| 协议版本 | `.tls13_only(true)` | `.tls13_only(true)` |
+| SNI | | `.sni(false)` 不再发送 |
+| 仅限测试 | | `.insecure_skip_verify()` |
 
-编译时内置 `ring` 加密实现。加载 PEM 文件由你自己负责（例如使用 `rustls-pemfile` 或
-`rustls::pki_types::pem`）。
+`.build()` 检查证书与私钥，返回配置或 `flash::tls::Error`；配置克隆开销很小。构建器未覆盖的
+设置可以用 `unstable` cargo feature：它重新导出 `flash::tls::rustls`，并提供
+`ServerConfig::from_rustls` / `ClientConfig::from_rustls`（以及 `as_rustls`）；该 feature 不在
+semver 承诺之内。
 
 ## 与其他 crate 配合
 
@@ -59,11 +63,12 @@
   listener 会为协商了 `h2` 的客户端提供 HTTP/2。
 - flash-ws 客户端：`wss://` 使用 `DialOptions::tls`。
 - flash-http 客户端：`Client::with_tls(cfg)`、`H2Client::dial(.., Some((cfg, name)), ..)`。
-- QUIC 与 HTTP/3 在 QUIC 内部使用 TLS 1.3：见 `flash_quic::server_config` 等函数。
+- QUIC 与 HTTP/3 在 QUIC 内部使用 TLS 1.3：见 `flash_quic::server_config` 与
+  `server_config_from(&tls_config)`。
 
 ## 尚未完成
 
-kTLS 卸载；rustls 直接提供的能力之外的 TLS 1.3 early data 与客户端证书辅助功能。
+kTLS 卸载；TCP 上的 TLS 1.3 early data；系统根证书（请自行加载到 `RootCerts`）。
 
 ## 编写自己的 transport
 

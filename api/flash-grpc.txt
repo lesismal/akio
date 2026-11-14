@@ -1,7 +1,10 @@
 pub mod flash_grpc
 pub mod flash_grpc::codec
-pub fn flash_grpc::codec::decode<M: prost::message::Message + core::default::Default>(&[u8]) -> core::result::Result<M, flash_grpc::Status>
-pub fn flash_grpc::codec::encode<M: prost::message::Message>(&M) -> alloc::vec::Vec<u8>
+pub trait flash_grpc::codec::Message: core::marker::Sized
+pub fn flash_grpc::codec::Message::decode_from(&[u8]) -> core::result::Result<Self, flash_grpc::Status>
+pub fn flash_grpc::codec::Message::encode_to(&self, &mut alloc::vec::Vec<u8>)
+pub fn flash_grpc::codec::decode<M: flash_grpc::codec::Message>(&[u8]) -> core::result::Result<M, flash_grpc::Status>
+pub fn flash_grpc::codec::encode<M: flash_grpc::codec::Message>(&M) -> alloc::vec::Vec<u8>
 pub enum flash_grpc::Code
 pub flash_grpc::Code::Aborted = 10
 pub flash_grpc::Code::AlreadyExists = 6

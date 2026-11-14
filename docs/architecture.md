@@ -77,8 +77,9 @@ flowchart BT
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (httparse for the head, an own chunked decoder),
   HTTP/2 framing and HPACK (loona-hpack), WebSocket framing and permessage-deflate, KCP, QPACK
-  and HTTP/3 framing are state machines fed bytes by flash; TLS is rustls and QUIC is
-  quinn-proto, both driven sans-io (ADR-005).
+  and HTTP/3 framing are state machines fed bytes by flash; TLS is rustls, QUIC is
+  quinn-proto and WebRTC is str0m, all driven sans-io (ADR-005) and hidden behind flash's own
+  types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).
 - The facade `flash` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
   composes backend groups into an `Engine`.
 

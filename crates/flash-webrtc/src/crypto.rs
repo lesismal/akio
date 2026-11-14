@@ -30,7 +30,7 @@ use str0m::crypto::{
 };
 
 /// The crypto provider every `Rtc` made by this crate uses (pure Rust: RustCrypto + dimpl).
-pub fn crypto_provider() -> Arc<CryptoProvider> {
+pub(crate) fn crypto_provider() -> Arc<CryptoProvider> {
     static SRTP: Srtp = Srtp;
     static SHA1_HMAC: Sha1Hmac = Sha1Hmac;
     static SHA256: Sha256 = Sha256;
@@ -46,7 +46,7 @@ pub fn crypto_provider() -> Arc<CryptoProvider> {
 /// A fresh self-signed ECDSA P-256 certificate (and PKCS#8 key) for DTLS, valid from a day ago
 /// for a year, with a random 128-bit serial (Firefox wants serials unique across peers). Its
 /// SHA-256 fingerprint goes into the SDP; peers verify the DTLS certificate against it.
-pub fn generate_certificate() -> Option<DtlsCert> {
+pub(crate) fn generate_certificate() -> Option<DtlsCert> {
     let key = loop {
         let mut b = [0u8; 32];
         crate::fill_random(&mut b);

@@ -13,10 +13,7 @@ use std::{
     time::Duration,
 };
 
-use flash::{
-    Backend, Config, Engine, Listener, UringConfig,
-    tls::{Tls, rustls},
-};
+use flash::{Backend, Config, Engine, Listener, UringConfig, tls::Tls};
 use flash_http::{
     Context, Headers, HttpConfig, Router, WsOptions,
     files::Files,
@@ -107,15 +104,14 @@ fn start(name: &str) -> Server {
 
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        ck.key_pair.serialize_der(),
-    ));
-    let mut scfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
-        .unwrap();
+    let scfg = flash::tls::ServerConfig::builder(
+        vec![flash::tls::Certificate::from_der(cert.to_vec())],
+        flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+    )
     // The server offers h2 too; these clients ask for http/1.1 only.
-    scfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    .alpn(["h2", "http/1.1"])
+    .build()
+    .unwrap();
     let mut cfg = HttpConfig::default();
     cfg.max_body_bytes = 16 << 20;
     let engine = Engine::builder()
@@ -128,7 +124,7 @@ fn start(name: &str) -> Server {
             Listener::tcp("127.0.0.1:0".parse().unwrap())
                 .backend(backend())
                 .threads(2)
-                .serve(Tls::server(Arc::new(scfg), serve_with(cfg, app(&dir)))),
+                .serve(Tls::server(scfg, serve_with(cfg, app(&dir)))),
         )
         .build()
         .unwrap();

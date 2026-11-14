@@ -14,7 +14,9 @@ WebRTC for [flash](https://github.com/lesismal/flash): the sans-io
 - **Media**: RTP/RTCP, packetization of Opus, VP8, VP9, H.264, H.265, AV1; NACK and RTX, PLI/FIR,
   TWCC and bandwidth estimation; frame mode or RTP mode.
 - **SDP** offer/answer and renegotiation.
-- **Pure Rust crypto** (`crypto_provider`): RustCrypto and the `dimpl` DTLS stack, no C toolchain.
+- **Pure Rust crypto**: RustCrypto and the `dimpl` DTLS stack, no C toolchain.
+- **Own types**: str0m stays out of the API (upgrading it is not a breaking change); the
+  `unstable` cargo feature gives raw access (`flash_webrtc::str0m`, `Peer::with_rtc`).
 
 ```rust,no_run
 use flash::{Engine, Listener};

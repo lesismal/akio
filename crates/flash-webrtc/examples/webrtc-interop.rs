@@ -18,10 +18,9 @@ use std::time::{Duration, Instant};
 
 use flash::{Config, Engine, Listener};
 use flash_turn::{TurnConfig, TurnServer, static_auth};
-use flash_webrtc::str0m::format::Codec;
 use flash_webrtc::{
-    ChannelId, Direction, Endpoint, Frequency, KeyframeRequest, MediaData, MediaKind, MediaTime,
-    Peer, PeerHandler, RtcServer,
+    ChannelId, Codec, Direction, Endpoint, Frequency, KeyframeRequest, MediaData, MediaKind,
+    MediaTime, Peer, PeerHandler, RtcServer,
 };
 
 /// Echoes data channel messages and media samples; answers a keyframe request with a text
@@ -177,10 +176,9 @@ fn client(http: &str, what: &str) {
     let mut audio = None;
     let (peer, offer) = ep
         .create_offer(Probe(Mutex::new(tx)), |api| {
-            api.add_channel("interop".into());
+            api.add_channel("interop");
             if what == "media" {
-                audio =
-                    Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None));
+                audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
             }
         })
         .expect("offer");

@@ -14,7 +14,9 @@
 - **媒体**：RTP/RTCP，Opus、VP8、VP9、H.264、H.265、AV1 打包；NACK 与 RTX、PLI/FIR、TWCC 与带宽
   估计；帧模式或 RTP 模式。
 - **SDP** offer/answer 与重新协商。
-- **纯 Rust 加密**（`crypto_provider`）：RustCrypto 与 `dimpl` DTLS 栈，不需要 C 工具链。
+- **纯 Rust 加密**：RustCrypto 与 `dimpl` DTLS 栈，不需要 C 工具链。
+- **自有类型**：str0m 不出现在 API 中（升级它不是破坏性变更）；`unstable` cargo feature 提供直接
+  访问（`flash_webrtc::str0m`、`Peer::with_rtc`）。
 
 ```rust,no_run
 use flash::{Engine, Listener};

@@ -81,7 +81,7 @@ impl H3Client {
         engine: &flash::Engine,
         addr: SocketAddr,
         server_name: &str,
-        config: flash_quic::proto::ClientConfig,
+        config: flash_quic::ClientConfig,
     ) -> Result<H3Client, flash_quic::Error> {
         let st = Arc::new(Mutex::new(State::default()));
         let handler = ClientConn {

@@ -55,8 +55,8 @@ impl QuicHandler for Client {
 
 fn setup() -> (Arc<Engine>, SocketAddr) {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(ck.key_pair.serialize_der().into());
+    let cert = flash::tls::Certificate::from_der(ck.cert.der().to_vec());
+    let key = flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
     let cfg = flash_quic::server_config(vec![cert], key, &[b"echo"]).unwrap();
     let server = QuicServer::new(cfg, |_c: &Connection| Echo);
     let e = Engine::builder()
@@ -151,7 +151,7 @@ fn streams_datagrams_and_close() {
 fn bad_certificate_fails_the_handshake() {
     let (e, addr) = setup();
     let (tx, rx) = mpsc::channel();
-    let cfg = flash_quic::client_config(rustls::RootCertStore::empty(), &[b"echo"]).unwrap();
+    let cfg = flash_quic::client_config(flash::tls::RootCerts::empty(), &[b"echo"]).unwrap();
     let _c = flash_quic::dial(
         &e,
         addr,
@@ -165,7 +165,7 @@ fn bad_certificate_fails_the_handshake() {
     .unwrap();
     loop {
         match rx.recv_timeout(Duration::from_secs(10)).expect("close") {
-            Got::Closed(ConnectionError::TransportError(_)) => break,
+            Got::Closed(ConnectionError::TransportError { .. }) => break,
             Got::Closed(r) => panic!("unexpected {r}"),
             _ => {}
         }

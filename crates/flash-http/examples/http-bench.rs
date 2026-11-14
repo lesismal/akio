@@ -8,17 +8,14 @@
 //!
 //! HTTP/2 is served on the same port (prior knowledge / h2c upgrade, or ALPN `h2` with `tls`).
 
-use std::sync::Arc;
-
 use flash::{
     Backend, Engine, Listener,
-    tls::{Tls, rustls},
+    tls::{Certificate, PrivateKey, ServerConfig, Tls},
 };
 use flash_http::{
     Context, Router, WsOptions, serve,
     ws::{Message, WsHandler, WsSender},
 };
-use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
 struct Echo;
 
@@ -79,13 +76,13 @@ fn main() -> std::io::Result<()> {
     let l = if a.get(3).map(String::as_str) == Some("tls") {
         let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .map_err(std::io::Error::other)?;
-        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der()));
-        let mut cfg = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![ck.cert.der().clone()], key)
-            .map_err(std::io::Error::other)?;
-        cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-        l.serve(Tls::server(Arc::new(cfg), serve(app)))
+        let cfg = ServerConfig::builder(
+            vec![Certificate::from_der(ck.cert.der().to_vec())],
+            PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+        )
+        .alpn(["h2", "http/1.1"])
+        .build()?;
+        l.serve(Tls::server(cfg, serve(app)))
     } else {
         l.serve(serve(app))
     };

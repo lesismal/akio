@@ -10,7 +10,7 @@
 //! use flash::{Engine, Listener};
 //! use flash_http::{Context, Router};
 //!
-//! # let (certs, key) = (vec![], flash_quic::rustls::pki_types::PrivateKeyDer::Pkcs8(vec![].into()));
+//! # let (certs, key) = (vec![], flash::tls::PrivateKey::from_pkcs8_der(vec![]));
 //! let app = Router::new().get("/", |ctx: &mut Context| ctx.text(200, "hello over h3"));
 //! let quic = flash_h3::server_config(certs, key).unwrap();
 //! let engine = Engine::builder()
@@ -68,20 +68,20 @@ impl Default for H3Config {
 
 /// A QUIC server config for a certificate chain and key, offering ALPN `h3`.
 pub fn server_config(
-    certs: Vec<flash_quic::rustls::pki_types::CertificateDer<'static>>,
-    key: flash_quic::rustls::pki_types::PrivateKeyDer<'static>,
-) -> Result<flash_quic::proto::ServerConfig, flash_quic::Error> {
+    certs: Vec<flash::tls::Certificate>,
+    key: flash::tls::PrivateKey,
+) -> Result<flash_quic::ServerConfig, flash_quic::Error> {
     flash_quic::server_config(certs, key, &[b"h3"])
 }
 
 /// Serves `service` over HTTP/3: the acceptor of a UDP listener (like `flash_http::serve`).
-pub fn serve<S: Service>(quic: flash_quic::proto::ServerConfig, service: S) -> QuicServer {
+pub fn serve<S: Service>(quic: flash_quic::ServerConfig, service: S) -> QuicServer {
     serve_with(quic, H3Config::default(), service)
 }
 
 /// [`serve`] with limits (like `flash_http::serve_with`).
 pub fn serve_with<S: Service>(
-    quic: flash_quic::proto::ServerConfig,
+    quic: flash_quic::ServerConfig,
     cfg: H3Config,
     service: S,
 ) -> QuicServer {

@@ -10,7 +10,7 @@ Both clients run their connections on a flash `Engine` (give it `client_threads(
 {{#include ../../../../crates/flash-http/examples/guide-http.rs:client}}
 ```
 
-- `Client::new(Arc<Engine>)`, cheap to clone. `with_tls(Arc<rustls::ClientConfig>)` enables
+- `Client::new(Arc<Engine>)`, cheap to clone. `with_tls(flash::tls::ClientConfig)` enables
   `https://`.
 - `ClientRequest::get(url)`, `ClientRequest::post(url, body)`, `.header(name, value)`; or fill
   `method`, `url`, `headers`, `body` yourself. `Host`, `Content-Length` and `Connection` are added.

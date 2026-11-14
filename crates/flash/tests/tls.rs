@@ -14,11 +14,11 @@ use std::{
 
 use flash::{
     Config, Conn, Engine, Error, Handler, Listener, fn_acceptor,
-    tls::{Tls, rustls, tls_info},
+    tls::{self as ftls, Tls, tls_info},
 };
 use rustls::{
-    ClientConfig, ClientConnection, RootCertStore, ServerConfig, StreamOwned,
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+    ClientConfig, ClientConnection, RootCertStore, StreamOwned,
+    pki_types::{CertificateDer, ServerName},
 };
 
 struct Pki {
@@ -34,14 +34,27 @@ fn pki() -> Pki {
     }
 }
 
-fn server_cfg(p: &Pki, alpn: &[&[u8]]) -> Arc<ServerConfig> {
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(p.key.clone()));
-    let mut c = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![p.cert.clone()], key)
+fn server_cfg(p: &Pki, alpn: &[&[u8]]) -> ftls::ServerConfig {
+    ftls::ServerConfig::builder(
+        vec![ftls::Certificate::from_der(p.cert.to_vec())],
+        ftls::PrivateKey::from_pkcs8_der(p.key.clone()),
+    )
+    .alpn(alpn)
+    .build()
+    .unwrap()
+}
+
+/// The configuration of a flash TLS client trusting `trust`.
+fn flash_client_cfg(trust: &CertificateDer<'static>, alpn: &[&[u8]]) -> ftls::ClientConfig {
+    let mut roots = ftls::RootCerts::empty();
+    roots
+        .add(&ftls::Certificate::from_der(trust.to_vec()))
         .unwrap();
-    c.alpn_protocols = alpn.iter().map(|a| a.to_vec()).collect();
-    Arc::new(c)
+    ftls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(alpn)
+        .build()
+        .unwrap()
 }
 
 fn client_cfg(trust: &CertificateDer<'static>, alpn: &[&[u8]]) -> Arc<ClientConfig> {
@@ -283,7 +296,7 @@ fn flash_dials_flash_over_tls() {
         .unwrap();
     client.start().unwrap();
     let acceptor = Tls::client(
-        client_cfg(&p.cert, &[]),
+        flash_client_cfg(&p.cert, &[]),
         "localhost",
         ClientAcceptor(got.clone()),
     )

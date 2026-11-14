@@ -11,10 +11,7 @@ use std::{
     time::Duration,
 };
 
-use flash::{
-    Backend, Config, Engine, Listener, UringConfig,
-    tls::{Tls, rustls},
-};
+use flash::{Backend, Config, Engine, Listener, UringConfig, tls::Tls};
 use flash_http::{
     Context, Headers, Response, Router,
     client::{Client, ClientError, ClientRequest},
@@ -261,20 +258,22 @@ fn errors_timeouts_and_await() {
 fn https_through_flash_tls() {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
     let cert = ck.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(rustls::pki_types::PrivatePkcs8KeyDer::from(
-        ck.key_pair.serialize_der(),
-    ));
-    let scfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
+    let scfg = flash::tls::ServerConfig::builder(
+        vec![flash::tls::Certificate::from_der(cert.to_vec())],
+        flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+    )
+    .build()
+    .unwrap();
+    let e = Arc::new(start(Tls::server(scfg, serve(app()))));
+    let mut roots = flash::tls::RootCerts::empty();
+    roots
+        .add(&flash::tls::Certificate::from_der(cert.to_vec()))
         .unwrap();
-    let e = Arc::new(start(Tls::server(Arc::new(scfg), serve(app()))));
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(cert).unwrap();
-    let ccfg = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    let c = Client::new(e.clone()).with_tls(Arc::new(ccfg));
+    let ccfg = flash::tls::ClientConfig::builder()
+        .roots(roots)
+        .build()
+        .unwrap();
+    let c = Client::new(e.clone()).with_tls(ccfg);
     let url = format!("https://localhost:{}/hello", e.local_addrs()[0].port());
     let r = c.send(ClientRequest::get(&url)).wait().unwrap();
     assert_eq!(r.body, b"hello client");

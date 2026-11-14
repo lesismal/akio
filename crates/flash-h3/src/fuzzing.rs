@@ -1,7 +1,7 @@
 //! Fuzz entry points (feature `fuzzing`; not a public API). The `fuzz/` cargo-fuzz project
 //! calls them; the unit tests below replay `fuzz/corpus/<target>` on stable.
 
-use flash_quic::proto::{Dir, Side, StreamId};
+use flash_quic::{Dir, Side, StreamId};
 
 use crate::frame::Reader;
 use crate::{H3Config, Req, Uni, qpack, read_req};

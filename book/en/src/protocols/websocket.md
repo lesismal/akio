@@ -85,6 +85,6 @@ Run `cargo run -p flash-ws --example guide-ws` for a chat room with two clients,
 
 ## Not done
 
-Client: system root certificates (supply a rustls config), proxies, redirects, sending 1001 on
+Client: system root certificates (load them into `flash::tls::RootCerts`), proxies, redirects, sending 1001 on
 engine shutdown (connections currently end with 1006). Server: WebSocket over HTTP/2 or HTTP/3
 (extended CONNECT).

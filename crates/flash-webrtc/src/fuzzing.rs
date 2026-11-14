@@ -17,7 +17,7 @@ pub fn webrtc_sdp(data: &[u8]) {
     let Ok(offer) = SdpOffer::from_sdp_string(s) else {
         return;
     };
-    let mut rtc = crate::rtc_config().build(Instant::now());
+    let mut rtc = crate::rtc_config().0.build(Instant::now());
     if let Ok(answer) = rtc.sdp_api().accept_offer(offer) {
         let text = answer.to_sdp_string();
         let _ = SdpAnswer::from_sdp_string(&text);
@@ -26,13 +26,13 @@ pub fn webrtc_sdp(data: &[u8]) {
 
 #[cfg(test)]
 pub(crate) mod seeds {
-    use crate::{Direction, MediaKind};
+    use str0m::media::{Direction, MediaKind};
 
     /// Offers str0m itself makes: data only, and audio + video + data.
     pub(crate) fn webrtc_sdp() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         for media in [false, true] {
-            let mut rtc = crate::rtc_config().build(std::time::Instant::now());
+            let mut rtc = crate::rtc_config().0.build(std::time::Instant::now());
             let c = str0m::Candidate::host("192.0.2.1:5000".parse().expect("addr"), "udp")
                 .expect("candidate");
             rtc.add_local_candidate(c);

@@ -62,7 +62,7 @@ pub struct flash_h3::H3Client
 impl flash_h3::H3Client
 pub fn flash_h3::H3Client::close(&self)
 pub fn flash_h3::H3Client::connection(&self) -> &flash_quic::Connection
-pub fn flash_h3::H3Client::dial(&flash::Engine, core::net::socket_addr::SocketAddr, &str, quinn_proto::config::ClientConfig) -> core::result::Result<flash_h3::H3Client, flash_quic::Error>
+pub fn flash_h3::H3Client::dial(&flash::Engine, core::net::socket_addr::SocketAddr, &str, flash_quic::types::ClientConfig) -> core::result::Result<flash_h3::H3Client, flash_quic::Error>
 pub fn flash_h3::H3Client::get(&self, &str, core::time::Duration) -> core::result::Result<flash_http::message::Response, flash_h3::H3Error>
 pub fn flash_h3::H3Client::request(&self, flash_http::message::Method, &str, &flash_http::message::Headers, alloc::vec::Vec<u8>, impl core::ops::function::FnOnce(core::result::Result<flash_http::message::Response, flash_h3::H3Error>) + core::marker::Send + 'static)
 pub fn flash_h3::H3Client::request_blocking(&self, flash_http::message::Method, &str, &flash_http::message::Headers, alloc::vec::Vec<u8>, core::time::Duration) -> core::result::Result<flash_http::message::Response, flash_h3::H3Error>
@@ -89,6 +89,6 @@ impl core::marker::Sync for flash_h3::H3Config
 impl core::marker::Unpin for flash_h3::H3Config
 impl core::panic::unwind_safe::RefUnwindSafe for flash_h3::H3Config
 impl core::panic::unwind_safe::UnwindSafe for flash_h3::H3Config
-pub fn flash_h3::serve<S: flash_http::context::Service>(quinn_proto::config::ServerConfig, S) -> flash_quic::QuicServer
-pub fn flash_h3::serve_with<S: flash_http::context::Service>(quinn_proto::config::ServerConfig, flash_h3::H3Config, S) -> flash_quic::QuicServer
-pub fn flash_h3::server_config(alloc::vec::Vec<rustls_pki_types::CertificateDer<'static>>, rustls_pki_types::PrivateKeyDer<'static>) -> core::result::Result<quinn_proto::config::ServerConfig, flash_quic::Error>
+pub fn flash_h3::serve<S: flash_http::context::Service>(flash_quic::types::ServerConfig, S) -> flash_quic::QuicServer
+pub fn flash_h3::serve_with<S: flash_http::context::Service>(flash_quic::types::ServerConfig, flash_h3::H3Config, S) -> flash_quic::QuicServer
+pub fn flash_h3::server_config(alloc::vec::Vec<flash_tls::config::Certificate>, flash_tls::config::PrivateKey) -> core::result::Result<flash_quic::types::ServerConfig, flash_quic::Error>

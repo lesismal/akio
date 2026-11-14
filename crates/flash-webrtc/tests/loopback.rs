@@ -8,10 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use flash::{Engine, Listener};
-use flash_webrtc::str0m::format::Codec;
 use flash_webrtc::{
-    ChannelConfig, ChannelId, Direction, Endpoint, Frequency, MediaAdded, MediaData, MediaKind,
-    MediaTime, Mid, Peer, PeerHandler, Reliability, RtcServer,
+    ChannelConfig, ChannelId, Codec, Direction, Endpoint, Frequency, MediaAdded, MediaData,
+    MediaKind, MediaTime, Mid, Peer, PeerHandler, Reliability, RtcServer,
 };
 
 const T: Duration = Duration::from_secs(10);
@@ -118,13 +117,11 @@ fn data_channels_endpoint_to_ice_lite_server() {
     let mut lossy = None;
     let (client, offer) = ep
         .create_offer(Probe(Mutex::new(tx)), |api| {
-            reliable = Some(api.add_channel("reliable".into()));
-            lossy = Some(api.add_channel_with_config(ChannelConfig {
-                label: "lossy".into(),
-                ordered: false,
-                reliability: Reliability::MaxRetransmits { retransmits: 0 },
-                ..Default::default()
-            }));
+            reliable = Some(api.add_channel("reliable"));
+            let mut cfg = ChannelConfig::new("lossy");
+            cfg.ordered = false;
+            cfg.reliability = Reliability::MaxRetransmits { retransmits: 0 };
+            lossy = Some(api.add_channel_with_config(&cfg));
         })
         .unwrap();
     assert!(offer.contains("a=candidate"), "{offer}");
@@ -160,12 +157,7 @@ fn data_channels_endpoint_to_ice_lite_server() {
     }
 
     // A channel opened later needs no renegotiation.
-    let (late, offer) = client
-        .open_channel(ChannelConfig {
-            label: "late".into(),
-            ..Default::default()
-        })
-        .unwrap();
+    let (late, offer) = client.open_channel(&ChannelConfig::new("late")).unwrap();
     assert!(offer.is_none());
     wait(
         &rx,
@@ -203,9 +195,9 @@ fn media_echo_between_two_full_ice_endpoints() {
     let mut video = None;
     let (pa, offer) = a
         .create_offer(Probe(Mutex::new(tx)), |api| {
-            audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None));
-            video = Some(api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None));
-            api.add_channel("ctl".into());
+            audio = Some(api.add_media(MediaKind::Audio, Direction::SendRecv, None, None));
+            video = Some(api.add_media(MediaKind::Video, Direction::SendRecv, None, None));
+            api.add_channel("ctl");
         })
         .unwrap();
     let (_pb, answer) = b.accept_offer(&offer, Echo).unwrap();
@@ -281,7 +273,7 @@ fn echoes_stay_in_order_while_an_app_thread_sends() {
     let mut ch = None;
     let (pa, offer) = a
         .create_offer(Probe(Mutex::new(tx)), |api| {
-            ch = Some(api.add_channel("o".into()));
+            ch = Some(api.add_channel("o"));
         })
         .unwrap();
     let (_pb, answer) = b.accept_offer(&offer, Echo).unwrap();
@@ -352,7 +344,7 @@ fn a_peer_that_never_connects_is_closed() {
     let (tx, rx) = channel();
     let (_client, offer) = ep
         .create_offer(Echo, |api| {
-            api.add_channel("x".into());
+            api.add_channel("x");
         })
         .unwrap();
     // The answer never reaches the client: nothing connects.

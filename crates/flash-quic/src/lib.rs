@@ -11,6 +11,11 @@
 //! Writes never block: [`Connection::send`] hands quinn what flow control allows and keeps the
 //! rest until the peer grants more credit ([`Connection::queued_bytes`] paces a producer).
 //!
+//! The API uses this crate's own types ([`StreamId`], [`ConnectionError`], [`ServerConfig`],
+//! [`TransportConfig`] ...) and the TLS types of `flash::tls`, so upgrading quinn-proto or rustls
+//! is not a breaking change. The `unstable` cargo feature re-exports `quinn_proto` as `proto`
+//! and adds `from_quinn` / `as_quinn_mut`, outside the semver promise.
+//!
 //! ```no_run
 //! use bytes::Bytes;
 //! use flash::{Engine, Listener};
@@ -25,7 +30,11 @@
 //!         }
 //!     }
 //! }
-//! # let (certs, key) = (vec![], rustls::pki_types::PrivateKeyDer::Pkcs8(vec![].into()));
+//! # fn pem() -> (Vec<u8>, Vec<u8>) { unimplemented!() }
+//! use flash::tls::{Certificate, PrivateKey};
+//! let (cert_pem, key_pem) = pem();
+//! let certs = Certificate::from_pem(&cert_pem).unwrap();
+//! let key = PrivateKey::from_pem(&key_pem).unwrap();
 //! let cfg = flash_quic::server_config(certs, key, &[b"echo"]).unwrap();
 //! let server = QuicServer::new(cfg, |_c: &Connection| Echo);
 //! let engine = Engine::builder()
@@ -40,6 +49,7 @@
 #![warn(clippy::unwrap_used)]
 
 mod timer;
+mod types;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -49,12 +59,19 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
 use bytes::{Bytes, BytesMut};
+use flash::tls;
 use flash_core::{Acceptor, Conn, Handler};
+use qp::{Dir as QDir, StreamId as QId, VarInt};
 use quinn_proto as qp;
 
-pub use qp::{ConnectionError, Dir, StreamId, TransportConfig, VarInt};
+/// The QUIC implementation. **Unstable** (cargo feature `unstable`): outside the semver promise.
+#[cfg(feature = "unstable")]
 pub use quinn_proto as proto;
-pub use rustls;
+pub use types::{
+    ClientConfig, Congestion, ConnectionError, ConnectionStats, Dir, ServerConfig, Side, StreamId,
+    TransportConfig, UdpStats,
+};
+use types::{Own, config_err};
 
 /// Errors of [`Connection`] calls and of the config helpers.
 #[derive(Debug)]
@@ -68,8 +85,8 @@ pub enum Error {
     Stopped(u64),
     /// The peer does not accept datagrams, or this one is too large.
     Datagram(String),
-    /// Could not start a connection.
-    Connect(qp::ConnectError),
+    /// Could not start a connection (bad server name, endpoint stopping ...).
+    Connect(String),
     /// A TLS or QUIC configuration problem.
     Config(String),
 }
@@ -111,11 +128,11 @@ pub trait QuicHandler: Send + 'static {
 
 enum Ev {
     Connected,
-    Opened(StreamId),
-    Data(StreamId, Bytes, bool),
-    Reset(StreamId, u64),
-    Stopped(StreamId, u64),
-    Available(Dir),
+    Opened(QId),
+    Data(QId, Bytes, bool),
+    Reset(QId, u64),
+    Stopped(QId, u64),
+    Available(QDir),
     Datagram(Bytes),
     Closed(ConnectionError),
 }
@@ -129,7 +146,7 @@ struct Pending {
 
 struct State {
     conn: qp::Connection,
-    pending: HashMap<StreamId, Pending>,
+    pending: HashMap<QId, Pending>,
     armed: Option<Instant>,
     lost: bool,
     buf: Vec<u8>,
@@ -208,9 +225,9 @@ impl Connection {
         lock(&self.0.state).conn.rtt()
     }
 
-    /// quinn's connection statistics.
-    pub fn stats(&self) -> qp::ConnectionStats {
-        lock(&self.0.state).conn.stats()
+    /// Connection statistics.
+    pub fn stats(&self) -> ConnectionStats {
+        lock(&self.0.state).conn.stats().own()
     }
 
     /// Whether the connection is closed or closing.
@@ -222,17 +239,20 @@ impl Connection {
     /// [`QuicHandler::on_streams_available`]), which includes before the handshake completes
     /// (open streams from [`QuicHandler::on_connected`]).
     pub fn open_bi(&self) -> Option<StreamId> {
-        lock(&self.0.state).conn.streams().open(Dir::Bi)
+        let id = lock(&self.0.state).conn.streams().open(QDir::Bi);
+        id.map(Own::own)
     }
 
     /// Opens a unidirectional stream; `None` while the peer's stream limit is reached.
     pub fn open_uni(&self) -> Option<StreamId> {
-        lock(&self.0.state).conn.streams().open(Dir::Uni)
+        let id = lock(&self.0.state).conn.streams().open(QDir::Uni);
+        id.map(Own::own)
     }
 
     /// Queues bytes on a stream; what flow control allows goes out now, the rest as credit
     /// arrives.
     pub fn send(&self, id: StreamId, data: impl Into<Bytes>) -> Result<(), Error> {
+        let id = id.q();
         let data = data.into();
         let mut st = lock(&self.0.state);
         if st.conn.is_closed() {
@@ -261,6 +281,7 @@ impl Connection {
 
     /// Ends a stream once its queued bytes are out.
     pub fn finish(&self, id: StreamId) -> Result<(), Error> {
+        let id = id.q();
         let mut st = lock(&self.0.state);
         let State { conn, pending, .. } = &mut *st;
         if !can_send(conn, id) {
@@ -279,6 +300,7 @@ impl Connection {
 
     /// Abandons sending on a stream (`RESET_STREAM`), dropping what is queued.
     pub fn reset(&self, id: StreamId, code: u32) -> Result<(), Error> {
+        let id = id.q();
         let mut st = lock(&self.0.state);
         if !can_send(&st.conn, id) {
             return Err(Error::UnknownStream);
@@ -296,6 +318,7 @@ impl Connection {
 
     /// Asks the peer to stop sending on a stream (`STOP_SENDING`).
     pub fn stop(&self, id: StreamId, code: u32) -> Result<(), Error> {
+        let id = id.q();
         let mut st = lock(&self.0.state);
         if !can_recv(&st.conn, id) {
             return Err(Error::UnknownStream);
@@ -312,7 +335,10 @@ impl Connection {
 
     /// Bytes queued on a stream that quinn has not taken yet.
     pub fn queued_bytes(&self, id: StreamId) -> usize {
-        lock(&self.0.state).pending.get(&id).map_or(0, |p| p.bytes)
+        lock(&self.0.state)
+            .pending
+            .get(&id.q())
+            .map_or(0, |p| p.bytes)
     }
 
     /// Sends an unreliable datagram (needs the peer's support, RFC 9221).
@@ -374,7 +400,7 @@ impl Connection {
                         qp::Event::ConnectionLost { reason } => {
                             pending.clear();
                             if !std::mem::replace(lost, true) {
-                                evs.push(Ev::Closed(reason));
+                                evs.push(Ev::Closed(reason.own()));
                             }
                         }
                         qp::Event::Stream(se) => on_stream_event(conn, pending, se, &mut evs),
@@ -451,11 +477,11 @@ impl Connection {
                 let Some(ev) = ev else { break };
                 match ev {
                     Ev::Connected => h.on_connected(self),
-                    Ev::Opened(id) => h.on_stream_opened(self, id),
-                    Ev::Data(id, d, fin) => h.on_stream_data(self, id, d, fin),
-                    Ev::Reset(id, c) => h.on_stream_reset(self, id, c),
-                    Ev::Stopped(id, c) => h.on_stream_stopped(self, id, c),
-                    Ev::Available(d) => h.on_streams_available(self, d),
+                    Ev::Opened(id) => h.on_stream_opened(self, id.own()),
+                    Ev::Data(id, d, fin) => h.on_stream_data(self, id.own(), d, fin),
+                    Ev::Reset(id, c) => h.on_stream_reset(self, id.own(), c),
+                    Ev::Stopped(id, c) => h.on_stream_stopped(self, id.own(), c),
+                    Ev::Available(d) => h.on_streams_available(self, d.own()),
                     Ev::Datagram(d) => h.on_datagram(self, d),
                     Ev::Closed(r) => {
                         self.0.done.store(true, Ordering::Release);
@@ -490,18 +516,18 @@ impl timer::Due for Shared {
 }
 
 /// Whether `id` has a send side here (quinn panics on a peer's unidirectional stream).
-fn can_send(conn: &qp::Connection, id: StreamId) -> bool {
-    id.dir() == Dir::Bi || id.initiator() == conn.side()
+fn can_send(conn: &qp::Connection, id: QId) -> bool {
+    id.dir() == QDir::Bi || id.initiator() == conn.side()
 }
 
 /// Whether `id` has a receive side here (not one of our own unidirectional streams).
-fn can_recv(conn: &qp::Connection, id: StreamId) -> bool {
-    id.dir() == Dir::Bi || id.initiator() != conn.side()
+fn can_recv(conn: &qp::Connection, id: QId) -> bool {
+    id.dir() == QDir::Bi || id.initiator() != conn.side()
 }
 
 /// Hands a stream's queued bytes to quinn; finishes it when they are all taken and `fin` is
 /// set.
-fn flush_stream(conn: &mut qp::Connection, id: StreamId, p: &mut Pending) -> Result<(), Error> {
+fn flush_stream(conn: &mut qp::Connection, id: QId, p: &mut Pending) -> Result<(), Error> {
     let mut s = conn.send_stream(id);
     while let Some(front) = p.chunks.front_mut() {
         match s.write(front) {
@@ -532,7 +558,7 @@ fn flush_stream(conn: &mut qp::Connection, id: StreamId, p: &mut Pending) -> Res
     Ok(())
 }
 
-fn read_stream(conn: &mut qp::Connection, id: StreamId, evs: &mut Vec<Ev>) {
+fn read_stream(conn: &mut qp::Connection, id: QId, evs: &mut Vec<Ev>) {
     let mut rs = conn.recv_stream(id);
     let Ok(mut chunks) = rs.read(true) else {
         return;
@@ -569,7 +595,7 @@ fn read_stream(conn: &mut qp::Connection, id: StreamId, evs: &mut Vec<Ev>) {
 
 fn on_stream_event(
     conn: &mut qp::Connection,
-    pending: &mut HashMap<StreamId, Pending>,
+    pending: &mut HashMap<QId, Pending>,
     se: qp::StreamEvent,
     evs: &mut Vec<Ev>,
 ) {
@@ -699,12 +725,12 @@ impl fmt::Debug for QuicServer {
 impl QuicServer {
     /// A server with `config` (see [`server_config`]) whose connections get handlers from
     /// `factory`.
-    pub fn new<H: QuicHandler, F>(config: qp::ServerConfig, factory: F) -> QuicServer
+    pub fn new<H: QuicHandler, F>(config: ServerConfig, factory: F) -> QuicServer
     where
         F: Fn(&Connection) -> H + Send + Sync + 'static,
     {
         QuicServer(Arc::new(Ep::new(
-            Some(Arc::new(config)),
+            Some(Arc::new(config.0)),
             Some(Box::new(move |c| Box::new(factory(c)))),
         )))
     }
@@ -812,13 +838,13 @@ pub fn dial<H: QuicHandler>(
     engine: &flash::Engine,
     addr: SocketAddr,
     server_name: &str,
-    config: qp::ClientConfig,
+    config: ClientConfig,
     handler: H,
 ) -> Result<Connection, Error> {
     let ep = Arc::new(Ep::new(None, None));
     let (h, conn) = lock(&ep.endpoint)
-        .connect(Instant::now(), config, addr, server_name)
-        .map_err(Error::Connect)?;
+        .connect(Instant::now(), config.0, addr, server_name)
+        .map_err(|e| Error::Connect(e.to_string()))?;
     let c = Connection::new(h, conn, ep.clone());
     *lock(&c.0.handler) = Some(Box::new(handler));
     lock(&ep.conns).insert(h, c.clone());
@@ -830,112 +856,60 @@ pub fn dial<H: QuicHandler>(
 
 // ---- configuration helpers ----
 
-fn provider() -> Arc<rustls::crypto::CryptoProvider> {
-    Arc::new(rustls::crypto::ring::default_provider())
-}
-
-/// A server config for a certificate chain and key, offering the ALPN protocols `alpn`.
+/// A server config for a certificate chain (leaf first) and key, offering the ALPN protocols
+/// `alpn` (TLS 1.3, 0-RTT accepted).
 pub fn server_config(
-    certs: Vec<rustls::pki_types::CertificateDer<'static>>,
-    key: rustls::pki_types::PrivateKeyDer<'static>,
+    certs: Vec<tls::Certificate>,
+    key: tls::PrivateKey,
     alpn: &[&[u8]],
-) -> Result<qp::ServerConfig, Error> {
-    let mut tls = rustls::ServerConfig::builder_with_provider(provider())
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|e| Error::Config(e.to_string()))?
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .map_err(|e| Error::Config(e.to_string()))?;
-    tls.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-    tls.max_early_data_size = u32::MAX;
-    server_config_from(tls)
+) -> Result<ServerConfig, Error> {
+    let tls = tls::ServerConfig::builder(certs, key)
+        .alpn(alpn)
+        .tls13_only(true)
+        .build()
+        .map_err(config_err)?;
+    server_from_rustls(&tls, true)
 }
 
-/// A server config from a rustls config (TLS 1.3, with the ALPN protocols set).
-pub fn server_config_from(tls: rustls::ServerConfig) -> Result<qp::ServerConfig, Error> {
-    let q = qp::crypto::rustls::QuicServerConfig::try_from(tls)
-        .map_err(|e| Error::Config(e.to_string()))?;
-    Ok(qp::ServerConfig::with_crypto(Arc::new(q)))
+/// A server config from a TLS configuration (its certificates, ALPN protocols, client
+/// authentication; QUIC always runs TLS 1.3).
+pub fn server_config_from(tls: &tls::ServerConfig) -> Result<ServerConfig, Error> {
+    server_from_rustls(tls, false)
+}
+
+fn server_from_rustls(tls: &tls::ServerConfig, early_data: bool) -> Result<ServerConfig, Error> {
+    let mut r = (**tls.__rustls()).clone();
+    // QUIC allows only "no 0-RTT" or "any amount".
+    r.max_early_data_size = if early_data { u32::MAX } else { 0 };
+    let q = qp::crypto::rustls::QuicServerConfig::try_from(r).map_err(config_err)?;
+    Ok(ServerConfig(qp::ServerConfig::with_crypto(Arc::new(q))))
 }
 
 /// A client config trusting `roots`, asking for the ALPN protocols `alpn`.
-pub fn client_config(
-    roots: rustls::RootCertStore,
-    alpn: &[&[u8]],
-) -> Result<qp::ClientConfig, Error> {
-    let mut tls = rustls::ClientConfig::builder_with_provider(provider())
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|e| Error::Config(e.to_string()))?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tls.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-    client_config_from(tls)
+pub fn client_config(roots: tls::RootCerts, alpn: &[&[u8]]) -> Result<ClientConfig, Error> {
+    let tls = tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(alpn)
+        .tls13_only(true)
+        .build()
+        .map_err(config_err)?;
+    client_config_from(&tls)
 }
 
-/// A client config from a rustls config.
-pub fn client_config_from(tls: rustls::ClientConfig) -> Result<qp::ClientConfig, Error> {
-    let q = qp::crypto::rustls::QuicClientConfig::try_from(tls)
-        .map_err(|e| Error::Config(e.to_string()))?;
-    Ok(qp::ClientConfig::new(Arc::new(q)))
+/// A client config from a TLS configuration (roots, ALPN protocols, client certificate).
+pub fn client_config_from(tls: &tls::ClientConfig) -> Result<ClientConfig, Error> {
+    let r = (**tls.__rustls()).clone();
+    let q = qp::crypto::rustls::QuicClientConfig::try_from(r).map_err(config_err)?;
+    Ok(ClientConfig(qp::ClientConfig::new(Arc::new(q))))
 }
 
 /// A client config that accepts any server certificate: for tests and interop runs only.
-pub fn client_config_insecure(alpn: &[&[u8]]) -> Result<qp::ClientConfig, Error> {
-    let p = provider();
-    let mut tls = rustls::ClientConfig::builder_with_provider(p.clone())
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|e| Error::Config(e.to_string()))?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(AnyCert(p)))
-        .with_no_client_auth();
-    tls.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-    client_config_from(tls)
-}
-
-#[derive(Debug)]
-struct AnyCert(Arc<rustls::crypto::CryptoProvider>);
-
-impl rustls::client::danger::ServerCertVerifier for AnyCert {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &rustls::pki_types::CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(
-            message,
-            cert,
-            dss,
-            &self.0.signature_verification_algorithms,
-        )
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.0.signature_verification_algorithms.supported_schemes()
-    }
+pub fn client_config_insecure(alpn: &[&[u8]]) -> Result<ClientConfig, Error> {
+    let tls = tls::ClientConfig::builder()
+        .insecure_skip_verify()
+        .alpn(alpn)
+        .tls13_only(true)
+        .build()
+        .map_err(config_err)?;
+    client_config_from(&tls)
 }

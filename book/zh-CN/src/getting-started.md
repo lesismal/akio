@@ -18,7 +18,7 @@ flash-http = { git = "https://github.com/lesismal/flash" }   # HTTP/1.1、HTTP/2
 # flash-quic、flash-h3、flash-kcp：写法相同
 ```
 
-TLS（`flash::tls`，基于 rustls）和 eBPF 分流（`flash::ebpf`）都包含在 `flash` crate 里。
+TLS（`flash::tls`）和 eBPF 分流（`flash::ebpf`）都包含在 `flash` crate 里。
 
 ## 一个 TCP echo 服务
 

@@ -82,7 +82,7 @@ fn main() -> std::io::Result<()> {
     let url = format!("ws://{}/ws", engine.local_addrs()[0]);
 
     // ANCHOR: dial
-    let mut opts = DialOptions::default(); // wss:// needs `tls: Some(Arc<rustls::ClientConfig>)`
+    let mut opts = DialOptions::default(); // wss:// needs `tls: Some(flash::tls::ClientConfig)`
     opts.protocols = vec!["chat".into()];
     opts.handshake_timeout = Duration::from_secs(5);
     let (tx, rx) = mpsc::channel();

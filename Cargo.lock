@@ -520,6 +520,7 @@ dependencies = [
  "libc",
  "log",
  "rcgen",
+ "rustls",
 ]
 
 [[package]]
@@ -628,6 +629,7 @@ dependencies = [
  "loona-hpack",
  "rcgen",
  "regex",
+ "rustls",
 ]
 
 [[package]]
@@ -669,6 +671,7 @@ dependencies = [
  "flash-core",
  "flash-http",
  "rcgen",
+ "rustls",
 ]
 
 [[package]]
@@ -694,7 +697,6 @@ dependencies = [
  "flash-core",
  "quinn-proto",
  "rcgen",
- "rustls",
 ]
 
 [[package]]
@@ -722,6 +724,7 @@ name = "flash-tls"
 version = "1.0.0-rc.1"
 dependencies = [
  "flash-core",
+ "rcgen",
  "rustls",
 ]
 

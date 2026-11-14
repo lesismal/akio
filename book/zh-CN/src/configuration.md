@@ -107,4 +107,5 @@ false）。
 | crate | feature | 默认 | 作用 |
 |---|---|---|---|
 | flash-http | `regex` | 开启 | 正则路由参数（`{id:[0-9]+}`） |
-| flash-grpc | `prost` | 关闭 | 用于 prost 消息的 `flash_grpc::codec` 辅助函数 |
+| flash-grpc | `prost` | 关闭 | 为 prost 消息实现 `codec::Message`（不在 semver 承诺内） |
+| flash、flash-tls、flash-quic、flash-webrtc | `unstable` | 关闭 | 直接访问被封装的 rustls / quinn-proto / str0m（不在 semver 承诺内） |

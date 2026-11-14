@@ -10,9 +10,8 @@ use std::{
 
 use flash::{
     Acceptor, Conn, Engine, Handler, Listener, fn_acceptor,
-    tls::{Tls, rustls, tls_info},
+    tls::{Certificate, ClientConfig, PrivateKey, RootCerts, ServerConfig, Tls, tls_info},
 };
-use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
 struct Echo;
 
@@ -51,22 +50,19 @@ impl Acceptor for Hello {
 fn main() -> std::io::Result<()> {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
         .map_err(std::io::Error::other)?;
-    let cert = ck.cert.der().clone();
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der()));
+    // In production: Certificate::from_pem(&std::fs::read("cert.pem")?) and PrivateKey::from_pem.
+    let cert = Certificate::from_der(ck.cert.der().to_vec());
+    let key = PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
 
     // ANCHOR: server
-    let mut server_cfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.clone()], key)
-        .map_err(std::io::Error::other)?;
-    server_cfg.alpn_protocols = vec![b"echo".to_vec()];
+    let server_cfg = ServerConfig::builder(vec![cert.clone()], key)
+        .alpn(["echo"])
+        .build()?;
     let engine = Arc::new(
         Engine::builder()
             .listen(
-                Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(Tls::server(
-                    Arc::new(server_cfg),
-                    fn_acceptor(|_c: &Conn<Echo>| Echo),
-                )),
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .serve(Tls::server(server_cfg, fn_acceptor(|_c: &Conn<Echo>| Echo))),
             )
             .client_threads(1)
             .build()?,
@@ -75,14 +71,14 @@ fn main() -> std::io::Result<()> {
     // ANCHOR_END: server
 
     // ANCHOR: client
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(cert).map_err(std::io::Error::other)?;
-    let mut client_cfg = rustls::ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    client_cfg.alpn_protocols = vec![b"echo".to_vec()];
+    let mut roots = RootCerts::empty();
+    roots.add(&cert)?;
+    let client_cfg = ClientConfig::builder()
+        .roots(roots)
+        .alpn(["echo"])
+        .build()?;
     let (tx, rx) = mpsc::channel();
-    let acceptor = Tls::client(Arc::new(client_cfg), "localhost", Hello(tx))?;
+    let acceptor = Tls::client(client_cfg, "localhost", Hello(tx))?;
     engine.dial(engine.local_addrs()[0], acceptor, |e| {
         eprintln!("dial: {e}");
     });

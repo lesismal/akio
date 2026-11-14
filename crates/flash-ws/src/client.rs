@@ -34,7 +34,7 @@ use std::{
 
 use flash::{
     Acceptor, Conn, Engine, Handler,
-    tls::{Tls, rustls},
+    tls::{ClientConfig as TlsClientConfig, Tls},
 };
 use flash_core::ConnInner;
 
@@ -56,9 +56,9 @@ pub struct DialOptions {
     /// Extra request header fields (e.g. `Authorization`, cookies). Fields the handshake itself
     /// sets (`Host`, `Upgrade`, `Connection`, `Sec-WebSocket-*`) are ignored here.
     pub headers: Vec<(String, String)>,
-    /// rustls configuration for `wss://` (roots, client certificates, ALPN...). Required for
+    /// TLS client configuration for `wss://` (roots, client certificate, ALPN...). Required for
     /// `wss://`; do not offer `h2` in its ALPN list.
-    pub tls: Option<Arc<rustls::ClientConfig>>,
+    pub tls: Option<TlsClientConfig>,
     /// Name for certificate verification and SNI; the URL's host by default.
     pub server_name: Option<String>,
     /// Limit for connecting plus the TLS and WebSocket handshakes.
@@ -222,7 +222,7 @@ impl Pending {
 struct Plan {
     engine: Arc<Engine>,
     addrs: Vec<SocketAddr>,
-    tls: Option<(Arc<rustls::ClientConfig>, String)>,
+    tls: Option<(TlsClientConfig, String)>,
     request: Vec<u8>,
     expected_accept: String,
     config: WsConfig,

@@ -108,4 +108,5 @@ The test suite also reads `FLASH_TEST_BACKEND=uring` (run the engine tests on io
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
 | flash-http | `regex` | on | regexp route parameters (`{id:[0-9]+}`) |
-| flash-grpc | `prost` | off | `flash_grpc::codec` helpers for prost messages |
+| flash-grpc | `prost` | off | `codec::Message` for prost messages (outside the semver promise) |
+| flash, flash-tls, flash-quic, flash-webrtc | `unstable` | off | raw access to the wrapped rustls / quinn-proto / str0m (outside the semver promise) |

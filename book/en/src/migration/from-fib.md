@@ -90,10 +90,10 @@ a connection at a time. If a handler only parses and replies, nothing changes: i
 
 | fib package | flash crate | Differences |
 |---|---|---|
-| `tls` (crypto/tls handshakes, own record layer) | `flash::tls` (rustls) | configured through rustls types; no kTLS yet |
+| `tls` (crypto/tls handshakes, own record layer) | `flash::tls` (rustls underneath) | `ServerConfig` / `ClientConfig` builders; no kTLS yet |
 | `websocket` | `flash-ws` (+ `Context::upgrade_websocket`) | complete messages only (no per-frame delivery); no WebSocket over HTTP/2 or HTTP/3; client sends no 1001 on shutdown yet |
 | `http3` (own QUIC) | `flash-quic` (quinn-proto) + `flash-h3` | no QPACK dynamic table, no push, no Alt-Svc auto-switch in the client |
-| `grpc` | `flash-grpc` | bytes or prost messages; no protoc-gen-go-grpc equivalent code generator |
+| `grpc` | `flash-grpc` | bytes or `codec::Message` types (prost with a feature); no protoc-gen-go-grpc equivalent code generator |
 | `arpc` | `flash-arpc` | same wire format; no middleware/coder chain |
 | `socks` | `flash-socks` | CONNECT only (no BIND / UDP ASSOCIATE); no SOCKS dialing for clients |
 | `mux` / `multiproto` | `flash-mux` | first-bytes sniffing with rules |

@@ -21,7 +21,7 @@ use std::{
 
 use flash::{
     Acceptor, Conn, Engine, Handler,
-    tls::{Tls, rustls},
+    tls::{ClientConfig as TlsClientConfig, Tls},
 };
 use loona_hpack::{Decoder, Encoder};
 
@@ -140,7 +140,7 @@ impl H2Client {
     pub fn dial(
         engine: &Engine,
         addr: SocketAddr,
-        tls: Option<(Arc<rustls::ClientConfig>, &str)>,
+        tls: Option<(TlsClientConfig, &str)>,
         opts: H2Options,
         ready: impl FnOnce(Result<H2Client, io::Error>) + Send + 'static,
     ) {
@@ -168,7 +168,7 @@ impl H2Client {
     pub fn dial_blocking(
         engine: &Engine,
         addr: SocketAddr,
-        tls: Option<(Arc<rustls::ClientConfig>, &str)>,
+        tls: Option<(TlsClientConfig, &str)>,
         opts: H2Options,
     ) -> io::Result<H2Client> {
         let (tx, rx) = mpsc::channel();

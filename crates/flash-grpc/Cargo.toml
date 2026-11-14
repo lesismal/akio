@@ -20,7 +20,8 @@ prost = { version = "0.13", optional = true }
 flash-core = { workspace = true, optional = true }
 
 [features]
-# Typed helpers for prost-generated messages.
+# `codec::Message` for prost-generated messages. Outside the semver promise (names prost types,
+# docs/api-stability.md).
 prost = ["dep:prost"]
 # Fuzz entry points for `fuzz/` (`flash_grpc::fuzzing`); not a public API.
 fuzzing = ["dep:flash-core", "flash-core/fuzzing", "flash-http/fuzzing"]

@@ -2,13 +2,10 @@
 //! `cargo run --release -p flash --example tls-echo` then
 //! `openssl s_client -connect 127.0.0.1:7443 -quiet` (add `-alpn h2` to see ALPN in the reply).
 
-use std::sync::Arc;
-
 use flash::{
     Conn, Engine, Handler, Listener, fn_acceptor,
-    tls::{Tls, rustls, tls_info},
+    tls::{Certificate, PrivateKey, ServerConfig, Tls, tls_info},
 };
-use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 
 struct Echo {
     first: bool,
@@ -28,17 +25,17 @@ impl Handler for Echo {
 fn main() -> std::io::Result<()> {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
         .map_err(std::io::Error::other)?;
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(ck.key_pair.serialize_der()));
-    let mut cfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![ck.cert.der().clone()], key)
-        .map_err(std::io::Error::other)?;
-    cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    let cfg = ServerConfig::builder(
+        vec![Certificate::from_der(ck.cert.der().to_vec())],
+        PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+    )
+    .alpn(["h2", "http/1.1"])
+    .build()?;
 
     let addr = "127.0.0.1:7443".parse().expect("address");
     let engine = Engine::builder()
         .listen(Listener::tcp(addr).serve(Tls::server(
-            Arc::new(cfg),
+            cfg,
             fn_acceptor(|_c: &Conn<Echo>| Echo { first: true }),
         )))
         .build()?;

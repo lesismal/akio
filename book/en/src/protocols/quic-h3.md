@@ -42,11 +42,16 @@ How it fits on flash:
 `send` hands quinn what flow control allows and keeps the rest per stream until the peer grants
 credit; pace producers with `queued_bytes`.
 
-Configuration helpers (TLS 1.3, `ring` provider): `server_config(certs, key, alpn)`,
-`server_config_from(rustls::ServerConfig)`, `client_config(roots, alpn)`,
-`client_config_from(rustls::ClientConfig)`, and `client_config_insecure(alpn)` for tests only.
-`quinn_proto` is re-exported as `flash_quic::proto` for transport settings
-(`TransportConfig`). `QuicServer::connections()` and `close_all(code, reason)` help at shutdown.
+Configuration (TLS 1.3): `server_config(certs, key, alpn)` with `flash::tls::Certificate` /
+`PrivateKey`, `server_config_from(&flash::tls::ServerConfig)`, `client_config(roots, alpn)` with
+`flash::tls::RootCerts`, `client_config_from(&flash::tls::ClientConfig)`, and
+`client_config_insecure(alpn)` for tests only. They return flash's own `ServerConfig` /
+`ClientConfig`; `.transport(&TransportConfig)` sets stream limits, windows, idle timeout,
+keep-alive, MTU discovery and the congestion controller, `ServerConfig::migration(bool)` client
+migration. `StreamId`, `Dir`, `Side`, `ConnectionError` and `ConnectionStats` are flash types
+too, so quinn-proto stays out of the API; the `unstable` cargo feature (outside the semver
+promise) re-exports it as `flash_quic::proto` and adds `from_quinn` / `as_quinn_mut`.
+`QuicServer::connections()` and `close_all(code, reason)` help at shutdown.
 
 ## HTTP/3
 

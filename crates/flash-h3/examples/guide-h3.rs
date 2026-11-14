@@ -12,9 +12,8 @@ use flash_http::{Context, Router};
 fn main() -> std::io::Result<()> {
     let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()])
         .map_err(std::io::Error::other)?;
-    let cert = ck.cert.der().clone();
-    let key =
-        flash_quic::rustls::pki_types::PrivateKeyDer::Pkcs8(ck.key_pair.serialize_der().into());
+    let cert = flash::tls::Certificate::from_der(ck.cert.der().to_vec());
+    let key = flash::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
 
     // ANCHOR: server
     // The same Router (and middleware) you serve over HTTP/1 and HTTP/2.
@@ -38,8 +37,8 @@ fn main() -> std::io::Result<()> {
     // ANCHOR_END: server
 
     // ANCHOR: client
-    let mut roots = flash_quic::rustls::RootCertStore::empty();
-    roots.add(cert).map_err(std::io::Error::other)?;
+    let mut roots = flash::tls::RootCerts::empty();
+    roots.add(&cert).map_err(std::io::Error::other)?;
     let cfg = flash_quic::client_config(roots, &[b"h3"])
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let client = H3Client::dial(&engine, engine.local_addrs()[0], "localhost", cfg)

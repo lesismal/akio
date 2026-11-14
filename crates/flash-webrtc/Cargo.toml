@@ -15,6 +15,9 @@ categories = ["network-programming", "multimedia"]
 [features]
 # Fuzz entry points for `fuzz/` (`flash_webrtc::fuzzing`); not a public API.
 fuzzing = []
+# Raw access to str0m (`flash_webrtc::str0m`, `Peer::with_rtc` ...): outside the semver promise
+# (docs/api-stability.md).
+unstable = []
 
 [dependencies]
 flash = { workspace = true }

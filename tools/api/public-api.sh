@@ -9,9 +9,9 @@
 # `public-api`). Run it on Linux x86_64/aarch64 (the snapshots are taken there): flash-uring and
 # parts of flash-ebpf / flash-sys only exist on Linux.
 #
-# Items under `#[doc(hidden)]` and the `fuzzing` features are not in the snapshots: they are
-# outside the stability promise. Blanket impls are omitted to keep the files readable; auto-trait
-# impls (Send / Sync / Unpin / UnwindSafe ...) stay, because losing one is a breaking change.
+# Items under `#[doc(hidden)]`, the `fuzzing` and `unstable` features and the `prost` feature of
+# flash-grpc are not in the snapshots: they are outside the stability promise.
+# Blanket impls are omitted to keep the files readable; auto-trait impls (Send / Sync / Unpin / UnwindSafe ...) stay, because losing one is a breaking change.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -31,10 +31,10 @@ else
     crates=("${all[@]}")
 fi
 
-# Every public, non-`fuzzing` feature of a crate (default features are always on).
+# Every covered (non-`fuzzing`, non-`unstable`) feature of a crate beyond the defaults (none today;
+# `prost` is outside the promise, docs/api-stability.md).
 features_for() {
     case "$1" in
-    flash-grpc) echo "--features prost" ;;
     *) echo "" ;;
     esac
 }
