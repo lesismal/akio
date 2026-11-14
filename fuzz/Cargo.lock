@@ -820,6 +820,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-dtls"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only-crypto",
+ "only-x509",
+]
+
+[[package]]
 name = "only-ebpf"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -858,6 +866,7 @@ dependencies = [
  "only-crypto",
  "only-deflate",
  "only-dpdk",
+ "only-dtls",
  "only-ebpf",
  "only-grpc",
  "only-h3",

@@ -1,0 +1,28 @@
+[package]
+name = "only-dtls"
+description = "only internals: sans-io DTLS 1.2 (RFC 6347) client and server with DTLS-SRTP (RFC 5764), fingerprint verification and RFC 5705 exporters, on only-crypto and only-x509"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-dtls"
+keywords = ["dtls", "webrtc", "srtp", "sans-io", "tls"]
+categories = ["cryptography", "network-programming"]
+
+[dependencies]
+only-crypto = { workspace = true }
+only-x509 = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_dtls::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+# Interop with str0m's DTLS stack (the one only-webrtc uses today); already in the lockfile.
+dimpl = { version = "0.7.6", default-features = false, features = ["rust-crypto"] }
+
+[lints]
+workspace = true

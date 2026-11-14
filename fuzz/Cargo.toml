@@ -42,6 +42,7 @@ chacha20poly1305 = "0.10"
 # Reference for the public-key differential target `crypto_sig_verify`.
 ring = "0.17"
 only-x509 = { path = "../crates/only-x509", features = ["fuzzing"] }
+only-dtls = { path = "../crates/only-dtls", features = ["fuzzing"] }
 only-protobuf = { path = "../crates/only-protobuf" }
 # Generated test messages and the prost mirror for the differential target `protobuf_diff`.
 protobuf-test = { path = "../tools/protobuf-test" }
@@ -439,6 +440,20 @@ bench = false
 [[bin]]
 name = "crypto_sig_verify"
 path = "fuzz_targets/crypto_sig_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dtls_record"
+path = "fuzz_targets/dtls_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dtls_handshake"
+path = "fuzz_targets/dtls_handshake.rs"
 test = false
 doc = false
 bench = false

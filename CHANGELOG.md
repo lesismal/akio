@@ -129,6 +129,37 @@ it in the protocol crates yet, so no behaviour changes.
   (RSA-PSS, P-384, Ed25519), rcgen and rustls-webpki interop, constructed negative chains; fuzz
   targets `x509_parse` and `crypto_sig_verify` (differential against ring) with corpus replays.
 
+### Added: own DTLS 1.2 (new `only-dtls`, DEV-PLAN wave C)
+
+The DTLS layer of the in-house WebRTC stack (wave D will replace str0m's `dimpl` with it);
+nothing uses it yet, so no behaviour changes.
+
+- New internal crate `only-dtls` (`#![forbid(unsafe_code)]`, depends only on `only-crypto` and
+  `only-x509`): a sans-io DTLS 1.2 (RFC 6347) `Connection` for either role, driven by
+  `handle_datagram`, `poll_transmit`, `poll_event`, `poll_timeout` / `handle_timeout` and
+  `send_application_data`. Record layer with epochs, 48-bit sequence numbers and a 64-record
+  anti-replay window; handshake fragmentation to the configured MTU and out-of-order
+  reassembly; flight retransmission with exponential backoff (RFC 6347 §4.2.4) and on a
+  repeated peer flight; stateless HMAC-SHA-256 HelloVerifyRequest cookies (`HelloVerifier` for
+  listeners that allocate nothing before return routability is proven).
+- Cipher suites `TLS_ECDHE_{ECDSA,RSA}_WITH_{AES_128_GCM_SHA256, AES_256_GCM_SHA384,
+  CHACHA20_POLY1305_SHA256}`, groups X25519 / P-256 / P-384, ECDSA, Ed25519, RSA-PSS and
+  RSA PKCS#1 signatures; extended master secret (RFC 7627, required by default); renegotiation
+  refused (RFC 5746).
+- WebRTC: `Config::webrtc`, mutual authentication with self-signed certificates checked by
+  `PeerVerifier::Fingerprints` (SDP `a=fingerprint`), a callback, or deferred to the caller;
+  `Identity::generate_self_signed`, `Fingerprint` (SDP form), `use_srtp` (RFC 5764) with
+  `SRTP_AEAD_AES_128_GCM`, `SRTP_AEAD_AES_256_GCM`, `SRTP_AES128_CM_HMAC_SHA1_80/32`, SRTP master
+  keys in `Event::Connected`, and the RFC 5705 exporter (`export_keying_material`).
+- Tests: handshakes over a simulated link with 25 % loss, duplication and reordering at MTU 256,
+  every suite with ECDSA P-256/P-384, Ed25519 and RSA certificates, negative cases (wrong
+  fingerprints, replays, tampered records, bad cookies, timeouts, missing client certificates,
+  no shared suite); interop both directions with OpenSSL `s_client`/`s_server -dtls1_2`
+  (3.5 in Docker, 4.1; `-use_srtp` and `-keymatexport` keys identical) and pion/dtls v3
+  (`tools/interop/dtls/run.sh`), and in memory with `dimpl` (`tests/dimpl.rs`); fuzz targets
+  `dtls_record` and `dtls_handshake` with corpus replays. Not implemented: DTLS 1.3 (RFC 9147),
+  connection IDs, session resumption, PSK.
+
 ### Changed: in-house HTTP codecs (no more httparse, loona-hpack, regex)
 
 DEV-PLAN "no third-party dependencies", wave A. The public API is unchanged.

@@ -14,6 +14,7 @@ flowchart BT
     sys["only-sys<br/>unsafe 系统调用：epoll/kqueue、<br/>eventfd/pipe、socket、recvmmsg/sendmmsg"]
     crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数、<br/>X25519、Ed25519、P-256/P-384、RSA、DER/PEM"]
     x509["only-x509<br/>证书解析、证书链校验、证书生成"]
+    dtls["only-dtls<br/>sans-io DTLS 1.2、DTLS-SRTP"]
     buf["only-buf<br/>分级缓冲池、SharedBuf"]
     timer["only-timer<br/>时间轮"]
     deflate["only-deflate<br/>DEFLATE、zlib、gzip"]
@@ -76,6 +77,8 @@ flowchart BT
     http --> media
     sys --> crypto
     crypto --> x509
+    x509 --> dtls
+    crypto --> dtls
     crypto --> ws
     crypto --> http
     crypto --> kcp
@@ -93,6 +96,11 @@ flowchart BT
   证书链校验、证书生成）所依赖的公钥算法与密钥格式（X25519、Ed25519、P-256/P-384 的 ECDH/ECDSA、
   RSA PKCS#1/PSS、DER/PEM、PKCS#8）；TLS、QUIC 与 DTLS 在 DEV-PLAN 后续各波之前仍使用
   rustls / quinn-proto / dimpl，之后会迁移到这两个 crate 之上。
+- **DTLS 也已自研，但尚未接入**：`only-dtls`（`#![forbid(unsafe_code)]`，只依赖 `only-crypto` 与
+  `only-x509`）是 sans-io 的 DTLS 1.2 客户端/服务端，支持 DTLS-SRTP（`use_srtp`、RFC 5705 导出器）
+  以及按指纹固定的自签名证书，驱动方式与 `only-quic` 驱动其状态机相同（`handle_datagram` /
+  `poll_transmit` / `poll_event` / `poll_timeout` / `handle_timeout`，没有线程也没有时钟）。第 D 波的
+  WebRTC 协议栈将用它替代 str0m 的 `dimpl`；在此之前 `only-webrtc` 保持不变。
 - **`unsafe` 被限制在** `only-sys`（其中也包含替代 `libc` crate 的工作区自有操作系统绑定 `only_sys::ffi`）、`only-uring`（自研 io_uring 绑定、ring 与 buffer ring 内存）、`only-ebpf`
   （原始 `bpf(2)`）、`only-dpdk`（DPDK FFI）和 `only-crypto` 的 AES 指令模块中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
