@@ -194,6 +194,12 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
     - [x] WebRTC：`only-webrtc` 在 API 不变的前提下运行自研 sans-io 协议栈，没有第三方依赖（str0m、dimpl、p256 与 RustCrypto crate 均已移除）：新的内部 crate `only-ice`（RFC 8445 完整与 lite agent、prflx、常规提名、角色冲突、consent freshness、trickle、重启）、`only-srtp`（RFC 3711 / RFC 7714，AES-CM-HMAC-SHA1-80/32、AEAD-AES-128/256-GCM）、`only-rtp`（RTP/RTCP、NACK + RTX、PLI/FIR、REMB、TWCC 与带宽估计、Opus/G.711/G.722/VP8/VP9/H.264/H.265/AV1 载荷格式、组帧器）和 `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP），以及 `only-webrtc` 中基于 `only-dtls` 的 SDP offer/answer 与重新协商。测试：RFC 5769 / 3711 / 7714 向量、与 pion 逐字节比对、各层及端到端的模拟丢包链路；与 pion（DC + Opus/VP8 回显 + PLI 双向、TURN 中继）、fib 双向和无头 Chrome 双向互通（`tools/interop/webrtc/run.sh`、`browser.sh`）；fuzz 目标 `ice_stun`、`srtp_unprotect`、`rtp_rtcp`、`rtp_codec`、`sctp_packet`、`webrtc_sdp`。未完成：为 `Endpoint` 提供 relay 候选的 TURN 客户端、simulcast 发送、FEC、RTCP XR、I-DATA、DTLS 1.3、only-media 中 WHIP/WHEP 的媒体接入
   - 仅测试用的工具（loom、rcgen 等）最后替换，或保留
 
+### 性能优化阶段（第 D 波之后；完成后再考虑发布 1.0.0）
+- [ ] `only-crypto` CPU 指令加速：SHA-NI / ARMv8 SHA、PMULL / PCLMULQDQ GHASH、CRC32 指令（TLS 大块传输与 BitTorrent 哈希），更快的 P-256（专用域运算）与 RSA（乘法），X25519
+- [ ] `only-deflate` 匹配器提速（4 字节哈希、medium 策略），缩小与 zlib-rs 0.25–0.6 倍的差距
+- [ ] 自研替换完成后重新剖析 TLS / QUIC / HTTP 热路径；h2 与 pipelined HTTP/1 对比 fib
+- [ ] 在空闲机器（DPDK 用真实网卡）上重跑基准并更新 `docs/BENCHMARKS.md`
+
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。
 - **代码**：`#![forbid(unsafe_code)]` 为默认，仅 `only-sys`、后端、`only-buf` 允许 unsafe，且每处带 `// SAFETY:`。

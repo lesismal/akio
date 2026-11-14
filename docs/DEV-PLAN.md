@@ -194,6 +194,12 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
     - [x] WebRTC: `only-webrtc` runs its own sans-io stack behind the unchanged API, with no third-party dependency (str0m, dimpl, p256 and the RustCrypto crates gone): new internal crates `only-ice` (RFC 8445 full and lite agents, prflx, regular nomination, role conflicts, consent freshness, trickle, restarts), `only-srtp` (RFC 3711 / RFC 7714, AES-CM-HMAC-SHA1-80/32, AEAD-AES-128/256-GCM), `only-rtp` (RTP/RTCP, NACK + RTX, PLI/FIR, REMB, TWCC + bandwidth estimation, Opus/G.711/G.722/VP8/VP9/H.264/H.265/AV1 payload formats, frame assembler) and `only-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP), plus SDP offer/answer and renegotiation in `only-webrtc` on `only-dtls`. Tests: RFC 5769 / 3711 / 7714 vectors, byte-exact pion cross-checks, simulated lossy links per layer and end to end; interop with pion (DC + Opus/VP8 echo + PLI both ways, TURN relay), fib both ways and headless Chrome both ways (`tools/interop/webrtc/run.sh`, `browser.sh`); fuzz targets `ice_stun`, `srtp_unprotect`, `rtp_rtcp`, `rtp_codec`, `sctp_packet`, `webrtc_sdp`. Not done: a TURN client for `Endpoint` relay candidates, simulcast sending, FEC, RTCP XR, I-DATA, DTLS 1.3, WHIP/WHEP media wiring in only-media
   - Test-only tools (loom, rcgen, …) are replaced last, if ever
 
+### Performance pass (after wave D; 1.0.0 publishing waits until it is done)
+- [ ] `only-crypto` CPU acceleration: SHA-NI / ARMv8 SHA, PMULL / PCLMULQDQ GHASH, CRC32 instructions (TLS bulk and BitTorrent hashing), faster P-256 (dedicated field) and RSA (multiplication), X25519
+- [ ] `only-deflate` matcher speed (4-byte hashing, a medium strategy) to close the 0.25–0.6x gap with zlib-rs
+- [ ] TLS / QUIC / HTTP hot paths re-profiled after the in-house replacements; h2 and pipelined HTTP/1 vs fib
+- [ ] Re-run the benchmark campaign on a quiet host (and a real NIC for DPDK) and update `docs/BENCHMARKS.md`
+
 ## 4. Engineering rules
 - **Branches/commits**: `main` stays releasable; feature branches + PRs; Conventional Commits.
 - **Code**: `#![forbid(unsafe_code)]` by default; unsafe allowed only in `only-sys`, the backends and `only-buf`, each with a `// SAFETY:` comment.
