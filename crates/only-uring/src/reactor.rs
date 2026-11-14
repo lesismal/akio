@@ -11,16 +11,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-use io_uring::{IoUring, cqueue, opcode, squeue, types, types::BufRingEntry};
 use only_core::{
     Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, LoopLink, LoopMeta, LoopStats,
     Pool, Task,
     telemetry::{LoopCmd, log_or_stderr},
 };
 use only_sys::EventFd;
+use only_sys::ffi;
 use only_timer::{TimerId, Wheel};
 
 use crate::UringOptions;
+use crate::ring::{self, Ring, Sqe, cqe_buffer, cqe_more};
 
 // Operation kinds, packed into the low bits of `user_data` next to the connection id.
 const OP_ACCEPT: u64 = 1;
@@ -54,36 +55,34 @@ fn ud(id: u64, op: u64) -> u64 {
 /// issuer and deferred task-run (6.1+); anything less if that is refused. The returned flag says
 /// the ring starts disabled and must be enabled by the thread that will drive it (single-issuer
 /// rings belong to the thread that enables them, and rings are built on another thread).
-pub(crate) fn make_ring(entries: u32, sqpoll: bool) -> io::Result<(IoUring, bool)> {
+pub(crate) fn make_ring(entries: u32, sqpoll: bool) -> io::Result<(Ring, bool)> {
     let cq = entries.saturating_mul(4);
     if sqpoll {
-        let mut b = IoUring::builder();
-        b.setup_cqsize(cq).setup_sqpoll(1000);
-        return Ok((b.build(entries)?, false));
-    }
-    let mut b = IoUring::builder();
-    b.setup_cqsize(cq)
-        .setup_coop_taskrun()
-        .setup_single_issuer()
-        .setup_defer_taskrun()
-        .setup_r_disabled();
-    if let Ok(r) = b.build(entries) {
-        return Ok((r, true));
-    }
-    let mut b = IoUring::builder();
-    b.setup_cqsize(cq).setup_coop_taskrun();
-    if let Ok(r) = b.build(entries) {
+        let r = Ring::new(entries, ring::SETUP_CQSIZE | ring::SETUP_SQPOLL, cq, 1000)?;
         return Ok((r, false));
     }
-    let mut b = IoUring::builder();
-    b.setup_cqsize(cq);
-    Ok((b.build(entries)?, false))
+    let fast = ring::SETUP_CQSIZE
+        | ring::SETUP_COOP_TASKRUN
+        | ring::SETUP_SINGLE_ISSUER
+        | ring::SETUP_DEFER_TASKRUN
+        | ring::SETUP_R_DISABLED;
+    if let Ok(r) = Ring::new(entries, fast, cq, 0) {
+        return Ok((r, true));
+    }
+    if let Ok(r) = Ring::new(
+        entries,
+        ring::SETUP_CQSIZE | ring::SETUP_COOP_TASKRUN,
+        cq,
+        0,
+    ) {
+        return Ok((r, false));
+    }
+    Ok((Ring::new(entries, ring::SETUP_CQSIZE, cq, 0)?, false))
 }
 
-/// One entry of a provided-buffer ring (`struct io_uring_buf`). Mirrored here, rather than
-/// using `io_uring::types::BufRingEntry`'s `&mut self` setters, so that entries are written
-/// through raw field pointers: a `&mut` to entry 0 would also cover the ring's tail (which
-/// overlays entry 0's `resv`) while the kernel may read it.
+/// One entry of a provided-buffer ring (`struct io_uring_buf`). Entries are written through raw
+/// field pointers, never through a `&mut RawBuf`: a `&mut` to entry 0 would also cover the
+/// ring's tail (which overlays entry 0's `resv`) while the kernel may read it.
 #[repr(C)]
 struct RawBuf {
     addr: u64,
@@ -93,8 +92,7 @@ struct RawBuf {
     resv: u16,
 }
 
-const _: () = assert!(size_of::<RawBuf>() == size_of::<BufRingEntry>());
-const _: () = assert!(size_of::<RawBuf>() == 16);
+const _: () = assert!(size_of::<RawBuf>() == 16 && std::mem::offset_of!(RawBuf, resv) == 14);
 
 /// The provided-buffer ring: page-aligned memory shared with the kernel. Returning a buffer is a
 /// plain memory write plus a tail bump, with no submission entry and no syscall.
@@ -126,14 +124,11 @@ impl BufRing {
     }
 
     /// Registers the ring with the kernel as buffer group `BGID`.
-    pub(crate) fn register(&self, ring: &IoUring) -> io::Result<()> {
+    pub(crate) fn register(&self, ring: &Ring) -> io::Result<()> {
         // SAFETY: `base` points to `BUF_COUNT` zeroed, page-aligned entries that stay allocated
         // until `self` is dropped, which happens after the io_uring instance that holds the
         // registration (see field order in `Loop`).
-        unsafe {
-            ring.submitter()
-                .register_buf_ring_with_flags(self.base as u64, BUF_COUNT, BGID, 0)
-        }
+        unsafe { ring.register_buf_ring(self.base as u64, BUF_COUNT, BGID) }
     }
 
     /// Makes buffer `bid` (a `size`-byte slot at `area + bid * size`) available to the kernel.
@@ -374,7 +369,7 @@ enum Slot {
 }
 
 pub(crate) struct Loop {
-    ring: IoUring,
+    ring: Ring,
     /// Declared after `ring` so the kernel's registration is gone before the memory is freed.
     buf_ring: BufRing,
     needs_enable: bool,
@@ -473,7 +468,7 @@ impl Loop {
     /// was created disabled) and hands the buffer ring to the kernel.
     fn init(&mut self) -> io::Result<()> {
         if self.needs_enable {
-            self.ring.submitter().register_enable_rings()?;
+            self.ring.enable_rings()?;
         }
         self.buf_ring.register(&self.ring)?;
         for bid in 0..BUF_COUNT {
@@ -484,12 +479,12 @@ impl Loop {
     }
 
     /// Queues an entry, submitting first if the submission queue is full.
-    fn push(&mut self, e: squeue::Entry) {
+    fn push(&mut self, e: Sqe) {
         loop {
             // SAFETY: every entry pushed refers to memory that outlives its completion: the
             // provided-buffer area and the wake buffer are owned by `self` and never moved or
             // freed while the ring lives; the other entries carry only integers (fds, ids).
-            if unsafe { self.ring.submission().push(&e) }.is_ok() {
+            if unsafe { self.ring.push(&e) }.is_ok() {
                 self.inflight += 1;
                 return;
             }
@@ -526,7 +521,7 @@ impl Loop {
                 // Submit before blocking: the kernel then holds its own references to the
                 // sockets of finalized connections, whose descriptors may be closed.
                 let _ = self.ring.submit();
-                if self.ring.submission().is_empty() {
+                if self.ring.sq_is_empty() {
                     self.graveyard.clear();
                 }
             }
@@ -540,23 +535,13 @@ impl Loop {
                 timeout = Some(timeout.map_or(left, |x| x.min(left)));
             }
             let res = match timeout {
-                Some(t) => {
-                    let ts = types::Timespec::new()
-                        .sec(t.as_secs())
-                        .nsec(t.subsec_nanos());
-                    self.ring
-                        .submitter()
-                        .submit_with_args(1, &types::SubmitArgs::new().timespec(&ts))
-                }
+                Some(t) => self.ring.submit_with_timeout(1, t),
                 None => self.ring.submit_and_wait(1),
             };
             match res {
                 Ok(_) => {}
                 Err(e)
-                    if matches!(
-                        e.raw_os_error(),
-                        Some(libc::ETIME | libc::EINTR | libc::EBUSY)
-                    ) => {}
+                    if matches!(e.raw_os_error(), Some(ffi::ETIME | ffi::EINTR | ffi::EBUSY)) => {}
                 Err(e) => {
                     log_or_stderr(log::Level::Error, format_args!("io_uring_enter: {e}"));
                     break;
@@ -565,11 +550,7 @@ impl Loop {
             self.shared.stats.iterations.add_local(1);
             let mut cqes = std::mem::take(&mut self.cqes);
             cqes.clear();
-            cqes.extend(
-                self.ring
-                    .completion()
-                    .map(|c| (c.user_data(), c.result(), c.flags())),
-            );
+            self.ring.reap_into(&mut cqes);
             self.shared.stats.events.add_local(cqes.len() as u64);
             self.clock = Instant::now();
             for &(data, res, flags) in &cqes {
@@ -605,25 +586,16 @@ impl Loop {
         if self.inflight == 0 {
             return;
         }
-        let e = opcode::AsyncCancel2::new(types::CancelBuilder::any())
-            .build()
-            .user_data(ud(0, OP_OTHER));
+        let e = Sqe::async_cancel_any().user_data(ud(0, OP_OTHER));
         self.push(e);
         let deadline = Instant::now() + Duration::from_secs(2);
         while self.inflight > 0 && Instant::now() < deadline {
-            let ts = types::Timespec::new().nsec(10_000_000);
-            let _ = self
-                .ring
-                .submitter()
-                .submit_with_args(1, &types::SubmitArgs::new().timespec(&ts));
-            let cqes: Vec<_> = self
-                .ring
-                .completion()
-                .map(|c| (c.user_data(), c.result(), c.flags()))
-                .collect();
+            let _ = self.ring.submit_with_timeout(1, Duration::from_millis(10));
+            let mut cqes = Vec::new();
+            self.ring.reap_into(&mut cqes);
             for (data, res, flags) in cqes {
                 // Count only: no callbacks or re-arming during teardown.
-                if !cqueue::more(flags) {
+                if !cqe_more(flags) {
                     self.inflight = self.inflight.saturating_sub(1);
                 }
                 if data & 0xf == OP_ACCEPT && res >= 0 {
@@ -657,16 +629,9 @@ impl Loop {
             if !self.accept_armed {
                 break;
             }
-            let ts = types::Timespec::new().nsec(10_000_000);
-            let _ = self
-                .ring
-                .submitter()
-                .submit_with_args(1, &types::SubmitArgs::new().timespec(&ts));
-            let cqes: Vec<_> = self
-                .ring
-                .completion()
-                .map(|c| (c.user_data(), c.result(), c.flags()))
-                .collect();
+            let _ = self.ring.submit_with_timeout(1, Duration::from_millis(10));
+            let mut cqes = Vec::new();
+            self.ring.reap_into(&mut cqes);
             for (data, res, flags) in cqes {
                 self.on_cqe(data, res, flags);
             }
@@ -678,18 +643,14 @@ impl Loop {
         if !self.wake_armed {
             let fd = self.shared.waker.as_raw_fd();
             let buf = self.wake_buf.as_ptr();
-            let e = opcode::Read::new(types::Fd(fd), buf, 8)
-                .build()
-                .user_data(ud(0, OP_WAKE));
+            let e = Sqe::read(fd, buf, 8).user_data(ud(0, OP_WAKE));
             self.push(e);
             self.wake_armed = true;
         }
         let backoff_over = self.accept_retry_at.is_none_or(|t| Instant::now() >= t);
         if !self.accept_armed && self.draining.is_none() && backoff_over {
             if let Some((l, _)) = &self.listener {
-                let e = opcode::AcceptMulti::new(types::Fd(l.as_raw_fd()))
-                    .build()
-                    .user_data(ud(0, OP_ACCEPT));
+                let e = Sqe::accept_multi(l.as_raw_fd()).user_data(ud(0, OP_ACCEPT));
                 self.push(e);
                 self.accept_armed = true;
             }
@@ -699,7 +660,7 @@ impl Loop {
     // ---- completions ----------------------------------------------------------------------
 
     fn on_cqe(&mut self, data: u64, res: i32, flags: u32) {
-        if !cqueue::more(flags) {
+        if !cqe_more(flags) {
             self.inflight = self.inflight.saturating_sub(1);
         }
         let (id, op) = (data >> 4, data & 0xf);
@@ -714,11 +675,11 @@ impl Loop {
     }
 
     fn on_accept(&mut self, res: i32, flags: u32) {
-        if !cqueue::more(flags) {
+        if !cqe_more(flags) {
             self.accept_armed = false;
         }
         if res < 0 {
-            if res != -libc::ECANCELED && res != -libc::EINTR {
+            if res != -ffi::ECANCELED && res != -ffi::EINTR {
                 // e.g. EMFILE: retry in a moment instead of spinning.
                 self.shared.stats.accept_errors.add_local(1);
                 let e = io::Error::from_raw_os_error(-res);
@@ -767,8 +728,8 @@ impl Loop {
     }
 
     fn on_recv(&mut self, id: u64, res: i32, flags: u32) {
-        let bid = cqueue::buffer_select(flags);
-        let more = cqueue::more(flags);
+        let bid = cqe_buffer(flags);
+        let more = cqe_more(flags);
         let now = self.clock.saturating_duration_since(self.epoch).as_millis() as u64;
         let timed = self.cfg.telemetry.timing_enabled();
         let mut done = Done::No;
@@ -815,7 +776,7 @@ impl Loop {
                     lc.inner.close_after_responses();
                     done = Done::Eof;
                 }
-            } else if res != -libc::ENOBUFS && res != -libc::ECANCELED && res != -libc::EINTR {
+            } else if res != -ffi::ENOBUFS && res != -ffi::ECANCELED && res != -ffi::EINTR {
                 done = Done::Err(io::Error::from_raw_os_error(-res));
             }
             // ENOBUFS/ECANCELED/EINTR end the multishot; `refresh` re-arms it if still wanted.
@@ -917,9 +878,8 @@ impl Loop {
     /// which would leave the connection open forever. `POLLRDHUP` also fires on a plain FIN,
     /// which the recv reports itself, so the completion only acts on a pending socket error.
     fn arm_reset_watch(&mut self, id: u64, fd: std::os::fd::RawFd) {
-        let e = opcode::PollAdd::new(types::Fd(fd), (libc::POLLRDHUP | libc::POLLERR) as u32)
-            .build()
-            .user_data(ud(id, OP_RESET));
+        let e =
+            Sqe::poll_add(fd, (ffi::POLLRDHUP | ffi::POLLERR) as u32).user_data(ud(id, OP_RESET));
         self.push(e);
     }
 
@@ -945,9 +905,7 @@ impl Loop {
             ));
         }
         let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
-        let e = opcode::PollAdd::new(types::Fd(stream.as_raw_fd()), libc::POLLOUT as u32)
-            .build()
-            .user_data(ud(id, OP_POLL));
+        let e = Sqe::poll_add(stream.as_raw_fd(), ffi::POLLOUT as u32).user_data(ud(id, OP_POLL));
         self.push(e);
         self.slots.insert(
             id,
@@ -1019,29 +977,17 @@ impl Loop {
         }
         let want_read = !lc.inner.read_held() && !lc.bp && !lc.eof && lc.inner.is_open();
         let fd = lc.inner.stream().as_raw_fd();
-        let mut entries: Vec<squeue::Entry> = Vec::new();
+        let mut entries: Vec<Sqe> = Vec::new();
         if want_read && !lc.recv_armed {
             lc.recv_armed = true;
-            entries.push(
-                opcode::RecvMulti::new(types::Fd(fd), BGID)
-                    .build()
-                    .user_data(ud(id, OP_RECV)),
-            );
+            entries.push(Sqe::recv_multi(fd, BGID).user_data(ud(id, OP_RECV)));
         } else if !want_read && lc.recv_armed && !lc.cancel_sent {
             lc.cancel_sent = true;
-            entries.push(
-                opcode::AsyncCancel::new(ud(id, OP_RECV))
-                    .build()
-                    .user_data(ud(id, OP_OTHER)),
-            );
+            entries.push(Sqe::async_cancel(ud(id, OP_RECV)).user_data(ud(id, OP_OTHER)));
         }
         if q > 0 && !lc.poll_armed {
             lc.poll_armed = true;
-            entries.push(
-                opcode::PollAdd::new(types::Fd(fd), libc::POLLOUT as u32)
-                    .build()
-                    .user_data(ud(id, OP_POLL)),
-            );
+            entries.push(Sqe::poll_add(fd, ffi::POLLOUT as u32).user_data(ud(id, OP_POLL)));
         }
         for e in entries {
             self.push(e);
@@ -1162,9 +1108,7 @@ impl Loop {
         }
         if listener.is_some() && self.accept_armed {
             // The multishot accept keeps the listening socket alive until it is cancelled.
-            let e = opcode::AsyncCancel::new(ud(0, OP_ACCEPT))
-                .build()
-                .user_data(ud(0, OP_OTHER));
+            let e = Sqe::async_cancel(ud(0, OP_ACCEPT)).user_data(ud(0, OP_OTHER));
             self.push(e);
         }
         let ids: Vec<u64> = self.slots.keys().copied().collect();
@@ -1320,7 +1264,7 @@ mod tests {
     use super::*;
 
     /// Pure memory operations (no syscalls), so this also runs under Miri: the mirrored entry
-    /// layout matches `io_uring`'s, `give` wraps and `publish` lands on entry 0's `resv`.
+    /// layout matches `struct io_uring_buf`, `give` wraps and `publish` lands on entry 0's `resv`.
     #[test]
     fn buf_ring_layout_give_and_publish() {
         let size = 512;
@@ -1333,13 +1277,20 @@ mod tests {
         // Wraps: the slot of buffer 0 is reused once the kernel has handed a buffer back.
         ring.give(&area, size, 3);
         ring.publish();
-        let base = ring.base.cast::<BufRingEntry>();
-        // SAFETY: `base` points to `BUF_COUNT` initialised entries owned by `ring`.
-        let (e0, e5, tail) = unsafe { (&*base, &*base.add(5), *BufRingEntry::tail(base)) };
-        assert_eq!(e0.addr(), area.as_ptr() as u64 + 3 * size as u64);
-        assert_eq!((e0.len(), e0.bid()), (size as u32, 3));
-        assert_eq!(e5.addr(), area.as_ptr() as u64 + 5 * size as u64);
-        assert_eq!(e5.bid(), 5);
+        let base = ring.base;
+        // SAFETY: `base` points to `BUF_COUNT` initialised entries owned by `ring`; the tail is
+        // entry 0's `resv`, at byte 14 as in `struct io_uring_buf_ring`.
+        let (e0, e5, tail) = unsafe {
+            (
+                &*base,
+                &*base.add(5),
+                base.cast::<u8>().add(14).cast::<u16>().read(),
+            )
+        };
+        assert_eq!(e0.addr, area.as_ptr() as u64 + 3 * size as u64);
+        assert_eq!((e0.len, e0.bid), (size as u32, 3));
+        assert_eq!(e5.addr, area.as_ptr() as u64 + 5 * size as u64);
+        assert_eq!(e5.bid, 5);
         assert_eq!(tail, BUF_COUNT.wrapping_add(1));
     }
 

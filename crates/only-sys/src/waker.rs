@@ -1,3 +1,4 @@
+use crate::ffi;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
@@ -17,7 +18,7 @@ impl Waker {
         #[cfg(target_os = "linux")]
         let w = {
             // SAFETY: plain syscall; the fd is owned by the returned OwnedFd.
-            let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+            let fd = unsafe { ffi::eventfd(0, ffi::EFD_NONBLOCK | ffi::EFD_CLOEXEC) };
             if fd < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -27,9 +28,9 @@ impl Waker {
         };
         #[cfg(not(target_os = "linux"))]
         let w = {
-            let mut fds: [libc::c_int; 2] = [0; 2];
+            let mut fds: [ffi::c_int; 2] = [0; 2];
             // SAFETY: `fds` has room for the two descriptors pipe(2) writes.
-            if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
+            if unsafe { ffi::pipe(fds.as_mut_ptr()) } < 0 {
                 return Err(io::Error::last_os_error());
             }
             // SAFETY: both fds were just created and are owned by nobody else. They are owned
@@ -60,13 +61,7 @@ impl Waker {
         #[cfg(not(target_os = "linux"))]
         let len = 1;
         // SAFETY: writes `len` bytes from a live u64. EAGAIN (already signalled) is fine.
-        unsafe {
-            libc::write(
-                self.write_fd(),
-                (&raw const one).cast::<libc::c_void>(),
-                len,
-            )
-        };
+        unsafe { ffi::write(self.write_fd(), (&raw const one).cast::<ffi::c_void>(), len) };
     }
 
     /// Clears the signalled state; call after the poller reported the waker's token.
@@ -75,9 +70,9 @@ impl Waker {
         loop {
             // SAFETY: reads at most `buf.len()` bytes into a live buffer.
             let n = unsafe {
-                libc::read(
+                ffi::read(
                     self.read.as_raw_fd(),
-                    buf.as_mut_ptr().cast::<libc::c_void>(),
+                    buf.as_mut_ptr().cast::<ffi::c_void>(),
                     buf.len(),
                 )
             };
@@ -108,7 +103,7 @@ impl EventFd {
     /// Creates a non-blocking, close-on-exec eventfd.
     pub fn new() -> io::Result<EventFd> {
         // SAFETY: plain syscall; the fd is owned by the returned OwnedFd.
-        let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+        let fd = unsafe { ffi::eventfd(0, ffi::EFD_NONBLOCK | ffi::EFD_CLOEXEC) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -126,6 +121,6 @@ impl EventFd {
     pub fn wake(&self) {
         let one: u64 = 1;
         // SAFETY: writes 8 bytes from a live u64. EAGAIN (counter saturated) is fine.
-        unsafe { libc::write(self.fd.as_raw_fd(), (&raw const one).cast(), 8) };
+        unsafe { ffi::write(self.fd.as_raw_fd(), (&raw const one).cast(), 8) };
     }
 }

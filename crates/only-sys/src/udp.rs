@@ -13,9 +13,7 @@ use std::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-const SOL_UDP: libc::c_int = 17;
-const UDP_SEGMENT: libc::c_int = 103;
-const UDP_GRO: libc::c_int = 104;
+use crate::ffi::{self, SOL_UDP, UDP_GRO, UDP_SEGMENT};
 
 /// Most datagrams one GSO send may carry (the kernel's `UDP_MAX_SEGMENTS` is 64 before 6.x).
 pub const MAX_GSO_SEGMENTS: usize = 64;
@@ -38,17 +36,17 @@ fn env_off(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"))
 }
 
-fn probe(opt: libc::c_int) -> bool {
+fn probe(opt: ffi::c_int) -> bool {
     // SAFETY: plain syscalls on a socket we create and close here.
     unsafe {
-        let fd = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+        let fd = ffi::socket(ffi::AF_INET, ffi::SOCK_DGRAM | ffi::SOCK_CLOEXEC, 0);
         if fd < 0 {
             return false;
         }
-        let mut v: libc::c_int = 0;
-        let mut len = size_of::<libc::c_int>() as libc::socklen_t;
-        let r = libc::getsockopt(fd, SOL_UDP, opt, (&raw mut v).cast(), &raw mut len);
-        libc::close(fd);
+        let mut v: ffi::c_int = 0;
+        let mut len = size_of::<ffi::c_int>() as ffi::socklen_t;
+        let r = ffi::getsockopt(fd, SOL_UDP, opt, (&raw mut v).cast(), &raw mut len);
+        ffi::close(fd);
         r == 0
     }
 }
@@ -90,15 +88,15 @@ pub fn enable_gro(fd: RawFd) -> bool {
     if !gro_available() {
         return false;
     }
-    let one: libc::c_int = 1;
+    let one: ffi::c_int = 1;
     // SAFETY: `one` is a valid int for the duration of the call.
     let r = unsafe {
-        libc::setsockopt(
+        ffi::setsockopt(
             fd,
             SOL_UDP,
             UDP_GRO,
             (&raw const one).cast(),
-            size_of::<libc::c_int>() as libc::socklen_t,
+            size_of::<ffi::c_int>() as ffi::socklen_t,
         )
     };
     r == 0
@@ -108,11 +106,11 @@ pub fn enable_gro(fd: RawFd) -> bool {
 pub struct RecvBatch {
     bufs: Vec<u8>,
     size: usize,
-    iov: Vec<libc::iovec>,
-    names: Vec<libc::sockaddr_storage>,
+    iov: Vec<ffi::iovec>,
+    names: Vec<ffi::sockaddr_storage>,
     ctrl: Vec<Ctrl>,
     gro: bool,
-    msgs: Vec<libc::mmsghdr>,
+    msgs: Vec<ffi::mmsghdr>,
     got: usize,
 }
 
@@ -164,7 +162,7 @@ impl RecvBatch {
         // Rust's aliasing model, invalidate the pointers taken for the earlier slots.
         let base = b.bufs.as_mut_ptr();
         for i in 0..slots {
-            b.iov.push(libc::iovec {
+            b.iov.push(ffi::iovec {
                 // SAFETY: `i * size + size <= total == bufs.len()` (checked above), so the slot
                 // lies inside the allocation; `bufs` is never resized, so the pointer stays valid.
                 iov_base: unsafe { base.add(i * size) }.cast(),
@@ -181,7 +179,7 @@ impl RecvBatch {
             self.names[i].ss_family = 0;
             let h = &mut self.msgs[i].msg_hdr;
             h.msg_name = (&raw mut self.names[i]).cast();
-            h.msg_namelen = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            h.msg_namelen = size_of::<ffi::sockaddr_storage>() as ffi::socklen_t;
             h.msg_iov = &raw mut self.iov[i];
             h.msg_iovlen = 1;
             if self.gro {
@@ -203,11 +201,11 @@ impl RecvBatch {
         // SAFETY: `msgs` holds `msgs.len()` initialised headers whose name/iov/control pointers
         // refer to buffers owned by `self` that are live for the duration of the call.
         let n = unsafe {
-            libc::recvmmsg(
+            ffi::recvmmsg(
                 fd,
                 self.msgs.as_mut_ptr(),
-                self.msgs.len() as libc::c_uint,
-                libc::MSG_DONTWAIT,
+                self.msgs.len() as ffi::c_uint,
+                ffi::MSG_DONTWAIT,
                 std::ptr::null_mut(),
             )
         };
@@ -240,16 +238,16 @@ impl RecvBatch {
             return 0;
         }
         let h = &self.msgs[i].msg_hdr;
-        // SAFETY: `h` is a header the kernel filled in; the CMSG_* macros only walk within
+        // SAFETY: `h` is a header the kernel filled in; the CMSG_* helpers only walk within
         // `msg_control[..msg_controllen]`, which points into `self.ctrl[i]`.
         unsafe {
-            let mut c = libc::CMSG_FIRSTHDR(h);
+            let mut c = ffi::cmsg_firsthdr(h);
             while !c.is_null() {
                 if (*c).cmsg_level == SOL_UDP && (*c).cmsg_type == UDP_GRO {
-                    let v = std::ptr::read_unaligned(libc::CMSG_DATA(c).cast::<libc::c_int>());
+                    let v = std::ptr::read_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>());
                     return v.max(0) as usize;
                 }
-                c = libc::CMSG_NXTHDR(h, c);
+                c = ffi::cmsg_nxthdr(h, c);
             }
         }
         0
@@ -260,17 +258,17 @@ impl RecvBatch {
 struct Meta {
     iov_start: usize,
     iov_len: usize,
-    namelen: libc::socklen_t,
+    namelen: ffi::socklen_t,
     gso: u16,
 }
 
 /// Reusable storage for `sendmmsg` batches; fill one with [`SendBatch::batch`].
 pub struct SendBatch {
-    iov: Vec<libc::iovec>,
-    names: Vec<libc::sockaddr_storage>,
+    iov: Vec<ffi::iovec>,
+    names: Vec<ffi::sockaddr_storage>,
     ctrl: Vec<Ctrl>,
     meta: Vec<Meta>,
-    msgs: Vec<libc::mmsghdr>,
+    msgs: Vec<ffi::mmsghdr>,
 }
 
 impl std::fmt::Debug for SendBatch {
@@ -348,8 +346,8 @@ impl<'d> Batch<'_, 'd> {
         }
         let iov_start = s.iov.len();
         for p in parts {
-            s.iov.push(libc::iovec {
-                iov_base: p.as_ptr() as *mut libc::c_void,
+            s.iov.push(ffi::iovec {
+                iov_base: p.as_ptr() as *mut ffi::c_void,
                 iov_len: p.len(),
             });
         }
@@ -396,16 +394,15 @@ impl<'d> Batch<'_, 'd> {
             h.msg_iovlen = m.iov_len as _;
             if m.gso > 0 {
                 h.msg_control = (&raw mut s.ctrl[i]).cast();
-                // SAFETY: CMSG_SPACE is a pure size computation.
-                h.msg_controllen = unsafe { libc::CMSG_SPACE(size_of::<u16>() as u32) } as _;
+                h.msg_controllen = ffi::cmsg_space(size_of::<u16>());
                 // SAFETY: `msg_control` points to `ctrl[i]` (32 bytes, 8-aligned), large enough
                 // for one cmsghdr with a u16 payload as computed by CMSG_SPACE above.
                 unsafe {
-                    let c = libc::CMSG_FIRSTHDR(h);
+                    let c = ffi::cmsg_firsthdr(h);
                     (*c).cmsg_level = SOL_UDP;
                     (*c).cmsg_type = UDP_SEGMENT;
-                    (*c).cmsg_len = libc::CMSG_LEN(size_of::<u16>() as u32) as _;
-                    std::ptr::write_unaligned(libc::CMSG_DATA(c).cast::<u16>(), m.gso);
+                    (*c).cmsg_len = ffi::cmsg_len(size_of::<u16>());
+                    std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<u16>(), m.gso);
                 }
             }
             s.msgs[i].msg_len = 0;
@@ -413,11 +410,11 @@ impl<'d> Batch<'_, 'd> {
         // SAFETY: headers `from..n` are initialised; their name/iov/control pointers refer to
         // `s`'s buffers and to the data borrowed for `'d`, all live for the call.
         let r = unsafe {
-            libc::sendmmsg(
+            ffi::sendmmsg(
                 fd,
                 s.msgs[from..].as_mut_ptr(),
-                (n - from) as libc::c_uint,
-                libc::MSG_DONTWAIT,
+                (n - from) as ffi::c_uint,
+                ffi::MSG_DONTWAIT,
             )
         };
         if r < 0 {
@@ -428,19 +425,19 @@ impl<'d> Batch<'_, 'd> {
     }
 }
 
-fn parse_addr(ss: &libc::sockaddr_storage) -> Option<SocketAddr> {
-    match libc::c_int::from(ss.ss_family) {
-        libc::AF_INET => {
+fn parse_addr(ss: &ffi::sockaddr_storage) -> Option<SocketAddr> {
+    match ffi::c_int::from(ss.ss_family) {
+        ffi::AF_INET => {
             // SAFETY: the family says the kernel stored a sockaddr_in here.
-            let a = unsafe { &*std::ptr::from_ref(ss).cast::<libc::sockaddr_in>() };
+            let a = unsafe { &*std::ptr::from_ref(ss).cast::<ffi::sockaddr_in>() };
             Some(SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::from(a.sin_addr.s_addr.to_ne_bytes()),
                 u16::from_be(a.sin_port),
             )))
         }
-        libc::AF_INET6 => {
+        ffi::AF_INET6 => {
             // SAFETY: the family says the kernel stored a sockaddr_in6 here.
-            let a = unsafe { &*std::ptr::from_ref(ss).cast::<libc::sockaddr_in6>() };
+            let a = unsafe { &*std::ptr::from_ref(ss).cast::<ffi::sockaddr_in6>() };
             Some(SocketAddr::V6(SocketAddrV6::new(
                 Ipv6Addr::from(a.sin6_addr.s6_addr),
                 u16::from_be(a.sin6_port),

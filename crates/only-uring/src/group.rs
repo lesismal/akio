@@ -8,10 +8,11 @@ use std::{
     thread::JoinHandle,
 };
 
-use io_uring::opcode;
 use only_core::{Config, DynAcceptor, Group, LoopMeta, Pool};
 
 use crate::reactor::{Cmd, Loop, LoopShared};
+use crate::ring;
+use only_sys::ffi;
 
 /// io_uring tuning.
 #[derive(Clone, Debug, Default)]
@@ -26,9 +27,9 @@ pub struct UringOptions {
 /// and recv with provided buffers) and the opcodes used. `Err` says what is missing.
 pub fn probe() -> Result<(), String> {
     // SAFETY: `uname` fills the zeroed struct it is given.
-    let mut u: libc::utsname = unsafe { std::mem::zeroed() };
+    let mut u: ffi::utsname = unsafe { std::mem::zeroed() };
     // SAFETY: as above; `u` is valid for writes.
-    if unsafe { libc::uname(&raw mut u) } != 0 {
+    if unsafe { ffi::uname(&raw mut u) } != 0 {
         return Err("uname failed".into());
     }
     // SAFETY: the kernel NUL-terminates `release`.
@@ -45,22 +46,22 @@ pub fn probe() -> Result<(), String> {
     }
     let (ring, _) =
         crate::reactor::make_ring(8, false).map_err(|e| format!("io_uring_setup: {e}"))?;
-    let mut probe = io_uring::Probe::new();
-    ring.submitter()
-        .register_probe(&mut probe)
-        .map_err(|e| format!("probe: {e}"))?;
+    if ring.features() & ring::FEAT_EXT_ARG == 0 {
+        return Err("IORING_FEAT_EXT_ARG unsupported".into());
+    }
+    let probe = ring.probe().map_err(|e| format!("probe: {e}"))?;
     // The same setup the loops use, including a buffer ring (the registration must succeed on
     // the thread that owns a single-issuer ring, hence the enable call).
-    ring.submitter().register_enable_rings().ok();
+    ring.enable_rings().ok();
     crate::reactor::BufRing::new()
         .and_then(|b| b.register(&ring))
         .map_err(|e| format!("buffer ring: {e}"))?;
     for (name, code) in [
-        ("accept", opcode::AcceptMulti::CODE),
-        ("recv", opcode::RecvMulti::CODE),
-        ("poll_add", opcode::PollAdd::CODE),
-        ("async_cancel", opcode::AsyncCancel::CODE),
-        ("read", opcode::Read::CODE),
+        ("accept", ring::OP_ACCEPT),
+        ("recv", ring::OP_RECV),
+        ("poll_add", ring::OP_POLL_ADD),
+        ("async_cancel", ring::OP_ASYNC_CANCEL),
+        ("read", ring::OP_READ),
     ] {
         if !probe.is_supported(code) {
             return Err(format!("opcode {name} unsupported"));

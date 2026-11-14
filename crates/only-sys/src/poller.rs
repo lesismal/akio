@@ -1,3 +1,4 @@
+use crate::ffi;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::time::Duration;
@@ -17,12 +18,12 @@ pub struct Event {
 pub(crate) fn set_nonblock_cloexec(fd: RawFd) -> io::Result<()> {
     // SAFETY: fcntl on a valid fd with valid commands.
     unsafe {
-        let fl = libc::fcntl(fd, libc::F_GETFL);
-        if fl < 0 || libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK) < 0 {
+        let fl = ffi::fcntl(fd, ffi::F_GETFL);
+        if fl < 0 || ffi::fcntl(fd, ffi::F_SETFL, fl | ffi::O_NONBLOCK) < 0 {
             return Err(io::Error::last_os_error());
         }
-        let fl = libc::fcntl(fd, libc::F_GETFD);
-        if fl < 0 || libc::fcntl(fd, libc::F_SETFD, fl | libc::FD_CLOEXEC) < 0 {
+        let fl = ffi::fcntl(fd, ffi::F_GETFD);
+        if fl < 0 || ffi::fcntl(fd, ffi::F_SETFD, fl | ffi::FD_CLOEXEC) < 0 {
             return Err(io::Error::last_os_error());
         }
     }
@@ -30,11 +31,11 @@ pub(crate) fn set_nonblock_cloexec(fd: RawFd) -> io::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn timeout_ms(t: Option<Duration>) -> libc::c_int {
+fn timeout_ms(t: Option<Duration>) -> ffi::c_int {
     match t {
         None => -1,
         // round up so a 100µs timeout does not spin
-        Some(d) => d.as_micros().div_ceil(1000).min(i32::MAX as u128) as libc::c_int,
+        Some(d) => d.as_micros().div_ceil(1000).min(i32::MAX as u128) as ffi::c_int,
     }
 }
 
@@ -43,9 +44,9 @@ fn timeout_ms(t: Option<Duration>) -> libc::c_int {
 pub struct Poller {
     fd: OwnedFd,
     #[cfg(target_os = "linux")]
-    buf: Vec<libc::epoll_event>,
+    buf: Vec<ffi::epoll_event>,
     #[cfg(target_os = "macos")]
-    buf: Vec<libc::kevent>,
+    buf: Vec<ffi::kevent>,
 }
 
 const BATCH: usize = 1024;
@@ -59,32 +60,32 @@ impl Poller {
     /// Creates a poller.
     pub fn new() -> io::Result<Poller> {
         // SAFETY: plain syscall; the fd is owned by the OwnedFd.
-        let fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        let fd = unsafe { ffi::epoll_create1(ffi::EPOLL_CLOEXEC) };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(Poller {
             // SAFETY: fd was just created and is owned by nobody else.
             fd: unsafe { OwnedFd::from_raw_fd(fd) },
-            buf: vec![libc::epoll_event { events: 0, u64: 0 }; BATCH],
+            buf: vec![ffi::epoll_event { events: 0, u64: 0 }; BATCH],
         })
     }
 
     fn ctl(
         &self,
-        op: libc::c_int,
+        op: ffi::c_int,
         fd: RawFd,
         token: u64,
         read: bool,
         write: bool,
     ) -> io::Result<()> {
-        let mut ev = libc::epoll_event {
-            events: (if read { libc::EPOLLIN } else { 0 } | if write { libc::EPOLLOUT } else { 0 })
+        let mut ev = ffi::epoll_event {
+            events: (if read { ffi::EPOLLIN } else { 0 } | if write { ffi::EPOLLOUT } else { 0 })
                 as u32,
             u64: token,
         };
         // SAFETY: `ev` is a valid epoll_event for the duration of the call.
-        if unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), op, fd, &raw mut ev) } < 0 {
+        if unsafe { ffi::epoll_ctl(self.fd.as_raw_fd(), op, fd, &raw mut ev) } < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
@@ -92,24 +93,24 @@ impl Poller {
 
     /// Registers `fd`.
     pub fn add(&self, fd: RawFd, token: u64, read: bool, write: bool) -> io::Result<()> {
-        self.ctl(libc::EPOLL_CTL_ADD, fd, token, read, write)
+        self.ctl(ffi::EPOLL_CTL_ADD, fd, token, read, write)
     }
 
     /// Changes the interest of a registered `fd`.
     pub fn modify(&self, fd: RawFd, token: u64, read: bool, write: bool) -> io::Result<()> {
-        self.ctl(libc::EPOLL_CTL_MOD, fd, token, read, write)
+        self.ctl(ffi::EPOLL_CTL_MOD, fd, token, read, write)
     }
 
     /// Deregisters `fd` (errors ignored: closing the fd deregisters it anyway).
     pub fn delete(&self, fd: RawFd) {
-        let _ = self.ctl(libc::EPOLL_CTL_DEL, fd, 0, false, false);
+        let _ = self.ctl(ffi::EPOLL_CTL_DEL, fd, 0, false, false);
     }
 
     /// Waits for events, appending them to `out`. `None` waits forever.
     pub fn wait(&mut self, out: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<()> {
         // SAFETY: `buf` has BATCH initialised entries; the kernel writes at most BATCH.
         let n = unsafe {
-            libc::epoll_wait(
+            ffi::epoll_wait(
                 self.fd.as_raw_fd(),
                 self.buf.as_mut_ptr(),
                 BATCH as i32,
@@ -126,11 +127,11 @@ impl Poller {
         }
         for ev in &self.buf[..n as usize] {
             let (events, token) = (ev.events, ev.u64); // by-value reads: the struct is packed
-            let bad = events & (libc::EPOLLERR | libc::EPOLLHUP) as u32 != 0;
+            let bad = events & (ffi::EPOLLERR | ffi::EPOLLHUP) as u32 != 0;
             out.push(Event {
                 token,
-                readable: bad || events & (libc::EPOLLIN | libc::EPOLLRDHUP) as u32 != 0,
-                writable: bad || events & libc::EPOLLOUT as u32 != 0,
+                readable: bad || events & (ffi::EPOLLIN | ffi::EPOLLRDHUP) as u32 != 0,
+                writable: bad || events & ffi::EPOLLOUT as u32 != 0,
             });
         }
         Ok(())
@@ -142,7 +143,7 @@ impl Poller {
     /// Creates a poller.
     pub fn new() -> io::Result<Poller> {
         // SAFETY: plain syscall; the fd is owned by the OwnedFd.
-        let fd = unsafe { libc::kqueue() };
+        let fd = unsafe { ffi::kqueue() };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -151,7 +152,7 @@ impl Poller {
         let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         // kqueue descriptors reject O_NONBLOCK (ENOTTY); close-on-exec is all they need.
         // SAFETY: fcntl on a valid fd with valid commands.
-        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        if unsafe { ffi::fcntl(fd.as_raw_fd(), ffi::F_SETFD, ffi::FD_CLOEXEC) } < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(Poller {
@@ -171,26 +172,21 @@ impl Poller {
     ) -> io::Result<()> {
         let mk = |filter: i16, on: bool| {
             // SAFETY: kevent is plain-old-data; all-zero is valid.
-            let mut k: libc::kevent = unsafe { std::mem::zeroed() };
-            k.ident = fd as libc::uintptr_t;
+            let mut k: ffi::kevent = unsafe { std::mem::zeroed() };
+            k.ident = fd as usize;
             k.filter = filter;
             k.flags = if delete {
-                libc::EV_DELETE
+                ffi::EV_DELETE
             } else {
-                libc::EV_ADD
-                    | if on {
-                        libc::EV_ENABLE
-                    } else {
-                        libc::EV_DISABLE
-                    }
+                ffi::EV_ADD | if on { ffi::EV_ENABLE } else { ffi::EV_DISABLE }
             };
-            k.udata = token as usize as *mut libc::c_void;
+            k.udata = token as usize as *mut ffi::c_void;
             k
         };
-        let changes = [mk(libc::EVFILT_READ, read), mk(libc::EVFILT_WRITE, write)];
+        let changes = [mk(ffi::EVFILT_READ, read), mk(ffi::EVFILT_WRITE, write)];
         // SAFETY: `changes` is a valid array of 2 kevents; no event list is requested.
         let r = unsafe {
-            libc::kevent(
+            ffi::kevent(
                 self.fd.as_raw_fd(),
                 changes.as_ptr(),
                 2,
@@ -222,14 +218,14 @@ impl Poller {
 
     /// Waits for events, appending them to `out`. `None` waits forever.
     pub fn wait(&mut self, out: &mut Vec<Event>, timeout: Option<Duration>) -> io::Result<()> {
-        let ts = timeout.map(|d| libc::timespec {
-            tv_sec: d.as_secs() as libc::time_t,
+        let ts = timeout.map(|d| ffi::timespec {
+            tv_sec: d.as_secs() as ffi::time_t,
             tv_nsec: d.subsec_nanos().into(),
         });
         let tsp = ts.as_ref().map_or(std::ptr::null(), std::ptr::from_ref);
         // SAFETY: `buf` has BATCH initialised entries; `tsp` is null or points to a live timespec.
         let n = unsafe {
-            libc::kevent(
+            ffi::kevent(
                 self.fd.as_raw_fd(),
                 std::ptr::null(),
                 0,
@@ -247,11 +243,11 @@ impl Poller {
             };
         }
         for k in &self.buf[..n as usize] {
-            let bad = k.flags & (libc::EV_ERROR | libc::EV_EOF) != 0;
+            let bad = k.flags & (ffi::EV_ERROR | ffi::EV_EOF) != 0;
             out.push(Event {
                 token: k.udata as usize as u64,
-                readable: k.filter == libc::EVFILT_READ || bad,
-                writable: k.filter == libc::EVFILT_WRITE || (bad && k.filter != libc::EVFILT_READ),
+                readable: k.filter == ffi::EVFILT_READ || bad,
+                writable: k.filter == ffi::EVFILT_WRITE || (bad && k.filter != ffi::EVFILT_READ),
             });
         }
         Ok(())

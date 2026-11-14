@@ -24,5 +24,7 @@
 mod group;
 #[allow(unsafe_code)]
 mod reactor;
+#[allow(unsafe_code)]
+mod ring;
 
 pub use group::{UringGroup, UringOptions, probe};

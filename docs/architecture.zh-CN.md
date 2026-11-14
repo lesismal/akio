@@ -87,7 +87,7 @@ flowchart BT
   crate 需要的哈希、MAC、KDF、CRC-32、常数时间 AES-CTR/GCM、ChaCha20-Poly1305、base64 与随机数
   （KCP 加密、STUN/TURN、WebSocket 握手、SRTP、SRT、RTMP、BitTorrent）；TLS、QUIC 与 DTLS 在
   DEV-PLAN 后续各波之前仍使用 rustls / quinn-proto / dimpl。
-- **`unsafe` 被限制在** `only-sys`、`only-uring`（ring 与 buffer ring 内存）、`only-ebpf`
+- **`unsafe` 被限制在** `only-sys`（其中也包含替代 `libc` crate 的工作区自有操作系统绑定 `only_sys::ffi`）、`only-uring`（自研 io_uring 绑定、ring 与 buffer ring 内存）、`only-ebpf`
   （原始 `bpf(2)`）、`only-dpdk`（DPDK FFI）和 `only-crypto` 的 AES 指令模块中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（零拷贝增量头部解析器与 chunked 解码器均为自研）、HTTP/2 分帧与
