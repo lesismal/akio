@@ -5,8 +5,8 @@
 > 可能在任何发布中变化。
 
 `Backend::Dpdk` 让 listener 运行在**用户态 TCP/IP 协议栈**上，而不是内核协议栈：only 的 I/O
-线程直接轮询网络设备，用 [smoltcp](https://docs.rs/smoltcp) 处理 ARP、IPv4、UDP 和 TCP，再把数据
-交给与其他后端相同的 `Handler`。UDP listener 依然每次 `on_data` 收到一个数据报，TCP listener 收到
+线程直接轮询网络设备，运行 only 自研的 TCP/IP 协议栈（以太网、ARP、IPv4、ICMP、UDP、TCP；安全
+Rust，`#![forbid(unsafe_code)]`，无依赖），再把数据交给与其他后端相同的 `Handler`。UDP listener 依然每次 `on_data` 收到一个数据报，TCP listener 收到
 字节流；`Conn::send`、背压、`dial`、`dial_udp`、空闲超时、遥测与优雅关闭照常工作，因此 `only-kcp`
 等协议 crate 无需修改即可运行。
 
@@ -63,8 +63,9 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
 ```
 
 `Engine::dial` 运行在 engine 的最后一个 listener 上，`dial_udp` 运行在最后一个 UDP listener 上，
-所以客户端 engine 需要在该设备上有一个 listener。拨号只支持单队列：多队列时回包落在哪个队列由网卡
-的 RSS 决定，而不是发起拨号的线程。
+所以客户端 engine 需要在该设备上有一个 listener。拨号分散到各个队列；每个队列选用满足
+`port % queues == queue` 的本地端口，被网卡 RSS 放到其他队列上的回包会转交给发起拨号的队列。
+对端以 ICMP“端口不可达”回应的已拨出 UDP 连接会以 `ConnectionRefused` 关闭，与内核后端一致。
 
 ## `DpdkConfig`
 
@@ -75,10 +76,13 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
 | `prefix_len` | 24 | 本地子网 |
 | `gateway` | 无 | 子网之外地址的下一跳 |
 | `mac` | 端口 MAC（DPDK）/ 由 `address` 派生 | 以太网地址 |
-| `mtu` | 1500 | IP MTU；最大 UDP 数据报为 `mtu - 28`（不做 IP 分片） |
-| `tcp_buffer` | 64 KiB | 每个 TCP 连接的收、发缓冲区（也限制窗口） |
-| `udp_buffer` | 1 MiB | 每个 UDP socket 的收、发缓冲区 |
+| `mtu` | 1500 | IP MTU（TCP MSS = `mtu - 40`）；更大的 UDP 数据报会分片发送，收到的分片会重组 |
+| `tcp_buffer` | 64 KiB | 每个 TCP 连接的收、发缓冲区（限制窗口；超过 64 KiB 时使用窗口缩放） |
+| `udp_buffer` | 1 MiB | 每个 UDP 端口在 I/O 线程交付前可排队的数据报字节数 |
 | `tcp_backlog` | 64 | 每个 TCP listener、每个队列可同时进行的握手数 |
+| `syn_cookies` | true | backlog 满后用无状态 SYN cookie 应答 SYN |
+| `congestion` | `Congestion::Cubic` | TCP 拥塞控制：CUBIC（RFC 9438）或 NewReno |
+| `tcp_keepalive` | 无 | 开始发送 TCP keepalive 探测前的空闲时间（9 次探测，间隔 `min(keepalive, 75 s)`） |
 | `busy_poll` | false | 从不休眠（DPDK 风格，每个队列占满一个核）；否则空闲时最多休眠 1 ms |
 
 `EalConfig`：`args`（EAL 参数）、`port`（端口序号或设备名）、`queues`（rx/tx 队列对数 = I/O 线程数，
@@ -86,38 +90,67 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
 
 ## 工作原理
 
-- **每个设备一个协议栈，每个队列一个线程。** 每个队列有自己的 smoltcp `Interface` 和 socket 集合，
-  由一个 I/O 线程独占。每轮迭代：执行投递来的命令，轮询设备（一次 `rte_eth_rx_burst` 最多 32 帧，
-  直接在 mbuf 中读取），交给 smoltcp 处理，把新数据交给 handler，把 handler 排队的数据搬进 smoltcp
-  的 socket 缓冲区，再轮询一次以发送（帧直接构造在新分配的 mbuf 里），最后批量发送
+- **每个设备一个协议栈，每个队列一个线程。** 每个队列有自己的协议栈实例（ARP 缓存、连接表、
+  定时器堆），由一个 I/O 线程独占。每轮迭代：执行投递来的命令，把一批收到的帧交给协议栈
+  （`rte_eth_rx_burst`，直接在 mbuf 中读取），处理协议栈报告的事件（新接受与新建立的连接、可读数据、
+  释放的发送空间、关闭、数据报），把 handler 排队的数据搬进协议栈的发送缓冲区，让协议栈发送（到期的
+  定时器、数据，每批只发一个 ACK 而不是每段一个；帧直接构造在新分配的 mbuf 里），最后批量发送
   （`rte_eth_tx_burst`）。
+- **没有每轮全量扫描。** 工作来自事件和每个连接一项（惰性重新调度）的定时器堆，空闲连接每轮迭代
+  不产生开销。
 - **多队列**：端口按 IP/UDP/TCP 四元组配置 RSS，同一条流始终落在同一个队列和线程上。ARP 帧会复制
-  到所有队列，让每个协议栈都知道邻居。
+  到所有队列，让每个协议栈都知道邻居；落到其他队列上的拨出连接的帧会被转交。
 - **连接**是没有内核 socket 的 only 连接：`Conn::send`（可在任意线程调用）只入队并唤醒所属线程，
   由它在每次回调之后把字节搬进协议栈。handler 在 cork 状态下运行，一次回调发送的内容只进入协议栈
   一次。
 - **线程**会注册到 EAL（`rte_thread_register`），以便使用内存池的 per-lcore 缓存。`busy_poll = false`
   时空闲线程最多休眠 1 ms（DPDK 与内存设备上，跨线程发送会提前唤醒它）。
 
-为什么选 smoltcp：它是持续维护、内存安全的 Rust 协议栈，没有全局状态，每个队列一个实例正好契合
-only 的每核一线程模型，无需加锁。F-Stack（DPDK 上的 FreeBSD 协议栈）和 Seastar 的协议栈更快、更
-完整，但会带来自带线程模型的 C/C++ 运行时，并在数据路径上引入大量 `unsafe` FFI。
+## TCP/IP 协议栈
+
+`crates/only-dpdk/src/net/`（取代 smoltcp，见 DEV-PLAN“长期：去除第三方依赖”）：
+
+- **以太网 II、ARP**（RFC 826）：邻居缓存，60 s 可达超时并单播刷新；等待解析的报文会排队，发往新
+  邻居的第一个 SYN 或数据报在应答到达后立即发出（smoltcp 版本会丢弃它，导致每条新连接都要等 1 s 的
+  SYN 重传）。
+- **IPv4**：首部校验和，大数据报分片，带上限的重组（64 个数据报、1 MiB、30 s），网关路由。
+- **ICMP**：回显应答；对关闭的端口回应端口/协议不可达（限速）；收到的不可达会结束已拨出的 UDP 连接
+  和握手，“需要分片”会降低 MSS。
+- **TCP**（RFC 9293）：完整状态机，含同时打开与同时关闭、TIME-WAIT（可被新 SYN 或新拨号复用）、
+  RST 规则与 RFC 5961 挑战 ACK；RTT 估计与 RTO（RFC 6298，下限 200 ms，指数退避）；SACK
+  （RFC 2018）记分板与 RFC 6675 风格的丢包恢复，无 SACK 时使用 NewReno 快速恢复（RFC 6582）；
+  CUBIC（RFC 9438）或 NewReno；窗口缩放与时间戳及 PAWS（RFC 7323）；MSS 选项；延迟 ACK（40 ms、
+  每两个段、连接开始时快速 ACK）；关闭 Nagle；零窗口探测；keepalive；监听 backlog 与 SYN cookie
+  （窗口缩放与 SACK 编码在时间戳中）。
+- 校验和由软件计算（无卸载）；收到的校验和都会校验，AF_PACKET 除外（来自本机内核的帧携带的是部分
+  校验和）。
+
+为什么自研：每个队列一个实例、没有全局状态，契合 only 的每核一线程模型，无需加锁；整个协议栈都是
+安全 Rust；数据路径需要的东西（按批合并 ACK、事件驱动的连接、定时器堆）无需给依赖打补丁就能做到。
+F-Stack（DPDK 上的 FreeBSD 协议栈）和 Seastar 的协议栈更快、更完整，但会带来自带线程模型的 C/C++
+运行时，并在数据路径上引入大量 `unsafe` FFI。
 
 ## 当前限制
 
-- 仅 IPv4（无 IPv6 / 邻居发现），不做 IP 分片，没有校验和或 TSO 卸载（校验和由软件计算）。
-- smoltcp 的 TCP 没有 SACK，默认也没有拥塞控制；局域网内没问题，但未针对高丢包长距离链路调优。
-  每轮有流量的迭代都会检查一遍 TCP 连接，开销与该线程上的连接数成线性关系。
-- `Config::write_timeout` 和 `Accel` 不适用；`send_file` 经由内存读取；ICMP 错误不会报告给拨出的
-  UDP 连接。
-- 尚未在真实网卡上与 epoll/io_uring 做基准对比。
+- 仅 IPv4（无 IPv6 / 邻居发现），没有校验和、TSO 或 LRO 卸载（校验和由软件计算），没有 pacing、
+  ECN、TCP Fast Open，除 ICMP“需要分片”外不做路径 MTU 探测。
+- 空闲超时每 50 ms 扫描一次（不是每轮迭代）。
+- `Config::write_timeout` 和 `Accel` 不适用；`send_file` 经由内存读取。
+- 尚未在真实网卡上与 epoll/io_uring 做基准对比；在内存链路上与原 smoltcp 版本的 A/B 对比见
+  docs/BENCHMARKS.zh-CN.md。
 
 ## 测试
 
-`crates/only-dpdk/tests/memory.rs` 可在任意平台运行：两个协议栈之间的 UDP 与 TCP echo、带流控的
-大块 TCP 传输、有序关闭、协议栈之上的 KCP。`tools/dpdk/test.sh` 构建 `tools/dpdk/` 中的 Docker 镜像
-（Debian 的 DPDK 24.11），并以 `--cap-add NET_ADMIN --device /dev/net/tun` 运行
-`tests/kernel_peer.rs`：Linux 内核自己的 socket 通过 DPDK 的 `net_tap` PMD（单队列与双队列）以及
-smoltcp 的 TAP 设备，以及 veth 对上的 AF_PACKET socket，与 only 交换 UDP 数据报和 2 MiB 的 TCP
-数据。CI 中的重型任务 `dpdk` 运行同样的
-测试。
+单元测试用构造的帧覆盖每一层（校验和、选项、ARP 排队、重组上限、RTO、NewReno 与 CUBIC），
+`src/net/sim.rs` 在虚拟时间里让两个协议栈通过模拟链路通信（时延、限速的尾丢弃队列、随机丢包、乱序）：
+大块传输、长肥管道上的窗口缩放、SACK 在一个往返内修复突发丢包、无 SACK 的 NewReno、双向 10% 丢包、
+RTO、零窗口、keepalive、各种关闭、SYN cookie、2000 条连接、300 条连接经由 cookie 与丢包做 echo。
+`tests/memory.rs` 可在任意平台运行：两个协议栈之间的 UDP 与 TCP echo、带流控的大块 TCP 传输、有序关闭、
+协议栈之上的 KCP。`tools/dpdk/test.sh` 构建 `tools/dpdk/` 中的 Docker 镜像（Debian 的 DPDK 24.11），
+以 `--cap-add NET_ADMIN --device /dev/net/tun` 运行 `tests/kernel_peer.rs`，以 Linux 内核自己的 socket
+为对端：通过 DPDK 的 `net_tap` PMD（单队列与双队列）、TAP 设备和 veth 对上的 AF_PACKET 做 UDP（含分片
+数据报）与 TCP echo，从协议栈向内核拨号（每个队列上的 TCP、UDP、ICMP 端口不可达），ping，`tc netem`
+丢包/时延/乱序（内核的 SACK 计数器必须变化），20 ms RTT 下的 4 MiB 窗口，以及 500 条并发连接。
+模糊测试目标 `dpdk_ethernet`、`dpdk_arp`、`dpdk_ipv4`、`dpdk_tcp`、`dpdk_udp`、`dpdk_icmp` 与
+`dpdk_stack`（向整个协议栈输入帧）位于 `fuzz/`，其语料在 `cargo test` 中回放。CI 中的重型任务 `dpdk`
+运行 `tools/dpdk/test.sh`。

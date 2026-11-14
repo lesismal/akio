@@ -26,6 +26,7 @@ only-turn = { path = "../crates/only-turn", features = ["fuzzing"] }
 only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
 only-media = { path = "../crates/only-media", features = ["fuzzing"] }
 only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
+only-dpdk = { path = "../crates/only-dpdk", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -299,6 +300,55 @@ bench = false
 [[bin]]
 name = "bt_mse"
 path = "fuzz_targets/bt_mse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_ethernet"
+path = "fuzz_targets/dpdk_ethernet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_arp"
+path = "fuzz_targets/dpdk_arp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_ipv4"
+path = "fuzz_targets/dpdk_ipv4.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_tcp"
+path = "fuzz_targets/dpdk_tcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_udp"
+path = "fuzz_targets/dpdk_udp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_icmp"
+path = "fuzz_targets/dpdk_icmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_stack"
+path = "fuzz_targets/dpdk_stack.rs"
 test = false
 doc = false
 bench = false

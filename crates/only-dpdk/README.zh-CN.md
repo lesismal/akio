@@ -3,7 +3,9 @@
 [English](README.md)
 
 [only](https://github.com/lesismal/only) 的内核旁路后端（**实验性**）：由 only I/O 线程驱动的
-用户态 TCP/IP 协议栈（[smoltcp](https://docs.rs/smoltcp)，IPv4），底层可以是
+自研用户态 TCP/IP 协议栈（以太网、ARP、带分片的 IPv4、ICMP、UDP，以及支持 SACK、快速恢复、
+CUBIC / NewReno、窗口缩放、时间戳、SYN cookie 的 TCP；安全 Rust，`#![forbid(unsafe_code)]`，
+无依赖），底层可以是
 
 - **DPDK** 端口（feature `pmd`，Linux，通过 `pkg-config` 链接 libdpdk）：按 `EalConfig` 初始化
   EAL，每个 rx/tx 队列对一个 I/O 线程，mbuf 批量收发，RSS；
@@ -24,10 +26,13 @@ UDP listener 每次 `on_data` 交付一个数据报，TCP listener 交付字节�
 
 - 指南：[内核旁路（DPDK）](https://lesismal.github.io/only/zh-CN/dpdk.html)
 - 示例：`cargo run -p only-dpdk --example guide-dpdk`
-- 测试：`cargo test -p only-dpdk`（内存链路，任意平台）；`tools/dpdk/test.sh`（Docker：DPDK
-  `net_tap` 与 TAP，以 Linux 内核协议栈为对端）
+- 基准：`cargo run --release -p only-dpdk --example stack-bench`
+- 测试：`cargo test -p only-dpdk`（逐层单元测试、模拟的丢包/乱序链路、内存链路；任意平台）；
+  `tools/dpdk/test.sh`（Docker：DPDK `net_tap`、TAP 与 AF_PACKET，以 Linux 内核协议栈为对端，
+  含 `tc netem` 丢包）；`fuzz/` 中的 `dpdk_*` 模糊测试目标
 
-`unsafe` 只出现在 `src/pmd.rs`（经由 `csrc/shim.c` 的 DPDK FFI）中，见
+`unsafe` 只出现在 `src/pmd.rs`（经由 `csrc/shim.c` 的 DPDK FFI）与 `src/sys.rs`（TAP /
+AF_PACKET）中；协议栈本身（`src/net/`）禁止 unsafe。见
 [docs/unsafe-review.zh-CN.md](../../docs/unsafe-review.zh-CN.md)。实验性：不在 semver 承诺范围内
 （[docs/api-stability.zh-CN.md](../../docs/api-stability.zh-CN.md)）。
 

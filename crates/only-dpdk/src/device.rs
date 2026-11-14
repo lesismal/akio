@@ -1,5 +1,6 @@
-//! The link layer under one stack queue: a smoltcp `phy::Device` over a DPDK queue, a TAP
-//! interface, an AF_PACKET socket or a memory wire.
+//! The link layer under one stack queue: a DPDK queue, a TAP interface, an AF_PACKET socket or
+//! a memory wire, plus the hand-over of frames between the queues of one device (ARP fan-out,
+//! frames for dialed connections that RSS put on another queue).
 
 use std::{
     collections::VecDeque,
@@ -7,253 +8,226 @@ use std::{
     time::Duration,
 };
 
-use smoltcp::{
-    phy::{self, DeviceCapabilities, Medium},
-    time::Instant,
-};
+use crate::{MemoryPort, net, pmd, stack::LoopShared};
 
-use crate::{MemoryPort, pmd};
-
-/// Frames handed from one queue's thread to another (ARP fan-out).
+/// Frames handed from one queue's thread to another.
 pub(crate) type Inbox = Arc<Mutex<VecDeque<Vec<u8>>>>;
+
+/// Most frames waiting in one queue's inbox.
+const INBOX_CAP: usize = 4096;
 
 pub(crate) enum Link {
     Dpdk(Box<pmd::Queue>),
     #[cfg(target_os = "linux")]
-    Tap(pmd::Sendable<phy::TunTapInterface>),
-    #[cfg(target_os = "linux")]
-    Raw(pmd::Sendable<phy::RawSocket>),
+    Fd(crate::sys::LinkFd),
     Memory(MemoryPort),
 }
 
 impl Link {
-    /// Opens the device for TAP / AF_PACKET (DPDK queues and memory ports are built by the
-    /// caller).
     #[cfg(target_os = "linux")]
     pub(crate) fn tap(name: &str) -> std::io::Result<Link> {
-        phy::TunTapInterface::new(name, Medium::Ethernet).map(|t| Link::Tap(pmd::Sendable::new(t)))
+        crate::sys::LinkFd::tap(name).map(Link::Fd)
     }
 
     #[cfg(target_os = "linux")]
     pub(crate) fn af_packet(name: &str) -> std::io::Result<Link> {
-        phy::RawSocket::new(name, Medium::Ethernet).map(|r| Link::Raw(pmd::Sendable::new(r)))
+        crate::sys::LinkFd::af_packet(name).map(Link::Fd)
     }
 }
 
-/// One queue's device: the link plus the ARP fan-out between sibling queues.
+/// Where a received frame is.
+pub(crate) enum Rx {
+    /// Copied (or moved) into the caller's buffer.
+    Buf,
+    /// In place in a DPDK mbuf.
+    Mbuf(pmd::Mbuf),
+}
+
+/// What a frame being built is written into (see `net::Tx`).
+enum Staged {
+    None,
+    /// A DPDK mbuf (`Queue::alloc`).
+    Mbuf,
+    /// `scratch`: written to the fd / memory wire on commit.
+    Scratch,
+    /// `scratch`, but the device could not take a frame: dropped on commit.
+    Drop,
+}
+
+/// One queue's device.
 pub(crate) struct Port {
     link: Link,
-    /// Ethernet frame MTU (IP MTU + 14).
-    frame_mtu: usize,
-    inbox: Inbox,
-    siblings: Vec<Inbox>,
-    rx_buf: Vec<u8>,
-    tx_scratch: Vec<u8>,
-    now: Instant,
-    /// Frames received / transmitted (for the loop's idle detection and stats).
+    index: usize,
+    /// Every queue's inbox, in queue order (this one's included).
+    inboxes: Vec<Inbox>,
+    /// Every queue's loop, to wake a sibling a frame was handed to.
+    loops: Vec<Arc<LoopShared>>,
+    scratch: Vec<u8>,
+    staged: Staged,
+    /// Frames were sent since the last `flush`.
+    sent_since_flush: bool,
+    /// Frames received / transmitted (idle detection and stats).
     pub(crate) rx_frames: u64,
     pub(crate) tx_frames: u64,
 }
 
 impl Port {
-    pub(crate) fn new(link: Link, ip_mtu: usize, inbox: Inbox, siblings: Vec<Inbox>) -> Port {
+    pub(crate) fn new(
+        link: Link,
+        index: usize,
+        inboxes: Vec<Inbox>,
+        loops: Vec<Arc<LoopShared>>,
+    ) -> Port {
         Port {
             link,
-            frame_mtu: ip_mtu + 14,
-            inbox,
-            siblings,
-            rx_buf: Vec::new(),
-            tx_scratch: Vec::new(),
-            now: Instant::from_millis(0),
+            index,
+            inboxes,
+            loops,
+            scratch: Vec::new(),
+            staged: Staged::None,
+            sent_since_flush: false,
             rx_frames: 0,
             tx_frames: 0,
         }
     }
 
+    /// Received frames carry the sender's partial checksums (AF_PACKET next to the local
+    /// kernel): do not verify them.
+    pub(crate) fn partial_checksums(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        if let Link::Fd(_) = self.link {
+            return true;
+        }
+        false
+    }
+
     /// Called first thing on the I/O thread that owns this port.
     pub(crate) fn on_thread_start(&self) {
-        if let Link::Dpdk(_) = self.link {
-            pmd::register_thread();
+        match &self.link {
+            Link::Dpdk(_) => pmd::register_thread(),
+            Link::Memory(m) => m.register_reader(),
+            #[cfg(target_os = "linux")]
+            Link::Fd(_) => {}
+        }
+    }
+
+    /// The next received frame: from the inbox (frames other queues handed over) first, then
+    /// from the device.
+    pub(crate) fn recv(&mut self, buf: &mut Vec<u8>) -> Option<Rx> {
+        let injected = self.inboxes[self.index]
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pop_front();
+        let rx = if let Some(frame) = injected {
+            *buf = frame;
+            Rx::Buf
+        } else {
+            match &mut self.link {
+                Link::Dpdk(q) => {
+                    let m = q.recv()?;
+                    Self::fan_out(&self.inboxes, self.index, &self.loops, m.data());
+                    Rx::Mbuf(m)
+                }
+                #[cfg(target_os = "linux")]
+                Link::Fd(fd) => {
+                    fd.recv(buf)?;
+                    Rx::Buf
+                }
+                Link::Memory(m) => {
+                    *buf = m.recv()?;
+                    Rx::Buf
+                }
+            }
+        };
+        self.rx_frames += 1;
+        Some(rx)
+    }
+
+    /// Copies an ARP frame to the sibling queues: replies and requests land on one queue (RSS
+    /// does not hash ARP), but every queue's stack needs the neighbour.
+    fn fan_out(inboxes: &[Inbox], me: usize, loops: &[Arc<LoopShared>], frame: &[u8]) {
+        if inboxes.len() > 1 && frame.len() >= 14 && frame[12..14] == [0x08, 0x06] {
+            for (i, b) in inboxes.iter().enumerate() {
+                if i != me {
+                    Self::hand_to(b, &loops[i], frame.to_vec());
+                }
+            }
+        }
+    }
+
+    fn hand_to(inbox: &Inbox, lp: &LoopShared, frame: Vec<u8>) {
+        let mut q = inbox.lock().unwrap_or_else(|p| p.into_inner());
+        if q.len() < INBOX_CAP {
+            q.push_back(frame);
+        }
+        drop(q);
+        lp.unpark();
+    }
+
+    /// Hands a frame to queue `q` (a dialed connection's frame that arrived here).
+    pub(crate) fn forward(&self, q: usize, frame: Vec<u8>) {
+        if let (Some(b), Some(lp)) = (self.inboxes.get(q), self.loops.get(q)) {
+            Self::hand_to(b, lp, frame);
         }
     }
 
     /// Transmits frames batched by the device (DPDK tx burst).
     pub(crate) fn flush(&mut self) {
-        if let Link::Dpdk(q) = &mut self.link {
-            q.flush();
+        match &mut self.link {
+            Link::Dpdk(q) => q.flush(),
+            Link::Memory(m) if self.sent_since_flush => m.wake_peer(),
+            _ => {}
         }
+        self.sent_since_flush = false;
     }
 
     /// Sleeps until a frame may have arrived, at most `timeout`.
     pub(crate) fn wait(&self, timeout: Duration) {
         match &self.link {
             #[cfg(target_os = "linux")]
-            Link::Tap(t) => {
-                let fd = std::os::fd::AsRawFd::as_raw_fd(t.get());
-                let _ = phy::wait(fd, Some(timeout.into()));
-            }
-            #[cfg(target_os = "linux")]
-            Link::Raw(r) => {
-                let fd = std::os::fd::AsRawFd::as_raw_fd(r.get());
-                let _ = phy::wait(fd, Some(timeout.into()));
-            }
-            // Woken early by `Thread::unpark` when a command is posted.
+            Link::Fd(fd) => fd.wait(timeout),
+            // Woken early by `Thread::unpark` when a command or frame is posted.
             Link::Dpdk(_) | Link::Memory(_) => std::thread::park_timeout(timeout),
         }
     }
+}
 
-    /// Copies an ARP frame to the sibling queues: replies and requests land on one queue (RSS
-    /// does not hash ARP), but every queue's stack needs the neighbour.
-    fn fan_out(siblings: &[Inbox], frame: &[u8]) {
-        if !siblings.is_empty() && frame.len() >= 14 && frame[12..14] == [0x08, 0x06] {
-            for s in siblings {
-                let mut q = s.lock().unwrap_or_else(|p| p.into_inner());
-                if q.len() < 1024 {
-                    q.push_back(frame.to_vec());
+impl net::Tx for Port {
+    fn buffer(&mut self, len: usize) -> &mut [u8] {
+        self.tx_frames += 1;
+        self.sent_since_flush = true;
+        self.staged = match &mut self.link {
+            Link::Dpdk(q) => {
+                if q.alloc(len) {
+                    Staged::Mbuf
+                } else {
+                    Staged::Drop
                 }
             }
-        }
-    }
-}
-
-pub(crate) enum Rx<'a> {
-    Buf(&'a [u8]),
-    Mbuf(pmd::Mbuf),
-}
-
-impl phy::RxToken for Rx<'_> {
-    fn consume<R, F: FnOnce(&[u8]) -> R>(self, f: F) -> R {
-        match self {
-            Rx::Buf(b) => f(b),
-            Rx::Mbuf(m) => f(m.data()),
-        }
-    }
-}
-
-pub(crate) struct Tx<'a> {
-    link: &'a mut Link,
-    scratch: &'a mut Vec<u8>,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    now: Instant,
-    sent: &'a mut u64,
-}
-
-impl phy::TxToken for Tx<'_> {
-    fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
-        *self.sent += 1;
-        // A frame the device cannot take right now is built in `scratch` and dropped.
-        let mut f = Some(f);
-        let r = match self.link {
-            Link::Dpdk(q) => q.send(len, |b| (f.take().expect("unused"))(b)),
-            #[cfg(target_os = "linux")]
-            Link::Tap(t) => phy::Device::transmit(t.get_mut(), self.now)
-                .map(|tx| phy::TxToken::consume(tx, len, |b| (f.take().expect("unused"))(b))),
-            #[cfg(target_os = "linux")]
-            Link::Raw(r) => phy::Device::transmit(r.get_mut(), self.now)
-                .map(|tx| phy::TxToken::consume(tx, len, |b| (f.take().expect("unused"))(b))),
-            Link::Memory(m) => {
-                let mut frame = vec![0u8; len];
-                let r = (f.take().expect("unused"))(&mut frame);
-                m.send(frame);
-                Some(r)
-            }
+            _ => Staged::Scratch,
         };
-        match r {
-            Some(r) => r,
-            None => {
-                self.scratch.clear();
-                self.scratch.resize(len, 0);
-                (f.take().expect("not called"))(self.scratch)
-            }
+        if let (Staged::Mbuf, Link::Dpdk(q)) = (&self.staged, &mut self.link) {
+            return q.staged_mut();
         }
+        self.scratch.clear();
+        self.scratch.resize(len, 0);
+        &mut self.scratch
     }
-}
 
-impl phy::Device for Port {
-    type RxToken<'a> = Rx<'a>;
-    type TxToken<'a> = Tx<'a>;
-
-    fn receive(&mut self, now: Instant) -> Option<(Rx<'_>, Tx<'_>)> {
-        self.now = now;
-        let Port {
-            link,
-            inbox,
-            siblings,
-            rx_buf,
-            tx_scratch,
-            rx_frames,
-            tx_frames,
-            ..
-        } = self;
-        let injected = inbox.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
-        let rx = if let Some(frame) = injected {
-            *rx_buf = frame;
-            Rx::Buf(rx_buf)
-        } else {
-            match link {
-                Link::Dpdk(q) => {
-                    let m = q.recv()?;
-                    Port::fan_out(siblings, m.data());
-                    Rx::Mbuf(m)
-                }
-                #[cfg(target_os = "linux")]
-                Link::Tap(t) => {
-                    let (rx, _) = phy::Device::receive(t.get_mut(), now)?;
-                    phy::RxToken::consume(rx, |b| {
-                        rx_buf.clear();
-                        rx_buf.extend_from_slice(b);
-                    });
-                    Rx::Buf(rx_buf)
-                }
-                #[cfg(target_os = "linux")]
-                Link::Raw(r) => {
-                    let (rx, _) = phy::Device::receive(r.get_mut(), now)?;
-                    phy::RxToken::consume(rx, |b| {
-                        rx_buf.clear();
-                        rx_buf.extend_from_slice(b);
-                    });
-                    Rx::Buf(rx_buf)
-                }
-                Link::Memory(m) => {
-                    *rx_buf = m.recv()?;
-                    Rx::Buf(rx_buf)
+    fn commit(&mut self) {
+        match std::mem::replace(&mut self.staged, Staged::None) {
+            Staged::Mbuf => {
+                if let Link::Dpdk(q) = &mut self.link {
+                    q.commit();
                 }
             }
-        };
-        *rx_frames += 1;
-        Some((
-            rx,
-            Tx {
-                link,
-                scratch: tx_scratch,
-                now,
-                sent: tx_frames,
+            Staged::Scratch => match &mut self.link {
+                #[cfg(target_os = "linux")]
+                Link::Fd(fd) => fd.send(&self.scratch),
+                Link::Memory(m) => m.send(std::mem::take(&mut self.scratch)),
+                Link::Dpdk(_) => {}
             },
-        ))
-    }
-
-    fn transmit(&mut self, now: Instant) -> Option<Tx<'_>> {
-        self.now = now;
-        Some(Tx {
-            link: &mut self.link,
-            scratch: &mut self.tx_scratch,
-            now,
-            sent: &mut self.tx_frames,
-        })
-    }
-
-    fn capabilities(&self) -> DeviceCapabilities {
-        let mut caps = DeviceCapabilities::default();
-        caps.medium = Medium::Ethernet;
-        caps.max_transmission_unit = self.frame_mtu;
-        #[cfg(target_os = "linux")]
-        if matches!(self.link, Link::Raw(_)) {
-            // Frames an AF_PACKET socket sees from the local kernel (a veth peer, checksum
-            // offload) carry partial checksums: compute ours, do not verify theirs.
-            caps.checksum.ipv4 = phy::Checksum::Tx;
-            caps.checksum.udp = phy::Checksum::Tx;
-            caps.checksum.tcp = phy::Checksum::Tx;
+            Staged::Drop | Staged::None => {}
         }
-        caps
     }
 }

@@ -71,6 +71,15 @@ impl LoopShared {
         }
     }
 
+    /// Wakes the loop's thread if it sleeps (a frame was handed to it).
+    pub(crate) fn unpark(&self) {
+        if let Some(t) = self.thread.get() {
+            if t.id() != std::thread::current().id() {
+                t.unpark();
+            }
+        }
+    }
+
     /// Commands are waiting (one atomic load: checked on every poll iteration).
     pub(crate) fn has_cmds(&self) -> bool {
         self.pending.load(Ordering::Acquire)
@@ -173,7 +182,8 @@ struct CtlState {
     ports: HashSet<(bool, u16)>,
 }
 
-const EPHEMERAL_FIRST: u16 = 49152;
+/// First port of the ephemeral range (dials, listeners on port 0).
+pub(crate) const EPHEMERAL_FIRST: u16 = 49152;
 
 impl StackCtl {
     /// A free ephemeral port (dials, listeners on port 0).
@@ -189,6 +199,18 @@ impl StackCtl {
             };
             let st = self.state.lock().unwrap_or_else(|p| p.into_inner());
             if !st.ports.contains(&(udp, p)) {
+                return p;
+            }
+        }
+    }
+
+    /// A free ephemeral port for a dial on queue `queue` of `queues`: with several queues,
+    /// `port % queues == queue`, so frames for it that RSS puts on another queue can be handed
+    /// to the right one.
+    pub(crate) fn ephemeral_for(&self, udp: bool, queue: usize, queues: usize) -> u16 {
+        loop {
+            let p = self.ephemeral(udp);
+            if queues <= 1 || usize::from(p) % queues == queue {
                 return p;
             }
         }
@@ -329,16 +351,19 @@ impl Stack {
             next_ephemeral: AtomicU16::new(EPHEMERAL_FIRST),
             ip: cfg.address,
         });
-        let mut loops = Vec::with_capacity(links.len());
+        let queues = links.len();
+        let mut loops = Vec::with_capacity(queues);
         for (i, link) in links.into_iter().enumerate() {
-            let siblings = inboxes
-                .iter()
-                .enumerate()
-                .filter(|&(j, _)| j != i)
-                .map(|(_, b)| b.clone())
-                .collect();
-            let port = Port::new(link, cfg.mtu, inboxes[i].clone(), siblings);
-            loops.push(Loop::new(i, shared[i].clone(), ctl.clone(), port, mac, cfg));
+            let port = Port::new(link, i, inboxes.clone(), shared.clone());
+            loops.push(Loop::new(
+                i,
+                queues,
+                shared[i].clone(),
+                ctl.clone(),
+                port,
+                mac,
+                cfg,
+            ));
         }
         Ok(Stack {
             key,

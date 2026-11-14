@@ -373,8 +373,9 @@ jobs:
 
   dpdk:
     # only-dpdk against the distribution's DPDK (tools/dpdk/Dockerfile): clippy with libdpdk
-    # linked, the memory-wire tests, and UDP/TCP echo against the kernel stack over DPDK's net_tap
-    # PMD (1 and 2 queues) and smoltcp's TAP device. Needs NET_ADMIN and /dev/net/tun, so it runs
+    # linked, the memory-wire tests, and the userspace stack against the kernel stack over DPDK's
+    # net_tap PMD (1 and 2 queues), TAP and AF_PACKET (with tc netem loss). Needs NET_ADMIN and
+    # /dev/net/tun, so it runs
     # in the job's own container; no hugepages or NIC (--no-huge --no-pci, virtual devices).
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest

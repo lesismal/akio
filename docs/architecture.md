@@ -20,7 +20,7 @@ flowchart BT
     epoll["only-epoll<br/>epoll / kqueue groups, UDP groups"]
     uring["only-uring<br/>io_uring groups"]
     ebpf["only-ebpf<br/>reuseport steering, sockmap relay"]
-    dpdk["only-dpdk (experimental)<br/>userspace TCP/IP (smoltcp) over DPDK / TAP"]
+    dpdk["only-dpdk (experimental)<br/>own userspace TCP/IP over DPDK / TAP / AF_PACKET"]
     tls["only-tls<br/>rustls Transport"]
     facade["only<br/>Engine, Listener, Backend, Accel"]
     http["only-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]

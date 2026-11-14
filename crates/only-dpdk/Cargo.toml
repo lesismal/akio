@@ -1,6 +1,6 @@
 [package]
 name = "only-dpdk"
-description = "only kernel-bypass backend (experimental): a userspace TCP/IP stack (smoltcp) over DPDK ports, TAP, AF_PACKET or in-memory devices"
+description = "only kernel-bypass backend (experimental): its own userspace TCP/IP stack over DPDK ports, TAP, AF_PACKET or in-memory devices"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -9,25 +9,16 @@ rust-version.workspace = true
 readme = "README.md"
 homepage.workspace = true
 documentation = "https://docs.rs/only-dpdk"
-keywords = ["dpdk", "kernel-bypass", "smoltcp", "network", "userspace"]
+keywords = ["dpdk", "kernel-bypass", "tcp-ip", "network", "userspace"]
 categories = ["network-programming"]
 links = "only_dpdk_shim"
 
 [dependencies]
 only-core = { workspace = true }
-log = "0.4.21"
-# The userspace TCP/IP stack. IPv4 only for now (ARP is fanned out between queues; IPv6
-# neighbor discovery is not). The `phy-*` features are the TAP / AF_PACKET devices (Linux).
-smoltcp = { version = "0.12", default-features = false, features = [
-    "std",
-    "log",
-    "medium-ethernet",
-    "proto-ipv4",
-    "socket-udp",
-    "socket-tcp",
-    "phy-raw_socket",
-    "phy-tuntap_interface",
-] }
+
+# TAP and AF_PACKET devices (the userspace TCP/IP stack itself has no dependencies).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 cc = { version = "1.2", optional = true }
@@ -38,9 +29,12 @@ pkg-config = { version = "0.3.30", optional = true }
 # time the crate still builds and `Device::Dpdk` fails at runtime with `Unsupported` (set
 # ONLY_DPDK_REQUIRE=1 to make that a build error instead).
 pmd = ["dep:cc", "dep:pkg-config"]
+# Fuzz entry points for `fuzz/` (`only_dpdk::fuzzing`); not a public API.
+fuzzing = []
 
 [dev-dependencies]
 only = { workspace = true, features = ["dpdk"] }
+only-core = { workspace = true, features = ["fuzzing"] }
 only-kcp = { workspace = true }
 
 [lints]

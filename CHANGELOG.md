@@ -62,6 +62,39 @@ Raw access moved behind new `unstable` cargo features (`only`, `only-tls`, `only
 | `Error::Rtc(str0m::RtcError)`, `impl From<str0m::RtcError> for Error` | `Error::Rtc(only_webrtc::RtcError)`; new `Error::InvalidCandidate` |
 | `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
 
+### Changed (experimental tier): only-dpdk runs its own TCP/IP stack
+
+`only-dpdk` no longer depends on smoltcp (DEV-PLAN "no third-party dependencies", wave A): the
+userspace stack is now `only`'s own, in `crates/only-dpdk/src/net` (safe Rust,
+`#![forbid(unsafe_code)]`, no dependencies), with the same `Device` kinds, `DpdkConfig` and
+`Backend::Dpdk` integration.
+
+- Ethernet II; ARP with a 60 s cache and a queue of packets awaiting resolution (the first SYN to
+  a new neighbour is no longer dropped, which cost the smoltcp version a 1 s SYN retransmission);
+  IPv4 with fragmentation on send and bounded reassembly (UDP datagrams larger than the MTU now
+  work); ICMP echo replies, port / protocol unreachable, and received unreachables delivered to
+  dialed UDP connections (closed with `ConnectionRefused`, as on the kernel backends).
+- TCP per RFC 9293: RTT / RTO per RFC 6298, SACK (RFC 2018) with RFC 6675-style recovery,
+  NewReno fast recovery (RFC 6582), CUBIC (RFC 9438, the default) or NewReno, window scaling and
+  timestamps with PAWS (RFC 7323), delayed ACKs, keepalive, TIME-WAIT with reuse, RFC 5961
+  challenge ACKs, a listen backlog with SYN cookies.
+- The I/O loop is event-driven with a per-connection timer heap (the smoltcp version re-examined
+  every connection on each busy iteration); ACKs are coalesced per receive burst; a memory-wire
+  end wakes its peer's thread when it sends.
+- Dialing works on multi-queue DPDK ports (was `Unsupported`): local ports name their queue and
+  replies RSS puts elsewhere are handed over.
+- New `DpdkConfig` fields: `syn_cookies` (default `true`), `congestion`
+  (new `only::dpdk::Congestion`, default `Cubic`), `tcp_keepalive` (default `None`).
+  `udp_buffer` now bounds the datagrams queued per UDP port.
+- TAP and AF_PACKET devices use `libc` directly (`src/sys.rs`); the AF_PACKET socket gets an 8 MiB
+  receive buffer and skips the host's outgoing frames.
+- Tests: per-layer unit tests, a simulated lossy / reordering link in virtual time, the kernel
+  peer suite extended with `tc netem` loss, a 4 MiB window over 20 ms, 500 concurrent
+  connections, dials to the kernel and ping; fuzz targets `dpdk_ethernet`, `dpdk_arp`,
+  `dpdk_ipv4`, `dpdk_tcp`, `dpdk_udp`, `dpdk_icmp`, `dpdk_stack`. Benchmark example
+  `stack-bench`; A/B against the smoltcp version in docs/BENCHMARKS.md.
+- `deny.toml`: the 0BSD license and the `bitflags@1` duplicate (both smoltcp's) are gone.
+
 ### Added
 
 - `only-prefork` (M6, optional): serve one program from several worker processes. A supervisor

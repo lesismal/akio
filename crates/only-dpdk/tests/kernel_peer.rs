@@ -1,24 +1,29 @@
 //! The userspace stack against the Linux kernel's own TCP/IP stack as the peer: over a TAP
-//! interface (smoltcp's TAP device, `Device::Tap`), over a veth pair (`Device::AfPacket`), and
-//! over DPDK's `net_tap` poll-mode driver (`Device::Dpdk`, feature `pmd` with libdpdk; one and
-//! two queues). A std `UdpSocket` / `TcpStream` on the kernel side talks to a `only` UDP / TCP
-//! echo served by the userspace stack.
+//! interface (`Device::Tap`), over a veth pair (`Device::AfPacket`), and over DPDK's `net_tap`
+//! poll-mode driver (`Device::Dpdk`, feature `pmd` with libdpdk; one and two queues). A std
+//! `UdpSocket` / `TcpStream` on the kernel side talks to a `only` UDP / TCP echo served by the
+//! userspace stack, and the userspace stack dials the kernel's sockets.
 //!
-//! Needs `CAP_NET_ADMIN`, `/dev/net/tun` and the `ip` tool, so the tests only run when asked:
-//! `ONLY_TAP_TEST=1` (TAP, AF_PACKET) and `ONLY_DPDK_TEST=1` (DPDK). `tools/dpdk/test.sh` runs
-//! them in Docker (`--cap-add NET_ADMIN --device /dev/net/tun`).
+//! On the veth pair, `tc netem` adds loss, delay and reordering (both directions) for the TCP
+//! recovery tests; `ss -tin` on the kernel side shows what was negotiated (SACK, window
+//! scaling, timestamps) and that segments were retransmitted.
+//!
+//! Needs `CAP_NET_ADMIN`, `/dev/net/tun` and the `ip` / `tc` / `ss` tools, so the tests only run
+//! when asked: `ONLY_TAP_TEST=1` (TAP, AF_PACKET) and `ONLY_DPDK_TEST=1` (DPDK).
+//! `tools/dpdk/test.sh` runs them in Docker (`--cap-add NET_ADMIN --device /dev/net/tun`).
 #![allow(missing_docs)]
 #![cfg(target_os = "linux")]
 
 use std::{
     io::{Read, Write},
-    net::{Ipv4Addr, SocketAddr, TcpStream, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket},
     process::Command,
+    sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
 
 use only::{
-    Backend, Config, Conn, Engine, Handler, Listener,
+    Backend, Config, Conn, Engine, Error, Handler, Listener,
     dpdk::{Device, DpdkConfig},
     fn_acceptor,
 };
@@ -49,23 +54,35 @@ fn retry<T>(mut f: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
     }
 }
 
-fn ip(args: &str) {
-    let st = Command::new("ip")
+fn run(cmd: &str, args: &str) -> String {
+    let out = Command::new(cmd)
         .args(args.split_whitespace())
-        .status()
-        .expect("run ip");
-    assert!(st.success(), "ip {args} failed");
+        .output()
+        .unwrap_or_else(|e| panic!("run {cmd}: {e}"));
+    assert!(
+        out.status.success(),
+        "{cmd} {args} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Serves UDP echo on :7000 and TCP echo on :7001 at `local` over `dev`, configures the
-/// kernel-side interface `ifname` as `kernel`/24, and checks both echoes from the
-/// kernel's sockets.
-fn kernel_peer(dev: Device, ifname: &str, local: Ipv4Addr, kernel: Ipv4Addr) {
+fn ip(args: &str) {
+    run("ip", args);
+}
+
+fn cfg() -> Config {
     let mut cfg = Config::default();
     cfg.shutdown_timeout = Duration::from_millis(500);
-    let backend = Backend::Dpdk(DpdkConfig::new(dev, local));
-    let engine = Engine::builder()
-        .config(cfg)
+    cfg
+}
+
+/// Serves UDP echo on :7000 and TCP echo on :7001 at `local` over `dcfg`'s device.
+fn echo_engine(dcfg: DpdkConfig) -> Engine {
+    let local = dcfg.address;
+    let backend = Backend::Dpdk(dcfg);
+    Engine::builder()
+        .config(cfg())
         .listen(
             Listener::udp(SocketAddr::from((local, 7000)))
                 .backend(backend.clone())
@@ -77,7 +94,67 @@ fn kernel_peer(dev: Device, ifname: &str, local: Ipv4Addr, kernel: Ipv4Addr) {
                 .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
         )
         .build()
-        .expect("build");
+        .expect("build")
+}
+
+/// Writes `data` and reads its echo concurrently; checks it.
+fn tcp_echo(t: &mut TcpStream, data: &[u8]) {
+    let mut w = t.try_clone().unwrap();
+    let sent = data.to_vec();
+    let writer = std::thread::spawn(move || {
+        for chunk in sent.chunks(16 << 10) {
+            retry(|| w.write_all(chunk)).unwrap();
+        }
+    });
+    let mut got = vec![0u8; data.len()];
+    let mut n = 0;
+    while n < got.len() {
+        let r = retry(|| t.read(&mut got[n..])).expect("tcp echo");
+        assert!(r > 0, "EOF after {n} bytes");
+        n += r;
+    }
+    writer.join().unwrap();
+    assert!(got == data, "TCP echo differs");
+}
+
+fn pattern(n: usize, salt: usize) -> Vec<u8> {
+    (0..n).map(|i| ((i * 7 + salt) % 253) as u8).collect()
+}
+
+/// The kernel's SACK processing counters (TcpExt in /proc/net/netstat), summed: they only move
+/// when SACK blocks from the peer were used.
+fn kernel_sack_counters() -> u64 {
+    let text = std::fs::read_to_string("/proc/net/netstat").unwrap_or_default();
+    let mut lines = text.lines().filter(|l| l.starts_with("TcpExt:"));
+    let (Some(names), Some(values)) = (lines.next(), lines.next()) else {
+        return 0;
+    };
+    names
+        .split_whitespace()
+        .zip(values.split_whitespace())
+        .filter(|(n, _)| {
+            matches!(
+                *n,
+                "TCPSACKRecovery"
+                    | "TCPSACKReorder"
+                    | "TCPSackShifted"
+                    | "TCPSackMerged"
+                    | "TCPSackShiftFallback"
+            )
+        })
+        .filter_map(|(_, v)| v.parse::<u64>().ok())
+        .sum()
+}
+
+/// `ss -tin` lines for connections to `addr` (kernel's view of a connection with the stack).
+fn ss_info(addr: SocketAddr) -> String {
+    run("ss", &format!("-tin dst {addr}"))
+}
+
+/// The UDP and TCP echoes from the kernel's sockets, and dials from the userspace stack to the
+/// kernel's sockets.
+fn kernel_peer(dev: Device, ifname: &str, local: Ipv4Addr, kernel: Ipv4Addr) {
+    let engine = echo_engine(DpdkConfig::new(dev, local));
     // The TAP interface exists now (created when the stack opened its device).
     ip(&format!("addr add {kernel}/24 dev {ifname}"));
     ip(&format!("link set {ifname} up"));
@@ -88,7 +165,7 @@ fn kernel_peer(dev: Device, ifname: &str, local: Ipv4Addr, kernel: Ipv4Addr) {
     u.connect((local, 7000)).unwrap();
     u.set_read_timeout(Some(Duration::from_millis(500)))
         .unwrap();
-    let mut buf = vec![0u8; 2048];
+    let mut buf = vec![0u8; 65536];
     let start = Instant::now();
     let mut answered = false;
     while start.elapsed() < Duration::from_secs(10) && !answered {
@@ -102,40 +179,154 @@ fn kernel_peer(dev: Device, ifname: &str, local: Ipv4Addr, kernel: Ipv4Addr) {
         let n = retry(|| u.recv(&mut buf)).expect("udp echo");
         assert_eq!(&buf[..n], &msg[..], "datagram {i}");
     }
+    // Datagrams larger than the MTU: IP fragmentation both ways.
+    for len in [2000usize, 8000, 30_000] {
+        let msg = pattern(len, len);
+        u.send(&msg).unwrap();
+        let n = retry(|| u.recv(&mut buf)).expect("fragmented udp echo");
+        assert!(buf[..n] == msg[..], "fragmented datagram of {len}");
+    }
 
-    // TCP: 2 MiB through the kernel's TCP and smoltcp, written and read concurrently.
+    // TCP: 2 MiB through the kernel's TCP and ours, written and read concurrently.
     let mut t =
         TcpStream::connect_timeout(&SocketAddr::from((local, 7001)), Duration::from_secs(5))
             .expect("tcp connect");
     t.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let data: Vec<u8> = (0..2u32 << 20).map(|i| (i % 253) as u8).collect();
-    let mut w = t.try_clone().unwrap();
-    let sent = data.clone();
-    let writer = std::thread::spawn(move || {
-        for chunk in sent.chunks(8 << 10) {
-            w.write_all(chunk).unwrap();
-        }
-    });
-    let mut got = vec![0u8; data.len()];
-    t.read_exact(&mut got).expect("tcp echo");
-    writer.join().unwrap();
-    assert!(got == data, "TCP echo differs");
+    tcp_echo(&mut t, &pattern(2 << 20, 1));
+    let info = ss_info(SocketAddr::from((local, 7001)));
+    eprintln!("{ifname}: ss: {}", info.lines().last().unwrap_or("").trim());
+    assert!(info.contains("wscale:"), "{info}");
     // Orderly close: our FIN, the server's FIN after it drained.
     t.shutdown(std::net::Shutdown::Write).unwrap();
     let eof = retry(|| t.read(&mut buf)).unwrap();
     assert_eq!(eof, 0, "EOF after the server closed");
+
+    dial_kernel(&engine, kernel);
 
     let m = engine.metrics();
     eprintln!(
         "{ifname}: {}",
         m.to_prometheus()
             .lines()
-            .filter(|l| l.contains("accepted"))
+            .filter(|l| l.contains("accepted_total{") || l.contains("dialed_total{"))
             .collect::<Vec<_>>()
             .join(" | ")
     );
     engine.shutdown();
     engine.wait();
+}
+
+/// Collects a dialed connection's data and close.
+struct Client(mpsc::Sender<Result<Vec<u8>, Option<String>>>);
+impl Handler for Client {
+    fn on_data(&mut self, _c: &Conn<Self>, data: &[u8]) {
+        let _ = self.0.send(Ok(data.to_vec()));
+    }
+    fn on_close(&mut self, _c: &Conn<Self>, err: Option<Error>) {
+        let _ = self.0.send(Err(err.map(|e| e.to_string())));
+    }
+}
+
+/// The userspace stack dials the kernel: several TCP connections to an echo listener (spread
+/// over the queues on a multi-queue device), a UDP echo, and a UDP port nobody listens on
+/// (ICMP port unreachable ends the dialed connection).
+fn dial_kernel(engine: &Engine, kernel: Ipv4Addr) {
+    let l = TcpListener::bind((kernel, 9001)).unwrap();
+    std::thread::spawn(move || {
+        for s in l.incoming() {
+            let Ok(mut s) = s else { break };
+            std::thread::spawn(move || {
+                let mut b = [0u8; 4096];
+                while let Ok(n) = retry(|| s.read(&mut b)) {
+                    if n == 0 || retry(|| s.write_all(&b[..n])).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+    });
+    let ku = UdpSocket::bind((kernel, 9002)).unwrap();
+    std::thread::spawn(move || {
+        let mut b = [0u8; 2048];
+        while let Ok((n, from)) = retry(|| ku.recv_from(&mut b)) {
+            let _ = ku.send_to(&b[..n], from);
+        }
+    });
+    for i in 0..8usize {
+        let (tx, rx) = mpsc::channel();
+        let slot: Arc<Mutex<Option<Conn<Client>>>> = Arc::default();
+        let s2 = slot.clone();
+        let etx = tx.clone();
+        engine.dial(
+            SocketAddr::from((kernel, 9001)),
+            fn_acceptor(move |c: &Conn<Client>| {
+                *s2.lock().unwrap() = Some(c.clone());
+                Client(tx.clone())
+            }),
+            move |e| {
+                let _ = etx.send(Err(Some(format!("dial: {e}"))));
+            },
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let c = loop {
+            let opened = slot.lock().unwrap().clone();
+            if let Some(c) = opened {
+                break c;
+            }
+            if let Ok(Err(e)) = rx.try_recv() {
+                panic!("dial {i}: {e:?}");
+            }
+            assert!(Instant::now() < deadline, "dial {i} timed out");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        let msg = pattern(100_000, i);
+        c.send(&msg).unwrap();
+        let mut got = Vec::new();
+        while got.len() < msg.len() {
+            match rx.recv_timeout(Duration::from_secs(10)).expect("dial echo") {
+                Ok(d) => got.extend(d),
+                Err(e) => panic!("dialed connection closed: {e:?}"),
+            }
+        }
+        assert!(got == msg, "dial {i}: echo differs");
+        c.close();
+    }
+    // UDP dial: echo, then a closed port.
+    for (port, refused) in [(9002u16, false), (9003, true)] {
+        let (tx, rx) = mpsc::channel();
+        let etx = tx.clone();
+        let slot: Arc<Mutex<Option<Conn<Client>>>> = Arc::default();
+        let s2 = slot.clone();
+        engine.dial_udp(
+            SocketAddr::from((kernel, port)),
+            fn_acceptor(move |c: &Conn<Client>| {
+                let _ = c.send(b"udp dial");
+                *s2.lock().unwrap() = Some(c.clone());
+                Client(tx.clone())
+            }),
+            move |e| {
+                let _ = etx.send(Err(Some(format!("dial_udp: {e}"))));
+            },
+        );
+        match rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("udp dial result")
+        {
+            Ok(d) => {
+                assert!(!refused);
+                assert_eq!(d, b"udp dial");
+                let opened = slot.lock().unwrap().take();
+                if let Some(c) = opened {
+                    c.close();
+                }
+            }
+            Err(e) => {
+                assert!(refused, "{e:?}");
+                let e = e.unwrap_or_default();
+                assert!(e.contains("unreachable") || e.contains("refused"), "{e}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -151,13 +342,47 @@ fn tap_kernel_peer() {
     );
 }
 
+/// A veth pair `<name>0` (the userspace stack, through AF_PACKET; the kernel has no address
+/// there) / `<name>1` (the kernel at `kernel`/24), with `netem` (if any) on both ends.
+struct Veth {
+    name: String,
+}
+
+impl Veth {
+    fn new(name: &str, kernel: Ipv4Addr, netem: Option<&str>) -> Veth {
+        let _ = Command::new("ip")
+            .args(["link", "del", &format!("{name}0")])
+            .status();
+        ip(&format!("link add {name}0 type veth peer name {name}1"));
+        ip(&format!("link set {name}0 up"));
+        ip(&format!("addr add {kernel}/24 dev {name}1"));
+        ip(&format!("link set {name}1 up"));
+        if let Some(n) = netem {
+            for end in ["0", "1"] {
+                run("tc", &format!("qdisc add dev {name}{end} root netem {n}"));
+            }
+        }
+        Veth {
+            name: name.to_owned(),
+        }
+    }
+}
+
+impl Drop for Veth {
+    fn drop(&mut self) {
+        let _ = Command::new("ip")
+            .args(["link", "del", &format!("{}0", self.name)])
+            .status();
+    }
+}
+
 #[test]
 fn af_packet_kernel_peer() {
     if !enabled("ONLY_TAP_TEST") {
         return;
     }
-    // A veth pair: the userspace stack owns flveth0 through AF_PACKET (the kernel has no
-    // address there), the kernel's sockets use flveth1.
+    // kernel_peer configures the kernel side itself.
+    let _ = Command::new("ip").args(["link", "del", "flveth0"]).status();
     ip("link add flveth0 type veth peer name flveth1");
     ip("link set flveth0 up");
     kernel_peer(
@@ -167,6 +392,151 @@ fn af_packet_kernel_peer() {
         Ipv4Addr::new(10, 76, 0, 1),
     );
     ip("link del flveth0");
+    // ICMP echo: the kernel pings the stack.
+    let _v = Veth::new("flping", Ipv4Addr::new(10, 75, 0, 1), None);
+    let engine = echo_engine(DpdkConfig::new(
+        Device::AfPacket("flping0".to_owned()),
+        Ipv4Addr::new(10, 75, 0, 2),
+    ));
+    engine.start().unwrap();
+    if Command::new("ping").arg("-V").output().is_ok() {
+        let out = run("ping", "-c 3 -i 0.2 -W 2 10.75.0.2");
+        assert!(out.contains("3 received"), "{out}");
+    } else {
+        eprintln!("ping not installed: ICMP echo not checked");
+    }
+    engine.shutdown();
+    engine.wait();
+}
+
+/// Kernel -> stack -> kernel echo of `size` bytes on each of `conns` concurrent connections.
+fn echo_many(local: Ipv4Addr, conns: usize, size: usize) -> Duration {
+    let t0 = Instant::now();
+    let handles: Vec<_> = (0..conns)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let mut t = TcpStream::connect_timeout(
+                    &SocketAddr::from((local, 7001)),
+                    Duration::from_secs(10),
+                )
+                .expect("tcp connect");
+                t.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+                tcp_echo(&mut t, &pattern(size, i));
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().expect("echo thread");
+    }
+    t0.elapsed()
+}
+
+#[test]
+fn af_packet_netem_loss_and_reordering() {
+    if !enabled("ONLY_TAP_TEST") {
+        return;
+    }
+    // 2% loss, 2 ms delay, 10% reordered, in both directions.
+    let local = Ipv4Addr::new(10, 74, 0, 2);
+    let _v = Veth::new(
+        "flloss",
+        Ipv4Addr::new(10, 74, 0, 1),
+        Some("loss 2% delay 2ms reorder 10% 50%"),
+    );
+    let mut d = DpdkConfig::new(Device::AfPacket("flloss0".to_owned()), local);
+    d.tcp_buffer = 1 << 20;
+    let engine = echo_engine(d);
+    engine.start().unwrap();
+    let mut t =
+        TcpStream::connect_timeout(&SocketAddr::from((local, 7001)), Duration::from_secs(10))
+            .expect("tcp connect over a lossy link");
+    t.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    let data = pattern(8 << 20, 3);
+    let sack0 = kernel_sack_counters();
+    let t0 = Instant::now();
+    tcp_echo(&mut t, &data);
+    let took = t0.elapsed();
+    let info = ss_info(SocketAddr::from((local, 7001)));
+    eprintln!(
+        "netem: 8 MiB echoed in {took:?} ({:.1} MB/s each way); ss: {}",
+        data.len() as f64 / took.as_secs_f64() / 1e6,
+        info.lines().last().unwrap_or("").trim()
+    );
+    let sacks = kernel_sack_counters() - sack0;
+    eprintln!("netem: kernel SACK counters moved by {sacks}");
+    assert!(sacks > 0, "the kernel used no SACK blocks from the stack");
+    assert!(
+        info.contains("retrans") || info.contains("lost"),
+        "the kernel retransmitted: {info}"
+    );
+    drop(t);
+    // Several connections at once over the same lossy link.
+    let took = echo_many(local, 16, 256 << 10);
+    eprintln!("netem: 16 x 256 KiB echoed in {took:?}");
+    engine.shutdown();
+    engine.wait();
+}
+
+#[test]
+fn af_packet_window_scaling_large_transfer() {
+    if !enabled("ONLY_TAP_TEST") {
+        return;
+    }
+    // 20 ms RTT: without window scaling a 64 KiB window caps a connection at ~3 MB/s.
+    let local = Ipv4Addr::new(10, 73, 0, 2);
+    let _v = Veth::new(
+        "flwin",
+        Ipv4Addr::new(10, 73, 0, 1),
+        Some("delay 10ms limit 10000"),
+    );
+    let mut d = DpdkConfig::new(Device::AfPacket("flwin0".to_owned()), local);
+    d.tcp_buffer = 4 << 20;
+    let engine = echo_engine(d);
+    engine.start().unwrap();
+    let mut t =
+        TcpStream::connect_timeout(&SocketAddr::from((local, 7001)), Duration::from_secs(10))
+            .expect("tcp connect");
+    t.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    let data = pattern(32 << 20, 5);
+    let t0 = Instant::now();
+    tcp_echo(&mut t, &data);
+    let took = t0.elapsed();
+    let mbps = data.len() as f64 / took.as_secs_f64() / 1e6;
+    let info = ss_info(SocketAddr::from((local, 7001)));
+    eprintln!(
+        "window scaling: 32 MiB echoed in {took:?} ({mbps:.1} MB/s each way); ss: {}",
+        info.lines().last().unwrap_or("").trim()
+    );
+    // The kernel saw our window scale (4 MiB buffer: shift 7).
+    assert!(info.contains("wscale:") && info.contains(",7"), "{info}");
+    assert!(mbps > 4.0, "{mbps:.1} MB/s: window scaling not effective");
+    engine.shutdown();
+    engine.wait();
+}
+
+#[test]
+fn af_packet_many_concurrent_connections() {
+    if !enabled("ONLY_TAP_TEST") {
+        return;
+    }
+    let local = Ipv4Addr::new(10, 72, 0, 2);
+    let _v = Veth::new("flmany", Ipv4Addr::new(10, 72, 0, 1), None);
+    let engine = echo_engine(DpdkConfig::new(
+        Device::AfPacket("flmany0".to_owned()),
+        local,
+    ));
+    engine.start().unwrap();
+    let took = echo_many(local, 500, 32 << 10);
+    eprintln!("500 concurrent connections x 32 KiB echoed in {took:?}");
+    let m = engine.metrics().to_prometheus();
+    let accepted: u64 = m
+        .lines()
+        .filter(|l| l.starts_with("only_connections_accepted_total{") && l.contains(":7001"))
+        .filter_map(|l| l.rsplit(" ").next()?.parse::<u64>().ok())
+        .sum();
+    assert_eq!(accepted, 500);
+    engine.shutdown();
+    engine.wait();
 }
 
 /// EAL settings for a net_tap port on interface `iface`. The EAL is initialised once per
@@ -210,7 +580,8 @@ fn dpdk_net_tap_kernel_peer() {
         Ipv4Addr::new(10, 78, 0, 1),
     );
     // Two queues: two I/O threads with a stack each; flows spread by the TAP's queue selection,
-    // ARP fanned out between the queues.
+    // ARP fanned out between the queues, dialed connections on both queues (replies landing on
+    // the other queue are handed over).
     kernel_peer(
         Device::Dpdk(eal("fldtap1", 2)),
         "fldtap1",

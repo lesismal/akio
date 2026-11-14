@@ -59,7 +59,7 @@ pub enum Backend {
     /// io_uring (Linux 5.19+). Where the kernel lacks it the listener falls back to epoll, unless
     /// [`UringConfig::strict`] is set, in which case `build` fails with `Unsupported`.
     IoUring(UringConfig),
-    /// Kernel bypass (experimental, cargo feature `dpdk`): a userspace TCP/IP stack (smoltcp)
+    /// Kernel bypass (experimental, cargo feature `dpdk`): `only`'s own userspace TCP/IP stack
     /// over a DPDK port, TAP, AF_PACKET or in-memory device; see [`dpdk`]. TCP and UDP
     /// listeners, `dial` and `dial_udp` (IPv4). Listeners naming the same device share its
     /// stack and I/O threads (one per queue), so `Listener::threads` does not apply.

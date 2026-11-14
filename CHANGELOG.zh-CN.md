@@ -59,6 +59,33 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
 | `Error::Rtc(str0m::RtcError)`、`impl From<str0m::RtcError> for Error` | `Error::Rtc(only_webrtc::RtcError)`；新增 `Error::InvalidCandidate` |
 | `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
 
+### 变更（实验性层级）：only-dpdk 使用自研 TCP/IP 协议栈
+
+`only-dpdk` 不再依赖 smoltcp（DEV-PLAN“去除第三方依赖”第 A 波）：用户态协议栈改为 only 自研，位于
+`crates/only-dpdk/src/net`（安全 Rust，`#![forbid(unsafe_code)]`，无依赖），`Device` 种类、
+`DpdkConfig` 与 `Backend::Dpdk` 的集成方式不变。
+
+- 以太网 II；ARP 缓存 60 s，并为等待解析的报文排队（发往新邻居的第一个 SYN 不再被丢弃，smoltcp 版本
+  因此要多等 1 s 的 SYN 重传）；IPv4 发送分片与带上限的重组（超过 MTU 的 UDP 数据报现在可用）；ICMP
+  回显应答、端口/协议不可达，收到的不可达会交付给已拨出的 UDP 连接（以 `ConnectionRefused` 关闭，与
+  内核后端一致）。
+- 遵循 RFC 9293 的 TCP：RFC 6298 的 RTT / RTO，SACK（RFC 2018）与 RFC 6675 风格的恢复，NewReno
+  快速恢复（RFC 6582），CUBIC（RFC 9438，默认）或 NewReno，窗口缩放与时间戳及 PAWS（RFC 7323），
+  延迟 ACK，keepalive，可复用的 TIME-WAIT，RFC 5961 挑战 ACK，带 SYN cookie 的监听 backlog。
+- I/O 循环改为事件驱动，并使用每连接一项的定时器堆（smoltcp 版本在每轮有流量的迭代中检查所有连接）；
+  ACK 按接收批次合并；内存链路的一端发送后会唤醒对端线程。
+- 多队列 DPDK 端口上可以拨号（原先返回 `Unsupported`）：本地端口对应其队列，RSS 放到其他队列的回包
+  会被转交。
+- `DpdkConfig` 新字段：`syn_cookies`（默认 `true`）、`congestion`（新类型 `only::dpdk::Congestion`，
+  默认 `Cubic`）、`tcp_keepalive`（默认 `None`）。`udp_buffer` 现在限制每个 UDP 端口排队的数据报。
+- TAP 与 AF_PACKET 设备直接使用 `libc`（`src/sys.rs`）；AF_PACKET socket 使用 8 MiB 接收缓冲区，并
+  跳过本机发出的帧。
+- 测试：逐层单元测试、虚拟时间中的模拟丢包/乱序链路，内核对端测试新增 `tc netem` 丢包、20 ms 下的
+  4 MiB 窗口、500 条并发连接、向内核拨号与 ping；模糊测试目标 `dpdk_ethernet`、`dpdk_arp`、
+  `dpdk_ipv4`、`dpdk_tcp`、`dpdk_udp`、`dpdk_icmp`、`dpdk_stack`。基准示例 `stack-bench`；与 smoltcp
+  版本的 A/B 对比见 docs/BENCHMARKS.zh-CN.md。
+- `deny.toml`：去掉了 smoltcp 带来的 0BSD 许可证与 `bitflags@1` 重复项。
+
 ### 新增
 
 - `only-prefork`（M6，可选）：用多个 worker 进程服务同一个程序。supervisor 以 N 个 worker 的身份重新执行

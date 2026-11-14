@@ -19,7 +19,7 @@ flowchart BT
     epoll["only-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
     uring["only-uring<br/>io_uring 线程组"]
     ebpf["only-ebpf<br/>reuseport 分流、sockmap 转发"]
-    dpdk["only-dpdk（实验性）<br/>基于 DPDK / TAP 的用户态 TCP/IP（smoltcp）"]
+    dpdk["only-dpdk（实验性）<br/>基于 DPDK / TAP / AF_PACKET 的自研用户态 TCP/IP"]
     tls["only-tls<br/>rustls Transport"]
     facade["only<br/>Engine、Listener、Backend、Accel"]
     http["only-http<br/>h1、h2、Router、中间件、<br/>静态文件、客户端、observe"]
