@@ -2,19 +2,23 @@
 
 两个 crate：
 
-- `only-webrtc` 在 only UDP socket 上运行 WebRTC peer。协议本身由
-  [str0m](https://github.com/algesten/str0m) 完成，它是 sans-io 的 WebRTC 状态机：ICE（完整 agent 与
-  ICE-lite、consent freshness）、带证书指纹校验的 DTLS 1.2/1.3、SRTP/SRTCP（AES-CM-SHA1-80、
-  AEAD-AES-128/256-GCM）、SCTP 数据通道（DCEP；可靠或不可靠、有序或无序）、RTP/RTCP 媒体（Opus、
-  VP8、VP9、H.264、H.265、AV1 打包；NACK 与 RTX、PLI/FIR、TWCC 与带宽估计、发送/接收报告）以及 SDP
-  offer/answer。only 用自己的 I/O 线程和一个共享定时器线程驱动它，并接入纯 Rust 的加密实现
-  （RustCrypto 加 `dimpl` DTLS 栈：不需要 C 工具链，也不需要 OpenSSL）。
+- `only-webrtc` 在 only UDP socket 上运行 WebRTC peer，基于自研、sans-io、无第三方依赖的协议栈
+  （DEV-PLAN 第 D 波），每层一个 crate，均为 `#![forbid(unsafe_code)]` 并构建于 `only-crypto` 之上：
+  `only-ice`（完整 ICE agent 与 ICE-lite、检查列表、提名、角色冲突、peer-reflexive 候选、trickle、
+  重启、consent freshness）、`only-dtls`（带证书指纹校验的 DTLS 1.2 与 DTLS-SRTP 密钥）、
+  `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放）、
+  `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
+  无序）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
+  NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告）。`only-webrtc` 本身负责 SDP
+  offer/answer（BUNDLE、rtcp-mux、编解码器与头扩展协商、重新协商），并用 only 的 I/O 线程和一个
+  共享定时器线程驱动各个 peer。
 - `only-turn` 提供 STUN 编解码、STUN 服务器和 TURN 服务器（UDP 上的 RFC 8656）。
 
 互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 only TURN 中继；还有 fib
 的 Go 版 WebRTC（数据通道，双向）；TURN
 服务器则与 pion/turn 客户端和 coturn 的 `turnutils_uclient` 互通（`tools/interop/webrtc/run.sh`，
-`COTURN=1` 时包括 coturn）。
+`COTURN=1` 时包括 coturn）。无头 Chrome 在两个 offer 方向上均经过测试：数据通道，以及 Chrome
+的虚拟摄像头与麦克风媒体由 `RtcServer` 回显后再由 Chrome 解码（`tools/interop/webrtc/browser.sh`）。
 
 ## 一个引擎上的服务器、TURN 服务器与客户端
 
@@ -38,9 +42,8 @@
 API 使用 only 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`、`Codec`、`MediaKind`、
 `Direction`、`MediaTime` / `Frequency`、`MediaData`、`MediaAdded`、`RtpPacket`、
 `KeyframeRequest`、`Candidate`、`IceConnectionState`、`RtcConfig`、`SdpChanges`、`Event`。底层
-干活的 str0m 不属于 API，因此升级它不是破坏性变更。`unstable` cargo feature（不在 semver 承诺内）
-重新导出 `only_webrtc::str0m`，并提供 `Peer::with_rtc`（在 peer 上调用任意 str0m API）、
-`RtcConfig::with_str0m` 与 `OtherEvent::as_str0m`。
+的协议 crate 属于内部层级（其 API 可能在任何发布中变化），不会出现在 API 中。`unstable` cargo
+feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（以前用于暴露 str0m）。
 
 ## Peer 与 handler
 
@@ -65,7 +68,6 @@ API 使用 only 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`�
 | `request_keyframe(mid, kind)` | 向远端发送方发 PLI 或 FIR |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | 首次交换之后的 SDP 变更 |
 | `add_remote_candidate(line)` | trickle ICE |
-| `with_rtc(f)` | 调用任意 str0m API，之后驱动该 peer（仅 `unstable` cargo feature） |
 | `close()` | DTLS close notify，随后 `on_close` |
 
 ## 完整 ICE 客户端：`Endpoint`
@@ -111,4 +113,5 @@ API 使用 only 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`�
 ## 尚未完成
 
 TCP/TLS 上的 TURN，以及 `only-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的
-ICE；mDNS 候选。str0m 自身的限制同样适用（见其文档）。
+ICE；解析 mDNS 候选（使用它们的对端仍可通过 peer-reflexive 候选连通）；simulcast 发送与分层
+选择；FEC；RTCP XR；DTLS 1.3。

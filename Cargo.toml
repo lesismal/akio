@@ -6,6 +6,10 @@ members = [
     "crates/only-crypto",
     "crates/only-x509",
     "crates/only-dtls",
+    "crates/only-srtp",
+    "crates/only-rtp",
+    "crates/only-sctp",
+    "crates/only-ice",
     "crates/only-buf",
     "crates/only-deflate",
     "crates/only-timer",
@@ -59,6 +63,10 @@ only-log = { path = "crates/only-log", version = "=1.0.0-rc.1" }
 only-crypto = { path = "crates/only-crypto", version = "=1.0.0-rc.1" }
 only-x509 = { path = "crates/only-x509", version = "=1.0.0-rc.1" }
 only-dtls = { path = "crates/only-dtls", version = "=1.0.0-rc.1" }
+only-srtp = { path = "crates/only-srtp", version = "=1.0.0-rc.1" }
+only-rtp = { path = "crates/only-rtp", version = "=1.0.0-rc.1" }
+only-sctp = { path = "crates/only-sctp", version = "=1.0.0-rc.1" }
+only-ice = { path = "crates/only-ice", version = "=1.0.0-rc.1" }
 only-buf = { path = "crates/only-buf", version = "=1.0.0-rc.1" }
 only-deflate = { path = "crates/only-deflate", version = "=1.0.0-rc.1" }
 only-timer = { path = "crates/only-timer", version = "=1.0.0-rc.1" }

@@ -25,7 +25,7 @@
 | 级别 | Crate | 承诺 |
 |---|---|---|
 | 公开 | `only`、`only-core`、`only-log`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-ebpf`、`only-prefork`、`only-turn`、`only-webrtc`、`only-media` | 其公开 API（见下）完整遵循 semver。 |
-| 内部 | `only-sys`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-uring`、`only-crypto`、`only-x509`、`only-dtls`、`only-deflate` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `only` / `only-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `only-core` 和 `only` 中的再导出受到保护。 |
+| 内部 | `only-sys`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-uring`、`only-crypto`、`only-x509`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-deflate` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `only` / `only-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `only-core` 和 `only` 中的再导出受到保护。 |
 | 实验性 | `only-dpdk`，以及 `only` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`only::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/only-dpdk.txt` 只用于让变化可见。 |
 
 `tools/` 与 `fuzz/` 不发布。
@@ -43,10 +43,9 @@ trait（`Send`、`Sync`、`Unpin`、`UnwindSafe`）。
   遥测辅助函数等），可能在任何发布中变化。
 - `fuzzing` cargo feature 及其启用的 `fuzzing` 模块（`fuzz/` 的入口）。
 - `unstable` cargo feature（`only`、`only-tls`、`only-quic`、`only-webrtc`）及其启用的一切：
-  直接访问被封装的依赖（`only_quic::proto`、`from_quinn` / `as_quinn_mut`、`only_webrtc::str0m`、
-  `Peer::with_rtc`、`RtcConfig::with_str0m`、`OtherEvent::as_str0m` 等）。only-tls 改用自研 TLS
+  直接访问被封装的依赖（`only_quic::proto`、`from_quinn` / `as_quinn_mut` 等）。only-tls 改用自研 TLS
   （DEV-PLAN 第 C 波）之后，它的 `unstable` feature 不再启用任何东西：保留为空的预留 feature，
-  以便 `only/unstable` 照常编译；`only::tls::rustls`、`from_rustls`、`as_rustls` 已移除。被封装的 crate 升级时它们的签名就会变化，
+  以便 `only/unstable` 照常编译；`only::tls::rustls`、`from_rustls`、`as_rustls` 已移除。同样，only-webrtc 改用自研 WebRTC 协议栈（DEV-PLAN 第 D 波）后，它的 `unstable` feature 也是预留的空 feature，`only_webrtc::str0m`、`crypto_provider_str0m`、`Peer::with_rtc`、`RtcConfig::with_str0m` 与 `OtherEvent::as_str0m` 已移除。被封装的 crate 升级时它们的签名就会变化，
   这可能发生在次版本中。任何暂时无法承诺的公开内容都放进 `#[doc(hidden)]` 或 `unstable` 之后，
   绝不悄悄进入受保护的 API。
 - `only-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`；已弃用，推荐改用
@@ -71,13 +70,13 @@ WebSocket、arpc、gRPC、KCP、SOCKS 保持互通），Prometheus 指标的名�
 target（`only`、`only_http::access`、`only_webrtc`）和键名与指标名同等对待：次版本可新增，只在
 主版本中改名或删除。
 
-TLS 由 `only-tls` 自己实现（基于 `only-crypto` 与 `only-x509`），不依赖任何第三方 crate。仍承担
+TLS 由 `only-tls` 自己实现（基于 `only-crypto` 与 `only-x509`），不依赖任何第三方 crate；WebRTC 也是如此（第 D 波）：`only-webrtc` 运行在内部的 `only-ice`、
+`only-dtls`、`only-srtp`、`only-rtp` 与 `only-sctp` 之上，它们的类型都不出现在其 API 中。仍承担
 协议工作的 1.0 之前的依赖（quinn-proto，其中为 QUIC 的 TLS 1.3 内含 rustls，直到第 D 波的自研
-QUIC；str0m；prost）都已**被封装**：受保护的 API
+QUIC；prost）都已**被封装**：受保护的 API
 改用 only 自己的类型（`only::tls::{ServerConfig, ClientConfig, Certificate, PrivateKey,
 RootCerts, Error}`、`only_quic::{ServerConfig, ClientConfig, TransportConfig, StreamId, Dir,
-Side, ConnectionError, ConnectionStats}`、`only_webrtc::{ChannelId, Mid, Pt, Codec, MediaData,
-RtcConfig, SdpChanges, Event, ...}`、`only_grpc::codec::Message`）。升级它们，或用自研实现替换
+Side, ConnectionError, ConnectionStats}`、`only_grpc::codec::Message`）。升级它们，或用自研实现替换
 它们，都不是破坏性变更。只有通过上面的 `unstable` feature 与 `prost` feature 才能访问它们，而这些
 feature 不在承诺之内。
 

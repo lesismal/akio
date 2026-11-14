@@ -38,7 +38,7 @@ $ cargo doc --workspace --no-deps --open
 | `only-socks` | SOCKS4/4a/5 与 HTTP CONNECT 代理 | [SOCKS](protocols/socks.md) |
 | `only-mux` | 一个端口上的多种协议 | [协议复用](protocols/mux.md) |
 | `only-kcp` | KCP（兼容 kcp-go） | [KCP](protocols/kcp.md) |
-| `only-webrtc` | 基于 str0m 的 WebRTC：ICE、DTLS-SRTP、数据通道、媒体 | [WebRTC](protocols/webrtc.md) |
+| `only-webrtc` | 基于自研协议栈（`only-ice`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`）的 WebRTC：ICE、DTLS-SRTP、数据通道、媒体 | [WebRTC](protocols/webrtc.md) |
 | `only-turn` | STUN 编解码、STUN 与 TURN 服务器 | [WebRTC](protocols/webrtc.md) |
 | `only-media` | 流媒体：hub、RTMP、RTSP、SRT、FLV、HTTP-FLV、WS-FLV、HLS、WHIP/WHEP 信令 | [流媒体](protocols/media.md) |
 | `only-bittorrent` | BitTorrent：tracker、peer wire + MSE、uTP、DHT、客户端（兼容 libtorrent 和 aria2） | [BitTorrent](protocols/bittorrent.md) |

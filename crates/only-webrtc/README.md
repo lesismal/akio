@@ -2,21 +2,33 @@
 
 [中文](README.zh-CN.md)
 
-WebRTC for [`only`](https://github.com/lesismal/only): the sans-io
-[str0m](https://github.com/algesten/str0m) state machine driven over `only` UDP sockets.
+WebRTC for [`only`](https://github.com/lesismal/only): an in-house, sans-io WebRTC stack with no
+third-party dependencies, driven over `only` UDP sockets. Every layer is safe Rust
+(`#![forbid(unsafe_code)]`) on `only-crypto`.
 
-- **ICE**: ICE-lite server (`RtcServer` on a `Listener::udp`, all peers on one port) and a full
-  ICE agent (`Endpoint` on a socket bound with `Engine::bind_udp`), host and server-reflexive
-  candidates (`Endpoint::gather_srflx`), trickle candidates, consent freshness, a connect timeout.
-- **DTLS-SRTP**: DTLS 1.2/1.3 with certificate fingerprint verification; SRTP/SRTCP with
-  AES-CM-SHA1-80 and AEAD-AES-128/256-GCM.
-- **Data channels**: SCTP with DCEP; reliable or partially reliable, ordered or unordered.
-- **Media**: RTP/RTCP, packetization of Opus, VP8, VP9, H.264, H.265, AV1; NACK and RTX, PLI/FIR,
-  TWCC and bandwidth estimation; frame mode or RTP mode.
-- **SDP** offer/answer and renegotiation.
-- **Pure Rust crypto**: RustCrypto and the `dimpl` DTLS stack, no C toolchain.
-- **Own types**: str0m stays out of the API (upgrading it is not a breaking change); the
-  `unstable` cargo feature gives raw access (`only_webrtc::str0m`, `Peer::with_rtc`).
+- **ICE** ([`only-ice`](../only-ice/README.md), RFC 8445): ICE-lite server (`RtcServer` on a
+  `Listener::udp`, all peers on one port) and a full ICE agent (`Endpoint` on a socket bound with
+  `Engine::bind_udp`); host, server-reflexive (`Endpoint::gather_srflx`) and peer-reflexive
+  candidates, checklists, regular nomination, role conflicts, trickle ICE (RFC 8838), ICE
+  restarts, consent freshness (RFC 7675), a connect timeout.
+- **DTLS-SRTP** ([`only-dtls`](../only-dtls/README.md)): DTLS 1.2 with the roles from
+  `a=setup` and certificate fingerprint verification; SRTP/SRTCP
+  ([`only-srtp`](../only-srtp/README.md), RFC 3711 / RFC 7714) with AES-CM-HMAC-SHA1-80/32 and
+  AEAD-AES-128/256-GCM, replay protection, ROC handling; keys from the DTLS exporter.
+- **Data channels** ([`only-sctp`](../only-sctp/README.md)): SCTP over DTLS (RFC 8261) with
+  congestion control, retransmission, PR-SCTP FORWARD-TSN (RFC 3758), stream reset (RFC 6525)
+  for closing, CRC32C; DCEP (RFC 8832); reliable / max-retransmits / max-lifetime, ordered or
+  unordered, binary / string / empty messages, buffered-amount-low events.
+- **Media** ([`only-rtp`](../only-rtp/README.md)): RTP/RTCP, packetization of Opus, G.711,
+  G.722, VP8, VP9, H.264, H.265 and AV1; a jitter-free frame assembler (`on_media_data`) or RTP
+  mode (`on_rtp`); sender/receiver reports, generic NACK with RTX (RFC 4588), PLI/FIR, REMB,
+  transport-wide congestion control (TWCC header extension + feedback) with a delay- and
+  loss-based bandwidth estimator.
+- **SDP** offer/answer (JSEP): BUNDLE, rtcp-mux, mid/msid, ssrc/FID, extmap,
+  rtpmap/fmtp/rtcp-fb negotiation, setup/fingerprint, ice-ufrag/pwd/options/lite, candidates,
+  sctp-port/max-message-size; renegotiation (media added, directions, ICE restart).
+- **Own types**: the API is this crate's own; the `unstable` cargo feature currently adds
+  nothing.
 
 ```rust,no_run
 use only::{Engine, Listener};
@@ -39,8 +51,13 @@ let offer: String = todo!("the remote SDP offer");
 let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // from WHIP/WHEP, a WebSocket ...
 ```
 
-Interop with pion (data channels and media in both offer directions, also through a `only` TURN
-relay) and with fib's Go WebRTC: `tools/interop/webrtc/run.sh`. STUN and TURN servers are in
+Interop: pion (data channels, Opus/VP8 echo and PLI in both offer directions, also through a
+`only` TURN relay) and fib's Go WebRTC both ways: `tools/interop/webrtc/run.sh`; headless Chrome
+in both offer directions (data channels, the fake camera and microphone echoed back and decoded
+by Chrome): `tools/interop/webrtc/browser.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
+
+Not implemented: a TURN client (relayed local candidates must be learnt elsewhere), simulcast
+sending and layer selection, FEC, RTCP XR, SDES-SRTP, DTLS 1.3.
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

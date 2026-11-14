@@ -1,0 +1,188 @@
+pub mod only_sctp
+pub enum only_sctp::Error
+pub only_sctp::Error::AssociationClosed
+pub only_sctp::Error::ChannelClosed(u16)
+pub only_sctp::Error::LabelTooLong
+pub only_sctp::Error::MessageTooLarge
+pub only_sctp::Error::MessageTooLarge::max: usize
+pub only_sctp::Error::MessageTooLarge::size: usize
+pub only_sctp::Error::NoStreamAvailable
+pub only_sctp::Error::StreamInUse(u16)
+pub only_sctp::Error::UnknownChannel(u16)
+impl core::clone::Clone for only_sctp::Error
+pub fn only_sctp::Error::clone(&self) -> Self
+impl core::cmp::Eq for only_sctp::Error
+impl core::cmp::PartialEq for only_sctp::Error
+pub fn only_sctp::Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_sctp::Error
+impl core::fmt::Debug for only_sctp::Error
+pub fn only_sctp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_sctp::Error
+pub fn only_sctp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_sctp::Error
+impl core::marker::Send for only_sctp::Error
+impl core::marker::Sync for only_sctp::Error
+impl core::marker::Unpin for only_sctp::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::Error
+impl core::panic::unwind_safe::UnwindSafe for only_sctp::Error
+pub enum only_sctp::Event
+pub only_sctp::Event::BufferedAmountLow
+pub only_sctp::Event::BufferedAmountLow::stream: u16
+pub only_sctp::Event::ChannelClose
+pub only_sctp::Event::ChannelClose::stream: u16
+pub only_sctp::Event::ChannelData
+pub only_sctp::Event::ChannelData::binary: bool
+pub only_sctp::Event::ChannelData::data: alloc::vec::Vec<u8>
+pub only_sctp::Event::ChannelData::stream: u16
+pub only_sctp::Event::ChannelOpen
+pub only_sctp::Event::ChannelOpen::label: alloc::string::String
+pub only_sctp::Event::ChannelOpen::protocol: alloc::string::String
+pub only_sctp::Event::ChannelOpen::stream: u16
+pub only_sctp::Event::Closed
+pub only_sctp::Event::Connected
+impl core::clone::Clone for only_sctp::Event
+pub fn only_sctp::Event::clone(&self) -> Self
+impl core::cmp::Eq for only_sctp::Event
+impl core::cmp::PartialEq for only_sctp::Event
+pub fn only_sctp::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_sctp::Event
+pub fn only_sctp::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_sctp::Event
+impl core::marker::Send for only_sctp::Event
+impl core::marker::Sync for only_sctp::Event
+impl core::marker::Unpin for only_sctp::Event
+impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::Event
+impl core::panic::unwind_safe::UnwindSafe for only_sctp::Event
+pub enum only_sctp::Reliability
+pub only_sctp::Reliability::MaxLifetime(u16)
+pub only_sctp::Reliability::MaxRetransmits(u16)
+pub only_sctp::Reliability::Reliable
+impl core::clone::Clone for only_sctp::Reliability
+pub fn only_sctp::Reliability::clone(&self) -> Self
+impl core::cmp::Eq for only_sctp::Reliability
+impl core::cmp::PartialEq for only_sctp::Reliability
+pub fn only_sctp::Reliability::eq(&self, &Self) -> bool
+impl core::default::Default for only_sctp::Reliability
+pub fn only_sctp::Reliability::default() -> Self
+impl core::fmt::Debug for only_sctp::Reliability
+pub fn only_sctp::Reliability::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_sctp::Reliability
+pub fn only_sctp::Reliability::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_sctp::Reliability
+impl core::marker::StructuralPartialEq for only_sctp::Reliability
+impl core::marker::Send for only_sctp::Reliability
+impl core::marker::Sync for only_sctp::Reliability
+impl core::marker::Unpin for only_sctp::Reliability
+impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::Reliability
+impl core::panic::unwind_safe::UnwindSafe for only_sctp::Reliability
+pub struct only_sctp::Association
+impl only_sctp::Association
+pub fn only_sctp::Association::abort(&mut self)
+pub fn only_sctp::Association::buffered_amount(&self, u16) -> usize
+pub fn only_sctp::Association::channel(&self, u16) -> core::option::Option<only_sctp::ChannelInfo>
+pub fn only_sctp::Association::close_channel(&mut self, std::time::Instant, u16)
+pub fn only_sctp::Association::connect(&mut self, std::time::Instant)
+pub fn only_sctp::Association::handle_packet(&mut self, std::time::Instant, &[u8])
+pub fn only_sctp::Association::handle_timeout(&mut self, std::time::Instant)
+pub fn only_sctp::Association::is_closed(&self) -> bool
+pub fn only_sctp::Association::is_established(&self) -> bool
+pub fn only_sctp::Association::new(only_sctp::Config, std::time::Instant) -> only_sctp::Association
+pub fn only_sctp::Association::open_channel(&mut self, std::time::Instant, only_sctp::ChannelOptions) -> core::result::Result<u16, only_sctp::Error>
+pub fn only_sctp::Association::poll_event(&mut self) -> core::option::Option<only_sctp::Event>
+pub fn only_sctp::Association::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_sctp::Association::poll_transmit(&mut self, std::time::Instant) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_sctp::Association::send(&mut self, std::time::Instant, u16, &[u8], bool) -> core::result::Result<bool, only_sctp::Error>
+pub fn only_sctp::Association::set_buffered_amount_low_threshold(&mut self, u16, usize)
+pub fn only_sctp::Association::shutdown(&mut self, std::time::Instant)
+impl core::fmt::Debug for only_sctp::Association
+pub fn only_sctp::Association::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_sctp::Association
+impl core::marker::Sync for only_sctp::Association
+impl core::marker::Unpin for only_sctp::Association
+impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::Association
+impl core::panic::unwind_safe::UnwindSafe for only_sctp::Association
+pub struct only_sctp::ChannelInfo
+pub only_sctp::ChannelInfo::label: alloc::string::String
+pub only_sctp::ChannelInfo::negotiated: bool
+pub only_sctp::ChannelInfo::ordered: bool
+pub only_sctp::ChannelInfo::priority: u16
+pub only_sctp::ChannelInfo::protocol: alloc::string::String
+pub only_sctp::ChannelInfo::reliability: only_sctp::Reliability
+impl core::clone::Clone for only_sctp::ChannelInfo
+pub fn only_sctp::ChannelInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_sctp::ChannelInfo
+impl core::cmp::PartialEq for only_sctp::ChannelInfo
+pub fn only_sctp::ChannelInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_sctp::ChannelInfo
+pub fn only_sctp::ChannelInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_sctp::ChannelInfo
+impl core::marker::Send for only_sctp::ChannelInfo
+impl core::marker::Sync for only_sctp::ChannelInfo
+impl core::marker::Unpin for only_sctp::ChannelInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::ChannelInfo
+impl core::panic::unwind_safe::UnwindSafe for only_sctp::ChannelInfo
+pub struct only_sctp::ChannelOptions
+pub only_sctp::ChannelOptions::label: alloc::string::String
+pub only_sctp::ChannelOptions::negotiated: core::option::Option<u16>
+pub only_sctp::ChannelOptions::ordered: bool
+pub only_sctp::ChannelOptions::priority: u16
+pub only_sctp::ChannelOptions::protocol: alloc::string::String
+pub only_sctp::ChannelOptions::reliability: only_sctp::Reliability
+impl only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::new(&str) -> only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::with_negotiated(self, u16) -> only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::with_ordered(self, bool) -> only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::with_protocol(self, &str) -> only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::with_reliability(self, only_sctp::Reliability) -> only_sctp::ChannelOptions
+impl core::clone::Clone for only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::clone(&self) -> Self
+impl core::cmp::Eq for only_sctp::ChannelOptions
+impl core::cmp::PartialEq for only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::eq(&self, &Self) -> bool
+impl core::default::Default for only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::default() -> only_sctp::ChannelOptions
+impl core::fmt::Debug for only_sctp::ChannelOptions
+pub fn only_sctp::ChannelOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_sctp::ChannelOptions
+impl core::marker::Send for only_sctp::ChannelOptions
+impl core::marker::Sync for only_sctp::ChannelOptions
+impl core::marker::Unpin for only_sctp::ChannelOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::ChannelOptions
+impl core::panic::unwind_safe::UnwindSafe for only_sctp::ChannelOptions
+pub struct only_sctp::Config
+pub only_sctp::Config::dtls_client: bool
+pub only_sctp::Config::local_port: u16
+pub only_sctp::Config::max_buffered_amount: usize
+pub only_sctp::Config::max_init_retransmissions: u32
+pub only_sctp::Config::max_message_size: usize
+pub only_sctp::Config::max_receive_message_size: usize
+pub only_sctp::Config::max_retransmissions: u32
+pub only_sctp::Config::mtu: usize
+pub only_sctp::Config::receive_window: u32
+pub only_sctp::Config::remote_port: u16
+pub only_sctp::Config::rto_initial: core::time::Duration
+pub only_sctp::Config::rto_max: core::time::Duration
+pub only_sctp::Config::rto_min: core::time::Duration
+impl only_sctp::Config
+pub fn only_sctp::Config::new(bool) -> only_sctp::Config
+pub fn only_sctp::Config::with_max_buffered_amount(self, usize) -> only_sctp::Config
+pub fn only_sctp::Config::with_max_message_size(self, usize) -> only_sctp::Config
+pub fn only_sctp::Config::with_max_receive_message_size(self, usize) -> only_sctp::Config
+pub fn only_sctp::Config::with_mtu(self, usize) -> only_sctp::Config
+pub fn only_sctp::Config::with_ports(self, u16, u16) -> only_sctp::Config
+pub fn only_sctp::Config::with_receive_window(self, u32) -> only_sctp::Config
+impl core::clone::Clone for only_sctp::Config
+pub fn only_sctp::Config::clone(&self) -> Self
+impl core::cmp::Eq for only_sctp::Config
+impl core::cmp::PartialEq for only_sctp::Config
+pub fn only_sctp::Config::eq(&self, &Self) -> bool
+impl core::default::Default for only_sctp::Config
+pub fn only_sctp::Config::default() -> only_sctp::Config
+impl core::fmt::Debug for only_sctp::Config
+pub fn only_sctp::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_sctp::Config
+impl core::marker::Send for only_sctp::Config
+impl core::marker::Sync for only_sctp::Config
+impl core::marker::Unpin for only_sctp::Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_sctp::Config
+impl core::panic::unwind_safe::UnwindSafe for only_sctp::Config

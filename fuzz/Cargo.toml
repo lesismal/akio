@@ -43,6 +43,10 @@ chacha20poly1305 = "0.10"
 ring = "0.17"
 only-x509 = { path = "../crates/only-x509", features = ["fuzzing"] }
 only-dtls = { path = "../crates/only-dtls", features = ["fuzzing"] }
+only-ice = { path = "../crates/only-ice", features = ["fuzzing"] }
+only-sctp = { path = "../crates/only-sctp", features = ["fuzzing"] }
+only-srtp = { path = "../crates/only-srtp", features = ["fuzzing"] }
+only-rtp = { path = "../crates/only-rtp", features = ["fuzzing"] }
 only-tls = { path = "../crates/only-tls", features = ["fuzzing"] }
 only-protobuf = { path = "../crates/only-protobuf" }
 # Generated test messages and the prost mirror for the differential target `protobuf_diff`.
@@ -476,6 +480,41 @@ bench = false
 [[bin]]
 name = "tls_record"
 path = "fuzz_targets/tls_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ice_stun"
+path = "fuzz_targets/ice_stun.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sctp_packet"
+path = "fuzz_targets/sctp_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srtp_unprotect"
+path = "fuzz_targets/srtp_unprotect.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtp_rtcp"
+path = "fuzz_targets/rtp_rtcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtp_codec"
+path = "fuzz_targets/rtp_codec.rs"
 test = false
 doc = false
 bench = false

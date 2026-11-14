@@ -1,0 +1,747 @@
+pub mod only_rtp
+pub mod only_rtp::codec
+#[non_exhaustive] pub enum only_rtp::codec::CodecError
+pub only_rtp::codec::CodecError::FragmentWithoutStart
+pub only_rtp::codec::CodecError::FrameTooLarge
+pub only_rtp::codec::CodecError::Malformed(&'static str)
+pub only_rtp::codec::CodecError::Truncated
+pub only_rtp::codec::CodecError::UnsupportedType(u8)
+impl core::clone::Clone for only_rtp::codec::CodecError
+pub fn only_rtp::codec::CodecError::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::codec::CodecError
+impl core::cmp::PartialEq for only_rtp::codec::CodecError
+pub fn only_rtp::codec::CodecError::eq(&self, &Self) -> bool
+impl core::error::Error for only_rtp::codec::CodecError
+impl core::fmt::Debug for only_rtp::codec::CodecError
+pub fn only_rtp::codec::CodecError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_rtp::codec::CodecError
+pub fn only_rtp::codec::CodecError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::codec::CodecError
+impl core::marker::StructuralPartialEq for only_rtp::codec::CodecError
+impl core::marker::Send for only_rtp::codec::CodecError
+impl core::marker::Sync for only_rtp::codec::CodecError
+impl core::marker::Unpin for only_rtp::codec::CodecError
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::CodecError
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::CodecError
+pub enum only_rtp::codec::CodecKind
+pub only_rtp::codec::CodecKind::Av1
+pub only_rtp::codec::CodecKind::G722
+pub only_rtp::codec::CodecKind::H264
+pub only_rtp::codec::CodecKind::H265
+pub only_rtp::codec::CodecKind::Opus
+pub only_rtp::codec::CodecKind::Other
+pub only_rtp::codec::CodecKind::Pcma
+pub only_rtp::codec::CodecKind::Pcmu
+pub only_rtp::codec::CodecKind::Vp8
+pub only_rtp::codec::CodecKind::Vp9
+impl only_rtp::codec::CodecKind
+pub const only_rtp::codec::CodecKind::ALL: [only_rtp::codec::CodecKind; 10]
+pub fn only_rtp::codec::CodecKind::is_audio(self) -> bool
+pub fn only_rtp::codec::CodecKind::is_single_packet(self) -> bool
+impl core::clone::Clone for only_rtp::codec::CodecKind
+pub fn only_rtp::codec::CodecKind::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::codec::CodecKind
+impl core::cmp::PartialEq for only_rtp::codec::CodecKind
+pub fn only_rtp::codec::CodecKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::codec::CodecKind
+pub fn only_rtp::codec::CodecKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_rtp::codec::CodecKind
+pub fn only_rtp::codec::CodecKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_rtp::codec::CodecKind
+impl core::marker::StructuralPartialEq for only_rtp::codec::CodecKind
+impl core::marker::Send for only_rtp::codec::CodecKind
+impl core::marker::Sync for only_rtp::codec::CodecKind
+impl core::marker::Unpin for only_rtp::codec::CodecKind
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::CodecKind
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::CodecKind
+pub struct only_rtp::codec::Av1Depacketizer
+impl only_rtp::codec::Av1Depacketizer
+pub fn only_rtp::codec::Av1Depacketizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::Av1Depacketizer
+pub fn only_rtp::codec::Av1Depacketizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::Av1Depacketizer
+pub fn only_rtp::codec::Av1Depacketizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::Av1Depacketizer
+pub fn only_rtp::codec::Av1Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Depacketizer for only_rtp::codec::Av1Depacketizer
+pub fn only_rtp::codec::Av1Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::Av1Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::Av1Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Av1Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Av1Depacketizer::reset(&mut self)
+impl core::marker::Send for only_rtp::codec::Av1Depacketizer
+impl core::marker::Sync for only_rtp::codec::Av1Depacketizer
+impl core::marker::Unpin for only_rtp::codec::Av1Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::Av1Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::Av1Depacketizer
+pub struct only_rtp::codec::Av1Packetizer
+impl only_rtp::codec::Av1Packetizer
+pub fn only_rtp::codec::Av1Packetizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::Av1Packetizer
+pub fn only_rtp::codec::Av1Packetizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::Av1Packetizer
+pub fn only_rtp::codec::Av1Packetizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::Av1Packetizer
+pub fn only_rtp::codec::Av1Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Packetizer for only_rtp::codec::Av1Packetizer
+pub fn only_rtp::codec::Av1Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for only_rtp::codec::Av1Packetizer
+impl core::marker::Sync for only_rtp::codec::Av1Packetizer
+impl core::marker::Unpin for only_rtp::codec::Av1Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::Av1Packetizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::Av1Packetizer
+pub struct only_rtp::codec::Frame
+pub only_rtp::codec::Frame::contiguous: bool
+pub only_rtp::codec::Frame::data: alloc::vec::Vec<u8>
+pub only_rtp::codec::Frame::first_arrival: std::time::Instant
+pub only_rtp::codec::Frame::first_seq: u64
+pub only_rtp::codec::Frame::keyframe: bool
+pub only_rtp::codec::Frame::last_seq: u64
+pub only_rtp::codec::Frame::timestamp: u64
+impl core::clone::Clone for only_rtp::codec::Frame
+pub fn only_rtp::codec::Frame::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::codec::Frame
+impl core::cmp::PartialEq for only_rtp::codec::Frame
+pub fn only_rtp::codec::Frame::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::codec::Frame
+pub fn only_rtp::codec::Frame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::codec::Frame
+impl core::marker::Send for only_rtp::codec::Frame
+impl core::marker::Sync for only_rtp::codec::Frame
+impl core::marker::Unpin for only_rtp::codec::Frame
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::Frame
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::Frame
+pub struct only_rtp::codec::FrameAssembler
+impl only_rtp::codec::FrameAssembler
+pub fn only_rtp::codec::FrameAssembler::buffered(&self) -> usize
+pub fn only_rtp::codec::FrameAssembler::kind(&self) -> only_rtp::codec::CodecKind
+pub fn only_rtp::codec::FrameAssembler::new(only_rtp::codec::CodecKind, usize) -> only_rtp::codec::FrameAssembler
+pub fn only_rtp::codec::FrameAssembler::pop(&mut self) -> core::option::Option<only_rtp::codec::Frame>
+pub fn only_rtp::codec::FrameAssembler::push(&mut self, u64, u32, bool, &[u8], std::time::Instant)
+impl core::fmt::Debug for only_rtp::codec::FrameAssembler
+pub fn only_rtp::codec::FrameAssembler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::codec::FrameAssembler
+impl !core::marker::Sync for only_rtp::codec::FrameAssembler
+impl core::marker::Unpin for only_rtp::codec::FrameAssembler
+impl !core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::FrameAssembler
+impl !core::panic::unwind_safe::UnwindSafe for only_rtp::codec::FrameAssembler
+pub struct only_rtp::codec::H264Depacketizer
+impl only_rtp::codec::H264Depacketizer
+pub fn only_rtp::codec::H264Depacketizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::H264Depacketizer
+pub fn only_rtp::codec::H264Depacketizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::H264Depacketizer
+pub fn only_rtp::codec::H264Depacketizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::H264Depacketizer
+pub fn only_rtp::codec::H264Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Depacketizer for only_rtp::codec::H264Depacketizer
+pub fn only_rtp::codec::H264Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::H264Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::H264Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H264Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H264Depacketizer::reset(&mut self)
+impl core::marker::Send for only_rtp::codec::H264Depacketizer
+impl core::marker::Sync for only_rtp::codec::H264Depacketizer
+impl core::marker::Unpin for only_rtp::codec::H264Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::H264Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::H264Depacketizer
+pub struct only_rtp::codec::H264Packetizer
+impl only_rtp::codec::H264Packetizer
+pub fn only_rtp::codec::H264Packetizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::H264Packetizer
+pub fn only_rtp::codec::H264Packetizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::H264Packetizer
+pub fn only_rtp::codec::H264Packetizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::H264Packetizer
+pub fn only_rtp::codec::H264Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Packetizer for only_rtp::codec::H264Packetizer
+pub fn only_rtp::codec::H264Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for only_rtp::codec::H264Packetizer
+impl core::marker::Sync for only_rtp::codec::H264Packetizer
+impl core::marker::Unpin for only_rtp::codec::H264Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::H264Packetizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::H264Packetizer
+pub struct only_rtp::codec::H265Depacketizer
+impl only_rtp::codec::H265Depacketizer
+pub fn only_rtp::codec::H265Depacketizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::H265Depacketizer
+pub fn only_rtp::codec::H265Depacketizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::H265Depacketizer
+pub fn only_rtp::codec::H265Depacketizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::H265Depacketizer
+pub fn only_rtp::codec::H265Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Depacketizer for only_rtp::codec::H265Depacketizer
+pub fn only_rtp::codec::H265Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::H265Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::H265Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H265Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H265Depacketizer::reset(&mut self)
+impl core::marker::Send for only_rtp::codec::H265Depacketizer
+impl core::marker::Sync for only_rtp::codec::H265Depacketizer
+impl core::marker::Unpin for only_rtp::codec::H265Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::H265Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::H265Depacketizer
+pub struct only_rtp::codec::H265Packetizer
+impl only_rtp::codec::H265Packetizer
+pub fn only_rtp::codec::H265Packetizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::H265Packetizer
+pub fn only_rtp::codec::H265Packetizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::H265Packetizer
+pub fn only_rtp::codec::H265Packetizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::H265Packetizer
+pub fn only_rtp::codec::H265Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Packetizer for only_rtp::codec::H265Packetizer
+pub fn only_rtp::codec::H265Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for only_rtp::codec::H265Packetizer
+impl core::marker::Sync for only_rtp::codec::H265Packetizer
+impl core::marker::Unpin for only_rtp::codec::H265Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::H265Packetizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::H265Packetizer
+pub struct only_rtp::codec::PassthroughDepacketizer
+impl only_rtp::codec::PassthroughDepacketizer
+pub fn only_rtp::codec::PassthroughDepacketizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::PassthroughDepacketizer
+pub fn only_rtp::codec::PassthroughDepacketizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::PassthroughDepacketizer
+pub fn only_rtp::codec::PassthroughDepacketizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::PassthroughDepacketizer
+pub fn only_rtp::codec::PassthroughDepacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Depacketizer for only_rtp::codec::PassthroughDepacketizer
+pub fn only_rtp::codec::PassthroughDepacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::PassthroughDepacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::PassthroughDepacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::PassthroughDepacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::PassthroughDepacketizer::reset(&mut self)
+impl core::marker::Send for only_rtp::codec::PassthroughDepacketizer
+impl core::marker::Sync for only_rtp::codec::PassthroughDepacketizer
+impl core::marker::Unpin for only_rtp::codec::PassthroughDepacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::PassthroughDepacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::PassthroughDepacketizer
+pub struct only_rtp::codec::PassthroughPacketizer
+impl only_rtp::codec::PassthroughPacketizer
+pub fn only_rtp::codec::PassthroughPacketizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::PassthroughPacketizer
+pub fn only_rtp::codec::PassthroughPacketizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::PassthroughPacketizer
+pub fn only_rtp::codec::PassthroughPacketizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::PassthroughPacketizer
+pub fn only_rtp::codec::PassthroughPacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Packetizer for only_rtp::codec::PassthroughPacketizer
+pub fn only_rtp::codec::PassthroughPacketizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for only_rtp::codec::PassthroughPacketizer
+impl core::marker::Sync for only_rtp::codec::PassthroughPacketizer
+impl core::marker::Unpin for only_rtp::codec::PassthroughPacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::PassthroughPacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::PassthroughPacketizer
+pub struct only_rtp::codec::Vp8Depacketizer
+impl only_rtp::codec::Vp8Depacketizer
+pub fn only_rtp::codec::Vp8Depacketizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::Vp8Depacketizer
+pub fn only_rtp::codec::Vp8Depacketizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::Vp8Depacketizer
+pub fn only_rtp::codec::Vp8Depacketizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::Vp8Depacketizer
+pub fn only_rtp::codec::Vp8Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Depacketizer for only_rtp::codec::Vp8Depacketizer
+pub fn only_rtp::codec::Vp8Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::Vp8Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::Vp8Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp8Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp8Depacketizer::reset(&mut self)
+impl core::marker::Send for only_rtp::codec::Vp8Depacketizer
+impl core::marker::Sync for only_rtp::codec::Vp8Depacketizer
+impl core::marker::Unpin for only_rtp::codec::Vp8Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::Vp8Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::Vp8Depacketizer
+pub struct only_rtp::codec::Vp8Packetizer
+impl only_rtp::codec::Vp8Packetizer
+pub fn only_rtp::codec::Vp8Packetizer::new(u16) -> Self
+pub fn only_rtp::codec::Vp8Packetizer::picture_id(&self) -> u16
+impl core::clone::Clone for only_rtp::codec::Vp8Packetizer
+pub fn only_rtp::codec::Vp8Packetizer::clone(&self) -> Self
+impl core::fmt::Debug for only_rtp::codec::Vp8Packetizer
+pub fn only_rtp::codec::Vp8Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Packetizer for only_rtp::codec::Vp8Packetizer
+pub fn only_rtp::codec::Vp8Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for only_rtp::codec::Vp8Packetizer
+impl core::marker::Sync for only_rtp::codec::Vp8Packetizer
+impl core::marker::Unpin for only_rtp::codec::Vp8Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::Vp8Packetizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::Vp8Packetizer
+pub struct only_rtp::codec::Vp9Depacketizer
+impl only_rtp::codec::Vp9Depacketizer
+pub fn only_rtp::codec::Vp9Depacketizer::new() -> Self
+impl core::clone::Clone for only_rtp::codec::Vp9Depacketizer
+pub fn only_rtp::codec::Vp9Depacketizer::clone(&self) -> Self
+impl core::default::Default for only_rtp::codec::Vp9Depacketizer
+pub fn only_rtp::codec::Vp9Depacketizer::default() -> Self
+impl core::fmt::Debug for only_rtp::codec::Vp9Depacketizer
+pub fn only_rtp::codec::Vp9Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Depacketizer for only_rtp::codec::Vp9Depacketizer
+pub fn only_rtp::codec::Vp9Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::Vp9Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::Vp9Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp9Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp9Depacketizer::reset(&mut self)
+impl core::marker::Send for only_rtp::codec::Vp9Depacketizer
+impl core::marker::Sync for only_rtp::codec::Vp9Depacketizer
+impl core::marker::Unpin for only_rtp::codec::Vp9Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::Vp9Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::Vp9Depacketizer
+pub struct only_rtp::codec::Vp9Packetizer
+impl only_rtp::codec::Vp9Packetizer
+pub fn only_rtp::codec::Vp9Packetizer::new(u16) -> Self
+pub fn only_rtp::codec::Vp9Packetizer::picture_id(&self) -> u16
+impl core::clone::Clone for only_rtp::codec::Vp9Packetizer
+pub fn only_rtp::codec::Vp9Packetizer::clone(&self) -> Self
+impl core::fmt::Debug for only_rtp::codec::Vp9Packetizer
+pub fn only_rtp::codec::Vp9Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_rtp::codec::Packetizer for only_rtp::codec::Vp9Packetizer
+pub fn only_rtp::codec::Vp9Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl core::marker::Send for only_rtp::codec::Vp9Packetizer
+impl core::marker::Sync for only_rtp::codec::Vp9Packetizer
+impl core::marker::Unpin for only_rtp::codec::Vp9Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::codec::Vp9Packetizer
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::codec::Vp9Packetizer
+pub const only_rtp::codec::MAX_FRAME_SIZE: usize
+pub trait only_rtp::codec::Depacketizer: core::marker::Send + core::fmt::Debug
+pub fn only_rtp::codec::Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Depacketizer::reset(&mut self)
+impl only_rtp::codec::Depacketizer for only_rtp::codec::Av1Depacketizer
+pub fn only_rtp::codec::Av1Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::Av1Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::Av1Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Av1Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Av1Depacketizer::reset(&mut self)
+impl only_rtp::codec::Depacketizer for only_rtp::codec::H264Depacketizer
+pub fn only_rtp::codec::H264Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::H264Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::H264Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H264Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H264Depacketizer::reset(&mut self)
+impl only_rtp::codec::Depacketizer for only_rtp::codec::H265Depacketizer
+pub fn only_rtp::codec::H265Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::H265Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::H265Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H265Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::H265Depacketizer::reset(&mut self)
+impl only_rtp::codec::Depacketizer for only_rtp::codec::PassthroughDepacketizer
+pub fn only_rtp::codec::PassthroughDepacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::PassthroughDepacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::PassthroughDepacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::PassthroughDepacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::PassthroughDepacketizer::reset(&mut self)
+impl only_rtp::codec::Depacketizer for only_rtp::codec::Vp8Depacketizer
+pub fn only_rtp::codec::Vp8Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::Vp8Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::Vp8Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp8Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp8Depacketizer::reset(&mut self)
+impl only_rtp::codec::Depacketizer for only_rtp::codec::Vp9Depacketizer
+pub fn only_rtp::codec::Vp9Depacketizer::depacketize(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_rtp::codec::CodecError>
+pub fn only_rtp::codec::Vp9Depacketizer::is_frame_end(&self, &[u8], bool) -> bool
+pub fn only_rtp::codec::Vp9Depacketizer::is_frame_start(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp9Depacketizer::is_keyframe(&self, &[u8]) -> bool
+pub fn only_rtp::codec::Vp9Depacketizer::reset(&mut self)
+pub trait only_rtp::codec::Packetizer: core::marker::Send + core::fmt::Debug
+pub fn only_rtp::codec::Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl only_rtp::codec::Packetizer for only_rtp::codec::Av1Packetizer
+pub fn only_rtp::codec::Av1Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl only_rtp::codec::Packetizer for only_rtp::codec::H264Packetizer
+pub fn only_rtp::codec::H264Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl only_rtp::codec::Packetizer for only_rtp::codec::H265Packetizer
+pub fn only_rtp::codec::H265Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl only_rtp::codec::Packetizer for only_rtp::codec::PassthroughPacketizer
+pub fn only_rtp::codec::PassthroughPacketizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl only_rtp::codec::Packetizer for only_rtp::codec::Vp8Packetizer
+pub fn only_rtp::codec::Vp8Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+impl only_rtp::codec::Packetizer for only_rtp::codec::Vp9Packetizer
+pub fn only_rtp::codec::Vp9Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
+pub fn only_rtp::codec::depacketizer(only_rtp::codec::CodecKind) -> alloc::boxed::Box<dyn only_rtp::codec::Depacketizer>
+pub fn only_rtp::codec::packetizer(only_rtp::codec::CodecKind) -> alloc::boxed::Box<dyn only_rtp::codec::Packetizer>
+pub enum only_rtp::BandwidthUsage
+pub only_rtp::BandwidthUsage::Normal
+pub only_rtp::BandwidthUsage::Overusing
+pub only_rtp::BandwidthUsage::Underusing
+impl core::clone::Clone for only_rtp::BandwidthUsage
+pub fn only_rtp::BandwidthUsage::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::BandwidthUsage
+impl core::cmp::PartialEq for only_rtp::BandwidthUsage
+pub fn only_rtp::BandwidthUsage::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::BandwidthUsage
+pub fn only_rtp::BandwidthUsage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::BandwidthUsage
+impl core::marker::StructuralPartialEq for only_rtp::BandwidthUsage
+impl core::marker::Send for only_rtp::BandwidthUsage
+impl core::marker::Sync for only_rtp::BandwidthUsage
+impl core::marker::Unpin for only_rtp::BandwidthUsage
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::BandwidthUsage
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::BandwidthUsage
+#[non_exhaustive] pub enum only_rtp::Error
+pub only_rtp::Error::BadPadding
+pub only_rtp::Error::BadVersion
+pub only_rtp::Error::Malformed(&'static str)
+pub only_rtp::Error::TooShort
+impl core::clone::Clone for only_rtp::Error
+pub fn only_rtp::Error::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::Error
+impl core::cmp::PartialEq for only_rtp::Error
+pub fn only_rtp::Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_rtp::Error
+impl core::fmt::Debug for only_rtp::Error
+pub fn only_rtp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_rtp::Error
+pub fn only_rtp::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::Error
+impl core::marker::StructuralPartialEq for only_rtp::Error
+impl core::marker::Send for only_rtp::Error
+impl core::marker::Sync for only_rtp::Error
+impl core::marker::Unpin for only_rtp::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Error
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::Error
+pub enum only_rtp::Extension
+pub only_rtp::Extension::AbsSendTime
+pub only_rtp::Extension::AudioLevel
+pub only_rtp::Extension::Mid
+pub only_rtp::Extension::PlayoutDelay
+pub only_rtp::Extension::RepairedRtpStreamId
+pub only_rtp::Extension::RtpStreamId
+pub only_rtp::Extension::TransmissionOffset
+pub only_rtp::Extension::TransportCc
+pub only_rtp::Extension::VideoOrientation
+impl only_rtp::Extension
+pub const only_rtp::Extension::ALL: [only_rtp::Extension; 9]
+pub fn only_rtp::Extension::from_uri(&str) -> core::option::Option<only_rtp::Extension>
+pub fn only_rtp::Extension::uri(self) -> &'static str
+impl core::clone::Clone for only_rtp::Extension
+pub fn only_rtp::Extension::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::Extension
+impl core::cmp::PartialEq for only_rtp::Extension
+pub fn only_rtp::Extension::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::Extension
+pub fn only_rtp::Extension::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_rtp::Extension
+pub fn only_rtp::Extension::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_rtp::Extension
+impl core::marker::StructuralPartialEq for only_rtp::Extension
+impl core::marker::Send for only_rtp::Extension
+impl core::marker::Sync for only_rtp::Extension
+impl core::marker::Unpin for only_rtp::Extension
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Extension
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::Extension
+pub enum only_rtp::Rtcp
+pub only_rtp::Rtcp::Fir
+pub only_rtp::Rtcp::Fir::entries: alloc::vec::Vec<(u32, u8)>
+pub only_rtp::Rtcp::Fir::sender_ssrc: u32
+pub only_rtp::Rtcp::Goodbye
+pub only_rtp::Rtcp::Goodbye::reason: core::option::Option<alloc::string::String>
+pub only_rtp::Rtcp::Goodbye::ssrcs: alloc::vec::Vec<u32>
+pub only_rtp::Rtcp::Nack
+pub only_rtp::Rtcp::Nack::lost: alloc::vec::Vec<u16>
+pub only_rtp::Rtcp::Nack::media_ssrc: u32
+pub only_rtp::Rtcp::Nack::sender_ssrc: u32
+pub only_rtp::Rtcp::Pli
+pub only_rtp::Rtcp::Pli::media_ssrc: u32
+pub only_rtp::Rtcp::Pli::sender_ssrc: u32
+pub only_rtp::Rtcp::ReceiverReport
+pub only_rtp::Rtcp::ReceiverReport::reports: alloc::vec::Vec<only_rtp::ReportBlock>
+pub only_rtp::Rtcp::ReceiverReport::ssrc: u32
+pub only_rtp::Rtcp::Remb
+pub only_rtp::Rtcp::Remb::bitrate: u64
+pub only_rtp::Rtcp::Remb::sender_ssrc: u32
+pub only_rtp::Rtcp::Remb::ssrcs: alloc::vec::Vec<u32>
+pub only_rtp::Rtcp::SenderReport
+pub only_rtp::Rtcp::SenderReport::info: only_rtp::SenderInfo
+pub only_rtp::Rtcp::SenderReport::reports: alloc::vec::Vec<only_rtp::ReportBlock>
+pub only_rtp::Rtcp::SenderReport::ssrc: u32
+pub only_rtp::Rtcp::SourceDescription(alloc::vec::Vec<(u32, alloc::vec::Vec<(u8, alloc::string::String)>)>)
+pub only_rtp::Rtcp::TransportCc(only_rtp::TwccFeedback)
+pub only_rtp::Rtcp::Unknown
+pub only_rtp::Rtcp::Unknown::data: alloc::vec::Vec<u8>
+pub only_rtp::Rtcp::Unknown::fmt: u8
+pub only_rtp::Rtcp::Unknown::packet_type: u8
+impl core::clone::Clone for only_rtp::Rtcp
+pub fn only_rtp::Rtcp::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::Rtcp
+impl core::cmp::PartialEq for only_rtp::Rtcp
+pub fn only_rtp::Rtcp::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::Rtcp
+pub fn only_rtp::Rtcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::Rtcp
+impl core::marker::Send for only_rtp::Rtcp
+impl core::marker::Sync for only_rtp::Rtcp
+impl core::marker::Unpin for only_rtp::Rtcp
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Rtcp
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::Rtcp
+pub struct only_rtp::BandwidthEstimator
+impl only_rtp::BandwidthEstimator
+pub fn only_rtp::BandwidthEstimator::acknowledged_bitrate(&self) -> core::option::Option<u64>
+pub fn only_rtp::BandwidthEstimator::estimate(&self) -> u64
+pub fn only_rtp::BandwidthEstimator::new(u64) -> only_rtp::BandwidthEstimator
+pub fn only_rtp::BandwidthEstimator::on_packet_results(&mut self, std::time::Instant, &[only_rtp::PacketResult])
+pub fn only_rtp::BandwidthEstimator::set_remote_estimate(&mut self, u64)
+pub fn only_rtp::BandwidthEstimator::usage(&self) -> only_rtp::BandwidthUsage
+pub fn only_rtp::BandwidthEstimator::with_bounds(self, u64, u64) -> only_rtp::BandwidthEstimator
+impl core::fmt::Debug for only_rtp::BandwidthEstimator
+pub fn only_rtp::BandwidthEstimator::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::BandwidthEstimator
+impl core::marker::Sync for only_rtp::BandwidthEstimator
+impl core::marker::Unpin for only_rtp::BandwidthEstimator
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::BandwidthEstimator
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::BandwidthEstimator
+pub struct only_rtp::ExtensionMap
+impl only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::default_audio() -> only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::default_video() -> only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::get(&self, u8) -> core::option::Option<only_rtp::Extension>
+pub fn only_rtp::ExtensionMap::id_of(&self, only_rtp::Extension) -> core::option::Option<u8>
+pub fn only_rtp::ExtensionMap::insert(&mut self, u8, only_rtp::Extension)
+pub fn only_rtp::ExtensionMap::is_empty(&self) -> bool
+pub fn only_rtp::ExtensionMap::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (u8, only_rtp::Extension)> + '_
+pub fn only_rtp::ExtensionMap::new() -> only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::remove(&mut self, only_rtp::Extension)
+impl core::clone::Clone for only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::ExtensionMap
+impl core::cmp::PartialEq for only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::default() -> Self
+impl core::fmt::Debug for only_rtp::ExtensionMap
+pub fn only_rtp::ExtensionMap::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::ExtensionMap
+impl core::marker::Send for only_rtp::ExtensionMap
+impl core::marker::Sync for only_rtp::ExtensionMap
+impl core::marker::Unpin for only_rtp::ExtensionMap
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ExtensionMap
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::ExtensionMap
+pub struct only_rtp::ExtensionValues
+pub only_rtp::ExtensionValues::abs_send_time: core::option::Option<u32>
+pub only_rtp::ExtensionValues::audio_level: core::option::Option<(bool, u8)>
+pub only_rtp::ExtensionValues::mid: core::option::Option<alloc::string::String>
+pub only_rtp::ExtensionValues::playout_delay: core::option::Option<(u16, u16)>
+pub only_rtp::ExtensionValues::rid: core::option::Option<alloc::string::String>
+pub only_rtp::ExtensionValues::rrid: core::option::Option<alloc::string::String>
+pub only_rtp::ExtensionValues::transmission_offset: core::option::Option<i32>
+pub only_rtp::ExtensionValues::transport_cc: core::option::Option<u16>
+pub only_rtp::ExtensionValues::video_orientation: core::option::Option<u8>
+impl core::clone::Clone for only_rtp::ExtensionValues
+pub fn only_rtp::ExtensionValues::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::ExtensionValues
+impl core::cmp::PartialEq for only_rtp::ExtensionValues
+pub fn only_rtp::ExtensionValues::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::ExtensionValues
+pub fn only_rtp::ExtensionValues::default() -> Self
+impl core::fmt::Debug for only_rtp::ExtensionValues
+pub fn only_rtp::ExtensionValues::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::ExtensionValues
+impl core::marker::Send for only_rtp::ExtensionValues
+impl core::marker::Sync for only_rtp::ExtensionValues
+impl core::marker::Unpin for only_rtp::ExtensionValues
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ExtensionValues
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::ExtensionValues
+pub struct only_rtp::PacketResult
+pub only_rtp::PacketResult::received: core::option::Option<std::time::Instant>
+pub only_rtp::PacketResult::sent: std::time::Instant
+pub only_rtp::PacketResult::seq: u64
+pub only_rtp::PacketResult::size: usize
+impl core::clone::Clone for only_rtp::PacketResult
+pub fn only_rtp::PacketResult::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::PacketResult
+impl core::cmp::PartialEq for only_rtp::PacketResult
+pub fn only_rtp::PacketResult::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::PacketResult
+pub fn only_rtp::PacketResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::PacketResult
+impl core::marker::StructuralPartialEq for only_rtp::PacketResult
+impl core::marker::Send for only_rtp::PacketResult
+impl core::marker::Sync for only_rtp::PacketResult
+impl core::marker::Unpin for only_rtp::PacketResult
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::PacketResult
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::PacketResult
+pub struct only_rtp::RecvStream
+impl only_rtp::RecvStream
+pub fn only_rtp::RecvStream::extended_highest_seq(&self) -> core::option::Option<u64>
+pub fn only_rtp::RecvStream::handle_sender_report(&mut self, std::time::Instant, &only_rtp::SenderInfo)
+pub fn only_rtp::RecvStream::jitter(&self) -> u32
+pub fn only_rtp::RecvStream::last_sender_report(&self) -> core::option::Option<(only_rtp::SenderInfo, std::time::Instant)>
+pub fn only_rtp::RecvStream::missing_count(&self) -> usize
+pub fn only_rtp::RecvStream::new(u32, u32, bool) -> only_rtp::RecvStream
+pub fn only_rtp::RecvStream::packets_received(&self) -> u64
+pub fn only_rtp::RecvStream::poll_nack(&mut self, std::time::Instant) -> core::option::Option<alloc::vec::Vec<u16>>
+pub fn only_rtp::RecvStream::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_rtp::RecvStream::receive(&mut self, std::time::Instant, u16, u32) -> core::option::Option<u64>
+pub fn only_rtp::RecvStream::report_block(&mut self, std::time::Instant) -> core::option::Option<only_rtp::ReportBlock>
+pub fn only_rtp::RecvStream::set_rtt(&mut self, core::time::Duration)
+pub fn only_rtp::RecvStream::ssrc(&self) -> u32
+impl core::fmt::Debug for only_rtp::RecvStream
+pub fn only_rtp::RecvStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::RecvStream
+impl core::marker::Sync for only_rtp::RecvStream
+impl core::marker::Unpin for only_rtp::RecvStream
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::RecvStream
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::RecvStream
+pub struct only_rtp::ReportBlock
+pub only_rtp::ReportBlock::cumulative_lost: i32
+pub only_rtp::ReportBlock::delay_since_last_sr: u32
+pub only_rtp::ReportBlock::extended_highest_seq: u32
+pub only_rtp::ReportBlock::fraction_lost: u8
+pub only_rtp::ReportBlock::jitter: u32
+pub only_rtp::ReportBlock::last_sr: u32
+pub only_rtp::ReportBlock::ssrc: u32
+impl core::clone::Clone for only_rtp::ReportBlock
+pub fn only_rtp::ReportBlock::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::ReportBlock
+impl core::cmp::PartialEq for only_rtp::ReportBlock
+pub fn only_rtp::ReportBlock::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::ReportBlock
+pub fn only_rtp::ReportBlock::default() -> Self
+impl core::fmt::Debug for only_rtp::ReportBlock
+pub fn only_rtp::ReportBlock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::ReportBlock
+impl core::marker::StructuralPartialEq for only_rtp::ReportBlock
+impl core::marker::Send for only_rtp::ReportBlock
+impl core::marker::Sync for only_rtp::ReportBlock
+impl core::marker::Unpin for only_rtp::ReportBlock
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ReportBlock
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::ReportBlock
+pub struct only_rtp::RtpHeader
+pub only_rtp::RtpHeader::csrc: alloc::vec::Vec<u32>
+pub only_rtp::RtpHeader::ext: only_rtp::ExtensionValues
+pub only_rtp::RtpHeader::header_len: usize
+pub only_rtp::RtpHeader::marker: bool
+pub only_rtp::RtpHeader::padding_len: usize
+pub only_rtp::RtpHeader::payload_type: u8
+pub only_rtp::RtpHeader::sequence_number: u16
+pub only_rtp::RtpHeader::ssrc: u32
+pub only_rtp::RtpHeader::timestamp: u32
+impl only_rtp::RtpHeader
+pub fn only_rtp::RtpHeader::parse(&[u8], &only_rtp::ExtensionMap) -> core::option::Option<only_rtp::RtpHeader>
+pub fn only_rtp::RtpHeader::payload<'a>(&self, &'a [u8]) -> &'a [u8]
+pub fn only_rtp::RtpHeader::write(&self, &only_rtp::ExtensionMap, &[u8]) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for only_rtp::RtpHeader
+pub fn only_rtp::RtpHeader::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::RtpHeader
+impl core::cmp::PartialEq for only_rtp::RtpHeader
+pub fn only_rtp::RtpHeader::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::RtpHeader
+pub fn only_rtp::RtpHeader::default() -> Self
+impl core::fmt::Debug for only_rtp::RtpHeader
+pub fn only_rtp::RtpHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::RtpHeader
+impl core::marker::Send for only_rtp::RtpHeader
+impl core::marker::Sync for only_rtp::RtpHeader
+impl core::marker::Unpin for only_rtp::RtpHeader
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::RtpHeader
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::RtpHeader
+pub struct only_rtp::SendStream
+impl only_rtp::SendStream
+pub fn only_rtp::SendStream::handle_report_block(&mut self, std::time::Instant, u64, &only_rtp::ReportBlock)
+pub fn only_rtp::SendStream::new(u32, u32, core::option::Option<u32>, u16) -> only_rtp::SendStream
+pub fn only_rtp::SendStream::next_seq(&self) -> u16
+pub fn only_rtp::SendStream::octets_resent(&self) -> u64
+pub fn only_rtp::SendStream::octets_sent(&self) -> u64
+pub fn only_rtp::SendStream::packets_resent(&self) -> u64
+pub fn only_rtp::SendStream::packets_sent(&self) -> u64
+pub fn only_rtp::SendStream::remote_report(&self) -> core::option::Option<&only_rtp::ReportBlock>
+pub fn only_rtp::SendStream::resend(&mut self, std::time::Instant, &[u16], core::option::Option<u8>, &only_rtp::ExtensionMap) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::SendStream::resend_with(&mut self, std::time::Instant, &[u16], core::option::Option<u8>, &only_rtp::ExtensionMap, impl core::ops::function::FnMut(&mut only_rtp::ExtensionValues)) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::SendStream::rtt(&self) -> core::option::Option<core::time::Duration>
+pub fn only_rtp::SendStream::rtx_ssrc(&self) -> core::option::Option<u32>
+pub fn only_rtp::SendStream::sender_report(&self, std::time::Instant, u64) -> core::option::Option<only_rtp::SenderInfo>
+pub fn only_rtp::SendStream::ssrc(&self) -> u32
+pub fn only_rtp::SendStream::write(&mut self, std::time::Instant, u8, bool, u32, &[u8], &only_rtp::ExtensionValues, &only_rtp::ExtensionMap) -> alloc::vec::Vec<u8>
+impl core::fmt::Debug for only_rtp::SendStream
+pub fn only_rtp::SendStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::SendStream
+impl core::marker::Sync for only_rtp::SendStream
+impl core::marker::Unpin for only_rtp::SendStream
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::SendStream
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::SendStream
+pub struct only_rtp::SenderInfo
+pub only_rtp::SenderInfo::ntp_time: u64
+pub only_rtp::SenderInfo::octet_count: u32
+pub only_rtp::SenderInfo::packet_count: u32
+pub only_rtp::SenderInfo::rtp_time: u32
+impl core::clone::Clone for only_rtp::SenderInfo
+pub fn only_rtp::SenderInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::SenderInfo
+impl core::cmp::PartialEq for only_rtp::SenderInfo
+pub fn only_rtp::SenderInfo::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::SenderInfo
+pub fn only_rtp::SenderInfo::default() -> Self
+impl core::fmt::Debug for only_rtp::SenderInfo
+pub fn only_rtp::SenderInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::SenderInfo
+impl core::marker::StructuralPartialEq for only_rtp::SenderInfo
+impl core::marker::Send for only_rtp::SenderInfo
+impl core::marker::Sync for only_rtp::SenderInfo
+impl core::marker::Unpin for only_rtp::SenderInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::SenderInfo
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::SenderInfo
+pub struct only_rtp::TwccFeedback
+pub only_rtp::TwccFeedback::base_seq: u16
+pub only_rtp::TwccFeedback::fb_count: u8
+pub only_rtp::TwccFeedback::media_ssrc: u32
+pub only_rtp::TwccFeedback::packets: alloc::vec::Vec<(u16, core::option::Option<i64>)>
+pub only_rtp::TwccFeedback::reference_time: u32
+pub only_rtp::TwccFeedback::sender_ssrc: u32
+impl core::clone::Clone for only_rtp::TwccFeedback
+pub fn only_rtp::TwccFeedback::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::TwccFeedback
+impl core::cmp::PartialEq for only_rtp::TwccFeedback
+pub fn only_rtp::TwccFeedback::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::TwccFeedback
+pub fn only_rtp::TwccFeedback::default() -> Self
+impl core::fmt::Debug for only_rtp::TwccFeedback
+pub fn only_rtp::TwccFeedback::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::TwccFeedback
+impl core::marker::Send for only_rtp::TwccFeedback
+impl core::marker::Sync for only_rtp::TwccFeedback
+impl core::marker::Unpin for only_rtp::TwccFeedback
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::TwccFeedback
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::TwccFeedback
+pub struct only_rtp::TwccReceiver
+impl only_rtp::TwccReceiver
+pub fn only_rtp::TwccReceiver::new() -> only_rtp::TwccReceiver
+pub fn only_rtp::TwccReceiver::on_received(&mut self, u16, std::time::Instant)
+pub fn only_rtp::TwccReceiver::poll_feedback(&mut self, std::time::Instant, u32, u32) -> core::option::Option<only_rtp::Rtcp>
+impl core::default::Default for only_rtp::TwccReceiver
+pub fn only_rtp::TwccReceiver::default() -> only_rtp::TwccReceiver
+impl core::fmt::Debug for only_rtp::TwccReceiver
+pub fn only_rtp::TwccReceiver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::TwccReceiver
+impl core::marker::Sync for only_rtp::TwccReceiver
+impl core::marker::Unpin for only_rtp::TwccReceiver
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::TwccReceiver
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::TwccReceiver
+pub struct only_rtp::TwccSender
+impl only_rtp::TwccSender
+pub fn only_rtp::TwccSender::new() -> only_rtp::TwccSender
+pub fn only_rtp::TwccSender::next_seq(&mut self) -> u16
+pub fn only_rtp::TwccSender::on_feedback(&mut self, std::time::Instant, &only_rtp::TwccFeedback) -> alloc::vec::Vec<only_rtp::PacketResult>
+pub fn only_rtp::TwccSender::on_sent(&mut self, u16, std::time::Instant, usize)
+impl core::default::Default for only_rtp::TwccSender
+pub fn only_rtp::TwccSender::default() -> only_rtp::TwccSender
+impl core::fmt::Debug for only_rtp::TwccSender
+pub fn only_rtp::TwccSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::TwccSender
+impl core::marker::Sync for only_rtp::TwccSender
+impl core::marker::Unpin for only_rtp::TwccSender
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::TwccSender
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::TwccSender
+pub const only_rtp::DEFAULT_MAX_BITRATE: u64
+pub const only_rtp::DEFAULT_MIN_BITRATE: u64
+pub const only_rtp::MAX_TWCC_STATUSES: usize
+pub const only_rtp::SEND_HISTORY_AGE: core::time::Duration
+pub const only_rtp::SEND_HISTORY_PACKETS: usize
+pub const only_rtp::TWCC_FEEDBACK_INTERVAL: core::time::Duration
+pub fn only_rtp::abs_send_time(core::time::Duration) -> u32
+pub fn only_rtp::compact_ntp(u64) -> u32
+pub fn only_rtp::is_rtcp(&[u8]) -> bool
+pub fn only_rtp::ntp_time(std::time::SystemTime) -> u64
+pub fn only_rtp::parse_compound(&[u8]) -> core::result::Result<alloc::vec::Vec<only_rtp::Rtcp>, only_rtp::Error>
+pub fn only_rtp::write_compound(&[only_rtp::Rtcp]) -> alloc::vec::Vec<u8>

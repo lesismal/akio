@@ -5,7 +5,7 @@
 [`only`](https://github.com/lesismal/only) 的 sans-io DTLS 1.2（RFC 6347），构建在
 [`only-crypto`](../only-crypto) 与 [`only-x509`](../only-x509) 之上，安全 Rust
 （`#![forbid(unsafe_code)]`），没有其他依赖。它是 DEV-PLAN 第 D 波计划中自研 WebRTC 协议栈的 DTLS 层
-（DTLS-SRTP 密钥、SCTP 数据通道），届时将替代 str0m 的 `dimpl`。这是内部 crate
+（DTLS-SRTP 密钥、SCTP 数据通道），由 `only-webrtc` 使用。这是内部 crate
 （docs/api-stability.zh-CN.md）：API 跟随该协议栈的需要，可能在任何发布中变化。
 
 ## 驱动连接
@@ -78,7 +78,6 @@ loop {
 - 互通（`tools/interop/dtls/run.sh`）：OpenSSL `s_server -dtls1_2` / `s_client -dtls1_2`（rust:1 镜像中的
   3.5 与主机上的 4.1）双向，覆盖每个套件、`-use_srtp` 配置、`-mtu 300`、双向认证，且
   `-keymatexport EXTRACTOR-dtls_srtp` 与我们的密钥一致；pion/dtls v3.1 双向，覆盖每个 SRTP 配置以及
-  ECDSA、ChaCha20 与 RSA 套件，比较密钥材料；在内存中与 str0m 的 `dimpl` 互通，两种角色
-  （`tests/dimpl.rs`）。
+  ECDSA、ChaCha20 与 RSA 套件，比较密钥材料；自研 WebRTC 协议栈的互通测试（pion、Chrome）也端到端地覆盖了它。
 - Fuzz：`fuzz/` 中的目标 `dtls_record`（记录拆分、分片与消息解析、重新编码）与 `dtls_handshake`
   （任意数据报输入握手中及已连接的客户端和服务端状态机）；`fuzzing::tests` 在 stable 上回放它们的语料。

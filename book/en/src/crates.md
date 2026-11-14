@@ -39,7 +39,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 | `only-socks` | SOCKS4/4a/5 and HTTP CONNECT proxies | [SOCKS](protocols/socks.md) |
 | `only-mux` | several protocols on one port | [Multiplexing](protocols/mux.md) |
 | `only-kcp` | KCP (kcp-go compatible) | [KCP](protocols/kcp.md) |
-| `only-webrtc` | WebRTC on str0m: ICE, DTLS-SRTP, data channels, media | [WebRTC](protocols/webrtc.md) |
+| `only-webrtc` | WebRTC on the in-house stack (`only-ice`, `only-dtls`, `only-srtp`, `only-rtp`, `only-sctp`): ICE, DTLS-SRTP, data channels, media | [WebRTC](protocols/webrtc.md) |
 | `only-turn` | STUN codec, STUN and TURN servers | [WebRTC](protocols/webrtc.md) |
 | `only-media` | streaming media: hub, RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS, WHIP/WHEP signalling | [Streaming media](protocols/media.md) |
 | `only-bittorrent` | BitTorrent: trackers, peer wire + MSE, uTP, DHT, client (libtorrent and aria2 compatible) | [BitTorrent](protocols/bittorrent.md) |

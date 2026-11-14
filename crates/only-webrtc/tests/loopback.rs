@@ -265,7 +265,7 @@ fn media_echo_between_two_full_ice_endpoints() {
 #[test]
 fn echoes_stay_in_order_while_an_app_thread_sends() {
     // The application thread drives the peer (sends) while the I/O thread drives it with the
-    // echoes coming back: events and datagrams must keep str0m's order.
+    // echoes coming back: events and datagrams must keep the stack's order.
     let (e, _) = engine_with(None);
     let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
     let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();

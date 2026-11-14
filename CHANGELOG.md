@@ -214,6 +214,56 @@ certificate. rcgen and rustls left the dev-dependencies of only-tls, only-http, 
 only-mux, only-h3, only-quic and only-grpc (test certificates come from `only-x509`); `only`
 keeps a rustls client in its TLS tests as an interop peer.
 
+### Changed: own WebRTC stack in `only-webrtc` (DEV-PLAN wave D; no more str0m, dimpl, p256)
+
+`only-webrtc` runs on an in-house, sans-io WebRTC stack with no third-party dependencies, behind
+the unchanged API (`RtcServer`, `Endpoint`, `Peer`, `PeerHandler` and its ordering guarantees,
+`ChannelConfig`, `Codec`, `SdpChanges`, `Event`, `RtcError` ...). Four new internal crates, all
+`#![forbid(unsafe_code)]` on `only-crypto`:
+
+- `only-ice`: ICE (RFC 8445) full agent and ICE-lite: candidate priorities and foundations,
+  checklists with pacing and retransmission, peer-reflexive candidates, regular nomination, role
+  conflicts (487), checks before the remote credentials, consent freshness (RFC 7675), trickle
+  (RFC 8838) and restarts; STUN through `only-turn`'s codec. RFC 5769 vectors; pion/ice interop.
+- `only-srtp`: SRTP/SRTCP (RFC 3711, RFC 7714) with AES-CM-HMAC-SHA1-80/32 and
+  AEAD-AES-128/256-GCM, ROC estimation, replay windows; RFC 3711 and RFC 7714 vectors and
+  byte-exact cross-checks with pion/srtp.
+- `only-rtp`: RTP header extensions (one- and two-byte), RTCP (SR, RR, SDES, BYE, generic NACK,
+  PLI, FIR, REMB, transport-wide CC feedback), send/receive streams with NACK + RTX (RFC 4588),
+  reports and RTT, TWCC and a delay- and loss-based bandwidth estimator; payload formats for
+  Opus, G.711, G.722, VP8, VP9, H.264 (RFC 6184), H.265 (RFC 7798) and AV1 with a jitter-free
+  frame assembler. Byte-exact cross-checks with pion/rtp, pion/rtcp and pion/interceptor.
+- `only-sctp`: SCTP over DTLS (RFC 8261; RFC 9260 essentials) with congestion control, fast
+  retransmit, PR-SCTP FORWARD-TSN (RFC 3758), stream reset (RFC 6525), DCEP data channels
+  (RFC 8831/8832); interop with pion/sctp 1.8 and 1.12 over UDP.
+
+`only-webrtc` itself gained the SDP offer/answer (BUNDLE, rtcp-mux, codec / RTX / rtcp-fb /
+extmap negotiation, ssrc and FID groups, setup roles and fingerprints, ICE-lite, candidates,
+sctp-port / max-message-size, renegotiation and ICE restarts) and the sans-io peer that glues
+the layers together. Tested on a simulated lossy link (ICE + DTLS + SCTP + media) and against
+pion (data channels, Opus/VP8 echo, PLI, a TURN relay, both offer directions), fib's Go WebRTC
+(both directions) and headless Chrome (`tools/interop/webrtc/browser.sh`: data channels, Chrome's
+camera and microphone echoed back and decoded, both offer directions). New fuzz targets
+`ice_stun`, `srtp_unprotect`, `rtp_rtcp`, `rtp_codec`, `sctp_packet`; `webrtc_sdp` now drives the
+new SDP code.
+
+Migration notes:
+
+- The `unstable` feature of `only-webrtc` is now reserved and empty: `only_webrtc::str0m`,
+  `crypto_provider_str0m`, `Peer::with_rtc`, `RtcConfig::with_str0m` and
+  `OtherEvent::as_str0m` are gone (they were outside the semver promise).
+- The covered API is unchanged except that `Event`, `OtherEvent`, `RtcConfig`, `RtcError` and
+  `SdpChanges` are now `RefUnwindSafe` (and `RtcError` `UnwindSafe`): auto traits gained, nothing
+  lost.
+- Behaviour: H.265 is no longer offered by default (`RtcConfig::enable_h265(true)` turns it on),
+  DTLS is 1.2 only (browsers and pion negotiate 1.2), the answerer takes the DTLS client role
+  (`a=setup:active`), `OtherEvent`'s `Debug` output changed (it was never stable), and
+  `Endpoint` still has no TURN client (relayed candidates must come from elsewhere, as before).
+- Dependencies: str0m, dimpl, p256 / ecdsa / elliptic-curve, the RustCrypto crates they pulled
+  and rand 0.9 left the library graph; only-dtls's in-memory interop test against dimpl was
+  removed. p256/p384 0.13 remain dev-dependencies of only-crypto's cross-checks, so the
+  RUSTSEC-2026-0387 (crypto-bigint) ignore in `deny.toml` now only covers them.
+
 ### Changed: in-house HTTP codecs (no more httparse, loona-hpack, regex)
 
 DEV-PLAN "no third-party dependencies", wave A. The public API is unchanged.
