@@ -6,14 +6,17 @@
 //! from them, so one publisher plays over every other protocol.
 #![warn(clippy::unwrap_used)]
 
+pub mod amf;
 pub mod av;
 mod bits;
 pub mod codec;
+pub mod flv;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
 pub mod hub;
 pub mod mpegts;
+pub mod rtmp;
 pub mod rtp;
 pub mod rtsp;
 pub mod sdp;

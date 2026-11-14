@@ -165,6 +165,9 @@ pub trait Sink: Send + 'static {
     /// The end: [`HubError::Unpublished`], [`HubError::NotFound`] (no publisher came within
     /// the wait) or [`HubError::Closed`]. Not called for [`Subscription::close`].
     fn on_close(&mut self, _err: HubError) {}
+    /// Called once by [`Hub::subscribe`] with the stream's counter of packets dropped for slow
+    /// subscribers, which [`Dropper`] adds to ([`StreamInfo::packets_dropped`]).
+    fn attach(&mut self, _dropped: &Arc<AtomicU64>) {}
 }
 
 /// Configures a subscription.
@@ -625,6 +628,7 @@ impl Hub {
                 st.release(g);
                 return Err(HubError::Limit);
             }
+            sink.attach(&st.dropped);
             let closed = Arc::new(AtomicBool::new(false));
             let mut s = Sub {
                 id: self.next_id(),
@@ -1007,6 +1011,13 @@ impl<S: Sink> Sink for Dropper<S> {
 
     fn on_close(&mut self, err: HubError) {
         self.next.on_close(err);
+    }
+
+    fn attach(&mut self, dropped: &Arc<AtomicU64>) {
+        if self.dropped.is_none() {
+            self.dropped = Some(dropped.clone());
+        }
+        self.next.attach(dropped);
     }
 }
 
