@@ -39,6 +39,8 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # smoltcp (flash-dpdk's userspace TCP/IP stack): zero-clause BSD, public-domain equivalent.
+    "0BSD",
 ]
 confidence-threshold = 0.8
 exceptions = []
@@ -67,6 +69,9 @@ skip = [
     { crate = "thiserror-impl@1", reason = "loona-hpack 0.4" },
     # Proc-macro build-time only: thiserror-impl 1 / 2 on syn 2 / 3.
     { crate = "syn@2", reason = "thiserror-impl 1 (build time only)" },
+    # smoltcp 0.12 (flash-dpdk) uses bitflags 1; everything else is on bitflags 2. smoltcp 0.13+
+    # moved on but needs Rust 1.91 > MSRV.
+    { crate = "bitflags@1", reason = "smoltcp 0.12 (flash-dpdk); newer smoltcp needs Rust 1.91" },
 ]
 skip-tree = []
 

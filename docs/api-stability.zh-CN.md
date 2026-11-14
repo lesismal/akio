@@ -26,6 +26,7 @@
 |---|---|---|
 | 公开 | `flash`、`flash-core`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`flash-ebpf`、`flash-prefork` | 其公开 API（见下）完整遵循 semver。 |
 | 内部 | `flash-sys`、`flash-buf`、`flash-timer`、`flash-pool`、`flash-epoll`、`flash-uring` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `flash` / `flash-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `flash-core` 和 `flash` 中的再导出受到保护。 |
+| 实验性 | `flash-dpdk`，以及 `flash` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`flash::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/flash-dpdk.txt` 只用于让变化可见。 |
 
 `tools/` 与 `fuzz/` 不发布。
 

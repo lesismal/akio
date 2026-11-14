@@ -10,7 +10,8 @@ name: CI
 #                              a job that never starts is not a code failure)
 #   Heavy (push to main, nightly schedule, manual run, or a PR labelled `full-ci`):
 #                              interop (Go peers: arpc, grpc, kcp, h3), fuzz (all targets, 5 min
-#                              each), sanitizers (ASan + TSan on the core and backend tests)
+#                              each), sanitizers (ASan + TSan on the core and backend tests),
+#                              dpdk (flash-dpdk with libdpdk: net_tap / TAP against the kernel)
 #   Deploy (push to main):     book-deploy (GitHub Pages)
 #   ci-ok:                     one status to require in branch protection.
 #
@@ -365,6 +366,19 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Interop (${{ matrix.suite }})
         run: flash/tools/interop/${{ matrix.suite }}/run.sh
+
+  dpdk:
+    # flash-dpdk against the distribution's DPDK (tools/dpdk/Dockerfile): clippy with libdpdk
+    # linked, the memory-wire tests, and UDP/TCP echo against the kernel stack over DPDK's net_tap
+    # PMD (1 and 2 queues) and smoltcp's TAP device. Needs NET_ADMIN and /dev/net/tun, so it runs
+    # in the job's own container; no hugepages or NIC (--no-huge --no-pci, virtual devices).
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: DPDK tests (Docker)
+        run: tools/dpdk/test.sh
 
   fuzz:
     # Every cargo-fuzz target for 5 minutes, all CPUs. Fails if any target left a crash, leak or

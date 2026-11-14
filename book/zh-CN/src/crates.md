@@ -24,6 +24,7 @@ $ cargo doc --workspace --no-deps --open
 | `flash-uring` | io_uring 后端 | [Engine 与后端](concepts/engine.md) |
 | `flash-ebpf` | `SO_REUSEPORT` 分流、sockmap 转发 | [Engine 与后端](concepts/engine.md) |
 | `flash-prefork` | 多进程服务：supervisor、worker 重启、优雅关闭与重载 | [Prefork](prefork.md) |
+| `flash-dpdk`（`flash::dpdk`，实验性） | 内核旁路：基于 DPDK / TAP / AF_PACKET 的用户态 TCP/IP（smoltcp） | [内核旁路（DPDK）](dpdk.md) |
 | `flash-tls`（`flash::tls`） | 作为连接 transport 的 rustls | [TLS](protocols/tls.md) |
 | `flash-http` | HTTP/1.1、HTTP/2、Router、中间件、静态文件、客户端、可观测性 | [HTTP 服务端](protocols/http-server.md) |
 | `flash-ws` | WebSocket 服务端会话与客户端 | [WebSocket](protocols/websocket.md) |

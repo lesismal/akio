@@ -25,6 +25,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.md
 | `flash-uring` | io_uring backend | [Engine and backends](concepts/engine.md) |
 | `flash-ebpf` | `SO_REUSEPORT` steering, sockmap relay | [Engine and backends](concepts/engine.md) |
 | `flash-prefork` | multi-process serving: supervisor, worker restarts, graceful shutdown and reload | [Prefork](prefork.md) |
+| `flash-dpdk` (`flash::dpdk`, experimental) | kernel bypass: userspace TCP/IP (smoltcp) over DPDK / TAP / AF_PACKET | [Kernel bypass (DPDK)](dpdk.md) |
 | `flash-tls` (`flash::tls`) | rustls as a connection transport | [TLS](protocols/tls.md) |
 | `flash-http` | HTTP/1.1, HTTP/2, Router, middleware, static files, clients, observability | [HTTP servers](protocols/http-server.md) |
 | `flash-ws` | WebSocket server session and client | [WebSocket](protocols/websocket.md) |

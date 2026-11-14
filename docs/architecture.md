@@ -20,6 +20,7 @@ flowchart BT
     epoll["flash-epoll<br/>epoll / kqueue groups, UDP groups"]
     uring["flash-uring<br/>io_uring groups"]
     ebpf["flash-ebpf<br/>reuseport steering, sockmap relay"]
+    dpdk["flash-dpdk (experimental)<br/>userspace TCP/IP (smoltcp) over DPDK / TAP"]
     tls["flash-tls<br/>rustls Transport"]
     facade["flash<br/>Engine, Listener, Backend, Accel"]
     http["flash-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
@@ -41,11 +42,13 @@ flowchart BT
     sys --> uring
     timer --> uring
     core --> ebpf
+    core --> dpdk
     sys --> ebpf
     core --> tls
     epoll --> facade
     uring --> facade
     ebpf --> facade
+    dpdk -.->|feature dpdk| facade
     tls --> facade
     facade --> ws
     facade --> http
@@ -63,7 +66,7 @@ flowchart BT
 - **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → flash →
   protocols`. Protocol crates depend on `flash-core`'s public traits and the `flash` facade,
   never on a specific backend.
-- **`unsafe` is confined** to `flash-sys`, `flash-uring` (ring and buffer-ring memory) and `flash-ebpf` (raw `bpf(2)`),
+- **`unsafe` is confined** to `flash-sys`, `flash-uring` (ring and buffer-ring memory), `flash-ebpf` (raw `bpf(2)`) and `flash-dpdk` (the DPDK FFI),
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (httparse for the head, an own chunked decoder),

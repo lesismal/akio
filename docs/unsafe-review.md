@@ -16,6 +16,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 | `flash-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls: epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, process plumbing for prefork (`pre_exec`, signals) |
 | `flash-uring` | `#![deny(unsafe_code)]`, allowed in `group` and `reactor` only | io_uring submission entries point into memory the kernel writes asynchronously |
 | `flash-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
+| `flash-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` only | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts), and `Sendable` (moves smoltcp's `!Send` TAP / AF_PACKET devices to their I/O thread) |
 | every other crate (`flash`, `flash-core`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `tools/echo-bench`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
 Tests, examples and benches are separate crates; they may use `unsafe` for test-only libc calls
@@ -113,11 +114,12 @@ contain no `unsafe`.
 | Crate | blocks | `unsafe fn` | `unsafe impl` | tests/examples/benches |
 |---|---:|---:|---:|---:|
 | flash | 0 | 0 | 0 | 12 |
+| flash-dpdk | 15 | 0 | 2 | 0 |
 | flash-ebpf | 11 | 3 | 0 | 1 |
 | flash-http | 0 | 0 | 0 | 8 |
 | flash-sys | 68 | 1 | 3 | 0 |
 | flash-uring | 18 | 1 | 1 | 0 |
-| **total** | **97** | **5** | **4** | **21** |
+| **total** | **112** | **5** | **6** | **21** |
 
 By purpose:
 
@@ -130,6 +132,7 @@ By purpose:
 | `flash-sys/src/udp.rs` | 15 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
 | `flash-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |
 | `flash-uring/src/group.rs` | 3 | `uname` for the kernel-version probe | zeroed `utsname`; kernel NUL-terminates `release` |
+| `flash-dpdk/src/pmd.rs` | 15, `impl Send for Queue`, `impl Send for Sendable` | calls into the C shim (`rte_eal_init`, port setup, `rte_eth_rx_burst`/`tx_burst`, mbuf alloc/free); frames borrowed from mbufs; `Sendable` for smoltcp's TAP / raw-socket devices | the shim's ABI is integers and opaque pointers only (no DPDK struct layouts in Rust); EAL argv leaked (outlives the EAL), init once (`OnceLock`); an mbuf is owned by exactly one `Queue`/`Mbuf` and freed once (frames not taken by `tx_burst` freed, received ones freed on drop); slices only over the single data segment the shim returned, for the mbuf's lifetime; a `Queue` and a `Sendable` device are used by one thread at a time (moved once to their I/O thread) |
 | `flash-ebpf/src/sys.rs` | 11, 3 `unsafe fn` | `bpf(2)` (`MAP_CREATE`, `MAP_UPDATE/DELETE_ELEM`, `PROG_LOAD`, `PROG_ATTACH`), `SO_ATTACH_REUSEPORT_[CE]BPF`, `SO_COOKIE` | `#[repr(C)]` attr prefixes identical to UAPI; pointer fields live for the call; key/value sizes fixed by `Map<K, V>` |
 
 ## 6. Findings of the 1.0 review

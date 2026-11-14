@@ -29,6 +29,7 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 |---|---|---|
 | Public | `flash`, `flash-core`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-ebpf`, `flash-prefork` | Full semver for their public API (below). |
 | Internal | `flash-sys`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-uring` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `flash` / `flash-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `flash-core` and `flash`. |
+| Experimental | `flash-dpdk`, and the `dpdk` / `dpdk-pmd` features of `flash` (`Backend::Dpdk`, `flash::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/flash-dpdk.txt` only makes changes visible. |
 
 `tools/` and `fuzz/` are not published.
 
