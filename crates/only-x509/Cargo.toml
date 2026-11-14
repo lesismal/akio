@@ -1,0 +1,30 @@
+[package]
+name = "only-x509"
+description = "only internals: X.509 certificate parsing, chain verification (RFC 5280 subset, RFC 6125 names) and generation, on only-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-x509"
+keywords = ["x509", "certificate", "pki", "asn1", "tls"]
+categories = ["cryptography", "parser-implementations"]
+
+[dependencies]
+only-crypto = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_x509::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+# Interop tests only: certificates made by rcgen (ring) verified here, ours verified by
+# rustls-webpki.
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
+rustls-pki-types = "1"
+
+[lints]
+workspace = true

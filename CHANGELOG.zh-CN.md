@@ -73,6 +73,29 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
   WebSocket accept key；BitTorrent info hash 与 MSE；SRT 密钥包装与 AES-CTR；RTMP digest 握手；SRTP）。
 - `only-sys`（内部，`#[doc(hidden)]`）：基于 `getrandom(2)` / `getentropy(2)` 的 `fill_random`，
   回退到 `/dev/urandom`。
+### 新增：公钥密码学与 X.509（`only-crypto`、新的 `only-x509`，DEV-PLAN 第 B 波）
+
+为自研 TLS 1.2/1.3、DTLS、QUIC 与 WebRTC 协议栈（第 C、D 波）打基础；协议 crate 目前还没有使用它们，
+行为没有变化。
+
+- `only-crypto`（内部层级；API 只增不减）：X25519（RFC 7748）、Ed25519（RFC 8032，严格验证：`S` 必须规范、
+  比较 `R` 的编码）、P-256 与 P-384 上的 ECDH 和 ECDSA（RFC 6979 确定性 nonce，DER 与定长签名，带校验的
+  SEC1 点）、RSA PKCS#1 v1.5 与 PSS 签名/验证（SHA-256/384/512，SHA-1 仅验证），模数 2048–8192 位（CRT、
+  盲化、结果校验），严格 DER 读写器、PEM，以及密钥编码（PKCS#8 v1/v2、SEC1、PKCS#1、
+  SubjectPublicKeyInfo），统一在 `pkey::{PrivateKey, PublicKey, SignatureAlgorithm}` 之后。`Error` 新增
+  `InvalidKey`、`Encoding`、`Unsupported`、`Random`、`ZeroSharedSecret`。常数时间的域运算（P-256/P-384 与
+  标量用 Montgomery，Curve25519 用 2⁵¹ 进制）、完备加法公式、读取全部表项的查表。
+- 新的内部 crate `only-x509`（`#![forbid(unsafe_code)]`）：证书解析（严格 DER；subjectAltName、
+  basicConstraints、keyUsage、extKeyUsage、nameConstraints、密钥标识符），基于 `RootStore` 的证书链构建与
+  校验（有效期、CA/pathLen、密钥用途、EKU、DNS/IP/directoryName 名称约束、未知关键扩展、签名校验次数上限），
+  RFC 6125 服务器名匹配（仅最左标签通配符、IP SAN），以及自签名和 CA 签发证书的生成
+  （`CertificateParams`、`generate_simple_self_signed`）。
+- 测试：Wycheproof（X25519、Ed25519、ECDSA P-256/P-384 的 DER 与 P1363、ECDH P-256/P-384、RSA PKCS#1 v1.5
+  与 PSS 验证、RSA 签名生成）、RFC 7748 / 8032 / 6979 向量、与 ring 和 RustCrypto p256/p384 签名逐字节一致
+  且互相验证、真实证书链（Google Trust Services、Let's Encrypt 的 ECDSA 与 RSA 链）、OpenSSL 生成的证书链与
+  密钥（RSA-PSS、P-384、Ed25519）、与 rcgen 和 rustls-webpki 互通、构造的反例证书链；模糊测试目标
+  `x509_parse` 与 `crypto_sig_verify`（与 ring 差分），并有语料回放测试。
+
 ### 变更：自研 HTTP 编解码（不再依赖 httparse、loona-hpack、regex）
 
 DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。

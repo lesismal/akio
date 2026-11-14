@@ -808,7 +808,10 @@ dependencies = [
  "hmac",
  "md-5",
  "only-sys",
+ "p256",
+ "p384",
  "pbkdf2",
+ "ring",
  "sha1",
  "sha2",
 ]
@@ -1031,6 +1034,16 @@ dependencies = [
  "only-deflate",
  "only-http",
  "rcgen",
+]
+
+[[package]]
+name = "only-x509"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only-crypto",
+ "rcgen",
+ "rustls-pki-types",
+ "rustls-webpki",
 ]
 
 [[package]]

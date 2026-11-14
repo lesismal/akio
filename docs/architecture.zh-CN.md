@@ -12,7 +12,8 @@
 ```mermaid
 flowchart BT
     sys["only-sys<br/>unsafe 系统调用：epoll/kqueue、<br/>eventfd/pipe、socket、recvmmsg/sendmmsg"]
-    crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数"]
+    crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数、<br/>X25519、Ed25519、P-256/P-384、RSA、DER/PEM"]
+    x509["only-x509<br/>证书解析、证书链校验、证书生成"]
     buf["only-buf<br/>分级缓冲池、SharedBuf"]
     timer["only-timer<br/>时间轮"]
     deflate["only-deflate<br/>DEFLATE、zlib、gzip"]
@@ -72,6 +73,7 @@ flowchart BT
     turn --> webrtc
     http --> media
     sys --> crypto
+    crypto --> x509
     crypto --> ws
     crypto --> http
     crypto --> kcp
@@ -85,8 +87,10 @@ flowchart BT
 - **密码学自研**：`only-crypto`（只依赖 std；`unsafe` 只用于 AES-NI / ARMv8 AES 指令，并有常数时间的可移植回退；
   随机数系统调用在 `only-sys` 中）提供协议
   crate 需要的哈希、MAC、KDF、CRC-32、常数时间 AES-CTR/GCM、ChaCha20-Poly1305、base64 与随机数
-  （KCP 加密、STUN/TURN、WebSocket 握手、SRTP、SRT、RTMP、BitTorrent）；TLS、QUIC 与 DTLS 在
-  DEV-PLAN 后续各波之前仍使用 rustls / quinn-proto / dimpl。
+  （KCP 加密、STUN/TURN、WebSocket 握手、SRTP、SRT、RTMP、BitTorrent），以及 `only-x509`（证书解析、
+  证书链校验、证书生成）所依赖的公钥算法与密钥格式（X25519、Ed25519、P-256/P-384 的 ECDH/ECDSA、
+  RSA PKCS#1/PSS、DER/PEM、PKCS#8）；TLS、QUIC 与 DTLS 在 DEV-PLAN 后续各波之前仍使用
+  rustls / quinn-proto / dimpl，之后会迁移到这两个 crate 之上。
 - **`unsafe` 被限制在** `only-sys`、`only-uring`（ring 与 buffer ring 内存）、`only-ebpf`
   （原始 `bpf(2)`）、`only-dpdk`（DPDK FFI）和 `only-crypto` 的 AES 指令模块中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。

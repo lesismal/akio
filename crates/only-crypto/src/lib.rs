@@ -19,6 +19,25 @@
 //!   ChaCha20-based generator seeded from it.
 //! - [`ct_eq`]: constant-time comparison of secrets (MACs, tags).
 //!
+//! Public-key cryptography (for the TLS, DTLS, QUIC and WebRTC stacks and `only-x509`):
+//!
+//! - [`x25519`]: X25519 key agreement (RFC 7748).
+//! - [`ed25519`]: Ed25519 signatures (RFC 8032) with strict verification.
+//! - [`p256`], [`p384`]: ECDH and ECDSA on the NIST curves (RFC 6979 nonces; DER and
+//!   fixed-width signatures; validated SEC1 points).
+//! - [`rsa`]: RSA PKCS#1 v1.5 and PSS signatures, 2048–8192-bit keys (CRT, blinding).
+//! - [`der`], [`pem`]: strict ASN.1 DER reading/writing, PEM.
+//! - [`pkey`]: algorithm-agnostic keys (PKCS#8, SEC1, PKCS#1, SubjectPublicKeyInfo) and
+//!   signatures by [`SignatureAlgorithm`](pkey::SignatureAlgorithm).
+//!
+//! Timing: secret-dependent work (field and scalar arithmetic, scalar multiplication, RSA
+//! private exponentiation) runs without secret-dependent branches or table indices: Montgomery
+//! arithmetic with masked corrections, complete addition formulas, fixed windows with lookups
+//! that read every table entry, the X25519 Montgomery ladder with masked swaps. Verification
+//! and public-key operations are variable time (their inputs are public). The compiler is not
+//! formally prevented from reintroducing branches (masks pass through `black_box`, nothing
+//! stronger), and keys are not zeroized on drop.
+//!
 //! This is an implementation crate of `only` (like `only-sys`): its API follows the needs of the
 //! other crates and may change in any release (docs/api-stability.md). It does not try to be a
 //! general-purpose cryptography library: no key zeroization, and only AES uses CPU instructions
@@ -41,15 +60,35 @@ pub mod aes;
 pub mod base64;
 pub mod chacha;
 pub mod crc;
+pub mod der;
+pub mod ed25519;
 pub mod gcm;
 pub mod hash;
 pub mod kdf;
 pub mod mac;
+pub mod p256;
+pub mod p384;
+pub mod pem;
+pub mod pkey;
 pub mod rand;
+pub mod rsa;
+pub mod x25519;
 
+mod bignum;
+mod ct;
+mod curve25519;
+mod ec;
 mod error;
+mod field;
 
 pub use error::Error;
+
+/// `N` bytes from the operating system's randomness.
+pub(crate) fn random_array<const N: usize>() -> Result<[u8; N], Error> {
+    let mut b = [0u8; N];
+    rand::fill_random(&mut b).map_err(|_| Error::Random)?;
+    Ok(b)
+}
 
 /// Compares two byte strings in time that depends only on their lengths, not on their contents
 /// (for MACs, AEAD tags and other secrets). Strings of different lengths are unequal.
