@@ -167,7 +167,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### 1.0 稳定化
 - [ ] API 审阅与冻结、semver 策略、弃用流程
-- [ ] 全量 fuzz 语料与覆盖率报告、`cargo-audit/deny`、unsafe 审查清单
+- [ ] 全量 fuzz 语料与覆盖率报告、`cargo-audit/deny`、unsafe 审查清单 —— 模糊测试已完成：`fuzz/` cargo-fuzz 工程共 21 个目标（HTTP/1、HTTP/2 + HPACK、WebSocket、arpc、gRPC、SOCKS、mux、KCP、HTTP/3 + QPACK、cBPF），最小化语料约 2.6 MB 由 stable 单元测试回放，每个目标在 Linux 上约 14 分钟，提供 `fuzz/run-all.sh` 与 `fuzz/coverage.sh`。已修复：HTTP/2 流式请求被丢弃时的死锁、递归/非法 server push、gRPC `grpc-timeout` panic/溢出、KCP RTT 溢出、SOCKS 握手缓冲无上限。待完成：deny/audit、unsafe 审查
 - [x] 文档站 + 迁移指南 + 架构文档：mdBook `book/en` 与 `book/zh-CN`（快速上手、核心概念、每个协议一章、配置参考、可观测性与热更新、性能调优、故障排查），由 `book/build.sh` 构建；所有代码片段来自 14 个可运行的 `guide-*` 示例；从 fib、tokio、hyper/axum 迁移的指南；带 Mermaid 图的 `docs/architecture.md`；各 crate 的 rustdoc 链接到对应章节；根目录 README。未完成：Pages 部署、在 Linux 上运行这些示例
 
 ## 4. 工程规范
