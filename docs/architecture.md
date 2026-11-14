@@ -25,7 +25,7 @@ flowchart BT
     uring["only-uring<br/>io_uring groups"]
     ebpf["only-ebpf<br/>reuseport steering, sockmap relay"]
     dpdk["only-dpdk (experimental)<br/>own userspace TCP/IP over DPDK / TAP / AF_PACKET"]
-    tls["only-tls<br/>rustls Transport"]
+    tls["only-tls<br/>own TLS 1.3/1.2 Transport"]
     facade["only<br/>Engine, Listener, Backend, Accel"]
     http["only-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
     ws[only-ws]
@@ -93,17 +93,18 @@ flowchart BT
   ChaCha20-Poly1305, base64 and randomness the protocol crates need (KCP crypt, STUN/TURN,
   WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent), plus the public-key algorithms and key
   formats (X25519, Ed25519, ECDH/ECDSA P-256/P-384, RSA PKCS#1/PSS, DER/PEM, PKCS#8) that
-  `only-x509` (certificate parsing, chain validation, generation) builds on; TLS, QUIC and DTLS
-  still use rustls / quinn-proto / dimpl until the later waves of the DEV-PLAN, which will move
-  them onto these two crates.
+  `only-x509` (certificate parsing, chain validation, generation) builds on. TLS 1.2/1.3 runs on
+  these two crates in `only-tls` (wave C); QUIC and DTLS still use quinn-proto (with rustls
+  inside) / dimpl until the later waves of the DEV-PLAN, which will move them onto them too
+  (`only_tls::quic` is the record-free TLS 1.3 core the in-house QUIC will drive).
 - **`unsafe` is confined** to `only-sys` (which also holds the workspace's own OS bindings, `only_sys::ffi`, in place of the `libc` crate), `only-uring` (its own io_uring binding, ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (own zero-copy incremental head parser and chunked
   decoder), HTTP/2 framing and HPACK (own), WebSocket framing and permessage-deflate (DEFLATE from the own `only-deflate`), KCP, QPACK
-  and HTTP/3 framing are state machines fed bytes by `only`; TLS is rustls, QUIC is
-  quinn-proto and WebRTC is str0m, all driven sans-io (ADR-005) and hidden behind `only`'s own
-  types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).
+  and HTTP/3 framing are state machines fed bytes by `only`; so is TLS (own record layer and
+  TLS 1.3 / 1.2 handshake machines in `only-tls`). QUIC is quinn-proto and WebRTC is str0m,
+  driven sans-io (ADR-005) and hidden behind `only`'s own types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).
 - The facade `only` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
   composes backend groups into an `Engine`.
 
@@ -292,7 +293,7 @@ flowchart TD
 ```mermaid
 flowchart TB
     subgraph TCP["TCP connection on an I/O thread"]
-      sock[socket] --> tr["Transport (optional): TLS via rustls"]
+      sock[socket] --> tr["Transport (optional): TLS (only-tls)"]
       tr --> hb["HandlerBox: decode, then on_data"]
       hb --> sess["only-http Session (a Handler)"]
       sess -- "preface, h2c upgrade, ALPN h2" --> h2["H2Session: streams"]
@@ -315,8 +316,8 @@ flowchart TB
   handler sees them; everything sent goes through `Transport::seal` under the write lock, in
   wire order. Application bytes sent during the handshake are held back by the transport and
   emitted when it completes. `close_after_send` appends `Transport::shutdown` output
-  (`close_notify`). `only-tls`'s `Tls<A>` is an acceptor wrapper that supplies a rustls
-  transport, so any acceptor (HTTP, arpc, raw handlers) gains TLS without knowing about it.
+  (`close_notify`). `only-tls`'s `Tls<A>` is an acceptor wrapper that supplies its own TLS
+  transport (record layer plus TLS 1.3 / 1.2 state machines, sans-io), so any acceptor (HTTP, arpc, raw handlers) gains TLS without knowing about it.
 - **HTTP versions share `Context`.** The `only-http` `Session` handler parses HTTP/1 and switches
   to an `H2Session` on the client preface, an `h2c` upgrade or ALPN `h2`. Both build a `Context`
   whose responder is either an ordered `ResponseSlot` (HTTP/1, so pipelined responses stay in

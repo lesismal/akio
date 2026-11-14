@@ -119,6 +119,52 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
   密钥（RSA-PSS、P-384、Ed25519）、与 rcgen 和 rustls-webpki 互通、构造的反例证书链；模糊测试目标
   `x509_parse` 与 `crypto_sig_verify`（与 ring 差分），并有语料回放测试。
 
+### 变更：`only-tls` 自研 TLS 1.3 与 1.2（DEV-PLAN 第 C 波；不再依赖 rustls、ring）
+
+`only-tls` 现在依据 RFC 自己实现 TLS，基于 `only-crypto` 与 `only-x509`（`#![forbid(unsafe_code)]`，
+无第三方依赖）。受保护的 API 不变（`api/only-tls.txt` 完全相同）：`ServerConfig` / `ClientConfig`
+构建器、`Certificate`、`PrivateKey`、`RootCerts`、`Error`、`Tls`、`TlsInfo`、`tls_info`；only-http
+（HTTP/1.1，经 ALPN 的 HTTP/2）、only-ws（`wss://`）、only-socks、only-grpc 与 only-mux 无需改动即
+运行其上。
+
+- TLS 1.3（RFC 8446）：双方完整握手、HelloRetryRequest（回显 cookie）、密钥调度、KeyUpdate（应答，
+  并在达到 AES-GCM 记录上限前主动发送）、NewSessionTicket 与 PSK 会话恢复（`psk_dhe_ke`；
+  `session_tickets(true)` 为无状态票据，会话缓存为一次性缓存票据）、客户端证书、中间设备兼容模式，
+  拒绝 0-RTT（按 RFC 8446 4.2.10 跳过）。
+- TLS 1.2（RFC 5246 + RFC 7627 扩展主密钥 + RFC 5746 重协商指示，以 `no_renegotiation` 警告拒绝
+  重协商）：仅 ECDHE 搭配 ECDSA、Ed25519 或 RSA 证书与 AEAD 套件，按会话 ID 与 RFC 5077 票据恢复，
+  客户端证书；设置并检查 RFC 8446 的降级哨兵。
+- 套件：TLS_AES_128_GCM_SHA256、TLS_AES_256_GCM_SHA384、TLS_CHACHA20_POLY1305_SHA256 以及六个
+  ECDHE-ECDSA/RSA 的 AES-GCM / ChaCha20-Poly1305 TLS 1.2 套件。组：X25519、secp256r1、secp384r1。
+  签名：ECDSA P-256/P-384、Ed25519、RSA-PSS（rsae）与 RSA PKCS#1 v1.5（TLS 1.2 与证书）。扩展：SNI、
+  ALPN、supported_versions、key_share、signature_algorithms、psk_key_exchange_modes、pre_shared_key、
+  early_data、cookie、extended_master_secret、renegotiation_info、session_ticket、ec_point_formats；
+  未知扩展被忽略。
+- 记录层：16 KiB 分片、TLS 1.3 内层内容类型与填充、严格的状态机、握手消息跨记录重组（跨密钥切换则拒绝）、
+  close_notify、告警、警告告警数量有上限；证书由 `only-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）；
+  `insecure_skip_verify` 不变。
+- 面向 QUIC 的内核（`only_tls::quic`，`#[doc(hidden)]`，内部）：同一套 TLS 1.3 状态机，不经记录层，
+  按加密级别驱动（握手字节进出、各级别的流量密钥、quic_transport_parameters、强制 ALPN、无兼容模式、
+  RFC 9001 密钥派生辅助函数及其附录 A 向量），供第 D 波的自研 QUIC 使用。在那之前 only-quic 仍用
+  quinn-proto，其 rustls 配置现由 only-quic 根据 only-tls 的配置自行构建（rustls 只留作 only-quic 的依赖）。
+- 测试：RFC 8448 跟踪（简单 1-RTT、恢复绑定值、HelloRetryRequest：密钥调度、transcript、Finished、记录
+  逐字节一致），覆盖所有套件、组、密钥类型与版本的内存握手，会话恢复、客户端认证、低至单字节的分片、
+  KeyUpdate、降级检测与反例；互通矩阵（`tools/interop/tls/run.sh`，107 个用例：OpenSSL
+  `s_server`/`s_client`、Go `crypto/tls` 双向、curl 的 HTTP/1.1 与 HTTP/2），`tools/interop/grpc/run.sh`
+  新增 TLS 一环，`only` 的 TLS 测试保留 rustls 客户端；以 tlsfuzzer 测试服务端（`tools/interop/tls/tlsfuzzer.sh`：
+  33 个适用的 TLS 1.3 / 1.2 脚本，985 个探测，5 个已知且有记录的失败）；fuzz 目标 `tls_server`、`tls_client`、
+  `tls_record` 及语料回放。
+- 性能（Apple M4 Pro，服务端 2 线程，rustls 客户端）：完整握手约为 rustls+ring 的 0.7 倍（`only-crypto`
+  的 P-256 ECDSA 与 X25519 慢于 ring 的汇编），小记录持平，大块吞吐约 0.45 倍（`only-crypto` 的 GHASH
+  为可移植实现；PMULL / PCLMULQDQ 是第 A 波的后续工作）。
+
+迁移：only-tls 的 `unstable` feature（以及 `only/unstable` 中与 TLS 相关的部分）不再暴露任何内容：
+`only::tls::rustls`、`ServerConfig::from_rustls` / `as_rustls` 与 `ClientConfig::from_rustls` /
+`as_rustls` 已移除（它们本就不在 semver 承诺之内）。`ServerConfigBuilder::build` 在私钥与证书不匹配时
+也会报错。rcgen 与 rustls 已从 only-tls、only-http、only-ws、only-mux、only-h3、only-quic、only-grpc
+的 dev-dependencies 中移除（测试证书改由 `only-x509` 生成）；`only` 的 TLS 测试保留 rustls 客户端作为
+互通对端。
+
 ### 变更：自研 HTTP 编解码（不再依赖 httparse、loona-hpack、regex）
 
 DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。

@@ -46,10 +46,12 @@ Not covered:
   `only_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
 - the `fuzzing` cargo features and the `fuzzing` modules they enable (entry points for `fuzz/`).
 - the `unstable` cargo features (`only`, `only-tls`, `only-quic`, `only-webrtc`) and
-  everything they enable: raw access to the wrapped dependencies (`only::tls::rustls`,
-  `ServerConfig::from_rustls` / `as_rustls`, `only_quic::proto`, `from_quinn` /
-  `as_quinn_mut`, `only_webrtc::str0m`, `Peer::with_rtc`, `RtcConfig::with_str0m`,
-  `OtherEvent::as_str0m` ...). Their signatures change whenever the wrapped crate is upgraded,
+  everything they enable: raw access to the wrapped dependencies (`only_quic::proto`,
+  `from_quinn` / `as_quinn_mut`, `only_webrtc::str0m`, `Peer::with_rtc`,
+  `RtcConfig::with_str0m`, `OtherEvent::as_str0m` ...). Since only-tls runs its own TLS
+  (DEV-PLAN wave C), its `unstable` feature enables nothing: it is kept, reserved and empty, so
+  that `only/unstable` keeps building, and `only::tls::rustls`, `from_rustls` and `as_rustls`
+  are gone. Their signatures change whenever the wrapped crate is upgraded,
   which may happen in a minor release. Anything public that cannot be promised yet goes under
   `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
 - the `prost` feature of `only-grpc` (the `codec::Message` implementation for prost messages;
@@ -78,7 +80,9 @@ only with the `log` cargo feature, which is outside the promise (above). The log
 (`only`, `only_http::access`, `only_webrtc`) and key names in the observability chapter are
 kept like metric names: added in minor releases, renamed or removed only in a major one.
 
-The pre-1.0 dependencies that do the protocol work (rustls, quinn-proto, str0m, prost) are
+TLS is implemented in `only-tls` itself (on `only-crypto` and `only-x509`), with no
+third-party dependency. The pre-1.0 dependencies that still do protocol work (quinn-proto, with
+rustls inside it for QUIC's TLS 1.3 until the in-house QUIC of wave D; str0m; prost) are
 **wrapped**: the covered API uses `only`'s own types instead (`only::tls::{ServerConfig,
 ClientConfig, Certificate, PrivateKey, RootCerts, Error}`, `only_quic::{ServerConfig,
 ClientConfig, TransportConfig, StreamId, Dir, Side, ConnectionError, ConnectionStats}`,

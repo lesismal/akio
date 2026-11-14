@@ -41,11 +41,12 @@ log = ["only-core/log", "only-log/log"]
 workspace = true
 
 [dev-dependencies]
-# A raw rustls client drives some tests (the library API hides rustls).
+# Interop: a rustls client drives tests/tls.rs and tests/chaos_tls.rs against the own TLS stack
+# (rustls stays in the tree through only-quic until the in-house QUIC, DEV-PLAN wave D).
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 libc = "0.2"
 only-core = { workspace = true }
-rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+only-x509 = { workspace = true }
 # tests/logging_bridge.rs: the `log` bridge, with a `log` crate logger.
 only-log = { workspace = true, features = ["log"] }
 log = { version = "0.4.21", features = ["kv"] }

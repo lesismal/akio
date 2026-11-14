@@ -211,11 +211,11 @@ struct Pki {
 }
 
 fn pki() -> Pki {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).unwrap();
-    let cert: CertificateDer<'static> = ck.cert.der().clone();
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert: CertificateDer<'static> = CertificateDer::from(ck.0.as_der().to_vec());
     let server = ftls::ServerConfig::builder(
         vec![ftls::Certificate::from_der(cert.to_vec())],
-        ftls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+        ftls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
     )
     .build()
     .unwrap();

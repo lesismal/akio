@@ -43,9 +43,10 @@ trait（`Send`、`Sync`、`Unpin`、`UnwindSafe`）。
   遥测辅助函数等），可能在任何发布中变化。
 - `fuzzing` cargo feature 及其启用的 `fuzzing` 模块（`fuzz/` 的入口）。
 - `unstable` cargo feature（`only`、`only-tls`、`only-quic`、`only-webrtc`）及其启用的一切：
-  直接访问被封装的依赖（`only::tls::rustls`、`ServerConfig::from_rustls` / `as_rustls`、
-  `only_quic::proto`、`from_quinn` / `as_quinn_mut`、`only_webrtc::str0m`、`Peer::with_rtc`、
-  `RtcConfig::with_str0m`、`OtherEvent::as_str0m` 等）。被封装的 crate 升级时它们的签名就会变化，
+  直接访问被封装的依赖（`only_quic::proto`、`from_quinn` / `as_quinn_mut`、`only_webrtc::str0m`、
+  `Peer::with_rtc`、`RtcConfig::with_str0m`、`OtherEvent::as_str0m` 等）。only-tls 改用自研 TLS
+  （DEV-PLAN 第 C 波）之后，它的 `unstable` feature 不再启用任何东西：保留为空的预留 feature，
+  以便 `only/unstable` 照常编译；`only::tls::rustls`、`from_rustls`、`as_rustls` 已移除。被封装的 crate 升级时它们的签名就会变化，
   这可能发生在次版本中。任何暂时无法承诺的公开内容都放进 `#[doc(hidden)]` 或 `unstable` 之后，
   绝不悄悄进入受保护的 API。
 - `only-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`；已弃用，推荐改用
@@ -70,7 +71,9 @@ WebSocket、arpc、gRPC、KCP、SOCKS 保持互通），Prometheus 指标的名�
 target（`only`、`only_http::access`、`only_webrtc`）和键名与指标名同等对待：次版本可新增，只在
 主版本中改名或删除。
 
-承担协议工作的 1.0 之前的依赖（rustls、quinn-proto、str0m、prost）都已**被封装**：受保护的 API
+TLS 由 `only-tls` 自己实现（基于 `only-crypto` 与 `only-x509`），不依赖任何第三方 crate。仍承担
+协议工作的 1.0 之前的依赖（quinn-proto，其中为 QUIC 的 TLS 1.3 内含 rustls，直到第 D 波的自研
+QUIC；str0m；prost）都已**被封装**：受保护的 API
 改用 only 自己的类型（`only::tls::{ServerConfig, ClientConfig, Certificate, PrivateKey,
 RootCerts, Error}`、`only_quic::{ServerConfig, ClientConfig, TransportConfig, StreamId, Dir,
 Side, ConnectionError, ConnectionStats}`、`only_webrtc::{ChannelId, Mid, Pt, Codec, MediaData,

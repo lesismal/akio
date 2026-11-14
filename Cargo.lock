@@ -739,7 +739,7 @@ dependencies = [
  "only-log",
  "only-tls",
  "only-uring",
- "rcgen",
+ "only-x509",
  "rustls",
 ]
 
@@ -846,6 +846,7 @@ dependencies = [
  "only-core",
  "only-deflate",
  "only-http",
+ "only-x509",
  "prost",
 ]
 
@@ -858,7 +859,7 @@ dependencies = [
  "only-core",
  "only-http",
  "only-quic",
- "rcgen",
+ "only-x509",
 ]
 
 [[package]]
@@ -873,8 +874,7 @@ dependencies = [
  "only-deflate",
  "only-log",
  "only-ws",
- "rcgen",
- "rustls",
+ "only-x509",
 ]
 
 [[package]]
@@ -910,8 +910,7 @@ dependencies = [
  "only",
  "only-core",
  "only-http",
- "rcgen",
- "rustls",
+ "only-x509",
 ]
 
 [[package]]
@@ -946,8 +945,9 @@ dependencies = [
  "bytes",
  "only",
  "only-core",
+ "only-x509",
  "quinn-proto",
- "rcgen",
+ "rustls",
 ]
 
 [[package]]
@@ -975,8 +975,9 @@ name = "only-tls"
 version = "1.0.0-rc.1"
 dependencies = [
  "only-core",
- "rcgen",
- "rustls",
+ "only-crypto",
+ "only-log",
+ "only-x509",
 ]
 
 [[package]]
@@ -1022,7 +1023,7 @@ dependencies = [
  "only-crypto",
  "only-deflate",
  "only-http",
- "rcgen",
+ "only-x509",
 ]
 
 [[package]]

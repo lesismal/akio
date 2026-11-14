@@ -24,7 +24,7 @@ flowchart BT
     uring["only-uring<br/>io_uring 线程组"]
     ebpf["only-ebpf<br/>reuseport 分流、sockmap 转发"]
     dpdk["only-dpdk（实验性）<br/>基于 DPDK / TAP / AF_PACKET 的自研用户态 TCP/IP"]
-    tls["only-tls<br/>rustls Transport"]
+    tls["only-tls<br/>自研 TLS 1.3/1.2 Transport"]
     facade["only<br/>Engine、Listener、Backend、Accel"]
     http["only-http<br/>h1、h2、Router、中间件、<br/>静态文件、客户端、observe"]
     ws[only-ws]
@@ -91,14 +91,16 @@ flowchart BT
   crate 需要的哈希、MAC、KDF、CRC-32、常数时间 AES-CTR/GCM、ChaCha20-Poly1305、base64 与随机数
   （KCP 加密、STUN/TURN、WebSocket 握手、SRTP、SRT、RTMP、BitTorrent），以及 `only-x509`（证书解析、
   证书链校验、证书生成）所依赖的公钥算法与密钥格式（X25519、Ed25519、P-256/P-384 的 ECDH/ECDSA、
-  RSA PKCS#1/PSS、DER/PEM、PKCS#8）；TLS、QUIC 与 DTLS 在 DEV-PLAN 后续各波之前仍使用
-  rustls / quinn-proto / dimpl，之后会迁移到这两个 crate 之上。
+  RSA PKCS#1/PSS、DER/PEM、PKCS#8）。`only-tls` 中的 TLS 1.2/1.3 已运行在这两个 crate 之上（第 C 波）；
+  QUIC 与 DTLS 在 DEV-PLAN 后续各波之前仍使用 quinn-proto（内含 rustls）/ dimpl，之后也会迁移过来
+  （`only_tls::quic` 是自研 QUIC 将要驱动的、不经记录层的 TLS 1.3 内核）。
 - **`unsafe` 被限制在** `only-sys`（其中也包含替代 `libc` crate 的工作区自有操作系统绑定 `only_sys::ffi`）、`only-uring`（自研 io_uring 绑定、ring 与 buffer ring 内存）、`only-ebpf`
   （原始 `bpf(2)`）、`only-dpdk`（DPDK FFI）和 `only-crypto` 的 AES 指令模块中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（零拷贝增量头部解析器与 chunked 解码器均为自研）、HTTP/2 分帧与
   HPACK（自研）、WebSocket 分帧与 permessage-deflate（DEFLATE 来自自研的 `only-deflate`）、KCP、QPACK 与 HTTP/3 分帧，都是
-  由 only 喂入字节的状态机；TLS 是 rustls，QUIC 是 quinn-proto，WebRTC 是 str0m，都以 sans-io
+  由 only 喂入字节的状态机，TLS 也是（`only-tls` 自研的记录层与 TLS 1.3 / 1.2 握手状态机）；QUIC 是
+  quinn-proto，WebRTC 是 str0m，都以 sans-io
   方式驱动（ADR-005），并隐藏在 only 自己的类型之后，因此升级或替换它们不会破坏 API
   （docs/api-stability.zh-CN.md）。
 - facade `only` 重新导出核心 API（`Conn`、`Handler`、`Acceptor`、`Config` 等），并把后端线程组
@@ -275,7 +277,7 @@ flowchart TD
 ```mermaid
 flowchart TB
     subgraph TCP["I/O 线程上的 TCP 连接"]
-      sock[socket] --> tr["Transport（可选）：基于 rustls 的 TLS"]
+      sock[socket] --> tr["Transport（可选）：TLS（only-tls）"]
       tr --> hb["HandlerBox：解码后调用 on_data"]
       hb --> sess["only-http Session（一个 Handler）"]
       sess -- "前言、h2c 升级、ALPN h2" --> h2["H2Session：stream"]
@@ -296,8 +298,8 @@ flowchart TB
   `on_open` 之前安装到连接之下。读到的字节先经过 `Transport::recv`（产生明文，可能还有需要发送
   的握手字节），再交给 handler；发送的一切都在写锁下按线路顺序经过 `Transport::seal`。握手期间
   应用发送的字节由 transport 暂存，握手完成后发出。`close_after_send` 会追加
-  `Transport::shutdown` 的输出（`close_notify`）。`only-tls` 的 `Tls<A>` 是一个提供 rustls
-  transport 的 acceptor 包装器，因此任意 acceptor（HTTP、arpc、原始 handler）都能在毫不知情的
+  `Transport::shutdown` 的输出（`close_notify`）。`only-tls` 的 `Tls<A>` 是一个提供自研 TLS
+  transport（记录层加 TLS 1.3 / 1.2 状态机，sans-io）的 acceptor 包装器，因此任意 acceptor（HTTP、arpc、原始 handler）都能在毫不知情的
   情况下获得 TLS。
 - **HTTP 各版本共享 `Context`。** only-http 的 `Session` handler 解析 HTTP/1，遇到客户端前言、
   `h2c` 升级或 ALPN `h2` 时切换到 `H2Session`。两者构建的 `Context` 的响应端要么是有序的

@@ -5,11 +5,19 @@
 //	go run . server 127.0.0.1:9200     # test.Echo + routeguide.RouteGuide + helloworld.Greeter
 //	go run . client 127.0.0.1:9201     # raw-bytes calls against only-grpc
 //	go run . pbclient 127.0.0.1:9203   # generated-stub calls against only-protobuf messages
+//	go run . server|client ADDR tls    # the test.Echo methods over TLS (self-signed, h2)
 package main
 
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +27,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/encoding/gzip"
@@ -111,8 +120,30 @@ func fail(what string, args ...any) {
 	os.Exit(1)
 }
 
+// selfSigned makes a throwaway P-256 certificate for localhost.
+func selfSigned() tls.Certificate {
+	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		fail("key", err)
+	}
+	t := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		DNSNames:     []string{"localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, t, t, &k.PublicKey, k)
+	if err != nil {
+		fail("certificate", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: k}
+}
+
 func main() {
 	mode, addr := os.Args[1], os.Args[2]
+	useTLS := len(os.Args) > 3 && os.Args[3] == "tls"
 	if mode == "pbclient" {
 		pbClient(addr)
 		return
@@ -122,14 +153,23 @@ func main() {
 		if err != nil {
 			fail("listen", err)
 		}
-		s := grpc.NewServer()
+		var opts []grpc.ServerOption
+		if useTLS {
+			c := credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{selfSigned()}})
+			opts = append(opts, grpc.Creds(c))
+		}
+		s := grpc.NewServer(opts...)
 		s.RegisterService(&desc, struct{}{})
 		registerPB(s)
 		fmt.Println("ready")
 		_ = s.Serve(l)
 		return
 	}
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds := insecure.NewCredentials()
+	if useTLS {
+		creds = credentials.NewTLS(&tls.Config{InsecureSkipVerify: true})
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		fail("dial", err)
 	}

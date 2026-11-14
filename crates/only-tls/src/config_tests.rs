@@ -1,7 +1,8 @@
-//! Tests of the configuration types: in-memory handshakes between the built configs.
+//! Tests of the configuration types: parsing, builders, errors, and in-memory handshakes between
+//! the built configs.
 
 use super::*;
-use rustls::{ClientConnection, ServerConnection};
+use crate::proto::Connection;
 
 struct Pki {
     cert: Certificate,
@@ -11,12 +12,12 @@ struct Pki {
 }
 
 fn pki(name: &str) -> Pki {
-    let ck = rcgen::generate_simple_self_signed(vec![name.to_string()]).unwrap();
+    let (cert, key) = only_x509::generate_simple_self_signed([name]).unwrap();
     Pki {
-        cert: Certificate::from_der(ck.cert.der().to_vec()),
-        key: PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
-        cert_pem: ck.cert.pem(),
-        key_pem: ck.key_pair.serialize_pem(),
+        cert: Certificate::from_der(cert.as_der().to_vec()),
+        key: PrivateKey::from_pkcs8_der(key.to_pkcs8_der()),
+        cert_pem: cert.to_pem(),
+        key_pem: key.to_pkcs8_pem(),
     }
 }
 
@@ -31,37 +32,17 @@ fn handshake(
     s: &ServerConfig,
     c: &ClientConfig,
     name: &str,
-) -> Result<(ServerConnection, ClientConnection), rustls::Error> {
-    let mut sc = ServerConnection::new(s.__rustls().clone())?;
-    let n = rustls::pki_types::ServerName::try_from(name.to_owned()).unwrap();
-    let mut cc = ClientConnection::new(c.__rustls().clone(), n)?;
+) -> Result<(Connection, Connection), crate::proto::Fatal> {
+    let mut sc = crate::__proto::server(s);
+    let mut cc = crate::__proto::client(c, name)?;
+    let mut c2s = Vec::new();
+    let mut plain = Vec::new();
+    cc.recv(&[], &mut plain, &mut c2s)?;
     for _ in 0..10 {
-        let mut buf = Vec::new();
-        while cc.wants_write() {
-            cc.write_tls(&mut buf).unwrap();
-        }
-        if !buf.is_empty() {
-            sc.read_tls(&mut &buf[..]).unwrap();
-            sc.process_new_packets()?;
-        }
-        buf.clear();
-        while sc.wants_write() {
-            sc.write_tls(&mut buf).unwrap();
-        }
-        if !buf.is_empty() {
-            cc.read_tls(&mut &buf[..]).unwrap();
-            cc.process_new_packets()?;
-        }
-        if !sc.is_handshaking() && !cc.is_handshaking() {
-            // One more round: in TLS 1.3 the server sees the client's certificate last.
-            let mut buf = Vec::new();
-            while cc.wants_write() {
-                cc.write_tls(&mut buf).unwrap();
-            }
-            if !buf.is_empty() {
-                sc.read_tls(&mut &buf[..]).unwrap();
-                sc.process_new_packets()?;
-            }
+        let mut s2c = Vec::new();
+        sc.recv(&std::mem::take(&mut c2s), &mut plain, &mut s2c)?;
+        cc.recv(&s2c, &mut plain, &mut c2s)?;
+        if c2s.is_empty() && !sc.handshaking() && !cc.handshaking() {
             return Ok((sc, cc));
         }
     }
@@ -78,6 +59,12 @@ fn pem_inputs_parse_and_bad_ones_fail() {
     assert!(Certificate::from_pem(b"nothing here").is_err());
     assert!(PrivateKey::from_pem(p.cert_pem.as_bytes()).is_err());
     assert!(PrivateKey::from_der(vec![1, 2, 3]).is_err());
+    // SEC1 and PKCS#1 keys load too.
+    let ec = pkey::PrivateKey::from_pkcs8_der(&p.key.0.der).unwrap();
+    let sec1 = ec.to_sec1_der().unwrap();
+    PrivateKey::from_der(sec1.clone()).unwrap();
+    let sec1_pem = only_crypto::pem::encode("EC PRIVATE KEY", &sec1);
+    PrivateKey::from_pem(sec1_pem.as_bytes()).unwrap();
     let mut r = RootCerts::default();
     assert!(r.is_empty());
     assert_eq!(r.add_pem(p.cert_pem.as_bytes()).unwrap(), 1);
@@ -101,6 +88,7 @@ fn alpn_and_sni_selection() {
         .unwrap();
     assert_eq!(s.alpn_protocols(), [b"h2".to_vec(), b"http/1.1".to_vec()]);
     assert!(format!("{s:?}").contains("alpn"));
+    assert_eq!(s.__parts().sni.len(), 1);
     let c = ClientConfig::builder()
         .roots(roots(&b.cert))
         .alpn([b"http/1.1"])
@@ -108,9 +96,10 @@ fn alpn_and_sni_selection() {
         .unwrap();
     assert_eq!(c.alpn_protocols(), [b"http/1.1".to_vec()]);
     assert!(format!("{c:?}").contains("alpn"));
+    assert_eq!(c.__parts().roots.len(), 1);
     let (sc, cc) = handshake(&s, &c, "b.test").unwrap();
     assert_eq!(sc.server_name(), Some("b.test"));
-    assert_eq!(cc.alpn_protocol(), Some(&b"http/1.1"[..]));
+    assert_eq!(cc.alpn(), Some(&b"http/1.1"[..]));
     // Any other name gets the default chain, which b.test's roots do not trust.
     let c = ClientConfig::builder()
         .roots(roots(&b.cert))
@@ -159,7 +148,7 @@ fn client_auth_required_and_optional() {
 #[test]
 fn insecure_client_accepts_unknown_certificates() {
     let srv = pki("localhost");
-    let s = ServerConfig::builder(vec![srv.cert.clone()], srv.key.clone())
+    let s = ServerConfig::builder(vec![srv.cert.clone()], srv.key)
         .build()
         .unwrap();
     let strict = ClientConfig::builder().build().unwrap();
@@ -169,15 +158,15 @@ fn insecure_client_accepts_unknown_certificates() {
         .tls13_only(true)
         .build()
         .unwrap();
+    assert!(insecure.__parts().insecure);
     handshake(&s, &insecure, "localhost").unwrap();
     let insecure12 = ClientConfig::builder()
         .insecure_skip_verify()
+        .__tls12_only(true)
         .build()
         .unwrap();
-    let s12 = ServerConfig::builder(vec![srv.cert.clone()], srv.key)
-        .build()
-        .unwrap();
-    handshake(&s12, &insecure12, "localhost").unwrap();
+    let (sc, _) = handshake(&s, &insecure12, "localhost").unwrap();
+    assert_eq!(sc.version_name(), Some("TLSv1_2"));
 }
 
 #[test]
@@ -204,6 +193,31 @@ fn bad_keys_and_errors_are_reported() {
         .build()
         .unwrap_err();
     assert!(e.to_string().contains("client certificate"), "{e}");
+    // A key that is not the certificate's.
+    let other = pki("localhost");
+    let e = ServerConfig::builder(vec![srv.cert.clone()], other.key)
+        .build()
+        .unwrap_err();
+    assert!(e.to_string().contains("does not match"), "{e}");
+    assert!(
+        ServerConfig::builder(vec![], srv.key.clone())
+            .build()
+            .is_err()
+    );
+    // Unknown internal suites / groups, or none left.
+    let b = || ServerConfig::builder(vec![srv.cert.clone()], srv.key.clone());
+    assert!(b().__suites(&[0x0035]).build().is_err());
+    assert!(b().__groups(&[0x0019]).build().is_err());
+    assert!(b().__groups(&[]).build().is_err());
+    assert!(b().__suites(&[0x1301]).__tls12_only(true).build().is_err());
+    assert!(
+        ClientConfig::builder()
+            .__suites(&[0xc02b])
+            .tls13_only(true)
+            .build()
+            .is_err()
+    );
+    assert!(ClientConfig::builder().__groups(&[]).build().is_err());
     assert!(format!("{:?}", ServerConfig::builder(vec![], srv.key)).contains("tls13_only"));
     assert!(format!("{:?}", ClientConfig::builder()).contains("roots"));
 }

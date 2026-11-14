@@ -1,7 +1,8 @@
 # TLS
 
-`only::tls`（即 `only-tls` crate）以 sans-io 方式运行 [rustls](https://docs.rs/rustls)，作为
-连接之下的一个 **transport 层**。包装任意 acceptor 之后，它的 handler 看到的都是明文：
+`only::tls`（即 `only-tls` crate）是连接之下的一个 **transport 层**，带有自研的 TLS 1.3 与 1.2
+实现：依据 RFC、基于 `only-crypto` 与 `only-x509` 编写，sans-io，`#![forbid(unsafe_code)]`，
+无第三方依赖。包装任意 acceptor 之后，它的 handler 看到的都是明文：
 `on_data` 收到解密后的字节，`Conn::send*` 自动加密。
 
 ## 服务端
@@ -36,10 +37,30 @@
 `tls_info(&conn)` 返回 `TlsInfo`，包含 `handshaking`、`alpn`、`server_name`（SNI，仅服务端）
 和 `version`；非 TLS 连接返回 `None`。
 
+## 协议支持
+
+| | TLS 1.3（RFC 8446） | TLS 1.2（RFC 5246） |
+|---|---|---|
+| 密钥交换 | X25519、secp256r1、secp384r1；HelloRetryRequest | 同样这些组上的 ECDHE（无 RSA 密钥交换、无静态 DH） |
+| 密码套件 | AES-128-GCM-SHA256、AES-256-GCM-SHA384、CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA 搭配 AES-128/256-GCM 与 CHACHA20-POLY1305（无 CBC） |
+| 证书 | ECDSA P-256/P-384、Ed25519、RSA（PSS 签名） | 同上，RSA 也可用 PKCS#1 v1.5 |
+| 会话恢复 | 票据 + PSK（`psk_dhe_ke`）：`.session_tickets(true)` 为无状态票据，会话缓存为一次性缓存票据 | 会话 ID（缓存）与 RFC 5077 票据 |
+| 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；客户端提供的 0-RTT 被拒绝并跳过 | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
+
+两者共有：SNI、ALPN、close_notify、16 KiB 记录、TLS 1.3 内层内容类型与填充、降级哨兵、严格的状态机
+（意外消息、空记录或交错记录、跨密钥切换的握手数据都是致命错误）。证书由 `only-x509` 验证：链接到
+根证书、有效期、扩展密钥用途、DNS 名（RFC 6125 通配符）与 IP 地址。客户端优先 AES-128-GCM，其次
+AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并优先使用客户端已发送的 key share
+（合适时不发 HelloRetryRequest）。
+
+一致性：RFC 8448 跟踪作为单元测试，tlsfuzzer（`tools/interop/tls/tlsfuzzer.sh`），以及与 OpenSSL、Go `crypto/tls`、curl 和 rustls 的互通矩阵
+（`tools/interop/tls/run.sh`、`tools/interop/grpc/run.sh`、`only` crate 的 TLS 测试）。速度：完整握手
+约为 rustls + ring 的 0.7 倍，大块传输约 0.45 倍（`only-crypto` 还没有 PMULL / PCLMULQDQ 的 GHASH），
+小记录持平。
+
 ## 配置
 
-配置使用 only 自己的类型；底层的 TLS 实现（rustls，编译时内置 `ring` 加密实现）不属于 API，
-因此升级它不是破坏性变更。`Certificate::from_pem` / `from_der`、`PrivateKey::from_pem` /
+配置使用 only 自己的类型；协议内部细节不属于 API。`Certificate::from_pem` / `from_der`、`PrivateKey::from_pem` /
 `from_der` / `from_pkcs8_der` 与 `RootCerts` 负责加载证书材料。
 
 | 需求 | 服务端：`ServerConfig::builder(chain, key)` | 客户端：`ClientConfig::builder()` |
@@ -52,10 +73,9 @@
 | SNI | | `.sni(false)` 不再发送 |
 | 仅限测试 | | `.insecure_skip_verify()` |
 
-`.build()` 检查证书与私钥，返回配置或 `only::tls::Error`；配置克隆开销很小。构建器未覆盖的
-设置可以用 `unstable` cargo feature：它重新导出 `only::tls::rustls`，并提供
-`ServerConfig::from_rustls` / `ClientConfig::from_rustls`（以及 `as_rustls`）；该 feature 不在
-semver 承诺之内。
+`.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `only::tls::Error`；配置克隆开销
+很小。过去用来暴露被封装的 rustls 的 `unstable` cargo feature 现在为空（保留它，以便引用它的构建
+继续可用）。
 
 ## 与其他 crate 配合
 
@@ -64,11 +84,15 @@ semver 承诺之内。
 - only-ws 客户端：`wss://` 使用 `DialOptions::tls`。
 - only-http 客户端：`Client::with_tls(cfg)`、`H2Client::dial(.., Some((cfg, name)), ..)`。
 - QUIC 与 HTTP/3 在 QUIC 内部使用 TLS 1.3：见 `only_quic::server_config` 与
-  `server_config_from(&tls_config)`。
+  `server_config_from(&tls_config)`。在自研 QUIC（DEV-PLAN 第 D 波）之前它们运行 quinn-proto，后者
+  使用 rustls；`only-quic` 依据同一份 `only::tls` 配置构建它，用户无感。新 QUIC 将驱动的、不经记录层
+  的 TLS 1.3 内核已在 `only-tls` 中（内部 API）。
 
 ## 尚未完成
 
-kTLS 卸载；TCP 上的 TLS 1.3 early data；系统根证书（请自行加载到 `RootCerts`）。
+kTLS 卸载；发送或接受 TLS 1.3 early data（0-RTT）；record_size_limit、证书压缩、OCSP stapling
+（忽略 status_request）；RSA-PSS 密钥（`rsa_pss_pss_*`）；P-521；系统根证书（请自行加载到
+`RootCerts`）。
 
 ## 编写自己的 transport
 

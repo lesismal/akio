@@ -48,11 +48,11 @@ impl Acceptor for Hello {
 }
 
 fn main() -> std::io::Result<()> {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .map_err(std::io::Error::other)?;
+    let ck =
+        only_x509::generate_simple_self_signed(["localhost"]).map_err(std::io::Error::other)?;
     // In production: Certificate::from_pem(&std::fs::read("cert.pem")?) and PrivateKey::from_pem.
-    let cert = Certificate::from_der(ck.cert.der().to_vec());
-    let key = PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let cert = Certificate::from_der(ck.0.as_der().to_vec());
+    let key = PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
 
     // ANCHOR: server
     let server_cfg = ServerConfig::builder(vec![cert.clone()], key)

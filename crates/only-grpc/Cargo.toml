@@ -29,6 +29,7 @@ fuzzing = ["dep:only-core", "only-core/fuzzing", "only-http/fuzzing"]
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }
 only-http = { workspace = true, features = ["fuzzing"] }
+only-x509 = { workspace = true }
 
 [lints]
 workspace = true

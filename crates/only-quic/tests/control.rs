@@ -70,9 +70,9 @@ impl QuicHandler for Client {
 }
 
 fn setup() -> (Arc<Engine>, SocketAddr, mpsc::Receiver<String>) {
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert = only::tls::Certificate::from_der(ck.cert.der().to_vec());
-    let key = only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
     let cfg = only_quic::server_config(vec![cert], key, &[b"ctl"]).unwrap();
     let (tx, rx) = mpsc::channel();
     let names = Arc::new(Mutex::new(tx));
@@ -194,10 +194,10 @@ fn errors_format_and_idle_server_handle() {
     );
     assert!(matches!(r, Err(Error::Config(_))));
     // A server that is not serving yet has no connections; closing all is a no-op.
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let key = only::tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
     let cfg = only_quic::server_config(
-        vec![only::tls::Certificate::from_der(ck.cert.der().to_vec())],
+        vec![only::tls::Certificate::from_der(ck.0.as_der().to_vec())],
         key,
         &[b"x"],
     )
@@ -216,9 +216,9 @@ fn configs_from_tls_with_transport_settings() {
     use only::tls;
     use only_quic::{Congestion, Dir, Side, TransportConfig};
 
-    let ck = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let cert = tls::Certificate::from_der(ck.cert.der().to_vec());
-    let key = tls::PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der());
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
     let stls = tls::ServerConfig::builder(vec![cert.clone()], key)
         .alpn(["ctl"])
         .build()

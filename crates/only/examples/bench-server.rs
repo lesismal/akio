@@ -87,11 +87,11 @@ fn main() -> std::io::Result<()> {
 
     let tls = (a[0] == "tls")
         .then(|| {
-            let ck = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            let ck = only_x509::generate_simple_self_signed(["localhost"])
                 .map_err(std::io::Error::other)?;
             ServerConfig::builder(
-                vec![Certificate::from_der(ck.cert.der().to_vec())],
-                PrivateKey::from_pkcs8_der(ck.key_pair.serialize_der()),
+                vec![Certificate::from_der(ck.0.as_der().to_vec())],
+                PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der()),
             )
             .build()
             .map_err(std::io::Error::from)

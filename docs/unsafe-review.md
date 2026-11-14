@@ -205,7 +205,7 @@ Accepted (documented, no change needed now):
   not move). None of them implements `Sync`.
 - **Kernel-provided data is trusted for layout**: sockaddr family, `cmsg_len`, `msg_len`
   (clamped), CQE buffer ids (now range-checked). This is the kernel ABI contract.
-- **Dependencies with `unsafe`** (`rustls`/`ring`, `quinn-proto`, RustCrypto) are trusted and tracked with `cargo deny`/`cargo audit`. DEFLATE/zlib/gzip is the
+- **Dependencies with `unsafe`** (`quinn-proto` with `rustls`/`ring` inside it, used by only-quic only; str0m) are trusted and tracked with `cargo deny`/`cargo audit`. TLS itself is the own `only-tls` (`#![forbid(unsafe_code)]`, wave C) on `only-crypto` and `only-x509`, so the TLS record and handshake code of every TCP protocol carries no `unsafe` outside `only-crypto`'s AES-instruction module. DEFLATE/zlib/gzip is the
   own `only-deflate` (`#![forbid(unsafe_code)]`), which replaced `flate2` with `zlib-rs`. The
   `libc` and `io-uring` crates are gone from the libraries (wave B): `only_sys::ffi` and
   `only-uring`'s `ring` replace them (`libc` stays a dev-dependency, for the layout comparison
