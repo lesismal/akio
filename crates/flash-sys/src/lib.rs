@@ -1,6 +1,6 @@
 //! Thin, audited `unsafe` wrappers over OS primitives: a readiness [`Poller`] (epoll on Linux,
 //! kqueue on macOS), a cross-thread [`Waker`], and socket helpers (`SO_REUSEPORT` listeners,
-//! non-blocking connect, `sendfile`) and, on Linux, batched datagram I/O (`recvmmsg` /
+//! non-blocking connect, `sendfile`), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
 //! `sendmmsg` with UDP GRO / GSO).
 //!
 //! All `unsafe` in the network stack's hot path lives here, each block with a comment stating the invariant it relies on.
@@ -12,6 +12,7 @@
 
 mod net;
 mod poller;
+pub mod process;
 #[cfg(target_os = "linux")]
 mod udp;
 mod waker;

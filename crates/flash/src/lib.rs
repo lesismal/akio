@@ -124,6 +124,8 @@ pub struct Listener {
     accel: Accel,
     threads: usize,
     acceptor: Option<Arc<dyn DynAcceptor>>,
+    /// An already listening socket to serve instead of binding `addr`.
+    inherited: Option<std::net::TcpListener>,
 }
 
 impl std::fmt::Debug for Listener {
@@ -142,6 +144,23 @@ impl Listener {
             accel: Accel::default(),
             threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
             acceptor: None,
+            inherited: None,
+        }
+    }
+
+    /// A TCP listener serving `listener`, a socket that is already bound and listening: one
+    /// inherited from a supervisor process (`flash-prefork`), passed by systemd socket
+    /// activation, or bound with options flash does not set. The listener's I/O threads share
+    /// the socket (each polls its own clone and they race to accept) instead of binding one
+    /// `SO_REUSEPORT` socket each, so [`Accel::Ebpf`] has no socket group to steer and reports
+    /// [`AccelStatus::Degraded`]. The socket is made non-blocking when the engine is built.
+    pub fn tcp_from_std(listener: std::net::TcpListener) -> Self {
+        let addr = listener
+            .local_addr()
+            .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
+        Listener {
+            inherited: Some(listener),
+            ..Listener::tcp(addr)
         }
     }
 
@@ -282,6 +301,12 @@ impl EngineBuilder {
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 return Err(unsupported("UDP on this platform"));
             }
+            if let Some(listener) = l.inherited {
+                groups.push(bind_inherited(
+                    listener, acceptor, &l.backend, l.threads, &self.cfg, &pool,
+                )?);
+                continue;
+            }
             match l.backend {
                 Backend::Epoll => {
                     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -376,6 +401,63 @@ impl EngineBuilder {
             accel,
             telemetry,
         })
+    }
+}
+
+/// The group serving an inherited listener (see [`Listener::tcp_from_std`]).
+fn bind_inherited(
+    listener: std::net::TcpListener,
+    acceptor: Arc<dyn DynAcceptor>,
+    backend: &Backend,
+    threads: usize,
+    cfg: &Config,
+    pool: &Arc<Pool>,
+) -> io::Result<Box<dyn Group>> {
+    #[cfg(target_os = "linux")]
+    if let Backend::IoUring(u) = backend {
+        match flash_uring::probe() {
+            Ok(()) => {
+                return Ok(Box::new(flash_uring::UringGroup::bind_listener(
+                    listener,
+                    acceptor,
+                    threads,
+                    cfg.clone(),
+                    pool.clone(),
+                    flash_uring::UringOptions {
+                        entries: u.entries,
+                        sqpoll: u.sqpoll,
+                    },
+                )?));
+            }
+            Err(why) if u.strict => {
+                return Err(unsupported(&format!("the io_uring backend ({why})")));
+            }
+            Err(why) => log_or_stderr(
+                log::Level::Warn,
+                format_args!("io_uring unavailable ({why}); using epoll"),
+            ),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    if let Backend::IoUring(u) = backend {
+        if u.strict {
+            return Err(unsupported("the io_uring backend on this platform"));
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        Ok(Box::new(flash_epoll::EpollGroup::bind_listener(
+            listener,
+            acceptor,
+            threads,
+            cfg.clone(),
+            pool.clone(),
+        )?))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (listener, acceptor, backend, threads, cfg, pool);
+        Err(unsupported("the epoll/kqueue backend on this platform"))
     }
 }
 

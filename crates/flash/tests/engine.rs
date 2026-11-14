@@ -691,3 +691,35 @@ fn listeners_can_use_different_backends_in_one_engine() {
     }
     stop(&e);
 }
+
+#[test]
+fn serves_an_inherited_listener_and_keeps_it_listening_after_shutdown() {
+    // A socket bound elsewhere (a supervisor, systemd): the engine serves a clone of it.
+    let std_l = std::net::TcpListener::bind(localhost()).unwrap();
+    let addr = std_l.local_addr().unwrap();
+    let keep = std_l.try_clone().unwrap();
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp_from_std(std_l)
+                .backend(common::backend())
+                .threads(3)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    assert_eq!(e.local_addrs(), vec![addr]);
+    for i in 0..12u8 {
+        let mut s = connect(addr);
+        s.write_all(&[i; 5]).unwrap();
+        let mut buf = [0u8; 5];
+        s.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, [i; 5]);
+    }
+    stop(&e);
+    // The engine closed its copies only: the socket still listens and queues connections.
+    let _queued = connect(addr);
+    keep.set_nonblocking(false).unwrap();
+    assert!(keep.accept().is_ok());
+}

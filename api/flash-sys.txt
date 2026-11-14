@@ -1,4 +1,31 @@
 pub mod flash_sys
+pub mod flash_sys::process
+pub struct flash_sys::process::ChildSetup
+pub flash_sys::process::ChildSetup::cpus: alloc::vec::Vec<usize>
+pub flash_sys::process::ChildSetup::inherit: alloc::vec::Vec<std::os::fd::raw::RawFd>
+pub flash_sys::process::ChildSetup::parent_death_signal: core::option::Option<i32>
+impl core::clone::Clone for flash_sys::process::ChildSetup
+pub fn flash_sys::process::ChildSetup::clone(&self) -> Self
+impl core::default::Default for flash_sys::process::ChildSetup
+pub fn flash_sys::process::ChildSetup::default() -> Self
+impl core::fmt::Debug for flash_sys::process::ChildSetup
+pub fn flash_sys::process::ChildSetup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_sys::process::ChildSetup
+impl core::marker::Sync for flash_sys::process::ChildSetup
+impl core::marker::Unpin for flash_sys::process::ChildSetup
+impl core::panic::unwind_safe::RefUnwindSafe for flash_sys::process::ChildSetup
+impl core::panic::unwind_safe::UnwindSafe for flash_sys::process::ChildSetup
+pub const flash_sys::process::SIGHUP: i32
+pub const flash_sys::process::SIGINT: i32
+pub const flash_sys::process::SIGQUIT: i32
+pub const flash_sys::process::SIGTERM: i32
+pub const flash_sys::process::SIGUSR1: i32
+pub const flash_sys::process::SIGUSR2: i32
+pub fn flash_sys::process::configure_child(&mut std::process::Command, &flash_sys::process::ChildSetup)
+pub fn flash_sys::process::kill(u32, i32) -> core::io::error::Result<()>
+pub fn flash_sys::process::reserve_reuseport(core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpListener>
+pub fn flash_sys::process::signal_pipe(&[i32]) -> core::io::error::Result<std::os::unix::net::stream::UnixStream>
+pub fn flash_sys::process::take_inherited_fd(std::os::fd::raw::RawFd) -> core::io::error::Result<std::os::fd::owned::OwnedFd>
 pub struct flash_sys::Batch<'s, 'd>
 impl<'d> flash_sys::Batch<'_, 'd>
 pub fn flash_sys::Batch<'_, 'd>::is_empty(&self) -> bool

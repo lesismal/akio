@@ -26,7 +26,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | RPC | gRPC（unary 与流式，与 grpc-go 互通），arpc（与 lesismal/arpc 和 fib 线路兼容） |
 | 代理 | SOCKS5/4/4a、HTTP CONNECT、按首字节嗅探的端口复用（flash-mux） |
 | KCP | 与 skywind3000/kcp 和 kcp-go 线路兼容（FEC、加密） |
-| 运维 | Prometheus 指标、连接表、慢回调记录、JSON 调试端点、基于 `log` 的结构化日志、运行时设置热更新 |
+| 运维 | Prometheus 指标、连接表、慢回调记录、JSON 调试端点、基于 `log` 的结构化日志、运行时设置热更新；多进程 prefork 服务，支持 worker 重启与不停机重载（[flash-prefork](crates/flash-prefork/README.zh-CN.md)） |
 
 实测性能（单台机器，请先看注意事项）：[docs/BENCHMARKS.zh-CN.md](docs/BENCHMARKS.zh-CN.md)。
 

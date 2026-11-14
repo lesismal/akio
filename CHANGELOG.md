@@ -10,6 +10,28 @@ All notable changes to flash are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `flash-prefork` (M6, optional): serve one program from several worker processes. A supervisor
+  re-executes the current binary as N workers (no fork after threads), each running its own
+  `Engine`; listeners are shared with `SO_REUSEPORT` (Linux default) or inherited from the
+  supervisor (`ListenMode::Inherit`, the macOS default; no connection is refused across restarts
+  and reloads); crashed workers are restarted with exponential backoff; SIGTERM/SIGINT drain the
+  workers, SIGHUP (or `Supervisor::reload`) starts a new generation and stops each old worker once
+  its replacement is ready; optional CPU pinning (Linux); `Worker` gives the index, worker count
+  and generation. Example `prefork-http`, book chapter "Multi-process serving (prefork)".
+- `flash::Listener::tcp_from_std`: serve an already bound and listening socket (inherited from a
+  supervisor, systemd socket activation); internal `EpollGroup::bind_listener` /
+  `UringGroup::bind_listener`.
+- `flash-sys` (internal): `process` module (child fd inheritance, CPU affinity and parent-death
+  signal in `pre_exec`, `take_inherited_fd`, `reserve_reuseport`, a self-pipe `signal_pipe`, `kill`).
+
+### Fixed
+
+- io_uring: during a graceful shutdown, connections the multishot accept completed before its
+  cancellation took effect were reset; they are now served (`on_shutdown` after their first data),
+  and the drain ends only once the accept has ended, so the listening socket is really closed.
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 First release candidate of 1.0: the API is frozen for review. The public API of every crate is

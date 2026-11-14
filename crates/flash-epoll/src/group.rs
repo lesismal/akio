@@ -44,14 +44,12 @@ impl EpollGroup {
         pool: Arc<Pool>,
     ) -> io::Result<EpollGroup> {
         let threads = threads.max(1);
-        cfg.telemetry.bind(&cfg);
-        let cfg = Arc::new(cfg);
-
         // One listener per loop (Linux, SO_REUSEPORT) or clones of one (elsewhere).
         let mut listeners: Vec<Option<TcpListener>> = (0..threads).map(|_| None).collect();
         let mut addr = SocketAddr::from(([0, 0, 0, 0], 0));
-        if let Some((a, _)) = &listen {
-            let first = flash_sys::listen(*a, cfg!(target_os = "linux"), cfg.backlog)?;
+        let mut acceptor = None;
+        if let Some((a, acc)) = listen {
+            let first = flash_sys::listen(a, cfg!(target_os = "linux"), cfg.backlog)?;
             addr = first.local_addr()?;
             for slot in listeners.iter_mut().skip(1) {
                 *slot = Some(if cfg!(target_os = "linux") {
@@ -61,22 +59,61 @@ impl EpollGroup {
                 });
             }
             listeners[0] = Some(first);
+            acceptor = Some(acc);
         }
         let fds = if cfg!(target_os = "linux") {
             listeners.iter().flatten().map(|l| l.as_raw_fd()).collect()
         } else {
             Vec::new()
         };
+        Self::assemble(listeners, addr, fds, acceptor, cfg, pool)
+    }
 
+    /// Serves an already bound and listening socket (one inherited from a supervisor process,
+    /// say) with `threads` loops that share it: each loop polls its own clone of the socket and
+    /// they race to accept. The socket is made non-blocking. The listener forms no
+    /// `SO_REUSEPORT` group of this process, so [`Group::listener_fds`] is empty.
+    pub fn bind_listener(
+        listener: TcpListener,
+        acceptor: Arc<dyn DynAcceptor>,
+        threads: usize,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<EpollGroup> {
+        listener.set_nonblocking(true)?;
+        let addr = listener.local_addr()?;
+        let mut listeners = Vec::with_capacity(threads.max(1));
+        for _ in 1..threads.max(1) {
+            listeners.push(Some(listener.try_clone()?));
+        }
+        listeners.insert(0, Some(listener));
+        Self::assemble(listeners, addr, Vec::new(), Some(acceptor), cfg, pool)
+    }
+
+    fn assemble(
+        listeners: Vec<Option<TcpListener>>,
+        addr: SocketAddr,
+        fds: Vec<i32>,
+        acceptor: Option<Arc<dyn DynAcceptor>>,
+        cfg: Config,
+        pool: Arc<Pool>,
+    ) -> io::Result<EpollGroup> {
+        cfg.telemetry.bind(&cfg);
+        let cfg = Arc::new(cfg);
+        let threads = listeners.len();
         let mut shared = Vec::with_capacity(threads);
         let mut loops = Vec::with_capacity(threads);
-        let listener = listen.as_ref().map(|_| addr);
+        let listener = acceptor.as_ref().map(|_| addr);
         for (thread, l) in listeners.into_iter().enumerate() {
             let poller = Poller::new()?;
             let meta = LoopMeta::new(crate::reactor::BACKEND, listener, thread);
             let sh = LoopShared::new(&poller, pool.clone(), &cfg, meta)?;
-            let acceptor = listen.as_ref().map(|(_, a)| a.clone());
-            loops.push(Loop::new(poller, sh.clone(), l.zip(acceptor), cfg.clone())?);
+            loops.push(Loop::new(
+                poller,
+                sh.clone(),
+                l.zip(acceptor.clone()),
+                cfg.clone(),
+            )?);
             shared.push(sh);
         }
         Ok(EpollGroup {

@@ -24,7 +24,7 @@
 
 | 级别 | Crate | 承诺 |
 |---|---|---|
-| 公开 | `flash`、`flash-core`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`flash-ebpf` | 其公开 API（见下）完整遵循 semver。 |
+| 公开 | `flash`、`flash-core`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`flash-ebpf`、`flash-prefork` | 其公开 API（见下）完整遵循 semver。 |
 | 内部 | `flash-sys`、`flash-buf`、`flash-timer`、`flash-pool`、`flash-epoll`、`flash-uring` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `flash` / `flash-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `flash-core` 和 `flash` 中的再导出受到保护。 |
 
 `tools/` 与 `fuzz/` 不发布。

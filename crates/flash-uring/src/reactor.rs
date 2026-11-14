@@ -359,6 +359,9 @@ struct LoopConn {
     /// Tick when it opened, and bytes read (connection table).
     opened: u64,
     bytes_in: u64,
+    /// Accepted while draining: `on_shutdown` runs after its first data, so the request that
+    /// is already on its way is served (see `on_accept`).
+    shutdown_after_data: bool,
 }
 
 enum Slot {
@@ -380,6 +383,9 @@ pub(crate) struct Loop {
     accept_armed: bool,
     /// After a failed accept (EMFILE...) do not re-arm before this instant.
     accept_retry_at: Option<Instant>,
+    /// While draining: the listener's acceptor, for connections the multishot accept completed
+    /// before its cancellation took effect.
+    drain_acceptor: Option<Arc<dyn DynAcceptor>>,
     /// Target of the eventfd `Read` (never read by Rust).
     wake_buf: KernelBuf,
     wake_armed: bool,
@@ -446,6 +452,7 @@ impl Loop {
             listener,
             accept_armed: false,
             accept_retry_at: None,
+            drain_acceptor: None,
             wake_buf: KernelBuf::new(8)?,
             wake_armed: false,
             bufs: KernelBuf::new(buf_size * BUF_COUNT as usize)?,
@@ -572,7 +579,9 @@ impl Loop {
             self.drain_cmds();
             self.fire_timers();
             if let Some(deadline) = self.draining {
-                if self.slots.is_empty() {
+                // Done once every connection closed and the cancelled multishot accept has
+                // ended: until then it may still deliver connections, which are served.
+                if self.slots.is_empty() && !self.accept_armed {
                     self.quiesce();
                     break;
                 }
@@ -642,6 +651,8 @@ impl Loop {
     /// socket is really closed when `Group::join` returns (the kernel keeps it alive while the
     /// accept is in flight).
     fn quiesce(&mut self) {
+        // The drain is over: what the accept still delivers now is closed.
+        self.drain_acceptor = None;
         for _ in 0..200 {
             if !self.accept_armed {
                 break;
@@ -718,16 +729,29 @@ impl Loop {
         }
         // SAFETY: the kernel just handed us this fresh descriptor; nothing else owns it.
         let stream = unsafe { TcpStream::from_raw_fd(res) };
+        let Ok(peer) = stream.peer_addr() else {
+            return;
+        };
         if self.draining.is_some() {
-            return; // dropped: closes it
+            // Accepted before the cancellation of the multishot accept took effect: the peer
+            // already counts as connected (on a listening socket shared with other processes it
+            // could have been served there). Resetting it would lose its first request, so serve
+            // that, then shut the connection down like those open when the drain began; one
+            // that sends nothing is closed at the drain deadline.
+            let Some(acceptor) = self.drain_acceptor.clone() else {
+                return; // dropped: closes it
+            };
+            if let Some(id) = self.open(stream, peer, acceptor, false) {
+                if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+                    lc.shutdown_after_data = true;
+                }
+            }
+            return;
         }
         let Some((_, acceptor)) = &self.listener else {
             return;
         };
         let acceptor = acceptor.clone();
-        let Ok(peer) = stream.peer_addr() else {
-            return;
-        };
         self.open(stream, peer, acceptor, false);
     }
 
@@ -800,6 +824,16 @@ impl Loop {
             self.give_back(bid);
             self.buf_ring.publish();
         }
+        if matches!(done, Done::No) && res > 0 {
+            if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+                if std::mem::take(&mut lc.shutdown_after_data) {
+                    let (acc, inner) = (lc.acceptor.clone(), lc.inner.clone());
+                    if catch_unwind(AssertUnwindSafe(|| acc.on_shutdown(&inner))).is_err() {
+                        done = Done::Panic;
+                    }
+                }
+            }
+        }
         match done {
             Done::No => self.refresh(id),
             Done::Eof => self.on_wake(id),
@@ -816,19 +850,19 @@ impl Loop {
         peer: std::net::SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         dialed: bool,
-    ) {
+    ) -> Option<u64> {
         if stream.set_nonblocking(true).is_err() {
-            return;
+            return None;
         }
         let _ = stream.set_nodelay(true);
         let Ok(local) = stream.local_addr() else {
-            return;
+            return None;
         };
         let tel = self.cfg.telemetry.clone();
         if !tel.conn_opened(!dialed) {
             self.shared.stats.rejected.add_local(1);
             log::debug!(target: "flash", peer:% = peer; "connection refused: max_connections reached");
-            return; // dropping the stream closes it
+            return None; // dropping the stream closes it
         }
         let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
         let fd = stream.as_raw_fd();
@@ -843,7 +877,7 @@ impl Loop {
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
             inner.mark_closed();
             tel.conn_closed();
-            return;
+            return None;
         };
         let st = &self.shared.stats;
         if dialed { &st.dialed } else { &st.accepted }.add_local(1);
@@ -868,11 +902,13 @@ impl Loop {
                 write_mark: 0,
                 opened: now,
                 bytes_in: 0,
+                shutdown_after_data: false,
             }),
         );
         self.arm_reset_watch(id, fd);
         // `on_open` may already have queued output or closed the connection.
         self.on_wake(id);
+        Some(id)
     }
 
     /// Watches the socket for a reset with a one-shot poll of its own. A multishot recv that
@@ -937,7 +973,9 @@ impl Loop {
             Ok(Some(e)) | Err(e) => Err(e),
         };
         match result {
-            Ok(peer) => self.open(stream, peer, acceptor, true),
+            Ok(peer) => {
+                self.open(stream, peer, acceptor, true);
+            }
             Err(e) => {
                 if let Some(f) = on_error {
                     f(e);
@@ -1118,7 +1156,11 @@ impl Loop {
             return;
         }
         self.draining = Some(Instant::now() + self.cfg.telemetry.live().shutdown_timeout());
-        if self.listener.take().is_some() && self.accept_armed {
+        let listener = self.listener.take();
+        if self.accept_armed {
+            self.drain_acceptor = listener.as_ref().map(|(_, a)| a.clone());
+        }
+        if listener.is_some() && self.accept_armed {
             // The multishot accept keeps the listening socket alive until it is cancelled.
             let e = opcode::AsyncCancel::new(ud(0, OP_ACCEPT))
                 .build()
