@@ -51,6 +51,15 @@ pub(crate) enum Cmd {
         sock: std::net::UdpSocket,
         acceptor: Arc<dyn DynAcceptor>,
     },
+    /// UDP only: an unconnected socket bound at run time (`Engine::bind_udp`), served like a
+    /// listener socket under poll token `id`.
+    BindUdp {
+        id: u64,
+        sock: Arc<std::net::UdpSocket>,
+        acceptor: Arc<dyn DynAcceptor>,
+    },
+    /// UDP only: closes the socket bound under `id` and its connections.
+    Unbind(u64),
     Dial {
         stream: TcpStream,
         addr: SocketAddr,
@@ -430,7 +439,7 @@ impl Loop {
                     Cmd::Shutdown => self.begin_shutdown(),
                     Cmd::Core(c) => self.on_core(c),
                     // Only UDP loops are sent these.
-                    Cmd::DialUdp { .. } => {}
+                    Cmd::DialUdp { .. } | Cmd::BindUdp { .. } | Cmd::Unbind(_) => {}
                     Cmd::Dial {
                         stream,
                         addr,

@@ -640,3 +640,65 @@ fn peer_cap_drops_new_peers_and_counts_them() {
     assert_eq!(st.rejected, 2);
     stop(&e);
 }
+
+#[test]
+fn bound_socket_talks_to_many_peers_from_one_port() {
+    // Replies come back through per-peer connections of the bound socket's acceptor.
+    type Got = Arc<Mutex<Vec<(SocketAddr, Vec<u8>)>>>;
+    struct Rx(Got, Arc<AtomicUsize>);
+    impl Handler for Rx {
+        fn on_data(&mut self, c: &Conn<Self>, d: &[u8]) {
+            self.0.lock().unwrap().push((c.peer_addr(), d.to_vec()));
+            let _ = c.send(b"ack");
+        }
+        fn on_close(&mut self, _c: &Conn<Self>, _e: Option<Error>) {
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let got: Got = Arc::default();
+    let closed = Arc::new(AtomicUsize::new(0));
+    let e = client_engine(1);
+    let (g, cl) = (got.clone(), closed.clone());
+    let b = e
+        .bind_udp(
+            localhost(),
+            fn_acceptor(move |_c: &Conn<Rx>| Rx(g.clone(), cl.clone())),
+        )
+        .unwrap();
+    assert_ne!(b.local_addr().port(), 0);
+    // Three plain sockets: the bound socket sends first (no datagram from them yet).
+    let peers: Vec<UdpSocket> = (0..3).map(|_| client(b.local_addr())).collect();
+    for (i, p) in peers.iter().enumerate() {
+        b.send_to(format!("hi-{i}").as_bytes(), p.local_addr().unwrap())
+            .unwrap();
+    }
+    for (i, p) in peers.iter().enumerate() {
+        assert_eq!(recv(p), format!("hi-{i}").into_bytes());
+        p.send(format!("re-{i}").as_bytes()).unwrap();
+        assert_eq!(recv(p), b"ack");
+    }
+    wait_for("three peers", || got.lock().unwrap().len() == 3);
+    for (i, p) in peers.iter().enumerate() {
+        let g = got.lock().unwrap();
+        let me = p.local_addr().unwrap();
+        let (_, d) = g.iter().find(|(a, _)| *a == me).unwrap();
+        assert_eq!(*d, format!("re-{i}").into_bytes());
+    }
+    b.close();
+    wait_for("peers closed", || closed.load(Ordering::SeqCst) == 3);
+    // Closed: nothing is received any more (the socket is unregistered).
+    peers[0].send(b"late").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(got.lock().unwrap().len(), 3);
+    stop(&e);
+}
+
+#[test]
+fn bind_udp_without_udp_threads_is_an_error() {
+    let e = Engine::builder().build().unwrap();
+    e.start().unwrap();
+    let err = e
+        .bind_udp(localhost(), fn_acceptor(|_c: &Conn<Echo>| Echo))
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+}

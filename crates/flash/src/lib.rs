@@ -36,7 +36,7 @@ pub use flash_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, Error, FnAcceptor, Handler, Live, LoopCounters,
     LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, ResponseSlot,
     ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
-    UdpStats, fn_acceptor, telemetry,
+    UdpBinding, UdpStats, fn_acceptor, telemetry,
 };
 #[doc(hidden)]
 pub use flash_core::{DynAcceptor, DynHandler};
@@ -553,6 +553,27 @@ impl Engine {
         match self.udp_client.and_then(|i| self.groups.get(i)) {
             Some(g) => g.dial_udp(addr, Arc::new(acceptor), Box::new(on_error)),
             None => on_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no UDP I/O threads (use udp_client_threads or a UDP listener)",
+            )),
+        }
+    }
+
+    /// Binds an unconnected UDP socket on `addr` (port 0 picks a free port) and serves it on an
+    /// I/O thread with `acceptor`, exactly like a [`Listener::udp`] (every distinct peer address
+    /// is a connection), except that it can be created while the engine runs and that the
+    /// returned [`UdpBinding`] sends to any address ([`UdpBinding::send_to`]): what an ICE agent
+    /// (one local port talking to many candidates) or a TURN relay needs. Needs
+    /// [`EngineBuilder::udp_client_threads`] or a UDP listener. The engine must have been
+    /// [`start`](Self::start)ed.
+    pub fn bind_udp<A: Acceptor>(&self, addr: SocketAddr, acceptor: A) -> io::Result<UdpBinding> {
+        match self.udp_client.and_then(|i| self.groups.get(i)) {
+            Some(g) => {
+                let sock = std::net::UdpSocket::bind(addr)?;
+                sock.set_nonblocking(true)?;
+                g.bind_udp(sock, Arc::new(acceptor))
+            }
+            None => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "engine has no UDP I/O threads (use udp_client_threads or a UDP listener)",
             )),

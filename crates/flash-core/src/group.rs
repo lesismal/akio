@@ -41,12 +41,86 @@ pub trait Group: Send + Sync {
         ));
     }
 
+    /// Registers the unconnected, bound UDP socket `sock` on an I/O thread, served by
+    /// `acceptor` exactly like a UDP listener (one connection per peer address). Only UDP
+    /// groups implement it.
+    fn bind_udp(
+        &self,
+        _sock: std::net::UdpSocket,
+        _acceptor: Arc<dyn DynAcceptor>,
+    ) -> io::Result<UdpBinding> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this listener does not support UDP bind",
+        ))
+    }
+
     fn dial(
         &self,
         addr: SocketAddr,
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     );
+}
+
+/// A UDP socket bound at run time (`flash::Engine::bind_udp`): unconnected, so it exchanges
+/// datagrams with any address from one local port. Datagrams it receives are served like a UDP
+/// listener's (each distinct peer address is a [`Conn`](crate::Conn) of the acceptor);
+/// [`send_to`](UdpBinding::send_to) sends to any address from any thread. Cheap to clone; the
+/// socket stays open until [`close`](UdpBinding::close) or engine shutdown.
+#[derive(Clone)]
+pub struct UdpBinding {
+    sock: Arc<std::net::UdpSocket>,
+    local: SocketAddr,
+    closer: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl std::fmt::Debug for UdpBinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpBinding")
+            .field("local", &self.local)
+            .finish_non_exhaustive()
+    }
+}
+
+impl UdpBinding {
+    /// Backend-facing constructor: the socket, its bound address and how to unregister it.
+    #[doc(hidden)]
+    pub fn new(
+        sock: Arc<std::net::UdpSocket>,
+        local: SocketAddr,
+        closer: Arc<dyn Fn() + Send + Sync>,
+    ) -> UdpBinding {
+        UdpBinding {
+            sock,
+            local,
+            closer,
+        }
+    }
+
+    /// The bound address (port 0 resolved).
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local
+    }
+
+    /// Sends one datagram to `addr` right away, from the calling thread. The socket is
+    /// non-blocking: when its send buffer is full the datagram is dropped with
+    /// `ErrorKind::WouldBlock` (UDP semantics; protocols on top retransmit).
+    pub fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<()> {
+        loop {
+            match self.sock.send_to(data, addr) {
+                Ok(_) => return Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Closes the socket: its connections are closed (their `on_close` runs on the I/O thread)
+    /// and it stops receiving. Idempotent.
+    pub fn close(&self) {
+        (self.closer)();
+    }
 }
 
 /// Counters of a UDP listener (see `Config::udp_max_peers`).
