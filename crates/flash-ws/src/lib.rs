@@ -12,6 +12,9 @@
 //!   handler model.
 //!
 //! The server-side HTTP upgrade lives in `flash-http` (`Context::upgrade_websocket`).
+//!
+//! Guide: [WebSocket](https://lesismal.github.io/flash/en/protocols/websocket.html)
+//! (中文: [WebSocket](https://lesismal.github.io/flash/zh-CN/protocols/websocket.html)).
 
 pub mod client;
 pub mod deflate;

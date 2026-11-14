@@ -10,6 +10,9 @@
 //!
 //! Handlers run on the connection's I/O thread and must not block; the [`Sink`] they get answers
 //! from any thread, so slow work goes to the logical pool or another thread.
+//!
+//! Guide: [gRPC](https://lesismal.github.io/flash/en/protocols/grpc.html)
+//! (中文: [gRPC](https://lesismal.github.io/flash/zh-CN/protocols/grpc.html)).
 
 pub mod codec;
 

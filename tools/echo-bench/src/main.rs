@@ -1,6 +1,6 @@
 //! Closed-loop echo load generator, so the same tool drives flash, fib, tokio...
 //!
-//! usage: echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]
+//! usage: `echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]`
 //!
 //! `mode` is `tcp`, `udp`, or `tls` (build with `--features tls`; the server certificate is not
 //! verified). Connections are spread over a few client threads; each thread sends one message on

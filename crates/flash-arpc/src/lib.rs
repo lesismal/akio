@@ -23,6 +23,9 @@
 //!     .unwrap();
 //! engine.run().unwrap();
 //! ```
+//!
+//! Guide: [arpc](https://lesismal.github.io/flash/en/protocols/arpc.html)
+//! (中文: [arpc](https://lesismal.github.io/flash/zh-CN/protocols/arpc.html)).
 
 pub mod proto;
 

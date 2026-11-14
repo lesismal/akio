@@ -6,6 +6,9 @@
 //! Supported: SOCKS5 `CONNECT` with no authentication or username/password (RFC 1929), IPv4,
 //! IPv6 and domain names (resolved on the logical pool); SOCKS4 and 4a `CONNECT`; HTTP
 //! `CONNECT host:port`. Not supported: SOCKS `BIND` and `UDP ASSOCIATE`, a Linux `splice` path.
+//!
+//! Guide: [SOCKS and HTTP CONNECT proxies](https://lesismal.github.io/flash/en/protocols/socks.html)
+//! (中文: [SOCKS 与 HTTP CONNECT 代理](https://lesismal.github.io/flash/zh-CN/protocols/socks.html)).
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
