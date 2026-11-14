@@ -13,12 +13,15 @@
 //! Programs are hand-assembled (a dozen instructions each) and loaded with raw `bpf(2)` calls,
 //! so building flash needs neither a BPF toolchain nor nightly Rust, and no `aya`/libbpf.
 //! Off Linux everything compiles and reports `Unsupported`.
+// `unsafe` is confined to `sys` (raw bpf(2) and socket options); see docs/unsafe-review.md.
+#![deny(unsafe_code)]
 
 pub mod cbpf;
 mod ebpf;
 pub mod relay;
 mod steer;
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
 mod sys;
 
 pub use relay::{Relay, Splice};

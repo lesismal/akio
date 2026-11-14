@@ -2,7 +2,7 @@
 //! kqueue on macOS), a cross-thread [`Waker`], and socket helpers (`SO_REUSEPORT` listeners,
 //! non-blocking connect).
 //!
-//! All `unsafe` in the network stack's hot path lives here, each block with a `SAFETY:` note.
+//! All `unsafe` in the network stack's hot path lives here, each block with a comment stating the invariant it relies on.
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
 mod net;

@@ -122,6 +122,10 @@ unsafe impl Send for RecvBatch {}
 
 impl RecvBatch {
     /// `slots` datagrams of up to `size` bytes each (longer ones are truncated).
+    ///
+    /// # Panics
+    ///
+    /// If `slots * size` overflows `usize` or `slots` exceeds `u32::MAX`.
     pub fn new(slots: usize, size: usize) -> RecvBatch {
         Self::with_gro(slots, size, false)
     }
@@ -129,8 +133,17 @@ impl RecvBatch {
     /// As [`new`](Self::new); with `gro`, coalesced receives (see [`enable_gro`]) report their
     /// segment size through [`get`](Self::get). `size` should then be at least 64 KiB.
     pub fn with_gro(slots: usize, size: usize, gro: bool) -> RecvBatch {
+        // An unchecked product could wrap in release builds and leave iovecs that claim more
+        // memory than `bufs` holds, letting the kernel write past the allocation.
+        let total = slots
+            .checked_mul(size)
+            .expect("RecvBatch: slots * size overflows usize");
+        assert!(
+            u32::try_from(slots).is_ok(),
+            "RecvBatch: too many slots for recvmmsg"
+        );
         let mut b = RecvBatch {
-            bufs: vec![0; slots * size],
+            bufs: vec![0; total],
             size,
             iov: Vec::with_capacity(slots),
             // SAFETY: sockaddr_storage and mmsghdr are plain-old-data; all-zero is valid.
@@ -141,9 +154,14 @@ impl RecvBatch {
             msgs: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
             got: 0,
         };
+        // One base pointer for all slots: re-borrowing `bufs` mutably per slot would, under
+        // Rust's aliasing model, invalidate the pointers taken for the earlier slots.
+        let base = b.bufs.as_mut_ptr();
         for i in 0..slots {
             b.iov.push(libc::iovec {
-                iov_base: b.bufs[i * size..].as_mut_ptr().cast(),
+                // SAFETY: `i * size + size <= total == bufs.len()` (checked above), so the slot
+                // lies inside the allocation; `bufs` is never resized, so the pointer stays valid.
+                iov_base: unsafe { base.add(i * size) }.cast(),
                 iov_len: size,
             });
         }
@@ -152,6 +170,9 @@ impl RecvBatch {
 
     fn reset(&mut self) {
         for i in 0..self.msgs.len() {
+            // A stale family from an earlier receive must not survive a header the kernel does
+            // not fill in (`parse_addr` trusts it).
+            self.names[i].ss_family = 0;
             let h = &mut self.msgs[i].msg_hdr;
             h.msg_name = (&raw mut self.names[i]).cast();
             h.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
@@ -171,6 +192,7 @@ impl RecvBatch {
 
     /// One `recvmmsg` call. Returns how many datagrams arrived (0 = nothing ready).
     pub fn recv(&mut self, fd: RawFd) -> io::Result<usize> {
+        self.got = 0;
         self.reset();
         // SAFETY: `msgs` holds `msgs.len()` initialised headers whose name/iov/control pointers
         // refer to buffers owned by `self` that are live for the duration of the call.
@@ -424,6 +446,39 @@ fn parse_addr(ss: &libc::sockaddr_storage) -> Option<SocketAddr> {
 mod tests {
     use super::*;
     use std::{net::UdpSocket, os::fd::AsRawFd};
+
+    #[test]
+    #[should_panic(expected = "overflows")]
+    fn recv_batch_rejects_overflowing_size() {
+        // Unchecked, `2 * (usize::MAX / 2 + 1)` wraps to 0 in release builds: an empty buffer
+        // behind iovecs that let the kernel write anywhere.
+        let _ = RecvBatch::new(2, usize::MAX / 2 + 1);
+    }
+
+    #[test]
+    fn recv_batch_forgets_previous_datagrams() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_nonblocking(true).unwrap();
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        tx.send_to(b"hello", rx.local_addr().unwrap()).unwrap();
+        let mut rb = RecvBatch::new(4, 2048);
+        let mut n = 0;
+        for _ in 0..100 {
+            n = rb.recv(rx.as_raw_fd()).unwrap();
+            if n > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(n, 1);
+        assert_eq!(rb.get(0).unwrap().0, b"hello");
+        // Nothing pending: the earlier datagram must not be reported again.
+        assert_eq!(rb.recv(rx.as_raw_fd()).unwrap(), 0);
+        assert!(rb.get(0).is_none());
+        // A failing receive (bad fd) must not leave the old one visible either.
+        assert!(rb.recv(-1).is_err());
+        assert!(rb.get(0).is_none());
+    }
 
     #[test]
     fn sendmmsg_gso_then_gro_split() {

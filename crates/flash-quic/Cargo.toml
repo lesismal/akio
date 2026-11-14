@@ -8,8 +8,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash = { path = "../flash" }
-flash-core = { path = "../flash-core" }
+flash = { workspace = true }
+flash-core = { workspace = true }
 quinn-proto = { version = "0.11", default-features = false, features = ["rustls-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 bytes = "1"

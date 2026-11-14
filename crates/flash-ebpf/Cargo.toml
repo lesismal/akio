@@ -8,11 +8,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-core = { path = "../flash-core" }
+flash-core = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
-flash-sys = { path = "../flash-sys" }
+flash-sys = { workspace = true }
 
 [lints]
 workspace = true

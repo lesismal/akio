@@ -120,14 +120,14 @@ pub(crate) fn attach_cpu_reuseport(fds: &[i32]) -> std::io::Result<()> {
     use crate::sys;
     use std::os::fd::AsRawFd;
     let n = fds.len() as u32;
-    let map = sys::map_create(sys::MAP_REUSEPORT_SOCKARRAY, 4, 8, n)?;
+    let map = sys::Map::<u32, u64>::create(sys::MAP_REUSEPORT_SOCKARRAY, n)?;
     for (i, &fd) in fds.iter().enumerate() {
-        sys::map_update(map.as_raw_fd(), &(i as u32), &(fd as u64))?;
+        map.update(&(i as u32), &(fd as u64))?;
     }
     let prog = sys::prog_load(
         sys::PROG_SK_REUSEPORT,
         sys::ATTACH_SK_REUSEPORT_SELECT,
-        &reuseport_cpu(map.as_raw_fd(), n),
+        &reuseport_cpu(map.fd(), n),
         "flash_steer_cpu",
     )?;
     // The group holds the program and the program the map: both fds can be closed now.

@@ -1,4 +1,5 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
+#![forbid(unsafe_code)]
 //! The readiness-based backend: epoll on Linux, kqueue on macOS.
 //!
 //! One [`EpollGroup`] serves one listener with a set of I/O threads, each running an event loop

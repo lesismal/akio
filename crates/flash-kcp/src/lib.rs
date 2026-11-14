@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! KCP for flash: reliable, ordered messages over UDP, wire-compatible with
 //! [skywind3000/kcp](https://github.com/skywind3000/kcp) and with
 //! [kcp-go](https://github.com/xtaci/kcp-go)'s FEC and encryption (so with kcptun and fib's kcp).

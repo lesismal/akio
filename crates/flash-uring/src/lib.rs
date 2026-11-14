@@ -14,7 +14,11 @@
 //!
 //! Not used: `SEND_ZC`, registered files, `MSG_RING` wake-up.
 #![cfg(target_os = "linux")]
+// `unsafe` is confined to the modules that talk to the kernel; see docs/unsafe-review.md.
+#![deny(unsafe_code)]
+#[allow(unsafe_code)]
 mod group;
+#[allow(unsafe_code)]
 mod reactor;
 
 pub use group::{UringGroup, UringOptions, probe};

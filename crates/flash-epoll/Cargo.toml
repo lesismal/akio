@@ -8,9 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-core = { path = "../flash-core" }
-flash-sys = { path = "../flash-sys" }
-flash-timer = { path = "../flash-timer" }
+flash-core = { workspace = true }
+flash-sys = { workspace = true }
+flash-timer = { workspace = true }
 log = "0.4.21"
 
 [lints]

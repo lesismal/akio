@@ -31,12 +31,13 @@ impl Waker {
             if unsafe { libc::pipe(fds.as_mut_ptr()) } < 0 {
                 return Err(io::Error::last_os_error());
             }
-            crate::poller::set_nonblock_cloexec(fds[0])?;
-            crate::poller::set_nonblock_cloexec(fds[1])?;
-            // SAFETY: both fds were just created and are owned by nobody else.
+            // SAFETY: both fds were just created and are owned by nobody else. They are owned
+            // before the fcntl calls so that a failure closes them.
             let read = unsafe { OwnedFd::from_raw_fd(fds[0]) };
             // SAFETY: as above.
             let write = unsafe { OwnedFd::from_raw_fd(fds[1]) };
+            crate::poller::set_nonblock_cloexec(read.as_raw_fd())?;
+            crate::poller::set_nonblock_cloexec(write.as_raw_fd())?;
             Waker { read, write }
         };
         poller.add(w.read.as_raw_fd(), token, true, false)?;

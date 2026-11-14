@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Size-class buffer pool and shared read-only buffers.
 //!
 //! * [`get`] / [`put`] use a small **thread-local** cache of `Vec<u8>`s grouped by size class, so

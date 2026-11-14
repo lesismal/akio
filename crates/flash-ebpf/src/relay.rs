@@ -188,22 +188,23 @@ mod imp {
     }
 
     pub(super) struct RelayInner {
-        map: OwnedFd,
+        /// Socket cookie -> socket fd.
+        map: sys::Map<u64, u32>,
         _prog: OwnedFd,
     }
 
     impl RelayInner {
         pub(super) fn new(entries: u32) -> io::Result<RelayInner> {
             // Key: a socket cookie; value: the socket to redirect that socket's data to.
-            let map = sys::map_create(sys::MAP_SOCKHASH, 8, 4, entries)?;
+            let map = sys::Map::<u64, u32>::create(sys::MAP_SOCKHASH, entries)?;
             let prog = sys::prog_load(
                 sys::PROG_SK_SKB,
                 0,
-                &ebpf::relay_verdict(map.as_raw_fd()),
+                &ebpf::relay_verdict(map.fd()),
                 "flash_relay",
             )?;
             sys::prog_attach(
-                map.as_raw_fd(),
+                map.fd(),
                 prog.as_raw_fd(),
                 sys::ATTACH_SK_SKB_STREAM_VERDICT,
             )?;
@@ -213,22 +214,21 @@ mod imp {
         pub(super) fn splice(&self, a: i32, b: i32) -> io::Result<[u64; 2]> {
             let ca = sys::socket_cookie(a)?;
             let cb = sys::socket_cookie(b)?;
-            let m = self.map.as_raw_fd();
+            let m = &self.map;
             // Inserting a socket as a value gives it the verdict program. With only the first
             // entry, b's data still finds no peer (passes to userspace); the second turns both
             // directions on.
-            sys::map_update(m, &ca, &(b as u32))?;
-            if let Err(e) = sys::map_update(m, &cb, &(a as u32)) {
-                let _ = sys::map_delete(m, &ca);
+            m.update(&ca, &(b as u32))?;
+            if let Err(e) = m.update(&cb, &(a as u32)) {
+                let _ = m.delete(&ca);
                 return Err(e);
             }
             Ok([ca, cb])
         }
 
         pub(super) fn unsplice(&self, cookies: [u64; 2]) -> io::Result<()> {
-            let m = self.map.as_raw_fd();
-            let r1 = sys::map_delete(m, &cookies[0]);
-            let r2 = sys::map_delete(m, &cookies[1]);
+            let r1 = self.map.delete(&cookies[0]);
+            let r2 = self.map.delete(&cookies[1]);
             // ENOENT: already removed because a socket closed.
             for r in [r1, r2] {
                 match r {

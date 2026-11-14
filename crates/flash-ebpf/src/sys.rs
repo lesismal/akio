@@ -36,9 +36,16 @@ fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {
 }
 
 /// `bpf(cmd, attr, size_of_val(attr))`.
-fn bpf<T>(cmd: libc::c_long, attr: &mut T) -> io::Result<libc::c_int> {
-    // SAFETY: `attr` is a valid, initialized `#[repr(C)]` prefix of `union bpf_attr` for `cmd`,
-    // and the size passed is its exact size; the kernel zero-extends shorter attrs.
+///
+/// # Safety
+///
+/// `T` must be the `#[repr(C)]` layout of the prefix of `union bpf_attr` that `cmd` reads, with
+/// no uninitialised padding the kernel would check (it rejects non-zero unknown tail bytes), and
+/// every pointer field (encoded as `u64`) must be valid for the reads or writes the kernel
+/// performs for `cmd`, with the sizes the attr states, for the duration of the call.
+unsafe fn bpf<T>(cmd: libc::c_long, attr: &mut T) -> io::Result<libc::c_int> {
+    // SAFETY: `attr` is a valid, initialized `#[repr(C)]` prefix of `union bpf_attr` for `cmd`
+    // (caller), and the size passed is its exact size; the kernel zero-extends shorter attrs.
     let r = unsafe {
         libc::syscall(
             libc::SYS_bpf,
@@ -65,7 +72,7 @@ struct MapCreate {
 }
 
 /// `BPF_MAP_CREATE`.
-pub(crate) fn map_create(
+fn map_create(
     map_type: u32,
     key_size: u32,
     value_size: u32,
@@ -78,7 +85,8 @@ pub(crate) fn map_create(
         max_entries,
         map_flags: 0,
     };
-    bpf(BPF_MAP_CREATE, &mut a).map(owned)
+    // SAFETY: `MapCreate` is the BPF_MAP_CREATE prefix of `bpf_attr`; it holds no pointers.
+    unsafe { bpf(BPF_MAP_CREATE, &mut a) }.map(owned)
 }
 
 #[repr(C)]
@@ -91,7 +99,13 @@ struct MapElem {
 }
 
 /// `BPF_MAP_UPDATE_ELEM` (`BPF_ANY`).
-pub(crate) fn map_update<K, V>(map: RawFd, key: &K, value: &V) -> io::Result<()> {
+///
+/// # Safety
+///
+/// `size_of::<K>()` and `size_of::<V>()` must equal the map's `key_size` and `value_size`: the
+/// kernel copies that many bytes from `key` and `value`, and a smaller type would let it read
+/// past the referenced value.
+unsafe fn map_update<K, V>(map: RawFd, key: &K, value: &V) -> io::Result<()> {
     let mut a = MapElem {
         map_fd: map as u32,
         _pad: 0,
@@ -99,11 +113,17 @@ pub(crate) fn map_update<K, V>(map: RawFd, key: &K, value: &V) -> io::Result<()>
         value: value as *const V as u64,
         flags: 0,
     };
-    bpf(BPF_MAP_UPDATE_ELEM, &mut a).map(drop)
+    // SAFETY: `MapElem` is the element-command prefix of `bpf_attr`; `key` and `value` point to
+    // live values of the map's key and value sizes (caller).
+    unsafe { bpf(BPF_MAP_UPDATE_ELEM, &mut a) }.map(drop)
 }
 
 /// `BPF_MAP_DELETE_ELEM`.
-pub(crate) fn map_delete<K>(map: RawFd, key: &K) -> io::Result<()> {
+///
+/// # Safety
+///
+/// `size_of::<K>()` must equal the map's `key_size` (see [`map_update`]).
+unsafe fn map_delete<K>(map: RawFd, key: &K) -> io::Result<()> {
     let mut a = MapElem {
         map_fd: map as u32,
         _pad: 0,
@@ -111,7 +131,48 @@ pub(crate) fn map_delete<K>(map: RawFd, key: &K) -> io::Result<()> {
         value: 0,
         flags: 0,
     };
-    bpf(BPF_MAP_DELETE_ELEM, &mut a).map(drop)
+    // SAFETY: as in `map_update`; `value` is unused (0) for this command.
+    unsafe { bpf(BPF_MAP_DELETE_ELEM, &mut a) }.map(drop)
+}
+
+/// A BPF map whose key and value sizes are those of `K` and `V`, fixed at creation: this ties
+/// the sizes `map_update`/`map_delete` rely on to the types, so the typed methods are safe.
+pub(crate) struct Map<K, V> {
+    fd: OwnedFd,
+    _kv: std::marker::PhantomData<fn(&K, &V)>,
+}
+
+impl<K: Copy, V: Copy> Map<K, V> {
+    /// `BPF_MAP_CREATE` of `map_type` with `max_entries` entries of `K` -> `V`.
+    pub(crate) fn create(map_type: u32, max_entries: u32) -> io::Result<Self> {
+        let fd = map_create(
+            map_type,
+            std::mem::size_of::<K>() as u32,
+            std::mem::size_of::<V>() as u32,
+            max_entries,
+        )?;
+        Ok(Map {
+            fd,
+            _kv: std::marker::PhantomData,
+        })
+    }
+
+    /// The map's descriptor (for `LD_IMM64` map references and `BPF_PROG_ATTACH`).
+    pub(crate) fn fd(&self) -> RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(&self.fd)
+    }
+
+    /// `BPF_MAP_UPDATE_ELEM` (`BPF_ANY`).
+    pub(crate) fn update(&self, key: &K, value: &V) -> io::Result<()> {
+        // SAFETY: the map was created with exactly `size_of::<K>()` / `size_of::<V>()`.
+        unsafe { map_update(self.fd(), key, value) }
+    }
+
+    /// `BPF_MAP_DELETE_ELEM`.
+    pub(crate) fn delete(&self, key: &K) -> io::Result<()> {
+        // SAFETY: as in `update`.
+        unsafe { map_delete(self.fd(), key) }
+    }
 }
 
 #[repr(C)]
@@ -157,7 +218,10 @@ pub(crate) fn prog_load(
         prog_ifindex: 0,
         expected_attach_type,
     };
-    match bpf(BPF_PROG_LOAD, &mut a) {
+    // SAFETY: `ProgLoad` is the BPF_PROG_LOAD prefix of `bpf_attr`; `insns` points to
+    // `insn_cnt` instructions, `license` to a NUL-terminated string and `log_buf` to `log_size`
+    // writable bytes, all alive until the call returns.
+    match unsafe { bpf(BPF_PROG_LOAD, &mut a) } {
         Ok(fd) => Ok(owned(fd)),
         Err(e) => {
             let end = log.iter().position(|&b| b == 0).unwrap_or(log.len());
@@ -187,7 +251,8 @@ pub(crate) fn prog_attach(target: RawFd, prog: RawFd, attach_type: u32) -> io::R
         attach_type,
         attach_flags: 0,
     };
-    bpf(BPF_PROG_ATTACH, &mut a).map(drop)
+    // SAFETY: `ProgAttach` is the BPF_PROG_ATTACH prefix of `bpf_attr`; it holds no pointers.
+    unsafe { bpf(BPF_PROG_ATTACH, &mut a) }.map(drop)
 }
 
 fn setsockopt<T>(fd: RawFd, name: libc::c_int, v: &T) -> io::Result<()> {
@@ -212,8 +277,10 @@ struct Fprog {
 
 /// `SO_ATTACH_REUSEPORT_CBPF`: attaches `prog` to the reuseport group of `fd`.
 pub(crate) fn attach_reuseport_cbpf(fd: RawFd, prog: &[cbpf::Insn]) -> io::Result<()> {
+    let len = u16::try_from(prog.len())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "cBPF program too long"))?;
     let p = Fprog {
-        len: prog.len() as u16,
+        len,
         filter: prog.as_ptr(),
     };
     setsockopt(fd, SO_ATTACH_REUSEPORT_CBPF, &p)

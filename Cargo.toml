@@ -30,10 +30,32 @@ license = "MIT"
 repository = "https://github.com/lesismal/flash"
 rust-version = "1.85"
 
+[workspace.dependencies]
+# Workspace crates: a path for local builds plus the version crates.io resolves once published
+# (a path-only dependency is a wildcard to cargo-deny and cannot be published).
+flash-sys = { path = "crates/flash-sys", version = "0.0.0" }
+flash-buf = { path = "crates/flash-buf", version = "0.0.0" }
+flash-timer = { path = "crates/flash-timer", version = "0.0.0" }
+flash-pool = { path = "crates/flash-pool", version = "0.0.0" }
+flash-core = { path = "crates/flash-core", version = "0.0.0" }
+flash-epoll = { path = "crates/flash-epoll", version = "0.0.0" }
+flash-uring = { path = "crates/flash-uring", version = "0.0.0" }
+flash-tls = { path = "crates/flash-tls", version = "0.0.0" }
+flash-http = { path = "crates/flash-http", version = "0.0.0" }
+flash-ws = { path = "crates/flash-ws", version = "0.0.0" }
+flash-quic = { path = "crates/flash-quic", version = "0.0.0" }
+flash-ebpf = { path = "crates/flash-ebpf", version = "0.0.0" }
+flash = { path = "crates/flash", version = "0.0.0" }
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [workspace.lints.clippy]
-undocumented_unsafe_blocks = "warn"
+# Every `unsafe` block and `unsafe impl` carries a `// SAFETY:` comment, every `unsafe fn` a
+# `# Safety` section (docs/unsafe-review.md).
+undocumented_unsafe_blocks = "deny"
+missing_safety_doc = "deny"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"

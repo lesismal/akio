@@ -8,17 +8,17 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-core = { path = "../flash-core" }
-flash-buf = { path = "../flash-buf" }
+flash-core = { workspace = true }
+flash-buf = { workspace = true }
 sha1 = "0.10"
 base64 = "0.22"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-flash = { path = "../flash" }
+flash = { workspace = true }
 httparse = "1"
 getrandom = "0.2"
 
 [dev-dependencies]
-flash-http = { path = "../flash-http" }
+flash-http = { workspace = true }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 
 [lints]
