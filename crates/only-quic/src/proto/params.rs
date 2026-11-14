@@ -102,14 +102,22 @@ impl TransportParams {
             put_bytes(&mut out, id::ORIGINAL_DCID, c);
         }
         let ints = [
-            (id::MAX_IDLE_TIMEOUT, self.max_idle_timeout, d.max_idle_timeout),
+            (
+                id::MAX_IDLE_TIMEOUT,
+                self.max_idle_timeout,
+                d.max_idle_timeout,
+            ),
             (
                 id::MAX_UDP_PAYLOAD,
                 self.max_udp_payload_size,
                 d.max_udp_payload_size,
             ),
             (id::MAX_DATA, self.initial_max_data, 0),
-            (id::MSD_BIDI_LOCAL, self.initial_max_stream_data_bidi_local, 0),
+            (
+                id::MSD_BIDI_LOCAL,
+                self.initial_max_stream_data_bidi_local,
+                0,
+            ),
             (
                 id::MSD_BIDI_REMOTE,
                 self.initial_max_stream_data_bidi_remote,
@@ -308,7 +316,10 @@ mod tests {
             (id::MAX_STREAMS_BIDI, &[0xd0, 0, 0, 0, 0, 0, 0, 1][..]),
             (id::MAX_STREAMS_UNI, &[0xd0, 0, 0, 0, 0, 0, 0, 1][..]),
         ] {
-            assert!(TransportParams::decode(&enc(pid, val), true).is_err(), "{pid}");
+            assert!(
+                TransportParams::decode(&enc(pid, val), true).is_err(),
+                "{pid}"
+            );
         }
         let mut dup = enc(id::MAX_DATA, &[1]);
         dup.extend(enc(id::MAX_DATA, &[1]));

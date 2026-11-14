@@ -62,8 +62,12 @@ impl PacketKey {
     pub fn open(&self, pn: u64, header: &[u8], payload: &mut [u8], tag: &[u8]) -> bool {
         let n = self.nonce(pn);
         match &self.aead {
-            Aead::Gcm(k) => k.decrypt_in_place_detached(&n, header, payload, tag).is_ok(),
-            Aead::ChaCha(k) => k.decrypt_in_place_detached(&n, header, payload, tag).is_ok(),
+            Aead::Gcm(k) => k
+                .decrypt_in_place_detached(&n, header, payload, tag)
+                .is_ok(),
+            Aead::ChaCha(k) => k
+                .decrypt_in_place_detached(&n, header, payload, tag)
+                .is_ok(),
         }
     }
 }
@@ -251,7 +255,9 @@ impl TokenKey {
         out.extend_from_slice(&nonce);
         let at = out.len();
         out.extend_from_slice(plain);
-        let tag = self.0.encrypt_in_place_detached(&nonce, &[kind], &mut out[at..]);
+        let tag = self
+            .0
+            .encrypt_in_place_detached(&nonce, &[kind], &mut out[at..]);
         out.extend_from_slice(&tag);
         out
     }
@@ -289,24 +295,29 @@ mod tests {
     fn rfc9001_header_protection_samples() {
         // A.2: the client Initial's sample and mask.
         let k = initial_keys(&unhex("8394c8f03e515708"), true);
-        let sample: [u8; 16] = unhex("d1b1c98dd7689fb8ec11d242b123dc9b").try_into().unwrap();
+        let sample: [u8; 16] = unhex("d1b1c98dd7689fb8ec11d242b123dc9b")
+            .try_into()
+            .unwrap();
         assert_eq!(k.local.header.mask(&sample).to_vec(), unhex("437b9aec36"));
         // A.3: the server Initial's.
-        let sample: [u8; 16] = unhex("2cd0991cd25b0aac406a5816b6394100").try_into().unwrap();
+        let sample: [u8; 16] = unhex("2cd0991cd25b0aac406a5816b6394100")
+            .try_into()
+            .unwrap();
         assert_eq!(k.remote.header.mask(&sample).to_vec(), unhex("2ec0d8356a"));
         // A.5: ChaCha20 header protection.
         let hp = unhex("25a282b9e82f06f21f488917a4fc8f1b73573685608597d0efcb076b0ab7a7a4");
         let hk = HeaderKey::new(AeadAlg::ChaCha20Poly1305, &hp);
-        let sample: [u8; 16] = unhex("5e5cd55c41f69080575d7999c25a5bfb").try_into().unwrap();
+        let sample: [u8; 16] = unhex("5e5cd55c41f69080575d7999c25a5bfb")
+            .try_into()
+            .unwrap();
         assert_eq!(hk.mask(&sample).to_vec(), unhex("aefefe7d03"));
     }
 
     #[test]
     fn retry_integrity_tag_vector() {
         // RFC 9001 A.4.
-        let pkt = unhex(
-            "ff000000010008f067a5502a4262b574 6f6b656e04a265ba2eff4d829058fb3f 0f2496ba",
-        );
+        let pkt =
+            unhex("ff000000010008f067a5502a4262b574 6f6b656e04a265ba2eff4d829058fb3f 0f2496ba");
         let (body, tag) = pkt.split_at(pkt.len() - 16);
         assert_eq!(retry_tag(&unhex("8394c8f03e515708"), body).to_vec(), tag);
     }

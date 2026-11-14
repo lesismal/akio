@@ -81,8 +81,16 @@ impl SpaceId {
 /// What a sent packet carried that matters when it is acknowledged or lost.
 #[derive(Clone, Debug)]
 pub(crate) enum SentFrame {
-    Stream { id: u64, off: u64, len: u64, fin: bool },
-    Crypto { off: u64, len: u64 },
+    Stream {
+        id: u64,
+        off: u64,
+        len: u64,
+        fin: bool,
+    },
+    Crypto {
+        off: u64,
+        len: u64,
+    },
     Ack(u64),
     ResetStream(u64),
     StopSending(u64),
@@ -90,8 +98,8 @@ pub(crate) enum SentFrame {
     MaxStreamData(u64),
     MaxStreams(bool),
     DataBlocked,
-    StreamDataBlocked(u64),
-    StreamsBlocked(bool),
+    StreamDataBlocked,
+    StreamsBlocked,
     NewCid(u64),
     RetireCid(u64),
     HandshakeDone,
@@ -267,8 +275,15 @@ pub struct Transmit {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CloseKind {
-    Transport { code: u64, frame: u64, reason: Vec<u8> },
-    App { code: u64, reason: Vec<u8> },
+    Transport {
+        code: u64,
+        frame: u64,
+        reason: Vec<u8>,
+    },
+    App {
+        code: u64,
+        reason: Vec<u8>,
+    },
 }
 
 #[derive(Debug)]
@@ -276,9 +291,15 @@ pub(crate) enum State {
     Handshake,
     Established,
     /// We closed: CONNECTION_CLOSE goes out in answer to anything until the deadline.
-    Closing { until: Instant, close: CloseKind, resend: bool },
+    Closing {
+        until: Instant,
+        close: CloseKind,
+        resend: bool,
+    },
     /// The peer closed: we stay quiet until the deadline.
-    Draining { until: Instant },
+    Draining {
+        until: Instant,
+    },
     Drained,
 }
 
@@ -394,6 +415,7 @@ pub struct Connection {
 }
 
 impl Connection {
+    #[allow(clippy::too_many_arguments)]
     fn base(
         side: Side,
         now: Instant,
@@ -469,7 +491,11 @@ impl Connection {
             first_rtt_sample: None,
             mtu,
             mtu_probe: None,
-            mtu_upper: if t.mtu_discovery { MTU_PROBE_MAX.max(mtu) } else { mtu },
+            mtu_upper: if t.mtu_discovery {
+                MTU_PROBE_MAX.max(mtu)
+            } else {
+                mtu
+            },
             mtu_in_flight: None,
             streams: HashMap::new(),
             send_queue: VecDeque::new(),
@@ -510,11 +536,16 @@ impl Connection {
         let t = &cfg.transport;
         let stream = t.stream_receive_window.min(super::coding::VARINT_MAX);
         TransportParams {
-            max_idle_timeout: t
-                .max_idle_timeout
-                .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX).min(super::coding::VARINT_MAX)),
+            max_idle_timeout: t.max_idle_timeout.map_or(0, |d| {
+                u64::try_from(d.as_millis())
+                    .unwrap_or(u64::MAX)
+                    .min(super::coding::VARINT_MAX)
+            }),
             max_udp_payload_size: LOCAL_MAX_UDP_PAYLOAD,
-            initial_max_data: t.receive_window.unwrap_or(super::coding::VARINT_MAX).min(super::coding::VARINT_MAX),
+            initial_max_data: t
+                .receive_window
+                .unwrap_or(super::coding::VARINT_MAX)
+                .min(super::coding::VARINT_MAX),
             initial_max_stream_data_bidi_local: stream,
             initial_max_stream_data_bidi_remote: stream,
             initial_max_stream_data_uni: stream,
@@ -552,7 +583,18 @@ impl Connection {
         params.disable_active_migration = false;
         let tls = QuicTls::client(tls_cfg, server_name, params.encode())
             .map_err(|e| crate::Error::Connect(e.to_string()))?;
-        let mut c = Connection::base(Side::Client, now, cfg, keys, rng, tls, remote, local, dcid, dcid);
+        let mut c = Connection::base(
+            Side::Client,
+            now,
+            cfg,
+            keys,
+            rng,
+            tls,
+            remote,
+            local,
+            dcid,
+            dcid,
+        );
         c.spaces[0].keys = Some(initial_keys(&dcid, true));
         c.retry_token = token;
         c.drain_tls(now);
@@ -602,10 +644,6 @@ impl Connection {
 
     // ---- introspection ----
 
-    pub fn side(&self) -> Side {
-        self.side
-    }
-
     pub fn remote_addr(&self) -> SocketAddr {
         self.path.remote
     }
@@ -642,6 +680,7 @@ impl Connection {
     }
 
     /// Whether the session was resumed from a ticket.
+    #[cfg(test)]
     pub fn resumed(&self) -> bool {
         self.tls.resumed()
     }
@@ -701,7 +740,13 @@ impl Connection {
         }
     }
 
-    fn install_keys(&mut self, now: Instant, l: Level, read: Option<TlsKeys>, write: Option<TlsKeys>) {
+    fn install_keys(
+        &mut self,
+        now: Instant,
+        l: Level,
+        read: Option<TlsKeys>,
+        write: Option<TlsKeys>,
+    ) {
         let slot = match l {
             Level::Handshake => &mut self.pending_hs_keys,
             Level::Application => &mut self.pending_1rtt_keys,
@@ -771,7 +816,11 @@ impl Connection {
         let mut plain = Vec::with_capacity(32);
         plain.extend_from_slice(&unix_secs().to_be_bytes());
         push_ip(&mut plain, self.path.remote);
-        Bytes::from(self.keys.token_key.seal(&mut self.rng, super::endpoint::TOKEN_NEW, &plain))
+        Bytes::from(
+            self.keys
+                .token_key
+                .seal(&mut self.rng, super::endpoint::TOKEN_NEW, &plain),
+        )
     }
 
     fn apply_peer_params(&mut self, raw: &[u8]) -> Result<(), TransportError> {
@@ -798,7 +847,7 @@ impl Connection {
         self.tx_max_data = p.initial_max_data;
         // Streams opened before the parameters (none in practice) get their limits.
         let side = self.side;
-        for (id, s) in self.streams.iter_mut() {
+        for (id, s) in &mut self.streams {
             if let Some(snd) = s.send.as_mut() {
                 let sid = StreamId::from_raw(*id);
                 snd.max_data = initial_send_window(&p, side, sid);
@@ -814,7 +863,13 @@ impl Connection {
     // ---- connection IDs ----
 
     fn issue_cids(&mut self) {
-        if self.remote_cids.values().next().is_some_and(|r| r.cid.is_empty()) && self.side == Side::Server {
+        if self
+            .remote_cids
+            .values()
+            .next()
+            .is_some_and(|r| r.cid.is_empty())
+            && self.side == Side::Server
+        {
             // A peer with zero-length IDs cannot use more of ours either way; still issue some
             // so it can migrate.
         }
@@ -855,7 +910,8 @@ impl Connection {
 
     fn reset_idle(&mut self, now: Instant) {
         let local = self.cfg.transport.max_idle_timeout;
-        let peer = (self.peer.max_idle_timeout > 0).then(|| Duration::from_millis(self.peer.max_idle_timeout));
+        let peer = (self.peer.max_idle_timeout > 0)
+            .then(|| Duration::from_millis(self.peer.max_idle_timeout));
         let t = match (local, peer) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -884,7 +940,8 @@ impl Connection {
                 reason: reason.to_vec(),
             },
         );
-        self.events.push_back(Event::Closed(ConnectionError::LocallyClosed));
+        self.events
+            .push_back(Event::Closed(ConnectionError::LocallyClosed));
     }
 
     /// Closes with a transport error we detected.
@@ -900,10 +957,11 @@ impl Connection {
                 reason: e.reason.as_bytes().to_vec(),
             },
         );
-        self.events.push_back(Event::Closed(ConnectionError::TransportError {
-            code: e.code,
-            reason: e.reason,
-        }));
+        self.events
+            .push_back(Event::Closed(ConnectionError::TransportError {
+                code: e.code,
+                reason: e.reason,
+            }));
     }
 
     fn enter_closing(&mut self, now: Instant, close: CloseKind) {
@@ -1055,7 +1113,9 @@ impl Connection {
 
     fn on_path_validation_timeout(&mut self, now: Instant) {
         let p = &mut self.path;
-        let tries_left = p.challenge_sent.is_some_and(|s| now < s + self.rtt.pto_base() * 3 * 3);
+        let tries_left = p
+            .challenge_sent
+            .is_some_and(|s| now < s + self.rtt.pto_base() * 3 * 3);
         if tries_left && !p.validated {
             // Resend the challenge.
             self.pending.path_challenge = true;

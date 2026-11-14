@@ -16,8 +16,6 @@ pub enum Side {
     Server,
 }
 
-
-
 /// Whether a stream carries data both ways or one way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dir {
@@ -26,8 +24,6 @@ pub enum Dir {
     /// Unidirectional (from the side that opened it).
     Uni,
 }
-
-
 
 /// A stream id (RFC 9000 section 2.1): who opened it, its direction and its index.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -71,7 +67,6 @@ impl StreamId {
         StreamId(v)
     }
 }
-
 
 impl From<StreamId> for u64 {
     /// The id as sent on the wire.
@@ -162,7 +157,6 @@ impl fmt::Display for ConnectionError {
 
 impl std::error::Error for ConnectionError {}
 
-
 /// Datagram counters of one direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -174,7 +168,6 @@ pub struct UdpStats {
     /// I/O calls (several datagrams may go out in one with GSO).
     pub ios: u64,
 }
-
 
 /// Statistics of a connection; see [`Connection::stats`](crate::Connection::stats).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -289,6 +282,7 @@ pub struct ServerConfig {
     pub(crate) transport: TransportConfig,
     pub(crate) migration: bool,
     pub(crate) retry: bool,
+    pub(crate) key_update: Option<u64>,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -304,6 +298,7 @@ impl ServerConfig {
             transport: TransportConfig::default(),
             migration: true,
             retry: false,
+            key_update: None,
         }
     }
 
@@ -329,6 +324,15 @@ impl ServerConfig {
         self.retry = yes;
         self
     }
+
+    /// Starts a 1-RTT key update every `packets` packets (default about four million).
+    /// Hidden: for tests and interop runs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn key_update_interval(mut self, packets: u64) -> Self {
+        self.key_update = Some(packets.max(1));
+        self
+    }
 }
 
 /// A QUIC client configuration: TLS (see [`client_config`](crate::client_config)) plus
@@ -339,6 +343,7 @@ pub struct ClientConfig {
     pub(crate) tls: only_tls::ClientConfig,
     pub(crate) transport: TransportConfig,
     pub(crate) tokens: TokenStore,
+    pub(crate) key_update: Option<u64>,
 }
 
 impl fmt::Debug for ClientConfig {
@@ -353,6 +358,7 @@ impl ClientConfig {
             tls,
             transport: TransportConfig::default(),
             tokens: Arc::new(Mutex::new(HashMap::new())),
+            key_update: None,
         }
     }
 
@@ -360,6 +366,15 @@ impl ClientConfig {
     #[must_use]
     pub fn transport(mut self, transport: &TransportConfig) -> Self {
         self.transport = transport.clone();
+        self
+    }
+
+    /// Starts a 1-RTT key update every `packets` packets (default about four million).
+    /// Hidden: for tests and interop runs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn key_update_interval(mut self, packets: u64) -> Self {
+        self.key_update = Some(packets.max(1));
         self
     }
 }
@@ -396,7 +411,10 @@ mod tests {
     #[test]
     fn errors_display() {
         for (e, s) in [
-            (ConnectionError::VersionMismatch, "peer supports no common version"),
+            (
+                ConnectionError::VersionMismatch,
+                "peer supports no common version",
+            ),
             (ConnectionError::Reset, "reset by peer"),
             (ConnectionError::LocallyClosed, "closed"),
             (ConnectionError::TimedOut, "timed out"),

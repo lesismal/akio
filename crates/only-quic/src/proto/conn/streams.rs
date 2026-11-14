@@ -55,7 +55,11 @@ fn di(dir: Dir) -> usize {
 impl Connection {
     fn new_stream(&self, id: StreamId) -> StreamState {
         let local = id.initiator() == self.side;
-        let window = self.cfg.transport.stream_receive_window.min(super::super::coding::VARINT_MAX);
+        let window = self
+            .cfg
+            .transport
+            .stream_receive_window
+            .min(super::super::coding::VARINT_MAX);
         let send = (id.dir() == Dir::Bi || local).then(|| SendSide {
             max_data: initial_send_window(&self.peer, self.side, id),
             ..SendSide::default()
@@ -103,7 +107,10 @@ impl Connection {
         if id.dir() == Dir::Uni && id.initiator() != self.side {
             return Err(Error::UnknownStream);
         }
-        let s = self.streams.get_mut(&u64::from(id)).ok_or(Error::UnknownStream)?;
+        let s = self
+            .streams
+            .get_mut(&u64::from(id))
+            .ok_or(Error::UnknownStream)?;
         let snd = s.send.as_mut().ok_or(Error::UnknownStream)?;
         if let Some(c) = snd.stopped {
             return Err(Error::Stopped(c));
@@ -204,7 +211,11 @@ impl Connection {
         let ids: Vec<u64> = self
             .streams
             .iter()
-            .filter(|(_, s)| s.send.as_ref().is_some_and(|x| x.buf.unsent() > 0 || x.buf.has_lost()))
+            .filter(|(_, s)| {
+                s.send
+                    .as_ref()
+                    .is_some_and(|x| x.buf.unsent() > 0 || x.buf.has_lost())
+            })
             .map(|(&id, _)| id)
             .collect();
         for id in ids {
@@ -214,7 +225,11 @@ impl Connection {
 
     /// Validates a stream id in a received frame, opening peer streams implicitly; `None` if the
     /// stream is already closed.
-    fn stream_for(&mut self, raw: u64, need: Need) -> Result<Option<&mut StreamState>, TransportError> {
+    fn stream_for(
+        &mut self,
+        raw: u64,
+        need: Need,
+    ) -> Result<Option<&mut StreamState>, TransportError> {
         let id = StreamId::from_raw(raw);
         let local = id.initiator() == self.side;
         let d = di(id.dir());
@@ -224,16 +239,25 @@ impl Connection {
                 Need::Send => local,
             };
             if !ok {
-                return Err(TransportError::new(code::STREAM_STATE_ERROR, "frame for the wrong direction of a stream"));
+                return Err(TransportError::new(
+                    code::STREAM_STATE_ERROR,
+                    "frame for the wrong direction of a stream",
+                ));
             }
         }
         if local {
             if id.index() >= self.next_local[d] {
-                return Err(TransportError::new(code::STREAM_STATE_ERROR, "frame for a stream not opened yet"));
+                return Err(TransportError::new(
+                    code::STREAM_STATE_ERROR,
+                    "frame for a stream not opened yet",
+                ));
             }
         } else {
             if id.index() >= self.local_max_streams[d] {
-                return Err(TransportError::new(code::STREAM_LIMIT_ERROR, "stream limit exceeded"));
+                return Err(TransportError::new(
+                    code::STREAM_LIMIT_ERROR,
+                    "stream limit exceeded",
+                ));
             }
             while self.peer_opened[d] <= id.index() {
                 let nid = StreamId::new(id.initiator(), id.dir(), self.peer_opened[d]);
@@ -247,10 +271,17 @@ impl Connection {
     }
 
     pub(super) fn check_stream_id(&mut self, raw: u64, send: bool) -> Result<(), TransportError> {
-        self.stream_for(raw, if send { Need::Send } else { Need::Recv }).map(|_| ())
+        self.stream_for(raw, if send { Need::Send } else { Need::Recv })
+            .map(|_| ())
     }
 
-    pub(super) fn on_stream_frame(&mut self, raw: u64, offset: u64, data: Bytes, fin: bool) -> Result<(), TransportError> {
+    pub(super) fn on_stream_frame(
+        &mut self,
+        raw: u64,
+        offset: u64,
+        data: Bytes,
+        fin: bool,
+    ) -> Result<(), TransportError> {
         let Some(s) = self.stream_for(raw, Need::Recv)? else {
             return Ok(());
         };
@@ -262,14 +293,20 @@ impl Connection {
         }
         let end = offset + data.len() as u64;
         if end > r.max_data {
-            return Err(TransportError::new(code::FLOW_CONTROL_ERROR, "stream flow control exceeded"));
+            return Err(TransportError::new(
+                code::FLOW_CONTROL_ERROR,
+                "stream flow control exceeded",
+            ));
         }
         let before = r.buf.max_seen;
         r.buf.insert(offset, data, fin)?;
         let grown = r.buf.max_seen - before;
         self.rx_data += grown;
         if self.rx_data > self.rx_max_data {
-            return Err(TransportError::new(code::FLOW_CONTROL_ERROR, "connection flow control exceeded"));
+            return Err(TransportError::new(
+                code::FLOW_CONTROL_ERROR,
+                "connection flow control exceeded",
+            ));
         }
         self.deliver_stream(raw);
         Ok(())
@@ -329,7 +366,12 @@ impl Connection {
         }
     }
 
-    pub(super) fn on_reset_stream(&mut self, raw: u64, code: u64, final_size: u64) -> Result<(), TransportError> {
+    pub(super) fn on_reset_stream(
+        &mut self,
+        raw: u64,
+        code: u64,
+        final_size: u64,
+    ) -> Result<(), TransportError> {
         let Some(s) = self.stream_for(raw, Need::Recv)? else {
             return Ok(());
         };
@@ -340,10 +382,16 @@ impl Connection {
             return Ok(());
         }
         if r.buf.final_size.is_some_and(|f| f != final_size) || final_size < r.buf.max_seen {
-            return Err(TransportError::new(code::FINAL_SIZE_ERROR, "RESET_STREAM final size changed"));
+            return Err(TransportError::new(
+                code::FINAL_SIZE_ERROR,
+                "RESET_STREAM final size changed",
+            ));
         }
         if final_size > r.max_data {
-            return Err(TransportError::new(code::FLOW_CONTROL_ERROR, "RESET_STREAM beyond the window"));
+            return Err(TransportError::new(
+                code::FLOW_CONTROL_ERROR,
+                "RESET_STREAM beyond the window",
+            ));
         }
         let grown = final_size - r.buf.max_seen;
         r.buf.max_seen = final_size;
@@ -353,10 +401,14 @@ impl Connection {
         r.done = true;
         self.rx_data += grown;
         if self.rx_data > self.rx_max_data {
-            return Err(TransportError::new(code::FLOW_CONTROL_ERROR, "connection flow control exceeded"));
+            return Err(TransportError::new(
+                code::FLOW_CONTROL_ERROR,
+                "connection flow control exceeded",
+            ));
         }
         if !was_done {
-            self.events.push_back(Event::StreamReset(StreamId::from_raw(raw), code));
+            self.events
+                .push_back(Event::StreamReset(StreamId::from_raw(raw), code));
         }
         self.pending.max_stream_data.remove(&raw);
         self.credit_conn(unread);
@@ -383,7 +435,8 @@ impl Connection {
             snd.buf.clear();
             self.pending.reset_stream.insert(raw);
         }
-        self.events.push_back(Event::StreamStopped(StreamId::from_raw(raw), code));
+        self.events
+            .push_back(Event::StreamStopped(StreamId::from_raw(raw), code));
         Ok(())
     }
 
@@ -403,15 +456,21 @@ impl Connection {
 
     pub(super) fn on_max_streams(&mut self, bidi: bool, max: u64) -> Result<(), TransportError> {
         if max > 1 << 60 {
-            return Err(TransportError::new(code::FRAME_ENCODING_ERROR, "MAX_STREAMS above 2^60"));
+            return Err(TransportError::new(
+                code::FRAME_ENCODING_ERROR,
+                "MAX_STREAMS above 2^60",
+            ));
         }
         let d = usize::from(!bidi);
         if max > self.peer_max_streams[d] {
             self.peer_max_streams[d] = max;
             if self.streams_blocked[d] {
                 self.streams_blocked[d] = false;
-                self.events
-                    .push_back(Event::StreamsAvailable(if bidi { Dir::Bi } else { Dir::Uni }));
+                self.events.push_back(Event::StreamsAvailable(if bidi {
+                    Dir::Bi
+                } else {
+                    Dir::Uni
+                }));
             }
         }
         Ok(())

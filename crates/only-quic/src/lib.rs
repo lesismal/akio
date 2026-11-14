@@ -276,24 +276,26 @@ impl Connection {
     /// events, the timer.
     fn drive(&self) {
         let ep = &self.0.ep;
-        let mut tx = Vec::new();
         let mut ep_events = Vec::new();
-        let mut evs = Vec::new();
         let drained;
         {
+            // Everything that must keep its order (datagrams on the wire, events for the
+            // handler) is handed on while the state is still locked: another thread driving
+            // the same connection cannot slip its batch in between.
             let mut st = lock(&self.0.state);
             let now = Instant::now();
             let State { conn, armed, lost } = &mut *st;
             while let Some(t) = conn.poll_transmit(now, MAX_DATAGRAMS) {
-                tx.push(t);
+                ep.transmit(t.dest, t.segment_size, t.data);
             }
+            let mut evs = lock(&self.0.events);
             while let Some(e) = conn.poll_event() {
                 if let proto::Event::Closed(_) = e {
                     if std::mem::replace(lost, true) {
                         continue;
                     }
                 }
-                evs.push(e);
+                evs.push_back(e);
             }
             while let Some(e) = conn.poll_endpoint_event() {
                 ep_events.push(e);
@@ -307,11 +309,8 @@ impl Connection {
             }
             drained = conn.is_drained();
             if drained && !std::mem::replace(lost, true) {
-                evs.push(proto::Event::Closed(ConnectionError::LocallyClosed));
+                evs.push_back(proto::Event::Closed(ConnectionError::LocallyClosed));
             }
-        }
-        for t in tx {
-            ep.transmit(t.dest, t.segment_size, t.data);
         }
         if !ep_events.is_empty() {
             let mut e = lock(&ep.endpoint);
@@ -329,9 +328,6 @@ impl Connection {
         }
         if drained {
             lock(&ep.conns).remove(&self.0.h);
-        }
-        if !evs.is_empty() {
-            lock(&self.0.events).extend(evs);
         }
         self.deliver();
     }
@@ -494,9 +490,13 @@ impl QuicServer {
     where
         F: Fn(&Connection) -> H + Send + Sync + 'static,
     {
+        let mut cfg = proto::ConnConfig::new(config.transport, config.migration);
+        if let Some(n) = config.key_update {
+            cfg.key_update_interval = n;
+        }
         let setup = proto::ServerSetup {
             tls: config.tls,
-            cfg: proto::ConnConfig::new(config.transport, config.migration),
+            cfg,
             retry: config.retry,
         };
         QuicServer(Arc::new(Ep::new(
@@ -605,9 +605,13 @@ pub fn dial<H: QuicHandler>(
         .cloned()
         .unwrap_or_default();
     let mut endpoint = proto::Endpoint::new(None);
+    let mut cfg = proto::ConnConfig::new(config.transport.clone(), true);
+    if let Some(n) = config.key_update {
+        cfg.key_update_interval = n;
+    }
     let (h, conn) = endpoint.connect(
         Instant::now(),
-        proto::ConnConfig::new(config.transport.clone(), true),
+        cfg,
         &config.tls,
         server_name,
         addr,

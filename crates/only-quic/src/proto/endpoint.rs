@@ -12,7 +12,9 @@ use only_crypto::rand::ChaChaRng;
 
 use super::cid::{ConnectionId, LOCAL_CID_LEN, reset_token};
 use super::coding::Reader;
-use super::conn::{ConnConfig, Connection, EndpointEvent, EndpointKeys, Transmit, push_ip, unix_secs};
+use super::conn::{
+    ConnConfig, Connection, EndpointEvent, EndpointKeys, Transmit, push_ip, unix_secs,
+};
 use super::crypto::TokenKey;
 use super::packet::{self, HeaderError, MIN_INITIAL_SIZE, PacketType};
 
@@ -99,15 +101,6 @@ impl Endpoint {
         ChaChaRng::from_seed(s)
     }
 
-    pub fn is_server(&self) -> bool {
-        self.server.is_some()
-    }
-
-    /// Connections known to the endpoint.
-    pub fn len(&self) -> usize {
-        self.ids.len()
-    }
-
     fn register(&mut self, h: ConnHandle, cid: ConnectionId) {
         self.routes.insert(cid, h);
         self.ids.entry(h).or_default().push(cid);
@@ -124,7 +117,16 @@ impl Endpoint {
         token: Vec<u8>,
     ) -> Result<(ConnHandle, Connection), crate::Error> {
         let rng = self.child_rng();
-        let c = Connection::client(now, cfg, self.keys.clone(), rng, tls, server_name, addr, token)?;
+        let c = Connection::client(
+            now,
+            cfg,
+            self.keys.clone(),
+            rng,
+            tls,
+            server_name,
+            addr,
+            token,
+        )?;
         let h = self.next;
         self.next += 1;
         self.register(h, c.local_cid());
@@ -164,7 +166,11 @@ impl Endpoint {
             }
             Err(HeaderError::Invalid) => return None,
         };
-        if let Some(&c) = self.routes.get(&h.dcid).or_else(|| self.initial.get(&h.dcid)) {
+        if let Some(&c) = self
+            .routes
+            .get(&h.dcid)
+            .or_else(|| self.initial.get(&h.dcid))
+        {
             return Some(DatagramEvent::Conn(c));
         }
         if self.server.is_none() || h.ty != PacketType::Initial {
@@ -214,7 +220,12 @@ impl Endpoint {
         Some(DatagramEvent::New(handle, Box::new(c)))
     }
 
-    fn retry(&mut self, from: SocketAddr, odcid: &ConnectionId, client_scid: &ConnectionId) -> DatagramEvent {
+    fn retry(
+        &mut self,
+        from: SocketAddr,
+        odcid: &ConnectionId,
+        client_scid: &ConnectionId,
+    ) -> DatagramEvent {
         let new_scid = ConnectionId::random(&mut self.rng, LOCAL_CID_LEN);
         let mut plain = Vec::with_capacity(64);
         plain.extend_from_slice(&unix_secs().to_be_bytes());
@@ -242,7 +253,10 @@ impl Endpoint {
             return TokenCheck::None;
         };
         let mut r = Reader::new(&plain);
-        let Some(ts) = r.bytes(8).map(|b| u64::from_be_bytes(b.try_into().unwrap_or_default())) else {
+        let Some(ts) = r
+            .bytes(8)
+            .map(|b| u64::from_be_bytes(b.try_into().unwrap_or_default()))
+        else {
             return TokenCheck::None;
         };
         let age = unix_secs().saturating_sub(ts);
@@ -258,7 +272,9 @@ impl Endpoint {
                     Some((odcid, scid, addr == &ip[..] && port == from.port()))
                 })();
                 match parsed {
-                    Some((odcid, scid, true)) if age <= RETRY_TOKEN_LIFETIME && scid == *dcid => TokenCheck::Retry(odcid),
+                    Some((odcid, scid, true)) if age <= RETRY_TOKEN_LIFETIME && scid == *dcid => {
+                        TokenCheck::Retry(odcid)
+                    }
                     _ => TokenCheck::Invalid,
                 }
             }
@@ -273,7 +289,13 @@ impl Endpoint {
         }
     }
 
-    fn stateless_reset(&mut self, now: Instant, from: SocketAddr, cid: &ConnectionId, len: usize) -> Option<DatagramEvent> {
+    fn stateless_reset(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        cid: &ConnectionId,
+        len: usize,
+    ) -> Option<DatagramEvent> {
         // Smaller than what triggered it, so two endpoints cannot loop (RFC 9000 10.3.3).
         if len <= 22 {
             return None;
@@ -325,12 +347,6 @@ impl Endpoint {
                 }
             }
             EndpointEvent::NewToken(_) => {}
-        }
-    }
-
-    pub fn set_retry(&mut self, yes: bool) {
-        if let Some(s) = self.server.as_mut() {
-            s.retry = yes;
         }
     }
 }

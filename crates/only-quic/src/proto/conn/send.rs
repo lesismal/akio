@@ -2,6 +2,7 @@
 //! datagrams and batching full-size datagrams for GSO, congestion control, pacing, the
 //! anti-amplification limit, padding rules, path MTU probes and CONNECTION_CLOSE.
 
+use std::net::SocketAddr;
 use std::time::Instant;
 
 use super::super::coding::varint_len;
@@ -51,9 +52,8 @@ impl Connection {
         while n < max {
             let start = buf.len();
             let limit = if n == 0 { usize::from(self.mtu) } else { seg };
-            let long = match self.write_datagram(now, &mut buf, limit) {
-                Some(long) => long,
-                None => break,
+            let Some(long) = self.write_datagram(now, &mut buf, limit) else {
+                break;
             };
             let len = buf.len() - start;
             n += 1;
@@ -139,10 +139,13 @@ impl Connection {
         if !blocked && !probing {
             if self.pacing_until.is_some_and(|p| now < p) {
                 blocked = true;
-            } else if let Some(at) =
-                self.pacer
-                    .delay(now, limit as u64, u64::from(self.mtu), self.cc.window, self.rtt.smoothed)
-            {
+            } else if let Some(at) = self.pacer.delay(
+                now,
+                limit as u64,
+                u64::from(self.mtu),
+                self.cc.window,
+                self.rtt.smoothed,
+            ) {
                 self.pacing_until = Some(at);
                 blocked = true;
             }
@@ -217,7 +220,9 @@ impl Connection {
                 };
                 PacketBuilder::long(buf, PacketType::Initial, &dcid, &scid, &token, pn, pnl)
             }
-            SpaceId::Handshake => PacketBuilder::long(buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl),
+            SpaceId::Handshake => {
+                PacketBuilder::long(buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl)
+            }
             SpaceId::Data => {
                 let phase = self.one_rtt.as_ref().is_some_and(|k| k.phase);
                 PacketBuilder::short(buf, &dcid, phase, pn, pnl)
@@ -231,6 +236,7 @@ impl Connection {
         let mut frames: Vec<SentFrame> = Vec::new();
         let mut eliciting = false;
         let mut path_frame = false;
+        let mut fill = false;
         // ACK first.
         {
             let sp = &mut self.spaces[sid as usize];
@@ -261,9 +267,14 @@ impl Connection {
             self.write_crypto(sid, buf, max_end, &mut frames, &mut eliciting);
             if sid == SpaceId::Data {
                 self.write_datagrams(buf, max_end, &mut eliciting);
+                let before = frames.len();
                 self.write_streams(buf, max_end, &mut frames, &mut eliciting);
+                // A packet that ran out of room for stream data is padded to the full size, so
+                // the datagram can lead a GSO batch of equal-size segments.
+                fill = frames.len() > before && max_end.saturating_sub(buf.len()) < 32;
             }
-            let ping = self.spaces[sid as usize].probes > 0 || (sid == SpaceId::Data && self.pending.ping);
+            let ping =
+                self.spaces[sid as usize].probes > 0 || (sid == SpaceId::Data && self.pending.ping);
             if ping && !eliciting && buf.len() < max_end {
                 buf.push(ty::PING as u8);
                 eliciting = true;
@@ -284,7 +295,11 @@ impl Connection {
             min_end = min_end.max(e.saturating_sub(TAG_LEN));
         }
         if path_frame {
-            min_end = min_end.max((dgram_start + MIN_INITIAL_SIZE.min(limit)).saturating_sub(TAG_LEN));
+            min_end =
+                min_end.max((dgram_start + MIN_INITIAL_SIZE.min(limit)).saturating_sub(TAG_LEN));
+        }
+        if fill {
+            min_end = max_end;
         }
         let padded = buf.len() < min_end.min(max_end);
         if padded {
@@ -361,7 +376,14 @@ impl Connection {
         true
     }
 
-    fn write_crypto(&mut self, sid: SpaceId, buf: &mut Vec<u8>, max_end: usize, frames: &mut Vec<SentFrame>, eliciting: &mut bool) {
+    fn write_crypto(
+        &mut self,
+        sid: SpaceId,
+        buf: &mut Vec<u8>,
+        max_end: usize,
+        frames: &mut Vec<SentFrame>,
+        eliciting: &mut bool,
+    ) {
         let sp = &mut self.spaces[sid as usize];
         loop {
             let room = max_end.saturating_sub(buf.len());
@@ -396,7 +418,13 @@ impl Connection {
         }
     }
 
-    fn write_streams(&mut self, buf: &mut Vec<u8>, max_end: usize, frames: &mut Vec<SentFrame>, eliciting: &mut bool) {
+    fn write_streams(
+        &mut self,
+        buf: &mut Vec<u8>,
+        max_end: usize,
+        frames: &mut Vec<SentFrame>,
+        eliciting: &mut bool,
+    ) {
         let mut tries = self.send_queue.len();
         while tries > 0 {
             tries -= 1;
@@ -404,8 +432,7 @@ impl Connection {
             let Some(&raw) = self.send_queue.front() else {
                 return;
             };
-            let est = 1 + varint_len(raw) + 8 + 2;
-            if room <= est + 1 {
+            if room <= 1 + varint_len(raw) + 3 {
                 return;
             }
             self.send_queue.pop_front();
@@ -416,6 +443,12 @@ impl Connection {
             };
             if snd.reset.is_some() {
                 continue;
+            }
+            // The frame header: type, id, offset (at most the next new offset), 2-byte length.
+            let est = 1 + varint_len(raw) + varint_len(snd.buf.sent()) + 2;
+            if room <= est {
+                self.enqueue(raw);
+                return;
             }
             let max_off = snd.max_data.min(snd.buf.sent() + credit);
             let before = snd.buf.sent();
@@ -432,7 +465,9 @@ impl Connection {
             frame::put_stream_header(buf, raw, r.start, len, fin);
             snd.buf.copy(r.clone(), buf);
             let new = snd.buf.sent() - before;
-            let again = snd.buf.wants_send(snd.max_data.min(snd.buf.sent() + credit - new));
+            let again = snd
+                .buf
+                .wants_send(snd.max_data.min(snd.buf.sent() + credit - new));
             self.tx_data += new;
             frames.push(SentFrame::Stream {
                 id: raw,
@@ -448,7 +483,13 @@ impl Connection {
     }
 
     /// Control frames of 1-RTT packets; returns whether a path validation frame was written.
-    fn write_control(&mut self, buf: &mut Vec<u8>, max_end: usize, frames: &mut Vec<SentFrame>, eliciting: &mut bool) -> bool {
+    fn write_control(
+        &mut self,
+        buf: &mut Vec<u8>,
+        max_end: usize,
+        frames: &mut Vec<SentFrame>,
+        eliciting: &mut bool,
+    ) -> bool {
         let room = |buf: &Vec<u8>, n: usize| buf.len() + n <= max_end;
         let mut path = false;
         // PATH_RESPONSE on the current path.
@@ -508,10 +549,17 @@ impl Connection {
             frames.push(SentFrame::MaxData);
             *eliciting = true;
         }
-        for (flag, bidi) in [(self.pending.max_streams_bidi, true), (self.pending.max_streams_uni, false)] {
+        for (flag, bidi) in [
+            (self.pending.max_streams_bidi, true),
+            (self.pending.max_streams_uni, false),
+        ] {
             if flag && room(buf, 9) {
                 let d = usize::from(!bidi);
-                let t = if bidi { ty::MAX_STREAMS_BIDI } else { ty::MAX_STREAMS_UNI };
+                let t = if bidi {
+                    ty::MAX_STREAMS_BIDI
+                } else {
+                    ty::MAX_STREAMS_UNI
+                };
                 frame::put_simple(buf, t, &[self.local_max_streams[d]]);
                 frames.push(SentFrame::MaxStreams(bidi));
                 *eliciting = true;
@@ -544,7 +592,12 @@ impl Connection {
                 break;
             }
             self.pending.reset_stream.remove(&id);
-            let Some((code, size, _)) = self.streams.get(&id).and_then(|s| s.send.as_ref()).and_then(|s| s.reset) else {
+            let Some((code, size, _)) = self
+                .streams
+                .get(&id)
+                .and_then(|s| s.send.as_ref())
+                .and_then(|s| s.reset)
+            else {
                 continue;
             };
             frame::put_simple(buf, ty::RESET_STREAM, &[id, code, size]);
@@ -557,7 +610,12 @@ impl Connection {
                 break;
             }
             self.pending.stop_sending.remove(&id);
-            let Some(code) = self.streams.get(&id).and_then(|s| s.recv.as_ref()).and_then(|r| r.stop_sent) else {
+            let Some(code) = self
+                .streams
+                .get(&id)
+                .and_then(|s| s.recv.as_ref())
+                .and_then(|r| r.stop_sent)
+            else {
                 continue;
             };
             frame::put_simple(buf, ty::STOP_SENDING, &[id, code]);
@@ -590,7 +648,7 @@ impl Connection {
                 continue;
             };
             frame::put_simple(buf, ty::STREAM_DATA_BLOCKED, &[id, s.max_data]);
-            frames.push(SentFrame::StreamDataBlocked(id));
+            frames.push(SentFrame::StreamDataBlocked);
             *eliciting = true;
         }
         for (flag, bidi) in [
@@ -599,9 +657,13 @@ impl Connection {
         ] {
             if flag && room(buf, 9) {
                 let d = usize::from(!bidi);
-                let t = if bidi { ty::STREAMS_BLOCKED_BIDI } else { ty::STREAMS_BLOCKED_UNI };
+                let t = if bidi {
+                    ty::STREAMS_BLOCKED_BIDI
+                } else {
+                    ty::STREAMS_BLOCKED_UNI
+                };
                 frame::put_simple(buf, t, &[self.peer_max_streams[d]]);
-                frames.push(SentFrame::StreamsBlocked(bidi));
+                frames.push(SentFrame::StreamsBlocked);
                 *eliciting = true;
                 if bidi {
                     self.pending.streams_blocked_bidi = false;
@@ -614,7 +676,12 @@ impl Connection {
     }
 
     /// A PATH_RESPONSE to an address other than the current path.
-    fn write_path_response(&mut self, now: Instant, to: std::net::SocketAddr, data: [u8; 8]) -> Option<Transmit> {
+    fn write_path_response(
+        &mut self,
+        now: Instant,
+        to: SocketAddr,
+        data: [u8; 8],
+    ) -> Option<Transmit> {
         let k = self.one_rtt.as_ref()?;
         let sp = &self.spaces[2];
         let pn = sp.next_pn;
@@ -732,19 +799,36 @@ impl Connection {
             let pkt_start = buf.len();
             let b = match sid {
                 SpaceId::Initial => {
-                    let tok = if self.side == Side::Client { self.retry_token.clone() } else { Vec::new() };
+                    let tok = if self.side == Side::Client {
+                        self.retry_token.clone()
+                    } else {
+                        Vec::new()
+                    };
                     PacketBuilder::long(&mut buf, PacketType::Initial, &dcid, &scid, &tok, pn, pnl)
                 }
-                SpaceId::Handshake => PacketBuilder::long(&mut buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl),
+                SpaceId::Handshake => {
+                    PacketBuilder::long(&mut buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl)
+                }
                 SpaceId::Data => {
                     let phase = self.one_rtt.as_ref().is_some_and(|k| k.phase);
                     PacketBuilder::short(&mut buf, &dcid, phase, pn, pnl)
                 }
             };
             match (&close, sid) {
-                (CloseKind::App { code, reason }, SpaceId::Data) => frame::put_close(&mut buf, true, *code, 0, reason),
-                (CloseKind::App { .. }, _) => frame::put_close(&mut buf, false, code::APPLICATION_ERROR, 0, b""),
-                (CloseKind::Transport { code, frame, reason }, _) => {
+                (CloseKind::App { code, reason }, SpaceId::Data) => {
+                    frame::put_close(&mut buf, true, *code, 0, reason);
+                }
+                (CloseKind::App { .. }, _) => {
+                    frame::put_close(&mut buf, false, code::APPLICATION_ERROR, 0, b"");
+                }
+                (
+                    CloseKind::Transport {
+                        code,
+                        frame,
+                        reason,
+                    },
+                    _,
+                ) => {
                     let r = &reason[..reason.len().min(256)];
                     frame::put_close(&mut buf, false, *code, *frame, r);
                 }
@@ -803,10 +887,15 @@ impl Connection {
             return Err(crate::Error::Closed);
         }
         let Some(max) = self.max_datagram_size() else {
-            return Err(crate::Error::Datagram("datagrams not supported by peer".into()));
+            return Err(crate::Error::Datagram(
+                "datagrams not supported by peer".into(),
+            ));
         };
         if data.len() > max {
-            return Err(crate::Error::Datagram(format!("datagram too large ({} > {max})", data.len())));
+            return Err(crate::Error::Datagram(format!(
+                "datagram too large ({} > {max})",
+                data.len()
+            )));
         }
         let cap = self.cfg.transport.datagram_send_buffer_size;
         while self.dgram_queued_bytes + data.len() > cap {

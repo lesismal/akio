@@ -70,6 +70,7 @@ impl Bytes {
     /// # Panics
     ///
     /// If the range is out of bounds.
+    #[must_use]
     pub fn slice(&self, range: impl RangeBounds<usize>) -> Bytes {
         let len = self.len();
         let lo = match range.start_bound() {
@@ -95,6 +96,7 @@ impl Bytes {
     /// # Panics
     ///
     /// If `at > len()`.
+    #[must_use]
     pub fn split_to(&mut self, at: usize) -> Bytes {
         assert!(at <= self.len(), "Bytes::split_to out of bounds");
         let head = Bytes {
@@ -111,6 +113,7 @@ impl Bytes {
     /// # Panics
     ///
     /// If `at > len()`.
+    #[must_use]
     pub fn split_off(&mut self, at: usize) -> Bytes {
         assert!(at <= self.len(), "Bytes::split_off out of bounds");
         let tail = Bytes {
@@ -173,7 +176,7 @@ impl Borrow<[u8]> for Bytes {
 impl fmt::Debug for Bytes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("b\"")?;
-        for &b in self.iter() {
+        for &b in &self[..] {
             match b {
                 b'\n' => f.write_str("\\n")?,
                 b'\r' => f.write_str("\\r")?,
@@ -321,7 +324,10 @@ mod tests {
         assert!(t.is_empty());
         assert_eq!(Vec::from(c.clone()), b"hello world".to_vec());
         assert_eq!(Vec::from(c.slice(1..3)), b"el".to_vec());
-        assert_eq!(format!("{:?}", Bytes::from_static(b"a\"\n\x01")), "b\"a\\\"\\n\\x01\"");
+        assert_eq!(
+            format!("{:?}", Bytes::from_static(b"a\"\n\x01")),
+            "b\"a\\\"\\n\\x01\""
+        );
         assert_eq!(Bytes::from(String::from("x")), Bytes::from("x"));
         assert_eq!(Bytes::default(), Bytes::new());
         assert!(Bytes::from_static(b"a") < Bytes::copy_from_slice(b"b"));

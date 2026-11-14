@@ -219,16 +219,27 @@ impl RecvBuf {
     }
 
     /// Adds data at `offset`; checks the final size rules (RFC 9000 section 4.5).
-    pub fn insert(&mut self, offset: u64, mut data: Bytes, fin: bool) -> Result<(), TransportError> {
+    pub fn insert(
+        &mut self,
+        offset: u64,
+        mut data: Bytes,
+        fin: bool,
+    ) -> Result<(), TransportError> {
         let end = offset + data.len() as u64;
         if let Some(f) = self.final_size {
             if end > f || (fin && end != f) {
-                return Err(TransportError::new(code::FINAL_SIZE_ERROR, "data beyond the final size"));
+                return Err(TransportError::new(
+                    code::FINAL_SIZE_ERROR,
+                    "data beyond the final size",
+                ));
             }
         }
         if fin {
             if end < self.max_seen {
-                return Err(TransportError::new(code::FINAL_SIZE_ERROR, "final size below received data"));
+                return Err(TransportError::new(
+                    code::FINAL_SIZE_ERROR,
+                    "final size below received data",
+                ));
             }
             self.final_size = Some(end);
         }
@@ -308,14 +319,14 @@ mod tests {
         s.copy(r2.clone(), &mut out);
         assert_eq!(out, b"o wo");
         // The middle range is lost and resent; the rest acknowledged.
-        s.on_lost(r2.clone(), false);
+        s.on_lost(r2, false);
         s.on_ack(r1, false);
-        s.on_ack(r3.clone(), true);
+        s.on_ack(r3, true);
         assert!(s.has_lost() && !s.all_acked());
         let (again, fin) = s.next(2, 100).unwrap();
         assert_eq!((again.clone(), fin), (4..6, false));
         out.clear();
-        s.copy(again.clone(), &mut out);
+        s.copy(again, &mut out);
         assert_eq!(out, b"o ");
         s.on_ack(4..8, false);
         assert!(s.all_acked());
@@ -327,8 +338,10 @@ mod tests {
 
     #[test]
     fn bare_fin_and_lost_fin() {
-        let mut s = SendBuf::default();
-        s.fin = true;
+        let mut s = SendBuf {
+            fin: true,
+            ..SendBuf::default()
+        };
         assert_eq!(s.next(10, 10), Some((0..0, true)));
         assert!(s.next(10, 10).is_none());
         s.on_lost(0..0, true);

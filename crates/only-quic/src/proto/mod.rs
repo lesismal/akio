@@ -18,5 +18,5 @@ pub(crate) mod stream;
 #[cfg(test)]
 mod sim;
 
-pub(crate) use conn::{ConnConfig, Connection, EndpointEvent, Event, Transmit};
+pub(crate) use conn::{ConnConfig, Connection, EndpointEvent, Event};
 pub(crate) use endpoint::{ConnHandle, DatagramEvent, Endpoint, ServerSetup};

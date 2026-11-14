@@ -40,7 +40,6 @@ impl PacketType {
 #[derive(Clone, Debug)]
 pub struct Header<'a> {
     pub ty: PacketType,
-    pub version: u32,
     pub dcid: ConnectionId,
     pub scid: ConnectionId,
     /// The Initial packet's token, or the Retry packet's.
@@ -75,7 +74,6 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
         let dcid = r.bytes(local_cid_len).ok_or(HeaderError::Invalid)?;
         return Ok(Header {
             ty: PacketType::Short,
-            version: VERSION_1,
             dcid: ConnectionId::new(dcid).ok_or(HeaderError::Invalid)?,
             scid: ConnectionId::default(),
             token: &[],
@@ -96,7 +94,6 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
     if version == 0 {
         return Ok(Header {
             ty: PacketType::VersionNegotiation,
-            version,
             dcid,
             scid,
             token: r.rest(),
@@ -123,7 +120,6 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
         }
         return Ok(Header {
             ty,
-            version,
             dcid,
             scid,
             token: &rest[..rest.len() - TAG_LEN],
@@ -145,7 +141,6 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
         .ok_or(HeaderError::Invalid)?;
     Ok(Header {
         ty,
-        version,
         dcid,
         scid,
         token,
@@ -292,6 +287,7 @@ impl PacketBuilder {
     }
 
     /// Header bytes before the payload.
+    #[cfg(test)]
     pub fn header_len(&self) -> usize {
         self.pn_offset + self.pn_len - self.start
     }
@@ -480,7 +476,12 @@ mod tests {
             parse_header(&v2, 8),
             Err(HeaderError::UnsupportedVersion { .. })
         ));
-        for bad in [&[][..], &[0x00][..], &[0x40, 1][..], &[0xc0, 0, 0, 0, 1, 30][..]] {
+        for bad in [
+            &[][..],
+            &[0x00][..],
+            &[0x40, 1][..],
+            &[0xc0, 0, 0, 0, 1, 30][..],
+        ] {
             assert_eq!(parse_header(bad, 8).unwrap_err(), HeaderError::Invalid);
         }
         // Length beyond the datagram.

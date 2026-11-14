@@ -9,6 +9,7 @@ use super::coding::{Reader, VARINT_MAX, put_varint, varint_len};
 use super::ranges::RangeSet;
 
 /// Transport error codes (RFC 9000 section 20.1).
+#[allow(dead_code)]
 pub mod code {
     pub const NO_ERROR: u64 = 0x0;
     pub const INTERNAL_ERROR: u64 = 0x1;
@@ -217,7 +218,8 @@ pub fn parse<'a>(r: &mut Reader<'a>) -> Result<Frame<'a>, TransportError> {
             if first > largest {
                 return Err(e());
             }
-            let mut ranges = vec![largest - first..largest + 1];
+            let mut ranges = Vec::with_capacity(1 + count.min(32) as usize);
+            ranges.push(largest - first..largest + 1);
             let mut smallest = largest - first;
             for _ in 0..count {
                 let gap = r.varint().ok_or_else(e)?;
@@ -421,19 +423,11 @@ pub fn put_stream_header(out: &mut Vec<u8>, id: u64, offset: u64, len: usize, fi
     put_varint(out, len as u64);
 }
 
-pub fn stream_header_size(id: u64, offset: u64, len: usize) -> usize {
-    1 + varint_len(id) + if offset != 0 { varint_len(offset) } else { 0 } + varint_len(len as u64)
-}
-
 pub fn put_simple(out: &mut Vec<u8>, t: u64, vals: &[u64]) {
     put_varint(out, t);
     for &v in vals {
         put_varint(out, v);
     }
-}
-
-pub fn simple_size(vals: &[u64]) -> usize {
-    1 + vals.iter().map(|&v| varint_len(v)).sum::<usize>()
 }
 
 pub fn put_new_cid(out: &mut Vec<u8>, seq: u64, rpt: u64, cid: &ConnectionId, token: &ResetToken) {
@@ -446,7 +440,14 @@ pub fn put_new_cid(out: &mut Vec<u8>, seq: u64, rpt: u64, cid: &ConnectionId, to
 }
 
 pub fn put_close(out: &mut Vec<u8>, app: bool, code: u64, frame: u64, reason: &[u8]) {
-    put_varint(out, if app { ty::CONNECTION_CLOSE_APP } else { ty::CONNECTION_CLOSE });
+    put_varint(
+        out,
+        if app {
+            ty::CONNECTION_CLOSE_APP
+        } else {
+            ty::CONNECTION_CLOSE
+        },
+    );
     put_varint(out, code);
     if !app {
         put_varint(out, frame);
@@ -497,12 +498,15 @@ mod tests {
         assert_eq!(
             one(&[0x03, 5, 0, 0, 0, 1, 2, 3]).unwrap(),
             Frame::Ack {
-                ranges: vec![5..6],
+                ranges: std::iter::once(5..6).collect(),
                 delay: 0,
                 ecn: Some([1, 2, 3])
             }
         );
-        assert_eq!(one(&[0x02, 5, 0, 0, 6]).unwrap_err().code, code::FRAME_ENCODING_ERROR);
+        assert_eq!(
+            one(&[0x02, 5, 0, 0, 6]).unwrap_err().code,
+            code::FRAME_ENCODING_ERROR
+        );
         assert!(one(&[0x02, 5, 0, 1, 0, 4, 0]).is_err());
         let empty = RangeSet::new();
         out.clear();
@@ -576,11 +580,20 @@ mod tests {
             },
             Frame::MaxData(1000),
             Frame::MaxStreamData { id: 8, max: 50 },
-            Frame::MaxStreams { bidi: true, max: 10 },
-            Frame::MaxStreams { bidi: false, max: 11 },
+            Frame::MaxStreams {
+                bidi: true,
+                max: 10,
+            },
+            Frame::MaxStreams {
+                bidi: false,
+                max: 11,
+            },
             Frame::DataBlocked(12),
             Frame::StreamDataBlocked { id: 8, max: 13 },
-            Frame::StreamsBlocked { bidi: true, max: 14 },
+            Frame::StreamsBlocked {
+                bidi: true,
+                max: 14,
+            },
             Frame::StreamsBlocked {
                 bidi: false,
                 max: 15,
@@ -615,28 +628,30 @@ mod tests {
         assert!(Frame::Ping.ack_eliciting() && !Frame::Padding.ack_eliciting());
         assert!(Frame::PathChallenge([0; 8]).probing() && !Frame::Ping.probing());
         assert!(Frame::Ping.allowed_in_handshake() && !Frame::HandshakeDone.allowed_in_handshake());
-        assert!(out.len() > stream_header_size(8, 2, 0) + crypto_header_size(10, 3) + simple_size(&[1]));
+        assert!(out.len() > crypto_header_size(10, 3));
     }
 
     #[test]
     fn malformed_frames() {
         for bad in [
-            &[0x40][..],                    // truncated type
-            &[0x21][..],                    // unknown type
-            &[0x06, 0, 5, 1][..],           // short CRYPTO
-            &[0x07, 0][..],                 // empty NEW_TOKEN
-            &[0x0a, 0, 9, 1][..],           // short STREAM
-            &[0x18, 1, 2, 8][..],           // retire_prior_to > seq
-            &[0x18, 1, 0, 21][..],          // CID too long
-            &[0x1a, 1, 2][..],              // short PATH_CHALLENGE
-            &[0x1c, 1, 0, 5, b'x'][..],     // short reason
-            &[0x31, 4, 1][..],              // short DATAGRAM
+            &[0x40][..],                // truncated type
+            &[0x21][..],                // unknown type
+            &[0x06, 0, 5, 1][..],       // short CRYPTO
+            &[0x07, 0][..],             // empty NEW_TOKEN
+            &[0x0a, 0, 9, 1][..],       // short STREAM
+            &[0x18, 1, 2, 8][..],       // retire_prior_to > seq
+            &[0x18, 1, 0, 21][..],      // CID too long
+            &[0x1a, 1, 2][..],          // short PATH_CHALLENGE
+            &[0x1c, 1, 0, 5, b'x'][..], // short reason
+            &[0x31, 4, 1][..],          // short DATAGRAM
             &[0x0e, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff][..],
         ] {
             assert!(one(bad).is_err(), "{bad:?}");
         }
         // Unbounded STREAM and DATAGRAM frames take the rest.
-        assert!(matches!(one(&[0x08, 0, 1, 2]).unwrap(), Frame::Stream { data, .. } if data == (2..4)));
+        assert!(
+            matches!(one(&[0x08, 0, 1, 2]).unwrap(), Frame::Stream { data, .. } if data == (2..4))
+        );
         assert_eq!(one(&[0x30, 1]).unwrap(), Frame::Datagram(1..2));
         let e = TransportError::new(code::PROTOCOL_VIOLATION, "x");
         assert_eq!(e.to_string(), "transport error 0xa: x");

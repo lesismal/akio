@@ -26,11 +26,9 @@ impl RangeSet {
         self.0.clear();
     }
 
+    #[cfg(test)]
     pub fn contains(&self, v: u64) -> bool {
-        self.0
-            .range(..=v)
-            .next_back()
-            .is_some_and(|(_, &e)| v < e)
+        self.0.range(..=v).next_back().is_some_and(|(_, &e)| v < e)
     }
 
     /// Adds `r`; returns whether anything new was added.
@@ -102,6 +100,7 @@ impl RangeSet {
         self.remove(0..v);
     }
 
+    #[cfg(test)]
     pub fn min(&self) -> Option<u64> {
         self.0.iter().next().map(|(&s, _)| s)
     }

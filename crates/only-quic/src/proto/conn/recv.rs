@@ -8,7 +8,9 @@ use super::super::cid::{ConnectionId, LOCAL_CID_LEN};
 use super::super::coding::Reader;
 use super::super::crypto::{TAG_LEN, initial_keys};
 use super::super::frame::{self, Frame, TransportError, code};
-use super::super::packet::{HeaderError, PacketType, VERSION_1, decode_pn, parse_header, unprotect_header};
+use super::super::packet::{
+    HeaderError, PacketType, VERSION_1, decode_pn, parse_header, unprotect_header,
+};
 use super::super::recovery::{GRANULARITY, PACKET_THRESHOLD, PERSISTENT_CONGESTION_THRESHOLD, Rtt};
 use super::*;
 use crate::types::ConnectionError;
@@ -120,7 +122,14 @@ impl Connection {
         }
     }
 
-    fn packet(&mut self, now: Instant, from: SocketAddr, mut pkt: Vec<u8>, h: &Pkt, dgram_len: usize) -> Outcome {
+    fn packet(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        mut pkt: Vec<u8>,
+        h: &Pkt,
+        dgram_len: usize,
+    ) -> Outcome {
         match h.ty {
             PacketType::VersionNegotiation => {
                 self.on_version_negotiation(&h.token);
@@ -156,7 +165,10 @@ impl Connection {
         let unprot = {
             let hk = match sid {
                 SpaceId::Data => self.one_rtt.as_ref().map(|k| &k.remote_hp),
-                s => self.spaces[s as usize].keys.as_ref().map(|k| &k.remote.header),
+                s => self.spaces[s as usize]
+                    .keys
+                    .as_ref()
+                    .map(|k| &k.remote.header),
             };
             let Some(hk) = hk else {
                 return Outcome::Undecryptable;
@@ -209,9 +221,16 @@ impl Connection {
             }
             return Outcome::Undecryptable;
         }
-        let reserved = if h.ty.is_long() { first & 0x0c } else { first & 0x18 };
+        let reserved = if h.ty.is_long() {
+            first & 0x0c
+        } else {
+            first & 0x18
+        };
         if reserved != 0 {
-            self.close_transport(now, TransportError::new(code::PROTOCOL_VIOLATION, "reserved header bits set"));
+            self.close_transport(
+                now,
+                TransportError::new(code::PROTOCOL_VIOLATION, "reserved header bits set"),
+            );
             return Outcome::Processed;
         }
         if sid == SpaceId::Data {
@@ -219,7 +238,13 @@ impl Connection {
                 KeyUse::Next => {
                     // The peer updated its keys: follow (RFC 9001 section 6.2).
                     if !self.confirmed && self.side == Side::Server && !self.tls_done {
-                        self.close_transport(now, TransportError::new(code::KEY_UPDATE_ERROR, "key update before the handshake completed"));
+                        self.close_transport(
+                            now,
+                            TransportError::new(
+                                code::KEY_UPDATE_ERROR,
+                                "key update before the handshake completed",
+                            ),
+                        );
                         return Outcome::Processed;
                     }
                     let keep = now + self.pto() * 3;
@@ -268,7 +293,10 @@ impl Connection {
         }
         let payload = Bytes::from(pkt).slice(header_len..h.len - TAG_LEN);
         if payload.is_empty() {
-            self.close_transport(now, TransportError::new(code::PROTOCOL_VIOLATION, "packet without frames"));
+            self.close_transport(
+                now,
+                TransportError::new(code::PROTOCOL_VIOLATION, "packet without frames"),
+            );
             return Outcome::Processed;
         }
         let migrating = sid == SpaceId::Data && from != self.path.remote;
@@ -288,7 +316,13 @@ impl Connection {
                 }
             };
             if sid != SpaceId::Data && !f.allowed_in_handshake() {
-                self.close_transport(now, TransportError::new(code::PROTOCOL_VIOLATION, "frame not allowed in this packet type"));
+                self.close_transport(
+                    now,
+                    TransportError::new(
+                        code::PROTOCOL_VIOLATION,
+                        "frame not allowed in this packet type",
+                    ),
+                );
                 return Outcome::Processed;
             }
             eliciting |= f.ack_eliciting();
@@ -372,33 +406,63 @@ impl Connection {
         self.pto_count = 0;
     }
 
-    fn on_frame(&mut self, now: Instant, sid: SpaceId, from: SocketAddr, payload: &Bytes, f: Frame<'_>) -> Result<(), TransportError> {
+    fn on_frame(
+        &mut self,
+        now: Instant,
+        sid: SpaceId,
+        from: SocketAddr,
+        payload: &Bytes,
+        f: Frame<'_>,
+    ) -> Result<(), TransportError> {
         match f {
             Frame::Padding | Frame::Ping => {}
-            Frame::Ack { ranges, delay, ecn: _ } => self.on_ack(now, sid, &ranges, delay)?,
+            Frame::Ack {
+                ranges,
+                delay,
+                ecn: _,
+            } => self.on_ack(now, sid, &ranges, delay)?,
             Frame::Crypto { offset, data } => {
                 let sp = &mut self.spaces[sid as usize];
                 sp.crypto_recv.insert(offset, payload.slice(data), false)?;
                 if sp.crypto_recv.buffered() > MAX_CRYPTO_BUFFER {
-                    return Err(TransportError::new(code::CRYPTO_BUFFER_EXCEEDED, "too much out-of-order CRYPTO data"));
+                    return Err(TransportError::new(
+                        code::CRYPTO_BUFFER_EXCEEDED,
+                        "too much out-of-order CRYPTO data",
+                    ));
                 }
                 while let Some(chunk) = self.spaces[sid as usize].crypto_recv.pop() {
                     if let Err(e) = self.tls.read_handshake(sid.level(), &chunk) {
-                        return Err(TransportError::new(code::CRYPTO_ERROR + u64::from(e.alert.code()), e.to_string()));
+                        return Err(TransportError::new(
+                            code::CRYPTO_ERROR + u64::from(e.alert.code()),
+                            e.to_string(),
+                        ));
                     }
                 }
                 self.drain_tls(now);
             }
             Frame::NewToken(t) => {
                 if self.side == Side::Server {
-                    return Err(TransportError::new(code::PROTOCOL_VIOLATION, "NEW_TOKEN from a client"));
+                    return Err(TransportError::new(
+                        code::PROTOCOL_VIOLATION,
+                        "NEW_TOKEN from a client",
+                    ));
                 }
-                self.ep_events.push_back(EndpointEvent::NewToken(t.to_vec()));
+                self.ep_events
+                    .push_back(EndpointEvent::NewToken(t.to_vec()));
             }
-            Frame::Stream { id, offset, data, fin } => {
+            Frame::Stream {
+                id,
+                offset,
+                data,
+                fin,
+            } => {
                 self.on_stream_frame(id, offset, payload.slice(data), fin)?;
             }
-            Frame::ResetStream { id, code, final_size } => self.on_reset_stream(id, code, final_size)?,
+            Frame::ResetStream {
+                id,
+                code,
+                final_size,
+            } => self.on_reset_stream(id, code, final_size)?,
             Frame::StopSending { id, code } => self.on_stop_sending(id, code)?,
             Frame::MaxData(m) => {
                 if m > self.tx_max_data {
@@ -408,12 +472,19 @@ impl Connection {
             }
             Frame::MaxStreamData { id, max } => self.on_max_stream_data(id, max)?,
             Frame::MaxStreams { bidi, max } => self.on_max_streams(bidi, max)?,
-            Frame::DataBlocked(_) | Frame::StreamDataBlocked { .. } | Frame::StreamsBlocked { .. } => {
+            Frame::DataBlocked(_)
+            | Frame::StreamDataBlocked { .. }
+            | Frame::StreamsBlocked { .. } => {
                 if let Frame::StreamDataBlocked { id, .. } = f {
                     self.check_stream_id(id, false)?;
                 }
             }
-            Frame::NewConnectionId { seq, retire_prior_to, cid, token } => {
+            Frame::NewConnectionId {
+                seq,
+                retire_prior_to,
+                cid,
+                token,
+            } => {
                 self.on_new_cid(seq, retire_prior_to, cid, token)?;
             }
             Frame::RetireConnectionId(seq) => self.on_retire_cid(seq)?,
@@ -430,7 +501,12 @@ impl Connection {
                     self.prev_path = None;
                 }
             }
-            Frame::ConnectionClose { app, code, frame: _, reason } => {
+            Frame::ConnectionClose {
+                app,
+                code,
+                frame: _,
+                reason,
+            } => {
                 let reason = reason.to_vec();
                 let e = if app {
                     ConnectionError::ApplicationClosed { code, reason }
@@ -441,13 +517,19 @@ impl Connection {
             }
             Frame::HandshakeDone => {
                 if self.side == Side::Server {
-                    return Err(TransportError::new(code::PROTOCOL_VIOLATION, "HANDSHAKE_DONE from a client"));
+                    return Err(TransportError::new(
+                        code::PROTOCOL_VIOLATION,
+                        "HANDSHAKE_DONE from a client",
+                    ));
                 }
                 self.confirm(now);
             }
             Frame::Datagram(r) => {
                 if self.cfg.transport.datagram_receive_buffer_size.is_none() {
-                    return Err(TransportError::new(code::PROTOCOL_VIOLATION, "DATAGRAM frames not accepted"));
+                    return Err(TransportError::new(
+                        code::PROTOCOL_VIOLATION,
+                        "DATAGRAM frames not accepted",
+                    ));
                 }
                 self.events.push_back(Event::Datagram(payload.slice(r)));
             }
@@ -457,13 +539,25 @@ impl Connection {
 
     // ---- connection IDs ----
 
-    fn on_new_cid(&mut self, seq: u64, rpt: u64, cid: ConnectionId, token: ResetToken) -> Result<(), TransportError> {
+    fn on_new_cid(
+        &mut self,
+        seq: u64,
+        rpt: u64,
+        cid: ConnectionId,
+        token: ResetToken,
+    ) -> Result<(), TransportError> {
         if self.remote_cid().is_empty() {
-            return Err(TransportError::new(code::PROTOCOL_VIOLATION, "NEW_CONNECTION_ID with zero-length IDs"));
+            return Err(TransportError::new(
+                code::PROTOCOL_VIOLATION,
+                "NEW_CONNECTION_ID with zero-length IDs",
+            ));
         }
         if let Some(old) = self.remote_cids.get(&seq) {
             if old.cid != cid {
-                return Err(TransportError::new(code::PROTOCOL_VIOLATION, "connection id sequence reused"));
+                return Err(TransportError::new(
+                    code::PROTOCOL_VIOLATION,
+                    "connection id sequence reused",
+                ));
             }
             return Ok(());
         }
@@ -472,7 +566,13 @@ impl Connection {
             self.pending.retire_cids.push(seq);
             return Ok(());
         }
-        self.remote_cids.insert(seq, RemoteCid { cid, token: Some(token) });
+        self.remote_cids.insert(
+            seq,
+            RemoteCid {
+                cid,
+                token: Some(token),
+            },
+        );
         if rpt > self.remote_retire_prior_to {
             self.remote_retire_prior_to = rpt;
             let old: Vec<u64> = self.remote_cids.range(..rpt).map(|(s, _)| *s).collect();
@@ -487,14 +587,20 @@ impl Connection {
             }
         }
         if self.remote_cids.len() as u64 > LOCAL_CID_LIMIT {
-            return Err(TransportError::new(code::CONNECTION_ID_LIMIT_ERROR, "too many connection ids"));
+            return Err(TransportError::new(
+                code::CONNECTION_ID_LIMIT_ERROR,
+                "too many connection ids",
+            ));
         }
         Ok(())
     }
 
     fn on_retire_cid(&mut self, seq: u64) -> Result<(), TransportError> {
         if seq >= self.next_local_seq {
-            return Err(TransportError::new(code::PROTOCOL_VIOLATION, "retiring an unissued connection id"));
+            return Err(TransportError::new(
+                code::PROTOCOL_VIOLATION,
+                "retiring an unissued connection id",
+            ));
         }
         if let Some(cid) = self.local_cids.remove(&seq) {
             self.ep_events.push_back(EndpointEvent::RetireCid(cid));
@@ -533,12 +639,21 @@ impl Connection {
 
     // ---- acknowledgments and loss detection ----
 
-    fn on_ack(&mut self, now: Instant, sid: SpaceId, ranges: &[std::ops::Range<u64>], delay: u64) -> Result<(), TransportError> {
+    fn on_ack(
+        &mut self,
+        now: Instant,
+        sid: SpaceId,
+        ranges: &[std::ops::Range<u64>],
+        delay: u64,
+    ) -> Result<(), TransportError> {
         let Some(largest) = ranges.first().map(|r| r.end - 1) else {
             return Ok(());
         };
         if largest >= self.spaces[sid as usize].next_pn {
-            return Err(TransportError::new(code::PROTOCOL_VIOLATION, "ACK of an unsent packet"));
+            return Err(TransportError::new(
+                code::PROTOCOL_VIOLATION,
+                "ACK of an unsent packet",
+            ));
         }
         let mut newly: Vec<(u64, Sent)> = Vec::new();
         {
@@ -564,7 +679,9 @@ impl Connection {
             if newly.iter().any(|(_, p)| p.ack_eliciting) {
                 let latest = now.saturating_duration_since(p.time);
                 let mut ack_delay = if sid == SpaceId::Data {
-                    Duration::from_micros(delay.saturating_mul(1 << self.peer.ack_delay_exponent.min(20)))
+                    Duration::from_micros(
+                        delay.saturating_mul(1 << self.peer.ack_delay_exponent.min(20)),
+                    )
                 } else {
                     Duration::ZERO
                 };
@@ -588,7 +705,8 @@ impl Connection {
             if p.mtu_probe {
                 self.on_mtu_probe_acked(p.size);
             } else if p.in_flight {
-                self.cc.on_ack(now, p.time, u64::from(p.size), &self.rtt, app_limited);
+                self.cc
+                    .on_ack(now, p.time, u64::from(p.size), &self.rtt, app_limited);
             }
             if sid == SpaceId::Data && pn >= self.phase_first_sent {
                 self.phase_acked = true;
@@ -606,7 +724,9 @@ impl Connection {
         match f {
             SentFrame::Stream { id, off, len, fin } => self.on_stream_acked(id, off, len, fin),
             SentFrame::Crypto { off, len } => {
-                self.spaces[sid as usize].crypto_send.on_ack(off..off + len, false);
+                self.spaces[sid as usize]
+                    .crypto_send
+                    .on_ack(off..off + len, false);
             }
             SentFrame::Ack(largest) => {
                 let sp = &mut self.spaces[sid as usize];
@@ -624,22 +744,36 @@ impl Connection {
         match f {
             SentFrame::Stream { id, off, len, fin } => self.on_stream_lost(id, off, len, fin),
             SentFrame::Crypto { off, len } => {
-                self.spaces[sid as usize].crypto_send.on_lost(off..off + len, false);
+                self.spaces[sid as usize]
+                    .crypto_send
+                    .on_lost(off..off + len, false);
             }
             SentFrame::Ack(_) | SentFrame::PathChallenge => {}
             SentFrame::ResetStream(id) => {
-                if self.streams.get(&id).is_some_and(|s| s.send.as_ref().is_some_and(|x| x.reset.is_some_and(|r| !r.2))) {
+                if self.streams.get(&id).is_some_and(|s| {
+                    s.send
+                        .as_ref()
+                        .is_some_and(|x| x.reset.is_some_and(|r| !r.2))
+                }) {
                     self.pending.reset_stream.insert(id);
                 }
             }
             SentFrame::StopSending(id) => {
-                if self.streams.get(&id).is_some_and(|s| s.recv.as_ref().is_some_and(|r| !r.done)) {
+                if self
+                    .streams
+                    .get(&id)
+                    .is_some_and(|s| s.recv.as_ref().is_some_and(|r| !r.done))
+                {
                     self.pending.stop_sending.insert(id);
                 }
             }
             SentFrame::MaxData => self.pending.max_data = true,
             SentFrame::MaxStreamData(id) => {
-                if self.streams.get(&id).is_some_and(|s| s.recv.as_ref().is_some_and(|r| !r.done)) {
+                if self
+                    .streams
+                    .get(&id)
+                    .is_some_and(|s| s.recv.as_ref().is_some_and(|r| !r.done))
+                {
                     self.pending.max_stream_data.insert(id);
                 }
             }
@@ -650,7 +784,7 @@ impl Connection {
                     self.pending.max_streams_uni = true;
                 }
             }
-            SentFrame::DataBlocked | SentFrame::StreamDataBlocked(_) | SentFrame::StreamsBlocked(_) => {}
+            SentFrame::DataBlocked | SentFrame::StreamDataBlocked | SentFrame::StreamsBlocked => {}
             SentFrame::NewCid(seq) => {
                 if self.local_cids.contains_key(&seq) {
                     self.pending.new_cids.push(seq);
@@ -758,10 +892,19 @@ impl Connection {
         if !any {
             // The client keeps probing until the server validated its address
             // (RFC 9002 section 6.2.2.1), so the handshake cannot deadlock.
-            let unvalidated = self.side == Side::Client && !self.confirmed && self.spaces[1].largest_acked.is_none();
+            let unvalidated = self.side == Side::Client
+                && !self.confirmed
+                && self.spaces[1].largest_acked.is_none();
             if unvalidated && !self.is_closed() {
-                let anchor = self.last_eliciting_sent_any.unwrap_or(self.last_rx).max(self.last_rx);
-                let id = if self.spaces[1].keys.is_some() { SpaceId::Handshake } else { SpaceId::Initial };
+                let anchor = self
+                    .last_eliciting_sent_any
+                    .unwrap_or(self.last_rx)
+                    .max(self.last_rx);
+                let id = if self.spaces[1].keys.is_some() {
+                    SpaceId::Handshake
+                } else {
+                    SpaceId::Initial
+                };
                 return Some((anchor + base * backoff, id));
             }
             return None;
@@ -789,7 +932,10 @@ impl Connection {
     }
 
     pub(super) fn on_loss_timer(&mut self, now: Instant, sid: SpaceId) {
-        if self.spaces[sid as usize].loss_time.is_some_and(|t| t <= now) {
+        if self.spaces[sid as usize]
+            .loss_time
+            .is_some_and(|t| t <= now)
+        {
             self.detect_lost(now, sid);
             return;
         }

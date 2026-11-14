@@ -48,7 +48,7 @@ impl Rtt {
         self.min = self.min.min(latest);
         let mut adjusted = latest;
         if latest >= self.min + ack_delay {
-            adjusted = latest - ack_delay;
+            adjusted = latest.saturating_sub(ack_delay);
         }
         let diff = self.smoothed.abs_diff(adjusted);
         self.var = (self.var * 3 + diff) / 4;
@@ -128,7 +128,14 @@ impl Congestion {
     }
 
     /// `bytes` of a packet sent at `sent` were acknowledged.
-    pub fn on_ack(&mut self, now: Instant, sent: Instant, bytes: u64, rtt: &Rtt, app_limited: bool) {
+    pub fn on_ack(
+        &mut self,
+        now: Instant,
+        sent: Instant,
+        bytes: u64,
+        rtt: &Rtt,
+        app_limited: bool,
+    ) {
         if self.in_recovery(sent) || app_limited {
             return;
         }
@@ -150,10 +157,8 @@ impl Congestion {
 
     fn cubic_ack(&mut self, now: Instant, bytes: u64, rtt: &Rtt) {
         let mss = self.mtu as f64;
-        let epoch = *self.epoch.get_or_insert_with(|| {
-            // A new avoidance epoch: from the current window if it never shrank.
-            now
-        });
+        // A new avoidance epoch starts now if none is running.
+        let epoch = *self.epoch.get_or_insert(now);
         if self.w_max == 0.0 {
             self.w_max = self.window as f64 / mss;
             self.k = 0.0;
@@ -253,7 +258,7 @@ impl Pacer {
     ) -> Option<Instant> {
         // Bursts of up to ~2 ms worth of window, at least 10 packets.
         let rtt = rtt.max(Duration::from_millis(1));
-        let cap = ((window as u128 * 2_000_000 / rtt.as_nanos().max(1)) as u64)
+        let cap = ((u128::from(window) * 2_000_000 / rtt.as_nanos().max(1)) as u64)
             .clamp(10 * mtu, 256 * mtu)
             .min(window.max(10 * mtu));
         if cap != self.capacity {
@@ -263,7 +268,7 @@ impl Pacer {
         let last = *self.last.get_or_insert(now);
         // Refill at 1.25 * window / rtt.
         let elapsed = now.saturating_duration_since(last);
-        let refill = (window as u128 * 5 / 4 * elapsed.as_nanos() / rtt.as_nanos()) as u64;
+        let refill = (u128::from(window) * 5 / 4 * elapsed.as_nanos() / rtt.as_nanos()) as u64;
         if refill > 0 {
             self.tokens = self.tokens.saturating_add(refill).min(cap);
             self.last = Some(now);
@@ -272,7 +277,8 @@ impl Pacer {
             return None;
         }
         let missing = size - self.tokens;
-        let nanos = (missing as u128 * rtt.as_nanos() * 4 / (window.max(1) as u128 * 5)) as u64;
+        let nanos =
+            (u128::from(missing) * rtt.as_nanos() * 4 / (u128::from(window.max(1)) * 5)) as u64;
         Some(now + Duration::from_nanos(nanos.max(1)))
     }
 
@@ -290,11 +296,14 @@ mod tests {
         let mut r = Rtt::new(Duration::from_millis(333));
         assert_eq!(r.pto_base(), Duration::from_millis(333 + 666));
         r.update(Duration::from_millis(100), Duration::ZERO);
-        assert_eq!((r.smoothed, r.var, r.min), (
-            Duration::from_millis(100),
-            Duration::from_millis(50),
-            Duration::from_millis(100)
-        ));
+        assert_eq!(
+            (r.smoothed, r.var, r.min),
+            (
+                Duration::from_millis(100),
+                Duration::from_millis(50),
+                Duration::from_millis(100)
+            )
+        );
         r.update(Duration::from_millis(120), Duration::from_millis(10));
         assert_eq!(r.smoothed, Duration::from_micros(101_250));
         r.update(Duration::from_millis(50), Duration::from_millis(100));
@@ -349,6 +358,9 @@ mod tests {
         assert!((10..=20).contains(&sent), "{sent}");
         let at = p.delay(now, 1200, 1200, window, rtt).unwrap();
         assert!(at > now && at < now + Duration::from_millis(5));
-        assert!(p.delay(at + Duration::from_millis(1), 1200, 1200, window, rtt).is_none());
+        assert!(
+            p.delay(at + Duration::from_millis(1), 1200, 1200, window, rtt)
+                .is_none()
+        );
     }
 }

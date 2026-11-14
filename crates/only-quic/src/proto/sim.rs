@@ -10,8 +10,8 @@ use only_crypto::rand::ChaChaRng;
 
 use super::conn::{ConnConfig, Connection, EndpointEvent, Event};
 use super::endpoint::{ConnHandle, DatagramEvent, Endpoint, ServerSetup};
-use crate::types::{ConnectionError, Dir, StreamId, TransportConfig};
 use crate::Bytes;
+use crate::types::{ConnectionError, Dir, StreamId, TransportConfig};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Link {
@@ -76,7 +76,9 @@ pub(crate) fn certs() -> (only_tls::ServerConfig, only_tls::ClientConfig) {
     certs_with(None)
 }
 
-pub(crate) fn certs_with(suites: Option<&[u16]>) -> (only_tls::ServerConfig, only_tls::ClientConfig) {
+pub(crate) fn certs_with(
+    suites: Option<&[u16]>,
+) -> (only_tls::ServerConfig, only_tls::ClientConfig) {
     let (cert, key) = only_x509::generate_simple_self_signed(["localhost"]).expect("cert");
     let chain = vec![only_tls::Certificate::from_der(cert.as_der().to_vec())];
     let mut roots = only_tls::RootCerts::empty();
@@ -86,12 +88,18 @@ pub(crate) fn certs_with(suites: Option<&[u16]>) -> (only_tls::ServerConfig, onl
         .alpn(["sim"])
         .tls13_only(true)
         .session_tickets(true);
-    let mut cb = only_tls::ClientConfig::builder().roots(roots).alpn(["sim"]).tls13_only(true);
+    let mut cb = only_tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["sim"])
+        .tls13_only(true);
     if let Some(s) = suites {
         sb = sb.__suites(s);
         cb = cb.__suites(s);
     }
-    (sb.build().expect("server tls"), cb.build().expect("client tls"))
+    (
+        sb.build().expect("server tls"),
+        cb.build().expect("client tls"),
+    )
 }
 
 impl Sim {
@@ -121,10 +129,23 @@ impl Sim {
 
     pub fn default_pair(seed: u8) -> (Sim, only_tls::ClientConfig) {
         let (s, c) = certs();
-        (Sim::new(seed, ConnConfig::new(TransportConfig::default(), true), s, false), c)
+        (
+            Sim::new(
+                seed,
+                ConnConfig::new(TransportConfig::default(), true),
+                s,
+                false,
+            ),
+            c,
+        )
     }
 
-    pub fn connect(&mut self, tls: &only_tls::ClientConfig, cfg: ConnConfig, token: Vec<u8>) -> ConnHandle {
+    pub fn connect(
+        &mut self,
+        tls: &only_tls::ClientConfig,
+        cfg: ConnConfig,
+        token: Vec<u8>,
+    ) -> ConnHandle {
         let (h, c) = self
             .client
             .ep
@@ -161,11 +182,15 @@ impl Sim {
     /// Lets every connection send what it has.
     fn flush(&mut self) {
         for side in [false, true] {
-            let node = if side { &mut self.server } else { &mut self.client };
+            let node = if side {
+                &mut self.server
+            } else {
+                &mut self.client
+            };
             let from = node.addr;
             let mut out = Vec::new();
             let mut ep_events = Vec::new();
-            for (&h, c) in node.conns.iter_mut() {
+            for (&h, c) in &mut node.conns {
                 while let Some(t) = c.poll_transmit(self.now, 10) {
                     match t.segment_size {
                         Some(s) => {
@@ -209,7 +234,11 @@ impl Sim {
             return;
         }
         let server_addr = self.server.addr;
-        let node = if to_server { &mut self.server } else { &mut self.client };
+        let node = if to_server {
+            &mut self.server
+        } else {
+            &mut self.client
+        };
         match node.ep.handle(now, from, &data) {
             Some(DatagramEvent::Conn(h)) => {
                 if let Some(c) = node.conns.get_mut(&h) {
@@ -278,7 +307,11 @@ impl Sim {
     }
 
     pub fn events(&mut self, server: bool, h: ConnHandle) -> Vec<Event> {
-        let node = if server { &mut self.server } else { &mut self.client };
+        let node = if server {
+            &mut self.server
+        } else {
+            &mut self.client
+        };
         node.events.remove(&h).unwrap_or_default()
     }
 
@@ -350,7 +383,9 @@ impl Collector {
 }
 
 fn body(n: usize, salt: u8) -> Vec<u8> {
-    (0..n).map(|i| (i as u8).wrapping_mul(31).wrapping_add(salt)).collect()
+    (0..n)
+        .map(|i| (i as u8).wrapping_mul(31).wrapping_add(salt))
+        .collect()
 }
 
 /// The server echoes every stream it gets (FIN included); runs until the client has `want`
@@ -367,14 +402,16 @@ fn echo_until(sim: &mut Sim, h: ConnHandle, want: usize, limit: Duration) -> Col
             for (id, d) in &server.data {
                 let done = echoed.entry(*id).or_default();
                 if d.len() > *done {
-                    sc.write(*id, Bytes::copy_from_slice(&d[*done..])).expect("echo write");
+                    sc.write(*id, Bytes::copy_from_slice(&d[*done..]))
+                        .expect("echo write");
                     *done = d.len();
                 }
             }
             for (id, d) in std::mem::take(&mut server.finished) {
                 let done = echoed.entry(id).or_default();
                 if d.len() > *done {
-                    sc.write(id, Bytes::copy_from_slice(&d[*done..])).expect("echo write");
+                    sc.write(id, Bytes::copy_from_slice(&d[*done..]))
+                        .expect("echo write");
                 }
                 *done = usize::MAX;
                 sc.finish(id).expect("echo finish");
@@ -385,7 +422,11 @@ fn echo_until(sim: &mut Sim, h: ConnHandle, want: usize, limit: Duration) -> Col
         client.take(evs);
         client.finished.len() >= want
     });
-    assert!(ok, "echo did not finish: {} of {want} streams back", client.finished.len());
+    assert!(
+        ok,
+        "echo did not finish: {} of {want} streams back",
+        client.finished.len()
+    );
     client
 }
 
@@ -394,7 +435,9 @@ fn bulk(sim: &mut Sim, h: ConnHandle, sizes: &[usize], limit: Duration) {
     for (i, &n) in sizes.iter().enumerate() {
         let id = sim.cconn(h).open(Dir::Bi).expect("stream credit");
         let b = body(n, i as u8);
-        sim.cconn(h).write(id, Bytes::from(b.clone())).expect("write");
+        sim.cconn(h)
+            .write(id, Bytes::from(b.clone()))
+            .expect("write");
         sim.cconn(h).finish(id).expect("finish");
         want.insert(id, b);
     }
@@ -415,8 +458,13 @@ fn clean_handshake_and_echo() {
     bulk(&mut sim, h, &[0, 1, 1000, 100_000], Duration::from_secs(30));
     let st = sim.cconn(h).stats();
     assert!(st.sent_packets > 0 && st.udp_rx.datagrams > 0 && st.rtt > Duration::ZERO);
+    // Full-size datagrams leave in GSO batches.
+    assert!(st.udp_tx.ios < st.udp_tx.datagrams, "{st:?}");
     // The path MTU was raised from 1200 to the probe size.
-    assert!(sim.run_until(Duration::from_secs(5), |s| s.cconn(h).stats().current_mtu == 1452));
+    assert!(
+        sim.run_until(Duration::from_secs(5), |s| s.cconn(h).stats().current_mtu
+            == 1452)
+    );
     assert_eq!(st.lost_packets, 0);
 }
 
@@ -454,10 +502,12 @@ fn handshake_survives_heavy_loss() {
 #[test]
 fn many_streams_with_small_limits_and_windows() {
     let (s, tls) = certs();
-    let mut t = TransportConfig::default();
-    t.max_concurrent_bidi_streams = 4;
-    t.stream_receive_window = 8 * 1024;
-    t.receive_window = Some(16 * 1024);
+    let t = TransportConfig {
+        max_concurrent_bidi_streams: 4,
+        stream_receive_window: 8 * 1024,
+        receive_window: Some(16 * 1024),
+        ..TransportConfig::default()
+    };
     let mut sim = Sim::new(6, ConnConfig::new(t.clone(), true), s, false);
     let h = sim.handshake(&tls, ConnConfig::new(t, true));
     // Four streams at a time; more as the server finishes them.
@@ -468,7 +518,9 @@ fn many_streams_with_small_limits_and_windows() {
     let mut client = Collector::default();
     let ok = sim.run_until(Duration::from_secs(120), |s| {
         while opened < total {
-            let Some(id) = s.cconn(h).open(Dir::Bi) else { break };
+            let Some(id) = s.cconn(h).open(Dir::Bi) else {
+                break;
+            };
             let b = body(20_000, opened as u8);
             s.cconn(h).write(id, Bytes::from(b.clone())).expect("write");
             s.cconn(h).finish(id).expect("finish");
@@ -492,7 +544,10 @@ fn many_streams_with_small_limits_and_windows() {
     for (id, b) in want {
         assert!(client.finished[&id] == b);
     }
-    assert!(!client.available.is_empty(), "StreamsAvailable after the limit");
+    assert!(
+        !client.available.is_empty(),
+        "StreamsAvailable after the limit"
+    );
 }
 
 #[test]
@@ -513,12 +568,19 @@ fn nat_rebinding_migrates_the_path() {
 #[test]
 fn migration_refused_when_disabled() {
     let (s, tls) = certs();
-    let mut sim = Sim::new(8, ConnConfig::new(TransportConfig::default(), false), s, false);
+    let mut sim = Sim::new(
+        8,
+        ConnConfig::new(TransportConfig::default(), false),
+        s,
+        false,
+    );
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     let old = sim.client.addr;
     sim.client.addr = "10.9.9.9:7000".parse().expect("addr");
     let id = sim.cconn(h).open(Dir::Bi).expect("stream");
-    sim.cconn(h).write(id, Bytes::from_static(b"x")).expect("write");
+    sim.cconn(h)
+        .write(id, Bytes::from_static(b"x"))
+        .expect("write");
     sim.run_until(Duration::from_secs(2), |_| false);
     assert_eq!(sim.sconn().remote_addr(), old);
 }
@@ -531,9 +593,15 @@ fn key_updates_both_ways() {
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     bulk(&mut sim, h, &[50_000], Duration::from_secs(30));
     assert_eq!(sim.cconn(h).key_phase(), Some(false));
-    assert!({ let n = sim.now; sim.cconn(h).force_key_update(n) });
+    assert!({
+        let n = sim.now;
+        sim.cconn(h).force_key_update(n)
+    });
     // Another update must wait for an acknowledgment in the new phase.
-    assert!(!{ let n = sim.now; sim.cconn(h).force_key_update(n) });
+    assert!(!{
+        let n = sim.now;
+        sim.cconn(h).force_key_update(n)
+    });
     bulk(&mut sim, h, &[200_000], Duration::from_secs(30));
     assert_eq!(sim.cconn(h).key_phase(), Some(true));
     assert_eq!(sim.sconn().key_phase(), Some(true));
@@ -558,16 +626,31 @@ fn automatic_key_update_interval() {
 #[test]
 fn chacha20_suite() {
     let (s, tls) = certs_with(Some(&[0x1303]));
-    let mut sim = Sim::new(11, ConnConfig::new(TransportConfig::default(), true), s, false);
+    let mut sim = Sim::new(
+        11,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        false,
+    );
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
-    assert!({ let n = sim.now; sim.cconn(h).force_key_update(n) } || true);
+    assert!(
+        {
+            let n = sim.now;
+            sim.cconn(h).force_key_update(n)
+        } || true
+    );
     bulk(&mut sim, h, &[100_000], Duration::from_secs(30));
 }
 
 #[test]
 fn aes256_suite() {
     let (s, tls) = certs_with(Some(&[0x1302]));
-    let mut sim = Sim::new(12, ConnConfig::new(TransportConfig::default(), true), s, false);
+    let mut sim = Sim::new(
+        12,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        false,
+    );
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     bulk(&mut sim, h, &[100_000], Duration::from_secs(30));
 }
@@ -575,7 +658,12 @@ fn aes256_suite() {
 #[test]
 fn retry_validates_the_address() {
     let (s, tls) = certs();
-    let mut sim = Sim::new(13, ConnConfig::new(TransportConfig::default(), true), s, true);
+    let mut sim = Sim::new(
+        13,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        true,
+    );
     sim.link.loss = 0.05;
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     assert!(sim.cconn(h).retry_scid.is_some());
@@ -589,10 +677,19 @@ fn new_token_and_resumption() {
     assert!(!sim.cconn(h).resumed());
     assert!(sim.run_until(Duration::from_secs(5), |s| !s.client.tokens.is_empty()));
     let token = sim.client.tokens[0].clone();
-    { let n = sim.now; sim.cconn(h).close(n, 0, b""); }
-    sim.run_until(Duration::from_secs(5), |s| s.client.conns.is_empty() && s.server.conns.is_empty());
+    {
+        let n = sim.now;
+        sim.cconn(h).close(n, 0, b"");
+    }
+    sim.run_until(Duration::from_secs(5), |s| {
+        s.client.conns.is_empty() && s.server.conns.is_empty()
+    });
     // The second connection presents the token (address validated at once) and resumes.
-    let h2 = sim.connect(&tls, ConnConfig::new(TransportConfig::default(), true), token);
+    let h2 = sim.connect(
+        &tls,
+        ConnConfig::new(TransportConfig::default(), true),
+        token,
+    );
     let ok = sim.run_until(Duration::from_secs(10), |s| {
         s.connected(false, h2) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
     });
@@ -604,7 +701,11 @@ fn new_token_and_resumption() {
 #[test]
 fn version_negotiation() {
     let (mut sim, tls) = Sim::default_pair(15);
-    let h = sim.connect(&tls, ConnConfig::new(TransportConfig::default(), true), Vec::new());
+    let h = sim.connect(
+        &tls,
+        ConnConfig::new(TransportConfig::default(), true),
+        Vec::new(),
+    );
     let now = sim.now;
     let t = sim.cconn(h).poll_transmit(now, 1).expect("initial");
     let mut d = t.data;
@@ -641,7 +742,9 @@ fn stateless_reset_after_server_restart() {
     sim.server.conns.remove(&sh);
     sim.server.ep.handle_event(sh, &EndpointEvent::Drained);
     let id = sim.cconn(h).open(Dir::Bi).expect("stream");
-    sim.cconn(h).write(id, Bytes::from(vec![7u8; 500])).expect("write");
+    sim.cconn(h)
+        .write(id, Bytes::from(vec![7u8; 500]))
+        .expect("write");
     let mut c = Collector::default();
     let ok = sim.run_until(Duration::from_secs(10), |s| {
         let evs = s.events(false, h);
@@ -655,8 +758,10 @@ fn stateless_reset_after_server_restart() {
 #[test]
 fn idle_timeout_and_keep_alive() {
     let (s, tls) = certs();
-    let mut t = TransportConfig::default();
-    t.max_idle_timeout = Some(Duration::from_secs(3));
+    let t = TransportConfig {
+        max_idle_timeout: Some(Duration::from_secs(3)),
+        ..TransportConfig::default()
+    };
     let mut sim = Sim::new(17, ConnConfig::new(t.clone(), true), s.clone(), false);
     let h = sim.handshake(&tls, ConnConfig::new(t.clone(), true));
     let mut c = Collector::default();
@@ -670,8 +775,10 @@ fn idle_timeout_and_keep_alive() {
     assert_eq!(c.closed, Some(ConnectionError::TimedOut));
     assert!(sim.now - start >= Duration::from_secs(3));
     // With keep-alives the connection stays.
-    let mut ka = t.clone();
-    ka.keep_alive_interval = Some(Duration::from_secs(1));
+    let ka = TransportConfig {
+        keep_alive_interval: Some(Duration::from_secs(1)),
+        ..t
+    };
     let mut sim = Sim::new(18, ConnConfig::new(t, true), s, false);
     let h = sim.handshake(&tls, ConnConfig::new(ka, true));
     sim.run_until(Duration::from_secs(10), |_| false);
@@ -685,7 +792,10 @@ fn application_close_reaches_the_peer() {
     let (mut sim, tls) = Sim::default_pair(19);
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     let sh = sim.server_handle().expect("server");
-    { let n = sim.now; sim.cconn(h).close(n, 42, b"bye"); }
+    {
+        let n = sim.now;
+        sim.cconn(h).close(n, 42, b"bye");
+    }
     let mut c = Collector::default();
     let ok = sim.run_until(Duration::from_secs(5), |s| {
         let evs = s.events(true, sh);
@@ -701,13 +811,20 @@ fn application_close_reaches_the_peer() {
         })
     );
     // Both drain and go away.
-    assert!(sim.run_until(Duration::from_secs(10), |s| s.client.conns.is_empty() && s.server.conns.is_empty()));
+    assert!(
+        sim.run_until(Duration::from_secs(10), |s| s.client.conns.is_empty()
+            && s.server.conns.is_empty())
+    );
 }
 
 #[test]
 fn close_during_handshake_uses_transport_close() {
     let (mut sim, tls) = Sim::default_pair(20);
-    let h = sim.connect(&tls, ConnConfig::new(TransportConfig::default(), true), Vec::new());
+    let h = sim.connect(
+        &tls,
+        ConnConfig::new(TransportConfig::default(), true),
+        Vec::new(),
+    );
     sim.step();
     sim.step();
     let now = sim.now;
@@ -715,7 +832,12 @@ fn close_during_handshake_uses_transport_close() {
     let ok = sim.run_until(Duration::from_secs(5), |s| {
         s.server_handle().is_some_and(|sh| {
             s.server.events.get(&sh).is_some_and(|v| {
-                v.iter().any(|e| matches!(e, Event::Closed(ConnectionError::ConnectionClosed { code: 0xc, .. })))
+                v.iter().any(|e| {
+                    matches!(
+                        e,
+                        Event::Closed(ConnectionError::ConnectionClosed { code: 0xc, .. })
+                    )
+                })
             })
         })
     });
@@ -728,9 +850,15 @@ fn datagrams_both_ways() {
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     let max = sim.cconn(h).max_datagram_size().expect("supported");
     assert!(max > 1000);
-    assert!(sim.cconn(h).send_datagram(Bytes::from(vec![0u8; max + 1])).is_err());
+    assert!(
+        sim.cconn(h)
+            .send_datagram(Bytes::from(vec![0u8; max + 1]))
+            .is_err()
+    );
     for i in 0..10u8 {
-        sim.cconn(h).send_datagram(Bytes::from(vec![i; 100])).expect("datagram");
+        sim.cconn(h)
+            .send_datagram(Bytes::from(vec![i; 100]))
+            .expect("datagram");
     }
     let mut sc = Collector::default();
     let ok = sim.run_until(Duration::from_secs(5), |s| {
@@ -740,7 +868,9 @@ fn datagrams_both_ways() {
         sc.datagrams.len() == 10
     });
     assert!(ok);
-    sim.sconn().send_datagram(Bytes::from_static(b"back")).expect("datagram");
+    sim.sconn()
+        .send_datagram(Bytes::from_static(b"back"))
+        .expect("datagram");
     let mut cc = Collector::default();
     assert!(sim.run_until(Duration::from_secs(5), |s| {
         let evs = s.events(false, h);
@@ -750,11 +880,17 @@ fn datagrams_both_ways() {
     assert_eq!(cc.datagrams[0], "back");
     // A peer that refuses datagrams.
     let (s, tls) = certs();
-    let mut t = TransportConfig::default();
-    t.datagram_receive_buffer_size = None;
+    let t = TransportConfig {
+        datagram_receive_buffer_size: None,
+        ..TransportConfig::default()
+    };
     let mut sim = Sim::new(22, ConnConfig::new(t, true), s, false);
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
-    assert!(sim.cconn(h).send_datagram(Bytes::from_static(b"x")).is_err());
+    assert!(
+        sim.cconn(h)
+            .send_datagram(Bytes::from_static(b"x"))
+            .is_err()
+    );
 }
 
 #[test]
@@ -762,10 +898,14 @@ fn reset_and_stop_streams() {
     let (mut sim, tls) = Sim::default_pair(23);
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     let a = sim.cconn(h).open(Dir::Bi).expect("stream");
-    sim.cconn(h).write(a, Bytes::from(vec![1u8; 50_000])).expect("write");
+    sim.cconn(h)
+        .write(a, Bytes::from(vec![1u8; 50_000]))
+        .expect("write");
     sim.cconn(h).reset(a, 5).expect("reset");
     let b = sim.cconn(h).open(Dir::Bi).expect("stream");
-    sim.cconn(h).write(b, Bytes::from_static(b"hello")).expect("write");
+    sim.cconn(h)
+        .write(b, Bytes::from_static(b"hello"))
+        .expect("write");
     let mut sc = Collector::default();
     let ok = sim.run_until(Duration::from_secs(5), |s| {
         let sh = s.server_handle().expect("server");
@@ -784,13 +924,21 @@ fn reset_and_stop_streams() {
         !cc.stops.is_empty()
     }));
     assert_eq!(cc.stops, vec![(b, 9)]);
-    assert!(matches!(sim.cconn(h).write(b, Bytes::from_static(b"x")), Err(crate::Error::Stopped(9))));
+    assert!(matches!(
+        sim.cconn(h).write(b, Bytes::from_static(b"x")),
+        Err(crate::Error::Stopped(9))
+    ));
     // Uni stream rules.
     let u = sim.cconn(h).open(Dir::Uni).expect("uni");
     assert!(sim.cconn(h).stop(u, 1).is_err());
-    sim.cconn(h).write(u, Bytes::from_static(b"one way")).expect("write");
+    sim.cconn(h)
+        .write(u, Bytes::from_static(b"one way"))
+        .expect("write");
     sim.cconn(h).finish(u).expect("finish");
-    assert!(matches!(sim.cconn(h).write(u, Bytes::from_static(b"x")), Err(crate::Error::UnknownStream)));
+    assert!(matches!(
+        sim.cconn(h).write(u, Bytes::from_static(b"x")),
+        Err(crate::Error::UnknownStream)
+    ));
     let mut sc = Collector::default();
     assert!(sim.run_until(Duration::from_secs(5), |s| {
         let sh = s.server_handle().expect("server");
@@ -806,7 +954,9 @@ fn blackout_then_recovery() {
     let (mut sim, tls) = Sim::default_pair(24);
     let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
     let id = sim.cconn(h).open(Dir::Bi).expect("stream");
-    sim.cconn(h).write(id, Bytes::from(body(500_000, 1))).expect("write");
+    sim.cconn(h)
+        .write(id, Bytes::from(body(500_000, 1)))
+        .expect("write");
     sim.cconn(h).finish(id).expect("finish");
     sim.run_until(Duration::from_millis(100), |_| false);
     sim.link.down = true;
@@ -827,8 +977,10 @@ fn blackout_then_recovery() {
 #[test]
 fn newreno_bulk() {
     let (s, tls) = certs();
-    let mut t = TransportConfig::default();
-    t.congestion = crate::Congestion::NewReno;
+    let t = TransportConfig {
+        congestion: crate::Congestion::NewReno,
+        ..TransportConfig::default()
+    };
     let mut sim = Sim::new(25, ConnConfig::new(t.clone(), true), s, false);
     sim.link.loss = 0.01;
     let h = sim.handshake(&tls, ConnConfig::new(t, true));
@@ -839,8 +991,17 @@ fn newreno_bulk() {
 fn bad_certificate_is_a_crypto_error() {
     let (s, _) = certs();
     let (_, other) = certs();
-    let mut sim = Sim::new(26, ConnConfig::new(TransportConfig::default(), true), s, false);
-    let h = sim.connect(&other, ConnConfig::new(TransportConfig::default(), true), Vec::new());
+    let mut sim = Sim::new(
+        26,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        false,
+    );
+    let h = sim.connect(
+        &other,
+        ConnConfig::new(TransportConfig::default(), true),
+        Vec::new(),
+    );
     let mut c = Collector::default();
     let ok = sim.run_until(Duration::from_secs(5), |s| {
         let evs = s.events(false, h);
