@@ -39,6 +39,9 @@ ctr = "0.9"
 crc32fast = "1"
 base64 = "0.22"
 chacha20poly1305 = "0.10"
+# Reference for the public-key differential target `crypto_sig_verify`.
+ring = "0.17"
+only-x509 = { path = "../crates/only-x509", features = ["fuzzing"] }
 only-protobuf = { path = "../crates/only-protobuf" }
 # Generated test messages and the prost mirror for the differential target `protobuf_diff`.
 protobuf-test = { path = "../tools/protobuf-test" }
@@ -422,6 +425,20 @@ bench = false
 [[bin]]
 name = "deflate_roundtrip"
 path = "fuzz_targets/deflate_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "x509_parse"
+path = "fuzz_targets/x509_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "crypto_sig_verify"
+path = "fuzz_targets/crypto_sig_verify.rs"
 test = false
 doc = false
 bench = false

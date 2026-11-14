@@ -102,6 +102,33 @@ Migration:
   BitTorrent info hashes and MSE, SRT key wrap and AES-CTR, RTMP digest handshake, SRTP).
 - `only-sys` (internal, `#[doc(hidden)]`): `fill_random` over `getrandom(2)` / `getentropy(2)`
   with a `/dev/urandom` fallback.
+### Added: public-key cryptography and X.509 (`only-crypto`, new `only-x509`, DEV-PLAN wave B)
+
+Groundwork for the own TLS 1.2/1.3, DTLS, QUIC and WebRTC stacks (waves C and D); nothing uses
+it in the protocol crates yet, so no behaviour changes.
+
+- `only-crypto` (internal tier; additive API): X25519 (RFC 7748), Ed25519 (RFC 8032, strict
+  verification: canonical `S`, encoded-`R` comparison), ECDH and ECDSA on P-256 and P-384
+  (RFC 6979 deterministic nonces, DER and fixed-width signatures, SEC1 points with validation),
+  RSA PKCS#1 v1.5 and PSS sign/verify with SHA-256/384/512 (SHA-1 verify only) for 2048–8192-bit
+  moduli (CRT, blinding, result check), strict DER reader/writer, PEM, and key encodings
+  (PKCS#8 v1/v2, SEC1, PKCS#1, SubjectPublicKeyInfo) behind `pkey::{PrivateKey, PublicKey,
+  SignatureAlgorithm}`. New `Error` variants `InvalidKey`, `Encoding`, `Unsupported`, `Random`,
+  `ZeroSharedSecret`. Constant-time field arithmetic (Montgomery for P-256/P-384 and scalars,
+  radix 2⁵¹ for Curve25519), complete addition formulas, table lookups that read every entry.
+- New internal crate `only-x509` (`#![forbid(unsafe_code)]`): certificate parsing (strict DER;
+  subjectAltName, basicConstraints, keyUsage, extKeyUsage, nameConstraints, key identifiers),
+  chain building and validation against a `RootStore` (validity, CA/pathLen, key usage, EKU,
+  DNS/IP/directoryName name constraints, unknown critical extensions, a signature-check budget),
+  RFC 6125 server-name matching (leftmost-label wildcards, IP SANs), and generation of
+  self-signed and CA-signed certificates (`CertificateParams`, `generate_simple_self_signed`).
+- Tests: Wycheproof (X25519, Ed25519, ECDSA P-256/P-384 DER and P1363, ECDH P-256/P-384, RSA
+  PKCS#1 v1.5 and PSS verification, RSA signature generation), RFC 7748 / 8032 / 6979 vectors,
+  identical signatures and mutual verification with ring and RustCrypto p256/p384, real-world
+  chains (Google Trust Services, Let's Encrypt ECDSA and RSA), OpenSSL-made chains and keys
+  (RSA-PSS, P-384, Ed25519), rcgen and rustls-webpki interop, constructed negative chains; fuzz
+  targets `x509_parse` and `crypto_sig_verify` (differential against ring) with corpus replays.
+
 ### Changed: in-house HTTP codecs (no more httparse, loona-hpack, regex)
 
 DEV-PLAN "no third-party dependencies", wave A. The public API is unchanged.

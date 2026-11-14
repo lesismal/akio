@@ -13,7 +13,8 @@ explanation is in the [book](https://lesismal.github.io/only/en/).
 ```mermaid
 flowchart BT
     sys["only-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
-    crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG"]
+    crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG,<br/>X25519, Ed25519, P-256/P-384, RSA, DER/PEM"]
+    x509["only-x509<br/>certificates, chain validation, generation"]
     buf["only-buf<br/>size-class pool, SharedBuf"]
     timer["only-timer<br/>timer wheel"]
     deflate["only-deflate<br/>DEFLATE, zlib, gzip"]
@@ -75,6 +76,7 @@ flowchart BT
     turn --> webrtc
     http --> media
     sys --> crypto
+    crypto --> x509
     crypto --> ws
     crypto --> http
     crypto --> kcp
@@ -89,8 +91,11 @@ flowchart BT
 - **Cryptography is in-house**: `only-crypto` (std only; `unsafe` only for the AES-NI / ARMv8
   AES instructions, with a constant-time portable fallback; the random syscall is in `only-sys`) provides the hashes, MACs, KDFs, CRC-32, constant-time AES-CTR/GCM,
   ChaCha20-Poly1305, base64 and randomness the protocol crates need (KCP crypt, STUN/TURN,
-  WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent); TLS, QUIC and DTLS still use rustls /
-  quinn-proto / dimpl until the later waves of the DEV-PLAN.
+  WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent), plus the public-key algorithms and key
+  formats (X25519, Ed25519, ECDH/ECDSA P-256/P-384, RSA PKCS#1/PSS, DER/PEM, PKCS#8) that
+  `only-x509` (certificate parsing, chain validation, generation) builds on; TLS, QUIC and DTLS
+  still use rustls / quinn-proto / dimpl until the later waves of the DEV-PLAN, which will move
+  them onto these two crates.
 - **`unsafe` is confined** to `only-sys` (which also holds the workspace's own OS bindings, `only_sys::ffi`, in place of the `libc` crate), `only-uring` (its own io_uring binding, ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
