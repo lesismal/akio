@@ -17,9 +17,10 @@ use flash_arpc::{CallError, Routes, Server, StreamEvent, dial};
 
 fn engine(server: Option<Server>) -> Arc<Engine> {
     let mut b = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(300),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(300);
+            v
         })
         .client_threads(1);
     if let Some(s) = server {

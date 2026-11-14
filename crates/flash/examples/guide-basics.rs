@@ -190,17 +190,16 @@ fn read_until(s: &mut TcpStream, want: &[&str]) -> String {
 
 fn main() -> std::io::Result<()> {
     // ANCHOR: engine
-    let cfg = Config {
-        idle_timeout: Some(Duration::from_secs(60)),
-        shutdown_timeout: Duration::from_secs(5),
-        ..Config::default()
-    };
+    let mut cfg = Config::default();
+    cfg.idle_timeout = Some(Duration::from_secs(60));
+    cfg.shutdown_timeout = Duration::from_secs(5);
     let engine = Arc::new(
         Engine::builder()
             .config(cfg)
-            .pool(PoolConfig {
-                max_threads: 16,
-                ..PoolConfig::default()
+            .pool({
+                let mut v = PoolConfig::default();
+                v.max_threads = 16;
+                v
             })
             .listen(
                 Listener::tcp("127.0.0.1:0".parse().unwrap())

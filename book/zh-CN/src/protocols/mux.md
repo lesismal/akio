@@ -19,7 +19,7 @@
 | `Custom(Arc<dyn Fn(&[u8]) -> Decision>)` | 自定义判断：`Yes`、`No` 或 `NeedMore` |
 
 `fallback(acceptor)` 接收不匹配任何规则、或在 `max_sniff(n)` 字节（默认 64）内仍无法判断的
-连接；没有 fallback 时这些连接被关闭。用 `Listener::serve_dyn(mux.into_dyn())` 提供 mux。在
+连接；没有 fallback 时这些连接被关闭。用 `Listener::serve_any(mux.into_any())` 提供 mux。在
 开始提供服务之前完成全部配置。
 
 一旦某条规则匹配，连接就归该路由的 acceptor 所有，如同由它 accept 的一样：嗅探到的字节会重放

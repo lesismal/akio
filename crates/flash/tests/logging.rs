@@ -73,12 +73,12 @@ impl Handler for Sleepy {
 fn lifecycle_slow_callbacks_and_connections_are_logged_with_key_values() {
     log::set_logger(&Capture).unwrap();
     let e = Engine::builder()
-        .config(Config {
-            slow_callback_threshold: Some(Duration::from_millis(5)),
-            shutdown_timeout: Duration::from_millis(300),
-            // The engine sets the global level from the config.
-            log_level: Some(log::LevelFilter::Trace),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.slow_callback_threshold = Some(Duration::from_millis(5));
+            v.shutdown_timeout = Duration::from_millis(300);
+            v.log_level = Some(log::LevelFilter::Trace);
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse::<SocketAddr>().unwrap())
@@ -112,10 +112,8 @@ fn lifecycle_slow_callbacks_and_connections_are_logged_with_key_values() {
     );
 
     // Reload through the engine: logged, and the level changes globally.
-    let mut cfg = Config {
-        log_level: Some(log::LevelFilter::Info),
-        ..Config::default()
-    };
+    let mut cfg = Config::default();
+    cfg.log_level = Some(log::LevelFilter::Info);
     cfg.idle_timeout = Some(Duration::from_secs(60));
     let rep = e.reload(&cfg);
     assert!(rep.applied.contains(&"log_level") && rep.applied.contains(&"idle_timeout"));

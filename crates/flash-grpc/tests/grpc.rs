@@ -74,9 +74,10 @@ fn server() -> GrpcServer {
 fn setup() -> (Arc<Engine>, GrpcClient) {
     let e = Arc::new(
         Engine::builder()
-            .config(Config {
-                shutdown_timeout: Duration::from_millis(300),
-                ..Config::default()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_millis(300);
+                v
             })
             .listen(
                 Listener::tcp("127.0.0.1:0".parse().unwrap())

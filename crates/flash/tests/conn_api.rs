@@ -90,10 +90,11 @@ fn start() -> (Engine, mpsc::Receiver<String>, std::path::PathBuf) {
     let (tx, rx) = mpsc::channel();
     let report: Report = Arc::new(Mutex::new(tx));
     let e = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(300),
-            max_queued_bytes: 1024,
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(300);
+            v.max_queued_bytes = 1024;
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse::<SocketAddr>().unwrap())

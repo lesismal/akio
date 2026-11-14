@@ -28,9 +28,10 @@ fn connect(addr: SocketAddr) -> TcpStream {
 }
 
 fn quick() -> Config {
-    Config {
-        shutdown_timeout: Duration::from_millis(300),
-        ..Config::default()
+    {
+        let mut v = Config::default();
+        v.shutdown_timeout = Duration::from_millis(300);
+        v
     }
 }
 
@@ -188,11 +189,13 @@ fn pool_overload_is_reported_to_the_caller() {
     let e = Engine::builder()
         .config(quick())
         // One worker, room for one waiting job: the 3rd and 4th submissions must be refused.
-        .pool(PoolConfig {
-            min_threads: 0,
-            max_threads: 1,
-            queue_capacity: 1,
-            keep_alive: Duration::from_secs(1),
+        .pool({
+            let mut v = PoolConfig::default();
+            v.min_threads = 0;
+            v.max_threads = 1;
+            v.queue_capacity = 1;
+            v.keep_alive = Duration::from_secs(1);
+            v
         })
         .listen(
             Listener::tcp(localhost())
@@ -299,12 +302,13 @@ fn slow_callbacks_are_reported_and_fast_ones_are_not() {
     let hits = Arc::new(Mutex::new(Vec::new()));
     let h = hits.clone();
     let e = Engine::builder()
-        .config(Config {
-            slow_callback_threshold: Some(Duration::from_millis(50)),
-            slow_hook: Some(SlowHook(Arc::new(move |r| {
+        .config({
+            let mut v = quick();
+            v.slow_callback_threshold = Some(Duration::from_millis(50));
+            v.slow_hook = Some(SlowHook(Arc::new(move |r| {
                 h.lock().unwrap().push((r.kind, r.elapsed));
-            }))),
-            ..quick()
+            })));
+            v
         })
         .listen(
             Listener::tcp(localhost())

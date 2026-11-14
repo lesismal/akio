@@ -46,7 +46,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | Method | Default | Meaning |
 |---|---|---|
 | `Listener::tcp(addr)` / `Listener::udp(addr)` | – | port 0 picks a free port |
-| `serve(acceptor)` | required | the acceptor (`serve_dyn` for type-erased ones such as `Mux`) |
+| `serve(acceptor)` | required | the acceptor (`serve_any` for type-erased ones such as `Mux`) |
 | `threads(n)` | one per core | I/O threads of this listener (at least 1) |
 | `backend(Backend)` | `Epoll` | `Epoll` (kqueue on macOS) or `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | `Ebpf(EbpfConfig)` for steering |

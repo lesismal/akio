@@ -24,9 +24,10 @@ const T: Duration = Duration::from_secs(10);
 
 fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..Default::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }
@@ -43,9 +44,10 @@ fn start_with(router: Router, tls: Option<Arc<rustls::ServerConfig>>) -> (Arc<En
         None => l.serve(serve(router)),
     };
     let e = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(500),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(500);
+            v
         })
         .listen(l)
         .build()

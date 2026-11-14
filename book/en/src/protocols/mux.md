@@ -21,7 +21,7 @@ Rules, tried in the order the routes were added:
 
 `fallback(acceptor)` takes connections that match nothing, or that decide nothing within
 `max_sniff(n)` bytes (default 64); without a fallback they are closed. Serve the mux with
-`Listener::serve_dyn(mux.into_dyn())`. Configure it completely before serving it.
+`Listener::serve_any(mux.into_any())`. Configure it completely before serving it.
 
 Once a rule matches, the connection belongs to that route's acceptor as if it had accepted it:
 the sniffed bytes are replayed to its handler, `spawn_blocking` completions reach it, and

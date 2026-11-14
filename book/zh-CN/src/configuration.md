@@ -46,7 +46,7 @@
 | 方法 | 默认值 | 含义 |
 |---|---|---|
 | `Listener::tcp(addr)` / `Listener::udp(addr)` | – | 端口 0 表示选择空闲端口 |
-| `serve(acceptor)` | 必填 | acceptor（`Mux` 这类类型擦除的 acceptor 用 `serve_dyn`） |
+| `serve(acceptor)` | 必填 | acceptor（`Mux` 这类类型擦除的 acceptor 用 `serve_any`） |
 | `threads(n)` | 每核一个 | 该 listener 的 I/O 线程数（至少 1） |
 | `backend(Backend)` | `Epoll` | `Epoll`（macOS 上为 kqueue）或 `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | 用于分流的 `Ebpf(EbpfConfig)` |

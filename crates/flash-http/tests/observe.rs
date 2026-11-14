@@ -18,9 +18,10 @@ use flash_http::{
 
 fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..Default::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }
@@ -64,10 +65,8 @@ fn sample(text: &str, series: &str) -> f64 {
 
 #[test]
 fn metrics_endpoint_exposes_engine_and_http_metrics() {
-    let cfg = Config {
-        shutdown_timeout: Duration::from_millis(300),
-        ..Config::default()
-    };
+    let mut cfg = Config::default();
+    cfg.shutdown_timeout = Duration::from_millis(300);
     let tel = cfg.telemetry.clone();
     let http = HttpMetrics::new();
     let app = Router::new()

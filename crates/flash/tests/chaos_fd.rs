@@ -132,9 +132,10 @@ fn accept_survives_fd_exhaustion_and_resumes() {
     const HEADROOM: usize = 12;
     let counters = Arc::new(Counters::default());
     let engine = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_secs(2),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_secs(2);
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())

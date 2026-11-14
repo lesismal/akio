@@ -388,10 +388,11 @@ fn run_seed(seed: u64, pki: &Pki, conns: usize) -> Vec<usize> {
     let baseline = open_fds();
     let st = Arc::new(Stats::default());
     let engine = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(500),
-            slow_callback_threshold: None,
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(500);
+            v.slow_callback_threshold = None;
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())

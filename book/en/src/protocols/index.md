@@ -15,7 +15,7 @@ block, and its "send" handles are usable from any thread.
 | `flash-grpc` | `GrpcServer` (a flash-http service) | `GrpcClient` | [gRPC](grpc.md) |
 | `flash-arpc` | `Server::new(routes)` | `flash_arpc::dial` | [arpc](arpc.md) |
 | `flash-socks` | `Socks::new(engine_ref)`, `connect_proxy(engine_ref)` | – | [SOCKS and CONNECT](socks.md) |
-| `flash-mux` | `Mux::new().route(rule, acceptor)` + `serve_dyn` | – | [Multiplexing](mux.md) |
+| `flash-mux` | `Mux::new().route(rule, acceptor)` + `serve_any` | – | [Multiplexing](mux.md) |
 | `flash-kcp` | `KcpServer::new(cfg, factory)` on a UDP listener | `flash_kcp::dial` | [KCP](kcp.md) |
 
 Interoperability is tested against reference implementations: h2spec (147/147), Autobahn

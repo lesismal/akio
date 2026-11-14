@@ -202,6 +202,7 @@ impl Transport for RustlsTransport {
 
 /// What a connection negotiated; see [`tls_info`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TlsInfo {
     /// The handshake has not finished yet (the other fields may still be empty).
     pub handshaking: bool,

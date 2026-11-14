@@ -21,6 +21,7 @@ const CLOSED: u8 = 2;
 ///
 /// Implementations must make `wake_conn` / `close_conn` cheap, callable from any thread
 /// (including the loop's own, from inside callbacks) and never call user code.
+#[doc(hidden)]
 pub trait LoopLink: Send + Sync {
     /// Ask the loop to re-evaluate connection `id`: flush queued output, apply read/write
     /// interest, and close it if `close_after_send` has drained.
@@ -41,6 +42,7 @@ pub trait LoopLink: Send + Sync {
 }
 
 /// A type-erased completion for a connection's handler (see [`LoopLink::post_task`]).
+#[doc(hidden)]
 pub type Task = Box<dyn std::any::Any + Send>;
 
 /// What a [`Task`] holds for handler type `H`.

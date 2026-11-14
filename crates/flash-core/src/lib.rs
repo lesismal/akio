@@ -4,9 +4,10 @@
 //! * [`Handler`] and [`Acceptor`] are what applications implement.
 //! * [`Conn`] is the cloneable, thread-safe connection handle.
 //! * [`Config`] holds the tunables.
-//! * `Group`, `ConnInner`, `LoopLink`, `DynAcceptor`, `DynHandler`: backend-facing plumbing
-//!   (hidden from the docs); backends such as `flash-epoll` implement them and the `flash` crate
-//!   composes them into an `Engine`.
+//! * `Group`, `ConnInner`, `LoopLink`, `LoopStats`, `Pool`, `DynAcceptor`, `DynHandler`:
+//!   backend-facing plumbing, `#[doc(hidden)]` and outside the semver promise
+//!   (docs/api-stability.md); backends such as `flash-epoll` implement them and the `flash`
+//!   crate composes them into an `Engine`.
 //!
 //! Guide: [Handlers, acceptors and `Conn`](https://lesismal.github.io/flash/en/concepts/handlers.html)
 //! (中文: [Handler、Acceptor 与 `Conn`](https://lesismal.github.io/flash/zh-CN/concepts/handlers.html)).
@@ -24,14 +25,25 @@ mod sync;
 pub mod telemetry;
 
 pub use config::{Config, SlowCallback, SlowHook};
-pub use conn::{Conn, ConnInner, LoopLink, Part, ResponseSlot, ResponseStream, Task, Transport};
+pub use conn::{Conn, Part, ResponseSlot, ResponseStream, Transport};
+#[doc(hidden)]
+pub use conn::{ConnInner, LoopLink, Task};
 pub use error::{Error, Result};
-pub use flash_pool::{Pool, PoolConfig, PoolStats};
-pub use group::{Group, UdpStats};
-pub use handler::{Acceptor, DynAcceptor, DynHandler, FnAcceptor, Handler, fn_acceptor};
+pub use flash_buf::SharedBuf;
+#[doc(hidden)]
+pub use flash_pool::Pool;
+pub use flash_pool::{PoolConfig, PoolStats};
+#[doc(hidden)]
+pub use group::Group;
+pub use group::UdpStats;
+pub use handler::{Acceptor, AnyAcceptor, FnAcceptor, Handler, fn_acceptor};
+#[doc(hidden)]
+pub use handler::{DynAcceptor, DynHandler};
+#[doc(hidden)]
+pub use telemetry::LoopStats;
 pub use telemetry::{
-    ConnInfo, Live, LoopCounters, LoopMeta, LoopMetrics, LoopStats, Metrics, ReloadReport,
-    SlowRecord, Telemetry,
+    ConnInfo, Live, LoopCounters, LoopMeta, LoopMetrics, Metrics, ReloadReport, SlowRecord,
+    Telemetry,
 };
 
 /// Hashes connection ids (sequential `u64`s) for the backends' connection tables: one multiply

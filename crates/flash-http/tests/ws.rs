@@ -21,9 +21,10 @@ use flash_http::{
 
 fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..Default::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }
@@ -31,9 +32,10 @@ fn backend() -> Backend {
 
 fn start(router: Router) -> Engine {
     let e = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(500),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(500);
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())

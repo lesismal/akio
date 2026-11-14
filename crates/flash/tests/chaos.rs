@@ -392,19 +392,22 @@ fn build_engine(st: &Arc<Stats>, shutdown_timeout: Duration) -> Engine {
 
 fn build_engine_q(st: &Arc<Stats>, shutdown_timeout: Duration, queue_capacity: usize) -> Engine {
     Engine::builder()
-        .config(Config {
-            read_buffer: READ_BUF,
-            write_high_watermark: HIGH,
-            max_queued_bytes: MAX_Q,
-            shutdown_timeout,
-            slow_callback_threshold: None,
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.read_buffer = READ_BUF;
+            v.write_high_watermark = HIGH;
+            v.max_queued_bytes = MAX_Q;
+            v.shutdown_timeout = shutdown_timeout;
+            v.slow_callback_threshold = None;
+            v
         })
-        .pool(PoolConfig {
-            min_threads: 0,
-            max_threads: 4,
-            queue_capacity,
-            keep_alive: Duration::from_millis(200),
+        .pool({
+            let mut v = PoolConfig::default();
+            v.min_threads = 0;
+            v.max_threads = 4;
+            v.queue_capacity = queue_capacity;
+            v.keep_alive = Duration::from_millis(200);
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())

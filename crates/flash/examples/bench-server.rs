@@ -58,9 +58,10 @@ fn serve<A: Acceptor>(
         None => l.serve(a),
     };
     let engine = Engine::builder()
-        .pool(PoolConfig {
-            max_threads: pool_threads,
-            ..PoolConfig::default()
+        .pool({
+            let mut v = PoolConfig::default();
+            v.max_threads = pool_threads;
+            v
         })
         .listen(l)
         .build()?;

@@ -66,14 +66,15 @@ fn tls_http1_http2_custom_prefix_and_fallback_share_a_port() {
         )
         .fallback(fn_acceptor(|_c: &Conn<Prefixed>| Prefixed(b"raw:")));
     let e = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(300),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(300);
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())
                 .threads(2)
-                .serve_dyn(mux.into_dyn()),
+                .serve_any(mux),
         )
         .client_threads(1)
         .build()

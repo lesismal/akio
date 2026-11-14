@@ -19,9 +19,10 @@ use flash::{Config, Conn, Engine, Error, Handler, Listener, fn_acceptor};
 
 /// Tests keep client sockets open while stopping; don't wait the default 10 s for them.
 fn cfg() -> Config {
-    Config {
-        shutdown_timeout: Duration::from_millis(300),
-        ..Config::default()
+    {
+        let mut v = Config::default();
+        v.shutdown_timeout = Duration::from_millis(300);
+        v
     }
 }
 
@@ -90,11 +91,9 @@ fn echo_many_connections_and_messages() {
 #[test]
 fn large_payload_survives_backpressure() {
     // 8 MiB through a server whose write watermark is tiny: reads pause and resume repeatedly.
-    let cfg = Config {
-        write_high_watermark: 16 << 10,
-        read_buffer: 8 << 10,
-        ..cfg()
-    };
+    let mut cfg = cfg();
+    cfg.write_high_watermark = 16 << 10;
+    cfg.read_buffer = 8 << 10;
     let e = Engine::builder()
         .config(cfg)
         .listen(
@@ -472,10 +471,8 @@ fn send_reports_overload_beyond_queue_limit() {
     }
     let outcome: Arc<Mutex<Option<Error>>> = Arc::default();
     let o = outcome.clone();
-    let cfg = Config {
-        max_queued_bytes: 1 << 20,
-        ..cfg()
-    };
+    let mut cfg = cfg();
+    cfg.max_queued_bytes = 1 << 20;
     let e = Engine::builder()
         .config(cfg)
         .listen(
@@ -511,9 +508,10 @@ fn ebpf_acceleration_degrades_or_attaches_and_strict_fails_where_unavailable() {
                 Listener::tcp(localhost())
                     .backend(common::backend())
                     .threads(2)
-                    .accel(flash::Accel::Ebpf(flash::EbpfConfig {
-                        strict,
-                        ..flash::EbpfConfig::default()
+                    .accel(flash::Accel::Ebpf({
+                        let mut v = flash::EbpfConfig::default();
+                        v.strict = strict;
+                        v
                     }))
                     .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
             )
@@ -557,9 +555,10 @@ fn idle_timeout_closes_silent_connections_only() {
     let kinds = Arc::new(Mutex::new(Vec::new()));
     let k = kinds.clone();
     let e = Engine::builder()
-        .config(Config {
-            idle_timeout: Some(Duration::from_millis(300)),
-            ..cfg()
+        .config({
+            let mut v = cfg();
+            v.idle_timeout = Some(Duration::from_millis(300));
+            v
         })
         .listen(
             Listener::tcp(localhost())
@@ -614,9 +613,10 @@ fn write_timeout_closes_connections_that_stop_reading() {
     let kinds = Arc::new(Mutex::new(Vec::new()));
     let k = kinds.clone();
     let e = Engine::builder()
-        .config(Config {
-            write_timeout: Some(Duration::from_millis(500)),
-            ..cfg()
+        .config({
+            let mut v = cfg();
+            v.write_timeout = Some(Duration::from_millis(500));
+            v
         })
         .listen(
             Listener::tcp(localhost())

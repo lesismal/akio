@@ -33,15 +33,18 @@ pub use flash_tls as tls;
 pub use flash_ebpf as ebpf;
 
 pub use flash_core::{
-    Acceptor, Config, Conn, ConnInfo, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, Live,
-    LoopCounters, LoopMeta, LoopMetrics, Metrics, PoolConfig, PoolStats, ReloadReport,
-    ResponseSlot, Result, SlowCallback, SlowHook, SlowRecord, Telemetry, UdpStats, fn_acceptor,
-    telemetry,
+    Acceptor, AnyAcceptor, Config, Conn, ConnInfo, Error, FnAcceptor, Handler, Live, LoopCounters,
+    LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, ResponseSlot,
+    ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
+    UdpStats, fn_acceptor, telemetry,
 };
+#[doc(hidden)]
+pub use flash_core::{DynAcceptor, DynHandler};
 use flash_core::{Group, Pool, telemetry::log_or_stderr};
 
 /// I/O backend of one listener (ADR-004).
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum Backend {
     /// epoll on Linux, kqueue on macOS. The default.
     #[default]
@@ -51,8 +54,9 @@ pub enum Backend {
     IoUring(UringConfig),
 }
 
-/// io_uring tuning.
+/// io_uring tuning. `#[non_exhaustive]`: start from `UringConfig::default()` and set fields.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct UringConfig {
     /// Submission queue depth (0 = default).
     pub entries: u32,
@@ -64,6 +68,7 @@ pub struct UringConfig {
 
 /// Acceleration/steering layer, orthogonal to [`Backend`] (ADR-006).
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum Accel {
     /// No acceleration: plain `SO_REUSEPORT` hashing.
     #[default]
@@ -74,8 +79,10 @@ pub enum Accel {
     Ebpf(EbpfConfig),
 }
 
-/// Configuration of [`Accel::Ebpf`].
+/// Configuration of [`Accel::Ebpf`]. `#[non_exhaustive]`: start from
+/// `EbpfConfig::default()` and set fields.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct EbpfConfig {
     /// How the listener's threads share new flows (default: [`ebpf::Steering::Cpu`]).
     pub steering: ebpf::Steering,
@@ -98,6 +105,7 @@ impl Default for EbpfConfig {
 
 /// What [`Accel`] a listener ended up with ([`Engine::accel_status`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AccelStatus {
     /// No acceleration was requested.
     Off,
@@ -178,11 +186,10 @@ impl Listener {
         self
     }
 
-    /// Attaches a type-erased acceptor (for protocol multiplexers such as `flash-mux`).
-    #[doc(hidden)]
+    /// Attaches a type-erased acceptor, such as a protocol multiplexer (`flash_mux::Mux`).
     #[must_use]
-    pub fn serve_dyn(mut self, acceptor: Arc<dyn DynAcceptor>) -> Self {
-        self.acceptor = Some(acceptor);
+    pub fn serve_any(mut self, acceptor: impl Into<AnyAcceptor>) -> Self {
+        self.acceptor = Some(acceptor.into().into_dyn());
         self
     }
 }
@@ -510,9 +517,10 @@ impl Engine {
         self.groups
             .iter()
             .map(|g| g.udp_stats())
-            .fold(UdpStats::default(), |a, b| UdpStats {
-                peers: a.peers + b.peers,
-                rejected: a.rejected + b.rejected,
+            .fold(UdpStats::default(), |mut a, b| {
+                a.peers += b.peers;
+                a.rejected += b.rejected;
+                a
             })
     }
 

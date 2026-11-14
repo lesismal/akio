@@ -51,6 +51,7 @@ pub trait Group: Send + Sync {
 
 /// Counters of a UDP listener (see `Config::udp_max_peers`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct UdpStats {
     /// Peers ("connections") currently open.
     pub peers: usize,

@@ -704,22 +704,12 @@ impl UdpLoop {
         self.conns
             .iter()
             .map(|(&id, p)| {
-                let (bytes_out, queued_bytes, transport, udp) = p.inner.debug_state();
-                ConnInfo {
-                    id,
-                    peer: p.addr,
-                    local: p.inner.local_addr(),
-                    owner: self.shared.stats.meta().clone(),
-                    age: Duration::from_millis(now.saturating_sub(p.opened)),
-                    idle: Duration::from_millis(now.saturating_sub(p.last_active)),
-                    bytes_in: p.bytes_in,
-                    bytes_out,
-                    queued_bytes,
-                    read_held: p.inner.read_held(),
-                    backpressure: false,
-                    transport,
-                    udp,
-                }
+                let mut ci = ConnInfo::new(id, &p.inner, self.shared.stats.meta().clone());
+                ci.peer = p.addr;
+                ci.age = Duration::from_millis(now.saturating_sub(p.opened));
+                ci.idle = Duration::from_millis(now.saturating_sub(p.last_active));
+                ci.bytes_in = p.bytes_in;
+                ci
             })
             .collect()
     }
@@ -855,11 +845,7 @@ impl UdpGroup {
         let stats = Arc::new(Stats::default());
         for (thread, server) in socks.into_iter().enumerate() {
             let poller = Poller::new()?;
-            let meta = LoopMeta {
-                backend: "udp",
-                listener,
-                thread,
-            };
+            let meta = LoopMeta::new("udp", listener, thread);
             let sh = LoopShared::new(&poller, pool.clone(), &cfg, meta)?;
             loops.push(UdpLoop::new(
                 poller,
@@ -892,10 +878,10 @@ impl Group for UdpGroup {
         self.fds.clone()
     }
     fn udp_stats(&self) -> UdpStats {
-        UdpStats {
-            peers: self.stats.peers.load(Ordering::Relaxed),
-            rejected: self.stats.rejected.load(Ordering::Relaxed),
-        }
+        let mut s = UdpStats::default();
+        s.peers = self.stats.peers.load(Ordering::Relaxed);
+        s.rejected = self.stats.rejected.load(Ordering::Relaxed);
+        s
     }
 
     fn start(&self) -> io::Result<()> {

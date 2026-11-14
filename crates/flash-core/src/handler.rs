@@ -76,6 +76,37 @@ where
     }
 }
 
+/// A type-erased [`Acceptor`]: lets one listener hand connections to acceptors of different
+/// handler types (protocol multiplexers such as `flash-mux` are built on it). Serve it with
+/// `flash::Listener::serve_any`.
+#[derive(Clone)]
+pub struct AnyAcceptor(Arc<dyn DynAcceptor>);
+
+impl AnyAcceptor {
+    /// Erases the handler type of `acceptor`.
+    pub fn new<A: Acceptor>(acceptor: A) -> AnyAcceptor {
+        AnyAcceptor(Arc::new(acceptor))
+    }
+
+    /// Wraps a backend-level acceptor. Backend-facing.
+    #[doc(hidden)]
+    pub fn from_dyn(acceptor: Arc<dyn DynAcceptor>) -> AnyAcceptor {
+        AnyAcceptor(acceptor)
+    }
+
+    /// The backend-level acceptor. Backend-facing.
+    #[doc(hidden)]
+    pub fn into_dyn(self) -> Arc<dyn DynAcceptor> {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for AnyAcceptor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnyAcceptor").finish_non_exhaustive()
+    }
+}
+
 /// Type-erased handler stored by a backend's loop. `#[doc(hidden)]`: backend-facing.
 #[doc(hidden)]
 pub trait DynHandler: Send {

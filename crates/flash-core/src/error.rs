@@ -2,6 +2,7 @@ use std::{fmt, io};
 
 /// Errors returned by connection operations.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// The connection is closed (or closing); the operation had no effect.
     Closed,
@@ -24,7 +25,14 @@ impl fmt::Display for Error {
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 impl From<io::Error> for Error {
     fn from(e: io::Error) -> Self {
@@ -44,6 +52,8 @@ mod tests {
         assert!(matches!(e, Error::Io(ref x) if x.kind() == io::ErrorKind::BrokenPipe));
         assert_eq!(e.to_string(), "io error: pipe");
         let dynerr: &dyn std::error::Error = &e;
-        assert!(dynerr.source().is_none());
+        assert!(dynerr.source().is_some());
+        let closed: &dyn std::error::Error = &Error::Closed;
+        assert!(closed.source().is_none());
     }
 }

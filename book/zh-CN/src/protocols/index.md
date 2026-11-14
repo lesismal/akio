@@ -14,7 +14,7 @@
 | `flash-grpc` | `GrpcServer`（一个 flash-http service） | `GrpcClient` | [gRPC](grpc.md) |
 | `flash-arpc` | `Server::new(routes)` | `flash_arpc::dial` | [arpc](arpc.md) |
 | `flash-socks` | `Socks::new(engine_ref)`、`connect_proxy(engine_ref)` | – | [SOCKS 与 CONNECT](socks.md) |
-| `flash-mux` | `Mux::new().route(rule, acceptor)` + `serve_dyn` | – | [协议复用](mux.md) |
+| `flash-mux` | `Mux::new().route(rule, acceptor)` + `serve_any` | – | [协议复用](mux.md) |
 | `flash-kcp` | UDP listener 上的 `KcpServer::new(cfg, factory)` | `flash_kcp::dial` | [KCP](kcp.md) |
 
 互通性用参考实现测试过：h2spec（147/147）、Autobahn（WebSocket 服务端与客户端）、grpc-go、
