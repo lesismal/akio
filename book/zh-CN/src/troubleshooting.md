@@ -58,7 +58,8 @@ BPF 不需要特权；eBPF 程序需要 `CAP_BPF` / `CAP_SYS_ADMIN`。原因字�
 
 ## 没有日志输出
 
-only 使用 `log` facade；请安装一个日志实现。没有安装时只有错误和慢回调警告会打印（到
+only 通过 `only::log` 记日志；请安装一个 logger（`only::log::init(only::log::LevelFilter::Info)`），
+或开启 `log` feature 以使用 env_logger 等 `log` crate 的 logger。没有安装时只有错误和慢回调警告会打印（到
 stderr）。访问日志需要 `observe::access_log()` 并启用 `only_http::access` target。
 
 ## 在 macOS 上测试或工具卡住

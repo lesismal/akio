@@ -517,7 +517,10 @@ impl Loop {
     fn run_inner(&mut self) {
         CURRENT_LOOP.with(|c| c.set(self.shared.uid));
         if let Err(e) = self.init() {
-            log_or_stderr(log::Level::Error, format_args!("io_uring init failed: {e}"));
+            log_or_stderr(
+                only_log::Level::Error,
+                format_args!("io_uring init failed: {e}"),
+            );
             return;
         }
         loop {
@@ -558,7 +561,7 @@ impl Loop {
                         Some(libc::ETIME | libc::EINTR | libc::EBUSY)
                     ) => {}
                 Err(e) => {
-                    log_or_stderr(log::Level::Error, format_args!("io_uring_enter: {e}"));
+                    log_or_stderr(only_log::Level::Error, format_args!("io_uring_enter: {e}"));
                     break;
                 }
             }
@@ -635,7 +638,7 @@ impl Loop {
         }
         if self.inflight > 0 {
             log_or_stderr(
-                log::Level::Warn,
+                only_log::Level::Warn,
                 format_args!(
                     "io_uring: {} operation(s) still in flight at exit; leaking their buffers",
                     self.inflight
@@ -722,7 +725,7 @@ impl Loop {
                 // e.g. EMFILE: retry in a moment instead of spinning.
                 self.shared.stats.accept_errors.add_local(1);
                 let e = io::Error::from_raw_os_error(-res);
-                log_or_stderr(log::Level::Warn, format_args!("accept: {e}"));
+                log_or_stderr(only_log::Level::Warn, format_args!("accept: {e}"));
                 self.accept_retry_at = Some(Instant::now() + Duration::from_millis(100));
             }
             return;
@@ -861,7 +864,7 @@ impl Loop {
         let tel = self.cfg.telemetry.clone();
         if !tel.conn_opened(!dialed) {
             self.shared.stats.rejected.add_local(1);
-            log::debug!(target: "only", peer:% = peer; "connection refused: max_connections reached");
+            only_log::debug!(target: "only", peer:% = peer; "connection refused: max_connections reached");
             return None; // dropping the stream closes it
         }
         let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
@@ -881,7 +884,7 @@ impl Loop {
         };
         let st = &self.shared.stats;
         if dialed { &st.dialed } else { &st.accepted }.add_local(1);
-        log::trace!(target: "only", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
+        only_log::trace!(target: "only", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
         let now = self.tick();
         let idle = self.cfg.telemetry.live().idle_ms();
         let idle_timer = self.arm_idle(id, now + idle);
@@ -1067,8 +1070,8 @@ impl Loop {
         self.graveyard.push(lc.inner.clone());
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);
         let t0 = self.timing();
-        if log::log_enabled!(target: "only", log::Level::Trace) {
-            log::trace!(target: "only", conn_id = id, peer:% = lc.inner.peer_addr(), error:? = err; "connection closed");
+        if only_log::log_enabled!(target: "only", only_log::Level::Trace) {
+            only_log::trace!(target: "only", conn_id = id, peer:% = lc.inner.peer_addr(), error:? = err; "connection closed");
         }
         let _ = catch_unwind(AssertUnwindSafe(|| lc.handler.on_close(err)));
         self.check_slow("on_close", id, t0);

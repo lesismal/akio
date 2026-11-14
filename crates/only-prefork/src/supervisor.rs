@@ -314,7 +314,7 @@ impl Spawner {
         let cpus = self.cfg.pinning.cpus_for(index);
         if !cpus.is_empty() && !cfg!(target_os = "linux") {
             log_or_stderr(
-                log::Level::Warn,
+                only_log::Level::Warn,
                 format_args!("prefork: CPU pinning is Linux-only; worker {index} is not pinned"),
             );
         }
@@ -473,7 +473,7 @@ impl State {
             match self.spawner.spawn(i, self.generation) {
                 Ok(p) => self.pending.push(p),
                 Err(e) => log_or_stderr(
-                    log::Level::Error,
+                    only_log::Level::Error,
                     format_args!("{e}; keeping the running worker"),
                 ),
             }
@@ -526,7 +526,7 @@ impl State {
             let delay = min.saturating_mul(1u32 << s.failures.min(16)).min(max);
             s.failures = s.failures.saturating_add(1);
             log_or_stderr(
-                log::Level::Error,
+                only_log::Level::Error,
                 format_args!(
                     "prefork: worker {i} (pid {}) exited on its own ({status}); restarting in {delay:?}",
                     p.child.id()
@@ -544,7 +544,7 @@ impl State {
             p.poll_ctl();
             if let Some(status) = p.exited() {
                 log_or_stderr(
-                    log::Level::Error,
+                    only_log::Level::Error,
                     format_args!(
                         "prefork: reloaded worker {} (pid {}) exited before it was ready ({status}); keeping the running worker",
                         p.index,
@@ -567,7 +567,7 @@ impl State {
             }
             if now.saturating_duration_since(p.started) >= ready_timeout {
                 log_or_stderr(
-                    log::Level::Error,
+                    only_log::Level::Error,
                     format_args!(
                         "prefork: reloaded worker {} (pid {}) not ready after {ready_timeout:?}; killing it and keeping the running worker",
                         p.index,
@@ -601,7 +601,7 @@ impl State {
                         s.failures = s.failures.saturating_add(1);
                         s.restart_at = Some(now + delay);
                         log_or_stderr(
-                            log::Level::Error,
+                            only_log::Level::Error,
                             format_args!("{e}; retrying in {delay:?}"),
                         );
                     }
@@ -617,7 +617,7 @@ impl State {
             }
             if p.stop_deadline.is_some_and(|d| d <= now) {
                 log_or_stderr(
-                    log::Level::Warn,
+                    only_log::Level::Warn,
                     format_args!(
                         "prefork: worker {} (pid {}) still running {timeout:?} after it was asked to stop; killing it",
                         p.index,

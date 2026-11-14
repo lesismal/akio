@@ -280,7 +280,7 @@ impl Worker {
                 .any(|s| matches!(s, AccelStatus::Steering(_)))
         {
             only::telemetry::log_or_stderr(
-                log::Level::Warn,
+                only_log::Level::Warn,
                 format_args!(
                     "prefork: worker {}: Accel::Ebpf steering in a SO_REUSEPORT group shared by \
                      {} worker processes replaces the group's program and sends new connections \

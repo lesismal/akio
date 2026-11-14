@@ -482,7 +482,7 @@ impl Peer {
                 return;
             };
             if let Err(e) = st.rtc.handle_input(Input::Receive(Instant::now(), r)) {
-                log::debug!(target: "only_webrtc", "peer {}: input: {e}", self.0.id);
+                only_log::debug!(target: "only_webrtc", "peer {}: input: {e}", self.0.id);
             }
         }
         self.drive();
@@ -507,7 +507,7 @@ impl Peer {
             if st.rtc.is_connected() {
                 st.connect_by = None;
             } else if st.connect_by.is_some_and(|d| d <= Instant::now()) {
-                log::debug!(target: "only_webrtc", "peer {}: not connected in time", self.0.id);
+                only_log::debug!(target: "only_webrtc", "peer {}: not connected in time", self.0.id);
                 died = true;
             }
             while !died {
@@ -537,7 +537,7 @@ impl Peer {
                         }
                     }
                     Err(e) => {
-                        log::debug!(target: "only_webrtc", "peer {}: {e}", self.0.id);
+                        only_log::debug!(target: "only_webrtc", "peer {}: {e}", self.0.id);
                         died = true;
                         break;
                     }
@@ -625,7 +625,7 @@ impl timer::Due for Shared {
             }
             st.armed = None;
             if let Err(e) = st.rtc.handle_input(Input::Timeout(Instant::now())) {
-                log::debug!(target: "only_webrtc", "peer {}: timeout: {e}", self.id);
+                only_log::debug!(target: "only_webrtc", "peer {}: timeout: {e}", self.id);
             }
         }
         Peer(me).drive();

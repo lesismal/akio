@@ -41,7 +41,7 @@ I/O 线程上执行**，所以 only 的 handler 不能阻塞，阻塞任务需�
 | `TaskPoolMode` | 无 | 线程池是自适应的 |
 | `Engine.Stats()` | `engine.metrics()`，通过 `observe::metrics_handler` 输出 Prometheus | |
 | `pprof` 中间件 | `observe::debug_handler`（连接、事件循环、慢回调、实时设置） | 不是 CPU profiler：用 `perf` |
-| `LogSettings`、`fib/log` | `log` facade，target 为 `only` | |
+| `LogSettings`、`fib/log` | `only::log`（`only-log` 门面），target 为 `only` | |
 | `prefork` | 没有 | |
 
 ## handler：从 worker 池到 I/O 线程

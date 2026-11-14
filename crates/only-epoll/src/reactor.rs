@@ -267,7 +267,7 @@ impl Loop {
             }
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout) {
-                log_or_stderr(log::Level::Error, format_args!("poller error: {e}"));
+                log_or_stderr(only_log::Level::Error, format_args!("poller error: {e}"));
                 break;
             }
             self.shared.stats.iterations.add_local(1);
@@ -567,7 +567,7 @@ impl Loop {
                     // it out of the poller for a moment (closing connections frees descriptors).
                     self.shared.stats.accept_errors.add_local(1);
                     log_or_stderr(
-                        log::Level::Warn,
+                        only_log::Level::Warn,
                         format_args!("accept: {e}; pausing accepts for {ACCEPT_BACKOFF:?}"),
                     );
                     self.poller.delete(l.as_raw_fd());
@@ -590,7 +590,7 @@ impl Loop {
         if let Some((l, _)) = &self.listener {
             if let Err(e) = self.poller.add(l.as_raw_fd(), LISTENER, true, false) {
                 log_or_stderr(
-                    log::Level::Warn,
+                    only_log::Level::Warn,
                     format_args!("re-arming the listener: {e}"),
                 );
                 self.accept_paused_until = Some(Instant::now() + ACCEPT_BACKOFF);
@@ -615,7 +615,7 @@ impl Loop {
         let tel = self.cfg.telemetry.clone();
         if !tel.conn_opened(!dialed) {
             self.shared.stats.rejected.add_local(1);
-            log::debug!(target: "only", peer:% = peer; "connection refused: max_connections reached");
+            only_log::debug!(target: "only", peer:% = peer; "connection refused: max_connections reached");
             return; // dropping the stream closes it
         }
         let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
@@ -640,7 +640,7 @@ impl Loop {
         }
         let st = &self.shared.stats;
         if dialed { &st.dialed } else { &st.accepted }.add_local(1);
-        log::trace!(target: "only", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
+        only_log::trace!(target: "only", conn_id = id, peer:% = peer, local:% = local, dialed = dialed; "connection opened");
         let now = self.tick();
         let idle = self.cfg.telemetry.live().idle_ms();
         let idle_timer = self.arm_idle(id, now + idle);
@@ -888,8 +888,8 @@ impl Loop {
         lc.inner.mark_closed();
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);
         let t0 = self.timing();
-        if log::log_enabled!(target: "only", log::Level::Trace) {
-            log::trace!(target: "only", conn_id = id, peer:% = lc.inner.peer_addr(), error:? = err; "connection closed");
+        if only_log::log_enabled!(target: "only", only_log::Level::Trace) {
+            only_log::trace!(target: "only", conn_id = id, peer:% = lc.inner.peer_addr(), error:? = err; "connection closed");
         }
         let _ = catch_unwind(AssertUnwindSafe(|| lc.handler.on_close(err)));
         self.check_slow("on_close", id, t0);

@@ -82,9 +82,11 @@ pub struct Config {
     /// Accepted connections beyond this many open ones (engine-wide, dialed connections and UDP
     /// peers included in the count) are closed right after `accept`. 0 (the default) = no limit.
     pub max_connections: usize,
-    /// When set, the engine calls `log::set_max_level` with it (`only` logs through the `log`
-    /// facade under the `only` target; install any `log` backend to see them).
-    pub log_level: Option<log::LevelFilter>,
+    /// When set, the engine calls [`only_log::set_max_level`] with it (`only` logs through the
+    /// `only-log` facade, re-exported as `only::log`, under the `only` target; install a logger
+    /// such as `only::log::init(..)` to see the records, or enable the `log` feature to send
+    /// them to the `log` crate's logger).
+    pub log_level: Option<only_log::LevelFilter>,
     /// Metrics, debug snapshots and live settings of the engine built with this config (see
     /// [`Telemetry`]). Grab a clone before building the engine to wire up a metrics endpoint.
     /// A config whose telemetry an engine already adopted gets a fresh one at the next `build`.

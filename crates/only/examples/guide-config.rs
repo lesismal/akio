@@ -77,7 +77,7 @@ fn main() -> std::io::Result<()> {
     })));
     cfg.shutdown_timeout = Duration::from_secs(10);
     cfg.max_connections = 0; // 0 = unlimited
-    cfg.log_level = None; // Some(LevelFilter) calls log::set_max_level
+    cfg.log_level = None; // Some(only::log::LevelFilter::Info) calls only::log::set_max_level
     let telemetry = cfg.telemetry.clone(); // grab it before build to wire endpoints
     // ANCHOR_END: config
 

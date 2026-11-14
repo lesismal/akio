@@ -254,13 +254,13 @@ pub fn metrics_handler(tel: Arc<Telemetry>, http: Option<HttpMetrics>) -> impl S
     }
 }
 
-/// Structured access log through the `log` facade (target `only_http::access`, level `info`):
-/// one record per response with the key-values `method`, `target`, `status`, `peer`,
-/// `elapsed_us` and `request_id` (when the request-id middleware ran first). Costs nothing
-/// beyond one level check while that target is disabled.
+/// Structured access log through the `only-log` facade (`only::log`; target
+/// `only_http::access`, level `info`): one record per response with the key-values `method`,
+/// `target`, `status`, `peer`, `elapsed_us` and `request_id` (when the request-id middleware
+/// ran first). Costs nothing beyond one level check while that target is disabled.
 pub fn access_log() -> impl Middleware {
     |ctx: &mut Context, next: &dyn Service| {
-        if !log::log_enabled!(target: "only_http::access", log::Level::Info) {
+        if !only_log::log_enabled!(target: "only_http::access", only_log::Level::Info) {
             return next.call(ctx);
         }
         let t0 = Instant::now();
@@ -269,7 +269,7 @@ pub fn access_log() -> impl Middleware {
         ctx.add_response_filter(move |resp: &mut Response, req| {
             let elapsed_us = t0.elapsed().as_micros() as u64;
             let rid = rid.as_deref().unwrap_or("");
-            log::info!(
+            only_log::info!(
                 target: "only_http::access",
                 method = req.method.as_str(), target = req.target.as_str(), status = resp.status,
                 peer:% = peer, elapsed_us = elapsed_us, request_id = rid;
@@ -358,7 +358,7 @@ pub fn debug_handler(tel: Arc<Telemetry>, token: Option<String>) -> impl Service
                     l.shutdown_timeout().as_millis(),
                     tel.open_connections(),
                 );
-                json_str(&mut o, log::max_level().as_str());
+                json_str(&mut o, only_log::max_level().as_str());
                 o.push('}');
                 json(ctx, o);
             }

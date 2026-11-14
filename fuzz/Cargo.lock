@@ -774,10 +774,10 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "only"
 version = "1.0.0-rc.1"
 dependencies = [
- "log",
  "only-core",
  "only-ebpf",
  "only-epoll",
+ "only-log",
  "only-tls",
  "only-uring",
 ]
@@ -810,9 +810,9 @@ version = "1.0.0-rc.1"
 name = "only-core"
 version = "1.0.0-rc.1"
 dependencies = [
- "log",
  "loom",
  "only-buf",
+ "only-log",
  "only-pool",
  "only-sys",
 ]
@@ -849,8 +849,8 @@ dependencies = [
 name = "only-epoll"
 version = "1.0.0-rc.1"
 dependencies = [
- "log",
  "only-core",
+ "only-log",
  "only-sys",
  "only-timer",
 ]
@@ -920,11 +920,11 @@ dependencies = [
 name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
- "log",
  "only",
  "only-core",
  "only-crypto",
  "only-deflate",
+ "only-log",
  "only-ws",
 ]
 
@@ -936,6 +936,10 @@ dependencies = [
  "only-core",
  "only-crypto",
 ]
+
+[[package]]
+name = "only-log"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "only-media"
@@ -1018,8 +1022,8 @@ version = "1.0.0-rc.1"
 dependencies = [
  "io-uring",
  "libc",
- "log",
  "only-core",
+ "only-log",
  "only-sys",
  "only-timer",
 ]
@@ -1029,9 +1033,9 @@ name = "only-webrtc"
 version = "1.0.0-rc.1"
 dependencies = [
  "dimpl",
- "log",
  "only",
  "only-crypto",
+ "only-log",
  "only-turn",
  "p256",
  "str0m",

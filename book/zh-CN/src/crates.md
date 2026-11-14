@@ -16,6 +16,7 @@ $ cargo doc --workspace --no-deps --open
 |---|---|---|
 | `only` | facade：`Engine`、`Listener`、`Backend`、`Accel`，重新导出核心 API、`tls`、`ebpf` | [核心概念](concepts/index.md) |
 | `only-core` | `Conn`、`Handler`、`Acceptor`、`Config`、`Transport`、`Telemetry`；面向后端的 trait | [Handler](concepts/handlers.md) |
+| `only-log`（`only::log`） | 日志门面：级别、target、键值对、`Logger`、内置 logger、可选 `log` 桥接 | [可观测性](observability.md) |
 | `only-pool` | 逻辑（阻塞任务）线程池 | [阻塞任务](concepts/blocking.md) |
 | `only-buf` | 分级缓冲池、`SharedBuf` | [架构](architecture.md) |
 | `only-timer` | I/O 事件循环使用的分层时间轮 | [架构](architecture.md) |

@@ -753,6 +753,7 @@ dependencies = [
  "only-dpdk",
  "only-ebpf",
  "only-epoll",
+ "only-log",
  "only-tls",
  "only-uring",
  "rcgen",
@@ -787,9 +788,9 @@ version = "1.0.0-rc.1"
 name = "only-core"
 version = "1.0.0-rc.1"
 dependencies = [
- "log",
  "loom",
  "only-buf",
+ "only-log",
  "only-pool",
  "only-sys",
 ]
@@ -845,8 +846,8 @@ dependencies = [
 name = "only-epoll"
 version = "1.0.0-rc.1"
 dependencies = [
- "log",
  "only-core",
+ "only-log",
  "only-sys",
  "only-timer",
 ]
@@ -880,11 +881,11 @@ version = "1.0.0-rc.1"
 dependencies = [
  "flate2",
  "libc",
- "log",
  "only",
  "only-core",
  "only-crypto",
  "only-deflate",
+ "only-log",
  "only-ws",
  "rcgen",
  "rustls",
@@ -897,6 +898,13 @@ dependencies = [
  "only",
  "only-core",
  "only-crypto",
+]
+
+[[package]]
+name = "only-log"
+version = "1.0.0-rc.1"
+dependencies = [
+ "log",
 ]
 
 [[package]]
@@ -928,9 +936,9 @@ version = "1.0.0-rc.1"
 name = "only-prefork"
 version = "1.0.0-rc.1"
 dependencies = [
- "log",
  "only",
  "only-http",
+ "only-log",
  "only-sys",
 ]
 
@@ -1000,8 +1008,8 @@ version = "1.0.0-rc.1"
 dependencies = [
  "io-uring",
  "libc",
- "log",
  "only-core",
+ "only-log",
  "only-sys",
  "only-timer",
 ]
@@ -1011,10 +1019,10 @@ name = "only-webrtc"
 version = "1.0.0-rc.1"
 dependencies = [
  "dimpl",
- "log",
  "only",
  "only-core",
  "only-crypto",
+ "only-log",
  "only-turn",
  "p256",
  "str0m",

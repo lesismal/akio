@@ -64,13 +64,42 @@ are the first things to watch: they tell you whether handlers are keeping the I/
   expose it publicly without a token.
 - `HttpMetrics::middleware()` counts requests by status class, observes latency, tracks
   in-flight requests.
-- `observe::access_log()` writes one structured record per response through the `log` facade.
+- `observe::access_log()` writes one structured record per response through `only::log`.
 
 ## Logs
 
-`only` logs through the [`log`](https://docs.rs/log) facade with key-value records; install any
-backend (env_logger, a `log`-to-`tracing` bridge, ...) to see them. Without a logger installed,
-errors and slow-callback warnings go to stderr so they are never lost silently.
+`only` logs through its own facade, `only-log` (re-exported as `only::log`), with key-value
+records. Install a logger once per process to see them:
+
+```rust,ignore
+// Formatted lines on stderr: `2026-11-14T08:00:00.000123Z INFO  only: engine started listeners=[...]`
+only::log::init(only::log::LevelFilter::Info).unwrap();
+
+// Or: per-target ceilings, stdout, no timestamps ...
+only::log::FmtLogger::new()
+    .target_level("only_http::access", only::log::LevelFilter::Off)
+    .stdout()
+    .init(only::log::LevelFilter::Debug)
+    .unwrap();
+
+// Or your own sink: implement `only::log::Logger` (`enabled`, `log`, `flush`) and call
+// `only::log::set_logger(&MY_LOGGER)` plus `only::log::set_max_level(..)`.
+```
+
+A record gives `level()`, `target()`, `args()` (the message, formatted lazily),
+`key_values()` (`iter()`, `get("conn_id")`; values implement `Display`) and the source location.
+Without a logger installed, errors and slow-callback warnings go to stderr (`only: ...`) so they
+are never lost silently; everything else is dropped. The maximum level defaults to `Off` and is
+checked first, with one relaxed atomic load, so disabled statements cost well under a
+nanosecond.
+
+**Existing `log` setups (env_logger, `tracing-log`, fern ...).** Enable the `log` feature
+(`only = { version = "1", features = ["log"] }`). While no only-log logger is installed, every
+record goes to the `log` crate's logger with the same level, target, message and key-values, and
+`log::max_level()` is the effective maximum; `Config::log_level` sets `log`'s level as well. To
+go the other way (records of crates using `log`, such as str0m or rustls, into an only-log
+logger) call `only::log::bridge::route_log_to_only()`. The feature is outside the semver promise:
+it follows `log` 0.4.
 
 | Target | Level | Records |
 |---|---|---|
@@ -81,7 +110,8 @@ errors and slow-callback warnings go to stderr so they are never lost silently.
 | `only` | trace | `connection opened` / `connection closed` (`conn_id`, `peer`, `local`, `dialed`, `error`) |
 | `only_http::access` | info | access log: `method`, `target`, `status`, `peer`, `elapsed_us`, `request_id` |
 
-`Config::log_level` (reloadable) calls `log::set_max_level`, so verbosity can change at runtime.
+`Config::log_level` (reloadable) calls `only::log::set_max_level`, so verbosity can change at
+runtime.
 
 ## Slow callbacks
 

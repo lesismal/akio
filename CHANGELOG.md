@@ -62,6 +62,31 @@ Raw access moved behind new `unstable` cargo features (`only`, `only-tls`, `only
 | `Error::Rtc(str0m::RtcError)`, `impl From<str0m::RtcError> for Error` | `Error::Rtc(only_webrtc::RtcError)`; new `Error::InvalidCandidate` |
 | `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
 
+### Changed (breaking, before 1.0.0): own logging facade `only-log` replaces `log`
+
+DEV-PLAN wave B. `only` no longer depends on the `log` crate; it logs through the new public
+crate `only-log` (no dependencies, re-exported as `only::log`): levels, targets, structured
+key-values with `log`'s macro syntax, a global maximum level in an atomic (a disabled statement
+costs one relaxed load: 0.25-0.29 ns against `log`'s 0.36 ns), a `Logger` trait with
+`set_logger` / `set_boxed_logger`, and built-in loggers (`only::log::init(level)` for formatted
+lines on stderr, `StderrLogger`). Targets, messages and key names are unchanged; without a
+logger, errors and slow-callback warnings still go to stderr. The new `log` cargo feature
+(`only`, `only-core`, `only-log`; outside the semver promise) bridges to the `log` crate: records
+go to `log`'s logger while no only-log logger is installed (and `Config::log_level` also sets
+`log::max_level`, as before), and `only::log::bridge::route_log_to_only()` sends `log` records
+(str0m, rustls ...) to the only-log logger.
+
+Migration:
+
+| Before | After |
+|---|---|
+| `env_logger::init()` (or any `log` logger) | unchanged, with `features = ["log"]` on `only`; or drop it for `only::log::init(only::log::LevelFilter::Info)` |
+| `cfg.log_level = Some(log::LevelFilter::Info)` | `Some(only::log::LevelFilter::Info)` (with the `log` feature, `Some(log::LevelFilter::Info.into())` also works) |
+| `Telemetry::set_log_level(log::LevelFilter)` | `set_log_level(only::log::LevelFilter)` |
+| `impl log::Log for MyLogger` | `impl only::log::Logger for MyLogger` (`enabled` and `flush` have defaults); install with `only::log::set_logger` |
+| `record.key_values().visit(&mut visitor)` | `record.key_values().iter()` / `.get("conn_id")`; values implement `Display` |
+| `log::max_level()` | `only::log::max_level()` |
+
 ### Changed: in-house cryptography (`only-crypto`, DEV-PLAN wave A)
 
 - New internal crate `only-crypto` (std only, `#![deny(unsafe_code)]` except its AES-NI / ARMv8

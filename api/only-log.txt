@@ -1,0 +1,325 @@
+pub mod only_log
+pub macro only_log::debug!
+pub macro only_log::error!
+pub macro only_log::info!
+pub macro only_log::log!
+pub macro only_log::log_enabled!
+pub macro only_log::trace!
+pub macro only_log::warn!
+#[repr(usize)] pub enum only_log::Level
+pub only_log::Level::Debug = 4
+pub only_log::Level::Error = 1
+pub only_log::Level::Info = 3
+pub only_log::Level::Trace = 5
+pub only_log::Level::Warn = 2
+impl only_log::Level
+pub const only_log::Level::ALL: [only_log::Level; 5]
+pub const fn only_log::Level::as_str(self) -> &'static str
+pub const fn only_log::Level::to_level_filter(self) -> only_log::LevelFilter
+impl core::clone::Clone for only_log::Level
+pub fn only_log::Level::clone(&self) -> Self
+impl core::cmp::Eq for only_log::Level
+impl core::cmp::Ord for only_log::Level
+pub fn only_log::Level::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_log::Level
+pub fn only_log::Level::eq(&self, &Self) -> bool
+impl core::cmp::PartialEq<only_log::Level> for only_log::LevelFilter
+pub fn only_log::LevelFilter::eq(&self, &only_log::Level) -> bool
+impl core::cmp::PartialEq<only_log::LevelFilter> for only_log::Level
+pub fn only_log::Level::eq(&self, &only_log::LevelFilter) -> bool
+impl core::cmp::PartialOrd for only_log::Level
+pub fn only_log::Level::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<only_log::Level> for only_log::LevelFilter
+pub fn only_log::LevelFilter::partial_cmp(&self, &only_log::Level) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<only_log::LevelFilter> for only_log::Level
+pub fn only_log::Level::partial_cmp(&self, &only_log::LevelFilter) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<only_log::Level> for only_log::LevelFilter
+pub fn only_log::LevelFilter::from(only_log::Level) -> only_log::LevelFilter
+impl core::fmt::Debug for only_log::Level
+pub fn only_log::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::Level
+pub fn only_log::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_log::Level
+pub fn only_log::Level::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_log::Level
+impl core::marker::StructuralPartialEq for only_log::Level
+impl core::str::traits::FromStr for only_log::Level
+pub type only_log::Level::Err = only_log::ParseLevelError
+pub fn only_log::Level::from_str(&str) -> core::result::Result<only_log::Level, only_log::ParseLevelError>
+impl core::marker::Send for only_log::Level
+impl core::marker::Sync for only_log::Level
+impl core::marker::Unpin for only_log::Level
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::Level
+impl core::panic::unwind_safe::UnwindSafe for only_log::Level
+#[repr(usize)] pub enum only_log::LevelFilter
+pub only_log::LevelFilter::Debug = 4
+pub only_log::LevelFilter::Error = 1
+pub only_log::LevelFilter::Info = 3
+pub only_log::LevelFilter::Off = 0
+pub only_log::LevelFilter::Trace = 5
+pub only_log::LevelFilter::Warn = 2
+impl only_log::LevelFilter
+pub const fn only_log::LevelFilter::as_str(self) -> &'static str
+pub const fn only_log::LevelFilter::to_level(self) -> core::option::Option<only_log::Level>
+impl core::clone::Clone for only_log::LevelFilter
+pub fn only_log::LevelFilter::clone(&self) -> Self
+impl core::cmp::Eq for only_log::LevelFilter
+impl core::cmp::Ord for only_log::LevelFilter
+pub fn only_log::LevelFilter::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_log::LevelFilter
+pub fn only_log::LevelFilter::eq(&self, &Self) -> bool
+impl core::cmp::PartialEq<only_log::Level> for only_log::LevelFilter
+pub fn only_log::LevelFilter::eq(&self, &only_log::Level) -> bool
+impl core::cmp::PartialEq<only_log::LevelFilter> for only_log::Level
+pub fn only_log::Level::eq(&self, &only_log::LevelFilter) -> bool
+impl core::cmp::PartialOrd for only_log::LevelFilter
+pub fn only_log::LevelFilter::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<only_log::Level> for only_log::LevelFilter
+pub fn only_log::LevelFilter::partial_cmp(&self, &only_log::Level) -> core::option::Option<core::cmp::Ordering>
+impl core::cmp::PartialOrd<only_log::LevelFilter> for only_log::Level
+pub fn only_log::Level::partial_cmp(&self, &only_log::LevelFilter) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<only_log::Level> for only_log::LevelFilter
+pub fn only_log::LevelFilter::from(only_log::Level) -> only_log::LevelFilter
+impl core::default::Default for only_log::LevelFilter
+pub fn only_log::LevelFilter::default() -> Self
+impl core::fmt::Debug for only_log::LevelFilter
+pub fn only_log::LevelFilter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::LevelFilter
+pub fn only_log::LevelFilter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_log::LevelFilter
+pub fn only_log::LevelFilter::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_log::LevelFilter
+impl core::marker::StructuralPartialEq for only_log::LevelFilter
+impl core::str::traits::FromStr for only_log::LevelFilter
+pub type only_log::LevelFilter::Err = only_log::ParseLevelError
+pub fn only_log::LevelFilter::from_str(&str) -> core::result::Result<only_log::LevelFilter, only_log::ParseLevelError>
+impl core::marker::Send for only_log::LevelFilter
+impl core::marker::Sync for only_log::LevelFilter
+impl core::marker::Unpin for only_log::LevelFilter
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::LevelFilter
+impl core::panic::unwind_safe::UnwindSafe for only_log::LevelFilter
+pub struct only_log::FmtLogger
+impl only_log::FmtLogger
+pub fn only_log::FmtLogger::format(&self, &only_log::Record<'_>) -> alloc::string::String
+pub fn only_log::FmtLogger::init(self, only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>
+pub fn only_log::FmtLogger::new() -> only_log::FmtLogger
+pub fn only_log::FmtLogger::stdout(self) -> only_log::FmtLogger
+pub fn only_log::FmtLogger::target_level(self, impl core::convert::Into<alloc::string::String>, only_log::LevelFilter) -> only_log::FmtLogger
+pub fn only_log::FmtLogger::without_timestamps(self) -> only_log::FmtLogger
+impl core::clone::Clone for only_log::FmtLogger
+pub fn only_log::FmtLogger::clone(&self) -> Self
+impl core::default::Default for only_log::FmtLogger
+pub fn only_log::FmtLogger::default() -> Self
+impl core::fmt::Debug for only_log::FmtLogger
+pub fn only_log::FmtLogger::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_log::Logger for only_log::FmtLogger
+pub fn only_log::FmtLogger::enabled(&self, &only_log::Metadata<'_>) -> bool
+pub fn only_log::FmtLogger::flush(&self)
+pub fn only_log::FmtLogger::log(&self, &only_log::Record<'_>)
+impl core::marker::Send for only_log::FmtLogger
+impl core::marker::Sync for only_log::FmtLogger
+impl core::marker::Unpin for only_log::FmtLogger
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::FmtLogger
+impl core::panic::unwind_safe::UnwindSafe for only_log::FmtLogger
+pub struct only_log::KeyValues<'a>(_)
+impl<'a> only_log::KeyValues<'a>
+pub fn only_log::KeyValues<'a>::get(&self, &str) -> core::option::Option<only_log::Value<'a>>
+pub const fn only_log::KeyValues<'a>::is_empty(&self) -> bool
+pub fn only_log::KeyValues<'a>::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&'a str, only_log::Value<'a>)> + 'a
+pub const fn only_log::KeyValues<'a>::len(&self) -> usize
+pub const fn only_log::KeyValues<'a>::new(&'a [(&'a str, only_log::Value<'a>)]) -> only_log::KeyValues<'a>
+impl core::fmt::Debug for only_log::KeyValues<'_>
+pub fn only_log::KeyValues<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for only_log::KeyValues<'a>
+pub fn only_log::KeyValues<'a>::clone(&self) -> Self
+impl<'a> core::default::Default for only_log::KeyValues<'a>
+pub fn only_log::KeyValues<'a>::default() -> Self
+impl<'a> core::marker::Copy for only_log::KeyValues<'a>
+impl<'a> !core::marker::Send for only_log::KeyValues<'a>
+impl<'a> !core::marker::Sync for only_log::KeyValues<'a>
+impl<'a> core::marker::Unpin for only_log::KeyValues<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for only_log::KeyValues<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for only_log::KeyValues<'a>
+pub struct only_log::Metadata<'a>
+impl<'a> only_log::Metadata<'a>
+pub const fn only_log::Metadata<'a>::level(&self) -> only_log::Level
+pub const fn only_log::Metadata<'a>::new(only_log::Level, &'a str) -> only_log::Metadata<'a>
+pub const fn only_log::Metadata<'a>::target(&self) -> &'a str
+impl<'a> core::clone::Clone for only_log::Metadata<'a>
+pub fn only_log::Metadata<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for only_log::Metadata<'a>
+impl<'a> core::cmp::PartialEq for only_log::Metadata<'a>
+pub fn only_log::Metadata<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for only_log::Metadata<'a>
+pub fn only_log::Metadata<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::hash::Hash for only_log::Metadata<'a>
+pub fn only_log::Metadata<'a>::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl<'a> core::marker::Copy for only_log::Metadata<'a>
+impl<'a> core::marker::StructuralPartialEq for only_log::Metadata<'a>
+impl<'a> core::marker::Send for only_log::Metadata<'a>
+impl<'a> core::marker::Sync for only_log::Metadata<'a>
+impl<'a> core::marker::Unpin for only_log::Metadata<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_log::Metadata<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_log::Metadata<'a>
+pub struct only_log::ParseLevelError(_)
+impl core::clone::Clone for only_log::ParseLevelError
+pub fn only_log::ParseLevelError::clone(&self) -> Self
+impl core::cmp::Eq for only_log::ParseLevelError
+impl core::cmp::PartialEq for only_log::ParseLevelError
+pub fn only_log::ParseLevelError::eq(&self, &Self) -> bool
+impl core::error::Error for only_log::ParseLevelError
+impl core::fmt::Debug for only_log::ParseLevelError
+pub fn only_log::ParseLevelError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::ParseLevelError
+pub fn only_log::ParseLevelError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::ParseLevelError
+impl core::marker::Send for only_log::ParseLevelError
+impl core::marker::Sync for only_log::ParseLevelError
+impl core::marker::Unpin for only_log::ParseLevelError
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::ParseLevelError
+impl core::panic::unwind_safe::UnwindSafe for only_log::ParseLevelError
+pub struct only_log::Record<'a>
+impl<'a> only_log::Record<'a>
+pub const fn only_log::Record<'a>::args(&self) -> &core::fmt::Arguments<'a>
+pub const fn only_log::Record<'a>::file(&self) -> core::option::Option<&'a str>
+pub const fn only_log::Record<'a>::key_values(&self) -> only_log::KeyValues<'a>
+pub const fn only_log::Record<'a>::level(&self) -> only_log::Level
+pub const fn only_log::Record<'a>::line(&self) -> core::option::Option<u32>
+pub const fn only_log::Record<'a>::metadata(&self) -> &only_log::Metadata<'a>
+pub const fn only_log::Record<'a>::module_path(&self) -> core::option::Option<&'a str>
+pub const fn only_log::Record<'a>::new(only_log::Level, &'a str, core::fmt::Arguments<'a>) -> only_log::Record<'a>
+pub const fn only_log::Record<'a>::target(&self) -> &'a str
+pub const fn only_log::Record<'a>::with_key_values(self, &'a [(&'a str, only_log::Value<'a>)]) -> only_log::Record<'a>
+pub const fn only_log::Record<'a>::with_location(self, core::option::Option<&'a str>, core::option::Option<&'a str>, core::option::Option<u32>) -> only_log::Record<'a>
+impl<'a> core::clone::Clone for only_log::Record<'a>
+pub fn only_log::Record<'a>::clone(&self) -> Self
+impl<'a> core::fmt::Debug for only_log::Record<'a>
+pub fn only_log::Record<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for only_log::Record<'a>
+impl<'a> !core::marker::Send for only_log::Record<'a>
+impl<'a> !core::marker::Sync for only_log::Record<'a>
+impl<'a> core::marker::Unpin for only_log::Record<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for only_log::Record<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for only_log::Record<'a>
+pub struct only_log::SetLoggerError(_)
+impl core::clone::Clone for only_log::SetLoggerError
+pub fn only_log::SetLoggerError::clone(&self) -> Self
+impl core::cmp::Eq for only_log::SetLoggerError
+impl core::cmp::PartialEq for only_log::SetLoggerError
+pub fn only_log::SetLoggerError::eq(&self, &Self) -> bool
+impl core::error::Error for only_log::SetLoggerError
+impl core::fmt::Debug for only_log::SetLoggerError
+pub fn only_log::SetLoggerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::SetLoggerError
+pub fn only_log::SetLoggerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::SetLoggerError
+impl core::marker::Send for only_log::SetLoggerError
+impl core::marker::Sync for only_log::SetLoggerError
+impl core::marker::Unpin for only_log::SetLoggerError
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::SetLoggerError
+impl core::panic::unwind_safe::UnwindSafe for only_log::SetLoggerError
+pub struct only_log::StderrLogger
+impl core::clone::Clone for only_log::StderrLogger
+pub fn only_log::StderrLogger::clone(&self) -> Self
+impl core::default::Default for only_log::StderrLogger
+pub fn only_log::StderrLogger::default() -> Self
+impl core::fmt::Debug for only_log::StderrLogger
+pub fn only_log::StderrLogger::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_log::StderrLogger
+impl only_log::Logger for only_log::StderrLogger
+pub fn only_log::StderrLogger::enabled(&self, &only_log::Metadata<'_>) -> bool
+pub fn only_log::StderrLogger::flush(&self)
+pub fn only_log::StderrLogger::log(&self, &only_log::Record<'_>)
+impl core::marker::Send for only_log::StderrLogger
+impl core::marker::Sync for only_log::StderrLogger
+impl core::marker::Unpin for only_log::StderrLogger
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::StderrLogger
+impl core::panic::unwind_safe::UnwindSafe for only_log::StderrLogger
+pub struct only_log::Value<'a>(_)
+impl<'a> only_log::Value<'a>
+pub fn only_log::Value<'a>::from_debug<T: core::fmt::Debug>(&'a T) -> only_log::Value<'a>
+pub fn only_log::Value<'a>::from_display<T: core::fmt::Display>(&'a T) -> only_log::Value<'a>
+pub fn only_log::Value<'a>::from_dyn_display(&'a dyn core::fmt::Display) -> only_log::Value<'a>
+pub fn only_log::Value<'a>::to_bool(&self) -> core::option::Option<bool>
+pub fn only_log::Value<'a>::to_char(&self) -> core::option::Option<char>
+pub fn only_log::Value<'a>::to_f64(&self) -> core::option::Option<f64>
+pub fn only_log::Value<'a>::to_i64(&self) -> core::option::Option<i64>
+pub fn only_log::Value<'a>::to_str(&self) -> core::option::Option<&'a str>
+pub fn only_log::Value<'a>::to_u64(&self) -> core::option::Option<u64>
+impl core::fmt::Debug for only_log::Value<'_>
+pub fn only_log::Value<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::Value<'_>
+pub fn only_log::Value<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_log::ToValue for only_log::Value<'_>
+pub fn only_log::Value<'_>::to_value(&self) -> only_log::Value<'_>
+impl<'a> core::clone::Clone for only_log::Value<'a>
+pub fn only_log::Value<'a>::clone(&self) -> Self
+impl<'a> core::marker::Copy for only_log::Value<'a>
+impl<'a> !core::marker::Send for only_log::Value<'a>
+impl<'a> !core::marker::Sync for only_log::Value<'a>
+impl<'a> core::marker::Unpin for only_log::Value<'a>
+impl<'a> !core::panic::unwind_safe::RefUnwindSafe for only_log::Value<'a>
+impl<'a> !core::panic::unwind_safe::UnwindSafe for only_log::Value<'a>
+pub trait only_log::Logger: core::marker::Send + core::marker::Sync
+pub fn only_log::Logger::enabled(&self, &only_log::Metadata<'_>) -> bool
+pub fn only_log::Logger::flush(&self)
+pub fn only_log::Logger::log(&self, &only_log::Record<'_>)
+impl only_log::Logger for only_log::FmtLogger
+pub fn only_log::FmtLogger::enabled(&self, &only_log::Metadata<'_>) -> bool
+pub fn only_log::FmtLogger::flush(&self)
+pub fn only_log::FmtLogger::log(&self, &only_log::Record<'_>)
+impl only_log::Logger for only_log::StderrLogger
+pub fn only_log::StderrLogger::enabled(&self, &only_log::Metadata<'_>) -> bool
+pub fn only_log::StderrLogger::flush(&self)
+pub fn only_log::StderrLogger::log(&self, &only_log::Record<'_>)
+pub trait only_log::ToValue
+pub fn only_log::ToValue::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for alloc::string::String
+pub fn alloc::string::String::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for bool
+pub fn bool::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for char
+pub fn char::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for f32
+pub fn f32::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for f64
+pub fn f64::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for i128
+pub fn i128::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for i16
+pub fn i16::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for i32
+pub fn i32::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for i64
+pub fn i64::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for i8
+pub fn i8::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for isize
+pub fn isize::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for only_log::Value<'_>
+pub fn only_log::Value<'_>::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for str
+pub fn str::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for u128
+pub fn u128::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for u16
+pub fn u16::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for u32
+pub fn u32::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for u64
+pub fn u64::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for u8
+pub fn u8::to_value(&self) -> only_log::Value<'_>
+impl only_log::ToValue for usize
+pub fn usize::to_value(&self) -> only_log::Value<'_>
+impl<T: only_log::ToValue + ?core::marker::Sized> only_log::ToValue for &T
+pub fn &T::to_value(&self) -> only_log::Value<'_>
+pub fn only_log::enabled(only_log::Level, &str) -> bool
+pub fn only_log::flush()
+pub fn only_log::init(only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>
+pub fn only_log::log_or_stderr(only_log::Level, &str, core::fmt::Arguments<'_>)
+pub fn only_log::logger() -> core::option::Option<&'static dyn only_log::Logger>
+pub fn only_log::max_level() -> only_log::LevelFilter
+pub fn only_log::set_boxed_logger(alloc::boxed::Box<dyn only_log::Logger>) -> core::result::Result<(), only_log::SetLoggerError>
+pub fn only_log::set_logger(&'static dyn only_log::Logger) -> core::result::Result<(), only_log::SetLoggerError>
+pub fn only_log::set_max_level(only_log::LevelFilter)

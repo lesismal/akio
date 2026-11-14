@@ -59,6 +59,29 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
 | `Error::Rtc(str0m::RtcError)`、`impl From<str0m::RtcError> for Error` | `Error::Rtc(only_webrtc::RtcError)`；新增 `Error::InvalidCandidate` |
 | `Endpoint::add_candidate(str0m::Candidate)` | `Candidate::host(addr)` / `server_reflexive(addr, base)` / `relayed(addr, base)` / `parse(sdp)` |
 
+### 变更（破坏性，1.0.0 之前）：自研日志门面 `only-log` 取代 `log`
+
+DEV-PLAN 第 B 波。`only` 不再依赖 `log` crate，而是通过新的公开 crate `only-log`（无依赖，以
+`only::log` 重新导出）记日志：级别、target、沿用 `log` 宏语法的结构化键值对、存放在原子变量中的全局
+最大级别（被禁用的语句只需一次 relaxed 读：0.25-0.29 ns，`log` 为 0.36 ns）、带 `set_logger` /
+`set_boxed_logger` 的 `Logger` trait，以及内置 logger（`only::log::init(level)` 向 stderr 输出格式化
+行，`StderrLogger`）。target、消息和键名保持不变；未安装 logger 时，错误与慢回调警告仍打印到 stderr。
+新增的 `log` cargo feature（`only`、`only-core`、`only-log`；不在 semver 承诺之内）桥接到 `log`
+crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::log_level` 也会像以前一样设置
+`log::max_level`），`only::log::bridge::route_log_to_only()` 则把 `log` 的记录（str0m、rustls ……）
+送入 only-log 的 logger。
+
+迁移：
+
+| 之前 | 之后 |
+|---|---|
+| `env_logger::init()`（或任意 `log` logger） | 不变，在 `only` 上开启 `features = ["log"]`；或改用 `only::log::init(only::log::LevelFilter::Info)` |
+| `cfg.log_level = Some(log::LevelFilter::Info)` | `Some(only::log::LevelFilter::Info)`（开启 `log` feature 时也可写 `Some(log::LevelFilter::Info.into())`） |
+| `Telemetry::set_log_level(log::LevelFilter)` | `set_log_level(only::log::LevelFilter)` |
+| `impl log::Log for MyLogger` | `impl only::log::Logger for MyLogger`（`enabled` 与 `flush` 有默认实现）；用 `only::log::set_logger` 安装 |
+| `record.key_values().visit(&mut visitor)` | `record.key_values().iter()` / `.get("conn_id")`；值实现了 `Display` |
+| `log::max_level()` | `only::log::max_level()` |
+
 ### 变更：自研密码学（`only-crypto`，DEV-PLAN 第 A 波）
 
 - 新的内部 crate `only-crypto`（只依赖 std，除 AES-NI / ARMv8 AES 模块外 `#![deny(unsafe_code)]`）：SHA-1、

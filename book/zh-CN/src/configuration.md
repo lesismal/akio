@@ -32,7 +32,7 @@
 | `udp_gro` | false | 否 | Linux UDP GRO；需要 `read_buffer` >= 64 KiB |
 | `shutdown_timeout` | 10 s | 是 | `shutdown` 之后，超过这么久仍未关闭的连接被强制关闭 |
 | `max_connections` | 0（不限） | 是 | 打开的连接数达到此值后，新 accept 的连接立即关闭（全 engine 计数，含 dial 的连接和 UDP 对端） |
-| `log_level` | `None` | 是 | 用它调用 `log::set_max_level` |
+| `log_level` | `None` | 是 | `only::log::LevelFilter`；用它调用 `only::log::set_max_level` |
 | `telemetry` | 新的 hub | – | engine 的 `Arc<Telemetry>`；在 `build` 前克隆它来接入端点 |
 
 ## `EngineBuilder`

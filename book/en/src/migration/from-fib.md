@@ -42,7 +42,7 @@ from that and from Rust's ownership rules.
 | `TaskPoolMode` | n/a | the pool is adaptive |
 | `Engine.Stats()` | `engine.metrics()`, Prometheus via `observe::metrics_handler` | |
 | `pprof` middleware | `observe::debug_handler` (connections, loops, slow callbacks, live settings) | not a CPU profiler: use `perf` |
-| `LogSettings`, `fib/log` | the `log` facade, target `only` | |
+| `LogSettings`, `fib/log` | `only::log` (the `only-log` facade), target `only` | |
 | `prefork` | not available | |
 
 ## Handlers: from worker pool to I/O thread

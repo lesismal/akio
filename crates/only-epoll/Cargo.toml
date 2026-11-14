@@ -16,7 +16,7 @@ categories = ["network-programming", "os::unix-apis"]
 only-core = { workspace = true }
 only-sys = { workspace = true }
 only-timer = { workspace = true }
-log = "0.4.21"
+only-log = { workspace = true }
 
 [lints]
 workspace = true
