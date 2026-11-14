@@ -156,6 +156,11 @@ impl fmt::Debug for Connection {
     }
 }
 
+thread_local! {
+    /// The connection whose handler this thread is running (its address), if any.
+    static DELIVERING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -212,42 +217,42 @@ impl Connection {
     /// (open streams from [`QuicHandler::on_connected`]).
     pub fn open_bi(&self) -> Option<StreamId> {
         let id = lock(&self.0.state).conn.open(Dir::Bi);
-        self.drive();
+        self.kick();
         id
     }
 
     /// Opens a unidirectional stream; `None` while the peer's stream limit is reached.
     pub fn open_uni(&self) -> Option<StreamId> {
         let id = lock(&self.0.state).conn.open(Dir::Uni);
-        self.drive();
+        self.kick();
         id
     }
 
     /// Queues bytes on a stream; they go out as flow and congestion control allow.
     pub fn send(&self, id: StreamId, data: impl Into<Bytes>) -> Result<(), Error> {
         let r = lock(&self.0.state).conn.write(id, data.into());
-        self.drive();
+        self.kick();
         r
     }
 
     /// Ends a stream once its queued bytes are out.
     pub fn finish(&self, id: StreamId) -> Result<(), Error> {
         let r = lock(&self.0.state).conn.finish(id);
-        self.drive();
+        self.kick();
         r
     }
 
     /// Abandons sending on a stream (`RESET_STREAM`), dropping what is queued.
     pub fn reset(&self, id: StreamId, code: u32) -> Result<(), Error> {
         let r = lock(&self.0.state).conn.reset(id, u64::from(code));
-        self.drive();
+        self.kick();
         r
     }
 
     /// Asks the peer to stop sending on a stream (`STOP_SENDING`).
     pub fn stop(&self, id: StreamId, code: u32) -> Result<(), Error> {
         let r = lock(&self.0.state).conn.stop(id, u64::from(code));
-        self.drive();
+        self.kick();
         r
     }
 
@@ -259,7 +264,7 @@ impl Connection {
     /// Sends an unreliable datagram (needs the peer's support, RFC 9221).
     pub fn send_datagram(&self, data: impl Into<Bytes>) -> Result<(), Error> {
         let r = lock(&self.0.state).conn.send_datagram(data.into());
-        self.drive();
+        self.kick();
         r
     }
 
@@ -269,15 +274,38 @@ impl Connection {
         lock(&self.0.state)
             .conn
             .close(Instant::now(), u64::from(code), reason);
-        self.drive();
+        self.kick();
     }
 
-    /// Runs the state machine until it is quiet: app events, datagrams to send, endpoint
-    /// events, the timer.
+    /// After an API call: runs the state machine, unless the call came from this connection's
+    /// own handler, whose delivering `drive` sends everything once the callback returns (so a
+    /// response, its FIN and the acknowledgments share packets).
+    fn kick(&self) {
+        let me = Arc::as_ptr(&self.0) as usize;
+        if DELIVERING.with(std::cell::Cell::get) != me {
+            self.drive();
+        }
+    }
+
+    /// Runs the state machine until it is quiet: handler events first, then datagrams to send,
+    /// endpoint events and the timer.
     fn drive(&self) {
+        self.collect(false);
+        loop {
+            self.deliver();
+            if !self.collect(true) {
+                return;
+            }
+        }
+    }
+
+    /// Takes what the state machine produced: datagrams (when `transmit`), events, endpoint
+    /// events, the timer. Returns whether new handler events were queued.
+    fn collect(&self, transmit: bool) -> bool {
         let ep = &self.0.ep;
         let mut ep_events = Vec::new();
         let drained;
+        let mut queued = false;
         {
             // Everything that must keep its order (datagrams on the wire, events for the
             // handler) is handed on while the state is still locked: another thread driving
@@ -285,8 +313,10 @@ impl Connection {
             let mut st = lock(&self.0.state);
             let now = Instant::now();
             let State { conn, armed, lost } = &mut *st;
-            while let Some(t) = conn.poll_transmit(now, MAX_DATAGRAMS) {
-                ep.transmit(t.dest, t.segment_size, t.data);
+            if transmit {
+                while let Some(t) = conn.poll_transmit(now, MAX_DATAGRAMS) {
+                    ep.transmit(t.dest, t.segment_size, t.data);
+                }
             }
             let mut evs = lock(&self.0.events);
             while let Some(e) = conn.poll_event() {
@@ -296,6 +326,7 @@ impl Connection {
                     }
                 }
                 evs.push_back(e);
+                queued = true;
             }
             while let Some(e) = conn.poll_endpoint_event() {
                 ep_events.push(e);
@@ -310,6 +341,7 @@ impl Connection {
             drained = conn.is_drained();
             if drained && !std::mem::replace(lost, true) {
                 evs.push_back(proto::Event::Closed(ConnectionError::LocallyClosed));
+                queued = true;
             }
         }
         if !ep_events.is_empty() {
@@ -329,7 +361,7 @@ impl Connection {
         if drained {
             lock(&ep.conns).remove(&self.0.h);
         }
-        self.deliver();
+        queued
     }
 
     /// Runs queued events through the handler, one deliverer at a time (a nested or concurrent
@@ -346,6 +378,7 @@ impl Connection {
                 return;
             };
             let mut closed = false;
+            let prev = DELIVERING.with(|d| d.replace(Arc::as_ptr(&self.0) as usize));
             loop {
                 let ev = lock(&self.0.events).pop_front();
                 let Some(ev) = ev else { break };
@@ -365,6 +398,7 @@ impl Connection {
                     }
                 }
             }
+            DELIVERING.with(|d| d.set(prev));
             if closed {
                 lock(&self.0.events).clear();
                 return;

@@ -528,10 +528,22 @@ impl Connection {
             let d = di(id.dir());
             self.local_closed[d] += 1;
             self.local_max_streams[d] += 1;
-            if d == 0 {
-                self.pending.max_streams_bidi = true;
+            // More credit in batches of an eighth of the limit, or at once when the peer is
+            // about to run out.
+            let t = &self.cfg.transport;
+            let limit = u64::from(if d == 0 {
+                t.max_concurrent_bidi_streams
             } else {
-                self.pending.max_streams_uni = true;
+                t.max_concurrent_uni_streams
+            });
+            let step = (limit / 8).max(1);
+            let unused = self.local_advertised[d].saturating_sub(self.peer_opened[d]);
+            if self.local_max_streams[d] - self.local_advertised[d] >= step || unused < step {
+                if d == 0 {
+                    self.pending.max_streams_bidi = true;
+                } else {
+                    self.pending.max_streams_uni = true;
+                }
             }
         }
     }

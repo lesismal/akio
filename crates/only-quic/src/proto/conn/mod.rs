@@ -389,6 +389,8 @@ pub struct Connection {
     peer_max_streams: [u64; 2],
     peer_opened: [u64; 2],
     local_max_streams: [u64; 2],
+    /// The MAX_STREAMS values the peer last got.
+    local_advertised: [u64; 2],
     local_closed: [u64; 2],
     streams_blocked: [bool; 2],
     tx_max_data: u64,
@@ -503,6 +505,7 @@ impl Connection {
             peer_max_streams: [0, 0],
             peer_opened: [0, 0],
             local_max_streams,
+            local_advertised: local_max_streams,
             local_closed: [0, 0],
             streams_blocked: [false, false],
             tx_max_data: 0,

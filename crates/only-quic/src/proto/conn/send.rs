@@ -561,6 +561,7 @@ impl Connection {
                     ty::MAX_STREAMS_UNI
                 };
                 frame::put_simple(buf, t, &[self.local_max_streams[d]]);
+                self.local_advertised[d] = self.local_max_streams[d];
                 frames.push(SentFrame::MaxStreams(bidi));
                 *eliciting = true;
                 if bidi {
