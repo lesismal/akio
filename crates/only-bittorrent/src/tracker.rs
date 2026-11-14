@@ -1264,7 +1264,7 @@ mod tests {
 
     #[test]
     fn http_codec() {
-        let req = AnnounceRequest::new(InfoHash([0xAB; 20]), *b"-FL0100-abcdefghijkl", 6881, 100);
+        let req = AnnounceRequest::new(InfoHash([0xAB; 20]), *b"-ON0100-abcdefghijkl", 6881, 100);
         let url = http::announce_url("http://t:1/announce", &req);
         assert!(url.contains("info_hash=%AB%AB"));
         assert!(url.contains("event=started"));

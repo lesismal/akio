@@ -24,10 +24,10 @@ pub const DEFAULT_MAX_MESSAGE: usize = 1 << 20;
 /// ut_metadata piece size.
 pub const METADATA_PIECE: usize = 16 * 1024;
 
-/// A new Azureus-style peer ID: `-FL0100-` and 12 random bytes.
+/// A new Azureus-style peer ID: `-ON0100-` and 12 random bytes.
 pub fn new_peer_id() -> PeerId {
     let mut id = [0u8; 20];
-    id[..8].copy_from_slice(b"-FL0100-");
+    id[..8].copy_from_slice(b"-ON0100-");
     crate::rand_fill(&mut id[8..]);
     id
 }

@@ -165,7 +165,7 @@ pub struct ClientConfig {
     pub listen: SocketAddr,
     /// Directory torrents are stored below (default: the working directory).
     pub data_dir: PathBuf,
-    /// Peer ID (default: `-FL0100-` and random bytes).
+    /// Peer ID (default: `-ON0100-` and random bytes).
     pub peer_id: Option<PeerId>,
     /// Encryption policy (default [`Policy::Prefer`]).
     pub encryption: Policy,
