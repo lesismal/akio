@@ -103,7 +103,7 @@ mod tls {
         }
     }
 
-    pub fn config() -> Arc<rustls::ClientConfig> {
+    pub(crate) fn config() -> Arc<rustls::ClientConfig> {
         let provider = rustls::crypto::ring::default_provider();
         let schemes = provider
             .signature_verification_algorithms

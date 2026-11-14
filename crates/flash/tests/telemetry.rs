@@ -113,6 +113,12 @@ fn metrics_count_connections_bytes_and_render_prometheus() {
         c.write_all(&[7u8; 1000]).unwrap();
         assert_eq!(read_n(c, 1000), vec![7u8; 1000]);
     }
+    // The I/O thread counts a write after the syscall: the echo can arrive first.
+    assert!(wait_until(Duration::from_secs(2), || e
+        .metrics()
+        .total
+        .bytes_out
+        == 3000));
     let m = e.metrics();
     assert_eq!(m.loops.len(), 2, "one entry per I/O thread");
     assert!(m.loops.iter().all(|l| l.running));
@@ -411,6 +417,12 @@ fn udp_datagrams_and_peers_are_counted() {
         let (n, _) = s.recv_from(&mut buf).unwrap();
         assert_eq!(n, 5);
     }
+    // Counted after the send returns: the reply can arrive first.
+    assert!(wait_until(Duration::from_secs(2), || e
+        .metrics()
+        .total
+        .datagrams_out
+        == 3));
     let m = e.metrics();
     assert_eq!(m.loops[0].owner.backend, "udp");
     assert_eq!(m.total.datagrams_in, 3);
