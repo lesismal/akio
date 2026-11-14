@@ -6,6 +6,12 @@ API 参考由 rustdoc 生成。在这些 crate 发布之前，请在本地构建
 $ cargo doc --workspace --no-deps --open
 ```
 
+公开 crate 从 1.0.0 起遵循 semver；`flash-pool`、`flash-buf`、`flash-timer`、`flash-sys`、
+`flash-epoll` 和 `flash-uring` 是内部实现 crate，其自身 API 可能在任何发布中变化（请通过 `flash` /
+`flash-core` 使用）。标记为 `#[doc(hidden)]` 的条目同样不受保护。详见
+[docs/api-stability.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.zh-CN.md)，
+变更记录：[CHANGELOG.zh-CN.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.zh-CN.md)。
+
 | crate | 作用 | 指南章节 |
 |---|---|---|
 | `flash` | facade：`Engine`、`Listener`、`Backend`、`Accel`，重新导出核心 API、`tls`、`ebpf` | [核心概念](concepts/index.md) |

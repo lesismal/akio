@@ -6,6 +6,13 @@ The API reference is rustdoc. Until the crates are published, build it locally:
 $ cargo doc --workspace --no-deps --open
 ```
 
+The public crates follow semver from 1.0.0; `flash-pool`, `flash-buf`, `flash-timer`,
+`flash-sys`, `flash-epoll` and `flash-uring` are internal implementation crates whose own APIs may
+change in any release (use them through `flash` / `flash-core`). Items marked `#[doc(hidden)]`
+are not covered either. Details:
+[docs/api-stability.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.md),
+changes: [CHANGELOG.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.md).
+
 | Crate | Role | Book chapter |
 |---|---|---|
 | `flash` | facade: `Engine`, `Listener`, `Backend`, `Accel`, re-exports of the core API, `tls`, `ebpf` | [Concepts](concepts/index.md) |

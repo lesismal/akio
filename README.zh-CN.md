@@ -68,6 +68,11 @@ BitTorrent）尚未完成。Linux 是第一等平台；macOS 用于开发；不�
 [docs/ROADMAP.zh-CN.md](docs/ROADMAP.zh-CN.md)、[docs/DEV-PLAN.zh-CN.md](docs/DEV-PLAN.zh-CN.md)，
 设计决策见 [docs/adr](docs/adr/README.zh-CN.md)。
 
+当前版本为 `1.0.0-rc.1`：API 已冻结以供评审。从 1.0.0 起 flash 遵循 semver，具体见
+[docs/api-stability.zh-CN.md](docs/api-stability.zh-CN.md)（受保护的 crate、MSRV 1.85、平台级别）
+与 [docs/deprecation.zh-CN.md](docs/deprecation.zh-CN.md)；变更记录见
+[CHANGELOG.zh-CN.md](CHANGELOG.zh-CN.md)。
+
 ## 构建文档
 
 ```console
