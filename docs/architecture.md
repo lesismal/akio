@@ -91,7 +91,7 @@ flowchart BT
   ChaCha20-Poly1305, base64 and randomness the protocol crates need (KCP crypt, STUN/TURN,
   WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent); TLS, QUIC and DTLS still use rustls /
   quinn-proto / dimpl until the later waves of the DEV-PLAN.
-- **`unsafe` is confined** to `only-sys`, `only-uring` (ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
+- **`unsafe` is confined** to `only-sys` (which also holds the workspace's own OS bindings, `only_sys::ffi`, in place of the `libc` crate), `only-uring` (its own io_uring binding, ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (own zero-copy incremental head parser and chunked

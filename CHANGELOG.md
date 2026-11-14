@@ -134,6 +134,31 @@ DEV-PLAN "no third-party dependencies", wave A. The public API is unchanged.
   loona-hpack (both directions of encode/decode too), new `regex_match` with the `regex` crate;
   those crates remain only as dependencies of `fuzz/` and of the `tools/codec-bench` micro
   benchmarks (both outside the library workspace).
+### Changed (internal): own syscall and io_uring bindings (no more `libc`, `io-uring`)
+
+DEV-PLAN "no third-party dependencies", wave B. No public API changes; behaviour, errno and
+`EINTR` handling are unchanged.
+
+- `only-sys` declares its own OS bindings in `only_sys::ffi` (`#[doc(hidden)]`, internal): C
+  types, constants, `#[repr(C)]` structs (`sockaddr_in`/`in6`/`storage`/`ll`, `msghdr`,
+  `mmsghdr`, `cmsghdr` with the `CMSG_*` helpers, `iovec`, `epoll_event` (packed on x86_64),
+  `kevent`, `timespec`, `pollfd`, `cpu_set_t`, `sigaction`, `utsname`) and `extern "C"`
+  declarations of the C library (Linux, glibc or musl) and libSystem (macOS). System calls
+  without a C wrapper (`bpf`, `io_uring_*`) use `syscall(2)` with per-architecture numbers.
+  Linux x86_64 and aarch64 (riscv64 / loongarch64 share the generic layouts) and macOS
+  aarch64 / x86_64; other Linux architectures fail to compile with a clear message instead of
+  silently using wrong layouts.
+- Every layout and constant is compared with the `libc` crate in a test-only module (`libc` is
+  now a dev-dependency only), verified on macOS aarch64, Linux aarch64 and Linux x86_64.
+- `only-uring` has its own io_uring binding (`ring`): `io_uring_setup` / `io_uring_enter` /
+  `io_uring_register`, the mmap'd SQ/CQ rings and SQE array with the kernel's memory ordering,
+  the submission entries the reactor uses (multishot accept, multishot recv with buffer
+  selection, poll add, async cancel and cancel-any, read), CQE flags, opcode probing and
+  `IORING_FEAT_*` checks (the probe now also requires `IORING_FEAT_EXT_ARG`), SQPOLL and the
+  cooperative / single-issuer / deferred task-run setup. The buffer-ring, `KernelBuf`,
+  in-flight cancel and graveyard logic is unchanged.
+- `only-ebpf` and `only-dpdk` (TAP, AF_PACKET) use `only_sys::ffi`.
+
 ### Changed (experimental tier): only-dpdk runs its own TCP/IP stack
 
 `only-dpdk` no longer depends on smoltcp (DEV-PLAN "no third-party dependencies", wave A): the

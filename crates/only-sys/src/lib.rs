@@ -11,6 +11,8 @@
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 #![warn(clippy::unwrap_used)]
 
+#[doc(hidden)]
+pub mod ffi;
 mod net;
 mod poller;
 pub mod process;

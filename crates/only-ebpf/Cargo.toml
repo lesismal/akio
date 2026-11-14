@@ -16,7 +16,6 @@ categories = ["network-programming", "os::linux-apis"]
 only-core = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
 only-sys = { workspace = true }
 
 [features]
@@ -24,6 +23,7 @@ only-sys = { workspace = true }
 fuzzing = []
 
 [dev-dependencies]
+libc = "0.2"
 only-core = { workspace = true, features = ["fuzzing"] }
 
 [lints]

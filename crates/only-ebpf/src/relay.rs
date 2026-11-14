@@ -233,7 +233,7 @@ mod imp {
             // ENOENT: already removed because a socket closed.
             for r in [r1, r2] {
                 match r {
-                    Err(e) if e.raw_os_error() != Some(libc::ENOENT) => return Err(e),
+                    Err(e) if e.raw_os_error() != Some(only_sys::ffi::ENOENT) => return Err(e),
                     _ => {}
                 }
             }

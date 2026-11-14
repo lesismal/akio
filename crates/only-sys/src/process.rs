@@ -2,6 +2,7 @@
 //! re-executed child, pinning it to CPUs, tying its life to the parent, reserving a
 //! `SO_REUSEPORT` port, and turning signals into bytes on a pipe (the self-pipe trick).
 
+use crate::ffi;
 use std::collections::HashSet;
 use std::io;
 use std::net::{SocketAddr, TcpListener};
@@ -12,17 +13,17 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// `SIGHUP`.
-pub const SIGHUP: i32 = libc::SIGHUP;
+pub const SIGHUP: i32 = ffi::SIGHUP;
 /// `SIGINT`.
-pub const SIGINT: i32 = libc::SIGINT;
+pub const SIGINT: i32 = ffi::SIGINT;
 /// `SIGTERM`.
-pub const SIGTERM: i32 = libc::SIGTERM;
+pub const SIGTERM: i32 = ffi::SIGTERM;
 /// `SIGQUIT`.
-pub const SIGQUIT: i32 = libc::SIGQUIT;
+pub const SIGQUIT: i32 = ffi::SIGQUIT;
 /// `SIGUSR1`.
-pub const SIGUSR1: i32 = libc::SIGUSR1;
+pub const SIGUSR1: i32 = ffi::SIGUSR1;
 /// `SIGUSR2`.
-pub const SIGUSR2: i32 = libc::SIGUSR2;
+pub const SIGUSR2: i32 = ffi::SIGUSR2;
 
 /// What [`configure_child`] does in the child between `fork` and `exec`.
 #[derive(Clone, Debug, Default)]
@@ -49,17 +50,17 @@ pub fn configure_child(cmd: &mut Command, setup: &ChildSetup) {
     #[cfg(target_os = "linux")]
     // SAFETY: getpid has no preconditions. Read in the parent before fork: the child compares
     // its getppid() against it.
-    let parent = unsafe { libc::getpid() };
+    let parent = unsafe { ffi::getpid() };
     let hook = move || -> io::Result<()> {
         for &fd in &inherit {
             // SAFETY: fcntl on an fd number with valid commands; an invalid fd fails with EBADF,
             // which is reported. No memory is passed.
             let r = unsafe {
-                let fl = libc::fcntl(fd, libc::F_GETFD);
+                let fl = ffi::fcntl(fd, ffi::F_GETFD);
                 if fl < 0 {
                     -1
                 } else {
-                    libc::fcntl(fd, libc::F_SETFD, fl & !libc::FD_CLOEXEC)
+                    ffi::fcntl(fd, ffi::F_SETFD, fl & !ffi::FD_CLOEXEC)
                 }
             };
             if r < 0 {
@@ -70,23 +71,19 @@ pub fn configure_child(cmd: &mut Command, setup: &ChildSetup) {
         {
             if let Some(sig) = pdeathsig {
                 // SAFETY: prctl(PR_SET_PDEATHSIG) takes a signal number by value.
-                if unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, sig as libc::c_ulong) } < 0 {
+                if unsafe { ffi::prctl(ffi::PR_SET_PDEATHSIG, sig as ffi::c_ulong) } < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 // The parent may have died between fork and prctl: then nobody would signal us.
                 // SAFETY: getppid has no preconditions.
-                if unsafe { libc::getppid() } != parent {
-                    return Err(io::Error::from_raw_os_error(libc::ESRCH));
+                if unsafe { ffi::getppid() } != parent {
+                    return Err(io::Error::from_raw_os_error(ffi::ESRCH));
                 }
             }
             if let Some(set) = &cpus {
                 // SAFETY: `set` is a fully initialised cpu_set_t of the size passed.
                 let r = unsafe {
-                    libc::sched_setaffinity(
-                        0,
-                        size_of::<libc::cpu_set_t>(),
-                        std::ptr::from_ref(set),
-                    )
+                    ffi::sched_setaffinity(0, size_of::<ffi::cpu_set_t>(), std::ptr::from_ref(set))
                 };
                 if r < 0 {
                     return Err(io::Error::last_os_error());
@@ -104,16 +101,13 @@ pub fn configure_child(cmd: &mut Command, setup: &ChildSetup) {
 }
 
 #[cfg(target_os = "linux")]
-fn cpu_set(cpus: &[usize]) -> Option<libc::cpu_set_t> {
+fn cpu_set(cpus: &[usize]) -> Option<ffi::cpu_set_t> {
     if cpus.is_empty() {
         return None;
     }
-    // SAFETY: cpu_set_t is plain-old-data; all-zero is the empty set.
-    let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
-    let max = 8 * size_of::<libc::cpu_set_t>();
-    for &c in cpus.iter().filter(|&&c| c < max) {
-        // SAFETY: `c` is below the set's capacity (filtered above).
-        unsafe { libc::CPU_SET(c, &mut set) };
+    let mut set = ffi::cpu_set_t::new();
+    for &c in cpus.iter().filter(|&&c| c < ffi::cpu_set_t::CAPACITY) {
+        set.set(c);
     }
     Some(set)
 }
@@ -131,7 +125,7 @@ static TAKEN: Mutex<Option<HashSet<RawFd>>> = Mutex::new(None);
 /// promised to pass you.
 pub fn take_inherited_fd(fd: RawFd) -> io::Result<OwnedFd> {
     if fd < 0 {
-        return Err(io::Error::from_raw_os_error(libc::EBADF));
+        return Err(io::Error::from_raw_os_error(ffi::EBADF));
     }
     let mut taken = TAKEN.lock().unwrap_or_else(|p| p.into_inner());
     let set = taken.get_or_insert_with(HashSet::new);
@@ -143,11 +137,11 @@ pub fn take_inherited_fd(fd: RawFd) -> io::Result<OwnedFd> {
     }
     // SAFETY: fcntl on an fd number with valid commands; EBADF for a closed one is reported.
     let r = unsafe {
-        let fl = libc::fcntl(fd, libc::F_GETFD);
+        let fl = ffi::fcntl(fd, ffi::F_GETFD);
         if fl < 0 {
             -1
         } else {
-            libc::fcntl(fd, libc::F_SETFD, fl | libc::FD_CLOEXEC)
+            ffi::fcntl(fd, ffi::F_SETFD, fl | ffi::FD_CLOEXEC)
         }
     };
     if r < 0 {
@@ -174,7 +168,7 @@ static SIGNAL_READ: OnceLock<std::os::unix::net::UnixStream> = OnceLock::new();
 /// Serialises [`signal_pipe`] calls.
 static SIGNAL_SETUP: Mutex<()> = Mutex::new(());
 
-extern "C" fn on_signal(sig: libc::c_int) {
+extern "C" fn on_signal(sig: ffi::c_int) {
     let fd = SIGNAL_WRITE.load(Ordering::Relaxed);
     if fd < 0 {
         return;
@@ -183,26 +177,10 @@ extern "C" fn on_signal(sig: libc::c_int) {
     // SAFETY: write(2) is async-signal-safe; `b` outlives the call. errno is saved and restored
     // so the interrupted code does not see the handler's errno.
     unsafe {
-        let errno = errno_location();
+        let errno = ffi::errno_location();
         let saved = *errno;
-        libc::write(fd, (&raw const b).cast::<libc::c_void>(), 1);
+        ffi::write(fd, (&raw const b).cast::<ffi::c_void>(), 1);
         *errno = saved;
-    }
-}
-
-/// # Safety
-///
-/// Returns the calling thread's errno pointer; callers dereference it only on this thread.
-unsafe fn errno_location() -> *mut libc::c_int {
-    #[cfg(target_os = "linux")]
-    // SAFETY: always valid for the calling thread.
-    unsafe {
-        libc::__errno_location()
-    }
-    #[cfg(target_os = "macos")]
-    // SAFETY: always valid for the calling thread.
-    unsafe {
-        libc::__error()
     }
 }
 
@@ -223,17 +201,17 @@ pub fn signal_pipe(signals: &[i32]) -> io::Result<std::os::unix::net::UnixStream
     }
     for &sig in signals {
         // SAFETY: sigaction is plain-old-data; all-zero is a valid starting value.
-        let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+        let mut sa: ffi::sigaction = unsafe { std::mem::zeroed() };
         // sigaction takes the handler as an integer (`sighandler_t`).
         #[allow(clippy::fn_to_numeric_cast_any)]
         {
-            sa.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            sa.sa_sigaction = on_signal as extern "C" fn(ffi::c_int) as ffi::sighandler_t;
         }
-        sa.sa_flags = libc::SA_RESTART;
+        sa.sa_flags = ffi::SA_RESTART;
         // SAFETY: `sa` is initialised (empty mask, our handler); the old action is not wanted.
         let r = unsafe {
-            libc::sigemptyset(&raw mut sa.sa_mask);
-            libc::sigaction(sig, &raw const sa, std::ptr::null_mut())
+            ffi::sigemptyset(&raw mut sa.sa_mask);
+            ffi::sigaction(sig, &raw const sa, std::ptr::null_mut())
         };
         if r < 0 {
             return Err(io::Error::last_os_error());
@@ -248,12 +226,12 @@ pub fn signal_pipe(signals: &[i32]) -> io::Result<std::os::unix::net::UnixStream
 /// Sends `sig` to process `pid` (`kill(2)`). `pid` must be positive: process groups and
 /// "every process" are refused.
 pub fn kill(pid: u32, sig: i32) -> io::Result<()> {
-    let pid = libc::pid_t::try_from(pid)
+    let pid = ffi::pid_t::try_from(pid)
         .ok()
         .filter(|&p| p > 0)
-        .ok_or_else(|| io::Error::from_raw_os_error(libc::EINVAL))?;
+        .ok_or_else(|| io::Error::from_raw_os_error(ffi::EINVAL))?;
     // SAFETY: plain syscall with integer arguments.
-    if unsafe { libc::kill(pid, sig) } < 0 {
+    if unsafe { ffi::kill(pid, sig) } < 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())

@@ -10,10 +10,10 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 
 | Crate | 状态 | 原因 |
 |---|---|---|
-| `only-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号）、内核 CSPRNG（`getrandom` / `getentropy`） |
-| `only-uring` | `#![deny(unsafe_code)]`，仅 `group` 与 `reactor` 模块允许 | io_uring 提交项指向内核异步写入的内存 |
+| `only-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿，也是工作区自有的操作系统绑定（`ffi`：C 类型、常量、`#[repr(C)]` 结构体、`extern "C"` 声明；不再使用 `libc` crate）：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号）、内核 CSPRNG（`getrandom` / `getentropy`） |
+| `only-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许 | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
 | `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
-| `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `libc` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
+| `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `only_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
 | `only-crypto` | `#![deny(unsafe_code)]`，仅 `aes::hw` 模块允许 | AES-NI / ARMv8 AES intrinsic（`#[target_feature]` 函数），只在运行时检测到 CPU 特性之后调用 |
 | 其它所有 crate（`only`、`only-core`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
@@ -77,26 +77,40 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 19 | 19 | 0 | 0 |
-| only-sys | 70 | 1 | 3 | 0 |
-| only-uring | 18 | 1 | 1 | 0 |
-| **合计** | **149** | **24** | **5** | **21** |
+| only-sys | 77 | 3 | 3 | 0 |
+| only-uring | 34 | 4 | 1 | 0 |
+| **合计** | **172** | **29** | **5** | **21** |
 
 按用途：
 
 | 位置 | 数量 | 用途 | 主要不变式 |
 |---|---:|---|---|
-| `only-sys/src/net.rs` | 16 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage` | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
+| `only-sys/src/ffi/` | 5 + 布局测试中 7 个，`unsafe fn errno_location`、`cmsg_firsthdr`、`cmsg_nxthdr` | 自有的操作系统绑定：C 库（Linux）/ libSystem（macOS）的 `extern "C"` 声明、常量、`#[repr(C)]` 结构体、`CMSG_*` 辅助函数、`cpu_set_t`、errno | 见下文“自有系统调用层” |
+| `only-sys/src/net.rs` | 15 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage` | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
-| `only-sys/src/process.rs` | 15，`unsafe fn errno_location` | prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
+| `only-sys/src/process.rs` | 12 | prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
-| `only-sys/src/udp.rs` | 15 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | iovec 位于同一分配内（大小经检查）；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
+| `only-sys/src/udp.rs` | 14 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | iovec 位于同一分配内（大小经检查）；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
 | `only-crypto/src/aes/hw.rs` | 19 个块、19 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 5 个，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密（`#[target_feature]` 函数与 intrinsic） | 只有在 `is_x86_feature_detected!("aes")` / `is_aarch64_feature_detected!("aes")` 之后才会构造 `hw::Keys`；加载与存储不要求对齐且不越出 16 字节数组；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |
 | `only-sys/src/random.rs` | 2（每个系统一个） | 供 `only-crypto` 使用的 `getrandom(2)`（Linux）、`getentropy(2)`（macOS） | 内核最多向存活的 `&mut [u8]` 写入 `buf.len()` 字节（`getentropy` 每次最多 256 字节）；`getrandom` 读到的字节不足时按返回值前移 |
 | `only-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
+| `only-uring/src/ring.rs` | 16，`unsafe fn push`、`register`、`register_buf_ring` | 自有 io_uring 绑定：经 `syscall(2)` 调用 `io_uring_setup`/`enter`/`register`，`mmap` 映射 SQ/CQ ring 与 SQE 数组，SQ/CQ 的 head/tail 原子量，probe、enable-rings、buffer ring 注册 | 内核给出的偏移在使用前对照各自映射做边界检查；仅在队列未满时写入 SQE 槽位，tail 以 `Release` 发布；在自身 head 与以 `Acquire` 读取的 tail 之间读取 CQE，head 以 `Release` 发布；读取 `SQ_NEED_WAKEUP` 前有 `SeqCst` 栅栏（SQPOLL）；映射与 `Ring` 同生命周期 |
 | `only-uring/src/group.rs` | 3 | 探测内核版本用的 `uname` | `utsname` 置零；内核以 NUL 结尾 `release` |
 | `only-dpdk/src/pmd.rs` | 17、`impl Send for Queue` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；就地写入暂存的发送 mbuf | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 同一时刻只被一个线程使用（一次性移交给其 I/O 线程）；未提交的暂存发送 mbuf 会被释放 |
 | `only-dpdk/src/sys.rs` | 14 | TAP（`open`、`TUNSETIFF`）、AF_PACKET（`socket`、`bind`、`setsockopt`）、`read` / `recvfrom` / `write`、`ppoll` | fd 立即归 `OwnedFd` 所有；`#[repr(C)]` 的 `ifreq` 与 UAPI 大小一致；缓冲区与地址结构在每次调用期间有效，传入的长度就是它们的大小 |
 | `only-ebpf/src/sys.rs` | 11，3 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段在调用期间存活；键/值大小由 `Map<K, V>` 固定 |
+
+### 自有系统调用层（`only_sys::ffi`、`only-uring` 的 `ring`）
+
+设计：Linux 上声明 C 库函数（`unsafe extern "C"`），链接 `std` 本就链接的 libc（glibc 或 musl）；没有 C 封装的系统调用（`bpf`、`io_uring_*`）经 C 库的可变参数 `syscall(2)` 调用，系统调用号按架构区分。因此 errno、`EINTR` 与 `io::Error::last_os_error()` 的行为与使用 `libc` crate 时完全一致。macOS 没有稳定的系统调用 ABI：同样声明 libSystem 函数。不使用内联 `asm!`。
+
+修改这一层时的审查清单：
+
+1. **函数原型**：每个声明与各受支持目标的 C 头文件一致（参数宽度、指针常量性、返回类型）；C 中的可变参数函数（`fcntl`、`ioctl`、`open`、`prctl`、`syscall`）声明为可变参数（arm64 macOS 把可变参数放在栈上），可变参数以 `c_long`/指针宽度的值传递。
+2. **布局**：每个 `#[repr(C)]` 结构体都有编译期大小/对齐断言（io_uring 结构体还有偏移断言）；`epoll_event` 仅在 x86_64 上 packed，`kevent` 为 `packed(4)`；`src/ffi/layout.rs` 在测试运行的每个目标上（macOS aarch64、Linux aarch64、Linux x86_64）将每个结构体的大小、对齐、字段偏移以及每个常量的类型和值与 `libc` crate（dev-dependency）对比。
+3. **常量**：按操作系统和架构区分（`SYS_bpf` 在 x86_64 上为 321，通用表为 280；io_uring 调用在所有架构上都是 425-427）；只有具备对应取值的目标才能编译（否则 `compile_error!`）。
+4. **errno**：调用后立即用 `io::Error::last_os_error()` 转换，在任何可能覆盖 errno 的操作之前；信号处理器通过 `errno_location` 保存并恢复 errno。
+5. **io_uring ring**：内核给出的偏移在使用前对照其映射做边界检查；SQ 索引数组初始化为恒等映射；内存序遵循 `io_uring(7)`（SQ tail `Release` / head `Acquire`，CQ tail `Acquire` / head `Release`，读取 `SQ_NEED_WAKEUP` 前 `SeqCst` 栅栏）；SQE 构造逐字段复现 `io-uring` crate 的结果（单元测试 `sqe_builders`）；已提交 SQE 的缓冲区存活到其最终 CQE（原有的 `KernelBuf` / buffer ring / 在途取消 / graveyard 规则不变）。
 
 ## 6. 1.0 审查结论
 
@@ -122,7 +136,7 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 - **缓冲区 id 只归还一次。** `give_back` 只对完成事件携带的 `bid` 执行，因此在外的条目最多 `BUF_COUNT` 个，tail 所在槽位绝不会是内核正在读取的条目。现在还有范围断言兜底（F7）。
 - **`unsafe impl Send`**：`Poller`（kevent 的 `udata` 只是 token，从不解引用）、`RecvBatch`（指针指向自身的堆缓冲区，随结构体一起移动）、`SendBatch`（批次之间指针悬空，但每次发送前都从存活的 `Batch<'d>` 重建）和 `Loop`（在一个线程上构建，之后归其 I/O 线程所有；SQE 指针指向不会移动的堆内存）。它们都没有实现 `Sync`。
 - **信任内核提供数据的布局**：sockaddr 地址族、`cmsg_len`、`msg_len`（已截断）、CQE 缓冲区 id（现已做范围检查）。这是内核 ABI 契约。
-- **含 `unsafe` 的依赖**（`libc`、`io-uring`、`rustls`/`ring`、`quinn-proto`、RustCrypto）被信任，并由 `cargo deny`/`cargo audit` 跟踪。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。
+- **含 `unsafe` 的依赖**（`rustls`/`ring`、`quinn-proto`、RustCrypto）被信任，并由 `cargo deny`/`cargo audit` 跟踪。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。`libc` 与 `io-uring` crate 已从各库中移除（wave B）：由 `only_sys::ffi` 与 `only-uring` 的 `ring` 取代（`libc` 仍是 dev-dependency，用于布局对比测试和仅测试用的调用）。
 
 ## 7. 验证结果（本次审查）
 

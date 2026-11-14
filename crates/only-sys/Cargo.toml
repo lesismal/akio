@@ -13,6 +13,9 @@ keywords = ["network", "epoll", "kqueue", "syscall"]
 categories = ["network-programming", "os::unix-apis"]
 
 [dependencies]
+
+[dev-dependencies]
+# Only for the layout tests of `ffi` (the library itself does not link the `libc` crate).
 libc = "0.2"
 
 

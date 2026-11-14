@@ -1,6 +1,7 @@
 //! The kernel's CSPRNG: `getrandom(2)` on Linux, `getentropy(2)` on macOS, `/dev/urandom` when
 //! the syscall is missing (Linux before 3.17) or blocked (seccomp).
 
+use crate::ffi;
 use std::io;
 
 /// Fills `buf` with cryptographically secure random bytes from the kernel. Blocks only until the
@@ -8,9 +9,7 @@ use std::io;
 #[doc(hidden)]
 pub fn fill_random(buf: &mut [u8]) -> io::Result<()> {
     match sys_fill(buf) {
-        Err(e)
-            if e.raw_os_error() == Some(libc::ENOSYS) || e.raw_os_error() == Some(libc::EPERM) =>
-        {
+        Err(e) if e.raw_os_error() == Some(ffi::ENOSYS) || e.raw_os_error() == Some(ffi::EPERM) => {
             urandom(buf)
         }
         r => r,
@@ -27,7 +26,7 @@ fn sys_fill(mut buf: &mut [u8]) -> io::Result<()> {
     while !buf.is_empty() {
         // SAFETY: `buf` is a live, writable slice of `buf.len()` bytes for the whole call; the
         // kernel writes at most that many bytes and returns how many it wrote.
-        let n = unsafe { libc::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
+        let n = unsafe { ffi::getrandom(buf.as_mut_ptr().cast(), buf.len(), 0) };
         if n < 0 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::Interrupted {
@@ -47,7 +46,7 @@ fn sys_fill(buf: &mut [u8]) -> io::Result<()> {
     for chunk in buf.chunks_mut(256) {
         // SAFETY: `chunk` is a live, writable slice of `chunk.len()` (<= 256) bytes; getentropy
         // writes exactly that many bytes or fails.
-        let r = unsafe { libc::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
+        let r = unsafe { ffi::getentropy(chunk.as_mut_ptr().cast(), chunk.len()) };
         if r != 0 {
             return Err(io::Error::last_os_error());
         }

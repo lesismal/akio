@@ -9,16 +9,15 @@ use std::{
 };
 
 use crate::cbpf;
+use only_sys::ffi;
 
-const SO_ATTACH_REUSEPORT_CBPF: libc::c_int = 51;
-const SO_ATTACH_REUSEPORT_EBPF: libc::c_int = 52;
-const SO_COOKIE: libc::c_int = 57;
+use ffi::{SO_ATTACH_REUSEPORT_CBPF, SO_ATTACH_REUSEPORT_EBPF, SO_COOKIE};
 
-const BPF_MAP_CREATE: libc::c_long = 0;
-const BPF_MAP_UPDATE_ELEM: libc::c_long = 2;
-const BPF_MAP_DELETE_ELEM: libc::c_long = 3;
-const BPF_PROG_LOAD: libc::c_long = 5;
-const BPF_PROG_ATTACH: libc::c_long = 8;
+const BPF_MAP_CREATE: ffi::c_long = 0;
+const BPF_MAP_UPDATE_ELEM: ffi::c_long = 2;
+const BPF_MAP_DELETE_ELEM: ffi::c_long = 3;
+const BPF_PROG_LOAD: ffi::c_long = 5;
+const BPF_PROG_ATTACH: ffi::c_long = 8;
 
 pub(crate) const MAP_SOCKHASH: u32 = 18;
 pub(crate) const MAP_REUSEPORT_SOCKARRAY: u32 = 20;
@@ -27,7 +26,7 @@ pub(crate) const PROG_SK_REUSEPORT: u32 = 21;
 pub(crate) const ATTACH_SK_SKB_STREAM_VERDICT: u32 = 5;
 pub(crate) const ATTACH_SK_REUSEPORT_SELECT: u32 = 39;
 
-fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {
+fn cvt(r: ffi::c_int) -> io::Result<ffi::c_int> {
     if r < 0 {
         Err(io::Error::last_os_error())
     } else {
@@ -43,21 +42,21 @@ fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {
 /// no uninitialised padding the kernel would check (it rejects non-zero unknown tail bytes), and
 /// every pointer field (encoded as `u64`) must be valid for the reads or writes the kernel
 /// performs for `cmd`, with the sizes the attr states, for the duration of the call.
-unsafe fn bpf<T>(cmd: libc::c_long, attr: &mut T) -> io::Result<libc::c_int> {
+unsafe fn bpf<T>(cmd: ffi::c_long, attr: &mut T) -> io::Result<ffi::c_int> {
     // SAFETY: `attr` is a valid, initialized `#[repr(C)]` prefix of `union bpf_attr` for `cmd`
     // (caller), and the size passed is its exact size; the kernel zero-extends shorter attrs.
     let r = unsafe {
-        libc::syscall(
-            libc::SYS_bpf,
+        ffi::syscall(
+            ffi::SYS_bpf,
             cmd,
             std::ptr::from_mut::<T>(attr).cast::<c_void>(),
             size_of::<T>(),
         )
     };
-    cvt(r as libc::c_int)
+    cvt(r as ffi::c_int)
 }
 
-fn owned(fd: libc::c_int) -> OwnedFd {
+fn owned(fd: ffi::c_int) -> OwnedFd {
     // SAFETY: `fd` was just returned by the kernel and is owned by nobody else.
     unsafe { OwnedFd::from_raw_fd(fd) }
 }
@@ -255,15 +254,15 @@ pub(crate) fn prog_attach(target: RawFd, prog: RawFd, attach_type: u32) -> io::R
     unsafe { bpf(BPF_PROG_ATTACH, &mut a) }.map(drop)
 }
 
-fn setsockopt<T>(fd: RawFd, name: libc::c_int, v: &T) -> io::Result<()> {
+fn setsockopt<T>(fd: RawFd, name: ffi::c_int, v: &T) -> io::Result<()> {
     // SAFETY: `v` is valid for reads of `size_of::<T>()` bytes for the duration of the call.
     cvt(unsafe {
-        libc::setsockopt(
+        ffi::setsockopt(
             fd,
-            libc::SOL_SOCKET,
+            ffi::SOL_SOCKET,
             name,
             std::ptr::from_ref::<T>(v).cast::<c_void>(),
-            size_of::<T>() as libc::socklen_t,
+            size_of::<T>() as ffi::socklen_t,
         )
     })
     .map(drop)
@@ -288,18 +287,18 @@ pub(crate) fn attach_reuseport_cbpf(fd: RawFd, prog: &[cbpf::Insn]) -> io::Resul
 
 /// `SO_ATTACH_REUSEPORT_EBPF`: attaches the loaded program `prog` to the group of `fd`.
 pub(crate) fn attach_reuseport_ebpf(fd: RawFd, prog: RawFd) -> io::Result<()> {
-    setsockopt(fd, SO_ATTACH_REUSEPORT_EBPF, &(prog as libc::c_int))
+    setsockopt(fd, SO_ATTACH_REUSEPORT_EBPF, &(prog as ffi::c_int))
 }
 
 /// `SO_COOKIE`: the socket's unique, never reused 64-bit id.
 pub(crate) fn socket_cookie(fd: RawFd) -> io::Result<u64> {
     let mut v = 0u64;
-    let mut len = size_of::<u64>() as libc::socklen_t;
+    let mut len = size_of::<u64>() as ffi::socklen_t;
     // SAFETY: `v` and `len` are valid for writes and `len` holds the size of `v`.
     cvt(unsafe {
-        libc::getsockopt(
+        ffi::getsockopt(
             fd,
-            libc::SOL_SOCKET,
+            ffi::SOL_SOCKET,
             SO_COOKIE,
             (&raw mut v).cast::<c_void>(),
             &raw mut len,

@@ -119,6 +119,15 @@ DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。
 - 模糊测试：`http1_request` / `http1_client` 将头部解析器与 httparse 对比，`hpack` 与 loona-hpack 对比（编解码
   双向互通），新增的 `regex_match` 与 `regex` crate 对比；这些 crate 只作为 `fuzz/` 与 `tools/codec-bench`
   微基准（都在库的 workspace 之外）的依赖保留。
+### 变更（内部）：自研系统调用与 io_uring 绑定（不再依赖 `libc`、`io-uring`）
+
+DEV-PLAN“不依赖三方库”第 B 波。公开 API 不变；行为、errno 与 `EINTR` 处理不变。
+
+- `only-sys` 在 `only_sys::ffi`（`#[doc(hidden)]`，内部）中声明自有的操作系统绑定：C 类型、常量、`#[repr(C)]` 结构体（`sockaddr_in`/`in6`/`storage`/`ll`、`msghdr`、`mmsghdr`、带 `CMSG_*` 辅助函数的 `cmsghdr`、`iovec`、`epoll_event`（x86_64 上为 packed）、`kevent`、`timespec`、`pollfd`、`cpu_set_t`、`sigaction`、`utsname`），以及 C 库（Linux，glibc 或 musl）与 libSystem（macOS）函数的 `extern "C"` 声明。没有 C 封装的系统调用（`bpf`、`io_uring_*`）经 `syscall(2)` 调用，系统调用号按架构区分。支持 Linux x86_64 与 aarch64（riscv64 / loongarch64 共用通用布局）以及 macOS aarch64 / x86_64；其他 Linux 架构会以明确的错误信息编译失败，而不是悄悄使用错误的布局。
+- 每个布局与常量都在仅测试用的模块中与 `libc` crate 对比（`libc` 现在只是 dev-dependency），已在 macOS aarch64、Linux aarch64 和 Linux x86_64 上验证。
+- `only-uring` 拥有自研 io_uring 绑定（`ring`）：`io_uring_setup` / `io_uring_enter` / `io_uring_register`，按内核内存序访问的 mmap SQ/CQ ring 与 SQE 数组，反应器用到的提交项（multishot accept、带缓冲区选择的 multishot recv、poll add、async cancel 与 cancel-any、read），CQE 标志，opcode 探测与 `IORING_FEAT_*` 检查（探测现在也要求 `IORING_FEAT_EXT_ARG`），SQPOLL 以及 cooperative / single-issuer / deferred task-run 设置。buffer ring、`KernelBuf`、在途取消与 graveyard 逻辑不变。
+- `only-ebpf` 与 `only-dpdk`（TAP、AF_PACKET）改用 `only_sys::ffi`。
+
 ### 变更（实验性层级）：only-dpdk 使用自研 TCP/IP 协议栈
 
 `only-dpdk` 不再依赖 smoltcp（DEV-PLAN“去除第三方依赖”第 A 波）：用户态协议栈改为 only 自研，位于

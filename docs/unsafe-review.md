@@ -13,10 +13,10 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 
 | Crate | Status | Why |
 |---|---|---|
-| `only-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls: epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, process plumbing for prefork (`pre_exec`, signals), the kernel CSPRNG (`getrandom` / `getentropy`) |
-| `only-uring` | `#![deny(unsafe_code)]`, allowed in `group` and `reactor` only | io_uring submission entries point into memory the kernel writes asynchronously |
+| `only-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls, and the workspace's own OS bindings (`ffi`: C types, constants, `#[repr(C)]` structs, `extern "C"` declarations; no `libc` crate): epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, process plumbing for prefork (`pre_exec`, signals), the kernel CSPRNG (`getrandom` / `getentropy`) |
+| `only-uring` | `#![deny(unsafe_code)]`, allowed in `group`, `reactor` and `ring` only | io_uring submission entries point into memory the kernel writes asynchronously; `ring` is the own io_uring binding (setup/enter/register, mmap'd SQ/CQ rings; no `io-uring` crate) |
 | `only-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
-| `only-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` and `sys` only; the TCP/IP stack (`net`) is `#![forbid(unsafe_code)]` | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts); TAP (`/dev/net/tun`, `TUNSETIFF`) and AF_PACKET sockets through `libc` |
+| `only-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` and `sys` only; the TCP/IP stack (`net`) is `#![forbid(unsafe_code)]` | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts); TAP (`/dev/net/tun`, `TUNSETIFF`) and AF_PACKET sockets through `only_sys::ffi` |
 | `only-crypto` | `#![deny(unsafe_code)]`, allowed in `aes::hw` only | the AES-NI / ARMv8 AES intrinsics (`#[target_feature]` functions), called only after run-time feature detection |
 | every other crate (`only`, `only-core`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-turn`, `only-webrtc`, `only-media`, `tools/echo-bench`, `tools/protobuf-test`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
@@ -119,26 +119,60 @@ contain no `unsafe`.
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 19 | 19 | 0 | 0 |
-| only-sys | 70 | 1 | 3 | 0 |
-| only-uring | 18 | 1 | 1 | 0 |
-| **total** | **149** | **24** | **5** | **21** |
+| only-sys | 77 | 3 | 3 | 0 |
+| only-uring | 34 | 4 | 1 | 0 |
+| **total** | **172** | **29** | **5** | **21** |
 
 By purpose:
 
 | Where | Count | Purpose | Main invariants |
 |---|---:|---|---|
-| `only-sys/src/net.rs` | 16 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` -> `sockaddr_storage` | sockaddr length matches family; fd owned before any fallible step |
+| `only-sys/src/ffi/` | 5 + 7 in the layout tests, `unsafe fn errno_location`, `cmsg_firsthdr`, `cmsg_nxthdr` | the own OS bindings: `extern "C"` declarations of the C library (Linux) / libSystem (macOS), constants, `#[repr(C)]` structs, the `CMSG_*` helpers, `cpu_set_t`, errno | see "The own syscall layer" below |
+| `only-sys/src/net.rs` | 15 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` -> `sockaddr_storage` | sockaddr length matches family; fd owned before any fallible step |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
-| `only-sys/src/process.rs` | 15, `unsafe fn errno_location` | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
+| `only-sys/src/process.rs` | 12 | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
-| `only-sys/src/udp.rs` | 15 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
+| `only-sys/src/udp.rs` | 14 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
 | `only-crypto/src/aes/hw.rs` | 19, 19 `unsafe fn` (x86_64 and aarch64 variants; 5 for other targets, never called) | AES-NI / ARMv8 AES key schedule, block encryption and decryption (`#[target_feature]` functions and intrinsics) | a `hw::Keys` is only constructed after `is_x86_feature_detected!("aes")` / `is_aarch64_feature_detected!("aes")`; loads and stores are unaligned and stay within 16-byte arrays; `SubWord` in the key schedule uses the AES instruction, no key-indexed table |
 | `only-sys/src/random.rs` | 2 (one per OS) | `getrandom(2)` (Linux), `getentropy(2)` (macOS) for `only-crypto` | the kernel writes at most `buf.len()` bytes into a live `&mut [u8]` (`getentropy` at most 256 per call); a short `getrandom` read advances by the returned count |
 | `only-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |
+| `only-uring/src/ring.rs` | 16, `unsafe fn push`, `register`, `register_buf_ring` | own io_uring binding: `io_uring_setup`/`enter`/`register` through `syscall(2)`, `mmap` of the SQ/CQ rings and SQE array, SQ/CQ head and tail atomics, probe, enable-rings, buffer-ring registration | offsets from the kernel bounds-checked against each mapping; SQE slot written only when the queue is not full, tail published with `Release`; CQEs read between our head and the `Acquire`-loaded tail, head published with `Release`; `SeqCst` fence before reading `SQ_NEED_WAKEUP` (SQPOLL); mappings live as long as the `Ring` |
 | `only-uring/src/group.rs` | 3 | `uname` for the kernel-version probe | zeroed `utsname`; kernel NUL-terminates `release` |
 | `only-dpdk/src/pmd.rs` | 17, `impl Send for Queue` | calls into the C shim (`rte_eal_init`, port setup, `rte_eth_rx_burst`/`tx_burst`, mbuf alloc/free); frames borrowed from mbufs; a staged tx mbuf written in place | the shim's ABI is integers and opaque pointers only (no DPDK struct layouts in Rust); EAL argv leaked (outlives the EAL), init once (`OnceLock`); an mbuf is owned by exactly one `Queue`/`Mbuf` and freed once (frames not taken by `tx_burst` freed, received ones freed on drop); slices only over the single data segment the shim returned, for the mbuf's lifetime; a `Queue` is used by one thread at a time (moved once to its I/O thread); the staged tx mbuf is freed if not committed |
 | `only-dpdk/src/sys.rs` | 14 | TAP (`open`, `TUNSETIFF`), AF_PACKET (`socket`, `bind`, `setsockopt`), `read` / `recvfrom` / `write`, `ppoll` | fds owned immediately (`OwnedFd`); `#[repr(C)]` `ifreq` with the UAPI size; buffers and address structs live across each call, lengths passed are their sizes |
 | `only-ebpf/src/sys.rs` | 11, 3 `unsafe fn` | `bpf(2)` (`MAP_CREATE`, `MAP_UPDATE/DELETE_ELEM`, `PROG_LOAD`, `PROG_ATTACH`), `SO_ATTACH_REUSEPORT_[CE]BPF`, `SO_COOKIE` | `#[repr(C)]` attr prefixes identical to UAPI; pointer fields live for the call; key/value sizes fixed by `Map<K, V>` |
+
+### The own syscall layer (`only_sys::ffi`, `only-uring` `ring`)
+
+Design: on Linux the C library's functions are declared (`unsafe extern "C"`) and linked from the
+libc `std` already links (glibc or musl); system calls without a wrapper (`bpf`, `io_uring_*`)
+go through the C library's variadic `syscall(2)` with per-architecture numbers. Errno, `EINTR`
+and `io::Error::last_os_error()` therefore behave exactly as with the `libc` crate. macOS has no
+stable syscall ABI: the libSystem functions are declared the same way. No inline `asm!`.
+
+Review checklist for a change to this layer:
+
+1. **Prototypes**: every declaration matches the C header for each supported target (argument
+   widths, pointer constness, return type); variadic C functions (`fcntl`, `ioctl`, `open`,
+   `prctl`, `syscall`) are declared variadic (arm64 macOS passes variadic arguments on the
+   stack) and their variadic arguments are passed as `c_long`/pointer-sized values.
+2. **Layouts**: each `#[repr(C)]` struct has compile-time size/alignment (and for io_uring,
+   offset) assertions; `epoll_event` is packed on x86_64 only, `kevent` is `packed(4)`;
+   `src/ffi/layout.rs` compares every struct's size, alignment and field offsets and every
+   constant's type and value with the `libc` crate (dev-dependency) on each target the tests
+   run on (macOS aarch64, Linux aarch64, Linux x86_64).
+3. **Constants**: per OS and per architecture (`SYS_bpf` 321 on x86_64, 280 on the generic
+   table; the io_uring calls are 425-427 everywhere); only targets whose values are present
+   compile (`compile_error!` otherwise).
+4. **Errno**: results are converted with `io::Error::last_os_error()` right after the call,
+   before anything else can clobber errno; the signal handler saves and restores errno via
+   `errno_location`.
+5. **io_uring rings**: kernel-provided offsets are bounds-checked against their mapping before
+   use; the SQ index array is initialised to the identity; memory ordering as in `io_uring(7)`
+   (SQ tail `Release` / head `Acquire`, CQ tail `Acquire` / head `Release`, `SeqCst` fence
+   before `SQ_NEED_WAKEUP`); SQE builders reproduce what the `io-uring` crate produced, field
+   by field (unit test `sqe_builders`); a pushed SQE's buffers outlive its final CQE (the
+   existing `KernelBuf` / buffer ring / in-flight cancel / graveyard rules are unchanged).
 
 ## 6. Findings of the 1.0 review
 
@@ -171,9 +205,11 @@ Accepted (documented, no change needed now):
   not move). None of them implements `Sync`.
 - **Kernel-provided data is trusted for layout**: sockaddr family, `cmsg_len`, `msg_len`
   (clamped), CQE buffer ids (now range-checked). This is the kernel ABI contract.
-- **Dependencies with `unsafe`** (`libc`, `io-uring`, `rustls`/`ring`, `quinn-proto`,
-  RustCrypto) are trusted and tracked with `cargo deny`/`cargo audit`. DEFLATE/zlib/gzip is the
-  own `only-deflate` (`#![forbid(unsafe_code)]`), which replaced `flate2` with `zlib-rs`.
+- **Dependencies with `unsafe`** (`rustls`/`ring`, `quinn-proto`, RustCrypto) are trusted and tracked with `cargo deny`/`cargo audit`. DEFLATE/zlib/gzip is the
+  own `only-deflate` (`#![forbid(unsafe_code)]`), which replaced `flate2` with `zlib-rs`. The
+  `libc` and `io-uring` crates are gone from the libraries (wave B): `only_sys::ffi` and
+  `only-uring`'s `ring` replace them (`libc` stays a dev-dependency, for the layout comparison
+  and test-only calls).
 
 ## 7. Verification results (this review)
 

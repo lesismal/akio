@@ -18,7 +18,7 @@ only-core = { workspace = true }
 
 # TAP and AF_PACKET devices (the userspace TCP/IP stack itself has no dependencies).
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+only-sys = { workspace = true }
 
 [build-dependencies]
 cc = { version = "1.2", optional = true }
