@@ -100,6 +100,19 @@ fn echo_engine(cfg: Config, threads: usize) -> (Engine, SocketAddr) {
     (e, addr)
 }
 
+/// Metrics once `done` holds (up to 5 s): a reply reaches the client a moment before the
+/// server thread records the write that sent it.
+fn settled(e: &Engine, done: impl Fn(&flash::Metrics) -> bool) -> flash::Metrics {
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let m = e.metrics();
+        if done(&m) || std::time::Instant::now() > until {
+            return m;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
 fn stop(e: &Engine) {
     e.shutdown();
     e.wait();
@@ -113,7 +126,7 @@ fn metrics_count_connections_bytes_and_render_prometheus() {
         c.write_all(&[7u8; 1000]).unwrap();
         assert_eq!(read_n(c, 1000), vec![7u8; 1000]);
     }
-    let m = e.metrics();
+    let m = settled(&e, |m| m.total.bytes_out >= 3000 && m.total.writes >= 3);
     assert_eq!(m.loops.len(), 2, "one entry per I/O thread");
     assert!(m.loops.iter().all(|l| l.running));
     assert_eq!(m.total.accepted, 3);
@@ -411,7 +424,7 @@ fn udp_datagrams_and_peers_are_counted() {
         let (n, _) = s.recv_from(&mut buf).unwrap();
         assert_eq!(n, 5);
     }
-    let m = e.metrics();
+    let m = settled(&e, |m| m.total.datagrams_out >= 3);
     assert_eq!(m.loops[0].owner.backend, "udp");
     assert_eq!(m.total.datagrams_in, 3);
     assert_eq!(m.total.datagrams_out, 3);

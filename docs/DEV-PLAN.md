@@ -167,7 +167,7 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### 1.0 Stabilization
 - [ ] API review and freeze, semver policy, deprecation process
-- [ ] Full fuzz corpora and coverage report, `cargo-audit/deny`, unsafe review checklist
+- [ ] Full fuzz corpora and coverage report, `cargo-audit/deny`, unsafe review checklist — fuzzing done: `fuzz/` cargo-fuzz project with 21 targets (HTTP/1, HTTP/2 + HPACK, WebSocket, arpc, gRPC, SOCKS, mux, KCP, HTTP/3 + QPACK, cBPF), minimized corpora (~2.6 MB) replayed by stable unit tests, ~14 min per target on Linux, `fuzz/run-all.sh` and `fuzz/coverage.sh`. Fixed: HTTP/2 deadlock when a streamed request is dropped, recursive/invalid server push, gRPC `grpc-timeout` panic/overflow, KCP RTT overflow, unbounded SOCKS handshake buffering. Pending: deny/audit, unsafe review
 - [x] Docs site + migration guides + architecture document: mdBook `book/en` + `book/zh-CN` (getting started, concepts, one chapter per protocol, configuration reference, observability and hot reload, performance tuning, troubleshooting), built by `book/build.sh`; every snippet included from 14 runnable `guide-*` examples; migration guides from fib, tokio and hyper/axum; `docs/architecture.md` with Mermaid diagrams; crate rustdocs link to the book; root README. Not done: Pages deployment, running the guide examples on Linux
 
 ## 4. Engineering rules
