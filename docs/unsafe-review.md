@@ -173,4 +173,37 @@ Accepted (documented, no change needed now):
 - Test suites: macOS `cargo test --workspace` green; Linux `cargo test --workspace` (epoll) and
   `FLASH_TEST_BACKEND=uring` for `flash`, `flash-uring`, `flash-sys`, `flash-ebpf`, `flash-http`,
   `flash-ws`, `flash-kcp`, `flash-quic` green.
-- Miri and sanitizers: see below.
+- Supply chain: `cargo deny check` reports `advisories ok, bans ok, licenses ok, sources ok`;
+  `cargo audit -D warnings` is clean. The only advisory found, RUSTSEC-2026-0009 in `time`
+  0.3.45 (dev-only, via `rcgen`), was fixed by updating to 0.3.47 (which needs Rust 1.88 for
+  dev builds; the libraries' `rust-version` stays 1.85).
+
+### Miri (nightly 1.102, `-Zmiri-disable-isolation`, Stacked Borrows)
+
+| Crate (`--lib`) | Result |
+|---|---|
+| flash-buf, flash-timer, flash-pool | pass (4 / 5 / 5 tests) |
+| flash-http | pass (27 tests, 35 s) |
+| flash-mux, flash-socks, flash-arpc, flash-h3 | pass (1 / 1 / 3 / 2) |
+| flash-kcp | pass (5 tests, 4-6 min) |
+| flash-uring (`buf_ring`, `kernel_buf` tests) | pass (3): the kernel-shared memory code of F5-F7 |
+| flash-ws | 15 of 20 pass; the other 5 (permessage-deflate round trips and exhaustive split loops) do not finish within 5-15 min under Miri |
+| flash-core, flash-quic | no unit tests outside loom / integration tests |
+| flash-ebpf | does not finish within 15 min (its unit tests run a cBPF interpreter over large input sets; safe code, the `sys` module is not exercised) |
+| **flash-grpc** | **UB reported in a dependency**: `tests::framing_and_gzip` fails in `zlib_rs::allocate::zfree_rust` while dropping a `flate2::write::GzEncoder` (`zlib_rs::stable::Deflate::drop` -> `deflate::end` deallocates memory that a protected `&mut` function argument still covers). Reproduces under Tree Borrows. `zlib-rs` 0.6.8 is the latest release; flash itself has no `unsafe` on that path. |
+
+The `zlib-rs` finding is an aliasing-model violation inside the dependency, not an observed
+memory corruption; it should be reported upstream (trifectatech/zlib-rs) with the reproduction
+above. Until it is fixed the CI Miri job skips `framing_and_gzip` and the deflate round trips.
+`flate2` was moved from `miniz_oxide` to `zlib-rs` because of a real data-loss bug in the former
+(see the WebSocket notes), so switching back is not an option; the C `zlib` backend would hide
+the code from Miri entirely.
+
+### Sanitizers
+
+ASan and TSan could not be run in this review: in the available Linux environment (Docker on
+Apple silicon, linuxkit 6.12 aarch64 kernel) even an empty `fn main` built with
+`-Zsanitizer=address` or `-Zsanitizer=thread` crashes with SIGSEGV at start-up (the sanitizer
+runtimes do not support that VM's address-space layout; `setarch -R` does not help and
+`vm.mmap_rnd_bits` cannot be changed). They are proposed as a CI job on `ubuntu-latest`
+(x86_64), where both are supported.

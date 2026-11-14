@@ -120,4 +120,24 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 - `cargo clippy --workspace --all-targets -- -D warnings`：在启用上述更严格 lint 的情况下，macOS（aarch64）和 Linux（Docker `rust:1`，1.98）均无告警。
 - `tools/unsafe-inventory.py --check`：所有位置都有注释。
 - 测试套件：macOS `cargo test --workspace` 全部通过；Linux `cargo test --workspace`（epoll）以及 `flash`、`flash-uring`、`flash-sys`、`flash-ebpf`、`flash-http`、`flash-ws`、`flash-kcp`、`flash-quic` 在 `FLASH_TEST_BACKEND=uring` 下全部通过。
-- Miri 与 sanitizer：见下文。
+- 供应链：`cargo deny check` 输出 `advisories ok, bans ok, licenses ok, sources ok`；`cargo audit -D warnings` 无告警。唯一发现的通告 RUSTSEC-2026-0009（`time` 0.3.45，仅开发依赖，经由 `rcgen`）已通过升级到 0.3.47 修复（开发构建因此需要 Rust 1.88；库的 `rust-version` 仍为 1.85）。
+
+### Miri（nightly 1.102，`-Zmiri-disable-isolation`，Stacked Borrows）
+
+| Crate（`--lib`） | 结果 |
+|---|---|
+| flash-buf、flash-timer、flash-pool | 通过（4 / 5 / 5 个测试） |
+| flash-http | 通过（27 个测试，35 秒） |
+| flash-mux、flash-socks、flash-arpc、flash-h3 | 通过（1 / 1 / 3 / 2） |
+| flash-kcp | 通过（5 个测试，4-6 分钟） |
+| flash-uring（`buf_ring`、`kernel_buf` 测试） | 通过（3 个）：即 F5-F7 中与内核共享内存的代码 |
+| flash-ws | 20 个中 15 个通过；其余 5 个（permessage-deflate 往返与穷举拆分循环）在 Miri 下 5-15 分钟内跑不完 |
+| flash-core、flash-quic | 除 loom / 集成测试外没有单元测试 |
+| flash-ebpf | 15 分钟内跑不完（单元测试在大量输入上运行 cBPF 解释器；均为安全代码，不涉及 `sys` 模块） |
+| **flash-grpc** | **在依赖中报告了 UB**：`tests::framing_and_gzip` 在 drop `flate2::write::GzEncoder` 时于 `zlib_rs::allocate::zfree_rust` 失败（`zlib_rs::stable::Deflate::drop` -> `deflate::end` 释放了一块仍被受保护的 `&mut` 函数参数覆盖的内存）。在 Tree Borrows 下同样复现。`zlib-rs` 0.6.8 已是最新版本；flash 在这条路径上没有任何 `unsafe`。 |
+
+`zlib-rs` 的问题是依赖内部违反别名模型，而不是观察到的内存破坏；应附上述复现向上游（trifectatech/zlib-rs）报告。修复之前，CI 的 Miri 任务跳过 `framing_and_gzip` 和 deflate 往返测试。`flate2` 当初从 `miniz_oxide` 切换到 `zlib-rs`，是因为前者有真实的数据丢失缺陷（见 WebSocket 相关说明），所以不能切回去；改用 C 的 `zlib` 后端则会让 Miri 完全看不到这段代码。
+
+### Sanitizer
+
+本次审查未能运行 ASan 和 TSan：在可用的 Linux 环境（Apple 芯片上的 Docker，linuxkit 6.12 aarch64 内核）中，即使是空的 `fn main` 用 `-Zsanitizer=address` 或 `-Zsanitizer=thread` 构建，启动时也会 SIGSEGV（sanitizer 运行时不支持该虚拟机的地址空间布局；`setarch -R` 无效，`vm.mmap_rnd_bits` 也无法修改）。建议作为 CI 任务在 `ubuntu-latest`（x86_64）上运行，两者在那里都受支持。
