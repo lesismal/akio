@@ -75,7 +75,7 @@ pub fn only_webrtc::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fm
 impl core::marker::Send for only_webrtc::Event
 impl core::marker::Sync for only_webrtc::Event
 impl core::marker::Unpin for only_webrtc::Event
-impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::Event
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::Event
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::Event
 #[non_exhaustive] pub enum only_webrtc::IceConnectionState
 pub only_webrtc::IceConnectionState::Checking
@@ -379,7 +379,7 @@ pub fn only_webrtc::OtherEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> cor
 impl core::marker::Send for only_webrtc::OtherEvent
 impl core::marker::Sync for only_webrtc::OtherEvent
 impl core::marker::Unpin for only_webrtc::OtherEvent
-impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::OtherEvent
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::OtherEvent
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::OtherEvent
 pub struct only_webrtc::Peer(_)
 impl only_webrtc::Peer
@@ -454,7 +454,7 @@ pub fn only_webrtc::RtcConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core
 impl core::marker::Send for only_webrtc::RtcConfig
 impl core::marker::Sync for only_webrtc::RtcConfig
 impl core::marker::Unpin for only_webrtc::RtcConfig
-impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcConfig
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::RtcConfig
 pub struct only_webrtc::RtcError(_)
 impl core::error::Error for only_webrtc::RtcError
@@ -465,8 +465,8 @@ pub fn only_webrtc::RtcError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 impl core::marker::Send for only_webrtc::RtcError
 impl core::marker::Sync for only_webrtc::RtcError
 impl core::marker::Unpin for only_webrtc::RtcError
-impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcError
-impl !core::panic::unwind_safe::UnwindSafe for only_webrtc::RtcError
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcError
+impl core::panic::unwind_safe::UnwindSafe for only_webrtc::RtcError
 pub struct only_webrtc::RtcServer(_)
 impl only_webrtc::RtcServer
 pub fn only_webrtc::RtcServer::accept_offer<H: only_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(only_webrtc::Peer, alloc::string::String), only_webrtc::Error>
@@ -527,7 +527,7 @@ pub fn only_webrtc::SdpChanges<'_, '_>::fmt(&self, &mut core::fmt::Formatter<'_>
 impl<'a, 'b> core::marker::Send for only_webrtc::SdpChanges<'a, 'b>
 impl<'a, 'b> core::marker::Sync for only_webrtc::SdpChanges<'a, 'b>
 impl<'a, 'b> core::marker::Unpin for only_webrtc::SdpChanges<'a, 'b>
-impl<'a, 'b> !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::SdpChanges<'a, 'b>
+impl<'a, 'b> core::panic::unwind_safe::RefUnwindSafe for only_webrtc::SdpChanges<'a, 'b>
 impl<'a, 'b> !core::panic::unwind_safe::UnwindSafe for only_webrtc::SdpChanges<'a, 'b>
 pub trait only_webrtc::PeerHandler: core::marker::Send + 'static
 pub fn only_webrtc::PeerHandler::on_channel_close(&mut self, &only_webrtc::Peer, only_webrtc::ChannelId)

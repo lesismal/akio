@@ -15,6 +15,10 @@ flowchart BT
     crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数、<br/>X25519、Ed25519、P-256/P-384、RSA、DER/PEM"]
     x509["only-x509<br/>证书解析、证书链校验、证书生成"]
     dtls["only-dtls<br/>sans-io DTLS 1.2、DTLS-SRTP"]
+    srtp["only-srtp<br/>SRTP/SRTCP"]
+    rtp["only-rtp<br/>RTP/RTCP、打包器、<br/>NACK/RTX、TWCC、带宽估计"]
+    sctp["only-sctp<br/>SCTP、数据通道"]
+    ice["only-ice<br/>ICE agent（完整、lite）"]
     buf["only-buf<br/>分级缓冲池、SharedBuf"]
     timer["only-timer<br/>时间轮"]
     deflate["only-deflate<br/>DEFLATE、zlib、gzip"]
@@ -37,7 +41,7 @@ flowchart BT
     h3[only-h3]
     kcp[only-kcp]
     turn["only-turn<br/>STUN, TURN"]
-    webrtc["only-webrtc<br/>str0m"]
+    webrtc["only-webrtc<br/>SDP、peer、RtcServer、Endpoint"]
     media["only-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
@@ -79,6 +83,15 @@ flowchart BT
     crypto --> x509
     x509 --> dtls
     crypto --> dtls
+    crypto --> srtp
+    crypto --> sctp
+    crypto --> ice
+    turn --> ice
+    dtls --> webrtc
+    srtp --> webrtc
+    rtp --> webrtc
+    sctp --> webrtc
+    ice --> webrtc
     crypto --> ws
     crypto --> http
     crypto --> kcp
@@ -100,14 +113,18 @@ flowchart BT
   `only-x509`）是 sans-io 的 DTLS 1.2 客户端/服务端，支持 DTLS-SRTP（`use_srtp`、RFC 5705 导出器）
   以及按指纹固定的自签名证书，驱动方式与 `only-quic` 驱动其状态机相同（`handle_datagram` /
   `poll_transmit` / `poll_event` / `poll_timeout` / `handle_timeout`，没有线程也没有时钟）。第 D 波的
-  WebRTC 协议栈将用它替代 str0m 的 `dimpl`；在此之前 `only-webrtc` 保持不变。
+  WebRTC 协议栈（第 D 波）已采用它；其余各层也是同样形态的 sans-io crate：`only-ice`（ICE agent，
+  基于 `only-turn` 的 STUN 编解码）、`only-srtp`、`only-rtp`（RTP/RTCP、载荷格式、NACK/RTX、TWCC
+  与带宽估计）和 `only-sctp`（SCTP 与 DCEP 数据通道），均为 `#![forbid(unsafe_code)]`。
+  `only-webrtc` 负责 SDP offer/answer，并由 I/O 线程与一个定时器线程驱动每个 peer 的 sans-io
+  `Rtc`；它没有第三方依赖。
 - **`unsafe` 被限制在** `only-sys`（其中也包含替代 `libc` crate 的工作区自有操作系统绑定 `only_sys::ffi`）、`only-uring`（自研 io_uring 绑定、ring 与 buffer ring 内存）、`only-ebpf`
   （原始 `bpf(2)`）、`only-dpdk`（DPDK FFI）和 `only-crypto` 的 AES 指令模块中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（零拷贝增量头部解析器与 chunked 解码器均为自研）、HTTP/2 分帧与
   HPACK（自研）、WebSocket 分帧与 permessage-deflate（DEFLATE 来自自研的 `only-deflate`）、KCP、QPACK 与 HTTP/3 分帧，都是
   由 only 喂入字节的状态机，TLS 也是（`only-tls` 自研的记录层与 TLS 1.3 / 1.2 握手状态机）；QUIC 是
-  quinn-proto，WebRTC 是 str0m，都以 sans-io
+  quinn-proto（WebRTC 协议栈已是自研），以 sans-io
   方式驱动（ADR-005），并隐藏在 only 自己的类型之后，因此升级或替换它们不会破坏 API
   （docs/api-stability.zh-CN.md）。
 - facade `only` 重新导出核心 API（`Conn`、`Handler`、`Acceptor`、`Config` 等），并把后端线程组

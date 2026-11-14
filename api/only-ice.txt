@@ -1,0 +1,217 @@
+pub mod only_ice
+pub enum only_ice::CandidateKind
+pub only_ice::CandidateKind::Host
+pub only_ice::CandidateKind::PeerReflexive
+pub only_ice::CandidateKind::Relayed
+pub only_ice::CandidateKind::ServerReflexive
+impl only_ice::CandidateKind
+pub fn only_ice::CandidateKind::as_str(self) -> &'static str
+pub fn only_ice::CandidateKind::type_preference(self) -> u32
+impl core::clone::Clone for only_ice::CandidateKind
+pub fn only_ice::CandidateKind::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::CandidateKind
+impl core::cmp::PartialEq for only_ice::CandidateKind
+pub fn only_ice::CandidateKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::CandidateKind
+pub fn only_ice::CandidateKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_ice::CandidateKind
+pub fn only_ice::CandidateKind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_ice::CandidateKind
+impl core::marker::StructuralPartialEq for only_ice::CandidateKind
+impl core::marker::Send for only_ice::CandidateKind
+impl core::marker::Sync for only_ice::CandidateKind
+impl core::marker::Unpin for only_ice::CandidateKind
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::CandidateKind
+impl core::panic::unwind_safe::UnwindSafe for only_ice::CandidateKind
+#[non_exhaustive] pub enum only_ice::IceEvent
+pub only_ice::IceEvent::SelectedPair
+pub only_ice::IceEvent::SelectedPair::local: core::net::socket_addr::SocketAddr
+pub only_ice::IceEvent::SelectedPair::remote: core::net::socket_addr::SocketAddr
+pub only_ice::IceEvent::StateChanged(only_ice::IceState)
+impl core::clone::Clone for only_ice::IceEvent
+pub fn only_ice::IceEvent::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::IceEvent
+impl core::cmp::PartialEq for only_ice::IceEvent
+pub fn only_ice::IceEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::IceEvent
+pub fn only_ice::IceEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ice::IceEvent
+impl core::marker::Send for only_ice::IceEvent
+impl core::marker::Sync for only_ice::IceEvent
+impl core::marker::Unpin for only_ice::IceEvent
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::IceEvent
+impl core::panic::unwind_safe::UnwindSafe for only_ice::IceEvent
+pub enum only_ice::IceState
+pub only_ice::IceState::Checking
+pub only_ice::IceState::Completed
+pub only_ice::IceState::Connected
+pub only_ice::IceState::Disconnected
+pub only_ice::IceState::Failed
+pub only_ice::IceState::New
+impl core::clone::Clone for only_ice::IceState
+pub fn only_ice::IceState::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::IceState
+impl core::cmp::PartialEq for only_ice::IceState
+pub fn only_ice::IceState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::IceState
+pub fn only_ice::IceState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_ice::IceState
+pub fn only_ice::IceState::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_ice::IceState
+impl core::marker::StructuralPartialEq for only_ice::IceState
+impl core::marker::Send for only_ice::IceState
+impl core::marker::Sync for only_ice::IceState
+impl core::marker::Unpin for only_ice::IceState
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::IceState
+impl core::panic::unwind_safe::UnwindSafe for only_ice::IceState
+#[non_exhaustive] pub enum only_ice::ParseError
+pub only_ice::ParseError::Fqdn
+pub only_ice::ParseError::Mdns
+pub only_ice::ParseError::Syntax(&'static str)
+pub only_ice::ParseError::Tcp
+impl only_ice::ParseError
+pub fn only_ice::ParseError::is_unsupported(&self) -> bool
+impl core::clone::Clone for only_ice::ParseError
+pub fn only_ice::ParseError::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::ParseError
+impl core::cmp::PartialEq for only_ice::ParseError
+pub fn only_ice::ParseError::eq(&self, &Self) -> bool
+impl core::error::Error for only_ice::ParseError
+impl core::fmt::Debug for only_ice::ParseError
+pub fn only_ice::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ice::ParseError
+pub fn only_ice::ParseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ice::ParseError
+impl core::marker::StructuralPartialEq for only_ice::ParseError
+impl core::marker::Send for only_ice::ParseError
+impl core::marker::Sync for only_ice::ParseError
+impl core::marker::Unpin for only_ice::ParseError
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::ParseError
+impl core::panic::unwind_safe::UnwindSafe for only_ice::ParseError
+pub struct only_ice::Candidate
+impl only_ice::Candidate
+pub fn only_ice::Candidate::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_ice::Candidate::base(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_ice::Candidate::component(&self) -> u16
+pub fn only_ice::Candidate::foundation(&self) -> &str
+pub fn only_ice::Candidate::generation(&self) -> core::option::Option<u32>
+pub fn only_ice::Candidate::host(core::net::socket_addr::SocketAddr) -> only_ice::Candidate
+pub fn only_ice::Candidate::kind(&self) -> only_ice::CandidateKind
+pub fn only_ice::Candidate::parse(&str) -> core::result::Result<only_ice::Candidate, only_ice::ParseError>
+pub fn only_ice::Candidate::peer_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, u32) -> only_ice::Candidate
+pub fn only_ice::Candidate::priority(&self) -> u32
+pub fn only_ice::Candidate::related(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_ice::Candidate::relayed(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> only_ice::Candidate
+pub fn only_ice::Candidate::server_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> only_ice::Candidate
+pub fn only_ice::Candidate::to_sdp(&self) -> alloc::string::String
+pub fn only_ice::Candidate::ufrag(&self) -> core::option::Option<&str>
+impl core::clone::Clone for only_ice::Candidate
+pub fn only_ice::Candidate::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::Candidate
+impl core::cmp::PartialEq for only_ice::Candidate
+pub fn only_ice::Candidate::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::Candidate
+pub fn only_ice::Candidate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ice::Candidate
+pub fn only_ice::Candidate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_ice::Candidate
+pub fn only_ice::Candidate::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for only_ice::Candidate
+impl core::marker::Send for only_ice::Candidate
+impl core::marker::Sync for only_ice::Candidate
+impl core::marker::Unpin for only_ice::Candidate
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::Candidate
+impl core::panic::unwind_safe::UnwindSafe for only_ice::Candidate
+pub struct only_ice::Credentials
+pub only_ice::Credentials::pwd: alloc::string::String
+pub only_ice::Credentials::ufrag: alloc::string::String
+impl only_ice::Credentials
+pub fn only_ice::Credentials::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> only_ice::Credentials
+pub fn only_ice::Credentials::random() -> only_ice::Credentials
+impl core::clone::Clone for only_ice::Credentials
+pub fn only_ice::Credentials::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::Credentials
+impl core::cmp::PartialEq for only_ice::Credentials
+pub fn only_ice::Credentials::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::Credentials
+pub fn only_ice::Credentials::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_ice::Credentials
+pub fn only_ice::Credentials::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::StructuralPartialEq for only_ice::Credentials
+impl core::marker::Send for only_ice::Credentials
+impl core::marker::Sync for only_ice::Credentials
+impl core::marker::Unpin for only_ice::Credentials
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::Credentials
+impl core::panic::unwind_safe::UnwindSafe for only_ice::Credentials
+pub struct only_ice::IceAgent
+impl only_ice::IceAgent
+pub fn only_ice::IceAgent::add_local_candidate(&mut self, only_ice::Candidate) -> bool
+pub fn only_ice::IceAgent::add_remote_candidate(&mut self, only_ice::Candidate)
+pub fn only_ice::IceAgent::close(&mut self)
+pub fn only_ice::IceAgent::controlling(&self) -> bool
+pub fn only_ice::IceAgent::end_of_remote_candidates(&mut self)
+pub fn only_ice::IceAgent::handle_receive(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8]) -> bool
+pub fn only_ice::IceAgent::handle_timeout(&mut self, std::time::Instant)
+pub fn only_ice::IceAgent::is_lite(&self) -> bool
+pub fn only_ice::IceAgent::local_candidates(&self) -> &[only_ice::Candidate]
+pub fn only_ice::IceAgent::local_credentials(&self) -> &only_ice::Credentials
+pub fn only_ice::IceAgent::new(only_ice::IceConfig, std::time::Instant) -> only_ice::IceAgent
+pub fn only_ice::IceAgent::poll_event(&mut self) -> core::option::Option<only_ice::IceEvent>
+pub fn only_ice::IceAgent::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_ice::IceAgent::poll_transmit(&mut self) -> core::option::Option<only_ice::Transmit>
+pub fn only_ice::IceAgent::remote_candidates(&self) -> &[only_ice::Candidate]
+pub fn only_ice::IceAgent::remote_credentials(&self) -> core::option::Option<&only_ice::Credentials>
+pub fn only_ice::IceAgent::restart(&mut self, only_ice::Credentials, bool)
+pub fn only_ice::IceAgent::selected_pair(&self) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn only_ice::IceAgent::send_pair(&self) -> core::option::Option<(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr)>
+pub fn only_ice::IceAgent::set_controlling(&mut self, bool)
+pub fn only_ice::IceAgent::set_remote_credentials(&mut self, only_ice::Credentials)
+pub fn only_ice::IceAgent::set_remote_lite(&mut self, bool)
+pub fn only_ice::IceAgent::state(&self) -> only_ice::IceState
+impl core::fmt::Debug for only_ice::IceAgent
+pub fn only_ice::IceAgent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ice::IceAgent
+impl core::marker::Sync for only_ice::IceAgent
+impl core::marker::Unpin for only_ice::IceAgent
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::IceAgent
+impl core::panic::unwind_safe::UnwindSafe for only_ice::IceAgent
+pub struct only_ice::IceConfig
+pub only_ice::IceConfig::check_max_sends: u32
+pub only_ice::IceConfig::check_rto: core::time::Duration
+pub only_ice::IceConfig::check_rto_max: core::time::Duration
+pub only_ice::IceConfig::consent_interval: core::time::Duration
+pub only_ice::IceConfig::consent_timeout: core::time::Duration
+pub only_ice::IceConfig::controlling: bool
+pub only_ice::IceConfig::failed_timeout: core::time::Duration
+pub only_ice::IceConfig::lite: bool
+pub only_ice::IceConfig::local: only_ice::Credentials
+pub only_ice::IceConfig::nomination_delay: core::time::Duration
+pub only_ice::IceConfig::ta: core::time::Duration
+impl only_ice::IceConfig
+pub fn only_ice::IceConfig::new(bool, bool) -> only_ice::IceConfig
+impl core::clone::Clone for only_ice::IceConfig
+pub fn only_ice::IceConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_ice::IceConfig
+pub fn only_ice::IceConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ice::IceConfig
+impl core::marker::Sync for only_ice::IceConfig
+impl core::marker::Unpin for only_ice::IceConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::IceConfig
+impl core::panic::unwind_safe::UnwindSafe for only_ice::IceConfig
+pub struct only_ice::Transmit
+pub only_ice::Transmit::contents: alloc::vec::Vec<u8>
+pub only_ice::Transmit::destination: core::net::socket_addr::SocketAddr
+pub only_ice::Transmit::source: core::net::socket_addr::SocketAddr
+impl core::clone::Clone for only_ice::Transmit
+pub fn only_ice::Transmit::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::Transmit
+impl core::cmp::PartialEq for only_ice::Transmit
+pub fn only_ice::Transmit::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::Transmit
+pub fn only_ice::Transmit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ice::Transmit
+impl core::marker::Send for only_ice::Transmit
+impl core::marker::Sync for only_ice::Transmit
+impl core::marker::Unpin for only_ice::Transmit
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::Transmit
+impl core::panic::unwind_safe::UnwindSafe for only_ice::Transmit

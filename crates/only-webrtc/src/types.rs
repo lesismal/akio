@@ -1,43 +1,71 @@
 //! This crate's own WebRTC types: ids, media descriptions, events, candidates, the per-peer
-//! configuration and the SDP change set. They hide str0m, so it can be upgraded or replaced
-//! without breaking this API; raw access is behind the `unstable` cargo feature.
+//! configuration and the SDP change set.
 
 use std::fmt;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use str0m::change::SdpApi;
-
 use crate::Error;
-
-/// Conversions between this crate's types and the wrapped implementation's (crate-private, so
-/// they stay out of the public API).
-pub(crate) trait Own<T> {
-    fn own(self) -> T;
-}
 
 // ---- ids ----
 
 /// A data channel id.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ChannelId(pub(crate) str0m::channel::ChannelId);
+pub struct ChannelId(pub(crate) usize);
 
 impl fmt::Debug for ChannelId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "ChannelId({:?})", self.0)
+        write!(f, "ChannelId({})", self.0)
     }
 }
 
+/// The longest media line id this crate keeps (longer remote ids are truncated).
+pub(crate) const MID_MAX: usize = 16;
+
 /// A media line id (`a=mid:` in the SDP).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct Mid(pub(crate) str0m::media::Mid);
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Mid(MidBytes);
+
+/// The inline text of a [`Mid`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct MidBytes {
+    bytes: [u8; MID_MAX],
+    len: u8,
+}
 
 impl Mid {
     /// The id as it appears in the SDP.
     pub fn as_str(&self) -> &str {
-        &self.0
+        std::str::from_utf8(&self.0.bytes[..usize::from(self.0.len)]).unwrap_or("")
+    }
+
+    /// A mid from SDP text (truncated to 16 bytes at a character boundary).
+    pub(crate) fn new(s: &str) -> Mid {
+        let mut end = s.len().min(MID_MAX);
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut bytes = [0u8; MID_MAX];
+        bytes[..end].copy_from_slice(&s.as_bytes()[..end]);
+        Mid(MidBytes {
+            bytes,
+            len: end as u8,
+        })
+    }
+}
+
+impl PartialOrd for Mid {
+    fn partial_cmp(&self, o: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+impl Ord for Mid {
+    fn cmp(&self, o: &Self) -> std::cmp::Ordering {
+        self.as_str().cmp(o.as_str())
     }
 }
 
@@ -73,20 +101,6 @@ impl From<u8> for Pt {
 impl From<Pt> for u8 {
     fn from(p: Pt) -> u8 {
         p.0
-    }
-}
-
-impl Own<Pt> for str0m::media::Pt {
-    fn own(self) -> Pt {
-        let p = self;
-        Pt(*p)
-    }
-}
-
-impl Own<str0m::media::Pt> for Pt {
-    fn own(self) -> str0m::media::Pt {
-        let p = self;
-        str0m::media::Pt::from(p.0)
     }
 }
 
@@ -149,22 +163,23 @@ impl ChannelConfig {
         }
     }
 
-    pub(crate) fn to_str0m(&self) -> str0m::channel::ChannelConfig {
-        str0m::channel::ChannelConfig {
-            label: self.label.clone(),
-            ordered: self.ordered,
-            reliability: match self.reliability {
-                Reliability::Reliable => str0m::channel::Reliability::Reliable,
+    pub(crate) fn to_sctp(&self) -> only_sctp::ChannelOptions {
+        let mut o = only_sctp::ChannelOptions::new(&self.label)
+            .with_ordered(self.ordered)
+            .with_protocol(&self.protocol)
+            .with_reliability(match self.reliability {
+                Reliability::Reliable => only_sctp::Reliability::Reliable,
                 Reliability::MaxPacketLifetime { lifetime } => {
-                    str0m::channel::Reliability::MaxPacketLifetime { lifetime }
+                    only_sctp::Reliability::MaxLifetime(lifetime)
                 }
                 Reliability::MaxRetransmits { retransmits } => {
-                    str0m::channel::Reliability::MaxRetransmits { retransmits }
+                    only_sctp::Reliability::MaxRetransmits(retransmits)
                 }
-            },
-            negotiated: self.negotiated,
-            protocol: self.protocol.clone(),
+            });
+        if let Some(id) = self.negotiated {
+            o = o.with_negotiated(id);
         }
+        o
     }
 }
 
@@ -179,22 +194,11 @@ pub enum MediaKind {
     Video,
 }
 
-impl Own<str0m::media::MediaKind> for MediaKind {
-    fn own(self) -> str0m::media::MediaKind {
-        let k = self;
-        match k {
-            MediaKind::Audio => str0m::media::MediaKind::Audio,
-            MediaKind::Video => str0m::media::MediaKind::Video,
-        }
-    }
-}
-
-impl Own<MediaKind> for str0m::media::MediaKind {
-    fn own(self) -> MediaKind {
-        let k = self;
-        match k {
-            str0m::media::MediaKind::Audio => MediaKind::Audio,
-            str0m::media::MediaKind::Video => MediaKind::Video,
+impl MediaKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            MediaKind::Audio => "audio",
+            MediaKind::Video => "video",
         }
     }
 }
@@ -212,26 +216,50 @@ pub enum Direction {
     SendRecv,
 }
 
-impl Own<str0m::media::Direction> for Direction {
-    fn own(self) -> str0m::media::Direction {
-        let d = self;
-        match d {
-            Direction::Inactive => str0m::media::Direction::Inactive,
-            Direction::RecvOnly => str0m::media::Direction::RecvOnly,
-            Direction::SendOnly => str0m::media::Direction::SendOnly,
-            Direction::SendRecv => str0m::media::Direction::SendRecv,
+impl Direction {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Direction::Inactive => "inactive",
+            Direction::RecvOnly => "recvonly",
+            Direction::SendOnly => "sendonly",
+            Direction::SendRecv => "sendrecv",
         }
     }
-}
 
-impl Own<Direction> for str0m::media::Direction {
-    fn own(self) -> Direction {
-        let d = self;
-        match d {
-            str0m::media::Direction::Inactive => Direction::Inactive,
-            str0m::media::Direction::RecvOnly => Direction::RecvOnly,
-            str0m::media::Direction::SendOnly => Direction::SendOnly,
-            str0m::media::Direction::SendRecv => Direction::SendRecv,
+    pub(crate) fn parse(s: &str) -> Option<Direction> {
+        Some(match s {
+            "inactive" => Direction::Inactive,
+            "recvonly" => Direction::RecvOnly,
+            "sendonly" => Direction::SendOnly,
+            "sendrecv" => Direction::SendRecv,
+            _ => return None,
+        })
+    }
+
+    /// The direction seen from the other side.
+    pub(crate) fn reverse(self) -> Direction {
+        match self {
+            Direction::RecvOnly => Direction::SendOnly,
+            Direction::SendOnly => Direction::RecvOnly,
+            d => d,
+        }
+    }
+
+    pub(crate) fn sends(self) -> bool {
+        matches!(self, Direction::SendOnly | Direction::SendRecv)
+    }
+
+    pub(crate) fn receives(self) -> bool {
+        matches!(self, Direction::RecvOnly | Direction::SendRecv)
+    }
+
+    /// Both `self` and `o` allow it.
+    pub(crate) fn intersect(self, o: Direction) -> Direction {
+        match (self.sends() && o.sends(), self.receives() && o.receives()) {
+            (true, true) => Direction::SendRecv,
+            (true, false) => Direction::SendOnly,
+            (false, true) => Direction::RecvOnly,
+            (false, false) => Direction::Inactive,
         }
     }
 }
@@ -261,23 +289,60 @@ pub enum Codec {
 }
 
 impl Codec {
-    fn to_str0m(self) -> str0m::format::Codec {
-        use str0m::format::Codec as C;
+    pub(crate) const ALL: [Codec; 9] = [
+        Codec::Opus,
+        Codec::Pcmu,
+        Codec::Pcma,
+        Codec::G722,
+        Codec::H264,
+        Codec::H265,
+        Codec::Vp8,
+        Codec::Vp9,
+        Codec::Av1,
+    ];
+
+    /// The `a=rtpmap` encoding name.
+    pub(crate) fn name(self) -> &'static str {
         match self {
-            Codec::Opus => C::Opus,
-            Codec::Pcmu => C::PCMU,
-            Codec::Pcma => C::PCMA,
-            Codec::G722 => C::G722,
-            Codec::H264 => C::H264,
-            Codec::H265 => C::H265,
-            Codec::Vp8 => C::Vp8,
-            Codec::Vp9 => C::Vp9,
-            Codec::Av1 => C::Av1,
+            Codec::Opus => "opus",
+            Codec::Pcmu => "PCMU",
+            Codec::Pcma => "PCMA",
+            Codec::G722 => "G722",
+            Codec::H264 => "H264",
+            Codec::H265 => "H265",
+            Codec::Vp8 => "VP8",
+            Codec::Vp9 => "VP9",
+            Codec::Av1 => "AV1",
         }
     }
 
-    pub(crate) fn matches(self, c: str0m::format::Codec) -> bool {
-        self.to_str0m() == c
+    pub(crate) fn from_name(s: &str) -> Option<Codec> {
+        Codec::ALL
+            .into_iter()
+            .find(|c| c.name().eq_ignore_ascii_case(s))
+            .or_else(|| s.eq_ignore_ascii_case("AV1X").then_some(Codec::Av1))
+    }
+
+    pub(crate) fn kind(self) -> MediaKind {
+        match self {
+            Codec::Opus | Codec::Pcmu | Codec::Pcma | Codec::G722 => MediaKind::Audio,
+            _ => MediaKind::Video,
+        }
+    }
+
+    pub(crate) fn rtp(self) -> only_rtp::codec::CodecKind {
+        use only_rtp::codec::CodecKind as K;
+        match self {
+            Codec::Opus => K::Opus,
+            Codec::Pcmu => K::Pcmu,
+            Codec::Pcma => K::Pcma,
+            Codec::G722 => K::G722,
+            Codec::H264 => K::H264,
+            Codec::H265 => K::H265,
+            Codec::Vp8 => K::Vp8,
+            Codec::Vp9 => K::Vp9,
+            Codec::Av1 => K::Av1,
+        }
     }
 }
 
@@ -335,21 +400,12 @@ impl MediaTime {
         Duration::from_secs(secs) + Duration::from_nanos(rem * 1_000_000_000 / hz)
     }
 
-    pub(crate) fn to_str0m(self) -> str0m::media::MediaTime {
-        str0m::media::MediaTime::new(
-            self.ticks,
-            str0m::media::Frequency::from_nonzero(self.rate.0),
-        )
-    }
-}
-
-impl Own<MediaTime> for str0m::media::MediaTime {
-    fn own(self) -> MediaTime {
-        let t = self;
-        MediaTime {
-            ticks: t.numer(),
-            rate: Frequency(t.frequency().nonzero()),
+    /// The ticks in another clock.
+    pub(crate) fn ticks_at(self, rate: u32) -> u64 {
+        if rate == self.rate.get() {
+            return self.ticks;
         }
+        (u128::from(self.ticks) * u128::from(rate) / u128::from(self.rate.get())) as u64
     }
 }
 
@@ -360,26 +416,6 @@ pub enum KeyframeRequestKind {
     Pli,
     /// Full Intra Request.
     Fir,
-}
-
-impl Own<str0m::media::KeyframeRequestKind> for KeyframeRequestKind {
-    fn own(self) -> str0m::media::KeyframeRequestKind {
-        let k = self;
-        match k {
-            KeyframeRequestKind::Pli => str0m::media::KeyframeRequestKind::Pli,
-            KeyframeRequestKind::Fir => str0m::media::KeyframeRequestKind::Fir,
-        }
-    }
-}
-
-impl Own<KeyframeRequestKind> for str0m::media::KeyframeRequestKind {
-    fn own(self) -> KeyframeRequestKind {
-        let k = self;
-        match k {
-            str0m::media::KeyframeRequestKind::Pli => KeyframeRequestKind::Pli,
-            str0m::media::KeyframeRequestKind::Fir => KeyframeRequestKind::Fir,
-        }
-    }
 }
 
 /// The remote peer asks for a keyframe on a media line.
@@ -394,17 +430,6 @@ pub struct KeyframeRequest {
     pub kind: KeyframeRequestKind,
 }
 
-impl Own<KeyframeRequest> for str0m::media::KeyframeRequest {
-    fn own(self) -> KeyframeRequest {
-        let k = self;
-        KeyframeRequest {
-            mid: Mid(k.mid),
-            rid: k.rid.map(|r| r.to_string()),
-            kind: k.kind.own(),
-        }
-    }
-}
-
 /// A media line was added (by the remote offer or ours).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -415,17 +440,6 @@ pub struct MediaAdded {
     pub kind: MediaKind,
     /// Its direction, from this side.
     pub direction: Direction,
-}
-
-impl Own<MediaAdded> for str0m::media::MediaAdded {
-    fn own(self) -> MediaAdded {
-        let m = self;
-        MediaAdded {
-            mid: Mid(m.mid),
-            kind: m.kind.own(),
-            direction: m.direction.own(),
-        }
-    }
 }
 
 /// A depacketized media sample (a frame).
@@ -450,38 +464,6 @@ pub struct MediaData {
     pub data: Arc<[u8]>,
 }
 
-fn own_codec(c: str0m::format::Codec) -> Option<Codec> {
-    [
-        Codec::Opus,
-        Codec::Pcmu,
-        Codec::Pcma,
-        Codec::G722,
-        Codec::H264,
-        Codec::H265,
-        Codec::Vp8,
-        Codec::Vp9,
-        Codec::Av1,
-    ]
-    .into_iter()
-    .find(|o| o.matches(c))
-}
-
-impl Own<MediaData> for str0m::media::MediaData {
-    fn own(self) -> MediaData {
-        let d = self;
-        MediaData {
-            mid: Mid(d.mid),
-            pt: d.pt.own(),
-            rid: d.rid.map(|r| r.to_string()),
-            codec: own_codec(d.params.spec().codec),
-            time: d.time.own(),
-            network_time: d.network_time,
-            contiguous: d.contiguous,
-            data: d.data,
-        }
-    }
-}
-
 /// A received RTP packet (RTP mode, [`RtcConfig::set_rtp_mode`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -504,22 +486,6 @@ pub struct RtpPacket {
     pub payload: Arc<[u8]>,
 }
 
-impl Own<RtpPacket> for str0m::rtp::RtpPacket {
-    fn own(self) -> RtpPacket {
-        let p = self;
-        RtpPacket {
-            seq_no: *p.seq_no,
-            ssrc: *p.header.ssrc,
-            pt: p.header.payload_type.own(),
-            marker: p.header.marker,
-            rtp_time: p.header.timestamp,
-            time: p.time.own(),
-            received: p.timestamp,
-            payload: p.payload,
-        }
-    }
-}
-
 // ---- ICE ----
 
 /// The ICE connection state.
@@ -538,49 +504,56 @@ pub enum IceConnectionState {
     Disconnected,
 }
 
-impl Own<IceConnectionState> for str0m::IceConnectionState {
-    fn own(self) -> IceConnectionState {
-        let s = self;
+impl IceConnectionState {
+    pub(crate) fn from_ice(s: only_ice::IceState) -> IceConnectionState {
+        use only_ice::IceState as S;
         match s {
-            str0m::IceConnectionState::New => IceConnectionState::New,
-            str0m::IceConnectionState::Checking => IceConnectionState::Checking,
-            str0m::IceConnectionState::Connected => IceConnectionState::Connected,
-            str0m::IceConnectionState::Completed => IceConnectionState::Completed,
-            str0m::IceConnectionState::Disconnected => IceConnectionState::Disconnected,
+            S::New => IceConnectionState::New,
+            S::Checking => IceConnectionState::Checking,
+            S::Connected => IceConnectionState::Connected,
+            S::Completed => IceConnectionState::Completed,
+            S::Disconnected | S::Failed => IceConnectionState::Disconnected,
         }
     }
 }
 
 /// A local ICE candidate (UDP).
 #[derive(Clone, PartialEq, Eq)]
-pub struct Candidate(pub(crate) str0m::Candidate);
+pub struct Candidate(pub(crate) only_ice::Candidate);
+
+fn check_addr(addr: SocketAddr) -> Result<(), Error> {
+    if addr.ip().is_unspecified() || addr.port() == 0 {
+        return Err(Error::InvalidCandidate(format!(
+            "{addr}: unspecified address or port"
+        )));
+    }
+    Ok(())
+}
 
 impl Candidate {
     /// A host candidate: an address of a local socket.
     pub fn host(addr: SocketAddr) -> Result<Candidate, Error> {
-        str0m::Candidate::host(addr, "udp")
-            .map(Candidate)
-            .map_err(|e| Error::InvalidCandidate(e.to_string()))
+        check_addr(addr)?;
+        Ok(Candidate(only_ice::Candidate::host(addr)))
     }
 
     /// A server-reflexive candidate: `addr` as a STUN server saw the local socket `base`.
     pub fn server_reflexive(addr: SocketAddr, base: SocketAddr) -> Result<Candidate, Error> {
-        str0m::Candidate::server_reflexive(addr, base, "udp")
-            .map(Candidate)
-            .map_err(|e| Error::InvalidCandidate(e.to_string()))
+        check_addr(addr)?;
+        Ok(Candidate(only_ice::Candidate::server_reflexive(addr, base)))
     }
 
     /// A relayed candidate: `addr` allocated on a TURN server for the local socket `base`.
     pub fn relayed(addr: SocketAddr, base: SocketAddr) -> Result<Candidate, Error> {
-        str0m::Candidate::relayed(addr, base, "udp")
-            .map(Candidate)
-            .map_err(|e| Error::InvalidCandidate(e.to_string()))
+        check_addr(addr)?;
+        Ok(Candidate(only_ice::Candidate::relayed(addr, base)))
     }
 
     /// Parses an SDP candidate (`candidate:...`, with or without `a=`).
     pub fn parse(sdp: &str) -> Result<Candidate, Error> {
-        let s = sdp.trim().trim_start_matches("a=");
-        str0m::Candidate::from_sdp_string(s)
+        let s = sdp.trim();
+        let s = s.strip_prefix("a=").unwrap_or(s);
+        only_ice::Candidate::parse(s)
             .map(Candidate)
             .map_err(|e| Error::Sdp(e.to_string()))
     }
@@ -592,7 +565,7 @@ impl Candidate {
 
     /// The SDP form (`candidate:...`).
     pub fn to_sdp(&self) -> String {
-        self.0.to_sdp_string()
+        self.0.to_sdp()
     }
 }
 
@@ -618,15 +591,7 @@ pub enum Event {
 }
 
 /// An event without a stable representation; see [`Event::Other`].
-pub struct OtherEvent(pub(crate) Box<str0m::Event>);
-
-impl OtherEvent {
-    /// The str0m event. **Unstable** (cargo feature `unstable`, outside the semver promise).
-    #[cfg(feature = "unstable")]
-    pub fn as_str0m(&self) -> &str0m::Event {
-        &self.0
-    }
-}
+pub struct OtherEvent(pub(crate) Box<Other>);
 
 impl fmt::Debug for OtherEvent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -634,112 +599,202 @@ impl fmt::Debug for OtherEvent {
     }
 }
 
+/// The events behind [`OtherEvent`] (crate-private: their shape is not promised).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Other {
+    /// The send-side bandwidth estimate changed (bits per second).
+    EgressBitrateEstimate(u64),
+    /// Periodic statistics ([`RtcConfig::set_stats_interval`]).
+    PeerStats {
+        bytes_sent: u64,
+        bytes_received: u64,
+        packets_sent: u64,
+        packets_received: u64,
+        rtt_ms: Option<u64>,
+    },
+    /// A sender report arrived for a received stream.
+    SenderReport {
+        mid: Mid,
+        ssrc: u32,
+        ntp_time: u64,
+        rtp_time: u32,
+    },
+    /// The remote's selected ICE pair changed.
+    IcePair {
+        local: SocketAddr,
+        remote: SocketAddr,
+    },
+}
+
 // ---- configuration ----
+
+/// The settings behind [`RtcConfig`].
+#[derive(Clone, Debug)]
+pub(crate) struct ConfigInner {
+    pub(crate) codecs: Vec<Codec>,
+    pub(crate) rtp_mode: bool,
+    pub(crate) stats_interval: Option<Duration>,
+    pub(crate) bwe: Option<u64>,
+    pub(crate) reorder_audio: usize,
+    pub(crate) reorder_video: usize,
+    pub(crate) sctp_max_buffered: usize,
+}
+
+impl Default for ConfigInner {
+    fn default() -> Self {
+        ConfigInner {
+            codecs: vec![
+                Codec::Opus,
+                Codec::Pcmu,
+                Codec::Pcma,
+                Codec::Vp8,
+                Codec::H264,
+                Codec::Vp9,
+                Codec::Av1,
+            ],
+            rtp_mode: false,
+            stats_interval: None,
+            bwe: None,
+            reorder_audio: 15,
+            reorder_video: 30,
+            sctp_max_buffered: 1 << 20,
+        }
+    }
+}
 
 /// The configuration of each peer: codecs, RTP mode, bandwidth estimation, statistics ...
 /// Start from [`rtc_config`](crate::rtc_config).
-pub struct RtcConfig(pub(crate) str0m::RtcConfig);
+pub struct RtcConfig(pub(crate) ConfigInner);
 
 impl fmt::Debug for RtcConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RtcConfig")
-            .field("rtp_mode", &self.0.rtp_mode())
-            .field("stats_interval", &self.0.stats_interval())
+            .field("codecs", &self.0.codecs)
+            .field("rtp_mode", &self.0.rtp_mode)
+            .field("stats_interval", &self.0.stats_interval)
             .finish_non_exhaustive()
     }
 }
 
 macro_rules! codec_switch {
-    ($(#[$doc:meta] $name:ident => $inner:ident $(, $red:expr)?;)*) => {
+    ($(#[$doc:meta] $name:ident => $codec:expr;)*) => {
         $(
             #[$doc]
             #[must_use]
             pub fn $name(self, enabled: bool) -> Self {
-                RtcConfig(self.0.$inner(enabled $(, $red)?))
+                self.switch($codec, enabled)
             }
         )*
     };
 }
 
 impl RtcConfig {
+    fn switch(mut self, c: Codec, on: bool) -> Self {
+        self.0.codecs.retain(|x| *x != c);
+        if on {
+            self.0.codecs.push(c);
+        }
+        self
+    }
+
     /// Removes every codec (then enable the ones wanted).
     #[must_use]
-    pub fn clear_codecs(self) -> Self {
-        RtcConfig(self.0.clear_codecs())
+    pub fn clear_codecs(mut self) -> Self {
+        self.0.codecs.clear();
+        self
     }
 
     codec_switch! {
         /// Offers or accepts Opus.
-        enable_opus => enable_opus, false;
+        enable_opus => Codec::Opus;
         /// Offers or accepts G.711 µ-law.
-        enable_pcmu => enable_pcmu, false;
+        enable_pcmu => Codec::Pcmu;
         /// Offers or accepts G.711 A-law.
-        enable_pcma => enable_pcma, false;
+        enable_pcma => Codec::Pcma;
         /// Offers or accepts VP8.
-        enable_vp8 => enable_vp8;
+        enable_vp8 => Codec::Vp8;
         /// Offers or accepts VP9.
-        enable_vp9 => enable_vp9;
+        enable_vp9 => Codec::Vp9;
         /// Offers or accepts H.264.
-        enable_h264 => enable_h264;
+        enable_h264 => Codec::H264;
         /// Offers or accepts H.265.
-        enable_h265 => enable_h265;
+        enable_h265 => Codec::H265;
         /// Offers or accepts AV1.
-        enable_av1 => enable_av1;
+        enable_av1 => Codec::Av1;
     }
 
     /// Delivers received RTP packets ([`PeerHandler::on_rtp`](crate::PeerHandler::on_rtp))
-    /// instead of depacketized samples, and sends packets the application builds.
+    /// instead of depacketized samples.
     #[must_use]
-    pub fn set_rtp_mode(self, enabled: bool) -> Self {
-        RtcConfig(self.0.set_rtp_mode(enabled))
+    pub fn set_rtp_mode(mut self, enabled: bool) -> Self {
+        self.0.rtp_mode = enabled;
+        self
     }
 
     /// How often statistics events are produced (`None`, the default, never).
     #[must_use]
-    pub fn set_stats_interval(self, interval: Option<Duration>) -> Self {
-        RtcConfig(self.0.set_stats_interval(interval))
+    pub fn set_stats_interval(mut self, interval: Option<Duration>) -> Self {
+        self.0.stats_interval = interval;
+        self
     }
 
     /// Enables send-side bandwidth estimation, starting from `initial_bps` (bits per second).
     #[must_use]
-    pub fn enable_bwe(self, initial_bps: Option<u64>) -> Self {
-        RtcConfig(self.0.enable_bwe(initial_bps.map(str0m::bwe::Bitrate::bps)))
+    pub fn enable_bwe(mut self, initial_bps: Option<u64>) -> Self {
+        self.0.bwe = Some(initial_bps.unwrap_or(300_000));
+        self
     }
 
     /// Packets held to reorder audio (default 15) and video (default 30).
     #[must_use]
-    pub fn set_reordering_size(self, audio: usize, video: usize) -> Self {
-        RtcConfig(
-            self.0
-                .set_reordering_size_audio(audio)
-                .set_reordering_size_video(video),
-        )
+    pub fn set_reordering_size(mut self, audio: usize, video: usize) -> Self {
+        self.0.reorder_audio = audio.max(1);
+        self.0.reorder_video = video.max(1);
+        self
     }
 
     /// Bytes a data channel may buffer before [`Peer::send`](crate::Peer::send) refuses more.
     #[must_use]
-    pub fn set_sctp_max_buffered_amount(self, bytes: usize) -> Self {
-        RtcConfig(self.0.set_sctp_max_buffered_amount(bytes))
+    pub fn set_sctp_max_buffered_amount(mut self, bytes: usize) -> Self {
+        self.0.sctp_max_buffered = bytes;
+        self
     }
+}
 
-    /// Changes the str0m configuration. **Unstable** (cargo feature `unstable`, outside the
-    /// semver promise).
-    #[cfg(feature = "unstable")]
-    #[must_use]
-    pub fn with_str0m(self, f: impl FnOnce(str0m::RtcConfig) -> str0m::RtcConfig) -> Self {
-        RtcConfig(f(self.0))
-    }
+/// One change requested through [`SdpChanges`].
+#[derive(Debug, Clone)]
+pub(crate) enum Change {
+    AddChannel(ChannelId, ChannelConfig),
+    AddMedia {
+        mid: Mid,
+        kind: MediaKind,
+        dir: Direction,
+        stream_id: Option<String>,
+        track_id: Option<String>,
+    },
+    SetDirection(Mid, Direction),
+    StopMedia(Mid),
+    IceRestart(bool),
+}
+
+/// The pending change set behind [`SdpChanges`].
+#[derive(Debug)]
+pub(crate) struct Changes<'b> {
+    pub(crate) next_channel: usize,
+    pub(crate) next_mid: usize,
+    pub(crate) ops: Vec<Change>,
+    pub(crate) _rtc: PhantomData<&'b ()>,
 }
 
 /// Changes to a session, made in the closure of `create_offer` or
 /// [`Peer::renegotiate`](crate::Peer::renegotiate): add media lines and data channels, change
 /// directions, restart ICE.
-pub struct SdpChanges<'a, 'b>(pub(crate) &'a mut SdpApi<'b>);
+pub struct SdpChanges<'a, 'b>(pub(crate) &'a mut Changes<'b>);
 
 impl fmt::Debug for SdpChanges<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SdpChanges")
-            .field("has_changes", &self.0.has_changes())
+            .field("has_changes", &self.has_changes())
             .finish()
     }
 }
@@ -747,12 +802,15 @@ impl fmt::Debug for SdpChanges<'_, '_> {
 impl SdpChanges<'_, '_> {
     /// Adds a reliable, ordered data channel.
     pub fn add_channel(&mut self, label: impl Into<String>) -> ChannelId {
-        ChannelId(self.0.add_channel(label.into()))
+        self.add_channel_with_config(&ChannelConfig::new(label))
     }
 
     /// Adds a data channel configured by `cfg`.
     pub fn add_channel_with_config(&mut self, cfg: &ChannelConfig) -> ChannelId {
-        ChannelId(self.0.add_channel_with_config(cfg.to_str0m()))
+        let id = ChannelId(self.0.next_channel);
+        self.0.next_channel += 1;
+        self.0.ops.push(Change::AddChannel(id, cfg.clone()));
+        id
     }
 
     /// Adds a media line; `stream_id` and `track_id` go into its `a=msid`.
@@ -763,29 +821,36 @@ impl SdpChanges<'_, '_> {
         stream_id: Option<String>,
         track_id: Option<String>,
     ) -> Mid {
-        Mid(self
-            .0
-            .add_media(kind.own(), dir.own(), stream_id, track_id, None))
+        let mid = Mid::new(&self.0.next_mid.to_string());
+        self.0.next_mid += 1;
+        self.0.ops.push(Change::AddMedia {
+            mid,
+            kind,
+            dir,
+            stream_id,
+            track_id,
+        });
+        mid
     }
 
     /// Changes the direction of a media line.
     pub fn set_direction(&mut self, mid: Mid, dir: Direction) {
-        self.0.set_direction(mid.0, dir.own());
+        self.0.ops.push(Change::SetDirection(mid, dir));
     }
 
     /// Stops a media line.
     pub fn stop_media(&mut self, mid: Mid) {
-        self.0.stop_media(mid.0);
+        self.0.ops.push(Change::StopMedia(mid));
     }
 
     /// Restarts ICE with new credentials.
     pub fn ice_restart(&mut self, keep_local_candidates: bool) {
-        let _ = self.0.ice_restart(keep_local_candidates);
+        self.0.ops.push(Change::IceRestart(keep_local_candidates));
     }
 
     /// Whether anything was changed.
     pub fn has_changes(&self) -> bool {
-        self.0.has_changes()
+        !self.0.ops.is_empty()
     }
 }
 
@@ -798,7 +863,7 @@ mod tests {
         let t = MediaTime::new(96_000, Frequency::FORTY_EIGHT_KHZ);
         assert_eq!(t.as_duration(), Duration::from_secs(2));
         assert_eq!((t.ticks(), t.rate().get()), (96_000, 48_000));
-        assert_eq!(Own::<MediaTime>::own(t.to_str0m()), t);
+        assert_eq!(t.ticks_at(90_000), 180_000);
         assert_eq!(
             MediaTime::new(45_000, Frequency::NINETY_KHZ).as_duration(),
             Duration::from_millis(500)
@@ -807,49 +872,28 @@ mod tests {
         assert_eq!(Frequency::new(8000), Some(Frequency::EIGHT_KHZ));
     }
 
-    /// Converts to the wrapped type and back.
-    fn rt<A: Own<B>, B: Own<A>>(a: A) -> A {
-        a.own().own()
-    }
-
     #[test]
-    fn conversions_round_trip() {
-        for k in [MediaKind::Audio, MediaKind::Video] {
-            assert_eq!(rt::<_, str0m::media::MediaKind>(k), k);
-        }
-        for d in [
-            Direction::Inactive,
-            Direction::RecvOnly,
-            Direction::SendOnly,
-            Direction::SendRecv,
-        ] {
-            assert_eq!(rt::<_, str0m::media::Direction>(d), d);
-        }
-        for k in [KeyframeRequestKind::Pli, KeyframeRequestKind::Fir] {
-            assert_eq!(rt::<_, str0m::media::KeyframeRequestKind>(k), k);
-        }
+    fn ids_and_codecs() {
+        let m = Mid::new("audio-0123456789-too-long");
+        assert_eq!(m.as_str().len(), MID_MAX);
+        assert!(Mid::new("a") < Mid::new("b"));
+        assert_eq!(Mid::new("x").to_string(), "x");
+        assert!(format!("{:?}", Mid::new("x")).starts_with("Mid("));
         let p = Pt::from(111);
-        assert_eq!(rt::<_, str0m::media::Pt>(p), p);
         assert_eq!(u8::from(p), p.get());
-        for c in [
-            Codec::Opus,
-            Codec::Pcmu,
-            Codec::Pcma,
-            Codec::G722,
-            Codec::H264,
-            Codec::H265,
-            Codec::Vp8,
-            Codec::Vp9,
-            Codec::Av1,
-        ] {
-            assert_eq!(own_codec(c.to_str0m()), Some(c));
+        for c in Codec::ALL {
+            assert_eq!(Codec::from_name(c.name()), Some(c));
         }
-        assert_eq!(own_codec(str0m::format::Codec::Rtx), None);
+        assert_eq!(Codec::from_name("rtx"), None);
+        assert_eq!(
+            Direction::SendRecv.intersect(Direction::RecvOnly.reverse()),
+            Direction::SendOnly
+        );
         let cfg = ChannelConfig {
             reliability: Reliability::MaxPacketLifetime { lifetime: 5 },
             ..ChannelConfig::new("x")
         };
-        assert_eq!(cfg.to_str0m().label, "x");
+        assert_eq!(cfg.to_sctp().label, "x");
     }
 
     #[test]
@@ -864,10 +908,11 @@ mod tests {
         assert_eq!(Candidate::server_reflexive(b, a).unwrap().addr(), b);
         assert_eq!(Candidate::relayed(b, a).unwrap().addr(), b);
         assert!(Candidate::parse("nonsense").is_err());
+        assert!(Candidate::host("0.0.0.0:1".parse().unwrap()).is_err());
     }
 
     #[test]
-    fn rtc_config_and_sdp_changes() {
+    fn rtc_config_switches() {
         let cfg = crate::rtc_config()
             .clear_codecs()
             .enable_opus(true)
@@ -884,24 +929,27 @@ mod tests {
             .set_reordering_size(10, 20)
             .set_sctp_max_buffered_amount(1 << 20);
         assert!(format!("{cfg:?}").contains("rtp_mode"));
-        let mut rtc = cfg.0.build(Instant::now());
-        let mut api = rtc.sdp_api();
-        let mut ch = SdpChanges(&mut api);
-        assert!(!ch.has_changes());
-        let mid = ch.add_media(
-            MediaKind::Audio,
-            Direction::SendRecv,
-            Some("s".into()),
-            Some("t".into()),
+        assert_eq!(
+            cfg.0.codecs,
+            vec![Codec::Opus, Codec::Pcmu, Codec::Vp8, Codec::H264]
         );
-        ch.set_direction(mid, Direction::SendOnly);
-        let _ = ch.add_channel("c");
-        let _ = ch.add_channel_with_config(&ChannelConfig::new("d"));
-        assert!(ch.has_changes());
-        assert!(format!("{ch:?}").contains("true"));
-        ch.ice_restart(true);
-        assert!(!mid.as_str().is_empty());
-        assert_eq!(mid.to_string(), mid.as_str());
-        assert!(format!("{mid:?}").starts_with("Mid("));
+        let mut ch = Changes {
+            next_channel: 0,
+            next_mid: 0,
+            ops: Vec::new(),
+            _rtc: PhantomData,
+        };
+        let mut api = SdpChanges(&mut ch);
+        assert!(!api.has_changes());
+        let mid = api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+        api.set_direction(mid, Direction::SendOnly);
+        let c = api.add_channel("c");
+        let d = api.add_channel_with_config(&ChannelConfig::new("d"));
+        assert_ne!(c, d);
+        assert!(api.has_changes());
+        assert!(format!("{api:?}").contains("true"));
+        api.ice_restart(true);
+        api.stop_media(mid);
+        assert_eq!(mid.as_str(), "0");
     }
 }

@@ -5,8 +5,7 @@
 Sans-io DTLS 1.2 (RFC 6347) for [`only`](https://github.com/lesismal/only), on
 [`only-crypto`](../only-crypto) and [`only-x509`](../only-x509), in safe Rust
 (`#![forbid(unsafe_code)]`) with no other dependencies. It is the DTLS layer of the in-house
-WebRTC stack planned in DEV-PLAN wave D (DTLS-SRTP keys, SCTP data channels), where it will
-replace str0m's `dimpl`. An internal crate (docs/api-stability.md): its API follows that stack
+WebRTC stack of DEV-PLAN wave D (DTLS-SRTP keys, SCTP data channels), used by `only-webrtc`. An internal crate (docs/api-stability.md): its API follows that stack
 and may change in any release.
 
 ## Driving a connection
@@ -91,7 +90,7 @@ session resumption and tickets, PSK and non-ECDHE key exchanges, CBC suites, SRT
   (3.5 in the rust:1 image, 4.1 on the host) in both directions with every suite, `-use_srtp`
   profiles, `-mtu 300`, mutual authentication, and `-keymatexport EXTRACTOR-dtls_srtp` equal to
   our keys; pion/dtls v3.1 both directions for every SRTP profile with ECDSA, ChaCha20 and RSA
-  suites, keying material compared; str0m's `dimpl` in memory, both roles (`tests/dimpl.rs`).
+  suites, keying material compared; the in-house WebRTC stack's interop runs (pion, Chrome) exercise it end to end.
 - Fuzzing: targets `dtls_record` (record splitter, fragment and message parsers, re-encoding)
   and `dtls_handshake` (arbitrary datagrams into client and server state machines mid-handshake
   and connected) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.

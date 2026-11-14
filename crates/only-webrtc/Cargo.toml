@@ -1,6 +1,6 @@
 [package]
 name = "only-webrtc"
-description = "only WebRTC: ICE, DTLS-SRTP, SCTP data channels and RTP media (str0m) over only UDP"
+description = "only WebRTC: ICE, DTLS-SRTP, SCTP data channels and RTP media (in-house sans-io stack) over only UDP"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,17 +15,19 @@ categories = ["network-programming", "multimedia"]
 [features]
 # Fuzz entry points for `fuzz/` (`only_webrtc::fuzzing`); not a public API.
 fuzzing = []
-# Raw access to str0m (`only_webrtc::str0m`, `Peer::with_rtc` ...): outside the semver promise
-# (docs/api-stability.md).
+# Reserved for APIs outside the semver promise (docs/api-stability.md); empty since the in-house
+# stack replaced str0m.
 unstable = []
 
 [dependencies]
 only = { workspace = true }
 only-turn = { workspace = true }
-str0m = { version = "=0.24.1", default-features = false }
-dimpl = { version = "0.7.6", default-features = false, features = ["rust-crypto"] }
 only-crypto = { workspace = true }
-p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
+only-dtls = { workspace = true }
+only-ice = { workspace = true }
+only-rtp = { workspace = true }
+only-sctp = { workspace = true }
+only-srtp = { workspace = true }
 only-log = { workspace = true }
 
 [dev-dependencies]

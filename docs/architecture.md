@@ -16,6 +16,10 @@ flowchart BT
     crypto["only-crypto<br/>SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC-32,<br/>AES-CTR/GCM, ChaCha20-Poly1305, base64, RNG,<br/>X25519, Ed25519, P-256/P-384, RSA, DER/PEM"]
     x509["only-x509<br/>certificates, chain validation, generation"]
     dtls["only-dtls<br/>sans-io DTLS 1.2, DTLS-SRTP"]
+    srtp["only-srtp<br/>SRTP/SRTCP"]
+    rtp["only-rtp<br/>RTP/RTCP, packetizers,<br/>NACK/RTX, TWCC, BWE"]
+    sctp["only-sctp<br/>SCTP, data channels"]
+    ice["only-ice<br/>ICE agent (full, lite)"]
     buf["only-buf<br/>size-class pool, SharedBuf"]
     timer["only-timer<br/>timer wheel"]
     deflate["only-deflate<br/>DEFLATE, zlib, gzip"]
@@ -38,7 +42,7 @@ flowchart BT
     h3[only-h3]
     kcp[only-kcp]
     turn["only-turn<br/>STUN, TURN"]
-    webrtc["only-webrtc<br/>str0m"]
+    webrtc["only-webrtc<br/>SDP, peers, RtcServer, Endpoint"]
     media["only-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
@@ -80,6 +84,15 @@ flowchart BT
     crypto --> x509
     x509 --> dtls
     crypto --> dtls
+    crypto --> srtp
+    crypto --> sctp
+    crypto --> ice
+    turn --> ice
+    dtls --> webrtc
+    srtp --> webrtc
+    rtp --> webrtc
+    sctp --> webrtc
+    ice --> webrtc
     crypto --> ws
     crypto --> http
     crypto --> kcp
@@ -97,22 +110,26 @@ flowchart BT
   WebSocket handshakes, SRTP, SRT, RTMP, BitTorrent), plus the public-key algorithms and key
   formats (X25519, Ed25519, ECDH/ECDSA P-256/P-384, RSA PKCS#1/PSS, DER/PEM, PKCS#8) that
   `only-x509` (certificate parsing, chain validation, generation) builds on. TLS 1.2/1.3 runs on
-  these two crates in `only-tls` (wave C); QUIC and DTLS still use quinn-proto (with rustls
-  inside) / dimpl until the later waves of the DEV-PLAN, which will move them onto them too
+  these two crates in `only-tls` (wave C), and DTLS in `only-dtls`; QUIC still uses quinn-proto
+  (with rustls inside) until a later wave of the DEV-PLAN moves it onto them too
   (`only_tls::quic` is the record-free TLS 1.3 core the in-house QUIC will drive).
-- **DTLS is in-house too, not yet wired in**: `only-dtls` (`#![forbid(unsafe_code)]`, on
+- **WebRTC is in-house** (wave D): `only-dtls` (`#![forbid(unsafe_code)]`, on
   `only-crypto` and `only-x509` only) is a sans-io DTLS 1.2 client/server with DTLS-SRTP
   (`use_srtp`, RFC 5705 exporter) and fingerprint-pinned self-signed certificates, driven like
   `only-quic` drives its state machine (`handle_datagram` / `poll_transmit` / `poll_event` /
-  `poll_timeout` / `handle_timeout`, no threads or clocks). The WebRTC stack of wave D will use
-  it in place of str0m's `dimpl`; until then `only-webrtc` is unchanged.
+  `poll_timeout` / `handle_timeout`, no threads or clocks), and the other layers are sans-io
+  crates of the same shape: `only-ice` (ICE agent, on `only-turn`'s STUN codec), `only-srtp`,
+  `only-rtp` (RTP/RTCP, payload formats, NACK/RTX, TWCC and bandwidth estimation) and
+  `only-sctp` (SCTP and DCEP data channels), all `#![forbid(unsafe_code)]`. `only-webrtc` adds
+  SDP offer/answer and drives a sans-io `Rtc` per peer from the I/O threads and one timer
+  thread; it has no third-party dependency.
 - **`unsafe` is confined** to `only-sys` (which also holds the workspace's own OS bindings, `only_sys::ffi`, in place of the `libc` crate), `only-uring` (its own io_uring binding, ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (own zero-copy incremental head parser and chunked
   decoder), HTTP/2 framing and HPACK (own), WebSocket framing and permessage-deflate (DEFLATE from the own `only-deflate`), KCP, QPACK
   and HTTP/3 framing are state machines fed bytes by `only`; so is TLS (own record layer and
-  TLS 1.3 / 1.2 handshake machines in `only-tls`). QUIC is quinn-proto and WebRTC is str0m,
+  TLS 1.3 / 1.2 handshake machines in `only-tls`) and the WebRTC stack. QUIC is quinn-proto,
   driven sans-io (ADR-005) and hidden behind `only`'s own types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).
 - The facade `only` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
   composes backend groups into an `Engine`.

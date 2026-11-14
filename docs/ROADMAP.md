@@ -113,7 +113,7 @@ Priority: P0 = required for 1.0; P1 = strongly recommended for 1.0; P2 = after 1
 | Async clients (h1/h2/h3/ws) | ✓ | P1 | M4–M5 | callback and future result channels |
 | Prefork (multi-process SO_REUSEPORT) | ✓ | P2 | M6 | little gain without a GC; demoted to optional |
 | Streaming media (RTMP/RTSP/SRT/FLV/HLS/WHIP/WHEP) | ✓ | P2 | M7 | large; separate crates |
-| WebRTC (ICE/DTLS-SRTP/DataChannel/TURN) | ✓ | P2 | M7 | evaluate sans-io implementations such as str0m |
+| WebRTC (ICE/DTLS-SRTP/DataChannel/TURN) | ✓ | P2 | M7 | in-house sans-io stack (DEV-PLAN wave D) |
 | BitTorrent (incl. DHT/uTP/MSE) | ✓ | P2 | M7 | separate crate, last |
 | eBPF acceleration | — | P1 | M5 | see 2.5 |
 | DPDK backend | — | P2 | M6 | see 2.5 |

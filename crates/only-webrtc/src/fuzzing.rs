@@ -3,47 +3,85 @@
 
 use std::time::Instant;
 
-use str0m::change::{SdpAnswer, SdpOffer};
+use crate::rtc::Rtc;
+use crate::types::ConfigInner;
+
+fn fresh(lite: bool) -> Option<Rtc> {
+    Rtc::new(ConfigInner::default(), lite, Instant::now()).ok()
+}
 
 /// `webrtc_sdp`: an SDP offer (or answer) from the signalling, as [`RtcServer::accept_offer`]
-/// takes it: parsed, then accepted by a fresh `Rtc`; the answer is printed and parsed back.
+/// takes it: accepted by a fresh peer; the answer is parsed back by another peer as the answer
+/// to an offer of its own.
 ///
 /// [`RtcServer::accept_offer`]: crate::RtcServer::accept_offer
 pub fn webrtc_sdp(data: &[u8]) {
     let Ok(s) = std::str::from_utf8(data) else {
         return;
     };
-    let _ = SdpAnswer::from_sdp_string(s);
-    let Ok(offer) = SdpOffer::from_sdp_string(s) else {
+    let now = Instant::now();
+    let Some(mut rtc) = fresh(true) else { return };
+    let _ = crate::sdp::Sdp::parse(s).map(|p| p.write());
+    if let Ok(answer) = rtc.accept_offer(now, s) {
+        assert!(crate::sdp::Sdp::parse(&answer).is_ok(), "{answer}");
+    }
+    // As an answer to an offer with media and a channel.
+    let Some(mut offerer) = fresh(false) else {
         return;
     };
-    let mut rtc = crate::rtc_config().0.build(Instant::now());
-    if let Ok(answer) = rtc.sdp_api().accept_offer(offer) {
-        let text = answer.to_sdp_string();
-        let _ = SdpAnswer::from_sdp_string(&text);
+    let mut ch = offerer.changes();
+    {
+        let mut api = crate::SdpChanges(&mut ch);
+        api.add_channel("fuzz");
+        api.add_media(
+            crate::MediaKind::Audio,
+            crate::Direction::SendRecv,
+            None,
+            None,
+        );
+        api.add_media(
+            crate::MediaKind::Video,
+            crate::Direction::SendRecv,
+            None,
+            None,
+        );
+    }
+    if offerer.apply(now, ch).is_ok() {
+        let _ = offerer.accept_answer(now, s);
     }
 }
 
 #[cfg(test)]
 pub(crate) mod seeds {
-    use str0m::media::{Direction, MediaKind};
+    use std::time::Instant;
 
-    /// Offers str0m itself makes: data only, and audio + video + data.
+    use crate::rtc::Rtc;
+    use crate::types::ConfigInner;
+    use crate::{Direction, MediaKind, SdpChanges};
+
+    /// Offers this stack makes (data only; audio + video + data) and the answers to them.
     pub(crate) fn webrtc_sdp() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
+        let now = Instant::now();
         for media in [false, true] {
-            let mut rtc = crate::rtc_config().0.build(std::time::Instant::now());
-            let c = str0m::Candidate::host("192.0.2.1:5000".parse().expect("addr"), "udp")
-                .expect("candidate");
-            rtc.add_local_candidate(c);
-            let mut api = rtc.sdp_api();
-            api.add_channel("seed".into());
-            if media {
-                api.add_media(MediaKind::Audio, Direction::SendRecv, None, None, None);
-                api.add_media(MediaKind::Video, Direction::SendOnly, None, None, None);
+            let mut rtc = Rtc::new(ConfigInner::default(), false, now).expect("rtc");
+            rtc.add_local_candidate(only_ice::Candidate::host(
+                "192.0.2.1:5000".parse().expect("addr"),
+            ));
+            let mut ch = rtc.changes();
+            {
+                let mut api = SdpChanges(&mut ch);
+                api.add_channel("seed");
+                if media {
+                    api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
+                    api.add_media(MediaKind::Video, Direction::SendOnly, None, None);
+                }
             }
-            let (offer, _) = api.apply().expect("offer");
-            out.push(offer.to_sdp_string().into_bytes());
+            let offer = rtc.apply(now, ch).expect("apply").expect("offer");
+            let mut answerer = Rtc::new(ConfigInner::default(), true, now).expect("rtc");
+            let answer = answerer.accept_offer(now, &offer).expect("answer");
+            out.push(offer.into_bytes());
+            out.push(answer.into_bytes());
         }
         out
     }

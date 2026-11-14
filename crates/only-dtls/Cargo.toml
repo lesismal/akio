@@ -20,9 +20,5 @@ only-x509 = { workspace = true }
 # Fuzz entry points for `fuzz/` (`only_dtls::fuzzing`); not a public API.
 fuzzing = []
 
-[dev-dependencies]
-# Interop with str0m's DTLS stack (the one only-webrtc uses today); already in the lockfile.
-dimpl = { version = "0.7.6", default-features = false, features = ["rust-crypto"] }
-
 [lints]
 workspace = true
