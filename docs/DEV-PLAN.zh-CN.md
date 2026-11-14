@@ -168,6 +168,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### 1.0 稳定化
 - [ ] API 审阅与冻结、semver 策略、弃用流程
 - [ ] 全量 fuzz 语料与覆盖率报告、`cargo-audit/deny`、unsafe 审查清单 —— 模糊测试已完成：`fuzz/` cargo-fuzz 工程共 21 个目标（HTTP/1、HTTP/2 + HPACK、WebSocket、arpc、gRPC、SOCKS、mux、KCP、HTTP/3 + QPACK、cBPF），最小化语料约 2.6 MB 由 stable 单元测试回放，每个目标在 Linux 上约 14 分钟，提供 `fuzz/run-all.sh` 与 `fuzz/coverage.sh`。已修复：HTTP/2 流式请求被丢弃时的死锁、递归/非法 server push、gRPC `grpc-timeout` panic/溢出、KCP RTT 溢出、SOCKS 握手缓冲无上限。待完成：deny/audit、unsafe 审查
+- [x] CI 加固与覆盖率：严格 lint 集（`missing_docs` deny、`unreachable_pub`、库代码 `unwrap_used`、精选 pedantic/nursery），rustdoc `-D warnings`；矩阵：Linux x86_64/arm64 × epoll/io_uring、macOS（尽力而为）、MSRV 1.85、cargo-hack 特性组合、Miri、loom、Autobahn（服务端+客户端）、h2spec、文档书构建与 Pages 部署、重任务（Go 互通、每夜 fuzz）；统一的 `ci-ok` 门禁。覆盖率任务（cargo-llvm-cov，两种后端合并）：行覆盖率 85.9% → 91.6%，每个 crate ≥ 85%。顺带修复：flash-quic 在方向错误的流上 panic、15 处持锁调用回调、`--no-default-features` 测试编译、两处测试竞态。尚未在 GitHub 上实际运行验证（Pages 设置、fib 检出、Codecov）
 - [x] 文档站 + 迁移指南 + 架构文档：mdBook `book/en` 与 `book/zh-CN`（快速上手、核心概念、每个协议一章、配置参考、可观测性与热更新、性能调优、故障排查），由 `book/build.sh` 构建；所有代码片段来自 14 个可运行的 `guide-*` 示例；从 fib、tokio、hyper/axum 迁移的指南；带 Mermaid 图的 `docs/architecture.md`；各 crate 的 rustdoc 链接到对应章节；根目录 README。未完成：Pages 部署、在 Linux 上运行这些示例
 
 ## 4. 工程规范
