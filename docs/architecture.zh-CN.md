@@ -33,6 +33,7 @@ flowchart BT
     kcp[flash-kcp]
     turn["flash-turn<br/>STUN, TURN"]
     webrtc["flash-webrtc<br/>str0m"]
+    media["flash-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
     pool --> core
@@ -64,6 +65,7 @@ flowchart BT
     facade --> kcp
     facade --> turn
     turn --> webrtc
+    http --> media
 ```
 
 - **依赖方向是单向的**：`sys → buf/timer/pool → core → 后端 → flash → 协议`。协议 crate 依赖

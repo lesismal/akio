@@ -273,6 +273,7 @@ pub fn flash_ws::WsSender::close(&self, u16, &str)
 pub fn flash_ws::WsSender::is_open(&self) -> bool
 pub fn flash_ws::WsSender::ping(&self, &[u8]) -> flash_core::error::Result<()>
 pub fn flash_ws::WsSender::pong(&self, &[u8]) -> flash_core::error::Result<()>
+pub fn flash_ws::WsSender::queued_bytes(&self) -> usize
 pub fn flash_ws::WsSender::send_binary(&self, &[u8]) -> flash_core::error::Result<()>
 pub fn flash_ws::WsSender::send_binary_fragmented(&self, &[u8], usize) -> flash_core::error::Result<()>
 pub fn flash_ws::WsSender::send_prepared(&self, &flash_ws::PreparedMessage) -> flash_core::error::Result<()>

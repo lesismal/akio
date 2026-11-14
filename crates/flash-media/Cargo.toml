@@ -1,0 +1,36 @@
+[package]
+name = "flash-media"
+description = "flash streaming media: RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS, WHIP/WHEP signalling and a stream hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/flash-media"
+keywords = ["rtmp", "rtsp", "srt", "hls", "streaming"]
+categories = ["network-programming", "multimedia"]
+
+[dependencies]
+flash = { workspace = true }
+flash-core = { workspace = true }
+flash-http = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+md-5 = "0.10"
+aes = "0.8"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
+
+[features]
+# Fuzz entry points for `fuzz/` (`flash_media::fuzzing`); not a public API.
+fuzzing = ["flash-core/fuzzing"]
+
+[dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

@@ -34,6 +34,7 @@ flowchart BT
     kcp[flash-kcp]
     turn["flash-turn<br/>STUN, TURN"]
     webrtc["flash-webrtc<br/>str0m"]
+    media["flash-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
     pool --> core
@@ -65,6 +66,7 @@ flowchart BT
     facade --> kcp
     facade --> turn
     turn --> webrtc
+    http --> media
 ```
 
 - **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → flash →

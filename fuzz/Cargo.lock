@@ -506,6 +506,7 @@ dependencies = [
  "flash-h3",
  "flash-http",
  "flash-kcp",
+ "flash-media",
  "flash-mux",
  "flash-socks",
  "flash-turn",
@@ -562,6 +563,23 @@ dependencies = [
  "getrandom 0.2.17",
  "pbkdf2",
  "sha1",
+]
+
+[[package]]
+name = "flash-media"
+version = "1.0.0-rc.1"
+dependencies = [
+ "aes",
+ "base64",
+ "flash",
+ "flash-core",
+ "flash-http",
+ "getrandom 0.2.17",
+ "hmac",
+ "md-5",
+ "pbkdf2",
+ "sha1",
+ "sha2",
 ]
 
 [[package]]

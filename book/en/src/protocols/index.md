@@ -19,6 +19,7 @@ block, and its "send" handles are usable from any thread.
 | `flash-kcp` | `KcpServer::new(cfg, factory)` on a UDP listener | `flash_kcp::dial` | [KCP](kcp.md) |
 | `flash-webrtc` | `RtcServer::new(addrs)` on a UDP listener | `Endpoint::bind(engine, addr)` | [WebRTC](webrtc.md) |
 | `flash-turn` | `TurnServer::new(cfg)` or `StunServer` on a UDP listener | – | [WebRTC](webrtc.md) |
+| `flash-media` | `RtmpServer`, `RtspServer`, `SrtServer` (UDP), `MediaHttp` / `WhipServer` (flash-http services) around one `Hub` | `srt::dial` / `push` / `pull` | [Streaming media](media.md) |
 
 Interoperability is tested against reference implementations: h2spec (147/147), Autobahn
 (WebSocket server and client), grpc-go, quic-go and fib (HTTP/3), kcp-go, and fib's Go arpc;

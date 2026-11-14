@@ -1,0 +1,16 @@
+OPTIONS * RTSP/1.0
+CSeq: 1
+
+DESCRIBE rtsp://h/live/s RTSP/1.0
+CSeq: 2
+
+SETUP rtsp://h/live/s/trackID=0 RTSP/1.0
+CSeq: 3
+Transport: RTP/AVP;unicast;client_port=5000-5001
+
+PLAY rtsp://h/live/s RTSP/1.0
+CSeq: 4
+
+TEARDOWN rtsp://h/live/s RTSP/1.0
+CSeq: 5
+

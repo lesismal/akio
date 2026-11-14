@@ -17,7 +17,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 | `flash-uring` | `#![deny(unsafe_code)]`, allowed in `group` and `reactor` only | io_uring submission entries point into memory the kernel writes asynchronously |
 | `flash-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
 | `flash-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` only | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts), and `Sendable` (moves smoltcp's `!Send` TAP / AF_PACKET devices to their I/O thread) |
-| every other crate (`flash`, `flash-core`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-turn`, `flash-webrtc`, `tools/echo-bench`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
+| every other crate (`flash`, `flash-core`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-turn`, `flash-webrtc`, `flash-media`, `tools/echo-bench`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
 Tests, examples and benches are separate crates; they may use `unsafe` for test-only libc calls
 (`setrlimit`, `SO_LINGER`, CPU affinity, a counting allocator), held to the same comment rule.

@@ -24,6 +24,7 @@ flash-h3 = { path = "../crates/flash-h3", features = ["fuzzing"] }
 flash-ebpf = { path = "../crates/flash-ebpf", features = ["fuzzing"] }
 flash-turn = { path = "../crates/flash-turn", features = ["fuzzing"] }
 flash-webrtc = { path = "../crates/flash-webrtc", features = ["fuzzing"] }
+flash-media = { path = "../crates/flash-media", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -183,6 +184,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "rtsp_server"
+path = "fuzz_targets/rtsp_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "turn_server"
 path = "fuzz_targets/turn_server.rs"
 test = false
@@ -190,8 +198,64 @@ doc = false
 bench = false
 
 [[bin]]
+name = "sdp_parse"
+path = "fuzz_targets/sdp_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "webrtc_sdp"
 path = "fuzz_targets/webrtc_sdp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtp_depacketize"
+path = "fuzz_targets/rtp_depacketize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mpegts_demux"
+path = "fuzz_targets/mpegts_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_listener"
+path = "fuzz_targets/srt_listener.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "srt_conn"
+path = "fuzz_targets/srt_conn.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_server"
+path = "fuzz_targets/rtmp_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flv_demux"
+path = "fuzz_targets/flv_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "amf_decode"
+path = "fuzz_targets/amf_decode.rs"
 test = false
 doc = false
 bench = false

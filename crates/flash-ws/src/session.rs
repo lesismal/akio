@@ -333,6 +333,12 @@ impl WsSender {
     pub fn is_open(&self) -> bool {
         !self.lock().closed && self.conn.is_open()
     }
+
+    /// Bytes sent but not yet written to the socket, for pacing a producer (a sender that
+    /// streams to a slow peer drops or waits while this is high).
+    pub fn queued_bytes(&self) -> usize {
+        self.conn.queued_bytes()
+    }
 }
 
 /// Drives one WebSocket connection: feed it the bytes read, it calls the handler. Used by

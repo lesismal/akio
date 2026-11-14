@@ -37,6 +37,7 @@ $ cargo doc --workspace --no-deps --open
 | `flash-kcp` | KCP（兼容 kcp-go） | [KCP](protocols/kcp.md) |
 | `flash-webrtc` | 基于 str0m 的 WebRTC：ICE、DTLS-SRTP、数据通道、媒体 | [WebRTC](protocols/webrtc.md) |
 | `flash-turn` | STUN 编解码、STUN 与 TURN 服务器 | [WebRTC](protocols/webrtc.md) |
+| `flash-media` | 流媒体：hub、RTMP、RTSP、SRT、FLV、HTTP-FLV、WS-FLV、HLS、WHIP/WHEP 信令 | [流媒体](protocols/media.md) |
 
 设计记录：[docs/adr](https://github.com/lesismal/flash/tree/main/docs/adr)。计划与状态：
 [docs/ROADMAP.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/ROADMAP.zh-CN.md)、

@@ -67,6 +67,27 @@ All notable changes to flash are documented here. The format follows
   offer directions, through a flash TURN relay) and with fib's Go WebRTC (data channels);
   `tools/interop/webrtc/run.sh`.
 - Fuzz targets `stun_message`, `turn_server` and `webrtc_sdp`.
+- `flash-media` (M7 streaming media), a new crate: one stream hub with RTMP, RTSP, SRT,
+  HTTP-FLV, WS-FLV, HLS and WHIP/WHEP signalling around it.
+  - `hub`: streams by path, one publisher and many subscribers, GOP cache for fast start,
+    `Dropper` (slow players drop to the next keyframe), publish / play auth hooks, reserve
+    before the tracks are known, waiting for (re)publishers, `Timeline` timestamp
+    normalization, per-stream statistics.
+  - RTMP server: simple and Flash digest handshake, chunk stream, publish / play, Enhanced RTMP
+    (H.265 `hvc1`, Opus); AMF0 / AMF3; FLV mux / demux (legacy and enhanced tags).
+  - HTTP-FLV and WS-FLV playback (`HttpFlv`), HLS with MPEG-TS segments, LL-HLS parts,
+    preload hints and blocking reload (`Hls`), `MediaHttp` dispatching both; MPEG-TS muxer.
+  - RTSP 1.0 server (ANNOUNCE/RECORD, DESCRIBE/SETUP/PLAY over TCP-interleaved and UDP,
+    Digest/Basic auth), RTP packetization for H.264/H.265/AAC/Opus/G.711 with decode times
+    derived for B-frame video, SDP, and WHIP/WHEP HTTP signalling with a `WebRtcEngine`
+    integration trait.
+  - SRT live mode (HSv5 caller/listener, ARQ, TSBPD, AES-CTR encryption with passphrase,
+    stream ID access control) with a hub-backed `SrtServer` and `srt::dial` / `push` / `pull`;
+    incremental MPEG-TS demuxer (`mpegts::demux`).
+  - Interop-tested with ffmpeg / ffprobe as publisher and player (SRT with libsrt in Docker);
+    fuzz targets `rtmp_server`, `flv_demux`, `amf_decode`, `rtsp_server`, `sdp_parse`,
+    `rtp_depacketize`, `mpegts_demux`, `srt_listener`, `srt_conn`.
+- `flash_ws::WsSender::queued_bytes`, for pacing a producer that streams to a slow peer.
 
 ## [1.0.0-rc.1] - 2026-11-14
 

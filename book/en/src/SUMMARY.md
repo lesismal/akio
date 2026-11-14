@@ -25,6 +25,9 @@
   - [Protocol multiplexing](protocols/mux.md)
   - [KCP](protocols/kcp.md)
   - [WebRTC, STUN and TURN](protocols/webrtc.md)
+  - [Streaming media: hub, RTMP, HTTP-FLV, HLS](protocols/media.md)
+    - [RTSP and WHIP/WHEP](protocols/media-rtsp.md)
+    - [SRT](protocols/media-srt.md)
 
 # Operations
 
