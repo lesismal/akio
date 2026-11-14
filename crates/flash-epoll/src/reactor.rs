@@ -60,6 +60,12 @@ pub(crate) enum Cmd {
     },
     /// UDP only: closes the socket bound under `id` and its connections.
     Unbind(u64),
+    /// UDP only: a peer of the server socket opened from this side.
+    OpenPeer {
+        peer: SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    },
     Dial {
         stream: TcpStream,
         addr: SocketAddr,
@@ -440,6 +446,10 @@ impl Loop {
                     Cmd::Core(c) => self.on_core(c),
                     // Only UDP loops are sent these.
                     Cmd::DialUdp { .. } | Cmd::BindUdp { .. } | Cmd::Unbind(_) => {}
+                    Cmd::OpenPeer { on_error, .. } => on_error(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "not a UDP listener",
+                    )),
                     Cmd::Dial {
                         stream,
                         addr,

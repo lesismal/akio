@@ -411,11 +411,26 @@ impl UdpLoop {
     }
 
     fn open(&mut self, bind: Option<u64>, peer: SocketAddr) -> Option<u64> {
-        let (sock, local, acceptor) = match bind {
-            None => (self.sock.clone()?, self.local?, self.acceptor.clone()?),
+        let acceptor = match bind {
+            None => self.acceptor.clone()?,
+            Some(b) => self.binds.get(&b)?.acceptor.clone(),
+        };
+        self.open_with(bind, peer, acceptor)
+    }
+
+    /// A peer of the server socket (`bind` = `None`) or of the socket bound under `bind`,
+    /// served by `acceptor` (the socket's own, or one given to `Group::open_udp_peer`).
+    fn open_with(
+        &mut self,
+        bind: Option<u64>,
+        peer: SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+    ) -> Option<u64> {
+        let (sock, local) = match bind {
+            None => (self.sock.clone()?, self.local?),
             Some(b) => {
                 let b = self.binds.get(&b)?;
-                (b.sock.clone(), b.local, b.acceptor.clone())
+                (b.sock.clone(), b.local)
             }
         };
         // Admission: `udp_max_peers` bounds the peers of the whole listener (all its loops).
@@ -836,6 +851,28 @@ impl UdpLoop {
                     Cmd::DialUdp { sock, acceptor } => self.open_client(sock, acceptor),
                     Cmd::BindUdp { id, sock, acceptor } => self.open_bound(id, sock, acceptor),
                     Cmd::Unbind(id) => self.unbind(id),
+                    Cmd::OpenPeer {
+                        peer,
+                        acceptor,
+                        on_error,
+                    } => {
+                        if self.sock.is_none() || self.draining.is_some() {
+                            on_error(io::Error::new(
+                                io::ErrorKind::NotConnected,
+                                "no UDP listener socket",
+                            ));
+                        } else if self.peers.contains_key(&peer) {
+                            on_error(io::Error::new(
+                                io::ErrorKind::AlreadyExists,
+                                "the peer already has a connection",
+                            ));
+                        } else if self.open_with(None, peer, acceptor).is_none() {
+                            on_error(io::Error::new(
+                                io::ErrorKind::ConnectionRefused,
+                                "peer refused (udp_max_peers, or on_open panicked or closed)",
+                            ));
+                        }
+                    }
                     Cmd::Dial { on_error, .. } => on_error(io::Error::new(
                         io::ErrorKind::Unsupported,
                         "dial is not supported on a UDP listener",
@@ -1130,5 +1167,22 @@ impl Group for UdpGroup {
             }
             Err(e) => on_error(e),
         }
+    }
+
+    fn open_udp_peer(
+        &self,
+        peer: SocketAddr,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        // Any loop: they all send from the listener's port. With SO_REUSEPORT the peer's
+        // answers may reach another loop, which then opens a peer of its own through the
+        // listener's acceptor.
+        let i = self.rr.fetch_add(1, Ordering::Relaxed) % self.shared.len();
+        self.shared[i].post(Cmd::OpenPeer {
+            peer,
+            acceptor,
+            on_error,
+        });
     }
 }

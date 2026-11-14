@@ -1,0 +1,31 @@
+[package]
+name = "flash-bittorrent"
+description = "flash BitTorrent: bencode, metainfo and magnets, HTTP/UDP trackers, peer wire with MSE, uTP, mainline DHT and a client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/flash-bittorrent"
+keywords = ["bittorrent", "dht", "utp", "p2p", "torrent"]
+categories = ["network-programming"]
+
+[dependencies]
+flash = { workspace = true }
+flash-core = { workspace = true }
+flash-pool = { workspace = true }
+flash-http = { workspace = true }
+sha1 = "0.10"
+getrandom = "0.2"
+
+[features]
+# Fuzz entry points for `fuzz/` (`flash_bittorrent::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

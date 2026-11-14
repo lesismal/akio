@@ -25,6 +25,7 @@ flash-ebpf = { path = "../crates/flash-ebpf", features = ["fuzzing"] }
 flash-turn = { path = "../crates/flash-turn", features = ["fuzzing"] }
 flash-webrtc = { path = "../crates/flash-webrtc", features = ["fuzzing"] }
 flash-media = { path = "../crates/flash-media", features = ["fuzzing"] }
+flash-bittorrent = { path = "../crates/flash-bittorrent", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -184,8 +185,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "bt_bencode"
+path = "fuzz_targets/bt_bencode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "rtsp_server"
 path = "fuzz_targets/rtsp_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_peer_wire"
+path = "fuzz_targets/bt_peer_wire.rs"
 test = false
 doc = false
 bench = false
@@ -198,6 +213,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "bt_krpc"
+path = "fuzz_targets/bt_krpc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "sdp_parse"
 path = "fuzz_targets/sdp_parse.rs"
 test = false
@@ -205,8 +227,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "bt_utp"
+path = "fuzz_targets/bt_utp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "webrtc_sdp"
 path = "fuzz_targets/webrtc_sdp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_tracker"
+path = "fuzz_targets/bt_tracker.rs"
 test = false
 doc = false
 bench = false
@@ -256,6 +292,13 @@ bench = false
 [[bin]]
 name = "amf_decode"
 path = "fuzz_targets/amf_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_mse"
+path = "fuzz_targets/bt_mse.rs"
 test = false
 doc = false
 bench = false

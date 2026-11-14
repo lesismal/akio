@@ -24,6 +24,7 @@ members = [
     "crates/flash-turn",
     "crates/flash-webrtc",
     "crates/flash-media",
+    "crates/flash-bittorrent",
     "crates/flash",
     "tools/echo-bench",
 ]
@@ -66,6 +67,7 @@ flash-dpdk = { path = "crates/flash-dpdk", version = "=1.0.0-rc.1" }
 flash-turn = { path = "crates/flash-turn", version = "=1.0.0-rc.1" }
 flash-webrtc = { path = "crates/flash-webrtc", version = "=1.0.0-rc.1" }
 flash-media = { path = "crates/flash-media", version = "=1.0.0-rc.1" }
+flash-bittorrent = { path = "crates/flash-bittorrent", version = "=1.0.0-rc.1" }
 flash = { path = "crates/flash", version = "=1.0.0-rc.1" }
 flash-prefork = { path = "crates/flash-prefork", version = "=1.0.0-rc.1" }
 

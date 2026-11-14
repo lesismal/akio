@@ -19,6 +19,7 @@
 | `flash-webrtc` | UDP listener 上的 `RtcServer::new(addrs)` | `Endpoint::bind(engine, addr)` | [WebRTC](webrtc.md) |
 | `flash-turn` | UDP listener 上的 `TurnServer::new(cfg)` 或 `StunServer` | – | [WebRTC](webrtc.md) |
 | `flash-media` | 围绕同一个 `Hub` 的 `RtmpServer`、`RtspServer`、`SrtServer`（UDP）、`MediaHttp` / `WhipServer`（flash-http 服务） | `srt::dial` / `push` / `pull` | [流媒体](media.md) |
+| `flash-bittorrent` | `Client::new(cfg)`（自带 listener）；`TrackerServer::http()` / `udp()`；`port::UdpPort` | `Client`、`TrackerClient` | [BitTorrent](bittorrent.md) |
 
 互通性用参考实现测试过：h2spec（147/147）、Autobahn（WebSocket 服务端与客户端）、grpc-go、
 quic-go 和 fib（HTTP/3）、kcp-go，以及 fib 的 Go 版 arpc；脚本位于 `tools/interop` 和

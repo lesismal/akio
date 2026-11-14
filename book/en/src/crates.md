@@ -39,6 +39,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.md
 | `flash-webrtc` | WebRTC on str0m: ICE, DTLS-SRTP, data channels, media | [WebRTC](protocols/webrtc.md) |
 | `flash-turn` | STUN codec, STUN and TURN servers | [WebRTC](protocols/webrtc.md) |
 | `flash-media` | streaming media: hub, RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS, WHIP/WHEP signalling | [Streaming media](protocols/media.md) |
+| `flash-bittorrent` | BitTorrent: trackers, peer wire + MSE, uTP, DHT, client (libtorrent and aria2 compatible) | [BitTorrent](protocols/bittorrent.md) |
 
 Design records: [docs/adr](https://github.com/lesismal/flash/tree/main/docs/adr). Plan and
 status: [docs/ROADMAP.md](https://github.com/lesismal/flash/blob/main/docs/ROADMAP.md),

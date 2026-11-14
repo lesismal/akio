@@ -26,6 +26,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | RPC | gRPC（unary 与流式，与 grpc-go 互通），arpc（与 lesismal/arpc 和 fib 线路兼容） |
 | 代理 | SOCKS5/4/4a、HTTP CONNECT、按首字节嗅探的端口复用（flash-mux） |
 | KCP | 与 skywind3000/kcp 和 kcp-go 线路兼容（FEC、加密） |
+| BitTorrent | tracker（HTTP/UDP，客户端与服务端）、带 MSE 的 peer wire、Fast 扩展、元数据交换与 PEX、uTP（LEDBAT）、主线 DHT、客户端；与 libtorrent 和 aria2 互通 |
 | 流媒体 | flash-media：统一的流 hub（GOP 缓存、慢播放者丢帧、鉴权钩子、统计），前接 RTMP（digest 握手、Enhanced RTMP 的 H.265/Opus）、RTSP 服务端（TCP 与 UDP，推流与播放）、SRT live（ARQ、TSBPD、AES 加密、主叫推拉流）、HTTP-FLV、WS-FLV、HLS（MPEG-TS、LL-HLS 分片、阻塞式刷新）以及 WHIP/WHEP 信令；已与 ffmpeg 互通测试 |
 | WebRTC、STUN、TURN | 基于 str0m 的 WebRTC（ICE-lite 服务端与完整 ICE agent、DTLS-SRTP、数据通道、RTP/RTCP 媒体），纯 Rust 加密栈；STUN 与 TURN 服务器；与 pion、coturn 互通 |
 | 运维 | Prometheus 指标、连接表、慢回调记录、JSON 调试端点、基于 `log` 的结构化日志、运行时设置热更新；多进程 prefork 服务，支持 worker 重启与不停机重载（[flash-prefork](crates/flash-prefork/README.zh-CN.md)） |

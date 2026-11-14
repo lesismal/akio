@@ -28,6 +28,7 @@
   - [Streaming media: hub, RTMP, HTTP-FLV, HLS](protocols/media.md)
     - [RTSP and WHIP/WHEP](protocols/media-rtsp.md)
     - [SRT](protocols/media-srt.md)
+  - [BitTorrent](protocols/bittorrent.md)
 
 # Operations
 

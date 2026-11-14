@@ -68,6 +68,13 @@ Protecting a public UDP port:
 `close()` ends it, and an ICMP "port unreachable" closes it with `ConnectionRefused`. The engine
 needs `udp_client_threads(n)` or a UDP listener whose threads can host it.
 
+`Engine::dial_udp_from(local, peer, acceptor, on_error)` instead opens a peer `Conn` on the
+socket of the UDP listener bound at `local`: datagrams leave from the listener's port, which is
+what a peer-to-peer node sharing one port needs (a DHT node, uTP; see
+[BitTorrent](bittorrent.md)). It fails with `AlreadyExists` when the peer already has a
+connection on that listener (its datagrams go there). On Linux the peer's answers may reach
+another of the listener's threads, which then opens a peer through the listener's own acceptor.
+
 ## Not provided
 
 - A connectionless datagram API (one callback per datagram without per-peer state): every peer

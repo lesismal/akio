@@ -286,6 +286,7 @@ impl EngineBuilder {
         let pool = Pool::new(self.pool.clone());
         telemetry.set_pool(&pool);
         let mut udp_last: Option<usize> = None;
+        let mut udp_listeners: Vec<usize> = Vec::new();
         // Each listener adds exactly one group, at index `groups.len()` when it starts.
         let mut accels: Vec<Accel> = Vec::new();
         for l in self.listeners {
@@ -316,6 +317,7 @@ impl EngineBuilder {
                         }
                     }
                     udp_last = Some(groups.len());
+                    udp_listeners.push(groups.len());
                     groups.push(Box::new(flash_epoll::UdpGroup::bind(
                         Some((l.addr, acceptor)),
                         l.threads,
@@ -400,7 +402,11 @@ impl EngineBuilder {
             .zip(&groups)
             .map(|(a, g)| apply_accel(a, g.as_ref()))
             .collect::<io::Result<Vec<_>>>()?;
+        // `dial` goes to the client group, else to the last TCP listener's group (never to a UDP
+        // group, which cannot dial TCP).
+        let mut tcp_dial = (0..groups.len()).rev().find(|i| !udp_listeners.contains(i));
         if self.client_threads > 0 {
+            tcp_dial = Some(groups.len());
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             groups.push(Box::new(flash_epoll::EpollGroup::bind(
                 None,
@@ -426,6 +432,8 @@ impl EngineBuilder {
             groups,
             pool,
             udp_client,
+            udp_listeners,
+            tcp_dial,
             accel,
             telemetry,
         })
@@ -543,6 +551,10 @@ pub struct Engine {
     groups: Vec<Box<dyn Group>>,
     pool: Arc<Pool>,
     udp_client: Option<usize>,
+    /// Indices into `groups` of the UDP listeners.
+    udp_listeners: Vec<usize>,
+    /// Index into `groups` of the group `dial` uses.
+    tcp_dial: Option<usize>,
     accel: Vec<AccelStatus>,
     telemetry: Arc<Telemetry>,
 }
@@ -690,6 +702,37 @@ impl Engine {
         }
     }
 
+    /// Opens a UDP "connection" to `peer` on the socket of this engine's UDP listener bound at
+    /// `local` (as [`local_addrs`](Self::local_addrs) reports it): datagrams leave from the
+    /// listener's port, which is what protocols that share one port for a peer-to-peer node
+    /// need (a DHT node, uTP, ICE). `acceptor.on_open` runs on an I/O thread, `on_data` gets the
+    /// peer's datagrams, and the connection ends like the listener's own peers (idle timeout,
+    /// close). Fails through `on_error` when there is no such UDP listener, or the peer already
+    /// has a connection on it (`AlreadyExists`: its datagrams go to that one). On Linux, where
+    /// a listener's threads share the port, the peer's answers may arrive on another thread,
+    /// which opens a peer through the listener's own acceptor. The engine must have been
+    /// [`start`](Self::start)ed.
+    pub fn dial_udp_from<A: Acceptor>(
+        &self,
+        local: SocketAddr,
+        peer: SocketAddr,
+        acceptor: A,
+        on_error: impl FnOnce(io::Error) + Send + 'static,
+    ) {
+        let g = self
+            .udp_listeners
+            .iter()
+            .filter_map(|&i| self.groups.get(i))
+            .find(|g| g.local_addr() == local);
+        match g {
+            Some(g) => g.open_udp_peer(peer, Arc::new(acceptor), Box::new(on_error)),
+            None => on_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no UDP listener at that address",
+            )),
+        }
+    }
+
     /// Connects to `addr` without blocking. When established, `acceptor.on_open` runs on an I/O
     /// thread exactly as for an accepted connection; on failure `on_error` is called instead.
     /// The engine must have been [`start`](Self::start)ed.
@@ -699,8 +742,8 @@ impl Engine {
         acceptor: A,
         on_error: impl FnOnce(io::Error) + Send + 'static,
     ) {
-        match self.groups.last() {
-            // The last group is the client group when `client_threads` was set, else a listener's.
+        match self.tcp_dial.and_then(|i| self.groups.get(i)) {
+            // The client group when `client_threads` was set, else the last TCP listener's.
             Some(g) => g.dial(addr, Arc::new(acceptor), Box::new(on_error)),
             None => on_error(io::Error::new(
                 io::ErrorKind::InvalidInput,

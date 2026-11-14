@@ -1,0 +1,1454 @@
+pub mod flash_bittorrent
+pub mod flash_bittorrent::bencode
+pub enum flash_bittorrent::bencode::Value
+pub flash_bittorrent::bencode::Value::Bytes(alloc::vec::Vec<u8>)
+pub flash_bittorrent::bencode::Value::Dict(alloc::collections::btree::map::BTreeMap<alloc::vec::Vec<u8>, flash_bittorrent::bencode::Value>)
+pub flash_bittorrent::bencode::Value::Int(i64)
+pub flash_bittorrent::bencode::Value::List(alloc::vec::Vec<flash_bittorrent::bencode::Value>)
+impl flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::as_bytes(&self) -> core::option::Option<&[u8]>
+pub fn flash_bittorrent::bencode::Value::as_dict(&self) -> core::option::Option<&alloc::collections::btree::map::BTreeMap<alloc::vec::Vec<u8>, flash_bittorrent::bencode::Value>>
+pub fn flash_bittorrent::bencode::Value::as_int(&self) -> core::option::Option<i64>
+pub fn flash_bittorrent::bencode::Value::as_list(&self) -> core::option::Option<&[flash_bittorrent::bencode::Value]>
+pub fn flash_bittorrent::bencode::Value::as_str(&self) -> core::option::Option<&str>
+pub fn flash_bittorrent::bencode::Value::bytes(impl core::convert::AsRef<[u8]>) -> flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::bytes_at(&self, &str) -> core::option::Option<&[u8]>
+pub fn flash_bittorrent::bencode::Value::dict() -> flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::encode_to(&self, &mut alloc::vec::Vec<u8>)
+pub fn flash_bittorrent::bencode::Value::get(&self, &str) -> core::option::Option<&flash_bittorrent::bencode::Value>
+pub fn flash_bittorrent::bencode::Value::insert(&mut self, &str, impl core::convert::Into<flash_bittorrent::bencode::Value>)
+pub fn flash_bittorrent::bencode::Value::int(&self, &str) -> core::option::Option<i64>
+pub fn flash_bittorrent::bencode::Value::str_at(&self, &str) -> core::option::Option<&str>
+pub fn flash_bittorrent::bencode::Value::with(self, &str, impl core::convert::Into<flash_bittorrent::bencode::Value>) -> flash_bittorrent::bencode::Value
+impl core::clone::Clone for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::bencode::Value
+impl core::cmp::PartialEq for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::eq(&self, &Self) -> bool
+impl core::convert::From<&[u8]> for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::from(&[u8]) -> flash_bittorrent::bencode::Value
+impl core::convert::From<&str> for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::from(&str) -> flash_bittorrent::bencode::Value
+impl core::convert::From<alloc::string::String> for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::from(alloc::string::String) -> flash_bittorrent::bencode::Value
+impl core::convert::From<alloc::vec::Vec<flash_bittorrent::bencode::Value>> for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::from(alloc::vec::Vec<flash_bittorrent::bencode::Value>) -> flash_bittorrent::bencode::Value
+impl core::convert::From<alloc::vec::Vec<u8>> for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::from(alloc::vec::Vec<u8>) -> flash_bittorrent::bencode::Value
+impl core::convert::From<i64> for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::from(i64) -> flash_bittorrent::bencode::Value
+impl core::fmt::Debug for flash_bittorrent::bencode::Value
+pub fn flash_bittorrent::bencode::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::bencode::Value
+impl core::marker::Send for flash_bittorrent::bencode::Value
+impl core::marker::Sync for flash_bittorrent::bencode::Value
+impl core::marker::Unpin for flash_bittorrent::bencode::Value
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::bencode::Value
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::bencode::Value
+pub struct flash_bittorrent::bencode::Error
+pub flash_bittorrent::bencode::Error::offset: usize
+pub flash_bittorrent::bencode::Error::reason: &'static str
+impl core::clone::Clone for flash_bittorrent::bencode::Error
+pub fn flash_bittorrent::bencode::Error::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::bencode::Error
+impl core::cmp::PartialEq for flash_bittorrent::bencode::Error
+pub fn flash_bittorrent::bencode::Error::eq(&self, &Self) -> bool
+impl core::convert::From<flash_bittorrent::bencode::Error> for flash_bittorrent::metainfo::MetaError
+pub fn flash_bittorrent::metainfo::MetaError::from(flash_bittorrent::bencode::Error) -> Self
+impl core::error::Error for flash_bittorrent::bencode::Error
+impl core::fmt::Debug for flash_bittorrent::bencode::Error
+pub fn flash_bittorrent::bencode::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::bencode::Error
+pub fn flash_bittorrent::bencode::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::bencode::Error
+impl core::marker::Send for flash_bittorrent::bencode::Error
+impl core::marker::Sync for flash_bittorrent::bencode::Error
+impl core::marker::Unpin for flash_bittorrent::bencode::Error
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::bencode::Error
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::bencode::Error
+pub const flash_bittorrent::bencode::MAX_DEPTH: usize
+pub fn flash_bittorrent::bencode::decode(&[u8]) -> core::result::Result<flash_bittorrent::bencode::Value, flash_bittorrent::bencode::Error>
+pub fn flash_bittorrent::bencode::decode_prefix(&[u8]) -> core::result::Result<(flash_bittorrent::bencode::Value, usize), flash_bittorrent::bencode::Error>
+pub fn flash_bittorrent::bencode::encode(&flash_bittorrent::bencode::Value) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::bencode::raw_value(&[u8], &[u8]) -> core::result::Result<core::option::Option<core::ops::range::Range<usize>>, flash_bittorrent::bencode::Error>
+pub fn flash_bittorrent::bencode::skip(&[u8], usize) -> core::result::Result<usize, flash_bittorrent::bencode::Error>
+pub mod flash_bittorrent::client
+pub mod flash_bittorrent::client::storage
+pub struct flash_bittorrent::client::storage::FileStorage
+impl flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::new(impl core::convert::AsRef<std::path::Path>, &flash_bittorrent::metainfo::Info) -> flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::path(&self, usize) -> &std::path::Path
+impl core::fmt::Debug for flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::marker::Send for flash_bittorrent::client::storage::FileStorage
+impl core::marker::Sync for flash_bittorrent::client::storage::FileStorage
+impl core::marker::Unpin for flash_bittorrent::client::storage::FileStorage
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::storage::FileStorage
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::storage::FileStorage
+pub struct flash_bittorrent::client::storage::MemoryStorage
+impl flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::new(u64) -> flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::snapshot(&self) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::client::storage::MemoryStorage::with_data(alloc::vec::Vec<u8>) -> flash_bittorrent::client::storage::MemoryStorage
+impl core::fmt::Debug for flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::marker::Send for flash_bittorrent::client::storage::MemoryStorage
+impl core::marker::Sync for flash_bittorrent::client::storage::MemoryStorage
+impl core::marker::Unpin for flash_bittorrent::client::storage::MemoryStorage
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::storage::MemoryStorage
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::storage::MemoryStorage
+pub trait flash_bittorrent::client::storage::Storage: core::marker::Send + core::marker::Sync + 'static
+pub fn flash_bittorrent::client::storage::Storage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::Storage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::Storage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+#[non_exhaustive] pub enum flash_bittorrent::client::AddError
+pub flash_bittorrent::client::AddError::Closed
+pub flash_bittorrent::client::AddError::Duplicate(flash_bittorrent::metainfo::InfoHash)
+pub flash_bittorrent::client::AddError::Magnet(flash_bittorrent::magnet::MagnetError)
+impl core::error::Error for flash_bittorrent::client::AddError
+impl core::fmt::Debug for flash_bittorrent::client::AddError
+pub fn flash_bittorrent::client::AddError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::client::AddError
+pub fn flash_bittorrent::client::AddError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::client::AddError
+impl core::marker::Sync for flash_bittorrent::client::AddError
+impl core::marker::Unpin for flash_bittorrent::client::AddError
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::AddError
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::AddError
+#[non_exhaustive] pub enum flash_bittorrent::client::TorrentEvent
+pub flash_bittorrent::client::TorrentEvent::Checked
+pub flash_bittorrent::client::TorrentEvent::Checked::pieces: usize
+pub flash_bittorrent::client::TorrentEvent::Completed
+pub flash_bittorrent::client::TorrentEvent::Error(alloc::string::String)
+pub flash_bittorrent::client::TorrentEvent::HashFailed(u32)
+pub flash_bittorrent::client::TorrentEvent::MetadataReceived
+pub flash_bittorrent::client::TorrentEvent::PeerConnected(core::net::socket_addr::SocketAddr)
+pub flash_bittorrent::client::TorrentEvent::PeerDisconnected(core::net::socket_addr::SocketAddr)
+pub flash_bittorrent::client::TorrentEvent::PieceVerified(u32)
+pub flash_bittorrent::client::TorrentEvent::StateChanged(flash_bittorrent::client::TorrentStatus)
+pub flash_bittorrent::client::TorrentEvent::TrackerError
+pub flash_bittorrent::client::TorrentEvent::TrackerError::error: alloc::string::String
+pub flash_bittorrent::client::TorrentEvent::TrackerError::url: alloc::string::String
+impl core::clone::Clone for flash_bittorrent::client::TorrentEvent
+pub fn flash_bittorrent::client::TorrentEvent::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::client::TorrentEvent
+impl core::cmp::PartialEq for flash_bittorrent::client::TorrentEvent
+pub fn flash_bittorrent::client::TorrentEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::client::TorrentEvent
+pub fn flash_bittorrent::client::TorrentEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::client::TorrentEvent
+impl core::marker::Send for flash_bittorrent::client::TorrentEvent
+impl core::marker::Sync for flash_bittorrent::client::TorrentEvent
+impl core::marker::Unpin for flash_bittorrent::client::TorrentEvent
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::TorrentEvent
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::TorrentEvent
+#[non_exhaustive] pub enum flash_bittorrent::client::TorrentStatus
+pub flash_bittorrent::client::TorrentStatus::Checking
+pub flash_bittorrent::client::TorrentStatus::Downloading
+pub flash_bittorrent::client::TorrentStatus::Error
+pub flash_bittorrent::client::TorrentStatus::FetchingMetadata
+pub flash_bittorrent::client::TorrentStatus::Paused
+pub flash_bittorrent::client::TorrentStatus::Seeding
+impl core::clone::Clone for flash_bittorrent::client::TorrentStatus
+pub fn flash_bittorrent::client::TorrentStatus::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::client::TorrentStatus
+impl core::cmp::PartialEq for flash_bittorrent::client::TorrentStatus
+pub fn flash_bittorrent::client::TorrentStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::client::TorrentStatus
+pub fn flash_bittorrent::client::TorrentStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_bittorrent::client::TorrentStatus
+pub fn flash_bittorrent::client::TorrentStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_bittorrent::client::TorrentStatus
+impl core::marker::StructuralPartialEq for flash_bittorrent::client::TorrentStatus
+impl core::marker::Send for flash_bittorrent::client::TorrentStatus
+impl core::marker::Sync for flash_bittorrent::client::TorrentStatus
+impl core::marker::Unpin for flash_bittorrent::client::TorrentStatus
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::TorrentStatus
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::TorrentStatus
+#[non_exhaustive] pub struct flash_bittorrent::client::AddOptions
+pub flash_bittorrent::client::AddOptions::paused: bool
+pub flash_bittorrent::client::AddOptions::peers: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub flash_bittorrent::client::AddOptions::seed: bool
+pub flash_bittorrent::client::AddOptions::storage: core::option::Option<alloc::rcs::arc::Arc<dyn flash_bittorrent::client::storage::Storage>>
+pub flash_bittorrent::client::AddOptions::trackers: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for flash_bittorrent::client::AddOptions
+pub fn flash_bittorrent::client::AddOptions::clone(&self) -> Self
+impl core::default::Default for flash_bittorrent::client::AddOptions
+pub fn flash_bittorrent::client::AddOptions::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::client::AddOptions
+pub fn flash_bittorrent::client::AddOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::client::AddOptions
+impl core::marker::Sync for flash_bittorrent::client::AddOptions
+impl core::marker::Unpin for flash_bittorrent::client::AddOptions
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::AddOptions
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::AddOptions
+pub struct flash_bittorrent::client::Client
+impl flash_bittorrent::client::Client
+pub fn flash_bittorrent::client::Client::add_magnet(&self, &str, flash_bittorrent::client::AddOptions) -> core::result::Result<flash_bittorrent::client::Torrent, flash_bittorrent::client::AddError>
+pub fn flash_bittorrent::client::Client::add_torrent(&self, flash_bittorrent::metainfo::MetaInfo, flash_bittorrent::client::AddOptions) -> core::result::Result<flash_bittorrent::client::Torrent, flash_bittorrent::client::AddError>
+pub fn flash_bittorrent::client::Client::close(&self)
+pub fn flash_bittorrent::client::Client::dht_bootstrap(&self, &[core::net::socket_addr::SocketAddr])
+pub fn flash_bittorrent::client::Client::dht_nodes(&self) -> usize
+pub fn flash_bittorrent::client::Client::engine(&self) -> &alloc::rcs::arc::Arc<flash::Engine>
+pub fn flash_bittorrent::client::Client::listen_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn flash_bittorrent::client::Client::new(flash_bittorrent::client::ClientConfig) -> core::io::error::Result<flash_bittorrent::client::Client>
+pub fn flash_bittorrent::client::Client::peer_id(&self) -> flash_bittorrent::wire::PeerId
+pub fn flash_bittorrent::client::Client::remove(&self, &flash_bittorrent::metainfo::InfoHash) -> core::option::Option<flash_bittorrent::client::Torrent>
+pub fn flash_bittorrent::client::Client::torrent(&self, &flash_bittorrent::metainfo::InfoHash) -> core::option::Option<flash_bittorrent::client::Torrent>
+pub fn flash_bittorrent::client::Client::torrents(&self) -> alloc::vec::Vec<flash_bittorrent::client::Torrent>
+impl core::clone::Clone for flash_bittorrent::client::Client
+pub fn flash_bittorrent::client::Client::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::client::Client
+pub fn flash_bittorrent::client::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::client::Client
+impl core::marker::Sync for flash_bittorrent::client::Client
+impl core::marker::Unpin for flash_bittorrent::client::Client
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::Client
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::Client
+#[non_exhaustive] pub struct flash_bittorrent::client::ClientConfig
+pub flash_bittorrent::client::ClientConfig::data_dir: std::path::PathBuf
+pub flash_bittorrent::client::ClientConfig::dht: bool
+pub flash_bittorrent::client::ClientConfig::dht_bootstrap: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub flash_bittorrent::client::ClientConfig::disk_threads: usize
+pub flash_bittorrent::client::ClientConfig::encryption: flash_bittorrent::mse::Policy
+pub flash_bittorrent::client::ClientConfig::listen: core::net::socket_addr::SocketAddr
+pub flash_bittorrent::client::ClientConfig::max_peers_per_torrent: usize
+pub flash_bittorrent::client::ClientConfig::on_event: core::option::Option<flash_bittorrent::client::EventFn>
+pub flash_bittorrent::client::ClientConfig::peer_id: core::option::Option<flash_bittorrent::wire::PeerId>
+pub flash_bittorrent::client::ClientConfig::pex: bool
+pub flash_bittorrent::client::ClientConfig::threads: usize
+pub flash_bittorrent::client::ClientConfig::tracker_timeout: core::time::Duration
+pub flash_bittorrent::client::ClientConfig::trackers: bool
+pub flash_bittorrent::client::ClientConfig::upload_slots: usize
+pub flash_bittorrent::client::ClientConfig::utp: bool
+impl core::clone::Clone for flash_bittorrent::client::ClientConfig
+pub fn flash_bittorrent::client::ClientConfig::clone(&self) -> Self
+impl core::default::Default for flash_bittorrent::client::ClientConfig
+pub fn flash_bittorrent::client::ClientConfig::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::client::ClientConfig
+pub fn flash_bittorrent::client::ClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::client::ClientConfig
+impl core::marker::Sync for flash_bittorrent::client::ClientConfig
+impl core::marker::Unpin for flash_bittorrent::client::ClientConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::ClientConfig
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::ClientConfig
+pub struct flash_bittorrent::client::FileStorage
+impl flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::new(impl core::convert::AsRef<std::path::Path>, &flash_bittorrent::metainfo::Info) -> flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::path(&self, usize) -> &std::path::Path
+impl core::fmt::Debug for flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::marker::Send for flash_bittorrent::client::storage::FileStorage
+impl core::marker::Sync for flash_bittorrent::client::storage::FileStorage
+impl core::marker::Unpin for flash_bittorrent::client::storage::FileStorage
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::storage::FileStorage
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::storage::FileStorage
+pub struct flash_bittorrent::client::MemoryStorage
+impl flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::new(u64) -> flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::snapshot(&self) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::client::storage::MemoryStorage::with_data(alloc::vec::Vec<u8>) -> flash_bittorrent::client::storage::MemoryStorage
+impl core::fmt::Debug for flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl core::marker::Send for flash_bittorrent::client::storage::MemoryStorage
+impl core::marker::Sync for flash_bittorrent::client::storage::MemoryStorage
+impl core::marker::Unpin for flash_bittorrent::client::storage::MemoryStorage
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::storage::MemoryStorage
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::storage::MemoryStorage
+#[non_exhaustive] pub struct flash_bittorrent::client::PeerInfo
+pub flash_bittorrent::client::PeerInfo::addr: core::net::socket_addr::SocketAddr
+pub flash_bittorrent::client::PeerInfo::am_choking: bool
+pub flash_bittorrent::client::PeerInfo::client: core::option::Option<alloc::string::String>
+pub flash_bittorrent::client::PeerInfo::downloaded: u64
+pub flash_bittorrent::client::PeerInfo::encrypted: bool
+pub flash_bittorrent::client::PeerInfo::id: flash_bittorrent::wire::PeerId
+pub flash_bittorrent::client::PeerInfo::outgoing: bool
+pub flash_bittorrent::client::PeerInfo::peer_choking: bool
+pub flash_bittorrent::client::PeerInfo::pieces: usize
+pub flash_bittorrent::client::PeerInfo::uploaded: u64
+pub flash_bittorrent::client::PeerInfo::utp: bool
+impl core::clone::Clone for flash_bittorrent::client::PeerInfo
+pub fn flash_bittorrent::client::PeerInfo::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::client::PeerInfo
+impl core::cmp::PartialEq for flash_bittorrent::client::PeerInfo
+pub fn flash_bittorrent::client::PeerInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::client::PeerInfo
+pub fn flash_bittorrent::client::PeerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::client::PeerInfo
+impl core::marker::Send for flash_bittorrent::client::PeerInfo
+impl core::marker::Sync for flash_bittorrent::client::PeerInfo
+impl core::marker::Unpin for flash_bittorrent::client::PeerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::PeerInfo
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::PeerInfo
+pub struct flash_bittorrent::client::Torrent
+impl flash_bittorrent::client::Torrent
+pub fn flash_bittorrent::client::Torrent::add_peers(&self, &[core::net::socket_addr::SocketAddr])
+pub fn flash_bittorrent::client::Torrent::info(&self) -> core::option::Option<flash_bittorrent::metainfo::Info>
+pub fn flash_bittorrent::client::Torrent::info_hash(&self) -> flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::client::Torrent::is_complete(&self) -> bool
+pub fn flash_bittorrent::client::Torrent::metainfo(&self) -> core::option::Option<flash_bittorrent::metainfo::MetaInfo>
+pub fn flash_bittorrent::client::Torrent::name(&self) -> core::option::Option<alloc::string::String>
+pub fn flash_bittorrent::client::Torrent::pause(&self)
+pub fn flash_bittorrent::client::Torrent::peers(&self) -> alloc::vec::Vec<flash_bittorrent::client::PeerInfo>
+pub fn flash_bittorrent::client::Torrent::resume(&self)
+pub fn flash_bittorrent::client::Torrent::stats(&self) -> flash_bittorrent::client::TorrentStats
+pub fn flash_bittorrent::client::Torrent::wait_complete(&self, core::time::Duration) -> bool
+pub fn flash_bittorrent::client::Torrent::wait_metadata(&self, core::time::Duration) -> bool
+impl core::clone::Clone for flash_bittorrent::client::Torrent
+pub fn flash_bittorrent::client::Torrent::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::client::Torrent
+pub fn flash_bittorrent::client::Torrent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::client::Torrent
+impl core::marker::Sync for flash_bittorrent::client::Torrent
+impl core::marker::Unpin for flash_bittorrent::client::Torrent
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::Torrent
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::Torrent
+#[non_exhaustive] pub struct flash_bittorrent::client::TorrentStats
+pub flash_bittorrent::client::TorrentStats::bytes_left: u64
+pub flash_bittorrent::client::TorrentStats::downloaded: u64
+pub flash_bittorrent::client::TorrentStats::hash_fails: u64
+pub flash_bittorrent::client::TorrentStats::known_peers: usize
+pub flash_bittorrent::client::TorrentStats::peers: usize
+pub flash_bittorrent::client::TorrentStats::pieces_have: usize
+pub flash_bittorrent::client::TorrentStats::pieces_total: usize
+pub flash_bittorrent::client::TorrentStats::seeders: usize
+pub flash_bittorrent::client::TorrentStats::status: flash_bittorrent::client::TorrentStatus
+pub flash_bittorrent::client::TorrentStats::total_size: u64
+pub flash_bittorrent::client::TorrentStats::uploaded: u64
+impl core::clone::Clone for flash_bittorrent::client::TorrentStats
+pub fn flash_bittorrent::client::TorrentStats::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::client::TorrentStats
+impl core::cmp::PartialEq for flash_bittorrent::client::TorrentStats
+pub fn flash_bittorrent::client::TorrentStats::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::client::TorrentStats
+pub fn flash_bittorrent::client::TorrentStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::client::TorrentStats
+impl core::marker::Send for flash_bittorrent::client::TorrentStats
+impl core::marker::Sync for flash_bittorrent::client::TorrentStats
+impl core::marker::Unpin for flash_bittorrent::client::TorrentStats
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::client::TorrentStats
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::client::TorrentStats
+pub trait flash_bittorrent::client::Storage: core::marker::Send + core::marker::Sync + 'static
+pub fn flash_bittorrent::client::Storage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::Storage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::Storage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::FileStorage
+pub fn flash_bittorrent::client::storage::FileStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::FileStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::FileStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+impl flash_bittorrent::client::storage::Storage for flash_bittorrent::client::storage::MemoryStorage
+pub fn flash_bittorrent::client::storage::MemoryStorage::may_have_data(&self) -> bool
+pub fn flash_bittorrent::client::storage::MemoryStorage::read(&self, u64, usize) -> core::io::error::Result<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::client::storage::MemoryStorage::write(&self, u64, &[u8]) -> core::io::error::Result<()>
+pub type flash_bittorrent::client::EventFn = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(flash_bittorrent::metainfo::InfoHash, &flash_bittorrent::client::TorrentEvent) + core::marker::Send + core::marker::Sync)>
+pub mod flash_bittorrent::dht
+#[non_exhaustive] pub enum flash_bittorrent::dht::DhtEvent
+pub flash_bittorrent::dht::DhtEvent::Announced
+pub flash_bittorrent::dht::DhtEvent::Announced::info_hash: flash_bittorrent::metainfo::InfoHash
+pub flash_bittorrent::dht::DhtEvent::Announced::peer: core::net::socket_addr::SocketAddr
+pub flash_bittorrent::dht::DhtEvent::LookupDone
+pub flash_bittorrent::dht::DhtEvent::LookupDone::announced: usize
+pub flash_bittorrent::dht::DhtEvent::LookupDone::id: u64
+pub flash_bittorrent::dht::DhtEvent::LookupDone::peers: usize
+pub flash_bittorrent::dht::DhtEvent::Peers
+pub flash_bittorrent::dht::DhtEvent::Peers::info_hash: flash_bittorrent::metainfo::InfoHash
+pub flash_bittorrent::dht::DhtEvent::Peers::peers: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+impl core::clone::Clone for flash_bittorrent::dht::DhtEvent
+pub fn flash_bittorrent::dht::DhtEvent::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::dht::DhtEvent
+impl core::cmp::PartialEq for flash_bittorrent::dht::DhtEvent
+pub fn flash_bittorrent::dht::DhtEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::dht::DhtEvent
+pub fn flash_bittorrent::dht::DhtEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::dht::DhtEvent
+impl core::marker::Send for flash_bittorrent::dht::DhtEvent
+impl core::marker::Sync for flash_bittorrent::dht::DhtEvent
+impl core::marker::Unpin for flash_bittorrent::dht::DhtEvent
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::dht::DhtEvent
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::dht::DhtEvent
+#[non_exhaustive] pub enum flash_bittorrent::dht::Msg
+pub flash_bittorrent::dht::Msg::Error
+pub flash_bittorrent::dht::Msg::Error::code: i64
+pub flash_bittorrent::dht::Msg::Error::msg: alloc::string::String
+pub flash_bittorrent::dht::Msg::Error::t: alloc::vec::Vec<u8>
+pub flash_bittorrent::dht::Msg::Query
+pub flash_bittorrent::dht::Msg::Query::a: flash_bittorrent::bencode::Value
+pub flash_bittorrent::dht::Msg::Query::q: alloc::string::String
+pub flash_bittorrent::dht::Msg::Query::ro: bool
+pub flash_bittorrent::dht::Msg::Query::t: alloc::vec::Vec<u8>
+pub flash_bittorrent::dht::Msg::Response
+pub flash_bittorrent::dht::Msg::Response::r: flash_bittorrent::bencode::Value
+pub flash_bittorrent::dht::Msg::Response::t: alloc::vec::Vec<u8>
+impl flash_bittorrent::dht::Msg
+pub fn flash_bittorrent::dht::Msg::encode(&self) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::dht::Msg::parse(&[u8]) -> core::option::Option<flash_bittorrent::dht::Msg>
+impl core::clone::Clone for flash_bittorrent::dht::Msg
+pub fn flash_bittorrent::dht::Msg::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::dht::Msg
+impl core::cmp::PartialEq for flash_bittorrent::dht::Msg
+pub fn flash_bittorrent::dht::Msg::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::dht::Msg
+pub fn flash_bittorrent::dht::Msg::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::dht::Msg
+impl core::marker::Send for flash_bittorrent::dht::Msg
+impl core::marker::Sync for flash_bittorrent::dht::Msg
+impl core::marker::Unpin for flash_bittorrent::dht::Msg
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::dht::Msg
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::dht::Msg
+pub struct flash_bittorrent::dht::Node
+impl flash_bittorrent::dht::Node
+pub fn flash_bittorrent::dht::Node::bootstrap(&mut self, &[core::net::socket_addr::SocketAddr]) -> u64
+pub fn flash_bittorrent::dht::Node::closest(&self, &[u8; 20], usize) -> alloc::vec::Vec<flash_bittorrent::dht::NodeInfo>
+pub fn flash_bittorrent::dht::Node::get_peers(&mut self, flash_bittorrent::metainfo::InfoHash, core::option::Option<u16>) -> u64
+pub fn flash_bittorrent::dht::Node::handle(&mut self, core::net::socket_addr::SocketAddr, &[u8]) -> bool
+pub fn flash_bittorrent::dht::Node::id(&self) -> flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::Node::new(flash_bittorrent::dht::NodeId) -> flash_bittorrent::dht::Node
+pub fn flash_bittorrent::dht::Node::ping(&mut self, core::net::socket_addr::SocketAddr)
+pub fn flash_bittorrent::dht::Node::set_read_only(&mut self, bool)
+pub fn flash_bittorrent::dht::Node::stored_peers(&self, &flash_bittorrent::metainfo::InfoHash) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub fn flash_bittorrent::dht::Node::table_len(&self) -> usize
+pub fn flash_bittorrent::dht::Node::take_events(&mut self) -> alloc::vec::Vec<flash_bittorrent::dht::DhtEvent>
+pub fn flash_bittorrent::dht::Node::take_outgoing(&mut self) -> alloc::vec::Vec<(core::net::socket_addr::SocketAddr, alloc::vec::Vec<u8>)>
+pub fn flash_bittorrent::dht::Node::tick(&mut self)
+impl core::fmt::Debug for flash_bittorrent::dht::Node
+pub fn flash_bittorrent::dht::Node::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::dht::Node
+impl core::marker::Sync for flash_bittorrent::dht::Node
+impl core::marker::Unpin for flash_bittorrent::dht::Node
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::dht::Node
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::dht::Node
+pub struct flash_bittorrent::dht::NodeId(pub [u8; 20])
+impl flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::common_prefix(&self, &flash_bittorrent::dht::NodeId) -> usize
+pub fn flash_bittorrent::dht::NodeId::distance(&self, &[u8; 20]) -> [u8; 20]
+pub fn flash_bittorrent::dht::NodeId::random() -> flash_bittorrent::dht::NodeId
+impl core::clone::Clone for flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::dht::NodeId
+impl core::cmp::Ord for flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_bittorrent::dht::NodeId
+pub fn flash_bittorrent::dht::NodeId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_bittorrent::dht::NodeId
+impl core::marker::StructuralPartialEq for flash_bittorrent::dht::NodeId
+impl core::marker::Send for flash_bittorrent::dht::NodeId
+impl core::marker::Sync for flash_bittorrent::dht::NodeId
+impl core::marker::Unpin for flash_bittorrent::dht::NodeId
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::dht::NodeId
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::dht::NodeId
+#[non_exhaustive] pub struct flash_bittorrent::dht::NodeInfo
+pub flash_bittorrent::dht::NodeInfo::addr: core::net::socket_addr::SocketAddr
+pub flash_bittorrent::dht::NodeInfo::id: flash_bittorrent::dht::NodeId
+impl core::clone::Clone for flash_bittorrent::dht::NodeInfo
+pub fn flash_bittorrent::dht::NodeInfo::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::dht::NodeInfo
+impl core::cmp::PartialEq for flash_bittorrent::dht::NodeInfo
+pub fn flash_bittorrent::dht::NodeInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::dht::NodeInfo
+pub fn flash_bittorrent::dht::NodeInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_bittorrent::dht::NodeInfo
+pub fn flash_bittorrent::dht::NodeInfo::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_bittorrent::dht::NodeInfo
+impl core::marker::StructuralPartialEq for flash_bittorrent::dht::NodeInfo
+impl core::marker::Send for flash_bittorrent::dht::NodeInfo
+impl core::marker::Sync for flash_bittorrent::dht::NodeInfo
+impl core::marker::Unpin for flash_bittorrent::dht::NodeInfo
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::dht::NodeInfo
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::dht::NodeInfo
+pub const flash_bittorrent::dht::ALPHA: usize
+pub const flash_bittorrent::dht::K: usize
+pub fn flash_bittorrent::dht::compact_nodes(&[flash_bittorrent::dht::NodeInfo]) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::dht::parse_compact_nodes(&[u8]) -> alloc::vec::Vec<flash_bittorrent::dht::NodeInfo>
+pub mod flash_bittorrent::magnet
+#[non_exhaustive] pub struct flash_bittorrent::magnet::Magnet
+pub flash_bittorrent::magnet::Magnet::info_hash: flash_bittorrent::metainfo::InfoHash
+pub flash_bittorrent::magnet::Magnet::length: core::option::Option<u64>
+pub flash_bittorrent::magnet::Magnet::name: core::option::Option<alloc::string::String>
+pub flash_bittorrent::magnet::Magnet::peers: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub flash_bittorrent::magnet::Magnet::trackers: alloc::vec::Vec<alloc::string::String>
+pub flash_bittorrent::magnet::Magnet::web_seeds: alloc::vec::Vec<alloc::string::String>
+impl flash_bittorrent::magnet::Magnet
+pub fn flash_bittorrent::magnet::Magnet::new(flash_bittorrent::metainfo::InfoHash) -> flash_bittorrent::magnet::Magnet
+pub fn flash_bittorrent::magnet::Magnet::parse(&str) -> core::result::Result<flash_bittorrent::magnet::Magnet, flash_bittorrent::magnet::MagnetError>
+impl core::clone::Clone for flash_bittorrent::magnet::Magnet
+pub fn flash_bittorrent::magnet::Magnet::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::magnet::Magnet
+impl core::cmp::PartialEq for flash_bittorrent::magnet::Magnet
+pub fn flash_bittorrent::magnet::Magnet::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::magnet::Magnet
+pub fn flash_bittorrent::magnet::Magnet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::magnet::Magnet
+pub fn flash_bittorrent::magnet::Magnet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::magnet::Magnet
+impl core::marker::Send for flash_bittorrent::magnet::Magnet
+impl core::marker::Sync for flash_bittorrent::magnet::Magnet
+impl core::marker::Unpin for flash_bittorrent::magnet::Magnet
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::magnet::Magnet
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::magnet::Magnet
+pub struct flash_bittorrent::magnet::MagnetError(pub &'static str)
+impl core::clone::Clone for flash_bittorrent::magnet::MagnetError
+pub fn flash_bittorrent::magnet::MagnetError::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::magnet::MagnetError
+impl core::cmp::PartialEq for flash_bittorrent::magnet::MagnetError
+pub fn flash_bittorrent::magnet::MagnetError::eq(&self, &Self) -> bool
+impl core::error::Error for flash_bittorrent::magnet::MagnetError
+impl core::fmt::Debug for flash_bittorrent::magnet::MagnetError
+pub fn flash_bittorrent::magnet::MagnetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::magnet::MagnetError
+pub fn flash_bittorrent::magnet::MagnetError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::magnet::MagnetError
+impl core::marker::Send for flash_bittorrent::magnet::MagnetError
+impl core::marker::Sync for flash_bittorrent::magnet::MagnetError
+impl core::marker::Unpin for flash_bittorrent::magnet::MagnetError
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::magnet::MagnetError
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::magnet::MagnetError
+pub mod flash_bittorrent::metainfo
+#[non_exhaustive] pub enum flash_bittorrent::metainfo::MetaError
+pub flash_bittorrent::metainfo::MetaError::Bencode(flash_bittorrent::bencode::Error)
+pub flash_bittorrent::metainfo::MetaError::Invalid(&'static str)
+pub flash_bittorrent::metainfo::MetaError::Io(core::io::error::Error)
+pub flash_bittorrent::metainfo::MetaError::UnsafePath(alloc::string::String)
+pub flash_bittorrent::metainfo::MetaError::Unsupported(&'static str)
+impl core::convert::From<core::io::error::Error> for flash_bittorrent::metainfo::MetaError
+pub fn flash_bittorrent::metainfo::MetaError::from(core::io::error::Error) -> Self
+impl core::convert::From<flash_bittorrent::bencode::Error> for flash_bittorrent::metainfo::MetaError
+pub fn flash_bittorrent::metainfo::MetaError::from(flash_bittorrent::bencode::Error) -> Self
+impl core::error::Error for flash_bittorrent::metainfo::MetaError
+impl core::fmt::Debug for flash_bittorrent::metainfo::MetaError
+pub fn flash_bittorrent::metainfo::MetaError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::metainfo::MetaError
+pub fn flash_bittorrent::metainfo::MetaError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::metainfo::MetaError
+impl core::marker::Sync for flash_bittorrent::metainfo::MetaError
+impl core::marker::Unpin for flash_bittorrent::metainfo::MetaError
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::metainfo::MetaError
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::metainfo::MetaError
+pub struct flash_bittorrent::metainfo::Builder
+impl flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::build_bytes(&self, &[u8]) -> core::result::Result<flash_bittorrent::metainfo::MetaInfo, flash_bittorrent::metainfo::MetaError>
+pub fn flash_bittorrent::metainfo::Builder::build_files(&self, &[(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<u8>)]) -> core::result::Result<flash_bittorrent::metainfo::MetaInfo, flash_bittorrent::metainfo::MetaError>
+pub fn flash_bittorrent::metainfo::Builder::build_path(&self, impl core::convert::AsRef<std::path::Path>) -> core::result::Result<flash_bittorrent::metainfo::MetaInfo, flash_bittorrent::metainfo::MetaError>
+pub fn flash_bittorrent::metainfo::Builder::comment(self, impl core::convert::Into<alloc::string::String>) -> flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::new(impl core::convert::Into<alloc::string::String>) -> flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::node(self, impl core::convert::Into<alloc::string::String>, u16) -> flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::piece_length(self, u32) -> flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::private(self, bool) -> flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::tracker(self, impl core::convert::Into<alloc::string::String>) -> flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::web_seed(self, impl core::convert::Into<alloc::string::String>) -> flash_bittorrent::metainfo::Builder
+impl core::clone::Clone for flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::metainfo::Builder
+pub fn flash_bittorrent::metainfo::Builder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::metainfo::Builder
+impl core::marker::Sync for flash_bittorrent::metainfo::Builder
+impl core::marker::Unpin for flash_bittorrent::metainfo::Builder
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::metainfo::Builder
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::metainfo::Builder
+#[non_exhaustive] pub struct flash_bittorrent::metainfo::FileEntry
+pub flash_bittorrent::metainfo::FileEntry::length: u64
+pub flash_bittorrent::metainfo::FileEntry::offset: u64
+pub flash_bittorrent::metainfo::FileEntry::padding: bool
+pub flash_bittorrent::metainfo::FileEntry::path: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for flash_bittorrent::metainfo::FileEntry
+pub fn flash_bittorrent::metainfo::FileEntry::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::metainfo::FileEntry
+impl core::cmp::PartialEq for flash_bittorrent::metainfo::FileEntry
+pub fn flash_bittorrent::metainfo::FileEntry::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::metainfo::FileEntry
+pub fn flash_bittorrent::metainfo::FileEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::metainfo::FileEntry
+impl core::marker::Send for flash_bittorrent::metainfo::FileEntry
+impl core::marker::Sync for flash_bittorrent::metainfo::FileEntry
+impl core::marker::Unpin for flash_bittorrent::metainfo::FileEntry
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::metainfo::FileEntry
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::metainfo::FileEntry
+#[non_exhaustive] pub struct flash_bittorrent::metainfo::Info
+pub flash_bittorrent::metainfo::Info::files: alloc::vec::Vec<flash_bittorrent::metainfo::FileEntry>
+pub flash_bittorrent::metainfo::Info::name: alloc::string::String
+pub flash_bittorrent::metainfo::Info::piece_length: u32
+pub flash_bittorrent::metainfo::Info::pieces: alloc::vec::Vec<[u8; 20]>
+pub flash_bittorrent::metainfo::Info::private: bool
+pub flash_bittorrent::metainfo::Info::single_file: bool
+pub flash_bittorrent::metainfo::Info::total_length: u64
+impl flash_bittorrent::metainfo::Info
+pub fn flash_bittorrent::metainfo::Info::info_hash(&self) -> flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::Info::num_pieces(&self) -> usize
+pub fn flash_bittorrent::metainfo::Info::parse(&[u8]) -> core::result::Result<flash_bittorrent::metainfo::Info, flash_bittorrent::metainfo::MetaError>
+pub fn flash_bittorrent::metainfo::Info::piece_offset(&self, usize) -> u64
+pub fn flash_bittorrent::metainfo::Info::piece_segments(&self, usize) -> alloc::vec::Vec<flash_bittorrent::metainfo::Segment>
+pub fn flash_bittorrent::metainfo::Info::piece_size(&self, usize) -> u32
+pub fn flash_bittorrent::metainfo::Info::raw(&self) -> &[u8]
+pub fn flash_bittorrent::metainfo::Info::segments(&self, u64, u64) -> alloc::vec::Vec<flash_bittorrent::metainfo::Segment>
+pub fn flash_bittorrent::metainfo::Info::verify_piece(&self, usize, &[u8]) -> bool
+impl core::clone::Clone for flash_bittorrent::metainfo::Info
+pub fn flash_bittorrent::metainfo::Info::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::metainfo::Info
+pub fn flash_bittorrent::metainfo::Info::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::metainfo::Info
+impl core::marker::Sync for flash_bittorrent::metainfo::Info
+impl core::marker::Unpin for flash_bittorrent::metainfo::Info
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::metainfo::Info
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::metainfo::Info
+pub struct flash_bittorrent::metainfo::InfoHash(pub [u8; 20])
+impl flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::from_hex(&str) -> core::option::Option<flash_bittorrent::metainfo::InfoHash>
+pub fn flash_bittorrent::metainfo::InfoHash::of(&[u8]) -> flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::to_hex(&self) -> alloc::string::String
+impl core::clone::Clone for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::metainfo::InfoHash
+impl core::cmp::Ord for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_bittorrent::metainfo::InfoHash
+pub fn flash_bittorrent::metainfo::InfoHash::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_bittorrent::metainfo::InfoHash
+impl core::marker::StructuralPartialEq for flash_bittorrent::metainfo::InfoHash
+impl core::marker::Send for flash_bittorrent::metainfo::InfoHash
+impl core::marker::Sync for flash_bittorrent::metainfo::InfoHash
+impl core::marker::Unpin for flash_bittorrent::metainfo::InfoHash
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::metainfo::InfoHash
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::metainfo::InfoHash
+#[non_exhaustive] pub struct flash_bittorrent::metainfo::MetaInfo
+pub flash_bittorrent::metainfo::MetaInfo::announce: core::option::Option<alloc::string::String>
+pub flash_bittorrent::metainfo::MetaInfo::announce_list: alloc::vec::Vec<alloc::vec::Vec<alloc::string::String>>
+pub flash_bittorrent::metainfo::MetaInfo::comment: core::option::Option<alloc::string::String>
+pub flash_bittorrent::metainfo::MetaInfo::created_by: core::option::Option<alloc::string::String>
+pub flash_bittorrent::metainfo::MetaInfo::creation_date: core::option::Option<i64>
+pub flash_bittorrent::metainfo::MetaInfo::info: flash_bittorrent::metainfo::Info
+pub flash_bittorrent::metainfo::MetaInfo::info_hash: flash_bittorrent::metainfo::InfoHash
+pub flash_bittorrent::metainfo::MetaInfo::nodes: alloc::vec::Vec<(alloc::string::String, u16)>
+pub flash_bittorrent::metainfo::MetaInfo::url_list: alloc::vec::Vec<alloc::string::String>
+impl flash_bittorrent::metainfo::MetaInfo
+pub fn flash_bittorrent::metainfo::MetaInfo::from_info(flash_bittorrent::metainfo::Info) -> flash_bittorrent::metainfo::MetaInfo
+pub fn flash_bittorrent::metainfo::MetaInfo::load(impl core::convert::AsRef<std::path::Path>) -> core::result::Result<flash_bittorrent::metainfo::MetaInfo, flash_bittorrent::metainfo::MetaError>
+pub fn flash_bittorrent::metainfo::MetaInfo::magnet(&self) -> flash_bittorrent::magnet::Magnet
+pub fn flash_bittorrent::metainfo::MetaInfo::parse(&[u8]) -> core::result::Result<flash_bittorrent::metainfo::MetaInfo, flash_bittorrent::metainfo::MetaError>
+pub fn flash_bittorrent::metainfo::MetaInfo::to_bytes(&self) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::metainfo::MetaInfo::trackers(&self) -> alloc::vec::Vec<alloc::vec::Vec<alloc::string::String>>
+impl core::clone::Clone for flash_bittorrent::metainfo::MetaInfo
+pub fn flash_bittorrent::metainfo::MetaInfo::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::metainfo::MetaInfo
+pub fn flash_bittorrent::metainfo::MetaInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::metainfo::MetaInfo
+impl core::marker::Sync for flash_bittorrent::metainfo::MetaInfo
+impl core::marker::Unpin for flash_bittorrent::metainfo::MetaInfo
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::metainfo::MetaInfo
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::metainfo::MetaInfo
+#[non_exhaustive] pub struct flash_bittorrent::metainfo::Segment
+pub flash_bittorrent::metainfo::Segment::file: usize
+pub flash_bittorrent::metainfo::Segment::len: u64
+pub flash_bittorrent::metainfo::Segment::offset: u64
+impl core::clone::Clone for flash_bittorrent::metainfo::Segment
+pub fn flash_bittorrent::metainfo::Segment::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::metainfo::Segment
+impl core::cmp::PartialEq for flash_bittorrent::metainfo::Segment
+pub fn flash_bittorrent::metainfo::Segment::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::metainfo::Segment
+pub fn flash_bittorrent::metainfo::Segment::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_bittorrent::metainfo::Segment
+impl core::marker::StructuralPartialEq for flash_bittorrent::metainfo::Segment
+impl core::marker::Send for flash_bittorrent::metainfo::Segment
+impl core::marker::Sync for flash_bittorrent::metainfo::Segment
+impl core::marker::Unpin for flash_bittorrent::metainfo::Segment
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::metainfo::Segment
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::metainfo::Segment
+pub mod flash_bittorrent::mse
+#[non_exhaustive] pub enum flash_bittorrent::mse::MseError
+pub flash_bittorrent::mse::MseError::Malformed(&'static str)
+pub flash_bittorrent::mse::MseError::NoCommonMethod
+pub flash_bittorrent::mse::MseError::NoSync
+pub flash_bittorrent::mse::MseError::UnknownTorrent
+impl core::clone::Clone for flash_bittorrent::mse::MseError
+pub fn flash_bittorrent::mse::MseError::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::mse::MseError
+impl core::cmp::PartialEq for flash_bittorrent::mse::MseError
+pub fn flash_bittorrent::mse::MseError::eq(&self, &Self) -> bool
+impl core::error::Error for flash_bittorrent::mse::MseError
+impl core::fmt::Debug for flash_bittorrent::mse::MseError
+pub fn flash_bittorrent::mse::MseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::mse::MseError
+pub fn flash_bittorrent::mse::MseError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::mse::MseError
+impl core::marker::Send for flash_bittorrent::mse::MseError
+impl core::marker::Sync for flash_bittorrent::mse::MseError
+impl core::marker::Unpin for flash_bittorrent::mse::MseError
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::mse::MseError
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::mse::MseError
+#[non_exhaustive] pub enum flash_bittorrent::mse::Policy
+pub flash_bittorrent::mse::Policy::Disabled
+pub flash_bittorrent::mse::Policy::Prefer
+pub flash_bittorrent::mse::Policy::Require
+impl core::clone::Clone for flash_bittorrent::mse::Policy
+pub fn flash_bittorrent::mse::Policy::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::mse::Policy
+impl core::cmp::PartialEq for flash_bittorrent::mse::Policy
+pub fn flash_bittorrent::mse::Policy::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::mse::Policy
+pub fn flash_bittorrent::mse::Policy::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::mse::Policy
+pub fn flash_bittorrent::mse::Policy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_bittorrent::mse::Policy
+pub fn flash_bittorrent::mse::Policy::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_bittorrent::mse::Policy
+impl core::marker::StructuralPartialEq for flash_bittorrent::mse::Policy
+impl core::marker::Send for flash_bittorrent::mse::Policy
+impl core::marker::Sync for flash_bittorrent::mse::Policy
+impl core::marker::Unpin for flash_bittorrent::mse::Policy
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::mse::Policy
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::mse::Policy
+#[non_exhaustive] pub struct flash_bittorrent::mse::Established
+pub flash_bittorrent::mse::Established::cipher: core::option::Option<(flash_bittorrent::mse::Rc4, flash_bittorrent::mse::Rc4)>
+pub flash_bittorrent::mse::Established::data: alloc::vec::Vec<u8>
+pub flash_bittorrent::mse::Established::info_hash: flash_bittorrent::metainfo::InfoHash
+impl core::fmt::Debug for flash_bittorrent::mse::Established
+pub fn flash_bittorrent::mse::Established::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::mse::Established
+impl core::marker::Sync for flash_bittorrent::mse::Established
+impl core::marker::Unpin for flash_bittorrent::mse::Established
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::mse::Established
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::mse::Established
+pub struct flash_bittorrent::mse::Initiator
+impl flash_bittorrent::mse::Initiator
+pub fn flash_bittorrent::mse::Initiator::feed(&mut self, &[u8]) -> core::result::Result<flash_bittorrent::mse::Progress, flash_bittorrent::mse::MseError>
+pub fn flash_bittorrent::mse::Initiator::new(flash_bittorrent::metainfo::InfoHash, u32, alloc::vec::Vec<u8>) -> (flash_bittorrent::mse::Initiator, alloc::vec::Vec<u8>)
+impl core::fmt::Debug for flash_bittorrent::mse::Initiator
+pub fn flash_bittorrent::mse::Initiator::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::mse::Initiator
+impl core::marker::Sync for flash_bittorrent::mse::Initiator
+impl core::marker::Unpin for flash_bittorrent::mse::Initiator
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::mse::Initiator
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::mse::Initiator
+#[non_exhaustive] pub struct flash_bittorrent::mse::Progress
+pub flash_bittorrent::mse::Progress::done: core::option::Option<flash_bittorrent::mse::Established>
+pub flash_bittorrent::mse::Progress::send: alloc::vec::Vec<u8>
+impl core::default::Default for flash_bittorrent::mse::Progress
+pub fn flash_bittorrent::mse::Progress::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::mse::Progress
+pub fn flash_bittorrent::mse::Progress::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::mse::Progress
+impl core::marker::Sync for flash_bittorrent::mse::Progress
+impl core::marker::Unpin for flash_bittorrent::mse::Progress
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::mse::Progress
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::mse::Progress
+pub struct flash_bittorrent::mse::Rc4
+impl flash_bittorrent::mse::Rc4
+pub fn flash_bittorrent::mse::Rc4::apply(&mut self, &mut [u8])
+pub fn flash_bittorrent::mse::Rc4::new(&[u8]) -> flash_bittorrent::mse::Rc4
+impl core::clone::Clone for flash_bittorrent::mse::Rc4
+pub fn flash_bittorrent::mse::Rc4::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::mse::Rc4
+pub fn flash_bittorrent::mse::Rc4::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::mse::Rc4
+impl core::marker::Sync for flash_bittorrent::mse::Rc4
+impl core::marker::Unpin for flash_bittorrent::mse::Rc4
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::mse::Rc4
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::mse::Rc4
+pub struct flash_bittorrent::mse::Receiver
+impl flash_bittorrent::mse::Receiver
+pub fn flash_bittorrent::mse::Receiver::feed(&mut self, &[u8], &dyn core::ops::function::Fn(&[u8; 20]) -> core::option::Option<flash_bittorrent::metainfo::InfoHash>) -> core::result::Result<flash_bittorrent::mse::Progress, flash_bittorrent::mse::MseError>
+pub fn flash_bittorrent::mse::Receiver::new(u32) -> flash_bittorrent::mse::Receiver
+impl core::fmt::Debug for flash_bittorrent::mse::Receiver
+pub fn flash_bittorrent::mse::Receiver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::mse::Receiver
+impl core::marker::Sync for flash_bittorrent::mse::Receiver
+impl core::marker::Unpin for flash_bittorrent::mse::Receiver
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::mse::Receiver
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::mse::Receiver
+pub const flash_bittorrent::mse::CRYPTO_PLAINTEXT: u32
+pub const flash_bittorrent::mse::CRYPTO_RC4: u32
+pub fn flash_bittorrent::mse::req2_hash(&flash_bittorrent::metainfo::InfoHash) -> [u8; 20]
+pub mod flash_bittorrent::port
+pub struct flash_bittorrent::port::PortAcceptor
+impl core::clone::Clone for flash_bittorrent::port::PortAcceptor
+pub fn flash_bittorrent::port::PortAcceptor::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::port::PortAcceptor
+pub fn flash_bittorrent::port::PortAcceptor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_core::handler::Acceptor for flash_bittorrent::port::PortAcceptor
+pub type flash_bittorrent::port::PortAcceptor::Handler = flash_bittorrent::port::PortPeer
+pub fn flash_bittorrent::port::PortAcceptor::on_open(&self, &flash_core::conn::Conn<flash_bittorrent::port::PortPeer>) -> flash_bittorrent::port::PortPeer
+impl core::marker::Send for flash_bittorrent::port::PortAcceptor
+impl core::marker::Sync for flash_bittorrent::port::PortAcceptor
+impl core::marker::Unpin for flash_bittorrent::port::PortAcceptor
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::port::PortAcceptor
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::port::PortAcceptor
+pub struct flash_bittorrent::port::PortPeer
+impl core::fmt::Debug for flash_bittorrent::port::PortPeer
+pub fn flash_bittorrent::port::PortPeer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_core::handler::Handler for flash_bittorrent::port::PortPeer
+pub fn flash_bittorrent::port::PortPeer::on_close(&mut self, &flash_core::conn::Conn<Self>, core::option::Option<flash_core::error::Error>)
+pub fn flash_bittorrent::port::PortPeer::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for flash_bittorrent::port::PortPeer
+impl core::marker::Sync for flash_bittorrent::port::PortPeer
+impl core::marker::Unpin for flash_bittorrent::port::PortPeer
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::port::PortPeer
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::port::PortPeer
+pub struct flash_bittorrent::port::UdpPort
+impl flash_bittorrent::port::UdpPort
+pub fn flash_bittorrent::port::UdpPort::acceptor(&self) -> flash_bittorrent::port::PortAcceptor
+pub fn flash_bittorrent::port::UdpPort::attach(&self, &alloc::rcs::arc::Arc<flash::Engine>, core::net::socket_addr::SocketAddr)
+pub fn flash_bittorrent::port::UdpPort::connect(&self, core::net::socket_addr::SocketAddr, impl flash_bittorrent::port::StreamHandler) -> flash_bittorrent::port::UtpStream
+pub fn flash_bittorrent::port::UdpPort::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn flash_bittorrent::port::UdpPort::new() -> flash_bittorrent::port::UdpPort
+pub fn flash_bittorrent::port::UdpPort::on_accept(&self, impl core::ops::function::Fn(&flash_bittorrent::port::UtpStream) -> core::option::Option<alloc::boxed::Box<dyn flash_bittorrent::port::StreamHandler>> + core::marker::Send + core::marker::Sync + 'static)
+pub fn flash_bittorrent::port::UdpPort::on_datagram(&self, impl core::ops::function::Fn(core::net::socket_addr::SocketAddr, &[u8]) + core::marker::Send + core::marker::Sync + 'static)
+pub fn flash_bittorrent::port::UdpPort::send_to(&self, core::net::socket_addr::SocketAddr, alloc::vec::Vec<u8>)
+pub fn flash_bittorrent::port::UdpPort::utp_connections(&self) -> usize
+impl core::clone::Clone for flash_bittorrent::port::UdpPort
+pub fn flash_bittorrent::port::UdpPort::clone(&self) -> Self
+impl core::default::Default for flash_bittorrent::port::UdpPort
+pub fn flash_bittorrent::port::UdpPort::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::port::UdpPort
+pub fn flash_bittorrent::port::UdpPort::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::port::UdpPort
+impl core::marker::Sync for flash_bittorrent::port::UdpPort
+impl core::marker::Unpin for flash_bittorrent::port::UdpPort
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::port::UdpPort
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::port::UdpPort
+pub struct flash_bittorrent::port::UtpStream
+impl flash_bittorrent::port::UtpStream
+pub fn flash_bittorrent::port::UtpStream::abort(&self)
+pub fn flash_bittorrent::port::UtpStream::buffered(&self) -> usize
+pub fn flash_bittorrent::port::UtpStream::close(&self)
+pub fn flash_bittorrent::port::UtpStream::is_open(&self) -> bool
+pub fn flash_bittorrent::port::UtpStream::peer_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn flash_bittorrent::port::UtpStream::rtt(&self) -> core::time::Duration
+pub fn flash_bittorrent::port::UtpStream::write(&self, &[u8]) -> core::io::error::Result<()>
+impl core::clone::Clone for flash_bittorrent::port::UtpStream
+pub fn flash_bittorrent::port::UtpStream::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::port::UtpStream
+pub fn flash_bittorrent::port::UtpStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::port::UtpStream
+impl core::marker::Sync for flash_bittorrent::port::UtpStream
+impl core::marker::Unpin for flash_bittorrent::port::UtpStream
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::port::UtpStream
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::port::UtpStream
+pub trait flash_bittorrent::port::StreamHandler: core::marker::Send + 'static
+pub fn flash_bittorrent::port::StreamHandler::on_close(&mut self, &flash_bittorrent::port::UtpStream, core::option::Option<core::io::error::ErrorKind>)
+pub fn flash_bittorrent::port::StreamHandler::on_connect(&mut self, &flash_bittorrent::port::UtpStream)
+pub fn flash_bittorrent::port::StreamHandler::on_data(&mut self, &flash_bittorrent::port::UtpStream, &[u8])
+pub fn flash_bittorrent::port::StreamHandler::on_eof(&mut self, &flash_bittorrent::port::UtpStream)
+pub mod flash_bittorrent::tracker
+pub mod flash_bittorrent::tracker::http
+pub fn flash_bittorrent::tracker::http::announce_url(&str, &flash_bittorrent::tracker::AnnounceRequest) -> alloc::string::String
+pub fn flash_bittorrent::tracker::http::parse_announce(&[u8]) -> core::result::Result<flash_bittorrent::tracker::AnnounceResponse, flash_bittorrent::tracker::TrackerError>
+pub fn flash_bittorrent::tracker::http::parse_announce_query(&str) -> core::option::Option<(flash_bittorrent::tracker::AnnounceRequest, bool)>
+pub fn flash_bittorrent::tracker::http::parse_scrape(&[u8]) -> core::result::Result<std::collections::hash::map::HashMap<flash_bittorrent::metainfo::InfoHash, flash_bittorrent::tracker::ScrapeStats>, flash_bittorrent::tracker::TrackerError>
+pub fn flash_bittorrent::tracker::http::scrape_url(&str, &[flash_bittorrent::metainfo::InfoHash]) -> core::option::Option<alloc::string::String>
+pub mod flash_bittorrent::tracker::udp
+#[non_exhaustive] pub enum flash_bittorrent::tracker::udp::Reply
+pub flash_bittorrent::tracker::udp::Reply::Announce
+pub flash_bittorrent::tracker::udp::Reply::Announce::resp: flash_bittorrent::tracker::AnnounceResponse
+pub flash_bittorrent::tracker::udp::Reply::Announce::tid: u32
+pub flash_bittorrent::tracker::udp::Reply::Connect
+pub flash_bittorrent::tracker::udp::Reply::Connect::conn_id: u64
+pub flash_bittorrent::tracker::udp::Reply::Connect::tid: u32
+pub flash_bittorrent::tracker::udp::Reply::Error
+pub flash_bittorrent::tracker::udp::Reply::Error::message: alloc::string::String
+pub flash_bittorrent::tracker::udp::Reply::Error::tid: u32
+pub flash_bittorrent::tracker::udp::Reply::Scrape
+pub flash_bittorrent::tracker::udp::Reply::Scrape::stats: alloc::vec::Vec<flash_bittorrent::tracker::ScrapeStats>
+pub flash_bittorrent::tracker::udp::Reply::Scrape::tid: u32
+impl core::clone::Clone for flash_bittorrent::tracker::udp::Reply
+pub fn flash_bittorrent::tracker::udp::Reply::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::tracker::udp::Reply
+impl core::cmp::PartialEq for flash_bittorrent::tracker::udp::Reply
+pub fn flash_bittorrent::tracker::udp::Reply::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::tracker::udp::Reply
+pub fn flash_bittorrent::tracker::udp::Reply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::tracker::udp::Reply
+impl core::marker::Send for flash_bittorrent::tracker::udp::Reply
+impl core::marker::Sync for flash_bittorrent::tracker::udp::Reply
+impl core::marker::Unpin for flash_bittorrent::tracker::udp::Reply
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::udp::Reply
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::udp::Reply
+#[non_exhaustive] pub enum flash_bittorrent::tracker::udp::Request
+pub flash_bittorrent::tracker::udp::Request::Announce
+pub flash_bittorrent::tracker::udp::Request::Announce::conn_id: u64
+pub flash_bittorrent::tracker::udp::Request::Announce::req: flash_bittorrent::tracker::AnnounceRequest
+pub flash_bittorrent::tracker::udp::Request::Announce::tid: u32
+pub flash_bittorrent::tracker::udp::Request::Connect
+pub flash_bittorrent::tracker::udp::Request::Connect::tid: u32
+pub flash_bittorrent::tracker::udp::Request::Scrape
+pub flash_bittorrent::tracker::udp::Request::Scrape::conn_id: u64
+pub flash_bittorrent::tracker::udp::Request::Scrape::hashes: alloc::vec::Vec<flash_bittorrent::metainfo::InfoHash>
+pub flash_bittorrent::tracker::udp::Request::Scrape::tid: u32
+impl core::clone::Clone for flash_bittorrent::tracker::udp::Request
+pub fn flash_bittorrent::tracker::udp::Request::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::tracker::udp::Request
+impl core::cmp::PartialEq for flash_bittorrent::tracker::udp::Request
+pub fn flash_bittorrent::tracker::udp::Request::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::tracker::udp::Request
+pub fn flash_bittorrent::tracker::udp::Request::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::tracker::udp::Request
+impl core::marker::Send for flash_bittorrent::tracker::udp::Request
+impl core::marker::Sync for flash_bittorrent::tracker::udp::Request
+impl core::marker::Unpin for flash_bittorrent::tracker::udp::Request
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::udp::Request
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::udp::Request
+pub const flash_bittorrent::tracker::udp::ANNOUNCE: u32
+pub const flash_bittorrent::tracker::udp::CONNECT: u32
+pub const flash_bittorrent::tracker::udp::ERROR: u32
+pub const flash_bittorrent::tracker::udp::PROTOCOL_ID: u64
+pub const flash_bittorrent::tracker::udp::SCRAPE: u32
+pub fn flash_bittorrent::tracker::udp::announce_request(u64, u32, &flash_bittorrent::tracker::AnnounceRequest) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::tracker::udp::connect_request(u32) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::tracker::udp::parse_reply(&[u8], bool) -> core::result::Result<flash_bittorrent::tracker::udp::Reply, flash_bittorrent::tracker::TrackerError>
+pub fn flash_bittorrent::tracker::udp::parse_request(&[u8]) -> core::result::Result<flash_bittorrent::tracker::udp::Request, flash_bittorrent::tracker::TrackerError>
+pub fn flash_bittorrent::tracker::udp::scrape_request(u64, u32, &[flash_bittorrent::metainfo::InfoHash]) -> alloc::vec::Vec<u8>
+#[non_exhaustive] pub enum flash_bittorrent::tracker::Event
+pub flash_bittorrent::tracker::Event::Completed
+pub flash_bittorrent::tracker::Event::None
+pub flash_bittorrent::tracker::Event::Started
+pub flash_bittorrent::tracker::Event::Stopped
+impl core::clone::Clone for flash_bittorrent::tracker::Event
+pub fn flash_bittorrent::tracker::Event::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::tracker::Event
+impl core::cmp::PartialEq for flash_bittorrent::tracker::Event
+pub fn flash_bittorrent::tracker::Event::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::tracker::Event
+pub fn flash_bittorrent::tracker::Event::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::Event
+pub fn flash_bittorrent::tracker::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for flash_bittorrent::tracker::Event
+pub fn flash_bittorrent::tracker::Event::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for flash_bittorrent::tracker::Event
+impl core::marker::StructuralPartialEq for flash_bittorrent::tracker::Event
+impl core::marker::Send for flash_bittorrent::tracker::Event
+impl core::marker::Sync for flash_bittorrent::tracker::Event
+impl core::marker::Unpin for flash_bittorrent::tracker::Event
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::Event
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::Event
+#[non_exhaustive] pub enum flash_bittorrent::tracker::TrackerError
+pub flash_bittorrent::tracker::TrackerError::BadUrl(alloc::string::String)
+pub flash_bittorrent::tracker::TrackerError::Failure(alloc::string::String)
+pub flash_bittorrent::tracker::TrackerError::Io(alloc::string::String)
+pub flash_bittorrent::tracker::TrackerError::Protocol(&'static str)
+pub flash_bittorrent::tracker::TrackerError::Timeout
+impl core::clone::Clone for flash_bittorrent::tracker::TrackerError
+pub fn flash_bittorrent::tracker::TrackerError::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::tracker::TrackerError
+impl core::cmp::PartialEq for flash_bittorrent::tracker::TrackerError
+pub fn flash_bittorrent::tracker::TrackerError::eq(&self, &Self) -> bool
+impl core::error::Error for flash_bittorrent::tracker::TrackerError
+impl core::fmt::Debug for flash_bittorrent::tracker::TrackerError
+pub fn flash_bittorrent::tracker::TrackerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::tracker::TrackerError
+pub fn flash_bittorrent::tracker::TrackerError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::tracker::TrackerError
+impl core::marker::Send for flash_bittorrent::tracker::TrackerError
+impl core::marker::Sync for flash_bittorrent::tracker::TrackerError
+impl core::marker::Unpin for flash_bittorrent::tracker::TrackerError
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::TrackerError
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::TrackerError
+#[non_exhaustive] pub struct flash_bittorrent::tracker::AnnounceRequest
+pub flash_bittorrent::tracker::AnnounceRequest::downloaded: u64
+pub flash_bittorrent::tracker::AnnounceRequest::event: flash_bittorrent::tracker::Event
+pub flash_bittorrent::tracker::AnnounceRequest::info_hash: flash_bittorrent::metainfo::InfoHash
+pub flash_bittorrent::tracker::AnnounceRequest::key: u32
+pub flash_bittorrent::tracker::AnnounceRequest::left: u64
+pub flash_bittorrent::tracker::AnnounceRequest::num_want: i32
+pub flash_bittorrent::tracker::AnnounceRequest::peer_id: flash_bittorrent::wire::PeerId
+pub flash_bittorrent::tracker::AnnounceRequest::port: u16
+pub flash_bittorrent::tracker::AnnounceRequest::uploaded: u64
+impl flash_bittorrent::tracker::AnnounceRequest
+pub fn flash_bittorrent::tracker::AnnounceRequest::new(flash_bittorrent::metainfo::InfoHash, flash_bittorrent::wire::PeerId, u16, u64) -> flash_bittorrent::tracker::AnnounceRequest
+impl core::clone::Clone for flash_bittorrent::tracker::AnnounceRequest
+pub fn flash_bittorrent::tracker::AnnounceRequest::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::tracker::AnnounceRequest
+impl core::cmp::PartialEq for flash_bittorrent::tracker::AnnounceRequest
+pub fn flash_bittorrent::tracker::AnnounceRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::tracker::AnnounceRequest
+pub fn flash_bittorrent::tracker::AnnounceRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::tracker::AnnounceRequest
+impl core::marker::Send for flash_bittorrent::tracker::AnnounceRequest
+impl core::marker::Sync for flash_bittorrent::tracker::AnnounceRequest
+impl core::marker::Unpin for flash_bittorrent::tracker::AnnounceRequest
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::AnnounceRequest
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::AnnounceRequest
+#[non_exhaustive] pub struct flash_bittorrent::tracker::AnnounceResponse
+pub flash_bittorrent::tracker::AnnounceResponse::interval: u32
+pub flash_bittorrent::tracker::AnnounceResponse::leechers: core::option::Option<u32>
+pub flash_bittorrent::tracker::AnnounceResponse::min_interval: core::option::Option<u32>
+pub flash_bittorrent::tracker::AnnounceResponse::peers: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub flash_bittorrent::tracker::AnnounceResponse::seeders: core::option::Option<u32>
+pub flash_bittorrent::tracker::AnnounceResponse::warning: core::option::Option<alloc::string::String>
+impl core::clone::Clone for flash_bittorrent::tracker::AnnounceResponse
+pub fn flash_bittorrent::tracker::AnnounceResponse::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::tracker::AnnounceResponse
+impl core::cmp::PartialEq for flash_bittorrent::tracker::AnnounceResponse
+pub fn flash_bittorrent::tracker::AnnounceResponse::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::tracker::AnnounceResponse
+pub fn flash_bittorrent::tracker::AnnounceResponse::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::AnnounceResponse
+pub fn flash_bittorrent::tracker::AnnounceResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::tracker::AnnounceResponse
+impl core::marker::Send for flash_bittorrent::tracker::AnnounceResponse
+impl core::marker::Sync for flash_bittorrent::tracker::AnnounceResponse
+impl core::marker::Unpin for flash_bittorrent::tracker::AnnounceResponse
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::AnnounceResponse
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::AnnounceResponse
+pub struct flash_bittorrent::tracker::HttpTracker(_)
+impl core::clone::Clone for flash_bittorrent::tracker::HttpTracker
+pub fn flash_bittorrent::tracker::HttpTracker::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::HttpTracker
+pub fn flash_bittorrent::tracker::HttpTracker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_http::context::Service for flash_bittorrent::tracker::HttpTracker
+pub fn flash_bittorrent::tracker::HttpTracker::call(&self, &mut flash_http::context::Context)
+impl core::marker::Send for flash_bittorrent::tracker::HttpTracker
+impl core::marker::Sync for flash_bittorrent::tracker::HttpTracker
+impl core::marker::Unpin for flash_bittorrent::tracker::HttpTracker
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::HttpTracker
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::HttpTracker
+#[non_exhaustive] pub struct flash_bittorrent::tracker::ScrapeStats
+pub flash_bittorrent::tracker::ScrapeStats::complete: u32
+pub flash_bittorrent::tracker::ScrapeStats::downloaded: u32
+pub flash_bittorrent::tracker::ScrapeStats::incomplete: u32
+impl core::clone::Clone for flash_bittorrent::tracker::ScrapeStats
+pub fn flash_bittorrent::tracker::ScrapeStats::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::tracker::ScrapeStats
+impl core::cmp::PartialEq for flash_bittorrent::tracker::ScrapeStats
+pub fn flash_bittorrent::tracker::ScrapeStats::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::tracker::ScrapeStats
+pub fn flash_bittorrent::tracker::ScrapeStats::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::ScrapeStats
+pub fn flash_bittorrent::tracker::ScrapeStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_bittorrent::tracker::ScrapeStats
+impl core::marker::StructuralPartialEq for flash_bittorrent::tracker::ScrapeStats
+impl core::marker::Send for flash_bittorrent::tracker::ScrapeStats
+impl core::marker::Sync for flash_bittorrent::tracker::ScrapeStats
+impl core::marker::Unpin for flash_bittorrent::tracker::ScrapeStats
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::ScrapeStats
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::ScrapeStats
+pub struct flash_bittorrent::tracker::TrackerClient
+impl flash_bittorrent::tracker::TrackerClient
+pub fn flash_bittorrent::tracker::TrackerClient::announce(&self, &str, &flash_bittorrent::tracker::AnnounceRequest, impl core::ops::function::FnOnce(core::result::Result<flash_bittorrent::tracker::AnnounceResponse, flash_bittorrent::tracker::TrackerError>) + core::marker::Send + 'static)
+pub fn flash_bittorrent::tracker::TrackerClient::new(alloc::rcs::arc::Arc<flash::Engine>, core::time::Duration, u32) -> flash_bittorrent::tracker::TrackerClient
+pub fn flash_bittorrent::tracker::TrackerClient::scrape(&self, &str, &[flash_bittorrent::metainfo::InfoHash], impl core::ops::function::FnOnce(core::result::Result<std::collections::hash::map::HashMap<flash_bittorrent::metainfo::InfoHash, flash_bittorrent::tracker::ScrapeStats>, flash_bittorrent::tracker::TrackerError>) + core::marker::Send + 'static)
+impl core::clone::Clone for flash_bittorrent::tracker::TrackerClient
+pub fn flash_bittorrent::tracker::TrackerClient::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::TrackerClient
+pub fn flash_bittorrent::tracker::TrackerClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::tracker::TrackerClient
+impl core::marker::Sync for flash_bittorrent::tracker::TrackerClient
+impl core::marker::Unpin for flash_bittorrent::tracker::TrackerClient
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::TrackerClient
+impl !core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::TrackerClient
+#[non_exhaustive] pub struct flash_bittorrent::tracker::TrackerConfig
+pub flash_bittorrent::tracker::TrackerConfig::allow: core::option::Option<alloc::vec::Vec<flash_bittorrent::metainfo::InfoHash>>
+pub flash_bittorrent::tracker::TrackerConfig::interval: u32
+pub flash_bittorrent::tracker::TrackerConfig::max_peers: usize
+pub flash_bittorrent::tracker::TrackerConfig::peer_ttl: core::time::Duration
+impl core::clone::Clone for flash_bittorrent::tracker::TrackerConfig
+pub fn flash_bittorrent::tracker::TrackerConfig::clone(&self) -> Self
+impl core::default::Default for flash_bittorrent::tracker::TrackerConfig
+pub fn flash_bittorrent::tracker::TrackerConfig::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::TrackerConfig
+pub fn flash_bittorrent::tracker::TrackerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::tracker::TrackerConfig
+impl core::marker::Sync for flash_bittorrent::tracker::TrackerConfig
+impl core::marker::Unpin for flash_bittorrent::tracker::TrackerConfig
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::TrackerConfig
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::TrackerConfig
+pub struct flash_bittorrent::tracker::TrackerServer
+impl flash_bittorrent::tracker::TrackerServer
+pub fn flash_bittorrent::tracker::TrackerServer::announce(&self, core::net::ip_addr::IpAddr, &flash_bittorrent::tracker::AnnounceRequest) -> core::result::Result<flash_bittorrent::tracker::AnnounceResponse, flash_bittorrent::tracker::TrackerError>
+pub fn flash_bittorrent::tracker::TrackerServer::handle_http(&self, core::net::ip_addr::IpAddr, &str) -> (u16, alloc::vec::Vec<u8>)
+pub fn flash_bittorrent::tracker::TrackerServer::handle_udp(&self, core::net::socket_addr::SocketAddr, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn flash_bittorrent::tracker::TrackerServer::http(&self) -> flash_bittorrent::tracker::HttpTracker
+pub fn flash_bittorrent::tracker::TrackerServer::new(flash_bittorrent::tracker::TrackerConfig) -> flash_bittorrent::tracker::TrackerServer
+pub fn flash_bittorrent::tracker::TrackerServer::stats(&self, &flash_bittorrent::metainfo::InfoHash) -> flash_bittorrent::tracker::ScrapeStats
+pub fn flash_bittorrent::tracker::TrackerServer::udp(&self) -> flash_bittorrent::tracker::UdpTracker
+impl core::clone::Clone for flash_bittorrent::tracker::TrackerServer
+pub fn flash_bittorrent::tracker::TrackerServer::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::TrackerServer
+pub fn flash_bittorrent::tracker::TrackerServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::tracker::TrackerServer
+impl core::marker::Sync for flash_bittorrent::tracker::TrackerServer
+impl core::marker::Unpin for flash_bittorrent::tracker::TrackerServer
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::TrackerServer
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::TrackerServer
+pub struct flash_bittorrent::tracker::UdpTracker(_)
+impl core::clone::Clone for flash_bittorrent::tracker::UdpTracker
+pub fn flash_bittorrent::tracker::UdpTracker::clone(&self) -> Self
+impl core::fmt::Debug for flash_bittorrent::tracker::UdpTracker
+pub fn flash_bittorrent::tracker::UdpTracker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_core::handler::Acceptor for flash_bittorrent::tracker::UdpTracker
+pub type flash_bittorrent::tracker::UdpTracker::Handler = flash_bittorrent::tracker::UdpTrackerConn
+pub fn flash_bittorrent::tracker::UdpTracker::on_open(&self, &flash_core::conn::Conn<flash_bittorrent::tracker::UdpTrackerConn>) -> flash_bittorrent::tracker::UdpTrackerConn
+impl core::marker::Send for flash_bittorrent::tracker::UdpTracker
+impl core::marker::Sync for flash_bittorrent::tracker::UdpTracker
+impl core::marker::Unpin for flash_bittorrent::tracker::UdpTracker
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::UdpTracker
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::UdpTracker
+pub struct flash_bittorrent::tracker::UdpTrackerConn(_)
+impl core::fmt::Debug for flash_bittorrent::tracker::UdpTrackerConn
+pub fn flash_bittorrent::tracker::UdpTrackerConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_core::handler::Handler for flash_bittorrent::tracker::UdpTrackerConn
+pub fn flash_bittorrent::tracker::UdpTrackerConn::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for flash_bittorrent::tracker::UdpTrackerConn
+impl core::marker::Sync for flash_bittorrent::tracker::UdpTrackerConn
+impl core::marker::Unpin for flash_bittorrent::tracker::UdpTrackerConn
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::tracker::UdpTrackerConn
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::tracker::UdpTrackerConn
+pub mod flash_bittorrent::utp
+#[non_exhaustive] pub enum flash_bittorrent::utp::Event
+pub flash_bittorrent::utp::Event::Closed(core::option::Option<core::io::error::ErrorKind>)
+pub flash_bittorrent::utp::Event::Connected
+pub flash_bittorrent::utp::Event::Data(alloc::vec::Vec<u8>)
+pub flash_bittorrent::utp::Event::Eof
+impl core::cmp::Eq for flash_bittorrent::utp::Event
+impl core::cmp::PartialEq for flash_bittorrent::utp::Event
+pub fn flash_bittorrent::utp::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::utp::Event
+pub fn flash_bittorrent::utp::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::utp::Event
+impl core::marker::Send for flash_bittorrent::utp::Event
+impl core::marker::Sync for flash_bittorrent::utp::Event
+impl core::marker::Unpin for flash_bittorrent::utp::Event
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::utp::Event
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::utp::Event
+pub struct flash_bittorrent::utp::Connection
+impl flash_bittorrent::utp::Connection
+pub fn flash_bittorrent::utp::Connection::abort(&mut self, u64, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>)
+pub fn flash_bittorrent::utp::Connection::accept(&flash_bittorrent::utp::Header, u64, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>) -> flash_bittorrent::utp::Connection
+pub fn flash_bittorrent::utp::Connection::buffered(&self) -> usize
+pub fn flash_bittorrent::utp::Connection::close(&mut self, u64, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>)
+pub fn flash_bittorrent::utp::Connection::connect(u16, u64, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>) -> flash_bittorrent::utp::Connection
+pub fn flash_bittorrent::utp::Connection::is_closed(&self) -> bool
+pub fn flash_bittorrent::utp::Connection::is_connected(&self) -> bool
+pub fn flash_bittorrent::utp::Connection::on_packet(&mut self, &flash_bittorrent::utp::Header, core::option::Option<&[u8]>, &[u8], u64, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>, &mut alloc::vec::Vec<flash_bittorrent::utp::Event>)
+pub fn flash_bittorrent::utp::Connection::on_tick(&mut self, u64, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>, &mut alloc::vec::Vec<flash_bittorrent::utp::Event>)
+pub fn flash_bittorrent::utp::Connection::recv_id(&self) -> u16
+pub fn flash_bittorrent::utp::Connection::rtt_us(&self) -> u64
+pub fn flash_bittorrent::utp::Connection::send_id(&self) -> u16
+pub fn flash_bittorrent::utp::Connection::stats(&self) -> flash_bittorrent::utp::Stats
+pub fn flash_bittorrent::utp::Connection::write(&mut self, &[u8], u64, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>) -> core::io::error::Result<()>
+impl core::fmt::Debug for flash_bittorrent::utp::Connection
+pub fn flash_bittorrent::utp::Connection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::utp::Connection
+impl core::marker::Sync for flash_bittorrent::utp::Connection
+impl core::marker::Unpin for flash_bittorrent::utp::Connection
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::utp::Connection
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::utp::Connection
+#[non_exhaustive] pub struct flash_bittorrent::utp::Header
+pub flash_bittorrent::utp::Header::ack: u16
+pub flash_bittorrent::utp::Header::conn_id: u16
+pub flash_bittorrent::utp::Header::ext: u8
+pub flash_bittorrent::utp::Header::seq: u16
+pub flash_bittorrent::utp::Header::ts: u32
+pub flash_bittorrent::utp::Header::ts_diff: u32
+pub flash_bittorrent::utp::Header::typ: u8
+pub flash_bittorrent::utp::Header::wnd: u32
+impl flash_bittorrent::utp::Header
+pub fn flash_bittorrent::utp::Header::encode_to(&self, &mut alloc::vec::Vec<u8>)
+pub fn flash_bittorrent::utp::Header::parse(&[u8]) -> core::option::Option<flash_bittorrent::utp::Parsed<'_>>
+impl core::clone::Clone for flash_bittorrent::utp::Header
+pub fn flash_bittorrent::utp::Header::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::utp::Header
+impl core::cmp::PartialEq for flash_bittorrent::utp::Header
+pub fn flash_bittorrent::utp::Header::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::utp::Header
+pub fn flash_bittorrent::utp::Header::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::utp::Header
+pub fn flash_bittorrent::utp::Header::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_bittorrent::utp::Header
+impl core::marker::StructuralPartialEq for flash_bittorrent::utp::Header
+impl core::marker::Send for flash_bittorrent::utp::Header
+impl core::marker::Sync for flash_bittorrent::utp::Header
+impl core::marker::Unpin for flash_bittorrent::utp::Header
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::utp::Header
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::utp::Header
+#[non_exhaustive] pub struct flash_bittorrent::utp::Stats
+pub flash_bittorrent::utp::Stats::packets_received: u64
+pub flash_bittorrent::utp::Stats::packets_sent: u64
+pub flash_bittorrent::utp::Stats::retransmits: u64
+pub flash_bittorrent::utp::Stats::timeouts: u64
+impl core::clone::Clone for flash_bittorrent::utp::Stats
+pub fn flash_bittorrent::utp::Stats::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::utp::Stats
+impl core::cmp::PartialEq for flash_bittorrent::utp::Stats
+pub fn flash_bittorrent::utp::Stats::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::utp::Stats
+pub fn flash_bittorrent::utp::Stats::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::utp::Stats
+pub fn flash_bittorrent::utp::Stats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_bittorrent::utp::Stats
+impl core::marker::StructuralPartialEq for flash_bittorrent::utp::Stats
+impl core::marker::Send for flash_bittorrent::utp::Stats
+impl core::marker::Sync for flash_bittorrent::utp::Stats
+impl core::marker::Unpin for flash_bittorrent::utp::Stats
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::utp::Stats
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::utp::Stats
+pub const flash_bittorrent::utp::HEADER_SIZE: usize
+pub const flash_bittorrent::utp::PAYLOAD_SIZE: usize
+pub const flash_bittorrent::utp::ST_DATA: u8
+pub const flash_bittorrent::utp::ST_FIN: u8
+pub const flash_bittorrent::utp::ST_RESET: u8
+pub const flash_bittorrent::utp::ST_STATE: u8
+pub const flash_bittorrent::utp::ST_SYN: u8
+pub fn flash_bittorrent::utp::is_utp(&[u8]) -> bool
+pub fn flash_bittorrent::utp::reset_for(&flash_bittorrent::utp::Header, u64) -> alloc::vec::Vec<u8>
+pub type flash_bittorrent::utp::Parsed<'a> = (flash_bittorrent::utp::Header, core::option::Option<&'a [u8]>, &'a [u8])
+pub mod flash_bittorrent::wire
+#[non_exhaustive] pub enum flash_bittorrent::wire::Message
+pub flash_bittorrent::wire::Message::AllowedFast(u32)
+pub flash_bittorrent::wire::Message::Bitfield(alloc::vec::Vec<u8>)
+pub flash_bittorrent::wire::Message::Cancel
+pub flash_bittorrent::wire::Message::Cancel::begin: u32
+pub flash_bittorrent::wire::Message::Cancel::index: u32
+pub flash_bittorrent::wire::Message::Cancel::length: u32
+pub flash_bittorrent::wire::Message::Choke
+pub flash_bittorrent::wire::Message::Extended
+pub flash_bittorrent::wire::Message::Extended::id: u8
+pub flash_bittorrent::wire::Message::Extended::payload: alloc::vec::Vec<u8>
+pub flash_bittorrent::wire::Message::Have(u32)
+pub flash_bittorrent::wire::Message::HaveAll
+pub flash_bittorrent::wire::Message::HaveNone
+pub flash_bittorrent::wire::Message::Interested
+pub flash_bittorrent::wire::Message::KeepAlive
+pub flash_bittorrent::wire::Message::NotInterested
+pub flash_bittorrent::wire::Message::Piece
+pub flash_bittorrent::wire::Message::Piece::begin: u32
+pub flash_bittorrent::wire::Message::Piece::data: alloc::vec::Vec<u8>
+pub flash_bittorrent::wire::Message::Piece::index: u32
+pub flash_bittorrent::wire::Message::Port(u16)
+pub flash_bittorrent::wire::Message::Reject
+pub flash_bittorrent::wire::Message::Reject::begin: u32
+pub flash_bittorrent::wire::Message::Reject::index: u32
+pub flash_bittorrent::wire::Message::Reject::length: u32
+pub flash_bittorrent::wire::Message::Request
+pub flash_bittorrent::wire::Message::Request::begin: u32
+pub flash_bittorrent::wire::Message::Request::index: u32
+pub flash_bittorrent::wire::Message::Request::length: u32
+pub flash_bittorrent::wire::Message::Suggest(u32)
+pub flash_bittorrent::wire::Message::Unchoke
+pub flash_bittorrent::wire::Message::Unknown
+pub flash_bittorrent::wire::Message::Unknown::id: u8
+pub flash_bittorrent::wire::Message::Unknown::payload: alloc::vec::Vec<u8>
+impl flash_bittorrent::wire::Message
+pub fn flash_bittorrent::wire::Message::decode(&[u8]) -> core::result::Result<flash_bittorrent::wire::Message, flash_bittorrent::wire::WireError>
+pub fn flash_bittorrent::wire::Message::encode(&self) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::wire::Message::encode_to(&self, &mut alloc::vec::Vec<u8>)
+impl core::clone::Clone for flash_bittorrent::wire::Message
+pub fn flash_bittorrent::wire::Message::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::wire::Message
+impl core::cmp::PartialEq for flash_bittorrent::wire::Message
+pub fn flash_bittorrent::wire::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::wire::Message
+pub fn flash_bittorrent::wire::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::wire::Message
+impl core::marker::Send for flash_bittorrent::wire::Message
+impl core::marker::Sync for flash_bittorrent::wire::Message
+impl core::marker::Unpin for flash_bittorrent::wire::Message
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::Message
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::Message
+#[non_exhaustive] pub enum flash_bittorrent::wire::MetadataMsg
+pub flash_bittorrent::wire::MetadataMsg::Data
+pub flash_bittorrent::wire::MetadataMsg::Data::data: alloc::vec::Vec<u8>
+pub flash_bittorrent::wire::MetadataMsg::Data::piece: u32
+pub flash_bittorrent::wire::MetadataMsg::Data::total_size: u32
+pub flash_bittorrent::wire::MetadataMsg::Reject(u32)
+pub flash_bittorrent::wire::MetadataMsg::Request(u32)
+impl flash_bittorrent::wire::MetadataMsg
+pub fn flash_bittorrent::wire::MetadataMsg::decode(&[u8]) -> core::result::Result<flash_bittorrent::wire::MetadataMsg, flash_bittorrent::wire::WireError>
+pub fn flash_bittorrent::wire::MetadataMsg::encode(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for flash_bittorrent::wire::MetadataMsg
+pub fn flash_bittorrent::wire::MetadataMsg::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::wire::MetadataMsg
+impl core::cmp::PartialEq for flash_bittorrent::wire::MetadataMsg
+pub fn flash_bittorrent::wire::MetadataMsg::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::wire::MetadataMsg
+pub fn flash_bittorrent::wire::MetadataMsg::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::wire::MetadataMsg
+impl core::marker::Send for flash_bittorrent::wire::MetadataMsg
+impl core::marker::Sync for flash_bittorrent::wire::MetadataMsg
+impl core::marker::Unpin for flash_bittorrent::wire::MetadataMsg
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::MetadataMsg
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::MetadataMsg
+#[non_exhaustive] pub enum flash_bittorrent::wire::WireError
+pub flash_bittorrent::wire::WireError::BadLength(u8)
+pub flash_bittorrent::wire::WireError::BadPayload(&'static str)
+pub flash_bittorrent::wire::WireError::TooLong(usize)
+impl core::clone::Clone for flash_bittorrent::wire::WireError
+pub fn flash_bittorrent::wire::WireError::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::wire::WireError
+impl core::cmp::PartialEq for flash_bittorrent::wire::WireError
+pub fn flash_bittorrent::wire::WireError::eq(&self, &Self) -> bool
+impl core::error::Error for flash_bittorrent::wire::WireError
+impl core::fmt::Debug for flash_bittorrent::wire::WireError
+pub fn flash_bittorrent::wire::WireError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_bittorrent::wire::WireError
+pub fn flash_bittorrent::wire::WireError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::wire::WireError
+impl core::marker::Send for flash_bittorrent::wire::WireError
+impl core::marker::Sync for flash_bittorrent::wire::WireError
+impl core::marker::Unpin for flash_bittorrent::wire::WireError
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::WireError
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::WireError
+pub struct flash_bittorrent::wire::Bitfield
+impl flash_bittorrent::wire::Bitfield
+pub fn flash_bittorrent::wire::Bitfield::as_bytes(&self) -> &[u8]
+pub fn flash_bittorrent::wire::Bitfield::count(&self) -> usize
+pub fn flash_bittorrent::wire::Bitfield::from_bytes(&[u8], usize) -> core::option::Option<flash_bittorrent::wire::Bitfield>
+pub fn flash_bittorrent::wire::Bitfield::full(usize) -> flash_bittorrent::wire::Bitfield
+pub fn flash_bittorrent::wire::Bitfield::get(&self, usize) -> bool
+pub fn flash_bittorrent::wire::Bitfield::is_empty(&self) -> bool
+pub fn flash_bittorrent::wire::Bitfield::is_full(&self) -> bool
+pub fn flash_bittorrent::wire::Bitfield::len(&self) -> usize
+pub fn flash_bittorrent::wire::Bitfield::new(usize) -> flash_bittorrent::wire::Bitfield
+pub fn flash_bittorrent::wire::Bitfield::ones(&self) -> impl core::iter::traits::iterator::Iterator<Item = usize> + '_
+pub fn flash_bittorrent::wire::Bitfield::set(&mut self, usize, bool)
+impl core::clone::Clone for flash_bittorrent::wire::Bitfield
+pub fn flash_bittorrent::wire::Bitfield::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::wire::Bitfield
+impl core::cmp::PartialEq for flash_bittorrent::wire::Bitfield
+pub fn flash_bittorrent::wire::Bitfield::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::wire::Bitfield
+pub fn flash_bittorrent::wire::Bitfield::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::wire::Bitfield
+pub fn flash_bittorrent::wire::Bitfield::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::wire::Bitfield
+impl core::marker::Send for flash_bittorrent::wire::Bitfield
+impl core::marker::Sync for flash_bittorrent::wire::Bitfield
+impl core::marker::Unpin for flash_bittorrent::wire::Bitfield
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::Bitfield
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::Bitfield
+#[non_exhaustive] pub struct flash_bittorrent::wire::ExtendedHandshake
+pub flash_bittorrent::wire::ExtendedHandshake::m: alloc::collections::btree::map::BTreeMap<alloc::string::String, u8>
+pub flash_bittorrent::wire::ExtendedHandshake::metadata_size: core::option::Option<u32>
+pub flash_bittorrent::wire::ExtendedHandshake::p: core::option::Option<u16>
+pub flash_bittorrent::wire::ExtendedHandshake::reqq: core::option::Option<u32>
+pub flash_bittorrent::wire::ExtendedHandshake::v: core::option::Option<alloc::string::String>
+pub flash_bittorrent::wire::ExtendedHandshake::yourip: core::option::Option<core::net::ip_addr::IpAddr>
+impl flash_bittorrent::wire::ExtendedHandshake
+pub fn flash_bittorrent::wire::ExtendedHandshake::decode(&[u8]) -> core::result::Result<flash_bittorrent::wire::ExtendedHandshake, flash_bittorrent::wire::WireError>
+pub fn flash_bittorrent::wire::ExtendedHandshake::encode(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for flash_bittorrent::wire::ExtendedHandshake
+pub fn flash_bittorrent::wire::ExtendedHandshake::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::wire::ExtendedHandshake
+impl core::cmp::PartialEq for flash_bittorrent::wire::ExtendedHandshake
+pub fn flash_bittorrent::wire::ExtendedHandshake::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::wire::ExtendedHandshake
+pub fn flash_bittorrent::wire::ExtendedHandshake::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::wire::ExtendedHandshake
+pub fn flash_bittorrent::wire::ExtendedHandshake::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::wire::ExtendedHandshake
+impl core::marker::Send for flash_bittorrent::wire::ExtendedHandshake
+impl core::marker::Sync for flash_bittorrent::wire::ExtendedHandshake
+impl core::marker::Unpin for flash_bittorrent::wire::ExtendedHandshake
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::ExtendedHandshake
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::ExtendedHandshake
+pub struct flash_bittorrent::wire::Handshake
+pub flash_bittorrent::wire::Handshake::info_hash: flash_bittorrent::metainfo::InfoHash
+pub flash_bittorrent::wire::Handshake::peer_id: flash_bittorrent::wire::PeerId
+pub flash_bittorrent::wire::Handshake::reserved: [u8; 8]
+impl flash_bittorrent::wire::Handshake
+pub fn flash_bittorrent::wire::Handshake::dht(&self) -> bool
+pub fn flash_bittorrent::wire::Handshake::encode(&self) -> [u8; 68]
+pub fn flash_bittorrent::wire::Handshake::extended(&self) -> bool
+pub fn flash_bittorrent::wire::Handshake::fast(&self) -> bool
+pub fn flash_bittorrent::wire::Handshake::new(flash_bittorrent::metainfo::InfoHash, flash_bittorrent::wire::PeerId) -> flash_bittorrent::wire::Handshake
+pub fn flash_bittorrent::wire::Handshake::parse(&[u8]) -> core::option::Option<flash_bittorrent::wire::Handshake>
+impl core::clone::Clone for flash_bittorrent::wire::Handshake
+pub fn flash_bittorrent::wire::Handshake::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::wire::Handshake
+impl core::cmp::PartialEq for flash_bittorrent::wire::Handshake
+pub fn flash_bittorrent::wire::Handshake::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_bittorrent::wire::Handshake
+pub fn flash_bittorrent::wire::Handshake::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_bittorrent::wire::Handshake
+impl core::marker::StructuralPartialEq for flash_bittorrent::wire::Handshake
+impl core::marker::Send for flash_bittorrent::wire::Handshake
+impl core::marker::Sync for flash_bittorrent::wire::Handshake
+impl core::marker::Unpin for flash_bittorrent::wire::Handshake
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::Handshake
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::Handshake
+pub struct flash_bittorrent::wire::Parser
+impl flash_bittorrent::wire::Parser
+pub fn flash_bittorrent::wire::Parser::buffered(&self) -> usize
+pub fn flash_bittorrent::wire::Parser::feed(&mut self, &[u8])
+pub fn flash_bittorrent::wire::Parser::new(usize) -> flash_bittorrent::wire::Parser
+pub fn flash_bittorrent::wire::Parser::next_message(&mut self) -> core::result::Result<core::option::Option<flash_bittorrent::wire::Message>, flash_bittorrent::wire::WireError>
+pub fn flash_bittorrent::wire::Parser::take_buffered(&mut self) -> alloc::vec::Vec<u8>
+impl core::default::Default for flash_bittorrent::wire::Parser
+pub fn flash_bittorrent::wire::Parser::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::wire::Parser
+pub fn flash_bittorrent::wire::Parser::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_bittorrent::wire::Parser
+impl core::marker::Sync for flash_bittorrent::wire::Parser
+impl core::marker::Unpin for flash_bittorrent::wire::Parser
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::Parser
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::Parser
+#[non_exhaustive] pub struct flash_bittorrent::wire::Pex
+pub flash_bittorrent::wire::Pex::added: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub flash_bittorrent::wire::Pex::dropped: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+impl flash_bittorrent::wire::Pex
+pub fn flash_bittorrent::wire::Pex::decode(&[u8]) -> core::result::Result<flash_bittorrent::wire::Pex, flash_bittorrent::wire::WireError>
+pub fn flash_bittorrent::wire::Pex::encode(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for flash_bittorrent::wire::Pex
+pub fn flash_bittorrent::wire::Pex::clone(&self) -> Self
+impl core::cmp::Eq for flash_bittorrent::wire::Pex
+impl core::cmp::PartialEq for flash_bittorrent::wire::Pex
+pub fn flash_bittorrent::wire::Pex::eq(&self, &Self) -> bool
+impl core::default::Default for flash_bittorrent::wire::Pex
+pub fn flash_bittorrent::wire::Pex::default() -> Self
+impl core::fmt::Debug for flash_bittorrent::wire::Pex
+pub fn flash_bittorrent::wire::Pex::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_bittorrent::wire::Pex
+impl core::marker::Send for flash_bittorrent::wire::Pex
+impl core::marker::Sync for flash_bittorrent::wire::Pex
+impl core::marker::Unpin for flash_bittorrent::wire::Pex
+impl core::panic::unwind_safe::RefUnwindSafe for flash_bittorrent::wire::Pex
+impl core::panic::unwind_safe::UnwindSafe for flash_bittorrent::wire::Pex
+pub const flash_bittorrent::wire::BLOCK_SIZE: u32
+pub const flash_bittorrent::wire::DEFAULT_MAX_MESSAGE: usize
+pub const flash_bittorrent::wire::HANDSHAKE_LEN: usize
+pub const flash_bittorrent::wire::METADATA_PIECE: usize
+pub const flash_bittorrent::wire::PROTOCOL: &[u8; 20]
+pub fn flash_bittorrent::wire::allowed_fast_set(&flash_bittorrent::metainfo::InfoHash, core::net::ip_addr::Ipv4Addr, u32, usize) -> alloc::vec::Vec<u32>
+pub fn flash_bittorrent::wire::compact_peers(&[core::net::socket_addr::SocketAddr], bool) -> alloc::vec::Vec<u8>
+pub fn flash_bittorrent::wire::new_peer_id() -> flash_bittorrent::wire::PeerId
+pub fn flash_bittorrent::wire::parse_compact_peers(&[u8], bool) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub type flash_bittorrent::wire::PeerId = [u8; 20]

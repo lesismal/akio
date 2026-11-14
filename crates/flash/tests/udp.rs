@@ -702,3 +702,92 @@ fn bind_udp_without_udp_threads_is_an_error() {
         .unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
 }
+
+#[test]
+fn dial_udp_from_sends_from_the_listener_port() {
+    let engine = echo_engine(2);
+    let local = engine.local_addrs()[0];
+    // A peer that has never written to the listener.
+    let peer = UdpSocket::bind("127.0.0.1:0").unwrap();
+    peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let opened = Arc::new(AtomicUsize::new(0));
+    let o = opened.clone();
+    engine.dial_udp_from(
+        local,
+        peer.local_addr().unwrap(),
+        fn_acceptor(move |c: &Conn<Echo>| {
+            c.send(b"hello from the listener port").unwrap();
+            o.fetch_add(1, Ordering::Relaxed);
+            Echo
+        }),
+        |e| panic!("dial_udp_from: {e}"),
+    );
+    let mut b = [0u8; 64];
+    let (n, from) = peer.recv_from(&mut b).unwrap();
+    assert_eq!(&b[..n], b"hello from the listener port");
+    assert_eq!(from, local, "the datagram leaves from the listener's port");
+    // Answers reach a connection of the listener (the echo handler), from the same port.
+    peer.send_to(b"ping", local).unwrap();
+    let (n, from) = peer.recv_from(&mut b).unwrap();
+    assert_eq!((&b[..n], from), (&b"ping"[..], local));
+    // No UDP listener at that address.
+    let (tx, rx) = std::sync::mpsc::channel();
+    engine.dial_udp_from(
+        "127.0.0.1:1".parse().unwrap(),
+        peer.local_addr().unwrap(),
+        fn_acceptor(|_c: &Conn<Echo>| Echo),
+        move |e| tx.send(e.kind()).unwrap(),
+    );
+    let k = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(k, std::io::ErrorKind::InvalidInput);
+    assert_eq!(opened.load(Ordering::Relaxed), 1);
+    stop(&engine);
+}
+
+#[test]
+fn tcp_dial_works_when_the_last_group_is_udp() {
+    // A TCP listener, then a UDP listener and UDP client threads: `dial` must use a TCP group.
+    let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let to = srv.local_addr().unwrap();
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp(localhost())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .listen(
+            Listener::udp(localhost())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    e.dial(to, fn_acceptor(|_c: &Conn<Echo>| Echo), |err| {
+        panic!("dial: {err}")
+    });
+    srv.set_nonblocking(false).unwrap();
+    let (_s, _) = srv.accept().unwrap();
+    stop(&e);
+}
+
+#[test]
+fn dial_udp_from_refuses_a_peer_that_has_a_connection() {
+    let engine = echo_engine(1);
+    let local = engine.local_addrs()[0];
+    let peer = client(local);
+    peer.send(b"first").unwrap();
+    assert_eq!(recv(&peer), b"first");
+    let (tx, rx) = std::sync::mpsc::channel();
+    engine.dial_udp_from(
+        local,
+        peer.local_addr().unwrap(),
+        fn_acceptor(|_c: &Conn<Echo>| Echo),
+        move |e| tx.send(e.kind()).unwrap(),
+    );
+    let k = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(k, std::io::ErrorKind::AlreadyExists);
+    stop(&engine);
+}

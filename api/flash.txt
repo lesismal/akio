@@ -99,6 +99,7 @@ pub fn flash::Engine::builder() -> flash::EngineBuilder
 pub fn flash::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<flash_core::telemetry::ConnInfo>
 pub fn flash::Engine::dial<A: flash_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn flash::Engine::dial_udp<A: flash_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn flash::Engine::dial_udp_from<A: flash_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn flash::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub fn flash::Engine::metrics(&self) -> flash_core::telemetry::Metrics
 pub fn flash::Engine::pool_stats(&self) -> flash_pool::PoolStats
