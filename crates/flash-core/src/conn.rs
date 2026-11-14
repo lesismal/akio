@@ -325,7 +325,7 @@ impl WriteState {
     }
 
     /// UDP: drops the first `k` queued datagrams (sent or refused).
-    #[cfg_attr(target_os = "linux", allow(dead_code))] // Linux batches with sendmmsg instead
+    #[cfg(not(target_os = "linux"))] // Linux goes through `send_datagrams`
     fn consume_datagrams(&mut self, k: usize) {
         for _ in 0..k {
             let Some(front) = self.queue.front_mut() else {
@@ -1194,6 +1194,14 @@ impl ConnInner {
         self.link.wake_conn(self.id);
     }
 
+    /// Loop side: the peer finished sending (EOF). Close once everything queued *and* every
+    /// response reserved before now has been written: the close takes the next response
+    /// position, so pipelined requests still being answered (on the pool, say) are not cut off.
+    pub fn close_after_responses(&self) {
+        let seq = self.reserve();
+        self.fill_parts(seq, Vec::new(), true);
+    }
+
     pub fn hold_reads(&self, hold: bool) {
         if self.hold.swap(hold, Ordering::AcqRel) != hold {
             self.link.wake_conn(self.id);
@@ -1217,7 +1225,8 @@ impl ConnInner {
             // First in line (the usual case): send now, without building a part list.
             o.entries.pop_front();
             o.head += 1;
-            let _ = self.send_owned(data);
+            let r = self.send_owned(data);
+            self.ordered_sent(r);
             if close_after {
                 self.close_after_send();
             }
@@ -1297,7 +1306,8 @@ impl ConnInner {
                     };
                     o.head += 1;
                     for p in parts {
-                        let _ = self.send_part(p);
+                        let r = self.send_part(p);
+                        self.ordered_sent(r);
                     }
                     if close_after {
                         self.close_after_send();
@@ -1308,7 +1318,8 @@ impl ConnInner {
                         s.live = true;
                         if !s.pending.is_empty() {
                             let d = std::mem::take(&mut s.pending);
-                            let _ = self.send_owned(d);
+                            let r = self.send_owned(d);
+                            self.ordered_sent(r);
                         }
                     }
                     if !s.finished {
@@ -1322,6 +1333,21 @@ impl ConnInner {
                     }
                 }
                 _ => return,
+            }
+        }
+    }
+
+    /// A response in the ordered stream could not be queued (over `max_queued_bytes`): it
+    /// cannot be dropped without corrupting or stalling the stream, so the connection ends.
+    fn ordered_sent(&self, r: Result<()>) {
+        if let Err(Error::Overloaded) = r {
+            if self
+                .state
+                .compare_exchange(OPEN, CLOSING, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                let e = io::Error::other("ordered response over max_queued_bytes");
+                self.link.close_conn(self.id, Some(e));
             }
         }
     }
@@ -1568,7 +1594,7 @@ impl<H> Conn<H> {
     /// Coalesces writes until [`flush`](Self::flush). Inside `on_data` this is already the
     /// default: everything sent during a callback leaves in one `writev` when it returns.
     pub fn cork(&self) {
-        self.inner.cork()
+        self.inner.cork();
     }
 
     /// Ends corking and writes queued output.
@@ -1578,17 +1604,17 @@ impl<H> Conn<H> {
 
     /// Closes the connection, discarding unsent data. `on_close` runs on the I/O thread.
     pub fn close(&self) {
-        self.inner.close()
+        self.inner.close();
     }
 
     /// Closes once everything queued has been written; further sends fail with `Closed`.
     pub fn close_after_send(&self) {
-        self.inner.close_after_send()
+        self.inner.close_after_send();
     }
 
     /// Pauses (`true`) or resumes (`false`) reading from the peer.
     pub fn hold_reads(&self, hold: bool) {
-        self.inner.hold_reads(hold)
+        self.inner.hold_reads(hold);
     }
 
     /// Calls `f` once everything queued on this connection has been written (right away if
@@ -1596,7 +1622,7 @@ impl<H> Conn<H> {
     /// outgoing side's queue grows, `hold_reads(true)` on the incoming side and resume it from
     /// `on_drain` of the outgoing one.
     pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
-        self.inner.on_drain(Box::new(f))
+        self.inner.on_drain(Box::new(f));
     }
 
     /// The type-erased connection state, for protocol crates that outlive the handler type

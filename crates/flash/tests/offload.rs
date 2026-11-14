@@ -57,7 +57,7 @@ impl Handler for Slow {
             let _ = c.send(data);
             return;
         }
-        let ms = data[0] as u64;
+        let ms = u64::from(data[0]);
         c.spawn_blocking(
             move || {
                 thread::sleep(Duration::from_millis(ms * 10));
@@ -175,7 +175,8 @@ fn pool_overload_is_reported_to_the_caller() {
     struct H(Arc<Mutex<Vec<bool>>>);
     impl Handler for H {
         fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
-            let r = c.spawn_blocking(|| thread::sleep(Duration::from_millis(300)), |_, _, ()| {});
+            // Long enough that job 1 still runs when submission 4 arrives on a slow runner.
+            let r = c.spawn_blocking(|| thread::sleep(Duration::from_secs(3)), |_, _, ()| {});
             self.0
                 .lock()
                 .unwrap()
@@ -226,7 +227,7 @@ fn ordered_slots_keep_pipelined_responses_in_request_order() {
             // One request per byte, pipelined in a single segment. Later requests finish first.
             for &b in data {
                 let slot = c.reserve_response().unwrap();
-                let delay = (20 - b as u64) * 5;
+                let delay = (20 - u64::from(b)) * 5;
                 c.spawn_blocking(
                     move || {
                         thread::sleep(Duration::from_millis(delay));
@@ -280,7 +281,7 @@ fn dropping_an_unfilled_slot_closes_the_connection() {
     let mut s = connect(e.local_addrs()[0]);
     s.write_all(b"x").unwrap();
     let mut b = [0u8; 1];
-    assert_eq!(s.read(&mut b).unwrap(), 0);
+    assert_eq!(common::read_retry(&mut s, &mut b).unwrap(), 0);
     stop(&e);
 }
 

@@ -1,0 +1,47 @@
+GET / HTTP/1.1
+Host: h
+mple.coexample.com:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+m:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+HoxampConnection: closele.com:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Host:"example.coexample.com:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+m:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Hoxample.kom:; H;cP/0.1
+Host: h
+
+raw 3 HTTP/1.1
+Host:"example.coexample.com:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+m:; H;cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Hoxample.kom:; H;cP/0.1
+Host: h
+
+raw byteoePPPno/p HTTP/1.1
+Host:m:443 HTTP/1.1
+Host:"example.com:; H;byteoePPPno/p HTTP/143 HTTP/1.1
+Host:"example.com:; H;cP/1.1
+Host: h
+
+raw byteomePPPno/p HTTP/1Connection: Upgrade, HTTP2-Settings
+Upgrac
+HTTP2-Settings: AAMAAABkAA^POSAP/
+

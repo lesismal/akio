@@ -1,0 +1,16 @@
+T /p HTTP/1.1
+Host: h
+Transfer-Encoding: chunked
+
+4
+body
+0
+CONN
+Transfer-Encoding: cªªªªªªª
+4
+body
+0
+CONNECT exampleT / HTTP/1.1
+Host: h
+Transfer-Encod.oc:m44T ex.oc:m!443 HTTP/1.3
+

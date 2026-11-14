@@ -1,0 +1,30 @@
+GET / HTTP/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+Connection:  / HTTTTP/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+Connection: /1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+Connection:  / HTTTTP/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+Connection:  / HTT / HTTP/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: P/1.1
+Host: h
+
+GET /2 HTTP/1.1
+Host: h
+Co

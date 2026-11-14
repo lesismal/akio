@@ -1,0 +1,19 @@
+CONNECT example+com:443 HTTP/1.1
+HoContent-Length: st: example.com:; Host:mple+cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Hostost: _no_contextSec-Wle.com:; Host:mple+cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Hostost: _no_contextSec-WebSockNNECT example+cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Host: example: example.comHEAD ebSockNNECT example+cP/1.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Host: example: example.comHEAD :; Hostover886
+

@@ -1,0 +1,8 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub=25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Protocol: chat
+

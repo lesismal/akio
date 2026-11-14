@@ -1,0 +1,4 @@
+GET /raw HTTP/1.1
+Host: .h
+
+raw bytes

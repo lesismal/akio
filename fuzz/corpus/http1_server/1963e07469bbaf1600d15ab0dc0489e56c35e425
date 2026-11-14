@@ -1,0 +1,40 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-VersioSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=n: : websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dG:1.1
+hExpect: ;=pect web HTTP/1.1
+zost: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-UebSocket-Key:/ws HTTP/1.1
+zost: h
+Upgradea:2.1
+hExpect: TP/1.1
+zost: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-UebSocket-Key:/ws HTTP/1.1
+zost: h
+Upgradea:2.1
+hExpect: ;=pect webs;=pect wehlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WabSocket-Ede: webso13
+Sec-WabSocket-Ede: websoYket
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-VersioSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=n: : websocket
+Connection: Upgrade
+Sec-WebSkcket-Key: dG:1.1
+hExpect: ;=pect web HTTP/1.1
+zost: h
+UConnection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version#: 13
+Sec-WabSockextensions: /pushssage-deflate; client_max_window_bits
+
+ÅÖ7˙!=-üMQ/detachc-WebS

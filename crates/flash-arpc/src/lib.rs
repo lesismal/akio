@@ -23,7 +23,14 @@
 //!     .unwrap();
 //! engine.run().unwrap();
 //! ```
+//!
+//! Guide: [arpc](https://lesismal.github.io/flash/en/protocols/arpc.html)
+//! (中文: [arpc](https://lesismal.github.io/flash/zh-CN/protocols/arpc.html)).
+#![warn(clippy::unwrap_used)]
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod proto;
 
 use std::{
@@ -50,10 +57,11 @@ use crate::proto::{Cmd, Decoder, Message, encode};
 pub const METHOD_NOT_FOUND: &str = "method not found";
 
 type HandlerFn = Arc<dyn Fn(&mut Context) + Send + Sync>;
-type StreamFn = Arc<dyn Fn(&Stream) -> Box<dyn FnMut(&Stream, StreamEvent) + Send> + Send + Sync>;
+type StreamFn =
+    Arc<dyn Fn(&Stream) -> Box<dyn FnMut(&Stream, StreamEvent<'_>) + Send> + Send + Sync>;
 type PeerFn = Arc<dyn Fn(&Peer) + Send + Sync>;
 type ReadyFn = Box<dyn FnOnce(Peer) + Send>;
-type StreamCb = Box<dyn FnMut(&Stream, StreamEvent) + Send>;
+type StreamCb = Box<dyn FnMut(&Stream, StreamEvent<'_>) + Send>;
 type StreamMap = HashMap<(u64, bool), Arc<Mutex<StreamState>>>;
 
 /// Methods served to the peer, and connection hooks.
@@ -91,7 +99,7 @@ impl Routes {
         open: impl Fn(&Stream) -> F + Send + Sync + 'static,
     ) -> Routes
     where
-        F: FnMut(&Stream, StreamEvent) + Send + 'static,
+        F: FnMut(&Stream, StreamEvent<'_>) + Send + 'static,
     {
         self.streams
             .insert(method.to_owned(), Arc::new(move |s| Box::new(open(s))));
@@ -245,7 +253,7 @@ impl Peer {
     pub fn new_stream(
         &self,
         method: &str,
-        on_event: impl FnMut(&Stream, StreamEvent) + Send + 'static,
+        on_event: impl FnMut(&Stream, StreamEvent<'_>) + Send + 'static,
     ) -> Stream {
         let id = self.0.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let s = Stream {
@@ -746,16 +754,16 @@ fn redial(weak: Weak<PeerInner>, engine: EngineRef, addr: SocketAddr) {
     }
     let peer = Peer(inner);
     let w2 = Arc::downgrade(&peer.0);
-    let e2 = engine.clone();
+    let e2 = engine;
     e.dial(
         addr,
         Attach {
-            peer: peer.clone(),
+            peer,
             ready: Mutex::new(None),
         },
         move |_err| {
             timers().add(Instant::now() + Duration::from_secs(1), move || {
-                redial(w2, e2, addr)
+                redial(w2, e2, addr);
             });
         },
     );
@@ -774,7 +782,8 @@ impl Acceptor for Attach {
         if let Some(f) = &self.peer.0.routes.on_connected {
             f(&self.peer);
         }
-        if let Some(r) = self.ready.lock().unwrap_or_else(|p| p.into_inner()).take() {
+        let taken = self.ready.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(r) = taken {
             r(self.peer.clone());
         }
         ArpcConn {
@@ -809,7 +818,7 @@ pub fn dial(engine: &Arc<Engine>, addr: SocketAddr, routes: Arc<Routes>) -> io::
     engine.dial(
         addr,
         Attach {
-            peer: peer.clone(),
+            peer,
             ready: Mutex::new(Some(Box::new(move |p| {
                 let _ = tx.send(Ok(p));
             }))),

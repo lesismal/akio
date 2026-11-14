@@ -1,0 +1,9 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c ction: Upgrade,+,TTade, HTTP2.1
+Host: h
+Connection: Upgrade, ,ade, HTTP1Sec-Wect H.Tade, HTTP2-SettingsP____oooooooooooooooooooooooo__________________________:_______________
+
+~

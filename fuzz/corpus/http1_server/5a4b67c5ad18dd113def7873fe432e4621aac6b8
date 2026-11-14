@@ -1,0 +1,11 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgr/0.1
+Host: h
+
+raw byteom:443 HTTP/1.1
+Host:"example.com:; H;cPct/0.1
+HostHost: : h
+
+raw byteom:443 HT: bXB!=üMLostttåˇ∏∫®öù¶

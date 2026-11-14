@@ -14,7 +14,12 @@ flash-http = { path = "../flash-http" }
 flash-quic = { path = "../flash-quic" }
 bytes = "1"
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_h3::fuzzing`); not a public API.
+fuzzing = []
+
 [dev-dependencies]
+flash-core = { path = "../flash-core", features = ["fuzzing"] }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 
 [lints]

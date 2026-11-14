@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-SettingA
+Upgrade: h2c
+HzTP2-Settings: .Exp7A9_
+

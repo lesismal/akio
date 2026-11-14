@@ -1,0 +1,15 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HT/rawSettings
+Upgrade: h2c
+XTTP2-Settings: AAMAAABkAAQAAP/ Hde, HT/rawSettings
+Upgrade: h2c
+XTTP2-Settings: AAMAAABkAAQAAP/ Honnection: Upgrade, HTTP2-Settings
+Upgrade: h2c
+XTTP2-Settings: tings
+Upgrade: h2c
+XTTP2-Settings: AAMAAABkAAQAAP__
+
+нннннннннннннннннннн__
+
+ннн

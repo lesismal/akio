@@ -386,14 +386,16 @@ impl Client {
                 let ok = conn.spawn_blocking(
                     || (),
                     move |h: &mut ClientConn, c, ()| {
-                        if let Some(p) = s2.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                        let taken = s2.lock().unwrap_or_else(|e| e.into_inner()).take();
+                        if let Some(p) = taken {
                             h.begin(c, p, me, true);
                         }
                     },
                 );
                 if ok.is_err() {
                     // The pool refused (or the connection just closed): start over on a new one.
-                    if let Some(p) = slot.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+                    if let Some(p) = taken {
                         self.dial(p);
                     }
                 }
@@ -415,7 +417,7 @@ impl Client {
             client: self.clone(),
         };
         let fail = {
-            let (slot, me) = (slot.clone(), self.clone());
+            let (slot, me) = (slot, self.clone());
             move |e: io::Error| {
                 let taken = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(mut p) = taken {
@@ -456,12 +458,12 @@ impl Acceptor for DialAcceptor {
 
     fn on_open(&self, c: &Conn<ClientConn>) -> ClientConn {
         let mut h = ClientConn::new();
-        if let Some(p) = self
+        let taken = self
             .pending
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
+            .take();
+        if let Some(p) = taken {
             h.begin(c, p, self.client.clone(), false);
         }
         h
@@ -709,6 +711,31 @@ impl ClientConn {
             }
         }
     }
+}
+
+/// Fuzzing: feeds `pieces` as the responses to requests on one connection (re-armed after each
+/// complete response, as a keep-alive client would before its next request).
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn fuzz_responses(pieces: &[&[u8]], head_only: bool) {
+    let c: Conn<ClientConn> = flash_core::fuzzing::conn();
+    let mut h = ClientConn::new();
+    let arm = |h: &mut ClientConn| {
+        h.state = RState::Head;
+        h.active = Some(Active {
+            cb: Box::new(|_| {}),
+            head_only,
+            retry: None,
+            resp: None,
+            version: Version::Http11,
+        });
+    };
+    for p in pieces {
+        if matches!(h.state, RState::Idle) && c.is_open() {
+            arm(&mut h);
+        }
+        h.on_data(&c, p);
+    }
+    h.on_close(&c, None);
 }
 
 impl Handler for ClientConn {

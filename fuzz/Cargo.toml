@@ -1,0 +1,174 @@
+[package]
+name = "flash-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: nightly-only, never built by the main workspace (see the root `exclude`).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+flash-http = { path = "../crates/flash-http", features = ["fuzzing"] }
+flash-ws = { path = "../crates/flash-ws", features = ["fuzzing"] }
+flash-arpc = { path = "../crates/flash-arpc", features = ["fuzzing"] }
+flash-grpc = { path = "../crates/flash-grpc", features = ["fuzzing"] }
+flash-socks = { path = "../crates/flash-socks", features = ["fuzzing"] }
+flash-mux = { path = "../crates/flash-mux", features = ["fuzzing"] }
+flash-kcp = { path = "../crates/flash-kcp", features = ["fuzzing"] }
+flash-h3 = { path = "../crates/flash-h3", features = ["fuzzing"] }
+flash-ebpf = { path = "../crates/flash-ebpf", features = ["fuzzing"] }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "http1_request"
+path = "fuzz_targets/http1_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http1_chunked"
+path = "fuzz_targets/http1_chunked.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hpack"
+path = "fuzz_targets/hpack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http1_client"
+path = "fuzz_targets/http1_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http1_server"
+path = "fuzz_targets/http1_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h2_server"
+path = "fuzz_targets/h2_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_frames"
+path = "fuzz_targets/ws_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ws_client_handshake"
+path = "fuzz_targets/ws_client_handshake.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "arpc_decoder"
+path = "fuzz_targets/arpc_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "grpc_framing"
+path = "fuzz_targets/grpc_framing.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "grpc_server"
+path = "fuzz_targets/grpc_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "socks_request"
+path = "fuzz_targets/socks_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mux_sniff"
+path = "fuzz_targets/mux_sniff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kcp_input"
+path = "fuzz_targets/kcp_input.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kcp_fec"
+path = "fuzz_targets/kcp_fec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kcp_crypt"
+path = "fuzz_targets/kcp_crypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kcp_frame"
+path = "fuzz_targets/kcp_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h3_frame"
+path = "fuzz_targets/h3_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "qpack_decode"
+path = "fuzz_targets/qpack_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h3_request"
+path = "fuzz_targets/h3_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cbpf_steer"
+path = "fuzz_targets/cbpf_steer.rs"
+test = false
+doc = false
+bench = false

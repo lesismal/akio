@@ -1,0 +1,6 @@
+GET /ws HTTP/1.1
+Hospgrade:w ebsocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Fersion: 1Îòõ¬šœÒ¨ebSocket-Proto chat
+

@@ -143,8 +143,8 @@ fn hash_program(key: HashKey, n: usize) -> Vec<Insn> {
 fn runs(table: &[u8]) -> Vec<(u32, u32)> {
     let mut r: Vec<(u32, u32)> = Vec::new();
     for (s, &i) in table.iter().enumerate() {
-        if r.last().is_none_or(|&(_, last)| last != i as u32) {
-            r.push((s as u32, i as u32));
+        if r.last().is_none_or(|&(_, last)| last != u32::from(i)) {
+            r.push((s as u32, u32::from(i)));
         }
     }
     r
@@ -178,7 +178,7 @@ pub fn run(prog: &[Insn], net: &[u8], cpu: u32) -> u32 {
         }
         let rel = off.wrapping_sub(NET) as usize;
         let b = net.get(rel..rel + size)?;
-        Some(b.iter().fold(0u32, |v, &x| (v << 8) | x as u32))
+        Some(b.iter().fold(0u32, |v, &x| (v << 8) | u32::from(x)))
     };
     let (mut a, mut x, mut mem) = (0u32, 0u32, [0u32; 16]);
     let mut pc = 0usize;
@@ -286,7 +286,7 @@ mod tests {
                     );
                     let src6 = SocketAddr::new(
                         IpAddr::V6(Ipv6Addr::from(
-                            (i as u128).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835),
+                            u128::from(i).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835),
                         )),
                         port,
                     );

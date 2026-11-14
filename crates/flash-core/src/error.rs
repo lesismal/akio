@@ -31,3 +31,19 @@ impl From<io::Error> for Error {
         Error::Io(e)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_and_conversion() {
+        assert_eq!(Error::Closed.to_string(), "connection closed");
+        assert_eq!(Error::Overloaded.to_string(), "overloaded");
+        let e: Error = io::Error::new(io::ErrorKind::BrokenPipe, "pipe").into();
+        assert!(matches!(e, Error::Io(ref x) if x.kind() == io::ErrorKind::BrokenPipe));
+        assert_eq!(e.to_string(), "io error: pipe");
+        let dynerr: &dyn std::error::Error = &e;
+        assert!(dynerr.source().is_none());
+    }
+}

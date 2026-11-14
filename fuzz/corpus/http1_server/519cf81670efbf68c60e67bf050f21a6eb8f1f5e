@@ -1,0 +1,9 @@
+GET /a.?b=c HTTP/1.0
+User5Agent: x
+Ac2ept: */*Upgrade: websocket
+Connection: Upg-deflate; cub25on: 13
+Sec-We:hpermessage-defla
+Content-Length: 4
+
+ab_c
+Ho

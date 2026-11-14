@@ -2,7 +2,7 @@
 //!
 //! `loona-hpack` rebuilds its Huffman decoding table (nested hash maps of 257 codes) for every
 //! Huffman-coded string, which made header decoding the dominant cost of an HTTP/2 request.
-//! [`strip_huffman`] rewrites a header block so that every string literal is raw, decoding the
+//! `strip_huffman` rewrites a header block so that every string literal is raw, decoding the
 //! Huffman ones here; the block then goes to `loona-hpack` unchanged otherwise, so its dynamic
 //! table and validation stay in charge.
 
@@ -206,8 +206,8 @@ mod tests {
         let (mut acc, mut bits, mut out) = (0u64, 0u32, Vec::new());
         for &c in s {
             let (code, len) = CODES[c as usize];
-            acc = (acc << len) | code as u64;
-            bits += len as u32;
+            acc = (acc << len) | u64::from(code);
+            bits += u32::from(len);
             while bits >= 8 {
                 out.push((acc >> (bits - 8)) as u8);
                 bits -= 8;

@@ -154,8 +154,8 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### M6 DPDK + production readiness (6–8 weeks)
 - [ ] `flash-dpdk`: EAL init, mbuf rx/tx, userspace TCP/IP stack selection and integration (UDP first, then TCP), integration with Engine thread groups
-- [ ] Production: metrics (Prometheus-style), structured logs, runtime debug/pprof equivalents (connection table, queue depth, slow callbacks), config hot reload
-- [ ] Chaos tests: random disconnects, half close, slow clients, pool saturation, fd exhaustion
+- [x] Production: per-I/O-thread relaxed counters (connections, bytes, reads/writes, UDP datagrams, send-queue gauge, backpressure/overload, TLS handshake failures, loop iterations/events/callback time, slow callbacks) plus pool stats, `Engine::metrics()` rendered as Prometheus text or JSON; structured logs through the `log` facade with key-values (stderr fallback, `Config::log_level`); runtime debug: connection table gathered by the loops, slow-callback ring buffer, per-thread loop stats; flash-http `metrics_handler`, `HttpMetrics` (status classes, latency histogram), `access_log`, token-guarded `debug_handler`; hot reload via `Engine::reload`/`Live` (idle timeout, slow threshold/hook, queue limit, high watermark, new `max_connections`, shutdown timeout, log level). Not done: `tracing` feature, reload of buffer size/backlog/threads/UDP idle timeout, per-route HTTP labels, overhead measured on a quiet host
+- [x] Chaos tests: seeded, reproducible suites for the engine (`flash/tests/chaos.rs`), fd exhaustion (`chaos_fd.rs`), TLS (`chaos_tls.rs`) and HTTP/WebSocket (`flash-http/tests/chaos.rs`): RST aborts, half close, slow and non-reading clients, pool saturation, EMFILE, shutdown under load; invariants: `on_close` exactly once, no stall, bounded queues, no fd leak. Fast seeds by default, `FLASH_CHAOS=1 FLASH_CHAOS_SECS=300` soaks (clean on macOS, Linux epoll and io_uring). Bugs fixed: EOF cut off pending ordered responses; an over-limit ordered response vanished; epoll spun on EMFILE; io_uring missed an RST after data; io_uring could reuse an fd still named by unsubmitted SQEs
 - [ ] Prefork (optional)
 - **Deliverable**: soak report (≥72h)
 
@@ -167,8 +167,9 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### 1.0 Stabilization
 - [ ] API review and freeze, semver policy, deprecation process
-- [ ] Full fuzz corpora and coverage report, `cargo-audit/deny`, unsafe review checklist
-- [ ] Docs site + migration guides (from fib / tokio / hyper) + architecture document
+- [ ] Full fuzz corpora and coverage report, `cargo-audit/deny`, unsafe review checklist — fuzzing done: `fuzz/` cargo-fuzz project with 21 targets (HTTP/1, HTTP/2 + HPACK, WebSocket, arpc, gRPC, SOCKS, mux, KCP, HTTP/3 + QPACK, cBPF), minimized corpora (~2.6 MB) replayed by stable unit tests, ~14 min per target on Linux, `fuzz/run-all.sh` and `fuzz/coverage.sh`. Fixed: HTTP/2 deadlock when a streamed request is dropped, recursive/invalid server push, gRPC `grpc-timeout` panic/overflow, KCP RTT overflow, unbounded SOCKS handshake buffering. Pending: deny/audit, unsafe review
+- [x] CI hardening and coverage: strict lint set (`missing_docs` deny, `unreachable_pub`, `unwrap_used` in library code, curated pedantic/nursery lints), rustdoc `-D warnings`; matrix: Linux x86_64/arm64 × epoll/io_uring, macOS (best effort), MSRV 1.85, cargo-hack feature powerset, Miri, loom, Autobahn (server + client), h2spec, book build + Pages deploy, heavy jobs (Go interop, nightly fuzz); single `ci-ok` gate. Coverage job (cargo-llvm-cov, both backends merged): 85.9% → 91.6% lines, every crate ≥ 85%. Fixed along the way: flash-quic panic on wrong-direction streams, 15 callbacks run under a slot lock, `--no-default-features` test build, two test races. Not verified on GitHub itself yet (Pages setting, fib checkout, Codecov)
+- [x] Docs site + migration guides + architecture document: mdBook `book/en` + `book/zh-CN` (getting started, concepts, one chapter per protocol, configuration reference, observability and hot reload, performance tuning, troubleshooting), built by `book/build.sh`; every snippet included from 14 runnable `guide-*` examples; migration guides from fib, tokio and hyper/axum; `docs/architecture.md` with Mermaid diagrams; crate rustdocs link to the book; root README. Not done: Pages deployment, running the guide examples on Linux
 
 ## 4. Engineering rules
 - **Branches/commits**: `main` stays releasable; feature branches + PRs; Conventional Commits.

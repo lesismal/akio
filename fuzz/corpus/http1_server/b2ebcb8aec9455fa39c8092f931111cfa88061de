@@ -1,0 +1,4 @@
+T /ws HTTP/1.1
+Host: h
+Upgr: we1mocket
+C3onnectExt!=

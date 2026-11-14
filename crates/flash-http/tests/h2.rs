@@ -179,7 +179,7 @@ fn large_bodies_cross_small_flow_control_windows_both_ways() {
     assert!(r.body == pattern(3_000_000), "download corrupted");
     let up = pattern(3 << 20);
     let r = c
-        .send(ClientRequest::post(&format!("{base}/echo"), up.clone()))
+        .send(ClientRequest::post(&format!("{base}/echo"), up))
         .wait()
         .unwrap();
     // The server buffers uploads up to its limit (1 MiB default): bigger ones get a 413.

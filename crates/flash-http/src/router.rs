@@ -267,7 +267,7 @@ impl Service for DefaultFallback {
     fn call(&self, ctx: &mut Context) {
         match ctx.local(ALLOW).map(str::to_owned) {
             Some(allow) => {
-                ctx.respond(Response::text(405, "Method Not Allowed").header("Allow", allow))
+                ctx.respond(Response::text(405, "Method Not Allowed").header("Allow", allow));
             }
             None => ctx.text(404, "Not Found"),
         }
@@ -669,6 +669,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "regex")] // regexp parameters need the `regex` feature
     #[test]
     fn regexp_params_sit_between_static_and_plain() {
         let nop = |_: &mut Context| {};
@@ -806,6 +807,7 @@ mod tests {
         let _ = Router::new().get("/a/:x", nop).get("/a/:y/b", nop);
     }
 
+    #[cfg(feature = "regex")] // regexp parameters need the `regex` feature
     #[test]
     #[should_panic(expected = "parameter name conflict")]
     fn conflicting_regexp_param_names_panic() {
@@ -815,11 +817,20 @@ mod tests {
             .get("/a/{y:[0-9]+}/b", nop);
     }
 
+    #[cfg(feature = "regex")] // regexp parameters need the `regex` feature
     #[test]
     #[should_panic(expected = "bad parameter regexp")]
     fn invalid_regexp_panics() {
         let nop = |_: &mut Context| {};
         let _ = Router::new().get("/a/{x:[0-9}", nop);
+    }
+
+    #[test]
+    #[cfg(not(feature = "regex"))]
+    #[should_panic(expected = "need flash-http's `regex` feature")]
+    fn regexp_params_without_the_feature_panic() {
+        let nop = |_: &mut Context| {};
+        let _ = Router::new().get("/a/{x:[0-9]+}", nop);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Ready-made [`Middleware`](crate::Middleware): recover, request id, CORS, access log.
+//! Ready-made [`Middleware`]: recover, request id, CORS, logger, response time, compress, ETag,
+//! CSRF and a per-IP rate limiter. Metrics and the structured access log are in [`crate::observe`].
 
 use std::{
     collections::HashMap,
@@ -38,7 +39,7 @@ pub fn request_id() -> impl Middleware {
                 let t = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos() as u64);
-                format!("{:016x}-{n:x}", t)
+                format!("{t:016x}-{n:x}")
             }
         };
         ctx.add_response_header("X-Request-Id", id.clone());

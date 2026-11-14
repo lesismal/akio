@@ -103,12 +103,12 @@ impl Group for EpollGroup {
         if self.started.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        let loops = std::mem::take(&mut *self.pending.lock().unwrap());
+        let loops = std::mem::take(&mut *self.pending.lock().unwrap_or_else(|p| p.into_inner()));
         // Running from now on: requests posted before a thread is first scheduled are queued.
         for s in &self.shared {
             s.stats.set_running(true);
         }
-        let mut handles = self.threads.lock().unwrap();
+        let mut handles = self.threads.lock().unwrap_or_else(|p| p.into_inner());
         for (i, mut l) in loops.into_iter().enumerate() {
             let h = std::thread::Builder::new()
                 .name(format!("flash-io-{i}"))
@@ -125,7 +125,7 @@ impl Group for EpollGroup {
     }
 
     fn join(&self) {
-        let handles = std::mem::take(&mut *self.threads.lock().unwrap());
+        let handles = std::mem::take(&mut *self.threads.lock().unwrap_or_else(|p| p.into_inner()));
         for h in handles {
             let _ = h.join();
         }

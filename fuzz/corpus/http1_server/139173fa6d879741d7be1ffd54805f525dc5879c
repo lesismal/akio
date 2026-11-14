@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTttings
+Upgrade: h2c
+HTTP2-Settings: AExpect: 100-continueAMAAABkAA_PA7A9_
+

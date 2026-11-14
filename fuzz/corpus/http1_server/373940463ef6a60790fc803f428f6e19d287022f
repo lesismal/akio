@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTade, HTTP2-Setting
+Upgrade: h2c
+HTTP2-Settings: AAMAAP__
+

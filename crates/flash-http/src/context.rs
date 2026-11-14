@@ -40,7 +40,7 @@ pub struct Streaming<S>(pub S);
 
 impl<S: Service> Service for Streaming<S> {
     fn call(&self, ctx: &mut Context) {
-        self.0.call(ctx)
+        self.0.call(ctx);
     }
     fn body_mode(&self, _req: &Request) -> BodyMode {
         BodyMode::Stream
@@ -63,7 +63,7 @@ where
     F: Fn(&mut Context) + Send + Sync + 'static,
 {
     fn call(&self, ctx: &mut Context) {
-        self(ctx)
+        self(ctx);
     }
 }
 
@@ -78,7 +78,7 @@ where
     F: Fn(&mut Context, &dyn Service) + Send + Sync + 'static,
 {
     fn handle(&self, ctx: &mut Context, next: &dyn Service) {
-        self(ctx, next)
+        self(ctx, next);
     }
 }
 

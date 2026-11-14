@@ -1,0 +1,12 @@
+POST / HTTP/1.1
+Host: h
+Expect: ontent-Length: 2
+
+POSc / HTTP/1.1
+Host: h
+Expect: 100-continue
+Content-Length: 2
+
+hihOST /stream HTTP/1.1
+Host:Transfer-Encoding: chunk
+

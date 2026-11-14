@@ -1,0 +1,10 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade:ވeTP/1.1
+Host: h
+Upgrade:ވebsEst
+Host: h
+Upgrade:ވeTP/1.1
+Host: h
+Upgrade:ވebsEst: examp/1dd
+

@@ -10,6 +10,10 @@
 //! * Write: `send` tries the socket directly (from any thread); the rest is queued and written by
 //!   the owning loop when the socket becomes writable.
 //! * Backpressure: reads pause while a connection's queue exceeds the high watermark.
+//!
+//! Guide: [Engine, listeners and backends](https://lesismal.github.io/flash/en/concepts/engine.html)
+//! (中文: [Engine、Listener 与后端](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
+#![warn(clippy::unwrap_used)]
 
 mod group;
 mod reactor;

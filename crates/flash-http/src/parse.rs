@@ -100,7 +100,7 @@ pub(crate) struct ChunkDecoder {
 const MAX_TRAILER_BYTES: usize = 8 << 10;
 
 impl ChunkDecoder {
-    pub fn new() -> ChunkDecoder {
+    pub(crate) fn new() -> ChunkDecoder {
         ChunkDecoder {
             st: St::Size,
             size: 0,
@@ -109,12 +109,12 @@ impl ChunkDecoder {
         }
     }
 
-    pub fn is_done(&self) -> bool {
+    pub(crate) fn is_done(&self) -> bool {
         self.st == St::Done
     }
 
     /// Trailer fields received after the last chunk.
-    pub fn trailers(&self) -> Headers {
+    pub(crate) fn trailers(&self) -> Headers {
         let mut h = Headers::new();
         let mut storage = [httparse::EMPTY_HEADER; 32];
         if let Ok(httparse::Status::Complete((_, parsed))) =
@@ -132,7 +132,7 @@ impl ChunkDecoder {
     /// Consumes bytes from `input`, appending decoded data to `out` (which may grow to
     /// `max_total` bytes). Returns how many bytes were used; the decoder is [`done`](Self::is_done)
     /// once the terminating empty line has been seen, even if `input` has more (the next request).
-    pub fn feed(
+    pub(crate) fn feed(
         &mut self,
         input: &[u8],
         out: &mut Vec<u8>,

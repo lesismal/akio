@@ -1,6 +1,6 @@
 //! Closed-loop echo load generator, so the same tool drives flash, fib, tokio...
 //!
-//! usage: echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]
+//! usage: `echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]`
 //!
 //! `mode` is `tcp`, `udp`, `ws` (WebSocket binary messages after an upgrade on `/ws`), `tls`, or
 //! `tlshs` (build with `--features tls`; the server certificate is not verified). `tlshs`
@@ -125,13 +125,13 @@ mod tls {
     }
 
     /// Like [`config`], without session resumption (every handshake is a full one).
-    pub fn config_no_resume() -> Arc<rustls::ClientConfig> {
+    pub(crate) fn config_no_resume() -> Arc<rustls::ClientConfig> {
         let mut c = (*config()).clone();
         c.resumption = rustls::client::Resumption::disabled();
         Arc::new(c)
     }
 
-    pub fn config() -> Arc<rustls::ClientConfig> {
+    pub(crate) fn config() -> Arc<rustls::ClientConfig> {
         let provider = rustls::crypto::ring::default_provider();
         let schemes = provider
             .signature_verification_algorithms
@@ -191,7 +191,7 @@ fn ws_connect(addr: &str, size: usize) -> Sock {
 
 /// One full TLS handshake: connect, handshake, close.
 #[cfg(feature = "tls")]
-fn tls_handshake(addr: &str, cfg: &std::sync::Arc<rustls::ClientConfig>) -> io::Result<()> {
+fn tls_handshake(addr: &str, cfg: &Arc<rustls::ClientConfig>) -> io::Result<()> {
     let mut tcp = TcpStream::connect(addr)?;
     tcp.set_nodelay(true).ok();
     let name = rustls::pki_types::ServerName::try_from("localhost").expect("name");
@@ -291,12 +291,12 @@ fn main() {
                 let mut buf = vec![0u8; size.max(1)];
                 let (mut n, mut l) = (0u64, 0u64);
                 'run: while !stop.load(Ordering::Relaxed) {
-                    for s in socks.iter_mut() {
+                    for s in &mut socks {
                         if s.send(&msg).is_err() {
                             break 'run;
                         }
                     }
-                    for s in socks.iter_mut() {
+                    for s in &mut socks {
                         match s.recv(&mut buf) {
                             Ok(true) => n += 1,
                             Ok(false) => l += 1,

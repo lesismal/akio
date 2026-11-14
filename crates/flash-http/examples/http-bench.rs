@@ -40,7 +40,7 @@ fn json_message(s: &str) -> Vec<u8> {
             '"' => out.extend_from_slice(b"\\\""),
             '\\' => out.extend_from_slice(b"\\\\"),
             c if (c as u32) < 0x20 => {
-                out.extend_from_slice(format!("\\u{:04x}", c as u32).as_bytes())
+                out.extend_from_slice(format!("\\u{:04x}", c as u32).as_bytes());
             }
             c => {
                 let mut b = [0u8; 4];
@@ -67,10 +67,10 @@ fn main() -> std::io::Result<()> {
     let opts = WsOptions::default();
     let app = Router::new()
         .get("/plaintext", |ctx: &mut Context| {
-            ctx.text(200, "Hello, World!")
+            ctx.text(200, "Hello, World!");
         })
         .get("/json", |ctx: &mut Context| {
-            ctx.bytes(200, "application/json", json_message("Hello, World!"))
+            ctx.bytes(200, "application/json", json_message("Hello, World!"));
         })
         .get("/ws", move |ctx: &mut Context| {
             ctx.upgrade_websocket(Echo, &opts);

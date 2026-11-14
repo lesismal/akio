@@ -1,0 +1,10 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: webs/CenO
+Connection: Wpgr
+Sec-WebSocket-Kost: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key:Co
+tocol: chat
+

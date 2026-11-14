@@ -212,7 +212,7 @@ impl<S: Service> Handler for Session<S> {
 }
 
 impl<S: Service> Session<S> {
-    fn shutdown(&mut self, c: &Conn<Self>) {
+    fn shutdown(&self, c: &Conn<Self>) {
         match &self.h2 {
             Some(h2) => h2.shutdown(),
             None => h1_shutdown(c),
@@ -558,7 +558,7 @@ mod size_tests {
     /// boxed so an idle HTTP/1 connection does not pay for them (it was 736 bytes).
     #[test]
     fn idle_session_stays_small() {
-        let n = std::mem::size_of::<super::Session<crate::Router>>();
+        let n = size_of::<super::Session<crate::Router>>();
         assert!(n <= 256, "Session is {n} bytes");
     }
 }

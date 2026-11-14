@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: PATCH  , HTTade,HTTade, HTTP2-Settings
+Upgrade: h2c
+tn: AAMAAPz__
+

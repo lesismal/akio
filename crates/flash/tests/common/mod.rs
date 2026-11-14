@@ -5,12 +5,23 @@ use flash::{Backend, UringConfig};
 
 /// The backend under test: epoll/kqueue by default, io_uring with `FLASH_TEST_BACKEND=uring`
 /// (strict: a kernel without io_uring fails the run instead of silently testing epoll).
-pub fn backend() -> Backend {
+pub(crate) fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
         Ok("uring") => Backend::IoUring(UringConfig {
             strict: true,
             ..UringConfig::default()
         }),
         _ => Backend::Epoll,
+    }
+}
+
+/// `read` that retries `EINTR`: with an io_uring ring in the same process, a blocking std read
+/// can be interrupted (`read_exact` already retries; a single `read` does not).
+pub(crate) fn read_retry(s: &mut impl std::io::Read, buf: &mut [u8]) -> std::io::Result<usize> {
+    loop {
+        match s.read(buf) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            r => return r,
+        }
     }
 }

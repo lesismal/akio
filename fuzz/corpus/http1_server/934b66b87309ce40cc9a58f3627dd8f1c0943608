@@ -1,0 +1,11 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+HOst: h
+Connection: UHt:so , HTTad,eHEAD Connection@ Upgrade, / HTTP/1.1
+Host:TTP/1.1
+HOst: h
+Connection: UHost: , HTTade,  h
+Connection: Upgrade, HTTade, HTTP2-Setti HTTade, HTTP2-Settings
+Upgrade: h2c
+TTP2-Sedtings: AA/stream
+

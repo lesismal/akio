@@ -1,0 +1,8 @@
+HTTP/1.1 101 Switchtocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+S*ec-Webs: perm
+Sec-WebSocsetYExtensions: pe
+Sen-WebSocket-Accept: s3ps=10
+

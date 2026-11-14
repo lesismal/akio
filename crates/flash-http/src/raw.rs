@@ -23,22 +23,22 @@ impl RawConn {
 
     /// Closes now, dropping unsent data.
     pub fn close(&self) {
-        self.0.close()
+        self.0.close();
     }
 
     /// Closes once everything queued is written.
     pub fn close_after_send(&self) {
-        self.0.close_after_send()
+        self.0.close_after_send();
     }
 
     /// Pauses or resumes reading.
     pub fn hold_reads(&self, hold: bool) {
-        self.0.hold_reads(hold)
+        self.0.hold_reads(hold);
     }
 
     /// Calls `f` once the send queue is empty (or the connection closed).
     pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
-        self.0.on_drain(Box::new(f))
+        self.0.on_drain(Box::new(f));
     }
 
     /// Bytes queued but not yet written.

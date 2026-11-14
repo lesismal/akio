@@ -23,6 +23,8 @@ const LISTENER: u64 = 1;
 const FIRST_CONN: u64 = 16;
 const MAX_ACCEPT_PER_EVENT: usize = 64;
 const MAX_READS_PER_EVENT: usize = 16;
+/// After `accept` fails (EMFILE, ENFILE, ENOBUFS...), the listener is left alone this long.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(100);
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(FIRST_CONN);
 static NEXT_LOOP_UID: AtomicUsize = AtomicUsize::new(1);
@@ -183,6 +185,8 @@ pub(crate) struct Loop {
     scratch: Vec<u8>,
     cfg: Arc<Config>,
     draining: Option<Instant>,
+    /// The listener is out of the poller until then, after a failed `accept`.
+    accept_paused_until: Option<Instant>,
     /// Idle-timeout timers (connection ids); empty unless `Config::idle_timeout` is set.
     wheel: Wheel<u64>,
     epoch: Instant,
@@ -218,6 +222,7 @@ impl Loop {
             scratch: vec![0; cfg.read_buffer],
             cfg,
             draining: None,
+            accept_paused_until: None,
             wheel: Wheel::new(0),
             epoch: Instant::now(),
             clock: Instant::now(),
@@ -241,6 +246,10 @@ impl Loop {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
                 timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
             }
+            if let Some(t) = self.accept_paused_until {
+                let left = t.saturating_duration_since(Instant::now()) + Duration::from_millis(1);
+                timeout = Some(timeout.map_or(left, |x| x.min(left)));
+            }
             events.clear();
             if let Err(e) = self.poller.wait(&mut events, timeout) {
                 log_or_stderr(log::Level::Error, format_args!("poller error: {e}"));
@@ -258,6 +267,7 @@ impl Loop {
             }
             self.drain_cmds();
             self.fire_timers();
+            self.resume_accept();
             if let Some(deadline) = self.draining {
                 if self.slots.is_empty() {
                     break;
@@ -543,11 +553,38 @@ impl Loop {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                 Err(e) => {
-                    // e.g. EMFILE: level-triggered, so we will be called again; avoid a hot loop.
+                    // e.g. EMFILE. The pending connection stays queued (on Linux) and the
+                    // listener stays readable: polling it again right away would spin, so take
+                    // it out of the poller for a moment (closing connections frees descriptors).
                     self.shared.stats.accept_errors.add_local(1);
-                    log_or_stderr(log::Level::Warn, format_args!("accept: {e}"));
+                    log_or_stderr(
+                        log::Level::Warn,
+                        format_args!("accept: {e}; pausing accepts for {ACCEPT_BACKOFF:?}"),
+                    );
+                    self.poller.delete(l.as_raw_fd());
+                    self.accept_paused_until = Some(Instant::now() + ACCEPT_BACKOFF);
                     return;
                 }
+            }
+        }
+    }
+
+    /// Puts the listener back into the poller once an accept backoff is over.
+    fn resume_accept(&mut self) {
+        let Some(t) = self.accept_paused_until else {
+            return;
+        };
+        if Instant::now() < t {
+            return;
+        }
+        self.accept_paused_until = None;
+        if let Some((l, _)) = &self.listener {
+            if let Err(e) = self.poller.add(l.as_raw_fd(), LISTENER, true, false) {
+                log_or_stderr(
+                    log::Level::Warn,
+                    format_args!("re-arming the listener: {e}"),
+                );
+                self.accept_paused_until = Some(Instant::now() + ACCEPT_BACKOFF);
             }
         }
     }
@@ -582,13 +619,10 @@ impl Loop {
             self.shared.clone(),
             self.cfg.clone(),
         );
-        let handler = match catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) {
-            Ok(h) => h,
-            Err(_) => {
-                inner.mark_closed();
-                tel.conn_closed();
-                return;
-            }
+        let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
+            inner.mark_closed();
+            tel.conn_closed();
+            return;
         };
         if self.poller.add(fd, id, true, false).is_err() {
             inner.mark_closed();
@@ -745,7 +779,7 @@ impl Loop {
                         st.bytes_in.add_local(n as u64);
                         lc.inner.set_corked(true);
                         let r = catch_unwind(AssertUnwindSafe(|| {
-                            lc.handler.on_data(&self.scratch[..n])
+                            lc.handler.on_data(&self.scratch[..n]);
                         }));
                         if timed {
                             self.clock = self
@@ -784,7 +818,7 @@ impl Loop {
             if matches!(done, Done::Eof) {
                 lc.eof = true;
                 // Peer is done sending: finish writing what we owe, then close.
-                lc.inner.close_after_send();
+                lc.inner.close_after_responses();
             }
         }
         match done {

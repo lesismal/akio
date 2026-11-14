@@ -1,0 +1,28 @@
+GET /Ceno/p HTTP/1.1
+Host:¬¬¬¬nnection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Extensions:ssaebSocket-Vers/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhb?BsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Extensions:ssaebSocket-Version: 13P/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Extensions:ssaebSocket-Vers/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Extensions:ssaebSocket-Version: 13
+Sec-WebSocket-Extensions:ss_bits
+
+ÅÖ7˙VVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV!=üMockion¬ h
+Tfer-Endig:ncst: h
+Upgrade: web

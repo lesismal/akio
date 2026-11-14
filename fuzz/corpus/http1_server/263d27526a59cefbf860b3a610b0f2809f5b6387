@@ -1,0 +1,8 @@
+T /p HTTP/1.1
+Host: h
+Transfer-Encoding: chunked
+Transfer-Encoding: chu
+
+40
+CONSecocket-VerçñêT 88 HTTP/1.3
+

@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP1-Settgs
+Upgrade: h2c
+HTTP2-Settings: AAMAAABkAAQHTTP2-Settingcontexts: AAP_2; server_no_context_takeover
+
+ннннннннннн

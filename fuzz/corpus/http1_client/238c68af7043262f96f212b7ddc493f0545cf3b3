@@ -1,0 +1,13 @@
+?HTTP/1.1 200 HTT OK
+CpExpect: 05P/1.1 100inue
+
+HTTP/1.1 204 No Cš‘‹šnt OK
+CpExpect: 05P/1.1 100inue
+
+HTTP/1.1 204 No Cš‘‹šHTTP/1.1 200 HTTP/1.1 200 OK
+CpExpect: 05P/1.1 100inue
+
+HTTP/1.1 204 No Cš‘‹šnt OK
+CpExpect: 05P/1.1 100inue
+
+n

@@ -1,0 +1,11 @@
+GET / HTTP/1.1
+Hoe: h2c h
+Connection: Upgrade, HTTade, #HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP,_____TTP/1.1
+Host: h
+Expeft: 1.1
+Host: h
+Exppgrade: h2c h
+Connection: Upgrade, HTtent-L1________________________________________
+

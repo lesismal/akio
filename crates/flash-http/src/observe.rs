@@ -88,7 +88,7 @@ impl std::fmt::Debug for HttpMetrics {
 }
 
 /// A snapshot of [`HttpMetrics`].
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HttpSnapshot {
     /// Responses by status class: `[1xx, 2xx, 3xx, 4xx, 5xx, other]`.
     pub by_class: [u64; 6],
@@ -183,7 +183,7 @@ impl HttpMetrics {
             ..HttpSnapshot::default()
         };
         let mut sum = 0u64;
-        for s in self.0.shards.iter() {
+        for s in &self.0.shards {
             for (o, c) in out.by_class.iter_mut().zip(&s.classes) {
                 *o += c.load(Ordering::Relaxed);
             }
@@ -340,7 +340,7 @@ pub fn debug_handler(tel: Arc<Telemetry>, token: Option<String>) -> impl Service
                 let l = tel.live();
                 let mut o = String::from("{");
                 let ms = |d: Option<Duration>| {
-                    d.map_or("null".to_owned(), |d| d.as_millis().to_string())
+                    d.map_or_else(|| "null".to_owned(), |d| d.as_millis().to_string())
                 };
                 let _ = write!(
                     o,
@@ -349,7 +349,7 @@ pub fn debug_handler(tel: Arc<Telemetry>, token: Option<String>) -> impl Service
                      \"open_connections\":{},\"log_level\":",
                     ms(l.idle_timeout()),
                     l.slow_callback_threshold()
-                        .map_or("null".to_owned(), |d| d.as_micros().to_string()),
+                        .map_or_else(|| "null".to_owned(), |d| d.as_micros().to_string()),
                     l.max_queued_bytes(),
                     l.write_high_watermark(),
                     l.max_connections(),

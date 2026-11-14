@@ -20,7 +20,7 @@ fn main() -> std::io::Result<()> {
                 sink.finish(Status::ok());
             })
             .unary("/test.Echo/Fail", |_md, _r, sink| {
-                sink.finish(Status::new(Code::InvalidArgument, "flash says no"))
+                sink.finish(Status::new(Code::InvalidArgument, "flash says no"));
             })
             .server_stream("/test.Echo/Count", |_md, req, sink| {
                 let n: usize = String::from_utf8_lossy(&req).parse().unwrap_or(0);

@@ -1,0 +1,6 @@
+(GET /a?b=c HTTP/1.0
+Ugggst: h
+Upgrade: weÿÿÿÿÿÿÿÿÿÿÿÿbsocket
+Connection: U
+/0.1
+HosT: h

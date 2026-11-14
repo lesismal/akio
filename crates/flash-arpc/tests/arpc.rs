@@ -64,7 +64,7 @@ fn server_routes(log: Arc<Mutex<Vec<String>>>) -> Routes {
             let _ = ctx.detach(); // dropped: no answer ever
         })
         .handle_stream("/upper", |_s| {
-            |s: &flash_arpc::Stream, ev: StreamEvent| match ev {
+            |s: &flash_arpc::Stream, ev: StreamEvent<'_>| match ev {
                 StreamEvent::Message(m) => {
                     s.send(&m.to_ascii_uppercase());
                 }
@@ -80,7 +80,7 @@ fn server_routes(log: Arc<Mutex<Vec<String>>>) -> Routes {
 fn calls_errors_notifies_two_way_and_detached_answers() {
     let log = Arc::new(Mutex::new(Vec::new()));
     let server = Server::new(Arc::new(server_routes(log.clone())));
-    let e = engine(Some(server.clone()));
+    let e = engine(Some(server));
     let client_routes = Routes::new().handle("/client/name", |ctx| ctx.write(b"rustacean"));
     let peer = dial(&e, e.local_addrs()[0], Arc::new(client_routes)).unwrap();
 

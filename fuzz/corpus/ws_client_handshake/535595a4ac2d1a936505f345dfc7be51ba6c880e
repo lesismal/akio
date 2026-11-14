@@ -1,0 +1,7 @@
+HTTP/1.1 101 itchls
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; server_max_window_bits=01222222222220Swi
+
+

@@ -90,7 +90,7 @@ fn setup() -> (Arc<Engine>, GrpcClient) {
     e.start().unwrap();
     let addr = e.local_addrs()[0];
     let h2 = H2Client::connect_blocking(&e, addr, None, H2Options::default()).unwrap();
-    (e.clone(), GrpcClient::new(h2, &format!("http://{addr}")))
+    (e, GrpcClient::new(h2, &format!("http://{addr}")))
 }
 
 #[test]

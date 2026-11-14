@@ -1,0 +1,2 @@
+s, permessage-deflate; server_max_window_bits=10; client_no_context_takeover
+kitrame

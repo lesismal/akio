@@ -1,0 +1,5 @@
+GET /ws HTTP/1.1
+HoZe: websocket
+Coket-Key-Key:dGhlIH 13
+Sec-WebSo-WebSocket-ProtlcKey: dao
+

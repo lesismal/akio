@@ -4,6 +4,10 @@
 //!   the hot path takes no lock. Buffers freed on another thread simply join that thread's cache
 //!   (bounded), which is fine for the producer/consumer split of send queues.
 //! * [`SharedBuf`] is a cheaply clonable, immutable buffer for broadcast (`send_shared`).
+//!
+//! Guide: [Architecture: memory and buffers](https://lesismal.github.io/flash/en/architecture.html#5-memory-and-buffers)
+//! (中文: [架构：内存与缓冲区](https://lesismal.github.io/flash/zh-CN/architecture.html)).
+#![warn(clippy::unwrap_used)]
 
 use std::{cell::RefCell, ops::Deref, sync::Arc};
 

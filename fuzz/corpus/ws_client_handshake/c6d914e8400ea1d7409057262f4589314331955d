@@ -1,0 +1,5 @@
+HTTP/1.1 101 SwitcProtoco
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: çts=20
+

@@ -1,0 +1,34 @@
+CYtNECT /wsexample.com:4]43 HTTP/1.1
+Host: exampleHTTP/
+
+ngECT /wsexample.com:123 HTTP/1.1
+Host: exampleHTTPCYtNECT /wsexample.com:4]43 HTTP/1.1
+Hom:4]43 HTTP/1.1
+Host: exampleHTTP/
+
+ngECT /wsexample.com:123 HTTP/1.1
+Host: exampleHTTPCYtNECT /wsexample.com:4]43 HTTP/1.1
+Host: exampleHTTP/
+
+ngECT /wsexample.com:123 HTTP/1.1
+Host: exampleHTTP/
+
+ng PUpgrade:` h2c1
+
+ PUpgrade:` h/
+
+ng PUpgrade:` h2c1
+
+ PUpgrade:` st: exampleHTTP/
+
+ngECT /wsexample.com:123 HTTP/1.1
+Host: exampleHTTP/
+
+ng PUpgrade:` h2c1
+
+ PUpgrade:` h/
+
+ng PUpgrade:` h2c1
+
+ PUpgrade:` h2c1
+
