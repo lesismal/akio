@@ -1,0 +1,12 @@
+PGET / HTTP/1.1
+Host: h
+Connectn: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings:OPTIONS  A;MAAABOST /Connect@on:pgraa1
+Host: h
+Connection: Upgrade, HTTSec-WebSocket-Version: 13P1-Settings
+Upgrade: h2c
+HTTP2-Settmngs: A;MAAABOST /Connect@on: UpgradeHo=de: : h2c
+HTTP2-Settmngs: A;MAAABOST /Connect@on: UpadeHo=th: 0
+
+/bc

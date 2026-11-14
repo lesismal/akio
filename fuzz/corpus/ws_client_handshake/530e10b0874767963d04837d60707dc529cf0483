@@ -1,0 +1,11 @@
+HTTP/1.1 101 SwSQLMBibSocket-Extensions: 
+Upgccept: s3pPLMBiTZRbK+xOo=
+Sec-WebSocket-Extensions:, 
+Upgradtensions:cept: s3pPLMBiTxaQ9kYGzzh×ZRbK+xOo=
+Sec-WebSocket-Extensions:, 
+Upgrade: websocket
+Coc-: s6pQLMBiTxaQ8kYGzzYGzzhZRbÿÿÿÿ-ÿocket
+Connection: Upgrade
+Sec-WebSOcket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSocket-Extensions: permessage-l s3t-Accept: s3pPLMBiTxaQ9kY%zzhZRbK+xOoge-l s3pP
+

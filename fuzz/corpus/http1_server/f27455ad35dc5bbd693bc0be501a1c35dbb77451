@@ -1,0 +1,18 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upg/push ,TTade, Host: h
+Connection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgection: Upgrade, HTTade, HTT(Pion: Upgrade, ,TTade, HTTP1-S+ttings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1.1
+Host: h
+Connection: Upg2-Settings
+Upgrade: h2c
+HTTP2-Settin__:________O______
+

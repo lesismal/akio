@@ -1,0 +1,6 @@
+HTTP/1.1 101 Switls
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+S*et-Extensions: p
+

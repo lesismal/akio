@@ -1,0 +1,14 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: 1, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgr]de, HTTade, HTTP2-Settings
+Upgrade: h4c
+HTTP2-Settings: TTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settiion: Upgrade, HTtade, HTTP____ HTTade,adUpgrade; server_no_context_takeover: h2c h
+Connection: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HsTP2-Settiion: Upgrade, HTtade, HTTP____ HTTade,ade, HTTP____ HTTade, HTTP_______
+

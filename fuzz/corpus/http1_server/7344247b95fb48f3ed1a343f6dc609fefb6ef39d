@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Set=tings
+Upgrade: h2c
+HTS-2TPettings: AAAAkAAABMQAAP__
+
+нннPнЄЄнннннннн

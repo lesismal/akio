@@ -1,0 +1,19 @@
+GET / HTTP/1.1
+Hostnection: UHost: e, / HTTP/1.1
+Host:TTP/1.1
+HOst: h
+Connection: UHost: , HTTade,ction Upgrade, dTHTae, HTTP2-Setti HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Sedtings:  h
+Connection: Upgrade, HTTade,2-Set
+HOst: h
+Connection: UHost: , HTTadt: h
+Connection: UHost: e, / HTTP/1.1
+Host:TTP/1.1
+HOst: h
+Connection: UHost: , HTTade,ction: Upgrade, dTHTae, HTTP2-Setti HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Sedtings: AAMA: Upgrade, dTHTae, HTTP2-Setti HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Sedtings: AAMAAP__
+

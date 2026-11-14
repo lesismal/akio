@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-SetPRI t: s3pde: h2Q[AP__ngs
+Upgrade: h2c
+HTTP2-Settingr: AAAover
+
+нннннннннннннн

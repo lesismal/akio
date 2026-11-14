@@ -1,0 +1,4 @@
+GET /ws HTTP/1.0
+Host: h
+Upgrade: w)bsock4
+

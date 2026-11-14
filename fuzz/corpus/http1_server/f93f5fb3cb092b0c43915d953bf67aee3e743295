@@ -1,0 +1,7 @@
+GGET /ws HTTP/1.1
+Host: h
+Upgrade: we`socket
+Connection: Upgrade
+Secket-Extensions: perx_window_bits
+
+…7ú!=#MQX‰€7ú!=

@@ -12,6 +12,9 @@
 //! from any thread, so slow work goes to the logical pool or another thread.
 
 pub mod codec;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 
 use std::{
     collections::HashMap,
@@ -235,8 +238,16 @@ impl Deframer {
     }
 }
 
+/// `grpc-timeout`: at most 8 ASCII digits and a unit (gRPC over HTTP/2 spec); anything else is
+/// ignored. (The digit limit keeps the arithmetic below and the deadline in range.)
 fn parse_timeout(v: &str) -> Option<Duration> {
+    if !v.is_ascii() {
+        return None; // also keeps the split below on a char boundary
+    }
     let (n, unit) = v.split_at(v.len().checked_sub(1)?);
+    if n.is_empty() || n.len() > 8 || !n.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     let n: u64 = n.parse().ok()?;
     Some(match unit {
         "H" => Duration::from_secs(n * 3600),
@@ -588,7 +599,7 @@ impl Service for GrpcServer {
             deadline: ctx
                 .header("grpc-timeout")
                 .and_then(parse_timeout)
-                .map(|d| Instant::now() + d),
+                .and_then(|d| Instant::now().checked_add(d)),
         };
         for i in &self.interceptors {
             if let Err(s) = i(&md) {
@@ -858,6 +869,27 @@ impl GrpcClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression (found by fuzzing): `grpc-timeout: 18446744073709551615H` overflowed the
+    /// multiplication (a panic in debug builds) and a huge deadline panicked in `Instant + d`.
+    #[test]
+    fn grpc_timeout_is_bounded() {
+        assert_eq!(parse_timeout("100m"), Some(Duration::from_millis(100)));
+        assert_eq!(
+            parse_timeout("99999999H"),
+            Some(Duration::from_secs(99_999_999 * 3600))
+        );
+        assert_eq!(parse_timeout("18446744073709551615H"), None);
+        assert_eq!(parse_timeout("123456789S"), None);
+        assert_eq!(parse_timeout("+5S"), None);
+        assert_eq!(parse_timeout("S"), None);
+        assert_eq!(
+            parse_timeout("\u{7b7}"),
+            None,
+            "non-ASCII used to panic in split_at"
+        );
+        assert_eq!(parse_timeout("1\u{e9}"), None);
+    }
 
     #[test]
     fn framing_and_gzip() {

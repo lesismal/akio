@@ -36,6 +36,9 @@
 pub mod client;
 mod context;
 pub mod files;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 mod h2;
 pub mod h2client;
 pub mod message;

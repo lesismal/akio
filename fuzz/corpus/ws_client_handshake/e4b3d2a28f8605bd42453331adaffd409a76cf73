@@ -1,0 +1,21 @@
+HTTP/1.1 101 Sg Pgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSoc-kEtexte-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSocket-Extensions: permessage-deflnrotoÿ/l/1.1 101 Sg Prot9kYGzzhZ§´Ô‡°Â
+Sec-WebSocket-Extensions:sage-deflnte; SgeÂ
+Sec-WebSocket-Extensions:sage-deflnte; Sge-deflnte‡°Â
+Sec-WebSocket-Extensions:sage-deflnte; Se–zs, pepgrade
+Sec-WebSocket-Accept: s1pPLMBiTxaQ9kYGzzhZ§´Ô‡°Â
+Sec-WebSocket-Extensions:sage-deflnte; See–zs, pepgrade
+Sec-WebSockensions: permessa~e-defte; Se–zs, pepgrade
+Sec-WebSockensions: permessage-deflnrotoÿ/l/1.1 101 Sg Protoÿ/ls
+Upgrade: websocket
+Connection:Accept: s3pPLMJiTxaQ9kYGzzhZ§´Ô‡°Â
+Sec-WebSocket-Extensions:sage-deflnte; Se–zs, pepgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZ§´Ô‡°Â
+Sec-WebSocket-Extensions:sÔ‡°Â
+Secxtensions:sage-deflnte; Se–zs, pepgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQÂ
+Sec-WebSocket-Extensions:sage-deflnte; Se–zs, permessag
+

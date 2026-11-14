@@ -1,0 +1,9 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGh
+Sec-WebSocket-Version: 13
+Sec-WebSocket-Extensions:hssage-deflate; client_max_window_bits
+
+…7.!=ŸMQX‰€7ú!=

@@ -11,6 +11,9 @@
 mod config;
 mod conn;
 mod error;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 mod group;
 mod handler;
 mod sync;

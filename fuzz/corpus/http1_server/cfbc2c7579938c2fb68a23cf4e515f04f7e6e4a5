@@ -1,0 +1,10 @@
+PGET / HTTP/1.1
+Host: h
+Connection: U
+Connection: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Conneh2c
+HTTP1-Settings: A;MAAABOS
+HTTP1-Settings: AradeHo=th: 0
+
+/b'

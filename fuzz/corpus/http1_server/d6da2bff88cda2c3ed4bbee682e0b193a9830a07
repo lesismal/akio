@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: Upgrade, HTTa HTTP2-Settin h2c h
+Connection: U, TPe, TP2-SettiAlgsAAP_
+

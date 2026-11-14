@@ -1,0 +1,10 @@
+GET / HTTP/1.1
+Host: hcWocket-
+
+GET /2 HTTP/1.1
+Host: h: chunked
+Connet: h
+
+GET /2 HTTP/1.1
+Hosction: c,ose
+

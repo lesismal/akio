@@ -1,0 +1,12 @@
+?HTTP/1.1 200 HTTP/1.1 200 OK
+CpExpect: 05P/1.0 100inuf
+
+HTTP/1.1 204 No Ce
+
+HTTP/1.1 204 No CK
+CpExpect: 05P/1.1 100inue
+
+HTTP/1.1 204 No Cš‘‹šnt OK
+CpExpect: 05P/1.) 100in}e
+
+HTTP4 No Cš‘‹šnt Cnt Ctonin

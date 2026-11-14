@@ -1,0 +1,8 @@
+GET /ws HTTP/1.1
+Host: h; server_no_contermeseflate; client_max_TTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Settings
+Upgrade: h2,,,,,,,,,,,,,,,,,,,,,,,c
+HTTP2-SetContent-Length: window_bits
+
+…3ú!=ŸMQX‰€7ú!=

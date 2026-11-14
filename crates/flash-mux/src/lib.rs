@@ -135,6 +135,10 @@ impl Rule {
     }
 }
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
+
 struct Inner {
     routes: Vec<(Rule, Arc<dyn DynAcceptor>)>,
     fallback: Option<Arc<dyn DynAcceptor>>,

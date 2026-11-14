@@ -1,0 +1,9 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, Hs
+Upgrade: h2c
+HTTP2-Settings: ApgAeraMd, HTTP1-Setti
+HTTP2-Setvings: AAMAAABks
+Upgrade: h2c
+HTTP2-Set*ings: AAMAAA(CONNECT BkAA_AAABkAA_PAQ._
+

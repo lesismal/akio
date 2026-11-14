@@ -10,7 +10,12 @@ rust-version.workspace = true
 [dependencies]
 flash-core = { path = "../flash-core" }
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_mux::fuzzing`); not a public API.
+fuzzing = ["flash-core/fuzzing"]
+
 [dev-dependencies]
+flash-core = { path = "../flash-core", features = ["fuzzing"] }
 flash = { path = "../flash" }
 flash-http = { path = "../flash-http" }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

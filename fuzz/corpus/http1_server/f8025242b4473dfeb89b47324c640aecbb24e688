@@ -1,0 +1,7 @@
+GET / HTTP/1.1
+Host: h
+ConnectioTransfer-Encoding: chunked
+Upgrade: h2c
+HTTP21-Settfnge: h2c
+HTTP2-Settde: h2~e: h2QAAP__																																																																	
+

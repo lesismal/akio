@@ -711,6 +711,31 @@ impl ClientConn {
     }
 }
 
+/// Fuzzing: feeds `pieces` as the responses to requests on one connection (re-armed after each
+/// complete response, as a keep-alive client would before its next request).
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn fuzz_responses(pieces: &[&[u8]], head_only: bool) {
+    let c: Conn<ClientConn> = flash_core::fuzzing::conn();
+    let mut h = ClientConn::new();
+    let arm = |h: &mut ClientConn| {
+        h.state = RState::Head;
+        h.active = Some(Active {
+            cb: Box::new(|_| {}),
+            head_only,
+            retry: None,
+            resp: None,
+            version: Version::Http11,
+        });
+    };
+    for p in pieces {
+        if matches!(h.state, RState::Idle) && c.is_open() {
+            arm(&mut h);
+        }
+        h.on_data(&c, p);
+    }
+    h.on_close(&c, None);
+}
+
 impl Handler for ClientConn {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         self.received_any = true;

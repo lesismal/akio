@@ -291,7 +291,11 @@ impl QuicHandler for ClientConn {
 
     fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
         if let Some(u) = self.uni.get_mut(&id) {
-            if let Err(e) = crate::on_uni(u, &mut self.peer_ctrl, c, id, &data, fin, false) {
+            let mut stop = |id, e| {
+                let _ = c.stop(id, e);
+            };
+            if let Err(e) = crate::on_uni(u, &mut self.peer_ctrl, &mut stop, id, &data, fin, false)
+            {
                 c.close(e, b"");
             }
             return;

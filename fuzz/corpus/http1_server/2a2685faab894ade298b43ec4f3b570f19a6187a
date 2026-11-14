@@ -1,0 +1,12 @@
+GET / HTTP/1.1
+Host:TTP/1.h2c
+HTTP2-Settings: AAMAAP____oooooooooooooooooooooomoooooooooooooo__________HTTP/1.101  1Switching Protocols
+_______Upgrade: h2c
+HTDP2-Settings: AAMAAP_______________t:TTP/1.1
+Host: h
+Connection: Upgrade, HT-Settings
+Uperade: h2c h
+Connection: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____oooooooooooo pesions: permessage-
+

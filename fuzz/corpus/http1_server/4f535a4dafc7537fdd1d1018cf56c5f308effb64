@@ -1,0 +1,9 @@
+CYtNECT /wsexample.com:443 HTTP/1.1
+Host: exampleHTTP/
+
+ngECT /wsexample.com:443 HTTP/1.1
+Host: exampleHTTP/
+
+ng PUpgrade:` h2c1
+Rh2c1
+

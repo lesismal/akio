@@ -19,6 +19,11 @@ use flash_http::{
     raw::{RawConn, RawHandler},
 };
 
+/// Largest handshake (greeting, authentication or request) buffered before the client is cut
+/// off. The largest valid SOCKS5 message is 513 bytes; SOCKS4's user id and 4a's host name are
+/// NUL-terminated, so without a bound a client could make the buffer grow forever.
+const MAX_HANDSHAKE: usize = 4096;
+
 /// Queue size on the outgoing side above which reading from the incoming side pauses.
 const HIGH_WATER: usize = 256 << 10;
 
@@ -115,6 +120,10 @@ fn try_dial(
         try_dial(Some(e2), addrs, i + 1, client, slot, up, fail);
     });
 }
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 
 // ---- SOCKS ---------------------------------------------------------------------------------
 
@@ -442,12 +451,22 @@ impl Handler for SocksSession {
                     forward(c.inner(), &up, data);
                     self.st = St::Relaying;
                 }
-                None => self.buf.extend_from_slice(data),
+                // Early data while the upstream connects is kept for it; after a failure (the
+                // session is closing) there is nobody to give it to.
+                None if matches!(self.st, St::Connecting) => self.buf.extend_from_slice(data),
+                None => {}
             }
             return;
         }
         self.buf.extend_from_slice(data);
         self.step(c);
+        if matches!(self.st, St::Greeting | St::Auth | St::Request | St::Socks4)
+            && self.buf.len() > MAX_HANDSHAKE
+        {
+            self.buf = Vec::new();
+            self.st = St::Relaying; // ignore anything else
+            c.close();
+        }
     }
 
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<flash::Error>) {
@@ -570,6 +589,19 @@ impl RawHandler for Tunnel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: a SOCKS4 request whose user id never ends used to be buffered without limit.
+    #[test]
+    fn endless_socks4_user_id_is_cut_off() {
+        let c = flash_core::fuzzing::conn();
+        let mut s = Socks::new(EngineRef::new()).on_open(&c);
+        s.on_data(&c, &[4, 1, 0, 80, 127, 0, 0, 1]);
+        for _ in 0..100 {
+            s.on_data(&c, &[b'u'; 1000]);
+        }
+        assert!(s.buf.len() <= MAX_HANDSHAKE);
+        assert!(!c.is_open());
+    }
 
     #[test]
     fn socks5_replies() {

@@ -24,6 +24,9 @@
 //! engine.run().unwrap();
 //! ```
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod proto;
 
 use std::{

@@ -1,0 +1,8 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: Upgrade, HT-Settings
+Uperade: hon: Upgrade, HTTade, HTTP2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____ooooooooooooooooooooooooooooooooooooo__________HTTP/1.1 101 Swi*tchin___
+

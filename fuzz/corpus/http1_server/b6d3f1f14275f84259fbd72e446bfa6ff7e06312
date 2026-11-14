@@ -1,0 +1,10 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Settings
+Upgrade: h2ost: h
+Connection: Upgrade, HTTP2-Settings
+Upgrade: h2c
+HTS-2TPettings: AAAAkAAABc
+HTS-2TPettings: AAAAkAAABMQAAP__
+
+нннPнннннннннннннннннннннннннннннннннн
