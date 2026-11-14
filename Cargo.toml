@@ -26,28 +26,38 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "0.0.0"
+version = "1.0.0-rc.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/lesismal/flash"
 rust-version = "1.85"
+readme = "README.md"
+homepage = "https://lesismal.github.io/flash/"
 
 [workspace.dependencies]
 # Workspace crates: a path for local builds plus the version crates.io resolves once published
-# (a path-only dependency is a wildcard to cargo-deny and cannot be published).
-flash-sys = { path = "crates/flash-sys", version = "0.0.0" }
-flash-buf = { path = "crates/flash-buf", version = "0.0.0" }
-flash-timer = { path = "crates/flash-timer", version = "0.0.0" }
-flash-pool = { path = "crates/flash-pool", version = "0.0.0" }
-flash-core = { path = "crates/flash-core", version = "0.0.0" }
-flash-epoll = { path = "crates/flash-epoll", version = "0.0.0" }
-flash-uring = { path = "crates/flash-uring", version = "0.0.0" }
-flash-tls = { path = "crates/flash-tls", version = "0.0.0" }
-flash-http = { path = "crates/flash-http", version = "0.0.0" }
-flash-ws = { path = "crates/flash-ws", version = "0.0.0" }
-flash-quic = { path = "crates/flash-quic", version = "0.0.0" }
-flash-ebpf = { path = "crates/flash-ebpf", version = "0.0.0" }
-flash = { path = "crates/flash", version = "0.0.0" }
+# (a path-only dependency is a wildcard to cargo-deny and cannot be published). The versions are
+# exact (`=`): all crates are released in lockstep, and the internal crates (flash-sys, -buf,
+# -timer, -pool, -epoll, -uring) may change their APIs in any release (docs/api-stability.md).
+flash-sys = { path = "crates/flash-sys", version = "=1.0.0-rc.1" }
+flash-buf = { path = "crates/flash-buf", version = "=1.0.0-rc.1" }
+flash-timer = { path = "crates/flash-timer", version = "=1.0.0-rc.1" }
+flash-pool = { path = "crates/flash-pool", version = "=1.0.0-rc.1" }
+flash-core = { path = "crates/flash-core", version = "=1.0.0-rc.1" }
+flash-epoll = { path = "crates/flash-epoll", version = "=1.0.0-rc.1" }
+flash-uring = { path = "crates/flash-uring", version = "=1.0.0-rc.1" }
+flash-tls = { path = "crates/flash-tls", version = "=1.0.0-rc.1" }
+flash-http = { path = "crates/flash-http", version = "=1.0.0-rc.1" }
+flash-ws = { path = "crates/flash-ws", version = "=1.0.0-rc.1" }
+flash-quic = { path = "crates/flash-quic", version = "=1.0.0-rc.1" }
+flash-h3 = { path = "crates/flash-h3", version = "=1.0.0-rc.1" }
+flash-kcp = { path = "crates/flash-kcp", version = "=1.0.0-rc.1" }
+flash-grpc = { path = "crates/flash-grpc", version = "=1.0.0-rc.1" }
+flash-arpc = { path = "crates/flash-arpc", version = "=1.0.0-rc.1" }
+flash-socks = { path = "crates/flash-socks", version = "=1.0.0-rc.1" }
+flash-mux = { path = "crates/flash-mux", version = "=1.0.0-rc.1" }
+flash-ebpf = { path = "crates/flash-ebpf", version = "=1.0.0-rc.1" }
+flash = { path = "crates/flash", version = "=1.0.0-rc.1" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,33 +1,11 @@
 pub mod flash_ebpf
-pub mod flash_ebpf::cbpf
-#[repr(C)] pub struct flash_ebpf::cbpf::Insn
-pub flash_ebpf::cbpf::Insn::code: u16
-pub flash_ebpf::cbpf::Insn::jf: u8
-pub flash_ebpf::cbpf::Insn::jt: u8
-pub flash_ebpf::cbpf::Insn::k: u32
-impl core::clone::Clone for flash_ebpf::cbpf::Insn
-pub fn flash_ebpf::cbpf::Insn::clone(&self) -> Self
-impl core::cmp::Eq for flash_ebpf::cbpf::Insn
-impl core::cmp::PartialEq for flash_ebpf::cbpf::Insn
-pub fn flash_ebpf::cbpf::Insn::eq(&self, &Self) -> bool
-impl core::fmt::Debug for flash_ebpf::cbpf::Insn
-pub fn flash_ebpf::cbpf::Insn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for flash_ebpf::cbpf::Insn
-impl core::marker::StructuralPartialEq for flash_ebpf::cbpf::Insn
-impl core::marker::Send for flash_ebpf::cbpf::Insn
-impl core::marker::Sync for flash_ebpf::cbpf::Insn
-impl core::marker::Unpin for flash_ebpf::cbpf::Insn
-impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::cbpf::Insn
-impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::cbpf::Insn
-pub fn flash_ebpf::cbpf::program(flash_ebpf::Steering, usize) -> alloc::vec::Vec<flash_ebpf::cbpf::Insn>
-pub fn flash_ebpf::cbpf::run(&[flash_ebpf::cbpf::Insn], &[u8], u32) -> u32
 pub mod flash_ebpf::relay
 pub struct flash_ebpf::relay::Relay
 impl flash_ebpf::relay::Relay
 pub fn flash_ebpf::relay::Relay::new(u32) -> core::io::error::Result<flash_ebpf::relay::Relay>
-pub fn flash_ebpf::relay::Relay::new_unchecked(u32) -> core::io::error::Result<flash_ebpf::relay::Relay>
+pub fn flash_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<flash_ebpf::relay::Relay>
 pub fn flash_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<flash_ebpf::relay::Splice>
-pub fn flash_ebpf::relay::Relay::splice_conns(&self, &alloc::rcs::arc::Arc<flash_core::conn::ConnInner>, &alloc::rcs::arc::Arc<flash_core::conn::ConnInner>) -> core::io::error::Result<flash_ebpf::relay::Splice>
+pub fn flash_ebpf::relay::Relay::splice_conns<A, B>(&self, &flash_core::conn::Conn<A>, &flash_core::conn::Conn<B>) -> core::io::error::Result<flash_ebpf::relay::Splice>
 impl core::clone::Clone for flash_ebpf::relay::Relay
 pub fn flash_ebpf::relay::Relay::clone(&self) -> Self
 impl core::fmt::Debug for flash_ebpf::relay::Relay
@@ -50,7 +28,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::relay::Splice
 impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::relay::Splice
 pub const flash_ebpf::relay::DEFAULT_PAIRS: u32
 pub const flash_ebpf::relay::MIN_KERNEL: (u32, u32)
-pub enum flash_ebpf::HashKey
+#[non_exhaustive] pub enum flash_ebpf::HashKey
 pub flash_ebpf::HashKey::SrcIp
 pub flash_ebpf::HashKey::SrcIpPort
 impl core::clone::Clone for flash_ebpf::HashKey
@@ -67,7 +45,7 @@ impl core::marker::Sync for flash_ebpf::HashKey
 impl core::marker::Unpin for flash_ebpf::HashKey
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::HashKey
 impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::HashKey
-pub enum flash_ebpf::Steering
+#[non_exhaustive] pub enum flash_ebpf::Steering
 pub flash_ebpf::Steering::Cpu
 pub flash_ebpf::Steering::Hash(flash_ebpf::HashKey)
 impl core::clone::Clone for flash_ebpf::Steering
@@ -86,7 +64,7 @@ impl core::marker::Sync for flash_ebpf::Steering
 impl core::marker::Unpin for flash_ebpf::Steering
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::Steering
 impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::Steering
-pub enum flash_ebpf::Tier
+#[non_exhaustive] pub enum flash_ebpf::Tier
 pub flash_ebpf::Tier::Cbpf
 pub flash_ebpf::Tier::Ebpf
 impl core::clone::Clone for flash_ebpf::Tier
@@ -103,7 +81,7 @@ impl core::marker::Sync for flash_ebpf::Tier
 impl core::marker::Unpin for flash_ebpf::Tier
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::Tier
 impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::Tier
-pub struct flash_ebpf::AttachOptions
+#[non_exhaustive] pub struct flash_ebpf::AttachOptions
 pub flash_ebpf::AttachOptions::ebpf: bool
 impl core::clone::Clone for flash_ebpf::AttachOptions
 pub fn flash_ebpf::AttachOptions::clone(&self) -> Self
@@ -117,7 +95,7 @@ impl core::marker::Sync for flash_ebpf::AttachOptions
 impl core::marker::Unpin for flash_ebpf::AttachOptions
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::AttachOptions
 impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::AttachOptions
-pub struct flash_ebpf::Probe
+#[non_exhaustive] pub struct flash_ebpf::Probe
 pub flash_ebpf::Probe::reuseport_cbpf: bool
 pub flash_ebpf::Probe::reuseport_ebpf: bool
 pub flash_ebpf::Probe::sockmap_relay: bool
@@ -139,9 +117,9 @@ impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::Probe
 pub struct flash_ebpf::Relay
 impl flash_ebpf::relay::Relay
 pub fn flash_ebpf::relay::Relay::new(u32) -> core::io::error::Result<flash_ebpf::relay::Relay>
-pub fn flash_ebpf::relay::Relay::new_unchecked(u32) -> core::io::error::Result<flash_ebpf::relay::Relay>
+pub fn flash_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<flash_ebpf::relay::Relay>
 pub fn flash_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<flash_ebpf::relay::Splice>
-pub fn flash_ebpf::relay::Relay::splice_conns(&self, &alloc::rcs::arc::Arc<flash_core::conn::ConnInner>, &alloc::rcs::arc::Arc<flash_core::conn::ConnInner>) -> core::io::error::Result<flash_ebpf::relay::Splice>
+pub fn flash_ebpf::relay::Relay::splice_conns<A, B>(&self, &flash_core::conn::Conn<A>, &flash_core::conn::Conn<B>) -> core::io::error::Result<flash_ebpf::relay::Splice>
 impl core::clone::Clone for flash_ebpf::relay::Relay
 pub fn flash_ebpf::relay::Relay::clone(&self) -> Self
 impl core::fmt::Debug for flash_ebpf::relay::Relay
@@ -162,7 +140,7 @@ impl core::marker::Sync for flash_ebpf::relay::Splice
 impl core::marker::Unpin for flash_ebpf::relay::Splice
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::relay::Splice
 impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::relay::Splice
-pub struct flash_ebpf::SteerInfo
+#[non_exhaustive] pub struct flash_ebpf::SteerInfo
 pub flash_ebpf::SteerInfo::ebpf_unavailable: core::option::Option<alloc::string::String>
 pub flash_ebpf::SteerInfo::sockets: usize
 pub flash_ebpf::SteerInfo::steering: flash_ebpf::Steering
@@ -182,8 +160,5 @@ impl core::marker::Sync for flash_ebpf::SteerInfo
 impl core::marker::Unpin for flash_ebpf::SteerInfo
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ebpf::SteerInfo
 impl core::panic::unwind_safe::UnwindSafe for flash_ebpf::SteerInfo
-pub const flash_ebpf::SLOTS: usize
 pub fn flash_ebpf::attach_reuseport(&[i32], flash_ebpf::Steering, flash_ebpf::AttachOptions) -> core::io::error::Result<flash_ebpf::SteerInfo>
-pub fn flash_ebpf::expected_index(flash_ebpf::Steering, usize, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::option::Option<usize>
 pub fn flash_ebpf::probe() -> flash_ebpf::Probe
-pub fn flash_ebpf::slot_table(usize) -> [u8; 251]

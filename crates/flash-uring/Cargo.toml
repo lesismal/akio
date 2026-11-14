@@ -1,11 +1,16 @@
 [package]
 name = "flash-uring"
-description = "flash network library: flash-uring"
+description = "flash internals: the io_uring backend (use `flash`)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-uring"
+keywords = ["network", "io-uring", "linux", "event-loop"]
+categories = ["network-programming", "os::linux-apis"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 flash-core = { workspace = true }

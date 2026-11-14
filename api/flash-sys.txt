@@ -6,6 +6,8 @@ pub fn flash_sys::Batch<'_, 'd>::is_gso(&self, usize) -> bool
 pub fn flash_sys::Batch<'_, 'd>::len(&self) -> usize
 pub fn flash_sys::Batch<'_, 'd>::push(&mut self, core::option::Option<&core::net::socket_addr::SocketAddr>, &[&'d [u8]], usize) -> bool
 pub fn flash_sys::Batch<'_, 'd>::send(&mut self, std::os::fd::raw::RawFd, usize) -> core::io::error::Result<usize>
+impl<'s, 'd> core::fmt::Debug for flash_sys::Batch<'s, 'd>
+pub fn flash_sys::Batch<'s, 'd>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'s, 'd> core::marker::Send for flash_sys::Batch<'s, 'd>
 impl<'s, 'd> !core::marker::Sync for flash_sys::Batch<'s, 'd>
 impl<'s, 'd> core::marker::Unpin for flash_sys::Batch<'s, 'd>
@@ -32,6 +34,8 @@ impl flash_sys::EventFd
 pub fn flash_sys::EventFd::as_raw_fd(&self) -> std::os::fd::raw::RawFd
 pub fn flash_sys::EventFd::new() -> core::io::error::Result<flash_sys::EventFd>
 pub fn flash_sys::EventFd::wake(&self)
+impl core::fmt::Debug for flash_sys::EventFd
+pub fn flash_sys::EventFd::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_sys::EventFd
 impl core::marker::Sync for flash_sys::EventFd
 impl core::marker::Unpin for flash_sys::EventFd
@@ -44,6 +48,8 @@ pub fn flash_sys::Poller::delete(&self, std::os::fd::raw::RawFd)
 pub fn flash_sys::Poller::modify(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
 pub fn flash_sys::Poller::new() -> core::io::error::Result<flash_sys::Poller>
 pub fn flash_sys::Poller::wait(&mut self, &mut alloc::vec::Vec<flash_sys::Event>, core::option::Option<core::time::Duration>) -> core::io::error::Result<()>
+impl core::fmt::Debug for flash_sys::Poller
+pub fn flash_sys::Poller::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_sys::Poller
 impl core::marker::Sync for flash_sys::Poller
 impl core::marker::Unpin for flash_sys::Poller
@@ -55,6 +61,8 @@ pub fn flash_sys::RecvBatch::get(&self, usize) -> core::option::Option<(&[u8], c
 pub fn flash_sys::RecvBatch::new(usize, usize) -> flash_sys::RecvBatch
 pub fn flash_sys::RecvBatch::recv(&mut self, std::os::fd::raw::RawFd) -> core::io::error::Result<usize>
 pub fn flash_sys::RecvBatch::with_gro(usize, usize, bool) -> flash_sys::RecvBatch
+impl core::fmt::Debug for flash_sys::RecvBatch
+pub fn flash_sys::RecvBatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_sys::RecvBatch
 impl !core::marker::Sync for flash_sys::RecvBatch
 impl core::marker::Unpin for flash_sys::RecvBatch
@@ -66,6 +74,8 @@ pub fn flash_sys::SendBatch::batch<'d>(&mut self) -> flash_sys::Batch<'_, 'd>
 pub fn flash_sys::SendBatch::new() -> flash_sys::SendBatch
 impl core::default::Default for flash_sys::SendBatch
 pub fn flash_sys::SendBatch::default() -> Self
+impl core::fmt::Debug for flash_sys::SendBatch
+pub fn flash_sys::SendBatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_sys::SendBatch
 impl !core::marker::Sync for flash_sys::SendBatch
 impl core::marker::Unpin for flash_sys::SendBatch
@@ -76,6 +86,8 @@ impl flash_sys::Waker
 pub fn flash_sys::Waker::drain(&self)
 pub fn flash_sys::Waker::new(&flash_sys::Poller, u64) -> core::io::error::Result<flash_sys::Waker>
 pub fn flash_sys::Waker::wake(&self)
+impl core::fmt::Debug for flash_sys::Waker
+pub fn flash_sys::Waker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_sys::Waker
 impl core::marker::Sync for flash_sys::Waker
 impl core::marker::Unpin for flash_sys::Waker

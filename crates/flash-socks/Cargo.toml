@@ -1,11 +1,16 @@
 [package]
 name = "flash-socks"
-description = "flash network library: SOCKS5/4/4a and HTTP CONNECT proxies"
+description = "flash: SOCKS5/4/4a and HTTP CONNECT proxies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-socks"
+keywords = ["socks", "socks5", "proxy", "network"]
+categories = ["network-programming"]
 
 [dependencies]
 flash = { workspace = true }

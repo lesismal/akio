@@ -1,11 +1,16 @@
 [package]
 name = "flash-epoll"
-description = "flash network library: flash-epoll"
+description = "flash internals: the epoll (Linux) / kqueue (macOS) backend (use `flash`)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-epoll"
+keywords = ["network", "epoll", "kqueue", "event-loop"]
+categories = ["network-programming", "os::unix-apis"]
 
 [dependencies]
 flash-core = { workspace = true }

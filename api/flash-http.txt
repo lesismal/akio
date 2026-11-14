@@ -1,7 +1,7 @@
 pub mod flash_http
 pub use flash_http::ws
 pub mod flash_http::client
-pub enum flash_http::client::ClientError
+#[non_exhaustive] pub enum flash_http::client::ClientError
 pub flash_http::client::ClientError::Closed
 pub flash_http::client::ClientError::InvalidUrl(alloc::string::String)
 pub flash_http::client::ClientError::Io(core::io::error::Error)
@@ -24,12 +24,16 @@ pub fn flash_http::client::Client::send(&self, flash_http::client::ClientRequest
 pub fn flash_http::client::Client::with_tls(self, alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>) -> flash_http::client::Client
 impl core::clone::Clone for flash_http::client::Client
 pub fn flash_http::client::Client::clone(&self) -> Self
+impl core::fmt::Debug for flash_http::client::Client
+pub fn flash_http::client::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_http::client::Client
 impl core::marker::Sync for flash_http::client::Client
 impl core::marker::Unpin for flash_http::client::Client
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_http::client::Client
 impl !core::panic::unwind_safe::UnwindSafe for flash_http::client::Client
 pub struct flash_http::client::ClientConn
+impl core::fmt::Debug for flash_http::client::ClientConn
+pub fn flash_http::client::ClientConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl flash_core::handler::Handler for flash_http::client::ClientConn
 pub fn flash_http::client::ClientConn::on_close(&mut self, &flash_core::conn::Conn<Self>, core::option::Option<flash_core::error::Error>)
 pub fn flash_http::client::ClientConn::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
@@ -38,14 +42,16 @@ impl !core::marker::Sync for flash_http::client::ClientConn
 impl core::marker::Unpin for flash_http::client::ClientConn
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_http::client::ClientConn
 impl !core::panic::unwind_safe::UnwindSafe for flash_http::client::ClientConn
-pub struct flash_http::client::ClientRequest
+#[non_exhaustive] pub struct flash_http::client::ClientRequest
 pub flash_http::client::ClientRequest::body: alloc::vec::Vec<u8>
 pub flash_http::client::ClientRequest::headers: flash_http::message::Headers
 pub flash_http::client::ClientRequest::method: flash_http::message::Method
 pub flash_http::client::ClientRequest::url: alloc::string::String
 impl flash_http::client::ClientRequest
+pub fn flash_http::client::ClientRequest::body(self, alloc::vec::Vec<u8>) -> flash_http::client::ClientRequest
 pub fn flash_http::client::ClientRequest::get(&str) -> flash_http::client::ClientRequest
 pub fn flash_http::client::ClientRequest::header(self, &str, &str) -> flash_http::client::ClientRequest
+pub fn flash_http::client::ClientRequest::new(flash_http::message::Method, &str) -> flash_http::client::ClientRequest
 pub fn flash_http::client::ClientRequest::post(&str, alloc::vec::Vec<u8>) -> flash_http::client::ClientRequest
 impl core::clone::Clone for flash_http::client::ClientRequest
 pub fn flash_http::client::ClientRequest::clone(&self) -> Self
@@ -56,7 +62,7 @@ impl core::marker::Sync for flash_http::client::ClientRequest
 impl core::marker::Unpin for flash_http::client::ClientRequest
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::client::ClientRequest
 impl core::panic::unwind_safe::UnwindSafe for flash_http::client::ClientRequest
-pub struct flash_http::client::ClientResponse
+#[non_exhaustive] pub struct flash_http::client::ClientResponse
 pub flash_http::client::ClientResponse::body: alloc::vec::Vec<u8>
 pub flash_http::client::ClientResponse::headers: flash_http::message::Headers
 pub flash_http::client::ClientResponse::pushed: alloc::vec::Vec<(alloc::string::String, flash_http::client::ClientResponse)>
@@ -76,6 +82,8 @@ pub struct flash_http::client::ResponseFuture
 impl flash_http::client::ResponseFuture
 pub fn flash_http::client::ResponseFuture::wait(self) -> core::result::Result<flash_http::client::ClientResponse, flash_http::client::ClientError>
 pub fn flash_http::client::ResponseFuture::wait_timeout(self, core::time::Duration) -> core::option::Option<core::result::Result<flash_http::client::ClientResponse, flash_http::client::ClientError>>
+impl core::fmt::Debug for flash_http::client::ResponseFuture
+pub fn flash_http::client::ResponseFuture::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::future::future::Future for flash_http::client::ResponseFuture
 pub type flash_http::client::ResponseFuture::Output = core::result::Result<flash_http::client::ClientResponse, flash_http::client::ClientError>
 pub fn flash_http::client::ResponseFuture::poll(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<Self::Output>
@@ -93,6 +101,8 @@ pub fn flash_http::files::Files::index(self, &str) -> flash_http::files::Files
 pub fn flash_http::files::Files::max_cached_bytes(self, u64) -> flash_http::files::Files
 pub fn flash_http::files::Files::max_open_files(self, usize) -> flash_http::files::Files
 pub fn flash_http::files::Files::new(impl core::convert::Into<std::path::PathBuf>) -> flash_http::files::Files
+impl core::fmt::Debug for flash_http::files::Files
+pub fn flash_http::files::Files::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl flash_http::Service for flash_http::files::Files
 pub fn flash_http::files::Files::body_mode(&self, &flash_http::message::Request) -> flash_http::BodyMode
 pub fn flash_http::files::Files::call(&self, &mut flash_http::Context)
@@ -110,6 +120,8 @@ pub flash_http::h2client::H2Event::Head
 pub flash_http::h2client::H2Event::Head::headers: &'a flash_http::message::Headers
 pub flash_http::h2client::H2Event::Head::status: u16
 pub flash_http::h2client::H2Event::Trailers(&'a flash_http::message::Headers)
+impl<'a> core::fmt::Debug for flash_http::h2client::H2Event<'a>
+pub fn flash_http::h2client::H2Event<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Send for flash_http::h2client::H2Event<'a>
 impl<'a> core::marker::Sync for flash_http::h2client::H2Event<'a>
 impl<'a> core::marker::Unpin for flash_http::h2client::H2Event<'a>
@@ -118,20 +130,24 @@ impl<'a> !core::panic::unwind_safe::UnwindSafe for flash_http::h2client::H2Event
 pub struct flash_http::h2client::H2Client
 impl flash_http::h2client::H2Client
 pub fn flash_http::h2client::H2Client::close(&self)
-pub fn flash_http::h2client::H2Client::connect(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str)>, flash_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<flash_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
-pub fn flash_http::h2client::H2Client::connect_blocking(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str)>, flash_http::h2client::H2Options) -> core::io::error::Result<flash_http::h2client::H2Client>
+pub fn flash_http::h2client::H2Client::dial(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str)>, flash_http::h2client::H2Options, impl core::ops::function::FnOnce(core::result::Result<flash_http::h2client::H2Client, core::io::error::Error>) + core::marker::Send + 'static)
+pub fn flash_http::h2client::H2Client::dial_blocking(&flash::Engine, core::net::socket_addr::SocketAddr, core::option::Option<(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str)>, flash_http::h2client::H2Options) -> core::io::error::Result<flash_http::h2client::H2Client>
 pub fn flash_http::h2client::H2Client::is_open(&self) -> bool
 pub fn flash_http::h2client::H2Client::open(&self, flash_http::client::ClientRequest, impl core::ops::function::FnMut(flash_http::h2client::H2Event<'_>) + core::marker::Send + 'static) -> flash_http::h2client::H2Upload
 pub fn flash_http::h2client::H2Client::request(&self, flash_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<flash_http::client::ClientResponse, flash_http::client::ClientError>) + core::marker::Send + 'static)
 pub fn flash_http::h2client::H2Client::send(&self, flash_http::client::ClientRequest) -> flash_http::client::ResponseFuture
 impl core::clone::Clone for flash_http::h2client::H2Client
 pub fn flash_http::h2client::H2Client::clone(&self) -> Self
+impl core::fmt::Debug for flash_http::h2client::H2Client
+pub fn flash_http::h2client::H2Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_http::h2client::H2Client
 impl core::marker::Sync for flash_http::h2client::H2Client
 impl core::marker::Unpin for flash_http::h2client::H2Client
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_http::h2client::H2Client
 impl !core::panic::unwind_safe::UnwindSafe for flash_http::h2client::H2Client
 pub struct flash_http::h2client::H2Conn
+impl core::fmt::Debug for flash_http::h2client::H2Conn
+pub fn flash_http::h2client::H2Conn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl flash_core::handler::Handler for flash_http::h2client::H2Conn
 pub fn flash_http::h2client::H2Conn::on_close(&mut self, &flash_core::conn::Conn<Self>, core::option::Option<flash_core::error::Error>)
 pub fn flash_http::h2client::H2Conn::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
@@ -140,7 +156,7 @@ impl !core::marker::Sync for flash_http::h2client::H2Conn
 impl core::marker::Unpin for flash_http::h2client::H2Conn
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_http::h2client::H2Conn
 impl !core::panic::unwind_safe::UnwindSafe for flash_http::h2client::H2Conn
-pub struct flash_http::h2client::H2Options
+#[non_exhaustive] pub struct flash_http::h2client::H2Options
 pub flash_http::h2client::H2Options::conn_window: u32
 pub flash_http::h2client::H2Options::enable_push: bool
 pub flash_http::h2client::H2Options::initial_window: u32
@@ -159,13 +175,15 @@ pub struct flash_http::h2client::H2Upload
 impl flash_http::h2client::H2Upload
 pub fn flash_http::h2client::H2Upload::finish(&self) -> bool
 pub fn flash_http::h2client::H2Upload::write(&self, &[u8]) -> bool
+impl core::fmt::Debug for flash_http::h2client::H2Upload
+pub fn flash_http::h2client::H2Upload::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_http::h2client::H2Upload
 impl core::marker::Sync for flash_http::h2client::H2Upload
 impl core::marker::Unpin for flash_http::h2client::H2Upload
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_http::h2client::H2Upload
 impl !core::panic::unwind_safe::UnwindSafe for flash_http::h2client::H2Upload
 pub mod flash_http::message
-pub enum flash_http::message::Method
+#[non_exhaustive] pub enum flash_http::message::Method
 pub flash_http::message::Method::Connect
 pub flash_http::message::Method::Delete
 pub flash_http::message::Method::Get
@@ -194,7 +212,7 @@ impl core::marker::Sync for flash_http::message::Method
 impl core::marker::Unpin for flash_http::message::Method
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::message::Method
 impl core::panic::unwind_safe::UnwindSafe for flash_http::message::Method
-pub enum flash_http::message::Version
+#[non_exhaustive] pub enum flash_http::message::Version
 pub flash_http::message::Version::Http10
 pub flash_http::message::Version::Http11
 pub flash_http::message::Version::Http2
@@ -213,10 +231,12 @@ impl core::marker::Sync for flash_http::message::Version
 impl core::marker::Unpin for flash_http::message::Version
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::message::Version
 impl core::panic::unwind_safe::UnwindSafe for flash_http::message::Version
-pub struct flash_http::message::FileBody
+#[non_exhaustive] pub struct flash_http::message::FileBody
 pub flash_http::message::FileBody::file: alloc::rcs::arc::Arc<std::fs::File>
 pub flash_http::message::FileBody::len: u64
 pub flash_http::message::FileBody::offset: u64
+impl flash_http::message::FileBody
+pub fn flash_http::message::FileBody::new(alloc::rcs::arc::Arc<std::fs::File>, u64, u64) -> flash_http::message::FileBody
 impl core::clone::Clone for flash_http::message::FileBody
 pub fn flash_http::message::FileBody::clone(&self) -> Self
 impl core::fmt::Debug for flash_http::message::FileBody
@@ -253,7 +273,7 @@ impl core::marker::Sync for flash_http::message::Headers
 impl core::marker::Unpin for flash_http::message::Headers
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::message::Headers
 impl core::panic::unwind_safe::UnwindSafe for flash_http::message::Headers
-pub struct flash_http::message::Request
+#[non_exhaustive] pub struct flash_http::message::Request
 pub flash_http::message::Request::body: alloc::vec::Vec<u8>
 pub flash_http::message::Request::headers: flash_http::message::Headers
 pub flash_http::message::Request::method: flash_http::message::Method
@@ -262,6 +282,7 @@ pub flash_http::message::Request::target: alloc::string::String
 pub flash_http::message::Request::trailers: flash_http::message::Headers
 pub flash_http::message::Request::version: flash_http::message::Version
 impl flash_http::message::Request
+pub fn flash_http::message::Request::new(flash_http::message::Method, impl core::convert::Into<alloc::string::String>) -> flash_http::message::Request
 pub fn flash_http::message::Request::path(&self) -> &str
 pub fn flash_http::message::Request::query(&self) -> core::option::Option<&str>
 pub fn flash_http::message::Request::query_param(&self, &str) -> core::option::Option<&str>
@@ -274,7 +295,7 @@ impl core::marker::Sync for flash_http::message::Request
 impl core::marker::Unpin for flash_http::message::Request
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::message::Request
 impl core::panic::unwind_safe::UnwindSafe for flash_http::message::Request
-pub struct flash_http::message::Response
+#[non_exhaustive] pub struct flash_http::message::Response
 pub flash_http::message::Response::body: alloc::vec::Vec<u8>
 pub flash_http::message::Response::file: core::option::Option<flash_http::message::FileBody>
 pub flash_http::message::Response::headers: flash_http::message::Headers
@@ -301,7 +322,7 @@ pub fn flash_http::message::http_date_now() -> alloc::string::String
 pub fn flash_http::message::percent_decode(&str) -> core::option::Option<alloc::string::String>
 pub fn flash_http::message::reason(u16) -> &'static str
 pub mod flash_http::middleware
-pub struct flash_http::middleware::Compress
+#[non_exhaustive] pub struct flash_http::middleware::Compress
 pub flash_http::middleware::Compress::level: u32
 pub flash_http::middleware::Compress::min_bytes: usize
 impl core::clone::Clone for flash_http::middleware::Compress
@@ -315,7 +336,7 @@ impl core::marker::Sync for flash_http::middleware::Compress
 impl core::marker::Unpin for flash_http::middleware::Compress
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::middleware::Compress
 impl core::panic::unwind_safe::UnwindSafe for flash_http::middleware::Compress
-pub struct flash_http::middleware::Cors
+#[non_exhaustive] pub struct flash_http::middleware::Cors
 pub flash_http::middleware::Cors::allow_headers: alloc::string::String
 pub flash_http::middleware::Cors::allow_methods: alloc::string::String
 pub flash_http::middleware::Cors::allow_origin: alloc::string::String
@@ -331,7 +352,7 @@ impl core::marker::Sync for flash_http::middleware::Cors
 impl core::marker::Unpin for flash_http::middleware::Cors
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::middleware::Cors
 impl core::panic::unwind_safe::UnwindSafe for flash_http::middleware::Cors
-pub struct flash_http::middleware::LogRecord
+#[non_exhaustive] pub struct flash_http::middleware::LogRecord
 pub flash_http::middleware::LogRecord::elapsed: core::time::Duration
 pub flash_http::middleware::LogRecord::method: alloc::string::String
 pub flash_http::middleware::LogRecord::peer: core::net::socket_addr::SocketAddr
@@ -374,7 +395,7 @@ impl core::marker::Sync for flash_http::observe::HttpMetrics
 impl core::marker::Unpin for flash_http::observe::HttpMetrics
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::observe::HttpMetrics
 impl core::panic::unwind_safe::UnwindSafe for flash_http::observe::HttpMetrics
-pub struct flash_http::observe::HttpSnapshot
+#[non_exhaustive] pub struct flash_http::observe::HttpSnapshot
 pub flash_http::observe::HttpSnapshot::buckets: [u64; 15]
 pub flash_http::observe::HttpSnapshot::by_class: [u64; 6]
 pub flash_http::observe::HttpSnapshot::in_flight: i64
@@ -414,6 +435,8 @@ pub fn flash_http::raw::RawConn::send(&self, &[u8]) -> flash_core::error::Result
 pub fn flash_http::raw::RawConn::send_owned(&self, alloc::vec::Vec<u8>) -> flash_core::error::Result<()>
 impl core::clone::Clone for flash_http::raw::RawConn
 pub fn flash_http::raw::RawConn::clone(&self) -> Self
+impl core::fmt::Debug for flash_http::raw::RawConn
+pub fn flash_http::raw::RawConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_http::raw::RawConn
 impl core::marker::Sync for flash_http::raw::RawConn
 impl core::marker::Unpin for flash_http::raw::RawConn
@@ -423,24 +446,17 @@ pub trait flash_http::raw::RawHandler: core::marker::Send + 'static
 pub fn flash_http::raw::RawHandler::on_close(&mut self)
 pub fn flash_http::raw::RawHandler::on_data(&mut self, &flash_http::raw::RawConn, &[u8])
 pub fn flash_http::raw::RawHandler::on_open(&mut self, &flash_http::raw::RawConn)
-pub mod flash_http::transport
-pub trait flash_http::transport::BodySink: core::marker::Send + 'static
-pub fn flash_http::transport::BodySink::finish(alloc::boxed::Box<Self>, core::option::Option<flash_http::message::Headers>)
-pub fn flash_http::transport::BodySink::queued_bytes(&self) -> usize
-pub fn flash_http::transport::BodySink::write(&self, &[u8]) -> flash_core::error::Result<()>
-pub trait flash_http::transport::ResponseSink: core::marker::Send + 'static
-pub fn flash_http::transport::ResponseSink::send(alloc::boxed::Box<Self>, flash_http::message::Response)
-pub fn flash_http::transport::ResponseSink::start_stream(alloc::boxed::Box<Self>, flash_http::message::Response) -> core::option::Option<alloc::boxed::Box<dyn flash_http::transport::BodySink>>
-pub fn flash_http::transport::dispatch<S: flash_http::Service + ?core::marker::Sized>(&S, flash_http::message::Request, alloc::boxed::Box<dyn flash_http::transport::ResponseSink>)
 pub enum flash_http::BodyEvent<'a>
 pub flash_http::BodyEvent::Chunk(&'a [u8])
 pub flash_http::BodyEvent::End(&'a flash_http::message::Headers)
+impl<'a> core::fmt::Debug for flash_http::BodyEvent<'a>
+pub fn flash_http::BodyEvent<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<'a> core::marker::Send for flash_http::BodyEvent<'a>
 impl<'a> core::marker::Sync for flash_http::BodyEvent<'a>
 impl<'a> core::marker::Unpin for flash_http::BodyEvent<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for flash_http::BodyEvent<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for flash_http::BodyEvent<'a>
-pub enum flash_http::BodyMode
+#[non_exhaustive] pub enum flash_http::BodyMode
 pub flash_http::BodyMode::Buffered
 pub flash_http::BodyMode::Stream
 impl core::clone::Clone for flash_http::BodyMode
@@ -457,7 +473,7 @@ impl core::marker::Sync for flash_http::BodyMode
 impl core::marker::Unpin for flash_http::BodyMode
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::BodyMode
 impl core::panic::unwind_safe::UnwindSafe for flash_http::BodyMode
-pub enum flash_http::Method
+#[non_exhaustive] pub enum flash_http::Method
 pub flash_http::Method::Connect
 pub flash_http::Method::Delete
 pub flash_http::Method::Get
@@ -486,7 +502,7 @@ impl core::marker::Sync for flash_http::message::Method
 impl core::marker::Unpin for flash_http::message::Method
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::message::Method
 impl core::panic::unwind_safe::UnwindSafe for flash_http::message::Method
-pub enum flash_http::Version
+#[non_exhaustive] pub enum flash_http::Version
 pub flash_http::Version::Http10
 pub flash_http::Version::Http11
 pub flash_http::Version::Http2
@@ -511,6 +527,8 @@ pub fn flash_http::BodyStream::finish(self)
 pub fn flash_http::BodyStream::finish_with_trailers(self, flash_http::message::Headers)
 pub fn flash_http::BodyStream::queued_bytes(&self) -> usize
 pub fn flash_http::BodyStream::write(&self, &[u8]) -> flash_core::error::Result<()>
+impl core::fmt::Debug for flash_http::BodyStream
+pub fn flash_http::BodyStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_http::BodyStream
 impl !core::marker::Sync for flash_http::BodyStream
 impl core::marker::Unpin for flash_http::BodyStream
@@ -542,6 +560,8 @@ pub fn flash_http::Context::stream_response(&mut self, u16, flash_http::message:
 pub fn flash_http::Context::text(&mut self, u16, impl core::convert::Into<alloc::string::String>)
 pub fn flash_http::Context::upgrade_raw(&mut self, impl flash_http::raw::RawHandler) -> bool
 pub fn flash_http::Context::upgrade_websocket(&mut self, impl flash_ws::session::WsHandler, &flash_http::WsOptions) -> bool
+impl core::fmt::Debug for flash_http::Context
+pub fn flash_http::Context::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_http::Context
 impl !core::marker::Sync for flash_http::Context
 impl core::marker::Unpin for flash_http::Context
@@ -554,15 +574,19 @@ pub fn flash_http::Detached::param_raw(&self, &str) -> core::option::Option<&str
 pub fn flash_http::Detached::req(&self) -> &flash_http::message::Request
 pub fn flash_http::Detached::respond(self, flash_http::message::Response)
 pub fn flash_http::Detached::stream_response(self, u16, flash_http::message::Headers) -> core::option::Option<flash_http::BodyStream>
+impl core::fmt::Debug for flash_http::Detached
+pub fn flash_http::Detached::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_http::Detached
 impl !core::marker::Sync for flash_http::Detached
 impl core::marker::Unpin for flash_http::Detached
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_http::Detached
 impl !core::panic::unwind_safe::UnwindSafe for flash_http::Detached
-pub struct flash_http::FileBody
+#[non_exhaustive] pub struct flash_http::FileBody
 pub flash_http::FileBody::file: alloc::rcs::arc::Arc<std::fs::File>
 pub flash_http::FileBody::len: u64
 pub flash_http::FileBody::offset: u64
+impl flash_http::message::FileBody
+pub fn flash_http::message::FileBody::new(alloc::rcs::arc::Arc<std::fs::File>, u64, u64) -> flash_http::message::FileBody
 impl core::clone::Clone for flash_http::message::FileBody
 pub fn flash_http::message::FileBody::clone(&self) -> Self
 impl core::fmt::Debug for flash_http::message::FileBody
@@ -572,7 +596,7 @@ impl core::marker::Sync for flash_http::message::FileBody
 impl core::marker::Unpin for flash_http::message::FileBody
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::message::FileBody
 impl core::panic::unwind_safe::UnwindSafe for flash_http::message::FileBody
-pub struct flash_http::H2Config
+#[non_exhaustive] pub struct flash_http::H2Config
 pub flash_http::H2Config::conn_window: u32
 pub flash_http::H2Config::initial_window: u32
 pub flash_http::H2Config::max_body_bytes: usize
@@ -622,12 +646,14 @@ impl<S: flash_http::Service> flash_core::handler::Acceptor for flash_http::HttpA
 pub type flash_http::HttpAcceptor<S>::Handler = flash_http::Session<S>
 pub fn flash_http::HttpAcceptor<S>::on_open(&self, &flash_core::conn::Conn<flash_http::Session<S>>) -> flash_http::Session<S>
 pub fn flash_http::HttpAcceptor<S>::on_shutdown(&self, &flash_core::conn::Conn<flash_http::Session<S>>)
+impl<S> core::fmt::Debug for flash_http::HttpAcceptor<S>
+pub fn flash_http::HttpAcceptor<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<S> core::marker::Send for flash_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Send
 impl<S> core::marker::Sync for flash_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Sync
 impl<S> core::marker::Unpin for flash_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin
 impl<S> core::panic::unwind_safe::RefUnwindSafe for flash_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::RefUnwindSafe
 impl<S> core::panic::unwind_safe::UnwindSafe for flash_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::UnwindSafe
-pub struct flash_http::HttpConfig
+#[non_exhaustive] pub struct flash_http::HttpConfig
 pub flash_http::HttpConfig::h2: core::option::Option<flash_http::H2Config>
 pub flash_http::HttpConfig::max_body_bytes: usize
 pub flash_http::HttpConfig::max_header_bytes: usize
@@ -642,7 +668,7 @@ impl core::marker::Sync for flash_http::HttpConfig
 impl core::marker::Unpin for flash_http::HttpConfig
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::HttpConfig
 impl core::panic::unwind_safe::UnwindSafe for flash_http::HttpConfig
-pub struct flash_http::Request
+#[non_exhaustive] pub struct flash_http::Request
 pub flash_http::Request::body: alloc::vec::Vec<u8>
 pub flash_http::Request::headers: flash_http::message::Headers
 pub flash_http::Request::method: flash_http::message::Method
@@ -651,6 +677,7 @@ pub flash_http::Request::target: alloc::string::String
 pub flash_http::Request::trailers: flash_http::message::Headers
 pub flash_http::Request::version: flash_http::message::Version
 impl flash_http::message::Request
+pub fn flash_http::message::Request::new(flash_http::message::Method, impl core::convert::Into<alloc::string::String>) -> flash_http::message::Request
 pub fn flash_http::message::Request::path(&self) -> &str
 pub fn flash_http::message::Request::query(&self) -> core::option::Option<&str>
 pub fn flash_http::message::Request::query_param(&self, &str) -> core::option::Option<&str>
@@ -663,7 +690,7 @@ impl core::marker::Sync for flash_http::message::Request
 impl core::marker::Unpin for flash_http::message::Request
 impl core::panic::unwind_safe::RefUnwindSafe for flash_http::message::Request
 impl core::panic::unwind_safe::UnwindSafe for flash_http::message::Request
-pub struct flash_http::Response
+#[non_exhaustive] pub struct flash_http::Response
 pub flash_http::Response::body: alloc::vec::Vec<u8>
 pub flash_http::Response::file: core::option::Option<flash_http::message::FileBody>
 pub flash_http::Response::headers: flash_http::message::Headers
@@ -712,6 +739,8 @@ pub fn flash_http::Router::put(self, &str, impl flash_http::Service) -> flash_ht
 pub fn flash_http::Router::route(self, flash_http::message::Method, &str, impl flash_http::Service) -> flash_http::Router
 impl core::default::Default for flash_http::Router
 pub fn flash_http::Router::default() -> Self
+impl core::fmt::Debug for flash_http::Router
+pub fn flash_http::Router::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl flash_http::Service for flash_http::Router
 pub fn flash_http::Router::body_mode(&self, &flash_http::message::Request) -> flash_http::BodyMode
 pub fn flash_http::Router::call(&self, &mut flash_http::Context)
@@ -724,6 +753,8 @@ pub struct flash_http::Session<S>
 impl<S: flash_http::Service> flash_core::handler::Handler for flash_http::Session<S>
 pub fn flash_http::Session<S>::on_close(&mut self, &flash_core::conn::Conn<Self>, core::option::Option<flash_core::error::Error>)
 pub fn flash_http::Session<S>::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
+impl<S> core::fmt::Debug for flash_http::Session<S>
+pub fn flash_http::Session<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<S> core::marker::Send for flash_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Send, core::option::Option<H2Session<S>>: core::marker::Send
 impl<S> !core::marker::Sync for flash_http::Session<S>
 impl<S> core::marker::Unpin for flash_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin, core::option::Option<H2Session<S>>: core::marker::Unpin
@@ -733,12 +764,14 @@ pub struct flash_http::Streaming<S>(pub S)
 impl<S: flash_http::Service> flash_http::Service for flash_http::Streaming<S>
 pub fn flash_http::Streaming<S>::body_mode(&self, &flash_http::message::Request) -> flash_http::BodyMode
 pub fn flash_http::Streaming<S>::call(&self, &mut flash_http::Context)
+impl<S> core::fmt::Debug for flash_http::Streaming<S>
+pub fn flash_http::Streaming<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<S> core::marker::Send for flash_http::Streaming<S> where S: core::marker::Send
 impl<S> core::marker::Sync for flash_http::Streaming<S> where S: core::marker::Sync
 impl<S> core::marker::Unpin for flash_http::Streaming<S> where S: core::marker::Unpin
 impl<S> core::panic::unwind_safe::RefUnwindSafe for flash_http::Streaming<S> where S: core::panic::unwind_safe::RefUnwindSafe
 impl<S> core::panic::unwind_safe::UnwindSafe for flash_http::Streaming<S> where S: core::panic::unwind_safe::UnwindSafe
-pub struct flash_http::WsOptions
+#[non_exhaustive] pub struct flash_http::WsOptions
 pub flash_http::WsOptions::config: flash_ws::session::WsConfig
 pub flash_http::WsOptions::origin_allowed: core::option::Option<fn(&str) -> bool>
 pub flash_http::WsOptions::protocols: alloc::vec::Vec<alloc::string::String>

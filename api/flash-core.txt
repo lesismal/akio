@@ -1,9 +1,9 @@
 pub mod flash_core
-pub use flash_core::Pool
 pub use flash_core::PoolConfig
 pub use flash_core::PoolStats
+pub use flash_core::SharedBuf
 pub mod flash_core::telemetry
-pub struct flash_core::telemetry::ConnInfo
+#[non_exhaustive] pub struct flash_core::telemetry::ConnInfo
 pub flash_core::telemetry::ConnInfo::age: core::time::Duration
 pub flash_core::telemetry::ConnInfo::backpressure: bool
 pub flash_core::telemetry::ConnInfo::bytes_in: u64
@@ -26,21 +26,6 @@ impl core::marker::Sync for flash_core::telemetry::ConnInfo
 impl core::marker::Unpin for flash_core::telemetry::ConnInfo
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::ConnInfo
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::ConnInfo
-pub struct flash_core::telemetry::Counter(_)
-impl flash_core::telemetry::Counter
-pub fn flash_core::telemetry::Counter::add(&self, u64)
-pub fn flash_core::telemetry::Counter::add_local(&self, u64)
-pub fn flash_core::telemetry::Counter::get(&self) -> u64
-pub fn flash_core::telemetry::Counter::sub(&self, u64)
-impl core::default::Default for flash_core::telemetry::Counter
-pub fn flash_core::telemetry::Counter::default() -> Self
-impl core::fmt::Debug for flash_core::telemetry::Counter
-pub fn flash_core::telemetry::Counter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for flash_core::telemetry::Counter
-impl core::marker::Sync for flash_core::telemetry::Counter
-impl core::marker::Unpin for flash_core::telemetry::Counter
-impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Counter
-impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Counter
 pub struct flash_core::telemetry::Live
 impl flash_core::telemetry::Live
 pub fn flash_core::telemetry::Live::idle_timeout(&self) -> core::option::Option<core::time::Duration>
@@ -66,7 +51,7 @@ impl core::marker::Sync for flash_core::telemetry::Live
 impl core::marker::Unpin for flash_core::telemetry::Live
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Live
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Live
-pub struct flash_core::telemetry::LoopCounters
+#[non_exhaustive] pub struct flash_core::telemetry::LoopCounters
 pub flash_core::telemetry::LoopCounters::accept_errors: u64
 pub flash_core::telemetry::LoopCounters::accepted: u64
 pub flash_core::telemetry::LoopCounters::backpressure: u64
@@ -108,7 +93,7 @@ impl core::marker::Sync for flash_core::telemetry::LoopCounters
 impl core::marker::Unpin for flash_core::telemetry::LoopCounters
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopCounters
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopCounters
-pub struct flash_core::telemetry::LoopMeta
+#[non_exhaustive] pub struct flash_core::telemetry::LoopMeta
 pub flash_core::telemetry::LoopMeta::backend: &'static str
 pub flash_core::telemetry::LoopMeta::listener: core::option::Option<core::net::socket_addr::SocketAddr>
 pub flash_core::telemetry::LoopMeta::thread: usize
@@ -125,7 +110,7 @@ impl core::marker::Sync for flash_core::telemetry::LoopMeta
 impl core::marker::Unpin for flash_core::telemetry::LoopMeta
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopMeta
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopMeta
-pub struct flash_core::telemetry::LoopMetrics
+#[non_exhaustive] pub struct flash_core::telemetry::LoopMetrics
 pub flash_core::telemetry::LoopMetrics::counters: flash_core::telemetry::LoopCounters
 pub flash_core::telemetry::LoopMetrics::owner: flash_core::telemetry::LoopMeta
 pub flash_core::telemetry::LoopMetrics::running: bool
@@ -140,24 +125,7 @@ impl core::marker::Sync for flash_core::telemetry::LoopMetrics
 impl core::marker::Unpin for flash_core::telemetry::LoopMetrics
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopMetrics
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopMetrics
-#[repr(align(128))] pub struct flash_core::telemetry::LoopStats
-impl flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::callback(&self, core::option::Option<std::time::Instant>) -> core::option::Option<core::time::Duration>
-pub fn flash_core::telemetry::LoopStats::datagram_in(&self, usize)
-pub fn flash_core::telemetry::LoopStats::meta(&self) -> &flash_core::telemetry::LoopMeta
-pub fn flash_core::telemetry::LoopStats::running(&self) -> bool
-pub fn flash_core::telemetry::LoopStats::set_running(&self, bool)
-impl flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::new(flash_core::telemetry::LoopMeta) -> flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::snapshot(&self) -> flash_core::telemetry::LoopCounters
-impl core::fmt::Debug for flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for flash_core::telemetry::LoopStats
-impl core::marker::Sync for flash_core::telemetry::LoopStats
-impl core::marker::Unpin for flash_core::telemetry::LoopStats
-impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopStats
-impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopStats
-pub struct flash_core::telemetry::Metrics
+#[non_exhaustive] pub struct flash_core::telemetry::Metrics
 pub flash_core::telemetry::Metrics::loops: alloc::vec::Vec<flash_core::telemetry::LoopMetrics>
 pub flash_core::telemetry::Metrics::open_connections: usize
 pub flash_core::telemetry::Metrics::pool: core::option::Option<flash_pool::PoolStats>
@@ -176,7 +144,7 @@ impl core::marker::Sync for flash_core::telemetry::Metrics
 impl core::marker::Unpin for flash_core::telemetry::Metrics
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Metrics
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Metrics
-pub struct flash_core::telemetry::ReloadReport
+#[non_exhaustive] pub struct flash_core::telemetry::ReloadReport
 pub flash_core::telemetry::ReloadReport::applied: alloc::vec::Vec<&'static str>
 pub flash_core::telemetry::ReloadReport::ignored: alloc::vec::Vec<&'static str>
 impl core::clone::Clone for flash_core::telemetry::ReloadReport
@@ -194,7 +162,7 @@ impl core::marker::Sync for flash_core::telemetry::ReloadReport
 impl core::marker::Unpin for flash_core::telemetry::ReloadReport
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::ReloadReport
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::ReloadReport
-pub struct flash_core::telemetry::SlowRecord
+#[non_exhaustive] pub struct flash_core::telemetry::SlowRecord
 pub flash_core::telemetry::SlowRecord::at: std::time::SystemTime
 pub flash_core::telemetry::SlowRecord::conn_id: u64
 pub flash_core::telemetry::SlowRecord::elapsed: core::time::Duration
@@ -232,16 +200,15 @@ impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Telemetr
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Telemetry
 pub const flash_core::telemetry::SLOW_RING: usize
 pub fn flash_core::telemetry::connections_json(&[flash_core::telemetry::ConnInfo]) -> alloc::string::String
-pub fn flash_core::telemetry::json_str(&mut alloc::string::String, &str)
-pub fn flash_core::telemetry::prometheus_header(&mut alloc::string::String, &str, &str, &str)
 pub fn flash_core::telemetry::slow_callbacks_json(&[flash_core::telemetry::SlowRecord]) -> alloc::string::String
-pub enum flash_core::Error
+#[non_exhaustive] pub enum flash_core::Error
 pub flash_core::Error::Closed
 pub flash_core::Error::Io(core::io::error::Error)
 pub flash_core::Error::Overloaded
 impl core::convert::From<core::io::error::Error> for flash_core::Error
 pub fn flash_core::Error::from(core::io::error::Error) -> Self
 impl core::error::Error for flash_core::Error
+pub fn flash_core::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
 impl core::fmt::Debug for flash_core::Error
 pub fn flash_core::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for flash_core::Error
@@ -251,18 +218,32 @@ impl core::marker::Sync for flash_core::Error
 impl core::marker::Unpin for flash_core::Error
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_core::Error
 impl !core::panic::unwind_safe::UnwindSafe for flash_core::Error
-pub enum flash_core::Part
+#[non_exhaustive] pub enum flash_core::Part
 pub flash_core::Part::Bytes(alloc::vec::Vec<u8>)
 pub flash_core::Part::File
 pub flash_core::Part::File::file: alloc::rcs::arc::Arc<std::fs::File>
 pub flash_core::Part::File::len: u64
 pub flash_core::Part::File::offset: u64
+impl core::fmt::Debug for flash_core::Part
+pub fn flash_core::Part::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_core::Part
 impl core::marker::Sync for flash_core::Part
 impl core::marker::Unpin for flash_core::Part
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::Part
 impl core::panic::unwind_safe::UnwindSafe for flash_core::Part
-pub struct flash_core::Config
+pub struct flash_core::AnyAcceptor(_)
+impl flash_core::AnyAcceptor
+pub fn flash_core::AnyAcceptor::new<A: flash_core::Acceptor>(A) -> flash_core::AnyAcceptor
+impl core::clone::Clone for flash_core::AnyAcceptor
+pub fn flash_core::AnyAcceptor::clone(&self) -> Self
+impl core::fmt::Debug for flash_core::AnyAcceptor
+pub fn flash_core::AnyAcceptor::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_core::AnyAcceptor
+impl core::marker::Sync for flash_core::AnyAcceptor
+impl core::marker::Unpin for flash_core::AnyAcceptor
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_core::AnyAcceptor
+impl !core::panic::unwind_safe::UnwindSafe for flash_core::AnyAcceptor
+#[non_exhaustive] pub struct flash_core::Config
 pub flash_core::Config::backlog: i32
 pub flash_core::Config::idle_timeout: core::option::Option<core::time::Duration>
 pub flash_core::Config::log_level: core::option::Option<log::LevelFilter>
@@ -312,12 +293,14 @@ pub fn flash_core::Conn<H>::send_shared(&self, flash_buf::SharedBuf) -> flash_co
 pub fn flash_core::Conn<H>::with_transport<R>(&self, impl core::ops::function::FnOnce(&mut dyn flash_core::Transport) -> R) -> core::option::Option<R>
 impl<H> core::clone::Clone for flash_core::Conn<H>
 pub fn flash_core::Conn<H>::clone(&self) -> Self
+impl<H> core::fmt::Debug for flash_core::Conn<H>
+pub fn flash_core::Conn<H>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<H> core::marker::Send for flash_core::Conn<H> where core::marker::PhantomData<fn() -> H>: core::marker::Send
 impl<H> core::marker::Sync for flash_core::Conn<H> where core::marker::PhantomData<fn() -> H>: core::marker::Sync
 impl<H> core::marker::Unpin for flash_core::Conn<H> where core::marker::PhantomData<fn() -> H>: core::marker::Unpin
 impl<H> !core::panic::unwind_safe::RefUnwindSafe for flash_core::Conn<H>
 impl<H> !core::panic::unwind_safe::UnwindSafe for flash_core::Conn<H>
-pub struct flash_core::ConnInfo
+#[non_exhaustive] pub struct flash_core::ConnInfo
 pub flash_core::ConnInfo::age: core::time::Duration
 pub flash_core::ConnInfo::backpressure: bool
 pub flash_core::ConnInfo::bytes_in: u64
@@ -341,6 +324,8 @@ impl core::marker::Unpin for flash_core::telemetry::ConnInfo
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::ConnInfo
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::ConnInfo
 pub struct flash_core::FnAcceptor<H, F>
+impl<H, F> core::fmt::Debug for flash_core::FnAcceptor<H, F>
+pub fn flash_core::FnAcceptor<H, F>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<H, F> flash_core::Acceptor for flash_core::FnAcceptor<H, F> where H: flash_core::Handler, F: core::ops::function::Fn(&flash_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
 pub type flash_core::FnAcceptor<H, F>::Handler = H
 pub fn flash_core::FnAcceptor<H, F>::on_open(&self, &flash_core::Conn<H>) -> H
@@ -376,7 +361,7 @@ impl core::marker::Sync for flash_core::telemetry::Live
 impl core::marker::Unpin for flash_core::telemetry::Live
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Live
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Live
-pub struct flash_core::LoopCounters
+#[non_exhaustive] pub struct flash_core::LoopCounters
 pub flash_core::LoopCounters::accept_errors: u64
 pub flash_core::LoopCounters::accepted: u64
 pub flash_core::LoopCounters::backpressure: u64
@@ -418,7 +403,7 @@ impl core::marker::Sync for flash_core::telemetry::LoopCounters
 impl core::marker::Unpin for flash_core::telemetry::LoopCounters
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopCounters
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopCounters
-pub struct flash_core::LoopMeta
+#[non_exhaustive] pub struct flash_core::LoopMeta
 pub flash_core::LoopMeta::backend: &'static str
 pub flash_core::LoopMeta::listener: core::option::Option<core::net::socket_addr::SocketAddr>
 pub flash_core::LoopMeta::thread: usize
@@ -435,7 +420,7 @@ impl core::marker::Sync for flash_core::telemetry::LoopMeta
 impl core::marker::Unpin for flash_core::telemetry::LoopMeta
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopMeta
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopMeta
-pub struct flash_core::LoopMetrics
+#[non_exhaustive] pub struct flash_core::LoopMetrics
 pub flash_core::LoopMetrics::counters: flash_core::telemetry::LoopCounters
 pub flash_core::LoopMetrics::owner: flash_core::telemetry::LoopMeta
 pub flash_core::LoopMetrics::running: bool
@@ -450,24 +435,7 @@ impl core::marker::Sync for flash_core::telemetry::LoopMetrics
 impl core::marker::Unpin for flash_core::telemetry::LoopMetrics
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopMetrics
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopMetrics
-#[repr(align(128))] pub struct flash_core::LoopStats
-impl flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::callback(&self, core::option::Option<std::time::Instant>) -> core::option::Option<core::time::Duration>
-pub fn flash_core::telemetry::LoopStats::datagram_in(&self, usize)
-pub fn flash_core::telemetry::LoopStats::meta(&self) -> &flash_core::telemetry::LoopMeta
-pub fn flash_core::telemetry::LoopStats::running(&self) -> bool
-pub fn flash_core::telemetry::LoopStats::set_running(&self, bool)
-impl flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::new(flash_core::telemetry::LoopMeta) -> flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::snapshot(&self) -> flash_core::telemetry::LoopCounters
-impl core::fmt::Debug for flash_core::telemetry::LoopStats
-pub fn flash_core::telemetry::LoopStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Send for flash_core::telemetry::LoopStats
-impl core::marker::Sync for flash_core::telemetry::LoopStats
-impl core::marker::Unpin for flash_core::telemetry::LoopStats
-impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::LoopStats
-impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::LoopStats
-pub struct flash_core::Metrics
+#[non_exhaustive] pub struct flash_core::Metrics
 pub flash_core::Metrics::loops: alloc::vec::Vec<flash_core::telemetry::LoopMetrics>
 pub flash_core::Metrics::open_connections: usize
 pub flash_core::Metrics::pool: core::option::Option<flash_pool::PoolStats>
@@ -486,7 +454,7 @@ impl core::marker::Sync for flash_core::telemetry::Metrics
 impl core::marker::Unpin for flash_core::telemetry::Metrics
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Metrics
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Metrics
-pub struct flash_core::ReloadReport
+#[non_exhaustive] pub struct flash_core::ReloadReport
 pub flash_core::ReloadReport::applied: alloc::vec::Vec<&'static str>
 pub flash_core::ReloadReport::ignored: alloc::vec::Vec<&'static str>
 impl core::clone::Clone for flash_core::telemetry::ReloadReport
@@ -510,6 +478,8 @@ pub fn flash_core::ResponseSlot::fill(self, alloc::vec::Vec<u8>)
 pub fn flash_core::ResponseSlot::fill_close(self, alloc::vec::Vec<u8>)
 pub fn flash_core::ResponseSlot::fill_parts(self, alloc::vec::Vec<flash_core::Part>, bool)
 pub fn flash_core::ResponseSlot::stream(self, alloc::vec::Vec<u8>) -> flash_core::ResponseStream
+impl core::fmt::Debug for flash_core::ResponseSlot
+pub fn flash_core::ResponseSlot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for flash_core::ResponseSlot
 pub fn flash_core::ResponseSlot::drop(&mut self)
 impl core::marker::Send for flash_core::ResponseSlot
@@ -522,6 +492,8 @@ impl flash_core::ResponseStream
 pub fn flash_core::ResponseStream::finish(self, bool)
 pub fn flash_core::ResponseStream::queued_bytes(&self) -> usize
 pub fn flash_core::ResponseStream::write(&self, alloc::vec::Vec<u8>) -> flash_core::Result<()>
+impl core::fmt::Debug for flash_core::ResponseStream
+pub fn flash_core::ResponseStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for flash_core::ResponseStream
 pub fn flash_core::ResponseStream::drop(&mut self)
 impl core::marker::Send for flash_core::ResponseStream
@@ -529,7 +501,7 @@ impl core::marker::Sync for flash_core::ResponseStream
 impl core::marker::Unpin for flash_core::ResponseStream
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_core::ResponseStream
 impl !core::panic::unwind_safe::UnwindSafe for flash_core::ResponseStream
-pub struct flash_core::SlowCallback
+#[non_exhaustive] pub struct flash_core::SlowCallback
 pub flash_core::SlowCallback::conn_id: u64
 pub flash_core::SlowCallback::elapsed: core::time::Duration
 pub flash_core::SlowCallback::kind: &'static str
@@ -553,7 +525,7 @@ impl core::marker::Sync for flash_core::SlowHook
 impl core::marker::Unpin for flash_core::SlowHook
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_core::SlowHook
 impl !core::panic::unwind_safe::UnwindSafe for flash_core::SlowHook
-pub struct flash_core::SlowRecord
+#[non_exhaustive] pub struct flash_core::SlowRecord
 pub flash_core::SlowRecord::at: std::time::SystemTime
 pub flash_core::SlowRecord::conn_id: u64
 pub flash_core::SlowRecord::elapsed: core::time::Duration
@@ -589,7 +561,7 @@ impl core::marker::Sync for flash_core::telemetry::Telemetry
 impl core::marker::Unpin for flash_core::telemetry::Telemetry
 impl core::panic::unwind_safe::RefUnwindSafe for flash_core::telemetry::Telemetry
 impl core::panic::unwind_safe::UnwindSafe for flash_core::telemetry::Telemetry
-pub struct flash_core::UdpStats
+#[non_exhaustive] pub struct flash_core::UdpStats
 pub flash_core::UdpStats::peers: usize
 pub flash_core::UdpStats::rejected: u64
 impl core::clone::Clone for flash_core::UdpStats
@@ -621,12 +593,6 @@ pub fn flash_core::FnAcceptor<H, F>::transport(&self) -> core::option::Option<al
 pub trait flash_core::Handler: core::marker::Send + core::marker::Sized + 'static
 pub fn flash_core::Handler::on_close(&mut self, &flash_core::Conn<Self>, core::option::Option<flash_core::Error>)
 pub fn flash_core::Handler::on_data(&mut self, &flash_core::Conn<Self>, &[u8])
-pub trait flash_core::LoopLink: core::marker::Send + core::marker::Sync
-pub fn flash_core::LoopLink::close_conn(&self, u64, core::option::Option<core::io::error::Error>)
-pub fn flash_core::LoopLink::pool(&self) -> core::option::Option<&flash_pool::Pool>
-pub fn flash_core::LoopLink::post_task(&self, u64, flash_core::Task)
-pub fn flash_core::LoopLink::stats(&self) -> core::option::Option<alloc::rcs::arc::Arc<flash_core::telemetry::LoopStats>>
-pub fn flash_core::LoopLink::wake_conn(&self, u64)
 pub trait flash_core::Transport: core::marker::Send + 'static
 pub fn flash_core::Transport::as_any(&mut self) -> &mut dyn core::any::Any
 pub fn flash_core::Transport::handshaking(&self) -> bool
@@ -636,4 +602,3 @@ pub fn flash_core::Transport::seal(&mut self, &[u8], &mut alloc::vec::Vec<u8>) -
 pub fn flash_core::Transport::shutdown(&mut self, &mut alloc::vec::Vec<u8>)
 pub fn flash_core::fn_acceptor<H, F>(F) -> flash_core::FnAcceptor<H, F> where H: flash_core::Handler, F: core::ops::function::Fn(&flash_core::Conn<H>) -> H + core::marker::Send + core::marker::Sync + 'static
 pub type flash_core::Result<T> = core::result::Result<T, flash_core::Error>
-pub type flash_core::Task = alloc::boxed::Box<(dyn core::any::Any + core::marker::Send)>

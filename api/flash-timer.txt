@@ -24,6 +24,8 @@ pub fn flash_timer::Wheel<T>::new(u64) -> Self
 pub fn flash_timer::Wheel<T>::next_deadline(&self) -> core::option::Option<u64>
 pub fn flash_timer::Wheel<T>::now(&self) -> u64
 pub fn flash_timer::Wheel<T>::schedule(&mut self, u64, T) -> flash_timer::TimerId
+impl<T> core::fmt::Debug for flash_timer::Wheel<T>
+pub fn flash_timer::Wheel<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<T> core::marker::Send for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::marker::Send
 impl<T> core::marker::Sync for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::marker::Sync
 impl<T> core::marker::Unpin for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::marker::Unpin

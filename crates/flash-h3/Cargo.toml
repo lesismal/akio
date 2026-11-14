@@ -1,11 +1,16 @@
 [package]
 name = "flash-h3"
-description = "flash network library: HTTP/3 (RFC 9114) with QPACK over flash-quic"
+description = "flash HTTP/3 (RFC 9114) with QPACK over flash-quic"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-h3"
+keywords = ["http3", "h3", "quic", "qpack", "network"]
+categories = ["network-programming", "web-programming::http-server"]
 
 [dependencies]
 flash = { workspace = true }

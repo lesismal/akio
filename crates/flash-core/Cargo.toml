@@ -1,11 +1,16 @@
 [package]
 name = "flash-core"
-description = "flash network library: flash-core"
+description = "flash core: Conn, Handler, Acceptor, Config, telemetry and the backend-facing traits"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-core"
+keywords = ["network", "event-loop", "tcp", "udp", "server"]
+categories = ["network-programming"]
 
 [dependencies]
 flash-buf = { workspace = true }

@@ -1,11 +1,16 @@
 [package]
 name = "flash-ebpf"
-description = "flash network library: SO_REUSEPORT steering (classic BPF / eBPF) and sockmap relay"
+description = "flash acceleration: SO_REUSEPORT steering (classic BPF / eBPF) and a sockmap relay"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-ebpf"
+keywords = ["ebpf", "bpf", "reuseport", "linux", "network"]
+categories = ["network-programming", "os::linux-apis"]
 
 [dependencies]
 flash-core = { workspace = true }

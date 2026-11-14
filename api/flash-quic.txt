@@ -6,7 +6,7 @@ pub use flash_quic::TransportConfig
 pub use flash_quic::VarInt
 pub use flash_quic::proto
 pub use flash_quic::rustls
-pub enum flash_quic::Error
+#[non_exhaustive] pub enum flash_quic::Error
 pub flash_quic::Error::Closed
 pub flash_quic::Error::Config(alloc::string::String)
 pub flash_quic::Error::Connect(quinn_proto::endpoint::ConnectError)
@@ -54,6 +54,8 @@ impl flash_quic::QuicServer
 pub fn flash_quic::QuicServer::close_all(&self, u32, &[u8])
 pub fn flash_quic::QuicServer::connections(&self) -> usize
 pub fn flash_quic::QuicServer::new<H: flash_quic::QuicHandler, F>(quinn_proto::config::ServerConfig, F) -> flash_quic::QuicServer where F: core::ops::function::Fn(&flash_quic::Connection) -> H + core::marker::Send + core::marker::Sync + 'static
+impl core::fmt::Debug for flash_quic::QuicServer
+pub fn flash_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl flash_core::handler::Acceptor for flash_quic::QuicServer
 pub type flash_quic::QuicServer::Handler = Udp
 pub fn flash_quic::QuicServer::on_open(&self, &flash_core::conn::Conn<Udp>) -> Udp

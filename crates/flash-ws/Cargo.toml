@@ -1,11 +1,16 @@
 [package]
 name = "flash-ws"
-description = "flash network library: WebSocket (RFC 6455)"
+description = "flash WebSocket (RFC 6455) server sessions and client, with permessage-deflate"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-ws"
+keywords = ["websocket", "ws", "network", "server", "client"]
+categories = ["network-programming", "web-programming::websocket"]
 
 [dependencies]
 flash-core = { workspace = true }

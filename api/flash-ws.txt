@@ -1,6 +1,6 @@
 pub mod flash_ws
 pub mod flash_ws::client
-pub enum flash_ws::client::WsClientError
+#[non_exhaustive] pub enum flash_ws::client::WsClientError
 pub flash_ws::client::WsClientError::Closed
 pub flash_ws::client::WsClientError::Handshake(&'static str)
 pub flash_ws::client::WsClientError::InvalidUrl(alloc::string::String)
@@ -17,7 +17,7 @@ impl core::marker::Sync for flash_ws::client::WsClientError
 impl core::marker::Unpin for flash_ws::client::WsClientError
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_ws::client::WsClientError
 impl !core::panic::unwind_safe::UnwindSafe for flash_ws::client::WsClientError
-pub struct flash_ws::client::DialOptions
+#[non_exhaustive] pub struct flash_ws::client::DialOptions
 pub flash_ws::client::DialOptions::close_timeout: core::time::Duration
 pub flash_ws::client::DialOptions::config: flash_ws::WsConfig
 pub flash_ws::client::DialOptions::handshake_timeout: core::time::Duration
@@ -38,16 +38,19 @@ impl core::marker::Sync for flash_ws::client::DialOptions
 impl core::marker::Unpin for flash_ws::client::DialOptions
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_ws::client::DialOptions
 impl !core::panic::unwind_safe::UnwindSafe for flash_ws::client::DialOptions
-pub fn flash_ws::client::connect(&alloc::rcs::arc::Arc<flash::Engine>, &str, &flash_ws::client::DialOptions, impl flash_ws::WsHandler) -> core::result::Result<flash_ws::WsSender, flash_ws::client::WsClientError>
 pub fn flash_ws::client::dial(&alloc::rcs::arc::Arc<flash::Engine>, &str, &flash_ws::client::DialOptions, impl flash_ws::WsHandler, impl core::ops::function::FnOnce(flash_ws::client::WsClientError) + core::marker::Send + 'static)
+pub fn flash_ws::client::dial_blocking(&alloc::rcs::arc::Arc<flash::Engine>, &str, &flash_ws::client::DialOptions, impl flash_ws::WsHandler) -> core::result::Result<flash_ws::WsSender, flash_ws::client::WsClientError>
 pub mod flash_ws::deflate
-pub enum flash_ws::deflate::InflateError
+#[non_exhaustive] pub enum flash_ws::deflate::InflateError
 pub flash_ws::deflate::InflateError::Corrupt
 pub flash_ws::deflate::InflateError::TooBig
 impl core::cmp::Eq for flash_ws::deflate::InflateError
 impl core::cmp::PartialEq for flash_ws::deflate::InflateError
 pub fn flash_ws::deflate::InflateError::eq(&self, &Self) -> bool
+impl core::error::Error for flash_ws::deflate::InflateError
 impl core::fmt::Debug for flash_ws::deflate::InflateError
+pub fn flash_ws::deflate::InflateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_ws::deflate::InflateError
 pub fn flash_ws::deflate::InflateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for flash_ws::deflate::InflateError
 impl core::marker::Send for flash_ws::deflate::InflateError
@@ -59,6 +62,8 @@ pub struct flash_ws::deflate::Deflater
 impl flash_ws::deflate::Deflater
 pub fn flash_ws::deflate::Deflater::deflate(&mut self, &[u8]) -> alloc::vec::Vec<u8>
 pub fn flash_ws::deflate::Deflater::new(bool, u8) -> flash_ws::deflate::Deflater
+impl core::fmt::Debug for flash_ws::deflate::Deflater
+pub fn flash_ws::deflate::Deflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_ws::deflate::Deflater
 impl core::marker::Sync for flash_ws::deflate::Deflater
 impl core::marker::Unpin for flash_ws::deflate::Deflater
@@ -68,12 +73,14 @@ pub struct flash_ws::deflate::Inflater
 impl flash_ws::deflate::Inflater
 pub fn flash_ws::deflate::Inflater::inflate(&mut self, &[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, flash_ws::deflate::InflateError>
 pub fn flash_ws::deflate::Inflater::new(bool) -> flash_ws::deflate::Inflater
+impl core::fmt::Debug for flash_ws::deflate::Inflater
+pub fn flash_ws::deflate::Inflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_ws::deflate::Inflater
 impl core::marker::Sync for flash_ws::deflate::Inflater
 impl core::marker::Unpin for flash_ws::deflate::Inflater
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ws::deflate::Inflater
 impl !core::panic::unwind_safe::UnwindSafe for flash_ws::deflate::Inflater
-pub struct flash_ws::deflate::PmdOffer
+#[non_exhaustive] pub struct flash_ws::deflate::PmdOffer
 pub flash_ws::deflate::PmdOffer::client_no_context_takeover: bool
 pub flash_ws::deflate::PmdOffer::server_max_window_bits: core::option::Option<u8>
 pub flash_ws::deflate::PmdOffer::server_no_context_takeover: bool
@@ -96,7 +103,7 @@ impl core::marker::Sync for flash_ws::deflate::PmdOffer
 impl core::marker::Unpin for flash_ws::deflate::PmdOffer
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ws::deflate::PmdOffer
 impl core::panic::unwind_safe::UnwindSafe for flash_ws::deflate::PmdOffer
-pub struct flash_ws::deflate::PmdParams
+#[non_exhaustive] pub struct flash_ws::deflate::PmdParams
 pub flash_ws::deflate::PmdParams::client_max_window_bits: u8
 pub flash_ws::deflate::PmdParams::client_no_context_takeover: bool
 pub flash_ws::deflate::PmdParams::server_max_window_bits: u8
@@ -189,18 +196,23 @@ pub struct flash_ws::protocol::Decoder
 impl flash_ws::protocol::Decoder
 pub fn flash_ws::protocol::Decoder::decode(&mut self, &[u8], &mut alloc::vec::Vec<flash_ws::protocol::Event>) -> core::result::Result<(), flash_ws::protocol::ProtocolError>
 pub fn flash_ws::protocol::Decoder::new(flash_ws::protocol::Role, usize, core::option::Option<flash_ws::deflate::Inflater>) -> flash_ws::protocol::Decoder
+impl core::fmt::Debug for flash_ws::protocol::Decoder
+pub fn flash_ws::protocol::Decoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_ws::protocol::Decoder
 impl core::marker::Sync for flash_ws::protocol::Decoder
 impl core::marker::Unpin for flash_ws::protocol::Decoder
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ws::protocol::Decoder
 impl !core::panic::unwind_safe::UnwindSafe for flash_ws::protocol::Decoder
-pub struct flash_ws::protocol::ProtocolError
+#[non_exhaustive] pub struct flash_ws::protocol::ProtocolError
 pub flash_ws::protocol::ProtocolError::code: u16
 pub flash_ws::protocol::ProtocolError::reason: &'static str
 impl core::cmp::Eq for flash_ws::protocol::ProtocolError
 impl core::cmp::PartialEq for flash_ws::protocol::ProtocolError
 pub fn flash_ws::protocol::ProtocolError::eq(&self, &Self) -> bool
+impl core::error::Error for flash_ws::protocol::ProtocolError
 impl core::fmt::Debug for flash_ws::protocol::ProtocolError
+pub fn flash_ws::protocol::ProtocolError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_ws::protocol::ProtocolError
 pub fn flash_ws::protocol::ProtocolError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for flash_ws::protocol::ProtocolError
 impl core::marker::Send for flash_ws::protocol::ProtocolError
@@ -233,12 +245,14 @@ pub fn flash_ws::PreparedMessage::binary(&[u8]) -> flash_ws::PreparedMessage
 pub fn flash_ws::PreparedMessage::text(&str) -> flash_ws::PreparedMessage
 impl core::clone::Clone for flash_ws::PreparedMessage
 pub fn flash_ws::PreparedMessage::clone(&self) -> Self
+impl core::fmt::Debug for flash_ws::PreparedMessage
+pub fn flash_ws::PreparedMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_ws::PreparedMessage
 impl core::marker::Sync for flash_ws::PreparedMessage
 impl core::marker::Unpin for flash_ws::PreparedMessage
 impl core::panic::unwind_safe::RefUnwindSafe for flash_ws::PreparedMessage
 impl core::panic::unwind_safe::UnwindSafe for flash_ws::PreparedMessage
-pub struct flash_ws::WsConfig
+#[non_exhaustive] pub struct flash_ws::WsConfig
 pub flash_ws::WsConfig::compress_min_bytes: usize
 pub flash_ws::WsConfig::max_message_bytes: usize
 pub flash_ws::WsConfig::permessage_deflate: bool
@@ -267,23 +281,13 @@ pub fn flash_ws::WsSender::send_text_fragmented(&self, &str, usize) -> flash_cor
 pub fn flash_ws::WsSender::subprotocol(&self) -> core::option::Option<alloc::string::String>
 impl core::clone::Clone for flash_ws::WsSender
 pub fn flash_ws::WsSender::clone(&self) -> Self
+impl core::fmt::Debug for flash_ws::WsSender
+pub fn flash_ws::WsSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for flash_ws::WsSender
 impl core::marker::Sync for flash_ws::WsSender
 impl core::marker::Unpin for flash_ws::WsSender
 impl !core::panic::unwind_safe::RefUnwindSafe for flash_ws::WsSender
 impl !core::panic::unwind_safe::UnwindSafe for flash_ws::WsSender
-pub struct flash_ws::WsSession
-impl flash_ws::WsSession
-pub fn flash_ws::WsSession::new(alloc::rcs::arc::Arc<flash_core::conn::ConnInner>, &flash_ws::WsConfig, core::option::Option<flash_ws::deflate::PmdParams>, alloc::boxed::Box<dyn flash_ws::WsHandler>) -> flash_ws::WsSession
-pub fn flash_ws::WsSession::on_data(&mut self, &[u8])
-pub fn flash_ws::WsSession::on_transport_closed(&mut self)
-pub fn flash_ws::WsSession::open(&mut self)
-impl core::marker::Send for flash_ws::WsSession
-impl !core::marker::Sync for flash_ws::WsSession
-impl core::marker::Unpin for flash_ws::WsSession
-impl !core::panic::unwind_safe::RefUnwindSafe for flash_ws::WsSession
-impl !core::panic::unwind_safe::UnwindSafe for flash_ws::WsSession
-pub const flash_ws::INTERNAL_ERROR: u16
 pub trait flash_ws::WsHandler: core::marker::Send + 'static
 pub fn flash_ws::WsHandler::on_close(&mut self, core::option::Option<u16>, &str)
 pub fn flash_ws::WsHandler::on_message(&mut self, &flash_ws::WsSender, flash_ws::Message)
