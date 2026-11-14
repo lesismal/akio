@@ -10,7 +10,7 @@ use std::{
 };
 
 use flash::{Engine, Listener};
-use flash_arpc::{CallError, Routes, Server, dial};
+use flash_arpc::{CallError, Routes, Server, dial_blocking};
 
 fn main() -> std::io::Result<()> {
     // ANCHOR: server
@@ -44,7 +44,7 @@ fn main() -> std::io::Result<()> {
     let client_routes = Routes::new().handle("/news", move |ctx| {
         let _ = tx.send(String::from_utf8_lossy(ctx.body()).into_owned());
     });
-    let peer = dial(&engine, engine.local_addrs()[0], Arc::new(client_routes))?;
+    let peer = dial_blocking(&engine, engine.local_addrs()[0], Arc::new(client_routes))?;
     let t = Some(Duration::from_secs(5));
     assert_eq!(peer.call("/echo", b"ping", t).wait().unwrap(), b"ping");
     assert_eq!(peer.call("/slow", b"", t).wait().unwrap(), b"done");

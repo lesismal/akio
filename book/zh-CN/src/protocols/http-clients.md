@@ -29,7 +29,7 @@
 {{#include ../../../../crates/flash-http/examples/guide-http.rs:h2client}}
 ```
 
-- `H2Client::connect(engine, addr, tls, opts, ready)` 或 `connect_blocking(engine, addr, tls,
+- `H2Client::dial(engine, addr, tls, opts, ready)` 或 `dial_blocking(engine, addr, tls,
   opts)`。`tls = None` 表示 prior knowledge 的明文 HTTP/2；`Some((cfg, server_name))` 使用 TLS，
   且 `cfg.alpn_protocols` 中必须包含 `h2`。
 - 一个连接复用所有请求；`H2Client` 克隆开销很小，可在任何线程使用。`send(req)` →

@@ -58,6 +58,6 @@ Both sides should agree on the KCP knobs and **must** agree on crypt and FEC.
 | `data_shards`, `parity_shards` | 0, 0 | kcp-go Reed–Solomon FEC (kcptun uses 10/3); either 0 turns it off |
 | `write_queue` | 0 | `send` fails beyond this many waiting segments (0 = twice the send window) |
 
-`Config::fast()` is kcptun's "fast3": nodelay, 10 ms interval, resend after 2, no congestion
+`KcpConfig::fast()` is kcptun's "fast3": nodelay, 10 ms interval, resend after 2, no congestion
 control. Keys are taken as already derived: kcptun derives them with PBKDF2-SHA1 from the
 passphrase (salt `kcp-go`, 4096 rounds, 32 bytes).

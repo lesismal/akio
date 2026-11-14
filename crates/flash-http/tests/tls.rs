@@ -26,9 +26,10 @@ use flash_http::{
 
 fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..Default::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }
@@ -115,14 +116,13 @@ fn start(name: &str) -> Server {
         .unwrap();
     // The server offers h2 too; these clients ask for http/1.1 only.
     scfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let cfg = HttpConfig {
-        max_body_bytes: 16 << 20,
-        ..HttpConfig::default()
-    };
+    let mut cfg = HttpConfig::default();
+    cfg.max_body_bytes = 16 << 20;
     let engine = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(500),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(500);
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())

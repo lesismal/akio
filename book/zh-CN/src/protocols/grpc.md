@@ -20,7 +20,7 @@
 | `bidi(path, open)` | `Fn(&Metadata, Sink) -> OnMessage` | 通用形式：每个请求消息调用一次 `OnMessage(Some(msg))`，半关闭时调用 `None` |
 
 其他设置：`interceptor(Fn(&Metadata) -> Result<(), Status>)` 在每次调用前执行（返回 `Err`
-时以该状态结束调用），`max_message(n)`（默认 4 MiB），`compress(bool)`（对接受 gzip 的客户端
+时以该状态结束调用），`max_message_bytes(n)`（默认 4 MiB），`compress(bool)`（对接受 gzip 的客户端
 压缩响应；gzip 压缩的请求总是被接受）。
 
 `Sink` 可在任何线程上答复：`send(msg) -> bool`、`set_header`、`set_trailer`、
@@ -40,7 +40,7 @@ server-streaming 方法就是这样做的）。
 {{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:client}}
 ```
 
-- `GrpcClient::new(h2_client, base_url)`；`.gzip(true)` 压缩请求。
+- `GrpcClient::new(h2_client, base_url)`；`.compress(true)` 压缩请求。
 - `unary(path, msg, CallOptions) -> Result<Vec<u8>, Status>` 会阻塞调用线程（不要在 I/O 线程上
   调用）。
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` 用于流式调用，同样是阻塞的。

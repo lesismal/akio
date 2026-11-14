@@ -89,6 +89,7 @@ impl std::fmt::Debug for HttpMetrics {
 
 /// A snapshot of [`HttpMetrics`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HttpSnapshot {
     /// Responses by status class: `[1xx, 2xx, 3xx, 4xx, 5xx, other]`.
     pub by_class: [u64; 6],

@@ -40,15 +40,25 @@ enum Kind {
 /// A packet encryption scheme, as kcp-go names them.
 pub struct Crypt(Kind);
 
+impl std::fmt::Debug for Crypt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Crypt").finish_non_exhaustive()
+    }
+}
+
 impl Crypt {
     /// `name` as kcptun spells it: `none`, `xor`, `aes` (32-byte key), `aes-128` (16),
     /// `aes-192` (24), `aes-128-gcm` (16). The key is already derived (kcptun uses
     /// PBKDF2-SHA1 of the passphrase with salt `kcp-go`, 4096 rounds, 32 bytes).
-    pub fn new(name: &str, key: &[u8]) -> Result<Crypt, String> {
+    ///
+    /// Fails with `InvalidInput` for an unknown `name` or a short key.
+    pub fn new(name: &str, key: &[u8]) -> std::io::Result<Crypt> {
         let need = |n: usize| {
-            key.get(..n)
-                .ok_or_else(|| format!("crypt {name} needs a key of {n} bytes"))
+            key.get(..n).ok_or_else(|| {
+                crate::invalid_input(format!("crypt {name} needs a key of {n} bytes"))
+            })
         };
+        let bad = |e: aes::cipher::InvalidLength| crate::invalid_input(e.to_string());
         Ok(Crypt(match name {
             "none" => Kind::None,
             "xor" => {
@@ -57,18 +67,22 @@ impl Crypt {
                 Kind::Xor(tbl)
             }
             "aes" => Kind::Aes(Box::new(AesAny::A256(
-                aes::Aes256::new_from_slice(need(32)?).map_err(|e| e.to_string())?,
+                aes::Aes256::new_from_slice(need(32)?).map_err(bad)?,
             ))),
             "aes-192" => Kind::Aes(Box::new(AesAny::A192(
-                aes::Aes192::new_from_slice(need(24)?).map_err(|e| e.to_string())?,
+                aes::Aes192::new_from_slice(need(24)?).map_err(bad)?,
             ))),
             "aes-128" => Kind::Aes(Box::new(AesAny::A128(
-                aes::Aes128::new_from_slice(need(16)?).map_err(|e| e.to_string())?,
+                aes::Aes128::new_from_slice(need(16)?).map_err(bad)?,
             ))),
-            "aes-128-gcm" => Kind::Gcm(Box::new(
-                Aes128Gcm::new_from_slice(need(16)?).map_err(|e| e.to_string())?,
-            )),
-            other => return Err(format!("crypt {other:?} is not supported")),
+            "aes-128-gcm" => {
+                Kind::Gcm(Box::new(Aes128Gcm::new_from_slice(need(16)?).map_err(bad)?))
+            }
+            other => {
+                return Err(crate::invalid_input(format!(
+                    "crypt {other:?} is not supported"
+                )));
+            }
         }))
     }
 

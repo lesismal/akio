@@ -69,6 +69,11 @@ the M7 protocols (media, WebRTC, BitTorrent) are not. Linux is the first-class p
 for development; Windows is not supported. Plan and progress: [docs/ROADMAP.md](docs/ROADMAP.md),
 [docs/DEV-PLAN.md](docs/DEV-PLAN.md), design decisions in [docs/adr](docs/adr/README.md).
 
+The current version is `1.0.0-rc.1`: the API is frozen for review. From 1.0.0 on flash follows
+semver as described in [docs/api-stability.md](docs/api-stability.md) (covered crates, MSRV 1.85,
+platform tiers) and [docs/deprecation.md](docs/deprecation.md); changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
 ## Building the docs
 
 ```console

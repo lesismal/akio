@@ -26,6 +26,7 @@ const CMD_MASK: u8 = !(STREAM_LOCAL | STREAM_EOF);
 
 /// Message commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Cmd {
     /// A request expecting a response.
     Request = 1,
@@ -57,6 +58,7 @@ impl Cmd {
 
 /// A decoded message.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Message {
     /// Command.
     pub cmd: Cmd,
@@ -127,7 +129,16 @@ pub fn ping() -> Vec<u8> {
 #[derive(Debug, PartialEq, Eq)]
 pub struct FrameError(pub &'static str);
 
+impl std::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "arpc framing error: {}", self.0)
+    }
+}
+
+impl std::error::Error for FrameError {}
+
 /// Incremental decoder.
+#[derive(Debug)]
 pub struct Decoder {
     buf: Vec<u8>,
     max_body: usize,

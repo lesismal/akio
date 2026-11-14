@@ -4,6 +4,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use crate::Poller;
 
 /// Wakes a [`Poller`] blocked in `wait` from any thread (eventfd on Linux, a pipe elsewhere).
+#[derive(Debug)]
 pub struct Waker {
     read: OwnedFd,
     #[cfg(not(target_os = "linux"))]
@@ -93,6 +94,13 @@ impl Waker {
 #[cfg(target_os = "linux")]
 pub struct EventFd {
     fd: OwnedFd,
+}
+
+#[cfg(target_os = "linux")]
+impl std::fmt::Debug for EventFd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventFd").finish_non_exhaustive()
+    }
 }
 
 #[cfg(target_os = "linux")]

@@ -12,7 +12,34 @@ use flash_quic::{Connection, ConnectionError, Dir, QuicHandler, StreamId};
 use crate::frame::{self, Reader};
 use crate::{Uni, code, qpack};
 
-type Callback = Box<dyn FnOnce(Result<Response, String>) + Send>;
+type Callback = Box<dyn FnOnce(Result<Response, H3Error>) + Send>;
+
+/// Why an HTTP/3 request got no response.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum H3Error {
+    /// The connection is closed (why).
+    Closed(String),
+    /// The server reset the request stream with this HTTP/3 error code ([`code`](crate::code)).
+    Reset(u64),
+    /// The response broke the protocol (what was wrong).
+    Protocol(&'static str),
+    /// No response within the timeout of a blocking call.
+    Timeout,
+}
+
+impl std::fmt::Display for H3Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            H3Error::Closed(why) => write!(f, "connection closed: {why}"),
+            H3Error::Reset(code) => write!(f, "stream reset (code {code:#x})"),
+            H3Error::Protocol(what) => write!(f, "HTTP/3 protocol error: {what}"),
+            H3Error::Timeout => f.write_str("timed out"),
+        }
+    }
+}
+
+impl std::error::Error for H3Error {}
 
 struct InFlight {
     r: Reader,
@@ -40,11 +67,17 @@ pub struct H3Client {
     authority: String,
 }
 
+impl std::fmt::Debug for H3Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H3Client").finish_non_exhaustive()
+    }
+}
+
 impl H3Client {
     /// Connects to `addr`, verifying it as `server_name`, with a QUIC client config offering
     /// ALPN `h3` (for example `flash_quic::client_config(roots, &[b"h3"])`). The engine needs
     /// UDP client threads. Requests sent before the handshake completes wait for it.
-    pub fn connect(
+    pub fn dial(
         engine: &flash::Engine,
         addr: SocketAddr,
         server_name: &str,
@@ -82,7 +115,7 @@ impl H3Client {
         path: &str,
         headers: &Headers,
         body: Vec<u8>,
-        cb: impl FnOnce(Result<Response, String>) + Send + 'static,
+        cb: impl FnOnce(Result<Response, H3Error>) + Send + 'static,
     ) {
         let m = method.as_str().to_owned();
         let mut fields: Vec<(&str, &str)> = vec![
@@ -109,7 +142,7 @@ impl H3Client {
         let mut st = lock(&self.st);
         if let Some(e) = st.closed.clone() {
             drop(st);
-            return cb(Err(e));
+            return cb(Err(H3Error::Closed(e)));
         }
         st.queue.push_back((wire, Box::new(cb)));
         let ready = st.ready;
@@ -127,17 +160,16 @@ impl H3Client {
         headers: &Headers,
         body: Vec<u8>,
         timeout: Duration,
-    ) -> Result<Response, String> {
+    ) -> Result<Response, H3Error> {
         let (tx, rx) = mpsc::channel();
         self.request(method, path, headers, body, move |r| {
             let _ = tx.send(r);
         });
-        rx.recv_timeout(timeout)
-            .map_err(|_| "timed out".to_owned())?
+        rx.recv_timeout(timeout).map_err(|_| H3Error::Timeout)?
     }
 
     /// `GET path`, blocking.
-    pub fn get(&self, path: &str, timeout: Duration) -> Result<Response, String> {
+    pub fn get(&self, path: &str, timeout: Duration) -> Result<Response, H3Error> {
         self.request_blocking(Method::Get, path, &Headers::new(), Vec::new(), timeout)
     }
 
@@ -202,7 +234,7 @@ impl ClientConn {
         cbs.extend(st.inflight.drain().filter_map(|(_, f)| f.cb));
         drop(st);
         for cb in cbs {
-            cb(Err(why.clone()));
+            cb(Err(H3Error::Closed(why.clone())));
         }
     }
 
@@ -212,7 +244,7 @@ impl ClientConn {
         id: StreamId,
         data: &[u8],
         fin: bool,
-    ) -> Option<(Callback, Result<Response, String>)> {
+    ) -> Option<(Callback, Result<Response, H3Error>)> {
         let mut st = lock(&self.st);
         let f = st.inflight.get_mut(&id)?;
         f.r.push(data);
@@ -220,13 +252,13 @@ impl ClientConn {
         loop {
             match f.r.frame(1 << 30) {
                 Err(_) => {
-                    err = Some("frame too large".to_owned());
+                    err = Some(H3Error::Protocol("frame too large"));
                     break;
                 }
                 Ok(None) => break,
                 Ok(Some((frame::HEADERS, p))) => {
                     let Ok(fields) = qpack::decode(&p, 1 << 20) else {
-                        err = Some("bad field section".to_owned());
+                        err = Some(H3Error::Protocol("bad field section"));
                         break;
                     };
                     match f.resp.as_mut() {
@@ -234,7 +266,7 @@ impl ClientConn {
                             Some(r) if r.status < 200 => {}
                             Some(r) => f.resp = Some(r),
                             None => {
-                                err = Some("malformed response".to_owned());
+                                err = Some(H3Error::Protocol("malformed response"));
                                 break;
                             }
                         },
@@ -250,7 +282,7 @@ impl ClientConn {
                 Ok(Some((frame::DATA, p))) => match f.resp.as_mut() {
                     Some(r) => r.body.extend_from_slice(&p),
                     None => {
-                        err = Some("DATA before HEADERS".to_owned());
+                        err = Some(H3Error::Protocol("DATA before HEADERS"));
                         break;
                     }
                 },
@@ -265,7 +297,7 @@ impl ClientConn {
         let r = match (err, f.resp.take()) {
             (Some(e), _) => Err(e),
             (None, Some(r)) => Ok(r),
-            (None, None) => Err("stream ended without a response".to_owned()),
+            (None, None) => Err(H3Error::Protocol("stream ended without a response")),
         };
         Some((cb, r))
     }
@@ -305,7 +337,7 @@ impl QuicHandler for ClientConn {
     fn on_stream_reset(&mut self, _c: &Connection, id: StreamId, code: u64) {
         let f = lock(&self.st).inflight.remove(&id);
         if let Some(cb) = f.and_then(|f| f.cb) {
-            cb(Err(format!("stream reset (code {code:#x})")));
+            cb(Err(H3Error::Reset(code)));
         }
     }
 
@@ -314,6 +346,6 @@ impl QuicHandler for ClientConn {
     }
 
     fn on_close(&mut self, _c: &Connection, reason: ConnectionError) {
-        self.fail_all(format!("connection closed: {reason}"));
+        self.fail_all(reason.to_string());
     }
 }

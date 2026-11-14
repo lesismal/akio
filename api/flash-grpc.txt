@@ -1,0 +1,156 @@
+pub mod flash_grpc
+pub mod flash_grpc::codec
+pub fn flash_grpc::codec::decode<M: prost::message::Message + core::default::Default>(&[u8]) -> core::result::Result<M, flash_grpc::Status>
+pub fn flash_grpc::codec::encode<M: prost::message::Message>(&M) -> alloc::vec::Vec<u8>
+pub enum flash_grpc::Code
+pub flash_grpc::Code::Aborted = 10
+pub flash_grpc::Code::AlreadyExists = 6
+pub flash_grpc::Code::Cancelled = 1
+pub flash_grpc::Code::DataLoss = 15
+pub flash_grpc::Code::DeadlineExceeded = 4
+pub flash_grpc::Code::FailedPrecondition = 9
+pub flash_grpc::Code::Internal = 13
+pub flash_grpc::Code::InvalidArgument = 3
+pub flash_grpc::Code::NotFound = 5
+pub flash_grpc::Code::Ok = 0
+pub flash_grpc::Code::OutOfRange = 11
+pub flash_grpc::Code::PermissionDenied = 7
+pub flash_grpc::Code::ResourceExhausted = 8
+pub flash_grpc::Code::Unauthenticated = 16
+pub flash_grpc::Code::Unavailable = 14
+pub flash_grpc::Code::Unimplemented = 12
+pub flash_grpc::Code::Unknown = 2
+impl core::clone::Clone for flash_grpc::Code
+pub fn flash_grpc::Code::clone(&self) -> Self
+impl core::cmp::Eq for flash_grpc::Code
+impl core::cmp::PartialEq for flash_grpc::Code
+pub fn flash_grpc::Code::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_grpc::Code
+pub fn flash_grpc::Code::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_grpc::Code
+impl core::marker::StructuralPartialEq for flash_grpc::Code
+impl core::marker::Send for flash_grpc::Code
+impl core::marker::Sync for flash_grpc::Code
+impl core::marker::Unpin for flash_grpc::Code
+impl core::panic::unwind_safe::RefUnwindSafe for flash_grpc::Code
+impl core::panic::unwind_safe::UnwindSafe for flash_grpc::Code
+#[non_exhaustive] pub struct flash_grpc::CallOptions
+pub flash_grpc::CallOptions::metadata: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub flash_grpc::CallOptions::timeout: core::option::Option<core::time::Duration>
+impl core::clone::Clone for flash_grpc::CallOptions
+pub fn flash_grpc::CallOptions::clone(&self) -> Self
+impl core::default::Default for flash_grpc::CallOptions
+pub fn flash_grpc::CallOptions::default() -> Self
+impl core::fmt::Debug for flash_grpc::CallOptions
+pub fn flash_grpc::CallOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_grpc::CallOptions
+impl core::marker::Sync for flash_grpc::CallOptions
+impl core::marker::Unpin for flash_grpc::CallOptions
+impl core::panic::unwind_safe::RefUnwindSafe for flash_grpc::CallOptions
+impl core::panic::unwind_safe::UnwindSafe for flash_grpc::CallOptions
+pub struct flash_grpc::ClientSink
+impl flash_grpc::ClientSink
+pub fn flash_grpc::ClientSink::close_send(&self) -> bool
+pub fn flash_grpc::ClientSink::send(&self, &[u8]) -> bool
+impl core::fmt::Debug for flash_grpc::ClientSink
+pub fn flash_grpc::ClientSink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_grpc::ClientSink
+impl core::marker::Sync for flash_grpc::ClientSink
+impl core::marker::Unpin for flash_grpc::ClientSink
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_grpc::ClientSink
+impl !core::panic::unwind_safe::UnwindSafe for flash_grpc::ClientSink
+pub struct flash_grpc::GrpcClient
+impl flash_grpc::GrpcClient
+pub fn flash_grpc::GrpcClient::bidi(&self, &str, flash_grpc::CallOptions, impl core::ops::function::FnMut(alloc::vec::Vec<u8>) + core::marker::Send + 'static, impl core::ops::function::FnOnce(flash_grpc::Status, flash_http::message::Headers) + core::marker::Send + 'static) -> flash_grpc::ClientSink
+pub fn flash_grpc::GrpcClient::collect(&self, &str, alloc::vec::Vec<alloc::vec::Vec<u8>>, flash_grpc::CallOptions) -> (alloc::vec::Vec<alloc::vec::Vec<u8>>, flash_grpc::Status)
+pub fn flash_grpc::GrpcClient::compress(self, bool) -> flash_grpc::GrpcClient
+pub fn flash_grpc::GrpcClient::new(flash_http::h2client::H2Client, &str) -> flash_grpc::GrpcClient
+pub fn flash_grpc::GrpcClient::unary(&self, &str, &[u8], flash_grpc::CallOptions) -> core::result::Result<alloc::vec::Vec<u8>, flash_grpc::Status>
+impl core::clone::Clone for flash_grpc::GrpcClient
+pub fn flash_grpc::GrpcClient::clone(&self) -> Self
+impl core::fmt::Debug for flash_grpc::GrpcClient
+pub fn flash_grpc::GrpcClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_grpc::GrpcClient
+impl core::marker::Sync for flash_grpc::GrpcClient
+impl core::marker::Unpin for flash_grpc::GrpcClient
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_grpc::GrpcClient
+impl !core::panic::unwind_safe::UnwindSafe for flash_grpc::GrpcClient
+pub struct flash_grpc::GrpcServer
+impl flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::bidi(self, &str, impl core::ops::function::Fn(&flash_grpc::Metadata, flash_grpc::Sink) -> flash_grpc::OnMessage + core::marker::Send + core::marker::Sync + 'static) -> flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::client_stream(self, &str, impl core::ops::function::Fn(&flash_grpc::Metadata, alloc::vec::Vec<alloc::vec::Vec<u8>>, flash_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::compress(self, bool) -> flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::interceptor(self, impl core::ops::function::Fn(&flash_grpc::Metadata) -> core::result::Result<(), flash_grpc::Status> + core::marker::Send + core::marker::Sync + 'static) -> flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::max_message_bytes(self, usize) -> flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::new() -> flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::server_stream(self, &str, impl core::ops::function::Fn(&flash_grpc::Metadata, alloc::vec::Vec<u8>, flash_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::unary(self, &str, impl core::ops::function::Fn(&flash_grpc::Metadata, alloc::vec::Vec<u8>, flash_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> flash_grpc::GrpcServer
+impl core::clone::Clone for flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::clone(&self) -> Self
+impl core::default::Default for flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::default() -> Self
+impl core::fmt::Debug for flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_http::context::Service for flash_grpc::GrpcServer
+pub fn flash_grpc::GrpcServer::body_mode(&self, &flash_http::message::Request) -> flash_http::context::BodyMode
+pub fn flash_grpc::GrpcServer::call(&self, &mut flash_http::context::Context)
+impl core::marker::Send for flash_grpc::GrpcServer
+impl core::marker::Sync for flash_grpc::GrpcServer
+impl core::marker::Unpin for flash_grpc::GrpcServer
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_grpc::GrpcServer
+impl !core::panic::unwind_safe::UnwindSafe for flash_grpc::GrpcServer
+#[non_exhaustive] pub struct flash_grpc::Metadata
+pub flash_grpc::Metadata::deadline: core::option::Option<std::time::Instant>
+pub flash_grpc::Metadata::headers: flash_http::message::Headers
+pub flash_grpc::Metadata::method: alloc::string::String
+impl flash_grpc::Metadata
+pub fn flash_grpc::Metadata::get(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for flash_grpc::Metadata
+pub fn flash_grpc::Metadata::clone(&self) -> Self
+impl core::fmt::Debug for flash_grpc::Metadata
+pub fn flash_grpc::Metadata::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_grpc::Metadata
+impl core::marker::Sync for flash_grpc::Metadata
+impl core::marker::Unpin for flash_grpc::Metadata
+impl core::panic::unwind_safe::RefUnwindSafe for flash_grpc::Metadata
+impl core::panic::unwind_safe::UnwindSafe for flash_grpc::Metadata
+pub struct flash_grpc::Sink(_)
+impl flash_grpc::Sink
+pub fn flash_grpc::Sink::finish(&self, flash_grpc::Status)
+pub fn flash_grpc::Sink::is_finished(&self) -> bool
+pub fn flash_grpc::Sink::send(&self, &[u8]) -> bool
+pub fn flash_grpc::Sink::set_header(&self, &str, &str)
+pub fn flash_grpc::Sink::set_trailer(&self, &str, &str)
+impl core::clone::Clone for flash_grpc::Sink
+pub fn flash_grpc::Sink::clone(&self) -> Self
+impl core::fmt::Debug for flash_grpc::Sink
+pub fn flash_grpc::Sink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_grpc::Sink
+impl core::marker::Sync for flash_grpc::Sink
+impl core::marker::Unpin for flash_grpc::Sink
+impl core::panic::unwind_safe::RefUnwindSafe for flash_grpc::Sink
+impl core::panic::unwind_safe::UnwindSafe for flash_grpc::Sink
+#[non_exhaustive] pub struct flash_grpc::Status
+pub flash_grpc::Status::code: flash_grpc::Code
+pub flash_grpc::Status::message: alloc::string::String
+impl flash_grpc::Status
+pub fn flash_grpc::Status::new(flash_grpc::Code, impl core::convert::Into<alloc::string::String>) -> flash_grpc::Status
+pub fn flash_grpc::Status::ok() -> flash_grpc::Status
+impl core::clone::Clone for flash_grpc::Status
+pub fn flash_grpc::Status::clone(&self) -> Self
+impl core::cmp::Eq for flash_grpc::Status
+impl core::cmp::PartialEq for flash_grpc::Status
+pub fn flash_grpc::Status::eq(&self, &Self) -> bool
+impl core::error::Error for flash_grpc::Status
+impl core::fmt::Debug for flash_grpc::Status
+pub fn flash_grpc::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_grpc::Status
+pub fn flash_grpc::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_grpc::Status
+impl core::marker::Send for flash_grpc::Status
+impl core::marker::Sync for flash_grpc::Status
+impl core::marker::Unpin for flash_grpc::Status
+impl core::panic::unwind_safe::RefUnwindSafe for flash_grpc::Status
+impl core::panic::unwind_safe::UnwindSafe for flash_grpc::Status
+pub const flash_grpc::DEFAULT_MAX_MESSAGE: usize
+pub type flash_grpc::OnMessage = alloc::boxed::Box<(dyn core::ops::function::FnMut(core::option::Option<alloc::vec::Vec<u8>>) + core::marker::Send)>

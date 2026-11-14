@@ -58,6 +58,7 @@ pub use rustls;
 
 /// Errors of [`Connection`] calls and of the config helpers.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// The connection is closed.
     Closed,
@@ -689,6 +690,12 @@ impl Ep {
 /// the factory.
 pub struct QuicServer(Arc<Ep>);
 
+impl fmt::Debug for QuicServer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuicServer").finish_non_exhaustive()
+    }
+}
+
 impl QuicServer {
     /// A server with `config` (see [`server_config`]) whose connections get handlers from
     /// `factory`.
@@ -732,6 +739,12 @@ impl Acceptor for QuicServer {
 pub struct Udp {
     ep: Arc<Ep>,
     client: bool,
+}
+
+impl fmt::Debug for Udp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Udp").finish_non_exhaustive()
+    }
 }
 
 impl Handler for Udp {

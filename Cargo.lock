@@ -191,7 +191,7 @@ dependencies = [
 
 [[package]]
 name = "echo-bench"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "rustls",
 ]
@@ -210,7 +210,7 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "flash"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash-core",
  "flash-ebpf",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "flash-arpc"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash",
  "flash-buf",
@@ -233,11 +233,11 @@ dependencies = [
 
 [[package]]
 name = "flash-buf"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "flash-core"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash-buf",
  "flash-pool",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "flash-ebpf"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash-core",
  "flash-sys",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "flash-epoll"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash-core",
  "flash-sys",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "flash-grpc"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash",
  "flash-core",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "flash-h3"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "bytes",
  "flash",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "flash-http"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "base64",
  "flash",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "flash-kcp"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "flash-mux"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash",
  "flash-core",
@@ -331,11 +331,11 @@ dependencies = [
 
 [[package]]
 name = "flash-pool"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "flash-quic"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "bytes",
  "flash",
@@ -347,7 +347,7 @@ dependencies = [
 
 [[package]]
 name = "flash-socks"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash",
  "flash-core",
@@ -356,18 +356,18 @@ dependencies = [
 
 [[package]]
 name = "flash-sys"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "flash-timer"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "flash-tls"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash-core",
  "rustls",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "flash-uring"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "flash-core",
  "flash-sys",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "flash-ws"
-version = "0.0.0"
+version = "1.0.0-rc.1"
 dependencies = [
  "base64",
  "flash",

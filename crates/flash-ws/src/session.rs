@@ -10,9 +10,7 @@ use flash_core::{ConnInner, Error, Result};
 
 use crate::{
     deflate::{Deflater, Inflater, PmdParams},
-    protocol::{
-        Decoder, Event, Opcode, Role, close, close_payload, encode_frame, encode_frame_masked,
-    },
+    protocol::{Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked},
 };
 
 /// A complete WebSocket message.
@@ -44,6 +42,7 @@ pub trait WsHandler: Send + 'static {
 
 /// Options for a WebSocket connection.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct WsConfig {
     /// Largest message accepted, after decompression; larger ones close with 1009.
     pub max_message_bytes: usize,
@@ -122,9 +121,15 @@ pub struct WsSender {
     tx: Arc<Mutex<Tx>>,
 }
 
+impl std::fmt::Debug for WsSender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsSender").finish_non_exhaustive()
+    }
+}
+
 /// A message encoded once, to be sent to many connections ([`WsSender::send_prepared`]). It is
 /// sent uncompressed, which every peer accepts.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PreparedMessage {
     frame: SharedBuf,
 }
@@ -330,13 +335,21 @@ impl WsSender {
     }
 }
 
-/// Drives one WebSocket connection: feed it the bytes read, it calls the handler.
+/// Drives one WebSocket connection: feed it the bytes read, it calls the handler. Used by
+/// flash-http's upgrade glue; `#[doc(hidden)]`, outside the semver promise.
+#[doc(hidden)]
 pub struct WsSession {
     decoder: Decoder,
     handler: Box<dyn WsHandler>,
     sender: WsSender,
     events: Vec<Event>,
     ended: bool,
+}
+
+impl std::fmt::Debug for WsSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsSession").finish_non_exhaustive()
+    }
 }
 
 impl WsSession {
@@ -478,9 +491,6 @@ pub fn select_subprotocol<'a>(
     }
     None
 }
-
-/// Status 1011 helper for servers that hit an internal error.
-pub const INTERNAL_ERROR: u16 = close::INTERNAL;
 
 #[cfg(test)]
 mod tests {

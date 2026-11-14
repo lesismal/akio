@@ -81,6 +81,12 @@ pub struct UringGroup {
     rr: AtomicUsize,
 }
 
+impl std::fmt::Debug for UringGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UringGroup").finish_non_exhaustive()
+    }
+}
+
 impl UringGroup {
     /// Binds `listen` (if any) and prepares `threads` rings. Nothing runs until [`Group::start`].
     pub fn bind(
@@ -112,11 +118,7 @@ impl UringGroup {
         let mut loops = Vec::with_capacity(threads);
         let listener = listen.as_ref().map(|_| addr);
         for (thread, l) in listeners.into_iter().enumerate() {
-            let meta = LoopMeta {
-                backend: "io_uring",
-                listener,
-                thread,
-            };
+            let meta = LoopMeta::new("io_uring", listener, thread);
             let sh = LoopShared::new(pool.clone(), &cfg, meta)?;
             let acceptor = listen.as_ref().map(|(_, a)| a.clone());
             loops.push(Loop::new(sh.clone(), l.zip(acceptor), cfg.clone(), &opts)?);

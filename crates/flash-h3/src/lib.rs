@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! HTTP/3 (RFC 9114) for flash, on [`flash_quic`] with QPACK (static table and literals).
 //!
-//! [`server`] serves any [`flash_http::Service`] (a [`flash_http::Router`] with its
+//! [`serve`] serves any [`flash_http::Service`] (a [`flash_http::Router`] with its
 //! middleware) over QUIC: handlers get the same [`flash_http::Context`] as on HTTP/1.1 and
 //! HTTP/2, including `detach` and `stream_response`; request bodies arrive buffered.
 //! [`H3Client`] sends requests on one QUIC connection.
@@ -14,7 +14,7 @@
 //! let app = Router::new().get("/", |ctx: &mut Context| ctx.text(200, "hello over h3"));
 //! let quic = flash_h3::server_config(certs, key).unwrap();
 //! let engine = Engine::builder()
-//!     .listen(Listener::udp("0.0.0.0:443".parse().unwrap()).serve(flash_h3::server(quic, app)))
+//!     .listen(Listener::udp("0.0.0.0:443".parse().unwrap()).serve(flash_h3::serve(quic, app)))
 //!     .build()
 //!     .unwrap();
 //! engine.run().unwrap();
@@ -42,25 +42,26 @@ use flash_http::message::{Headers, Method, Request, Response, Version};
 use flash_http::transport::{BodySink, ResponseSink};
 use flash_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
 
-pub use client::H3Client;
+pub use client::{H3Client, H3Error};
 pub use frame::code;
 
 use frame::Reader;
 
 /// Server limits.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct H3Config {
     /// Largest request body (larger ones get 413).
-    pub max_body: usize,
+    pub max_body_bytes: usize,
     /// Largest field section, as `SETTINGS_MAX_FIELD_SECTION_SIZE`.
-    pub max_field_section: usize,
+    pub max_field_section_bytes: usize,
 }
 
 impl Default for H3Config {
     fn default() -> H3Config {
         H3Config {
-            max_body: 8 << 20,
-            max_field_section: 64 << 10,
+            max_body_bytes: 8 << 20,
+            max_field_section_bytes: 64 << 10,
         }
     }
 }
@@ -73,16 +74,16 @@ pub fn server_config(
     flash_quic::server_config(certs, key, &[b"h3"])
 }
 
-/// Serves `service` over HTTP/3: the acceptor of a UDP listener.
-pub fn server<S: Service>(quic: flash_quic::proto::ServerConfig, service: S) -> QuicServer {
-    server_with(quic, service, H3Config::default())
+/// Serves `service` over HTTP/3: the acceptor of a UDP listener (like `flash_http::serve`).
+pub fn serve<S: Service>(quic: flash_quic::proto::ServerConfig, service: S) -> QuicServer {
+    serve_with(quic, H3Config::default(), service)
 }
 
-/// [`server`] with limits.
-pub fn server_with<S: Service>(
+/// [`serve`] with limits (like `flash_http::serve_with`).
+pub fn serve_with<S: Service>(
     quic: flash_quic::proto::ServerConfig,
-    service: S,
     cfg: H3Config,
+    service: S,
 ) -> QuicServer {
     let svc = Arc::new(service);
     let cfg = Arc::new(cfg);
@@ -265,8 +266,8 @@ fn read_req(
     fin: bool,
 ) -> Result<Option<(Request, bool)>, Fail> {
     {
-        let max_field = cfg.max_field_section;
-        let max_frame = (cfg.max_body + max_field) as u64;
+        let max_field = cfg.max_field_section_bytes;
+        let max_frame = (cfg.max_body_bytes + max_field) as u64;
         if req.done {
             return Ok(None);
         }
@@ -294,7 +295,7 @@ fn read_req(
                     if req.fields.is_none() || req.trailers.is_some() {
                         return Err(Fail::Conn(code::FRAME_UNEXPECTED));
                     }
-                    if req.body.len() + p.len() > cfg.max_body {
+                    if req.body.len() + p.len() > cfg.max_body_bytes {
                         return Err(Fail::Status(413));
                     }
                     req.body.extend_from_slice(&p);
@@ -407,14 +408,14 @@ fn build_request(
     let head_only = method == Method::Head;
     let target = path.unwrap_or_else(|| authority.clone().unwrap_or_default());
     Some((
-        Request {
-            method,
-            target,
-            version: Version::Http3,
-            headers,
-            trailers: tr,
-            body,
-            peer,
+        {
+            let mut v = Request::new(method, target);
+            v.version = Version::Http3;
+            v.headers = headers;
+            v.trailers = tr;
+            v.body = body;
+            v.peer = peer;
+            v
         },
         head_only,
     ))
@@ -423,7 +424,10 @@ fn build_request(
 impl<S: Service> QuicHandler for ServerConn<S> {
     fn on_connected(&mut self, c: &Connection) {
         if let Some(id) = c.open_uni() {
-            let _ = c.send(id, control_stream_preamble(self.cfg.max_field_section));
+            let _ = c.send(
+                id,
+                control_stream_preamble(self.cfg.max_field_section_bytes),
+            );
         }
     }
 

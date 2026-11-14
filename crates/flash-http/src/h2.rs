@@ -62,6 +62,7 @@ pub(crate) const DEFAULT_FRAME: u32 = 16_384;
 
 /// HTTP/2 limits and options.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct H2Config {
     /// Streams the peer may have open at once.
     pub max_concurrent_streams: u32,

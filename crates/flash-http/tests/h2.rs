@@ -23,9 +23,10 @@ use flash_http::{
 
 fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..Default::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }
@@ -93,9 +94,10 @@ fn pattern(n: usize) -> Vec<u8> {
 fn start(acceptor: impl flash::Acceptor) -> Arc<Engine> {
     let e = Arc::new(
         Engine::builder()
-            .config(Config {
-                shutdown_timeout: Duration::from_millis(800),
-                ..Config::default()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_millis(800);
+                v
             })
             .listen(
                 Listener::tcp("127.0.0.1:0".parse().unwrap())
@@ -118,7 +120,7 @@ fn stop(e: &Engine) {
 
 fn connect(e: &Engine, opts: H2Options) -> (H2Client, String) {
     let addr = e.local_addrs()[0];
-    let c = H2Client::connect_blocking(e, addr, None, opts).unwrap();
+    let c = H2Client::dial_blocking(e, addr, None, opts).unwrap();
     (c, format!("http://{addr}"))
 }
 
@@ -163,14 +165,12 @@ fn large_bodies_cross_small_flow_control_windows_both_ways() {
     let e = start(serve(app()));
     // 16 KiB windows on the client force WINDOW_UPDATE round trips for the download, and the
     // server's own windows (1 MiB) for the 3 MiB upload.
-    let (c, base) = connect(
-        &e,
-        H2Options {
-            initial_window: 16 << 10,
-            conn_window: 64 << 10,
-            ..H2Options::default()
-        },
-    );
+    let (c, base) = connect(&e, {
+        let mut v = H2Options::default();
+        v.initial_window = 16 << 10;
+        v.conn_window = 64 << 10;
+        v
+    });
     let r = c
         .send(ClientRequest::get(&format!("{base}/big/3000000")))
         .wait()
@@ -247,13 +247,11 @@ fn streamed_responses_and_streamed_request_bodies() {
 #[test]
 fn server_push() {
     let e = start(serve(app()));
-    let (c, base) = connect(
-        &e,
-        H2Options {
-            enable_push: true,
-            ..H2Options::default()
-        },
-    );
+    let (c, base) = connect(&e, {
+        let mut v = H2Options::default();
+        v.enable_push = true;
+        v
+    });
     let r = c
         .send(ClientRequest::get(&format!("{base}/page")))
         .wait()
@@ -356,7 +354,7 @@ fn tls_with_alpn_h2_and_http1_on_the_same_listener() {
         .with_root_certificates(roots)
         .with_no_client_auth();
     ccfg.alpn_protocols = vec![b"h2".to_vec()];
-    let c = H2Client::connect_blocking(
+    let c = H2Client::dial_blocking(
         &e,
         addr,
         Some((Arc::new(ccfg), "localhost")),

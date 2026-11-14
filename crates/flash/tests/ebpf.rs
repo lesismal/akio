@@ -29,9 +29,10 @@ fn expect_ebpf() -> bool {
 }
 
 fn cfg() -> Config {
-    Config {
-        shutdown_timeout: Duration::from_millis(300),
-        ..Config::default()
+    {
+        let mut v = Config::default();
+        v.shutdown_timeout = Duration::from_millis(300);
+        v
     }
 }
 
@@ -84,10 +85,11 @@ fn steered_engine(udp: bool, threads: usize, steering: Steering) -> (Engine, Lan
         .config(cfg())
         .listen(
             l.threads(threads)
-                .accel(Accel::Ebpf(EbpfConfig {
-                    steering,
-                    strict: true,
-                    ..EbpfConfig::default()
+                .accel(Accel::Ebpf({
+                    let mut v = EbpfConfig::default();
+                    v.steering = steering;
+                    v.strict = true;
+                    v
                 }))
                 .serve(Recorder(landed.clone())),
         )
@@ -216,6 +218,7 @@ impl Acceptor for Proxy {
     type Handler = Side;
     fn on_open(&self, c: &Conn<Side>) -> Side {
         let client = c.inner().clone();
+        let client_conn = c.clone();
         let to_upstream = Arc::new(Mutex::new(None));
         let slot = to_upstream.clone();
         let relay = self.relay.clone();
@@ -223,7 +226,7 @@ impl Acceptor for Proxy {
             *slot.lock().unwrap() = Some(u.inner().clone());
             let spliced = relay
                 .as_ref()
-                .is_some_and(|r| r.splice_conns(&client, u.inner()).is_ok());
+                .is_some_and(|r| r.splice_conns(&client_conn, u).is_ok());
             let _ = client.send(if spliced { b"K" } else { b"U" });
             Side {
                 other: Arc::new(Mutex::new(Some(client.clone()))),
@@ -255,7 +258,7 @@ fn read_n(s: &mut TcpStream, n: usize) -> Vec<u8> {
 #[test]
 fn sockmap_relay_splices_proxied_flash_connections() {
     // Small transfers only, so kernels below ebpf::relay::MIN_KERNEL are fine too.
-    let relay = match ebpf::Relay::new_unchecked(64) {
+    let relay = match ebpf::Relay::new_any_kernel(64) {
         Ok(r) => Some(r),
         Err(e) if expect_ebpf() => panic!("sockmap relay: {e}"),
         Err(e) => {

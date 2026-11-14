@@ -1,11 +1,16 @@
 [package]
 name = "flash-arpc"
-description = "flash network library: arpc (wire-compatible with lesismal/arpc and fib/arpc)"
+description = "flash arpc: RPC wire-compatible with lesismal/arpc and fib/arpc"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-arpc"
+keywords = ["rpc", "arpc", "network", "server", "client"]
+categories = ["network-programming"]
 
 [dependencies]
 flash = { workspace = true }

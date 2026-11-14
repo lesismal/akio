@@ -1,11 +1,16 @@
 [package]
 name = "flash-grpc"
-description = "flash network library: gRPC over flash-http's HTTP/2"
+description = "flash gRPC: unary and streaming calls over the HTTP/2 of flash-http"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-grpc"
+keywords = ["grpc", "rpc", "http2", "network"]
+categories = ["network-programming", "web-programming"]
 
 [dependencies]
 flash = { workspace = true }

@@ -47,7 +47,7 @@ fn main() -> std::io::Result<()> {
             Some("mallory") => Err(Status::new(Code::PermissionDenied, "go away")),
             _ => Ok(()),
         })
-        .max_message(4 << 20)
+        .max_message_bytes(4 << 20)
         .compress(true); // gzip responses when the client accepts it
     // Plain HTTP routes and gRPC on one port: gRPC requests go to `grpc`.
     let app = Router::new()
@@ -64,16 +64,15 @@ fn main() -> std::io::Result<()> {
     let addr = engine.local_addrs()[0];
 
     // ANCHOR: client
-    let h2 = H2Client::connect_blocking(&engine, addr, None, H2Options::default())?;
+    let h2 = H2Client::dial_blocking(&engine, addr, None, H2Options::default())?;
     let client = GrpcClient::new(h2, &format!("http://{addr}"));
-    let opts = || CallOptions {
-        timeout: Some(Duration::from_secs(5)), // sent as grpc-timeout
-        ..CallOptions::default()
+    let opts = || {
+        let mut o = CallOptions::default();
+        o.timeout = Some(Duration::from_secs(5)); // sent as grpc-timeout
+        o
     };
-    let with_user = CallOptions {
-        metadata: vec![("x-user".into(), "ada".into())],
-        ..opts()
-    };
+    let mut with_user = opts();
+    with_user.metadata = vec![("x-user".into(), "ada".into())];
     let reply = client
         .unary("/demo.Greeter/Hello", b"world", with_user)
         .expect("unary");

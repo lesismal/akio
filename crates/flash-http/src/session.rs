@@ -15,6 +15,7 @@ use crate::{
 
 /// Limits and options of the HTTP server.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct HttpConfig {
     /// Largest request head (request line + headers) accepted; else 431.
     pub max_header_bytes: usize,
@@ -52,6 +53,12 @@ pub fn serve_with<S: Service>(cfg: HttpConfig, service: S) -> HttpAcceptor<S> {
 pub struct HttpAcceptor<S> {
     service: Arc<S>,
     cfg: HttpConfig,
+}
+
+impl<S> std::fmt::Debug for HttpAcceptor<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpAcceptor").finish_non_exhaustive()
+    }
 }
 
 impl<S: Service> Acceptor for HttpAcceptor<S> {
@@ -119,6 +126,12 @@ pub struct Session<S> {
     h2: Option<H2Session<S>>,
     /// Some bytes have been seen (the HTTP/2 preface is only looked for at the very start).
     started: bool,
+}
+
+impl<S> std::fmt::Debug for Session<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Session").finish_non_exhaustive()
+    }
 }
 
 /// HTTP/1 shutdown: the close goes into the response order, so it happens after every response

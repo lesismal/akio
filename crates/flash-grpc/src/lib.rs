@@ -91,6 +91,7 @@ impl Code {
 
 /// A call's outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Status {
     /// Code.
     pub code: Code,
@@ -330,6 +331,7 @@ fn after(at: Instant, f: impl FnOnce() + Send + 'static) {
 
 /// The request side of a call: its metadata.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Metadata {
     /// The full method path, `/package.Service/Method`.
     pub method: String,
@@ -365,6 +367,12 @@ struct SinkInner {
 /// thread. Dropping every clone without [`finish`](Self::finish) ends the call with `INTERNAL`.
 #[derive(Clone)]
 pub struct Sink(Arc<SinkInner>);
+
+impl std::fmt::Debug for Sink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Sink").finish_non_exhaustive()
+    }
+}
 
 impl Sink {
     /// Adds response header metadata (before the first message only).
@@ -487,6 +495,12 @@ pub struct GrpcServer {
     compress: bool,
 }
 
+impl std::fmt::Debug for GrpcServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrpcServer").finish_non_exhaustive()
+    }
+}
+
 impl GrpcServer {
     /// No methods.
     pub fn new() -> GrpcServer {
@@ -495,6 +509,7 @@ impl GrpcServer {
 
     /// The general form: `open` runs when a call starts and returns the function that receives
     /// its request messages (then `None` at the client's half-close). Answer with the [`Sink`].
+    #[must_use]
     pub fn bidi(
         mut self,
         path: &str,
@@ -505,6 +520,7 @@ impl GrpcServer {
     }
 
     /// A unary method: one request message, `f` answers through the sink (`send` then `finish`).
+    #[must_use]
     pub fn unary(
         self,
         path: &str,
@@ -532,6 +548,7 @@ impl GrpcServer {
     }
 
     /// A server-streaming method: one request, any number of responses through the sink.
+    #[must_use]
     pub fn server_stream(
         self,
         path: &str,
@@ -541,6 +558,7 @@ impl GrpcServer {
     }
 
     /// A client-streaming method: `f` gets every request message once the client finishes.
+    #[must_use]
     pub fn client_stream(
         self,
         path: &str,
@@ -558,6 +576,7 @@ impl GrpcServer {
     }
 
     /// Runs before every call; an `Err` ends the call with that status.
+    #[must_use]
     pub fn interceptor(
         mut self,
         f: impl Fn(&Metadata) -> Result<(), Status> + Send + Sync + 'static,
@@ -567,12 +586,14 @@ impl GrpcServer {
     }
 
     /// Largest request message accepted (default 4 MiB).
-    pub fn max_message(mut self, n: usize) -> GrpcServer {
+    #[must_use]
+    pub fn max_message_bytes(mut self, n: usize) -> GrpcServer {
         self.max_message = Some(n);
         self
     }
 
     /// Compress responses with gzip for clients that accept it.
+    #[must_use]
     pub fn compress(mut self, on: bool) -> GrpcServer {
         self.compress = on;
         self
@@ -682,7 +703,7 @@ impl Service for GrpcServer {
 // ---- client ----------------------------------------------------------------------------------
 
 /// A gRPC client on one HTTP/2 connection.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct GrpcClient {
     h2: H2Client,
     base: String,
@@ -692,6 +713,7 @@ pub struct GrpcClient {
 
 /// Call options.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct CallOptions {
     /// Deadline, sent as `grpc-timeout`.
     pub timeout: Option<Duration>,
@@ -702,6 +724,7 @@ pub struct CallOptions {
 type DoneFn = Box<dyn FnOnce(Status, Headers) + Send>;
 
 /// The sending half of a streaming call.
+#[derive(Debug)]
 pub struct ClientSink {
     up: flash_http::h2client::H2Upload,
     gzip: bool,
@@ -731,7 +754,8 @@ impl GrpcClient {
     }
 
     /// Compress request messages with gzip.
-    pub fn gzip(mut self, on: bool) -> GrpcClient {
+    #[must_use]
+    pub fn compress(mut self, on: bool) -> GrpcClient {
         self.gzip = on;
         self
     }

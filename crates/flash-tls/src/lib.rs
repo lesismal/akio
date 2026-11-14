@@ -44,6 +44,12 @@ pub struct Tls<A> {
     inner: A,
 }
 
+impl<A> std::fmt::Debug for Tls<A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tls").finish_non_exhaustive()
+    }
+}
+
 enum Mode {
     Server(Arc<ServerConfig>),
     Client(Arc<ClientConfig>, rustls::pki_types::ServerName<'static>),
@@ -196,6 +202,7 @@ impl Transport for RustlsTransport {
 
 /// What a connection negotiated; see [`tls_info`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TlsInfo {
     /// The handshake has not finished yet (the other fields may still be empty).
     pub handshaking: bool,

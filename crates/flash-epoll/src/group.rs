@@ -27,6 +27,12 @@ pub struct EpollGroup {
     cfg: Arc<Config>,
 }
 
+impl std::fmt::Debug for EpollGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EpollGroup").finish_non_exhaustive()
+    }
+}
+
 impl EpollGroup {
     /// Binds `listen` (if any) and prepares `threads` loops. Nothing runs until [`Group::start`].
     ///
@@ -67,11 +73,7 @@ impl EpollGroup {
         let listener = listen.as_ref().map(|_| addr);
         for (thread, l) in listeners.into_iter().enumerate() {
             let poller = Poller::new()?;
-            let meta = LoopMeta {
-                backend: crate::reactor::BACKEND,
-                listener,
-                thread,
-            };
+            let meta = LoopMeta::new(crate::reactor::BACKEND, listener, thread);
             let sh = LoopShared::new(&poller, pool.clone(), &cfg, meta)?;
             let acceptor = listen.as_ref().map(|(_, a)| a.clone());
             loops.push(Loop::new(poller, sh.clone(), l.zip(acceptor), cfg.clone())?);

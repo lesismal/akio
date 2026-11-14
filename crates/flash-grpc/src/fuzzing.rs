@@ -37,7 +37,7 @@ pub fn grpc_framing(data: &[u8]) {
 
 fn server() -> GrpcServer {
     GrpcServer::new()
-        .max_message(16 << 10)
+        .max_message_bytes(16 << 10)
         .unary("/echo.Echo/Unary", |_md, m, sink| {
             sink.send(&m);
             sink.finish(Status::ok());

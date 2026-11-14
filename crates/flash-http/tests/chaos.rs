@@ -33,9 +33,10 @@ const MAX_HEADER: usize = 8 << 10;
 
 fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..Default::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }
@@ -501,15 +502,14 @@ fn client(addr: SocketAddr, seed: u64, st: &Stats) {
 fn run_seed(seed: u64, conns: usize) {
     let baseline = open_fds();
     let st = Arc::new(Stats::default());
-    let cfg = HttpConfig {
-        max_header_bytes: MAX_HEADER,
-        ..HttpConfig::default()
-    };
+    let mut cfg = HttpConfig::default();
+    cfg.max_header_bytes = MAX_HEADER;
     let engine = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(500),
-            slow_callback_threshold: None,
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(500);
+            v.slow_callback_threshold = None;
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())

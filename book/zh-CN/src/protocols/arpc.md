@@ -19,7 +19,7 @@
 | `handle(method, Fn(&mut Context))` | 处理 `method` 的调用和通知；`""` 是未知方法的兜底（否则返回 "method not found"） |
 | `handle_stream(method, open)` | 处理对端打开的 stream：`open(&Stream)` 返回接收 `Message(bytes)` 和 `Eof` 的 `FnMut(&Stream, StreamEvent)` |
 | `on_connected(Fn(&Peer))`、`on_disconnected(Fn(&Peer))` | 连接事件 |
-| `max_body(n)` | 方法名 + 载荷的最大长度（64 MiB）；超出则关闭连接 |
+| `max_body_bytes(n)` | 方法名 + 载荷的最大长度（64 MiB）；超出则关闭连接 |
 
 在 handler 中，`Context` 提供 `method()`、`body()`、`is_notify()`、`peer()`，用 `write(payload)`
 或 `error(text)` 答复，或者 `detach()` 得到 `Responder`（稍后在任何线程 `write` / `error`）。
@@ -34,7 +34,7 @@ handler 在 I/O 线程上执行，不能阻塞。
 {{#include ../../../../crates/flash-arpc/examples/guide-arpc.rs:client}}
 ```
 
-`flash_arpc::dial(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
+`flash_arpc::dial_blocking(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
 **自动重连**，直到调用 `Peer::close()`。
 
 `Peer`（可克隆，可在任何线程使用）：

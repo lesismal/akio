@@ -1,0 +1,33 @@
+pub mod flash_timer
+pub struct flash_timer::TimerId
+impl core::clone::Clone for flash_timer::TimerId
+pub fn flash_timer::TimerId::clone(&self) -> Self
+impl core::cmp::Eq for flash_timer::TimerId
+impl core::cmp::PartialEq for flash_timer::TimerId
+pub fn flash_timer::TimerId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_timer::TimerId
+pub fn flash_timer::TimerId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_timer::TimerId
+impl core::marker::StructuralPartialEq for flash_timer::TimerId
+impl core::marker::Send for flash_timer::TimerId
+impl core::marker::Sync for flash_timer::TimerId
+impl core::marker::Unpin for flash_timer::TimerId
+impl core::panic::unwind_safe::RefUnwindSafe for flash_timer::TimerId
+impl core::panic::unwind_safe::UnwindSafe for flash_timer::TimerId
+pub struct flash_timer::Wheel<T>
+impl<T> flash_timer::Wheel<T>
+pub fn flash_timer::Wheel<T>::advance(&mut self, u64, impl core::ops::function::FnMut(T))
+pub fn flash_timer::Wheel<T>::cancel(&mut self, flash_timer::TimerId) -> core::option::Option<T>
+pub fn flash_timer::Wheel<T>::is_empty(&self) -> bool
+pub fn flash_timer::Wheel<T>::len(&self) -> usize
+pub fn flash_timer::Wheel<T>::new(u64) -> Self
+pub fn flash_timer::Wheel<T>::next_deadline(&self) -> core::option::Option<u64>
+pub fn flash_timer::Wheel<T>::now(&self) -> u64
+pub fn flash_timer::Wheel<T>::schedule(&mut self, u64, T) -> flash_timer::TimerId
+impl<T> core::fmt::Debug for flash_timer::Wheel<T>
+pub fn flash_timer::Wheel<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::marker::Send for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::marker::Send
+impl<T> core::marker::Sync for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::marker::Sync
+impl<T> core::marker::Unpin for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::marker::Unpin
+impl<T> core::panic::unwind_safe::RefUnwindSafe for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::panic::unwind_safe::RefUnwindSafe
+impl<T> core::panic::unwind_safe::UnwindSafe for flash_timer::Wheel<T> where alloc::vec::Vec<Entry<T>>: core::panic::unwind_safe::UnwindSafe

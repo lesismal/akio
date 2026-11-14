@@ -116,6 +116,12 @@ pub struct RecvBatch {
     got: usize,
 }
 
+impl std::fmt::Debug for RecvBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecvBatch").finish_non_exhaustive()
+    }
+}
+
 // SAFETY: the raw pointers inside `iov`/`msgs` point into the heap buffers owned by this same
 // struct, which move with it; nothing is shared with another thread.
 unsafe impl Send for RecvBatch {}
@@ -267,6 +273,12 @@ pub struct SendBatch {
     msgs: Vec<libc::mmsghdr>,
 }
 
+impl std::fmt::Debug for SendBatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SendBatch").finish_non_exhaustive()
+    }
+}
+
 // SAFETY: between batches the raw pointers are dangling but never dereferenced; a `Batch` (which
 // borrows the data they point to) is needed to send.
 unsafe impl Send for SendBatch {}
@@ -306,6 +318,12 @@ impl SendBatch {
 pub struct Batch<'s, 'd> {
     s: &'s mut SendBatch,
     _d: PhantomData<&'d [u8]>,
+}
+
+impl<'s, 'd> std::fmt::Debug for Batch<'s, 'd> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Batch").finish_non_exhaustive()
+    }
 }
 
 impl<'d> Batch<'_, 'd> {

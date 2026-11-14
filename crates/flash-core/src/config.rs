@@ -9,6 +9,7 @@ pub(crate) const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What the slow-callback detector reports.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct SlowCallback {
     /// Which callback ran long.
     pub kind: &'static str,
@@ -29,7 +30,16 @@ impl std::fmt::Debug for SlowHook {
 }
 
 /// Tunables shared by all connections of an engine.
+///
+/// `#[non_exhaustive]`: start from [`Config::default()`] and set the fields you need, so new
+/// settings can be added in minor releases (docs/api-stability.md):
+///
+/// ```
+/// let mut cfg = flash_core::Config::default();
+/// cfg.idle_timeout = Some(std::time::Duration::from_secs(30));
+/// ```
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Config {
     /// Size of each I/O thread's read buffer; `on_data` never sees more than this at once.
     pub read_buffer: usize,

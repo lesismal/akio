@@ -19,9 +19,10 @@ fn localhost() -> SocketAddr {
 }
 
 fn cfg() -> Config {
-    Config {
-        shutdown_timeout: Duration::from_millis(500),
-        ..Config::default()
+    {
+        let mut v = Config::default();
+        v.shutdown_timeout = Duration::from_millis(500);
+        v
     }
 }
 
@@ -195,9 +196,10 @@ fn silent_peers_are_evicted_and_come_back_fresh() {
     let cl = closed.clone();
     let e =
         Engine::builder()
-            .config(Config {
-                udp_idle_timeout: Duration::from_millis(250),
-                ..cfg()
+            .config({
+                let mut v = cfg();
+                v.udp_idle_timeout = Duration::from_millis(250);
+                v
             })
             .listen(Listener::udp(localhost()).threads(1).serve(fn_acceptor(
                 move |_c: &Conn<H>| H {
@@ -288,9 +290,10 @@ fn graceful_shutdown_notifies_peers_and_returns_promptly() {
     }
     let notified = Arc::new(AtomicUsize::new(0));
     let e = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_secs(10),
-            ..cfg()
+        .config({
+            let mut v = cfg();
+            v.shutdown_timeout = Duration::from_secs(10);
+            v
         })
         .listen(
             Listener::udp(localhost())
@@ -361,9 +364,10 @@ impl Acceptor for CliAcceptor {
 
 fn client_engine(threads: usize) -> Engine {
     let e = Engine::builder()
-        .config(Config {
-            udp_idle_timeout: Duration::from_millis(400),
-            ..cfg()
+        .config({
+            let mut v = cfg();
+            v.udp_idle_timeout = Duration::from_millis(400);
+            v
         })
         .udp_client_threads(threads)
         .build()
@@ -580,9 +584,10 @@ fn dialed_connection_splits_coalesced_receives() {
     }
     let server = segs_server();
     let client = Engine::builder()
-        .config(Config {
-            udp_gro: true,
-            ..cfg()
+        .config({
+            let mut v = cfg();
+            v.udp_gro = true;
+            v
         })
         .udp_client_threads(1)
         .build()
@@ -602,9 +607,10 @@ fn dialed_connection_splits_coalesced_receives() {
 #[test]
 fn peer_cap_drops_new_peers_and_counts_them() {
     let e = Engine::builder()
-        .config(Config {
-            udp_max_peers: Some(2),
-            ..cfg()
+        .config({
+            let mut v = cfg();
+            v.udp_max_peers = Some(2);
+            v
         })
         .listen(
             Listener::udp(localhost())

@@ -29,6 +29,7 @@ use crate::{
 
 /// A request to send.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ClientRequest {
     /// Method.
     pub method: Method,
@@ -41,26 +42,35 @@ pub struct ClientRequest {
 }
 
 impl ClientRequest {
-    /// A `GET` request.
-    pub fn get(url: &str) -> ClientRequest {
+    /// A request with `method` to `url`, no headers and an empty body.
+    pub fn new(method: Method, url: &str) -> ClientRequest {
         ClientRequest {
-            method: Method::Get,
+            method,
             url: url.to_owned(),
             headers: Headers::new(),
             body: Vec::new(),
         }
     }
 
+    /// A `GET` request.
+    pub fn get(url: &str) -> ClientRequest {
+        ClientRequest::new(Method::Get, url)
+    }
+
     /// A `POST` request with a body.
     pub fn post(url: &str, body: Vec<u8>) -> ClientRequest {
-        ClientRequest {
-            method: Method::Post,
-            body,
-            ..ClientRequest::get(url)
-        }
+        ClientRequest::new(Method::Post, url).body(body)
+    }
+
+    /// Replaces the body.
+    #[must_use]
+    pub fn body(mut self, body: Vec<u8>) -> ClientRequest {
+        self.body = body;
+        self
     }
 
     /// Adds a header.
+    #[must_use]
     pub fn header(mut self, name: &str, value: &str) -> ClientRequest {
         self.headers.append(name, value);
         self
@@ -69,6 +79,7 @@ impl ClientRequest {
 
 /// A received response.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ClientResponse {
     /// Status code.
     pub status: u16,
@@ -86,6 +97,7 @@ pub struct ClientResponse {
 
 /// Why a request failed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ClientError {
     /// The URL could not be used.
     InvalidUrl(String),
@@ -115,6 +127,12 @@ type Callback = Box<dyn FnOnce(Result<ClientResponse, ClientError>) + Send>;
 /// The result of [`Client::send`]: wait for it, or `.await` it.
 pub struct ResponseFuture {
     pub(crate) shared: Arc<FutureShared>,
+}
+
+impl std::fmt::Debug for ResponseFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseFuture").finish_non_exhaustive()
+    }
 }
 
 pub(crate) type Outcome = Result<ClientResponse, ClientError>;
@@ -269,6 +287,12 @@ pub struct Client {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for Client {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client").finish_non_exhaustive()
+    }
+}
+
 impl Client {
     /// A client that runs its connections on `engine` (built with `client_threads(n)`, or with a
     /// listener whose threads may host them). The engine must be started.
@@ -283,6 +307,7 @@ impl Client {
     }
 
     /// Enables `https://` with the given rustls client configuration.
+    #[must_use]
     pub fn with_tls(self, cfg: Arc<rustls::ClientConfig>) -> Client {
         Client {
             inner: Arc::new(Inner {
@@ -497,6 +522,12 @@ pub struct ClientConn {
     client: Option<Client>,
     key: Option<Key>,
     received_any: bool,
+}
+
+impl std::fmt::Debug for ClientConn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientConn").finish_non_exhaustive()
+    }
 }
 
 impl ClientConn {

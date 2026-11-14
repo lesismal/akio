@@ -45,11 +45,12 @@ fn main() -> std::io::Result<()> {
     }
     let e = Arc::new(Engine::builder().client_threads(1).build()?);
     e.start()?;
-    let h2 = H2Client::connect_blocking(&e, addr, None, H2Options::default())?;
+    let h2 = H2Client::dial_blocking(&e, addr, None, H2Options::default())?;
     let c = GrpcClient::new(h2, &format!("http://{addr}"));
-    let o = || CallOptions {
-        timeout: Some(Duration::from_secs(10)),
-        ..CallOptions::default()
+    let o = || {
+        let mut v = CallOptions::default();
+        v.timeout = Some(Duration::from_secs(10));
+        v
     };
     assert_eq!(
         c.unary("/test.Echo/Unary", b"from rust", o()).unwrap(),

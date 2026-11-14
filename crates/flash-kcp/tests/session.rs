@@ -6,7 +6,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use flash::{Engine, Listener};
-use flash_kcp::{CloseReason, Config, Crypt, KcpHandler, KcpServer, Session};
+use flash_kcp::{CloseReason, Crypt, KcpConfig, KcpHandler, KcpServer, Session};
 
 struct Echo;
 impl KcpHandler for Echo {
@@ -27,12 +27,10 @@ impl KcpHandler for Collect {
     }
 }
 
-fn engine(cfg: Config) -> (Arc<Engine>, SocketAddr) {
+fn engine(cfg: KcpConfig) -> (Arc<Engine>, SocketAddr) {
     // Echo never waits on the I/O thread, so its queue must hold whatever the client has in flight.
-    let cfg = Config {
-        write_queue: 1 << 20,
-        ..cfg
-    };
+    let mut cfg = cfg;
+    cfg.write_queue = 1 << 20;
     let server = KcpServer::new(cfg, |_s: &Session| Echo).unwrap();
     let e = Engine::builder()
         .listen(
@@ -48,7 +46,7 @@ fn engine(cfg: Config) -> (Arc<Engine>, SocketAddr) {
     (Arc::new(e), addr)
 }
 
-fn echo_roundtrip(cfg: Config) {
+fn echo_roundtrip(cfg: KcpConfig) {
     let (e, addr) = engine(cfg.clone());
     let (tx, rx) = mpsc::channel();
     let (ctx, crx) = mpsc::channel();
@@ -83,44 +81,45 @@ fn echo_roundtrip(cfg: Config) {
 
 #[test]
 fn echo_plain() {
-    echo_roundtrip(Config::fast());
+    echo_roundtrip(KcpConfig::fast());
 }
 
 #[test]
 fn echo_normal_mode() {
-    echo_roundtrip(Config::default());
+    echo_roundtrip(KcpConfig::default());
 }
 
 #[test]
 fn echo_aes_with_fec() {
-    echo_roundtrip(Config {
-        crypt: Some(Arc::new(Crypt::new("aes", &[9; 32]).unwrap())),
-        data_shards: 10,
-        parity_shards: 3,
-        ..Config::fast()
+    echo_roundtrip({
+        let mut v = KcpConfig::fast();
+        v.crypt = Some(Arc::new(Crypt::new("aes", &[9; 32]).unwrap()));
+        v.data_shards = 10;
+        v.parity_shards = 3;
+        v
     });
 }
 
 #[test]
 fn echo_xor_gcm_and_stream() {
-    echo_roundtrip(Config {
-        crypt: Some(Arc::new(Crypt::new("xor", b"secret").unwrap())),
-        ..Config::fast()
+    echo_roundtrip({
+        let mut v = KcpConfig::fast();
+        v.crypt = Some(Arc::new(Crypt::new("xor", b"secret").unwrap()));
+        v
     });
-    echo_roundtrip(Config {
-        crypt: Some(Arc::new(Crypt::new("aes-128-gcm", &[5; 16]).unwrap())),
-        data_shards: 4,
-        parity_shards: 2,
-        ..Config::fast()
+    echo_roundtrip({
+        let mut v = KcpConfig::fast();
+        v.crypt = Some(Arc::new(Crypt::new("aes-128-gcm", &[5; 16]).unwrap()));
+        v.data_shards = 4;
+        v.parity_shards = 2;
+        v
     });
 }
 
 #[test]
 fn stream_mode_carries_bytes() {
-    let cfg = Config {
-        stream: true,
-        ..Config::fast()
-    };
+    let mut cfg = KcpConfig::fast();
+    cfg.stream = true;
     let (e, addr) = engine(cfg.clone());
     let (tx, rx) = mpsc::channel();
     let s = flash_kcp::dial(&e, addr, cfg, Collect(tx, None)).unwrap();
@@ -140,17 +139,16 @@ fn stream_mode_carries_bytes() {
 
 #[test]
 fn mismatched_crypt_is_dropped_and_dead_link_closes() {
-    let (e, addr) = engine(Config {
-        crypt: Some(Arc::new(Crypt::new("aes-128", &[1; 16]).unwrap())),
-        ..Config::fast()
+    let (e, addr) = engine({
+        let mut v = KcpConfig::fast();
+        v.crypt = Some(Arc::new(Crypt::new("aes-128", &[1; 16]).unwrap()));
+        v
     });
     let (tx, rx) = mpsc::channel();
     let (ctx, crx) = mpsc::channel();
-    let cfg = Config {
-        crypt: Some(Arc::new(Crypt::new("aes-128", &[2; 16]).unwrap())),
-        dead_link: 4,
-        ..Config::fast()
-    };
+    let mut cfg = KcpConfig::fast();
+    cfg.crypt = Some(Arc::new(Crypt::new("aes-128", &[2; 16]).unwrap()));
+    cfg.dead_link = 4;
     let s = flash_kcp::dial(&e, addr, cfg, Collect(tx, Some(ctx))).unwrap();
     s.send(b"hello").unwrap();
     assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());

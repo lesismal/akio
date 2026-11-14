@@ -27,6 +27,7 @@ pub trait Service: Send + Sync + 'static {
 
 /// How a request body reaches the service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BodyMode {
     /// Fully received (and size-limited) before `call`; the body is `ctx.body()`.
     Buffered,
@@ -37,6 +38,12 @@ pub enum BodyMode {
 
 /// Marks a service as taking its request body as a stream; see [`BodyMode::Stream`].
 pub struct Streaming<S>(pub S);
+
+impl<S> std::fmt::Debug for Streaming<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Streaming").finish_non_exhaustive()
+    }
+}
 
 impl<S: Service> Service for Streaming<S> {
     fn call(&self, ctx: &mut Context) {
@@ -53,6 +60,12 @@ pub enum BodyEvent<'a> {
     Chunk(&'a [u8]),
     /// The body is complete; chunked bodies may carry trailer fields.
     End(&'a Headers),
+}
+
+impl<'a> std::fmt::Debug for BodyEvent<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyEvent").finish_non_exhaustive()
+    }
 }
 
 type Sink = Box<dyn FnMut(&mut Context, BodyEvent<'_>) + Send>;
@@ -190,6 +203,12 @@ pub struct Context {
     sink: Option<Sink>,
 }
 
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context").finish_non_exhaustive()
+    }
+}
+
 /// A WebSocket upgrade accepted by [`Context::upgrade_websocket`], applied by the session.
 pub(crate) struct PendingUpgrade {
     pub handler: Box<dyn WsHandler>,
@@ -199,6 +218,7 @@ pub(crate) struct PendingUpgrade {
 
 /// Options for [`Context::upgrade_websocket`].
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct WsOptions {
     /// Message limits and compression.
     pub config: WsConfig,
@@ -579,6 +599,12 @@ pub struct Detached {
     responder: Out,
 }
 
+impl std::fmt::Debug for Detached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Detached").finish_non_exhaustive()
+    }
+}
+
 impl Detached {
     /// The request.
     pub fn req(&self) -> &Request {
@@ -639,6 +665,12 @@ fn start_stream(out: Out, fin: &mut Finish, status: u16, headers: Headers) -> Op
 
 /// A response body being written in pieces; see [`Context::stream_response`].
 pub struct BodyStream(Inner);
+
+impl std::fmt::Debug for BodyStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BodyStream").finish_non_exhaustive()
+    }
+}
 
 enum Inner {
     H1 {

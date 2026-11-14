@@ -1,11 +1,16 @@
 [package]
 name = "flash-mux"
-description = "flash network library: several protocols on one port, told apart by their first bytes"
+description = "flash: several protocols on one port, told apart by their first bytes"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/flash-mux"
+keywords = ["multiplexing", "sniffing", "network", "server"]
+categories = ["network-programming"]
 
 [dependencies]
 flash-core = { workspace = true }

@@ -9,13 +9,14 @@ use std::{
 };
 
 use flash::{Config, Engine, Listener};
-use flash_arpc::{CallError, Routes, Server, StreamEvent, dial};
+use flash_arpc::{CallError, Routes, Server, StreamEvent, dial_blocking};
 
 fn engine(server: Option<Server>) -> Arc<Engine> {
     let mut b = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(300),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(300);
+            v
         })
         .client_threads(2);
     if let Some(s) = server {
@@ -82,7 +83,7 @@ fn calls_errors_notifies_two_way_and_detached_answers() {
     let server = Server::new(Arc::new(server_routes(log.clone())));
     let e = engine(Some(server));
     let client_routes = Routes::new().handle("/client/name", |ctx| ctx.write(b"rustacean"));
-    let peer = dial(&e, e.local_addrs()[0], Arc::new(client_routes)).unwrap();
+    let peer = dial_blocking(&e, e.local_addrs()[0], Arc::new(client_routes)).unwrap();
 
     assert_eq!(peer.call("/echo", b"ping", None).wait().unwrap(), b"ping");
     assert_eq!(
@@ -133,7 +134,7 @@ fn calls_errors_notifies_two_way_and_detached_answers() {
 fn streams_both_directions() {
     let server = Server::new(Arc::new(server_routes(Arc::default())));
     let e = engine(Some(server));
-    let peer = dial(&e, e.local_addrs()[0], Arc::new(Routes::new())).unwrap();
+    let peer = dial_blocking(&e, e.local_addrs()[0], Arc::new(Routes::new())).unwrap();
     let (tx, rx) = mpsc::channel();
     let s = peer.new_stream("/upper", move |_s, ev| {
         let _ = tx.send(match ev {
@@ -174,7 +175,7 @@ fn broadcast_and_reconnect() {
             let routes = Routes::new().handle("/news", move |ctx| {
                 g.lock().unwrap().push((i, ctx.body().to_vec()));
             });
-            dial(&e, addr, Arc::new(routes)).unwrap()
+            dial_blocking(&e, addr, Arc::new(routes)).unwrap()
         })
         .collect();
     let t = std::time::Instant::now();

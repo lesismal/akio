@@ -49,9 +49,10 @@ fn start(socks: Option<Socks>, http: bool, er: &EngineRef) -> Arc<Engine> {
     };
     let e = Arc::new(
         Engine::builder()
-            .config(Config {
-                shutdown_timeout: Duration::from_millis(300),
-                ..Config::default()
+            .config({
+                let mut v = Config::default();
+                v.shutdown_timeout = Duration::from_millis(300);
+                v
             })
             .listen(l)
             .client_threads(2)

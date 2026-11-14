@@ -1,0 +1,63 @@
+pub mod flash_pool
+pub struct flash_pool::Pool
+impl flash_pool::Pool
+pub fn flash_pool::Pool::join(&self)
+pub fn flash_pool::Pool::new(flash_pool::PoolConfig) -> alloc::rcs::arc::Arc<flash_pool::Pool>
+pub fn flash_pool::Pool::shutdown(&self)
+pub fn flash_pool::Pool::stats(&self) -> flash_pool::PoolStats
+pub fn flash_pool::Pool::try_execute(&self, flash_pool::Job) -> core::result::Result<(), flash_pool::Rejected>
+impl core::fmt::Debug for flash_pool::Pool
+pub fn flash_pool::Pool::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_pool::Pool
+impl core::marker::Sync for flash_pool::Pool
+impl core::marker::Unpin for flash_pool::Pool
+impl core::panic::unwind_safe::RefUnwindSafe for flash_pool::Pool
+impl core::panic::unwind_safe::UnwindSafe for flash_pool::Pool
+#[non_exhaustive] pub struct flash_pool::PoolConfig
+pub flash_pool::PoolConfig::keep_alive: core::time::Duration
+pub flash_pool::PoolConfig::max_threads: usize
+pub flash_pool::PoolConfig::min_threads: usize
+pub flash_pool::PoolConfig::queue_capacity: usize
+impl core::clone::Clone for flash_pool::PoolConfig
+pub fn flash_pool::PoolConfig::clone(&self) -> Self
+impl core::default::Default for flash_pool::PoolConfig
+pub fn flash_pool::PoolConfig::default() -> Self
+impl core::fmt::Debug for flash_pool::PoolConfig
+pub fn flash_pool::PoolConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_pool::PoolConfig
+impl core::marker::Sync for flash_pool::PoolConfig
+impl core::marker::Unpin for flash_pool::PoolConfig
+impl core::panic::unwind_safe::RefUnwindSafe for flash_pool::PoolConfig
+impl core::panic::unwind_safe::UnwindSafe for flash_pool::PoolConfig
+#[non_exhaustive] pub struct flash_pool::PoolStats
+pub flash_pool::PoolStats::completed: u64
+pub flash_pool::PoolStats::idle: usize
+pub flash_pool::PoolStats::panicked: u64
+pub flash_pool::PoolStats::queued: usize
+pub flash_pool::PoolStats::rejected: u64
+pub flash_pool::PoolStats::threads: usize
+impl core::clone::Clone for flash_pool::PoolStats
+pub fn flash_pool::PoolStats::clone(&self) -> Self
+impl core::cmp::Eq for flash_pool::PoolStats
+impl core::cmp::PartialEq for flash_pool::PoolStats
+pub fn flash_pool::PoolStats::eq(&self, &Self) -> bool
+impl core::default::Default for flash_pool::PoolStats
+pub fn flash_pool::PoolStats::default() -> Self
+impl core::fmt::Debug for flash_pool::PoolStats
+pub fn flash_pool::PoolStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_pool::PoolStats
+impl core::marker::StructuralPartialEq for flash_pool::PoolStats
+impl core::marker::Send for flash_pool::PoolStats
+impl core::marker::Sync for flash_pool::PoolStats
+impl core::marker::Unpin for flash_pool::PoolStats
+impl core::panic::unwind_safe::RefUnwindSafe for flash_pool::PoolStats
+impl core::panic::unwind_safe::UnwindSafe for flash_pool::PoolStats
+pub struct flash_pool::Rejected(pub flash_pool::Job)
+impl core::fmt::Debug for flash_pool::Rejected
+pub fn flash_pool::Rejected::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_pool::Rejected
+impl !core::marker::Sync for flash_pool::Rejected
+impl core::marker::Unpin for flash_pool::Rejected
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_pool::Rejected
+impl !core::panic::unwind_safe::UnwindSafe for flash_pool::Rejected
+pub type flash_pool::Job = alloc::boxed::Box<(dyn core::ops::function::FnOnce() + core::marker::Send + 'static)>

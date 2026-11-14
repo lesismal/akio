@@ -45,9 +45,9 @@ fn main() -> std::io::Result<()> {
             fn_acceptor(|_c: &Conn<Tagged>| Tagged("json")),
         )
         .fallback(fn_acceptor(|_c: &Conn<Tagged>| Tagged("other")))
-        .max_sniff(64); // give up sniffing (and use the fallback) after this many bytes
+        .max_sniff_bytes(64); // give up sniffing (and use the fallback) after this many bytes
     let engine = Engine::builder()
-        .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve_dyn(mux.into_dyn()))
+        .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve_any(mux))
         .build()?;
     engine.start()?;
     // ANCHOR_END: mux

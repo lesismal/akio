@@ -3,7 +3,9 @@ name: CI
 # Layout
 #   Gate (every push and PR):  lint, docs, book, test-linux (epoll + io_uring, x86_64 + arm64),
 #                              msrv, features, miri, loom, coverage, autobahn, h2spec,
-#                              supply-chain (cargo-deny, cargo-audit, unsafe inventory)
+#                              supply-chain (cargo-deny, cargo-audit, unsafe inventory),
+#                              public-api (API snapshots, docs/api-stability.md), semver-checks
+#                              (skipped until 1.0.0 is on crates.io)
 #   Best effort:               test-macos (macOS runners are often not scheduled for capacity;
 #                              a job that never starts is not a code failure)
 #   Heavy (push to main, nightly schedule, manual run, or a PR labelled `full-ci`):
@@ -422,6 +424,57 @@ jobs:
       - run: cargo audit -D warnings
       - run: python3 tools/unsafe-inventory.py --check
 
+  public-api:
+    # The public API of every published crate must match api/<crate>.txt (docs/api-stability.md).
+    # An intended change: run `tools/api/public-api.sh --bless`, commit api/*.txt with a CHANGELOG
+    # entry. rustdoc JSON needs nightly; the toolchain and cargo-public-api are pinned so the
+    # output only changes when the API does (bump both together and re-bless).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-11-14
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-11-14
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-public-api@0.52.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: public-api
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: tools/api/public-api.sh
+
+  semver-checks:
+    # Breaking changes against the latest release on crates.io (public-tier crates only, see
+    # docs/api-stability.md). Skipped until a 1.x release is published: there is no baseline.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Published baseline?
+        id: baseline
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'flash-ci (github.com/lesismal/flash)' \
+            https://crates.io/api/v1/crates/flash-core/1.0.0)
+          echo "published=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "flash-core 1.0.0 on crates.io: HTTP $code"
+      - if: steps.baseline.outputs.published == 'true'
+        uses: dtolnay/rust-toolchain@stable
+      - if: steps.baseline.outputs.published == 'true'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - if: steps.baseline.outputs.published == 'true'
+        run: >-
+          cargo semver-checks check-release
+          -p flash -p flash-core -p flash-tls -p flash-http -p flash-ws -p flash-mux
+          -p flash-socks -p flash-arpc -p flash-grpc -p flash-kcp -p flash-quic -p flash-h3
+          -p flash-ebpf
+
   sanitizers:
     # AddressSanitizer and ThreadSanitizer over the core, syscall and backend tests (epoll and
     # io_uring), where Miri cannot go.
@@ -469,7 +522,7 @@ jobs:
   ci-ok:
     # The single required check. Fails if any gate job failed or was cancelled.
     if: always()
-    needs: [lint, docs, book, test-linux, msrv, features, miri, loom, coverage, autobahn, h2spec, supply-chain]
+    needs: [lint, docs, book, test-linux, msrv, features, miri, loom, coverage, autobahn, h2spec, supply-chain, public-api, semver-checks]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -43,6 +43,12 @@ pub struct Files {
     cache: Mutex<HashMap<PathBuf, Arc<Cached>>>,
 }
 
+impl std::fmt::Debug for Files {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Files").finish_non_exhaustive()
+    }
+}
+
 /// The content of a cache entry: the bytes of a small file, or an open handle to a large one.
 enum Body {
     Mem(Vec<u8>),
@@ -74,12 +80,14 @@ impl Files {
     }
 
     /// The file served for a directory (default `index.html`).
+    #[must_use]
     pub fn index(mut self, name: &str) -> Files {
         self.index = name.to_owned();
         self
     }
 
     /// Largest file kept in memory (default 256 KiB; 0 disables the cache).
+    #[must_use]
     pub fn max_cached_bytes(mut self, n: u64) -> Files {
         self.max_cached = n;
         self
@@ -88,18 +96,21 @@ impl Files {
     /// How many files larger than [`max_cached_bytes`](Files::max_cached_bytes) keep an open
     /// handle and their metadata cached (default 64; 0 opens such files per request). Each
     /// holds a file descriptor while the `Files` lives.
+    #[must_use]
     pub fn max_open_files(mut self, n: usize) -> Files {
         self.max_open = n;
         self
     }
 
     /// How long a cached file is trusted before the disk is consulted again (default 5 s).
+    #[must_use]
     pub fn check_interval(mut self, d: Duration) -> Files {
         self.check_interval = d;
         self
     }
 
     /// A `Cache-Control` header for every file response.
+    #[must_use]
     pub fn cache_control(mut self, v: &str) -> Files {
         self.cache_control = Some(v.to_owned());
         self

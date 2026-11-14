@@ -78,9 +78,10 @@ impl Handler for Echo {
 }
 
 fn quick() -> Config {
-    Config {
-        shutdown_timeout: Duration::from_millis(300),
-        ..Config::default()
+    {
+        let mut v = Config::default();
+        v.shutdown_timeout = Duration::from_millis(300);
+        v
     }
 }
 
@@ -207,13 +208,11 @@ impl Handler for Sleepy {
 fn slow_callbacks_are_recorded_counted_and_hooked() {
     let hits = Arc::new(AtomicUsize::new(0));
     let h = hits.clone();
-    let cfg = Config {
-        slow_callback_threshold: Some(Duration::from_millis(10)),
-        slow_hook: Some(SlowHook(Arc::new(move |_| {
-            h.fetch_add(1, Ordering::SeqCst);
-        }))),
-        ..quick()
-    };
+    let mut cfg = quick();
+    cfg.slow_callback_threshold = Some(Duration::from_millis(10));
+    cfg.slow_hook = Some(SlowHook(Arc::new(move |_| {
+        h.fetch_add(1, Ordering::SeqCst);
+    })));
     let e = Engine::builder()
         .config(cfg)
         .listen(
@@ -289,9 +288,10 @@ fn reload_enables_and_disables_the_idle_timeout_for_open_connections() {
 #[test]
 fn max_connections_refuses_accepts_beyond_the_limit() {
     let (e, addr) = echo_engine(
-        Config {
-            max_connections: 2,
-            ..quick()
+        {
+            let mut v = quick();
+            v.max_connections = 2;
+            v
         },
         1,
     );

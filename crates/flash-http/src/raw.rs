@@ -7,7 +7,7 @@ use flash_core::{ConnInner, Result};
 
 /// A connection handed over by [`Context::upgrade_raw`](crate::Context::upgrade_raw). Cheap to
 /// clone and usable from any thread.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct RawConn(pub(crate) Arc<ConnInner>);
 
 impl RawConn {

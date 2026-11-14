@@ -461,22 +461,12 @@ impl Loop {
     }
 
     fn info(&self, id: u64, lc: &LoopConn, now: u64) -> ConnInfo {
-        let (bytes_out, queued_bytes, transport, udp) = lc.inner.debug_state();
-        ConnInfo {
-            id,
-            peer: lc.inner.peer_addr(),
-            local: lc.inner.local_addr(),
-            owner: self.shared.stats.meta().clone(),
-            age: Duration::from_millis(now.saturating_sub(lc.opened)),
-            idle: Duration::from_millis(now.saturating_sub(lc.last_active)),
-            bytes_in: lc.bytes_in,
-            bytes_out,
-            queued_bytes,
-            read_held: lc.inner.read_held(),
-            backpressure: lc.bp,
-            transport,
-            udp,
-        }
+        let mut ci = ConnInfo::new(id, &lc.inner, self.shared.stats.meta().clone());
+        ci.age = Duration::from_millis(now.saturating_sub(lc.opened));
+        ci.idle = Duration::from_millis(now.saturating_sub(lc.last_active));
+        ci.bytes_in = lc.bytes_in;
+        ci.backpressure = lc.bp;
+        ci
     }
 
     /// Live settings changed: re-arm idle timers for the new timeout and re-evaluate

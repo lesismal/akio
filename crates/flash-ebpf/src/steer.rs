@@ -7,6 +7,7 @@ use std::{
 
 /// How a listener's `SO_REUSEPORT` group picks the socket (= I/O thread) for a new flow.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Steering {
     /// CPU affinity: the flow goes to thread `cpu % threads`, where `cpu` is the CPU that
     /// received its first packet (the TCP SYN / the UDP datagram), so a flow is served by the
@@ -23,6 +24,7 @@ pub enum Steering {
 
 /// What [`Steering::Hash`] hashes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HashKey {
     /// The peer's IP address only: every connection from one host lands on the same thread.
     SrcIp,
@@ -32,6 +34,7 @@ pub enum HashKey {
 
 /// Which kind of program was attached.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Tier {
     /// Classic BPF (`SO_ATTACH_REUSEPORT_CBPF`): needs no privileges. The returned index is the
     /// socket's position in the reuseport group, i.e. the order the sockets were bound in.
@@ -44,6 +47,7 @@ pub enum Tier {
 
 /// What [`attach_reuseport`] attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SteerInfo {
     /// Program kind.
     pub tier: Tier,
@@ -67,6 +71,7 @@ impl fmt::Display for SteerInfo {
 
 /// Options of [`attach_reuseport`].
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct AttachOptions {
     /// Try the eBPF tier first where it applies (privileged); fall back to classic BPF.
     pub ebpf: bool,

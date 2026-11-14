@@ -24,14 +24,13 @@ fn main() -> std::io::Result<()> {
     });
     let quic = flash_h3::server_config(vec![cert.clone()], key)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let limits = H3Config {
-        max_body: 8 << 20,
-        max_field_section: 64 << 10,
-    };
+    let mut limits = H3Config::default();
+    limits.max_body_bytes = 8 << 20;
+    limits.max_field_section_bytes = 64 << 10;
     let engine = Engine::builder()
         .listen(
             Listener::udp("127.0.0.1:0".parse().unwrap())
-                .serve(flash_h3::server_with(quic, app, limits)),
+                .serve(flash_h3::serve_with(quic, limits, app)),
         )
         .udp_client_threads(1)
         .build()?;
@@ -43,7 +42,7 @@ fn main() -> std::io::Result<()> {
     roots.add(cert).map_err(std::io::Error::other)?;
     let cfg = flash_quic::client_config(roots, &[b"h3"])
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    let client = H3Client::connect(&engine, engine.local_addrs()[0], "localhost", cfg)
+    let client = H3Client::dial(&engine, engine.local_addrs()[0], "localhost", cfg)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     let resp = client
         .get("/hello/h3", Duration::from_secs(5))

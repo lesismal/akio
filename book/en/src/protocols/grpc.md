@@ -20,7 +20,7 @@ Registering methods (`path` is `/package.Service/Method`):
 | `bidi(path, open)` | `Fn(&Metadata, Sink) -> OnMessage` | the general form: `OnMessage` gets `Some(msg)` per request, then `None` at half-close |
 
 Other settings: `interceptor(Fn(&Metadata) -> Result<(), Status>)` runs before every call (an
-`Err` ends it with that status), `max_message(n)` (default 4 MiB), `compress(bool)` (gzip
+`Err` ends it with that status), `max_message_bytes(n)` (default 4 MiB), `compress(bool)` (gzip
 responses for clients that accept it; gzip requests are always accepted).
 
 The `Sink` answers, from any thread: `send(msg) -> bool`, `set_header`, `set_trailer`,
@@ -40,7 +40,7 @@ Serving it: `flash_http::serve(grpc)` on its own, or as the `fallback` (or a rou
 {{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:client}}
 ```
 
-- `GrpcClient::new(h2_client, base_url)`; `.gzip(true)` compresses requests.
+- `GrpcClient::new(h2_client, base_url)`; `.compress(true)` compresses requests.
 - `unary(path, msg, CallOptions) -> Result<Vec<u8>, Status>` blocks the calling thread (do not
   call it on an I/O thread).
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` for streaming calls, also blocking.

@@ -1,0 +1,106 @@
+pub mod flash_sys
+pub struct flash_sys::Batch<'s, 'd>
+impl<'d> flash_sys::Batch<'_, 'd>
+pub fn flash_sys::Batch<'_, 'd>::is_empty(&self) -> bool
+pub fn flash_sys::Batch<'_, 'd>::is_gso(&self, usize) -> bool
+pub fn flash_sys::Batch<'_, 'd>::len(&self) -> usize
+pub fn flash_sys::Batch<'_, 'd>::push(&mut self, core::option::Option<&core::net::socket_addr::SocketAddr>, &[&'d [u8]], usize) -> bool
+pub fn flash_sys::Batch<'_, 'd>::send(&mut self, std::os::fd::raw::RawFd, usize) -> core::io::error::Result<usize>
+impl<'s, 'd> core::fmt::Debug for flash_sys::Batch<'s, 'd>
+pub fn flash_sys::Batch<'s, 'd>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'s, 'd> core::marker::Send for flash_sys::Batch<'s, 'd>
+impl<'s, 'd> !core::marker::Sync for flash_sys::Batch<'s, 'd>
+impl<'s, 'd> core::marker::Unpin for flash_sys::Batch<'s, 'd>
+impl<'s, 'd> core::panic::unwind_safe::RefUnwindSafe for flash_sys::Batch<'s, 'd>
+impl<'s, 'd> !core::panic::unwind_safe::UnwindSafe for flash_sys::Batch<'s, 'd>
+pub struct flash_sys::Event
+pub flash_sys::Event::readable: bool
+pub flash_sys::Event::token: u64
+pub flash_sys::Event::writable: bool
+impl core::clone::Clone for flash_sys::Event
+pub fn flash_sys::Event::clone(&self) -> Self
+impl core::default::Default for flash_sys::Event
+pub fn flash_sys::Event::default() -> Self
+impl core::fmt::Debug for flash_sys::Event
+pub fn flash_sys::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_sys::Event
+impl core::marker::Send for flash_sys::Event
+impl core::marker::Sync for flash_sys::Event
+impl core::marker::Unpin for flash_sys::Event
+impl core::panic::unwind_safe::RefUnwindSafe for flash_sys::Event
+impl core::panic::unwind_safe::UnwindSafe for flash_sys::Event
+pub struct flash_sys::EventFd
+impl flash_sys::EventFd
+pub fn flash_sys::EventFd::as_raw_fd(&self) -> std::os::fd::raw::RawFd
+pub fn flash_sys::EventFd::new() -> core::io::error::Result<flash_sys::EventFd>
+pub fn flash_sys::EventFd::wake(&self)
+impl core::fmt::Debug for flash_sys::EventFd
+pub fn flash_sys::EventFd::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_sys::EventFd
+impl core::marker::Sync for flash_sys::EventFd
+impl core::marker::Unpin for flash_sys::EventFd
+impl core::panic::unwind_safe::RefUnwindSafe for flash_sys::EventFd
+impl core::panic::unwind_safe::UnwindSafe for flash_sys::EventFd
+pub struct flash_sys::Poller
+impl flash_sys::Poller
+pub fn flash_sys::Poller::add(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
+pub fn flash_sys::Poller::delete(&self, std::os::fd::raw::RawFd)
+pub fn flash_sys::Poller::modify(&self, std::os::fd::raw::RawFd, u64, bool, bool) -> core::io::error::Result<()>
+pub fn flash_sys::Poller::new() -> core::io::error::Result<flash_sys::Poller>
+pub fn flash_sys::Poller::wait(&mut self, &mut alloc::vec::Vec<flash_sys::Event>, core::option::Option<core::time::Duration>) -> core::io::error::Result<()>
+impl core::fmt::Debug for flash_sys::Poller
+pub fn flash_sys::Poller::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_sys::Poller
+impl core::marker::Sync for flash_sys::Poller
+impl core::marker::Unpin for flash_sys::Poller
+impl core::panic::unwind_safe::RefUnwindSafe for flash_sys::Poller
+impl core::panic::unwind_safe::UnwindSafe for flash_sys::Poller
+pub struct flash_sys::RecvBatch
+impl flash_sys::RecvBatch
+pub fn flash_sys::RecvBatch::get(&self, usize) -> core::option::Option<(&[u8], core::net::socket_addr::SocketAddr, usize)>
+pub fn flash_sys::RecvBatch::new(usize, usize) -> flash_sys::RecvBatch
+pub fn flash_sys::RecvBatch::recv(&mut self, std::os::fd::raw::RawFd) -> core::io::error::Result<usize>
+pub fn flash_sys::RecvBatch::with_gro(usize, usize, bool) -> flash_sys::RecvBatch
+impl core::fmt::Debug for flash_sys::RecvBatch
+pub fn flash_sys::RecvBatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_sys::RecvBatch
+impl !core::marker::Sync for flash_sys::RecvBatch
+impl core::marker::Unpin for flash_sys::RecvBatch
+impl core::panic::unwind_safe::RefUnwindSafe for flash_sys::RecvBatch
+impl core::panic::unwind_safe::UnwindSafe for flash_sys::RecvBatch
+pub struct flash_sys::SendBatch
+impl flash_sys::SendBatch
+pub fn flash_sys::SendBatch::batch<'d>(&mut self) -> flash_sys::Batch<'_, 'd>
+pub fn flash_sys::SendBatch::new() -> flash_sys::SendBatch
+impl core::default::Default for flash_sys::SendBatch
+pub fn flash_sys::SendBatch::default() -> Self
+impl core::fmt::Debug for flash_sys::SendBatch
+pub fn flash_sys::SendBatch::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_sys::SendBatch
+impl !core::marker::Sync for flash_sys::SendBatch
+impl core::marker::Unpin for flash_sys::SendBatch
+impl core::panic::unwind_safe::RefUnwindSafe for flash_sys::SendBatch
+impl core::panic::unwind_safe::UnwindSafe for flash_sys::SendBatch
+pub struct flash_sys::Waker
+impl flash_sys::Waker
+pub fn flash_sys::Waker::drain(&self)
+pub fn flash_sys::Waker::new(&flash_sys::Poller, u64) -> core::io::error::Result<flash_sys::Waker>
+pub fn flash_sys::Waker::wake(&self)
+impl core::fmt::Debug for flash_sys::Waker
+pub fn flash_sys::Waker::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_sys::Waker
+impl core::marker::Sync for flash_sys::Waker
+impl core::marker::Unpin for flash_sys::Waker
+impl core::panic::unwind_safe::RefUnwindSafe for flash_sys::Waker
+impl core::panic::unwind_safe::UnwindSafe for flash_sys::Waker
+pub const flash_sys::MAX_GSO_BYTES: usize
+pub const flash_sys::MAX_GSO_SEGMENTS: usize
+pub const flash_sys::SEND_BATCH: usize
+pub fn flash_sys::connect_nonblocking(core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpStream>
+pub fn flash_sys::disable_gso()
+pub fn flash_sys::enable_gro(std::os::fd::raw::RawFd) -> bool
+pub fn flash_sys::gro_available() -> bool
+pub fn flash_sys::gso_enabled() -> bool
+pub fn flash_sys::listen(core::net::socket_addr::SocketAddr, bool, i32) -> core::io::error::Result<std::net::tcp::TcpListener>
+pub fn flash_sys::listen_udp(core::net::socket_addr::SocketAddr, bool) -> core::io::error::Result<std::net::udp::UdpSocket>
+pub fn flash_sys::sendfile(std::os::fd::raw::RawFd, std::os::fd::raw::RawFd, u64, usize) -> core::io::error::Result<usize>

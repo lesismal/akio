@@ -114,9 +114,10 @@ fn churn(n: usize, rounds: usize) {
     );
     let counters = Arc::new(Counters::default());
     let engine = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_secs(5),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_secs(5);
+            v
         })
         .listen(
             Listener::tcp("127.0.0.1:0".parse().unwrap())

@@ -1,0 +1,60 @@
+pub mod flash_mux
+pub enum flash_mux::Decision
+pub flash_mux::Decision::NeedMore
+pub flash_mux::Decision::No
+pub flash_mux::Decision::Yes
+impl core::clone::Clone for flash_mux::Decision
+pub fn flash_mux::Decision::clone(&self) -> Self
+impl core::cmp::Eq for flash_mux::Decision
+impl core::cmp::PartialEq for flash_mux::Decision
+pub fn flash_mux::Decision::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_mux::Decision
+pub fn flash_mux::Decision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_mux::Decision
+impl core::marker::StructuralPartialEq for flash_mux::Decision
+impl core::marker::Send for flash_mux::Decision
+impl core::marker::Sync for flash_mux::Decision
+impl core::marker::Unpin for flash_mux::Decision
+impl core::panic::unwind_safe::RefUnwindSafe for flash_mux::Decision
+impl core::panic::unwind_safe::UnwindSafe for flash_mux::Decision
+#[non_exhaustive] pub enum flash_mux::Rule
+pub flash_mux::Rule::Custom(alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&[u8]) -> flash_mux::Decision + core::marker::Send + core::marker::Sync)>)
+pub flash_mux::Rule::Http
+pub flash_mux::Rule::Http1
+pub flash_mux::Rule::Http2
+pub flash_mux::Rule::Prefix(alloc::vec::Vec<u8>)
+pub flash_mux::Rule::Socks4
+pub flash_mux::Rule::Socks5
+pub flash_mux::Rule::Tls
+impl flash_mux::Rule
+pub fn flash_mux::Rule::decide(&self, &[u8]) -> flash_mux::Decision
+impl core::clone::Clone for flash_mux::Rule
+pub fn flash_mux::Rule::clone(&self) -> Self
+impl core::fmt::Debug for flash_mux::Rule
+pub fn flash_mux::Rule::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_mux::Rule
+impl core::marker::Sync for flash_mux::Rule
+impl core::marker::Unpin for flash_mux::Rule
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_mux::Rule
+impl !core::panic::unwind_safe::UnwindSafe for flash_mux::Rule
+pub struct flash_mux::Mux(_)
+impl flash_mux::Mux
+pub fn flash_mux::Mux::fallback<A: flash_core::handler::Acceptor>(self, A) -> flash_mux::Mux
+pub fn flash_mux::Mux::into_any(self) -> flash_core::handler::AnyAcceptor
+pub fn flash_mux::Mux::max_sniff_bytes(self, usize) -> flash_mux::Mux
+pub fn flash_mux::Mux::new() -> flash_mux::Mux
+pub fn flash_mux::Mux::route<A: flash_core::handler::Acceptor>(self, flash_mux::Rule, A) -> flash_mux::Mux
+pub fn flash_mux::Mux::route_any(self, flash_mux::Rule, impl core::convert::Into<flash_core::handler::AnyAcceptor>) -> flash_mux::Mux
+impl core::clone::Clone for flash_mux::Mux
+pub fn flash_mux::Mux::clone(&self) -> Self
+impl core::convert::From<flash_mux::Mux> for flash_core::handler::AnyAcceptor
+pub fn flash_core::handler::AnyAcceptor::from(flash_mux::Mux) -> flash_core::handler::AnyAcceptor
+impl core::default::Default for flash_mux::Mux
+pub fn flash_mux::Mux::default() -> Self
+impl core::fmt::Debug for flash_mux::Mux
+pub fn flash_mux::Mux::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_mux::Mux
+impl core::marker::Sync for flash_mux::Mux
+impl core::marker::Unpin for flash_mux::Mux
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_mux::Mux
+impl !core::panic::unwind_safe::UnwindSafe for flash_mux::Mux

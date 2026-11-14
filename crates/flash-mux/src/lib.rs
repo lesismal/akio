@@ -10,7 +10,7 @@
 //!     .route(Rule::Http1, flash_core::fn_acceptor(|_c: &flash_core::Conn<Echo>| Echo))
 //!     .fallback(flash_core::fn_acceptor(|_c: &flash_core::Conn<Echo>| Echo));
 //! let engine = Engine::builder()
-//!     .listen(Listener::tcp("0.0.0.0:443".parse().unwrap()).serve_dyn(mux.into_dyn()))
+//!     .listen(Listener::tcp("0.0.0.0:443".parse().unwrap()).serve_any(mux))
 //!     .build()
 //!     .unwrap();
 //! ```
@@ -29,7 +29,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use flash_core::{Acceptor, ConnInner, DynAcceptor, DynHandler, Error, Task};
+use flash_core::{Acceptor, AnyAcceptor, ConnInner, DynAcceptor, DynHandler, Error, Task};
 
 /// The outcome of looking at the first bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +46,7 @@ type Matcher = Arc<dyn Fn(&[u8]) -> Decision + Send + Sync>;
 
 /// How a protocol is recognised.
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum Rule {
     /// A TLS ClientHello (`0x16 0x03 ..`).
     Tls,
@@ -63,6 +64,12 @@ pub enum Rule {
     Prefix(Vec<u8>),
     /// Any test.
     Custom(Matcher),
+}
+
+impl std::fmt::Debug for Rule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Rule").finish_non_exhaustive()
+    }
 }
 
 const METHODS: [&[u8]; 9] = [
@@ -146,7 +153,7 @@ pub mod fuzzing;
 struct Inner {
     routes: Vec<(Rule, Arc<dyn DynAcceptor>)>,
     fallback: Option<Arc<dyn DynAcceptor>>,
-    max_sniff: usize,
+    max_sniff_bytes: usize,
     /// Which acceptor each connection went to (for graceful shutdown).
     chosen: Mutex<HashMap<u64, Arc<dyn DynAcceptor>>>,
 }
@@ -154,6 +161,12 @@ struct Inner {
 /// The multiplexer: an acceptor that hands each connection to the first matching route.
 #[derive(Clone)]
 pub struct Mux(Arc<Inner>);
+
+impl std::fmt::Debug for Mux {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Mux").finish_non_exhaustive()
+    }
+}
 
 impl Default for Mux {
     fn default() -> Self {
@@ -167,7 +180,7 @@ impl Mux {
         Mux(Arc::new(Inner {
             routes: Vec::new(),
             fallback: None,
-            max_sniff: 64,
+            max_sniff_bytes: 64,
             chosen: Mutex::new(HashMap::new()),
         }))
     }
@@ -177,33 +190,39 @@ impl Mux {
     }
 
     /// Adds a route; routes are tried in order.
+    #[must_use]
     pub fn route<A: Acceptor>(mut self, rule: Rule, acceptor: A) -> Mux {
         self.inner_mut().routes.push((rule, Arc::new(acceptor)));
         self
     }
 
     /// Adds a route to a type-erased acceptor (another `Mux`, for instance).
-    pub fn route_dyn(mut self, rule: Rule, acceptor: Arc<dyn DynAcceptor>) -> Mux {
-        self.inner_mut().routes.push((rule, acceptor));
+    #[must_use]
+    pub fn route_any(mut self, rule: Rule, acceptor: impl Into<AnyAcceptor>) -> Mux {
+        self.inner_mut()
+            .routes
+            .push((rule, acceptor.into().into_dyn()));
         self
     }
 
-    /// Where connections go that match nothing (or that decide nothing within `max_sniff`
-    /// bytes). Without a fallback they are closed.
+    /// Where connections go that match nothing (or that decide nothing within
+    /// `max_sniff_bytes`). Without a fallback they are closed.
+    #[must_use]
     pub fn fallback<A: Acceptor>(mut self, acceptor: A) -> Mux {
         self.inner_mut().fallback = Some(Arc::new(acceptor));
         self
     }
 
     /// How many bytes to look at before giving up and using the fallback (default 64).
-    pub fn max_sniff(mut self, n: usize) -> Mux {
-        self.inner_mut().max_sniff = n.max(1);
+    #[must_use]
+    pub fn max_sniff_bytes(mut self, n: usize) -> Mux {
+        self.inner_mut().max_sniff_bytes = n.max(1);
         self
     }
 
-    /// The form `Listener::serve_dyn` takes.
-    pub fn into_dyn(self) -> Arc<dyn DynAcceptor> {
-        Arc::new(self)
+    /// The form `flash::Listener::serve_any` takes (`From<Mux>` does the same).
+    pub fn into_any(self) -> AnyAcceptor {
+        AnyAcceptor::from_dyn(Arc::new(self))
     }
 
     fn pick(&self, b: &[u8]) -> Option<Option<Arc<dyn DynAcceptor>>> {
@@ -215,10 +234,16 @@ impl Mux {
                 Decision::No => {}
             }
         }
-        if undecided && b.len() < self.0.max_sniff {
+        if undecided && b.len() < self.0.max_sniff_bytes {
             return None; // wait for more bytes
         }
         Some(self.0.fallback.clone())
+    }
+}
+
+impl From<Mux> for AnyAcceptor {
+    fn from(mux: Mux) -> AnyAcceptor {
+        mux.into_any()
     }
 }
 

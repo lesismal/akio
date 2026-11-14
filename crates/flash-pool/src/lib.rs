@@ -25,6 +25,7 @@ pub type Job = Box<dyn FnOnce() + Send + 'static>;
 
 /// Pool sizing and overload behaviour.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct PoolConfig {
     /// Threads kept alive even when idle.
     pub min_threads: usize,
@@ -59,6 +60,7 @@ impl std::fmt::Debug for Rejected {
 
 /// A snapshot of pool counters.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PoolStats {
     /// Threads currently alive.
     pub threads: usize,
@@ -91,6 +93,12 @@ pub struct Pool {
     completed: AtomicU64,
     panicked: AtomicU64,
     rejected: AtomicU64,
+}
+
+impl std::fmt::Debug for Pool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pool").finish_non_exhaustive()
+    }
 }
 
 impl Pool {

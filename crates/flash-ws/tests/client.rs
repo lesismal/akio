@@ -24,9 +24,10 @@ const T: Duration = Duration::from_secs(10);
 
 fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..Default::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }
@@ -43,9 +44,10 @@ fn start_with(router: Router, tls: Option<Arc<rustls::ServerConfig>>) -> (Arc<En
         None => l.serve(serve(router)),
     };
     let e = Engine::builder()
-        .config(Config {
-            shutdown_timeout: Duration::from_millis(500),
-            ..Config::default()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(500);
+            v
         })
         .listen(l)
         .build()
@@ -180,7 +182,8 @@ fn open(
     opts: &DialOptions,
 ) -> (WsSender, Receiver<Ev>, Option<String>, String) {
     let (tx, rx) = mpsc::channel();
-    let ws = client::connect(e, url, opts, Rec(tx)).unwrap_or_else(|err| panic!("{url}: {err}"));
+    let ws =
+        client::dial_blocking(e, url, opts, Rec(tx)).unwrap_or_else(|err| panic!("{url}: {err}"));
     let proto = match rx.recv_timeout(T).unwrap() {
         Ev::Open(p) => p,
         other => panic!("{other:?}"),
@@ -281,26 +284,28 @@ fn compression_negotiation_variants() {
     let url = format!("ws://127.0.0.1:{port}/ws");
     let offers = [
         PmdOffer::default(),
-        PmdOffer {
-            client_no_context_takeover: true,
-            ..PmdOffer::default()
+        {
+            let mut v = PmdOffer::default();
+            v.client_no_context_takeover = true;
+            v
         },
-        PmdOffer {
-            server_no_context_takeover: true,
-            server_max_window_bits: Some(9),
-            ..PmdOffer::default()
+        {
+            let mut v = PmdOffer::default();
+            v.server_no_context_takeover = true;
+            v.server_max_window_bits = Some(9);
+            v
         },
-        PmdOffer {
-            client_no_context_takeover: true,
-            server_no_context_takeover: true,
-            server_max_window_bits: Some(12),
+        {
+            let mut v = PmdOffer::default();
+            v.client_no_context_takeover = true;
+            v.server_no_context_takeover = true;
+            v.server_max_window_bits = Some(12);
+            v
         },
     ];
     for pmd in offers {
-        let opts = DialOptions {
-            pmd,
-            ..DialOptions::default()
-        };
+        let mut opts = DialOptions::default();
+        opts.pmd = pmd;
         let (ws, rx, _, seen) = open(&e, &url, &opts);
         assert!(seen.contains(&pmd.header()), "{seen}");
         roundtrips(&ws, &rx);
@@ -317,24 +322,25 @@ fn compression_negotiation_variants() {
         );
     }
     // Compression off on either side: plain frames.
-    let opts = DialOptions {
-        config: WsConfig {
-            permessage_deflate: false,
-            ..WsConfig::default()
-        },
-        ..DialOptions::default()
+    let mut opts = DialOptions::default();
+    opts.config = {
+        let mut v = WsConfig::default();
+        v.permessage_deflate = false;
+        v
     };
     let (ws, rx, _, seen) = open(&e, &url, &opts);
     assert!(seen.contains("sec-websocket-extensions=-"), "{seen}");
     roundtrips(&ws, &rx);
     stop(&e);
     let (e, port) = start(echo_router(
-        WsOptions {
-            config: WsConfig {
-                permessage_deflate: false,
-                ..WsConfig::default()
-            },
-            ..WsOptions::default()
+        {
+            let mut v = WsOptions::default();
+            v.config = {
+                let mut v = WsConfig::default();
+                v.permessage_deflate = false;
+                v
+            };
+            v
         },
         None,
     ));
@@ -347,24 +353,25 @@ fn compression_negotiation_variants() {
 #[test]
 fn large_and_fragmented_messages_and_limits() {
     let (e, port) = start(echo_router(
-        WsOptions {
-            config: WsConfig {
-                max_message_bytes: 64 << 20,
-                ..WsConfig::default()
-            },
-            ..WsOptions::default()
+        {
+            let mut v = WsOptions::default();
+            v.config = {
+                let mut v = WsConfig::default();
+                v.max_message_bytes = 64 << 20;
+                v
+            };
+            v
         },
         None,
     ));
     let url = format!("ws://127.0.0.1:{port}/ws");
     for deflate in [false, true] {
-        let opts = DialOptions {
-            config: WsConfig {
-                max_message_bytes: 64 << 20,
-                permessage_deflate: deflate,
-                ..WsConfig::default()
-            },
-            ..DialOptions::default()
+        let mut opts = DialOptions::default();
+        opts.config = {
+            let mut v = WsConfig::default();
+            v.max_message_bytes = 64 << 20;
+            v.permessage_deflate = deflate;
+            v
         };
         let (ws, rx, _, _) = open(&e, &url, &opts);
         let big = pattern(8 << 20, 7);
@@ -384,12 +391,11 @@ fn large_and_fragmented_messages_and_limits() {
         assert_eq!(next_msg(&rx), Message::Text(text));
     }
     // A message over the client's limit fails the connection with 1009.
-    let opts = DialOptions {
-        config: WsConfig {
-            max_message_bytes: 1000,
-            ..WsConfig::default()
-        },
-        ..DialOptions::default()
+    let mut opts = DialOptions::default();
+    opts.config = {
+        let mut v = WsConfig::default();
+        v.max_message_bytes = 1000;
+        v
     };
     let (ws, rx, _, _) = open(&e, &url, &opts);
     ws.send_binary(&[1; 999]).unwrap();
@@ -404,22 +410,18 @@ fn large_and_fragmented_messages_and_limits() {
 
 #[test]
 fn subprotocols_origin_and_headers() {
-    let opts_srv = WsOptions {
-        protocols: vec!["v2.json".into(), "chat".into()],
-        origin_allowed: Some(|o| o == "https://good.example"),
-        ..WsOptions::default()
-    };
+    let mut opts_srv = WsOptions::default();
+    opts_srv.protocols = vec!["v2.json".into(), "chat".into()];
+    opts_srv.origin_allowed = Some(|o| o == "https://good.example");
     let (e, port) = start(echo_router(opts_srv, None));
     let url = format!("ws://127.0.0.1:{port}/ws");
-    let opts = DialOptions {
-        protocols: vec!["mqtt".into(), "chat".into()],
-        origin: Some("https://good.example".into()),
-        headers: vec![
-            ("Authorization".into(), "Bearer t0k3n".into()),
-            ("User-Agent".into(), "tester/1".into()),
-        ],
-        ..DialOptions::default()
-    };
+    let mut opts = DialOptions::default();
+    opts.protocols = vec!["mqtt".into(), "chat".into()];
+    opts.origin = Some("https://good.example".into());
+    opts.headers = vec![
+        ("Authorization".into(), "Bearer t0k3n".into()),
+        ("User-Agent".into(), "tester/1".into()),
+    ];
     let (ws, rx, proto, seen) = open(&e, &url, &opts);
     assert_eq!(proto.as_deref(), Some("chat"));
     assert_eq!(ws.subprotocol().as_deref(), Some("chat"));
@@ -428,22 +430,20 @@ fn subprotocols_origin_and_headers() {
     assert!(seen.contains("user-agent=tester/1"), "{seen}");
     roundtrips(&ws, &rx);
     // No common subprotocol: the server picks none.
-    let (_, _, proto, _) = open(
-        &e,
-        &url,
-        &DialOptions {
-            protocols: vec!["mqtt".into()],
-            ..DialOptions::default()
-        },
-    );
+    let (_, _, proto, _) = open(&e, &url, &{
+        let mut v = DialOptions::default();
+        v.protocols = vec!["mqtt".into()];
+        v
+    });
     assert_eq!(proto, None);
     // The origin policy refuses: a status error.
-    let err = client::connect(
+    let err = client::dial_blocking(
         &e,
         &url,
-        &DialOptions {
-            origin: Some("https://evil.example".into()),
-            ..DialOptions::default()
+        &{
+            let mut v = DialOptions::default();
+            v.origin = Some("https://evil.example".into());
+            v
         },
         Rec(mpsc::channel().0),
     )
@@ -457,7 +457,7 @@ fn subprotocols_origin_and_headers() {
 fn handshake_failures() {
     let (e, port) = start(echo_router(WsOptions::default(), None));
     let fail = |url: &str, opts: &DialOptions| {
-        client::connect(&e, url, opts, Rec(mpsc::channel().0))
+        client::dial_blocking(&e, url, opts, Rec(mpsc::channel().0))
             .err()
             .unwrap_or_else(|| panic!("{url} connected"))
     };
@@ -481,10 +481,8 @@ fn handshake_failures() {
     // A server that accepts and never answers.
     let mute = TcpListener::bind("127.0.0.1:0").unwrap();
     let mport = mute.local_addr().unwrap().port();
-    let opts = DialOptions {
-        handshake_timeout: Duration::from_millis(300),
-        ..DialOptions::default()
-    };
+    let mut opts = DialOptions::default();
+    opts.handshake_timeout = Duration::from_millis(300);
     let t0 = std::time::Instant::now();
     let err = fail(&format!("ws://127.0.0.1:{mport}/"), &opts);
     assert!(matches!(err, WsClientError::Timeout), "{err}");
@@ -520,10 +518,8 @@ fn wss_with_sni_and_custom_roots() {
             .with_root_certificates(roots)
             .with_no_client_auth(),
     );
-    let opts = DialOptions {
-        tls: Some(ccfg.clone()),
-        ..DialOptions::default()
-    };
+    let mut opts = DialOptions::default();
+    opts.tls = Some(ccfg.clone());
     // `localhost` may resolve to ::1 first: the client falls back to 127.0.0.1.
     let url = format!("wss://localhost:{port}/ws");
     let (ws, rx, _, _) = open(&e, &url, &opts);
@@ -537,20 +533,16 @@ fn wss_with_sni_and_custom_roots() {
         Ev::Close(Some(1000), String::new())
     );
     // By IP with an explicit server name for verification and SNI.
-    let opts_ip = DialOptions {
-        tls: Some(ccfg.clone()),
-        server_name: Some("localhost".into()),
-        ..DialOptions::default()
-    };
+    let mut opts_ip = DialOptions::default();
+    opts_ip.tls = Some(ccfg.clone());
+    opts_ip.server_name = Some("localhost".into());
     let (ws, rx, _, _) = open(&e, &format!("wss://127.0.0.1:{port}/ws"), &opts_ip);
     roundtrips(&ws, &rx);
     // A name the certificate does not cover fails verification.
-    let bad = DialOptions {
-        tls: Some(ccfg),
-        server_name: Some("other.example".into()),
-        ..DialOptions::default()
-    };
-    let err = client::connect(
+    let mut bad = DialOptions::default();
+    bad.tls = Some(ccfg);
+    bad.server_name = Some("other.example".into());
+    let err = client::dial_blocking(
         &e,
         &format!("wss://127.0.0.1:{port}/ws"),
         &bad,
@@ -635,16 +627,15 @@ fn interop_with_external_echo_server() {
     let cli = Arc::new(Engine::builder().client_threads(1).build().unwrap());
     cli.start().unwrap();
     for pmd in [false, true] {
-        let opts = DialOptions {
-            config: WsConfig {
-                permessage_deflate: pmd,
-                max_message_bytes: 64 << 20,
-                ..WsConfig::default()
-            },
-            ..DialOptions::default()
+        let mut opts = DialOptions::default();
+        opts.config = {
+            let mut v = WsConfig::default();
+            v.permessage_deflate = pmd;
+            v.max_message_bytes = 64 << 20;
+            v
         };
         let (tx, rx) = mpsc::channel();
-        let ws = client::connect(&cli, &url, &opts, Rec(tx)).unwrap();
+        let ws = client::dial_blocking(&cli, &url, &opts, Rec(tx)).unwrap();
         assert_eq!(rx.recv_timeout(T).unwrap(), Ev::Open(None));
         roundtrips(&ws, &rx);
         let big = pattern(8 << 20, 11);

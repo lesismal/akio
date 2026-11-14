@@ -59,9 +59,10 @@ fn localhost() -> SocketAddr {
 }
 
 fn quick() -> Config {
-    Config {
-        shutdown_timeout: Duration::from_millis(300),
-        ..Config::default()
+    {
+        let mut v = Config::default();
+        v.shutdown_timeout = Duration::from_millis(300);
+        v
     }
 }
 

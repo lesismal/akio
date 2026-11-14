@@ -50,7 +50,7 @@ quinn，其余按 stream 暂存，等对端给出额度；用 `queued_bytes` 控
 {{#include ../../../../crates/flash-h3/examples/guide-h3.rs:server}}
 ```
 
-`flash_h3::server(quic_cfg, service)`（或 `server_with(.., H3Config)`）返回一个通过 HTTP/3 提供
+`flash_h3::serve(quic_cfg, service)`（或 `serve_with(.., H3Config)`）返回一个通过 HTTP/3 提供
 该 service 的 `QuicServer`。`flash_h3::server_config(certs, key)` 就是 ALPN 为 `h3` 的
 `server_config`。handler 拿到的 `Context` 与 HTTP/1.1 和 HTTP/2 上相同，包括 `detach`、
 `stream_response` 和 trailer；`ctx.req().version` 为 `Version::Http3`。请求 body 以缓冲方式
@@ -67,7 +67,7 @@ quinn，其余按 stream 暂存，等对端给出额度；用 `queued_bytes` 控
 {{#include ../../../../crates/flash-h3/examples/guide-h3.rs:client}}
 ```
 
-`H3Client::connect(&engine, addr, server_name, client_cfg)`（ALPN `h3`）；握手完成前发出的
+`H3Client::dial(&engine, addr, server_name, client_cfg)`（ALPN `h3`）；握手完成前发出的
 请求会等待握手完成。`request(method, path, headers, body, callback)`、
 `request_blocking(..)`、`get(path, timeout)`、`close()`、`connection()`。
 

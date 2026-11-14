@@ -7,9 +7,10 @@ use flash::{Backend, UringConfig};
 /// (strict: a kernel without io_uring fails the run instead of silently testing epoll).
 pub(crate) fn backend() -> Backend {
     match std::env::var("FLASH_TEST_BACKEND").as_deref() {
-        Ok("uring") => Backend::IoUring(UringConfig {
-            strict: true,
-            ..UringConfig::default()
+        Ok("uring") => Backend::IoUring({
+            let mut v = UringConfig::default();
+            v.strict = true;
+            v
         }),
         _ => Backend::Epoll,
     }

@@ -74,6 +74,12 @@ pub struct Routes {
     max_body: Option<usize>,
 }
 
+impl std::fmt::Debug for Routes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Routes").finish_non_exhaustive()
+    }
+}
+
 impl Routes {
     /// No methods.
     pub fn new() -> Routes {
@@ -82,6 +88,7 @@ impl Routes {
 
     /// Serves `method` (requests and notifies). `""` is the fallback for unknown methods;
     /// without it they get the error [`METHOD_NOT_FOUND`].
+    #[must_use]
     pub fn handle(
         mut self,
         method: &str,
@@ -93,6 +100,7 @@ impl Routes {
 
     /// Serves streams the peer opens for `method`: `open` runs on the first message and returns
     /// the callback that receives this and every later message of the stream.
+    #[must_use]
     pub fn handle_stream<F>(
         mut self,
         method: &str,
@@ -107,19 +115,22 @@ impl Routes {
     }
 
     /// Runs when a connection is established.
+    #[must_use]
     pub fn on_connected(mut self, f: impl Fn(&Peer) + Send + Sync + 'static) -> Routes {
         self.on_connected = Some(Arc::new(f));
         self
     }
 
     /// Runs when a connection is lost.
+    #[must_use]
     pub fn on_disconnected(mut self, f: impl Fn(&Peer) + Send + Sync + 'static) -> Routes {
         self.on_disconnected = Some(Arc::new(f));
         self
     }
 
     /// Longest body (method + payload) accepted; longer closes the connection. Default 64 MiB.
-    pub fn max_body(mut self, n: usize) -> Routes {
+    #[must_use]
+    pub fn max_body_bytes(mut self, n: usize) -> Routes {
         self.max_body = Some(n);
         self
     }
@@ -127,6 +138,7 @@ impl Routes {
 
 /// Why a call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallError {
     /// The peer answered with an error (its text).
     Remote(String),
@@ -160,6 +172,12 @@ pub enum StreamEvent<'a> {
     Eof,
 }
 
+impl<'a> std::fmt::Debug for StreamEvent<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamEvent").finish_non_exhaustive()
+    }
+}
+
 struct StreamState {
     cb: StreamCb,
 }
@@ -179,6 +197,12 @@ struct PeerInner {
 /// One end of an arpc connection: call, notify and stream to the peer. Cheap to clone.
 #[derive(Clone)]
 pub struct Peer(Arc<PeerInner>);
+
+impl std::fmt::Debug for Peer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Peer").finish_non_exhaustive()
+    }
+}
 
 impl Peer {
     fn conn(&self) -> Option<Arc<ConnInner>> {
@@ -420,7 +444,7 @@ impl Peer {
 }
 
 /// One side of a stream.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Stream {
     peer: Peer,
     id: u64,
@@ -472,6 +496,7 @@ impl Stream {
 }
 
 /// A request or notify being served.
+#[derive(Debug)]
 pub struct Context {
     peer: Peer,
     msg: Message,
@@ -549,6 +574,7 @@ impl Context {
 }
 
 /// An answer to send later; see [`Context::detach`].
+#[derive(Debug)]
 pub struct Responder {
     peer: Peer,
     method: String,
@@ -614,6 +640,12 @@ impl Shared {
 
 /// The result of [`Peer::call`]: wait for it or `.await` it.
 pub struct CallFuture(Arc<Shared>);
+
+impl std::fmt::Debug for CallFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CallFuture").finish_non_exhaustive()
+    }
+}
 
 impl CallFuture {
     /// Blocks until the answer.
@@ -710,6 +742,7 @@ fn timers() -> &'static Timers {
 // ---- the connection handler ------------------------------------------------------------------
 
 /// The flash handler of an arpc connection.
+#[derive(Debug)]
 pub struct ArpcConn {
     peer: Peer,
     dec: Decoder,
@@ -801,7 +834,11 @@ impl Acceptor for Attach {
 
 /// Connects to an arpc server and keeps reconnecting (every second) until [`Peer::close`].
 /// Blocks until the first connection is up (10 s at most).
-pub fn dial(engine: &Arc<Engine>, addr: SocketAddr, routes: Arc<Routes>) -> io::Result<Peer> {
+pub fn dial_blocking(
+    engine: &Arc<Engine>,
+    addr: SocketAddr,
+    routes: Arc<Routes>,
+) -> io::Result<Peer> {
     let er = EngineRef::new();
     er.set(engine);
     let peer = Peer(Arc::new(PeerInner {
@@ -832,7 +869,7 @@ pub fn dial(engine: &Arc<Engine>, addr: SocketAddr, routes: Arc<Routes>) -> io::
 }
 
 /// An arpc server: serve it on a listener. Every accepted connection is a [`Peer`].
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Server {
     routes: Arc<Routes>,
     peers: Arc<Mutex<HashMap<u64, Peer>>>,
@@ -874,6 +911,7 @@ impl Server {
 }
 
 /// The handler of a server-side connection: an [`ArpcConn`] that also leaves the registry.
+#[derive(Debug)]
 pub struct ServerConn {
     conn: ArpcConn,
     id: u64,

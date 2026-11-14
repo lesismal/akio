@@ -4,7 +4,7 @@
 //! ```no_run
 //! # use flash::Engine; use flash_http::{client::ClientRequest, h2client::{H2Client, H2Options}};
 //! # let engine = Engine::builder().client_threads(1).build().unwrap(); engine.start().unwrap();
-//! let c = H2Client::connect_blocking(&engine, "127.0.0.1:8082".parse().unwrap(), None, H2Options::default())
+//! let c = H2Client::dial_blocking(&engine, "127.0.0.1:8082".parse().unwrap(), None, H2Options::default())
 //!     .unwrap();
 //! let r = c.send(ClientRequest::get("http://127.0.0.1:8082/")).wait().unwrap();
 //! ```
@@ -36,6 +36,7 @@ use crate::{
 
 /// Connection options.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct H2Options {
     /// Receive window per stream.
     pub initial_window: u32,
@@ -77,6 +78,12 @@ pub enum H2Event<'a> {
     Error(ClientError),
 }
 
+impl<'a> std::fmt::Debug for H2Event<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H2Event").finish_non_exhaustive()
+    }
+}
+
 /// Request body still to be produced for a streamed request.
 struct UpShared {
     q: Mutex<(VecDeque<Vec<u8>>, bool)>,
@@ -87,6 +94,12 @@ struct UpShared {
 pub struct H2Upload {
     conn: Conn<H2Conn>,
     up: Arc<UpShared>,
+}
+
+impl std::fmt::Debug for H2Upload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H2Upload").finish_non_exhaustive()
+    }
 }
 
 impl H2Upload {
@@ -116,7 +129,7 @@ impl H2Upload {
 }
 
 /// A connection to an HTTP/2 server. Cheap to clone.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct H2Client {
     conn: Conn<H2Conn>,
 }
@@ -124,7 +137,7 @@ pub struct H2Client {
 impl H2Client {
     /// Connects (prior knowledge, or TLS with ALPN `h2` when `tls` is given: the client config's
     /// `alpn_protocols` must contain `h2`), then calls `ready`.
-    pub fn connect(
+    pub fn dial(
         engine: &Engine,
         addr: SocketAddr,
         tls: Option<(Arc<rustls::ClientConfig>, &str)>,
@@ -151,15 +164,15 @@ impl H2Client {
         }
     }
 
-    /// Like [`connect`](Self::connect), waiting for the result (10 s).
-    pub fn connect_blocking(
+    /// Like [`dial`](Self::dial), waiting for the result (10 s).
+    pub fn dial_blocking(
         engine: &Engine,
         addr: SocketAddr,
         tls: Option<(Arc<rustls::ClientConfig>, &str)>,
         opts: H2Options,
     ) -> io::Result<H2Client> {
         let (tx, rx) = mpsc::channel();
-        H2Client::connect(engine, addr, tls, opts, move |r| {
+        H2Client::dial(engine, addr, tls, opts, move |r| {
             let _ = tx.send(r);
         });
         rx.recv_timeout(Duration::from_secs(10))
@@ -337,6 +350,12 @@ pub struct H2Conn {
     cont: Option<(u32, Option<u32>, Vec<u8>, bool)>,
     goaway: bool,
     dead: bool,
+}
+
+impl std::fmt::Debug for H2Conn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("H2Conn").finish_non_exhaustive()
+    }
 }
 
 fn window_update(out: &mut Vec<u8>, sid: u32, inc: u32) {

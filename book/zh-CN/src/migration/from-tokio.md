@@ -101,7 +101,7 @@ tokio 运行时。在 tokio 的停机流程里调用 `engine.shutdown()`，并�
 
 需要避免的：
 
-- 在 tokio 任务内部调用阻塞等待（`ResponseFuture::wait`、`client::connect`、
+- 在 tokio 任务内部调用阻塞等待（`ResponseFuture::wait`、`client::dial_blocking`、
   `GrpcClient::unary`）：能 `.await` 就 `.await`，否则用 `spawn_blocking`；
 - 在 flash 的 I/O 线程上调用这些阻塞辅助函数：它们可能因为等待被自己阻塞的那个线程而死锁；
 - 在 flash 回调里 `block_on`。

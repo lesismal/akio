@@ -3,7 +3,7 @@
 //!
 //! Every engine owns one [`Telemetry`] (reachable as `Config::telemetry` before the engine is
 //! built and as `Engine::telemetry()` after). The I/O threads update plain per-thread counters
-//! ([`LoopStats`]) with relaxed atomics; nothing is locked or allocated per event. Snapshots
+//! with relaxed atomics; nothing is locked or allocated per event. Snapshots
 //! ([`Telemetry::metrics`], [`Telemetry::connections`]) are assembled on demand.
 
 use std::{
@@ -26,6 +26,7 @@ pub const SLOW_RING: usize = 256;
 /// A monotonically increasing (or, for gauges, adjustable) counter. Relaxed atomics: readers on
 /// other threads see a recent value, never a torn one.
 #[derive(Default, Debug)]
+#[doc(hidden)]
 pub struct Counter(AtomicU64);
 
 impl Counter {
@@ -58,8 +59,9 @@ impl Counter {
     }
 }
 
-/// Which I/O thread a [`LoopStats`] belongs to.
+/// Which I/O thread a connection, a slow callback or a metrics row belongs to.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LoopMeta {
     /// Backend name: `epoll`, `kqueue`, `io_uring` or `udp`.
     pub backend: &'static str,
@@ -69,11 +71,24 @@ pub struct LoopMeta {
     pub thread: usize,
 }
 
+impl LoopMeta {
+    /// Backend-facing constructor.
+    #[doc(hidden)]
+    pub fn new(backend: &'static str, listener: Option<SocketAddr>, thread: usize) -> LoopMeta {
+        LoopMeta {
+            backend,
+            listener,
+            thread,
+        }
+    }
+}
+
 macro_rules! loop_counters {
     ($( $(#[$m:meta])* $field:ident : $kind:literal, $prom:literal, $help:literal; )*) => {
-        /// Live counters of one I/O thread. Backend-facing (`#[doc(hidden)]` fields are updated by
-        /// the loops); read them through [`Telemetry::metrics`].
+        /// Live counters of one I/O thread. Backend-facing (updated by the loops); read them
+        /// through [`Telemetry::metrics`].
         #[derive(Debug)]
+        #[doc(hidden)]
         #[repr(align(128))] // threads' counters never share a cache line
         pub struct LoopStats {
             meta: LoopMeta,
@@ -81,8 +96,9 @@ macro_rules! loop_counters {
             $( #[doc(hidden)] pub $field: Counter, )*
         }
 
-        /// A snapshot of [`LoopStats`] (or a sum of several).
+        /// Counters of one I/O thread (or a sum of several) in a [`Metrics`] snapshot.
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+        #[non_exhaustive]
         pub struct LoopCounters {
             $( $(#[$m])* pub $field: u64, )*
         }
@@ -213,6 +229,12 @@ pub enum LoopCmd {
     Reload,
 }
 
+impl std::fmt::Debug for LoopCmd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoopCmd").finish_non_exhaustive()
+    }
+}
+
 struct LoopEntry {
     stats: Arc<LoopStats>,
     post: Box<dyn Fn(LoopCmd) + Send + Sync>,
@@ -220,6 +242,7 @@ struct LoopEntry {
 
 /// One row of the connection table ([`Telemetry::connections`]).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ConnInfo {
     /// Connection id (as in [`SlowCallback::conn_id`]).
     pub id: u64,
@@ -249,8 +272,33 @@ pub struct ConnInfo {
     pub udp: bool,
 }
 
+impl ConnInfo {
+    /// Backend-facing: the row for connection `id`, with what `inner` knows filled in; the
+    /// backend sets `age`, `idle`, `bytes_in` and `backpressure`.
+    #[doc(hidden)]
+    pub fn new(id: u64, inner: &crate::ConnInner, owner: LoopMeta) -> ConnInfo {
+        let (bytes_out, queued_bytes, transport, udp) = inner.debug_state();
+        ConnInfo {
+            id,
+            peer: inner.peer_addr(),
+            local: inner.local_addr(),
+            owner,
+            age: Duration::ZERO,
+            idle: Duration::ZERO,
+            bytes_in: 0,
+            bytes_out,
+            queued_bytes,
+            read_held: inner.read_held(),
+            backpressure: false,
+            transport,
+            udp,
+        }
+    }
+}
+
 /// One slow callback (see [`Telemetry::slow_callbacks`]).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SlowRecord {
     /// When it was reported.
     pub at: SystemTime,
@@ -328,6 +376,7 @@ impl Live {
     /// Idle timeout in milliseconds, 0 when off.
     #[doc(hidden)]
     #[inline]
+    #[doc(hidden)]
     pub fn idle_ms(&self) -> u64 {
         self.idle_ms.load(Ordering::Relaxed)
     }
@@ -433,6 +482,7 @@ struct Fixed {
 
 /// What [`Telemetry::reload`] did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ReloadReport {
     /// Settings that changed and now apply.
     pub applied: Vec<&'static str>,
@@ -824,6 +874,7 @@ impl Telemetry {
 
 /// Counters of one I/O thread in a [`Metrics`] snapshot.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct LoopMetrics {
     /// Which thread.
     pub owner: LoopMeta,
@@ -843,6 +894,7 @@ impl LoopMetrics {
 
 /// A metrics snapshot ([`Telemetry::metrics`]).
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Metrics {
     /// Per I/O thread.
     pub loops: Vec<LoopMetrics>,
@@ -882,6 +934,7 @@ fn loop_labels(out: &mut String, m: &LoopMeta) {
 }
 
 /// Writes a `# HELP` / `# TYPE` header (Prometheus text exposition format 0.0.4).
+#[doc(hidden)]
 pub fn prometheus_header(out: &mut String, name: &str, kind: &str, help: &str) {
     let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} {kind}");
 }
@@ -1029,6 +1082,7 @@ impl Metrics {
 }
 
 /// Appends `s` as a JSON string literal.
+#[doc(hidden)]
 pub fn json_str(o: &mut String, s: &str) {
     o.push('"');
     for ch in s.chars() {

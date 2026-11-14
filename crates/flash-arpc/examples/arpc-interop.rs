@@ -5,7 +5,7 @@
 use std::{sync::Arc, time::Duration};
 
 use flash::{Engine, Listener};
-use flash_arpc::{CallError, Routes, Server, StreamEvent, dial};
+use flash_arpc::{CallError, Routes, Server, StreamEvent, dial_blocking};
 
 fn main() -> std::io::Result<()> {
     let a: Vec<String> = std::env::args().skip(1).collect();
@@ -38,7 +38,7 @@ fn main() -> std::io::Result<()> {
     }
     let e = Arc::new(Engine::builder().client_threads(1).build()?);
     e.start()?;
-    let p = dial(&e, addr, Arc::new(Routes::new()))?;
+    let p = dial_blocking(&e, addr, Arc::new(Routes::new()))?;
     let t = Some(Duration::from_secs(5));
     assert_eq!(
         p.call("/echo", b"from rust", t).wait().unwrap(),

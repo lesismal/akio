@@ -33,15 +33,18 @@ pub use flash_tls as tls;
 pub use flash_ebpf as ebpf;
 
 pub use flash_core::{
-    Acceptor, Config, Conn, ConnInfo, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, Live,
-    LoopCounters, LoopMeta, LoopMetrics, Metrics, PoolConfig, PoolStats, ReloadReport,
-    ResponseSlot, Result, SlowCallback, SlowHook, SlowRecord, Telemetry, UdpStats, fn_acceptor,
-    telemetry,
+    Acceptor, AnyAcceptor, Config, Conn, ConnInfo, Error, FnAcceptor, Handler, Live, LoopCounters,
+    LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, ResponseSlot,
+    ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
+    UdpStats, fn_acceptor, telemetry,
 };
+#[doc(hidden)]
+pub use flash_core::{DynAcceptor, DynHandler};
 use flash_core::{Group, Pool, telemetry::log_or_stderr};
 
 /// I/O backend of one listener (ADR-004).
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum Backend {
     /// epoll on Linux, kqueue on macOS. The default.
     #[default]
@@ -51,8 +54,9 @@ pub enum Backend {
     IoUring(UringConfig),
 }
 
-/// io_uring tuning.
+/// io_uring tuning. `#[non_exhaustive]`: start from `UringConfig::default()` and set fields.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct UringConfig {
     /// Submission queue depth (0 = default).
     pub entries: u32,
@@ -64,6 +68,7 @@ pub struct UringConfig {
 
 /// Acceleration/steering layer, orthogonal to [`Backend`] (ADR-006).
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum Accel {
     /// No acceleration: plain `SO_REUSEPORT` hashing.
     #[default]
@@ -74,8 +79,10 @@ pub enum Accel {
     Ebpf(EbpfConfig),
 }
 
-/// Configuration of [`Accel::Ebpf`].
+/// Configuration of [`Accel::Ebpf`]. `#[non_exhaustive]`: start from
+/// `EbpfConfig::default()` and set fields.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct EbpfConfig {
     /// How the listener's threads share new flows (default: [`ebpf::Steering::Cpu`]).
     pub steering: ebpf::Steering,
@@ -98,6 +105,7 @@ impl Default for EbpfConfig {
 
 /// What [`Accel`] a listener ended up with ([`Engine::accel_status`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AccelStatus {
     /// No acceleration was requested.
     Off,
@@ -116,6 +124,12 @@ pub struct Listener {
     accel: Accel,
     threads: usize,
     acceptor: Option<Arc<dyn DynAcceptor>>,
+}
+
+impl std::fmt::Debug for Listener {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listener").finish_non_exhaustive()
+    }
 }
 
 impl Listener {
@@ -145,39 +159,43 @@ impl Listener {
     }
 
     /// Chooses this listener's backend.
+    #[must_use]
     pub fn backend(mut self, b: Backend) -> Self {
         self.backend = b;
         self
     }
 
     /// Chooses this listener's acceleration layer.
+    #[must_use]
     pub fn accel(mut self, a: Accel) -> Self {
         self.accel = a;
         self
     }
 
     /// Number of I/O threads for this listener (default: one per core).
+    #[must_use]
     pub fn threads(mut self, n: usize) -> Self {
         self.threads = n.max(1);
         self
     }
 
     /// Attaches the acceptor that serves this listener.
+    #[must_use]
     pub fn serve<A: Acceptor>(mut self, acceptor: A) -> Self {
         self.acceptor = Some(Arc::new(acceptor));
         self
     }
 
-    /// Attaches a type-erased acceptor (for protocol multiplexers such as `flash-mux`).
-    #[doc(hidden)]
-    pub fn serve_dyn(mut self, acceptor: Arc<dyn DynAcceptor>) -> Self {
-        self.acceptor = Some(acceptor);
+    /// Attaches a type-erased acceptor, such as a protocol multiplexer (`flash_mux::Mux`).
+    #[must_use]
+    pub fn serve_any(mut self, acceptor: impl Into<AnyAcceptor>) -> Self {
+        self.acceptor = Some(acceptor.into().into_dyn());
         self
     }
 }
 
 /// Builds an [`Engine`].
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct EngineBuilder {
     listeners: Vec<Listener>,
     client_threads: usize,
@@ -188,6 +206,7 @@ pub struct EngineBuilder {
 
 impl EngineBuilder {
     /// Adds a listener.
+    #[must_use]
     pub fn listen(mut self, l: Listener) -> Self {
         self.listeners.push(l);
         self
@@ -195,12 +214,14 @@ impl EngineBuilder {
 
     /// Adds `n` I/O threads that only serve connections made with [`Engine::dial`]. Without it,
     /// dialed connections run on the threads of the last listener added.
+    #[must_use]
     pub fn client_threads(mut self, n: usize) -> Self {
         self.client_threads = n;
         self
     }
 
     /// Replaces the default [`Config`].
+    #[must_use]
     pub fn config(mut self, cfg: Config) -> Self {
         self.cfg = cfg;
         self
@@ -208,6 +229,7 @@ impl EngineBuilder {
 
     /// Adds `n` I/O threads for connections made with [`Engine::dial_udp`]. Without it, UDP
     /// dials run on the threads of the last UDP listener added (and fail if there is none).
+    #[must_use]
     pub fn udp_client_threads(mut self, n: usize) -> Self {
         self.udp_client_threads = n;
         self
@@ -215,6 +237,7 @@ impl EngineBuilder {
 
     /// Sizes the logical pool that runs [`Conn::spawn_blocking`] work (default: no threads until
     /// used, up to 8 per core, 65,536 queued jobs).
+    #[must_use]
     pub fn pool(mut self, pool: PoolConfig) -> Self {
         self.pool = pool;
         self
@@ -361,9 +384,8 @@ fn apply_accel(a: &Accel, g: &dyn Group) -> io::Result<AccelStatus> {
     let Accel::Ebpf(cfg) = a else {
         return Ok(AccelStatus::Off);
     };
-    let opts = ebpf::AttachOptions {
-        ebpf: cfg.ebpf_programs,
-    };
+    let mut opts = ebpf::AttachOptions::default();
+    opts.ebpf = cfg.ebpf_programs;
     match ebpf::attach_reuseport(&g.listener_fds(), cfg.steering, opts) {
         Ok(info) => Ok(AccelStatus::Steering(info)),
         Err(e) if cfg.strict => Err(unsupported(&format!("BPF steering ({e})"))),
@@ -383,7 +405,7 @@ fn unsupported(what: &str) -> io::Error {
 
 /// A late-bound handle to an [`Engine`], for services that need to dial (proxies, clients
 /// inside handlers) but are built before the engine. Holds the engine weakly.
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineRef(Arc<std::sync::OnceLock<std::sync::Weak<Engine>>>);
 
 impl EngineRef {
@@ -413,6 +435,12 @@ pub struct Engine {
     udp_client: Option<usize>,
     accel: Vec<AccelStatus>,
     telemetry: Arc<Telemetry>,
+}
+
+impl std::fmt::Debug for Engine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Engine").finish_non_exhaustive()
+    }
 }
 
 impl Engine {
@@ -488,9 +516,10 @@ impl Engine {
         self.groups
             .iter()
             .map(|g| g.udp_stats())
-            .fold(UdpStats::default(), |a, b| UdpStats {
-                peers: a.peers + b.peers,
-                rejected: a.rejected + b.rejected,
+            .fold(UdpStats::default(), |mut a, b| {
+                a.peers += b.peers;
+                a.rejected += b.rejected;
+                a
             })
     }
 

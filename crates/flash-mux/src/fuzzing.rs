@@ -76,7 +76,7 @@ pub fn mux_sniff(data: &[u8]) {
     let log: Log = Arc::default();
     let all = rules();
     let first = usize::from(cfg & 7);
-    let mut mux = Mux::new().max_sniff(usize::from(cfg >> 4) * 4);
+    let mut mux = Mux::new().max_sniff_bytes(usize::from(cfg >> 4) * 4);
     for (i, r) in all.into_iter().enumerate().skip(first) {
         mux = mux.route(r, Rec(i, log.clone()));
     }

@@ -21,6 +21,7 @@ const CLOSED: u8 = 2;
 ///
 /// Implementations must make `wake_conn` / `close_conn` cheap, callable from any thread
 /// (including the loop's own, from inside callbacks) and never call user code.
+#[doc(hidden)]
 pub trait LoopLink: Send + Sync {
     /// Ask the loop to re-evaluate connection `id`: flush queued output, apply read/write
     /// interest, and close it if `close_after_send` has drained.
@@ -41,6 +42,7 @@ pub trait LoopLink: Send + Sync {
 }
 
 /// A type-erased completion for a connection's handler (see [`LoopLink::post_task`]).
+#[doc(hidden)]
 pub type Task = Box<dyn std::any::Any + Send>;
 
 /// What a [`Task`] holds for handler type `H`.
@@ -499,6 +501,8 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
 }
 
 /// One piece of a response written in order (see [`ResponseSlot::fill_parts`]).
+#[derive(Debug)]
+#[non_exhaustive]
 pub enum Part {
     /// Bytes to send.
     Bytes(Vec<u8>),
@@ -1524,6 +1528,26 @@ pub struct Conn<H> {
     _h: PhantomData<fn() -> H>,
 }
 
+impl<H> std::fmt::Debug for Conn<H> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Conn")
+            .field("id", &self.inner.id)
+            .field("peer", &self.inner.peer)
+            .field("open", &self.inner.is_open())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for ConnInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnInner")
+            .field("id", &self.id)
+            .field("local", &self.local)
+            .field("peer", &self.peer)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<H> Clone for Conn<H> {
     fn clone(&self) -> Self {
         Conn {
@@ -1683,6 +1707,8 @@ impl<H: Handler> Conn<H> {
 }
 
 /// A reserved, ordered response position; see [`Conn::reserve_response`].
+#[derive(Debug)]
+#[must_use = "a reserved response position must be filled"]
 pub struct ResponseSlot {
     seq: u64,
     inner: Option<Arc<ConnInner>>,
@@ -1725,6 +1751,7 @@ impl ResponseSlot {
 
 /// A response being written piece by piece; see [`ResponseSlot::stream`]. Dropping it without
 /// [`finish`](Self::finish) closes the connection (the framing cannot be completed).
+#[derive(Debug)]
 pub struct ResponseStream {
     inner: Option<Arc<ConnInner>>,
     seq: u64,

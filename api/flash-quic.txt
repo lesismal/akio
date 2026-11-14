@@ -1,0 +1,81 @@
+pub mod flash_quic
+pub use flash_quic::ConnectionError
+pub use flash_quic::Dir
+pub use flash_quic::StreamId
+pub use flash_quic::TransportConfig
+pub use flash_quic::VarInt
+pub use flash_quic::proto
+pub use flash_quic::rustls
+#[non_exhaustive] pub enum flash_quic::Error
+pub flash_quic::Error::Closed
+pub flash_quic::Error::Config(alloc::string::String)
+pub flash_quic::Error::Connect(quinn_proto::endpoint::ConnectError)
+pub flash_quic::Error::Datagram(alloc::string::String)
+pub flash_quic::Error::Stopped(u64)
+pub flash_quic::Error::UnknownStream
+impl core::error::Error for flash_quic::Error
+impl core::fmt::Debug for flash_quic::Error
+pub fn flash_quic::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_quic::Error
+pub fn flash_quic::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_quic::Error
+impl core::marker::Sync for flash_quic::Error
+impl core::marker::Unpin for flash_quic::Error
+impl core::panic::unwind_safe::RefUnwindSafe for flash_quic::Error
+impl core::panic::unwind_safe::UnwindSafe for flash_quic::Error
+pub struct flash_quic::Connection(_)
+impl flash_quic::Connection
+pub fn flash_quic::Connection::alpn(&self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn flash_quic::Connection::close(&self, u32, &[u8])
+pub fn flash_quic::Connection::finish(&self, quinn_proto::StreamId) -> core::result::Result<(), flash_quic::Error>
+pub fn flash_quic::Connection::is_closed(&self) -> bool
+pub fn flash_quic::Connection::open_bi(&self) -> core::option::Option<quinn_proto::StreamId>
+pub fn flash_quic::Connection::open_uni(&self) -> core::option::Option<quinn_proto::StreamId>
+pub fn flash_quic::Connection::queued_bytes(&self, quinn_proto::StreamId) -> usize
+pub fn flash_quic::Connection::remote_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn flash_quic::Connection::reset(&self, quinn_proto::StreamId, u32) -> core::result::Result<(), flash_quic::Error>
+pub fn flash_quic::Connection::rtt(&self) -> core::time::Duration
+pub fn flash_quic::Connection::send(&self, quinn_proto::StreamId, impl core::convert::Into<bytes::bytes::Bytes>) -> core::result::Result<(), flash_quic::Error>
+pub fn flash_quic::Connection::send_datagram(&self, impl core::convert::Into<bytes::bytes::Bytes>) -> core::result::Result<(), flash_quic::Error>
+pub fn flash_quic::Connection::server_name(&self) -> core::option::Option<alloc::string::String>
+pub fn flash_quic::Connection::stats(&self) -> quinn_proto::connection::stats::ConnectionStats
+pub fn flash_quic::Connection::stop(&self, quinn_proto::StreamId, u32) -> core::result::Result<(), flash_quic::Error>
+impl core::clone::Clone for flash_quic::Connection
+pub fn flash_quic::Connection::clone(&self) -> Self
+impl core::fmt::Debug for flash_quic::Connection
+pub fn flash_quic::Connection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash_quic::Connection
+impl core::marker::Sync for flash_quic::Connection
+impl core::marker::Unpin for flash_quic::Connection
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_quic::Connection
+impl !core::panic::unwind_safe::UnwindSafe for flash_quic::Connection
+pub struct flash_quic::QuicServer(_)
+impl flash_quic::QuicServer
+pub fn flash_quic::QuicServer::close_all(&self, u32, &[u8])
+pub fn flash_quic::QuicServer::connections(&self) -> usize
+pub fn flash_quic::QuicServer::new<H: flash_quic::QuicHandler, F>(quinn_proto::config::ServerConfig, F) -> flash_quic::QuicServer where F: core::ops::function::Fn(&flash_quic::Connection) -> H + core::marker::Send + core::marker::Sync + 'static
+impl core::fmt::Debug for flash_quic::QuicServer
+pub fn flash_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl flash_core::handler::Acceptor for flash_quic::QuicServer
+pub type flash_quic::QuicServer::Handler = Udp
+pub fn flash_quic::QuicServer::on_open(&self, &flash_core::conn::Conn<Udp>) -> Udp
+impl core::marker::Send for flash_quic::QuicServer
+impl core::marker::Sync for flash_quic::QuicServer
+impl core::marker::Unpin for flash_quic::QuicServer
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_quic::QuicServer
+impl !core::panic::unwind_safe::UnwindSafe for flash_quic::QuicServer
+pub trait flash_quic::QuicHandler: core::marker::Send + 'static
+pub fn flash_quic::QuicHandler::on_close(&mut self, &flash_quic::Connection, quinn_proto::connection::ConnectionError)
+pub fn flash_quic::QuicHandler::on_connected(&mut self, &flash_quic::Connection)
+pub fn flash_quic::QuicHandler::on_datagram(&mut self, &flash_quic::Connection, bytes::bytes::Bytes)
+pub fn flash_quic::QuicHandler::on_stream_data(&mut self, &flash_quic::Connection, quinn_proto::StreamId, bytes::bytes::Bytes, bool)
+pub fn flash_quic::QuicHandler::on_stream_opened(&mut self, &flash_quic::Connection, quinn_proto::StreamId)
+pub fn flash_quic::QuicHandler::on_stream_reset(&mut self, &flash_quic::Connection, quinn_proto::StreamId, u64)
+pub fn flash_quic::QuicHandler::on_stream_stopped(&mut self, &flash_quic::Connection, quinn_proto::StreamId, u64)
+pub fn flash_quic::QuicHandler::on_streams_available(&mut self, &flash_quic::Connection, quinn_proto::Dir)
+pub fn flash_quic::client_config(rustls::webpki::anchors::RootCertStore, &[&[u8]]) -> core::result::Result<quinn_proto::config::ClientConfig, flash_quic::Error>
+pub fn flash_quic::client_config_from(rustls::client::client_conn::ClientConfig) -> core::result::Result<quinn_proto::config::ClientConfig, flash_quic::Error>
+pub fn flash_quic::client_config_insecure(&[&[u8]]) -> core::result::Result<quinn_proto::config::ClientConfig, flash_quic::Error>
+pub fn flash_quic::dial<H: flash_quic::QuicHandler>(&flash::Engine, core::net::socket_addr::SocketAddr, &str, quinn_proto::config::ClientConfig, H) -> core::result::Result<flash_quic::Connection, flash_quic::Error>
+pub fn flash_quic::server_config(alloc::vec::Vec<rustls_pki_types::CertificateDer<'static>>, rustls_pki_types::PrivateKeyDer<'static>, &[&[u8]]) -> core::result::Result<quinn_proto::config::ServerConfig, flash_quic::Error>
+pub fn flash_quic::server_config_from(rustls::server::server_conn::ServerConfig) -> core::result::Result<quinn_proto::config::ServerConfig, flash_quic::Error>

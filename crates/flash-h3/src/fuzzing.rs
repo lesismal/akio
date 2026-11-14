@@ -102,8 +102,8 @@ pub fn h3_request(data: &[u8]) {
         return;
     };
     let cfg = H3Config {
-        max_body: 16 << 10,
-        max_field_section: 4 << 10,
+        max_body_bytes: 16 << 10,
+        max_field_section_bytes: 4 << 10,
     };
     let peer = "127.0.0.1:4433".parse().expect("addr");
     let mut req = Req::default();
@@ -112,7 +112,7 @@ pub fn h3_request(data: &[u8]) {
         let fin = i + 1 == ps.len();
         match read_req(&mut req, &cfg, peer, p, fin) {
             Ok(Some((r, _))) => {
-                assert!(r.body.len() <= cfg.max_body);
+                assert!(r.body.len() <= cfg.max_body_bytes);
                 break;
             }
             Ok(None) => {}
