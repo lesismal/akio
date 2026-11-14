@@ -46,8 +46,6 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
-    # smoltcp (only-dpdk's userspace TCP/IP stack): zero-clause BSD, public-domain equivalent.
-    "0BSD",
 ]
 confidence-threshold = 0.8
 exceptions = []
@@ -80,9 +78,6 @@ skip = [
     # Proc-macro build-time only: der_derive (RustCrypto, via only-webrtc) on syn 2, thiserror-impl 2
     # on syn 3.
     { crate = "syn@2", reason = "der_derive 0.7 (build time only)" },
-    # smoltcp 0.12 (only-dpdk) uses bitflags 1; everything else is on bitflags 2. smoltcp 0.13+
-    # moved on but needs Rust 1.91 > MSRV.
-    { crate = "bitflags@1", reason = "smoltcp 0.12 (only-dpdk); newer smoltcp needs Rust 1.91" },
 ]
 skip-tree = []
 

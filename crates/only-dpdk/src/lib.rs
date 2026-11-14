@@ -1,6 +1,7 @@
-#![deny(unsafe_code)] // `unsafe` is confined to the DPDK FFI module (`pmd`)
-//! `only`'s kernel-bypass backend (experimental): a userspace TCP/IP stack
-//! ([smoltcp](https://docs.rs/smoltcp)) driven by `only` I/O threads, over
+#![deny(unsafe_code)] // `unsafe` is confined to the DPDK FFI (`pmd`) and TAP / AF_PACKET (`sys`)
+//! `only`'s kernel-bypass backend (experimental): its own userspace TCP/IP stack (Ethernet,
+//! ARP, IPv4, ICMP, UDP, TCP with SACK, CUBIC / NewReno, window scaling and timestamps; safe
+//! Rust, `#![forbid(unsafe_code)]`, no dependencies) driven by `only` I/O threads, over
 //!
 //! * a **DPDK** port ([`Device::Dpdk`], cargo feature `pmd`, Linux, links `libdpdk`): the EAL is
 //!   initialised from [`EalConfig`], each I/O thread polls one rx/tx queue pair with
@@ -18,15 +19,17 @@
 //!
 //! Design (see the book chapter "Kernel bypass (DPDK)"):
 //!
-//! * One *stack* per device: a smoltcp `Interface` and socket set per queue, each owned by one
-//!   I/O thread that polls the device (busy or adaptive, [`DpdkConfig::busy_poll`]). Every
-//!   listener on the same device shares those threads; each listener is still its own `Group`
-//!   (own acceptor, config, telemetry, shutdown).
+//! * One *stack* per device: a stack instance per queue (its own ARP cache, connection table,
+//!   timer heap), each owned by one I/O thread that polls the device (busy or adaptive,
+//!   [`DpdkConfig::busy_poll`]). Every listener on the same device shares those threads; each
+//!   listener is still its own `Group` (own acceptor, config, telemetry, shutdown).
 //! * Connections are `ConnInner::new_virtual`: `Conn::send` only queues, and the owning thread
-//!   moves the bytes into smoltcp's socket buffers after each callback (no locks on the wire
-//!   path besides the per-connection queue lock).
+//!   moves the bytes into the stack's send buffers after each callback (no locks on the wire
+//!   path besides the per-connection queue lock). The thread works from the stack's events and
+//!   timer heap: no per-iteration scan of all connections.
 //! * With several queues, the NIC's RSS keeps a flow on one queue; ARP frames are copied to every
-//!   queue so each stack resolves its neighbours.
+//!   queue so each stack resolves its neighbours, and dialed connections use local ports that
+//!   name their queue (`port % queues`), so replies RSS puts elsewhere are handed over.
 //!
 //! Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/only/en/dpdk.html)
 //! (中文: [内核旁路（DPDK）](https://lesismal.github.io/only/zh-CN/dpdk.html)).
@@ -44,8 +47,15 @@ use std::{
 mod device;
 mod group;
 mod lp;
+mod net;
 mod pmd;
 mod stack;
+#[cfg(target_os = "linux")]
+mod sys;
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 
 pub use group::DpdkGroup;
 
@@ -129,9 +139,17 @@ pub struct DpdkConfig {
     pub tcp_buffer: usize,
     /// Receive and send buffer of each UDP socket, bytes each (default 1 MiB).
     pub udp_buffer: usize,
-    /// Listening TCP sockets kept ready per TCP listener and queue: how many handshakes can be in
-    /// progress at once (default 64).
+    /// Handshakes in progress per TCP listener and queue (default 64). Beyond it, new SYNs are
+    /// answered with SYN cookies ([`syn_cookies`](Self::syn_cookies)) or dropped.
     pub tcp_backlog: usize,
+    /// Answer SYNs with stateless SYN cookies once the backlog is full (default `true`).
+    pub syn_cookies: bool,
+    /// TCP congestion control (default [`Congestion::Cubic`]).
+    pub congestion: Congestion,
+    /// Idle time before TCP keepalive probes start (`None`, the default: no keepalive; the
+    /// engine's idle timeout usually covers dead peers). Probes repeat every
+    /// `min(keepalive, 75 s)`; 9 unanswered ones reset the connection.
+    pub tcp_keepalive: Option<Duration>,
     /// Poll the device without ever sleeping (DPDK style: lowest latency, one core per queue at
     /// 100%). `false` (the default): after a short spin without traffic the thread sleeps up to a
     /// millisecond at a time.
@@ -151,6 +169,9 @@ impl DpdkConfig {
             tcp_buffer: 64 << 10,
             udp_buffer: 1 << 20,
             tcp_backlog: 64,
+            syn_cookies: true,
+            congestion: Congestion::Cubic,
+            tcp_keepalive: None,
             busy_poll: false,
         }
     }
@@ -164,8 +185,26 @@ impl DpdkConfig {
     }
 }
 
-/// Frames in flight on one direction of a [`MemoryWire`].
-type Frames = Arc<Mutex<std::collections::VecDeque<Vec<u8>>>>;
+/// TCP congestion control of a userspace stack.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Congestion {
+    /// CUBIC (RFC 9438), the Linux default.
+    #[default]
+    Cubic,
+    /// NewReno (RFC 5681 / RFC 6582).
+    NewReno,
+}
+
+/// One direction of a [`MemoryWire`]: the frames in flight and the thread reading them (woken
+/// when frames arrive, so an idle reader does not add its sleep to the latency).
+#[derive(Default)]
+struct Direction {
+    frames: Mutex<std::collections::VecDeque<Vec<u8>>>,
+    reader: Mutex<Option<std::thread::Thread>>,
+}
+
+type Frames = Arc<Direction>;
 
 /// An in-process Ethernet link between two stacks: what one end transmits, the other receives.
 /// For tests and examples; works on every platform and needs no privileges.
@@ -216,15 +255,34 @@ impl MemoryPort {
 
     pub(crate) fn recv(&self) -> Option<Vec<u8>> {
         self.rx
+            .frames
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .pop_front()
     }
 
     pub(crate) fn send(&self, frame: Vec<u8>) {
-        let mut q = self.tx.lock().unwrap_or_else(|p| p.into_inner());
+        let mut q = self.tx.frames.lock().unwrap_or_else(|p| p.into_inner());
         if q.len() < Self::CAPACITY {
             q.push_back(frame);
+        }
+    }
+
+    /// The calling thread reads this end (woken by `wake_peer` of the other end).
+    pub(crate) fn register_reader(&self) {
+        *self.rx.reader.lock().unwrap_or_else(|p| p.into_inner()) = Some(std::thread::current());
+    }
+
+    /// Wakes the thread reading the other end (after a burst was sent).
+    pub(crate) fn wake_peer(&self) {
+        let reader = self
+            .tx
+            .reader
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if let Some(t) = reader {
+            t.unpark();
         }
     }
 }

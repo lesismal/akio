@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # only-dpdk end-to-end tests against the Linux kernel stack
-# (crates/only-dpdk/tests/kernel_peer.rs): the userspace stack over smoltcp's TAP device, over
-# AF_PACKET on a veth pair and over DPDK's net_tap poll-mode driver (1 and 2 queues), with a std
-# UdpSocket / TcpStream on the kernel side. Also runs the memory-wire tests and clippy with DPDK
-# linked.
+# (crates/only-dpdk/tests/kernel_peer.rs): the userspace stack over a TAP device, over AF_PACKET
+# on veth pairs (also with `tc netem` loss / delay / reordering, large windows, 500 concurrent
+# connections) and over DPDK's net_tap poll-mode driver (1 and 2 queues), with std UdpSocket /
+# TcpStream on the kernel side, and dials from the stack to the kernel. Also runs the
+# memory-wire tests and clippy with DPDK linked.
 #
 #   tools/dpdk/test.sh            # from the repository root, on a host with Docker
 #   tools/dpdk/test.sh --inside   # inside a container/VM that already has DPDK, CAP_NET_ADMIN
@@ -26,5 +27,6 @@ export ONLY_DPDK_REQUIRE=1 # fail the build if libdpdk is not found
 pkg-config --modversion libdpdk
 cargo clippy -p only-dpdk --all-targets --features pmd -- -D warnings
 cargo test -p only-dpdk --features pmd --test memory
-ONLY_TAP_TEST=1 ONLY_DPDK_TEST=1 cargo test -p only-dpdk --features pmd --test kernel_peer \
+# Release build: the throughput checks (netem, window scaling) measure the stack, not debug code.
+ONLY_TAP_TEST=1 ONLY_DPDK_TEST=1 cargo test --release -p only-dpdk --features pmd --test kernel_peer \
     -- --nocapture --test-threads=1

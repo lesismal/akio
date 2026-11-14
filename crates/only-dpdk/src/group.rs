@@ -126,14 +126,9 @@ impl DpdkGroup {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        // With several queues the NIC's RSS decides which queue a reply lands on, and it would
-        // not be the dialing one.
-        if self.stack.queues() > 1 {
-            return on_error(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "dialing on a multi-queue userspace stack is not supported",
-            ));
-        }
+        // With several queues the NIC's RSS decides which queue a reply lands on: the dialing
+        // queue picks a local port with `port % queues == queue`, and a reply that lands on
+        // another queue is handed over to it.
         let i = self.rr.fetch_add(1, Ordering::Relaxed) % self.stack.queues();
         self.stack.ctl.shared[i].post(Cmd::Dial {
             gid: self.spec.gid,

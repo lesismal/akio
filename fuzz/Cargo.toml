@@ -47,6 +47,7 @@ prost = "0.13"
 httparse = "1"
 loona-hpack = "0.4"
 regex = "1"
+only-dpdk = { path = "../crates/only-dpdk", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -332,8 +333,22 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dpdk_ethernet"
+path = "fuzz_targets/dpdk_ethernet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "crypto_aead"
 path = "fuzz_targets/crypto_aead.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_arp"
+path = "fuzz_targets/dpdk_arp.rs"
 test = false
 doc = false
 bench = false
@@ -346,6 +361,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dpdk_ipv4"
+path = "fuzz_targets/dpdk_ipv4.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "protobuf_diff"
 path = "fuzz_targets/protobuf_diff.rs"
 test = false
@@ -353,8 +375,36 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dpdk_tcp"
+path = "fuzz_targets/dpdk_tcp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "regex_match"
 path = "fuzz_targets/regex_match.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_udp"
+path = "fuzz_targets/dpdk_udp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_icmp"
+path = "fuzz_targets/dpdk_icmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_stack"
+path = "fuzz_targets/dpdk_stack.rs"
 test = false
 doc = false
 bench = false

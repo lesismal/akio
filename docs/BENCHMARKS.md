@@ -215,6 +215,37 @@ are examined. (Before, only-http's HTTP/2 path already decoded Huffman strings i
 raw literals to loona-hpack, so the h2c gain over the previous release is smaller than the
 Huffman rows suggest.)
 
+## Userspace TCP/IP stack (only-dpdk): own stack vs smoltcp
+
+`cargo run --release -p only-dpdk --example stack-bench` (public API only, so the same file runs
+on both versions): two engines joined by the in-process memory wire, on macOS (Apple silicon, 14
+cores). The host was shared with other heavy jobs (load average 20-80), so each version ran five
+times, alternating, and the table shows the medians; single runs varied by up to 10x.
+
+| | smoltcp 0.12 (before) | own stack (after) |
+|---|---:|---:|
+| TCP echo, one connection, 64 KiB buffers | 75 MB/s | 492 MB/s |
+| TCP echo, one connection, 1 MiB buffers | 105 MB/s | 1179 MB/s |
+| sequential connections (dial, 1 request/response, close) | 2216/s | 24197/s |
+| median time to the first response of a new connection | 152 µs | 36 µs |
+| 100 concurrent connections: all established | 8.7 ms | 0.8 ms |
+| 100 concurrent connections: request/responses per second | 155 k | 494 k |
+| 1000 concurrent connections: all established | 14.1 ms | 10.2 ms |
+| 1000 concurrent connections: request/responses per second | 127 k | 662 k |
+| UDP request/response (one in flight) | 3.2 k/s | 14.1 k/s |
+
+Part of the gain is the I/O loop rather than the protocol code: the memory wire now wakes the
+peer's thread when it sends (before, an idle peer could sleep up to 1 ms per exchange). One run
+of the new stack without that wake-up gave 39 / 209 MB/s, 779 connections/s and 759 UDP
+round trips/s, so the per-exchange latency was dominated by the sleep, while the bulk and
+many-connection numbers already came from the stack (ACK coalescing per burst, no per-iteration
+scan of connections, a timer heap). Against the Linux kernel in Docker (AF_PACKET on a veth,
+`tests/kernel_peer.rs`, release build): a 4 MiB window over a 20 ms RTT echoes 32 MiB at about
+70 MB/s each way, 500 concurrent connections echo 32 KiB each in about 0.3 s, and with `netem` 2%
+loss, 2 ms delay and 10% reordering both ways 8 MiB echo at about 1.6 MB/s with the kernel's
+SACK counters moving. The smoltcp version had no SACK or congestion control to compare on that
+link.
+
 ## What this says
 
 - **TCP echo**: `only` is level with tokio and fib at 64 connections and ahead of both from 256

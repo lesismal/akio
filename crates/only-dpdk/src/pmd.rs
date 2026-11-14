@@ -1,7 +1,6 @@
 //! DPDK poll-mode-driver access through the C shim (`csrc/shim.c`): EAL initialisation, port
-//! setup, and per-queue rx/tx bursts on mbufs; plus [`Sendable`], which moves smoltcp's
-//! (non-`Send`) TAP / AF_PACKET devices to their I/O thread. This is the only module of the crate
-//! with `unsafe` (docs/unsafe-review.md). Without a linked libdpdk (`pmd` feature off, or libdpdk not found by
+//! setup, and per-queue rx/tx bursts on mbufs. With `sys` (TAP / AF_PACKET) the only modules of
+//! the crate with `unsafe` (docs/unsafe-review.md). Without a linked libdpdk (`pmd` feature off, or libdpdk not found by
 //! build.rs) the same API exists and [`open`] fails with `Unsupported`.
 
 #[cfg(only_dpdk_linked)]
@@ -152,6 +151,10 @@ mod imp {
         rx_len: usize,
         rx_next: usize,
         tx: Vec<*mut c_void>,
+        /// The mbuf handed out by `alloc` (and its data area), queued by `commit`.
+        staged: *mut c_void,
+        staged_data: *mut u8,
+        staged_len: usize,
     }
 
     // SAFETY: the mbuf pointers a `Queue` holds are owned by it alone (taken from rx bursts or
@@ -168,6 +171,9 @@ mod imp {
                 rx_len: 0,
                 rx_next: 0,
                 tx: Vec::with_capacity(BURST),
+                staged: std::ptr::null_mut(),
+                staged_data: std::ptr::null_mut(),
+                staged_len: 0,
             }
         }
 
@@ -208,25 +214,63 @@ mod imp {
             }
         }
 
-        /// Builds a frame of `len` bytes with `f` in a fresh mbuf and queues it for transmission
-        /// (sent with the next burst). `None` when the pool is exhausted: the frame is dropped.
-        pub(crate) fn send<R>(&mut self, len: usize, f: impl FnOnce(&mut [u8]) -> R) -> Option<R> {
-            let len16 = u16::try_from(len).ok()?;
+        /// Stages a fresh mbuf with `len` writable bytes for the next frame (`staged_mut`),
+        /// queued by `commit`. `false` when the pool is exhausted (the caller builds the frame
+        /// elsewhere and drops it).
+        pub(crate) fn alloc(&mut self, len: usize) -> bool {
+            self.drop_staged();
+            let Ok(len16) = u16::try_from(len) else {
+                return false;
+            };
             let mut data: *mut u8 = std::ptr::null_mut();
             // SAFETY: `data` is a valid out pointer; the shim checks the port has a pool.
             let m = unsafe { only_dpdk_tx_alloc(self.port, len16, &raw mut data) };
-            if m.is_null() {
-                return None;
+            if m.is_null() || data.is_null() {
+                if !m.is_null() {
+                    // SAFETY: `m` was just allocated for us and is freed once.
+                    unsafe { only_dpdk_mbuf_free(m) };
+                }
+                return false;
             }
-            // SAFETY: the shim appended `len` writable bytes at `data` to the new mbuf `m`, which
-            // nothing else references until it is queued below.
-            let buf = unsafe { std::slice::from_raw_parts_mut(data, len) };
-            let r = f(buf);
-            self.tx.push(m);
+            self.staged = m;
+            self.staged_data = data;
+            self.staged_len = len;
+            true
+        }
+
+        /// The data area of the staged mbuf (empty if none).
+        pub(crate) fn staged_mut(&mut self) -> &mut [u8] {
+            if self.staged.is_null() {
+                return &mut [];
+            }
+            // SAFETY: the shim appended `staged_len` writable bytes at `staged_data` to the
+            // staged mbuf, which nothing else references until `commit` queues it; the slice
+            // borrows `self`, so it cannot outlive that.
+            unsafe { std::slice::from_raw_parts_mut(self.staged_data, self.staged_len) }
+        }
+
+        /// Queues the mbuf from the last `alloc` for transmission (sent with the next burst).
+        pub(crate) fn commit(&mut self) {
+            if self.staged.is_null() {
+                return;
+            }
+            self.tx
+                .push(std::mem::replace(&mut self.staged, std::ptr::null_mut()));
+            self.staged_data = std::ptr::null_mut();
+            self.staged_len = 0;
             if self.tx.len() >= BURST {
                 self.flush();
             }
-            Some(r)
+        }
+
+        fn drop_staged(&mut self) {
+            if !self.staged.is_null() {
+                // SAFETY: a staged mbuf is owned by this queue and freed once (then cleared).
+                unsafe { only_dpdk_mbuf_free(self.staged) };
+                self.staged = std::ptr::null_mut();
+                self.staged_data = std::ptr::null_mut();
+                self.staged_len = 0;
+            }
         }
 
         /// Transmits the queued frames. Frames the NIC ring cannot take are dropped (as a full
@@ -272,6 +316,7 @@ mod imp {
 
     impl Drop for Queue {
         fn drop(&mut self) {
+            self.drop_staged();
             self.flush();
             for &m in &self.rx[self.rx_next..self.rx_len] {
                 // SAFETY: received mbufs not yet handed out are owned here and freed once.
@@ -327,11 +372,13 @@ mod imp {
         pub(crate) fn recv(&mut self) -> Option<Mbuf> {
             match self.0 {}
         }
-        pub(crate) fn send<R>(
-            &mut self,
-            _len: usize,
-            _f: impl FnOnce(&mut [u8]) -> R,
-        ) -> Option<R> {
+        pub(crate) fn alloc(&mut self, _len: usize) -> bool {
+            match self.0 {}
+        }
+        pub(crate) fn staged_mut(&mut self) -> &mut [u8] {
+            match self.0 {}
+        }
+        pub(crate) fn commit(&mut self) {
             match self.0 {}
         }
         pub(crate) fn flush(&mut self) {
@@ -341,37 +388,3 @@ mod imp {
 }
 
 pub(crate) use imp::{Mbuf, Queue, open, register_thread};
-
-/// Moves a device that is not `Send` to the I/O thread that will own it.
-///
-/// smoltcp's `TunTapInterface` and `RawSocket` keep their file descriptor in an
-/// `Rc<RefCell<..>>` so that the rx/tx tokens of one poll can share it; that makes them `!Send`
-/// although nothing in them is tied to a thread. A device is created on the thread that binds the
-/// listener (so errors surface in `Engine::build`), wrapped here before any token exists, moved
-/// once to its loop thread together with the loop, and only ever used there; tokens are created
-/// and consumed within one `Interface::poll` call on that thread.
-#[cfg(target_os = "linux")]
-pub(crate) struct Sendable<T>(T);
-
-#[cfg(target_os = "linux")]
-impl<T> Sendable<T> {
-    /// Wraps a freshly created device (no clones of its inner `Rc` exist yet).
-    pub(crate) fn new(device: T) -> Sendable<T> {
-        Sendable(device)
-    }
-
-    pub(crate) fn get(&self) -> &T {
-        &self.0
-    }
-
-    pub(crate) fn get_mut(&mut self) -> &mut T {
-        &mut self.0
-    }
-}
-
-// SAFETY: see the type's documentation: the wrapped device's `Rc` is never cloned outside the
-// device's own transient rx/tx tokens, so all reference counts and the `RefCell` are only touched
-// by the one thread that owns the `Sendable` at any time; moving it moves every reference.
-#[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-unsafe impl<T> Send for Sendable<T> {}

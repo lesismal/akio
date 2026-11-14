@@ -13,7 +13,7 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `only-sys` | 允许 `unsafe`（整个 crate） | 原始系统调用的唯一归宿：epoll/kqueue、eventfd/pipe、socket、`sendfile`、`recvmmsg`/`sendmmsg` + cmsg、prefork 所需的进程相关调用（`pre_exec`、信号）、内核 CSPRNG（`getrandom` / `getentropy`） |
 | `only-uring` | `#![deny(unsafe_code)]`，仅 `group` 与 `reactor` 模块允许 | io_uring 提交项指向内核异步写入的内存 |
 | `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
-| `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 模块允许 | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst），以及 `Sendable`（把 smoltcp 不是 `Send` 的 TAP / AF_PACKET 设备移交给其 I/O 线程） |
+| `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `libc` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
 | `only-crypto` | `#![deny(unsafe_code)]`，仅 `aes::hw` 模块允许 | AES-NI / ARMv8 AES intrinsic（`#[target_feature]` 函数），只在运行时检测到 CPU 特性之后调用 |
 | 其它所有 crate（`only`、`only-core`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
@@ -73,13 +73,13 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | Crate | 块 | `unsafe fn` | `unsafe impl` | 测试/示例/基准 |
 |---|---:|---:|---:|---:|
 | only | 0 | 0 | 0 | 12 |
-| only-dpdk | 15 | 0 | 2 | 0 |
+| only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 19 | 19 | 0 | 0 |
 | only-sys | 70 | 1 | 3 | 0 |
 | only-uring | 18 | 1 | 1 | 0 |
-| **合计** | **133** | **24** | **6** | **21** |
+| **合计** | **149** | **24** | **5** | **21** |
 
 按用途：
 
@@ -94,7 +94,8 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | `only-sys/src/random.rs` | 2（每个系统一个） | 供 `only-crypto` 使用的 `getrandom(2)`（Linux）、`getentropy(2)`（macOS） | 内核最多向存活的 `&mut [u8]` 写入 `buf.len()` 字节（`getentropy` 每次最多 256 字节）；`getrandom` 读到的字节不足时按返回值前移 |
 | `only-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
 | `only-uring/src/group.rs` | 3 | 探测内核版本用的 `uname` | `utsname` 置零；内核以 NUL 结尾 `release` |
-| `only-dpdk/src/pmd.rs` | 15、`impl Send for Queue`、`impl Send for Sendable` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；smoltcp TAP / raw socket 设备的 `Sendable` | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 与 `Sendable` 设备同一时刻只被一个线程使用（一次性移交给其 I/O 线程） |
+| `only-dpdk/src/pmd.rs` | 17、`impl Send for Queue` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；就地写入暂存的发送 mbuf | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 同一时刻只被一个线程使用（一次性移交给其 I/O 线程）；未提交的暂存发送 mbuf 会被释放 |
+| `only-dpdk/src/sys.rs` | 14 | TAP（`open`、`TUNSETIFF`）、AF_PACKET（`socket`、`bind`、`setsockopt`）、`read` / `recvfrom` / `write`、`ppoll` | fd 立即归 `OwnedFd` 所有；`#[repr(C)]` 的 `ifreq` 与 UAPI 大小一致；缓冲区与地址结构在每次调用期间有效，传入的长度就是它们的大小 |
 | `only-ebpf/src/sys.rs` | 11，3 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段在调用期间存活；键/值大小由 `Map<K, V>` 固定 |
 
 ## 6. 1.0 审查结论

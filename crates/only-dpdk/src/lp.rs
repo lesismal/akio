@@ -1,15 +1,17 @@
-//! One stack queue's I/O thread: polls the device through smoltcp and runs the connections of
-//! every group attached to it.
+//! One stack queue's I/O thread: polls the device, drives its [`Iface`] and runs the
+//! connections of every group attached to it.
 //!
-//! Each iteration: run posted commands, `Interface::poll` (rx burst -> protocol processing ->
-//! tx), hand new data to handlers, move what they queued into smoltcp's socket buffers, poll
-//! again for egress, transmit the burst. Handlers run corked, so everything a callback sends is
-//! moved into the stack once, after it returns.
+//! Each iteration: run posted commands, receive a burst of frames into the stack, act on the
+//! events it reports (accepts, readable connections, connects, closes, datagrams), move what
+//! handlers queued into the stack, let the stack send (timers, data, ACKs coalesced per burst)
+//! and transmit the burst. Work is driven by events and the stack's timer heap: nothing scans
+//! every connection per iteration. Handlers run corked, so what one callback sends enters the
+//! stack once, after it returns.
 
 use std::{
     collections::{HashMap, HashSet},
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
@@ -22,16 +24,11 @@ use only_core::{
     Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, IdMap, LoopStats, Task,
     telemetry::LoopCmd,
 };
-use smoltcp::{
-    iface::{Config as IfaceConfig, Interface, PollResult, SocketHandle, SocketSet},
-    socket::{tcp, udp},
-    time::Instant as SInstant,
-    wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint},
-};
 
 use crate::{
-    DpdkConfig,
-    device::Port,
+    Congestion, DpdkConfig,
+    device::{Port, Rx},
+    net::{self, CallError, Event, Iface, TcpError, TcpHandle},
     stack::{Cmd, GroupLink, GroupSpec, LoopShared, StackCtl},
 };
 
@@ -45,13 +42,10 @@ const MAX_SLEEP: Duration = Duration::from_millis(1);
 const SCAN: Duration = Duration::from_millis(50);
 /// Most reads per TCP connection per iteration (fairness).
 const MAX_READS: usize = 8;
-/// A closed TCP socket is kept this long at most to finish its FIN/RST exchange.
-const LINGER: Duration = Duration::from_secs(30);
+/// Frames received per iteration before the stack sends (ACKs are coalesced per burst).
+const RX_BURST: usize = 64;
 
 struct Settings {
-    tcp_buffer: usize,
-    udp_buffer: usize,
-    tcp_backlog: usize,
     busy_poll: bool,
 }
 
@@ -59,24 +53,22 @@ struct Settings {
 struct GroupRt {
     spec: Arc<GroupSpec>,
     link: Arc<GroupLink>,
-    /// The listener's UDP socket.
-    udp: Option<SocketHandle>,
-    /// The listener's TCP sockets waiting for a handshake.
-    listening: Vec<SocketHandle>,
-    port: u16,
+    /// The listener's port and protocol, if it listens.
+    listen: Option<(bool, u16)>,
     draining: Option<Instant>,
     conns: usize,
 }
 
+#[derive(Clone, Copy)]
 enum Kind {
-    /// A UDP peer: of the listener's socket, or of a dialed connection's own socket (`own`).
+    /// A UDP peer: of a listener (`own == false`), or a dialed connection with its own port.
     Udp {
-        sock: SocketHandle,
-        ep: IpEndpoint,
+        port: u16,
+        peer: SocketAddrV4,
         own: bool,
     },
     Tcp {
-        sock: SocketHandle,
+        h: TcpHandle,
     },
 }
 
@@ -97,7 +89,6 @@ struct LConn {
 
 struct PendingDial {
     gid: u64,
-    sock: SocketHandle,
     acceptor: Arc<dyn DynAcceptor>,
     on_error: Box<dyn FnOnce(io::Error) + Send>,
     deadline: Instant,
@@ -108,23 +99,28 @@ pub(crate) struct Loop {
     shared: Arc<LoopShared>,
     ctl: Arc<StackCtl>,
     port: Port,
-    iface: Interface,
-    sockets: SocketSet<'static>,
+    iface: Iface,
     ip: Ipv4Addr,
+    queues: usize,
     set: Settings,
     groups: IdMap<GroupRt>,
     conns: IdMap<LConn>,
-    udp_peers: HashMap<(SocketHandle, IpEndpoint), u64>,
+    tcp_ids: HashMap<TcpHandle, u64>,
+    /// UDP listener peers: (listener port, peer) -> connection.
+    udp_peers: HashMap<(u16, SocketAddrV4), u64>,
+    /// Dialed UDP connections by their local port.
+    udp_dialed: HashMap<u16, u64>,
+    /// Listener ports: (udp, port) -> group.
+    listen_ports: HashMap<(bool, u16), u64>,
+    dials: HashMap<TcpHandle, PendingDial>,
     /// Connections whose output must be moved into the stack.
     dirty: Vec<u64>,
-    /// Connections whose socket buffer was full (retried every iteration).
-    blocked: HashSet<u64>,
-    lingering: Vec<(SocketHandle, Instant)>,
-    dials: Vec<PendingDial>,
+    /// TCP connections with unread data held back (read paused, or the read budget used up).
+    paused: HashSet<u64>,
+    events: Vec<Event>,
+    rxbuf: Vec<u8>,
     scratch: Vec<u8>,
     ids: Vec<u64>,
-    /// Re-examine every connection (reads, state) this iteration.
-    recheck: bool,
     last_scan: Instant,
 }
 
@@ -132,62 +128,82 @@ fn panic_error() -> Error {
     Error::Io(io::Error::other("handler panicked"))
 }
 
-fn to_sockaddr(ep: IpEndpoint) -> SocketAddr {
-    let ip: IpAddr = match ep.addr {
-        IpAddress::Ipv4(a) => IpAddr::V4(a),
-    };
-    SocketAddr::new(ip, ep.port)
-}
-
-fn now_s() -> SInstant {
-    SInstant::now()
+fn tcp_error(e: TcpError) -> io::Error {
+    match e {
+        TcpError::Refused => io::ErrorKind::ConnectionRefused.into(),
+        TcpError::Reset => io::Error::new(io::ErrorKind::ConnectionReset, "connection reset"),
+        TcpError::TimedOut => io::Error::new(io::ErrorKind::TimedOut, "connection timed out"),
+        TcpError::Unreachable => {
+            io::Error::new(io::ErrorKind::HostUnreachable, "destination unreachable")
+        }
+    }
 }
 
 impl Loop {
     pub(crate) fn new(
         index: usize,
+        queues: usize,
         shared: Arc<LoopShared>,
         ctl: Arc<StackCtl>,
-        mut port: Port,
+        port: Port,
         mac: [u8; 6],
         cfg: &DpdkConfig,
     ) -> Loop {
-        let mut ic = IfaceConfig::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
-        ic.random_seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as u64)
-            ^ (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-        let mut iface = Interface::new(ic, &mut port, now_s());
-        iface.update_ip_addrs(|a| {
-            let _ = a.push(IpCidr::new(IpAddress::Ipv4(cfg.address), cfg.prefix_len));
-        });
-        if let Some(gw) = cfg.gateway {
-            let _ = iface.routes_mut().add_default_ipv4_route(gw);
-        }
+        let mtu = cfg.mtu.clamp(576, 9000);
+        let tcp = net::Params {
+            mss: (mtu - 40) as u16,
+            rx_buf: cfg.tcp_buffer.max(1024),
+            tx_buf: cfg.tcp_buffer.max(1024),
+            cc: match cfg.congestion {
+                Congestion::NewReno => net::CcKind::NewReno,
+                _ => net::CcKind::Cubic,
+            },
+            keepalive: cfg.tcp_keepalive,
+            time_wait: Duration::from_secs(60),
+            wscale: true,
+            timestamps: true,
+            sack: true,
+        };
+        let icfg = net::Config {
+            mac,
+            ip: cfg.address,
+            prefix_len: cfg.prefix_len,
+            gateway: cfg.gateway,
+            mtu,
+            tcp,
+            backlog: cfg.tcp_backlog.max(1),
+            syn_cookies: cfg.syn_cookies,
+            udp_queue: cfg.udp_buffer.max(mtu),
+            verify_checksums: !port.partial_checksums(),
+            queue: index,
+            queues,
+            dial_first: crate::stack::EPHEMERAL_FIRST,
+            seed: None,
+        };
         Loop {
             index,
             shared,
             ctl,
             port,
-            iface,
-            sockets: SocketSet::new(Vec::new()),
+            iface: Iface::new(icfg, Instant::now()),
             ip: cfg.address,
+            queues,
             set: Settings {
-                tcp_buffer: cfg.tcp_buffer.max(1024),
-                udp_buffer: cfg.udp_buffer.max(cfg.mtu),
-                tcp_backlog: cfg.tcp_backlog.max(1),
                 busy_poll: cfg.busy_poll,
             },
             groups: IdMap::default(),
             conns: IdMap::default(),
+            tcp_ids: HashMap::new(),
             udp_peers: HashMap::new(),
+            udp_dialed: HashMap::new(),
+            listen_ports: HashMap::new(),
+            dials: HashMap::new(),
             dirty: Vec::new(),
-            blocked: HashSet::new(),
-            lingering: Vec::new(),
-            dials: Vec::new(),
+            paused: HashSet::new(),
+            events: Vec::new(),
+            rxbuf: Vec::new(),
             scratch: vec![0; 64 << 10],
             ids: Vec::new(),
-            recheck: false,
             last_scan: Instant::now(),
         }
     }
@@ -203,18 +219,41 @@ impl Loop {
                     break;
                 }
             }
-            let rx0 = self.port.rx_frames;
-            let changed = self.iface.poll(now_s(), &mut self.port, &mut self.sockets)
-                == PollResult::SocketStateChanged;
-            if self.port.rx_frames != rx0 {
+            let now = Instant::now();
+            for _ in 0..RX_BURST {
+                let Some(rx) = self.port.recv(&mut self.rxbuf) else {
+                    break;
+                };
                 busy = true;
+                let frame: &[u8] = match &rx {
+                    Rx::Buf => &self.rxbuf,
+                    Rx::Mbuf(m) => m.data(),
+                };
+                self.iface.receive(now, frame, &mut self.port);
             }
-            if changed || std::mem::take(&mut self.recheck) {
-                busy |= self.service();
+            for (q, f) in self.iface.take_forward() {
+                self.port.forward(q, f);
+            }
+            if self.iface.has_events() {
+                busy = true;
+                self.handle_events();
+            }
+            if !self.paused.is_empty() {
+                busy |= self.retry_paused();
             }
             if self.flush_dirty() {
                 busy = true;
-                self.iface.poll(now_s(), &mut self.port, &mut self.sockets);
+            }
+            let now = Instant::now();
+            self.iface.poll(now, &mut self.port);
+            for (q, f) in self.iface.take_forward() {
+                self.port.forward(q, f);
+            }
+            if self.iface.has_events() {
+                busy = true;
+                self.handle_events();
+                self.flush_dirty();
+                self.iface.poll(now, &mut self.port);
             }
             self.port.flush();
             self.housekeeping();
@@ -227,12 +266,13 @@ impl Loop {
             }
             idle = idle.saturating_add(1);
             if !self.set.busy_poll && idle > SPIN {
+                let now = Instant::now();
                 let delay = self
                     .iface
-                    .poll_delay(now_s(), &self.sockets)
-                    .map_or(MAX_SLEEP, Duration::from)
+                    .next_deadline()
+                    .map_or(MAX_SLEEP, |t| t.saturating_duration_since(now))
                     .min(MAX_SLEEP);
-                if !delay.is_zero() && !self.shared.has_cmds() {
+                if !delay.is_zero() && !self.shared.has_cmds() && !self.iface.has_dirty() {
                     self.port.wait(delay);
                 }
             }
@@ -242,6 +282,7 @@ impl Loop {
         for id in ids {
             self.finalize(id, None);
         }
+        self.iface.poll(Instant::now(), &mut self.port);
         self.port.flush();
     }
 
@@ -249,7 +290,6 @@ impl Loop {
 
     /// Runs posted commands; `true` when the thread must exit.
     fn drain_cmds(&mut self) -> bool {
-        self.recheck = true;
         for cmd in self.shared.take() {
             match cmd {
                 Cmd::Wake(id) => self.dirty.push(id),
@@ -272,66 +312,23 @@ impl Loop {
         false
     }
 
-    fn udp_socket(&self) -> udp::Socket<'static> {
-        let n = (self.set.udp_buffer / 64).clamp(64, 4096);
-        udp::Socket::new(
-            udp::PacketBuffer::new(
-                vec![udp::PacketMetadata::EMPTY; n],
-                vec![0; self.set.udp_buffer],
-            ),
-            udp::PacketBuffer::new(
-                vec![udp::PacketMetadata::EMPTY; n],
-                vec![0; self.set.udp_buffer],
-            ),
-        )
-    }
-
-    fn tcp_socket(&self) -> tcp::Socket<'static> {
-        let mut s = tcp::Socket::new(
-            tcp::SocketBuffer::new(vec![0; self.set.tcp_buffer]),
-            tcp::SocketBuffer::new(vec![0; self.set.tcp_buffer]),
-        );
-        // Handlers already coalesce what one callback sends; Nagle would only add latency.
-        s.set_nagle_enabled(false);
-        s
-    }
-
-    fn listen_tcp(&mut self, port: u16) -> Option<SocketHandle> {
-        let mut s = self.tcp_socket();
-        s.listen(IpListenEndpoint { addr: None, port }).ok()?;
-        Some(self.sockets.add(s))
-    }
-
     fn attach(&mut self, spec: Arc<GroupSpec>) {
         let link = spec.links[self.index].clone();
         let mut rt = GroupRt {
             spec: spec.clone(),
             link,
-            udp: None,
-            listening: Vec::new(),
-            port: 0,
+            listen: None,
             draining: None,
             conns: 0,
         };
         if let Some(l) = &spec.listen {
-            rt.port = l.port;
+            rt.listen = Some((l.udp, l.port));
             if l.udp {
-                let mut s = self.udp_socket();
-                if s.bind(IpListenEndpoint {
-                    addr: None,
-                    port: l.port,
-                })
-                .is_ok()
-                {
-                    rt.udp = Some(self.sockets.add(s));
-                }
+                self.iface.udp_bind(l.port);
             } else {
-                for _ in 0..self.set.tcp_backlog {
-                    if let Some(h) = self.listen_tcp(l.port) {
-                        rt.listening.push(h);
-                    }
-                }
+                self.iface.tcp_listen(l.port);
             }
+            self.listen_ports.insert((l.udp, l.port), spec.gid);
         }
         rt.link.stats.set_running(true);
         self.groups.insert(spec.gid, rt);
@@ -345,8 +342,9 @@ impl Loop {
             return;
         }
         rt.draining = Some(Instant::now() + rt.spec.cfg.telemetry.live().shutdown_timeout());
-        for h in std::mem::take(&mut rt.listening) {
-            self.sockets.remove(h);
+        if let Some((false, port)) = rt.listen {
+            // No new connections; handshakes in progress are refused once they complete.
+            self.iface.tcp_unlisten(port);
         }
         let ids: Vec<u64> = self
             .conns
@@ -390,57 +388,66 @@ impl Loop {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        let SocketAddr::V4(v4) = addr else {
+        let SocketAddr::V4(remote) = addr else {
             return on_error(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "the userspace stack is IPv4-only",
             ));
         };
-        if !self.groups.contains_key(&gid) {
+        if self.groups.get(&gid).is_none_or(|rt| rt.draining.is_some()) {
             return on_error(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "the engine is shutting down",
             ));
         }
-        let remote = IpEndpoint::new(IpAddress::Ipv4(*v4.ip()), v4.port());
-        let local = self.ctl.ephemeral(udp);
-        if udp {
-            let mut s = self.udp_socket();
-            if let Err(e) = s.bind(local) {
-                return on_error(io::Error::other(format!("udp bind: {e}")));
+        for _ in 0..256 {
+            let local = self.ctl.ephemeral_for(udp, self.index, self.queues);
+            if udp {
+                if !self.iface.udp_bind(local) {
+                    continue;
+                }
+                let kind = Kind::Udp {
+                    port: local,
+                    peer: remote,
+                    own: true,
+                };
+                match self.open(gid, acceptor, kind, local, addr, true) {
+                    Some(id) => {
+                        self.udp_dialed.insert(local, id);
+                    }
+                    None => self.iface.udp_unbind(local),
+                }
+                return;
             }
-            let sock = self.sockets.add(s);
-            if self
-                .open(
-                    gid,
-                    acceptor,
-                    Kind::Udp {
-                        sock,
-                        ep: remote,
-                        own: true,
-                    },
-                    local,
-                    addr,
-                    true,
-                )
-                .is_none()
-            {
-                self.sockets.remove(sock);
+            if self.iface.tcp_in_use(local, remote) {
+                continue;
             }
-            return;
+            match self.iface.tcp_connect(local, remote, Instant::now()) {
+                Ok(h) => {
+                    self.dials.insert(
+                        h,
+                        PendingDial {
+                            gid,
+                            acceptor,
+                            on_error,
+                            deadline: Instant::now() + crate::CONNECT_TIMEOUT,
+                        },
+                    );
+                    return;
+                }
+                Err(CallError::AddrInUse) => continue,
+                Err(_) => {
+                    return on_error(io::Error::new(
+                        io::ErrorKind::NetworkUnreachable,
+                        "no route to the destination (set DpdkConfig::gateway)",
+                    ));
+                }
+            }
         }
-        let mut s = self.tcp_socket();
-        if let Err(e) = s.connect(self.iface.context(), remote, local) {
-            return on_error(io::Error::other(format!("tcp connect: {e}")));
-        }
-        let sock = self.sockets.add(s);
-        self.dials.push(PendingDial {
-            gid,
-            sock,
-            acceptor,
-            on_error,
-            deadline: Instant::now() + crate::CONNECT_TIMEOUT,
-        });
+        on_error(io::Error::new(
+            io::ErrorKind::AddrInUse,
+            "no free local port",
+        ));
     }
 
     // ---- connections ----------------------------------------------------------------------
@@ -478,13 +485,18 @@ impl Loop {
         }
         rt.conns += 1;
         let now = Instant::now();
-        if let Kind::Udp {
-            sock,
-            ep,
-            own: false,
-        } = kind
-        {
-            self.udp_peers.insert((sock, ep), id);
+        match kind {
+            Kind::Udp {
+                port,
+                peer,
+                own: false,
+            } => {
+                self.udp_peers.insert((port, peer), id);
+            }
+            Kind::Tcp { h } => {
+                self.tcp_ids.insert(h, id);
+            }
+            Kind::Udp { .. } => {}
         }
         self.conns.insert(
             id,
@@ -545,120 +557,129 @@ impl Loop {
         self.scratch = data;
     }
 
-    /// Accepts, receives and checks connection state after a poll. `true` if anything happened.
-    fn service(&mut self) -> bool {
-        let mut busy = false;
-        // Handshakes completed on listening sockets become connections; a fresh listening
-        // socket takes their place.
-        let gids: Vec<u64> = self.groups.keys().copied().collect();
-        for &gid in &gids {
-            let Some(rt) = self.groups.get(&gid) else {
-                continue;
-            };
-            if rt.draining.is_some() || rt.listening.is_empty() {
-                continue;
-            }
-            let (port, n) = (rt.port, rt.listening.len());
-            for i in 0..n {
-                let h = self.groups[&gid].listening[i];
-                let s = self.sockets.get_mut::<tcp::Socket<'_>>(h);
-                match s.state() {
-                    tcp::State::Listen | tcp::State::SynReceived => continue,
-                    tcp::State::Established | tcp::State::CloseWait => {}
-                    _ => {
-                        // Reset during the handshake: listen again.
-                        s.abort();
-                        let _ = s.listen(IpListenEndpoint { addr: None, port });
-                        continue;
+    /// Acts on what the stack reported.
+    fn handle_events(&mut self) {
+        let mut events = std::mem::take(&mut self.events);
+        self.iface.take_events(&mut events);
+        for e in events.drain(..) {
+            match e {
+                Event::Accepted { port, h } => self.on_accept(port, h),
+                Event::Connected(h) => self.on_connected(h),
+                Event::ConnectFailed(h, err) => {
+                    if let Some(d) = self.dials.remove(&h) {
+                        (d.on_error)(tcp_error(err));
                     }
                 }
-                let peer = s.remote_endpoint().map(to_sockaddr);
-                let Some(fresh) = self.listen_tcp(port) else {
-                    continue;
-                };
-                self.groups.get_mut(&gid).expect("group present").listening[i] = fresh;
-                busy = true;
-                let acceptor = self.groups[&gid]
-                    .spec
-                    .listen
-                    .as_ref()
-                    .map(|l| l.acceptor.clone());
-                let (Some(peer), Some(acceptor)) = (peer, acceptor) else {
-                    self.sockets.remove(h);
-                    continue;
-                };
-                if self
-                    .open(gid, acceptor, Kind::Tcp { sock: h }, port, peer, false)
-                    .is_none()
-                {
-                    self.sockets.get_mut::<tcp::Socket<'_>>(h).abort();
-                    self.lingering.push((h, Instant::now()));
-                }
-            }
-        }
-        // Dialed TCP connections.
-        let mut i = 0;
-        while i < self.dials.len() {
-            let s = self.sockets.get::<tcp::Socket<'_>>(self.dials[i].sock);
-            match s.state() {
-                tcp::State::Established | tcp::State::CloseWait => {
-                    let local = s.local_endpoint().map_or(0, |e| e.port);
-                    let peer = s.remote_endpoint().map(to_sockaddr);
-                    let d = self.dials.swap_remove(i);
-                    busy = true;
-                    let Some(peer) = peer else { continue };
-                    if self
-                        .open(
-                            d.gid,
-                            d.acceptor,
-                            Kind::Tcp { sock: d.sock },
-                            local,
-                            peer,
-                            true,
-                        )
-                        .is_none()
-                    {
-                        self.sockets.get_mut::<tcp::Socket<'_>>(d.sock).abort();
-                        self.lingering.push((d.sock, Instant::now()));
-                        (d.on_error)(io::Error::other("connection refused locally"));
+                Event::Readable(h) => {
+                    if let Some(&id) = self.tcp_ids.get(&h) {
+                        self.read_tcp(id);
                     }
                 }
-                tcp::State::Closed | tcp::State::TimeWait => {
-                    let d = self.dials.swap_remove(i);
-                    self.sockets.remove(d.sock);
-                    (d.on_error)(io::ErrorKind::ConnectionRefused.into());
-                    busy = true;
+                Event::Writable(h) => {
+                    if let Some(&id) = self.tcp_ids.get(&h) {
+                        self.dirty.push(id);
+                    }
                 }
-                _ => i += 1,
+                Event::Closed(h, err) => {
+                    if let Some(id) = self.tcp_ids.remove(&h) {
+                        self.finalize(id, err.map(|e| Error::Io(tcp_error(e))));
+                    }
+                }
+                Event::UdpUnreachable { port, remote } => {
+                    if let Some(&id) = self.udp_dialed.get(&port) {
+                        let matches = self.conns.get(&id).is_some_and(
+                            |c| matches!(c.kind, Kind::Udp { peer, .. } if peer == remote),
+                        );
+                        if matches {
+                            let e = io::Error::new(
+                                io::ErrorKind::ConnectionRefused,
+                                "port unreachable",
+                            );
+                            self.finalize(id, Some(Error::Io(e)));
+                        }
+                    }
+                }
             }
         }
-        // UDP listener sockets.
-        for &gid in &gids {
-            let Some(h) = self.groups.get(&gid).and_then(|rt| rt.udp) else {
+        self.events = events;
+        // Datagrams.
+        while let Some((port, from, n)) = self.iface.udp_recv(&mut self.scratch) {
+            if let Some(&id) = self.udp_dialed.get(&port) {
+                let ok = self
+                    .conns
+                    .get(&id)
+                    .is_some_and(|c| matches!(c.kind, Kind::Udp { peer, .. } if peer == from));
+                if ok {
+                    self.deliver(id, n);
+                }
                 continue;
-            };
-            loop {
-                let s = self.sockets.get_mut::<udp::Socket<'_>>(h);
-                let Ok((n, meta)) = s.recv_slice(&mut self.scratch) else {
-                    break;
-                };
-                busy = true;
-                self.on_datagram(gid, h, meta.endpoint, n);
+            }
+            if let Some(&gid) = self.listen_ports.get(&(true, port)) {
+                self.on_datagram(gid, port, from, n);
             }
         }
-        // Connections: dialed UDP sockets, TCP reads and state.
-        let mut ids = std::mem::take(&mut self.ids);
-        ids.clear();
-        ids.extend(self.conns.keys().copied());
-        for &id in &ids {
-            busy |= self.service_conn(id);
-        }
-        self.ids = ids;
-        busy
     }
 
-    fn on_datagram(&mut self, gid: u64, sock: SocketHandle, ep: IpEndpoint, n: usize) {
-        let id = match self.udp_peers.get(&(sock, ep)) {
+    fn on_accept(&mut self, port: u16, h: TcpHandle) {
+        let now = Instant::now();
+        let target = self
+            .listen_ports
+            .get(&(false, port))
+            .copied()
+            .and_then(|gid| {
+                let rt = self.groups.get(&gid)?;
+                if rt.draining.is_some() {
+                    return None;
+                }
+                Some((gid, rt.spec.listen.as_ref()?.acceptor.clone()))
+            });
+        let peer = self.iface.tcp_peer(h);
+        let (Some((gid, acceptor)), Some(peer)) = (target, peer) else {
+            self.iface.tcp_abort(h, now, &mut self.port);
+            return;
+        };
+        match self.open(
+            gid,
+            acceptor,
+            Kind::Tcp { h },
+            port,
+            SocketAddr::V4(peer),
+            false,
+        ) {
+            Some(id) => self.read_tcp(id),
+            None => self.iface.tcp_abort(h, now, &mut self.port),
+        }
+    }
+
+    fn on_connected(&mut self, h: TcpHandle) {
+        let Some(d) = self.dials.remove(&h) else {
+            // Nobody waits for it (timed out, group gone).
+            self.iface.tcp_abort(h, Instant::now(), &mut self.port);
+            return;
+        };
+        let (Some(local), Some(peer)) = (self.iface.tcp_local_port(h), self.iface.tcp_peer(h))
+        else {
+            (d.on_error)(io::ErrorKind::ConnectionReset.into());
+            return;
+        };
+        match self.open(
+            d.gid,
+            d.acceptor,
+            Kind::Tcp { h },
+            local,
+            SocketAddr::V4(peer),
+            true,
+        ) {
+            Some(id) => self.read_tcp(id),
+            None => {
+                self.iface.tcp_abort(h, Instant::now(), &mut self.port);
+                (d.on_error)(io::Error::other("connection refused locally"));
+            }
+        }
+    }
+
+    fn on_datagram(&mut self, gid: u64, port: u16, from: SocketAddrV4, n: usize) {
+        let id = match self.udp_peers.get(&(port, from)) {
             Some(&id) => id,
             None => {
                 let Some(rt) = self.groups.get(&gid) else {
@@ -678,13 +699,12 @@ impl Loop {
                     spec.peers.fetch_sub(1, Ordering::Relaxed);
                     return;
                 };
-                let port = rt.port;
                 let kind = Kind::Udp {
-                    sock,
-                    ep,
+                    port,
+                    peer: from,
                     own: false,
                 };
-                match self.open(gid, acceptor, kind, port, to_sockaddr(ep), false) {
+                match self.open(gid, acceptor, kind, port, SocketAddr::V4(from), false) {
                     Some(id) => id,
                     None => {
                         spec.peers.fetch_sub(1, Ordering::Relaxed);
@@ -696,136 +716,115 @@ impl Loop {
         self.deliver(id, n);
     }
 
-    /// Reads and state checks of one connection. `true` if anything happened.
-    fn service_conn(&mut self, id: u64) -> bool {
+    /// Reads what a TCP connection has (within the read budget and backpressure), and notes the
+    /// peer's FIN.
+    fn read_tcp(&mut self, id: u64) {
         let Some(c) = self.conns.get(&id) else {
-            return false;
+            return;
         };
-        let mut busy = false;
-        match c.kind {
-            Kind::Udp {
-                sock,
-                ep,
-                own: true,
-            } => loop {
-                let s = self.sockets.get_mut::<udp::Socket<'_>>(sock);
-                let Ok((n, meta)) = s.recv_slice(&mut self.scratch) else {
-                    break;
-                };
-                busy = true;
-                if meta.endpoint == ep {
-                    self.deliver(id, n);
-                    if !self.conns.contains_key(&id) {
-                        break;
-                    }
-                }
-            },
-            Kind::Udp { .. } => {}
-            Kind::Tcp { sock } => {
-                let watermark = c.cfg.telemetry.live().write_high_watermark();
-                for _ in 0..MAX_READS {
-                    let Some(c) = self.conns.get(&id) else {
-                        return true;
-                    };
-                    if c.inner.read_held() || c.inner.queued_bytes() >= watermark {
-                        break;
-                    }
-                    let s = self.sockets.get_mut::<tcp::Socket<'_>>(sock);
-                    let n = match s.recv_slice(&mut self.scratch) {
-                        Ok(n) if n > 0 => n,
-                        _ => break,
-                    };
-                    busy = true;
-                    self.deliver(id, n);
-                }
-                let Some(c) = self.conns.get_mut(&id) else {
-                    return true;
-                };
-                let s = self.sockets.get::<tcp::Socket<'_>>(sock);
-                if s.state() == tcp::State::Closed {
-                    let e = io::Error::new(io::ErrorKind::ConnectionReset, "connection reset");
-                    self.finalize(id, Some(Error::Io(e)));
-                    return true;
-                }
-                if !c.peer_eof && !s.may_recv() && !s.can_recv() {
-                    // The peer sent FIN: end once our output has drained.
-                    c.peer_eof = true;
-                    self.dirty.push(id);
-                    busy = true;
-                }
+        let Kind::Tcp { h } = c.kind else {
+            return;
+        };
+        let watermark = c.cfg.telemetry.live().write_high_watermark();
+        self.paused.remove(&id);
+        for _ in 0..MAX_READS {
+            let Some(c) = self.conns.get(&id) else {
+                return;
+            };
+            if self.iface.tcp_readable(h) == 0 {
+                break;
             }
+            if c.inner.read_held() || c.inner.queued_bytes() >= watermark {
+                self.paused.insert(id);
+                return;
+            }
+            let n = self.iface.tcp_recv(h, &mut self.scratch);
+            if n == 0 {
+                break;
+            }
+            self.deliver(id, n);
         }
-        busy
+        let Some(c) = self.conns.get_mut(&id) else {
+            return;
+        };
+        if self.iface.tcp_readable(h) > 0 {
+            self.paused.insert(id); // budget used up: more next iteration
+            return;
+        }
+        if !c.peer_eof && self.iface.tcp_eof(h) {
+            // The peer sent FIN: end once our output has drained.
+            c.peer_eof = true;
+            self.dirty.push(id);
+        }
     }
 
-    /// Moves queued output of the dirty (and previously blocked) connections into the stack.
-    /// `true` if anything was moved.
+    /// Re-reads connections whose reads were held back. `true` if anything was read.
+    fn retry_paused(&mut self) -> bool {
+        let mut ids = std::mem::take(&mut self.ids);
+        ids.clear();
+        ids.extend(self.paused.iter().copied());
+        let mut any = false;
+        for &id in &ids {
+            let Some(c) = self.conns.get(&id) else {
+                self.paused.remove(&id);
+                continue;
+            };
+            let watermark = c.cfg.telemetry.live().write_high_watermark();
+            if c.inner.read_held() || c.inner.queued_bytes() >= watermark {
+                continue;
+            }
+            any = true;
+            self.read_tcp(id);
+        }
+        self.ids = ids;
+        any
+    }
+
+    /// Moves queued output of the dirty connections into the stack. `true` if any.
     fn flush_dirty(&mut self) -> bool {
-        if self.dirty.is_empty() && self.blocked.is_empty() {
+        if self.dirty.is_empty() {
             return false;
         }
         let mut ids = std::mem::take(&mut self.dirty);
-        ids.extend(self.blocked.iter().copied());
         ids.sort_unstable();
         ids.dedup();
-        let mut moved = false;
         for &id in &ids {
-            moved |= self.flush(id);
+            self.flush(id);
         }
         ids.clear();
         if self.dirty.is_empty() {
             self.dirty = ids;
         }
-        // Drained queues may let paused readers resume.
-        self.recheck |= moved;
-        moved
+        true
     }
 
-    fn flush(&mut self, id: u64) -> bool {
+    fn flush(&mut self, id: u64) {
         let Some(c) = self.conns.get(&id) else {
-            self.blocked.remove(&id);
-            return false;
+            return;
         };
-        let mut moved = false;
+        let now = Instant::now();
+        let iface = &mut self.iface;
         let r = match c.kind {
-            Kind::Udp { sock, ep, .. } => {
-                let s = self.sockets.get_mut::<udp::Socket<'_>>(sock);
+            Kind::Udp { port, peer, .. } => {
+                let tx = &mut self.port;
                 c.inner.drain_output(&mut |d| {
-                    if d.len() > s.payload_send_capacity() {
-                        return d.len(); // can never fit: dropped, as UDP does
-                    }
-                    match s.send_slice(d, ep) {
-                        Ok(()) => {
-                            moved = true;
-                            d.len()
-                        }
-                        Err(udp::SendError::BufferFull) => 0,
-                        Err(_) => d.len(),
-                    }
+                    // A datagram that cannot be sent is dropped, as UDP does.
+                    let _ = iface.udp_send(now, tx, port, peer, d);
+                    d.len()
                 })
             }
-            Kind::Tcp { sock } => {
-                let s = self.sockets.get_mut::<tcp::Socket<'_>>(sock);
-                c.inner.drain_output(&mut |d| {
-                    let n = s.send_slice(d).unwrap_or(0);
-                    moved |= n > 0;
-                    n
-                })
-            }
+            Kind::Tcp { h } => c.inner.drain_output(&mut |d| iface.tcp_send(h, d)),
         };
         match r {
             Err(e) => self.finalize(id, Some(Error::Io(e))),
-            Ok(false) => {
-                self.blocked.insert(id);
-            }
+            // Partly queued: the stack reports `Writable` when space frees up.
+            Ok(false) => {}
             Ok(true) => {
-                self.blocked.remove(&id);
                 if c.inner.close_after_send_requested() || c.peer_eof {
                     self.finalize(id, None);
                 }
             }
         }
-        moved
     }
 
     /// Ends connection `id`: TCP sends FIN (orderly) or RST (error), `on_close` runs.
@@ -833,26 +832,27 @@ impl Loop {
         let Some(mut c) = self.conns.remove(&id) else {
             return;
         };
-        self.blocked.remove(&id);
+        self.paused.remove(&id);
+        let now = Instant::now();
         match c.kind {
-            Kind::Udp { sock, ep, own } => {
+            Kind::Udp { port, peer, own } => {
                 if own {
-                    self.sockets.remove(sock);
+                    self.iface.udp_unbind(port);
+                    self.udp_dialed.remove(&port);
                 } else {
-                    self.udp_peers.remove(&(sock, ep));
+                    self.udp_peers.remove(&(port, peer));
                     if let Some(rt) = self.groups.get(&c.gid) {
                         rt.spec.peers.fetch_sub(1, Ordering::Relaxed);
                     }
                 }
             }
-            Kind::Tcp { sock } => {
-                let s = self.sockets.get_mut::<tcp::Socket<'_>>(sock);
+            Kind::Tcp { h } => {
+                self.tcp_ids.remove(&h);
                 if err.is_none() {
-                    s.close();
+                    self.iface.tcp_close(h, now);
                 } else {
-                    s.abort();
+                    self.iface.tcp_abort(h, now, &mut self.port);
                 }
-                self.lingering.push((sock, Instant::now()));
             }
         }
         if let Some(rt) = self.groups.get_mut(&c.gid) {
@@ -925,28 +925,18 @@ impl Loop {
             self.finalize(id, Some(Error::Io(e)));
         }
         // Dials that take too long.
-        let mut i = 0;
-        while i < self.dials.len() {
-            if now >= self.dials[i].deadline {
-                let d = self.dials.swap_remove(i);
-                self.sockets.get_mut::<tcp::Socket<'_>>(d.sock).abort();
-                self.lingering.push((d.sock, now));
+        let late: Vec<TcpHandle> = self
+            .dials
+            .iter()
+            .filter(|(_, d)| now >= d.deadline)
+            .map(|(&h, _)| h)
+            .collect();
+        for h in late {
+            if let Some(d) = self.dials.remove(&h) {
+                self.iface.tcp_abort(h, now, &mut self.port);
                 (d.on_error)(io::Error::new(io::ErrorKind::TimedOut, "connect timed out"));
-            } else {
-                i += 1;
             }
         }
-        // Closed TCP sockets that finished their exchange.
-        let sockets = &mut self.sockets;
-        self.lingering.retain(|&(h, since)| {
-            let s = sockets.get::<tcp::Socket<'_>>(h);
-            let done = matches!(s.state(), tcp::State::Closed | tcp::State::TimeWait)
-                || now.duration_since(since) >= LINGER;
-            if done {
-                sockets.remove(h);
-            }
-            !done
-        });
     }
 
     /// Group `gid` has no connections left on this loop and is shutting down: release it.
@@ -954,23 +944,27 @@ impl Loop {
         let Some(rt) = self.groups.remove(&gid) else {
             return;
         };
-        if let Some(h) = rt.udp {
-            self.sockets.remove(h);
+        if let Some((udp, port)) = rt.listen {
+            if udp {
+                self.iface.udp_unbind(port);
+            } else {
+                self.iface.tcp_unlisten(port);
+            }
+            self.listen_ports.remove(&(udp, port));
         }
-        for h in rt.listening {
-            self.sockets.remove(h);
-        }
-        let mut i = 0;
-        while i < self.dials.len() {
-            if self.dials[i].gid == gid {
-                let d = self.dials.swap_remove(i);
-                self.sockets.remove(d.sock);
+        let mine: Vec<TcpHandle> = self
+            .dials
+            .iter()
+            .filter(|(_, d)| d.gid == gid)
+            .map(|(&h, _)| h)
+            .collect();
+        for h in mine {
+            if let Some(d) = self.dials.remove(&h) {
+                self.iface.tcp_abort(h, Instant::now(), &mut self.port);
                 (d.on_error)(io::Error::new(
                     io::ErrorKind::NotConnected,
                     "the engine shut down",
                 ));
-            } else {
-                i += 1;
             }
         }
         rt.link.stats.set_running(false);

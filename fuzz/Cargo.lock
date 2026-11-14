@@ -825,6 +825,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-dpdk"
+version = "1.0.0-rc.1"
+dependencies = [
+ "libc",
+ "only-core",
+]
+
+[[package]]
 name = "only-ebpf"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -861,6 +869,7 @@ dependencies = [
  "only-arpc",
  "only-bittorrent",
  "only-crypto",
+ "only-dpdk",
  "only-ebpf",
  "only-grpc",
  "only-h3",
