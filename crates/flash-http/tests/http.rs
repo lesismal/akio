@@ -169,6 +169,15 @@ fn app() -> Router {
             ctx.text(200, v);
         })
         .get("/forget", |_ctx: &mut Context| {})
+        .get("/items/{n:[0-9]+}", |ctx: &mut Context| {
+            let n = ctx.param("n").unwrap().to_owned();
+            ctx.text(200, format!("item #{n}"));
+        })
+        .get("/items/{slug}", |ctx: &mut Context| {
+            let s = ctx.param("slug").unwrap().to_owned();
+            let raw = ctx.param_raw("slug").unwrap().to_owned();
+            ctx.text(200, format!("item {s} raw {raw}"));
+        })
 }
 
 #[test]
@@ -194,6 +203,23 @@ fn basic_routing_head_404_405() {
     assert_eq!(
         request(a, "GET /query?q=hi HTTP/1.1\r\nHost: x\r\n\r\n").text(),
         "hi"
+    );
+    // Regexp parameters beat plain ones; values are percent-decoded, the raw text is kept.
+    assert_eq!(
+        request(a, "GET /items/42?x=1 HTTP/1.1\r\nHost: x\r\n\r\n").text(),
+        "item #42"
+    );
+    assert_eq!(
+        request(a, "GET /items/a%20b%2Fc HTTP/1.1\r\nHost: x\r\n\r\n").text(),
+        "item a b/c raw a%20b%2Fc"
+    );
+    assert_eq!(
+        request(a, "GET /files/x%20y/z HTTP/1.1\r\nHost: x\r\n\r\n").text(),
+        "file [x y/z]"
+    );
+    assert_eq!(
+        request(a, "GET /users/caf%C3%A9 HTTP/1.1\r\nHost: x\r\n\r\n").text(),
+        "user café"
     );
 
     let r = request(a, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");

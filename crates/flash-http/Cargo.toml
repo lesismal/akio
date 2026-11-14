@@ -15,6 +15,12 @@ base64 = "0.22"
 loona-hpack = "0.4"
 flash-ws = { path = "../flash-ws" }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+regex = { version = "1", optional = true }
+
+[features]
+default = ["regex"]
+## Regexp route parameters (`/users/{id:[0-9]+}`).
+regex = ["dep:regex"]
 
 [dev-dependencies]
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

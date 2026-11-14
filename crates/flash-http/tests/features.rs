@@ -310,6 +310,92 @@ fn static_files_serve_ranges_conditionals_index_and_refuse_traversal() {
         get(a, "/s/hello.txt", "If-None-Match: \"other\"\r\n").status,
         200
     );
+    // Dates compare by time, not by text: a later date is "not modified", an earlier one is.
+    assert_eq!(
+        get(
+            a,
+            "/s/hello.txt",
+            "If-Modified-Since: Fri, 01 Jan 2100 00:00:00 GMT\r\n"
+        )
+        .status,
+        304
+    );
+    assert_eq!(
+        get(
+            a,
+            "/s/hello.txt",
+            "If-Modified-Since: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+        )
+        .status,
+        200
+    );
+    // If-None-Match wins over If-Modified-Since.
+    assert_eq!(
+        get(
+            a,
+            "/s/hello.txt",
+            &format!("If-None-Match: \"other\"\r\nIf-Modified-Since: {lm}\r\n")
+        )
+        .status,
+        200
+    );
+    // Preconditions for state-checking clients: 412 unless the representation matches.
+    assert_eq!(
+        get(a, "/s/hello.txt", &format!("If-Match: {etag}\r\n")).status,
+        200
+    );
+    assert_eq!(get(a, "/s/hello.txt", "If-Match: *\r\n").status, 200);
+    let r = get(a, "/s/hello.txt", "If-Match: \"other\"\r\n");
+    assert_eq!((r.status, r.header("etag")), (412, Some(etag.as_str())));
+    assert_eq!(
+        get(a, "/s/hello.txt", &format!("If-Match: W/{etag}\r\n")).status,
+        412,
+        "If-Match uses the strong comparison"
+    );
+    assert_eq!(
+        get(
+            a,
+            "/s/hello.txt",
+            "If-Unmodified-Since: Thu, 01 Jan 1970 00:00:00 GMT\r\n"
+        )
+        .status,
+        412
+    );
+    assert_eq!(
+        get(a, "/s/hello.txt", &format!("If-Unmodified-Since: {lm}\r\n")).status,
+        200
+    );
+    // If-Range: the range only while the client's copy is current.
+    let r = get(
+        a,
+        "/s/hello.txt",
+        &format!("Range: bytes=0-4\r\nIf-Range: {etag}\r\n"),
+    );
+    assert_eq!((r.status, r.body.as_slice()), (206, &b"hello"[..]));
+    let r = get(
+        a,
+        "/s/hello.txt",
+        &format!("Range: bytes=0-4\r\nIf-Range: {lm}\r\n"),
+    );
+    assert_eq!(r.status, 206);
+    let r = get(
+        a,
+        "/s/hello.txt",
+        "Range: bytes=0-4\r\nIf-Range: \"stale\"\r\n",
+    );
+    assert_eq!((r.status, r.body.as_slice()), (200, &b"hello static"[..]));
+    let r = get(
+        a,
+        "/s/hello.txt",
+        "Range: bytes=0-4\r\nIf-Range: Thu, 01 Jan 1970 00:00:00 GMT\r\n",
+    );
+    assert_eq!(r.status, 200);
+    let r = get(
+        a,
+        "/s/hello.txt",
+        &format!("Range: bytes=0-4\r\nIf-Range: W/{etag}\r\n"),
+    );
+    assert_eq!(r.status, 200, "a weak tag never satisfies If-Range");
     // Ranges.
     let r = get(a, "/s/hello.txt", "Range: bytes=6-\r\n");
     assert_eq!((r.status, r.body.as_slice()), (206, &b"static"[..]));
@@ -356,6 +442,19 @@ fn static_files_serve_ranges_conditionals_index_and_refuse_traversal() {
     let r = get(a, "/s/big.bin", "Range: bytes=1000000-1999999\r\n");
     assert_eq!(r.status, 206);
     assert!(r.body == big[1_000_000..2_000_000]);
+    // The large file's open handle is cached; replacing the file is noticed (interval zero).
+    let big_etag = get(a, "/s/big.bin", "").header("etag").unwrap().to_owned();
+    assert_eq!(
+        get(a, "/s/big.bin", &format!("If-None-Match: {big_etag}\r\n")).status,
+        304
+    );
+    let big2 = pattern(3 << 20);
+    std::fs::write(dir.join("big.bin.tmp"), &big2).unwrap();
+    std::fs::rename(dir.join("big.bin.tmp"), dir.join("big.bin")).unwrap();
+    let r = get(a, "/s/big.bin", "");
+    assert!(r.body == big2, "stale open-file cache entry");
+    assert_ne!(r.header("etag"), Some(big_etag.as_str()));
+    std::fs::write(dir.join("big.bin"), &big).unwrap();
     // The file changes: the next request sees it (check interval is zero here).
     std::fs::write(dir.join("hello.txt"), "changed on disk!").unwrap();
     assert_eq!(get(a, "/s/hello.txt", "").body, b"changed on disk!");
