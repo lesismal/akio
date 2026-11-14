@@ -222,16 +222,16 @@ impl Connection {
     /// [`QuicHandler::on_streams_available`]), which includes before the handshake completes
     /// (open streams from [`QuicHandler::on_connected`]).
     pub fn open_bi(&self) -> Option<StreamId> {
-        let id = lock(&self.0.state).conn.open(Dir::Bi);
-        self.kick();
-        id
+        // No callbacks run here (callers may hold their own locks); anything the opening
+        // queued goes out with the next write.
+        lock(&self.0.state).conn.open(Dir::Bi)
     }
 
     /// Opens a unidirectional stream; `None` while the peer's stream limit is reached.
     pub fn open_uni(&self) -> Option<StreamId> {
-        let id = lock(&self.0.state).conn.open(Dir::Uni);
-        self.kick();
-        id
+        // No callbacks run here (callers may hold their own locks); anything the opening
+        // queued goes out with the next write.
+        lock(&self.0.state).conn.open(Dir::Uni)
     }
 
     /// Queues bytes on a stream; they go out as flow and congestion control allow.
@@ -369,7 +369,18 @@ impl Connection {
             self.send_queued();
         }
         if drained {
-            lock(&ep.conns).remove(&self.0.h);
+            let empty = {
+                let mut conns = lock(&ep.conns);
+                conns.remove(&self.0.h);
+                conns.is_empty()
+            };
+            if empty && ep.factory.is_none() {
+                // A client endpoint's only connection is gone: so is its UDP socket.
+                let socks: Vec<Conn<Udp>> = lock(&ep.socks).values().cloned().collect();
+                for s in socks {
+                    s.close();
+                }
+            }
         }
         queued
     }

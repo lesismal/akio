@@ -693,7 +693,7 @@ impl Connection {
                 self.spaces[sid as usize].largest_acked_time = Some(p.time);
             }
         }
-        let app_limited = self.bytes_in_flight + u64::from(self.mtu) * 3 < self.cc.window / 2;
+        let app_limited = self.app_limited;
         for (pn, p) in newly {
             if p.in_flight {
                 self.bytes_in_flight = self.bytes_in_flight.saturating_sub(u64::from(p.size));

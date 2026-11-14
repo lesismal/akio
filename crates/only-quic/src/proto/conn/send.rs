@@ -135,7 +135,11 @@ impl Connection {
             return None;
         }
         let probing = self.spaces.iter().any(|s| s.probes > 0);
-        let mut blocked = !probing && self.bytes_in_flight + u64::from(self.mtu) > self.cc.window;
+        let cwnd_blocked = !probing && self.bytes_in_flight + u64::from(self.mtu) > self.cc.window;
+        if cwnd_blocked {
+            self.app_limited = false;
+        }
+        let mut blocked = cwnd_blocked;
         if !blocked && !probing {
             if self.pacing_until.is_some_and(|p| now < p) {
                 blocked = true;
@@ -155,6 +159,9 @@ impl Connection {
             .filter(|&s| self.space_wants(s, now, blocked))
             .collect();
         if wants.is_empty() {
+            if !blocked {
+                self.app_limited = true;
+            }
             return None;
         }
         // Client datagrams with Initial packets, and server datagrams with ack-eliciting

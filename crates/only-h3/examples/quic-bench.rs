@@ -154,9 +154,10 @@ fn bulk(mb: usize) {
     let el = start.elapsed().as_secs_f64();
     let st = c.stats();
     println!(
-        "bulk: {mb} MB in {el:.2}s = {:.0} Mbit/s (rtt {:?}, lost {} of {} packets, {} datagrams in {} sends)",
+        "bulk: {mb} MB in {el:.2}s = {:.0} Mbit/s (rtt {:?}, cwnd {}, lost {} of {} packets, {} datagrams in {} sends)",
         (mb * 8) as f64 / el,
         st.rtt,
+        st.cwnd,
         st.lost_packets,
         st.sent_packets,
         st.udp_tx.datagrams,

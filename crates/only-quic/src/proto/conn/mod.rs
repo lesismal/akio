@@ -376,6 +376,9 @@ pub struct Connection {
     cc: Congestion,
     pacer: Pacer,
     bytes_in_flight: u64,
+    /// The sender last stopped for lack of data, not because of the congestion window (the
+    /// window does not grow then, RFC 9002 section 7.8).
+    app_limited: bool,
     pto_count: u32,
     first_rtt_sample: Option<Instant>,
     mtu: u16,
@@ -493,6 +496,7 @@ impl Connection {
             cc: Congestion::new(kind, mtu),
             pacer: Pacer::new(),
             bytes_in_flight: 0,
+            app_limited: true,
             pto_count: 0,
             first_rtt_sample: None,
             mtu,
