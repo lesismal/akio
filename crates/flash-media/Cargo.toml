@@ -16,12 +16,10 @@ categories = ["network-programming", "multimedia"]
 flash = { workspace = true }
 flash-core = { workspace = true }
 flash-http = { workspace = true }
-flash-ws = { workspace = true }
 hmac = "0.12"
 sha2 = "0.10"
 md-5 = "0.10"
 aes = "0.8"
-ctr = "0.9"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 sha1 = "0.10"
 base64 = "0.22"

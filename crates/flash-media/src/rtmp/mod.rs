@@ -454,15 +454,16 @@ impl RtmpSession {
                     );
                 }
                 if tx != 0.0 {
+                    // getStreamLength wants a number: 0, the length of a live stream.
+                    let v = if name == "getStreamLength" {
+                        Value::Number(0.0)
+                    } else {
+                        Value::Undefined
+                    };
                     self.command(
                         c,
                         0,
-                        &[
-                            Value::from("_result"),
-                            Value::Number(tx),
-                            Value::Null,
-                            Value::Undefined,
-                        ],
+                        &[Value::from("_result"), Value::Number(tx), Value::Null, v],
                     );
                 }
             }

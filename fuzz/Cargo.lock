@@ -316,11 +316,9 @@ version = "1.0.0-rc.1"
 dependencies = [
  "aes",
  "base64",
- "ctr",
  "flash",
  "flash-core",
  "flash-http",
- "flash-ws",
  "getrandom 0.2.17",
  "hmac",
  "md-5",
