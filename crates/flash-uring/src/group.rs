@@ -72,6 +72,8 @@ pub fn probe() -> Result<(), String> {
 /// A group of io_uring I/O threads serving one listener.
 pub struct UringGroup {
     addr: SocketAddr,
+    /// Listener fds in ring order (one `SO_REUSEPORT` group).
+    fds: Vec<i32>,
     shared: Vec<Arc<LoopShared>>,
     pending: Mutex<Vec<Loop>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -100,6 +102,11 @@ impl UringGroup {
             }
             listeners[0] = Some(first);
         }
+        let fds = listeners
+            .iter()
+            .flatten()
+            .map(std::os::fd::AsRawFd::as_raw_fd)
+            .collect();
         let mut shared = Vec::with_capacity(threads);
         let mut loops = Vec::with_capacity(threads);
         for l in listeners {
@@ -110,6 +117,7 @@ impl UringGroup {
         }
         Ok(UringGroup {
             addr,
+            fds,
             shared,
             pending: Mutex::new(loops),
             threads: Mutex::new(Vec::new()),
@@ -122,6 +130,10 @@ impl UringGroup {
 impl Group for UringGroup {
     fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    fn listener_fds(&self) -> Vec<i32> {
+        self.fds.clone()
     }
 
     fn start(&self) -> io::Result<()> {

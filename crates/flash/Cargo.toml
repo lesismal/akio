@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 flash-core = { path = "../flash-core" }
 flash-epoll = { path = "../flash-epoll" }
+flash-ebpf = { path = "../flash-ebpf" }
 flash-tls = { path = "../flash-tls" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -20,4 +21,5 @@ workspace = true
 
 [dev-dependencies]
 libc = "0.2"
+flash-core = { path = "../flash-core" }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

@@ -1,6 +1,7 @@
 use std::{
     io,
     net::{SocketAddr, TcpListener},
+    os::fd::AsRawFd,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -16,6 +17,8 @@ use crate::reactor::{Cmd, Loop, LoopShared};
 /// A group of epoll/kqueue I/O threads serving one listener.
 pub struct EpollGroup {
     addr: SocketAddr,
+    /// Listener fds in loop order when they form a `SO_REUSEPORT` group (Linux).
+    fds: Vec<i32>,
     shared: Vec<Arc<LoopShared>>,
     pending: Mutex<Vec<Loop>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -52,6 +55,11 @@ impl EpollGroup {
             }
             listeners[0] = Some(first);
         }
+        let fds = if cfg!(target_os = "linux") {
+            listeners.iter().flatten().map(|l| l.as_raw_fd()).collect()
+        } else {
+            Vec::new()
+        };
 
         let mut shared = Vec::with_capacity(threads);
         let mut loops = Vec::with_capacity(threads);
@@ -64,6 +72,7 @@ impl EpollGroup {
         }
         Ok(EpollGroup {
             addr,
+            fds,
             shared,
             pending: Mutex::new(loops),
             threads: Mutex::new(Vec::new()),
@@ -77,6 +86,10 @@ impl EpollGroup {
 impl Group for EpollGroup {
     fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    fn listener_fds(&self) -> Vec<i32> {
+        self.fds.clone()
     }
 
     fn start(&self) -> io::Result<()> {

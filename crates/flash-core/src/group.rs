@@ -9,6 +9,12 @@ use crate::DynAcceptor;
 pub trait Group: Send + Sync {
     /// Bound address of the listener (the unspecified address when there is none).
     fn local_addr(&self) -> SocketAddr;
+    /// Raw fds of the listening sockets, one per I/O thread in thread order (thread `i` serves
+    /// `listener_fds()[i]`), when they form one `SO_REUSEPORT` group; empty otherwise. Used to
+    /// attach steering programs (`flash-ebpf`). Valid while the group is alive.
+    fn listener_fds(&self) -> Vec<i32> {
+        Vec::new()
+    }
     /// Spawns the I/O threads. Idempotent.
     fn start(&self) -> io::Result<()>;
     /// Begins graceful shutdown: stop accepting, notify, drain, then stop the threads.
