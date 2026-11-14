@@ -11,7 +11,7 @@ fn cvt(r: libc::c_int) -> io::Result<libc::c_int> {
     }
 }
 
-fn sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
+pub(crate) fn sockaddr(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
     // SAFETY: sockaddr_storage is plain-old-data; all-zero is a valid value.
     let mut ss: libc::sockaddr_storage = unsafe { mem::zeroed() };
     let len = match addr {

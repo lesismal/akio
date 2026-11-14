@@ -46,6 +46,15 @@ pub struct Config {
     /// UDP: a peer that sent nothing for this long is dropped (its `on_close` runs) so idle peers
     /// do not accumulate. `idle_timeout`, when set and shorter, wins.
     pub udp_idle_timeout: Duration,
+    /// UDP: most peers one listener keeps open at once (`None`, the default: no limit). While
+    /// at the limit, datagrams from new peers are dropped without creating a connection and
+    /// counted in `UdpStats::rejected` (see `Engine::udp_stats`); known peers are unaffected.
+    pub udp_max_peers: Option<usize>,
+    /// UDP, Linux: let the kernel coalesce datagrams of one flow into one receive (UDP GRO);
+    /// flash splits them again, so `on_data` still sees one datagram per call. It pays off for
+    /// bulk flows from GSO senders (QUIC transfers) and costs for request/response traffic, so
+    /// it is off by default. Needs `read_buffer` of at least 64 KiB (otherwise ignored).
+    pub udp_gro: bool,
     /// After `shutdown`, connections still open after this long are closed forcibly.
     pub shutdown_timeout: Duration,
 }
@@ -61,6 +70,8 @@ impl Default for Config {
             slow_callback_threshold: Some(Duration::from_millis(100)),
             slow_hook: None,
             udp_idle_timeout: Duration::from_secs(60),
+            udp_max_peers: None,
+            udp_gro: false,
             shutdown_timeout: Duration::from_secs(10),
         }
     }

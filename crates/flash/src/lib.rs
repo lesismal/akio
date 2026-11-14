@@ -26,7 +26,7 @@ pub use flash_tls as tls;
 
 pub use flash_core::{
     Acceptor, Config, Conn, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, PoolConfig,
-    PoolStats, ResponseSlot, Result, SlowCallback, SlowHook, fn_acceptor,
+    PoolStats, ResponseSlot, Result, SlowCallback, SlowHook, UdpStats, fn_acceptor,
 };
 use flash_core::{Group, Pool};
 
@@ -356,6 +356,17 @@ impl Engine {
     /// Counters of the logical pool.
     pub fn pool_stats(&self) -> PoolStats {
         self.pool.stats()
+    }
+
+    /// Peer counters of the UDP listeners, summed (see `Config::udp_max_peers`).
+    pub fn udp_stats(&self) -> UdpStats {
+        self.groups
+            .iter()
+            .map(|g| g.udp_stats())
+            .fold(UdpStats::default(), |a, b| UdpStats {
+                peers: a.peers + b.peers,
+                rejected: a.rejected + b.rejected,
+            })
     }
 
     /// `start` + `wait`.

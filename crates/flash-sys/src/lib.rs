@@ -14,7 +14,10 @@ mod waker;
 pub use net::{connect_nonblocking, listen, listen_udp, sendfile};
 pub use poller::{Event, Poller};
 #[cfg(target_os = "linux")]
-pub use udp::RecvBatch;
+pub use udp::{
+    Batch, MAX_GSO_BYTES, MAX_GSO_SEGMENTS, RecvBatch, SEND_BATCH, SendBatch, disable_gso,
+    enable_gro, gro_available, gso_enabled,
+};
 #[cfg(target_os = "linux")]
 pub use waker::EventFd;
 pub use waker::Waker;

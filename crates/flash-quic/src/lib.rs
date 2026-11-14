@@ -370,7 +370,7 @@ impl Connection {
                 }
                 loop {
                     buf.clear();
-                    match conn.poll_transmit(now, 1, buf) {
+                    match conn.poll_transmit(now, MAX_DATAGRAMS, buf) {
                         Some(t) => tx.push((t.destination, t.segment_size, buf[..t.size].to_vec())),
                         None => break,
                     }
@@ -581,7 +581,7 @@ struct Ep {
     conns: Mutex<HashMap<qp::ConnectionHandle, Connection>>,
     socks: Mutex<HashMap<SocketAddr, Conn<Udp>>>,
     /// A client's datagrams from before its socket was up.
-    backlog: Mutex<Vec<(SocketAddr, Vec<u8>)>>,
+    backlog: Mutex<Vec<Outgoing>>,
     factory: Option<Box<Factory>>,
     server_config: Option<Arc<qp::ServerConfig>>,
 }
@@ -607,20 +607,16 @@ impl Ep {
         let sock = lock(&self.socks).get(&dest).cloned();
         let Some(sock) = sock else {
             if self.server_config.is_none() {
-                lock(&self.backlog).push((dest, data));
+                lock(&self.backlog).push((dest, seg, data));
             }
             return;
         };
-        match seg {
-            Some(s) if s < data.len() => {
-                for d in data.chunks(s) {
-                    let _ = sock.send(d);
-                }
-            }
-            _ => {
-                let _ = sock.send_owned(data);
-            }
-        }
+        // Several datagrams of `s` bytes: one GSO send where Linux supports it (else one
+        // sendmmsg, else one by one); the boundaries survive either way.
+        let _ = match seg {
+            Some(s) => sock.send_segments(data, s),
+            None => sock.send_owned(data),
+        };
     }
 
     fn on_datagram(self: &Arc<Ep>, peer: SocketAddr, data: &[u8]) {
@@ -744,6 +740,13 @@ impl Connection {
     }
 }
 
+/// A transmit: destination, segment size (several datagrams), bytes.
+type Outgoing = (SocketAddr, Option<usize>, Vec<u8>);
+
+/// Datagrams one `poll_transmit` may return in a single [`Conn::send_segments`] (as quinn does,
+/// up to 10).
+const MAX_DATAGRAMS: usize = 10;
+
 struct ClientAcceptor(Arc<Ep>);
 
 impl Acceptor for ClientAcceptor {
@@ -751,8 +754,8 @@ impl Acceptor for ClientAcceptor {
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
         lock(&self.0.socks).insert(c.peer_addr(), c.clone());
         let backlog = std::mem::take(&mut *lock(&self.0.backlog));
-        for (dest, d) in backlog {
-            self.0.transmit(dest, None, d);
+        for (dest, seg, d) in backlog {
+            self.0.transmit(dest, seg, d);
         }
         Udp {
             ep: self.0.clone(),
