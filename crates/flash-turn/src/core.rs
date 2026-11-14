@@ -640,7 +640,10 @@ impl TurnCore {
         let relay = env
             .open_relay(client, self.cfg.relay_ip)
             .map_err(|_| Reject(508, "Insufficient Capacity"))?;
-        let public = SocketAddr::new(self.cfg.public_ip.unwrap_or_else(|| relay.ip()), relay.port());
+        let public = SocketAddr::new(
+            self.cfg.public_ip.unwrap_or_else(|| relay.ip()),
+            relay.port(),
+        );
         let life = self.lifetime(m);
         self.allocs.insert(
             client,
