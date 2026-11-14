@@ -127,6 +127,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] 中间件：响应时间、compress（gzip/deflate）、etag + 304、csrf（双重提交 cookie）、按 IP 的令牌桶限流。尚未提供 brotli（还没引入 brotli 依赖）
 - [x] 静态文件（`files::Files`）：路径安全、MIME、ETag/Last-Modified/304、单段 Range、index 文件、预压缩 `.br`/`.gz` 同名文件、带 stat 间隔的内存缓存、大文件用 `sendfile`。基于 inotify 的变更跟踪未做（用 stat 间隔代替）
 - [x] `flash-ws`：RFC 6455 + permessage-deflate（context takeover、服务端窗口位数）、`PreparedMessage` 广播、子协议、Origin 检查、关闭握手；Autobahn|Testsuite：核心 298 项 OK + 3 项 informational，permessage-deflate 216/216 OK，由 `tools/autobahn/run.sh` 在 CI 中运行。Autobahn 发现了 miniz_oxide 的一个 deflate bug（flate2 现改用 zlib-rs）
+- [x] WebSocket 客户端（`flash_ws::client::dial`/`connect`）：通过 `flash::tls` 支持 `ws://`/`wss://`（SNI、自定义 rustls 配置），多地址回退，握手校验（key/accept、子协议、Origin、自定义头），握手与关闭超时，permessage-deflate 协商并遵从服务端选择，帧掩码、符合 RFC 的关闭握手、分片发送。Autobahn 客户端测试（`tools/autobahn/run.sh client`）：517 个用例 514 OK + 3 informational，no-context-takeover 补充轮 216/216；与 fib 的 Go websocket 服务端互通。未完成：系统根证书、代理、重定向、引擎关闭时发送 1001
 - [x] HTTP/1 异步客户端（`client::Client`）：回调、`ResponseFuture`（`wait`、`wait_timeout`、`.await`）、按主机复用 keep-alive 连接（复用的连接已失效时重试一次）、chunked/以关闭为界的 body、通过 `flash::tls` 支持 HTTPS、地址回退（先 ::1 再 127.0.0.1）。未做：重定向、单请求超时、把 DNS 解析移出调用线程
 - [ ] 与 hyper、fib 的 HTTP/1 对比报告（plaintext、pipelined、json）：放到功能阶段结束后的统一 benchmark 阶段
 - **交付**：`examples/http`、`examples/ws-chat`
