@@ -97,7 +97,7 @@ pub fn server_reply(c0c1: &[u8]) -> Result<Vec<u8>, HandshakeError> {
     if c0c1.len() < 1 + SIZE || c0c1[0] != VERSION {
         return Err(HandshakeError);
     }
-    let c1 = &c0c1[1..1 + SIZE];
+    let c1 = &c0c1[1..=SIZE];
     let mut out = vec![0u8; 1 + 2 * SIZE];
     out[0] = VERSION;
     let (s1, s2) = out[1..].split_at_mut(SIZE);
@@ -130,7 +130,7 @@ pub fn client_reply(s0s1: &[u8]) -> Result<Vec<u8>, HandshakeError> {
     if s0s1.len() < 1 + SIZE || s0s1[0] != VERSION {
         return Err(HandshakeError);
     }
-    let s1 = &s0s1[1..1 + SIZE];
+    let s1 = &s0s1[1..=SIZE];
     let mut c2 = vec![0u8; SIZE];
     if let Some((_, d)) = find_digest(s1, &FMS_KEY[..36]) {
         answer(&mut c2, FP_KEY, &d);
@@ -151,7 +151,7 @@ mod tests {
         let s = server_reply(&c0c1).unwrap();
         assert_eq!(s.len(), 1 + 2 * SIZE);
         // S1 is signed with the server key, S2 answers the client's digest.
-        let (_, d) = find_digest(&s[1..1 + SIZE], &FMS_KEY[..36]).unwrap();
+        let (_, d) = find_digest(&s[1..=SIZE], &FMS_KEY[..36]).unwrap();
         let c2 = client_reply(&s).unwrap();
         assert_eq!(c2.len(), SIZE);
         let mut tmp = mac(FP_KEY);
@@ -167,7 +167,7 @@ mod tests {
         let c0c1 = client_hello(true);
         let s = server_reply(&c0c1).unwrap();
         assert_eq!(&s[1 + SIZE..], &c0c1[1..]);
-        assert_eq!(client_reply(&s).unwrap(), s[1..1 + SIZE].to_vec());
+        assert_eq!(client_reply(&s).unwrap(), s[1..=SIZE].to_vec());
         assert!(server_reply(&[6; 1 + SIZE]).is_err());
         assert!(server_reply(&[3; 10]).is_err());
     }

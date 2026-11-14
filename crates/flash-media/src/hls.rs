@@ -680,9 +680,7 @@ impl Sink for HlsSink {
                     b.part_independent = true;
                 }
             }
-            if b.data.is_empty() {
-                m.write_tables(&mut b.data);
-            } else if video && pkt.keyframe {
+            if b.data.is_empty() || video && pkt.keyframe {
                 m.write_tables(&mut b.data);
             }
             let p = Packet::new(pkt.track, dts, pts, pkt.keyframe, pkt.data.clone());

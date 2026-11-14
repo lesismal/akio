@@ -187,7 +187,7 @@ fn read_http_flv(addr: SocketAddr, path: &str, want: usize) -> (Tracks, usize) {
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
     let mut raw = Vec::new();
-    let mut buf = [0u8; 65536];
+    let mut buf = vec![0u8; 65536];
     let mut head_done = false;
     let mut demux = Demuxer::new();
     let mut dec = Decoder::new();
@@ -208,10 +208,7 @@ fn read_http_flv(addr: SocketAddr, path: &str, want: usize) -> (Tracks, usize) {
             head_done = true;
         }
         // De-chunk what is complete.
-        loop {
-            let Some(e) = raw.windows(2).position(|w| w == b"\r\n") else {
-                break;
-            };
+        while let Some(e) = raw.windows(2).position(|w| w == b"\r\n") {
             let n = usize::from_str_radix(std::str::from_utf8(&raw[..e]).unwrap(), 16).unwrap();
             if raw.len() < e + 2 + n + 2 {
                 break;
@@ -278,7 +275,7 @@ fn read_ws_flv(addr: SocketAddr, path: &str, want: usize) -> (Tracks, usize) {
     )
     .unwrap();
     let mut raw = Vec::new();
-    let mut buf = [0u8; 65536];
+    let mut buf = vec![0u8; 65536];
     let mut head_done = false;
     let mut demux = Demuxer::new();
     let mut dec = Decoder::new();

@@ -111,8 +111,8 @@ pub fn parse_sps(sps: &[u8]) -> Option<SpsInfo> {
             (2, _) => (2, 1),
             _ => (1, 1),
         };
-        width = width.checked_sub(sw * l.checked_add(ri)?)?;
-        height = height.checked_sub(sh * t.checked_add(b)?)?;
+        width = width.checked_sub(l.checked_add(ri)?.checked_mul(sw)?)?;
+        height = height.checked_sub(t.checked_add(b)?.checked_mul(sh)?)?;
     }
     let bit_depth_luma_minus8 = r.ue()?;
     let bit_depth_chroma_minus8 = r.ue()?;

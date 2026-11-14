@@ -642,7 +642,7 @@ impl Decoder {
         if video && self.video.is_none() || !video && self.audio.is_none() {
             return;
         }
-        p.track = if video || self.video.is_none() { 0 } else { 1 };
+        p.track = usize::from(!(video || self.video.is_none()));
         out.push(Event::Packet(p));
     }
 
@@ -756,7 +756,7 @@ impl Demuxer {
             }
             let off =
                 u32::from_be_bytes([self.buf[5], self.buf[6], self.buf[7], self.buf[8]]) as usize;
-            if off < 9 || off > 1024 {
+            if !(9..=1024).contains(&off) {
                 return Err(FlvError::Signature);
             }
             if self.buf.len() < off + 4 {
@@ -791,6 +791,7 @@ impl Demuxer {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::sync::Arc;

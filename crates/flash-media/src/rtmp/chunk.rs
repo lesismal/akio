@@ -157,11 +157,8 @@ impl ChunkReader {
         self.buf.extend_from_slice(data);
         let mut out = Vec::new();
         let mut p = 0;
-        loop {
-            match self.chunk(p, &mut out)? {
-                Some(np) => p = np,
-                None => break,
-            }
+        while let Some(np) = self.chunk(p, &mut out)? {
+            p = np;
         }
         self.buf.drain(..p);
         Ok(out)

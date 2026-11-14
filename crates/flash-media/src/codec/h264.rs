@@ -286,10 +286,10 @@ pub fn sps_size(sps: &[u8]) -> Option<(u32, u32)> {
     };
     let w = w_mbs
         .checked_mul(16)?
-        .checked_sub(sub_w * (cl.checked_add(cr)?))?;
+        .checked_sub(cl.checked_add(cr)?.checked_mul(sub_w)?)?;
     let h = h_units
         .checked_mul(16 * field)?
-        .checked_sub(sub_h * (ct.checked_add(cb)?))?;
+        .checked_sub(ct.checked_add(cb)?.checked_mul(sub_h)?)?;
     Some((w, h))
 }
 

@@ -216,7 +216,7 @@ impl Handler for RtmpSession {
                         }
                         Err(_) => return c.close(),
                     }
-                    self.buf.drain(..1 + handshake::SIZE);
+                    self.buf.drain(..=handshake::SIZE);
                     self.st = State::C2;
                 }
                 if self.buf.len() < handshake::SIZE {
@@ -269,9 +269,8 @@ impl RtmpSession {
     }
 
     fn chunks(&mut self, c: &Conn<Self>, data: &[u8]) {
-        let msgs = match self.reader.feed(data) {
-            Ok(m) => m,
-            Err(_) => return c.close(),
+        let Ok(msgs) = self.reader.feed(data) else {
+            return c.close();
         };
         if self.peer_window > 0
             && self.reader.received() - self.acked >= u64::from(self.peer_window)

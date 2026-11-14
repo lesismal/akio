@@ -180,9 +180,10 @@ impl Out {
             HubError::Denied(_) => 403,
             _ => 503,
         };
-        match lock(&self.w).take() {
+        let w = lock(&self.w).take();
+        match w {
             Some(Writer::Pending(d, _)) => {
-                d.respond(flash_http::Response::text(status, e.to_string()))
+                d.respond(flash_http::Response::text(status, e.to_string()));
             }
             Some(Writer::Http(b)) => b.finish(),
             Some(Writer::Ws(s)) => s.close(4000 + status, &e.to_string()),
@@ -216,12 +217,13 @@ impl Out {
             Some(Writer::Http(b)) => b.finish(),
             Some(Writer::Ws(s)) => s.close(1000, ""),
             Some(Writer::Pending(d, _)) => {
-                d.respond(flash_http::Response::text(404, "stream ended"))
+                d.respond(flash_http::Response::text(404, "stream ended"));
             }
             None => {}
         }
         // Closing from inside a sink never blocks; the hub unlinks the subscription.
-        if let Some(s) = lock(&self.sub).take() {
+        let sub = lock(&self.sub).take();
+        if let Some(s) = sub {
             s.close();
         }
     }
