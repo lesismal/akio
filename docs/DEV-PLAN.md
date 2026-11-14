@@ -155,7 +155,7 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 ### M6 DPDK + production readiness (6–8 weeks)
 - [ ] `flash-dpdk`: EAL init, mbuf rx/tx, userspace TCP/IP stack selection and integration (UDP first, then TCP), integration with Engine thread groups
 - [ ] Production: metrics (Prometheus-style), structured logs, runtime debug/pprof equivalents (connection table, queue depth, slow callbacks), config hot reload
-- [ ] Chaos tests: random disconnects, half close, slow clients, pool saturation, fd exhaustion
+- [x] Chaos tests: seeded, reproducible suites for the engine (`flash/tests/chaos.rs`), fd exhaustion (`chaos_fd.rs`), TLS (`chaos_tls.rs`) and HTTP/WebSocket (`flash-http/tests/chaos.rs`): RST aborts, half close, slow and non-reading clients, pool saturation, EMFILE, shutdown under load; invariants: `on_close` exactly once, no stall, bounded queues, no fd leak. Fast seeds by default, `FLASH_CHAOS=1 FLASH_CHAOS_SECS=300` soaks (clean on macOS, Linux epoll and io_uring). Bugs fixed: EOF cut off pending ordered responses; an over-limit ordered response vanished; epoll spun on EMFILE; io_uring missed an RST after data; io_uring could reuse an fd still named by unsubmitted SQEs
 - [ ] Prefork (optional)
 - **Deliverable**: soak report (≥72h)
 

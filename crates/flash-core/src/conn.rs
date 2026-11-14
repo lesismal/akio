@@ -244,6 +244,7 @@ impl WriteState {
     }
 
     /// UDP: drops the first `k` queued datagrams (sent or refused).
+    #[cfg(not(target_os = "linux"))]
     fn consume_datagrams(&mut self, k: usize) {
         for _ in 0..k {
             let Some(front) = self.queue.front_mut() else {

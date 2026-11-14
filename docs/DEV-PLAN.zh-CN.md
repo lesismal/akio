@@ -155,7 +155,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### M6 DPDK + 生产化（6–8 周）
 - [ ] `flash-dpdk`：EAL 初始化、mbuf 收发、用户态 TCP/IP 栈选型与集成（先 UDP，再 TCP）、与 Engine 线程组对接
 - [ ] 生产化：指标（Prometheus 风格）、结构化日志、运行时 debug/pprof 等价物（连接表、队列深度、慢回调）、配置热更新
-- [ ] 混沌测试：随机断连、半关闭、慢客户端、池饱和、fd 耗尽
+- [x] 混沌测试：为引擎（`flash/tests/chaos.rs`）、fd 耗尽（`chaos_fd.rs`）、TLS（`chaos_tls.rs`）和 HTTP/WebSocket（`flash-http/tests/chaos.rs`）新增带种子、可复现的测试：RST 中断、半关闭、慢读与不读客户端、逻辑池饱和、EMFILE、负载下关闭；校验 `on_close` 恰好一次、无卡死、队列有界、无 fd 泄漏。默认只跑少量种子，`FLASH_CHAOS=1 FLASH_CHAOS_SECS=300` 进行浸泡（macOS、Linux epoll 与 io_uring 均无违规）。修复的 bug：EOF 截断未完成的有序响应；超限有序响应被静默丢弃；epoll 在 EMFILE 时空转；io_uring 漏掉数据之后的 RST；io_uring 可能复用仍被未提交 SQE 引用的 fd
 - [ ] Prefork（可选）
 - **交付**：长稳（≥72h）报告
 
