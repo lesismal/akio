@@ -44,6 +44,11 @@ pub struct Config {
     /// long. `None` (the default) disables it. Resolution is about a millisecond; only inbound
     /// data counts as activity.
     pub idle_timeout: Option<Duration>,
+    /// Close a connection (with `ErrorKind::TimedOut`) when it has output queued and none of it
+    /// could be written for this long: a peer that stopped reading. `None` (the default)
+    /// disables it. Checked about every `write_timeout` while output is queued, so a stalled
+    /// connection is closed between one and two timeouts after its last progress. TCP only.
+    pub write_timeout: Option<Duration>,
     /// A handler callback (`on_data`, `on_close`, a `spawn_blocking` completion) that runs longer
     /// than this blocks its I/O thread and every other connection on it: it is reported to
     /// `slow_hook`, or printed to stderr when there is none. `None` disables the check.
@@ -77,7 +82,7 @@ pub struct Config {
     /// Reloadable at runtime (`Engine::reload` / [`Telemetry::reload`]): `idle_timeout`,
     /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
     /// `max_connections`, `shutdown_timeout`, `log_level`. Fixed at build time: `read_buffer`,
-    /// `backlog`, `udp_idle_timeout`.
+    /// `backlog`, `udp_idle_timeout`, `write_timeout`.
     pub telemetry: Arc<Telemetry>,
 }
 
@@ -89,6 +94,7 @@ impl Default for Config {
             max_queued_bytes: DEFAULT_MAX_QUEUED_BYTES,
             backlog: 1024,
             idle_timeout: None,
+            write_timeout: None,
             slow_callback_threshold: Some(DEFAULT_SLOW_CALLBACK),
             slow_hook: None,
             udp_idle_timeout: Duration::from_secs(60),

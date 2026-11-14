@@ -67,9 +67,9 @@ fn get_str(b: &[u8], pos: &mut usize, prefix: u8) -> Result<Vec<u8>, QpackError>
         .ok_or(QpackError::Decompression)?;
     *pos += len;
     if huff {
-        loona_hpack::huffman::HuffmanDecoder::new()
-            .decode(raw)
-            .map_err(|_| QpackError::Decompression)
+        let mut out = Vec::with_capacity(raw.len() + raw.len() / 2);
+        flash_http::hpack::decode_huffman(raw, &mut out).map_err(|_| QpackError::Decompression)?;
+        Ok(out)
     } else {
         Ok(raw.to_vec())
     }

@@ -281,7 +281,7 @@ fn dropping_an_unfilled_slot_closes_the_connection() {
     let mut s = connect(e.local_addrs()[0]);
     s.write_all(b"x").unwrap();
     let mut b = [0u8; 1];
-    assert_eq!(s.read(&mut b).unwrap(), 0);
+    assert_eq!(common::read_retry(&mut s, &mut b).unwrap(), 0);
     stop(&e);
 }
 

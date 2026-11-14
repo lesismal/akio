@@ -62,29 +62,47 @@ impl Method {
 }
 
 /// HTTP header fields: ordered, names compared case-insensitively, duplicates allowed.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Headers(Vec<(String, String)>);
+///
+/// All names and values live in one string, so a set of fields costs two allocations however
+/// many fields it holds (a parsed request head used to cost two per field).
+#[derive(Clone, Default)]
+pub struct Headers {
+    buf: String,
+    /// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`.
+    fields: Vec<(usize, usize, usize)>,
+}
 
 impl Headers {
     /// An empty set.
     pub fn new() -> Headers {
-        Headers(Vec::new())
+        Headers::default()
+    }
+
+    /// An empty set with room for `fields` fields totalling `bytes` bytes of names and values.
+    pub fn with_capacity(fields: usize, bytes: usize) -> Headers {
+        Headers {
+            buf: String::with_capacity(bytes),
+            fields: Vec::with_capacity(fields),
+        }
+    }
+
+    #[inline]
+    fn field(&self, f: &(usize, usize, usize)) -> (&str, &str) {
+        (&self.buf[f.0..f.1], &self.buf[f.1..f.2])
     }
 
     /// The first value of `name`.
     pub fn get(&self, name: &str) -> Option<&str> {
-        self.0
-            .iter()
+        self.iter()
             .find(|(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
+            .map(|(_, v)| v)
     }
 
     /// Every value of `name`, in order.
     pub fn get_all<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> {
-        self.0
-            .iter()
+        self.iter()
             .filter(move |(n, _)| n.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
+            .map(|(_, v)| v)
     }
 
     /// Whether a comma-separated header (such as `Connection`) lists `token`, ignoring case.
@@ -94,35 +112,68 @@ impl Headers {
     }
 
     /// Adds a field after the existing ones.
-    pub fn append(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        self.0.push((name.into(), value.into()));
+    pub fn append(&mut self, name: impl AsRef<str>, value: impl AsRef<str>) {
+        let a = self.buf.len();
+        self.buf.push_str(name.as_ref());
+        let b = self.buf.len();
+        self.buf.push_str(value.as_ref());
+        self.fields.push((a, b, self.buf.len()));
     }
 
     /// Replaces every field called `name` with one.
-    pub fn set(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        let name = name.into();
-        self.remove(&name);
-        self.0.push((name, value.into()));
+    pub fn set(&mut self, name: impl AsRef<str>, value: impl AsRef<str>) {
+        let name = name.as_ref();
+        self.remove(name);
+        self.append(name, value);
     }
 
     /// Removes every field called `name`.
     pub fn remove(&mut self, name: &str) {
-        self.0.retain(|(n, _)| !n.eq_ignore_ascii_case(name));
+        let before = self.fields.len();
+        let buf = &self.buf;
+        self.fields
+            .retain(|f| !buf[f.0..f.1].eq_ignore_ascii_case(name));
+        if self.fields.len() == before {
+            return;
+        }
+        // Reclaim the removed bytes once they are most of the buffer.
+        let live: usize = self.fields.iter().map(|f| f.2 - f.0).sum();
+        if self.buf.len() > 2 * live + 256 {
+            let mut c = Headers::with_capacity(self.fields.len(), live);
+            for (n, v) in self.iter() {
+                c.append(n, v);
+            }
+            *self = c;
+        }
     }
 
     /// All fields in order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.0.iter().map(|(n, v)| (n.as_str(), v.as_str()))
+        self.fields.iter().map(|f| self.field(f))
     }
 
     /// Number of fields.
     pub fn len(&self) -> usize {
-        self.0.len()
+        self.fields.len()
     }
 
     /// Whether there are no fields.
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.fields.is_empty()
+    }
+}
+
+impl PartialEq for Headers {
+    fn eq(&self, other: &Headers) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for Headers {}
+
+impl std::fmt::Debug for Headers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -251,7 +302,7 @@ impl Response {
     }
 
     /// Sets a header, replacing earlier ones of that name.
-    pub fn header(mut self, name: &str, value: impl Into<String>) -> Response {
+    pub fn header(mut self, name: &str, value: impl AsRef<str>) -> Response {
         self.headers.set(name, value);
         self
     }
@@ -264,25 +315,38 @@ impl Response {
         head_only: bool,
         out: &mut Vec<u8>,
     ) {
-        use std::io::Write;
-        let _ = write!(out, "HTTP/1.1 {} {}\r\n", self.status, reason(self.status));
+        out.extend_from_slice(b"HTTP/1.1 ");
+        push_uint(out, u64::from(self.status));
+        out.push(b' ');
+        out.extend_from_slice(reason(self.status).as_bytes());
+        out.extend_from_slice(b"\r\n");
+        let (mut has_len, mut has_date, mut has_conn) = (false, false, false);
         for (n, v) in self.headers.iter() {
+            has_len |= n.eq_ignore_ascii_case("content-length");
+            has_date |= n.eq_ignore_ascii_case("date");
+            has_conn |= n.eq_ignore_ascii_case("connection");
             out.extend_from_slice(n.as_bytes());
             out.extend_from_slice(b": ");
             // Header injection guard: a value cannot contain a line break.
-            out.extend(v.bytes().filter(|b| *b != b'\r' && *b != b'\n'));
+            if v.contains(['\r', '\n']) {
+                out.extend(v.bytes().filter(|b| *b != b'\r' && *b != b'\n'));
+            } else {
+                out.extend_from_slice(v.as_bytes());
+            }
             out.extend_from_slice(b"\r\n");
         }
         let bodyless = self.status < 200 || self.status == 204 || self.status == 304;
-        if self.headers.get("Content-Length").is_none() && !bodyless && !self.streaming {
-            let _ = write!(out, "Content-Length: {}\r\n", self.body_len());
-        }
-        if self.headers.get("Date").is_none() {
-            out.extend_from_slice(b"Date: ");
-            out.extend_from_slice(http_date().as_bytes());
+        if !has_len && !bodyless && !self.streaming {
+            out.extend_from_slice(b"Content-Length: ");
+            push_uint(out, self.body_len());
             out.extend_from_slice(b"\r\n");
         }
-        if self.headers.get("Connection").is_none() {
+        if !has_date {
+            out.extend_from_slice(b"Date: ");
+            with_http_date(|d| out.extend_from_slice(d.as_bytes()));
+            out.extend_from_slice(b"\r\n");
+        }
+        if !has_conn {
             if !keep_alive {
                 out.extend_from_slice(b"Connection: close\r\n");
             } else if version == Version::Http10 {
@@ -343,10 +407,12 @@ thread_local! {
 
 /// The current time as an IMF-fixdate, cached for the current second.
 pub fn http_date_now() -> String {
-    http_date()
+    with_http_date(str::to_owned)
 }
 
-fn http_date() -> String {
+/// Calls `f` with the current IMF-fixdate (cached per thread for the current second, so a
+/// response costs no formatting and no allocation for it).
+fn with_http_date<R>(f: impl FnOnce(&str) -> R) -> R {
     let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -355,8 +421,23 @@ fn http_date() -> String {
         if c.0 != secs || c.1.is_empty() {
             *c = (secs, format_http_date(secs));
         }
-        c.1.clone()
+        f(&c.1)
     })
+}
+
+/// Appends `n` in decimal.
+fn push_uint(out: &mut Vec<u8>, mut n: u64) {
+    let mut b = [0u8; 20];
+    let mut i = b.len();
+    loop {
+        i -= 1;
+        b[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(&b[i..]);
 }
 
 /// Formats seconds since the Unix epoch as `Sun, 06 Nov 1994 08:49:37 GMT`.
@@ -406,6 +487,31 @@ mod tests {
             format_http_date(951_782_400),
             "Tue, 29 Feb 2000 00:00:00 GMT"
         );
+    }
+
+    #[test]
+    fn push_uint_and_header_storage() {
+        for n in [0u64, 7, 10, 200, 65535, u64::MAX] {
+            let mut v = Vec::new();
+            push_uint(&mut v, n);
+            assert_eq!(v, n.to_string().as_bytes());
+        }
+        let mut h = Headers::with_capacity(2, 16);
+        for i in 0..200 {
+            h.set("X-Count", i.to_string()); // repeated set: removed bytes are reclaimed
+        }
+        h.append("Accept", "*/*");
+        assert_eq!(h.get("x-count"), Some("199"));
+        assert_eq!(h.len(), 2);
+        assert!(h.buf.len() < 1024, "{}", h.buf.len());
+        let mut g = Headers::new();
+        g.append("x-count", "199");
+        assert_ne!(h, g);
+        g.append("Accept", "*/*");
+        h.remove("Accept");
+        g.remove("accept");
+        assert_eq!(h.iter().collect::<Vec<_>>(), [("X-Count", "199")]);
+        assert_eq!(format!("{h:?}"), r#"[("X-Count", "199")]"#);
     }
 
     #[test]

@@ -33,3 +33,32 @@ pub use telemetry::{
     ConnInfo, Live, LoopCounters, LoopMeta, LoopMetrics, LoopStats, Metrics, ReloadReport,
     SlowRecord, Telemetry,
 };
+
+/// Hashes connection ids (sequential `u64`s) for the backends' connection tables: one multiply
+/// instead of SipHash on every event. Ids are not attacker-chosen, so no DoS-resistant hash is
+/// needed. Backend-facing.
+#[doc(hidden)]
+#[derive(Default, Clone, Copy)]
+pub struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(b)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        // Fibonacci hashing: spreads sequential ids over the high bits hashbrown uses too.
+        self.0 = (self.0 ^ n).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+}
+
+/// A map keyed by connection id, hashed with [`IdHasher`]. Backend-facing.
+#[doc(hidden)]
+pub type IdMap<V> = std::collections::HashMap<u64, V, std::hash::BuildHasherDefault<IdHasher>>;

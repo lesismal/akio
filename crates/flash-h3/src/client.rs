@@ -241,10 +241,7 @@ impl ClientConn {
                         Some(r) => {
                             let mut t = Headers::new();
                             for (n, v) in fields {
-                                t.append(
-                                    String::from_utf8_lossy(&n).into_owned(),
-                                    String::from_utf8_lossy(&v).into_owned(),
-                                );
+                                t.append(String::from_utf8_lossy(&n), String::from_utf8_lossy(&v));
                             }
                             r.trailers = Some(t);
                         }

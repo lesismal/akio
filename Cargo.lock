@@ -285,7 +285,6 @@ dependencies = [
  "flash-core",
  "flash-http",
  "flash-quic",
- "loona-hpack",
  "rcgen",
 ]
 

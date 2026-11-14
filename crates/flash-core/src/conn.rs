@@ -98,6 +98,87 @@ impl Chunk {
     }
 }
 
+/// A queue whose first element is held inline, so the common case (one item in flight at a
+/// time: one coalesced response in the send queue, one reserved response slot) never allocates a
+/// `VecDeque`, and an idle connection keeps no queue allocation (they used to stay at their
+/// first growth, a few hundred bytes per connection).
+struct InlineDeque<T> {
+    head: Option<T>,
+    /// Elements after `head`; empty whenever `head` is `None`.
+    rest: VecDeque<T>,
+}
+
+impl<T> Default for InlineDeque<T> {
+    fn default() -> Self {
+        InlineDeque {
+            head: None,
+            rest: VecDeque::new(),
+        }
+    }
+}
+
+impl<T> InlineDeque<T> {
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.head.is_none()
+    }
+
+    #[inline]
+    fn front(&self) -> Option<&T> {
+        self.head.as_ref()
+    }
+
+    #[inline]
+    fn front_mut(&mut self) -> Option<&mut T> {
+        self.head.as_mut()
+    }
+
+    #[inline]
+    fn back_mut(&mut self) -> Option<&mut T> {
+        match self.rest.back_mut() {
+            Some(c) => Some(c),
+            None => self.head.as_mut(),
+        }
+    }
+
+    #[inline]
+    fn push_back(&mut self, c: T) {
+        if self.head.is_none() {
+            self.head = Some(c);
+        } else {
+            self.rest.push_back(c);
+        }
+    }
+
+    #[inline]
+    fn pop_front(&mut self) -> Option<T> {
+        let h = self.head.take();
+        self.head = self.rest.pop_front();
+        h
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        self.head.iter().chain(self.rest.iter())
+    }
+
+    /// The `i`-th element.
+    #[inline]
+    fn get_mut(&mut self, i: usize) -> Option<&mut T> {
+        match i {
+            0 => self.head.as_mut(),
+            _ => self.rest.get_mut(i - 1),
+        }
+    }
+
+    /// Removes and returns every element; the overflow allocation is released.
+    fn take_all(&mut self) -> impl Iterator<Item = T> {
+        self.head
+            .take()
+            .into_iter()
+            .chain(std::mem::take(&mut self.rest))
+    }
+}
+
 /// A byte-stream transformation layered under a connection, such as TLS (see `flash-tls`).
 ///
 /// Everything the application `send`s is passed through [`seal`](Transport::seal) before it
@@ -131,7 +212,7 @@ struct WriteState {
     /// UDP: every chunk is one datagram; never coalesced, never partially written.
     datagram: bool,
     transport: Option<Box<dyn Transport>>,
-    queue: VecDeque<Chunk>,
+    queue: InlineDeque<Chunk>,
     queued: usize,
     /// Bytes of queued file chunks: they use no memory, so they are not in `queued`.
     file_bytes: u64,
@@ -276,7 +357,7 @@ impl WriteState {
     }
 
     fn clear(&mut self) {
-        for c in self.queue.drain(..) {
+        for c in self.queue.take_all() {
             if let Bytes::Owned(v) | Bytes::Segmented(v, _) = c.bytes {
                 flash_buf::put(v);
             }
@@ -455,7 +536,7 @@ struct Ordered {
     /// Sequence number of `entries[0]`.
     head: u64,
     next: u64,
-    entries: VecDeque<Entry>,
+    entries: InlineDeque<Entry>,
 }
 
 /// The socket under a connection: its own TCP stream, or a peer on a shared UDP socket.
@@ -481,7 +562,9 @@ pub struct ConnInner {
     write: Mutex<WriteState>,
     /// A drain waiter whose condition was met while the write lock was held; run right after.
     drained: Mutex<Option<Box<dyn FnOnce() + Send>>>,
-    ordered: Mutex<Ordered>,
+    /// Allocated by the first `reserve_response` (HTTP), so plain TCP connections, idle ones
+    /// above all, do not carry it.
+    ordered: Mutex<Option<Box<Ordered>>>,
     sock: Sock,
     link: Arc<dyn LoopLink>,
     cfg: Arc<Config>,
@@ -508,7 +591,7 @@ impl ConnInner {
                 ..WriteState::default()
             }),
             drained: Mutex::new(None),
-            ordered: Mutex::new(Ordered::default()),
+            ordered: Mutex::new(None),
             sock: Sock::Tcp(stream),
             link,
             cfg,
@@ -538,7 +621,7 @@ impl ConnInner {
                 ..WriteState::default()
             }),
             drained: Mutex::new(None),
-            ordered: Mutex::new(Ordered::default()),
+            ordered: Mutex::new(None),
             sock: Sock::Udp {
                 sock,
                 peer,
@@ -1127,7 +1210,8 @@ impl ConnInner {
 
     /// Reserves the next response position. Call in request order (on the I/O thread).
     pub fn reserve(&self) -> u64 {
-        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let o: &mut Ordered = g.get_or_insert_with(Box::default);
         o.entries.push_back(Entry::Empty);
         o.next += 1;
         o.next - 1
@@ -1135,34 +1219,53 @@ impl ConnInner {
 
     /// Fills reserved position `seq`; everything now contiguous from the front is sent in order.
     pub fn fill(&self, seq: u64, data: Vec<u8>, close_after: bool) {
-        self.fill_parts(seq, vec![Part::Bytes(data)], close_after);
+        let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let o: &mut Ordered = g.get_or_insert_with(Box::default);
+        if seq == o.head {
+            // First in line (the usual case): send now, without building a part list.
+            o.entries.pop_front();
+            o.head += 1;
+            let r = self.send_owned(data);
+            self.ordered_sent(r);
+            if close_after {
+                self.close_after_send();
+            }
+        } else {
+            let i = (seq - o.head) as usize;
+            *o.entries.get_mut(i).expect("reserved") =
+                Entry::Ready(vec![Part::Bytes(data)], close_after);
+        }
+        self.advance(o);
     }
 
     /// Like [`fill`](Self::fill) with several parts, some of which may be files.
     pub fn fill_parts(&self, seq: u64, parts: Vec<Part>, close_after: bool) {
-        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let o: &mut Ordered = g.get_or_insert_with(Box::default);
         let i = (seq - o.head) as usize;
-        o.entries[i] = Entry::Ready(parts, close_after);
-        self.advance(&mut o);
+        *o.entries.get_mut(i).expect("reserved") = Entry::Ready(parts, close_after);
+        self.advance(o);
     }
 
     /// Opens position `seq` for streaming with `head` as its first bytes.
     pub fn stream_open(&self, seq: u64, head: Vec<u8>) {
-        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let o: &mut Ordered = g.get_or_insert_with(Box::default);
         let i = (seq - o.head) as usize;
-        o.entries[i] = Entry::Stream(Stream {
+        *o.entries.get_mut(i).expect("reserved") = Entry::Stream(Stream {
             pending: head,
             live: false,
             finished: false,
             close: false,
         });
-        self.advance(&mut o);
+        self.advance(o);
     }
 
     /// Writes to a streaming position. Written straight to the socket when it is first in line,
     /// held in memory (up to `max_queued_bytes`) until earlier responses are out otherwise.
     pub fn stream_write(&self, seq: u64, data: Vec<u8>) -> Result<()> {
-        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let o: &mut Ordered = g.get_or_insert_with(Box::default);
         let i = (seq - o.head) as usize;
         let max = self.cfg.telemetry.live().max_queued_bytes();
         match o.entries.get_mut(i) {
@@ -1182,13 +1285,14 @@ impl ConnInner {
 
     /// Ends a streaming position; later responses may go out.
     pub fn stream_finish(&self, seq: u64, close_after: bool) {
-        let mut o = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        let o: &mut Ordered = g.get_or_insert_with(Box::default);
         let i = (seq - o.head) as usize;
         if let Some(Entry::Stream(s)) = o.entries.get_mut(i) {
             s.finished = true;
             s.close = close_after;
         }
-        self.advance(&mut o);
+        self.advance(o);
     }
 
     /// Sends everything that is now first in line. The lock is held across the sends: threads

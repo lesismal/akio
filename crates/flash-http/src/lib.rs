@@ -51,6 +51,8 @@ pub mod files;
 pub mod fuzzing;
 mod h2;
 pub mod h2client;
+#[doc(hidden)]
+pub mod hpack;
 pub mod message;
 pub mod middleware;
 pub mod observe;

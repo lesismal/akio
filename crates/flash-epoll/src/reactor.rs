@@ -1,6 +1,5 @@
 use std::{
     cell::Cell,
-    collections::HashMap,
     io::{self, Read},
     net::{SocketAddr, TcpListener, TcpStream},
     os::fd::AsRawFd,
@@ -160,6 +159,10 @@ struct LoopConn {
     /// Wheel tick of the last inbound data (idle timeout).
     last_active: u64,
     idle_timer: Option<TimerId>,
+    /// Pending write-timeout check (`Config::write_timeout`), and the bytes written when it
+    /// was armed.
+    write_timer: Option<TimerId>,
+    write_mark: u64,
     /// Wheel tick when it opened, and bytes read (connection table).
     opened: u64,
     bytes_in: u64,
@@ -178,7 +181,7 @@ pub(crate) struct Loop {
     poller: Poller,
     shared: Arc<LoopShared>,
     listener: Option<(TcpListener, Arc<dyn DynAcceptor>)>,
-    slots: HashMap<u64, Slot>,
+    slots: flash_core::IdMap<Slot>,
     scratch: Vec<u8>,
     cfg: Arc<Config>,
     draining: Option<Instant>,
@@ -187,7 +190,14 @@ pub(crate) struct Loop {
     /// Idle-timeout timers (connection ids); empty unless `Config::idle_timeout` is set.
     wheel: Wheel<u64>,
     epoch: Instant,
+    /// When the current batch of events started, or the last timed callback ended: the start of
+    /// the next callback and the "now" of idle accounting, so a request costs one clock read
+    /// instead of three. (A timed `on_data` therefore includes the `read` just before it.)
+    clock: Instant,
 }
+
+/// Marks a wheel entry as a write-timeout check (connection ids never reach bit 63).
+const WRITE_TIMER: u64 = 1 << 63;
 
 fn panic_error() -> Error {
     Error::Io(io::Error::other("handler panicked"))
@@ -208,13 +218,14 @@ impl Loop {
             poller,
             shared,
             listener,
-            slots: HashMap::new(),
+            slots: Default::default(),
             scratch: vec![0; cfg.read_buffer],
             cfg,
             draining: None,
             accept_paused_until: None,
             wheel: Wheel::new(0),
             epoch: Instant::now(),
+            clock: Instant::now(),
         })
     }
 
@@ -246,6 +257,7 @@ impl Loop {
             }
             self.shared.stats.iterations.add_local(1);
             self.shared.stats.events.add_local(events.len() as u64);
+            self.clock = Instant::now();
             for ev in &events {
                 match ev.token {
                     WAKER => self.shared.waker.drain(),
@@ -324,6 +336,52 @@ impl Loop {
         Some(self.wheel.schedule(at, id))
     }
 
+    /// Arms the write-timeout check of a connection that has output queued (if the timeout is
+    /// set and no check is pending). `now` comes from the cached loop clock.
+    fn arm_write(&mut self, id: u64) {
+        let Some(wt) = self.cfg.write_timeout else {
+            return;
+        };
+        let now = self.clock.saturating_duration_since(self.epoch).as_millis() as u64;
+        let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+            return;
+        };
+        if lc.write_timer.is_some() {
+            return;
+        }
+        if self.wheel.is_empty() {
+            self.wheel.advance(now, drop);
+        }
+        lc.write_mark = lc.inner.debug_state().0;
+        let at = now + (wt.as_millis() as u64).max(1);
+        lc.write_timer = Some(self.wheel.schedule(at, id | WRITE_TIMER));
+    }
+
+    /// A write-timeout check is due: close the connection if output is still queued and nothing
+    /// was written since the last check, else check again later.
+    fn on_write_timer(&mut self, id: u64, now: u64) {
+        let Some(wt) = self.cfg.write_timeout else {
+            return;
+        };
+        let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+            return;
+        };
+        lc.write_timer = None;
+        let (sent, pending, ..) = lc.inner.debug_state();
+        if pending == 0 {
+            return; // drained: the next blocked write arms a new check
+        }
+        if sent != lc.write_mark {
+            lc.write_mark = sent;
+            let at = now + (wt.as_millis() as u64).max(1);
+            lc.write_timer = Some(self.wheel.schedule(at, id | WRITE_TIMER));
+            return;
+        }
+        self.shared.stats.write_timeouts.add_local(1);
+        let e = io::Error::new(io::ErrorKind::TimedOut, "write timeout");
+        self.finalize(id, Some(Error::Io(e)));
+    }
+
     fn fire_timers(&mut self) {
         let idle = self.cfg.telemetry.live().idle_ms();
         if self.wheel.is_empty() {
@@ -333,6 +391,10 @@ impl Loop {
         let mut due = Vec::new();
         self.wheel.advance(now, |id| due.push(id));
         for id in due {
+            if id & WRITE_TIMER != 0 {
+                self.on_write_timer(id & !WRITE_TIMER, now);
+                continue;
+            }
             let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
                 continue;
             };
@@ -585,6 +647,8 @@ impl Loop {
                 eof: false,
                 last_active: now,
                 idle_timer,
+                write_timer: None,
+                write_mark: 0,
                 opened: now,
                 bytes_in: 0,
             }),
@@ -692,7 +756,8 @@ impl Loop {
         }
         let mut done = Done::No;
         let high = self.cfg.telemetry.live().write_high_watermark();
-        let now = self.epoch.elapsed().as_millis() as u64;
+        let now = self.clock.saturating_duration_since(self.epoch).as_millis() as u64;
+        let timed = self.cfg.telemetry.timing_enabled();
         {
             let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
                 return;
@@ -713,11 +778,17 @@ impl Loop {
                         st.reads.add_local(1);
                         st.bytes_in.add_local(n as u64);
                         lc.inner.set_corked(true);
-                        let t0 = self.cfg.telemetry.timing();
                         let r = catch_unwind(AssertUnwindSafe(|| {
                             lc.handler.on_data(&self.scratch[..n]);
                         }));
-                        self.cfg.telemetry.callback_done(st, "on_data", id, t0);
+                        if timed {
+                            self.clock = self
+                                .cfg
+                                .telemetry
+                                .callback_done_at(st, "on_data", id, self.clock);
+                        } else {
+                            st.callbacks.add_local(1);
+                        }
                         if r.is_err() {
                             done = Done::Panic;
                             break;
@@ -775,6 +846,7 @@ impl Loop {
         }
         let read = !lc.inner.read_held() && !lc.bp && !lc.eof;
         let write = q > 0;
+        let arm = write && lc.write_timer.is_none() && self.cfg.write_timeout.is_some();
         if (read, write) != (lc.reg_read, lc.reg_write) {
             lc.reg_read = read;
             lc.reg_write = write;
@@ -783,7 +855,11 @@ impl Loop {
                 .modify(lc.inner.stream().as_raw_fd(), id, read, write)
             {
                 self.finalize(id, Some(Error::Io(e)));
+                return;
             }
+        }
+        if arm {
+            self.arm_write(id);
         }
     }
 
@@ -794,6 +870,9 @@ impl Loop {
             return;
         };
         if let Some(t) = lc.idle_timer.take() {
+            self.wheel.cancel(t);
+        }
+        if let Some(t) = lc.write_timer.take() {
             self.wheel.cancel(t);
         }
         self.poller.delete(lc.inner.stream().as_raw_fd());

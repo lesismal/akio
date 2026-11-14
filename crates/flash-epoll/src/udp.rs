@@ -84,7 +84,7 @@ struct UdpLoop {
     local: Option<SocketAddr>,
     acceptor: Option<Arc<dyn DynAcceptor>>,
     peers: HashMap<SocketAddr, u64>,
-    conns: HashMap<u64, Peer>,
+    conns: flash_core::IdMap<Peer>,
     /// Server-socket peers with datagrams waiting for socket space.
     blocked: HashSet<u64>,
     /// Dialed connections with datagrams waiting for socket space.
@@ -150,7 +150,7 @@ impl UdpLoop {
             local,
             acceptor,
             peers: HashMap::new(),
-            conns: HashMap::new(),
+            conns: Default::default(),
             blocked: HashSet::new(),
             blocked_own: HashSet::new(),
             want_write: false,

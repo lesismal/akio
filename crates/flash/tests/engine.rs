@@ -597,6 +597,65 @@ fn idle_timeout_closes_silent_connections_only() {
     stop(&e);
 }
 
+#[test]
+fn write_timeout_closes_connections_that_stop_reading() {
+    const BIG: usize = 8 << 20;
+    struct H(Arc<Mutex<Vec<std::io::ErrorKind>>>);
+    impl Handler for H {
+        fn on_data(&mut self, c: &Conn<Self>, _data: &[u8]) {
+            let _ = c.send(&vec![7u8; BIG]);
+        }
+        fn on_close(&mut self, _c: &Conn<Self>, err: Option<Error>) {
+            if let Some(Error::Io(e)) = err {
+                self.0.lock().unwrap().push(e.kind());
+            }
+        }
+    }
+    let kinds = Arc::new(Mutex::new(Vec::new()));
+    let k = kinds.clone();
+    let e = Engine::builder()
+        .config(Config {
+            write_timeout: Some(Duration::from_millis(500)),
+            ..cfg()
+        })
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(2)
+                .serve(fn_acceptor(move |_c: &Conn<H>| H(k.clone()))),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    // `stalled` asks for 8 MiB and never reads; `reader` reads it all, which takes longer than
+    // the timeout in total but makes progress all along.
+    let mut stalled = connect(addr);
+    stalled.write_all(b"go").unwrap();
+    let mut reader = connect(addr);
+    reader.write_all(b"go").unwrap();
+    let mut got = 0;
+    let mut b = vec![0u8; 64 << 10];
+    while got < BIG {
+        let n = match reader.read(&mut b) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue, // io_uring in-process
+            r => r.unwrap(),
+        };
+        assert!(n > 0, "reader closed after {got} bytes");
+        got += n;
+        if got % (1 << 20) < n {
+            thread::sleep(Duration::from_millis(150)); // 8 x 150 ms in all: past the timeout
+        }
+    }
+    let t0 = std::time::Instant::now();
+    while kinds.lock().unwrap().is_empty() && t0.elapsed() < Duration::from_secs(5) {
+        thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(*kinds.lock().unwrap(), vec![std::io::ErrorKind::TimedOut]);
+    drop(stalled);
+    stop(&e);
+}
+
 /// Two listeners of one engine, each on its own backend, serving independently.
 #[cfg(target_os = "linux")]
 #[test]

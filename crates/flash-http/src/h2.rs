@@ -253,12 +253,24 @@ impl std::ops::DerefMut for Locked<'_> {
     }
 }
 
+thread_local! {
+    /// An empty buffer with capacity, swapped with `Core::dropped` on unlock so that dropping
+    /// finished streams outside the lock allocates nothing in the steady state (a fresh `Vec`
+    /// per finished stream cost ~9% of h2c throughput).
+    static SPARE_DROPPED: std::cell::Cell<Vec<Stream>> = const { std::cell::Cell::new(Vec::new()) };
+}
+
 impl Drop for Locked<'_> {
     fn drop(&mut self) {
         let Some(mut g) = self.0.take() else { return };
-        let dropped = std::mem::take(&mut g.dropped);
+        if g.dropped.is_empty() {
+            return;
+        }
+        let mut dropped = SPARE_DROPPED.take();
+        std::mem::swap(&mut dropped, &mut g.dropped);
         drop(g);
-        drop(dropped);
+        dropped.clear(); // runs the streams' drops, outside the lock
+        SPARE_DROPPED.set(dropped);
     }
 }
 
@@ -946,6 +958,10 @@ impl Core {
     /// A whole header block arrived: decode it (always: HPACK state must stay in step), then treat
     /// it as request headers or trailers.
     fn headers_complete(&mut self, sid: u32, block: Vec<u8>, end_stream: bool) -> R<Vec<Action>> {
+        // Huffman strings are decoded here (loona-hpack's decoder is very slow at it).
+        let Ok(block) = crate::hpack::strip_huffman(&block) else {
+            return Err(Fail::Conn(err::COMPRESSION));
+        };
         let decoded = catch_unwind(AssertUnwindSafe(|| self.dec.decode(&block)));
         let Ok(Ok(list)) = decoded else {
             return Err(Fail::Conn(err::COMPRESSION));

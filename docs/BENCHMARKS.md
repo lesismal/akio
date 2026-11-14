@@ -1,91 +1,219 @@
-# Benchmarks (M2 report)
+# Benchmarks
 
 English | [简体中文](BENCHMARKS.zh-CN.md)
 
-Measured 2026-11-14 on commit `34ab5d5`. **Read the caveats first**: this is one machine, one set of
-runs, and no variance was recorded. Treat differences under ~10% as noise and the whole report as
-"same class or not", not as a ranking.
+Measured 2026-11-14 on the branch that follows commit `23d9c59` (the performance and memory pass
+described below). **Read the caveats first**: one VM on a laptop, shared with other busy jobs while
+these runs were taken. The spread between rounds was often ±20% and sometimes more; treat
+differences under ~20% in the comparison tables as noise and read them as "same class or not",
+not as a ranking. The before/after rows of the optimizations were measured separately, with the
+two builds interleaved, and are more trustworthy than the cross-library tables.
 
 ## Setup
 
-- Linux 6.12.5 (linuxkit, a Docker VM on an Apple-silicon Mac), aarch64, 14 vCPUs, loopback.
-- Server pinned to CPUs 0–3 (4 threads); load generator `echo-bench` pinned to CPUs 4–11
-  (8 client threads). Closed loop: every connection sends one message, waits for the reply, repeats.
-- 1 s warm-up, then 5 s × 3 runs per figure; the table shows the **median** req/s.
-- Servers, all with 4 threads and the same handler (echo, or the blocking handlers below):
-  - **flash-epoll**, **flash-uring**: `crates/flash/examples/bench-server` (`Backend::Epoll` / `IoUring`).
-  - **tokio**: `tools/bench-ref/tokio-ref`, multi-thread runtime with 4 workers, one task per
-    connection (UDP: one task looping on `recv_from`/`send_to`); TLS through tokio-rustls.
-  - **fib**: `tools/bench-ref/fib-ref`, default fib config (Go 1.27.3, `GOMAXPROCS` follows the
-    4-CPU affinity). fib has no TLS row because the reference server for it was not written.
-- TLS: TLS 1.3, rustls with the `ring` provider on both flash and tokio, self-signed certificate,
-  the client does not verify it, handshakes are completed before the measurement.
-- Reproduce: `tools/bench/run.sh` (see its header; the build steps are in the commit that added it).
+- One Docker VM (linuxkit, Linux 6.12.5, aarch64) on an Apple-silicon Mac, **14 vCPUs shared with
+  other jobs**: while these runs were taken, other agents' containers (fuzzers, test suites, an
+  Autobahn server) kept roughly 4–5 vCPUs busy, unpinned, so they also ran on the benchmark's
+  CPUs. Loopback only, no NIC.
+- Server pinned to CPUs 0–3 with 4 I/O threads (tokio: 4 workers; fib: `GOMAXPROCS` follows the
+  4-CPU affinity). Load generators pinned to CPUs 4–11 with 8 threads.
+- Every figure is the **median of 3 rounds** of 5 s after a 1 s warm-up (the A/B rows: 5 rounds).
+  A round runs every case against every server in turn, each run against a freshly started
+  server, so a burst of noise lands on one run of each server rather than on one server. The `±`
+  after a figure is half the min–max spread of the rounds, as a percentage of the median.
+- Before each run the scripts sample `/proc/stat` and wait (up to 15 s) while more than 45% of the
+  VM is busy; the other jobs rarely left it idler than that, so this only skips the worst bursts.
+  Work outside the VM (on the macOS host) is invisible to it.
+- Servers (the same handlers everywhere):
+  - **flash-epoll / flash-uring**: `crates/flash/examples/bench-server.rs` (TCP/TLS/UDP echo) and
+    `crates/flash-http/examples/http-bench.rs` (HTTP/1.1 + h2c `/plaintext`, `/json`, WebSocket
+    echo on `/ws`), with `Backend::Epoll` / `Backend::IoUring`.
+  - **tokio**: `tools/bench-ref/tokio-ref` (tokio 1, one task per connection, 64 KiB read buffer;
+    TLS through tokio-rustls; WebSocket through tokio-tungstenite 0.28).
+  - **hyper**: `tools/bench-ref/hyper-ref` (hyper 1 + hyper-util `auto`: HTTP/1.1 and h2c).
+  - **fib**: `tools/bench-ref/fib-ref` (Go 1.27.3, fib's default config; TLS through `fib/tls`,
+    HTTP through `fib/http`, WebSocket through `fib/websocket`).
+- TLS: TLS 1.3 with an ECDSA P-256 self-signed certificate on every server (rustls + ring for flash
+  and tokio, crypto/tls for fib); the client does not verify the certificate.
+- Load generators: `wrk` 4.1 (HTTP/1.1; pipelining through a Lua script that writes 16 requests at
+  a time), `h2load` 1.64 (HTTP/2 prior knowledge, 64 connections × 16 streams, 8 threads), and the
+  in-repo `tools/echo-bench` (closed-loop echo for TCP/TLS/UDP/WebSocket, full-handshake TLS rate,
+  and the connection holder of the memory runs).
+- JSON: hyper serialises with serde_json, fib with `encoding/json`, flash with a small hand-written
+  serializer in the example (flash has no JSON dependency); all three build the body per request.
 
-## Results (requests per second, median of 3)
+## Reproducing
 
-### TCP echo
+```sh
+docker build -t flash-bench tools/bench          # rust:1 + wrk + h2load + perf + Go
+PRIV=1 tools/bench/docker.sh 'tools/bench/build.sh && tools/bench/all.sh /tmp/t/results'
+```
+
+`docker.sh` mounts the repository at `/w` and the fib checkout (`../fib` next to the main flash
+checkout, or `$FIB_DIR`) at `/fib`, keeps the cargo registry, the target directory and the Go
+modules in volumes, raises `nofile` to 1M and sets loopback-friendly sysctls (ephemeral ports
+10000–65535, above the servers' ports; `tcp_tw_reuse`). The pieces also run on their own:
+`echo.sh [tcp,udp,tls,tlshs]`, `http.sh [plaintext,pipelined,json,h2,ws]`, `mem.sh
+[proto:kind:conns ...]`, and `profile.sh <h1|pipelined|h2|ws|tcp> <server>` (perf; needs
+`PRIV=1`). The knobs (`SRV_CPUS`, `CLI_CPUS`, `THREADS`, `SECS`, `RUNS`, `KINDS`, and `BASE_DIR`
+for A/B runs against the binaries of another revision, which appear as `base-epoll` /
+`base-uring`) are described in `tools/bench/lib.sh`; `summarize.py` turns the raw TSV rows into the
+tables below.
+
+## Results
+
+The cross-library tables were taken one change before the final state of the branch (before the
+ordered-response state became lazily allocated, a memory-only change); the memory table and the
+HTTP A/B rows below are from the final state.
+
+### TCP echo (requests/s; message size × connections)
 
 | Load | flash-epoll | flash-uring | tokio | fib |
 |---|---:|---:|---:|---:|
-| 1 connection, 64 B | 35,255 | 35,189 | 34,714 | 31,581 |
-| 64 connections, 64 B | 532,588 | 524,265 | **628,231** | 479,041 |
-| 512 connections, 64 B | **1,030,385** | 957,627 | 858,882 | 625,446 |
-| 64 connections, 16 KiB | 422,596 | 400,807 | **489,537** | 77,559 |
+| 64 B × 64 | 413,656 (±21%) | 463,209 (±9%) | 392,648 (±36%) | 402,295 (±4%) |
+| 64 B × 256 | 774,759 (±15%) | 818,456 (±14%) | 596,489 (±29%) | 538,260 (±2%) |
+| 64 B × 1024 | 704,040 (±54%) | 842,623 (±23%) | 438,664 (±20%) | 523,915 (±15%) |
+| 1 KiB × 64 | 404,664 (±8%) | 463,423 (±21%) | 399,786 (±27%) | 301,771 (±1%) |
+| 1 KiB × 256 | 634,095 (±21%) | 620,271 (±49%) | 609,872 (±43%) | 422,758 (±4%) |
+| 1 KiB × 1024 | 1,098,164 (±20%) | 1,077,873 (±26%) | 542,744 (±34%) | 487,955 (±14%) |
+| 16 KiB × 64 | 395,935 (±4%) | 309,907 (±37%) | 406,491 (±20%) | 83,666 (±10%) |
+| 16 KiB × 256 | 613,344 (±24%) | 493,820 (±14%) | 602,560 (±14%) | 141,787 (±14%) |
+| 16 KiB × 1024 | 619,031 (±24%) | 488,161 (±13%) | 326,409 (±20%) | 190,626 (±12%) |
 
-### TLS 1.3 echo, 64 connections, 1 KiB
+### UDP echo, TLS
 
-| flash-epoll | flash-uring | tokio |
-|---:|---:|---:|
-| 468,314 | 500,861 | 510,563 |
-
-### UDP echo, 64 sockets, 64 B
-
-| flash | tokio | fib |
-|---:|---:|---:|
-| 578,665 | 437,746 | 565,353 |
-
-### 5 ms of blocking work per request, 256 connections
-
-| Handler | flash-epoll | flash-uring | tokio | fib |
+| Case | flash-epoll | flash-uring | tokio | fib |
 |---|---:|---:|---:|---:|
-| blocks on the I/O thread / runtime worker | 549 | 548 | 631 | n/a |
-| work on the logical pool / `spawn_blocking` | 32,078 | 31,802 | 36,870 | n/a |
-| fib: handler blocks (fib runs handlers on its worker pool) | | | | 31,415 |
+| UDP echo, 64 B × 64 sockets (req/s) | 484,282 (±30%) | – | 359,668 (±2%) | 529,350 (±1%) |
+| TLS 1.3 echo, 1 KiB × 64 (req/s) | 345,810 (±20%) | 406,917 (±19%) | 312,620 (±33%) | 269,039 (±4%) |
+| TLS 1.3 full handshakes/s (32 clients) | 27,627 (±34%) | 27,743 (±35%) | 31,553 (±26%) | 9,142 (±32%) |
 
-Four threads each blocking 5 ms can serve at most 800 req/s, which is what the first row shows;
-256 connections each waiting 5 ms cap the second row at ~51,000 req/s.
+UDP runs on flash's epoll UDP loop for both backends. The tokio UDP reference is one task looping
+on `recv_from`/`send_to`, the simplest tokio server, not its best case. The handshake rate is
+probably limited by the client (8 threads doing the client half of every handshake) for flash and
+tokio; it shows that flash's TLS layer adds nothing visible over tokio-rustls, not a server maximum.
+
+### HTTP/1.1 and HTTP/2 (requests/s, 256 connections for HTTP/1.1)
+
+| Case | flash-epoll | flash-uring | hyper | fib |
+|---|---:|---:|---:|---:|
+| `GET /plaintext` | 769,559 (±29%) | 752,350 (±21%) | 546,363 (±16%) | 486,917 (±8%) |
+| `GET /plaintext`, pipelined ×16 | 3,619,101 (±14%) | 3,233,575 (±20%) | 1,575,798 (±12%) | 4,644,526 (±20%) |
+| `GET /json` | 689,533 (±41%) | 756,059 (±13%) | 552,799 (±18%) | 496,978 (±7%) |
+| h2c, 64 conns × 16 streams | 1,414,553 (±7%) | 1,398,819 (±15%) | 705,017 (±8%) | 2,593,261 (±11%) |
+
+In the quieter A/B runs below, flash reached 1.1–1.2 M req/s for plaintext and JSON and 1.8 M req/s
+for h2c: the table above caught busier moments of the host.
+
+### WebSocket echo (messages/s, 256 connections)
+
+| Message | flash-epoll | flash-uring | tokio-tungstenite | fib |
+|---|---:|---:|---:|---:|
+| 64 B | 840,572 (±17%) | 825,552 (±19%) | 640,534 (±24%) | 557,493 (±8%) |
+| 1 KiB | 736,543 (±21%) | 587,501 (±23%) | 673,068 (±22%) | 536,800 (±6%) |
+
+### Memory per connection
+
+Server RSS growth divided by the connections held open (`tools/bench/mem.sh`): the client opens the
+connections (spread over 127.0.0.1–4, so one client holds more than 64k), takes each through one
+exchange, then keeps them all idle while the server's `VmRSS` is read. Bytes per connection,
+10,000 connections unless noted. tokio's per-connection read buffer is set to 4 KiB for these runs
+(`TOKIO_REF_BUF`, a memory-conscious tokio server would do the same); the 64 KiB of its throughput
+runs would be mostly untouched memory anyway.
+
+| Connection state | flash-epoll | flash-uring | tokio | hyper | fib |
+|---|---:|---:|---:|---:|---:|
+| idle TCP (connected only) | 600 | 603 | 4,993 | – | 428 |
+| idle TCP, **100,000 connections** | 562 | 564 | 5,008 | – | 275 |
+| TCP after one 64 B echo | 607 | 6,674 ¹ | 4,993 | – | 471 |
+| HTTP/1.1 keep-alive after one request | 912 | 7,000 ¹ | – | 17,432 | 1,629 |
+| WebSocket after upgrade + one echo | 1,660 | 7,759 ¹ | 137,297 ² | – | 485 |
+| TLS 1.3 after handshake + one echo | 8,526 | 14,598 ¹ | 15,086 | – | 6,661 |
+
+¹ Not per connection: io_uring receives into a provided-buffer ring of 1024 × 16 KiB per I/O thread
+(64 MiB for 4 threads), allocated up front and touched page by page as the ring cycles. With 10,000
+connections receiving once each, most of it gets touched (~60 MB here), which shows up as ~6 KB
+"per connection"; it is a fixed ceiling that does not grow with more connections. The idle row,
+where nothing was received, shows flash-uring's real per-connection cost: the same as epoll.
+
+² tokio-tungstenite with its default configuration keeps large per-connection read/write buffers.
+
+The 100k-connection run (the M1 leftover) completed for every server: flash held 100,000 idle
+connections in ~55 MB of RSS above its baseline.
+
+## Performance and memory pass
+
+What was profiled and changed, with before/after numbers from interleaved A/B runs of the two
+builds (`BASE_DIR`, 5 rounds × 5 s for HTTP, 3 rounds for the rest; the earlier build is the code at
+`23d9c59` with only the benchmark example added).
+
+### Profiles (perf, `tools/bench/profile.sh`)
+
+- **h2c**: 65% of the server's CPU was in HPACK header decoding: `loona-hpack` builds its Huffman
+  decoding table (nested hash maps of 257 codes) from scratch for every Huffman-coded string.
+  After the fix the profile is led by malloc/free (~25%) and the kernel.
+- **HTTP/1.1 plaintext**: 74% kernel (loopback TCP, wakeups), 26% user space, of which allocation
+  (~4%), clock reads (~4%: five `clock_gettime` per request), request parsing and response encoding
+  were the largest items.
+- **TCP echo**: kernel-bound; no user-space item above 1%.
+
+### Changes and their effect
+
+| Change | Where | Effect (median, A/B) |
+|---|---|---|
+| Huffman decoding with a table built once (`flash_http::hpack`); header blocks are rewritten to raw literals before `loona-hpack`, which keeps the dynamic table and validation; the same decoder serves QPACK | flash-http, flash-h3 | h2c: **292k → 1.87M req/s** (epoll, ×6.4), 287k → 1.82M (uring) |
+| One clock read per callback instead of three: the loop caches "now" per batch of events and chains callback timing (slow-callback detection) from the previous callback's end; the response-time middleware reads the clock only when installed | flash-epoll, flash-uring, flash-core, flash-http | with the next three rows: HTTP/1.1 plaintext **1.10M → 1.20M** (epoll, +9%), 1.14M → 1.19M (uring, +4%); JSON 1.14M → 1.20M (epoll, +5%), 1.16M → 1.19M (uring, +3%); pipelined ×16 3.76M → 4.40M (epoll, 3 rounds, +17%) |
+| `Headers` keeps all names and values in one string: two allocations per header set instead of two per field; response encoding without `fmt`, the date header written from the per-second cache without a clone | flash-http | (included above) |
+| `fill` of the response that is first in line sends directly, without a one-element `Vec<Part>` | flash-core | (included above) |
+| Connection tables hashed with a multiply instead of SipHash (`IdMap`) | flash-core, backends | (included above) |
+| Send queue and response-slot queue hold their first element inline, so a connection keeps no queue allocation between requests; the ordered-response state is allocated on first use (HTTP) | flash-core | TCP after one echo **739 → 607 B** (−18%); idle TCP 554 → 600 B (+8%, the inline head), 100k idle 533 → 562 B |
+| HTTP session: the WebSocket, HTTP/2 and request-body states are boxed (session 736 → 200 bytes) | flash-http | HTTP keep-alive **1,624 → 912 B** (−44%); WebSocket 2,085 → 1,660 B (−20%) |
+
+TCP echo throughput was unchanged within noise (64 B × 64: 511k → 517k; 64 B × 1024: 1.01M →
+1.01M). TLS memory was unchanged (8.5 KB per connection, mostly rustls' own buffers).
+
+After merging the later `main` (chaos fixes, lints, fuzzing), the same A/B against the pre-merge
+build showed HTTP/1.1 plaintext unchanged (1.11M vs 1.12M) and memory unchanged (within 10 bytes
+per connection), but h2c 9% slower (1.82M → 1.67M): the h2 session now drops finished streams after
+releasing its lock, through a `Vec` that was allocated afresh for every finished stream. Reusing a
+per-thread spare buffer for it brought h2c back level with the pre-merge build (1.39M vs 1.41M in
+a busier moment of the host).
+
+### New: write timeout
+
+`Config::write_timeout` (default off): a connection that has output queued and makes no write
+progress for that long is closed with `ErrorKind::TimedOut` (counted in `write_timeouts`). The
+existing `idle_timeout` already acts as the read timeout (only inbound data counts as activity).
+Both backends; the check runs on the idle-timeout wheel only while output is queued, so it costs
+nothing on connections that keep up.
 
 ## What this says
 
-- **Same class as fib and tokio for TCP echo.** flash is ahead of fib at every TCP load measured
-  here (1.1× at 64 connections, 1.6× at 512, and far ahead at 16 KiB), and ahead of tokio at 512
-  connections but **behind tokio at 64 connections (−15%) and at 16 KiB (−14%)**. The M1 target
-  "same class as fib's echo" is met on this machine; "better than tokio" is not shown.
-- **io_uring is not faster than epoll here.** In this echo workload flash-uring was equal or up to
-  ~7% slower, except TLS where it was ~7% faster. The earlier single-thread server-bound run
-  (docs/DEV-PLAN.md) showed io_uring ahead by 10–25%, so the advantage appears when the server, not
-  the client, is the bottleneck. With 4 server threads and 8 client threads the client side is
-  probably limiting the 512-connection figures, which makes them an upper bound for the server,
-  not a precise value.
-- **The logical pool does what it is for.** A handler that blocks the I/O thread drops flash (and
-  tokio) from hundreds of thousands to ~550 req/s; moving the same work to `spawn_blocking` gives
-  ~58× that, within 15% of tokio's `spawn_blocking`.
-- fib's blocking row is high because fib calls handlers on a worker pool by default; flash's default
-  is the opposite (inline, non-blocking) by design, so blocking code has to be moved explicitly.
-- UDP: flash and fib are level; the tokio reference is a single `recv_from` loop, the simplest
-  possible tokio server, so that row says little about tokio's best case.
+- **TCP echo**: flash is level with tokio and fib at 64 connections and ahead of both from 256
+  connections on, by 1.3–2× at 1024 connections. io_uring is level with epoll for small messages
+  and behind it for 16 KiB messages; that gap was not investigated.
+- **HTTP/1.1**: 1.25–1.6× hyper and fib without pipelining. With 16 pipelined requests flash does
+  2.3× hyper but is behind fib (~0.8×); why was not investigated.
+- **HTTP/2**: 2× hyper after the HPACK fix (it was 0.4× before), still behind fib (~0.55×); the
+  next costs are per-request allocations in the h2 session.
+- **WebSocket**: ahead of tokio-tungstenite and fib for both message sizes.
+- **Memory**: an idle flash connection costs ~0.6 KB, 8× less than tokio with a 4 KiB buffer and
+  1.4–2× fib's. HTTP keep-alive connections are now below fib (0.9 vs 1.6 KB) and far below hyper
+  (17 KB). WebSocket connections cost 3.4× fib's (fib stores less per upgraded connection), TLS
+  connections 1.3× fib's (rustls buffers).
 
 ## Caveats
 
-- One VM on a laptop-class Mac: scheduler noise, a shared host, loopback only (no NIC, no real
-  network latency). Absolute numbers are not meaningful; ratios are indicative.
-- No per-run spread was stored, only the median. A rerun can move any single cell by several percent.
-  Earlier smoke runs (1 s × 1) had flash-uring TLS slower than flash-epoll; this run has the
-  opposite order: they are within noise of each other.
-- The gaps flash vs tokio at 64 connections and 16 KiB were **not profiled**; no cause is claimed.
-- fib's 16 KiB result (about a fifth of the others) was not investigated; it may be a default
-  buffer setting, not a property of fib in general. fib was not tuned.
-- Memory, latency percentiles, connection-count scaling beyond 512, and TLS handshake rate were not
-  measured. The TLS figures are record throughput on established connections.
-- monoio was not run.
+- One shared VM on a laptop-class Mac; other jobs were running throughout. The `±` columns are the
+  honest error bars: several cells moved by 30–50% between rounds. Absolute numbers are not
+  meaningful; ratios are indicative, and only large ones.
+- Loopback only: no NIC, no real network latency, client and server compete for the same memory
+  bandwidth and kernel locks.
+- The client side limits some cells (TLS handshakes, the 1024-connection echo rows), which then are
+  lower bounds for the server.
+- fib and the reference servers were not tuned; fib's 16 KiB echo figure (a fifth of the others)
+  was not investigated.
+- Not measured: latency percentiles, QUIC/HTTP/3 against quic-go (optional, not done), memory
+  under sustained load (only after an exchange), monoio.
+
+Previous report: the M2 TCP echo report (commit `34ab5d5`) is in the git history of this file.

@@ -88,7 +88,7 @@ enum State {
     Head,
     /// A buffered body being collected before dispatch.
     Body {
-        req: Request,
+        req: Box<Request>,
         kind: Kind,
         body: Vec<u8>,
         keep_alive: bool,
@@ -112,7 +112,7 @@ pub struct Session<S> {
     buf: Vec<u8>,
     state: State,
     /// Set once a request was upgraded to WebSocket; the connection then speaks only that.
-    ws: Option<WsSession>,
+    ws: Option<Box<WsSession>>,
     /// Set once a request handed the connection over as raw bytes.
     raw: Option<(crate::raw::RawConn, Box<dyn crate::raw::RawHandler>)>,
     /// Set once the connection speaks HTTP/2.
@@ -307,7 +307,7 @@ impl<S: Service> Session<S> {
                         req.trailers = dec.trailers();
                     }
                     req.body = body;
-                    self.dispatch(c, req, keep_alive);
+                    self.dispatch(c, *req, keep_alive);
                 }
                 State::Stream {
                     ctx, kind, scratch, ..
@@ -435,7 +435,7 @@ impl<S: Service> Session<S> {
         }
         if !stream {
             self.state = State::Body {
-                req,
+                req: Box::new(req),
                 kind,
                 body: Vec::new(),
                 keep_alive,
@@ -494,7 +494,7 @@ impl<S: Service> Session<S> {
         if let Some(up) = ctx.take_upgrade() {
             let mut ws = WsSession::new(c.inner().clone(), &up.cfg, up.pmd, up.handler);
             ws.open();
-            self.ws = Some(ws);
+            self.ws = Some(Box::new(ws));
             return;
         }
         if !keep_alive {
@@ -550,4 +550,15 @@ fn starts_with_http1_method(b: &[u8]) -> bool {
     ]
     .iter()
     .any(|m| b.starts_with(m))
+}
+
+#[cfg(test)]
+mod size_tests {
+    /// Every keep-alive connection holds one `Session`; the WebSocket / HTTP/2 / body states are
+    /// boxed so an idle HTTP/1 connection does not pay for them (it was 736 bytes).
+    #[test]
+    fn idle_session_stays_small() {
+        let n = size_of::<super::Session<crate::Router>>();
+        assert!(n <= 256, "Session is {n} bytes");
+    }
 }
