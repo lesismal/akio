@@ -2,7 +2,9 @@
 //!
 //!     cargo run --release -p only-deflate --example bench [FILE...]
 //!
-//! Without files it uses generated corpora; with files, each file is one corpus.
+//! Generated corpora (text, JSON, random) come first, then each file is one more corpus
+//! (`BENCH_GENERATED=0` leaves the generated ones out). `BENCH_LEVELS=1,6,9` picks the levels
+//! (default 1..=9).
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -140,23 +142,50 @@ fn flate2_inflate(data: &[u8], n: usize) -> Vec<u8> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let corpora: Vec<(String, Vec<u8>)> = if args.is_empty() {
-        vec![
-            ("text 4 MB".into(), gen_text(4 << 20)),
-            ("json 4 MB".into(), gen_json(4 << 20)),
-            ("random 1 MB".into(), gen_random(1 << 20)),
-        ]
-    } else {
-        args.iter()
-            .map(|p| (p.clone(), std::fs::read(p).expect("read file")))
-            .collect()
-    };
+    let mut corpora: Vec<(String, Vec<u8>)> = Vec::new();
+    if std::env::var("BENCH_GENERATED").as_deref() != Ok("0") {
+        corpora.push(("text 4 MB".into(), gen_text(4 << 20)));
+        corpora.push(("json 4 MB".into(), gen_json(4 << 20)));
+        corpora.push(("random 1 MB".into(), gen_random(1 << 20)));
+    }
+    for p in &args {
+        let data = std::fs::read(p).expect("read file");
+        let name = std::path::Path::new(p)
+            .file_name()
+            .map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned());
+        corpora.push((format!("{name} {:.1} MB", data.len() as f64 / 1e6), data));
+    }
+    let levels: Vec<u32> = std::env::var("BENCH_LEVELS").map_or_else(
+        |_| (1..=9).collect(),
+        |v| {
+            v.split(',')
+                .map(|x| x.trim().parse().expect("level"))
+                .collect()
+        },
+    );
+    if let Ok(spec) = std::env::var("BENCH_PROFILE") {
+        // Profiling aid: `deflate:LEVEL` or `inflate:LEVEL`, only-deflate alone on the first
+        // corpus, for a few seconds.
+        let (op, level) = spec.split_once(':').expect("op:level");
+        let level: u32 = level.parse().expect("level");
+        let data = &corpora[0].1;
+        let packed = flate2_raw(level, data);
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            if op == "deflate" {
+                std::hint::black_box(compress(Format::Raw, Level::new(level), data));
+            } else {
+                std::hint::black_box(decompress(Format::Raw, &packed, data.len()).unwrap());
+            }
+        }
+        return;
+    }
     println!(
         "| corpus | level | ratio only | ratio zlib-rs | deflate MB/s only | deflate MB/s zlib-rs | inflate MB/s only | inflate MB/s zlib-rs |"
     );
     println!("|---|---|---|---|---|---|---|---|");
     for (name, data) in &corpora {
-        for level in [1u32, 6, 9] {
+        for &level in &levels {
             let ours = compress(Format::Raw, Level::new(level), data);
             let theirs = flate2_raw(level, data);
             assert_eq!(flate2_inflate(&ours, data.len()), *data);

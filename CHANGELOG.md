@@ -354,6 +354,35 @@ userspace stack is now `only`'s own, in `crates/only-dpdk/src/net` (safe Rust,
   `stack-bench`; A/B against the smoltcp version in docs/BENCHMARKS.md.
 - `deny.toml`: the 0BSD license and the `bitflags@1` duplicate (both smoltcp's) are gone.
 
+### Changed (performance): only-deflate at zlib-rs speed (DEV-PLAN performance pass)
+
+`only-deflate` (still `#![forbid(unsafe_code)]`, no dependencies, no SIMD) now compresses at
+0.94-1.48x the speed of flate2 with the zlib-rs backend (was 0.25-0.9x) with output at most 0.5%
+larger (identical in 36 of 45 level × corpus cases), and decompresses at 0.82-1.23x (was
+0.7-0.85x); measured on x86-64, tables in docs/BENCHMARKS.md. The streams are as valid as before
+for every window size (8 laid out as 9); no API change.
+
+- Compression uses zlib-ng's / zlib-rs's level table and match finders: a hash of four bytes
+  (three at level 9), `quick` at level 1 (one probe per position, fixed-code blocks written
+  directly, replaced by stored blocks when those are smaller), `fast` at level 2, `medium` at
+  levels 3-6 (greedy, from level 5 looking one match ahead), lazy `slow` at 7-9 with zlib-ng's
+  chain-jumping search at level 9. Candidates are compared 8 bytes at a time with a cheap
+  rejection first. **Level 1 output is now up to 40% larger than before** (like zlib-ng's and
+  zlib-rs's level 1) and 1.7-2.9x faster; levels 2-9 are 1.03-4x faster, with output between
+  12% smaller and 3.4% larger than before.
+- `Deflater::reset` (permessage-deflate without context takeover) clears only the hash slots a
+  short stream used instead of the whole table; stored blocks are written straight from the
+  window; Huffman code construction counts lengths without store-forwarding stalls.
+- Decompression: a fast path refills 64 bits without branches and decodes up to three literals
+  or a length/distance pair per refill; matches are copied 8 or 16 bytes at a time (also for
+  overlapping matches); decoding tables of complete codes are no longer cleared first.
+- permessage-deflate echo (`pmd_echo`, level 6, context takeover) against zlib-rs: 1.84x for 64 B
+  messages, 1.04x for 512 B, 1.00x for 4 KiB, 0.98x for 64 KiB (was 1.36x / 0.62x / 0.75x /
+  0.54x), with the same bytes on the wire as zlib-rs.
+- The `bench` example covers levels 1..=9 (`BENCH_LEVELS`), generated corpora plus files and a
+  profiling mode (`BENCH_PROFILE`); a new streaming test covers every level, window size and
+  flush kind.
+
 ### Added
 
 - `only-protobuf` and `only-protobuf-build` (DEV-PLAN "no third-party dependencies", wave A):

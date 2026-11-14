@@ -196,7 +196,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### 性能优化阶段（第 D 波之后；完成后再考虑发布 1.0.0）
 - [ ] `only-crypto` CPU 指令加速：SHA-NI / ARMv8 SHA、PMULL / PCLMULQDQ GHASH、CRC32 指令（TLS 大块传输与 BitTorrent 哈希），更快的 P-256（专用域运算）与 RSA（乘法），X25519
-- [ ] `only-deflate` 匹配器提速（4 字节哈希、medium 策略），缩小与 zlib-rs 0.25–0.6 倍的差距
+- [x] `only-deflate` 匹配器提速（4 字节哈希、medium 策略），缩小与 zlib-rs 0.25–0.6 倍的差距：采用 zlib-ng 的级别表与 quick/fast/medium/slow 策略（级别 9 用 3 字节哈希与跳链搜索）、每次比较 8 字节、不保留上下文时的廉价重置；解码器快速路径（64 位补充比特、每次补充解码三个字面量或一个长度/距离对、分块复制匹配）。仍为不用 SIMD 的安全 Rust。在 x86-64 上与 flate2/zlib-rs 相比：各级别输出最多大 0.5%（45 组级别 × 语料中 36 组完全相同），压缩 0.94–1.48 倍，解压 0.82–1.23 倍（存储块 0.42 倍），permessage-deflate 回显在 64 B / 512 B / 4 KiB / 64 KiB 时为 1.84 / 1.04 / 1.00 / 0.98 倍（见 docs/BENCHMARKS.zh-CN.md）。级别 1 现在与 zlib-ng 一样以压缩率换速度（输出比之前最多大 40%）。未完成：存储块仍经过窗口（复制两次）
 - [ ] 自研替换完成后重新剖析 TLS / QUIC / HTTP 热路径；h2 与 pipelined HTTP/1 对比 fib
 - [ ] 在空闲机器（DPDK 用真实网卡）上重跑基准并更新 `docs/BENCHMARKS.md`
 

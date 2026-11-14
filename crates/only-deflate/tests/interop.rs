@@ -659,3 +659,65 @@ fn repeated_random_messages_with_context_takeover() {
         }
     }
 }
+
+#[test]
+fn streaming_every_level_window_and_flush() {
+    // Each strategy (quick, fast, medium, slow, level 9's search) keeps state across calls:
+    // pieces of awkward sizes with every kind of flush, at every window size. The stream
+    // decodes with ours (with the compressor's window) and with zlib-rs, a decoder starting at
+    // a full flush gets the rest, and a reset (the cheap hash reset of short streams) gives a
+    // valid stream again.
+    let mut data = text(30_000, 11);
+    data.extend_from_slice(&random(5_000, 12));
+    data.extend_from_slice(&binary(20_000));
+    data.extend_from_slice(&random(600, 13).repeat(40));
+    for level in 1..=9 {
+        for bits in [8u8, 9, 12, 15] {
+            for (pattern, step) in [(0usize, 1usize), (1, 7), (2, 1000), (3, 4093)] {
+                // Byte-at-a-time input is slow: a prefix is enough.
+                let input = if step == 1 { &data[..3000] } else { &data[..] };
+                let mut d = Deflater::with_window_bits(Format::Raw, Level::new(level), bits);
+                let mut wire = Vec::new();
+                let mut full_at = None;
+                for (i, piece) in input.chunks(step).enumerate() {
+                    let flush = match (pattern + i) % 5 {
+                        0 => Flush::Sync,
+                        1 if i % 3 == 0 => Flush::Full,
+                        _ => Flush::None,
+                    };
+                    d.compress(piece, &mut wire, flush);
+                    if flush == Flush::Full {
+                        full_at = Some((wire.len(), ((i + 1) * step).min(input.len())));
+                    }
+                }
+                d.compress(&[], &mut wire, Flush::Finish);
+                let what = format!("level {level} bits {bits} step {step}");
+                let mut inf = Inflater::with_window_bits(Format::Raw, bits.max(9));
+                let mut back = Vec::new();
+                let p = inf.decompress_vec(&wire, &mut back, usize::MAX).unwrap();
+                assert!(p.done && back == input, "{what}");
+                let mut z = flate2::Decompress::new(false);
+                let mut zb = Vec::with_capacity(input.len() + 64);
+                z.decompress_vec(&wire, &mut zb, flate2::FlushDecompress::Finish)
+                    .unwrap();
+                assert!(zb == input, "zlib-rs: {what}");
+                if let Some((at, consumed)) = full_at {
+                    let mut inf = Inflater::new(Format::Raw);
+                    let mut rest = Vec::new();
+                    let p = inf
+                        .decompress_vec(&wire[at..], &mut rest, usize::MAX)
+                        .unwrap();
+                    assert!(p.done && rest == input[consumed..], "full flush: {what}");
+                }
+                d.reset();
+                let mut again = Vec::new();
+                d.compress(&input[..500], &mut again, Flush::Finish);
+                assert_eq!(
+                    decompress(Format::Raw, &again, 500).unwrap(),
+                    &input[..500],
+                    "after reset: {what}"
+                );
+            }
+        }
+    }
+}
