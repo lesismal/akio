@@ -233,6 +233,49 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
 `Connection::queued_bytes` 统计尚未发出的字节数。未实现：0-RTT、发送 ECN 标记、客户端主动迁移、
 preferred_address、QUIC v2。
 
+### 变更：`only-webrtc` 使用自研 WebRTC 协议栈（DEV-PLAN 第 D 波；不再依赖 str0m、dimpl、p256）
+
+`only-webrtc` 在 API 不变的前提下（`RtcServer`、`Endpoint`、`Peer`、`PeerHandler` 及其顺序保证、
+`ChannelConfig`、`Codec`、`SdpChanges`、`Event`、`RtcError` 等）改为运行在自研、sans-io、无第三方
+依赖的 WebRTC 协议栈上。新增四个内部 crate，均为 `#![forbid(unsafe_code)]`，构建于 `only-crypto`
+之上：
+
+- `only-ice`：ICE（RFC 8445）完整 agent 与 ICE-lite：候选优先级与 foundation、带节奏控制与重传的
+  检查列表、peer-reflexive 候选、常规提名、角色冲突（487）、在获得远端凭据之前到达的检查、consent
+  freshness（RFC 7675）、trickle（RFC 8838）与重启；STUN 使用 `only-turn` 的编解码。RFC 5769 向量；
+  与 pion/ice 互通。
+- `only-srtp`：SRTP/SRTCP（RFC 3711、RFC 7714），支持 AES-CM-HMAC-SHA1-80/32 与
+  AEAD-AES-128/256-GCM、ROC 估计、防重放窗口；RFC 3711 与 RFC 7714 向量，并与 pion/srtp 逐字节比对。
+- `only-rtp`：RTP 头扩展（单字节与双字节形式）、RTCP（SR、RR、SDES、BYE、通用 NACK、PLI、FIR、REMB、
+  传输层拥塞控制反馈）、带 NACK + RTX（RFC 4588）、报告与 RTT 的收发流、TWCC 与基于时延和丢包的
+  带宽估计；Opus、G.711、G.722、VP8、VP9、H.264（RFC 6184）、H.265（RFC 7798）与 AV1 的载荷格式，
+  以及无抖动缓冲延迟的组帧器。与 pion/rtp、pion/rtcp、pion/interceptor 逐字节比对。
+- `only-sctp`：基于 DTLS 的 SCTP（RFC 8261；RFC 9260 的核心部分），拥塞控制、快速重传、PR-SCTP
+  FORWARD-TSN（RFC 3758）、流重置（RFC 6525）、DCEP 数据通道（RFC 8831/8832）；经 UDP 与
+  pion/sctp 1.8 和 1.12 互通。
+
+`only-webrtc` 本身新增了 SDP offer/answer（BUNDLE、rtcp-mux、编解码器 / RTX / rtcp-fb / extmap 协商、
+ssrc 与 FID 组、setup 角色与指纹、ICE-lite、候选、sctp-port / max-message-size、重新协商与 ICE 重启）
+以及把各层粘合起来的 sans-io peer。测试覆盖模拟丢包链路（ICE + DTLS + SCTP + 媒体），并与 pion（数据
+通道、Opus/VP8 回显、PLI、TURN 中继，两个 offer 方向）、fib 的 Go WebRTC（双向）以及无头 Chrome
+（`tools/interop/webrtc/browser.sh`：数据通道，Chrome 的摄像头与麦克风媒体回显后由其解码，两个 offer
+方向）互通。新增 fuzz 目标 `ice_stun`、`srtp_unprotect`、`rtp_rtcp`、`rtp_codec`、`sctp_packet`；
+`webrtc_sdp` 现在驱动新的 SDP 代码。
+
+迁移说明：
+
+- `only-webrtc` 的 `unstable` feature 现在是预留的空 feature：`only_webrtc::str0m`、
+  `crypto_provider_str0m`、`Peer::with_rtc`、`RtcConfig::with_str0m` 与 `OtherEvent::as_str0m`
+  已移除（它们本就不在 semver 承诺内）。
+- 受保护的 API 不变，只是 `Event`、`OtherEvent`、`RtcConfig`、`RtcError` 与 `SdpChanges` 现在实现了
+  `RefUnwindSafe`（`RtcError` 还实现了 `UnwindSafe`）：只增加了 auto trait，没有减少。
+- 行为：默认不再提供 H.265（用 `RtcConfig::enable_h265(true)` 开启）；DTLS 只支持 1.2（浏览器与 pion
+  协商的都是 1.2）；应答方取 DTLS 客户端角色（`a=setup:active`）；`OtherEvent` 的 `Debug` 输出变了
+  （它从来不是稳定的）；`Endpoint` 仍没有 TURN 客户端（与以前一样，relay 候选需在别处获得）。
+- 依赖：str0m、dimpl、p256 / ecdsa / elliptic-curve、它们引入的 RustCrypto crate 以及 rand 0.9 已退出
+  库的依赖图；only-dtls 与 dimpl 的内存互通测试已删除。p256/p384 0.13 仍是 only-crypto 交叉检查的
+  dev-dependency，因此 `deny.toml` 中对 RUSTSEC-2026-0387（crypto-bigint）的忽略现在只涉及它们。
+
 ### 变更：自研 HTTP 编解码（不再依赖 httparse、loona-hpack、regex）
 
 DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。
@@ -291,6 +334,29 @@ DEV-PLAN“不依赖三方库”第 B 波。公开 API 不变；行为、errno �
   `dpdk_ipv4`、`dpdk_tcp`、`dpdk_udp`、`dpdk_icmp`、`dpdk_stack`。基准示例 `stack-bench`；与 smoltcp
   版本的 A/B 对比见 docs/BENCHMARKS.zh-CN.md。
 - `deny.toml`：去掉了 smoltcp 带来的 0BSD 许可证与 `bitflags@1` 重复项。
+
+### 变更（性能）：only-deflate 达到 zlib-rs 的速度（DEV-PLAN 性能优化）
+
+`only-deflate`（仍为 `#![forbid(unsafe_code)]`，无依赖，不用 SIMD）的压缩速度现在为使用 zlib-rs
+后端的 flate2 的 0.94-1.48 倍（之前为 0.25-0.9 倍），输出最多大 0.5%（45 组级别 × 语料中 36 组完全
+相同）；解压为 0.82-1.23 倍（之前为 0.7-0.85 倍）。在 x86-64 上测量，表格见 docs/BENCHMARKS.zh-CN.md。
+对每种窗口大小（8 按 9 布局）输出的流与之前一样有效；API 不变。
+
+- 压缩采用 zlib-ng / zlib-rs 的级别表与匹配策略：四字节哈希（级别 9 为三字节）；级别 1 为 `quick`
+  （每个位置只探测一次，直接写出固定编码块，若存储块更小则改用存储块），级别 2 为 `fast`，级别 3-6 为
+  `medium`（贪心，级别 5 起向前多看一个匹配），级别 7-9 为惰性的 `slow`，级别 9 使用 zlib-ng 的跳链
+  搜索。候选匹配先做廉价的排除检查，再每次比较 8 字节。**级别 1 的输出现在比之前最多大 40%**（与
+  zlib-ng、zlib-rs 的级别 1 相同），速度为之前的 1.7-2.9 倍；级别 2-9 快 1.03-4 倍，输出比之前小 12%
+  到大 3.4% 不等。
+- `Deflater::reset`（不保留上下文的 permessage-deflate）对短流只清空它用过的哈希槽，而不是整张表；
+  存储块直接从窗口写出；构造 Huffman 编码时统计码长不再受存储转发停顿影响。
+- 解压：快速路径无分支地补充 64 位比特，每次补充后解码最多三个字面量或一个长度/距离对；匹配以 8 或
+  16 字节为单位复制（重叠匹配也是）；完整编码的解码表不再预先清零。
+- permessage-deflate 回显（`pmd_echo`，级别 6，保留上下文）与 zlib-rs 相比：64 B 消息 1.84 倍，
+  512 B 1.04 倍，4 KiB 1.00 倍，64 KiB 0.98 倍（之前为 1.36 / 0.62 / 0.75 / 0.54 倍），线上字节与
+  zlib-rs 相同。
+- `bench` 示例覆盖级别 1..=9（`BENCH_LEVELS`）、生成的语料加上传入的文件，并提供剖析模式
+  （`BENCH_PROFILE`）；新的流式测试覆盖每个级别、窗口大小与刷新方式。
 
 ### 新增
 

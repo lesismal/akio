@@ -113,7 +113,7 @@ Engine::builder()
 | 异步 HTTP 客户端（h1/h2/h3/ws） | ✓ | P1 | M4–M5 | 回调 / future 两种结果通道 |
 | Prefork（多进程 SO_REUSEPORT） | ✓ | P2 | M6 | Rust 无 GC，收益小，降级为可选 |
 | 流媒体（RTMP/RTSP/SRT/FLV/HLS/WHIP/WHEP） | ✓ | P2 | M7 | 体量大，拆独立 crate |
-| WebRTC（ICE/DTLS-SRTP/DataChannel/TURN） | ✓ | P2 | M7 | 评估 str0m 等 sans-io 实现 |
+| WebRTC（ICE/DTLS-SRTP/DataChannel/TURN） | ✓ | P2 | M7 | 自研 sans-io 协议栈（DEV-PLAN 第 D 波） |
 | BitTorrent（含 DHT/uTP/MSE） | ✓ | P2 | M7 | 独立 crate，最后做 |
 | eBPF 加速 | — | P1 | M5 | 见 2.5 |
 | DPDK 后端 | — | P2 | M6 | 见 2.5 |

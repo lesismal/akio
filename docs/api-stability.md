@@ -28,7 +28,7 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 | Tier | Crates | Promise |
 |---|---|---|
 | Public | `only`, `only-core`, `only-log`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-ebpf`, `only-prefork`, `only-turn`, `only-webrtc`, `only-media` | Full semver for their public API (below). |
-| Internal | `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-uring`, `only-crypto`, `only-x509`, `only-dtls`, `only-deflate` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `only` / `only-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `only-core` and `only`. |
+| Internal | `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-uring`, `only-crypto`, `only-x509`, `only-dtls`, `only-srtp`, `only-rtp`, `only-sctp`, `only-ice`, `only-deflate` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `only` / `only-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `only-core` and `only`. |
 | Experimental | `only-dpdk`, and the `dpdk` / `dpdk-pmd` features of `only` (`Backend::Dpdk`, `only::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/only-dpdk.txt` only makes changes visible. |
 
 `tools/` and `fuzz/` are not published.
@@ -46,12 +46,12 @@ Not covered:
   `only_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
 - the `fuzzing` cargo features and the `fuzzing` modules they enable (entry points for `fuzz/`).
 - the `unstable` cargo features (`only`, `only-tls`, `only-quic`, `only-webrtc`) and
-  everything they enable: raw access to the wrapped dependencies (`only_webrtc::str0m`,
-  `Peer::with_rtc`, `RtcConfig::with_str0m`, `OtherEvent::as_str0m` ...). Since only-tls runs
-  its own TLS (DEV-PLAN wave C) and only-quic its own QUIC (wave D), their `unstable` features
-  enable nothing: they are kept, reserved and empty, so that `only/unstable` keeps building;
-  `only::tls::rustls`, `from_rustls`, `as_rustls`, `only_quic::proto`, `from_quinn` and
-  `as_quinn_mut` are gone. Their signatures change whenever the wrapped crate is upgraded,
+  everything they enable. Since only-tls runs its own TLS (DEV-PLAN wave C) and only-quic its
+  own QUIC and only-webrtc its own WebRTC stack (wave D), their `unstable` features enable
+  nothing: they are kept, reserved and empty, so that `only/unstable` keeps building;
+  `only::tls::rustls`, `from_rustls`, `as_rustls`, `only_quic::proto`, `from_quinn`,
+  `as_quinn_mut`, `only_webrtc::str0m`, `crypto_provider_str0m`, `Peer::with_rtc`,
+  `RtcConfig::with_str0m` and `OtherEvent::as_str0m` are gone. Their signatures change whenever the wrapped crate is upgraded,
   which may happen in a minor release. Anything public that cannot be promised yet goes under
   `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
 - the `prost` feature of `only-grpc` (the `codec::Message` implementation for prost messages;
@@ -82,12 +82,13 @@ only with the `log` cargo feature, which is outside the promise (above). The log
 kept like metric names: added in minor releases, renamed or removed only in a major one.
 
 TLS is implemented in `only-tls` itself (on `only-crypto` and `only-x509`), with no
-third-party dependency, and so is QUIC in `only-quic` (on `only-tls` and `only-crypto`). The
-pre-1.0 dependencies that still do protocol work (str0m; prost) are
+third-party dependency, and so are QUIC in `only-quic` (on `only-tls` and `only-crypto`) and
+WebRTC (wave D): `only-webrtc` runs on the internal `only-ice`, `only-dtls`, `only-srtp`,
+`only-rtp` and `only-sctp`, none of whose types appear in its API. The pre-1.0 dependency that
+still does protocol work (prost) is
 **wrapped**: the covered API uses `only`'s own types instead (`only::tls::{ServerConfig,
 ClientConfig, Certificate, PrivateKey, RootCerts, Error}`, `only_quic::{ServerConfig,
 ClientConfig, TransportConfig, StreamId, Dir, Side, ConnectionError, ConnectionStats}`,
-`only_webrtc::{ChannelId, Mid, Pt, Codec, MediaData, RtcConfig, SdpChanges, Event, ...}`,
 `only_grpc::codec::Message`). Upgrading them, or replacing them with in-house implementations,
 is not a breaking change. They are reachable only through the `unstable` features and the
 `prost` feature above, which are excluded from the promise.

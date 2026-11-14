@@ -1,0 +1,16 @@
+
+candidate:2 1 udp 0*18
+
+
+
+candidate:1 2 udp 0*181
+n
+dd
+
+
+candidate:1 1 udp 0*181
+n
+dd
+ciaate:
+
+candidate:2 1 udp 0*181a

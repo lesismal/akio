@@ -52,3 +52,26 @@ pub(crate) const fn reverse_bits(code: u32, len: u32) -> u32 {
         code.reverse_bits() >> (32 - len)
     }
 }
+
+/// Counts of each code length (0..=15) in `lens`, with `count[0]` set to 0. Four interleaved
+/// counters avoid the store-to-load stall of incrementing one counter for runs of equal
+/// lengths.
+#[inline]
+pub(crate) fn length_counts(lens: &[u8]) -> [u16; 16] {
+    let mut c = [[0u16; 16]; 4];
+    let mut chunks = lens.chunks_exact(4);
+    for q in &mut chunks {
+        c[0][usize::from(q[0] & 15)] += 1;
+        c[1][usize::from(q[1] & 15)] += 1;
+        c[2][usize::from(q[2] & 15)] += 1;
+        c[3][usize::from(q[3] & 15)] += 1;
+    }
+    for &l in chunks.remainder() {
+        c[0][usize::from(l & 15)] += 1;
+    }
+    let mut count = [0u16; 16];
+    for (i, n) in count.iter_mut().enumerate().skip(1) {
+        *n = c[0][i] + c[1][i] + c[2][i] + c[3][i];
+    }
+    count
+}

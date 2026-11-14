@@ -215,6 +215,61 @@ are examined. (Before, only-http's HTTP/2 path already decoded Huffman strings i
 raw literals to loona-hpack, so the h2c gain over the previous release is smaller than the
 Huffman rows suggest.)
 
+## Deflate (only-deflate vs flate2 / zlib-rs)
+
+`cargo run --release -p only-deflate --example bench [FILE...]` and `--example pmd_echo`, measured
+2026-11-15 on a quiet x86-64 host (AMD Ryzen 7 7800X3D, Ubuntu 24.04, Rust 1.100, other services
+stopped, pinned to one core with `taskset`), best of 3 rounds of at least 200 ms. "Before" is the
+wave A matcher (zlib's greedy/lazy with a 3-byte hash), "after" the performance pass (4-byte
+hash, zlib-ng's quick/fast/medium/slow strategies and level table, 8-byte compares, zlib-ng's
+chain-jumping search at level 9; a decoder fast path with 64-bit refills and chunked match
+copies). Corpora: generated English-like text (4 MB), JSON lines (4 MB), random bytes (1 MB), the
+repository's Rust sources (4.2 MB) and glibc's `libc.so.6` (2.1 MB). Inflate decodes zlib-rs's
+output of the same level. zlib-rs is flate2 1.1 with the `zlib-rs` backend (it uses AVX2/BMI2
+paths chosen at run time; only-deflate is `#![forbid(unsafe_code)]` without SIMD).
+
+| corpus | level | ratio only (before) | ratio zlib-rs | deflate MB/s only before → after | zlib-rs | inflate MB/s only before → after | zlib-rs |
+|---|---|---|---|---|---|---|---|
+| text | 1 | 2.200 (3.109) | 2.201 | 191 → 549 | 372 | 695 → 862 | 974 |
+| text | 3 | 3.601 (3.472) | 3.601 | 78 → 206 | 196 | 840 → 1 105 | 1 092 |
+| text | 6 | 4.058 (3.993) | 4.062 | 22 → 38 | 39 | 1 218 → 1 512 | 1 227 |
+| text | 9 | 4.186 (4.186) | 4.186 | 5 → 15 | 14 | 1 121 → 1 285 | 1 238 |
+| JSON | 1 | 4.838 (5.794) | 4.839 | 611 → 1 249 | 1 125 | 1 811 → 2 157 | 2 319 |
+| JSON | 3 | 7.552 (6.614) | 7.552 | 276 → 459 | 463 | 1 944 → 2 275 | 2 518 |
+| JSON | 6 | 7.604 (7.588) | 7.604 | 126 → 211 | 215 | 1 948 → 2 282 | 2 484 |
+| JSON | 9 | 7.761 (8.024) | 7.761 | 50 → 124 | 117 | 2 001 → 2 270 | 2 542 |
+| random | 1 | 1.000 (1.000) | 0.948 | 82 → 138 | 147 | 365 → 528 | 645 |
+| random | 6 | 1.000 (1.000) | 1.000 | 79 → 81 | 74 | 15 624 → 15 357 | 36 428 |
+| Rust sources | 1 | 2.720 (3.328) | 2.721 | 234 → 491 | 392 | 735 → 845 | 897 |
+| Rust sources | 3 | 3.817 (3.624) | 3.817 | 150 → 209 | 199 | 819 → 959 | 964 |
+| Rust sources | 6 | 4.079 (4.100) | 4.088 | 58 → 99 | 100 | 883 → 1 028 | 1 015 |
+| Rust sources | 9 | 4.132 (4.137) | 4.132 | 15 → 60 | 53 | 938 → 1 070 | 1 056 |
+| libc.so.6 | 1 | 1.724 (2.058) | 1.724 | 133 → 285 | 254 | 498 → 577 | 679 |
+| libc.so.6 | 3 | 2.109 (2.127) | 2.109 | 94 → 129 | 123 | 481 → 557 | 651 |
+| libc.so.6 | 6 | 2.160 (2.222) | 2.160 | 37 → 87 | 84 | 502 → 582 | 672 |
+| libc.so.6 | 9 | 2.242 (2.233) | 2.242 | 12 → 41 | 27 | 505 → 570 | 662 |
+
+Across all levels 1..=9 and the five corpora (45 cases) the output is never more than 0.5%
+larger than zlib-rs's: identical in 36 cases, up to 0.5% larger with the medium strategy at
+levels 5 and 6 on text and sources, smaller on random data at level 1 (a fixed-code block that
+does not pay off becomes a stored block). Compression runs at 0.94–1.48x zlib-rs's speed
+(geometric mean 1.08x; before: 0.25–0.9x), decompression at 0.82–1.23x (geometric mean 0.95x),
+except stored blocks at 0.42x (they are copied twice, into the window and out of it). The levels now mean what they mean in zlib-ng and zlib-rs: level 1 compresses
+1.7–2.9x faster than before with output up to 40% larger (zlib's level 1 searched more); levels
+2–9 compress 1.03–4x faster, with output from 12% smaller (text and JSON at levels 2–4) to 3.4%
+larger (binary data, and JSON at level 9) than before. Decompression is 1.1–1.45x faster than
+before.
+
+permessage-deflate echo (`pmd_echo`: client deflate → server inflate → server deflate → client
+inflate, level 6, context takeover, JSON-like messages):
+
+| message | before (echoes/s) | after | zlib-rs | after / zlib-rs | wire bytes after (before) / zlib-rs |
+|---|---|---|---|---|---|
+| 64 B | 478 180 | 643 130 | 349 455 | 1.84 | 5 (5) / 5 |
+| 512 B | 50 005 | 82 218 | 78 843 | 1.04 | 80 (83) / 80 |
+| 4 KiB | 13 020 | 17 110 | 17 192 | 1.00 | 481 (545) / 481 |
+| 64 KiB | 766 | 1 388 | 1 409 | 0.98 | 6 897 (6 721) / 6 897 |
+
 ## Userspace TCP/IP stack (only-dpdk): own stack vs smoltcp
 
 `cargo run --release -p only-dpdk --example stack-bench` (public API only, so the same file runs

@@ -5,7 +5,6 @@
 #     the host's openssl instead.
 #   - pion/dtls v3 (Go; pion/main.go): every SRTP profile, ECDSA and RSA suites, keying
 #     material compared.
-# The str0m `dimpl` stack is covered by `cargo test -p only-dtls --test dimpl`.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 W=$(mktemp -d)

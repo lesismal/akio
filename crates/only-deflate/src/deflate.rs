@@ -1,59 +1,75 @@
-//! Streaming compression: LZ77 with hash chains (greedy for the fast levels, lazy matching for
-//! the others, with zlib's level parameters), and blocks coded with whichever is smallest of a
-//! dynamic Huffman code (length-limited), the fixed code, or stored.
+//! Streaming compression: LZ77 over a hash of the next four bytes, with one of four match
+//! finders chosen by the level (as zlib-ng and zlib-rs do): `quick` (level 1: one probe, the
+//! fixed code written directly), `fast` (level 2: greedy), `medium` (levels 3..=6: greedy with
+//! a look one match ahead) and `slow` (levels 7..=9: lazy matching). Blocks are coded with
+//! whichever is smallest of a dynamic Huffman code (length-limited), the fixed code, or stored.
 
 use crate::checksum::{Adler32, Crc32};
 use crate::tables::{
-    CL_ORDER, DIST_BASE, DIST_EXTRA, LEN_BASE, LEN_EXTRA, fixed_lit_lens, reverse_bits,
+    CL_ORDER, DIST_BASE, DIST_EXTRA, LEN_BASE, LEN_EXTRA, fixed_lit_lens, length_counts,
+    reverse_bits,
 };
 use crate::{Flush, Format, Level};
 
 const MIN_MATCH: usize = 3;
+/// Shortest match the finders look for (the hash covers four bytes).
+const WANT_MIN_MATCH: usize = 4;
 const MAX_MATCH: usize = 258;
 /// Lookahead needed to find a full-length match after the current position.
 const MIN_LOOKAHEAD: usize = MAX_MATCH + MIN_MATCH + 1;
-/// Matches of length 3 further away than this are not worth it.
-const TOO_FAR: usize = 4096;
+/// Bytes compared per candidate at most: a match plus the overrun of the last 8-byte compare.
+const CMP: usize = MAX_MATCH + 8;
+/// Zero bytes after the window, so that hashing and comparing near its end stay in bounds.
+const WINDOW_PAD: usize = CMP + 8;
 /// Symbols per block (zlib's `lit_bufsize - 1` at the default memory level).
 const SYMS_PER_BLOCK: usize = 16383;
 const MAX_STORED: usize = 65535;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strategy {
+    Stored,
+    Quick,
+    Fast,
+    Medium,
+    Slow,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Config {
     /// Reduce the chain search when the previous match is at least this long.
     good: u16,
-    /// Lazy levels: do not look for a better match after one this long. Fast levels: insert
-    /// the strings of matches up to this long into the hash table.
+    /// Slow: do not look for a better match after one this long. Fast and medium: insert the
+    /// strings of matches up to this long (16 times this for medium) into the hash table.
     lazy: u16,
     /// Stop searching at a match this long.
     nice: u16,
     /// Longest hash chain walked.
     chain: u16,
-    lazy_matching: bool,
+    strategy: Strategy,
 }
 
-const fn cfg(good: u16, lazy: u16, nice: u16, chain: u16, lazy_matching: bool) -> Config {
+const fn cfg(good: u16, lazy: u16, nice: u16, chain: u16, strategy: Strategy) -> Config {
     Config {
         good,
         lazy,
         nice,
         chain,
-        lazy_matching,
+        strategy,
     }
 }
 
-/// zlib's configuration table.
+/// The configuration table of zlib-ng and zlib-rs.
 const CONFIGS: [Config; 10] = [
-    cfg(0, 0, 0, 0, false), // stored
-    cfg(4, 4, 8, 4, false),
-    cfg(4, 5, 16, 8, false),
-    cfg(4, 6, 32, 32, false),
-    cfg(4, 4, 16, 16, true),
-    cfg(8, 16, 32, 32, true),
-    cfg(8, 16, 128, 128, true),
-    cfg(8, 32, 128, 256, true),
-    cfg(32, 128, 258, 1024, true),
-    cfg(32, 258, 258, 4096, true),
+    cfg(0, 0, 0, 0, Strategy::Stored),
+    cfg(0, 0, 0, 0, Strategy::Quick),
+    cfg(4, 4, 8, 4, Strategy::Fast),
+    cfg(4, 6, 16, 6, Strategy::Medium),
+    cfg(4, 12, 32, 24, Strategy::Medium),
+    cfg(8, 16, 32, 32, Strategy::Medium),
+    cfg(8, 16, 128, 128, Strategy::Medium),
+    cfg(8, 32, 128, 256, Strategy::Slow),
+    cfg(32, 128, 258, 1024, Strategy::Slow),
+    cfg(32, 258, 258, 4096, Strategy::Slow),
 ];
 
 /// Length symbol index (0..29) of `length - 3`.
@@ -101,12 +117,126 @@ static DIST_CODE: [u8; 512] = dist_code_table();
 
 #[inline(always)]
 fn dist_code(dist: usize) -> usize {
-    let d = dist - 1;
+    let d = (dist - 1) & 0x7fff;
     usize::from(if d < 256 {
         DIST_CODE[d]
     } else {
         DIST_CODE[256 + (d >> 7)]
     })
+}
+
+/// The four bytes at `i`, little endian.
+#[inline(always)]
+fn load32(w: &[u8], i: usize) -> u32 {
+    u32::from_le_bytes(<[u8; 4]>::try_from(&w[i..i + 4]).unwrap_or_default())
+}
+
+/// The eight bytes at `i`, little endian.
+#[inline(always)]
+fn load64(w: &[u8], i: usize) -> u64 {
+    u64::from_le_bytes(<[u8; 8]>::try_from(&w[i..i + 8]).unwrap_or_default())
+}
+
+/// The `CMP` bytes at `i` (the window is padded so that they exist for every position).
+#[inline(always)]
+fn cmp_window(w: &[u8], i: usize) -> &[u8; CMP] {
+    const ZERO: [u8; CMP] = [0; CMP];
+    <&[u8; CMP]>::try_from(&w[i..i + CMP]).unwrap_or(&ZERO)
+}
+
+/// Length of the common prefix of `a` and `b` given that the first `from` bytes are equal,
+/// 8 bytes at a time (at most `MAX_MATCH + 7`; callers clamp it).
+#[inline(always)]
+fn common_len(a: &[u8; CMP], b: &[u8; CMP], mut from: usize) -> usize {
+    while from < MAX_MATCH {
+        let x = load64(a, from) ^ load64(b, from);
+        if x != 0 {
+            return from + (x.trailing_zeros() / 8) as usize;
+        }
+        from += 8;
+    }
+    from
+}
+
+/// The hash of four bytes, `bits` wide.
+#[inline(always)]
+fn hash4(v: u32, bits: u32) -> usize {
+    (v.wrapping_mul(0x9E37_79B1) >> (32 - bits)) as usize
+}
+
+/// Bit output, least significant bit first, 32 bits at a time into the output `Vec`.
+#[derive(Clone, Copy, Debug, Default)]
+struct Bits {
+    buf: u64,
+    cnt: u32,
+}
+
+impl Bits {
+    /// Appends the low `n` bits of `v` (`n <= 32`, `v` without higher bits).
+    #[inline(always)]
+    fn put(&mut self, out: &mut Vec<u8>, v: u32, n: u32) {
+        self.buf |= u64::from(v) << self.cnt;
+        self.cnt += n;
+        if self.cnt >= 32 {
+            out.extend_from_slice(&(self.buf as u32).to_le_bytes());
+            self.buf >>= 32;
+            self.cnt -= 32;
+        }
+    }
+
+    /// Pads to a byte boundary and writes out everything.
+    fn align(&mut self, out: &mut Vec<u8>) {
+        while self.cnt > 0 {
+            out.push(self.buf as u8);
+            self.buf >>= 8;
+            self.cnt = self.cnt.saturating_sub(8);
+        }
+        self.buf = 0;
+    }
+
+    /// Writes `data` as stored blocks (split at 65535 bytes); `last` marks the final one.
+    fn stored(&mut self, data: &[u8], last: bool, out: &mut Vec<u8>) {
+        let mut chunks = data.chunks(MAX_STORED).peekable();
+        if chunks.peek().is_none() {
+            self.stored_one(&[], last, out);
+        }
+        while let Some(c) = chunks.next() {
+            let fin = last && chunks.peek().is_none();
+            self.stored_one(c, fin, out);
+        }
+    }
+
+    fn stored_one(&mut self, data: &[u8], last: bool, out: &mut Vec<u8>) {
+        self.put(out, u32::from(last), 3);
+        self.align(out);
+        let len = data.len() as u16;
+        out.extend_from_slice(&len.to_le_bytes());
+        out.extend_from_slice(&(!len).to_le_bytes());
+        out.extend_from_slice(data);
+    }
+}
+
+/// Bits of stored blocks for `len` bytes after `pending` bits of output.
+fn stored_cost(pending: u32, len: usize) -> u64 {
+    let pad = (8 - (u64::from(pending) + 3) % 8) % 8;
+    let extra_chunks = len.saturating_sub(1) / MAX_STORED;
+    3 + pad + 32 + 8 * len as u64 + 40 * extra_chunks as u64
+}
+
+/// A match (or, with `len < WANT_MIN_MATCH`, `len` literals) of the medium strategy.
+#[derive(Clone, Copy, Debug, Default)]
+struct Match {
+    pos: usize,
+    start: usize,
+    len: usize,
+}
+
+/// Where a block of the quick strategy started in this call's output, to replace it with
+/// stored blocks when that is smaller or to mark it as the final block.
+#[derive(Clone, Copy, Debug)]
+struct QuickMark {
+    out_len: usize,
+    bits: Bits,
 }
 
 /// A streaming DEFLATE / zlib / gzip compressor.
@@ -137,7 +267,10 @@ pub struct Deflater {
     wbits: u8,
     w_size: usize,
     hash_bits: u32,
-    /// `2 * w_size` bytes; positions in `head`/`prev` are indices into it (0 = none).
+    /// The bytes hashed: four, or three at level 9 (whose search finds three-byte matches).
+    hash_mask: u32,
+    /// `2 * w_size` bytes plus padding; positions in `head`/`prev` are indices into it (0 =
+    /// none).
     window: Vec<u8>,
     prev: Vec<u16>,
     head: Vec<u16>,
@@ -146,6 +279,9 @@ pub struct Deflater {
     lookahead: usize,
     /// Positions before `strstart` not yet inserted into the hash table (end of input).
     insert: usize,
+    /// The window slid since the last reset (positions of the stream are no longer all in
+    /// `window[..strstart + lookahead]`).
+    slid: bool,
     match_start: usize,
     match_length: usize,
     prev_length: usize,
@@ -157,8 +293,11 @@ pub struct Deflater {
     dfreq: [u32; 30],
     /// Level 0: input not yet emitted.
     raw: Vec<u8>,
-    bitbuf: u64,
-    bitcnt: u32,
+    bits: Bits,
+    /// Quick strategy: a fixed-code block is open.
+    quick_open: bool,
+    /// Quick strategy: the open block started in the current call.
+    quick_mark: Option<QuickMark>,
     started: bool,
     finished: bool,
     adler: Adler32,
@@ -198,7 +337,12 @@ impl Deflater {
             cfg: CONFIGS[usize::from(level)],
             wbits,
             w_size: 1 << lay,
-            hash_bits: u32::from(lay).clamp(10, 15),
+            hash_bits: u32::from(lay + 1).clamp(10, 16),
+            hash_mask: if CONFIGS[usize::from(level)].chain > 1024 {
+                0x00ff_ffff
+            } else {
+                u32::MAX
+            },
             window: Vec::new(),
             prev: Vec::new(),
             head: Vec::new(),
@@ -206,6 +350,7 @@ impl Deflater {
             block_start: 0,
             lookahead: 0,
             insert: 0,
+            slid: false,
             match_start: 0,
             match_length: 0,
             prev_length: 0,
@@ -215,8 +360,9 @@ impl Deflater {
             lfreq: [0; 286],
             dfreq: [0; 30],
             raw: Vec::new(),
-            bitbuf: 0,
-            bitcnt: 0,
+            bits: Bits::default(),
+            quick_open: false,
+            quick_mark: None,
             started: false,
             finished: false,
             adler: Adler32::new(),
@@ -229,7 +375,7 @@ impl Deflater {
 
     /// Starts a new stream: the history is forgotten, buffers are kept.
     pub fn reset(&mut self) {
-        self.head.fill(0);
+        self.clear_hash();
         self.strstart = 0;
         self.block_start = 0;
         self.lookahead = 0;
@@ -243,8 +389,9 @@ impl Deflater {
         self.lfreq = [0; 286];
         self.dfreq = [0; 30];
         self.raw.clear();
-        self.bitbuf = 0;
-        self.bitcnt = 0;
+        self.bits = Bits::default();
+        self.quick_open = false;
+        self.quick_mark = None;
         self.started = false;
         self.finished = false;
         self.adler = Adler32::new();
@@ -285,24 +432,27 @@ impl Deflater {
             self.compress_stored(input, out, flush);
         } else {
             if self.window.is_empty() {
-                self.window = vec![0; 2 * self.w_size];
+                self.window = vec![0; 2 * self.w_size + WINDOW_PAD];
                 self.prev = vec![0; self.w_size];
                 self.head = vec![0; 1 << self.hash_bits];
                 self.syms.reserve_exact(SYMS_PER_BLOCK);
             }
             out.reserve(input.len() / 2 + 64);
-            if self.cfg.lazy_matching {
-                self.deflate_slow(input, out, flush);
-            } else {
-                self.deflate_fast(input, out, flush);
+            // A quick block left open by an earlier call was written to another output.
+            self.quick_mark = None;
+            match self.cfg.strategy {
+                Strategy::Quick => self.deflate_quick(input, out, flush),
+                Strategy::Fast => self.deflate_fast(input, out, flush),
+                Strategy::Medium => self.deflate_medium(input, out, flush),
+                Strategy::Slow | Strategy::Stored => self.deflate_slow(input, out, flush),
             }
         }
         match flush {
             Flush::None => {}
             Flush::Sync | Flush::Full => {
-                self.stored_block(&[], false, out);
+                self.bits.stored(&[], false, out);
                 if flush == Flush::Full && self.level != 0 {
-                    self.head.fill(0);
+                    self.clear_hash();
                     if self.lookahead == 0 {
                         self.strstart = 0;
                         self.block_start = 0;
@@ -311,7 +461,7 @@ impl Deflater {
                 }
             }
             Flush::Finish => {
-                self.align(out);
+                self.bits.align(out);
                 self.write_trailer(out);
                 self.finished = true;
             }
@@ -359,93 +509,84 @@ impl Deflater {
 
     fn compress_stored(&mut self, input: &[u8], out: &mut Vec<u8>, flush: Flush) {
         self.raw.extend_from_slice(input);
-        let mut raw = std::mem::take(&mut self.raw);
+        let raw = &self.raw;
         let mut start = 0;
         while raw.len() - start > MAX_STORED {
-            self.stored_one(&raw[start..start + MAX_STORED], false, out);
+            self.bits
+                .stored_one(&raw[start..start + MAX_STORED], false, out);
             start += MAX_STORED;
         }
         match flush {
             Flush::None => {}
             Flush::Sync | Flush::Full => {
                 if start < raw.len() {
-                    self.stored_one(&raw[start..], false, out);
+                    self.bits.stored_one(&raw[start..], false, out);
                     start = raw.len();
                 }
             }
             Flush::Finish => {
-                self.stored_one(&raw[start..], true, out);
+                self.bits.stored_one(&raw[start..], true, out);
                 start = raw.len();
             }
         }
-        raw.drain(..start);
-        self.raw = raw;
-    }
-
-    // ---- bit output ---------------------------------------------------------------------------
-
-    #[inline(always)]
-    fn put(&mut self, out: &mut Vec<u8>, v: u32, n: u32) {
-        self.bitbuf |= u64::from(v) << self.bitcnt;
-        self.bitcnt += n;
-        if self.bitcnt >= 32 {
-            out.extend_from_slice(&(self.bitbuf as u32).to_le_bytes());
-            self.bitbuf >>= 32;
-            self.bitcnt -= 32;
-        }
-    }
-
-    fn align(&mut self, out: &mut Vec<u8>) {
-        while self.bitcnt > 0 {
-            out.push(self.bitbuf as u8);
-            self.bitbuf >>= 8;
-            self.bitcnt = self.bitcnt.saturating_sub(8);
-        }
-        self.bitbuf = 0;
-    }
-
-    /// Writes `data` as stored blocks (split at 65535 bytes); `last` marks the final one.
-    fn stored_block(&mut self, data: &[u8], last: bool, out: &mut Vec<u8>) {
-        let mut chunks = data.chunks(MAX_STORED).peekable();
-        if chunks.peek().is_none() {
-            self.stored_one(&[], last, out);
-        }
-        while let Some(c) = chunks.next() {
-            let fin = last && chunks.peek().is_none();
-            self.stored_one(c, fin, out);
-        }
-    }
-
-    fn stored_one(&mut self, data: &[u8], last: bool, out: &mut Vec<u8>) {
-        self.put(out, u32::from(last), 3);
-        self.align(out);
-        let len = data.len() as u16;
-        out.extend_from_slice(&len.to_le_bytes());
-        out.extend_from_slice(&(!len).to_le_bytes());
-        out.extend_from_slice(data);
+        self.raw.drain(..start);
     }
 
     // ---- LZ77 ---------------------------------------------------------------------------------
+
+    /// Empties the hash table. After a short stream only the slots of its positions are
+    /// cleared (permessage-deflate without context takeover resets after every message). A
+    /// slot missed because its string changed after it was inserted only leaves a stale
+    /// candidate, which the match search checks against the window like any other.
+    fn clear_hash(&mut self) {
+        let end = self.strstart + self.lookahead;
+        if self.slid || end >= self.head.len() / 8 {
+            self.head.fill(0);
+        } else {
+            let (bits, mask) = (self.hash_bits, self.hash_mask);
+            for pos in 0..end {
+                self.head[hash4(load32(&self.window, pos) & mask, bits)] = 0;
+            }
+        }
+        self.slid = false;
+    }
 
     fn max_dist(&self) -> usize {
         self.w_size - MIN_LOOKAHEAD
     }
 
-    #[inline(always)]
-    fn hash(&self, pos: usize) -> usize {
-        let w = &self.window;
-        let v = u32::from(w[pos]) | (u32::from(w[pos + 1]) << 8) | (u32::from(w[pos + 2]) << 16);
-        (v.wrapping_mul(0x9E37_79B1) >> (32 - self.hash_bits)) as usize
-    }
-
-    /// Inserts the string at `pos` and returns the previous head of its chain (0: none).
+    /// Inserts the string at `pos` and returns the previous position on its chain (0: none).
     #[inline(always)]
     fn insert_string(&mut self, pos: usize) -> usize {
-        let h = self.hash(pos);
+        let h = hash4(load32(&self.window, pos) & self.hash_mask, self.hash_bits);
         let old = self.head[h];
-        self.prev[pos & (self.w_size - 1)] = old;
+        let slot = pos & (self.w_size - 1);
+        if usize::from(old) == pos {
+            // Already inserted: its chain goes on from `prev`.
+            return usize::from(self.prev[slot]);
+        }
+        self.prev[slot] = old;
         self.head[h] = pos as u16;
         usize::from(old)
+    }
+
+    /// Inserts the strings at `from..to`.
+    #[inline(always)]
+    fn insert_range(&mut self, from: usize, to: usize) {
+        let bits = self.hash_bits;
+        let mask = self.hash_mask;
+        let wmask = self.w_size - 1;
+        let w = &self.window[..];
+        let head = &mut self.head[..];
+        let prev = &mut self.prev[..];
+        for pos in from..to {
+            let h = hash4(load32(w, pos) & mask, bits);
+            let old = head[h];
+            if usize::from(old) != pos {
+                prev[pos & wmask] = old;
+                head[h] = pos as u16;
+            }
+        }
     }
 
     /// Moves input into the window (sliding it by `w_size` when the position gets too far).
@@ -460,6 +601,7 @@ impl Deflater {
                 self.strstart -= w;
                 self.block_start -= w as isize;
                 self.insert = self.insert.min(self.strstart);
+                self.slid = true;
                 let wu = w as u16;
                 for h in &mut self.head {
                     *h = h.saturating_sub(wu);
@@ -477,16 +619,14 @@ impl Deflater {
             self.window[dst..dst + n].copy_from_slice(&input[..n]);
             *input = &input[n..];
             self.lookahead += n;
-            if self.lookahead + self.insert >= MIN_MATCH {
-                let mut s = self.strstart - self.insert;
-                while self.insert > 0 {
-                    self.insert_string(s);
-                    s += 1;
-                    self.insert -= 1;
-                    if self.lookahead + self.insert < MIN_MATCH {
-                        break;
-                    }
-                }
+            if self.insert > 0 && self.lookahead + self.insert >= WANT_MIN_MATCH {
+                // Strings left before `strstart` at the end of the previous input.
+                let n = self
+                    .insert
+                    .min(self.lookahead + self.insert - (WANT_MIN_MATCH - 1));
+                let s = self.strstart - self.insert;
+                self.insert_range(s, s + n);
+                self.insert -= n;
             }
             if self.lookahead >= MIN_LOOKAHEAD || input.is_empty() {
                 break;
@@ -494,69 +634,190 @@ impl Deflater {
         }
     }
 
-    /// Longest match at `strstart` along the chain starting at `cur`; sets `match_start`.
-    fn longest_match(&mut self, mut cur: usize) -> usize {
-        let mut chain = u32::from(self.cfg.chain);
+    /// Longest match at `strstart` along the chain starting at `cur`, longer than
+    /// `prev_length`; sets `match_start`. With `early_exit`, stops at the first candidate that
+    /// matches without improving.
+    #[inline(always)]
+    fn longest_match(&mut self, mut cur: usize, early_exit: bool) -> usize {
         let scan = self.strstart;
-        let mut best = self.prev_length;
-        let nice = usize::from(self.cfg.nice).min(self.lookahead);
         let max_len = MAX_MATCH.min(self.lookahead);
-        let limit = self.strstart.saturating_sub(self.max_dist());
-        if self.prev_length >= usize::from(self.cfg.good) {
-            chain >>= 2;
-        }
+        let mut best = self.prev_length.max(MIN_MATCH - 1);
         if best >= max_len {
             return max_len;
         }
-        let w = &self.window[..];
+        let mut chain = u32::from(self.cfg.chain);
+        if best >= usize::from(self.cfg.good) {
+            chain = (chain >> 2).max(1);
+        }
+        let nice = usize::from(self.cfg.nice).min(max_len);
+        let limit = scan.saturating_sub(self.max_dist());
         let wmask = self.w_size - 1;
-        let head2 = [w[scan], w[scan + 1]];
-        let mut end8 = eight(&w[(scan + best).saturating_sub(7)..]);
-        loop {
-            let m = cur;
-            // Cheap rejection: the bytes ending at the current best length must match (8 at a
-            // time once the best match is long enough), and so must the first two.
-            let candidate = if best >= 7 {
-                eight(&w[m + best - 7..]) == end8
+        let w = &self.window[..];
+        let prev = &self.prev[..];
+        let s = cmp_window(w, scan);
+        let s0 = load64(s, 0);
+        let mut s_end = load64(s, best.saturating_sub(7));
+        let mut match_start = self.match_start;
+        while cur < scan {
+            let m = cmp_window(w, cur);
+            // Cheap rejection first: the first eight bytes when the best match is shorter,
+            // otherwise the eight bytes ending one past the best length, then the first eight.
+            let len = if best < 8 {
+                let x = s0 ^ load64(m, 0);
+                if x != 0 {
+                    let l = (x.trailing_zeros() / 8) as usize;
+                    if l > best { Some(l) } else { None }
+                } else {
+                    Some(common_len(s, m, 8))
+                }
+            } else if load64(m, best - 7) == s_end && load64(m, 0) == s0 {
+                Some(common_len(s, m, 8))
             } else {
-                w[m + best] == w[scan + best]
+                None
             };
-            if candidate && [w[m], w[m + 1]] == head2 {
-                let mut len = 2;
-                while len + 8 <= max_len {
-                    let a = u64::from_le_bytes(eight(&w[m + len..]));
-                    let b = u64::from_le_bytes(eight(&w[scan + len..]));
-                    let x = a ^ b;
-                    if x != 0 {
-                        len += (x.trailing_zeros() / 8) as usize;
-                        break;
-                    }
-                    len += 8;
-                }
-                if len + 8 > max_len {
-                    while len < max_len && w[m + len] == w[scan + len] {
-                        len += 1;
-                    }
-                }
+            if let Some(len) = len {
                 let len = len.min(max_len);
                 if len > best {
-                    self.match_start = m;
+                    match_start = cur;
                     best = len;
                     if len >= nice {
                         break;
                     }
-                    if best >= 7 {
-                        end8 = eight(&w[scan + best - 7..]);
+                    if best >= 8 {
+                        s_end = load64(s, best - 7);
                     }
+                } else if early_exit {
+                    break;
                 }
             }
-            cur = usize::from(self.prev[m & wmask]);
             chain -= 1;
-            if cur <= limit || chain == 0 {
+            if chain == 0 {
+                break;
+            }
+            cur = usize::from(prev[cur & wmask]);
+            if cur <= limit {
                 break;
             }
         }
-        best.min(self.lookahead)
+        self.match_start = match_start;
+        best
+    }
+
+    /// [`Deflater::longest_match`] for level 9 (zlib-ng's `longest_match_slow`): candidates
+    /// are taken from the chain of whichever string inside the current best match (or at the
+    /// current position plus an offset) reaches furthest back, which skips candidates that
+    /// cannot be longer. A candidate on the chain of the string at offset `off` starts `off`
+    /// bytes before the chain position.
+    fn longest_match_slow(&mut self, cur0: usize) -> usize {
+        let scan = self.strstart;
+        let max_len = MAX_MATCH.min(self.lookahead);
+        let mut best = self.prev_length.max(MIN_MATCH - 1);
+        if best >= max_len {
+            return max_len;
+        }
+        let mut chain = u32::from(self.cfg.chain);
+        if best >= usize::from(self.cfg.good) {
+            chain = (chain >> 2).max(1);
+        }
+        let nice = usize::from(self.cfg.nice).min(max_len);
+        let limit_base = scan.saturating_sub(self.max_dist());
+        let wmask = self.w_size - 1;
+        let (bits, mask) = (self.hash_bits, self.hash_mask);
+        let w = &self.window[..];
+        let prev = &self.prev[..];
+        let head = &self.head[..];
+        let hash_at = |p: usize| usize::from(head[hash4(load32(w, p) & mask, bits)]);
+        let s = cmp_window(w, scan);
+        let s0 = load64(s, 0);
+        let mut s_end = load64(s, best.saturating_sub(7));
+        let mut match_start = self.match_start;
+        let mut cur = cur0;
+        let mut off = 0usize;
+        if best >= MIN_MATCH {
+            // Continuing a lazy search: start on the most distant chain of the strings inside
+            // the previous match length.
+            for i in 1..=best - 2 {
+                let pos = hash_at(scan + i);
+                if pos < cur {
+                    off = i;
+                    cur = pos;
+                }
+            }
+            if cur <= limit_base + off {
+                return best;
+            }
+        }
+        loop {
+            let start = cur - off;
+            if start >= scan {
+                break;
+            }
+            let m = cmp_window(w, start);
+            let len = if best < 8 {
+                let x = s0 ^ load64(m, 0);
+                if x != 0 {
+                    let l = (x.trailing_zeros() / 8) as usize;
+                    if l > best { Some(l) } else { None }
+                } else {
+                    Some(common_len(s, m, 8))
+                }
+            } else if load64(m, best - 7) == s_end && load64(m, 0) == s0 {
+                Some(common_len(s, m, 8))
+            } else {
+                None
+            };
+            let len = len.map_or(0, |l| l.min(max_len));
+            if len > best {
+                match_start = start;
+                best = len;
+                if len >= nice {
+                    break;
+                }
+                if best >= 8 {
+                    s_end = load64(s, best - 7);
+                }
+                if len > MIN_MATCH && start + len < scan {
+                    // Switch to the most distant chain of the strings inside this match.
+                    let mut next = start;
+                    off = 0;
+                    for i in 0..=len - MIN_MATCH {
+                        let pos = usize::from(prev[(start + i) & wmask]);
+                        if pos < next {
+                            if pos <= limit_base + i {
+                                self.match_start = match_start;
+                                return best;
+                            }
+                            next = pos;
+                            off = i;
+                        }
+                    }
+                    cur = next;
+                    // Or the chain of the string just before the end of the match, which
+                    // includes the byte that would make it longer.
+                    let o = len - (MIN_MATCH + 1);
+                    let pos = hash_at(scan + o);
+                    if pos < cur {
+                        if pos <= limit_base + o {
+                            self.match_start = match_start;
+                            return best;
+                        }
+                        cur = pos;
+                        off = o;
+                    }
+                    continue;
+                }
+            }
+            chain -= 1;
+            if chain == 0 {
+                break;
+            }
+            cur = usize::from(prev[cur & wmask]);
+            if cur <= limit_base + off {
+                break;
+            }
+        }
+        self.match_start = match_start;
+        best
     }
 
     #[inline(always)]
@@ -568,7 +829,7 @@ impl Deflater {
 
     #[inline(always)]
     fn tally_match(&mut self, dist: usize, len: usize) -> bool {
-        let lc = len - MIN_MATCH;
+        let lc = (len - MIN_MATCH) & 0xff;
         self.syms.push(((dist as u32) << 16) | lc as u32);
         self.lfreq[257 + usize::from(LEN_CODE[lc])] += 1;
         self.dfreq[dist_code(dist)] += 1;
@@ -580,7 +841,145 @@ impl Deflater {
         self.block_start = self.strstart as isize;
     }
 
-    /// Greedy matching (levels 1..=3).
+    /// Closes the input of a symbol-buffer strategy: the last block, or the pending symbols.
+    fn finish_input(&mut self, out: &mut Vec<u8>, flush: Flush) {
+        self.insert = self.strstart.min(WANT_MIN_MATCH - 1);
+        if flush == Flush::Finish {
+            self.end_block(true, out);
+        } else if !self.syms.is_empty() {
+            self.end_block(false, out);
+        }
+    }
+
+    /// The head of the chain for the string at `strstart` (inserting it), or 0 when there is
+    /// no usable candidate.
+    #[inline(always)]
+    fn candidate(&mut self) -> usize {
+        if self.lookahead < WANT_MIN_MATCH {
+            return 0;
+        }
+        let head = self.insert_string(self.strstart);
+        if head != 0 && head < self.strstart && self.strstart - head <= self.max_dist() {
+            head
+        } else {
+            0
+        }
+    }
+
+    // ---- quick (level 1) ----------------------------------------------------------------------
+
+    /// Opens a fixed-code block (not final; [`Deflater::quick_end`] may mark it so).
+    fn quick_start(&mut self, out: &mut Vec<u8>) {
+        self.quick_mark = Some(QuickMark {
+            out_len: out.len(),
+            bits: self.bits,
+        });
+        self.bits.put(out, 1 << 1, 3);
+        self.quick_open = true;
+        self.block_start = self.strstart as isize;
+    }
+
+    /// Ends the open fixed-code block: replaced by stored blocks when those are smaller (and
+    /// the block started in this call), and marked final when `last`.
+    fn quick_end(&mut self, last: bool, out: &mut Vec<u8>) {
+        if !self.quick_open {
+            if last {
+                // An empty final block.
+                self.bits.put(out, 1 | (1 << 1), 3);
+                self.bits.put(out, 0, 7);
+            }
+            return;
+        }
+        self.bits.put(out, 0, 7); // end of block
+        self.quick_open = false;
+        let Some(mark) = self.quick_mark.take() else {
+            if last {
+                self.bits.put(out, 1 | (1 << 1), 3);
+                self.bits.put(out, 0, 7);
+            }
+            self.block_start = self.strstart as isize;
+            return;
+        };
+        let used = (out.len() - mark.out_len) as u64 * 8 + u64::from(self.bits.cnt)
+            - u64::from(mark.bits.cnt);
+        let len = (self.strstart as isize - self.block_start) as usize;
+        if self.block_start >= 0 && stored_cost(mark.bits.cnt, len) < used {
+            out.truncate(mark.out_len);
+            self.bits = mark.bits;
+            let s = self.block_start as usize;
+            self.bits.stored(&self.window[s..s + len], last, out);
+        } else if last {
+            // Set BFINAL, the first bit of the block header.
+            let p = mark.out_len * 8 + mark.bits.cnt as usize;
+            if p < out.len() * 8 {
+                out[p / 8] |= 1 << (p % 8);
+            } else {
+                self.bits.buf |= 1 << (p - out.len() * 8);
+            }
+        }
+        self.block_start = self.strstart as isize;
+    }
+
+    /// One probe per position, matches of at least four bytes, the fixed code written
+    /// directly; the strings inside matches are not inserted.
+    fn deflate_quick(&mut self, mut input: &[u8], out: &mut Vec<u8>, flush: Flush) {
+        loop {
+            if self.lookahead < MIN_LOOKAHEAD {
+                if self.quick_open && self.strstart >= self.w_size + self.max_dist() {
+                    // The window slides: end the block while its data is still there.
+                    self.quick_end(false, out);
+                }
+                self.fill_window(&mut input);
+                if self.lookahead < MIN_LOOKAHEAD && flush == Flush::None {
+                    return;
+                }
+                if self.lookahead == 0 {
+                    break;
+                }
+            }
+            if !self.quick_open {
+                self.quick_start(out);
+            }
+            let w = &self.window[..];
+            let pos = self.strstart;
+            if self.lookahead >= WANT_MIN_MATCH {
+                let val = load32(w, pos);
+                let h = hash4(val, self.hash_bits);
+                let head = usize::from(self.head[h]);
+                self.prev[pos & (self.w_size - 1)] = head as u16;
+                self.head[h] = pos as u16;
+                let dist = pos.wrapping_sub(head);
+                if head != 0 && dist <= self.max_dist() && dist > 0 && load32(w, head) == val {
+                    let len = common_len(cmp_window(w, pos), cmp_window(w, head), 4)
+                        .min(MAX_MATCH)
+                        .min(self.lookahead);
+                    let (lv, ln) = STATIC_LEN[len - MIN_MATCH];
+                    let dc = dist_code(dist);
+                    let dv = u32::from(FIXED_DIST_CODES[dc])
+                        | ((dist - usize::from(DIST_BASE[dc])) as u32) << 5;
+                    self.bits.put(out, lv, u32::from(ln));
+                    self.bits.put(out, dv, 5 + u32::from(DIST_EXTRA[dc]));
+                    self.lookahead -= len;
+                    self.strstart += len;
+                    continue;
+                }
+            }
+            let c = usize::from(w[pos]);
+            self.bits.put(
+                out,
+                u32::from(FIXED_LIT_CODES[c]),
+                u32::from(FIXED_LIT_LENS[c]),
+            );
+            self.strstart += 1;
+            self.lookahead -= 1;
+        }
+        self.insert = self.strstart.min(WANT_MIN_MATCH - 1);
+        self.quick_end(flush == Flush::Finish, out);
+    }
+
+    // ---- fast (level 2) -----------------------------------------------------------------------
+
+    /// Greedy matching; the strings of short matches are inserted.
     fn deflate_fast(&mut self, mut input: &[u8], out: &mut Vec<u8>, flush: Flush) {
         loop {
             if self.lookahead < MIN_LOOKAHEAD {
@@ -592,29 +991,22 @@ impl Deflater {
                     break;
                 }
             }
-            let mut head = 0;
-            if self.lookahead >= MIN_MATCH {
-                head = self.insert_string(self.strstart);
-            }
-            if head != 0 && self.strstart - head <= self.max_dist() {
-                self.match_length = self.longest_match(head);
+            let head = self.candidate();
+            let mut len = 0;
+            if head != 0 {
+                self.prev_length = MIN_MATCH - 1;
+                len = self.longest_match(head, true);
             }
             let bflush;
-            if self.match_length >= MIN_MATCH {
-                bflush = self.tally_match(self.strstart - self.match_start, self.match_length);
-                self.lookahead -= self.match_length;
-                if self.match_length <= usize::from(self.cfg.lazy) && self.lookahead >= MIN_MATCH {
-                    self.match_length -= 1;
-                    while self.match_length > 0 {
-                        self.strstart += 1;
-                        self.insert_string(self.strstart);
-                        self.match_length -= 1;
-                    }
-                    self.strstart += 1;
-                } else {
-                    self.strstart += self.match_length;
-                    self.match_length = 0;
+            if len >= WANT_MIN_MATCH {
+                bflush = self.tally_match(self.strstart - self.match_start, len);
+                self.lookahead -= len;
+                if len <= usize::from(self.cfg.lazy) && self.lookahead >= WANT_MIN_MATCH {
+                    self.insert_range(self.strstart + 1, self.strstart + len);
+                } else if self.lookahead >= WANT_MIN_MATCH {
+                    self.insert_range(self.strstart + len - 1, self.strstart + len);
                 }
+                self.strstart += len;
             } else {
                 bflush = self.tally_lit(self.window[self.strstart]);
                 self.lookahead -= 1;
@@ -624,16 +1016,150 @@ impl Deflater {
                 self.end_block(false, out);
             }
         }
-        self.insert = self.strstart.min(MIN_MATCH - 1);
-        if flush == Flush::Finish {
-            self.end_block(true, out);
-        } else if !self.syms.is_empty() {
-            self.end_block(false, out);
+        self.finish_input(out, flush);
+    }
+
+    // ---- medium (levels 3..=6) ----------------------------------------------------------------
+
+    /// The match (or literal) at `strstart`, searching the chain of `head`.
+    #[inline(always)]
+    fn medium_find(&mut self, head: usize, early_exit: bool) -> Match {
+        let pos = self.strstart;
+        let mut m = Match {
+            pos,
+            start: 0,
+            len: 1,
+        };
+        if head != 0 {
+            self.prev_length = MIN_MATCH - 1;
+            let len = self.longest_match(head, early_exit);
+            if len >= WANT_MIN_MATCH && self.match_start < pos {
+                m.len = len;
+                m.start = self.match_start;
+            }
+        }
+        m
+    }
+
+    /// Inserts the strings covered by `m` (all of them for short matches, the last one for
+    /// long ones, none near the end of the input); `inserted` is the first position not
+    /// inserted yet.
+    #[inline(always)]
+    fn medium_insert(&mut self, m: Match, inserted: &mut usize) {
+        if self.lookahead <= m.len + WANT_MIN_MATCH {
+            return;
+        }
+        let end = m.pos + m.len;
+        if m.len < WANT_MIN_MATCH || m.len <= 16 * usize::from(self.cfg.lazy) {
+            let from = (m.pos + 1).max(*inserted);
+            if from < end {
+                self.insert_range(from, end);
+            }
+        } else {
+            self.insert_range(end - 1, end);
+        }
+        *inserted = (*inserted).max(end);
+    }
+
+    /// Greedy matching that looks at the match after the current one (levels 5 and 6) and
+    /// moves bytes from the end of the current match to the next one when they are equal, so
+    /// that a short current match may become a literal.
+    fn deflate_medium(&mut self, mut input: &[u8], out: &mut Vec<u8>, flush: Flush) {
+        let early_exit = self.level < 5;
+        let mut next: Option<Match> = None;
+        let mut inserted = 0usize;
+        loop {
+            if self.lookahead < MIN_LOOKAHEAD {
+                self.fill_window(&mut input);
+                if self.lookahead < MIN_LOOKAHEAD && flush == Flush::None {
+                    return;
+                }
+                if self.lookahead == 0 {
+                    break;
+                }
+                next = None;
+                inserted = 0;
+            }
+            let mut cur = match next.take() {
+                Some(m) => m,
+                None => {
+                    let head = self.candidate();
+                    inserted = inserted.max(self.strstart + 1);
+                    self.medium_find(head, early_exit)
+                }
+            };
+            self.medium_insert(cur, &mut inserted);
+            let next_pos = cur.pos + cur.len;
+            if !early_exit
+                && self.lookahead > MIN_LOOKAHEAD
+                && next_pos < 2 * self.w_size - MIN_LOOKAHEAD
+            {
+                // Look one match ahead, with the lookahead seen from there.
+                let ahead = self.lookahead;
+                self.strstart = next_pos;
+                self.lookahead = ahead - cur.len;
+                let head = self.candidate();
+                inserted = inserted.max(next_pos + 1);
+                let mut n = self.medium_find(head, false);
+                if n.len >= WANT_MIN_MATCH {
+                    self.fizzle(&mut cur, &mut n);
+                }
+                next = Some(n);
+                self.strstart = cur.pos;
+                self.lookahead = ahead;
+            }
+            // Emit the current match or literals.
+            let bflush = if cur.len >= WANT_MIN_MATCH {
+                self.tally_match(cur.pos - cur.start, cur.len)
+            } else {
+                let mut f = false;
+                for i in 0..cur.len {
+                    f |= self.tally_lit(self.window[cur.pos + i]);
+                }
+                f
+            };
+            self.lookahead -= cur.len;
+            self.strstart += cur.len;
+            if bflush {
+                self.end_block(false, out);
+            }
+        }
+        self.finish_input(out, flush);
+    }
+
+    /// Moves the start of `next` back over bytes that end `cur` when they are equal (the match
+    /// distance stays); applied only when `cur` shrinks to a literal.
+    fn fizzle(&self, cur: &mut Match, next: &mut Match) {
+        if cur.len < WANT_MIN_MATCH || next.start == 0 {
+            return;
+        }
+        let w = &self.window[..];
+        let limit = next.pos.saturating_sub(self.max_dist());
+        let (mut c, mut n) = (*cur, *next);
+        let mut changed = false;
+        while c.len > 1
+            && n.pos > limit
+            && n.pos > c.pos + 1
+            && n.len < MAX_MATCH - 2
+            && n.start > 1
+            && w[n.start - 1] == w[n.pos - 1]
+        {
+            n.pos -= 1;
+            n.start -= 1;
+            n.len += 1;
+            c.len -= 1;
+            changed = true;
+        }
+        if changed && c.len <= 1 {
+            *cur = c;
+            *next = n;
         }
     }
 
-    /// Lazy matching (levels 4..=9): a match is taken only if the next position does not
-    /// start a longer one.
+    // ---- slow (levels 7..=9) ------------------------------------------------------------------
+
+    /// Lazy matching: a match is taken only if the next position does not start a longer
+    /// one.
     fn deflate_slow(&mut self, mut input: &[u8], out: &mut Vec<u8>, flush: Flush) {
         loop {
             if self.lookahead < MIN_LOOKAHEAD {
@@ -645,41 +1171,31 @@ impl Deflater {
                     break;
                 }
             }
-            let mut head = 0;
-            if self.lookahead >= MIN_MATCH {
-                head = self.insert_string(self.strstart);
-            }
+            let head = self.candidate();
             self.prev_length = self.match_length;
             self.prev_match = self.match_start;
             self.match_length = MIN_MATCH - 1;
-            if head != 0
-                && self.prev_length < usize::from(self.cfg.lazy)
-                && self.strstart - head <= self.max_dist()
-            {
-                self.match_length = self.longest_match(head);
-                if self.match_length == MIN_MATCH && self.strstart - self.match_start > TOO_FAR {
-                    self.match_length = MIN_MATCH - 1;
-                }
+            if head != 0 && self.prev_length < usize::from(self.cfg.lazy) {
+                self.match_length = if self.cfg.chain > 1024 {
+                    self.longest_match_slow(head)
+                } else {
+                    self.longest_match(head, false)
+                };
             }
             if self.prev_length >= MIN_MATCH && self.match_length <= self.prev_length {
-                let max_insert = self.strstart + self.lookahead - MIN_MATCH;
+                let max_insert = (self.strstart + self.lookahead).saturating_sub(WANT_MIN_MATCH);
                 let bflush =
                     self.tally_match(self.strstart - 1 - self.prev_match, self.prev_length);
-                self.lookahead -= self.prev_length - 1;
-                self.prev_length -= 2;
-                loop {
-                    self.strstart += 1;
-                    if self.strstart <= max_insert {
-                        self.insert_string(self.strstart);
-                    }
-                    self.prev_length -= 1;
-                    if self.prev_length == 0 {
-                        break;
-                    }
+                // `strstart - 1` and `strstart` are inserted; insert the rest of the match.
+                let end = self.strstart - 1 + self.prev_length;
+                let to = end.min(max_insert + 1);
+                if to > self.strstart + 1 {
+                    self.insert_range(self.strstart + 1, to);
                 }
+                self.lookahead -= self.prev_length - 1;
+                self.strstart = end;
                 self.match_available = false;
                 self.match_length = MIN_MATCH - 1;
-                self.strstart += 1;
                 if bflush {
                     self.end_block(false, out);
                 }
@@ -699,12 +1215,7 @@ impl Deflater {
             self.tally_lit(self.window[self.strstart - 1]);
             self.match_available = false;
         }
-        self.insert = self.strstart.min(MIN_MATCH - 1);
-        if flush == Flush::Finish {
-            self.end_block(true, out);
-        } else if !self.syms.is_empty() {
-            self.end_block(false, out);
-        }
+        self.finish_input(out, flush);
     }
 
     // ---- blocks -------------------------------------------------------------------------------
@@ -712,10 +1223,6 @@ impl Deflater {
     /// Writes the pending symbols as one block, choosing the smallest coding.
     fn flush_block(&mut self, last: bool, out: &mut Vec<u8>) {
         let stored_len = (self.strstart as isize - self.block_start) as usize;
-        let raw = (self.block_start >= 0).then(|| {
-            let s = self.block_start as usize;
-            s..s + stored_len
-        });
         self.lfreq[256] = 1;
 
         let mut llens = [0u8; 286];
@@ -776,22 +1283,17 @@ impl Deflater {
                 };
         }
         let fixed_bits = 3 + data_bits(&FIXED_LIT_LENS, &[5u8; 30]);
-        let stored_bits = raw.as_ref().map(|_| {
-            let pad = (8 - (u64::from(self.bitcnt) + 3) % 8) % 8;
-            let extra_chunks = stored_len.saturating_sub(1) / MAX_STORED;
-            3 + pad + 32 + 8 * stored_len as u64 + 40 * extra_chunks as u64
-        });
 
-        if let (Some(r), Some(sb)) = (raw, stored_bits) {
-            if sb <= fixed_bits.min(dyn_bits) {
-                let data = self.window[r].to_vec();
-                self.stored_block(&data, last, out);
-                self.clear_block();
-                return;
-            }
+        if self.block_start >= 0
+            && stored_cost(self.bits.cnt, stored_len) <= fixed_bits.min(dyn_bits)
+        {
+            let s = self.block_start as usize;
+            self.bits.stored(&self.window[s..s + stored_len], last, out);
+            self.clear_block();
+            return;
         }
         if fixed_bits <= dyn_bits {
-            self.put(out, u32::from(last) | (1 << 1), 3);
+            self.bits.put(out, u32::from(last) | (1 << 1), 3);
             self.write_symbols(
                 out,
                 &FIXED_LIT_CODES,
@@ -800,21 +1302,22 @@ impl Deflater {
                 &[5; 30],
             );
         } else {
-            self.put(out, u32::from(last) | (2 << 1), 3);
-            self.put(out, (nlit - 257) as u32, 5);
-            self.put(out, (ndist - 1) as u32, 5);
-            self.put(out, (ncl - 4) as u32, 4);
+            let b = &mut self.bits;
+            b.put(out, u32::from(last) | (2 << 1), 3);
+            b.put(out, (nlit - 257) as u32, 5);
+            b.put(out, (ndist - 1) as u32, 5);
+            b.put(out, (ncl - 4) as u32, 4);
             for &i in &CL_ORDER[..ncl] {
-                self.put(out, u32::from(cllens[i]), 3);
+                b.put(out, u32::from(cllens[i]), 3);
             }
             let clcodes = canonical_codes(&cllens);
             for &(s, x) in &rle[..nrle] {
                 let s = usize::from(s);
-                self.put(out, u32::from(clcodes[s]), u32::from(cllens[s]));
+                b.put(out, u32::from(clcodes[s]), u32::from(cllens[s]));
                 match s {
-                    16 => self.put(out, u32::from(x), 2),
-                    17 => self.put(out, u32::from(x), 3),
-                    18 => self.put(out, u32::from(x), 7),
+                    16 => b.put(out, u32::from(x), 2),
+                    17 => b.put(out, u32::from(x), 3),
+                    18 => b.put(out, u32::from(x), 7),
                     _ => {}
                 }
             }
@@ -834,14 +1337,32 @@ impl Deflater {
     fn write_symbols(
         &mut self,
         out: &mut Vec<u8>,
-        lcodes: &[u16],
-        llens: &[u8],
-        dcodes: &[u16],
-        dlens: &[u8],
+        lcodes: &[u16; 286],
+        llens: &[u8; 286],
+        dcodes: &[u16; 30],
+        dlens: &[u8; 30],
     ) {
+        let len_bits = |lc: usize| {
+            let code = usize::from(LEN_CODE[lc]);
+            let sym = 257 + code;
+            let xv = (lc + 3 - usize::from(LEN_BASE[code])) as u32;
+            (
+                u32::from(lcodes[sym]) | (xv << llens[sym]),
+                llens[sym] + LEN_EXTRA[code],
+            )
+        };
+        // Code and extra bits of each length in one table, when the block is large enough.
+        let mut len_tab = [(0u32, 0u8); 256];
+        let use_tab = self.syms.len() >= 2048;
+        if use_tab {
+            for (lc, e) in len_tab.iter_mut().enumerate() {
+                *e = len_bits(lc);
+            }
+        }
         let syms = std::mem::take(&mut self.syms);
-        let mut bb = self.bitbuf;
-        let mut bc = self.bitcnt;
+        out.reserve(syms.len() * 4 + 16);
+        let mut bb = self.bits.buf;
+        let mut bc = self.bits.cnt;
         macro_rules! put {
             ($v:expr, $n:expr) => {{
                 bb |= u64::from($v) << bc;
@@ -859,38 +1380,39 @@ impl Deflater {
             if dist == 0 {
                 put!(u32::from(lcodes[lc]), u32::from(llens[lc]));
             } else {
-                let code = usize::from(LEN_CODE[lc]);
-                let sym = 257 + code;
-                let xb = u32::from(LEN_EXTRA[code]);
-                let xv = (lc + 3 - usize::from(LEN_BASE[code])) as u32;
-                put!(
-                    u32::from(lcodes[sym]) | (xv << llens[sym]),
-                    u32::from(llens[sym]) + xb
-                );
+                let (lv, ln) = if use_tab { len_tab[lc] } else { len_bits(lc) };
+                put!(lv, u32::from(ln));
                 let dc = dist_code(dist);
-                let dxb = u32::from(DIST_EXTRA[dc]);
                 let dxv = (dist - usize::from(DIST_BASE[dc])) as u32;
                 put!(
                     u32::from(dcodes[dc]) | (dxv << dlens[dc]),
-                    u32::from(dlens[dc]) + dxb
+                    u32::from(dlens[dc]) + u32::from(DIST_EXTRA[dc])
                 );
             }
         }
         put!(u32::from(lcodes[256]), u32::from(llens[256]));
-        self.bitbuf = bb;
-        self.bitcnt = bc;
+        self.bits = Bits { buf: bb, cnt: bc };
         self.syms = syms;
     }
 }
 
-#[inline(always)]
-fn eight(s: &[u8]) -> [u8; 8] {
-    // One bounds check instead of eight.
-    match s.first_chunk::<8>() {
-        Some(c) => *c,
-        None => [s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]],
+/// Fixed-code bits of each length (`len - 3`): the code with its extra bits, and their count.
+static STATIC_LEN: [(u32, u8); 256] = {
+    let len_code = len_code_table();
+    let lens = fixed_lit_lens();
+    let codes = canonical_codes_const(&lens);
+    let mut t = [(0u32, 0u8); 256];
+    let mut lc = 0;
+    while lc < 256 {
+        let code = len_code[lc] as usize;
+        let sym = 257 + code;
+        let xv = (lc + 3 - LEN_BASE[code] as usize) as u32;
+        let l = lens[sym];
+        t[lc] = (codes[sym] as u32 | (xv << l), l + LEN_EXTRA[code]);
+        lc += 1;
     }
-}
+    t
+};
 
 const FIXED_LIT_LENS: [u8; 286] = {
     let all = fixed_lit_lens();
@@ -948,7 +1470,22 @@ static FIXED_DIST_CODES: [u16; 30] = canonical_codes_const(&[5u8; 30]);
 
 /// Bit-reversed canonical codes for `lens` (as the DEFLATE bit order needs them).
 fn canonical_codes<const N: usize>(lens: &[u8; N]) -> [u16; N] {
-    canonical_codes_const(lens)
+    let count = length_counts(lens);
+    let mut next = [0u32; 16];
+    let mut code = 0u32;
+    for len in 1..16 {
+        code = (code + u32::from(count[len - 1])) << 1;
+        next[len] = code;
+    }
+    let mut out = [0u16; N];
+    for (o, &l) in out.iter_mut().zip(lens.iter()) {
+        if l != 0 {
+            let l = usize::from(l & 15);
+            *o = reverse_bits(next[l], l as u32) as u16;
+            next[l] += 1;
+        }
+    }
+    out
 }
 
 /// Run-length codes (symbols 16/17/18 with their extra values) of a code length sequence.
@@ -994,19 +1531,20 @@ fn rle_lengths(lens: &[u8], out: &mut [(u8, u8)]) -> usize {
 /// symbols get a code (a lone symbol is paired with a dummy one), so every code is complete.
 fn huffman_lengths<const N: usize>(freq: &[u32; N], max_len: u32, lens: &mut [u8; N]) {
     lens.fill(0);
-    let mut syms = [(0u32, 0u16); N];
+    // Frequency and symbol in one sort key.
+    let mut syms = [0u64; N];
     let mut n = 0;
     for (s, &f) in freq.iter().enumerate() {
         if f != 0 {
-            syms[n] = (f, s as u16);
+            syms[n] = (u64::from(f) << 16) | s as u64;
             n += 1;
         }
     }
     // Force two codes (zlib does the same): pkzip-era decoders want at least one bit per code.
     let mut s = 0;
     while n < 2 {
-        if freq[s] == 0 && syms[..n].iter().all(|&(_, x)| usize::from(x) != s) {
-            syms[n] = (1, s as u16);
+        if freq[s] == 0 && syms[..n].iter().all(|&x| (x & 0xffff) as usize != s) {
+            syms[n] = (1 << 16) | s as u64;
             n += 1;
         }
         s += 1;
@@ -1017,8 +1555,8 @@ fn huffman_lengths<const N: usize>(freq: &[u32; N], max_len: u32, lens: &mut [u8
     // Moffat & Katajainen, in place: code lengths of a minimum-redundancy code.
     let mut keys = [0u32; N];
     let a = &mut keys[..n];
-    for (k, &(f, _)) in a.iter_mut().zip(syms.iter()) {
-        *k = f;
+    for (k, &x) in a.iter_mut().zip(syms.iter()) {
+        *k = (x >> 16) as u32;
     }
     a[0] += a[1];
     let (mut root, mut leaf) = (0usize, 2usize);
@@ -1086,7 +1624,7 @@ fn huffman_lengths<const N: usize>(freq: &[u32; N], max_len: u32, lens: &mut [u8
     for (len, &cnt) in num.iter().enumerate().take(max + 1).skip(1) {
         for _ in 0..cnt {
             j -= 1;
-            lens[usize::from(syms[j].1)] = len as u8;
+            lens[(syms[j] & 0xffff) as usize] = len as u8;
         }
     }
 }

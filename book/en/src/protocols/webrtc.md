@@ -2,20 +2,26 @@
 
 Two crates:
 
-- `only-webrtc` runs WebRTC peers on `only` UDP sockets. The protocol work is done by
-  [str0m](https://github.com/algesten/str0m), a sans-io WebRTC state machine: ICE (full agent
-  and ICE-lite, consent freshness), DTLS 1.2/1.3 with certificate fingerprint verification,
-  SRTP/SRTCP (AES-CM-SHA1-80, AEAD-AES-128/256-GCM), SCTP data channels (DCEP; reliable or not,
-  ordered or not), RTP/RTCP media (Opus, VP8, VP9, H.264, H.265, AV1 packetization; NACK and
-  RTX, PLI/FIR, TWCC and bandwidth estimation, sender/receiver reports) and SDP offer/answer.
-  `only` drives it with its I/O threads and one shared timer thread, and plugs in a pure-Rust
-  crypto provider (RustCrypto plus the `dimpl` DTLS stack: no C toolchain, no OpenSSL).
+- `only-webrtc` runs WebRTC peers on `only` UDP sockets, on an in-house sans-io stack with no
+  third-party dependencies (DEV-PLAN wave D), one crate per layer, all `#![forbid(unsafe_code)]`
+  on `only-crypto`: `only-ice` (ICE full agent and ICE-lite, checklists, nomination, role
+  conflicts, peer-reflexive candidates, trickle, restarts, consent freshness), `only-dtls`
+  (DTLS 1.2 with certificate fingerprint verification and DTLS-SRTP keys), `only-srtp`
+  (SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, replay protection),
+  `only-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP data
+  channels: reliable or not, ordered or not) and `only-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
+  VP9, H.264, H.265 and AV1 packetization, a frame assembler, NACK and RTX, PLI/FIR, REMB, TWCC
+  and bandwidth estimation, sender/receiver reports). `only-webrtc` itself does SDP
+  offer/answer (BUNDLE, rtcp-mux, codec and header-extension negotiation, renegotiation) and
+  drives the peers with `only`'s I/O threads and one shared timer thread.
 - `only-turn` has the STUN codec, a STUN server and a TURN server (RFC 8656 over UDP).
 
 Interop is tested against pion (Go) in both offer directions, for data channels and media,
 directly and through a `only` TURN relay, against fib's Go WebRTC (data channels, both
 directions), and the TURN server against the pion/turn client and
-coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn).
+coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn). Headless
+Chrome is tested in both offer directions: data channels, and its fake camera and microphone
+echoed back by an `RtcServer` and decoded by Chrome (`tools/interop/webrtc/browser.sh`).
 
 ## A server, a TURN server and a client on one engine
 
@@ -40,11 +46,10 @@ coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for cotu
 
 The API uses `only`'s own types: `ChannelId`, `ChannelConfig`, `Mid`, `Pt`, `Codec`,
 `MediaKind`, `Direction`, `MediaTime` / `Frequency`, `MediaData`, `MediaAdded`, `RtpPacket`,
-`KeyframeRequest`, `Candidate`, `IceConnectionState`, `RtcConfig`, `SdpChanges`, `Event`. str0m,
-which does the work underneath, is not part of the API, so upgrading it is not a breaking
-change. The `unstable` cargo feature (outside the semver promise) re-exports
-`only_webrtc::str0m`, adds `Peer::with_rtc` (any str0m API on a peer), `RtcConfig::with_str0m`
-and `OtherEvent::as_str0m`.
+`KeyframeRequest`, `Candidate`, `IceConnectionState`, `RtcConfig`, `SdpChanges`, `Event`. The
+protocol crates underneath are internal (their APIs may change in any release) and do not
+appear in it. The `unstable` cargo feature is kept for APIs outside the semver promise and adds
+nothing today (it used to expose str0m).
 
 ## Peers and handlers
 
@@ -71,7 +76,6 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 | `request_keyframe(mid, kind)` | PLI or FIR to the remote sender |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | SDP changes after the first exchange |
 | `add_remote_candidate(line)` | trickle ICE |
-| `with_rtc(f)` | any str0m API, then the peer is driven (cargo feature `unstable` only) |
 | `close()` | DTLS close notify, then `on_close` |
 
 ## A full ICE client: `Endpoint`
@@ -119,4 +123,5 @@ sending), for embedding or testing. `StunServer` alone answers Binding requests.
 ## Not done yet
 
 TURN over TCP/TLS and a TURN client in `only-webrtc` (relay candidates for an `Endpoint`); ICE
-over TCP; mDNS candidates. str0m's own limits apply (see its documentation).
+over TCP; resolving mDNS candidates (peers using them are still reached through peer-reflexive
+candidates); simulcast sending and layer selection; FEC; RTCP XR; DTLS 1.3.

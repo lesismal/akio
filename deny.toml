@@ -29,12 +29,12 @@ ignore = [
     # Drop this once the MSRV reaches 1.88 or rcgen no longer pulls time.
     { id = "RUSTSEC-2026-0009", reason = "dev-only via rcgen; fix needs Rust 1.88 > MSRV" },
     # crypto-bigint 0.5.5: some operations meant to be constant time may branch on secrets,
-    # depending on compiler and CPU. Reached through p256/p384 0.13 (elliptic-curve 0.13), which
-    # only-webrtc's DTLS stack (dimpl 0.7 on RustCrypto) uses for ECDHE and ECDSA. The fix is
-    # crypto-bigint 0.7.6, i.e. elliptic-curve 0.14: blocked until dimpl moves to p256 0.14.
-    # DTLS keys are ephemeral per connection (the certificate key per peer), which limits what
-    # a remote timing attack across the network could collect. Revisit on every str0m upgrade.
-    { id = "RUSTSEC-2026-0387", reason = "via dimpl 0.7 -> p256 0.13; fix needs elliptic-curve 0.14" },
+    # depending on compiler and CPU. Reached only through p256/p384 0.13 (elliptic-curve 0.13),
+    # the dev-dependencies only-crypto's public-key cross-checks and benchmarks compare against;
+    # no library links it since the in-house WebRTC stack replaced str0m / dimpl. The fix is
+    # crypto-bigint 0.7.6, i.e. elliptic-curve 0.14: drop this when the cross-checks move to
+    # p256/p384 0.14.
+    { id = "RUSTSEC-2026-0387", reason = "dev-only via p256/p384 0.13 cross-checks in only-crypto" },
 ]
 
 [licenses]
@@ -59,20 +59,10 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
-# Accepted duplicates, all pulled in by upstream crates on different major versions (none is a
-# direct dependency of two workspace crates at different versions). Revisit on upgrades.
-skip = [
-    # ring 0.17 (the rustls interop client in `only`'s dev-dependencies) and RustCrypto
-    # 0.10-era crates stay on getrandom 0.2 / rand_core 0.6, while str0m 0.24 / dimpl 0.7
-    # (only-webrtc) use rand 0.9 -> rand_core 0.9 -> getrandom 0.3.
-    { crate = "getrandom@0.2", reason = "ring 0.17 and RustCrypto crypto-common 0.1" },
-    { crate = "rand_core@0.6", reason = "RustCrypto crypto-common 0.1 (only-kcp ciphers)" },
-    { crate = "rand_core@0.9", reason = "rand 0.9 (str0m, dimpl)" },
-    { crate = "getrandom@0.3", reason = "rand_core 0.9 (str0m, dimpl)" },
-    # Proc-macro build-time only: der_derive (RustCrypto, via only-webrtc) on syn 2, thiserror-impl 2
-    # on syn 3.
-    { crate = "syn@2", reason = "der_derive 0.7 (build time only)" },
-]
+# No accepted duplicates: since the in-house QUIC and WebRTC stacks of wave D replaced
+# quinn-proto and str0m, every crate in the graph has a single version. Add `skip` entries here
+# (with a reason) only when an upstream crate forces one.
+skip = []
 skip-tree = []
 
 [sources]

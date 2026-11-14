@@ -270,6 +270,56 @@ removed (they were outside the semver promise). `Congestion::Bbr` (experimental)
 `Connection::queued_bytes` counts bytes not sent yet. Not implemented: 0-RTT, sending ECN marks,
 client-initiated migration, preferred_address, QUIC v2.
 
+### Changed: own WebRTC stack in `only-webrtc` (DEV-PLAN wave D; no more str0m, dimpl, p256)
+
+`only-webrtc` runs on an in-house, sans-io WebRTC stack with no third-party dependencies, behind
+the unchanged API (`RtcServer`, `Endpoint`, `Peer`, `PeerHandler` and its ordering guarantees,
+`ChannelConfig`, `Codec`, `SdpChanges`, `Event`, `RtcError` ...). Four new internal crates, all
+`#![forbid(unsafe_code)]` on `only-crypto`:
+
+- `only-ice`: ICE (RFC 8445) full agent and ICE-lite: candidate priorities and foundations,
+  checklists with pacing and retransmission, peer-reflexive candidates, regular nomination, role
+  conflicts (487), checks before the remote credentials, consent freshness (RFC 7675), trickle
+  (RFC 8838) and restarts; STUN through `only-turn`'s codec. RFC 5769 vectors; pion/ice interop.
+- `only-srtp`: SRTP/SRTCP (RFC 3711, RFC 7714) with AES-CM-HMAC-SHA1-80/32 and
+  AEAD-AES-128/256-GCM, ROC estimation, replay windows; RFC 3711 and RFC 7714 vectors and
+  byte-exact cross-checks with pion/srtp.
+- `only-rtp`: RTP header extensions (one- and two-byte), RTCP (SR, RR, SDES, BYE, generic NACK,
+  PLI, FIR, REMB, transport-wide CC feedback), send/receive streams with NACK + RTX (RFC 4588),
+  reports and RTT, TWCC and a delay- and loss-based bandwidth estimator; payload formats for
+  Opus, G.711, G.722, VP8, VP9, H.264 (RFC 6184), H.265 (RFC 7798) and AV1 with a jitter-free
+  frame assembler. Byte-exact cross-checks with pion/rtp, pion/rtcp and pion/interceptor.
+- `only-sctp`: SCTP over DTLS (RFC 8261; RFC 9260 essentials) with congestion control, fast
+  retransmit, PR-SCTP FORWARD-TSN (RFC 3758), stream reset (RFC 6525), DCEP data channels
+  (RFC 8831/8832); interop with pion/sctp 1.8 and 1.12 over UDP.
+
+`only-webrtc` itself gained the SDP offer/answer (BUNDLE, rtcp-mux, codec / RTX / rtcp-fb /
+extmap negotiation, ssrc and FID groups, setup roles and fingerprints, ICE-lite, candidates,
+sctp-port / max-message-size, renegotiation and ICE restarts) and the sans-io peer that glues
+the layers together. Tested on a simulated lossy link (ICE + DTLS + SCTP + media) and against
+pion (data channels, Opus/VP8 echo, PLI, a TURN relay, both offer directions), fib's Go WebRTC
+(both directions) and headless Chrome (`tools/interop/webrtc/browser.sh`: data channels, Chrome's
+camera and microphone echoed back and decoded, both offer directions). New fuzz targets
+`ice_stun`, `srtp_unprotect`, `rtp_rtcp`, `rtp_codec`, `sctp_packet`; `webrtc_sdp` now drives the
+new SDP code.
+
+Migration notes:
+
+- The `unstable` feature of `only-webrtc` is now reserved and empty: `only_webrtc::str0m`,
+  `crypto_provider_str0m`, `Peer::with_rtc`, `RtcConfig::with_str0m` and
+  `OtherEvent::as_str0m` are gone (they were outside the semver promise).
+- The covered API is unchanged except that `Event`, `OtherEvent`, `RtcConfig`, `RtcError` and
+  `SdpChanges` are now `RefUnwindSafe` (and `RtcError` `UnwindSafe`): auto traits gained, nothing
+  lost.
+- Behaviour: H.265 is no longer offered by default (`RtcConfig::enable_h265(true)` turns it on),
+  DTLS is 1.2 only (browsers and pion negotiate 1.2), the answerer takes the DTLS client role
+  (`a=setup:active`), `OtherEvent`'s `Debug` output changed (it was never stable), and
+  `Endpoint` still has no TURN client (relayed candidates must come from elsewhere, as before).
+- Dependencies: str0m, dimpl, p256 / ecdsa / elliptic-curve, the RustCrypto crates they pulled
+  and rand 0.9 left the library graph; only-dtls's in-memory interop test against dimpl was
+  removed. p256/p384 0.13 remain dev-dependencies of only-crypto's cross-checks, so the
+  RUSTSEC-2026-0387 (crypto-bigint) ignore in `deny.toml` now only covers them.
+
 ### Changed: in-house HTTP codecs (no more httparse, loona-hpack, regex)
 
 DEV-PLAN "no third-party dependencies", wave A. The public API is unchanged.
@@ -359,6 +409,35 @@ userspace stack is now `only`'s own, in `crates/only-dpdk/src/net` (safe Rust,
   `dpdk_ipv4`, `dpdk_tcp`, `dpdk_udp`, `dpdk_icmp`, `dpdk_stack`. Benchmark example
   `stack-bench`; A/B against the smoltcp version in docs/BENCHMARKS.md.
 - `deny.toml`: the 0BSD license and the `bitflags@1` duplicate (both smoltcp's) are gone.
+
+### Changed (performance): only-deflate at zlib-rs speed (DEV-PLAN performance pass)
+
+`only-deflate` (still `#![forbid(unsafe_code)]`, no dependencies, no SIMD) now compresses at
+0.94-1.48x the speed of flate2 with the zlib-rs backend (was 0.25-0.9x) with output at most 0.5%
+larger (identical in 36 of 45 level × corpus cases), and decompresses at 0.82-1.23x (was
+0.7-0.85x); measured on x86-64, tables in docs/BENCHMARKS.md. The streams are as valid as before
+for every window size (8 laid out as 9); no API change.
+
+- Compression uses zlib-ng's / zlib-rs's level table and match finders: a hash of four bytes
+  (three at level 9), `quick` at level 1 (one probe per position, fixed-code blocks written
+  directly, replaced by stored blocks when those are smaller), `fast` at level 2, `medium` at
+  levels 3-6 (greedy, from level 5 looking one match ahead), lazy `slow` at 7-9 with zlib-ng's
+  chain-jumping search at level 9. Candidates are compared 8 bytes at a time with a cheap
+  rejection first. **Level 1 output is now up to 40% larger than before** (like zlib-ng's and
+  zlib-rs's level 1) and 1.7-2.9x faster; levels 2-9 are 1.03-4x faster, with output between
+  12% smaller and 3.4% larger than before.
+- `Deflater::reset` (permessage-deflate without context takeover) clears only the hash slots a
+  short stream used instead of the whole table; stored blocks are written straight from the
+  window; Huffman code construction counts lengths without store-forwarding stalls.
+- Decompression: a fast path refills 64 bits without branches and decodes up to three literals
+  or a length/distance pair per refill; matches are copied 8 or 16 bytes at a time (also for
+  overlapping matches); decoding tables of complete codes are no longer cleared first.
+- permessage-deflate echo (`pmd_echo`, level 6, context takeover) against zlib-rs: 1.84x for 64 B
+  messages, 1.04x for 512 B, 1.00x for 4 KiB, 0.98x for 64 KiB (was 1.36x / 0.62x / 0.75x /
+  0.54x), with the same bytes on the wire as zlib-rs.
+- The `bench` example covers levels 1..=9 (`BENCH_LEVELS`), generated corpora plus files and a
+  profiling mode (`BENCH_PROFILE`); a new streaming test covers every level, window size and
+  flush kind.
 
 ### Added
 

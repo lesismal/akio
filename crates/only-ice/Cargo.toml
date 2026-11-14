@@ -1,0 +1,27 @@
+[package]
+name = "only-ice"
+description = "only internals: sans-io ICE agent (RFC 8445 full and lite, RFC 7675 consent freshness, RFC 8838 trickle) for the WebRTC stack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-ice"
+keywords = ["ice", "webrtc", "stun", "nat", "sans-io"]
+categories = ["network-programming"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_ice::fuzzing`); not a public API.
+fuzzing = []
+
+[dependencies]
+only-crypto = { workspace = true }
+only-turn = { workspace = true }
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true
