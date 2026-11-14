@@ -5,7 +5,7 @@
 
 use std::{sync::mpsc, time::Duration};
 
-use bytes::Bytes;
+use only_quic::Bytes;
 use only::{Engine, Listener};
 use only_quic::{Connection, QuicHandler, QuicServer, StreamId};
 

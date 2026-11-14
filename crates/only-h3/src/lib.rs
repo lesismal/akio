@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bytes::Bytes;
+use only_quic::Bytes;
 use only_http::Service;
 use only_http::message::{Headers, Method, Request, Response, Version};
 use only_http::transport::{BodySink, ResponseSink};

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use bytes::Bytes;
+use only_quic::Bytes;
 use only::{Engine, Listener};
 use only_quic::{Connection, Error, QuicHandler, QuicServer, StreamId};
 

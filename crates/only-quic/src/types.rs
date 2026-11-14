@@ -1,20 +1,11 @@
 //! This crate's own QUIC types: stream ids, connection errors, statistics and configuration.
-//! They hide quinn-proto, so it can be upgraded or replaced without breaking this API; raw
-//! access is behind the `unstable` cargo feature.
 
+use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use quinn_proto as qp;
-
 use crate::Error;
-
-/// Conversions between this crate's types and the wrapped implementation's (crate-private, so
-/// they stay out of the public API).
-pub(crate) trait Own<T> {
-    fn own(self) -> T;
-}
 
 /// Which side opened a stream or a connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -25,25 +16,7 @@ pub enum Side {
     Server,
 }
 
-impl Own<Side> for qp::Side {
-    fn own(self) -> Side {
-        let s = self;
-        match s {
-            qp::Side::Client => Side::Client,
-            qp::Side::Server => Side::Server,
-        }
-    }
-}
 
-impl Own<qp::Side> for Side {
-    fn own(self) -> qp::Side {
-        let s = self;
-        match s {
-            Side::Client => qp::Side::Client,
-            Side::Server => qp::Side::Server,
-        }
-    }
-}
 
 /// Whether a stream carries data both ways or one way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,25 +27,7 @@ pub enum Dir {
     Uni,
 }
 
-impl Own<Dir> for qp::Dir {
-    fn own(self) -> Dir {
-        let d = self;
-        match d {
-            qp::Dir::Bi => Dir::Bi,
-            qp::Dir::Uni => Dir::Uni,
-        }
-    }
-}
 
-impl Own<qp::Dir> for Dir {
-    fn own(self) -> qp::Dir {
-        let d = self;
-        match d {
-            Dir::Bi => qp::Dir::Bi,
-            Dir::Uni => qp::Dir::Uni,
-        }
-    }
-}
 
 /// A stream id (RFC 9000 section 2.1): who opened it, its direction and its index.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -81,11 +36,15 @@ pub struct StreamId(u64);
 impl StreamId {
     /// The `index`-th stream of direction `dir` opened by `initiator`.
     pub fn new(initiator: Side, dir: Dir, index: u64) -> StreamId {
-        StreamId(u64::from(qp::StreamId::new(
-            initiator.own(),
-            dir.own(),
-            index,
-        )))
+        let side = match initiator {
+            Side::Client => 0,
+            Side::Server => 1,
+        };
+        let d = match dir {
+            Dir::Bi => 0,
+            Dir::Uni => 2,
+        };
+        StreamId((index << 2) | d | side)
     }
 
     /// The side that opened the stream.
@@ -107,17 +66,12 @@ impl StreamId {
         self.0 >> 2
     }
 
-    pub(crate) fn q(self) -> qp::StreamId {
-        qp::StreamId::new(self.initiator().own(), self.dir().own(), self.index())
+    /// The id with this wire value.
+    pub(crate) fn from_raw(v: u64) -> StreamId {
+        StreamId(v)
     }
 }
 
-impl Own<StreamId> for qp::StreamId {
-    fn own(self) -> StreamId {
-        let id = self;
-        StreamId(u64::from(id))
-    }
-}
 
 impl From<StreamId> for u64 {
     /// The id as sent on the wire.
@@ -208,30 +162,6 @@ impl fmt::Display for ConnectionError {
 
 impl std::error::Error for ConnectionError {}
 
-impl Own<ConnectionError> for qp::ConnectionError {
-    fn own(self) -> ConnectionError {
-        let e = self;
-        match e {
-            qp::ConnectionError::VersionMismatch => ConnectionError::VersionMismatch,
-            qp::ConnectionError::TransportError(t) => ConnectionError::TransportError {
-                code: u64::from(t.code),
-                reason: t.reason,
-            },
-            qp::ConnectionError::ConnectionClosed(c) => ConnectionError::ConnectionClosed {
-                code: u64::from(c.error_code),
-                reason: c.reason.to_vec(),
-            },
-            qp::ConnectionError::ApplicationClosed(c) => ConnectionError::ApplicationClosed {
-                code: c.error_code.into_inner(),
-                reason: c.reason.to_vec(),
-            },
-            qp::ConnectionError::Reset => ConnectionError::Reset,
-            qp::ConnectionError::TimedOut => ConnectionError::TimedOut,
-            qp::ConnectionError::LocallyClosed => ConnectionError::LocallyClosed,
-            qp::ConnectionError::CidsExhausted => ConnectionError::CidsExhausted,
-        }
-    }
-}
 
 /// Datagram counters of one direction.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -245,16 +175,6 @@ pub struct UdpStats {
     pub ios: u64,
 }
 
-impl Own<UdpStats> for qp::UdpStats {
-    fn own(self) -> UdpStats {
-        let s = self;
-        UdpStats {
-            datagrams: s.datagrams,
-            bytes: s.bytes,
-            ios: s.ios,
-        }
-    }
-}
 
 /// Statistics of a connection; see [`Connection::stats`](crate::Connection::stats).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -282,24 +202,6 @@ pub struct ConnectionStats {
     pub current_mtu: u16,
 }
 
-impl Own<ConnectionStats> for qp::ConnectionStats {
-    fn own(self) -> ConnectionStats {
-        let s = self;
-        ConnectionStats {
-            udp_tx: s.udp_tx.own(),
-            udp_rx: s.udp_rx.own(),
-            rtt: s.path.rtt,
-            min_rtt: s.path.min_rtt,
-            cwnd: s.path.cwnd,
-            congestion_events: s.path.congestion_events,
-            sent_packets: s.path.sent_packets,
-            lost_packets: s.path.lost_packets,
-            lost_bytes: s.path.lost_bytes,
-            current_mtu: s.path.current_mtu,
-        }
-    }
-}
-
 /// The congestion controller of a connection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -309,12 +211,12 @@ pub enum Congestion {
     Cubic,
     /// NewReno (RFC 9002).
     NewReno,
-    /// BBR (experimental).
+    /// BBR (experimental; runs CUBIC for now).
     Bbr,
 }
 
-/// Transport parameters and limits of connections. Start from `Default::default()` (quinn's
-/// defaults) and set fields.
+/// Transport parameters and limits of connections. Start from `Default::default()` and set
+/// fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct TransportConfig {
@@ -373,50 +275,21 @@ impl Default for TransportConfig {
     }
 }
 
-fn varint(v: u64) -> qp::VarInt {
-    qp::VarInt::from_u64(v).unwrap_or(qp::VarInt::MAX)
-}
-
-impl TransportConfig {
-    /// The quinn configuration (out-of-range values are clamped).
-    pub(crate) fn to_quinn(&self) -> qp::TransportConfig {
-        let mut t = qp::TransportConfig::default();
-        t.max_concurrent_bidi_streams(self.max_concurrent_bidi_streams.into())
-            .max_concurrent_uni_streams(self.max_concurrent_uni_streams.into())
-            .max_idle_timeout(self.max_idle_timeout.map(|d| {
-                qp::IdleTimeout::try_from(d)
-                    .unwrap_or_else(|_| qp::IdleTimeout::from(qp::VarInt::MAX))
-            }))
-            .keep_alive_interval(self.keep_alive_interval)
-            .stream_receive_window(varint(self.stream_receive_window))
-            .receive_window(self.receive_window.map_or(qp::VarInt::MAX, varint))
-            .send_window(self.send_window)
-            .initial_rtt(self.initial_rtt)
-            .initial_mtu(self.initial_mtu.max(1200))
-            .datagram_receive_buffer_size(self.datagram_receive_buffer_size)
-            .datagram_send_buffer_size(self.datagram_send_buffer_size);
-        if !self.mtu_discovery {
-            t.mtu_discovery_config(None);
-        }
-        match self.congestion {
-            Congestion::Cubic => {}
-            Congestion::NewReno => {
-                t.congestion_controller_factory(Arc::new(qp::congestion::NewRenoConfig::default()));
-            }
-            Congestion::Bbr => {
-                t.congestion_controller_factory(Arc::new(qp::congestion::BbrConfig::default()));
-            }
-        }
-        t
-    }
-}
-
 // ---- endpoint configurations ----
+
+/// Address-validation tokens (NEW_TOKEN) a client keeps per server name for later
+/// connections.
+pub(crate) type TokenStore = Arc<Mutex<HashMap<String, Vec<u8>>>>;
 
 /// A QUIC server configuration: TLS (see [`server_config`](crate::server_config)) plus
 /// transport settings. Cheap to clone.
 #[derive(Clone)]
-pub struct ServerConfig(pub(crate) qp::ServerConfig);
+pub struct ServerConfig {
+    pub(crate) tls: only_tls::ServerConfig,
+    pub(crate) transport: TransportConfig,
+    pub(crate) migration: bool,
+    pub(crate) retry: bool,
+}
 
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -425,38 +298,48 @@ impl fmt::Debug for ServerConfig {
 }
 
 impl ServerConfig {
+    pub(crate) fn new(tls: only_tls::ServerConfig) -> ServerConfig {
+        ServerConfig {
+            tls,
+            transport: TransportConfig::default(),
+            migration: true,
+            retry: false,
+        }
+    }
+
     /// Uses `transport` for every connection.
     #[must_use]
     pub fn transport(mut self, transport: &TransportConfig) -> Self {
-        self.0.transport_config(Arc::new(transport.to_quinn()));
+        self.transport = transport.clone();
         self
     }
 
     /// Whether clients may migrate to a new address (default `true`).
     #[must_use]
     pub fn migration(mut self, yes: bool) -> Self {
-        self.0.migration(yes);
+        self.migration = yes;
         self
     }
 
-    /// Wraps a quinn-proto configuration. **Unstable** (cargo feature `unstable`, outside the
-    /// semver promise).
-    #[cfg(feature = "unstable")]
-    pub fn from_quinn(config: qp::ServerConfig) -> ServerConfig {
-        ServerConfig(config)
-    }
-
-    /// The quinn-proto configuration. **Unstable** (cargo feature `unstable`).
-    #[cfg(feature = "unstable")]
-    pub fn as_quinn_mut(&mut self) -> &mut qp::ServerConfig {
-        &mut self.0
+    /// Validates every client address with a Retry round trip before accepting it (default:
+    /// only under handshake load). Hidden: for tests and interop runs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn retry(mut self, yes: bool) -> Self {
+        self.retry = yes;
+        self
     }
 }
 
 /// A QUIC client configuration: TLS (see [`client_config`](crate::client_config)) plus
-/// transport settings. Cheap to clone.
+/// transport settings. Cheap to clone; clones share the address-validation tokens servers
+/// hand out (NEW_TOKEN), which later connections to the same server name present.
 #[derive(Clone)]
-pub struct ClientConfig(pub(crate) qp::ClientConfig);
+pub struct ClientConfig {
+    pub(crate) tls: only_tls::ClientConfig,
+    pub(crate) transport: TransportConfig,
+    pub(crate) tokens: TokenStore,
+}
 
 impl fmt::Debug for ClientConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -465,24 +348,19 @@ impl fmt::Debug for ClientConfig {
 }
 
 impl ClientConfig {
+    pub(crate) fn new(tls: only_tls::ClientConfig) -> ClientConfig {
+        ClientConfig {
+            tls,
+            transport: TransportConfig::default(),
+            tokens: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
     /// Uses `transport` for connections dialed with this configuration.
     #[must_use]
     pub fn transport(mut self, transport: &TransportConfig) -> Self {
-        self.0.transport_config(Arc::new(transport.to_quinn()));
+        self.transport = transport.clone();
         self
-    }
-
-    /// Wraps a quinn-proto configuration. **Unstable** (cargo feature `unstable`, outside the
-    /// semver promise).
-    #[cfg(feature = "unstable")]
-    pub fn from_quinn(config: qp::ClientConfig) -> ClientConfig {
-        ClientConfig(config)
-    }
-
-    /// The quinn-proto configuration. **Unstable** (cargo feature `unstable`).
-    #[cfg(feature = "unstable")]
-    pub fn as_quinn_mut(&mut self) -> &mut qp::ClientConfig {
-        &mut self.0
     }
 }
 
@@ -500,18 +378,15 @@ mod tests {
             for dir in [Dir::Bi, Dir::Uni] {
                 let id = StreamId::new(side, dir, 7);
                 assert_eq!((id.initiator(), id.dir(), id.index()), (side, dir, 7));
-                let q = id.q();
-                let back: qp::Side = side.own();
-                assert_eq!(back, q.initiator());
-                let back: qp::Dir = dir.own();
-                assert_eq!(back, q.dir());
-                assert_eq!(Own::<StreamId>::own(q), id);
-                assert_eq!(u64::from(id), u64::from(q));
-                assert_eq!(Own::<Side>::own(q.initiator()), side);
-                assert_eq!(Own::<Dir>::own(q.dir()), dir);
+                assert_eq!(StreamId::from_raw(u64::from(id)), id);
                 assert_eq!(id.to_string(), u64::from(id).to_string());
             }
         }
+        // RFC 9000 section 2.1: the two low bits.
+        assert_eq!(u64::from(StreamId::new(Side::Client, Dir::Bi, 0)), 0);
+        assert_eq!(u64::from(StreamId::new(Side::Server, Dir::Bi, 0)), 1);
+        assert_eq!(u64::from(StreamId::new(Side::Client, Dir::Uni, 0)), 2);
+        assert_eq!(u64::from(StreamId::new(Side::Server, Dir::Uni, 1)), 7);
         assert_eq!(
             format!("{:?}", StreamId::new(Side::Server, Dir::Uni, 3)),
             "StreamId(Server Uni 3)"
@@ -519,22 +394,15 @@ mod tests {
     }
 
     #[test]
-    fn errors_map_and_display() {
-        let e: ConnectionError = qp::ConnectionError::TimedOut.own();
-        assert_eq!(e, ConnectionError::TimedOut);
-        for (q, s) in [
-            (
-                qp::ConnectionError::VersionMismatch,
-                "peer supports no common version",
-            ),
-            (qp::ConnectionError::Reset, "reset by peer"),
-            (qp::ConnectionError::LocallyClosed, "closed"),
-            (
-                qp::ConnectionError::CidsExhausted,
-                "connection ids exhausted",
-            ),
+    fn errors_display() {
+        for (e, s) in [
+            (ConnectionError::VersionMismatch, "peer supports no common version"),
+            (ConnectionError::Reset, "reset by peer"),
+            (ConnectionError::LocallyClosed, "closed"),
+            (ConnectionError::TimedOut, "timed out"),
+            (ConnectionError::CidsExhausted, "connection ids exhausted"),
         ] {
-            assert_eq!(Own::<ConnectionError>::own(q).to_string(), s);
+            assert_eq!(e.to_string(), s);
         }
         let e = ConnectionError::ApplicationClosed {
             code: 7,
@@ -551,21 +419,7 @@ mod tests {
             reason: "bad".into(),
         };
         assert_eq!(e.to_string(), "transport error 0x1: bad");
-    }
-
-    #[test]
-    fn transport_config_converts() {
-        let mut t = TransportConfig::default();
-        let _ = t.to_quinn();
-        t.max_idle_timeout = Some(Duration::from_secs(u64::MAX / 2));
-        t.receive_window = Some(u64::MAX);
-        t.mtu_discovery = false;
-        t.initial_mtu = 0;
-        for c in [Congestion::Cubic, Congestion::NewReno, Congestion::Bbr] {
-            t.congestion = c;
-            let _ = t.to_quinn();
-        }
-        let s: ConnectionStats = qp::ConnectionStats::default().own();
-        assert_eq!(s.udp_tx, UdpStats::default());
+        assert_eq!(ConnectionStats::default().udp_tx, UdpStats::default());
+        assert_eq!(TransportConfig::default().congestion, Congestion::Cubic);
     }
 }
