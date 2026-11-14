@@ -1,6 +1,6 @@
 # WebSocket
 
-`flash-ws` 实现了 RFC 6455 以及 `permessage-deflate`（RFC 7692）。服务端通过 flash-http 的
+`only-ws` 实现了 RFC 6455 以及 `permessage-deflate`（RFC 7692）。服务端通过 only-http 的
 升级进入；客户端拨号 `ws://` 和 `wss://` URL。两端使用同一个 handler trait。一致性：
 Autobahn|Testsuite 服务端 298 OK + 3 informational（核心）以及 216/216（permessage-deflate）；
 客户端 517 项中 514 OK + 3 informational；CI 中由 `tools/autobahn/run.sh` 运行。
@@ -28,13 +28,13 @@ pub trait WsHandler: Send + 'static {
 | `send_text_fragmented`、`send_binary_fragmented` | 按给定大小拆成多个帧 |
 | `send_prepared(&PreparedMessage)` | 为多个连接只编码一次的消息（不压缩发送） |
 | `ping`、`pong` | 控制帧 |
-| `close(code, reason)` | 发起关闭握手（`flash_ws::protocol::close::NORMAL` 等） |
+| `close(code, reason)` | 发起关闭握手（`only_ws::protocol::close::NORMAL` 等） |
 | `subprotocol()`、`is_open()` | 协商的子协议、状态 |
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-ws/examples/guide-ws.rs:server}}
+{{#include ../../../../crates/only-ws/examples/guide-ws.rs:server}}
 ```
 
 `ctx.upgrade_websocket(handler, &WsOptions)` 校验握手（GET、HTTP/1.1、`Upgrade`/`Connection`
@@ -55,11 +55,11 @@ pub trait WsHandler: Send + 'static {
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-ws/examples/guide-ws.rs:client}}
+{{#include ../../../../crates/only-ws/examples/guide-ws.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-ws/examples/guide-ws.rs:dial}}
+{{#include ../../../../crates/only-ws/examples/guide-ws.rs:dial}}
 ```
 
 - `client::dial_blocking(&engine, url, &opts, handler)` 阻塞到握手完成，返回 `WsSender`；不要在同一个
@@ -73,10 +73,10 @@ pub trait WsHandler: Send + 'static {
   （3 s）。
 - 帧用不可预测的密钥加掩码；依次尝试解析出的每个地址；域名解析在调用线程上进行。
 
-运行 `cargo run -p flash-ws --example guide-ws` 可以看到一个有两个客户端的聊天室，浏览器聊天
-示例见 `crates/flash-http/examples/ws-chat.rs`。
+运行 `cargo run -p only-ws --example guide-ws` 可以看到一个有两个客户端的聊天室，浏览器聊天
+示例见 `crates/only-http/examples/ws-chat.rs`。
 
 ## 尚未完成
 
-客户端：系统根证书（请提供 rustls 配置）、代理、重定向、engine 停机时发送 1001（目前连接以
+客户端：系统根证书（请自行加载到 `only::tls::RootCerts`）、代理、重定向、engine 停机时发送 1001（目前连接以
 1006 结束）。服务端：基于 HTTP/2 或 HTTP/3 的 WebSocket（extended CONNECT）。

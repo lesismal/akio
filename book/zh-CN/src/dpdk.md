@@ -1,13 +1,13 @@
 # 内核旁路（DPDK）
 
-> **实验性。** `Backend::Dpdk` 与 `flash::dpdk` 模块不在 semver 承诺范围内
+> **实验性。** `Backend::Dpdk` 与 `only::dpdk` 模块不在 semver 承诺范围内
 > （[docs/api-stability.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.zh-CN.md)），
 > 可能在任何发布中变化。
 
-`Backend::Dpdk` 让 listener 运行在**用户态 TCP/IP 协议栈**上，而不是内核协议栈：flash 的 I/O
+`Backend::Dpdk` 让 listener 运行在**用户态 TCP/IP 协议栈**上，而不是内核协议栈：only 的 I/O
 线程直接轮询网络设备，用 [smoltcp](https://docs.rs/smoltcp) 处理 ARP、IPv4、UDP 和 TCP，再把数据
 交给与其他后端相同的 `Handler`。UDP listener 依然每次 `on_data` 收到一个数据报，TCP listener 收到
-字节流；`Conn::send`、背压、`dial`、`dial_udp`、空闲超时、遥测与优雅关闭照常工作，因此 `flash-kcp`
+字节流；`Conn::send`、背压、`dial`、`dial_udp`、空闲超时、遥测与优雅关闭照常工作，因此 `only-kcp`
 等协议 crate 无需修改即可运行。
 
 协议栈之下的设备可以是：
@@ -23,19 +23,19 @@
 
 ```toml
 [dependencies]
-flash = { version = "1", features = ["dpdk"] }       # TAP、AF_PACKET、内存链路
-# flash = { version = "1", features = ["dpdk-pmd"] } # 外加 DPDK 端口（链接 libdpdk）
+only = { version = "1", features = ["dpdk"] }       # TAP、AF_PACKET、内存链路
+# only = { version = "1", features = ["dpdk-pmd"] } # 外加 DPDK 端口（链接 libdpdk）
 ```
 
 `dpdk-pmd` 会针对已安装的 DPDK（`pkg-config --cflags --libs libdpdk`，DPDK 21.11 或更新）编译一个
 很小的 C shim。没有 libdpdk 时 crate 仍能构建，`Device::Dpdk` 会在 `build` 时以 `Unsupported`
-失败；设置 `FLASH_DPDK_REQUIRE=1` 可把缺少 libdpdk 变成构建错误。Debian/Ubuntu 上：
+失败；设置 `ONLY_DPDK_REQUIRE=1` 可把缺少 libdpdk 变成构建错误。Debian/Ubuntu 上：
 `apt-get install dpdk-dev libdpdk-dev pkg-config`。
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../crates/flash-dpdk/examples/guide-dpdk.rs:server}}
+{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:server}}
 ```
 
 - `DpdkConfig::new(device, address)` 为协议栈指定 IPv4 地址；`prefix_len`（默认 24）和 `gateway`
@@ -47,7 +47,7 @@ flash = { version = "1", features = ["dpdk"] }       # TAP、AF_PACKET、内存�
 把内存链路换成 DPDK 端口：
 
 ```rust,ignore
-{{#include ../../../crates/flash-dpdk/examples/guide-dpdk.rs:dpdk}}
+{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:dpdk}}
 ```
 
 EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。在真实网卡上：预留大页
@@ -59,7 +59,7 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../crates/flash-dpdk/examples/guide-dpdk.rs:client}}
+{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:client}}
 ```
 
 `Engine::dial` 运行在 engine 的最后一个 listener 上，`dial_udp` 运行在最后一个 UDP listener 上，
@@ -93,14 +93,14 @@ EAL 每个进程只初始化一次，使用第一个 DPDK 协议栈的 `args`。
   （`rte_eth_tx_burst`）。
 - **多队列**：端口按 IP/UDP/TCP 四元组配置 RSS，同一条流始终落在同一个队列和线程上。ARP 帧会复制
   到所有队列，让每个协议栈都知道邻居。
-- **连接**是没有内核 socket 的 flash 连接：`Conn::send`（可在任意线程调用）只入队并唤醒所属线程，
+- **连接**是没有内核 socket 的 only 连接：`Conn::send`（可在任意线程调用）只入队并唤醒所属线程，
   由它在每次回调之后把字节搬进协议栈。handler 在 cork 状态下运行，一次回调发送的内容只进入协议栈
   一次。
 - **线程**会注册到 EAL（`rte_thread_register`），以便使用内存池的 per-lcore 缓存。`busy_poll = false`
   时空闲线程最多休眠 1 ms（DPDK 与内存设备上，跨线程发送会提前唤醒它）。
 
 为什么选 smoltcp：它是持续维护、内存安全的 Rust 协议栈，没有全局状态，每个队列一个实例正好契合
-flash 的每核一线程模型，无需加锁。F-Stack（DPDK 上的 FreeBSD 协议栈）和 Seastar 的协议栈更快、更
+only 的每核一线程模型，无需加锁。F-Stack（DPDK 上的 FreeBSD 协议栈）和 Seastar 的协议栈更快、更
 完整，但会带来自带线程模型的 C/C++ 运行时，并在数据路径上引入大量 `unsafe` FFI。
 
 ## 当前限制
@@ -114,10 +114,10 @@ flash 的每核一线程模型，无需加锁。F-Stack（DPDK 上的 FreeBSD �
 
 ## 测试
 
-`crates/flash-dpdk/tests/memory.rs` 可在任意平台运行：两个协议栈之间的 UDP 与 TCP echo、带流控的
+`crates/only-dpdk/tests/memory.rs` 可在任意平台运行：两个协议栈之间的 UDP 与 TCP echo、带流控的
 大块 TCP 传输、有序关闭、协议栈之上的 KCP。`tools/dpdk/test.sh` 构建 `tools/dpdk/` 中的 Docker 镜像
 （Debian 的 DPDK 24.11），并以 `--cap-add NET_ADMIN --device /dev/net/tun` 运行
 `tests/kernel_peer.rs`：Linux 内核自己的 socket 通过 DPDK 的 `net_tap` PMD（单队列与双队列）以及
-smoltcp 的 TAP 设备，以及 veth 对上的 AF_PACKET socket，与 flash 交换 UDP 数据报和 2 MiB 的 TCP
+smoltcp 的 TAP 设备，以及 veth 对上的 AF_PACKET socket，与 only 交换 UDP 数据报和 2 MiB 的 TCP
 数据。CI 中的重型任务 `dpdk` 运行同样的
 测试。

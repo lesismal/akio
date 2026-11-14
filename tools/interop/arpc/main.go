@@ -1,7 +1,7 @@
-// arpc interop peer (fib's Go arpc) for flash-arpc:
+// arpc interop peer (fib's Go arpc) for only-arpc:
 //
 //	go run . server 127.0.0.1:9100     serves /echo, /fail and the /upper stream
-//	go run . client 127.0.0.1:9101     calls a flash server and checks the answers
+//	go run . client 127.0.0.1:9101     calls a only server and checks the answers
 package main
 
 import (

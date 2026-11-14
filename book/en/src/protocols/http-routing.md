@@ -3,7 +3,7 @@
 ## Router
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-http.rs:router}}
+{{#include ../../../../crates/only-http/examples/guide-http.rs:router}}
 ```
 
 Path segments:
@@ -25,7 +25,7 @@ Behaviour:
 - Methods: `get`, `post`, `put`, `delete`, `patch`, `options`, or `route(Method, path, svc)`.
 - A path that exists with another method answers **405** with an `Allow` header; an unknown path
   answers **404**. `fallback(svc)` replaces both (the `Allow` list is in
-  `ctx.local("flash.allow")`).
+  `ctx.local("only.allow")`).
 - `HEAD` is answered by the `GET` route, without a body.
 - Duplicate or conflicting routes, a wildcard that is not last and invalid regexps **panic at
   registration**: you find out at startup, not in production.
@@ -40,7 +40,7 @@ implementing `Middleware::handle`). Call `next.call(ctx)` to continue, or answer
 it:
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-http.rs:middleware}}
+{{#include ../../../../crates/only-http/examples/guide-http.rs:middleware}}
 ```
 
 In the router above it guards only the nested `/admin` router:
@@ -55,7 +55,7 @@ instead of inspecting it after `next.call` returns: `ctx.add_response_filter(|re
 runs just before the response is sent, on whichever thread sends it. `ctx.add_response_header`
 adds a header unless the response sets it.
 
-Built-in middleware (`flash_http::middleware` and `flash_http::observe`):
+Built-in middleware (`only_http::middleware` and `only_http::observe`):
 
 | Middleware | What it does |
 |---|---|

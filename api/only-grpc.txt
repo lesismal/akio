@@ -1,0 +1,159 @@
+pub mod only_grpc
+pub mod only_grpc::codec
+pub trait only_grpc::codec::Message: core::marker::Sized
+pub fn only_grpc::codec::Message::decode_from(&[u8]) -> core::result::Result<Self, only_grpc::Status>
+pub fn only_grpc::codec::Message::encode_to(&self, &mut alloc::vec::Vec<u8>)
+pub fn only_grpc::codec::decode<M: only_grpc::codec::Message>(&[u8]) -> core::result::Result<M, only_grpc::Status>
+pub fn only_grpc::codec::encode<M: only_grpc::codec::Message>(&M) -> alloc::vec::Vec<u8>
+pub enum only_grpc::Code
+pub only_grpc::Code::Aborted = 10
+pub only_grpc::Code::AlreadyExists = 6
+pub only_grpc::Code::Cancelled = 1
+pub only_grpc::Code::DataLoss = 15
+pub only_grpc::Code::DeadlineExceeded = 4
+pub only_grpc::Code::FailedPrecondition = 9
+pub only_grpc::Code::Internal = 13
+pub only_grpc::Code::InvalidArgument = 3
+pub only_grpc::Code::NotFound = 5
+pub only_grpc::Code::Ok = 0
+pub only_grpc::Code::OutOfRange = 11
+pub only_grpc::Code::PermissionDenied = 7
+pub only_grpc::Code::ResourceExhausted = 8
+pub only_grpc::Code::Unauthenticated = 16
+pub only_grpc::Code::Unavailable = 14
+pub only_grpc::Code::Unimplemented = 12
+pub only_grpc::Code::Unknown = 2
+impl core::clone::Clone for only_grpc::Code
+pub fn only_grpc::Code::clone(&self) -> Self
+impl core::cmp::Eq for only_grpc::Code
+impl core::cmp::PartialEq for only_grpc::Code
+pub fn only_grpc::Code::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_grpc::Code
+pub fn only_grpc::Code::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_grpc::Code
+impl core::marker::StructuralPartialEq for only_grpc::Code
+impl core::marker::Send for only_grpc::Code
+impl core::marker::Sync for only_grpc::Code
+impl core::marker::Unpin for only_grpc::Code
+impl core::panic::unwind_safe::RefUnwindSafe for only_grpc::Code
+impl core::panic::unwind_safe::UnwindSafe for only_grpc::Code
+#[non_exhaustive] pub struct only_grpc::CallOptions
+pub only_grpc::CallOptions::metadata: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_grpc::CallOptions::timeout: core::option::Option<core::time::Duration>
+impl core::clone::Clone for only_grpc::CallOptions
+pub fn only_grpc::CallOptions::clone(&self) -> Self
+impl core::default::Default for only_grpc::CallOptions
+pub fn only_grpc::CallOptions::default() -> Self
+impl core::fmt::Debug for only_grpc::CallOptions
+pub fn only_grpc::CallOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_grpc::CallOptions
+impl core::marker::Sync for only_grpc::CallOptions
+impl core::marker::Unpin for only_grpc::CallOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_grpc::CallOptions
+impl core::panic::unwind_safe::UnwindSafe for only_grpc::CallOptions
+pub struct only_grpc::ClientSink
+impl only_grpc::ClientSink
+pub fn only_grpc::ClientSink::close_send(&self) -> bool
+pub fn only_grpc::ClientSink::send(&self, &[u8]) -> bool
+impl core::fmt::Debug for only_grpc::ClientSink
+pub fn only_grpc::ClientSink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_grpc::ClientSink
+impl core::marker::Sync for only_grpc::ClientSink
+impl core::marker::Unpin for only_grpc::ClientSink
+impl !core::panic::unwind_safe::RefUnwindSafe for only_grpc::ClientSink
+impl !core::panic::unwind_safe::UnwindSafe for only_grpc::ClientSink
+pub struct only_grpc::GrpcClient
+impl only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::bidi(&self, &str, only_grpc::CallOptions, impl core::ops::function::FnMut(alloc::vec::Vec<u8>) + core::marker::Send + 'static, impl core::ops::function::FnOnce(only_grpc::Status, only_http::message::Headers) + core::marker::Send + 'static) -> only_grpc::ClientSink
+pub fn only_grpc::GrpcClient::collect(&self, &str, alloc::vec::Vec<alloc::vec::Vec<u8>>, only_grpc::CallOptions) -> (alloc::vec::Vec<alloc::vec::Vec<u8>>, only_grpc::Status)
+pub fn only_grpc::GrpcClient::compress(self, bool) -> only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::new(only_http::h2client::H2Client, &str) -> only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::unary(&self, &str, &[u8], only_grpc::CallOptions) -> core::result::Result<alloc::vec::Vec<u8>, only_grpc::Status>
+impl core::clone::Clone for only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::clone(&self) -> Self
+impl core::fmt::Debug for only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_grpc::GrpcClient
+impl core::marker::Sync for only_grpc::GrpcClient
+impl core::marker::Unpin for only_grpc::GrpcClient
+impl !core::panic::unwind_safe::RefUnwindSafe for only_grpc::GrpcClient
+impl !core::panic::unwind_safe::UnwindSafe for only_grpc::GrpcClient
+pub struct only_grpc::GrpcServer
+impl only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::bidi(self, &str, impl core::ops::function::Fn(&only_grpc::Metadata, only_grpc::Sink) -> only_grpc::OnMessage + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::client_stream(self, &str, impl core::ops::function::Fn(&only_grpc::Metadata, alloc::vec::Vec<alloc::vec::Vec<u8>>, only_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::compress(self, bool) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::interceptor(self, impl core::ops::function::Fn(&only_grpc::Metadata) -> core::result::Result<(), only_grpc::Status> + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::max_message_bytes(self, usize) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::new() -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::server_stream(self, &str, impl core::ops::function::Fn(&only_grpc::Metadata, alloc::vec::Vec<u8>, only_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::unary(self, &str, impl core::ops::function::Fn(&only_grpc::Metadata, alloc::vec::Vec<u8>, only_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
+impl core::clone::Clone for only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::clone(&self) -> Self
+impl core::default::Default for only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::default() -> Self
+impl core::fmt::Debug for only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_http::context::Service for only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::body_mode(&self, &only_http::message::Request) -> only_http::context::BodyMode
+pub fn only_grpc::GrpcServer::call(&self, &mut only_http::context::Context)
+impl core::marker::Send for only_grpc::GrpcServer
+impl core::marker::Sync for only_grpc::GrpcServer
+impl core::marker::Unpin for only_grpc::GrpcServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_grpc::GrpcServer
+impl !core::panic::unwind_safe::UnwindSafe for only_grpc::GrpcServer
+#[non_exhaustive] pub struct only_grpc::Metadata
+pub only_grpc::Metadata::deadline: core::option::Option<std::time::Instant>
+pub only_grpc::Metadata::headers: only_http::message::Headers
+pub only_grpc::Metadata::method: alloc::string::String
+impl only_grpc::Metadata
+pub fn only_grpc::Metadata::get(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for only_grpc::Metadata
+pub fn only_grpc::Metadata::clone(&self) -> Self
+impl core::fmt::Debug for only_grpc::Metadata
+pub fn only_grpc::Metadata::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_grpc::Metadata
+impl core::marker::Sync for only_grpc::Metadata
+impl core::marker::Unpin for only_grpc::Metadata
+impl core::panic::unwind_safe::RefUnwindSafe for only_grpc::Metadata
+impl core::panic::unwind_safe::UnwindSafe for only_grpc::Metadata
+pub struct only_grpc::Sink(_)
+impl only_grpc::Sink
+pub fn only_grpc::Sink::finish(&self, only_grpc::Status)
+pub fn only_grpc::Sink::is_finished(&self) -> bool
+pub fn only_grpc::Sink::send(&self, &[u8]) -> bool
+pub fn only_grpc::Sink::set_header(&self, &str, &str)
+pub fn only_grpc::Sink::set_trailer(&self, &str, &str)
+impl core::clone::Clone for only_grpc::Sink
+pub fn only_grpc::Sink::clone(&self) -> Self
+impl core::fmt::Debug for only_grpc::Sink
+pub fn only_grpc::Sink::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_grpc::Sink
+impl core::marker::Sync for only_grpc::Sink
+impl core::marker::Unpin for only_grpc::Sink
+impl core::panic::unwind_safe::RefUnwindSafe for only_grpc::Sink
+impl core::panic::unwind_safe::UnwindSafe for only_grpc::Sink
+#[non_exhaustive] pub struct only_grpc::Status
+pub only_grpc::Status::code: only_grpc::Code
+pub only_grpc::Status::message: alloc::string::String
+impl only_grpc::Status
+pub fn only_grpc::Status::new(only_grpc::Code, impl core::convert::Into<alloc::string::String>) -> only_grpc::Status
+pub fn only_grpc::Status::ok() -> only_grpc::Status
+impl core::clone::Clone for only_grpc::Status
+pub fn only_grpc::Status::clone(&self) -> Self
+impl core::cmp::Eq for only_grpc::Status
+impl core::cmp::PartialEq for only_grpc::Status
+pub fn only_grpc::Status::eq(&self, &Self) -> bool
+impl core::error::Error for only_grpc::Status
+impl core::fmt::Debug for only_grpc::Status
+pub fn only_grpc::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_grpc::Status
+pub fn only_grpc::Status::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_grpc::Status
+impl core::marker::Send for only_grpc::Status
+impl core::marker::Sync for only_grpc::Status
+impl core::marker::Unpin for only_grpc::Status
+impl core::panic::unwind_safe::RefUnwindSafe for only_grpc::Status
+impl core::panic::unwind_safe::UnwindSafe for only_grpc::Status
+pub const only_grpc::DEFAULT_MAX_MESSAGE: usize
+pub type only_grpc::OnMessage = alloc::boxed::Box<(dyn core::ops::function::FnMut(core::option::Option<alloc::vec::Vec<u8>>) + core::marker::Send)>

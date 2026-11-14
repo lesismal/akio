@@ -1,0 +1,28 @@
+[package]
+name = "only-arpc"
+description = "only arpc: RPC wire-compatible with lesismal/arpc and fib/arpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-arpc"
+keywords = ["rpc", "arpc", "network", "server", "client"]
+categories = ["network-programming"]
+
+[dependencies]
+only = { workspace = true }
+only-core = { workspace = true }
+only-buf = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_arpc::fuzzing`); not a public API.
+fuzzing = ["only-core/fuzzing"]
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

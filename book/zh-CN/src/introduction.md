@@ -2,7 +2,7 @@
 
 [English](../en/) | [简体中文](../zh-CN/)
 
-**flash** 是 Rust 的事件驱动网络库，是 Go 库 [fib](https://github.com/lesismal/fib) 的
+**only** 是 Rust 的事件驱动网络库，是 Go 库 [fib](https://github.com/lesismal/fib) 的
 Rust 对应物：功能面相同，但用 Rust 的方式实现：用所有权代替垃圾回收，用 `Send`/`Sync`
 边界代替约定，协议状态机都是 sans-io 的，而且没有异步运行时。
 
@@ -10,17 +10,17 @@ Rust 对应物：功能面相同，但用 Rust 的方式实现：用所有权代
            你的 Handler / Service / WsHandler / QuicHandler ...
                  │ 回调，在连接所属的 I/O 线程上直接执行
  ┌───────────────┴─────────────────────────────────────────────────┐
- │ flash-http  flash-ws  flash-grpc  flash-arpc  flash-socks  ...  │  协议（sans-io）
- │ flash-tls（Transport 层）          flash-quic / flash-kcp（UDP）│
+ │ only-http  only-ws  only-grpc  only-arpc  only-socks  ...  │  协议（sans-io）
+ │ only-tls（Transport 层）          only-quic / only-kcp（UDP）│
  ├─────────────────────────────────────────────────────────────────┤
- │ flash（Engine、Listener、Backend、Accel）  flash-core（Conn）   │
+ │ only（Engine、Listener、Backend、Accel）  only-core（Conn）   │
  ├─────────────────────────────────────────────────────────────────┤
- │ flash-epoll（epoll / kqueue）   flash-uring（io_uring）         │  每个 listener 一个后端
- │ flash-ebpf（SO_REUSEPORT 分流、sockmap 转发）                   │  可选加速层
+ │ only-epoll（epoll / kqueue）   only-uring（io_uring）         │  每个 listener 一个后端
+ │ only-ebpf（SO_REUSEPORT 分流、sockmap 转发）                   │  可选加速层
  └─────────────────────────────────────────────────────────────────┘
 ```
 
-## flash 的不同之处
+## only 的不同之处
 
 - **每核一线程（thread-per-core）。** 每个连接从建立到关闭只属于一个 I/O 线程。回调就在
   这个线程上直接执行，因此每连接状态不需要锁，也不需要 `Sync`。
@@ -37,10 +37,10 @@ Rust 对应物：功能面相同，但用 Rust 的方式实现：用所有权代
 
 ## 如何阅读本书
 
-- 初次接触 flash：先读[快速上手](getting-started.md)，再读[核心概念](concepts/index.md)
+- 初次接触 only：先读[快速上手](getting-started.md)，再读[核心概念](concepts/index.md)
   各章。它们很短，讲的是每个协议 crate 都遵守的规则。
 - 查找某个协议：[协议](protocols/index.md)部分每个 crate 一章。
-- 在生产环境运行 flash：[配置](configuration.md)、[可观测性](observability.md)、
+- 在生产环境运行 only：[配置](configuration.md)、[可观测性](observability.md)、
   [性能调优](performance.md)和[故障排查](troubleshooting.md)。
 - 从 Go、tokio 或 axum 迁移：见[迁移指南](migration/from-fib.md)。
 - 想了解内部实现：见[架构](architecture.md)。
@@ -50,7 +50,7 @@ Rust 对应物：功能面相同，但用 Rust 的方式实现：用所有权代
 
 ## 状态
 
-flash 正在接近 1.0。Linux 是第一等平台（epoll、io_uring、eBPF）；macOS 使用 kqueue，
+only 正在接近 1.0。Linux 是第一等平台（epoll、io_uring、eBPF）；macOS 使用 kqueue，
 用于开发。不支持 Windows。已完成和未完成的内容按里程碑记录在
 [docs/DEV-PLAN.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/DEV-PLAN.zh-CN.md)；
 实测性能见

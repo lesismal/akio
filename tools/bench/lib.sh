@@ -7,7 +7,7 @@
 #   CLI_THREADS  load generator threads                  (default 8)
 #   SECS         seconds per measurement                 (default 5)
 #   RUNS         rounds; every figure is their median    (default 3)
-#   KINDS        servers to run, e.g. "flash-epoll fib"  (default: all that apply)
+#   KINDS        servers to run, e.g. "only-epoll fib"  (default: all that apply)
 #   OUT          TSV file the raw results are appended to (default /tmp/bench-<suite>.tsv)
 #
 # Each round runs every case against every server in turn, with a fresh server per run, so a
@@ -33,17 +33,17 @@ SPID=
 server_cmd() {
   local kind=$1 proto=$2 addr=$3
   case $kind in
-    base-*) # the flash servers built from another revision, in $BASE_DIR (A/B runs)
+    base-*) # the only servers built from another revision, in $BASE_DIR (A/B runs)
       [ -n "${BASE_DIR:-}" ] || return 0
-      BENCH_SERVER=$BASE_DIR/bench-server HTTP_BENCH=$BASE_DIR/http-bench server_cmd "flash-${kind#base-}" "$proto" "$addr"
+      BENCH_SERVER=$BASE_DIR/bench-server HTTP_BENCH=$BASE_DIR/http-bench server_cmd "only-${kind#base-}" "$proto" "$addr"
       return 0
       ;;
   esac
   case $kind:$proto in
-    flash-epoll:tcp | flash-epoll:tls | flash-epoll:udp) echo "$BENCH_SERVER $proto $addr $THREADS epoll echo" ;;
-    flash-uring:tcp | flash-uring:tls) echo "$BENCH_SERVER $proto $addr $THREADS uring echo" ;;
-    flash-epoll:http | flash-epoll:ws) echo "$HTTP_BENCH $addr $THREADS epoll" ;;
-    flash-uring:http | flash-uring:ws) echo "$HTTP_BENCH $addr $THREADS uring" ;;
+    only-epoll:tcp | only-epoll:tls | only-epoll:udp) echo "$BENCH_SERVER $proto $addr $THREADS epoll echo" ;;
+    only-uring:tcp | only-uring:tls) echo "$BENCH_SERVER $proto $addr $THREADS uring echo" ;;
+    only-epoll:http | only-epoll:ws) echo "$HTTP_BENCH $addr $THREADS epoll" ;;
+    only-uring:http | only-uring:ws) echo "$HTTP_BENCH $addr $THREADS uring" ;;
     tokio:tcp | tokio:tls | tokio:udp | tokio:ws) [ -x "$TOKIO_REF" ] && echo "$TOKIO_REF $proto $addr $THREADS" ;;
     hyper:http) [ -x "$HYPER_REF" ] && echo "$HYPER_REF $addr $THREADS" ;;
     fib:tcp | fib:tls | fib:udp | fib:http | fib:ws) [ -x "$FIB_REF" ] && echo "$FIB_REF $proto $addr" ;;
@@ -54,7 +54,7 @@ server_cmd() {
 # kinds_for <proto>: the servers (of $KINDS) that can serve it.
 kinds_for() {
   local k out=
-  for k in ${KINDS:-flash-epoll flash-uring tokio hyper fib}; do
+  for k in ${KINDS:-only-epoll only-uring tokio hyper fib}; do
     [ -n "$(server_cmd "$k" "$1" x)" ] && out="$out $k"
   done
   echo "$out"

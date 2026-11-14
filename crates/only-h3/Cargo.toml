@@ -1,0 +1,31 @@
+[package]
+name = "only-h3"
+description = "only HTTP/3 (RFC 9114) with QPACK over only-quic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-h3"
+keywords = ["http3", "h3", "quic", "qpack", "network"]
+categories = ["network-programming", "web-programming::http-server"]
+
+[dependencies]
+only = { workspace = true }
+only-core = { workspace = true }
+only-http = { workspace = true }
+only-quic = { workspace = true }
+bytes = "1"
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_h3::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+
+[lints]
+workspace = true

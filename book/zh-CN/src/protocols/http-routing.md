@@ -3,7 +3,7 @@
 ## Router
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-http.rs:router}}
+{{#include ../../../../crates/only-http/examples/guide-http.rs:router}}
 ```
 
 路径段：
@@ -23,7 +23,7 @@
 
 - 方法：`get`、`post`、`put`、`delete`、`patch`、`options`，或 `route(Method, path, svc)`。
 - 路径存在但方法不对时返回 **405** 并带 `Allow` 头；路径不存在时返回 **404**。`fallback(svc)`
-  同时替换两者（`Allow` 列表在 `ctx.local("flash.allow")` 中）。
+  同时替换两者（`Allow` 列表在 `ctx.local("only.allow")` 中）。
 - `HEAD` 由 `GET` 路由应答，不带 body。
 - 重复或冲突的路由、不在最后的通配段、非法正则都会**在注册时 panic**：启动时就发现，而不是
   在生产环境。
@@ -36,7 +36,7 @@
 `Middleware::handle` 的类型）。调用 `next.call(ctx)` 继续，或者不调用它直接答复：
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-http.rs:middleware}}
+{{#include ../../../../crates/only-http/examples/guide-http.rs:middleware}}
 ```
 
 在上面的 router 里，它只保护嵌套的 `/admin` router：
@@ -50,7 +50,7 @@
 `ctx.add_response_filter(|resp, req| ..)` 在响应发出前执行，在发送响应的那个线程上运行。
 `ctx.add_response_header` 添加一个头部，除非响应自己设置了它。
 
-内置中间件（`flash_http::middleware` 与 `flash_http::observe`）：
+内置中间件（`only_http::middleware` 与 `only_http::observe`）：
 
 | 中间件 | 作用 |
 |---|---|

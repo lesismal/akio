@@ -1,9 +1,9 @@
 # Streaming media: hub, RTMP, HTTP-FLV, HLS
 
-`flash-media` is a live streaming server toolkit: one stream **hub** with every ingest and
+`only-media` is a live streaming server toolkit: one stream **hub** with every ingest and
 egress protocol around it. A stream published over RTMP, RTSP or SRT plays over RTMP, RTSP,
 SRT, HTTP-FLV, WS-FLV and HLS, with no protocol-to-protocol glue: every protocol converts what
-it receives into the canonical packets of `flash_media::av` and muxes from them.
+it receives into the canonical packets of `only_media::av` and muxes from them.
 
 | Protocol | In (publish) | Out (play) | Chapter |
 |---|---|---|---|
@@ -15,7 +15,7 @@ it receives into the canonical packets of `flash_media::av` and muxes from them.
 | WHIP / WHEP | signalling (media plugs in) | signalling | [RTSP and WHIP/WHEP](media-rtsp.md) |
 
 Codecs: H.264, H.265, AAC and Opus everywhere they can be carried (G.711 and MP3 where the
-container allows). Snippets below are from `crates/flash-media/examples/guide-media.rs`.
+container allows). Snippets below are from `crates/only-media/examples/guide-media.rs`.
 
 ## The canonical form
 
@@ -24,13 +24,13 @@ form (the `AVCDecoderConfigurationRecord` / `HEVCDecoderConfigurationRecord` wit
 sets, the AAC `AudioSpecificConfig`, the `OpusHead`), plus picture size or sample rate.
 `av::Packet` is one access unit: AVCC video (4-byte NAL lengths, no access unit delimiters),
 raw AAC frames without ADTS, Opus packets; decode and presentation times in nanoseconds.
-`flash_media::codec` has the helpers to go between AVCC and Annex B, parse the configuration
+`only_media::codec` has the helpers to go between AVCC and Annex B, parse the configuration
 records and SPS (picture size), and frame ADTS.
 
 ## The hub
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:hub}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:hub}}
 ```
 
 - **Streams by path.** RTMP `rtmp://host/app/name` publishes `app/name`; RTSP, SRT, HTTP and
@@ -60,11 +60,11 @@ records and SPS (picture size), and frame ADTS.
 A sink of your own (recorder, relay, analytics) is a `Sink`:
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:sink}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:sink}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:subscribe}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:subscribe}}
 ```
 
 Dropping the `Subscription` (or the `Publisher`) ends it. `SubscribeOptions::wait` lets a
@@ -74,7 +74,7 @@ next keyframe instead of the cache.
 ## RTMP
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:rtmp}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:rtmp}}
 ```
 
 `RtmpServer` is an `Acceptor`. It does the simple and the Flash digest ("complex") handshake,
@@ -85,15 +85,15 @@ aborts, aggregate messages, acknowledgements), and answers `connect`, `releaseSt
 including H.265 as id 12, and Enhanced RTMP FourCCs `hvc1`, `Opus`, `mp4a`); players get
 onMetaData and the sequence headers first, then the GOP cache, written by `flv::Encoder`
 (H.265 as `hvc1`, or codec id 12 with `EncoderConfig::legacy_hevc`). `RtmpConfig::on_connect`
-can reject connections by app and tcUrl. RTMPS is RTMP behind flash-tls.
+can reject connections by app and tcUrl. RTMPS is RTMP behind only-tls.
 
 ## HTTP-FLV, WS-FLV and HLS
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:http}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:http}}
 ```
 
-`MediaHttp` dispatches by extension to two flash-http services you can also mount on their own:
+`MediaHttp` dispatches by extension to two only-http services you can also mount on their own:
 
 - **`HttpFlv`**: `GET /app/name.flv` streams an FLV file that never ends (chunked on
   HTTP/1.1, a stream on HTTP/2). The response starts once the subscription is accepted, so a
@@ -112,11 +112,11 @@ can reject connections by app and tcUrl. RTMPS is RTMP behind flash-tls.
 ## Running it
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:engine}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:engine}}
 ```
 
 ```console
-$ cargo run -p flash-media --example guide-media
+$ cargo run -p only-media --example guide-media
 $ ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=25 -f lavfi -i sine \
     -c:v libx264 -g 50 -c:a aac -f flv rtmp://127.0.0.1:1935/live/cam
 $ ffprobe rtmp://127.0.0.1:1935/live/cam
@@ -126,7 +126,7 @@ $ ffplay http://127.0.0.1:8080/live/cam/index.m3u8
 
 ## Interoperability
 
-The integration tests (`crates/flash-media/tests/*_interop.rs`, skipped when ffmpeg is not
+The integration tests (`crates/only-media/tests/*_interop.rs`, skipped when ffmpeg is not
 installed) run ffmpeg 9 as publisher and ffprobe / ffmpeg as player:
 
 | Publisher | Player | Codecs |

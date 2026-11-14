@@ -1,5 +1,5 @@
 [package]
-name = "flash-fuzz"
+name = "only-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
@@ -13,19 +13,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-flash-http = { path = "../crates/flash-http", features = ["fuzzing"] }
-flash-ws = { path = "../crates/flash-ws", features = ["fuzzing"] }
-flash-arpc = { path = "../crates/flash-arpc", features = ["fuzzing"] }
-flash-grpc = { path = "../crates/flash-grpc", features = ["fuzzing"] }
-flash-socks = { path = "../crates/flash-socks", features = ["fuzzing"] }
-flash-mux = { path = "../crates/flash-mux", features = ["fuzzing"] }
-flash-kcp = { path = "../crates/flash-kcp", features = ["fuzzing"] }
-flash-h3 = { path = "../crates/flash-h3", features = ["fuzzing"] }
-flash-ebpf = { path = "../crates/flash-ebpf", features = ["fuzzing"] }
-flash-turn = { path = "../crates/flash-turn", features = ["fuzzing"] }
-flash-webrtc = { path = "../crates/flash-webrtc", features = ["fuzzing"] }
-flash-media = { path = "../crates/flash-media", features = ["fuzzing"] }
-flash-bittorrent = { path = "../crates/flash-bittorrent", features = ["fuzzing"] }
+only-http = { path = "../crates/only-http", features = ["fuzzing"] }
+only-ws = { path = "../crates/only-ws", features = ["fuzzing"] }
+only-arpc = { path = "../crates/only-arpc", features = ["fuzzing"] }
+only-grpc = { path = "../crates/only-grpc", features = ["fuzzing"] }
+only-socks = { path = "../crates/only-socks", features = ["fuzzing"] }
+only-mux = { path = "../crates/only-mux", features = ["fuzzing"] }
+only-kcp = { path = "../crates/only-kcp", features = ["fuzzing"] }
+only-h3 = { path = "../crates/only-h3", features = ["fuzzing"] }
+only-ebpf = { path = "../crates/only-ebpf", features = ["fuzzing"] }
+only-turn = { path = "../crates/only-turn", features = ["fuzzing"] }
+only-webrtc = { path = "../crates/only-webrtc", features = ["fuzzing"] }
+only-media = { path = "../crates/only-media", features = ["fuzzing"] }
+only-bittorrent = { path = "../crates/only-bittorrent", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1

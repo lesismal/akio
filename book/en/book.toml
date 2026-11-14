@@ -1,7 +1,7 @@
 [book]
-title = "The flash Book"
-description = "flash: an event-driven, thread-per-core network library for Rust"
-authors = ["The flash authors"]
+title = "only — a network library for Rust"
+description = "only: an event-driven, thread-per-core network library for Rust"
+authors = ["only contributors"]
 language = "en"
 src = "src"
 
@@ -13,7 +13,7 @@ create-missing = false
 [output.html]
 git-repository-url = "https://github.com/lesismal/flash"
 edit-url-template = "https://github.com/lesismal/flash/edit/main/book/en/{path}"
-site-url = "/flash/en/"
+site-url = "/only/en/"
 additional-js = ["mermaid-init.js"]
 
 [output.html.playground]

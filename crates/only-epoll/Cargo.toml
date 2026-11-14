@@ -1,0 +1,22 @@
+[package]
+name = "only-epoll"
+description = "only internals: the epoll (Linux) / kqueue (macOS) backend (use `only`)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-epoll"
+keywords = ["network", "epoll", "kqueue", "event-loop"]
+categories = ["network-programming", "os::unix-apis"]
+
+[dependencies]
+only-core = { workspace = true }
+only-sys = { workspace = true }
+only-timer = { workspace = true }
+log = "0.4.21"
+
+[lints]
+workspace = true

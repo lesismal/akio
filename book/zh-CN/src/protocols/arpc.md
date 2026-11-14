@@ -1,6 +1,6 @@
 # arpc
 
-`flash-arpc` 使用 [lesismal/arpc](https://github.com/lesismal/arpc) 和 fib 的 `arpc` package 的
+`only-arpc` 使用 [lesismal/arpc](https://github.com/lesismal/arpc) 和 fib 的 `arpc` package 的
 线路格式，因此可以与这两者的 Go 端互通（由 `tools/interop/arpc/run.sh` 做双向检查）。
 
 每个连接在**两端**都是一个 `Peer`：任意一端都可以调用、通知或打开 stream，并用自己拿到的
@@ -9,7 +9,7 @@
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-arpc/examples/guide-arpc.rs:server}}
+{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:server}}
 ```
 
 `Routes`：
@@ -31,10 +31,10 @@ handler 在 I/O 线程上执行，不能阻塞。
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-arpc/examples/guide-arpc.rs:client}}
+{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:client}}
 ```
 
-`flash_arpc::dial_blocking(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
+`only_arpc::dial_blocking(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
 **自动重连**，直到调用 `Peer::close()`。
 
 `Peer`（可克隆，可在任何线程使用）：

@@ -3,15 +3,15 @@
 先测量，再调优。这里引用的数据来自
 [docs/BENCHMARKS.zh-CN.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.zh-CN.md)：
 一台笔记本级 Mac 上的 Docker 虚拟机、回环网络、4 个服务端线程。把它们当作方向参考，而不是
-排名。在那份报告中，flash 的 TCP echo 与 tokio 同一量级、领先 fib（512 连接时领先 tokio，
+排名。在那份报告中，only 的 TCP echo 与 tokio 同一量级、领先 fib（512 连接时领先 tokio，
 64 连接和 16 KiB 消息时落后约 15%），UDP echo 与 fib 持平，把 5 ms 的阻塞工作移到逻辑线程池
 后吞吐量约为在 I/O 线程上阻塞时的 58 倍。`tools/bench/run.sh` 可以复现这些测试；
 `tools/echo-bench` 是压测工具。
 
 ## 1. 保持 I/O 线程空闲
 
-如果回调会阻塞，其他一切都无从谈起。关注 `flash_slow_callbacks_total` 和
-`flash_loop_callback_seconds_total`；在预发布环境把 `slow_callback_threshold` 调低到
+如果回调会阻塞，其他一切都无从谈起。关注 `only_slow_callbacks_total` 和
+`only_loop_callback_seconds_total`；在预发布环境把 `slow_callback_threshold` 调低到
 1–10 ms 来找出问题代码；把阻塞工作移到 `spawn_blocking`、`Context::detach` 或你自己的线程。
 见[阻塞任务](concepts/blocking.md)。
 
@@ -55,7 +55,7 @@
 - Linux 上接收使用 `recvmmsg`；为一批接收产生的回复用 `sendmmsg` 发出，发往同一对端、长度相同
   的连续数据报合并成一次 GSO 发送。在 UDP 批量化的工作中，这让突发流量下每个数据报的服务端
   CPU 降低了 30–46%，64 字节 echo 提升约 19%。
-- `Conn::send_segments` 一次调用发送多个数据报（flash-quic 使用它）。
+- `Conn::send_segments` 一次调用发送多个数据报（only-quic 使用它）。
 - `Config::udp_gro = true` 对接收 GSO 流量的大流量接收方（QUIC 下载）有帮助，对小的请求/响应
   流量有开销。它需要 `read_buffer` >= 64 KiB。
 - `udp_max_peers` 在洪泛下限制每对端状态的数量。
@@ -65,7 +65,7 @@
 `Accel::Ebpf` 决定每个新连接或新 UDP 对端交给哪个 I/O 线程：
 
 - `Steering::Cpu` 让一个流留在与收到其数据包的 CPU 对应的线程上。配合网卡 RSS/RPS 和绑核的
-  I/O 线程可以获得缓存局部性（flash 目前还不提供线程绑核本身）。
+  I/O 线程可以获得缓存局部性（only 目前还不提供线程绑核本身）。
 - `Steering::Hash`（按源 IP，或源 IP 加端口做一致性哈希）让客户端在重连后仍落在同一线程，适合
   按客户端缓存的场景。
 

@@ -1,15 +1,15 @@
 # RTSP and WHIP/WHEP
 
-`flash-media` serves RTSP and the WHIP/WHEP signalling endpoints in front of the same stream
+`only-media` serves RTSP and the WHIP/WHEP signalling endpoints in front of the same stream
 `Hub` as RTMP, HTTP-FLV, HLS and SRT: a camera that records over RTSP plays over every other
 protocol, and an RTMP encoder's stream plays in any RTSP player. Every protocol converts to
-the canonical packets of `flash_media::av` (AVCC video, raw AAC), so no protocol knows about
+the canonical packets of `only_media::av` (AVCC video, raw AAC), so no protocol knows about
 another.
 
 ## One hub, one hook
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:hub}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:hub}}
 ```
 
 `HubConfig::on_publish` and `on_subscribe` authorize every ingest and egress at once; the
@@ -19,7 +19,7 @@ tokens travel).
 ## RTSP server
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:rtsp}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:rtsp}}
 ```
 
 - `rtsp://host:port/live/cam` plays or records the hub stream `live/cam`.
@@ -37,7 +37,7 @@ tokens travel).
   `AAC-hbr`), Opus, G.711.
 - Authentication: `RtspConfig::credentials` turns on Digest (MD5) and Basic.
 
-Tested with ffmpeg 9 (`crates/flash-media/tests/rtsp_interop.rs`):
+Tested with ffmpeg 9 (`crates/only-media/tests/rtsp_interop.rs`):
 
 ```text
 ffmpeg -re -f lavfi -i testsrc=size=320x240:rate=25 -f lavfi -i sine -c:v libx264 -c:a aac \
@@ -50,10 +50,10 @@ ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 ## WHIP and WHEP
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:whip}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:whip}}
 ```
 
-`WhipServer::routes` adds to a flash-http `Router`:
+`WhipServer::routes` adds to a only-http `Router`:
 
 | Request | Answer |
 | --- | --- |
@@ -72,7 +72,7 @@ answers every offer with `501 Not Implemented` until a WebRTC engine is plugged 
 ## Statistics
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:stats}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:stats}}
 ```
 
 ## Not supported

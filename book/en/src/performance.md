@@ -3,7 +3,7 @@
 Measure before tuning. The numbers quoted here come from
 [docs/BENCHMARKS.md](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.md): one
 Docker VM on a laptop-class Mac, loopback, 4 server threads. Treat them as direction, not as a
-ranking. In that report flash's TCP echo was in the same class as tokio and ahead of fib (ahead
+ranking. In that report `only`'s TCP echo was in the same class as tokio and ahead of fib (ahead
 of tokio at 512 connections, about 15% behind at 64 connections and at 16 KiB messages), UDP
 echo was level with fib, and moving 5 ms of blocking work to the logical pool gave about 58× the
 throughput of blocking inline. `tools/bench/run.sh` reproduces the runs; `tools/echo-bench` is the
@@ -11,8 +11,8 @@ load generator.
 
 ## 1. Keep the I/O threads free
 
-Nothing else matters if callbacks block. Watch `flash_slow_callbacks_total` and
-`flash_loop_callback_seconds_total`; lower `slow_callback_threshold` (to 1–10 ms) in staging to
+Nothing else matters if callbacks block. Watch `only_slow_callbacks_total` and
+`only_loop_callback_seconds_total`; lower `slow_callback_threshold` (to 1–10 ms) in staging to
 find offenders; move blocking work to `spawn_blocking`, `Context::detach`, or your own threads.
 See [Blocking work](concepts/blocking.md).
 
@@ -59,7 +59,7 @@ See [Blocking work](concepts/blocking.md).
 - On Linux, receives use `recvmmsg`; the replies produced for a receive batch leave with
   `sendmmsg`, and equal-size runs to one peer as a single GSO send. In the UDP batching work this
   cut server CPU per datagram by 30–46% for bursts and raised 64-byte echo by about 19%.
-- `Conn::send_segments` sends many datagrams in one call (flash-quic uses it).
+- `Conn::send_segments` sends many datagrams in one call (only-quic uses it).
 - `Config::udp_gro = true` helps bulk receivers of GSO traffic (QUIC downloads) and costs for
   small request/response traffic. It needs `read_buffer` >= 64 KiB.
 - `udp_max_peers` caps per-peer state under floods.
@@ -70,7 +70,7 @@ See [Blocking work](concepts/blocking.md).
 
 - `Steering::Cpu` keeps a flow on the thread matching the CPU that received its packets. Combine
   it with NIC RSS/RPS and pinned I/O threads for cache locality (thread pinning itself is not
-  provided by flash yet).
+  provided by `only` yet).
 - `Steering::Hash` (consistent hashing by source IP, or IP and port) keeps a client on the same
   thread across reconnects, useful for per-client caches.
 

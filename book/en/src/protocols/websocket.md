@@ -1,7 +1,7 @@
 # WebSocket
 
-`flash-ws` implements RFC 6455 with `permessage-deflate` (RFC 7692). The server side is reached
-through a flash-http upgrade; the client dials `ws://` and `wss://` URLs. Both use the same
+`only-ws` implements RFC 6455 with `permessage-deflate` (RFC 7692). The server side is reached
+through a only-http upgrade; the client dials `ws://` and `wss://` URLs. Both use the same
 handler trait. Conformance: Autobahn|Testsuite server 298 OK + 3 informational (core) and 216/216
 (permessage-deflate); client 514 OK + 3 informational of 517; run in CI by
 `tools/autobahn/run.sh`.
@@ -31,13 +31,13 @@ different threads never interleave):
 | `send_text_fragmented`, `send_binary_fragmented` | split into frames of a given size |
 | `send_prepared(&PreparedMessage)` | a message encoded once for many connections (sent uncompressed) |
 | `ping`, `pong` | control frames |
-| `close(code, reason)` | start the close handshake (`flash_ws::protocol::close::NORMAL`, ...) |
+| `close(code, reason)` | start the close handshake (`only_ws::protocol::close::NORMAL`, ...) |
 | `subprotocol()`, `is_open()` | negotiated subprotocol, state |
 
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/flash-ws/examples/guide-ws.rs:server}}
+{{#include ../../../../crates/only-ws/examples/guide-ws.rs:server}}
 ```
 
 `ctx.upgrade_websocket(handler, &WsOptions)` validates the handshake (GET, HTTP/1.1,
@@ -61,11 +61,11 @@ authentication, rate limiting, logging) applies to the handshake request.
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/flash-ws/examples/guide-ws.rs:client}}
+{{#include ../../../../crates/only-ws/examples/guide-ws.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-ws/examples/guide-ws.rs:dial}}
+{{#include ../../../../crates/only-ws/examples/guide-ws.rs:dial}}
 ```
 
 - `client::dial_blocking(&engine, url, &opts, handler)` blocks until the handshake completes and
@@ -80,11 +80,11 @@ authentication, rate limiting, logging) applies to the handshake request.
 - Frames are masked with unpredictable keys; every resolved address is tried in turn; name
   resolution runs on the calling thread.
 
-Run `cargo run -p flash-ws --example guide-ws` for a chat room with two clients, and see
-`crates/flash-http/examples/ws-chat.rs` for a browser chat.
+Run `cargo run -p only-ws --example guide-ws` for a chat room with two clients, and see
+`crates/only-http/examples/ws-chat.rs` for a browser chat.
 
 ## Not done
 
-Client: system root certificates (supply a rustls config), proxies, redirects, sending 1001 on
+Client: system root certificates (load them into `only::tls::RootCerts`), proxies, redirects, sending 1001 on
 engine shutdown (connections currently end with 1006). Server: WebSocket over HTTP/2 or HTTP/3
 (extended CONNECT).

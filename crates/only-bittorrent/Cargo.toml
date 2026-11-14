@@ -1,0 +1,31 @@
+[package]
+name = "only-bittorrent"
+description = "only BitTorrent: bencode, metainfo and magnets, HTTP/UDP trackers, peer wire with MSE, uTP, mainline DHT and a client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-bittorrent"
+keywords = ["bittorrent", "dht", "utp", "p2p", "torrent"]
+categories = ["network-programming"]
+
+[dependencies]
+only = { workspace = true }
+only-core = { workspace = true }
+only-pool = { workspace = true }
+only-http = { workspace = true }
+sha1 = "0.10"
+getrandom = "0.2"
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_bittorrent::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

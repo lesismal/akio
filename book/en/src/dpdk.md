@@ -1,15 +1,15 @@
 # Kernel bypass (DPDK)
 
-> **Experimental.** `Backend::Dpdk` and the `flash::dpdk` module are outside the semver promise
+> **Experimental.** `Backend::Dpdk` and the `only::dpdk` module are outside the semver promise
 > ([docs/api-stability.md](https://github.com/lesismal/flash/blob/main/docs/api-stability.md))
 > and may change in any release.
 
-`Backend::Dpdk` runs a listener on a **userspace TCP/IP stack** instead of the kernel's: flash
+`Backend::Dpdk` runs a listener on a **userspace TCP/IP stack** instead of the kernel's: `only`
 I/O threads poll a network device directly, run [smoltcp](https://docs.rs/smoltcp) for ARP, IPv4,
 UDP and TCP, and hand data to the same `Handler`s as every other backend. UDP listeners still get
 one datagram per `on_data`, TCP listeners a byte stream; `Conn::send`, backpressure, `dial`,
 `dial_udp`, idle timeouts, telemetry and graceful shutdown work as usual, so protocol crates such
-as `flash-kcp` run unchanged.
+as `only-kcp` run unchanged.
 
 The device under the stack is one of:
 
@@ -24,19 +24,19 @@ The device under the stack is one of:
 
 ```toml
 [dependencies]
-flash = { version = "1", features = ["dpdk"] }       # TAP, AF_PACKET, memory wire
-# flash = { version = "1", features = ["dpdk-pmd"] } # + DPDK ports (links libdpdk)
+only = { version = "1", features = ["dpdk"] }       # TAP, AF_PACKET, memory wire
+# only = { version = "1", features = ["dpdk-pmd"] } # + DPDK ports (links libdpdk)
 ```
 
 `dpdk-pmd` compiles a small C shim against the installed DPDK (`pkg-config --cflags --libs
 libdpdk`, DPDK 21.11 or newer). Without libdpdk the crate still builds and `Device::Dpdk` fails
-at `build` with `Unsupported`; set `FLASH_DPDK_REQUIRE=1` to make a missing libdpdk a build error.
+at `build` with `Unsupported`; set `ONLY_DPDK_REQUIRE=1` to make a missing libdpdk a build error.
 On Debian/Ubuntu: `apt-get install dpdk-dev libdpdk-dev pkg-config`.
 
 ## A server
 
 ```rust,ignore
-{{#include ../../../crates/flash-dpdk/examples/guide-dpdk.rs:server}}
+{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:server}}
 ```
 
 - `DpdkConfig::new(device, address)` gives the stack its IPv4 address; `prefix_len` (default 24)
@@ -49,7 +49,7 @@ On Debian/Ubuntu: `apt-get install dpdk-dev libdpdk-dev pkg-config`.
 A DPDK port instead of the memory wire:
 
 ```rust,ignore
-{{#include ../../../crates/flash-dpdk/examples/guide-dpdk.rs:dpdk}}
+{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:dpdk}}
 ```
 
 The EAL is initialised once per process, from the `args` of the first DPDK stack. On a real NIC:
@@ -61,7 +61,7 @@ NIC to `vfio-pci` (`dpdk-devbind.py -b vfio-pci 0000:03:00.0`), and pass e.g.
 ## A client
 
 ```rust,ignore
-{{#include ../../../crates/flash-dpdk/examples/guide-dpdk.rs:client}}
+{{#include ../../../crates/only-dpdk/examples/guide-dpdk.rs:client}}
 ```
 
 `Engine::dial` runs on the engine's last listener and `dial_udp` on its last UDP listener, so a
@@ -98,7 +98,7 @@ I/O threads, default 1), `descriptors` (per queue, default 1024), `mbufs` (pool 
 - **Several queues**: the port is configured for RSS on the IP/UDP/TCP 4-tuple, so one flow stays
   on one queue and thread. ARP frames are copied to every queue, so each stack knows its
   neighbours.
-- **Connections** are flash connections without a kernel socket: `Conn::send` only queues (from
+- **Connections** are `only` connections without a kernel socket: `Conn::send` only queues (from
   any thread) and wakes the owning thread, which moves the bytes into the stack after each
   callback. Handlers run corked, so what one callback sends enters the stack once.
 - **Threads** are registered with the EAL (`rte_thread_register`) so mempool caches apply. With
@@ -106,7 +106,7 @@ I/O threads, default 1), `descriptors` (per queue, default 1024), `mbufs` (pool 
   and memory devices).
 
 Why smoltcp: it is a maintained, memory-safe Rust stack with no global state, so one instance per
-queue fits flash's thread-per-core model without locks. F-Stack (FreeBSD's stack on DPDK) and
+queue fits `only`'s thread-per-core model without locks. F-Stack (FreeBSD's stack on DPDK) and
 Seastar's stack are faster and more complete, but bring a C/C++ runtime with its own threading
 model and would put a large amount of `unsafe` FFI on the data path.
 
@@ -123,10 +123,10 @@ model and would put a large amount of `unsafe` FFI on the data path.
 
 ## Testing
 
-`crates/flash-dpdk/tests/memory.rs` runs everywhere: UDP and TCP echo between two stacks, bulk TCP
+`crates/only-dpdk/tests/memory.rs` runs everywhere: UDP and TCP echo between two stacks, bulk TCP
 with flow control, orderly close, KCP over the stack. `tools/dpdk/test.sh` builds the Docker image
 in `tools/dpdk/` (Debian's DPDK 24.11) and runs `tests/kernel_peer.rs` with `--cap-add NET_ADMIN
 --device /dev/net/tun`: the Linux kernel's own sockets exchange UDP datagrams and 2 MiB of TCP
-with flash over DPDK's `net_tap` PMD (one and two queues), over smoltcp's TAP device and over
+with `only` over DPDK's `net_tap` PMD (one and two queues), over smoltcp's TAP device and over
 an AF_PACKET socket on a veth pair. CI runs
 the same as the heavy `dpdk` job.

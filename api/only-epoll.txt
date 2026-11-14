@@ -1,0 +1,22 @@
+pub mod only_epoll
+pub struct only_epoll::EpollGroup
+impl only_epoll::EpollGroup
+pub fn only_epoll::EpollGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn only_core::handler::DynAcceptor>)>, usize, only_core::config::Config, alloc::rcs::arc::Arc<only_pool::Pool>) -> core::io::error::Result<only_epoll::EpollGroup>
+pub fn only_epoll::EpollGroup::bind_listener(std::net::tcp::TcpListener, alloc::rcs::arc::Arc<dyn only_core::handler::DynAcceptor>, usize, only_core::config::Config, alloc::rcs::arc::Arc<only_pool::Pool>) -> core::io::error::Result<only_epoll::EpollGroup>
+impl core::fmt::Debug for only_epoll::EpollGroup
+pub fn only_epoll::EpollGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_epoll::EpollGroup
+impl core::marker::Sync for only_epoll::EpollGroup
+impl core::marker::Unpin for only_epoll::EpollGroup
+impl !core::panic::unwind_safe::RefUnwindSafe for only_epoll::EpollGroup
+impl !core::panic::unwind_safe::UnwindSafe for only_epoll::EpollGroup
+pub struct only_epoll::UdpGroup
+impl only_epoll::UdpGroup
+pub fn only_epoll::UdpGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn only_core::handler::DynAcceptor>)>, usize, only_core::config::Config, alloc::rcs::arc::Arc<only_pool::Pool>) -> core::io::error::Result<only_epoll::UdpGroup>
+impl core::fmt::Debug for only_epoll::UdpGroup
+pub fn only_epoll::UdpGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_epoll::UdpGroup
+impl core::marker::Sync for only_epoll::UdpGroup
+impl core::marker::Unpin for only_epoll::UdpGroup
+impl core::panic::unwind_safe::RefUnwindSafe for only_epoll::UdpGroup
+impl core::panic::unwind_safe::UnwindSafe for only_epoll::UdpGroup

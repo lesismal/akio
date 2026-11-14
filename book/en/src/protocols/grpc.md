@@ -1,13 +1,13 @@
 # gRPC
 
-`flash-grpc` provides a gRPC server that is a flash-http `Service` (so it shares the port and the
-HTTP/2 stack with ordinary HTTP routes) and a client on flash-http's HTTP/2 client. Interop with
+`only-grpc` provides a gRPC server that is a only-http `Service` (so it shares the port and the
+HTTP/2 stack with ordinary HTTP routes) and a client on only-http's HTTP/2 client. Interop with
 grpc-go is tested in both directions (`tools/interop/grpc/run.sh`).
 
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:server}}
+{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:server}}
 ```
 
 Registering methods (`path` is `/package.Service/Method`):
@@ -31,13 +31,13 @@ as trailers-only responses; `grpc-timeout` deadlines are enforced.
 Handlers run on the I/O thread: answer inline when it is quick, or move the `Sink` to another
 thread (the server-streaming example above does) when it is not.
 
-Serving it: `flash_http::serve(grpc)` on its own, or as the `fallback` (or a route) of a
+Serving it: `only_http::serve(grpc)` on its own, or as the `fallback` (or a route) of a
 `Router` as above. gRPC needs HTTP/2: cleartext with prior knowledge, or TLS with ALPN `h2`.
 
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:client}}
+{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:client}}
 ```
 
 - `GrpcClient::new(h2_client, base_url)`; `.compress(true)` compresses requests.
@@ -50,8 +50,10 @@ Serving it: `flash_http::serve(grpc)` on its own, or as the `fallback` (or a rou
 
 ## Messages
 
-Messages are bytes. With the `prost` feature, `flash_grpc::codec` converts prost-generated
-messages; any other serializer works by encoding to `Vec<u8>` yourself.
+Messages are bytes. `only_grpc::codec::{encode, decode}` convert any type implementing
+`codec::Message` (`encode_to` / `decode_from`), so any serializer plugs in. With the `prost`
+feature every prost-generated message implements it; that adapter names prost's types, so the
+feature is outside the semver promise (a prost upgrade may come in a minor release).
 
 Not provided: server reflection, the standard health-checking service, client-side load
 balancing. Interop has been run against grpc-go only (not tonic).

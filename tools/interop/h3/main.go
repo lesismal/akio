@@ -1,7 +1,7 @@
-// HTTP/3 interop peer (github.com/quic-go/quic-go) for flash-h3:
+// HTTP/3 interop peer (github.com/quic-go/quic-go) for only-h3:
 //
 //	go run . server 127.0.0.1:9400    serves /, /echo, /trailers, /big
-//	go run . client 127.0.0.1:9401    checks a flash-h3 server (crates/flash-h3/examples/h3-interop.rs)
+//	go run . client 127.0.0.1:9401    checks a only-h3 server (crates/only-h3/examples/h3-interop.rs)
 package main
 
 import (
@@ -142,5 +142,5 @@ func main() {
 		}(i)
 	}
 	wg.Wait()
-	fmt.Println("ok: quic-go client -> flash-h3 server")
+	fmt.Println("ok: quic-go client -> only-h3 server")
 }

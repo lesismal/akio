@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# flash-kcp <-> kcp-go (xtaci/kcp-go v5, as kcptun), both directions, for several crypts, with
+# only-kcp <-> kcp-go (xtaci/kcp-go v5, as kcptun), both directions, for several crypts, with
 # and without FEC, directly and through a relay dropping every 7th datagram. Needs Go.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-cd "$ROOT" && cargo build -q --release -p flash-kcp --example kcp-interop
+cd "$ROOT" && cargo build -q --release -p only-kcp --example kcp-interop
 RS=$ROOT/target/release/examples/kcp-interop
 cd "$ROOT/tools/interop/kcp" && GOFLAGS=-mod=mod go build -o /tmp/kcp-go .
 GO=/tmp/kcp-go
@@ -17,14 +17,14 @@ for c in "plain 0 0" "none 0 0" "xor 0 0" "aes 10 3" "aes-128 0 0" "aes-128-gcm 
   $RS server 127.0.0.1:$rs "$@" > /dev/null & PIDS="$PIDS $!"
   sleep 0.5
   echo "== $c"
-  echo -n "flash client -> kcp-go server: "; $RS client 127.0.0.1:$gs "$@"
-  echo -n "kcp-go client -> flash server: "; $GO client 127.0.0.1:$rs "$@"
+  echo -n "only client -> kcp-go server: "; $RS client 127.0.0.1:$gs "$@"
+  echo -n "kcp-go client -> only server: "; $GO client 127.0.0.1:$rs "$@"
   if [ "$2" != 0 ]; then
     $GO relay 127.0.0.1:$gr 127.0.0.1:$gs 7 > /dev/null & PIDS="$PIDS $!"
     $GO relay 127.0.0.1:$rr 127.0.0.1:$rs 7 > /dev/null & PIDS="$PIDS $!"
     sleep 0.3
-    echo -n "  lossy, flash client -> kcp-go server: "; $RS client 127.0.0.1:$gr "$@"
-    echo -n "  lossy, kcp-go client -> flash server: "; $GO client 127.0.0.1:$rr "$@"
+    echo -n "  lossy, only client -> kcp-go server: "; $RS client 127.0.0.1:$gr "$@"
+    echo -n "  lossy, kcp-go client -> only server: "; $GO client 127.0.0.1:$rr "$@"
   fi
 done
 echo "kcp interop: all passed"

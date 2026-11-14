@@ -3,15 +3,15 @@
 #
 #   tools/api/public-api.sh          # check: diff every crate's API against api/<crate>.txt
 #   tools/api/public-api.sh --bless  # regenerate api/<crate>.txt after a deliberate change
-#   tools/api/public-api.sh flash-core flash   # only these crates
+#   tools/api/public-api.sh only-core only   # only these crates
 #
 # Needs a nightly toolchain (rustdoc JSON) and cargo-public-api. CI pins both (ci.yml, job
-# `public-api`). Run it on Linux x86_64/aarch64 (the snapshots are taken there): flash-uring and
-# parts of flash-ebpf / flash-sys only exist on Linux.
+# `public-api`). Run it on Linux x86_64/aarch64 (the snapshots are taken there): only-uring and
+# parts of only-ebpf / only-sys only exist on Linux.
 #
-# Items under `#[doc(hidden)]` and the `fuzzing` features are not in the snapshots: they are
-# outside the stability promise. Blanket impls are omitted to keep the files readable; auto-trait
-# impls (Send / Sync / Unpin / UnwindSafe ...) stay, because losing one is a breaking change.
+# Items under `#[doc(hidden)]`, the `fuzzing` and `unstable` features and the `prost` feature of
+# only-grpc are not in the snapshots: they are outside the stability promise.
+# Blanket impls are omitted to keep the files readable; auto-trait impls (Send / Sync / Unpin / UnwindSafe ...) stay, because losing one is a breaking change.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -22,19 +22,19 @@ if [ "${1:-}" = "--bless" ]; then
 fi
 
 # Publishable library crates (tools/ and fuzz/ are not published).
-all=(flash-sys flash-buf flash-timer flash-pool flash-core flash-epoll flash-uring flash-tls
-    flash-http flash-ws flash-mux flash-socks flash-arpc flash-grpc flash-kcp flash-quic flash-h3
-    flash-ebpf flash-prefork flash-dpdk flash-turn flash-webrtc flash-media flash-bittorrent flash)
+all=(only-sys only-buf only-timer only-pool only-core only-epoll only-uring only-tls
+    only-http only-ws only-mux only-socks only-arpc only-grpc only-kcp only-quic only-h3
+    only-ebpf only-prefork only-dpdk only-turn only-webrtc only-media only-bittorrent only)
 if [ "$#" -gt 0 ]; then
     crates=("$@")
 else
     crates=("${all[@]}")
 fi
 
-# Every public, non-`fuzzing` feature of a crate (default features are always on).
+# Every covered (non-`fuzzing`, non-`unstable`) feature of a crate beyond the defaults (none today;
+# `prost` is outside the promise, docs/api-stability.md).
 features_for() {
     case "$1" in
-    flash-grpc) echo "--features prost" ;;
     *) echo "" ;;
     esac
 }

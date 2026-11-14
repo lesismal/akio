@@ -11,7 +11,7 @@ threads, logging to a slow sink, a static-file cache miss on a large file.
 
 ## Latency spikes for everyone on one thread
 
-Same cause as above, below the threshold. Compare `flash_loop_callback_seconds_total` between
+Same cause as above, below the threshold. Compare `only_loop_callback_seconds_total` between
 threads; a hot connection cannot move to another thread, so consider `Steering::Hash` /
 `Steering::Cpu` placement or splitting traffic across more connections.
 
@@ -30,11 +30,11 @@ handles never panic and never touch a reused descriptor.
 ## Responses come out of order
 
 Mixing ordered slots with plain sends: `Conn::send` is not held behind reserved but unfilled
-`ResponseSlot`s. Use slots for every reply of an ordered protocol. (flash-http does this for you.)
+`ResponseSlot`s. Use slots for every reply of an ordered protocol. (only-http does this for you.)
 
 ## A connection closed by itself right after a request
 
-- A `ResponseSlot` or `ResponseStream` was dropped without being filled/finished: flash closes
+- A `ResponseSlot` or `ResponseStream` was dropped without being filled/finished: `only` closes
   the connection, because the reply stream cannot continue.
 - An HTTP handler neither responded nor detached: the client got a 500.
 - A callback panicked: the connection is closed and `on_close` receives the error. Use
@@ -52,7 +52,7 @@ Mixing ordered slots with plain sends: `Conn::send` is not held behind reserved 
 ## io_uring is not used
 
 The kernel lacks it (older than 5.19, or disabled by `kernel.io_uring_disabled` / a seccomp
-profile, as in many containers): flash logs `io_uring unavailable (...); using epoll`. Set
+profile, as in many containers): `only` logs `io_uring unavailable (...); using epoll`. Set
 `UringConfig::strict` to fail instead.
 
 ## eBPF steering shows `Degraded`
@@ -63,9 +63,9 @@ could not be attached. Classic BPF needs no privileges; eBPF programs need `CAP_
 
 ## No log output
 
-flash uses the `log` facade; install a logger. Without one, only errors and slow-callback
+`only` uses the `log` facade; install a logger. Without one, only errors and slow-callback
 warnings are printed (to stderr). Access logs need `observe::access_log()` and the
-`flash_http::access` target enabled.
+`only_http::access` target enabled.
 
 ## Tests or tools hang on macOS
 
@@ -74,7 +74,7 @@ they write a lot before reading. Read and write from separate threads, or read i
 
 ## FAQ
 
-**Is flash async? Can I use it with tokio?** flash is callback-based and has no runtime. Its
+**Is `only` async? Can I use it with tokio?** `only` is callback-based and has no runtime. Its
 handles are `Send + Sync`, its client futures can be awaited from any executor, and work can be
 handed to tokio and answered from there. See [Migrating from tokio](migration/from-tokio.md).
 
@@ -82,11 +82,11 @@ handed to tokio and answered from there. See [Migrating from tokio](migration/fr
 
 **Why is my handler not `Sync`?** It does not need to be: only its own I/O thread touches it.
 
-**Does flash support Windows?** No (no IOCP backend is planned before 1.0).
+**Does `only` support Windows?** No (no IOCP backend is planned before 1.0).
 
 **Is DPDK supported?** Not yet; it is planned (milestone M6).
 
-**How do I serve HTTP and HTTPS on one port?** Use flash-mux with `Rule::Tls` routed to
+**How do I serve HTTP and HTTPS on one port?** Use only-mux with `Rule::Tls` routed to
 `Tls::server(cfg, serve(app))` and `Rule::Http` routed to `serve(app)`.
 
 **How do I get the client IP behind a proxy?** `ctx.peer()` is the TCP peer; read

@@ -1,6 +1,6 @@
 # arpc
 
-`flash-arpc` speaks the wire format of [lesismal/arpc](https://github.com/lesismal/arpc) and
+`only-arpc` speaks the wire format of [lesismal/arpc](https://github.com/lesismal/arpc) and
 fib's `arpc` package, so it talks to Go peers of either (checked in both directions by
 `tools/interop/arpc/run.sh`).
 
@@ -10,7 +10,7 @@ each serves the other's calls with the `Routes` it was given.
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/flash-arpc/examples/guide-arpc.rs:server}}
+{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:server}}
 ```
 
 `Routes`:
@@ -32,10 +32,10 @@ one shared encoded frame; `peers()` lists them.
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/flash-arpc/examples/guide-arpc.rs:client}}
+{{#include ../../../../crates/only-arpc/examples/guide-arpc.rs:client}}
 ```
 
-`flash_arpc::dial_blocking(&engine, addr, routes)` blocks until the first connection is up (10 s at most)
+`only_arpc::dial_blocking(&engine, addr, routes)` blocks until the first connection is up (10 s at most)
 and then **keeps reconnecting** every second until `Peer::close()`.
 
 `Peer` (cloneable, any thread):

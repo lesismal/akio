@@ -20,30 +20,30 @@
 - 每次运行前脚本会采样 `/proc/stat`，若虚拟机忙碌超过 45% 则等待（最多 15 秒）；其他任务很少让它
   更空闲，所以这只能避开最严重的突发。虚拟机之外（macOS 宿主）的负载它看不到。
 - 服务端（处理逻辑一致）：
-  - **flash-epoll / flash-uring**：`crates/flash/examples/bench-server.rs`（TCP/TLS/UDP echo）和
-    `crates/flash-http/examples/http-bench.rs`（HTTP/1.1 + h2c 的 `/plaintext`、`/json`，`/ws` 上的
+  - **only-epoll / only-uring**：`crates/only/examples/bench-server.rs`（TCP/TLS/UDP echo）和
+    `crates/only-http/examples/http-bench.rs`（HTTP/1.1 + h2c 的 `/plaintext`、`/json`，`/ws` 上的
     WebSocket echo），分别使用 `Backend::Epoll` / `Backend::IoUring`。
   - **tokio**：`tools/bench-ref/tokio-ref`（tokio 1，每连接一个 task，64 KiB 读缓冲；TLS 用
     tokio-rustls；WebSocket 用 tokio-tungstenite 0.28）。
   - **hyper**：`tools/bench-ref/hyper-ref`（hyper 1 + hyper-util `auto`：HTTP/1.1 与 h2c）。
   - **fib**：`tools/bench-ref/fib-ref`（Go 1.27.3，fib 默认配置；TLS 用 `fib/tls`，HTTP 用
     `fib/http`，WebSocket 用 `fib/websocket`）。
-- TLS：TLS 1.3，所有服务端都用 ECDSA P-256 自签名证书（flash 与 tokio 用 rustls + ring，fib 用
+- TLS：TLS 1.3，所有服务端都用 ECDSA P-256 自签名证书（only 与 tokio 用 rustls + ring，fib 用
   crypto/tls）；客户端不校验证书。
 - 压测工具：`wrk` 4.1（HTTP/1.1；流水线用 Lua 脚本一次写 16 个请求），`h2load` 1.64（HTTP/2 prior
   knowledge，64 连接 × 16 流，8 线程），以及仓库内的 `tools/echo-bench`（TCP/TLS/UDP/WebSocket 的
   闭环 echo、完整 TLS 握手速率，以及内存测试中保持连接的客户端）。
-- JSON：hyper 用 serde_json，fib 用 `encoding/json`，flash 在示例里用一个手写的小序列化函数（flash
+- JSON：hyper 用 serde_json，fib 用 `encoding/json`，only 在示例里用一个手写的小序列化函数（only
   不依赖 JSON 库）；三者都是每个请求现场生成响应体。
 
 ## 复现
 
 ```sh
-docker build -t flash-bench tools/bench          # rust:1 + wrk + h2load + perf + Go
+docker build -t only-bench tools/bench          # rust:1 + wrk + h2load + perf + Go
 PRIV=1 tools/bench/docker.sh 'tools/bench/build.sh && tools/bench/all.sh /tmp/t/results'
 ```
 
-`docker.sh` 把仓库挂载到 `/w`，把 fib 检出目录（主 flash 检出目录旁的 `../fib`，或 `$FIB_DIR`）挂载到
+`docker.sh` 把仓库挂载到 `/w`，把 fib 检出目录（主 only 检出目录旁的 `../fib`，或 `$FIB_DIR`）挂载到
 `/fib`，用卷保存 cargo registry、target 目录和 Go 模块，把 `nofile` 提高到 1M，并设置适合回环压测的
 sysctl（临时端口 10000–65535，高于服务端端口；`tcp_tw_reuse`）。各部分也可单独运行：
 `echo.sh [tcp,udp,tls,tlshs]`、`http.sh [plaintext,pipelined,json,h2,ws]`、
@@ -59,7 +59,7 @@ sysctl（临时端口 10000–65535，高于服务端端口；`tcp_tw_reuse`）�
 
 ### TCP echo（请求/秒；消息大小 × 连接数）
 
-| 负载 | flash-epoll | flash-uring | tokio | fib |
+| 负载 | only-epoll | only-uring | tokio | fib |
 |---|---:|---:|---:|---:|
 | 64 B × 64 | 413,656 (±21%) | 463,209 (±9%) | 392,648 (±36%) | 402,295 (±4%) |
 | 64 B × 256 | 774,759 (±15%) | 818,456 (±14%) | 596,489 (±29%) | 538,260 (±2%) |
@@ -73,32 +73,32 @@ sysctl（临时端口 10000–65535，高于服务端端口；`tcp_tw_reuse`）�
 
 ### UDP echo、TLS
 
-| 场景 | flash-epoll | flash-uring | tokio | fib |
+| 场景 | only-epoll | only-uring | tokio | fib |
 |---|---:|---:|---:|---:|
 | UDP echo，64 B × 64 个 socket（请求/秒） | 484,282 (±30%) | – | 359,668 (±2%) | 529,350 (±1%) |
 | TLS 1.3 echo，1 KiB × 64（请求/秒） | 345,810 (±20%) | 406,917 (±19%) | 312,620 (±33%) | 269,039 (±4%) |
 | TLS 1.3 完整握手/秒（32 个客户端） | 27,627 (±34%) | 27,743 (±35%) | 31,553 (±26%) | 9,142 (±32%) |
 
-两种后端的 UDP 都走 flash 的 epoll UDP 循环。tokio 的 UDP 参考实现只是一个循环调用
-`recv_from`/`send_to` 的 task，是最简单的 tokio 服务端，不代表它的最佳情况。对 flash 和 tokio 来说，
-握手速率很可能受限于客户端（8 个线程要完成每次握手的客户端一半）；它说明 flash 的 TLS 层相对
+两种后端的 UDP 都走 only 的 epoll UDP 循环。tokio 的 UDP 参考实现只是一个循环调用
+`recv_from`/`send_to` 的 task，是最简单的 tokio 服务端，不代表它的最佳情况。对 only 和 tokio 来说，
+握手速率很可能受限于客户端（8 个线程要完成每次握手的客户端一半）；它说明 only 的 TLS 层相对
 tokio-rustls 没有可见的额外开销，而不是服务端的上限。
 
 ### HTTP/1.1 与 HTTP/2（请求/秒，HTTP/1.1 为 256 连接）
 
-| 场景 | flash-epoll | flash-uring | hyper | fib |
+| 场景 | only-epoll | only-uring | hyper | fib |
 |---|---:|---:|---:|---:|
 | `GET /plaintext` | 769,559 (±29%) | 752,350 (±21%) | 546,363 (±16%) | 486,917 (±8%) |
 | `GET /plaintext`，16 个请求流水线 | 3,619,101 (±14%) | 3,233,575 (±20%) | 1,575,798 (±12%) | 4,644,526 (±20%) |
 | `GET /json` | 689,533 (±41%) | 756,059 (±13%) | 552,799 (±18%) | 496,978 (±7%) |
 | h2c，64 连接 × 16 流 | 1,414,553 (±7%) | 1,398,819 (±15%) | 705,017 (±8%) | 2,593,261 (±11%) |
 
-在下面较安静的 A/B 运行中，flash 的 plaintext 和 JSON 达到 110–120 万请求/秒，h2c 达到 180 万请求/秒：
+在下面较安静的 A/B 运行中，only 的 plaintext 和 JSON 达到 110–120 万请求/秒，h2c 达到 180 万请求/秒：
 上表碰上了宿主更忙的时段。
 
 ### WebSocket echo（消息/秒，256 连接）
 
-| 消息 | flash-epoll | flash-uring | tokio-tungstenite | fib |
+| 消息 | only-epoll | only-uring | tokio-tungstenite | fib |
 |---|---:|---:|---:|---:|
 | 64 B | 840,572 (±17%) | 825,552 (±19%) | 640,534 (±24%) | 557,493 (±8%) |
 | 1 KiB | 736,543 (±21%) | 587,501 (±23%) | 673,068 (±22%) | 536,800 (±6%) |
@@ -111,7 +111,7 @@ tokio-rustls 没有可见的额外开销，而不是服务端的上限。
 4 KiB（`TOKIO_REF_BUF`，注重内存的 tokio 服务也会这样做）；吞吐测试用的 64 KiB 大部分本来也不会被
 触碰。
 
-| 连接状态 | flash-epoll | flash-uring | tokio | hyper | fib |
+| 连接状态 | only-epoll | only-uring | tokio | hyper | fib |
 |---|---:|---:|---:|---:|---:|
 | 空闲 TCP（仅建立连接） | 600 | 603 | 4,993 | – | 428 |
 | 空闲 TCP，**100,000 个连接** | 562 | 564 | 5,008 | – | 275 |
@@ -123,11 +123,11 @@ tokio-rustls 没有可见的额外开销，而不是服务端的上限。
 ¹ 并非每连接开销：io_uring 收数据用的是每个 I/O 线程 1024 × 16 KiB 的 provided-buffer 环（4 个线程共
 64 MiB），预先分配，随着环的循环逐页被触碰。10,000 个连接各收一次数据时，其中大部分被触碰（此处约
 60 MB），于是表现为每连接约 6 KB；这是一个固定上限，不会随连接数增长。在没有收过数据的空闲那一行里，
-flash-uring 真实的每连接开销与 epoll 相同。
+only-uring 真实的每连接开销与 epoll 相同。
 
 ² tokio-tungstenite 默认配置下每个连接保留较大的读写缓冲。
 
-100k 连接测试（M1 遗留项）在所有服务端上都跑完了：flash 在基线之上用约 55 MB RSS 保持了 100,000 个
+100k 连接测试（M1 遗留项）在所有服务端上都跑完了：only 在基线之上用约 55 MB RSS 保持了 100,000 个
 空闲连接。
 
 ## 性能与内存优化
@@ -148,13 +148,13 @@ flash-uring 真实的每连接开销与 epoll 相同。
 
 | 修改 | 位置 | 效果（中位数，A/B） |
 |---|---|---|
-| Huffman 解码改用只构建一次的表（`flash_http::hpack`）；头部块先改写为原始字面量再交给 `loona-hpack`，动态表和校验仍由它负责；QPACK 也用同一个解码器 | flash-http、flash-h3 | h2c：**29.2 万 → 187 万请求/秒**（epoll，×6.4），28.7 万 → 182 万（uring） |
-| 每个回调读一次时钟而不是三次：事件循环按批缓存“当前时间”，回调计时（慢回调检测）从上一个回调的结束时刻接着算；响应时间中间件只有安装时才读时钟 | flash-epoll、flash-uring、flash-core、flash-http | 与后三行合计：HTTP/1.1 plaintext **110 万 → 120 万**（epoll，+9%），114 万 → 119 万（uring，+4%）；JSON 114 万 → 120 万（epoll，+5%），116 万 → 119 万（uring，+3%）；16 请求流水线 376 万 → 440 万（epoll，3 轮，+17%） |
-| `Headers` 把所有名字和值放在一个字符串里：每组头部两次分配，而不是每个字段两次；响应编码不再使用 `fmt`，日期头直接从每秒缓存写出而不克隆 | flash-http | （含在上面） |
-| 排在最前面的响应在 `fill` 时直接发送，不再构造只有一个元素的 `Vec<Part>` | flash-core | （含在上面） |
-| 连接表用一次乘法哈希代替 SipHash（`IdMap`） | flash-core、各后端 | （含在上面） |
-| 发送队列和响应槽队列把第一个元素内联保存，请求之间连接不再保留队列分配；有序响应状态在首次使用时（HTTP）才分配 | flash-core | 一次 echo 之后的 TCP **739 → 607 B**（−18%）；空闲 TCP 554 → 600 B（+8%，内联头元素的代价），100k 空闲 533 → 562 B |
-| HTTP 会话：WebSocket、HTTP/2 和请求体状态改为 Box（会话结构 736 → 200 字节） | flash-http | HTTP keep-alive **1,624 → 912 B**（−44%）；WebSocket 2,085 → 1,660 B（−20%） |
+| Huffman 解码改用只构建一次的表（`only_http::hpack`）；头部块先改写为原始字面量再交给 `loona-hpack`，动态表和校验仍由它负责；QPACK 也用同一个解码器 | only-http、only-h3 | h2c：**29.2 万 → 187 万请求/秒**（epoll，×6.4），28.7 万 → 182 万（uring） |
+| 每个回调读一次时钟而不是三次：事件循环按批缓存“当前时间”，回调计时（慢回调检测）从上一个回调的结束时刻接着算；响应时间中间件只有安装时才读时钟 | only-epoll、only-uring、only-core、only-http | 与后三行合计：HTTP/1.1 plaintext **110 万 → 120 万**（epoll，+9%），114 万 → 119 万（uring，+4%）；JSON 114 万 → 120 万（epoll，+5%），116 万 → 119 万（uring，+3%）；16 请求流水线 376 万 → 440 万（epoll，3 轮，+17%） |
+| `Headers` 把所有名字和值放在一个字符串里：每组头部两次分配，而不是每个字段两次；响应编码不再使用 `fmt`，日期头直接从每秒缓存写出而不克隆 | only-http | （含在上面） |
+| 排在最前面的响应在 `fill` 时直接发送，不再构造只有一个元素的 `Vec<Part>` | only-core | （含在上面） |
+| 连接表用一次乘法哈希代替 SipHash（`IdMap`） | only-core、各后端 | （含在上面） |
+| 发送队列和响应槽队列把第一个元素内联保存，请求之间连接不再保留队列分配；有序响应状态在首次使用时（HTTP）才分配 | only-core | 一次 echo 之后的 TCP **739 → 607 B**（−18%）；空闲 TCP 554 → 600 B（+8%，内联头元素的代价），100k 空闲 533 → 562 B |
+| HTTP 会话：WebSocket、HTTP/2 和请求体状态改为 Box（会话结构 736 → 200 字节） | only-http | HTTP keep-alive **1,624 → 912 B**（−44%）；WebSocket 2,085 → 1,660 B（−20%） |
 
 TCP echo 吞吐在噪声范围内没有变化（64 B × 64：51.1 万 → 51.7 万；64 B × 1024：101 万 → 101 万）。
 TLS 内存没有变化（每连接 8.5 KB，主要是 rustls 自身的缓冲）。
@@ -172,14 +172,14 @@ plaintext 没有变化（111 万对 112 万），内存没有变化（每连接�
 
 ## 结论
 
-- **TCP echo**：64 连接时 flash 与 tokio、fib 持平，256 连接起领先两者，1024 连接时领先 1.3–2 倍。
+- **TCP echo**：64 连接时 only 与 tokio、fib 持平，256 连接起领先两者，1024 连接时领先 1.3–2 倍。
   小消息时 io_uring 与 epoll 持平，16 KiB 消息时落后于 epoll；原因没有调查。
 - **HTTP/1.1**：不用流水线时是 hyper 和 fib 的 1.25–1.6 倍。16 请求流水线时是 hyper 的 2.3 倍，但落后
   fib（约 0.8 倍）；原因没有调查。
 - **HTTP/2**：修复 HPACK 后是 hyper 的 2 倍（之前是 0.4 倍），仍落后 fib（约 0.55 倍）；下一步的开销
   在 h2 会话里每个请求的内存分配。
 - **WebSocket**：两种消息大小都领先 tokio-tungstenite 和 fib。
-- **内存**：一个空闲的 flash 连接约 0.6 KB，是 4 KiB 缓冲的 tokio 的 1/8，是 fib 的 1.4–2 倍。HTTP
+- **内存**：一个空闲的 only 连接约 0.6 KB，是 4 KiB 缓冲的 tokio 的 1/8，是 fib 的 1.4–2 倍。HTTP
   keep-alive 连接现在低于 fib（0.9 对 1.6 KB），远低于 hyper（17 KB）。WebSocket 连接是 fib 的 3.4 倍
   （fib 对升级后的连接保存的状态更少），TLS 连接是 fib 的 1.3 倍（rustls 缓冲）。
 

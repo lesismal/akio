@@ -10,7 +10,7 @@ import statistics
 import sys
 from collections import OrderedDict
 
-ORDER = ["flash-epoll", "flash-uring", "tokio", "hyper", "fib"]
+ORDER = ["only-epoll", "only-uring", "tokio", "hyper", "fib"]
 
 
 def main():

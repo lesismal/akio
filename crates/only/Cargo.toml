@@ -1,0 +1,44 @@
+[package]
+name = "only"
+description = "only: an event-driven, thread-per-core network library (epoll, kqueue, io_uring) with TLS, UDP and eBPF steering"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only"
+keywords = ["network", "event-loop", "io-uring", "epoll", "server"]
+categories = ["network-programming"]
+
+[dependencies]
+only-core = { workspace = true }
+only-epoll = { workspace = true }
+only-ebpf = { workspace = true }
+only-tls = { workspace = true }
+only-dpdk = { workspace = true, optional = true }
+log = { version = "0.4.21", features = ["kv"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+only-uring = { workspace = true }
+
+[features]
+# Experimental (outside the semver promise, docs/api-stability.md): `Backend::Dpdk`, the
+# userspace TCP/IP stack over TAP / AF_PACKET / in-memory devices.
+dpdk = ["dep:only-dpdk"]
+# Also DPDK ports (`only::dpdk::Device::Dpdk`): links libdpdk, found with pkg-config (Linux).
+dpdk-pmd = ["dpdk", "only-dpdk/pmd"]
+# Raw access to wrapped dependencies (`only::tls::rustls`, `from_rustls` ...): outside the
+# semver promise (docs/api-stability.md).
+unstable = ["only-tls/unstable"]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# A raw rustls client drives some tests (the library API hides rustls).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+libc = "0.2"
+only-core = { workspace = true }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

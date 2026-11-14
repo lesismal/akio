@@ -5,7 +5,7 @@ that thread for 5 ms. The benchmark report shows what that costs: four I/O threa
 5 ms per request serve about 550 requests per second; the same work moved to the logical pool
 serves about 32,000 ([BENCHMARKS](https://github.com/lesismal/flash/blob/main/docs/BENCHMARKS.md)).
 
-flash does not guess which code blocks. **You move blocking work explicitly**, and the result
+`only` does not guess which code blocks. **You move blocking work explicitly**, and the result
 comes back to the connection's own thread.
 
 ## `spawn_blocking`
@@ -32,7 +32,7 @@ Pool jobs finish in any order. For protocols where replies must follow request o
 pipelining, line protocols, arpc-style framing), reserve the position first:
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-basics.rs:offload}}
+{{#include ../../../../crates/only/examples/guide-basics.rs:offload}}
 ```
 
 `Conn::reserve_response()` (call it on the I/O thread, in request order) returns a
@@ -52,7 +52,7 @@ the stream would otherwise stall forever behind the missing response. A plain `C
 
 ## Sizing the pool
 
-The pool is engine-wide, created lazily and adaptive (`flash_pool`):
+The pool is engine-wide, created lazily and adaptive (`only_pool`):
 
 ```rust,ignore
 let mut pool = PoolConfig::default();       // #[non_exhaustive]: set fields on the default
@@ -77,11 +77,11 @@ is sent later from any thread:
 
 | Crate | Mechanism |
 |---|---|
-| flash-http | `Context::detach()` returns a `Detached` you `respond` from any thread; pipelined responses stay ordered. |
-| flash-ws | `WsSender` is `Clone + Send + Sync`; send from any thread. |
-| flash-grpc | The `Sink` handed to a method is usable from any thread. |
-| flash-arpc | `Context::detach()` returns a `Responder`. |
-| flash-quic / flash-kcp | `Connection` / `Session` are cloneable handles; send from any thread. |
+| only-http | `Context::detach()` returns a `Detached` you `respond` from any thread; pipelined responses stay ordered. |
+| only-ws | `WsSender` is `Clone + Send + Sync`; send from any thread. |
+| only-grpc | The `Sink` handed to a method is usable from any thread. |
+| only-arpc | `Context::detach()` returns a `Responder`. |
+| only-quic / only-kcp | `Connection` / `Session` are cloneable handles; send from any thread. |
 
 These give you the "answer later" half; run the work wherever suits you: a thread of your own,
 your own pool, or another runtime ([Migrating from tokio](../migration/from-tokio.md) shows the
@@ -92,5 +92,5 @@ bridge). For raw `Handler`s, `Conn::spawn_blocking` uses the engine's pool.
 Every callback is timed while `Config::slow_callback_threshold` is set (100 ms by default). A
 callback that runs longer is counted, kept in a ring of recent records
 (`Engine::slow_callbacks()`, the debug endpoint) and reported to `Config::slow_hook`, or logged
-(target `flash`, level `warn`), or printed to stderr when no logger is installed. Treat each
+(target `only`, level `warn`), or printed to stderr when no logger is installed. Treat each
 report as a bug: something on the I/O thread blocked.

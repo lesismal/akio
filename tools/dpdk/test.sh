@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# flash-dpdk end-to-end tests against the Linux kernel stack
-# (crates/flash-dpdk/tests/kernel_peer.rs): the userspace stack over smoltcp's TAP device, over
+# only-dpdk end-to-end tests against the Linux kernel stack
+# (crates/only-dpdk/tests/kernel_peer.rs): the userspace stack over smoltcp's TAP device, over
 # AF_PACKET on a veth pair and over DPDK's net_tap poll-mode driver (1 and 2 queues), with a std
 # UdpSocket / TcpStream on the kernel side. Also runs the memory-wire tests and clippy with DPDK
 # linked.
@@ -16,15 +16,15 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 if [ "${1:-}" != "--inside" ]; then
-    docker build -t flash-dpdk-dev tools/dpdk
+    docker build -t only-dpdk-dev tools/dpdk
     exec docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
-        -v "$PWD":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
-        -e CARGO_TARGET_DIR=/tmp/t flash-dpdk-dev tools/dpdk/test.sh --inside
+        -v "$PWD":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
+        -e CARGO_TARGET_DIR=/tmp/t only-dpdk-dev tools/dpdk/test.sh --inside
 fi
 
-export FLASH_DPDK_REQUIRE=1 # fail the build if libdpdk is not found
+export ONLY_DPDK_REQUIRE=1 # fail the build if libdpdk is not found
 pkg-config --modversion libdpdk
-cargo clippy -p flash-dpdk --all-targets --features pmd -- -D warnings
-cargo test -p flash-dpdk --features pmd --test memory
-FLASH_TAP_TEST=1 FLASH_DPDK_TEST=1 cargo test -p flash-dpdk --features pmd --test kernel_peer \
+cargo clippy -p only-dpdk --all-targets --features pmd -- -D warnings
+cargo test -p only-dpdk --features pmd --test memory
+ONLY_TAP_TEST=1 ONLY_DPDK_TEST=1 cargo test -p only-dpdk --features pmd --test kernel_peer \
     -- --nocapture --test-threads=1

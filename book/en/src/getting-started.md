@@ -6,20 +6,20 @@
 - Linux for production (kernel 5.19+ for io_uring; any kernel with epoll otherwise). macOS works
   with the kqueue backend for development. Windows is not supported.
 
-## Adding flash to a project
+## Adding `only` to a project
 
 The crates are not published on crates.io yet; depend on the repository. Pick the crates you
-need: `flash` is the engine, the others are protocols.
+need: `only` is the engine, the others are protocols.
 
 ```toml
 [dependencies]
-flash      = { git = "https://github.com/lesismal/flash" }
-flash-http = { git = "https://github.com/lesismal/flash" }   # HTTP/1.1, HTTP/2, Router
-# flash-ws, flash-grpc, flash-arpc, flash-socks, flash-mux,
-# flash-quic, flash-h3, flash-kcp: same form
+only      = { git = "https://github.com/lesismal/flash" }
+only-http = { git = "https://github.com/lesismal/flash" }   # HTTP/1.1, HTTP/2, Router
+# only-ws, only-grpc, only-arpc, only-socks, only-mux,
+# only-quic, only-h3, only-kcp: same form
 ```
 
-TLS (`flash::tls`, on rustls) and eBPF steering (`flash::ebpf`) are part of the `flash` crate.
+TLS (`only::tls`) and eBPF steering (`only::ebpf`) are part of the `only` crate.
 
 ## A TCP echo server
 
@@ -28,13 +28,13 @@ creates one **handler** per connection; the handler's callbacks run on the conne
 thread.
 
 ```rust,ignore
-{{#include ../../../crates/flash/examples/echo.rs}}
+{{#include ../../../crates/only/examples/echo.rs}}
 ```
 
 Run it and talk to it:
 
 ```console
-$ cargo run --release -p flash --example echo -- 127.0.0.1:7000
+$ cargo run --release -p only --example echo -- 127.0.0.1:7000
 $ nc 127.0.0.1 7000
 hello
 hello
@@ -50,16 +50,16 @@ Three things to notice:
 ## An HTTP server
 
 ```rust,ignore
-{{#include ../../../crates/flash-http/examples/hello.rs}}
+{{#include ../../../crates/only-http/examples/hello.rs}}
 ```
 
 ```console
-$ cargo run --release -p flash-http --example hello
+$ cargo run --release -p only-http --example hello
 $ curl -i localhost:8080/users/7
 $ curl --http2-prior-knowledge localhost:8080/   # HTTP/2 on the same port
 ```
 
-The `/slow` route shows the rule you will meet everywhere in flash: **handlers run on the I/O
+The `/slow` route shows the rule you will meet everywhere in `only`: **handlers run on the I/O
 thread and must not block**. When an answer needs slow work, detach the request and finish it
 from another thread; see [Blocking work](concepts/blocking.md).
 
@@ -70,19 +70,19 @@ exercise it with a client and exit:
 
 | Example | Topic |
 |---|---|
-| `cargo run -p flash --example guide-basics` | handlers, `Conn`, pool, ordering, dial, shutdown |
-| `cargo run -p flash --example guide-config` | every config knob, backends, metrics, reload, UDP |
-| `cargo run -p flash --example guide-tls` | TLS server and client |
-| `cargo run -p flash-http --example guide-http` | router, middleware, files, streaming, clients |
-| `cargo run -p flash-http --example guide-observe` | Prometheus, debug endpoint, access log, reload |
-| `cargo run -p flash-http --example guide-bridge` | bridging to other runtimes and threads |
-| `cargo run -p flash-ws --example guide-ws` | WebSocket server and client |
-| `cargo run -p flash-grpc --example guide-grpc` | gRPC server and client |
-| `cargo run -p flash-arpc --example guide-arpc` | arpc calls, notifies, broadcast |
-| `cargo run -p flash-socks --example guide-socks` | SOCKS5 and HTTP CONNECT |
-| `cargo run -p flash-mux --example guide-mux` | several protocols on one port |
-| `cargo run -p flash-quic --example guide-quic` | QUIC server and client |
-| `cargo run -p flash-h3 --example guide-h3` | HTTP/3 server and client |
-| `cargo run -p flash-kcp --example guide-kcp` | KCP with FEC and encryption |
+| `cargo run -p only --example guide-basics` | handlers, `Conn`, pool, ordering, dial, shutdown |
+| `cargo run -p only --example guide-config` | every config knob, backends, metrics, reload, UDP |
+| `cargo run -p only --example guide-tls` | TLS server and client |
+| `cargo run -p only-http --example guide-http` | router, middleware, files, streaming, clients |
+| `cargo run -p only-http --example guide-observe` | Prometheus, debug endpoint, access log, reload |
+| `cargo run -p only-http --example guide-bridge` | bridging to other runtimes and threads |
+| `cargo run -p only-ws --example guide-ws` | WebSocket server and client |
+| `cargo run -p only-grpc --example guide-grpc` | gRPC server and client |
+| `cargo run -p only-arpc --example guide-arpc` | arpc calls, notifies, broadcast |
+| `cargo run -p only-socks --example guide-socks` | SOCKS5 and HTTP CONNECT |
+| `cargo run -p only-mux --example guide-mux` | several protocols on one port |
+| `cargo run -p only-quic --example guide-quic` | QUIC server and client |
+| `cargo run -p only-h3 --example guide-h3` | HTTP/3 server and client |
+| `cargo run -p only-kcp --example guide-kcp` | KCP with FEC and encryption |
 
 Next: [Concepts](concepts/index.md).

@@ -1,0 +1,28 @@
+[package]
+name = "only-socks"
+description = "only: SOCKS5/4/4a and HTTP CONNECT proxies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-socks"
+keywords = ["socks", "socks5", "proxy", "network"]
+categories = ["network-programming"]
+
+[dependencies]
+only = { workspace = true }
+only-core = { workspace = true }
+only-http = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_socks::fuzzing`); not a public API.
+fuzzing = ["only-core/fuzzing"]
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

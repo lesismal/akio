@@ -2,7 +2,7 @@
 
 [中文](api-stability.zh-CN.md)
 
-This document says what flash promises from 1.0.0 on: which crates and items are covered by
+This document says what `only` promises from 1.0.0 on: which crates and items are covered by
 [Semantic Versioning](https://semver.org/), what counts as a breaking change, how the minimum
 supported Rust version (MSRV) moves, and which platforms are supported at which level. The
 deprecation process is in [deprecation.md](deprecation.md); the history of changes in
@@ -27,9 +27,9 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 
 | Tier | Crates | Promise |
 |---|---|---|
-| Public | `flash`, `flash-core`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-ebpf`, `flash-prefork`, `flash-turn`, `flash-webrtc`, `flash-media` | Full semver for their public API (below). |
-| Internal | `flash-sys`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-uring` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `flash` / `flash-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `flash-core` and `flash`. |
-| Experimental | `flash-dpdk`, and the `dpdk` / `dpdk-pmd` features of `flash` (`Backend::Dpdk`, `flash::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/flash-dpdk.txt` only makes changes visible. |
+| Public | `only`, `only-core`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-kcp`, `only-quic`, `only-h3`, `only-ebpf`, `only-prefork`, `only-turn`, `only-webrtc`, `only-media` | Full semver for their public API (below). |
+| Internal | `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-uring` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `only` / `only-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `only-core` and `only`. |
+| Experimental | `only-dpdk`, and the `dpdk` / `dpdk-pmd` features of `only` (`Backend::Dpdk`, `only::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/only-dpdk.txt` only makes changes visible. |
 
 `tools/` and `fuzz/` are not published.
 
@@ -42,11 +42,18 @@ Not covered:
 
 - items marked `#[doc(hidden)]` and everything reachable only through them. These are
   backend-facing plumbing shared between workspace crates (`ConnInner`, `LoopLink`, `Group`,
-  `DynAcceptor`, `DynHandler`, `LoopStats`, `Pool`, `flash_http::transport`, `flash_ws::WsSession`,
-  `flash_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
+  `DynAcceptor`, `DynHandler`, `LoopStats`, `Pool`, `only_http::transport`, `only_ws::WsSession`,
+  `only_ebpf::cbpf`, `Conn::inner`, telemetry helpers ...). They may change in any release.
 - the `fuzzing` cargo features and the `fuzzing` modules they enable (entry points for `fuzz/`).
-- an `unstable` cargo feature, should one be added: anything public that cannot be promised yet
-  goes under `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
+- the `unstable` cargo features (`only`, `only-tls`, `only-quic`, `only-webrtc`) and
+  everything they enable: raw access to the wrapped dependencies (`only::tls::rustls`,
+  `ServerConfig::from_rustls` / `as_rustls`, `only_quic::proto`, `from_quinn` /
+  `as_quinn_mut`, `only_webrtc::str0m`, `Peer::with_rtc`, `RtcConfig::with_str0m`,
+  `OtherEvent::as_str0m` ...). Their signatures change whenever the wrapped crate is upgraded,
+  which may happen in a minor release. Anything public that cannot be promised yet goes under
+  `#[doc(hidden)]` or behind `unstable`, never into the covered API silently.
+- the `prost` feature of `only-grpc` (the `codec::Message` implementation for prost messages):
+  it names prost's types, so a prost upgrade may come in a minor release.
 - the exact text of `Display` output, log messages and panic messages.
 - behaviour documented as unspecified, and performance characteristics.
 
@@ -57,12 +64,18 @@ minor releases; removed or renamed only in a major one).
 
 ### Public dependencies
 
-Some public signatures use types of other crates: `rustls` (re-exported as `flash::tls::rustls`,
-`flash_quic::rustls`), `quinn-proto` (`flash_quic::proto`), `bytes`, `log` (`Config::log_level`)
-and, with the `prost` feature, `prost`; `str0m` (re-exported as `flash_webrtc::str0m`, whose types
-`flash-webrtc` signatures use). Upgrading one of these to a semver-incompatible version is a
-breaking change for flash and happens only in a major release. Use the re-exports so your build
-always uses the versions flash was built with.
+The covered API uses types of only two other crates: `bytes` (`Bytes` in the QUIC and stream
+APIs) and `log` (`Config::log_level`), both at 1.x / 0.4 for years. Upgrading one of them to a
+semver-incompatible version is a breaking change for `only` and happens only in a major release.
+
+The pre-1.0 dependencies that do the protocol work (rustls, quinn-proto, str0m, prost) are
+**wrapped**: the covered API uses `only`'s own types instead (`only::tls::{ServerConfig,
+ClientConfig, Certificate, PrivateKey, RootCerts, Error}`, `only_quic::{ServerConfig,
+ClientConfig, TransportConfig, StreamId, Dir, Side, ConnectionError, ConnectionStats}`,
+`only_webrtc::{ChannelId, Mid, Pt, Codec, MediaData, RtcConfig, SdpChanges, Event, ...}`,
+`only_grpc::codec::Message`). Upgrading them, or replacing them with in-house implementations,
+is not a breaking change. They are reachable only through the `unstable` features and the
+`prost` feature above, which are excluded from the promise.
 
 ## 3. What counts as breaking
 
@@ -103,7 +116,7 @@ These are checked by lints or review, so new API follows them too:
   from `Default::default()` (or a preset like `KcpConfig::fast()`) and assign fields:
 
   ```rust
-  let mut cfg = flash::Config::default();
+  let mut cfg = only::Config::default();
   cfg.idle_timeout = Some(std::time::Duration::from_secs(30));
   ```
 
@@ -112,7 +125,7 @@ These are checked by lints or review, so new API follows them too:
   readable `Debug` output, no doubling of the API, and the fields are documented where they are.
   `*Config` names the settings of a server, engine or protocol instance; `*Options` the arguments
   of one operation (a dial, a call, an upgrade).
-- **Report structs** that flash fills and users read (`Metrics`, `LoopCounters`, `ConnInfo`,
+- **Report structs** that `only` fills and users read (`Metrics`, `LoopCounters`, `ConnInfo`,
   `SlowRecord`, `PoolStats`, `UdpStats`, `TlsInfo`, `ClientResponse`, `Stats`, ...) and the
   message types `Request` / `Response` are `#[non_exhaustive]`; build messages with their
   constructors (`Request::new`, `Response::new`, `ClientRequest::new`, `FileBody::new`).
@@ -127,7 +140,7 @@ These are checked by lints or review, so new API follows them too:
 - **Traits**: the traits users implement (`Handler`, `Acceptor`, `Transport`, `Service`,
   `Middleware`, `WsHandler`, `RawHandler`, `QuicHandler`, `KcpHandler`) only gain methods with a
   default. A trait that users should call but not implement is sealed (a private supertrait), so
-  methods can be added to it freely; flash 1.0 has none, and backend-facing traits are
+  methods can be added to it freely; `only` 1.0 has none, and backend-facing traits are
   `#[doc(hidden)]` instead.
 - **Naming**: `dial` starts a client connection without blocking (a callback, or a handle that
   becomes ready later); `dial_blocking` waits until it is established; `serve` / `serve_with(cfg,

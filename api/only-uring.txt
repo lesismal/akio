@@ -1,0 +1,27 @@
+pub mod only_uring
+pub struct only_uring::UringGroup
+impl only_uring::UringGroup
+pub fn only_uring::UringGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn only_core::handler::DynAcceptor>)>, usize, only_core::config::Config, alloc::rcs::arc::Arc<only_pool::Pool>, only_uring::UringOptions) -> core::io::error::Result<only_uring::UringGroup>
+pub fn only_uring::UringGroup::bind_listener(std::net::tcp::TcpListener, alloc::rcs::arc::Arc<dyn only_core::handler::DynAcceptor>, usize, only_core::config::Config, alloc::rcs::arc::Arc<only_pool::Pool>, only_uring::UringOptions) -> core::io::error::Result<only_uring::UringGroup>
+impl core::fmt::Debug for only_uring::UringGroup
+pub fn only_uring::UringGroup::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_uring::UringGroup
+impl core::marker::Sync for only_uring::UringGroup
+impl core::marker::Unpin for only_uring::UringGroup
+impl core::panic::unwind_safe::RefUnwindSafe for only_uring::UringGroup
+impl core::panic::unwind_safe::UnwindSafe for only_uring::UringGroup
+pub struct only_uring::UringOptions
+pub only_uring::UringOptions::entries: u32
+pub only_uring::UringOptions::sqpoll: bool
+impl core::clone::Clone for only_uring::UringOptions
+pub fn only_uring::UringOptions::clone(&self) -> Self
+impl core::default::Default for only_uring::UringOptions
+pub fn only_uring::UringOptions::default() -> Self
+impl core::fmt::Debug for only_uring::UringOptions
+pub fn only_uring::UringOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_uring::UringOptions
+impl core::marker::Sync for only_uring::UringOptions
+impl core::marker::Unpin for only_uring::UringOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_uring::UringOptions
+impl core::panic::unwind_safe::UnwindSafe for only_uring::UringOptions
+pub fn only_uring::probe() -> core::result::Result<(), alloc::string::String>

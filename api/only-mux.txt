@@ -1,0 +1,60 @@
+pub mod only_mux
+pub enum only_mux::Decision
+pub only_mux::Decision::NeedMore
+pub only_mux::Decision::No
+pub only_mux::Decision::Yes
+impl core::clone::Clone for only_mux::Decision
+pub fn only_mux::Decision::clone(&self) -> Self
+impl core::cmp::Eq for only_mux::Decision
+impl core::cmp::PartialEq for only_mux::Decision
+pub fn only_mux::Decision::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_mux::Decision
+pub fn only_mux::Decision::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_mux::Decision
+impl core::marker::StructuralPartialEq for only_mux::Decision
+impl core::marker::Send for only_mux::Decision
+impl core::marker::Sync for only_mux::Decision
+impl core::marker::Unpin for only_mux::Decision
+impl core::panic::unwind_safe::RefUnwindSafe for only_mux::Decision
+impl core::panic::unwind_safe::UnwindSafe for only_mux::Decision
+#[non_exhaustive] pub enum only_mux::Rule
+pub only_mux::Rule::Custom(alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&[u8]) -> only_mux::Decision + core::marker::Send + core::marker::Sync)>)
+pub only_mux::Rule::Http
+pub only_mux::Rule::Http1
+pub only_mux::Rule::Http2
+pub only_mux::Rule::Prefix(alloc::vec::Vec<u8>)
+pub only_mux::Rule::Socks4
+pub only_mux::Rule::Socks5
+pub only_mux::Rule::Tls
+impl only_mux::Rule
+pub fn only_mux::Rule::decide(&self, &[u8]) -> only_mux::Decision
+impl core::clone::Clone for only_mux::Rule
+pub fn only_mux::Rule::clone(&self) -> Self
+impl core::fmt::Debug for only_mux::Rule
+pub fn only_mux::Rule::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_mux::Rule
+impl core::marker::Sync for only_mux::Rule
+impl core::marker::Unpin for only_mux::Rule
+impl !core::panic::unwind_safe::RefUnwindSafe for only_mux::Rule
+impl !core::panic::unwind_safe::UnwindSafe for only_mux::Rule
+pub struct only_mux::Mux(_)
+impl only_mux::Mux
+pub fn only_mux::Mux::fallback<A: only_core::handler::Acceptor>(self, A) -> only_mux::Mux
+pub fn only_mux::Mux::into_any(self) -> only_core::handler::AnyAcceptor
+pub fn only_mux::Mux::max_sniff_bytes(self, usize) -> only_mux::Mux
+pub fn only_mux::Mux::new() -> only_mux::Mux
+pub fn only_mux::Mux::route<A: only_core::handler::Acceptor>(self, only_mux::Rule, A) -> only_mux::Mux
+pub fn only_mux::Mux::route_any(self, only_mux::Rule, impl core::convert::Into<only_core::handler::AnyAcceptor>) -> only_mux::Mux
+impl core::clone::Clone for only_mux::Mux
+pub fn only_mux::Mux::clone(&self) -> Self
+impl core::convert::From<only_mux::Mux> for only_core::handler::AnyAcceptor
+pub fn only_core::handler::AnyAcceptor::from(only_mux::Mux) -> only_core::handler::AnyAcceptor
+impl core::default::Default for only_mux::Mux
+pub fn only_mux::Mux::default() -> Self
+impl core::fmt::Debug for only_mux::Mux
+pub fn only_mux::Mux::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_mux::Mux
+impl core::marker::Sync for only_mux::Mux
+impl core::marker::Unpin for only_mux::Mux
+impl !core::panic::unwind_safe::RefUnwindSafe for only_mux::Mux
+impl !core::panic::unwind_safe::UnwindSafe for only_mux::Mux

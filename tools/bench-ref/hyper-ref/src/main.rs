@@ -1,6 +1,6 @@
 //! hyper reference server: `hyper-ref <addr> <threads>`
 //!
-//! Same routes as flash's `http-bench`: `GET /plaintext` and `GET /json`. HTTP/1.1 and HTTP/2
+//! Same routes as `only`'s `http-bench`: `GET /plaintext` and `GET /json`. HTTP/1.1 and HTTP/2
 //! (prior knowledge, h2c) on one port via `hyper_util::server::conn::auto`.
 
 use std::convert::Infallible;

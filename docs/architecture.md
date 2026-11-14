@@ -1,8 +1,8 @@
-# flash architecture
+# `only` architecture
 
 English | [简体中文](architecture.zh-CN.md)
 
-This document describes how flash is built: the crates and their dependencies, the threading and
+This document describes how `only` is built: the crates and their dependencies, the threading and
 locking model, what happens on a read and a write on each backend, how memory is managed, how
 protocols are layered, and how connections and engines end. The decisions behind it are recorded
 in the [ADRs](https://github.com/lesismal/flash/tree/main/docs/adr); the user-facing
@@ -12,29 +12,29 @@ explanation is in the [book](https://lesismal.github.io/flash/en/).
 
 ```mermaid
 flowchart BT
-    sys["flash-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
-    buf["flash-buf<br/>size-class pool, SharedBuf"]
-    timer["flash-timer<br/>timer wheel"]
-    pool["flash-pool<br/>logical pool"]
-    core["flash-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
-    epoll["flash-epoll<br/>epoll / kqueue groups, UDP groups"]
-    uring["flash-uring<br/>io_uring groups"]
-    ebpf["flash-ebpf<br/>reuseport steering, sockmap relay"]
-    dpdk["flash-dpdk (experimental)<br/>userspace TCP/IP (smoltcp) over DPDK / TAP"]
-    tls["flash-tls<br/>rustls Transport"]
-    facade["flash<br/>Engine, Listener, Backend, Accel"]
-    http["flash-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
-    ws[flash-ws]
-    grpc[flash-grpc]
-    arpc[flash-arpc]
-    socks[flash-socks]
-    mux[flash-mux]
-    quic["flash-quic<br/>quinn-proto"]
-    h3[flash-h3]
-    kcp[flash-kcp]
-    turn["flash-turn<br/>STUN, TURN"]
-    webrtc["flash-webrtc<br/>str0m"]
-    media["flash-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
+    sys["only-sys<br/>unsafe syscalls: epoll/kqueue,<br/>eventfd/pipe, sockets, recvmmsg/sendmmsg"]
+    buf["only-buf<br/>size-class pool, SharedBuf"]
+    timer["only-timer<br/>timer wheel"]
+    pool["only-pool<br/>logical pool"]
+    core["only-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
+    epoll["only-epoll<br/>epoll / kqueue groups, UDP groups"]
+    uring["only-uring<br/>io_uring groups"]
+    ebpf["only-ebpf<br/>reuseport steering, sockmap relay"]
+    dpdk["only-dpdk (experimental)<br/>userspace TCP/IP (smoltcp) over DPDK / TAP"]
+    tls["only-tls<br/>rustls Transport"]
+    facade["only<br/>Engine, Listener, Backend, Accel"]
+    http["only-http<br/>h1, h2, Router, middleware,<br/>files, clients, observe"]
+    ws[only-ws]
+    grpc[only-grpc]
+    arpc[only-arpc]
+    socks[only-socks]
+    mux[only-mux]
+    quic["only-quic<br/>quinn-proto"]
+    h3[only-h3]
+    kcp[only-kcp]
+    turn["only-turn<br/>STUN, TURN"]
+    webrtc["only-webrtc<br/>str0m"]
+    media["only-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
     pool --> core
@@ -69,17 +69,18 @@ flowchart BT
     http --> media
 ```
 
-- **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → flash →
-  protocols`. Protocol crates depend on `flash-core`'s public traits and the `flash` facade,
+- **Dependency direction is one way**: `sys → buf/timer/pool → core → backends → only →
+  protocols`. Protocol crates depend on `only-core`'s public traits and the ``only`` facade,
   never on a specific backend.
-- **`unsafe` is confined** to `flash-sys`, `flash-uring` (ring and buffer-ring memory), `flash-ebpf` (raw `bpf(2)`) and `flash-dpdk` (the DPDK FFI),
+- **`unsafe` is confined** to `only-sys`, `only-uring` (ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`) and `only-dpdk` (the DPDK FFI),
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
 - **Sans-io protocol cores**: HTTP/1 parsing (httparse for the head, an own chunked decoder),
   HTTP/2 framing and HPACK (loona-hpack), WebSocket framing and permessage-deflate, KCP, QPACK
-  and HTTP/3 framing are state machines fed bytes by flash; TLS is rustls and QUIC is
-  quinn-proto, both driven sans-io (ADR-005).
-- The facade `flash` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
+  and HTTP/3 framing are state machines fed bytes by `only`; TLS is rustls, QUIC is
+  quinn-proto and WebRTC is str0m, all driven sans-io (ADR-005) and hidden behind `only`'s own
+  types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).
+- The facade `only` re-exports the core API (`Conn`, `Handler`, `Acceptor`, `Config`, ...) and
   composes backend groups into an `Engine`.
 
 ## 2. Threading model
@@ -110,14 +111,14 @@ flowchart LR
 
 - An `Engine` holds one **group** per listener (plus optional client groups for `dial` and
   `dial_udp`). A group is a set of I/O threads; each thread runs one event loop that owns its
-  connections, its timer wheel (`flash-timer`, millisecond ticks) and its read buffer(s)
-  (ADR-001, ADR-004). Groups implement the internal `flash_core::Group` trait.
+  connections, its timer wheel (`only-timer`, millisecond ticks) and its read buffer(s)
+  (ADR-001, ADR-004). Groups implement the internal `only_core::Group` trait.
 - **Accept distribution**: on Linux every thread binds its own `SO_REUSEPORT` socket and the
-  kernel (or a steering program from `flash-ebpf`) picks the thread; on macOS the threads share
+  kernel (or a steering program from `only-ebpf`) picks the thread; on macOS the threads share
   one listening socket and race to accept.
 - **A connection never migrates.** Its handler is created on its thread and only touched there,
   which is why `Handler: Send` but not `Sync` (ADR-003).
-- **The logical pool** (`flash-pool`) is engine-wide, adaptive (threads start on demand up to a
+- **The logical pool** (`only-pool`) is engine-wide, adaptive (threads start on demand up to a
   maximum and retire when idle) and bounded (a full queue rejects with `Overloaded`).
   `Conn::spawn_blocking` runs work there and posts the completion back to the owning loop as a
   type-erased task (`LoopLink::post_task`); the loop runs it with `&mut` access to the handler,
@@ -145,7 +146,7 @@ Conn<H>  (Clone + Send + Sync, PhantomData<fn() -> H>)
 - **The write lock guards only the send state** and is never held while user code runs; user
   callbacks run on the loop without it. This rules out lock-ordering deadlocks between
   connections and handlers. The send / close / cork protocols are model-checked with `loom`
-  (`RUSTFLAGS="--cfg loom" cargo test -p flash-core --lib --release -- loom`).
+  (`RUSTFLAGS="--cfg loom" cargo test -p only-core --lib --release -- loom`).
 - **The fd is released** when the connection is closed *and* the last `Arc<ConnInner>` is
   dropped, so a stale handle can never write to a recycled descriptor; operations on a closed
   connection return `Error::Closed`.
@@ -220,7 +221,7 @@ flowchart TD
   `poll(POLLOUT)`).
 - Inside callbacks the connection is corked, so everything sent leaves in one `writev` when the
   callback returns.
-- Chunks are owned bytes (from `flash-buf` size classes, appended to when there is room),
+- Chunks are owned bytes (from `only-buf` size classes, appended to when there is room),
   `SharedBuf` broadcasts, file ranges (`sendfile(2)`, never copied, not counted against
   `max_queued_bytes`), or segmented UDP buffers.
 - Limits: reads pause at `write_high_watermark` and resume at a quarter of it;
@@ -250,14 +251,14 @@ flowchart TD
 |---|---|---|
 | epoll/kqueue read scratch | one per I/O thread | `read_buffer` (64 KiB) |
 | io_uring provided buffers | one ring per I/O thread | 1024 × `min(read_buffer, 16 KiB)` |
-| send queue chunks | per connection, only while something is queued | `flash-buf` size classes: 512 B, 4, 16, 64, 256 KiB |
+| send queue chunks | per connection, only while something is queued | `only-buf` size classes: 512 B, 4, 16, 64, 256 KiB |
 | broadcast frames | shared (`SharedBuf` = `Arc<[u8]>`) | encoded once |
 | protocol buffers (HTTP head, WebSocket frames, HTTP/2 frames) | per connection state machine | grow with the message, bounded by protocol limits |
 
-- `flash-buf` keeps a small **thread-local** cache of `Vec<u8>` per size class, so taking and
+- `only-buf` keeps a small **thread-local** cache of `Vec<u8>` per size class, so taking and
   returning a queue buffer takes no lock. Buffers freed on another thread join that thread's
   (bounded) cache.
-- Received data is borrowed, never copied by flash before your callback. Keeping it requires an
+- Received data is borrowed, never copied by `only` before your callback. Keeping it requires an
   explicit copy, which keeps every backend zero-copy on the read side (ADR-004).
 - Memory per connection is bounded by `max_queued_bytes` for queues and by protocol limits
   (`max_header_bytes`, `max_body_bytes`, `max_message_bytes`, HTTP/2 windows) for parsers.
@@ -269,7 +270,7 @@ flowchart TB
     subgraph TCP["TCP connection on an I/O thread"]
       sock[socket] --> tr["Transport (optional): TLS via rustls"]
       tr --> hb["HandlerBox: decode, then on_data"]
-      hb --> sess["flash-http Session (a Handler)"]
+      hb --> sess["only-http Session (a Handler)"]
       sess -- "preface, h2c upgrade, ALPN h2" --> h2["H2Session: streams"]
       sess -- "Upgrade: websocket" --> ws["WsSession, then WsHandler"]
       sess -- "upgrade_raw" --> raw["RawHandler: CONNECT tunnel"]
@@ -277,35 +278,35 @@ flowchart TB
       h2 --> svc
     end
     subgraph UDP["UDP listener"]
-      udp["UDP peers"] --> quic["flash-quic Endpoint, then QuicHandler"]
-      quic --> h3["flash-h3 ServerConn"]
+      udp["UDP peers"] --> quic["only-quic Endpoint, then QuicHandler"]
+      quic --> h3["only-h3 ServerConn"]
       h3 -- "transport::dispatch + ResponseSink" --> svc2["the same Service: Context"]
-      udp --> kcp["flash-kcp sessions, then KcpHandler"]
+      udp --> kcp["only-kcp sessions, then KcpHandler"]
     end
 ```
 
-- **`Transport` (TLS).** `Acceptor::transport()` returns an optional `flash_core::Transport`
+- **`Transport` (TLS).** `Acceptor::transport()` returns an optional `only_core::Transport`
   installed under the connection before `on_open`. Bytes read are passed through
   `Transport::recv` (producing plaintext and possibly handshake bytes to send) before the
   handler sees them; everything sent goes through `Transport::seal` under the write lock, in
   wire order. Application bytes sent during the handshake are held back by the transport and
   emitted when it completes. `close_after_send` appends `Transport::shutdown` output
-  (`close_notify`). `flash-tls`'s `Tls<A>` is an acceptor wrapper that supplies a rustls
+  (`close_notify`). `only-tls`'s `Tls<A>` is an acceptor wrapper that supplies a rustls
   transport, so any acceptor (HTTP, arpc, raw handlers) gains TLS without knowing about it.
-- **HTTP versions share `Context`.** The flash-http `Session` handler parses HTTP/1 and switches
+- **HTTP versions share `Context`.** The `only-http` `Session` handler parses HTTP/1 and switches
   to an `H2Session` on the client preface, an `h2c` upgrade or ALPN `h2`. Both build a `Context`
   whose responder is either an ordered `ResponseSlot` (HTTP/1, so pipelined responses stay in
   order even when detached) or an HTTP/2 stream.
-- **Transport hook for HTTP/3.** `flash_http::transport` lets a transport outside the crate serve
+- **Transport hook for HTTP/3.** `only_http::transport` lets a transport outside the crate serve
   a `Service`: it parses a request and calls `dispatch(service, request, sink)`, where the sink
-  implements `ResponseSink` (`send`, `start_stream` returning a `BodySink`). flash-h3 implements
+  implements `ResponseSink` (`send`, `start_stream` returning a `BodySink`). only-h3 implements
   those on QUIC streams, so routers, middleware, `detach` and `stream_response` behave the same
   on HTTP/3.
 - **Upgrades.** `Context::upgrade_websocket` answers 101 and replaces the HTTP state machine with
   a `WsSession` on the same connection; `Context::upgrade_raw` hands the raw byte stream to a
   `RawHandler` (the HTTP CONNECT proxy). The WebSocket session keeps the type-erased
   `ConnInner`, so `WsSender` outlives the HTTP handler type.
-- **Multiplexing.** `flash-mux` is a type-erased acceptor (`DynAcceptor`) that buffers the first
+- **Multiplexing.** `only-mux` is a type-erased acceptor (`DynAcceptor`) that buffers the first
   bytes, picks a route, then creates the chosen acceptor's handler and replays the bytes to it;
   `spawn_blocking` completions and `on_shutdown` are forwarded to the chosen acceptor.
 
@@ -341,7 +342,7 @@ sequenceDiagram
 
 ## 8. Error handling
 
-- **Connection operations** return `flash_core::Result<T>` with `Error::Closed` (the operation had
+- **Connection operations** return `only_core::Result<T>` with `Error::Closed` (the operation had
   no effect), `Error::Overloaded` (a bound was hit; the caller decides) or `Error::Io` (an OS
   error; the connection is being closed). A failing write from a non-loop thread schedules the
   close on the owning loop and returns `Closed`.
@@ -365,13 +366,13 @@ engine's `Telemetry` hub together with a way to post it commands. Metrics snapsh
 counters on demand; the connection table is gathered by asking each loop for a snapshot (with a
 timeout); slow callbacks are timed around every callback while a threshold is set and kept in a
 ring of 256 records. Live settings (`Live`) are atomics read on each use, which is what makes
-`Engine::reload` free on the hot path. flash-http's `observe` module renders all of this as
+`Engine::reload` free on the hot path. only-http's `observe` module renders all of this as
 Prometheus text and JSON debug views.
 
 ## 10. How the architecture is tested
 
 - `loom` models of the send / close / cork protocols (5 models, run in CI).
-- The engine, offload and stress suites run on epoll and on io_uring (`FLASH_TEST_BACKEND=uring`).
+- The engine, offload and stress suites run on epoll and on io_uring (`ONLY_TEST_BACKEND=uring`).
 - 5,000 simultaneous connections and connect/close cycles with fd-leak checks.
 - Interop: h2spec, Autobahn (server and client), grpc-go, quic-go, kcp-go, fib.
 - eBPF programs tested privileged (eBPF tier, relay) and unprivileged (classic BPF, fallback).

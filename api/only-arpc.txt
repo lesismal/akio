@@ -1,0 +1,241 @@
+pub mod only_arpc
+pub mod only_arpc::proto
+#[non_exhaustive] pub enum only_arpc::proto::Cmd
+pub only_arpc::proto::Cmd::Notify = 3
+pub only_arpc::proto::Cmd::Ping = 4
+pub only_arpc::proto::Cmd::Pong = 5
+pub only_arpc::proto::Cmd::Request = 1
+pub only_arpc::proto::Cmd::Response = 2
+pub only_arpc::proto::Cmd::Stream = 6
+impl core::clone::Clone for only_arpc::proto::Cmd
+pub fn only_arpc::proto::Cmd::clone(&self) -> Self
+impl core::cmp::Eq for only_arpc::proto::Cmd
+impl core::cmp::PartialEq for only_arpc::proto::Cmd
+pub fn only_arpc::proto::Cmd::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_arpc::proto::Cmd
+pub fn only_arpc::proto::Cmd::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_arpc::proto::Cmd
+impl core::marker::StructuralPartialEq for only_arpc::proto::Cmd
+impl core::marker::Send for only_arpc::proto::Cmd
+impl core::marker::Sync for only_arpc::proto::Cmd
+impl core::marker::Unpin for only_arpc::proto::Cmd
+impl core::panic::unwind_safe::RefUnwindSafe for only_arpc::proto::Cmd
+impl core::panic::unwind_safe::UnwindSafe for only_arpc::proto::Cmd
+pub struct only_arpc::proto::Decoder
+impl only_arpc::proto::Decoder
+pub fn only_arpc::proto::Decoder::feed(&mut self, &[u8], &mut alloc::vec::Vec<only_arpc::proto::Message>) -> core::result::Result<(), only_arpc::proto::FrameError>
+pub fn only_arpc::proto::Decoder::new(usize) -> only_arpc::proto::Decoder
+impl core::fmt::Debug for only_arpc::proto::Decoder
+pub fn only_arpc::proto::Decoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_arpc::proto::Decoder
+impl core::marker::Sync for only_arpc::proto::Decoder
+impl core::marker::Unpin for only_arpc::proto::Decoder
+impl core::panic::unwind_safe::RefUnwindSafe for only_arpc::proto::Decoder
+impl core::panic::unwind_safe::UnwindSafe for only_arpc::proto::Decoder
+pub struct only_arpc::proto::FrameError(pub &'static str)
+impl core::cmp::Eq for only_arpc::proto::FrameError
+impl core::cmp::PartialEq for only_arpc::proto::FrameError
+pub fn only_arpc::proto::FrameError::eq(&self, &Self) -> bool
+impl core::error::Error for only_arpc::proto::FrameError
+impl core::fmt::Debug for only_arpc::proto::FrameError
+pub fn only_arpc::proto::FrameError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_arpc::proto::FrameError
+pub fn only_arpc::proto::FrameError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_arpc::proto::FrameError
+impl core::marker::Send for only_arpc::proto::FrameError
+impl core::marker::Sync for only_arpc::proto::FrameError
+impl core::marker::Unpin for only_arpc::proto::FrameError
+impl core::panic::unwind_safe::RefUnwindSafe for only_arpc::proto::FrameError
+impl core::panic::unwind_safe::UnwindSafe for only_arpc::proto::FrameError
+#[non_exhaustive] pub struct only_arpc::proto::Message
+pub only_arpc::proto::Message::async_flag: bool
+pub only_arpc::proto::Message::cmd: only_arpc::proto::Cmd
+pub only_arpc::proto::Message::error: bool
+pub only_arpc::proto::Message::method: alloc::string::String
+pub only_arpc::proto::Message::payload: alloc::vec::Vec<u8>
+pub only_arpc::proto::Message::reserved: u8
+pub only_arpc::proto::Message::seq: u64
+pub only_arpc::proto::Message::stream_eof: bool
+pub only_arpc::proto::Message::stream_local: bool
+impl core::clone::Clone for only_arpc::proto::Message
+pub fn only_arpc::proto::Message::clone(&self) -> Self
+impl core::cmp::Eq for only_arpc::proto::Message
+impl core::cmp::PartialEq for only_arpc::proto::Message
+pub fn only_arpc::proto::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_arpc::proto::Message
+pub fn only_arpc::proto::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_arpc::proto::Message
+impl core::marker::Send for only_arpc::proto::Message
+impl core::marker::Sync for only_arpc::proto::Message
+impl core::marker::Unpin for only_arpc::proto::Message
+impl core::panic::unwind_safe::RefUnwindSafe for only_arpc::proto::Message
+impl core::panic::unwind_safe::UnwindSafe for only_arpc::proto::Message
+pub const only_arpc::proto::DEFAULT_MAX_BODY: usize
+pub const only_arpc::proto::HEAD_LEN: usize
+pub const only_arpc::proto::MAX_METHOD_LEN: usize
+pub fn only_arpc::proto::encode(only_arpc::proto::Cmd, u8, bool, bool, &str, u64, &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_arpc::proto::ping() -> alloc::vec::Vec<u8>
+pub fn only_arpc::proto::pong() -> alloc::vec::Vec<u8>
+#[non_exhaustive] pub enum only_arpc::CallError
+pub only_arpc::CallError::Closed
+pub only_arpc::CallError::Remote(alloc::string::String)
+pub only_arpc::CallError::Timeout
+impl core::clone::Clone for only_arpc::CallError
+pub fn only_arpc::CallError::clone(&self) -> Self
+impl core::cmp::Eq for only_arpc::CallError
+impl core::cmp::PartialEq for only_arpc::CallError
+pub fn only_arpc::CallError::eq(&self, &Self) -> bool
+impl core::error::Error for only_arpc::CallError
+impl core::fmt::Debug for only_arpc::CallError
+pub fn only_arpc::CallError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_arpc::CallError
+pub fn only_arpc::CallError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_arpc::CallError
+impl core::marker::Send for only_arpc::CallError
+impl core::marker::Sync for only_arpc::CallError
+impl core::marker::Unpin for only_arpc::CallError
+impl core::panic::unwind_safe::RefUnwindSafe for only_arpc::CallError
+impl core::panic::unwind_safe::UnwindSafe for only_arpc::CallError
+pub enum only_arpc::StreamEvent<'a>
+pub only_arpc::StreamEvent::Eof
+pub only_arpc::StreamEvent::Message(&'a [u8])
+impl<'a> core::fmt::Debug for only_arpc::StreamEvent<'a>
+pub fn only_arpc::StreamEvent<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for only_arpc::StreamEvent<'a>
+impl<'a> core::marker::Sync for only_arpc::StreamEvent<'a>
+impl<'a> core::marker::Unpin for only_arpc::StreamEvent<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_arpc::StreamEvent<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_arpc::StreamEvent<'a>
+pub struct only_arpc::ArpcConn
+impl core::fmt::Debug for only_arpc::ArpcConn
+pub fn only_arpc::ArpcConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Handler for only_arpc::ArpcConn
+pub fn only_arpc::ArpcConn::on_close(&mut self, &only_core::conn::Conn<Self>, core::option::Option<only_core::error::Error>)
+pub fn only_arpc::ArpcConn::on_data(&mut self, &only_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for only_arpc::ArpcConn
+impl core::marker::Sync for only_arpc::ArpcConn
+impl core::marker::Unpin for only_arpc::ArpcConn
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::ArpcConn
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::ArpcConn
+pub struct only_arpc::CallFuture(_)
+impl only_arpc::CallFuture
+pub fn only_arpc::CallFuture::wait(self) -> only_arpc::CallResult
+impl core::fmt::Debug for only_arpc::CallFuture
+pub fn only_arpc::CallFuture::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::future::future::Future for only_arpc::CallFuture
+pub type only_arpc::CallFuture::Output = core::result::Result<alloc::vec::Vec<u8>, only_arpc::CallError>
+pub fn only_arpc::CallFuture::poll(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<only_arpc::CallResult>
+impl core::marker::Send for only_arpc::CallFuture
+impl core::marker::Sync for only_arpc::CallFuture
+impl core::marker::Unpin for only_arpc::CallFuture
+impl core::panic::unwind_safe::RefUnwindSafe for only_arpc::CallFuture
+impl core::panic::unwind_safe::UnwindSafe for only_arpc::CallFuture
+pub struct only_arpc::Context
+impl only_arpc::Context
+pub fn only_arpc::Context::body(&self) -> &[u8]
+pub fn only_arpc::Context::detach(&mut self) -> only_arpc::Responder
+pub fn only_arpc::Context::error(&mut self, &str)
+pub fn only_arpc::Context::is_notify(&self) -> bool
+pub fn only_arpc::Context::method(&self) -> &str
+pub fn only_arpc::Context::peer(&self) -> &only_arpc::Peer
+pub fn only_arpc::Context::write(&mut self, &[u8])
+impl core::fmt::Debug for only_arpc::Context
+pub fn only_arpc::Context::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_arpc::Context
+impl core::marker::Sync for only_arpc::Context
+impl core::marker::Unpin for only_arpc::Context
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Context
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Context
+pub struct only_arpc::Peer(_)
+impl only_arpc::Peer
+pub fn only_arpc::Peer::call(&self, &str, &[u8], core::option::Option<core::time::Duration>) -> only_arpc::CallFuture
+pub fn only_arpc::Peer::call_async(&self, &str, &[u8], core::option::Option<core::time::Duration>, impl core::ops::function::FnOnce(only_arpc::CallResult) + core::marker::Send + 'static)
+pub fn only_arpc::Peer::close(&self)
+pub fn only_arpc::Peer::is_connected(&self) -> bool
+pub fn only_arpc::Peer::new_stream(&self, &str, impl core::ops::function::FnMut(&only_arpc::Stream, only_arpc::StreamEvent<'_>) + core::marker::Send + 'static) -> only_arpc::Stream
+pub fn only_arpc::Peer::notify(&self, &str, &[u8]) -> bool
+pub fn only_arpc::Peer::peer_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+impl core::clone::Clone for only_arpc::Peer
+pub fn only_arpc::Peer::clone(&self) -> Self
+impl core::fmt::Debug for only_arpc::Peer
+pub fn only_arpc::Peer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_arpc::Peer
+impl core::marker::Sync for only_arpc::Peer
+impl core::marker::Unpin for only_arpc::Peer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Peer
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Peer
+pub struct only_arpc::Responder
+impl only_arpc::Responder
+pub fn only_arpc::Responder::error(self, &str)
+pub fn only_arpc::Responder::write(self, &[u8])
+impl core::fmt::Debug for only_arpc::Responder
+pub fn only_arpc::Responder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_arpc::Responder
+impl core::marker::Sync for only_arpc::Responder
+impl core::marker::Unpin for only_arpc::Responder
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Responder
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Responder
+pub struct only_arpc::Routes
+impl only_arpc::Routes
+pub fn only_arpc::Routes::handle(self, &str, impl core::ops::function::Fn(&mut only_arpc::Context) + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes
+pub fn only_arpc::Routes::handle_stream<F>(self, &str, impl core::ops::function::Fn(&only_arpc::Stream) -> F + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes where F: core::ops::function::FnMut(&only_arpc::Stream, only_arpc::StreamEvent<'_>) + core::marker::Send + 'static
+pub fn only_arpc::Routes::max_body_bytes(self, usize) -> only_arpc::Routes
+pub fn only_arpc::Routes::new() -> only_arpc::Routes
+pub fn only_arpc::Routes::on_connected(self, impl core::ops::function::Fn(&only_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes
+pub fn only_arpc::Routes::on_disconnected(self, impl core::ops::function::Fn(&only_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes
+impl core::default::Default for only_arpc::Routes
+pub fn only_arpc::Routes::default() -> Self
+impl core::fmt::Debug for only_arpc::Routes
+pub fn only_arpc::Routes::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_arpc::Routes
+impl core::marker::Sync for only_arpc::Routes
+impl core::marker::Unpin for only_arpc::Routes
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Routes
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Routes
+pub struct only_arpc::Server
+impl only_arpc::Server
+pub fn only_arpc::Server::broadcast(&self, &str, &[u8])
+pub fn only_arpc::Server::new(alloc::rcs::arc::Arc<only_arpc::Routes>) -> only_arpc::Server
+pub fn only_arpc::Server::peers(&self) -> alloc::vec::Vec<only_arpc::Peer>
+impl core::clone::Clone for only_arpc::Server
+pub fn only_arpc::Server::clone(&self) -> Self
+impl core::fmt::Debug for only_arpc::Server
+pub fn only_arpc::Server::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_arpc::Server
+pub type only_arpc::Server::Handler = only_arpc::ServerConn
+pub fn only_arpc::Server::on_open(&self, &only_core::conn::Conn<only_arpc::ServerConn>) -> only_arpc::ServerConn
+impl core::marker::Send for only_arpc::Server
+impl core::marker::Sync for only_arpc::Server
+impl core::marker::Unpin for only_arpc::Server
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Server
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Server
+pub struct only_arpc::ServerConn
+impl core::fmt::Debug for only_arpc::ServerConn
+pub fn only_arpc::ServerConn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Handler for only_arpc::ServerConn
+pub fn only_arpc::ServerConn::on_close(&mut self, &only_core::conn::Conn<Self>, core::option::Option<only_core::error::Error>)
+pub fn only_arpc::ServerConn::on_data(&mut self, &only_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for only_arpc::ServerConn
+impl core::marker::Sync for only_arpc::ServerConn
+impl core::marker::Unpin for only_arpc::ServerConn
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::ServerConn
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::ServerConn
+pub struct only_arpc::Stream
+impl only_arpc::Stream
+pub fn only_arpc::Stream::close_send(&self) -> bool
+pub fn only_arpc::Stream::id(&self) -> u64
+pub fn only_arpc::Stream::method(&self) -> &str
+pub fn only_arpc::Stream::peer(&self) -> &only_arpc::Peer
+pub fn only_arpc::Stream::send(&self, &[u8]) -> bool
+impl core::clone::Clone for only_arpc::Stream
+pub fn only_arpc::Stream::clone(&self) -> Self
+impl core::fmt::Debug for only_arpc::Stream
+pub fn only_arpc::Stream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_arpc::Stream
+impl core::marker::Sync for only_arpc::Stream
+impl core::marker::Unpin for only_arpc::Stream
+impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Stream
+impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Stream
+pub const only_arpc::METHOD_NOT_FOUND: &str
+pub fn only_arpc::dial_blocking(&alloc::rcs::arc::Arc<only::Engine>, core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<only_arpc::Routes>) -> core::io::error::Result<only_arpc::Peer>
+pub type only_arpc::CallResult = core::result::Result<alloc::vec::Vec<u8>, only_arpc::CallError>

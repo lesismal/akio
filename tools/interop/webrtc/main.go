@@ -50,7 +50,7 @@ func newPC(iceServers []webrtc.ICEServer, relayOnly bool) *webrtc.PeerConnection
 	return pc
 }
 
-// offer runs the offer/answer exchange against the flash server at http.
+// offer runs the offer/answer exchange against the only server at http.
 func offer(pc *webrtc.PeerConnection, addr string) {
 	o, err := pc.CreateOffer(nil)
 	check(err)
@@ -215,12 +215,12 @@ func clientMedia(addr string) {
 			fail("media echo: %d audio, %d video RTP packets back", audioN, videoN)
 		}
 	}
-	// A PLI for the echoed video reaches the flash side as a keyframe request.
+	// A PLI for the echoed video reaches the only side as a keyframe request.
 	check(pc.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: videoSSRC}}))
 	select {
 	case <-pli:
 	case <-time.After(10 * time.Second):
-		fail("PLI not reported by the flash peer")
+		fail("PLI not reported by the only peer")
 	}
 	close(stop)
 	fmt.Printf("ok: pion media: %d Opus and %d VP8 RTP packets echoed, PLI delivered as a keyframe request\n", audioN, videoN)
@@ -279,7 +279,7 @@ func turnRaw(server, user, pass string) {
 	check(err)
 	c, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: server, TURNServerAddr: server, Conn: conn,
-		Username: user, Password: pass, Realm: "flash",
+		Username: user, Password: pass, Realm: "only",
 	})
 	check(err)
 	check(c.Listen())
@@ -330,7 +330,7 @@ func main() {
 		clientMedia(os.Args[2])
 	case "client-turn":
 		ice := []webrtc.ICEServer{{URLs: []string{"turn:" + os.Args[3] + "?transport=udp"}, Username: os.Args[4], Credential: os.Args[5]}}
-		dcEcho(newPC(ice, true), os.Args[2], "over a flash TURN relay")
+		dcEcho(newPC(ice, true), os.Args[2], "over a only TURN relay")
 	case "turn-raw":
 		turnRaw(os.Args[2], os.Args[3], os.Args[4])
 	default:

@@ -1,6 +1,6 @@
 # Observability and hot reload
 
-Every engine owns a **telemetry hub** (`flash::Telemetry`): per-thread counters, the connection
+Every engine owns a **telemetry hub** (`only::Telemetry`): per-thread counters, the connection
 table, slow-callback records and the live (reloadable) settings. It is reachable as
 `Config::telemetry` before the engine is built and as `Engine::telemetry()` afterwards. The I/O
 threads update plain per-thread counters with relaxed atomics (cache-line aligned, nothing
@@ -9,7 +9,7 @@ locked or allocated per event); snapshots are assembled on demand.
 ## From code
 
 ```rust,ignore
-{{#include ../../../crates/flash/examples/guide-config.rs:observe}}
+{{#include ../../../crates/only/examples/guide-config.rs:observe}}
 ```
 
 | Call | Returns |
@@ -27,35 +27,35 @@ Engine series (one per I/O thread, labelled `listener`, `backend`, `thread`):
 
 | Series | Type |
 |---|---|
-| `flash_connections_accepted_total`, `flash_connections_dialed_total`, `flash_connections_closed_total` | counter |
-| `flash_connections_rejected_total` (max_connections), `flash_accept_errors_total`, `flash_idle_timeouts_total` | counter |
-| `flash_read_bytes_total`, `flash_reads_total`, `flash_written_bytes_total`, `flash_writes_total` | counter |
-| `flash_udp_datagrams_received_total`, `flash_udp_datagrams_sent_total` | counter |
-| `flash_send_queue_bytes` | gauge |
-| `flash_backpressure_events_total`, `flash_overloaded_total` | counter |
-| `flash_tls_handshake_failures_total`, `flash_transport_errors_total` | counter |
-| `flash_loop_iterations_total`, `flash_loop_events_total`, `flash_loop_callbacks_total`, `flash_loop_callback_seconds_total`, `flash_slow_callbacks_total` | counter |
-| `flash_connections_open`, `flash_loop_running` | gauge |
-| `flash_pool_threads`, `flash_pool_active`, `flash_pool_queued` | gauge |
-| `flash_pool_completed_total`, `flash_pool_panicked_total`, `flash_pool_rejected_total` | counter |
-| `flash_uptime_seconds` | gauge |
+| `only_connections_accepted_total`, `only_connections_dialed_total`, `only_connections_closed_total` | counter |
+| `only_connections_rejected_total` (max_connections), `only_accept_errors_total`, `only_idle_timeouts_total` | counter |
+| `only_read_bytes_total`, `only_reads_total`, `only_written_bytes_total`, `only_writes_total` | counter |
+| `only_udp_datagrams_received_total`, `only_udp_datagrams_sent_total` | counter |
+| `only_send_queue_bytes` | gauge |
+| `only_backpressure_events_total`, `only_overloaded_total` | counter |
+| `only_tls_handshake_failures_total`, `only_transport_errors_total` | counter |
+| `only_loop_iterations_total`, `only_loop_events_total`, `only_loop_callbacks_total`, `only_loop_callback_seconds_total`, `only_slow_callbacks_total` | counter |
+| `only_connections_open`, `only_loop_running` | gauge |
+| `only_pool_threads`, `only_pool_active`, `only_pool_queued` | gauge |
+| `only_pool_completed_total`, `only_pool_panicked_total`, `only_pool_rejected_total` | counter |
+| `only_uptime_seconds` | gauge |
 
-HTTP series from `observe::HttpMetrics`: `flash_http_requests_total{class="2xx"...}`,
-`flash_http_request_duration_seconds` (histogram, buckets from 0.5 ms to 10 s),
-`flash_http_requests_in_flight`.
+HTTP series from `observe::HttpMetrics`: `only_http_requests_total{class="2xx"...}`,
+`only_http_request_duration_seconds` (histogram, buckets from 0.5 ms to 10 s),
+`only_http_requests_in_flight`.
 
-`flash_loop_callback_seconds_total / flash_loop_iterations_total` and the slow-callback counter
+`only_loop_callback_seconds_total / only_loop_iterations_total` and the slow-callback counter
 are the first things to watch: they tell you whether handlers are keeping the I/O threads busy.
 
 ## HTTP endpoints
 
 ```rust,ignore
-{{#include ../../../crates/flash-http/examples/guide-observe.rs:endpoints}}
+{{#include ../../../crates/only-http/examples/guide-observe.rs:endpoints}}
 ```
 
 - `observe::metrics_handler(telemetry, Some(http_metrics))` answers the Prometheus text format
   (0.0.4).
-- `observe::debug_handler(telemetry, token)` is an opt-in runtime debug endpoint (flash's
+- `observe::debug_handler(telemetry, token)` is an opt-in runtime debug endpoint (`only`'s
   counterpart of Go's pprof pages), answering JSON. Mount it under a wildcard route; the last
   path segment picks the view: `conns` (connection table), `loops` (per-thread counters, totals,
   pool), `slow` (recent slow callbacks), `live` (current live settings). With a token, requests
@@ -68,18 +68,18 @@ are the first things to watch: they tell you whether handlers are keeping the I/
 
 ## Logs
 
-flash logs through the [`log`](https://docs.rs/log) facade with key-value records; install any
+`only` logs through the [`log`](https://docs.rs/log) facade with key-value records; install any
 backend (env_logger, a `log`-to-`tracing` bridge, ...) to see them. Without a logger installed,
 errors and slow-callback warnings go to stderr so they are never lost silently.
 
 | Target | Level | Records |
 |---|---|---|
-| `flash` | info | `engine started` (listeners), `engine shutting down` (open connections), `configuration reloaded` (applied, ignored) |
-| `flash` | warn | slow callbacks (`kind`, `conn_id`, `elapsed_us`, `limit_us`, `thread`, `listener`); io_uring / BPF fallbacks |
-| `flash` | error | poller failures |
-| `flash` | debug | connections refused by `max_connections` |
-| `flash` | trace | `connection opened` / `connection closed` (`conn_id`, `peer`, `local`, `dialed`, `error`) |
-| `flash_http::access` | info | access log: `method`, `target`, `status`, `peer`, `elapsed_us`, `request_id` |
+| `only` | info | `engine started` (listeners), `engine shutting down` (open connections), `configuration reloaded` (applied, ignored) |
+| `only` | warn | slow callbacks (`kind`, `conn_id`, `elapsed_us`, `limit_us`, `thread`, `listener`); io_uring / BPF fallbacks |
+| `only` | error | poller failures |
+| `only` | debug | connections refused by `max_connections` |
+| `only` | trace | `connection opened` / `connection closed` (`conn_id`, `peer`, `local`, `dialed`, `error`) |
+| `only_http::access` | info | access log: `method`, `target`, `status`, `peer`, `elapsed_us`, `request_id` |
 
 `Config::log_level` (reloadable) calls `log::set_max_level`, so verbosity can change at runtime.
 
@@ -93,7 +93,7 @@ See [Blocking work](concepts/blocking.md#slow-callback-detection). Reports go to
 ## Hot reload
 
 ```rust,ignore
-{{#include ../../../crates/flash/examples/guide-config.rs:reload}}
+{{#include ../../../crates/only/examples/guide-config.rs:reload}}
 ```
 
 `Engine::reload(&Config)` (or `Telemetry::reload`) applies the runtime-changeable settings
@@ -110,5 +110,5 @@ threads read live settings with one relaxed load per use, so reloading costs not
 path. Individual values can also be changed with the setters on `Telemetry::live()` followed by
 `Telemetry::notify_reload()`.
 
-flash does not watch configuration files itself: trigger `reload` from whatever you use (a
+`only` does not watch configuration files itself: trigger `reload` from whatever you use (a
 `SIGHUP` handler, a file watcher, an admin route as in the example above).

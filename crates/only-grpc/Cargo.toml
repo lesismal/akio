@@ -1,0 +1,34 @@
+[package]
+name = "only-grpc"
+description = "only gRPC: unary and streaming calls over the HTTP/2 of only-http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-grpc"
+keywords = ["grpc", "rpc", "http2", "network"]
+categories = ["network-programming", "web-programming"]
+
+[dependencies]
+only = { workspace = true }
+only-http = { workspace = true }
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+prost = { version = "0.13", optional = true }
+only-core = { workspace = true, optional = true }
+
+[features]
+# `codec::Message` for prost-generated messages. Outside the semver promise (names prost types,
+# docs/api-stability.md).
+prost = ["dep:prost"]
+# Fuzz entry points for `fuzz/` (`only_grpc::fuzzing`); not a public API.
+fuzzing = ["dep:only-core", "only-core/fuzzing", "only-http/fuzzing"]
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+only-http = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

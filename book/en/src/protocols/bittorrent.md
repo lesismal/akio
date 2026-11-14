@@ -1,6 +1,6 @@
 # BitTorrent
 
-`flash-bittorrent` is BitTorrent on flash: bencoding, .torrent files and magnet links, HTTP and
+`only-bittorrent` is BitTorrent on `only`: bencoding, .torrent files and magnet links, HTTP and
 UDP trackers (client and server), the peer wire protocol with its extensions and Message Stream
 Encryption, uTP and the mainline DHT, and a client that downloads and seeds with all of them.
 It is a port of fib's `bittorrent` packages and is wire compatible with mainstream clients:
@@ -11,16 +11,16 @@ HTTP and UDP trackers).
 ## A tracker, a seeder and a leecher
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:tracker}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:tracker}}
 ```
 
-A `TrackerServer` serves both protocols from one in-memory store: `http()` is a flash-http
+A `TrackerServer` serves both protocols from one in-memory store: `http()` is a only-http
 service (paths ending in `announce` and `scrape`, compact and dictionary peer lists, `peers6`),
 `udp()` the acceptor of a UDP listener (BEP 15; connection IDs are an HMAC of a secret, the
 minute and the client address, so nothing is kept per client).
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:torrent}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
 
 `metainfo::Builder` hashes bytes, in-memory files or a path (streaming) into a v1 torrent with
@@ -30,19 +30,19 @@ piece hashes that do not match the length. v2-only torrents are refused; hybrid 
 as their v1 part.
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:seeder}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:seeder}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:leecher}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:leecher}}
 ```
 
 ## The client
 
-A `Client` is one flash engine and **one port number**: a TCP listener for peers, and a UDP
+A `Client` is one `only` engine and **one port number**: a TCP listener for peers, and a UDP
 listener shared by uTP and the DHT through a `port::UdpPort`. Trackers go through a
-`tracker::TrackerClient` on the same engine (flash-http for HTTP(S), `dial_udp` sockets for
-UDP). Storage reads and writes and every SHA-1 check run on a logical pool (`flash-pool`), never
+`tracker::TrackerClient` on the same engine (only-http for HTTP(S), `dial_udp` sockets for
+UDP). Storage reads and writes and every SHA-1 check run on a logical pool (`only-pool`), never
 on an I/O thread.
 
 - **Torrents** come from a `MetaInfo` (`add_torrent`) or a magnet link (`add_magnet`, the info
@@ -81,7 +81,7 @@ datagram ─┬─ uTP header (version 1, type ≤ 4) ──► uTP connection �
           └─ anything else ('d…' = DHT)       ──► on_datagram ──► dht::Node
 ```
 
-`UdpPort` is the acceptor of a flash UDP listener. It sorts datagrams by their first byte, runs
+`UdpPort` is the acceptor of a `only` UDP listener. It sorts datagrams by their first byte, runs
 uTP connections on a 10 ms timer, and **sends from the listener's own port**: to reach an
 address that has not written first it opens a peer on the listener socket with
 `Engine::dial_udp_from`, so a DHT node is reachable at the port it announces and uTP peers see
@@ -118,9 +118,9 @@ Each protocol is usable alone, without I/O:
   (`tests/swarm.rs`): a seeder and leechers over TCP and uTP, with and without MSE, peers found
   through HTTP and UDP trackers, magnet links, files on disk with resume, the DHT and PEX.
 - `tools/interop/bittorrent/run.sh` runs everything in a Debian container on 127.0.0.1:
-  aria2 leeching from flash (plaintext, MSE required, magnet) and seeding to it (UDP tracker,
-  plaintext and MSE); libtorrent leeching from flash over uTP with RC4 and over TCP, and by
-  magnet, seeding to flash the same three ways, and the DHT both ways (a flash node bootstraps
+  aria2 leeching from `only` (plaintext, MSE required, magnet) and seeding to it (UDP tracker,
+  plaintext and MSE); libtorrent leeching from `only` over uTP with RC4 and over TCP, and by
+  magnet, seeding to `only` the same three ways, and the DHT both ways (a `only` node bootstraps
   libtorrent; each finds the other's seed by magnet alone).
 - Fuzz targets: `bt_bencode` (bencode, metainfo, magnet), `bt_peer_wire`, `bt_krpc`, `bt_utp`,
   `bt_tracker`, `bt_mse`, with their seed corpora replayed by `cargo test`.

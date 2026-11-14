@@ -1,0 +1,185 @@
+pub mod only
+pub use only::Acceptor
+pub use only::AnyAcceptor
+pub use only::Config
+pub use only::Conn
+pub use only::ConnInfo
+pub use only::Error
+pub use only::FnAcceptor
+pub use only::Handler
+pub use only::Live
+pub use only::LoopCounters
+pub use only::LoopMeta
+pub use only::LoopMetrics
+pub use only::Metrics
+pub use only::Part
+pub use only::PoolConfig
+pub use only::PoolStats
+pub use only::ReloadReport
+pub use only::ResponseSlot
+pub use only::ResponseStream
+pub use only::Result
+pub use only::SharedBuf
+pub use only::SlowCallback
+pub use only::SlowHook
+pub use only::SlowRecord
+pub use only::Telemetry
+pub use only::Transport
+pub use only::UdpBinding
+pub use only::UdpStats
+pub use only::ebpf
+pub use only::fn_acceptor
+pub use only::telemetry
+pub use only::tls
+#[non_exhaustive] pub enum only::Accel
+pub only::Accel::Ebpf(only::EbpfConfig)
+pub only::Accel::None
+impl core::clone::Clone for only::Accel
+pub fn only::Accel::clone(&self) -> Self
+impl core::default::Default for only::Accel
+pub fn only::Accel::default() -> Self
+impl core::fmt::Debug for only::Accel
+pub fn only::Accel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::Accel
+impl core::marker::Sync for only::Accel
+impl core::marker::Unpin for only::Accel
+impl core::panic::unwind_safe::RefUnwindSafe for only::Accel
+impl core::panic::unwind_safe::UnwindSafe for only::Accel
+#[non_exhaustive] pub enum only::AccelStatus
+pub only::AccelStatus::Degraded(alloc::string::String)
+pub only::AccelStatus::Off
+pub only::AccelStatus::Steering(only_ebpf::steer::SteerInfo)
+impl core::clone::Clone for only::AccelStatus
+pub fn only::AccelStatus::clone(&self) -> Self
+impl core::cmp::Eq for only::AccelStatus
+impl core::cmp::PartialEq for only::AccelStatus
+pub fn only::AccelStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only::AccelStatus
+pub fn only::AccelStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only::AccelStatus
+impl core::marker::Send for only::AccelStatus
+impl core::marker::Sync for only::AccelStatus
+impl core::marker::Unpin for only::AccelStatus
+impl core::panic::unwind_safe::RefUnwindSafe for only::AccelStatus
+impl core::panic::unwind_safe::UnwindSafe for only::AccelStatus
+#[non_exhaustive] pub enum only::Backend
+pub only::Backend::Epoll
+pub only::Backend::IoUring(only::UringConfig)
+impl core::clone::Clone for only::Backend
+pub fn only::Backend::clone(&self) -> Self
+impl core::default::Default for only::Backend
+pub fn only::Backend::default() -> Self
+impl core::fmt::Debug for only::Backend
+pub fn only::Backend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::Backend
+impl core::marker::Sync for only::Backend
+impl core::marker::Unpin for only::Backend
+impl core::panic::unwind_safe::RefUnwindSafe for only::Backend
+impl core::panic::unwind_safe::UnwindSafe for only::Backend
+#[non_exhaustive] pub struct only::EbpfConfig
+pub only::EbpfConfig::ebpf_programs: bool
+pub only::EbpfConfig::steering: only_ebpf::steer::Steering
+pub only::EbpfConfig::strict: bool
+impl core::clone::Clone for only::EbpfConfig
+pub fn only::EbpfConfig::clone(&self) -> Self
+impl core::default::Default for only::EbpfConfig
+pub fn only::EbpfConfig::default() -> Self
+impl core::fmt::Debug for only::EbpfConfig
+pub fn only::EbpfConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::EbpfConfig
+impl core::marker::Sync for only::EbpfConfig
+impl core::marker::Unpin for only::EbpfConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only::EbpfConfig
+impl core::panic::unwind_safe::UnwindSafe for only::EbpfConfig
+pub struct only::Engine
+impl only::Engine
+pub fn only::Engine::accel_status(&self) -> &[only::AccelStatus]
+pub fn only::Engine::bind_udp<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<only_core::group::UdpBinding>
+pub fn only::Engine::builder() -> only::EngineBuilder
+pub fn only::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>
+pub fn only::Engine::dial<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn only::Engine::dial_udp<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn only::Engine::dial_udp_from<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn only::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub fn only::Engine::metrics(&self) -> only_core::telemetry::Metrics
+pub fn only::Engine::pool_stats(&self) -> only_pool::PoolStats
+pub fn only::Engine::reload(&self, &only_core::config::Config) -> only_core::telemetry::ReloadReport
+pub fn only::Engine::run(&self) -> core::io::error::Result<()>
+pub fn only::Engine::shutdown(&self)
+pub fn only::Engine::slow_callbacks(&self) -> alloc::vec::Vec<only_core::telemetry::SlowRecord>
+pub fn only::Engine::start(&self) -> core::io::error::Result<()>
+pub fn only::Engine::telemetry(&self) -> &alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>
+pub fn only::Engine::udp_stats(&self) -> only_core::group::UdpStats
+pub fn only::Engine::wait(&self)
+impl core::fmt::Debug for only::Engine
+pub fn only::Engine::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::Engine
+impl core::marker::Sync for only::Engine
+impl core::marker::Unpin for only::Engine
+impl !core::panic::unwind_safe::RefUnwindSafe for only::Engine
+impl !core::panic::unwind_safe::UnwindSafe for only::Engine
+pub struct only::EngineBuilder
+impl only::EngineBuilder
+pub fn only::EngineBuilder::build(self) -> core::io::error::Result<only::Engine>
+pub fn only::EngineBuilder::client_threads(self, usize) -> Self
+pub fn only::EngineBuilder::config(self, only_core::config::Config) -> Self
+pub fn only::EngineBuilder::listen(self, only::Listener) -> Self
+pub fn only::EngineBuilder::pool(self, only_pool::PoolConfig) -> Self
+pub fn only::EngineBuilder::udp_client_threads(self, usize) -> Self
+impl core::default::Default for only::EngineBuilder
+pub fn only::EngineBuilder::default() -> Self
+impl core::fmt::Debug for only::EngineBuilder
+pub fn only::EngineBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::EngineBuilder
+impl core::marker::Sync for only::EngineBuilder
+impl core::marker::Unpin for only::EngineBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for only::EngineBuilder
+impl !core::panic::unwind_safe::UnwindSafe for only::EngineBuilder
+pub struct only::EngineRef(_)
+impl only::EngineRef
+pub fn only::EngineRef::get(&self) -> core::option::Option<alloc::rcs::arc::Arc<only::Engine>>
+pub fn only::EngineRef::new() -> only::EngineRef
+pub fn only::EngineRef::set(&self, &alloc::rcs::arc::Arc<only::Engine>)
+impl core::clone::Clone for only::EngineRef
+pub fn only::EngineRef::clone(&self) -> Self
+impl core::default::Default for only::EngineRef
+pub fn only::EngineRef::default() -> Self
+impl core::fmt::Debug for only::EngineRef
+pub fn only::EngineRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::EngineRef
+impl core::marker::Sync for only::EngineRef
+impl core::marker::Unpin for only::EngineRef
+impl !core::panic::unwind_safe::RefUnwindSafe for only::EngineRef
+impl !core::panic::unwind_safe::UnwindSafe for only::EngineRef
+pub struct only::Listener
+impl only::Listener
+pub fn only::Listener::accel(self, only::Accel) -> Self
+pub fn only::Listener::backend(self, only::Backend) -> Self
+pub fn only::Listener::serve<A: only_core::handler::Acceptor>(self, A) -> Self
+pub fn only::Listener::serve_any(self, impl core::convert::Into<only_core::handler::AnyAcceptor>) -> Self
+pub fn only::Listener::tcp(core::net::socket_addr::SocketAddr) -> Self
+pub fn only::Listener::tcp_from_std(std::net::tcp::TcpListener) -> Self
+pub fn only::Listener::threads(self, usize) -> Self
+pub fn only::Listener::udp(core::net::socket_addr::SocketAddr) -> Self
+impl core::fmt::Debug for only::Listener
+pub fn only::Listener::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::Listener
+impl core::marker::Sync for only::Listener
+impl core::marker::Unpin for only::Listener
+impl !core::panic::unwind_safe::RefUnwindSafe for only::Listener
+impl !core::panic::unwind_safe::UnwindSafe for only::Listener
+#[non_exhaustive] pub struct only::UringConfig
+pub only::UringConfig::entries: u32
+pub only::UringConfig::sqpoll: bool
+pub only::UringConfig::strict: bool
+impl core::clone::Clone for only::UringConfig
+pub fn only::UringConfig::clone(&self) -> Self
+impl core::default::Default for only::UringConfig
+pub fn only::UringConfig::default() -> Self
+impl core::fmt::Debug for only::UringConfig
+pub fn only::UringConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only::UringConfig
+impl core::marker::Sync for only::UringConfig
+impl core::marker::Unpin for only::UringConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only::UringConfig
+impl core::panic::unwind_safe::UnwindSafe for only::UringConfig

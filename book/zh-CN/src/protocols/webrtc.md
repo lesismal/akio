@@ -2,16 +2,16 @@
 
 两个 crate：
 
-- `flash-webrtc` 在 flash UDP socket 上运行 WebRTC peer。协议本身由
+- `only-webrtc` 在 only UDP socket 上运行 WebRTC peer。协议本身由
   [str0m](https://github.com/algesten/str0m) 完成，它是 sans-io 的 WebRTC 状态机：ICE（完整 agent 与
   ICE-lite、consent freshness）、带证书指纹校验的 DTLS 1.2/1.3、SRTP/SRTCP（AES-CM-SHA1-80、
   AEAD-AES-128/256-GCM）、SCTP 数据通道（DCEP；可靠或不可靠、有序或无序）、RTP/RTCP 媒体（Opus、
   VP8、VP9、H.264、H.265、AV1 打包；NACK 与 RTX、PLI/FIR、TWCC 与带宽估计、发送/接收报告）以及 SDP
-  offer/answer。flash 用自己的 I/O 线程和一个共享定时器线程驱动它，并接入纯 Rust 的加密实现
+  offer/answer。only 用自己的 I/O 线程和一个共享定时器线程驱动它，并接入纯 Rust 的加密实现
   （RustCrypto 加 `dimpl` DTLS 栈：不需要 C 工具链，也不需要 OpenSSL）。
-- `flash-turn` 提供 STUN 编解码、STUN 服务器和 TURN 服务器（UDP 上的 RFC 8656）。
+- `only-turn` 提供 STUN 编解码、STUN 服务器和 TURN 服务器（UDP 上的 RFC 8656）。
 
-互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 flash TURN 中继；还有 fib
+互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 only TURN 中继；还有 fib
 的 Go 版 WebRTC（数据通道，双向）；TURN
 服务器则与 pion/turn 客户端和 coturn 的 `turnutils_uclient` 互通（`tools/interop/webrtc/run.sh`，
 `COTURN=1` 时包括 coturn）。
@@ -19,30 +19,39 @@
 ## 一个引擎上的服务器、TURN 服务器与客户端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:engine}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:engine}}
 ```
 
 - `RtcServer::new(addrs)` 是一个 **UDP listener** 的 acceptor；它的所有 peer 共用这个端口。`addrs`
   是远端访问该监听器所用的地址（公网 IP 与端口），作为 host 候选写进每份 SDP。默认运行
   **ICE-lite**：服务器只应答连通性检查，适合一切公网可达的服务（SFU、WHIP/WHEP 端点）。数据报
   先按首个检查的 ICE 用户名、之后按源地址分派给各 peer。
-- 构建方法（须在克隆前调用）：`config(|| rtc_config()...)` 构造每个 peer 的 str0m `RtcConfig`
-  （编解码器、RTP 模式、BWE 等），`ice_lite(false)` 改为完整 agent，`close_on_disconnect(bool)`
+- 构建方法（须在克隆前调用）：`config(|| rtc_config()...)` 构造每个 peer 的 `RtcConfig`
+  （编解码器、RTP 模式、BWE、统计等），`ice_lite(false)` 改为完整 agent，`close_on_disconnect(bool)`
   （默认 true：consent 过期的 peer 被关闭），`connect_timeout(Some(d))`（默认 30 秒：接受了 offer
   却一直连不上的 peer 被丢弃）。
 - `TurnServer::new(TurnConfig::new(realm, auth, relay_ip))` 在另一个 UDP listener 上提供 TURN 与
   STUN。中继 socket 在运行时绑定，因此它需要引擎：`set_engine(&engine)`。
 
+## 类型
+
+API 使用 only 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`、`Codec`、`MediaKind`、
+`Direction`、`MediaTime` / `Frequency`、`MediaData`、`MediaAdded`、`RtpPacket`、
+`KeyframeRequest`、`Candidate`、`IceConnectionState`、`RtcConfig`、`SdpChanges`、`Event`。底层
+干活的 str0m 不属于 API，因此升级它不是破坏性变更。`unstable` cargo feature（不在 semver 承诺内）
+重新导出 `only_webrtc::str0m`，并提供 `Peer::with_rtc`（在 peer 上调用任意 str0m API）、
+`RtcConfig::with_str0m` 与 `OtherEvent::as_str0m`。
+
 ## Peer 与 handler
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:handler}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:handler}}
 ```
 
 `PeerHandler` 的每个回调都有默认实现：`on_ice_state`、`on_connected`、`on_channel_open` /
 `on_channel_data` / `on_channel_close`、`on_media_added`、`on_media_data`（解包后的样本，默认的
-帧模式）、`on_rtp`（RTP 模式）、`on_keyframe_request`（远端的 PLI/FIR）、`on_event`（str0m 报告的
-其余一切：统计、带宽估计、发送报告等）、`on_close`。一个 peer 的回调逐个、按序执行，运行在读到
+帧模式）、`on_rtp`（RTP 模式）、`on_keyframe_request`（远端的 PLI/FIR）、`on_event`
+（`Event::ChannelBufferedAmountLow`，以及统计、带宽估计、发送报告等 `Event::Other`）、`on_close`。一个 peer 的回调逐个、按序执行，运行在读到
 数据报的 I/O 线程、定时器线程或调用 `Peer` 方法的线程上；回调不能阻塞。
 
 `Peer` 克隆开销很小，可在任意线程使用：
@@ -51,29 +60,29 @@
 |---|---|
 | `send(channel, data, binary)` | 发送数据通道消息（`Ok(false)`：缓冲已满） |
 | `open_channel(cfg)` | 新建通道；已有通道时无需重新协商 |
-| `write_media(mid, pt, wallclock, rtp_time, data)` | 写一个样本（由 str0m 打包） |
+| `write_media(mid, pt, wallclock, rtp_time, data)` | 写一个样本（自动打包） |
 | `payload_type(mid, codec)` | 某编解码器协商得到的 payload type |
 | `request_keyframe(mid, kind)` | 向远端发送方发 PLI 或 FIR |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | 首次交换之后的 SDP 变更 |
 | `add_remote_candidate(line)` | trickle ICE |
-| `with_rtc(f)` | 调用任意 str0m API，之后驱动该 peer |
+| `with_rtc(f)` | 调用任意 str0m API，之后驱动该 peer（仅 `unstable` cargo feature） |
 | `close()` | DTLS close notify，随后 `on_close` |
 
 ## 完整 ICE 客户端：`Endpoint`
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:client}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:endpoint}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:endpoint}}
 ```
 
 `Endpoint::bind(&engine, addr)` 用 `Engine::bind_udp` 绑定一个 UDP socket（引擎需要
 `udp_client_threads(n)` 或一个 UDP listener）。ICE agent 需要的正是非连接 socket：一个本地端口向
 每个远端候选发送检查。host 候选是 `addr`；`addr` 为未指定地址时，取默认路由所在网卡的地址。
 `gather_srflx(stun, timeout)` 向 STUN 服务器询问公网地址并加为 server-reflexive 候选（会阻塞：
-不要在回调中调用）。`create_offer(handler, |sdp| ...)` 通过 str0m 的 `SdpApi` 添加通道与媒体；
+不要在回调中调用）。`create_offer(handler, |sdp| ...)` 通过 `SdpChanges` 添加通道与媒体；
 `accept_offer` 应答远端 offer。`Endpoint` 可与 ICE-lite 服务器、浏览器和 pion 以及其他
 `Endpoint` 通信。
 
@@ -101,5 +110,5 @@
 
 ## 尚未完成
 
-TCP/TLS 上的 TURN，以及 `flash-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的
+TCP/TLS 上的 TURN，以及 `only-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的
 ICE；mDNS 候选。str0m 自身的限制同样适用（见其文档）。
