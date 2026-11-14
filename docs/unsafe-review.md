@@ -5,7 +5,7 @@ English | [简体中文](unsafe-review.zh-CN.md)
 Status: 1.0 stabilization review, 2026-11-14. Re-run the inventory and update this page whenever
 `unsafe` is added, removed or its invariant changes.
 
-flash is a network library: a memory-safety bug in it is a remote-code-execution bug in its
+`only` is a network library: a memory-safety bug in it is a remote-code-execution bug in its
 users. This page is the policy for `unsafe` code, the checklist each `unsafe` site must pass,
 the procedure for adding new ones, the inventory, and the findings of the 1.0 review.
 
@@ -13,11 +13,11 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 
 | Crate | Status | Why |
 |---|---|---|
-| `flash-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls: epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, process plumbing for prefork (`pre_exec`, signals) |
-| `flash-uring` | `#![deny(unsafe_code)]`, allowed in `group` and `reactor` only | io_uring submission entries point into memory the kernel writes asynchronously |
-| `flash-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
-| `flash-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` only | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts), and `Sendable` (moves smoltcp's `!Send` TAP / AF_PACKET devices to their I/O thread) |
-| every other crate (`flash`, `flash-core`, `flash-buf`, `flash-timer`, `flash-pool`, `flash-epoll`, `flash-tls`, `flash-http`, `flash-ws`, `flash-mux`, `flash-socks`, `flash-arpc`, `flash-grpc`, `flash-kcp`, `flash-quic`, `flash-h3`, `flash-turn`, `flash-webrtc`, `flash-media`, `tools/echo-bench`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
+| `only-sys` | `unsafe` allowed (crate-wide) | the one place for raw syscalls: epoll/kqueue, eventfd/pipe, sockets, `sendfile`, `recvmmsg`/`sendmmsg` + cmsg, process plumbing for prefork (`pre_exec`, signals) |
+| `only-uring` | `#![deny(unsafe_code)]`, allowed in `group` and `reactor` only | io_uring submission entries point into memory the kernel writes asynchronously |
+| `only-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
+| `only-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` only | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts), and `Sendable` (moves smoltcp's `!Send` TAP / AF_PACKET devices to their I/O thread) |
+| every other crate (`only`, `only-core`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-kcp`, `only-quic`, `only-h3`, `only-turn`, `only-webrtc`, `only-media`, `tools/echo-bench`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
 Tests, examples and benches are separate crates; they may use `unsafe` for test-only libc calls
 (`setrlimit`, `SO_LINGER`, CPU affinity, a counting allocator), held to the same comment rule.
@@ -74,8 +74,8 @@ An `unsafe` block is accepted only if its `SAFETY:` comment (or the `# Safety` s
 
 ## 3. Procedure for new `unsafe`
 
-1. First look for a safe alternative (`std`, an existing `flash-sys` wrapper, a typed wrapper).
-   New `unsafe` goes into `flash-sys` unless it must live next to backend state (io_uring) or
+1. First look for a safe alternative (`std`, an existing `only-sys` wrapper, a typed wrapper).
+   New `unsafe` goes into `only-sys` unless it must live next to backend state (io_uring) or
    the BPF loader; a crate that is `forbid(unsafe_code)` stays so.
 2. Write the `SAFETY:` comment against the checklist above; for an `unsafe fn` write a
    `# Safety` section with the caller's obligations.
@@ -83,7 +83,7 @@ An `unsafe` block is accepted only if its `SAFETY:` comment (or the `# Safety` s
    pure memory manipulation, make it runnable under Miri (no syscalls in that test).
 4. Run locally: `cargo clippy --workspace --all-targets -- -D warnings` on Linux and macOS,
    `python3 tools/unsafe-inventory.py --check`, Miri for the touched crate where it applies,
-   and the io_uring suite (`FLASH_TEST_BACKEND=uring`) for backend changes.
+   and the io_uring suite (`ONLY_TEST_BACKEND=uring`) for backend changes.
 5. The PR description lists each new or changed `unsafe` site; a reviewer other than the author
    checks it against the checklist. Update the inventory table below.
 
@@ -94,7 +94,7 @@ An `unsafe` block is accepted only if its `SAFETY:` comment (or the `# Safety` s
 | Clippy lints | comments present (host platform) | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Inventory script | counts and comment check, all platforms | `python3 tools/unsafe-inventory.py [--markdown] [--check]` |
 | Miri | UB in pure-Rust code: aliasing (Stacked Borrows), out-of-bounds, uninitialised reads, data races | `cargo +nightly miri test -p <crate> --lib` (Linux nightly image; `MIRIFLAGS=-Zmiri-disable-isolation`) |
-| loom | interleavings of `flash-core`'s lock-free primitives | `RUSTFLAGS="--cfg loom" cargo test -p flash-core --lib --release -- loom` |
+| loom | interleavings of `only-core`'s lock-free primitives | `RUSTFLAGS="--cfg loom" cargo test -p only-core --lib --release -- loom` |
 | AddressSanitizer | out-of-bounds / use-after-free across FFI, including syscall paths Miri cannot run | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test -Zbuild-std --target <host> -p <crate>` |
 | ThreadSanitizer | data races between I/O threads, wakers and senders | as above with `-Zsanitizer=thread` |
 | Fuzzing | parsers and protocol state machines (remote input) | `cargo fuzz` targets (separate work item) |
@@ -113,27 +113,27 @@ contain no `unsafe`.
 
 | Crate | blocks | `unsafe fn` | `unsafe impl` | tests/examples/benches |
 |---|---:|---:|---:|---:|
-| flash | 0 | 0 | 0 | 12 |
-| flash-dpdk | 15 | 0 | 2 | 0 |
-| flash-ebpf | 11 | 3 | 0 | 1 |
-| flash-http | 0 | 0 | 0 | 8 |
-| flash-sys | 68 | 1 | 3 | 0 |
-| flash-uring | 18 | 1 | 1 | 0 |
+| `only` | 0 | 0 | 0 | 12 |
+| only-dpdk | 15 | 0 | 2 | 0 |
+| only-ebpf | 11 | 3 | 0 | 1 |
+| only-http | 0 | 0 | 0 | 8 |
+| only-sys | 68 | 1 | 3 | 0 |
+| only-uring | 18 | 1 | 1 | 0 |
 | **total** | **112** | **5** | **6** | **21** |
 
 By purpose:
 
 | Where | Count | Purpose | Main invariants |
 |---|---:|---|---|
-| `flash-sys/src/net.rs` | 16 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` -> `sockaddr_storage` | sockaddr length matches family; fd owned before any fallible step |
-| `flash-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
-| `flash-sys/src/process.rs` | 15, `unsafe fn errno_location` | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
-| `flash-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
-| `flash-sys/src/udp.rs` | 15 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
-| `flash-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |
-| `flash-uring/src/group.rs` | 3 | `uname` for the kernel-version probe | zeroed `utsname`; kernel NUL-terminates `release` |
-| `flash-dpdk/src/pmd.rs` | 15, `impl Send for Queue`, `impl Send for Sendable` | calls into the C shim (`rte_eal_init`, port setup, `rte_eth_rx_burst`/`tx_burst`, mbuf alloc/free); frames borrowed from mbufs; `Sendable` for smoltcp's TAP / raw-socket devices | the shim's ABI is integers and opaque pointers only (no DPDK struct layouts in Rust); EAL argv leaked (outlives the EAL), init once (`OnceLock`); an mbuf is owned by exactly one `Queue`/`Mbuf` and freed once (frames not taken by `tx_burst` freed, received ones freed on drop); slices only over the single data segment the shim returned, for the mbuf's lifetime; a `Queue` and a `Sendable` device are used by one thread at a time (moved once to their I/O thread) |
-| `flash-ebpf/src/sys.rs` | 11, 3 `unsafe fn` | `bpf(2)` (`MAP_CREATE`, `MAP_UPDATE/DELETE_ELEM`, `PROG_LOAD`, `PROG_ATTACH`), `SO_ATTACH_REUSEPORT_[CE]BPF`, `SO_COOKIE` | `#[repr(C)]` attr prefixes identical to UAPI; pointer fields live for the call; key/value sizes fixed by `Map<K, V>` |
+| `only-sys/src/net.rs` | 16 | `socket`/`bind`/`listen`/`connect`, `setsockopt`, `sendfile`, `SocketAddr` -> `sockaddr_storage` | sockaddr length matches family; fd owned before any fallible step |
+| `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
+| `only-sys/src/process.rs` | 15, `unsafe fn errno_location` | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
+| `only-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
+| `only-sys/src/udp.rs` | 15 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
+| `only-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |
+| `only-uring/src/group.rs` | 3 | `uname` for the kernel-version probe | zeroed `utsname`; kernel NUL-terminates `release` |
+| `only-dpdk/src/pmd.rs` | 15, `impl Send for Queue`, `impl Send for Sendable` | calls into the C shim (`rte_eal_init`, port setup, `rte_eth_rx_burst`/`tx_burst`, mbuf alloc/free); frames borrowed from mbufs; `Sendable` for smoltcp's TAP / raw-socket devices | the shim's ABI is integers and opaque pointers only (no DPDK struct layouts in Rust); EAL argv leaked (outlives the EAL), init once (`OnceLock`); an mbuf is owned by exactly one `Queue`/`Mbuf` and freed once (frames not taken by `tx_burst` freed, received ones freed on drop); slices only over the single data segment the shim returned, for the mbuf's lifetime; a `Queue` and a `Sendable` device are used by one thread at a time (moved once to their I/O thread) |
+| `only-ebpf/src/sys.rs` | 11, 3 `unsafe fn` | `bpf(2)` (`MAP_CREATE`, `MAP_UPDATE/DELETE_ELEM`, `PROG_LOAD`, `PROG_ATTACH`), `SO_ATTACH_REUSEPORT_[CE]BPF`, `SO_COOKIE` | `#[repr(C)]` attr prefixes identical to UAPI; pointer fields live for the call; key/value sizes fixed by `Map<K, V>` |
 
 ## 6. Findings of the 1.0 review
 
@@ -141,18 +141,18 @@ Fixed in this review (each with a regression test where one can observe it):
 
 | # | Where | Issue | Fix |
 |---|---|---|---|
-| F1 | `flash-sys` `RecvBatch::with_gro` | `slots * size` unchecked: in release builds an overflowing product wraps, `bufs` is tiny while each iovec still claims `size` bytes, so `recvmmsg` would write past the allocation (heap overflow from a public safe API). | `checked_mul` + `u32` slot check, panic documented; test `recv_batch_rejects_overflowing_size`. |
+| F1 | `only-sys` `RecvBatch::with_gro` | `slots * size` unchecked: in release builds an overflowing product wraps, `bufs` is tiny while each iovec still claims `size` bytes, so `recvmmsg` would write past the allocation (heap overflow from a public safe API). | `checked_mul` + `u32` slot check, panic documented; test `recv_batch_rejects_overflowing_size`. |
 | F2 | `RecvBatch::recv` / `get` | `got` was not reset on `WouldBlock` or error, so `get(i)` kept returning the previous call's datagrams (in-tree callers iterate `0..n`, so not reachable, but the API was wrong). | `got = 0` before each call; test `recv_batch_forgets_previous_datagrams`. |
 | F3 | `RecvBatch::with_gro` | iovec bases were taken from a fresh `&mut bufs[i*size..]` per slot; under Stacked Borrows each reborrow invalidates the pointers derived earlier. | One base pointer from `as_mut_ptr()`, offsets with `add`. |
 | F4 | `RecvBatch::reset` | `sockaddr_storage` kept the previous family; a header the kernel left unfilled would be parsed with a stale family. | Family cleared before each receive. |
-| F5 | `flash-uring` provided buffers | Buffers lived in a `Vec<u8>` (and the eventfd target in a `Box<[u8; 8]>`) while the kernel fills them asynchronously; `on_recv` borrowed `&self.bufs[..]`, a shared reference covering every buffer, including ones the kernel may be writing from an io-wq worker. Aliasing UB in Rust's model. | `KernelBuf`: raw allocation, no `Vec`/`Box`; Rust borrows only the completed buffer through `unsafe fn slice` (bounds-checked). |
+| F5 | `only-uring` provided buffers | Buffers lived in a `Vec<u8>` (and the eventfd target in a `Box<[u8; 8]>`) while the kernel fills them asynchronously; `on_recv` borrowed `&self.bufs[..]`, a shared reference covering every buffer, including ones the kernel may be writing from an io-wq worker. Aliasing UB in Rust's model. | `KernelBuf`: raw allocation, no `Vec`/`Box`; Rust borrows only the completed buffer through `unsafe fn slice` (bounds-checked). |
 | F6 | `BufRing::give` | Wrote entries through `&mut BufRingEntry`; for entry 0 that reference also covers the ring tail (`resv`) the kernel reads concurrently. | Mirrored `#[repr(C)] RawBuf` (size asserted equal to `io_uring_buf`), fields written via raw pointers; tail via `AtomicU16` with `Release`. Miri-runnable test `buf_ring_layout_give_and_publish` checks the layout against `io_uring`'s accessors. |
 | F7 | `BufRing::give` | Buffer id not checked against the area. | Asserted (`bid < BUF_COUNT` and slot inside the area); test `buf_ring_rejects_foreign_buffer_ids`. |
-| F8 | `flash-ebpf` `sys::bpf`, `map_update`, `map_delete` | Safe `fn bpf<T>(cmd, &mut T)` accepted any `T`; `map_update<K, V>` let the kernel copy the map's `key_size`/`value_size` bytes from `&K`/`&V` whatever their real size (out-of-bounds read into the map). | Made `unsafe fn` with `# Safety`; callers use a typed `Map<K, V>` whose key/value sizes are `size_of::<K/V>()` at creation, so its methods are safe. |
+| F8 | `only-ebpf` `sys::bpf`, `map_update`, `map_delete` | Safe `fn bpf<T>(cmd, &mut T)` accepted any `T`; `map_update<K, V>` let the kernel copy the map's `key_size`/`value_size` bytes from `&K`/`&V` whatever their real size (out-of-bounds read into the map). | Made `unsafe fn` with `# Safety`; callers use a typed `Map<K, V>` whose key/value sizes are `size_of::<K/V>()` at creation, so its methods are safe. |
 | F9 | `attach_reuseport_cbpf` | Program length truncated to `u16`. | `InvalidInput` error instead. |
-| F10 | `flash-sys` macOS paths (`socket_of`, pipe `Waker`, `kqueue` `Poller`) | fd leaked when the `fcntl` after creation failed. | Wrapped in `OwnedFd` before the fallible step. |
-| F11 | `flash-uring` loop teardown | `Loop` closed the ring and then freed the provided buffers, buffer ring and wake buffer while operations could still be in flight: part of the kernel's ring teardown runs in asynchronous exit work, and after the shutdown timeout (or an `io_uring_enter` error) the loop exited with connections and their multishot `recv`s still armed, so a late completion could write freed memory. | The loop counts operations in flight (one final CQE per SQE); `drain_inflight` submits `ASYNC_CANCEL_ANY` and reaps completions until none is left before the memory is dropped (closing any fd an accept still delivers); if that does not finish within 2 s the memory is deliberately leaked, never freed. The io_uring suites log no leak. |
-| F12 | `flash-core` `consume_datagrams` | Linux-only dead code made `clippy -D warnings` fail on Linux (from the UDP batching change). | `#[cfg(not(target_os = "linux"))]`. |
+| F10 | `only-sys` macOS paths (`socket_of`, pipe `Waker`, `kqueue` `Poller`) | fd leaked when the `fcntl` after creation failed. | Wrapped in `OwnedFd` before the fallible step. |
+| F11 | `only-uring` loop teardown | `Loop` closed the ring and then freed the provided buffers, buffer ring and wake buffer while operations could still be in flight: part of the kernel's ring teardown runs in asynchronous exit work, and after the shutdown timeout (or an `io_uring_enter` error) the loop exited with connections and their multishot `recv`s still armed, so a late completion could write freed memory. | The loop counts operations in flight (one final CQE per SQE); `drain_inflight` submits `ASYNC_CANCEL_ANY` and reaps completions until none is left before the memory is dropped (closing any fd an accept still delivers); if that does not finish within 2 s the memory is deliberately leaked, never freed. The io_uring suites log no leak. |
+| F12 | `only-core` `consume_datagrams` | Linux-only dead code made `clippy -D warnings` fail on Linux (from the UDP batching change). | `#[cfg(not(target_os = "linux"))]`. |
 
 Accepted (documented, no change needed now):
 
@@ -178,12 +178,12 @@ Accepted (documented, no change needed now):
   such as the io_uring `graveyard` and reset watch): `cargo clippy --workspace --all-targets
   --all-features -- -D warnings` and `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps
   --all-features` clean on macOS and Linux; `cargo test --workspace` green on macOS and Linux
-  (epoll); `FLASH_TEST_BACKEND=uring` green for flash, flash-uring, flash-http, flash-ws,
-  flash-kcp and flash-quic; chaos seeds 1..30 on io_uring green; no in-flight leak logged. The
+  (epoll); `ONLY_TEST_BACKEND=uring` green for `only`, only-uring, only-http, only-ws,
+  only-kcp and only-quic; chaos seeds 1..30 on io_uring green; no in-flight leak logged. The
   new chaos code added no `unsafe`.
 - Test suites (before the merge): macOS `cargo test --workspace` green; Linux `cargo test --workspace` (epoll) and
-  `FLASH_TEST_BACKEND=uring` for `flash`, `flash-uring`, `flash-sys`, `flash-ebpf`, `flash-http`,
-  `flash-ws`, `flash-kcp`, `flash-quic` green.
+  `ONLY_TEST_BACKEND=uring` for `only`, `only-uring`, `only-sys`, `only-ebpf`, `only-http`,
+  `only-ws`, `only-kcp`, `only-quic` green.
 - Supply chain: `cargo deny check` reports `advisories ok, bans ok, licenses ok, sources ok`;
   `cargo audit -D warnings` is clean. The only advisory found, RUSTSEC-2026-0009 in `time`
   0.3.45, is ignored with its reason in `deny.toml` and `.cargo/audit.toml`: it is reached only
@@ -195,15 +195,15 @@ Accepted (documented, no change needed now):
 
 | Crate (`--lib`) | Result |
 |---|---|
-| flash-buf, flash-timer, flash-pool | pass (4 / 5 / 5 tests) |
-| flash-http | pass (27 tests, 35 s) |
-| flash-mux, flash-socks, flash-arpc, flash-h3 | pass (1 / 1 / 3 / 2) |
-| flash-kcp | pass (5 tests, 4-6 min) |
-| flash-uring (`buf_ring`, `kernel_buf` tests) | pass (3): the kernel-shared memory code of F5-F7 |
-| flash-ws | 15 of 20 pass; the other 5 (permessage-deflate round trips and exhaustive split loops) do not finish within 5-15 min under Miri |
-| flash-core, flash-quic | no unit tests outside loom / integration tests |
-| flash-ebpf | does not finish within 15 min (its unit tests run a cBPF interpreter over large input sets; safe code, the `sys` module is not exercised) |
-| **flash-grpc** | **UB reported in a dependency**: `tests::framing_and_gzip` fails in `zlib_rs::allocate::zfree_rust` while dropping a `flate2::write::GzEncoder` (`zlib_rs::stable::Deflate::drop` -> `deflate::end` deallocates memory that a protected `&mut` function argument still covers). Reproduces under Tree Borrows. `zlib-rs` 0.6.8 is the latest release; flash itself has no `unsafe` on that path. |
+| only-buf, only-timer, only-pool | pass (4 / 5 / 5 tests) |
+| only-http | pass (27 tests, 35 s) |
+| only-mux, only-socks, only-arpc, only-h3 | pass (1 / 1 / 3 / 2) |
+| only-kcp | pass (5 tests, 4-6 min) |
+| only-uring (`buf_ring`, `kernel_buf` tests) | pass (3): the kernel-shared memory code of F5-F7 |
+| only-ws | 15 of 20 pass; the other 5 (permessage-deflate round trips and exhaustive split loops) do not finish within 5-15 min under Miri |
+| only-core, only-quic | no unit tests outside loom / integration tests |
+| only-ebpf | does not finish within 15 min (its unit tests run a cBPF interpreter over large input sets; safe code, the `sys` module is not exercised) |
+| **only-grpc** | **UB reported in a dependency**: `tests::framing_and_gzip` fails in `zlib_rs::allocate::zfree_rust` while dropping a `flate2::write::GzEncoder` (`zlib_rs::stable::Deflate::drop` -> `deflate::end` deallocates memory that a protected `&mut` function argument still covers). Reproduces under Tree Borrows. `zlib-rs` 0.6.8 is the latest release; `only` itself has no `unsafe` on that path. |
 
 The `zlib-rs` finding is an aliasing-model violation inside the dependency, not an observed
 memory corruption; it should be reported upstream (trifectatech/zlib-rs) with the reproduction

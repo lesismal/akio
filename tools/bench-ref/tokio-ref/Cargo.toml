@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
-# Reference servers for docs/BENCHMARKS.md. Kept out of the flash workspace on purpose.
+# Reference servers for docs/BENCHMARKS.md. Kept out of the `only` workspace on purpose.
 [workspace]
 
 [dependencies]

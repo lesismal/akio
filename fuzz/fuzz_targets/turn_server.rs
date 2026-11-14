@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| flash_turn::fuzzing::turn_server(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| only_turn::fuzzing::turn_server(data));

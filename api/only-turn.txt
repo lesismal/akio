@@ -1,0 +1,278 @@
+pub mod only_turn
+pub mod only_turn::stun
+pub mod only_turn::stun::attr
+pub const only_turn::stun::attr::ADDITIONAL_ADDRESS_FAMILY: u16
+pub const only_turn::stun::attr::ALTERNATE_SERVER: u16
+pub const only_turn::stun::attr::CHANNEL_NUMBER: u16
+pub const only_turn::stun::attr::DATA: u16
+pub const only_turn::stun::attr::DONT_FRAGMENT: u16
+pub const only_turn::stun::attr::ERROR_CODE: u16
+pub const only_turn::stun::attr::EVEN_PORT: u16
+pub const only_turn::stun::attr::FINGERPRINT: u16
+pub const only_turn::stun::attr::ICE_CONTROLLED: u16
+pub const only_turn::stun::attr::ICE_CONTROLLING: u16
+pub const only_turn::stun::attr::LIFETIME: u16
+pub const only_turn::stun::attr::MAPPED_ADDRESS: u16
+pub const only_turn::stun::attr::MESSAGE_INTEGRITY: u16
+pub const only_turn::stun::attr::MESSAGE_INTEGRITY_SHA256: u16
+pub const only_turn::stun::attr::NONCE: u16
+pub const only_turn::stun::attr::PASSWORD_ALGORITHMS: u16
+pub const only_turn::stun::attr::PRIORITY: u16
+pub const only_turn::stun::attr::REALM: u16
+pub const only_turn::stun::attr::REQUESTED_ADDRESS_FAMILY: u16
+pub const only_turn::stun::attr::REQUESTED_TRANSPORT: u16
+pub const only_turn::stun::attr::RESERVATION_TOKEN: u16
+pub const only_turn::stun::attr::RESPONSE_ORIGIN: u16
+pub const only_turn::stun::attr::SOFTWARE: u16
+pub const only_turn::stun::attr::UNKNOWN_ATTRIBUTES: u16
+pub const only_turn::stun::attr::USERHASH: u16
+pub const only_turn::stun::attr::USERNAME: u16
+pub const only_turn::stun::attr::USE_CANDIDATE: u16
+pub const only_turn::stun::attr::XOR_MAPPED_ADDRESS: u16
+pub const only_turn::stun::attr::XOR_PEER_ADDRESS: u16
+pub const only_turn::stun::attr::XOR_RELAYED_ADDRESS: u16
+pub enum only_turn::stun::Class
+pub only_turn::stun::Class::Error
+pub only_turn::stun::Class::Indication
+pub only_turn::stun::Class::Request
+pub only_turn::stun::Class::Success
+impl core::clone::Clone for only_turn::stun::Class
+pub fn only_turn::stun::Class::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::stun::Class
+impl core::cmp::PartialEq for only_turn::stun::Class
+pub fn only_turn::stun::Class::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_turn::stun::Class
+pub fn only_turn::stun::Class::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_turn::stun::Class
+pub fn only_turn::stun::Class::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_turn::stun::Class
+impl core::marker::StructuralPartialEq for only_turn::stun::Class
+impl core::marker::Send for only_turn::stun::Class
+impl core::marker::Sync for only_turn::stun::Class
+impl core::marker::Unpin for only_turn::stun::Class
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::stun::Class
+impl core::panic::unwind_safe::UnwindSafe for only_turn::stun::Class
+#[non_exhaustive] pub enum only_turn::stun::StunError
+pub only_turn::stun::StunError::BadAttribute
+pub only_turn::stun::StunError::Misplaced
+pub only_turn::stun::StunError::NotStun
+pub only_turn::stun::StunError::Truncated
+impl core::clone::Clone for only_turn::stun::StunError
+pub fn only_turn::stun::StunError::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::stun::StunError
+impl core::cmp::PartialEq for only_turn::stun::StunError
+pub fn only_turn::stun::StunError::eq(&self, &Self) -> bool
+impl core::error::Error for only_turn::stun::StunError
+impl core::fmt::Debug for only_turn::stun::StunError
+pub fn only_turn::stun::StunError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_turn::stun::StunError
+pub fn only_turn::stun::StunError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_turn::stun::StunError
+impl core::marker::StructuralPartialEq for only_turn::stun::StunError
+impl core::marker::Send for only_turn::stun::StunError
+impl core::marker::Sync for only_turn::stun::StunError
+impl core::marker::Unpin for only_turn::stun::StunError
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::stun::StunError
+impl core::panic::unwind_safe::UnwindSafe for only_turn::stun::StunError
+pub struct only_turn::stun::Message<'a>
+impl<'a> only_turn::stun::Message<'a>
+pub fn only_turn::stun::Message<'a>::attr_types(&self) -> impl core::iter::traits::iterator::Iterator<Item = u16> + '_
+pub fn only_turn::stun::Message<'a>::check_fingerprint(&self) -> bool
+pub fn only_turn::stun::Message<'a>::check_integrity(&self, &[u8]) -> bool
+pub fn only_turn::stun::Message<'a>::class(&self) -> only_turn::stun::Class
+pub fn only_turn::stun::Message<'a>::error_code(&self) -> core::option::Option<(u16, &'a str)>
+pub fn only_turn::stun::Message<'a>::get(&self, u16) -> core::option::Option<&'a [u8]>
+pub fn only_turn::stun::Message<'a>::get_addr(&self, u16) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::stun::Message<'a>::get_all(&self, u16) -> impl core::iter::traits::iterator::Iterator<Item = &'a [u8]> + '_
+pub fn only_turn::stun::Message<'a>::get_str(&self, u16) -> core::option::Option<&'a str>
+pub fn only_turn::stun::Message<'a>::get_u32(&self, u16) -> core::option::Option<u32>
+pub fn only_turn::stun::Message<'a>::get_xor_addr(&self, u16) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::stun::Message<'a>::get_xor_addrs(&self, u16) -> alloc::vec::Vec<core::option::Option<core::net::socket_addr::SocketAddr>>
+pub fn only_turn::stun::Message<'a>::has(&self, u16) -> bool
+pub fn only_turn::stun::Message<'a>::method(&self) -> only_turn::stun::Method
+pub fn only_turn::stun::Message<'a>::parse(&'a [u8]) -> core::result::Result<only_turn::stun::Message<'a>, only_turn::stun::StunError>
+pub fn only_turn::stun::Message<'a>::raw(&self) -> &'a [u8]
+pub fn only_turn::stun::Message<'a>::transaction_id(&self) -> [u8; 12]
+impl core::fmt::Debug for only_turn::stun::Message<'_>
+pub fn only_turn::stun::Message<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::clone::Clone for only_turn::stun::Message<'a>
+pub fn only_turn::stun::Message<'a>::clone(&self) -> Self
+impl<'a> core::marker::Send for only_turn::stun::Message<'a>
+impl<'a> core::marker::Sync for only_turn::stun::Message<'a>
+impl<'a> core::marker::Unpin for only_turn::stun::Message<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_turn::stun::Message<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_turn::stun::Message<'a>
+pub struct only_turn::stun::MessageBuilder
+impl only_turn::stun::MessageBuilder
+pub fn only_turn::stun::MessageBuilder::addr(self, u16, core::net::socket_addr::SocketAddr) -> Self
+pub fn only_turn::stun::MessageBuilder::attr(self, u16, &[u8]) -> Self
+pub fn only_turn::stun::MessageBuilder::build(self) -> alloc::vec::Vec<u8>
+pub fn only_turn::stun::MessageBuilder::error(self, u16, &str) -> Self
+pub fn only_turn::stun::MessageBuilder::fingerprint(self) -> Self
+pub fn only_turn::stun::MessageBuilder::integrity(self, &[u8]) -> Self
+pub fn only_turn::stun::MessageBuilder::new(only_turn::stun::Method, only_turn::stun::Class, [u8; 12]) -> only_turn::stun::MessageBuilder
+pub fn only_turn::stun::MessageBuilder::response(&only_turn::stun::Message<'_>, only_turn::stun::Class) -> only_turn::stun::MessageBuilder
+pub fn only_turn::stun::MessageBuilder::u32(self, u16, u32) -> Self
+pub fn only_turn::stun::MessageBuilder::xor_addr(self, u16, core::net::socket_addr::SocketAddr) -> Self
+impl core::clone::Clone for only_turn::stun::MessageBuilder
+pub fn only_turn::stun::MessageBuilder::clone(&self) -> Self
+impl core::fmt::Debug for only_turn::stun::MessageBuilder
+pub fn only_turn::stun::MessageBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_turn::stun::MessageBuilder
+impl core::marker::Sync for only_turn::stun::MessageBuilder
+impl core::marker::Unpin for only_turn::stun::MessageBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::stun::MessageBuilder
+impl core::panic::unwind_safe::UnwindSafe for only_turn::stun::MessageBuilder
+pub struct only_turn::stun::Method(pub u16)
+impl only_turn::stun::Method
+pub const only_turn::stun::Method::ALLOCATE: only_turn::stun::Method
+pub const only_turn::stun::Method::BINDING: only_turn::stun::Method
+pub const only_turn::stun::Method::CHANNEL_BIND: only_turn::stun::Method
+pub const only_turn::stun::Method::CREATE_PERMISSION: only_turn::stun::Method
+pub const only_turn::stun::Method::DATA: only_turn::stun::Method
+pub const only_turn::stun::Method::REFRESH: only_turn::stun::Method
+pub const only_turn::stun::Method::SEND: only_turn::stun::Method
+impl core::clone::Clone for only_turn::stun::Method
+pub fn only_turn::stun::Method::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::stun::Method
+impl core::cmp::PartialEq for only_turn::stun::Method
+pub fn only_turn::stun::Method::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_turn::stun::Method
+pub fn only_turn::stun::Method::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_turn::stun::Method
+pub fn only_turn::stun::Method::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_turn::stun::Method
+impl core::marker::StructuralPartialEq for only_turn::stun::Method
+impl core::marker::Send for only_turn::stun::Method
+impl core::marker::Sync for only_turn::stun::Method
+impl core::marker::Unpin for only_turn::stun::Method
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::stun::Method
+impl core::panic::unwind_safe::UnwindSafe for only_turn::stun::Method
+pub const only_turn::stun::HEADER_LEN: usize
+pub const only_turn::stun::MAGIC_COOKIE: u32
+pub fn only_turn::stun::binding_request([u8; 12]) -> alloc::vec::Vec<u8>
+pub fn only_turn::stun::binding_response(&[u8], core::net::socket_addr::SocketAddr, core::option::Option<&str>) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_turn::stun::is_channel_data(&[u8]) -> bool
+pub fn only_turn::stun::is_stun(&[u8]) -> bool
+pub fn only_turn::stun::long_term_key(&str, &str, &str) -> [u8; 16]
+pub fn only_turn::stun::parse_binding_response(&[u8], &[u8; 12]) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::stun::transaction_id() -> [u8; 12]
+pub struct only_turn::StunServer
+impl only_turn::StunServer
+pub fn only_turn::StunServer::new() -> only_turn::StunServer
+pub fn only_turn::StunServer::software(self, &str) -> Self
+impl core::clone::Clone for only_turn::StunServer
+pub fn only_turn::StunServer::clone(&self) -> Self
+impl core::default::Default for only_turn::StunServer
+pub fn only_turn::StunServer::default() -> Self
+impl core::fmt::Debug for only_turn::StunServer
+pub fn only_turn::StunServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_turn::StunServer
+pub type only_turn::StunServer::Handler = StunPeer
+pub fn only_turn::StunServer::on_open(&self, &only_core::conn::Conn<StunPeer>) -> StunPeer
+impl core::marker::Send for only_turn::StunServer
+impl core::marker::Sync for only_turn::StunServer
+impl core::marker::Unpin for only_turn::StunServer
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::StunServer
+impl core::panic::unwind_safe::UnwindSafe for only_turn::StunServer
+#[non_exhaustive] pub struct only_turn::TurnConfig
+pub only_turn::TurnConfig::allow_private_peers: bool
+pub only_turn::TurnConfig::auth: only_turn::AuthFn
+pub only_turn::TurnConfig::channel_lifetime: core::time::Duration
+pub only_turn::TurnConfig::default_lifetime: core::time::Duration
+pub only_turn::TurnConfig::max_allocations: usize
+pub only_turn::TurnConfig::max_allocations_per_user: usize
+pub only_turn::TurnConfig::max_channels: usize
+pub only_turn::TurnConfig::max_lifetime: core::time::Duration
+pub only_turn::TurnConfig::max_permissions: usize
+pub only_turn::TurnConfig::nonce_lifetime: core::time::Duration
+pub only_turn::TurnConfig::peer_allowed: core::option::Option<only_turn::PeerFilter>
+pub only_turn::TurnConfig::permission_lifetime: core::time::Duration
+pub only_turn::TurnConfig::public_ip: core::option::Option<core::net::ip_addr::IpAddr>
+pub only_turn::TurnConfig::realm: alloc::string::String
+pub only_turn::TurnConfig::relay_ip: core::net::ip_addr::IpAddr
+pub only_turn::TurnConfig::software: core::option::Option<alloc::string::String>
+impl only_turn::TurnConfig
+pub fn only_turn::TurnConfig::allow_private_peers(self, bool) -> Self
+pub fn only_turn::TurnConfig::lifetimes(self, core::time::Duration, core::time::Duration) -> Self
+pub fn only_turn::TurnConfig::new(&str, only_turn::AuthFn, core::net::ip_addr::IpAddr) -> only_turn::TurnConfig
+pub fn only_turn::TurnConfig::peer_allowed(self, impl core::ops::function::Fn(core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
+pub fn only_turn::TurnConfig::public_ip(self, core::net::ip_addr::IpAddr) -> Self
+impl core::clone::Clone for only_turn::TurnConfig
+pub fn only_turn::TurnConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_turn::TurnConfig
+pub fn only_turn::TurnConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_turn::TurnConfig
+impl core::marker::Sync for only_turn::TurnConfig
+impl core::marker::Unpin for only_turn::TurnConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_turn::TurnConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_turn::TurnConfig
+pub struct only_turn::TurnCore
+impl only_turn::TurnCore
+pub fn only_turn::TurnCore::close_all(&mut self, &mut dyn only_turn::TurnEnv)
+pub fn only_turn::TurnCore::config(&self) -> &only_turn::TurnConfig
+pub fn only_turn::TurnCore::handle_client(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8], &mut dyn only_turn::TurnEnv)
+pub fn only_turn::TurnCore::handle_peer(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8], &mut dyn only_turn::TurnEnv)
+pub fn only_turn::TurnCore::handle_timeout(&mut self, std::time::Instant, &mut dyn only_turn::TurnEnv)
+pub fn only_turn::TurnCore::new(only_turn::TurnConfig) -> only_turn::TurnCore
+pub fn only_turn::TurnCore::relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnCore::stats(&self) -> only_turn::TurnStats
+impl core::fmt::Debug for only_turn::TurnCore
+pub fn only_turn::TurnCore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_turn::TurnCore
+impl core::marker::Sync for only_turn::TurnCore
+impl core::marker::Unpin for only_turn::TurnCore
+impl !core::panic::unwind_safe::RefUnwindSafe for only_turn::TurnCore
+impl !core::panic::unwind_safe::UnwindSafe for only_turn::TurnCore
+pub struct only_turn::TurnServer(_)
+impl only_turn::TurnServer
+pub fn only_turn::TurnServer::close_all(&self)
+pub fn only_turn::TurnServer::new(only_turn::TurnConfig) -> only_turn::TurnServer
+pub fn only_turn::TurnServer::relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnServer::set_engine(&self, &alloc::rcs::arc::Arc<only::Engine>)
+pub fn only_turn::TurnServer::stats(&self) -> only_turn::TurnStats
+impl core::clone::Clone for only_turn::TurnServer
+pub fn only_turn::TurnServer::clone(&self) -> Self
+impl core::fmt::Debug for only_turn::TurnServer
+pub fn only_turn::TurnServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_turn::TurnServer
+pub type only_turn::TurnServer::Handler = TurnClient
+pub fn only_turn::TurnServer::on_open(&self, &only_core::conn::Conn<TurnClient>) -> TurnClient
+pub fn only_turn::TurnServer::on_shutdown(&self, &only_core::conn::Conn<TurnClient>)
+impl core::marker::Send for only_turn::TurnServer
+impl core::marker::Sync for only_turn::TurnServer
+impl core::marker::Unpin for only_turn::TurnServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_turn::TurnServer
+impl !core::panic::unwind_safe::UnwindSafe for only_turn::TurnServer
+#[non_exhaustive] pub struct only_turn::TurnStats
+pub only_turn::TurnStats::allocations: usize
+pub only_turn::TurnStats::auth_failures: u64
+pub only_turn::TurnStats::to_client: u64
+pub only_turn::TurnStats::to_peer: u64
+impl core::clone::Clone for only_turn::TurnStats
+pub fn only_turn::TurnStats::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::TurnStats
+impl core::cmp::PartialEq for only_turn::TurnStats
+pub fn only_turn::TurnStats::eq(&self, &Self) -> bool
+impl core::default::Default for only_turn::TurnStats
+pub fn only_turn::TurnStats::default() -> Self
+impl core::fmt::Debug for only_turn::TurnStats
+pub fn only_turn::TurnStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_turn::TurnStats
+impl core::marker::StructuralPartialEq for only_turn::TurnStats
+impl core::marker::Send for only_turn::TurnStats
+impl core::marker::Sync for only_turn::TurnStats
+impl core::marker::Unpin for only_turn::TurnStats
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::TurnStats
+impl core::panic::unwind_safe::UnwindSafe for only_turn::TurnStats
+pub trait only_turn::TurnEnv
+pub fn only_turn::TurnEnv::close_relay(&mut self, core::net::socket_addr::SocketAddr)
+pub fn only_turn::TurnEnv::open_relay(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::io::error::Result<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnEnv::send_to_client(&mut self, core::net::socket_addr::SocketAddr, &[u8])
+pub fn only_turn::TurnEnv::send_to_peer(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8])
+pub fn only_turn::denied_by_default(core::net::ip_addr::IpAddr) -> bool
+pub fn only_turn::ephemeral_auth(&[u8]) -> only_turn::AuthFn
+pub fn only_turn::ephemeral_credentials(&[u8], &str, core::time::Duration) -> (alloc::string::String, alloc::string::String)
+pub fn only_turn::static_auth<'a>(&str, impl core::iter::traits::collect::IntoIterator<Item = (&'a str, &'a str)>) -> only_turn::AuthFn
+pub type only_turn::AuthFn = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &str) -> core::option::Option<[u8; 16]> + core::marker::Send + core::marker::Sync)>
+pub type only_turn::PeerFilter = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync)>

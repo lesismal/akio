@@ -1,10 +1,10 @@
 # Multi-process serving (prefork)
 
-`flash-prefork` serves one program from several worker processes, each running its own
+`only-prefork` serves one program from several worker processes, each running its own
 `Engine`, under a supervisor that restarts crashed workers, drains them on shutdown and replaces
 them on reload. It buys isolation (a crash or a stuck callback takes down one worker), upgrades
 without downtime, and per-process resources that do not contend across cores. Inside a worker
-everything is ordinary flash.
+everything is ordinary `only`.
 
 ## A worker and its supervisor
 
@@ -12,17 +12,17 @@ The worker is a function that builds an engine on the listener the supervisor pr
 it to `Worker::serve`:
 
 ```rust,ignore
-{{#include ../../../crates/flash-prefork/examples/prefork-http.rs:worker}}
+{{#include ../../../crates/only-prefork/examples/prefork-http.rs:worker}}
 ```
 
 `main` configures the supervisor and calls `run` with that function:
 
 ```rust,ignore
-{{#include ../../../crates/flash-prefork/examples/prefork-http.rs:supervisor}}
+{{#include ../../../crates/only-prefork/examples/prefork-http.rs:supervisor}}
 ```
 
 The same `main` runs in every process. In the supervisor, `run` binds the addresses, starts the
-workers by **re-executing the current binary** with the same arguments plus `FLASH_PREFORK_*`
+workers by **re-executing the current binary** with the same arguments plus `ONLY_PREFORK_*`
 environment variables, and supervises them; it never calls the worker function. In a worker,
 `run` finds those variables and calls the worker function with a `Worker`. Re-executing instead of
 `fork` avoids the hazards of forking a multi-threaded process: each worker starts from `main` with
@@ -31,7 +31,7 @@ a clean address space. Keep start-up work that only workers need inside the work
 `Worker` tells the worker who it is: `index()` (0-based, kept by a restarted or reloaded
 replacement), `workers()` (to take a per-process share of a machine-wide limit, such as database
 connections), `generation()` (0, then one more per reload) and `addrs()`. `listener(i)` returns a
-`flash::Listener` for address `i`, to configure with `.threads()`, `.backend()` and `.serve()` as
+`only::Listener` for address `i`, to configure with `.threads()`, `.backend()` and `.serve()` as
 usual.
 
 ## Sharing the port
@@ -69,7 +69,7 @@ code while the old one drains.
 
 With `Inherit`, a reload refuses or resets no connection. One gap remains: a connection an old
 worker accepted just before it began draining, whose request had not arrived yet, is closed by
-flash-http's graceful shutdown, which closes connections with no request in flight (about 1 in
+only-http's graceful shutdown, which closes connections with no request in flight (about 1 in
 5,000 requests during a reload under continuous load in the tests).
 
 ## CPU pinning
@@ -89,7 +89,7 @@ Cross-process steering through a program pinned in bpffs is not implemented yet.
 
 ## Testing
 
-The integration tests (`crates/flash-prefork/tests/prefork.rs`) run their own binary as the
+The integration tests (`crates/only-prefork/tests/prefork.rs`) run their own binary as the
 workers: requests are answered by several PIDs, a crashed worker is replaced, a shutdown lets
 in-flight requests finish, and a reload under continuous load swaps every worker without a
 refused or reset connection.

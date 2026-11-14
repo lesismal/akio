@@ -1,6 +1,6 @@
 # 可观测性与热更新
 
-每个 engine 都有一个**遥测中心**（`flash::Telemetry`）：每线程计数器、连接表、慢回调记录以及
+每个 engine 都有一个**遥测中心**（`only::Telemetry`）：每线程计数器、连接表、慢回调记录以及
 实时（可热更新的）设置。engine 构建之前通过 `Config::telemetry` 访问，构建之后通过
 `Engine::telemetry()` 访问。I/O 线程用 relaxed 原子操作更新各自的普通计数器（按缓存行对齐，
 每个事件既不加锁也不分配内存）；快照按需汇总。
@@ -8,7 +8,7 @@
 ## 在代码中
 
 ```rust,ignore
-{{#include ../../../crates/flash/examples/guide-config.rs:observe}}
+{{#include ../../../crates/only/examples/guide-config.rs:observe}}
 ```
 
 | 调用 | 返回 |
@@ -26,30 +26,30 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 | 序列 | 类型 |
 |---|---|
-| `flash_connections_accepted_total`、`flash_connections_dialed_total`、`flash_connections_closed_total` | counter |
-| `flash_connections_rejected_total`（max_connections）、`flash_accept_errors_total`、`flash_idle_timeouts_total` | counter |
-| `flash_read_bytes_total`、`flash_reads_total`、`flash_written_bytes_total`、`flash_writes_total` | counter |
-| `flash_udp_datagrams_received_total`、`flash_udp_datagrams_sent_total` | counter |
-| `flash_send_queue_bytes` | gauge |
-| `flash_backpressure_events_total`、`flash_overloaded_total` | counter |
-| `flash_tls_handshake_failures_total`、`flash_transport_errors_total` | counter |
-| `flash_loop_iterations_total`、`flash_loop_events_total`、`flash_loop_callbacks_total`、`flash_loop_callback_seconds_total`、`flash_slow_callbacks_total` | counter |
-| `flash_connections_open`、`flash_loop_running` | gauge |
-| `flash_pool_threads`、`flash_pool_active`、`flash_pool_queued` | gauge |
-| `flash_pool_completed_total`、`flash_pool_panicked_total`、`flash_pool_rejected_total` | counter |
-| `flash_uptime_seconds` | gauge |
+| `only_connections_accepted_total`、`only_connections_dialed_total`、`only_connections_closed_total` | counter |
+| `only_connections_rejected_total`（max_connections）、`only_accept_errors_total`、`only_idle_timeouts_total` | counter |
+| `only_read_bytes_total`、`only_reads_total`、`only_written_bytes_total`、`only_writes_total` | counter |
+| `only_udp_datagrams_received_total`、`only_udp_datagrams_sent_total` | counter |
+| `only_send_queue_bytes` | gauge |
+| `only_backpressure_events_total`、`only_overloaded_total` | counter |
+| `only_tls_handshake_failures_total`、`only_transport_errors_total` | counter |
+| `only_loop_iterations_total`、`only_loop_events_total`、`only_loop_callbacks_total`、`only_loop_callback_seconds_total`、`only_slow_callbacks_total` | counter |
+| `only_connections_open`、`only_loop_running` | gauge |
+| `only_pool_threads`、`only_pool_active`、`only_pool_queued` | gauge |
+| `only_pool_completed_total`、`only_pool_panicked_total`、`only_pool_rejected_total` | counter |
+| `only_uptime_seconds` | gauge |
 
-`observe::HttpMetrics` 提供的 HTTP 指标：`flash_http_requests_total{class="2xx"...}`、
-`flash_http_request_duration_seconds`（直方图，桶从 0.5 ms 到 10 s）、
-`flash_http_requests_in_flight`。
+`observe::HttpMetrics` 提供的 HTTP 指标：`only_http_requests_total{class="2xx"...}`、
+`only_http_request_duration_seconds`（直方图，桶从 0.5 ms 到 10 s）、
+`only_http_requests_in_flight`。
 
-`flash_loop_callback_seconds_total / flash_loop_iterations_total` 和慢回调计数是最先要看的：
+`only_loop_callback_seconds_total / only_loop_iterations_total` 和慢回调计数是最先要看的：
 它们告诉你 handler 是否让 I/O 线程一直忙碌。
 
 ## HTTP 端点
 
 ```rust,ignore
-{{#include ../../../crates/flash-http/examples/guide-observe.rs:endpoints}}
+{{#include ../../../crates/only-http/examples/guide-observe.rs:endpoints}}
 ```
 
 - `observe::metrics_handler(telemetry, Some(http_metrics))` 以 Prometheus 文本格式（0.0.4）应答。
@@ -63,18 +63,18 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 ## 日志
 
-flash 通过 [`log`](https://docs.rs/log) facade 输出带键值对的记录；安装任意实现（env_logger、
+only 通过 [`log`](https://docs.rs/log) facade 输出带键值对的记录；安装任意实现（env_logger、
 `log` 到 `tracing` 的桥接等）即可看到。没有安装日志实现时，错误和慢回调警告会打印到 stderr，
 不会悄无声息地丢失。
 
 | target | 级别 | 记录 |
 |---|---|---|
-| `flash` | info | `engine started`（listener）、`engine shutting down`（打开的连接数）、`configuration reloaded`（applied、ignored） |
-| `flash` | warn | 慢回调（`kind`、`conn_id`、`elapsed_us`、`limit_us`、`thread`、`listener`）；io_uring / BPF 回退 |
-| `flash` | error | poller 失败 |
-| `flash` | debug | 被 `max_connections` 拒绝的连接 |
-| `flash` | trace | `connection opened` / `connection closed`（`conn_id`、`peer`、`local`、`dialed`、`error`） |
-| `flash_http::access` | info | 访问日志：`method`、`target`、`status`、`peer`、`elapsed_us`、`request_id` |
+| `only` | info | `engine started`（listener）、`engine shutting down`（打开的连接数）、`configuration reloaded`（applied、ignored） |
+| `only` | warn | 慢回调（`kind`、`conn_id`、`elapsed_us`、`limit_us`、`thread`、`listener`）；io_uring / BPF 回退 |
+| `only` | error | poller 失败 |
+| `only` | debug | 被 `max_connections` 拒绝的连接 |
+| `only` | trace | `connection opened` / `connection closed`（`conn_id`、`peer`、`local`、`dialed`、`error`） |
+| `only_http::access` | info | 访问日志：`method`、`target`、`status`、`peer`、`elapsed_us`、`request_id` |
 
 `Config::log_level`（可热更新）会调用 `log::set_max_level`，因此日志详细程度可以在运行时调整。
 
@@ -88,7 +88,7 @@ flash 通过 [`log`](https://docs.rs/log) facade 输出带键值对的记录；�
 ## 热更新
 
 ```rust,ignore
-{{#include ../../../crates/flash/examples/guide-config.rs:reload}}
+{{#include ../../../crates/only/examples/guide-config.rs:reload}}
 ```
 
 `Engine::reload(&Config)`（或 `Telemetry::reload`）无需重启即可应用可在运行时修改的设置，并返回
@@ -103,5 +103,5 @@ flash 通过 [`log`](https://docs.rs/log) facade 输出带键值对的记录；�
 带来任何开销。也可以通过 `Telemetry::live()` 上的 setter 单独修改某个值，然后调用
 `Telemetry::notify_reload()`。
 
-flash 自己不监视配置文件：从你使用的机制触发 `reload`（`SIGHUP` 处理器、文件监视器、或者像
+only 自己不监视配置文件：从你使用的机制触发 `reload`（`SIGHUP` 处理器、文件监视器、或者像
 上例那样的管理路由）。

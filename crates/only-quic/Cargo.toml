@@ -1,0 +1,30 @@
+[package]
+name = "only-quic"
+description = "only QUIC: quinn-proto driven over only UDP sockets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-quic"
+keywords = ["quic", "udp", "network", "quinn"]
+categories = ["network-programming"]
+
+[dependencies]
+only = { workspace = true }
+only-core = { workspace = true }
+quinn-proto = { version = "0.11", default-features = false, features = ["rustls-ring"] }
+bytes = "1"
+
+[features]
+# Raw access to quinn-proto (`only_quic::proto`, `ServerConfig::from_quinn` ...): outside the
+# semver promise (docs/api-stability.md).
+unstable = []
+
+[dev-dependencies]
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+
+[lints]
+workspace = true

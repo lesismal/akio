@@ -1,0 +1,160 @@
+pub mod only_tls
+pub struct only_tls::Certificate(_)
+impl only_tls::Certificate
+pub fn only_tls::Certificate::as_der(&self) -> &[u8]
+pub fn only_tls::Certificate::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> only_tls::Certificate
+pub fn only_tls::Certificate::from_pem(&[u8]) -> core::result::Result<alloc::vec::Vec<only_tls::Certificate>, only_tls::Error>
+impl core::clone::Clone for only_tls::Certificate
+pub fn only_tls::Certificate::clone(&self) -> Self
+impl core::cmp::Eq for only_tls::Certificate
+impl core::cmp::PartialEq for only_tls::Certificate
+pub fn only_tls::Certificate::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_tls::Certificate
+pub fn only_tls::Certificate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_tls::Certificate
+impl core::marker::Send for only_tls::Certificate
+impl core::marker::Sync for only_tls::Certificate
+impl core::marker::Unpin for only_tls::Certificate
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::Certificate
+impl core::panic::unwind_safe::UnwindSafe for only_tls::Certificate
+pub struct only_tls::ClientConfig
+impl only_tls::ClientConfig
+pub fn only_tls::ClientConfig::alpn_protocols(&self) -> &[alloc::vec::Vec<u8>]
+pub fn only_tls::ClientConfig::builder() -> only_tls::ClientConfigBuilder
+impl core::clone::Clone for only_tls::ClientConfig
+pub fn only_tls::ClientConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_tls::ClientConfig
+pub fn only_tls::ClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::ClientConfig
+impl core::marker::Sync for only_tls::ClientConfig
+impl core::marker::Unpin for only_tls::ClientConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_tls::ClientConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_tls::ClientConfig
+pub struct only_tls::ClientConfigBuilder
+impl only_tls::ClientConfigBuilder
+pub fn only_tls::ClientConfigBuilder::alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
+pub fn only_tls::ClientConfigBuilder::build(self) -> core::result::Result<only_tls::ClientConfig, only_tls::Error>
+pub fn only_tls::ClientConfigBuilder::client_cert(self, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
+pub fn only_tls::ClientConfigBuilder::insecure_skip_verify(self) -> Self
+pub fn only_tls::ClientConfigBuilder::resumption(self, bool) -> Self
+pub fn only_tls::ClientConfigBuilder::roots(self, only_tls::RootCerts) -> Self
+pub fn only_tls::ClientConfigBuilder::sni(self, bool) -> Self
+pub fn only_tls::ClientConfigBuilder::tls13_only(self, bool) -> Self
+impl core::fmt::Debug for only_tls::ClientConfigBuilder
+pub fn only_tls::ClientConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::ClientConfigBuilder
+impl core::marker::Sync for only_tls::ClientConfigBuilder
+impl core::marker::Unpin for only_tls::ClientConfigBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::ClientConfigBuilder
+impl core::panic::unwind_safe::UnwindSafe for only_tls::ClientConfigBuilder
+pub struct only_tls::Error
+impl core::convert::From<only_tls::Error> for core::io::error::Error
+pub fn core::io::error::Error::from(only_tls::Error) -> core::io::error::Error
+impl core::error::Error for only_tls::Error
+pub fn only_tls::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for only_tls::Error
+pub fn only_tls::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_tls::Error
+pub fn only_tls::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::Error
+impl core::marker::Sync for only_tls::Error
+impl core::marker::Unpin for only_tls::Error
+impl !core::panic::unwind_safe::RefUnwindSafe for only_tls::Error
+impl !core::panic::unwind_safe::UnwindSafe for only_tls::Error
+pub struct only_tls::PrivateKey(_)
+impl only_tls::PrivateKey
+pub fn only_tls::PrivateKey::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<only_tls::PrivateKey, only_tls::Error>
+pub fn only_tls::PrivateKey::from_pem(&[u8]) -> core::result::Result<only_tls::PrivateKey, only_tls::Error>
+pub fn only_tls::PrivateKey::from_pkcs8_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> only_tls::PrivateKey
+impl core::clone::Clone for only_tls::PrivateKey
+pub fn only_tls::PrivateKey::clone(&self) -> Self
+impl core::fmt::Debug for only_tls::PrivateKey
+pub fn only_tls::PrivateKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::PrivateKey
+impl core::marker::Sync for only_tls::PrivateKey
+impl core::marker::Unpin for only_tls::PrivateKey
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::PrivateKey
+impl core::panic::unwind_safe::UnwindSafe for only_tls::PrivateKey
+pub struct only_tls::RootCerts(_)
+impl only_tls::RootCerts
+pub fn only_tls::RootCerts::add(&mut self, &only_tls::Certificate) -> core::result::Result<(), only_tls::Error>
+pub fn only_tls::RootCerts::add_pem(&mut self, &[u8]) -> core::result::Result<usize, only_tls::Error>
+pub fn only_tls::RootCerts::empty() -> only_tls::RootCerts
+pub fn only_tls::RootCerts::is_empty(&self) -> bool
+pub fn only_tls::RootCerts::len(&self) -> usize
+impl core::clone::Clone for only_tls::RootCerts
+pub fn only_tls::RootCerts::clone(&self) -> Self
+impl core::default::Default for only_tls::RootCerts
+pub fn only_tls::RootCerts::default() -> Self
+impl core::fmt::Debug for only_tls::RootCerts
+pub fn only_tls::RootCerts::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::RootCerts
+impl core::marker::Sync for only_tls::RootCerts
+impl core::marker::Unpin for only_tls::RootCerts
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::RootCerts
+impl core::panic::unwind_safe::UnwindSafe for only_tls::RootCerts
+pub struct only_tls::ServerConfig
+impl only_tls::ServerConfig
+pub fn only_tls::ServerConfig::alpn_protocols(&self) -> &[alloc::vec::Vec<u8>]
+pub fn only_tls::ServerConfig::builder(alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> only_tls::ServerConfigBuilder
+impl core::clone::Clone for only_tls::ServerConfig
+pub fn only_tls::ServerConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_tls::ServerConfig
+pub fn only_tls::ServerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::ServerConfig
+impl core::marker::Sync for only_tls::ServerConfig
+impl core::marker::Unpin for only_tls::ServerConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_tls::ServerConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_tls::ServerConfig
+pub struct only_tls::ServerConfigBuilder
+impl only_tls::ServerConfigBuilder
+pub fn only_tls::ServerConfigBuilder::alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
+pub fn only_tls::ServerConfigBuilder::build(self) -> core::result::Result<only_tls::ServerConfig, only_tls::Error>
+pub fn only_tls::ServerConfigBuilder::client_auth_optional(self, only_tls::RootCerts) -> Self
+pub fn only_tls::ServerConfigBuilder::client_auth_required(self, only_tls::RootCerts) -> Self
+pub fn only_tls::ServerConfigBuilder::session_cache(self, usize) -> Self
+pub fn only_tls::ServerConfigBuilder::session_tickets(self, bool) -> Self
+pub fn only_tls::ServerConfigBuilder::sni_cert(self, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
+pub fn only_tls::ServerConfigBuilder::tls13_only(self, bool) -> Self
+impl core::fmt::Debug for only_tls::ServerConfigBuilder
+pub fn only_tls::ServerConfigBuilder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::ServerConfigBuilder
+impl core::marker::Sync for only_tls::ServerConfigBuilder
+impl core::marker::Unpin for only_tls::ServerConfigBuilder
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::ServerConfigBuilder
+impl core::panic::unwind_safe::UnwindSafe for only_tls::ServerConfigBuilder
+pub struct only_tls::Tls<A>
+impl<A: only_core::handler::Acceptor> only_tls::Tls<A>
+pub fn only_tls::Tls<A>::client(only_tls::ClientConfig, &str, A) -> core::io::error::Result<Self>
+pub fn only_tls::Tls<A>::server(only_tls::ServerConfig, A) -> Self
+impl<A: only_core::handler::Acceptor> only_core::handler::Acceptor for only_tls::Tls<A>
+pub type only_tls::Tls<A>::Handler = <A as only_core::handler::Acceptor>::Handler
+pub fn only_tls::Tls<A>::on_open(&self, &only_core::conn::Conn<<A as only_core::handler::Acceptor>::Handler>) -> <A as only_core::handler::Acceptor>::Handler
+pub fn only_tls::Tls<A>::on_shutdown(&self, &only_core::conn::Conn<<A as only_core::handler::Acceptor>::Handler>)
+pub fn only_tls::Tls<A>::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn only_core::conn::Transport>>
+impl<A> core::fmt::Debug for only_tls::Tls<A>
+pub fn only_tls::Tls<A>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<A> core::marker::Send for only_tls::Tls<A> where A: core::marker::Send
+impl<A> core::marker::Sync for only_tls::Tls<A> where A: core::marker::Sync
+impl<A> core::marker::Unpin for only_tls::Tls<A> where A: core::marker::Unpin
+impl<A> !core::panic::unwind_safe::RefUnwindSafe for only_tls::Tls<A>
+impl<A> !core::panic::unwind_safe::UnwindSafe for only_tls::Tls<A>
+#[non_exhaustive] pub struct only_tls::TlsInfo
+pub only_tls::TlsInfo::alpn: core::option::Option<alloc::vec::Vec<u8>>
+pub only_tls::TlsInfo::handshaking: bool
+pub only_tls::TlsInfo::server_name: core::option::Option<alloc::string::String>
+pub only_tls::TlsInfo::version: core::option::Option<alloc::string::String>
+impl core::clone::Clone for only_tls::TlsInfo
+pub fn only_tls::TlsInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_tls::TlsInfo
+impl core::cmp::PartialEq for only_tls::TlsInfo
+pub fn only_tls::TlsInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_tls::TlsInfo
+pub fn only_tls::TlsInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_tls::TlsInfo
+impl core::marker::Send for only_tls::TlsInfo
+impl core::marker::Sync for only_tls::TlsInfo
+impl core::marker::Unpin for only_tls::TlsInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::TlsInfo
+impl core::panic::unwind_safe::UnwindSafe for only_tls::TlsInfo
+pub fn only_tls::tls_info<H>(&only_core::conn::Conn<H>) -> core::option::Option<only_tls::TlsInfo>

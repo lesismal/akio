@@ -1,11 +1,11 @@
 # Migrating from tokio
 
-tokio is a general-purpose async runtime; flash is a network library with no runtime. They solve
+tokio is a general-purpose async runtime; `only` is a network library with no runtime. They solve
 overlapping problems with different shapes, and they can live in the same process.
 
 ## The mental model
 
-| tokio | flash |
+| tokio | `only` |
 |---|---|
 | a task per connection, `async fn` with `.await` points | a `Handler` per connection, callbacks (`on_data`, `on_close`) |
 | work-stealing scheduler: a task may resume on any worker | thread-per-core: a connection never leaves its I/O thread |
@@ -18,7 +18,7 @@ overlapping problems with different shapes, and they can live in the same proces
 | `tokio::sync::mpsc` to talk to a connection task | clone the `Conn` and call `send`/`close` from anywhere |
 | `CancellationToken` / dropping the task | `Conn::close()`, `Engine::shutdown()` |
 | `tokio::net::TcpListener::bind` + accept loop | `Listener::tcp(addr).serve(acceptor)` |
-| hyper / axum on top | flash-http on top ([guide](from-hyper-axum.md)) |
+| hyper / axum on top | only-http on top ([guide](from-hyper-axum.md)) |
 
 An echo server in tokio, for comparison (not compiled as part of this book):
 
@@ -37,7 +37,7 @@ loop {
 }
 ```
 
-The flash version is the [echo example](../getting-started.md#a-tcp-echo-server): no accept
+The `only` version is the [echo example](../getting-started.md#a-tcp-echo-server): no accept
 loop, no task, no buffer management; the engine reads into its per-thread buffer and calls you.
 
 ## What changes in your code
@@ -64,20 +64,20 @@ lookups inline: they are cheaper than the hand-off.
 
 Lower `slow_callback_threshold` during development to find what you missed.
 
-## Bridging flash and tokio
+## Bridging `only` and tokio
 
-flash's handles are `Send + Sync` and its client results are `Future`s, so the two worlds can
+`only`'s handles are `Send + Sync` and its client results are `Future`s, so the two worlds can
 call each other.
 
-**From flash to async code.** Detach the request (or keep the `Conn`) and hand the job to the
+**From `only` to async code.** Detach the request (or keep the `Conn`) and hand the job to the
 other runtime through a channel; answer from there:
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-bridge.rs:worker}}
+{{#include ../../../../crates/only-http/examples/guide-bridge.rs:worker}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-bridge.rs:handoff}}
+{{#include ../../../../crates/only-http/examples/guide-bridge.rs:handoff}}
 ```
 
 With tokio, `start_worker` would be a runtime (`tokio::runtime::Runtime::new()`), the channel
@@ -87,22 +87,22 @@ thread), and the loop `while let Some(job) = rx.recv().await { tokio::spawn(..) 
 `WsSender::send_text` and the other handles never block, so calling them from async tasks is
 fine.
 
-**From async code to flash.** flash-http's `ResponseFuture` (HTTP/1 and HTTP/2 clients) and
-flash-arpc's `CallFuture` implement `Future`: `.await` them in any executor. The connection
-itself runs on flash's I/O threads; the future is completed from there and wakes your task.
+**From async code to only.** only-http's `ResponseFuture` (HTTP/1 and HTTP/2 clients) and
+only-arpc's `CallFuture` implement `Future`: `.await` them in any executor. The connection
+itself runs on `only`'s I/O threads; the future is completed from there and wakes your task.
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-bridge.rs:await}}
+{{#include ../../../../crates/only-http/examples/guide-bridge.rs:await}}
 ```
 
 The example uses a ten-line `block_on` instead of tokio to keep the repository free of a tokio
 dependency:
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-bridge.rs:block_on}}
+{{#include ../../../../crates/only-http/examples/guide-bridge.rs:block_on}}
 ```
 
-**Running both in one process.** Build the flash engine, `start()` it, keep it in an `Arc`, and
+**Running both in one process.** Build the `only` engine, `start()` it, keep it in an `Arc`, and
 run your tokio runtime as usual. Call `engine.shutdown()` from your tokio shutdown path and
 `engine.wait()` from a blocking context (`spawn_blocking`), since `wait` blocks.
 
@@ -110,13 +110,13 @@ Things to avoid:
 
 - calling blocking waits (`ResponseFuture::wait`, `client::dial_blocking`, `GrpcClient::unary`) from
   inside a tokio task: use `.await` where available, or `spawn_blocking`;
-- calling those blocking helpers on a flash I/O thread: they can deadlock waiting for the very
+- calling those blocking helpers on a `only` I/O thread: they can deadlock waiting for the very
   thread they block;
-- `block_on` inside a flash callback.
+- `block_on` inside a `only` callback.
 
 ## Async adapters
 
-A `Future`-based adapter for flash connections (`Conn::spawn(async ..)`) is not planned before
+A `Future`-based adapter for `only` connections (`Conn::spawn(async ..)`) is not planned before
 1.0 (see the ROADMAP's non-goals). For a fully async stack, tokio with hyper/axum remains the
-natural choice; flash fits where thread-per-core callbacks, explicit backpressure and
+natural choice; `only` fits where thread-per-core callbacks, explicit backpressure and
 per-listener backends (io_uring, eBPF steering) are what you want.

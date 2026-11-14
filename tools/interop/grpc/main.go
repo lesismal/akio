@@ -1,4 +1,4 @@
-// gRPC interop peer (grpc-go) for flash-grpc, with a pass-through bytes codec so no generated
+// gRPC interop peer (grpc-go) for only-grpc, with a pass-through bytes codec so no generated
 // code is needed:
 //
 //	go run . server 127.0.0.1:9200

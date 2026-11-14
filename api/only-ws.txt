@@ -1,0 +1,299 @@
+pub mod only_ws
+pub mod only_ws::client
+#[non_exhaustive] pub enum only_ws::client::WsClientError
+pub only_ws::client::WsClientError::Closed
+pub only_ws::client::WsClientError::Handshake(&'static str)
+pub only_ws::client::WsClientError::InvalidUrl(alloc::string::String)
+pub only_ws::client::WsClientError::Io(core::io::error::Error)
+pub only_ws::client::WsClientError::Status(u16, alloc::string::String)
+pub only_ws::client::WsClientError::Timeout
+impl core::error::Error for only_ws::client::WsClientError
+impl core::fmt::Debug for only_ws::client::WsClientError
+pub fn only_ws::client::WsClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ws::client::WsClientError
+pub fn only_ws::client::WsClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::client::WsClientError
+impl core::marker::Sync for only_ws::client::WsClientError
+impl core::marker::Unpin for only_ws::client::WsClientError
+impl !core::panic::unwind_safe::RefUnwindSafe for only_ws::client::WsClientError
+impl !core::panic::unwind_safe::UnwindSafe for only_ws::client::WsClientError
+#[non_exhaustive] pub struct only_ws::client::DialOptions
+pub only_ws::client::DialOptions::close_timeout: core::time::Duration
+pub only_ws::client::DialOptions::config: only_ws::WsConfig
+pub only_ws::client::DialOptions::handshake_timeout: core::time::Duration
+pub only_ws::client::DialOptions::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_ws::client::DialOptions::origin: core::option::Option<alloc::string::String>
+pub only_ws::client::DialOptions::pmd: only_ws::deflate::PmdOffer
+pub only_ws::client::DialOptions::protocols: alloc::vec::Vec<alloc::string::String>
+pub only_ws::client::DialOptions::server_name: core::option::Option<alloc::string::String>
+pub only_ws::client::DialOptions::tls: core::option::Option<only_tls::config::ClientConfig>
+impl core::clone::Clone for only_ws::client::DialOptions
+pub fn only_ws::client::DialOptions::clone(&self) -> Self
+impl core::default::Default for only_ws::client::DialOptions
+pub fn only_ws::client::DialOptions::default() -> Self
+impl core::fmt::Debug for only_ws::client::DialOptions
+pub fn only_ws::client::DialOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::client::DialOptions
+impl core::marker::Sync for only_ws::client::DialOptions
+impl core::marker::Unpin for only_ws::client::DialOptions
+impl !core::panic::unwind_safe::RefUnwindSafe for only_ws::client::DialOptions
+impl !core::panic::unwind_safe::UnwindSafe for only_ws::client::DialOptions
+pub fn only_ws::client::dial(&alloc::rcs::arc::Arc<only::Engine>, &str, &only_ws::client::DialOptions, impl only_ws::WsHandler, impl core::ops::function::FnOnce(only_ws::client::WsClientError) + core::marker::Send + 'static)
+pub fn only_ws::client::dial_blocking(&alloc::rcs::arc::Arc<only::Engine>, &str, &only_ws::client::DialOptions, impl only_ws::WsHandler) -> core::result::Result<only_ws::WsSender, only_ws::client::WsClientError>
+pub mod only_ws::deflate
+#[non_exhaustive] pub enum only_ws::deflate::InflateError
+pub only_ws::deflate::InflateError::Corrupt
+pub only_ws::deflate::InflateError::TooBig
+impl core::cmp::Eq for only_ws::deflate::InflateError
+impl core::cmp::PartialEq for only_ws::deflate::InflateError
+pub fn only_ws::deflate::InflateError::eq(&self, &Self) -> bool
+impl core::error::Error for only_ws::deflate::InflateError
+impl core::fmt::Debug for only_ws::deflate::InflateError
+pub fn only_ws::deflate::InflateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ws::deflate::InflateError
+pub fn only_ws::deflate::InflateError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ws::deflate::InflateError
+impl core::marker::Send for only_ws::deflate::InflateError
+impl core::marker::Sync for only_ws::deflate::InflateError
+impl core::marker::Unpin for only_ws::deflate::InflateError
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::InflateError
+impl core::panic::unwind_safe::UnwindSafe for only_ws::deflate::InflateError
+pub struct only_ws::deflate::Deflater
+impl only_ws::deflate::Deflater
+pub fn only_ws::deflate::Deflater::deflate(&mut self, &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_ws::deflate::Deflater::new(bool, u8) -> only_ws::deflate::Deflater
+impl core::fmt::Debug for only_ws::deflate::Deflater
+pub fn only_ws::deflate::Deflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::deflate::Deflater
+impl core::marker::Sync for only_ws::deflate::Deflater
+impl core::marker::Unpin for only_ws::deflate::Deflater
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::Deflater
+impl !core::panic::unwind_safe::UnwindSafe for only_ws::deflate::Deflater
+pub struct only_ws::deflate::Inflater
+impl only_ws::deflate::Inflater
+pub fn only_ws::deflate::Inflater::inflate(&mut self, &[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, only_ws::deflate::InflateError>
+pub fn only_ws::deflate::Inflater::new(bool) -> only_ws::deflate::Inflater
+impl core::fmt::Debug for only_ws::deflate::Inflater
+pub fn only_ws::deflate::Inflater::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::deflate::Inflater
+impl core::marker::Sync for only_ws::deflate::Inflater
+impl core::marker::Unpin for only_ws::deflate::Inflater
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::Inflater
+impl !core::panic::unwind_safe::UnwindSafe for only_ws::deflate::Inflater
+#[non_exhaustive] pub struct only_ws::deflate::PmdOffer
+pub only_ws::deflate::PmdOffer::client_no_context_takeover: bool
+pub only_ws::deflate::PmdOffer::server_max_window_bits: core::option::Option<u8>
+pub only_ws::deflate::PmdOffer::server_no_context_takeover: bool
+impl only_ws::deflate::PmdOffer
+pub fn only_ws::deflate::PmdOffer::accept_response<'a>(&self, impl core::iter::traits::collect::IntoIterator<Item = &'a str>) -> core::result::Result<core::option::Option<only_ws::deflate::PmdParams>, &'static str>
+pub fn only_ws::deflate::PmdOffer::header(&self) -> alloc::string::String
+impl core::clone::Clone for only_ws::deflate::PmdOffer
+pub fn only_ws::deflate::PmdOffer::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::deflate::PmdOffer
+impl core::cmp::PartialEq for only_ws::deflate::PmdOffer
+pub fn only_ws::deflate::PmdOffer::eq(&self, &Self) -> bool
+impl core::default::Default for only_ws::deflate::PmdOffer
+pub fn only_ws::deflate::PmdOffer::default() -> Self
+impl core::fmt::Debug for only_ws::deflate::PmdOffer
+pub fn only_ws::deflate::PmdOffer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ws::deflate::PmdOffer
+impl core::marker::StructuralPartialEq for only_ws::deflate::PmdOffer
+impl core::marker::Send for only_ws::deflate::PmdOffer
+impl core::marker::Sync for only_ws::deflate::PmdOffer
+impl core::marker::Unpin for only_ws::deflate::PmdOffer
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::PmdOffer
+impl core::panic::unwind_safe::UnwindSafe for only_ws::deflate::PmdOffer
+#[non_exhaustive] pub struct only_ws::deflate::PmdParams
+pub only_ws::deflate::PmdParams::client_max_window_bits: u8
+pub only_ws::deflate::PmdParams::client_no_context_takeover: bool
+pub only_ws::deflate::PmdParams::server_max_window_bits: u8
+pub only_ws::deflate::PmdParams::server_no_context_takeover: bool
+impl core::clone::Clone for only_ws::deflate::PmdParams
+pub fn only_ws::deflate::PmdParams::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::deflate::PmdParams
+impl core::cmp::PartialEq for only_ws::deflate::PmdParams
+pub fn only_ws::deflate::PmdParams::eq(&self, &Self) -> bool
+impl core::default::Default for only_ws::deflate::PmdParams
+pub fn only_ws::deflate::PmdParams::default() -> Self
+impl core::fmt::Debug for only_ws::deflate::PmdParams
+pub fn only_ws::deflate::PmdParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ws::deflate::PmdParams
+impl core::marker::StructuralPartialEq for only_ws::deflate::PmdParams
+impl core::marker::Send for only_ws::deflate::PmdParams
+impl core::marker::Sync for only_ws::deflate::PmdParams
+impl core::marker::Unpin for only_ws::deflate::PmdParams
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::PmdParams
+impl core::panic::unwind_safe::UnwindSafe for only_ws::deflate::PmdParams
+pub fn only_ws::deflate::negotiate<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a str>) -> core::option::Option<(only_ws::deflate::PmdParams, alloc::string::String)>
+pub mod only_ws::protocol
+pub mod only_ws::protocol::close
+pub const only_ws::protocol::close::GOING_AWAY: u16
+pub const only_ws::protocol::close::INTERNAL: u16
+pub const only_ws::protocol::close::INVALID_DATA: u16
+pub const only_ws::protocol::close::NORMAL: u16
+pub const only_ws::protocol::close::POLICY: u16
+pub const only_ws::protocol::close::PROTOCOL: u16
+pub const only_ws::protocol::close::TOO_BIG: u16
+pub const only_ws::protocol::close::UNSUPPORTED: u16
+pub enum only_ws::protocol::Event
+pub only_ws::protocol::Event::Binary(alloc::vec::Vec<u8>)
+pub only_ws::protocol::Event::Close
+pub only_ws::protocol::Event::Close::code: core::option::Option<u16>
+pub only_ws::protocol::Event::Close::reason: alloc::string::String
+pub only_ws::protocol::Event::Ping(alloc::vec::Vec<u8>)
+pub only_ws::protocol::Event::Pong(alloc::vec::Vec<u8>)
+pub only_ws::protocol::Event::Text(alloc::string::String)
+impl core::cmp::Eq for only_ws::protocol::Event
+impl core::cmp::PartialEq for only_ws::protocol::Event
+pub fn only_ws::protocol::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ws::protocol::Event
+pub fn only_ws::protocol::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ws::protocol::Event
+impl core::marker::Send for only_ws::protocol::Event
+impl core::marker::Sync for only_ws::protocol::Event
+impl core::marker::Unpin for only_ws::protocol::Event
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::protocol::Event
+impl core::panic::unwind_safe::UnwindSafe for only_ws::protocol::Event
+pub enum only_ws::protocol::Opcode
+pub only_ws::protocol::Opcode::Binary = 2
+pub only_ws::protocol::Opcode::Close = 8
+pub only_ws::protocol::Opcode::Continue = 0
+pub only_ws::protocol::Opcode::Ping = 9
+pub only_ws::protocol::Opcode::Pong = 10
+pub only_ws::protocol::Opcode::Text = 1
+impl core::clone::Clone for only_ws::protocol::Opcode
+pub fn only_ws::protocol::Opcode::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::protocol::Opcode
+impl core::cmp::PartialEq for only_ws::protocol::Opcode
+pub fn only_ws::protocol::Opcode::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ws::protocol::Opcode
+pub fn only_ws::protocol::Opcode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ws::protocol::Opcode
+impl core::marker::StructuralPartialEq for only_ws::protocol::Opcode
+impl core::marker::Send for only_ws::protocol::Opcode
+impl core::marker::Sync for only_ws::protocol::Opcode
+impl core::marker::Unpin for only_ws::protocol::Opcode
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::protocol::Opcode
+impl core::panic::unwind_safe::UnwindSafe for only_ws::protocol::Opcode
+pub enum only_ws::protocol::Role
+pub only_ws::protocol::Role::Client
+pub only_ws::protocol::Role::Server
+impl core::clone::Clone for only_ws::protocol::Role
+pub fn only_ws::protocol::Role::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::protocol::Role
+impl core::cmp::PartialEq for only_ws::protocol::Role
+pub fn only_ws::protocol::Role::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ws::protocol::Role
+pub fn only_ws::protocol::Role::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ws::protocol::Role
+impl core::marker::StructuralPartialEq for only_ws::protocol::Role
+impl core::marker::Send for only_ws::protocol::Role
+impl core::marker::Sync for only_ws::protocol::Role
+impl core::marker::Unpin for only_ws::protocol::Role
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::protocol::Role
+impl core::panic::unwind_safe::UnwindSafe for only_ws::protocol::Role
+pub struct only_ws::protocol::Decoder
+impl only_ws::protocol::Decoder
+pub fn only_ws::protocol::Decoder::decode(&mut self, &[u8], &mut alloc::vec::Vec<only_ws::protocol::Event>) -> core::result::Result<(), only_ws::protocol::ProtocolError>
+pub fn only_ws::protocol::Decoder::new(only_ws::protocol::Role, usize, core::option::Option<only_ws::deflate::Inflater>) -> only_ws::protocol::Decoder
+impl core::fmt::Debug for only_ws::protocol::Decoder
+pub fn only_ws::protocol::Decoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::protocol::Decoder
+impl core::marker::Sync for only_ws::protocol::Decoder
+impl core::marker::Unpin for only_ws::protocol::Decoder
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::protocol::Decoder
+impl !core::panic::unwind_safe::UnwindSafe for only_ws::protocol::Decoder
+#[non_exhaustive] pub struct only_ws::protocol::ProtocolError
+pub only_ws::protocol::ProtocolError::code: u16
+pub only_ws::protocol::ProtocolError::reason: &'static str
+impl core::cmp::Eq for only_ws::protocol::ProtocolError
+impl core::cmp::PartialEq for only_ws::protocol::ProtocolError
+pub fn only_ws::protocol::ProtocolError::eq(&self, &Self) -> bool
+impl core::error::Error for only_ws::protocol::ProtocolError
+impl core::fmt::Debug for only_ws::protocol::ProtocolError
+pub fn only_ws::protocol::ProtocolError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ws::protocol::ProtocolError
+pub fn only_ws::protocol::ProtocolError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ws::protocol::ProtocolError
+impl core::marker::Send for only_ws::protocol::ProtocolError
+impl core::marker::Sync for only_ws::protocol::ProtocolError
+impl core::marker::Unpin for only_ws::protocol::ProtocolError
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::protocol::ProtocolError
+impl core::panic::unwind_safe::UnwindSafe for only_ws::protocol::ProtocolError
+pub fn only_ws::protocol::close_payload(u16, &str) -> alloc::vec::Vec<u8>
+pub fn only_ws::protocol::encode_frame(only_ws::protocol::Opcode, bool, bool, &[u8], &mut alloc::vec::Vec<u8>)
+pub fn only_ws::protocol::encode_frame_masked(only_ws::protocol::Opcode, bool, bool, &[u8], [u8; 4], &mut alloc::vec::Vec<u8>)
+pub enum only_ws::Message
+pub only_ws::Message::Binary(alloc::vec::Vec<u8>)
+pub only_ws::Message::Text(alloc::string::String)
+impl core::clone::Clone for only_ws::Message
+pub fn only_ws::Message::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::Message
+impl core::cmp::PartialEq for only_ws::Message
+pub fn only_ws::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ws::Message
+pub fn only_ws::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ws::Message
+impl core::marker::Send for only_ws::Message
+impl core::marker::Sync for only_ws::Message
+impl core::marker::Unpin for only_ws::Message
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::Message
+impl core::panic::unwind_safe::UnwindSafe for only_ws::Message
+pub struct only_ws::PreparedMessage
+impl only_ws::PreparedMessage
+pub fn only_ws::PreparedMessage::binary(&[u8]) -> only_ws::PreparedMessage
+pub fn only_ws::PreparedMessage::text(&str) -> only_ws::PreparedMessage
+impl core::clone::Clone for only_ws::PreparedMessage
+pub fn only_ws::PreparedMessage::clone(&self) -> Self
+impl core::fmt::Debug for only_ws::PreparedMessage
+pub fn only_ws::PreparedMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::PreparedMessage
+impl core::marker::Sync for only_ws::PreparedMessage
+impl core::marker::Unpin for only_ws::PreparedMessage
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::PreparedMessage
+impl core::panic::unwind_safe::UnwindSafe for only_ws::PreparedMessage
+#[non_exhaustive] pub struct only_ws::WsConfig
+pub only_ws::WsConfig::compress_min_bytes: usize
+pub only_ws::WsConfig::max_message_bytes: usize
+pub only_ws::WsConfig::permessage_deflate: bool
+impl core::clone::Clone for only_ws::WsConfig
+pub fn only_ws::WsConfig::clone(&self) -> Self
+impl core::default::Default for only_ws::WsConfig
+pub fn only_ws::WsConfig::default() -> Self
+impl core::fmt::Debug for only_ws::WsConfig
+pub fn only_ws::WsConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::WsConfig
+impl core::marker::Sync for only_ws::WsConfig
+impl core::marker::Unpin for only_ws::WsConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::WsConfig
+impl core::panic::unwind_safe::UnwindSafe for only_ws::WsConfig
+pub struct only_ws::WsSender
+impl only_ws::WsSender
+pub fn only_ws::WsSender::close(&self, u16, &str)
+pub fn only_ws::WsSender::is_open(&self) -> bool
+pub fn only_ws::WsSender::ping(&self, &[u8]) -> only_core::error::Result<()>
+pub fn only_ws::WsSender::pong(&self, &[u8]) -> only_core::error::Result<()>
+pub fn only_ws::WsSender::queued_bytes(&self) -> usize
+pub fn only_ws::WsSender::send_binary(&self, &[u8]) -> only_core::error::Result<()>
+pub fn only_ws::WsSender::send_binary_fragmented(&self, &[u8], usize) -> only_core::error::Result<()>
+pub fn only_ws::WsSender::send_prepared(&self, &only_ws::PreparedMessage) -> only_core::error::Result<()>
+pub fn only_ws::WsSender::send_text(&self, &str) -> only_core::error::Result<()>
+pub fn only_ws::WsSender::send_text_fragmented(&self, &str, usize) -> only_core::error::Result<()>
+pub fn only_ws::WsSender::subprotocol(&self) -> core::option::Option<alloc::string::String>
+impl core::clone::Clone for only_ws::WsSender
+pub fn only_ws::WsSender::clone(&self) -> Self
+impl core::fmt::Debug for only_ws::WsSender
+pub fn only_ws::WsSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ws::WsSender
+impl core::marker::Sync for only_ws::WsSender
+impl core::marker::Unpin for only_ws::WsSender
+impl !core::panic::unwind_safe::RefUnwindSafe for only_ws::WsSender
+impl !core::panic::unwind_safe::UnwindSafe for only_ws::WsSender
+pub trait only_ws::WsHandler: core::marker::Send + 'static
+pub fn only_ws::WsHandler::on_close(&mut self, core::option::Option<u16>, &str)
+pub fn only_ws::WsHandler::on_message(&mut self, &only_ws::WsSender, only_ws::Message)
+pub fn only_ws::WsHandler::on_open(&mut self, &only_ws::WsSender)
+pub fn only_ws::WsHandler::on_pong(&mut self, &only_ws::WsSender, &[u8])
+pub fn only_ws::accept_key(&str) -> alloc::string::String
+pub fn only_ws::select_subprotocol<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a str>, &[alloc::string::String]) -> core::option::Option<alloc::string::String>
+pub fn only_ws::valid_key(&str) -> bool

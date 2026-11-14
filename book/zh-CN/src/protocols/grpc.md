@@ -1,13 +1,13 @@
 # gRPC
 
-`flash-grpc` 提供一个 gRPC 服务端，它本身是一个 flash-http `Service`（因此与普通 HTTP 路由
-共享端口和 HTTP/2 协议栈），以及一个建立在 flash-http HTTP/2 客户端之上的客户端。与 grpc-go
+`only-grpc` 提供一个 gRPC 服务端，它本身是一个 only-http `Service`（因此与普通 HTTP 路由
+共享端口和 HTTP/2 协议栈），以及一个建立在 only-http HTTP/2 客户端之上的客户端。与 grpc-go
 做过双向互通测试（`tools/interop/grpc/run.sh`）。
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:server}}
+{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:server}}
 ```
 
 注册方法（`path` 为 `/package.Service/Method`）：
@@ -31,13 +31,13 @@ trailers-only 响应发送；`grpc-timeout` 截止时间会被执行。
 handler 在 I/O 线程上执行：处理很快时直接答复，否则把 `Sink` 移到其他线程（上例的
 server-streaming 方法就是这样做的）。
 
-提供服务：单独使用 `flash_http::serve(grpc)`，或者像上面那样作为 `Router` 的 `fallback`
+提供服务：单独使用 `only_http::serve(grpc)`，或者像上面那样作为 `Router` 的 `fallback`
 （或某个路由）。gRPC 需要 HTTP/2：明文用 prior knowledge，或 ALPN 为 `h2` 的 TLS。
 
 ## 客户端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:client}}
+{{#include ../../../../crates/only-grpc/examples/guide-grpc.rs:client}}
 ```
 
 - `GrpcClient::new(h2_client, base_url)`；`.compress(true)` 压缩请求。
@@ -50,7 +50,7 @@ server-streaming 方法就是这样做的）。
 
 ## 消息
 
-消息是字节。`flash_grpc::codec::{encode, decode}` 可转换任何实现了 `codec::Message`
+消息是字节。`only_grpc::codec::{encode, decode}` 可转换任何实现了 `codec::Message`
 （`encode_to` / `decode_from`）的类型，因此任意序列化方式都能接入。启用 `prost` feature 后，所有
 prost 生成的消息都实现了它；该适配器用到 prost 的类型，所以这个 feature 不在 semver 承诺之内
 （prost 升级可能出现在 minor 版本中）。

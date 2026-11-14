@@ -1,0 +1,31 @@
+[package]
+name = "only-mux"
+description = "only: several protocols on one port, told apart by their first bytes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-mux"
+keywords = ["multiplexing", "sniffing", "network", "server"]
+categories = ["network-programming"]
+
+[dependencies]
+only-core = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_mux::fuzzing`); not a public API.
+fuzzing = ["only-core/fuzzing"]
+
+[dev-dependencies]
+# A raw rustls client drives some tests (the library API hides rustls).
+rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
+only-core = { workspace = true, features = ["fuzzing"] }
+only = { workspace = true }
+only-http = { workspace = true }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+
+[lints]
+workspace = true

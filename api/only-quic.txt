@@ -1,0 +1,294 @@
+pub mod only_quic
+#[non_exhaustive] pub enum only_quic::Congestion
+pub only_quic::Congestion::Bbr
+pub only_quic::Congestion::Cubic
+pub only_quic::Congestion::NewReno
+impl core::clone::Clone for only_quic::Congestion
+pub fn only_quic::Congestion::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::Congestion
+impl core::cmp::PartialEq for only_quic::Congestion
+pub fn only_quic::Congestion::eq(&self, &Self) -> bool
+impl core::default::Default for only_quic::Congestion
+pub fn only_quic::Congestion::default() -> Self
+impl core::fmt::Debug for only_quic::Congestion
+pub fn only_quic::Congestion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_quic::Congestion
+impl core::marker::StructuralPartialEq for only_quic::Congestion
+impl core::marker::Send for only_quic::Congestion
+impl core::marker::Sync for only_quic::Congestion
+impl core::marker::Unpin for only_quic::Congestion
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::Congestion
+impl core::panic::unwind_safe::UnwindSafe for only_quic::Congestion
+#[non_exhaustive] pub enum only_quic::ConnectionError
+pub only_quic::ConnectionError::ApplicationClosed
+pub only_quic::ConnectionError::ApplicationClosed::code: u64
+pub only_quic::ConnectionError::ApplicationClosed::reason: alloc::vec::Vec<u8>
+pub only_quic::ConnectionError::CidsExhausted
+pub only_quic::ConnectionError::ConnectionClosed
+pub only_quic::ConnectionError::ConnectionClosed::code: u64
+pub only_quic::ConnectionError::ConnectionClosed::reason: alloc::vec::Vec<u8>
+pub only_quic::ConnectionError::LocallyClosed
+pub only_quic::ConnectionError::Reset
+pub only_quic::ConnectionError::TimedOut
+pub only_quic::ConnectionError::TransportError
+pub only_quic::ConnectionError::TransportError::code: u64
+pub only_quic::ConnectionError::TransportError::reason: alloc::string::String
+pub only_quic::ConnectionError::VersionMismatch
+impl core::clone::Clone for only_quic::ConnectionError
+pub fn only_quic::ConnectionError::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::ConnectionError
+impl core::cmp::PartialEq for only_quic::ConnectionError
+pub fn only_quic::ConnectionError::eq(&self, &Self) -> bool
+impl core::error::Error for only_quic::ConnectionError
+impl core::fmt::Debug for only_quic::ConnectionError
+pub fn only_quic::ConnectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_quic::ConnectionError
+pub fn only_quic::ConnectionError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_quic::ConnectionError
+impl core::marker::Send for only_quic::ConnectionError
+impl core::marker::Sync for only_quic::ConnectionError
+impl core::marker::Unpin for only_quic::ConnectionError
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::ConnectionError
+impl core::panic::unwind_safe::UnwindSafe for only_quic::ConnectionError
+pub enum only_quic::Dir
+pub only_quic::Dir::Bi
+pub only_quic::Dir::Uni
+impl core::clone::Clone for only_quic::Dir
+pub fn only_quic::Dir::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::Dir
+impl core::cmp::PartialEq for only_quic::Dir
+pub fn only_quic::Dir::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_quic::Dir
+pub fn only_quic::Dir::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_quic::Dir
+pub fn only_quic::Dir::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_quic::Dir
+impl core::marker::StructuralPartialEq for only_quic::Dir
+impl core::marker::Send for only_quic::Dir
+impl core::marker::Sync for only_quic::Dir
+impl core::marker::Unpin for only_quic::Dir
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::Dir
+impl core::panic::unwind_safe::UnwindSafe for only_quic::Dir
+#[non_exhaustive] pub enum only_quic::Error
+pub only_quic::Error::Closed
+pub only_quic::Error::Config(alloc::string::String)
+pub only_quic::Error::Connect(alloc::string::String)
+pub only_quic::Error::Datagram(alloc::string::String)
+pub only_quic::Error::Stopped(u64)
+pub only_quic::Error::UnknownStream
+impl core::error::Error for only_quic::Error
+impl core::fmt::Debug for only_quic::Error
+pub fn only_quic::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_quic::Error
+pub fn only_quic::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_quic::Error
+impl core::marker::Sync for only_quic::Error
+impl core::marker::Unpin for only_quic::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::Error
+impl core::panic::unwind_safe::UnwindSafe for only_quic::Error
+pub enum only_quic::Side
+pub only_quic::Side::Client
+pub only_quic::Side::Server
+impl core::clone::Clone for only_quic::Side
+pub fn only_quic::Side::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::Side
+impl core::cmp::PartialEq for only_quic::Side
+pub fn only_quic::Side::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_quic::Side
+pub fn only_quic::Side::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_quic::Side
+pub fn only_quic::Side::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_quic::Side
+impl core::marker::StructuralPartialEq for only_quic::Side
+impl core::marker::Send for only_quic::Side
+impl core::marker::Sync for only_quic::Side
+impl core::marker::Unpin for only_quic::Side
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::Side
+impl core::panic::unwind_safe::UnwindSafe for only_quic::Side
+pub struct only_quic::ClientConfig(_)
+impl only_quic::ClientConfig
+pub fn only_quic::ClientConfig::transport(self, &only_quic::TransportConfig) -> Self
+impl core::clone::Clone for only_quic::ClientConfig
+pub fn only_quic::ClientConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_quic::ClientConfig
+pub fn only_quic::ClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_quic::ClientConfig
+impl core::marker::Sync for only_quic::ClientConfig
+impl core::marker::Unpin for only_quic::ClientConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_quic::ClientConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_quic::ClientConfig
+pub struct only_quic::Connection(_)
+impl only_quic::Connection
+pub fn only_quic::Connection::alpn(&self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_quic::Connection::close(&self, u32, &[u8])
+pub fn only_quic::Connection::finish(&self, only_quic::StreamId) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::is_closed(&self) -> bool
+pub fn only_quic::Connection::open_bi(&self) -> core::option::Option<only_quic::StreamId>
+pub fn only_quic::Connection::open_uni(&self) -> core::option::Option<only_quic::StreamId>
+pub fn only_quic::Connection::queued_bytes(&self, only_quic::StreamId) -> usize
+pub fn only_quic::Connection::remote_addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_quic::Connection::reset(&self, only_quic::StreamId, u32) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::rtt(&self) -> core::time::Duration
+pub fn only_quic::Connection::send(&self, only_quic::StreamId, impl core::convert::Into<bytes::bytes::Bytes>) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::send_datagram(&self, impl core::convert::Into<bytes::bytes::Bytes>) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::server_name(&self) -> core::option::Option<alloc::string::String>
+pub fn only_quic::Connection::stats(&self) -> only_quic::ConnectionStats
+pub fn only_quic::Connection::stop(&self, only_quic::StreamId, u32) -> core::result::Result<(), only_quic::Error>
+impl core::clone::Clone for only_quic::Connection
+pub fn only_quic::Connection::clone(&self) -> Self
+impl core::fmt::Debug for only_quic::Connection
+pub fn only_quic::Connection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_quic::Connection
+impl core::marker::Sync for only_quic::Connection
+impl core::marker::Unpin for only_quic::Connection
+impl !core::panic::unwind_safe::RefUnwindSafe for only_quic::Connection
+impl !core::panic::unwind_safe::UnwindSafe for only_quic::Connection
+#[non_exhaustive] pub struct only_quic::ConnectionStats
+pub only_quic::ConnectionStats::congestion_events: u64
+pub only_quic::ConnectionStats::current_mtu: u16
+pub only_quic::ConnectionStats::cwnd: u64
+pub only_quic::ConnectionStats::lost_bytes: u64
+pub only_quic::ConnectionStats::lost_packets: u64
+pub only_quic::ConnectionStats::min_rtt: core::time::Duration
+pub only_quic::ConnectionStats::rtt: core::time::Duration
+pub only_quic::ConnectionStats::sent_packets: u64
+pub only_quic::ConnectionStats::udp_rx: only_quic::UdpStats
+pub only_quic::ConnectionStats::udp_tx: only_quic::UdpStats
+impl core::clone::Clone for only_quic::ConnectionStats
+pub fn only_quic::ConnectionStats::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::ConnectionStats
+impl core::cmp::PartialEq for only_quic::ConnectionStats
+pub fn only_quic::ConnectionStats::eq(&self, &Self) -> bool
+impl core::default::Default for only_quic::ConnectionStats
+pub fn only_quic::ConnectionStats::default() -> Self
+impl core::fmt::Debug for only_quic::ConnectionStats
+pub fn only_quic::ConnectionStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_quic::ConnectionStats
+impl core::marker::StructuralPartialEq for only_quic::ConnectionStats
+impl core::marker::Send for only_quic::ConnectionStats
+impl core::marker::Sync for only_quic::ConnectionStats
+impl core::marker::Unpin for only_quic::ConnectionStats
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::ConnectionStats
+impl core::panic::unwind_safe::UnwindSafe for only_quic::ConnectionStats
+pub struct only_quic::QuicServer(_)
+impl only_quic::QuicServer
+pub fn only_quic::QuicServer::close_all(&self, u32, &[u8])
+pub fn only_quic::QuicServer::connections(&self) -> usize
+pub fn only_quic::QuicServer::new<H: only_quic::QuicHandler, F>(only_quic::ServerConfig, F) -> only_quic::QuicServer where F: core::ops::function::Fn(&only_quic::Connection) -> H + core::marker::Send + core::marker::Sync + 'static
+impl core::fmt::Debug for only_quic::QuicServer
+pub fn only_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_quic::QuicServer
+pub type only_quic::QuicServer::Handler = Udp
+pub fn only_quic::QuicServer::on_open(&self, &only_core::conn::Conn<Udp>) -> Udp
+impl core::marker::Send for only_quic::QuicServer
+impl core::marker::Sync for only_quic::QuicServer
+impl core::marker::Unpin for only_quic::QuicServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_quic::QuicServer
+impl !core::panic::unwind_safe::UnwindSafe for only_quic::QuicServer
+pub struct only_quic::ServerConfig(_)
+impl only_quic::ServerConfig
+pub fn only_quic::ServerConfig::migration(self, bool) -> Self
+pub fn only_quic::ServerConfig::transport(self, &only_quic::TransportConfig) -> Self
+impl core::clone::Clone for only_quic::ServerConfig
+pub fn only_quic::ServerConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_quic::ServerConfig
+pub fn only_quic::ServerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_quic::ServerConfig
+impl core::marker::Sync for only_quic::ServerConfig
+impl core::marker::Unpin for only_quic::ServerConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_quic::ServerConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_quic::ServerConfig
+pub struct only_quic::StreamId(_)
+impl only_quic::StreamId
+pub fn only_quic::StreamId::dir(self) -> only_quic::Dir
+pub fn only_quic::StreamId::index(self) -> u64
+pub fn only_quic::StreamId::initiator(self) -> only_quic::Side
+pub fn only_quic::StreamId::new(only_quic::Side, only_quic::Dir, u64) -> only_quic::StreamId
+impl core::clone::Clone for only_quic::StreamId
+pub fn only_quic::StreamId::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::StreamId
+impl core::cmp::Ord for only_quic::StreamId
+pub fn only_quic::StreamId::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_quic::StreamId
+pub fn only_quic::StreamId::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_quic::StreamId
+pub fn only_quic::StreamId::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<only_quic::StreamId> for u64
+pub fn u64::from(only_quic::StreamId) -> u64
+impl core::fmt::Debug for only_quic::StreamId
+pub fn only_quic::StreamId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_quic::StreamId
+pub fn only_quic::StreamId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_quic::StreamId
+pub fn only_quic::StreamId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_quic::StreamId
+impl core::marker::StructuralPartialEq for only_quic::StreamId
+impl core::marker::Send for only_quic::StreamId
+impl core::marker::Sync for only_quic::StreamId
+impl core::marker::Unpin for only_quic::StreamId
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::StreamId
+impl core::panic::unwind_safe::UnwindSafe for only_quic::StreamId
+#[non_exhaustive] pub struct only_quic::TransportConfig
+pub only_quic::TransportConfig::congestion: only_quic::Congestion
+pub only_quic::TransportConfig::datagram_receive_buffer_size: core::option::Option<usize>
+pub only_quic::TransportConfig::datagram_send_buffer_size: usize
+pub only_quic::TransportConfig::initial_mtu: u16
+pub only_quic::TransportConfig::initial_rtt: core::time::Duration
+pub only_quic::TransportConfig::keep_alive_interval: core::option::Option<core::time::Duration>
+pub only_quic::TransportConfig::max_concurrent_bidi_streams: u32
+pub only_quic::TransportConfig::max_concurrent_uni_streams: u32
+pub only_quic::TransportConfig::max_idle_timeout: core::option::Option<core::time::Duration>
+pub only_quic::TransportConfig::mtu_discovery: bool
+pub only_quic::TransportConfig::receive_window: core::option::Option<u64>
+pub only_quic::TransportConfig::send_window: u64
+pub only_quic::TransportConfig::stream_receive_window: u64
+impl core::clone::Clone for only_quic::TransportConfig
+pub fn only_quic::TransportConfig::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::TransportConfig
+impl core::cmp::PartialEq for only_quic::TransportConfig
+pub fn only_quic::TransportConfig::eq(&self, &Self) -> bool
+impl core::default::Default for only_quic::TransportConfig
+pub fn only_quic::TransportConfig::default() -> Self
+impl core::fmt::Debug for only_quic::TransportConfig
+pub fn only_quic::TransportConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_quic::TransportConfig
+impl core::marker::Send for only_quic::TransportConfig
+impl core::marker::Sync for only_quic::TransportConfig
+impl core::marker::Unpin for only_quic::TransportConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::TransportConfig
+impl core::panic::unwind_safe::UnwindSafe for only_quic::TransportConfig
+#[non_exhaustive] pub struct only_quic::UdpStats
+pub only_quic::UdpStats::bytes: u64
+pub only_quic::UdpStats::datagrams: u64
+pub only_quic::UdpStats::ios: u64
+impl core::clone::Clone for only_quic::UdpStats
+pub fn only_quic::UdpStats::clone(&self) -> Self
+impl core::cmp::Eq for only_quic::UdpStats
+impl core::cmp::PartialEq for only_quic::UdpStats
+pub fn only_quic::UdpStats::eq(&self, &Self) -> bool
+impl core::default::Default for only_quic::UdpStats
+pub fn only_quic::UdpStats::default() -> Self
+impl core::fmt::Debug for only_quic::UdpStats
+pub fn only_quic::UdpStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_quic::UdpStats
+impl core::marker::StructuralPartialEq for only_quic::UdpStats
+impl core::marker::Send for only_quic::UdpStats
+impl core::marker::Sync for only_quic::UdpStats
+impl core::marker::Unpin for only_quic::UdpStats
+impl core::panic::unwind_safe::RefUnwindSafe for only_quic::UdpStats
+impl core::panic::unwind_safe::UnwindSafe for only_quic::UdpStats
+pub trait only_quic::QuicHandler: core::marker::Send + 'static
+pub fn only_quic::QuicHandler::on_close(&mut self, &only_quic::Connection, only_quic::ConnectionError)
+pub fn only_quic::QuicHandler::on_connected(&mut self, &only_quic::Connection)
+pub fn only_quic::QuicHandler::on_datagram(&mut self, &only_quic::Connection, bytes::bytes::Bytes)
+pub fn only_quic::QuicHandler::on_stream_data(&mut self, &only_quic::Connection, only_quic::StreamId, bytes::bytes::Bytes, bool)
+pub fn only_quic::QuicHandler::on_stream_opened(&mut self, &only_quic::Connection, only_quic::StreamId)
+pub fn only_quic::QuicHandler::on_stream_reset(&mut self, &only_quic::Connection, only_quic::StreamId, u64)
+pub fn only_quic::QuicHandler::on_stream_stopped(&mut self, &only_quic::Connection, only_quic::StreamId, u64)
+pub fn only_quic::QuicHandler::on_streams_available(&mut self, &only_quic::Connection, only_quic::Dir)
+pub fn only_quic::client_config(only_tls::config::RootCerts, &[&[u8]]) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>
+pub fn only_quic::client_config_from(&only_tls::config::ClientConfig) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>
+pub fn only_quic::client_config_insecure(&[&[u8]]) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>
+pub fn only_quic::dial<H: only_quic::QuicHandler>(&only::Engine, core::net::socket_addr::SocketAddr, &str, only_quic::ClientConfig, H) -> core::result::Result<only_quic::Connection, only_quic::Error>
+pub fn only_quic::server_config(alloc::vec::Vec<only_tls::config::Certificate>, only_tls::config::PrivateKey, &[&[u8]]) -> core::result::Result<only_quic::ServerConfig, only_quic::Error>
+pub fn only_quic::server_config_from(&only_tls::config::ServerConfig) -> core::result::Result<only_quic::ServerConfig, only_quic::Error>

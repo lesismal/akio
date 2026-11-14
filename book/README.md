@@ -1,4 +1,4 @@
-# The flash book: sources
+# The `only` book: sources
 
 English | [简体中文](README.zh-CN.md)
 

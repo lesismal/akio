@@ -2,7 +2,7 @@
 
 [English](api-stability.md)
 
-本文说明 flash 从 1.0.0 起的承诺：哪些 crate 和条目受[语义化版本](https://semver.org/lang/zh-CN/)
+本文说明 only 从 1.0.0 起的承诺：哪些 crate 和条目受[语义化版本](https://semver.org/lang/zh-CN/)
 约束、什么算破坏性变更、最低支持的 Rust 版本（MSRV）如何调整，以及各平台的支持级别。弃用流程见
 [deprecation.zh-CN.md](deprecation.zh-CN.md)；变更历史见 [CHANGELOG.zh-CN.md](../CHANGELOG.zh-CN.md)。
 
@@ -24,9 +24,9 @@
 
 | 级别 | Crate | 承诺 |
 |---|---|---|
-| 公开 | `flash`、`flash-core`、`flash-tls`、`flash-http`、`flash-ws`、`flash-mux`、`flash-socks`、`flash-arpc`、`flash-grpc`、`flash-kcp`、`flash-quic`、`flash-h3`、`flash-ebpf`、`flash-prefork`、`flash-turn`、`flash-webrtc`、`flash-media` | 其公开 API（见下）完整遵循 semver。 |
-| 内部 | `flash-sys`、`flash-buf`、`flash-timer`、`flash-pool`、`flash-epoll`、`flash-uring` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `flash` / `flash-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `flash-core` 和 `flash` 中的再导出受到保护。 |
-| 实验性 | `flash-dpdk`，以及 `flash` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`flash::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/flash-dpdk.txt` 只用于让变化可见。 |
+| 公开 | `only`、`only-core`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-kcp`、`only-quic`、`only-h3`、`only-ebpf`、`only-prefork`、`only-turn`、`only-webrtc`、`only-media` | 其公开 API（见下）完整遵循 semver。 |
+| 内部 | `only-sys`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-uring` | 实现用的 crate，仅因公开 crate 依赖它们才发布。它们自身的 API 可能在**任何**发布中变化；请依赖 `only` / `only-core`。它们贡献给公开 API 的类型（`SharedBuf`、`PoolConfig`、`PoolStats`）通过 `only-core` 和 `only` 中的再导出受到保护。 |
+| 实验性 | `only-dpdk`，以及 `only` 的 `dpdk` / `dpdk-pmd` feature（`Backend::Dpdk`、`only::dpdk`） | 内核旁路后端是新加入的，其配置仍可能在任何发布中变化。在生产中使用过之后再纳入保护（公开层级）；在此之前快照 `api/only-dpdk.txt` 只用于让变化可见。 |
 
 `tools/` 与 `fuzz/` 不发布。
 
@@ -39,16 +39,16 @@ trait（`Send`、`Sync`、`Unpin`、`UnwindSafe`）。
 
 - 标记为 `#[doc(hidden)]` 的条目以及只能经由它们访问的一切。这些是 workspace 内各 crate 共享的、
   面向后端的管道代码（`ConnInner`、`LoopLink`、`Group`、`DynAcceptor`、`DynHandler`、`LoopStats`、
-  `Pool`、`flash_http::transport`、`flash_ws::WsSession`、`flash_ebpf::cbpf`、`Conn::inner`、
+  `Pool`、`only_http::transport`、`only_ws::WsSession`、`only_ebpf::cbpf`、`Conn::inner`、
   遥测辅助函数等），可能在任何发布中变化。
 - `fuzzing` cargo feature 及其启用的 `fuzzing` 模块（`fuzz/` 的入口）。
-- `unstable` cargo feature（`flash`、`flash-tls`、`flash-quic`、`flash-webrtc`）及其启用的一切：
-  直接访问被封装的依赖（`flash::tls::rustls`、`ServerConfig::from_rustls` / `as_rustls`、
-  `flash_quic::proto`、`from_quinn` / `as_quinn_mut`、`flash_webrtc::str0m`、`Peer::with_rtc`、
+- `unstable` cargo feature（`only`、`only-tls`、`only-quic`、`only-webrtc`）及其启用的一切：
+  直接访问被封装的依赖（`only::tls::rustls`、`ServerConfig::from_rustls` / `as_rustls`、
+  `only_quic::proto`、`from_quinn` / `as_quinn_mut`、`only_webrtc::str0m`、`Peer::with_rtc`、
   `RtcConfig::with_str0m`、`OtherEvent::as_str0m` 等）。被封装的 crate 升级时它们的签名就会变化，
   这可能发生在次版本中。任何暂时无法承诺的公开内容都放进 `#[doc(hidden)]` 或 `unstable` 之后，
   绝不悄悄进入受保护的 API。
-- `flash-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`）：它用到 prost 的类型，
+- `only-grpc` 的 `prost` feature（为 prost 消息实现 `codec::Message`）：它用到 prost 的类型，
   因此 prost 升级可能出现在次版本中。
 - `Display` 输出、日志消息和 panic 消息的具体文本。
 - 文档中注明未指定的行为，以及性能特征。
@@ -60,14 +60,14 @@ WebSocket、arpc、gRPC、KCP、SOCKS 保持互通），Prometheus 指标的名�
 ### 公开依赖
 
 受保护的 API 只用到另外两个 crate 的类型：`bytes`（QUIC 与流式 API 中的 `Bytes`）和 `log`
-（`Config::log_level`），二者多年来一直是 1.x / 0.4。把它们升级到 semver 不兼容的版本对 flash
+（`Config::log_level`），二者多年来一直是 1.x / 0.4。把它们升级到 semver 不兼容的版本对 only
 而言是破坏性变更，只在主版本中进行。
 
 承担协议工作的 1.0 之前的依赖（rustls、quinn-proto、str0m、prost）都已**被封装**：受保护的 API
-改用 flash 自己的类型（`flash::tls::{ServerConfig, ClientConfig, Certificate, PrivateKey,
-RootCerts, Error}`、`flash_quic::{ServerConfig, ClientConfig, TransportConfig, StreamId, Dir,
-Side, ConnectionError, ConnectionStats}`、`flash_webrtc::{ChannelId, Mid, Pt, Codec, MediaData,
-RtcConfig, SdpChanges, Event, ...}`、`flash_grpc::codec::Message`）。升级它们，或用自研实现替换
+改用 only 自己的类型（`only::tls::{ServerConfig, ClientConfig, Certificate, PrivateKey,
+RootCerts, Error}`、`only_quic::{ServerConfig, ClientConfig, TransportConfig, StreamId, Dir,
+Side, ConnectionError, ConnectionStats}`、`only_webrtc::{ChannelId, Mid, Pt, Codec, MediaData,
+RtcConfig, SdpChanges, Event, ...}`、`only_grpc::codec::Message`）。升级它们，或用自研实现替换
 它们，都不是破坏性变更。只有通过上面的 `unstable` feature 与 `prost` feature 才能访问它们，而这些
 feature 不在承诺之内。
 
@@ -105,7 +105,7 @@ feature 不在承诺之内。
   `Default::default()`（或 `KcpConfig::fast()` 这样的预设）开始，再给字段赋值：
 
   ```rust
-  let mut cfg = flash::Config::default();
+  let mut cfg = only::Config::default();
   cfg.idle_timeout = Some(std::time::Duration::from_secs(30));
   ```
 
@@ -113,7 +113,7 @@ feature 不在承诺之内。
   字段而不是构建器方法：设置一个值只有一种方式，`Debug` 输出可读，API 不会翻倍，字段文档就在
   字段旁边。`*Config` 表示服务器、engine 或协议实例的设置；`*Options` 表示单次操作（一次 dial、
   一次调用、一次升级）的参数。
-- 由 flash 填写、用户读取的**报告结构体**（`Metrics`、`LoopCounters`、`ConnInfo`、`SlowRecord`、
+- 由 only 填写、用户读取的**报告结构体**（`Metrics`、`LoopCounters`、`ConnInfo`、`SlowRecord`、
   `PoolStats`、`UdpStats`、`TlsInfo`、`ClientResponse`、`Stats` 等）以及消息类型 `Request` /
   `Response` 都是 `#[non_exhaustive]`；用构造函数创建消息（`Request::new`、`Response::new`、
   `ClientRequest::new`、`FileBody::new`）。
@@ -126,7 +126,7 @@ feature 不在承诺之内。
   方法都带 `#[must_use]`（clippy `return_self_not_must_use`）。
 - **Trait**：用户实现的 trait（`Handler`、`Acceptor`、`Transport`、`Service`、`Middleware`、
   `WsHandler`、`RawHandler`、`QuicHandler`、`KcpHandler`）只会增加带默认实现的方法。用户只应调用
-  而不应实现的 trait 会被密封（私有 supertrait），从而可以随意增加方法；flash 1.0 中没有这样的
+  而不应实现的 trait 会被密封（私有 supertrait），从而可以随意增加方法；only 1.0 中没有这样的
   trait，面向后端的 trait 改为 `#[doc(hidden)]`。
 - **命名**：`dial` 以非阻塞方式发起客户端连接（回调，或稍后就绪的句柄）；`dial_blocking` 等到
   连接建立；`serve` / `serve_with(cfg, service)` 构造服务端 acceptor；字节数上限以 `_bytes` 结尾；

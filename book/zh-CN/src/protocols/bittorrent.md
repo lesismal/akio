@@ -1,6 +1,6 @@
 # BitTorrent
 
-`flash-bittorrent` 是运行在 flash 上的 BitTorrent：bencode 编码、.torrent 文件与磁力链接、HTTP
+`only-bittorrent` 是运行在 only 上的 BitTorrent：bencode 编码、.torrent 文件与磁力链接、HTTP
 和 UDP tracker（客户端与服务端）、带扩展和消息流加密（MSE）的 peer wire 协议、uTP、主线 DHT，
 以及一个用上述全部能力下载和做种的客户端。它移植自 fib 的 `bittorrent` 包，与主流客户端线路兼容：
 `tools/interop/bittorrent/run.sh` 针对 **libtorrent 2.0**（RC4 加密的 uTP、TCP、双向磁力链接、
@@ -9,16 +9,16 @@
 ## 一个 tracker、一个做种者和一个下载者
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:tracker}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:tracker}}
 ```
 
-`TrackerServer` 用一个内存存储同时服务两种协议：`http()` 是一个 flash-http service（处理以
+`TrackerServer` 用一个内存存储同时服务两种协议：`http()` 是一个 only-http service（处理以
 `announce` 和 `scrape` 结尾的路径，支持紧凑与字典形式的 peer 列表以及 `peers6`），`udp()` 是
 UDP listener 的 acceptor（BEP 15；连接 ID 是密钥、当前分钟和客户端地址的 HMAC，因此不为每个
 客户端保存状态）。
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:torrent}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
 
 `metainfo::Builder` 把字节、内存中的文件或一个路径（流式读取）哈希成 v1 种子，可设置 tracker
@@ -27,19 +27,19 @@ UDP listener 的 acceptor（BEP 15；连接 ID 是密钥、当前分钟和客户
 种子按其 v1 部分读取。
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:seeder}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:seeder}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-bittorrent/examples/guide-bittorrent.rs:leecher}}
+{{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:leecher}}
 ```
 
 ## 客户端
 
-一个 `Client` 是一个 flash engine 加 **一个端口号**：TCP listener 接受 peer 连接，UDP listener
+一个 `Client` 是一个 only engine 加 **一个端口号**：TCP listener 接受 peer 连接，UDP listener
 通过 `port::UdpPort` 由 uTP 和 DHT 共享。tracker 请求经由同一 engine 上的
-`tracker::TrackerClient`（HTTP(S) 用 flash-http，UDP 用 `dial_udp` 套接字）。存储读写和每一次
-SHA-1 校验都在逻辑池（`flash-pool`）上运行，从不占用 I/O 线程。
+`tracker::TrackerClient`（HTTP(S) 用 only-http，UDP 用 `dial_udp` 套接字）。存储读写和每一次
+SHA-1 校验都在逻辑池（`only-pool`）上运行，从不占用 I/O 线程。
 
 - **种子**来自 `MetaInfo`（`add_torrent`）或磁力链接（`add_magnet`，info 字典通过 ut_metadata
   从 peer 获取，BEP 9/10）。`AddOptions` 可以为种子指定独立存储（`MemoryStorage`，或任何实现
@@ -72,7 +72,7 @@ SHA-1 校验都在逻辑池（`flash-pool`）上运行，从不占用 I/O 线程
         └─ 其他（'d…' = DHT）        ──► on_datagram ──► dht::Node
 ```
 
-`UdpPort` 是一个 flash UDP listener 的 acceptor。它按首字节分拣数据报，用 10 ms 定时器驱动 uTP
+`UdpPort` 是一个 only UDP listener 的 acceptor。它按首字节分拣数据报，用 10 ms 定时器驱动 uTP
 连接，并且 **从 listener 自己的端口发送**：要联系尚未先发来数据的地址时，它用
 `Engine::dial_udp_from` 在 listener 套接字上打开一个 peer，这样 DHT 节点在它宣告的端口上可达，
 uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发起 uTP 连接；`on_accept` 接收
@@ -106,9 +106,9 @@ uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发�
   下载者，经 TCP 和 uTP、有无 MSE，通过 HTTP 和 UDP tracker 发现 peer，磁力链接，磁盘文件与续传，
   DHT 和 PEX。
 - `tools/interop/bittorrent/run.sh` 在一个 Debian 容器中以 127.0.0.1 运行全部场景：aria2 从
-  flash 下载（明文、强制 MSE、磁力链接）以及向 flash 做种（UDP tracker，明文与 MSE）；libtorrent
-  经 RC4 加密的 uTP 和经 TCP 从 flash 下载，以及通过磁力链接下载；libtorrent 以同样三种方式向
-  flash 做种；以及双向 DHT（flash 节点为 libtorrent 引导；双方都只凭磁力链接通过 DHT 找到对方的
+  only 下载（明文、强制 MSE、磁力链接）以及向 only 做种（UDP tracker，明文与 MSE）；libtorrent
+  经 RC4 加密的 uTP 和经 TCP 从 only 下载，以及通过磁力链接下载；libtorrent 以同样三种方式向
+  only 做种；以及双向 DHT（only 节点为 libtorrent 引导；双方都只凭磁力链接通过 DHT 找到对方的
   做种者）。
 - 模糊测试目标：`bt_bencode`（bencode、metainfo、磁力链接）、`bt_peer_wire`、`bt_krpc`、
   `bt_utp`、`bt_tracker`、`bt_mse`，其种子语料由 `cargo test` 回放。

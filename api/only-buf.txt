@@ -1,0 +1,25 @@
+pub mod only_buf
+pub struct only_buf::SharedBuf(_)
+impl only_buf::SharedBuf
+pub fn only_buf::SharedBuf::copy_from(&[u8]) -> Self
+impl core::clone::Clone for only_buf::SharedBuf
+pub fn only_buf::SharedBuf::clone(&self) -> Self
+impl core::convert::AsRef<[u8]> for only_buf::SharedBuf
+pub fn only_buf::SharedBuf::as_ref(&self) -> &[u8]
+impl core::convert::From<alloc::vec::Vec<u8>> for only_buf::SharedBuf
+pub fn only_buf::SharedBuf::from(alloc::vec::Vec<u8>) -> Self
+impl core::default::Default for only_buf::SharedBuf
+pub fn only_buf::SharedBuf::default() -> Self
+impl core::fmt::Debug for only_buf::SharedBuf
+pub fn only_buf::SharedBuf::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::deref::Deref for only_buf::SharedBuf
+pub type only_buf::SharedBuf::Target = [u8]
+pub fn only_buf::SharedBuf::deref(&self) -> &[u8]
+impl core::marker::Send for only_buf::SharedBuf
+impl core::marker::Sync for only_buf::SharedBuf
+impl core::marker::Unpin for only_buf::SharedBuf
+impl core::panic::unwind_safe::RefUnwindSafe for only_buf::SharedBuf
+impl core::panic::unwind_safe::UnwindSafe for only_buf::SharedBuf
+pub const only_buf::CLASSES: [usize; 5]
+pub fn only_buf::get(usize) -> alloc::vec::Vec<u8>
+pub fn only_buf::put(alloc::vec::Vec<u8>)

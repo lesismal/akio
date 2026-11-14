@@ -1,0 +1,28 @@
+pub mod only_socks
+pub struct only_socks::Socks
+impl only_socks::Socks
+pub fn only_socks::Socks::auth(self, impl core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync + 'static) -> only_socks::Socks
+pub fn only_socks::Socks::new(only::EngineRef) -> only_socks::Socks
+impl core::fmt::Debug for only_socks::Socks
+pub fn only_socks::Socks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_socks::Socks
+pub type only_socks::Socks::Handler = only_socks::SocksSession
+pub fn only_socks::Socks::on_open(&self, &only_core::conn::Conn<only_socks::SocksSession>) -> only_socks::SocksSession
+impl core::marker::Send for only_socks::Socks
+impl core::marker::Sync for only_socks::Socks
+impl core::marker::Unpin for only_socks::Socks
+impl !core::panic::unwind_safe::RefUnwindSafe for only_socks::Socks
+impl !core::panic::unwind_safe::UnwindSafe for only_socks::Socks
+pub struct only_socks::SocksSession
+impl core::fmt::Debug for only_socks::SocksSession
+pub fn only_socks::SocksSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Handler for only_socks::SocksSession
+pub fn only_socks::SocksSession::on_close(&mut self, &only_core::conn::Conn<Self>, core::option::Option<only_core::error::Error>)
+pub fn only_socks::SocksSession::on_data(&mut self, &only_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for only_socks::SocksSession
+impl core::marker::Sync for only_socks::SocksSession
+impl core::marker::Unpin for only_socks::SocksSession
+impl !core::panic::unwind_safe::RefUnwindSafe for only_socks::SocksSession
+impl !core::panic::unwind_safe::UnwindSafe for only_socks::SocksSession
+pub fn only_socks::connect_proxy(only::EngineRef) -> impl only_http::context::Service
+pub type only_socks::Auth = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync)>

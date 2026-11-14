@@ -1,17 +1,17 @@
 # SRT
 
-`flash_media::srt` 实现 live 模式的 SRT（Secure Reliable Transport，draft-sharabayko-srt-01）：
+`only_media::srt` 实现 live 模式的 SRT（Secure Reliable Transport，draft-sharabayko-srt-01）：
 在 UDP 上传 MPEG-TS，丢包在固定延迟内靠重传修复，ffmpeg、OBS 和硬件编码器都这样推流。
 `SrtServer` 位于媒体 [hub](media.md) 之前，接收推流、播放流；`dial`、`push`、`pull` 是主叫（caller）一侧。
 
-与 ffmpeg 的 libsrt 互通已测试（`crates/flash-media/tests/srt_ffmpeg.rs`，在 Linux Docker 里用 Debian
+与 ffmpeg 的 libsrt 互通已测试（`crates/only-media/tests/srt_ffmpeg.rs`，在 Linux Docker 里用 Debian
 的 ffmpeg 运行；ffmpeg 不带 SRT 时（如 Homebrew 版）测试自动跳过）：ffmpeg 推流进来、ffprobe / ffmpeg
-播放出去，带或不带密码；以及 flash 向 `mode=listener` 的 ffmpeg 推流和从它拉流。
+播放出去，带或不带密码；以及 only 向 `mode=listener` 的 ffmpeg 推流和从它拉流。
 
 ## 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:server}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:server}}
 ```
 
 - 服务端是一个 **UDP 监听器** 的 acceptor：每个对端地址有自己的 handler；同一地址的 caller 重启
@@ -22,7 +22,7 @@
 - `SrtConfig::on_connect` 能看到请求（地址、stream ID、延迟、是否加密）和解析后的 `StreamId`，
   可以用任意 `RejectReason` 拒绝（`FORBIDDEN` = 1403 等），caller 在握手中收到拒绝码。
 - **推流者** 在握手期间预留路径（`Hub::reserve`），所以同一路径的第二个推流者在握手时就被拒绝
-  （`CONFLICT`，1409）。它的 MPEG-TS 经解复用（`flash_media::mpegts::demux`），节目的轨道
+  （`CONFLICT`，1409）。它的 MPEG-TS 经解复用（`only_media::mpegts::demux`），节目的轨道
   （H.264、H.265、AAC、Opus、MP3）都已知后流才上线。
 - **播放者** 订阅 hub，收到复用成 MPEG-TS 的流，每个 SRT 包 7 个 TS 包，每个关键帧前重发 PAT/PMT，
   重新推流时时间戳继续递增；默认从 GOP 缓存开始（`play_gop_cache`）。对端确认太少
@@ -34,19 +34,19 @@
 ## 主叫（caller）
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:publish}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:publish}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:player}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:player}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:play}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:play}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:relay}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:relay}}
 ```
 
 - `srt::dial(&engine, addr, Config, handler)` 打开一个原始 caller 会话（engine 需要 `udp_client_threads`）；

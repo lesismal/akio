@@ -1,25 +1,25 @@
 # TLS
 
-`flash::tls` (the `flash-tls` crate) runs [rustls](https://docs.rs/rustls) sans-io as a
+`only::tls` (the `only-tls` crate) runs [rustls](https://docs.rs/rustls) sans-io as a
 **transport layer** under the connection. Wrap any acceptor and its handlers see plaintext:
 `on_data` receives decrypted bytes, `Conn::send*` encrypts.
 
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-tls.rs:server}}
+{{#include ../../../../crates/only/examples/guide-tls.rs:server}}
 ```
 
 ## Client
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-tls.rs:client}}
+{{#include ../../../../crates/only/examples/guide-tls.rs:client}}
 ```
 
 `Tls::client(config, server_name, acceptor)` verifies the server as `server_name` and sends it as
 SNI. It returns an error for a name that is not a valid DNS name or IP address.
 
-Run both with `cargo run -p flash --example guide-tls`.
+Run both with `cargo run -p only --example guide-tls`.
 
 ## How it works
 
@@ -29,8 +29,8 @@ Run both with `cargo run -p flash --example guide-tls`.
   flushed as soon as it does.
 - `close_after_send()` sends `close_notify` after the queued data.
 - A failed handshake or a bad record closes the connection after flushing the alert; failures
-  are counted separately for the handshake (`flash_tls_handshake_failures_total`) and afterwards
-  (`flash_transport_errors_total`).
+  are counted separately for the handshake (`only_tls_handshake_failures_total`) and afterwards
+  (`only_transport_errors_total`).
 - Records are sealed in pieces of at most one TLS record, so large sends are fine.
 - The connection table shows `transport: "tls"`.
 
@@ -41,7 +41,7 @@ side) and `version`, or `None` for a non-TLS connection.
 
 ## Configuration
 
-Configuration uses flash's own types; the TLS implementation underneath (rustls, with the
+Configuration uses `only`'s own types; the TLS implementation underneath (rustls, with the
 `ring` crypto provider compiled in) is not part of the API, so upgrading it is not a breaking
 change. `Certificate::from_pem` / `from_der`, `PrivateKey::from_pem` / `from_der` /
 `from_pkcs8_der` and `RootCerts` load the material.
@@ -56,18 +56,18 @@ change. `Certificate::from_pem` / `from_der`, `PrivateKey::from_pem` / `from_der
 | SNI | | `.sni(false)` to stop sending it |
 | tests only | | `.insecure_skip_verify()` |
 
-`.build()` checks the certificates and key and returns the config or a `flash::tls::Error`;
+`.build()` checks the certificates and key and returns the config or a `only::tls::Error`;
 configs are cheap to clone. For settings these builders do not cover, the `unstable` cargo
-feature re-exports `flash::tls::rustls` and adds `ServerConfig::from_rustls` /
+feature re-exports `only::tls::rustls` and adds `ServerConfig::from_rustls` /
 `ClientConfig::from_rustls` (and `as_rustls`); that feature is outside the semver promise.
 
 ## With other crates
 
-- flash-http: `Tls::server(cfg, serve(app))`. With `alpn_protocols = [h2, http/1.1]` the same
+- only-http: `Tls::server(cfg, serve(app))`. With `alpn_protocols = [h2, http/1.1]` the same
   listener serves HTTP/2 to clients that negotiate `h2`.
-- flash-ws client: `DialOptions::tls` for `wss://`.
-- flash-http clients: `Client::with_tls(cfg)`, `H2Client::dial(.., Some((cfg, name)), ..)`.
-- QUIC and HTTP/3 use TLS 1.3 inside QUIC: see `flash_quic::server_config` and
+- only-ws client: `DialOptions::tls` for `wss://`.
+- only-http clients: `Client::with_tls(cfg)`, `H2Client::dial(.., Some((cfg, name)), ..)`.
+- QUIC and HTTP/3 use TLS 1.3 inside QUIC: see `only_quic::server_config` and
   `server_config_from(&tls_config)`.
 
 ## Not done
@@ -77,7 +77,7 @@ kTLS offload; TLS 1.3 early data over TCP; system root certificates (load them i
 
 ## Writing your own transport
 
-`flash_core::Transport` is the trait TLS implements: `recv(cipher, plain, out)`, `seal(plain,
+`only_core::Transport` is the trait TLS implements: `recv(cipher, plain, out)`, `seal(plain,
 out)`, `shutdown(out)`, plus `name` and `handshaking`. Return one from `Acceptor::transport` to
 layer any byte-stream transformation under a connection. All calls happen under the connection's
 write lock, in wire order, and must not block.

@@ -1,8 +1,8 @@
 # 流媒体：hub、RTMP、HTTP-FLV、HLS
 
-`flash-media` 是直播服务端工具集：一个流 **hub**，周围是全部推流与播放协议。通过 RTMP、RTSP 或
+`only-media` 是直播服务端工具集：一个流 **hub**，周围是全部推流与播放协议。通过 RTMP、RTSP 或
 SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS 播放，协议之间没有任何胶水代码：
-每个协议都把收到的内容转换成 `flash_media::av` 的规范包，再从规范包封装输出。
+每个协议都把收到的内容转换成 `only_media::av` 的规范包，再从规范包封装输出。
 
 | 协议 | 推流 | 播放 | 章节 |
 |---|---|---|---|
@@ -14,20 +14,20 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 | WHIP / WHEP | 信令（媒体可插入） | 信令 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
 
 编码：H.264、H.265、AAC 和 Opus，凡容器能承载之处都支持（容器允许时还有 G.711 与 MP3）。下面的代码片段
-来自 `crates/flash-media/examples/guide-media.rs`。
+来自 `crates/only-media/examples/guide-media.rs`。
 
 ## 规范形式
 
 `av::Track` 描述一路基本流：`Codec` 及其 ISO BMFF 形式的配置（带参数集的
 `AVCDecoderConfigurationRecord` / `HEVCDecoderConfigurationRecord`、AAC 的 `AudioSpecificConfig`、
 `OpusHead`），以及画面尺寸或采样率。`av::Packet` 是一个访问单元：AVCC 视频（4 字节 NAL 长度，不含访问
-单元分隔符）、不带 ADTS 的 AAC 原始帧、Opus 包；解码时间与显示时间以纳秒计。`flash_media::codec`
+单元分隔符）、不带 ADTS 的 AAC 原始帧、Opus 包；解码时间与显示时间以纳秒计。`only_media::codec`
 提供 AVCC 与 Annex B 互转、解析配置记录与 SPS（画面尺寸）以及 ADTS 分帧的工具。
 
 ## Hub
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:hub}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:hub}}
 ```
 
 - **按路径区分的流。** RTMP 的 `rtmp://host/app/name` 推送 `app/name`；RTSP、SRT、HTTP 与 WHIP 使用
@@ -50,11 +50,11 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 自定义 sink（录制、转推、分析）实现 `Sink` 即可：
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:sink}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:sink}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:subscribe}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:subscribe}}
 ```
 
 丢弃 `Subscription`（或 `Publisher`）即结束。`SubscribeOptions::wait` 让订阅可以先于推流者存在，并在
@@ -63,7 +63,7 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 ## RTMP
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:rtmp}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:rtmp}}
 ```
 
 `RtmpServer` 是一个 `Acceptor`。它支持简单握手和 Flash digest（"complex"）握手、完整的 chunk 流（四种
@@ -72,15 +72,15 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 `closeStream`。推流者的 FLV tag 经 `flv::Decoder` 解析（传统 codec id，包括以 12 表示的 H.265，以及
 Enhanced RTMP 的 FourCC `hvc1`、`Opus`、`mp4a`）；播放者先收到 onMetaData 和序列头，然后是 GOP 缓存，
 由 `flv::Encoder` 写出（H.265 写作 `hvc1`，或在 `EncoderConfig::legacy_hevc` 时写作 codec id 12）。
-`RtmpConfig::on_connect` 可按 app 和 tcUrl 拒绝连接。RTMPS 就是放在 flash-tls 之后的 RTMP。
+`RtmpConfig::on_connect` 可按 app 和 tcUrl 拒绝连接。RTMPS 就是放在 only-tls 之后的 RTMP。
 
 ## HTTP-FLV、WS-FLV 与 HLS
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:http}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:http}}
 ```
 
-`MediaHttp` 按扩展名分发给两个 flash-http 服务，它们也可以单独挂载：
+`MediaHttp` 按扩展名分发给两个 only-http 服务，它们也可以单独挂载：
 
 - **`HttpFlv`**：`GET /app/name.flv` 输出一个永不结束的 FLV 文件（HTTP/1.1 上为 chunked，HTTP/2 上为
   流）。响应在订阅被接受后才开始，所以不存在的流返回 404，被拒绝的返回 403。同一 URL 升级为 WebSocket
@@ -95,11 +95,11 @@ Enhanced RTMP 的 FourCC `hvc1`、`Opus`、`mp4a`）；播放者先收到 onMeta
 ## 运行
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media.rs:engine}}
+{{#include ../../../../crates/only-media/examples/guide-media.rs:engine}}
 ```
 
 ```console
-$ cargo run -p flash-media --example guide-media
+$ cargo run -p only-media --example guide-media
 $ ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=25 -f lavfi -i sine \
     -c:v libx264 -g 50 -c:a aac -f flv rtmp://127.0.0.1:1935/live/cam
 $ ffprobe rtmp://127.0.0.1:1935/live/cam
@@ -109,7 +109,7 @@ $ ffplay http://127.0.0.1:8080/live/cam/index.m3u8
 
 ## 互通
 
-集成测试（`crates/flash-media/tests/*_interop.rs`，未安装 ffmpeg 时跳过）以 ffmpeg 9 作为推流端，
+集成测试（`crates/only-media/tests/*_interop.rs`，未安装 ffmpeg 时跳过）以 ffmpeg 9 作为推流端，
 ffprobe / ffmpeg 作为播放端：
 
 | 推流端 | 播放端 | 编码 |

@@ -2,16 +2,16 @@
 
 两个 crate：
 
-- `flash-webrtc` 在 flash UDP socket 上运行 WebRTC peer。协议本身由
+- `only-webrtc` 在 only UDP socket 上运行 WebRTC peer。协议本身由
   [str0m](https://github.com/algesten/str0m) 完成，它是 sans-io 的 WebRTC 状态机：ICE（完整 agent 与
   ICE-lite、consent freshness）、带证书指纹校验的 DTLS 1.2/1.3、SRTP/SRTCP（AES-CM-SHA1-80、
   AEAD-AES-128/256-GCM）、SCTP 数据通道（DCEP；可靠或不可靠、有序或无序）、RTP/RTCP 媒体（Opus、
   VP8、VP9、H.264、H.265、AV1 打包；NACK 与 RTX、PLI/FIR、TWCC 与带宽估计、发送/接收报告）以及 SDP
-  offer/answer。flash 用自己的 I/O 线程和一个共享定时器线程驱动它，并接入纯 Rust 的加密实现
+  offer/answer。only 用自己的 I/O 线程和一个共享定时器线程驱动它，并接入纯 Rust 的加密实现
   （RustCrypto 加 `dimpl` DTLS 栈：不需要 C 工具链，也不需要 OpenSSL）。
-- `flash-turn` 提供 STUN 编解码、STUN 服务器和 TURN 服务器（UDP 上的 RFC 8656）。
+- `only-turn` 提供 STUN 编解码、STUN 服务器和 TURN 服务器（UDP 上的 RFC 8656）。
 
-互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 flash TURN 中继；还有 fib
+互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 only TURN 中继；还有 fib
 的 Go 版 WebRTC（数据通道，双向）；TURN
 服务器则与 pion/turn 客户端和 coturn 的 `turnutils_uclient` 互通（`tools/interop/webrtc/run.sh`，
 `COTURN=1` 时包括 coturn）。
@@ -19,7 +19,7 @@
 ## 一个引擎上的服务器、TURN 服务器与客户端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:engine}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:engine}}
 ```
 
 - `RtcServer::new(addrs)` 是一个 **UDP listener** 的 acceptor；它的所有 peer 共用这个端口。`addrs`
@@ -35,17 +35,17 @@
 
 ## 类型
 
-API 使用 flash 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`、`Codec`、`MediaKind`、
+API 使用 only 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`、`Codec`、`MediaKind`、
 `Direction`、`MediaTime` / `Frequency`、`MediaData`、`MediaAdded`、`RtpPacket`、
 `KeyframeRequest`、`Candidate`、`IceConnectionState`、`RtcConfig`、`SdpChanges`、`Event`。底层
 干活的 str0m 不属于 API，因此升级它不是破坏性变更。`unstable` cargo feature（不在 semver 承诺内）
-重新导出 `flash_webrtc::str0m`，并提供 `Peer::with_rtc`（在 peer 上调用任意 str0m API）、
+重新导出 `only_webrtc::str0m`，并提供 `Peer::with_rtc`（在 peer 上调用任意 str0m API）、
 `RtcConfig::with_str0m` 与 `OtherEvent::as_str0m`。
 
 ## Peer 与 handler
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:handler}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:handler}}
 ```
 
 `PeerHandler` 的每个回调都有默认实现：`on_ice_state`、`on_connected`、`on_channel_open` /
@@ -71,11 +71,11 @@ API 使用 flash 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`�
 ## 完整 ICE 客户端：`Endpoint`
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:client}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:endpoint}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:endpoint}}
 ```
 
 `Endpoint::bind(&engine, addr)` 用 `Engine::bind_udp` 绑定一个 UDP socket（引擎需要
@@ -110,5 +110,5 @@ API 使用 flash 自己的类型：`ChannelId`、`ChannelConfig`、`Mid`、`Pt`�
 
 ## 尚未完成
 
-TCP/TLS 上的 TURN，以及 `flash-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的
+TCP/TLS 上的 TURN，以及 `only-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的
 ICE；mDNS 候选。str0m 自身的限制同样适用（见其文档）。

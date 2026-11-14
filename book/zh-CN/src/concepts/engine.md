@@ -6,7 +6,7 @@
 共享的逻辑线程池和一个遥测中心（telemetry hub）。用 `Engine::builder()` 构建：
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-basics.rs:engine}}
+{{#include ../../../../crates/only/examples/guide-basics.rs:engine}}
 ```
 
 - `build()` 校验配置、绑定所有 listener（端口冲突在这里就会报错）并准备线程，此时什么都还
@@ -59,7 +59,7 @@ io_uring 与 epoll 相差几个百分点之内，服务端是瓶颈时 io_uring 
 原因；`strict: true` 会把这种情况变成构建错误。
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-config.rs:listeners}}
+{{#include ../../../../crates/only/examples/guide-config.rs:listeners}}
 ```
 
 `Engine::accel_status()` 按 listener 报告 `Off`、`Steering(info)` 或 `Degraded(reason)`。
@@ -72,7 +72,7 @@ io_uring 与 epoll 相差几个百分点之内，服务端是瓶颈时 io_uring 
 
 - 每连接状态不需要锁，也不需要 `Sync`。
 - 同一个连接的事件按顺序逐个处理。
-- 一个慢回调会拖慢同一线程上的所有其他连接。所以回调不能阻塞，flash 也会测量回调耗时并
+- 一个慢回调会拖慢同一线程上的所有其他连接。所以回调不能阻塞，only 也会测量回调耗时并
   报告慢回调（见[可观测性](../observability.md)）。
 - 负载按连接均衡，而不是按请求：一个热点连接无法迁移到空闲线程。上面的分流控制的是初始
   放置。

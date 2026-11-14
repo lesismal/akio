@@ -1,0 +1,31 @@
+[package]
+name = "only-turn"
+description = "only STUN and TURN servers (RFC 8489, RFC 8656) over only UDP sockets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-turn"
+keywords = ["turn", "stun", "webrtc", "nat", "relay"]
+categories = ["network-programming"]
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_turn::fuzzing`); not a public API.
+fuzzing = []
+
+[dependencies]
+only = { workspace = true }
+hmac = "0.12"
+sha1 = "0.10"
+md-5 = "0.10"
+crc32fast = "1"
+getrandom = "0.2"
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

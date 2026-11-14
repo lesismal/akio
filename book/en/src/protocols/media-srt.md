@@ -1,19 +1,19 @@
 # SRT
 
-`flash_media::srt` speaks SRT (Secure Reliable Transport, draft-sharabayko-srt-01) in live
+`only_media::srt` speaks SRT (Secure Reliable Transport, draft-sharabayko-srt-01) in live
 mode: MPEG-TS over UDP, losses repaired by retransmission within a fixed latency, as ffmpeg,
 OBS and hardware encoders send it. An `SrtServer` in front of the media [hub](media.md) takes
 publishers in and plays streams out; `dial`, `push` and `pull` are the caller side.
 
-Interop with ffmpeg's libsrt is tested (`crates/flash-media/tests/srt_ffmpeg.rs`, run in Linux
+Interop with ffmpeg's libsrt is tested (`crates/only-media/tests/srt_ffmpeg.rs`, run in Linux
 Docker with Debian's ffmpeg; the test skips when ffmpeg has no SRT, as Homebrew's): ffmpeg
-publishing in and ffprobe / ffmpeg playing out, with and without a passphrase, and flash
+publishing in and ffprobe / ffmpeg playing out, with and without a passphrase, and `only`
 pushing to and pulling from ffmpeg in `mode=listener`.
 
 ## Server
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:server}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:server}}
 ```
 
 - The server is the acceptor of a **UDP listener**: each peer address gets its own handler,
@@ -27,7 +27,7 @@ pushing to and pulling from ffmpeg in `mode=listener`.
   (`FORBIDDEN` = 1403, ...), which the caller hears in the handshake.
 - A **publisher** reserves its path during the handshake (`Hub::reserve`), so a second
   publisher of a busy path is rejected there (`CONFLICT`, 1409). Its MPEG-TS is demuxed
-  (`flash_media::mpegts::demux`) and the stream goes live once the program's tracks are known
+  (`only_media::mpegts::demux`) and the stream goes live once the program's tracks are known
   (H.264, H.265, AAC, Opus, MP3).
 - A **player** subscribes to the hub and receives the stream muxed into MPEG-TS, seven
   transport packets per SRT packet, with PAT/PMT before every keyframe and timestamps that keep
@@ -42,19 +42,19 @@ pushing to and pulling from ffmpeg in `mode=listener`.
 ## Callers
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:publish}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:publish}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:player}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:player}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:play}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:play}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-srt.rs:relay}}
+{{#include ../../../../crates/only-media/examples/guide-media-srt.rs:relay}}
 ```
 
 - `srt::dial(&engine, addr, Config, handler)` opens a raw caller session (the engine needs

@@ -1,7 +1,7 @@
 [book]
-title = "flash 指南"
-description = "flash：Rust 的事件驱动、每核一线程网络库"
-authors = ["The flash authors"]
+title = "only 指南"
+description = "only：Rust 的事件驱动、每核一线程网络库"
+authors = ["only contributors"]
 language = "zh-CN"
 src = "src"
 
@@ -13,7 +13,7 @@ create-missing = false
 [output.html]
 git-repository-url = "https://github.com/lesismal/flash"
 edit-url-template = "https://github.com/lesismal/flash/edit/main/book/zh-CN/{path}"
-site-url = "/flash/zh-CN/"
+site-url = "/only/zh-CN/"
 additional-js = ["mermaid-init.js"]
 
 [output.html.playground]

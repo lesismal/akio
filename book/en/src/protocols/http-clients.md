@@ -1,16 +1,16 @@
 # HTTP clients
 
-Both clients run their connections on a flash `Engine` (give it `client_threads(n)` and
+Both clients run their connections on a `only` `Engine` (give it `client_threads(n)` and
 `start()` it). Results arrive in a callback on an I/O thread (which must not block), or through a
 `ResponseFuture` you can `wait()`, `wait_timeout(d)` or `.await`.
 
 ## HTTP/1.1: `client::Client`
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-http.rs:client}}
+{{#include ../../../../crates/only-http/examples/guide-http.rs:client}}
 ```
 
-- `Client::new(Arc<Engine>)`, cheap to clone. `with_tls(flash::tls::ClientConfig)` enables
+- `Client::new(Arc<Engine>)`, cheap to clone. `with_tls(only::tls::ClientConfig)` enables
   `https://`.
 - `ClientRequest::get(url)`, `ClientRequest::post(url, body)`, `.header(name, value)`; or fill
   `method`, `url`, `headers`, `body` yourself. `Host`, `Content-Length` and `Connection` are added.
@@ -27,7 +27,7 @@ name resolution off the calling thread (resolution happens in `send`/`request` a
 ## HTTP/2: `h2client::H2Client`
 
 ```rust,ignore
-{{#include ../../../../crates/flash-http/examples/guide-http.rs:h2client}}
+{{#include ../../../../crates/only-http/examples/guide-http.rs:h2client}}
 ```
 
 - `H2Client::dial(engine, addr, tls, opts, ready)` or `dial_blocking(engine, addr, tls,
@@ -39,15 +39,15 @@ name resolution off the calling thread (resolution happens in `send`/`request` a
   `ClientResponse::pushed` carries pushed responses).
 - Streaming both ways: `open(req, on_event)` returns an `H2Upload` (`write`, `finish`) for the
   request body, and reports `H2Event::Head`, `Data`, `Trailers`, `End` or `Error` as the response
-  arrives. flash-grpc's client is built on it.
+  arrives. only-grpc's client is built on it.
 - `is_open()`, `close()`.
 
 ## HTTP/3
 
-`flash_h3::H3Client` is covered in [QUIC and HTTP/3](quic-h3.md).
+`only_h3::H3Client` is covered in [QUIC and HTTP/3](quic-h3.md).
 
 ## Awaiting from async code
 
 `ResponseFuture` implements `Future`, so async code (tokio included) can `.await` it; the
-connection still runs on flash's I/O threads. See
+connection still runs on `only`'s I/O threads. See
 [Migrating from tokio](../migration/from-tokio.md).

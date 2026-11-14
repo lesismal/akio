@@ -1,0 +1,36 @@
+[package]
+name = "only-media"
+description = "only streaming media: RTMP, RTSP, SRT, FLV, HTTP-FLV, WS-FLV, HLS, WHIP/WHEP signalling and a stream hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-media"
+keywords = ["rtmp", "rtsp", "srt", "hls", "streaming"]
+categories = ["network-programming", "multimedia"]
+
+[dependencies]
+only = { workspace = true }
+only-core = { workspace = true }
+only-http = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"
+md-5 = "0.10"
+aes = "0.8"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_media::fuzzing`); not a public API.
+fuzzing = ["only-core/fuzzing"]
+
+[dev-dependencies]
+only-core = { workspace = true, features = ["fuzzing"] }
+
+[lints]
+workspace = true

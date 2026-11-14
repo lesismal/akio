@@ -1,4 +1,4 @@
-# Build/test image for flash-dpdk: Rust plus the distribution's DPDK development packages.
+# Build/test image for only-dpdk: Rust plus the distribution's DPDK development packages.
 # Used by tools/dpdk/test.sh and the `dpdk` CI job.
 FROM rust:1
 RUN apt-get update \

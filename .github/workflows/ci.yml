@@ -12,7 +12,7 @@ name: CI
 #                              interop (Go peers: arpc, grpc, kcp, h3, webrtc + coturn;
 #                              libtorrent and aria2 for BitTorrent), fuzz (all targets, 5 min
 #                              each), sanitizers (ASan + TSan on the core and backend tests),
-#                              dpdk (flash-dpdk with libdpdk: net_tap / TAP against the kernel)
+#                              dpdk (only-dpdk with libdpdk: net_tap / TAP against the kernel)
 #   Deploy (push to main):     book-deploy (GitHub Pages)
 #   ci-ok:                     one status to require in branch protection.
 #
@@ -140,12 +140,12 @@ jobs:
         # One test at a time, so a hang shows which test it is; the step timeout keeps the log.
         timeout-minutes: 15
         run: cargo test --workspace -- --test-threads=1
-      - name: Tests (io_uring), crates that honour FLASH_TEST_BACKEND
+      - name: Tests (io_uring), crates that honour ONLY_TEST_BACKEND
         if: matrix.backend == 'uring'
         timeout-minutes: 15
         env:
-          FLASH_TEST_BACKEND: uring
-        run: cargo test -p flash -p flash-http -p flash-ws -- --test-threads=1
+          ONLY_TEST_BACKEND: uring
+        run: cargo test -p only -p only-http -p only-ws -- --test-threads=1
 
   test-macos:
     runs-on: macos-latest
@@ -201,16 +201,16 @@ jobs:
           shared-key: features
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo hack check --workspace --feature-powerset --no-dev-deps
-      - name: flash-http without default features
+      - name: only-http without default features
         timeout-minutes: 10
-        run: cargo test -p flash-http --no-default-features -- --test-threads=1
+        run: cargo test -p only-http --no-default-features -- --test-threads=1
 
   miri:
     # Pure-Rust code only (Miri cannot run syscalls): the core crates, the protocol crates'
-    # unit tests and the syscall-free io_uring buffer-ring tests. Skipped: flash-grpc's gzip
+    # unit tests and the syscall-free io_uring buffer-ring tests. Skipped: only-grpc's gzip
     # test (zlib-rs 0.6.8 violates Stacked/Tree Borrows in its Deflate drop, see
     # docs/unsafe-review.md) and tests too slow under Miri (deflate round trips, exhaustive
-    # split loops, flash-ebpf's interpreter sweeps).
+    # split loops, only-ebpf's interpreter sweeps).
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -222,26 +222,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
-      - run: cargo miri test -p flash-timer -p flash-buf -p flash-core
+      - run: cargo miri test -p only-timer -p only-buf -p only-core
       # `fuzzing::` tests replay the fuzz corpora: minutes per crate under Miri, and the fuzz
       # job already runs those inputs natively.
       - run: >-
-          cargo miri test --lib -p flash-pool -p flash-http -p flash-mux
-          -p flash-arpc -p flash-h3 -p flash-kcp -- --skip fuzzing::
-      - name: flash-socks (its test connection leaves a helper thread running at exit)
+          cargo miri test --lib -p only-pool -p only-http -p only-mux
+          -p only-arpc -p only-h3 -p only-kcp -- --skip fuzzing::
+      - name: only-socks (its test connection leaves a helper thread running at exit)
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
-        run: "cargo miri test -p flash-socks --lib -- --skip fuzzing::"
-      - run: "cargo miri test -p flash-grpc --lib -- --skip framing_and_gzip --skip fuzzing::"
+        run: "cargo miri test -p only-socks --lib -- --skip fuzzing::"
+      - run: "cargo miri test -p only-grpc --lib -- --skip framing_and_gzip --skip fuzzing::"
       - run: >-
-          cargo miri test -p flash-ws --lib --
+          cargo miri test -p only-ws --lib --
           protocol:: session:: client:: deflate::tests::negotiation deflate::tests::client_offer
           --skip messages_survive_any_split --skip fuzzing::
       - name: io_uring buffer ring (kernel-shared memory, no syscalls)
-        run: cargo miri test -p flash-uring --lib -- buf_ring kernel_buf
+        run: cargo miri test -p only-uring --lib -- buf_ring kernel_buf
 
   loom:
-    # Model-checks the cork/send/close protocols of flash-core::conn (see loom_tests).
+    # Model-checks the cork/send/close protocols of only-core::conn (see loom_tests).
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -251,7 +251,7 @@ jobs:
         with:
           shared-key: loom
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: cargo test -p flash-core --lib --release -- loom
+      - run: cargo test -p only-core --lib --release -- loom
         env:
           RUSTFLAGS: --cfg loom
 
@@ -308,8 +308,8 @@ jobs:
           shared-key: conformance
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: >-
-          cargo build --release -p flash-http --example ws-echo
-          -p flash-ws --example ws-autobahn-client
+          cargo build --release -p only-http --example ws-echo
+          -p only-ws --example ws-autobahn-client
       - name: Autobahn server (core protocol)
         run: tools/autobahn/run.sh base
       - name: Autobahn server (permessage-deflate)
@@ -334,13 +334,13 @@ jobs:
         with:
           shared-key: conformance
           save-if: false
-      - run: cargo build --release -p flash-http --example h2-server
+      - run: cargo build --release -p only-http --example h2-server
       - run: tools/h2spec/run.sh
 
   interop:
     # Against Go peers: fib's arpc, grpc-go, kcp-go, quic-go + fib's HTTP/3, pion (WebRTC and TURN,
     # plus coturn's turnutils_uclient in Docker). The arpc and h3 suites build against the fib
-    # checkout next to flash (../../../../fib from each suite).
+    # checkout next to this repository (../../../../fib from each suite).
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       fail-fast: false
@@ -351,28 +351,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          path: flash
+          path: only
       - uses: actions/checkout@v4
         with:
           repository: lesismal/fib
           path: fib
       - uses: actions/setup-go@v5
         with:
-          go-version-file: flash/tools/interop/${{ matrix.suite }}/go.mod
-          cache-dependency-path: flash/tools/interop/${{ matrix.suite }}/go.*
+          go-version-file: only/tools/interop/${{ matrix.suite }}/go.mod
+          cache-dependency-path: only/tools/interop/${{ matrix.suite }}/go.*
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: flash
+          workspaces: only
           shared-key: interop-${{ matrix.suite }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Interop (${{ matrix.suite }})
         env:
           COTURN: ${{ matrix.suite == 'webrtc' && '1' || '0' }}
-        run: flash/tools/interop/${{ matrix.suite }}/run.sh
+        run: only/tools/interop/${{ matrix.suite }}/run.sh
 
   dpdk:
-    # flash-dpdk against the distribution's DPDK (tools/dpdk/Dockerfile): clippy with libdpdk
+    # only-dpdk against the distribution's DPDK (tools/dpdk/Dockerfile): clippy with libdpdk
     # linked, the memory-wire tests, and UDP/TCP echo against the kernel stack over DPDK's net_tap
     # PMD (1 and 2 queues) and smoltcp's TAP device. Needs NET_ADMIN and /dev/net/tun, so it runs
     # in the job's own container; no hugepages or NIC (--no-huge --no-pci, virtual devices).
@@ -385,7 +385,7 @@ jobs:
         run: tools/dpdk/test.sh
 
   interop-bittorrent:
-    # flash-bittorrent against libtorrent 2.0 and aria2 1.37, in a Debian container (the script
+    # only-bittorrent against libtorrent 2.0 and aria2 1.37, in a Debian container (the script
     # starts it and installs both there).
     if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
@@ -487,10 +487,10 @@ jobs:
       - name: Published baseline?
         id: baseline
         run: |
-          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'flash-ci (github.com/lesismal/flash)' \
-            https://crates.io/api/v1/crates/flash-core/1.0.0)
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A 'only-ci (github.com/lesismal/flash)' \
+            https://crates.io/api/v1/crates/only-core/1.0.0)
           echo "published=$([ "$code" = 200 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-          echo "flash-core 1.0.0 on crates.io: HTTP $code"
+          echo "only-core 1.0.0 on crates.io: HTTP $code"
       - if: steps.baseline.outputs.published == 'true'
         uses: dtolnay/rust-toolchain@stable
       - if: steps.baseline.outputs.published == 'true'
@@ -500,9 +500,9 @@ jobs:
       - if: steps.baseline.outputs.published == 'true'
         run: >-
           cargo semver-checks check-release
-          -p flash -p flash-core -p flash-tls -p flash-http -p flash-ws -p flash-mux
-          -p flash-socks -p flash-arpc -p flash-grpc -p flash-kcp -p flash-quic -p flash-h3
-          -p flash-ebpf -p flash-prefork -p flash-bittorrent
+          -p only -p only-core -p only-tls -p only-http -p only-ws -p only-mux
+          -p only-socks -p only-arpc -p only-grpc -p only-kcp -p only-quic -p only-h3
+          -p only-ebpf -p only-prefork -p only-bittorrent
 
   sanitizers:
     # AddressSanitizer and ThreadSanitizer over the core, syscall and backend tests (epoll and
@@ -538,15 +538,15 @@ jobs:
         timeout-minutes: 25
         run: >-
           cargo test -Zbuild-std --target x86_64-unknown-linux-gnu
-          -p flash-core -p flash-sys -p flash-epoll -p flash-buf -p flash-pool -p flash-timer
+          -p only-core -p only-sys -p only-epoll -p only-buf -p only-pool -p only-timer
           --lib --tests -- --test-threads=1
       - name: io_uring backend
         timeout-minutes: 25
         env:
-          FLASH_TEST_BACKEND: uring
+          ONLY_TEST_BACKEND: uring
         run: >-
           cargo test -Zbuild-std --target x86_64-unknown-linux-gnu
-          -p flash-uring -p flash --lib --tests -- --test-threads=1
+          -p only-uring -p only --lib --tests -- --test-threads=1
 
   ci-ok:
     # The single required check. Fails if any gate job failed or was cancelled.

@@ -1,31 +1,31 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/flash-sys",
-    "crates/flash-buf",
-    "crates/flash-timer",
-    "crates/flash-pool",
-    "crates/flash-core",
-    "crates/flash-epoll",
-    "crates/flash-uring",
-    "crates/flash-tls",
-    "crates/flash-http",
-    "crates/flash-ws",
-    "crates/flash-mux",
-    "crates/flash-socks",
-    "crates/flash-arpc",
-    "crates/flash-grpc",
-    "crates/flash-kcp",
-    "crates/flash-quic",
-    "crates/flash-h3",
-    "crates/flash-ebpf",
-    "crates/flash-prefork",
-    "crates/flash-dpdk",
-    "crates/flash-turn",
-    "crates/flash-webrtc",
-    "crates/flash-media",
-    "crates/flash-bittorrent",
-    "crates/flash",
+    "crates/only-sys",
+    "crates/only-buf",
+    "crates/only-timer",
+    "crates/only-pool",
+    "crates/only-core",
+    "crates/only-epoll",
+    "crates/only-uring",
+    "crates/only-tls",
+    "crates/only-http",
+    "crates/only-ws",
+    "crates/only-mux",
+    "crates/only-socks",
+    "crates/only-arpc",
+    "crates/only-grpc",
+    "crates/only-kcp",
+    "crates/only-quic",
+    "crates/only-h3",
+    "crates/only-ebpf",
+    "crates/only-prefork",
+    "crates/only-dpdk",
+    "crates/only-turn",
+    "crates/only-webrtc",
+    "crates/only-media",
+    "crates/only-bittorrent",
+    "crates/only",
     "tools/echo-bench",
 ]
 # The cargo-fuzz project is its own (nightly-only) workspace.
@@ -43,33 +43,33 @@ homepage = "https://lesismal.github.io/flash/"
 [workspace.dependencies]
 # Workspace crates: a path for local builds plus the version crates.io resolves once published
 # (a path-only dependency is a wildcard to cargo-deny and cannot be published). The versions are
-# exact (`=`): all crates are released in lockstep, and the internal crates (flash-sys, -buf,
+# exact (`=`): all crates are released in lockstep, and the internal crates (only-sys, -buf,
 # -timer, -pool, -epoll, -uring) may change their APIs in any release (docs/api-stability.md).
-flash-sys = { path = "crates/flash-sys", version = "=1.0.0-rc.1" }
-flash-buf = { path = "crates/flash-buf", version = "=1.0.0-rc.1" }
-flash-timer = { path = "crates/flash-timer", version = "=1.0.0-rc.1" }
-flash-pool = { path = "crates/flash-pool", version = "=1.0.0-rc.1" }
-flash-core = { path = "crates/flash-core", version = "=1.0.0-rc.1" }
-flash-epoll = { path = "crates/flash-epoll", version = "=1.0.0-rc.1" }
-flash-uring = { path = "crates/flash-uring", version = "=1.0.0-rc.1" }
-flash-tls = { path = "crates/flash-tls", version = "=1.0.0-rc.1" }
-flash-http = { path = "crates/flash-http", version = "=1.0.0-rc.1" }
-flash-ws = { path = "crates/flash-ws", version = "=1.0.0-rc.1" }
-flash-quic = { path = "crates/flash-quic", version = "=1.0.0-rc.1" }
-flash-h3 = { path = "crates/flash-h3", version = "=1.0.0-rc.1" }
-flash-kcp = { path = "crates/flash-kcp", version = "=1.0.0-rc.1" }
-flash-grpc = { path = "crates/flash-grpc", version = "=1.0.0-rc.1" }
-flash-arpc = { path = "crates/flash-arpc", version = "=1.0.0-rc.1" }
-flash-socks = { path = "crates/flash-socks", version = "=1.0.0-rc.1" }
-flash-mux = { path = "crates/flash-mux", version = "=1.0.0-rc.1" }
-flash-ebpf = { path = "crates/flash-ebpf", version = "=1.0.0-rc.1" }
-flash-dpdk = { path = "crates/flash-dpdk", version = "=1.0.0-rc.1" }
-flash-turn = { path = "crates/flash-turn", version = "=1.0.0-rc.1" }
-flash-webrtc = { path = "crates/flash-webrtc", version = "=1.0.0-rc.1" }
-flash-media = { path = "crates/flash-media", version = "=1.0.0-rc.1" }
-flash-bittorrent = { path = "crates/flash-bittorrent", version = "=1.0.0-rc.1" }
-flash = { path = "crates/flash", version = "=1.0.0-rc.1" }
-flash-prefork = { path = "crates/flash-prefork", version = "=1.0.0-rc.1" }
+only-sys = { path = "crates/only-sys", version = "=1.0.0-rc.1" }
+only-buf = { path = "crates/only-buf", version = "=1.0.0-rc.1" }
+only-timer = { path = "crates/only-timer", version = "=1.0.0-rc.1" }
+only-pool = { path = "crates/only-pool", version = "=1.0.0-rc.1" }
+only-core = { path = "crates/only-core", version = "=1.0.0-rc.1" }
+only-epoll = { path = "crates/only-epoll", version = "=1.0.0-rc.1" }
+only-uring = { path = "crates/only-uring", version = "=1.0.0-rc.1" }
+only-tls = { path = "crates/only-tls", version = "=1.0.0-rc.1" }
+only-http = { path = "crates/only-http", version = "=1.0.0-rc.1" }
+only-ws = { path = "crates/only-ws", version = "=1.0.0-rc.1" }
+only-quic = { path = "crates/only-quic", version = "=1.0.0-rc.1" }
+only-h3 = { path = "crates/only-h3", version = "=1.0.0-rc.1" }
+only-kcp = { path = "crates/only-kcp", version = "=1.0.0-rc.1" }
+only-grpc = { path = "crates/only-grpc", version = "=1.0.0-rc.1" }
+only-arpc = { path = "crates/only-arpc", version = "=1.0.0-rc.1" }
+only-socks = { path = "crates/only-socks", version = "=1.0.0-rc.1" }
+only-mux = { path = "crates/only-mux", version = "=1.0.0-rc.1" }
+only-ebpf = { path = "crates/only-ebpf", version = "=1.0.0-rc.1" }
+only-dpdk = { path = "crates/only-dpdk", version = "=1.0.0-rc.1" }
+only-turn = { path = "crates/only-turn", version = "=1.0.0-rc.1" }
+only-webrtc = { path = "crates/only-webrtc", version = "=1.0.0-rc.1" }
+only-media = { path = "crates/only-media", version = "=1.0.0-rc.1" }
+only-bittorrent = { path = "crates/only-bittorrent", version = "=1.0.0-rc.1" }
+only = { path = "crates/only", version = "=1.0.0-rc.1" }
+only-prefork = { path = "crates/only-prefork", version = "=1.0.0-rc.1" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

@@ -1,20 +1,20 @@
 # 配置参考
 
-所有配置都是普通的 Rust 值：带公开字段和 `Default` 的结构体，以及带方法的构建器。flash 没有
+所有配置都是普通的 Rust 值：带公开字段和 `Default` 的结构体，以及带方法的构建器。only 没有
 配置文件格式；用你自己的方式加载（TOML、环境变量、命令行参数），再映射到这些类型上。
 
 所有配置结构体都是 `#[non_exhaustive]`，这样新设置可以在次版本中加入而不破坏你的代码：从
-`Default`（或 `KcpConfig::fast()` 这样的预设）开始，再给需要的字段赋值，如下例。在 flash 之外
+`Default`（或 `KcpConfig::fast()` 这样的预设）开始，再给需要的字段赋值，如下例。在 only 之外
 不能用结构体字面量（`Config { .. }`）构造它们
 （[API 稳定性](https://github.com/lesismal/flash/blob/main/docs/api-stability.zh-CN.md)）。
 **可热更新**表示 `Engine::reload(&Config)` 会把它应用到运行中的 engine，包括已打开的连接
 （[可观测性与热更新](observability.md)）。
 
 ```rust,ignore
-{{#include ../../../crates/flash/examples/guide-config.rs:config}}
+{{#include ../../../crates/only/examples/guide-config.rs:config}}
 ```
 
-## `flash::Config`
+## `only::Config`
 
 通过 `EngineBuilder::config(cfg)` 传入；engine 的所有 listener 共享。
 
@@ -78,34 +78,34 @@ false）。
 
 | 类型 | 字段：默认值 |
 |---|---|
-| `flash_http::HttpConfig` | `max_header_bytes`：64 KiB，`max_body_bytes`：1 MiB，`h2`：`Some(H2Config::default())` |
-| `flash_http::H2Config` | `max_concurrent_streams`：128，`initial_window`：1 MiB，`conn_window`：16 MiB，`max_header_list`：64 KiB，`max_body_bytes`：1 MiB，`max_pending_bytes`：8 MiB |
-| `flash_http::files::Files` | `index`：`index.html`，`max_cached_bytes`：256 KiB，`max_open_files`：64，`check_interval`：5 s，`cache_control`：无 |
-| `flash_http::middleware::Cors` | `allow_origin`：`*`，`allow_methods`：GET, POST, PUT, PATCH, DELETE, OPTIONS，`allow_headers`：Content-Type, Authorization，`max_age`：600 s |
-| `flash_http::middleware::Compress` | `min_bytes`：1024，`level`：6 |
-| `flash_http::h2client::H2Options` | `initial_window`：1 MiB，`conn_window`：16 MiB，`enable_push`：false |
-| `flash_ws::WsConfig` | `max_message_bytes`：16 MiB，`permessage_deflate`：true，`compress_min_bytes`：128 |
-| `flash_http::WsOptions` | `config`：`WsConfig::default()`，`protocols`：无，`origin_allowed`：无 |
-| `flash_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s |
-| `flash_h3::H3Config` | `max_body`：8 MiB，`max_field_section`：64 KiB |
-| `flash_grpc::GrpcServer` | `max_message`：4 MiB，`compress`：false |
-| `flash_arpc::Routes` | `max_body`：64 MiB |
-| `flash_kcp::KcpConfig` | 见 [KCP](protocols/kcp.md#config) |
+| `only_http::HttpConfig` | `max_header_bytes`：64 KiB，`max_body_bytes`：1 MiB，`h2`：`Some(H2Config::default())` |
+| `only_http::H2Config` | `max_concurrent_streams`：128，`initial_window`：1 MiB，`conn_window`：16 MiB，`max_header_list`：64 KiB，`max_body_bytes`：1 MiB，`max_pending_bytes`：8 MiB |
+| `only_http::files::Files` | `index`：`index.html`，`max_cached_bytes`：256 KiB，`max_open_files`：64，`check_interval`：5 s，`cache_control`：无 |
+| `only_http::middleware::Cors` | `allow_origin`：`*`，`allow_methods`：GET, POST, PUT, PATCH, DELETE, OPTIONS，`allow_headers`：Content-Type, Authorization，`max_age`：600 s |
+| `only_http::middleware::Compress` | `min_bytes`：1024，`level`：6 |
+| `only_http::h2client::H2Options` | `initial_window`：1 MiB，`conn_window`：16 MiB，`enable_push`：false |
+| `only_ws::WsConfig` | `max_message_bytes`：16 MiB，`permessage_deflate`：true，`compress_min_bytes`：128 |
+| `only_http::WsOptions` | `config`：`WsConfig::default()`，`protocols`：无，`origin_allowed`：无 |
+| `only_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s |
+| `only_h3::H3Config` | `max_body`：8 MiB，`max_field_section`：64 KiB |
+| `only_grpc::GrpcServer` | `max_message`：4 MiB，`compress`：false |
+| `only_arpc::Routes` | `max_body`：64 MiB |
+| `only_kcp::KcpConfig` | 见 [KCP](protocols/kcp.md#config) |
 
 ## 环境变量
 
 | 变量 | 作用 |
 |---|---|
-| `FLASH_UDP_GSO=0` | 在 Linux 上关闭 UDP GSO（Linux 4.18+；否则每个进程探测一次） |
-| `FLASH_UDP_GRO=0` | 即使设置了 `Config::udp_gro` 也不启用 UDP GRO（Linux 5.0+） |
+| `ONLY_UDP_GSO=0` | 在 Linux 上关闭 UDP GSO（Linux 4.18+；否则每个进程探测一次） |
+| `ONLY_UDP_GRO=0` | 即使设置了 `Config::udp_gro` 也不启用 UDP GRO（Linux 5.0+） |
 
-测试套件还会读取 `FLASH_TEST_BACKEND=uring`（在 io_uring 上运行 engine 测试）和
-`FLASH_TEST_EXPECT_EBPF=1`（eBPF 不可用时失败而不是跳过）。
+测试套件还会读取 `ONLY_TEST_BACKEND=uring`（在 io_uring 上运行 engine 测试）和
+`ONLY_TEST_EXPECT_EBPF=1`（eBPF 不可用时失败而不是跳过）。
 
 ## Cargo feature
 
 | crate | feature | 默认 | 作用 |
 |---|---|---|---|
-| flash-http | `regex` | 开启 | 正则路由参数（`{id:[0-9]+}`） |
-| flash-grpc | `prost` | 关闭 | 为 prost 消息实现 `codec::Message`（不在 semver 承诺内） |
-| flash、flash-tls、flash-quic、flash-webrtc | `unstable` | 关闭 | 直接访问被封装的 rustls / quinn-proto / str0m（不在 semver 承诺内） |
+| only-http | `regex` | 开启 | 正则路由参数（`{id:[0-9]+}`） |
+| only-grpc | `prost` | 关闭 | 为 prost 消息实现 `codec::Message`（不在 semver 承诺内） |
+| only、only-tls、only-quic、only-webrtc | `unstable` | 关闭 | 直接访问被封装的 rustls / quinn-proto / str0m（不在 semver 承诺内） |

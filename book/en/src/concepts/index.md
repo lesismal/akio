@@ -1,6 +1,6 @@
 # Concepts
 
-flash has a small core and a few rules that every protocol crate follows. Learn them once:
+`only` has a small core and a few rules that every protocol crate follows. Learn them once:
 
 | Rule | Chapter |
 |---|---|
@@ -11,5 +11,5 @@ flash has a small core and a few rules that every protocol crate follows. Learn 
 | Shutdown is graceful: stop accepting, notify, drain, force after a timeout. | [Lifecycle and shutdown](lifecycle.md) |
 
 The snippets in these chapters come from
-[`crates/flash/examples/guide-basics.rs`](https://github.com/lesismal/flash/blob/main/crates/flash/examples/guide-basics.rs)
-(run it with `cargo run -p flash --example guide-basics`).
+[`crates/only/examples/guide-basics.rs`](https://github.com/lesismal/flash/blob/main/crates/only/examples/guide-basics.rs)
+(run it with `cargo run -p only --example guide-basics`).

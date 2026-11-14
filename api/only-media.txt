@@ -1,0 +1,2215 @@
+pub mod only_media
+pub mod only_media::amf
+#[non_exhaustive] pub enum only_media::amf::AmfError
+pub only_media::amf::AmfError::Invalid
+pub only_media::amf::AmfError::Marker(u8)
+pub only_media::amf::AmfError::Short
+impl core::clone::Clone for only_media::amf::AmfError
+pub fn only_media::amf::AmfError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::amf::AmfError
+impl core::cmp::PartialEq for only_media::amf::AmfError
+pub fn only_media::amf::AmfError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::amf::AmfError
+impl core::fmt::Debug for only_media::amf::AmfError
+pub fn only_media::amf::AmfError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::amf::AmfError
+pub fn only_media::amf::AmfError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::amf::AmfError
+impl core::marker::Send for only_media::amf::AmfError
+impl core::marker::Sync for only_media::amf::AmfError
+impl core::marker::Unpin for only_media::amf::AmfError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::amf::AmfError
+impl core::panic::unwind_safe::UnwindSafe for only_media::amf::AmfError
+#[non_exhaustive] pub enum only_media::amf::Value
+pub only_media::amf::Value::Array(alloc::vec::Vec<only_media::amf::Value>)
+pub only_media::amf::Value::Bool(bool)
+pub only_media::amf::Value::Bytes(alloc::vec::Vec<u8>)
+pub only_media::amf::Value::Date(f64)
+pub only_media::amf::Value::EcmaArray(alloc::vec::Vec<(alloc::string::String, only_media::amf::Value)>)
+pub only_media::amf::Value::Null
+pub only_media::amf::Value::Number(f64)
+pub only_media::amf::Value::Object(alloc::vec::Vec<(alloc::string::String, only_media::amf::Value)>)
+pub only_media::amf::Value::String(alloc::string::String)
+pub only_media::amf::Value::Undefined
+impl only_media::amf::Value
+pub fn only_media::amf::Value::as_f64(&self) -> core::option::Option<f64>
+pub fn only_media::amf::Value::as_str(&self) -> core::option::Option<&str>
+pub fn only_media::amf::Value::get(&self, &str) -> core::option::Option<&only_media::amf::Value>
+pub fn only_media::amf::Value::object<K: core::convert::Into<alloc::string::String>>(impl core::iter::traits::collect::IntoIterator<Item = (K, only_media::amf::Value)>) -> only_media::amf::Value
+pub fn only_media::amf::Value::props(&self) -> core::option::Option<&[(alloc::string::String, only_media::amf::Value)]>
+impl core::clone::Clone for only_media::amf::Value
+pub fn only_media::amf::Value::clone(&self) -> Self
+impl core::cmp::PartialEq for only_media::amf::Value
+pub fn only_media::amf::Value::eq(&self, &Self) -> bool
+impl core::convert::From<&str> for only_media::amf::Value
+pub fn only_media::amf::Value::from(&str) -> only_media::amf::Value
+impl core::convert::From<bool> for only_media::amf::Value
+pub fn only_media::amf::Value::from(bool) -> only_media::amf::Value
+impl core::convert::From<f64> for only_media::amf::Value
+pub fn only_media::amf::Value::from(f64) -> only_media::amf::Value
+impl core::fmt::Debug for only_media::amf::Value
+pub fn only_media::amf::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::amf::Value
+impl core::marker::Send for only_media::amf::Value
+impl core::marker::Sync for only_media::amf::Value
+impl core::marker::Unpin for only_media::amf::Value
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::amf::Value
+impl core::panic::unwind_safe::UnwindSafe for only_media::amf::Value
+pub struct only_media::amf::Reader<'a>
+impl<'a> only_media::amf::Reader<'a>
+pub fn only_media::amf::Reader<'a>::is_empty(&self) -> bool
+pub fn only_media::amf::Reader<'a>::new(&'a [u8]) -> only_media::amf::Reader<'a>
+pub fn only_media::amf::Reader<'a>::read(&mut self) -> core::result::Result<only_media::amf::Value, only_media::amf::AmfError>
+pub fn only_media::amf::Reader<'a>::read_all(&mut self) -> core::result::Result<alloc::vec::Vec<only_media::amf::Value>, only_media::amf::AmfError>
+pub fn only_media::amf::Reader<'a>::rest(&self) -> &'a [u8]
+impl<'a> core::fmt::Debug for only_media::amf::Reader<'a>
+pub fn only_media::amf::Reader<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Send for only_media::amf::Reader<'a>
+impl<'a> core::marker::Sync for only_media::amf::Reader<'a>
+impl<'a> core::marker::Unpin for only_media::amf::Reader<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_media::amf::Reader<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_media::amf::Reader<'a>
+pub fn only_media::amf::decode_all(&[u8]) -> core::result::Result<alloc::vec::Vec<only_media::amf::Value>, only_media::amf::AmfError>
+pub fn only_media::amf::decode_amf3_all(&[u8]) -> core::result::Result<alloc::vec::Vec<only_media::amf::Value>, only_media::amf::AmfError>
+pub fn only_media::amf::encode(&[only_media::amf::Value]) -> alloc::vec::Vec<u8>
+pub fn only_media::amf::write(&mut alloc::vec::Vec<u8>, &only_media::amf::Value)
+pub fn only_media::amf::write_string(&mut alloc::vec::Vec<u8>, &str)
+pub mod only_media::av
+#[non_exhaustive] pub enum only_media::av::Codec
+pub only_media::av::Codec::Aac
+pub only_media::av::Codec::H264
+pub only_media::av::Codec::H265
+pub only_media::av::Codec::Mp3
+pub only_media::av::Codec::Opus
+pub only_media::av::Codec::Pcma
+pub only_media::av::Codec::Pcmu
+pub only_media::av::Codec::Unknown
+impl only_media::av::Codec
+pub fn only_media::av::Codec::is_audio(self) -> bool
+pub fn only_media::av::Codec::is_video(self) -> bool
+pub fn only_media::av::Codec::name(self) -> &'static str
+impl core::clone::Clone for only_media::av::Codec
+pub fn only_media::av::Codec::clone(&self) -> Self
+impl core::cmp::Eq for only_media::av::Codec
+impl core::cmp::PartialEq for only_media::av::Codec
+pub fn only_media::av::Codec::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::av::Codec
+pub fn only_media::av::Codec::default() -> Self
+impl core::fmt::Debug for only_media::av::Codec
+pub fn only_media::av::Codec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::av::Codec
+pub fn only_media::av::Codec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_media::av::Codec
+pub fn only_media::av::Codec::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_media::av::Codec
+impl core::marker::StructuralPartialEq for only_media::av::Codec
+impl core::marker::Send for only_media::av::Codec
+impl core::marker::Sync for only_media::av::Codec
+impl core::marker::Unpin for only_media::av::Codec
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::av::Codec
+impl core::panic::unwind_safe::UnwindSafe for only_media::av::Codec
+#[non_exhaustive] pub struct only_media::av::Packet
+pub only_media::av::Packet::data: alloc::vec::Vec<u8>
+pub only_media::av::Packet::dts: only_media::av::Time
+pub only_media::av::Packet::keyframe: bool
+pub only_media::av::Packet::pts: only_media::av::Time
+pub only_media::av::Packet::track: usize
+impl only_media::av::Packet
+pub fn only_media::av::Packet::cts(&self) -> only_media::av::Time
+pub fn only_media::av::Packet::new(usize, only_media::av::Time, only_media::av::Time, bool, alloc::vec::Vec<u8>) -> only_media::av::Packet
+impl core::clone::Clone for only_media::av::Packet
+pub fn only_media::av::Packet::clone(&self) -> Self
+impl core::cmp::Eq for only_media::av::Packet
+impl core::cmp::PartialEq for only_media::av::Packet
+pub fn only_media::av::Packet::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::av::Packet
+pub fn only_media::av::Packet::default() -> Self
+impl core::fmt::Debug for only_media::av::Packet
+pub fn only_media::av::Packet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::av::Packet
+impl core::marker::Send for only_media::av::Packet
+impl core::marker::Sync for only_media::av::Packet
+impl core::marker::Unpin for only_media::av::Packet
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::av::Packet
+impl core::panic::unwind_safe::UnwindSafe for only_media::av::Packet
+#[non_exhaustive] pub struct only_media::av::Track
+pub only_media::av::Track::channels: u8
+pub only_media::av::Track::codec: only_media::av::Codec
+pub only_media::av::Track::config: alloc::vec::Vec<u8>
+pub only_media::av::Track::height: u32
+pub only_media::av::Track::sample_rate: u32
+pub only_media::av::Track::width: u32
+impl only_media::av::Track
+pub fn only_media::av::Track::aac(alloc::vec::Vec<u8>) -> only_media::av::Track
+pub fn only_media::av::Track::audio(only_media::av::Codec, alloc::vec::Vec<u8>, u32, u8) -> only_media::av::Track
+pub fn only_media::av::Track::clock_rate(&self) -> u32
+pub fn only_media::av::Track::is_video(&self) -> bool
+pub fn only_media::av::Track::new(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
+pub fn only_media::av::Track::video(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
+impl core::clone::Clone for only_media::av::Track
+pub fn only_media::av::Track::clone(&self) -> Self
+impl core::cmp::Eq for only_media::av::Track
+impl core::cmp::PartialEq for only_media::av::Track
+pub fn only_media::av::Track::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::av::Track
+pub fn only_media::av::Track::default() -> Self
+impl core::fmt::Debug for only_media::av::Track
+pub fn only_media::av::Track::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::av::Track
+impl core::marker::Send for only_media::av::Track
+impl core::marker::Sync for only_media::av::Track
+impl core::marker::Unpin for only_media::av::Track
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::av::Track
+impl core::panic::unwind_safe::UnwindSafe for only_media::av::Track
+pub const only_media::av::MILLISECOND: only_media::av::Time
+pub const only_media::av::SECOND: only_media::av::Time
+pub fn only_media::av::from_ticks(i64, u32) -> only_media::av::Time
+pub fn only_media::av::to_ticks(only_media::av::Time, u32) -> i64
+pub type only_media::av::Time = i64
+pub type only_media::av::Tracks = alloc::rcs::arc::Arc<[only_media::av::Track]>
+pub mod only_media::codec
+pub mod only_media::codec::aac
+pub struct only_media::codec::aac::AdtsFrame<'a>
+pub only_media::codec::aac::AdtsFrame::config: only_media::codec::aac::Config
+pub only_media::codec::aac::AdtsFrame::payload: &'a [u8]
+impl<'a> core::clone::Clone for only_media::codec::aac::AdtsFrame<'a>
+pub fn only_media::codec::aac::AdtsFrame<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for only_media::codec::aac::AdtsFrame<'a>
+impl<'a> core::cmp::PartialEq for only_media::codec::aac::AdtsFrame<'a>
+pub fn only_media::codec::aac::AdtsFrame<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for only_media::codec::aac::AdtsFrame<'a>
+pub fn only_media::codec::aac::AdtsFrame<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for only_media::codec::aac::AdtsFrame<'a>
+impl<'a> core::marker::Send for only_media::codec::aac::AdtsFrame<'a>
+impl<'a> core::marker::Sync for only_media::codec::aac::AdtsFrame<'a>
+impl<'a> core::marker::Unpin for only_media::codec::aac::AdtsFrame<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_media::codec::aac::AdtsFrame<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_media::codec::aac::AdtsFrame<'a>
+#[non_exhaustive] pub struct only_media::codec::aac::Config
+pub only_media::codec::aac::Config::channels: u8
+pub only_media::codec::aac::Config::object_type: u8
+pub only_media::codec::aac::Config::sample_rate: u32
+impl only_media::codec::aac::Config
+pub fn only_media::codec::aac::Config::adts_header(&self, usize) -> [u8; 7]
+pub fn only_media::codec::aac::Config::encode(&self) -> alloc::vec::Vec<u8>
+pub fn only_media::codec::aac::Config::new(u8, u32, u8) -> only_media::codec::aac::Config
+pub fn only_media::codec::aac::Config::parse(&[u8]) -> core::result::Result<only_media::codec::aac::Config, only_media::codec::CodecError>
+impl core::clone::Clone for only_media::codec::aac::Config
+pub fn only_media::codec::aac::Config::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::aac::Config
+impl core::cmp::PartialEq for only_media::codec::aac::Config
+pub fn only_media::codec::aac::Config::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::codec::aac::Config
+pub fn only_media::codec::aac::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::codec::aac::Config
+impl core::marker::StructuralPartialEq for only_media::codec::aac::Config
+impl core::marker::Send for only_media::codec::aac::Config
+impl core::marker::Sync for only_media::codec::aac::Config
+impl core::marker::Unpin for only_media::codec::aac::Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::aac::Config
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::aac::Config
+pub const only_media::codec::aac::FRAME_SAMPLES: u32
+pub const only_media::codec::aac::SAMPLE_RATES: [u32; 13]
+pub fn only_media::codec::aac::split_adts(&[u8]) -> core::result::Result<(alloc::vec::Vec<only_media::codec::aac::AdtsFrame<'_>>, usize), only_media::codec::CodecError>
+pub mod only_media::codec::h264
+#[non_exhaustive] pub struct only_media::codec::h264::Config
+pub only_media::codec::h264::Config::compat: u8
+pub only_media::codec::h264::Config::length_size: u8
+pub only_media::codec::h264::Config::level: u8
+pub only_media::codec::h264::Config::pps: alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub only_media::codec::h264::Config::profile: u8
+pub only_media::codec::h264::Config::sps: alloc::vec::Vec<alloc::vec::Vec<u8>>
+impl only_media::codec::h264::Config
+pub fn only_media::codec::h264::Config::encode(&self) -> alloc::vec::Vec<u8>
+pub fn only_media::codec::h264::Config::from_sets(&[u8], &[u8]) -> only_media::codec::h264::Config
+pub fn only_media::codec::h264::Config::parse(&[u8]) -> core::result::Result<only_media::codec::h264::Config, only_media::codec::CodecError>
+impl core::clone::Clone for only_media::codec::h264::Config
+pub fn only_media::codec::h264::Config::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::h264::Config
+impl core::cmp::PartialEq for only_media::codec::h264::Config
+pub fn only_media::codec::h264::Config::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::codec::h264::Config
+pub fn only_media::codec::h264::Config::default() -> Self
+impl core::fmt::Debug for only_media::codec::h264::Config
+pub fn only_media::codec::h264::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::codec::h264::Config
+impl core::marker::Send for only_media::codec::h264::Config
+impl core::marker::Sync for only_media::codec::h264::Config
+impl core::marker::Unpin for only_media::codec::h264::Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::h264::Config
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::h264::Config
+pub const only_media::codec::h264::NAL_AUD: u8
+pub const only_media::codec::h264::NAL_IDR: u8
+pub const only_media::codec::h264::NAL_PPS: u8
+pub const only_media::codec::h264::NAL_SEI: u8
+pub const only_media::codec::h264::NAL_SLICE: u8
+pub const only_media::codec::h264::NAL_SPS: u8
+pub fn only_media::codec::h264::avcc_nalus(&[u8]) -> alloc::vec::Vec<&[u8]>
+pub fn only_media::codec::h264::avcc_to_annexb(&[u8], &mut alloc::vec::Vec<u8>)
+pub fn only_media::codec::h264::is_keyframe(&[u8]) -> bool
+pub fn only_media::codec::h264::nal_type(u8) -> u8
+pub fn only_media::codec::h264::push_avcc(&mut alloc::vec::Vec<u8>, &[u8])
+pub fn only_media::codec::h264::split_annexb(&[u8]) -> alloc::vec::Vec<&[u8]>
+pub fn only_media::codec::h264::sps_size(&[u8]) -> core::option::Option<(u32, u32)>
+pub fn only_media::codec::h264::to_avcc<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a [u8]>) -> alloc::vec::Vec<u8>
+pub mod only_media::codec::h265
+#[non_exhaustive] pub struct only_media::codec::h265::Config
+pub only_media::codec::h265::Config::header: alloc::vec::Vec<u8>
+pub only_media::codec::h265::Config::length_size: u8
+pub only_media::codec::h265::Config::pps: alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub only_media::codec::h265::Config::sps: alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub only_media::codec::h265::Config::vps: alloc::vec::Vec<alloc::vec::Vec<u8>>
+impl only_media::codec::h265::Config
+pub fn only_media::codec::h265::Config::encode(&self) -> alloc::vec::Vec<u8>
+pub fn only_media::codec::h265::Config::from_sets(&[u8], &[u8], &[u8]) -> core::option::Option<only_media::codec::h265::Config>
+pub fn only_media::codec::h265::Config::parse(&[u8]) -> core::result::Result<only_media::codec::h265::Config, only_media::codec::CodecError>
+pub fn only_media::codec::h265::Config::size(&self) -> core::option::Option<(u32, u32)>
+impl core::clone::Clone for only_media::codec::h265::Config
+pub fn only_media::codec::h265::Config::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::h265::Config
+impl core::cmp::PartialEq for only_media::codec::h265::Config
+pub fn only_media::codec::h265::Config::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::codec::h265::Config
+pub fn only_media::codec::h265::Config::default() -> Self
+impl core::fmt::Debug for only_media::codec::h265::Config
+pub fn only_media::codec::h265::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::codec::h265::Config
+impl core::marker::Send for only_media::codec::h265::Config
+impl core::marker::Sync for only_media::codec::h265::Config
+impl core::marker::Unpin for only_media::codec::h265::Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::h265::Config
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::h265::Config
+#[non_exhaustive] pub struct only_media::codec::h265::SpsInfo
+pub only_media::codec::h265::SpsInfo::bit_depth_chroma_minus8: u32
+pub only_media::codec::h265::SpsInfo::bit_depth_luma_minus8: u32
+pub only_media::codec::h265::SpsInfo::chroma_format: u32
+pub only_media::codec::h265::SpsInfo::compat: u32
+pub only_media::codec::h265::SpsInfo::constraints: [u8; 6]
+pub only_media::codec::h265::SpsInfo::height: u32
+pub only_media::codec::h265::SpsInfo::level: u8
+pub only_media::codec::h265::SpsInfo::profile_byte: u8
+pub only_media::codec::h265::SpsInfo::sub_layers: u8
+pub only_media::codec::h265::SpsInfo::temporal_id_nested: bool
+pub only_media::codec::h265::SpsInfo::width: u32
+impl core::clone::Clone for only_media::codec::h265::SpsInfo
+pub fn only_media::codec::h265::SpsInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::h265::SpsInfo
+impl core::cmp::PartialEq for only_media::codec::h265::SpsInfo
+pub fn only_media::codec::h265::SpsInfo::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::codec::h265::SpsInfo
+pub fn only_media::codec::h265::SpsInfo::default() -> Self
+impl core::fmt::Debug for only_media::codec::h265::SpsInfo
+pub fn only_media::codec::h265::SpsInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::codec::h265::SpsInfo
+impl core::marker::Send for only_media::codec::h265::SpsInfo
+impl core::marker::Sync for only_media::codec::h265::SpsInfo
+impl core::marker::Unpin for only_media::codec::h265::SpsInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::h265::SpsInfo
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::h265::SpsInfo
+pub const only_media::codec::h265::NAL_AUD: u8
+pub const only_media::codec::h265::NAL_PPS: u8
+pub const only_media::codec::h265::NAL_SEI_PREFIX: u8
+pub const only_media::codec::h265::NAL_SPS: u8
+pub const only_media::codec::h265::NAL_VPS: u8
+pub fn only_media::codec::h265::is_irap(u8) -> bool
+pub fn only_media::codec::h265::is_keyframe(&[u8]) -> bool
+pub fn only_media::codec::h265::nal_type(u8) -> u8
+pub fn only_media::codec::h265::parse_sps(&[u8]) -> core::option::Option<only_media::codec::h265::SpsInfo>
+pub mod only_media::codec::opus
+#[non_exhaustive] pub struct only_media::codec::opus::Head
+pub only_media::codec::opus::Head::channels: u8
+pub only_media::codec::opus::Head::input_rate: u32
+pub only_media::codec::opus::Head::pre_skip: u16
+impl only_media::codec::opus::Head
+pub fn only_media::codec::opus::Head::encode(&self) -> alloc::vec::Vec<u8>
+pub fn only_media::codec::opus::Head::new(u8) -> only_media::codec::opus::Head
+pub fn only_media::codec::opus::Head::parse(&[u8]) -> core::result::Result<only_media::codec::opus::Head, only_media::codec::CodecError>
+impl core::clone::Clone for only_media::codec::opus::Head
+pub fn only_media::codec::opus::Head::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::opus::Head
+impl core::cmp::PartialEq for only_media::codec::opus::Head
+pub fn only_media::codec::opus::Head::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::codec::opus::Head
+pub fn only_media::codec::opus::Head::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::codec::opus::Head
+impl core::marker::StructuralPartialEq for only_media::codec::opus::Head
+impl core::marker::Send for only_media::codec::opus::Head
+impl core::marker::Sync for only_media::codec::opus::Head
+impl core::marker::Unpin for only_media::codec::opus::Head
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::opus::Head
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::opus::Head
+pub fn only_media::codec::opus::packet_samples(&[u8]) -> u32
+#[non_exhaustive] pub enum only_media::codec::CodecError
+pub only_media::codec::CodecError::Invalid(&'static str)
+pub only_media::codec::CodecError::Short
+impl core::clone::Clone for only_media::codec::CodecError
+pub fn only_media::codec::CodecError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::codec::CodecError
+impl core::cmp::PartialEq for only_media::codec::CodecError
+pub fn only_media::codec::CodecError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::codec::CodecError
+impl core::fmt::Debug for only_media::codec::CodecError
+pub fn only_media::codec::CodecError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::codec::CodecError
+pub fn only_media::codec::CodecError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::codec::CodecError
+impl core::marker::Send for only_media::codec::CodecError
+impl core::marker::Sync for only_media::codec::CodecError
+impl core::marker::Unpin for only_media::codec::CodecError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::codec::CodecError
+impl core::panic::unwind_safe::UnwindSafe for only_media::codec::CodecError
+pub mod only_media::flv
+#[non_exhaustive] pub enum only_media::flv::Event
+pub only_media::flv::Event::Packet(only_media::av::Packet)
+pub only_media::flv::Event::Tracks(only_media::av::Tracks)
+impl core::clone::Clone for only_media::flv::Event
+pub fn only_media::flv::Event::clone(&self) -> Self
+impl core::cmp::PartialEq for only_media::flv::Event
+pub fn only_media::flv::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::flv::Event
+pub fn only_media::flv::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::flv::Event
+impl core::marker::Send for only_media::flv::Event
+impl core::marker::Sync for only_media::flv::Event
+impl core::marker::Unpin for only_media::flv::Event
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::Event
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::Event
+#[non_exhaustive] pub enum only_media::flv::FlvError
+pub only_media::flv::FlvError::Script(only_media::amf::AmfError)
+pub only_media::flv::FlvError::Short
+pub only_media::flv::FlvError::Signature
+pub only_media::flv::FlvError::TooLarge
+impl core::clone::Clone for only_media::flv::FlvError
+pub fn only_media::flv::FlvError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::flv::FlvError
+impl core::cmp::PartialEq for only_media::flv::FlvError
+pub fn only_media::flv::FlvError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::flv::FlvError
+impl core::fmt::Debug for only_media::flv::FlvError
+pub fn only_media::flv::FlvError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::flv::FlvError
+pub fn only_media::flv::FlvError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::flv::FlvError
+impl core::marker::Send for only_media::flv::FlvError
+impl core::marker::Sync for only_media::flv::FlvError
+impl core::marker::Unpin for only_media::flv::FlvError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::FlvError
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::FlvError
+#[non_exhaustive] pub enum only_media::flv::PacketType
+pub only_media::flv::PacketType::Coded
+pub only_media::flv::PacketType::End
+pub only_media::flv::PacketType::Other
+pub only_media::flv::PacketType::SequenceHeader
+impl core::clone::Clone for only_media::flv::PacketType
+pub fn only_media::flv::PacketType::clone(&self) -> Self
+impl core::cmp::Eq for only_media::flv::PacketType
+impl core::cmp::PartialEq for only_media::flv::PacketType
+pub fn only_media::flv::PacketType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::flv::PacketType
+pub fn only_media::flv::PacketType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::flv::PacketType
+impl core::marker::StructuralPartialEq for only_media::flv::PacketType
+impl core::marker::Send for only_media::flv::PacketType
+impl core::marker::Sync for only_media::flv::PacketType
+impl core::marker::Unpin for only_media::flv::PacketType
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::PacketType
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::PacketType
+#[non_exhaustive] pub struct only_media::flv::AudioTag<'a>
+pub only_media::flv::AudioTag::channels: u8
+pub only_media::flv::AudioTag::codec: only_media::av::Codec
+pub only_media::flv::AudioTag::data: &'a [u8]
+pub only_media::flv::AudioTag::packet_type: only_media::flv::PacketType
+pub only_media::flv::AudioTag::sample_rate: u32
+impl<'a> core::clone::Clone for only_media::flv::AudioTag<'a>
+pub fn only_media::flv::AudioTag<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for only_media::flv::AudioTag<'a>
+impl<'a> core::cmp::PartialEq for only_media::flv::AudioTag<'a>
+pub fn only_media::flv::AudioTag<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for only_media::flv::AudioTag<'a>
+pub fn only_media::flv::AudioTag<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for only_media::flv::AudioTag<'a>
+impl<'a> core::marker::Send for only_media::flv::AudioTag<'a>
+impl<'a> core::marker::Sync for only_media::flv::AudioTag<'a>
+impl<'a> core::marker::Unpin for only_media::flv::AudioTag<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_media::flv::AudioTag<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_media::flv::AudioTag<'a>
+pub struct only_media::flv::Decoder
+impl only_media::flv::Decoder
+pub fn only_media::flv::Decoder::new() -> only_media::flv::Decoder
+pub fn only_media::flv::Decoder::tracks(&self) -> core::option::Option<&only_media::av::Tracks>
+pub fn only_media::flv::Decoder::write(&mut self, u8, u32, &[u8]) -> alloc::vec::Vec<only_media::flv::Event>
+impl core::default::Default for only_media::flv::Decoder
+pub fn only_media::flv::Decoder::default() -> Self
+impl core::fmt::Debug for only_media::flv::Decoder
+pub fn only_media::flv::Decoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::flv::Decoder
+impl core::marker::Sync for only_media::flv::Decoder
+impl core::marker::Unpin for only_media::flv::Decoder
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::Decoder
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::Decoder
+pub struct only_media::flv::Demuxer
+impl only_media::flv::Demuxer
+pub fn only_media::flv::Demuxer::feed(&mut self, &[u8]) -> core::result::Result<alloc::vec::Vec<only_media::flv::Tag>, only_media::flv::FlvError>
+pub fn only_media::flv::Demuxer::new() -> only_media::flv::Demuxer
+impl core::default::Default for only_media::flv::Demuxer
+pub fn only_media::flv::Demuxer::default() -> Self
+impl core::fmt::Debug for only_media::flv::Demuxer
+pub fn only_media::flv::Demuxer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::flv::Demuxer
+impl core::marker::Sync for only_media::flv::Demuxer
+impl core::marker::Unpin for only_media::flv::Demuxer
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::Demuxer
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::Demuxer
+pub struct only_media::flv::Encoder
+impl only_media::flv::Encoder
+pub fn only_media::flv::Encoder::carried(&self) -> (core::option::Option<usize>, core::option::Option<usize>)
+pub fn only_media::flv::Encoder::headers(&self) -> alloc::vec::Vec<(u8, alloc::vec::Vec<u8>)>
+pub fn only_media::flv::Encoder::new(only_media::flv::EncoderConfig) -> only_media::flv::Encoder
+pub fn only_media::flv::Encoder::packet(&self, &only_media::av::Packet) -> core::option::Option<(u8, alloc::vec::Vec<u8>)>
+pub fn only_media::flv::Encoder::set_tracks(&mut self, &only_media::av::Tracks)
+impl core::default::Default for only_media::flv::Encoder
+pub fn only_media::flv::Encoder::default() -> Self
+impl core::fmt::Debug for only_media::flv::Encoder
+pub fn only_media::flv::Encoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::flv::Encoder
+impl core::marker::Sync for only_media::flv::Encoder
+impl core::marker::Unpin for only_media::flv::Encoder
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::Encoder
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::Encoder
+#[non_exhaustive] pub struct only_media::flv::EncoderConfig
+pub only_media::flv::EncoderConfig::legacy_hevc: bool
+impl core::clone::Clone for only_media::flv::EncoderConfig
+pub fn only_media::flv::EncoderConfig::clone(&self) -> Self
+impl core::default::Default for only_media::flv::EncoderConfig
+pub fn only_media::flv::EncoderConfig::default() -> Self
+impl core::fmt::Debug for only_media::flv::EncoderConfig
+pub fn only_media::flv::EncoderConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::flv::EncoderConfig
+impl core::marker::Sync for only_media::flv::EncoderConfig
+impl core::marker::Unpin for only_media::flv::EncoderConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::EncoderConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::EncoderConfig
+pub struct only_media::flv::Tag
+pub only_media::flv::Tag::body: alloc::vec::Vec<u8>
+pub only_media::flv::Tag::tag_type: u8
+pub only_media::flv::Tag::ts: u32
+impl core::clone::Clone for only_media::flv::Tag
+pub fn only_media::flv::Tag::clone(&self) -> Self
+impl core::cmp::Eq for only_media::flv::Tag
+impl core::cmp::PartialEq for only_media::flv::Tag
+pub fn only_media::flv::Tag::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::flv::Tag
+pub fn only_media::flv::Tag::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::flv::Tag
+impl core::marker::Send for only_media::flv::Tag
+impl core::marker::Sync for only_media::flv::Tag
+impl core::marker::Unpin for only_media::flv::Tag
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::flv::Tag
+impl core::panic::unwind_safe::UnwindSafe for only_media::flv::Tag
+#[non_exhaustive] pub struct only_media::flv::VideoTag<'a>
+pub only_media::flv::VideoTag::codec: only_media::av::Codec
+pub only_media::flv::VideoTag::cts: i32
+pub only_media::flv::VideoTag::data: &'a [u8]
+pub only_media::flv::VideoTag::keyframe: bool
+pub only_media::flv::VideoTag::packet_type: only_media::flv::PacketType
+impl<'a> core::clone::Clone for only_media::flv::VideoTag<'a>
+pub fn only_media::flv::VideoTag<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for only_media::flv::VideoTag<'a>
+impl<'a> core::cmp::PartialEq for only_media::flv::VideoTag<'a>
+pub fn only_media::flv::VideoTag<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for only_media::flv::VideoTag<'a>
+pub fn only_media::flv::VideoTag<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for only_media::flv::VideoTag<'a>
+impl<'a> core::marker::Send for only_media::flv::VideoTag<'a>
+impl<'a> core::marker::Sync for only_media::flv::VideoTag<'a>
+impl<'a> core::marker::Unpin for only_media::flv::VideoTag<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_media::flv::VideoTag<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_media::flv::VideoTag<'a>
+pub const only_media::flv::TAG_AUDIO: u8
+pub const only_media::flv::TAG_SCRIPT: u8
+pub const only_media::flv::TAG_VIDEO: u8
+pub fn only_media::flv::ms(only_media::av::Time) -> i64
+pub fn only_media::flv::parse_audio(&[u8]) -> core::result::Result<only_media::flv::AudioTag<'_>, only_media::flv::FlvError>
+pub fn only_media::flv::parse_video(&[u8]) -> core::result::Result<only_media::flv::VideoTag<'_>, only_media::flv::FlvError>
+pub fn only_media::flv::write_header(&mut alloc::vec::Vec<u8>, bool, bool)
+pub fn only_media::flv::write_tag(&mut alloc::vec::Vec<u8>, u8, u32, &[u8])
+pub mod only_media::hls
+pub struct only_media::hls::Hls(_)
+impl only_media::hls::Hls
+pub fn only_media::hls::Hls::active(&self) -> alloc::vec::Vec<alloc::string::String>
+pub fn only_media::hls::Hls::new(only_media::hub::Hub, only_media::hls::HlsConfig) -> only_media::hls::Hls
+impl core::clone::Clone for only_media::hls::Hls
+pub fn only_media::hls::Hls::clone(&self) -> Self
+impl core::fmt::Debug for only_media::hls::Hls
+pub fn only_media::hls::Hls::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_http::context::Service for only_media::hls::Hls
+pub fn only_media::hls::Hls::call(&self, &mut only_http::context::Context)
+impl core::marker::Send for only_media::hls::Hls
+impl core::marker::Sync for only_media::hls::Hls
+impl core::marker::Unpin for only_media::hls::Hls
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hls::Hls
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hls::Hls
+#[non_exhaustive] pub struct only_media::hls::HlsConfig
+pub only_media::hls::HlsConfig::cors_origin: core::option::Option<alloc::string::String>
+pub only_media::hls::HlsConfig::idle_timeout: core::time::Duration
+pub only_media::hls::HlsConfig::keep_segments: usize
+pub only_media::hls::HlsConfig::max_bytes: usize
+pub only_media::hls::HlsConfig::part_duration: core::option::Option<core::time::Duration>
+pub only_media::hls::HlsConfig::play_wait: core::option::Option<core::time::Duration>
+pub only_media::hls::HlsConfig::playlist_size: usize
+pub only_media::hls::HlsConfig::target_duration: core::time::Duration
+impl core::clone::Clone for only_media::hls::HlsConfig
+pub fn only_media::hls::HlsConfig::clone(&self) -> Self
+impl core::default::Default for only_media::hls::HlsConfig
+pub fn only_media::hls::HlsConfig::default() -> Self
+impl core::fmt::Debug for only_media::hls::HlsConfig
+pub fn only_media::hls::HlsConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hls::HlsConfig
+impl core::marker::Sync for only_media::hls::HlsConfig
+impl core::marker::Unpin for only_media::hls::HlsConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::HlsConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::HlsConfig
+pub mod only_media::http
+pub struct only_media::http::MediaHttp
+impl only_media::http::MediaHttp
+pub fn only_media::http::MediaHttp::flv(self, only_media::httpflv::HttpFlv) -> only_media::http::MediaHttp
+pub fn only_media::http::MediaHttp::hls(self, only_media::hls::Hls) -> only_media::http::MediaHttp
+pub fn only_media::http::MediaHttp::new() -> only_media::http::MediaHttp
+impl core::clone::Clone for only_media::http::MediaHttp
+pub fn only_media::http::MediaHttp::clone(&self) -> Self
+impl core::default::Default for only_media::http::MediaHttp
+pub fn only_media::http::MediaHttp::default() -> Self
+impl core::fmt::Debug for only_media::http::MediaHttp
+pub fn only_media::http::MediaHttp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_http::context::Service for only_media::http::MediaHttp
+pub fn only_media::http::MediaHttp::call(&self, &mut only_http::context::Context)
+impl core::marker::Send for only_media::http::MediaHttp
+impl core::marker::Sync for only_media::http::MediaHttp
+impl core::marker::Unpin for only_media::http::MediaHttp
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::http::MediaHttp
+impl !core::panic::unwind_safe::UnwindSafe for only_media::http::MediaHttp
+pub mod only_media::httpflv
+pub struct only_media::httpflv::HttpFlv
+impl only_media::httpflv::HttpFlv
+pub fn only_media::httpflv::HttpFlv::new(only_media::hub::Hub, only_media::httpflv::HttpFlvConfig) -> only_media::httpflv::HttpFlv
+impl core::clone::Clone for only_media::httpflv::HttpFlv
+pub fn only_media::httpflv::HttpFlv::clone(&self) -> Self
+impl core::fmt::Debug for only_media::httpflv::HttpFlv
+pub fn only_media::httpflv::HttpFlv::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_http::context::Service for only_media::httpflv::HttpFlv
+pub fn only_media::httpflv::HttpFlv::call(&self, &mut only_http::context::Context)
+impl core::marker::Send for only_media::httpflv::HttpFlv
+impl core::marker::Sync for only_media::httpflv::HttpFlv
+impl core::marker::Unpin for only_media::httpflv::HttpFlv
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::httpflv::HttpFlv
+impl !core::panic::unwind_safe::UnwindSafe for only_media::httpflv::HttpFlv
+#[non_exhaustive] pub struct only_media::httpflv::HttpFlvConfig
+pub only_media::httpflv::HttpFlvConfig::cors_origin: core::option::Option<alloc::string::String>
+pub only_media::httpflv::HttpFlvConfig::encoder: only_media::flv::EncoderConfig
+pub only_media::httpflv::HttpFlvConfig::max_write_queue: usize
+pub only_media::httpflv::HttpFlvConfig::play_wait: core::option::Option<core::time::Duration>
+pub only_media::httpflv::HttpFlvConfig::write_queue_limit: usize
+impl core::clone::Clone for only_media::httpflv::HttpFlvConfig
+pub fn only_media::httpflv::HttpFlvConfig::clone(&self) -> Self
+impl core::default::Default for only_media::httpflv::HttpFlvConfig
+pub fn only_media::httpflv::HttpFlvConfig::default() -> Self
+impl core::fmt::Debug for only_media::httpflv::HttpFlvConfig
+pub fn only_media::httpflv::HttpFlvConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::httpflv::HttpFlvConfig
+impl core::marker::Sync for only_media::httpflv::HttpFlvConfig
+impl core::marker::Unpin for only_media::httpflv::HttpFlvConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::httpflv::HttpFlvConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::httpflv::HttpFlvConfig
+pub fn only_media::httpflv::path_of(&str, &str) -> core::option::Option<alloc::string::String>
+pub mod only_media::hub
+#[non_exhaustive] pub enum only_media::hub::HubError
+pub only_media::hub::HubError::Closed
+pub only_media::hub::HubError::Denied(alloc::string::String)
+pub only_media::hub::HubError::Limit
+pub only_media::hub::HubError::NotFound
+pub only_media::hub::HubError::StreamBusy
+pub only_media::hub::HubError::Unpublished
+impl core::clone::Clone for only_media::hub::HubError
+pub fn only_media::hub::HubError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hub::HubError
+impl core::cmp::PartialEq for only_media::hub::HubError
+pub fn only_media::hub::HubError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::hub::HubError
+impl core::fmt::Debug for only_media::hub::HubError
+pub fn only_media::hub::HubError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::hub::HubError
+pub fn only_media::hub::HubError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hub::HubError
+impl core::marker::Send for only_media::hub::HubError
+impl core::marker::Sync for only_media::hub::HubError
+impl core::marker::Unpin for only_media::hub::HubError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::HubError
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::HubError
+pub struct only_media::hub::Dropper<S>
+impl<S: only_media::hub::Sink> only_media::hub::Dropper<S>
+pub fn only_media::hub::Dropper<S>::count_into(self, alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>) -> only_media::hub::Dropper<S>
+pub fn only_media::hub::Dropper<S>::new(S, impl core::ops::function::Fn() -> usize + core::marker::Send + 'static, usize) -> only_media::hub::Dropper<S>
+impl<S: only_media::hub::Sink> only_media::hub::Sink for only_media::hub::Dropper<S>
+pub fn only_media::hub::Dropper<S>::attach(&mut self, &alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>)
+pub fn only_media::hub::Dropper<S>::on_close(&mut self, only_media::hub::HubError)
+pub fn only_media::hub::Dropper<S>::on_packet(&mut self, &alloc::rcs::arc::Arc<only_media::av::Packet>)
+pub fn only_media::hub::Dropper<S>::on_tracks(&mut self, &only_media::av::Tracks)
+impl<S> core::fmt::Debug for only_media::hub::Dropper<S>
+pub fn only_media::hub::Dropper<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::marker::Send for only_media::hub::Dropper<S> where S: core::marker::Send
+impl<S> !core::marker::Sync for only_media::hub::Dropper<S>
+impl<S> core::marker::Unpin for only_media::hub::Dropper<S> where S: core::marker::Unpin
+impl<S> !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Dropper<S>
+impl<S> !core::panic::unwind_safe::UnwindSafe for only_media::hub::Dropper<S>
+pub struct only_media::hub::Hub(_)
+impl only_media::hub::Hub
+pub fn only_media::hub::Hub::close(&self)
+pub fn only_media::hub::Hub::new(only_media::hub::HubConfig) -> only_media::hub::Hub
+pub fn only_media::hub::Hub::publish(&self, &str, only_media::av::Tracks, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
+pub fn only_media::hub::Hub::reserve(&self, &str, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
+pub fn only_media::hub::Hub::stream_info(&self, &str) -> core::option::Option<only_media::hub::StreamInfo>
+pub fn only_media::hub::Hub::streams(&self) -> alloc::vec::Vec<only_media::hub::StreamInfo>
+pub fn only_media::hub::Hub::subscribe(&self, &str, impl only_media::hub::Sink, only_media::hub::SubscribeOptions) -> core::result::Result<only_media::hub::Subscription, only_media::hub::HubError>
+pub fn only_media::hub::Hub::subscribe_boxed(&self, &str, alloc::boxed::Box<dyn only_media::hub::Sink>, only_media::hub::SubscribeOptions) -> core::result::Result<only_media::hub::Subscription, only_media::hub::HubError>
+impl core::clone::Clone for only_media::hub::Hub
+pub fn only_media::hub::Hub::clone(&self) -> Self
+impl core::default::Default for only_media::hub::Hub
+pub fn only_media::hub::Hub::default() -> Self
+impl core::fmt::Debug for only_media::hub::Hub
+pub fn only_media::hub::Hub::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::Hub
+impl core::marker::Sync for only_media::hub::Hub
+impl core::marker::Unpin for only_media::hub::Hub
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Hub
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Hub
+#[non_exhaustive] pub struct only_media::hub::HubConfig
+pub only_media::hub::HubConfig::gop_cache_bytes: usize
+pub only_media::hub::HubConfig::max_streams: usize
+pub only_media::hub::HubConfig::max_subscribers: usize
+pub only_media::hub::HubConfig::on_publish: core::option::Option<only_media::hub::AuthHook>
+pub only_media::hub::HubConfig::on_subscribe: core::option::Option<only_media::hub::AuthHook>
+pub only_media::hub::HubConfig::on_unpublish: core::option::Option<only_media::hub::PathHook>
+impl core::clone::Clone for only_media::hub::HubConfig
+pub fn only_media::hub::HubConfig::clone(&self) -> Self
+impl core::default::Default for only_media::hub::HubConfig
+pub fn only_media::hub::HubConfig::default() -> Self
+impl core::fmt::Debug for only_media::hub::HubConfig
+pub fn only_media::hub::HubConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::HubConfig
+impl core::marker::Sync for only_media::hub::HubConfig
+impl core::marker::Unpin for only_media::hub::HubConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::HubConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::HubConfig
+#[non_exhaustive] pub struct only_media::hub::PeerInfo
+pub only_media::hub::PeerInfo::protocol: &'static str
+pub only_media::hub::PeerInfo::query: alloc::string::String
+pub only_media::hub::PeerInfo::remote: core::option::Option<core::net::socket_addr::SocketAddr>
+impl only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::new(&'static str, core::option::Option<core::net::socket_addr::SocketAddr>, impl core::convert::Into<alloc::string::String>) -> only_media::hub::PeerInfo
+impl core::clone::Clone for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hub::PeerInfo
+impl core::cmp::PartialEq for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::default() -> Self
+impl core::fmt::Debug for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hub::PeerInfo
+impl core::marker::Send for only_media::hub::PeerInfo
+impl core::marker::Sync for only_media::hub::PeerInfo
+impl core::marker::Unpin for only_media::hub::PeerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::PeerInfo
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::PeerInfo
+pub struct only_media::hub::Publisher
+impl only_media::hub::Publisher
+pub fn only_media::hub::Publisher::close(&self)
+pub fn only_media::hub::Publisher::is_active(&self) -> bool
+pub fn only_media::hub::Publisher::path(&self) -> &str
+pub fn only_media::hub::Publisher::set_tracks(&self, only_media::av::Tracks)
+pub fn only_media::hub::Publisher::tracks(&self) -> core::option::Option<only_media::av::Tracks>
+pub fn only_media::hub::Publisher::write(&self, only_media::av::Packet)
+pub fn only_media::hub::Publisher::write_shared(&self, alloc::rcs::arc::Arc<only_media::av::Packet>)
+impl core::fmt::Debug for only_media::hub::Publisher
+pub fn only_media::hub::Publisher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_media::hub::Publisher
+pub fn only_media::hub::Publisher::drop(&mut self)
+impl core::marker::Send for only_media::hub::Publisher
+impl core::marker::Sync for only_media::hub::Publisher
+impl core::marker::Unpin for only_media::hub::Publisher
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Publisher
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Publisher
+#[non_exhaustive] pub struct only_media::hub::StreamInfo
+pub only_media::hub::StreamInfo::bytes_in: u64
+pub only_media::hub::StreamInfo::packets_dropped: u64
+pub only_media::hub::StreamInfo::packets_in: u64
+pub only_media::hub::StreamInfo::path: alloc::string::String
+pub only_media::hub::StreamInfo::publisher: only_media::hub::PeerInfo
+pub only_media::hub::StreamInfo::publishing: bool
+pub only_media::hub::StreamInfo::reserved: bool
+pub only_media::hub::StreamInfo::since: core::option::Option<std::time::SystemTime>
+pub only_media::hub::StreamInfo::subscribers: usize
+pub only_media::hub::StreamInfo::tracks: only_media::av::Tracks
+impl core::clone::Clone for only_media::hub::StreamInfo
+pub fn only_media::hub::StreamInfo::clone(&self) -> Self
+impl core::fmt::Debug for only_media::hub::StreamInfo
+pub fn only_media::hub::StreamInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::StreamInfo
+impl core::marker::Sync for only_media::hub::StreamInfo
+impl core::marker::Unpin for only_media::hub::StreamInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::StreamInfo
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::StreamInfo
+#[non_exhaustive] pub struct only_media::hub::SubscribeOptions
+pub only_media::hub::SubscribeOptions::info: only_media::hub::PeerInfo
+pub only_media::hub::SubscribeOptions::no_gop_cache: bool
+pub only_media::hub::SubscribeOptions::start_wait: core::option::Option<core::time::Duration>
+pub only_media::hub::SubscribeOptions::wait: core::option::Option<core::time::Duration>
+impl only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::new(only_media::hub::PeerInfo) -> only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::wait(self, core::time::Duration) -> only_media::hub::SubscribeOptions
+impl core::clone::Clone for only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::clone(&self) -> Self
+impl core::default::Default for only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::default() -> Self
+impl core::fmt::Debug for only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::SubscribeOptions
+impl core::marker::Sync for only_media::hub::SubscribeOptions
+impl core::marker::Unpin for only_media::hub::SubscribeOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::SubscribeOptions
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::SubscribeOptions
+pub struct only_media::hub::Subscription
+impl only_media::hub::Subscription
+pub fn only_media::hub::Subscription::close(&self)
+pub fn only_media::hub::Subscription::drop_counter(&mut self) -> alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>
+pub fn only_media::hub::Subscription::is_closed(&self) -> bool
+pub fn only_media::hub::Subscription::path(&self) -> &str
+impl core::fmt::Debug for only_media::hub::Subscription
+pub fn only_media::hub::Subscription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_media::hub::Subscription
+pub fn only_media::hub::Subscription::drop(&mut self)
+impl core::marker::Send for only_media::hub::Subscription
+impl core::marker::Sync for only_media::hub::Subscription
+impl core::marker::Unpin for only_media::hub::Subscription
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Subscription
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Subscription
+pub struct only_media::hub::Timeline
+impl only_media::hub::Timeline
+pub fn only_media::hub::Timeline::from_zero() -> only_media::hub::Timeline
+pub fn only_media::hub::Timeline::last(&self) -> only_media::av::Time
+pub fn only_media::hub::Timeline::last_of(&self, bool) -> only_media::av::Time
+pub fn only_media::hub::Timeline::new() -> only_media::hub::Timeline
+pub fn only_media::hub::Timeline::offset(&self) -> only_media::av::Time
+pub fn only_media::hub::Timeline::restart(&mut self)
+pub fn only_media::hub::Timeline::stamp(&mut self, bool, only_media::av::Time) -> only_media::av::Time
+impl core::clone::Clone for only_media::hub::Timeline
+pub fn only_media::hub::Timeline::clone(&self) -> Self
+impl core::default::Default for only_media::hub::Timeline
+pub fn only_media::hub::Timeline::default() -> Self
+impl core::fmt::Debug for only_media::hub::Timeline
+pub fn only_media::hub::Timeline::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::Timeline
+impl core::marker::Sync for only_media::hub::Timeline
+impl core::marker::Unpin for only_media::hub::Timeline
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Timeline
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::Timeline
+pub const only_media::hub::DEFAULT_GOP_CACHE_BYTES: usize
+pub trait only_media::hub::Sink: core::marker::Send + 'static
+pub fn only_media::hub::Sink::attach(&mut self, &alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>)
+pub fn only_media::hub::Sink::on_close(&mut self, only_media::hub::HubError)
+pub fn only_media::hub::Sink::on_packet(&mut self, &alloc::rcs::arc::Arc<only_media::av::Packet>)
+pub fn only_media::hub::Sink::on_tracks(&mut self, &only_media::av::Tracks)
+impl<S: only_media::hub::Sink> only_media::hub::Sink for only_media::hub::Dropper<S>
+pub fn only_media::hub::Dropper<S>::attach(&mut self, &alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>)
+pub fn only_media::hub::Dropper<S>::on_close(&mut self, only_media::hub::HubError)
+pub fn only_media::hub::Dropper<S>::on_packet(&mut self, &alloc::rcs::arc::Arc<only_media::av::Packet>)
+pub fn only_media::hub::Dropper<S>::on_tracks(&mut self, &only_media::av::Tracks)
+pub type only_media::hub::AuthHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &only_media::hub::PeerInfo) -> core::result::Result<(), alloc::string::String> + core::marker::Send + core::marker::Sync)>
+pub type only_media::hub::PathHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str) + core::marker::Send + core::marker::Sync)>
+pub mod only_media::mpegts
+pub mod only_media::mpegts::demux
+#[non_exhaustive] pub enum only_media::mpegts::demux::DemuxError
+pub only_media::mpegts::demux::DemuxError::NoSync
+impl core::clone::Clone for only_media::mpegts::demux::DemuxError
+pub fn only_media::mpegts::demux::DemuxError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::mpegts::demux::DemuxError
+impl core::cmp::PartialEq for only_media::mpegts::demux::DemuxError
+pub fn only_media::mpegts::demux::DemuxError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::mpegts::demux::DemuxError
+impl core::fmt::Debug for only_media::mpegts::demux::DemuxError
+pub fn only_media::mpegts::demux::DemuxError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::mpegts::demux::DemuxError
+pub fn only_media::mpegts::demux::DemuxError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::mpegts::demux::DemuxError
+impl core::marker::Send for only_media::mpegts::demux::DemuxError
+impl core::marker::Sync for only_media::mpegts::demux::DemuxError
+impl core::marker::Unpin for only_media::mpegts::demux::DemuxError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::mpegts::demux::DemuxError
+impl core::panic::unwind_safe::UnwindSafe for only_media::mpegts::demux::DemuxError
+#[non_exhaustive] pub enum only_media::mpegts::demux::Event
+pub only_media::mpegts::demux::Event::Packet(only_media::av::Packet)
+pub only_media::mpegts::demux::Event::Tracks(only_media::av::Tracks)
+impl core::clone::Clone for only_media::mpegts::demux::Event
+pub fn only_media::mpegts::demux::Event::clone(&self) -> Self
+impl core::fmt::Debug for only_media::mpegts::demux::Event
+pub fn only_media::mpegts::demux::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::mpegts::demux::Event
+impl core::marker::Sync for only_media::mpegts::demux::Event
+impl core::marker::Unpin for only_media::mpegts::demux::Event
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::mpegts::demux::Event
+impl core::panic::unwind_safe::UnwindSafe for only_media::mpegts::demux::Event
+pub struct only_media::mpegts::demux::Demuxer
+impl only_media::mpegts::demux::Demuxer
+pub fn only_media::mpegts::demux::Demuxer::feed(&mut self, &[u8], &mut dyn core::ops::function::FnMut(only_media::mpegts::demux::Event)) -> core::result::Result<(), only_media::mpegts::demux::DemuxError>
+pub fn only_media::mpegts::demux::Demuxer::flush(&mut self, &mut dyn core::ops::function::FnMut(only_media::mpegts::demux::Event))
+pub fn only_media::mpegts::demux::Demuxer::new() -> only_media::mpegts::demux::Demuxer
+pub fn only_media::mpegts::demux::Demuxer::tracks(&self) -> core::option::Option<&only_media::av::Tracks>
+impl core::default::Default for only_media::mpegts::demux::Demuxer
+pub fn only_media::mpegts::demux::Demuxer::default() -> Self
+impl core::fmt::Debug for only_media::mpegts::demux::Demuxer
+pub fn only_media::mpegts::demux::Demuxer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::mpegts::demux::Demuxer
+impl core::marker::Sync for only_media::mpegts::demux::Demuxer
+impl core::marker::Unpin for only_media::mpegts::demux::Demuxer
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::mpegts::demux::Demuxer
+impl core::panic::unwind_safe::UnwindSafe for only_media::mpegts::demux::Demuxer
+pub struct only_media::mpegts::Muxer
+impl only_media::mpegts::Muxer
+pub fn only_media::mpegts::Muxer::carries(&self, usize) -> bool
+pub fn only_media::mpegts::Muxer::has_tracks(&self) -> bool
+pub fn only_media::mpegts::Muxer::new(&[only_media::av::Track]) -> only_media::mpegts::Muxer
+pub fn only_media::mpegts::Muxer::write_packet(&mut self, &only_media::av::Packet, &mut alloc::vec::Vec<u8>) -> bool
+pub fn only_media::mpegts::Muxer::write_tables(&mut self, &mut alloc::vec::Vec<u8>)
+impl core::fmt::Debug for only_media::mpegts::Muxer
+pub fn only_media::mpegts::Muxer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::mpegts::Muxer
+impl core::marker::Sync for only_media::mpegts::Muxer
+impl core::marker::Unpin for only_media::mpegts::Muxer
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::mpegts::Muxer
+impl core::panic::unwind_safe::UnwindSafe for only_media::mpegts::Muxer
+pub const only_media::mpegts::PACKET_SIZE: usize
+pub const only_media::mpegts::PID_FIRST_ES: u16
+pub const only_media::mpegts::PID_PAT: u16
+pub const only_media::mpegts::PID_PMT: u16
+pub const only_media::mpegts::STREAM_AAC: u8
+pub const only_media::mpegts::STREAM_H264: u8
+pub const only_media::mpegts::STREAM_H265: u8
+pub const only_media::mpegts::STREAM_MP2_AUDIO: u8
+pub const only_media::mpegts::STREAM_MP3: u8
+pub const only_media::mpegts::STREAM_PRIVATE: u8
+pub fn only_media::mpegts::crc32(&[u8]) -> u32
+pub mod only_media::rtmp
+pub mod only_media::rtmp::chunk
+#[non_exhaustive] pub enum only_media::rtmp::chunk::ChunkError
+pub only_media::rtmp::chunk::ChunkError::ChunkSize
+pub only_media::rtmp::chunk::ChunkError::NoHeader
+pub only_media::rtmp::chunk::ChunkError::TooLarge
+pub only_media::rtmp::chunk::ChunkError::TooManyStreams
+impl core::clone::Clone for only_media::rtmp::chunk::ChunkError
+pub fn only_media::rtmp::chunk::ChunkError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtmp::chunk::ChunkError
+impl core::cmp::PartialEq for only_media::rtmp::chunk::ChunkError
+pub fn only_media::rtmp::chunk::ChunkError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtmp::chunk::ChunkError
+impl core::fmt::Debug for only_media::rtmp::chunk::ChunkError
+pub fn only_media::rtmp::chunk::ChunkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtmp::chunk::ChunkError
+pub fn only_media::rtmp::chunk::ChunkError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtmp::chunk::ChunkError
+impl core::marker::Send for only_media::rtmp::chunk::ChunkError
+impl core::marker::Sync for only_media::rtmp::chunk::ChunkError
+impl core::marker::Unpin for only_media::rtmp::chunk::ChunkError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::chunk::ChunkError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::chunk::ChunkError
+pub struct only_media::rtmp::chunk::ChunkReader
+impl only_media::rtmp::chunk::ChunkReader
+pub fn only_media::rtmp::chunk::ChunkReader::chunk_size(&self) -> usize
+pub fn only_media::rtmp::chunk::ChunkReader::feed(&mut self, &[u8]) -> core::result::Result<alloc::vec::Vec<only_media::rtmp::chunk::Message>, only_media::rtmp::chunk::ChunkError>
+pub fn only_media::rtmp::chunk::ChunkReader::new() -> only_media::rtmp::chunk::ChunkReader
+pub fn only_media::rtmp::chunk::ChunkReader::received(&self) -> u64
+impl core::default::Default for only_media::rtmp::chunk::ChunkReader
+pub fn only_media::rtmp::chunk::ChunkReader::default() -> Self
+impl core::fmt::Debug for only_media::rtmp::chunk::ChunkReader
+pub fn only_media::rtmp::chunk::ChunkReader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtmp::chunk::ChunkReader
+impl core::marker::Sync for only_media::rtmp::chunk::ChunkReader
+impl core::marker::Unpin for only_media::rtmp::chunk::ChunkReader
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::chunk::ChunkReader
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::chunk::ChunkReader
+#[non_exhaustive] pub struct only_media::rtmp::chunk::Message
+pub only_media::rtmp::chunk::Message::csid: u32
+pub only_media::rtmp::chunk::Message::msg_type: u8
+pub only_media::rtmp::chunk::Message::payload: alloc::vec::Vec<u8>
+pub only_media::rtmp::chunk::Message::stream_id: u32
+pub only_media::rtmp::chunk::Message::timestamp: u32
+impl only_media::rtmp::chunk::Message
+pub fn only_media::rtmp::chunk::Message::new(u32, u8, u32, u32, alloc::vec::Vec<u8>) -> only_media::rtmp::chunk::Message
+impl core::clone::Clone for only_media::rtmp::chunk::Message
+pub fn only_media::rtmp::chunk::Message::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtmp::chunk::Message
+impl core::cmp::PartialEq for only_media::rtmp::chunk::Message
+pub fn only_media::rtmp::chunk::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtmp::chunk::Message
+pub fn only_media::rtmp::chunk::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtmp::chunk::Message
+impl core::marker::Send for only_media::rtmp::chunk::Message
+impl core::marker::Sync for only_media::rtmp::chunk::Message
+impl core::marker::Unpin for only_media::rtmp::chunk::Message
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::chunk::Message
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::chunk::Message
+pub const only_media::rtmp::chunk::ABORT: u8
+pub const only_media::rtmp::chunk::ACK: u8
+pub const only_media::rtmp::chunk::AGGREGATE: u8
+pub const only_media::rtmp::chunk::AUDIO: u8
+pub const only_media::rtmp::chunk::COMMAND_AMF0: u8
+pub const only_media::rtmp::chunk::COMMAND_AMF3: u8
+pub const only_media::rtmp::chunk::DATA_AMF0: u8
+pub const only_media::rtmp::chunk::DATA_AMF3: u8
+pub const only_media::rtmp::chunk::MAX_CHUNK_SIZE: u32
+pub const only_media::rtmp::chunk::SET_CHUNK_SIZE: u8
+pub const only_media::rtmp::chunk::SET_PEER_BANDWIDTH: u8
+pub const only_media::rtmp::chunk::USER_CONTROL: u8
+pub const only_media::rtmp::chunk::VIDEO: u8
+pub const only_media::rtmp::chunk::WINDOW_ACK_SIZE: u8
+pub fn only_media::rtmp::chunk::control_u32(u8, u32) -> only_media::rtmp::chunk::Message
+pub fn only_media::rtmp::chunk::peer_bandwidth(u32) -> only_media::rtmp::chunk::Message
+pub fn only_media::rtmp::chunk::split_aggregate(&only_media::rtmp::chunk::Message) -> alloc::vec::Vec<only_media::rtmp::chunk::Message>
+pub fn only_media::rtmp::chunk::user_control(u16, u32) -> only_media::rtmp::chunk::Message
+pub fn only_media::rtmp::chunk::write_message(&mut alloc::vec::Vec<u8>, &only_media::rtmp::chunk::Message, usize)
+pub mod only_media::rtmp::handshake
+pub struct only_media::rtmp::handshake::HandshakeError
+impl core::clone::Clone for only_media::rtmp::handshake::HandshakeError
+pub fn only_media::rtmp::handshake::HandshakeError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtmp::handshake::HandshakeError
+impl core::cmp::PartialEq for only_media::rtmp::handshake::HandshakeError
+pub fn only_media::rtmp::handshake::HandshakeError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtmp::handshake::HandshakeError
+impl core::fmt::Debug for only_media::rtmp::handshake::HandshakeError
+pub fn only_media::rtmp::handshake::HandshakeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtmp::handshake::HandshakeError
+pub fn only_media::rtmp::handshake::HandshakeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::rtmp::handshake::HandshakeError
+impl core::marker::StructuralPartialEq for only_media::rtmp::handshake::HandshakeError
+impl core::marker::Send for only_media::rtmp::handshake::HandshakeError
+impl core::marker::Sync for only_media::rtmp::handshake::HandshakeError
+impl core::marker::Unpin for only_media::rtmp::handshake::HandshakeError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::handshake::HandshakeError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::handshake::HandshakeError
+pub const only_media::rtmp::handshake::SIZE: usize
+pub const only_media::rtmp::handshake::VERSION: u8
+pub fn only_media::rtmp::handshake::client_hello(bool) -> alloc::vec::Vec<u8>
+pub fn only_media::rtmp::handshake::client_reply(&[u8]) -> core::result::Result<alloc::vec::Vec<u8>, only_media::rtmp::handshake::HandshakeError>
+pub fn only_media::rtmp::handshake::server_reply(&[u8]) -> core::result::Result<alloc::vec::Vec<u8>, only_media::rtmp::handshake::HandshakeError>
+#[non_exhaustive] pub struct only_media::rtmp::RtmpConfig
+pub only_media::rtmp::RtmpConfig::chunk_size: u32
+pub only_media::rtmp::RtmpConfig::encoder: only_media::flv::EncoderConfig
+pub only_media::rtmp::RtmpConfig::max_write_queue: usize
+pub only_media::rtmp::RtmpConfig::on_connect: core::option::Option<only_media::rtmp::ConnectHook>
+pub only_media::rtmp::RtmpConfig::play_wait: core::option::Option<core::time::Duration>
+pub only_media::rtmp::RtmpConfig::window_ack_size: u32
+pub only_media::rtmp::RtmpConfig::write_queue_limit: usize
+impl core::clone::Clone for only_media::rtmp::RtmpConfig
+pub fn only_media::rtmp::RtmpConfig::clone(&self) -> Self
+impl core::default::Default for only_media::rtmp::RtmpConfig
+pub fn only_media::rtmp::RtmpConfig::default() -> Self
+impl core::fmt::Debug for only_media::rtmp::RtmpConfig
+pub fn only_media::rtmp::RtmpConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtmp::RtmpConfig
+impl core::marker::Sync for only_media::rtmp::RtmpConfig
+impl core::marker::Unpin for only_media::rtmp::RtmpConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::RtmpConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_media::rtmp::RtmpConfig
+pub struct only_media::rtmp::RtmpServer(_)
+impl only_media::rtmp::RtmpServer
+pub fn only_media::rtmp::RtmpServer::hub(&self) -> &only_media::hub::Hub
+pub fn only_media::rtmp::RtmpServer::new(only_media::hub::Hub, only_media::rtmp::RtmpConfig) -> only_media::rtmp::RtmpServer
+impl core::clone::Clone for only_media::rtmp::RtmpServer
+pub fn only_media::rtmp::RtmpServer::clone(&self) -> Self
+impl core::fmt::Debug for only_media::rtmp::RtmpServer
+pub fn only_media::rtmp::RtmpServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_media::rtmp::RtmpServer
+pub type only_media::rtmp::RtmpServer::Handler = only_media::rtmp::RtmpSession
+pub fn only_media::rtmp::RtmpServer::on_open(&self, &only_core::conn::Conn<only_media::rtmp::RtmpSession>) -> only_media::rtmp::RtmpSession
+impl core::marker::Send for only_media::rtmp::RtmpServer
+impl core::marker::Sync for only_media::rtmp::RtmpServer
+impl core::marker::Unpin for only_media::rtmp::RtmpServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::RtmpServer
+impl !core::panic::unwind_safe::UnwindSafe for only_media::rtmp::RtmpServer
+pub struct only_media::rtmp::RtmpSession
+impl core::fmt::Debug for only_media::rtmp::RtmpSession
+pub fn only_media::rtmp::RtmpSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Handler for only_media::rtmp::RtmpSession
+pub fn only_media::rtmp::RtmpSession::on_close(&mut self, &only_core::conn::Conn<Self>, core::option::Option<only_core::error::Error>)
+pub fn only_media::rtmp::RtmpSession::on_data(&mut self, &only_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for only_media::rtmp::RtmpSession
+impl core::marker::Sync for only_media::rtmp::RtmpSession
+impl core::marker::Unpin for only_media::rtmp::RtmpSession
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::RtmpSession
+impl !core::panic::unwind_safe::UnwindSafe for only_media::rtmp::RtmpSession
+pub fn only_media::rtmp::stream_path(&str, &str) -> (alloc::string::String, alloc::string::String)
+pub type only_media::rtmp::ConnectHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &str, &only_media::hub::PeerInfo) -> core::result::Result<(), alloc::string::String> + core::marker::Send + core::marker::Sync)>
+pub mod only_media::rtp
+#[non_exhaustive] pub enum only_media::rtp::RtpError
+pub only_media::rtp::RtpError::Short
+pub only_media::rtp::RtpError::Version
+impl core::clone::Clone for only_media::rtp::RtpError
+pub fn only_media::rtp::RtpError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtp::RtpError
+impl core::cmp::PartialEq for only_media::rtp::RtpError
+pub fn only_media::rtp::RtpError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtp::RtpError
+impl core::fmt::Debug for only_media::rtp::RtpError
+pub fn only_media::rtp::RtpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtp::RtpError
+pub fn only_media::rtp::RtpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtp::RtpError
+impl core::marker::Send for only_media::rtp::RtpError
+impl core::marker::Sync for only_media::rtp::RtpError
+impl core::marker::Unpin for only_media::rtp::RtpError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtp::RtpError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtp::RtpError
+pub struct only_media::rtp::Depacketizer
+impl only_media::rtp::Depacketizer
+pub fn only_media::rtp::Depacketizer::new(&only_media::av::Track) -> only_media::rtp::Depacketizer
+pub fn only_media::rtp::Depacketizer::offset(self, only_media::av::Time) -> only_media::rtp::Depacketizer
+pub fn only_media::rtp::Depacketizer::push(&mut self, &[u8], &mut alloc::vec::Vec<only_media::av::Packet>) -> core::result::Result<(), only_media::rtp::RtpError>
+pub fn only_media::rtp::Depacketizer::take_config(&mut self) -> core::option::Option<alloc::vec::Vec<u8>>
+impl core::fmt::Debug for only_media::rtp::Depacketizer
+pub fn only_media::rtp::Depacketizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtp::Depacketizer
+impl core::marker::Sync for only_media::rtp::Depacketizer
+impl core::marker::Unpin for only_media::rtp::Depacketizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtp::Depacketizer
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtp::Depacketizer
+#[non_exhaustive] pub struct only_media::rtp::Header
+pub only_media::rtp::Header::marker: bool
+pub only_media::rtp::Header::payload_type: u8
+pub only_media::rtp::Header::sequence: u16
+pub only_media::rtp::Header::ssrc: u32
+pub only_media::rtp::Header::timestamp: u32
+impl only_media::rtp::Header
+pub fn only_media::rtp::Header::parse(&[u8]) -> core::result::Result<(only_media::rtp::Header, &[u8]), only_media::rtp::RtpError>
+pub fn only_media::rtp::Header::write(&self, &mut alloc::vec::Vec<u8>)
+impl core::clone::Clone for only_media::rtp::Header
+pub fn only_media::rtp::Header::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtp::Header
+impl core::cmp::PartialEq for only_media::rtp::Header
+pub fn only_media::rtp::Header::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtp::Header
+pub fn only_media::rtp::Header::default() -> Self
+impl core::fmt::Debug for only_media::rtp::Header
+pub fn only_media::rtp::Header::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::rtp::Header
+impl core::marker::StructuralPartialEq for only_media::rtp::Header
+impl core::marker::Send for only_media::rtp::Header
+impl core::marker::Sync for only_media::rtp::Header
+impl core::marker::Unpin for only_media::rtp::Header
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtp::Header
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtp::Header
+pub struct only_media::rtp::Packetizer
+impl only_media::rtp::Packetizer
+pub fn only_media::rtp::Packetizer::base(&self) -> u32
+pub fn only_media::rtp::Packetizer::clock_rate(&self) -> u32
+pub fn only_media::rtp::Packetizer::last_timestamp(&self) -> u32
+pub fn only_media::rtp::Packetizer::mtu(self, usize) -> only_media::rtp::Packetizer
+pub fn only_media::rtp::Packetizer::new(&only_media::av::Track, u8) -> only_media::rtp::Packetizer
+pub fn only_media::rtp::Packetizer::next_sequence(&self) -> u16
+pub fn only_media::rtp::Packetizer::packetize(&mut self, &only_media::av::Packet, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>)
+pub fn only_media::rtp::Packetizer::sender_report(&self, u64, u32) -> alloc::vec::Vec<u8>
+pub fn only_media::rtp::Packetizer::ssrc(&self) -> u32
+pub fn only_media::rtp::Packetizer::timestamp(&self, only_media::av::Time) -> u32
+impl core::fmt::Debug for only_media::rtp::Packetizer
+pub fn only_media::rtp::Packetizer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtp::Packetizer
+impl core::marker::Sync for only_media::rtp::Packetizer
+impl core::marker::Unpin for only_media::rtp::Packetizer
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtp::Packetizer
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtp::Packetizer
+pub const only_media::rtp::DEFAULT_MTU: usize
+pub fn only_media::rtp::is_rtcp(&[u8]) -> bool
+pub fn only_media::rtp::ntp_now() -> u64
+pub fn only_media::rtp::sender_report(u32, u64, u32, u32, u32) -> alloc::vec::Vec<u8>
+pub fn only_media::rtp::supported(only_media::av::Codec) -> bool
+pub mod only_media::rtsp
+pub mod only_media::rtsp::message
+#[non_exhaustive] pub enum only_media::rtsp::message::Frame
+pub only_media::rtsp::message::Frame::Interleaved
+pub only_media::rtsp::message::Frame::Interleaved::channel: u8
+pub only_media::rtsp::message::Frame::Interleaved::data: alloc::vec::Vec<u8>
+pub only_media::rtsp::message::Frame::Request(only_media::rtsp::message::Request)
+pub only_media::rtsp::message::Frame::Response(u16)
+impl core::clone::Clone for only_media::rtsp::message::Frame
+pub fn only_media::rtsp::message::Frame::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Frame
+impl core::cmp::PartialEq for only_media::rtsp::message::Frame
+pub fn only_media::rtsp::message::Frame::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtsp::message::Frame
+pub fn only_media::rtsp::message::Frame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Frame
+impl core::marker::Send for only_media::rtsp::message::Frame
+impl core::marker::Sync for only_media::rtsp::message::Frame
+impl core::marker::Unpin for only_media::rtsp::message::Frame
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Frame
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Frame
+#[non_exhaustive] pub enum only_media::rtsp::message::RtspError
+pub only_media::rtsp::message::RtspError::BodyTooLarge
+pub only_media::rtsp::message::RtspError::HeadTooLarge
+pub only_media::rtsp::message::RtspError::Malformed
+impl core::clone::Clone for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::RtspError
+impl core::cmp::PartialEq for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtsp::message::RtspError
+impl core::fmt::Debug for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::RtspError
+impl core::marker::Send for only_media::rtsp::message::RtspError
+impl core::marker::Sync for only_media::rtsp::message::RtspError
+impl core::marker::Unpin for only_media::rtsp::message::RtspError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::RtspError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::RtspError
+pub struct only_media::rtsp::message::Parser
+impl only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::feed(&mut self, &[u8], &mut alloc::vec::Vec<only_media::rtsp::message::Frame>) -> core::result::Result<(), only_media::rtsp::message::RtspError>
+pub fn only_media::rtsp::message::Parser::new(usize, usize) -> only_media::rtsp::message::Parser
+impl core::default::Default for only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtsp::message::Parser
+impl core::marker::Sync for only_media::rtsp::message::Parser
+impl core::marker::Unpin for only_media::rtsp::message::Parser
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Parser
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Parser
+#[non_exhaustive] pub struct only_media::rtsp::message::Request
+pub only_media::rtsp::message::Request::body: alloc::vec::Vec<u8>
+pub only_media::rtsp::message::Request::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_media::rtsp::message::Request::method: alloc::string::String
+pub only_media::rtsp::message::Request::uri: alloc::string::String
+impl only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::cseq(&self) -> core::option::Option<&str>
+pub fn only_media::rtsp::message::Request::header(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Request
+impl core::cmp::PartialEq for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Request
+impl core::marker::Send for only_media::rtsp::message::Request
+impl core::marker::Sync for only_media::rtsp::message::Request
+impl core::marker::Unpin for only_media::rtsp::message::Request
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Request
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Request
+#[non_exhaustive] pub struct only_media::rtsp::message::Response
+pub only_media::rtsp::message::Response::body: alloc::vec::Vec<u8>
+pub only_media::rtsp::message::Response::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_media::rtsp::message::Response::status: u16
+impl only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::body(self, &str, alloc::vec::Vec<u8>) -> only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::encode(&self, core::option::Option<&str>) -> alloc::vec::Vec<u8>
+pub fn only_media::rtsp::message::Response::header(self, &str, impl core::convert::Into<alloc::string::String>) -> only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::new(u16) -> only_media::rtsp::message::Response
+impl core::clone::Clone for only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Response
+impl core::cmp::PartialEq for only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Response
+impl core::marker::Send for only_media::rtsp::message::Response
+impl core::marker::Sync for only_media::rtsp::message::Response
+impl core::marker::Unpin for only_media::rtsp::message::Response
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Response
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Response
+#[non_exhaustive] pub struct only_media::rtsp::message::Transport
+pub only_media::rtsp::message::Transport::client_port: core::option::Option<(u16, u16)>
+pub only_media::rtsp::message::Transport::interleaved: core::option::Option<(u8, u8)>
+pub only_media::rtsp::message::Transport::mode: core::option::Option<alloc::string::String>
+pub only_media::rtsp::message::Transport::multicast: bool
+pub only_media::rtsp::message::Transport::server_port: core::option::Option<(u16, u16)>
+pub only_media::rtsp::message::Transport::ssrc: core::option::Option<u32>
+pub only_media::rtsp::message::Transport::tcp: bool
+impl only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::parse_all(&str) -> alloc::vec::Vec<only_media::rtsp::message::Transport>
+impl core::clone::Clone for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Transport
+impl core::cmp::PartialEq for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Transport
+impl core::marker::Send for only_media::rtsp::message::Transport
+impl core::marker::Sync for only_media::rtsp::message::Transport
+impl core::marker::Unpin for only_media::rtsp::message::Transport
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Transport
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Transport
+pub const only_media::rtsp::message::MAX_BODY: usize
+pub const only_media::rtsp::message::MAX_HEAD: usize
+pub fn only_media::rtsp::message::interleaved(u8, &[u8], &mut alloc::vec::Vec<u8>)
+pub fn only_media::rtsp::message::reason(u16) -> &'static str
+#[non_exhaustive] pub enum only_media::rtsp::Frame
+pub only_media::rtsp::Frame::Interleaved
+pub only_media::rtsp::Frame::Interleaved::channel: u8
+pub only_media::rtsp::Frame::Interleaved::data: alloc::vec::Vec<u8>
+pub only_media::rtsp::Frame::Request(only_media::rtsp::message::Request)
+pub only_media::rtsp::Frame::Response(u16)
+impl core::clone::Clone for only_media::rtsp::message::Frame
+pub fn only_media::rtsp::message::Frame::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Frame
+impl core::cmp::PartialEq for only_media::rtsp::message::Frame
+pub fn only_media::rtsp::message::Frame::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtsp::message::Frame
+pub fn only_media::rtsp::message::Frame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Frame
+impl core::marker::Send for only_media::rtsp::message::Frame
+impl core::marker::Sync for only_media::rtsp::message::Frame
+impl core::marker::Unpin for only_media::rtsp::message::Frame
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Frame
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Frame
+#[non_exhaustive] pub enum only_media::rtsp::RtspError
+pub only_media::rtsp::RtspError::BodyTooLarge
+pub only_media::rtsp::RtspError::HeadTooLarge
+pub only_media::rtsp::RtspError::Malformed
+impl core::clone::Clone for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::RtspError
+impl core::cmp::PartialEq for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtsp::message::RtspError
+impl core::fmt::Debug for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtsp::message::RtspError
+pub fn only_media::rtsp::message::RtspError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::RtspError
+impl core::marker::Send for only_media::rtsp::message::RtspError
+impl core::marker::Sync for only_media::rtsp::message::RtspError
+impl core::marker::Unpin for only_media::rtsp::message::RtspError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::RtspError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::RtspError
+pub struct only_media::rtsp::Parser
+impl only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::feed(&mut self, &[u8], &mut alloc::vec::Vec<only_media::rtsp::message::Frame>) -> core::result::Result<(), only_media::rtsp::message::RtspError>
+pub fn only_media::rtsp::message::Parser::new(usize, usize) -> only_media::rtsp::message::Parser
+impl core::default::Default for only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtsp::message::Parser
+impl core::marker::Sync for only_media::rtsp::message::Parser
+impl core::marker::Unpin for only_media::rtsp::message::Parser
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Parser
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Parser
+#[non_exhaustive] pub struct only_media::rtsp::Request
+pub only_media::rtsp::Request::body: alloc::vec::Vec<u8>
+pub only_media::rtsp::Request::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_media::rtsp::Request::method: alloc::string::String
+pub only_media::rtsp::Request::uri: alloc::string::String
+impl only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::cseq(&self) -> core::option::Option<&str>
+pub fn only_media::rtsp::message::Request::header(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Request
+impl core::cmp::PartialEq for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Request
+pub fn only_media::rtsp::message::Request::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Request
+impl core::marker::Send for only_media::rtsp::message::Request
+impl core::marker::Sync for only_media::rtsp::message::Request
+impl core::marker::Unpin for only_media::rtsp::message::Request
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Request
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Request
+#[non_exhaustive] pub struct only_media::rtsp::Response
+pub only_media::rtsp::Response::body: alloc::vec::Vec<u8>
+pub only_media::rtsp::Response::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_media::rtsp::Response::status: u16
+impl only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::body(self, &str, alloc::vec::Vec<u8>) -> only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::encode(&self, core::option::Option<&str>) -> alloc::vec::Vec<u8>
+pub fn only_media::rtsp::message::Response::header(self, &str, impl core::convert::Into<alloc::string::String>) -> only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::new(u16) -> only_media::rtsp::message::Response
+impl core::clone::Clone for only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Response
+impl core::cmp::PartialEq for only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtsp::message::Response
+pub fn only_media::rtsp::message::Response::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Response
+impl core::marker::Send for only_media::rtsp::message::Response
+impl core::marker::Sync for only_media::rtsp::message::Response
+impl core::marker::Unpin for only_media::rtsp::message::Response
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Response
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Response
+#[non_exhaustive] pub struct only_media::rtsp::RtspConfig
+pub only_media::rtsp::RtspConfig::credentials: core::option::Option<only_media::rtsp::Credentials>
+pub only_media::rtsp::RtspConfig::max_write_queue: usize
+pub only_media::rtsp::RtspConfig::play_wait: core::option::Option<core::time::Duration>
+pub only_media::rtsp::RtspConfig::realm: alloc::string::String
+pub only_media::rtsp::RtspConfig::sender_report_interval: core::time::Duration
+pub only_media::rtsp::RtspConfig::write_queue_limit: usize
+impl core::clone::Clone for only_media::rtsp::RtspConfig
+pub fn only_media::rtsp::RtspConfig::clone(&self) -> Self
+impl core::default::Default for only_media::rtsp::RtspConfig
+pub fn only_media::rtsp::RtspConfig::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::RtspConfig
+pub fn only_media::rtsp::RtspConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtsp::RtspConfig
+impl core::marker::Sync for only_media::rtsp::RtspConfig
+impl core::marker::Unpin for only_media::rtsp::RtspConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::RtspConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_media::rtsp::RtspConfig
+pub struct only_media::rtsp::RtspServer(_)
+impl only_media::rtsp::RtspServer
+pub fn only_media::rtsp::RtspServer::hub(&self) -> &only_media::hub::Hub
+pub fn only_media::rtsp::RtspServer::listen_udp(&self, core::net::socket_addr::SocketAddr) -> core::io::error::Result<(u16, u16)>
+pub fn only_media::rtsp::RtspServer::new(only_media::hub::Hub, only_media::rtsp::RtspConfig) -> only_media::rtsp::RtspServer
+impl core::clone::Clone for only_media::rtsp::RtspServer
+pub fn only_media::rtsp::RtspServer::clone(&self) -> Self
+impl core::fmt::Debug for only_media::rtsp::RtspServer
+pub fn only_media::rtsp::RtspServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_media::rtsp::RtspServer
+pub type only_media::rtsp::RtspServer::Handler = only_media::rtsp::RtspSession
+pub fn only_media::rtsp::RtspServer::on_open(&self, &only_core::conn::Conn<only_media::rtsp::RtspSession>) -> only_media::rtsp::RtspSession
+impl core::marker::Send for only_media::rtsp::RtspServer
+impl core::marker::Sync for only_media::rtsp::RtspServer
+impl core::marker::Unpin for only_media::rtsp::RtspServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::RtspServer
+impl !core::panic::unwind_safe::UnwindSafe for only_media::rtsp::RtspServer
+pub struct only_media::rtsp::RtspSession
+impl core::fmt::Debug for only_media::rtsp::RtspSession
+pub fn only_media::rtsp::RtspSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Handler for only_media::rtsp::RtspSession
+pub fn only_media::rtsp::RtspSession::on_close(&mut self, &only_core::conn::Conn<Self>, core::option::Option<only_core::error::Error>)
+pub fn only_media::rtsp::RtspSession::on_data(&mut self, &only_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for only_media::rtsp::RtspSession
+impl core::marker::Sync for only_media::rtsp::RtspSession
+impl core::marker::Unpin for only_media::rtsp::RtspSession
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::RtspSession
+impl !core::panic::unwind_safe::UnwindSafe for only_media::rtsp::RtspSession
+#[non_exhaustive] pub struct only_media::rtsp::Transport
+pub only_media::rtsp::Transport::client_port: core::option::Option<(u16, u16)>
+pub only_media::rtsp::Transport::interleaved: core::option::Option<(u8, u8)>
+pub only_media::rtsp::Transport::mode: core::option::Option<alloc::string::String>
+pub only_media::rtsp::Transport::multicast: bool
+pub only_media::rtsp::Transport::server_port: core::option::Option<(u16, u16)>
+pub only_media::rtsp::Transport::ssrc: core::option::Option<u32>
+pub only_media::rtsp::Transport::tcp: bool
+impl only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::parse_all(&str) -> alloc::vec::Vec<only_media::rtsp::message::Transport>
+impl core::clone::Clone for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Transport
+impl core::cmp::PartialEq for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::message::Transport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Transport
+impl core::marker::Send for only_media::rtsp::message::Transport
+impl core::marker::Sync for only_media::rtsp::message::Transport
+impl core::marker::Unpin for only_media::rtsp::message::Transport
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Transport
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Transport
+pub fn only_media::rtsp::describe_sdp(&only_media::av::Tracks) -> only_media::sdp::Session
+pub fn only_media::rtsp::url_path(&str) -> (alloc::string::String, alloc::string::String)
+pub type only_media::rtsp::Credentials = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str) -> core::option::Option<alloc::string::String> + core::marker::Send + core::marker::Sync)>
+pub mod only_media::sdp
+#[non_exhaustive] pub enum only_media::sdp::SdpError
+pub only_media::sdp::SdpError::Line(usize)
+pub only_media::sdp::SdpError::Media(usize)
+pub only_media::sdp::SdpError::TooLarge
+impl core::clone::Clone for only_media::sdp::SdpError
+pub fn only_media::sdp::SdpError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::sdp::SdpError
+impl core::cmp::PartialEq for only_media::sdp::SdpError
+pub fn only_media::sdp::SdpError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::sdp::SdpError
+impl core::fmt::Debug for only_media::sdp::SdpError
+pub fn only_media::sdp::SdpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::sdp::SdpError
+pub fn only_media::sdp::SdpError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::sdp::SdpError
+impl core::marker::Send for only_media::sdp::SdpError
+impl core::marker::Sync for only_media::sdp::SdpError
+impl core::marker::Unpin for only_media::sdp::SdpError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::sdp::SdpError
+impl core::panic::unwind_safe::UnwindSafe for only_media::sdp::SdpError
+#[non_exhaustive] pub struct only_media::sdp::Attribute
+pub only_media::sdp::Attribute::name: alloc::string::String
+pub only_media::sdp::Attribute::value: core::option::Option<alloc::string::String>
+impl only_media::sdp::Attribute
+pub fn only_media::sdp::Attribute::flag(impl core::convert::Into<alloc::string::String>) -> only_media::sdp::Attribute
+pub fn only_media::sdp::Attribute::new(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> only_media::sdp::Attribute
+impl core::clone::Clone for only_media::sdp::Attribute
+pub fn only_media::sdp::Attribute::clone(&self) -> Self
+impl core::cmp::Eq for only_media::sdp::Attribute
+impl core::cmp::PartialEq for only_media::sdp::Attribute
+pub fn only_media::sdp::Attribute::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::sdp::Attribute
+pub fn only_media::sdp::Attribute::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::sdp::Attribute
+impl core::marker::Send for only_media::sdp::Attribute
+impl core::marker::Sync for only_media::sdp::Attribute
+impl core::marker::Unpin for only_media::sdp::Attribute
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::sdp::Attribute
+impl core::panic::unwind_safe::UnwindSafe for only_media::sdp::Attribute
+#[non_exhaustive] pub struct only_media::sdp::Media
+pub only_media::sdp::Media::attributes: alloc::vec::Vec<only_media::sdp::Attribute>
+pub only_media::sdp::Media::bandwidth: alloc::vec::Vec<alloc::string::String>
+pub only_media::sdp::Media::connection: core::option::Option<alloc::string::String>
+pub only_media::sdp::Media::formats: alloc::vec::Vec<alloc::string::String>
+pub only_media::sdp::Media::kind: alloc::string::String
+pub only_media::sdp::Media::port: u16
+pub only_media::sdp::Media::proto: alloc::string::String
+impl only_media::sdp::Media
+pub fn only_media::sdp::Media::attr(&self, &str) -> core::option::Option<&str>
+pub fn only_media::sdp::Media::attrs<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a str> + 'a
+pub fn only_media::sdp::Media::control(&self) -> core::option::Option<&str>
+pub fn only_media::sdp::Media::fmtp(&self, &str) -> alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub fn only_media::sdp::Media::new(&str, u16, &str, alloc::vec::Vec<alloc::string::String>) -> only_media::sdp::Media
+pub fn only_media::sdp::Media::rtpmap(&self, &str) -> core::option::Option<(alloc::string::String, u32, core::option::Option<alloc::string::String>)>
+impl core::clone::Clone for only_media::sdp::Media
+pub fn only_media::sdp::Media::clone(&self) -> Self
+impl core::cmp::Eq for only_media::sdp::Media
+impl core::cmp::PartialEq for only_media::sdp::Media
+pub fn only_media::sdp::Media::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::sdp::Media
+pub fn only_media::sdp::Media::default() -> Self
+impl core::fmt::Debug for only_media::sdp::Media
+pub fn only_media::sdp::Media::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::sdp::Media
+impl core::marker::Send for only_media::sdp::Media
+impl core::marker::Sync for only_media::sdp::Media
+impl core::marker::Unpin for only_media::sdp::Media
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::sdp::Media
+impl core::panic::unwind_safe::UnwindSafe for only_media::sdp::Media
+#[non_exhaustive] pub struct only_media::sdp::Session
+pub only_media::sdp::Session::attributes: alloc::vec::Vec<only_media::sdp::Attribute>
+pub only_media::sdp::Session::connection: core::option::Option<alloc::string::String>
+pub only_media::sdp::Session::media: alloc::vec::Vec<only_media::sdp::Media>
+pub only_media::sdp::Session::name: alloc::string::String
+pub only_media::sdp::Session::origin: alloc::string::String
+pub only_media::sdp::Session::timing: alloc::string::String
+impl only_media::sdp::Session
+pub fn only_media::sdp::Session::attr(&self, &str) -> core::option::Option<&str>
+pub fn only_media::sdp::Session::new(&str) -> only_media::sdp::Session
+pub fn only_media::sdp::Session::parse(&str) -> core::result::Result<only_media::sdp::Session, only_media::sdp::SdpError>
+impl core::clone::Clone for only_media::sdp::Session
+pub fn only_media::sdp::Session::clone(&self) -> Self
+impl core::cmp::Eq for only_media::sdp::Session
+impl core::cmp::PartialEq for only_media::sdp::Session
+pub fn only_media::sdp::Session::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::sdp::Session
+pub fn only_media::sdp::Session::default() -> Self
+impl core::fmt::Debug for only_media::sdp::Session
+pub fn only_media::sdp::Session::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::sdp::Session
+pub fn only_media::sdp::Session::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::sdp::Session
+impl core::marker::Send for only_media::sdp::Session
+impl core::marker::Sync for only_media::sdp::Session
+impl core::marker::Unpin for only_media::sdp::Session
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::sdp::Session
+impl core::panic::unwind_safe::UnwindSafe for only_media::sdp::Session
+pub fn only_media::sdp::media_track(&only_media::sdp::Media) -> core::option::Option<(only_media::av::Track, u8)>
+pub fn only_media::sdp::track_media(&only_media::av::Track, u8, &str) -> core::option::Option<only_media::sdp::Media>
+pub mod only_media::srt
+#[non_exhaustive] pub enum only_media::srt::Event
+pub only_media::srt::Event::Closed(core::option::Option<only_media::srt::SrtError>)
+pub only_media::srt::Event::Connected
+pub only_media::srt::Event::Data(alloc::vec::Vec<u8>)
+impl core::clone::Clone for only_media::srt::Event
+pub fn only_media::srt::Event::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::Event
+impl core::cmp::PartialEq for only_media::srt::Event
+pub fn only_media::srt::Event::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::srt::Event
+pub fn only_media::srt::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::srt::Event
+impl core::marker::Send for only_media::srt::Event
+impl core::marker::Sync for only_media::srt::Event
+impl core::marker::Unpin for only_media::srt::Event
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::Event
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::Event
+#[non_exhaustive] pub enum only_media::srt::Mode
+pub only_media::srt::Mode::Bidirectional
+pub only_media::srt::Mode::Publish
+pub only_media::srt::Mode::Request
+impl core::clone::Clone for only_media::srt::Mode
+pub fn only_media::srt::Mode::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::Mode
+impl core::cmp::PartialEq for only_media::srt::Mode
+pub fn only_media::srt::Mode::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::srt::Mode
+pub fn only_media::srt::Mode::default() -> Self
+impl core::fmt::Debug for only_media::srt::Mode
+pub fn only_media::srt::Mode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::srt::Mode
+impl core::marker::StructuralPartialEq for only_media::srt::Mode
+impl core::marker::Send for only_media::srt::Mode
+impl core::marker::Sync for only_media::srt::Mode
+impl core::marker::Unpin for only_media::srt::Mode
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::Mode
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::Mode
+#[non_exhaustive] pub enum only_media::srt::SrtError
+pub only_media::srt::SrtError::BufferFull
+pub only_media::srt::SrtError::Closed
+pub only_media::srt::SrtError::Config(&'static str)
+pub only_media::srt::SrtError::HandshakeTimeout
+pub only_media::srt::SrtError::NotConnected
+pub only_media::srt::SrtError::PeerClosed
+pub only_media::srt::SrtError::PeerIdle
+pub only_media::srt::SrtError::Rejected(only_media::srt::RejectReason)
+pub only_media::srt::SrtError::TooLarge
+pub only_media::srt::SrtError::Transport(alloc::string::String)
+impl core::clone::Clone for only_media::srt::SrtError
+pub fn only_media::srt::SrtError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::SrtError
+impl core::cmp::PartialEq for only_media::srt::SrtError
+pub fn only_media::srt::SrtError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::srt::SrtError
+impl core::fmt::Debug for only_media::srt::SrtError
+pub fn only_media::srt::SrtError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::srt::SrtError
+pub fn only_media::srt::SrtError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::srt::SrtError
+impl core::marker::Send for only_media::srt::SrtError
+impl core::marker::Sync for only_media::srt::SrtError
+impl core::marker::Unpin for only_media::srt::SrtError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::SrtError
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::SrtError
+#[non_exhaustive] pub enum only_media::srt::State
+pub only_media::srt::State::Closed
+pub only_media::srt::State::Connected
+pub only_media::srt::State::Handshake
+impl core::clone::Clone for only_media::srt::State
+pub fn only_media::srt::State::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::State
+impl core::cmp::PartialEq for only_media::srt::State
+pub fn only_media::srt::State::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::srt::State
+pub fn only_media::srt::State::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::srt::State
+impl core::marker::StructuralPartialEq for only_media::srt::State
+impl core::marker::Send for only_media::srt::State
+impl core::marker::Sync for only_media::srt::State
+impl core::marker::Unpin for only_media::srt::State
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::State
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::State
+#[non_exhaustive] pub struct only_media::srt::Config
+pub only_media::srt::Config::flow_window: usize
+pub only_media::srt::Config::handshake_timeout: core::time::Duration
+pub only_media::srt::Config::latency: core::time::Duration
+pub only_media::srt::Config::passphrase: core::option::Option<alloc::string::String>
+pub only_media::srt::Config::payload_size: usize
+pub only_media::srt::Config::pbkeylen: usize
+pub only_media::srt::Config::peer_idle_timeout: core::time::Duration
+pub only_media::srt::Config::send_buffer_packets: usize
+pub only_media::srt::Config::stream_id: alloc::string::String
+impl only_media::srt::Config
+pub fn only_media::srt::Config::latency(self, core::time::Duration) -> only_media::srt::Config
+pub fn only_media::srt::Config::passphrase(self, impl core::convert::Into<alloc::string::String>) -> only_media::srt::Config
+pub fn only_media::srt::Config::stream_id(self, impl core::convert::Into<alloc::string::String>) -> only_media::srt::Config
+impl core::clone::Clone for only_media::srt::Config
+pub fn only_media::srt::Config::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::Config
+impl core::cmp::PartialEq for only_media::srt::Config
+pub fn only_media::srt::Config::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::srt::Config
+pub fn only_media::srt::Config::default() -> Self
+impl core::fmt::Debug for only_media::srt::Config
+pub fn only_media::srt::Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::srt::Config
+impl core::marker::Send for only_media::srt::Config
+impl core::marker::Sync for only_media::srt::Config
+impl core::marker::Unpin for only_media::srt::Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::Config
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::Config
+pub struct only_media::srt::Conn
+impl only_media::srt::Conn
+pub fn only_media::srt::Conn::caller(only_media::srt::Config, std::time::Instant) -> core::result::Result<only_media::srt::Conn, only_media::srt::SrtError>
+pub fn only_media::srt::Conn::close(&mut self, std::time::Instant)
+pub fn only_media::srt::Conn::encrypted(&self) -> bool
+pub fn only_media::srt::Conn::handle(&mut self, &[u8], std::time::Instant)
+pub fn only_media::srt::Conn::handle_timeout(&mut self, std::time::Instant)
+pub fn only_media::srt::Conn::latency(&self) -> core::time::Duration
+pub fn only_media::srt::Conn::next_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_media::srt::Conn::poll_event(&mut self) -> core::option::Option<only_media::srt::Event>
+pub fn only_media::srt::Conn::send_backlog(&self) -> usize
+pub fn only_media::srt::Conn::state(&self) -> only_media::srt::State
+pub fn only_media::srt::Conn::stats(&self) -> only_media::srt::Stats
+pub fn only_media::srt::Conn::stream_id(&self) -> &str
+pub fn only_media::srt::Conn::take_output(&mut self) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_media::srt::Conn::write(&mut self, &[u8], std::time::Instant) -> core::result::Result<(), only_media::srt::SrtError>
+impl core::fmt::Debug for only_media::srt::Conn
+pub fn only_media::srt::Conn::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::srt::Conn
+impl core::marker::Sync for only_media::srt::Conn
+impl core::marker::Unpin for only_media::srt::Conn
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::Conn
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::Conn
+pub struct only_media::srt::Listener
+impl only_media::srt::Listener
+pub fn only_media::srt::Listener::handle(&mut self, &[u8], core::net::socket_addr::SocketAddr, std::time::Instant, &mut alloc::vec::Vec<alloc::vec::Vec<u8>>, impl core::ops::function::FnOnce(&only_media::srt::Request) -> core::result::Result<only_media::srt::Config, only_media::srt::RejectReason>) -> core::option::Option<only_media::srt::Conn>
+pub fn only_media::srt::Listener::new() -> only_media::srt::Listener
+impl core::default::Default for only_media::srt::Listener
+pub fn only_media::srt::Listener::default() -> Self
+impl core::fmt::Debug for only_media::srt::Listener
+pub fn only_media::srt::Listener::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::srt::Listener
+impl core::marker::Sync for only_media::srt::Listener
+impl core::marker::Unpin for only_media::srt::Listener
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::Listener
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::Listener
+pub struct only_media::srt::RejectReason(pub u32)
+impl only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::BAD_MODE: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::BAD_REQUEST: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::BAD_SECRET: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::CLOSE: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::CONFLICT: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::FORBIDDEN: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::NOT_FOUND: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::OVERLOAD: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::PEER: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::RESOURCE: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::ROGUE: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::SYSTEM: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::TIMEOUT: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::UNAUTHORIZED: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::UNKNOWN: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::UNSECURE: only_media::srt::RejectReason
+pub const only_media::srt::RejectReason::VERSION: only_media::srt::RejectReason
+impl core::clone::Clone for only_media::srt::RejectReason
+pub fn only_media::srt::RejectReason::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::RejectReason
+impl core::cmp::PartialEq for only_media::srt::RejectReason
+pub fn only_media::srt::RejectReason::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::srt::RejectReason
+pub fn only_media::srt::RejectReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::srt::RejectReason
+pub fn only_media::srt::RejectReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_media::srt::RejectReason
+pub fn only_media::srt::RejectReason::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_media::srt::RejectReason
+impl core::marker::StructuralPartialEq for only_media::srt::RejectReason
+impl core::marker::Send for only_media::srt::RejectReason
+impl core::marker::Sync for only_media::srt::RejectReason
+impl core::marker::Unpin for only_media::srt::RejectReason
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::RejectReason
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::RejectReason
+#[non_exhaustive] pub struct only_media::srt::Request
+pub only_media::srt::Request::encrypted: bool
+pub only_media::srt::Request::latency: core::time::Duration
+pub only_media::srt::Request::peer_socket_id: u32
+pub only_media::srt::Request::remote: core::net::socket_addr::SocketAddr
+pub only_media::srt::Request::stream_id: alloc::string::String
+impl core::clone::Clone for only_media::srt::Request
+pub fn only_media::srt::Request::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::Request
+impl core::cmp::PartialEq for only_media::srt::Request
+pub fn only_media::srt::Request::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::srt::Request
+pub fn only_media::srt::Request::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::srt::Request
+impl core::marker::Send for only_media::srt::Request
+impl core::marker::Sync for only_media::srt::Request
+impl core::marker::Unpin for only_media::srt::Request
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::Request
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::Request
+#[non_exhaustive] pub struct only_media::srt::SrtConfig
+pub only_media::srt::SrtConfig::flow_window: usize
+pub only_media::srt::SrtConfig::latency: core::time::Duration
+pub only_media::srt::SrtConfig::max_conns: usize
+pub only_media::srt::SrtConfig::max_send_backlog: usize
+pub only_media::srt::SrtConfig::on_connect: core::option::Option<only_media::srt::ConnectHook>
+pub only_media::srt::SrtConfig::passphrase: core::option::Option<alloc::string::String>
+pub only_media::srt::SrtConfig::peer_idle_timeout: core::time::Duration
+pub only_media::srt::SrtConfig::play_gop_cache: bool
+pub only_media::srt::SrtConfig::play_wait: core::option::Option<core::time::Duration>
+impl only_media::srt::SrtConfig
+pub fn only_media::srt::SrtConfig::latency(self, core::time::Duration) -> only_media::srt::SrtConfig
+pub fn only_media::srt::SrtConfig::passphrase(self, impl core::convert::Into<alloc::string::String>) -> only_media::srt::SrtConfig
+pub fn only_media::srt::SrtConfig::play_wait(self, core::time::Duration) -> only_media::srt::SrtConfig
+impl core::clone::Clone for only_media::srt::SrtConfig
+pub fn only_media::srt::SrtConfig::clone(&self) -> Self
+impl core::default::Default for only_media::srt::SrtConfig
+pub fn only_media::srt::SrtConfig::default() -> Self
+impl core::fmt::Debug for only_media::srt::SrtConfig
+pub fn only_media::srt::SrtConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::srt::SrtConfig
+impl core::marker::Sync for only_media::srt::SrtConfig
+impl core::marker::Unpin for only_media::srt::SrtConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::srt::SrtConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_media::srt::SrtConfig
+pub struct only_media::srt::SrtPeer
+impl core::fmt::Debug for only_media::srt::SrtPeer
+pub fn only_media::srt::SrtPeer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Handler for only_media::srt::SrtPeer
+pub fn only_media::srt::SrtPeer::on_close(&mut self, &only_core::conn::Conn<Self>, core::option::Option<only_core::error::Error>)
+pub fn only_media::srt::SrtPeer::on_data(&mut self, &only_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for only_media::srt::SrtPeer
+impl core::marker::Sync for only_media::srt::SrtPeer
+impl core::marker::Unpin for only_media::srt::SrtPeer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::srt::SrtPeer
+impl !core::panic::unwind_safe::UnwindSafe for only_media::srt::SrtPeer
+pub struct only_media::srt::SrtServer(_)
+impl only_media::srt::SrtServer
+pub fn only_media::srt::SrtServer::connections(&self) -> usize
+pub fn only_media::srt::SrtServer::new(only_media::hub::Hub, only_media::srt::SrtConfig) -> only_media::srt::SrtServer
+impl core::clone::Clone for only_media::srt::SrtServer
+pub fn only_media::srt::SrtServer::clone(&self) -> Self
+impl core::fmt::Debug for only_media::srt::SrtServer
+pub fn only_media::srt::SrtServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_media::srt::SrtServer
+pub type only_media::srt::SrtServer::Handler = only_media::srt::SrtPeer
+pub fn only_media::srt::SrtServer::on_open(&self, &only_core::conn::Conn<only_media::srt::SrtPeer>) -> only_media::srt::SrtPeer
+impl core::marker::Send for only_media::srt::SrtServer
+impl core::marker::Sync for only_media::srt::SrtServer
+impl core::marker::Unpin for only_media::srt::SrtServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::srt::SrtServer
+impl !core::panic::unwind_safe::UnwindSafe for only_media::srt::SrtServer
+pub struct only_media::srt::SrtSession(_)
+impl only_media::srt::SrtSession
+pub fn only_media::srt::SrtSession::close(&self)
+pub fn only_media::srt::SrtSession::is_connected(&self) -> bool
+pub fn only_media::srt::SrtSession::remote(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_media::srt::SrtSession::send(&self, &[u8]) -> core::result::Result<(), only_media::srt::SrtError>
+pub fn only_media::srt::SrtSession::send_backlog(&self) -> usize
+pub fn only_media::srt::SrtSession::stats(&self) -> only_media::srt::Stats
+pub fn only_media::srt::SrtSession::stream_id(&self) -> &str
+impl core::clone::Clone for only_media::srt::SrtSession
+pub fn only_media::srt::SrtSession::clone(&self) -> Self
+impl core::fmt::Debug for only_media::srt::SrtSession
+pub fn only_media::srt::SrtSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::srt::SrtSession
+impl core::marker::Sync for only_media::srt::SrtSession
+impl core::marker::Unpin for only_media::srt::SrtSession
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::SrtSession
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::SrtSession
+#[non_exhaustive] pub struct only_media::srt::Stats
+pub only_media::srt::Stats::bytes_received: u64
+pub only_media::srt::Stats::bytes_sent: u64
+pub only_media::srt::Stats::naks_received: u64
+pub only_media::srt::Stats::naks_sent: u64
+pub only_media::srt::Stats::packets_duplicate: u64
+pub only_media::srt::Stats::packets_lost: u64
+pub only_media::srt::Stats::packets_received: u64
+pub only_media::srt::Stats::packets_recv_drop: u64
+pub only_media::srt::Stats::packets_retrans: u64
+pub only_media::srt::Stats::packets_send_drop: u64
+pub only_media::srt::Stats::packets_sent: u64
+pub only_media::srt::Stats::packets_undecrypt: u64
+pub only_media::srt::Stats::rtt: core::time::Duration
+impl core::clone::Clone for only_media::srt::Stats
+pub fn only_media::srt::Stats::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::Stats
+impl core::cmp::PartialEq for only_media::srt::Stats
+pub fn only_media::srt::Stats::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::srt::Stats
+pub fn only_media::srt::Stats::default() -> Self
+impl core::fmt::Debug for only_media::srt::Stats
+pub fn only_media::srt::Stats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::srt::Stats
+impl core::marker::Send for only_media::srt::Stats
+impl core::marker::Sync for only_media::srt::Stats
+impl core::marker::Unpin for only_media::srt::Stats
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::Stats
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::Stats
+#[non_exhaustive] pub struct only_media::srt::StreamId
+pub only_media::srt::StreamId::mode: only_media::srt::Mode
+pub only_media::srt::StreamId::params: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_media::srt::StreamId::query: alloc::string::String
+pub only_media::srt::StreamId::resource: alloc::string::String
+pub only_media::srt::StreamId::session: alloc::string::String
+pub only_media::srt::StreamId::user: alloc::string::String
+impl only_media::srt::StreamId
+pub fn only_media::srt::StreamId::parse(&str) -> core::option::Option<only_media::srt::StreamId>
+impl core::clone::Clone for only_media::srt::StreamId
+pub fn only_media::srt::StreamId::clone(&self) -> Self
+impl core::cmp::Eq for only_media::srt::StreamId
+impl core::cmp::PartialEq for only_media::srt::StreamId
+pub fn only_media::srt::StreamId::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::srt::StreamId
+pub fn only_media::srt::StreamId::default() -> Self
+impl core::fmt::Debug for only_media::srt::StreamId
+pub fn only_media::srt::StreamId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::srt::StreamId
+impl core::marker::Send for only_media::srt::StreamId
+impl core::marker::Sync for only_media::srt::StreamId
+impl core::marker::Unpin for only_media::srt::StreamId
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::srt::StreamId
+impl core::panic::unwind_safe::UnwindSafe for only_media::srt::StreamId
+pub const only_media::srt::DEFAULT_LATENCY: core::time::Duration
+pub const only_media::srt::DEFAULT_MAX_SEND_BACKLOG: usize
+pub const only_media::srt::MAX_PAYLOAD_SIZE: usize
+pub const only_media::srt::TS_PAYLOAD_SIZE: usize
+pub trait only_media::srt::SrtHandler: core::marker::Send + 'static
+pub fn only_media::srt::SrtHandler::on_close(&mut self, core::option::Option<only_media::srt::SrtError>)
+pub fn only_media::srt::SrtHandler::on_connect(&mut self, &only_media::srt::SrtSession)
+pub fn only_media::srt::SrtHandler::on_data(&mut self, alloc::vec::Vec<u8>)
+pub fn only_media::srt::dial(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, impl only_media::srt::SrtHandler) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
+pub fn only_media::srt::pull(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
+pub fn only_media::srt::push(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
+pub type only_media::srt::ConnectHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&only_media::srt::Request, &only_media::srt::StreamId) -> core::result::Result<(), only_media::srt::RejectReason> + core::marker::Send + core::marker::Sync)>
+pub mod only_media::whip
+#[non_exhaustive] pub enum only_media::whip::WhipError
+pub only_media::whip::WhipError::BadOffer(alloc::string::String)
+pub only_media::whip::WhipError::Hub(only_media::hub::HubError)
+pub only_media::whip::WhipError::Internal(alloc::string::String)
+pub only_media::whip::WhipError::NotAllowed
+pub only_media::whip::WhipError::NotImplemented
+pub only_media::whip::WhipError::Unsupported
+impl core::clone::Clone for only_media::whip::WhipError
+pub fn only_media::whip::WhipError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::whip::WhipError
+impl core::cmp::PartialEq for only_media::whip::WhipError
+pub fn only_media::whip::WhipError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::whip::WhipError
+impl core::fmt::Debug for only_media::whip::WhipError
+pub fn only_media::whip::WhipError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::whip::WhipError
+pub fn only_media::whip::WhipError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::whip::WhipError
+impl core::marker::Send for only_media::whip::WhipError
+impl core::marker::Sync for only_media::whip::WhipError
+impl core::marker::Unpin for only_media::whip::WhipError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::whip::WhipError
+impl core::panic::unwind_safe::UnwindSafe for only_media::whip::WhipError
+#[non_exhaustive] pub struct only_media::whip::Answer
+pub only_media::whip::Answer::sdp: alloc::string::String
+pub only_media::whip::Answer::session: alloc::boxed::Box<dyn only_media::whip::WebRtcSession>
+impl only_media::whip::Answer
+pub fn only_media::whip::Answer::new(impl core::convert::Into<alloc::string::String>, alloc::boxed::Box<dyn only_media::whip::WebRtcSession>) -> only_media::whip::Answer
+impl core::fmt::Debug for only_media::whip::Answer
+pub fn only_media::whip::Answer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::whip::Answer
+impl !core::marker::Sync for only_media::whip::Answer
+impl core::marker::Unpin for only_media::whip::Answer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::whip::Answer
+impl !core::panic::unwind_safe::UnwindSafe for only_media::whip::Answer
+pub struct only_media::whip::NoMedia
+impl core::clone::Clone for only_media::whip::NoMedia
+pub fn only_media::whip::NoMedia::clone(&self) -> Self
+impl core::default::Default for only_media::whip::NoMedia
+pub fn only_media::whip::NoMedia::default() -> Self
+impl core::fmt::Debug for only_media::whip::NoMedia
+pub fn only_media::whip::NoMedia::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::whip::NoMedia
+impl only_media::whip::WebRtcEngine for only_media::whip::NoMedia
+pub fn only_media::whip::NoMedia::play(&self, &only_media::whip::OfferInfo, &only_media::hub::Hub) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+pub fn only_media::whip::NoMedia::publish(&self, &only_media::whip::OfferInfo, only_media::hub::Publisher) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+impl core::marker::Send for only_media::whip::NoMedia
+impl core::marker::Sync for only_media::whip::NoMedia
+impl core::marker::Unpin for only_media::whip::NoMedia
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::whip::NoMedia
+impl core::panic::unwind_safe::UnwindSafe for only_media::whip::NoMedia
+#[non_exhaustive] pub struct only_media::whip::OfferInfo
+pub only_media::whip::OfferInfo::offer: only_media::sdp::Session
+pub only_media::whip::OfferInfo::offer_text: alloc::string::String
+pub only_media::whip::OfferInfo::path: alloc::string::String
+pub only_media::whip::OfferInfo::peer: only_media::hub::PeerInfo
+impl core::clone::Clone for only_media::whip::OfferInfo
+pub fn only_media::whip::OfferInfo::clone(&self) -> Self
+impl core::fmt::Debug for only_media::whip::OfferInfo
+pub fn only_media::whip::OfferInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::whip::OfferInfo
+impl core::marker::Sync for only_media::whip::OfferInfo
+impl core::marker::Unpin for only_media::whip::OfferInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::whip::OfferInfo
+impl core::panic::unwind_safe::UnwindSafe for only_media::whip::OfferInfo
+#[non_exhaustive] pub struct only_media::whip::WhipConfig
+pub only_media::whip::WhipConfig::cors_origin: core::option::Option<alloc::string::String>
+pub only_media::whip::WhipConfig::ice_links: alloc::vec::Vec<alloc::string::String>
+pub only_media::whip::WhipConfig::max_sessions: usize
+pub only_media::whip::WhipConfig::resource_prefix: alloc::string::String
+pub only_media::whip::WhipConfig::whep_prefix: alloc::string::String
+pub only_media::whip::WhipConfig::whip_prefix: alloc::string::String
+impl core::clone::Clone for only_media::whip::WhipConfig
+pub fn only_media::whip::WhipConfig::clone(&self) -> Self
+impl core::default::Default for only_media::whip::WhipConfig
+pub fn only_media::whip::WhipConfig::default() -> Self
+impl core::fmt::Debug for only_media::whip::WhipConfig
+pub fn only_media::whip::WhipConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::whip::WhipConfig
+impl core::marker::Sync for only_media::whip::WhipConfig
+impl core::marker::Unpin for only_media::whip::WhipConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::whip::WhipConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::whip::WhipConfig
+pub struct only_media::whip::WhipServer(_)
+impl only_media::whip::WhipServer
+pub fn only_media::whip::WhipServer::close_all(&self)
+pub fn only_media::whip::WhipServer::new(only_media::hub::Hub, alloc::rcs::arc::Arc<dyn only_media::whip::WebRtcEngine>, only_media::whip::WhipConfig) -> only_media::whip::WhipServer
+pub fn only_media::whip::WhipServer::routes(&self, only_http::router::Router) -> only_http::router::Router
+pub fn only_media::whip::WhipServer::sessions(&self) -> usize
+impl core::clone::Clone for only_media::whip::WhipServer
+pub fn only_media::whip::WhipServer::clone(&self) -> Self
+impl core::fmt::Debug for only_media::whip::WhipServer
+pub fn only_media::whip::WhipServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::whip::WhipServer
+impl core::marker::Sync for only_media::whip::WhipServer
+impl core::marker::Unpin for only_media::whip::WhipServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::whip::WhipServer
+impl !core::panic::unwind_safe::UnwindSafe for only_media::whip::WhipServer
+pub trait only_media::whip::WebRtcEngine: core::marker::Send + core::marker::Sync + 'static
+pub fn only_media::whip::WebRtcEngine::play(&self, &only_media::whip::OfferInfo, &only_media::hub::Hub) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+pub fn only_media::whip::WebRtcEngine::publish(&self, &only_media::whip::OfferInfo, only_media::hub::Publisher) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+impl only_media::whip::WebRtcEngine for only_media::whip::NoMedia
+pub fn only_media::whip::NoMedia::play(&self, &only_media::whip::OfferInfo, &only_media::hub::Hub) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+pub fn only_media::whip::NoMedia::publish(&self, &only_media::whip::OfferInfo, only_media::hub::Publisher) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+pub trait only_media::whip::WebRtcSession: core::marker::Send + 'static
+pub fn only_media::whip::WebRtcSession::close(&mut self)
+pub fn only_media::whip::WebRtcSession::trickle(&mut self, &str) -> core::result::Result<(), only_media::whip::WhipError>
+pub fn only_media::whip::handles(&only_http::message::Method) -> bool
+#[non_exhaustive] pub enum only_media::Codec
+pub only_media::Codec::Aac
+pub only_media::Codec::H264
+pub only_media::Codec::H265
+pub only_media::Codec::Mp3
+pub only_media::Codec::Opus
+pub only_media::Codec::Pcma
+pub only_media::Codec::Pcmu
+pub only_media::Codec::Unknown
+impl only_media::av::Codec
+pub fn only_media::av::Codec::is_audio(self) -> bool
+pub fn only_media::av::Codec::is_video(self) -> bool
+pub fn only_media::av::Codec::name(self) -> &'static str
+impl core::clone::Clone for only_media::av::Codec
+pub fn only_media::av::Codec::clone(&self) -> Self
+impl core::cmp::Eq for only_media::av::Codec
+impl core::cmp::PartialEq for only_media::av::Codec
+pub fn only_media::av::Codec::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::av::Codec
+pub fn only_media::av::Codec::default() -> Self
+impl core::fmt::Debug for only_media::av::Codec
+pub fn only_media::av::Codec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::av::Codec
+pub fn only_media::av::Codec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_media::av::Codec
+pub fn only_media::av::Codec::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_media::av::Codec
+impl core::marker::StructuralPartialEq for only_media::av::Codec
+impl core::marker::Send for only_media::av::Codec
+impl core::marker::Sync for only_media::av::Codec
+impl core::marker::Unpin for only_media::av::Codec
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::av::Codec
+impl core::panic::unwind_safe::UnwindSafe for only_media::av::Codec
+#[non_exhaustive] pub enum only_media::HubError
+pub only_media::HubError::Closed
+pub only_media::HubError::Denied(alloc::string::String)
+pub only_media::HubError::Limit
+pub only_media::HubError::NotFound
+pub only_media::HubError::StreamBusy
+pub only_media::HubError::Unpublished
+impl core::clone::Clone for only_media::hub::HubError
+pub fn only_media::hub::HubError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hub::HubError
+impl core::cmp::PartialEq for only_media::hub::HubError
+pub fn only_media::hub::HubError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::hub::HubError
+impl core::fmt::Debug for only_media::hub::HubError
+pub fn only_media::hub::HubError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::hub::HubError
+pub fn only_media::hub::HubError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hub::HubError
+impl core::marker::Send for only_media::hub::HubError
+impl core::marker::Sync for only_media::hub::HubError
+impl core::marker::Unpin for only_media::hub::HubError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::HubError
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::HubError
+pub struct only_media::Hub(_)
+impl only_media::hub::Hub
+pub fn only_media::hub::Hub::close(&self)
+pub fn only_media::hub::Hub::new(only_media::hub::HubConfig) -> only_media::hub::Hub
+pub fn only_media::hub::Hub::publish(&self, &str, only_media::av::Tracks, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
+pub fn only_media::hub::Hub::reserve(&self, &str, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
+pub fn only_media::hub::Hub::stream_info(&self, &str) -> core::option::Option<only_media::hub::StreamInfo>
+pub fn only_media::hub::Hub::streams(&self) -> alloc::vec::Vec<only_media::hub::StreamInfo>
+pub fn only_media::hub::Hub::subscribe(&self, &str, impl only_media::hub::Sink, only_media::hub::SubscribeOptions) -> core::result::Result<only_media::hub::Subscription, only_media::hub::HubError>
+pub fn only_media::hub::Hub::subscribe_boxed(&self, &str, alloc::boxed::Box<dyn only_media::hub::Sink>, only_media::hub::SubscribeOptions) -> core::result::Result<only_media::hub::Subscription, only_media::hub::HubError>
+impl core::clone::Clone for only_media::hub::Hub
+pub fn only_media::hub::Hub::clone(&self) -> Self
+impl core::default::Default for only_media::hub::Hub
+pub fn only_media::hub::Hub::default() -> Self
+impl core::fmt::Debug for only_media::hub::Hub
+pub fn only_media::hub::Hub::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::Hub
+impl core::marker::Sync for only_media::hub::Hub
+impl core::marker::Unpin for only_media::hub::Hub
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Hub
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Hub
+#[non_exhaustive] pub struct only_media::HubConfig
+pub only_media::HubConfig::gop_cache_bytes: usize
+pub only_media::HubConfig::max_streams: usize
+pub only_media::HubConfig::max_subscribers: usize
+pub only_media::HubConfig::on_publish: core::option::Option<only_media::hub::AuthHook>
+pub only_media::HubConfig::on_subscribe: core::option::Option<only_media::hub::AuthHook>
+pub only_media::HubConfig::on_unpublish: core::option::Option<only_media::hub::PathHook>
+impl core::clone::Clone for only_media::hub::HubConfig
+pub fn only_media::hub::HubConfig::clone(&self) -> Self
+impl core::default::Default for only_media::hub::HubConfig
+pub fn only_media::hub::HubConfig::default() -> Self
+impl core::fmt::Debug for only_media::hub::HubConfig
+pub fn only_media::hub::HubConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::HubConfig
+impl core::marker::Sync for only_media::hub::HubConfig
+impl core::marker::Unpin for only_media::hub::HubConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::HubConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::HubConfig
+#[non_exhaustive] pub struct only_media::Packet
+pub only_media::Packet::data: alloc::vec::Vec<u8>
+pub only_media::Packet::dts: only_media::av::Time
+pub only_media::Packet::keyframe: bool
+pub only_media::Packet::pts: only_media::av::Time
+pub only_media::Packet::track: usize
+impl only_media::av::Packet
+pub fn only_media::av::Packet::cts(&self) -> only_media::av::Time
+pub fn only_media::av::Packet::new(usize, only_media::av::Time, only_media::av::Time, bool, alloc::vec::Vec<u8>) -> only_media::av::Packet
+impl core::clone::Clone for only_media::av::Packet
+pub fn only_media::av::Packet::clone(&self) -> Self
+impl core::cmp::Eq for only_media::av::Packet
+impl core::cmp::PartialEq for only_media::av::Packet
+pub fn only_media::av::Packet::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::av::Packet
+pub fn only_media::av::Packet::default() -> Self
+impl core::fmt::Debug for only_media::av::Packet
+pub fn only_media::av::Packet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::av::Packet
+impl core::marker::Send for only_media::av::Packet
+impl core::marker::Sync for only_media::av::Packet
+impl core::marker::Unpin for only_media::av::Packet
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::av::Packet
+impl core::panic::unwind_safe::UnwindSafe for only_media::av::Packet
+#[non_exhaustive] pub struct only_media::PeerInfo
+pub only_media::PeerInfo::protocol: &'static str
+pub only_media::PeerInfo::query: alloc::string::String
+pub only_media::PeerInfo::remote: core::option::Option<core::net::socket_addr::SocketAddr>
+impl only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::new(&'static str, core::option::Option<core::net::socket_addr::SocketAddr>, impl core::convert::Into<alloc::string::String>) -> only_media::hub::PeerInfo
+impl core::clone::Clone for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hub::PeerInfo
+impl core::cmp::PartialEq for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::default() -> Self
+impl core::fmt::Debug for only_media::hub::PeerInfo
+pub fn only_media::hub::PeerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::hub::PeerInfo
+impl core::marker::Send for only_media::hub::PeerInfo
+impl core::marker::Sync for only_media::hub::PeerInfo
+impl core::marker::Unpin for only_media::hub::PeerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::PeerInfo
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::PeerInfo
+pub struct only_media::Publisher
+impl only_media::hub::Publisher
+pub fn only_media::hub::Publisher::close(&self)
+pub fn only_media::hub::Publisher::is_active(&self) -> bool
+pub fn only_media::hub::Publisher::path(&self) -> &str
+pub fn only_media::hub::Publisher::set_tracks(&self, only_media::av::Tracks)
+pub fn only_media::hub::Publisher::tracks(&self) -> core::option::Option<only_media::av::Tracks>
+pub fn only_media::hub::Publisher::write(&self, only_media::av::Packet)
+pub fn only_media::hub::Publisher::write_shared(&self, alloc::rcs::arc::Arc<only_media::av::Packet>)
+impl core::fmt::Debug for only_media::hub::Publisher
+pub fn only_media::hub::Publisher::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_media::hub::Publisher
+pub fn only_media::hub::Publisher::drop(&mut self)
+impl core::marker::Send for only_media::hub::Publisher
+impl core::marker::Sync for only_media::hub::Publisher
+impl core::marker::Unpin for only_media::hub::Publisher
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Publisher
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Publisher
+#[non_exhaustive] pub struct only_media::SubscribeOptions
+pub only_media::SubscribeOptions::info: only_media::hub::PeerInfo
+pub only_media::SubscribeOptions::no_gop_cache: bool
+pub only_media::SubscribeOptions::start_wait: core::option::Option<core::time::Duration>
+pub only_media::SubscribeOptions::wait: core::option::Option<core::time::Duration>
+impl only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::new(only_media::hub::PeerInfo) -> only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::wait(self, core::time::Duration) -> only_media::hub::SubscribeOptions
+impl core::clone::Clone for only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::clone(&self) -> Self
+impl core::default::Default for only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::default() -> Self
+impl core::fmt::Debug for only_media::hub::SubscribeOptions
+pub fn only_media::hub::SubscribeOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::hub::SubscribeOptions
+impl core::marker::Sync for only_media::hub::SubscribeOptions
+impl core::marker::Unpin for only_media::hub::SubscribeOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::SubscribeOptions
+impl core::panic::unwind_safe::UnwindSafe for only_media::hub::SubscribeOptions
+pub struct only_media::Subscription
+impl only_media::hub::Subscription
+pub fn only_media::hub::Subscription::close(&self)
+pub fn only_media::hub::Subscription::drop_counter(&mut self) -> alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>
+pub fn only_media::hub::Subscription::is_closed(&self) -> bool
+pub fn only_media::hub::Subscription::path(&self) -> &str
+impl core::fmt::Debug for only_media::hub::Subscription
+pub fn only_media::hub::Subscription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_media::hub::Subscription
+pub fn only_media::hub::Subscription::drop(&mut self)
+impl core::marker::Send for only_media::hub::Subscription
+impl core::marker::Sync for only_media::hub::Subscription
+impl core::marker::Unpin for only_media::hub::Subscription
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Subscription
+impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Subscription
+#[non_exhaustive] pub struct only_media::Track
+pub only_media::Track::channels: u8
+pub only_media::Track::codec: only_media::av::Codec
+pub only_media::Track::config: alloc::vec::Vec<u8>
+pub only_media::Track::height: u32
+pub only_media::Track::sample_rate: u32
+pub only_media::Track::width: u32
+impl only_media::av::Track
+pub fn only_media::av::Track::aac(alloc::vec::Vec<u8>) -> only_media::av::Track
+pub fn only_media::av::Track::audio(only_media::av::Codec, alloc::vec::Vec<u8>, u32, u8) -> only_media::av::Track
+pub fn only_media::av::Track::clock_rate(&self) -> u32
+pub fn only_media::av::Track::is_video(&self) -> bool
+pub fn only_media::av::Track::new(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
+pub fn only_media::av::Track::video(only_media::av::Codec, alloc::vec::Vec<u8>) -> only_media::av::Track
+impl core::clone::Clone for only_media::av::Track
+pub fn only_media::av::Track::clone(&self) -> Self
+impl core::cmp::Eq for only_media::av::Track
+impl core::cmp::PartialEq for only_media::av::Track
+pub fn only_media::av::Track::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::av::Track
+pub fn only_media::av::Track::default() -> Self
+impl core::fmt::Debug for only_media::av::Track
+pub fn only_media::av::Track::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::av::Track
+impl core::marker::Send for only_media::av::Track
+impl core::marker::Sync for only_media::av::Track
+impl core::marker::Unpin for only_media::av::Track
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::av::Track
+impl core::panic::unwind_safe::UnwindSafe for only_media::av::Track
+pub trait only_media::Sink: core::marker::Send + 'static
+pub fn only_media::Sink::attach(&mut self, &alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>)
+pub fn only_media::Sink::on_close(&mut self, only_media::hub::HubError)
+pub fn only_media::Sink::on_packet(&mut self, &alloc::rcs::arc::Arc<only_media::av::Packet>)
+pub fn only_media::Sink::on_tracks(&mut self, &only_media::av::Tracks)
+impl<S: only_media::hub::Sink> only_media::hub::Sink for only_media::hub::Dropper<S>
+pub fn only_media::hub::Dropper<S>::attach(&mut self, &alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>)
+pub fn only_media::hub::Dropper<S>::on_close(&mut self, only_media::hub::HubError)
+pub fn only_media::hub::Dropper<S>::on_packet(&mut self, &alloc::rcs::arc::Arc<only_media::av::Packet>)
+pub fn only_media::hub::Dropper<S>::on_tracks(&mut self, &only_media::av::Tracks)
+pub type only_media::Tracks = alloc::rcs::arc::Arc<[only_media::av::Track]>

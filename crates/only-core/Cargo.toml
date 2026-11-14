@@ -1,0 +1,31 @@
+[package]
+name = "only-core"
+description = "only core: Conn, Handler, Acceptor, Config, telemetry and the backend-facing traits"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/only-core"
+keywords = ["network", "event-loop", "tcp", "udp", "server"]
+categories = ["network-programming"]
+
+[dependencies]
+only-buf = { workspace = true }
+only-pool = { workspace = true }
+log = { version = "0.4.21", features = ["kv"] }
+
+[target.'cfg(unix)'.dependencies]
+only-sys = { workspace = true }
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[features]
+# Detached connections for the fuzz targets (`fuzz/`); not a public API.
+fuzzing = []
+
+[lints]
+workspace = true

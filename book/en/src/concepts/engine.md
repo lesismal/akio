@@ -6,7 +6,7 @@ An `Engine` is a set of listeners, each served by its own **group** of I/O threa
 shared logical pool and a telemetry hub. You build it with `Engine::builder()`:
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-basics.rs:engine}}
+{{#include ../../../../crates/only/examples/guide-basics.rs:engine}}
 ```
 
 - `build()` validates the configuration, binds every listener (so port conflicts fail here) and
@@ -62,7 +62,7 @@ process is privileged. When nothing can be attached the listener keeps the kerne
 hashing and reports why; `strict: true` turns that into a build error.
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-config.rs:listeners}}
+{{#include ../../../../crates/only/examples/guide-config.rs:listeners}}
 ```
 
 `Engine::accel_status()` reports, per listener, `Off`, `Steering(info)` or `Degraded(reason)`.
@@ -77,7 +77,7 @@ queues. Consequences:
 - Your per-connection state needs no lock and no `Sync`.
 - Events of one connection are handled in order, one at a time.
 - A slow callback delays every other connection on that thread. This is why callbacks must not
-  block, and why flash measures callbacks and reports slow ones (see
+  block, and why `only` measures callbacks and reports slow ones (see
   [Observability](../observability.md)).
 - Load is balanced per connection, not per request: a hot connection cannot move to an idle
   thread. Steering (above) controls the initial placement.

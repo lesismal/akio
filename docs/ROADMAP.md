@@ -1,4 +1,4 @@
-# flash Roadmap
+# `only` Roadmap
 
 English | [简体中文](ROADMAP.zh-CN.md)
 
@@ -6,7 +6,7 @@ English | [简体中文](ROADMAP.zh-CN.md)
 >
 > Original note: Items marked `⚠ TBC` are places where I changed the original design or where the intent is ambiguous and needs your decision. They are collected in the "Open questions" list at the end.
 
-flash is the Rust counterpart of [fib](../../fib) (Go): the same feature surface, implemented the Rust way (ownership, `Send/Sync` boundaries, zero-cost abstractions, feature flags, sans-io protocol layers).
+`only` is the Rust counterpart of [fib](../../fib) (Go): the same feature surface, implemented the Rust way (ownership, `Send/Sync` boundaries, zero-cost abstractions, feature flags, sans-io protocol layers).
 
 ## 1. Goals and non-goals
 
@@ -18,7 +18,7 @@ flash is the Rust counterpart of [fib](../../fib) (Go): the same feature surface
 5. Performance: on the same machine, no worse than fib, and in the same class as or better than tokio+hyper, monoio and glommio.
 
 **Non-goals (at least before 1.0)**
-- No async/await runtime (flash is not a tokio replacement). A `Future` adapter may come after 1.0.
+- No async/await runtime (`only` is not a tokio replacement). A `Future` adapter may come after 1.0.
 - No Windows (IOCP) support. Linux is the first-class platform; macOS gets a kqueue backend for development and testing.
 - No rewriting of mature sans-io crypto/protocol implementations (see 2.6).
 
@@ -26,8 +26,8 @@ flash is the Rust counterpart of [fib](../../fib) (Go): the same feature surface
 
 ### 2.1 Threading model: thread-per-core, a connection belongs to one I/O thread
 - Each I/O thread owns a reactor, its own connection table, buffer pool and timer wheel. `SO_REUSEPORT` (optionally an eBPF program) spreads new connections across threads.
-- Unlike fib, where each read round may land on any idle worker (no affinity), flash runs callbacks **directly on the I/O thread**, so a connection necessarily belongs to one thread. Per-connection handler state then needs no `Sync` and no lock.
-- Cost: a heavy callback delays the other connections on the same thread. That is exactly why the logical pool exists (see 2.3). The docs must state the "callbacks must not block" contract, and flash provides slow-callback detection (configurable threshold; logs/metrics on overrun).
+- Unlike fib, where each read round may land on any idle worker (no affinity), `only` runs callbacks **directly on the I/O thread**, so a connection necessarily belongs to one thread. Per-connection handler state then needs no `Sync` and no lock.
+- Cost: a heavy callback delays the other connections on the same thread. That is exactly why the logical pool exists (see 2.3). The docs must state the "callbacks must not block" contract, and `only` provides slow-callback detection (configurable threshold; logs/metrics on overrun).
 
 ### 2.2 Connection: a handle with an internal lock
 ```text
@@ -84,18 +84,18 @@ Engine::builder()
 > **On the eBPF ambiguity**: an eBPF program does not do userspace send/receive itself, so listing it next to epoll/io_uring/DPDK as an "Engine" needs a definition first. My suggestion is the "acceleration/steering layer + optional AF_XDP data path" in the table above: `Backend::Epoll + Accel::Ebpf(..)`, with AF_XDP as a lighter kernel-bypass option besides DPDK. Please confirm this matches your intent.
 
 ### 2.6 Other design decisions
-- **sans-io protocol layers**: HTTP/1, HTTP/2, WebSocket, QUIC, KCP, ... are written as pure state machines driven by flash's Handler. This makes them easy to fuzz, to unit-test without an Engine, and to reuse across backends.
+- **sans-io protocol layers**: HTTP/1, HTTP/2, WebSocket, QUIC, KCP, ... are written as pure state machines driven by `only`'s Handler. This makes them easy to fuzz, to unit-test without an Engine, and to reuse across backends.
 - **Buffers**: a size-class buffer pool (thread-local cache plus global recycling) and `Bytes`-like reference-counted shared buffers for broadcast (like fib's `PreparedMessage`/`SendShared`).
 - **Backpressure**: per-connection write watermark pauses reads, engine-wide `max_pending_bytes`, `hold_reads`.
 - **Graceful shutdown**: `Engine::shutdown()` notifies handlers and waits for connections to drain.
 - **Dependency policy**: fib has zero dependencies; in Rust the policy is "few and well chosen": `libc`, `io-uring` (or a thin in-house wrapper), `aya` (eBPF), and mature sans-io crates such as `rustls`/`quinn-proto` behind features, with the core crates close to dependency-free. `⚠ TBC`
-- **unsafe governance**: `unsafe` lives only in `flash-sys`, the backends and the buffer pool, with SAFETY comments; core concurrent structures are verified with `loom`, protocol parsers with `cargo-fuzz`, and the pure-Rust parts run under `miri`.
+- **unsafe governance**: `unsafe` lives only in `only-sys`, the backends and the buffer pool, with SAFETY comments; core concurrent structures are verified with `loom`, protocol parsers with `cargo-fuzz`, and the pure-Rust parts run under `miri`.
 
 ## 3. Parity matrix with fib
 
 Priority: P0 = required for 1.0; P1 = strongly recommended for 1.0; P2 = after 1.0.
 
-| Capability | fib | flash priority | Milestone | Notes |
+| Capability | fib | `only` priority | Milestone | Notes |
 | --- | --- | --- | --- | --- |
 | TCP / Unix sockets, async dial | ✓ | P0 | M1 | sendfile / splice / writev / cork / half close |
 | UDP (one connection per peer, batched I/O) | ✓ | P0 | M2 | recvmmsg/sendmmsg, GRO/GSO |
@@ -138,7 +138,7 @@ Priority: P0 = required for 1.0; P1 = strongly recommended for 1.0; P2 = after 1
 - **Correctness**: Autobahn (WS), h2spec (H2), and interop tests against curl / nghttp2 / quiche / kcp-go in CI.
 - **Concurrency**: `loom` covers the Conn send queue and close state machine; stress tests cover cross-thread `send` racing `close`.
 - **Fuzzing**: at least one `cargo-fuzz` target per sans-io parser.
-- **Performance gates**: fixed baselines (flash's own history, fib, hyper/tokio, monoio), run nightly in CI, alert on regressions beyond a threshold. Scenarios: echo, HTTP/1 plaintext, pipelined, HTTP/2 multiplexed, WS echo, TLS, memory with 100k idle connections.
+- **Performance gates**: fixed baselines (`only`'s own history, fib, hyper/tokio, monoio), run nightly in CI, alert on regressions beyond a threshold. Scenarios: echo, HTTP/1 plaintext, pipelined, HTTP/2 multiplexed, WS echo, TLS, memory with 100k idle connections.
 - **Platform matrix**: Linux x86_64/aarch64 (io_uring with tiered kernel-feature probing, ≥5.19 for the full set), macOS arm64 (kqueue).
 
 ## 6. Main risks

@@ -1,13 +1,13 @@
 # RTSP 与 WHIP/WHEP
 
-`flash-media` 在同一个流 `Hub` 前提供 RTSP 服务和 WHIP/WHEP 信令端点，与 RTMP、HTTP-FLV、
+`only-media` 在同一个流 `Hub` 前提供 RTSP 服务和 WHIP/WHEP 信令端点，与 RTMP、HTTP-FLV、
 HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放，RTMP 编码器推的流也能在任意 RTSP
-播放器里播放。每种协议都转换成 `flash_media::av` 的规范包（AVCC 视频、裸 AAC），协议之间互不感知。
+播放器里播放。每种协议都转换成 `only_media::av` 的规范包（AVCC 视频、裸 AAC），协议之间互不感知。
 
 ## 一个 hub，一个钩子
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:hub}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:hub}}
 ```
 
 `HubConfig::on_publish` 和 `on_subscribe` 一次性为所有推流和播放协议做鉴权；它们拿到的
@@ -16,7 +16,7 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
 ## RTSP 服务端
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:rtsp}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:rtsp}}
 ```
 
 - `rtsp://host:port/live/cam` 播放或录制 hub 中的流 `live/cam`。
@@ -32,7 +32,7 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   `AAC-hbr`）、Opus、G.711。
 - 鉴权：设置 `RtspConfig::credentials` 后启用 Digest（MD5）和 Basic。
 
-已用 ffmpeg 9 测试（`crates/flash-media/tests/rtsp_interop.rs`）：
+已用 ffmpeg 9 测试（`crates/only-media/tests/rtsp_interop.rs`）：
 
 ```text
 ffmpeg -re -f lavfi -i testsrc=size=320x240:rate=25 -f lavfi -i sine -c:v libx264 -c:a aac \
@@ -45,10 +45,10 @@ ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 ## WHIP 与 WHEP
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:whip}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:whip}}
 ```
 
-`WhipServer::routes` 向 flash-http 的 `Router` 添加：
+`WhipServer::routes` 向 only-http 的 `Router` 添加：
 
 | 请求 | 应答 |
 | --- | --- |
@@ -66,7 +66,7 @@ RTP）由 `WebRtcEngine` 负责：其 `publish` 拿到预占的 `Publisher`，`p
 ## 统计
 
 ```rust,ignore
-{{#include ../../../../crates/flash-media/examples/guide-media-rtsp.rs:stats}}
+{{#include ../../../../crates/only-media/examples/guide-media-rtsp.rs:stats}}
 ```
 
 ## 不支持

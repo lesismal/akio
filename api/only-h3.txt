@@ -1,0 +1,94 @@
+pub mod only_h3
+pub mod only_h3::code
+pub const only_h3::code::CLOSED_CRITICAL_STREAM: u32
+pub const only_h3::code::EXCESSIVE_LOAD: u32
+pub const only_h3::code::FRAME_ERROR: u32
+pub const only_h3::code::FRAME_UNEXPECTED: u32
+pub const only_h3::code::GENERAL_PROTOCOL_ERROR: u32
+pub const only_h3::code::ID_ERROR: u32
+pub const only_h3::code::INTERNAL_ERROR: u32
+pub const only_h3::code::MESSAGE_ERROR: u32
+pub const only_h3::code::MISSING_SETTINGS: u32
+pub const only_h3::code::NO_ERROR: u32
+pub const only_h3::code::QPACK_DECOMPRESSION_FAILED: u32
+pub const only_h3::code::REQUEST_CANCELLED: u32
+pub const only_h3::code::REQUEST_INCOMPLETE: u32
+pub const only_h3::code::REQUEST_REJECTED: u32
+pub const only_h3::code::SETTINGS_ERROR: u32
+pub const only_h3::code::STREAM_CREATION_ERROR: u32
+pub mod only_h3::qpack
+#[non_exhaustive] pub enum only_h3::qpack::QpackError
+pub only_h3::qpack::QpackError::Decompression
+pub only_h3::qpack::QpackError::TooLarge
+impl core::cmp::Eq for only_h3::qpack::QpackError
+impl core::cmp::PartialEq for only_h3::qpack::QpackError
+pub fn only_h3::qpack::QpackError::eq(&self, &Self) -> bool
+impl core::error::Error for only_h3::qpack::QpackError
+impl core::fmt::Debug for only_h3::qpack::QpackError
+pub fn only_h3::qpack::QpackError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_h3::qpack::QpackError
+pub fn only_h3::qpack::QpackError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_h3::qpack::QpackError
+impl core::marker::Send for only_h3::qpack::QpackError
+impl core::marker::Sync for only_h3::qpack::QpackError
+impl core::marker::Unpin for only_h3::qpack::QpackError
+impl core::panic::unwind_safe::RefUnwindSafe for only_h3::qpack::QpackError
+impl core::panic::unwind_safe::UnwindSafe for only_h3::qpack::QpackError
+pub fn only_h3::qpack::decode(&[u8], usize) -> core::result::Result<only_h3::qpack::Fields, only_h3::qpack::QpackError>
+pub fn only_h3::qpack::encode<'a>(impl core::iter::traits::collect::IntoIterator<Item = (&'a str, &'a str)>, &mut alloc::vec::Vec<u8>)
+pub type only_h3::qpack::Fields = alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::vec::Vec<u8>)>
+#[non_exhaustive] pub enum only_h3::H3Error
+pub only_h3::H3Error::Closed(alloc::string::String)
+pub only_h3::H3Error::Protocol(&'static str)
+pub only_h3::H3Error::Reset(u64)
+pub only_h3::H3Error::Timeout
+impl core::clone::Clone for only_h3::H3Error
+pub fn only_h3::H3Error::clone(&self) -> Self
+impl core::cmp::Eq for only_h3::H3Error
+impl core::cmp::PartialEq for only_h3::H3Error
+pub fn only_h3::H3Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_h3::H3Error
+impl core::fmt::Debug for only_h3::H3Error
+pub fn only_h3::H3Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_h3::H3Error
+pub fn only_h3::H3Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_h3::H3Error
+impl core::marker::Send for only_h3::H3Error
+impl core::marker::Sync for only_h3::H3Error
+impl core::marker::Unpin for only_h3::H3Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Error
+impl core::panic::unwind_safe::UnwindSafe for only_h3::H3Error
+pub struct only_h3::H3Client
+impl only_h3::H3Client
+pub fn only_h3::H3Client::close(&self)
+pub fn only_h3::H3Client::connection(&self) -> &only_quic::Connection
+pub fn only_h3::H3Client::dial(&only::Engine, core::net::socket_addr::SocketAddr, &str, only_quic::types::ClientConfig) -> core::result::Result<only_h3::H3Client, only_quic::Error>
+pub fn only_h3::H3Client::get(&self, &str, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
+pub fn only_h3::H3Client::request(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, impl core::ops::function::FnOnce(core::result::Result<only_http::message::Response, only_h3::H3Error>) + core::marker::Send + 'static)
+pub fn only_h3::H3Client::request_blocking(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
+impl core::clone::Clone for only_h3::H3Client
+pub fn only_h3::H3Client::clone(&self) -> Self
+impl core::fmt::Debug for only_h3::H3Client
+pub fn only_h3::H3Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_h3::H3Client
+impl core::marker::Sync for only_h3::H3Client
+impl core::marker::Unpin for only_h3::H3Client
+impl !core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Client
+impl !core::panic::unwind_safe::UnwindSafe for only_h3::H3Client
+#[non_exhaustive] pub struct only_h3::H3Config
+pub only_h3::H3Config::max_body_bytes: usize
+pub only_h3::H3Config::max_field_section_bytes: usize
+impl core::clone::Clone for only_h3::H3Config
+pub fn only_h3::H3Config::clone(&self) -> Self
+impl core::default::Default for only_h3::H3Config
+pub fn only_h3::H3Config::default() -> only_h3::H3Config
+impl core::fmt::Debug for only_h3::H3Config
+pub fn only_h3::H3Config::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_h3::H3Config
+impl core::marker::Sync for only_h3::H3Config
+impl core::marker::Unpin for only_h3::H3Config
+impl core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Config
+impl core::panic::unwind_safe::UnwindSafe for only_h3::H3Config
+pub fn only_h3::serve<S: only_http::context::Service>(only_quic::types::ServerConfig, S) -> only_quic::QuicServer
+pub fn only_h3::serve_with<S: only_http::context::Service>(only_quic::types::ServerConfig, only_h3::H3Config, S) -> only_quic::QuicServer
+pub fn only_h3::server_config(alloc::vec::Vec<only_tls::config::Certificate>, only_tls::config::PrivateKey) -> core::result::Result<only_quic::types::ServerConfig, only_quic::Error>

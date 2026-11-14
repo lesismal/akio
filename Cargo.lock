@@ -508,288 +508,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
-name = "flash"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash-core",
- "flash-dpdk",
- "flash-ebpf",
- "flash-epoll",
- "flash-tls",
- "flash-uring",
- "libc",
- "log",
- "rcgen",
- "rustls",
-]
-
-[[package]]
-name = "flash-arpc"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash",
- "flash-buf",
- "flash-core",
-]
-
-[[package]]
-name = "flash-bittorrent"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash",
- "flash-core",
- "flash-http",
- "flash-pool",
- "getrandom 0.2.17",
- "sha1",
-]
-
-[[package]]
-name = "flash-buf"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "flash-core"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash-buf",
- "flash-pool",
- "flash-sys",
- "log",
- "loom",
-]
-
-[[package]]
-name = "flash-dpdk"
-version = "1.0.0-rc.1"
-dependencies = [
- "cc",
- "flash",
- "flash-core",
- "flash-kcp",
- "log",
- "pkg-config",
- "smoltcp",
-]
-
-[[package]]
-name = "flash-ebpf"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash-core",
- "flash-sys",
- "libc",
-]
-
-[[package]]
-name = "flash-epoll"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash-core",
- "flash-sys",
- "flash-timer",
- "log",
-]
-
-[[package]]
-name = "flash-grpc"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash",
- "flash-core",
- "flash-http",
- "flate2",
- "prost",
-]
-
-[[package]]
-name = "flash-h3"
-version = "1.0.0-rc.1"
-dependencies = [
- "bytes",
- "flash",
- "flash-core",
- "flash-http",
- "flash-quic",
- "rcgen",
-]
-
-[[package]]
-name = "flash-http"
-version = "1.0.0-rc.1"
-dependencies = [
- "base64",
- "flash",
- "flash-core",
- "flash-ws",
- "flate2",
- "httparse",
- "libc",
- "log",
- "loona-hpack",
- "rcgen",
- "regex",
- "rustls",
-]
-
-[[package]]
-name = "flash-kcp"
-version = "1.0.0-rc.1"
-dependencies = [
- "aes",
- "aes-gcm",
- "crc32fast",
- "flash",
- "flash-core",
- "getrandom 0.2.17",
- "pbkdf2",
- "sha1",
-]
-
-[[package]]
-name = "flash-media"
-version = "1.0.0-rc.1"
-dependencies = [
- "aes",
- "base64",
- "flash",
- "flash-core",
- "flash-http",
- "getrandom 0.2.17",
- "hmac",
- "md-5",
- "pbkdf2",
- "sha1",
- "sha2",
-]
-
-[[package]]
-name = "flash-mux"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash",
- "flash-core",
- "flash-http",
- "rcgen",
- "rustls",
-]
-
-[[package]]
-name = "flash-pool"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "flash-prefork"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash",
- "flash-http",
- "flash-sys",
- "log",
-]
-
-[[package]]
-name = "flash-quic"
-version = "1.0.0-rc.1"
-dependencies = [
- "bytes",
- "flash",
- "flash-core",
- "quinn-proto",
- "rcgen",
-]
-
-[[package]]
-name = "flash-socks"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash",
- "flash-core",
- "flash-http",
-]
-
-[[package]]
-name = "flash-sys"
-version = "1.0.0-rc.1"
-dependencies = [
- "libc",
-]
-
-[[package]]
-name = "flash-timer"
-version = "1.0.0-rc.1"
-
-[[package]]
-name = "flash-tls"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash-core",
- "rcgen",
- "rustls",
-]
-
-[[package]]
-name = "flash-turn"
-version = "1.0.0-rc.1"
-dependencies = [
- "crc32fast",
- "flash",
- "flash-core",
- "getrandom 0.2.17",
- "hmac",
- "md-5",
- "sha1",
-]
-
-[[package]]
-name = "flash-uring"
-version = "1.0.0-rc.1"
-dependencies = [
- "flash-core",
- "flash-sys",
- "flash-timer",
- "io-uring",
- "libc",
- "log",
-]
-
-[[package]]
-name = "flash-webrtc"
-version = "1.0.0-rc.1"
-dependencies = [
- "aes",
- "aes-gcm",
- "ctr",
- "dimpl",
- "flash",
- "flash-core",
- "flash-turn",
- "getrandom 0.2.17",
- "hmac",
- "log",
- "p256",
- "sha1",
- "sha2",
- "str0m",
-]
-
-[[package]]
-name = "flash-ws"
-version = "1.0.0-rc.1"
-dependencies = [
- "base64",
- "flash",
- "flash-buf",
- "flash-core",
- "flash-http",
- "flate2",
- "getrandom 0.2.17",
- "httparse",
- "rcgen",
- "sha1",
-]
-
-[[package]]
 name = "flate2"
 version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1117,6 +835,288 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "only"
+version = "1.0.0-rc.1"
+dependencies = [
+ "libc",
+ "log",
+ "only-core",
+ "only-dpdk",
+ "only-ebpf",
+ "only-epoll",
+ "only-tls",
+ "only-uring",
+ "rcgen",
+ "rustls",
+]
+
+[[package]]
+name = "only-arpc"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only",
+ "only-buf",
+ "only-core",
+]
+
+[[package]]
+name = "only-bittorrent"
+version = "1.0.0-rc.1"
+dependencies = [
+ "getrandom 0.2.17",
+ "only",
+ "only-core",
+ "only-http",
+ "only-pool",
+ "sha1",
+]
+
+[[package]]
+name = "only-buf"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "only-core"
+version = "1.0.0-rc.1"
+dependencies = [
+ "log",
+ "loom",
+ "only-buf",
+ "only-pool",
+ "only-sys",
+]
+
+[[package]]
+name = "only-dpdk"
+version = "1.0.0-rc.1"
+dependencies = [
+ "cc",
+ "log",
+ "only",
+ "only-core",
+ "only-kcp",
+ "pkg-config",
+ "smoltcp",
+]
+
+[[package]]
+name = "only-ebpf"
+version = "1.0.0-rc.1"
+dependencies = [
+ "libc",
+ "only-core",
+ "only-sys",
+]
+
+[[package]]
+name = "only-epoll"
+version = "1.0.0-rc.1"
+dependencies = [
+ "log",
+ "only-core",
+ "only-sys",
+ "only-timer",
+]
+
+[[package]]
+name = "only-grpc"
+version = "1.0.0-rc.1"
+dependencies = [
+ "flate2",
+ "only",
+ "only-core",
+ "only-http",
+ "prost",
+]
+
+[[package]]
+name = "only-h3"
+version = "1.0.0-rc.1"
+dependencies = [
+ "bytes",
+ "only",
+ "only-core",
+ "only-http",
+ "only-quic",
+ "rcgen",
+]
+
+[[package]]
+name = "only-http"
+version = "1.0.0-rc.1"
+dependencies = [
+ "base64",
+ "flate2",
+ "httparse",
+ "libc",
+ "log",
+ "loona-hpack",
+ "only",
+ "only-core",
+ "only-ws",
+ "rcgen",
+ "regex",
+ "rustls",
+]
+
+[[package]]
+name = "only-kcp"
+version = "1.0.0-rc.1"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "crc32fast",
+ "getrandom 0.2.17",
+ "only",
+ "only-core",
+ "pbkdf2",
+ "sha1",
+]
+
+[[package]]
+name = "only-media"
+version = "1.0.0-rc.1"
+dependencies = [
+ "aes",
+ "base64",
+ "getrandom 0.2.17",
+ "hmac",
+ "md-5",
+ "only",
+ "only-core",
+ "only-http",
+ "pbkdf2",
+ "sha1",
+ "sha2",
+]
+
+[[package]]
+name = "only-mux"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only",
+ "only-core",
+ "only-http",
+ "rcgen",
+ "rustls",
+]
+
+[[package]]
+name = "only-pool"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "only-prefork"
+version = "1.0.0-rc.1"
+dependencies = [
+ "log",
+ "only",
+ "only-http",
+ "only-sys",
+]
+
+[[package]]
+name = "only-quic"
+version = "1.0.0-rc.1"
+dependencies = [
+ "bytes",
+ "only",
+ "only-core",
+ "quinn-proto",
+ "rcgen",
+]
+
+[[package]]
+name = "only-socks"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only",
+ "only-core",
+ "only-http",
+]
+
+[[package]]
+name = "only-sys"
+version = "1.0.0-rc.1"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "only-timer"
+version = "1.0.0-rc.1"
+
+[[package]]
+name = "only-tls"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only-core",
+ "rcgen",
+ "rustls",
+]
+
+[[package]]
+name = "only-turn"
+version = "1.0.0-rc.1"
+dependencies = [
+ "crc32fast",
+ "getrandom 0.2.17",
+ "hmac",
+ "md-5",
+ "only",
+ "only-core",
+ "sha1",
+]
+
+[[package]]
+name = "only-uring"
+version = "1.0.0-rc.1"
+dependencies = [
+ "io-uring",
+ "libc",
+ "log",
+ "only-core",
+ "only-sys",
+ "only-timer",
+]
+
+[[package]]
+name = "only-webrtc"
+version = "1.0.0-rc.1"
+dependencies = [
+ "aes",
+ "aes-gcm",
+ "ctr",
+ "dimpl",
+ "getrandom 0.2.17",
+ "hmac",
+ "log",
+ "only",
+ "only-core",
+ "only-turn",
+ "p256",
+ "sha1",
+ "sha2",
+ "str0m",
+]
+
+[[package]]
+name = "only-ws"
+version = "1.0.0-rc.1"
+dependencies = [
+ "base64",
+ "flate2",
+ "getrandom 0.2.17",
+ "httparse",
+ "only",
+ "only-buf",
+ "only-core",
+ "only-http",
+ "rcgen",
+ "sha1",
+]
 
 [[package]]
 name = "opaque-debug"

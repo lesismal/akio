@@ -13,12 +13,12 @@ details:
   accepts beyond a number of open connections (counted engine-wide, dialed connections and UDP
   peers included).
 - File bodies: protocol code can send a file range with `sendfile(2)` through ordered response
-  parts (`Part::File`); flash-http uses it for static files on plain TCP.
+  parts (`Part::File`); only-http uses it for static files on plain TCP.
 
 ## TCP clients
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-basics.rs:dial}}
+{{#include ../../../../crates/only/examples/guide-basics.rs:dial}}
 ```
 
 `Engine::dial` runs the client connection with the same `Acceptor`/`Handler` model as a server
@@ -35,7 +35,7 @@ connection. Give the engine `client_threads(n)` to keep clients off the listener
   when it is set and shorter) is closed and its `on_close` runs.
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/udp-echo.rs}}
+{{#include ../../../../crates/only/examples/udp-echo.rs}}
 ```
 
 On Linux the listener's threads each bind a `SO_REUSEPORT` socket, and a given peer always lands
@@ -44,23 +44,23 @@ on the same thread; on other systems one thread serves the listener. Receives ar
 
 Linux batching on the send side: the replies produced while handling one receive batch leave
 with `sendmmsg` across peers, and runs of equal-size datagrams to one peer become a single UDP
-GSO send (probed at runtime and disabled for good on `EIO`/`EINVAL`; `FLASH_UDP_GSO=0` turns it
+GSO send (probed at runtime and disabled for good on `EIO`/`EINVAL`; `ONLY_UDP_GSO=0` turns it
 off). `Conn::send_segments(buf, size)` sends a buffer as consecutive datagrams of `size` bytes in
-one call; flash-quic uses it for multi-datagram transmits.
+one call; only-quic uses it for multi-datagram transmits.
 
 Protecting a public UDP port:
 
 - `Config::udp_max_peers`: at most this many peers per listener; datagrams from new peers beyond
   it are dropped without creating a connection and counted (`Engine::udp_stats().rejected`).
 - `Config::udp_gro` (Linux, off by default): lets the kernel coalesce datagrams of one flow;
-  flash splits them again so `on_data` still sees one datagram per call. It helps bulk flows from
+  `only` splits them again so `on_data` still sees one datagram per call. It helps bulk flows from
   GSO senders (QUIC transfers) and costs for request/response traffic. Needs a `read_buffer` of
   at least 64 KiB.
 
 ## UDP clients
 
 ```rust,ignore
-{{#include ../../../../crates/flash/examples/guide-config.rs:udp_dial}}
+{{#include ../../../../crates/only/examples/guide-config.rs:udp_dial}}
 ```
 
 `Engine::dial_udp(addr, acceptor, on_error)` creates a socket of its own (so its own local port)

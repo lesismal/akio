@@ -6,15 +6,15 @@ these types.
 
 Every config struct is `#[non_exhaustive]` so that settings can be added in minor releases
 without breaking you: start from `Default` (or a preset such as `KcpConfig::fast()`) and assign
-the fields you need, as below. Struct literals (`Config { .. }`) do not compile outside flash
+the fields you need, as below. Struct literals (`Config { .. }`) do not compile outside `only`
 ([API stability](https://github.com/lesismal/flash/blob/main/docs/api-stability.md)). **Reloadable** means `Engine::reload(&Config)` applies it to the running engine,
 including open connections ([Observability and hot reload](observability.md)).
 
 ```rust,ignore
-{{#include ../../../crates/flash/examples/guide-config.rs:config}}
+{{#include ../../../crates/only/examples/guide-config.rs:config}}
 ```
 
-## `flash::Config`
+## `only::Config`
 
 Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine.
 
@@ -79,34 +79,34 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 
 | Type | Field: default |
 |---|---|
-| `flash_http::HttpConfig` | `max_header_bytes`: 64 KiB, `max_body_bytes`: 1 MiB, `h2`: `Some(H2Config::default())` |
-| `flash_http::H2Config` | `max_concurrent_streams`: 128, `initial_window`: 1 MiB, `conn_window`: 16 MiB, `max_header_list`: 64 KiB, `max_body_bytes`: 1 MiB, `max_pending_bytes`: 8 MiB |
-| `flash_http::files::Files` | `index`: `index.html`, `max_cached_bytes`: 256 KiB, `max_open_files`: 64, `check_interval`: 5 s, `cache_control`: none |
-| `flash_http::middleware::Cors` | `allow_origin`: `*`, `allow_methods`: GET, POST, PUT, PATCH, DELETE, OPTIONS, `allow_headers`: Content-Type, Authorization, `max_age`: 600 s |
-| `flash_http::middleware::Compress` | `min_bytes`: 1024, `level`: 6 |
-| `flash_http::h2client::H2Options` | `initial_window`: 1 MiB, `conn_window`: 16 MiB, `enable_push`: false |
-| `flash_ws::WsConfig` | `max_message_bytes`: 16 MiB, `permessage_deflate`: true, `compress_min_bytes`: 128 |
-| `flash_http::WsOptions` | `config`: `WsConfig::default()`, `protocols`: none, `origin_allowed`: none |
-| `flash_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s |
-| `flash_h3::H3Config` | `max_body`: 8 MiB, `max_field_section`: 64 KiB |
-| `flash_grpc::GrpcServer` | `max_message`: 4 MiB, `compress`: false |
-| `flash_arpc::Routes` | `max_body`: 64 MiB |
-| `flash_kcp::KcpConfig` | see [KCP](protocols/kcp.md#config) |
+| `only_http::HttpConfig` | `max_header_bytes`: 64 KiB, `max_body_bytes`: 1 MiB, `h2`: `Some(H2Config::default())` |
+| `only_http::H2Config` | `max_concurrent_streams`: 128, `initial_window`: 1 MiB, `conn_window`: 16 MiB, `max_header_list`: 64 KiB, `max_body_bytes`: 1 MiB, `max_pending_bytes`: 8 MiB |
+| `only_http::files::Files` | `index`: `index.html`, `max_cached_bytes`: 256 KiB, `max_open_files`: 64, `check_interval`: 5 s, `cache_control`: none |
+| `only_http::middleware::Cors` | `allow_origin`: `*`, `allow_methods`: GET, POST, PUT, PATCH, DELETE, OPTIONS, `allow_headers`: Content-Type, Authorization, `max_age`: 600 s |
+| `only_http::middleware::Compress` | `min_bytes`: 1024, `level`: 6 |
+| `only_http::h2client::H2Options` | `initial_window`: 1 MiB, `conn_window`: 16 MiB, `enable_push`: false |
+| `only_ws::WsConfig` | `max_message_bytes`: 16 MiB, `permessage_deflate`: true, `compress_min_bytes`: 128 |
+| `only_http::WsOptions` | `config`: `WsConfig::default()`, `protocols`: none, `origin_allowed`: none |
+| `only_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s |
+| `only_h3::H3Config` | `max_body`: 8 MiB, `max_field_section`: 64 KiB |
+| `only_grpc::GrpcServer` | `max_message`: 4 MiB, `compress`: false |
+| `only_arpc::Routes` | `max_body`: 64 MiB |
+| `only_kcp::KcpConfig` | see [KCP](protocols/kcp.md#config) |
 
 ## Environment variables
 
 | Variable | Effect |
 |---|---|
-| `FLASH_UDP_GSO=0` | disable UDP GSO on Linux (Linux 4.18+; probed once per process otherwise) |
-| `FLASH_UDP_GRO=0` | never enable UDP GRO, even with `Config::udp_gro` (Linux 5.0+) |
+| `ONLY_UDP_GSO=0` | disable UDP GSO on Linux (Linux 4.18+; probed once per process otherwise) |
+| `ONLY_UDP_GRO=0` | never enable UDP GRO, even with `Config::udp_gro` (Linux 5.0+) |
 
-The test suite also reads `FLASH_TEST_BACKEND=uring` (run the engine tests on io_uring) and
-`FLASH_TEST_EXPECT_EBPF=1` (fail instead of skip when eBPF is unavailable).
+The test suite also reads `ONLY_TEST_BACKEND=uring` (run the engine tests on io_uring) and
+`ONLY_TEST_EXPECT_EBPF=1` (fail instead of skip when eBPF is unavailable).
 
 ## Cargo features
 
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
-| flash-http | `regex` | on | regexp route parameters (`{id:[0-9]+}`) |
-| flash-grpc | `prost` | off | `codec::Message` for prost messages (outside the semver promise) |
-| flash, flash-tls, flash-quic, flash-webrtc | `unstable` | off | raw access to the wrapped rustls / quinn-proto / str0m (outside the semver promise) |
+| only-http | `regex` | on | regexp route parameters (`{id:[0-9]+}`) |
+| only-grpc | `prost` | off | `codec::Message` for prost messages (outside the semver promise) |
+| `only`, only-tls, only-quic, only-webrtc | `unstable` | off | raw access to the wrapped rustls / quinn-proto / str0m (outside the semver promise) |

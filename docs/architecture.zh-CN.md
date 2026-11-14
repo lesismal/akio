@@ -1,8 +1,8 @@
-# flash 架构
+# only 架构
 
 [English](architecture.md) | 简体中文
 
-本文描述 flash 是如何构建的：各个 crate 及其依赖关系、线程与加锁模型、在每种后端上一次读和
+本文描述 only 是如何构建的：各个 crate 及其依赖关系、线程与加锁模型、在每种后端上一次读和
 一次写的过程、内存如何管理、协议如何分层，以及连接和 engine 如何结束。背后的决策记录在
 [ADR](https://github.com/lesismal/flash/tree/main/docs/adr) 中；面向使用者的说明见
 [指南](https://lesismal.github.io/flash/zh-CN/)。
@@ -11,29 +11,29 @@
 
 ```mermaid
 flowchart BT
-    sys["flash-sys<br/>unsafe 系统调用：epoll/kqueue、<br/>eventfd/pipe、socket、recvmmsg/sendmmsg"]
-    buf["flash-buf<br/>分级缓冲池、SharedBuf"]
-    timer["flash-timer<br/>时间轮"]
-    pool["flash-pool<br/>逻辑线程池"]
-    core["flash-core<br/>Conn、ConnInner、Handler、Acceptor、<br/>Transport、Telemetry、Group trait"]
-    epoll["flash-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
-    uring["flash-uring<br/>io_uring 线程组"]
-    ebpf["flash-ebpf<br/>reuseport 分流、sockmap 转发"]
-    dpdk["flash-dpdk（实验性）<br/>基于 DPDK / TAP 的用户态 TCP/IP（smoltcp）"]
-    tls["flash-tls<br/>rustls Transport"]
-    facade["flash<br/>Engine、Listener、Backend、Accel"]
-    http["flash-http<br/>h1、h2、Router、中间件、<br/>静态文件、客户端、observe"]
-    ws[flash-ws]
-    grpc[flash-grpc]
-    arpc[flash-arpc]
-    socks[flash-socks]
-    mux[flash-mux]
-    quic["flash-quic<br/>quinn-proto"]
-    h3[flash-h3]
-    kcp[flash-kcp]
-    turn["flash-turn<br/>STUN, TURN"]
-    webrtc["flash-webrtc<br/>str0m"]
-    media["flash-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
+    sys["only-sys<br/>unsafe 系统调用：epoll/kqueue、<br/>eventfd/pipe、socket、recvmmsg/sendmmsg"]
+    buf["only-buf<br/>分级缓冲池、SharedBuf"]
+    timer["only-timer<br/>时间轮"]
+    pool["only-pool<br/>逻辑线程池"]
+    core["only-core<br/>Conn、ConnInner、Handler、Acceptor、<br/>Transport、Telemetry、Group trait"]
+    epoll["only-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
+    uring["only-uring<br/>io_uring 线程组"]
+    ebpf["only-ebpf<br/>reuseport 分流、sockmap 转发"]
+    dpdk["only-dpdk（实验性）<br/>基于 DPDK / TAP 的用户态 TCP/IP（smoltcp）"]
+    tls["only-tls<br/>rustls Transport"]
+    facade["only<br/>Engine、Listener、Backend、Accel"]
+    http["only-http<br/>h1、h2、Router、中间件、<br/>静态文件、客户端、observe"]
+    ws[only-ws]
+    grpc[only-grpc]
+    arpc[only-arpc]
+    socks[only-socks]
+    mux[only-mux]
+    quic["only-quic<br/>quinn-proto"]
+    h3[only-h3]
+    kcp[only-kcp]
+    turn["only-turn<br/>STUN, TURN"]
+    webrtc["only-webrtc<br/>str0m"]
+    media["only-media<br/>hub, RTMP, RTSP, SRT,<br/>HTTP-FLV, HLS, WHIP"]
 
     buf --> core
     pool --> core
@@ -68,17 +68,17 @@ flowchart BT
     http --> media
 ```
 
-- **依赖方向是单向的**：`sys → buf/timer/pool → core → 后端 → flash → 协议`。协议 crate 依赖
-  `flash-core` 的公开 trait 和 `flash` facade，从不依赖具体后端。
-- **`unsafe` 被限制在** `flash-sys`、`flash-uring`（ring 与 buffer ring 内存）、`flash-ebpf`
-  （原始 `bpf(2)`）和 `flash-dpdk`（DPDK FFI）中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
+- **依赖方向是单向的**：`sys → buf/timer/pool → core → 后端 → only → 协议`。协议 crate 依赖
+  `only-core` 的公开 trait 和 `only` facade，从不依赖具体后端。
+- **`unsafe` 被限制在** `only-sys`、`only-uring`（ring 与 buffer ring 内存）、`only-ebpf`
+  （原始 `bpf(2)`）和 `only-dpdk`（DPDK FFI）中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（请求头用 httparse，chunked 解码器自研）、HTTP/2 分帧与
   HPACK（loona-hpack）、WebSocket 分帧与 permessage-deflate、KCP、QPACK 与 HTTP/3 分帧，都是
-  由 flash 喂入字节的状态机；TLS 是 rustls，QUIC 是 quinn-proto，WebRTC 是 str0m，都以 sans-io
-  方式驱动（ADR-005），并隐藏在 flash 自己的类型之后，因此升级或替换它们不会破坏 API
+  由 only 喂入字节的状态机；TLS 是 rustls，QUIC 是 quinn-proto，WebRTC 是 str0m，都以 sans-io
+  方式驱动（ADR-005），并隐藏在 only 自己的类型之后，因此升级或替换它们不会破坏 API
   （docs/api-stability.zh-CN.md）。
-- facade `flash` 重新导出核心 API（`Conn`、`Handler`、`Acceptor`、`Config` 等），并把后端线程组
+- facade `only` 重新导出核心 API（`Conn`、`Handler`、`Acceptor`、`Config` 等），并把后端线程组
   组合成 `Engine`。
 
 ## 2. 线程模型
@@ -109,13 +109,13 @@ flowchart LR
 
 - `Engine` 为每个 listener 持有一个**线程组**（另外还有用于 `dial` 和 `dial_udp` 的可选客户端
   线程组）。线程组是一组 I/O 线程；每个线程运行一个事件循环，拥有自己的连接、时间轮
-  （`flash-timer`，毫秒刻度）和读缓冲区（ADR-001、ADR-004）。线程组实现内部的
-  `flash_core::Group` trait。
-- **连接分发**：Linux 上每个线程绑定自己的 `SO_REUSEPORT` socket，由内核（或 `flash-ebpf` 的
+  （`only-timer`，毫秒刻度）和读缓冲区（ADR-001、ADR-004）。线程组实现内部的
+  `only_core::Group` trait。
+- **连接分发**：Linux 上每个线程绑定自己的 `SO_REUSEPORT` socket，由内核（或 `only-ebpf` 的
   分流程序）选择线程；macOS 上各线程共享一个监听 socket 并竞争 accept。
 - **连接从不迁移。** 它的 handler 在它的线程上创建，也只在那里被访问，所以
   `Handler: Send` 但不需要 `Sync`（ADR-003）。
-- **逻辑线程池**（`flash-pool`）全 engine 共享、自适应（按需启动线程直到上限，空闲后退出）且
+- **逻辑线程池**（`only-pool`）全 engine 共享、自适应（按需启动线程直到上限，空闲后退出）且
   有界（队列满时以 `Overloaded` 拒绝）。`Conn::spawn_blocking` 在其中执行任务，再把完成回调
   作为类型擦除的任务投递回所属事件循环（`LoopLink::post_task`）；事件循环以对 handler 的 `&mut`
   访问执行它，连接已不存在时则丢弃它。
@@ -141,7 +141,7 @@ Conn<H>  (Clone + Send + Sync, PhantomData<fn() -> H>)
 
 - **写锁只保护发送状态**，用户代码运行时从不持有它；用户回调在事件循环上执行，不持有这把锁。
   这排除了连接与 handler 之间因锁顺序导致的死锁。发送 / 关闭 / cork 协议用 `loom` 做了模型检查
-  （`RUSTFLAGS="--cfg loom" cargo test -p flash-core --lib --release -- loom`）。
+  （`RUSTFLAGS="--cfg loom" cargo test -p only-core --lib --release -- loom`）。
 - **fd 在连接关闭*并且*最后一个 `Arc<ConnInner>` 被 drop 时才释放**，因此过期的句柄永远不会写到
   被复用的描述符上；对已关闭连接的操作返回 `Error::Closed`。
 - `Conn<H>` 带泛型只是为了让 `spawn_blocking` 的完成回调具有 `FnOnce(&mut H, &Conn<H>, R)`
@@ -210,7 +210,7 @@ flowchart TD
   只有剩余部分排队，由所属事件循环在 socket 可写时刷出（epoll/kqueue 用可写关注；io_uring 用
   一次性的 `poll(POLLOUT)`）。
 - 回调内部连接处于 cork 状态，所以发送的所有数据在回调返回时合并为一次 `writev`。
-- 队列块可以是 owned 字节（来自 `flash-buf` 的分级缓冲，有空间时追加）、`SharedBuf` 广播、
+- 队列块可以是 owned 字节（来自 `only-buf` 的分级缓冲，有空间时追加）、`SharedBuf` 广播、
   文件区间（`sendfile(2)`，从不复制，不计入 `max_queued_bytes`），或分段的 UDP 缓冲区。
 - 上限：达到 `write_high_watermark` 时暂停读，降到四分之一时恢复；超过 `max_queued_bytes` 时
   `send` 返回 `Overloaded`。队列清空时触发 `on_drain` 回调。
@@ -236,13 +236,13 @@ flowchart TD
 |---|---|---|
 | epoll/kqueue 读临时缓冲区 | 每个 I/O 线程一个 | `read_buffer`（64 KiB） |
 | io_uring provided buffer | 每个 I/O 线程一个 ring | 1024 × `min(read_buffer, 16 KiB)` |
-| 发送队列块 | 每连接，只在有数据排队时存在 | `flash-buf` 分级：512 B、4、16、64、256 KiB |
+| 发送队列块 | 每连接，只在有数据排队时存在 | `only-buf` 分级：512 B、4、16、64、256 KiB |
 | 广播帧 | 共享（`SharedBuf` = `Arc<[u8]>`） | 只编码一次 |
 | 协议缓冲区（HTTP 请求头、WebSocket 帧、HTTP/2 帧） | 每连接的状态机 | 随消息增长，受协议上限约束 |
 
-- `flash-buf` 为每个大小级别维护一个小的**线程本地**`Vec<u8>` 缓存，因此取用和归还队列缓冲区
+- `only-buf` 为每个大小级别维护一个小的**线程本地**`Vec<u8>` 缓存，因此取用和归还队列缓冲区
   都不加锁。在其他线程释放的缓冲区进入那个线程的（有上限的）缓存。
-- 收到的数据以借用方式交给回调，flash 在回调之前从不复制。需要保留时由你显式复制，这让所有
+- 收到的数据以借用方式交给回调，only 在回调之前从不复制。需要保留时由你显式复制，这让所有
   后端在读路径上都保持零拷贝（ADR-004）。
 - 每连接内存由 `max_queued_bytes`（队列）和协议上限（`max_header_bytes`、`max_body_bytes`、
   `max_message_bytes`、HTTP/2 窗口；解析器）约束。
@@ -254,7 +254,7 @@ flowchart TB
     subgraph TCP["I/O 线程上的 TCP 连接"]
       sock[socket] --> tr["Transport（可选）：基于 rustls 的 TLS"]
       tr --> hb["HandlerBox：解码后调用 on_data"]
-      hb --> sess["flash-http Session（一个 Handler）"]
+      hb --> sess["only-http Session（一个 Handler）"]
       sess -- "前言、h2c 升级、ALPN h2" --> h2["H2Session：stream"]
       sess -- "Upgrade: websocket" --> ws["WsSession，然后 WsHandler"]
       sess -- "upgrade_raw" --> raw["RawHandler：CONNECT 隧道"]
@@ -262,31 +262,31 @@ flowchart TB
       h2 --> svc
     end
     subgraph UDP["UDP listener"]
-      udp["UDP 对端"] --> quic["flash-quic Endpoint，然后 QuicHandler"]
-      quic --> h3["flash-h3 ServerConn"]
+      udp["UDP 对端"] --> quic["only-quic Endpoint，然后 QuicHandler"]
+      quic --> h3["only-h3 ServerConn"]
       h3 -- "transport::dispatch + ResponseSink" --> svc2["同一个 Service：Context"]
-      udp --> kcp["flash-kcp 会话，然后 KcpHandler"]
+      udp --> kcp["only-kcp 会话，然后 KcpHandler"]
     end
 ```
 
-- **`Transport`（TLS）。** `Acceptor::transport()` 返回一个可选的 `flash_core::Transport`，在
+- **`Transport`（TLS）。** `Acceptor::transport()` 返回一个可选的 `only_core::Transport`，在
   `on_open` 之前安装到连接之下。读到的字节先经过 `Transport::recv`（产生明文，可能还有需要发送
   的握手字节），再交给 handler；发送的一切都在写锁下按线路顺序经过 `Transport::seal`。握手期间
   应用发送的字节由 transport 暂存，握手完成后发出。`close_after_send` 会追加
-  `Transport::shutdown` 的输出（`close_notify`）。`flash-tls` 的 `Tls<A>` 是一个提供 rustls
+  `Transport::shutdown` 的输出（`close_notify`）。`only-tls` 的 `Tls<A>` 是一个提供 rustls
   transport 的 acceptor 包装器，因此任意 acceptor（HTTP、arpc、原始 handler）都能在毫不知情的
   情况下获得 TLS。
-- **HTTP 各版本共享 `Context`。** flash-http 的 `Session` handler 解析 HTTP/1，遇到客户端前言、
+- **HTTP 各版本共享 `Context`。** only-http 的 `Session` handler 解析 HTTP/1，遇到客户端前言、
   `h2c` 升级或 ALPN `h2` 时切换到 `H2Session`。两者构建的 `Context` 的响应端要么是有序的
   `ResponseSlot`（HTTP/1，因此即使 detach，流水线响应也保持顺序），要么是 HTTP/2 stream。
-- **HTTP/3 的 transport 钩子。** `flash_http::transport` 让 crate 之外的 transport 也能提供
+- **HTTP/3 的 transport 钩子。** `only_http::transport` 让 crate 之外的 transport 也能提供
   `Service`：它解析出请求后调用 `dispatch(service, request, sink)`，sink 实现 `ResponseSink`
-  （`send`，以及返回 `BodySink` 的 `start_stream`）。flash-h3 在 QUIC stream 上实现了这些，所以
+  （`send`，以及返回 `BodySink` 的 `start_stream`）。only-h3 在 QUIC stream 上实现了这些，所以
   router、中间件、`detach` 和 `stream_response` 在 HTTP/3 上表现一致。
 - **升级。** `Context::upgrade_websocket` 应答 101，并在同一连接上用 `WsSession` 替换 HTTP 状态
   机；`Context::upgrade_raw` 把原始字节流交给 `RawHandler`（HTTP CONNECT 代理）。WebSocket 会话
   保留类型擦除的 `ConnInner`，所以 `WsSender` 的生命周期可以超过 HTTP handler 类型。
-- **复用。** `flash-mux` 是一个类型擦除的 acceptor（`DynAcceptor`），它缓存最初的字节、选择
+- **复用。** `only-mux` 是一个类型擦除的 acceptor（`DynAcceptor`），它缓存最初的字节、选择
   路由，然后创建所选 acceptor 的 handler 并把字节重放给它；`spawn_blocking` 的完成回调和
   `on_shutdown` 会转发给所选的 acceptor。
 
@@ -320,7 +320,7 @@ sequenceDiagram
 
 ## 8. 错误处理
 
-- **连接操作** 返回 `flash_core::Result<T>`，错误为 `Error::Closed`（操作没有生效）、
+- **连接操作** 返回 `only_core::Result<T>`，错误为 `Error::Closed`（操作没有生效）、
   `Error::Overloaded`（触及上限，由调用方决定）或 `Error::Io`（操作系统错误，连接正在被关闭）。
   非事件循环线程上的写失败会在所属事件循环上安排关闭，并返回 `Closed`。
 - handler 回调中的 **panic** 在 I/O 线程上被捕获（`catch_unwind`）：该连接以错误关闭，线程继续
@@ -339,12 +339,12 @@ sequenceDiagram
 一起注册到 engine 的 `Telemetry` 中心。指标快照按需汇总计数器；连接表通过向每个事件循环索取
 快照收集（带超时）；设置了阈值时每个回调都会计时，慢回调保存在一个 256 条记录的环形缓冲中。
 实时设置（`Live`）是每次使用时读取的原子量，这正是 `Engine::reload` 不给热路径带来开销的原因。
-flash-http 的 `observe` 模块把这些渲染成 Prometheus 文本和 JSON 调试视图。
+only-http 的 `observe` 模块把这些渲染成 Prometheus 文本和 JSON 调试视图。
 
 ## 10. 如何测试这套架构
 
 - 发送 / 关闭 / cork 协议的 `loom` 模型（5 个模型，在 CI 中运行）。
-- engine、offload 和压力测试套件在 epoll 和 io_uring 上都运行（`FLASH_TEST_BACKEND=uring`）。
+- engine、offload 和压力测试套件在 epoll 和 io_uring 上都运行（`ONLY_TEST_BACKEND=uring`）。
 - 5,000 个并发连接以及带 fd 泄漏检查的连接/关闭循环。
 - 互通：h2spec、Autobahn（服务端与客户端）、grpc-go、quic-go、kcp-go、fib。
 - eBPF 程序在特权（eBPF 层级、转发）与非特权（经典 BPF、回退）两种条件下测试。

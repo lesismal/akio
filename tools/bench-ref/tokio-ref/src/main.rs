@@ -1,7 +1,7 @@
 //! tokio reference server: `tokio-ref <tcp|tls|udp|ws> <addr> <threads> [echo|block-inline|block-pool [ms]]`
-//! (same handlers as flash's `bench-server`; `ws` is a tokio-tungstenite echo server).
+//! (same handlers as `only`'s `bench-server`; `ws` is a tokio-tungstenite echo server).
 //!
-//! `TOKIO_REF_BUF` sets the per-connection read buffer (default 65536, the size flash's I/O
+//! `TOKIO_REF_BUF` sets the per-connection read buffer (default 65536, the size `only`'s I/O
 //! threads read with); memory runs use a smaller one, as a memory-conscious tokio server would.
 
 use std::{sync::Arc, time::Duration};

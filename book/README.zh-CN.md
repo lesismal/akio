@@ -1,4 +1,4 @@
-# flash 指南：源文件
+# only 指南：源文件
 
 [English](README.md) | 简体中文
 

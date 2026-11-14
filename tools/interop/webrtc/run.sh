@@ -1,37 +1,37 @@
 #!/usr/bin/env bash
-# flash-webrtc / flash-turn <-> pion (webrtc v4, turn v5): data channels and RTP media in both
-# offer directions, PLI, WebRTC through a flash TURN relay, and the pion/turn client against
-# flash-turn; and fib's Go WebRTC (data channels, both directions) when the fib checkout is
-# next to flash (or at $FIB_DIR). Needs Go. With COTURN=1 also runs coturn's turnutils_uclient
-# against flash-turn, both in Docker (the flash TURN server is built for Linux in rust:1).
+# only-webrtc / only-turn <-> pion (webrtc v4, turn v5): data channels and RTP media in both
+# offer directions, PLI, WebRTC through a only TURN relay, and the pion/turn client against
+# only-turn; and fib's Go WebRTC (data channels, both directions) when the fib checkout is
+# next to this repository (or at $FIB_DIR). Needs Go. With COTURN=1 also runs coturn's turnutils_uclient
+# against only-turn, both in Docker (the only TURN server is built for Linux in rust:1).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-cd "$ROOT" && cargo build -q --release -p flash-webrtc --example webrtc-interop
+cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop
 RS=$ROOT/target/release/examples/webrtc-interop
 cd "$ROOT/tools/interop/webrtc" && GOFLAGS=-mod=mod go build -o /tmp/webrtc-pion .
 GO=/tmp/webrtc-pion
 PIDS=""
 trap 'kill $PIDS 2>/dev/null || true' EXIT
 
-$RS server 127.0.0.1:9500 127.0.0.1:9501 2>/tmp/webrtc-flash-server.log & PIDS="$PIDS $!"
+$RS server 127.0.0.1:9500 127.0.0.1:9501 2>/tmp/webrtc-only-server.log & PIDS="$PIDS $!"
 $GO server 127.0.0.1:9502 & PIDS="$PIDS $!"
 $RS turn 127.0.0.1:9503 127.0.0.1 alice wonderland 2>/dev/null & PIDS="$PIDS $!"
 sleep 1
 
-echo "== pion offers to the flash ICE-lite server"
+echo "== pion offers to the only ICE-lite server"
 $GO client-dc 127.0.0.1:9501
 $GO client-media 127.0.0.1:9501
-echo "== flash (full ICE Endpoint) offers to pion"
+echo "== only (full ICE Endpoint) offers to pion"
 $RS client 127.0.0.1:9502 dc
 $RS client 127.0.0.1:9502 media
-echo "== pion over a flash TURN relay (relay-only policy) to the flash server"
+echo "== pion over a only TURN relay (relay-only policy) to the only server"
 $GO client-turn 127.0.0.1:9501 127.0.0.1:9503 alice wonderland
-echo "== pion/turn client against flash-turn"
+echo "== pion/turn client against only-turn"
 $GO turn-raw 127.0.0.1:9503 alice wonderland
 
 FIB_DIR=${FIB_DIR:-$ROOT/../fib}
 if [ -d "$FIB_DIR/webrtc" ]; then
-  echo "== fib (Go, lesismal/fib/webrtc) <-> flash, both directions"
+  echo "== fib (Go, lesismal/fib/webrtc) <-> only, both directions"
   W=$(mktemp -d)
   printf 'go 1.27.3\n\nuse %s\n\nreplace github.com/lesismal/fib => %s\n' \
     "$ROOT/tools/interop/webrtc/fib" "$(cd "$FIB_DIR" && pwd)" > "$W/go.work"
@@ -45,17 +45,17 @@ else
 fi
 
 if [ "${COTURN:-0}" = 1 ]; then
-  echo "== coturn turnutils_uclient against flash-turn (Docker)"
-  docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
-    -v flash-webrtc-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 \
-    cargo build -q --release -p flash-webrtc --example webrtc-interop
-  docker rm -f flash-turn-it >/dev/null 2>&1 || true
-  docker run -d --name flash-turn-it -v flash-webrtc-target:/tmp/t rust:1 \
+  echo "== coturn turnutils_uclient against only-turn (Docker)"
+  docker run --rm -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
+    -v only-webrtc-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t rust:1 \
+    cargo build -q --release -p only-webrtc --example webrtc-interop
+  docker rm -f only-turn-it >/dev/null 2>&1 || true
+  docker run -d --name only-turn-it -v only-webrtc-target:/tmp/t rust:1 \
     /tmp/t/release/examples/webrtc-interop turn 127.0.0.1:3478 127.0.0.1 alice wonderland >/dev/null
   sleep 2
-  docker run --rm --network container:flash-turn-it coturn/coturn:4.6 turnutils_uclient -y -n 20 \
-    -m 2 -l 100 -u alice -w wonderland -r flash -p 3478 127.0.0.1 2>&1 | tee /tmp/uclient.log | tail -4
-  docker rm -f flash-turn-it >/dev/null
+  docker run --rm --network container:only-turn-it coturn/coturn:4.6 turnutils_uclient -y -n 20 \
+    -m 2 -l 100 -u alice -w wonderland -r only -p 3478 127.0.0.1 2>&1 | tee /tmp/uclient.log | tail -4
+  docker rm -f only-turn-it >/dev/null
   grep -q "tot_send_msgs=20, tot_recv_msgs=20" /tmp/uclient.log
   grep -q "Total lost packets 0 " /tmp/uclient.log
 fi

@@ -2,25 +2,25 @@
 
 Two crates:
 
-- `flash-webrtc` runs WebRTC peers on flash UDP sockets. The protocol work is done by
+- `only-webrtc` runs WebRTC peers on `only` UDP sockets. The protocol work is done by
   [str0m](https://github.com/algesten/str0m), a sans-io WebRTC state machine: ICE (full agent
   and ICE-lite, consent freshness), DTLS 1.2/1.3 with certificate fingerprint verification,
   SRTP/SRTCP (AES-CM-SHA1-80, AEAD-AES-128/256-GCM), SCTP data channels (DCEP; reliable or not,
   ordered or not), RTP/RTCP media (Opus, VP8, VP9, H.264, H.265, AV1 packetization; NACK and
   RTX, PLI/FIR, TWCC and bandwidth estimation, sender/receiver reports) and SDP offer/answer.
-  flash drives it with its I/O threads and one shared timer thread, and plugs in a pure-Rust
+  `only` drives it with its I/O threads and one shared timer thread, and plugs in a pure-Rust
   crypto provider (RustCrypto plus the `dimpl` DTLS stack: no C toolchain, no OpenSSL).
-- `flash-turn` has the STUN codec, a STUN server and a TURN server (RFC 8656 over UDP).
+- `only-turn` has the STUN codec, a STUN server and a TURN server (RFC 8656 over UDP).
 
 Interop is tested against pion (Go) in both offer directions, for data channels and media,
-directly and through a flash TURN relay, against fib's Go WebRTC (data channels, both
+directly and through a `only` TURN relay, against fib's Go WebRTC (data channels, both
 directions), and the TURN server against the pion/turn client and
 coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn).
 
 ## A server, a TURN server and a client on one engine
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:engine}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:engine}}
 ```
 
 - `RtcServer::new(addrs)` is the acceptor of a **UDP listener**; all its peers share the port.
@@ -38,18 +38,18 @@ coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for cotu
 
 ## Types
 
-The API uses flash's own types: `ChannelId`, `ChannelConfig`, `Mid`, `Pt`, `Codec`,
+The API uses `only`'s own types: `ChannelId`, `ChannelConfig`, `Mid`, `Pt`, `Codec`,
 `MediaKind`, `Direction`, `MediaTime` / `Frequency`, `MediaData`, `MediaAdded`, `RtpPacket`,
 `KeyframeRequest`, `Candidate`, `IceConnectionState`, `RtcConfig`, `SdpChanges`, `Event`. str0m,
 which does the work underneath, is not part of the API, so upgrading it is not a breaking
 change. The `unstable` cargo feature (outside the semver promise) re-exports
-`flash_webrtc::str0m`, adds `Peer::with_rtc` (any str0m API on a peer), `RtcConfig::with_str0m`
+`only_webrtc::str0m`, adds `Peer::with_rtc` (any str0m API on a peer), `RtcConfig::with_str0m`
 and `OtherEvent::as_str0m`.
 
 ## Peers and handlers
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:handler}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:handler}}
 ```
 
 `PeerHandler` has a default for every callback: `on_ice_state`, `on_connected`,
@@ -77,11 +77,11 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 ## A full ICE client: `Endpoint`
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:client}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-webrtc/examples/guide-webrtc.rs:endpoint}}
+{{#include ../../../../crates/only-webrtc/examples/guide-webrtc.rs:endpoint}}
 ```
 
 `Endpoint::bind(&engine, addr)` binds a UDP socket with `Engine::bind_udp` (the engine needs
@@ -118,5 +118,5 @@ sending), for embedding or testing. `StunServer` alone answers Binding requests.
 
 ## Not done yet
 
-TURN over TCP/TLS and a TURN client in `flash-webrtc` (relay candidates for an `Endpoint`); ICE
+TURN over TCP/TLS and a TURN client in `only-webrtc` (relay candidates for an `Endpoint`); ICE
 over TCP; mDNS candidates. str0m's own limits apply (see its documentation).

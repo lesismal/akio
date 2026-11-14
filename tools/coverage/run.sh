@@ -15,9 +15,9 @@ cargo llvm-cov clean --workspace
 echo "== tests, epoll/kqueue backend"
 cargo llvm-cov --no-report --workspace -- --test-threads=1
 if [ "$(uname -s)" = Linux ]; then
-  # The crates whose tests honour FLASH_TEST_BACKEND.
+  # The crates whose tests honour ONLY_TEST_BACKEND.
   echo "== tests, io_uring backend"
-  FLASH_TEST_BACKEND=uring cargo llvm-cov --no-report -p flash -p flash-http -p flash-ws \
+  ONLY_TEST_BACKEND=uring cargo llvm-cov --no-report -p only -p only-http -p only-ws \
     -- --test-threads=1
 fi
 cargo llvm-cov report --lcov --output-path "$OUT/lcov.info" --ignore-filename-regex "$IGNORE"

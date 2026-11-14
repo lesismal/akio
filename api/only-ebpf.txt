@@ -1,0 +1,164 @@
+pub mod only_ebpf
+pub mod only_ebpf::relay
+pub struct only_ebpf::relay::Relay
+impl only_ebpf::relay::Relay
+pub fn only_ebpf::relay::Relay::new(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
+pub fn only_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
+pub fn only_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<only_ebpf::relay::Splice>
+pub fn only_ebpf::relay::Relay::splice_conns<A, B>(&self, &only_core::conn::Conn<A>, &only_core::conn::Conn<B>) -> core::io::error::Result<only_ebpf::relay::Splice>
+impl core::clone::Clone for only_ebpf::relay::Relay
+pub fn only_ebpf::relay::Relay::clone(&self) -> Self
+impl core::fmt::Debug for only_ebpf::relay::Relay
+pub fn only_ebpf::relay::Relay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ebpf::relay::Relay
+impl core::marker::Sync for only_ebpf::relay::Relay
+impl core::marker::Unpin for only_ebpf::relay::Relay
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Relay
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Relay
+pub struct only_ebpf::relay::Splice
+impl only_ebpf::relay::Splice
+pub fn only_ebpf::relay::Splice::cookies(&self) -> [u64; 2]
+pub fn only_ebpf::relay::Splice::unsplice(self) -> core::io::error::Result<()>
+impl core::fmt::Debug for only_ebpf::relay::Splice
+pub fn only_ebpf::relay::Splice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ebpf::relay::Splice
+impl core::marker::Sync for only_ebpf::relay::Splice
+impl core::marker::Unpin for only_ebpf::relay::Splice
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Splice
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Splice
+pub const only_ebpf::relay::DEFAULT_PAIRS: u32
+pub const only_ebpf::relay::MIN_KERNEL: (u32, u32)
+#[non_exhaustive] pub enum only_ebpf::HashKey
+pub only_ebpf::HashKey::SrcIp
+pub only_ebpf::HashKey::SrcIpPort
+impl core::clone::Clone for only_ebpf::HashKey
+pub fn only_ebpf::HashKey::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::HashKey
+impl core::cmp::PartialEq for only_ebpf::HashKey
+pub fn only_ebpf::HashKey::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ebpf::HashKey
+pub fn only_ebpf::HashKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::HashKey
+impl core::marker::StructuralPartialEq for only_ebpf::HashKey
+impl core::marker::Send for only_ebpf::HashKey
+impl core::marker::Sync for only_ebpf::HashKey
+impl core::marker::Unpin for only_ebpf::HashKey
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::HashKey
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::HashKey
+#[non_exhaustive] pub enum only_ebpf::Steering
+pub only_ebpf::Steering::Cpu
+pub only_ebpf::Steering::Hash(only_ebpf::HashKey)
+impl core::clone::Clone for only_ebpf::Steering
+pub fn only_ebpf::Steering::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::Steering
+impl core::cmp::PartialEq for only_ebpf::Steering
+pub fn only_ebpf::Steering::eq(&self, &Self) -> bool
+impl core::default::Default for only_ebpf::Steering
+pub fn only_ebpf::Steering::default() -> Self
+impl core::fmt::Debug for only_ebpf::Steering
+pub fn only_ebpf::Steering::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::Steering
+impl core::marker::StructuralPartialEq for only_ebpf::Steering
+impl core::marker::Send for only_ebpf::Steering
+impl core::marker::Sync for only_ebpf::Steering
+impl core::marker::Unpin for only_ebpf::Steering
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::Steering
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::Steering
+#[non_exhaustive] pub enum only_ebpf::Tier
+pub only_ebpf::Tier::Cbpf
+pub only_ebpf::Tier::Ebpf
+impl core::clone::Clone for only_ebpf::Tier
+pub fn only_ebpf::Tier::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::Tier
+impl core::cmp::PartialEq for only_ebpf::Tier
+pub fn only_ebpf::Tier::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ebpf::Tier
+pub fn only_ebpf::Tier::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::Tier
+impl core::marker::StructuralPartialEq for only_ebpf::Tier
+impl core::marker::Send for only_ebpf::Tier
+impl core::marker::Sync for only_ebpf::Tier
+impl core::marker::Unpin for only_ebpf::Tier
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::Tier
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::Tier
+#[non_exhaustive] pub struct only_ebpf::AttachOptions
+pub only_ebpf::AttachOptions::ebpf: bool
+impl core::clone::Clone for only_ebpf::AttachOptions
+pub fn only_ebpf::AttachOptions::clone(&self) -> Self
+impl core::default::Default for only_ebpf::AttachOptions
+pub fn only_ebpf::AttachOptions::default() -> Self
+impl core::fmt::Debug for only_ebpf::AttachOptions
+pub fn only_ebpf::AttachOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_ebpf::AttachOptions
+impl core::marker::Send for only_ebpf::AttachOptions
+impl core::marker::Sync for only_ebpf::AttachOptions
+impl core::marker::Unpin for only_ebpf::AttachOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::AttachOptions
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::AttachOptions
+#[non_exhaustive] pub struct only_ebpf::Probe
+pub only_ebpf::Probe::reuseport_cbpf: bool
+pub only_ebpf::Probe::reuseport_ebpf: bool
+pub only_ebpf::Probe::sockmap_relay: bool
+impl core::clone::Clone for only_ebpf::Probe
+pub fn only_ebpf::Probe::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::Probe
+impl core::cmp::PartialEq for only_ebpf::Probe
+pub fn only_ebpf::Probe::eq(&self, &Self) -> bool
+impl core::default::Default for only_ebpf::Probe
+pub fn only_ebpf::Probe::default() -> Self
+impl core::fmt::Debug for only_ebpf::Probe
+pub fn only_ebpf::Probe::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ebpf::Probe
+impl core::marker::Send for only_ebpf::Probe
+impl core::marker::Sync for only_ebpf::Probe
+impl core::marker::Unpin for only_ebpf::Probe
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::Probe
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::Probe
+pub struct only_ebpf::Relay
+impl only_ebpf::relay::Relay
+pub fn only_ebpf::relay::Relay::new(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
+pub fn only_ebpf::relay::Relay::new_any_kernel(u32) -> core::io::error::Result<only_ebpf::relay::Relay>
+pub fn only_ebpf::relay::Relay::splice(&self, i32, i32) -> core::io::error::Result<only_ebpf::relay::Splice>
+pub fn only_ebpf::relay::Relay::splice_conns<A, B>(&self, &only_core::conn::Conn<A>, &only_core::conn::Conn<B>) -> core::io::error::Result<only_ebpf::relay::Splice>
+impl core::clone::Clone for only_ebpf::relay::Relay
+pub fn only_ebpf::relay::Relay::clone(&self) -> Self
+impl core::fmt::Debug for only_ebpf::relay::Relay
+pub fn only_ebpf::relay::Relay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ebpf::relay::Relay
+impl core::marker::Sync for only_ebpf::relay::Relay
+impl core::marker::Unpin for only_ebpf::relay::Relay
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Relay
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Relay
+pub struct only_ebpf::Splice
+impl only_ebpf::relay::Splice
+pub fn only_ebpf::relay::Splice::cookies(&self) -> [u64; 2]
+pub fn only_ebpf::relay::Splice::unsplice(self) -> core::io::error::Result<()>
+impl core::fmt::Debug for only_ebpf::relay::Splice
+pub fn only_ebpf::relay::Splice::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ebpf::relay::Splice
+impl core::marker::Sync for only_ebpf::relay::Splice
+impl core::marker::Unpin for only_ebpf::relay::Splice
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::relay::Splice
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::relay::Splice
+#[non_exhaustive] pub struct only_ebpf::SteerInfo
+pub only_ebpf::SteerInfo::ebpf_unavailable: core::option::Option<alloc::string::String>
+pub only_ebpf::SteerInfo::sockets: usize
+pub only_ebpf::SteerInfo::steering: only_ebpf::Steering
+pub only_ebpf::SteerInfo::tier: only_ebpf::Tier
+impl core::clone::Clone for only_ebpf::SteerInfo
+pub fn only_ebpf::SteerInfo::clone(&self) -> Self
+impl core::cmp::Eq for only_ebpf::SteerInfo
+impl core::cmp::PartialEq for only_ebpf::SteerInfo
+pub fn only_ebpf::SteerInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ebpf::SteerInfo
+pub fn only_ebpf::SteerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ebpf::SteerInfo
+pub fn only_ebpf::SteerInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ebpf::SteerInfo
+impl core::marker::Send for only_ebpf::SteerInfo
+impl core::marker::Sync for only_ebpf::SteerInfo
+impl core::marker::Unpin for only_ebpf::SteerInfo
+impl core::panic::unwind_safe::RefUnwindSafe for only_ebpf::SteerInfo
+impl core::panic::unwind_safe::UnwindSafe for only_ebpf::SteerInfo
+pub fn only_ebpf::attach_reuseport(&[i32], only_ebpf::Steering, only_ebpf::AttachOptions) -> core::io::error::Result<only_ebpf::SteerInfo>
+pub fn only_ebpf::probe() -> only_ebpf::Probe

@@ -1,3 +1,3 @@
 #![no_main]
 
-libfuzzer_sys::fuzz_target!(|data: &[u8]| flash_bittorrent::fuzzing::bt_tracker(data));
+libfuzzer_sys::fuzz_target!(|data: &[u8]| only_bittorrent::fuzzing::bt_tracker(data));

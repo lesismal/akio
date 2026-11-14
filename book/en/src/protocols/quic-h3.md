@@ -1,25 +1,25 @@
 # QUIC and HTTP/3
 
-`flash-quic` runs the sans-io [quinn-proto](https://docs.rs/quinn-proto) state machine on flash's
-UDP engine; `flash-h3` implements HTTP/3 (RFC 9114) and QPACK on top and serves any flash-http
+`only-quic` runs the sans-io [quinn-proto](https://docs.rs/quinn-proto) state machine on `only`'s
+UDP engine; `only-h3` implements HTTP/3 (RFC 9114) and QPACK on top and serves any only-http
 `Service`. Interop is tested in both directions with quic-go and with fib's QUIC/HTTP/3
 (`tools/interop/h3/run.sh`).
 
 ## QUIC
 
 ```rust,ignore
-{{#include ../../../../crates/flash-quic/examples/guide-quic.rs:server}}
+{{#include ../../../../crates/only-quic/examples/guide-quic.rs:server}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-quic/examples/guide-quic.rs:client}}
+{{#include ../../../../crates/only-quic/examples/guide-quic.rs:client}}
 ```
 
 ```rust,ignore
-{{#include ../../../../crates/flash-quic/examples/guide-quic.rs:engine}}
+{{#include ../../../../crates/only-quic/examples/guide-quic.rs:engine}}
 ```
 
-How it fits on flash:
+How it fits on `only`:
 
 - A `QuicServer` is the acceptor of a **UDP listener**. Every datagram of that listener goes
   through one `quinn_proto::Endpoint`, which routes it by connection id, so a client that
@@ -27,7 +27,7 @@ How it fits on flash:
 - Each QUIC connection gets a `QuicHandler` from the factory. Its callbacks run one at a time, in
   order, on the I/O thread that read the datagram or on a shared timer thread; they must not
   block.
-- `flash_quic::dial(&engine, addr, server_name, client_cfg, handler)` starts a client
+- `only_quic::dial(&engine, addr, server_name, client_cfg, handler)` starts a client
   connection on a UDP socket of its own; the engine needs `udp_client_threads(n)`.
 - Transmits of several datagrams go out with `Conn::send_segments` (UDP GSO / `sendmmsg` on
   Linux). `Config::udp_gro` can help bulk receivers.
@@ -42,25 +42,25 @@ How it fits on flash:
 `send` hands quinn what flow control allows and keeps the rest per stream until the peer grants
 credit; pace producers with `queued_bytes`.
 
-Configuration (TLS 1.3): `server_config(certs, key, alpn)` with `flash::tls::Certificate` /
-`PrivateKey`, `server_config_from(&flash::tls::ServerConfig)`, `client_config(roots, alpn)` with
-`flash::tls::RootCerts`, `client_config_from(&flash::tls::ClientConfig)`, and
-`client_config_insecure(alpn)` for tests only. They return flash's own `ServerConfig` /
+Configuration (TLS 1.3): `server_config(certs, key, alpn)` with `only::tls::Certificate` /
+`PrivateKey`, `server_config_from(&only::tls::ServerConfig)`, `client_config(roots, alpn)` with
+`only::tls::RootCerts`, `client_config_from(&only::tls::ClientConfig)`, and
+`client_config_insecure(alpn)` for tests only. They return `only`'s own `ServerConfig` /
 `ClientConfig`; `.transport(&TransportConfig)` sets stream limits, windows, idle timeout,
 keep-alive, MTU discovery and the congestion controller, `ServerConfig::migration(bool)` client
-migration. `StreamId`, `Dir`, `Side`, `ConnectionError` and `ConnectionStats` are flash types
+migration. `StreamId`, `Dir`, `Side`, `ConnectionError` and `ConnectionStats` are `only` types
 too, so quinn-proto stays out of the API; the `unstable` cargo feature (outside the semver
-promise) re-exports it as `flash_quic::proto` and adds `from_quinn` / `as_quinn_mut`.
+promise) re-exports it as `only_quic::proto` and adds `from_quinn` / `as_quinn_mut`.
 `QuicServer::connections()` and `close_all(code, reason)` help at shutdown.
 
 ## HTTP/3
 
 ```rust,ignore
-{{#include ../../../../crates/flash-h3/examples/guide-h3.rs:server}}
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:server}}
 ```
 
-`flash_h3::serve(quic_cfg, service)` (or `serve_with(.., H3Config)`) returns a `QuicServer`
-serving the service over HTTP/3. `flash_h3::server_config(certs, key)` is `server_config` with
+`only_h3::serve(quic_cfg, service)` (or `serve_with(.., H3Config)`) returns a `QuicServer`
+serving the service over HTTP/3. `only_h3::server_config(certs, key)` is `server_config` with
 ALPN `h3`. Handlers get the same `Context` as on HTTP/1.1 and HTTP/2, including `detach`,
 `stream_response` and trailers; `ctx.req().version` is `Version::Http3`. Request bodies arrive
 buffered. `H3Config`: `max_body` (8 MiB, larger gets 413) and `max_field_section` (64 KiB, sent
@@ -70,22 +70,22 @@ A common deployment serves the same application on TCP (HTTP/1.1 + HTTP/2 over T
 (HTTP/3) in one engine: two listeners on the same port number. A `Router` is moved into its
 acceptor and is not `Clone`, so either build it with a function called once per listener, or
 share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app.call(ctx)`
-(with `flash_http::Service` in scope) on both.
+(with `only_http::Service` in scope) on both.
 
 ```rust,ignore
-{{#include ../../../../crates/flash-h3/examples/guide-h3.rs:client}}
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:client}}
 ```
 
 `H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`); requests sent before
 the handshake completes wait for it. `request(method, path, headers, body, callback)`,
 `request_blocking(..)`, `get(path, timeout)`, `close()`, `connection()`.
 
-## How HTTP/3 reuses flash-http
+## How HTTP/3 reuses `only-http`
 
-flash-http exposes a transport hook, `flash_http::transport`: a transport parses a request and
+only-http exposes a transport hook, `only_http::transport`: a transport parses a request and
 calls `dispatch(service, request, sink)` with a `ResponseSink` that writes the response its own
 way (`send` for a complete response, `start_stream` returning a `BodySink` for a streamed one).
-flash-h3 implements those sinks on QUIC streams, which is why routers, middleware and handlers
+only-h3 implements those sinks on QUIC streams, which is why routers, middleware and handlers
 work unchanged. See [Architecture](../architecture.md).
 
 ## Not done

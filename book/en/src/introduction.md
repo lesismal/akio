@@ -2,7 +2,7 @@
 
 [English](../en/) | [简体中文](../zh-CN/)
 
-**flash** is an event-driven network library for Rust. It is the Rust counterpart of the Go
+**`only`** is an event-driven network library for Rust. It is the Rust counterpart of the Go
 library [fib](https://github.com/lesismal/fib): the same feature surface, built the Rust way:
 ownership instead of a garbage collector, `Send`/`Sync` boundaries instead of conventions,
 sans-io protocol state machines, and no async runtime.
@@ -11,17 +11,17 @@ sans-io protocol state machines, and no async runtime.
            your Handler / Service / WsHandler / QuicHandler ...
                  │ callbacks, inline on the connection's I/O thread
  ┌───────────────┴─────────────────────────────────────────────────┐
- │ flash-http  flash-ws  flash-grpc  flash-arpc  flash-socks  ...  │  protocols (sans-io)
- │ flash-tls (Transport layer)        flash-quic / flash-kcp (UDP) │
+ │ only-http  only-ws  only-grpc  only-arpc  only-socks  ...  │  protocols (sans-io)
+ │ only-tls (Transport layer)        only-quic / only-kcp (UDP) │
  ├─────────────────────────────────────────────────────────────────┤
- │ flash (Engine, Listener, Backend, Accel)   flash-core (Conn)    │
+ │ only (Engine, Listener, Backend, Accel)   only-core (Conn)    │
  ├─────────────────────────────────────────────────────────────────┤
- │ flash-epoll (epoll / kqueue)   flash-uring (io_uring)           │  one backend per listener
- │ flash-ebpf (SO_REUSEPORT steering, sockmap relay)               │  optional acceleration
+ │ only-epoll (epoll / kqueue)   only-uring (io_uring)           │  one backend per listener
+ │ only-ebpf (SO_REUSEPORT steering, sockmap relay)               │  optional acceleration
  └─────────────────────────────────────────────────────────────────┘
 ```
 
-## What makes flash different
+## What makes `only` different
 
 - **Thread-per-core.** Every connection belongs to exactly one I/O thread for its whole life.
   Your callbacks run inline on that thread, so per-connection state needs no lock and no
@@ -40,10 +40,10 @@ sans-io protocol state machines, and no async runtime.
 
 ## How to read this book
 
-- New to flash: [Getting started](getting-started.md), then the [Concepts](concepts/index.md)
+- New to `only`: [Getting started](getting-started.md), then the [Concepts](concepts/index.md)
   chapters. They are short and explain the rules every protocol crate follows.
 - Looking for a protocol: the [Protocols](protocols/index.md) part has one chapter per crate.
-- Running flash in production: [Configuration](configuration.md),
+- Running `only` in production: [Configuration](configuration.md),
   [Observability](observability.md), [Performance tuning](performance.md) and
   [Troubleshooting](troubleshooting.md).
 - Coming from Go, tokio or axum: the [migration guides](migration/from-fib.md).
@@ -55,7 +55,7 @@ can run it (`cargo run -p <crate> --example <name>`).
 
 ## Status
 
-flash is approaching 1.0. Linux is the first-class platform (epoll, io_uring, eBPF); macOS uses
+`only` is approaching 1.0. Linux is the first-class platform (epoll, io_uring, eBPF); macOS uses
 kqueue and is meant for development. Windows is not supported. What is done and what is not is
 tracked milestone by milestone in
 [docs/DEV-PLAN.md](https://github.com/lesismal/flash/blob/main/docs/DEV-PLAN.md); measured
