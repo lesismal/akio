@@ -175,7 +175,8 @@ fn pool_overload_is_reported_to_the_caller() {
     struct H(Arc<Mutex<Vec<bool>>>);
     impl Handler for H {
         fn on_data(&mut self, c: &Conn<Self>, _d: &[u8]) {
-            let r = c.spawn_blocking(|| thread::sleep(Duration::from_millis(300)), |_, _, ()| {});
+            // Long enough that job 1 still runs when submission 4 arrives on a slow runner.
+            let r = c.spawn_blocking(|| thread::sleep(Duration::from_secs(3)), |_, _, ()| {});
             self.0
                 .lock()
                 .unwrap()

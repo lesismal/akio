@@ -351,9 +351,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-fuzz
+      # Built from source: the prebuilt binary is a static musl build, and cargo-fuzz then
+      # targets musl (no sanitizer support, no std installed for it).
+      - run: cargo install cargo-fuzz --locked
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
