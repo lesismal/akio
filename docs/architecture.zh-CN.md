@@ -16,6 +16,7 @@ flowchart BT
     buf["only-buf<br/>分级缓冲池、SharedBuf"]
     timer["only-timer<br/>时间轮"]
     deflate["only-deflate<br/>DEFLATE、zlib、gzip"]
+    logc["only-log<br/>日志门面"]
     pool["only-pool<br/>逻辑线程池"]
     core["only-core<br/>Conn、ConnInner、Handler、Acceptor、<br/>Transport、Telemetry、Group trait"]
     epoll["only-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
@@ -39,6 +40,7 @@ flowchart BT
 
     buf --> core
     pool --> core
+    logc --> core
     core --> epoll
     sys --> epoll
     timer --> epoll

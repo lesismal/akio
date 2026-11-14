@@ -79,7 +79,7 @@
 | `csrf()` | double-submit cookie：`csrf_token` cookie，非安全方法须在 `X-CSRF-Token` 头中带上同样的值 |
 | `limiter(rate, burst)` | 按客户端 IP 的令牌桶，超出返回 429 和 `Retry-After` |
 | `observe::HttpMetrics::middleware()` | 请求计数与延迟直方图（[可观测性](../observability.md)） |
-| `observe::access_log()` | 通过 `log` facade 输出结构化访问日志 |
+| `observe::access_log()` | 通过 `only::log` 输出结构化访问日志 |
 
 不提供 Brotli 压缩（暂无 brotli 依赖）；预压缩的 `.br` 文件由 `Files` 提供。
 

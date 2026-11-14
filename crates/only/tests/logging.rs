@@ -1,4 +1,5 @@
-//! Structured logs through the `log` facade (a logger is process-global: one test binary).
+//! Structured logs through the `only-log` facade (`only::log`; a logger is process-global: one
+//! test binary).
 #![allow(missing_docs)]
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
@@ -12,13 +13,13 @@ use std::{
     time::Duration,
 };
 
-use log::kv::{Key, Value, VisitSource};
+use only::log::{Level, LevelFilter, Logger, Metadata, Record};
 use only::{Config, Conn, Engine, Handler, Listener, fn_acceptor};
 
 /// One captured record: level, target, message and key-values rendered as strings.
 #[derive(Debug, Clone)]
 struct Rec {
-    level: log::Level,
+    level: Level,
     target: String,
     msg: String,
     kv: Vec<(String, String)>,
@@ -28,29 +29,22 @@ static RECORDS: Mutex<Vec<Rec>> = Mutex::new(Vec::new());
 
 struct Capture;
 
-struct Kv<'a>(&'a mut Vec<(String, String)>);
-impl<'kvs> VisitSource<'kvs> for Kv<'_> {
-    fn visit_pair(&mut self, k: Key<'kvs>, v: Value<'kvs>) -> Result<(), log::kv::Error> {
-        self.0.push((k.to_string(), v.to_string()));
-        Ok(())
-    }
-}
-
-impl log::Log for Capture {
-    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+impl Logger for Capture {
+    fn enabled(&self, _: &Metadata<'_>) -> bool {
         true
     }
-    fn log(&self, r: &log::Record<'_>) {
-        let mut kv = Vec::new();
-        let _ = r.key_values().visit(&mut Kv(&mut kv));
+    fn log(&self, r: &Record<'_>) {
         RECORDS.lock().unwrap().push(Rec {
             level: r.level(),
             target: r.target().to_owned(),
             msg: r.args().to_string(),
-            kv,
+            kv: r
+                .key_values()
+                .iter()
+                .map(|(k, v)| (k.to_owned(), v.to_string()))
+                .collect(),
         });
     }
-    fn flush(&self) {}
 }
 
 fn find(f: impl Fn(&Rec) -> bool) -> Option<Rec> {
@@ -71,13 +65,13 @@ impl Handler for Sleepy {
 
 #[test]
 fn lifecycle_slow_callbacks_and_connections_are_logged_with_key_values() {
-    log::set_logger(&Capture).unwrap();
+    only::log::set_logger(&Capture).unwrap();
     let e = Engine::builder()
         .config({
             let mut v = Config::default();
             v.slow_callback_threshold = Some(Duration::from_millis(5));
             v.shutdown_timeout = Duration::from_millis(300);
-            v.log_level = Some(log::LevelFilter::Trace);
+            v.log_level = Some(LevelFilter::Trace);
             v
         })
         .listen(
@@ -88,11 +82,16 @@ fn lifecycle_slow_callbacks_and_connections_are_logged_with_key_values() {
         )
         .build()
         .unwrap();
-    assert_eq!(log::max_level(), log::LevelFilter::Trace);
+    assert_eq!(only::log::max_level(), LevelFilter::Trace);
     e.start().unwrap();
     let started = find(|r| r.msg == "engine started").expect("lifecycle record");
-    assert_eq!(started.level, log::Level::Info);
+    assert_eq!(started.level, Level::Info);
     assert_eq!(started.target, "only");
+    assert!(
+        kv(&started, "listeners")
+            .unwrap()
+            .starts_with("[127.0.0.1:")
+    );
 
     let mut c = TcpStream::connect(e.local_addrs()[0]).unwrap();
     c.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -102,7 +101,7 @@ fn lifecycle_slow_callbacks_and_connections_are_logged_with_key_values() {
 
     // No slow hook: the report goes to the logger, with structured fields.
     let slow = find(|r| r.msg.starts_with("slow callback")).expect("slow callback record");
-    assert_eq!(slow.level, log::Level::Warn);
+    assert_eq!(slow.level, Level::Warn);
     assert_eq!(kv(&slow, "kind"), Some("on_data"));
     assert!(kv(&slow, "elapsed_us").unwrap().parse::<u64>().unwrap() >= 15_000);
     let opened = find(|r| r.msg == "connection opened").expect("trace record");
@@ -110,14 +109,15 @@ fn lifecycle_slow_callbacks_and_connections_are_logged_with_key_values() {
         kv(&opened, "peer"),
         Some(c.local_addr().unwrap().to_string().as_str())
     );
+    assert_eq!(kv(&opened, "dialed"), Some("false"));
 
     // Reload through the engine: logged, and the level changes globally.
     let mut cfg = Config::default();
-    cfg.log_level = Some(log::LevelFilter::Info);
+    cfg.log_level = Some(LevelFilter::Info);
     cfg.idle_timeout = Some(Duration::from_secs(60));
     let rep = e.reload(&cfg);
     assert!(rep.applied.contains(&"log_level") && rep.applied.contains(&"idle_timeout"));
-    assert_eq!(log::max_level(), log::LevelFilter::Info);
+    assert_eq!(only::log::max_level(), LevelFilter::Info);
     assert!(find(|r| r.msg == "configuration reloaded").is_some());
 
     drop(c);

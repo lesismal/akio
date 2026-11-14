@@ -33,6 +33,12 @@ pub use only_tls as tls;
 /// the in-kernel sockmap [`ebpf::Relay`] for proxies.
 pub use only_ebpf as ebpf;
 
+/// Logging (the `only-log` facade): `only` logs under the targets `only`, `only_http::access`
+/// ... Install a logger with [`log::init`] (formatted lines on stderr) or [`log::set_logger`];
+/// [`Config::log_level`] sets the maximum level. With the `log` cargo feature, records go to
+/// the `log` crate's logger instead while none is installed here.
+pub use only_log as log;
+
 /// Kernel bypass (experimental, cargo feature `dpdk`): configuration of [`Backend::Dpdk`], a
 /// userspace TCP/IP stack over DPDK ports (feature `dpdk-pmd`), TAP, AF_PACKET or in-memory
 /// devices.
@@ -368,7 +374,7 @@ impl EngineBuilder {
                         }
                         Err(why) => {
                             log_or_stderr(
-                                log::Level::Warn,
+                                only_log::Level::Warn,
                                 format_args!("io_uring unavailable ({why}); using epoll"),
                             );
                             groups.push(Box::new(only_epoll::EpollGroup::bind(
@@ -385,7 +391,7 @@ impl EngineBuilder {
                             return Err(unsupported("the io_uring backend on this platform"));
                         }
                         log_or_stderr(
-                            log::Level::Warn,
+                            only_log::Level::Warn,
                             format_args!("io_uring is Linux-only; using epoll/kqueue"),
                         );
                         groups.push(Box::new(only_epoll::EpollGroup::bind(
@@ -470,7 +476,7 @@ fn bind_inherited(
                 return Err(unsupported(&format!("the io_uring backend ({why})")));
             }
             Err(why) => log_or_stderr(
-                log::Level::Warn,
+                only_log::Level::Warn,
                 format_args!("io_uring unavailable ({why}); using epoll"),
             ),
         }
@@ -585,7 +591,7 @@ impl Engine {
     /// Spawns the I/O threads and returns immediately. Idempotent.
     pub fn start(&self) -> io::Result<()> {
         self.groups.iter().try_for_each(|g| g.start())?;
-        log::info!(target: "only", listeners:? = self.local_addrs(); "engine started");
+        only_log::info!(target: "only", listeners:? = self.local_addrs(); "engine started");
         Ok(())
     }
 
@@ -657,7 +663,7 @@ impl Engine {
     /// open connections, and the engine waits (up to `Config::shutdown_timeout`) for them to
     /// close before forcing the rest. Returns immediately; use [`wait`](Self::wait) to block.
     pub fn shutdown(&self) {
-        log::info!(target: "only", open_connections = self.telemetry.open_connections(); "engine shutting down");
+        only_log::info!(target: "only", open_connections = self.telemetry.open_connections(); "engine shutting down");
         self.groups.iter().for_each(|g| g.shutdown());
     }
 

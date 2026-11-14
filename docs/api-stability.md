@@ -27,7 +27,7 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 
 | Tier | Crates | Promise |
 |---|---|---|
-| Public | `only`, `only-core`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-ebpf`, `only-prefork`, `only-turn`, `only-webrtc`, `only-media` | Full semver for their public API (below). |
+| Public | `only`, `only-core`, `only-log`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-ebpf`, `only-prefork`, `only-turn`, `only-webrtc`, `only-media` | Full semver for their public API (below). |
 | Internal | `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-uring`, `only-crypto`, `only-deflate` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `only` / `only-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `only-core` and `only`. |
 | Experimental | `only-dpdk`, and the `dpdk` / `dpdk-pmd` features of `only` (`Backend::Dpdk`, `only::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/only-dpdk.txt` only makes changes visible. |
 
@@ -55,6 +55,11 @@ Not covered:
 - the `prost` feature of `only-grpc` (the `codec::Message` implementation for prost messages;
   deprecated in favour of `only-protobuf`, which generated messages implement directly):
   it names prost's types, so a prost upgrade may come in a minor release.
+- the `log` cargo features (`only`, `only-core`, `only-log`): the bridge to the `log` crate
+  (`only_log::bridge`, the `From` conversions between the level types, forwarding records to
+  `log`'s logger). It names `log`'s types and follows `log` 0.4; a newer `log` may come in a
+  minor release. The bridge's behaviour is documented in the observability chapter of the
+  book.
 - the exact text of `Display` output, log messages and panic messages.
 - behaviour documented as unspecified, and performance characteristics.
 
@@ -65,9 +70,13 @@ minor releases; removed or renamed only in a major one).
 
 ### Public dependencies
 
-The covered API uses types of only two other crates: `bytes` (`Bytes` in the QUIC and stream
-APIs) and `log` (`Config::log_level`), both at 1.x / 0.4 for years. Upgrading one of them to a
-semver-incompatible version is a breaking change for `only` and happens only in a major release.
+The covered API uses types of only one other crate: `bytes` (`Bytes` in the QUIC and stream
+APIs), at 1.x for years. Upgrading it to a semver-incompatible version is a breaking change for
+`only` and happens only in a major release. Logging uses the workspace's own facade `only-log`
+(`only::log`, `Config::log_level: Option<only::log::LevelFilter>`); `log` is a dependency
+only with the `log` cargo feature, which is outside the promise (above). The log targets
+(`only`, `only_http::access`, `only_webrtc`) and key names in the observability chapter are
+kept like metric names: added in minor releases, renamed or removed only in a major one.
 
 The pre-1.0 dependencies that do the protocol work (rustls, quinn-proto, str0m, prost) are
 **wrapped**: the covered API uses `only`'s own types instead (`only::tls::{ServerConfig,

@@ -63,8 +63,9 @@ could not be attached. Classic BPF needs no privileges; eBPF programs need `CAP_
 
 ## No log output
 
-`only` uses the `log` facade; install a logger. Without one, only errors and slow-callback
-warnings are printed (to stderr). Access logs need `observe::access_log()` and the
+`only` logs through `only::log`; install a logger (`only::log::init(only::log::LevelFilter::Info)`),
+or enable the `log` feature to use a `log` crate logger such as env_logger. Without one, only
+errors and slow-callback warnings are printed (to stderr). Access logs need `observe::access_log()` and the
 `only_http::access` target enabled.
 
 ## Tests or tools hang on macOS

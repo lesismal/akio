@@ -32,7 +32,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `udp_gro` | false | no | Linux UDP GRO; needs `read_buffer` >= 64 KiB |
 | `shutdown_timeout` | 10 s | yes | after `shutdown`, force-close what is still open after this long |
 | `max_connections` | 0 (none) | yes | accepted connections beyond this many open ones are closed right away (engine-wide count, dialed and UDP peers included) |
-| `log_level` | `None` | yes | calls `log::set_max_level` with it |
+| `log_level` | `None` | yes | `only::log::LevelFilter`; calls `only::log::set_max_level` with it |
 | `telemetry` | new hub | – | the engine's `Arc<Telemetry>`; clone it before `build` to wire endpoints |
 
 ## `EngineBuilder`

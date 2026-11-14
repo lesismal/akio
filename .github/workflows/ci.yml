@@ -221,7 +221,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
-      - run: cargo miri test -p only-timer -p only-buf -p only-core -p only-protobuf
+      - run: cargo miri test -p only-timer -p only-buf -p only-core -p only-protobuf -p only-log
       # `fuzzing::` tests replay the fuzz corpora: minutes per crate under Miri, and the fuzz
       # job already runs those inputs natively.
       - run: >-

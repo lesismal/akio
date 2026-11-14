@@ -500,7 +500,7 @@ pub struct Telemetry {
     open: AtomicUsize,
     pool: Mutex<Weak<Pool>>,
     started: Instant,
-    log_level: Mutex<Option<log::LevelFilter>>,
+    log_level: Mutex<Option<only_log::LevelFilter>>,
 }
 
 impl std::fmt::Debug for Telemetry {
@@ -649,7 +649,7 @@ impl Telemetry {
         }
         self.notify_reload();
         if !r.applied.is_empty() || !r.ignored.is_empty() {
-            log::info!(target: "only", applied:? = r.applied, ignored:? = r.ignored; "configuration reloaded");
+            only_log::info!(target: "only", applied:? = r.applied, ignored:? = r.ignored; "configuration reloaded");
         }
         r
     }
@@ -664,10 +664,11 @@ impl Telemetry {
         }
     }
 
-    /// Sets the `log` crate's global maximum level (`log::set_max_level`).
-    pub fn set_log_level(&self, level: log::LevelFilter) {
+    /// Sets the global maximum log level ([`only_log::set_max_level`]; with the `log` feature also
+    /// the `log` crate's).
+    pub fn set_log_level(&self, level: only_log::LevelFilter) {
         *lock(&self.log_level) = Some(level);
-        log::set_max_level(level);
+        only_log::set_max_level(level);
     }
 
     // ---- connection accounting --------------------------------------------------------------
@@ -798,8 +799,8 @@ impl Telemetry {
             "slow callback: {kind} on connection {id} blocked its I/O thread for {elapsed:?} \
              (limit {limit:?}); move blocking work to Conn::spawn_blocking"
         );
-        if log::log_enabled!(target: "only", log::Level::Warn) {
-            log::warn!(
+        if only_log::log_enabled!(target: "only", only_log::Level::Warn) {
+            only_log::warn!(
                 target: "only",
                 kind = kind, conn_id = id, elapsed_us = elapsed.as_micros() as u64,
                 limit_us = limit.as_micros() as u64, thread = stats.meta.thread,
@@ -1187,13 +1188,9 @@ pub fn slow_callbacks_json(recs: &[SlowRecord]) -> String {
     o
 }
 
-/// Logs `msg` through the `log` facade at `level` when a logger accepts it, else prints it to
+/// Logs `msg` through the `only-log` facade at `level` when a logger accepts it, else prints it to
 /// stderr (so errors are never silently lost when no logger is installed). Not for hot paths.
 #[doc(hidden)]
-pub fn log_or_stderr(level: log::Level, msg: std::fmt::Arguments<'_>) {
-    if log::log_enabled!(target: "only", level) {
-        log::log!(target: "only", level, "{msg}");
-    } else {
-        eprintln!("only: {msg}");
-    }
+pub fn log_or_stderr(level: only_log::Level, msg: std::fmt::Arguments<'_>) {
+    only_log::log_or_stderr(level, "only", msg);
 }

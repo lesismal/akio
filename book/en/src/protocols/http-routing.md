@@ -87,7 +87,7 @@ Built-in middleware (`only_http::middleware` and `only_http::observe`):
 | `csrf()` | double-submit cookie: `csrf_token` cookie, checked against the `X-CSRF-Token` header on unsafe methods |
 | `limiter(rate, burst)` | per-client-IP token bucket, 429 with `Retry-After` |
 | `observe::HttpMetrics::middleware()` | request counters and latency histogram ([Observability](../observability.md)) |
-| `observe::access_log()` | structured access log through the `log` facade |
+| `observe::access_log()` | structured access log through `only::log` |
 
 Brotli compression is not offered (no brotli dependency yet); pre-compressed `.br` files are
 served by `Files`.

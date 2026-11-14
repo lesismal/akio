@@ -15,7 +15,7 @@ categories = ["network-programming"]
 [dependencies]
 only-buf = { workspace = true }
 only-pool = { workspace = true }
-log = { version = "0.4.21", features = ["kv"] }
+only-log = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 only-sys = { workspace = true }
@@ -26,6 +26,9 @@ loom = "0.7"
 [features]
 # Detached connections for the fuzz targets (`fuzz/`); not a public API.
 fuzzing = []
+# Bridge to the `log` crate (only-log's `log` feature): records go to `log`'s logger while no
+# only-log logger is installed. Outside the semver promise (docs/api-stability.md).
+log = ["only-log/log"]
 
 [lints]
 workspace = true

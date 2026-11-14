@@ -17,6 +17,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 |---|---|---|
 | `only` | facade: `Engine`, `Listener`, `Backend`, `Accel`, re-exports of the core API, `tls`, `ebpf` | [Concepts](concepts/index.md) |
 | `only-core` | `Conn`, `Handler`, `Acceptor`, `Config`, `Transport`, `Telemetry`; backend-facing traits | [Handlers](concepts/handlers.md) |
+| `only-log` (`only::log`) | logging facade: levels, targets, key-values, `Logger`, built-in loggers, optional `log` bridge | [Observability](observability.md) |
 | `only-pool` | the logical (blocking-work) pool | [Blocking work](concepts/blocking.md) |
 | `only-buf` | size-class buffer pool, `SharedBuf` | [Architecture](architecture.md) |
 | `only-timer` | hierarchical timer wheel used by the I/O loops | [Architecture](architecture.md) |

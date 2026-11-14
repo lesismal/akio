@@ -14,7 +14,7 @@ categories = ["network-programming", "os::unix-apis"]
 
 [dependencies]
 only = { workspace = true }
-log = { version = "0.4.21", features = ["kv"] }
+only-log = { workspace = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 only-sys = { workspace = true }

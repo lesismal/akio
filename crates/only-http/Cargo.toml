@@ -15,7 +15,7 @@ categories = ["network-programming", "web-programming::http-server", "web-progra
 [dependencies]
 only-core = { workspace = true }
 only = { workspace = true }
-log = { version = "0.4.21", features = ["kv"] }
+only-log = { workspace = true }
 only-crypto = { workspace = true }
 only-ws = { workspace = true }
 only-deflate = { workspace = true }

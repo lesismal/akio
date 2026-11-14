@@ -18,7 +18,7 @@ only-epoll = { workspace = true }
 only-ebpf = { workspace = true }
 only-tls = { workspace = true }
 only-dpdk = { workspace = true, optional = true }
-log = { version = "0.4.21", features = ["kv"] }
+only-log = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 only-uring = { workspace = true }
@@ -32,6 +32,10 @@ dpdk-pmd = ["dpdk", "only-dpdk/pmd"]
 # Raw access to wrapped dependencies (`only::tls::rustls`, `from_rustls` ...): outside the
 # semver promise (docs/api-stability.md).
 unstable = ["only-tls/unstable"]
+# Bridge to the `log` crate: `only`'s records go to `log`'s logger (env_logger, tracing-log ...)
+# while no only-log logger is installed; `only::log::bridge` routes `log` records the other way.
+# Outside the semver promise (docs/api-stability.md).
+log = ["only-core/log", "only-log/log"]
 
 [lints]
 workspace = true
@@ -42,3 +46,6 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 libc = "0.2"
 only-core = { workspace = true }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
+# tests/logging_bridge.rs: the `log` bridge, with a `log` crate logger.
+only-log = { workspace = true, features = ["log"] }
+log = { version = "0.4.21", features = ["kv"] }

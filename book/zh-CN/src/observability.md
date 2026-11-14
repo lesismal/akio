@@ -63,9 +63,35 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 ## 日志
 
-only 通过 [`log`](https://docs.rs/log) facade 输出带键值对的记录；安装任意实现（env_logger、
-`log` 到 `tracing` 的桥接等）即可看到。没有安装日志实现时，错误和慢回调警告会打印到 stderr，
-不会悄无声息地丢失。
+only 通过自己的日志门面 `only-log`（以 `only::log` 重新导出）输出带键值对的记录。每个进程安装一次
+logger 即可看到：
+
+```rust,ignore
+// 向 stderr 输出格式化行：`2026-11-14T08:00:00.000123Z INFO  only: engine started listeners=[...]`
+only::log::init(only::log::LevelFilter::Info).unwrap();
+
+// 或者：按 target 设上限、输出到 stdout、不带时间戳 ……
+only::log::FmtLogger::new()
+    .target_level("only_http::access", only::log::LevelFilter::Off)
+    .stdout()
+    .init(only::log::LevelFilter::Debug)
+    .unwrap();
+
+// 或者自己的输出：实现 `only::log::Logger`（`enabled`、`log`、`flush`），调用
+// `only::log::set_logger(&MY_LOGGER)` 和 `only::log::set_max_level(..)`。
+```
+
+记录提供 `level()`、`target()`、`args()`（消息，延迟格式化）、`key_values()`（`iter()`、
+`get("conn_id")`；值实现了 `Display`）以及源码位置。没有安装 logger 时，错误和慢回调警告会打印到
+stderr（`only: ...`），不会悄无声息地丢失；其余记录被丢弃。最大级别默认为 `Off`，并且最先检查，只需
+一次 relaxed 原子读，因此被禁用的语句开销远低于一纳秒。
+
+**已有的 `log` 配置（env_logger、`tracing-log`、fern ……）。** 开启 `log` feature
+（`only = { version = "1", features = ["log"] }`）。未安装 only-log logger 时，每条记录都以相同的
+级别、target、消息和键值对交给 `log` crate 的 logger，有效最大级别为 `log::max_level()`；
+`Config::log_level` 也会设置 `log` 的级别。反方向（把使用 `log` 的 crate，例如 str0m 或 rustls 的记录
+送入 only-log logger）调用 `only::log::bridge::route_log_to_only()`。该 feature 不在 semver 承诺之内：
+它跟随 `log` 0.4。
 
 | target | 级别 | 记录 |
 |---|---|---|
@@ -76,7 +102,7 @@ only 通过 [`log`](https://docs.rs/log) facade 输出带键值对的记录；�
 | `only` | trace | `connection opened` / `connection closed`（`conn_id`、`peer`、`local`、`dialed`、`error`） |
 | `only_http::access` | info | 访问日志：`method`、`target`、`status`、`peer`、`elapsed_us`、`request_id` |
 
-`Config::log_level`（可热更新）会调用 `log::set_max_level`，因此日志详细程度可以在运行时调整。
+`Config::log_level`（可热更新）会调用 `only::log::set_max_level`，因此日志详细程度可以在运行时调整。
 
 ## 慢回调
 
