@@ -12,8 +12,8 @@ use std::{
     time::Duration,
 };
 
-use loona_hpack::{Decoder, Encoder};
 use only::{Backend, Config, Engine, Listener, UringConfig};
+use only_http::hpack::{Decoder, Encoder};
 use only_http::{BodyEvent, Context, H2Config, Headers, HttpConfig, Router, Streaming, serve_with};
 
 // Frame types, flags and error codes (RFC 9113).
@@ -149,8 +149,8 @@ struct Frame {
 /// One HTTP/2 connection driven by hand.
 struct Peer {
     s: TcpStream,
-    enc: Encoder<'static>,
-    dec: Decoder<'static>,
+    enc: Encoder,
+    dec: Decoder,
 }
 
 impl Peer {

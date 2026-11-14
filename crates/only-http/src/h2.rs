@@ -1,4 +1,4 @@
-//! HTTP/2 (RFC 9113) server connection: frames, HPACK (via `loona-hpack`), streams, flow control
+//! HTTP/2 (RFC 9113) server connection: frames, HPACK (`crate::hpack`), streams, flow control
 //! in both directions, trailers, server push, graceful shutdown and the h2c upgrade.
 //!
 //! A connection's state lives in one [`Core`] behind a mutex. The I/O thread feeds it frames;
@@ -8,11 +8,10 @@
 use std::{
     collections::{HashMap, VecDeque},
     net::SocketAddr,
-    panic::{AssertUnwindSafe, catch_unwind},
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
 
-use loona_hpack::{Decoder, Encoder};
+use crate::hpack::{Decoder, Encoder};
 use only_core::ConnInner;
 
 use crate::{
@@ -212,8 +211,8 @@ struct Core {
     remote: Settings,
     conn_send: i64,
     conn_recv: i64,
-    dec: Decoder<'static>,
-    enc: Encoder<'static>,
+    dec: Decoder,
+    enc: Encoder,
     streams: HashMap<u32, Stream>,
     last_peer: u32,
     next_push: u32,
@@ -959,12 +958,10 @@ impl Core {
     /// A whole header block arrived: decode it (always: HPACK state must stay in step), then treat
     /// it as request headers or trailers.
     fn headers_complete(&mut self, sid: u32, block: Vec<u8>, end_stream: bool) -> R<Vec<Action>> {
-        // Huffman strings are decoded here (loona-hpack's decoder is very slow at it).
-        let Ok(block) = crate::hpack::strip_huffman(&block) else {
-            return Err(Fail::Conn(err::COMPRESSION));
-        };
-        let decoded = catch_unwind(AssertUnwindSafe(|| self.dec.decode(&block)));
-        let Ok(Ok(list)) = decoded else {
+        // The whole block is decoded even past the header list limit (the dynamic table must
+        // stay in step); fields past it are not kept.
+        let limit = self.cfg.max_header_list as usize;
+        let Ok((list, size)) = self.dec.decode_limited(&block, limit) else {
             return Err(Fail::Conn(err::COMPRESSION));
         };
         if let Some((s, code)) = self.pending_rst.take() {
@@ -976,6 +973,10 @@ impl Core {
         }
         let existing = self.streams.contains_key(&sid);
         if existing {
+            if size > limit {
+                self.rst(sid, err::PROTOCOL); // trailers past the header list limit
+                return Ok(Vec::new());
+            }
             return self.trailers(sid, list, end_stream);
         }
         if sid <= self.last_peer {
@@ -990,8 +991,7 @@ impl Core {
             self.frame_refuse(sid);
             return Ok(Vec::new());
         }
-        let size: usize = list.iter().map(|(n, v)| n.len() + v.len() + 32).sum();
-        if size > self.cfg.max_header_list as usize {
+        if size > limit {
             self.frame_refuse(sid);
             return Ok(Vec::new());
         }

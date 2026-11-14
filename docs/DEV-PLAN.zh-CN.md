@@ -179,6 +179,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### 长期目标：去掉所有三方依赖
 - [ ] 逐个自研库中用到的所有三方依赖，每一项保持相同的公开 API（API 快照不变），以已知答案测试向量、互通与模糊测试作为门禁。顺序（每一波依赖前一波）：
   - [ ] 第 A 波：`only-crypto`（SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC32、AES、CTR、GCM、ChaCha20-Poly1305、base64、系统随机数）替代 sha1/sha2/md-5/hmac/pbkdf2/aes/aes-gcm/ctr/crc32fast/base64/getrandom；自研 HTTP/1 解析、HPACK 与正则引擎替代 httparse/loona-hpack/regex；自研 deflate/zlib/gzip 替代 flate2；自研用户态 TCP/IP 栈替代 smoltcp；自研 protobuf 运行时替代 prost
+    - [x] HTTP 编解码：`only_ws::http1`（零拷贝、增量、按 RFC 9110/9112 严格校验的头部解析器；安全代码中按字扫描，速度与 httparse 相当）、`only_http::hpack`（编码器与解码器都带动态表，双向 Huffman，大小更新，never-indexed 字段，解码时即应用列表大小限制；RFC 7541 附录 C 向量）、`only_http::re`（路由约束用的线性时间 Thompson NFA，小模式用位并行，其余用 Pike VM）；httparse/loona-hpack/regex 已从库中移除（仅 `fuzz/` 的差分目标与 `tools/codec-bench` 保留）；h2spec 147/147，`regex` feature 变为空操作
   - [ ] 第 B 波：公钥密码学（X25519、P-256 ECDH/ECDSA、Ed25519、RSA PKCS#1/PSS 验签）与 ASN.1/X.509；自研日志门面替代 `log`（可选 `log` 桥接）；自研系统调用与 io_uring 绑定替代 libc/io-uring
   - [ ] 第 C 波：自研 TLS 1.2/1.3 与 DTLS 替代 rustls（及 ring）
   - [ ] 第 D 波：自研 QUIC 替代 quinn-proto（及 bytes）；自研 WebRTC 栈（ICE、DTLS-SRTP、SCTP、RTP/RTCP）替代 str0m/dimpl/p256

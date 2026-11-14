@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! HTTP/1.1 and HTTP/2 for `only`: server, router, middleware, static files and clients.
 //!
-//! * HTTP/1.x: sans-io parsing ([`httparse`](https://docs.rs/httparse) for the head, an
+//! * HTTP/1.x: sans-io parsing (an in-house zero-copy, incremental, strict head parser, an
 //!   incremental decoder for chunked bodies with trailers), pipelining, keep-alive,
 //!   `Expect: 100-continue`, limits.
 //! * [`Service`] / [`Context`]: handlers run inline on the I/O thread; call
@@ -35,8 +35,8 @@
 //! WebSocket: [`Context::upgrade_websocket`] switches a request to a `only_ws::WsHandler` (re-exported
 //! as [`ws`]), with subprotocols, an origin check and `permessage-deflate`.
 //!
-//! Routing ([`Router`]) is allocation-free and supports static, regexp (`{id:[0-9]+}`, default
-//! `regex` feature), plain (`:id`) and wildcard (`*rest`) segments, in that order of precedence;
+//! Routing ([`Router`]) is allocation-free and supports static, regexp (`{id:[0-9]+}`, an in-house
+//! linear-time engine), plain (`:id`) and wildcard (`*rest`) segments, in that order of precedence;
 //! parameters are percent-decoded once ([`Context::param`], raw in [`Context::param_raw`]).
 //!
 //! Guide: [HTTP servers](https://lesismal.github.io/only/en/protocols/http-server.html), [Routing, middleware and static files](https://lesismal.github.io/only/en/protocols/http-routing.html), [HTTP clients](https://lesismal.github.io/only/en/protocols/http-clients.html), [Observability](https://lesismal.github.io/only/en/observability.html)
@@ -58,6 +58,9 @@ pub mod middleware;
 pub mod observe;
 mod parse;
 pub mod raw;
+// The route constraint regexp engine: `#[doc(hidden)]` for the fuzz targets, not a public API.
+#[doc(hidden)]
+pub mod re;
 mod router;
 mod session;
 // The seam between HTTP transports and services (only-h3 dispatches through it):

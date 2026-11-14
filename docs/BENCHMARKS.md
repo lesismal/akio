@@ -187,6 +187,34 @@ existing `idle_timeout` already acts as the read timeout (only inbound data coun
 Both backends; the check runs on the idle-timeout wheel only while output is queued, so it costs
 nothing on connections that keep up.
 
+## Codec micro benchmarks (in-house vs the replaced crates)
+
+`cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex]`, a separate
+workspace so httparse, loona-hpack and regex stay out of the libraries. Apple M-series (aarch64,
+httparse uses NEON there), best of 5 rounds, ns per operation:
+
+| Operation | only | replaced crate |
+|---|---|---|
+| HTTP/1 request head, 1 header | 52 | httparse 50 |
+| HTTP/1 request head, browser-like, 11 headers | 192–216 | httparse 179–187 |
+| HTTP/1 response head, 7 headers | 131–146 | httparse 150–154 |
+| same browser-like request delivered in 16-byte reads (resumed vs re-parsed) | 1 694–1 801 | httparse 4 597–4 767 |
+| HPACK decode, first request block, Huffman | 1 759 | loona-hpack 132 435 |
+| HPACK decode, first request block, raw literals | 764 | loona-hpack 902 |
+| HPACK decode, request block, all indexed | 398 | loona-hpack 410 |
+| HPACK encode response, warm table | 75 | loona-hpack 304 |
+| HPACK encode response, fresh table (only Huffman-codes, loona does not) | 368 | loona-hpack 299 |
+| route regexp `[0-9]+` on `1234567` | 5.8 | regex 12.6 |
+| route regexp `\d{4}-\d{2}-\d{2}` | 10.7 | regex 13.6 |
+| route regexp `[a-z0-9_-]{3,16}` on 14 chars | 16.0 | regex 15.8 |
+| compile `\d{4}-\d{2}-\d{2}` | 2 652 | regex 127 213 |
+
+The head parser scans 8 bytes at a time in safe code (no SIMD intrinsics) and stays within ~10%
+of httparse on whole heads; heads that arrive in pieces are ~2.7× cheaper because only new lines
+are examined. (Before, only-http's HTTP/2 path already decoded Huffman strings itself and passed
+raw literals to loona-hpack, so the h2c gain over the previous release is smaller than the
+Huffman rows suggest.)
+
 ## What this says
 
 - **TCP echo**: `only` is level with tokio and fib at 64 connections and ahead of both from 256

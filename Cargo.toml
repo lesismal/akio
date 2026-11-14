@@ -28,8 +28,9 @@ members = [
     "crates/only",
     "tools/echo-bench",
 ]
-# The cargo-fuzz project is its own (nightly-only) workspace.
-exclude = ["fuzz"]
+# The cargo-fuzz project (nightly-only) and the codec micro benchmarks (which measure against
+# the third-party crates the libraries replaced) are their own workspaces.
+exclude = ["fuzz", "tools/codec-bench"]
 
 [workspace.package]
 version = "1.0.0-rc.1"

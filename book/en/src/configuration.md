@@ -107,6 +107,6 @@ The test suite also reads `ONLY_TEST_BACKEND=uring` (run the engine tests on io_
 
 | Crate | Feature | Default | Effect |
 |---|---|---|---|
-| only-http | `regex` | on | regexp route parameters (`{id:[0-9]+}`) |
+| only-http | `regex` | on | no effect (kept for compatibility): regexp route parameters (`{id:[0-9]+}`) are always available |
 | only-grpc | `prost` | off | `codec::Message` for prost messages (outside the semver promise) |
 | `only`, only-tls, only-quic, only-webrtc | `unstable` | off | raw access to the wrapped rustls / quinn-proto / str0m (outside the semver promise) |

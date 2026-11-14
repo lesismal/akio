@@ -106,6 +106,6 @@ false）。
 
 | crate | feature | 默认 | 作用 |
 |---|---|---|---|
-| only-http | `regex` | 开启 | 正则路由参数（`{id:[0-9]+}`） |
+| only-http | `regex` | 开启 | 无作用（为兼容保留）：正则路由参数（`{id:[0-9]+}`）始终可用 |
 | only-grpc | `prost` | 关闭 | 为 prost 消息实现 `codec::Message`（不在 semver 承诺内） |
 | only、only-tls、only-quic、only-webrtc | `unstable` | 关闭 | 直接访问被封装的 rustls / quinn-proto / str0m（不在 semver 承诺内） |

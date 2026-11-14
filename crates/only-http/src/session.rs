@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use only_core::{Acceptor, Conn, Error, Handler};
-use only_ws::WsSession;
+use only_ws::{WsSession, http1::Resume};
 
 use crate::h2::{H2Config, H2Session, PREFACE};
 
@@ -74,6 +74,7 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             raw: None,
             h2: None,
             started: false,
+            head: Resume::default(),
         }
     }
 
@@ -126,6 +127,8 @@ pub struct Session<S> {
     h2: Option<H2Session<S>>,
     /// Some bytes have been seen (the HTTP/2 preface is only looked for at the very start).
     started: bool,
+    /// Progress on the head being received (so a head arriving in pieces is scanned once).
+    head: Resume,
 }
 
 impl<S> std::fmt::Debug for Session<S> {
@@ -199,15 +202,19 @@ impl<S: Service> Handler for Session<S> {
         }
         // Common case: nothing carried over, so parse straight from the borrowed read buffer.
         let mut owned = std::mem::take(&mut self.buf);
-        let src: &[u8] = if owned.is_empty() {
-            data
+        if owned.is_empty() {
+            let used = self.process(c, data);
+            if !matches!(self.state, State::Closed) && used < data.len() {
+                self.buf = data[used..].to_vec();
+            }
         } else {
             owned.extend_from_slice(data);
-            &owned
-        };
-        let used = self.process(c, src);
-        if !matches!(self.state, State::Closed) && used < src.len() {
-            self.buf = src[used..].to_vec();
+            let used = self.process(c, &owned);
+            if !matches!(self.state, State::Closed) && used < owned.len() {
+                // Keep the allocation: an incomplete head grows in place.
+                owned.drain(..used);
+                self.buf = owned;
+            }
         }
     }
 
@@ -253,7 +260,7 @@ impl<S: Service> Session<S> {
                     if pos == src.len() {
                         return pos;
                     }
-                    match parse_head(&src[pos..]) {
+                    match parse_head(&src[pos..], &mut self.head) {
                         Ok(None) => {
                             if src.len() - pos > self.cfg.max_header_bytes {
                                 self.fail(c, 431);

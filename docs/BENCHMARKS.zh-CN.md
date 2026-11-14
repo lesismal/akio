@@ -170,6 +170,32 @@ plaintext 没有变化（111 万对 112 万），内存没有变化（每连接�
 `ErrorKind::TimedOut` 关闭（计入 `write_timeouts`）。已有的 `idle_timeout` 就是读超时（只有收到数据才算
 活动）。两种后端都支持；检查只在有待发送数据时挂在空闲超时的时间轮上，跟得上的连接没有额外开销。
 
+## 编解码微基准（自研 vs 被替换的 crate）
+
+`cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex]`，这是一个单独的
+workspace，httparse、loona-hpack 与 regex 因此不进入库的依赖。Apple M 系列（aarch64，httparse 在此使用
+NEON），取 5 轮中最好的一轮，单位为每次操作的纳秒数：
+
+| 操作 | only | 被替换的 crate |
+|---|---|---|
+| HTTP/1 请求头，1 个头部 | 52 | httparse 50 |
+| HTTP/1 请求头，类浏览器，11 个头部 | 192–216 | httparse 179–187 |
+| HTTP/1 响应头，7 个头部 | 131–146 | httparse 150–154 |
+| 同一类浏览器请求按 16 字节分次到达（增量续解析 vs 从头重解析） | 1 694–1 801 | httparse 4 597–4 767 |
+| HPACK 解码，首个请求头部块，Huffman | 1 759 | loona-hpack 132 435 |
+| HPACK 解码，首个请求头部块，原始字面量 | 764 | loona-hpack 902 |
+| HPACK 解码，全部为索引的请求头部块 | 398 | loona-hpack 410 |
+| HPACK 编码响应，动态表已预热 | 75 | loona-hpack 304 |
+| HPACK 编码响应，全新动态表（only 做 Huffman 编码，loona 不做） | 368 | loona-hpack 299 |
+| 路由正则 `[0-9]+` 匹配 `1234567` | 5.8 | regex 12.6 |
+| 路由正则 `\d{4}-\d{2}-\d{2}` | 10.7 | regex 13.6 |
+| 路由正则 `[a-z0-9_-]{3,16}` 匹配 14 个字符 | 16.0 | regex 15.8 |
+| 编译 `\d{4}-\d{2}-\d{2}` | 2 652 | regex 127 213 |
+
+头部解析器在安全代码中每次扫描 8 字节（不使用 SIMD intrinsics），对完整头部与 httparse 相差约 10% 以内；
+分次到达的头部因为只检查新到的行，开销约为原来的 1/2.7。（此前 only-http 的 HTTP/2 路径已经自己解码 Huffman
+字符串、再把原始字面量交给 loona-hpack，因此相对上一版本的 h2c 提升要比 Huffman 那几行显示的小。）
+
 ## 结论
 
 - **TCP echo**：64 连接时 only 与 tokio、fib 持平，256 连接起领先两者，1024 连接时领先 1.3–2 倍。

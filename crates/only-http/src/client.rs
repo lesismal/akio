@@ -21,6 +21,7 @@ use only::{
     Acceptor, Conn, Engine, Handler,
     tls::{ClientConfig as TlsClientConfig, Tls},
 };
+use only_ws::http1;
 
 use crate::{
     message::{Headers, Method, Version},
@@ -522,6 +523,8 @@ pub struct ClientConn {
     client: Option<Client>,
     key: Option<Key>,
     received_any: bool,
+    /// Progress on the response head being received.
+    head: http1::Resume,
 }
 
 impl std::fmt::Debug for ClientConn {
@@ -539,6 +542,7 @@ impl ClientConn {
             client: None,
             key: None,
             received_any: false,
+            head: http1::Resume::default(),
         }
     }
 
@@ -563,6 +567,7 @@ impl ClientConn {
         });
         self.state = RState::Head;
         self.buf.clear();
+        self.head = http1::Resume::default();
         self.received_any = false;
         self.client = Some(client);
         self.key = Some(key);
@@ -635,27 +640,26 @@ impl ClientConn {
                     return;
                 }
                 RState::Head => {
-                    let mut storage = [httparse::EMPTY_HEADER; 100];
-                    let mut r = httparse::Response::new(&mut storage);
-                    let n = match r.parse(&self.buf) {
-                        Ok(httparse::Status::Complete(n)) => n,
-                        Ok(httparse::Status::Partial) => return,
+                    let mut storage = [http1::Header::EMPTY; 100];
+                    let r = match http1::parse_response(&self.buf, &mut storage, &mut self.head) {
+                        Ok(http1::Status::Complete(r)) => r,
+                        Ok(http1::Status::Partial) => return,
                         Err(_) => return self.fail(c, ClientError::Protocol("bad response head")),
                     };
-                    let status = r.code.unwrap_or(0);
-                    let mut headers = Headers::new();
-                    for h in r.headers.iter() {
+                    let (n, status) = (r.len, r.code);
+                    let mut headers = Headers::with_capacity(r.headers.len(), 0);
+                    for h in r.headers {
                         let Ok(v) = std::str::from_utf8(h.value) else {
                             return self.fail(c, ClientError::Protocol("non-UTF-8 header"));
                         };
-                        headers.append(h.name, v.trim());
+                        headers.append(h.name, v);
                     }
-                    let version = if r.version == Some(0) {
+                    let version = if r.minor == 0 {
                         Version::Http10
                     } else {
                         Version::Http11
                     };
-                    let reason = r.reason.unwrap_or("").to_owned();
+                    let reason = r.reason.to_owned();
                     self.buf.drain(..n);
                     if (100..200).contains(&status) && status != 101 {
                         continue; // interim response: the real one follows

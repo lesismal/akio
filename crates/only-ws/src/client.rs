@@ -38,7 +38,9 @@ use only::{
 };
 use only_core::ConnInner;
 
-use crate::{Message, WsConfig, WsHandler, WsSender, WsSession, accept_key, deflate::PmdOffer};
+use crate::{
+    Message, WsConfig, WsHandler, WsSender, WsSession, accept_key, deflate::PmdOffer, http1,
+};
 
 /// How to dial.
 #[derive(Clone)]
@@ -567,19 +569,16 @@ pub(crate) fn check_response(
     pmd: Option<&PmdOffer>,
     buf: &[u8],
 ) -> Result<Option<Accepted>, WsClientError> {
-    let mut storage = [httparse::EMPTY_HEADER; 64];
-    let mut r = httparse::Response::new(&mut storage);
-    let head_len = match r.parse(buf) {
-        Ok(httparse::Status::Complete(n)) => n,
-        Ok(httparse::Status::Partial) => return Ok(None),
+    let mut storage = [http1::Header::EMPTY; 64];
+    let r = match http1::parse_response(buf, &mut storage, &mut http1::Resume::default()) {
+        Ok(http1::Status::Complete(r)) => r,
+        Ok(http1::Status::Partial) => return Ok(None),
         Err(_) => return Err(WsClientError::Handshake("malformed response head")),
     };
-    let status = r.code.unwrap_or(0);
+    let head_len = r.len;
+    let status = r.code;
     if status != 101 {
-        return Err(WsClientError::Status(
-            status,
-            r.reason.unwrap_or("").to_owned(),
-        ));
+        return Err(WsClientError::Status(status, r.reason.to_owned()));
     }
     let values = |name: &'static str| {
         r.headers
