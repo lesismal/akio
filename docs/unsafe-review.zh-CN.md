@@ -14,7 +14,7 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `only-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许 | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
 | `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
 | `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `only_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
-| `only-crypto` | `#![deny(unsafe_code)]`，仅 `aes::hw` 模块允许 | AES-NI / ARMv8 AES intrinsic（`#[target_feature]` 函数），只在运行时检测到 CPU 特性之后调用；公钥部分（域与大数运算、曲线、RSA、DER）均为安全 Rust |
+| `only-crypto` | `#![deny(unsafe_code)]`，仅五个 CPU 指令模块 `aes::hw`、`gcm::hw`、`hash::hw`、`crc::hw`、`chacha::hw` 允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），每次调用前都经过 `cpu.rs` 的运行时检测；可移植回退实现与公钥部分（域与大数运算、曲线、RSA、DER）均为安全 Rust |
 | 其它所有 crate（`only`、`only-core`、`only-x509`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
@@ -66,6 +66,8 @@ Clippy 只检查为当前主机编译的代码，因此 CI 在 Linux 和 macOS �
 
 Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系统调用路径由 sanitizer 和 Linux/macOS 测试套件（epoll 与 io_uring 后端）覆盖；io_uring 中与内核共享内存的逻辑（`BufRing`、`KernelBuf`）有不做系统调用的单元测试，可在 Miri 下运行。
 
+Miri 同样不解释 SIMD intrinsic：在 Miri 下 `only-crypto` 检测不到任何 CPU 特性，只运行可移植实现（`cargo +nightly miri test -p only-crypto --lib -- aes:: gcm:: hash:: crc:: chacha:: …`）。CPU 指令模块改由以下方式验证：单元测试逐一比较硬件路径与可移植路径（`hardware_matches_portable` / `hardware_matches_table`）；所有 KAT（NIST CAVP、RFC、Wycheproof）在 x86_64 与 aarch64 上各跑两遍，一遍默认、一遍设置 `ONLY_CRYPTO_PORTABLE=1`；以及差分模糊测试目标 `crypto_hash` 与 `crypto_aead`。
+
 ## 5. 清单
 
 由 `python3 tools/unsafe-inventory.py --markdown` 生成（`src/` 下的库代码，含单元测试；集成测试、示例与基准计入最后一列）。未列出的 crate 不含 `unsafe`。
@@ -76,10 +78,10 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
-| only-crypto | 19 | 19 | 0 | 0 |
+| only-crypto | 65 | 59 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **合计** | **172** | **29** | **5** | **21** |
+| **合计** | **218** | **69** | **5** | **21** |
 
 按用途：
 
@@ -91,7 +93,11 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | `only-sys/src/process.rs` | 12 | prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `only-sys/src/udp.rs` | 14 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | iovec 位于同一分配内（大小经检查）；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
-| `only-crypto/src/aes/hw.rs` | 19 个块、19 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 5 个，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密（`#[target_feature]` 函数与 intrinsic） | 只有在 `is_x86_feature_detected!("aes")` / `is_aarch64_feature_detected!("aes")` 之后才会构造 `hw::Keys`；加载与存储不要求对齐且不越出 16 字节数组；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |
+| `only-crypto/src/aes/hw.rs` | 27 个块、26 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 6 个桩函数，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密，CTR 每次 8 个分组（轮数为常量泛型，完全展开） | 只有在 `cpu::cpu_has(Feature::Aes)`（`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`）之后才会构造 `hw::Keys`；加载与存储不要求对齐，且不越出 16 字节数组或 `&mut [u8; 128]` 块中的 16 字节片段；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |
+| `only-crypto/src/gcm/hw.rs` | 17 个块、17 个 `unsafe fn`（其他平台 2 个桩函数） | 基于 PCLMULQDQ / PMULL 的 GHASH（每次归约聚合 8 个分组，Karatsuba），以及单趟融合的 AES-GCM 加解密（同一循环里执行 AES-NI / ARMv8 AES 轮函数与无进位乘法） | 只有在 `cpu_has(Feature::Clmul)`（PCLMULQDQ + SSSE3 + SSE4.1 / aarch64 AES 扩展）之后才会构造 `Powers`；安全包装函数每次调用前都重新检查 `cpu_has`（融合内核还检查 `Feature::Aes`）；每次加载读取的 16 字节都位于长度已被包装函数截为 16（GHASH）或 128（融合）整数倍的切片内 |
+| `only-crypto/src/hash/hw.rs` | 8 个块、8 个 `unsafe fn`（2 个桩函数） | 基于 SHA-NI（x86_64）与 ARMv8 SHA1/SHA2 指令的 SHA-1、SHA-256 压缩函数 | 包装函数只在 `cpu_has(Feature::Sha)`（SHA + SSSE3 + SSE4.1 / `sha2`）时调用；加载读取分组切片中 64 字节块内的 16 字节片段，状态从存活的 `[u32; 5]` / `[u32; 8]` 加载并写回 |
+| `only-crypto/src/crc/hw.rs` | 11 个块、7 个 `unsafe fn` | CRC-32 / CRC-32C：x86_64 上的 PCLMULQDQ 折叠（4 个 128 位累加器）与 SSE4.2 `crc32` 指令，aarch64 上的 ARMv8 CRC32 指令 | 只在 `cpu_has(Feature::Clmul)` / `cpu_has(Feature::Crc)` 之后调用；折叠循环只在 `len >= 64` 时运行，在偏移 `o` 处读取 16 字节且满足 `o + 16 <= len`（由循环条件保证）；折叠常量是公开多项式的编译期函数 |
+| `only-crypto/src/chacha/hw.rs` | 2 个块、1 个 `unsafe fn` | AVX2 一次计算 8 个 ChaCha20 分组（8×8 转置还原为分组） | 只在 `cpu_has(Feature::Avx2)` 之后调用；加载与存储是 `&mut [u8; 512]` 中的 32 字节片段；8 个分组的计数器不会回绕（由调用方检查） |
 | `only-sys/src/random.rs` | 2（每个系统一个） | 供 `only-crypto` 使用的 `getrandom(2)`（Linux）、`getentropy(2)`（macOS） | 内核最多向存活的 `&mut [u8]` 写入 `buf.len()` 字节（`getentropy` 每次最多 256 字节）；`getrandom` 读到的字节不足时按返回值前移 |
 | `only-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
 | `only-uring/src/ring.rs` | 16，`unsafe fn push`、`register`、`register_buf_ring` | 自有 io_uring 绑定：经 `syscall(2)` 调用 `io_uring_setup`/`enter`/`register`，`mmap` 映射 SQ/CQ ring 与 SQE 数组，SQ/CQ 的 head/tail 原子量，probe、enable-rings、buffer ring 注册 | 内核给出的偏移在使用前对照各自映射做边界检查；仅在队列未满时写入 SQE 槽位，tail 以 `Release` 发布；在自身 head 与以 `Acquire` 读取的 tail 之间读取 CQE，head 以 `Release` 发布；读取 `SQ_NEED_WAKEUP` 前有 `SeqCst` 栅栏（SQPOLL）；映射与 `Ring` 同生命周期 |
@@ -136,7 +142,7 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 - **缓冲区 id 只归还一次。** `give_back` 只对完成事件携带的 `bid` 执行，因此在外的条目最多 `BUF_COUNT` 个，tail 所在槽位绝不会是内核正在读取的条目。现在还有范围断言兜底（F7）。
 - **`unsafe impl Send`**：`Poller`（kevent 的 `udata` 只是 token，从不解引用）、`RecvBatch`（指针指向自身的堆缓冲区，随结构体一起移动）、`SendBatch`（批次之间指针悬空，但每次发送前都从存活的 `Batch<'d>` 重建）和 `Loop`（在一个线程上构建，之后归其 I/O 线程所有；SQE 指针指向不会移动的堆内存）。它们都没有实现 `Sync`。
 - **信任内核提供数据的布局**：sockaddr 地址族、`cmsg_len`、`msg_len`（已截断）、CQE 缓冲区 id（现已做范围检查）。这是内核 ABI 契约。
-- **库已不再依赖任何含 `unsafe` 的第三方 crate**（rustls/ring 随 quinn-proto 移除，str0m 被自研 WebRTC 栈取代）；dev-dependencies 由 `cargo deny`/`cargo audit` 跟踪。TLS 本身是自研的 `only-tls`（`#![forbid(unsafe_code)]`，第 C 波），基于 `only-crypto` 与 `only-x509`，因此所有 TCP 协议的 TLS 记录层与握手代码中，除 `only-crypto` 的 AES 指令模块外没有任何 `unsafe`；QUIC 是自研的 `only-quic`（`#![forbid(unsafe_code)]`，第 D 波，替代了内含 `rustls`/`ring` 的 `quinn-proto`），因此 QUIC 与 HTTP/3 的包保护、帧、流与丢包恢复代码中也没有。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。`libc` 与 `io-uring` crate 已从各库中移除（wave B）：由 `only_sys::ffi` 与 `only-uring` 的 `ring` 取代（`libc` 仍是 dev-dependency，用于布局对比测试和仅测试用的调用）。
+- **库已不再依赖任何含 `unsafe` 的第三方 crate**（rustls/ring 随 quinn-proto 移除，str0m 被自研 WebRTC 栈取代）；dev-dependencies 由 `cargo deny`/`cargo audit` 跟踪。TLS 本身是自研的 `only-tls`（`#![forbid(unsafe_code)]`，第 C 波），基于 `only-crypto` 与 `only-x509`，因此所有 TCP 协议的 TLS 记录层与握手代码中，除 `only-crypto` 的 CPU 指令模块外没有任何 `unsafe`；QUIC 是自研的 `only-quic`（`#![forbid(unsafe_code)]`，第 D 波，替代了内含 `rustls`/`ring` 的 `quinn-proto`），因此 QUIC 与 HTTP/3 的包保护、帧、流与丢包恢复代码中也没有。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。`libc` 与 `io-uring` crate 已从各库中移除（wave B）：由 `only_sys::ffi` 与 `only-uring` 的 `ring` 取代（`libc` 仍是 dev-dependency，用于布局对比测试和仅测试用的调用）。
 
 ## 7. 验证结果（本次审查）
 

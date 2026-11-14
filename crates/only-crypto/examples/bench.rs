@@ -4,10 +4,10 @@
 //! cargo run --release -p only-crypto --example bench
 //! ```
 //!
-//! The replaced crates detect CPU features at run time (SHA-NI / ARMv8 SHA, AES-NI, PCLMULQDQ /
-//! PMULL, CRC32 instructions; the `aes` crate uses ARMv8 AES only with `--cfg aes_armv8`).
-//! `only-crypto` uses the CPU's AES instructions (AES-NI, ARMv8 AES) when present and portable
-//! code for everything else; the "portable" rows force its constant-time software AES.
+//! Both sides detect CPU features at run time (SHA-NI / ARMv8 SHA, AES-NI / ARMv8 AES,
+//! PCLMULQDQ / PMULL, CRC32 instructions, AVX2; the `aes` crate uses ARMv8 AES only with
+//! `--cfg aes_armv8`). The "portable" rows force `only-crypto`'s constant-time software AES and
+//! GHASH; `ONLY_CRYPTO_PORTABLE=1` forces the portable code everywhere.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -35,15 +35,24 @@ fn row(name: &str, bytes: usize, ours: f64, theirs: f64) {
     );
 }
 
+fn row1(name: &str, bytes: usize, ours: f64) {
+    println!("{name:<34} {bytes:>6} B  only-crypto {ours:>9.1} MB/s");
+}
+
 fn main() {
     use aes::cipher::{BlockEncrypt, KeyInit, KeyIvInit, StreamCipher};
     use aes_gcm::aead::AeadInPlace;
     use hmac::Mac;
     use sha2::Digest;
 
+    println!(
+        "only-crypto hardware paths: [{}]",
+        only_crypto::hardware_features()
+    );
     let big = vec![0x5au8; 16 * 1024];
     let pkt = vec![0xa5u8; 1400];
     let stun = vec![0x11u8; 100];
+    let piece = vec![0x3cu8; 256 * 1024];
 
     row(
         "SHA-1",
@@ -63,6 +72,26 @@ fn main() {
         }),
         rate(big.len(), || {
             black_box(sha2::Sha256::digest(black_box(&big)));
+        }),
+    );
+    row(
+        "SHA-1 BitTorrent piece",
+        piece.len(),
+        rate(piece.len(), || {
+            black_box(only_crypto::hash::Sha1::digest(black_box(&piece)));
+        }),
+        rate(piece.len(), || {
+            black_box(sha1::Sha1::digest(black_box(&piece)));
+        }),
+    );
+    row(
+        "SHA-256",
+        pkt.len(),
+        rate(pkt.len(), || {
+            black_box(only_crypto::hash::Sha256::digest(black_box(&pkt)));
+        }),
+        rate(pkt.len(), || {
+            black_box(sha2::Sha256::digest(black_box(&pkt)));
         }),
     );
     row(
@@ -93,6 +122,23 @@ fn main() {
         }),
         rate(pkt.len(), || {
             black_box(crc32fast::hash(black_box(&pkt)));
+        }),
+    );
+    row(
+        "CRC-32",
+        big.len(),
+        rate(big.len(), || {
+            black_box(only_crypto::crc::crc32(black_box(&big)));
+        }),
+        rate(big.len(), || {
+            black_box(crc32fast::hash(black_box(&big)));
+        }),
+    );
+    row1(
+        "CRC-32C",
+        pkt.len(),
+        rate(pkt.len(), || {
+            black_box(only_crypto::crc::crc32c(black_box(&pkt)));
         }),
     );
     row(
@@ -168,7 +214,7 @@ fn main() {
                 .apply_keystream(black_box(&mut buf2));
         }),
     );
-    let gcm_soft = only_crypto::gcm::AesGcm::with_cipher(soft);
+    let gcm_soft = only_crypto::gcm::AesGcm::with_cipher_portable(soft);
     let gcm = only_crypto::gcm::AesGcm::new(&key).unwrap();
     let gcm2 = aes_gcm::Aes128Gcm::new(&key.into());
     row(
@@ -197,6 +243,73 @@ fn main() {
             );
         }),
     );
+    let mut bbuf = big.clone();
+    let mut bbuf2 = big.clone();
+    row(
+        "AES-128-CTR",
+        big.len(),
+        rate(big.len(), || {
+            ours.apply_ctr(&[3; 16], black_box(&mut bbuf));
+        }),
+        rate(big.len(), || {
+            ctr::Ctr128BE::<aes::Aes128>::new(&key.into(), &[3; 16].into())
+                .apply_keystream(black_box(&mut bbuf2));
+        }),
+    );
+    row(
+        "AES-128-GCM seal",
+        big.len(),
+        rate(big.len(), || {
+            black_box(gcm.encrypt_in_place_detached(&[1; 12], b"", black_box(&mut bbuf)));
+        }),
+        rate(big.len(), || {
+            black_box(
+                gcm2.encrypt_in_place_detached((&[1; 12]).into(), b"", black_box(&mut bbuf2))
+                    .unwrap(),
+            );
+        }),
+    );
+    let tag = gcm.encrypt_in_place_detached(&[1; 12], b"", &mut bbuf);
+    let tag2 = gcm2
+        .encrypt_in_place_detached((&[1; 12]).into(), b"", &mut bbuf2)
+        .unwrap();
+    row(
+        "AES-128-GCM open",
+        big.len(),
+        rate(big.len(), || {
+            // Decrypting twice restores the ciphertext only for valid tags, so verify the same
+            // buffer each time: the tag check runs before decryption, and the result is ignored.
+            let mut b = bbuf.clone();
+            black_box(gcm.decrypt_in_place_detached(&[1; 12], b"", black_box(&mut b), &tag))
+                .unwrap();
+        }),
+        rate(big.len(), || {
+            let mut b = bbuf2.clone();
+            black_box(gcm2.decrypt_in_place_detached(
+                (&[1; 12]).into(),
+                b"",
+                black_box(&mut b),
+                &tag2,
+            ))
+            .unwrap();
+        }),
+    );
+    let gcm256 = only_crypto::gcm::AesGcm::new(&[7u8; 32]).unwrap();
+    let gcm256b = aes_gcm::Aes256Gcm::new(&[7u8; 32].into());
+    row(
+        "AES-256-GCM seal",
+        big.len(),
+        rate(big.len(), || {
+            black_box(gcm256.encrypt_in_place_detached(&[1; 12], b"", black_box(&mut bbuf)));
+        }),
+        rate(big.len(), || {
+            black_box(
+                gcm256b
+                    .encrypt_in_place_detached((&[1; 12]).into(), b"", black_box(&mut bbuf2))
+                    .unwrap(),
+            );
+        }),
+    );
     let cp = only_crypto::chacha::ChaCha20Poly1305::new(&[9; 32]);
     let cp2 = {
         use chacha20poly1305::KeyInit;
@@ -212,6 +325,20 @@ fn main() {
             use chacha20poly1305::AeadInPlace;
             black_box(
                 cp2.encrypt_in_place_detached((&[1; 12]).into(), b"", black_box(&mut buf2))
+                    .unwrap(),
+            );
+        }),
+    );
+    row(
+        "ChaCha20-Poly1305 seal",
+        big.len(),
+        rate(big.len(), || {
+            black_box(cp.encrypt_in_place_detached(&[1; 12], b"", black_box(&mut bbuf)));
+        }),
+        rate(big.len(), || {
+            use chacha20poly1305::AeadInPlace;
+            black_box(
+                cp2.encrypt_in_place_detached((&[1; 12]).into(), b"", black_box(&mut bbuf2))
                     .unwrap(),
             );
         }),

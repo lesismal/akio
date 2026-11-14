@@ -65,8 +65,15 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     if klen != 24 {
         let gcm = only_crypto::gcm::AesGcm::new(key).unwrap();
         let sealed = gcm.encrypt(&nonce, aad, msg);
-        let soft_gcm = only_crypto::gcm::AesGcm::with_cipher(soft.clone());
+        // Hardware AES / GHASH (fused when both are present) against the portable code.
+        let soft_gcm = only_crypto::gcm::AesGcm::with_cipher_portable(soft.clone());
         assert_eq!(soft_gcm.encrypt(&nonce, aad, msg), sealed);
+        assert_eq!(
+            soft_gcm.decrypt(&nonce, aad, msg).ok(),
+            gcm.decrypt(&nonce, aad, msg).ok()
+        );
+        let mixed = only_crypto::gcm::AesGcm::with_cipher(soft.clone());
+        assert_eq!(mixed.encrypt(&nonce, aad, msg), sealed);
         let (theirs, opened) = if klen == 16 {
             let g = aes_gcm::Aes128Gcm::new_from_slice(key).unwrap();
             (g.encrypt((&nonce).into(), Payload { msg, aad }).unwrap(), g.decrypt((&nonce).into(), Payload { msg, aad }))

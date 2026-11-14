@@ -1,9 +1,12 @@
 //! Constant-time building blocks shared by the public-key code: masks, selection and
 //! comparison on machine words without secret-dependent branches.
 //!
-//! A *mask* is `0` or `u64::MAX`. The comparisons go through [`std::hint::black_box`] so that
-//! the optimizer cannot see that a mask has only two values and turn the selection that uses it
-//! back into a branch.
+//! A *mask* is `0` or `u64::MAX`. Every mask goes through [`std::hint::black_box`] so that the
+//! optimizer cannot see that it has only two values and turn the selection that uses it back
+//! into a branch. This matters in practice: without the barrier, LLVM compiles the masked
+//! corrections of the modular additions and subtractions (`d + (P & m)`, selects between two
+//! limb arrays) into conditional jumps for some moduli (seen on x86_64 for P-384 and, depending
+//! on the formulation, P-256), although it costs a round trip through memory per mask.
 
 use std::hint::black_box;
 

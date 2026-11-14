@@ -187,6 +187,90 @@ existing `idle_timeout` already acts as the read timeout (only inbound data coun
 Both backends; the check runs on the idle-timeout wheel only while output is queued, so it costs
 nothing on connections that keep up.
 
+## Cryptography (only-crypto): CPU acceleration
+
+The performance pass gave `only-crypto` hardware paths chosen at run time (AES-NI / ARMv8 AES
+with eight blocks in flight, AES-GCM with PCLMULQDQ / PMULL GHASH fused into the CTR pass,
+SHA-NI / ARMv8 SHA for SHA-1 and SHA-256, PCLMULQDQ folding and SSE4.2 / ARMv8 CRC32 for CRC-32
+and CRC-32C, AVX2 ChaCha20) and faster safe-Rust arithmetic (Poly1305 in 44-bit limbs, a dedicated
+P-256 field reduction and inversion chain, a signed comb with affine points for `[k]G`, Jacobian
+wNAF verification without inversion, Ed25519 double-scalar wNAF, squaring for Curve25519 and the
+NIST/RSA Montgomery code, fixed-size RSA Montgomery). "Before" is `main` at 354f3bc5.
+
+Reference host: AMD Ryzen 7 7800X3D (Zen 4), Ubuntu 24.04, Rust 1.100, one core pinned
+(`taskset -c 2`), services stopped. `cargo run --release -p only-crypto --example bench` and
+`--example pk_bench`; the comparison columns are the RustCrypto crates `only-crypto` replaced
+(dev-dependencies, also with run-time CPU detection) and ring 0.17 (assembly for AES-GCM, P-256,
+X25519, RSA).
+
+| Operation (MB/s) | Size | before | after | speed-up | RustCrypto | after / RustCrypto |
+|---|---:|---:|---:|---:|---:|---:|
+| SHA-1 | 16 KiB | 697 | 2 543 | 3.6x | 2 545 | 1.00 |
+| SHA-1, BitTorrent piece | 256 KiB | 703 | 2 558 | 3.6x | 2 558 | 1.00 |
+| SHA-256 | 16 KiB | 366 | 2 383 | 6.5x | 2 384 | 1.00 |
+| SHA-256 | 1400 B | 350 | 2 210 | 6.3x | 2 231 | 0.99 |
+| HMAC-SHA1 (STUN message) | 100 B | 184 | 599 | 3.3x | 577 | 1.04 |
+| CRC-32 | 1400 B | 2 764 | 18 526 | 6.7x | crc32fast 30 427 | 0.61 |
+| CRC-32 | 16 KiB | 2 733 | 20 047 | 7.3x | crc32fast 73 703 | 0.27 |
+| CRC-32C | 1400 B | 2 759 | 18 819 | 6.8x | – | – |
+| AES-128, one block (CFB chain, KCP) | 16 B | 810 | 3 183 | 3.9x | 3 411 | 0.93 |
+| AES-128-CTR | 1400 B | 1 538 | 7 713 | 5.0x | 8 525 | 0.90 |
+| AES-128-CTR | 16 KiB | 1 555 | 8 433 | 5.4x | 11 556 | 0.73 |
+| AES-128-GCM seal | 1400 B | 355 | 4 409 | 12.4x | aes-gcm 1 953 | 2.26 |
+| AES-128-GCM seal | 16 KiB | 364 | 6 484 | 17.8x | aes-gcm 2 178 | 2.98 |
+| AES-128-GCM open | 16 KiB | 362 | 5 657 | 15.6x | aes-gcm 2 110 | 2.68 |
+| AES-256-GCM seal | 16 KiB | 358 | 5 790 | 16.2x | aes-gcm 2 016 | 2.87 |
+| ChaCha20-Poly1305 seal | 1400 B | 556 | 1 086 | 2.0x | 780 | 1.39 |
+| ChaCha20-Poly1305 seal | 16 KiB | 588 | 1 757 | 3.0x | 1 969 | 0.89 |
+| SHA-512, MD5 (portable, unchanged) | 16 KiB | 537, 690 | 546, 690 | – | 830, 815 | 0.66, 0.85 |
+| PBKDF2-HMAC-SHA1, 4096 rounds (kcptun key) | – | 2.06 ms | 0.83 ms | 2.5x | 0.56 ms | – |
+
+| Operation (op/s) | before | after | speed-up | ring | after / ring |
+|---|---:|---:|---:|---:|---:|
+| Ed25519 sign | 67 635 | 67 794 | 1.00x | 59 306 | 1.14 |
+| Ed25519 verify | 18 289 | 27 161 | 1.49x | 32 107 | 0.85 |
+| X25519 agreement | 28 865 | 30 945 | 1.07x | 36 998 | 0.84 |
+| P-256 ECDSA sign | 23 435 | 34 184 | 1.46x | 76 257 | 0.45 |
+| P-256 ECDSA verify | 8 043 | 13 397 | 1.67x | 26 352 | 0.51 |
+| P-256 ECDH (incl. point decoding) | 10 075 | 10 390 | 1.03x | 30 150 | 0.34 |
+| P-256 key generation | 48 581 | 54 755 | 1.13x | 113 326 | 0.48 |
+| P-384 ECDSA sign | 7 650 | 9 443 | 1.23x | 3 363 | 2.81 |
+| P-384 ECDSA verify | 2 426 | 3 798 | 1.57x | 1 867 | 2.03 |
+| P-384 ECDH | 3 005 | 3 012 | 1.00x | 3 614 | 0.83 |
+| RSA-2048 PKCS#1 sign | 871 | 1 199 | 1.38x | 2 441 | 0.49 |
+| RSA-2048 PKCS#1 verify | 29 019 | 39 557 | 1.36x | 66 282 | 0.60 |
+
+Protocols on the same host: TLS 1.3 measured in memory (an out-of-tree harness driving
+`only_tls::__proto::Connection` and rustls 0.23 + ring with the same self-signed ECDSA P-256
+certificate, verified on both sides, no tickets; both ends of each handshake on the one core;
+records sealed by one side and opened by the other), and `only_kcp::Crypt` seal + open:
+
+| Operation | before | after | speed-up | rustls + ring | after / rustls |
+|---|---:|---:|---:|---:|---:|
+| TLS 1.3 full handshakes/s, X25519 | 2 028 | 3 041 | 1.50x | 5 043 | 0.60 |
+| TLS 1.3 full handshakes/s, secp256r1 | 1 643 | 2 290 | 1.39x | 5 131 | 0.45 |
+| TLS record seal + open, 1 KiB, AES-128-GCM (MB/s) | 170 | 1 652 | 9.7x | 1 838 | 0.90 |
+| TLS record seal + open, 1 KiB, AES-256-GCM | 167 | 1 504 | 9.0x | 1 714 | 0.88 |
+| TLS record seal + open, 1 KiB, ChaCha20-Poly1305 | 253 | 607 | 2.4x | 928 | 0.65 |
+| TLS record seal + open, 16 KiB, AES-128-GCM | 180 | 2 673 | 14.9x | 4 167 | 0.64 |
+| TLS record seal + open, 16 KiB, AES-256-GCM | 176 | 2 292 | 13.0x | 3 870 | 0.59 |
+| TLS record seal + open, 16 KiB, ChaCha20-Poly1305 | 286 | 832 | 2.9x | 1 527 | 0.54 |
+| KCP `aes` (CFB + CRC-32) seal + open, 1400 B (MB/s) | 399 | 541 | 1.4x | – | – |
+| KCP `aes-128-gcm` seal + open, 1400 B | 167 | 1 164 | 7.0x | – | – |
+
+aarch64 (Apple M-series laptop, not a quiet host, for the ARMv8 paths only; same examples):
+SHA-1 16 KiB 639 → 2 789 MB/s, SHA-256 370 → 2 515, CRC-32 16 KiB 2 330 → 10 474 (crc32fast
+89 363 with PMULL folding), AES-128-CTR 16 KiB 2 096 → 19 101, AES-128-GCM seal 16 KiB
+701 → 6 315 (open 697 → 5 918), AES-256-GCM seal 693 → 7 658, ChaCha20-Poly1305 16 KiB
+651 → 963; P-256 sign 27 171 → 42 254 op/s (0.50x ring), verify 9 689 → 15 703 (0.48x), Ed25519
+verify 29 998 → 42 782 (0.90x), X25519 45 451 → 49 613 (0.91x), RSA-2048 sign 1 194 → 1 590
+(0.53x).
+
+What is left: AES-GCM and CRC-32 at 16 KiB trail code that uses 256/512-bit VAES and VPCLMULQDQ
+(those intrinsics are newer than the MSRV, 1.85); Poly1305 is scalar (ChaCha20-Poly1305 bulk
+~0.55x rustls); P-256 ECDH keeps complete formulas for every doubling of a secret scalar; RSA has
+no Karatsuba; SHA-512 and MD5 stay portable.
+
 ## Codec micro benchmarks (in-house vs the replaced crates)
 
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex]`, a separate

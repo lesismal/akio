@@ -1,6 +1,8 @@
-//! CRC-32 checksums, slicing-by-8 table driven: [`crc32`] (IEEE 802.3 / zlib / PNG, the
-//! polynomial `0xEDB88320` reflected; what `crc32fast` computes) and [`crc32c`] (Castagnoli,
-//! `0x82F63B78` reflected; iSCSI, SCTP).
+//! CRC-32 checksums: [`crc32`] (IEEE 802.3 / zlib / PNG, the polynomial `0xEDB88320`
+//! reflected; what `crc32fast` computes) and [`crc32c`] (Castagnoli, `0x82F63B78` reflected;
+//! iSCSI, SCTP). On CPU instructions when present (detected at run time: PCLMULQDQ folding and
+//! SSE4.2 `crc32` on x86_64, the CRC32 instructions on aarch64; see `hw`), else slicing-by-8
+//! tables.
 //!
 //! ```
 //! use only_crypto::crc::{Crc32, crc32};
@@ -40,8 +42,31 @@ const fn tables(poly: u32) -> [[u32; 256]; 8] {
     t
 }
 
+mod hw;
+
 static IEEE: [[u32; 256]; 8] = tables(0xedb8_8320);
 static CASTAGNOLI: [[u32; 256]; 8] = tables(0x82f6_3b78);
+
+fn table_ieee(crc: u32, data: &[u8]) -> u32 {
+    update(&IEEE, crc, data)
+}
+
+fn table_castagnoli(crc: u32, data: &[u8]) -> u32 {
+    update(&CASTAGNOLI, crc, data)
+}
+
+/// CRC-32 register update (state already inverted): instructions or table.
+#[inline]
+fn update_ieee(crc: u32, data: &[u8]) -> u32 {
+    hw::update(hw::Poly::Ieee, crc, data, table_ieee).unwrap_or_else(|| table_ieee(crc, data))
+}
+
+/// CRC-32C register update (state already inverted): instructions or table.
+#[inline]
+fn update_castagnoli(crc: u32, data: &[u8]) -> u32 {
+    hw::update(hw::Poly::Castagnoli, crc, data, table_castagnoli)
+        .unwrap_or_else(|| table_castagnoli(crc, data))
+}
 
 fn update(t: &[[u32; 256]; 8], mut crc: u32, data: &[u8]) -> u32 {
     let mut chunks = data.chunks_exact(8);
@@ -64,7 +89,7 @@ fn update(t: &[[u32; 256]; 8], mut crc: u32, data: &[u8]) -> u32 {
 }
 
 macro_rules! crc_type {
-    ($name:ident, $func:ident, $table:ident, $doc:literal) => {
+    ($name:ident, $func:ident, $update:ident, $doc:literal) => {
         #[doc = concat!("An incremental ", $doc, " computation.")]
         #[derive(Clone, Debug, Default)]
         pub struct $name {
@@ -80,7 +105,7 @@ macro_rules! crc_type {
 
             /// Absorbs `data`.
             pub fn update(&mut self, data: &[u8]) {
-                self.state = !update(&$table, !self.state, data);
+                self.state = !$update(!self.state, data);
             }
 
             /// The checksum of everything absorbed so far.
@@ -93,17 +118,36 @@ macro_rules! crc_type {
         #[doc = concat!("The ", $doc, " of `data`.")]
         #[must_use]
         pub fn $func(data: &[u8]) -> u32 {
-            !update(&$table, !0, data)
+            !$update(!0, data)
         }
     };
 }
 
-crc_type!(Crc32, crc32, IEEE, "CRC-32 (IEEE)");
-crc_type!(Crc32c, crc32c, CASTAGNOLI, "CRC-32C (Castagnoli)");
+crc_type!(Crc32, crc32, update_ieee, "CRC-32 (IEEE)");
+crc_type!(Crc32c, crc32c, update_castagnoli, "CRC-32C (Castagnoli)");
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The instruction paths (when present) and the tables agree for every length and split.
+    #[test]
+    fn hardware_matches_table() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([8; 32]);
+        let mut data = vec![0u8; 2000];
+        rng.fill(&mut data);
+        for len in (0..300).chain([511, 512, 513, 1000, 1023, 1024, 1999, 2000]) {
+            for init in [0u32, 0xffff_ffff, 0x1234_5678] {
+                let d = &data[..len];
+                assert_eq!(update_ieee(init, d), table_ieee(init, d), "ieee len {len}");
+                assert_eq!(
+                    update_castagnoli(init, d),
+                    table_castagnoli(init, d),
+                    "castagnoli len {len}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn check_values() {

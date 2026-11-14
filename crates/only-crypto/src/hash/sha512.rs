@@ -1,6 +1,6 @@
 //! SHA-384 and SHA-512 (FIPS 180-4, section 6.4 and 6.5).
 
-use super::{Buffer, impl_hash};
+use super::{Buffer, blocks, impl_hash};
 
 const K: [u64; 80] = [
     0x428a_2f98_d728_ae22,
@@ -123,12 +123,14 @@ impl Core {
 
     fn update(&mut self, data: &[u8]) {
         let state = &mut self.state;
-        self.buf.update(data, |b| compress(state, b));
+        self.buf
+            .update(data, |d| blocks(d).for_each(|b| compress(state, b)));
     }
 
     fn finish(mut self, out: &mut [u8]) {
         let state = &mut self.state;
-        self.buf.finish(16, true, |b| compress(state, b));
+        self.buf
+            .finish(16, true, |d| blocks(d).for_each(|b| compress(state, b)));
         for (o, s) in out.chunks_mut(8).zip(self.state) {
             o.copy_from_slice(&s.to_be_bytes()[..o.len()]);
         }

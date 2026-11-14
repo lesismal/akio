@@ -37,6 +37,57 @@ pub(crate) struct Consts {
     pub(crate) sqrt_m1: Fe,
     /// `table[i][j] = j·16ⁱ·B`.
     base: Vec<[Point; 16]>,
+    /// `(2i + 1)·B` for `0 ≤ i < 32` in affine Niels form (width-7 wNAF, verification).
+    base_odd: Vec<Niels>,
+}
+
+/// An affine point as `(y + x, y - x, 2d·x·y)` (Niels form), for mixed additions.
+#[derive(Clone, Copy, Debug)]
+struct Niels {
+    ypx: Fe,
+    ymx: Fe,
+    xy2d: Fe,
+}
+
+/// A point as `(Y + X, Y - X, Z, 2d·T)`, for additions with a variable second operand.
+#[derive(Clone, Copy, Debug)]
+struct Cached {
+    ypx: Fe,
+    ymx: Fe,
+    z: Fe,
+    t2d: Fe,
+}
+
+/// A "completed" point `((X:Z), (Y:T))`: the output of additions and doublings before
+/// conversion (ref10's `p1p1`).
+#[derive(Clone, Copy, Debug)]
+struct Completed {
+    x: Fe,
+    y: Fe,
+    z: Fe,
+    t: Fe,
+}
+
+impl Completed {
+    /// To extended coordinates (4M).
+    fn to_point(self) -> Point {
+        Point {
+            x: self.x.mul(&self.t),
+            y: self.y.mul(&self.z),
+            z: self.z.mul(&self.t),
+            t: self.x.mul(&self.y),
+        }
+    }
+
+    /// To projective `(X:Y:Z)` (3M; `t` of the result is not maintained).
+    fn to_projective(self) -> Point {
+        Point {
+            x: self.x.mul(&self.t),
+            y: self.y.mul(&self.z),
+            z: self.z.mul(&self.t),
+            t: Fe::ZERO,
+        }
+    }
 }
 
 pub(crate) fn consts() -> &'static Consts {
@@ -53,6 +104,7 @@ pub(crate) fn consts() -> &'static Consts {
             d2: d.add(&d),
             sqrt_m1,
             base: Vec::new(),
+            base_odd: Vec::new(),
         };
         // B: y = 4/5, x even.
         let mut by = [0u8; 32];
@@ -70,6 +122,20 @@ pub(crate) fn consts() -> &'static Consts {
             base.push(row);
         }
         c.base = base;
+        let b2 = b.add_with(&b, &c);
+        let mut q = b;
+        let mut odd = Vec::with_capacity(32);
+        for _ in 0..32 {
+            let zi = q.z.invert();
+            let (x, y) = (q.x.mul(&zi), q.y.mul(&zi));
+            odd.push(Niels {
+                ypx: y.add(&x),
+                ymx: y.sub(&x),
+                xy2d: x.mul(&y).mul(&c.d2),
+            });
+            q = q.add_with(&b2, &c);
+        }
+        c.base_odd = odd;
         c
     })
 }
@@ -143,6 +209,7 @@ impl Point {
         b
     }
 
+    #[cfg(test)]
     pub(crate) fn add(&self, q: &Point) -> Point {
         self.add_with(q, consts())
     }
@@ -218,6 +285,7 @@ impl Point {
     }
 
     /// `[s]P` in variable time (public scalars only: signature verification).
+    #[cfg(test)]
     pub(crate) fn mul_vartime(&self, s: &[u8; 32]) -> Point {
         let c = consts();
         let mut table = [Point::IDENTITY; 16];
@@ -231,6 +299,117 @@ impl Point {
             if nib != 0 {
                 r = r.add_with(&table[nib], c);
             }
+        }
+        r
+    }
+
+    fn cached(&self, c: &Consts) -> Cached {
+        Cached {
+            ypx: self.y.add(&self.x),
+            ymx: self.y.sub(&self.x),
+            z: self.z,
+            t2d: self.t.mul(&c.d2),
+        }
+    }
+
+    /// Doubling of a projective point (ref10 `ge_p2_dbl`: 4S; `t` is not read).
+    fn double_completed(&self) -> Completed {
+        let xx = self.x.square();
+        let yy = self.y.square();
+        let b = self.z.square().mul_small(2);
+        let a = self.x.add(&self.y).square();
+        let y3 = yy.add(&xx);
+        let z3 = yy.sub(&xx);
+        Completed {
+            x: a.sub(&y3),
+            y: y3,
+            z: z3,
+            t: b.sub(&z3),
+        }
+    }
+
+    /// `self ± q` for an affine `q` (ref10 `ge_madd` / `ge_msub`: 3M).
+    fn add_niels(&self, q: &Niels, negate: bool) -> Completed {
+        let (qp, qm) = if negate {
+            (&q.ymx, &q.ypx)
+        } else {
+            (&q.ypx, &q.ymx)
+        };
+        let a = self.y.add(&self.x).mul(qp);
+        let b = self.y.sub(&self.x).mul(qm);
+        let c = q.xy2d.mul(&self.t);
+        let d = self.z.add(&self.z);
+        let (z, t) = if negate {
+            (d.sub(&c), d.add(&c))
+        } else {
+            (d.add(&c), d.sub(&c))
+        };
+        Completed {
+            x: a.sub(&b),
+            y: a.add(&b),
+            z,
+            t,
+        }
+    }
+
+    /// `self ± q` (ref10 `ge_add` / `ge_sub`: 4M).
+    fn add_cached(&self, q: &Cached, negate: bool) -> Completed {
+        let (qp, qm) = if negate {
+            (&q.ymx, &q.ypx)
+        } else {
+            (&q.ypx, &q.ymx)
+        };
+        let a = self.y.add(&self.x).mul(qp);
+        let b = self.y.sub(&self.x).mul(qm);
+        let c = q.t2d.mul(&self.t);
+        let d = self.z.mul(&q.z);
+        let d = d.add(&d);
+        let (z, t) = if negate {
+            (d.sub(&c), d.add(&c))
+        } else {
+            (d.add(&c), d.sub(&c))
+        };
+        Completed {
+            x: a.sub(&b),
+            y: a.add(&b),
+            z,
+            t,
+        }
+    }
+
+    /// `[s]B + [k]self` in variable time (public scalars: verification): width-7 wNAF of `s`
+    /// over the precomputed odd multiples of `B`, width-5 wNAF of `k` over `self, 3·self, …,
+    /// 15·self`, one shared chain of doublings in projective coordinates.
+    pub(crate) fn mul_add_base_vartime(&self, s: &[u8; 32], k: &[u8; 32]) -> Point {
+        let c = consts();
+        let ws = crate::ec::wnaf(&field::le_to_limbs::<4>(s).unwrap_or([0; 4]), 7);
+        let wk = crate::ec::wnaf(&field::le_to_limbs::<4>(k).unwrap_or([0; 4]), 5);
+        let mut table = [self.cached(c); 8];
+        let p2 = self.double();
+        let mut q = *self;
+        for e in table.iter_mut().skip(1) {
+            q = q.add_with(&p2, c);
+            *e = q.cached(c);
+        }
+        let n = ws.len().max(wk.len());
+        let mut r = Point::IDENTITY;
+        for i in (0..n).rev() {
+            let mut t = r.double_completed();
+            let ds = ws.get(i).copied().unwrap_or(0);
+            let dk = wk.get(i).copied().unwrap_or(0);
+            if ds != 0 {
+                let u = t.to_point();
+                t = u.add_niels(&c.base_odd[usize::from(ds.unsigned_abs() >> 1)], ds < 0);
+            }
+            if dk != 0 {
+                let u = t.to_point();
+                t = u.add_cached(&table[usize::from(dk.unsigned_abs() >> 1)], dk < 0);
+            }
+            r = if i == 0 {
+                t.to_point()
+            } else {
+                t.to_projective()
+            };
         }
         r
     }
@@ -268,5 +447,31 @@ mod tests {
         assert_eq!(bb.double().compress(), bb.add(&bb).compress());
         assert!(!bb.is_small_order());
         assert!(Point::IDENTITY.is_small_order());
+    }
+
+    /// The interleaved wNAF double multiplication matches the separate ones.
+    #[test]
+    fn mul_add_base() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([25; 32]);
+        let a = Point::mul_base(&[7; 32]);
+        for i in 0..30 {
+            let (mut s, mut k) = ([0u8; 32], [0u8; 32]);
+            rng.fill(&mut s);
+            rng.fill(&mut k);
+            s[31] &= 0x1f;
+            k[31] &= 0x1f;
+            if i == 0 {
+                s = [0; 32];
+            }
+            if i == 1 {
+                k = [0; 32];
+            }
+            let want = Point::mul_base(&s).add(&a.mul_vartime(&k));
+            assert_eq!(a.mul_add_base_vartime(&s, &k).compress(), want.compress());
+        }
+        assert_eq!(
+            a.mul_add_base_vartime(&[0; 32], &[0; 32]).compress(),
+            Point::IDENTITY.compress()
+        );
     }
 }

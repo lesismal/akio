@@ -1,8 +1,20 @@
 #![deny(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 //! Dependency-free cryptographic primitives for the `only` crates: everything their protocols
-//! need, in safe Rust on `std` only (`#![deny(unsafe_code)]`; the one exception is `aes::hw`, the
-//! AES-NI / ARMv8 AES instructions used when the CPU has them).
+//! need, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are five small modules
+//! that call CPU instructions when the CPU has them, detected at run time: `aes::hw`, `gcm::hw`,
+//! `hash::hw`, `crc::hw`, `chacha::hw`).
+//!
+//! Hardware paths, each with a constant-time portable fallback that is also used when the
+//! environment variable `ONLY_CRYPTO_PORTABLE=1` is set (tests, benchmarks):
+//!
+//! | | x86_64 | aarch64 |
+//! |---|---|---|
+//! | AES (block, CTR 8 blocks at a time) | AES-NI | ARMv8 AES |
+//! | AES-GCM (GHASH, fused with CTR) | PCLMULQDQ + AES-NI | PMULL + ARMv8 AES |
+//! | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
+//! | CRC-32, CRC-32C | PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
+//! | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes (NEON by the compiler) |
 //!
 //! - [`hash`]: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 and MD5, streaming or one-shot, behind
 //!   the [`Hash`](hash::Hash) trait.
@@ -32,16 +44,19 @@
 //!
 //! Timing: secret-dependent work (field and scalar arithmetic, scalar multiplication, RSA
 //! private exponentiation) runs without secret-dependent branches or table indices: Montgomery
-//! arithmetic with masked corrections, complete addition formulas, fixed windows with lookups
-//! that read every table entry, the X25519 Montgomery ladder with masked swaps. Verification
-//! and public-key operations are variable time (their inputs are public). The compiler is not
-//! formally prevented from reintroducing branches (masks pass through `black_box`, nothing
-//! stronger), and keys are not zeroized on drop.
+//! arithmetic with masked corrections, complete addition formulas, fixed windows and a signed
+//! comb with lookups that read every table entry, inversion by fixed exponents (addition chains,
+//! fixed windows), the X25519 Montgomery ladder with masked swaps. Verification and public-key
+//! operations are variable time (their inputs are public: Jacobian coordinates and wNAF). The
+//! compiler is not formally prevented from reintroducing branches (masks pass through
+//! `black_box`, nothing stronger; the x86_64 and aarch64 code of the point operations was
+//! checked for conditional branches), and keys are not zeroized on drop. The CPU instructions
+//! used take constant time.
 //!
 //! This is an implementation crate of `only` (like `only-sys`): its API follows the needs of the
 //! other crates and may change in any release (docs/api-stability.md). It does not try to be a
-//! general-purpose cryptography library: no key zeroization, and only AES uses CPU instructions
-//! (the hashes, GHASH and CRC-32 are portable code).
+//! general-purpose cryptography library: no key zeroization, and no assembly (SHA-512, MD5,
+//! Poly1305 and the public-key arithmetic are portable Rust).
 //!
 //! ```
 //! use only_crypto::hash::{Hash, Sha256};
@@ -75,6 +90,7 @@ pub mod rsa;
 pub mod x25519;
 
 mod bignum;
+mod cpu;
 mod ct;
 mod curve25519;
 mod ec;
@@ -82,6 +98,9 @@ mod error;
 mod field;
 
 pub use error::Error;
+
+#[doc(hidden)]
+pub use cpu::{hardware_features, is_portable, set_portable};
 
 /// `N` bytes from the operating system's randomness.
 pub(crate) fn random_array<const N: usize>() -> Result<[u8; N], Error> {
