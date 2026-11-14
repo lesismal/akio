@@ -53,7 +53,7 @@ fn main() {
             });
         let quic = flash_h3::server_config(vec![cert], key).expect("config");
         let e = Engine::builder()
-            .listen(Listener::udp(addr).serve(flash_h3::server(quic, app)))
+            .listen(Listener::udp(addr).serve(flash_h3::serve(quic, app)))
             .build()
             .expect("engine");
         e.start().expect("start");
@@ -67,9 +67,9 @@ fn main() {
         .expect("engine");
     e.start().expect("start");
     let cc = flash_quic::client_config_insecure(&[b"h3"]).expect("client config");
-    let c = H3Client::connect(&e, addr, "localhost", cc).expect("connect");
+    let c = H3Client::dial(&e, addr, "localhost", cc).expect("connect");
     let t = Duration::from_secs(20);
-    let r = c.get("/", t).unwrap_or_else(|e| fail(e));
+    let r = c.get("/", t).unwrap_or_else(|e| fail(e.to_string()));
     let body = String::from_utf8_lossy(&r.body).into_owned();
     let fib = a[1] == "client-fib";
     let want = if fib {
@@ -85,7 +85,7 @@ fn main() {
     let big = pattern(3 << 20);
     let r = c
         .request_blocking(Method::Post, "/echo", &h, big.clone(), t)
-        .unwrap_or_else(|e| fail(e));
+        .unwrap_or_else(|e| fail(e.to_string()));
     if r.body != big || (!fib && r.headers.get("x-req-header") != Some("yes")) {
         fail(format!("POST /echo: {} bytes", r.body.len()));
     }
@@ -95,7 +95,9 @@ fn main() {
         println!("ok: flash-h3 client -> fib server");
         return;
     }
-    let r = c.get("/trailers", t).unwrap_or_else(|e| fail(e));
+    let r = c
+        .get("/trailers", t)
+        .unwrap_or_else(|e| fail(e.to_string()));
     let sum = r
         .trailers
         .as_ref()
@@ -103,7 +105,7 @@ fn main() {
     if r.body != b"body" || sum.as_deref() != Some("42") {
         fail(format!("trailers: {:?} {sum:?}", r.body));
     }
-    let r = c.get("/big", t).unwrap_or_else(|e| fail(e));
+    let r = c.get("/big", t).unwrap_or_else(|e| fail(e.to_string()));
     if r.body != pattern(4 << 20) {
         fail(format!("GET /big: {} bytes", r.body.len()));
     }

@@ -671,9 +671,10 @@ fn listeners_can_use_different_backends_in_one_engine() {
         )
         .listen(
             Listener::tcp(localhost())
-                .backend(Backend::IoUring(UringConfig {
-                    strict: true,
-                    ..Default::default()
+                .backend(Backend::IoUring({
+                    let mut v = UringConfig::default();
+                    v.strict = true;
+                    v
                 }))
                 .threads(2)
                 .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),

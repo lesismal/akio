@@ -51,7 +51,7 @@ fn setup(cfg: H3Config) -> (Arc<Engine>, H3Client) {
     let e = Engine::builder()
         .listen(
             Listener::udp("127.0.0.1:0".parse().unwrap())
-                .serve(flash_h3::server_with(quic, app, cfg)),
+                .serve(flash_h3::serve_with(quic, cfg, app)),
         )
         .udp_client_threads(1)
         .build()
@@ -59,7 +59,7 @@ fn setup(cfg: H3Config) -> (Arc<Engine>, H3Client) {
     e.start().unwrap();
     let addr = e.local_addrs()[0];
     let cc = flash_quic::client_config_insecure(&[b"h3"]).unwrap();
-    let client = H3Client::connect(&e, addr, "localhost", cc).unwrap();
+    let client = H3Client::dial(&e, addr, "localhost", cc).unwrap();
     (Arc::new(e), client)
 }
 
@@ -119,9 +119,11 @@ fn requests_over_h3() {
 
 #[test]
 fn limits() {
-    let (e, c) = setup(H3Config {
-        max_body: 1000,
-        max_field_section: 400,
+    let (e, c) = setup({
+        let mut v = H3Config::default();
+        v.max_body_bytes = 1000;
+        v.max_field_section_bytes = 400;
+        v
     });
     let r = c
         .request_blocking(Method::Post, "/echo", &Headers::new(), vec![1; 5000], T)

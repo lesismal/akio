@@ -58,6 +58,7 @@ pub use rustls;
 
 /// Errors of [`Connection`] calls and of the config helpers.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// The connection is closed.
     Closed,

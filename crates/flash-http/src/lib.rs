@@ -60,8 +60,8 @@ mod parse;
 pub mod raw;
 mod router;
 mod session;
-/// The seam between HTTP transports and [`Service`]s (flash-h3 dispatches through it).
-/// `#[doc(hidden)]`: unstable, outside the semver promise (docs/api-stability.md).
+// The seam between HTTP transports and services (flash-h3 dispatches through it):
+// `#[doc(hidden)]`, unstable, outside the semver promise (docs/api-stability.md).
 #[doc(hidden)]
 pub mod transport;
 

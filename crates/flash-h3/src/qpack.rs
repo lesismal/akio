@@ -12,12 +12,24 @@ pub type Fields = Vec<(Vec<u8>, Vec<u8>)>;
 
 /// A field section that cannot be decoded (`QPACK_DECOMPRESSION_FAILED`) or is too large.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum QpackError {
     /// Malformed, or refers to a dynamic table we do not have.
     Decompression,
     /// Over the configured field section size.
     TooLarge,
 }
+
+impl std::fmt::Display for QpackError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            QpackError::Decompression => "QPACK decompression failed",
+            QpackError::TooLarge => "field section too large",
+        })
+    }
+}
+
+impl std::error::Error for QpackError {}
 
 pub(crate) fn put_int(out: &mut Vec<u8>, flags: u8, prefix: u8, mut v: u64) {
     let max = (1u64 << prefix) - 1;

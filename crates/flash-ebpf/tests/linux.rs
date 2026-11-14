@@ -97,7 +97,12 @@ fn check_cpu_steering(g: &[TcpListener]) {
 fn cbpf_cpu_steering_follows_the_receiving_cpu() {
     let g = group(3);
     let fds: Vec<i32> = g.iter().map(|l| l.as_raw_fd()).collect();
-    let info = attach_reuseport(&fds, Steering::Cpu, AttachOptions { ebpf: false }).unwrap();
+    let info = attach_reuseport(&fds, Steering::Cpu, {
+        let mut o = AttachOptions::default();
+        o.ebpf = false;
+        o
+    })
+    .unwrap();
     assert_eq!(info.tier, Tier::Cbpf);
     check_cpu_steering(&g);
 }
@@ -124,6 +129,7 @@ fn cbpf_hash_steering_matches_expected_index() {
             HashKey::SrcIp => assert_eq!(seen.iter().filter(|&&c| c > 0).count(), 1),
             // Different source ports spread.
             HashKey::SrcIpPort => assert!(seen.iter().filter(|&&c| c > 0).count() >= 3),
+            _ => {}
         }
     }
 }
@@ -132,7 +138,12 @@ fn cbpf_hash_steering_matches_expected_index() {
 fn ebpf_cpu_steering_with_a_socket_array() {
     let g = group(3);
     let fds: Vec<i32> = g.iter().map(|l| l.as_raw_fd()).collect();
-    let info = attach_reuseport(&fds, Steering::Cpu, AttachOptions { ebpf: true }).unwrap();
+    let info = attach_reuseport(&fds, Steering::Cpu, {
+        let mut o = AttachOptions::default();
+        o.ebpf = true;
+        o
+    })
+    .unwrap();
     if info.tier != Tier::Ebpf {
         let why = info.ebpf_unavailable.unwrap_or_default();
         privileged::<()>("eBPF reuseport", Err(std::io::Error::other(why)));
@@ -172,7 +183,7 @@ fn assert_same(got: &[u8], want: &[u8]) {
 #[test]
 fn sockmap_relay_splices_two_connections() {
     // On kernels below MIN_KERNEL only transfers that never fill a send buffer are safe.
-    let Some(relay) = privileged("sockmap relay", Relay::new_unchecked(4)) else {
+    let Some(relay) = privileged("sockmap relay", Relay::new_any_kernel(4)) else {
         return;
     };
     let fixed = Relay::new(1).is_ok();

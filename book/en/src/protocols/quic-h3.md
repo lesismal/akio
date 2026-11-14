@@ -54,7 +54,7 @@ Configuration helpers (TLS 1.3, `ring` provider): `server_config(certs, key, alp
 {{#include ../../../../crates/flash-h3/examples/guide-h3.rs:server}}
 ```
 
-`flash_h3::server(quic_cfg, service)` (or `server_with(.., H3Config)`) returns a `QuicServer`
+`flash_h3::serve(quic_cfg, service)` (or `serve_with(.., H3Config)`) returns a `QuicServer`
 serving the service over HTTP/3. `flash_h3::server_config(certs, key)` is `server_config` with
 ALPN `h3`. Handlers get the same `Context` as on HTTP/1.1 and HTTP/2, including `detach`,
 `stream_response` and trailers; `ctx.req().version` is `Version::Http3`. Request bodies arrive
@@ -71,7 +71,7 @@ share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app
 {{#include ../../../../crates/flash-h3/examples/guide-h3.rs:client}}
 ```
 
-`H3Client::connect(&engine, addr, server_name, client_cfg)` (ALPN `h3`); requests sent before
+`H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`); requests sent before
 the handshake completes wait for it. `request(method, path, headers, body, callback)`,
 `request_blocking(..)`, `get(path, timeout)`, `close()`, `connection()`.
 

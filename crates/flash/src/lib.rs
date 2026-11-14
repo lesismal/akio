@@ -384,9 +384,8 @@ fn apply_accel(a: &Accel, g: &dyn Group) -> io::Result<AccelStatus> {
     let Accel::Ebpf(cfg) = a else {
         return Ok(AccelStatus::Off);
     };
-    let opts = ebpf::AttachOptions {
-        ebpf: cfg.ebpf_programs,
-    };
+    let mut opts = ebpf::AttachOptions::default();
+    opts.ebpf = cfg.ebpf_programs;
     match ebpf::attach_reuseport(&g.listener_fds(), cfg.steering, opts) {
         Ok(info) => Ok(AccelStatus::Steering(info)),
         Err(e) if cfg.strict => Err(unsupported(&format!("BPF steering ({e})"))),

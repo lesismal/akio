@@ -10,7 +10,7 @@
 | `flash-http` | `serve(service)` / `serve_with(cfg, service)` | `client::Client`、`h2client::H2Client` | [HTTP 服务端](http-server.md)、[路由](http-routing.md)、[客户端](http-clients.md) |
 | `flash-ws` | `Context::upgrade_websocket`（flash-http） | `client::dial` / `connect` | [WebSocket](websocket.md) |
 | `flash-quic` | UDP listener 上的 `QuicServer::new(cfg, factory)` | `flash_quic::dial` | [QUIC 与 HTTP/3](quic-h3.md) |
-| `flash-h3` | UDP listener 上的 `flash_h3::server(cfg, service)` | `H3Client` | [QUIC 与 HTTP/3](quic-h3.md) |
+| `flash-h3` | UDP listener 上的 `flash_h3::serve(cfg, service)` | `H3Client` | [QUIC 与 HTTP/3](quic-h3.md) |
 | `flash-grpc` | `GrpcServer`（一个 flash-http service） | `GrpcClient` | [gRPC](grpc.md) |
 | `flash-arpc` | `Server::new(routes)` | `flash_arpc::dial_blocking` | [arpc](arpc.md) |
 | `flash-socks` | `Socks::new(engine_ref)`、`connect_proxy(engine_ref)` | – | [SOCKS 与 CONNECT](socks.md) |

@@ -21,7 +21,7 @@
 
 use std::{io, sync::Arc};
 
-use flash_core::ConnInner;
+use flash_core::Conn;
 
 /// Oldest kernel [`Relay::new`] accepts. Earlier kernels can drop or misorder relayed bytes
 /// when the destination socket's send buffer is full and the psock backlog retries after
@@ -69,18 +69,18 @@ impl Relay {
                     io::ErrorKind::Unsupported,
                     format!(
                         "kernel {}.{} may lose relayed data when the destination's send buffer \
-                         fills (sockmap EAGAIN bug, fixed in {}.{}); see Relay::new_unchecked",
+                         fills (sockmap EAGAIN bug, fixed in {}.{}); see Relay::new_any_kernel",
                         v.0, v.1, MIN_KERNEL.0, MIN_KERNEL.1
                     ),
                 ));
             }
         }
-        Self::new_unchecked(pairs)
+        Self::new_any_kernel(pairs)
     }
 
     /// [`Relay::new`] without the kernel version check, for kernels that carry the fix as a
     /// backport, or for workloads that never fill a send buffer.
-    pub fn new_unchecked(pairs: u32) -> io::Result<Relay> {
+    pub fn new_any_kernel(pairs: u32) -> io::Result<Relay> {
         let pairs = if pairs == 0 { DEFAULT_PAIRS } else { pairs };
         #[cfg(target_os = "linux")]
         return Ok(Relay {
@@ -122,8 +122,9 @@ impl Relay {
     /// TLS, whose bytes on the wire are not the payload. Call it on an I/O thread of one of the
     /// connections, after forwarding whatever data that callback received; on error just keep
     /// relaying in userspace.
-    pub fn splice_conns(&self, a: &Arc<ConnInner>, b: &Arc<ConnInner>) -> io::Result<Splice> {
+    pub fn splice_conns<A, B>(&self, a: &Conn<A>, b: &Conn<B>) -> io::Result<Splice> {
         use std::os::fd::AsRawFd;
+        let (a, b) = (a.inner(), b.inner());
         let (Some(sa), Some(sb)) = (a.tcp_stream(), b.tcp_stream()) else {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,

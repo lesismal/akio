@@ -96,6 +96,12 @@ pub struct EventFd {
     fd: OwnedFd,
 }
 
+impl std::fmt::Debug for EventFd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventFd").finish_non_exhaustive()
+    }
+}
+
 #[cfg(target_os = "linux")]
 impl EventFd {
     /// Creates a non-blocking, close-on-exec eventfd.

@@ -115,7 +115,7 @@ fn setup() -> (Arc<Engine>, SocketAddr) {
         });
     let quic = flash_h3::server_config(vec![cert], key).unwrap();
     let e = Engine::builder()
-        .listen(Listener::udp("127.0.0.1:0".parse().unwrap()).serve(flash_h3::server(quic, app)))
+        .listen(Listener::udp("127.0.0.1:0".parse().unwrap()).serve(flash_h3::serve(quic, app)))
         .udp_client_threads(1)
         .build()
         .unwrap();

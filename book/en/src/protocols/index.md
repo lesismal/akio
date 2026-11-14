@@ -11,7 +11,7 @@ block, and its "send" handles are usable from any thread.
 | `flash-http` | `serve(service)` / `serve_with(cfg, service)` | `client::Client`, `h2client::H2Client` | [HTTP servers](http-server.md), [Routing](http-routing.md), [Clients](http-clients.md) |
 | `flash-ws` | `Context::upgrade_websocket` (flash-http) | `client::dial` / `connect` | [WebSocket](websocket.md) |
 | `flash-quic` | `QuicServer::new(cfg, factory)` on a UDP listener | `flash_quic::dial` | [QUIC and HTTP/3](quic-h3.md) |
-| `flash-h3` | `flash_h3::server(cfg, service)` on a UDP listener | `H3Client` | [QUIC and HTTP/3](quic-h3.md) |
+| `flash-h3` | `flash_h3::serve(cfg, service)` on a UDP listener | `H3Client` | [QUIC and HTTP/3](quic-h3.md) |
 | `flash-grpc` | `GrpcServer` (a flash-http service) | `GrpcClient` | [gRPC](grpc.md) |
 | `flash-arpc` | `Server::new(routes)` | `flash_arpc::dial_blocking` | [arpc](arpc.md) |
 | `flash-socks` | `Socks::new(engine_ref)`, `connect_proxy(engine_ref)` | – | [SOCKS and CONNECT](socks.md) |

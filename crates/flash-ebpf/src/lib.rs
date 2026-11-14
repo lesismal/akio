@@ -21,6 +21,8 @@
 // `unsafe` is confined to `sys` (raw bpf(2) and socket options); see docs/unsafe-review.md.
 #![deny(unsafe_code)]
 
+/// Classic BPF programs and an interpreter (tests, fuzzing). `#[doc(hidden)]`: unstable.
+#[doc(hidden)]
 pub mod cbpf;
 mod ebpf;
 #[cfg(any(test, feature = "fuzzing"))]
@@ -33,13 +35,14 @@ mod steer;
 mod sys;
 
 pub use relay::{Relay, Splice};
-pub use steer::{
-    AttachOptions, HashKey, SLOTS, SteerInfo, Steering, Tier, attach_reuseport, expected_index,
-    slot_table,
-};
+pub use steer::{AttachOptions, HashKey, SteerInfo, Steering, Tier, attach_reuseport};
+// Steering internals the tests check the kernel against; unstable.
+#[doc(hidden)]
+pub use steer::{SLOTS, expected_index, slot_table};
 
 /// What the running kernel and process privileges allow, found by trying.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Probe {
     /// Classic BPF reuseport programs (unprivileged).
     pub reuseport_cbpf: bool,

@@ -5,7 +5,7 @@
 //! handshake and then serves the connection with the same [`WsHandler`] model the server uses:
 //! callbacks on the connection's I/O thread, [`WsSender`] to send from any thread. Frames are
 //! masked, `permessage-deflate` is offered when [`WsConfig::permessage_deflate`] is set.
-//! [`connect`] is the blocking convenience that waits for the handshake.
+//! [`dial_blocking`] is the blocking convenience that waits for the handshake.
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -389,7 +389,7 @@ pub fn dial_blocking(
         .unwrap_or(Err(WsClientError::Timeout))
 }
 
-/// Forwards to the application's handler, reporting the open to [`connect`].
+/// Forwards to the application's handler, reporting the open to [`dial_blocking`].
 struct Notify {
     inner: Box<dyn WsHandler>,
     tx: Option<mpsc::Sender<Result<WsSender, WsClientError>>>,
