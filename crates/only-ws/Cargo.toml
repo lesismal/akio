@@ -16,7 +16,7 @@ categories = ["network-programming", "web-programming::websocket"]
 only-core = { workspace = true }
 only-buf = { workspace = true }
 only-crypto = { workspace = true }
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+only-deflate = { workspace = true }
 only = { workspace = true }
 
 [features]

@@ -48,6 +48,9 @@ httparse = "1"
 loona-hpack = "0.4"
 regex = "1"
 only-dpdk = { path = "../crates/only-dpdk", features = ["fuzzing"] }
+only-deflate = { path = "../crates/only-deflate", features = ["fuzzing"] }
+# Differential oracle for the deflate targets only (zlib-rs).
+flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 
 [profile.release]
 debug = 1
@@ -333,6 +336,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "deflate_inflate"
+path = "fuzz_targets/deflate_inflate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "dpdk_ethernet"
 path = "fuzz_targets/dpdk_ethernet.rs"
 test = false
@@ -405,6 +415,13 @@ bench = false
 [[bin]]
 name = "dpdk_stack"
 path = "fuzz_targets/dpdk_stack.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "deflate_roundtrip"
+path = "fuzz_targets/deflate_roundtrip.rs"
 test = false
 doc = false
 bench = false

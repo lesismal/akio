@@ -15,6 +15,7 @@ flowchart BT
     crypto["only-crypto<br/>SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC-32、<br/>AES-CTR/GCM、ChaCha20-Poly1305、base64、随机数"]
     buf["only-buf<br/>分级缓冲池、SharedBuf"]
     timer["only-timer<br/>时间轮"]
+    deflate["only-deflate<br/>DEFLATE、zlib、gzip"]
     pool["only-pool<br/>逻辑线程池"]
     core["only-core<br/>Conn、ConnInner、Handler、Acceptor、<br/>Transport、Telemetry、Group trait"]
     epoll["only-epoll<br/>epoll / kqueue 线程组、UDP 线程组"]
@@ -54,6 +55,9 @@ flowchart BT
     dpdk -.->|feature dpdk| facade
     tls --> facade
     facade --> ws
+    deflate --> ws
+    deflate --> http
+    deflate --> grpc
     facade --> http
     ws --> http
     http --> grpc
@@ -87,7 +91,7 @@ flowchart BT
   （原始 `bpf(2)`）、`only-dpdk`（DPDK FFI）和 `only-crypto` 的 AES 指令模块中，每个 unsafe 块都有 `SAFETY:` 注释。其他 crate 要么是
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（零拷贝增量头部解析器与 chunked 解码器均为自研）、HTTP/2 分帧与
-  HPACK（自研）、WebSocket 分帧与 permessage-deflate、KCP、QPACK 与 HTTP/3 分帧，都是
+  HPACK（自研）、WebSocket 分帧与 permessage-deflate（DEFLATE 来自自研的 `only-deflate`）、KCP、QPACK 与 HTTP/3 分帧，都是
   由 only 喂入字节的状态机；TLS 是 rustls，QUIC 是 quinn-proto，WebRTC 是 str0m，都以 sans-io
   方式驱动（ADR-005），并隐藏在 only 自己的类型之后，因此升级或替换它们不会破坏 API
   （docs/api-stability.zh-CN.md）。

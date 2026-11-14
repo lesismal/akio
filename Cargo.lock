@@ -814,6 +814,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-deflate"
+version = "1.0.0-rc.1"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "only-dpdk"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -848,9 +855,9 @@ dependencies = [
 name = "only-grpc"
 version = "1.0.0-rc.1"
 dependencies = [
- "flate2",
  "only",
  "only-core",
+ "only-deflate",
  "only-http",
  "prost",
 ]
@@ -877,6 +884,7 @@ dependencies = [
  "only",
  "only-core",
  "only-crypto",
+ "only-deflate",
  "only-ws",
  "rcgen",
  "rustls",
@@ -1016,11 +1024,11 @@ dependencies = [
 name = "only-ws"
 version = "1.0.0-rc.1"
 dependencies = [
- "flate2",
  "only",
  "only-buf",
  "only-core",
  "only-crypto",
+ "only-deflate",
  "only-http",
  "rcgen",
 ]

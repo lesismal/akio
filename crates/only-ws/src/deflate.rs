@@ -1,6 +1,6 @@
 //! permessage-deflate (RFC 7692): raw deflate per message, with optional context takeover.
 
-use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, Status};
+use only_deflate::{Flush, Format, Level};
 
 /// What went wrong inflating a message.
 #[derive(Debug, PartialEq, Eq)]
@@ -26,7 +26,7 @@ impl std::error::Error for InflateError {}
 /// Decompresses messages.
 #[derive(Debug)]
 pub struct Inflater {
-    d: Decompress,
+    d: only_deflate::Inflater,
     reset_each_message: bool,
 }
 
@@ -36,7 +36,7 @@ impl Inflater {
     /// `no_context_takeover`: forget the history after every message.
     pub fn new(no_context_takeover: bool) -> Inflater {
         Inflater {
-            d: Decompress::new(false),
+            d: only_deflate::Inflater::new(Format::Raw),
             reset_each_message: no_context_takeover,
         }
     }
@@ -47,37 +47,28 @@ impl Inflater {
         if data.is_empty() {
             return Ok(Vec::new()); // lenient: an empty compressed payload is an empty message
         }
-        let mut input = Vec::with_capacity(data.len() + 4);
-        input.extend_from_slice(data);
-        input.extend_from_slice(&TAIL);
+        let limit = max.saturating_add(1);
         let mut out: Vec<u8> = Vec::with_capacity((data.len() * 3).clamp(256, max.max(256)));
-        let mut consumed = 0;
-        loop {
-            if out.len() == out.capacity() {
-                out.reserve(out.len().max(4096));
+        let mut done = false;
+        for part in [data, &TAIL[..]] {
+            if done {
+                break; // the message ended with a final block: the tail is not needed
             }
-            let (in0, out0) = (self.d.total_in(), self.d.total_out());
-            let st = self
+            let p = self
                 .d
-                .decompress_vec(&input[consumed..], &mut out, FlushDecompress::Sync)
+                .decompress_vec(part, &mut out, limit)
                 .map_err(|_| InflateError::Corrupt)?;
-            consumed += (self.d.total_in() - in0) as usize;
             if out.len() > max {
                 return Err(InflateError::TooBig);
             }
-            if st == Status::StreamEnd {
-                break;
-            }
-            if consumed >= input.len() && out.len() < out.capacity() {
-                break;
-            }
-            if self.d.total_in() == in0 && self.d.total_out() == out0 && out.len() < out.capacity()
-            {
-                return Err(InflateError::Corrupt);
-            }
+            done = p.done;
         }
         if self.reset_each_message {
-            self.d.reset(false);
+            self.d.reset();
+        } else if done {
+            // A final block ends the deflate stream, not the history: the next message may
+            // still refer back into this one.
+            self.d.reset_keep_window();
         }
         Ok(out)
     }
@@ -86,19 +77,19 @@ impl Inflater {
 /// Compresses messages.
 #[derive(Debug)]
 pub struct Deflater {
-    c: Compress,
+    c: only_deflate::Deflater,
     reset_each_message: bool,
 }
 
 impl Deflater {
-    /// `no_context_takeover`: forget the history after every message. `window_bits`: 9..=15,
+    /// `no_context_takeover`: forget the history after every message. `window_bits`: 8..=15,
     /// the LZ77 window the peer agreed to inflate with (15 when nothing was negotiated).
     pub fn new(no_context_takeover: bool, window_bits: u8) -> Deflater {
         Deflater {
-            c: Compress::new_with_window_bits(
-                Compression::default(),
-                false,
-                window_bits.clamp(9, 15),
+            c: only_deflate::Deflater::with_window_bits(
+                Format::Raw,
+                Level::DEFAULT,
+                window_bits.clamp(8, 15),
             ),
             reset_each_message: no_context_takeover,
         }
@@ -112,21 +103,7 @@ impl Deflater {
             return vec![0x00];
         }
         let mut out: Vec<u8> = Vec::with_capacity(data.len() / 2 + 64);
-        let mut consumed = 0;
-        loop {
-            if out.len() == out.capacity() {
-                out.reserve(out.len().max(256));
-            }
-            let in0 = self.c.total_in();
-            let _ = self
-                .c
-                .compress_vec(&data[consumed..], &mut out, FlushCompress::Sync);
-            consumed += (self.c.total_in() - in0) as usize;
-            // Done when all input was taken and the flush marker had room to be written.
-            if consumed >= data.len() && out.len() < out.capacity() {
-                break;
-            }
-        }
+        self.c.compress(data, &mut out, Flush::Sync);
         if out.ends_with(&TAIL) {
             out.truncate(out.len() - 4);
         }
@@ -145,11 +122,10 @@ pub struct PmdParams {
     pub server_no_context_takeover: bool,
     /// The client compresses without history.
     pub client_no_context_takeover: bool,
-    /// Window the server compresses with (9..=15); echoed in the response when below 15.
+    /// Window the server compresses with (8..=15); echoed in the response when below 15.
     pub server_max_window_bits: u8,
     /// Window the client compresses with (8..=15). A server ignores it (it inflates with a full
-    /// window); a client that was told 8 sends its messages uncompressed, since zlib cannot
-    /// produce raw deflate with a 256-byte window.
+    /// window).
     pub client_max_window_bits: u8,
 }
 
@@ -173,7 +149,7 @@ pub struct PmdOffer {
     pub client_no_context_takeover: bool,
     /// Ask the server to compress without context takeover (`server_no_context_takeover`).
     pub server_no_context_takeover: bool,
-    /// Ask the server to compress with a smaller window (`server_max_window_bits`, 9..=15).
+    /// Ask the server to compress with a smaller window (`server_max_window_bits`, 8..=15).
     pub server_max_window_bits: Option<u8>,
 }
 
@@ -189,7 +165,7 @@ impl PmdOffer {
             h.push_str("; server_no_context_takeover");
         }
         if let Some(b) = self.server_max_window_bits {
-            h.push_str(&format!("; server_max_window_bits={}", b.clamp(9, 15)));
+            h.push_str(&format!("; server_max_window_bits={}", b.clamp(8, 15)));
         }
         h
     }
@@ -245,7 +221,7 @@ impl PmdOffer {
                     return Err("server ignored server_no_context_takeover");
                 }
                 if let Some(b) = self.server_max_window_bits {
-                    if p.server_max_window_bits > b.clamp(9, 15) {
+                    if p.server_max_window_bits > b.clamp(8, 15) {
                         return Err("server window larger than requested");
                     }
                 }
@@ -260,8 +236,7 @@ impl PmdOffer {
 
 /// Picks the first acceptable `permessage-deflate` offer among the `Sec-WebSocket-Extensions`
 /// header values. Returns the agreed parameters and the response header value. An offer is
-/// declined when it asks for something this implementation cannot do (a server window of 8 bits,
-/// which zlib cannot produce for raw deflate, or unknown parameters).
+/// declined when it has unknown parameters or bad values.
 pub fn negotiate<'a>(
     header_values: impl IntoIterator<Item = &'a str>,
 ) -> Option<(PmdParams, String)> {
@@ -283,7 +258,7 @@ pub fn negotiate<'a>(
                     // We inflate with a full window, so any client window is fine; not echoed.
                     ("client_max_window_bits", _) => {}
                     ("server_max_window_bits", Some(v)) => match v.parse::<u8>() {
-                        Ok(b @ 9..=15) => p.server_max_window_bits = b,
+                        Ok(b @ 8..=15) => p.server_max_window_bits = b,
                         _ => continue 'offers,
                     },
                     _ => continue 'offers,
@@ -422,13 +397,16 @@ mod tests {
                 .unwrap();
         assert!(p.server_no_context_takeover && !p.client_no_context_takeover);
         assert_eq!(r, "permessage-deflate; server_no_context_takeover");
-        // A smaller server window is honoured and echoed; 8 bits cannot be produced: declined.
+        // A smaller server window is honoured and echoed, down to 8 bits.
         let (p, r) = negotiate(["permessage-deflate; server_max_window_bits=10"]).unwrap();
         assert_eq!(p.server_max_window_bits, 10);
         assert_eq!(r, "permessage-deflate; server_max_window_bits=10");
-        let (_, r) = negotiate(["permessage-deflate; server_max_window_bits=8, permessage-deflate; client_no_context_takeover"]).unwrap();
+        let (p, r) = negotiate(["permessage-deflate; server_max_window_bits=8, permessage-deflate; client_no_context_takeover"]).unwrap();
+        assert_eq!(p.server_max_window_bits, 8);
+        assert_eq!(r, "permessage-deflate; server_max_window_bits=8");
+        let (_, r) = negotiate(["permessage-deflate; server_max_window_bits=7, permessage-deflate; client_no_context_takeover"]).unwrap();
         assert_eq!(r, "permessage-deflate; client_no_context_takeover");
-        assert!(negotiate(["permessage-deflate; server_max_window_bits=8"]).is_none());
+        assert!(negotiate(["permessage-deflate; server_max_window_bits=16"]).is_none());
         assert!(negotiate(["x-webkit-deflate-frame"]).is_none());
         assert!(negotiate(["permessage-deflate; bogus"]).is_none());
         assert!(negotiate(std::iter::empty()).is_none());

@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
@@ -182,5 +184,12 @@ func main() {
 		}
 	}
 	_ = bs.CloseSend()
+	// gzip both ways: grpc-go compresses the request, only must answer compressed too (the gzip
+	// compressor is registered, so every call above already accepted gzip responses).
+	zbig := bytes.Repeat([]byte("gzip me, only! "), 50000)
+	if err := conn.Invoke(ctx, "/test.Echo/Unary", &zbig, &out, grpc.UseCompressor(gzip.Name)); err != nil || !bytes.Equal(out, zbig) {
+		fail("gzip unary", err)
+	}
+	fmt.Println("gzip OK")
 	fmt.Println("OK")
 }

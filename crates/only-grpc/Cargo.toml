@@ -15,7 +15,7 @@ categories = ["network-programming", "web-programming"]
 [dependencies]
 only = { workspace = true }
 only-http = { workspace = true }
-flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+only-deflate = { workspace = true }
 prost = { version = "0.13", optional = true }
 only-core = { workspace = true, optional = true }
 

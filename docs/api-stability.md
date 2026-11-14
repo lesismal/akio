@@ -28,7 +28,7 @@ deprecation process is in [deprecation.md](deprecation.md); the history of chang
 | Tier | Crates | Promise |
 |---|---|---|
 | Public | `only`, `only-core`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-ebpf`, `only-prefork`, `only-turn`, `only-webrtc`, `only-media` | Full semver for their public API (below). |
-| Internal | `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-uring`, `only-crypto` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `only` / `only-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `only-core` and `only`. |
+| Internal | `only-sys`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-uring`, `only-crypto`, `only-deflate` | Implementation crates, published only because the public crates depend on them. Their own APIs may change in **any** release; depend on `only` / `only-core` instead. The types they contribute to the public API (`SharedBuf`, `PoolConfig`, `PoolStats`) are covered through the re-exports in `only-core` and `only`. |
 | Experimental | `only-dpdk`, and the `dpdk` / `dpdk-pmd` features of `only` (`Backend::Dpdk`, `only::dpdk`) | The kernel-bypass backend is new and its configuration may still change in any release. It becomes covered (public tier) once it has been used in production; until then the snapshot `api/only-dpdk.txt` only makes changes visible. |
 
 `tools/` and `fuzz/` are not published.

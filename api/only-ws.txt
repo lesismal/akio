@@ -68,7 +68,7 @@ impl core::marker::Send for only_ws::deflate::Deflater
 impl core::marker::Sync for only_ws::deflate::Deflater
 impl core::marker::Unpin for only_ws::deflate::Deflater
 impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::Deflater
-impl !core::panic::unwind_safe::UnwindSafe for only_ws::deflate::Deflater
+impl core::panic::unwind_safe::UnwindSafe for only_ws::deflate::Deflater
 pub struct only_ws::deflate::Inflater
 impl only_ws::deflate::Inflater
 pub fn only_ws::deflate::Inflater::inflate(&mut self, &[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, only_ws::deflate::InflateError>
@@ -79,7 +79,7 @@ impl core::marker::Send for only_ws::deflate::Inflater
 impl core::marker::Sync for only_ws::deflate::Inflater
 impl core::marker::Unpin for only_ws::deflate::Inflater
 impl core::panic::unwind_safe::RefUnwindSafe for only_ws::deflate::Inflater
-impl !core::panic::unwind_safe::UnwindSafe for only_ws::deflate::Inflater
+impl core::panic::unwind_safe::UnwindSafe for only_ws::deflate::Inflater
 #[non_exhaustive] pub struct only_ws::deflate::PmdOffer
 pub only_ws::deflate::PmdOffer::client_no_context_takeover: bool
 pub only_ws::deflate::PmdOffer::server_max_window_bits: core::option::Option<u8>
@@ -202,7 +202,7 @@ impl core::marker::Send for only_ws::protocol::Decoder
 impl core::marker::Sync for only_ws::protocol::Decoder
 impl core::marker::Unpin for only_ws::protocol::Decoder
 impl core::panic::unwind_safe::RefUnwindSafe for only_ws::protocol::Decoder
-impl !core::panic::unwind_safe::UnwindSafe for only_ws::protocol::Decoder
+impl core::panic::unwind_safe::UnwindSafe for only_ws::protocol::Decoder
 #[non_exhaustive] pub struct only_ws::protocol::ProtocolError
 pub only_ws::protocol::ProtocolError::code: u16
 pub only_ws::protocol::ProtocolError::reason: &'static str
