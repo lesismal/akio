@@ -1,6 +1,6 @@
 #![no_main]
-//! only-crypto's hashes, HMAC and CRC-32 against the crates they replaced, with the input split
-//! at an arbitrary point for the streaming interface.
+//! only-crypto's hashes, HMAC and CRC-32 against the crates they replaced (CRC-32C against its
+//! bitwise definition), with the input split at an arbitrary point for the streaming interface.
 
 use only_crypto::hash::{Md5, Sha1, Sha224, Sha256, Sha384, Sha512};
 use only_crypto::mac::Hmac;
@@ -29,6 +29,18 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
     c.update(a);
     c.update(b);
     assert_eq!(c.finalize(), crc32fast::hash(data));
+    // CRC-32C (instruction paths when present) against the bitwise definition.
+    let mut r = !0u32;
+    for &x in data {
+        r ^= u32::from(x);
+        for _ in 0..8 {
+            r = if r & 1 != 0 { (r >> 1) ^ 0x82f6_3b78 } else { r >> 1 };
+        }
+    }
+    let mut c = only_crypto::crc::Crc32c::new();
+    c.update(a);
+    c.update(b);
+    assert_eq!(c.finalize(), !r);
 
     // HMAC: the first part is the key (any length, including longer than a block).
     use hmac::Mac as _;

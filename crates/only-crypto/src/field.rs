@@ -3,10 +3,12 @@
 //! Ed25519.
 //!
 //! Every operation runs in time independent of the values: Montgomery multiplication (CIOS)
-//! with a final masked subtraction, masked additions and subtractions, inversion and square
-//! roots by exponentiation with a fixed public exponent. The constants a modulus needs (`R mod
-//! p`, `R² mod p`, `R³ mod p`, `-p⁻¹ mod 2⁶⁴`, the exponents) are computed at compile time from
-//! the modulus alone.
+//! with a final masked subtraction, squaring as a half-size product plus Montgomery reduction,
+//! masked additions and subtractions, inversion and square roots by exponentiation with a fixed
+//! public exponent (4-bit windows, or an addition chain where a modulus provides one). The
+//! constants a modulus needs (`R mod p`, `R² mod p`, `R³ mod p`, `-p⁻¹ mod 2⁶⁴`, the exponents)
+//! are computed at compile time from the modulus alone. A modulus with a special form (the P-256
+//! prime) overrides multiplication, squaring and inversion with dedicated code.
 
 use std::marker::PhantomData;
 
@@ -26,6 +28,152 @@ pub(crate) trait Modulus<const N: usize>: Copy + Send + Sync + 'static {
     const R3: [u64; N] = pow2_mod(&Self::P, 192 * N);
     /// `P - 2`: the inversion exponent.
     const P_MINUS_2: [u64; N] = sub_small(&Self::P, 2);
+
+    /// Montgomery multiplication `a·b·R⁻¹ mod P`, fully reduced (`a < R`, `b < P`).
+    #[inline]
+    fn mont_mul(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
+        mont_mul_cios(a, b, &Self::P, Self::N0)
+    }
+
+    /// Montgomery squaring `a²·R⁻¹ mod P` (`a < P`).
+    #[inline]
+    fn mont_sqr(a: &[u64; N]) -> [u64; N] {
+        if N <= 8 {
+            redc::<N, 16>(sqr_wide::<N, 16>(a), &Self::P, Self::N0)
+        } else {
+            Self::mont_mul(a, a)
+        }
+    }
+
+    /// `a⁻¹` (Montgomery form in and out) by a dedicated addition chain, or `None` to use the
+    /// generic windowed exponentiation by `P - 2`.
+    #[inline]
+    fn mont_inv(a: &[u64; N]) -> Option<[u64; N]> {
+        let _ = a;
+        None
+    }
+}
+
+/// CIOS Montgomery multiplication `a·b·R⁻¹ mod p` with a final masked subtraction. Needs
+/// `a < R`, `b < p`.
+#[inline]
+pub(crate) fn mont_mul_cios<const N: usize>(
+    a: &[u64; N],
+    b: &[u64; N],
+    p: &[u64; N],
+    n0: u64,
+) -> [u64; N] {
+    let mut t = [0u64; N];
+    let mut t_n = 0u64;
+    for &bi in b {
+        let mut c = 0u64;
+        for j in 0..N {
+            let x = u128::from(t[j]) + u128::from(a[j]) * u128::from(bi) + u128::from(c);
+            t[j] = x as u64;
+            c = (x >> 64) as u64;
+        }
+        let x = u128::from(t_n) + u128::from(c);
+        t_n = x as u64;
+        let t_n1 = (x >> 64) as u64;
+
+        let m = t[0].wrapping_mul(n0);
+        let x = u128::from(t[0]) + u128::from(m) * u128::from(p[0]);
+        let mut c = (x >> 64) as u64;
+        for j in 1..N {
+            let x = u128::from(t[j]) + u128::from(m) * u128::from(p[j]) + u128::from(c);
+            t[j - 1] = x as u64;
+            c = (x >> 64) as u64;
+        }
+        let x = u128::from(t_n) + u128::from(c);
+        t[N - 1] = x as u64;
+        t_n = t_n1 + (x >> 64) as u64;
+    }
+    sub_if_ge(t, t_n, p)
+}
+
+/// `t - p` if `t + top·R >= p` (with `t + top·R < 2p`), else `t`; constant time.
+#[inline(always)]
+pub(crate) fn sub_if_ge<const N: usize>(t: [u64; N], top: u64, p: &[u64; N]) -> [u64; N] {
+    let mut r = [0u64; N];
+    let borrow = ct::sub_limbs(&mut r, &t, p);
+    // Keep t when the subtraction borrowed and nothing carried out.
+    let keep_t = ct::mask(borrow & (1 ^ (top & 1)));
+    ct::assign(keep_t, &mut r, &t);
+    r
+}
+
+/// `a²` as `2N` limbs (in a `W`-limb buffer, `W >= 2N`): the cross products once, doubled, plus
+/// the squares.
+#[inline(always)]
+pub(crate) fn sqr_wide<const N: usize, const W: usize>(a: &[u64; N]) -> [u64; W] {
+    let mut t = [0u64; W];
+    for i in 0..N {
+        let mut c = 0u64;
+        for j in i + 1..N {
+            let x = u128::from(t[i + j]) + u128::from(a[i]) * u128::from(a[j]) + u128::from(c);
+            t[i + j] = x as u64;
+            c = (x >> 64) as u64;
+        }
+        t[i + N] = c;
+    }
+    let mut top = 0u64;
+    for v in t.iter_mut().take(2 * N) {
+        let x = *v;
+        *v = (x << 1) | top;
+        top = x >> 63;
+    }
+    let mut c = 0u64;
+    for i in 0..N {
+        let sq = u128::from(a[i]) * u128::from(a[i]);
+        let x = u128::from(t[2 * i]) + u128::from(sq as u64) + u128::from(c);
+        t[2 * i] = x as u64;
+        let x = u128::from(t[2 * i + 1]) + (sq >> 64) + (x >> 64);
+        t[2 * i + 1] = x as u64;
+        c = (x >> 64) as u64;
+    }
+    t
+}
+
+/// `a·b` as `2N` limbs (in a `W`-limb buffer, `W >= 2N`).
+#[inline(always)]
+pub(crate) fn mul_wide<const N: usize, const W: usize>(a: &[u64; N], b: &[u64; N]) -> [u64; W] {
+    let mut t = [0u64; W];
+    for i in 0..N {
+        let mut c = 0u64;
+        for j in 0..N {
+            let x = u128::from(t[i + j]) + u128::from(a[i]) * u128::from(b[j]) + u128::from(c);
+            t[i + j] = x as u64;
+            c = (x >> 64) as u64;
+        }
+        t[i + N] = c;
+    }
+    t
+}
+
+/// Montgomery reduction `t·R⁻¹ mod p` of a `2N`-limb `t < p·R` (in a `W`-limb buffer), fully
+/// reduced.
+#[inline(always)]
+pub(crate) fn redc<const N: usize, const W: usize>(
+    mut t: [u64; W],
+    p: &[u64; N],
+    n0: u64,
+) -> [u64; N] {
+    let mut carry = 0u64;
+    for i in 0..N {
+        let m = t[i].wrapping_mul(n0);
+        let mut c = 0u64;
+        for j in 0..N {
+            let x = u128::from(t[i + j]) + u128::from(m) * u128::from(p[j]) + u128::from(c);
+            t[i + j] = x as u64;
+            c = (x >> 64) as u64;
+        }
+        let x = u128::from(t[i + N]) + u128::from(c) + u128::from(carry);
+        t[i + N] = x as u64;
+        carry = (x >> 64) as u64;
+    }
+    let mut r = [0u64; N];
+    r.copy_from_slice(&t[N..2 * N]);
+    sub_if_ge(r, carry, p)
 }
 
 /// `-a⁻¹ mod 2⁶⁴` for odd `a` (Newton iteration).
@@ -151,41 +299,10 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
     }
     pub(crate) const ONE: Self = Self::raw(M::R1);
 
-    /// Montgomery multiplication `a·b·R⁻¹ mod P` (CIOS). Needs `a < R`, `b < P`.
+    /// Montgomery multiplication `a·b·R⁻¹ mod P`. Needs `a < R`, `b < P`.
     #[inline]
     fn mont_mul(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
-        let p = &M::P;
-        let mut t = [0u64; N];
-        let mut t_n = 0u64;
-        for &bi in b {
-            let mut c = 0u64;
-            for j in 0..N {
-                let x = u128::from(t[j]) + u128::from(a[j]) * u128::from(bi) + u128::from(c);
-                t[j] = x as u64;
-                c = (x >> 64) as u64;
-            }
-            let x = u128::from(t_n) + u128::from(c);
-            t_n = x as u64;
-            let t_n1 = (x >> 64) as u64;
-
-            let m = t[0].wrapping_mul(M::N0);
-            let x = u128::from(t[0]) + u128::from(m) * u128::from(p[0]);
-            let mut c = (x >> 64) as u64;
-            for j in 1..N {
-                let x = u128::from(t[j]) + u128::from(m) * u128::from(p[j]) + u128::from(c);
-                t[j - 1] = x as u64;
-                c = (x >> 64) as u64;
-            }
-            let x = u128::from(t_n) + u128::from(c);
-            t[N - 1] = x as u64;
-            t_n = t_n1 + (x >> 64) as u64;
-        }
-        // t < 2P: subtract P unless that borrows (and nothing carried out).
-        let mut r = [0u64; N];
-        let borrow = ct::sub_limbs(&mut r, &t, p);
-        let keep_t = ct::mask(borrow & (1 ^ (t_n & 1)));
-        ct::assign(keep_t, &mut r, &t);
-        r
+        M::mont_mul(a, b)
     }
 
     #[inline]
@@ -195,7 +312,7 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
 
     #[inline]
     pub(crate) fn square(&self) -> Self {
-        self.mul(self)
+        Self::raw(M::mont_sqr(&self.l))
     }
 
     #[inline]
@@ -257,24 +374,39 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
         Self::raw(l)
     }
 
-    /// `self^e` for a public exponent `e` (little-endian limbs), most significant bit first.
-    /// The sequence of operations depends only on `e`.
+    /// `self^e` for a public exponent `e` (little-endian limbs): fixed 4-bit windows, most
+    /// significant first, table entries indexed by the exponent's digits. The sequence of
+    /// operations and memory accesses depends only on `e`, so `self` may be secret.
     pub(crate) fn pow_vartime_exp(&self, e: &[u64; N]) -> Self {
+        let mut table = [Self::ONE; 16];
+        table[1] = *self;
+        for j in 2..16 {
+            table[j] = table[j - 1].mul(self);
+        }
         let mut r = Self::ONE;
-        for i in (0..N).rev() {
-            for bit in (0..64).rev() {
-                r = r.square();
-                if (e[i] >> bit) & 1 == 1 {
-                    r = r.mul(self);
+        let mut started = false;
+        for i in (0..16 * N).rev() {
+            let d = ((e[i / 16] >> (4 * (i % 16))) & 15) as usize;
+            if started {
+                r = r.square().square().square().square();
+                if d != 0 {
+                    r = r.mul(&table[d]);
                 }
+            } else if d != 0 {
+                r = table[d];
+                started = true;
             }
         }
         r
     }
 
-    /// `self⁻¹` (0 maps to 0), by Fermat's little theorem: constant time.
+    /// `self⁻¹` (0 maps to 0), by Fermat's little theorem (an addition chain or windowed
+    /// exponentiation by `P - 2`): constant time.
     pub(crate) fn invert(&self) -> Self {
-        self.pow_vartime_exp(&M::P_MINUS_2)
+        match M::mont_inv(&self.l) {
+            Some(l) => Self::raw(l),
+            None => self.pow_vartime_exp(&M::P_MINUS_2),
+        }
     }
 
     /// The Montgomery form of the integer with little-endian limbs `a` (any value below `R`).
@@ -414,6 +546,49 @@ mod tests {
         let mut e = [0u64; 4];
         ct::sub_limbs(&mut e, &[u64::MAX; 4], &P256::P);
         assert_eq!(w.to_limbs(), e);
+    }
+
+    /// The squaring path (half-size product + REDC) and the windowed exponentiation agree with
+    /// plain multiplication, for 4- and 6-limb moduli.
+    #[test]
+    fn square_and_pow() {
+        #[derive(Clone, Copy)]
+        struct P384;
+        impl Modulus<6> for P384 {
+            const P: [u64; 6] = [
+                0x0000_0000_ffff_ffff,
+                0xffff_ffff_0000_0000,
+                0xffff_ffff_ffff_fffe,
+                0xffff_ffff_ffff_ffff,
+                0xffff_ffff_ffff_ffff,
+                0xffff_ffff_ffff_ffff,
+            ];
+        }
+        let mut rng = crate::rand::ChaChaRng::from_seed([1; 32]);
+        for _ in 0..200 {
+            let mut b = [0u8; 48];
+            rng.fill(&mut b);
+            let x = Fe::<P384, 6>::from_be_bytes_reduce(&b).unwrap();
+            assert_eq!(x.square().l, x.mul(&x).l);
+            let y = F::from_be_bytes_reduce(&b[..32]).unwrap();
+            assert_eq!(y.square().l, y.mul(&y).l);
+            // x^(p-2) by the window method is the inverse.
+            assert_eq!(y.invert().mul(&y).to_limbs(), [1, 0, 0, 0]);
+            assert_eq!(x.invert().mul(&x).to_limbs(), [1, 0, 0, 0, 0, 0]);
+        }
+        // All-ones limbs (the largest values) square correctly.
+        let m = F::from_limbs_canonical(&sub_small(&P256::P, 1)).unwrap();
+        assert_eq!(m.square().l, m.mul(&m).l);
+        let e = [5u64, 0, 0, 1];
+        let mut naive = F::ONE;
+        let base = F::from_limbs_reduce(&[3, 0, 0, 0]);
+        for i in (0..256).rev() {
+            naive = naive.mul(&naive);
+            if (e[i / 64] >> (i % 64)) & 1 == 1 {
+                naive = naive.mul(&base);
+            }
+        }
+        assert_eq!(base.pow_vartime_exp(&e).l, naive.l);
     }
 
     #[test]

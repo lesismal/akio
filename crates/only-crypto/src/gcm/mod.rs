@@ -1,8 +1,11 @@
 //! AES-GCM (NIST SP 800-38D) with 96-bit nonces and 128-bit tags.
 //!
-//! GHASH multiplies in GF(2^128) with BearSSL's constant-time `ctmul64` method (Thomas Pornin,
-//! MIT): carry-less 64x64 multiplications built from integer multiplications with the carries
-//! masked out, combined Karatsuba style. No tables, no secret-dependent branches.
+//! GHASH multiplies in GF(2^128) on the CPU's carry-less multiplication (PCLMULQDQ on x86_64,
+//! PMULL on aarch64; detected at run time, eight blocks per reduction, see `hw`), else with
+//! BearSSL's constant-time `ctmul64` method (Thomas Pornin, MIT): carry-less 64x64
+//! multiplications built from integer multiplications with the carries masked out, combined
+//! Karatsuba style. No tables, no secret-dependent branches on either path. The CTR keystream
+//! comes from [`Aes`] (eight blocks in flight on AES instructions).
 //!
 //! ```
 //! use only_crypto::gcm::AesGcm;
@@ -14,6 +17,8 @@
 //! assert_eq!(gcm.decrypt(&nonce, b"header", &sealed).unwrap(), b"secret");
 //! assert!(gcm.decrypt(&nonce, b"other header", &sealed).is_err());
 //! ```
+
+mod hw;
 
 use crate::Error;
 use crate::aes::Aes;
@@ -31,6 +36,8 @@ const MAX_LEN: u64 = ((1 << 32) - 2) * 16;
 pub struct AesGcm {
     aes: Aes,
     h: (u64, u64),
+    /// `H¹ … H⁸` for the carry-less multiplication instructions, when the CPU has them.
+    powers: Option<hw::Powers>,
 }
 
 impl std::fmt::Debug for AesGcm {
@@ -54,19 +61,49 @@ impl AesGcm {
     pub fn with_cipher(aes: Aes) -> AesGcm {
         let mut h = [0u8; 16];
         aes.encrypt_block(&mut h);
+        let h = be_pair(&h);
         AesGcm {
             aes,
-            h: be_pair(&h),
+            h,
+            powers: hw::Powers::new([h.0, h.1]),
         }
     }
 
+    /// The same key on the portable GHASH (and the AES path `aes` already has), for tests and
+    /// benchmarks.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_cipher_portable(aes: Aes) -> AesGcm {
+        let mut g = Self::with_cipher(aes);
+        g.powers = None;
+        g
+    }
+
+    /// Whether GHASH runs on carry-less multiplication instructions.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_hardware(&self) -> bool {
+        self.powers.is_some()
+    }
+
     fn tag(&self, j0: &[u8; 16], aad: &[u8], ct: &[u8]) -> [u8; 16] {
-        let mut g = Ghash::new(self.h);
+        let mut g = Ghash::new(self.h, self.powers.as_ref());
         g.update_padded(aad);
         g.update_padded(ct);
+        self.finish_tag(g, j0, aad.len(), ct.len())
+    }
+
+    /// Absorbs the length block and masks the GHASH result with `E(J0)`.
+    fn finish_tag(
+        &self,
+        mut g: Ghash<'_>,
+        j0: &[u8; 16],
+        aad_len: usize,
+        ct_len: usize,
+    ) -> [u8; 16] {
         let mut len = [0u8; 16];
-        len[..8].copy_from_slice(&((aad.len() as u64) << 3).to_be_bytes());
-        len[8..].copy_from_slice(&((ct.len() as u64) << 3).to_be_bytes());
+        len[..8].copy_from_slice(&((aad_len as u64) << 3).to_be_bytes());
+        len[8..].copy_from_slice(&((ct_len as u64) << 3).to_be_bytes());
         g.update_padded(&len);
         let mut s = g.finish();
         let mut ek = *j0;
@@ -90,8 +127,37 @@ impl AesGcm {
     ) -> [u8; TAG_LEN] {
         assert!(buf.len() as u64 <= MAX_LEN, "AES-GCM: plaintext too long");
         let j0 = j0(nonce);
+        if let Some(t) = self.fused(&j0, aad, buf, false) {
+            return t;
+        }
         self.aes.apply_ctr32(&inc32(j0), buf);
         self.tag(&j0, aad, buf)
+    }
+
+    /// Encryption (`open == false`) or decryption with the tag computed in the same pass, on AES
+    /// and carry-less multiplication instructions; `None` (nothing done) without them. Returns
+    /// the tag (over the ciphertext either way).
+    fn fused(&self, j0: &[u8; 16], aad: &[u8], buf: &mut [u8], open: bool) -> Option<[u8; 16]> {
+        let p = self.powers.as_ref()?;
+        let rk = self.aes.hw_round_keys()?;
+        let mut g = Ghash::new(self.h, Some(p));
+        g.update_padded(aad);
+        let ctr = inc32(*j0);
+        let mut y = [g.y0, g.y1];
+        let done = p.crypt(rk, &ctr, &mut y, buf, open);
+        [g.y0, g.y1] = y;
+        let rest = &mut buf[done..];
+        let mut c = ctr;
+        let n = u32::from_be_bytes([c[12], c[13], c[14], c[15]]).wrapping_add((done / 16) as u32);
+        c[12..].copy_from_slice(&n.to_be_bytes());
+        if open {
+            g.update_padded(rest);
+            self.aes.apply_ctr32(&c, rest);
+        } else {
+            self.aes.apply_ctr32(&c, rest);
+            g.update_padded(rest);
+        }
+        Some(self.finish_tag(g, j0, aad.len(), buf.len()))
     }
 
     /// Verifies `tag` and decrypts `buf` in place. On failure ([`Error::Verification`], or
@@ -110,6 +176,14 @@ impl AesGcm {
             return Err(Error::Verification);
         }
         let j0 = j0(nonce);
+        if let Some(t) = self.fused(&j0, aad, buf, true) {
+            if crate::ct_eq(&t, tag) {
+                return Ok(());
+            }
+            // Decrypted in the same pass: CTR again restores the ciphertext.
+            self.aes.apply_ctr32(&inc32(j0), buf);
+            return Err(Error::Verification);
+        }
         if !crate::ct_eq(&self.tag(&j0, aad, buf), tag) {
             return Err(Error::Verification);
         }
@@ -199,8 +273,20 @@ fn bmul64(x: u64, y: u64) -> u64 {
     (z0 & M0) | (z1 & M1) | (z2 & M2) | (z3 & M3)
 }
 
-/// GHASH state (BearSSL `br_ghash_ctmul64`).
-struct Ghash {
+/// `a·b` in GHASH's field, both as `[lo, hi]` (the layout of [`be_pair`]), constant time
+/// (BearSSL `ctmul64`, as [`Ghash`] does per block).
+fn gf_mul(a: [u64; 2], b: [u64; 2]) -> [u64; 2] {
+    let mut g = Ghash::new((b[0], b[1]), None);
+    let mut blk = [0u8; 16];
+    blk[..8].copy_from_slice(&a[1].to_be_bytes());
+    blk[8..].copy_from_slice(&a[0].to_be_bytes());
+    g.block(&blk);
+    [g.y0, g.y1]
+}
+
+/// GHASH state (BearSSL `br_ghash_ctmul64`), or the hardware path when `hw` is set.
+struct Ghash<'a> {
+    hw: Option<&'a hw::Powers>,
     h0: u64,
     h1: u64,
     h0r: u64,
@@ -211,11 +297,12 @@ struct Ghash {
     y1: u64,
 }
 
-impl Ghash {
-    fn new((h0, h1): (u64, u64)) -> Ghash {
+impl<'a> Ghash<'a> {
+    fn new((h0, h1): (u64, u64), hw: Option<&'a hw::Powers>) -> Ghash<'a> {
         let h0r = h0.reverse_bits();
         let h1r = h1.reverse_bits();
         Ghash {
+            hw,
             h0,
             h1,
             h0r,
@@ -229,11 +316,22 @@ impl Ghash {
 
     /// Absorbs `data` as 16-byte blocks, the last one padded with zeros.
     fn update_padded(&mut self, data: &[u8]) {
-        let mut chunks = data.chunks_exact(16);
-        for b in &mut chunks {
+        let whole = data.len() & !15;
+        let rest = &data[whole..];
+        if let Some(p) = self.hw {
+            let mut y = [self.y0, self.y1];
+            p.update(&mut y, &data[..whole]);
+            if !rest.is_empty() {
+                let mut b = [0u8; 16];
+                b[..rest.len()].copy_from_slice(rest);
+                p.update(&mut y, &b);
+            }
+            [self.y0, self.y1] = y;
+            return;
+        }
+        for b in data[..whole].chunks_exact(16) {
             self.block(b);
         }
-        let rest = chunks.remainder();
         if !rest.is_empty() {
             let mut b = [0u8; 16];
             b[..rest.len()].copy_from_slice(rest);
@@ -377,6 +475,55 @@ mod tests {
                 .unwrap();
             assert_eq!(buf, p);
         }
+    }
+
+    /// The hardware GHASH / AES paths (when this CPU has them) and the portable ones agree, for
+    /// every length class (whole 8-block groups, remainders, partial blocks) of AAD and data.
+    #[test]
+    fn hardware_matches_portable() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([9; 32]);
+        for i in 0..300 {
+            let mut key = vec![0u8; [16, 24, 32][i % 3]];
+            rng.fill(&mut key);
+            let hw = AesGcm::new(&key).unwrap();
+            let sw = AesGcm::with_cipher_portable(Aes::new_portable(&key).unwrap());
+            assert!(!sw.is_hardware());
+            let mut nonce = [0u8; 12];
+            rng.fill(&mut nonce);
+            let mut pt = vec![0u8; (i * 37) % 700];
+            rng.fill(&mut pt);
+            let mut aad = vec![0u8; (i * 13) % 300];
+            rng.fill(&mut aad);
+            let (mut a, mut b) = (pt.clone(), pt.clone());
+            let ta = hw.encrypt_in_place_detached(&nonce, &aad, &mut a);
+            let tb = sw.encrypt_in_place_detached(&nonce, &aad, &mut b);
+            assert_eq!(a, b, "case {i}");
+            assert_eq!(ta, tb, "case {i}");
+            // A bad tag leaves the ciphertext as it was (the fused path decrypts and restores).
+            let mut bad = tb;
+            bad[0] ^= 1;
+            assert!(
+                hw.decrypt_in_place_detached(&nonce, &aad, &mut a, &bad)
+                    .is_err()
+            );
+            assert_eq!(a, b);
+            hw.decrypt_in_place_detached(&nonce, &aad, &mut a, &tb)
+                .unwrap();
+            assert_eq!(a, pt);
+            sw.decrypt_in_place_detached(&nonce, &aad, &mut b, &ta)
+                .unwrap();
+            assert_eq!(b, pt);
+        }
+        // GF(2^128) multiplication: H^8 by repeated multiplication matches the hardware powers'
+        // use (checked above); also 1·x = x (1 is the block 0x80 00 .. 00).
+        let one = [0, 1u64 << 63];
+        let x = [0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210];
+        assert_eq!(gf_mul(one, x), x);
+        assert_eq!(gf_mul(x, one), x);
+        println!(
+            "hardware GHASH: {}",
+            AesGcm::new(&[0; 16]).unwrap().is_hardware()
+        );
     }
 
     #[test]

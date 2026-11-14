@@ -195,7 +195,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
   - 仅测试用的工具（loom、rcgen 等）最后替换，或保留
 
 ### 性能优化阶段（第 D 波之后；完成后再考虑发布 1.0.0）
-- [ ] `only-crypto` CPU 指令加速：SHA-NI / ARMv8 SHA、PMULL / PCLMULQDQ GHASH、CRC32 指令（TLS 大块传输与 BitTorrent 哈希），更快的 P-256（专用域运算）与 RSA（乘法），X25519
+- [x] `only-crypto` CPU 指令加速：SHA-NI / ARMv8 SHA、PMULL / PCLMULQDQ GHASH、CRC32 指令（TLS 大块传输与 BitTorrent 哈希），更快的 P-256（专用域运算）与 RSA（乘法），X25519（已完成：运行时检测的 AES-NI / ARMv8 AES CTR 一次 8 个分组，PCLMULQDQ / PMULL GHASH 与 CTR 单趟融合的 AES-GCM，SHA-NI / ARMv8 SHA，PCLMULQDQ 折叠 / SSE4.2 / ARMv8 CRC32，AVX2 ChaCha20，44 位 limb 的 Poly1305，P-256 专用约简 + 求逆加法链 + 有符号仿射梳形表 + Jacobian wNAF 验签，Ed25519 wNAF 验签，Curve25519 专用平方，带专用平方的定长 RSA Montgomery；unsafe 仅限五个 `hw` 模块，`ONLY_CRYPTO_PORTABLE=1` 强制使用可移植实现。在 Ryzen 7800X3D 上：SHA-1/SHA-256 达到 RustCrypto 的速度（3.6 倍 / 6.5 倍），AES-128-GCM 6.5 GB/s（17.8 倍，TLS 16 KiB 记录为 rustls+ring 的 0.64 倍），CRC-32 7 倍，P-256 验签 1.67 倍 / 签名 1.46 倍，TLS 1.3 握手 1.5 倍（rustls+ring 的 0.60 倍）；见 docs/BENCHMARKS.zh-CN.md。未完成：VAES/VPCLMULQDQ 内核（intrinsic 比 MSRV 新）、SIMD Poly1305、更便宜的 P-256 秘密标量倍点、RSA Karatsuba）
 - [ ] `only-deflate` 匹配器提速（4 字节哈希、medium 策略），缩小与 zlib-rs 0.25–0.6 倍的差距
 - [ ] 自研替换完成后重新剖析 TLS / QUIC / HTTP 热路径；h2 与 pipelined HTTP/1 对比 fib
 - [ ] 在空闲机器（DPDK 用真实网卡）上重跑基准并更新 `docs/BENCHMARKS.md`

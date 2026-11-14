@@ -3,18 +3,29 @@
 [中文](README.zh-CN.md)
 
 Dependency-free cryptographic primitives for the [`only`](https://github.com/lesismal/only)
-crates, in safe Rust on `std` only (`#![deny(unsafe_code)]`; the one exception is the module
-that drives the CPU's AES instructions; the OS random syscall lives in `only-sys`).
+crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are five small modules
+that drive CPU instructions, detected at run time; the OS random syscall lives in `only-sys`).
+
+| Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
+|---|---|---|
+| AES block cipher, CTR (8 blocks in flight) | AES-NI | ARMv8 AES |
+| AES-GCM (GHASH fused with CTR, 8 blocks per reduction) | PCLMULQDQ + AES-NI | PMULL + ARMv8 AES |
+| SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
+| CRC-32, CRC-32C | PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
+| ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
+
+`ONLY_CRYPTO_PORTABLE=1` (read once) forces the portable code everywhere; the tests run every
+known-answer vector with and without it. Under Miri nothing is detected.
 
 | Module | What |
 |---|---|
 | `hash` | SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, MD5 (streaming and one-shot, `Hash` trait) |
 | `mac` | HMAC over any `Hash` (constant-time `verify`) |
 | `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
-| `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli), slicing-by-8 |
+| `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR |
-| `gcm` | AES-GCM, constant-time GHASH (BearSSL `ctmul64`) |
-| `chacha` | ChaCha20, Poly1305, ChaCha20-Poly1305 (RFC 8439) |
+| `gcm` | AES-GCM: PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`) |
+| `chacha` | ChaCha20 (8 blocks with AVX2, else 4-block lanes), Poly1305 (44-bit limbs, two blocks per step), ChaCha20-Poly1305 (RFC 8439) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
 | `ct_eq` | constant-time comparison |
@@ -43,54 +54,70 @@ assert_eq!(gcm.decrypt(&[0u8; 12], b"aad", &sealed).unwrap(), b"plaintext");
 
 This is an implementation crate: its API follows the needs of the other `only` crates and may
 change in any release (internal tier, docs/api-stability.md). It is not a general-purpose
-cryptography library (no key zeroization; only AES uses CPU instructions, the hashes, GHASH and
-CRC-32 are portable code). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
+cryptography library (no key zeroization, no assembly; SHA-512, MD5, Poly1305 and the
+public-key arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
 planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x509).
 
 ## Public-key timing
 
-- Secret-dependent code has no secret-dependent branches or memory indices. P-256, P-384 and
-  all scalar fields use 64-bit-limb Montgomery arithmetic (CIOS) with masked final
-  subtractions, generic over the limb count, constants derived at compile time; inversion is
-  Fermat exponentiation with a fixed public exponent. Curve25519 uses radix 2⁵¹.
-- Points use complete formulas (Renes–Costello–Batina for `a = -3`, unified extended Edwards
-  addition), so no input takes a different path. Secret scalar multiplications use fixed 4-bit
-  windows (variable base) or a precomputed comb table of `j·16ⁱ·G` (fixed base), and every
-  lookup reads all 16 entries with masks; X25519 is the RFC 7748 ladder with masked swaps.
+- Secret-dependent code has no secret-dependent branches or memory indices. P-384 and all
+  scalar fields use 64-bit-limb Montgomery arithmetic (CIOS multiplication, squaring as a
+  half-size product plus REDC) with masked final subtractions, generic over the limb count,
+  constants derived at compile time. The P-256 base field has a dedicated reduction (`-p⁻¹ mod
+  2⁶⁴ = 1`, so each step costs one real multiplication) and inverts by an addition chain (255
+  squarings, 12 multiplications); other inversions use 4-bit fixed windows over the public
+  exponent `p - 2`. Curve25519 uses radix 2⁵¹ with a dedicated squaring.
+- Points use complete formulas (Renes–Costello–Batina for `a = -3`, including the mixed
+  addition with an affine point, unified extended Edwards addition), so no input takes a
+  different path. `[k]G` recodes `k` into signed 4-bit digits (masked arithmetic) and adds one
+  affine comb entry `|d|·16ⁱ·G` per digit: each lookup reads all 8 entries of the row with
+  masks, the negation and the skipping of a zero digit are masked selects. Variable-base secret
+  multiplication uses fixed 4-bit windows reading all 16 entries; X25519 is the RFC 7748 ladder
+  with masked swaps.
 - RSA private operations: CRT exponentiation with fixed 4-bit windows over the full exponent
-  length and masked table selection, base blinding (`rᵉ`, `r⁻¹` per key, inverted by Fermat in
+  length and masked table selection (fixed-size Montgomery code for 1024- to 4096-bit primes,
+  squaring by a half-size product), base blinding (`rᵉ`, `r⁻¹` per key, inverted by Fermat in
   each prime field, squared after each use) and a check that `sᵉ = m` before releasing the
   signature. Moduli reductions are constant time; public `p`/`q` limb counts are not hidden.
-- Known variable-time parts, all on public data: signature verification (ECDSA `u₁G + u₂Q`,
-  Ed25519 `[k]A`, RSA `sᵉ`), point decoding/validation, the `Option`/`Result` outcome of range
-  checks, RFC 6979's rejection loop (probability ~2⁻³²), `SecretKey::generate`'s rejection
-  sampling, affine conversion branching on the identity (impossible for valid secret scalars).
+- Known variable-time parts, all on public data: signature verification (ECDSA `u₁G + u₂Q` in
+  Jacobian coordinates with width-7 / width-5 wNAF and a projective `x ≡ r` check, Ed25519
+  `[s]B - [k]A` with interleaved wNAF, RSA `sᵉ`), table construction, point
+  decoding/validation, the `Option`/`Result` outcome of range checks, RFC 6979's rejection loop
+  (probability ~2⁻³²), `SecretKey::generate`'s rejection sampling, affine conversion branching
+  on the identity (impossible for valid secret scalars).
 - Limits: masks go through `std::hint::black_box`, which discourages but does not forbid the
-  optimizer from reintroducing branches; nothing is checked at the binary level (no dudect or
-  ctgrind run yet). Keys are not zeroized.
+  optimizer from reintroducing branches; without it LLVM does turn some masked modular
+  corrections into jumps, so the barrier stays even where it costs speed. The x86_64 and
+  aarch64 code of the P-256 / P-384 point operations, the field multiplication, squaring and
+  inversion and the X25519 ladder was inspected: no conditional branch besides loop control.
+  No statistical test (dudect, ctgrind) has been run. Keys are not zeroized. The CPU
+  instructions used (AES, carry-less multiplication, SHA, CRC32, AVX2) take constant time.
 
-## Performance vs ring
+## Performance
 
-`cargo run --release -p only-crypto --example pk_bench` (Apple M-series, one core, operations
-per second; ring uses assembly for P-256, X25519 and RSA Montgomery multiplication):
+AMD Ryzen 7 7800X3D (x86_64, one core), `cargo run --release -p only-crypto --example bench`
+and `--example pk_bench`; before = the previous release, the full tables and the TLS / KCP
+numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-crypto-cpu-acceleration):
 
-| Operation | only | ring | ratio |
+| Operation | before | after | vs RustCrypto / ring |
 |---|---:|---:|---:|
-| Ed25519 sign | 104,900 | 128,300 | 0.82x |
-| Ed25519 verify | 31,600 | 48,000 | 0.66x |
-| X25519 agreement | 46,500 | 54,500 | 0.85x |
-| P-256 ECDSA sign | 28,200 | 84,300 | 0.34x |
-| P-256 ECDSA verify | 9,700 | 32,800 | 0.30x |
-| P-256 ECDH (incl. point decoding) | 12,100 | 37,000 | 0.33x |
-| P-384 ECDSA sign | 9,800 | 4,300 | 2.27x |
-| P-384 ECDSA verify | 3,100 | 2,400 | 1.29x |
-| P-384 ECDH | 3,600 | 4,600 | 0.78x |
-| RSA-2048 PKCS#1 sign | 1,130 | 3,000 | 0.38x |
-| RSA-2048 PKCS#1 verify | 35,500 | 88,600 | 0.40x |
+| SHA-1, 16 KiB (MB/s) | 697 | 2 543 | 1.00x sha1 |
+| SHA-256, 16 KiB | 366 | 2 383 | 1.00x sha2 |
+| CRC-32, 16 KiB | 2 733 | 20 047 | 0.27x crc32fast |
+| AES-128-GCM seal, 16 KiB | 364 | 6 484 | 2.98x aes-gcm |
+| ChaCha20-Poly1305 seal, 16 KiB | 588 | 1 757 | 0.89x chacha20poly1305 |
+| Ed25519 verify (op/s) | 18 289 | 27 161 | 0.85x ring |
+| X25519 agreement | 28 865 | 30 945 | 0.84x ring |
+| P-256 ECDSA sign | 23 435 | 34 184 | 0.45x ring |
+| P-256 ECDSA verify | 8 043 | 13 397 | 0.51x ring |
+| P-256 ECDH | 10 075 | 10 390 | 0.34x ring |
+| P-384 ECDSA verify | 2 426 | 3 798 | 2.03x ring |
+| RSA-2048 PKCS#1 sign | 871 | 1 199 | 0.49x ring |
+| RSA-2048 PKCS#1 verify | 29 019 | 39 557 | 0.60x ring |
 
-(ring's ECDH numbers include generating its ephemeral key.) Follow-ups: a dedicated P-256 field
-(Solinas reduction or fiat-crypto style), wNAF / precomputed-table verification, Karatsuba or
-CPU-specific multiplication for RSA.
+ring uses assembly for AES-GCM, P-256, X25519 and RSA. Follow-ups: VAES / VPCLMULQDQ kernels
+(newer than the MSRV), a SIMD Poly1305, cheaper doublings for secret P-256 scalars, Karatsuba
+for RSA.
 
 ## Testing
 
@@ -98,7 +125,12 @@ CPU-specific multiplication for RSA.
   specification, RFC 1321, 2202, 4231, 5869, 6070, 3720, 4648, 8439, and Wycheproof (AES-GCM,
   ChaCha20-Poly1305, HMAC-SHA1/SHA256, HKDF-SHA256), vendored under `tests/data/`.
 - `tests/compat.rs` cross-checks every primitive against the replaced crates (dev-dependencies
-  only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead`, `crypto_base64`.
+  only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also hardware against
+  portable AES-GCM), `crypto_base64`.
+- Hardware paths: unit tests compare each one with the portable code (`hardware_matches_portable`
+  for AES, CTR, GCM, SHA-1, SHA-256, `hardware_matches_table` for CRC, the multi-block ChaCha20
+  and two-block Poly1305 against one block at a time), and the whole suite also runs with
+  `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.
 - `cargo run --release -p only-crypto --example bench` compares throughput with the replaced
   crates.
 - Public key (`tests/pk_kat.rs`): Wycheproof X25519, Ed25519, ECDSA P-256/SHA-256 (DER and

@@ -1,8 +1,8 @@
 //! SHA-224 and SHA-256 (FIPS 180-4, section 6.2 and 6.3).
 
-use super::{Buffer, impl_hash};
+use super::{Buffer, blocks, impl_hash};
 
-const K: [u32; 64] = [
+pub(super) const K: [u32; 64] = [
     0x428a_2f98,
     0x7137_4491,
     0xb5c0_fbcf,
@@ -107,12 +107,12 @@ impl Core {
 
     fn update(&mut self, data: &[u8]) {
         let state = &mut self.state;
-        self.buf.update(data, |b| compress(state, b));
+        self.buf.update(data, |d| compress_blocks(state, d));
     }
 
     fn finish(mut self, out: &mut [u8]) {
         let state = &mut self.state;
-        self.buf.finish(8, true, |b| compress(state, b));
+        self.buf.finish(8, true, |d| compress_blocks(state, d));
         for (o, s) in out.chunks_mut(4).zip(self.state) {
             o.copy_from_slice(&s.to_be_bytes()[..o.len()]);
         }
@@ -173,6 +173,16 @@ impl Sha224 {
 
 impl_hash!(Sha224, 64, 28);
 
+/// Compresses whole 64-byte blocks: the SHA instructions when the CPU has them, else
+/// [`compress`].
+#[inline]
+fn compress_blocks(state: &mut [u32; 8], data: &[u8]) {
+    if super::hw::enabled() && super::hw::sha256(state, data) {
+        return;
+    }
+    blocks(data).for_each(|b| compress(state, b));
+}
+
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for (w, b) in w.iter_mut().zip(block.chunks_exact(4)) {
@@ -216,6 +226,21 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
 mod tests {
     use super::super::hex;
     use super::*;
+
+    /// The SHA instructions (when present) and the portable compression agree.
+    #[test]
+    fn hardware_matches_portable() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([4; 32]);
+        let mut data = vec![0u8; 64 * 9];
+        for _ in 0..50 {
+            rng.fill(&mut data);
+            let mut a = H256;
+            let mut b = H256;
+            compress_blocks(&mut a, &data);
+            blocks(&data).for_each(|blk| compress(&mut b, blk));
+            assert_eq!(a, b);
+        }
+    }
 
     #[test]
     fn vectors() {

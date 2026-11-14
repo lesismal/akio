@@ -28,6 +28,27 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 性能：`only-crypto` 的 CPU 指令加速
+
+`only-crypto` 现在在 CPU 支持时使用 CPU 指令（运行时检测），每条路径都以常数时间的可移植实现作为回退
+（DEV-PLAN“性能优化”）；API 不变。
+
+- x86_64：SHA-1 / SHA-256 使用 SHA-NI，AES-NI CTR 一次 8 个分组，AES-GCM 的 PCLMULQDQ GHASH（每次归约
+  8 个分组）与 CTR 单趟融合，CRC-32 与 CRC-32C 使用 PCLMULQDQ 折叠以及 SSE4.2 `crc32` 指令，AVX2 ChaCha20
+  （8 个分组）。
+- aarch64：ARMv8 SHA1/SHA2、ARMv8 AES CTR、与 CTR 融合的 PMULL GHASH、ARMv8 CRC32 指令；ChaCha20 使用由
+  编译器向量化的 4 分组并行布局（其他平台的可移植路径也是它）。
+- 安全 Rust：44 位 limb 的 Poly1305（每步两个分组）；P-256 的专用 Montgomery 约简、加法链求逆、`[k]G` 的
+  有符号仿射点梳形表以及无需求逆的 Jacobian wNAF 验签；Ed25519 交错 wNAF 验签；Curve25519、NIST 域与 RSA
+  的专用平方；定长 RSA Montgomery 乘法；其余求逆使用窗口幂运算。
+- `unsafe` 仍只出现在指令模块（`aes::hw`、`gcm::hw`、`hash::hw`、`crc::hw`、`chacha::hw`）中，每次调用前
+  都经过检测（docs/unsafe-review.zh-CN.md）。`ONLY_CRYPTO_PORTABLE=1` 强制使用可移植实现（测试、基准）；
+  Miri 运行的也是它。
+- Ryzen 7 7800X3D 单核：SHA-1 3.6 倍、SHA-256 6.5 倍（与 RustCrypto crate 持平），AES-128-GCM
+  364 → 6 484 MB/s，CRC-32 2.7 → 20 GB/s，ChaCha20-Poly1305 3 倍，P-256 验签 1.67 倍 / 签名 1.46 倍，Ed25519
+  验签 1.49 倍，RSA-2048 签名 1.38 倍；TLS 1.3 握手 1.5 倍，16 KiB AES-GCM 记录 15 倍（分别为 rustls + ring
+  的 0.60 倍与 0.64 倍）。表格见 docs/BENCHMARKS.zh-CN.md。
+
 ### 变更（破坏性，1.0.0 之前）：封装 1.0 之前的依赖
 
 rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保护的 API 中，因此 1.0.0 之后

@@ -155,9 +155,25 @@ impl Fe {
         Fe(r)
     }
 
+    /// `self²`: 15 products instead of 25 (cross terms doubled, the `19` of the reduction folded
+    /// into the operands).
     #[inline]
     pub(crate) fn square(&self) -> Fe {
-        self.mul(self)
+        let a = &self.0;
+        let m = |x: u64, y: u64| u128::from(x) * u128::from(y);
+        let a0_2 = a[0] * 2;
+        let a1_2 = a[1] * 2;
+        let a1_38 = a[1] * 38;
+        let a2_38 = a[2] * 38;
+        let a3_38 = a[3] * 38;
+        let a3_19 = a[3] * 19;
+        let a4_19 = a[4] * 19;
+        let c0 = m(a[0], a[0]) + m(a1_38, a[4]) + m(a2_38, a[3]);
+        let c1 = m(a0_2, a[1]) + m(a2_38, a[4]) + m(a3_19, a[3]);
+        let c2 = m(a0_2, a[2]) + m(a[1], a[1]) + m(a3_38, a[4]);
+        let c3 = m(a0_2, a[3]) + m(a1_2, a[2]) + m(a4_19, a[4]);
+        let c4 = m(a0_2, a[4]) + m(a1_2, a[3]) + m(a[2], a[2]);
+        Self::reduce_wide([c0, c1, c2, c3, c4])
     }
 
     fn square_n(&self, n: u32) -> Fe {
@@ -264,5 +280,13 @@ mod tests {
             x.mul_small(121_666).to_bytes(),
             x.mul(&Fe::from_u64(121_666)).to_bytes()
         );
+        // Squaring matches multiplication, also for loosely reduced limbs near 2^52.
+        let mut y = x;
+        for _ in 0..100 {
+            assert_eq!(y.square().to_bytes(), y.mul(&y).to_bytes());
+            y = y.mul(&x).add(&x);
+        }
+        let big = Fe([(1 << 52) - 1; 5]);
+        assert_eq!(big.square().to_bytes(), big.mul(&big).to_bytes());
     }
 }

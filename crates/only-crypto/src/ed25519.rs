@@ -185,7 +185,7 @@ impl VerifyingKey {
         let (mut sb, mut kb) = ([0u8; 32], [0u8; 32]);
         s.write_le(&mut sb);
         k.write_le(&mut kb);
-        let r = Point::mul_base(&sb).add(&a.neg().mul_vartime(&kb));
+        let r = a.neg().mul_add_base_vartime(&sb, &kb);
         if r.compress()[..] == sig[..32] {
             Ok(())
         } else {

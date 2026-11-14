@@ -2,8 +2,8 @@
 
 use std::sync::OnceLock;
 
-use super::{Curve, Point};
-use crate::field::Modulus;
+use super::{BaseTables, Curve};
+use crate::field::{Modulus, mul_wide, sqr_wide, sub_if_ge};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct P256;
@@ -19,6 +19,73 @@ impl Modulus<4> for P256P {
         0x0000_0000_0000_0000,
         0xffff_ffff_0000_0001,
     ];
+
+    #[inline]
+    fn mont_mul(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+        p256_redc(&mul_wide::<4, 8>(a, b))
+    }
+
+    #[inline]
+    fn mont_sqr(a: &[u64; 4]) -> [u64; 4] {
+        p256_redc(&sqr_wide::<4, 8>(a))
+    }
+
+    fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
+        Some(p256_inv(a))
+    }
+}
+
+/// Montgomery reduction modulo the P-256 prime `p = 2²⁵⁶ - 2²²⁴ + 2¹⁹² + 2⁹⁶ - 1` of an 8-limb
+/// `t < p·2²⁵⁶`. `-p⁻¹ mod 2⁶⁴ = 1`, so each step's multiplier is the low limb `m` itself, and
+/// `m·p` needs one multiplication: adding `m·(2⁹⁶ - 1)` clears the low limb and adds `m·2⁹⁶`
+/// (two shifted words); only `m·p₃` (`p₃ = 2⁶⁴ - 2³² + 1`) is a real product. Constant time.
+#[inline(always)]
+fn p256_redc(t: &[u64; 8]) -> [u64; 4] {
+    const P3: u64 = 0xffff_ffff_0000_0001;
+    let mut t = *t;
+    let mut carry = 0u64;
+    for i in 0..4 {
+        let m = t[i];
+        let x = u128::from(t[i + 1]) + u128::from(m << 32);
+        t[i + 1] = x as u64;
+        let x = u128::from(t[i + 2]) + u128::from(m >> 32) + (x >> 64);
+        t[i + 2] = x as u64;
+        let mp = u128::from(m) * u128::from(P3);
+        let x = u128::from(t[i + 3]) + u128::from(mp as u64) + (x >> 64);
+        t[i + 3] = x as u64;
+        let x = u128::from(t[i + 4]) + (mp >> 64) + (x >> 64) + u128::from(carry);
+        t[i + 4] = x as u64;
+        carry = (x >> 64) as u64;
+    }
+    sub_if_ge([t[4], t[5], t[6], t[7]], carry, &P256P::P)
+}
+
+/// `a^(p-2)` (Montgomery form) by the addition chain of mmcloughlin/addchain for P-256 (255
+/// squarings, 12 multiplications; the same as Go's `p256Invert`): constant time.
+fn p256_inv(a: &[u64; 4]) -> [u64; 4] {
+    let mul = |x: &[u64; 4], y: &[u64; 4]| P256P::mont_mul(x, y);
+    let sqn = |x: &[u64; 4], n: usize| {
+        let mut r = *x;
+        for _ in 0..n {
+            r = P256P::mont_sqr(&r);
+        }
+        r
+    };
+    let z = a;
+    let t10 = sqn(z, 1);
+    let t11 = mul(z, &t10);
+    let t110 = sqn(&t11, 1);
+    let t111 = mul(z, &t110);
+    let t111000 = sqn(&t111, 3);
+    let t111111 = mul(&t111, &t111000);
+    let x12 = mul(&sqn(&t111111, 6), &t111111);
+    let x15 = mul(&sqn(&x12, 3), &t111);
+    let x16 = mul(&sqn(&x15, 1), z);
+    let x32 = mul(&sqn(&x16, 16), &x16);
+    let i53 = sqn(&x32, 15);
+    let x47 = mul(&x15, &i53);
+    let i263 = sqn(&mul(&sqn(&mul(&sqn(&i53, 17), z), 143), &x47), 47);
+    mul(&sqn(&mul(&x47, &i263), 2), z)
 }
 impl Modulus<4> for P256N {
     const P: [u64; 4] = [
@@ -49,9 +116,9 @@ impl Curve<4> for P256 {
         0x8ee7_eb4a_7c0f_9e16,
         0x4fe3_42e2_fe1a_7f9b,
     ];
-    fn base_table() -> &'static [[Point<Self, 4>; 16]] {
-        static T: OnceLock<Vec<[Point<P256, 4>; 16]>> = OnceLock::new();
-        T.get_or_init(Point::build_base_table)
+    fn tables() -> &'static BaseTables<Self, 4> {
+        static T: OnceLock<BaseTables<P256, 4>> = OnceLock::new();
+        T.get_or_init(BaseTables::build)
     }
 }
 
@@ -109,9 +176,9 @@ impl Curve<6> for P384 {
         0x5d9e_98bf_9292_dc29,
         0x3617_de4a_9626_2c6f,
     ];
-    fn base_table() -> &'static [[Point<Self, 6>; 16]] {
-        static T: OnceLock<Vec<[Point<P384, 6>; 16]>> = OnceLock::new();
-        T.get_or_init(Point::build_base_table)
+    fn tables() -> &'static BaseTables<Self, 6> {
+        static T: OnceLock<BaseTables<P384, 6>> = OnceLock::new();
+        T.get_or_init(BaseTables::build)
     }
 }
 
@@ -140,6 +207,45 @@ mod tests {
             g.mul_add_base_vartime(&Scalar::<C, L>::ONE, &Scalar::<C, L>::ONE)
                 .to_uncompressed(),
             Point::<C, L>::mul_base(&two).to_uncompressed()
+        );
+        // Mixed addition matches full addition, also from the identity; wNAF verification math
+        // on random scalars matches the constant-time multiplications.
+        let (gx, gy) = g.to_affine().unwrap();
+        let g3 = g.double().add(&g);
+        assert_eq!(
+            g3.add_affine(&gx, &gy).to_uncompressed(),
+            g3.add(&g).to_uncompressed()
+        );
+        assert_eq!(
+            Point::<C, L>::identity()
+                .add_affine(&gx, &gy)
+                .to_uncompressed(),
+            g.to_uncompressed()
+        );
+        let mut rng = crate::rand::ChaChaRng::from_seed([L as u8; 32]);
+        for _ in 0..20 {
+            let mut b = vec![0u8; 8 * L];
+            rng.fill(&mut b);
+            let a = Scalar::<C, L>::from_be_bytes_reduce(&b).unwrap();
+            rng.fill(&mut b);
+            let k = Scalar::<C, L>::from_be_bytes_reduce(&b).unwrap();
+            let q = Point::<C, L>::mul_base(&k);
+            assert_eq!(
+                Point::<C, L>::mul_base(&a).to_uncompressed(),
+                g.mul(&a).to_uncompressed()
+            );
+            let want = Point::<C, L>::mul_base(&a).add(&q.mul(&k));
+            assert_eq!(
+                q.mul_add_base_vartime(&a, &k).to_uncompressed(),
+                want.to_uncompressed()
+            );
+        }
+        // Digits that carry into the top row: n - 1 has top nibble f.
+        let top =
+            Scalar::<C, L>::from_limbs_canonical(&sub_small(&<C::Fq as Modulus<L>>::P, 2)).unwrap();
+        assert_eq!(
+            Point::<C, L>::mul_base(&top).to_uncompressed(),
+            g.mul(&top).to_uncompressed()
         );
         // Compressed round trip.
         let u = g.double().to_uncompressed().unwrap();

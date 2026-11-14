@@ -30,6 +30,29 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Performance: CPU acceleration in `only-crypto`
+
+`only-crypto` now uses CPU instructions where the CPU has them, detected at run time, each with
+the constant-time portable code as fallback (DEV-PLAN "Performance pass"); no API change.
+
+- x86_64: SHA-NI for SHA-1 / SHA-256, AES-NI CTR eight blocks at a time, AES-GCM with PCLMULQDQ
+  GHASH (eight blocks per reduction) fused into the CTR pass, PCLMULQDQ folding for CRC-32 and
+  CRC-32C plus the SSE4.2 `crc32` instruction, AVX2 ChaCha20 (eight blocks).
+- aarch64: ARMv8 SHA1/SHA2, ARMv8 AES CTR, PMULL GHASH fused with CTR, ARMv8 CRC32 instructions;
+  ChaCha20 in a 4-block lane layout the compiler vectorizes (also the portable path elsewhere).
+- Safe Rust: Poly1305 in 44-bit limbs (two blocks per step); P-256 with a dedicated Montgomery
+  reduction, an addition-chain inversion, a signed comb of affine points for `[k]G` and Jacobian
+  wNAF verification without inversion; Ed25519 verification by interleaved wNAF; squaring
+  routines for Curve25519, the NIST fields and RSA; fixed-size RSA Montgomery multiplication;
+  windowed exponentiation for the remaining inversions.
+- `unsafe` stays confined to the instruction modules (`aes::hw`, `gcm::hw`, `hash::hw`,
+  `crc::hw`, `chacha::hw`), every call behind detection (docs/unsafe-review.md).
+  `ONLY_CRYPTO_PORTABLE=1` forces the portable code (tests, benchmarks); Miri runs it.
+- Ryzen 7 7800X3D, one core: SHA-1 3.6x and SHA-256 6.5x (equal to the RustCrypto crates),
+  AES-128-GCM 364 → 6 484 MB/s, CRC-32 2.7 → 20 GB/s, ChaCha20-Poly1305 3x, P-256 verify 1.67x /
+  sign 1.46x, Ed25519 verify 1.49x, RSA-2048 sign 1.38x; TLS 1.3 handshakes 1.5x and 16 KiB
+  AES-GCM records 15x (0.60x and 0.64x rustls + ring). Tables in docs/BENCHMARKS.md.
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so
