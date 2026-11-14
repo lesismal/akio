@@ -524,10 +524,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src, llvm-tools
+          components: rust-src
       - name: Symbolizer for sanitizer reports
+        # Rust's llvm-tools component has no llvm-symbolizer; the runner image's LLVM does.
         run: |
-          sym=$(find "$(rustc --print sysroot)" -name llvm-symbolizer -type f | head -1)
+          sym=$(command -v llvm-symbolizer || find /usr/bin -name 'llvm-symbolizer-*' | sort -V | tail -1)
+          if [ -z "$sym" ]; then sudo apt-get install -y -qq llvm >/dev/null && sym=$(command -v llvm-symbolizer); fi
           echo "ASAN_SYMBOLIZER_PATH=$sym" >> "$GITHUB_ENV"
           echo "TSAN_SYMBOLIZER_PATH=$sym" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@v2

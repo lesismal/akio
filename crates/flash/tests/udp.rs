@@ -349,14 +349,15 @@ impl Handler for Cli {
     }
 }
 
-struct CliAcceptor(Arc<Log>, &'static [u8]);
+/// Sends its message once the connection opens.
+struct CliAcceptor(Arc<Log>, std::borrow::Cow<'static, [u8]>);
 
 impl Acceptor for CliAcceptor {
     type Handler = Cli;
     fn on_open(&self, c: &Conn<Cli>) -> Cli {
         self.0.conns.lock().unwrap().push(c.clone());
         if !self.1.is_empty() {
-            c.send(self.1).unwrap();
+            c.send(&self.1).unwrap();
         }
         Cli(self.0.clone())
     }
@@ -403,8 +404,8 @@ fn dialed_udp_connections_talk_to_a_flash_server_from_their_own_ports() {
     let client = client_engine(2);
     let logs: Vec<Arc<Log>> = (0..30).map(|_| Arc::new(Log::default())).collect();
     for (i, log) in logs.iter().enumerate() {
-        let msg: &'static [u8] = Box::leak(format!("ping-{i}").into_bytes().into_boxed_slice());
-        client.dial_udp(addr, CliAcceptor(log.clone(), msg), |e| panic!("dial: {e}"));
+        let msg = format!("ping-{i}").into_bytes();
+        client.dial_udp(addr, CliAcceptor(log.clone(), msg.into()), |e| panic!("dial: {e}"));
     }
     for (i, log) in logs.iter().enumerate() {
         wait_for("echo", || !log.got.lock().unwrap().is_empty());
@@ -427,7 +428,7 @@ fn dialing_a_closed_port_ends_with_connection_refused() {
     }; // socket dropped: nobody listens, the kernel answers with ICMP port unreachable
     let client = client_engine(1);
     let log = Arc::new(Log::default());
-    client.dial_udp(dead, CliAcceptor(log.clone(), b"anyone?"), |e| {
+    client.dial_udp(dead, CliAcceptor(log.clone(), b"anyone?"[..].into()), |e| {
         panic!("{e}")
     });
     wait_for("refused", || !log.closed.lock().unwrap().is_empty());
@@ -445,7 +446,7 @@ fn silent_server_means_idle_timeout_for_the_client() {
     let log = Arc::new(Log::default());
     client.dial_udp(
         silent.local_addr().unwrap(),
-        CliAcceptor(log.clone(), b"hello?"),
+        CliAcceptor(log.clone(), b"hello?"[..].into()),
         |e| panic!("{e}"),
     );
     wait_for("idle", || !log.closed.lock().unwrap().is_empty());
@@ -462,7 +463,7 @@ fn dialed_connection_can_send_from_another_thread_and_closes_cleanly() {
     let addr = server.local_addrs()[0];
     let client = client_engine(1);
     let log = Arc::new(Log::default());
-    client.dial_udp(addr, CliAcceptor(log.clone(), b""), |e| panic!("{e}"));
+    client.dial_udp(addr, CliAcceptor(log.clone(), b""[..].into()), |e| panic!("{e}"));
     wait_for("conn", || !log.conns.lock().unwrap().is_empty());
     let conn = log.conns.lock().unwrap()[0].clone();
     let t = thread::spawn({
@@ -492,7 +493,7 @@ fn dial_udp_without_udp_threads_is_an_error() {
     let f = failed.clone();
     e.dial_udp(
         "127.0.0.1:9".parse().unwrap(),
-        CliAcceptor(Arc::new(Log::default()), b""),
+        CliAcceptor(Arc::new(Log::default()), b""[..].into()),
         move |_| {
             f.fetch_add(1, Ordering::SeqCst);
         },
