@@ -8,16 +8,16 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-core = { path = "../flash-core" }
+flash-core = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`flash_mux::fuzzing`); not a public API.
 fuzzing = ["flash-core/fuzzing"]
 
 [dev-dependencies]
-flash-core = { path = "../flash-core", features = ["fuzzing"] }
-flash = { path = "../flash" }
-flash-http = { path = "../flash-http" }
+flash-core = { workspace = true, features = ["fuzzing"] }
+flash = { workspace = true }
+flash-http = { workspace = true }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 
 [lints]

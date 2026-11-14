@@ -2,12 +2,13 @@ name: CI
 
 # Layout
 #   Gate (every push and PR):  lint, docs, book, test-linux (epoll + io_uring, x86_64 + arm64),
-#                              msrv, features, miri, loom, coverage, autobahn, h2spec
+#                              msrv, features, miri, loom, coverage, autobahn, h2spec,
+#                              supply-chain (cargo-deny, cargo-audit, unsafe inventory)
 #   Best effort:               test-macos (macOS runners are often not scheduled for capacity;
 #                              a job that never starts is not a code failure)
 #   Heavy (push to main, nightly schedule, manual run, or a PR labelled `full-ci`):
 #                              interop (Go peers: arpc, grpc, kcp, h3), fuzz (all targets, 5 min
-#                              each)
+#                              each), sanitizers (ASan + TSan on the core and backend tests)
 #   Deploy (push to main):     book-deploy (GitHub Pages)
 #   ci-ok:                     one status to require in branch protection.
 #
@@ -201,18 +202,39 @@ jobs:
         run: cargo test -p flash-http --no-default-features -- --test-threads=1
 
   miri:
-    # Pure-Rust crates only; crates with OS syscalls are excluded.
+    # Pure-Rust code only (Miri cannot run syscalls): the core crates, the protocol crates'
+    # unit tests and the syscall-free io_uring buffer-ring tests. Skipped: flash-grpc's gzip
+    # test (zlib-rs 0.6.8 violates Stacked/Tree Borrows in its Deflate drop, see
+    # docs/unsafe-review.md) and tests too slow under Miri (deflate round trips, exhaustive
+    # split loops, flash-ebpf's interpreter sweeps).
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       # rust-toolchain.toml pins stable; override it for this job.
       RUSTUP_TOOLCHAIN: nightly
+      MIRIFLAGS: -Zmiri-disable-isolation
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
         with:
-          components: miri
+          components: miri, rust-src
       - run: cargo miri test -p flash-timer -p flash-buf -p flash-core
+      # `fuzzing::` tests replay the fuzz corpora: minutes per crate under Miri, and the fuzz
+      # job already runs those inputs natively.
+      - run: >-
+          cargo miri test --lib -p flash-pool -p flash-http -p flash-mux
+          -p flash-arpc -p flash-h3 -p flash-kcp -- --skip fuzzing::
+      - name: flash-socks (its test connection leaves a helper thread running at exit)
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
+        run: "cargo miri test -p flash-socks --lib -- --skip fuzzing::"
+      - run: "cargo miri test -p flash-grpc --lib -- --skip framing_and_gzip --skip fuzzing::"
+      - run: >-
+          cargo miri test -p flash-ws --lib --
+          protocol:: session:: client:: deflate::tests::negotiation deflate::tests::client_offer
+          --skip messages_survive_any_split --skip fuzzing::
+      - name: io_uring buffer ring (kernel-shared memory, no syscalls)
+        run: cargo miri test -p flash-uring --lib -- buf_ring kernel_buf
 
   loom:
     # Model-checks the cork/send/close protocols of flash-core::conn (see loom_tests).
@@ -383,16 +405,65 @@ jobs:
             fuzz/logs/
           if-no-files-found: ignore
 
-  # Supply chain (placeholder): cargo-deny (licenses, bans, sources, advisories) and
-  # cargo-audit jobs go here once deny.toml lands, e.g.
-  #   deny:  runs-on ubuntu-latest; uses: EmbarkStudios/cargo-deny-action@v2
-  #   audit: runs-on ubuntu-latest; uses: rustsec/audit-check@v2 (or `cargo deny check advisories`)
-  # and are added to ci-ok.needs.
+  supply-chain:
+    # RustSec advisories, licenses, duplicate versions and sources (deny.toml), cargo-audit
+    # (.cargo/audit.toml), and the `SAFETY:` comment check of every unsafe site on all
+    # platforms (clippy only sees the host's cfg).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit -D warnings
+      - run: python3 tools/unsafe-inventory.py --check
+
+  sanitizers:
+    # AddressSanitizer and ThreadSanitizer over the core, syscall and backend tests (epoll and
+    # io_uring), where Miri cannot go.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    strategy:
+      fail-fast: false
+      matrix:
+        san: [address, thread]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+      RUSTFLAGS: -D warnings -Zsanitizer=${{ matrix.san }}
+      RUSTDOCFLAGS: -Zsanitizer=${{ matrix.san }}
+      TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: sanitizer-${{ matrix.san }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Core and syscall crates (epoll)
+        timeout-minutes: 25
+        run: >-
+          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p flash-core -p flash-sys -p flash-epoll -p flash-buf -p flash-pool -p flash-timer
+          --lib --tests -- --test-threads=1
+      - name: io_uring backend
+        timeout-minutes: 25
+        env:
+          FLASH_TEST_BACKEND: uring
+        run: >-
+          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p flash-uring -p flash --lib --tests -- --test-threads=1
 
   ci-ok:
     # The single required check. Fails if any gate job failed or was cancelled.
     if: always()
-    needs: [lint, docs, book, test-linux, msrv, features, miri, loom, coverage, autobahn, h2spec]
+    needs: [lint, docs, book, test-linux, msrv, features, miri, loom, coverage, autobahn, h2spec, supply-chain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! QUIC for flash, on the sans-io [`quinn-proto`](https://docs.rs/quinn-proto) state machine.
 //!
 //! A [`QuicServer`] is the acceptor of a UDP [`flash::Listener`]: every datagram goes through one

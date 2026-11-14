@@ -62,19 +62,24 @@ fn socket_of(addr: &SocketAddr, ty: libc::c_int) -> io::Result<OwnedFd> {
         libc::AF_INET6
     };
     #[cfg(target_os = "linux")]
-    let fd = cvt(unsafe {
+    let fd = {
         // SAFETY: plain syscall with valid constant arguments.
-        libc::socket(domain, ty | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0)
-    })?;
+        let fd =
+            cvt(unsafe { libc::socket(domain, ty | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC, 0) })?;
+        // SAFETY: `fd` was just created by socket(2) and is owned by no one else.
+        unsafe { OwnedFd::from_raw_fd(fd) }
+    };
     #[cfg(not(target_os = "linux"))]
     let fd = {
         // SAFETY: plain syscall with valid constant arguments.
         let fd = cvt(unsafe { libc::socket(domain, ty, 0) })?;
-        crate::poller::set_nonblock_cloexec(fd)?;
+        // SAFETY: `fd` was just created by socket(2) and is owned by no one else. Owning it
+        // before the fcntl calls closes it if they fail.
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        crate::poller::set_nonblock_cloexec(std::os::fd::AsRawFd::as_raw_fd(&fd))?;
         fd
     };
-    // SAFETY: `fd` was just created by socket(2) and is owned by no one else.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    Ok(fd)
 }
 
 fn setsockopt_int(

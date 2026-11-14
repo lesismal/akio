@@ -8,10 +8,10 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash = { path = "../flash" }
-flash-core = { path = "../flash-core" }
-flash-http = { path = "../flash-http" }
-flash-quic = { path = "../flash-quic" }
+flash = { workspace = true }
+flash-core = { workspace = true }
+flash-http = { workspace = true }
+flash-quic = { workspace = true }
 bytes = "1"
 
 [features]
@@ -19,7 +19,7 @@ bytes = "1"
 fuzzing = []
 
 [dev-dependencies]
-flash-core = { path = "../flash-core", features = ["fuzzing"] }
+flash-core = { workspace = true, features = ["fuzzing"] }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 
 [lints]

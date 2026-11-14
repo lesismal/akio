@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Closed-loop echo load generator, so the same tool drives flash, fib, tokio...
 //!
 //! usage: `echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]`

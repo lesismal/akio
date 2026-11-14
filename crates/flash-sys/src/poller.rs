@@ -145,14 +145,16 @@ impl Poller {
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
+        // SAFETY: fd was just created and is owned by nobody else (owned first, so that a
+        // failing fcntl below closes it).
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
         // kqueue descriptors reject O_NONBLOCK (ENOTTY); close-on-exec is all they need.
         // SAFETY: fcntl on a valid fd with valid commands.
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(Poller {
-            // SAFETY: fd was just created and is owned by nobody else.
-            fd: unsafe { OwnedFd::from_raw_fd(fd) },
+            fd,
             // SAFETY: kevent is plain-old-data; all-zero is valid.
             buf: vec![unsafe { std::mem::zeroed() }; BATCH],
         })

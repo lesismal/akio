@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! HTTP/3 (RFC 9114) for flash, on [`flash_quic`] with QPACK (static table and literals).
 //!
 //! [`server`] serves any [`flash_http::Service`] (a [`flash_http::Router`] with its

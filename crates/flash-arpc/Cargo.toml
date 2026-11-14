@@ -8,16 +8,16 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash = { path = "../flash" }
-flash-core = { path = "../flash-core" }
-flash-buf = { path = "../flash-buf" }
+flash = { workspace = true }
+flash-core = { workspace = true }
+flash-buf = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`flash_arpc::fuzzing`); not a public API.
 fuzzing = ["flash-core/fuzzing"]
 
 [dev-dependencies]
-flash-core = { path = "../flash-core", features = ["fuzzing"] }
+flash-core = { workspace = true, features = ["fuzzing"] }
 
 [lints]
 workspace = true

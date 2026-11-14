@@ -18,7 +18,11 @@
 //! (中文: [Engine、Listener 与后端](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
 #![cfg(target_os = "linux")]
 #![warn(clippy::unwrap_used)]
+// `unsafe` is confined to the modules that talk to the kernel; see docs/unsafe-review.md.
+#![deny(unsafe_code)]
+#[allow(unsafe_code)]
 mod group;
+#[allow(unsafe_code)]
 mod reactor;
 
 pub use group::{UringGroup, UringOptions, probe};

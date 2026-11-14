@@ -80,14 +80,32 @@ pub(crate) fn make_ring(entries: u32, sqpoll: bool) -> io::Result<(IoUring, bool
     Ok((b.build(entries)?, false))
 }
 
+/// One entry of a provided-buffer ring (`struct io_uring_buf`). Mirrored here, rather than
+/// using `io_uring::types::BufRingEntry`'s `&mut self` setters, so that entries are written
+/// through raw field pointers: a `&mut` to entry 0 would also cover the ring's tail (which
+/// overlays entry 0's `resv`) while the kernel may read it.
+#[repr(C)]
+struct RawBuf {
+    addr: u64,
+    len: u32,
+    bid: u16,
+    /// In entry 0: the ring's tail, shared with the kernel.
+    resv: u16,
+}
+
+const _: () = assert!(size_of::<RawBuf>() == size_of::<BufRingEntry>());
+const _: () = assert!(size_of::<RawBuf>() == 16);
+
 /// The provided-buffer ring: page-aligned memory shared with the kernel. Returning a buffer is a
 /// plain memory write plus a tail bump, with no submission entry and no syscall.
 pub(crate) struct BufRing {
-    base: *mut BufRingEntry,
+    base: *mut RawBuf,
     tail: u16,
+    /// Never free the ring (the kernel may still use it; see `Loop::drain_inflight`).
+    leaked: bool,
 }
 
-const RING_BYTES: usize = BUF_COUNT as usize * size_of::<BufRingEntry>();
+const RING_BYTES: usize = BUF_COUNT as usize * size_of::<RawBuf>();
 
 impl BufRing {
     fn layout() -> std::alloc::Layout {
@@ -96,11 +114,15 @@ impl BufRing {
 
     pub(crate) fn new() -> io::Result<BufRing> {
         // SAFETY: the layout has non-zero size.
-        let base = unsafe { std::alloc::alloc_zeroed(Self::layout()) }.cast::<BufRingEntry>();
+        let base = unsafe { std::alloc::alloc_zeroed(Self::layout()) }.cast::<RawBuf>();
         if base.is_null() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
-        Ok(BufRing { base, tail: 0 })
+        Ok(BufRing {
+            base,
+            tail: 0,
+            leaked: false,
+        })
     }
 
     /// Registers the ring with the kernel as buffer group `BGID`.
@@ -115,26 +137,36 @@ impl BufRing {
     }
 
     /// Makes buffer `bid` (a `size`-byte slot at `area + bid * size`) available to the kernel.
-    fn give(&mut self, area: *mut u8, size: usize, bid: u16) {
+    ///
+    /// Each `bid` must be given at most once until the kernel hands it back in a completion, so
+    /// at most `BUF_COUNT` entries are ever outstanding and the slot at `tail` is never one the
+    /// kernel is reading.
+    fn give(&mut self, area: &KernelBuf, size: usize, bid: u16) {
+        assert!(
+            bid < BUF_COUNT && (bid as usize + 1) * size <= area.len(),
+            "buffer id out of range"
+        );
         let idx = (self.tail & (BUF_COUNT - 1)) as usize;
-        // SAFETY: `idx < BUF_COUNT`, so the entry is inside the allocation; `bid < BUF_COUNT`
-        // keeps the buffer address inside `area`. Only this thread writes entries, and the
-        // kernel reads an entry only after the tail store below publishes it.
+        // SAFETY: `idx < BUF_COUNT`, so the entry is inside the allocation, and `bid`'s slot is
+        // inside `area` (asserted above). Only this thread writes entries; the kernel reads an
+        // entry only after the tail store in `publish` covers it, and never reads the slot at
+        // `tail` (see above). Fields are written through raw pointers, never touching `resv`.
         unsafe {
-            let e = &mut *self.base.add(idx);
-            e.set_addr(area.add(bid as usize * size) as u64);
-            e.set_len(size as u32);
-            e.set_bid(bid);
+            let e = self.base.add(idx);
+            (&raw mut (*e).addr).write(area.as_ptr().add(bid as usize * size) as u64);
+            (&raw mut (*e).len).write(size as u32);
+            (&raw mut (*e).bid).write(bid);
         }
         self.tail = self.tail.wrapping_add(1);
     }
 
     /// Publishes everything given since the last call.
     fn publish(&self) {
-        // SAFETY: `tail` points at the ring's tail field inside the allocation; it is a `u16`
-        // shared with the kernel, which the protocol says to store with release ordering.
+        // SAFETY: the tail is entry 0's `resv`, a 2-aligned `u16` inside the allocation shared
+        // with the kernel, which the protocol says to store with release ordering. `AtomicU16`
+        // has the size and alignment of `u16`, and this thread is its only writer.
         unsafe {
-            let t = BufRingEntry::tail(self.base).cast::<std::sync::atomic::AtomicU16>();
+            let t = (&raw mut (*self.base).resv).cast::<std::sync::atomic::AtomicU16>();
             (*t).store(self.tail, Ordering::Release);
         }
     }
@@ -142,8 +174,76 @@ impl BufRing {
 
 impl Drop for BufRing {
     fn drop(&mut self) {
+        if self.leaked {
+            return;
+        }
         // SAFETY: allocated in `new` with the same layout.
         unsafe { std::alloc::dealloc(self.base.cast(), Self::layout()) };
+    }
+}
+
+/// Heap memory the kernel writes into asynchronously: the provided buffers and the eventfd read
+/// buffer. Held as a raw pointer rather than a `Vec`/`Box`, which would assert exclusive access
+/// for as long as they live while the kernel may fill any buffer it owns at any moment (from
+/// task work or an io-wq worker). Rust code only borrows, with [`KernelBuf::slice`], a range the
+/// kernel has handed back and is not using.
+pub(crate) struct KernelBuf {
+    ptr: std::ptr::NonNull<u8>,
+    len: usize,
+    /// Never free the memory (the kernel may still write it; see `Loop::drain_inflight`).
+    leaked: bool,
+}
+
+impl KernelBuf {
+    fn layout(len: usize) -> std::alloc::Layout {
+        std::alloc::Layout::from_size_align(len, 64).expect("valid layout")
+    }
+
+    /// `len` zeroed bytes (`len > 0`).
+    pub(crate) fn new(len: usize) -> io::Result<KernelBuf> {
+        assert!(len > 0, "KernelBuf::new(0)");
+        // SAFETY: the layout has non-zero size.
+        let p = unsafe { std::alloc::alloc_zeroed(Self::layout(len)) };
+        let ptr = std::ptr::NonNull::new(p).ok_or(io::ErrorKind::OutOfMemory)?;
+        Ok(KernelBuf {
+            ptr,
+            len,
+            leaked: false,
+        })
+    }
+
+    pub(crate) fn as_ptr(&self) -> *mut u8 {
+        self.ptr.as_ptr()
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Borrows `off..off + n`.
+    ///
+    /// # Safety
+    ///
+    /// The kernel must not write that range while the returned slice lives (it was handed back
+    /// in a completion and has not been given to the kernel again).
+    pub(crate) unsafe fn slice(&self, off: usize, n: usize) -> &[u8] {
+        assert!(
+            off.checked_add(n).is_some_and(|end| end <= self.len),
+            "KernelBuf range out of bounds"
+        );
+        // SAFETY: the range is inside the allocation (asserted above), initialised (zeroed at
+        // allocation, then written by the kernel), and not written while borrowed (caller).
+        unsafe { std::slice::from_raw_parts(self.ptr.as_ptr().add(off), n) }
+    }
+}
+
+impl Drop for KernelBuf {
+    fn drop(&mut self) {
+        if self.leaked {
+            return;
+        }
+        // SAFETY: allocated in `new` with the same layout.
+        unsafe { std::alloc::dealloc(self.ptr.as_ptr(), Self::layout(self.len)) };
     }
 }
 
@@ -280,10 +380,11 @@ pub(crate) struct Loop {
     accept_armed: bool,
     /// After a failed accept (EMFILE...) do not re-arm before this instant.
     accept_retry_at: Option<Instant>,
-    wake_buf: Box<[u8; 8]>,
+    /// Target of the eventfd `Read` (never read by Rust).
+    wake_buf: KernelBuf,
     wake_armed: bool,
     /// Provided buffers: `BUF_COUNT` slots of `buf_size` bytes. Never reallocated.
-    bufs: Vec<u8>,
+    bufs: KernelBuf,
     buf_size: usize,
     slots: flash_core::IdMap<Slot>,
     cfg: Arc<Config>,
@@ -299,11 +400,14 @@ pub(crate) struct Loop {
     /// read instead of three.
     clock: Instant,
     cqes: Vec<(u64, i32, u32)>,
+    /// Submitted operations whose final completion (one without `F_MORE`) has not been reaped.
+    /// Every entry this loop pushes ends with exactly one such completion.
+    inflight: usize,
 }
 
 // SAFETY: a `Loop` is built on one thread and then moved to, and used only by, its I/O thread.
-// The raw pointers inside submitted entries point into `bufs`/`wake_buf`, which move with it
-// (heap allocations that do not change address).
+// The raw pointers inside submitted entries point into `bufs`/`wake_buf`/`buf_ring`, heap
+// allocations that move with it without changing address and are freed only after `ring`.
 unsafe impl Send for Loop {}
 
 fn panic_error() -> Error {
@@ -342,9 +446,9 @@ impl Loop {
             listener,
             accept_armed: false,
             accept_retry_at: None,
-            wake_buf: Box::new([0; 8]),
+            wake_buf: KernelBuf::new(8)?,
             wake_armed: false,
-            bufs: vec![0; buf_size * BUF_COUNT as usize],
+            bufs: KernelBuf::new(buf_size * BUF_COUNT as usize)?,
             buf_size,
             slots: Default::default(),
             cfg,
@@ -354,6 +458,7 @@ impl Loop {
             epoch: Instant::now(),
             clock: Instant::now(),
             cqes: Vec::with_capacity(1024),
+            inflight: 0,
         })
     }
 
@@ -364,9 +469,8 @@ impl Loop {
             self.ring.submitter().register_enable_rings()?;
         }
         self.buf_ring.register(&self.ring)?;
-        let area = self.bufs.as_mut_ptr();
         for bid in 0..BUF_COUNT {
-            self.buf_ring.give(area, self.buf_size, bid);
+            self.buf_ring.give(&self.bufs, self.buf_size, bid);
         }
         self.buf_ring.publish();
         Ok(())
@@ -379,6 +483,7 @@ impl Loop {
             // provided-buffer area and the wake buffer are owned by `self` and never moved or
             // freed while the ring lives; the other entries carry only integers (fds, ids).
             if unsafe { self.ring.submission().push(&e) }.is_ok() {
+                self.inflight += 1;
                 return;
             }
             let _ = self.ring.submit();
@@ -387,8 +492,7 @@ impl Loop {
 
     /// Returns a receive buffer to the kernel (no syscall; published with `publish`).
     fn give_back(&mut self, bid: u16) {
-        let area = self.bufs.as_mut_ptr();
-        self.buf_ring.give(area, self.buf_size, bid);
+        self.buf_ring.give(&self.bufs, self.buf_size, bid);
     }
 
     fn tick(&self) -> u64 {
@@ -397,6 +501,7 @@ impl Loop {
 
     pub(crate) fn run(&mut self) {
         self.run_inner();
+        self.drain_inflight();
         self.shared.stats.set_running(false);
         // Pending telemetry requests are dropped, which answers them (as "nothing").
         drop(self.shared.take());
@@ -483,6 +588,56 @@ impl Loop {
         }
     }
 
+    /// Before the loop's memory is freed: cancels every operation still in flight and reaps
+    /// completions until none is left, so the kernel no longer refers to the provided buffers,
+    /// the buffer ring or the wake buffer when `Loop` drops them. If that does not finish in
+    /// time (a kernel refusing `ASYNC_CANCEL_ANY`, say), that memory is leaked instead of freed.
+    fn drain_inflight(&mut self) {
+        if self.inflight == 0 {
+            return;
+        }
+        let e = opcode::AsyncCancel2::new(types::CancelBuilder::any())
+            .build()
+            .user_data(ud(0, OP_OTHER));
+        self.push(e);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while self.inflight > 0 && Instant::now() < deadline {
+            let ts = types::Timespec::new().nsec(10_000_000);
+            let _ = self
+                .ring
+                .submitter()
+                .submit_with_args(1, &types::SubmitArgs::new().timespec(&ts));
+            let cqes: Vec<_> = self
+                .ring
+                .completion()
+                .map(|c| (c.user_data(), c.result(), c.flags()))
+                .collect();
+            for (data, res, flags) in cqes {
+                // Count only: no callbacks or re-arming during teardown.
+                if !cqueue::more(flags) {
+                    self.inflight = self.inflight.saturating_sub(1);
+                }
+                if data & 0xf == OP_ACCEPT && res >= 0 {
+                    // SAFETY: a fresh descriptor from the kernel that nothing else owns;
+                    // dropping it closes it.
+                    drop(unsafe { std::os::fd::OwnedFd::from_raw_fd(res) });
+                }
+            }
+        }
+        if self.inflight > 0 {
+            log_or_stderr(
+                log::Level::Warn,
+                format_args!(
+                    "io_uring: {} operation(s) still in flight at exit; leaking their buffers",
+                    self.inflight
+                ),
+            );
+            self.bufs.leaked = true;
+            self.wake_buf.leaked = true;
+            self.buf_ring.leaked = true;
+        }
+    }
+
     /// Before the thread exits: let the cancelled multishot accept finish, so the listening
     /// socket is really closed when `Group::join` returns (the kernel keeps it alive while the
     /// accept is in flight).
@@ -511,7 +666,7 @@ impl Loop {
     fn arm_loop_ops(&mut self) {
         if !self.wake_armed {
             let fd = self.shared.waker.as_raw_fd();
-            let buf = self.wake_buf.as_mut_ptr();
+            let buf = self.wake_buf.as_ptr();
             let e = opcode::Read::new(types::Fd(fd), buf, 8)
                 .build()
                 .user_data(ud(0, OP_WAKE));
@@ -533,6 +688,9 @@ impl Loop {
     // ---- completions ----------------------------------------------------------------------
 
     fn on_cqe(&mut self, data: u64, res: i32, flags: u32) {
+        if !cqueue::more(flags) {
+            self.inflight = self.inflight.saturating_sub(1);
+        }
         let (id, op) = (data >> 4, data & 0xf);
         match op {
             OP_WAKE => self.wake_armed = false,
@@ -606,7 +764,10 @@ impl Loop {
                         st.reads.add_local(1);
                         st.bytes_in.add_local(n as u64);
                         lc.inner.set_corked(true);
-                        let data = &self.bufs[off..off + n];
+                        // SAFETY: the kernel handed buffer `bid` over in this completion; it is
+                        // not in the ring again until `give_back` below, so nothing writes it
+                        // while `data` lives. `slice` bounds-checks the range.
+                        let data = unsafe { self.bufs.slice(off, n.min(self.buf_size)) };
                         let r = catch_unwind(AssertUnwindSafe(|| lc.handler.on_data(data)));
                         if timed {
                             self.clock = self
@@ -1119,5 +1280,54 @@ impl Loop {
                 lc.idle_timer = Some(self.wheel.schedule(expires, id));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pure memory operations (no syscalls), so this also runs under Miri: the mirrored entry
+    /// layout matches `io_uring`'s, `give` wraps and `publish` lands on entry 0's `resv`.
+    #[test]
+    fn buf_ring_layout_give_and_publish() {
+        let size = 512;
+        let area = KernelBuf::new(size * BUF_COUNT as usize).unwrap();
+        let mut ring = BufRing::new().unwrap();
+        for bid in 0..BUF_COUNT {
+            ring.give(&area, size, bid);
+        }
+        ring.publish();
+        // Wraps: the slot of buffer 0 is reused once the kernel has handed a buffer back.
+        ring.give(&area, size, 3);
+        ring.publish();
+        let base = ring.base.cast::<BufRingEntry>();
+        // SAFETY: `base` points to `BUF_COUNT` initialised entries owned by `ring`.
+        let (e0, e5, tail) = unsafe { (&*base, &*base.add(5), *BufRingEntry::tail(base)) };
+        assert_eq!(e0.addr(), area.as_ptr() as u64 + 3 * size as u64);
+        assert_eq!((e0.len(), e0.bid()), (size as u32, 3));
+        assert_eq!(e5.addr(), area.as_ptr() as u64 + 5 * size as u64);
+        assert_eq!(e5.bid(), 5);
+        assert_eq!(tail, BUF_COUNT.wrapping_add(1));
+    }
+
+    #[test]
+    fn kernel_buf_slices_are_bounds_checked() {
+        let b = KernelBuf::new(64).unwrap();
+        // SAFETY: no kernel operation refers to `b`.
+        assert_eq!(unsafe { b.slice(60, 4) }, &[0; 4]);
+        let r = catch_unwind(AssertUnwindSafe(|| {
+            // SAFETY: as above (and the range is rejected before any access).
+            let _ = unsafe { b.slice(60, 5) };
+        }));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "buffer id out of range")]
+    fn buf_ring_rejects_foreign_buffer_ids() {
+        let area = KernelBuf::new(512 * 4).unwrap();
+        let mut ring = BufRing::new().unwrap();
+        ring.give(&area, 512, 4);
     }
 }

@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-core = { path = "../flash-core" }
+flash-core = { workspace = true }
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 
 [lints]

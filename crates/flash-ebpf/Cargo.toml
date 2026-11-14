@@ -8,18 +8,18 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-core = { path = "../flash-core" }
+flash-core = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
-flash-sys = { path = "../flash-sys" }
+flash-sys = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`flash_ebpf::fuzzing`); not a public API.
 fuzzing = []
 
 [dev-dependencies]
-flash-core = { path = "../flash-core", features = ["fuzzing"] }
+flash-core = { workspace = true, features = ["fuzzing"] }
 
 [lints]
 workspace = true

@@ -8,19 +8,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-core = { path = "../flash-core" }
-flash-epoll = { path = "../flash-epoll" }
-flash-ebpf = { path = "../flash-ebpf" }
-flash-tls = { path = "../flash-tls" }
+flash-core = { workspace = true }
+flash-epoll = { workspace = true }
+flash-ebpf = { workspace = true }
+flash-tls = { workspace = true }
 log = { version = "0.4.21", features = ["kv"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-flash-uring = { path = "../flash-uring" }
+flash-uring = { workspace = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 libc = "0.2"
-flash-core = { path = "../flash-core" }
+flash-core = { workspace = true }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }

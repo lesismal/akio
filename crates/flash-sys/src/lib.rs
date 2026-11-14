@@ -3,7 +3,7 @@
 //! non-blocking connect, `sendfile`) and, on Linux, batched datagram I/O (`recvmmsg` /
 //! `sendmmsg` with UDP GRO / GSO).
 //!
-//! All `unsafe` in the network stack's hot path lives here, each block with a `SAFETY:` note.
+//! All `unsafe` in the network stack's hot path lives here, each block with a comment stating the invariant it relies on.
 //!
 //! Guide: [Architecture](https://lesismal.github.io/flash/en/architecture.html)
 //! (中文: [架构](https://lesismal.github.io/flash/zh-CN/architecture.html)).

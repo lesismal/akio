@@ -8,12 +8,12 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash-buf = { path = "../flash-buf" }
-flash-pool = { path = "../flash-pool" }
+flash-buf = { workspace = true }
+flash-pool = { workspace = true }
 log = { version = "0.4.21", features = ["kv"] }
 
 [target.'cfg(unix)'.dependencies]
-flash-sys = { path = "../flash-sys" }
+flash-sys = { workspace = true }
 
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"

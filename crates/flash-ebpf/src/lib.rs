@@ -18,6 +18,8 @@
 //! Guide: [eBPF steering](https://lesismal.github.io/flash/en/concepts/engine.html#acceleration-ebpf-steering)
 //! (中文: [eBPF 分流](https://lesismal.github.io/flash/zh-CN/concepts/engine.html)).
 #![warn(clippy::unwrap_used)]
+// `unsafe` is confined to `sys` (raw bpf(2) and socket options); see docs/unsafe-review.md.
+#![deny(unsafe_code)]
 
 pub mod cbpf;
 mod ebpf;
@@ -27,6 +29,7 @@ pub mod fuzzing;
 pub mod relay;
 mod steer;
 #[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
 mod sys;
 
 pub use relay::{Relay, Splice};

@@ -8,8 +8,8 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-flash = { path = "../flash" }
-flash-core = { path = "../flash-core" }
+flash = { workspace = true }
+flash-core = { workspace = true }
 aes = "0.8"
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
@@ -22,7 +22,7 @@ getrandom = "0.2"
 fuzzing = []
 
 [dev-dependencies]
-flash-core = { path = "../flash-core", features = ["fuzzing"] }
+flash-core = { workspace = true, features = ["fuzzing"] }
 
 [lints]
 workspace = true
