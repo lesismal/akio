@@ -12,3 +12,7 @@ eBPF is an **acceleration/steering layer**, orthogonal to the I/O backend: `List
 
 - eBPF stays optional and never blocks a deployment.
 - No pretence that eBPF itself performs userspace I/O.
+
+## Implementation note (M5, 2026-11-14)
+
+`aya` was not used: building BPF object files needs nightly Rust and `bpf-linker`, and the programs flash needs are a dozen instructions each. `flash-ebpf` hand-assembles them and loads them with raw `bpf(2)` calls, so the default build stays on stable with no BPF toolchain. Steering has two tiers: classic BPF (`SO_ATTACH_REUSEPORT_CBPF`, unprivileged) for CPU and consistent-hash steering, and eBPF (`SK_REUSEPORT` + `REUSEPORT_SOCKARRAY`, privileged) for CPU steering. The sockmap relay uses a `SOCKHASH` keyed by socket cookie with an `sk_skb` stream verdict; by default it requires Linux 6.15+ because older kernels can lose relayed data when the destination's send buffer fills.

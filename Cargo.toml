@@ -18,6 +18,7 @@ members = [
     "crates/flash-kcp",
     "crates/flash-quic",
     "crates/flash-h3",
+    "crates/flash-ebpf",
     "crates/flash",
     "tools/echo-bench",
 ]

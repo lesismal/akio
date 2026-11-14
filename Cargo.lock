@@ -213,6 +213,7 @@ name = "flash"
 version = "0.0.0"
 dependencies = [
  "flash-core",
+ "flash-ebpf",
  "flash-epoll",
  "flash-tls",
  "flash-uring",
@@ -241,6 +242,15 @@ dependencies = [
  "flash-pool",
  "flash-sys",
  "loom",
+]
+
+[[package]]
+name = "flash-ebpf"
+version = "0.0.0"
+dependencies = [
+ "flash-core",
+ "flash-sys",
+ "libc",
 ]
 
 [[package]]

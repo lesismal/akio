@@ -505,19 +505,42 @@ fn send_reports_overload_beyond_queue_limit() {
 }
 
 #[test]
-fn unsupported_acceleration_is_rejected_by_build() {
-    let r = Engine::builder()
-        .config(cfg())
-        .listen(
-            Listener::tcp(localhost())
-                .accel(flash::Accel::Ebpf)
-                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
-        )
-        .build();
-    assert_eq!(
-        r.err().map(|e| e.kind()),
-        Some(std::io::ErrorKind::Unsupported)
-    );
+fn ebpf_acceleration_degrades_or_attaches_and_strict_fails_where_unavailable() {
+    let build = |strict: bool| {
+        Engine::builder()
+            .config(cfg())
+            .listen(
+                Listener::tcp(localhost())
+                    .backend(common::backend())
+                    .threads(2)
+                    .accel(flash::Accel::Ebpf(flash::EbpfConfig {
+                        strict,
+                        ..flash::EbpfConfig::default()
+                    }))
+                    .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+            )
+            .build()
+    };
+    let e = build(false).unwrap();
+    let st = e.accel_status().to_vec();
+    if cfg!(target_os = "linux") {
+        assert!(matches!(st[0], flash::AccelStatus::Steering(_)), "{st:?}");
+    } else {
+        assert!(matches!(st[0], flash::AccelStatus::Degraded(_)), "{st:?}");
+        assert_eq!(
+            build(true).err().map(|e| e.kind()),
+            Some(std::io::ErrorKind::Unsupported)
+        );
+    }
+    // Still serves.
+    e.start().unwrap();
+    let mut s = connect(e.local_addrs()[0]);
+    s.write_all(b"hi").unwrap();
+    let mut b = [0u8; 2];
+    s.read_exact(&mut b).unwrap();
+    assert_eq!(&b, b"hi");
+    drop(s);
+    stop(&e);
 }
 
 #[test]

@@ -327,6 +327,14 @@ impl ConnInner {
         }
     }
 
+    /// The TCP stream, or `None` for a UDP connection.
+    pub fn tcp_stream(&self) -> Option<&TcpStream> {
+        match &self.sock {
+            Sock::Tcp(s) => Some(s),
+            Sock::Udp { .. } => None,
+        }
+    }
+
     fn tcp(&self) -> &TcpStream {
         self.stream()
     }

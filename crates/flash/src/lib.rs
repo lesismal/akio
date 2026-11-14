@@ -24,6 +24,10 @@ use std::{io, net::SocketAddr, sync::Arc};
 /// TLS (rustls): wrap an acceptor in [`tls::Tls`] to serve or dial over TLS.
 pub use flash_tls as tls;
 
+/// BPF acceleration (ADR-006): `SO_REUSEPORT` steering programs (used by [`Accel::Ebpf`]) and
+/// the in-kernel sockmap [`ebpf::Relay`] for proxies.
+pub use flash_ebpf as ebpf;
+
 pub use flash_core::{
     Acceptor, Config, Conn, DynAcceptor, DynHandler, Error, FnAcceptor, Handler, PoolConfig,
     PoolStats, ResponseSlot, Result, SlowCallback, SlowHook, fn_acceptor,
@@ -58,8 +62,44 @@ pub enum Accel {
     /// No acceleration: plain `SO_REUSEPORT` hashing.
     #[default]
     None,
-    /// eBPF (M5). Selecting it today makes `build` fail with `Unsupported`.
-    Ebpf,
+    /// BPF steering of new connections / UDP peers to I/O threads (Linux). Attaches what the
+    /// kernel and privileges allow and otherwise keeps the kernel's default distribution; see
+    /// [`Engine::accel_status`] for what was attached.
+    Ebpf(EbpfConfig),
+}
+
+/// Configuration of [`Accel::Ebpf`].
+#[derive(Clone, Debug)]
+pub struct EbpfConfig {
+    /// How the listener's threads share new flows (default: [`ebpf::Steering::Cpu`]).
+    pub steering: ebpf::Steering,
+    /// Prefer eBPF programs where they apply and the process is privileged (default: true);
+    /// classic BPF, which needs no privileges, is the fallback.
+    pub ebpf_programs: bool,
+    /// Fail `build` with `Unsupported` instead of degrading when nothing could be attached.
+    pub strict: bool,
+}
+
+impl Default for EbpfConfig {
+    fn default() -> Self {
+        EbpfConfig {
+            steering: ebpf::Steering::Cpu,
+            ebpf_programs: true,
+            strict: false,
+        }
+    }
+}
+
+/// What [`Accel`] a listener ended up with ([`Engine::accel_status`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccelStatus {
+    /// No acceleration was requested.
+    Off,
+    /// A steering program is attached.
+    Steering(ebpf::SteerInfo),
+    /// Acceleration was requested but is unavailable (the reason); the listener runs with the
+    /// kernel's default distribution.
+    Degraded(String),
 }
 
 /// One bound address with its own acceptor, backend and I/O threads.
@@ -179,10 +219,10 @@ impl EngineBuilder {
         let mut groups: Vec<Box<dyn Group>> = Vec::new();
         let pool = Pool::new(self.pool.clone());
         let mut udp_last: Option<usize> = None;
+        // Each listener adds exactly one group, at index `groups.len()` when it starts.
+        let mut accels: Vec<Accel> = Vec::new();
         for l in self.listeners {
-            if matches!(l.accel, Accel::Ebpf) {
-                return Err(unsupported("eBPF acceleration (planned for M5)"));
-            }
+            accels.push(l.accel.clone());
             let acceptor = l.acceptor.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
             })?;
@@ -260,6 +300,11 @@ impl EngineBuilder {
                 }
             }
         }
+        let accel = accels
+            .iter()
+            .zip(&groups)
+            .map(|(a, g)| apply_accel(a, g.as_ref()))
+            .collect::<io::Result<Vec<_>>>()?;
         if self.client_threads > 0 {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             groups.push(Box::new(flash_epoll::EpollGroup::bind(
@@ -286,7 +331,26 @@ impl EngineBuilder {
             groups,
             pool,
             udp_client,
+            accel,
         })
+    }
+}
+
+/// Attaches the steering program `a` asks for to the listener sockets of `g`.
+fn apply_accel(a: &Accel, g: &dyn Group) -> io::Result<AccelStatus> {
+    let Accel::Ebpf(cfg) = a else {
+        return Ok(AccelStatus::Off);
+    };
+    let opts = ebpf::AttachOptions {
+        ebpf: cfg.ebpf_programs,
+    };
+    match ebpf::attach_reuseport(&g.listener_fds(), cfg.steering, opts) {
+        Ok(info) => Ok(AccelStatus::Steering(info)),
+        Err(e) if cfg.strict => Err(unsupported(&format!("BPF steering ({e})"))),
+        Err(e) => {
+            eprintln!("flash: BPF steering unavailable ({e}); using default SO_REUSEPORT hashing");
+            Ok(AccelStatus::Degraded(e.to_string()))
+        }
     }
 }
 
@@ -327,6 +391,7 @@ pub struct Engine {
     groups: Vec<Box<dyn Group>>,
     pool: Arc<Pool>,
     udp_client: Option<usize>,
+    accel: Vec<AccelStatus>,
 }
 
 impl Engine {
@@ -338,6 +403,11 @@ impl Engine {
     /// Bound addresses of the listeners, in the order they were added (resolves port 0).
     pub fn local_addrs(&self) -> Vec<SocketAddr> {
         self.groups.iter().map(|g| g.local_addr()).collect()
+    }
+
+    /// What acceleration each listener got, in the order they were added.
+    pub fn accel_status(&self) -> &[AccelStatus] {
+        &self.accel
     }
 
     /// Spawns the I/O threads and returns immediately. Idempotent.

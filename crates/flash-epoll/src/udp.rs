@@ -584,6 +584,8 @@ impl UdpLoop {
 /// A group of UDP loops serving one address.
 pub struct UdpGroup {
     addr: SocketAddr,
+    /// Server socket fds in loop order when they form a `SO_REUSEPORT` group (Linux).
+    fds: Vec<i32>,
     shared: Vec<Arc<LoopShared>>,
     pending: Mutex<Vec<UdpLoop>>,
     threads: Mutex<Vec<JoinHandle<()>>>,
@@ -618,6 +620,15 @@ impl UdpGroup {
             }
             socks[0] = Some((first, acceptor));
         }
+        let fds = if cfg!(target_os = "linux") {
+            socks
+                .iter()
+                .flatten()
+                .map(|(s, _)| std::os::fd::AsRawFd::as_raw_fd(s))
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut shared = Vec::new();
         let mut loops = Vec::new();
         for server in socks {
@@ -628,6 +639,7 @@ impl UdpGroup {
         }
         Ok(UdpGroup {
             addr: bound,
+            fds,
             shared,
             pending: Mutex::new(loops),
             threads: Mutex::new(Vec::new()),
@@ -640,6 +652,10 @@ impl UdpGroup {
 impl Group for UdpGroup {
     fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    fn listener_fds(&self) -> Vec<i32> {
+        self.fds.clone()
     }
 
     fn start(&self) -> io::Result<()> {
