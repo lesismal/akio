@@ -241,7 +241,7 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
   和 OpenSSL 3.5 的 QUIC（curl、libcurl、`openssl s_client -quic`）作为我方服务端的客户端（新增
   `tools/interop/quic/docker.sh`）；fuzz 目标 `quic_packet`、`quic_frame`、
   `quic_conn`，并回放语料。
-- 性能（与 quinn-proto 版本对比，同一个回环基准 `crates/only-h3/examples/quic-bench.rs`）：PERF_ZH
+- 性能（与 quinn-proto 版本对比，同一个回环基准 `crates/only-h3/examples/quic-bench.rs`）：在 AMD Ryzen 7 7800X3D（Linux，回环，交替运行 3 轮）上，完整握手 6705-6785 次/秒，对比 6536-6674 次/秒（约 1.0 倍）；单流大块吞吐 3.1-3.6 Gbit/s，对比 4.6-4.7 Gbit/s（约 0.72 倍；包保护使用 `only-crypto` 的硬件 AES-GCM）；单连接 64 个并发的 HTTP/3 请求 17.1 万次/秒，对比 5.8 万次/秒（约 2.9 倍，因为响应、FIN 与 ACK 共用数据包）。
 
 迁移：流与数据报负载改为 `only_quic::Bytes`（原为 `bytes::Bytes`），这是唯一的签名变化
 （`QuicHandler::on_stream_data`、`QuicHandler::on_datagram`，以及接受 `impl Into<only_quic::Bytes>` 的
@@ -251,7 +251,7 @@ crate：未安装 only-log logger 时记录交给 `log` 的 logger（`Config::lo
 通常只需改导入：`use bytes::Bytes;` 改为 `use only_quic::Bytes;`。only-quic 的 `unstable` feature 保留且为空：
 `only_quic::proto`、`ServerConfig::from_quinn` / `as_quinn_mut` 与 `ClientConfig::from_quinn` /
 `as_quinn_mut` 已移除（它们本就不在 semver 承诺之内）。`Congestion::Bbr`（实验性）实际运行 CUBIC。
-`Connection::queued_bytes` 统计尚未发出的字节数。未实现：0-RTT、发送 ECN 标记、客户端主动迁移、
+`Connection::queued_bytes` 统计尚未发出的字节数。`dial` 发起的连接结束后其 UDP socket 会被关闭（以前一直保持到引擎停止）；`open_bi` / `open_uni` 从不运行处理器回调，因此可以在持有处理器也会获取的锁时调用。未实现：0-RTT、发送 ECN 标记、客户端主动迁移、
 preferred_address、QUIC v2。
 
 ### 变更：`only-webrtc` 使用自研 WebRTC 协议栈（DEV-PLAN 第 D 波；不再依赖 str0m、dimpl、p256）

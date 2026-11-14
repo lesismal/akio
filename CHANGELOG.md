@@ -278,7 +278,7 @@ depends on rustls any more. The API is the same apart from the payload type (mig
   (`tools/interop/quic/docker.sh`, new); fuzz targets `quic_packet`, `quic_frame`, `quic_conn` with corpus
   replays.
 - Performance against the quinn-proto version, same loopback benchmark
-  (`crates/only-h3/examples/quic-bench.rs`): PERF_EN
+  (`crates/only-h3/examples/quic-bench.rs`): on an AMD Ryzen 7 7800X3D (Linux, loopback, 3 alternating rounds) full handshakes 6705-6785/s against 6536-6674/s (about 1.0x), bulk throughput on one stream 3.1-3.6 Gbit/s against 4.6-4.7 Gbit/s (about 0.72x; packet protection uses `only-crypto`'s hardware AES-GCM), and HTTP/3 requests on one connection with 64 in flight 171k/s against 58k/s (about 2.9x, since responses, FINs and acknowledgments share packets).
 
 Migration: stream and datagram payloads are `only_quic::Bytes` instead of `bytes::Bytes`, the
 only signature change (`QuicHandler::on_stream_data`, `QuicHandler::on_datagram`,
@@ -290,7 +290,7 @@ usually only changes its import: `use bytes::Bytes;` becomes `use only_quic::Byt
 `unstable` feature of only-quic is reserved and empty: `only_quic::proto`,
 `ServerConfig::from_quinn` / `as_quinn_mut` and `ClientConfig::from_quinn` / `as_quinn_mut` are
 removed (they were outside the semver promise). `Congestion::Bbr` (experimental) runs CUBIC.
-`Connection::queued_bytes` counts bytes not sent yet. Not implemented: 0-RTT, sending ECN marks,
+`Connection::queued_bytes` counts bytes not sent yet. A dialed connection's UDP socket is now closed once the connection is gone (it used to stay open until the engine stopped), and `open_bi` / `open_uni` never run handler callbacks, so they may be called while holding locks the handler takes. Not implemented: 0-RTT, sending ECN marks,
 client-initiated migration, preferred_address, QUIC v2.
 
 ### Changed: own WebRTC stack in `only-webrtc` (DEV-PLAN wave D; no more str0m, dimpl, p256)
