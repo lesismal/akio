@@ -1,0 +1,24 @@
+pub mod flash_socks
+pub struct flash_socks::Socks
+impl flash_socks::Socks
+pub fn flash_socks::Socks::auth(self, impl core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync + 'static) -> flash_socks::Socks
+pub fn flash_socks::Socks::new(flash::EngineRef) -> flash_socks::Socks
+impl flash_core::handler::Acceptor for flash_socks::Socks
+pub type flash_socks::Socks::Handler = flash_socks::SocksSession
+pub fn flash_socks::Socks::on_open(&self, &flash_core::conn::Conn<flash_socks::SocksSession>) -> flash_socks::SocksSession
+impl core::marker::Send for flash_socks::Socks
+impl core::marker::Sync for flash_socks::Socks
+impl core::marker::Unpin for flash_socks::Socks
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_socks::Socks
+impl !core::panic::unwind_safe::UnwindSafe for flash_socks::Socks
+pub struct flash_socks::SocksSession
+impl flash_core::handler::Handler for flash_socks::SocksSession
+pub fn flash_socks::SocksSession::on_close(&mut self, &flash_core::conn::Conn<Self>, core::option::Option<flash_core::error::Error>)
+pub fn flash_socks::SocksSession::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for flash_socks::SocksSession
+impl core::marker::Sync for flash_socks::SocksSession
+impl core::marker::Unpin for flash_socks::SocksSession
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_socks::SocksSession
+impl !core::panic::unwind_safe::UnwindSafe for flash_socks::SocksSession
+pub fn flash_socks::connect_proxy(flash::EngineRef) -> impl flash_http::context::Service
+pub type flash_socks::Auth = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync)>

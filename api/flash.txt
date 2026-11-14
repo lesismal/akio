@@ -1,0 +1,167 @@
+pub mod flash
+pub use flash::Acceptor
+pub use flash::Config
+pub use flash::Conn
+pub use flash::ConnInfo
+pub use flash::Error
+pub use flash::FnAcceptor
+pub use flash::Handler
+pub use flash::Live
+pub use flash::LoopCounters
+pub use flash::LoopMeta
+pub use flash::LoopMetrics
+pub use flash::Metrics
+pub use flash::PoolConfig
+pub use flash::PoolStats
+pub use flash::ReloadReport
+pub use flash::ResponseSlot
+pub use flash::Result
+pub use flash::SlowCallback
+pub use flash::SlowHook
+pub use flash::SlowRecord
+pub use flash::Telemetry
+pub use flash::UdpStats
+pub use flash::ebpf
+pub use flash::fn_acceptor
+pub use flash::telemetry
+pub use flash::tls
+pub enum flash::Accel
+pub flash::Accel::Ebpf(flash::EbpfConfig)
+pub flash::Accel::None
+impl core::clone::Clone for flash::Accel
+pub fn flash::Accel::clone(&self) -> Self
+impl core::default::Default for flash::Accel
+pub fn flash::Accel::default() -> Self
+impl core::fmt::Debug for flash::Accel
+pub fn flash::Accel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash::Accel
+impl core::marker::Sync for flash::Accel
+impl core::marker::Unpin for flash::Accel
+impl core::panic::unwind_safe::RefUnwindSafe for flash::Accel
+impl core::panic::unwind_safe::UnwindSafe for flash::Accel
+pub enum flash::AccelStatus
+pub flash::AccelStatus::Degraded(alloc::string::String)
+pub flash::AccelStatus::Off
+pub flash::AccelStatus::Steering(flash_ebpf::steer::SteerInfo)
+impl core::clone::Clone for flash::AccelStatus
+pub fn flash::AccelStatus::clone(&self) -> Self
+impl core::cmp::Eq for flash::AccelStatus
+impl core::cmp::PartialEq for flash::AccelStatus
+pub fn flash::AccelStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash::AccelStatus
+pub fn flash::AccelStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash::AccelStatus
+impl core::marker::Send for flash::AccelStatus
+impl core::marker::Sync for flash::AccelStatus
+impl core::marker::Unpin for flash::AccelStatus
+impl core::panic::unwind_safe::RefUnwindSafe for flash::AccelStatus
+impl core::panic::unwind_safe::UnwindSafe for flash::AccelStatus
+pub enum flash::Backend
+pub flash::Backend::Epoll
+pub flash::Backend::IoUring(flash::UringConfig)
+impl core::clone::Clone for flash::Backend
+pub fn flash::Backend::clone(&self) -> Self
+impl core::default::Default for flash::Backend
+pub fn flash::Backend::default() -> Self
+impl core::fmt::Debug for flash::Backend
+pub fn flash::Backend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash::Backend
+impl core::marker::Sync for flash::Backend
+impl core::marker::Unpin for flash::Backend
+impl core::panic::unwind_safe::RefUnwindSafe for flash::Backend
+impl core::panic::unwind_safe::UnwindSafe for flash::Backend
+pub struct flash::EbpfConfig
+pub flash::EbpfConfig::ebpf_programs: bool
+pub flash::EbpfConfig::steering: flash_ebpf::steer::Steering
+pub flash::EbpfConfig::strict: bool
+impl core::clone::Clone for flash::EbpfConfig
+pub fn flash::EbpfConfig::clone(&self) -> Self
+impl core::default::Default for flash::EbpfConfig
+pub fn flash::EbpfConfig::default() -> Self
+impl core::fmt::Debug for flash::EbpfConfig
+pub fn flash::EbpfConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash::EbpfConfig
+impl core::marker::Sync for flash::EbpfConfig
+impl core::marker::Unpin for flash::EbpfConfig
+impl core::panic::unwind_safe::RefUnwindSafe for flash::EbpfConfig
+impl core::panic::unwind_safe::UnwindSafe for flash::EbpfConfig
+pub struct flash::Engine
+impl flash::Engine
+pub fn flash::Engine::accel_status(&self) -> &[flash::AccelStatus]
+pub fn flash::Engine::builder() -> flash::EngineBuilder
+pub fn flash::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<flash_core::telemetry::ConnInfo>
+pub fn flash::Engine::dial<A: flash_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn flash::Engine::dial_udp<A: flash_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
+pub fn flash::Engine::local_addrs(&self) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub fn flash::Engine::metrics(&self) -> flash_core::telemetry::Metrics
+pub fn flash::Engine::pool_stats(&self) -> flash_pool::PoolStats
+pub fn flash::Engine::reload(&self, &flash_core::config::Config) -> flash_core::telemetry::ReloadReport
+pub fn flash::Engine::run(&self) -> core::io::error::Result<()>
+pub fn flash::Engine::shutdown(&self)
+pub fn flash::Engine::slow_callbacks(&self) -> alloc::vec::Vec<flash_core::telemetry::SlowRecord>
+pub fn flash::Engine::start(&self) -> core::io::error::Result<()>
+pub fn flash::Engine::telemetry(&self) -> &alloc::rcs::arc::Arc<flash_core::telemetry::Telemetry>
+pub fn flash::Engine::udp_stats(&self) -> flash_core::group::UdpStats
+pub fn flash::Engine::wait(&self)
+impl core::marker::Send for flash::Engine
+impl core::marker::Sync for flash::Engine
+impl core::marker::Unpin for flash::Engine
+impl !core::panic::unwind_safe::RefUnwindSafe for flash::Engine
+impl !core::panic::unwind_safe::UnwindSafe for flash::Engine
+pub struct flash::EngineBuilder
+impl flash::EngineBuilder
+pub fn flash::EngineBuilder::build(self) -> core::io::error::Result<flash::Engine>
+pub fn flash::EngineBuilder::client_threads(self, usize) -> Self
+pub fn flash::EngineBuilder::config(self, flash_core::config::Config) -> Self
+pub fn flash::EngineBuilder::listen(self, flash::Listener) -> Self
+pub fn flash::EngineBuilder::pool(self, flash_pool::PoolConfig) -> Self
+pub fn flash::EngineBuilder::udp_client_threads(self, usize) -> Self
+impl core::default::Default for flash::EngineBuilder
+pub fn flash::EngineBuilder::default() -> Self
+impl core::marker::Send for flash::EngineBuilder
+impl core::marker::Sync for flash::EngineBuilder
+impl core::marker::Unpin for flash::EngineBuilder
+impl !core::panic::unwind_safe::RefUnwindSafe for flash::EngineBuilder
+impl !core::panic::unwind_safe::UnwindSafe for flash::EngineBuilder
+pub struct flash::EngineRef(_)
+impl flash::EngineRef
+pub fn flash::EngineRef::get(&self) -> core::option::Option<alloc::rcs::arc::Arc<flash::Engine>>
+pub fn flash::EngineRef::new() -> flash::EngineRef
+pub fn flash::EngineRef::set(&self, &alloc::rcs::arc::Arc<flash::Engine>)
+impl core::clone::Clone for flash::EngineRef
+pub fn flash::EngineRef::clone(&self) -> Self
+impl core::default::Default for flash::EngineRef
+pub fn flash::EngineRef::default() -> Self
+impl core::marker::Send for flash::EngineRef
+impl core::marker::Sync for flash::EngineRef
+impl core::marker::Unpin for flash::EngineRef
+impl !core::panic::unwind_safe::RefUnwindSafe for flash::EngineRef
+impl !core::panic::unwind_safe::UnwindSafe for flash::EngineRef
+pub struct flash::Listener
+impl flash::Listener
+pub fn flash::Listener::accel(self, flash::Accel) -> Self
+pub fn flash::Listener::backend(self, flash::Backend) -> Self
+pub fn flash::Listener::serve<A: flash_core::handler::Acceptor>(self, A) -> Self
+pub fn flash::Listener::tcp(core::net::socket_addr::SocketAddr) -> Self
+pub fn flash::Listener::threads(self, usize) -> Self
+pub fn flash::Listener::udp(core::net::socket_addr::SocketAddr) -> Self
+impl core::marker::Send for flash::Listener
+impl core::marker::Sync for flash::Listener
+impl core::marker::Unpin for flash::Listener
+impl !core::panic::unwind_safe::RefUnwindSafe for flash::Listener
+impl !core::panic::unwind_safe::UnwindSafe for flash::Listener
+pub struct flash::UringConfig
+pub flash::UringConfig::entries: u32
+pub flash::UringConfig::sqpoll: bool
+pub flash::UringConfig::strict: bool
+impl core::clone::Clone for flash::UringConfig
+pub fn flash::UringConfig::clone(&self) -> Self
+impl core::default::Default for flash::UringConfig
+pub fn flash::UringConfig::default() -> Self
+impl core::fmt::Debug for flash::UringConfig
+pub fn flash::UringConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for flash::UringConfig
+impl core::marker::Sync for flash::UringConfig
+impl core::marker::Unpin for flash::UringConfig
+impl core::panic::unwind_safe::RefUnwindSafe for flash::UringConfig
+impl core::panic::unwind_safe::UnwindSafe for flash::UringConfig

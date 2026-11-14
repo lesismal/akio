@@ -1,0 +1,35 @@
+pub mod flash_tls
+pub use flash_tls::rustls
+pub struct flash_tls::Tls<A>
+impl<A: flash_core::handler::Acceptor> flash_tls::Tls<A>
+pub fn flash_tls::Tls<A>::client(alloc::rcs::arc::Arc<rustls::client::client_conn::ClientConfig>, &str, A) -> core::io::error::Result<Self>
+pub fn flash_tls::Tls<A>::server(alloc::rcs::arc::Arc<rustls::server::server_conn::ServerConfig>, A) -> Self
+impl<A: flash_core::handler::Acceptor> flash_core::handler::Acceptor for flash_tls::Tls<A>
+pub type flash_tls::Tls<A>::Handler = <A as flash_core::handler::Acceptor>::Handler
+pub fn flash_tls::Tls<A>::on_open(&self, &flash_core::conn::Conn<<A as flash_core::handler::Acceptor>::Handler>) -> <A as flash_core::handler::Acceptor>::Handler
+pub fn flash_tls::Tls<A>::on_shutdown(&self, &flash_core::conn::Conn<<A as flash_core::handler::Acceptor>::Handler>)
+pub fn flash_tls::Tls<A>::transport(&self) -> core::option::Option<alloc::boxed::Box<dyn flash_core::conn::Transport>>
+impl<A> core::marker::Send for flash_tls::Tls<A> where A: core::marker::Send
+impl<A> core::marker::Sync for flash_tls::Tls<A> where A: core::marker::Sync
+impl<A> core::marker::Unpin for flash_tls::Tls<A> where A: core::marker::Unpin
+impl<A> !core::panic::unwind_safe::RefUnwindSafe for flash_tls::Tls<A>
+impl<A> !core::panic::unwind_safe::UnwindSafe for flash_tls::Tls<A>
+pub struct flash_tls::TlsInfo
+pub flash_tls::TlsInfo::alpn: core::option::Option<alloc::vec::Vec<u8>>
+pub flash_tls::TlsInfo::handshaking: bool
+pub flash_tls::TlsInfo::server_name: core::option::Option<alloc::string::String>
+pub flash_tls::TlsInfo::version: core::option::Option<alloc::string::String>
+impl core::clone::Clone for flash_tls::TlsInfo
+pub fn flash_tls::TlsInfo::clone(&self) -> Self
+impl core::cmp::Eq for flash_tls::TlsInfo
+impl core::cmp::PartialEq for flash_tls::TlsInfo
+pub fn flash_tls::TlsInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_tls::TlsInfo
+pub fn flash_tls::TlsInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_tls::TlsInfo
+impl core::marker::Send for flash_tls::TlsInfo
+impl core::marker::Sync for flash_tls::TlsInfo
+impl core::marker::Unpin for flash_tls::TlsInfo
+impl core::panic::unwind_safe::RefUnwindSafe for flash_tls::TlsInfo
+impl core::panic::unwind_safe::UnwindSafe for flash_tls::TlsInfo
+pub fn flash_tls::tls_info<H>(&flash_core::conn::Conn<H>) -> core::option::Option<flash_tls::TlsInfo>

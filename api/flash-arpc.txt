@@ -1,0 +1,216 @@
+pub mod flash_arpc
+pub mod flash_arpc::proto
+pub enum flash_arpc::proto::Cmd
+pub flash_arpc::proto::Cmd::Notify = 3
+pub flash_arpc::proto::Cmd::Ping = 4
+pub flash_arpc::proto::Cmd::Pong = 5
+pub flash_arpc::proto::Cmd::Request = 1
+pub flash_arpc::proto::Cmd::Response = 2
+pub flash_arpc::proto::Cmd::Stream = 6
+impl core::clone::Clone for flash_arpc::proto::Cmd
+pub fn flash_arpc::proto::Cmd::clone(&self) -> Self
+impl core::cmp::Eq for flash_arpc::proto::Cmd
+impl core::cmp::PartialEq for flash_arpc::proto::Cmd
+pub fn flash_arpc::proto::Cmd::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_arpc::proto::Cmd
+pub fn flash_arpc::proto::Cmd::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for flash_arpc::proto::Cmd
+impl core::marker::StructuralPartialEq for flash_arpc::proto::Cmd
+impl core::marker::Send for flash_arpc::proto::Cmd
+impl core::marker::Sync for flash_arpc::proto::Cmd
+impl core::marker::Unpin for flash_arpc::proto::Cmd
+impl core::panic::unwind_safe::RefUnwindSafe for flash_arpc::proto::Cmd
+impl core::panic::unwind_safe::UnwindSafe for flash_arpc::proto::Cmd
+pub struct flash_arpc::proto::Decoder
+impl flash_arpc::proto::Decoder
+pub fn flash_arpc::proto::Decoder::feed(&mut self, &[u8], &mut alloc::vec::Vec<flash_arpc::proto::Message>) -> core::result::Result<(), flash_arpc::proto::FrameError>
+pub fn flash_arpc::proto::Decoder::new(usize) -> flash_arpc::proto::Decoder
+impl core::marker::Send for flash_arpc::proto::Decoder
+impl core::marker::Sync for flash_arpc::proto::Decoder
+impl core::marker::Unpin for flash_arpc::proto::Decoder
+impl core::panic::unwind_safe::RefUnwindSafe for flash_arpc::proto::Decoder
+impl core::panic::unwind_safe::UnwindSafe for flash_arpc::proto::Decoder
+pub struct flash_arpc::proto::FrameError(pub &'static str)
+impl core::cmp::Eq for flash_arpc::proto::FrameError
+impl core::cmp::PartialEq for flash_arpc::proto::FrameError
+pub fn flash_arpc::proto::FrameError::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_arpc::proto::FrameError
+pub fn flash_arpc::proto::FrameError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_arpc::proto::FrameError
+impl core::marker::Send for flash_arpc::proto::FrameError
+impl core::marker::Sync for flash_arpc::proto::FrameError
+impl core::marker::Unpin for flash_arpc::proto::FrameError
+impl core::panic::unwind_safe::RefUnwindSafe for flash_arpc::proto::FrameError
+impl core::panic::unwind_safe::UnwindSafe for flash_arpc::proto::FrameError
+pub struct flash_arpc::proto::Message
+pub flash_arpc::proto::Message::async_flag: bool
+pub flash_arpc::proto::Message::cmd: flash_arpc::proto::Cmd
+pub flash_arpc::proto::Message::error: bool
+pub flash_arpc::proto::Message::method: alloc::string::String
+pub flash_arpc::proto::Message::payload: alloc::vec::Vec<u8>
+pub flash_arpc::proto::Message::reserved: u8
+pub flash_arpc::proto::Message::seq: u64
+pub flash_arpc::proto::Message::stream_eof: bool
+pub flash_arpc::proto::Message::stream_local: bool
+impl core::clone::Clone for flash_arpc::proto::Message
+pub fn flash_arpc::proto::Message::clone(&self) -> Self
+impl core::cmp::Eq for flash_arpc::proto::Message
+impl core::cmp::PartialEq for flash_arpc::proto::Message
+pub fn flash_arpc::proto::Message::eq(&self, &Self) -> bool
+impl core::fmt::Debug for flash_arpc::proto::Message
+pub fn flash_arpc::proto::Message::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_arpc::proto::Message
+impl core::marker::Send for flash_arpc::proto::Message
+impl core::marker::Sync for flash_arpc::proto::Message
+impl core::marker::Unpin for flash_arpc::proto::Message
+impl core::panic::unwind_safe::RefUnwindSafe for flash_arpc::proto::Message
+impl core::panic::unwind_safe::UnwindSafe for flash_arpc::proto::Message
+pub const flash_arpc::proto::DEFAULT_MAX_BODY: usize
+pub const flash_arpc::proto::HEAD_LEN: usize
+pub const flash_arpc::proto::MAX_METHOD_LEN: usize
+pub fn flash_arpc::proto::encode(flash_arpc::proto::Cmd, u8, bool, bool, &str, u64, &[u8]) -> alloc::vec::Vec<u8>
+pub fn flash_arpc::proto::ping() -> alloc::vec::Vec<u8>
+pub fn flash_arpc::proto::pong() -> alloc::vec::Vec<u8>
+pub enum flash_arpc::CallError
+pub flash_arpc::CallError::Closed
+pub flash_arpc::CallError::Remote(alloc::string::String)
+pub flash_arpc::CallError::Timeout
+impl core::clone::Clone for flash_arpc::CallError
+pub fn flash_arpc::CallError::clone(&self) -> Self
+impl core::cmp::Eq for flash_arpc::CallError
+impl core::cmp::PartialEq for flash_arpc::CallError
+pub fn flash_arpc::CallError::eq(&self, &Self) -> bool
+impl core::error::Error for flash_arpc::CallError
+impl core::fmt::Debug for flash_arpc::CallError
+pub fn flash_arpc::CallError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for flash_arpc::CallError
+pub fn flash_arpc::CallError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for flash_arpc::CallError
+impl core::marker::Send for flash_arpc::CallError
+impl core::marker::Sync for flash_arpc::CallError
+impl core::marker::Unpin for flash_arpc::CallError
+impl core::panic::unwind_safe::RefUnwindSafe for flash_arpc::CallError
+impl core::panic::unwind_safe::UnwindSafe for flash_arpc::CallError
+pub enum flash_arpc::StreamEvent<'a>
+pub flash_arpc::StreamEvent::Eof
+pub flash_arpc::StreamEvent::Message(&'a [u8])
+impl<'a> core::marker::Send for flash_arpc::StreamEvent<'a>
+impl<'a> core::marker::Sync for flash_arpc::StreamEvent<'a>
+impl<'a> core::marker::Unpin for flash_arpc::StreamEvent<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for flash_arpc::StreamEvent<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for flash_arpc::StreamEvent<'a>
+pub struct flash_arpc::ArpcConn
+impl flash_core::handler::Handler for flash_arpc::ArpcConn
+pub fn flash_arpc::ArpcConn::on_close(&mut self, &flash_core::conn::Conn<Self>, core::option::Option<flash_core::error::Error>)
+pub fn flash_arpc::ArpcConn::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for flash_arpc::ArpcConn
+impl core::marker::Sync for flash_arpc::ArpcConn
+impl core::marker::Unpin for flash_arpc::ArpcConn
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::ArpcConn
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::ArpcConn
+pub struct flash_arpc::CallFuture(_)
+impl flash_arpc::CallFuture
+pub fn flash_arpc::CallFuture::wait(self) -> flash_arpc::CallResult
+impl core::future::future::Future for flash_arpc::CallFuture
+pub type flash_arpc::CallFuture::Output = core::result::Result<alloc::vec::Vec<u8>, flash_arpc::CallError>
+pub fn flash_arpc::CallFuture::poll(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<flash_arpc::CallResult>
+impl core::marker::Send for flash_arpc::CallFuture
+impl core::marker::Sync for flash_arpc::CallFuture
+impl core::marker::Unpin for flash_arpc::CallFuture
+impl core::panic::unwind_safe::RefUnwindSafe for flash_arpc::CallFuture
+impl core::panic::unwind_safe::UnwindSafe for flash_arpc::CallFuture
+pub struct flash_arpc::Context
+impl flash_arpc::Context
+pub fn flash_arpc::Context::body(&self) -> &[u8]
+pub fn flash_arpc::Context::detach(&mut self) -> flash_arpc::Responder
+pub fn flash_arpc::Context::error(&mut self, &str)
+pub fn flash_arpc::Context::is_notify(&self) -> bool
+pub fn flash_arpc::Context::method(&self) -> &str
+pub fn flash_arpc::Context::peer(&self) -> &flash_arpc::Peer
+pub fn flash_arpc::Context::write(&mut self, &[u8])
+impl core::marker::Send for flash_arpc::Context
+impl core::marker::Sync for flash_arpc::Context
+impl core::marker::Unpin for flash_arpc::Context
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::Context
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::Context
+pub struct flash_arpc::Peer(_)
+impl flash_arpc::Peer
+pub fn flash_arpc::Peer::call(&self, &str, &[u8], core::option::Option<core::time::Duration>) -> flash_arpc::CallFuture
+pub fn flash_arpc::Peer::call_async(&self, &str, &[u8], core::option::Option<core::time::Duration>, impl core::ops::function::FnOnce(flash_arpc::CallResult) + core::marker::Send + 'static)
+pub fn flash_arpc::Peer::close(&self)
+pub fn flash_arpc::Peer::is_connected(&self) -> bool
+pub fn flash_arpc::Peer::new_stream(&self, &str, impl core::ops::function::FnMut(&flash_arpc::Stream, flash_arpc::StreamEvent<'_>) + core::marker::Send + 'static) -> flash_arpc::Stream
+pub fn flash_arpc::Peer::notify(&self, &str, &[u8]) -> bool
+pub fn flash_arpc::Peer::peer_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+impl core::clone::Clone for flash_arpc::Peer
+pub fn flash_arpc::Peer::clone(&self) -> Self
+impl core::marker::Send for flash_arpc::Peer
+impl core::marker::Sync for flash_arpc::Peer
+impl core::marker::Unpin for flash_arpc::Peer
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::Peer
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::Peer
+pub struct flash_arpc::Responder
+impl flash_arpc::Responder
+pub fn flash_arpc::Responder::error(self, &str)
+pub fn flash_arpc::Responder::write(self, &[u8])
+impl core::marker::Send for flash_arpc::Responder
+impl core::marker::Sync for flash_arpc::Responder
+impl core::marker::Unpin for flash_arpc::Responder
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::Responder
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::Responder
+pub struct flash_arpc::Routes
+impl flash_arpc::Routes
+pub fn flash_arpc::Routes::handle(self, &str, impl core::ops::function::Fn(&mut flash_arpc::Context) + core::marker::Send + core::marker::Sync + 'static) -> flash_arpc::Routes
+pub fn flash_arpc::Routes::handle_stream<F>(self, &str, impl core::ops::function::Fn(&flash_arpc::Stream) -> F + core::marker::Send + core::marker::Sync + 'static) -> flash_arpc::Routes where F: core::ops::function::FnMut(&flash_arpc::Stream, flash_arpc::StreamEvent<'_>) + core::marker::Send + 'static
+pub fn flash_arpc::Routes::max_body(self, usize) -> flash_arpc::Routes
+pub fn flash_arpc::Routes::new() -> flash_arpc::Routes
+pub fn flash_arpc::Routes::on_connected(self, impl core::ops::function::Fn(&flash_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> flash_arpc::Routes
+pub fn flash_arpc::Routes::on_disconnected(self, impl core::ops::function::Fn(&flash_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> flash_arpc::Routes
+impl core::default::Default for flash_arpc::Routes
+pub fn flash_arpc::Routes::default() -> Self
+impl core::marker::Send for flash_arpc::Routes
+impl core::marker::Sync for flash_arpc::Routes
+impl core::marker::Unpin for flash_arpc::Routes
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::Routes
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::Routes
+pub struct flash_arpc::Server
+impl flash_arpc::Server
+pub fn flash_arpc::Server::broadcast(&self, &str, &[u8])
+pub fn flash_arpc::Server::new(alloc::rcs::arc::Arc<flash_arpc::Routes>) -> flash_arpc::Server
+pub fn flash_arpc::Server::peers(&self) -> alloc::vec::Vec<flash_arpc::Peer>
+impl core::clone::Clone for flash_arpc::Server
+pub fn flash_arpc::Server::clone(&self) -> Self
+impl flash_core::handler::Acceptor for flash_arpc::Server
+pub type flash_arpc::Server::Handler = flash_arpc::ServerConn
+pub fn flash_arpc::Server::on_open(&self, &flash_core::conn::Conn<flash_arpc::ServerConn>) -> flash_arpc::ServerConn
+impl core::marker::Send for flash_arpc::Server
+impl core::marker::Sync for flash_arpc::Server
+impl core::marker::Unpin for flash_arpc::Server
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::Server
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::Server
+pub struct flash_arpc::ServerConn
+impl flash_core::handler::Handler for flash_arpc::ServerConn
+pub fn flash_arpc::ServerConn::on_close(&mut self, &flash_core::conn::Conn<Self>, core::option::Option<flash_core::error::Error>)
+pub fn flash_arpc::ServerConn::on_data(&mut self, &flash_core::conn::Conn<Self>, &[u8])
+impl core::marker::Send for flash_arpc::ServerConn
+impl core::marker::Sync for flash_arpc::ServerConn
+impl core::marker::Unpin for flash_arpc::ServerConn
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::ServerConn
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::ServerConn
+pub struct flash_arpc::Stream
+impl flash_arpc::Stream
+pub fn flash_arpc::Stream::close_send(&self) -> bool
+pub fn flash_arpc::Stream::id(&self) -> u64
+pub fn flash_arpc::Stream::method(&self) -> &str
+pub fn flash_arpc::Stream::peer(&self) -> &flash_arpc::Peer
+pub fn flash_arpc::Stream::send(&self, &[u8]) -> bool
+impl core::clone::Clone for flash_arpc::Stream
+pub fn flash_arpc::Stream::clone(&self) -> Self
+impl core::marker::Send for flash_arpc::Stream
+impl core::marker::Sync for flash_arpc::Stream
+impl core::marker::Unpin for flash_arpc::Stream
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_arpc::Stream
+impl !core::panic::unwind_safe::UnwindSafe for flash_arpc::Stream
+pub const flash_arpc::METHOD_NOT_FOUND: &str
+pub fn flash_arpc::dial(&alloc::rcs::arc::Arc<flash::Engine>, core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<flash_arpc::Routes>) -> core::io::error::Result<flash_arpc::Peer>
+pub type flash_arpc::CallResult = core::result::Result<alloc::vec::Vec<u8>, flash_arpc::CallError>

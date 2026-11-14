@@ -1,0 +1,17 @@
+pub mod flash_epoll
+pub struct flash_epoll::EpollGroup
+impl flash_epoll::EpollGroup
+pub fn flash_epoll::EpollGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn flash_core::handler::DynAcceptor>)>, usize, flash_core::config::Config, alloc::rcs::arc::Arc<flash_pool::Pool>) -> core::io::error::Result<flash_epoll::EpollGroup>
+impl core::marker::Send for flash_epoll::EpollGroup
+impl core::marker::Sync for flash_epoll::EpollGroup
+impl core::marker::Unpin for flash_epoll::EpollGroup
+impl !core::panic::unwind_safe::RefUnwindSafe for flash_epoll::EpollGroup
+impl !core::panic::unwind_safe::UnwindSafe for flash_epoll::EpollGroup
+pub struct flash_epoll::UdpGroup
+impl flash_epoll::UdpGroup
+pub fn flash_epoll::UdpGroup::bind(core::option::Option<(core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<dyn flash_core::handler::DynAcceptor>)>, usize, flash_core::config::Config, alloc::rcs::arc::Arc<flash_pool::Pool>) -> core::io::error::Result<flash_epoll::UdpGroup>
+impl core::marker::Send for flash_epoll::UdpGroup
+impl core::marker::Sync for flash_epoll::UdpGroup
+impl core::marker::Unpin for flash_epoll::UdpGroup
+impl core::panic::unwind_safe::RefUnwindSafe for flash_epoll::UdpGroup
+impl core::panic::unwind_safe::UnwindSafe for flash_epoll::UdpGroup
