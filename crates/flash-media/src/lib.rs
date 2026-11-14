@@ -14,6 +14,9 @@ pub mod flv;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+pub mod hls;
+pub mod http;
+pub mod httpflv;
 pub mod hub;
 pub mod mpegts;
 pub mod rtmp;
