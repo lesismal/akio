@@ -17,5 +17,12 @@ sha1 = "0.10"
 crc32fast = "1"
 getrandom = "0.2"
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_kcp::fuzzing`); not a public API.
+fuzzing = []
+
+[dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
+
 [lints]
 workspace = true

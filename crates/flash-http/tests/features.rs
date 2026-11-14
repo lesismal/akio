@@ -215,7 +215,7 @@ fn streamed_response_over_http10_is_close_delimited() {
 fn streamed_request_bodies_arrive_in_chunks_without_a_size_limit() {
     let total = Arc::new(AtomicUsize::new(0));
     let chunks = Arc::new(AtomicUsize::new(0));
-    let (t, c) = (total.clone(), chunks.clone());
+    let (t, c) = (total, chunks.clone());
     let app = Router::new().post(
         "/upload",
         Streaming(move |ctx: &mut Context| {
@@ -485,7 +485,7 @@ fn compress_etag_and_response_time() {
         .get("/text", move |ctx: &mut Context| ctx.text(200, t.clone()))
         .get("/tiny", |ctx: &mut Context| ctx.text(200, "tiny"))
         .get("/bin", |ctx: &mut Context| {
-            ctx.bytes(200, "application/octet-stream", vec![7; 5000])
+            ctx.bytes(200, "application/octet-stream", vec![7; 5000]);
         })
         .layer(middleware::etag())
         .layer(middleware::compress(Compress::default()))

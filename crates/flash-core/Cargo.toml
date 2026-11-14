@@ -18,5 +18,9 @@ flash-sys = { workspace = true }
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
 
+[features]
+# Detached connections for the fuzz targets (`fuzz/`); not a public API.
+fuzzing = []
+
 [lints]
 workspace = true

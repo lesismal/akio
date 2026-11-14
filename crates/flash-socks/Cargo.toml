@@ -12,5 +12,12 @@ flash = { workspace = true }
 flash-core = { workspace = true }
 flash-http = { workspace = true }
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_socks::fuzzing`); not a public API.
+fuzzing = ["flash-core/fuzzing"]
+
+[dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
+
 [lints]
 workspace = true

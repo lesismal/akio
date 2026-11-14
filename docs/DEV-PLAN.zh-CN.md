@@ -154,8 +154,8 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### M6 DPDK + 生产化（6–8 周）
 - [ ] `flash-dpdk`：EAL 初始化、mbuf 收发、用户态 TCP/IP 栈选型与集成（先 UDP，再 TCP）、与 Engine 线程组对接
-- [ ] 生产化：指标（Prometheus 风格）、结构化日志、运行时 debug/pprof 等价物（连接表、队列深度、慢回调）、配置热更新
-- [ ] 混沌测试：随机断连、半关闭、慢客户端、池饱和、fd 耗尽
+- [x] 生产化：每个 I/O 线程的 relaxed 计数器（连接、字节、读写次数、UDP 数据报、发送队列字节、背压/过载、TLS 握手失败、循环迭代/事件/回调耗时、慢回调）及池统计，`Engine::metrics()` 输出 Prometheus 文本或 JSON；基于 `log` 门面的结构化日志（带键值，无 logger 时回退 stderr，`Config::log_level`）；运行时调试：由事件循环收集的连接表、慢回调环形缓冲、线程循环统计；flash-http 提供 `metrics_handler`、`HttpMetrics`（状态码分类、延迟直方图）、`access_log`、可用 token 保护的 `debug_handler`；`Engine::reload`/`Live` 热更新（空闲超时、慢回调阈值/钩子、队列上限、高水位、新增 `max_connections`、关闭超时、日志级别）。未完成：`tracing` feature、读缓冲/backlog/线程数/UDP 空闲超时的热更新、按路由的 HTTP 标签、在空闲机器上测量开销
+- [x] 混沌测试：为引擎（`flash/tests/chaos.rs`）、fd 耗尽（`chaos_fd.rs`）、TLS（`chaos_tls.rs`）和 HTTP/WebSocket（`flash-http/tests/chaos.rs`）新增带种子、可复现的测试：RST 中断、半关闭、慢读与不读客户端、逻辑池饱和、EMFILE、负载下关闭；校验 `on_close` 恰好一次、无卡死、队列有界、无 fd 泄漏。默认只跑少量种子，`FLASH_CHAOS=1 FLASH_CHAOS_SECS=300` 进行浸泡（macOS、Linux epoll 与 io_uring 均无违规）。修复的 bug：EOF 截断未完成的有序响应；超限有序响应被静默丢弃；epoll 在 EMFILE 时空转；io_uring 漏掉数据之后的 RST；io_uring 可能复用仍被未提交 SQE 引用的 fd
 - [ ] Prefork（可选）
 - **交付**：长稳（≥72h）报告
 
@@ -167,8 +167,9 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 
 ### 1.0 稳定化
 - [ ] API 审阅与冻结、semver 策略、弃用流程
-- [ ] 全量 fuzz 语料与覆盖率报告、`cargo-audit/deny`、unsafe 审查清单
-- [ ] 文档站 + 迁移指南（从 fib / tokio / hyper）+ 架构文档
+- [ ] 全量 fuzz 语料与覆盖率报告、`cargo-audit/deny`、unsafe 审查清单 —— 模糊测试已完成：`fuzz/` cargo-fuzz 工程共 21 个目标（HTTP/1、HTTP/2 + HPACK、WebSocket、arpc、gRPC、SOCKS、mux、KCP、HTTP/3 + QPACK、cBPF），最小化语料约 2.6 MB 由 stable 单元测试回放，每个目标在 Linux 上约 14 分钟，提供 `fuzz/run-all.sh` 与 `fuzz/coverage.sh`。已修复：HTTP/2 流式请求被丢弃时的死锁、递归/非法 server push、gRPC `grpc-timeout` panic/溢出、KCP RTT 溢出、SOCKS 握手缓冲无上限。待完成：deny/audit、unsafe 审查
+- [x] CI 加固与覆盖率：严格 lint 集（`missing_docs` deny、`unreachable_pub`、库代码 `unwrap_used`、精选 pedantic/nursery），rustdoc `-D warnings`；矩阵：Linux x86_64/arm64 × epoll/io_uring、macOS（尽力而为）、MSRV 1.85、cargo-hack 特性组合、Miri、loom、Autobahn（服务端+客户端）、h2spec、文档书构建与 Pages 部署、重任务（Go 互通、每夜 fuzz）；统一的 `ci-ok` 门禁。覆盖率任务（cargo-llvm-cov，两种后端合并）：行覆盖率 85.9% → 91.6%，每个 crate ≥ 85%。顺带修复：flash-quic 在方向错误的流上 panic、15 处持锁调用回调、`--no-default-features` 测试编译、两处测试竞态。尚未在 GitHub 上实际运行验证（Pages 设置、fib 检出、Codecov）
+- [x] 文档站 + 迁移指南 + 架构文档：mdBook `book/en` 与 `book/zh-CN`（快速上手、核心概念、每个协议一章、配置参考、可观测性与热更新、性能调优、故障排查），由 `book/build.sh` 构建；所有代码片段来自 14 个可运行的 `guide-*` 示例；从 fib、tokio、hyper/axum 迁移的指南；带 Mermaid 图的 `docs/architecture.md`；各 crate 的 rustdoc 链接到对应章节；根目录 README。未完成：Pages 部署、在 Linux 上运行这些示例
 
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。

@@ -218,7 +218,7 @@ fn spawn_blocking_and_ordered_slots_work_over_tls() {
         fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
             for &b in data {
                 let slot = c.reserve_response().unwrap();
-                let delay = (10 - b as u64) * 5;
+                let delay = (10 - u64::from(b)) * 5;
                 c.spawn_blocking(
                     move || {
                         thread::sleep(Duration::from_millis(delay));

@@ -1,0 +1,5 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+t: h
+Connection: UHosPRI * t: ,MAAP__
+

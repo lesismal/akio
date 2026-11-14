@@ -1,0 +1,7 @@
+HTTP/1.1 101 Swe
+Sec-WebSocket-Accett: s3pPLMBtocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accett:sp 6PLMBde
+Sec-WebSocket-Accept: aQ9kYGz-Extensions=11
+

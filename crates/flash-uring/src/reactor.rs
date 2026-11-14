@@ -29,6 +29,8 @@ const OP_RECV: u64 = 2;
 const OP_POLL: u64 = 3;
 const OP_WAKE: u64 = 4;
 const OP_OTHER: u64 = 5;
+/// One-shot poll for a socket error (a reset): see `arm_reset_watch`.
+const OP_RESET: u64 = 6;
 
 const BGID: u16 = 0;
 /// Provided buffers per loop; a power of two (the buffer ring is indexed with a mask).
@@ -89,8 +91,8 @@ struct RawBuf {
     resv: u16,
 }
 
-const _: () = assert!(std::mem::size_of::<RawBuf>() == std::mem::size_of::<BufRingEntry>());
-const _: () = assert!(std::mem::size_of::<RawBuf>() == 16);
+const _: () = assert!(size_of::<RawBuf>() == size_of::<BufRingEntry>());
+const _: () = assert!(size_of::<RawBuf>() == 16);
 
 /// The provided-buffer ring: page-aligned memory shared with the kernel. Returning a buffer is a
 /// plain memory write plus a tail bump, with no submission entry and no syscall.
@@ -101,7 +103,7 @@ pub(crate) struct BufRing {
     leaked: bool,
 }
 
-const RING_BYTES: usize = BUF_COUNT as usize * std::mem::size_of::<RawBuf>();
+const RING_BYTES: usize = BUF_COUNT as usize * size_of::<RawBuf>();
 
 impl BufRing {
     fn layout() -> std::alloc::Layout {
@@ -381,6 +383,10 @@ pub(crate) struct Loop {
     slots: HashMap<u64, Slot>,
     cfg: Arc<Config>,
     draining: Option<Instant>,
+    /// Connections finalized since the last submit. Entries already in the submission queue
+    /// name their socket by fd number, resolved by the kernel only at submit: the fd must not be
+    /// closed (and reused by another connection, perhaps on another loop) before that.
+    graveyard: Vec<Arc<ConnInner>>,
     wheel: Wheel<u64>,
     epoch: Instant,
     cqes: Vec<(u64, i32, u32)>,
@@ -437,6 +443,7 @@ impl Loop {
             slots: HashMap::new(),
             cfg,
             draining: None,
+            graveyard: Vec::new(),
             wheel: Wheel::new(0),
             epoch: Instant::now(),
             cqes: Vec::with_capacity(1024),
@@ -497,6 +504,14 @@ impl Loop {
         }
         loop {
             self.arm_loop_ops();
+            if !self.graveyard.is_empty() {
+                // Submit before blocking: the kernel then holds its own references to the
+                // sockets of finalized connections, whose descriptors may be closed.
+                let _ = self.ring.submit();
+                if self.ring.submission().is_empty() {
+                    self.graveyard.clear();
+                }
+            }
             let mut timeout = self.draining.map(|_| Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
@@ -670,6 +685,7 @@ impl Loop {
             OP_ACCEPT => self.on_accept(res, flags),
             OP_RECV => self.on_recv(id, res, flags),
             OP_POLL => self.on_poll(id),
+            OP_RESET => self.on_reset_watch(id),
             _ => {} // buffer provisioning, cancels
         }
     }
@@ -753,7 +769,7 @@ impl Loop {
                 if !lc.eof {
                     lc.eof = true;
                     // Peer is done sending: finish writing what we owe, then close.
-                    lc.inner.close_after_send();
+                    lc.inner.close_after_responses();
                     done = Done::Eof;
                 }
             } else if res != -libc::ENOBUFS && res != -libc::ECANCELED && res != -libc::EINTR {
@@ -796,6 +812,7 @@ impl Loop {
             return; // dropping the stream closes it
         }
         let id = NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed);
+        let fd = stream.as_raw_fd();
         let inner = ConnInner::new(
             id,
             stream,
@@ -804,13 +821,10 @@ impl Loop {
             self.shared.clone(),
             self.cfg.clone(),
         );
-        let handler = match catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) {
-            Ok(h) => h,
-            Err(_) => {
-                inner.mark_closed();
-                tel.conn_closed();
-                return;
-            }
+        let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
+            inner.mark_closed();
+            tel.conn_closed();
+            return;
         };
         let st = &self.shared.stats;
         if dialed { &st.dialed } else { &st.accepted }.add_local(1);
@@ -835,8 +849,30 @@ impl Loop {
                 bytes_in: 0,
             }),
         );
+        self.arm_reset_watch(id, fd);
         // `on_open` may already have queued output or closed the connection.
         self.on_wake(id);
+    }
+
+    /// Watches the socket for a reset with a one-shot poll of its own. A multishot recv that
+    /// has delivered data and is waiting for more does not always complete when an RST
+    /// arrives next (observed on Linux 6.12: the socket holds ECONNRESET, no CQE ever comes),
+    /// which would leave the connection open forever. `POLLRDHUP` also fires on a plain FIN,
+    /// which the recv reports itself, so the completion only acts on a pending socket error.
+    fn arm_reset_watch(&mut self, id: u64, fd: std::os::fd::RawFd) {
+        let e = opcode::PollAdd::new(types::Fd(fd), (libc::POLLRDHUP | libc::POLLERR) as u32)
+            .build()
+            .user_data(ud(id, OP_RESET));
+        self.push(e);
+    }
+
+    fn on_reset_watch(&mut self, id: u64) {
+        let Some(Slot::Conn(lc)) = self.slots.get(&id) else {
+            return;
+        };
+        if let Ok(Some(e)) = lc.inner.stream().take_error() {
+            self.finalize(id, Some(Error::Io(e)));
+        }
     }
 
     fn begin_dial(
@@ -962,6 +998,7 @@ impl Loop {
             self.wheel.cancel(t);
         }
         lc.inner.mark_closed();
+        self.graveyard.push(lc.inner.clone());
         let _ = lc.inner.stream().shutdown(std::net::Shutdown::Both);
         let t0 = self.timing();
         if log::log_enabled!(target: "flash", log::Level::Trace) {
@@ -1201,7 +1238,7 @@ mod tests {
         let b = KernelBuf::new(64).unwrap();
         // SAFETY: no kernel operation refers to `b`.
         assert_eq!(unsafe { b.slice(60, 4) }, &[0; 4]);
-        let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
+        let r = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: as above (and the range is rejected before any access).
             let _ = unsafe { b.slice(60, 5) };
         }));

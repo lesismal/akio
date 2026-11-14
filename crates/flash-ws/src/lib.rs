@@ -12,9 +12,16 @@
 //!   handler model.
 //!
 //! The server-side HTTP upgrade lives in `flash-http` (`Context::upgrade_websocket`).
+//!
+//! Guide: [WebSocket](https://lesismal.github.io/flash/en/protocols/websocket.html)
+//! (中文: [WebSocket](https://lesismal.github.io/flash/zh-CN/protocols/websocket.html)).
+#![warn(clippy::unwrap_used)]
 
 pub mod client;
 pub mod deflate;
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod protocol;
 mod session;
 mod timer;

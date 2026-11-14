@@ -1,0 +1,8 @@
+GET /ws HTTP/1.1
+Host: h
+Content-Length: et
+ConnectPGETion: UUpgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Connect@on: UpgradeHo=de: h2c
+HTTP1-Settings: A;MAAABOST /Connect@on: ol: chat
+

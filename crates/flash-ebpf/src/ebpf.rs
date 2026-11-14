@@ -4,7 +4,7 @@
 /// One eBPF instruction (`struct bpf_insn`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Insn {
+pub(crate) struct Insn {
     code: u8,
     regs: u8,
     off: i16,
@@ -149,6 +149,6 @@ mod tests {
         let v = relay_verdict(9);
         assert_eq!(v.len(), 13);
         assert_eq!(v[4].imm, 9);
-        assert_eq!(std::mem::size_of::<Insn>(), 8);
+        assert_eq!(size_of::<Insn>(), 8);
     }
 }

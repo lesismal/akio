@@ -22,7 +22,13 @@ feature-depth = 1
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 unmaintained = "all"
-ignore = []
+ignore = [
+    # time 0.3.45: stack exhaustion when parsing hostile RFC 2822 input. Reached only through
+    # rcgen (a dev-dependency generating test certificates; no RFC 2822 parsing). The fix,
+    # time 0.3.47, needs Rust 1.88 and would break the MSRV (1.85) check of the test targets.
+    # Drop this once the MSRV reaches 1.88 or rcgen no longer pulls time.
+    { id = "RUSTSEC-2026-0009", reason = "dev-only via rcgen; fix needs Rust 1.88 > MSRV" },
+]
 
 [licenses]
 # The workspace is MIT; these licenses are all permissive and MIT-compatible for distribution.

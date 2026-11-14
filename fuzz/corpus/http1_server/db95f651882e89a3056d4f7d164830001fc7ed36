@@ -1,0 +1,10 @@
+PGET / HTTP/1.1
+Host: h
+Connection:Upgraa1
+Host: h
+Connection: Upgrade, HTTP1-Settings
+Upgrade: h2c
+HTTP2-Settings: A;MAAABOST /Connect@on: UpgrSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: ttings: A;MAAABOST /Connect@on: UpgdrH=eaoth: 0
+
+/bc

@@ -104,7 +104,7 @@ fn main() -> std::io::Result<()> {
     }
     .threads(threads);
 
-    match a.get(4).map(String::as_str).unwrap_or("echo") {
+    match a.get(4).map_or("echo", String::as_str) {
         "echo" => serve(l, fn_acceptor(|_c: &Conn<Echo>| Echo), tls, 64),
         "block-inline" => serve(l, fn_acceptor(move |_c: &Conn<Inline>| Inline(d)), tls, 64),
         "block-pool" => serve(

@@ -1,0 +1,13 @@
+POST / HTTP/1.1
+Host: 
+Host: h
+Expect: 100-continue
+Content-Length: 2
+
+hihOST /stream HTTP/1.1
+Host: b
+Transfer-Encoding: chunked
+
+¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥¥bz
+0 X-T: 1
+

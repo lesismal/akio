@@ -1,0 +1,6 @@
+GET ws HTTP/1.1
+HosocConnection:
+Sec-WebSoersion: 12]M
+Sec-Webersionon:
+bSocket-Prtocol: chat
+

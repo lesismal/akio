@@ -1,0 +1,23 @@
+GET /Cenop/ HTTP/1.1
+Host: h
+T: cLostttt/1.1
+Host: h
+Content-Length: 4
+
+bodyttttttttPOST tttttttttto/p HTTP/1.1
+Host: h
+T: cLostttt/1.1
+Host: h
+Content-: h
+T: cLostttt/1.1
+Host: h
+Content-Length: 4
+
+bodyttttttttPOST tttttttttto/p HTTP/1.1
+Host: h
+T: cLostttt/1.1
+Host: h
+Content-Length: 4
+
+bodyExpect: 100-continuettttt h: h
+

@@ -212,7 +212,7 @@ impl<S: Service> Handler for Session<S> {
 }
 
 impl<S: Service> Session<S> {
-    fn shutdown(&mut self, c: &Conn<Self>) {
+    fn shutdown(&self, c: &Conn<Self>) {
         match &self.h2 {
             Some(h2) => h2.shutdown(),
             None => h1_shutdown(c),

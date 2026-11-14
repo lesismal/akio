@@ -1,0 +1,8 @@
+HTTP/1.1 101 cols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+S*ec-Weet-Extenons: perm
+ebSe: websocket
+Connection:ssagts=10
+

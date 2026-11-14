@@ -1,0 +1,3 @@
+CONNECT /wsmple.com:44 HTTP/1.1
+Host: 43
+

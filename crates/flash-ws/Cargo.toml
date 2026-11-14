@@ -17,7 +17,12 @@ flash = { workspace = true }
 httparse = "1"
 getrandom = "0.2"
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_ws::fuzzing`); not a public API.
+fuzzing = ["flash-core/fuzzing"]
+
 [dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
 flash-http = { workspace = true }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 

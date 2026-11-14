@@ -1,0 +1,20 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSkckersion: 06
+Sec-WabSocket-Ede: websock0et
+Connection: Upgrade
+Sec-WmbSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Vmrsion#: 13
+Sec-WabSockextensionst-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+Sec-WabSocket-Ede: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version#: 13
+Sec-WabSockextensions: /pushssage-deflate; client_max_window_bits
+
+ÅÖ7˙!=üMQ/det_max_window_bits
+
+ÅÖ7˙!=üMQ/detachc-WebS

@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+HoTransfer-Encot: h
+Content--Lee: websocket
+C/nnecn 0
+
+ab

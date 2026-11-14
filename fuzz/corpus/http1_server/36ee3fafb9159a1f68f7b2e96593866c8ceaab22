@@ -1,0 +1,42 @@
+GET / HTTP/1.1
+Hoqt:TTP/1.1
+Host: h
+Connection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1.1
+Host: h
+Connection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgection: Upgrade, HTTade, HTTPion: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1.1
+Host: h
+Connection: Upg2-Settings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____oooooooooooooooooooooooo_________grade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgection: Upgrade, HTTade, HTTPion: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1.1
+Host: h
+Connection: Upg2-S_______Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgection: Upgrade, HTTade, HTTPion: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1.1
+Host: h
+Connection: Upg2-S_____________________:______, HTTP1-Setti______________:______, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1.1
+Host: h
+Connection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgection: Upgrade, HTTade, HTTPion: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1_________
+

@@ -307,16 +307,24 @@ impl Kcp {
     }
 
     fn update_ack(&mut self, rtt: i32) {
+        // The RTT comes from a timestamp the peer echoes, so it can be anything up to
+        // `i32::MAX`: compute in i64 (the results stay within i32, being weighted averages).
         if self.rx_srtt == 0 {
             self.rx_srtt = rtt;
             self.rx_rttvar = rtt / 2;
         } else {
-            let delta = (rtt - self.rx_srtt).abs();
-            self.rx_rttvar = (3 * self.rx_rttvar + delta) / 4;
-            self.rx_srtt = ((7 * self.rx_srtt + rtt) / 8).max(1);
+            let (rtt, srtt, var) = (
+                i64::from(rtt),
+                i64::from(self.rx_srtt),
+                i64::from(self.rx_rttvar),
+            );
+            let delta = (rtt - srtt).abs();
+            self.rx_rttvar = ((3 * var + delta) / 4) as i32;
+            self.rx_srtt = ((7 * srtt + rtt) / 8).max(1) as i32;
         }
-        let rto = self.rx_srtt as u32 + self.interval.max(4 * self.rx_rttvar as u32);
-        self.rx_rto = rto.clamp(self.rx_minrto, RTO_MAX);
+        let var4 = 4 * u64::from(self.rx_rttvar.unsigned_abs());
+        let rto = u64::from(self.rx_srtt.unsigned_abs()) + u64::from(self.interval).max(var4);
+        self.rx_rto = rto.clamp(u64::from(self.rx_minrto), u64::from(RTO_MAX)) as u32;
     }
 
     fn shrink_buf(&mut self) {
@@ -352,7 +360,7 @@ impl Kcp {
         if diff(sn, self.snd_una) < 0 || diff(sn, self.snd_nxt) >= 0 {
             return;
         }
-        for s in self.snd_buf.iter_mut() {
+        for s in &mut self.snd_buf {
             if diff(sn, s.sn) < 0 {
                 break;
             }
@@ -663,6 +671,26 @@ impl Kcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression (found by fuzzing): acks echoing timestamps far in the past gave RTTs near
+    /// `i32::MAX`, and the smoothing arithmetic overflowed (a panic in debug builds).
+    #[test]
+    fn huge_rtts_do_not_overflow() {
+        let mut k = Kcp::new(1);
+        k.send(b"x").unwrap();
+        k.flush(0, &mut |_| {});
+        for now in [i32::MAX as u32, u32::MAX / 2 + 7, 3_000_000_000, 1] {
+            let mut ack = Vec::new();
+            ack.extend(1u32.to_le_bytes());
+            ack.extend([CMD_ACK, 0, 128, 0]);
+            ack.extend(0u32.to_le_bytes()); // ts
+            ack.extend(0u32.to_le_bytes()); // sn
+            ack.extend(0u32.to_le_bytes()); // una
+            ack.extend(0u32.to_le_bytes()); // len
+            k.input(&ack, now).unwrap();
+            assert!((RTO_MIN..=RTO_MAX).contains(&k.rx_rto));
+        }
+    }
 
     /// Two KCPs connected by a lossy pipe deliver everything in order.
     #[test]

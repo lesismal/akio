@@ -1,0 +1,15 @@
+PGET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTs
+Upgrade: TTP/1.1
+Host: h
+Connection: Upgrade, HTs
+Upgrade: h2c
+HTTet2-tSPings: ATP1-Settings
+Upgrade: h2c
+HTTet2-tSPings: A;MAAABOST /Conneh2c
+HTTet2-tSPings: ATP1-Settings
+Upgrade: h2c
+HTTet2-tSPings: A;MAAABOST /Connect@on: UpgradeHo=th: 0
+
+/bc

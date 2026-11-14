@@ -222,7 +222,8 @@ impl Decoder {
         if h[0] & 0x30 != 0 {
             return Err(err(close::PROTOCOL, "reserved bits set"));
         }
-        let opcode = Opcode::from_u8(h[0] & 0x0f).ok_or(err(close::PROTOCOL, "unknown opcode"))?;
+        let opcode =
+            Opcode::from_u8(h[0] & 0x0f).ok_or_else(|| err(close::PROTOCOL, "unknown opcode"))?;
         let masked = h[1] & 0x80 != 0;
         match (self.role, masked) {
             (Role::Server, false) => return Err(err(close::PROTOCOL, "client frame not masked")),
@@ -232,7 +233,7 @@ impl Decoder {
         let (len, at) = match h[1] & 0x7f {
             126 => (u64::from(u16::from_be_bytes([h[2], h[3]])), 4),
             127 => {
-                let l = u64::from_be_bytes(h[2..10].try_into().unwrap());
+                let l = u64::from_be_bytes(h[2..10].try_into().expect("8 bytes"));
                 if l >> 63 != 0 {
                     return Err(err(close::PROTOCOL, "length high bit set"));
                 }
@@ -399,7 +400,7 @@ pub(crate) fn unmask(data: &mut [u8], mask: [u8; 4], pos: usize) {
     let m8 = u64::from_ne_bytes([m[0], m[1], m[2], m[3], m[0], m[1], m[2], m[3]]);
     let mut chunks = data.chunks_exact_mut(8);
     for c in &mut chunks {
-        let v = u64::from_ne_bytes(c.try_into().unwrap()) ^ m8;
+        let v = u64::from_ne_bytes(c.try_into().expect("8-byte chunk")) ^ m8;
         c.copy_from_slice(&v.to_ne_bytes());
     }
     for (i, b) in chunks.into_remainder().iter_mut().enumerate() {

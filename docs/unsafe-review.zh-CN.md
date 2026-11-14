@@ -70,12 +70,12 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 
 | Crate | 块 | `unsafe fn` | `unsafe impl` | 测试/示例/基准 |
 |---|---:|---:|---:|---:|
-| flash | 0 | 0 | 0 | 3 |
+| flash | 0 | 0 | 0 | 12 |
 | flash-ebpf | 11 | 3 | 0 | 1 |
-| flash-http | 0 | 0 | 0 | 7 |
+| flash-http | 0 | 0 | 0 | 8 |
 | flash-sys | 51 | 0 | 3 | 0 |
 | flash-uring | 18 | 1 | 1 | 0 |
-| **合计** | **80** | **4** | **4** | **11** |
+| **合计** | **80** | **4** | **4** | **21** |
 
 按用途：
 
@@ -119,8 +119,9 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 
 - `cargo clippy --workspace --all-targets -- -D warnings`：在启用上述更严格 lint 的情况下，macOS（aarch64）和 Linux（Docker `rust:1`，1.98）均无告警。
 - `tools/unsafe-inventory.py --check`：所有位置都有注释。
-- 测试套件：macOS `cargo test --workspace` 全部通过；Linux `cargo test --workspace`（epoll）以及 `flash`、`flash-uring`、`flash-sys`、`flash-ebpf`、`flash-http`、`flash-ws`、`flash-kcp`、`flash-quic` 在 `FLASH_TEST_BACKEND=uring` 下全部通过。
-- 供应链：`cargo deny check` 输出 `advisories ok, bans ok, licenses ok, sources ok`；`cargo audit -D warnings` 无告警。唯一发现的通告 RUSTSEC-2026-0009（`time` 0.3.45，仅开发依赖，经由 `rcgen`）已通过升级到 0.3.47 修复（开发构建因此需要 Rust 1.88；库的 `rust-version` 仍为 1.85）。
+- 合并 `main`（`fa5f413`，包含更严格的 lint、fuzzing 模块以及 io_uring `graveyard`、复位监视等混沌测试修复）后重新验证：`cargo clippy --workspace --all-targets --all-features -- -D warnings` 与 `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features` 在 macOS 和 Linux 上均无告警；`cargo test --workspace` 在 macOS 和 Linux（epoll）上通过；flash、flash-uring、flash-http、flash-ws、flash-kcp、flash-quic 在 `FLASH_TEST_BACKEND=uring` 下通过；io_uring 混沌测试种子 1..30 通过；没有出现在途操作泄漏日志。新的混沌测试代码没有引入 `unsafe`。
+- 测试套件（合并前）：macOS `cargo test --workspace` 全部通过；Linux `cargo test --workspace`（epoll）以及 `flash`、`flash-uring`、`flash-sys`、`flash-ebpf`、`flash-http`、`flash-ws`、`flash-kcp`、`flash-quic` 在 `FLASH_TEST_BACKEND=uring` 下全部通过。
+- 供应链：`cargo deny check` 输出 `advisories ok, bans ok, licenses ok, sources ok`；`cargo audit -D warnings` 无告警。唯一发现的通告 RUSTSEC-2026-0009（`time` 0.3.45）已在 `deny.toml` 与 `.cargo/audit.toml` 中带理由忽略：它只经由 `rcgen` 引入，而 `rcgen` 是生成测试证书的开发依赖，从不解析 RFC 2822 输入；修复版 `time` 0.3.47 需要 Rust 1.88，高于 CI 检查测试目标时使用的 1.85 MSRV。MSRV 升到 1.88 后删除此例外。
 
 ### Miri（nightly 1.102，`-Zmiri-disable-isolation`，Stacked Borrows）
 
@@ -136,7 +137,7 @@ Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系�
 | flash-ebpf | 15 分钟内跑不完（单元测试在大量输入上运行 cBPF 解释器；均为安全代码，不涉及 `sys` 模块） |
 | **flash-grpc** | **在依赖中报告了 UB**：`tests::framing_and_gzip` 在 drop `flate2::write::GzEncoder` 时于 `zlib_rs::allocate::zfree_rust` 失败（`zlib_rs::stable::Deflate::drop` -> `deflate::end` 释放了一块仍被受保护的 `&mut` 函数参数覆盖的内存）。在 Tree Borrows 下同样复现。`zlib-rs` 0.6.8 已是最新版本；flash 在这条路径上没有任何 `unsafe`。 |
 
-`zlib-rs` 的问题是依赖内部违反别名模型，而不是观察到的内存破坏；应附上述复现向上游（trifectatech/zlib-rs）报告。修复之前，CI 的 Miri 任务跳过 `framing_and_gzip` 和 deflate 往返测试。`flate2` 当初从 `miniz_oxide` 切换到 `zlib-rs`，是因为前者有真实的数据丢失缺陷（见 WebSocket 相关说明），所以不能切回去；改用 C 的 `zlib` 后端则会让 Miri 完全看不到这段代码。
+`zlib-rs` 的问题是依赖内部违反别名模型，而不是观察到的内存破坏；应附上述复现向上游（trifectatech/zlib-rs）报告。修复之前，CI 的 Miri 任务跳过 `framing_and_gzip` 和 deflate 往返测试；它还跳过回放模糊测试语料的 `fuzzing::` 测试（在 Miri 下每个 crate 需数分钟，而 fuzz 任务会原生运行这些输入）。`flate2` 当初从 `miniz_oxide` 切换到 `zlib-rs`，是因为前者有真实的数据丢失缺陷（见 WebSocket 相关说明），所以不能切回去；改用 C 的 `zlib` 后端则会让 Miri 完全看不到这段代码。
 
 ### Sanitizer
 

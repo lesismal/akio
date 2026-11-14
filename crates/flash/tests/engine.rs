@@ -268,9 +268,7 @@ fn on_close_runs_exactly_once_per_connection() {
 struct Panicky;
 impl Handler for Panicky {
     fn on_data(&mut self, c: &Conn<Self>, d: &[u8]) {
-        if d == b"boom" {
-            panic!("boom");
-        }
+        assert!(d != b"boom", "boom");
         let _ = c.send(d);
     }
 }
@@ -447,7 +445,7 @@ fn dial_connects_and_runs_handler() {
     };
     let (tx, rx) = std::sync::mpsc::channel();
     e.dial(dead, fn_acceptor(|_c: &Conn<Echo>| Echo), move |err| {
-        tx.send(err.kind()).unwrap()
+        tx.send(err.kind()).unwrap();
     });
     assert!(
         rx.recv_timeout(Duration::from_secs(5)).is_ok(),

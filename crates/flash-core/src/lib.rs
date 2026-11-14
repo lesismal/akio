@@ -7,10 +7,17 @@
 //! * `Group`, `ConnInner`, `LoopLink`, `DynAcceptor`, `DynHandler`: backend-facing plumbing
 //!   (hidden from the docs); backends such as `flash-epoll` implement them and the `flash` crate
 //!   composes them into an `Engine`.
+//!
+//! Guide: [Handlers, acceptors and `Conn`](https://lesismal.github.io/flash/en/concepts/handlers.html)
+//! (中文: [Handler、Acceptor 与 `Conn`](https://lesismal.github.io/flash/zh-CN/concepts/handlers.html)).
+#![warn(clippy::unwrap_used)]
 
 mod config;
 mod conn;
 mod error;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 mod group;
 mod handler;
 mod sync;

@@ -1,0 +1,16 @@
+GET /ws HTTP/1.1
+Host: h
+Upgrade: CO-NNNECT  /ws HTTP/1.1
+Host: h
+Upgrade: CO-NNNECT websocket
+Cocnnetion: WpKost: h
+Up+rade: websocket
+Conrection: Upgrade
+Sec-WebSPU:Co
+t-Kocol: cwebsocket
+Cocnnetion: WpKost: h
+Up+rade: websocket
+Conrection: Upgrade
+Sec-WebSPU:Co
+t-Kocol: chat
+

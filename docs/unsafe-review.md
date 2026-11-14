@@ -112,12 +112,12 @@ contain no `unsafe`.
 
 | Crate | blocks | `unsafe fn` | `unsafe impl` | tests/examples/benches |
 |---|---:|---:|---:|---:|
-| flash | 0 | 0 | 0 | 3 |
+| flash | 0 | 0 | 0 | 12 |
 | flash-ebpf | 11 | 3 | 0 | 1 |
-| flash-http | 0 | 0 | 0 | 7 |
+| flash-http | 0 | 0 | 0 | 8 |
 | flash-sys | 51 | 0 | 3 | 0 |
 | flash-uring | 18 | 1 | 1 | 0 |
-| **total** | **80** | **4** | **4** | **11** |
+| **total** | **80** | **4** | **4** | **21** |
 
 By purpose:
 
@@ -170,13 +170,22 @@ Accepted (documented, no change needed now):
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean on macOS (aarch64) and Linux
   (Docker `rust:1`, 1.98), with the stricter lints above.
 - `tools/unsafe-inventory.py --check`: every site documented.
-- Test suites: macOS `cargo test --workspace` green; Linux `cargo test --workspace` (epoll) and
+- Re-verified after merging `main` at `fa5f413` (strict lints, fuzzing modules, chaos fixes
+  such as the io_uring `graveyard` and reset watch): `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` and `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps
+  --all-features` clean on macOS and Linux; `cargo test --workspace` green on macOS and Linux
+  (epoll); `FLASH_TEST_BACKEND=uring` green for flash, flash-uring, flash-http, flash-ws,
+  flash-kcp and flash-quic; chaos seeds 1..30 on io_uring green; no in-flight leak logged. The
+  new chaos code added no `unsafe`.
+- Test suites (before the merge): macOS `cargo test --workspace` green; Linux `cargo test --workspace` (epoll) and
   `FLASH_TEST_BACKEND=uring` for `flash`, `flash-uring`, `flash-sys`, `flash-ebpf`, `flash-http`,
   `flash-ws`, `flash-kcp`, `flash-quic` green.
 - Supply chain: `cargo deny check` reports `advisories ok, bans ok, licenses ok, sources ok`;
   `cargo audit -D warnings` is clean. The only advisory found, RUSTSEC-2026-0009 in `time`
-  0.3.45 (dev-only, via `rcgen`), was fixed by updating to 0.3.47 (which needs Rust 1.88 for
-  dev builds; the libraries' `rust-version` stays 1.85).
+  0.3.45, is ignored with its reason in `deny.toml` and `.cargo/audit.toml`: it is reached only
+  through `rcgen`, a dev-dependency that generates test certificates and never parses RFC 2822
+  input, and the fixed `time` 0.3.47 needs Rust 1.88, above the 1.85 MSRV the CI checks test
+  targets against. Remove the exception when the MSRV moves to 1.88.
 
 ### Miri (nightly 1.102, `-Zmiri-disable-isolation`, Stacked Borrows)
 
@@ -194,7 +203,9 @@ Accepted (documented, no change needed now):
 
 The `zlib-rs` finding is an aliasing-model violation inside the dependency, not an observed
 memory corruption; it should be reported upstream (trifectatech/zlib-rs) with the reproduction
-above. Until it is fixed the CI Miri job skips `framing_and_gzip` and the deflate round trips.
+above. Until it is fixed the CI Miri job skips `framing_and_gzip` and the deflate round trips; it
+also skips the `fuzzing::` corpus-replay tests (minutes per crate under Miri; the fuzz job runs
+those inputs natively).
 `flate2` was moved from `miniz_oxide` to `zlib-rs` because of a real data-loss bug in the former
 (see the WebSocket notes), so switching back is not an option; the C `zlib` backend would hide
 the code from Miri entirely.

@@ -1,0 +1,13 @@
+GET / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Sett&n: h2c
+HTTP1-Settings: AAMAAT / HTTP/1.1
+Host: h
+Connection: Upgrade, HTTP2-Sett&ngs
+Upgrade: h2c
+HTTP1-Settings: AConnection: Upgrade, HTTP0-Sett&ngs
+Upgrade: h2c
+HTTP1-Settings: AAMAAABkAA_PA7AMAAABkAA_PA7A9_
+
+ABkAA_PA7AMAAABkAA_PA7A9_
+

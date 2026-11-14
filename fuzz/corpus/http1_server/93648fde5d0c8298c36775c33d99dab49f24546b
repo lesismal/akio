@@ -1,0 +1,20 @@
+GET / HTTP/1.1
+Host:TTP/1.1
+Host: h
+Connection: Upgrade, ,TTade, HTTP0-Settings
+Upgrade: h2c  Upar g,,edTTade, HTTP1.1
+Hos: h2c
+HTTP2-Settings: AAMAAP____oooooooooooooooooooooooo_________grade: h2c h
+ConnConnection: Upgrade, ,TTade, HTTP1-Settings
+Upgrade: h2c h
+Connection: Upgection: Upgrade, HTTade, HTTPion: Upgrade, ,TTad h
+ConnConnection: Upgrade, ,TTade, HTTP1.1
+Host: h
+Connection: Upg2-Settings
+Upgrade: e: h2c h
+ConnConnection: Upg/wse
+Upgrade: h2c b
+Connection: Upgection: Upgrade, HTTade,S3 -TPHTettings
+Upgrade: h2c
+HTTP2ASettings: AAMAAP____oooooooooooooooooooooooo__________________________:_______________
+

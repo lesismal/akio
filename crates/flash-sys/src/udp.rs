@@ -46,8 +46,8 @@ fn probe(opt: libc::c_int) -> bool {
             return false;
         }
         let mut v: libc::c_int = 0;
-        let mut len = mem::size_of::<libc::c_int>() as libc::socklen_t;
-        let r = libc::getsockopt(fd, SOL_UDP, opt, (&raw mut v).cast(), &mut len);
+        let mut len = size_of::<libc::c_int>() as libc::socklen_t;
+        let r = libc::getsockopt(fd, SOL_UDP, opt, (&raw mut v).cast(), &raw mut len);
         libc::close(fd);
         r == 0
     }
@@ -98,7 +98,7 @@ pub fn enable_gro(fd: RawFd) -> bool {
             SOL_UDP,
             UDP_GRO,
             (&raw const one).cast(),
-            mem::size_of::<libc::c_int>() as libc::socklen_t,
+            size_of::<libc::c_int>() as libc::socklen_t,
         )
     };
     r == 0
@@ -175,12 +175,12 @@ impl RecvBatch {
             self.names[i].ss_family = 0;
             let h = &mut self.msgs[i].msg_hdr;
             h.msg_name = (&raw mut self.names[i]).cast();
-            h.msg_namelen = mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            h.msg_namelen = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
             h.msg_iov = &raw mut self.iov[i];
             h.msg_iovlen = 1;
             if self.gro {
                 h.msg_control = (&raw mut self.ctrl[i]).cast();
-                h.msg_controllen = mem::size_of::<Ctrl>() as _;
+                h.msg_controllen = size_of::<Ctrl>() as _;
             } else {
                 h.msg_control = std::ptr::null_mut();
                 h.msg_controllen = 0;
@@ -379,14 +379,14 @@ impl<'d> Batch<'_, 'd> {
             if m.gso > 0 {
                 h.msg_control = (&raw mut s.ctrl[i]).cast();
                 // SAFETY: CMSG_SPACE is a pure size computation.
-                h.msg_controllen = unsafe { libc::CMSG_SPACE(mem::size_of::<u16>() as u32) } as _;
+                h.msg_controllen = unsafe { libc::CMSG_SPACE(size_of::<u16>() as u32) } as _;
                 // SAFETY: `msg_control` points to `ctrl[i]` (32 bytes, 8-aligned), large enough
                 // for one cmsghdr with a u16 payload as computed by CMSG_SPACE above.
                 unsafe {
                     let c = libc::CMSG_FIRSTHDR(h);
                     (*c).cmsg_level = SOL_UDP;
                     (*c).cmsg_type = UDP_SEGMENT;
-                    (*c).cmsg_len = libc::CMSG_LEN(mem::size_of::<u16>() as u32) as _;
+                    (*c).cmsg_len = libc::CMSG_LEN(size_of::<u16>() as u32) as _;
                     std::ptr::write_unaligned(libc::CMSG_DATA(c).cast::<u16>(), m.gso);
                 }
             }
@@ -411,10 +411,10 @@ impl<'d> Batch<'_, 'd> {
 }
 
 fn parse_addr(ss: &libc::sockaddr_storage) -> Option<SocketAddr> {
-    match ss.ss_family as libc::c_int {
+    match libc::c_int::from(ss.ss_family) {
         libc::AF_INET => {
             // SAFETY: the family says the kernel stored a sockaddr_in here.
-            let a = unsafe { &*(ss as *const _ as *const libc::sockaddr_in) };
+            let a = unsafe { &*std::ptr::from_ref(ss).cast::<libc::sockaddr_in>() };
             Some(SocketAddr::V4(SocketAddrV4::new(
                 Ipv4Addr::from(a.sin_addr.s_addr.to_ne_bytes()),
                 u16::from_be(a.sin_port),
@@ -422,7 +422,7 @@ fn parse_addr(ss: &libc::sockaddr_storage) -> Option<SocketAddr> {
         }
         libc::AF_INET6 => {
             // SAFETY: the family says the kernel stored a sockaddr_in6 here.
-            let a = unsafe { &*(ss as *const _ as *const libc::sockaddr_in6) };
+            let a = unsafe { &*std::ptr::from_ref(ss).cast::<libc::sockaddr_in6>() };
             Some(SocketAddr::V6(SocketAddrV6::new(
                 Ipv6Addr::from(a.sin6_addr.s6_addr),
                 u16::from_be(a.sin6_port),

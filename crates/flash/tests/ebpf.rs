@@ -103,7 +103,7 @@ fn pin_to_cpu(cpu: usize) {
         let mut set: libc::cpu_set_t = std::mem::zeroed();
         libc::CPU_ZERO(&mut set);
         libc::CPU_SET(cpu, &mut set);
-        libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set) == 0
+        libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &raw const set) == 0
     };
     assert!(ok, "sched_setaffinity({cpu})");
 }
@@ -197,7 +197,8 @@ impl Handler for Side {
         }
     }
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<flash::Error>) {
-        if let Some(o) = self.other.lock().unwrap().take() {
+        let other = self.other.lock().unwrap().take();
+        if let Some(o) = other {
             o.close_after_send();
         }
     }

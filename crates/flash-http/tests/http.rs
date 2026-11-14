@@ -144,7 +144,7 @@ fn at_eof(s: &mut TcpStream) -> bool {
 }
 
 fn app() -> Router {
-    Router::new()
+    let r = Router::new()
         .get("/", |ctx: &mut Context| ctx.text(200, "root"))
         .get("/users/me", |ctx: &mut Context| ctx.text(200, "me"))
         .get("/users/:id", |ctx: &mut Context| {
@@ -169,15 +169,18 @@ fn app() -> Router {
             ctx.text(200, v);
         })
         .get("/forget", |_ctx: &mut Context| {})
-        .get("/items/{n:[0-9]+}", |ctx: &mut Context| {
-            let n = ctx.param("n").unwrap().to_owned();
-            ctx.text(200, format!("item #{n}"));
-        })
         .get("/items/{slug}", |ctx: &mut Context| {
             let s = ctx.param("slug").unwrap().to_owned();
             let raw = ctx.param_raw("slug").unwrap().to_owned();
             ctx.text(200, format!("item {s} raw {raw}"));
-        })
+        });
+    // Regexp parameters need the (default) `regex` feature.
+    #[cfg(feature = "regex")]
+    let r = r.get("/items/{n:[0-9]+}", |ctx: &mut Context| {
+        let n = ctx.param("n").unwrap().to_owned();
+        ctx.text(200, format!("item #{n}"));
+    });
+    r
 }
 
 #[test]
@@ -205,9 +208,14 @@ fn basic_routing_head_404_405() {
         "hi"
     );
     // Regexp parameters beat plain ones; values are percent-decoded, the raw text is kept.
+    let want = if cfg!(feature = "regex") {
+        "item #42"
+    } else {
+        "item 42 raw 42"
+    };
     assert_eq!(
         request(a, "GET /items/42?x=1 HTTP/1.1\r\nHost: x\r\n\r\n").text(),
-        "item #42"
+        want
     );
     assert_eq!(
         request(a, "GET /items/a%20b%2Fc HTTP/1.1\r\nHost: x\r\n\r\n").text(),

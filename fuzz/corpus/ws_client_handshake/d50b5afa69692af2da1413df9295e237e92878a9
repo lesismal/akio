@@ -1,0 +1,18 @@
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; r_max_window_ade Swi;
+
+
+
+
+
+
+
+
+
+
+
+9
+

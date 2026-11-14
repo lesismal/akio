@@ -1,0 +1,6 @@
+GET / HTTP/1.1
+Host:TTP/1.c h
+Connection: Upgrade, HTTade, ings
+Upgrade: h2c
+HTTP2-Settings: AAMAAP____oooooooooooooooo@ooooooo____________________________________55____
+

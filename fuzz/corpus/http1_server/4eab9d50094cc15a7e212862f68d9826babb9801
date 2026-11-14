@@ -1,0 +1,12 @@
+GET /ws HTTP/1.1
+Host: bsocket
+Connection: UXonnection: UXPO h	
+Upgrade: websocket
+Connection: UXPOPOST /TP/1.1
+ngtst: h	
+Upgrade: websocket
+Connection: UXPOST /TP/1.1
+ngth: 1
+
+`bc
+

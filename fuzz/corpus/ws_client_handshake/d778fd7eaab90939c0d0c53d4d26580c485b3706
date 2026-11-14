@@ -1,0 +1,7 @@
+HTTP/1.1 101 
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+S*ecnnsions: permede: websockgr
+Sec-WebSocket-Accept: 
+

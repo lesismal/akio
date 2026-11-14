@@ -22,6 +22,10 @@
 //!
 //! Not implemented: server push, a QPACK dynamic table, extended CONNECT (WebSocket over
 //! HTTP/3), streamed request bodies.
+//!
+//! Guide: [QUIC and HTTP/3](https://lesismal.github.io/flash/en/protocols/quic-h3.html)
+//! (中文: [QUIC 与 HTTP/3](https://lesismal.github.io/flash/zh-CN/protocols/quic-h3.html)).
+#![warn(clippy::unwrap_used)]
 
 mod client;
 mod frame;
@@ -140,11 +144,12 @@ pub(crate) enum Uni {
 }
 
 /// Feeds a peer's unidirectional stream; `Err(code)` is a connection error. Shared by both
-/// sides (`server` refuses push streams, which only a server may open).
+/// sides (`server` refuses push streams, which only a server may open). `stop` asks the peer to
+/// stop sending on a stream (`STOP_SENDING`).
 pub(crate) fn on_uni(
     u: &mut Uni,
     peer_ctrl: &mut Option<StreamId>,
-    c: &Connection,
+    stop: &mut dyn FnMut(StreamId, u32),
     id: StreamId,
     data: &[u8],
     fin: bool,
@@ -170,11 +175,11 @@ pub(crate) fn on_uni(
             frame::STREAM_QPACK_ENCODER | frame::STREAM_QPACK_DECODER => Uni::Critical,
             frame::STREAM_PUSH if server => return Err(code::STREAM_CREATION_ERROR),
             _ => {
-                let _ = c.stop(id, code::STREAM_CREATION_ERROR);
+                stop(id, code::STREAM_CREATION_ERROR);
                 Uni::Skip
             }
         };
-        return on_uni(u, peer_ctrl, c, id, &rest, fin, server);
+        return on_uni(u, peer_ctrl, stop, id, &rest, fin, server);
     }
     match u {
         Uni::Control { r, settings } => {
@@ -237,11 +242,33 @@ enum Fail {
 
 impl<S: Service> ServerConn<S> {
     fn on_req(&mut self, c: &Connection, id: StreamId, data: &[u8], fin: bool) -> Result<(), Fail> {
-        let max_field = self.cfg.max_field_section;
-        let max_frame = (self.cfg.max_body + max_field) as u64;
         let req = self.reqs.entry(id).or_default();
-        if req.done {
+        let Some((request, head_only)) = read_req(req, &self.cfg, self.peer, data, fin)? else {
             return Ok(());
+        };
+        let sink = Box::new(Sink {
+            c: c.clone(),
+            id,
+            head_only,
+        });
+        flash_http::transport::dispatch(&*self.svc, request, sink);
+        Ok(())
+    }
+}
+
+/// Reads a request stream's bytes; the request once the stream has ended (`fin`).
+fn read_req(
+    req: &mut Req,
+    cfg: &H3Config,
+    peer: SocketAddr,
+    data: &[u8],
+    fin: bool,
+) -> Result<Option<(Request, bool)>, Fail> {
+    {
+        let max_field = cfg.max_field_section;
+        let max_frame = (cfg.max_body + max_field) as u64;
+        if req.done {
+            return Ok(None);
         }
         req.r.push(data);
         loop {
@@ -267,7 +294,7 @@ impl<S: Service> ServerConn<S> {
                     if req.fields.is_none() || req.trailers.is_some() {
                         return Err(Fail::Conn(code::FRAME_UNEXPECTED));
                     }
-                    if req.body.len() + p.len() > self.cfg.max_body {
+                    if req.body.len() + p.len() > cfg.max_body {
                         return Err(Fail::Status(413));
                     }
                     req.body.extend_from_slice(&p);
@@ -282,7 +309,7 @@ impl<S: Service> ServerConn<S> {
             }
         }
         if !fin {
-            return Ok(());
+            return Ok(None);
         }
         req.done = true;
         let fields = req
@@ -291,17 +318,15 @@ impl<S: Service> ServerConn<S> {
             .ok_or(Fail::Stream(code::REQUEST_INCOMPLETE))?;
         let body = std::mem::take(&mut req.body);
         let trailers = req.trailers.take();
-        let (request, head_only) = build_request(fields, trailers, body, self.peer)
-            .ok_or(Fail::Stream(code::MESSAGE_ERROR))?;
-        let sink = Box::new(Sink {
-            c: c.clone(),
-            id,
-            head_only,
-        });
-        flash_http::transport::dispatch(&*self.svc, request, sink);
-        Ok(())
+        build_request(fields, trailers, body, peer)
+            .ok_or(Fail::Stream(code::MESSAGE_ERROR))
+            .map(Some)
     }
 }
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 
 fn header_list(fields: qpack::Fields, out: &mut Headers) -> Option<()> {
     for (n, v) in fields {
@@ -412,7 +437,10 @@ impl<S: Service> QuicHandler for ServerConn<S> {
 
     fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
         if let Some(u) = self.uni.get_mut(&id) {
-            if let Err(e) = on_uni(u, &mut self.peer_ctrl, c, id, &data, fin, true) {
+            let mut stop = |id, e| {
+                let _ = c.stop(id, e);
+            };
+            if let Err(e) = on_uni(u, &mut self.peer_ctrl, &mut stop, id, &data, fin, true) {
                 c.close(e, b"");
             }
             return;

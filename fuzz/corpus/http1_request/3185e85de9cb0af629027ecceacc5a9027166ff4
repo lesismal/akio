@@ -1,0 +1,73 @@
+GET /ws HTTP/1.1
+Host: h
+Upgra: we
+Connection: Upgra
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgrade
+t: he
+bSocket-Kegrade: we
+Connection: Upgra
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgrade
+t: he
+bSocket-Key: dGhlIHNh:1.1
+Ho: dGhlIHNh:1.1
+Hos-Key: dG
+Upgrade: we
+Connection: Upgrade
+t: he
+bSocket-Key: dGhlIHNh:1.1
+Host:12
+Sec-WebSo-WebSocket-Protlcoo: ch3
+Sec-Wh:1.1
+Hts:1o
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgra,
+bSocket-Kest:1
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgrade
+t: he
+bSocket-Key: dGhlIHNh:1.1
+Host:13
+Sec-WebSo-WebSocky: dGhlIHNh:1.1
+Host:1
+bSocket-Key: Hts:1o
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgra,
+bSocket-Kest:1
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgrade
+t: he
+bSocket-Key: dGhlIHNh:1.1
+Host:13
+Sec-WebSo-WebSocky: dGhlIHNh:1.1
+Host:1
+bSocket-Key: dG
+Upgrade: we
+Coade: we
+Connection: Upgra
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgrade
+t:u
+bSocket-Kegrade: we
+Connection: Upgra
+bSocket-Key: dG
+Upgrade: we
+Connection: Upgrade
+t: he
+bSocket-KhlIHNh:1.1
+Host:13
+SebSo-WebSocket-Protlcoo: ch3
+Sec-Wh:1.1
+Host:1
+bSocket-Key: dG
+Upgrade: we
+-Protlcoo: chat
+

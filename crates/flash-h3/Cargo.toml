@@ -15,7 +15,12 @@ flash-quic = { workspace = true }
 bytes = "1"
 loona-hpack = "0.4"
 
+[features]
+# Fuzz entry points for `fuzz/` (`flash_h3::fuzzing`); not a public API.
+fuzzing = []
+
 [dev-dependencies]
+flash-core = { workspace = true, features = ["fuzzing"] }
 rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring", "pem"] }
 
 [lints]

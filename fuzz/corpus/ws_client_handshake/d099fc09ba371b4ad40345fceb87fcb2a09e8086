@@ -1,0 +1,19 @@
+HTTP/1.1 101 Switchls
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_max_window_bits=00000479924016Swi
+
+
+
+
+
+
+
+
+
+
+
+
+9
+
