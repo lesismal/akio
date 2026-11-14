@@ -92,7 +92,7 @@ a connection at a time. If a handler only parses and replies, nothing changes: i
 |---|---|---|
 | `tls` (crypto/tls handshakes, own record layer) | `only::tls` (rustls underneath) | `ServerConfig` / `ClientConfig` builders; no kTLS yet |
 | `websocket` | `only-ws` (+ `Context::upgrade_websocket`) | complete messages only (no per-frame delivery); no WebSocket over HTTP/2 or HTTP/3; client sends no 1001 on shutdown yet |
-| `http3` (own QUIC) | `only-quic` (quinn-proto) + `only-h3` | no QPACK dynamic table, no push, no Alt-Svc auto-switch in the client |
+| `http3` (own QUIC) | `only-quic` (own QUIC) + `only-h3` | no QPACK dynamic table, no push, no Alt-Svc auto-switch in the client |
 | `grpc` | `only-grpc` | bytes or `codec::Message` types (prost with a feature); no protoc-gen-go-grpc equivalent code generator |
 | `arpc` | `only-arpc` | same wire format; no middleware/coder chain |
 | `socks` | `only-socks` | CONNECT only (no BIND / UDP ASSOCIATE); no SOCKS dialing for clients |

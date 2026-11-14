@@ -55,8 +55,7 @@ stapling (status_request is ignored), RSA-PSS keys, P-521, kTLS.
 - `quic` (`#[doc(hidden)]`, internal): the same TLS 1.3 machines without records for a QUIC
   implementation: handshake bytes in and out per encryption level, traffic secrets per level,
   the quic_transport_parameters extension, ALPN required, no compatibility mode, RFC 9001 key
-  derivation helpers. The in-house QUIC of DEV-PLAN wave D will drive it; until then only-quic
-  keeps quinn-proto (and its rustls) with configurations built from this crate's.
+  derivation helpers. `only-quic`'s own QUIC (DEV-PLAN wave D) drives it.
 - `stream` (`#[doc(hidden)]`): a blocking TLS stream over `Read + Write`, for tests, examples
   and the interop driver (`examples/tls-interop.rs`).
 - The `unstable` feature is empty (it used to expose rustls); `fuzzing` enables the fuzz entry

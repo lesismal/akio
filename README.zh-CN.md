@@ -22,7 +22,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | TLS | rustls 作为连接 transport（服务端与客户端、ALPN、SNI） |
 | HTTP | 同一端口上的 HTTP/1.1 与 HTTP/2（h2spec 147/147），流水线，双向流式，Router（静态/正则/参数/通配），9 个中间件，基于 `sendfile` 的静态文件，HTTP/1 与 HTTP/2 客户端 |
 | WebSocket | 服务端与客户端，permessage-deflate，Autobahn 100%（服务端与客户端） |
-| HTTP/3 与 QUIC | 基于 quinn-proto 的 QUIC，HTTP/3 提供同一个 `Router`，H3 客户端；与 quic-go 和 fib 互通 |
+| HTTP/3 与 QUIC | 自研 QUIC v1（RFC 9000/9001/9002，数据报、迁移、Retry、密钥更新、GSO），HTTP/3 提供同一个 `Router`，H3 客户端；与 quic-go 和 fib 互通 |
 | RPC | gRPC（unary 与流式，与 grpc-go 互通），arpc（与 lesismal/arpc 和 fib 线路兼容） |
 | 代理 | SOCKS5/4/4a、HTTP CONNECT、按首字节嗅探的端口复用（only-mux） |
 | KCP | 与 skywind3000/kcp 和 kcp-go 线路兼容（FEC、加密） |

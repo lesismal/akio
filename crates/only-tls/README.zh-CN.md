@@ -48,8 +48,7 @@ RSA-PSS 密钥、P-521、kTLS。
   密钥切换、告警），密钥调度与 TLS 1.2 PRF，会话与票据。
 - `quic`（`#[doc(hidden)]`，内部）：同一套 TLS 1.3 状态机，不经记录层，供 QUIC 实现使用：按加密级别
   输入输出握手字节、各级别的流量密钥、quic_transport_parameters 扩展、强制 ALPN、无兼容模式、RFC 9001
-  密钥派生辅助函数。DEV-PLAN 第 D 波的自研 QUIC 将驱动它；在那之前 only-quic 仍使用 quinn-proto（及其
-  rustls），配置由本 crate 的配置构建。
+  密钥派生辅助函数。`only-quic` 的自研 QUIC（DEV-PLAN 第 D 波）驱动它。
 - `stream`（`#[doc(hidden)]`）：基于 `Read + Write` 的阻塞 TLS 流，供测试、示例与互通驱动程序
   （`examples/tls-interop.rs`）使用。
 - `unstable` feature 为空（过去用于暴露 rustls）；`fuzzing` 启用 fuzz 入口。

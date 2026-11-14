@@ -37,7 +37,7 @@ flowchart BT
     arpc[only-arpc]
     socks[only-socks]
     mux[only-mux]
-    quic["only-quic<br/>quinn-proto"]
+    quic["only-quic<br/>QUIC v1，sans-io"]
     h3[only-h3]
     kcp[only-kcp]
     turn["only-turn<br/>STUN, TURN"]
@@ -108,8 +108,9 @@ flowchart BT
   （KCP 加密、STUN/TURN、WebSocket 握手、SRTP、SRT、RTMP、BitTorrent），以及 `only-x509`（证书解析、
   证书链校验、证书生成）所依赖的公钥算法与密钥格式（X25519、Ed25519、P-256/P-384 的 ECDH/ECDSA、
   RSA PKCS#1/PSS、DER/PEM、PKCS#8）。`only-tls` 中的 TLS 1.2/1.3 已运行在这两个 crate 之上（第 C 波）；
-  QUIC 与 DTLS 在 DEV-PLAN 后续各波之前仍使用 quinn-proto（内含 rustls）/ dimpl，之后也会迁移过来
-  （`only_tls::quic` 是自研 QUIC 将要驱动的、不经记录层的 TLS 1.3 内核）。
+  `only-quic` 中的 QUIC 运行在 `only-tls` 不经记录层的 TLS 1.3 内核（`only_tls::quic`）与
+  `only-crypto` 之上（第 D 波）；WebRTC 中的 DTLS 在第 D 波的 WebRTC 部分之前仍使用 dimpl，之后也会
+  迁移过来。
   `only-x509`）是 sans-io 的 DTLS 1.2 客户端/服务端，支持 DTLS-SRTP（`use_srtp`、RFC 5705 导出器）
   以及按指纹固定的自签名证书，驱动方式与 `only-quic` 驱动其状态机相同（`handle_datagram` /
   `poll_transmit` / `poll_event` / `poll_timeout` / `handle_timeout`，没有线程也没有时钟）。第 D 波的
@@ -123,9 +124,9 @@ flowchart BT
   `#![forbid(unsafe_code)]`，要么不包含 `unsafe` 代码。
 - **sans-io 协议核心**：HTTP/1 解析（零拷贝增量头部解析器与 chunked 解码器均为自研）、HTTP/2 分帧与
   HPACK（自研）、WebSocket 分帧与 permessage-deflate（DEFLATE 来自自研的 `only-deflate`）、KCP、QPACK 与 HTTP/3 分帧，都是
-  由 only 喂入字节的状态机，TLS 也是（`only-tls` 自研的记录层与 TLS 1.3 / 1.2 握手状态机）；QUIC 是
-  quinn-proto（WebRTC 协议栈已是自研），以 sans-io
-  方式驱动（ADR-005），并隐藏在 only 自己的类型之后，因此升级或替换它们不会破坏 API
+  由 only 喂入字节的状态机，TLS 也是（`only-tls` 自研的记录层与 TLS 1.3 / 1.2 握手状态机），QUIC 也是
+  （`only-quic` 自研的数据包、帧、流、丢包恢复与按连接 ID 路由的 endpoint：数据报进、数据报出，时间由
+  外部传入），WebRTC 协议栈也是（ADR-005），都隐藏在 only 自己的类型之后
   （docs/api-stability.zh-CN.md）。
 - facade `only` 重新导出核心 API（`Conn`、`Handler`、`Acceptor`、`Config` 等），并把后端线程组
   组合成 `Engine`。

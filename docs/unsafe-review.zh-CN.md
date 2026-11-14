@@ -142,7 +142,7 @@ Miri 同样不解释 SIMD intrinsic：在 Miri 下 `only-crypto` 检测不到任
 - **缓冲区 id 只归还一次。** `give_back` 只对完成事件携带的 `bid` 执行，因此在外的条目最多 `BUF_COUNT` 个，tail 所在槽位绝不会是内核正在读取的条目。现在还有范围断言兜底（F7）。
 - **`unsafe impl Send`**：`Poller`（kevent 的 `udata` 只是 token，从不解引用）、`RecvBatch`（指针指向自身的堆缓冲区，随结构体一起移动）、`SendBatch`（批次之间指针悬空，但每次发送前都从存活的 `Batch<'d>` 重建）和 `Loop`（在一个线程上构建，之后归其 I/O 线程所有；SQE 指针指向不会移动的堆内存）。它们都没有实现 `Sync`。
 - **信任内核提供数据的布局**：sockaddr 地址族、`cmsg_len`、`msg_len`（已截断）、CQE 缓冲区 id（现已做范围检查）。这是内核 ABI 契约。
-- **含 `unsafe` 的依赖**（仅 only-quic 使用的 `quinn-proto` 及其内部的 `rustls`/`ring`）被信任，并由 `cargo deny`/`cargo audit` 跟踪。TLS 本身是自研的 `only-tls`（`#![forbid(unsafe_code)]`，第 C 波），基于 `only-crypto` 与 `only-x509`，因此所有 TCP 协议的 TLS 记录层与握手代码中，除 `only-crypto` 的 CPU 指令模块外没有任何 `unsafe`。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。`libc` 与 `io-uring` crate 已从各库中移除（wave B）：由 `only_sys::ffi` 与 `only-uring` 的 `ring` 取代（`libc` 仍是 dev-dependency，用于布局对比测试和仅测试用的调用）。
+- **库已不再依赖任何含 `unsafe` 的第三方 crate**（rustls/ring 随 quinn-proto 移除，str0m 被自研 WebRTC 栈取代）；dev-dependencies 由 `cargo deny`/`cargo audit` 跟踪。TLS 本身是自研的 `only-tls`（`#![forbid(unsafe_code)]`，第 C 波），基于 `only-crypto` 与 `only-x509`，因此所有 TCP 协议的 TLS 记录层与握手代码中，除 `only-crypto` 的 CPU 指令模块外没有任何 `unsafe`；QUIC 是自研的 `only-quic`（`#![forbid(unsafe_code)]`，第 D 波，替代了内含 `rustls`/`ring` 的 `quinn-proto`），因此 QUIC 与 HTTP/3 的包保护、帧、流与丢包恢复代码中也没有。DEFLATE/zlib/gzip 由自研的 `only-deflate`（`#![forbid(unsafe_code)]`）实现，它替代了使用 `zlib-rs` 的 `flate2`。`libc` 与 `io-uring` crate 已从各库中移除（wave B）：由 `only_sys::ffi` 与 `only-uring` 的 `ring` 取代（`libc` 仍是 dev-dependency，用于布局对比测试和仅测试用的调用）。
 
 ## 7. 验证结果（本次审查）
 
@@ -162,7 +162,8 @@ Miri 同样不解释 SIMD intrinsic：在 Miri 下 `only-crypto` 检测不到任
 | only-kcp | 通过（5 个测试，4-6 分钟） |
 | only-uring（`buf_ring`、`kernel_buf` 测试） | 通过（3 个）：即 F5-F7 中与内核共享内存的代码 |
 | only-ws | 20 个中 15 个通过；其余 5 个（permessage-deflate 往返与穷举拆分循环）在 Miri 下 5-15 分钟内跑不完 |
-| only-core、only-quic | 除 loom / 集成测试外没有单元测试 |
+| only-core | 除 loom / 集成测试外没有单元测试 |
+| only-quic（第 D 波起为自研 QUIC） | 未在 Miri 下运行：`#![forbid(unsafe_code)]`，自身没有 `unsafe`；其单元测试、模拟网络测试与语料回放测试以原生方式运行 |
 | only-ebpf | 15 分钟内跑不完（单元测试在大量输入上运行 cBPF 解释器；均为安全代码，不涉及 `sys` 模块） |
 | only-deflate | 通过（全部单元测试；与其他 crate 一样，CI 中跳过语料回放） |
 | only-grpc | 通过，gzip 改用 only-deflate 后也包括 `tests::framing_and_gzip`（见下） |

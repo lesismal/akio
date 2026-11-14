@@ -42,7 +42,7 @@ workspace = true
 
 [dev-dependencies]
 # Interop: a rustls client drives tests/tls.rs and tests/chaos_tls.rs against the own TLS stack
-# (rustls stays in the tree through only-quic until the in-house QUIC, DEV-PLAN wave D).
+# (a dev-dependency only: no library of the workspace uses rustls since DEV-PLAN wave D).
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 libc = "0.2"
 only-core = { workspace = true }

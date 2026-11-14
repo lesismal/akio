@@ -17,7 +17,6 @@ only = { workspace = true }
 only-core = { workspace = true }
 only-http = { workspace = true }
 only-quic = { workspace = true }
-bytes = "1"
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_h3::fuzzing`); not a public API.

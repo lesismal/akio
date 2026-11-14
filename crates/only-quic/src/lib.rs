@@ -1,25 +1,26 @@
 #![forbid(unsafe_code)]
-//! QUIC for `only`, on the sans-io [`quinn-proto`](https://docs.rs/quinn-proto) state machine.
+//! QUIC v1 (RFC 9000, 9001, 9002) with unreliable datagrams (RFC 9221) for `only`, implemented
+//! in this crate on `only-tls` and `only-crypto`, with no third-party dependency.
 //!
 //! A [`QuicServer`] is the acceptor of a UDP [`only::Listener`]: every datagram goes through one
-//! `quinn_proto::Endpoint`, which routes it to its connection by connection id (so a peer that
-//! migrates to another address keeps its connection). Each connection gets a [`QuicHandler`]
-//! from the server's factory; [`dial`] starts a client connection on an engine with UDP client
-//! threads. A connection's callbacks run one at a time, in order, on the I/O thread that read
-//! the datagram or on the shared timer thread; they must not block.
+//! endpoint, which routes it to its connection by connection ID (so a peer that migrates to
+//! another address keeps its connection). Each connection gets a [`QuicHandler`] from the
+//! server's factory; [`dial`] starts a client connection on an engine with UDP client threads.
+//! A connection's callbacks run one at a time, in order, on the I/O thread that read the
+//! datagram or on the shared timer thread; they must not block.
 //!
-//! Writes never block: [`Connection::send`] hands quinn what flow control allows and keeps the
-//! rest until the peer grants more credit ([`Connection::queued_bytes`] paces a producer).
+//! Writes never block: [`Connection::send`] queues the bytes, and they go out as flow and
+//! congestion control allow ([`Connection::queued_bytes`] paces a producer).
 //!
-//! The API uses this crate's own types ([`StreamId`], [`ConnectionError`], [`ServerConfig`],
-//! [`TransportConfig`] ...) and the TLS types of `only::tls`, so upgrading quinn-proto or rustls
-//! is not a breaking change. The `unstable` cargo feature re-exports `quinn_proto` as `proto`
-//! and adds `from_quinn` / `as_quinn_mut`, outside the semver promise.
+//! The protocol core is sans-io (no sockets, threads or clocks of its own): packets and
+//! header protection, all RFC 9000 frames, streams with flow control, loss detection and
+//! congestion control (NewReno, CUBIC) with pacing, connection IDs, Retry and NEW_TOKEN
+//! address validation, path validation and migration, key updates, stateless resets and
+//! version negotiation. Full-size datagrams leave in batches for one GSO send.
 //!
 //! ```no_run
-//! use bytes::Bytes;
 //! use only::{Engine, Listener};
-//! use only_quic::{Connection, QuicHandler, QuicServer, StreamId};
+//! use only_quic::{Bytes, Connection, QuicHandler, QuicServer, StreamId};
 //!
 //! struct Echo;
 //! impl QuicHandler for Echo {
@@ -48,31 +49,31 @@
 //! (中文: [QUIC 与 HTTP/3](https://lesismal.github.io/only/zh-CN/protocols/quic-h3.html)).
 #![warn(clippy::unwrap_used)]
 
-mod rustls_bridge;
+mod bytes;
+mod proto;
 mod timer;
 mod types;
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use bytes::{Bytes, BytesMut};
 use only::tls;
 use only_core::{Acceptor, Conn, Handler};
-use qp::{Dir as QDir, StreamId as QId, VarInt};
-use quinn_proto as qp;
 
-/// The QUIC implementation. **Unstable** (cargo feature `unstable`): outside the semver promise.
-#[cfg(feature = "unstable")]
-pub use quinn_proto as proto;
+pub use crate::bytes::Bytes;
 pub use types::{
     ClientConfig, Congestion, ConnectionError, ConnectionStats, Dir, ServerConfig, Side, StreamId,
     TransportConfig, UdpStats,
 };
-use types::{Own, config_err};
+use types::{TokenStore, config_err};
 
 /// Errors of [`Connection`] calls and of the config helpers.
 #[derive(Debug)]
@@ -127,40 +128,24 @@ pub trait QuicHandler: Send + 'static {
     fn on_close(&mut self, _c: &Connection, _reason: ConnectionError) {}
 }
 
-enum Ev {
-    Connected,
-    Opened(QId),
-    Data(QId, Bytes, bool),
-    Reset(QId, u64),
-    Stopped(QId, u64),
-    Available(QDir),
-    Datagram(Bytes),
-    Closed(ConnectionError),
-}
-
-#[derive(Default)]
-struct Pending {
-    chunks: VecDeque<Bytes>,
-    bytes: usize,
-    fin: bool,
-}
-
 struct State {
-    conn: qp::Connection,
-    pending: HashMap<QId, Pending>,
+    conn: proto::Connection,
     armed: Option<Instant>,
     lost: bool,
-    buf: Vec<u8>,
 }
 
 struct Shared {
-    h: qp::ConnectionHandle,
+    h: proto::ConnHandle,
     ep: Arc<Ep>,
     me: Weak<Shared>,
     state: Mutex<State>,
-    events: Mutex<VecDeque<Ev>>,
+    events: Mutex<VecDeque<proto::Event>>,
     handler: Mutex<Option<Box<dyn QuicHandler>>>,
     done: AtomicBool,
+    /// Datagrams to send, in the order the state machine produced them; queued under the
+    /// state lock, sent outside it by one thread at a time (`sending`).
+    outq: Mutex<VecDeque<proto::Transmit>>,
+    sending: AtomicBool,
 }
 
 /// A QUIC connection. Cheap to clone and usable from any thread.
@@ -175,60 +160,57 @@ impl fmt::Debug for Connection {
     }
 }
 
+thread_local! {
+    /// The connection whose handler this thread is running (its address), if any.
+    static DELIVERING: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Connection {
-    fn new(h: qp::ConnectionHandle, conn: qp::Connection, ep: Arc<Ep>) -> Connection {
+    fn new(h: proto::ConnHandle, conn: proto::Connection, ep: Arc<Ep>) -> Connection {
         Connection(Arc::new_cyclic(|me| Shared {
             h,
             ep,
             me: me.clone(),
             state: Mutex::new(State {
                 conn,
-                pending: HashMap::new(),
                 armed: None,
                 lost: false,
-                buf: Vec::new(),
             }),
             events: Mutex::new(VecDeque::new()),
             handler: Mutex::new(None),
             done: AtomicBool::new(false),
+            outq: Mutex::new(VecDeque::new()),
+            sending: AtomicBool::new(false),
         }))
     }
 
     /// The peer's current address.
     pub fn remote_addr(&self) -> SocketAddr {
-        lock(&self.0.state).conn.remote_address()
+        lock(&self.0.state).conn.remote_addr()
     }
 
     /// The negotiated ALPN protocol.
     pub fn alpn(&self) -> Option<Vec<u8>> {
-        let st = lock(&self.0.state);
-        let hd = st.conn.crypto_session().handshake_data()?;
-        hd.downcast::<qp::crypto::rustls::HandshakeData>()
-            .ok()?
-            .protocol
+        lock(&self.0.state).conn.alpn()
     }
 
     /// The SNI the client asked for (server side).
     pub fn server_name(&self) -> Option<String> {
-        let st = lock(&self.0.state);
-        let hd = st.conn.crypto_session().handshake_data()?;
-        hd.downcast::<qp::crypto::rustls::HandshakeData>()
-            .ok()?
-            .server_name
+        lock(&self.0.state).conn.server_name()
     }
 
     /// The smoothed round-trip time.
-    pub fn rtt(&self) -> Duration {
+    pub fn rtt(&self) -> std::time::Duration {
         lock(&self.0.state).conn.rtt()
     }
 
     /// Connection statistics.
     pub fn stats(&self) -> ConnectionStats {
-        lock(&self.0.state).conn.stats().own()
+        lock(&self.0.state).conn.stats()
     }
 
     /// Whether the connection is closed or closing.
@@ -240,220 +222,183 @@ impl Connection {
     /// [`QuicHandler::on_streams_available`]), which includes before the handshake completes
     /// (open streams from [`QuicHandler::on_connected`]).
     pub fn open_bi(&self) -> Option<StreamId> {
-        let id = lock(&self.0.state).conn.streams().open(QDir::Bi);
-        id.map(Own::own)
+        // No callbacks run here (callers may hold their own locks); anything the opening
+        // queued goes out with the next write.
+        lock(&self.0.state).conn.open(Dir::Bi)
     }
 
     /// Opens a unidirectional stream; `None` while the peer's stream limit is reached.
     pub fn open_uni(&self) -> Option<StreamId> {
-        let id = lock(&self.0.state).conn.streams().open(QDir::Uni);
-        id.map(Own::own)
+        // No callbacks run here (callers may hold their own locks); anything the opening
+        // queued goes out with the next write.
+        lock(&self.0.state).conn.open(Dir::Uni)
     }
 
-    /// Queues bytes on a stream; what flow control allows goes out now, the rest as credit
-    /// arrives.
+    /// Queues bytes on a stream; they go out as flow and congestion control allow.
     pub fn send(&self, id: StreamId, data: impl Into<Bytes>) -> Result<(), Error> {
-        let id = id.q();
-        let data = data.into();
-        let mut st = lock(&self.0.state);
-        if st.conn.is_closed() {
-            return Err(Error::Closed);
-        }
-        let State { conn, pending, .. } = &mut *st;
-        if !can_send(conn, id) {
-            return Err(Error::UnknownStream);
-        }
-        let p = pending.entry(id).or_default();
-        if p.fin {
-            return Err(Error::UnknownStream);
-        }
-        if !data.is_empty() {
-            p.bytes += data.len();
-            p.chunks.push_back(data);
-        }
-        let r = flush_stream(conn, id, p);
-        if r.is_err() || (p.chunks.is_empty() && !p.fin) {
-            pending.remove(&id);
-        }
-        drop(st);
-        self.drive();
+        let r = lock(&self.0.state).conn.write(id, data.into());
+        self.kick();
         r
     }
 
     /// Ends a stream once its queued bytes are out.
     pub fn finish(&self, id: StreamId) -> Result<(), Error> {
-        let id = id.q();
-        let mut st = lock(&self.0.state);
-        let State { conn, pending, .. } = &mut *st;
-        if !can_send(conn, id) {
-            return Err(Error::UnknownStream);
-        }
-        let p = pending.entry(id).or_default();
-        p.fin = true;
-        let r = flush_stream(conn, id, p);
-        if r.is_err() || p.chunks.is_empty() {
-            pending.remove(&id);
-        }
-        drop(st);
-        self.drive();
+        let r = lock(&self.0.state).conn.finish(id);
+        self.kick();
         r
     }
 
     /// Abandons sending on a stream (`RESET_STREAM`), dropping what is queued.
     pub fn reset(&self, id: StreamId, code: u32) -> Result<(), Error> {
-        let id = id.q();
-        let mut st = lock(&self.0.state);
-        if !can_send(&st.conn, id) {
-            return Err(Error::UnknownStream);
-        }
-        st.pending.remove(&id);
-        let r = st
-            .conn
-            .send_stream(id)
-            .reset(VarInt::from_u32(code))
-            .map_err(|_| Error::UnknownStream);
-        drop(st);
-        self.drive();
+        let r = lock(&self.0.state).conn.reset(id, u64::from(code));
+        self.kick();
         r
     }
 
     /// Asks the peer to stop sending on a stream (`STOP_SENDING`).
     pub fn stop(&self, id: StreamId, code: u32) -> Result<(), Error> {
-        let id = id.q();
-        let mut st = lock(&self.0.state);
-        if !can_recv(&st.conn, id) {
-            return Err(Error::UnknownStream);
-        }
-        let r = st
-            .conn
-            .recv_stream(id)
-            .stop(VarInt::from_u32(code))
-            .map_err(|_| Error::UnknownStream);
-        drop(st);
-        self.drive();
+        let r = lock(&self.0.state).conn.stop(id, u64::from(code));
+        self.kick();
         r
     }
 
-    /// Bytes queued on a stream that quinn has not taken yet.
+    /// Bytes queued on a stream that were not sent yet.
     pub fn queued_bytes(&self, id: StreamId) -> usize {
-        lock(&self.0.state)
-            .pending
-            .get(&id.q())
-            .map_or(0, |p| p.bytes)
+        lock(&self.0.state).conn.queued_bytes(id)
     }
 
     /// Sends an unreliable datagram (needs the peer's support, RFC 9221).
     pub fn send_datagram(&self, data: impl Into<Bytes>) -> Result<(), Error> {
-        let mut st = lock(&self.0.state);
-        let r = st
-            .conn
-            .datagrams()
-            .send(data.into(), true)
-            .map_err(|e| Error::Datagram(e.to_string()));
-        drop(st);
-        self.drive();
+        let r = lock(&self.0.state).conn.send_datagram(data.into());
+        self.kick();
         r
     }
 
     /// Closes the connection with an application error code and reason; `on_close` gets
     /// `LocallyClosed`.
     pub fn close(&self, code: u32, reason: &[u8]) {
-        let mut st = lock(&self.0.state);
-        if st.conn.is_closed() {
-            return;
-        }
-        st.conn.close(
-            Instant::now(),
-            VarInt::from_u32(code),
-            Bytes::copy_from_slice(reason),
-        );
-        st.pending.clear();
-        let first = !std::mem::replace(&mut st.lost, true);
-        drop(st);
-        if first {
-            lock(&self.0.events).push_back(Ev::Closed(ConnectionError::LocallyClosed));
-        }
-        self.drive();
+        lock(&self.0.state)
+            .conn
+            .close(Instant::now(), u64::from(code), reason);
+        self.kick();
     }
 
-    /// Polls quinn until it is quiet: app events, datagrams to send, endpoint events, the timer.
+    /// After an API call: runs the state machine, unless the call came from this connection's
+    /// own handler, whose delivering `drive` sends everything once the callback returns (so a
+    /// response, its FIN and the acknowledgments share packets).
+    fn kick(&self) {
+        let me = Arc::as_ptr(&self.0) as usize;
+        if DELIVERING.with(std::cell::Cell::get) != me {
+            self.drive();
+        }
+    }
+
+    /// Runs the state machine until it is quiet: handler events first, then datagrams to send,
+    /// endpoint events and the timer.
     fn drive(&self) {
-        let ep = &self.0.ep;
+        self.collect(false);
         loop {
-            let mut tx = Vec::new();
-            let mut ep_events = Vec::new();
-            let mut evs = Vec::new();
-            let drained;
-            {
-                let mut st = lock(&self.0.state);
-                let now = Instant::now();
-                let State {
-                    conn,
-                    pending,
-                    armed,
-                    lost,
-                    buf,
-                } = &mut *st;
-                while let Some(e) = conn.poll() {
-                    match e {
-                        qp::Event::HandshakeDataReady => {}
-                        qp::Event::Connected => evs.push(Ev::Connected),
-                        qp::Event::ConnectionLost { reason } => {
-                            pending.clear();
-                            if !std::mem::replace(lost, true) {
-                                evs.push(Ev::Closed(reason.own()));
-                            }
-                        }
-                        qp::Event::Stream(se) => on_stream_event(conn, pending, se, &mut evs),
-                        qp::Event::DatagramReceived => {
-                            while let Some(d) = conn.datagrams().recv() {
-                                evs.push(Ev::Datagram(d));
-                            }
-                        }
-                        qp::Event::DatagramsUnblocked => {}
-                    }
-                }
-                loop {
-                    buf.clear();
-                    match conn.poll_transmit(now, MAX_DATAGRAMS, buf) {
-                        Some(t) => tx.push((t.destination, t.segment_size, buf[..t.size].to_vec())),
-                        None => break,
-                    }
-                }
-                while let Some(e) = conn.poll_endpoint_events() {
-                    ep_events.push(e);
-                }
-                if let Some(t) = conn.poll_timeout() {
-                    if armed.is_none_or(|a| t < a) {
-                        *armed = Some(t);
-                        let target: Weak<dyn timer::Due> = self.0.me.clone();
-                        timer::timer().schedule(t, target);
-                    }
-                }
-                drained = conn.is_drained();
-                if drained && !std::mem::replace(lost, true) {
-                    evs.push(Ev::Closed(ConnectionError::LocallyClosed));
-                }
-            }
-            for (dest, seg, data) in tx {
-                ep.transmit(dest, seg, data);
-            }
-            let mut again = false;
-            for e in ep_events {
-                let ce = lock(&ep.endpoint).handle_event(self.0.h, e);
-                if let Some(ce) = ce {
-                    lock(&self.0.state).conn.handle_event(ce);
-                    again = true;
-                }
-            }
-            if drained {
-                lock(&ep.conns).remove(&self.0.h);
-            }
-            if !evs.is_empty() {
-                lock(&self.0.events).extend(evs);
-            }
             self.deliver();
-            if !again {
+            if !self.collect(true) {
+                return;
+            }
+        }
+    }
+
+    /// Takes what the state machine produced: datagrams (when `transmit`), events, endpoint
+    /// events, the timer. Returns whether new handler events were queued.
+    fn collect(&self, transmit: bool) -> bool {
+        let ep = &self.0.ep;
+        let mut ep_events = Vec::new();
+        let drained;
+        let mut queued = false;
+        {
+            // Everything that must keep its order (datagrams on the wire, events for the
+            // handler) is handed on while the state is still locked: another thread driving
+            // the same connection cannot slip its batch in between.
+            let mut st = lock(&self.0.state);
+            let now = Instant::now();
+            let State { conn, armed, lost } = &mut *st;
+            if transmit {
+                let mut q = lock(&self.0.outq);
+                while let Some(t) = conn.poll_transmit(now, MAX_DATAGRAMS) {
+                    q.push_back(t);
+                }
+            }
+            let mut evs = lock(&self.0.events);
+            while let Some(e) = conn.poll_event() {
+                if let proto::Event::Closed(_) = e {
+                    if std::mem::replace(lost, true) {
+                        continue;
+                    }
+                }
+                evs.push_back(e);
+                queued = true;
+            }
+            while let Some(e) = conn.poll_endpoint_event() {
+                ep_events.push(e);
+            }
+            if let Some(t) = conn.poll_timeout() {
+                if armed.is_none_or(|a| t < a) {
+                    *armed = Some(t);
+                    let target: Weak<dyn timer::Due> = self.0.me.clone();
+                    timer::timer().schedule(t, target);
+                }
+            }
+            drained = conn.is_drained();
+            if drained && !std::mem::replace(lost, true) {
+                evs.push_back(proto::Event::Closed(ConnectionError::LocallyClosed));
+                queued = true;
+            }
+        }
+        if !ep_events.is_empty() {
+            let mut e = lock(&ep.endpoint);
+            for ev in &ep_events {
+                e.handle_event(self.0.h, ev);
+            }
+            drop(e);
+            for ev in ep_events {
+                if let proto::EndpointEvent::NewToken(t) = ev {
+                    if let Some((store, name)) = &ep.tokens {
+                        lock(store).insert(name.clone(), t);
+                    }
+                }
+            }
+        }
+        if transmit {
+            self.send_queued();
+        }
+        if drained {
+            let empty = {
+                let mut conns = lock(&ep.conns);
+                conns.remove(&self.0.h);
+                conns.is_empty()
+            };
+            if empty && ep.factory.is_none() {
+                // A client endpoint's only connection is gone: so is its UDP socket.
+                let socks: Vec<Conn<Udp>> = lock(&ep.socks).values().cloned().collect();
+                for s in socks {
+                    s.close();
+                }
+            }
+        }
+        queued
+    }
+
+    /// Sends the queued datagrams; if another thread is already sending them, it sends ours
+    /// too (the queue keeps the wire order without holding the state lock over syscalls).
+    fn send_queued(&self) {
+        loop {
+            if self.0.sending.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            loop {
+                let t = lock(&self.0.outq).pop_front();
+                let Some(t) = t else { break };
+                self.0.ep.transmit(t.dest, t.segment_size, t.data);
+            }
+            self.0.sending.store(false, Ordering::Release);
+            if lock(&self.0.outq).is_empty() {
                 return;
             }
         }
@@ -473,18 +418,19 @@ impl Connection {
                 return;
             };
             let mut closed = false;
+            let prev = DELIVERING.with(|d| d.replace(Arc::as_ptr(&self.0) as usize));
             loop {
                 let ev = lock(&self.0.events).pop_front();
                 let Some(ev) = ev else { break };
                 match ev {
-                    Ev::Connected => h.on_connected(self),
-                    Ev::Opened(id) => h.on_stream_opened(self, id.own()),
-                    Ev::Data(id, d, fin) => h.on_stream_data(self, id.own(), d, fin),
-                    Ev::Reset(id, c) => h.on_stream_reset(self, id.own(), c),
-                    Ev::Stopped(id, c) => h.on_stream_stopped(self, id.own(), c),
-                    Ev::Available(d) => h.on_streams_available(self, d.own()),
-                    Ev::Datagram(d) => h.on_datagram(self, d),
-                    Ev::Closed(r) => {
+                    proto::Event::Connected => h.on_connected(self),
+                    proto::Event::StreamOpened(id) => h.on_stream_opened(self, id),
+                    proto::Event::StreamData(id, d, fin) => h.on_stream_data(self, id, d, fin),
+                    proto::Event::StreamReset(id, c) => h.on_stream_reset(self, id, c),
+                    proto::Event::StreamStopped(id, c) => h.on_stream_stopped(self, id, c),
+                    proto::Event::StreamsAvailable(d) => h.on_streams_available(self, d),
+                    proto::Event::Datagram(d) => h.on_datagram(self, d),
+                    proto::Event::Closed(r) => {
                         self.0.done.store(true, Ordering::Release);
                         h.on_close(self, r);
                         closed = true;
@@ -492,11 +438,21 @@ impl Connection {
                     }
                 }
             }
+            DELIVERING.with(|d| d.set(prev));
             if closed {
                 lock(&self.0.events).clear();
                 return;
             }
             *lock(&self.0.handler) = Some(h);
+        }
+    }
+
+    /// The socket under a client connection failed.
+    fn fail(&self) {
+        let first = !std::mem::replace(&mut lock(&self.0.state).lost, true);
+        if first {
+            lock(&self.0.events).push_back(proto::Event::Closed(ConnectionError::TimedOut));
+            self.deliver();
         }
     }
 }
@@ -516,152 +472,41 @@ impl timer::Due for Shared {
     }
 }
 
-/// Whether `id` has a send side here (quinn panics on a peer's unidirectional stream).
-fn can_send(conn: &qp::Connection, id: QId) -> bool {
-    id.dir() == QDir::Bi || id.initiator() == conn.side()
-}
-
-/// Whether `id` has a receive side here (not one of our own unidirectional streams).
-fn can_recv(conn: &qp::Connection, id: QId) -> bool {
-    id.dir() == QDir::Bi || id.initiator() != conn.side()
-}
-
-/// Hands a stream's queued bytes to quinn; finishes it when they are all taken and `fin` is
-/// set.
-fn flush_stream(conn: &mut qp::Connection, id: QId, p: &mut Pending) -> Result<(), Error> {
-    let mut s = conn.send_stream(id);
-    while let Some(front) = p.chunks.front_mut() {
-        match s.write(front) {
-            Ok(n) => {
-                p.bytes -= n;
-                if n == front.len() {
-                    p.chunks.pop_front();
-                } else {
-                    let _ = front.split_to(n);
-                }
-            }
-            Err(qp::WriteError::Blocked) => return Ok(()),
-            Err(qp::WriteError::Stopped(c)) => {
-                p.chunks.clear();
-                p.bytes = 0;
-                return Err(Error::Stopped(c.into_inner()));
-            }
-            Err(qp::WriteError::ClosedStream) => {
-                p.chunks.clear();
-                p.bytes = 0;
-                return Err(Error::UnknownStream);
-            }
-        }
-    }
-    if p.fin {
-        return s.finish().map_err(|_| Error::UnknownStream);
-    }
-    Ok(())
-}
-
-fn read_stream(conn: &mut qp::Connection, id: QId, evs: &mut Vec<Ev>) {
-    let mut rs = conn.recv_stream(id);
-    let Ok(mut chunks) = rs.read(true) else {
-        return;
-    };
-    let mut got: Vec<Bytes> = Vec::new();
-    let mut fin = false;
-    let mut reset = None;
-    loop {
-        match chunks.next(usize::MAX) {
-            Ok(Some(c)) => got.push(c.bytes),
-            Ok(None) => {
-                fin = true;
-                break;
-            }
-            Err(qp::ReadError::Blocked) => break,
-            Err(qp::ReadError::Reset(c)) => {
-                reset = Some(c.into_inner());
-                break;
-            }
-        }
-    }
-    let _ = chunks.finalize();
-    let n = got.len();
-    for (i, d) in got.into_iter().enumerate() {
-        evs.push(Ev::Data(id, d, fin && i + 1 == n));
-    }
-    if fin && n == 0 {
-        evs.push(Ev::Data(id, Bytes::new(), true));
-    }
-    if let Some(c) = reset {
-        evs.push(Ev::Reset(id, c));
-    }
-}
-
-fn on_stream_event(
-    conn: &mut qp::Connection,
-    pending: &mut HashMap<QId, Pending>,
-    se: qp::StreamEvent,
-    evs: &mut Vec<Ev>,
-) {
-    match se {
-        qp::StreamEvent::Opened { dir } => {
-            while let Some(id) = conn.streams().accept(dir) {
-                evs.push(Ev::Opened(id));
-                read_stream(conn, id, evs);
-            }
-        }
-        qp::StreamEvent::Readable { id } => read_stream(conn, id, evs),
-        qp::StreamEvent::Writable { id } => {
-            if let Some(p) = pending.get_mut(&id) {
-                let r = flush_stream(conn, id, p);
-                if r.is_err() || p.chunks.is_empty() {
-                    pending.remove(&id);
-                }
-            }
-        }
-        qp::StreamEvent::Finished { id } => {
-            pending.remove(&id);
-        }
-        qp::StreamEvent::Stopped { id, error_code } => {
-            pending.remove(&id);
-            evs.push(Ev::Stopped(id, error_code.into_inner()));
-        }
-        qp::StreamEvent::Available { dir } => evs.push(Ev::Available(dir)),
-    }
-}
-
 // ---- the endpoint and its UDP side ----
 
 type Factory = dyn Fn(&Connection) -> Box<dyn QuicHandler> + Send + Sync;
 
 struct Ep {
-    endpoint: Mutex<qp::Endpoint>,
-    conns: Mutex<HashMap<qp::ConnectionHandle, Connection>>,
+    endpoint: Mutex<proto::Endpoint>,
+    conns: Mutex<HashMap<proto::ConnHandle, Connection>>,
     socks: Mutex<HashMap<SocketAddr, Conn<Udp>>>,
     /// A client's datagrams from before its socket was up.
     backlog: Mutex<Vec<Outgoing>>,
     factory: Option<Box<Factory>>,
-    server_config: Option<Arc<qp::ServerConfig>>,
+    /// A client's token store and the server name its tokens are kept under.
+    tokens: Option<(TokenStore, String)>,
 }
 
 impl Ep {
-    fn new(server_config: Option<Arc<qp::ServerConfig>>, factory: Option<Box<Factory>>) -> Ep {
+    fn new(
+        endpoint: proto::Endpoint,
+        factory: Option<Box<Factory>>,
+        tokens: Option<(TokenStore, String)>,
+    ) -> Ep {
         Ep {
-            endpoint: Mutex::new(qp::Endpoint::new(
-                Arc::new(qp::EndpointConfig::default()),
-                server_config.clone(),
-                false,
-                None,
-            )),
+            endpoint: Mutex::new(endpoint),
             conns: Mutex::new(HashMap::new()),
             socks: Mutex::new(HashMap::new()),
             backlog: Mutex::new(Vec::new()),
             factory,
-            server_config,
+            tokens,
         }
     }
 
     fn transmit(&self, dest: SocketAddr, seg: Option<usize>, data: Vec<u8>) {
         let sock = lock(&self.socks).get(&dest).cloned();
         let Some(sock) = sock else {
-            if self.server_config.is_none() {
+            if self.factory.is_none() {
                 lock(&self.backlog).push((dest, seg, data));
             }
             return;
@@ -676,38 +521,27 @@ impl Ep {
 
     fn on_datagram(self: &Arc<Ep>, peer: SocketAddr, data: &[u8]) {
         let now = Instant::now();
-        let mut buf = Vec::new();
-        let ev = lock(&self.endpoint).handle(now, peer, None, None, BytesMut::from(data), &mut buf);
+        let ev = lock(&self.endpoint).handle(now, peer, data);
         match ev {
             None => {}
-            Some(qp::DatagramEvent::Response(t)) => {
-                self.transmit(t.destination, t.segment_size, buf[..t.size].to_vec());
-            }
-            Some(qp::DatagramEvent::ConnectionEvent(h, ce)) => {
+            Some(proto::DatagramEvent::Respond(t)) => self.transmit(t.dest, None, t.data),
+            Some(proto::DatagramEvent::Conn(h)) => {
                 let c = lock(&self.conns).get(&h).cloned();
                 if let Some(c) = c {
-                    lock(&c.0.state).conn.handle_event(ce);
+                    lock(&c.0.state)
+                        .conn
+                        .handle_datagram(now, peer, data.to_vec());
                     c.drive();
                 }
             }
-            Some(qp::DatagramEvent::NewConnection(incoming)) => {
-                let r = lock(&self.endpoint).accept(incoming, now, &mut buf, None);
-                match r {
-                    Ok((h, conn)) => {
-                        let c = Connection::new(h, conn, self.clone());
-                        lock(&self.conns).insert(h, c.clone());
-                        if let Some(f) = &self.factory {
-                            let handler = f(&c);
-                            *lock(&c.0.handler) = Some(handler);
-                        }
-                        c.drive();
-                    }
-                    Err(e) => {
-                        if let Some(t) = e.response {
-                            self.transmit(t.destination, t.segment_size, buf[..t.size].to_vec());
-                        }
-                    }
+            Some(proto::DatagramEvent::New(h, conn)) => {
+                let c = Connection::new(h, *conn, self.clone());
+                lock(&self.conns).insert(h, c.clone());
+                if let Some(f) = &self.factory {
+                    let handler = f(&c);
+                    *lock(&c.0.handler) = Some(handler);
                 }
+                c.drive();
             }
         }
     }
@@ -730,9 +564,20 @@ impl QuicServer {
     where
         F: Fn(&Connection) -> H + Send + Sync + 'static,
     {
+        let config = config.0;
+        let mut cfg = proto::ConnConfig::new(config.transport, config.migration);
+        if let Some(n) = config.key_update {
+            cfg.key_update_interval = n;
+        }
+        let setup = proto::ServerSetup {
+            tls: config.tls,
+            cfg,
+            retry: config.retry,
+        };
         QuicServer(Arc::new(Ep::new(
-            Some(Arc::new(config.0)),
+            proto::Endpoint::new(Some(setup)),
             Some(Box::new(move |c| Box::new(factory(c)))),
+            None,
         )))
     }
 
@@ -796,22 +641,10 @@ impl Handler for Udp {
     }
 }
 
-impl Connection {
-    /// The socket under a client connection failed.
-    fn fail(&self) {
-        let first = !std::mem::replace(&mut lock(&self.0.state).lost, true);
-        if first {
-            lock(&self.0.events).push_back(Ev::Closed(ConnectionError::TimedOut));
-            self.deliver();
-        }
-    }
-}
-
 /// A transmit: destination, segment size (several datagrams), bytes.
 type Outgoing = (SocketAddr, Option<usize>, Vec<u8>);
 
-/// Datagrams one `poll_transmit` may return in a single [`Conn::send_segments`] (as quinn does,
-/// up to 10).
+/// Datagrams one `poll_transmit` may return in a single [`Conn::send_segments`].
 const MAX_DATAGRAMS: usize = 10;
 
 struct ClientAcceptor(Arc<Ep>);
@@ -842,10 +675,22 @@ pub fn dial<H: QuicHandler>(
     config: ClientConfig,
     handler: H,
 ) -> Result<Connection, Error> {
-    let ep = Arc::new(Ep::new(None, None));
-    let (h, conn) = lock(&ep.endpoint)
-        .connect(Instant::now(), config.0, addr, server_name)
-        .map_err(|e| Error::Connect(e.to_string()))?;
+    let config = config.0;
+    let token = lock(&config.tokens)
+        .get(server_name)
+        .cloned()
+        .unwrap_or_default();
+    let mut endpoint = proto::Endpoint::new(None);
+    let mut cfg = proto::ConnConfig::new(config.transport.clone(), true);
+    if let Some(n) = config.key_update {
+        cfg.key_update_interval = n;
+    }
+    let (h, conn) = endpoint.connect(Instant::now(), cfg, &config.tls, server_name, addr, token)?;
+    let ep = Arc::new(Ep::new(
+        endpoint,
+        None,
+        Some((config.tokens.clone(), server_name.to_string())),
+    ));
     let c = Connection::new(h, conn, ep.clone());
     *lock(&c.0.handler) = Some(Box::new(handler));
     lock(&ep.conns).insert(h, c.clone());
@@ -858,7 +703,7 @@ pub fn dial<H: QuicHandler>(
 // ---- configuration helpers ----
 
 /// A server config for a certificate chain (leaf first) and key, offering the ALPN protocols
-/// `alpn` (TLS 1.3, 0-RTT accepted).
+/// `alpn` (TLS 1.3 with session tickets for resumption).
 pub fn server_config(
     certs: Vec<tls::Certificate>,
     key: tls::PrivateKey,
@@ -867,23 +712,16 @@ pub fn server_config(
     let tls = tls::ServerConfig::builder(certs, key)
         .alpn(alpn)
         .tls13_only(true)
+        .session_tickets(true)
         .build()
         .map_err(config_err)?;
-    server_from_rustls(&tls, true)
+    Ok(ServerConfig::new(tls))
 }
 
 /// A server config from a TLS configuration (its certificates, ALPN protocols, client
 /// authentication; QUIC always runs TLS 1.3).
 pub fn server_config_from(tls: &tls::ServerConfig) -> Result<ServerConfig, Error> {
-    server_from_rustls(tls, false)
-}
-
-fn server_from_rustls(tls: &tls::ServerConfig, early_data: bool) -> Result<ServerConfig, Error> {
-    let mut r = rustls_bridge::server(tls).map_err(config_err)?;
-    // QUIC allows only "no 0-RTT" or "any amount".
-    r.max_early_data_size = if early_data { u32::MAX } else { 0 };
-    let q = qp::crypto::rustls::QuicServerConfig::try_from(r).map_err(config_err)?;
-    Ok(ServerConfig(qp::ServerConfig::with_crypto(Arc::new(q))))
+    Ok(ServerConfig::new(tls.clone()))
 }
 
 /// A client config trusting `roots`, asking for the ALPN protocols `alpn`.
@@ -899,9 +737,7 @@ pub fn client_config(roots: tls::RootCerts, alpn: &[&[u8]]) -> Result<ClientConf
 
 /// A client config from a TLS configuration (roots, ALPN protocols, client certificate).
 pub fn client_config_from(tls: &tls::ClientConfig) -> Result<ClientConfig, Error> {
-    let r = rustls_bridge::client(tls).map_err(config_err)?;
-    let q = qp::crypto::rustls::QuicClientConfig::try_from(r).map_err(config_err)?;
-    Ok(ClientConfig(qp::ClientConfig::new(Arc::new(q))))
+    Ok(ClientConfig::new(tls.clone()))
 }
 
 /// A client config that accepts any server certificate: for tests and interop runs only.

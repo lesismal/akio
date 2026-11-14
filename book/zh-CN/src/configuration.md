@@ -108,4 +108,4 @@ false）。
 |---|---|---|---|
 | only-http | `regex` | 开启 | 无作用（为兼容保留）：正则路由参数（`{id:[0-9]+}`）始终可用 |
 | only-grpc | `prost` | 关闭 | 为 prost 消息实现 `codec::Message`（不在 semver 承诺内） |
-| only、only-tls、only-quic、only-webrtc | `unstable` | 关闭 | 直接访问被封装的 quinn-proto（不在 semver 承诺内）；在 only-tls 与 only-webrtc 中为预留的空 feature |
+| only、only-tls、only-quic、only-webrtc | `unstable` | 关闭 | 预留的空 feature：only-tls、only-quic 与 only-webrtc 运行自研的 TLS、QUIC 与 WebRTC，已没有被封装的依赖 |

@@ -5,8 +5,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
-use bytes::Bytes;
 use only::{Engine, Listener};
+use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, QuicHandler, QuicServer, StreamId};
 
 struct Echo;

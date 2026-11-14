@@ -84,9 +84,8 @@ AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并
 - only-ws 客户端：`wss://` 使用 `DialOptions::tls`。
 - only-http 客户端：`Client::with_tls(cfg)`、`H2Client::dial(.., Some((cfg, name)), ..)`。
 - QUIC 与 HTTP/3 在 QUIC 内部使用 TLS 1.3：见 `only_quic::server_config` 与
-  `server_config_from(&tls_config)`。在自研 QUIC（DEV-PLAN 第 D 波）之前它们运行 quinn-proto，后者
-  使用 rustls；`only-quic` 依据同一份 `only::tls` 配置构建它，用户无感。新 QUIC 将驱动的、不经记录层
-  的 TLS 1.3 内核已在 `only-tls` 中（内部 API）。
+  `server_config_from(&tls_config)`。`only-quic` 的自研 QUIC（DEV-PLAN 第 D 波）用同一份
+  `only::tls` 配置驱动 `only-tls` 内不经记录层的 TLS 1.3 内核（内部 API）。
 
 ## 尚未完成
 

@@ -5,8 +5,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::Duration;
 
-use bytes::Bytes;
 use only_http::message::{Headers, Method, Response};
+use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, StreamId};
 
 use crate::frame::{self, Reader};

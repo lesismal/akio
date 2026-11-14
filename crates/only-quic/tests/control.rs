@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
-use bytes::Bytes;
 use only::{Engine, Listener};
+use only_quic::Bytes;
 use only_quic::{Connection, Error, QuicHandler, QuicServer, StreamId};
 
 /// Server: `reset` resets the stream, `stop` stops it, anything else is echoed with FIN.

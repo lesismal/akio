@@ -45,7 +45,6 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Zlib",
 ]
 confidence-threshold = 0.8
 exceptions = []
@@ -60,21 +59,10 @@ multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
 highlight = "all"
-# Accepted duplicates, all pulled in by upstream crates on different major versions (none is a
-# direct dependency of two workspace crates at different versions). Revisit on upgrades.
-skip = [
-    # quinn-proto 0.11 -> rand 0.10 -> getrandom 0.4 / rand_core 0.10 / cpufeatures 0.3, while
-    # ring 0.17 (rustls) and RustCrypto 0.10-era crates (aes-gcm, sha1, pbkdf2) stay on
-    # getrandom 0.2 / rand_core 0.6 / cpufeatures 0.2.
-    { crate = "getrandom@0.2", reason = "ring 0.17 and RustCrypto crypto-common 0.1" },
-    { crate = "rand_core@0.6", reason = "RustCrypto crypto-common 0.1 (only-kcp ciphers)" },
-    { crate = "cpufeatures@0.2", reason = "RustCrypto 0.10-era crates; quinn-proto's chacha20 uses 0.3" },
-    # chacha20poly1305 0.10 (an only-crypto dev-dependency) uses chacha20 0.9, quinn-proto 0.10.
-    { crate = "chacha20@0.9", reason = "chacha20poly1305 0.10 (only-crypto cross-checks)" },
-    # Proc-macro build-time only: prost-derive 0.13 (tools/protobuf-test) on syn 2,
-    # thiserror-impl 2 on syn 3.
-    { crate = "syn@2", reason = "prost-derive 0.13 (build time only)" },
-]
+# No accepted duplicates: since the in-house QUIC and WebRTC stacks of wave D replaced
+# quinn-proto and str0m, every crate in the graph has a single version. Add `skip` entries here
+# (with a reason) only when an upstream crate forces one.
+skip = []
 skip-tree = []
 
 [sources]
