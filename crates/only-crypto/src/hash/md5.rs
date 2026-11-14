@@ -1,6 +1,6 @@
 //! MD5 (RFC 1321).
 
-use super::{Buffer, impl_hash};
+use super::{Buffer, blocks, impl_hash};
 
 const S: [u32; 64] = [
     7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9,
@@ -96,14 +96,16 @@ impl Md5 {
     /// Absorbs `data`.
     pub fn update(&mut self, data: &[u8]) {
         let state = &mut self.state;
-        self.buf.update(data, |b| compress(state, b));
+        self.buf
+            .update(data, |d| blocks(d).for_each(|b| compress(state, b)));
     }
 
     /// Finishes the hash and returns the digest.
     #[must_use]
     pub fn finalize(mut self) -> [u8; 16] {
         let state = &mut self.state;
-        self.buf.finish(8, false, |b| compress(state, b));
+        self.buf
+            .finish(8, false, |d| blocks(d).for_each(|b| compress(state, b)));
         let mut out = [0u8; 16];
         for (o, s) in out.chunks_exact_mut(4).zip(self.state) {
             o.copy_from_slice(&s.to_le_bytes());

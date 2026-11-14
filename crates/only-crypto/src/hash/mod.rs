@@ -18,6 +18,7 @@
 //! still use them (WebSocket handshakes, BitTorrent info hashes, STUN, HMAC-SHA1, RTSP digest
 //! authentication).
 
+mod hw;
 mod md5;
 mod sha1;
 mod sha256;
@@ -70,8 +71,10 @@ impl<const N: usize> Buffer<N> {
         }
     }
 
+    /// Absorbs `data`; `compress` gets runs of whole `N`-byte blocks (a slice whose length is a
+    /// non-zero multiple of `N`).
     #[inline]
-    pub(crate) fn update(&mut self, mut data: &[u8], mut compress: impl FnMut(&[u8; N])) {
+    pub(crate) fn update(&mut self, mut data: &[u8], mut compress: impl FnMut(&[u8])) {
         self.total = self.total.wrapping_add(data.len() as u64);
         if self.pos > 0 {
             let n = (N - self.pos).min(data.len());
@@ -84,12 +87,11 @@ impl<const N: usize> Buffer<N> {
             compress(&self.buf);
             self.pos = 0;
         }
-        let mut blocks = data.chunks_exact(N);
-        for b in &mut blocks {
-            let b: &[u8; N] = b.try_into().unwrap_or_else(|_| unreachable!());
-            compress(b);
+        let whole = data.len() - data.len() % N;
+        if whole > 0 {
+            compress(&data[..whole]);
         }
-        let rest = blocks.remainder();
+        let rest = &data[whole..];
         self.buf[..rest.len()].copy_from_slice(rest);
         self.pos = rest.len();
     }
@@ -100,7 +102,7 @@ impl<const N: usize> Buffer<N> {
         &mut self,
         len_field: usize,
         big_endian: bool,
-        mut compress: impl FnMut(&[u8; N]),
+        mut compress: impl FnMut(&[u8]),
     ) {
         let bits = u128::from(self.total) << 3;
         self.buf[self.pos] = 0x80;
@@ -124,6 +126,13 @@ impl<const N: usize> Buffer<N> {
         compress(&self.buf);
         self.pos = 0;
     }
+}
+
+/// The `N`-byte blocks of `data` (whose length is a multiple of `N`).
+#[inline]
+pub(crate) fn blocks<const N: usize>(data: &[u8]) -> impl Iterator<Item = &[u8; N]> {
+    data.chunks_exact(N)
+        .map(|b| b.try_into().unwrap_or_else(|_| unreachable!()))
 }
 
 /// Implements [`Hash`], `Default` and `Debug` for a hash type with `new` / `update` / `finalize`

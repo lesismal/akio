@@ -4,9 +4,14 @@
 //! data-dependent branches; ECDH and ECDSA on top.
 //!
 //! Secret-scalar multiplication uses fixed 4-bit windows with a table lookup that reads every
-//! entry (variable base) or a precomputed comb table of `j·16ⁱ·G` (fixed base), always the same
-//! sequence of field operations. Verification (public inputs) uses the same code without the
-//! secret-handling discipline where that is faster.
+//! entry (variable base) or a precomputed comb of affine points `j·16ⁱ·G` (`1 ≤ j ≤ 8`) indexed
+//! by signed 4-bit digits (fixed base: one mixed addition per digit, the whole row read, the
+//! point negated by a masked select), always the same sequence of field operations.
+//!
+//! Verification (public inputs) uses Jacobian coordinates (cheaper doublings than the complete
+//! formulas) and interleaves width-5 wNAF over the public key with width-7 wNAF over a
+//! precomputed table of odd multiples of `G`, sharing one chain of doublings; it compares
+//! `x(R) ≡ r` projectively, without an inversion. Its branches depend on public data only.
 
 pub(crate) mod api;
 pub(crate) mod curves;
@@ -30,8 +35,58 @@ pub(crate) trait Curve<const L: usize>: Copy + Send + Sync + 'static {
     /// The base point.
     const GX: [u64; L];
     const GY: [u64; L];
-    /// The comb table of the base point, built once.
-    fn base_table() -> &'static [[Point<Self, L>; 16]];
+    /// The base point tables, built once (with [`BaseTables::build`]).
+    fn tables() -> &'static BaseTables<Self, L>;
+}
+
+/// An affine point `(x, y)` (never the identity).
+pub(crate) type Affine<C, const L: usize> = (Fp<C, L>, Fp<C, L>);
+
+/// Precomputed multiples of the base point.
+pub(crate) struct BaseTables<C: Curve<L>, const L: usize> {
+    /// `comb[i][j - 1] = j·16ⁱ·G` for `1 ≤ j ≤ 8`, `16L + 1` rows (signed digits carry into the
+    /// last one).
+    comb: Vec<[Affine<C, L>; 8]>,
+    /// `wnaf[i] = (2i + 1)·G`, `0 ≤ i < 32` (width-7 wNAF digits).
+    wnaf: Vec<Affine<C, L>>,
+}
+
+impl<C: Curve<L>, const L: usize> BaseTables<C, L> {
+    /// Computes the tables (projective arithmetic, then one batched inversion).
+    pub(crate) fn build() -> Self {
+        let mut pts = Vec::with_capacity((16 * L + 1) * 8 + 32);
+        let mut p = Point::<C, L>::generator();
+        for _ in 0..=16 * L {
+            let mut q = p;
+            for _ in 0..8 {
+                pts.push(q);
+                q = q.add(&p);
+            }
+            // 16·16ⁱ·G = 8·16ⁱ·G doubled.
+            p = pts[pts.len() - 1].double();
+        }
+        let g = Point::<C, L>::generator();
+        let g2 = g.double();
+        let mut q = g;
+        for _ in 0..32 {
+            pts.push(q);
+            q = q.add(&g2);
+        }
+        let aff = Point::batch_to_affine(&pts);
+        let n = (16 * L + 1) * 8;
+        let comb = aff[..n]
+            .chunks_exact(8)
+            .map(|c| {
+                let mut row = [c[0]; 8];
+                row.copy_from_slice(c);
+                row
+            })
+            .collect();
+        BaseTables {
+            comb,
+            wnaf: aff[n..].to_vec(),
+        }
+    }
 }
 
 pub(crate) type Fp<C, const L: usize> = Fe<<C as Curve<L>>::Fp, L>;
@@ -214,6 +269,7 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
     }
 
     /// `table[idx]`, reading every entry.
+    #[inline]
     fn lookup(table: &[Self; 16], idx: u64) -> Self {
         let mut r = Self::identity();
         for (j, p) in table.iter().enumerate() {
@@ -242,53 +298,139 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
         r
     }
 
-    /// `[k]G` in constant time from the comb table: one addition per 4-bit digit.
+    /// Complete mixed addition `self + (x2, y2)` (RCB16 algorithm 5, a = -3): correct for every
+    /// `self`, including the identity; `(x2, y2)` must be a point on the curve (not the
+    /// identity, which has no affine form). Constant time.
+    pub(crate) fn add_affine(&self, x2: &Fp<C, L>, y2: &Fp<C, L>) -> Self {
+        let b = curve_b::<C, L>();
+        let (x1, y1, z1) = (&self.x, &self.y, &self.z);
+        let mut t0 = x1.mul(x2);
+        let mut t1 = y1.mul(y2);
+        let mut t3 = x2.add(y2);
+        let mut t4 = x1.add(y1);
+        t3 = t3.mul(&t4);
+        t4 = t0.add(&t1);
+        t3 = t3.sub(&t4);
+        t4 = y2.mul(z1);
+        t4 = t4.add(y1);
+        let mut y3 = x2.mul(z1);
+        y3 = y3.add(x1);
+        let mut z3 = b.mul(z1);
+        let mut x3 = y3.sub(&z3);
+        z3 = x3.add(&x3);
+        x3 = x3.add(&z3);
+        z3 = t1.sub(&x3);
+        x3 = t1.add(&x3);
+        y3 = b.mul(&y3);
+        t1 = z1.add(z1);
+        let mut t2 = t1.add(z1);
+        y3 = y3.sub(&t2);
+        y3 = y3.sub(&t0);
+        t1 = y3.add(&y3);
+        y3 = t1.add(&y3);
+        t1 = t0.add(&t0);
+        t0 = t1.add(&t0);
+        t0 = t0.sub(&t2);
+        t1 = t4.mul(&y3);
+        t2 = t0.mul(&y3);
+        y3 = x3.mul(&z3);
+        y3 = y3.add(&t2);
+        x3 = t3.mul(&x3);
+        x3 = x3.sub(&t1);
+        z3 = t4.mul(&z3);
+        t1 = t3.mul(&t0);
+        z3 = z3.add(&t1);
+        Point {
+            x: x3,
+            y: y3,
+            z: z3,
+            _c: PhantomData,
+        }
+    }
+
+    /// `[k]G` in constant time from the comb: `k = Σ dᵢ·16ⁱ` with signed digits `dᵢ ∈ [-7, 8]`
+    /// (a carry into the extra top row), one mixed addition per digit. Each digit's entry is
+    /// found by reading the whole row with masked selects, negated by a masked select, and the
+    /// addition of a zero digit is computed and discarded by a masked select.
     pub(crate) fn mul_base(k: &Scalar<C, L>) -> Self {
         let k = k.to_limbs();
+        let comb = &C::tables().comb;
         let mut r = Self::identity();
-        for (i, row) in C::base_table().iter().enumerate() {
-            r = r.add(&Self::lookup(row, Self::nibble(&k, i)));
+        let mut carry = 0u64;
+        for (i, row) in comb.iter().enumerate().take(16 * L) {
+            let d = Self::nibble(&k, i) + carry;
+            // d ∈ [0, 16]; d ≥ 9 becomes d - 16 with a carry.
+            carry = (d + 7) >> 4;
+            let sd = d.wrapping_sub(carry << 4); // two's complement of d - 16·carry
+            let neg = ct::mask(sd >> 63);
+            let abs = (sd ^ neg).wrapping_sub(neg);
+            let (mut x, mut y) = (Fp::<C, L>::ZERO, Fp::<C, L>::ZERO);
+            for (j, (px, py)) in row.iter().enumerate() {
+                let m = ct::eq(j as u64 + 1, abs);
+                x = Fe::select(m, px, &x);
+                y = Fe::select(m, py, &y);
+            }
+            y = Fe::select(neg, &y.neg(), &y);
+            // abs = 0 selected nothing: (0, 0) is off the curve, the sum is discarded below.
+            let sum = r.add_affine(&x, &y);
+            r = Self::select(ct::is_zero(abs) ^ u64::MAX, &sum, &r);
         }
-        r
+        let (x, y) = &comb[16 * L][0];
+        let sum = r.add_affine(x, y);
+        Self::select(ct::mask(carry), &sum, &r)
     }
 
-    /// `[a]G + [b]self` in variable time (public scalars: verification).
-    pub(crate) fn mul_add_base_vartime(&self, a: &Scalar<C, L>, b: &Scalar<C, L>) -> Self {
-        let (a, b) = (a.to_limbs(), b.to_limbs());
-        let mut table = [Self::identity(); 16];
-        for j in 1..16 {
-            table[j] = table[j - 1].add(self);
-        }
-        let mut r = Self::identity();
-        for i in (0..16 * L).rev() {
-            r = r.double().double().double().double();
-            let n = Self::nibble(&b, i) as usize;
-            if n != 0 {
-                r = r.add(&table[n]);
+    /// Affine forms of many points with one inversion (Montgomery's trick); the identity maps
+    /// to `(0, 0)`. For public points (tables).
+    pub(crate) fn batch_to_affine(pts: &[Self]) -> Vec<Affine<C, L>> {
+        let mut acc = Vec::with_capacity(pts.len());
+        let mut a = Fp::<C, L>::ONE;
+        for p in pts {
+            acc.push(a);
+            if p.is_identity() == 0 {
+                a = a.mul(&p.z);
             }
         }
-        for (i, row) in C::base_table().iter().enumerate() {
-            let n = Self::nibble(&a, i) as usize;
-            if n != 0 {
-                r = r.add(&row[n]);
+        let mut inv = a.invert();
+        let mut out = vec![(Fp::<C, L>::ZERO, Fp::<C, L>::ZERO); pts.len()];
+        for (i, p) in pts.iter().enumerate().rev() {
+            if p.is_identity() != 0 {
+                continue;
             }
-        }
-        r
-    }
-
-    /// Builds the comb table `table[i][j] = j·16ⁱ·G` (for [`Curve::base_table`]).
-    pub(crate) fn build_base_table() -> Vec<[Self; 16]> {
-        let mut out = Vec::with_capacity(16 * L);
-        let mut p = Self::generator();
-        for _ in 0..16 * L {
-            let mut row = [Self::identity(); 16];
-            for j in 1..16 {
-                row[j] = row[j - 1].add(&p);
-            }
-            p = row[15].add(&p);
-            out.push(row);
+            let zi = inv.mul(&acc[i]);
+            inv = inv.mul(&p.z);
+            out[i] = (p.x.mul(&zi), p.y.mul(&zi));
         }
         out
+    }
+
+    /// `[a]G + [b]self` in variable time (public scalars: verification), as a projective
+    /// point.
+    #[cfg(test)]
+    pub(crate) fn mul_add_base_vartime(&self, a: &Scalar<C, L>, b: &Scalar<C, L>) -> Self {
+        let j = Jac::<C, L>::mul_add_vartime(self, a, b);
+        if j.is_identity() {
+            return Self::identity();
+        }
+        // Jacobian (X:Y:Z) is projective (X·Z : Y : Z³).
+        Point {
+            x: j.x.mul(&j.z),
+            y: j.y,
+            z: j.z.square().mul(&j.z),
+            _c: PhantomData,
+        }
+    }
+
+    /// Affine coordinates of a public point, skipping the inversion when `Z = 1` (decoded
+    /// points); `None` for the identity. Variable time.
+    fn to_affine_vartime(self) -> Option<Affine<C, L>> {
+        if self.is_identity() != 0 {
+            return None;
+        }
+        if self.z.ct_eq(&Fp::<C, L>::ONE) != 0 {
+            return Some((self.x, self.y));
+        }
+        self.to_affine()
     }
 
     /// Affine coordinates; `None` for the identity.
@@ -362,6 +504,211 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
         y.write_be(&mut v[1 + n..]);
         Some(v)
     }
+}
+
+/// A point in Jacobian coordinates `(X:Y:Z)`, affine `(X/Z², Y/Z³)`, `Z = 0` for the identity.
+/// Variable time throughout: only for verification (public points and scalars).
+struct Jac<C: Curve<L>, const L: usize> {
+    x: Fp<C, L>,
+    y: Fp<C, L>,
+    z: Fp<C, L>,
+}
+
+impl<C: Curve<L>, const L: usize> Clone for Jac<C, L> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<C: Curve<L>, const L: usize> Copy for Jac<C, L> {}
+
+impl<C: Curve<L>, const L: usize> Jac<C, L> {
+    fn identity() -> Self {
+        Jac {
+            x: Fp::<C, L>::ONE,
+            y: Fp::<C, L>::ONE,
+            z: Fp::<C, L>::ZERO,
+        }
+    }
+
+    fn is_identity(&self) -> bool {
+        self.z.is_zero() != 0
+    }
+
+    fn from_affine((x, y): &Affine<C, L>) -> Self {
+        Jac {
+            x: *x,
+            y: *y,
+            z: Fp::<C, L>::ONE,
+        }
+    }
+
+    fn neg(&self) -> Self {
+        Jac {
+            x: self.x,
+            y: self.y.neg(),
+            z: self.z,
+        }
+    }
+
+    /// Doubling for a = -3 (dbl-2001-b: 3M + 5S).
+    fn double(&self) -> Self {
+        if self.is_identity() {
+            return *self;
+        }
+        let delta = self.z.square();
+        let gamma = self.y.square();
+        let beta = self.x.mul(&gamma);
+        let t = self.x.sub(&delta).mul(&self.x.add(&delta));
+        let alpha = t.double().add(&t);
+        let beta4 = beta.double().double();
+        let x3 = alpha.square().sub(&beta4.double());
+        let z3 = self.y.add(&self.z).square().sub(&gamma).sub(&delta);
+        let g2 = gamma.square().double();
+        let y3 = alpha.mul(&beta4.sub(&x3)).sub(&g2.double().double());
+        Jac {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
+    }
+
+    /// `self + (x2, y2)` (madd-2007-bl: 7M + 4S), with the special cases handled by branches.
+    fn add_affine(&self, q: &Affine<C, L>) -> Self {
+        if self.is_identity() {
+            return Self::from_affine(q);
+        }
+        let (x2, y2) = q;
+        let z1z1 = self.z.square();
+        let u2 = x2.mul(&z1z1);
+        let s2 = y2.mul(&self.z).mul(&z1z1);
+        let h = u2.sub(&self.x);
+        let r = s2.sub(&self.y).double();
+        if h.is_zero() != 0 {
+            return if r.is_zero() != 0 {
+                self.double()
+            } else {
+                Self::identity()
+            };
+        }
+        let hh = h.square();
+        let i = hh.double().double();
+        let j = h.mul(&i);
+        let v = self.x.mul(&i);
+        let x3 = r.square().sub(&j).sub(&v.double());
+        let y3 = r.mul(&v.sub(&x3)).sub(&self.y.mul(&j).double());
+        let z3 = self.z.add(&h).square().sub(&z1z1).sub(&hh);
+        Jac {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
+    }
+
+    /// `self + q` (add-2007-bl: 11M + 5S), with the special cases handled by branches.
+    fn add(&self, q: &Self) -> Self {
+        if self.is_identity() {
+            return *q;
+        }
+        if q.is_identity() {
+            return *self;
+        }
+        let z1z1 = self.z.square();
+        let z2z2 = q.z.square();
+        let u1 = self.x.mul(&z2z2);
+        let u2 = q.x.mul(&z1z1);
+        let s1 = self.y.mul(&q.z).mul(&z2z2);
+        let s2 = q.y.mul(&self.z).mul(&z1z1);
+        let h = u2.sub(&u1);
+        let r = s2.sub(&s1).double();
+        if h.is_zero() != 0 {
+            return if r.is_zero() != 0 {
+                self.double()
+            } else {
+                Self::identity()
+            };
+        }
+        let i = h.double().square();
+        let j = h.mul(&i);
+        let v = u1.mul(&i);
+        let x3 = r.square().sub(&j).sub(&v.double());
+        let y3 = r.mul(&v.sub(&x3)).sub(&s1.mul(&j).double());
+        let z3 = self.z.add(&q.z).square().sub(&z1z1).sub(&z2z2).mul(&h);
+        Jac {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
+    }
+
+    /// `[a]G + [b]q`: width-7 wNAF of `a` over the precomputed odd multiples of `G`, width-5
+    /// wNAF of `b` over `q, 3q, …, 15q`, one shared chain of doublings.
+    fn mul_add_vartime(q: &Point<C, L>, a: &Scalar<C, L>, b: &Scalar<C, L>) -> Self {
+        let wa = wnaf(&a.to_limbs(), 7);
+        let wb = wnaf(&b.to_limbs(), 5);
+        let gt = &C::tables().wnaf;
+        let mut qt = [Self::identity(); 8];
+        if let Some(qa) = q.to_affine_vartime() {
+            qt[0] = Self::from_affine(&qa);
+            let q2 = qt[0].double();
+            for i in 1..8 {
+                qt[i] = qt[i - 1].add(&q2);
+            }
+        }
+        let mut r = Self::identity();
+        for i in (0..wa.len().max(wb.len())).rev() {
+            r = r.double();
+            match wa.get(i).copied().unwrap_or(0) {
+                0 => {}
+                d if d > 0 => r = r.add_affine(&gt[(d as usize) >> 1]),
+                d => {
+                    let (x, y) = &gt[((-d) as usize) >> 1];
+                    r = r.add_affine(&(*x, y.neg()));
+                }
+            }
+            match wb.get(i).copied().unwrap_or(0) {
+                0 => {}
+                d if d > 0 => r = r.add(&qt[(d as usize) >> 1]),
+                d => r = r.add(&qt[((-d) as usize) >> 1].neg()),
+            }
+        }
+        r
+    }
+}
+
+/// The width-`w` NAF of `k` (little-endian limbs): digits zero or odd in
+/// `(-2^(w-1), 2^(w-1))`, least significant first, trailing zeros trimmed. Variable time.
+pub(crate) fn wnaf<const L: usize>(k: &[u64; L], w: u32) -> Vec<i8> {
+    // One extra limb: subtracting a negative digit adds to k.
+    let mut k: Vec<u64> = k.iter().copied().chain([0]).collect();
+    let mut out = Vec::with_capacity(64 * L + 1);
+    let full = 1u64 << w;
+    let half = 1u64 << (w - 1);
+    while k.iter().any(|&x| x != 0) {
+        let mut d = 0i64;
+        if k[0] & 1 == 1 {
+            let m = k[0] & (full - 1);
+            if m >= half {
+                d = m as i64 - full as i64;
+                // k += |d|
+                let mut c = (-d) as u64;
+                for x in &mut k {
+                    let (v, o) = x.overflowing_add(c);
+                    *x = v;
+                    c = u64::from(o);
+                }
+            } else {
+                d = m as i64;
+                k[0] -= m; // the low w bits are m: no borrow
+            }
+        }
+        out.push(d as i8);
+        // k >>= 1
+        for i in 0..k.len() {
+            let hi = k.get(i + 1).copied().unwrap_or(0);
+            k[i] = (k[i] >> 1) | (hi << 63);
+        }
+    }
+    out
 }
 
 /// `bits2int(h) mod n` (RFC 6979 §2.3.2 / SEC1 §4.1.3 step 5): the leftmost `8L·8` bits of the
@@ -453,16 +800,28 @@ pub(crate) fn verify<C: Curve<L>, const L: usize>(
     let w = sig.s.invert();
     let u1 = e.mul(&w);
     let u2 = sig.r.mul(&w);
-    let (x, _) = q
-        .mul_add_base_vartime(&u1, &u2)
-        .to_affine()
-        .ok_or(Error::Verification)?;
-    let xr = Scalar::<C, L>::from_limbs_reduce(&x.to_limbs());
-    if xr.ct_eq(&sig.r) != 0 {
-        Ok(())
-    } else {
-        Err(Error::Verification)
+    let rj = Jac::<C, L>::mul_add_vartime(q, &u1, &u2);
+    if rj.is_identity() {
+        return Err(Error::Verification);
     }
+    // x(R) mod n == r, where x(R) = X/Z² < p: compare X with r·Z², and with (r + n)·Z² when
+    // r + n < p (x(R) ≥ n). No inversion; all values public.
+    let z2 = rj.z.square();
+    let r = sig.r.to_limbs();
+    let rx = Fp::<C, L>::from_limbs_canonical(&r).ok_or(Error::Verification)?;
+    if rx.mul(&z2).ct_eq(&rj.x) != 0 {
+        return Ok(());
+    }
+    let mut rn = [0u64; L];
+    let carry = ct::add_limbs(&mut rn, &r, &<C::Fq as Modulus<L>>::P);
+    if carry == 0 {
+        if let Some(rnx) = Fp::<C, L>::from_limbs_canonical(&rn) {
+            if rnx.mul(&z2).ct_eq(&rj.x) != 0 {
+                return Ok(());
+            }
+        }
+    }
+    Err(Error::Verification)
 }
 
 /// Parses a fixed-width `r || s` signature, requiring `1 <= r, s < n`.

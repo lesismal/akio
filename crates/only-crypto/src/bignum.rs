@@ -7,7 +7,7 @@
 //! with full-table lookups. Functions named `_vartime` are for public values only.
 
 use crate::ct;
-use crate::field::neg_inv64;
+use crate::field::{mont_mul_cios, neg_inv64, redc, sqr_wide};
 
 /// The largest modulus: 8192 bits.
 pub(crate) const MAX_LIMBS: usize = 128;
@@ -80,6 +80,12 @@ pub(crate) fn resize(a: &[u64], k: usize) -> Vec<u64> {
     v
 }
 
+/// The first `N` limbs of `a` as an array (callers pass at least `N`).
+#[inline(always)]
+fn arr<const N: usize>(a: &[u64]) -> &[u64; N] {
+    a[..N].try_into().unwrap_or_else(|_| unreachable!())
+}
+
 /// Montgomery context for an odd modulus `m` of `k` limbs, `R = 2^(64k)`.
 #[derive(Clone, Debug)]
 pub(crate) struct Mont {
@@ -136,8 +142,46 @@ impl Mont {
         self.r1.clone()
     }
 
-    /// `out = a·b·R⁻¹ mod m` for `a < R`, `b < m` (CIOS).
+    /// `out = a·b·R⁻¹ mod m` for `a < R`, `b < m` (CIOS; fixed-size code for the limb counts
+    /// of 2048- to 8192-bit RSA and their CRT halves).
     pub(crate) fn mul_into(&self, out: &mut [u64], a: &[u64], b: &[u64]) {
+        macro_rules! fixed {
+            ($($n:literal),*) => {
+                match self.m.len() {
+                    $($n => {
+                        let r = mont_mul_cios::<$n>(arr(a), arr(b), arr(&self.m), self.n0);
+                        out[..$n].copy_from_slice(&r);
+                        return;
+                    })*
+                    _ => {}
+                }
+            };
+        }
+        fixed!(16, 24, 32, 48, 64);
+        self.mul_into_generic(out, a, b);
+    }
+
+    /// `out = a²·R⁻¹ mod m` for `a < m`: a half-size product plus Montgomery reduction for the
+    /// common limb counts, else [`mul_into`](Self::mul_into).
+    pub(crate) fn sqr_into(&self, out: &mut [u64], a: &[u64]) {
+        macro_rules! fixed {
+            ($(($n:literal, $w:literal)),*) => {
+                match self.m.len() {
+                    $($n => {
+                        let r = redc::<$n, $w>(sqr_wide::<$n, $w>(arr(a)), arr(&self.m), self.n0);
+                        out[..$n].copy_from_slice(&r);
+                        return;
+                    })*
+                    _ => {}
+                }
+            };
+        }
+        fixed!((16, 32), (24, 48), (32, 64), (48, 96), (64, 128));
+        self.mul_into_generic(out, a, a);
+    }
+
+    /// CIOS for any limb count.
+    fn mul_into_generic(&self, out: &mut [u64], a: &[u64], b: &[u64]) {
         let k = self.m.len();
         let m = &self.m;
         let mut t = [0u64; MAX_LIMBS + 2];
@@ -247,7 +291,7 @@ impl Mont {
         let mut sel = vec![0u64; k];
         for i in (0..16 * e.len()).rev() {
             for _ in 0..4 {
-                self.mul_into(&mut tmp, &r, &r);
+                self.sqr_into(&mut tmp, &r);
                 r.copy_from_slice(&tmp);
             }
             let nib = (e[i / 16] >> (4 * (i % 16))) & 15;
@@ -265,8 +309,10 @@ impl Mont {
     pub(crate) fn pow_vartime(&self, base: &[u64], e: &[u64]) -> Vec<u64> {
         let mut r = self.one();
         let bits = bit_len_vartime(e);
+        let mut tmp = vec![0u64; self.m.len()];
         for i in (0..bits).rev() {
-            r = self.mul(&r, &r);
+            self.sqr_into(&mut tmp, &r);
+            r.copy_from_slice(&tmp);
             if (e[i / 64] >> (i % 64)) & 1 == 1 {
                 r = self.mul(&r, base);
             }
@@ -278,6 +324,36 @@ impl Mont {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fixed-size multiplication and squaring agree with the generic CIOS.
+    #[test]
+    fn fixed_sizes() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([16; 32]);
+        for k in [16usize, 24, 32, 48, 64] {
+            let mut m = vec![0u64; k];
+            for x in &mut m {
+                *x = rng.next_u64();
+            }
+            m[0] |= 1;
+            m[k - 1] |= 1 << 63;
+            let mont = Mont::new(&m).unwrap();
+            let mut a = vec![0u64; k];
+            let mut b = vec![0u64; k];
+            for (x, y) in a.iter_mut().zip(b.iter_mut()) {
+                *x = rng.next_u64();
+                *y = rng.next_u64();
+            }
+            a[k - 1] >>= 1; // below m
+            b[k - 1] >>= 1;
+            let (mut f, mut g) = (vec![0u64; k], vec![0u64; k]);
+            mont.mul_into(&mut f, &a, &b);
+            mont.mul_into_generic(&mut g, &a, &b);
+            assert_eq!(f, g, "mul {k}");
+            mont.sqr_into(&mut f, &a);
+            mont.mul_into_generic(&mut g, &a, &a);
+            assert_eq!(f, g, "sqr {k}");
+        }
+    }
 
     #[test]
     fn small_modulus() {

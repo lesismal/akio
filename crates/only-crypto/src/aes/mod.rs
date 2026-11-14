@@ -6,7 +6,7 @@
 //! `aes` crate's `soft` backend: the S-box is a Boolean circuit over bitsliced state, so there are
 //! no secret-dependent memory accesses or branches. It processes four blocks at once;
 //! [`Aes::encrypt_blocks`] and CTR use that, a single block costs as much as four. Both paths are
-//! constant time.
+//! constant time. On the hardware path CTR mode keeps eight blocks in flight.
 //!
 //! ```
 //! use only_crypto::aes::Aes;
@@ -119,6 +119,15 @@ impl Aes {
         matches!(self.0, Keys::Hw(..))
     }
 
+    /// The round keys of the hardware path (`None` on the portable path): only constructed when
+    /// the CPU has AES instructions.
+    pub(crate) fn hw_round_keys(&self) -> Option<(&[[u8; 16]; 15], usize)> {
+        match &self.0 {
+            Keys::Hw(k, _) => Some(k.enc_keys()),
+            _ => None,
+        }
+    }
+
     /// The key length in bytes: 16, 24 or 32.
     #[must_use]
     pub fn key_len(&self) -> usize {
@@ -220,6 +229,15 @@ impl Aes {
 
     #[inline]
     fn ctr_with(&self, data: &mut [u8], block: impl Fn(u128) -> [u8; 16]) {
+        if let Keys::Hw(k, _) = &self.0 {
+            let mut i: u128 = 0;
+            k.ctr(data, || {
+                let b = block(i);
+                i += 1;
+                b
+            });
+            return;
+        }
         let mut i: u128 = 0;
         for chunk in data.chunks_mut(64) {
             let ks = self.enc4(&[block(i), block(i + 1), block(i + 2), block(i + 3)]);
@@ -314,6 +332,33 @@ mod tests {
             "hardware AES: {}",
             Aes::new(&[0; 16]).unwrap().is_hardware()
         );
+    }
+
+    /// Hardware CTR (eight blocks per step) and portable CTR agree for every length.
+    #[test]
+    fn ctr_hardware_matches_portable() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([6; 32]);
+        for i in 0..200 {
+            let mut key = vec![0u8; [16, 24, 32][i % 3]];
+            rng.fill(&mut key);
+            let hw = Aes::new(&key).unwrap();
+            let sw = Aes::new_portable(&key).unwrap();
+            let mut ctr = [0u8; 16];
+            rng.fill(&mut ctr);
+            if i % 5 == 0 {
+                ctr[8..].fill(0xff); // carries across the 64-bit and 32-bit boundaries
+            }
+            let mut data = vec![0u8; (i * 29) % 600];
+            rng.fill(&mut data);
+            let (mut a, mut b) = (data.clone(), data.clone());
+            hw.apply_ctr(&ctr, &mut a);
+            sw.apply_ctr(&ctr, &mut b);
+            assert_eq!(a, b);
+            let (mut a, mut b) = (data.clone(), data);
+            hw.apply_ctr32(&ctr, &mut a);
+            sw.apply_ctr32(&ctr, &mut b);
+            assert_eq!(a, b);
+        }
     }
 
     /// SP 800-38A F.5.1 (CTR-AES128.Encrypt).

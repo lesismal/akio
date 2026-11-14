@@ -17,7 +17,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 | `only-uring` | `#![deny(unsafe_code)]`, allowed in `group`, `reactor` and `ring` only | io_uring submission entries point into memory the kernel writes asynchronously; `ring` is the own io_uring binding (setup/enter/register, mmap'd SQ/CQ rings; no `io-uring` crate) |
 | `only-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
 | `only-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` and `sys` only; the TCP/IP stack (`net`) is `#![forbid(unsafe_code)]` | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts); TAP (`/dev/net/tun`, `TUNSETIFF`) and AF_PACKET sockets through `only_sys::ffi` |
-| `only-crypto` | `#![deny(unsafe_code)]`, allowed in `aes::hw` only | the AES-NI / ARMv8 AES intrinsics (`#[target_feature]` functions), called only after run-time feature detection; the public-key code (field and bignum arithmetic, curves, RSA, DER) is safe Rust |
+| `only-crypto` | `#![deny(unsafe_code)]`, allowed in the five CPU-instruction modules `aes::hw`, `gcm::hw`, `hash::hw`, `crc::hw`, `chacha::hw` only | AES-NI / ARMv8 AES, PCLMULQDQ / PMULL, SHA-NI / ARMv8 SHA, SSE4.2 / ARMv8 CRC32 and AVX2 intrinsics (`#[target_feature]` functions), each call behind the run-time detection of `cpu.rs`; the portable fallbacks and the public-key code (field and bignum arithmetic, curves, RSA, DER) are safe Rust |
 | every other crate (`only`, `only-core`, `only-x509`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-turn`, `only-dtls`, `only-srtp`, `only-rtp`, `only-sctp`, `only-ice`, `only-webrtc`, `only-media`, `tools/echo-bench`, `tools/protobuf-test`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
 Tests, examples and benches are separate crates; they may use `unsafe` for test-only libc calls
@@ -106,6 +106,14 @@ by the sanitizers and the Linux/macOS test suites (epoll and io_uring backends);
 kernel-shared memory logic of io_uring (`BufRing`, `KernelBuf`) has syscall-free unit tests that
 do run under Miri.
 
+Miri does not interpret SIMD intrinsics either: under Miri `only-crypto` detects no CPU feature
+and runs its portable code (`cargo +nightly miri test -p only-crypto --lib -- aes:: gcm:: hash::
+crc:: chacha:: …`). The CPU-instruction modules are checked instead by comparing every hardware
+path with the portable one (unit tests `hardware_matches_portable` / `hardware_matches_table`),
+by running all KATs (NIST CAVP, RFC, Wycheproof) twice, normally and with
+`ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64, and by the differential fuzz targets
+`crypto_hash` and `crypto_aead`.
+
 ## 5. Inventory
 
 Produced by `python3 tools/unsafe-inventory.py --markdown` (library code under `src/`, unit
@@ -118,10 +126,10 @@ contain no `unsafe`.
 | only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
-| only-crypto | 19 | 19 | 0 | 0 |
+| only-crypto | 65 | 59 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **total** | **172** | **29** | **5** | **21** |
+| **total** | **218** | **69** | **5** | **21** |
 
 By purpose:
 
@@ -133,7 +141,11 @@ By purpose:
 | `only-sys/src/process.rs` | 12 | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
 | `only-sys/src/udp.rs` | 14 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
-| `only-crypto/src/aes/hw.rs` | 19, 19 `unsafe fn` (x86_64 and aarch64 variants; 5 for other targets, never called) | AES-NI / ARMv8 AES key schedule, block encryption and decryption (`#[target_feature]` functions and intrinsics) | a `hw::Keys` is only constructed after `is_x86_feature_detected!("aes")` / `is_aarch64_feature_detected!("aes")`; loads and stores are unaligned and stay within 16-byte arrays; `SubWord` in the key schedule uses the AES instruction, no key-indexed table |
+| `only-crypto/src/aes/hw.rs` | 27, 26 `unsafe fn` (x86_64 and aarch64 variants; 6 stubs for other targets, never called) | AES-NI / ARMv8 AES key schedule, block encryption and decryption, CTR eight blocks at a time (round count as a const generic, unrolled) | a `hw::Keys` is only constructed after `cpu::cpu_has(Feature::Aes)` (`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`); loads and stores are unaligned and stay within 16-byte arrays or 16-byte pieces of a `&mut [u8; 128]` chunk; `SubWord` in the key schedule uses the AES instruction, no key-indexed table |
+| `only-crypto/src/gcm/hw.rs` | 17, 17 `unsafe fn` (2 stubs for other targets) | GHASH on PCLMULQDQ / PMULL (eight blocks per reduction, Karatsuba) and AES-GCM encryption/decryption fused into one pass (AES-NI / ARMv8 AES rounds and the carry-less products in the same loop) | `Powers` exist only after `cpu_has(Feature::Clmul)` (PCLMULQDQ + SSSE3 + SSE4.1 / the aarch64 AES extension); the safe wrappers re-check `cpu_has` (and `Feature::Aes` for the fused kernel) before every call; every load reads 16 bytes inside a slice whose length the wrapper made a multiple of 16 (GHASH) or 128 (fused) |
+| `only-crypto/src/hash/hw.rs` | 8, 8 `unsafe fn` (2 stubs) | SHA-1 and SHA-256 compression on SHA-NI (x86_64) and the ARMv8 SHA1/SHA2 instructions | the wrappers call only when `cpu_has(Feature::Sha)` (SHA + SSSE3 + SSE4.1 / `sha2`); loads read 16-byte pieces of the 64-byte chunks of the block slice, the state is loaded from and stored to the live `[u32; 5]` / `[u32; 8]` |
+| `only-crypto/src/crc/hw.rs` | 11, 7 `unsafe fn` | CRC-32 / CRC-32C: PCLMULQDQ folding (four 128-bit accumulators) and the SSE4.2 `crc32` instruction on x86_64, the ARMv8 CRC32 instructions on aarch64 | called only after `cpu_has(Feature::Clmul)` / `cpu_has(Feature::Crc)`; the folding loop reads 16 bytes at offsets `o` with `o + 16 <= len` (checked by the loop conditions), only with `len >= 64`; the fold constants are compile-time functions of the public polynomials |
+| `only-crypto/src/chacha/hw.rs` | 2, 1 `unsafe fn` | ChaCha20 eight blocks at a time with AVX2 (8×8 transpose back into blocks) | called only after `cpu_has(Feature::Avx2)`; loads and stores are 32-byte pieces of a `&mut [u8; 512]`; the counter of the eight blocks cannot wrap (checked by the caller) |
 | `only-sys/src/random.rs` | 2 (one per OS) | `getrandom(2)` (Linux), `getentropy(2)` (macOS) for `only-crypto` | the kernel writes at most `buf.len()` bytes into a live `&mut [u8]` (`getentropy` at most 256 per call); a short `getrandom` read advances by the returned count |
 | `only-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |
 | `only-uring/src/ring.rs` | 16, `unsafe fn push`, `register`, `register_buf_ring` | own io_uring binding: `io_uring_setup`/`enter`/`register` through `syscall(2)`, `mmap` of the SQ/CQ rings and SQE array, SQ/CQ head and tail atomics, probe, enable-rings, buffer-ring registration | offsets from the kernel bounds-checked against each mapping; SQE slot written only when the queue is not full, tail published with `Release`; CQEs read between our head and the `Acquire`-loaded tail, head published with `Release`; `SeqCst` fence before reading `SQ_NEED_WAKEUP` (SQPOLL); mappings live as long as the `Ring` |
@@ -205,7 +217,7 @@ Accepted (documented, no change needed now):
   not move). None of them implements `Sync`.
 - **Kernel-provided data is trusted for layout**: sockaddr family, `cmsg_len`, `msg_len`
   (clamped), CQE buffer ids (now range-checked). This is the kernel ABI contract.
-- **Dependencies with `unsafe`** (`quinn-proto` with `rustls`/`ring` inside it, used by only-quic only) are trusted and tracked with `cargo deny`/`cargo audit`. TLS itself is the own `only-tls` (`#![forbid(unsafe_code)]`, wave C) on `only-crypto` and `only-x509`, so the TLS record and handshake code of every TCP protocol carries no `unsafe` outside `only-crypto`'s AES-instruction module. DEFLATE/zlib/gzip is the
+- **Dependencies with `unsafe`** (`quinn-proto` with `rustls`/`ring` inside it, used by only-quic only) are trusted and tracked with `cargo deny`/`cargo audit`. TLS itself is the own `only-tls` (`#![forbid(unsafe_code)]`, wave C) on `only-crypto` and `only-x509`, so the TLS record and handshake code of every TCP protocol carries no `unsafe` outside `only-crypto`'s CPU-instruction modules. DEFLATE/zlib/gzip is the
   own `only-deflate` (`#![forbid(unsafe_code)]`), which replaced `flate2` with `zlib-rs`. The
   `libc` and `io-uring` crates are gone from the libraries (wave B): `only_sys::ffi` and
   `only-uring`'s `ring` replace them (`libc` stays a dev-dependency, for the layout comparison
