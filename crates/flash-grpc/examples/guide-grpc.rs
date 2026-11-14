@@ -67,9 +67,9 @@ fn main() -> std::io::Result<()> {
     let h2 = H2Client::dial_blocking(&engine, addr, None, H2Options::default())?;
     let client = GrpcClient::new(h2, &format!("http://{addr}"));
     let opts = || {
-        let mut v = CallOptions::default();
-        v.timeout = Some(Duration::from_secs(5));
-        v
+        let mut o = CallOptions::default();
+        o.timeout = Some(Duration::from_secs(5)); // sent as grpc-timeout
+        o
     };
     let mut with_user = opts();
     with_user.metadata = vec![("x-user".into(), "ada".into())];

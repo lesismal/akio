@@ -59,37 +59,40 @@ impl Acceptor for UdpDial {
 
 fn main() -> std::io::Result<()> {
     // ANCHOR: config
+    // `Config` is #[non_exhaustive]: start from the defaults and set what you need.
     let mut cfg = Config::default();
-    cfg.read_buffer = 64 << 10;
-    cfg.backlog = 1024;
+    // Fixed at build time.
+    cfg.read_buffer = 64 << 10; // per I/O thread; on_data sees at most this much
+    cfg.backlog = 1024; // listen(2) backlog
     cfg.udp_idle_timeout = Duration::from_secs(60);
-    cfg.udp_max_peers = Some(100_000);
-    cfg.udp_gro = false;
-    cfg.write_high_watermark = 256 << 10;
-    cfg.max_queued_bytes = 64 << 20;
+    cfg.udp_max_peers = Some(100_000); // None = unlimited
+    cfg.udp_gro = false; // Linux UDP GRO, needs read_buffer >= 64 KiB
+    // Reloadable with Engine::reload.
+    cfg.write_high_watermark = 256 << 10; // pause reads above this many queued bytes
+    cfg.max_queued_bytes = 64 << 20; // send() fails with Overloaded beyond this
     cfg.idle_timeout = Some(Duration::from_secs(300));
     cfg.slow_callback_threshold = Some(Duration::from_millis(10));
     cfg.slow_hook = Some(SlowHook(Arc::new(|s| {
         eprintln!("slow {} on conn {}: {:?}", s.kind, s.conn_id, s.elapsed);
     })));
     cfg.shutdown_timeout = Duration::from_secs(10);
-    cfg.max_connections = 0;
-    cfg.log_level = None;
+    cfg.max_connections = 0; // 0 = unlimited
+    cfg.log_level = None; // Some(LevelFilter) calls log::set_max_level
     let telemetry = cfg.telemetry.clone(); // grab it before build to wire endpoints
     // ANCHOR_END: config
 
     // ANCHOR: listeners
+    let mut pool = PoolConfig::default();
+    pool.min_threads = 0;
+    pool.max_threads = 64;
+    pool.queue_capacity = 65_536;
+    pool.keep_alive = Duration::from_secs(30);
+    let mut steering = EbpfConfig::default();
+    steering.steering = Steering::Cpu;
     let engine = Arc::new(
         Engine::builder()
             .config(cfg.clone())
-            .pool({
-                let mut v = PoolConfig::default();
-                v.min_threads = 0;
-                v.max_threads = 64;
-                v.queue_capacity = 65_536;
-                v.keep_alive = Duration::from_secs(30);
-                v
-            })
+            .pool(pool)
             // epoll (kqueue on macOS), two I/O threads.
             .listen(
                 Listener::tcp("127.0.0.1:0".parse().unwrap())
@@ -101,11 +104,7 @@ fn main() -> std::io::Result<()> {
             .listen(
                 Listener::tcp("127.0.0.1:0".parse().unwrap())
                     .backend(Backend::IoUring(UringConfig::default()))
-                    .accel(Accel::Ebpf({
-                        let mut v = EbpfConfig::default();
-                        v.steering = Steering::Cpu;
-                        v
-                    }))
+                    .accel(Accel::Ebpf(steering))
                     .threads(2)
                     .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
             )

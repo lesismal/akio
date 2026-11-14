@@ -45,13 +45,10 @@ impl WsHandler for Member {
 
 fn chat_app(room: Room) -> Router {
     let mut opts = WsOptions::default();
-    opts.config = {
-        let mut v = WsConfig::default();
-        v.max_message_bytes = 1 << 20;
-        v
-    };
+    opts.config = WsConfig::default(); // permessage-deflate on when the client offers it
+    opts.config.max_message_bytes = 1 << 20;
     opts.protocols = vec!["chat".into()];
-    opts.origin_allowed = None;
+    opts.origin_allowed = None; // e.g. Some(|o| o == "https://example.com")
     Router::new().get("/ws", move |ctx: &mut Context| {
         // Answers 101 and switches the connection, or answers 400/403/426 itself.
         ctx.upgrade_websocket(Member { room: room.clone() }, &opts);
@@ -85,7 +82,7 @@ fn main() -> std::io::Result<()> {
     let url = format!("ws://{}/ws", engine.local_addrs()[0]);
 
     // ANCHOR: dial
-    let mut opts = DialOptions::default();
+    let mut opts = DialOptions::default(); // wss:// needs `tls: Some(Arc<rustls::ClientConfig>)`
     opts.protocols = vec!["chat".into()];
     opts.handshake_timeout = Duration::from_secs(5);
     let (tx, rx) = mpsc::channel();

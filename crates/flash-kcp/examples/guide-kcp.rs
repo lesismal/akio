@@ -34,7 +34,7 @@ fn main() -> std::io::Result<()> {
     // Both sides must agree on crypt and FEC. The key is already derived (kcptun derives it
     // with PBKDF2-SHA1 from the passphrase); "aes" takes 32 bytes.
     let key = [7u8; 32];
-    let mut cfg = KcpConfig::fast();
+    let mut cfg = KcpConfig::fast(); // nodelay, 10 ms interval, fast resend, no congestion control
     cfg.crypt = Some(Arc::new(Crypt::new("aes", &key).expect("crypt")));
     cfg.data_shards = 10;
     cfg.parity_shards = 3;
