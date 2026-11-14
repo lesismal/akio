@@ -9,18 +9,82 @@ use crate::message::{Headers, Request, Response};
 use crate::parse::{ChunkDecoder, parse_head};
 use crate::ws::{Message, WsConfig, WsHandler, WsSender};
 use crate::{BodyEvent, BodyMode, Context, H2Config, HttpConfig, Service, WsOptions};
+use only_ws::http1::Resume;
 
 /// `http1_request`: the request head parser. A complete head must parse to the same result
-/// from exactly its own bytes, and never claim more bytes than it was given.
+/// from exactly its own bytes, and never claim more bytes than it was given. Also, `data[1..]`
+/// fed in growing prefixes cut as `data[0]` says (resumed parsing) must reach the same outcome
+/// as in one go.
 pub fn http1_request(data: &[u8]) {
-    if let Ok(Some((head, n))) = parse_head(data) {
+    if let Ok(Some((head, n))) = parse_head(data, &mut Resume::default()) {
         assert!(n <= data.len());
-        let (again, m) = parse_head(&data[..n])
+        let (again, m) = parse_head(&data[..n], &mut Resume::default())
             .expect("a complete head parses alone")
             .expect("and is complete");
         assert_eq!(m, n);
         assert_eq!(again.target, head.target);
         assert_eq!(again.headers.len(), head.headers.len());
+    }
+    let stream = data.get(1..).unwrap_or_default();
+    let once = parse_head(stream, &mut Resume::default());
+    let mut resume = Resume::default();
+    let mut end = 0;
+    for piece in split(data) {
+        end += piece.len();
+        match parse_head(&stream[..end], &mut resume) {
+            Ok(None) => {}
+            Ok(Some((head, n))) => {
+                let Ok(Some((h, m))) = &once else {
+                    panic!("resumed parsing completed, one-shot did not")
+                };
+                assert_eq!(
+                    (n, &head.target, head.headers.len()),
+                    (*m, &h.target, h.headers.len())
+                );
+                return;
+            }
+            Err(e) => {
+                assert_eq!(once.as_ref().err(), Some(&e), "resumed error differs");
+                return;
+            }
+        }
+    }
+    // Still incomplete: one-shot must not have completed (it may have refused a byte of the
+    // last, unfinished line, which resumed parsing only examines once the line ends).
+    assert!(
+        !matches!(once, Ok(Some(_))),
+        "one-shot finished, resumed parsing did not"
+    );
+}
+
+/// Splits a `regex_match` input: the pattern, then the subjects (NUL-separated, lossy UTF-8).
+pub fn regex_input(data: &[u8]) -> (String, Vec<String>) {
+    let mut parts = data.split(|&b| b == 0);
+    let pattern = String::from_utf8_lossy(parts.next().unwrap_or_default()).into_owned();
+    let subjects = parts
+        .take(16)
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    (pattern, subjects)
+}
+
+/// `regex_match`: the route constraint engine (`crate::re`). Compiling must not panic, and for
+/// small patterns the bit-parallel simulation must agree with the general one. (The cargo-fuzz
+/// target also compares the outcome with the `regex` crate.)
+pub fn regex_match(data: &[u8]) {
+    if data.len() > 4096 {
+        return;
+    }
+    let (pattern, subjects) = regex_input(data);
+    let Ok(re) = crate::re::Regex::new(&pattern) else {
+        return;
+    };
+    for s in std::iter::once("").chain(subjects.iter().map(String::as_str)) {
+        assert_eq!(
+            re.is_match(s),
+            re.pike_match(s),
+            "engines disagree on {pattern:?} / {s:?}"
+        );
     }
 }
 
@@ -63,19 +127,37 @@ fn decode_chunked(pieces: &[&[u8]], max: usize) -> Decoded {
 }
 
 /// `hpack`: the HPACK decoder as the HTTP/2 server configures it. `data[0]` splits the input
-/// into two header blocks decoded in sequence (the dynamic table carries over).
+/// into two header blocks decoded in sequence (the dynamic table carries over). Whatever decodes
+/// must survive a round trip through the encoder (with and without Huffman coding), and the
+/// limited decoder must agree with the plain one.
 pub fn hpack(data: &[u8]) {
     let Some((&cut, rest)) = data.split_first() else {
         return;
     };
     let cut = usize::from(cut).min(rest.len());
-    let mut dec = loona_hpack::Decoder::new();
-    dec.set_max_allowed_table_size(4096);
+    let mut dec = crate::hpack::Decoder::new();
+    let mut lim = crate::hpack::Decoder::new();
+    let mut enc = [crate::hpack::Encoder::new(), crate::hpack::Encoder::new()];
+    enc[1].set_huffman(false);
+    let mut back = [crate::hpack::Decoder::new(), crate::hpack::Decoder::new()];
     for block in [&rest[..cut], &rest[cut..]] {
-        let mut total = 0usize;
-        let r = dec.decode_with_cb(block, |n, v| total += n.len() + v.len() + 32);
-        if r.is_err() {
+        let r = dec.decode(block);
+        let limited = lim.decode_limited(block, 256);
+        let Ok(list) = r else {
+            assert!(limited.is_err(), "limited decoding accepted a bad block");
             return;
+        };
+        let (kept, size) = limited.expect("limited decoding refused a good block");
+        assert_eq!(
+            size,
+            list.iter()
+                .map(|(n, v)| n.len() + v.len() + 32)
+                .sum::<usize>()
+        );
+        assert_eq!(kept[..], list[..kept.len()]);
+        for (e, d) in enc.iter_mut().zip(&mut back) {
+            let wire = e.encode(list.iter().map(|(n, v)| (&n[..], &v[..])));
+            assert_eq!(d.decode(&wire).expect("own encoding decodes"), list);
         }
     }
 }
@@ -330,7 +412,7 @@ pub(crate) mod seeds {
 
     fn h2_request(sid: u32) -> Vec<u8> {
         let mut out = Vec::new();
-        let mut enc = loona_hpack::Encoder::new();
+        let mut enc = crate::hpack::Encoder::new();
         let block = enc.encode([
             (&b":method"[..], &b"POST"[..]),
             (b":scheme", b"http"),
@@ -345,7 +427,7 @@ pub(crate) mod seeds {
 
     pub(crate) fn h2_server() -> Vec<Vec<u8>> {
         let mut v = Vec::new();
-        let mut enc = loona_hpack::Encoder::new();
+        let mut enc = crate::hpack::Encoder::new();
         let get = enc.encode([
             (&b":method"[..], &b"GET"[..]),
             (b":scheme", b"https"),
@@ -392,6 +474,23 @@ pub(crate) mod seeds {
         v
     }
 
+    /// Route-style patterns with matching and non-matching subjects.
+    pub(crate) fn regex_match() -> Vec<Vec<u8>> {
+        let cases: [&[u8]; 10] = [
+            b"[0-9]+\x0042\x0042x\x00",
+            b"\\d{4}-\\d{2}\x002026-11\x002026-1",
+            b"0x[0-9a-f]+\x000x1f\x000x",
+            b"(?:ab|a)(bc|c)*\x00abc\x00abcbc\x00ac",
+            b"[^/]+\x00h\xc3\xa9llo\x00a/b",
+            b"(a|aa)*b{0,3}c?\x00aaaaaaaaaaaaaaaaaaaaaaa\x00aabbbc",
+            b"[\\w.-]+@[\\w-]+\\.[a-z]{2,6}\x00a.b@c-d.io\x00a@b",
+            b"^v[0-9]+(\\.[0-9]+){0,2}$\x00v1.2.3\x00v1.2.3.4",
+            b"[a-c]{70}|x{1,100}\x00xxxx\x00abc",
+            b".*\\S\x00 x\x00 \n",
+        ];
+        cases.iter().map(|c| c.to_vec()).collect()
+    }
+
     pub(crate) fn http1_client() -> Vec<Vec<u8>> {
         let resp: [&[u8]; 8] = [
             b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello",
@@ -431,6 +530,7 @@ mod tests {
         n += replay(DIR, "http1_client", http1_client);
         n += replay(DIR, "http1_server", http1_server);
         n += replay(DIR, "h2_server", h2_server);
+        n += replay(DIR, "regex_match", regex_match);
         assert!(n > 0, "no corpus found under fuzz/corpus");
     }
 
@@ -454,13 +554,16 @@ mod tests {
         for s in &seeds::h2_server() {
             h2_server(s);
         }
+        for s in &seeds::regex_match() {
+            regex_match(s);
+        }
     }
 
     /// Regression: a handler that pushes from every request (including pushed ones) used to
     /// recurse without bound (stack overflow) and sent PUSH_PROMISE on server-initiated streams.
     #[test]
     fn push_from_a_pushed_stream_is_refused() {
-        let mut enc = loona_hpack::Encoder::new();
+        let mut enc = crate::hpack::Encoder::new();
         let block = enc.encode([
             (&b":method"[..], &b"GET"[..]),
             (b":scheme", b"http"),
@@ -492,7 +595,7 @@ mod tests {
                 let _ = &guard;
             });
         });
-        let mut enc = loona_hpack::Encoder::new();
+        let mut enc = crate::hpack::Encoder::new();
         let block = enc.encode([
             (&b":method"[..], &b"POST"[..]),
             (b":scheme", b"http"),
@@ -524,5 +627,6 @@ mod tests {
         write_target_seeds(DIR, "http1_client", &seeds::http1_client());
         write_target_seeds(DIR, "http1_server", &seeds::http1_server());
         write_target_seeds(DIR, "h2_server", &seeds::h2_server());
+        write_target_seeds(DIR, "regex_match", &seeds::regex_match());
     }
 }

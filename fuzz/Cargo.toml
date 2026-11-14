@@ -43,6 +43,10 @@ only-protobuf = { path = "../crates/only-protobuf" }
 # Generated test messages and the prost mirror for the differential target `protobuf_diff`.
 protobuf-test = { path = "../tools/protobuf-test" }
 prost = "0.13"
+# Reference implementations for the differential targets (the libraries no longer use them).
+httparse = "1"
+loona-hpack = "0.4"
+regex = "1"
 
 [profile.release]
 debug = 1
@@ -344,6 +348,13 @@ bench = false
 [[bin]]
 name = "protobuf_diff"
 path = "fuzz_targets/protobuf_diff.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "regex_match"
+path = "fuzz_targets/regex_match.rs"
 test = false
 doc = false
 bench = false

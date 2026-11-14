@@ -11,7 +11,7 @@ Path segments:
 | Pattern | Matches | Parameter |
 |---|---|---|
 | `users` | exactly that segment | – |
-| `{id:[0-9]+}` | one whole segment matching the regexp (default `regex` feature) | `id` |
+| `{id:[0-9]+}` | one whole segment matching the regexp | `id` |
 | `:id` or `{id}` | any one segment | `id` |
 | `*rest` or `{*rest}` | everything after, last segment only | `rest` |
 
@@ -19,6 +19,24 @@ Precedence is **static > regexp > parameter > wildcard**, with backtracking: if 
 fails further down, the parameter branch is tried. Lookups are allocation-free (about 30 ns for a
 52-route GitHub-style table in `examples/router-bench.rs`). `Router::lookup(method, path)` gives
 the match without dispatching.
+
+Regexp parameters use a small built-in engine: the expression must match the whole segment, and
+matching takes time linear in the segment length (no backtracking, so no pathological patterns).
+Supported syntax, with the meaning it has in the `regex` crate:
+
+- literals (any Unicode character), `.` (any character but newline), `^` / `$`;
+- classes `[a-z0-9_]`, `[^/]` with ranges, negation and escapes; `]` first and `-` first or last
+  are literal;
+- `\d`, `\w`, `\s` and `\D`, `\W`, `\S`, **ASCII only** (`[0-9]`, `[0-9A-Za-z_]`,
+  `[\t\n\x0B\x0C\r ]`: segments are matched as sent, percent-encoded);
+- escapes `\n \t \r \f \v \a`, `\x41`, `\x{1F600}`, `\u0041`, `\u{41}`, `\U0001F600`, and any escaped
+  ASCII punctuation (`\.`, `\-`, `\{` ...);
+- groups `(...)`, `(?:...)`, `(?P<name>...)`, `(?<name>...)` (nothing is captured), alternation
+  `|`, quantifiers `*`, `+`, `?`, `{m}`, `{m,}`, `{m,n}` (counts up to 1000) and their lazy forms.
+
+Anything else (flags such as `(?i)`, `\b` and other assertions, `\p{L}`, backreferences, POSIX
+classes `[[:alpha:]]`, class set operations `&&` `--` `~~`) is refused at registration with a
+message naming the problem. The `regex` cargo feature of earlier versions no longer does anything.
 
 Behaviour:
 

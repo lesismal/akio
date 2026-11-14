@@ -15,18 +15,16 @@ categories = ["network-programming", "web-programming::http-server", "web-progra
 [dependencies]
 only-core = { workspace = true }
 only = { workspace = true }
-httparse = "1"
 log = { version = "0.4.21", features = ["kv"] }
 only-crypto = { workspace = true }
-loona-hpack = "0.4"
 only-ws = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-regex = { version = "1", optional = true }
 
 [features]
 default = ["regex"]
-## Regexp route parameters (`/users/{id:[0-9]+}`).
-regex = ["dep:regex"]
+## Kept for compatibility, does nothing: regexp route parameters (`/users/{id:[0-9]+}`) are
+## always available (an in-house engine replaced the `regex` crate in 1.0).
+regex = []
 # Fuzz entry points for `fuzz/` (`only_http::fuzzing`); not a public API.
 fuzzing = ["only-core/fuzzing"]
 

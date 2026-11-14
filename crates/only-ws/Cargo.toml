@@ -18,7 +18,6 @@ only-buf = { workspace = true }
 only-crypto = { workspace = true }
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 only = { workspace = true }
-httparse = "1"
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_ws::fuzzing`); not a public API.

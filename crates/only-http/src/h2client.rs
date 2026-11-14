@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use loona_hpack::{Decoder, Encoder};
+use crate::hpack::{Decoder, Encoder};
 use only::{
     Acceptor, Conn, Engine, Handler,
     tls::{ClientConfig as TlsClientConfig, Tls},
@@ -338,8 +338,8 @@ struct CStream {
 pub struct H2Conn {
     opts: H2Options,
     rbuf: Vec<u8>,
-    dec: Decoder<'static>,
-    enc: Encoder<'static>,
+    dec: Decoder,
+    enc: Encoder,
     streams: HashMap<u32, CStream>,
     next_id: u32,
     conn_send: i64,
@@ -688,10 +688,7 @@ impl H2Conn {
         block: Vec<u8>,
         end_stream: bool,
     ) {
-        let Some(list) = crate::hpack::strip_huffman(&block)
-            .ok()
-            .and_then(|b| self.dec.decode(&b).ok())
-        else {
+        let Ok(list) = self.dec.decode(&block) else {
             return self.conn_error(c, err::COMPRESSION, "bad header block");
         };
         if let Some(pid) = promised {

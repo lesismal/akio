@@ -5,7 +5,7 @@
 //!
 //! 1. static: `users`;
 //! 2. regexp parameter: `{id:[0-9]+}` (chi style; the expression must match the whole segment
-//!    and cannot contain `/`; needs the default `regex` feature);
+//!    and cannot contain `/`; the in-house linear-time engine in `crate::re`);
 //! 3. plain parameter: `:id` or `{id}` (one non-empty segment);
 //! 4. wildcard: `*rest` or `{*rest}`, last segment only, matching the rest of the path (possibly
 //!    empty).
@@ -119,13 +119,12 @@ impl Params {
     }
 }
 
-#[cfg(feature = "regex")]
-struct Matcher(regex::Regex);
+/// A regexp parameter's constraint (the in-house engine, `crate::re`).
+struct Matcher(crate::re::Regex);
 
-#[cfg(feature = "regex")]
 impl Matcher {
     fn new(src: &str, path: &str) -> Matcher {
-        match regex::Regex::new(&format!("^(?:{src})$")) {
+        match crate::re::Regex::new(src) {
             Ok(re) => Matcher(re),
             Err(e) => panic!("bad parameter regexp in {path}: {e}"),
         }
@@ -133,20 +132,6 @@ impl Matcher {
 
     fn is_match(&self, seg: &str) -> bool {
         self.0.is_match(seg)
-    }
-}
-
-#[cfg(not(feature = "regex"))]
-struct Matcher;
-
-#[cfg(not(feature = "regex"))]
-impl Matcher {
-    fn new(_src: &str, path: &str) -> Matcher {
-        panic!("regexp route parameters need only-http's `regex` feature: {path}")
-    }
-
-    fn is_match(&self, _seg: &str) -> bool {
-        false
     }
 }
 
@@ -315,7 +300,7 @@ impl Router {
     ///
     /// # Panics
     /// On a duplicate route, a parameter name that conflicts with a sibling, a wildcard that is
-    /// not last, or an invalid regexp (or any regexp without the `regex` feature).
+    /// not last, or an invalid or unsupported regexp (syntax: the routing chapter of the guide).
     #[must_use]
     pub fn route(mut self, method: Method, path: &str, svc: impl Service) -> Router {
         self.insert(method, path.to_owned(), Arc::new(svc));
@@ -685,7 +670,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "regex")] // regexp parameters need the `regex` feature
     #[test]
     fn regexp_params_sit_between_static_and_plain() {
         let nop = |_: &mut Context| {};
@@ -823,7 +807,6 @@ mod tests {
         let _ = Router::new().get("/a/:x", nop).get("/a/:y/b", nop);
     }
 
-    #[cfg(feature = "regex")] // regexp parameters need the `regex` feature
     #[test]
     #[should_panic(expected = "parameter name conflict")]
     fn conflicting_regexp_param_names_panic() {
@@ -833,20 +816,11 @@ mod tests {
             .get("/a/{y:[0-9]+}/b", nop);
     }
 
-    #[cfg(feature = "regex")] // regexp parameters need the `regex` feature
     #[test]
     #[should_panic(expected = "bad parameter regexp")]
     fn invalid_regexp_panics() {
         let nop = |_: &mut Context| {};
         let _ = Router::new().get("/a/{x:[0-9}", nop);
-    }
-
-    #[test]
-    #[cfg(not(feature = "regex"))]
-    #[should_panic(expected = "need only-http's `regex` feature")]
-    fn regexp_params_without_the_feature_panic() {
-        let nop = |_: &mut Context| {};
-        let _ = Router::new().get("/a/{x:[0-9]+}", nop);
     }
 
     #[test]

@@ -1,4 +1,6 @@
-//! Sans-io request parsing: the head (via `httparse`) and chunked bodies.
+//! Sans-io request parsing: the head (via `only_ws::http1`) and chunked bodies.
+
+use only_ws::http1::{self, Header, Resume};
 
 use crate::message::{Headers, Method, Version};
 
@@ -22,43 +24,45 @@ pub(crate) enum ParseError {
 }
 
 /// Parses a head from `buf`. `Ok(None)`: incomplete. `Ok(Some((head, n)))`: `n` bytes consumed.
-pub(crate) fn parse_head(buf: &[u8]) -> Result<Option<(Head, usize)>, ParseError> {
+/// `resume` carries the progress over calls on the same growing buffer (see [`Resume`]).
+pub(crate) fn parse_head(
+    buf: &[u8],
+    resume: &mut Resume,
+) -> Result<Option<(Head, usize)>, ParseError> {
     const MAX_HEADERS: usize = 100;
-    let mut storage = [httparse::EMPTY_HEADER; MAX_HEADERS];
-    let mut req = httparse::Request::new(&mut storage);
-    match req.parse(buf) {
-        Ok(httparse::Status::Complete(n)) => {
-            let version = match req.version {
-                Some(0) => Version::Http10,
-                Some(1) => Version::Http11,
-                _ => return Err(ParseError::Version),
-            };
-            let bytes = req
-                .headers
-                .iter()
-                .map(|h| h.name.len() + h.value.len())
-                .sum();
-            let mut headers = Headers::with_capacity(req.headers.len(), bytes);
-            for h in req.headers.iter() {
-                // Header values must be text we can hand out as `&str`.
-                let v = std::str::from_utf8(h.value).map_err(|_| ParseError::Bad)?;
-                headers.append(h.name, v.trim());
-            }
-            Ok(Some((
-                Head {
-                    method: Method::parse(req.method.ok_or(ParseError::Bad)?),
-                    target: req.path.ok_or(ParseError::Bad)?.to_owned(),
-                    version,
-                    headers,
-                },
-                n,
-            )))
-        }
-        Ok(httparse::Status::Partial) => Ok(None),
-        Err(httparse::Error::TooManyHeaders) => Err(ParseError::TooManyHeaders),
-        Err(httparse::Error::Version) => Err(ParseError::Version),
-        Err(_) => Err(ParseError::Bad),
+    let mut storage = [Header::EMPTY; MAX_HEADERS];
+    let req = match http1::parse_request(buf, &mut storage, resume) {
+        Ok(http1::Status::Complete(r)) => r,
+        Ok(http1::Status::Partial) => return Ok(None),
+        Err(http1::Error::TooManyHeaders) => return Err(ParseError::TooManyHeaders),
+        Err(http1::Error::Version) => return Err(ParseError::Version),
+        Err(_) => return Err(ParseError::Bad),
+    };
+    let version = if req.minor == 0 {
+        Version::Http10
+    } else {
+        Version::Http11
+    };
+    let bytes = req
+        .headers
+        .iter()
+        .map(|h| h.name.len() + h.value.len())
+        .sum();
+    let mut headers = Headers::with_capacity(req.headers.len(), bytes);
+    for h in req.headers {
+        // Header values must be text we can hand out as `&str`.
+        let v = std::str::from_utf8(h.value).map_err(|_| ParseError::Bad)?;
+        headers.append(h.name, v);
     }
+    Ok(Some((
+        Head {
+            method: Method::parse(req.method),
+            target: req.target.to_owned(),
+            version,
+            headers,
+        },
+        req.len,
+    )))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -116,13 +120,13 @@ impl ChunkDecoder {
     /// Trailer fields received after the last chunk.
     pub(crate) fn trailers(&self) -> Headers {
         let mut h = Headers::new();
-        let mut storage = [httparse::EMPTY_HEADER; 32];
-        if let Ok(httparse::Status::Complete((_, parsed))) =
-            httparse::parse_headers(&self.trailer, &mut storage)
+        let mut storage = [Header::EMPTY; 32];
+        if let Ok(http1::Status::Complete((_, parsed))) =
+            http1::parse_fields(&self.trailer, &mut storage)
         {
             for t in parsed {
                 if let Ok(v) = std::str::from_utf8(t.value) {
-                    h.append(t.name, v.trim());
+                    h.append(t.name, v);
                 }
             }
         }
@@ -296,22 +300,26 @@ mod tests {
         );
     }
 
+    fn parse_head_once(b: &[u8]) -> Result<Option<(Head, usize)>, ParseError> {
+        parse_head(b, &mut Resume::default())
+    }
+
     #[test]
     fn head_parsing() {
         let wire = b"POST /x?y=1 HTTP/1.1\r\nHost: a\r\nContent-Length:  3 \r\n\r\nabc";
-        let (h, n) = parse_head(wire).unwrap().unwrap();
+        let (h, n) = parse_head(wire, &mut Resume::default()).unwrap().unwrap();
         assert_eq!(h.method, Method::Post);
         assert_eq!(h.target, "/x?y=1");
         assert_eq!(h.version, Version::Http11);
         assert_eq!(h.headers.get("content-length"), Some("3"));
         assert_eq!(&wire[n..], b"abc");
-        assert!(parse_head(b"GET / HT").unwrap().is_none());
+        assert!(parse_head_once(b"GET / HT").unwrap().is_none());
         assert_eq!(
-            parse_head(b"GET / HTTP/2.0\r\n\r\n").unwrap_err(),
+            parse_head_once(b"GET / HTTP/2.0\r\n\r\n").unwrap_err(),
             ParseError::Version
         );
         assert_eq!(
-            parse_head(b"GE\x01T / HTTP/1.1\r\n\r\n").unwrap_err(),
+            parse_head_once(b"GE\x01T / HTTP/1.1\r\n\r\n").unwrap_err(),
             ParseError::Bad
         );
         let mut many = String::from("GET / HTTP/1.1\r\n");
@@ -320,7 +328,7 @@ mod tests {
         }
         many.push_str("\r\n");
         assert_eq!(
-            parse_head(many.as_bytes()).unwrap_err(),
+            parse_head_once(many.as_bytes()).unwrap_err(),
             ParseError::TooManyHeaders
         );
     }

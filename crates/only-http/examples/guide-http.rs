@@ -104,7 +104,7 @@ fn hits(state: Arc<AppState>) -> impl Fn(&mut Context) + Send + Sync + 'static {
 fn app(static_dir: &str, state: Arc<AppState>) -> Router {
     let api = Router::new()
         .get("/users/:id", user) // plain parameter
-        .get("/orders/{id:[0-9]+}", user) // regexp parameter (default `regex` feature)
+        .get("/orders/{id:[0-9]+}", user) // regexp parameter
         .post("/upload", Streaming(upload)); // streamed request body
     let admin = Router::new().get("/stats", hello).layer(auth); // only admin routes need auth
     Router::new()

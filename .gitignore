@@ -3,3 +3,4 @@
 Cargo.lock.bak
 *.profraw
 /tools/bench-ref/*/target
+/tools/codec-bench/target

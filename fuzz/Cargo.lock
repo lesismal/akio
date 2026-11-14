@@ -854,7 +854,9 @@ dependencies = [
  "crc32fast",
  "ctr",
  "hmac",
+ "httparse",
  "libfuzzer-sys",
+ "loona-hpack",
  "md-5",
  "only-arpc",
  "only-bittorrent",
@@ -873,6 +875,7 @@ dependencies = [
  "only-ws",
  "prost",
  "protobuf-test",
+ "regex",
  "sha1",
  "sha2",
 ]
@@ -903,14 +906,11 @@ name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
  "flate2",
- "httparse",
  "log",
- "loona-hpack",
  "only",
  "only-core",
  "only-crypto",
  "only-ws",
- "regex",
 ]
 
 [[package]]
@@ -1027,7 +1027,6 @@ name = "only-ws"
 version = "1.0.0-rc.1"
 dependencies = [
  "flate2",
- "httparse",
  "only",
  "only-buf",
  "only-core",

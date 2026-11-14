@@ -11,8 +11,8 @@ use std::{
     time::Duration,
 };
 
-use loona_hpack::{Decoder, Encoder};
 use only::{Config, Engine};
+use only_http::hpack::{Decoder, Encoder};
 use only_http::{
     client::{ClientError, ClientRequest},
     h2client::{H2Client, H2Event, H2Options},
@@ -44,8 +44,8 @@ struct Frame {
 /// The fake server side of one connection.
 struct Srv {
     s: TcpStream,
-    enc: Encoder<'static>,
-    dec: Decoder<'static>,
+    enc: Encoder,
+    dec: Decoder,
 }
 
 impl Srv {

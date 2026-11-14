@@ -77,6 +77,38 @@ Raw access moved behind new `unstable` cargo features (`only`, `only-tls`, `only
   BitTorrent info hashes and MSE, SRT key wrap and AES-CTR, RTMP digest handshake, SRTP).
 - `only-sys` (internal, `#[doc(hidden)]`): `fill_random` over `getrandom(2)` / `getentropy(2)`
   with a `/dev/urandom` fallback.
+### Changed: in-house HTTP codecs (no more httparse, loona-hpack, regex)
+
+DEV-PLAN "no third-party dependencies", wave A. The public API is unchanged.
+
+- HTTP/1 head parsing (only-http requests, chunked trailers and client responses, only-ws client
+  handshake responses) uses an in-house parser, `only_ws::http1` (`#[doc(hidden)]`): zero-copy,
+  incremental (a head arriving in many reads is scanned once instead of re-parsed from the start
+  on every read; the session also stops copying the buffered bytes on every read) and strict per
+  RFC 9110/9112: token methods and field names, visible-ASCII request targets (non-ASCII bytes,
+  which httparse let through, are now 400), exactly one SP between request-line elements, a bare
+  CR, whitespace before a colon or the first field and obsolete line folding are rejected (also
+  in responses), CRLF or bare LF line ends. Header values are no longer `str::trim`med (only
+  SP/HTAB around them are removed, as RFC 9110 says). Speed is on par with httparse (SIMD) using
+  word-at-a-time scanning in safe code (`tools/codec-bench`).
+- HPACK is in-house (`only_http::hpack`, `#[doc(hidden)]`): encoder with dynamic table, Huffman
+  coding when not longer, never-indexed literals for `authorization` / `proxy-authorization` /
+  short `cookie`s and the table size updates RFC 7541 §4.2 requires after the peer changes
+  `SETTINGS_HEADER_TABLE_SIZE` (loona-hpack sent none); decoder with dynamic table, size updates
+  only at the start of a block and within our setting, 32-bit integers, and a header list limit
+  applied while decoding (the whole block is still processed so the table stays in step); the
+  Huffman decoder walks 4 bits at a time. RFC 7541 Appendix C vectors pass both ways; h2spec
+  147/147.
+- Route constraints (`{id:[0-9]+}`) use an in-house linear-time engine (`only_http::re`): literals,
+  `.`, classes with ranges/negation/escapes, ASCII `\d \w \s` (and negations), groups (named
+  ones too, nothing is captured), `|`, `* + ? {m} {m,} {m,n}` with lazy variants, `^`/`$`;
+  unsupported syntax (flags, `\b`, `\p{..}`, backreferences, POSIX classes, class set
+  operations, counts above 1000) panics at registration naming the problem. Regexp parameters are
+  always available; the `regex` cargo feature of only-http is kept as a no-op for compatibility.
+- Fuzzing: `http1_request` / `http1_client` compare the head parser with httparse, `hpack` with
+  loona-hpack (both directions of encode/decode too), new `regex_match` with the `regex` crate;
+  those crates remain only as dependencies of `fuzz/` and of the `tools/codec-bench` micro
+  benchmarks (both outside the library workspace).
 
 ### Added
 

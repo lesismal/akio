@@ -3,8 +3,8 @@
 # SECURITY.md. Every exception below carries the reason it is accepted.
 
 [graph]
-# Check every platform only supports, and every feature (optional deps such as prost, regex
-# and echo-bench's `tls` included).
+# Check every platform only supports, and every feature (optional deps such as prost and
+# echo-bench's `tls` included).
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
@@ -77,11 +77,9 @@ skip = [
     { crate = "rand_core@0.9", reason = "rand 0.9 (str0m, dimpl)" },
     { crate = "getrandom@0.3", reason = "rand_core 0.9 (str0m, dimpl)" },
     { crate = "chacha20@0.9", reason = "chacha20poly1305 0.10 via dimpl 0.7" },
-    # loona-hpack 0.4 (HPACK) still uses thiserror 1; quinn-proto uses thiserror 2.
-    { crate = "thiserror@1", reason = "loona-hpack 0.4" },
-    { crate = "thiserror-impl@1", reason = "loona-hpack 0.4" },
-    # Proc-macro build-time only: thiserror-impl 1 / 2 on syn 2 / 3.
-    { crate = "syn@2", reason = "thiserror-impl 1 (build time only)" },
+    # Proc-macro build-time only: der_derive (RustCrypto, via only-webrtc) on syn 2, thiserror-impl 2
+    # on syn 3.
+    { crate = "syn@2", reason = "der_derive 0.7 (build time only)" },
     # smoltcp 0.12 (only-dpdk) uses bitflags 1; everything else is on bitflags 2. smoltcp 0.13+
     # moved on but needs Rust 1.91 > MSRV.
     { crate = "bitflags@1", reason = "smoltcp 0.12 (only-dpdk); newer smoltcp needs Rust 1.91" },

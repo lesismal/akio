@@ -88,8 +88,8 @@ flowchart BT
 - **`unsafe` is confined** to `only-sys`, `only-uring` (ring and buffer-ring memory), `only-ebpf` (raw `bpf(2)`), `only-dpdk` (the DPDK FFI) and `only-crypto`'s AES-instruction module,
   each block with a `SAFETY:` comment. The other crates are `#![forbid(unsafe_code)]` or contain
   no `unsafe` code.
-- **Sans-io protocol cores**: HTTP/1 parsing (httparse for the head, an own chunked decoder),
-  HTTP/2 framing and HPACK (loona-hpack), WebSocket framing and permessage-deflate, KCP, QPACK
+- **Sans-io protocol cores**: HTTP/1 parsing (own zero-copy incremental head parser and chunked
+  decoder), HTTP/2 framing and HPACK (own), WebSocket framing and permessage-deflate, KCP, QPACK
   and HTTP/3 framing are state machines fed bytes by `only`; TLS is rustls, QUIC is
   quinn-proto and WebRTC is str0m, all driven sans-io (ADR-005) and hidden behind `only`'s own
   types, so they can be upgraded or replaced without breaking the API (docs/api-stability.md).

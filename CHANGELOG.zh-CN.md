@@ -73,6 +73,29 @@ rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保
   WebSocket accept key；BitTorrent info hash 与 MSE；SRT 密钥包装与 AES-CTR；RTMP digest 握手；SRTP）。
 - `only-sys`（内部，`#[doc(hidden)]`）：基于 `getrandom(2)` / `getentropy(2)` 的 `fill_random`，
   回退到 `/dev/urandom`。
+### 变更：自研 HTTP 编解码（不再依赖 httparse、loona-hpack、regex）
+
+DEV-PLAN“长期：去除第三方依赖”第 A 波。公开 API 不变。
+
+- HTTP/1 头部解析（only-http 的请求、chunked trailer 与客户端响应，only-ws 客户端握手响应）改用自研解析器
+  `only_ws::http1`（`#[doc(hidden)]`）：零拷贝；增量（分多次读到的头部只扫描一遍，不再每次读都从头重新解析；
+  会话也不再每次读都复制已缓存的字节）；按 RFC 9110/9112 严格校验：方法与字段名必须是 token，请求目标必须是
+  可见 ASCII（httparse 放行的非 ASCII 字节现在返回 400），请求行各元素之间恰好一个 SP，拒绝孤立 CR、冒号前
+  或首个字段前的空白以及过时的折行（响应中同样拒绝），行尾接受 CRLF 或单独 LF。头部值不再做 `str::trim`
+  （按 RFC 9110 只去掉两侧的 SP/HTAB）。速度与 httparse（SIMD）相当，用的是安全代码中的按字扫描
+  （`tools/codec-bench`）。
+- HPACK 改为自研（`only_http::hpack`，`#[doc(hidden)]`）：编码器带动态表，Huffman 编码不更长时使用，
+  `authorization` / `proxy-authorization` / 较短的 `cookie` 用 never-indexed 字面量，对端修改
+  `SETTINGS_HEADER_TABLE_SIZE` 后按 RFC 7541 §4.2 发送动态表大小更新（loona-hpack 从不发送）；解码器带动态表，
+  大小更新只允许出现在头部块开头且不超过我方设置，整数不超过 32 位，解码过程中即应用头部列表大小限制（整个块
+  仍会处理完，使动态表保持同步）；Huffman 解码每次处理 4 位。RFC 7541 附录 C 的向量双向通过；h2spec 147/147。
+- 路由约束（`{id:[0-9]+}`）改用自研线性时间引擎（`only_http::re`）：字面量、`.`、带范围/取反/转义的字符类、
+  ASCII 的 `\d \w \s`（及其取反）、分组（含命名分组，不做捕获）、`|`、`* + ? {m} {m,} {m,n}` 及其惰性形式、
+  `^`/`$`；不支持的语法（标志、`\b`、`\p{..}`、反向引用、POSIX 字符类、字符类集合运算、超过 1000 的计数）
+  在注册时 panic 并指出问题。正则参数始终可用；only-http 的 `regex` cargo feature 保留为空操作以保持兼容。
+- 模糊测试：`http1_request` / `http1_client` 将头部解析器与 httparse 对比，`hpack` 与 loona-hpack 对比（编解码
+  双向互通），新增的 `regex_match` 与 `regex` crate 对比；这些 crate 只作为 `fuzz/` 与 `tools/codec-bench`
+  微基准（都在库的 workspace 之外）的依赖保留。
 
 ### 新增
 
