@@ -177,7 +177,12 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - 回调名保持各协议自己的术语（QUIC 的 `on_connected`、WebSocket 的 `on_open` 等）
 
 ### 长期目标：去掉所有三方依赖
-- [ ] 逐个自研库中用到的所有三方依赖（以自研 TLS 1.2/1.3 与密码学原语替代 rustls/ring/aws-lc，自研 QUIC 替代 quinn-proto，HPACK，自研 protobuf 运行时替代 prost，自研 WebRTC 栈替代 str0m/dimpl，自研用户态 TCP/IP 栈替代 smoltcp，deflate/zlib、regex、`log` 等），每一项保持相同的公开 API，并以互通与模糊测试作为门禁；在本节跟踪清单与顺序
+- [ ] 逐个自研库中用到的所有三方依赖，每一项保持相同的公开 API（API 快照不变），以已知答案测试向量、互通与模糊测试作为门禁。顺序（每一波依赖前一波）：
+  - [ ] 第 A 波：`only-crypto`（SHA-1/2、MD5、HMAC、HKDF、PBKDF2、CRC32、AES、CTR、GCM、ChaCha20-Poly1305、base64、系统随机数）替代 sha1/sha2/md-5/hmac/pbkdf2/aes/aes-gcm/ctr/crc32fast/base64/getrandom；自研 HTTP/1 解析、HPACK 与正则引擎替代 httparse/loona-hpack/regex；自研 deflate/zlib/gzip 替代 flate2；自研用户态 TCP/IP 栈替代 smoltcp；自研 protobuf 运行时替代 prost
+  - [ ] 第 B 波：公钥密码学（X25519、P-256 ECDH/ECDSA、Ed25519、RSA PKCS#1/PSS 验签）与 ASN.1/X.509；自研日志门面替代 `log`（可选 `log` 桥接）；自研系统调用与 io_uring 绑定替代 libc/io-uring
+  - [ ] 第 C 波：自研 TLS 1.2/1.3 与 DTLS 替代 rustls（及 ring）
+  - [ ] 第 D 波：自研 QUIC 替代 quinn-proto（及 bytes）；自研 WebRTC 栈（ICE、DTLS-SRTP、SCTP、RTP/RTCP）替代 str0m/dimpl/p256
+  - 仅测试用的工具（loom、rcgen 等）最后替换，或保留
 
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。

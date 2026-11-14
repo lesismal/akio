@@ -177,7 +177,12 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 - Callback names stay domain-specific (`on_connected` for QUIC, `on_open` for WebSocket, …)
 
 ### Long term: no third-party dependencies
-- [ ] Implement in-house, one by one, every third-party dependency the libraries use (TLS 1.2/1.3 and the crypto primitives instead of rustls/ring/aws-lc, QUIC instead of quinn-proto, HPACK, protobuf runtime instead of prost, the WebRTC stack instead of str0m/dimpl, the userspace TCP/IP stack instead of smoltcp, deflate/zlib, regex, `log`, …), each behind the same public API, with interop and fuzzing as gates; track the list and the order in this section
+- [ ] Implement in-house, one by one, every third-party dependency the libraries use, each behind the same public API (API snapshots unchanged), with known-answer test vectors, interop and fuzzing as gates. Order (each wave builds on the previous):
+  - [ ] Wave A: `only-crypto` (SHA-1/2, MD5, HMAC, HKDF, PBKDF2, CRC32, AES, CTR, GCM, ChaCha20-Poly1305, base64, OS randomness) replacing sha1/sha2/md-5/hmac/pbkdf2/aes/aes-gcm/ctr/crc32fast/base64/getrandom; own HTTP/1 parser, HPACK and regex engine replacing httparse/loona-hpack/regex; own deflate/zlib/gzip replacing flate2; own userspace TCP/IP stack replacing smoltcp; own protobuf runtime replacing prost
+  - [ ] Wave B: public-key crypto (X25519, P-256 ECDH/ECDSA, Ed25519, RSA PKCS#1/PSS verify) and ASN.1/X.509; own logging facade replacing `log` (optional `log` bridge); own syscall and io_uring bindings replacing libc/io-uring
+  - [ ] Wave C: own TLS 1.2/1.3 and DTLS replacing rustls (and ring)
+  - [ ] Wave D: own QUIC replacing quinn-proto (and bytes); own WebRTC stack (ICE, DTLS-SRTP, SCTP, RTP/RTCP) replacing str0m/dimpl/p256
+  - Test-only tools (loom, rcgen, …) are replaced last, if ever
 
 ## 4. Engineering rules
 - **Branches/commits**: `main` stays releasable; feature branches + PRs; Conventional Commits.
