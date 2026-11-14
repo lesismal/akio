@@ -153,16 +153,16 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - **交付**：`examples/h3`、`examples/kcp`、eBPF 加速 benchmark
 
 ### M6 DPDK + 生产化（6–8 周）
-- [ ] `flash-dpdk`：EAL 初始化、mbuf 收发、用户态 TCP/IP 栈选型与集成（先 UDP，再 TCP）、与 Engine 线程组对接
+- [x] `flash-dpdk`（实验性）：在 flash I/O 线程上运行 smoltcp 用户态 TCP/IP 协议栈；按 `EalConfig` 初始化 EAL，每个 rx/tx 队列一个线程，经 C shim 批量收发 mbuf，RSS 并扇出 ARP；另支持 TAP、AF_PACKET 与内存链路。`Backend::Dpdk(DpdkConfig)` 位于 `dpdk`/`dpdk-pmd` feature 之后；支持 UDP/TCP listener 与 `dial`/`dial_udp`；flash-kcp 无需修改即可运行。已在 Docker 中与 Linux 内核协议栈互测（DPDK `net_tap` 单/双队列、TAP、veth 上的 AF_PACKET）；重型 CI 任务 `dpdk`。未完成：IPv6、IP 分片与卸载、多队列拨号、SACK/拥塞控制、真实网卡基准
 - [x] 生产化：每个 I/O 线程的 relaxed 计数器（连接、字节、读写次数、UDP 数据报、发送队列字节、背压/过载、TLS 握手失败、循环迭代/事件/回调耗时、慢回调）及池统计，`Engine::metrics()` 输出 Prometheus 文本或 JSON；基于 `log` 门面的结构化日志（带键值，无 logger 时回退 stderr，`Config::log_level`）；运行时调试：由事件循环收集的连接表、慢回调环形缓冲、线程循环统计；flash-http 提供 `metrics_handler`、`HttpMetrics`（状态码分类、延迟直方图）、`access_log`、可用 token 保护的 `debug_handler`；`Engine::reload`/`Live` 热更新（空闲超时、慢回调阈值/钩子、队列上限、高水位、新增 `max_connections`、关闭超时、日志级别）。未完成：`tracing` feature、读缓冲/backlog/线程数/UDP 空闲超时的热更新、按路由的 HTTP 标签、在空闲机器上测量开销
 - [x] 混沌测试：为引擎（`flash/tests/chaos.rs`）、fd 耗尽（`chaos_fd.rs`）、TLS（`chaos_tls.rs`）和 HTTP/WebSocket（`flash-http/tests/chaos.rs`）新增带种子、可复现的测试：RST 中断、半关闭、慢读与不读客户端、逻辑池饱和、EMFILE、负载下关闭；校验 `on_close` 恰好一次、无卡死、队列有界、无 fd 泄漏。默认只跑少量种子，`FLASH_CHAOS=1 FLASH_CHAOS_SECS=300` 进行浸泡（macOS、Linux epoll 与 io_uring 均无违规）。修复的 bug：EOF 截断未完成的有序响应；超限有序响应被静默丢弃；epoll 在 EMFILE 时空转；io_uring 漏掉数据之后的 RST；io_uring 可能复用仍被未提交 SQE 引用的 fd
-- [ ] Prefork（可选）
+- [x] Prefork（可选）：`flash-prefork`：supervisor 以 N 个 worker 重新执行二进制，各自运行 `Engine`；监听套接字经 SO_REUSEPORT 共享（Linux 默认）或继承（macOS 默认，重启/重载期间不拒绝连接）；崩溃退避重启、SIGTERM/SIGINT 排空、SIGHUP/`Supervisor::reload` 切换代际、pdeathsig、CPU 绑核；新增 `Listener::tcp_from_std`。未完成：基于 bpffs 的跨进程 eBPF 分流；ReusePort 重载需要 `tcp_migrate_req`
 - **交付**：长稳（≥72h）报告
 
 ### M7 重型协议（开放）
-- [ ] 流媒体（RTMP/RTSP/SRT/FLV/HLS/WHIP/WHEP + hub）
-- [ ] WebRTC（ICE/DTLS-SRTP/DataChannel/TURN）
-- [ ] BitTorrent（metainfo/tracker/peer wire/uTP/DHT/MSE）
+- [x] 流媒体（`flash-media`）：统一 hub（GOP 缓存、慢播放者丢帧至关键帧、鉴权钩子、重推等待、时间戳规整、统计）；RTMP 服务端（digest 握手、Enhanced RTMP H.265/Opus）、HTTP-FLV、WS-FLV、HLS（MPEG-TS、LL-HLS 分片、阻塞式刷新）、RTSP 服务端（TCP/UDP、推流/播放、Digest 鉴权）、SRT live（ARQ、TSBPD、AES、推/拉流）、WHIP/WHEP 信令；每个协议均与 ffmpeg/ffprobe 互通；9 个 fuzz 目标。未完成：fMP4 HLS、加密、RTMP/RTSP 客户端、SRT rendezvous、hub 中的 WebRTC 媒体
+- [x] WebRTC（`flash-webrtc`、`flash-turn`）：在 flash UDP 上运行 str0m 0.24，使用纯 Rust 加密实现；ICE-lite 的 `RtcServer` 与完整 ICE 的 `Endpoint`（新增 `Engine::bind_udp`），DTLS-SRTP、SCTP 数据通道、带 NACK/PLI/TWCC 的 RTP/RTCP；STUN 编解码/服务器与 TURN 服务器（长期与 REST 凭据、通道、EVEN-PORT、配额）。与 pion（双向，含经 flash TURN）、fib、pion/turn、coturn 互通；3 个 fuzz 目标。未完成：TCP/TLS 上的 TURN、`Endpoint` 的 TURN 客户端、ICE-TCP、mDNS
+- [x] BitTorrent（`flash-bittorrent`）：bencode、v1 种子与磁力链接、HTTP/UDP tracker（客户端与服务端）、带 Fast 扩展/ut_metadata/PEX/MSE-RC4 的 peer wire、带 LEDBAT 的 uTP、主线 DHT、客户端（最稀有优先、残局、choke、存储走逻辑池）；新增 `Engine::dial_udp_from`。与 libtorrent 2.0.11、aria2 1.37 互通 15/15；6 个 fuzz 目标。未完成：BEP 52（v2/混合）、web seed、LSD、BEP 44、IPv6 DHT、限速与分享率限制
 - 各自独立 crate、独立 README 与测试；视社区与精力并行推进。
 
 ### 1.0 稳定化
@@ -170,6 +170,14 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] 全量 fuzz 语料与覆盖率报告、`cargo-audit/deny`、unsafe 审查清单。模糊测试：`fuzz/` cargo-fuzz 工程 21 个目标（HTTP/1、HTTP/2 + HPACK、WebSocket、arpc、gRPC、SOCKS、mux、KCP、HTTP/3 + QPACK、cBPF），最小化语料约 2.6 MB 由 stable 单元测试回放，每个目标在 Linux 上约 14 分钟，每夜 CI 任务；修复 HTTP/2 死锁、递归 server push、gRPC `grpc-timeout` panic/溢出、KCP RTT 溢出、SOCKS 缓冲无上限。供应链：`deny.toml` + `.cargo/audit.toml`，`cargo deny`/`cargo audit` 通过并作为 CI 门禁（一个仅开发依赖的通告带理由忽略，直到 MSRV 1.88）。unsafe：仅限 flash-sys、flash-uring、flash-ebpf，其余 crate 全部 `forbid(unsafe_code)`，缺少安全注释即报错，CI 运行清单 `--check`（`docs/unsafe-review.md`、`SECURITY.md`）；修复 12 个问题（含 `RecvBatch` 堆溢出、io_uring 缓冲区别名及在途操作未结束即释放、bpf(2) 键/值大小未校验）。Miri 扩展到协议 crate，在 zlib-rs 0.6.8 中发现 UB（待向上游报告）。未完成：首次运行 ASan/TSan（已加入重型 CI 任务）
 - [x] CI 加固与覆盖率：严格 lint 集（`missing_docs` deny、`unreachable_pub`、库代码 `unwrap_used`、精选 pedantic/nursery），rustdoc `-D warnings`；矩阵：Linux x86_64/arm64 × epoll/io_uring、macOS（尽力而为）、MSRV 1.85、cargo-hack 特性组合、Miri、loom、Autobahn（服务端+客户端）、h2spec、文档书构建与 Pages 部署、重任务（Go 互通、每夜 fuzz）；统一的 `ci-ok` 门禁。覆盖率任务（cargo-llvm-cov，两种后端合并）：行覆盖率 85.9% → 91.6%，每个 crate ≥ 85%。顺带修复：flash-quic 在方向错误的流上 panic、15 处持锁调用回调、`--no-default-features` 测试编译、两处测试竞态。尚未在 GitHub 上实际运行验证（Pages 设置、fib 检出、Codecov）
 - [x] 文档站 + 迁移指南 + 架构文档：mdBook `book/en` 与 `book/zh-CN`（快速上手、核心概念、每个协议一章、配置参考、可观测性与热更新、性能调优、故障排查），由 `book/build.sh` 构建；所有代码片段来自 14 个可运行的 `guide-*` 示例；从 fib、tokio、hyper/axum 迁移的指南；带 Mermaid 图的 `docs/architecture.md`；各 crate 的 rustdoc 链接到对应章节；根目录 README。未完成：Pages 部署、在 Linux 上运行这些示例
+
+### 1.0.0 发布决定（2026-11-14）
+- [ ] 项目更名为 **only**：crate 改为 `only`、`only-core`、`only-http` 等（crates.io 上 `flash` 已被占用），涉及代码、文档、手册、工具与 CI
+- [ ] 将尚未 1.0 的公开依赖（rustls、quinn-proto、prost、str0m）封装在项目自己的类型之后，原始访问只在 `unstable` feature 中提供，使升级它们不再是破坏性变更
+- 回调名保持各协议自己的术语（QUIC 的 `on_connected`、WebSocket 的 `on_open` 等）
+
+### 长期目标：去掉所有三方依赖
+- [ ] 逐个自研库中用到的所有三方依赖（以自研 TLS 1.2/1.3 与密码学原语替代 rustls/ring/aws-lc，自研 QUIC 替代 quinn-proto，HPACK，自研 protobuf 运行时替代 prost，自研 WebRTC 栈替代 str0m/dimpl，自研用户态 TCP/IP 栈替代 smoltcp，deflate/zlib、regex、`log` 等），每一项保持相同的公开 API，并以互通与模糊测试作为门禁；在本节跟踪清单与顺序
 
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。
