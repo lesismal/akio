@@ -15,6 +15,7 @@ use crate::{
 
 /// Limits and options of the HTTP server.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct HttpConfig {
     /// Largest request head (request line + headers) accepted; else 431.
     pub max_header_bytes: usize,

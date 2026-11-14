@@ -34,7 +34,7 @@ handler 在 I/O 线程上执行，不能阻塞。
 {{#include ../../../../crates/flash-arpc/examples/guide-arpc.rs:client}}
 ```
 
-`flash_arpc::dial(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
+`flash_arpc::dial_blocking(&engine, addr, routes)` 阻塞到第一个连接建立（最多 10 s），之后每秒
 **自动重连**，直到调用 `Peer::close()`。
 
 `Peer`（可克隆，可在任何线程使用）：

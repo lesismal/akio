@@ -9,7 +9,7 @@ use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use flash::{Engine, Listener};
-use flash_kcp::{Config, Crypt, KcpError, KcpHandler, KcpServer, Session};
+use flash_kcp::{Crypt, KcpConfig, KcpError, KcpHandler, KcpServer, Session};
 
 fn crypt(name: &str) -> Option<Arc<Crypt>> {
     let key = match name {
@@ -41,19 +41,15 @@ impl KcpHandler for Collect {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let addr = a[2].parse().expect("addr");
-    let cfg = Config {
-        crypt: crypt(&a[3]),
-        data_shards: a[4].parse().expect("data shards"),
-        parity_shards: a[5].parse().expect("parity shards"),
-        send_window: 256,
-        recv_window: 256,
-        ..Config::fast()
-    };
+    let mut cfg = KcpConfig::fast();
+    cfg.crypt = crypt(&a[3]);
+    cfg.data_shards = a[4].parse().expect("data shards");
+    cfg.parity_shards = a[5].parse().expect("parity shards");
+    cfg.send_window = 256;
+    cfg.recv_window = 256;
     if a[1] == "server" {
-        let cfg = Config {
-            write_queue: 1 << 20,
-            ..cfg
-        };
+        let mut cfg = cfg;
+        cfg.write_queue = 1 << 20;
         let server = KcpServer::new(cfg, |_s: &Session| Echo).expect("config");
         let e = Engine::builder()
             .listen(Listener::udp(addr).serve(server))

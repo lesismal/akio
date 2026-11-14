@@ -11,7 +11,7 @@
 //!
 //! ```no_run
 //! use flash::{Engine, Listener};
-//! use flash_kcp::{Config, KcpHandler, KcpServer, Session};
+//! use flash_kcp::{KcpConfig, KcpHandler, KcpServer, Session};
 //!
 //! struct Echo;
 //! impl KcpHandler for Echo {
@@ -19,7 +19,7 @@
 //!         let _ = s.send(&msg);
 //!     }
 //! }
-//! let server = KcpServer::new(Config::fast(), |_s: &Session| Echo).unwrap();
+//! let server = KcpServer::new(KcpConfig::fast(), |_s: &Session| Echo).unwrap();
 //! let engine = Engine::builder()
 //!     .listen(Listener::udp("0.0.0.0:4000".parse().unwrap()).serve(server))
 //!     .build()
@@ -55,7 +55,8 @@ use frame::Framer;
 
 /// A session's settings; both sides should agree on the KCP knobs, and must on FEC and crypt.
 #[derive(Debug, Clone)]
-pub struct Config {
+#[non_exhaustive]
+pub struct KcpConfig {
     /// KCP `nodelay`: 0 normal, 1 fast retransmission timing.
     pub nodelay: i32,
     /// Internal update interval in milliseconds (10..=5000; KCP's default is 100).
@@ -87,10 +88,10 @@ pub struct Config {
     pub write_queue: usize,
 }
 
-impl Default for Config {
+impl Default for KcpConfig {
     /// The reference implementation's normal mode.
-    fn default() -> Config {
-        Config {
+    fn default() -> KcpConfig {
+        KcpConfig {
             nodelay: 0,
             interval: 100,
             resend: 0,
@@ -108,23 +109,24 @@ impl Default for Config {
     }
 }
 
-impl Config {
+impl KcpConfig {
     /// kcptun's "fast3": nodelay, 10 ms interval, resend after 2, no congestion control.
-    pub fn fast() -> Config {
-        Config {
+    pub fn fast() -> KcpConfig {
+        KcpConfig {
             nodelay: 1,
             interval: 10,
             resend: 2,
             no_congestion: true,
-            ..Config::default()
+            ..KcpConfig::default()
         }
     }
 
-    fn validate(&self) -> Result<(), String> {
-        let fr = Framer::new(self.data_shards, self.parity_shards).ok_or("bad FEC shard counts")?;
+    fn validate(&self) -> std::io::Result<()> {
+        let fr = Framer::new(self.data_shards, self.parity_shards)
+            .ok_or_else(|| invalid_input("bad FEC shard counts".into()))?;
         let ovh = fr.overhead(self.crypt.as_deref());
         if self.mtu < kcp::OVERHEAD + ovh + 1 || self.mtu > 1500 {
-            return Err("MTU out of range for the framing".into());
+            return Err(invalid_input("MTU out of range for the framing".into()));
         }
         Ok(())
     }
@@ -132,10 +134,11 @@ impl Config {
 
 /// Why a session closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CloseReason {
     /// [`Session::close`] closed it.
     Closed,
-    /// A segment went unacknowledged through `Config::dead_link` transmissions.
+    /// A segment went unacknowledged through `KcpConfig::dead_link` transmissions.
     DeadLink,
     /// The peer started a new conversation from the same address.
     Replaced,
@@ -156,6 +159,7 @@ pub trait KcpHandler: Send + 'static {
 
 /// Session statistics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Stats {
     /// Segments sent for the first time.
     pub sent: u64,
@@ -179,7 +183,7 @@ struct State {
 }
 
 struct Shared {
-    cfg: Config,
+    cfg: KcpConfig,
     conv: u32,
     remote: SocketAddr,
     epoch: Instant,
@@ -202,7 +206,7 @@ impl std::fmt::Debug for Session {
 
 impl Session {
     fn new(
-        cfg: &Config,
+        cfg: &KcpConfig,
         conv: u32,
         remote: SocketAddr,
         owner: Option<Arc<ServerShared>>,
@@ -273,7 +277,7 @@ impl Session {
     }
 
     /// Queues a message and sends what KCP allows right away. Fails with `KcpError::Closed`
-    /// once closed, `KcpError::Full` when `Config::write_queue` segments wait, or as KCP's send.
+    /// once closed, `KcpError::Full` when `KcpConfig::write_queue` segments wait, or as KCP's send.
     pub fn send(&self, msg: &[u8]) -> Result<(), KcpError> {
         let mut st = lock(&self.0.state);
         if st.closed.is_some() {
@@ -543,7 +547,7 @@ fn ticker() -> &'static Ticker {
 type Factory = dyn Fn(&Session) -> Box<dyn KcpHandler> + Send + Sync;
 
 struct ServerShared {
-    cfg: Config,
+    cfg: KcpConfig,
     factory: Box<Factory>,
     max_sessions: usize,
     sessions: AtomicUsize,
@@ -562,7 +566,8 @@ impl std::fmt::Debug for KcpServer {
 
 impl KcpServer {
     /// A server whose sessions get handlers from `factory`.
-    pub fn new<H: KcpHandler, F>(cfg: Config, factory: F) -> Result<KcpServer, String>
+    /// Fails with `InvalidInput` when `cfg` is inconsistent (FEC shards, MTU).
+    pub fn new<H: KcpHandler, F>(cfg: KcpConfig, factory: F) -> std::io::Result<KcpServer>
     where
         F: Fn(&Session) -> H + Send + Sync + 'static,
     {
@@ -691,11 +696,11 @@ impl Acceptor for Client {
 pub fn dial<H: KcpHandler>(
     engine: &flash::Engine,
     addr: SocketAddr,
-    cfg: Config,
+    cfg: KcpConfig,
     handler: H,
-) -> Result<Session, String> {
+) -> std::io::Result<Session> {
     let mut b = [0u8; 4];
-    getrandom::getrandom(&mut b).map_err(|e| e.to_string())?;
+    getrandom::getrandom(&mut b).map_err(|e| std::io::Error::other(e.to_string()))?;
     dial_conv(engine, addr, u32::from_le_bytes(b), cfg, handler)
 }
 
@@ -704,9 +709,9 @@ pub fn dial_conv<H: KcpHandler>(
     engine: &flash::Engine,
     addr: SocketAddr,
     conv: u32,
-    cfg: Config,
+    cfg: KcpConfig,
     handler: H,
-) -> Result<Session, String> {
+) -> std::io::Result<Session> {
     cfg.validate()?;
     let s = Session::new(&cfg, conv, addr, None);
     *lock(&s.0.handler) = Some(Box::new(handler));
@@ -715,4 +720,9 @@ pub fn dial_conv<H: KcpHandler>(
         failed.close_with(CloseReason::Transport);
     });
     Ok(s)
+}
+
+/// An `InvalidInput` error with `msg`.
+pub(crate) fn invalid_input(msg: String) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, msg)
 }

@@ -44,14 +44,14 @@ impl WsHandler for Member {
 }
 
 fn chat_app(room: Room) -> Router {
-    let opts = WsOptions {
-        config: WsConfig {
-            max_message_bytes: 1 << 20,
-            ..WsConfig::default() // permessage-deflate on when the client offers it
-        },
-        protocols: vec!["chat".into()],
-        origin_allowed: None, // e.g. Some(|o| o == "https://example.com")
+    let mut opts = WsOptions::default();
+    opts.config = {
+        let mut v = WsConfig::default();
+        v.max_message_bytes = 1 << 20;
+        v
     };
+    opts.protocols = vec!["chat".into()];
+    opts.origin_allowed = None;
     Router::new().get("/ws", move |ctx: &mut Context| {
         // Answers 101 and switches the connection, or answers 400/403/426 itself.
         ctx.upgrade_websocket(Member { room: room.clone() }, &opts);
@@ -85,14 +85,12 @@ fn main() -> std::io::Result<()> {
     let url = format!("ws://{}/ws", engine.local_addrs()[0]);
 
     // ANCHOR: dial
-    let opts = DialOptions {
-        protocols: vec!["chat".into()],
-        handshake_timeout: Duration::from_secs(5),
-        ..DialOptions::default() // wss:// needs `tls: Some(Arc<rustls::ClientConfig>)`
-    };
+    let mut opts = DialOptions::default();
+    opts.protocols = vec!["chat".into()];
+    opts.handshake_timeout = Duration::from_secs(5);
     let (tx, rx) = mpsc::channel();
-    let alice = client::connect(&engine, &url, &opts, Printer(tx.clone())).expect("alice");
-    let _bob = client::connect(&engine, &url, &opts, Printer(tx)).expect("bob");
+    let alice = client::dial_blocking(&engine, &url, &opts, Printer(tx.clone())).expect("alice");
+    let _bob = client::dial_blocking(&engine, &url, &opts, Printer(tx)).expect("bob");
     assert_eq!(alice.subprotocol().as_deref(), Some("chat"));
     alice.send_text("hi all").expect("send");
     // ANCHOR_END: dial

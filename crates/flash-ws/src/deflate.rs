@@ -4,12 +4,24 @@ use flate2::{Compress, Compression, Decompress, FlushCompress, FlushDecompress, 
 
 /// What went wrong inflating a message.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InflateError {
     /// The decompressed size exceeds the message limit.
     TooBig,
     /// The data is not valid deflate.
     Corrupt,
 }
+
+impl std::fmt::Display for InflateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            InflateError::TooBig => "inflated message too big",
+            InflateError::Corrupt => "corrupt deflate data",
+        })
+    }
+}
+
+impl std::error::Error for InflateError {}
 
 /// Decompresses messages.
 #[derive(Debug)]
@@ -127,6 +139,7 @@ impl Deflater {
 
 /// Parameters agreed in the handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PmdParams {
     /// The server compresses without history.
     pub server_no_context_takeover: bool,
@@ -153,6 +166,7 @@ impl Default for PmdParams {
 
 /// What a client puts in its `permessage-deflate` offer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PmdOffer {
     /// Promise not to use context takeover when compressing (`client_no_context_takeover`):
     /// less memory on the server, worse compression.

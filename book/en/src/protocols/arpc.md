@@ -35,7 +35,7 @@ one shared encoded frame; `peers()` lists them.
 {{#include ../../../../crates/flash-arpc/examples/guide-arpc.rs:client}}
 ```
 
-`flash_arpc::dial(&engine, addr, routes)` blocks until the first connection is up (10 s at most)
+`flash_arpc::dial_blocking(&engine, addr, routes)` blocks until the first connection is up (10 s at most)
 and then **keeps reconnecting** every second until `Peer::close()`.
 
 `Peer` (cloneable, any thread):

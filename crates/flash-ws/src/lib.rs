@@ -27,6 +27,6 @@ mod session;
 mod timer;
 
 pub use session::{
-    INTERNAL_ERROR, Message, PreparedMessage, WsConfig, WsHandler, WsSender, WsSession, accept_key,
+    Message, PreparedMessage, WsConfig, WsHandler, WsSender, WsSession, accept_key,
     select_subprotocol, valid_key,
 };

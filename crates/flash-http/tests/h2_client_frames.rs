@@ -166,7 +166,7 @@ fn setup(
             .unwrap(),
     );
     e.start().unwrap();
-    let c = H2Client::connect_blocking(&e, addr, None, opts).unwrap();
+    let c = H2Client::dial_blocking(&e, addr, None, opts).unwrap();
     (e, c, t)
 }
 
@@ -333,10 +333,8 @@ fn push_promise_is_refused_when_push_is_disabled() {
 
 #[test]
 fn push_promise_split_with_continuation_and_reset_push() {
-    let opts = H2Options {
-        enable_push: true,
-        ..H2Options::default()
-    };
+    let mut opts = H2Options::default();
+    opts.enable_push = true;
     let (e, c, t) = setup(opts, |srv| {
         let (sid, _) = srv.request();
         // A padded PUSH_PROMISE whose block continues in a CONTINUATION frame.

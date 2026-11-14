@@ -116,10 +116,8 @@ fn start(name: &str) -> Server {
         .unwrap();
     // The server offers h2 too; these clients ask for http/1.1 only.
     scfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    let cfg = HttpConfig {
-        max_body_bytes: 16 << 20,
-        ..HttpConfig::default()
-    };
+    let mut cfg = HttpConfig::default();
+    cfg.max_body_bytes = 16 << 20;
     let engine = Engine::builder()
         .config({
             let mut v = Config::default();

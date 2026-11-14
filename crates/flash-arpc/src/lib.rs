@@ -130,7 +130,7 @@ impl Routes {
 
     /// Longest body (method + payload) accepted; longer closes the connection. Default 64 MiB.
     #[must_use]
-    pub fn max_body(mut self, n: usize) -> Routes {
+    pub fn max_body_bytes(mut self, n: usize) -> Routes {
         self.max_body = Some(n);
         self
     }
@@ -138,6 +138,7 @@ impl Routes {
 
 /// Why a call failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CallError {
     /// The peer answered with an error (its text).
     Remote(String),
@@ -833,7 +834,11 @@ impl Acceptor for Attach {
 
 /// Connects to an arpc server and keeps reconnecting (every second) until [`Peer::close`].
 /// Blocks until the first connection is up (10 s at most).
-pub fn dial(engine: &Arc<Engine>, addr: SocketAddr, routes: Arc<Routes>) -> io::Result<Peer> {
+pub fn dial_blocking(
+    engine: &Arc<Engine>,
+    addr: SocketAddr,
+    routes: Arc<Routes>,
+) -> io::Result<Peer> {
     let er = EngineRef::new();
     er.set(engine);
     let peer = Peer(Arc::new(PeerInner {

@@ -136,14 +136,14 @@ fn main() -> std::io::Result<()> {
     std::fs::write(dir.join("hello.txt"), "a static file\n")?;
 
     // ANCHOR: serve
-    let http = HttpConfig {
-        max_header_bytes: 64 << 10,
-        max_body_bytes: 1 << 20, // buffered bodies; streamed ones are unlimited
-        h2: Some(H2Config {
-            max_concurrent_streams: 256,
-            ..H2Config::default()
-        }), // None = HTTP/1 only
-    };
+    let mut http = HttpConfig::default();
+    http.max_header_bytes = 64 << 10;
+    http.max_body_bytes = 1 << 20;
+    http.h2 = Some({
+        let mut v = H2Config::default();
+        v.max_concurrent_streams = 256;
+        v
+    });
     let engine = Arc::new(
         Engine::builder()
             .listen(
@@ -210,7 +210,7 @@ fn main() -> std::io::Result<()> {
 
     // ANCHOR: h2client
     // HTTP/2 with prior knowledge on the same port; many requests share one connection.
-    let h2 = H2Client::connect_blocking(&engine, addr, None, H2Options::default())?;
+    let h2 = H2Client::dial_blocking(&engine, addr, None, H2Options::default())?;
     let futures: Vec<_> = (0..4)
         .map(|i| h2.send(ClientRequest::get(&format!("{base}/api/users/{i}"))))
         .collect();

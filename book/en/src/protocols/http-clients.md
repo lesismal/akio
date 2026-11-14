@@ -30,7 +30,7 @@ name resolution off the calling thread (resolution happens in `send`/`request` a
 {{#include ../../../../crates/flash-http/examples/guide-http.rs:h2client}}
 ```
 
-- `H2Client::connect(engine, addr, tls, opts, ready)` or `connect_blocking(engine, addr, tls,
+- `H2Client::dial(engine, addr, tls, opts, ready)` or `connect_blocking(engine, addr, tls,
   opts)`. `tls = None` is prior-knowledge cleartext HTTP/2; `Some((cfg, server_name))` uses TLS
   and needs `h2` in `cfg.alpn_protocols`.
 - One connection multiplexes every request; `H2Client` is cheap to clone and usable from any

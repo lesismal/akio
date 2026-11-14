@@ -28,6 +28,7 @@ const MAX_FRAGMENTS: usize = 256;
 
 /// KCP errors.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KcpError {
     /// A segment of another conversation.
     Conv,
@@ -111,7 +112,7 @@ pub struct Kcp {
     acklist: Vec<(u32, u32)>,
     buffer: Vec<u8>,
     /// Segments sent, retransmitted, fast-retransmitted; loss events.
-    pub stats: [u64; 4],
+    pub(crate) stats: [u64; 4],
 }
 
 impl std::fmt::Debug for Kcp {

@@ -108,7 +108,7 @@ run your tokio runtime as usual. Call `engine.shutdown()` from your tokio shutdo
 
 Things to avoid:
 
-- calling blocking waits (`ResponseFuture::wait`, `client::connect`, `GrpcClient::unary`) from
+- calling blocking waits (`ResponseFuture::wait`, `client::dial_blocking`, `GrpcClient::unary`) from
   inside a tokio task: use `.await` where available, or `spawn_blocking`;
 - calling those blocking helpers on a flash I/O thread: they can deadlock waiting for the very
   thread they block;

@@ -107,10 +107,8 @@ fn app() -> Router {
 }
 
 fn start_with(h2: H2Config) -> Arc<Engine> {
-    let cfg = HttpConfig {
-        h2: Some(h2),
-        ..HttpConfig::default()
-    };
+    let mut cfg = HttpConfig::default();
+    cfg.h2 = Some(h2);
     let e = Arc::new(
         Engine::builder()
             .config({
@@ -756,11 +754,12 @@ fn data_frames_padding_closed_streams_and_trailers() {
 
 #[test]
 fn limits_refuse_streams_and_oversized_bodies() {
-    let e = start_with(H2Config {
-        max_concurrent_streams: 1,
-        max_header_list: 200,
-        max_body_bytes: 1000,
-        ..H2Config::default()
+    let e = start_with({
+        let mut v = H2Config::default();
+        v.max_concurrent_streams = 1;
+        v.max_header_list = 200;
+        v.max_body_bytes = 1000;
+        v
     });
     let mut p = Peer::open(&e, &[]);
     p.request(1, "GET", "/slow", true);

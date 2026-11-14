@@ -27,6 +27,7 @@ pub trait Service: Send + Sync + 'static {
 
 /// How a request body reaches the service.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BodyMode {
     /// Fully received (and size-limited) before `call`; the body is `ctx.body()`.
     Buffered,
@@ -217,6 +218,7 @@ pub(crate) struct PendingUpgrade {
 
 /// Options for [`Context::upgrade_websocket`].
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct WsOptions {
     /// Message limits and compression.
     pub config: WsConfig,

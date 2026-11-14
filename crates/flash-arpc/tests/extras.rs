@@ -13,7 +13,7 @@ use std::{
 };
 
 use flash::{Config, Engine, Listener};
-use flash_arpc::{CallError, Routes, Server, StreamEvent, dial};
+use flash_arpc::{CallError, Routes, Server, StreamEvent, dial_blocking};
 
 fn engine(server: Option<Server>) -> Arc<Engine> {
     let mut b = Engine::builder()
@@ -110,7 +110,7 @@ fn metadata_detached_errors_and_awaiting() {
             let _ = tx.lock().unwrap().send("disconnected".into());
         });
     let e = engine(Some(Server::new(Arc::new(routes))));
-    let peer = dial(&e, e.local_addrs()[0], Arc::new(Routes::new())).unwrap();
+    let peer = dial_blocking(&e, e.local_addrs()[0], Arc::new(Routes::new())).unwrap();
     assert!(peer.peer_addr().is_some());
 
     assert_eq!(
@@ -166,12 +166,12 @@ fn metadata_detached_errors_and_awaiting() {
 
 #[test]
 fn oversized_bodies_close_the_connection() {
-    let routes = Routes::new().max_body(64).handle("/echo", |ctx| {
+    let routes = Routes::new().max_body_bytes(64).handle("/echo", |ctx| {
         let b = ctx.body().to_vec();
         ctx.write(&b);
     });
     let e = engine(Some(Server::new(Arc::new(routes))));
-    let peer = dial(&e, e.local_addrs()[0], Arc::new(Routes::new())).unwrap();
+    let peer = dial_blocking(&e, e.local_addrs()[0], Arc::new(Routes::new())).unwrap();
     assert_eq!(peer.call("/echo", b"small", None).wait().unwrap(), b"small");
     assert_eq!(
         peer.call("/echo", &[0u8; 1000], Some(Duration::from_secs(5)))
@@ -192,6 +192,6 @@ fn errors_format_and_dial_failures() {
         l.local_addr().unwrap()
     };
     let e = engine(None);
-    assert!(dial(&e, port, Arc::new(Routes::new())).is_err());
+    assert!(dial_blocking(&e, port, Arc::new(Routes::new())).is_err());
     stop(&e);
 }

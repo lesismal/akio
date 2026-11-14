@@ -9,7 +9,7 @@ use std::{
 };
 
 use flash::{Engine, Listener};
-use flash_kcp::{Config, Crypt, KcpHandler, KcpServer, Session};
+use flash_kcp::{Crypt, KcpConfig, KcpHandler, KcpServer, Session};
 
 // ANCHOR: server
 struct Echo;
@@ -34,12 +34,10 @@ fn main() -> std::io::Result<()> {
     // Both sides must agree on crypt and FEC. The key is already derived (kcptun derives it
     // with PBKDF2-SHA1 from the passphrase); "aes" takes 32 bytes.
     let key = [7u8; 32];
-    let cfg = Config {
-        crypt: Some(Arc::new(Crypt::new("aes", &key).expect("crypt"))),
-        data_shards: 10,
-        parity_shards: 3,
-        ..Config::fast() // nodelay, 10 ms interval, fast resend, no congestion control
-    };
+    let mut cfg = KcpConfig::fast();
+    cfg.crypt = Some(Arc::new(Crypt::new("aes", &key).expect("crypt")));
+    cfg.data_shards = 10;
+    cfg.parity_shards = 3;
     let server = KcpServer::new(cfg.clone(), |_s: &Session| Echo)
         .map_err(std::io::Error::other)?
         .max_sessions(10_000);

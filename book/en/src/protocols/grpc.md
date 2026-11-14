@@ -40,7 +40,7 @@ Serving it: `flash_http::serve(grpc)` on its own, or as the `fallback` (or a rou
 {{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:client}}
 ```
 
-- `GrpcClient::new(h2_client, base_url)`; `.gzip(true)` compresses requests.
+- `GrpcClient::new(h2_client, base_url)`; `.compress(true)` compresses requests.
 - `unary(path, msg, CallOptions) -> Result<Vec<u8>, Status>` blocks the calling thread (do not
   call it on an I/O thread).
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` for streaming calls, also blocking.

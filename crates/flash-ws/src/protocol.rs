@@ -80,12 +80,21 @@ pub enum Event {
 
 /// A protocol violation; the connection should be closed with `code`.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ProtocolError {
     /// The close status to send.
     pub code: u16,
     /// What went wrong.
     pub reason: &'static str,
 }
+
+impl std::fmt::Display for ProtocolError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "websocket protocol error {}: {}", self.code, self.reason)
+    }
+}
+
+impl std::error::Error for ProtocolError {}
 
 fn err(code: u16, reason: &'static str) -> ProtocolError {
     ProtocolError { code, reason }

@@ -263,9 +263,10 @@ fn basic_routing_head_404_405() {
 #[test]
 fn bodies_content_length_chunked_with_trailers_and_limits() {
     let e = start(serve_with(
-        HttpConfig {
-            max_body_bytes: 1000,
-            ..HttpConfig::default()
+        {
+            let mut v = HttpConfig::default();
+            v.max_body_bytes = 1000;
+            v
         },
         app(),
     ));
@@ -408,9 +409,10 @@ fn expect_continue_and_protocol_errors() {
 
     // Head too large.
     let e = start(serve_with(
-        HttpConfig {
-            max_header_bytes: 256,
-            ..HttpConfig::default()
+        {
+            let mut v = HttpConfig::default();
+            v.max_header_bytes = 256;
+            v
         },
         app(),
     ));

@@ -91,6 +91,7 @@ impl Code {
 
 /// A call's outcome.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Status {
     /// Code.
     pub code: Code,
@@ -330,6 +331,7 @@ fn after(at: Instant, f: impl FnOnce() + Send + 'static) {
 
 /// The request side of a call: its metadata.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Metadata {
     /// The full method path, `/package.Service/Method`.
     pub method: String,
@@ -585,7 +587,7 @@ impl GrpcServer {
 
     /// Largest request message accepted (default 4 MiB).
     #[must_use]
-    pub fn max_message(mut self, n: usize) -> GrpcServer {
+    pub fn max_message_bytes(mut self, n: usize) -> GrpcServer {
         self.max_message = Some(n);
         self
     }
@@ -711,6 +713,7 @@ pub struct GrpcClient {
 
 /// Call options.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct CallOptions {
     /// Deadline, sent as `grpc-timeout`.
     pub timeout: Option<Duration>,
@@ -752,7 +755,7 @@ impl GrpcClient {
 
     /// Compress request messages with gzip.
     #[must_use]
-    pub fn gzip(mut self, on: bool) -> GrpcClient {
+    pub fn compress(mut self, on: bool) -> GrpcClient {
         self.gzip = on;
         self
     }

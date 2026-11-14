@@ -4,6 +4,7 @@ use std::{net::SocketAddr, sync::Arc, time::SystemTime};
 
 /// An HTTP request method.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Method {
     /// GET
     Get,
@@ -179,6 +180,7 @@ impl std::fmt::Debug for Headers {
 
 /// HTTP version of a request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Version {
     /// HTTP/1.0
     Http10,
@@ -192,6 +194,7 @@ pub enum Version {
 
 /// A parsed request, with its body fully received.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Request {
     /// Request method.
     pub method: Method,
@@ -210,6 +213,21 @@ pub struct Request {
 }
 
 impl Request {
+    /// A request with `method` for `target` (`/a/b?x=1`): HTTP/1.1, no headers, an empty body
+    /// and an unspecified peer address. Handy for testing services; set the other fields as
+    /// needed.
+    pub fn new(method: Method, target: impl Into<String>) -> Request {
+        Request {
+            method,
+            target: target.into(),
+            version: Version::Http11,
+            headers: Headers::new(),
+            trailers: Headers::new(),
+            body: Vec::new(),
+            peer: SocketAddr::from(([0, 0, 0, 0], 0)),
+        }
+    }
+
     /// The path of the target, without the query.
     pub fn path(&self) -> &str {
         self.target.split('?').next().unwrap_or("")
@@ -232,6 +250,7 @@ impl Request {
 
 /// A response to send.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Response {
     /// Status code.
     pub status: u16,
@@ -250,6 +269,7 @@ pub struct Response {
 
 /// A byte range of an open file used as a response body.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct FileBody {
     /// The open file.
     pub file: Arc<std::fs::File>,
@@ -257,6 +277,13 @@ pub struct FileBody {
     pub offset: u64,
     /// Number of bytes to send.
     pub len: u64,
+}
+
+impl FileBody {
+    /// `len` bytes of `file` starting at `offset`.
+    pub fn new(file: Arc<std::fs::File>, offset: u64, len: u64) -> FileBody {
+        FileBody { file, offset, len }
+    }
 }
 
 impl Response {

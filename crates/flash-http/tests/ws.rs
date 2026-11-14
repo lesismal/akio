@@ -357,12 +357,11 @@ fn close_handshake_both_directions() {
 
 #[test]
 fn protocol_errors_close_with_the_right_status() {
-    let opts = WsOptions {
-        config: WsConfig {
-            max_message_bytes: 1000,
-            ..WsConfig::default()
-        },
-        ..WsOptions::default()
+    let mut opts = WsOptions::default();
+    opts.config = {
+        let mut v = WsConfig::default();
+        v.max_message_bytes = 1000;
+        v
     };
     let e = start(echo_app(Arc::default(), opts));
     let addr = e.local_addrs()[0];
@@ -390,11 +389,9 @@ fn protocol_errors_close_with_the_right_status() {
 #[test]
 fn handshake_validation_and_subprotocols() {
     let seen = Arc::new(Seen::default());
-    let opts = WsOptions {
-        protocols: vec!["chat".into(), "v2.json".into()],
-        origin_allowed: Some(|o| o == "https://good.example"),
-        ..WsOptions::default()
-    };
+    let mut opts = WsOptions::default();
+    opts.protocols = vec!["chat".into(), "v2.json".into()];
+    opts.origin_allowed = Some(|o| o == "https://good.example");
     let e = start(echo_app(seen, opts));
     let addr = e.local_addrs()[0];
 
@@ -488,12 +485,11 @@ fn permessage_deflate_roundtrip_with_context_takeover() {
 
 #[test]
 fn permessage_deflate_is_only_used_when_asked_for_and_enabled() {
-    let off = WsOptions {
-        config: WsConfig {
-            permessage_deflate: false,
-            ..WsConfig::default()
-        },
-        ..WsOptions::default()
+    let mut off = WsOptions::default();
+    off.config = {
+        let mut v = WsConfig::default();
+        v.permessage_deflate = false;
+        v
     };
     let e = start(echo_app(Arc::default(), off));
     let (_, h) = ws_connect(

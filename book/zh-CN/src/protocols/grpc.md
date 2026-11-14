@@ -40,7 +40,7 @@ server-streaming 方法就是这样做的）。
 {{#include ../../../../crates/flash-grpc/examples/guide-grpc.rs:client}}
 ```
 
-- `GrpcClient::new(h2_client, base_url)`；`.gzip(true)` 压缩请求。
+- `GrpcClient::new(h2_client, base_url)`；`.compress(true)` 压缩请求。
 - `unary(path, msg, CallOptions) -> Result<Vec<u8>, Status>` 会阻塞调用线程（不要在 I/O 线程上
   调用）。
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` 用于流式调用，同样是阻塞的。

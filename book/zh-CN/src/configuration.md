@@ -85,7 +85,7 @@ false）。
 | `flash_h3::H3Config` | `max_body`：8 MiB，`max_field_section`：64 KiB |
 | `flash_grpc::GrpcServer` | `max_message`：4 MiB，`compress`：false |
 | `flash_arpc::Routes` | `max_body`：64 MiB |
-| `flash_kcp::Config` | 见 [KCP](protocols/kcp.md#config) |
+| `flash_kcp::KcpConfig` | 见 [KCP](protocols/kcp.md#config) |
 
 ## 环境变量
 

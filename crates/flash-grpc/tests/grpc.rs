@@ -67,7 +67,7 @@ fn server() -> GrpcServer {
             sink.send(b"the secret");
             sink.finish(Status::ok());
         })
-        .max_message(4 << 20)
+        .max_message_bytes(4 << 20)
         .compress(true)
 }
 
@@ -90,7 +90,7 @@ fn setup() -> (Arc<Engine>, GrpcClient) {
     );
     e.start().unwrap();
     let addr = e.local_addrs()[0];
-    let h2 = H2Client::connect_blocking(&e, addr, None, H2Options::default()).unwrap();
+    let h2 = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
     (e, GrpcClient::new(h2, &format!("http://{addr}")))
 }
 
@@ -116,10 +116,8 @@ fn unary_errors_metadata_and_unknown_methods() {
         c.unary("/test.Echo/Nope", b"x", o()).unwrap_err().code,
         Code::Unimplemented
     );
-    let opts = CallOptions {
-        metadata: vec![("x-user".into(), "ada".into())],
-        ..CallOptions::default()
-    };
+    let mut opts = CallOptions::default();
+    opts.metadata = vec![("x-user".into(), "ada".into())];
     assert_eq!(c.unary("/test.Echo/Meta", b"", opts).unwrap(), b"ada");
     // Trailers come back through bidi's completion.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -184,18 +182,14 @@ fn streaming_calls() {
 #[test]
 fn deadlines_interceptors_compression_and_limits() {
     let (e, c) = setup();
-    let short = CallOptions {
-        timeout: Some(Duration::from_millis(100)),
-        ..CallOptions::default()
-    };
+    let mut short = CallOptions::default();
+    short.timeout = Some(Duration::from_millis(100));
     assert_eq!(
         c.unary("/test.Echo/Slow", b"x", short).unwrap_err().code,
         Code::DeadlineExceeded
     );
-    let long = CallOptions {
-        timeout: Some(Duration::from_secs(5)),
-        ..CallOptions::default()
-    };
+    let mut long = CallOptions::default();
+    long.timeout = Some(Duration::from_secs(5));
     assert_eq!(c.unary("/test.Echo/Slow", b"x", long).unwrap(), b"x");
     assert_eq!(
         c.unary("/test.Echo/Secret", b"", CallOptions::default())
@@ -203,16 +197,14 @@ fn deadlines_interceptors_compression_and_limits() {
             .code,
         Code::Unauthenticated
     );
-    let auth = CallOptions {
-        metadata: vec![("authorization".into(), "Bearer t0k3n".into())],
-        ..CallOptions::default()
-    };
+    let mut auth = CallOptions::default();
+    auth.metadata = vec![("authorization".into(), "Bearer t0k3n".into())];
     assert_eq!(
         c.unary("/test.Echo/Secret", b"", auth).unwrap(),
         b"the secret"
     );
     // gzip both ways (the server compresses because the client accepts it).
-    let gz = c.clone().gzip(true);
+    let gz = c.clone().compress(true);
     let big = vec![b'z'; 3 << 20];
     assert_eq!(
         gz.unary("/test.Echo/Unary", &big, CallOptions::default())

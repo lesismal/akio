@@ -29,6 +29,7 @@ use crate::{
 
 /// A request to send.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ClientRequest {
     /// Method.
     pub method: Method,
@@ -41,23 +42,31 @@ pub struct ClientRequest {
 }
 
 impl ClientRequest {
-    /// A `GET` request.
-    pub fn get(url: &str) -> ClientRequest {
+    /// A request with `method` to `url`, no headers and an empty body.
+    pub fn new(method: Method, url: &str) -> ClientRequest {
         ClientRequest {
-            method: Method::Get,
+            method,
             url: url.to_owned(),
             headers: Headers::new(),
             body: Vec::new(),
         }
     }
 
+    /// A `GET` request.
+    pub fn get(url: &str) -> ClientRequest {
+        ClientRequest::new(Method::Get, url)
+    }
+
     /// A `POST` request with a body.
     pub fn post(url: &str, body: Vec<u8>) -> ClientRequest {
-        ClientRequest {
-            method: Method::Post,
-            body,
-            ..ClientRequest::get(url)
-        }
+        ClientRequest::new(Method::Post, url).body(body)
+    }
+
+    /// Replaces the body.
+    #[must_use]
+    pub fn body(mut self, body: Vec<u8>) -> ClientRequest {
+        self.body = body;
+        self
     }
 
     /// Adds a header.
@@ -70,6 +79,7 @@ impl ClientRequest {
 
 /// A received response.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ClientResponse {
     /// Status code.
     pub status: u16,
@@ -87,6 +97,7 @@ pub struct ClientResponse {
 
 /// Why a request failed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum ClientError {
     /// The URL could not be used.
     InvalidUrl(String),

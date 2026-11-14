@@ -92,7 +92,7 @@ fn tls_http1_http2_custom_prefix_and_fallback_share_a_port() {
     assert!(String::from_utf8_lossy(&all).ends_with("http says hi"));
 
     // HTTP/2 prior knowledge through the same route.
-    let c = H2Client::connect_blocking(&e, addr, None, H2Options::default()).unwrap();
+    let c = H2Client::dial_blocking(&e, addr, None, H2Options::default()).unwrap();
     let r = c
         .send(ClientRequest::get(&format!("http://{addr}/hi")))
         .wait()

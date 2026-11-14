@@ -49,7 +49,7 @@ impl WsHandler for Collect {
 /// Opens `url` and returns the first text message (empty when none came before the close).
 fn fetch_text(engine: &Arc<Engine>, url: &str, opts: &DialOptions) -> String {
     let (tx, rx) = mpsc::channel();
-    if let Err(e) = client::connect(engine, url, opts, Collect(tx)) {
+    if let Err(e) = client::dial_blocking(engine, url, opts, Collect(tx)) {
         eprintln!("{url}: {e}");
         return String::new();
     }
@@ -71,18 +71,18 @@ fn main() {
 
     let engine = Arc::new(Engine::builder().client_threads(1).build().expect("engine"));
     engine.start().expect("start");
-    let opts = DialOptions {
-        config: WsConfig {
-            max_message_bytes: 64 << 20,
-            ..WsConfig::default()
-        },
-        pmd: PmdOffer {
-            client_no_context_takeover: nct,
-            ..PmdOffer::default()
-        },
-        handshake_timeout: Duration::from_secs(30),
-        ..DialOptions::default()
+    let mut opts = DialOptions::default();
+    opts.config = {
+        let mut v = WsConfig::default();
+        v.max_message_bytes = 64 << 20;
+        v
     };
+    opts.pmd = {
+        let mut v = PmdOffer::default();
+        v.client_no_context_takeover = nct;
+        v
+    };
+    opts.handshake_timeout = Duration::from_secs(30);
     let count: usize = fetch_text(&engine, &format!("{base}/getCaseCount"), &opts)
         .trim()
         .parse()
@@ -105,7 +105,7 @@ fn main() {
         }
         let (tx, rx) = mpsc::channel();
         let url = format!("{base}/runCase?case={case}&agent={agent}");
-        match client::connect(&engine, &url, &opts, Echo(tx)) {
+        match client::dial_blocking(&engine, &url, &opts, Echo(tx)) {
             Ok(_) => {
                 if rx.recv_timeout(Duration::from_secs(120)).is_err() {
                     eprintln!("case {case}: no close within 120 s");

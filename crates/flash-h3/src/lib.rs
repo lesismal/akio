@@ -407,14 +407,14 @@ fn build_request(
     let head_only = method == Method::Head;
     let target = path.unwrap_or_else(|| authority.clone().unwrap_or_default());
     Some((
-        Request {
-            method,
-            target,
-            version: Version::Http3,
-            headers,
-            trailers: tr,
-            body,
-            peer,
+        {
+            let mut v = Request::new(method, target);
+            v.version = Version::Http3;
+            v.headers = headers;
+            v.trailers = tr;
+            v.body = body;
+            v.peer = peer;
+            v
         },
         head_only,
     ))

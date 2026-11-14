@@ -50,6 +50,7 @@ pub fn request_id() -> impl Middleware {
 
 /// CORS policy for [`cors`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Cors {
     /// `Access-Control-Allow-Origin` value (`*` or one origin).
     pub allow_origin: String,
@@ -101,6 +102,7 @@ pub fn cors(policy: Cors) -> impl Middleware {
 
 /// One finished request, for [`logger`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LogRecord {
     /// Request method.
     pub method: String,
@@ -139,6 +141,7 @@ pub fn response_time() -> impl Middleware {
 
 /// Settings for [`compress`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Compress {
     /// Bodies shorter than this are left alone.
     pub min_bytes: usize,

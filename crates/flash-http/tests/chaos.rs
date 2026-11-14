@@ -502,10 +502,8 @@ fn client(addr: SocketAddr, seed: u64, st: &Stats) {
 fn run_seed(seed: u64, conns: usize) {
     let baseline = open_fds();
     let st = Arc::new(Stats::default());
-    let cfg = HttpConfig {
-        max_header_bytes: MAX_HEADER,
-        ..HttpConfig::default()
-    };
+    let mut cfg = HttpConfig::default();
+    cfg.max_header_bytes = MAX_HEADER;
     let engine = Engine::builder()
         .config({
             let mut v = Config::default();

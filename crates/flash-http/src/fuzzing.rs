@@ -130,9 +130,10 @@ impl Service for Svc {
         let path = ctx.path().to_owned();
         if path.starts_with("/ws") {
             let opts = WsOptions {
-                config: WsConfig {
-                    max_message_bytes: 64 << 10,
-                    ..WsConfig::default()
+                config: {
+                    let mut v = WsConfig::default();
+                    v.max_message_bytes = 64 << 10;
+                    v
                 },
                 protocols: vec!["chat".into()],
                 origin_allowed: None,

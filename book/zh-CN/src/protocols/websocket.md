@@ -62,7 +62,7 @@ pub trait WsHandler: Send + 'static {
 {{#include ../../../../crates/flash-ws/examples/guide-ws.rs:dial}}
 ```
 
-- `client::connect(&engine, url, &opts, handler)` 阻塞到握手完成，返回 `WsSender`；不要在同一个
+- `client::dial_blocking(&engine, url, &opts, handler)` 阻塞到握手完成，返回 `WsSender`；不要在同一个
   engine 的 I/O 线程上调用它。
 - `client::dial(&engine, url, &opts, handler, on_error)` 是非阻塞形式：成功时执行 `on_open`，
   失败时调用一次 `on_error(WsClientError)`（`InvalidUrl`、`Io`、`Status`、`Handshake`、

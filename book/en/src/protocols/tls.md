@@ -61,7 +61,7 @@ The `ring` crypto provider is compiled in. Loading PEM files is left to you (for
 - flash-http: `Tls::server(cfg, serve(app))`. With `alpn_protocols = [h2, http/1.1]` the same
   listener serves HTTP/2 to clients that negotiate `h2`.
 - flash-ws client: `DialOptions::tls` for `wss://`.
-- flash-http clients: `Client::with_tls(cfg)`, `H2Client::connect(.., Some((cfg, name)), ..)`.
+- flash-http clients: `Client::with_tls(cfg)`, `H2Client::dial(.., Some((cfg, name)), ..)`.
 - QUIC and HTTP/3 use TLS 1.3 inside QUIC: see `flash_quic::server_config` and friends.
 
 ## Not done

@@ -58,7 +58,7 @@
 - flash-http：`Tls::server(cfg, serve(app))`。设置 `alpn_protocols = [h2, http/1.1]` 后，同一个
   listener 会为协商了 `h2` 的客户端提供 HTTP/2。
 - flash-ws 客户端：`wss://` 使用 `DialOptions::tls`。
-- flash-http 客户端：`Client::with_tls(cfg)`、`H2Client::connect(.., Some((cfg, name)), ..)`。
+- flash-http 客户端：`Client::with_tls(cfg)`、`H2Client::dial(.., Some((cfg, name)), ..)`。
 - QUIC 与 HTTP/3 在 QUIC 内部使用 TLS 1.3：见 `flash_quic::server_config` 等函数。
 
 ## 尚未完成

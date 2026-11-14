@@ -68,7 +68,7 @@ authentication, rate limiting, logging) applies to the handshake request.
 {{#include ../../../../crates/flash-ws/examples/guide-ws.rs:dial}}
 ```
 
-- `client::connect(&engine, url, &opts, handler)` blocks until the handshake completes and
+- `client::dial_blocking(&engine, url, &opts, handler)` blocks until the handshake completes and
   returns the `WsSender`; do not call it on an I/O thread of the same engine.
 - `client::dial(&engine, url, &opts, handler, on_error)` is the non-blocking form: `on_open`
   runs on success, `on_error(WsClientError)` once on failure (`InvalidUrl`, `Io`, `Status`,

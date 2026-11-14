@@ -21,7 +21,7 @@
 //!
 //! let engine = Arc::new(Engine::builder().client_threads(1).build().unwrap());
 //! engine.start().unwrap();
-//! let ws = client::connect(&engine, "ws://127.0.0.1:8080/ws", &DialOptions::default(), Print).unwrap();
+//! let ws = client::dial_blocking(&engine, "ws://127.0.0.1:8080/ws", &DialOptions::default(), Print).unwrap();
 //! ws.send_text("hello").unwrap();
 //! ```
 
@@ -42,6 +42,7 @@ use crate::{Message, WsConfig, WsHandler, WsSender, WsSession, accept_key, defla
 
 /// How to dial.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct DialOptions {
     /// Message limits and compression; `permessage_deflate` decides whether it is offered.
     pub config: WsConfig,
@@ -101,6 +102,7 @@ impl std::fmt::Debug for DialOptions {
 
 /// Why a dial failed (before `on_open`).
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum WsClientError {
     /// The URL is not a usable `ws://` or `wss://` URL.
     InvalidUrl(String),
@@ -362,7 +364,7 @@ fn dial_addr(plan: Arc<Plan>, i: usize) {
 /// Like [`dial`], blocking until the handshake completes; returns the connection's sender.
 /// `handler.on_open` has been called (or is about to be) when this returns. Do not call it on
 /// an I/O thread of the same engine.
-pub fn connect(
+pub fn dial_blocking(
     engine: &Arc<Engine>,
     url: &str,
     opts: &DialOptions,
