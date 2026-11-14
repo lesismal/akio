@@ -196,7 +196,7 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 
 ### Performance pass (after wave D; 1.0.0 publishing waits until it is done)
 - [ ] `only-crypto` CPU acceleration: SHA-NI / ARMv8 SHA, PMULL / PCLMULQDQ GHASH, CRC32 instructions (TLS bulk and BitTorrent hashing), faster P-256 (dedicated field) and RSA (multiplication), X25519
-- [ ] `only-deflate` matcher speed (4-byte hashing, a medium strategy) to close the 0.25–0.6x gap with zlib-rs
+- [x] `only-deflate` matcher speed (4-byte hashing, a medium strategy) to close the 0.25–0.6x gap with zlib-rs: zlib-ng's level table and quick/fast/medium/slow strategies (3-byte hash and chain-jumping search at level 9), 8-byte compares, cheap no-context-takeover reset; decoder fast path (64-bit refills, three literals or a pair per refill, chunked match copies). Still safe Rust without SIMD. On x86-64 vs flate2/zlib-rs: output at most 0.5% larger at every level (identical in 36 of 45 level × corpus cases), deflate 0.94–1.48x, inflate 0.82–1.23x (stored blocks 0.42x), permessage-deflate echo 1.84x / 1.04x / 1.00x / 0.98x at 64 B / 512 B / 4 KiB / 64 KiB (docs/BENCHMARKS.md). Level 1 now trades ratio for speed as in zlib-ng (output up to 40% larger than before). Not done: stored blocks still go through the window (two copies)
 - [ ] TLS / QUIC / HTTP hot paths re-profiled after the in-house replacements; h2 and pipelined HTTP/1 vs fib
 - [ ] Re-run the benchmark campaign on a quiet host (and a real NIC for DPDK) and update `docs/BENCHMARKS.md`
 

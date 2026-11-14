@@ -10,7 +10,8 @@ use std::sync::OnceLock;
 
 use crate::checksum::{Adler32, Crc32};
 use crate::tables::{
-    CL_ORDER, DIST_BASE, DIST_EXTRA, LEN_BASE, LEN_EXTRA, fixed_lit_lens, reverse_bits,
+    CL_ORDER, DIST_BASE, DIST_EXTRA, LEN_BASE, LEN_EXTRA, fixed_lit_lens, length_counts,
+    reverse_bits,
 };
 use crate::{Error, Format};
 
@@ -89,15 +90,12 @@ impl Table {
 fn build_table(lens: &[u8], code: Table, out: &mut Vec<u32>) -> bool {
     let pbits = code.primary_bits();
     let psize = 1usize << pbits;
-    let mut count = [0u16; 16];
-    for &l in lens {
-        count[usize::from(l)] += 1;
-    }
-    count[0] = 0;
+    let count = length_counts(lens);
     let max = (1..16).rev().find(|&l| count[l] != 0).unwrap_or(0) as u32;
-    out.clear();
-    out.resize(psize, entry(K_BAD, 0, pbits, 0));
+    let bad = entry(K_BAD, 0, pbits, 0);
     if max == 0 {
+        out.clear();
+        out.resize(psize, bad);
         return true;
     }
     let mut left: i32 = 1;
@@ -110,6 +108,13 @@ fn build_table(lens: &[u8], code: Table, out: &mut Vec<u32>) -> bool {
     if left > 0 && (code == Table::CodeLens || max != 1) {
         return false;
     }
+    if left > 0 {
+        out.clear();
+    } else {
+        // A complete code writes every entry: the old contents need no clearing.
+        out.truncate(psize);
+    }
+    out.resize(psize, bad);
     let mut next = [0u32; 16];
     let mut c = 0u32;
     for len in 1..16 {
@@ -150,36 +155,53 @@ fn build_table(lens: &[u8], code: Table, out: &mut Vec<u32>) -> bool {
         next[l as usize] += 1;
         let e = code.entry(sym, l);
         if l <= pbits {
-            let mut i = r as usize;
-            while i < psize {
-                out[i] = e;
-                i += 1 << l;
+            for x in out[..psize].iter_mut().skip(r as usize).step_by(1 << l) {
+                *x = e;
             }
         } else {
             let link = out[(r & pmask) as usize];
             let off = (link >> 16) as usize;
             let sb = (link >> 5) & 31;
-            let mut i = (r >> pbits) as usize;
-            while i < 1 << sb {
-                out[off + i] = e;
-                i += 1 << (l - pbits);
+            let sub = &mut out[off..off + (1 << sb)];
+            for x in sub
+                .iter_mut()
+                .skip((r >> pbits) as usize)
+                .step_by(1 << (l - pbits))
+            {
+                *x = e;
             }
         }
     }
     true
 }
 
-/// Looks up the next symbol; the caller checks the entry's length against the bits it has.
+/// The primary part of a decoding table (`N` = `2^pbits` entries; tables are never shorter).
 #[inline(always)]
-fn lookup(table: &[u32], pbits: u32, bits: u64) -> u32 {
-    let e = table[(bits as usize) & ((1 << pbits) - 1)];
+fn primary<const N: usize>(table: &[u32]) -> &[u32; N] {
+    const BAD: [u32; LIT_N] = [entry(K_BAD, 0, 0, 0); LIT_N];
+    match table.first_chunk::<N>() {
+        Some(p) => p,
+        None => BAD.first_chunk::<N>().unwrap_or_else(|| unreachable!()),
+    }
+}
+
+/// Looks up the next symbol in `table`, whose primary part is `primary`; the caller checks the
+/// entry's length against the bits it has.
+#[inline(always)]
+fn lookup<const N: usize>(primary: &[u32; N], table: &[u32], bits: u64) -> u32 {
+    let e = primary[(bits as usize) & (N - 1)];
     if kind(e) == K_LINK {
         let sb = (e >> 5) & 31;
+        let pbits = N.trailing_zeros();
         table[(e >> 16) as usize + ((bits >> pbits) as usize & ((1 << sb) - 1))]
     } else {
         e
     }
 }
+
+const LIT_N: usize = 1 << LIT_BITS;
+const DIST_N: usize = 1 << DIST_BITS;
+const CL_N: usize = 1 << CL_BITS;
 
 struct Fixed {
     lit: Vec<u32>,
@@ -224,6 +246,45 @@ fn refill(bb: &mut u64, bc: &mut u32, input: &[u8], ip: &mut usize) {
             *bb |= u64::from(input[*ip]) << *bc;
             *ip += 1;
             *bc += 8;
+        }
+    }
+}
+
+/// The eight bytes at `i`, little endian.
+#[inline(always)]
+fn load64(s: &[u8], i: usize) -> u64 {
+    u64::from_le_bytes(<[u8; 8]>::try_from(&s[i..i + 8]).unwrap_or_default())
+}
+
+/// Copies the `len` bytes `dist` back to `wpos` in 8- or 16-byte chunks, which may write up to
+/// 15 bytes beyond `wpos + len` (later output overwrites them; `SLACK` keeps them inside).
+#[inline(always)]
+fn copy_match(win: &mut [u8], wpos: usize, dist: usize, len: usize) {
+    let src = wpos - dist;
+    if dist >= 16 {
+        // Each chunk reads only bytes already final.
+        let mut k = 0;
+        while k < len {
+            win.copy_within(src + k..src + k + 16, wpos + k);
+            k += 16;
+        }
+    } else if dist >= 8 {
+        let mut k = 0;
+        while k < len {
+            win.copy_within(src + k..src + k + 8, wpos + k);
+            k += 8;
+        }
+    } else {
+        // The first eight bytes one at a time (the pattern of period `dist`), then chunks from
+        // a multiple of the period back that is at least eight bytes.
+        for i in 0..8 {
+            win[wpos + i] = win[src + i];
+        }
+        let p = dist * 8usize.div_ceil(dist);
+        let mut k = 8;
+        while k < len {
+            win.copy_within(wpos + k - p..wpos + k - p + 8, wpos + k);
+            k += 8;
         }
     }
 }
@@ -775,7 +836,7 @@ impl Inflater {
                 let total = self.nlen + self.ndist;
                 while self.idx < total {
                     refill(&mut self.bitbuf, &mut self.bitcnt, input, ip);
-                    let e = lookup(&self.lit, CL_BITS, self.bitbuf);
+                    let e = lookup(primary::<CL_N>(&self.lit), &self.lit, self.bitbuf);
                     let n = e & 31;
                     if n > self.bitcnt {
                         return Ok(false);
@@ -911,6 +972,7 @@ impl Inflater {
             } else {
                 (&self.lit, &self.dist)
             };
+            let (lp, dp) = (primary::<LIT_N>(lt), primary::<DIST_N>(dt));
             let win = &mut self.win[..];
             let mut bb = self.bitbuf;
             let mut bc = self.bitcnt;
@@ -918,8 +980,61 @@ impl Inflater {
             let stop = (self.flushed + budget).min(win.len() - SLACK + 1);
             let mut outcome: Option<Result<bool, Error>> = None;
             while wpos < stop {
+                if *ip + 16 <= input.len() {
+                    // Fast path: a branchless refill to at least 56 bits, which is enough for
+                    // three literals or one length/distance pair. The bits above `bc` are the
+                    // next input bits (`bb` is masked when leaving). Anything unusual (end of
+                    // block, invalid symbols or distances) is left to the careful path below,
+                    // which starts over from the same state.
+                    bb |= load64(input, *ip) << bc;
+                    *ip += ((63 - bc) >> 3) as usize;
+                    bc |= 56;
+                    let e = lookup(lp, lt, bb);
+                    let n = e & 31;
+                    match kind(e) {
+                        K_LIT => {
+                            win[wpos] = (e >> 16) as u8;
+                            wpos += 1;
+                            bb >>= n;
+                            bc -= n;
+                            for _ in 0..2 {
+                                // Primary entries only (a link is not a literal here).
+                                let e = lp[(bb as usize) & (LIT_N - 1)];
+                                if kind(e) != K_LIT || wpos >= stop {
+                                    break;
+                                }
+                                win[wpos] = (e >> 16) as u8;
+                                wpos += 1;
+                                bb >>= e & 31;
+                                bc -= e & 31;
+                            }
+                            continue;
+                        }
+                        K_LEN => {
+                            let xb = (e >> 5) & 31;
+                            let len = (e >> 16) as usize + ((bb >> n) & low_bits(xb)) as usize;
+                            let used = n + xb;
+                            let d = lookup(dp, dt, bb >> used);
+                            if kind(d) == K_LIT {
+                                let dn = d & 31;
+                                let dxb = (d >> 5) & 31;
+                                let dist = (d >> 16) as usize
+                                    + ((bb >> (used + dn)) & low_bits(dxb)) as usize;
+                                if dist <= wpos.min(hist) {
+                                    let used = used + dn + dxb;
+                                    bb >>= used;
+                                    bc -= used;
+                                    copy_match(win, wpos, dist, len);
+                                    wpos += len;
+                                    continue;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 refill(&mut bb, &mut bc, input, ip);
-                let e = lookup(lt, LIT_BITS, bb);
+                let e = lookup(lp, lt, bb);
                 let n = e & 31;
                 if n > bc {
                     outcome = Some(Ok(false));
@@ -940,7 +1055,7 @@ impl Inflater {
                             break;
                         }
                         let len = (e >> 16) as usize + ((bb >> n) & low_bits(xb)) as usize;
-                        let d = lookup(dt, DIST_BITS, bb >> used);
+                        let d = lookup(dp, dt, bb >> used);
                         let dn = d & 31;
                         if used + dn > bc {
                             outcome = Some(Ok(false));
@@ -964,30 +1079,7 @@ impl Inflater {
                         }
                         bb >>= used;
                         bc -= used;
-                        let src = wpos - dist;
-                        if dist >= 16 {
-                            // 16-byte chunks; each reads only bytes already final, and the
-                            // overrun past `len` is overwritten later (SLACK keeps it inside).
-                            let mut k = 0;
-                            while k < len {
-                                win.copy_within(src + k..src + k + 16, wpos + k);
-                                k += 16;
-                            }
-                        } else if dist >= len {
-                            win.copy_within(src..src + len, wpos);
-                        } else if dist == 1 {
-                            let b = win[src];
-                            win[wpos..wpos + len].fill(b);
-                        } else {
-                            // The pattern of period `dist` doubles with each copy.
-                            let (mut done, mut k) = (0, dist);
-                            while done < len {
-                                let c = k.min(len - done);
-                                win.copy_within(src..src + c, wpos + done);
-                                done += c;
-                                k *= 2;
-                            }
-                        }
+                        copy_match(win, wpos, dist, len);
                         wpos += len;
                     }
                     K_EOB => {
@@ -1005,7 +1097,7 @@ impl Inflater {
             if wpos != self.wpos {
                 progressed = true;
             }
-            self.bitbuf = bb;
+            self.bitbuf = bb & low_bits(bc);
             self.bitcnt = bc;
             self.wpos = wpos;
             match outcome {

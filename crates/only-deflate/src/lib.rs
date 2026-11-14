@@ -6,8 +6,9 @@
 //! - [`Inflater`]: streaming decompression with input split anywhere, output taken in pieces of
 //!   any size, a size limit for decompression bombs ([`Inflater::decompress_vec`]) and window
 //!   sizes from 2⁸ to 2¹⁵ bytes.
-//! - [`Deflater`]: streaming compression (LZ77 with hash chains and lazy matching, dynamic
-//!   Huffman codes limited to 15 bits, fixed codes or stored blocks, whichever is smallest)
+//! - [`Deflater`]: streaming compression (LZ77 with hash chains and zlib-ng's quick, fast,
+//!   medium or lazy match finder by level; dynamic Huffman codes limited to 15 bits, fixed
+//!   codes or stored blocks, whichever is smallest)
 //!   with zlib's levels 0..=9, [`Flush::Sync`] / [`Flush::Full`] / [`Flush::Finish`], window
 //!   sizes from 2⁸ to 2¹⁵ bytes and [`Deflater::reset`] for permessage-deflate without context
 //!   takeover.
