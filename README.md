@@ -27,6 +27,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
 | Proxies | SOCKS5/4/4a, HTTP CONNECT, port sharing by first-byte sniffing (flash-mux) |
 | KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |
+| BitTorrent | trackers (HTTP/UDP, client and server), peer wire with MSE, Fast extension, metadata exchange and PEX, uTP (LEDBAT), mainline DHT, a client; interop with libtorrent and aria2 |
 | Operations | Prometheus metrics, connection table, slow-callback records, JSON debug endpoint, structured logs via `log`, hot reload of runtime settings |
 
 Measured performance (one machine, see the caveats): [docs/BENCHMARKS.md](docs/BENCHMARKS.md).

@@ -16,6 +16,7 @@
 | `flash-socks` | `Socks::new(engine_ref)`、`connect_proxy(engine_ref)` | – | [SOCKS 与 CONNECT](socks.md) |
 | `flash-mux` | `Mux::new().route(rule, acceptor)` + `serve_any` | – | [协议复用](mux.md) |
 | `flash-kcp` | UDP listener 上的 `KcpServer::new(cfg, factory)` | `flash_kcp::dial` | [KCP](kcp.md) |
+| `flash-bittorrent` | `Client::new(cfg)`（自带 listener）；`TrackerServer::http()` / `udp()`；`port::UdpPort` | `Client`、`TrackerClient` | [BitTorrent](bittorrent.md) |
 
 互通性用参考实现测试过：h2spec（147/147）、Autobahn（WebSocket 服务端与客户端）、grpc-go、
 quic-go 和 fib（HTTP/3）、kcp-go，以及 fib 的 Go 版 arpc；脚本位于 `tools/interop` 和

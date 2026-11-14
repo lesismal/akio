@@ -34,6 +34,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/flash/blob/main/CHANGELOG.md
 | `flash-socks` | SOCKS4/4a/5 and HTTP CONNECT proxies | [SOCKS](protocols/socks.md) |
 | `flash-mux` | several protocols on one port | [Multiplexing](protocols/mux.md) |
 | `flash-kcp` | KCP (kcp-go compatible) | [KCP](protocols/kcp.md) |
+| `flash-bittorrent` | BitTorrent: trackers, peer wire + MSE, uTP, DHT, client (libtorrent and aria2 compatible) | [BitTorrent](protocols/bittorrent.md) |
 
 Design records: [docs/adr](https://github.com/lesismal/flash/tree/main/docs/adr). Plan and
 status: [docs/ROADMAP.md](https://github.com/lesismal/flash/blob/main/docs/ROADMAP.md),

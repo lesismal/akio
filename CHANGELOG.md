@@ -10,6 +10,25 @@ All notable changes to flash are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `flash-bittorrent` (M7): bencode; .torrent v1 files (path safety, `Builder`) and magnet links;
+  HTTP and UDP trackers as codecs, a `TrackerClient` (flash-http, `dial_udp`) and a
+  `TrackerServer` (a flash-http service and a UDP acceptor on one store); the peer wire protocol
+  with the Fast extension, the extension protocol, ut_metadata and ut_pex; MSE/PE (DH-768, RC4);
+  uTP with LEDBAT; the mainline DHT; `port::UdpPort`, uTP and the DHT on one flash UDP listener;
+  and a `client::Client` (magnets, rarest-first picker with endgame, pipelining, choking with
+  optimistic unchoke, storage and SHA-1 on a logical pool, PEX, DHT, trackers, events). Interop
+  with libtorrent 2.0 and aria2 1.37 (`tools/interop/bittorrent/run.sh`); fuzz targets
+  `bt_bencode`, `bt_peer_wire`, `bt_krpc`, `bt_utp`, `bt_tracker`, `bt_mse`.
+- `Engine::dial_udp_from`: a peer connection on a UDP listener's own socket, so datagrams to a
+  new address leave from the listener's port (DHT nodes, uTP).
+
+### Fixed
+
+- `Engine::dial` no longer picks a UDP group (and fails) when the engine has both TCP listeners
+  and UDP listeners or UDP client threads, but no `client_threads`.
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 First release candidate of 1.0: the API is frozen for review. The public API of every crate is

@@ -10,6 +10,24 @@ flash 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增
+
+- `flash-bittorrent`（M7）：bencode；v1 .torrent 文件（路径安全检查、`Builder`）与磁力链接；HTTP
+  与 UDP tracker 的编解码、`TrackerClient`（flash-http、`dial_udp`）和 `TrackerServer`（共用一个
+  存储的 flash-http service 与 UDP acceptor）；带 Fast 扩展、扩展协议、ut_metadata 和 ut_pex 的
+  peer wire 协议；MSE/PE（DH-768、RC4）；带 LEDBAT 的 uTP；主线 DHT；`port::UdpPort`，让 uTP 与
+  DHT 共用一个 flash UDP listener；以及 `client::Client`（磁力链接、带残局模式的最稀有优先选片、
+  请求流水线、带乐观 unchoke 的 choke 算法、在逻辑池上进行的存储与 SHA-1 校验、PEX、DHT、
+  tracker、事件）。与 libtorrent 2.0 和 aria2 1.37 互通（`tools/interop/bittorrent/run.sh`）；
+  模糊测试目标 `bt_bencode`、`bt_peer_wire`、`bt_krpc`、`bt_utp`、`bt_tracker`、`bt_mse`。
+- `Engine::dial_udp_from`：在 UDP listener 自己的 socket 上建立对端连接，使发往新地址的数据报从
+  listener 的端口发出（DHT 节点、uTP）。
+
+### 修复
+
+- 当 engine 同时有 TCP listener 与 UDP listener（或 UDP 客户端线程）但没有 `client_threads` 时，
+  `Engine::dial` 不再选中 UDP group（并因此失败）。
+
 ## [1.0.0-rc.1] - 2026-11-14
 
 1.0 的第一个发布候选版：API 冻结以供评审。每个 crate 的公开 API 记录在 `api/<crate>.txt` 中，并在

@@ -64,6 +64,12 @@ Linux 上的发送批量化：处理一批接收时产生的回复会用 `sendmm
 `close()` 结束它，收到 ICMP "port unreachable" 时以 `ConnectionRefused` 关闭。engine 需要
 `udp_client_threads(n)`，或者有一个可以承载它的 UDP listener。
 
+`Engine::dial_udp_from(local, peer, acceptor, on_error)` 则在绑定于 `local` 的 UDP listener 的
+socket 上打开一个对端 `Conn`：数据报从 listener 的端口发出，这正是共享一个端口的点对点节点
+（DHT 节点、uTP；见 [BitTorrent](bittorrent.md)）所需要的。若该对端在这个 listener 上已有连接，
+它以 `AlreadyExists` 失败（其数据报会进入已有的连接）。在 Linux 上，对端的回复可能到达 listener
+的另一个线程，该线程会通过 listener 自己的 acceptor 打开一个对端。
+
 ## 未提供
 
 - 无连接的数据报 API（每个数据报一次回调、没有每对端状态）：每个对端都是一个 `Conn`。

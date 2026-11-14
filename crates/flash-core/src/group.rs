@@ -47,6 +47,21 @@ pub trait Group: Send + Sync {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     );
+
+    /// Opens a peer "connection" to `peer` on this UDP listener's own socket (datagrams leave
+    /// from the listener's port), served by `acceptor` instead of the listener's. Only UDP
+    /// listener groups implement it.
+    fn open_udp_peer(
+        &self,
+        _peer: SocketAddr,
+        _acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        on_error(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group is not a UDP listener",
+        ));
+    }
 }
 
 /// Counters of a UDP listener (see `Config::udp_max_peers`).

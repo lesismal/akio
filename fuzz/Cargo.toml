@@ -22,6 +22,7 @@ flash-mux = { path = "../crates/flash-mux", features = ["fuzzing"] }
 flash-kcp = { path = "../crates/flash-kcp", features = ["fuzzing"] }
 flash-h3 = { path = "../crates/flash-h3", features = ["fuzzing"] }
 flash-ebpf = { path = "../crates/flash-ebpf", features = ["fuzzing"] }
+flash-bittorrent = { path = "../crates/flash-bittorrent", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1
@@ -169,6 +170,48 @@ bench = false
 [[bin]]
 name = "cbpf_steer"
 path = "fuzz_targets/cbpf_steer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_bencode"
+path = "fuzz_targets/bt_bencode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_peer_wire"
+path = "fuzz_targets/bt_peer_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_krpc"
+path = "fuzz_targets/bt_krpc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_utp"
+path = "fuzz_targets/bt_utp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_tracker"
+path = "fuzz_targets/bt_tracker.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_mse"
+path = "fuzz_targets/bt_mse.rs"
 test = false
 doc = false
 bench = false
