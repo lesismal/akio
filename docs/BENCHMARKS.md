@@ -133,10 +133,13 @@ read buffer is set to 4 KiB here (`TOKIO_REF_BUF`).
 | idle TCP, **100,000 connections** | 564 | 564 | 5,008 | – | 288 |
 | TCP after one 64 B echo | 603 | 603 | 5,008 | – | 414 (±4%) |
 | HTTP/1.1 keep-alive after one request | 937 | 936 | – | 17,447 | 1,643 |
-| WebSocket after upgrade + one echo | 3,493 | 3,496 | 137,320 ² | – | 563 |
+| WebSocket after upgrade + one echo | 1,426 ³ | 1,414 ³ | 137,320 ² | – | 563 |
 | TLS 1.3 after handshake + one echo | 8,192 | 8,186 | 15,124 | – | 6,815 |
 
 ² tokio-tungstenite with its default configuration keeps large per-connection read/write buffers.
+
+³ Re-measured after a fix (median of 3 rounds, same host, same harness): this campaign's build
+had 3,486 (epoll) / 3,485 (uring); see the end of History.
 
 only-uring allocates its provided-buffer ring (1024 × 16 KiB per I/O thread) up front: its
 baseline RSS is ~69 MB against ~3.5 MB for epoll, and that is not counted per connection. 100,000
@@ -353,12 +356,16 @@ Short summaries of the per-area passes; the full tables are in the git history o
   6.5–11× the bulk throughput and 11× the sequential connection rate.
 
 This campaign reproduced the per-area figures of the HTTP, QUIC, TLS, crypto and deflate passes
-within 1–2% (no regressions there). One memory figure moved: a WebSocket connection after upgrade + one echo costs 3,493 bytes
+within 1–2% (no regressions there). One memory figure moved: a WebSocket connection after upgrade + one echo cost 3,493 bytes
 here against 1,660 in the 2026-11-14 table (the other rows are within 5% of it: idle TCP 600 →
-603, HTTP keep-alive 912 → 937, TLS 8,526 → 8,192). The hosts differ (aarch64 VM then, x86-64
-now), but per-connection heap use should not depend on that, so this is flagged as a possible
-regression of about 1.8 KB per WebSocket connection to look into; it was not investigated in this
-measurement-only pass.
+603, HTTP keep-alive 912 → 937, TLS 8,526 → 8,192). It was a real regression, not the change of
+host: the 2026-11-14 build measured on this host with the same `mem.sh` gives 1,683, and a
+bisection put the jump (1,679 → 3,437) on the commit that replaced flate2 with only-deflate. The
+permessage-deflate wrappers of only-ws held the new codec state inline (528 B inflater, 1,552 B
+deflater; flate2 kept its state behind a pointer), and every connection carries an
+`Option<Inflater>` in its decoder and an `Option<Deflater>` in its sender, so ~2 KB was paid even
+when compression was not negotiated, as in this benchmark. The state is now boxed: 3,486 → 1,426
+bytes (epoll) and 3,485 → 1,414 (uring), below the 2026-11-14 figure.
 
 ## Reproducing
 

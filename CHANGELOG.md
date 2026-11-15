@@ -563,6 +563,9 @@ for every window size (8 laid out as 9); no API change.
 
 ### Fixed
 
+- `only-ws`: every WebSocket connection carried ~2 KB of inline permessage-deflate state (the
+  only-deflate inflater and deflater inside `Option`s), even when compression was not negotiated;
+  the state is now boxed. An idle connection after upgrade + one echo: 3,486 → 1,426 bytes.
 - io_uring: during a graceful shutdown, connections the multishot accept completed before its
   cancellation took effect were reset; they are now served (`on_shutdown` after their first data),
   and the drain ends only once the accept has ended, so the listening socket is really closed.
