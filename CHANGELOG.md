@@ -30,6 +30,34 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Added: aarch64 assembly for P-256 and X25519 in `only-crypto` (not benchmarked yet)
+
+On aarch64 the P-256 field and group-order arithmetic and the X25519 ladder's field now run in
+inline assembly (`ec::hw_aarch64`, `curve25519::hw_aarch64`), the counterparts of the x86_64
+BMI2 + ADX code; no API change.
+
+- P-256: Montgomery multiplication and squaring modulo `p` and `n`, addition, subtraction,
+  `2ᵏ·a` and `3·a` on four 64-bit limbs with `MUL`/`UMULH` products, `ADDS`/`ADCS`/`SUBS`/`SBCS`
+  carry chains and `CSEL` corrections; the reduction modulo `p` needs shifts and subtractions
+  only (as OpenSSL's `ecp_nistz256-armv8`), modulo `n` two of the four limb products are shifts.
+  `P256` dispatches to a twin curve on this field, as on x86_64; inversions are safegcd (portable
+  divsteps) with the final multiplication in assembly, and the twin keeps the portable defaults of
+  the `Curve::jac_*` hooks (point formulas, table scans, 4-bit comb) over the assembly field.
+- X25519: the ladder's field on four 64-bit limbs (16 `MUL` + 16 `UMULH` per product instead of
+  the 25 128-bit products of radix 2⁵¹), folds by `2²⁵⁶ ≡ 38` with `CSEL`, masked swaps.
+- Every ARMv8.0 CPU has these instructions: `hardware_features()` reports `umulh` on aarch64;
+  `ONLY_CRYPTO_PORTABLE=1` / `set_portable(true)` switch back to the portable code, and Miri
+  never runs the assembly.
+- Correctness: differential tests against the portable field code on random and edge values and
+  on chains of 20,000–50,000 dependent operations, the twin curve against the portable curve
+  (key generation, ECDH, signing, verification), the RFC 7748 vectors (including the
+  1,000,000-iteration one, `--ignored`), Wycheproof, all on macOS (Apple silicon) and arm64
+  Linux. The release code of the secret paths was disassembled: no conditional branch in the
+  assembly, and around it only loop counters, public bounds, CPU-feature checks and the final
+  identity test.
+- **Not benchmarked yet**: the design follows the instruction counts; no aarch64 speed-up is
+  claimed until it is measured.
+
 ### Performance: HTTP/2 and pipelined HTTP/1 hot paths in `only-http`
 
 Re-profiled after the in-house replacements (DEV-PLAN "Performance pass"); no API change.

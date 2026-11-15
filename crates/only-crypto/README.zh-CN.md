@@ -3,7 +3,7 @@
 [English](README.md)
 
 [`only`](https://github.com/lesismal/only) 各 crate 使用的无依赖密码学原语，Rust 实现
-（`#![deny(unsafe_code)]`，只依赖 `std`；例外是十个驱动 CPU 指令的小模块，运行时检测 CPU 特性；操作系统随机数
+（`#![deny(unsafe_code)]`，只依赖 `std`；例外是十二个驱动 CPU 指令的小模块，运行时检测 CPU 特性；操作系统随机数
 的系统调用放在 `only-sys` 中）。
 
 | 硬件路径（运行时检测，常数时间的可移植回退实现） | x86_64 | aarch64 |
@@ -13,7 +13,7 @@
 | SHA-1、SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32、CRC-32C | VPCLMULQDQ + AVX-512 或 PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 | AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
-| P-256 域与群阶运算、X25519 阶梯（`ec::hw`、`curve25519::hw`） | BMI2 + ADX 内联汇编（`mulx`、`adcx`/`adox`） | 可移植实现 |
+| P-256 域与群阶运算、X25519 阶梯（`ec::hw`、`curve25519::hw`；`ec::hw_aarch64`、`curve25519::hw_aarch64`） | BMI2 + ADX 内联汇编（`mulx`、`adcx`/`adox`） | 内联汇编（`MUL`/`UMULH`、`ADDS`/`ADCS`、`CSEL`；所有 ARMv8.0 CPU；尚未做性能测试） |
 | RSA 模幂（`bignum::ifma`、`bignum::hw`） | AVX-512 IFMA（`vpmadd52luq`/`vpmadd52huq`）处理 2048 至 4096 位密钥的 CRT 两半，否则 BMI2 + ADX 内联汇编（Montgomery 乘法与平方） | 可移植实现 |
 
 设置 `ONLY_CRYPTO_PORTABLE=1`（只读取一次）可强制全部使用可移植实现；测试会在设置与不设置时各跑一遍全部已知
@@ -55,7 +55,7 @@ assert_eq!(gcm.decrypt(&[0u8; 12], b"aad", &sealed).unwrap(), b"plaintext");
 ```
 
 这是一个实现用的 crate：它的 API 跟随其他 `only` crate 的需要，可能在任何发布中变化（内部层级，见
-docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥；只有宽 AES-GCM 内核与 CRC 折叠（其 VAES / VPCLMULQDQ / AVX-512 intrinsic 比 MSRV 新）以及 x86_64 上 P-256 与 Curve25519 的域运算和 RSA 的 Montgomery 运算使用汇编；SHA-512、MD5、Poly1305 与其余公钥运算是可移植的 Rust 代码）。
+docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥；只有宽 AES-GCM 内核与 CRC 折叠（其 VAES / VPCLMULQDQ / AVX-512 intrinsic 比 MSRV 新）以及 x86_64 上 P-256 与 Curve25519 的域运算和 RSA 的 Montgomery 运算、aarch64 上 P-256 与 Curve25519 的域运算使用汇编；SHA-512、MD5、Poly1305 与其余公钥运算是可移植的 Rust 代码）。
 公钥部分是 DEV-PLAN 第 C、D 波计划中自研 TLS/DTLS/QUIC 协议栈的基础；证书相关功能在
 [`only-x509`](../only-x509) 中。
 
@@ -71,6 +71,12 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
   P-256 运算在一个与可移植实现共享 Montgomery 表示和基点预计算表的“孪生”曲线类型上执行；它的 Jacobian
   倍点（也可连续 `n` 次）、加法与混合加法各是一个作用于小栈帧的整点 `asm!` 块（乘法、约简与模加减融合，
   累加值留在寄存器中），safegcd 的 divsteps 也是汇编；有 AVX2 时，查表用 256 位读取加 `vpcmpeqq` 掩码。
+- aarch64 上（所有 ARMv8.0 CPU 都具备所需指令，无需检测；`ONLY_CRYPTO_PORTABLE=1` 可关闭）P-256 的域与群阶
+  运算以及 X25519 阶梯的域运算用内联汇编实现：`MUL`/`UMULH` 求积，`ADDS`/`ADCS`/`SUBS`/`SBCS` 进位链，`CSEL`
+  修正，两条曲线都用四个 64 位 limb（模 P-256 素数的约简只用移位与减法，同 OpenSSL 的 `ecp_nistz256-armv8`）；
+  求逆是 safegcd（可移植的 divsteps），点运算公式、查表与 4 位梳形表是建立在这个域上的可移植实现。设计依据
+  指令数（4×64 乘积是 16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个 128 位乘积）；这条路径已测试，但
+  **尚未做性能测试**，因此不给出 aarch64 的性能数字。
 - P-256 / P-384 的秘密标量乘法使用 Jacobian 坐标（`a = -3`：倍点 4M + 4S，加法 11M + 5S，混合加法
   7M + 4S；P-256 孪生曲线的汇编加法用 12M + 4S 与 8M + 3S，模加减次数减半）。可变基点（ECDH）：Booth 重编码的有符号 5 位窗口（数字在 `[-16, 16]`）作用于 `1·P … 16·P`，每次
   查表读取全部 16 项，取负为掩码选择。固定基点：把 `k` 重新编码为有符号 4 位数字（掩码算术），每个数字加一个
@@ -96,7 +102,7 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
   `SecretKey::generate` 的拒绝采样、仿射坐标转换对无穷远点的分支（合法秘密标量不会出现）。
 - 局限：掩码经过 `std::hint::black_box`，只能阻止而不能保证优化器不重新引入分支；去掉它时 LLVM 确实会把部分
   带掩码的模修正编译成跳转，因此即使有性能代价也保留这道屏障（汇编不需要这道屏障）。已反汇编秘密标量路径在
-  x86_64（含汇编）与 aarch64（可移植）上的 release 代码并列出每个条件分支（方法见 `src/ct.rs`）：P-256 /
+  x86_64（含汇编）与 aarch64（含 aarch64 汇编，以及可移植实现）上的 release 代码并列出每个条件分支（方法见 `src/ct.rs`）：P-256 /
   P-384 的 `ecdh_x_impl`、`base_mul_impl`、`sign_impl` 及其内联的窗口与梳形表循环，Jacobian 倍点与加法（含整点
   汇编），宽梳形表与 AVX2 查表，域与群阶的乘法、平方与求逆（safegcd 及两种 divsteps），Ed25519 基点乘法与
   两种 X25519 阶梯；RSA 部分为 `Mont::mul_into` / `sqr_into`（内联了 BMI2 + ADX 汇编块）、`ifma::amm`（三个
@@ -104,7 +110,8 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
   `private_op`。分支只出现在循环计数、公开下标与边界（以及按 limb 数的分派、切片与内存分配检查）、其余费马求逆链的公开指数位、CPU 特性与
   `OnceLock` 检查、输出编码的长度，以及最后“结果为无穷远点”的判断上。尚未运行统计检测
   （dudect、ctgrind）。密钥不会被清零。所用的 CPU 指令（AES、无进位乘法、SHA、CRC32、AVX2、`mulx`、
-  `adcx`/`adox`、`cmov`、`vpmadd52luq`/`vpmadd52huq`）是常数时间的。
+  `adcx`/`adox`、`cmov`、`vpmadd52luq`/`vpmadd52huq`；aarch64 上的 `MUL`、`UMULH`、设置标志位的加减法与 `CSEL`）
+  是常数时间的。
 
 ## 性能
 
@@ -153,8 +160,8 @@ Montgomery 汇编、IFMA 模幂、带一遍式 AVX2 查表的 5 位窗口，以�
 （0.95 倍、0.95 倍），only-tls 使用 RSA-2048 证书的握手从 rustls 的 0.43 倍提升到 1.44 倍。一次 1024 位
 Montgomery 乘法在 BMI2 + ADX 上需要 805 个周期（平方 681），一次 1024 位 IFMA 乘法 416 个周期；只有
 BMI2 + ADX（没有 IFMA）时 RSA-2048 签名为 ring 的 0.99 倍。没有尝试 Karatsuba：在这些位数下，汇编的行循环
-已没有多少可省。后续：给没有 AVX-512 的 CPU 的 VAES + AVX2 内核、SIMD Poly1305、aarch64 上 P-256
-域运算的汇编、在一个 IFMA 汇编块中交错计算 CRT 的两半。
+已没有多少可省。后续：给没有 AVX-512 的 CPU 的 VAES + AVX2 内核、SIMD Poly1305、测量 aarch64 上 P-256 与
+X25519 汇编的性能（已测试，尚未做性能测试）、aarch64 上的整点运算与 divsteps 汇编、在一个 IFMA 汇编块中交错计算 CRT 的两半。
 
 ## 测试
 
@@ -169,8 +176,8 @@ BMI2 + ADX（没有 IFMA）时 RSA-2048 签名为 ring 的 0.99 倍。没有尝�
   的 CPU 上运行，因此这些测试要在这样的机器（Zen 4）上原生运行。
 - 硬件路径：单元测试把每条硬件路径与可移植实现比较（AES、CTR、GCM、SHA-1、SHA-256 的
   `hardware_matches_portable`，CRC 的 `hardware_matches_table`，多分组 ChaCha20 与两分组 Poly1305 对比逐分组
-  计算，`ec::hw` 与 `curve25519::hw` 的 `matches_portable` 在随机值与边界值上覆盖每个域运算例程与 X25519
-  阶梯，`ec::hw` 的 `points_match_portable` 在随机 `Z` 的随机点、Wycheproof 中全部合法的 ECDH 点、`P + P`、
+  计算，`ec::hw`、`ec::hw_aarch64`、`curve25519::hw` 与 `curve25519::hw_aarch64` 的 `matches_portable` 在随机值
+  与边界值上覆盖每个域运算例程与 X25519 阶梯，`chains_match_portable` 覆盖长串相互依赖的运算（aarch64），`ec::hw` 的 `points_match_portable` 在随机 `Z` 的随机点、Wycheproof 中全部合法的 ECDH 点、`P + P`、
   `P + (-P)` 与两种形式的无穷远点上把整点倍点（逐 limb）、加法与混合加法（按点比较：它们的公式给出另一种
   表示）和可移植公式比较，并在边界值上检查模减半，`safegcd` 的 `matches_fermat`
   覆盖 P-256 的两个模数，`twin_matches_portable` 覆盖 P-256 的密钥生成、ECDH、签名与验签，`bignum` 的 `asm_matches_generic`

@@ -4,6 +4,8 @@
 pub(crate) mod fe;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod hw;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod hw_aarch64;
 
 use std::sync::OnceLock;
 
