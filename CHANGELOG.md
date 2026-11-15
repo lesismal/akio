@@ -30,6 +30,30 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Performance: HTTP/2 and pipelined HTTP/1 hot paths in `only-http`
+
+Re-profiled after the in-house replacements (DEV-PLAN "Performance pass"); no API change.
+
+- HTTP/2: frames are parsed in place from the read buffer (no copy per frame, the leftover moved
+  once per read); decoded header fields go into one reused buffer instead of two `Vec`s per
+  field; header blocks are HPACK-encoded straight into the output, with `:status`, `date` and
+  `content-length` written there; a body that fits one DATA frame and the flow-control windows
+  skips the stream queue; the stream table uses a multiply-fold hasher instead of SipHash.
+- HTTP/2: everything one read produces, including the responses the service sends on the I/O
+  thread, is handed to the connection in a single write at the end of the read (one TLS record
+  for the batch instead of one per response); responses sent from other threads join the batch
+  while a read is being handled and go out immediately otherwise.
+- HTTP/2 flow control: the connection and stream receive windows are given back once a quarter
+  of them is owed, instead of two WINDOW_UPDATE frames per DATA frame.
+- HTTP/1: request heads are parsed with room for 32 fields first (100 only when needed), and the
+  fields framing needs (`Host`, `Connection`, `Content-Length`, `Transfer-Encoding`, `Expect`)
+  are found in one pass.
+- Ryzen 7 7800X3D, 4 server threads (epoll): h2c 64 connections x 16 streams 2.28M → 4.05M
+  req/s (1.78x, now 1.25x fib), h2c 16 x 128 2.37M → 4.71M, HTTP/2 over TLS 1.58M → 4.03M (2.5x,
+  1.33x fib), pipelined HTTP/1.1 x16 3.99M → 4.26M (+7%, 1.14x fib). h2spec: 147/147. Tables
+  in docs/BENCHMARKS.md; the harness (`tools/bench`, now with a README) drives HTTP/1.1 with
+  `h2load --h1` when wrk is missing and gained h2-over-TLS and many-streams cases.
+
 ### Performance: CPU acceleration in `only-crypto`
 
 `only-crypto` now uses CPU instructions where the CPU has them, detected at run time, each with
