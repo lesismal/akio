@@ -462,6 +462,9 @@ API 无变化。Ryzen 7 7800X3D，回环，交替运行三轮（见 docs/BENCHMA
 
 ### 修复
 
+- `only-ws`：每个 WebSocket 连接都带着约 2 KB 内联的 permessage-deflate 状态（`Option` 中的
+  only-deflate inflater 与 deflater），即使没有协商压缩；现在状态改为装箱。升级 + 一次 echo 之后的
+  空闲连接：3,486 → 1,426 字节。
 - io_uring：优雅关闭期间，multishot accept 在取消生效前已完成接受的连接会被重置；现在它们会被服务
   （收到第一份数据后调用 `on_shutdown`），并且排空要等 accept 真正结束才完成，监听套接字因此确实被关闭。
 - `only-dpdk`（实验性，M6）：内核旁路后端。用户态 TCP/IP 协议栈（smoltcp，IPv4）运行在 only 的

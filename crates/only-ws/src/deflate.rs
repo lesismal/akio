@@ -26,7 +26,9 @@ impl std::error::Error for InflateError {}
 /// Decompresses messages.
 #[derive(Debug)]
 pub struct Inflater {
-    d: only_deflate::Inflater,
+    // Boxed: the codec state is ~0.6 KB inline, and `Option<Inflater>` sits in every
+    // connection's decoder, compressed or not.
+    d: Box<only_deflate::Inflater>,
     reset_each_message: bool,
 }
 
@@ -36,7 +38,7 @@ impl Inflater {
     /// `no_context_takeover`: forget the history after every message.
     pub fn new(no_context_takeover: bool) -> Inflater {
         Inflater {
-            d: only_deflate::Inflater::new(Format::Raw),
+            d: Box::new(only_deflate::Inflater::new(Format::Raw)),
             reset_each_message: no_context_takeover,
         }
     }
@@ -77,7 +79,8 @@ impl Inflater {
 /// Compresses messages.
 #[derive(Debug)]
 pub struct Deflater {
-    c: only_deflate::Deflater,
+    // Boxed for the same reason (~1.4 KB inline, in every connection's sender).
+    c: Box<only_deflate::Deflater>,
     reset_each_message: bool,
 }
 
@@ -86,11 +89,11 @@ impl Deflater {
     /// the LZ77 window the peer agreed to inflate with (15 when nothing was negotiated).
     pub fn new(no_context_takeover: bool, window_bits: u8) -> Deflater {
         Deflater {
-            c: only_deflate::Deflater::with_window_bits(
+            c: Box::new(only_deflate::Deflater::with_window_bits(
                 Format::Raw,
                 Level::DEFAULT,
                 window_bits.clamp(8, 15),
-            ),
+            )),
             reset_each_message: no_context_takeover,
         }
     }
@@ -286,6 +289,14 @@ pub fn negotiate<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codec_state_is_not_inline() {
+        // Every connection carries an `Option<Inflater>` and an `Option<Deflater>`, mostly `None`;
+        // the codec state inline (~2 KB) cost ~1.8 KB per WebSocket connection.
+        assert!(size_of::<Option<Inflater>>() <= 16);
+        assert!(size_of::<Option<Deflater>>() <= 16);
+    }
 
     #[test]
     fn roundtrip_with_and_without_context_takeover() {
