@@ -198,7 +198,11 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 ### 性能优化阶段（第 D 波之后；完成后再考虑发布 1.0.0）
 - [x] `only-crypto` CPU 指令加速：SHA-NI / ARMv8 SHA、PMULL / PCLMULQDQ GHASH、CRC32 指令（TLS 大块传输与 BitTorrent 哈希），更快的 P-256（专用域运算）与 RSA（乘法），X25519（已完成：运行时检测的 AES-NI / ARMv8 AES CTR 一次 8 个分组，PCLMULQDQ / PMULL GHASH 与 CTR 单趟融合的 AES-GCM，SHA-NI / ARMv8 SHA，PCLMULQDQ 折叠 / SSE4.2 / ARMv8 CRC32，AVX2 ChaCha20，44 位 limb 的 Poly1305，P-256 专用约简 + 求逆加法链 + 有符号仿射梳形表 + Jacobian wNAF 验签，Ed25519 wNAF 验签，Curve25519 专用平方，带专用平方的定长 RSA Montgomery；unsafe 仅限五个 `hw` 模块，`ONLY_CRYPTO_PORTABLE=1` 强制使用可移植实现。在 Ryzen 7800X3D 上：SHA-1/SHA-256 达到 RustCrypto 的速度（3.6 倍 / 6.5 倍），AES-128-GCM 6.5 GB/s（17.8 倍，TLS 16 KiB 记录为 rustls+ring 的 0.64 倍），CRC-32 7 倍，P-256 验签 1.67 倍 / 签名 1.46 倍，TLS 1.3 握手 1.5 倍（rustls+ring 的 0.60 倍）；见 docs/BENCHMARKS.zh-CN.md。未完成：VAES/VPCLMULQDQ 内核（intrinsic 比 MSRV 新）、SIMD Poly1305、更便宜的 P-256 秘密标量倍点、RSA Karatsuba）
 - [x] `only-deflate` 匹配器提速（4 字节哈希、medium 策略），缩小与 zlib-rs 0.25–0.6 倍的差距：采用 zlib-ng 的级别表与 quick/fast/medium/slow 策略（级别 9 用 3 字节哈希与跳链搜索）、每次比较 8 字节、不保留上下文时的廉价重置；解码器快速路径（64 位补充比特、每次补充解码三个字面量或一个长度/距离对、分块复制匹配）。仍为不用 SIMD 的安全 Rust。在 x86-64 上与 flate2/zlib-rs 相比：各级别输出最多大 0.5%（45 组级别 × 语料中 36 组完全相同），压缩 0.94–1.48 倍，解压 0.82–1.23 倍（存储块 0.42 倍），permessage-deflate 回显在 64 B / 512 B / 4 KiB / 64 KiB 时为 1.84 / 1.04 / 1.00 / 0.98 倍（见 docs/BENCHMARKS.zh-CN.md）。级别 1 现在与 zlib-ng 一样以压缩率换速度（输出比之前最多大 40%）。未完成：存储块仍经过窗口（复制两次）
-- [ ] 自研替换完成后重新剖析 TLS / QUIC / HTTP 热路径；h2 与 pipelined HTTP/1 对比 fib
+- [x] 自研替换完成后重新剖析 TLS / QUIC / HTTP 热路径；h2 与 pipelined HTTP/1 对比 fib（Ryzen 7800X3D）：
+  - HTTP：h2 帧原地解析、HPACK 平铺缓冲、每次读只写一次（一个 TLS 记录）、接收窗口按四分之一归还；HTTP/1 请求头先用小存储解析。h2c 228 万 → 405 万请求/秒（fib 的 1.25 倍，原 0.70 倍），TLS 上的 h2 158 万 → 403 万（fib 的 1.33 倍，原 0.52 倍），HTTP/1.1 流水线 +7%（fib 的 1.14–1.17 倍）；h2spec 147/147。
+  - QUIC：pacer 改用测得的 RTT 并整批补满令牌，不再逐包唤醒。单流大块 3.4–3.7 → 5.7–5.8 Gbit/s（quinn-proto 的 1.25 倍，原 0.72 倍），HTTP/3 每秒请求 17.1 万 → 41.5–42.6 万。
+  - TLS：完整记录直接解密进调用方缓冲区（+5–7%；16 KiB 为 rustls+ring 的 0.64–0.69 倍，其余差距在 AES-GCM 内核）；握手 98% 以上为曲线运算（0.61 / 0.45 倍）。新增 `only-tls/examples/tls-bench.rs`。
+  - 未完成：VAES GCM、recvmmsg 接收复制、默认 GRO 与 QUIC 按批 ACK、受内核限制的 keep-alive HTTP/1。
 - [ ] 在空闲机器（DPDK 用真实网卡）上重跑基准并更新 `docs/BENCHMARKS.md`
 
 ## 4. 工程规范
