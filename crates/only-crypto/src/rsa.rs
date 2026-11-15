@@ -144,7 +144,7 @@ impl PublicKey {
         if e < 3 || e & 1 == 0 || e >= 1 << 33 {
             return Err(Error::InvalidKey);
         }
-        let n = Mont::new(&nl).ok_or(Error::InvalidKey)?;
+        let n = Mont::new_public(&nl).ok_or(Error::InvalidKey)?;
         Ok(PublicKey {
             n,
             len: bits.div_ceil(8),
@@ -539,25 +539,26 @@ impl PrivateKey {
                 Some(b) => b,
                 None => self.new_blinding()?,
             };
-            *g = Some(Blinding {
-                r_e: n.mul(&b.r_e, &b.r_e),
-                r_inv: n.mul(&b.r_inv, &b.r_inv),
-            });
+            let mut next = b.clone();
+            n.sqr_into(&mut next.r_e, &b.r_e);
+            n.sqr_into(&mut next.r_inv, &b.r_inv);
+            *g = Some(next);
             b
         };
-        // c·rᵉ (normal form).
-        let cb = n.mul(&n.to_mont(&cl), &bl.r_e);
-        let cb = n.out_of_mont(&cb);
-        let m1 = {
-            let cp = self.p.to_mont(&self.p.reduce_any(&cb));
-            self.p.out_of_mont(&self.p.pow(&cp, &self.dp))
+        // c·rᵉ in normal form: a Montgomery product with rᵉ·R.
+        let cb = n.mul(&cl, &bl.r_e);
+        let to_half = |h: &Mont| {
+            if cb.len() <= 2 * h.limbs() {
+                h.to_mont_wide(&cb)
+            } else {
+                h.to_mont(&h.reduce_any(&cb))
+            }
         };
-        let m2 = {
-            let cq = self.q.to_mont(&self.q.reduce_any(&cb));
-            self.q.out_of_mont(&self.q.pow(&cq, &self.dq))
-        };
+        let m1 = self.p.out_of_mont(&self.p.pow(&to_half(&self.p), &self.dp));
+        let m2 = self.q.out_of_mont(&self.q.pow(&to_half(&self.q), &self.dq));
         let mb = self.crt_combine(&m1, &m2);
-        let m = n.out_of_mont(&n.mul(&n.to_mont(&mb), &bl.r_inv));
+        // m·r⁻¹ in normal form, likewise.
+        let m = n.mul(&mb, &bl.r_inv);
         // Fault check: mᵉ = c.
         let back = n.out_of_mont(&n.pow_vartime(&n.to_mont(&m), &[self.public.e]));
         if back != cl {
