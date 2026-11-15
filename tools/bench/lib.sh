@@ -97,14 +97,23 @@ wait_quiet() {
 # start_server <kind> <proto>: picks a fresh port (in $PORT), starts the server pinned to
 # $SRV_CPUS, waits until it listens. The pid is in $SPID.
 start_server() {
-  local cmd
+  local cmd try
   [ "${QUIET:-1}" = 1 ] && wait_quiet
-  PORT=$((PORT + 1))
-  cmd=$(server_cmd "$1" "$2" "0.0.0.0:$PORT")
-  # shellcheck disable=SC2086
-  taskset -c "$SRV_CPUS" $cmd >/dev/null 2>&1 &
-  SPID=$!
-  if [ "$2" = udp ]; then sleep 1; else wait_port "$PORT" || echo "server $1 $2 did not start" >&2; fi
+  # On a host whose ephemeral range covers $PORT (bare Linux defaults to 1024-65535), the client
+  # sockets of an earlier run (tens of thousands after mem.sh) can still hold the next port:
+  # skip ports that any socket uses, and retry on the next port if the server still fails.
+  for try in 1 2 3; do
+    PORT=$((PORT + 1))
+    while [ -n "$(ss -Htuan "sport = :$PORT" 2>/dev/null | head -1)" ]; do PORT=$((PORT + 1)); done
+    cmd=$(server_cmd "$1" "$2" "0.0.0.0:$PORT")
+    # shellcheck disable=SC2086
+    taskset -c "$SRV_CPUS" $cmd >/dev/null 2>&1 &
+    SPID=$!
+    if [ "$2" = udp ]; then sleep 1; return 0; fi
+    wait_port "$PORT" && kill -0 "$SPID" 2>/dev/null && return 0
+    echo "server $1 $2 did not start on port $PORT (attempt $try)" >&2
+    stop_server
+  done
 }
 
 stop_server() {

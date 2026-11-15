@@ -33,7 +33,9 @@ same one.
 Environment variables, see `lib.sh`: `SRV_CPUS` / `CLI_CPUS` (CPU lists for `taskset`),
 `THREADS` / `CLI_THREADS`, `SECS` (seconds per run), `RUNS` (rounds; tables show the median),
 `KINDS` (servers, e.g. `"only-epoll fib"`), `OUT` (TSV file), `HCONNS` (HTTP/1.1 connections),
-`MAX_BUSY` / `QUIET_WAIT` (wait for an idle host before each run).
+`MAX_BUSY` / `QUIET_WAIT` (wait for an idle host before each run). Each server gets a fresh port
+above `PORT` (default 7400); ports still held by sockets of an earlier run are skipped, since a
+bare host's ephemeral range (1024–65535) covers them.
 
 A/B runs: copy the binaries of the old revision (`http-bench`, `bench-server`) into a directory
 and set `BASE_DIR` to it; they then run as `base-epoll` / `base-uring` next to the current build,
