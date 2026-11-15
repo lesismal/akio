@@ -32,6 +32,8 @@ HTTP/1.1 在装有 `wrk` 时用 `wrk`（通过 Lua 脚本做流水线），否�
 环境变量，见 `lib.sh`：`SRV_CPUS` / `CLI_CPUS`（传给 `taskset` 的 CPU 列表）、`THREADS` / `CLI_THREADS`、
 `SECS`（每次运行的秒数）、`RUNS`（轮数，表格取中位数）、`KINDS`（服务端，如 `"only-epoll fib"`）、
 `OUT`（TSV 文件）、`HCONNS`（HTTP/1.1 连接数）、`MAX_BUSY` / `QUIET_WAIT`（每次运行前等待主机空闲）。
+每个服务端使用 `PORT`（默认 7400）之上的新端口；之前运行的套接字仍占用的端口会被跳过，因为裸机的
+临时端口范围（1024–65535）覆盖了它们。
 
 A/B 对比：把旧版本的二进制（`http-bench`、`bench-server`）复制到一个目录，并把 `BASE_DIR` 设为该目录；
 它们会以 `base-epoll` / `base-uring` 的名字与当前构建一起、在每一轮中交替运行。
