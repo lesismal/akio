@@ -5,7 +5,9 @@
 //! ```
 //!
 //! - `handshakes`: full handshakes per second with X25519 and secp256r1, both ends on this
-//!   thread, the same self-signed ECDSA P-256 certificate verified by the client, no tickets.
+//!   thread, the same self-signed ECDSA P-256 certificate verified by the client, no tickets;
+//!   then with X25519 and a self-signed RSA-2048 certificate (the server signs with RSA-PSS,
+//!   the client verifies the certificate and that signature).
 //! - `records`: application data sealed by the client and opened by the server, MB/s of
 //!   plaintext, for writes of 1 KiB, 16 KiB and 64 KiB with each TLS 1.3 cipher suite.
 //!
@@ -38,6 +40,21 @@ fn cert() -> Cert {
     Cert {
         der: c.as_der().to_vec(),
         key: k.to_pkcs8_der(),
+    }
+}
+
+/// A self-signed certificate on the RSA-2048 test key of only-crypto.
+fn cert_rsa() -> Cert {
+    let key = only_crypto::pkey::PrivateKey::from_pem(include_bytes!(
+        "../../only-crypto/tests/data/rsa2048_test_key.pem"
+    ))
+    .expect("rsa key");
+    let c = only_x509::CertificateParams::new(["localhost"])
+        .self_signed(&key)
+        .expect("certificate");
+    Cert {
+        der: c.as_der().to_vec(),
+        key: key.to_pkcs8_der(),
     }
 }
 
@@ -274,6 +291,23 @@ fn main() {
             });
             row(&format!("full handshakes, {name}"), "/s", ours, theirs);
         }
+        let rc = cert_rsa();
+        let (os, oc) = only_configs(&rc, X25519, AES128);
+        let (rs, rcl) = rustls_configs(&rc, X25519, AES128);
+        let ours = rate(secs, || {
+            black_box(only_pair(&os, &oc));
+            1
+        });
+        let theirs = rate(secs, || {
+            black_box(rustls_pair(&rs, &rcl));
+            1
+        });
+        row(
+            "full handshakes, X25519, RSA-2048 certificate",
+            "/s",
+            ours,
+            theirs,
+        );
     }
     if matches!(what, "records" | "all") {
         for (name, s) in [

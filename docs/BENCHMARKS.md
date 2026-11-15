@@ -166,6 +166,7 @@ dev-dependency.
 |---|---:|---:|---:|
 | full handshakes/s, X25519 | 5,027 | 5,025 | 1.00 |
 | full handshakes/s, secp256r1 | 4,552 | 5,126 | 0.89 |
+| full handshakes/s, X25519, RSA-2048 certificate ³ | 2,586 | 1,800 | 1.44 |
 | seal + open 1 KiB, AES-128-GCM (MB/s) | 2,697 | 1,760 | 1.53 |
 | seal + open 16 KiB, AES-128-GCM | 6,603 | 3,994 | 1.65 |
 | seal + open 64 KiB, AES-128-GCM | 6,734 | ² | – |
@@ -178,6 +179,9 @@ dev-dependency.
 
 ² rustls at 64 KiB swings between ~2,200 and ~3,900 MB/s from run to run (its receive side takes
 at most 16 KiB of plaintext before it must be read out), so no ratio is given.
+
+³ The server signs with RSA-PSS, the client verifies the certificate and that signature (the
+RSA pass, below); 775/s (0.43×) before it.
 
 Handshakes were 3,055 (X25519) and 2,306 (secp256r1) per second before the P-256 / X25519
 pass (0.61× and 0.45×; History). The handshake profile is still dominated by curve arithmetic:
@@ -232,8 +236,10 @@ crc32fast for CRC-32) and ring 0.17 for public-key operations.
 | P-384 ECDSA verify | 4,330 | 1,849 | 2.34 |
 | P-384 ECDH | 4,387 | 3,579 | 1.23 |
 | P-384 key generation | 19,331 | 3,586 | 5.39 |
-| RSA-2048 PKCS#1 sign | 1,192 | 2,429 | 0.49 |
-| RSA-2048 PKCS#1 verify | 39,244 | 65,991 | 0.59 |
+| RSA-2048 PKCS#1 sign | 3,910 | 2,429 | 1.61 |
+| RSA-2048 PKCS#1 verify | 79,970 | 65,600 | 1.22 |
+| RSA-3072 PKCS#1 sign | 1,455 | 787 | 1.85 |
+| RSA-4096 PKCS#1 sign | 755 | 345 | 2.19 |
 
 The P-256 rows and X25519 run on BMI2 + ADX (`ec::hw`, `curve25519::hw`; `adx` in the detected
 paths). With every hardware path off (`ONLY_CRYPTO_PORTABLE=1`, which also turns off SHA-NI for
@@ -298,6 +304,42 @@ product rows neutral (+1%); the `cmov` selections of the final subtractions repl
 order, which is close to the throughput of the `mulx` and flag-reading instructions it issues
 rather than to its dependency chain.
 
+#### RSA (`--example pk_bench rsa`, `tls-bench handshakes`, CPU 2)
+
+Three alternating rounds of the previous code (`7f5c483a`, with this pass's benchmark files) and
+this pass, against ring 0.17 / rustls 0.23 in the same run, on a quiet host (load average 1–2,
+the services stopped by `quiet.sh`); the rounds agreed within 1%. "verify + key parse" builds
+the public key from `(n, e)` before each verification, as ring's `RsaPublicKeyComponents` does on
+every call: the cost of checking one certificate signature.
+
+| op/s (quiet host) | before | after | ring / rustls | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|
+| RSA-2048 PKCS#1 sign | 1,192 | 3,910 | 2,429 | 0.49 | 1.61 |
+| RSA-2048 PKCS#1 verify | 39,250 | 79,970 | 65,600 | 0.60 | 1.22 |
+| RSA-2048 verify + key parse | 5,850 | 67,090 | 65,600 | 0.09 | 1.02 |
+| RSA-3072 PKCS#1 sign | 371 | 1,455 | 787 | 0.47 | 1.85 |
+| RSA-3072 PKCS#1 verify | 18,300 | 33,440 | 30,550 | 0.60 | 1.10 |
+| RSA-3072 verify + key parse | 2,627 | 28,980 | 30,550 | 0.09 | 0.95 |
+| RSA-4096 PKCS#1 sign | 156 | 755 | 345 | 0.45 | 2.19 |
+| RSA-4096 PKCS#1 verify | 10,110 | 19,090 | 17,540 | 0.58 | 1.09 |
+| RSA-4096 verify + key parse | 1,400 | 16,560 | 17,540 | 0.08 | 0.95 |
+| TLS 1.3 full handshakes/s, X25519, RSA-2048 certificate | 775 | 2,586 | 1,800 | 0.43 | 1.44 |
+
+Signing runs on AVX-512 IFMA here (`ifma` in the detected paths): radix-2⁵² almost Montgomery
+multiplication, 416 cycles for 1,024 bits (84 ns at 4.93 GHz), 787 for 1,536 and 1,210 for 2,048;
+a whole 1,024-bit CRT half-exponentiation takes 113 µs. Verification and CPUs without IFMA use
+the BMI2 + ADX assembly: a 1,024-bit Montgomery multiplication 805 cycles (portable 1,245),
+squaring 681 (portable 1,486), 2,048-bit 3,045 and 2,700 cycles. Measured on that path alone
+(before the IFMA code), RSA-2048 signing was 0.99× ring and verification 1.20×. The MULX row
+pattern (`mulx`, `adcx`, `adox` per product) runs at about 1.5 cycles per product on Zen 4 in a
+probe, so the multiplication is near what this instruction mix allows. With
+`ONLY_CRYPTO_PORTABLE=1` signing is 0.50× ring and verification 0.59× (the key parse no longer
+dominates: 0.53×). Tried and dropped by measurement: computing the next reduction factor from a
+register instead of memory (no change), `zmm` accumulators for 32 digits (slower than `ymm` with
+the operands in registers), a second accumulator for the `m` products and splitting each step
+into low/high halves at 32 and 40 digits (no gain: the shared multiply/shuffle pipes are the
+limit), memory operands for the IFMA instructions (half the throughput on Zen 4).
+
 #### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
 
 MB/s of message bytes with 13 bytes of AAD, median of three alternating rounds; before = `main`
@@ -345,7 +387,8 @@ fixed cost; the tail after the last 256-byte group runs on the 128-bit path); CP
 without AVX-512 (Zen 3, Alder Lake) use the 128-bit path; the TLS record layer still zero-fills
 the output before the AEAD writes it (about 9% of a 16 KiB record); Poly1305 is scalar; P-256
 ECDH is at 1.12× ring (a doubling ~348 cycles, about 44 per product whatever their order);
-Ed25519 verification is portable; RSA has no Karatsuba; SHA-512 and MD5 are portable.
+Ed25519 verification is portable; RSA's two CRT halves are not interleaved in one IFMA block,
+and without IFMA RSA-2048 signing is at parity with ring; SHA-512 and MD5 are portable.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 
@@ -478,6 +521,12 @@ Short summaries of the per-area passes; the full tables are in the git history o
   whole-point assembly, a shorter reduction step. Against ring in the same run: ECDH 1.08× →
   1.12×, sign 1.36× → 1.38×, verify 1.08× → 1.10×, key generation 1.36× → 1.40×; handshakes
   unchanged (secp256r1 1.07×, X25519 1.08× rustls).
+- **RSA** (this host, CPU 2, three alternating rounds on a quiet host, `7f5c483a` → after): BMI2 +
+  ADX Montgomery multiplication and squaring in assembly, the exponentiation on AVX-512 IFMA
+  (radix 2⁵²), 5-bit windows with one-pass AVX2 scans, `R²` by squarings or one division. Against
+  ring: RSA-2048 sign 0.49× → 1.61×, 3072 0.47× → 1.85×, 4096 0.45× → 2.19×, verify 0.60× →
+  1.22×, verify with the key parse 0.09× → 1.02×; RSA-2048 certificate handshakes 0.43× → 1.44×
+  rustls.
 - **Wide AES-GCM and CRC** (this host, `a1cc9b49` → after): AES-GCM on VAES + VPCLMULQDQ +
   AVX-512 (512-bit, chosen over 256-bit by measurement) 2.3–2.5× at 16–64 KiB (AES-128 seal
   16 KiB 6,455 → 15,048 MB/s, 0.51× → 1.19× ring), the fused tail 1.8–2.1× at 64 B; TLS 1.3
