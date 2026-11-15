@@ -209,6 +209,21 @@ Each task is marked `[ ]`, with the deliverable in parentheses. Each milestone m
 - [x] P-256 whole-point pass (x86_64): doubling / addition / mixed addition as single BMI2+ADX `asm!` blocks (consecutive doublings share one frame), 6-bit Booth comb (43×32 affine points, 88 KiB) and ECDH window tables scanned with AVX2 masks, constant-time safegcd (Bernstein–Yang) inversion with asm divsteps. vs ring: sign 1.25x, keygen 1.33x, verify 1.04x, ECDH 0.96x; secp256r1 TLS handshakes 1.12x rustls+ring (ratios from same-run A/B; the host had outside load). ECDH was later measured at 1.08x on a quiet host; the 0.96x figure came from the loaded host.
 - [x] P-256 ECDH ≥ ring on x86_64: OpenSSL ecp_nistz256 point formulas (addition 12M+4S, mixed addition 8M+3S, doubling from 2Y with a branch-free halving) and a 7-instruction reduction step. Quiet Zen 4, same-run A/B: ECDH 1.08x → 1.12x ring, sign 1.38x, verify 1.10x, keygen 1.40x; doubling 348 / addition 721 / mixed addition 508 cycles, variable-base multiply 140.6k. Handshakes unchanged within noise (secp256r1 1.07x, X25519 1.08x rustls+ring). An interleaved reduction measured neutral and was dropped.
 
+### Performance pass 2 (follow-ups, 2026-11-16)
+Decisions taken while the user was away (recommended option chosen, review later):
+- aarch64 assembly is verified by tests only; no aarch64 performance numbers are claimed until an ARM benchmark host exists (user choice).
+- Benchmarks run only on the quiet host .51 under `quiet.sh`; when an outside workload loads it, same-run A/B ratios are reported instead of absolute numbers.
+- New SIMD/asm code keeps MSRV 1.85 by using `asm!` plus CPUID/XGETBV detection, never by raising the MSRV.
+
+Items:
+- [ ] aarch64 `asm!` for the P-256 field/order arithmetic and the X25519 ladder (tests only)
+- [ ] RSA sign/verify on x86_64 (BMI2/ADX Montgomery, constant-time windows; 2048 sign was 0.49x ring, verify 0.59x)
+- [ ] ChaCha20-Poly1305 bulk (AVX2/AVX-512 ChaCha20, SIMD Poly1305; TLS records were 0.55x rustls+ring)
+- [ ] QUIC datapath leftovers: no copy out of the `recvmmsg` buffer, a ring buffer for sent packets, per-batch ACKs (needs an only-core batch-end hook), GRO on by default where supported
+- [ ] Wide AES-GCM leftovers: a VAES-AVX2 kernel for CPUs without AVX-512, masked tails inside the wide kernel, the TLS record zero-fill
+- [ ] A dudect-style statistical timing test for the secret-dependent paths (CI job, not a gate)
+- [ ] `only-deflate` stored blocks decoded with one copy
+
 ## 4. Engineering rules
 - **Branches/commits**: `main` stays releasable; feature branches + PRs; Conventional Commits.
 - **Code**: `#![forbid(unsafe_code)]` by default; unsafe allowed only in `only-sys`, the backends and `only-buf`, each with a `// SAFETY:` comment.

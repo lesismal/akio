@@ -209,6 +209,21 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] P-256 整点优化（x86_64）：倍点 / 加法 / 混合加法各为一个 BMI2+ADX `asm!` 块（连续倍点共用一帧），6 位 Booth 梳形表（43×32 个仿射点，88 KiB）与 ECDH 窗口表用 AVX2 掩码扫表，常数时间 safegcd（Bernstein–Yang）求逆，divsteps 用汇编。相对 ring：签名 1.25 倍，生成密钥 1.33 倍，验签 1.04 倍，ECDH 0.96 倍；secp256r1 TLS 握手为 rustls+ring 的 1.12 倍（比例来自同一轮 A/B；主机有外部负载）。ECDH 后来在空闲主机上测得为 1.08 倍；0.96 倍是有负载时测得。
 - [x] x86_64 上 P-256 ECDH 不低于 ring：改用 OpenSSL ecp_nistz256 的点运算公式（加法 12M+4S、混合加法 8M+3S、倍点从 2Y 出发并用无分支模减半），约简每步 7 条指令。空闲的 Zen 4、同一轮 A/B：ECDH 为 ring 的 1.08 倍 → 1.12 倍，签名 1.38 倍，验签 1.10 倍，生成密钥 1.40 倍；倍点 348、加法 721、混合加法 508 个周期，可变基点乘法 140.6k。握手在噪声范围内不变（secp256r1 为 rustls+ring 的 1.07 倍，X25519 1.08 倍）。约简交织进乘积各行实测无收益，未采用。
 
+### 性能优化第二轮（后续项，2026-11-16）
+用户不在时按建议方案做出的决定（之后再审阅）：
+- aarch64 汇编只用测试验证；在有 ARM 基准主机之前不给出 aarch64 性能数字（用户选择）。
+- 基准测试只在安静主机 .51 上用 `quiet.sh` 运行；有外部负载时报告同一轮 A/B 的比例，而不是绝对数字。
+- 新的 SIMD/汇编代码通过 `asm!` 加 CPUID/XGETBV 检测保持 MSRV 1.85，不提高 MSRV。
+
+条目：
+- [ ] P-256 域/群阶运算与 X25519 阶梯的 aarch64 `asm!`（仅测试）
+- [ ] x86_64 上的 RSA 签名/验签（BMI2/ADX Montgomery、常数时间窗口；2048 位签名原为 ring 的 0.49 倍，验签 0.59 倍）
+- [ ] ChaCha20-Poly1305 大块性能（AVX2/AVX-512 ChaCha20、SIMD Poly1305；TLS 记录原为 rustls+ring 的 0.55 倍）
+- [ ] QUIC 数据通路遗留项：不再从 `recvmmsg` 缓冲区复制、已发送包改用环形缓冲、按批 ACK（需要 only-core 的批次结束钩子）、在支持的平台默认开启 GRO
+- [ ] 宽 AES-GCM 遗留项：无 AVX-512 的 CPU 用的 VAES-AVX2 内核、宽内核内的掩码尾部、TLS 记录的预先清零
+- [ ] 对依赖秘密数据的路径做 dudect 式统计计时测试（CI 任务，不作为门禁）
+- [ ] `only-deflate` 存储块解码只复制一次
+
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。
 - **代码**：`#![forbid(unsafe_code)]` 为默认，仅 `only-sys`、后端、`only-buf` 允许 unsafe，且每处带 `// SAFETY:`。
