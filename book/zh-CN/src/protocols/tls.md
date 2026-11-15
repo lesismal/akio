@@ -55,8 +55,8 @@ AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并
 
 一致性：RFC 8448 跟踪作为单元测试，tlsfuzzer（`tools/interop/tls/tlsfuzzer.sh`），以及与 OpenSSL、Go `crypto/tls`、curl 和 rustls 的互通矩阵
 （`tools/interop/tls/run.sh`、`tools/interop/grpc/run.sh`、`only` crate 的 TLS 测试）。与 rustls 0.23 +
-ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握手持平，AES-128-GCM 记录在 1 KiB 时为
-1.5 倍、16 KiB 时为 1.65 倍。
+ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握手持平，AES-128-GCM 记录在 1 KiB 与 16 KiB
+时均约为 1.6 倍。
 
 ## 配置
 
