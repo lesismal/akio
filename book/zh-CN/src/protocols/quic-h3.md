@@ -1,9 +1,10 @@
 # QUIC 与 HTTP/3
 
 `only-quic` 是在本 crate 内基于 `only-tls` 和 `only-crypto` 以 sans-io 状态机实现的 QUIC v1
-（RFC 9000、9001、9002）及数据报（RFC 9221），运行在 only 的 UDP 引擎上；`only-h3` 在其上实现
+（RFC 9000、9001、9002）、v2（RFC 9369）及数据报（RFC 9221），运行在 only 的 UDP 引擎上；`only-h3` 在其上实现
 HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 quic-go 做过双向互通测试（流与
-数据报的原生 QUIC 回显，含 Retry、密钥更新与 150 MB 传输：`tools/interop/quic/run.sh`），HTTP/3
+数据报的原生 QUIC 回显，含 Retry、密钥更新、150 MB 传输、版本 2 与客户端迁移：
+`tools/interop/quic/run.sh`），HTTP/3
 则与 quic-go 以及 fib 自己的 QUIC/HTTP/3 双向互通（`tools/interop/h3/run.sh`）；ngtcp2 与 OpenSSL 3.5
 的 QUIC 实现作为我方服务端的客户端在 Docker 中验证（`tools/interop/quic/docker.sh`）。
 
@@ -58,6 +59,26 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 暴露 quinn-proto）。
 `QuicServer::connections()` 和 `close_all(code, reason)` 在停机时有用。
 
+### 版本、ECN、BBR 与迁移
+
+- **版本**：QUIC v1 与 v2（RFC 9369）。服务端两者都接受（可用 `ServerConfig::versions` 收窄），并以
+  客户端的版本应答；客户端以 `ClientConfig::version`（默认 v1）开始，服务端回以不含该版本的版本协商
+  包时，在双方都支持的版本上重新开始一次，并以 version_information 传输参数（RFC 9368）防止伪造的
+  降级。`Connection::version()` 返回所用版本。未实现兼容版本协商（在一次握手中切换版本）。
+- **ECN**（`TransportConfig::ecn`，默认开启）：Linux 上以 ECT(0) 发送，逐个数据报读取收到的码点并在
+  ACK_ECN 帧中报告，验证路径（RFC 9000 第 13.4 节），CE 标记视为拥塞；清除或丢弃标记的路径回退为不带
+  标记发送。其他平台不打标记（Linux 上也可用 `ONLY_UDP_ECN=0` 关闭）。`stats().ecn_capable` /
+  `ecn_ce_events`。
+- **拥塞控制**：`TransportConfig::congestion` 可选 CUBIC（默认）、NewReno 或实验性的
+  `Congestion::Bbr`：基于投递速率采样的 BBRv1 模型（Startup、Drain、ProbeBW、ProbeRTT），加上 BBRv2/v3
+  对丢包或 CE 标记超过 2% 的轮次的上限。在模拟的 20 Mbit/s、40 ms 路径上，它把 RTT 保持在最小值的
+  约 6% 以内（CUBIC 会填满缓冲），1% 随机丢包下吞吐是 CUBIC 的 4 倍。
+- **迁移**：客户端换地址（NAT 重绑定）后，服务端在路径验证后跟随。客户端可用
+  `Connection::migrate(&engine)` 主动迁移：换到新的本地 UDP socket，或在服务端提供了首选地址时迁到
+  该地址（`ServerConfig::preferred_address(addr)`，由同一个 `QuicServer` 的克隆在第二个监听器上提供
+  服务；客户端用 `Connection::preferred_address()` 查看）。新路径先用一个未用过的连接 ID 探测，得到
+  回应后切换；三个 PTO 内无回应则留在原路径。
+
 ## HTTP/3
 
 ```rust,ignore
@@ -99,5 +120,5 @@ sink，所以 router、中间件和 handler 都无需改动。见[架构](../arc
 
 ## 尚未完成
 
-curl/quiche 互通测试、基于 HTTP/3 的 WebSocket（extended CONNECT）、QPACK 动态表（宣告容量为
+QUIC 0-RTT、curl/quiche 互通测试、基于 HTTP/3 的 WebSocket（extended CONNECT）、QPACK 动态表（宣告容量为
 0）、服务端推送、流式请求 body。
