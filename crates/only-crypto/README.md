@@ -12,7 +12,8 @@ that drive CPU instructions, detected at run time; the OS random syscall lives i
 | AES-GCM (GHASH fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
-| ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
+| ChaCha20 (`chacha::hw`, `chacha::hw::avx512`) | AVX-512 inline assembly (`vprold`; 16 blocks per iteration, 8 or 4 for the rest), else AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
+| Poly1305 (`chacha::hw::ifma`) | AVX-512 IFMA inline assembly (8 blocks per step, runs of 256 bytes and more), else radix-2⁶⁴ scalar | radix-2⁶⁴ scalar |
 | P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`; `ec::hw_aarch64`, `curve25519::hw_aarch64`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | inline assembly (`MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL`; every ARMv8.0 CPU; not benchmarked yet) |
 | RSA exponentiation (`bignum::ifma`, `bignum::hw`) | AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq`) for the CRT halves of 2048- to 4096-bit keys, else BMI2 + ADX inline assembly (Montgomery multiplication and squaring) | portable |
 
@@ -27,7 +28,7 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR |
 | `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 one 512-bit pass (16 blocks per iteration and reduction), else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`) |
-| `chacha` | ChaCha20 (8 blocks with AVX2, else 4-block lanes), Poly1305 (44-bit limbs, two blocks per step), ChaCha20-Poly1305 (RFC 8439) |
+| `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` for the TLS record layer) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
 | `ct_eq` | constant-time comparison |
@@ -162,7 +163,9 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | AES-128-GCM seal, 16 KiB | 6 455 | 15 048 | 1.19x ring |
 | AES-128-GCM seal, 1400 B | 4 249 | 8 163 | 1.11x ring |
 | AES-128-GCM seal, 64 B | 611 | 1 185 | 1.10x ring |
-| ChaCha20-Poly1305 seal, 16 KiB | 588 | 1 757 | 0.89x chacha20poly1305 |
+| ChaCha20-Poly1305 seal, 16 KiB | 588 | 4 597 | 1.30x ring |
+| ChaCha20-Poly1305 seal, 1400 B | – | 2 541 | 0.96x ring |
+| ChaCha20-Poly1305 seal, 64 B | – | 412 | 0.83x ring |
 | Ed25519 verify (op/s) | 18 289 | 27 714 | 0.87x ring |
 | Ed25519 sign | – | 89 784 | 1.53x ring |
 | X25519 agreement | 28 865 | 36 488 | 1.00x ring |
@@ -201,7 +204,7 @@ RSA-2048 certificate from 0.43× to 1.44× rustls. A 1024-bit Montgomery multipl
 cycles with BMI2 + ADX (squaring 681), a 1024-bit IFMA multiplication 416; on BMI2 + ADX alone
 (no IFMA) RSA-2048 signing measured 0.99× ring. Karatsuba was not tried: at these sizes the
 assembly row loops leave little to save. Follow-ups: a VAES + AVX2 kernel for CPUs without
-AVX-512, a SIMD Poly1305, measuring the aarch64 assembly for P-256 and X25519 (tested, not
+AVX-512, measuring the aarch64 assembly for P-256 and X25519 (tested, not
 benchmarked), aarch64 whole-point routines and divsteps, the two CRT halves interleaved
 in one IFMA block.
 
@@ -212,14 +215,19 @@ in one IFMA block.
   ChaCha20-Poly1305, HMAC-SHA1/SHA256, HKDF-SHA256), vendored under `tests/data/`.
 - `tests/compat.rs` cross-checks every primitive against the replaced crates (dev-dependencies
   only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also the wide, 128-bit
-  and portable AES-GCM paths against each other, in place and out of place), `crypto_base64`.
+  and portable AES-GCM paths against each other, in place and out of place, and the AVX-512 /
+  IFMA, AVX2 and portable ChaCha20-Poly1305 paths), `crypto_base64`.
+- The AVX-512 ChaCha20 and IFMA Poly1305 kernels (`chacha::tests`): every length 0..=600 and
+  large sizes against the AVX2 and portable paths, misaligned, in place and out of place,
+  forged tags, counters near the wrap, Poly1305 on all-ones blocks and extreme `r` / `s`; run
+  natively on a CPU with AVX-512 IFMA (Zen 4).
 - The wide AES-GCM kernel (`gcm::tests`): every length 0..=600 and large sizes against the
   128-bit and portable paths, misaligned, in place and out of place, the 32-bit counter
   wrapping inside a group, and large messages against ring; it runs only on a CPU with VAES
   and AVX-512, so these tests are run natively on one (Zen 4).
 - Hardware paths: unit tests compare each one with the portable code (`hardware_matches_portable`
   for AES, CTR, GCM, SHA-1, SHA-256, `hardware_matches_table` for CRC, the multi-block ChaCha20
-  and two-block Poly1305 against one block at a time, `ec::hw`, `ec::hw_aarch64`,
+  and Poly1305 against one block at a time, `ec::hw`, `ec::hw_aarch64`,
   `curve25519::hw` and `curve25519::hw_aarch64` `matches_portable` for every field routine and
   the X25519 ladder on random and edge values, `chains_match_portable` on long chains of
   dependent operations (aarch64),
