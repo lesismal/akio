@@ -336,8 +336,8 @@ fn reload_swaps_workers(mode: ListenMode) -> Failures {
         ok: ok.load(Ordering::Relaxed),
     };
     println!(
-        "    {mode:?}: {} requests answered during the reload ({} after it), {} refused/reset, \
-         {} closed unanswered by a draining worker",
+        "    {mode:?}: {} requests answered during the reload ({} after it), {} refused, \
+         {} closed unanswered (EOF or reset) by a draining worker",
         f.ok,
         f.ok - ok_at_reload,
         f.lost,
