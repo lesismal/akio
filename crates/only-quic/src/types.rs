@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -301,6 +302,7 @@ pub(crate) struct ServerInner {
     pub(crate) migration: bool,
     pub(crate) retry: bool,
     pub(crate) key_update: Option<u64>,
+    pub(crate) preferred: (Option<SocketAddrV4>, Option<SocketAddrV6>),
 }
 
 impl fmt::Debug for ServerConfig {
@@ -317,6 +319,7 @@ impl ServerConfig {
             migration: true,
             retry: false,
             key_update: None,
+            preferred: (None, None),
         })
     }
 
@@ -331,6 +334,20 @@ impl ServerConfig {
     #[must_use]
     pub fn migration(mut self, yes: bool) -> Self {
         self.0.migration = yes;
+        self
+    }
+
+    /// Offers `addr` as the server's preferred address (RFC 9000 section 9.6; call once per
+    /// address family): clients may move their connections there with
+    /// [`Connection::migrate`](crate::Connection::migrate). The server must serve it too:
+    /// listen on it with a clone of the same [`QuicServer`](crate::QuicServer), so the
+    /// connections are found whichever address their packets arrive at.
+    #[must_use]
+    pub fn preferred_address(mut self, addr: SocketAddr) -> Self {
+        match addr {
+            SocketAddr::V4(a) => self.0.preferred.0 = Some(a),
+            SocketAddr::V6(a) => self.0.preferred.1 = Some(a),
+        }
         self
     }
 

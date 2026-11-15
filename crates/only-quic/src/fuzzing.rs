@@ -93,7 +93,7 @@ pub fn frames(data: &[u8]) {
     for from_server in [false, true] {
         if let Ok(mut p) = TransportParams::decode(data, from_server) {
             // The preferred address is parsed but not kept, so it does not re-encode.
-            p.preferred_address = false;
+            p.preferred_address = None;
             assert_eq!(
                 TransportParams::decode(&p.encode(), from_server).ok(),
                 Some(p)

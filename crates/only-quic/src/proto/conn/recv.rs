@@ -326,7 +326,12 @@ impl Connection {
             return Outcome::Processed;
         }
         let migrating = sid == SpaceId::Data && from != self.path.remote;
-        if migrating && (self.side == Side::Client || !self.cfg.migration || !self.confirmed) {
+        let refused = match self.side {
+            // A client hears from its server's address only, and from the path it probes.
+            Side::Client => !self.probing_from(from),
+            Side::Server => !self.cfg.migration || !self.confirmed,
+        };
+        if migrating && refused {
             // No migration: ignore packets from elsewhere.
             return Outcome::Processed;
         }
@@ -381,8 +386,8 @@ impl Connection {
                 sp.ack_deadline = Some(now + LOCAL_MAX_ACK_DELAY);
             }
         }
-        if migrating && non_probing && is_largest {
-            self.migrate(now, from, dgram_len);
+        if migrating && non_probing && is_largest && self.side == Side::Server {
+            self.follow_peer(now, from, dgram_len);
         }
         Outcome::Processed
     }
@@ -509,6 +514,8 @@ impl Connection {
                 token,
             } => {
                 self.on_new_cid(seq, retire_prior_to, cid, token)?;
+                // A migration may have waited for a connection ID.
+                self.try_start_probe(now);
             }
             Frame::RetireConnectionId(seq) => self.on_retire_cid(seq)?,
             Frame::PathChallenge(d) => {
@@ -517,7 +524,9 @@ impl Connection {
                 }
             }
             Frame::PathResponse(d) => {
-                if self.path.challenge == Some(d) {
+                if self.on_probe_response(now, d) {
+                    // The client moved to the probed path.
+                } else if self.path.challenge == Some(d) {
                     self.path.validated = true;
                     self.path.challenge = None;
                     self.path.challenge_deadline = None;
@@ -636,7 +645,8 @@ impl Connection {
 
     // ---- migration ----
 
-    fn migrate(&mut self, now: Instant, from: SocketAddr, dgram_len: usize) {
+    /// The client's address changed (server): validate it and follow.
+    fn follow_peer(&mut self, now: Instant, from: SocketAddr, dgram_len: usize) {
         let same_ip = from.ip() == self.path.remote.ip();
         let mut p = Path::new(from, false);
         p.recv_bytes = dgram_len as u64;

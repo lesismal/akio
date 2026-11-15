@@ -175,6 +175,7 @@ impl Endpoint {
                         segment_size: None,
                         data: packet::version_negotiation(&dcid, &scid, r),
                         ecn: 0,
+                        probe: false,
                     }));
                 }
                 return None;
@@ -257,6 +258,7 @@ impl Endpoint {
             segment_size: None,
             data: packet::retry(client_scid, &new_scid, odcid, &token, r),
             ecn: 0,
+            probe: false,
         })
     }
 
@@ -333,6 +335,7 @@ impl Endpoint {
             segment_size: None,
             data: out,
             ecn: 0,
+            probe: false,
         }))
     }
 
@@ -364,7 +367,9 @@ impl Endpoint {
                     }
                 }
             }
-            EndpointEvent::NewToken(_) => {}
+            EndpointEvent::NewToken(_)
+            | EndpointEvent::Migrated { .. }
+            | EndpointEvent::MigrationFailed => {}
         }
     }
 }

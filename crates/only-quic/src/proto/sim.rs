@@ -65,6 +65,13 @@ pub(crate) struct Node {
     pub events: HashMap<ConnHandle, Vec<Event>>,
     pub addr: SocketAddr,
     pub tokens: Vec<Vec<u8>>,
+    /// Server: a second address it serves (its preferred address). Client: the address of the
+    /// socket a migration probes from.
+    pub alt_addr: Option<SocketAddr>,
+    /// Addresses whose sockets were closed (datagrams to them are lost).
+    pub closed: Vec<SocketAddr>,
+    /// Migration outcomes the node's connections reported (client).
+    pub migrations: Vec<Result<SocketAddr, ()>>,
 }
 
 impl Node {
@@ -75,12 +82,15 @@ impl Node {
             events: HashMap::new(),
             addr,
             tokens: Vec::new(),
+            alt_addr: None,
+            closed: Vec::new(),
+            migrations: Vec::new(),
         }
     }
 }
 
-/// A datagram on the link: to the server?, from, ECN codepoint, bytes.
-type InFlight = (bool, SocketAddr, u8, Vec<u8>);
+/// A datagram on the link: to the server?, from, to, ECN codepoint, bytes.
+type InFlight = (bool, SocketAddr, SocketAddr, u8, Vec<u8>);
 
 pub(crate) struct Sim {
     pub now: Instant,
@@ -99,6 +109,11 @@ pub(crate) struct Sim {
     pub ce_marked: u64,
     /// Datagrams sent ECN-capable.
     pub ect_sent: u64,
+    /// Datagrams from or to these addresses are dropped (a path that does not work).
+    pub blocked: Vec<SocketAddr>,
+    /// The server address each client address last sent to: the server answers from it (a
+    /// socket per listener address, as the I/O layer has).
+    server_local: HashMap<SocketAddr, SocketAddr>,
 }
 
 pub(crate) fn certs() -> (only_tls::ServerConfig, only_tls::ClientConfig) {
@@ -149,6 +164,8 @@ impl Sim {
             busy_until: [now; 2],
             ce_marked: 0,
             ect_sent: 0,
+            blocked: Vec::new(),
+            server_local: HashMap::new(),
             client: Node::new(client, "10.0.0.1:5000".parse().expect("addr")),
             server: Node::new(server, "10.0.0.2:4433".parse().expect("addr")),
             link: Link::default(),
@@ -192,9 +209,18 @@ impl Sim {
         f64::from(self.rng.next_u32()) / f64::from(u32::MAX)
     }
 
-    fn send(&mut self, to_server: bool, from: SocketAddr, mut ecn: u8, data: Vec<u8>) {
+    fn is_server(&self, a: SocketAddr) -> bool {
+        a == self.server.addr || Some(a) == self.server.alt_addr
+    }
+
+    fn send(&mut self, from: SocketAddr, to: SocketAddr, mut ecn: u8, data: Vec<u8>) {
+        let to_server = self.is_server(to);
         if ecn != 0 {
             self.ect_sent += 1;
+        }
+        if self.blocked.contains(&from) || self.blocked.contains(&to) {
+            self.dropped += 1;
+            return;
         }
         if self.link.down
             || data.len() > self.link.mtu
@@ -243,7 +269,7 @@ impl Sim {
             self.seq += 1;
             self.queue.insert(
                 (self.now + d, self.seq),
-                (to_server, from, ecn, data.clone()),
+                (to_server, from, to, ecn, data.clone()),
             );
         }
     }
@@ -256,18 +282,26 @@ impl Sim {
             } else {
                 &mut self.client
             };
-            let from = node.addr;
             let mut out = Vec::new();
             let mut ep_events = Vec::new();
             for (&h, c) in &mut node.conns {
                 while let Some(t) = c.poll_transmit(self.now, 10) {
+                    // The source: the client's probe socket for probe transmits; for the server,
+                    // the address the client talks to.
+                    let from = if side {
+                        self.server_local.get(&t.dest).copied().unwrap_or(node.addr)
+                    } else if t.probe {
+                        node.alt_addr.unwrap_or(node.addr)
+                    } else {
+                        node.addr
+                    };
                     match t.segment_size {
                         Some(s) => {
                             for d in t.data.chunks(s) {
-                                out.push((t.dest, t.ecn, d.to_vec()));
+                                out.push((from, t.dest, t.ecn, d.to_vec()));
                             }
                         }
-                        None => out.push((t.dest, t.ecn, t.data)),
+                        None => out.push((from, t.dest, t.ecn, t.data)),
                     }
                 }
                 while let Some(e) = c.poll_endpoint_event() {
@@ -283,26 +317,48 @@ impl Sim {
                 match e {
                     EndpointEvent::Drained => drained.push(h),
                     EndpointEvent::NewToken(t) => node.tokens.push(t),
+                    EndpointEvent::Migrated { remote } => {
+                        // The probe socket becomes the connection's socket; the old one closes.
+                        if let Some(a) = node.alt_addr.take() {
+                            node.closed.push(std::mem::replace(&mut node.addr, a));
+                        }
+                        node.migrations.push(Ok(remote));
+                    }
+                    EndpointEvent::MigrationFailed => {
+                        if let Some(a) = node.alt_addr.take() {
+                            node.closed.push(a);
+                        }
+                        node.migrations.push(Err(()));
+                    }
                     _ => {}
                 }
             }
             for h in drained {
                 node.conns.remove(&h);
             }
-            for (dest, ecn, d) in out {
-                let to_server = dest == self.server.addr;
-                self.send(to_server, from, ecn, d);
+            for (from, dest, ecn, d) in out {
+                self.send(from, dest, ecn, d);
             }
         }
     }
 
-    fn deliver(&mut self, to_server: bool, from: SocketAddr, ecn: u8, data: Vec<u8>) {
+    fn deliver(
+        &mut self,
+        to_server: bool,
+        from: SocketAddr,
+        to: SocketAddr,
+        ecn: u8,
+        data: Vec<u8>,
+    ) {
         self.delivered += 1;
         let now = self.now;
-        if !to_server && from != self.server.addr {
+        // A client's (connected) sockets hear from server addresses only; closed ones nothing.
+        if !to_server && (!self.is_server(from) || self.client.closed.contains(&to)) {
             return;
         }
-        let server_addr = self.server.addr;
+        if to_server {
+            self.server_local.insert(from, to);
+        }
         let node = if to_server {
             &mut self.server
         } else {
@@ -318,9 +374,8 @@ impl Sim {
                 node.conns.insert(h, *c);
             }
             Some(DatagramEvent::Respond(t)) => {
-                let src = node.addr;
-                let to_server = t.dest == server_addr;
-                self.send(to_server, src, t.ecn, t.data);
+                let src = if to_server { to } else { node.addr };
+                self.send(src, t.dest, t.ecn, t.data);
             }
             None => {}
         }
@@ -347,8 +402,8 @@ impl Sim {
             if k.0 > self.now {
                 break;
             }
-            let (to_server, from, ecn, data) = self.queue.remove(&k).expect("present");
-            self.deliver(to_server, from, ecn, data);
+            let (to_server, from, to, ecn, data) = self.queue.remove(&k).expect("present");
+            self.deliver(to_server, from, to, ecn, data);
         }
         let now = self.now;
         for node in [&mut self.client, &mut self.server] {
@@ -1154,14 +1209,15 @@ fn late_initial_does_not_start_a_second_connection() {
     let now = sim.now;
     let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
     let from = sim.client.addr;
-    sim.deliver(true, from, 0, first.clone());
+    let server = sim.server.addr;
+    sim.deliver(true, from, server, 0, first.clone());
     let ok = sim.run_until(Duration::from_secs(10), |s| {
         s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
     });
     assert!(ok);
     // The handshake is confirmed; the client's first Initial arrives again, late.
     sim.run_until(Duration::from_millis(200), |_| false);
-    sim.deliver(true, from, 0, first);
+    sim.deliver(true, from, server, 0, first);
     sim.run_until(Duration::from_millis(200), |_| false);
     assert_eq!(sim.server.conns.len(), 1);
 }
@@ -1383,4 +1439,127 @@ fn bbr_debug_trace() {
         }
         false
     });
+}
+
+/// Runs until the client reports the outcome of a migration.
+fn migration_outcome(sim: &mut Sim) -> Result<SocketAddr, ()> {
+    let ok = sim.run_until(Duration::from_secs(30), |s| !s.client.migrations.is_empty());
+    assert!(ok, "no migration outcome");
+    sim.client.migrations.remove(0)
+}
+
+#[test]
+fn client_migrates_to_a_new_local_port() {
+    let (mut sim, tls) = Sim::default_pair(60);
+    sim.link.loss = 0.02;
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    bulk(&mut sim, h, &[50_000], Duration::from_secs(10));
+    let old = sim.client.addr;
+    let old_cid = sim.cconn(h).remote_cid();
+    // A new socket: the path is probed from it, then the connection moves there.
+    let new: SocketAddr = "10.0.0.1:5001".parse().expect("addr");
+    sim.client.alt_addr = Some(new);
+    let now = sim.now;
+    assert_eq!(sim.cconn(h).migrate(now), Ok(sim.server.addr));
+    assert_eq!(
+        sim.cconn(h).migrate(now),
+        Err(super::conn::MigrateError::InProgress)
+    );
+    assert_eq!(migration_outcome(&mut sim), Ok(sim.server.addr));
+    assert_eq!(sim.client.addr, new);
+    assert!(sim.client.closed.contains(&old));
+    // A connection ID not used before, on the new path.
+    assert_ne!(sim.cconn(h).remote_cid(), old_cid);
+    // Data flows on the new path; the server follows (validating the address itself).
+    bulk(&mut sim, h, &[300_000], Duration::from_secs(30));
+    assert_eq!(sim.sconn().remote_addr(), new);
+    // And again.
+    let newer: SocketAddr = "10.0.0.1:5002".parse().expect("addr");
+    sim.client.alt_addr = Some(newer);
+    let now = sim.now;
+    sim.cconn(h).migrate(now).expect("second migration");
+    assert!(migration_outcome(&mut sim).is_ok());
+    bulk(&mut sim, h, &[50_000], Duration::from_secs(30));
+    assert_eq!(sim.sconn().remote_addr(), newer);
+}
+
+#[test]
+fn failed_migration_stays_on_the_old_path() {
+    let (mut sim, tls) = Sim::default_pair(61);
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    bulk(&mut sim, h, &[10_000], Duration::from_secs(10));
+    let old = sim.client.addr;
+    let new: SocketAddr = "10.0.0.1:5001".parse().expect("addr");
+    sim.client.alt_addr = Some(new);
+    // The new path does not work.
+    sim.blocked.push(new);
+    let now = sim.now;
+    sim.cconn(h).migrate(now).expect("migrate");
+    // Meanwhile the old path carries on.
+    bulk(&mut sim, h, &[100_000], Duration::from_secs(10));
+    assert_eq!(migration_outcome(&mut sim), Err(()));
+    assert_eq!(sim.client.addr, old);
+    bulk(&mut sim, h, &[100_000], Duration::from_secs(10));
+    assert_eq!(sim.sconn().remote_addr(), old);
+    assert!(!sim.cconn(h).is_closed());
+}
+
+#[test]
+fn migration_refused_when_the_server_disables_it() {
+    let (s, tls) = certs();
+    let mut sim = Sim::new(
+        62,
+        ConnConfig::new(TransportConfig::default(), false),
+        s,
+        false,
+    );
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    let now = sim.now;
+    assert_eq!(
+        sim.cconn(h).migrate(now),
+        Err(super::conn::MigrateError::Disabled)
+    );
+    assert_eq!(
+        sim.sconn().migrate(now),
+        Err(super::conn::MigrateError::NotClient)
+    );
+}
+
+#[test]
+fn client_moves_to_the_preferred_address() {
+    let (s, tls) = certs();
+    let preferred: SocketAddr = "10.0.0.3:4433".parse().expect("addr");
+    let mut cfg = ConnConfig::new(TransportConfig::default(), true);
+    let SocketAddr::V4(v4) = preferred else {
+        unreachable!()
+    };
+    cfg.preferred_address = (Some(v4), None);
+    let mut sim = Sim::new(63, cfg, s, false);
+    sim.server.alt_addr = Some(preferred);
+    sim.link.loss = 0.02;
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    // Confirmed: the offer is known.
+    assert!(sim.run_until(Duration::from_secs(5), |s| {
+        s.cconn(h).preferred_address().is_some()
+    }));
+    assert_eq!(sim.cconn(h).preferred_address(), Some(preferred));
+    bulk(&mut sim, h, &[20_000], Duration::from_secs(10));
+    let new: SocketAddr = "10.0.0.1:5001".parse().expect("addr");
+    sim.client.alt_addr = Some(new);
+    let now = sim.now;
+    assert_eq!(sim.cconn(h).migrate(now), Ok(preferred));
+    assert_eq!(migration_outcome(&mut sim), Ok(preferred));
+    assert_eq!(sim.cconn(h).remote_addr(), preferred);
+    assert_eq!(sim.cconn(h).preferred_address(), None);
+    // The server's original address is gone for this connection: everything flows through
+    // the preferred one.
+    sim.blocked.push(sim.server.addr);
+    bulk(&mut sim, h, &[300_000], Duration::from_secs(30));
+    assert_eq!(sim.sconn().remote_addr(), new);
+    // A later migration moves the local port again, on the preferred address.
+    sim.client.alt_addr = Some("10.0.0.1:5002".parse().expect("addr"));
+    let now = sim.now;
+    assert_eq!(sim.cconn(h).migrate(now), Ok(preferred));
+    assert!(migration_outcome(&mut sim).is_ok());
+    bulk(&mut sim, h, &[20_000], Duration::from_secs(30));
 }

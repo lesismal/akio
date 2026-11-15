@@ -42,6 +42,9 @@ impl Connection {
                 }
             }
         }
+        if let Some(t) = self.write_probe(now) {
+            return Some(t);
+        }
         if let Some(t) = self.write_mtu_probe(now) {
             return Some(t);
         }
@@ -82,6 +85,7 @@ impl Connection {
             } else {
                 ecn::cp::NOT_ECT
             },
+            probe: false,
         })
     }
 
@@ -792,6 +796,7 @@ impl Connection {
             segment_size: None,
             data: buf,
             ecn: 0,
+            probe: false,
         })
     }
 
@@ -844,6 +849,7 @@ impl Connection {
             segment_size: None,
             data: buf,
             ecn: 0,
+            probe: false,
         })
     }
 
@@ -952,6 +958,7 @@ impl Connection {
             segment_size: None,
             data: buf,
             ecn: 0,
+            probe: false,
         })
     }
 

@@ -123,6 +123,9 @@ fn streams_datagrams_and_close() {
         }
     }
     assert_eq!(c.alpn().as_deref(), Some(&b"echo"[..]));
+    // Loopback carries ECN codepoints on Linux: the path passed ECN validation.
+    #[cfg(target_os = "linux")]
+    assert!(c.stats().ecn_capable, "{:?}", c.stats());
     c.send_datagram(Bytes::from_static(b"ping")).unwrap();
     loop {
         match rx.recv_timeout(Duration::from_secs(5)).expect("datagram") {

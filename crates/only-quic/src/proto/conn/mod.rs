@@ -4,6 +4,7 @@
 //! endpoint events (connection IDs, [`Connection::poll_endpoint_event`]).
 
 mod ecn;
+mod migrate;
 mod recv;
 mod send;
 mod sent;
@@ -29,6 +30,8 @@ use crate::types::{Congestion as CcConfig, ConnectionError, ConnectionStats, Dir
 use crate::{Bytes, TransportConfig};
 
 use ecn::Ecn;
+#[cfg(test)]
+pub(crate) use migrate::MigrateError;
 use sent::SentPackets;
 pub(crate) use streams::StreamState;
 
@@ -295,6 +298,12 @@ pub enum EndpointEvent {
     HandshakeDone,
     /// A token for future connections to this server (client).
     NewToken(Vec<u8>),
+    /// The probed path was validated: the connection moved to it (client; send the transmits
+    /// over the probe's socket from now on and close the old one).
+    Migrated { remote: SocketAddr },
+    /// The probed path did not answer: the connection stays where it was (close the probe's
+    /// socket).
+    MigrationFailed,
     /// The connection is gone.
     Drained,
 }
@@ -308,6 +317,8 @@ pub struct Transmit {
     pub data: Vec<u8>,
     /// The ECN codepoint to send the datagrams with (0: not ECN-capable).
     pub ecn: u8,
+    /// Send over the socket of the path being probed (client migration), not the current one.
+    pub probe: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -349,6 +360,11 @@ pub(crate) struct ConnConfig {
     pub key_update_interval: u64,
     /// The I/O layer can send ECN codepoints (with `transport.ecn`, packets are marked).
     pub ecn_io: bool,
+    /// The addresses a server offers as its preferred address (RFC 9000 section 9.6).
+    pub preferred_address: (
+        Option<std::net::SocketAddrV4>,
+        Option<std::net::SocketAddrV6>,
+    ),
 }
 
 impl ConnConfig {
@@ -358,6 +374,7 @@ impl ConnConfig {
             migration,
             key_update_interval: KEY_UPDATE_INTERVAL,
             ecn_io: true,
+            preferred_address: (None, None),
         }
     }
 
@@ -469,6 +486,10 @@ pub struct Connection {
     rx_ecn: u8,
     /// The ECN marking decided for the datagrams being written.
     tx_ecn: bool,
+    /// A path being probed for an active migration (client).
+    probe: Option<migrate::Probe>,
+    /// The connection moved to the server's preferred address.
+    on_preferred: bool,
     /// Frame lists of acknowledged or lost packets, reused for new packets.
     spare_frames: Vec<Vec<SentFrame>>,
     replay: bool,
@@ -592,6 +613,8 @@ impl Connection {
             ecn: Ecn::new(cfg.ecn()),
             rx_ecn: 0,
             tx_ecn: false,
+            probe: None,
+            on_preferred: false,
             spare_frames: Vec::new(),
             replay: false,
             events: VecDeque::new(),
@@ -696,6 +719,20 @@ impl Connection {
         params.initial_scid = Some(local);
         params.retry_scid = retry_scid;
         params.stateless_reset_token = Some(reset_token(&keys.reset_key, &local));
+        // The preferred address comes with connection ID sequence number 1.
+        let preferred = match cfg.preferred_address {
+            (None, None) => None,
+            (v4, v6) => {
+                let cid = ConnectionId::random(&mut rng, LOCAL_CID_LEN);
+                params.preferred_address = Some(super::params::PreferredAddress {
+                    v4,
+                    v6,
+                    cid,
+                    token: reset_token(&keys.reset_key, &cid),
+                });
+                Some(cid)
+            }
+        };
         let tls = QuicTls::server(tls_cfg, params.encode());
         let mut c = Connection::base(
             Side::Server,
@@ -713,6 +750,11 @@ impl Connection {
         c.peer_initial_scid = Some(client_scid);
         c.retry_scid = retry_scid;
         c.path.validated = validated;
+        if let Some(cid) = preferred {
+            c.local_cids.insert(1, cid);
+            c.next_local_seq = 2;
+            c.ep_events.push_back(EndpointEvent::NewCid(cid));
+        }
         c
     }
 
@@ -902,6 +944,7 @@ impl Connection {
         if self.mtu_upper > self.mtu {
             self.mtu_probe = Some((self.next_probe_size(), 0));
         }
+        self.try_start_probe(now);
     }
 
     fn new_token(&mut self) -> Bytes {
@@ -933,6 +976,16 @@ impl Connection {
                 if let Some(r) = self.remote_cids.get_mut(&0) {
                     r.token = Some(t);
                 }
+            }
+            // The preferred address's connection ID is sequence number 1 (RFC 9000 5.1.1).
+            if let Some(pa) = &p.preferred_address {
+                self.remote_cids.insert(
+                    1,
+                    RemoteCid {
+                        cid: pa.cid,
+                        token: Some(pa.token),
+                    },
+                );
             }
         }
         self.peer_max_streams = [p.initial_max_streams_bidi, p.initial_max_streams_uni];
@@ -980,7 +1033,7 @@ impl Connection {
         reset_token(&self.keys.reset_key, cid)
     }
 
-    fn remote_cid(&self) -> ConnectionId {
+    pub(crate) fn remote_cid(&self) -> ConnectionId {
         self.remote_cids
             .get(&self.remote_seq)
             .map(|r| r.cid)
@@ -1157,6 +1210,7 @@ impl Connection {
             }
         }
         min(self.path.challenge_deadline);
+        min(self.probe_timeout());
         if let Some((_, until)) = self.one_rtt.as_ref().and_then(|k| k.prev_remote.as_ref()) {
             min(Some(*until));
         }
@@ -1191,6 +1245,9 @@ impl Connection {
         }
         if self.path.challenge_deadline.is_some_and(|d| now >= d) {
             self.on_path_validation_timeout(now);
+        }
+        if self.probe_timeout().is_some_and(|d| now >= d) {
+            self.on_probe_timer(now);
         }
         if let Some(k) = self.one_rtt.as_mut() {
             if k.prev_remote.as_ref().is_some_and(|(_, u)| now >= *u) {
