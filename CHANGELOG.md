@@ -323,6 +323,26 @@ published, no new dependency); runs in CI as the informational job `ct-dudect` (
 differences under investigation (the degenerate all-zero X25519 scalar, P-256 portable signing
 at the threshold); method and results in [docs/constant-time.md](docs/constant-time.md).
 
+### Performance: stored blocks copied once in `only-deflate`
+
+No API change; compressed output is byte-identical. Measured on the bench host (Zen 4, CPU 2,
+five alternating rounds of the old and new `bench` binaries, zlib-rs in the same run):
+inflating random data at level 6 (stored blocks) 15,456 → 34,278 MB/s (0.43× → 0.94×
+zlib-rs), level 9 15,357 → 34,003 MB/s. Text and JSON (literals and matches) are unchanged.
+
+- Stored blocks are copied straight from the input to the caller's output instead of through
+  the window, and only the last window's worth of a run of stored data (up to 32 KiB, once per
+  call, before a compressed block or the trailer needs it) enters the history afterwards.
+- `Inflater::decompress_vec` appends stored data with `extend_from_slice` (no zero-filled room
+  to copy into); block headers are decoded with no output space. `decompress` reserves room for
+  twice the input (at most the limit) up front.
+- Tested with stored blocks split at every input byte and every output size in the three
+  formats, through `decompress` and `decompress_vec`, and stored blocks longer than the window
+  (up to 65,535 bytes) followed by matches at the largest distance, for 512-byte, 4 KiB and
+  32 KiB windows.
+- Tried and dropped: decoding up to five literals per refill instead of three on the
+  literal-heavy path made no measurable difference.
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so

@@ -40,7 +40,7 @@ for msg in [&b"hello websocket"[..], b"hello websocket again"] {
 
 测试：文本、二进制、不可压缩、空、单字节重复与长周期数据在每个级别、格式与窗口下的往返；与
 zlib-rs（经由开发依赖 flate2）及 `gzip(1)` 的双向互通；经固定编码的所有字面量、长度与距离；
-保留上下文时的同步刷新边界（即 Autobahn 曾发现的 miniz_oxide 缺陷那一类）；输入输出按各种大小拆分；
+保留上下文时的同步刷新边界（即 Autobahn 曾发现的 miniz_oxide 缺陷那一类）；输入输出按各种大小拆分；存储块在每个输入字节处切开并按每种输出大小读取，以及长于窗口的存储块之后引用其中数据的匹配；
 每个级别、窗口大小与刷新方式下的流式压缩；截断、比特翻转与校验和错误。模糊测试目标
 `deflate_inflate`（与 zlib-rs 差分）和 `deflate_roundtrip`。Miri 运行全部单元测试。
 
@@ -48,4 +48,4 @@ zlib-rs（经由开发依赖 flate2）及 `gzip(1)` 的双向互通；经固定�
 （`BENCH_LEVELS=1,6,9` 可选部分级别）下与 flate2（zlib-rs）对比的压缩率与吞吐量，语料为生成的
 文本、JSON 与随机数据以及传入的各个文件；`pmd_echo` 示例测量 permessage-deflate 回显。在 x86-64
 上各级别输出与 zlib-rs 一样小（最多大 0.5%），压缩速度为其 0.94-1.48 倍，解压为 0.82-1.23 倍
-（存储块 0.4 倍）；见 docs/BENCHMARKS.zh-CN.md。
+（存储块 0.94 倍：直接复制进输出，只有最后 32 KiB 进窗口）；见 docs/BENCHMARKS.zh-CN.md。
