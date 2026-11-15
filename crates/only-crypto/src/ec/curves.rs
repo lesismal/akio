@@ -2,8 +2,10 @@
 
 use std::sync::OnceLock;
 
-use super::{BaseTables, Curve};
-use crate::field::{Modulus, mul_wide, sqr_wide, sub_if_ge};
+use super::{BaseTables, Curve, Point, Scalar, Sig};
+use crate::Error;
+use crate::field::{Modulus, mont_mul_cios, mul_wide, redc, sqr_wide, sub_if_ge};
+use crate::hash::Hash;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct P256;
@@ -30,8 +32,14 @@ impl Modulus<4> for P256P {
         p256_redc(&sqr_wide::<4, 8>(a))
     }
 
+    // Inversions also happen outside the twin's operations (encoding a public key): one check
+    // chooses the BMI2 + ADX chain.
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
-        Some(p256_inv(a))
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return Some(p256_inv::<super::hw::P256Px>(a));
+        }
+        Some(p256_inv::<Self>(a))
     }
 }
 
@@ -61,13 +69,14 @@ fn p256_redc(t: &[u64; 8]) -> [u64; 4] {
 }
 
 /// `a^(p-2)` (Montgomery form) by the addition chain of mmcloughlin/addchain for P-256 (255
-/// squarings, 12 multiplications; the same as Go's `p256Invert`): constant time.
-fn p256_inv(a: &[u64; 4]) -> [u64; 4] {
-    let mul = |x: &[u64; 4], y: &[u64; 4]| P256P::mont_mul(x, y);
+/// squarings, 12 multiplications; the same as Go's `p256Invert`): constant time. Generic over
+/// the implementation of the P-256 prime (portable or `hw`).
+pub(crate) fn p256_inv<M: Modulus<4>>(a: &[u64; 4]) -> [u64; 4] {
+    let mul = |x: &[u64; 4], y: &[u64; 4]| M::mont_mul(x, y);
     let sqn = |x: &[u64; 4], n: usize| {
         let mut r = *x;
         for _ in 0..n {
-            r = P256P::mont_sqr(&r);
+            r = M::mont_sqr(&r);
         }
         r
     };
@@ -94,6 +103,86 @@ impl Modulus<4> for P256N {
         0xffff_ffff_ffff_ffff,
         0xffff_ffff_0000_0000,
     ];
+
+    // Scalar operations are few outside the inversion: one check per operation chooses the
+    // BMI2 + ADX code (`hw`), the inversion checks once.
+    #[inline]
+    fn mont_mul(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return super::hw::ord_mul(a, b);
+        }
+        mont_mul_cios(a, b, &Self::P, Self::N0)
+    }
+
+    #[inline]
+    fn mont_sqr(a: &[u64; 4]) -> [u64; 4] {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return super::hw::ord_sqr(a);
+        }
+        redc::<4, 8>(sqr_wide::<4, 8>(a), &Self::P, Self::N0)
+    }
+
+    fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return Some(p256n_inv::<super::hw::P256Nx>(a));
+        }
+        Some(p256n_inv::<Self>(a))
+    }
+}
+
+/// `a^(n-2)` modulo the P-256 group order (Montgomery form): `n - 2` is
+/// `ffffffff 00000000 ffffffff ffffffff` followed by 128 irregular bits. The top half comes from
+/// `a^(2³² - 1)` (31 squarings, 5 multiplications) shifted into place, the bottom half from
+/// sliding windows of up to 4 bits over `a, a³, …, a¹⁵`: 255 squarings and 40 multiplications
+/// (the generic 4-bit windows need 78). Every branch depends on the public exponent
+/// only, so the sequence of operations is the same for every `a`: constant time.
+pub(crate) fn p256n_inv<M: Modulus<4>>(a: &[u64; 4]) -> [u64; 4] {
+    const LOW: [u64; 2] = [0xf3b9_cac2_fc63_254f, 0xbce6_faad_a717_9e84];
+    let mul = |x: &[u64; 4], y: &[u64; 4]| M::mont_mul(x, y);
+    let sqn = |x: &[u64; 4], n: usize| {
+        let mut r = *x;
+        for _ in 0..n {
+            r = M::mont_sqr(&r);
+        }
+        r
+    };
+    // odd[i] = a^(2i + 1).
+    let a2 = M::mont_sqr(a);
+    let mut odd = [*a; 8];
+    for i in 1..8 {
+        odd[i] = mul(&odd[i - 1], &a2);
+    }
+    let x2 = odd[1];
+    let x4 = mul(&sqn(&x2, 2), &x2);
+    let x8 = mul(&sqn(&x4, 4), &x4);
+    let x16 = mul(&sqn(&x8, 8), &x8);
+    let x32 = mul(&sqn(&x16, 16), &x16);
+    let mut t = mul(&sqn(&x32, 64), &x32);
+    t = mul(&sqn(&t, 32), &x32);
+    let bit = |i: usize| (LOW[i / 64] >> (i % 64)) & 1;
+    let mut i = 128usize;
+    while i > 0 {
+        if bit(i - 1) == 0 {
+            t = M::mont_sqr(&t);
+            i -= 1;
+            continue;
+        }
+        // The window: bits i-1 down to j, at most 4 of them, ending in a one.
+        let mut j = i.saturating_sub(4);
+        while bit(j) == 0 {
+            j += 1;
+        }
+        let mut w = 0usize;
+        for b in (j..i).rev() {
+            w = (w << 1) | bit(b) as usize;
+        }
+        t = mul(&sqn(&t, i - j), &odd[w >> 1]);
+        i = j;
+    }
+    t
 }
 impl Curve<4> for P256 {
     type Fp = P256P;
@@ -116,9 +205,63 @@ impl Curve<4> for P256 {
         0x8ee7_eb4a_7c0f_9e16,
         0x4fe3_42e2_fe1a_7f9b,
     ];
-    fn tables() -> &'static BaseTables<Self, 4> {
-        static T: OnceLock<BaseTables<P256, 4>> = OnceLock::new();
-        T.get_or_init(BaseTables::build)
+    fn tables() -> &'static BaseTables<4> {
+        static T: OnceLock<BaseTables<4>> = OnceLock::new();
+        T.get_or_init(BaseTables::build::<P256>)
+    }
+
+    #[inline]
+    fn base_mul(d: &Scalar<Self, 4>) -> Point<Self, 4> {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return super::base_mul_impl::<P256X, 4>(d).cast();
+        }
+        super::base_mul_impl::<Self, 4>(d)
+    }
+
+    #[inline]
+    fn ecdh_x(d: &Scalar<Self, 4>, q: &Point<Self, 4>, out: &mut [u8]) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return super::ecdh_x_impl::<P256X, 4>(d, &q.cast(), out);
+        }
+        super::ecdh_x_impl::<Self, 4>(d, q, out)
+    }
+
+    #[inline]
+    fn sign_digest<H: Hash>(d: &Scalar<Self, 4>, h: &[u8]) -> Sig<Self, 4> {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return super::sign_impl::<P256X, H, 4>(d, h).cast();
+        }
+        super::sign_impl::<Self, H, 4>(d, h)
+    }
+
+    #[inline]
+    fn verify_digest(q: &Point<Self, 4>, h: &[u8], sig: &Sig<Self, 4>) -> Result<(), Error> {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return super::verify_impl::<P256X, 4>(&q.cast(), h, &sig.cast());
+        }
+        super::verify_impl::<Self, 4>(q, h, sig)
+    }
+}
+
+/// P-256 with the base field on BMI2 + ADX (`hw`): the twin `P256` dispatches its operations to
+/// when `hw::enabled()`. Same constants, same scalar field, same tables.
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct P256X;
+
+#[cfg(target_arch = "x86_64")]
+impl Curve<4> for P256X {
+    type Fp = super::hw::P256Px;
+    type Fq = P256N;
+    const B: [u64; 4] = P256::B;
+    const GX: [u64; 4] = P256::GX;
+    const GY: [u64; 4] = P256::GY;
+    fn tables() -> &'static BaseTables<4> {
+        P256::tables()
     }
 }
 
@@ -176,29 +319,72 @@ impl Curve<6> for P384 {
         0x5d9e_98bf_9292_dc29,
         0x3617_de4a_9626_2c6f,
     ];
-    fn tables() -> &'static BaseTables<Self, 6> {
-        static T: OnceLock<BaseTables<P384, 6>> = OnceLock::new();
-        T.get_or_init(BaseTables::build)
+    fn tables() -> &'static BaseTables<6> {
+        static T: OnceLock<BaseTables<6>> = OnceLock::new();
+        T.get_or_init(BaseTables::build::<P384>)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::{Point, Scalar};
+    use super::super::{Jac, Point, Scalar};
     use super::*;
     use crate::field::sub_small;
 
+    fn enc<C: Curve<L>, const L: usize>(j: Jac<C, L>) -> Option<Vec<u8>> {
+        let (x, y) = j.to_affine()?;
+        Point::<C, L>::from_affine(x, y)?.to_uncompressed()
+    }
+
+    fn scalar<C: Curve<L>, const L: usize>(l: &[u64; L]) -> Scalar<C, L> {
+        Scalar::<C, L>::from_limbs_canonical(l).expect("scalar below n")
+    }
+
+    /// Scalars that stress the digit recodings: the ends of `[1, n)`, `n - 2|d|` for every
+    /// Booth digit, carries into the comb's top row, runs of 8s, 9s and 16s.
+    fn edge_scalars<C: Curve<L>, const L: usize>() -> Vec<Scalar<C, L>> {
+        let n = <C::Fq as Modulus<L>>::P;
+        let mut v = Vec::new();
+        for s in 1..=40 {
+            v.push(scalar::<C, L>(&sub_small(&n, s)));
+            let mut small = [0u64; L];
+            small[0] = s;
+            v.push(scalar::<C, L>(&small));
+        }
+        for pat in [
+            0x8888_8888_8888_8888u64,
+            0x9999_9999_9999_9999,
+            0x1010_1010_1010_1010,
+        ] {
+            let mut l = [pat; L];
+            l[L - 1] &= 0x7fff_ffff_ffff_ffff;
+            v.push(scalar::<C, L>(&l));
+            l[L - 1] = 0x8000_0000_0000_0000;
+            v.push(scalar::<C, L>(&l));
+        }
+        let mut top = [0u64; L];
+        top[L - 1] = 1 << 63;
+        v.push(scalar::<C, L>(&top));
+        top[0] = 0xf;
+        v.push(scalar::<C, L>(&top));
+        v
+    }
+
     fn check<C: Curve<L>, const L: usize>() {
+        // The Booth argument of `Jac::mul_ct` needs n mod 32 ∉ [1, 16].
+        assert!(<C::Fq as Modulus<L>>::P[0] & 31 >= 17);
         let g = Point::<C, L>::generator();
         assert!(Point::<C, L>::from_affine(g.x, g.y).is_some());
         // (n-1)·G = -G, via both multiplications.
         let nm1 =
             Scalar::<C, L>::from_limbs_canonical(&sub_small(&<C::Fq as Modulus<L>>::P, 1)).unwrap();
-        let a = Point::<C, L>::mul_base(&nm1).to_uncompressed().unwrap();
-        let b = g.mul(&nm1).to_uncompressed().unwrap();
+        let a = Point::<C, L>::mul_base_ref(&nm1).to_uncompressed().unwrap();
+        let b = g.mul_ref(&nm1).to_uncompressed().unwrap();
         let c = g.neg().to_uncompressed().unwrap();
         assert_eq!(a, c);
         assert_eq!(b, c);
+        assert_eq!(enc(Jac::<C, L>::mul_base_ct(&nm1)).unwrap(), c);
+        assert_eq!(enc(Jac::<C, L>::mul_ct(&g, &nm1)).unwrap(), c);
         // G + (n-1)G = identity, 2G = G + G.
         assert!(g.add(&g.neg()).to_affine().is_none());
         assert_eq!(g.double().to_uncompressed(), g.add(&g).to_uncompressed());
@@ -206,7 +392,7 @@ mod tests {
         assert_eq!(
             g.mul_add_base_vartime(&Scalar::<C, L>::ONE, &Scalar::<C, L>::ONE)
                 .to_uncompressed(),
-            Point::<C, L>::mul_base(&two).to_uncompressed()
+            Point::<C, L>::mul_base_ref(&two).to_uncompressed()
         );
         // Mixed addition matches full addition, also from the identity; wNAF verification math
         // on random scalars matches the constant-time multiplications.
@@ -222,30 +408,53 @@ mod tests {
                 .to_uncompressed(),
             g.to_uncompressed()
         );
+        // The Jacobian multiplications against the complete-formula references: random
+        // scalars and points, then the edge scalars on G and on a random point.
         let mut rng = crate::rand::ChaChaRng::from_seed([L as u8; 32]);
+        let mut q = g;
         for _ in 0..20 {
             let mut b = vec![0u8; 8 * L];
             rng.fill(&mut b);
             let a = Scalar::<C, L>::from_be_bytes_reduce(&b).unwrap();
             rng.fill(&mut b);
             let k = Scalar::<C, L>::from_be_bytes_reduce(&b).unwrap();
-            let q = Point::<C, L>::mul_base(&k);
+            q = Point::<C, L>::mul_base_ref(&k);
+            let want = Point::<C, L>::mul_base_ref(&a).to_uncompressed();
+            assert_eq!(want, g.mul_ref(&a).to_uncompressed());
+            assert_eq!(enc(Jac::<C, L>::mul_base_ct(&a)), want);
             assert_eq!(
-                Point::<C, L>::mul_base(&a).to_uncompressed(),
-                g.mul(&a).to_uncompressed()
+                enc(Jac::<C, L>::mul_ct(&q, &a)),
+                q.mul_ref(&a).to_uncompressed()
             );
-            let want = Point::<C, L>::mul_base(&a).add(&q.mul(&k));
+            let want = Point::<C, L>::mul_base_ref(&a).add(&q.mul_ref(&k));
             assert_eq!(
                 q.mul_add_base_vartime(&a, &k).to_uncompressed(),
                 want.to_uncompressed()
             );
         }
-        // Digits that carry into the top row: n - 1 has top nibble f.
+        for k in edge_scalars::<C, L>() {
+            let want = g.mul_ref(&k).to_uncompressed();
+            assert_eq!(Point::<C, L>::mul_base_ref(&k).to_uncompressed(), want);
+            assert_eq!(enc(Jac::<C, L>::mul_base_ct(&k)), want);
+            assert_eq!(enc(Jac::<C, L>::mul_ct(&g, &k)), want);
+            assert_eq!(
+                enc(Jac::<C, L>::mul_ct(&q, &k)),
+                q.mul_ref(&k).to_uncompressed()
+            );
+        }
+        // A point with Z ≠ 1 enters the variable-base multiplication correctly.
+        let q3 = q.double().add(&q);
+        let k = edge_scalars::<C, L>()[5];
+        assert_eq!(
+            enc(Jac::<C, L>::mul_ct(&q3, &k)),
+            q3.mul_ref(&k).to_uncompressed()
+        );
+        // Digits that carry into the top row: n - 2 has top nibble f.
         let top =
             Scalar::<C, L>::from_limbs_canonical(&sub_small(&<C::Fq as Modulus<L>>::P, 2)).unwrap();
         assert_eq!(
-            Point::<C, L>::mul_base(&top).to_uncompressed(),
-            g.mul(&top).to_uncompressed()
+            Point::<C, L>::mul_base_ref(&top).to_uncompressed(),
+            g.mul_ref(&top).to_uncompressed()
         );
         // Compressed round trip.
         let u = g.double().to_uncompressed().unwrap();
@@ -260,9 +469,73 @@ mod tests {
         );
     }
 
+    /// The dedicated scalar inversion chain matches the generic exponentiation by `n - 2`.
+    #[test]
+    fn scalar_inverse() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([0x4e; 32]);
+        let mut vals = vec![[1u64, 0, 0, 0], sub_small(&P256N::P, 1), [0; 4]];
+        for _ in 0..100 {
+            let mut b = [0u8; 32];
+            rng.fill(&mut b);
+            vals.push(Scalar::<P256, 4>::from_be_bytes_reduce(&b).unwrap().l);
+        }
+        for a in vals {
+            let x = Scalar::<P256, 4>::from_mont(a);
+            let want = x.pow_vartime_exp(&P256N::P_MINUS_2);
+            assert_eq!(p256n_inv::<P256N>(&a), want.l);
+            assert_eq!(x.invert().l, want.l);
+            #[cfg(target_arch = "x86_64")]
+            if crate::cpu::cpu_has(crate::cpu::Feature::Adx) {
+                assert_eq!(p256n_inv::<crate::ec::hw::P256Nx>(&a), want.l);
+            }
+        }
+    }
+
     #[test]
     fn group_laws() {
         check::<P256, 4>();
         check::<P384, 6>();
+        #[cfg(target_arch = "x86_64")]
+        if crate::cpu::cpu_has(crate::cpu::Feature::Adx) {
+            check::<P256X, 4>();
+        }
+    }
+
+    /// The hardware twin and the portable curve agree on every operation, through the public
+    /// API's dispatch (the portable path forced by `set_portable` for the comparison).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn twin_matches_portable() {
+        use crate::hash::Sha256;
+        if !crate::cpu::cpu_has(crate::cpu::Feature::Adx) {
+            return;
+        }
+        let mut rng = crate::rand::ChaChaRng::from_seed([0x77; 32]);
+        for _ in 0..50 {
+            let mut b = [0u8; 32];
+            rng.fill(&mut b);
+            let d = Scalar::<P256, 4>::from_be_bytes_reduce(&b).unwrap();
+            rng.fill(&mut b);
+            let e = Scalar::<P256, 4>::from_be_bytes_reduce(&b).unwrap();
+            let q = super::super::base_mul_impl::<P256, 4>(&e);
+            let qx = super::super::base_mul_impl::<P256X, 4>(&e).cast::<P256>();
+            assert_eq!(q.to_uncompressed(), qx.to_uncompressed());
+            let (mut o1, mut o2) = ([0u8; 32], [0u8; 32]);
+            assert!(super::super::ecdh_x_impl::<P256, 4>(&d, &q, &mut o1));
+            assert!(super::super::ecdh_x_impl::<P256X, 4>(
+                &d,
+                &q.cast(),
+                &mut o2
+            ));
+            assert_eq!(o1, o2);
+            let s1 = super::super::sign_impl::<P256, Sha256, 4>(&d, &b);
+            let s2 = super::super::sign_impl::<P256X, Sha256, 4>(&d, &b);
+            assert_eq!((s1.r.l, s1.s.l), (s2.r.l, s2.s.l));
+            let pd = super::super::base_mul_impl::<P256, 4>(&d);
+            assert!(super::super::verify_impl::<P256, 4>(&pd, &b, &s1).is_ok());
+            assert!(super::super::verify_impl::<P256X, 4>(&pd.cast(), &b, &s2.cast()).is_ok());
+            b[0] ^= 1;
+            assert!(super::super::verify_impl::<P256X, 4>(&pd.cast(), &b, &s2.cast()).is_err());
+        }
     }
 }

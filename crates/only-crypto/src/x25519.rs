@@ -1,4 +1,7 @@
-//! X25519 key agreement (RFC 7748): the Montgomery ladder on Curve25519, constant time.
+//! X25519 key agreement (RFC 7748): the Montgomery ladder on Curve25519, constant time. Public
+//! keys (the fixed base point) come from the Ed25519 base point table instead: `[k]B` on the
+//! birationally equivalent edwards25519 curve, mapped to `u = (1 + y)/(1 - y)`, about three
+//! times cheaper than the ladder.
 //!
 //! ```
 //! use only_crypto::x25519::PrivateKey;
@@ -12,6 +15,7 @@
 
 use crate::Error;
 use crate::ct;
+use crate::curve25519::Point;
 use crate::curve25519::fe::Fe;
 
 /// The u-coordinate of the base point.
@@ -25,10 +29,26 @@ pub const BASEPOINT: [u8; 32] = {
 /// RFC 7748 specifies). Constant time in both inputs.
 #[must_use]
 pub fn x25519(scalar: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
+    #[cfg(target_arch = "x86_64")]
+    if crate::curve25519::hw::enabled() {
+        return crate::curve25519::hw::ladder(&clamp(scalar), u);
+    }
+    x25519_portable(scalar, u)
+}
+
+/// The scalar as RFC 7748 §5 decodes it: the low three bits and the top bit cleared, bit 254 set.
+fn clamp(scalar: &[u8; 32]) -> [u8; 32] {
     let mut k = *scalar;
     k[0] &= 248;
     k[31] &= 127;
     k[31] |= 64;
+    k
+}
+
+/// [`x25519`] on the portable field (radix 2⁵¹): the fallback, and the reference for the
+/// BMI2 + ADX ladder (`curve25519::hw`).
+pub(crate) fn x25519_portable(scalar: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
+    let k = clamp(scalar);
     let x1 = Fe::from_bytes(u);
     let mut x2 = Fe::ONE;
     let mut z2 = Fe::ZERO;
@@ -93,7 +113,10 @@ impl PrivateKey {
     /// The public key, `x25519(self, 9)`.
     #[must_use]
     pub fn public_key(&self) -> [u8; 32] {
-        x25519(&self.0, &BASEPOINT)
+        let k = clamp(&self.0);
+        // u = 9 is the image of the Ed25519 base point B, so x25519(k, 9) = u([k]B); the clamped
+        // k is below 2²⁵⁵ as `mul_base` needs.
+        Point::mul_base(&k).to_montgomery_u()
     }
 
     /// The shared secret with the peer's public key. Fails with
@@ -171,5 +194,29 @@ mod tests {
             "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
         );
         assert_eq!(a.diffie_hellman(&[0; 32]), Err(Error::ZeroSharedSecret));
+        assert_eq!(
+            hex(&b.public_key()),
+            "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+        );
+    }
+
+    /// Public keys from the Edwards base point table match the ladder on u = 9.
+    #[test]
+    fn public_key_matches_ladder() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([0x25; 32]);
+        let mut keys = vec![[0u8; 32], [0xff; 32]];
+        for _ in 0..200 {
+            let mut k = [0u8; 32];
+            rng.fill(&mut k);
+            keys.push(k);
+        }
+        for k in keys {
+            assert_eq!(
+                PrivateKey::from_bytes(k).public_key(),
+                x25519(&k, &BASEPOINT),
+                "{}",
+                hex(&k)
+            );
+        }
     }
 }

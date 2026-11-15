@@ -117,7 +117,7 @@ The TCP rows of `only` and tokio plateau at 0.65–0.8 M req/s from 64 to 1024 c
 points at the closed-loop client (8 threads) as much as at the servers: read them as "same class",
 with fib behind at small and 16 KiB messages. The handshake rate is client-bound (see Limits): it
 shows that only-tls on the server side keeps up with tokio-rustls, not a server maximum (in memory,
-only-tls does 0.45–0.61× rustls' handshakes, see below).
+only-tls does 0.89–1.00× rustls' handshakes, see below).
 
 ### Memory per connection
 
@@ -164,8 +164,8 @@ dev-dependency.
 
 | Case | only-tls | rustls + ring | only / rustls |
 |---|---:|---:|---:|
-| full handshakes/s, X25519 | 3,041 | 5,015 | 0.61 |
-| full handshakes/s, secp256r1 | 2,300 | 5,126 | 0.45 |
+| full handshakes/s, X25519 | 5,027 | 5,025 | 1.00 |
+| full handshakes/s, secp256r1 | 4,552 | 5,126 | 0.89 |
 | seal + open 1 KiB, AES-128-GCM (MB/s) | 2,697 | 1,760 | 1.53 |
 | seal + open 16 KiB, AES-128-GCM | 6,603 | 3,994 | 1.65 |
 | seal + open 64 KiB, AES-128-GCM | 6,734 | ² | – |
@@ -179,17 +179,19 @@ dev-dependency.
 ² rustls at 64 KiB swings between ~2,200 and ~3,900 MB/s from run to run (its receive side takes
 at most 16 KiB of plaintext before it must be read out), so no ratio is given.
 
-The handshake profile is >98% curve arithmetic and hashing (P-256 and X25519 against ring's
-assembly). The AES-GCM records run on the VAES + VPCLMULQDQ + AVX-512 kernel and are sealed and
-opened out of place (the AEAD reads the caller's plaintext or the received record and writes the
-output once; before, a copy came first, 30% of the 16 KiB profile): 2.4× the previous release at
-16–64 KiB (AES-128 2,739 → 6,603 MB/s at 16 KiB, 0.69× → 1.65× rustls + ring). The remaining
-ChaCha20-Poly1305 gap is the scalar Poly1305 (ring has a SIMD one).
+Handshakes were 3,055 (X25519) and 2,306 (secp256r1) per second before the P-256 / X25519
+pass (0.61× and 0.45×; History). The handshake profile is still dominated by curve arithmetic:
+the P-256 doubling of the ECDH and the signature verification, then the X25519 ladder. The AES-GCM
+records run on the VAES + VPCLMULQDQ + AVX-512 kernel and are sealed and opened out of place (the
+AEAD reads the caller's plaintext or the received record and writes the output once; before, a
+copy came first, 30% of the 16 KiB profile): 2.4× the previous release at 16–64 KiB (AES-128
+2,739 → 6,603 MB/s at 16 KiB, 0.69× → 1.65× rustls + ring). The remaining ChaCha20-Poly1305 gap
+is the scalar Poly1305 (ring has a SIMD one).
 
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +
-VPCLMULQDQ + AVX-512 (AES-GCM from 256 bytes, CRC folding from 512 bytes). The comparison
+VPCLMULQDQ + AVX-512 (AES-GCM from 256 bytes, CRC folding from 512 bytes), BMI2 + ADX. The comparison
 columns are the RustCrypto crates `only-crypto` replaced (also with run-time CPU detection;
 crc32fast for CRC-32) and ring 0.17 for public-key operations.
 
@@ -219,19 +221,25 @@ crc32fast for CRC-32) and ring 0.17 for public-key operations.
 
 | Operation (op/s) | only-crypto | ring | ratio |
 |---|---:|---:|---:|
-| Ed25519 sign | 67,763 | 58,969 | 1.15 |
-| Ed25519 verify | 26,882 | 31,938 | 0.84 |
-| X25519 agreement | 30,671 | 36,564 | 0.84 |
-| P-256 ECDSA sign | 34,137 | 75,699 | 0.45 |
-| P-256 ECDSA verify | 13,418 | 26,190 | 0.51 |
-| P-256 ECDH | 10,363 | 29,958 | 0.35 |
-| P-256 key generation | 54,664 | 112,178 | 0.49 |
-| P-384 ECDSA sign | 9,358 | 3,333 | 2.81 |
-| P-384 ECDSA verify | 3,777 | 1,848 | 2.04 |
-| P-384 ECDH | 2,999 | 3,582 | 0.84 |
-| P-384 key generation | 15,743 | 3,588 | 4.39 |
+| Ed25519 sign | 89,784 | 58,979 | 1.53 |
+| Ed25519 verify | 27,714 | 31,874 | 0.87 |
+| X25519 agreement | 36,488 | 36,512 | 1.00 |
+| P-256 ECDSA sign | 59,837 | 75,840 | 0.79 |
+| P-256 ECDSA verify | 25,138 | 26,140 | 0.96 |
+| P-256 ECDH | 27,288 | 29,913 | 0.91 |
+| P-256 key generation | 108,263 | 112,440 | 0.96 |
+| P-384 ECDSA sign | 10,553 | 3,330 | 3.17 |
+| P-384 ECDSA verify | 4,330 | 1,849 | 2.34 |
+| P-384 ECDH | 4,387 | 3,579 | 1.23 |
+| P-384 key generation | 19,331 | 3,586 | 5.39 |
 | RSA-2048 PKCS#1 sign | 1,192 | 2,429 | 0.49 |
-| RSA-2048 PKCS#1 verify | 39,275 | 65,868 | 0.60 |
+| RSA-2048 PKCS#1 verify | 39,244 | 65,991 | 0.59 |
+
+The P-256 rows and X25519 run on BMI2 + ADX (`ec::hw`, `curve25519::hw`; `adx` in the detected
+paths). With every hardware path off (`ONLY_CRYPTO_PORTABLE=1`, which also turns off SHA-NI for
+the RFC 6979 HMACs) P-256 does 0.42× (sign), 0.58× (verify), 0.52× (ECDH) and 0.60× (key
+generation) of ring, X25519 0.84×, and the handshakes 0.62× (X25519) and 0.49× (secp256r1) of
+rustls.
 
 #### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
 
@@ -279,8 +287,10 @@ What is left: AES-GCM messages of 1 KiB to 1.4 KiB are at 0.96–1.11× ring (th
 fixed cost; the tail after the last 256-byte group runs on the 128-bit path); CPUs with VAES but
 without AVX-512 (Zen 3, Alder Lake) use the 128-bit path; the TLS record layer still zero-fills
 the output before the AEAD writes it (about 9% of a 16 KiB record); Poly1305 is scalar; P-256
-keeps complete formulas for the doublings of a secret scalar; RSA has no Karatsuba; SHA-512 and
-MD5 are portable.
+sign trails ring's 7-bit comb with AVX2 table scans and the order arithmetic in assembly (ours: a
+4-bit comb, about 100-cycle `mod n` products), and each P-256 doubling (4M + 4S, ~480 cycles)
+passes its field elements through memory between the assembly routines where ring keeps them in
+registers; Ed25519 verification is portable; RSA has no Karatsuba; SHA-512 and MD5 are portable.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 
@@ -394,6 +404,14 @@ Short summaries of the per-area passes; the full tables are in the git history o
 - **Crypto CPU acceleration** (this host, `354f3bc5` → after): AES-128-GCM 16 KiB 364 → 6,484 MB/s
   (17.8×), SHA-256 6.5×, SHA-1 3.6×, CRC-32 7.3×, ChaCha20-Poly1305 3×; P-256 sign 1.46×, verify
   1.67×, Ed25519 verify 1.49×, RSA-2048 1.36–1.38×. TLS records 9–15× faster, handshakes 1.4–1.5×.
+- **P-256 and X25519 for TLS handshakes** (this host, CPU 2, median of three alternating rounds,
+  `a1cc9b49` → after): P-256 field and order arithmetic in BMI2/ADX assembly behind run-time
+  detection, Jacobian scalar multiplication (Booth 5-bit windows, signed comb with mixed
+  additions), a scalar inversion chain, X25519 public keys from the Edwards base table and an
+  ADX ladder. P-256 sign 34,152 → 59,837 op/s, verify 13,404 → 25,138, ECDH 10,380 → 27,288, key
+  generation 54,581 → 108,263; X25519 30,696 → 36,488; Ed25519 sign 67,644 → 89,784; P-384
+  1.13–1.47×. Handshakes 3,055 → 5,027/s (X25519, 1.00× rustls) and 2,306 → 4,552/s (secp256r1,
+  0.89×).
 - **Wide AES-GCM and CRC** (this host, `a1cc9b49` → after): AES-GCM on VAES + VPCLMULQDQ +
   AVX-512 (512-bit, chosen over 256-bit by measurement) 2.3–2.5× at 16–64 KiB (AES-128 seal
   16 KiB 6,455 → 15,048 MB/s, 0.51× → 1.19× ring), the fused tail 1.8–2.1× at 64 B; TLS 1.3

@@ -3,7 +3,7 @@
 [中文](README.zh-CN.md)
 
 Dependency-free cryptographic primitives for the [`only`](https://github.com/lesismal/only)
-crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are six small modules
+crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are eight small modules
 that drive CPU instructions, detected at run time; the OS random syscall lives in `only-sys`).
 
 | Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
@@ -13,6 +13,7 @@ that drive CPU instructions, detected at run time; the OS random syscall lives i
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
+| P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | portable |
 
 `ONLY_CRYPTO_PORTABLE=1` (read once) forces the portable code everywhere; the tests run every
 known-answer vector with and without it. Under Miri nothing is detected.
@@ -55,8 +56,9 @@ assert_eq!(gcm.decrypt(&[0u8; 12], b"aad", &sealed).unwrap(), b"plaintext");
 This is an implementation crate: its API follows the needs of the other `only` crates and may
 change in any release (internal tier, docs/api-stability.md). It is not a general-purpose
 cryptography library (no key zeroization; assembly only for the wide AES-GCM kernel and CRC fold,
-whose VAES / VPCLMULQDQ / AVX-512 intrinsics are newer than the MSRV; SHA-512, MD5, Poly1305 and
-the public-key arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
+whose VAES / VPCLMULQDQ / AVX-512 intrinsics are newer than the MSRV, and for the P-256 and
+Curve25519 field arithmetic on x86_64; SHA-512, MD5, Poly1305, RSA and the rest of the public-key
+arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
 planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x509).
 
 ## Public-key timing
@@ -66,33 +68,50 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   half-size product plus REDC) with masked final subtractions, generic over the limb count,
   constants derived at compile time. The P-256 base field has a dedicated reduction (`-p⁻¹ mod
   2⁶⁴ = 1`, so each step costs one real multiplication) and inverts by an addition chain (255
-  squarings, 12 multiplications); other inversions use 4-bit fixed windows over the public
-  exponent `p - 2`. Curve25519 uses radix 2⁵¹ with a dedicated squaring.
-- Points use complete formulas (Renes–Costello–Batina for `a = -3`, including the mixed
-  addition with an affine point, unified extended Edwards addition), so no input takes a
-  different path. `[k]G` recodes `k` into signed 4-bit digits (masked arithmetic) and adds one
-  affine comb entry `|d|·16ⁱ·G` per digit: each lookup reads all 8 entries of the row with
-  masks, the negation and the skipping of a zero digit are masked selects. Variable-base secret
-  multiplication uses fixed 4-bit windows reading all 16 entries; X25519 is the RFC 7748 ladder
-  with masked swaps.
+  squarings, 12 multiplications), the P-256 group order by a chain of 255 squarings and 40
+  multiplications; other inversions use 4-bit fixed windows over the public exponent `p - 2`.
+  Curve25519 uses radix 2⁵¹ with a dedicated squaring.
+- On x86_64 with BMI2 + ADX (detected at run time; off with `ONLY_CRYPTO_PORTABLE=1`) the P-256
+  field and order arithmetic and the X25519 ladder's field run in inline assembly (`mulx`,
+  `adcx`/`adox`, corrections by `cmov` and `sbb` masks, straight-line code). The P-256
+  operations run on a twin curve type that shares the Montgomery form and the base point tables.
+- Secret scalar multiplication on P-256 / P-384 uses Jacobian coordinates (`a = -3`: doubling
+  4M + 4S, addition 11M + 5S, mixed addition 7M + 4S). Variable base (ECDH): Booth-recoded signed
+  5-bit windows (digits in `[-16, 16]`) over `1·P … 16·P`, every lookup reading all 16 entries,
+  the negation a masked select. Fixed base: `k` recoded into signed 4-bit digits (masked
+  arithmetic), one affine comb entry `|d|·16ⁱ·G` per digit, each lookup reading all 8 entries of
+  the row. The Jacobian formulas are incomplete: an accumulator still at the identity and a zero
+  digit are masked selects, and equal operands cannot occur for scalars in `[1, n)` (the proofs
+  are in `ec/mod.rs`; they need `n mod 32 ≥ 17`, which a test checks). Decoding, validation and
+  table construction keep the complete formulas (Renes–Costello–Batina).
+- Ed25519 `[k]B` adds one affine Niels entry per signed 4-bit digit (complete unified addition,
+  7M per digit). X25519 public keys are that `[k]B` mapped to `u = (1 + y)/(1 - y)`; the shared
+  secret is the RFC 7748 ladder with masked swaps.
 - RSA private operations: CRT exponentiation with fixed 4-bit windows over the full exponent
   length and masked table selection (fixed-size Montgomery code for 1024- to 4096-bit primes,
   squaring by a half-size product), base blinding (`rᵉ`, `r⁻¹` per key, inverted by Fermat in
   each prime field, squared after each use) and a check that `sᵉ = m` before releasing the
   signature. Moduli reductions are constant time; public `p`/`q` limb counts are not hidden.
 - Known variable-time parts, all on public data: signature verification (ECDSA `u₁G + u₂Q` in
-  Jacobian coordinates with width-7 / width-5 wNAF and a projective `x ≡ r` check, Ed25519
-  `[s]B - [k]A` with interleaved wNAF, RSA `sᵉ`), table construction, point
+  Jacobian coordinates with width-7 / width-5 wNAF, a binary-GCD inversion of `s` and a
+  projective `x ≡ r` check, Ed25519 `[s]B - [k]A` with interleaved wNAF, RSA `sᵉ`), table
+  construction, point
   decoding/validation, the `Option`/`Result` outcome of range checks, RFC 6979's rejection loop
   (probability ~2⁻³²), `SecretKey::generate`'s rejection sampling, affine conversion branching
   on the identity (impossible for valid secret scalars).
 - Limits: masks go through `std::hint::black_box`, which discourages but does not forbid the
   optimizer from reintroducing branches; without it LLVM does turn some masked modular
-  corrections into jumps, so the barrier stays even where it costs speed. The x86_64 and
-  aarch64 code of the P-256 / P-384 point operations, the field multiplication, squaring and
-  inversion and the X25519 ladder was inspected: no conditional branch besides loop control.
-  No statistical test (dudect, ctgrind) has been run. Keys are not zeroized. The CPU
-  instructions used (AES, carry-less multiplication, SHA, CRC32, AVX2) take constant time.
+  corrections into jumps, so the barrier stays even where it costs speed (the assembly needs no
+  barrier). The release x86_64 code (with the assembly) and aarch64 code (portable) of the
+  secret-scalar paths was disassembled and every conditional branch listed (`src/ct.rs` has the
+  recipe): P-256 / P-384 `ecdh_x_impl`, `base_mul_impl`, `sign_impl` with the inlined window
+  and comb loops, the Jacobian doubling and additions, the field and order multiplication,
+  squaring and inversion chains, the Ed25519 base multiplication and both X25519 ladders. The
+  only branches are loop counters, public indices and bounds, the public exponent bits of the
+  inversion chains, CPU-feature and `OnceLock` checks, and the final "result is the identity"
+  test. No statistical test (dudect, ctgrind) has been run. Keys are not zeroized. The CPU
+  instructions used (AES, carry-less multiplication, SHA, CRC32, AVX2, `mulx`, `adcx`/`adox`,
+  `cmov`) take constant time.
 
 ## Performance
 
@@ -109,20 +128,27 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | AES-128-GCM seal, 1400 B | 4 249 | 8 163 | 1.11x ring |
 | AES-128-GCM seal, 64 B | 611 | 1 185 | 1.10x ring |
 | ChaCha20-Poly1305 seal, 16 KiB | 588 | 1 757 | 0.89x chacha20poly1305 |
-| Ed25519 verify (op/s) | 18 289 | 27 161 | 0.85x ring |
-| X25519 agreement | 28 865 | 30 945 | 0.84x ring |
-| P-256 ECDSA sign | 23 435 | 34 184 | 0.45x ring |
-| P-256 ECDSA verify | 8 043 | 13 397 | 0.51x ring |
-| P-256 ECDH | 10 075 | 10 390 | 0.34x ring |
-| P-384 ECDSA verify | 2 426 | 3 798 | 2.03x ring |
-| RSA-2048 PKCS#1 sign | 871 | 1 199 | 0.49x ring |
-| RSA-2048 PKCS#1 verify | 29 019 | 39 557 | 0.60x ring |
+| Ed25519 verify (op/s) | 18 289 | 27 714 | 0.87x ring |
+| Ed25519 sign | – | 89 784 | 1.53x ring |
+| X25519 agreement | 28 865 | 36 488 | 1.00x ring |
+| P-256 ECDSA sign | 23 435 | 59 837 | 0.79x ring |
+| P-256 ECDSA verify | 8 043 | 25 138 | 0.96x ring |
+| P-256 ECDH | 10 075 | 27 288 | 0.91x ring |
+| P-256 key generation | – | 108 263 | 0.96x ring |
+| P-384 ECDSA verify | 2 426 | 4 330 | 2.34x ring |
+| RSA-2048 PKCS#1 sign | 871 | 1 192 | 0.49x ring |
+| RSA-2048 PKCS#1 verify | 29 019 | 39 244 | 0.59x ring |
+| TLS 1.3 full handshakes/s, X25519 (only-tls vs rustls + ring) | – | 5 027 | 1.00x rustls |
+| TLS 1.3 full handshakes/s, secp256r1 | – | 4 552 | 0.89x rustls |
 
-ring uses assembly for AES-GCM, P-256, X25519 and RSA. The AES-GCM and CRC rows compare with the
+The public-key rows and the handshakes are from the P-256 / X25519 pass (before it: P-256 sign
+34 152, verify 13 404, ECDH 10 380, X25519 30 696 op/s; handshakes 3 055 and 2 306/s). ring uses
+assembly for AES-GCM, P-256, X25519 and RSA. The AES-GCM and CRC rows compare with the
 previous VAES / VPCLMULQDQ-less code (`--example gcm-sizes` against ring, `--example bench`
 against crc32fast); on Zen 4 the 512-bit kernel beat the same kernel on 256-bit registers at every
-size. Follow-ups: a VAES + AVX2 kernel for CPUs without AVX-512, a SIMD Poly1305, cheaper
-doublings for secret P-256 scalars, Karatsuba for RSA.
+size. Follow-ups: a VAES + AVX2 kernel for CPUs without AVX-512, a SIMD Poly1305, whole point
+doublings in assembly (field elements kept in registers) and a wider P-256 comb, aarch64 assembly
+for the P-256 field, Karatsuba for RSA.
 
 ## Testing
 
@@ -138,8 +164,14 @@ doublings for secret P-256 scalars, Karatsuba for RSA.
   and AVX-512, so these tests are run natively on one (Zen 4).
 - Hardware paths: unit tests compare each one with the portable code (`hardware_matches_portable`
   for AES, CTR, GCM, SHA-1, SHA-256, `hardware_matches_table` for CRC, the multi-block ChaCha20
-  and two-block Poly1305 against one block at a time), and the whole suite also runs with
-  `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.
+  and two-block Poly1305 against one block at a time, `ec::hw` and `curve25519::hw`
+  `matches_portable` for every field routine and the X25519 ladder on random and edge values,
+  `twin_matches_portable` for P-256 key generation, ECDH, signing and verification), and the
+  whole suite also runs with `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.
+- The Jacobian scalar multiplications are checked against the complete-formula references
+  (`mul_ref`, `mul_base_ref`) on random scalars and on edge scalars (the ends of `[1, n)`,
+  `n - 2|d|` for every Booth digit, carries into the comb's top row), for P-256, P-384 and the
+  P-256 twin; X25519 public keys from the Edwards table against the ladder on `u = 9`.
 - `cargo run --release -p only-crypto --example bench` compares throughput with the replaced
   crates.
 - Public key (`tests/pk_kat.rs`): Wycheproof X25519, Ed25519, ECDSA P-256/SHA-256 (DER and

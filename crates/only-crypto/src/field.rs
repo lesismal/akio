@@ -8,7 +8,8 @@
 //! public exponent (4-bit windows, or an addition chain where a modulus provides one). The
 //! constants a modulus needs (`R mod p`, `R² mod p`, `R³ mod p`, `-p⁻¹ mod 2⁶⁴`, the exponents)
 //! are computed at compile time from the modulus alone. A modulus with a special form (the P-256
-//! prime) overrides multiplication, squaring and inversion with dedicated code.
+//! prime) overrides multiplication, squaring and inversion with dedicated code, and a modulus
+//! implemented with CPU instructions (`ec::hw`) overrides addition and subtraction too.
 
 use std::marker::PhantomData;
 
@@ -43,6 +44,49 @@ pub(crate) trait Modulus<const N: usize>: Copy + Send + Sync + 'static {
         } else {
             Self::mont_mul(a, a)
         }
+    }
+
+    /// `a + b mod P` (`a, b < P`), constant time.
+    #[inline]
+    fn mod_add(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
+        let mut s = [0u64; N];
+        let carry = ct::add_limbs(&mut s, a, b);
+        let mut r = [0u64; N];
+        let borrow = ct::sub_limbs(&mut r, &s, &Self::P);
+        // Keep s when s < P, i.e. the subtraction borrowed and the addition did not carry.
+        ct::assign(ct::mask(borrow & (1 ^ carry)), &mut r, &s);
+        r
+    }
+
+    /// `a - b mod P` (`a, b < P`), constant time.
+    #[inline]
+    fn mod_sub(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
+        let mut d = [0u64; N];
+        let borrow = ct::sub_limbs(&mut d, a, b);
+        let m = ct::mask(borrow);
+        let mut pm = [0u64; N];
+        for (x, &p) in pm.iter_mut().zip(Self::P.iter()) {
+            *x = p & m;
+        }
+        let mut r = [0u64; N];
+        ct::add_limbs(&mut r, &d, &pm);
+        r
+    }
+
+    /// `3·a mod P` (`a < P`).
+    #[inline]
+    fn mod_mul3(a: &[u64; N]) -> [u64; N] {
+        Self::mod_add(&Self::mod_add(a, a), a)
+    }
+
+    /// `2ᵏ·a mod P` (`a < P`, small `k`).
+    #[inline]
+    fn mod_mul_pow2(a: &[u64; N], k: u32) -> [u64; N] {
+        let mut r = *a;
+        for _ in 0..k {
+            r = Self::mod_add(&r, &r);
+        }
+        r
     }
 
     /// `a⁻¹` (Montgomery form in and out) by a dedicated addition chain, or `None` to use the
@@ -293,6 +337,13 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
 
     pub(crate) const ZERO: Self = Self::raw([0; N]);
 
+    /// The element whose Montgomery form is `l` (`l < P`): for moving values between two
+    /// implementations of the same modulus.
+    #[inline]
+    pub(crate) const fn from_mont(l: [u64; N]) -> Self {
+        Self::raw(l)
+    }
+
     /// The element with canonical limbs `a < P`, converted at compile time (`a·R` by doubling).
     pub(crate) const fn from_canonical_const(a: [u64; N]) -> Self {
         Self::raw(mul_pow2_mod(a, &M::P, 64 * N))
@@ -317,27 +368,12 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
 
     #[inline]
     pub(crate) fn add(&self, b: &Self) -> Self {
-        let mut s = [0u64; N];
-        let carry = ct::add_limbs(&mut s, &self.l, &b.l);
-        let mut r = [0u64; N];
-        let borrow = ct::sub_limbs(&mut r, &s, &M::P);
-        // Keep s when s < P, i.e. the subtraction borrowed and the addition did not carry.
-        ct::assign(ct::mask(borrow & (1 ^ carry)), &mut r, &s);
-        Self::raw(r)
+        Self::raw(M::mod_add(&self.l, &b.l))
     }
 
     #[inline]
     pub(crate) fn sub(&self, b: &Self) -> Self {
-        let mut d = [0u64; N];
-        let borrow = ct::sub_limbs(&mut d, &self.l, &b.l);
-        let m = ct::mask(borrow);
-        let mut pm = [0u64; N];
-        for (x, &p) in pm.iter_mut().zip(M::P.iter()) {
-            *x = p & m;
-        }
-        let mut r = [0u64; N];
-        ct::add_limbs(&mut r, &d, &pm);
-        Self::raw(r)
+        Self::raw(M::mod_sub(&self.l, &b.l))
     }
 
     #[inline]
@@ -348,6 +384,18 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
     #[inline]
     pub(crate) fn double(&self) -> Self {
         self.add(self)
+    }
+
+    /// `3·self`.
+    #[inline]
+    pub(crate) fn mul3(&self) -> Self {
+        Self::raw(M::mod_mul3(&self.l))
+    }
+
+    /// `2ᵏ·self` for a small `k`.
+    #[inline]
+    pub(crate) fn mul_pow2(&self, k: u32) -> Self {
+        Self::raw(M::mod_mul_pow2(&self.l, k))
     }
 
     /// `u64::MAX` if zero.
@@ -407,6 +455,63 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
             Some(l) => Self::raw(l),
             None => self.pow_vartime_exp(&M::P_MINUS_2),
         }
+    }
+
+    /// `self⁻¹` (0 maps to 0) in variable time, for public values (signature verification):
+    /// the binary extended Euclidean algorithm on the canonical integer `a·R` gives
+    /// `(a·R)⁻¹ = a⁻¹·R⁻¹`, and one Montgomery multiplication by `R³` restores `a⁻¹·R`.
+    pub(crate) fn invert_vartime(&self) -> Self {
+        let p = M::P;
+        if self.is_zero() != 0 {
+            return Self::ZERO;
+        }
+        // Invariants: x1·(aR) ≡ u and x2·(aR) ≡ v (mod p), with u, v odd after halving;
+        // x1, x2 < p.
+        let (mut u, mut v) = (self.l, p);
+        let mut x1 = [0u64; N];
+        x1[0] = 1;
+        let mut x2 = [0u64; N];
+        let is_one = |w: &[u64; N]| w[0] == 1 && w[1..].iter().all(|&x| x == 0);
+        // x/2 mod p for x < p: x even halves, x odd becomes (x + p)/2 (one carry bit).
+        let half = |x: &mut [u64; N]| {
+            let mut top = 0u64;
+            if x[0] & 1 == 1 {
+                let x0 = *x;
+                top = ct::add_limbs(x, &x0, &p);
+            }
+            for i in 0..N {
+                let hi = if i + 1 < N { x[i + 1] } else { top };
+                x[i] = (x[i] >> 1) | (hi << 63);
+            }
+        };
+        let shr1 = |w: &mut [u64; N]| {
+            for i in 0..N {
+                let hi = if i + 1 < N { w[i + 1] } else { 0 };
+                w[i] = (w[i] >> 1) | (hi << 63);
+            }
+        };
+        while !is_one(&u) && !is_one(&v) {
+            while u[0] & 1 == 0 {
+                shr1(&mut u);
+                half(&mut x1);
+            }
+            while v[0] & 1 == 0 {
+                shr1(&mut v);
+                half(&mut x2);
+            }
+            if ct::lt_limbs(&u, &v) == 0 {
+                let u0 = u;
+                ct::sub_limbs(&mut u, &u0, &v);
+                x1 = M::mod_sub(&x1, &x2);
+            } else {
+                let v0 = v;
+                ct::sub_limbs(&mut v, &v0, &u);
+                x2 = M::mod_sub(&x2, &x1);
+            }
+        }
+        let inv = if is_one(&u) { x1 } else { x2 };
+        // inv = (aR)⁻¹ as a plain integer; ·R³·R⁻¹ = a⁻¹·R.
+        Self::raw(M::mont_mul(&inv, &M::R3))
     }
 
     /// The Montgomery form of the integer with little-endian limbs `a` (any value below `R`).
@@ -575,7 +680,14 @@ mod tests {
             // x^(p-2) by the window method is the inverse.
             assert_eq!(y.invert().mul(&y).to_limbs(), [1, 0, 0, 0]);
             assert_eq!(x.invert().mul(&x).to_limbs(), [1, 0, 0, 0, 0, 0]);
+            assert_eq!(y.invert_vartime().l, y.invert().l);
+            assert_eq!(x.invert_vartime().l, x.invert().l);
         }
+        for v in [[1u64, 0, 0, 0], [2, 0, 0, 0], sub_small(&P256::P, 1)] {
+            let y = F::from_limbs_canonical(&v).unwrap();
+            assert_eq!(y.invert_vartime().l, y.invert().l);
+        }
+        assert_eq!(F::ZERO.invert_vartime().l, [0; 4]);
         // All-ones limbs (the largest values) square correctly.
         let m = F::from_limbs_canonical(&sub_small(&P256::P, 1)).unwrap();
         assert_eq!(m.square().l, m.mul(&m).l);
