@@ -122,6 +122,7 @@ mod tests {
             ack_eliciting: true,
             in_flight: true,
             mtu_probe: false,
+            ecn: false,
             frames: Vec::new(),
         }
     }

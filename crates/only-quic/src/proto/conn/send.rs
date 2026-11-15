@@ -46,6 +46,8 @@ impl Connection {
             return Some(t);
         }
         let max = max_datagrams.max(1);
+        // One ECN marking for the whole batch (the I/O sends it with one codepoint).
+        self.tx_ecn = self.ecn.marking();
         let mut buf = Vec::with_capacity(usize::from(self.mtu) * max);
         let mut seg = 0usize;
         let mut n = 0usize;
@@ -75,6 +77,11 @@ impl Connection {
             dest: self.path.remote,
             segment_size: (n > 1).then_some(seg),
             data: buf,
+            ecn: if self.tx_ecn {
+                ecn::cp::ECT0
+            } else {
+                ecn::cp::NOT_ECT
+            },
         })
     }
 
@@ -271,6 +278,7 @@ impl Connection {
         let mut fill = false;
         // ACK first.
         {
+            let counts = self.ecn.report(sid as usize);
             let sp = &mut self.spaces[sid as usize];
             if sp.rx_new && !sp.rx.is_empty() && buf.len() + ack_room(sp) <= max_end {
                 let delay = if sid == SpaceId::Data {
@@ -281,7 +289,7 @@ impl Connection {
                 } else {
                     0
                 };
-                frame::put_ack(buf, &sp.rx, delay, MAX_ACK_RANGES);
+                frame::put_ack_ecn(buf, &sp.rx, delay, MAX_ACK_RANGES, counts);
                 if let Some(l) = sp.rx.max() {
                     frames.push(SentFrame::Ack(l));
                 }
@@ -350,6 +358,9 @@ impl Connection {
         }
         let size = (buf.len() - pkt_start) as u16;
         let in_flight = eliciting || padded;
+        if self.tx_ecn {
+            self.ecn.on_marked_sent(sid as usize);
+        }
         let sp = &mut self.spaces[sid as usize];
         sp.next_pn += 1;
         if eliciting {
@@ -367,6 +378,7 @@ impl Connection {
                 ack_eliciting: eliciting,
                 in_flight,
                 mtu_probe: false,
+                ecn: self.tx_ecn,
                 frames,
             },
         );
@@ -749,6 +761,7 @@ impl Connection {
                 ack_eliciting: true,
                 in_flight: false,
                 mtu_probe: false,
+                ecn: false,
                 frames: Vec::new(),
             },
         );
@@ -760,6 +773,7 @@ impl Connection {
             dest: to,
             segment_size: None,
             data: buf,
+            ecn: 0,
         })
     }
 
@@ -793,6 +807,7 @@ impl Connection {
                 ack_eliciting: true,
                 in_flight: true,
                 mtu_probe: true,
+                ecn: false,
                 frames: Vec::new(),
             },
         );
@@ -806,6 +821,7 @@ impl Connection {
             dest: self.path.remote,
             segment_size: None,
             data: buf,
+            ecn: 0,
         })
     }
 
@@ -913,6 +929,7 @@ impl Connection {
             dest: self.path.remote,
             segment_size: None,
             data: buf,
+            ecn: 0,
         })
     }
 

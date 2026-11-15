@@ -1,8 +1,10 @@
 //! Batched datagram I/O (Linux): `recvmmsg` with optional UDP GRO, `sendmmsg` with optional UDP
-//! GSO (`UDP_SEGMENT`).
+//! GSO (`UDP_SEGMENT`), and the ECN codepoint of each datagram (RFC 3168) both ways: received
+//! from the `IP_TOS` / `IPV6_TCLASS` control message ([`enable_ecn`]), sent as one per message.
 //!
 //! GSO is detected once per process and turned off for good when the kernel or a device refuses
-//! it (`EIO`/`EINVAL`, as quinn does); `ONLY_UDP_GSO=0` / `ONLY_UDP_GRO=0` disable either.
+//! it (`EIO`/`EINVAL`, as quinn does); `ONLY_UDP_GSO=0` / `ONLY_UDP_GRO=0` / `ONLY_UDP_ECN=0`
+//! disable GSO, GRO or ECN.
 
 use std::{
     io,
@@ -13,7 +15,10 @@ use std::{
     sync::atomic::{AtomicU8, Ordering},
 };
 
-use crate::ffi::{self, SOL_UDP, UDP_GRO, UDP_SEGMENT};
+use crate::ffi::{
+    self, IP_RECVTOS, IP_TOS, IPPROTO_IP, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, SOL_UDP,
+    UDP_GRO, UDP_SEGMENT,
+};
 
 /// Most datagrams one GSO send may carry (the kernel's `UDP_MAX_SEGMENTS` is 64 before 6.x).
 pub const MAX_GSO_SEGMENTS: usize = 64;
@@ -23,14 +28,16 @@ pub const MAX_GSO_BYTES: usize = 65000;
 pub const SEND_BATCH: usize = 64;
 const MAX_IOV: usize = 1024;
 
-/// Space for one `cmsghdr` carrying an `int` (u16 for UDP_SEGMENT, int for UDP_GRO), 8-aligned.
-type Ctrl = [u64; 4];
+/// Space for two `cmsghdr`s carrying an `int` each (u16 for UDP_SEGMENT, int for UDP_GRO, a byte
+/// or an int for the traffic class), 8-aligned.
+type Ctrl = [u64; 8];
 
 const UNKNOWN: u8 = 0;
 const ON: u8 = 1;
 const OFF: u8 = 2;
 static GSO: AtomicU8 = AtomicU8::new(UNKNOWN);
 static GRO: AtomicU8 = AtomicU8::new(UNKNOWN);
+static ECN: AtomicU8 = AtomicU8::new(UNKNOWN);
 
 fn env_off(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "0" || v.eq_ignore_ascii_case("off"))
@@ -102,6 +109,46 @@ pub fn enable_gro(fd: RawFd) -> bool {
     r == 0
 }
 
+/// Whether datagrams may carry ECN codepoints (not disabled with `ONLY_UDP_ECN=0`).
+pub fn ecn_available() -> bool {
+    match ECN.load(Ordering::Relaxed) {
+        ON => true,
+        OFF => false,
+        _ => {
+            let on = !env_off("ONLY_UDP_ECN");
+            ECN.store(if on { ON } else { OFF }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+/// Asks the kernel to report the ECN codepoint of every received datagram (`IP_RECVTOS`, and
+/// `IPV6_RECVTCLASS` on an IPv6 socket); [`RecvBatch::ecn`] reads it. Returns whether it was
+/// enabled.
+pub fn enable_ecn(fd: RawFd) -> bool {
+    if !ecn_available() {
+        return false;
+    }
+    let one: ffi::c_int = 1;
+    let set = |level, opt| {
+        // SAFETY: `one` is a valid int for the duration of the call.
+        unsafe {
+            ffi::setsockopt(
+                fd,
+                level,
+                opt,
+                (&raw const one).cast(),
+                size_of::<ffi::c_int>() as ffi::socklen_t,
+            ) == 0
+        }
+    };
+    // An IPv4 socket refuses the IPv6 option; an IPv6 one takes both (the IPv4 one covers
+    // IPv4-mapped peers).
+    let v4 = set(IPPROTO_IP, IP_RECVTOS);
+    let v6 = set(IPPROTO_IPV6, IPV6_RECVTCLASS);
+    v4 || v6
+}
+
 /// Receives up to `slots` datagrams per syscall into pre-allocated buffers.
 pub struct RecvBatch {
     bufs: Vec<u8>,
@@ -152,7 +199,7 @@ impl RecvBatch {
             iov: Vec::with_capacity(slots),
             // SAFETY: sockaddr_storage and mmsghdr are plain-old-data; all-zero is valid.
             names: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
-            ctrl: vec![[0; 4]; if gro { slots } else { 0 }],
+            ctrl: vec![[0; 8]; slots],
             gro,
             // SAFETY: as above.
             msgs: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
@@ -182,13 +229,9 @@ impl RecvBatch {
             h.msg_namelen = size_of::<ffi::sockaddr_storage>() as ffi::socklen_t;
             h.msg_iov = &raw mut self.iov[i];
             h.msg_iovlen = 1;
-            if self.gro {
-                h.msg_control = (&raw mut self.ctrl[i]).cast();
-                h.msg_controllen = size_of::<Ctrl>() as _;
-            } else {
-                h.msg_control = std::ptr::null_mut();
-                h.msg_controllen = 0;
-            }
+            // Control data: the GRO segment size and the traffic class (ECN), when enabled.
+            h.msg_control = (&raw mut self.ctrl[i]).cast();
+            h.msg_controllen = size_of::<Ctrl>() as _;
             h.msg_flags = 0;
             self.msgs[i].msg_len = 0;
         }
@@ -237,20 +280,47 @@ impl RecvBatch {
         if !self.gro {
             return 0;
         }
+        self.cmsg_int(i, |level, ty| level == SOL_UDP && ty == UDP_GRO)
+            .map_or(0, |v| v.max(0) as usize)
+    }
+
+    /// The ECN codepoint (the low two bits of the traffic class) of datagram `i` of the last
+    /// `recv`: 0 when not ECN-capable or not reported (see [`enable_ecn`]).
+    pub fn ecn(&self, i: usize) -> u8 {
+        if i >= self.got {
+            return 0;
+        }
+        let tos = self.cmsg_int(i, |level, ty| {
+            (level == IPPROTO_IP && ty == IP_TOS) || (level == IPPROTO_IPV6 && ty == IPV6_TCLASS)
+        });
+        tos.map_or(0, |v| (v & 3) as u8)
+    }
+
+    /// The payload of the first control message of datagram `i` that `want(level, type)`
+    /// accepts, as an int (a one-byte payload, as `IP_TOS` has, is widened).
+    fn cmsg_int(&self, i: usize, want: impl Fn(ffi::c_int, ffi::c_int) -> bool) -> Option<i32> {
         let h = &self.msgs[i].msg_hdr;
         // SAFETY: `h` is a header the kernel filled in; the CMSG_* helpers only walk within
-        // `msg_control[..msg_controllen]`, which points into `self.ctrl[i]`.
+        // `msg_control[..msg_controllen]`, which points into `self.ctrl[i]`, and a payload is
+        // read only within the `cmsg_len` the kernel wrote (one int, else one byte).
         unsafe {
             let mut c = ffi::cmsg_firsthdr(h);
             while !c.is_null() {
-                if (*c).cmsg_level == SOL_UDP && (*c).cmsg_type == UDP_GRO {
-                    let v = std::ptr::read_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>());
-                    return v.max(0) as usize;
+                if want((*c).cmsg_level, (*c).cmsg_type) {
+                    let data = ffi::cmsg_data(c);
+                    let len = (*c).cmsg_len as usize;
+                    return if len >= ffi::cmsg_len(size_of::<ffi::c_int>()) {
+                        Some(std::ptr::read_unaligned(data.cast::<ffi::c_int>()))
+                    } else if len >= ffi::cmsg_len(1) {
+                        Some(i32::from(*data))
+                    } else {
+                        None
+                    };
                 }
                 c = ffi::cmsg_nxthdr(h, c);
             }
         }
-        0
+        None
     }
 }
 
@@ -260,6 +330,10 @@ struct Meta {
     iov_len: usize,
     namelen: ffi::socklen_t,
     gso: u16,
+    /// ECN codepoint to send with (0: none), and whether the socket is IPv6 (`IPV6_TCLASS`
+    /// rather than `IP_TOS`).
+    ecn: u8,
+    v6: bool,
 }
 
 /// Reusable storage for `sendmmsg` batches; fill one with [`SendBatch::batch`].
@@ -294,7 +368,7 @@ impl SendBatch {
             iov: Vec::with_capacity(MAX_IOV),
             // SAFETY: plain-old-data; all-zero is valid.
             names: (0..SEND_BATCH).map(|_| unsafe { mem::zeroed() }).collect(),
-            ctrl: vec![[0; 4]; SEND_BATCH],
+            ctrl: vec![[0; 8]; SEND_BATCH],
             meta: Vec::with_capacity(SEND_BATCH),
             // SAFETY: as above.
             msgs: (0..SEND_BATCH).map(|_| unsafe { mem::zeroed() }).collect(),
@@ -339,6 +413,20 @@ impl<'d> Batch<'_, 'd> {
     /// or, with `gso = n > 0`, the datagrams of `n` bytes each (the last may be shorter) that
     /// `parts` concatenate. Returns `false` (adding nothing) when the batch is full.
     pub fn push(&mut self, dest: Option<&SocketAddr>, parts: &[&'d [u8]], gso: usize) -> bool {
+        self.push_ecn(dest, parts, gso, 0, false)
+    }
+
+    /// As [`push`](Self::push), with the ECN codepoint `ecn` (its low two bits; 0 sends none)
+    /// set on the message's datagrams, through `IPV6_TCLASS` when `v6_socket` (the socket is
+    /// IPv6), else `IP_TOS`.
+    pub fn push_ecn(
+        &mut self,
+        dest: Option<&SocketAddr>,
+        parts: &[&'d [u8]],
+        gso: usize,
+        ecn: u8,
+        v6_socket: bool,
+    ) -> bool {
         let s = &mut *self.s;
         let i = s.meta.len();
         if i == SEND_BATCH || s.iov.len() + parts.len() > MAX_IOV {
@@ -364,6 +452,8 @@ impl<'d> Batch<'_, 'd> {
             iov_len: parts.len(),
             namelen,
             gso: gso.min(u16::MAX as usize) as u16,
+            ecn: ecn & 3,
+            v6: v6_socket,
         });
         true
     }
@@ -392,17 +482,37 @@ impl<'d> Batch<'_, 'd> {
             }
             h.msg_iov = s.iov[m.iov_start..].as_mut_ptr();
             h.msg_iovlen = m.iov_len as _;
+            let mut space = 0;
             if m.gso > 0 {
+                space += ffi::cmsg_space(size_of::<u16>());
+            }
+            if m.ecn > 0 {
+                space += ffi::cmsg_space(size_of::<ffi::c_int>());
+            }
+            if space > 0 {
+                s.ctrl[i] = [0; 8];
                 h.msg_control = (&raw mut s.ctrl[i]).cast();
-                h.msg_controllen = ffi::cmsg_space(size_of::<u16>());
-                // SAFETY: `msg_control` points to `ctrl[i]` (32 bytes, 8-aligned), large enough
-                // for one cmsghdr with a u16 payload as computed by CMSG_SPACE above.
+                h.msg_controllen = space as _;
+                // SAFETY: `msg_control` points to `ctrl[i]` (64 bytes, 8-aligned, zeroed above),
+                // large enough for the (at most two) cmsghdrs CMSG_SPACE counted; each header
+                // comes from CMSG_FIRSTHDR / CMSG_NXTHDR within that length, the next one only
+                // after its predecessor's `cmsg_len` is set.
                 unsafe {
-                    let c = ffi::cmsg_firsthdr(h);
-                    (*c).cmsg_level = SOL_UDP;
-                    (*c).cmsg_type = UDP_SEGMENT;
-                    (*c).cmsg_len = ffi::cmsg_len(size_of::<u16>());
-                    std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<u16>(), m.gso);
+                    let mut c = ffi::cmsg_firsthdr(h);
+                    if m.gso > 0 && !c.is_null() {
+                        (*c).cmsg_level = SOL_UDP;
+                        (*c).cmsg_type = UDP_SEGMENT;
+                        (*c).cmsg_len = ffi::cmsg_len(size_of::<u16>());
+                        std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<u16>(), m.gso);
+                        c = ffi::cmsg_nxthdr(h, c);
+                    }
+                    if m.ecn > 0 && !c.is_null() {
+                        (*c).cmsg_level = if m.v6 { IPPROTO_IPV6 } else { IPPROTO_IP };
+                        (*c).cmsg_type = if m.v6 { IPV6_TCLASS } else { IP_TOS };
+                        (*c).cmsg_len = ffi::cmsg_len(size_of::<ffi::c_int>());
+                        let v = ffi::c_int::from(m.ecn);
+                        std::ptr::write_unaligned(ffi::cmsg_data(c).cast::<ffi::c_int>(), v);
+                    }
                 }
             }
             s.msgs[i].msg_len = 0;
@@ -493,6 +603,48 @@ mod tests {
         // A failing receive (bad fd) must not leave the old one visible either.
         assert!(rb.recv(-1).is_err());
         assert!(rb.get(0).is_none());
+    }
+
+    #[test]
+    fn ecn_codepoints_both_ways() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_nonblocking(true).unwrap();
+        assert!(enable_ecn(rx.as_raw_fd()));
+        let gro = enable_gro(rx.as_raw_fd());
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let dest = rx.local_addr().unwrap();
+        let (a, b, c) = ([1u8; 100], [2u8; 100], [3u8; 60]);
+        let mut sb = SendBatch::new();
+        let mut batch = sb.batch();
+        // ECT(0), ECT(1) with GSO when available, then CE.
+        assert!(batch.push_ecn(Some(&dest), &[&a], 0, 2, false));
+        let gso = if gso_enabled() { 100 } else { 0 };
+        if gso > 0 {
+            assert!(batch.push_ecn(Some(&dest), &[&b, &b], gso, 1, false));
+        } else {
+            assert!(batch.push_ecn(Some(&dest), &[&b], 0, 1, false));
+            assert!(batch.push_ecn(Some(&dest), &[&b], 0, 1, false));
+        }
+        assert!(batch.push_ecn(Some(&dest), &[&c], 0, 3, false));
+        let n = batch.len();
+        assert_eq!(batch.send(tx.as_raw_fd(), 0).unwrap(), n);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut rb = RecvBatch::with_gro(8, 65536, gro);
+        let mut got = Vec::new();
+        loop {
+            let k = rb.recv(rx.as_raw_fd()).unwrap();
+            if k == 0 {
+                break;
+            }
+            for i in 0..k {
+                let (d, _, seg) = rb.get(i).unwrap();
+                let seg = if seg > 0 { seg } else { d.len() };
+                for x in d.chunks(seg) {
+                    got.push((x[0], rb.ecn(i)));
+                }
+            }
+        }
+        assert_eq!(got, vec![(1, 2), (2, 1), (2, 1), (3, 3)]);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! [`Connection::handle_timeout`]), application events ([`Connection::poll_event`]) and
 //! endpoint events (connection IDs, [`Connection::poll_endpoint_event`]).
 
+mod ecn;
 mod recv;
 mod send;
 mod sent;
@@ -27,6 +28,7 @@ use super::{IdMap, IdSet};
 use crate::types::{Congestion as CcConfig, ConnectionError, ConnectionStats, Dir, Side, StreamId};
 use crate::{Bytes, TransportConfig};
 
+use ecn::Ecn;
 use sent::SentPackets;
 pub(crate) use streams::StreamState;
 
@@ -117,6 +119,8 @@ pub(crate) struct Sent {
     ack_eliciting: bool,
     in_flight: bool,
     mtu_probe: bool,
+    /// Sent ECT(0).
+    ecn: bool,
     frames: Vec<SentFrame>,
 }
 
@@ -274,6 +278,8 @@ pub struct Transmit {
     pub dest: SocketAddr,
     pub segment_size: Option<usize>,
     pub data: Vec<u8>,
+    /// The ECN codepoint to send the datagrams with (0: not ECN-capable).
+    pub ecn: u8,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -313,6 +319,8 @@ pub(crate) struct ConnConfig {
     pub migration: bool,
     /// Forces this side to start a key update every `n` packets (tests).
     pub key_update_interval: u64,
+    /// The I/O layer can send ECN codepoints (with `transport.ecn`, packets are marked).
+    pub ecn_io: bool,
 }
 
 impl ConnConfig {
@@ -321,7 +329,13 @@ impl ConnConfig {
             transport,
             migration,
             key_update_interval: KEY_UPDATE_INTERVAL,
+            ecn_io: true,
         }
+    }
+
+    /// Whether packets are sent ECN-marked (validation permitting).
+    fn ecn(&self) -> bool {
+        self.transport.ecn && self.ecn_io
     }
 }
 
@@ -418,7 +432,14 @@ pub struct Connection {
     eliciting_since_rx: bool,
     last_eliciting_sent_any: Option<Instant>,
     pacing_until: Option<Instant>,
-    buffered: Vec<(SocketAddr, Arc<Vec<u8>>)>,
+    /// Packets that arrived before their keys: sender, ECN codepoint, packet.
+    buffered: Vec<(SocketAddr, u8, Arc<Vec<u8>>)>,
+    /// ECN state of the current path.
+    ecn: Ecn,
+    /// The ECN codepoint of the datagram being processed.
+    rx_ecn: u8,
+    /// The ECN marking decided for the datagrams being written.
+    tx_ecn: bool,
     /// Frame lists of acknowledged or lost packets, reused for new packets.
     spare_frames: Vec<Vec<SentFrame>>,
     replay: bool,
@@ -537,6 +558,9 @@ impl Connection {
             last_eliciting_sent_any: None,
             pacing_until: None,
             buffered: Vec::new(),
+            ecn: Ecn::new(cfg.ecn()),
+            rx_ecn: 0,
+            tx_ecn: false,
             spare_frames: Vec::new(),
             replay: false,
             events: VecDeque::new(),
@@ -711,6 +735,7 @@ impl Connection {
         s.cwnd = self.cc.window;
         s.congestion_events = self.cc.events;
         s.current_mtu = self.mtu;
+        s.ecn_capable = self.ecn.phase == ecn::Phase::Capable;
         s
     }
 

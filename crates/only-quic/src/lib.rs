@@ -419,7 +419,7 @@ impl Connection {
             loop {
                 let t = lock(&self.0.outq).pop_front();
                 let Some(t) = t else { break };
-                self.0.ep.transmit(t.dest, t.segment_size, t.data);
+                self.0.ep.transmit(t.dest, t.segment_size, t.data, t.ecn);
             }
             self.0.sending.store(false, Ordering::Release);
             if lock(&self.0.outq).is_empty() {
@@ -528,14 +528,16 @@ impl Ep {
         }
     }
 
-    fn transmit(&self, dest: SocketAddr, seg: Option<usize>, data: Vec<u8>) {
+    fn transmit(&self, dest: SocketAddr, seg: Option<usize>, data: Vec<u8>, ecn: u8) {
         let sock = lock(&self.socks).get(&dest).cloned();
         let Some(sock) = sock else {
             if self.factory.is_none() {
-                lock(&self.backlog).push((dest, seg, data));
+                lock(&self.backlog).push((dest, seg, data, ecn));
             }
             return;
         };
+        // The codepoint applies to what leaves from now on (one connection per peer address).
+        sock.set_ecn(ecn);
         // Several datagrams of `s` bytes: one GSO send where Linux supports it (else one
         // sendmmsg, else one by one); the boundaries survive either way.
         let _ = match seg {
@@ -550,20 +552,24 @@ impl Ep {
     fn on_datagram(
         self: &Arc<Ep>,
         peer: SocketAddr,
+        ecn: u8,
         data: &[u8],
         batch: Option<&mut Vec<Connection>>,
     ) {
         let now = Instant::now();
-        let ev = lock(&self.endpoint).handle(now, peer, data);
+        let ev = lock(&self.endpoint).handle_ecn(now, peer, ecn, data);
         match ev {
             None => {}
-            Some(proto::DatagramEvent::Respond(t)) => self.transmit(t.dest, None, t.data),
+            Some(proto::DatagramEvent::Respond(t)) => self.transmit(t.dest, None, t.data, t.ecn),
             Some(proto::DatagramEvent::Conn(h)) => {
                 let c = lock(&self.conns).get(&h).cloned();
                 if let Some(c) = c {
-                    lock(&c.0.state)
-                        .conn
-                        .handle_shared(now, peer, bytes::pool::copy(data));
+                    lock(&c.0.state).conn.handle_shared_ecn(
+                        now,
+                        peer,
+                        ecn,
+                        bytes::pool::copy(data),
+                    );
                     match batch {
                         Some(b) => {
                             c.drive_received(now);
@@ -610,6 +616,7 @@ impl QuicServer {
         if let Some(n) = config.key_update {
             cfg.key_update_interval = n;
         }
+        cfg.ecn_io = ecn_platform();
         let setup = proto::ServerSetup {
             tls: config.tls,
             cfg,
@@ -677,7 +684,7 @@ impl fmt::Debug for Udp {
 impl Handler for Udp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         let batch = self.batched.then_some(&mut self.pending);
-        self.ep.on_datagram(c.peer_addr(), data, batch);
+        self.ep.on_datagram(c.peer_addr(), c.rx_ecn(), data, batch);
     }
 
     fn on_batch_end(&mut self, _c: &Conn<Self>) {
@@ -712,8 +719,16 @@ impl Handler for Udp {
     }
 }
 
-/// A transmit: destination, segment size (several datagrams), bytes.
-type Outgoing = (SocketAddr, Option<usize>, Vec<u8>);
+/// A transmit: destination, segment size (several datagrams), bytes, ECN codepoint.
+type Outgoing = (SocketAddr, Option<usize>, Vec<u8>, u8);
+
+/// Whether the UDP layer can mark datagrams ECT(0) (Linux, unless `ONLY_UDP_ECN=0`); elsewhere
+/// connections do not try (validation would only fail).
+fn ecn_platform() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var("ONLY_UDP_ECN")
+            .map_or(true, |v| v != "0" && !v.eq_ignore_ascii_case("off"))
+}
 
 /// Datagrams one `poll_transmit` may return in a single [`Conn::send_segments`].
 const MAX_DATAGRAMS: usize = 10;
@@ -725,8 +740,8 @@ impl Acceptor for ClientAcceptor {
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
         lock(&self.0.socks).insert(c.peer_addr(), c.clone());
         let backlog = std::mem::take(&mut *lock(&self.0.backlog));
-        for (dest, seg, d) in backlog {
-            self.0.transmit(dest, seg, d);
+        for (dest, seg, d, ecn) in backlog {
+            self.0.transmit(dest, seg, d, ecn);
         }
         Udp::new(self.0.clone(), true)
     }
@@ -753,6 +768,7 @@ pub fn dial<H: QuicHandler>(
     if let Some(n) = config.key_update {
         cfg.key_update_interval = n;
     }
+    cfg.ecn_io = ecn_platform();
     let (h, conn) = endpoint.connect(Instant::now(), cfg, &config.tls, server_name, addr, token)?;
     let ep = Arc::new(Ep::new(
         endpoint,

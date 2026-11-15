@@ -1,6 +1,8 @@
 //! A simulated network for the sans-io core: two endpoints, a virtual clock, and a link that
-//! loses, reorders, duplicates and delays datagrams and enforces an MTU. Handshakes, bulk
-//! transfers, many streams, migration, key updates, Retry, resets and timeouts run on it.
+//! loses, reorders, duplicates and delays datagrams and enforces an MTU, optionally behind a
+//! bottleneck of limited rate with a drop-tail buffer, and that carries, bleaches or CE-marks
+//! the ECN codepoint. Handshakes, bulk transfers, many streams, migration, key updates, Retry,
+//! resets, timeouts, ECN and congestion control run on it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
@@ -23,6 +25,18 @@ pub(crate) struct Link {
     pub mtu: usize,
     /// Drop everything (a blackout) while set.
     pub down: bool,
+    /// A bottleneck of this many bytes per second (each direction), or none.
+    pub rate: Option<u64>,
+    /// The bottleneck's buffer in bytes: datagrams that do not fit are dropped (drop-tail).
+    pub buffer: usize,
+    /// ECN-capable datagrams are CE-marked instead of queued past this many bytes (an AQM).
+    pub ce_above: Option<usize>,
+    /// The probability that an ECN-capable datagram is CE-marked.
+    pub ce: f64,
+    /// Clear the ECN codepoint of every datagram (a bleaching middlebox).
+    pub bleach: bool,
+    /// Drop every ECN-capable datagram (a black hole for ECN).
+    pub drop_ect: bool,
 }
 
 impl Default for Link {
@@ -35,6 +49,12 @@ impl Default for Link {
             jitter: Duration::ZERO,
             mtu: 1500,
             down: false,
+            rate: None,
+            buffer: 64 * 1024,
+            ce_above: None,
+            ce: 0.0,
+            bleach: false,
+            drop_ect: false,
         }
     }
 }
@@ -59,6 +79,9 @@ impl Node {
     }
 }
 
+/// A datagram on the link: to the server?, from, ECN codepoint, bytes.
+type InFlight = (bool, SocketAddr, u8, Vec<u8>);
+
 pub(crate) struct Sim {
     pub now: Instant,
     pub client: Node,
@@ -66,10 +89,16 @@ pub(crate) struct Sim {
     pub link: Link,
     rng: ChaChaRng,
     seq: u64,
-    /// (deliver at, seq) -> (to server, from, datagram)
-    queue: BTreeMap<(Instant, u64), (bool, SocketAddr, Vec<u8>)>,
+    /// (deliver at, seq) -> datagram
+    queue: BTreeMap<(Instant, u64), InFlight>,
+    /// When the bottleneck of each direction (to client, to server) is free again.
+    busy_until: [Instant; 2],
     pub delivered: u64,
     pub dropped: u64,
+    /// Datagrams the link CE-marked.
+    pub ce_marked: u64,
+    /// Datagrams sent ECN-capable.
+    pub ect_sent: u64,
 }
 
 pub(crate) fn certs() -> (only_tls::ServerConfig, only_tls::ClientConfig) {
@@ -114,8 +143,12 @@ impl Sim {
             &mut rng,
         );
         let client = Endpoint::with_rng(None, &mut rng);
+        let now = Instant::now();
         Sim {
-            now: Instant::now(),
+            now,
+            busy_until: [now; 2],
+            ce_marked: 0,
+            ect_sent: 0,
             client: Node::new(client, "10.0.0.1:5000".parse().expect("addr")),
             server: Node::new(server, "10.0.0.2:4433".parse().expect("addr")),
             link: Link::default(),
@@ -159,14 +192,48 @@ impl Sim {
         f64::from(self.rng.next_u32()) / f64::from(u32::MAX)
     }
 
-    fn send(&mut self, to_server: bool, from: SocketAddr, data: Vec<u8>) {
-        if self.link.down || data.len() > self.link.mtu || self.rand() < self.link.loss {
+    fn send(&mut self, to_server: bool, from: SocketAddr, mut ecn: u8, data: Vec<u8>) {
+        if ecn != 0 {
+            self.ect_sent += 1;
+        }
+        if self.link.down
+            || data.len() > self.link.mtu
+            || self.rand() < self.link.loss
+            || (ecn != 0 && self.link.drop_ect)
+        {
             self.dropped += 1;
             return;
         }
+        if self.link.bleach {
+            ecn = 0;
+        }
+        if ecn != 0 && self.rand() < self.link.ce {
+            ecn = 3;
+            self.ce_marked += 1;
+        }
+        // The bottleneck: queued behind what it is still sending, dropped when the buffer is
+        // full, CE-marked above the AQM threshold.
+        let mut depart = self.now;
+        if let Some(rate) = self.link.rate {
+            let dir = usize::from(to_server);
+            let busy = self.busy_until[dir].max(self.now);
+            let queued = (busy - self.now).as_secs_f64() * rate as f64;
+            if queued as usize + data.len() > self.link.buffer {
+                self.dropped += 1;
+                return;
+            }
+            if ecn != 0 && self.link.ce_above.is_some_and(|t| queued as usize > t) {
+                if ecn != 3 {
+                    self.ce_marked += 1;
+                }
+                ecn = 3;
+            }
+            depart = busy + Duration::from_secs_f64(data.len() as f64 / rate as f64);
+            self.busy_until[dir] = depart;
+        }
         let copies = if self.rand() < self.link.dup { 2 } else { 1 };
         for _ in 0..copies {
-            let mut d = self.link.delay;
+            let mut d = self.link.delay + (depart - self.now);
             if !self.link.jitter.is_zero() {
                 d += self.link.jitter.mul_f64(self.rand());
             }
@@ -174,8 +241,10 @@ impl Sim {
                 d += self.link.delay;
             }
             self.seq += 1;
-            self.queue
-                .insert((self.now + d, self.seq), (to_server, from, data.clone()));
+            self.queue.insert(
+                (self.now + d, self.seq),
+                (to_server, from, ecn, data.clone()),
+            );
         }
     }
 
@@ -195,10 +264,10 @@ impl Sim {
                     match t.segment_size {
                         Some(s) => {
                             for d in t.data.chunks(s) {
-                                out.push((t.dest, d.to_vec()));
+                                out.push((t.dest, t.ecn, d.to_vec()));
                             }
                         }
-                        None => out.push((t.dest, t.data)),
+                        None => out.push((t.dest, t.ecn, t.data)),
                     }
                 }
                 while let Some(e) = c.poll_endpoint_event() {
@@ -220,14 +289,14 @@ impl Sim {
             for h in drained {
                 node.conns.remove(&h);
             }
-            for (dest, d) in out {
+            for (dest, ecn, d) in out {
                 let to_server = dest == self.server.addr;
-                self.send(to_server, from, d);
+                self.send(to_server, from, ecn, d);
             }
         }
     }
 
-    fn deliver(&mut self, to_server: bool, from: SocketAddr, data: Vec<u8>) {
+    fn deliver(&mut self, to_server: bool, from: SocketAddr, ecn: u8, data: Vec<u8>) {
         self.delivered += 1;
         let now = self.now;
         if !to_server && from != self.server.addr {
@@ -239,10 +308,10 @@ impl Sim {
         } else {
             &mut self.client
         };
-        match node.ep.handle(now, from, &data) {
+        match node.ep.handle_ecn(now, from, ecn, &data) {
             Some(DatagramEvent::Conn(h)) => {
                 if let Some(c) = node.conns.get_mut(&h) {
-                    c.handle_datagram(now, from, data);
+                    c.handle_shared_ecn(now, from, ecn, std::sync::Arc::new(data));
                 }
             }
             Some(DatagramEvent::New(h, c)) => {
@@ -251,7 +320,7 @@ impl Sim {
             Some(DatagramEvent::Respond(t)) => {
                 let src = node.addr;
                 let to_server = t.dest == server_addr;
-                self.send(to_server, src, t.data);
+                self.send(to_server, src, t.ecn, t.data);
             }
             None => {}
         }
@@ -278,8 +347,8 @@ impl Sim {
             if k.0 > self.now {
                 break;
             }
-            let (to_server, from, data) = self.queue.remove(&k).expect("present");
-            self.deliver(to_server, from, data);
+            let (to_server, from, ecn, data) = self.queue.remove(&k).expect("present");
+            self.deliver(to_server, from, ecn, data);
         }
         let now = self.now;
         for node in [&mut self.client, &mut self.server] {
@@ -479,7 +548,7 @@ fn lossy_reordering_duplicating_link() {
             delay: Duration::from_millis(20),
             jitter: Duration::from_millis(5),
             mtu: 1350,
-            down: false,
+            ..Link::default()
         };
         let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
         let mut sizes = vec![2_000_000];
@@ -1085,14 +1154,70 @@ fn late_initial_does_not_start_a_second_connection() {
     let now = sim.now;
     let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
     let from = sim.client.addr;
-    sim.deliver(true, from, first.clone());
+    sim.deliver(true, from, 0, first.clone());
     let ok = sim.run_until(Duration::from_secs(10), |s| {
         s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
     });
     assert!(ok);
     // The handshake is confirmed; the client's first Initial arrives again, late.
     sim.run_until(Duration::from_millis(200), |_| false);
-    sim.deliver(true, from, first);
+    sim.deliver(true, from, 0, first);
     sim.run_until(Duration::from_millis(200), |_| false);
     assert_eq!(sim.server.conns.len(), 1);
+}
+
+#[test]
+fn ecn_validated_and_ce_marks_are_congestion() {
+    let (mut sim, tls) = Sim::default_pair(40);
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    bulk(&mut sim, h, &[200_000], Duration::from_secs(30));
+    let st = sim.cconn(h).stats();
+    assert!(st.ecn_capable && sim.sconn().stats().ecn_capable, "{st:?}");
+    assert_eq!(st.ecn_ce_events, 0);
+    assert!(sim.ect_sent > 100);
+    // A 20 Mbit/s bottleneck whose AQM marks instead of dropping, with a deep buffer: the
+    // senders back off on the CE marks and nothing is lost.
+    sim.link.rate = Some(2_500_000);
+    sim.link.buffer = 1 << 20;
+    sim.link.ce_above = Some(30_000);
+    bulk(&mut sim, h, &[3_000_000], Duration::from_secs(60));
+    let st = sim.cconn(h).stats();
+    assert!(sim.ce_marked > 0);
+    assert!(st.ecn_ce_events > 0 && st.congestion_events > 0, "{st:?}");
+    assert_eq!((sim.dropped, st.lost_packets), (0, 0), "{st:?}");
+    assert!(st.ecn_capable);
+}
+
+#[test]
+fn ecn_bleached_or_black_holed_falls_back() {
+    // A middlebox clears the codepoint: validation fails, marking stops, data still flows.
+    let (mut sim, tls) = Sim::default_pair(41);
+    sim.link.bleach = true;
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    bulk(&mut sim, h, &[200_000], Duration::from_secs(30));
+    assert!(!sim.cconn(h).stats().ecn_capable && !sim.sconn().stats().ecn_capable);
+    let marked = sim.ect_sent;
+    assert!(marked <= 2 * 10, "{marked}");
+    bulk(&mut sim, h, &[200_000], Duration::from_secs(30));
+    assert_eq!(sim.ect_sent, marked);
+    // A path that drops marked packets: the handshake gets through after one probe timeout,
+    // unmarked.
+    let (mut sim, tls) = Sim::default_pair(42);
+    sim.link.drop_ect = true;
+    let start = sim.now;
+    let h = sim.handshake(&tls, ConnConfig::new(TransportConfig::default(), true));
+    assert!(sim.now - start < Duration::from_secs(3));
+    bulk(&mut sim, h, &[200_000], Duration::from_secs(30));
+    assert!(!sim.cconn(h).stats().ecn_capable);
+    // Off by configuration: nothing is marked, received marks are still reported.
+    let (s, tls) = certs();
+    let t = TransportConfig {
+        ecn: false,
+        ..TransportConfig::default()
+    };
+    let mut sim = Sim::new(43, ConnConfig::new(t.clone(), true), s, false);
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    bulk(&mut sim, h, &[100_000], Duration::from_secs(30));
+    assert_eq!(sim.ect_sent, 0);
+    assert!(!sim.cconn(h).stats().ecn_capable);
 }

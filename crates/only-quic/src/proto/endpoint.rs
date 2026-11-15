@@ -136,7 +136,19 @@ impl Endpoint {
     }
 
     /// Routes a datagram from `from`.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn handle(&mut self, now: Instant, from: SocketAddr, data: &[u8]) -> Option<DatagramEvent> {
+        self.handle_ecn(now, from, 0, data)
+    }
+
+    /// Routes a datagram from `from` that arrived with ECN codepoint `ecn`.
+    pub fn handle_ecn(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        ecn: u8,
+        data: &[u8],
+    ) -> Option<DatagramEvent> {
         let first = *data.first()?;
         if first & 0x80 == 0 {
             let cid = ConnectionId::new(data.get(1..1 + LOCAL_CID_LEN)?)?;
@@ -162,6 +174,7 @@ impl Endpoint {
                         dest: from,
                         segment_size: None,
                         data: packet::version_negotiation(&dcid, &scid, r),
+                        ecn: 0,
                     }));
                 }
                 return None;
@@ -218,7 +231,7 @@ impl Endpoint {
         self.initial.insert(h.dcid, handle);
         self.ids.entry(handle).or_default().push(h.dcid);
         self.handshaking.insert(handle);
-        c.handle_shared(now, from, crate::bytes::pool::copy(data));
+        c.handle_shared_ecn(now, from, ecn, crate::bytes::pool::copy(data));
         Some(DatagramEvent::New(handle, Box::new(c)))
     }
 
@@ -243,6 +256,7 @@ impl Endpoint {
             dest: from,
             segment_size: None,
             data: packet::retry(client_scid, &new_scid, odcid, &token, r),
+            ecn: 0,
         })
     }
 
@@ -318,6 +332,7 @@ impl Endpoint {
             dest: from,
             segment_size: None,
             data: out,
+            ecn: 0,
         }))
     }
 

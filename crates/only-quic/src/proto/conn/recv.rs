@@ -49,6 +49,17 @@ impl Connection {
     /// [`Connection::handle_datagram`] on a buffer from [`crate::bytes::pool`] (or any buffer
     /// not shared yet), which goes back to the pool afterwards.
     pub fn handle_shared(&mut self, now: Instant, from: SocketAddr, data: Arc<Vec<u8>>) {
+        self.handle_shared_ecn(now, from, 0, data);
+    }
+
+    /// [`Connection::handle_shared`] for a datagram that arrived with ECN codepoint `ecn`.
+    pub fn handle_shared_ecn(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        ecn: u8,
+        data: Arc<Vec<u8>>,
+    ) {
         if matches!(self.state, State::Drained) {
             return;
         }
@@ -58,12 +69,14 @@ impl Connection {
         if from == self.path.remote {
             self.path.recv_bytes += data.len() as u64;
         }
+        self.rx_ecn = ecn;
         self.datagram(now, from, data, true);
         let mut rounds = 0;
         while self.replay && rounds < 4 {
             rounds += 1;
             self.replay = false;
-            for (f, d) in std::mem::take(&mut self.buffered) {
+            for (f, e, d) in std::mem::take(&mut self.buffered) {
+                self.rx_ecn = e;
                 self.datagram(now, f, d, false);
             }
         }
@@ -166,7 +179,7 @@ impl Connection {
         };
         if !have_keys {
             if self.buffered.len() < MAX_BUFFERED_PACKETS && !self.is_closed() {
-                self.buffered.push((from, pkt.clone()));
+                self.buffered.push((from, self.rx_ecn, pkt.clone()));
             }
             return Outcome::Undecryptable;
         }
@@ -287,6 +300,7 @@ impl Connection {
                 sp.seen.keep_highest(512);
             }
         }
+        let ce = self.ecn.on_received(sid as usize, self.rx_ecn);
         self.last_rx = now;
         self.eliciting_since_rx = false;
         self.reset_idle(now);
@@ -359,7 +373,8 @@ impl Connection {
         if eliciting {
             sp.rx_new = true;
             sp.eliciting_since_ack += 1;
-            if sid != SpaceId::Data || sp.eliciting_since_ack >= 2 || out_of_order {
+            // CE-marked packets are acknowledged at once (RFC 9000 section 13.2.1).
+            if sid != SpaceId::Data || sp.eliciting_since_ack >= 2 || out_of_order || ce {
                 sp.ack_now = true;
             } else if sp.ack_deadline.is_none() {
                 sp.ack_deadline = Some(now + LOCAL_MAX_ACK_DELAY);
@@ -427,11 +442,7 @@ impl Connection {
     ) -> Result<(), TransportError> {
         match f {
             Frame::Padding | Frame::Ping => {}
-            Frame::Ack {
-                ranges,
-                delay,
-                ecn: _,
-            } => self.on_ack(now, sid, &ranges, delay)?,
+            Frame::Ack { ranges, delay, ecn } => self.on_ack(now, sid, &ranges, delay, ecn)?,
             Frame::Crypto { offset, data } => {
                 let sp = &mut self.spaces[sid as usize];
                 sp.crypto_recv.insert(offset, payload.slice(data), false)?;
@@ -639,6 +650,7 @@ impl Connection {
             self.cc.reset();
             self.rtt = Rtt::new(self.cfg.transport.initial_rtt);
         }
+        self.ecn.new_path(self.cfg.ecn());
         // A fresh connection ID for the new path, if the peer gave us one (RFC 9000 9.5).
         if let Some((&s, _)) = self.remote_cids.range(self.remote_seq + 1..).next() {
             let old = self.remote_seq;
@@ -656,6 +668,7 @@ impl Connection {
         sid: SpaceId,
         ranges: &[std::ops::Range<u64>],
         delay: u64,
+        ecn: Option<[u64; 3]>,
     ) -> Result<(), TransportError> {
         let Some(largest) = ranges.first().map(|r| r.end - 1) else {
             return Ok(());
@@ -667,6 +680,7 @@ impl Connection {
             ));
         }
         let mut newly: Vec<(u64, Sent)> = Vec::new();
+        let raised;
         {
             let sp = &mut self.spaces[sid as usize];
             for r in ranges {
@@ -675,8 +689,27 @@ impl Connection {
             if newly.is_empty() {
                 return Ok(());
             }
-            if sp.largest_acked.is_none_or(|l| largest > l) {
+            raised = sp.largest_acked.is_none_or(|l| largest > l);
+            if raised {
                 sp.largest_acked = Some(largest);
+            }
+        }
+        // ECN validation, on ACK frames that raise the largest acknowledged only (older ones
+        // carry older counts, RFC 9000 section 13.4.2.1).
+        if raised {
+            let marked = newly.iter().filter(|(_, p)| p.ecn).count() as u64;
+            let largest_sent = newly
+                .iter()
+                .find(|(pn, _)| *pn == largest)
+                .map(|(_, p)| p.time);
+            if self.ecn.on_ack(sid as usize, marked, ecn) == ecn::AckEcn::Congestion {
+                if let Some(t) = largest_sent {
+                    let before = self.cc.events;
+                    self.cc.on_congestion(now, t);
+                    if self.cc.events > before {
+                        self.stats.ecn_ce_events += 1;
+                    }
+                }
             }
         }
         // An RTT sample from the largest acknowledged, if newly acknowledged.
@@ -851,6 +884,9 @@ impl Connection {
                     sp.eliciting_in_flight = sp.eliciting_in_flight.saturating_sub(1);
                 }
             }
+            if p.ecn {
+                self.ecn.on_marked_lost();
+            }
             if p.mtu_probe {
                 self.on_mtu_probe_lost(p.size);
             } else {
@@ -957,6 +993,7 @@ impl Connection {
             return;
         }
         self.pto_count += 1;
+        self.ecn.on_pto();
         let any = self.spaces.iter().any(|s| s.eliciting_in_flight > 0);
         if !any {
             let sp = &mut self.spaces[sid as usize];

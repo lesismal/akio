@@ -193,6 +193,11 @@ pub struct ConnectionStats {
     pub lost_bytes: u64,
     /// The path MTU in use.
     pub current_mtu: u16,
+    /// The path passed ECN validation and packets are sent ECT(0) (see
+    /// [`TransportConfig::ecn`]).
+    pub ecn_capable: bool,
+    /// Congestion events signalled by ECN-CE marks the peer reported.
+    pub ecn_ce_events: u64,
 }
 
 /// The congestion controller of a connection.
@@ -244,6 +249,12 @@ pub struct TransportConfig {
     pub datagram_send_buffer_size: usize,
     /// The congestion controller (default CUBIC).
     pub congestion: Congestion,
+    /// Explicit Congestion Notification (RFC 9000 section 13.4; default on): packets are sent
+    /// ECT(0) where the platform can set the codepoint (Linux), the path and the peer are
+    /// validated with the first packets and the ACK_ECN counts, and CE marks are congestion
+    /// signals like losses. A path that fails validation (bleaching or dropping marked packets,
+    /// wrong counts) falls back to unmarked packets. Received codepoints are always reported.
+    pub ecn: bool,
 }
 
 const STREAM_RWND: u64 = 12_500 * 100;
@@ -264,6 +275,7 @@ impl Default for TransportConfig {
             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
             datagram_send_buffer_size: 1024 * 1024,
             congestion: Congestion::Cubic,
+            ecn: true,
         }
     }
 }

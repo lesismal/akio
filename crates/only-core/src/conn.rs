@@ -419,6 +419,8 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                     continue;
                 }
                 let dest = it.inner.udp_target().0;
+                let ecn = it.inner.ecn.load(Ordering::Relaxed);
+                let v6 = it.inner.local.is_ipv6();
                 let (mut seg, mut total) = (0, 0);
                 let mut iter = it.w.datagrams().peekable();
                 while let Some(d) = iter.next() {
@@ -438,7 +440,7 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                         continue;
                     }
                     let g = if parts.len() > 1 { seg } else { 0 };
-                    let pushed = b.push(dest, &parts, g);
+                    let pushed = b.push_ecn(dest, &parts, g, ecn, v6);
                     let cnt = parts.len();
                     parts.clear();
                     if !pushed {
@@ -571,6 +573,10 @@ pub struct ConnInner {
     hold: AtomicBool,
     /// Exempt from the write backpressure (see [`set_relayed`](Self::set_relayed)).
     relayed: AtomicBool,
+    /// UDP: the ECN codepoint datagrams are sent with (see [`set_ecn`](Self::set_ecn)).
+    ecn: AtomicU8,
+    /// UDP: the ECN codepoint of the datagram being delivered (set by the loop).
+    rx_ecn: AtomicU8,
     write: Mutex<WriteState>,
     /// A drain waiter whose condition was met while the write lock was held; run right after.
     drained: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -599,6 +605,8 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
+            ecn: AtomicU8::new(0),
+            rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
                 stats: link.stats(),
                 ..WriteState::default()
@@ -629,6 +637,8 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
+            ecn: AtomicU8::new(0),
+            rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
                 datagram: true,
                 stats: link.stats(),
@@ -664,6 +674,8 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
+            ecn: AtomicU8::new(0),
+            rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
                 datagram,
                 stats: link.stats(),
@@ -807,6 +819,35 @@ impl ConnInner {
     /// we stop reading — both sides would wait for each other forever.
     pub fn set_relayed(&self) {
         self.relayed.store(true, Ordering::Release);
+    }
+
+    /// UDP: sends the datagrams that leave from now on with ECN codepoint `codepoint` (its low
+    /// two bits; 0 = not ECN-capable). Returns whether the platform sets it: Linux, on a kernel
+    /// UDP socket, unless `ONLY_UDP_ECN=0`.
+    pub fn set_ecn(&self, codepoint: u8) -> bool {
+        let able = cfg!(target_os = "linux") && matches!(self.sock, Sock::Udp { .. }) && {
+            #[cfg(target_os = "linux")]
+            {
+                only_sys::ecn_available()
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                false
+            }
+        };
+        self.ecn
+            .store(if able { codepoint & 3 } else { 0 }, Ordering::Relaxed);
+        able
+    }
+
+    /// Loop side, UDP: the ECN codepoint of the datagram about to be delivered.
+    pub fn set_rx_ecn(&self, codepoint: u8) {
+        self.rx_ecn.store(codepoint & 3, Ordering::Relaxed);
+    }
+
+    /// UDP: the ECN codepoint of the datagram being delivered (0 when unknown).
+    pub fn rx_ecn(&self) -> u8 {
+        self.rx_ecn.load(Ordering::Relaxed)
     }
 
     /// Whether reads pause at `Config::write_high_watermark` of queued output (not for a relay,
@@ -1746,6 +1787,22 @@ impl<H> Conn<H> {
     /// On a TCP connection it is [`send_owned`](Self::send_owned).
     pub fn send_segments(&self, data: Vec<u8>, segment_size: usize) -> Result<()> {
         self.inner.send_segments(data, segment_size)
+    }
+
+    /// UDP (internal, outside the stability promise): sends the datagrams that leave from now
+    /// on with ECN codepoint `codepoint` (RFC 3168: 2 = ECT(0), 1 = ECT(1), 0 = not
+    /// ECN-capable). Returns whether the platform marks them (Linux kernel sockets, unless
+    /// `ONLY_UDP_ECN=0`); elsewhere they go out unmarked.
+    #[doc(hidden)]
+    pub fn set_ecn(&self, codepoint: u8) -> bool {
+        self.inner.set_ecn(codepoint)
+    }
+
+    /// UDP (internal, outside the stability promise): inside `on_data`, the ECN codepoint the
+    /// datagram arrived with (0 when not ECN-capable or not reported by the platform).
+    #[doc(hidden)]
+    pub fn rx_ecn(&self) -> u8 {
+        self.inner.rx_ecn()
     }
 
     /// Coalesces writes until [`flush`](Self::flush). Inside `on_data` this is already the
