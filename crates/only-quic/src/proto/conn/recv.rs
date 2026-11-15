@@ -4,6 +4,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use super::super::bbr::RateSample;
 use super::super::cid::{ConnectionId, LOCAL_CID_LEN};
 use super::super::coding::Reader;
 use super::super::crypto::{TAG_LEN, initial_keys};
@@ -702,7 +703,8 @@ impl Connection {
                 .iter()
                 .find(|(pn, _)| *pn == largest)
                 .map(|(_, p)| p.time);
-            if self.ecn.on_ack(sid as usize, marked, ecn) == ecn::AckEcn::Congestion {
+            if let ecn::AckEcn::Congestion(ce) = self.ecn.on_ack(sid as usize, marked, ecn) {
+                self.cc.on_lost(ce * u64::from(self.mtu));
                 if let Some(t) = largest_sent {
                     let before = self.cc.events;
                     self.cc.on_congestion(now, t);
@@ -713,6 +715,7 @@ impl Connection {
             }
         }
         // An RTT sample from the largest acknowledged, if newly acknowledged.
+        let mut rtt_sample = None;
         if let Some((_, p)) = newly.iter().find(|(pn, _)| *pn == largest) {
             if newly.iter().any(|(_, p)| p.ack_eliciting) {
                 let latest = now.saturating_duration_since(p.time);
@@ -727,12 +730,36 @@ impl Connection {
                     ack_delay = ack_delay.min(Duration::from_millis(self.peer.max_ack_delay));
                 }
                 self.rtt.update(latest, ack_delay);
+                rtt_sample = Some(latest);
                 self.first_rtt_sample.get_or_insert(now);
                 self.spaces[sid as usize].largest_acked_time = Some(p.time);
             }
         }
         let app_limited = self.app_limited;
+        // The delivery-rate sample of this acknowledgment: from the newest packet it covers.
+        let mut rs = RateSample {
+            total_delivered: 0,
+            prior_delivered: 0,
+            delivered: 0,
+            interval: Duration::ZERO,
+            acked: 0,
+            app_limited: false,
+            rtt: rtt_sample,
+        };
+        let mut newest: Option<(Instant, Instant, Instant)> = None;
         for (pn, mut p) in newly {
+            if p.in_flight && !p.mtu_probe {
+                let d = &mut self.dlv;
+                d.delivered += u64::from(p.size);
+                d.delivered_time = now;
+                rs.acked += u64::from(p.size);
+                if newest.is_none() || p.delivered >= rs.prior_delivered {
+                    rs.prior_delivered = p.delivered;
+                    rs.app_limited = p.app_limited;
+                    newest = Some((p.time, p.first_sent, p.delivered_time));
+                    d.first_sent = p.time;
+                }
+            }
             if p.in_flight {
                 self.bytes_in_flight = self.bytes_in_flight.saturating_sub(u64::from(p.size));
                 if p.ack_eliciting {
@@ -755,7 +782,21 @@ impl Connection {
             }
             self.recycle_frames(frames);
         }
+        if let Some((sent, first_sent, delivered_time)) = newest {
+            let d = &mut self.dlv;
+            if d.app_limited_until != 0 && d.delivered > d.app_limited_until {
+                d.app_limited_until = 0;
+            }
+            rs.total_delivered = d.delivered;
+            rs.delivered = d.delivered - rs.prior_delivered;
+            let send_elapsed = sent.saturating_duration_since(first_sent);
+            let ack_elapsed = now.saturating_duration_since(delivered_time);
+            rs.interval = send_elapsed.max(ack_elapsed);
+        }
         self.detect_lost(now, sid);
+        if newest.is_some() {
+            self.cc.on_ack_event(now, &rs, self.bytes_in_flight);
+        }
         self.pto_count = 0;
         Ok(())
     }
@@ -894,6 +935,7 @@ impl Connection {
                     // Lost ACK-only packets are not counted: nothing is resent for them.
                     self.stats.lost_packets += 1;
                     self.stats.lost_bytes += u64::from(p.size);
+                    self.cc.on_lost(u64::from(p.size));
                     latest_lost = Some(latest_lost.map_or(p.time, |l| l.max(p.time)));
                 }
                 if p.ack_eliciting && self.first_rtt_sample.is_some_and(|f| p.time >= f) {

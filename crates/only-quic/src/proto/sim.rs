@@ -1221,3 +1221,166 @@ fn ecn_bleached_or_black_holed_falls_back() {
     assert_eq!(sim.ect_sent, 0);
     assert!(!sim.cconn(h).stats().ecn_capable);
 }
+
+/// Sends `n` bytes one way (client to server) with congestion controller `cc` over `link`;
+/// returns the virtual time it took after the handshake and the sender's statistics.
+fn upload(
+    seed: u8,
+    cc: crate::Congestion,
+    link: Link,
+    n: usize,
+) -> (Duration, crate::ConnectionStats) {
+    let (s, tls) = certs();
+    let t = TransportConfig {
+        congestion: cc,
+        ..TransportConfig::default()
+    };
+    let mut sim = Sim::new(seed, ConnConfig::new(t.clone(), true), s, false);
+    sim.link = link;
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    let start = sim.now;
+    let id = sim.cconn(h).open(Dir::Uni).expect("stream");
+    sim.cconn(h)
+        .write(id, Bytes::from(body(n, 9)))
+        .expect("write");
+    sim.cconn(h).finish(id).expect("finish");
+    let mut got = Collector::default();
+    let ok = sim.run_until(Duration::from_secs(600), |s| {
+        if let Some(sh) = s.server_handle() {
+            let evs = s.events(true, sh);
+            got.take(evs);
+        }
+        got.finished.contains_key(&id)
+    });
+    assert!(ok, "{cc:?}: upload did not finish");
+    assert_eq!(got.finished[&id].len(), n);
+    (sim.now - start, sim.cconn(h).stats())
+}
+
+/// A 20 Mbit/s bottleneck with 40 ms of round trip and a buffer of one bandwidth-delay product.
+fn bottleneck() -> Link {
+    Link {
+        delay: Duration::from_millis(20),
+        rate: Some(2_500_000),
+        buffer: 100_000,
+        ..Link::default()
+    }
+}
+
+#[test]
+fn bbr_fills_a_bottleneck_without_a_standing_queue() {
+    let n = 8_000_000;
+    let ideal = n as f64 / 2_500_000.0;
+    let (t, st) = upload(50, crate::Congestion::Bbr, bottleneck(), n);
+    let secs = t.as_secs_f64();
+    assert!(
+        secs < ideal * 1.35,
+        "BBR took {secs:.2}s, ideal {ideal:.2}s: {st:?}"
+    );
+    // The queue it keeps is small: the smoothed RTT stays near the minimum.
+    assert!(st.rtt < st.min_rtt * 2, "{st:?}");
+    let (tc, stc) = upload(50, crate::Congestion::Cubic, bottleneck(), n);
+    assert!(tc.as_secs_f64() < ideal * 1.5, "CUBIC took {tc:?}: {stc:?}");
+    eprintln!(
+        "bottleneck: BBR {secs:.2}s (rtt {:?}, lost {}), CUBIC {:.2}s (rtt {:?}, lost {})",
+        st.rtt,
+        st.lost_packets,
+        tc.as_secs_f64(),
+        stc.rtt,
+        stc.lost_packets
+    );
+}
+
+#[test]
+fn bbr_keeps_its_rate_under_random_loss() {
+    // 1% random loss on top of the bottleneck: CUBIC halves its window over and over, BBR's
+    // model is unaffected (the loss rate stays below its 2% bound).
+    let link = Link {
+        loss: 0.01,
+        ..bottleneck()
+    };
+    let n = 4_000_000;
+    let (tb, sb) = upload(51, crate::Congestion::Bbr, link.clone(), n);
+    let (tc, sc) = upload(51, crate::Congestion::Cubic, link, n);
+    eprintln!(
+        "1% loss: BBR {:.2}s (lost {}), CUBIC {:.2}s (lost {})",
+        tb.as_secs_f64(),
+        sb.lost_packets,
+        tc.as_secs_f64(),
+        sc.lost_packets
+    );
+    assert!(tb.as_secs_f64() < 2.5, "BBR took {tb:?}: {sb:?}");
+    assert!(tb * 2 < tc, "BBR {tb:?} vs CUBIC {tc:?}");
+}
+
+#[test]
+fn bbr_backs_off_on_a_shallow_buffer_and_ecn() {
+    // A buffer of under a third of the BDP: the 2% loss bound caps what BBR keeps in flight, so it
+    // loses little more than CUBIC does.
+    let shallow = Link {
+        buffer: 30_000,
+        ..bottleneck()
+    };
+    let n = 4_000_000;
+    let (tb, sb) = upload(52, crate::Congestion::Bbr, shallow.clone(), n);
+    let (tc, sc) = upload(52, crate::Congestion::Cubic, shallow, n);
+    eprintln!(
+        "shallow: BBR {:.2}s (lost {}), CUBIC {:.2}s (lost {})",
+        tb.as_secs_f64(),
+        sb.lost_packets,
+        tc.as_secs_f64(),
+        sc.lost_packets
+    );
+    let sent = sb.sent_packets.max(1);
+    assert!(sb.lost_packets * 100 / sent < 6, "{sb:?}");
+    assert!(tb.as_secs_f64() < 2.5, "BBR took {tb:?}");
+    // An AQM that marks: BBR treats CE marks like losses and nothing is dropped.
+    let marking = Link {
+        buffer: 1 << 20,
+        ce_above: Some(20_000),
+        ..bottleneck()
+    };
+    let (tm, sm) = upload(53, crate::Congestion::Bbr, marking, n);
+    assert!(sm.ecn_capable && sm.lost_packets == 0, "{sm:?}");
+    assert!(tm.as_secs_f64() < 2.5, "BBR with ECN took {tm:?}");
+}
+
+#[test]
+#[ignore]
+fn bbr_debug_trace() {
+    let (s, tls) = certs();
+    let t = TransportConfig {
+        congestion: crate::Congestion::Bbr,
+        ..TransportConfig::default()
+    };
+    let mut sim = Sim::new(52, ConnConfig::new(t.clone(), true), s, false);
+    sim.link = Link {
+        buffer: 30_000,
+        ..bottleneck()
+    };
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    let id = sim.cconn(h).open(Dir::Uni).expect("stream");
+    sim.cconn(h)
+        .write(id, Bytes::from(body(4_000_000, 9)))
+        .expect("write");
+    sim.cconn(h).finish(id).expect("finish");
+    let start = sim.now;
+    let mut next = start;
+    sim.run_until(Duration::from_secs(5), |s| {
+        if s.now >= next {
+            next += Duration::from_millis(50);
+            let now = s.now;
+            let dropped = s.dropped;
+            let c = s.cconn(h);
+            let st = c.stats();
+            eprintln!(
+                "{:>5}ms {} lost {} dropped {}",
+                (now - start).as_millis(),
+                c.cc_debug(),
+                st.lost_packets,
+                dropped
+            );
+        }
+        false
+    });
+}

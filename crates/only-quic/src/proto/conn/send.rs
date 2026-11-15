@@ -176,6 +176,7 @@ impl Connection {
                 u64::from(self.mtu),
                 self.cc.window,
                 self.rtt.smoothed,
+                self.cc.pacing_rate(),
             ) {
                 self.pacing_until = Some(at);
                 blocked = true;
@@ -193,6 +194,9 @@ impl Connection {
         if wants.is_empty() {
             if !blocked {
                 self.app_limited = true;
+                // Rate samples are application-limited until what is in flight now is
+                // delivered.
+                self.dlv.app_limited_until = (self.dlv.delivered + self.bytes_in_flight).max(1);
             }
             return None;
         }
@@ -361,6 +365,12 @@ impl Connection {
         if self.tx_ecn {
             self.ecn.on_marked_sent(sid as usize);
         }
+        if in_flight && self.bytes_in_flight == 0 {
+            // A new flight: its rate intervals start now.
+            self.dlv.first_sent = now;
+            self.dlv.delivered_time = now;
+        }
+        let dlv = self.dlv;
         let sp = &mut self.spaces[sid as usize];
         sp.next_pn += 1;
         if eliciting {
@@ -379,6 +389,10 @@ impl Connection {
                 in_flight,
                 mtu_probe: false,
                 ecn: self.tx_ecn,
+                delivered: dlv.delivered,
+                delivered_time: dlv.delivered_time,
+                first_sent: dlv.first_sent,
+                app_limited: dlv.app_limited_until != 0,
                 frames,
             },
         );
@@ -762,6 +776,10 @@ impl Connection {
                 in_flight: false,
                 mtu_probe: false,
                 ecn: false,
+                delivered: self.dlv.delivered,
+                delivered_time: self.dlv.delivered_time,
+                first_sent: self.dlv.first_sent,
+                app_limited: true,
                 frames: Vec::new(),
             },
         );
@@ -808,6 +826,10 @@ impl Connection {
                 in_flight: true,
                 mtu_probe: true,
                 ecn: false,
+                delivered: self.dlv.delivered,
+                delivered_time: self.dlv.delivered_time,
+                first_sent: self.dlv.first_sent,
+                app_limited: true,
                 frames: Vec::new(),
             },
         );

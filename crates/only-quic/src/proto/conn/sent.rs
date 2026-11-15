@@ -123,6 +123,10 @@ mod tests {
             in_flight: true,
             mtu_probe: false,
             ecn: false,
+            delivered: 0,
+            delivered_time: Instant::now(),
+            first_sent: Instant::now(),
+            app_limited: false,
             frames: Vec::new(),
         }
     }

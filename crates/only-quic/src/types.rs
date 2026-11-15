@@ -209,7 +209,10 @@ pub enum Congestion {
     Cubic,
     /// NewReno (RFC 9002).
     NewReno,
-    /// BBR (experimental; runs CUBIC for now).
+    /// BBR (experimental): paces at the estimated bottleneck bandwidth with a window of about
+    /// two bandwidth-delay products, instead of backing off on every loss; BBRv1's model and
+    /// state machine with the loss and ECN bound of BBRv2/v3 (a round losing more than 2%
+    /// caps the data in flight).
     Bbr,
 }
 

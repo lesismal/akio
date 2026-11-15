@@ -121,7 +121,35 @@ pub(crate) struct Sent {
     mtu_probe: bool,
     /// Sent ECT(0).
     ecn: bool,
+    /// Delivery-rate sampling state when it was sent (see [`Delivery`]).
+    delivered: u64,
+    delivered_time: Instant,
+    first_sent: Instant,
+    app_limited: bool,
     frames: Vec<SentFrame>,
+}
+
+/// Delivery-rate estimation (draft-cheng-iccrg-delivery-rate-estimation): bytes delivered so
+/// far and when, recorded in every packet sent, so an acknowledgment can tell the rate at which
+/// data got through over the packet's flight. BBR's bandwidth samples.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Delivery {
+    delivered: u64,
+    delivered_time: Instant,
+    first_sent: Instant,
+    /// Non-zero while the samples are application-limited: until `delivered` passes it.
+    app_limited_until: u64,
+}
+
+impl Delivery {
+    fn new(now: Instant) -> Delivery {
+        Delivery {
+            delivered: 0,
+            delivered_time: now,
+            first_sent: now,
+            app_limited_until: 0,
+        }
+    }
 }
 
 /// One packet number space.
@@ -391,6 +419,7 @@ pub struct Connection {
     // Recovery.
     rtt: Rtt,
     cc: Congestion,
+    dlv: Delivery,
     pacer: Pacer,
     bytes_in_flight: u64,
     /// The sender last stopped for lack of data, not because of the congestion window (the
@@ -467,6 +496,7 @@ impl Connection {
         let mtu = t.initial_mtu.max(1200);
         let kind = match t.congestion {
             CcConfig::NewReno => CcKind::NewReno,
+            CcConfig::Bbr => CcKind::Bbr,
             _ => CcKind::Cubic,
         };
         let rx_max_data = t.receive_window.unwrap_or(super::coding::VARINT_MAX);
@@ -519,7 +549,8 @@ impl Connection {
             retry_token: Vec::new(),
             got_server_packet: false,
             rtt: Rtt::new(t.initial_rtt),
-            cc: Congestion::new(kind, mtu),
+            cc: Congestion::new(kind, mtu, t.initial_rtt),
+            dlv: Delivery::new(now),
             pacer: Pacer::new(),
             bytes_in_flight: 0,
             app_limited: true,
@@ -751,6 +782,23 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn force_key_update(&mut self, now: Instant) -> bool {
         self.start_key_update(now)
+    }
+
+    /// The congestion controller's state, for traces.
+    #[cfg(test)]
+    pub(crate) fn cc_debug(&self) -> String {
+        match self.cc.bbr() {
+            Some(b) => format!(
+                "{:?} bw {:.0} cwnd {} pacing {} hi {} inflight {}",
+                b.mode,
+                b.bandwidth(),
+                b.cwnd,
+                b.pacing_rate(),
+                b.inflight_hi,
+                self.bytes_in_flight
+            ),
+            None => format!("cwnd {} inflight {}", self.cc.window, self.bytes_in_flight),
+        }
     }
 
     #[cfg(test)]

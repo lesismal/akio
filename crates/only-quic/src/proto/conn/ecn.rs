@@ -49,8 +49,8 @@ pub(crate) struct Ecn {
 pub(crate) enum AckEcn {
     /// Nothing to act on.
     None,
-    /// New CE marks: a congestion event (RFC 9002 section 7.1).
-    Congestion,
+    /// This many new CE marks: a congestion event (RFC 9002 section 7.1).
+    Congestion(u64),
 }
 
 impl Ecn {
@@ -167,7 +167,7 @@ impl Ecn {
             self.phase = Phase::Capable;
         }
         if d_ce > 0 {
-            AckEcn::Congestion
+            AckEcn::Congestion(d_ce)
         } else {
             AckEcn::None
         }
@@ -195,7 +195,7 @@ mod tests {
         // CE marks are congestion.
         e.on_marked_sent(2);
         e.on_marked_sent(2);
-        assert_eq!(e.on_ack(2, 2, Some([5, 0, 1])), AckEcn::Congestion);
+        assert_eq!(e.on_ack(2, 2, Some([5, 0, 1])), AckEcn::Congestion(1));
         // A count going backwards fails validation.
         assert_eq!(e.on_ack(2, 1, Some([4, 0, 1])), AckEcn::None);
         assert_eq!(e.phase, Phase::Failed);
