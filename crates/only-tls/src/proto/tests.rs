@@ -813,6 +813,39 @@ fn bulk_data_and_key_update() {
     transfer(&mut c, &mut s, &big);
 }
 
+/// Records opened straight from the input (whole ones) and through the receive buffer (split
+/// ones), with KeyUpdates and a close_notify among them, in reads of awkward sizes.
+#[test]
+fn records_split_across_reads() {
+    let p = pki(Kind::P256, &["localhost"]);
+    for tls12 in [false, true] {
+        for chunk in [3usize, 5, 4096, 16 * 1024 + 21, 16 * 1024 + 23, 70_000] {
+            let (mut c, mut s) = connect(
+                &server(&p).build().unwrap(),
+                &client(&p).__tls12_only(tls12).build().unwrap(),
+                "localhost",
+            )
+            .unwrap();
+            c.set_key_update_after(2);
+            let mut wire = Vec::new();
+            let mut want = Vec::new();
+            for i in 0..12u32 {
+                let part: Vec<u8> = (0..=(i * 7919 % 40_000)).map(|j| (i + j) as u8).collect();
+                c.seal(&part, &mut wire).unwrap();
+                want.extend_from_slice(&part);
+            }
+            c.close(&mut wire);
+            let mut plain = Vec::new();
+            for part in wire.chunks(chunk) {
+                s.recv(part, &mut plain, &mut Vec::new()).unwrap();
+            }
+            assert_eq!(plain.len(), want.len(), "tls12 {tls12} chunk {chunk}");
+            assert!(plain == want, "tls12 {tls12} chunk {chunk}");
+            assert!(s.received_close_notify());
+        }
+    }
+}
+
 #[test]
 fn data_before_handshake_completion_is_queued() {
     let p = pki(Kind::P256, &["localhost"]);

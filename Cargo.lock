@@ -758,6 +758,7 @@ dependencies = [
  "only-crypto",
  "only-log",
  "only-x509",
+ "rustls",
 ]
 
 [[package]]
