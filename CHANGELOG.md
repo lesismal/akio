@@ -343,6 +343,49 @@ zlib-rs), level 9 15,357 → 34,003 MB/s. Text and JSON (literals and matches) a
 - Tried and dropped: decoding up to five literals per refill instead of three on the
   literal-heavy path made no measurable difference.
 
+### Performance: QUIC datapath (GRO by default, per-batch ACKs, pooled receive buffers)
+
+No API change (`tools/api/public-api.sh` unchanged: the new hook is `#[doc(hidden)]`). One
+default changed: `Config::udp_gro` is now `true`. Measured on the bench host (Zen 4, loopback,
+`quic-bench` client and server on CPUs 2–5, median of seven alternating old/new rounds, an
+outside workload on the host during some of them): one-stream bulk 6,378 → 16,066 Mbit/s
+(2.52×), HTTP/3 427,901 → 443,299 req/s (1.04×), full handshakes 9,294 → 9,542/s (flat). The
+quinn-proto build of the same program did 4,613 Mbit/s and 56,934 req/s in the same run as
+15,999 Mbit/s and 430,098 req/s for this one (3.5× and 7.6×).
+
+- `only-core`: `Handler::on_batch_end` (`#[doc(hidden)]`, default no-op, outside the stability
+  promise) tells a UDP handler that the receive batch that called its `on_data` is over. The UDP
+  loop of only-epoll, which also serves UDP on the io_uring backend and on macOS, calls it once
+  per connection and batch (one `recvmmsg`; up to 32 `recv_from`/`recv` calls on macOS), before
+  the batch's replies are flushed; dialed connections that fill a whole batch now flush after
+  each one instead of after up to eight. Other backends (only-dpdk) never call it.
+- `Config::udp_gro` defaults to `true` (Linux, where the kernel supports `UDP_GRO`; probed once,
+  `ONLY_UDP_GRO=0` still turns it off, `read_buffer` must stay at least 64 KiB). Coalesced
+  receives are split by the `UDP_GRO` segment size on server, bound and dialed sockets as before,
+  so `on_data` still sees one datagram per call (only-kcp, only-turn, only-webrtc and DNS tests
+  pass unchanged). Bulk QUIC 6.4 → 9.8 Gbit/s on its own: a GSO batch from the sender reaches the
+  receiving socket whole instead of being segmented. 64-byte UDP echo with GRO on and off, 15
+  alternating rounds each: no difference beyond the noise of the case.
+- The UDP loop reads the clock once per receive call and chains the end of each timed callback
+  into the start of the next (as the TCP loops do): three clock reads per datagram become one.
+- only-quic acknowledges once per receive batch: after each datagram the handler runs and data
+  that is ready goes out right away, but an ACK-only packet waits for `on_batch_end` (one per
+  batch instead of one per two packets); the QUIC timer is armed once per batch too. A variant
+  that also deferred handler events and data to the batch end measured 1.45× on bulk but cost
+  28% on HTTP/3 (64 requests in flight became one lock-step batch per round trip), so it is not
+  in. Until a socket's first `on_batch_end` (and on backends without it) every datagram is
+  driven on its own, as before.
+- Received datagrams are copied once into a per-thread pool of buffers (`Arc<Vec<u8>>`) and
+  decrypted in place; stream data and datagrams are `Bytes` slices of them, and a buffer is reused
+  once all its slices are dropped (on any thread). This replaces two allocations per packet (the
+  copy and the `Arc` around it). A copy remains: the handler gets the `recvmmsg` slot by
+  reference, and decrypting in place needs a buffer this side owns alone.
+- Sent packets are kept in a ring indexed by packet number (`proto/conn/sent.rs`) instead of a
+  `BTreeMap`, and the frame lists of acknowledged or lost packets are reused for new packets.
+- Profile notes not acted on: SipHash on the peer address and connection ID maps (~2% of the
+  receiver), and allocations and header hashing in only-h3/only-http (`encode_fields`,
+  `Headers`), which dominate the HTTP/3 profile.
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so

@@ -29,7 +29,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `slow_hook` | `None` | yes | `SlowHook(Arc<dyn Fn(&SlowCallback)>)` receiving reports (else log/stderr) |
 | `udp_idle_timeout` | 60 s | no | drop a silent UDP peer (`idle_timeout` wins when set and shorter) |
 | `udp_max_peers` | `None` | no | most peers per UDP listener; new peers beyond are dropped and counted |
-| `udp_gro` | false | no | Linux UDP GRO; needs `read_buffer` >= 64 KiB |
+| `udp_gro` | true | no | Linux UDP GRO where the kernel supports it; needs `read_buffer` >= 64 KiB |
 | `shutdown_timeout` | 10 s | yes | after `shutdown`, force-close what is still open after this long |
 | `max_connections` | 0 (none) | yes | accepted connections beyond this many open ones are closed right away (engine-wide count, dialed and UDP peers included) |
 | `log_level` | `None` | yes | `only::log::LevelFilter`; calls `only::log::set_max_level` with it |
@@ -98,7 +98,7 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | Variable | Effect |
 |---|---|
 | `ONLY_UDP_GSO=0` | disable UDP GSO on Linux (Linux 4.18+; probed once per process otherwise) |
-| `ONLY_UDP_GRO=0` | never enable UDP GRO, even with `Config::udp_gro` (Linux 5.0+) |
+| `ONLY_UDP_GRO=0` | never enable UDP GRO, whatever `Config::udp_gro` says (Linux 5.0+) |
 
 The test suite also reads `ONLY_TEST_BACKEND=uring` (run the engine tests on io_uring) and
 `ONLY_TEST_EXPECT_EBPF=1` (fail instead of skip when eBPF is unavailable).

@@ -49,9 +49,10 @@ Linux 上的发送批量化：处理一批接收时产生的回复会用 `sendmm
 
 - `Config::udp_max_peers`：每个 listener 最多这么多对端；超出后来自新对端的数据报被丢弃，
   不创建连接，并计数（`Engine::udp_stats().rejected`）。
-- `Config::udp_gro`（Linux，默认关闭）：让内核合并同一流的数据报；only 会再拆开，所以
-  `on_data` 仍然每次一个数据报。它对来自 GSO 发送方的大流量（QUIC 传输）有帮助，对请求/响应
-  式流量反而有开销。需要 `read_buffer` 至少 64 KiB。
+- `Config::udp_gro`（Linux，在内核支持时默认开启）：让内核合并同一流的数据报；only 按内核报告
+  的分段大小再拆开，所以 `on_data` 仍然每次一个数据报。它对来自 GSO 发送方的大流量（QUIC
+  传输）有帮助，请求/响应式流量没有可测的变慢。需要 `read_buffer` 至少 64 KiB；
+  `ONLY_UDP_GRO=0` 可关闭。
 
 ## UDP 客户端
 

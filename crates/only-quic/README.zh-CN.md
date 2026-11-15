@@ -61,7 +61,11 @@ engine.run().unwrap();
 - **迁移**：客户端换地址（NAT 重绑定、端口变化）后，经路径验证（PATH_CHALLENGE / PATH_RESPONSE）跟随；
   IP 变化时重置拥塞状态，对端给过新的连接 ID 时换用新 ID；`ServerConfig::migration(false)` 拒绝迁移。
 - **I/O**：满尺寸的数据报成批地用一次 GSO 发送（`Conn::send_segments`，最多 10 段）；在连接自身回调中
-  发起的写入会先攒起来，回调返回后与 ACK 一起发出。一个共享的定时器线程驱动各种超时。
+  发起的写入会先攒起来，回调返回后与 ACK 一起发出。收到的数据报逐个处理（处理器事件与待发数据
+  立即处理），但 ACK 每个接收批次只生成一次，在 I/O 循环内部的批次结束钩子里；UDP GRO（Linux 上
+  默认开启）让大流量接收方一次拿到整批 GSO 数据。收到的包只复制一次，进入每线程池化的缓冲区并在
+  其中解密，流数据和数据报都是它的切片；切片全部释放后缓冲区被复用。已发送的包记录在按包号索引的
+  环形缓冲中。一个共享的定时器线程驱动各种超时。
 
 未实现：0-RTT（发送与接受；`only-tls` 拒绝早期数据）、发送 ECN 标记（会解析收到的 ECN 计数；socket 层
 不暴露 TOS 字节）、客户端主动迁移（API 没有重新绑定的入口）、preferred_address（解析但不使用）、BBR
@@ -74,7 +78,8 @@ engine.run().unwrap();
   缓冲）、`ranges`、`recovery`（RTT、NewReno、CUBIC、pacer）、`conn`（连接：接收路径、发送路径、流）、
   `endpoint`（按连接 ID 路由、Retry、版本协商、无状态重置），以及 `sim`：用于测试的带虚拟时钟、会丢包/
   乱序/重复的模拟链路。
-- `bytes`：负载类型 `Bytes`（克隆与切片代价低；收到的数据是解密后数据包的切片）。
+- `bytes`：负载类型 `Bytes`（克隆与切片代价低；收到的数据是解密后数据包的切片），以及每线程的
+  接收缓冲池。
 - `fuzzing`（`#[doc(hidden)]`，feature `fuzzing`）：`quic_packet`、`quic_frame`、`quic_conn` 模糊测试
   目标的入口。
 

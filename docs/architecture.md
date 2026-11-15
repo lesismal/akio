@@ -286,8 +286,11 @@ flowchart TD
 - Each new peer address becomes a `ConnInner` over the shared socket, with the normal `Handler`;
   a per-listener peer table, idle eviction (`udp_idle_timeout`) and an optional cap
   (`udp_max_peers`).
-- Receives use `recvmmsg` (optionally with GRO, split back into datagrams). Replies produced
-  while handling a receive batch are collected per socket and sent with `sendmmsg` across peers;
+- Receives use `recvmmsg` (with GRO by default where the kernel supports it, split back into
+  datagrams by the `UDP_GRO` segment size). Each connection a receive batch reached gets one
+  internal `on_batch_end` after its last datagram (only-quic acknowledges and sends there). Replies
+  produced while handling a receive batch are collected per socket and sent with `sendmmsg` across
+  peers;
   equal-size runs to one peer become one GSO message (`UDP_SEGMENT`, probed once, disabled for
   good on `EIO`/`EINVAL`).
 - `dial_udp` creates a `connect`ed socket per dialed connection, so ICMP errors are reported to

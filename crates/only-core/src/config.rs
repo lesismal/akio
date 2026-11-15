@@ -73,9 +73,11 @@ pub struct Config {
     /// counted in `UdpStats::rejected` (see `Engine::udp_stats`); known peers are unaffected.
     pub udp_max_peers: Option<usize>,
     /// UDP, Linux: let the kernel coalesce datagrams of one flow into one receive (UDP GRO);
-    /// `only` splits them again, so `on_data` still sees one datagram per call. It pays off for
-    /// bulk flows from GSO senders (QUIC transfers) and costs for request/response traffic, so
-    /// it is off by default. Needs `read_buffer` of at least 64 KiB (otherwise ignored).
+    /// `only` splits them again, so `on_data` still sees one datagram per call. On by default
+    /// where the kernel supports it (probed once; `ONLY_UDP_GRO=0` turns it off process-wide):
+    /// bulk flows from GSO senders (QUIC transfers) skip the per-datagram receive work, and
+    /// request/response traffic is not measurably slower. Needs `read_buffer` of at least
+    /// 64 KiB (otherwise ignored).
     pub udp_gro: bool,
     /// After `shutdown`, connections still open after this long are closed forcibly.
     pub shutdown_timeout: Duration,
@@ -111,7 +113,7 @@ impl Default for Config {
             slow_hook: None,
             udp_idle_timeout: Duration::from_secs(60),
             udp_max_peers: None,
-            udp_gro: false,
+            udp_gro: true,
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
             max_connections: 0,
             log_level: None,

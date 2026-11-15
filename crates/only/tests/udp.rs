@@ -796,3 +796,108 @@ fn dial_udp_from_refuses_a_peer_that_has_a_connection() {
     assert_eq!(k, std::io::ErrorKind::AlreadyExists);
     stop(&engine);
 }
+
+/// Records `on_data` ('d') and the (internal) `on_batch_end` ('e'); at each batch end it sends
+/// how many datagrams the batch brought.
+struct Batches {
+    log: Arc<Mutex<Vec<char>>>,
+    n: u8,
+}
+impl Handler for Batches {
+    fn on_data(&mut self, _c: &Conn<Self>, _d: &[u8]) {
+        self.log.lock().unwrap().push('d');
+        self.n += 1;
+    }
+    fn on_batch_end(&mut self, c: &Conn<Self>) {
+        self.log.lock().unwrap().push('e');
+        let _ = c.send(&[std::mem::take(&mut self.n)]);
+    }
+}
+
+/// Every batch end follows at least one datagram, and the last datagram is followed by one.
+fn check_batches(log: &[char], datagrams: usize) {
+    assert_eq!(
+        log.iter().filter(|&&c| c == 'd').count(),
+        datagrams,
+        "{log:?}"
+    );
+    assert_eq!(log.last(), Some(&'e'), "{log:?}");
+    assert!(
+        log[0] == 'd' && log.windows(2).all(|w| w != ['e', 'e']),
+        "{log:?}"
+    );
+}
+
+/// Reads the counts the hook sends back until they add up to `n`.
+fn sum_replies(mut recv: impl FnMut() -> Vec<u8>, n: usize) {
+    let mut total = 0;
+    while total < n {
+        let r = recv();
+        assert!(r.len() == 1 && r[0] > 0, "{r:?}");
+        total += usize::from(r[0]);
+    }
+    assert_eq!(total, n);
+}
+
+#[test]
+fn batch_end_follows_the_datagrams_of_a_batch() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let l = log.clone();
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::udp(localhost()).serve(fn_acceptor(move |_c: &Conn<Batches>| Batches {
+                log: l.clone(),
+                n: 0,
+            })),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let c = client(e.local_addrs()[0]);
+    for i in 0..100u8 {
+        c.send(&[i]).unwrap();
+    }
+    // The replies sent from the hook account for every datagram.
+    sum_replies(|| recv(&c), 100);
+    check_batches(&log.lock().unwrap(), 100);
+    stop(&e);
+}
+
+#[test]
+fn batch_end_on_a_dialed_connection() {
+    struct Dial(Arc<Mutex<Vec<char>>>);
+    impl Acceptor for Dial {
+        type Handler = Batches;
+        fn on_open(&self, c: &Conn<Batches>) -> Batches {
+            c.send(b"hi").unwrap();
+            Batches {
+                log: self.0.clone(),
+                n: 0,
+            }
+        }
+    }
+    let server = UdpSocket::bind(localhost()).unwrap();
+    server
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let client = client_engine(1);
+    let log = Arc::new(Mutex::new(Vec::new()));
+    client.dial_udp(server.local_addr().unwrap(), Dial(log.clone()), |e| {
+        panic!("dial: {e}")
+    });
+    let mut b = [0u8; 16];
+    let (_, peer) = server.recv_from(&mut b).unwrap();
+    for i in 0..100u8 {
+        server.send_to(&[i], peer).unwrap();
+    }
+    sum_replies(
+        || {
+            let (n, _) = server.recv_from(&mut b).unwrap();
+            b[..n].to_vec()
+        },
+        100,
+    );
+    check_batches(&log.lock().unwrap(), 100);
+    stop(&client);
+}

@@ -37,7 +37,9 @@ How it fits on `only`:
 - Full-size datagrams go out in batches of up to 10 with `Conn::send_segments` (UDP GSO /
   `sendmmsg` on Linux). Writes a handler makes from inside its own callbacks are corked: they
   leave together, with the acknowledgments, once the callback returns, so a request handler's
-  headers, body and FIN usually share one packet. `Config::udp_gro` can help bulk receivers.
+  headers, body and FIN usually share one packet. Acknowledgments are made once per receive
+  batch, and received packets are decrypted in pooled buffers that their stream data shares. UDP
+  GRO (`Config::udp_gro`, on by default on Linux) lets a bulk receiver take whole GSO batches.
 
 `QuicHandler` callbacks: `on_connected`, `on_stream_opened`, `on_stream_data(c, id, data, fin)`
 (required), `on_stream_reset`, `on_stream_stopped`, `on_streams_available`, `on_datagram`,

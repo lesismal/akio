@@ -216,7 +216,7 @@ impl Endpoint {
         self.initial.insert(h.dcid, handle);
         self.ids.entry(handle).or_default().push(h.dcid);
         self.handshaking.insert(handle);
-        c.handle_datagram(now, from, data.to_vec());
+        c.handle_shared(now, from, crate::bytes::pool::copy(data));
         Some(DatagramEvent::New(handle, Box::new(c)))
     }
 

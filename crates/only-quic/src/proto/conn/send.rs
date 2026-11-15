@@ -94,6 +94,26 @@ impl Connection {
         if sp.ack_due(now) && !sp.rx.is_empty() {
             return true;
         }
+        self.space_has_data(sid, blocked)
+    }
+
+    /// Whether something other than an acknowledgment waits to be sent (ignoring congestion
+    /// control and pacing, which may still hold it back). The I/O layer acknowledges once per
+    /// receive batch, but sends data as soon as there is some.
+    pub fn wants_transmit(&self) -> bool {
+        match &self.state {
+            State::Drained | State::Draining { .. } => false,
+            State::Closing { resend, .. } => *resend,
+            // (An MTU probe waits for the end of the batch.)
+            _ => SpaceId::ALL
+                .into_iter()
+                .any(|s| self.space_ready(s) && self.space_has_data(s, false)),
+        }
+    }
+
+    /// [`Connection::space_wants`] without the acknowledgment.
+    fn space_has_data(&self, sid: SpaceId, blocked: bool) -> bool {
+        let sp = &self.spaces[sid as usize];
         if blocked && sp.probes == 0 {
             return false;
         }
@@ -245,7 +265,7 @@ impl Connection {
             buf.truncate(pkt_start);
             return None;
         }
-        let mut frames: Vec<SentFrame> = Vec::new();
+        let mut frames = self.spare_frames.pop().unwrap_or_default();
         let mut eliciting = false;
         let mut path_frame = false;
         let mut fill = false;
