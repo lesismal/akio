@@ -165,6 +165,10 @@ fn ecdh_and_x25519_vs_ring() {
     }
 }
 
+/// RSA against ring at 2048 (the Wycheproof key), 3072 and 4096 bits (OpenSSL test keys):
+/// PKCS#1 v1.5 signatures are deterministic and must match byte for byte, PSS signatures must
+/// verify both ways; with the hardware paths (BMI2/ADX, AVX-512 IFMA) and with the portable code
+/// forced, which must produce the same PKCS#1 v1.5 signatures.
 #[test]
 fn rsa_vs_ring() {
     let groups = wycheproof("wycheproof_rsa_pkcs1_2048_sig_gen.json");
@@ -172,9 +176,24 @@ fn rsa_vs_ring() {
         .iter()
         .find(|(g, _)| g.get("sha").str() == "SHA-256")
         .unwrap();
-    let der = g.get("privateKeyPkcs8").hex();
-    let ours = PrivateKey::from_pkcs8_der(&der).unwrap();
-    let theirs = rs::RsaKeyPair::from_pkcs8(&der).unwrap();
+    let keys = [
+        g.get("privateKeyPkcs8").hex(),
+        PrivateKey::from_pem(include_bytes!("data/rsa3072_test_key.pem"))
+            .unwrap()
+            .to_pkcs8_der(),
+        PrivateKey::from_pem(include_bytes!("data/rsa4096_test_key.pem"))
+            .unwrap()
+            .to_pkcs8_der(),
+    ];
+    for der in &keys {
+        rsa_vs_ring_key(der);
+    }
+    let _ = HashAlg::Sha256;
+}
+
+fn rsa_vs_ring_key(der: &[u8]) {
+    let ours = PrivateKey::from_pkcs8_der(der).unwrap();
+    let theirs = rs::RsaKeyPair::from_pkcs8(der).unwrap();
     let rand = ring::rand::SystemRandom::new();
     let spki = ours.public_key().to_spki_der();
     let PublicKey::Rsa(pk) = ours.public_key() else {
@@ -223,7 +242,13 @@ fn rsa_vs_ring() {
             SignatureAlgorithm::RsaPkcs1Sha256 | SignatureAlgorithm::RsaPkcs1Sha512
         ) {
             assert_eq!(sig, rsig, "PKCS#1 v1.5 is deterministic");
+            // The portable code gives the same signature (a fresh key: the forced path applies
+            // to everything made afterwards).
+            let was = only_crypto::is_portable();
+            only_crypto::set_portable(true);
+            let portable = PrivateKey::from_pkcs8_der(der).unwrap().sign(alg, &msg);
+            only_crypto::set_portable(was);
+            assert_eq!(portable.unwrap(), sig, "portable path");
         }
     }
-    let _ = HashAlg::Sha256;
 }
