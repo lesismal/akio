@@ -569,6 +569,8 @@ pub struct ConnInner {
     id: u64,
     state: AtomicU8,
     hold: AtomicBool,
+    /// Exempt from the write backpressure (see [`set_relayed`](Self::set_relayed)).
+    relayed: AtomicBool,
     write: Mutex<WriteState>,
     /// A drain waiter whose condition was met while the write lock was held; run right after.
     drained: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -596,6 +598,7 @@ impl ConnInner {
             id,
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
+            relayed: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 stats: link.stats(),
                 ..WriteState::default()
@@ -625,6 +628,7 @@ impl ConnInner {
             id,
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
+            relayed: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 datagram: true,
                 stats: link.stats(),
@@ -659,6 +663,7 @@ impl ConnInner {
             id,
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
+            relayed: AtomicBool::new(false),
             write: Mutex::new(WriteState {
                 datagram,
                 stats: link.stats(),
@@ -792,6 +797,22 @@ impl ConnInner {
 
     pub fn read_held(&self) -> bool {
         self.hold.load(Ordering::Acquire)
+    }
+
+    /// Marks the connection as one end of a relay: what it reads is sent on *another*
+    /// connection, which paces it with [`hold_reads`](Self::hold_reads) and
+    /// [`on_drain`](Self::on_drain). Its reads then no longer pause because its own output is
+    /// queued (`Config::write_high_watermark`): that output is the other side's data, and a
+    /// peer that only reads once it can write (an echo server, say) would never take it while
+    /// we stop reading — both sides would wait for each other forever.
+    pub fn set_relayed(&self) {
+        self.relayed.store(true, Ordering::Release);
+    }
+
+    /// Whether reads pause at `Config::write_high_watermark` of queued output (not for a relay,
+    /// see [`set_relayed`](Self::set_relayed)).
+    pub fn write_backpressure(&self) -> bool {
+        !self.relayed.load(Ordering::Acquire)
     }
 
     pub fn queued_bytes(&self) -> usize {

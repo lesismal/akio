@@ -30,6 +30,18 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Fixed: SOCKS and HTTP CONNECT tunnels could hang under backpressure
+
+- `only-socks`: a tunnel (SOCKS5/4/4a or HTTP `CONNECT`) could stop for good while relaying a
+  large transfer. The engine's write backpressure (`Config::write_high_watermark`) paused reading
+  the upstream connection whenever client data was queued for it, but those reads feed the
+  client, not that queue. An upstream that does not read while its own writes are blocked (an
+  echo server, most request/response servers) then waited on the proxy while the proxy waited on
+  it. It showed up as a rare 10-second hang of `socks5_ipv4_domain_and_backpressure` on a loaded
+  machine (kqueue, epoll and io_uring alike); an upstream that sends before it reads hung every
+  time. Both ends of a tunnel are now paced only by the relay's own pause/resume. Backends honour
+  a new hidden `ConnInner::set_relayed` (epoll, kqueue, io_uring, DPDK). No public API change.
+
 ### Performance: ChaCha20-Poly1305 on AVX-512 and IFMA in `only-crypto`, out-of-place TLS records
 
 On x86_64 ChaCha20-Poly1305 seals 16 KiB at 4,597 MB/s (1,752 before, 1.30× ring), 1400 B at

@@ -734,7 +734,9 @@ impl Loop {
             if self.iface.tcp_readable(h) == 0 {
                 break;
             }
-            if c.inner.read_held() || c.inner.queued_bytes() >= watermark {
+            if c.inner.read_held()
+                || (c.inner.write_backpressure() && c.inner.queued_bytes() >= watermark)
+            {
                 self.paused.insert(id);
                 return;
             }
@@ -770,7 +772,9 @@ impl Loop {
                 continue;
             };
             let watermark = c.cfg.telemetry.live().write_high_watermark();
-            if c.inner.read_held() || c.inner.queued_bytes() >= watermark {
+            if c.inner.read_held()
+                || (c.inner.write_backpressure() && c.inner.queued_bytes() >= watermark)
+            {
                 continue;
             }
             any = true;

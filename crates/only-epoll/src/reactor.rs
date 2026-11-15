@@ -811,7 +811,7 @@ impl Loop {
                         if n < self.scratch.len()
                             || !lc.inner.is_open()
                             || lc.inner.read_held()
-                            || lc.inner.queued_bytes() >= high
+                            || (lc.inner.write_backpressure() && lc.inner.queued_bytes() >= high)
                         {
                             break;
                         }
@@ -845,12 +845,12 @@ impl Loop {
             return;
         };
         let q = lc.inner.queued_bytes();
-        if q >= high {
+        if q >= high && lc.inner.write_backpressure() {
             if !lc.bp {
                 self.shared.stats.backpressure.add_local(1);
             }
             lc.bp = true;
-        } else if q <= high / 4 {
+        } else if q <= high / 4 || !lc.inner.write_backpressure() {
             lc.bp = false;
         }
         let read = !lc.inner.read_held() && !lc.bp && !lc.eof;
