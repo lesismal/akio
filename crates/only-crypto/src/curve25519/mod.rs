@@ -35,8 +35,8 @@ pub(crate) struct Consts {
     pub(crate) d: Fe,
     pub(crate) d2: Fe,
     pub(crate) sqrt_m1: Fe,
-    /// `table[i][j] = j·16ⁱ·B`.
-    base: Vec<[Point; 16]>,
+    /// `base[i][j - 1] = j·16ⁱ·B` for `1 ≤ j ≤ 8`, affine Niels form (signed 4-bit digits).
+    base: Vec<[Niels; 8]>,
     /// `(2i + 1)·B` for `0 ≤ i < 32` in affine Niels form (width-7 wNAF, verification).
     base_odd: Vec<Niels>,
 }
@@ -47,6 +47,41 @@ struct Niels {
     ypx: Fe,
     ymx: Fe,
     xy2d: Fe,
+}
+
+impl Niels {
+    /// The identity, `(1, 1, 0)`: adding it is a no-op (the formulas are complete).
+    const IDENTITY: Niels = Niels {
+        ypx: Fe::ONE,
+        ymx: Fe::ONE,
+        xy2d: Fe::ZERO,
+    };
+
+    /// The Niels form of the affine point `(x, y)`.
+    fn from_affine(x: &Fe, y: &Fe, c: &Consts) -> Niels {
+        Niels {
+            ypx: y.add(x),
+            ymx: y.sub(x),
+            xy2d: x.mul(y).mul(&c.d2),
+        }
+    }
+
+    /// `a` where `m` is all ones, else `b`.
+    fn select(m: u64, a: &Niels, b: &Niels) -> Niels {
+        Niels {
+            ypx: Fe::select(m, &a.ypx, &b.ypx),
+            ymx: Fe::select(m, &a.ymx, &b.ymx),
+            xy2d: Fe::select(m, &a.xy2d, &b.xy2d),
+        }
+    }
+
+    /// `-self` where `m` is all ones (`-(x, y) = (-x, y)`: swap `y ± x`, negate `2d·x·y`).
+    fn cneg(&self, m: u64) -> Niels {
+        let mut r = *self;
+        Fe::cswap(m, &mut r.ypx, &mut r.ymx);
+        r.xy2d = Fe::select(m, &self.xy2d.neg(), &self.xy2d);
+        r
+    }
 }
 
 /// A point as `(Y + X, Y - X, Z, 2d·T)`, for additions with a variable second operand.
@@ -111,15 +146,30 @@ pub(crate) fn consts() -> &'static Consts {
         let y = Fe::from_u64(4).mul(&Fe::from_u64(5).invert());
         by.copy_from_slice(&y.to_bytes());
         let b = Point::decompress_with(&by, &c).unwrap_or(Point::IDENTITY);
-        let mut base = Vec::with_capacity(64);
+        // j·16ⁱ·B for 1 ≤ j ≤ 8, then all to affine with one inversion (Montgomery's trick).
+        let mut pts = Vec::with_capacity(64 * 8);
         let mut p16 = b; // 16^i B
         for _ in 0..64 {
-            let mut row = [Point::IDENTITY; 16];
-            for j in 1..16 {
-                row[j] = row[j - 1].add_with(&p16, &c);
+            let mut q = p16;
+            for _ in 0..8 {
+                pts.push(q);
+                q = q.add_with(&p16, &c);
             }
-            p16 = row[15].add_with(&p16, &c);
-            base.push(row);
+            // 16·16ⁱ·B = 8·16ⁱ·B doubled.
+            p16 = pts[pts.len() - 1].double();
+        }
+        let mut acc = Vec::with_capacity(pts.len());
+        let mut a = Fe::ONE;
+        for p in &pts {
+            acc.push(a);
+            a = a.mul(&p.z);
+        }
+        let mut inv = a.invert();
+        let mut base = vec![[Niels::IDENTITY; 8]; 64];
+        for (i, p) in pts.iter().enumerate().rev() {
+            let zi = inv.mul(&acc[i]);
+            inv = inv.mul(&p.z);
+            base[i / 8][i % 8] = Niels::from_affine(&p.x.mul(&zi), &p.y.mul(&zi), &c);
         }
         c.base = base;
         let b2 = b.add_with(&b, &c);
@@ -128,11 +178,7 @@ pub(crate) fn consts() -> &'static Consts {
         for _ in 0..32 {
             let zi = q.z.invert();
             let (x, y) = (q.x.mul(&zi), q.y.mul(&zi));
-            odd.push(Niels {
-                ypx: y.add(&x),
-                ymx: y.sub(&x),
-                xy2d: x.mul(&y).mul(&c.d2),
-            });
+            odd.push(Niels::from_affine(&x, &y, &c));
             q = q.add_with(&b2, &c);
         }
         c.base_odd = odd;
@@ -259,29 +305,36 @@ impl Point {
         }
     }
 
-    fn select(m: u64, a: &Point, b: &Point) -> Point {
-        Point {
-            x: Fe::select(m, &a.x, &b.x),
-            y: Fe::select(m, &a.y, &b.y),
-            z: Fe::select(m, &a.z, &b.z),
-            t: Fe::select(m, &a.t, &b.t),
-        }
-    }
-
-    /// `[s]B` for a 32-byte little-endian scalar below 2²⁵⁶, in constant time: one addition
-    /// per 4-bit digit from the precomputed table, each entry chosen by scanning the whole row.
+    /// `[s]B` for a 32-byte little-endian scalar below 2²⁵⁵ (clamped scalars, scalars reduced
+    /// modulo `ℓ`), in constant time: signed 4-bit digits `s = Σ dᵢ·16ⁱ`, `dᵢ ∈ [-7, 8]`, one
+    /// mixed addition (7M) per digit with the entry `|dᵢ|·16ⁱ·B` found by scanning the whole row
+    /// and negated by masked selects; a zero digit adds the identity (the formulas are
+    /// complete). Below 2²⁵⁵ the top digit is at most 8, so no carry leaves the last row.
     pub(crate) fn mul_base(s: &[u8; 32]) -> Point {
+        debug_assert!(s[31] < 0x80, "mul_base needs a scalar below 2^255");
         let c = consts();
         let mut r = Point::IDENTITY;
+        let mut carry = 0u64;
         for (i, row) in c.base.iter().enumerate() {
             let nib = u64::from((s[i / 2] >> (4 * (i & 1))) & 15);
-            let mut e = Point::IDENTITY;
+            let (abs, neg, cy) = crate::ec::comb_digit(nib, carry);
+            carry = cy;
+            let mut e = Niels::IDENTITY;
             for (j, p) in row.iter().enumerate() {
-                e = Point::select(ct::eq(j as u64, nib), p, &e);
+                e = Niels::select(ct::eq(j as u64 + 1, abs), p, &e);
             }
-            r = r.add_with(&e, c);
+            r = r.add_niels(&e.cneg(neg), false).to_point();
         }
         r
+    }
+
+    /// The X25519 (Montgomery) u-coordinate `(1 + y)/(1 - y) = (Z + Y)/(Z - Y)` of this point,
+    /// encoded (RFC 7748 §4.1); 0 for the identity. Constant time.
+    pub(crate) fn to_montgomery_u(self) -> [u8; 32] {
+        self.z
+            .add(&self.y)
+            .mul(&self.z.sub(&self.y).invert())
+            .to_bytes()
     }
 
     /// `[s]P` in variable time (public scalars only: signature verification).

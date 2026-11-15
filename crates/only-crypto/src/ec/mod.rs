@@ -1,20 +1,40 @@
-//! Short Weierstrass curves `y² = x³ - 3x + b` over prime fields (P-256, P-384): points in
-//! projective coordinates with the complete addition formulas of Renes, Costello and Batina
-//! (2016, algorithms 4 and 6 for `a = -3`), so there are no exceptional cases and no
-//! data-dependent branches; ECDH and ECDSA on top.
+//! Short Weierstrass curves `y² = x³ - 3x + b` over prime fields (P-256, P-384), ECDH and ECDSA.
 //!
-//! Secret-scalar multiplication uses fixed 4-bit windows with a table lookup that reads every
-//! entry (variable base) or a precomputed comb of affine points `j·16ⁱ·G` (`1 ≤ j ≤ 8`) indexed
-//! by signed 4-bit digits (fixed base: one mixed addition per digit, the whole row read, the
-//! point negated by a masked select), always the same sequence of field operations.
+//! Scalar multiplication works in Jacobian coordinates with the `a = -3` formulas
+//! (dbl-2001-b: 3M + 5S; add-2007-bl: 11M + 5S; madd-2007-bl: 7M + 4S).
 //!
-//! Verification (public inputs) uses Jacobian coordinates (cheaper doublings than the complete
-//! formulas) and interleaves width-5 wNAF over the public key with width-7 wNAF over a
-//! precomputed table of odd multiples of `G`, sharing one chain of doublings; it compares
+//! Secret scalars, constant time (always the same sequence of field operations and memory
+//! accesses):
+//!
+//! - variable base (ECDH): Booth-recoded signed 5-bit windows (digits in `[-16, 16]`, 52 windows
+//!   for P-256) over a table of `1·P … 16·P`, read in full for every digit and negated by a
+//!   masked select; five doublings and one addition per window;
+//! - fixed base (key generation, signing): a precomputed comb of affine points `j·16ⁱ·G`
+//!   (`1 ≤ j ≤ 8`) indexed by signed 4-bit digits, one mixed addition per digit, the whole row
+//!   read for every digit.
+//!
+//! The Jacobian addition formulas are not complete: they fail when an operand is the identity
+//! and when both operands are equal. The identity cases are handled by masked selects (an
+//! accumulator still at the identity, a zero digit). Equal operands cannot occur for scalars in
+//! `[1, n)` on a prime-order curve, as [`Jac::mul_ct`] and [`Jac::mul_base_ct`] prove; the
+//! sum of a point and its negation correctly comes out as `Z = 0`. Points enter as validated
+//! affine points (`Z = 1`) and leave through one inversion.
+//!
+//! Verification (public inputs) interleaves width-5 wNAF over the public key with width-7 wNAF
+//! over a precomputed table of odd multiples of `G`, sharing one chain of doublings; it compares
 //! `x(R) ≡ r` projectively, without an inversion. Its branches depend on public data only.
+//!
+//! Decoding, validation and the table construction use projective coordinates with the complete
+//! formulas of Renes, Costello and Batina (2016, algorithms 4 and 6 for `a = -3`).
+//!
+//! A curve can route the high-level operations to a twin whose base field uses CPU instructions
+//! (P-256 on x86_64 with BMI2 + ADX: `hw`); the twin shares the Montgomery representation and the
+//! base point tables.
 
 pub(crate) mod api;
 pub(crate) mod curves;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod hw;
 
 use std::marker::PhantomData;
 
@@ -36,24 +56,60 @@ pub(crate) trait Curve<const L: usize>: Copy + Send + Sync + 'static {
     const GX: [u64; L];
     const GY: [u64; L];
     /// The base point tables, built once (with [`BaseTables::build`]).
-    fn tables() -> &'static BaseTables<Self, L>;
+    fn tables() -> &'static BaseTables<L>;
+
+    /// `d·G` as an affine point (`Z = 1`), for a secret `d`. A curve with a hardware twin
+    /// overrides the four operations here to dispatch to it.
+    #[inline]
+    fn base_mul_affine(d: &Scalar<Self, L>) -> Point<Self, L> {
+        base_mul_affine_impl::<Self, L>(d)
+    }
+
+    /// The big-endian x-coordinate of `d·q` into `out` (`8L` bytes) for a secret `d`; `false`
+    /// (nothing written) for the identity.
+    #[inline]
+    fn ecdh_x(d: &Scalar<Self, L>, q: &Point<Self, L>, out: &mut [u8]) -> bool {
+        ecdh_x_impl::<Self, L>(d, q, out)
+    }
+
+    /// ECDSA signature of digest `h` under `d` (RFC 6979 nonce over `H`).
+    #[inline]
+    fn sign_digest<H: Hash>(d: &Scalar<Self, L>, h: &[u8]) -> Sig<Self, L> {
+        sign_impl::<Self, H, L>(d, h)
+    }
+
+    /// ECDSA verification of `sig` on digest `h` under `q`.
+    #[inline]
+    fn verify_digest(q: &Point<Self, L>, h: &[u8], sig: &Sig<Self, L>) -> Result<(), Error> {
+        verify_impl::<Self, L>(q, h, sig)
+    }
 }
 
 /// An affine point `(x, y)` (never the identity).
 pub(crate) type Affine<C, const L: usize> = (Fp<C, L>, Fp<C, L>);
 
+/// An affine point as the Montgomery-form limbs of `x` and `y` (shared by a curve and its
+/// hardware twin).
+type RawAffine<const L: usize> = [[u64; L]; 2];
+
 /// Precomputed multiples of the base point.
-pub(crate) struct BaseTables<C: Curve<L>, const L: usize> {
+pub(crate) struct BaseTables<const L: usize> {
     /// `comb[i][j - 1] = j·16ⁱ·G` for `1 ≤ j ≤ 8`, `16L + 1` rows (signed digits carry into the
     /// last one).
-    comb: Vec<[Affine<C, L>; 8]>,
+    comb: Vec<[RawAffine<L>; 8]>,
     /// `wnaf[i] = (2i + 1)·G`, `0 ≤ i < 32` (width-7 wNAF digits).
-    wnaf: Vec<Affine<C, L>>,
+    wnaf: Vec<RawAffine<L>>,
 }
 
-impl<C: Curve<L>, const L: usize> BaseTables<C, L> {
+/// The point behind a table entry.
+#[inline]
+fn raw_affine<C: Curve<L>, const L: usize>(e: &RawAffine<L>) -> Affine<C, L> {
+    (Fe::from_mont(e[0]), Fe::from_mont(e[1]))
+}
+
+impl<const L: usize> BaseTables<L> {
     /// Computes the tables (projective arithmetic, then one batched inversion).
-    pub(crate) fn build() -> Self {
+    pub(crate) fn build<C: Curve<L>>() -> Self {
         let mut pts = Vec::with_capacity((16 * L + 1) * 8 + 32);
         let mut p = Point::<C, L>::generator();
         for _ in 0..=16 * L {
@@ -72,7 +128,10 @@ impl<C: Curve<L>, const L: usize> BaseTables<C, L> {
             pts.push(q);
             q = q.add(&g2);
         }
-        let aff = Point::batch_to_affine(&pts);
+        let aff: Vec<RawAffine<L>> = Point::batch_to_affine(&pts)
+            .iter()
+            .map(|(x, y)| [x.l, y.l])
+            .collect();
         let n = (16 * L + 1) * 8;
         let comb = aff[..n]
             .chunks_exact(8)
@@ -259,6 +318,24 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
         }
     }
 
+    /// The same point on a twin curve (same base field modulus and Montgomery form).
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+    #[inline]
+    pub(crate) fn cast<D: Curve<L>>(&self) -> Point<D, L> {
+        debug_assert_eq!(
+            <C::Fp as Modulus<L>>::P,
+            <D::Fp as Modulus<L>>::P,
+            "not a twin"
+        );
+        Point {
+            x: Fe::from_mont(self.x.l),
+            y: Fe::from_mont(self.y.l),
+            z: Fe::from_mont(self.z.l),
+            _c: PhantomData,
+        }
+    }
+
+    #[cfg(test)]
     fn select(m: u64, a: &Self, b: &Self) -> Self {
         Point {
             x: Fe::select(m, &a.x, &b.x),
@@ -269,7 +346,7 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
     }
 
     /// `table[idx]`, reading every entry.
-    #[inline]
+    #[cfg(test)]
     fn lookup(table: &[Self; 16], idx: u64) -> Self {
         let mut r = Self::identity();
         for (j, p) in table.iter().enumerate() {
@@ -278,13 +355,10 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
         r
     }
 
-    /// The 4-bit digit `i` (from the least significant) of little-endian limbs.
-    fn nibble(k: &[u64; L], i: usize) -> u64 {
-        (k[i / 16] >> (4 * (i % 16))) & 15
-    }
-
-    /// `[k]self` in constant time (fixed 4-bit windows, full-table lookups).
-    pub(crate) fn mul(&self, k: &Scalar<C, L>) -> Self {
+    /// `[k]self` with the complete formulas (fixed 4-bit windows, full-table lookups): the
+    /// reference for the Jacobian multiplications in tests.
+    #[cfg(test)]
+    pub(crate) fn mul_ref(&self, k: &Scalar<C, L>) -> Self {
         let k = k.to_limbs();
         let mut table = [Self::identity(); 16];
         for j in 1..16 {
@@ -293,7 +367,7 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
         let mut r = Self::identity();
         for i in (0..16 * L).rev() {
             r = r.double().double().double().double();
-            r = r.add(&Self::lookup(&table, Self::nibble(&k, i)));
+            r = r.add(&Self::lookup(&table, nibble(&k, i)));
         }
         r
     }
@@ -301,6 +375,7 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
     /// Complete mixed addition `self + (x2, y2)` (RCB16 algorithm 5, a = -3): correct for every
     /// `self`, including the identity; `(x2, y2)` must be a point on the curve (not the
     /// identity, which has no affine form). Constant time.
+    #[cfg(test)]
     pub(crate) fn add_affine(&self, x2: &Fp<C, L>, y2: &Fp<C, L>) -> Self {
         let b = curve_b::<C, L>();
         let (x1, y1, z1) = (&self.x, &self.y, &self.z);
@@ -348,35 +423,30 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
         }
     }
 
-    /// `[k]G` in constant time from the comb: `k = Σ dᵢ·16ⁱ` with signed digits `dᵢ ∈ [-7, 8]`
-    /// (a carry into the extra top row), one mixed addition per digit. Each digit's entry is
-    /// found by reading the whole row with masked selects, negated by a masked select, and the
-    /// addition of a zero digit is computed and discarded by a masked select.
-    pub(crate) fn mul_base(k: &Scalar<C, L>) -> Self {
+    /// `[k]G` from the comb with the complete mixed addition: the reference for
+    /// [`Jac::mul_base_ct`] in tests.
+    #[cfg(test)]
+    pub(crate) fn mul_base_ref(k: &Scalar<C, L>) -> Self {
         let k = k.to_limbs();
         let comb = &C::tables().comb;
         let mut r = Self::identity();
         let mut carry = 0u64;
         for (i, row) in comb.iter().enumerate().take(16 * L) {
-            let d = Self::nibble(&k, i) + carry;
-            // d ∈ [0, 16]; d ≥ 9 becomes d - 16 with a carry.
-            carry = (d + 7) >> 4;
-            let sd = d.wrapping_sub(carry << 4); // two's complement of d - 16·carry
-            let neg = ct::mask(sd >> 63);
-            let abs = (sd ^ neg).wrapping_sub(neg);
+            let (abs, neg, c) = comb_digit(nibble(&k, i), carry);
+            carry = c;
             let (mut x, mut y) = (Fp::<C, L>::ZERO, Fp::<C, L>::ZERO);
-            for (j, (px, py)) in row.iter().enumerate() {
+            for (j, e) in row.iter().enumerate() {
                 let m = ct::eq(j as u64 + 1, abs);
-                x = Fe::select(m, px, &x);
-                y = Fe::select(m, py, &y);
+                let (px, py) = raw_affine::<C, L>(e);
+                x = Fe::select(m, &px, &x);
+                y = Fe::select(m, &py, &y);
             }
             y = Fe::select(neg, &y.neg(), &y);
-            // abs = 0 selected nothing: (0, 0) is off the curve, the sum is discarded below.
             let sum = r.add_affine(&x, &y);
             r = Self::select(ct::is_zero(abs) ^ u64::MAX, &sum, &r);
         }
-        let (x, y) = &comb[16 * L][0];
-        let sum = r.add_affine(x, y);
+        let (x, y) = raw_affine::<C, L>(&comb[16 * L][0]);
+        let sum = r.add_affine(&x, &y);
         Self::select(ct::mask(carry), &sum, &r)
     }
 
@@ -494,9 +564,10 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
         }
     }
 
-    /// The uncompressed SEC1 encoding (`04 || x || y`); `None` for the identity.
+    /// The uncompressed SEC1 encoding (`04 || x || y`); `None` for the identity. Variable time
+    /// (public points: the inversion is skipped for `Z = 1`).
     pub(crate) fn to_uncompressed(self) -> Option<Vec<u8>> {
-        let (x, y) = self.to_affine()?;
+        let (x, y) = self.to_affine_vartime()?;
         let n = Self::LEN;
         let mut v = vec![0u8; 1 + 2 * n];
         v[0] = 4;
@@ -506,9 +577,58 @@ impl<C: Curve<L>, const L: usize> Point<C, L> {
     }
 }
 
+/// The 4-bit digit `i` (from the least significant) of little-endian limbs.
+#[inline]
+fn nibble<const L: usize>(k: &[u64; L], i: usize) -> u64 {
+    (k[i / 16] >> (4 * (i % 16))) & 15
+}
+
+/// One signed comb digit: the nibble plus the incoming carry, `d ∈ [0, 16]`, becomes
+/// `d - 16` with an outgoing carry when `d ≥ 9`. Returns `(|digit|, negative mask, carry)`,
+/// without branches.
+#[inline]
+pub(crate) fn comb_digit(nib: u64, carry: u64) -> (u64, u64, u64) {
+    let d = nib + carry;
+    let c = (d + 7) >> 4;
+    let sd = d.wrapping_sub(c << 4); // two's complement of d - 16·c
+    let neg = ct::mask(sd >> 63);
+    let abs = (sd ^ neg).wrapping_sub(neg);
+    (abs, neg, c)
+}
+
+/// The number of signed 5-bit windows of an `L`-limb scalar: the top window's sign bit (bit
+/// `5w - 1`) lies above the scalar, so the top digit is not negative.
+const fn booth_windows(l: usize) -> usize {
+    (64 * l + 5) / 5
+}
+
+/// The Booth digit of window `i` of `k`: bits `5i - 1 ..= 5i + 4` (bit -1 is 0) recoded to
+/// `|d| ∈ [0, 16]` and a mask set when `d < 0`, so that `k = Σ dᵢ·32ⁱ` (OpenSSL's
+/// `booth_recode_w5`). The bit positions are public; the digit is computed without branches.
+#[inline]
+fn booth5<const L: usize>(k: &[u64; L], i: usize) -> (u64, u64) {
+    let w = if i == 0 {
+        (k[0] << 1) & 63
+    } else {
+        let pos = 5 * i - 1;
+        let (limb, off) = (pos / 64, pos % 64);
+        let lo = k.get(limb).copied().unwrap_or(0) >> off;
+        let hi = if off > 58 {
+            k.get(limb + 1).copied().unwrap_or(0) << (64 - off)
+        } else {
+            0
+        };
+        (lo | hi) & 63
+    };
+    let s = ct::mask(w >> 5);
+    let d = ((63 - w) & s) | (w & !s);
+    ((d >> 1) + (d & 1), s)
+}
+
 /// A point in Jacobian coordinates `(X:Y:Z)`, affine `(X/Z², Y/Z³)`, `Z = 0` for the identity.
-/// Variable time throughout: only for verification (public points and scalars).
-struct Jac<C: Curve<L>, const L: usize> {
+/// The `*_ct` operations and the doubling are constant time (secret scalars); the others branch
+/// on their inputs (verification: public points and scalars).
+pub(crate) struct Jac<C: Curve<L>, const L: usize> {
     x: Fp<C, L>,
     y: Fp<C, L>,
     z: Fp<C, L>,
@@ -520,6 +640,201 @@ impl<C: Curve<L>, const L: usize> Clone for Jac<C, L> {
     }
 }
 impl<C: Curve<L>, const L: usize> Copy for Jac<C, L> {}
+
+/// Constant-time Jacobian arithmetic for secret scalars.
+impl<C: Curve<L>, const L: usize> Jac<C, L> {
+    fn select(m: u64, a: &Self, b: &Self) -> Self {
+        Jac {
+            x: Fe::select(m, &a.x, &b.x),
+            y: Fe::select(m, &a.y, &b.y),
+            z: Fe::select(m, &a.z, &b.z),
+        }
+    }
+
+    /// The Jacobian form `(X·Z : Y·Z² : Z)` of a projective point.
+    fn from_point(p: &Point<C, L>) -> Self {
+        Jac {
+            x: p.x.mul(&p.z),
+            y: p.y.mul(&p.z.square()),
+            z: p.z,
+        }
+    }
+
+    /// `self + q` (add-2007-bl: 11M + 5S) without special cases: correct when neither operand
+    /// is the identity and `self ≠ q`; `self = -q` gives `Z = 0`, the identity.
+    fn add_core(&self, q: &Self) -> Self {
+        let z1z1 = self.z.square();
+        let z2z2 = q.z.square();
+        let u1 = self.x.mul(&z2z2);
+        let u2 = q.x.mul(&z1z1);
+        let s1 = self.y.mul(&q.z).mul(&z2z2);
+        let s2 = q.y.mul(&self.z).mul(&z1z1);
+        let h = u2.sub(&u1);
+        let r = s2.sub(&s1).double();
+        let i = h.double().square();
+        let j = h.mul(&i);
+        let v = u1.mul(&i);
+        let x3 = r.square().sub(&j).sub(&v.double());
+        let y3 = r.mul(&v.sub(&x3)).sub(&s1.mul(&j).double());
+        let z3 = self.z.add(&q.z).square().sub(&z1z1).sub(&z2z2).mul(&h);
+        Jac {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
+    }
+
+    /// `self + (x2, y2)` (madd-2007-bl: 7M + 4S) without special cases: correct when `self`
+    /// is not the identity and not `(x2, y2)`; `self = -(x2, y2)` gives `Z = 0`.
+    fn madd_core(&self, x2: &Fp<C, L>, y2: &Fp<C, L>) -> Self {
+        let z1z1 = self.z.square();
+        let u2 = x2.mul(&z1z1);
+        let s2 = y2.mul(&self.z).mul(&z1z1);
+        let h = u2.sub(&self.x);
+        let hh = h.square();
+        let i = hh.double().double();
+        let j = h.mul(&i);
+        let r = s2.sub(&self.y).double();
+        let v = self.x.mul(&i);
+        let x3 = r.square().sub(&j).sub(&v.double());
+        let y3 = r.mul(&v.sub(&x3)).sub(&self.y.mul(&j).double());
+        let z3 = self.z.add(&h).square().sub(&z1z1).sub(&hh);
+        Jac {
+            x: x3,
+            y: y3,
+            z: z3,
+        }
+    }
+
+    /// `self + q` in constant time, correct when either operand is the identity (masked
+    /// selects); `self ≠ q` otherwise (the caller's invariant).
+    fn add_ct(&self, q: &Self) -> Self {
+        let s = self.add_core(q);
+        let s = Self::select(q.z.is_zero(), self, &s);
+        Self::select(self.z.is_zero(), q, &s)
+    }
+
+    /// `self + (x2, y2)` in constant time, correct when `self` is the identity (masked select);
+    /// `self ≠ (x2, y2)` otherwise (the caller's invariant).
+    fn madd_ct(&self, x2: &Fp<C, L>, y2: &Fp<C, L>) -> Self {
+        let s = self.madd_core(x2, y2);
+        let q = Jac {
+            x: *x2,
+            y: *y2,
+            z: Fp::<C, L>::ONE,
+        };
+        Self::select(self.z.is_zero(), &q, &s)
+    }
+
+    /// `table[d - 1]` for `d ∈ [1, 16]`, the identity for `d = 0`, reading every entry.
+    #[inline]
+    fn lookup(table: &[Self; 16], d: u64) -> Self {
+        let mut r = Self::identity();
+        for (j, p) in table.iter().enumerate() {
+            r = Self::select(ct::eq(j as u64 + 1, d), p, &r);
+        }
+        r
+    }
+
+    /// `[k]p` for a secret `k`, in constant time; `p` must have order `n` (every point other
+    /// than the identity: P-256 and P-384 have prime order) and `k ∈ [1, n)` (a `Scalar` is
+    /// reduced; `k = 0` gives the identity, possibly with a wrong `X`, `Y`).
+    ///
+    /// Booth-recoded signed 5-bit windows `k = Σ dᵢ·32ⁱ`, `dᵢ ∈ [-16, 16]`, from the top: five
+    /// doublings, then the addition of `table[|dᵢ|]` (read in full, negated by a masked select).
+    ///
+    /// The addition never meets equal operands. Write `Mⱼ = Σ_{i≥j} dᵢ·32^(i-j)`: the accumulator
+    /// before adding `dⱼ` is `A = 32·Mⱼ₊₁` (times `p`), and `A + dⱼ = Mⱼ`. The lower digits sum to
+    /// less than `32ʲ/1.9` in absolute value, so `0 ≤ Mⱼ < n` for `j ≥ 1` and `0 ≤ A < n`.
+    /// Equal operands mean `A ≡ dⱼ (mod n)`. For `j ≥ 1` both sides are below `n` in absolute
+    /// value, so `A = dⱼ`; as `32 | A` and `|dⱼ| ≤ 16`, `A = dⱼ = 0`: both operands are the
+    /// identity, which the masked selects handle. For `j = 0`, `A - d₀ = k - 2d₀ ≡ 0` needs
+    /// `k = 2d₀` (then `A = d₀ = 0`, `k = 0`, excluded) or `k = n - 2|d₀|` with `A = n - |d₀|`, a
+    /// multiple of 32: `n ≡ |d₀| (mod 32)`, impossible as `n mod 32 ≥ 17` for both curves
+    /// (checked in the tests). `A ≡ -dⱼ` is the sum `Mⱼ ≡ 0`, the identity, which the formula
+    /// yields as `Z = 0` (and `j = 0` would need `k ≡ 0`).
+    pub(crate) fn mul_ct(p: &Point<C, L>, k: &Scalar<C, L>) -> Self {
+        let k = k.to_limbs();
+        let p1 = Self::from_point(p);
+        // table[j] = (j + 1)·p: no addition here meets equal operands (jP ≠ ±P for 2 ≤ j ≤ 15).
+        let mut table = [p1; 16];
+        for j in 1..16 {
+            table[j] = if j % 2 == 1 {
+                table[j / 2].double()
+            } else {
+                table[j - 1].add_core(&p1)
+            };
+        }
+        let w = booth_windows(L);
+        let mut r = Self::identity();
+        for i in (0..w).rev() {
+            if i != w - 1 {
+                r = r.double().double().double().double().double();
+            }
+            let (d, neg) = booth5(&k, i);
+            let mut t = Self::lookup(&table, d);
+            t.y = Fe::select(neg, &t.y.neg(), &t.y);
+            r = r.add_ct(&t);
+        }
+        r
+    }
+
+    /// `[k]G` for a secret `k`, in constant time, from the comb: `k = Σ dᵢ·16ⁱ` with signed
+    /// digits `dᵢ ∈ [-7, 8]` (a carry into the extra top row), one mixed addition per digit.
+    /// Each digit's entry is found by reading the whole row with masked selects, negated by a
+    /// masked select; the addition of a zero digit is computed and discarded by a masked
+    /// select, and an accumulator still at the identity takes the entry by a masked select.
+    ///
+    /// The addition never meets equal operands: before row `j` the accumulator is
+    /// `Sⱼ = Σ_{i<j} dᵢ·16ⁱ` (times `G`) with `|Sⱼ| ≤ 8·(16ʲ - 1)/15 < 0.54·16ʲ`, and the entry
+    /// is `±dⱼ·16ʲ` with `dⱼ ≠ 0`, so `0 < |Sⱼ ∓ dⱼ·16ʲ| < 8.54·16ʲ`, below `n` for every
+    /// regular row (`8.54·2^(64L-4) < 2^(64L-0.9) < n`): never `≡ 0 (mod n)`. The top row adds
+    /// `2^(64L)·G` only when the last digit carried, which needs `k ≥ 2^(64L-1)`; equality
+    /// there means `k ≡ 2^(64L+1) (mod n)` (or `k ≡ 0`), and that residue is
+    /// `2^(64L+1) - 2n < 2^(64L-30)`, far smaller.
+    pub(crate) fn mul_base_ct(k: &Scalar<C, L>) -> Self {
+        let k = k.to_limbs();
+        let comb = &C::tables().comb;
+        let mut r = Self::identity();
+        let mut carry = 0u64;
+        for (i, row) in comb.iter().enumerate().take(16 * L) {
+            let (abs, neg, c) = comb_digit(nibble(&k, i), carry);
+            carry = c;
+            let mut e = [[0u64; L]; 2];
+            for (j, entry) in row.iter().enumerate() {
+                let m = ct::eq(j as u64 + 1, abs);
+                ct::assign(m, &mut e[0], &entry[0]);
+                ct::assign(m, &mut e[1], &entry[1]);
+            }
+            let (x, y) = raw_affine::<C, L>(&e);
+            let y = Fe::select(neg, &y.neg(), &y);
+            // abs = 0 selected (0, 0), off the curve: the sum is discarded.
+            let sum = r.madd_ct(&x, &y);
+            r = Self::select(ct::is_zero(abs) ^ u64::MAX, &sum, &r);
+        }
+        let (x, y) = raw_affine::<C, L>(&comb[16 * L][0]);
+        let sum = r.madd_ct(&x, &y);
+        Self::select(ct::mask(carry), &sum, &r)
+    }
+
+    /// The affine x-coordinate (one constant-time inversion); `None` for the identity.
+    fn to_affine_x(self) -> Option<Fp<C, L>> {
+        if self.z.is_zero() != 0 {
+            return None;
+        }
+        Some(self.x.mul(&self.z.invert().square()))
+    }
+
+    /// The affine coordinates (one constant-time inversion); `None` for the identity.
+    fn to_affine(self) -> Option<Affine<C, L>> {
+        if self.z.is_zero() != 0 {
+            return None;
+        }
+        let zi = self.z.invert();
+        let zi2 = zi.square();
+        Some((self.x.mul(&zi2), self.y.mul(&zi2).mul(&zi)))
+    }
+}
 
 impl<C: Curve<L>, const L: usize> Jac<C, L> {
     fn identity() -> Self {
@@ -550,11 +865,9 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         }
     }
 
-    /// Doubling for a = -3 (dbl-2001-b: 3M + 5S).
+    /// Doubling for a = -3 (dbl-2001-b: 3M + 5S), constant time; the identity (`Z = 0`) stays
+    /// the identity (`Z₃ = (Y + Z)² - Y² - Z² = 0`).
     fn double(&self) -> Self {
-        if self.is_identity() {
-            return *self;
-        }
         let delta = self.z.square();
         let gamma = self.y.square();
         let beta = self.x.mul(&gamma);
@@ -659,10 +972,10 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
             r = r.double();
             match wa.get(i).copied().unwrap_or(0) {
                 0 => {}
-                d if d > 0 => r = r.add_affine(&gt[(d as usize) >> 1]),
+                d if d > 0 => r = r.add_affine(&raw_affine::<C, L>(&gt[(d as usize) >> 1])),
                 d => {
-                    let (x, y) = &gt[((-d) as usize) >> 1];
-                    r = r.add_affine(&(*x, y.neg()));
+                    let (x, y) = raw_affine::<C, L>(&gt[((-d) as usize) >> 1]);
+                    r = r.add_affine(&(x, y.neg()));
                 }
             }
             match wb.get(i).copied().unwrap_or(0) {
@@ -773,12 +1086,55 @@ pub(crate) struct Sig<C: Curve<L>, const L: usize> {
     pub(crate) s: Scalar<C, L>,
 }
 
+impl<C: Curve<L>, const L: usize> Sig<C, L> {
+    /// The same signature on a twin curve (same scalar field).
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+    #[inline]
+    pub(crate) fn cast<D: Curve<L, Fq = C::Fq>>(&self) -> Sig<D, L> {
+        Sig {
+            r: self.r,
+            s: self.s,
+        }
+    }
+}
+
+/// `d·G` as an affine point (`Z = 1`), constant time.
+pub(crate) fn base_mul_affine_impl<C: Curve<L>, const L: usize>(d: &Scalar<C, L>) -> Point<C, L> {
+    match Jac::<C, L>::mul_base_ct(d).to_affine() {
+        Some((x, y)) => Point {
+            x,
+            y,
+            z: Fp::<C, L>::ONE,
+            _c: PhantomData,
+        },
+        None => Point::identity(),
+    }
+}
+
+/// The big-endian x-coordinate of `d·q` into `out`, constant time; `false` for the identity.
+pub(crate) fn ecdh_x_impl<C: Curve<L>, const L: usize>(
+    d: &Scalar<C, L>,
+    q: &Point<C, L>,
+    out: &mut [u8],
+) -> bool {
+    match Jac::<C, L>::mul_ct(q, d).to_affine_x() {
+        Some(x) => {
+            x.write_be(out);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Signs digest `h` with private key `d` (RFC 6979 nonce over `H`).
-pub(crate) fn sign<C: Curve<L>, H: Hash, const L: usize>(d: &Scalar<C, L>, h: &[u8]) -> Sig<C, L> {
+pub(crate) fn sign_impl<C: Curve<L>, H: Hash, const L: usize>(
+    d: &Scalar<C, L>,
+    h: &[u8],
+) -> Sig<C, L> {
     let e = digest_scalar::<C, L>(h);
     loop {
         let k = rfc6979_nonce::<C, H, L>(d, h);
-        let Some((x, _)) = Point::<C, L>::mul_base(&k).to_affine() else {
+        let Some(x) = Jac::<C, L>::mul_base_ct(&k).to_affine_x() else {
             continue; // unreachable: 0 < k < n
         };
         // r = x mod n (x < p < 2n).
@@ -791,7 +1147,7 @@ pub(crate) fn sign<C: Curve<L>, H: Hash, const L: usize>(d: &Scalar<C, L>, h: &[
 }
 
 /// Verifies `(r, s)` (already range-checked) on digest `h` under public key `q`.
-pub(crate) fn verify<C: Curve<L>, const L: usize>(
+pub(crate) fn verify_impl<C: Curve<L>, const L: usize>(
     q: &Point<C, L>,
     h: &[u8],
     sig: &Sig<C, L>,

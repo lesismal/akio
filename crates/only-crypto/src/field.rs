@@ -8,7 +8,8 @@
 //! public exponent (4-bit windows, or an addition chain where a modulus provides one). The
 //! constants a modulus needs (`R mod p`, `R² mod p`, `R³ mod p`, `-p⁻¹ mod 2⁶⁴`, the exponents)
 //! are computed at compile time from the modulus alone. A modulus with a special form (the P-256
-//! prime) overrides multiplication, squaring and inversion with dedicated code.
+//! prime) overrides multiplication, squaring and inversion with dedicated code, and a modulus
+//! implemented with CPU instructions (`ec::hw`) overrides addition and subtraction too.
 
 use std::marker::PhantomData;
 
@@ -43,6 +44,33 @@ pub(crate) trait Modulus<const N: usize>: Copy + Send + Sync + 'static {
         } else {
             Self::mont_mul(a, a)
         }
+    }
+
+    /// `a + b mod P` (`a, b < P`), constant time.
+    #[inline]
+    fn mod_add(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
+        let mut s = [0u64; N];
+        let carry = ct::add_limbs(&mut s, a, b);
+        let mut r = [0u64; N];
+        let borrow = ct::sub_limbs(&mut r, &s, &Self::P);
+        // Keep s when s < P, i.e. the subtraction borrowed and the addition did not carry.
+        ct::assign(ct::mask(borrow & (1 ^ carry)), &mut r, &s);
+        r
+    }
+
+    /// `a - b mod P` (`a, b < P`), constant time.
+    #[inline]
+    fn mod_sub(a: &[u64; N], b: &[u64; N]) -> [u64; N] {
+        let mut d = [0u64; N];
+        let borrow = ct::sub_limbs(&mut d, a, b);
+        let m = ct::mask(borrow);
+        let mut pm = [0u64; N];
+        for (x, &p) in pm.iter_mut().zip(Self::P.iter()) {
+            *x = p & m;
+        }
+        let mut r = [0u64; N];
+        ct::add_limbs(&mut r, &d, &pm);
+        r
     }
 
     /// `a⁻¹` (Montgomery form in and out) by a dedicated addition chain, or `None` to use the
@@ -293,6 +321,13 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
 
     pub(crate) const ZERO: Self = Self::raw([0; N]);
 
+    /// The element whose Montgomery form is `l` (`l < P`): for moving values between two
+    /// implementations of the same modulus.
+    #[inline]
+    pub(crate) const fn from_mont(l: [u64; N]) -> Self {
+        Self::raw(l)
+    }
+
     /// The element with canonical limbs `a < P`, converted at compile time (`a·R` by doubling).
     pub(crate) const fn from_canonical_const(a: [u64; N]) -> Self {
         Self::raw(mul_pow2_mod(a, &M::P, 64 * N))
@@ -317,27 +352,12 @@ impl<M: Modulus<N>, const N: usize> Fe<M, N> {
 
     #[inline]
     pub(crate) fn add(&self, b: &Self) -> Self {
-        let mut s = [0u64; N];
-        let carry = ct::add_limbs(&mut s, &self.l, &b.l);
-        let mut r = [0u64; N];
-        let borrow = ct::sub_limbs(&mut r, &s, &M::P);
-        // Keep s when s < P, i.e. the subtraction borrowed and the addition did not carry.
-        ct::assign(ct::mask(borrow & (1 ^ carry)), &mut r, &s);
-        Self::raw(r)
+        Self::raw(M::mod_add(&self.l, &b.l))
     }
 
     #[inline]
     pub(crate) fn sub(&self, b: &Self) -> Self {
-        let mut d = [0u64; N];
-        let borrow = ct::sub_limbs(&mut d, &self.l, &b.l);
-        let m = ct::mask(borrow);
-        let mut pm = [0u64; N];
-        for (x, &p) in pm.iter_mut().zip(M::P.iter()) {
-            *x = p & m;
-        }
-        let mut r = [0u64; N];
-        ct::add_limbs(&mut r, &d, &pm);
-        Self::raw(r)
+        Self::raw(M::mod_sub(&self.l, &b.l))
     }
 
     #[inline]

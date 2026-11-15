@@ -58,7 +58,7 @@ macro_rules! curve_api {
             #[must_use]
             pub fn public_key(&self) -> PublicKey {
                 PublicKey {
-                    q: Point::<C, $l>::mul_base(&self.d),
+                    q: <C as ec::Curve<$l>>::base_mul_affine(&self.d),
                 }
             }
 
@@ -68,9 +68,7 @@ macro_rules! curve_api {
             #[must_use]
             pub fn diffie_hellman(&self, peer: &PublicKey) -> [u8; $len] {
                 let mut out = [0u8; $len];
-                if let Some((x, _)) = peer.q.mul(&self.d).to_affine() {
-                    x.write_be(&mut out);
-                }
+                <C as ec::Curve<$l>>::ecdh_x(&self.d, &peer.q, &mut out);
                 out
             }
 
@@ -90,7 +88,7 @@ macro_rules! curve_api {
             /// should be the one that produced `digest`).
             #[must_use]
             pub fn sign_prehash<H: Hash>(&self, digest: &[u8]) -> Signature {
-                Signature(ec::sign::<C, H, $l>(&self.d, digest))
+                Signature(<C as ec::Curve<$l>>::sign_digest::<H>(&self.d, digest))
             }
         }
 
@@ -157,7 +155,7 @@ macro_rules! curve_api {
             /// order's size as ECDSA specifies). High-`s` signatures are accepted (TLS and
             /// X.509 do not require low `s`).
             pub fn verify_prehash(&self, digest: &[u8], sig: &Signature) -> Result<(), Error> {
-                ec::verify::<C, $l>(&self.q, digest, &sig.0)
+                <C as ec::Curve<$l>>::verify_digest(&self.q, digest, &sig.0)
             }
         }
 

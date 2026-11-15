@@ -1,5 +1,5 @@
 //! Run-time CPU feature detection for the hardware paths (`aes::hw`, `hash::hw`, `gcm::hw`,
-//! `crc::hw`, `chacha::hw`), detected once and cached.
+//! `crc::hw`, `chacha::hw`, `ec::hw`), detected once and cached.
 //!
 //! A feature reported here is one the CPU has *and* that has not been switched off: the
 //! environment variable `ONLY_CRYPTO_PORTABLE` (set to anything but `0` or the empty string when
@@ -34,6 +34,9 @@ pub(crate) enum Feature {
     Crc = 1 << 3,
     /// 256-bit integer vectors: AVX2 (x86_64).
     Avx2 = 1 << 4,
+    /// Wide multiplication with two independent carry chains: BMI2 `mulx` and ADX
+    /// `adcx`/`adox` (x86_64).
+    Adx = 1 << 5,
 }
 
 #[cfg(all(target_arch = "x86_64", not(miri)))]
@@ -54,6 +57,9 @@ fn detect() -> u32 {
     }
     if has!("avx2") {
         f |= Feature::Avx2 as u32;
+    }
+    if has!("bmi2") && has!("adx") {
+        f |= Feature::Adx as u32;
     }
     f
 }
@@ -136,7 +142,7 @@ pub fn is_portable() -> bool {
 }
 
 /// The hardware paths this CPU uses now, for diagnostics and benchmark labels (for example
-/// `"aes clmul sha crc avx2"`; empty when everything is portable).
+/// `"aes clmul sha crc avx2 adx"`; empty when everything is portable).
 #[doc(hidden)]
 #[must_use]
 pub fn hardware_features() -> String {
@@ -146,6 +152,7 @@ pub fn hardware_features() -> String {
         (Feature::Sha, "sha"),
         (Feature::Crc, "crc"),
         (Feature::Avx2, "avx2"),
+        (Feature::Adx, "adx"),
     ];
     names
         .iter()
