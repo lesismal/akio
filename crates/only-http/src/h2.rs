@@ -7,6 +7,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
+    hash::{BuildHasherDefault, Hasher},
     net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
@@ -134,6 +135,8 @@ struct Stream {
     state: SState,
     send_window: i64,
     recv_window: i64,
+    /// Receive window consumed by DATA and not yet given back.
+    recv_owed: i64,
     /// Request being assembled from HEADERS.
     head: Option<Request>,
     body: Vec<u8>,
@@ -161,6 +164,7 @@ impl Stream {
             state,
             send_window,
             recv_window,
+            recv_owed: 0,
             head: None,
             body: Vec::new(),
             content_length: None,
@@ -197,6 +201,58 @@ enum Action {
     End(u32, Headers),
 }
 
+/// Hashes stream ids for the stream table: SipHash (the default) showed up at ~3% of h2c
+/// throughput. Ids are chosen by the peer, but a stream table is bounded by
+/// `max_concurrent_streams`, so collisions cannot grow it; the multiply-and-fold still spreads
+/// odd ids over every bucket.
+#[derive(Default)]
+struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0 << 8 | u64::from(b)).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        }
+    }
+    fn write_u32(&mut self, n: u32) {
+        let h = u64::from(n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = h ^ (h >> 29);
+    }
+}
+
+type StreamMap = HashMap<u32, Stream, BuildHasherDefault<IdHasher>>;
+
+/// A decoded header block, flat: every name and value in one buffer, reused across blocks (a
+/// `Vec` per name and per value cost ~12 allocations per request).
+#[derive(Default)]
+struct Fields {
+    buf: Vec<u8>,
+    /// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`.
+    spans: Vec<(usize, usize, usize)>,
+}
+
+impl Fields {
+    fn clear(&mut self) {
+        self.buf.clear();
+        self.spans.clear();
+    }
+    fn push(&mut self, n: &[u8], v: &[u8]) {
+        let a = self.buf.len();
+        self.buf.extend_from_slice(n);
+        let b = self.buf.len();
+        self.buf.extend_from_slice(v);
+        self.spans.push((a, b, self.buf.len()));
+    }
+    fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> {
+        self.spans
+            .iter()
+            .map(|&(a, b, c)| (&self.buf[a..b], &self.buf[b..c]))
+    }
+}
+
 type PushHook = Arc<dyn Fn(Request, H2Responder) + Send + Sync>;
 type ModeFn = Arc<dyn Fn(&Request) -> BodyMode + Send + Sync>;
 
@@ -213,7 +269,7 @@ struct Core {
     conn_recv: i64,
     dec: Decoder,
     enc: Encoder,
-    streams: HashMap<u32, Stream>,
+    streams: StreamMap,
     last_peer: u32,
     next_push: u32,
     cont: Option<Cont>,
@@ -231,9 +287,30 @@ struct Core {
     open_peer: u32,
     /// Streams removed under the lock, dropped once it is released (see [`Locked`]).
     dropped: Vec<Stream>,
+    /// While the I/O thread works through one read, frames are only appended to `out`; the
+    /// whole batch is handed to the connection once at the end (one write, one TLS record).
+    batching: bool,
+    /// The header block being decoded.
+    fields: Fields,
+    /// Scratch for encoding a header block: lowercased names and cleaned values.
+    enc_fields: Fields,
+    /// Connection-level receive window consumed and not yet given back.
+    conn_recv_owed: u32,
 }
 
 type Shared = Arc<Mutex<Core>>;
+
+/// Write batching for one read (see [`Core::flush`]): the queued frames go out when this is
+/// dropped, also when the service panics.
+struct Batch<'a>(&'a Shared);
+
+impl Drop for Batch<'_> {
+    fn drop(&mut self) {
+        let mut c = lock(self.0);
+        c.batching = false;
+        c.flush_now();
+    }
+}
 
 /// The locked core. Streams removed while it is held are dropped only after the lock is
 /// released: a stream can own a parked request context whose drop runs user code (a gRPC sink,
@@ -279,12 +356,22 @@ fn lock(s: &Shared) -> Locked<'_> {
 }
 
 pub(crate) fn frame(out: &mut Vec<u8>, ty: u8, flags: u8, sid: u32, payload: &[u8]) {
-    let len = payload.len() as u32;
-    out.extend_from_slice(&len.to_be_bytes()[1..]);
-    out.push(ty);
-    out.push(flags);
-    out.extend_from_slice(&(sid & 0x7fff_ffff).to_be_bytes());
+    frame_head(out, payload.len(), ty, flags, sid);
     out.extend_from_slice(payload);
+}
+
+/// Appends the 9-byte frame header of a `len`-byte payload.
+fn frame_head(out: &mut Vec<u8>, len: usize, ty: u8, flags: u8, sid: u32) {
+    out.extend_from_slice(&frame_header(len, ty, flags, sid));
+}
+
+fn frame_header(len: usize, ty: u8, flags: u8, sid: u32) -> [u8; 9] {
+    let mut h = [0u8; 9];
+    h[..3].copy_from_slice(&(len as u32).to_be_bytes()[1..]);
+    h[3] = ty;
+    h[4] = flags;
+    h[5..].copy_from_slice(&(sid & 0x7fff_ffff).to_be_bytes());
+    h
 }
 
 enum Fail {
@@ -295,7 +382,15 @@ enum Fail {
 type R<T> = Result<T, Fail>;
 
 impl Core {
+    /// Hands the queued frames to the connection, unless the I/O thread is in the middle of a
+    /// read (it flushes once at the end, see [`H2Session::feed`]).
     fn flush(&mut self) {
+        if !self.batching {
+            self.flush_now();
+        }
+    }
+
+    fn flush_now(&mut self) {
         if !self.out.is_empty() {
             let out = std::mem::take(&mut self.out);
             let _ = self.conn.send_owned(out);
@@ -320,7 +415,7 @@ impl Core {
     fn conn_error(&mut self, code: u32) {
         self.goaway(code);
         self.dead = true;
-        self.flush();
+        self.flush_now();
         self.conn.close_after_send();
     }
 
@@ -337,7 +432,7 @@ impl Core {
     fn maybe_close_after_goaway(&mut self) {
         if self.goaway_sent && self.streams.is_empty() && !self.dead {
             self.dead = true;
-            self.flush();
+            self.flush_now();
             self.conn.close_after_send();
         }
     }
@@ -375,52 +470,107 @@ impl Core {
         }
     }
 
-    fn encode_headers(&mut self, status: Option<u16>, headers: &Headers) -> Vec<u8> {
-        let mut list: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(headers.len() + 2);
+    /// Writes the HEADERS (+ CONTINUATION) frames of a header block for `sid`: `:status` when
+    /// given, `headers` (names lowercased, hop-by-hop fields dropped, line breaks removed from
+    /// values), then `date` when `add_date` and the headers have none, then `content-length`
+    /// when given and the headers have none. The block is encoded straight into `out`.
+    fn write_headers(
+        &mut self,
+        sid: u32,
+        status: Option<u16>,
+        headers: &Headers,
+        add_date: bool,
+        content_length: Option<u64>,
+        end_stream: bool,
+    ) {
+        let mut f = std::mem::take(&mut self.enc_fields);
+        f.clear();
         if let Some(s) = status {
-            list.push((b":status".to_vec(), s.to_string().into_bytes()));
+            let a = f.buf.len();
+            f.buf.extend_from_slice(b":status");
+            let b = f.buf.len();
+            crate::message::push_uint(&mut f.buf, u64::from(s));
+            f.spans.push((a, b, f.buf.len()));
         }
+        let (mut has_date, mut has_len) = (false, false);
         for (n, v) in headers.iter() {
-            let n = n.to_ascii_lowercase();
-            if matches!(
-                n.as_str(),
-                "connection"
-                    | "keep-alive"
-                    | "proxy-connection"
-                    | "transfer-encoding"
-                    | "upgrade"
-                    | "host"
-            ) {
-                continue;
+            let a = f.buf.len();
+            f.buf.extend(n.bytes().map(|b| b.to_ascii_lowercase()));
+            let b = f.buf.len();
+            match &f.buf[a..b] {
+                b"connection" | b"keep-alive" | b"proxy-connection" | b"transfer-encoding"
+                | b"upgrade" | b"host" => {
+                    f.buf.truncate(a);
+                    continue;
+                }
+                b"date" => has_date = true,
+                b"content-length" => has_len = true,
+                _ => {}
             }
-            list.push((n.into_bytes(), v.replace(['\r', '\n'], "").into_bytes()));
+            if v.contains(['\r', '\n']) {
+                f.buf
+                    .extend(v.bytes().filter(|b| *b != b'\r' && *b != b'\n'));
+            } else {
+                f.buf.extend_from_slice(v.as_bytes());
+            }
+            f.spans.push((a, b, f.buf.len()));
         }
-        self.enc
-            .encode(list.iter().map(|(n, v)| (n.as_slice(), v.as_slice())))
+        if add_date && !has_date {
+            crate::message::with_http_date(|d| f.push(b"date", d.as_bytes()));
+        }
+        if let (Some(len), false) = (content_length, has_len) {
+            let a = f.buf.len();
+            f.buf.extend_from_slice(b"content-length");
+            let b = f.buf.len();
+            crate::message::push_uint(&mut f.buf, len);
+            f.spans.push((a, b, f.buf.len()));
+        }
+        // Encode behind a placeholder frame header, which is filled in once the size is known.
+        let start = self.out.len();
+        self.out.extend_from_slice(&[0; 9]);
+        self.enc.encode_into(f.iter(), &mut self.out);
+        self.enc_fields = f;
+        let len = self.out.len() - start - 9;
+        if len <= self.remote.max_frame as usize {
+            let mut flags = flag::END_HEADERS;
+            if end_stream {
+                flags |= flag::END_STREAM;
+            }
+            self.out[start..start + 9].copy_from_slice(&frame_header(len, ty::HEADERS, flags, sid));
+        } else {
+            // Larger than a frame: split into CONTINUATIONs.
+            let block = self.out.split_off(start + 9);
+            self.out.truncate(start);
+            self.write_header_block(ty::HEADERS, sid, &[], &block, end_stream);
+        }
     }
 
     /// Sends a complete response on `sid`.
     fn send_response(&mut self, sid: u32, mut resp: Response) {
-        let Some(st) = self.streams.get_mut(&sid) else {
+        let Some(st) = self.streams.get(&sid) else {
             return;
         };
         let head_only = st.head_only;
         let bodyless = resp.status < 200 || resp.status == 204 || resp.status == 304;
-        if resp.headers.get("date").is_none() {
-            resp.headers.set("date", crate::message::http_date_now());
-        }
         let len = resp.body_len();
-        if !bodyless && resp.headers.get("content-length").is_none() && !resp.streaming {
-            resp.headers.set("content-length", len.to_string());
-        }
-        let block = self.encode_headers(Some(resp.status), &resp.headers);
+        let content_length = (!bodyless && !resp.streaming).then_some(len);
         let no_body = head_only || bodyless || len == 0;
         let trailers = resp.trailers.take().filter(|_| !head_only);
-        self.write_header_block(ty::HEADERS, sid, &[], &block, no_body && trailers.is_none());
+        let end_with_head = no_body && trailers.is_none();
+        self.write_headers(
+            sid,
+            Some(resp.status),
+            &resp.headers,
+            true,
+            content_length,
+            end_with_head,
+        );
+        let max_frame = self.remote.max_frame as usize;
+        let conn_send = self.conn_send;
         let st = self.streams.get_mut(&sid).expect("stream still present");
         st.head_sent = true;
         st.trailers = trailers;
-        if no_body && st.trailers.is_none() {
+        if end_with_head {
             st.sent_end = true;
         } else if no_body {
             st.end_pending = true;
@@ -435,7 +585,22 @@ impl Core {
                     st.out_bytes += len as usize;
                 }
                 None => {
-                    st.out_bytes += resp.body.len();
+                    let n = resp.body.len();
+                    if st.trailers.is_none()
+                        && n <= max_frame
+                        && (n as i64) <= st.send_window
+                        && (n as i64) <= conn_send
+                    {
+                        // The common case: the whole body fits one DATA frame and the windows.
+                        st.send_window -= n as i64;
+                        st.sent_end = true;
+                        self.conn_send -= n as i64;
+                        frame(&mut self.out, ty::DATA, flag::END_STREAM, sid, &resp.body);
+                        self.finish_if_done(sid);
+                        self.flush();
+                        return;
+                    }
+                    st.out_bytes += n;
                     st.out
                         .push_back(OutChunk::Bytes(std::mem::take(&mut resp.body), 0));
                 }
@@ -460,8 +625,7 @@ impl Core {
                 // Everything queued is written.
                 if st.end_pending {
                     if let Some(tr) = st.trailers.take() {
-                        let block = self.encode_headers(None, &tr);
-                        self.write_header_block(ty::HEADERS, sid, &[], &block, true);
+                        self.write_headers(sid, None, &tr, false, None, true);
                     } else {
                         frame(&mut self.out, ty::DATA, flag::END_STREAM, sid, &[]);
                     }
@@ -474,15 +638,30 @@ impl Core {
             if allow <= 0 {
                 break;
             }
+            if let OutChunk::Bytes(v, off) = chunk {
+                // Straight from the queued buffer into the output; END_STREAM is set below.
+                let n = (v.len() - *off).min(allow as usize);
+                let head = self.out.len();
+                frame_head(&mut self.out, n, ty::DATA, 0, sid);
+                self.out.extend_from_slice(&v[*off..*off + n]);
+                *off += n;
+                if *off == v.len() {
+                    st.out.pop_front();
+                }
+                st.out_bytes = st.out_bytes.saturating_sub(n);
+                st.send_window -= n as i64;
+                self.conn_send -= n as i64;
+                if st.out.is_empty() && st.end_pending && st.trailers.is_none() {
+                    st.sent_end = true;
+                    st.end_pending = false;
+                    self.out[head + 4] = flag::END_STREAM;
+                }
+                continue;
+            }
             let mut buf = Vec::new();
             let done_chunk;
             match chunk {
-                OutChunk::Bytes(v, off) => {
-                    let n = (v.len() - *off).min(allow as usize);
-                    buf.extend_from_slice(&v[*off..*off + n]);
-                    *off += n;
-                    done_chunk = *off == v.len();
-                }
+                OutChunk::Bytes(..) => unreachable!("handled above"),
                 OutChunk::File { file, off, left } => {
                     use std::os::unix::fs::FileExt;
                     let n = (*left).min(allow as u64) as usize;
@@ -557,6 +736,13 @@ impl Core {
     }
 
     fn flush_all_streams(&mut self) {
+        if !self
+            .streams
+            .values()
+            .any(|s| !s.out.is_empty() || s.end_pending)
+        {
+            return;
+        }
         let ids: Vec<u32> = self
             .streams
             .iter()
@@ -574,39 +760,50 @@ impl Core {
         }
     }
 
+    /// Gives back the connection window consumed by DATA frames, once a quarter of it is owed
+    /// (one WINDOW_UPDATE per batch of uploads rather than one per DATA frame).
+    fn owe_conn_window(&mut self, n: u32) {
+        self.conn_recv_owed = self.conn_recv_owed.saturating_add(n);
+        if self.conn_recv_owed >= self.cfg.conn_window / 4 {
+            let inc = std::mem::take(&mut self.conn_recv_owed);
+            self.conn_recv += i64::from(inc);
+            self.window_update(0, inc);
+        }
+    }
+
     // ---- receiving -------------------------------------------------------------------------
 
-    /// Parses and handles at most one frame from the buffer. `Ok(None)`: need more bytes.
-    fn next_frame(&mut self) -> R<Option<Vec<Action>>> {
+    /// Parses and handles at most one frame at the start of `buf`, appending what the driver
+    /// has to run to `actions`. Returns the bytes consumed, `Ok(None)` if more are needed.
+    fn next_frame(&mut self, buf: &[u8], actions: &mut Vec<Action>) -> R<Option<usize>> {
         if !self.preface {
-            if self.rbuf.len() < PREFACE.len() {
-                if !PREFACE.starts_with(&self.rbuf) {
+            if buf.len() < PREFACE.len() {
+                if !PREFACE.starts_with(buf) {
                     return Err(Fail::Conn(err::PROTOCOL));
                 }
                 return Ok(None);
             }
-            if &self.rbuf[..PREFACE.len()] != PREFACE {
+            if &buf[..PREFACE.len()] != PREFACE {
                 return Err(Fail::Conn(err::PROTOCOL));
             }
-            self.rbuf.drain(..PREFACE.len());
             self.preface = true;
+            return Ok(Some(PREFACE.len()));
         }
-        if self.rbuf.len() < 9 {
+        if buf.len() < 9 {
             return Ok(None);
         }
-        let len = u32::from_be_bytes([0, self.rbuf[0], self.rbuf[1], self.rbuf[2]]);
-        let ty_ = self.rbuf[3];
-        let flags = self.rbuf[4];
-        let sid = u32::from_be_bytes([self.rbuf[5], self.rbuf[6], self.rbuf[7], self.rbuf[8]])
-            & 0x7fff_ffff;
+        let len = u32::from_be_bytes([0, buf[0], buf[1], buf[2]]);
+        let ty_ = buf[3];
+        let flags = buf[4];
+        let sid = u32::from_be_bytes([buf[5], buf[6], buf[7], buf[8]]) & 0x7fff_ffff;
         if len > self.local.max_frame {
             return Err(Fail::Conn(err::FRAME_SIZE));
         }
-        if self.rbuf.len() < 9 + len as usize {
+        let end = 9 + len as usize;
+        if buf.len() < end {
             return Ok(None);
         }
-        let payload: Vec<u8> = self.rbuf[9..9 + len as usize].to_vec();
-        self.rbuf.drain(..9 + len as usize);
+        let payload = &buf[9..end];
         // The first frame must be SETTINGS; a header block must be continued without interruption.
         if !self.got_settings && ty_ != ty::SETTINGS {
             return Err(Fail::Conn(err::PROTOCOL));
@@ -616,21 +813,12 @@ impl Core {
                 return Err(Fail::Conn(err::PROTOCOL));
             }
         }
-        let actions = match ty_ {
-            ty::DATA => self.on_data_frame(sid, flags, payload)?,
-            ty::HEADERS => self.on_headers(sid, flags, payload)?,
-            ty::PRIORITY => {
-                self.on_priority(sid, &payload)?;
-                Vec::new()
-            }
-            ty::RST_STREAM => {
-                self.on_rst(sid, &payload)?;
-                Vec::new()
-            }
-            ty::SETTINGS => {
-                self.on_settings(sid, flags, &payload)?;
-                Vec::new()
-            }
+        match ty_ {
+            ty::DATA => self.on_data_frame(sid, flags, payload, actions)?,
+            ty::HEADERS => self.on_headers(sid, flags, payload, actions)?,
+            ty::PRIORITY => self.on_priority(sid, payload)?,
+            ty::RST_STREAM => self.on_rst(sid, payload)?,
+            ty::SETTINGS => self.on_settings(sid, flags, payload)?,
             ty::PUSH_PROMISE => return Err(Fail::Conn(err::PROTOCOL)),
             ty::PING => {
                 if sid != 0 {
@@ -640,9 +828,8 @@ impl Core {
                     return Err(Fail::Conn(err::FRAME_SIZE));
                 }
                 if flags & flag::ACK == 0 {
-                    frame(&mut self.out, ty::PING, flag::ACK, 0, &payload);
+                    frame(&mut self.out, ty::PING, flag::ACK, 0, payload);
                 }
-                Vec::new()
             }
             ty::GOAWAY => {
                 if sid != 0 {
@@ -652,16 +839,12 @@ impl Core {
                     return Err(Fail::Conn(err::FRAME_SIZE));
                 }
                 self.goaway_recv = true;
-                Vec::new()
             }
-            ty::WINDOW_UPDATE => {
-                self.on_window_update(sid, &payload)?;
-                Vec::new()
-            }
-            ty::CONTINUATION => self.on_continuation(sid, flags, payload)?,
-            _ => Vec::new(), // unknown frame types are ignored
-        };
-        Ok(Some(actions))
+            ty::WINDOW_UPDATE => self.on_window_update(sid, payload)?,
+            ty::CONTINUATION => self.on_continuation(sid, flags, payload, actions)?,
+            _ => {} // unknown frame types are ignored
+        }
+        Ok(Some(end))
     }
 
     fn on_priority(&mut self, sid: u32, p: &[u8]) -> R<()> {
@@ -793,7 +976,7 @@ impl Core {
         Ok(())
     }
 
-    fn on_data_frame(&mut self, sid: u32, flags: u8, mut p: Vec<u8>) -> R<Vec<Action>> {
+    fn on_data_frame(&mut self, sid: u32, flags: u8, p: &[u8], actions: &mut Vec<Action>) -> R<()> {
         if sid == 0 {
             return Err(Fail::Conn(err::PROTOCOL));
         }
@@ -802,44 +985,40 @@ impl Core {
         if self.conn_recv < 0 {
             return Err(Fail::Conn(err::FLOW_CONTROL));
         }
-        let mut data_start = 0;
-        let mut data_end = p.len();
+        let mut data = p;
         if flags & flag::PADDED != 0 {
-            if p.is_empty() {
+            let Some((&pad, rest)) = p.split_first() else {
                 return Err(Fail::Conn(err::FRAME_SIZE));
-            }
-            let pad = p[0] as usize;
+            };
+            let pad = pad as usize;
             if pad >= p.len() {
                 return Err(Fail::Conn(err::PROTOCOL));
             }
-            data_start = 1;
-            data_end = p.len() - pad;
+            data = &rest[..rest.len() - pad];
         }
-        // Padding and data both consumed connection window: give it back now.
-        self.window_update(0, total as u32);
-        self.conn_recv += total;
+        // Padding and data both consumed connection window: it is given back (in batches).
+        self.owe_conn_window(total as u32);
         if self.is_idle(sid) {
             return Err(Fail::Conn(err::PROTOCOL));
         }
         let Some(st) = self.streams.get_mut(&sid) else {
             self.rst(sid, err::STREAM_CLOSED);
-            return Ok(Vec::new());
+            return Ok(());
         };
         if st.state != SState::Open && st.state != SState::HalfClosedLocal {
             self.rst(sid, err::STREAM_CLOSED);
-            return Ok(Vec::new());
+            return Ok(());
         }
         st.recv_window -= total;
         if st.recv_window < 0 {
             self.rst(sid, err::FLOW_CONTROL);
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let data: Vec<u8> = p.drain(data_start..data_end).collect();
         st.received += data.len() as u64;
         if let Some(cl) = st.content_length {
             if st.received > cl {
                 self.rst(sid, err::PROTOCOL);
-                return Ok(Vec::new());
+                return Ok(());
             }
         }
         let end = flags & flag::END_STREAM != 0;
@@ -847,20 +1026,24 @@ impl Core {
             if let Some(cl) = st.content_length {
                 if st.received != cl {
                     self.rst(sid, err::PROTOCOL);
-                    return Ok(Vec::new());
+                    return Ok(());
                 }
             }
         }
-        // Replenish the stream window as data arrives (bodies are consumed immediately).
+        // Replenish the stream window as data arrives (bodies are consumed immediately), once
+        // a quarter of it is owed.
         if total > 0 && !end {
-            st.recv_window += total;
-            self.window_update(sid, total as u32);
+            st.recv_owed += total;
+            if st.recv_owed >= self.local.initial_window / 4 {
+                let inc = std::mem::take(&mut st.recv_owed);
+                st.recv_window += inc;
+                self.window_update(sid, inc as u32);
+            }
         }
         let st = self.streams.get_mut(&sid).expect("present");
-        let mut actions = Vec::new();
         if st.streaming {
             if !data.is_empty() {
-                actions.push(Action::Chunk(sid, data));
+                actions.push(Action::Chunk(sid, data.to_vec()));
             }
             if end {
                 st.state = SState::HalfClosedRemote;
@@ -880,9 +1063,9 @@ impl Core {
                 st.body = Vec::new();
                 self.send_response(sid, Response::text(413, "Payload Too Large"));
                 self.flush();
-                return Ok(Vec::new());
+                return Ok(());
             }
-            st.body.extend_from_slice(&data);
+            st.body.extend_from_slice(data);
             if end {
                 st.state = SState::HalfClosedRemote;
                 if let Some(a) = self.complete_request(sid) {
@@ -890,14 +1073,14 @@ impl Core {
                 }
             }
         }
-        Ok(actions)
+        Ok(())
     }
 
-    fn on_headers(&mut self, sid: u32, flags: u8, p: Vec<u8>) -> R<Vec<Action>> {
+    fn on_headers(&mut self, sid: u32, flags: u8, p: &[u8], actions: &mut Vec<Action>) -> R<()> {
         if sid == 0 || sid % 2 == 0 {
             return Err(Fail::Conn(err::PROTOCOL));
         }
-        let mut block = &p[..];
+        let mut block = p;
         let mut pad = 0usize;
         if flags & flag::PADDED != 0 {
             let Some((&pl, rest)) = block.split_first() else {
@@ -920,27 +1103,33 @@ impl Core {
         if pad > block.len() {
             return Err(Fail::Conn(err::PROTOCOL));
         }
-        let block = block[..block.len() - pad].to_vec();
+        let block = &block[..block.len() - pad];
         let end_stream = flags & flag::END_STREAM != 0;
         if flags & flag::END_HEADERS == 0 {
             self.cont = Some(Cont {
                 stream: sid,
-                block,
+                block: block.to_vec(),
                 end_stream,
             });
-            return Ok(Vec::new());
+            return Ok(());
         }
-        self.headers_complete(sid, block, end_stream)
+        self.headers_complete(sid, block, end_stream, actions)
     }
 
-    fn on_continuation(&mut self, sid: u32, flags: u8, p: Vec<u8>) -> R<Vec<Action>> {
+    fn on_continuation(
+        &mut self,
+        sid: u32,
+        flags: u8,
+        p: &[u8],
+        actions: &mut Vec<Action>,
+    ) -> R<()> {
         let Some(mut c) = self.cont.take() else {
             return Err(Fail::Conn(err::PROTOCOL));
         };
         if sid != c.stream {
             return Err(Fail::Conn(err::PROTOCOL));
         }
-        c.block.extend_from_slice(&p);
+        c.block.extend_from_slice(p);
         if c.block.len()
             > (self.cfg.max_header_list as usize)
                 .saturating_mul(2)
@@ -950,34 +1139,64 @@ impl Core {
         }
         if flags & flag::END_HEADERS == 0 {
             self.cont = Some(c);
-            return Ok(Vec::new());
+            return Ok(());
         }
-        self.headers_complete(sid, c.block, c.end_stream)
+        self.headers_complete(sid, &c.block, c.end_stream, actions)
     }
 
     /// A whole header block arrived: decode it (always: HPACK state must stay in step), then treat
     /// it as request headers or trailers.
-    fn headers_complete(&mut self, sid: u32, block: Vec<u8>, end_stream: bool) -> R<Vec<Action>> {
+    fn headers_complete(
+        &mut self,
+        sid: u32,
+        block: &[u8],
+        end_stream: bool,
+        actions: &mut Vec<Action>,
+    ) -> R<()> {
         // The whole block is decoded even past the header list limit (the dynamic table must
-        // stay in step); fields past it are not kept.
+        // stay in step); fields past it are not kept. The list size counts name + value + 32
+        // per field (RFC 9113 §6.5.2).
         let limit = self.cfg.max_header_list as usize;
-        let Ok((list, size)) = self.dec.decode_limited(&block, limit) else {
-            return Err(Fail::Conn(err::COMPRESSION));
+        let mut fields = std::mem::take(&mut self.fields);
+        fields.clear();
+        let mut size = 0usize;
+        let decoded = self.dec.decode_with(block, |n, v, _| {
+            size = size.saturating_add(n.len() + v.len() + 32);
+            if size <= limit {
+                fields.push(n, v);
+            }
+        });
+        let r = match decoded {
+            Ok(()) => self.on_header_fields(sid, &fields, size, end_stream, actions),
+            Err(_) => Err(Fail::Conn(err::COMPRESSION)),
         };
+        self.fields = fields;
+        r
+    }
+
+    fn on_header_fields(
+        &mut self,
+        sid: u32,
+        fields: &Fields,
+        size: usize,
+        end_stream: bool,
+        actions: &mut Vec<Action>,
+    ) -> R<()> {
+        let limit = self.cfg.max_header_list as usize;
         if let Some((s, code)) = self.pending_rst.take() {
             if s == sid {
                 self.last_peer = self.last_peer.max(sid);
                 self.rst(sid, code);
-                return Ok(Vec::new());
+                return Ok(());
             }
         }
         let existing = self.streams.contains_key(&sid);
         if existing {
             if size > limit {
                 self.rst(sid, err::PROTOCOL); // trailers past the header list limit
-                return Ok(Vec::new());
+                return Ok(());
             }
-            return self.trailers(sid, list, end_stream);
+            return self.trailers(sid, fields, end_stream, actions);
         }
         if sid <= self.last_peer {
             // A closed stream cannot carry headers.
@@ -985,19 +1204,29 @@ impl Core {
         }
         self.last_peer = sid;
         if self.goaway_sent {
-            return Ok(Vec::new()); // ignored after our GOAWAY
+            return Ok(()); // ignored after our GOAWAY
         }
         if self.open_peer >= self.cfg.max_concurrent_streams {
             self.frame_refuse(sid);
-            return Ok(Vec::new());
+            return Ok(());
         }
         if size > limit {
             self.frame_refuse(sid);
-            return Ok(Vec::new());
+            return Ok(());
         }
-        let Ok(req) = self.build_request(&list) else {
+        let Ok(req) = self.build_request(fields) else {
             self.rst_new(sid, err::PROTOCOL);
-            return Ok(Vec::new());
+            return Ok(());
+        };
+        let content_length = match req.headers.get("content-length") {
+            None => None,
+            Some(v) => match v.parse::<u64>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    self.rst_new(sid, err::PROTOCOL);
+                    return Ok(());
+                }
+            },
         };
         self.open_peer += 1;
         let state = if end_stream {
@@ -1006,43 +1235,35 @@ impl Core {
             SState::Open
         };
         let mut st = Stream::new(state, self.remote.initial_window, self.local.initial_window);
-        st.content_length = req
-            .headers
-            .get("content-length")
-            .and_then(|v| v.parse().ok());
-        if req.headers.get("content-length").is_some() && st.content_length.is_none() {
-            self.open_peer -= 1;
-            self.rst_new(sid, err::PROTOCOL);
-            return Ok(Vec::new());
-        }
+        st.content_length = content_length;
         st.head_only = req.method == Method::Head;
-        st.head = Some(req);
-        self.streams.insert(sid, st);
         if end_stream {
-            if let Some(cl) = self.streams[&sid].content_length {
-                if cl != 0 {
-                    self.rst(sid, err::PROTOCOL);
-                    return Ok(Vec::new());
-                }
+            self.streams.insert(sid, st);
+            if content_length.is_some_and(|cl| cl != 0) {
+                self.rst(sid, err::PROTOCOL);
+                return Ok(());
             }
-            return Ok(self.complete_request(sid).into_iter().collect());
+            // A request without a body: dispatched right away, nothing parked on the stream.
+            let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
+            actions.push(Action::Dispatch(Box::new(Context::new_h2(req, resp))));
+            return Ok(());
         }
         // Does the service want the body as a stream?
-        let mode = {
-            let req = self.streams[&sid].head.as_ref().expect("just stored");
-            self.mode_of.as_ref().map_or(BodyMode::Buffered, |f| f(req))
-        };
+        let mode = self
+            .mode_of
+            .as_ref()
+            .map_or(BodyMode::Buffered, |f| f(&req));
         if mode == BodyMode::Stream {
-            let st = self.streams.get_mut(&sid).expect("present");
             st.streaming = true;
-            let req = st.head.as_ref().expect("present").clone();
             let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
-            return Ok(vec![Action::Start(
-                sid,
-                Box::new(Context::new_h2(req, resp)),
-            )]);
+            st.head = Some(req.clone());
+            self.streams.insert(sid, st);
+            actions.push(Action::Start(sid, Box::new(Context::new_h2(req, resp))));
+            return Ok(());
         }
-        Ok(Vec::new())
+        st.head = Some(req);
+        self.streams.insert(sid, st);
+        Ok(())
     }
 
     fn frame_refuse(&mut self, sid: u32) {
@@ -1063,26 +1284,27 @@ impl Core {
     fn trailers(
         &mut self,
         sid: u32,
-        list: Vec<(Vec<u8>, Vec<u8>)>,
+        fields: &Fields,
         end_stream: bool,
-    ) -> R<Vec<Action>> {
+        actions: &mut Vec<Action>,
+    ) -> R<()> {
         let Some(st) = self.streams.get_mut(&sid) else {
-            return Ok(Vec::new());
+            return Ok(());
         };
         if st.state == SState::HalfClosedRemote {
             self.rst(sid, err::STREAM_CLOSED);
-            return Ok(Vec::new());
+            return Ok(());
         }
         if !end_stream {
             // Trailers must end the stream.
             self.rst(sid, err::PROTOCOL);
-            return Ok(Vec::new());
+            return Ok(());
         }
         let mut tr = Headers::new();
-        for (n, v) in &list {
+        for (n, v) in fields.iter() {
             if n.first() == Some(&b':') || n.iter().any(u8::is_ascii_uppercase) {
                 self.rst(sid, err::PROTOCOL);
-                return Ok(Vec::new());
+                return Ok(());
             }
             if let (Ok(n), Ok(v)) = (std::str::from_utf8(n), std::str::from_utf8(v)) {
                 tr.append(n, v);
@@ -1092,7 +1314,7 @@ impl Core {
         if let Some(cl) = st.content_length {
             if st.received != cl {
                 self.rst(sid, err::PROTOCOL);
-                return Ok(Vec::new());
+                return Ok(());
             }
         }
         st.state = SState::HalfClosedRemote;
@@ -1100,9 +1322,11 @@ impl Core {
             h.trailers = tr.clone();
         }
         if st.streaming {
-            return Ok(vec![Action::End(sid, tr)]);
+            actions.push(Action::End(sid, tr));
+            return Ok(());
         }
-        Ok(self.complete_request(sid).into_iter().collect())
+        actions.extend(self.complete_request(sid));
+        Ok(())
     }
 
     /// Turns the assembled request into a context to dispatch.
@@ -1114,25 +1338,26 @@ impl Core {
         Some(Action::Dispatch(Box::new(Context::new_h2(req, resp))))
     }
 
-    fn build_request(&self, list: &[(Vec<u8>, Vec<u8>)]) -> Result<Request, ()> {
+    fn build_request(&self, fields: &Fields) -> Result<Request, ()> {
         let (mut method, mut path, mut authority, mut scheme) = (None, None, None, None);
-        let mut headers = Headers::new();
+        // The regular fields fit in one allocation (the pseudo-headers are not kept as fields).
+        let mut headers = Headers::with_capacity(fields.spans.len(), fields.buf.len());
         let mut regular = false;
-        let mut cookies: Vec<String> = Vec::new();
-        for (n, v) in list {
+        let mut cookies: Option<String> = None;
+        for (n, v) in fields.iter() {
             let v = std::str::from_utf8(v).map_err(|_| ())?;
             if n.first() == Some(&b':') {
                 if regular {
                     return Err(()); // pseudo-header after a regular one
                 }
-                let slot = match n.as_slice() {
+                let slot = match n {
                     b":method" => &mut method,
                     b":path" => &mut path,
                     b":authority" => &mut authority,
                     b":scheme" => &mut scheme,
                     _ => return Err(()),
                 };
-                if slot.replace(v.to_owned()).is_some() {
+                if slot.replace(v).is_some() {
                     return Err(());
                 }
                 continue;
@@ -1148,12 +1373,18 @@ impl Core {
                     return Err(());
                 }
                 "te" if v != "trailers" => return Err(()),
-                "cookie" => cookies.push(v.to_owned()),
+                "cookie" => match &mut cookies {
+                    Some(c) => {
+                        c.push_str("; ");
+                        c.push_str(v);
+                    }
+                    None => cookies = Some(v.to_owned()),
+                },
                 _ => headers.append(n, v),
             }
         }
-        if !cookies.is_empty() {
-            headers.append("cookie", cookies.join("; "));
+        if let Some(c) = cookies {
+            headers.append("cookie", c);
         }
         let (method, path) = (method.ok_or(())?, path.ok_or(())?);
         scheme.ok_or(())?;
@@ -1166,8 +1397,8 @@ impl Core {
             }
         }
         Ok(Request {
-            method: Method::parse(&method),
-            target: path,
+            method: Method::parse(method),
+            target: path.to_owned(),
             version: Version::Http2,
             headers,
             trailers: Headers::new(),
@@ -1203,19 +1434,15 @@ impl H2Responder {
     }
 
     /// Starts a response whose body is written later; `None` if the connection is gone.
-    pub(crate) fn start_stream(&self, mut resp: Response) -> Option<H2Stream> {
+    pub(crate) fn start_stream(&self, resp: Response) -> Option<H2Stream> {
         let core = self.core.upgrade()?;
         {
             let mut c = lock(&core);
             if !c.streams.contains_key(&self.sid) {
                 return None;
             }
-            if resp.headers.get("date").is_none() {
-                resp.headers.set("date", crate::message::http_date_now());
-            }
-            let block = c.encode_headers(Some(resp.status), &resp.headers);
             let end = self.head_only;
-            c.write_header_block(ty::HEADERS, self.sid, &[], &block, end);
+            c.write_headers(self.sid, Some(resp.status), &resp.headers, true, None, end);
             if let Some(st) = c.streams.get_mut(&self.sid) {
                 st.head_sent = true;
                 if end {
@@ -1418,7 +1645,7 @@ impl<S: Service> H2Session<S> {
                 conn_recv: DEFAULT_WINDOW,
                 dec,
                 enc: Encoder::new(),
-                streams: HashMap::new(),
+                streams: StreamMap::default(),
                 last_peer: 0,
                 next_push: 2,
                 cont: None,
@@ -1437,6 +1664,10 @@ impl<S: Service> H2Session<S> {
                 pending_rst: None,
                 open_peer: 0,
                 dropped: Vec::new(),
+                batching: false,
+                fields: Fields::default(),
+                enc_fields: Fields::default(),
+                conn_recv_owed: 0,
             })
         });
         let s = H2Session { core, service };
@@ -1496,39 +1727,66 @@ impl<S: Service> H2Session<S> {
         self.feed(data);
     }
 
+    /// Handles one read: frames are parsed in place (from `data`, or from the bytes left over
+    /// from earlier reads plus `data`), and everything they produce, including the responses
+    /// the service sends on this thread, is handed to the connection once at the end.
     fn feed(&self, data: &[u8]) {
-        if !data.is_empty() {
+        let held = {
             let mut c = lock(&self.core);
             if c.dead {
                 return;
             }
-            c.rbuf.extend_from_slice(data);
-        }
+            c.batching = true;
+            if c.rbuf.is_empty() {
+                None
+            } else {
+                c.rbuf.extend_from_slice(data);
+                Some(std::mem::take(&mut c.rbuf))
+            }
+        };
+        let batch = Batch(&self.core);
+        let buf = held.as_deref().unwrap_or(data);
+        let mut pos = 0;
+        let mut actions = Vec::new();
         loop {
-            let actions = {
+            let more = {
                 let mut c = lock(&self.core);
-                if c.dead {
-                    return;
-                }
-                match c.next_frame() {
-                    Ok(None) => {
-                        c.flush();
+                loop {
+                    if c.dead {
                         return;
                     }
-                    Ok(Some(a)) => {
-                        c.flush();
-                        a
+                    match c.next_frame(&buf[pos..], &mut actions) {
+                        Ok(None) => break false,
+                        Ok(Some(n)) => pos += n,
+                        Err(Fail::Conn(code)) => {
+                            c.conn_error(code);
+                            return;
+                        }
                     }
-                    Err(Fail::Conn(code)) => {
-                        c.conn_error(code);
-                        return;
+                    if !actions.is_empty() {
+                        break true;
                     }
                 }
             };
-            for a in actions {
+            // The service runs without the lock.
+            for a in actions.drain(..) {
                 self.run(a);
             }
+            if !more {
+                break;
+            }
         }
+        // Keep what is left of an incomplete frame for the next read.
+        let mut c = lock(&self.core);
+        match held {
+            Some(mut v) => {
+                v.drain(..pos);
+                c.rbuf = v;
+            }
+            None => c.rbuf.extend_from_slice(&data[pos..]),
+        }
+        drop(c);
+        drop(batch);
     }
 
     fn run(&self, a: Action) {

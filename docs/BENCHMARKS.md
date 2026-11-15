@@ -187,6 +187,83 @@ existing `idle_timeout` already acts as the read timeout (only inbound data coun
 Both backends; the check runs on the idle-timeout wheel only while output is queued, so it costs
 nothing on connections that keep up.
 
+## HTTP hot paths (performance pass, 2026-11-15)
+
+Re-profile of `only-http` after the in-house replacements (TLS, HPACK, HTTP/1 parser), on a
+quiet bare-metal host rather than the shared VM above: AMD Ryzen 7 7800X3D (8 cores, 16 threads),
+Ubuntu 24.04, Linux 7.0, loopback. Server pinned to CPUs 0–3 with 4 I/O threads (fib:
+`GOMAXPROCS` follows the affinity), h2load 1.59 pinned to CPUs 4–7 and 12–15 with 8 threads
+(CPUs 8–11, the SMT siblings of the server's cores, idle). wrk is not installed there, so HTTP/1.1
+is driven by `h2load --h1` (pipelining: `-m 16`); its absolute numbers are not comparable with
+the wrk rows above. Every figure is the median of 3 rounds of 5 s, the builds interleaved in
+every round (`tools/bench/http.sh` with `BASE_DIR`, see [tools/bench/README.md](../tools/bench/README.md));
+the spread between rounds was ≤1% except where noted. "Before" is `main` at df90c0b3; fib is
+built with Go 1.27.4 from the fib checkout of the same day, hyper is `tools/bench-ref/hyper-ref`.
+
+### Profiles before (perf, `tools/bench/profile.sh`)
+
+- **h2c**: half the server's CPU in user space and about a quarter in malloc/free. About 40 allocations per
+  request: a copy of every frame's payload and a `drain` of the read buffer per frame, two
+  `Vec`s per decoded header field, the method/path/authority/scheme strings, a temporary list
+  with a lowercased name and cleaned value per response header, the `date` and `content-length`
+  strings, the encoded block and a payload copy, a `VecDeque` and a copy for the DATA frame, and
+  a fresh output buffer handed to the connection after every frame and every response. SipHash
+  on the stream table showed up at 3%.
+- **HTTP/2 over TLS**: on top of that, every response (and every frame-level flush) became its
+  own TLS record.
+- **HTTP/1.1, pipelined ×16**: 50% kernel; in user space the head parser (header storage for 100
+  fields filled per request), five header-name lookups per request, response encoding and
+  malloc/free.
+- **HTTP/1.1 keep-alive**: 86% kernel (one read and one write per request); nothing in user space
+  above 1.3%.
+
+### Changes
+
+| Change | Crate |
+|---|---|
+| h2: frames parsed in place from the read buffer (or straight from the read when nothing is carried over); the leftover moved once per read | only-http |
+| h2: decoded header fields in one reused buffer (`hpack::Decoder::decode_with`), requests built from slices with one allocation for the header set | only-http |
+| h2: header blocks HPACK-encoded straight into the output behind a placeholder frame header; `:status`, `date` (per-second cache) and `content-length` written there instead of into the response's headers | only-http |
+| h2: a body that fits one DATA frame and both windows written right after its HEADERS, without the stream queue; queued DATA copied from the queue straight into the output | only-http |
+| h2: one write per read: frames and the responses the service sends on the I/O thread are appended to one buffer and handed to the connection when the read is done (a drop guard, so a panicking handler still flushes) | only-http |
+| h2: stream table hashed with a multiply-fold hasher instead of SipHash | only-http |
+| h2 flow control: receive windows (connection and stream) given back once a quarter is owed instead of two WINDOW_UPDATE frames per DATA frame | only-http |
+| HTTP/1: heads parsed with storage for 32 fields first (100 only when that is not enough), framing fields found in one pass | only-http |
+
+### Before / after (requests/s)
+
+| Case | epoll before | epoll after | uring before | uring after |
+|---|---:|---:|---:|---:|
+| HTTP/1.1 `GET /plaintext`, 256 conns | 722,782 | 729,591 (+1%) | 763,999 | 773,221 (+1%) |
+| HTTP/1.1 pipelined ×16, 256 conns | 3,989,430 | **4,263,945 (+7%)** | 4,074,844 | **4,382,038 (+8%)** |
+| HTTP/1.1 `GET /json`, 256 conns | 719,339 | 726,737 (+1%) | 761,864 | 770,710 (+1%) |
+| h2c, 64 conns × 16 streams | 2,277,248 | **4,045,984 (1.78×)** | 2,237,200 | **4,117,145 (1.84×)** |
+| h2c, 16 conns × 128 streams | 2,372,441 | **4,712,691 (1.99×, ±8%)** | 2,306,368 | **5,337,945 (2.31×)** |
+| HTTP/2 over TLS 1.3, 64 conns × 16 streams | 1,584,905 (±5%) | **4,027,577 (2.54×)** | 1,535,459 (±11%) | **3,942,486 (2.57×, ±7%)** |
+
+### Against fib and hyper (requests/s, after)
+
+| Case | only-epoll | only-uring | hyper | fib |
+|---|---:|---:|---:|---:|
+| HTTP/1.1 `GET /plaintext` | 729,591 | 773,221 | 635,806 | 623,863 |
+| HTTP/1.1 pipelined ×16 | 4,263,945 | 4,382,038 | 854,841 | 3,741,347 |
+| HTTP/1.1 `GET /json` | 726,737 | 770,710 | 625,322 | 596,983 |
+| h2c, 64 conns × 16 streams | 4,045,984 | 4,117,145 | 1,031,867 | 3,239,262 |
+| h2c, 16 conns × 128 streams | 4,712,691 | 5,337,945 | 1,369,063 | 3,998,168 |
+| HTTP/2 over TLS 1.3, 64 × 16 | 4,027,577 | 3,942,486 | – | 3,033,656 |
+
+Before this pass `only` was at 0.70× fib for h2c 64 × 16, 0.59× for 16 × 128 and 0.52× for
+HTTP/2 over TLS, and 1.07× for pipelined HTTP/1.1 (with h2load; the earlier 0.8× came from wrk
+on the shared VM). Now it is 1.25×, 1.18–1.34×, 1.33× and 1.14–1.17×. hyper-ref has no TLS
+listener. During the after runs the server kept its 4 CPUs busy (`profile.sh` reports the
+server's CPU time), so these are server-side limits, but h2load with 8 threads is close to its
+own ceiling at ~4–5M req/s; the HTTP/2 rows may understate `only`. The keep-alive HTTP/1.1 rows
+are kernel-bound (one read and one write per request on loopback) and barely moved.
+
+After the changes the h2c profile is led by request building and header validation (UTF-8
+checks), HPACK encoding, `Response::text` (the handler's own allocations) and the kernel (31%);
+malloc/free fell from about 25% to ~9%.
+
 ## Cryptography (only-crypto): CPU acceleration
 
 The performance pass gave `only-crypto` hardware paths chosen at run time (AES-NI / ARMv8 AES
@@ -391,9 +468,11 @@ link.
   connections on, by 1.3–2× at 1024 connections. io_uring is level with epoll for small messages
   and behind it for 16 KiB messages; that gap was not investigated.
 - **HTTP/1.1**: 1.25–1.6× hyper and fib without pipelining. With 16 pipelined requests `only` does
-  2.3× hyper but is behind fib (~0.8×); why was not investigated.
+  2.3× hyper but is behind fib (~0.8×); why was not investigated. (On the quiet host of the
+  2026-11-15 pass, with h2load as the client, it is 1.14–1.17× fib.)
 - **HTTP/2**: 2× hyper after the HPACK fix (it was 0.4× before), still behind fib (~0.55×); the
-  next costs are per-request allocations in the h2 session.
+  next costs are per-request allocations in the h2 session. (Fixed by the HTTP hot-path pass of
+  2026-11-15: 1.25–1.34× fib for h2c and 1.33× over TLS, see that section.)
 - **WebSocket**: ahead of tokio-tungstenite and fib for both message sizes.
 - **Memory**: an idle `only` connection costs ~0.6 KB, 8× less than tokio with a 4 KiB buffer and
   1.4–2× fib's. HTTP keep-alive connections are now below fib (0.9 vs 1.6 KB) and far below hyper

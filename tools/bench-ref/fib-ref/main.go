@@ -1,11 +1,12 @@
 // fib reference server for docs/BENCHMARKS.md:
 //
 //	fib-ref <tcp|udp|tls> <addr> [echo|block [ms]]
-//	fib-ref <http|ws> <addr>
+//	fib-ref <http|https|ws> <addr>
 //
 // fib runs handler callbacks on its worker pool, so `block` sleeps inside OnData.
 // `tls` is the echo handler behind fib/tls (ECDSA P-256 self-signed certificate, TLS 1.3).
-// `http` serves GET /plaintext and GET /json (HTTP/1.1 and h2c), `ws` a WebSocket echo.
+// `http` serves GET /plaintext and GET /json (HTTP/1.1 and h2c), `https` the same behind fib/tls
+// with ALPN h2 and http/1.1, `ws` a WebSocket echo.
 package main
 
 import (
@@ -31,7 +32,7 @@ import (
 
 func main() {
 	if len(os.Args) < 3 {
-		fmt.Fprintln(os.Stderr, "usage: fib-ref <tcp|udp|tls|http|ws> <addr> [echo|block [ms]]")
+		fmt.Fprintln(os.Stderr, "usage: fib-ref <tcp|udp|tls|http|https|ws> <addr> [echo|block [ms]]")
 		os.Exit(2)
 	}
 	proto, addr := os.Args[1], os.Args[2]
@@ -64,6 +65,12 @@ func main() {
 	case "http":
 		network = "tcp"
 		h = fibhttp.NewHandler(fibhttp.HandlerFunc(serveHTTP))
+	case "https":
+		network = "tcp"
+		h = fibtls.NewServer(fibhttp.ConfigureTLS(&tls.Config{
+			Certificates: []tls.Certificate{makeCertificate()},
+			MinVersion:   tls.VersionTLS13,
+		}), fibhttp.NewHandler(fibhttp.HandlerFunc(serveHTTP)))
 	case "ws":
 		network = "tcp"
 		cfg := websocket.DefaultConfig()

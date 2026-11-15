@@ -29,7 +29,8 @@ PORT=${PORT:-7400} # below the ephemeral range (docker.sh sets it to 10000-65535
 SPID=
 
 # server_cmd <kind> <proto> <addr>: the command line of one server. Protocols: tcp, tls, udp
-# (echo), http (HTTP/1.1 + h2c: /plaintext, /json), ws (echo on /ws). Empty when unsupported.
+# (echo), http (HTTP/1.1 + h2c: /plaintext, /json), https (the same over TLS 1.3, ALPN h2 and
+# http/1.1), ws (echo on /ws). Empty when unsupported.
 server_cmd() {
   local kind=$1 proto=$2 addr=$3
   case $kind in
@@ -44,9 +45,11 @@ server_cmd() {
     only-uring:tcp | only-uring:tls) echo "$BENCH_SERVER $proto $addr $THREADS uring echo" ;;
     only-epoll:http | only-epoll:ws) echo "$HTTP_BENCH $addr $THREADS epoll" ;;
     only-uring:http | only-uring:ws) echo "$HTTP_BENCH $addr $THREADS uring" ;;
+    only-epoll:https) echo "$HTTP_BENCH $addr $THREADS epoll tls" ;;
+    only-uring:https) echo "$HTTP_BENCH $addr $THREADS uring tls" ;;
     tokio:tcp | tokio:tls | tokio:udp | tokio:ws) [ -x "$TOKIO_REF" ] && echo "$TOKIO_REF $proto $addr $THREADS" ;;
     hyper:http) [ -x "$HYPER_REF" ] && echo "$HYPER_REF $addr $THREADS" ;;
-    fib:tcp | fib:tls | fib:udp | fib:http | fib:ws) [ -x "$FIB_REF" ] && echo "$FIB_REF $proto $addr" ;;
+    fib:tcp | fib:tls | fib:udp | fib:http | fib:https | fib:ws) [ -x "$FIB_REF" ] && echo "$FIB_REF $proto $addr" ;;
   esac
   return 0
 }

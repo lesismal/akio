@@ -29,15 +29,35 @@ pub(crate) fn parse_head(
     buf: &[u8],
     resume: &mut Resume,
 ) -> Result<Option<(Head, usize)>, ParseError> {
+    // Most heads have a handful of fields: try with room for 32 (filling the storage costs per
+    // request), and only parse again with room for the limit when that is not enough. A failed
+    // parse resets `resume`, so the second one starts from scratch.
+    const FEW_HEADERS: usize = 32;
     const MAX_HEADERS: usize = 100;
-    let mut storage = [Header::EMPTY; MAX_HEADERS];
-    let req = match http1::parse_request(buf, &mut storage, resume) {
-        Ok(http1::Status::Complete(r)) => r,
+    let mut few = [Header::EMPTY; FEW_HEADERS];
+    match http1::parse_request(buf, &mut few, resume) {
+        Ok(http1::Status::Complete(r)) => return head(r),
         Ok(http1::Status::Partial) => return Ok(None),
-        Err(http1::Error::TooManyHeaders) => return Err(ParseError::TooManyHeaders),
-        Err(http1::Error::Version) => return Err(ParseError::Version),
-        Err(_) => return Err(ParseError::Bad),
-    };
+        Err(http1::Error::TooManyHeaders) => {}
+        Err(e) => return Err(parse_error(e)),
+    }
+    let mut storage = [Header::EMPTY; MAX_HEADERS];
+    match http1::parse_request(buf, &mut storage, resume) {
+        Ok(http1::Status::Complete(r)) => head(r),
+        Ok(http1::Status::Partial) => Ok(None),
+        Err(e) => Err(parse_error(e)),
+    }
+}
+
+fn parse_error(e: http1::Error) -> ParseError {
+    match e {
+        http1::Error::TooManyHeaders => ParseError::TooManyHeaders,
+        http1::Error::Version => ParseError::Version,
+        _ => ParseError::Bad,
+    }
+}
+
+fn head(req: http1::Request<'_, '_>) -> Result<Option<(Head, usize)>, ParseError> {
     let version = if req.minor == 0 {
         Version::Http10
     } else {

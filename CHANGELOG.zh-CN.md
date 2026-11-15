@@ -28,6 +28,25 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 性能：`only-http` 中 HTTP/2 与流水线 HTTP/1 的热路径
+
+在自研替换完成后重新剖析（DEV-PLAN“性能优化”）；API 不变。
+
+- HTTP/2：帧直接在读缓冲区中原地解析（不再每帧复制一次，剩余字节每次读只移动一次）；解码出的头部字段放进
+  一个复用的缓冲区，而不是每个字段两个 `Vec`；头部块直接 HPACK 编码进输出缓冲区，`:status`、`date` 与
+  `content-length` 也直接写在那里；能放进一个 DATA 帧且不超过流控窗口的响应体不再经过流的发送队列；
+  流表用乘法折叠哈希代替 SipHash。
+- HTTP/2：一次读所产生的一切（包括服务在 I/O 线程上发出的响应）在这次读处理结束时一次性交给连接写出
+  （一批只产生一个 TLS 记录，而不是每个响应一个）；处理读期间其他线程发出的响应并入这一批，其余时候立即发出。
+- HTTP/2 流控：连接与流的接收窗口在欠下四分之一时才归还，而不是每个 DATA 帧两个 WINDOW_UPDATE。
+- HTTP/1：请求头先按最多 32 个字段解析（只在需要时才用 100 个），分帧所需的字段（`Host`、`Connection`、
+  `Content-Length`、`Transfer-Encoding`、`Expect`）一次遍历找出。
+- Ryzen 7 7800X3D，服务端 4 个线程（epoll）：h2c 64 连接 × 16 流 2.28M → 4.05M 请求/秒（1.78 倍，
+  现为 fib 的 1.25 倍），h2c 16 × 128 2.37M → 4.71M，TLS 上的 HTTP/2 1.58M → 4.03M（2.5 倍，fib 的 1.33 倍），
+  HTTP/1.1 流水线 ×16 3.99M → 4.26M（+7%，fib 的 1.14 倍）。h2spec：147/147。表格见 docs/BENCHMARKS.zh-CN.md；
+  压测脚本（`tools/bench`，新增 README）在没有 wrk 时用 `h2load --h1` 驱动 HTTP/1.1，并新增了 TLS 上的
+  HTTP/2 与多流用例。
+
 ### 性能：`only-crypto` 的 CPU 指令加速
 
 `only-crypto` 现在在 CPU 支持时使用 CPU 指令（运行时检测），每条路径都以常数时间的可移植实现作为回退

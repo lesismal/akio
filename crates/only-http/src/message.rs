@@ -440,7 +440,7 @@ pub fn http_date_now() -> String {
 
 /// Calls `f` with the current IMF-fixdate (cached per thread for the current second, so a
 /// response costs no formatting and no allocation for it).
-fn with_http_date<R>(f: impl FnOnce(&str) -> R) -> R {
+pub(crate) fn with_http_date<R>(f: impl FnOnce(&str) -> R) -> R {
     let secs = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -454,7 +454,7 @@ fn with_http_date<R>(f: impl FnOnce(&str) -> R) -> R {
 }
 
 /// Appends `n` in decimal.
-fn push_uint(out: &mut Vec<u8>, mut n: u64) {
+pub(crate) fn push_uint(out: &mut Vec<u8>, mut n: u64) {
     let mut b = [0u8; 20];
     let mut i = b.len();
     loop {

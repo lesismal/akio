@@ -394,24 +394,48 @@ impl<S: Service> Session<S> {
     /// Validates a head, decides how the body is framed, and either dispatches or waits for it.
     fn on_head(&mut self, c: &Conn<Self>, head: Head) {
         let h = &head.headers;
-        if head.version == Version::Http11 && h.get("host").is_none() {
+        // One pass over the fields for everything framing needs (a lookup per header name
+        // cost ~4% of pipelined throughput).
+        let (mut host, mut close, mut keep, mut te, mut te_n, mut cl_n, mut expect) =
+            (false, false, false, None, 0, 0, None);
+        for (n, v) in h.iter() {
+            let token = |t: &str| v.split(',').any(|x| x.trim().eq_ignore_ascii_case(t));
+            match n.len() {
+                4 if n.eq_ignore_ascii_case("host") => host = true,
+                6 if n.eq_ignore_ascii_case("expect") => {
+                    expect = expect.or(Some(v));
+                }
+                10 if n.eq_ignore_ascii_case("connection") => {
+                    close |= token("close");
+                    keep |= token("keep-alive");
+                }
+                14 if n.eq_ignore_ascii_case("content-length") => cl_n += 1,
+                17 if n.eq_ignore_ascii_case("transfer-encoding") => {
+                    te = te.or(Some(v));
+                    te_n += 1;
+                }
+                _ => {}
+            }
+        }
+        if head.version == Version::Http11 && !host {
             return self.fail(c, 400);
         }
         let keep_alive = match head.version {
-            Version::Http11 => !h.has_token("connection", "close"),
-            Version::Http10 => h.has_token("connection", "keep-alive"),
+            Version::Http11 => !close,
+            Version::Http10 => keep,
             Version::Http2 | Version::Http3 => true,
         };
-        let te = h.get("transfer-encoding");
-        let cl = h.get_all("content-length").collect::<Vec<_>>();
+        let cl = if cl_n == 0 {
+            Vec::new()
+        } else {
+            h.get_all("content-length").collect::<Vec<_>>()
+        };
         let mut declared = 0usize;
         let kind = match (te, cl.is_empty()) {
             (Some(_), false) => return self.fail(c, 400), // request smuggling vector
             (Some(te), true) => {
                 let last = te.rsplit(',').next().unwrap_or("").trim();
-                if !last.eq_ignore_ascii_case("chunked")
-                    || h.get_all("transfer-encoding").count() > 1
-                {
+                if !last.eq_ignore_ascii_case("chunked") || te_n > 1 {
                     return self.fail(c, 501);
                 }
                 Some(Kind::Chunked(Box::new(ChunkDecoder::new())))
@@ -430,10 +454,7 @@ impl<S: Service> Session<S> {
             (None, true) => None,
         };
         let expect_continue = head.version == Version::Http11
-            && head
-                .headers
-                .get("expect")
-                .is_some_and(|e| e.eq_ignore_ascii_case("100-continue"));
+            && expect.is_some_and(|e| e.eq_ignore_ascii_case("100-continue"));
         let req = Request {
             method: head.method,
             target: head.target,
