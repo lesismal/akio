@@ -2,8 +2,10 @@
 //!
 //! On x86_64 with VAES, VPCLMULQDQ and AVX-512 (detected at run time) the CTR keystream and
 //! GHASH run in one pass over 512-bit vectors, sixteen blocks per loop iteration and per GHASH
-//! reduction (`hw::vaes`); the rest of a message (under 256 bytes) and other CPUs use the
-//! 128-bit path below.
+//! reduction, and the whole message, its last partial group under byte masks and the tag
+//! included, is one call (`hw::vaes`). With VAES and VPCLMULQDQ but no AVX-512 the same pass runs
+//! on 256-bit vectors for whole 256-byte groups; the rest of such a message and other CPUs use
+//! the 128-bit path below.
 //!
 //! GHASH multiplies in GF(2^128) on the CPU's carry-less multiplication (PCLMULQDQ on x86_64,
 //! PMULL on aarch64; detected at run time, eight blocks per reduction, see `hw`), else with
@@ -71,25 +73,46 @@ impl AesGcm {
         AesGcm {
             aes,
             h,
-            powers: hw::Powers::new([h.0, h.1], true),
+            powers: hw::Powers::new([h.0, h.1], hw::Mode::Best),
         }
     }
 
     /// The same key on the 128-bit carry-less multiplication and AES paths even when the CPU
-    /// has VAES and AVX-512 (the wide kernel), for tests and benchmarks.
+    /// has VAES (the wide kernels), for tests and benchmarks.
     #[doc(hidden)]
     #[must_use]
     pub fn with_cipher_narrow(aes: Aes) -> AesGcm {
         let mut g = Self::with_cipher(aes);
-        g.powers = hw::Powers::new([g.h.0, g.h.1], false);
+        g.powers = hw::Powers::new([g.h.0, g.h.1], hw::Mode::Narrow);
         g
     }
 
-    /// Whether AES-GCM runs on the wide VAES / VPCLMULQDQ / AVX-512 kernel (x86_64).
+    /// The same key on the VAES-AVX2 kernel even when the CPU has AVX-512 (the 128-bit path
+    /// without VAES), for tests and benchmarks: the kernel of CPUs with VAES but no AVX-512.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_cipher_avx2(aes: Aes) -> AesGcm {
+        let mut g = Self::with_cipher(aes);
+        g.powers = hw::Powers::new([g.h.0, g.h.1], hw::Mode::Avx2);
+        g
+    }
+
+    /// Whether AES-GCM runs on a wide VAES / VPCLMULQDQ kernel (x86_64; AVX-512 or AVX2).
     #[doc(hidden)]
     #[must_use]
     pub fn is_wide(&self) -> bool {
-        self.powers.as_ref().is_some_and(hw::Powers::is_wide)
+        self.powers
+            .as_ref()
+            .is_some_and(|p| p.kernel().starts_with("vaes"))
+    }
+
+    /// The kernel AES-GCM runs on, for diagnostics and benchmark labels: `"vaes-avx512"`,
+    /// `"vaes-avx2"`, `"clmul"` (AES-NI / ARMv8 AES with 128-bit carry-less multiplication) or
+    /// `"portable"` (portable GHASH).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn kernel(&self) -> &'static str {
+        self.powers.as_ref().map_or("portable", hw::Powers::kernel)
     }
 
     /// The same key on the portable GHASH (and the AES path `aes` already has), for tests and
@@ -239,6 +262,17 @@ impl AesGcm {
         let rk = self.aes.hw_round_keys()?;
         let (aad_len, ct_len) = (aad.len(), buf.len());
         let mut y = [0u64; 2];
+        // The AVX-512 kernel does everything in one call (an AAD over 256 bytes hashed first).
+        if p.whole_message() {
+            let (wide_aad, wide_y) = if aad_len <= WIDE_AAD {
+                (aad, y)
+            } else {
+                let mut g = Ghash::new(self.h, Some(p));
+                g.update_padded(aad);
+                (&[][..], [g.y0, g.y1])
+            };
+            return p.crypt_all(rk, j0, wide_y, wide_aad, aad_len, src, buf, open);
+        }
         // A short message hashes a short AAD together with its blocks (one GHASH call).
         let joined = ct_len < 128 && aad_len <= SHORT_AAD;
         if !joined {
@@ -399,6 +433,9 @@ impl AesGcm {
 /// The longest AAD hashed in the same GHASH call as a short message's blocks (TLS record
 /// headers, QUIC packet headers).
 const SHORT_AAD: usize = 64;
+
+/// The longest AAD the AVX-512 kernel hashes itself (one masked sixteen-block group).
+const WIDE_AAD: usize = 256;
 
 /// What [`AesGcm::finish_short`] needs besides the data: `J0`, the counter block of the first
 /// remaining byte, the AAD when it is hashed with the tail (else empty), the AAD and ciphertext
@@ -707,9 +744,20 @@ mod tests {
     /// each key; all must agree with the first, and a bad tag must leave the ciphertext as it
     /// was.
     fn agree(keys: &[&AesGcm], len: usize, off: usize, rng: &mut crate::rand::ChaChaRng) {
+        agree_aad(keys, len, len % 41, off, rng);
+    }
+
+    /// [`agree`] with `aad_len` bytes of AAD.
+    fn agree_aad(
+        keys: &[&AesGcm],
+        len: usize,
+        aad_len: usize,
+        off: usize,
+        rng: &mut crate::rand::ChaChaRng,
+    ) {
         let mut nonce = [0u8; 12];
         rng.fill(&mut nonce);
-        let mut aad = vec![0u8; len % 41];
+        let mut aad = vec![0u8; aad_len];
         rng.fill(&mut aad);
         let mut pt = vec![0u8; len];
         rng.fill(&mut pt);
@@ -744,15 +792,20 @@ mod tests {
             );
 
             // Out of place: the first `split` bytes from a separate (misaligned) buffer, the
-            // rest already in the output; then decryption into a separate buffer.
-            let split = len - len / 3;
-            let mut src = vec![0u8; split + 1];
-            src[1..].copy_from_slice(&pt[..split]);
-            let mut dst = vec![0u8; len + off];
-            dst[off + split..].copy_from_slice(&pt[split..]);
-            let t2 = k.encrypt_detached_from(&nonce, &aad, &src[1..], &mut dst[off..]);
-            assert!(dst[off..] == ct[..], "from: key {i}, len {len}, off {off}");
-            assert_eq!(t2, tag, "from tag: key {i}, len {len}, off {off}");
+            // rest already in the output (all of it from `src`, all but the last byte as the
+            // TLS 1.3 record layer has it, two thirds); then decryption into a separate buffer.
+            for split in [len, len.saturating_sub(1), len - len / 3] {
+                let mut src = vec![0u8; split + 1];
+                src[1..].copy_from_slice(&pt[..split]);
+                let mut dst = vec![0u8; len + off];
+                dst[off + split..].copy_from_slice(&pt[split..]);
+                let t2 = k.encrypt_detached_from(&nonce, &aad, &src[1..], &mut dst[off..]);
+                assert!(
+                    dst[off..] == ct[..],
+                    "from: key {i}, len {len}, split {split}, off {off}"
+                );
+                assert_eq!(t2, tag, "from tag: key {i}, len {len}, split {split}");
+            }
             let mut out = vec![0x77u8; len + 2];
             assert!(
                 k.decrypt_detached_from(&nonce, &aad, &ct, &bad, &mut out[2..])
@@ -778,19 +831,35 @@ mod tests {
             let mut key = vec![0u8; klen];
             rng.fill(&mut key);
             let wide = AesGcm::new(&key).unwrap();
+            let avx2 = AesGcm::with_cipher_avx2(Aes::new(&key).unwrap());
             let narrow = AesGcm::with_cipher_narrow(Aes::new(&key).unwrap());
             let sw = AesGcm::with_cipher_portable(Aes::new_portable(&key).unwrap());
             assert!(!narrow.is_wide() && !sw.is_wide());
-            println!("AES-{} GCM wide kernel: {}", klen * 8, wide.is_wide());
+            assert_ne!(avx2.kernel(), "vaes-avx512");
+            println!(
+                "AES-{} GCM kernels: {} {} {} {}",
+                klen * 8,
+                wide.kernel(),
+                avx2.kernel(),
+                narrow.kernel(),
+                sw.kernel()
+            );
+            let keys = [&wide, &avx2, &narrow, &sw];
             for len in 0..=600 {
-                agree(&[&wide, &narrow, &sw], len, len % 5, &mut rng);
+                agree(&keys, len, len % 5, &mut rng);
             }
             for len in [
                 767, 768, 769, 1023, 1024, 1025, 1400, 1500, 4096, 4111, 16383, 16384, 16385,
                 16401, 65536, 65791,
             ] {
                 for off in [0, 3] {
-                    agree(&[&wide, &narrow, &sw], len, off, &mut rng);
+                    agree(&keys, len, off, &mut rng);
+                }
+            }
+            // Every AAD length the AVX-512 kernel hashes itself and past it (hashed first).
+            for aad_len in (0..=300).chain([511, 512, 513, 1000]) {
+                for len in [0, 1, 15, 16, 200, 256, 300] {
+                    agree_aad(&keys, len, aad_len, aad_len % 3, &mut rng);
                 }
             }
         }
@@ -853,20 +922,23 @@ mod tests {
             let (Some(p), Some(rk)) = (g.powers.as_ref(), g.aes.hw_round_keys()) else {
                 return;
             };
-            let narrow = hw::Powers::new([g.h.0, g.h.1], false).unwrap();
+            let narrow = hw::Powers::new([g.h.0, g.h.1], hw::Mode::Narrow).unwrap();
+            let avx2 = hw::Powers::new([g.h.0, g.h.1], hw::Mode::Avx2).unwrap();
             for start in [0xffff_fff0u32, 0xffff_ffff, 0xffff_ff00, 7] {
                 let mut ctr = [0x3cu8; 16];
                 ctr[12..].copy_from_slice(&start.to_be_bytes());
                 let mut data = vec![0u8; 1024 + 256 + 128 + 48];
                 rng.fill(&mut data);
                 for open in [false, true] {
-                    let (mut d1, mut d2) = (data.clone(), data.clone());
-                    let (mut y1, mut y2) = ([1u64, 2], [1u64, 2]);
+                    let (mut d1, mut d2, mut d4) = (data.clone(), data.clone(), data.clone());
+                    let (mut y1, mut y2, mut y4) = ([1u64, 2], [1u64, 2], [1u64, 2]);
                     let n1 = p.crypt(rk, &ctr, &mut y1, None, &mut d1, open);
                     let n2 = narrow.crypt(rk, &ctr, &mut y2, None, &mut d2, open);
-                    assert_eq!((n1, n2), (1024 + 256 + 128, 1024 + 256 + 128));
-                    assert!(d1 == d2);
+                    let n4 = avx2.crypt(rk, &ctr, &mut y4, None, &mut d4, open);
+                    assert_eq!((n1, n2, n4), (1024 + 256 + 128, 1024 + 256 + 128, 1408));
+                    assert!(d1 == d2 && d4 == d2);
                     assert_eq!(y1, y2);
+                    assert_eq!(y4, y2);
                     let mut d3 = data.clone();
                     g.aes.apply_ctr32(&ctr, &mut d3[..n1]);
                     assert!(d1[..n1] == d3[..n1]);

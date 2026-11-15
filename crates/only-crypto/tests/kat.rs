@@ -99,8 +99,12 @@ fn cavp_gcm() {
         let key = unhex(&l[0]);
         let iv: [u8; 12] = unhex(&l[1]).try_into().unwrap();
         let (aad, ct, tag) = (unhex(&l[3]), unhex(&l[4]), unhex(&l[5]));
+        // The default kernel (VAES + AVX-512 where the CPU has it), the VAES-AVX2 one, the
+        // 128-bit one and portable AES.
         for gcm in [
             AesGcm::new(&key).unwrap(),
+            AesGcm::with_cipher_avx2(Aes::new(&key).unwrap()),
+            AesGcm::with_cipher_narrow(Aes::new(&key).unwrap()),
             AesGcm::with_cipher(Aes::new_portable(&key).unwrap()),
         ] {
             let mut buf = ct.clone();
@@ -166,11 +170,22 @@ fn aead_vectors(
 
 #[test]
 fn wycheproof_aes_gcm() {
-    aead_vectors(
-        "wycheproof_aes_gcm.json",
-        |k, iv, aad, m| Some(AesGcm::new(k).ok()?.encrypt(iv, aad, m)),
-        |k, iv, aad, c| Some(AesGcm::new(k).ok()?.decrypt(iv, aad, c)),
-    );
+    // Every kernel: the default (VAES + AVX-512 where the CPU has it), VAES-AVX2, the 128-bit
+    // one, portable.
+    type Key = fn(&[u8]) -> Option<AesGcm>;
+    let kernels: [Key; 4] = [
+        |k| AesGcm::new(k).ok(),
+        |k| Some(AesGcm::with_cipher_avx2(Aes::new(k).ok()?)),
+        |k| Some(AesGcm::with_cipher_narrow(Aes::new(k).ok()?)),
+        |k| Some(AesGcm::with_cipher_portable(Aes::new_portable(k).ok()?)),
+    ];
+    for key in kernels {
+        aead_vectors(
+            "wycheproof_aes_gcm.json",
+            |k, iv, aad, m| Some(key(k)?.encrypt(iv, aad, m)),
+            |k, iv, aad, c| Some(key(k)?.decrypt(iv, aad, c)),
+        );
+    }
 }
 
 #[test]
