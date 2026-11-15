@@ -74,7 +74,13 @@ engine.run().unwrap();
   refuses it.
 - **I/O**: full-size datagrams leave in batches for one GSO send (`Conn::send_segments`, up to
   10 segments); writes made from a connection's own callbacks are corked and go out together
-  with the acknowledgments once the callback returns. A shared timer thread drives timeouts.
+  with the acknowledgments once the callback returns. Received datagrams are handled one by one
+  (handler events and data to send right away), but acknowledgments are made once per receive
+  batch, at the I/O loop's internal batch-end hook; UDP GRO (on by default on Linux) hands a bulk
+  receiver whole GSO batches. A received packet is copied once into a per-thread pooled buffer,
+  decrypted there, and its stream data and datagrams are slices of it; the buffer is reused once
+  they are all dropped. Sent packets are tracked in a ring indexed by packet number. A shared
+  timer thread drives timeouts.
 
 Not implemented: 0-RTT (sending or accepting; `only-tls` rejects early data), sending ECN marks
 (received ECN counts are parsed; the socket layer does not expose the TOS byte), client-side
@@ -90,7 +96,7 @@ active migration (the API has no way to rebind), preferred_address (parsed, not 
   streams), `endpoint` (connection ID routing, Retry, Version Negotiation, stateless reset),
   and `sim`, a simulated lossy, reordering, duplicating link with a virtual clock for tests.
 - `bytes`: the `Bytes` payload type (cheaply cloneable, sliceable; received data is a slice of
-  the decrypted packet).
+  the decrypted packet) and the per-thread pool of receive buffers.
 - `fuzzing` (`#[doc(hidden)]`, feature `fuzzing`): entry points of the `quic_packet`,
   `quic_frame` and `quic_conn` fuzz targets.
 

@@ -11,8 +11,13 @@
 //! one receive batch is handled, the peers it touches are corked; at its end everything they sent
 //! leaves together in as few `sendmmsg` calls as possible, and runs of equal-size datagrams to one
 //! peer go out as a single UDP GSO send where the kernel supports it (`Conn::send_segments` asks
-//! for that explicitly). With `Config::udp_gro`, coalesced GRO receives are split back into one
-//! `on_data` per datagram. `Config::udp_max_peers` caps the peers of a listener.
+//! for that explicitly). With `Config::udp_gro` (the default), coalesced GRO receives are split
+//! back into one `on_data` per datagram, by the segment size the kernel reports in the `UDP_GRO`
+//! control message. `Config::udp_max_peers` caps the peers of a listener.
+//!
+//! Every connection that got datagrams in a receive batch (one `recvmmsg`, or up to `BATCH`
+//! `recv_from` calls elsewhere) gets one `on_batch_end` after the batch's last `on_data`, before
+//! the batch's replies are flushed (only-quic acknowledges and sends once per batch).
 //!
 //! io_uring: a UDP listener on the io_uring backend is served here. With `recvmmsg`/`sendmmsg`/GSO
 //! the syscall cost is already one per batch, so a ring buys little; a multishot `recvmsg` with
@@ -119,9 +124,13 @@ struct UdpLoop {
     draining: Option<Instant>,
     wheel: Wheel<u64>,
     epoch: Instant,
+    /// The loop clock during a receive batch: read after each receive call and moved on by the
+    /// end of each timed callback, which is also the start of the next one, so a datagram costs
+    /// one clock read (for the slow-callback check) or none.
+    clock: Instant,
 }
 
-/// GRO is opt-in (`Config::udp_gro`) and coalesces up to 64 KiB into one receive: only safe
+/// GRO (`Config::udp_gro`, on by default) coalesces up to 64 KiB into one receive: only safe
 /// when a slot can hold that.
 #[cfg(target_os = "linux")]
 fn gro_ok(cfg: &Config) -> bool {
@@ -182,11 +191,36 @@ impl UdpLoop {
             draining: None,
             wheel: Wheel::new(0),
             epoch: Instant::now(),
+            clock: Instant::now(),
         })
     }
 
     fn tick(&self) -> u64 {
         self.epoch.elapsed().as_millis() as u64
+    }
+
+    /// [`UdpLoop::tick`] of the loop clock (no clock read).
+    fn clock_tick(&self) -> u64 {
+        self.clock.saturating_duration_since(self.epoch).as_millis() as u64
+    }
+
+    /// The start of a callback during a receive batch: the loop clock, when callbacks are timed.
+    fn timed_start(&self) -> Option<Instant> {
+        self.cfg.telemetry.timing_enabled().then_some(self.clock)
+    }
+
+    /// The end of a callback started with [`UdpLoop::timed_start`]: accounted, reported if slow,
+    /// and its end becomes the loop clock.
+    fn timed_end(&mut self, kind: &'static str, id: u64, t0: Option<Instant>) {
+        match t0 {
+            Some(t0) => {
+                self.clock = self
+                    .cfg
+                    .telemetry
+                    .callback_done_at(&self.shared.stats, kind, id, t0);
+            }
+            None => self.shared.stats.callbacks.add_local(1),
+        }
     }
 
     fn idle_ms(&self) -> u64 {
@@ -301,6 +335,7 @@ impl UdpLoop {
                     break;
                 }
             };
+            self.clock = Instant::now();
             for i in 0..n {
                 if let Some((data, peer, seg)) = batch.get(i) {
                     if seg > 0 && seg < data.len() {
@@ -322,12 +357,16 @@ impl UdpLoop {
         self.batch = Some(batch);
     }
 
-    /// Uncorks the peers corked during a receive batch and flushes them together.
+    /// Ends a receive batch: tells the peers it touched (`on_batch_end`, while their replies are
+    /// still corked), then uncorks and flushes them together.
     fn flush_touched(&mut self) {
         if self.touched.is_empty() {
             return;
         }
         let mut ids = std::mem::take(&mut self.touched);
+        for &id in &ids {
+            self.batch_end(id);
+        }
         ids.retain(|id| match self.conns.get_mut(id) {
             Some(p) => {
                 p.in_batch = false;
@@ -350,6 +389,19 @@ impl UdpLoop {
         self.touched = ids;
     }
 
+    /// `on_batch_end` for `id` (a panic closes the connection).
+    fn batch_end(&mut self, id: u64) {
+        let t0 = self.timed_start();
+        let Some(p) = self.conns.get_mut(&id) else {
+            return;
+        };
+        let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_batch_end()));
+        self.timed_end("on_batch_end", id, t0);
+        if r.is_err() {
+            self.finalize(id, Some(panic_error()));
+        }
+    }
+
     #[cfg(not(target_os = "linux"))]
     fn recv_on(&mut self, src: Option<u64>) {
         let Some(sock) = self.src_sock(src) else {
@@ -359,16 +411,23 @@ impl UdpLoop {
             .scratch
             .take()
             .unwrap_or_else(|| vec![0u8; self.cfg.read_buffer]);
-        for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
-            match sock.recv_from(&mut buf) {
-                Ok((n, peer)) => self.on_datagram(src, peer, &buf[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                Err(e) => {
-                    eprintln!("only: recv_from: {e}");
-                    break;
+        'event: for _ in 0..MAX_BATCHES_PER_EVENT {
+            // A batch is up to BATCH datagrams, as with recvmmsg.
+            for _ in 0..BATCH {
+                match sock.recv_from(&mut buf) {
+                    Ok((n, peer)) => {
+                        self.clock = Instant::now();
+                        self.on_datagram(src, peer, &buf[..n]);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break 'event,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        eprintln!("only: recv_from: {e}");
+                        break 'event;
+                    }
                 }
             }
+            self.flush_touched();
         }
         self.scratch = Some(buf);
         self.flush_touched();
@@ -389,22 +448,25 @@ impl UdpLoop {
                 None => return,
             },
         };
-        let t0 = self.cfg.telemetry.timing();
-        let now = self.tick();
+        let t0 = self.timed_start();
+        let now = self.clock_tick();
         let Some(p) = self.conns.get_mut(&id) else {
             return;
         };
         p.last_active = now;
         p.bytes_in += data.len() as u64;
         self.shared.stats.datagram_in(data.len());
-        if cfg!(target_os = "linux") && !p.in_batch {
-            // Replies wait for the end of the receive batch (see `flush_touched`).
+        if !p.in_batch {
+            // `on_batch_end` follows at the end of the receive batch (see `flush_touched`), and
+            // on Linux the replies wait for it, to leave together in few `sendmmsg` calls.
             p.in_batch = true;
-            p.inner.set_corked(true);
+            if cfg!(target_os = "linux") {
+                p.inner.set_corked(true);
+            }
             self.touched.push(id);
         }
         let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
-        self.check_slow("on_data", id, t0);
+        self.timed_end("on_data", id, t0);
         if r.is_err() {
             self.finalize(id, Some(panic_error()));
         }
@@ -581,10 +643,12 @@ impl UdpLoop {
                     break;
                 }
             };
+            self.clock = Instant::now();
             for i in 0..n {
                 let Some((data, _, seg)) = batch.get(i) else {
                     continue;
                 };
+                // GRO coalesced several datagrams: restore the boundaries.
                 let seg = if seg > 0 { seg } else { data.len().max(1) };
                 for d in data.chunks(seg) {
                     if !self.deliver(id, d) {
@@ -592,8 +656,19 @@ impl UdpLoop {
                     }
                 }
             }
+            self.batch_end(id);
             if n < BATCH {
                 break;
+            }
+            // More may be waiting: what this batch produced leaves first.
+            let Some(p) = self.conns.get(&id) else {
+                break;
+            };
+            p.inner.set_corked(false);
+            self.on_wake(id);
+            match self.conns.get(&id) {
+                Some(p) => p.inner.set_corked(true),
+                None => break,
             }
         }
         self.batch = Some(batch);
@@ -615,11 +690,18 @@ impl UdpLoop {
             .scratch
             .take()
             .unwrap_or_else(|| vec![0u8; self.cfg.read_buffer]);
+        let mut got = 0;
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
             match sock.recv(&mut buf) {
                 Ok(n) => {
+                    self.clock = Instant::now();
                     if !self.deliver(id, &buf[..n]) {
-                        break;
+                        self.scratch = Some(buf);
+                        return;
+                    }
+                    got += 1;
+                    if got % BATCH == 0 {
+                        self.batch_end(id);
                     }
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -633,12 +715,15 @@ impl UdpLoop {
             }
         }
         self.scratch = Some(buf);
+        if got % BATCH != 0 {
+            self.batch_end(id);
+        }
     }
 
     /// One datagram for dialed connection `id`. `false` when the connection is gone.
     fn deliver(&mut self, id: u64, data: &[u8]) -> bool {
-        let t0 = self.cfg.telemetry.timing();
-        let now = self.tick();
+        let t0 = self.timed_start();
+        let now = self.clock_tick();
         let Some(p) = self.conns.get_mut(&id) else {
             return false;
         };
@@ -646,7 +731,7 @@ impl UdpLoop {
         p.bytes_in += data.len() as u64;
         self.shared.stats.datagram_in(data.len());
         let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
-        self.check_slow("on_data", id, t0);
+        self.timed_end("on_data", id, t0);
         if r.is_err() {
             self.finalize(id, Some(panic_error()));
             return false;

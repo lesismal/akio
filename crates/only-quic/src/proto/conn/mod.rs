@@ -5,6 +5,7 @@
 
 mod recv;
 mod send;
+mod sent;
 mod streams;
 
 use std::collections::{BTreeMap, VecDeque};
@@ -26,6 +27,7 @@ use super::{IdMap, IdSet};
 use crate::types::{Congestion as CcConfig, ConnectionError, ConnectionStats, Dir, Side, StreamId};
 use crate::{Bytes, TransportConfig};
 
+use sent::SentPackets;
 pub(crate) use streams::StreamState;
 
 /// Our max_ack_delay.
@@ -124,7 +126,7 @@ pub(crate) struct Space {
     next_pn: u64,
     largest_acked: Option<u64>,
     largest_acked_time: Option<Instant>,
-    sent: BTreeMap<u64, Sent>,
+    sent: SentPackets,
     // Receiving.
     rx: RangeSet,
     seen: RangeSet,
@@ -154,7 +156,7 @@ impl Space {
             next_pn: 0,
             largest_acked: None,
             largest_acked_time: None,
-            sent: BTreeMap::new(),
+            sent: SentPackets::default(),
             rx: RangeSet::new(),
             seen: RangeSet::new(),
             seen_floor: 0,
@@ -416,7 +418,9 @@ pub struct Connection {
     eliciting_since_rx: bool,
     last_eliciting_sent_any: Option<Instant>,
     pacing_until: Option<Instant>,
-    buffered: Vec<(SocketAddr, Vec<u8>)>,
+    buffered: Vec<(SocketAddr, Arc<Vec<u8>>)>,
+    /// Frame lists of acknowledged or lost packets, reused for new packets.
+    spare_frames: Vec<Vec<SentFrame>>,
     replay: bool,
     events: VecDeque<Event>,
     ep_events: VecDeque<EndpointEvent>,
@@ -533,6 +537,7 @@ impl Connection {
             last_eliciting_sent_any: None,
             pacing_until: None,
             buffered: Vec::new(),
+            spare_frames: Vec::new(),
             replay: false,
             events: VecDeque::new(),
             ep_events: VecDeque::new(),

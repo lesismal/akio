@@ -18,6 +18,14 @@ pub trait Handler: Send + Sized + 'static {
     /// The connection closed; called exactly once, after every earlier `on_data`. `err` is `None`
     /// for an orderly close (peer EOF after pending output drained, or a local close).
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {}
+
+    /// UDP (internal, outside the stability promise): the receive batch that delivered one or
+    /// more `on_data` calls to this connection is over; what is sent from here leaves with the
+    /// batch's other replies. Called once per batch, after its last `on_data`, by the UDP loops
+    /// of the epoll backend (which also serves io_uring and kqueue UDP); other backends never
+    /// call it, so a handler must not wait for it before it has seen one.
+    #[doc(hidden)]
+    fn on_batch_end(&mut self, _c: &Conn<Self>) {}
 }
 
 /// Creates a [`Handler`] for each accepted or dialed connection. Shared by all I/O threads.
@@ -114,6 +122,8 @@ pub trait DynHandler: Send {
     fn on_close(&mut self, err: Option<Error>);
     /// Runs a `spawn_blocking` completion posted by [`Conn::spawn_blocking`].
     fn run_task(&mut self, task: Task);
+    /// The receive batch that called `on_data` is over ([`Handler::on_batch_end`]).
+    fn on_batch_end(&mut self) {}
 }
 
 /// Type-erased acceptor. `#[doc(hidden)]`: backend-facing.
@@ -155,6 +165,9 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
     }
     fn on_close(&mut self, err: Option<Error>) {
         self.h.on_close(&self.conn, err);
+    }
+    fn on_batch_end(&mut self) {
+        self.h.on_batch_end(&self.conn);
     }
     fn run_task(&mut self, task: Task) {
         if let Ok(f) = task.downcast::<Completion<H>>() {

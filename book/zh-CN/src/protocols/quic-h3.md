@@ -33,7 +33,9 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
   发起客户端连接；engine 需要 `udp_client_threads(n)`。
 - 满尺寸的数据报每批最多 10 个，用 `Conn::send_segments` 发出（Linux 上为 UDP GSO /
   `sendmmsg`）。处理器在自身回调里发起的写入会先攒起来，回调返回后与 ACK 一起发出，因此请求
-  处理器的响应头、响应体和 FIN 通常在同一个包里。`Config::udp_gro` 对大流量接收方有帮助。
+  处理器的响应头、响应体和 FIN 通常在同一个包里。ACK 每个接收批次生成一次；收到的包在池化缓冲区
+  中解密，流数据与之共享缓冲区。UDP GRO（`Config::udp_gro`，Linux 上默认开启）让大流量接收方
+  一次接收整批 GSO 数据。
 
 `QuicHandler` 回调：`on_connected`、`on_stream_opened`、`on_stream_data(c, id, data, fin)`
 （必须实现）、`on_stream_reset`、`on_stream_stopped`、`on_streams_available`、`on_datagram`、

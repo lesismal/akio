@@ -56,8 +56,9 @@
   的连续数据报合并成一次 GSO 发送。在 UDP 批量化的工作中，这让突发流量下每个数据报的服务端
   CPU 降低了 30–46%，64 字节 echo 提升约 19%。
 - `Conn::send_segments` 一次调用发送多个数据报（only-quic 使用它）。
-- `Config::udp_gro = true` 对接收 GSO 流量的大流量接收方（QUIC 下载）有帮助，对小的请求/响应
-  流量有开销。它需要 `read_buffer` >= 64 KiB。
+- `Config::udp_gro`（在内核支持时默认开启）让接收 GSO 流量的大流量接收方（QUIC 下载）一次接收
+  整批 GSO 数据：回环上的 QUIC 大流量因此从 6.4 提升到 9.8 Gbit/s，64 字节 UDP echo 没有可测的
+  变化。它需要 `read_buffer` >= 64 KiB；`ONLY_UDP_GRO=0` 可关闭。
 - `udp_max_peers` 在洪泛下限制每对端状态的数量。
 
 ## 6. eBPF 分流

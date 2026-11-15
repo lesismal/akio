@@ -302,18 +302,36 @@ impl Connection {
     /// [`Connection::drive`] whose first round uses `now` (the time a datagram was just
     /// handled at) instead of reading the clock twice more.
     fn drive_at(&self, mut now: Option<Instant>) {
-        self.collect(false, now);
+        // The timer is armed by the last round, which always runs.
+        self.collect(false, false, now);
         loop {
             self.deliver();
-            if !self.collect(true, now.take()) {
+            if !self.collect(true, true, now.take()) {
                 return;
             }
         }
     }
 
+    /// After a datagram that is part of a receive batch: runs the handler on what it brought,
+    /// and sends right away only if there is more than an acknowledgment to send (data, a
+    /// handler's reply); acknowledgments wait for the end of the batch (`Udp::on_batch_end`).
+    fn drive_received(&self, now: Instant) {
+        // The timer is armed at the end of the batch, when the connection is driven again.
+        self.collect(false, false, Some(now));
+        loop {
+            self.deliver();
+            if !self.collect(false, false, Some(now)) {
+                break;
+            }
+        }
+        if lock(&self.0.state).conn.wants_transmit() {
+            self.drive_at(Some(now));
+        }
+    }
+
     /// Takes what the state machine produced: datagrams (when `transmit`), events, endpoint
-    /// events, the timer. Returns whether new handler events were queued.
-    fn collect(&self, transmit: bool, now: Option<Instant>) -> bool {
+    /// events, the timer (when `arm`). Returns whether new handler events were queued.
+    fn collect(&self, transmit: bool, arm: bool, now: Option<Instant>) -> bool {
         let ep = &self.0.ep;
         let mut ep_events = Vec::new();
         let drained;
@@ -344,7 +362,7 @@ impl Connection {
             while let Some(e) = conn.poll_endpoint_event() {
                 ep_events.push(e);
             }
-            if let Some(t) = conn.poll_timeout() {
+            if let Some(t) = arm.then(|| conn.poll_timeout()).flatten() {
                 if armed.is_none_or(|a| t < a) {
                     *armed = Some(t);
                     let target: Weak<dyn timer::Due> = self.0.me.clone();
@@ -525,7 +543,15 @@ impl Ep {
         };
     }
 
-    fn on_datagram(self: &Arc<Ep>, peer: SocketAddr, data: &[u8]) {
+    /// A datagram from `peer`. With `batch`, the connection it went to runs its handler and sends
+    /// data now, but leaves its acknowledgment for the end of the receive batch (it is added to
+    /// `batch` once and driven then): one ACK per batch instead of one per two packets.
+    fn on_datagram(
+        self: &Arc<Ep>,
+        peer: SocketAddr,
+        data: &[u8],
+        batch: Option<&mut Vec<Connection>>,
+    ) {
         let now = Instant::now();
         let ev = lock(&self.endpoint).handle(now, peer, data);
         match ev {
@@ -536,8 +562,16 @@ impl Ep {
                 if let Some(c) = c {
                     lock(&c.0.state)
                         .conn
-                        .handle_datagram(now, peer, data.to_vec());
-                    c.drive_at(Some(now));
+                        .handle_shared(now, peer, bytes::pool::copy(data));
+                    match batch {
+                        Some(b) => {
+                            c.drive_received(now);
+                            if !b.iter().any(|x| Arc::ptr_eq(&x.0, &c.0)) {
+                                b.push(c);
+                            }
+                        }
+                        None => c.drive_at(Some(now)),
+                    }
                 }
             }
             Some(proto::DatagramEvent::New(h, conn)) => {
@@ -605,10 +639,7 @@ impl Acceptor for QuicServer {
     type Handler = Udp;
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
         lock(&self.0.socks).insert(c.peer_addr(), c.clone());
-        Udp {
-            ep: self.0.clone(),
-            client: false,
-        }
+        Udp::new(self.0.clone(), false)
     }
 }
 
@@ -617,6 +648,23 @@ impl Acceptor for QuicServer {
 pub struct Udp {
     ep: Arc<Ep>,
     client: bool,
+    /// The I/O loop reports the end of receive batches (it called `on_batch_end` once): the
+    /// connections a batch reached acknowledge then, once (see `Ep::on_datagram`). Until then
+    /// (and on backends without the hook) every datagram is driven on its own.
+    batched: bool,
+    /// Connections that got datagrams in the current batch.
+    pending: Vec<Connection>,
+}
+
+impl Udp {
+    fn new(ep: Arc<Ep>, client: bool) -> Udp {
+        Udp {
+            ep,
+            client,
+            batched: false,
+            pending: Vec::new(),
+        }
+    }
 }
 
 impl fmt::Debug for Udp {
@@ -627,10 +675,26 @@ impl fmt::Debug for Udp {
 
 impl Handler for Udp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        self.ep.on_datagram(c.peer_addr(), data);
+        let batch = self.batched.then_some(&mut self.pending);
+        self.ep.on_datagram(c.peer_addr(), data, batch);
+    }
+
+    fn on_batch_end(&mut self, _c: &Conn<Self>) {
+        self.batched = true;
+        if self.pending.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        for c in self.pending.drain(..) {
+            c.drive_at(Some(now));
+        }
     }
 
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<only_core::Error>) {
+        // Whatever arrived before the close is handled (a batch cut short by it).
+        for p in std::mem::take(&mut self.pending) {
+            p.drive();
+        }
         {
             let mut socks = lock(&self.ep.socks);
             if socks.get(&c.peer_addr()).is_some_and(|s| s.id() == c.id()) {
@@ -663,10 +727,7 @@ impl Acceptor for ClientAcceptor {
         for (dest, seg, d) in backlog {
             self.0.transmit(dest, seg, d);
         }
-        Udp {
-            ep: self.0.clone(),
-            client: true,
-        }
+        Udp::new(self.0.clone(), true)
     }
 }
 

@@ -156,6 +156,22 @@ idle connections cost `only` ~56 MB above the baseline.
 No reference: the harness has no quic-go or fib QUIC server (see Not measured). During wave D
 the quinn-proto build of the same program did 4.6 Gbit/s, 58 k req/s and ~6,600 handshakes/s.
 
+**After the QUIC datapath pass** (2026-11-16, same host and pinning, `42d67dde` → after, median of
+seven alternating rounds; an outside workload loaded the host during some rounds, so the ranges
+are wide and the ratios are the figure to read):
+
+| Case | before | after | after / before |
+|---|---:|---:|---:|
+| bulk, one stream, 2 GiB | 6,378 Mbit/s (4,083–6,428) | 16,066 Mbit/s (10,598–16,308) | 2.52 |
+| HTTP/3 GET, one connection, 64 in flight | 427,901 req/s (324,321–434,382) | 443,299 req/s (335,410–444,711) | 1.04 |
+| full handshakes, 8 in flight | 9,294/s (8,252–9,514) | 9,542/s (6,406–9,591) | 1.03 |
+
+The quinn-proto build (the wave D tree with this harness) in another same-run comparison: bulk
+4,613 against 15,999 Mbit/s (3.5×), HTTP/3 56,934 against 430,098 req/s (7.6×); its handshake
+figure (202/s) is an artifact of the old stack under this harness and is left out. The
+handshake row moved from 6,640 to ~9,300 before this pass through the P-256 and X25519 work in
+only-crypto.
+
 ### TLS 1.3 in memory (`crates/only-tls/examples/tls-bench.rs`, CPU 2)
 
 Both ends in one thread, the same self-signed ECDSA P-256 certificate verified by the client, no
@@ -473,6 +489,14 @@ Short summaries of the per-area passes; the full tables are in the git history o
   of the ECDH window table, safegcd inversions with assembly divsteps. Against ring in the same
   run: sign 0.77× → 1.25×, key generation 0.94× → 1.33×, verify 0.98× → 1.04×, ECDH 0.94× →
   0.96×; secp256r1 handshakes 0.94× → 1.12× rustls.
+- **QUIC datapath** (this host, CPUs 2–5, same-run old/new rounds, `42d67dde` → after): UDP
+  GRO on by default (bulk 6.4 → 9.8 Gbit/s: a GSO batch arrives as one receive, no
+  `skb_segment` on the way), acknowledgments once per receive batch through an internal
+  batch-end hook of the UDP loop (9.5 → 13.6 Gbit/s), sent packets in a ring and received packets
+  in pooled buffers (14.3 → 15.1), one clock read per datagram in the UDP loop instead of three
+  and the QUIC timer armed once per batch (15.2 → 16.2). HTTP/3 +3–4%, handshakes flat. 64-byte
+  UDP echo with GRO on and off (15 alternating rounds each): within the noise of the case
+  (±15% at 64 peers; −0.3% to −0.9% with one exchange in flight).
 - **P-256 point formulas** (this host, CPU 2, median of five alternating rounds on a quiet host,
   `1376b324` → after): OpenSSL's `ecp_nistz256` addition, mixed addition and doubling order in the
   whole-point assembly, a shorter reduction step. Against ring in the same run: ECDH 1.08× →

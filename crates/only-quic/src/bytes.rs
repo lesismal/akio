@@ -9,6 +9,58 @@ use std::hash::{Hash, Hasher};
 use std::ops::{Bound, Deref, RangeBounds};
 use std::sync::Arc;
 
+/// Receive buffers kept for reuse per thread: a received datagram is copied into one, decrypted
+/// in place, and its frames' payloads ([`Bytes`] slices) share it. A buffer is reused once every
+/// slice of it has dropped (on any thread), so steady traffic allocates nothing per packet.
+pub(crate) mod pool {
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    /// Buffers kept per thread (about 1.5 KB each for full-size datagrams).
+    const MAX: usize = 256;
+    /// Buffers looked at for a free one before allocating (a slice still held elsewhere, an
+    /// out-of-order stream fragment for example, keeps its buffer busy).
+    const TRIES: usize = 8;
+
+    thread_local! {
+        static POOL: RefCell<VecDeque<Arc<Vec<u8>>>> = const { RefCell::new(VecDeque::new()) };
+    }
+
+    /// A buffer holding a copy of `data`, unshared.
+    pub(crate) fn copy(data: &[u8]) -> Arc<Vec<u8>> {
+        let reused = POOL.with(|p| {
+            let mut p = p.borrow_mut();
+            for _ in 0..TRIES.min(p.len()) {
+                let mut b = p.pop_front()?;
+                if let Some(v) = Arc::get_mut(&mut b) {
+                    v.clear();
+                    v.extend_from_slice(data);
+                    return Some(b);
+                }
+                p.push_back(b);
+            }
+            None
+        });
+        reused.unwrap_or_else(|| Arc::new(data.to_vec()))
+    }
+
+    /// Done with a buffer (slices of it may live on): keep it for a later [`copy`].
+    pub(crate) fn recycle(b: Arc<Vec<u8>>) {
+        // Only buffers of ordinary datagram sizes are worth keeping.
+        if b.capacity() > 1 << 16 {
+            return;
+        }
+        // Not during thread teardown (the pool may be gone).
+        let _ = POOL.try_with(|p| {
+            let mut p = p.borrow_mut();
+            if p.len() < MAX {
+                p.push_back(b);
+            }
+        });
+    }
+}
+
 #[derive(Clone)]
 enum Repr {
     Static(&'static [u8]),
@@ -46,6 +98,16 @@ impl Bytes {
     /// A buffer holding a copy of `data`.
     pub fn copy_from_slice(data: &[u8]) -> Bytes {
         Bytes::from(data.to_vec())
+    }
+
+    /// The whole of a shared buffer (no copy, no allocation).
+    pub(crate) fn from_shared(v: Arc<Vec<u8>>) -> Bytes {
+        let end = v.len();
+        Bytes {
+            repr: Repr::Shared(v),
+            start: 0,
+            end,
+        }
     }
 
     /// Length in bytes.

@@ -52,10 +52,11 @@ Protecting a public UDP port:
 
 - `Config::udp_max_peers`: at most this many peers per listener; datagrams from new peers beyond
   it are dropped without creating a connection and counted (`Engine::udp_stats().rejected`).
-- `Config::udp_gro` (Linux, off by default): lets the kernel coalesce datagrams of one flow;
-  `only` splits them again so `on_data` still sees one datagram per call. It helps bulk flows from
-  GSO senders (QUIC transfers) and costs for request/response traffic. Needs a `read_buffer` of
-  at least 64 KiB.
+- `Config::udp_gro` (Linux, on by default where the kernel supports it): lets the kernel
+  coalesce datagrams of one flow; `only` splits them again by the segment size the kernel reports,
+  so `on_data` still sees one datagram per call. It helps bulk flows from GSO senders (QUIC
+  transfers); request/response traffic is not measurably slower. Needs a `read_buffer` of at
+  least 64 KiB; `ONLY_UDP_GRO=0` turns it off.
 
 ## UDP clients
 

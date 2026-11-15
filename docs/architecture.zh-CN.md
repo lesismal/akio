@@ -271,7 +271,9 @@ flowchart TD
   哈希到一个线程）；其他系统上由一个线程服务该 listener。
 - 每个新的对端地址成为共享 socket 上的一个 `ConnInner`，使用普通的 `Handler`；每个 listener
   有一张对端表、空闲淘汰（`udp_idle_timeout`）和可选的上限（`udp_max_peers`）。
-- 接收使用 `recvmmsg`（可选 GRO，再拆回单个数据报）。处理一批接收时产生的回复按 socket 收集，
+- 接收使用 `recvmmsg`（内核支持时默认开启 GRO，按 `UDP_GRO` 分段大小再拆回单个数据报）。一批接收
+  涉及的每个连接在最后一个数据报之后收到一次内部的 `on_batch_end`（only-quic 在这里生成 ACK 并
+  发送）。处理一批接收时产生的回复按 socket 收集，
   用 `sendmmsg` 跨对端发出；发往同一对端的等长连续数据报合并为一条 GSO 消息（`UDP_SEGMENT`，
   只探测一次，遇到 `EIO`/`EINVAL` 永久关闭）。
 - `dial_udp` 为每个 dial 出的连接创建一个 `connect` 过的 socket，因此 ICMP 错误会报告给它

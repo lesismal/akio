@@ -60,8 +60,10 @@ See [Blocking work](concepts/blocking.md).
   `sendmmsg`, and equal-size runs to one peer as a single GSO send. In the UDP batching work this
   cut server CPU per datagram by 30–46% for bursts and raised 64-byte echo by about 19%.
 - `Conn::send_segments` sends many datagrams in one call (only-quic uses it).
-- `Config::udp_gro = true` helps bulk receivers of GSO traffic (QUIC downloads) and costs for
-  small request/response traffic. It needs `read_buffer` >= 64 KiB.
+- `Config::udp_gro` (on by default where the kernel supports it) lets bulk receivers of GSO
+  traffic (QUIC downloads) take a whole GSO batch in one receive: QUIC bulk on loopback went from
+  6.4 to 9.8 Gbit/s with it, and 64-byte UDP echo did not change measurably. It needs
+  `read_buffer` >= 64 KiB; `ONLY_UDP_GRO=0` turns it off.
 - `udp_max_peers` caps per-peer state under floods.
 
 ## 6. eBPF steering

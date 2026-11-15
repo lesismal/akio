@@ -13,6 +13,7 @@ use super::super::packet::{
 };
 use super::super::recovery::{GRANULARITY, PACKET_THRESHOLD, PERSISTENT_CONGESTION_THRESHOLD, Rtt};
 use super::*;
+use crate::bytes::pool;
 use crate::types::ConnectionError;
 
 /// The owned parts of a packet header.
@@ -40,7 +41,14 @@ enum Outcome {
 
 impl Connection {
     /// Handles a received UDP datagram (possibly several coalesced packets).
+    #[cfg_attr(not(any(test, feature = "fuzzing")), allow(dead_code))]
     pub fn handle_datagram(&mut self, now: Instant, from: SocketAddr, data: Vec<u8>) {
+        self.handle_shared(now, from, Arc::new(data));
+    }
+
+    /// [`Connection::handle_datagram`] on a buffer from [`crate::bytes::pool`] (or any buffer
+    /// not shared yet), which goes back to the pool afterwards.
+    pub fn handle_shared(&mut self, now: Instant, from: SocketAddr, data: Arc<Vec<u8>>) {
         if matches!(self.state, State::Drained) {
             return;
         }
@@ -61,7 +69,7 @@ impl Connection {
         }
     }
 
-    fn datagram(&mut self, now: Instant, from: SocketAddr, data: Vec<u8>, fresh: bool) {
+    fn datagram(&mut self, now: Instant, from: SocketAddr, data: Arc<Vec<u8>>, fresh: bool) {
         let total = data.len();
         let mut off = 0;
         let mut first_dcid: Option<ConnectionId> = None;
@@ -90,13 +98,15 @@ impl Connection {
                 Some(d) if d != h.dcid => break,
                 _ => {}
             }
-            let pkt = if off == 0 && h.len == total {
+            let mut pkt = if off == 0 && h.len == total {
                 data.take().unwrap_or_default()
             } else {
-                buf[..h.len].to_vec()
+                pool::copy(&buf[..h.len])
             };
             off += h.len;
-            if let Outcome::Processed = self.packet(now, from, pkt, &h, total) {
+            let outcome = self.packet(now, from, &mut pkt, &h, total);
+            pool::recycle(pkt);
+            if let Outcome::Processed = outcome {
                 any = true;
             }
             if matches!(self.state, State::Drained) {
@@ -104,12 +114,11 @@ impl Connection {
             }
         }
         // A datagram moved whole into one packet was checked for a stateless reset there.
-        if !any && fresh {
-            if let Some(d) = &data {
-                if self.is_stateless_reset(d) {
-                    self.drain_now(ConnectionError::Reset);
-                }
+        if let Some(d) = data {
+            if !any && fresh && self.is_stateless_reset(&d) {
+                self.drain_now(ConnectionError::Reset);
             }
+            pool::recycle(d);
         }
     }
 
@@ -126,7 +135,7 @@ impl Connection {
         &mut self,
         now: Instant,
         from: SocketAddr,
-        mut pkt: Vec<u8>,
+        pkt: &mut Arc<Vec<u8>>,
         h: &Pkt,
         dgram_len: usize,
     ) -> Outcome {
@@ -136,7 +145,7 @@ impl Connection {
                 return Outcome::Processed;
             }
             PacketType::Retry => {
-                self.on_retry(now, &pkt, h);
+                self.on_retry(now, &pkt[..], h);
                 return Outcome::Processed;
             }
             PacketType::ZeroRtt => return Outcome::Undecryptable,
@@ -157,7 +166,7 @@ impl Connection {
         };
         if !have_keys {
             if self.buffered.len() < MAX_BUFFERED_PACKETS && !self.is_closed() {
-                self.buffered.push((from, pkt));
+                self.buffered.push((from, pkt.clone()));
             }
             return Outcome::Undecryptable;
         }
@@ -173,7 +182,8 @@ impl Connection {
             let Some(hk) = hk else {
                 return Outcome::Undecryptable;
             };
-            unprotect_header(hk, &mut pkt[..h.len], h.pn_offset)
+            // Unshared (fresh from the pool), so this does not copy.
+            unprotect_header(hk, &mut Arc::make_mut(pkt)[..h.len], h.pn_offset)
         };
         let Some((pn_len, tpn)) = unprot else {
             return Outcome::Undecryptable;
@@ -187,7 +197,7 @@ impl Connection {
         // Decrypt with the right key (and phase, for 1-RTT).
         let mut used = KeyUse::Current;
         let ok = {
-            let (head, rest) = pkt.split_at_mut(header_len);
+            let (head, rest) = Arc::make_mut(pkt).split_at_mut(header_len);
             let body = &mut rest[..h.len - header_len];
             let (ct, tag) = body.split_at_mut(body.len() - TAG_LEN);
             match sid {
@@ -215,7 +225,8 @@ impl Connection {
             }
         };
         if !ok {
-            if h.ty == PacketType::Short && h.len == dgram_len && self.is_stateless_reset(&pkt) {
+            if h.ty == PacketType::Short && h.len == dgram_len && self.is_stateless_reset(&pkt[..])
+            {
                 self.drain_now(ConnectionError::Reset);
                 return Outcome::Processed;
             }
@@ -291,7 +302,7 @@ impl Connection {
             }
             self.peer_initial_scid = Some(h.scid);
         }
-        let payload = Bytes::from(pkt).slice(header_len..h.len - TAG_LEN);
+        let payload = Bytes::from_shared(pkt.clone()).slice(header_len..h.len - TAG_LEN);
         if payload.is_empty() {
             self.close_transport(
                 now,
@@ -390,8 +401,8 @@ impl Connection {
         }
         self.spaces[0].keys = Some(initial_keys(&h.scid, true));
         // The server kept nothing: everything sent in Initial packets goes again.
-        let sent = std::mem::take(&mut self.spaces[0].sent);
-        for (_, p) in sent {
+        let sent: Vec<Sent> = self.spaces[0].sent.drain().collect();
+        for p in sent {
             if p.in_flight {
                 self.bytes_in_flight = self.bytes_in_flight.saturating_sub(u64::from(p.size));
             }
@@ -659,13 +670,7 @@ impl Connection {
         {
             let sp = &mut self.spaces[sid as usize];
             for r in ranges {
-                // Ranges come highest first; collect without holding the borrow.
-                let pns: Vec<u64> = sp.sent.range(r.clone()).map(|(k, _)| *k).collect();
-                for pn in pns {
-                    if let Some(p) = sp.sent.remove(&pn) {
-                        newly.push((pn, p));
-                    }
-                }
+                sp.sent.remove_range(r.clone(), &mut newly);
             }
             if newly.is_empty() {
                 return Ok(());
@@ -694,7 +699,7 @@ impl Connection {
             }
         }
         let app_limited = self.app_limited;
-        for (pn, p) in newly {
+        for (pn, mut p) in newly {
             if p.in_flight {
                 self.bytes_in_flight = self.bytes_in_flight.saturating_sub(u64::from(p.size));
                 if p.ack_eliciting {
@@ -711,13 +716,22 @@ impl Connection {
             if sid == SpaceId::Data && pn >= self.phase_first_sent {
                 self.phase_acked = true;
             }
-            for f in p.frames {
+            let mut frames = std::mem::take(&mut p.frames);
+            for f in frames.drain(..) {
                 self.on_frame_acked(sid, f);
             }
+            self.recycle_frames(frames);
         }
         self.detect_lost(now, sid);
         self.pto_count = 0;
         Ok(())
+    }
+
+    /// Keeps an emptied frame list for a later packet (a few dozen at most).
+    fn recycle_frames(&mut self, frames: Vec<SentFrame>) {
+        if self.spare_frames.len() < 64 && frames.capacity() > 0 {
+            self.spare_frames.push(frames);
+        }
     }
 
     fn on_frame_acked(&mut self, sid: SpaceId, f: SentFrame) {
@@ -805,7 +819,7 @@ impl Connection {
         let lost_send_time = now.checked_sub(loss_delay);
         sp.loss_time = None;
         let mut lost: Vec<u64> = Vec::new();
-        for (&pn, p) in sp.sent.range(..=largest) {
+        for (pn, p) in sp.sent.up_to(largest) {
             if lost_send_time.is_some_and(|t| p.time <= t) || largest >= pn + PACKET_THRESHOLD {
                 lost.push(pn);
             } else {
@@ -825,11 +839,11 @@ impl Connection {
             * PERSISTENT_CONGESTION_THRESHOLD;
         let mut packets = Vec::with_capacity(lost.len());
         for pn in lost {
-            if let Some(p) = self.spaces[sid as usize].sent.remove(&pn) {
+            if let Some(p) = self.spaces[sid as usize].sent.remove(pn) {
                 packets.push((pn, p));
             }
         }
-        for (pn, p) in packets {
+        for (pn, mut p) in packets {
             if p.in_flight {
                 self.bytes_in_flight = self.bytes_in_flight.saturating_sub(u64::from(p.size));
                 if p.ack_eliciting {
@@ -858,9 +872,11 @@ impl Connection {
                     }
                 }
             }
-            for f in p.frames {
+            let mut frames = std::mem::take(&mut p.frames);
+            for f in frames.drain(..) {
                 self.on_frame_lost(sid, f);
             }
+            self.recycle_frames(frames);
         }
         if let Some(t) = latest_lost {
             self.cc.on_congestion(now, t);

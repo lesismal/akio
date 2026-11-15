@@ -29,7 +29,7 @@
 | `slow_hook` | `None` | 是 | 接收报告的 `SlowHook(Arc<dyn Fn(&SlowCallback)>)`（否则写日志/stderr） |
 | `udp_idle_timeout` | 60 s | 否 | 丢弃静默的 UDP 对端（设置了更短的 `idle_timeout` 时以它为准） |
 | `udp_max_peers` | `None` | 否 | 每个 UDP listener 的最大对端数；超出后新对端被丢弃并计数 |
-| `udp_gro` | false | 否 | Linux UDP GRO；需要 `read_buffer` >= 64 KiB |
+| `udp_gro` | true | 否 | 内核支持时启用 Linux UDP GRO；需要 `read_buffer` >= 64 KiB |
 | `shutdown_timeout` | 10 s | 是 | `shutdown` 之后，超过这么久仍未关闭的连接被强制关闭 |
 | `max_connections` | 0（不限） | 是 | 打开的连接数达到此值后，新 accept 的连接立即关闭（全 engine 计数，含 dial 的连接和 UDP 对端） |
 | `log_level` | `None` | 是 | `only::log::LevelFilter`；用它调用 `only::log::set_max_level` |
@@ -97,7 +97,7 @@ false）。
 | 变量 | 作用 |
 |---|---|
 | `ONLY_UDP_GSO=0` | 在 Linux 上关闭 UDP GSO（Linux 4.18+；否则每个进程探测一次） |
-| `ONLY_UDP_GRO=0` | 即使设置了 `Config::udp_gro` 也不启用 UDP GRO（Linux 5.0+） |
+| `ONLY_UDP_GRO=0` | 无论 `Config::udp_gro` 如何都不启用 UDP GRO（Linux 5.0+） |
 
 测试套件还会读取 `ONLY_TEST_BACKEND=uring`（在 io_uring 上运行 engine 测试）和
 `ONLY_TEST_EXPECT_EBPF=1`（eBPF 不可用时失败而不是跳过）。
