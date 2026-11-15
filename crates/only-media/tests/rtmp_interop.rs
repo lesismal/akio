@@ -280,6 +280,32 @@ fn ffprobe_streams(url: &str) -> String {
 
 /// ffmpeg publishes over RTMP (H.264 + AAC, then H.265 + Opus with Enhanced RTMP), ffprobe and
 /// ffmpeg play it back over RTMP.
+/// Whether the installed ffmpeg can write Opus into FLV (enhanced RTMP, ffmpeg 7+).
+fn ffmpeg_muxes_opus_into_flv() -> bool {
+    Command::new("ffmpeg")
+        .args([
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=sample_rate=48000",
+            "-t",
+            "0.1",
+            "-c:a",
+            "libopus",
+            "-f",
+            "flv",
+            "-y",
+        ])
+        .arg(if cfg!(windows) { "NUL" } else { "/dev/null" })
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 #[test]
 fn ffmpeg_publish_and_play() {
     if !have("ffmpeg") || !have("ffprobe") {
@@ -289,10 +315,14 @@ fn ffmpeg_publish_and_play() {
     let mut cfg = RtmpConfig::default();
     cfg.play_wait = Some(Duration::from_secs(5));
     let (hub, engine, addr) = start(cfg);
-    for (vcodec, acodec, want) in [
-        ("libx264", "aac", "h264,320,240"),
-        ("libx265", "libopus", "hevc,320,240"),
-    ] {
+    let mut rounds = vec![("libx264", "aac", "h264,320,240")];
+    if ffmpeg_muxes_opus_into_flv() {
+        rounds.push(("libx265", "libopus", "hevc,320,240"));
+    } else {
+        // Enhanced RTMP (HEVC / Opus in FLV) needs ffmpeg 7 or newer.
+        eprintln!("this ffmpeg cannot mux Opus into FLV: HEVC/Opus round skipped");
+    }
+    for (vcodec, acodec, want) in rounds {
         let url = format!("rtmp://{addr}/live/ff");
         let mut pubp = Command::new("ffmpeg")
             .args([
