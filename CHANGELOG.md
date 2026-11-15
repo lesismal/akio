@@ -433,6 +433,25 @@ userspace stack is now `only`'s own, in `crates/only-dpdk/src/net` (safe Rust,
   `stack-bench`; A/B against the smoltcp version in docs/BENCHMARKS.md.
 - `deny.toml`: the 0BSD license and the `bitflags@1` duplicate (both smoltcp's) are gone.
 
+### Changed (performance): QUIC and TLS hot paths (DEV-PLAN performance pass)
+
+No API change. Ryzen 7 7800X3D, loopback, three alternating rounds (docs/BENCHMARKS.md):
+
+- `only-quic`: single-stream bulk 3.4-3.7 → 5.7-5.8 Gbit/s (1.25x the quinn-proto version, was
+  0.72x), HTTP/3 requests on one connection with 64 in flight 171k → 415-426k/s, handshakes +2%.
+  The pacer floored the RTT at 1 ms and, once empty, woke the sender for every packet through the
+  timer thread; it now uses the measured RTT and waits for a whole burst to refill (as
+  quinn-proto does), so paced data leaves in GSO batches from the I/O thread (per GiB: futex calls
+  423k → 5.6k, context switches 182k → 9.5k). Also cheaper per-packet bookkeeping (stream maps
+  without SipHash, in-order range inserts with one lookup, no per-datagram allocations for the
+  batch buffer and space selection).
+- `only-tls`: received records are copied once, straight into the caller's plaintext buffer, and
+  decrypted there (they used to go through the receive buffer and be copied out); large writes
+  reserve room for all their records at once. Seal + open +5-7% for 16-64 KiB records. Handshakes
+  were profiled: over 98% is curve arithmetic and hashing, so they are unchanged. New
+  `crates/only-tls/examples/tls-bench.rs` compares against rustls 0.23 + ring (dev-dependency
+  only).
+
 ### Changed (performance): only-deflate at zlib-rs speed (DEV-PLAN performance pass)
 
 `only-deflate` (still `#![forbid(unsafe_code)]`, no dependencies, no SIMD) now compresses at
