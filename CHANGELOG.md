@@ -80,6 +80,18 @@ for tests and benchmarks).
   `asm!` blocks, the whole-message calls), documented in docs/unsafe-review.md. Miri never
   reaches the `asm!`.
 
+### Fixed: io_uring kept calling `on_data` after reads paused
+
+- `only-uring`: once a connection's output queue reached `Config::write_high_watermark`, or the
+  handler called `hold_reads(true)`, the backend cancelled its multishot recv, but completions
+  that arrived before the cancel took effect (on a fast machine with a flooding peer, a dozen or
+  more 16 KiB reads) were still handed to `on_data`. An echo-style handler then queued past the
+  watermark up to `max_queued_bytes` and got `Error::Overloaded`, and held reads were not held.
+  It made `chaos_engine` fail every run on io_uring on a 16-thread Linux 7.0 machine
+  ("echo send failed: overloaded"). That input now waits in the connection, in order (an EOF
+  behind it too), and is delivered when reads resume, as epoll and kqueue stop reading instead.
+  No API change.
+
 ### Fixed: SOCKS and HTTP CONNECT tunnels could hang under backpressure
 
 - `only-socks`: a tunnel (SOCKS5/4/4a or HTTP `CONNECT`) could stop for good while relaying a

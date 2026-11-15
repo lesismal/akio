@@ -345,6 +345,12 @@ struct LoopConn {
     bp: bool,
     /// Peer sent EOF; we are only draining output.
     eof: bool,
+    /// Input that arrived while reads were paused (backpressure, `hold_reads`): a multishot recv
+    /// keeps completing until its cancel lands, so what it read waits here for `on_data` until
+    /// reads resume (epoll simply stops reading instead).
+    held_in: Vec<u8>,
+    /// The peer's EOF arrived behind `held_in`: it takes effect once that is delivered.
+    held_eof: bool,
     last_active: u64,
     idle_timer: Option<TimerId>,
     /// Pending write-timeout check (`Config::write_timeout`), and the bytes written when it
@@ -420,6 +426,39 @@ enum Done {
     Eof,
     Err(io::Error),
     Panic,
+}
+
+/// Whether `on_data` must wait: the handler held reads, or (unless relayed) the output queue
+/// reached `Config::write_high_watermark`, checked after every chunk as epoll does.
+fn reads_paused(lc: &LoopConn, high: usize) -> bool {
+    lc.bp
+        || lc.inner.read_held()
+        || (lc.inner.write_backpressure() && lc.inner.queued_bytes() >= high)
+}
+
+/// Runs `on_data` with `data`, then flushes what it queued.
+fn feed(
+    lc: &mut LoopConn,
+    data: &[u8],
+    id: u64,
+    cfg: &Config,
+    st: &LoopStats,
+    clock: &mut Instant,
+) -> Done {
+    lc.inner.set_corked(true);
+    let r = catch_unwind(AssertUnwindSafe(|| lc.handler.on_data(data)));
+    if cfg.telemetry.timing_enabled() {
+        *clock = cfg.telemetry.callback_done_at(st, "on_data", id, *clock);
+    } else {
+        st.callbacks.add_local(1);
+    }
+    if r.is_err() {
+        Done::Panic
+    } else if let Err(e) = lc.inner.uncork_flush() {
+        Done::Err(e)
+    } else {
+        Done::No
+    }
 }
 
 impl Loop {
@@ -734,8 +773,8 @@ impl Loop {
         let bid = cqe_buffer(flags);
         let more = cqe_more(flags);
         let now = self.clock.saturating_duration_since(self.epoch).as_millis() as u64;
-        let timed = self.cfg.telemetry.timing_enabled();
         let mut done = Done::No;
+        let mut fed = false;
         if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
             if !more {
                 lc.recv_armed = false;
@@ -744,40 +783,39 @@ impl Loop {
             if res > 0 {
                 let n = res as usize;
                 if let Some(bid) = bid {
-                    if !lc.eof && lc.inner.is_open() {
+                    if !lc.eof && !lc.held_eof && lc.inner.is_open() {
                         let off = bid as usize * self.buf_size;
                         lc.last_active = now;
                         lc.bytes_in += n as u64;
                         let st = &self.shared.stats;
                         st.reads.add_local(1);
                         st.bytes_in.add_local(n as u64);
-                        lc.inner.set_corked(true);
                         // SAFETY: the kernel handed buffer `bid` over in this completion; it is
                         // not in the ring again until `give_back` below, so nothing writes it
                         // while `data` lives. `slice` bounds-checks the range.
                         let data = unsafe { self.bufs.slice(off, n.min(self.buf_size)) };
-                        let r = catch_unwind(AssertUnwindSafe(|| lc.handler.on_data(data)));
-                        if timed {
-                            self.clock = self
-                                .cfg
-                                .telemetry
-                                .callback_done_at(st, "on_data", id, self.clock);
+                        // `refresh` ran after the previous completion, so `bp` is current.
+                        if !lc.held_in.is_empty() || lc.bp || lc.inner.read_held() {
+                            // Reads are paused, but the multishot recv runs until its cancel
+                            // lands (it can complete many more buffers first): keep the data,
+                            // in order, for when they resume (`replay`).
+                            lc.held_in.extend_from_slice(data);
                         } else {
-                            st.callbacks.add_local(1);
-                        }
-                        if r.is_err() {
-                            done = Done::Panic;
-                        } else if let Err(e) = lc.inner.uncork_flush() {
-                            done = Done::Err(e);
+                            done = feed(lc, data, id, &self.cfg, st, &mut self.clock);
+                            fed = true;
                         }
                     }
                 }
             } else if res == 0 {
-                if !lc.eof {
-                    lc.eof = true;
-                    // Peer is done sending: finish writing what we owe, then close.
-                    lc.inner.close_after_responses();
-                    done = Done::Eof;
+                if !lc.eof && !lc.held_eof {
+                    if lc.held_in.is_empty() {
+                        lc.eof = true;
+                        // Peer is done sending: finish writing what we owe, then close.
+                        lc.inner.close_after_responses();
+                        done = Done::Eof;
+                    } else {
+                        lc.held_eof = true; // after the held input (`replay`)
+                    }
                 }
             } else if res != -ffi::ENOBUFS && res != -ffi::ECANCELED && res != -ffi::EINTR {
                 done = Done::Err(io::Error::from_raw_os_error(-res));
@@ -788,7 +826,51 @@ impl Loop {
             self.give_back(bid);
             self.buf_ring.publish();
         }
-        if matches!(done, Done::No) && res > 0 {
+        self.after_data(id, done, fed);
+    }
+
+    /// Delivers input held while reads were paused, until it is all out or they pause again.
+    /// Called by `refresh` once reads may resume.
+    fn replay(&mut self, id: u64) {
+        let high = self.cfg.telemetry.live().write_high_watermark();
+        let chunk = self.buf_size;
+        let mut done = Done::No;
+        let mut fed = false;
+        if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+            let mut data = std::mem::take(&mut lc.held_in);
+            let mut off = 0;
+            while off < data.len() && lc.inner.is_open() && !reads_paused(lc, high) {
+                let end = data.len().min(off + chunk);
+                done = feed(
+                    lc,
+                    &data[off..end],
+                    id,
+                    &self.cfg,
+                    &self.shared.stats,
+                    &mut self.clock,
+                );
+                fed = true;
+                off = end;
+                if !matches!(done, Done::No) {
+                    break;
+                }
+            }
+            data.drain(..off);
+            lc.held_in = data;
+            if matches!(done, Done::No) && lc.held_in.is_empty() && lc.held_eof {
+                lc.held_eof = false;
+                lc.eof = true;
+                lc.inner.close_after_responses();
+                done = Done::Eof;
+            }
+        }
+        self.after_data(id, done, fed);
+    }
+
+    /// After `on_data` ran (`fed`) or input was held: the drain's `on_shutdown` for a connection
+    /// accepted while draining, then the follow-up for `done`.
+    fn after_data(&mut self, id: u64, mut done: Done, fed: bool) {
+        if matches!(done, Done::No) && fed {
             if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
                 if std::mem::take(&mut lc.shutdown_after_data) {
                     let (acc, inner) = (lc.acceptor.clone(), lc.inner.clone());
@@ -860,6 +942,8 @@ impl Loop {
                 poll_armed: false,
                 bp: false,
                 eof: false,
+                held_in: Vec::new(),
+                held_eof: false,
                 last_active: now,
                 idle_timer,
                 write_timer: None,
@@ -979,6 +1063,11 @@ impl Loop {
             lc.bp = false;
         }
         let want_read = !lc.inner.read_held() && !lc.bp && !lc.eof && lc.inner.is_open();
+        if want_read && (!lc.held_in.is_empty() || lc.held_eof) {
+            // Input held while paused goes first; `replay` comes back here (once it is out, or
+            // paused again, so this does not loop).
+            return self.replay(id);
+        }
         let fd = lc.inner.stream().as_raw_fd();
         let mut entries: Vec<Sqe> = Vec::new();
         if want_read && !lc.recv_armed {
