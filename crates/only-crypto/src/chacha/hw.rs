@@ -64,7 +64,7 @@ pub(super) fn xor_wide(state: &[u32; 16], src: Option<&[u8]>, dst: &mut [u8]) ->
         let mut st = *state;
         if whole > 0 {
             let to = dst.as_mut_ptr();
-            let from = src.map_or(to.cast_const(), <[u8]>::as_ptr);
+            let from = src.map_or_else(|| to.cast_const(), <[u8]>::as_ptr);
             // SAFETY: `cpu_has` confirmed AVX-512 F/BW/VL and the OS ZMM state; `whole >= 1`
             // groups of 1024 bytes fit in `dst` and in `src` (of the same length); `src` is a
             // shared slice and `dst` a unique one, so they do not overlap, and without `src` the
@@ -82,7 +82,7 @@ pub(super) fn xor_wide(state: &[u32; 16], src: Option<&[u8]>, dst: &mut [u8]) ->
             };
             if rest == w.bytes() {
                 let to = dst[done..].as_mut_ptr();
-                let from = src.map_or(to.cast_const(), |s| s[done..].as_ptr());
+                let from = src.map_or_else(|| to.cast_const(), |s| s[done..].as_ptr());
                 // SAFETY: as above, one group of exactly `rest` bytes from offset `done`.
                 unsafe { avx512::xor(&st, from, to, 1, w) };
             } else {

@@ -96,8 +96,7 @@ fn main() {
         });
         println!("{line}  ring {r:>7.0} MB/s  only/ring {:.2}", first / r);
 
-        let pt = vec![0xa5u8; len];
-        let mut sealed = pt.clone();
+        let mut sealed = vec![0xa5u8; len];
         let tag = ours[0]
             .1
             .encrypt_in_place_detached(&nonce, &aad, &mut sealed);

@@ -456,13 +456,31 @@ impl Poly1305 {
         self.h = [h0, h1, h2];
     }
 
-    /// Absorbs the whole 16-byte blocks of `data` (a multiple of 16 bytes).
-    fn full_blocks(&mut self, mut data: &[u8]) {
-        if self.wide && data.len() >= IFMA_MIN && hw::ifma_enabled() {
+    /// Whether `len` bytes of whole blocks go through the IFMA kernel.
+    fn uses_ifma(&self, len: usize) -> bool {
+        self.wide && len >= IFMA_MIN && hw::ifma_enabled()
+    }
+
+    /// The powers of `r` for the IFMA kernel.
+    fn ifma_powers(&self) -> hw::Powers {
+        Self::powers(to44([self.r[0], self.r[1], 0]))
+    }
+
+    /// Absorbs the whole 16-byte blocks of `data` (a multiple of 16 bytes), with the powers of
+    /// `r` for the IFMA kernel when the caller computed them already.
+    fn full_blocks(&mut self, mut data: &[u8], pw: Option<&hw::Powers>) {
+        if self.uses_ifma(data.len()) {
             let n = data.len() / hw::POLY_CHUNK * hw::POLY_CHUNK;
-            let r = to44([self.r[0], self.r[1], 0]);
             let mut h = to44(self.h);
-            if hw::poly_blocks(&mut h, &Self::powers(r), &data[..n]) {
+            let own;
+            let pw = match pw {
+                Some(pw) => pw,
+                None => {
+                    own = self.ifma_powers();
+                    &own
+                }
+            };
+            if hw::poly_blocks(&mut h, pw, &data[..n]) {
                 // Back to radix 2⁶⁴ (carried so that each limb is in range).
                 let [l0, mut l1, mut l2] = carry(h.map(u128::from));
                 l2 += l1 >> 44;
@@ -475,7 +493,12 @@ impl Poly1305 {
     }
 
     /// Absorbs `data`.
-    pub fn update(&mut self, mut data: &[u8]) {
+    pub fn update(&mut self, data: &[u8]) {
+        self.update_with(data, None);
+    }
+
+    /// [`update`](Self::update) with precomputed powers for the IFMA kernel.
+    fn update_with(&mut self, mut data: &[u8], pw: Option<&hw::Powers>) {
         if self.pos > 0 {
             let n = (16 - self.pos).min(data.len());
             self.buf[self.pos..self.pos + n].copy_from_slice(&data[..n]);
@@ -489,7 +512,7 @@ impl Poly1305 {
             self.pos = 0;
         }
         let whole = data.len() / 16 * 16;
-        self.full_blocks(&data[..whole]);
+        self.full_blocks(&data[..whole], pw);
         let rest = &data[whole..];
         self.buf[..rest.len()].copy_from_slice(rest);
         self.pos = rest.len();
@@ -687,10 +710,11 @@ impl ChaCha20Poly1305 {
         c.apply(lvl, dst);
     }
 
-    fn tag(mut p: Poly1305, aad: &[u8], ct: &[u8]) -> [u8; TAG_LEN] {
+    /// The tag of `aad` and `ct` (`pw`: the IFMA powers of `p`'s `r`, when computed already).
+    fn tag(mut p: Poly1305, aad: &[u8], ct: &[u8], pw: Option<&hw::Powers>) -> [u8; TAG_LEN] {
         p.update(aad);
         p.pad16();
-        p.update(ct);
+        p.update_with(ct, pw);
         p.pad16();
         p.update(&(aad.len() as u64).to_le_bytes());
         p.update(&(ct.len() as u64).to_le_bytes());
@@ -714,8 +738,12 @@ impl ChaCha20Poly1305 {
             "ChaCha20-Poly1305: plaintext too long"
         );
         let (lvl, st, head) = self.start(nonce, dst.len());
+        let p = Poly1305::with_level(&head.ks[..32], lvl);
+        // The powers of `r` for the IFMA kernel first: their scalar multiplications overlap the
+        // vector work of the cipher.
+        let pw = p.uses_ifma(dst.len() / 16 * 16).then(|| p.ifma_powers());
         Self::crypt(lvl, &st, &head, src, dst);
-        Self::tag(Poly1305::with_level(&head.ks[..32], lvl), aad, dst)
+        Self::tag(p, aad, dst, pw.as_ref())
     }
 
     /// Verifies the tag over the ciphertext `src` (or `dst` in place) and decrypts it into `dst`;
@@ -731,7 +759,7 @@ impl ChaCha20Poly1305 {
         let (lvl, st, head) = self.start(nonce, dst.len());
         let ct = src.unwrap_or(dst);
         if !crate::ct_eq(
-            &Self::tag(Poly1305::with_level(&head.ks[..32], lvl), aad, ct),
+            &Self::tag(Poly1305::with_level(&head.ks[..32], lvl), aad, ct, None),
             tag,
         ) {
             return false;
