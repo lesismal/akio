@@ -222,7 +222,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [ ] QUIC 数据通路遗留项：不再从 `recvmmsg` 缓冲区复制、已发送包改用环形缓冲、按批 ACK（需要 only-core 的批次结束钩子）、在支持的平台默认开启 GRO
 - [ ] 宽 AES-GCM 遗留项：无 AVX-512 的 CPU 用的 VAES-AVX2 内核、宽内核内的掩码尾部、TLS 记录的预先清零
 - [x] 对依赖秘密数据的路径做 dudect 式统计计时测试（CI 任务，不作为门禁）：`tools/ct-dudect`（Welch t 检验，固定对随机秘密，rdtsc / cntvct_el0，分位数裁剪加二阶检验），覆盖 P-256 ECDH/生成密钥/签名、X25519、Ed25519、RSA-2048、AES-GCM / ChaCha20-Poly1305 / HMAC 标签校验、`ct_eq` 与 `ct.rs` 原语，并有 A/A 与两个故意泄漏的自检目标；CI 任务 `ct-dudect`（continue-on-error，不属于 `ci-ok`，上传 t 值）。Zen 4 两条路径：无稳定泄漏。两处细小且时有时无的差异记录在 docs/constant-time.zh-CN.md（仅全零标量的 x25519 生成密钥，≤60 ppm；P-256 可移植签名处于 4.5 阈值边缘），需在安静主机上重测。
-- [ ] `only-deflate` 存储块解码只复制一次
+- [x] `only-deflate` 存储块解码只复制一次：直接写入输出，`decompress_vec` 追加时不填零，只有最后 32 KiB 进窗口。随机数据级别 6 解压 15.5 → 34.3 GB/s（zlib-rs 的 0.43 倍 → 0.94 倍）；以字面量为主的解码不变（试过每次补充解码 5 个字面量，无收益）。
 
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。

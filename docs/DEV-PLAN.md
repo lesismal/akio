@@ -222,7 +222,7 @@ Items:
 - [ ] QUIC datapath leftovers: no copy out of the `recvmmsg` buffer, a ring buffer for sent packets, per-batch ACKs (needs an only-core batch-end hook), GRO on by default where supported
 - [ ] Wide AES-GCM leftovers: a VAES-AVX2 kernel for CPUs without AVX-512, masked tails inside the wide kernel, the TLS record zero-fill
 - [x] A dudect-style statistical timing test for the secret-dependent paths (CI job, not a gate): `tools/ct-dudect` (Welch t-test, fixed vs random secrets, rdtsc / cntvct_el0, percentile cropping plus a second-order test) over P-256 ECDH/keygen/sign, X25519, Ed25519, RSA-2048, AES-GCM / ChaCha20-Poly1305 / HMAC tag checks, `ct_eq` and the `ct.rs` primitives, with an A/A and two deliberately leaky sanity targets; CI job `ct-dudect` (continue-on-error, not in `ci-ok`, t-values uploaded). Zen 4, both paths: no stable leak. Two small intermittent differences are written up in docs/constant-time.md (x25519 keygen with the all-zero scalar only, ≤60 ppm; P-256 portable sign at the 4.5 threshold) and need a re-run on a quiet host.
-- [ ] `only-deflate` stored blocks decoded with one copy
+- [x] `only-deflate` stored blocks decoded with one copy: straight into the output, `decompress_vec` appends without zero-fill, only the last 32 KiB into the window. Random data level 6 inflate 15.5 → 34.3 GB/s (0.43x → 0.94x zlib-rs); literal-heavy decode unchanged (5 literals per refill tried, no gain).
 
 ## 4. Engineering rules
 - **Branches/commits**: `main` stays releasable; feature branches + PRs; Conventional Commits.
