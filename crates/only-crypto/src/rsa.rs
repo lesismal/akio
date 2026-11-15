@@ -2,7 +2,7 @@
 //! verification), moduli of 2048 to 8192 bits.
 //!
 //! Private-key operations use the CRT with constant-time Montgomery exponentiation (fixed
-//! 4-bit windows over the full exponent length), base blinding (a random `r`, `rᵉ` and `r⁻¹`
+//! 5-bit windows over the full exponent length), base blinding (a random `r`, `rᵉ` and `r⁻¹`
 //! kept per key and squared after each use), and check the result against the public key
 //! before releasing it (fault attacks). Verification is variable time (public data) and
 //! compares the full encoded message, so BER variations of the DigestInfo never verify.

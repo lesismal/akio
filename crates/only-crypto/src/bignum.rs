@@ -3,8 +3,9 @@
 //!
 //! The modular operations used with secrets ([`Mont::mul`], [`Mont::pow`], [`Mont::reduce`],
 //! the constant computation in [`Mont::new`]) take time that depends only on the limb counts:
-//! CIOS Montgomery multiplication with a masked final subtraction, fixed 4-bit exponent windows
-//! with full-table lookups. Functions named `_vartime` are for public values only.
+//! Montgomery multiplication with a masked final subtraction (BMI2 + ADX assembly in `hw`,
+//! portable CIOS otherwise), fixed 5-bit exponent windows with full-table lookups (on AVX-512
+//! IFMA in radix 2⁵², `ifma`). Functions named `_vartime` are for public values only.
 
 use crate::ct;
 use crate::field::{mont_mul_cios, neg_inv64, redc, sqr_wide};
