@@ -123,6 +123,9 @@ fn streams_datagrams_and_close() {
         }
     }
     assert_eq!(c.alpn().as_deref(), Some(&b"echo"[..]));
+    // Loopback carries ECN codepoints on Linux: the path passed ECN validation.
+    #[cfg(target_os = "linux")]
+    assert!(c.stats().ecn_capable, "{:?}", c.stats());
     c.send_datagram(Bytes::from_static(b"ping")).unwrap();
     loop {
         match rx.recv_timeout(Duration::from_secs(5)).expect("datagram") {
@@ -169,6 +172,44 @@ fn bad_certificate_fails_the_handshake() {
             Got::Closed(r) => panic!("unexpected {r}"),
             _ => {}
         }
+    }
+    e.shutdown();
+}
+
+#[test]
+fn version_2() {
+    let (e, addr) = setup();
+    for version in [only_quic::Version::V2, only_quic::Version::V1] {
+        let (tx, rx) = mpsc::channel();
+        let cfg = only_quic::client_config_insecure(&[b"echo"])
+            .unwrap()
+            .version(version);
+        let c = only_quic::dial(
+            &e,
+            addr,
+            "localhost",
+            cfg,
+            Client {
+                tx,
+                bufs: HashMap::new(),
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Got::Connected
+        ));
+        assert_eq!(c.version(), version);
+        let id = c.open_bi().unwrap();
+        c.send(id, vec![7u8; 50_000]).unwrap();
+        c.finish(id).unwrap();
+        loop {
+            if let Got::Stream(_, b) = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+                assert_eq!(b, vec![7u8; 50_000]);
+                break;
+            }
+        }
+        c.close(0, b"");
     }
     e.shutdown();
 }

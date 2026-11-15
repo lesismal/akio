@@ -32,7 +32,7 @@ pub use random::fill_random;
 #[cfg(target_os = "linux")]
 pub use udp::{
     Batch, MAX_GSO_BYTES, MAX_GSO_SEGMENTS, RecvBatch, SEND_BATCH, SendBatch, disable_gso,
-    enable_gro, gro_available, gso_enabled,
+    ecn_available, enable_ecn, enable_gro, gro_available, gso_enabled,
 };
 #[cfg(target_os = "linux")]
 pub use waker::EventFd;

@@ -1,10 +1,11 @@
 # QUIC and HTTP/3
 
-`only-quic` is QUIC v1 (RFC 9000, 9001, 9002) with datagrams (RFC 9221), implemented in the
+`only-quic` is QUIC v1 (RFC 9000, 9001, 9002) and v2 (RFC 9369) with datagrams (RFC 9221), implemented in the
 crate as a sans-io state machine on `only-tls` and `only-crypto`, running on `only`'s UDP engine;
 `only-h3` implements HTTP/3 (RFC 9114) and QPACK on top and serves any only-http `Service`.
 Interop is tested in both directions with quic-go (raw QUIC echo of streams and datagrams,
-with Retry, key updates and a 150 MB transfer: `tools/interop/quic/run.sh`) and, for HTTP/3,
+with Retry, key updates, a 150 MB transfer, version 2 and client migration:
+`tools/interop/quic/run.sh`) and, for HTTP/3,
 with quic-go and fib's QUIC/HTTP/3 (`tools/interop/h3/run.sh`); ngtcp2 and OpenSSL 3.5's QUIC
 stack are checked as clients of our servers in Docker (`tools/interop/quic/docker.sh`).
 
@@ -64,6 +65,32 @@ skip the address-validation limits on the next connection. The `unstable` cargo 
 reserved and enables nothing (it exposed quinn-proto before the in-house implementation).
 `QuicServer::connections()` and `close_all(code, reason)` help at shutdown.
 
+### Versions, ECN, BBR and migration
+
+- **Versions**: QUIC v1 and v2 (RFC 9369). A server accepts both (`ServerConfig::versions`
+  narrows it) and answers in the client's; a client starts in `ClientConfig::version` (v1 by
+  default) and, when a server answers with Version Negotiation without it, starts over once in a
+  version both speak, the version_information transport parameter (RFC 9368) guarding against a
+  forged downgrade. `Connection::version()` tells which is in use. Compatible version negotiation
+  (switching inside one handshake) is not implemented.
+- **ECN** (`TransportConfig::ecn`, on by default): on Linux packets go out ECT(0), received
+  codepoints are read per datagram and reported in ACK_ECN frames, the path is validated (RFC 9000
+  section 13.4) and CE marks count as congestion; a path that bleaches or drops marks falls back
+  to unmarked packets. Elsewhere packets are not marked (`ONLY_UDP_ECN=0` turns marking off on
+  Linux too). `stats().ecn_capable` / `ecn_ce_events`.
+- **Congestion control**: `TransportConfig::congestion` picks CUBIC (default), NewReno or
+  `Congestion::Bbr`, an experimental BBR: BBRv1's model (Startup, Drain, ProbeBW, ProbeRTT) on
+  delivery-rate samples with BBRv2/v3's bound on rounds losing or CE-marking more than 2%. On a
+  simulated 20 Mbit/s, 40 ms path it keeps the RTT within about 6% of the minimum where CUBIC fills the
+  buffer, and gets 4x CUBIC's goodput under 1% random loss.
+- **Migration**: servers follow clients that change address (NAT rebinding) after path
+  validation. A client moves by itself with `Connection::migrate(&engine)`: to a new local UDP
+  socket, or to the server's preferred address when it offered one
+  (`ServerConfig::preferred_address(addr)`, served by a clone of the same `QuicServer` on a
+  second listener; `Connection::preferred_address()` on the client). The new path is probed
+  under a connection ID not used before and adopted once answered; without an answer within
+  three PTOs the connection stays where it was.
+
 ## HTTP/3
 
 ```rust,ignore
@@ -108,5 +135,5 @@ Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/only/blob/main/docs/BE
 
 ## Not done
 
-curl/quiche interop runs, WebSocket over HTTP/3 (extended CONNECT), the QPACK dynamic table
+QUIC 0-RTT, curl/quiche interop runs, WebSocket over HTTP/3 (extended CONNECT), the QPACK dynamic table
 (capacity 0 is advertised), server push, streamed request bodies.

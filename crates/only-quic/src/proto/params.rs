@@ -1,5 +1,7 @@
 //! Transport parameters (RFC 9000 section 18, RFC 9221 max_datagram_frame_size).
 
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6};
+
 use super::cid::{ConnectionId, ResetToken};
 use super::coding::{Reader, put_varint, varint_len};
 use super::frame::{TransportError, code};
@@ -26,8 +28,63 @@ pub struct TransportParams {
     pub retry_scid: Option<ConnectionId>,
     /// 0 = datagrams not accepted.
     pub max_datagram_frame_size: u64,
-    /// The server's preferred address was offered (not used).
-    pub preferred_address: bool,
+    /// The address the server would rather be reached at (RFC 9000 section 9.6).
+    pub preferred_address: Option<PreferredAddress>,
+    /// version_information (RFC 9368 section 3): the chosen version, then the available ones.
+    pub version_info: Option<(u32, Vec<u32>)>,
+}
+
+/// The preferred_address transport parameter: an IPv4 and/or an IPv6 address, the connection
+/// ID (sequence number 1) to use there and its stateless reset token.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreferredAddress {
+    pub v4: Option<SocketAddrV4>,
+    pub v6: Option<SocketAddrV6>,
+    pub cid: ConnectionId,
+    pub token: ResetToken,
+}
+
+impl PreferredAddress {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(41 + self.cid.len());
+        let v4 = self
+            .v4
+            .unwrap_or(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
+        out.extend_from_slice(&v4.ip().octets());
+        out.extend_from_slice(&v4.port().to_be_bytes());
+        let v6 = self
+            .v6
+            .unwrap_or(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0));
+        out.extend_from_slice(&v6.ip().octets());
+        out.extend_from_slice(&v6.port().to_be_bytes());
+        out.push(self.cid.len() as u8);
+        out.extend_from_slice(&self.cid);
+        out.extend_from_slice(&self.token);
+        out
+    }
+
+    fn decode(val: &[u8]) -> Option<PreferredAddress> {
+        let mut r = Reader::new(val);
+        let ip4: [u8; 4] = r.bytes(4)?.try_into().ok()?;
+        let p4 = r.u16()?;
+        let ip6: [u8; 16] = r.bytes(16)?.try_into().ok()?;
+        let p6 = r.u16()?;
+        let n = usize::from(r.u8()?);
+        // A server with zero-length connection IDs cannot offer a preferred address.
+        if n == 0 {
+            return None;
+        }
+        let cid = ConnectionId::new(r.bytes(n)?)?;
+        let token: ResetToken = r.bytes(16)?.try_into().ok()?;
+        if !r.is_empty() {
+            return None;
+        }
+        // An all-zero address and port: that family is not offered.
+        let v4 = (ip4 != [0; 4] || p4 != 0).then(|| SocketAddrV4::new(Ipv4Addr::from(ip4), p4));
+        let v6 =
+            (ip6 != [0; 16] || p6 != 0).then(|| SocketAddrV6::new(Ipv6Addr::from(ip6), p6, 0, 0));
+        Some(PreferredAddress { v4, v6, cid, token })
+    }
 }
 
 impl Default for TransportParams {
@@ -51,7 +108,8 @@ impl Default for TransportParams {
             initial_scid: None,
             retry_scid: None,
             max_datagram_frame_size: 0,
-            preferred_address: false,
+            preferred_address: None,
+            version_info: None,
         }
     }
 }
@@ -74,6 +132,7 @@ mod id {
     pub const CID_LIMIT: u64 = 0x0e;
     pub const INITIAL_SCID: u64 = 0x0f;
     pub const RETRY_SCID: u64 = 0x10;
+    pub const VERSION_INFO: u64 = 0x11;
     pub const MAX_DATAGRAM: u64 = 0x20;
 }
 
@@ -147,6 +206,16 @@ impl TransportParams {
         }
         if let Some(c) = &self.retry_scid {
             put_bytes(&mut out, id::RETRY_SCID, c);
+        }
+        if let Some(a) = &self.preferred_address {
+            put_bytes(&mut out, id::PREFERRED_ADDRESS, &a.encode());
+        }
+        if let Some((chosen, avail)) = &self.version_info {
+            let mut v = chosen.to_be_bytes().to_vec();
+            for a in avail {
+                v.extend_from_slice(&a.to_be_bytes());
+            }
+            put_bytes(&mut out, id::VERSION_INFO, &v);
         }
         // A reserved parameter (31 * N + 27) exercises the peer's handling of unknown ones.
         put_bytes(&mut out, 31 * 5 + 27, &[]);
@@ -238,10 +307,10 @@ impl TransportParams {
                 id::PREFERRED_ADDRESS => {
                     server_only()?;
                     // IPv4 (6) + IPv6 (18) + CID length + CID + reset token (16).
-                    if val.len() < 41 || val.len() != 41 + usize::from(val[24]) {
-                        return Err(perr("bad preferred_address"));
-                    }
-                    p.preferred_address = true;
+                    p.preferred_address = Some(
+                        PreferredAddress::decode(val)
+                            .ok_or_else(|| perr("bad preferred_address"))?,
+                    );
                 }
                 id::CID_LIMIT => {
                     p.active_connection_id_limit = int()?;
@@ -255,6 +324,19 @@ impl TransportParams {
                     p.retry_scid = Some(cid()?);
                 }
                 id::MAX_DATAGRAM => p.max_datagram_frame_size = int()?,
+                id::VERSION_INFO => {
+                    let vi = (val.len() >= 4 && val.len() % 4 == 0)
+                        .then(|| {
+                            let mut words = val
+                                .chunks(4)
+                                .map(|w| u32::from_be_bytes([w[0], w[1], w[2], w[3]]));
+                            let chosen = words.next()?;
+                            Some((chosen, words.collect::<Vec<u32>>()))
+                        })
+                        .flatten()
+                        .filter(|(c, a)| *c != 0 && !a.contains(&0));
+                    p.version_info = Some(vi.ok_or_else(|| perr("bad version_information"))?);
+                }
                 _ => {}
             }
         }
@@ -286,7 +368,13 @@ mod tests {
             initial_scid: ConnectionId::new(&[2; 8]),
             retry_scid: ConnectionId::new(&[3; 4]),
             max_datagram_frame_size: 65535,
-            preferred_address: false,
+            preferred_address: Some(PreferredAddress {
+                v4: Some("192.0.2.1:4433".parse().unwrap()),
+                v6: None,
+                cid: ConnectionId::new(&[4; 8]).unwrap(),
+                token: [6; 16],
+            }),
+            version_info: Some((1, vec![0x6b33_43cf, 1])),
         };
         let b = p.encode();
         assert_eq!(TransportParams::decode(&b, true).unwrap(), p);
@@ -327,10 +415,19 @@ mod tests {
         assert!(TransportParams::decode(&[1], true).is_err());
         assert!(TransportParams::decode(&[1, 5, 0], true).is_err());
         // Unknown parameters are ignored; a valid preferred_address is recorded.
-        let mut pa = vec![0u8; 41];
-        pa[24] = 0;
+        let mut pa = vec![0u8; 49];
+        pa[22..24].copy_from_slice(&443u16.to_be_bytes());
+        pa[24] = 8;
         let mut b = enc(0x1234, &[1, 2, 3]);
         b.extend(enc(id::PREFERRED_ADDRESS, &pa));
-        assert!(TransportParams::decode(&b, true).unwrap().preferred_address);
+        let got = TransportParams::decode(&b, true)
+            .unwrap()
+            .preferred_address
+            .unwrap();
+        assert_eq!((got.v4, got.v6.map(|a| a.port())), (None, Some(443)));
+        // A zero-length connection ID is not allowed there.
+        pa.truncate(41);
+        pa[24] = 0;
+        assert!(TransportParams::decode(&enc(id::PREFERRED_ADDRESS, &pa), true).is_err());
     }
 }

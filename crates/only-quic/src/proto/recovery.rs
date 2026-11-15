@@ -1,7 +1,9 @@
 //! Loss recovery building blocks (RFC 9002): the RTT estimator, NewReno and CUBIC (RFC 9438)
-//! congestion controllers, and a pacer.
+//! congestion controllers, BBR (see [`super::bbr`]) behind the same interface, and a pacer.
 
 use std::time::{Duration, Instant};
+
+use super::bbr::{Bbr, RateSample};
 
 /// Timer granularity (RFC 9002 kGranularity).
 pub const GRANULARITY: Duration = Duration::from_millis(1);
@@ -71,6 +73,7 @@ impl Rtt {
 pub enum CcKind {
     NewReno,
     Cubic,
+    Bbr,
 }
 
 /// A congestion controller in bytes (RFC 9002 section 7 and RFC 9438).
@@ -90,16 +93,22 @@ pub struct Congestion {
     k: f64,
     epoch: Option<Instant>,
     w_est: f64,
+    initial_rtt: Duration,
+    /// The BBR model (`CcKind::Bbr`), which then owns `window` and the pacing rate.
+    bbr: Option<Box<Bbr>>,
 }
 
 const BETA_CUBIC: f64 = 0.7;
 const C_CUBIC: f64 = 0.4;
 
 impl Congestion {
-    pub fn new(kind: CcKind, mtu: u16) -> Congestion {
+    pub fn new(kind: CcKind, mtu: u16, initial_rtt: Duration) -> Congestion {
+        let mtu16 = mtu;
         let mtu = u64::from(mtu);
         let w = initial_window(mtu);
         Congestion {
+            initial_rtt,
+            bbr: (kind == CcKind::Bbr).then(|| Box::new(Bbr::new(mtu16, w, initial_rtt))),
             kind,
             window: w,
             ssthresh: u64::MAX,
@@ -117,6 +126,44 @@ impl Congestion {
     pub fn set_mtu(&mut self, mtu: u16) {
         self.mtu = u64::from(mtu);
         self.window = self.window.max(self.min_window());
+        if let Some(b) = self.bbr.as_mut() {
+            b.set_mtu(mtu);
+            self.window = b.cwnd;
+        }
+    }
+
+    /// The pacing rate in bytes per second, when the controller sets one (BBR); otherwise the
+    /// pacer spreads the window over the RTT.
+    pub fn pacing_rate(&self) -> Option<u64> {
+        self.bbr.as_ref().map(|b| b.pacing_rate())
+    }
+
+    /// Whether the controller uses delivery-rate samples (BBR); the connection only keeps
+    /// them then.
+    pub fn wants_rate_samples(&self) -> bool {
+        self.bbr.is_some()
+    }
+
+    /// The BBR model, when that is the controller.
+    #[cfg(test)]
+    pub fn bbr(&self) -> Option<&Bbr> {
+        self.bbr.as_deref()
+    }
+
+    /// An acknowledgment (frame) was processed: `rs` is its delivery-rate sample, `inflight`
+    /// what is still in flight. Only BBR acts on it.
+    pub fn on_ack_event(&mut self, now: Instant, rs: &RateSample, inflight: u64) {
+        if let Some(b) = self.bbr.as_mut() {
+            b.on_ack(now, rs, inflight);
+            self.window = b.cwnd;
+        }
+    }
+
+    /// `bytes` were lost, or arrived CE-marked: BBR's per-round congestion signal.
+    pub fn on_lost(&mut self, bytes: u64) {
+        if let Some(b) = self.bbr.as_mut() {
+            b.on_lost(bytes);
+        }
     }
 
     fn min_window(&self) -> u64 {
@@ -136,7 +183,7 @@ impl Congestion {
         rtt: &Rtt,
         app_limited: bool,
     ) {
-        if self.in_recovery(sent) || app_limited {
+        if self.bbr.is_some() || self.in_recovery(sent) || app_limited {
             return;
         }
         if self.window < self.ssthresh {
@@ -151,7 +198,7 @@ impl Congestion {
                     self.window += self.mtu;
                 }
             }
-            CcKind::Cubic => self.cubic_ack(now, bytes, rtt),
+            CcKind::Cubic | CcKind::Bbr => self.cubic_ack(now, bytes, rtt),
         }
     }
 
@@ -189,7 +236,12 @@ impl Congestion {
         }
         self.events += 1;
         self.recovery_start = Some(now);
+        if self.bbr.is_some() {
+            // BBR does not cut its window per loss event: the round's loss rate bounds it.
+            return;
+        }
         match self.kind {
+            CcKind::Bbr => {}
             CcKind::NewReno => {
                 self.window = (self.window / 2).max(self.min_window());
             }
@@ -214,6 +266,9 @@ impl Congestion {
 
     /// Persistent congestion (RFC 9002 section 7.6): back to the minimum window.
     pub fn on_persistent_congestion(&mut self) {
+        if let Some(b) = self.bbr.as_mut() {
+            b.on_persistent_congestion();
+        }
         self.window = self.min_window();
         self.recovery_start = None;
         self.w_max = 0.0;
@@ -222,7 +277,7 @@ impl Congestion {
 
     /// A new path: start over.
     pub fn reset(&mut self) {
-        *self = Congestion::new(self.kind, self.mtu as u16);
+        *self = Congestion::new(self.kind, self.mtu as u16, self.initial_rtt);
     }
 }
 
@@ -249,11 +304,12 @@ impl Pacer {
 
     /// When a packet of `size` bytes may be sent, or `None` for now.
     ///
-    /// Bursts of about 2 ms worth of window (10 to 256 packets) refill at 1.25 * window / RTT,
-    /// using the measured RTT (a loopback or LAN path may need microseconds, not milliseconds).
-    /// Once the bucket is empty the sender waits until a whole burst has refilled, so a paced
-    /// sender wakes up once per burst and its datagrams leave in GSO-sized batches, rather than
-    /// once per packet.
+    /// The bucket refills at `rate` bytes per second when the controller sets one (BBR), else
+    /// at 1.25 * window / RTT, using the measured RTT (a loopback or LAN path may need
+    /// microseconds, not milliseconds); it holds bursts of 1.6 ms at that rate (about 2 ms of
+    /// window, 10 to 256 packets). Once the bucket is empty the sender waits until a whole burst
+    /// has refilled, so a paced sender wakes up once per burst and its datagrams leave in
+    /// GSO-sized batches, rather than once per packet.
     pub fn delay(
         &mut self,
         now: Instant,
@@ -261,9 +317,15 @@ impl Pacer {
         mtu: u64,
         window: u64,
         rtt: Duration,
+        rate: Option<u64>,
     ) -> Option<Instant> {
-        let rtt_ns = rtt.as_nanos().max(1);
-        let cap = ((u128::from(window) * 2_000_000 / rtt_ns) as u64)
+        // The rate as `num` bytes per `den` nanoseconds (no division until it is used: this
+        // runs for every datagram).
+        let (num, den) = match rate {
+            Some(r) => (u128::from(r.max(1)), 1_000_000_000u128),
+            None => ((u128::from(window) * 5 / 4).max(1), rtt.as_nanos().max(1)),
+        };
+        let cap = ((num * 1_600_000 / den) as u64)
             .clamp(10 * mtu, 256 * mtu)
             .min(window.max(10 * mtu));
         if cap != self.capacity {
@@ -275,7 +337,7 @@ impl Pacer {
         }
         let last = *self.last.get_or_insert(now);
         let elapsed = now.saturating_duration_since(last);
-        let refill = (u128::from(window) * 5 / 4 * elapsed.as_nanos() / rtt_ns) as u64;
+        let refill = (num * elapsed.as_nanos() / den) as u64;
         if refill > 0 {
             self.tokens = self.tokens.saturating_add(refill).min(cap);
             self.last = Some(now);
@@ -285,7 +347,7 @@ impl Pacer {
         }
         // Wait for a full burst (at least this packet).
         let missing = size.max(cap) - self.tokens;
-        let nanos = (u128::from(missing) * rtt_ns * 4 / (u128::from(window.max(1)) * 5)) as u64;
+        let nanos = (u128::from(missing) * den / num) as u64;
         Some(now + Duration::from_nanos(nanos.max(1)))
     }
 
@@ -323,7 +385,7 @@ mod tests {
         let now = Instant::now();
         let rtt = Rtt::new(Duration::from_millis(10));
         for kind in [CcKind::NewReno, CcKind::Cubic] {
-            let mut c = Congestion::new(kind, 1200);
+            let mut c = Congestion::new(kind, 1200, Duration::from_millis(333));
             assert_eq!(c.window, 12000);
             c.on_ack(now, now, 1200, &rtt, false);
             assert_eq!(c.window, 13200);
@@ -358,16 +420,16 @@ mod tests {
         let rtt = Duration::from_millis(100);
         let window = 100 * 1200;
         let mut sent = 0;
-        while p.delay(now, 1200, 1200, window, rtt).is_none() {
+        while p.delay(now, 1200, 1200, window, rtt, None).is_none() {
             p.on_sent(1200);
             sent += 1;
         }
         assert!((10..=20).contains(&sent), "{sent}");
-        let at = p.delay(now, 1200, 1200, window, rtt).unwrap();
+        let at = p.delay(now, 1200, 1200, window, rtt, None).unwrap();
         // The bucket (10 packets here) refills at 1.25 windows per RTT: 8 ms.
         assert!(at > now + Duration::from_millis(7) && at <= now + Duration::from_millis(8));
         let mut again = 0;
-        while p.delay(at, 1200, 1200, window, rtt).is_none() {
+        while p.delay(at, 1200, 1200, window, rtt, None).is_none() {
             p.on_sent(1200);
             again += 1;
         }
@@ -379,7 +441,7 @@ mod tests {
         let mut sent = 0u64;
         let mut t = t0;
         while t < t0 + Duration::from_millis(1) {
-            match p.delay(t, 1200, 1200, window, rtt) {
+            match p.delay(t, 1200, 1200, window, rtt, None) {
                 None => {
                     p.on_sent(1200);
                     sent += 1;

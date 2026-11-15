@@ -161,6 +161,8 @@ impl UdpLoop {
                 if gro_ok(&cfg) {
                     only_sys::enable_gro(sock.as_raw_fd());
                 }
+                #[cfg(target_os = "linux")]
+                only_sys::enable_ecn(sock.as_raw_fd());
                 poller.add(sock.as_raw_fd(), SOCK, true, false)?;
                 let local = sock.local_addr()?;
                 (Some(Arc::new(sock)), Some(local), Some(acceptor))
@@ -338,13 +340,14 @@ impl UdpLoop {
             self.clock = Instant::now();
             for i in 0..n {
                 if let Some((data, peer, seg)) = batch.get(i) {
+                    let ecn = batch.ecn(i);
                     if seg > 0 && seg < data.len() {
                         // GRO coalesced several datagrams of this peer: restore the boundaries.
                         for d in data.chunks(seg) {
-                            self.on_datagram(src, peer, d);
+                            self.on_datagram(src, peer, d, ecn);
                         }
                     } else {
-                        self.on_datagram(src, peer, data);
+                        self.on_datagram(src, peer, data, ecn);
                     }
                 }
             }
@@ -417,7 +420,7 @@ impl UdpLoop {
                 match sock.recv_from(&mut buf) {
                     Ok((n, peer)) => {
                         self.clock = Instant::now();
-                        self.on_datagram(src, peer, &buf[..n]);
+                        self.on_datagram(src, peer, &buf[..n], 0);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break 'event,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -433,7 +436,8 @@ impl UdpLoop {
         self.flush_touched();
     }
 
-    fn on_datagram(&mut self, src: Option<u64>, peer: SocketAddr, data: &[u8]) {
+    /// One datagram from `peer` with ECN codepoint `ecn` (0 when not reported).
+    fn on_datagram(&mut self, src: Option<u64>, peer: SocketAddr, data: &[u8], ecn: u8) {
         if self.draining.is_some() {
             return;
         }
@@ -465,6 +469,7 @@ impl UdpLoop {
             }
             self.touched.push(id);
         }
+        p.inner.set_rx_ecn(ecn);
         let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
         self.timed_end("on_data", id, t0);
         if r.is_err() {
@@ -573,6 +578,8 @@ impl UdpLoop {
         if gro_ok(&self.cfg) {
             only_sys::enable_gro(sock.as_raw_fd());
         }
+        #[cfg(target_os = "linux")]
+        only_sys::enable_ecn(sock.as_raw_fd());
         if self.poller.add(sock.as_raw_fd(), id, true, false).is_err() {
             return;
         }
@@ -648,10 +655,11 @@ impl UdpLoop {
                 let Some((data, _, seg)) = batch.get(i) else {
                     continue;
                 };
+                let ecn = batch.ecn(i);
                 // GRO coalesced several datagrams: restore the boundaries.
                 let seg = if seg > 0 { seg } else { data.len().max(1) };
                 for d in data.chunks(seg) {
-                    if !self.deliver(id, d) {
+                    if !self.deliver(id, d, ecn) {
                         break 'recv;
                     }
                 }
@@ -695,7 +703,7 @@ impl UdpLoop {
             match sock.recv(&mut buf) {
                 Ok(n) => {
                     self.clock = Instant::now();
-                    if !self.deliver(id, &buf[..n]) {
+                    if !self.deliver(id, &buf[..n], 0) {
                         self.scratch = Some(buf);
                         return;
                     }
@@ -721,7 +729,7 @@ impl UdpLoop {
     }
 
     /// One datagram for dialed connection `id`. `false` when the connection is gone.
-    fn deliver(&mut self, id: u64, data: &[u8]) -> bool {
+    fn deliver(&mut self, id: u64, data: &[u8], ecn: u8) -> bool {
         let t0 = self.timed_start();
         let now = self.clock_tick();
         let Some(p) = self.conns.get_mut(&id) else {
@@ -730,6 +738,7 @@ impl UdpLoop {
         p.last_active = now;
         p.bytes_in += data.len() as u64;
         self.shared.stats.datagram_in(data.len());
+        p.inner.set_rx_ecn(ecn);
         let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
         self.timed_end("on_data", id, t0);
         if r.is_err() {
@@ -835,6 +844,8 @@ impl UdpLoop {
         if gro_ok(&self.cfg) {
             only_sys::enable_gro(sock.as_raw_fd());
         }
+        #[cfg(target_os = "linux")]
+        only_sys::enable_ecn(sock.as_raw_fd());
         if self.poller.add(sock.as_raw_fd(), id, true, false).is_err() {
             return;
         }

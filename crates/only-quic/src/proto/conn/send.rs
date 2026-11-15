@@ -42,10 +42,15 @@ impl Connection {
                 }
             }
         }
+        if let Some(t) = self.write_probe(now) {
+            return Some(t);
+        }
         if let Some(t) = self.write_mtu_probe(now) {
             return Some(t);
         }
         let max = max_datagrams.max(1);
+        // One ECN marking for the whole batch (the I/O sends it with one codepoint).
+        self.tx_ecn = self.ecn.marking();
         let mut buf = Vec::with_capacity(usize::from(self.mtu) * max);
         let mut seg = 0usize;
         let mut n = 0usize;
@@ -75,6 +80,12 @@ impl Connection {
             dest: self.path.remote,
             segment_size: (n > 1).then_some(seg),
             data: buf,
+            ecn: if self.tx_ecn {
+                ecn::cp::ECT0
+            } else {
+                ecn::cp::NOT_ECT
+            },
+            probe: false,
         })
     }
 
@@ -169,6 +180,7 @@ impl Connection {
                 u64::from(self.mtu),
                 self.cc.window,
                 self.rtt.smoothed,
+                self.cc.pacing_rate(),
             ) {
                 self.pacing_until = Some(at);
                 blocked = true;
@@ -186,6 +198,9 @@ impl Connection {
         if wants.is_empty() {
             if !blocked {
                 self.app_limited = true;
+                // Rate samples are application-limited until what is in flight now is
+                // delivered.
+                self.dlv.app_limited_until = (self.dlv.delivered + self.bytes_in_flight).max(1);
             }
             return None;
         }
@@ -250,11 +265,27 @@ impl Connection {
                 } else {
                     Vec::new()
                 };
-                PacketBuilder::long(buf, PacketType::Initial, &dcid, &scid, &token, pn, pnl)
+                PacketBuilder::long(
+                    buf,
+                    self.version,
+                    PacketType::Initial,
+                    &dcid,
+                    &scid,
+                    &token,
+                    pn,
+                    pnl,
+                )
             }
-            SpaceId::Handshake => {
-                PacketBuilder::long(buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl)
-            }
+            SpaceId::Handshake => PacketBuilder::long(
+                buf,
+                self.version,
+                PacketType::Handshake,
+                &dcid,
+                &scid,
+                &[],
+                pn,
+                pnl,
+            ),
             SpaceId::Data => {
                 let phase = self.one_rtt.as_ref().is_some_and(|k| k.phase);
                 PacketBuilder::short(buf, &dcid, phase, pn, pnl)
@@ -271,6 +302,7 @@ impl Connection {
         let mut fill = false;
         // ACK first.
         {
+            let counts = self.ecn.report(sid as usize);
             let sp = &mut self.spaces[sid as usize];
             if sp.rx_new && !sp.rx.is_empty() && buf.len() + ack_room(sp) <= max_end {
                 let delay = if sid == SpaceId::Data {
@@ -281,7 +313,7 @@ impl Connection {
                 } else {
                     0
                 };
-                frame::put_ack(buf, &sp.rx, delay, MAX_ACK_RANGES);
+                frame::put_ack_ecn(buf, &sp.rx, delay, MAX_ACK_RANGES, counts);
                 if let Some(l) = sp.rx.max() {
                     frames.push(SentFrame::Ack(l));
                 }
@@ -350,6 +382,27 @@ impl Connection {
         }
         let size = (buf.len() - pkt_start) as u16;
         let in_flight = eliciting || padded;
+        if self.tx_ecn {
+            self.ecn.on_marked_sent(sid as usize);
+        }
+        // Delivery-rate state, for a controller that samples it (BBR).
+        let (delivered, delivered_age, first_sent_age, app_limited) =
+            if self.cc.wants_rate_samples() {
+                if in_flight && self.bytes_in_flight == 0 {
+                    // A new flight: its rate intervals start now.
+                    self.dlv.first_sent = now;
+                    self.dlv.delivered_time = now;
+                }
+                let d = self.dlv;
+                (
+                    d.delivered,
+                    age_us(now, d.delivered_time),
+                    age_us(now, d.first_sent),
+                    d.app_limited_until != 0,
+                )
+            } else {
+                (0, 0, 0, false)
+            };
         let sp = &mut self.spaces[sid as usize];
         sp.next_pn += 1;
         if eliciting {
@@ -367,6 +420,11 @@ impl Connection {
                 ack_eliciting: eliciting,
                 in_flight,
                 mtu_probe: false,
+                ecn: self.tx_ecn,
+                delivered,
+                delivered_age,
+                first_sent_age,
+                app_limited,
                 frames,
             },
         );
@@ -728,12 +786,14 @@ impl Connection {
         to: SocketAddr,
         data: [u8; 8],
     ) -> Option<Transmit> {
+        // Not the connection ID of the current path: one per destination (RFC 9000 9.5).
+        let dcid = self.path_cid(to);
         let k = self.one_rtt.as_ref()?;
         let sp = &self.spaces[2];
         let pn = sp.next_pn;
         let pnl = pn_len(pn, sp.largest_acked);
         let mut buf = Vec::with_capacity(MIN_INITIAL_SIZE);
-        let b = PacketBuilder::short(&mut buf, &self.remote_cid(), k.phase, pn, pnl);
+        let b = PacketBuilder::short(&mut buf, &dcid, k.phase, pn, pnl);
         buf.push(ty::PATH_RESPONSE as u8);
         buf.extend_from_slice(&data);
         buf.resize(MIN_INITIAL_SIZE - TAG_LEN, 0);
@@ -749,6 +809,11 @@ impl Connection {
                 ack_eliciting: true,
                 in_flight: false,
                 mtu_probe: false,
+                ecn: false,
+                delivered: self.dlv.delivered,
+                delivered_age: age_us(now, self.dlv.delivered_time),
+                first_sent_age: age_us(now, self.dlv.first_sent),
+                app_limited: true,
                 frames: Vec::new(),
             },
         );
@@ -760,6 +825,8 @@ impl Connection {
             dest: to,
             segment_size: None,
             data: buf,
+            ecn: 0,
+            probe: false,
         })
     }
 
@@ -793,6 +860,11 @@ impl Connection {
                 ack_eliciting: true,
                 in_flight: true,
                 mtu_probe: true,
+                ecn: false,
+                delivered: self.dlv.delivered,
+                delivered_age: age_us(now, self.dlv.delivered_time),
+                first_sent_age: age_us(now, self.dlv.first_sent),
+                app_limited: true,
                 frames: Vec::new(),
             },
         );
@@ -806,6 +878,8 @@ impl Connection {
             dest: self.path.remote,
             segment_size: None,
             data: buf,
+            ecn: 0,
+            probe: false,
         })
     }
 
@@ -850,11 +924,27 @@ impl Connection {
                     } else {
                         Vec::new()
                     };
-                    PacketBuilder::long(&mut buf, PacketType::Initial, &dcid, &scid, &tok, pn, pnl)
+                    PacketBuilder::long(
+                        &mut buf,
+                        self.version,
+                        PacketType::Initial,
+                        &dcid,
+                        &scid,
+                        &tok,
+                        pn,
+                        pnl,
+                    )
                 }
-                SpaceId::Handshake => {
-                    PacketBuilder::long(&mut buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl)
-                }
+                SpaceId::Handshake => PacketBuilder::long(
+                    &mut buf,
+                    self.version,
+                    PacketType::Handshake,
+                    &dcid,
+                    &scid,
+                    &[],
+                    pn,
+                    pnl,
+                ),
                 SpaceId::Data => {
                     let phase = self.one_rtt.as_ref().is_some_and(|k| k.phase);
                     PacketBuilder::short(&mut buf, &dcid, phase, pn, pnl)
@@ -913,6 +1003,8 @@ impl Connection {
             dest: self.path.remote,
             segment_size: None,
             data: buf,
+            ecn: 0,
+            probe: false,
         })
     }
 

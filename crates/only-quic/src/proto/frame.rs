@@ -27,6 +27,8 @@ pub mod code {
     pub const CRYPTO_BUFFER_EXCEEDED: u64 = 0xd;
     pub const KEY_UPDATE_ERROR: u64 = 0xe;
     pub const AEAD_LIMIT_REACHED: u64 = 0xf;
+    /// RFC 9368 section 10.2.
+    pub const VERSION_NEGOTIATION_ERROR: u64 = 0x11;
     pub const CRYPTO_ERROR: u64 = 0x100;
 }
 
@@ -371,11 +373,23 @@ pub fn parse<'a>(r: &mut Reader<'a>) -> Result<Frame<'a>, TransportError> {
 // ---- encoding ----
 
 /// Writes an ACK frame for `ranges` (at most `max_ranges` highest), with the raw delay field.
+#[cfg_attr(not(any(test, feature = "fuzzing")), allow(dead_code))]
 pub fn put_ack(out: &mut Vec<u8>, ranges: &RangeSet, delay: u64, max_ranges: usize) {
+    put_ack_ecn(out, ranges, delay, max_ranges, None);
+}
+
+/// [`put_ack`], as an ACK_ECN frame carrying the ECT(0), ECT(1) and CE counts when given.
+pub fn put_ack_ecn(
+    out: &mut Vec<u8>,
+    ranges: &RangeSet,
+    delay: u64,
+    max_ranges: usize,
+    ecn: Option<[u64; 3]>,
+) {
     let mut it = ranges.iter().rev().take(max_ranges.max(1));
     let Some(first) = it.next() else { return };
     let rest: Vec<Range<u64>> = it.collect();
-    put_varint(out, ty::ACK);
+    put_varint(out, if ecn.is_some() { ty::ACK_ECN } else { ty::ACK });
     let largest = first.end - 1;
     put_varint(out, largest);
     put_varint(out, delay);
@@ -388,12 +402,17 @@ pub fn put_ack(out: &mut Vec<u8>, ranges: &RangeSet, delay: u64, max_ranges: usi
         put_varint(out, hi - r.start);
         smallest = r.start;
     }
+    if let Some(c) = ecn {
+        for v in c {
+            put_varint(out, v);
+        }
+    }
 }
 
-/// Upper bound of an ACK frame's size.
+/// Upper bound of an ACK frame's size (an ACK_ECN frame's: three counts included).
 pub fn ack_size(ranges: &RangeSet, delay: u64, max_ranges: usize) -> usize {
     let n = ranges.len().min(max_ranges.max(1));
-    1 + 8 + varint_len(delay) + varint_len(n as u64) + n * 16
+    1 + 8 + varint_len(delay) + varint_len(n as u64) + n * 16 + 3 * 8
 }
 
 pub fn put_crypto_header(out: &mut Vec<u8>, offset: u64, len: usize) {
@@ -512,6 +531,14 @@ mod tests {
         out.clear();
         put_ack(&mut out, &empty, 0, 4);
         assert!(out.is_empty());
+        // And written.
+        put_ack_ecn(&mut out, &s, 3, 32, Some([7, 0, 1 << 40]));
+        assert!(out.len() <= ack_size(&s, 3, 32));
+        let Frame::Ack { ranges, ecn, .. } = one(&out).unwrap() else {
+            panic!()
+        };
+        assert_eq!(ranges.len(), 3);
+        assert_eq!(ecn, Some([7, 0, 1 << 40]));
     }
 
     #[test]

@@ -28,6 +28,39 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 新增：`only-quic` 的 ECN、BBR、客户端迁移、preferred_address 与 QUIC v2
+
+- **ECN**（RFC 9000 第 13.4 节、RFC 9002 第 7.1 节），`TransportConfig::ecn`（默认开启）：Linux 上
+  以 ECT(0) 发送，在 ACK_ECN 帧中报告收到的码点；用十个包的测试期和对端计数验证路径，CE 标记视为
+  拥塞事件，清除、改写或丢弃带标记包的路径回退为不带标记发送。新增
+  `ConnectionStats::ecn_capable` / `ecn_ce_events`。UDP 层逐个数据报传递码点：接收时用
+  `IP_RECVTOS` / `IPV6_RECVTCLASS`，发送时每条 `sendmmsg` 消息带一个 `IP_TOS` / `IPV6_TCLASS`
+  控制消息（`only_sys::enable_ecn`、`ecn_available`、`RecvBatch::ecn`、`Batch::push_ecn`；
+  `ONLY_UDP_ECN=0` 关闭）。
+- **BBR**：`Congestion::Bbr` 不再运行 CUBIC，而是基于投递速率采样的 BBRv1 模型与状态机，加上
+  BBRv2/v3 对丢包或 CE 标记超过 2% 的轮次的上限。在测试机上用网络命名空间加 netem（100 Mbit/s、
+  40 ms RTT、双向各回显 40 MB）：1% 丢包时 73 对 CUBIC 的 5 Mbit/s，60 个包的缓冲时 75 对 36 Mbit/s，
+  干净的深缓冲上都是 84 Mbit/s。实验性。
+- **客户端迁移**：`Connection::migrate(&engine)` 把客户端连接迁到新的本地 UDP socket 或服务端的
+  首选地址，先用一个未用过的连接 ID 探测新路径；探测无回应时留在原路径。新增
+  `Connection::preferred_address()`、`Error::Migration`。
+- **preferred_address**：`ServerConfig::preferred_address(addr)` 提供首选地址（连接 ID 序号 1 及其
+  重置令牌）；`QuicServer` 现在实现 `Clone`，同一个服务端可在第二个监听器上服务该地址。
+- **QUIC 版本 2**（RFC 9369）：`Version`、`ClientConfig::version`、`ServerConfig::versions`、
+  `Connection::version()`。服务端接受 1 和 2；收到版本协商包的客户端在双方都支持的版本上重新开始
+  一次，并以 RFC 9368 的 version_information 参数防降级。未实现兼容版本协商（在握手中切换版本）。
+- 互通（`tools/interop/quic/run.sh`）：与 quic-go 双向的版本 2（停在 quic-go 第一次密钥更新之前：
+  quic-go v0.62 对版本 2 的密钥更新用了版本 1 的标签，与 RFC 9369 第 3.3.2 节不符）、双向客户端迁移
+  （我方使用 BBR），以及 Linux 上与 quic-go 的 ECN 验证。
+- 对来自其他地址的路径探测的回应现在使用单独的连接 ID（RFC 9000 第 9.5 节）；quic-go 的迁移客户端
+  需要这一点。
+- 未完成：0-RTT。
+
+环回基准上的开销（`quic-bench`，测试机，CPU 2–5，与合并基点交替五轮取中位数）：bulk 18,704 →
+18,288 Mbit/s（−2.2%；`ONLY_UDP_ECN=0` 时 −1.5%），HTTP/3 839,148 → 824,949 req/s（−1.7%；
+−1.0%），完整握手 9,725 → 9,615/s（−1.1%；−0.8%）。ECN 的部分来自每个数据报的控制消息与 ACK_ECN
+计数。
+
 ### 评估：内核 TLS 卸载（未采用，实验性 feature）
 
 - 在 Linux 7.0 / Ryzen 7 7800X3D 上用 TLS 上的 HTTP/1.1 测量了握手后把 only-tls 的记录密钥交给 Linux

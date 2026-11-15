@@ -136,7 +136,19 @@ impl Endpoint {
     }
 
     /// Routes a datagram from `from`.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub fn handle(&mut self, now: Instant, from: SocketAddr, data: &[u8]) -> Option<DatagramEvent> {
+        self.handle_ecn(now, from, 0, data)
+    }
+
+    /// Routes a datagram from `from` that arrived with ECN codepoint `ecn`.
+    pub fn handle_ecn(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        ecn: u8,
+        data: &[u8],
+    ) -> Option<DatagramEvent> {
         let first = *data.first()?;
         if first & 0x80 == 0 {
             let cid = ConnectionId::new(data.get(1..1 + LOCAL_CID_LEN)?)?;
@@ -156,18 +168,17 @@ impl Endpoint {
         let h = match packet::parse_header(data, LOCAL_CID_LEN) {
             Ok(h) => h,
             Err(HeaderError::UnsupportedVersion { dcid, scid }) => {
-                if self.server.is_some() && data.len() >= MIN_INITIAL_SIZE {
-                    let r = (self.rng.next_u32() & 0x7f) as u8;
-                    return Some(DatagramEvent::Respond(Transmit {
-                        dest: from,
-                        segment_size: None,
-                        data: packet::version_negotiation(&dcid, &scid, r),
-                    }));
-                }
-                return None;
+                return self.version_negotiation(from, &dcid, &scid, data.len());
             }
             Err(HeaderError::Invalid) => return None,
         };
+        // A version this server does not offer.
+        if let Some(s) = &self.server {
+            if h.ty != PacketType::VersionNegotiation && !s.cfg.versions.contains(&h.version) {
+                let (d, sc) = (h.dcid, h.scid);
+                return self.version_negotiation(from, &d, &sc, data.len());
+            }
+        }
         if let Some(&c) = self
             .routes
             .get(&h.dcid)
@@ -182,6 +193,7 @@ impl Endpoint {
         if data.len() < MIN_INITIAL_SIZE || h.dcid.len() < 8 {
             return None;
         }
+        let version = h.version;
         let (orig, retry_scid, validated) = match self.check_token(from, h.token, &h.dcid) {
             TokenCheck::Retry(odcid) => (odcid, Some(h.dcid), true),
             TokenCheck::New => (h.dcid, None, true),
@@ -192,7 +204,7 @@ impl Endpoint {
                     .as_ref()
                     .is_some_and(|s| s.retry || self.handshaking.len() >= RETRY_THRESHOLD);
                 if must {
-                    return Some(self.retry(from, &h.dcid, &h.scid));
+                    return Some(self.retry(version, from, &h.dcid, &h.scid));
                 }
                 (h.dcid, None, false)
             }
@@ -211,6 +223,7 @@ impl Endpoint {
             orig,
             retry_scid,
             validated,
+            version,
         );
         let handle = self.next;
         self.next += 1;
@@ -218,12 +231,39 @@ impl Endpoint {
         self.initial.insert(h.dcid, handle);
         self.ids.entry(handle).or_default().push(h.dcid);
         self.handshaking.insert(handle);
-        c.handle_shared(now, from, crate::bytes::pool::copy(data));
+        c.handle_shared_ecn(now, from, ecn, crate::bytes::pool::copy(data));
         Some(DatagramEvent::New(handle, Box::new(c)))
+    }
+
+    /// A Version Negotiation packet listing this server's versions, in answer to a full-size
+    /// datagram (RFC 9000 section 6.1).
+    fn version_negotiation(
+        &mut self,
+        from: SocketAddr,
+        dcid: &ConnectionId,
+        scid: &ConnectionId,
+        len: usize,
+    ) -> Option<DatagramEvent> {
+        let s = self.server.as_ref()?;
+        if len < MIN_INITIAL_SIZE {
+            return None;
+        }
+        let data = packet::version_negotiation(dcid, scid, 0, &s.cfg.versions);
+        let r = (self.rng.next_u32() & 0x7f) as u8;
+        let mut data = data;
+        data[0] |= r;
+        Some(DatagramEvent::Respond(Transmit {
+            dest: from,
+            segment_size: None,
+            data,
+            ecn: 0,
+            probe: false,
+        }))
     }
 
     fn retry(
         &mut self,
+        version: u32,
         from: SocketAddr,
         odcid: &ConnectionId,
         client_scid: &ConnectionId,
@@ -242,7 +282,9 @@ impl Endpoint {
         DatagramEvent::Respond(Transmit {
             dest: from,
             segment_size: None,
-            data: packet::retry(client_scid, &new_scid, odcid, &token, r),
+            data: packet::retry(version, client_scid, &new_scid, odcid, &token, r),
+            ecn: 0,
+            probe: false,
         })
     }
 
@@ -318,6 +360,8 @@ impl Endpoint {
             dest: from,
             segment_size: None,
             data: out,
+            ecn: 0,
+            probe: false,
         }))
     }
 
@@ -349,7 +393,9 @@ impl Endpoint {
                     }
                 }
             }
-            EndpointEvent::NewToken(_) => {}
+            EndpointEvent::NewToken(_)
+            | EndpointEvent::Migrated { .. }
+            | EndpointEvent::MigrationFailed => {}
         }
     }
 }

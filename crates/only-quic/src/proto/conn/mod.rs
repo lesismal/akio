@@ -3,6 +3,8 @@
 //! [`Connection::handle_timeout`]), application events ([`Connection::poll_event`]) and
 //! endpoint events (connection IDs, [`Connection::poll_endpoint_event`]).
 
+mod ecn;
+mod migrate;
 mod recv;
 mod send;
 mod sent;
@@ -27,6 +29,9 @@ use super::{IdMap, IdSet};
 use crate::types::{Congestion as CcConfig, ConnectionError, ConnectionStats, Dir, Side, StreamId};
 use crate::{Bytes, TransportConfig};
 
+use ecn::Ecn;
+#[cfg(test)]
+pub(crate) use migrate::MigrateError;
 use sent::SentPackets;
 pub(crate) use streams::StreamState;
 
@@ -117,7 +122,44 @@ pub(crate) struct Sent {
     ack_eliciting: bool,
     in_flight: bool,
     mtu_probe: bool,
+    /// Sent ECT(0).
+    ecn: bool,
+    /// Delivery-rate sampling state when it was sent (see [`Delivery`]): bytes delivered, and
+    /// how long before `time` the last delivery and the flight's first send were, in
+    /// microseconds (kept small: one of these per packet in flight).
+    delivered: u64,
+    delivered_age: u32,
+    first_sent_age: u32,
+    app_limited: bool,
     frames: Vec<SentFrame>,
+}
+
+/// Delivery-rate estimation (draft-cheng-iccrg-delivery-rate-estimation): bytes delivered so
+/// far and when, recorded in every packet sent, so an acknowledgment can tell the rate at which
+/// data got through over the packet's flight. BBR's bandwidth samples.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Delivery {
+    delivered: u64,
+    delivered_time: Instant,
+    first_sent: Instant,
+    /// Non-zero while the samples are application-limited: until `delivered` passes it.
+    app_limited_until: u64,
+}
+
+/// Microseconds from `then` to `now` (saturating).
+fn age_us(now: Instant, then: Instant) -> u32 {
+    u32::try_from(now.saturating_duration_since(then).as_micros()).unwrap_or(u32::MAX)
+}
+
+impl Delivery {
+    fn new(now: Instant) -> Delivery {
+        Delivery {
+            delivered: 0,
+            delivered_time: now,
+            first_sent: now,
+            app_limited_until: 0,
+        }
+    }
 }
 
 /// One packet number space.
@@ -263,6 +305,12 @@ pub enum EndpointEvent {
     HandshakeDone,
     /// A token for future connections to this server (client).
     NewToken(Vec<u8>),
+    /// The probed path was validated: the connection moved to it (client; send the transmits
+    /// over the probe's socket from now on and close the old one).
+    Migrated { remote: SocketAddr },
+    /// The probed path did not answer: the connection stays where it was (close the probe's
+    /// socket).
+    MigrationFailed,
     /// The connection is gone.
     Drained,
 }
@@ -274,6 +322,10 @@ pub struct Transmit {
     pub dest: SocketAddr,
     pub segment_size: Option<usize>,
     pub data: Vec<u8>,
+    /// The ECN codepoint to send the datagrams with (0: not ECN-capable).
+    pub ecn: u8,
+    /// Send over the socket of the path being probed (client migration), not the current one.
+    pub probe: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -313,6 +365,18 @@ pub(crate) struct ConnConfig {
     pub migration: bool,
     /// Forces this side to start a key update every `n` packets (tests).
     pub key_update_interval: u64,
+    /// The I/O layer can send ECN codepoints (with `transport.ecn`, packets are marked).
+    pub ecn_io: bool,
+    /// The addresses a server offers as its preferred address (RFC 9000 section 9.6).
+    pub preferred_address: (
+        Option<std::net::SocketAddrV4>,
+        Option<std::net::SocketAddrV6>,
+    ),
+    /// The QUIC version a client starts with (a server answers in the client's).
+    pub version: u32,
+    /// The versions this side speaks: a server accepts them, a client may start over in them
+    /// after Version Negotiation.
+    pub versions: Vec<u32>,
 }
 
 impl ConnConfig {
@@ -321,7 +385,16 @@ impl ConnConfig {
             transport,
             migration,
             key_update_interval: KEY_UPDATE_INTERVAL,
+            ecn_io: true,
+            preferred_address: (None, None),
+            version: super::packet::VERSION_1,
+            versions: vec![super::packet::VERSION_1, super::packet::VERSION_2],
         }
+    }
+
+    /// Whether packets are sent ECN-marked (validation permitting).
+    fn ecn(&self) -> bool {
+        self.transport.ecn && self.ecn_io
     }
 }
 
@@ -377,6 +450,7 @@ pub struct Connection {
     // Recovery.
     rtt: Rtt,
     cc: Congestion,
+    dlv: Delivery,
     pacer: Pacer,
     bytes_in_flight: u64,
     /// The sender last stopped for lack of data, not because of the congestion window (the
@@ -418,7 +492,26 @@ pub struct Connection {
     eliciting_since_rx: bool,
     last_eliciting_sent_any: Option<Instant>,
     pacing_until: Option<Instant>,
-    buffered: Vec<(SocketAddr, Arc<Vec<u8>>)>,
+    /// Packets that arrived before their keys: sender, ECN codepoint, packet.
+    buffered: Vec<(SocketAddr, u8, Arc<Vec<u8>>)>,
+    /// ECN state of the current path.
+    ecn: Ecn,
+    /// The ECN codepoint of the datagram being processed.
+    rx_ecn: u8,
+    /// The ECN marking decided for the datagrams being written.
+    tx_ecn: bool,
+    /// A path being probed for an active migration (client).
+    probe: Option<migrate::Probe>,
+    /// The connection moved to the server's preferred address.
+    on_preferred: bool,
+    /// Remote connection IDs used to answer probes from other peer addresses (RFC 9000 9.5).
+    path_cids: Vec<(SocketAddr, u64)>,
+    /// The QUIC version of the long headers and keys.
+    version: u32,
+    /// What a client needs to start over in another version after Version Negotiation (once).
+    restart_with: Option<(only_tls::ClientConfig, String)>,
+    /// The version a client gave up after Version Negotiation (downgrade check).
+    vn_from: Option<u32>,
     /// Frame lists of acknowledged or lost packets, reused for new packets.
     spare_frames: Vec<Vec<SentFrame>>,
     replay: bool,
@@ -446,6 +539,7 @@ impl Connection {
         let mtu = t.initial_mtu.max(1200);
         let kind = match t.congestion {
             CcConfig::NewReno => CcKind::NewReno,
+            CcConfig::Bbr => CcKind::Bbr,
             _ => CcKind::Cubic,
         };
         let rx_max_data = t.receive_window.unwrap_or(super::coding::VARINT_MAX);
@@ -498,7 +592,8 @@ impl Connection {
             retry_token: Vec::new(),
             got_server_packet: false,
             rtt: Rtt::new(t.initial_rtt),
-            cc: Congestion::new(kind, mtu),
+            cc: Congestion::new(kind, mtu, t.initial_rtt),
+            dlv: Delivery::new(now),
             pacer: Pacer::new(),
             bytes_in_flight: 0,
             app_limited: true,
@@ -537,6 +632,15 @@ impl Connection {
             last_eliciting_sent_any: None,
             pacing_until: None,
             buffered: Vec::new(),
+            ecn: Ecn::new(cfg.ecn()),
+            rx_ecn: 0,
+            tx_ecn: false,
+            probe: None,
+            on_preferred: false,
+            path_cids: Vec::new(),
+            version: cfg.version,
+            restart_with: None,
+            vn_from: None,
             spare_frames: Vec::new(),
             replay: false,
             events: VecDeque::new(),
@@ -579,6 +683,12 @@ impl Connection {
             } else {
                 0
             },
+            // The chosen version first among the available ones (RFC 9368).
+            version_info: Some({
+                let mut avail = vec![cfg.version];
+                avail.extend(cfg.versions.iter().filter(|&&v| v != cfg.version));
+                (cfg.version, avail)
+            }),
             ..TransportParams::default()
         }
     }
@@ -596,6 +706,32 @@ impl Connection {
         token: Vec<u8>,
     ) -> Result<Connection, crate::Error> {
         let local = ConnectionId::random(&mut rng, LOCAL_CID_LEN);
+        Connection::client_with(
+            now,
+            cfg,
+            keys,
+            rng,
+            tls_cfg,
+            server_name,
+            remote,
+            token,
+            local,
+        )
+    }
+
+    /// [`Connection::client`] with the source connection ID `local`.
+    #[allow(clippy::too_many_arguments)]
+    fn client_with(
+        now: Instant,
+        cfg: ConnConfig,
+        keys: Arc<EndpointKeys>,
+        mut rng: ChaChaRng,
+        tls_cfg: &only_tls::ClientConfig,
+        server_name: &str,
+        remote: SocketAddr,
+        token: Vec<u8>,
+        local: ConnectionId,
+    ) -> Result<Connection, crate::Error> {
         let dcid = ConnectionId::random(&mut rng, 8);
         let mut params = Connection::local_params(&cfg);
         params.initial_scid = Some(local);
@@ -614,10 +750,50 @@ impl Connection {
             dcid,
             dcid,
         );
-        c.spaces[0].keys = Some(initial_keys(&dcid, true));
+        c.spaces[0].keys = Some(initial_keys(&dcid, true, c.version));
         c.retry_token = token;
+        c.restart_with = Some((tls_cfg.clone(), server_name.to_string()));
         c.drain_tls(now);
         Ok(c)
+    }
+
+    /// Starts over in `version` after a Version Negotiation packet that does not list ours but
+    /// lists that one (RFC 9000 section 6.2, incompatible negotiation of RFC 9368 section
+    /// 2.1): a new handshake under the same source connection ID. Once per connection.
+    pub(super) fn restart(&mut self, now: Instant, version: u32) -> bool {
+        let Some((tls, name)) = self.restart_with.take() else {
+            return false;
+        };
+        let mut cfg = self.cfg.clone();
+        cfg.version = version;
+        let mut seed = [0u8; 32];
+        self.rng.fill(&mut seed);
+        let local = self.local_cid();
+        let Ok(mut c) = Connection::client_with(
+            now,
+            cfg,
+            self.keys.clone(),
+            ChaChaRng::from_seed(seed),
+            &tls,
+            &name,
+            self.path.remote,
+            Vec::new(),
+            local,
+        ) else {
+            return false;
+        };
+        c.restart_with = None;
+        c.vn_from = Some(self.version);
+        c.events = std::mem::take(&mut self.events);
+        c.ep_events = std::mem::take(&mut self.ep_events);
+        c.stats = self.stats;
+        *self = c;
+        true
+    }
+
+    /// The QUIC version in use.
+    pub fn version(&self) -> u32 {
+        self.version
     }
 
     /// A server connection for a client's first Initial.
@@ -634,13 +810,31 @@ impl Connection {
         orig_dcid: ConnectionId,
         retry_scid: Option<ConnectionId>,
         validated: bool,
+        version: u32,
     ) -> Connection {
+        let mut cfg = cfg;
+        // The server answers in the client's version.
+        cfg.version = version;
         let local = ConnectionId::random(&mut rng, LOCAL_CID_LEN);
         let mut params = Connection::local_params(&cfg);
         params.original_dcid = Some(orig_dcid);
         params.initial_scid = Some(local);
         params.retry_scid = retry_scid;
         params.stateless_reset_token = Some(reset_token(&keys.reset_key, &local));
+        // The preferred address comes with connection ID sequence number 1.
+        let preferred = match cfg.preferred_address {
+            (None, None) => None,
+            (v4, v6) => {
+                let cid = ConnectionId::random(&mut rng, LOCAL_CID_LEN);
+                params.preferred_address = Some(super::params::PreferredAddress {
+                    v4,
+                    v6,
+                    cid,
+                    token: reset_token(&keys.reset_key, &cid),
+                });
+                Some(cid)
+            }
+        };
         let tls = QuicTls::server(tls_cfg, params.encode());
         let mut c = Connection::base(
             Side::Server,
@@ -654,10 +848,15 @@ impl Connection {
             orig_dcid,
             client_scid,
         );
-        c.spaces[0].keys = Some(initial_keys(&initial_dcid, false));
+        c.spaces[0].keys = Some(initial_keys(&initial_dcid, false, version));
         c.peer_initial_scid = Some(client_scid);
         c.retry_scid = retry_scid;
         c.path.validated = validated;
+        if let Some(cid) = preferred {
+            c.local_cids.insert(1, cid);
+            c.next_local_seq = 2;
+            c.ep_events.push_back(EndpointEvent::NewCid(cid));
+        }
         c
     }
 
@@ -711,6 +910,7 @@ impl Connection {
         s.cwnd = self.cc.window;
         s.congestion_events = self.cc.events;
         s.current_mtu = self.mtu;
+        s.ecn_capable = self.ecn.phase == ecn::Phase::Capable;
         s
     }
 
@@ -726,6 +926,23 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn force_key_update(&mut self, now: Instant) -> bool {
         self.start_key_update(now)
+    }
+
+    /// The congestion controller's state, for traces.
+    #[cfg(test)]
+    pub(crate) fn cc_debug(&self) -> String {
+        match self.cc.bbr() {
+            Some(b) => format!(
+                "{:?} bw {:.0} cwnd {} pacing {} hi {} inflight {}",
+                b.mode,
+                b.bandwidth(),
+                b.cwnd,
+                b.pacing_rate(),
+                b.inflight_hi,
+                self.bytes_in_flight
+            ),
+            None => format!("cwnd {} inflight {}", self.cc.window, self.bytes_in_flight),
+        }
     }
 
     #[cfg(test)]
@@ -787,12 +1004,12 @@ impl Connection {
         match l {
             Level::Handshake => {
                 self.spaces[1].keys = Some(Keys {
-                    local: super::crypto::DirKeys::from_secret(suite, &ws),
-                    remote: super::crypto::DirKeys::from_secret(suite, &rs),
+                    local: super::crypto::DirKeys::from_secret(suite, &ws, self.version),
+                    remote: super::crypto::DirKeys::from_secret(suite, &rs, self.version),
                 });
             }
             _ => {
-                self.one_rtt = Some(OneRtt::new(suite, ws, rs));
+                self.one_rtt = Some(OneRtt::new(suite, ws, rs, self.version));
             }
         }
         // Packets that arrived before their keys get another try.
@@ -829,6 +1046,7 @@ impl Connection {
         if self.mtu_upper > self.mtu {
             self.mtu_probe = Some((self.next_probe_size(), 0));
         }
+        self.try_start_probe(now);
     }
 
     fn new_token(&mut self) -> Bytes {
@@ -846,6 +1064,18 @@ impl Connection {
         self.params_done = true;
         let p = TransportParams::decode(raw, self.side == Side::Client)?;
         let perr = |r: &str| TransportError::new(code::TRANSPORT_PARAMETER_ERROR, r);
+        // Version negotiation (RFC 9368 section 4): the chosen version is the one in use, and
+        // a server that lists the version a client gave up after Version Negotiation did not
+        // send that Version Negotiation packet (a downgrade).
+        if let Some((chosen, avail)) = &p.version_info {
+            let verr = |r: &str| TransportError::new(code::VERSION_NEGOTIATION_ERROR, r);
+            if *chosen != self.version {
+                return Err(verr("version_information chosen version mismatch"));
+            }
+            if self.vn_from.is_some_and(|v| avail.contains(&v)) {
+                return Err(verr("version downgrade"));
+            }
+        }
         if p.initial_scid != self.peer_initial_scid {
             return Err(perr("initial_source_connection_id mismatch"));
         }
@@ -860,6 +1090,16 @@ impl Connection {
                 if let Some(r) = self.remote_cids.get_mut(&0) {
                     r.token = Some(t);
                 }
+            }
+            // The preferred address's connection ID is sequence number 1 (RFC 9000 5.1.1).
+            if let Some(pa) = &p.preferred_address {
+                self.remote_cids.insert(
+                    1,
+                    RemoteCid {
+                        cid: pa.cid,
+                        token: Some(pa.token),
+                    },
+                );
             }
         }
         self.peer_max_streams = [p.initial_max_streams_bidi, p.initial_max_streams_uni];
@@ -907,7 +1147,7 @@ impl Connection {
         reset_token(&self.keys.reset_key, cid)
     }
 
-    fn remote_cid(&self) -> ConnectionId {
+    pub(crate) fn remote_cid(&self) -> ConnectionId {
         self.remote_cids
             .get(&self.remote_seq)
             .map(|r| r.cid)
@@ -1084,6 +1324,7 @@ impl Connection {
             }
         }
         min(self.path.challenge_deadline);
+        min(self.probe_timeout());
         if let Some((_, until)) = self.one_rtt.as_ref().and_then(|k| k.prev_remote.as_ref()) {
             min(Some(*until));
         }
@@ -1118,6 +1359,9 @@ impl Connection {
         }
         if self.path.challenge_deadline.is_some_and(|d| now >= d) {
             self.on_path_validation_timeout(now);
+        }
+        if self.probe_timeout().is_some_and(|d| now >= d) {
+            self.on_probe_timer(now);
         }
         if let Some(k) = self.one_rtt.as_mut() {
             if k.prev_remote.as_ref().is_some_and(|(_, u)| now >= *u) {

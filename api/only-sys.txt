@@ -32,6 +32,7 @@ pub fn only_sys::Batch<'_, 'd>::is_empty(&self) -> bool
 pub fn only_sys::Batch<'_, 'd>::is_gso(&self, usize) -> bool
 pub fn only_sys::Batch<'_, 'd>::len(&self) -> usize
 pub fn only_sys::Batch<'_, 'd>::push(&mut self, core::option::Option<&core::net::socket_addr::SocketAddr>, &[&'d [u8]], usize) -> bool
+pub fn only_sys::Batch<'_, 'd>::push_ecn(&mut self, core::option::Option<&core::net::socket_addr::SocketAddr>, &[&'d [u8]], usize, u8, bool) -> bool
 pub fn only_sys::Batch<'_, 'd>::send(&mut self, std::os::fd::raw::RawFd, usize) -> core::io::error::Result<usize>
 impl<'s, 'd> core::fmt::Debug for only_sys::Batch<'s, 'd>
 pub fn only_sys::Batch<'s, 'd>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -84,6 +85,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_sys::Poller
 impl core::panic::unwind_safe::UnwindSafe for only_sys::Poller
 pub struct only_sys::RecvBatch
 impl only_sys::RecvBatch
+pub fn only_sys::RecvBatch::ecn(&self, usize) -> u8
 pub fn only_sys::RecvBatch::get(&self, usize) -> core::option::Option<(&[u8], core::net::socket_addr::SocketAddr, usize)>
 pub fn only_sys::RecvBatch::new(usize, usize) -> only_sys::RecvBatch
 pub fn only_sys::RecvBatch::recv(&mut self, std::os::fd::raw::RawFd) -> core::io::error::Result<usize>
@@ -125,6 +127,8 @@ pub const only_sys::MAX_GSO_SEGMENTS: usize
 pub const only_sys::SEND_BATCH: usize
 pub fn only_sys::connect_nonblocking(core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpStream>
 pub fn only_sys::disable_gso()
+pub fn only_sys::ecn_available() -> bool
+pub fn only_sys::enable_ecn(std::os::fd::raw::RawFd) -> bool
 pub fn only_sys::enable_gro(std::os::fd::raw::RawFd) -> bool
 pub fn only_sys::gro_available() -> bool
 pub fn only_sys::gso_enabled() -> bool

@@ -71,7 +71,7 @@ use only_core::{Acceptor, Conn, Handler};
 pub use crate::bytes::Bytes;
 pub use types::{
     ClientConfig, Congestion, ConnectionError, ConnectionStats, Dir, ServerConfig, Side, StreamId,
-    TransportConfig, UdpStats,
+    TransportConfig, UdpStats, Version,
 };
 use types::{TokenStore, config_err};
 
@@ -89,6 +89,8 @@ pub enum Error {
     Datagram(String),
     /// Could not start a connection (bad server name, endpoint stopping ...).
     Connect(String),
+    /// Could not start a migration (see [`Connection::migrate`]).
+    Migration(String),
     /// A TLS or QUIC configuration problem.
     Config(String),
 }
@@ -101,6 +103,7 @@ impl fmt::Display for Error {
             Error::Stopped(c) => write!(f, "quic: stream stopped by peer (code {c})"),
             Error::Datagram(e) => write!(f, "quic: datagram: {e}"),
             Error::Connect(e) => write!(f, "quic: connect: {e}"),
+            Error::Migration(e) => write!(f, "quic: migration: {e}"),
             Error::Config(e) => write!(f, "quic: config: {e}"),
         }
     }
@@ -274,6 +277,45 @@ impl Connection {
         r
     }
 
+    /// The QUIC version in use.
+    pub fn version(&self) -> Version {
+        Version::from_wire(lock(&self.0.state).conn.version())
+    }
+
+    /// The server's preferred address (RFC 9000 section 9.6), on a client whose server offered
+    /// one in the family of the current path and that does not use it yet (see
+    /// [`migrate`](Self::migrate)). Known once the handshake completes.
+    pub fn preferred_address(&self) -> Option<SocketAddr> {
+        lock(&self.0.state).conn.preferred_address()
+    }
+
+    /// Moves this client connection to a new network path (RFC 9000 section 9): to the
+    /// server's [preferred address](Self::preferred_address) if there is one, else to the same
+    /// server address from a new UDP socket, so a new local port (what a client does when its
+    /// network changes, or to shed a NAT binding). The new path is probed first with
+    /// PATH_CHALLENGE under a connection ID not used before; the connection moves to it once
+    /// the server answers (resetting its congestion state, ECN validation and, for a new server
+    /// address, its RTT estimate), and the old socket closes. Without an answer within three
+    /// probe timeouts it stays where it was and the new socket closes. Before the handshake is
+    /// confirmed, or until the server provides a spare connection ID, the probe waits.
+    ///
+    /// Fails on a server's connection, a closed one, during another migration, and when the
+    /// server disabled active migration (`disable_active_migration`, which does not cover its
+    /// preferred address). `engine` opens the new socket (it needs UDP client threads).
+    pub fn migrate(&self, engine: &only::Engine) -> Result<(), Error> {
+        let dest = lock(&self.0.state)
+            .conn
+            .migrate(Instant::now())
+            .map_err(|e| Error::Migration(e.to_string()))?;
+        let ep = self.0.ep.clone();
+        lock(&ep.probe_backlog).clear();
+        engine.dial_udp(dest, ProbeAcceptor(ep), |_e| {
+            // The probe goes unanswered and the migration fails by itself.
+        });
+        self.drive();
+        Ok(())
+    }
+
     /// Closes the connection with an application error code and reason; `on_close` gets
     /// `LocallyClosed`.
     pub fn close(&self, code: u32, reason: &[u8]) {
@@ -382,10 +424,15 @@ impl Connection {
             }
             drop(e);
             for ev in ep_events {
-                if let proto::EndpointEvent::NewToken(t) = ev {
-                    if let Some((store, name)) = &ep.tokens {
-                        lock(store).insert(name.clone(), t);
+                match ev {
+                    proto::EndpointEvent::NewToken(t) => {
+                        if let Some((store, name)) = &ep.tokens {
+                            lock(store).insert(name.clone(), t);
+                        }
                     }
+                    proto::EndpointEvent::Migrated { .. } => ep.on_migrated(),
+                    proto::EndpointEvent::MigrationFailed => ep.on_migration_failed(),
+                    _ => {}
                 }
             }
         }
@@ -419,7 +466,13 @@ impl Connection {
             loop {
                 let t = lock(&self.0.outq).pop_front();
                 let Some(t) = t else { break };
-                self.0.ep.transmit(t.dest, t.segment_size, t.data);
+                if t.probe {
+                    self.0
+                        .ep
+                        .transmit_probe((t.dest, t.segment_size, t.data, t.ecn));
+                } else {
+                    self.0.ep.transmit(t.dest, t.segment_size, t.data, t.ecn);
+                }
             }
             self.0.sending.store(false, Ordering::Release);
             if lock(&self.0.outq).is_empty() {
@@ -507,6 +560,10 @@ struct Ep {
     socks: Mutex<proto::KeyedMap<SocketAddr, Conn<Udp>>>,
     /// A client's datagrams from before its socket was up.
     backlog: Mutex<Vec<Outgoing>>,
+    /// A client's socket for the path a migration probes, once open, and the probe's datagrams
+    /// from before that.
+    probe: Mutex<Option<Conn<Udp>>>,
+    probe_backlog: Mutex<Vec<Outgoing>>,
     factory: Option<Box<Factory>>,
     /// A client's token store and the server name its tokens are kept under.
     tokens: Option<(TokenStore, String)>,
@@ -523,25 +580,69 @@ impl Ep {
             conns: Mutex::new(proto::KeyedMap::default()),
             socks: Mutex::new(proto::KeyedMap::default()),
             backlog: Mutex::new(Vec::new()),
+            probe: Mutex::new(None),
+            probe_backlog: Mutex::new(Vec::new()),
             factory,
             tokens,
         }
     }
 
-    fn transmit(&self, dest: SocketAddr, seg: Option<usize>, data: Vec<u8>) {
+    fn transmit(&self, dest: SocketAddr, seg: Option<usize>, data: Vec<u8>, ecn: u8) {
         let sock = lock(&self.socks).get(&dest).cloned();
         let Some(sock) = sock else {
             if self.factory.is_none() {
-                lock(&self.backlog).push((dest, seg, data));
+                lock(&self.backlog).push((dest, seg, data, ecn));
             }
             return;
         };
         // Several datagrams of `s` bytes: one GSO send where Linux supports it (else one
         // sendmmsg, else one by one); the boundaries survive either way.
-        let _ = match seg {
-            Some(s) => sock.send_segments(data, s),
-            None => sock.send_owned(data),
+        let _ = match (seg, ecn) {
+            (Some(s), _) => sock.send_segments_ecn(data, s, ecn),
+            (None, 0) => sock.send_owned(data),
+            (None, _) => sock.send_segments_ecn(data, 0, ecn),
         };
+    }
+
+    /// A datagram of the path a migration probes (client).
+    fn transmit_probe(&self, t: Outgoing) {
+        let sock = lock(&self.probe).clone();
+        let Some(sock) = sock else {
+            lock(&self.probe_backlog).push(t);
+            return;
+        };
+        let (_, seg, data, ecn) = t;
+        let _ = sock.send_segments_ecn(data, seg.unwrap_or(0), ecn);
+    }
+
+    /// The probed path was validated: its socket becomes the client's socket, the others close.
+    fn on_migrated(&self) {
+        let Some(new) = lock(&self.probe).take() else {
+            return;
+        };
+        let old: Vec<Conn<Udp>> = {
+            let mut socks = lock(&self.socks);
+            let old = socks
+                .values()
+                .filter(|s| s.id() != new.id())
+                .cloned()
+                .collect();
+            socks.clear();
+            socks.insert(new.peer_addr(), new);
+            old
+        };
+        for s in old {
+            s.close();
+        }
+    }
+
+    /// The probed path did not answer: its socket closes.
+    fn on_migration_failed(&self) {
+        lock(&self.probe_backlog).clear();
+        let probe = lock(&self.probe).take();
+        if let Some(s) = probe {
+            s.close();
+        }
     }
 
     /// A datagram from `peer`. With `batch`, the connection it went to runs its handler and sends
@@ -550,20 +651,24 @@ impl Ep {
     fn on_datagram(
         self: &Arc<Ep>,
         peer: SocketAddr,
+        ecn: u8,
         data: &[u8],
         batch: Option<&mut Vec<Connection>>,
     ) {
         let now = Instant::now();
-        let ev = lock(&self.endpoint).handle(now, peer, data);
+        let ev = lock(&self.endpoint).handle_ecn(now, peer, ecn, data);
         match ev {
             None => {}
-            Some(proto::DatagramEvent::Respond(t)) => self.transmit(t.dest, None, t.data),
+            Some(proto::DatagramEvent::Respond(t)) => self.transmit(t.dest, None, t.data, t.ecn),
             Some(proto::DatagramEvent::Conn(h)) => {
                 let c = lock(&self.conns).get(&h).cloned();
                 if let Some(c) = c {
-                    lock(&c.0.state)
-                        .conn
-                        .handle_shared(now, peer, bytes::pool::copy(data));
+                    lock(&c.0.state).conn.handle_shared_ecn(
+                        now,
+                        peer,
+                        ecn,
+                        bytes::pool::copy(data),
+                    );
                     match batch {
                         Some(b) => {
                             c.drive_received(now);
@@ -610,6 +715,9 @@ impl QuicServer {
         if let Some(n) = config.key_update {
             cfg.key_update_interval = n;
         }
+        cfg.ecn_io = ecn_platform();
+        cfg.preferred_address = config.preferred;
+        cfg.versions = config.versions;
         let setup = proto::ServerSetup {
             tls: config.tls,
             cfg,
@@ -633,6 +741,14 @@ impl QuicServer {
         for c in all {
             c.close(code, reason);
         }
+    }
+}
+
+impl Clone for QuicServer {
+    /// The same server (connections, configuration): serve it on several listeners, such as
+    /// its [preferred address](ServerConfig::preferred_address).
+    fn clone(&self) -> QuicServer {
+        QuicServer(self.0.clone())
     }
 }
 
@@ -677,7 +793,7 @@ impl fmt::Debug for Udp {
 impl Handler for Udp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         let batch = self.batched.then_some(&mut self.pending);
-        self.ep.on_datagram(c.peer_addr(), data, batch);
+        self.ep.on_datagram(c.peer_addr(), c.rx_ecn(), data, batch);
     }
 
     fn on_batch_end(&mut self, _c: &Conn<Self>) {
@@ -696,13 +812,22 @@ impl Handler for Udp {
         for p in std::mem::take(&mut self.pending) {
             p.drive();
         }
-        {
+        let current = {
             let mut socks = lock(&self.ep.socks);
-            if socks.get(&c.peer_addr()).is_some_and(|s| s.id() == c.id()) {
+            let current = socks.get(&c.peer_addr()).is_some_and(|s| s.id() == c.id());
+            if current {
                 socks.remove(&c.peer_addr());
             }
+            current
+        };
+        {
+            let mut probe = lock(&self.ep.probe);
+            if probe.as_ref().is_some_and(|s| s.id() == c.id()) {
+                *probe = None;
+            }
         }
-        if self.client {
+        // A client's sockets left behind by a migration (or a failed probe's) close quietly.
+        if self.client && current {
             // The socket is gone: so is every connection on it.
             let all: Vec<Connection> = lock(&self.ep.conns).drain().map(|(_, c)| c).collect();
             for c in all {
@@ -712,21 +837,44 @@ impl Handler for Udp {
     }
 }
 
-/// A transmit: destination, segment size (several datagrams), bytes.
-type Outgoing = (SocketAddr, Option<usize>, Vec<u8>);
+/// A transmit: destination, segment size (several datagrams), bytes, ECN codepoint.
+type Outgoing = (SocketAddr, Option<usize>, Vec<u8>, u8);
+
+/// Whether the UDP layer can mark datagrams ECT(0) (Linux, unless `ONLY_UDP_ECN=0`); elsewhere
+/// connections do not try (validation would only fail).
+fn ecn_platform() -> bool {
+    cfg!(target_os = "linux")
+        && std::env::var("ONLY_UDP_ECN")
+            .map_or(true, |v| v != "0" && !v.eq_ignore_ascii_case("off"))
+}
 
 /// Datagrams one `poll_transmit` may return in a single [`Conn::send_segments`].
 const MAX_DATAGRAMS: usize = 10;
 
 struct ClientAcceptor(Arc<Ep>);
 
+/// Opens the socket of the path a client migration probes.
+struct ProbeAcceptor(Arc<Ep>);
+
+impl Acceptor for ProbeAcceptor {
+    type Handler = Udp;
+    fn on_open(&self, c: &Conn<Udp>) -> Udp {
+        *lock(&self.0.probe) = Some(c.clone());
+        let backlog = std::mem::take(&mut *lock(&self.0.probe_backlog));
+        for t in backlog {
+            self.0.transmit_probe(t);
+        }
+        Udp::new(self.0.clone(), true)
+    }
+}
+
 impl Acceptor for ClientAcceptor {
     type Handler = Udp;
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
         lock(&self.0.socks).insert(c.peer_addr(), c.clone());
         let backlog = std::mem::take(&mut *lock(&self.0.backlog));
-        for (dest, seg, d) in backlog {
-            self.0.transmit(dest, seg, d);
+        for (dest, seg, d, ecn) in backlog {
+            self.0.transmit(dest, seg, d, ecn);
         }
         Udp::new(self.0.clone(), true)
     }
@@ -753,6 +901,8 @@ pub fn dial<H: QuicHandler>(
     if let Some(n) = config.key_update {
         cfg.key_update_interval = n;
     }
+    cfg.ecn_io = ecn_platform();
+    cfg.version = config.version.wire();
     let (h, conn) = endpoint.connect(Instant::now(), cfg, &config.tls, server_name, addr, token)?;
     let ep = Arc::new(Ep::new(
         endpoint,

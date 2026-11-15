@@ -4,12 +4,13 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use super::super::bbr::RateSample;
 use super::super::cid::{ConnectionId, LOCAL_CID_LEN};
 use super::super::coding::Reader;
 use super::super::crypto::{TAG_LEN, initial_keys};
 use super::super::frame::{self, Frame, TransportError, code};
 use super::super::packet::{
-    HeaderError, PacketType, VERSION_1, decode_pn, parse_header, unprotect_header,
+    HeaderError, PacketType, decode_pn, parse_header, supported, unprotect_header,
 };
 use super::super::recovery::{GRANULARITY, PACKET_THRESHOLD, PERSISTENT_CONGESTION_THRESHOLD, Rtt};
 use super::*;
@@ -19,6 +20,7 @@ use crate::types::ConnectionError;
 /// The owned parts of a packet header.
 struct Pkt {
     ty: PacketType,
+    version: u32,
     dcid: ConnectionId,
     scid: ConnectionId,
     token: Vec<u8>,
@@ -49,6 +51,17 @@ impl Connection {
     /// [`Connection::handle_datagram`] on a buffer from [`crate::bytes::pool`] (or any buffer
     /// not shared yet), which goes back to the pool afterwards.
     pub fn handle_shared(&mut self, now: Instant, from: SocketAddr, data: Arc<Vec<u8>>) {
+        self.handle_shared_ecn(now, from, 0, data);
+    }
+
+    /// [`Connection::handle_shared`] for a datagram that arrived with ECN codepoint `ecn`.
+    pub fn handle_shared_ecn(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        ecn: u8,
+        data: Arc<Vec<u8>>,
+    ) {
         if matches!(self.state, State::Drained) {
             return;
         }
@@ -58,12 +71,14 @@ impl Connection {
         if from == self.path.remote {
             self.path.recv_bytes += data.len() as u64;
         }
+        self.rx_ecn = ecn;
         self.datagram(now, from, data, true);
         let mut rounds = 0;
         while self.replay && rounds < 4 {
             rounds += 1;
             self.replay = false;
-            for (f, d) in std::mem::take(&mut self.buffered) {
+            for (f, e, d) in std::mem::take(&mut self.buffered) {
+                self.rx_ecn = e;
                 self.datagram(now, f, d, false);
             }
         }
@@ -80,6 +95,7 @@ impl Connection {
             let h = match parse_header(buf, LOCAL_CID_LEN) {
                 Ok(h) => Pkt {
                     ty: h.ty,
+                    version: h.version,
                     dcid: h.dcid,
                     scid: h.scid,
                     token: if matches!(h.ty, PacketType::Retry | PacketType::VersionNegotiation) {
@@ -92,6 +108,12 @@ impl Connection {
                 },
                 Err(HeaderError::Invalid | HeaderError::UnsupportedVersion { .. }) => break,
             };
+            // Long headers of another version than ours are not for us (a client's late Initial
+            // after it started over, say).
+            if h.ty.is_long() && h.ty != PacketType::VersionNegotiation && h.version != self.version
+            {
+                break;
+            }
             // Coalesced packets must all be for this connection ID (RFC 9000 section 12.2).
             match first_dcid {
                 None => first_dcid = Some(h.dcid),
@@ -141,7 +163,7 @@ impl Connection {
     ) -> Outcome {
         match h.ty {
             PacketType::VersionNegotiation => {
-                self.on_version_negotiation(&h.token);
+                self.on_version_negotiation(now, &h.token);
                 return Outcome::Processed;
             }
             PacketType::Retry => {
@@ -166,7 +188,7 @@ impl Connection {
         };
         if !have_keys {
             if self.buffered.len() < MAX_BUFFERED_PACKETS && !self.is_closed() {
-                self.buffered.push((from, pkt.clone()));
+                self.buffered.push((from, self.rx_ecn, pkt.clone()));
             }
             return Outcome::Undecryptable;
         }
@@ -287,6 +309,7 @@ impl Connection {
                 sp.seen.keep_highest(512);
             }
         }
+        let ce = self.ecn.on_received(sid as usize, self.rx_ecn);
         self.last_rx = now;
         self.eliciting_since_rx = false;
         self.reset_idle(now);
@@ -311,7 +334,12 @@ impl Connection {
             return Outcome::Processed;
         }
         let migrating = sid == SpaceId::Data && from != self.path.remote;
-        if migrating && (self.side == Side::Client || !self.cfg.migration || !self.confirmed) {
+        let refused = match self.side {
+            // A client hears from its server's address only, and from the path it probes.
+            Side::Client => !self.probing_from(from),
+            Side::Server => !self.cfg.migration || !self.confirmed,
+        };
+        if migrating && refused {
             // No migration: ignore packets from elsewhere.
             return Outcome::Processed;
         }
@@ -359,26 +387,37 @@ impl Connection {
         if eliciting {
             sp.rx_new = true;
             sp.eliciting_since_ack += 1;
-            if sid != SpaceId::Data || sp.eliciting_since_ack >= 2 || out_of_order {
+            // CE-marked packets are acknowledged at once (RFC 9000 section 13.2.1).
+            if sid != SpaceId::Data || sp.eliciting_since_ack >= 2 || out_of_order || ce {
                 sp.ack_now = true;
             } else if sp.ack_deadline.is_none() {
                 sp.ack_deadline = Some(now + LOCAL_MAX_ACK_DELAY);
             }
         }
-        if migrating && non_probing && is_largest {
-            self.migrate(now, from, dgram_len);
+        if migrating && non_probing && is_largest && self.side == Side::Server {
+            self.follow_peer(now, from, dgram_len);
         }
         Outcome::Processed
     }
 
-    fn on_version_negotiation(&mut self, list: &[u8]) {
+    fn on_version_negotiation(&mut self, now: Instant, list: &[u8]) {
         if self.side != Side::Client || self.got_server_packet || !self.is_handshaking() {
             return;
         }
         let mut r = Reader::new(list);
+        let mut other = None;
         while let Some(v) = r.u32() {
-            if v == VERSION_1 {
+            if v == self.version {
                 // A VN listing our version is bogus (RFC 9000 section 6.2): ignore it.
+                return;
+            }
+            if supported(v) && self.cfg.versions.contains(&v) && other.is_none() {
+                other = Some(v);
+            }
+        }
+        // Start over in a version both sides speak, once.
+        if let Some(v) = other {
+            if self.restart(now, v) {
                 return;
             }
         }
@@ -390,7 +429,10 @@ impl Connection {
             return;
         }
         let (body, tag) = pkt.split_at(pkt.len() - TAG_LEN);
-        let want = super::super::crypto::retry_tag(&self.orig_dcid, body);
+        if h.version != self.version {
+            return;
+        }
+        let want = super::super::crypto::retry_tag(self.version, &self.orig_dcid, body);
         if !only_crypto::ct_eq(&want, tag) || h.token.is_empty() || h.scid == self.orig_dcid {
             return;
         }
@@ -399,7 +441,7 @@ impl Connection {
         if let Some(r) = self.remote_cids.get_mut(&0) {
             r.cid = h.scid;
         }
-        self.spaces[0].keys = Some(initial_keys(&h.scid, true));
+        self.spaces[0].keys = Some(initial_keys(&h.scid, true, self.version));
         // The server kept nothing: everything sent in Initial packets goes again.
         let sent: Vec<Sent> = self.spaces[0].sent.drain().collect();
         for p in sent {
@@ -427,11 +469,7 @@ impl Connection {
     ) -> Result<(), TransportError> {
         match f {
             Frame::Padding | Frame::Ping => {}
-            Frame::Ack {
-                ranges,
-                delay,
-                ecn: _,
-            } => self.on_ack(now, sid, &ranges, delay)?,
+            Frame::Ack { ranges, delay, ecn } => self.on_ack(now, sid, &ranges, delay, ecn)?,
             Frame::Crypto { offset, data } => {
                 let sp = &mut self.spaces[sid as usize];
                 sp.crypto_recv.insert(offset, payload.slice(data), false)?;
@@ -497,6 +535,8 @@ impl Connection {
                 token,
             } => {
                 self.on_new_cid(seq, retire_prior_to, cid, token)?;
+                // A migration may have waited for a connection ID.
+                self.try_start_probe(now);
             }
             Frame::RetireConnectionId(seq) => self.on_retire_cid(seq)?,
             Frame::PathChallenge(d) => {
@@ -505,7 +545,9 @@ impl Connection {
                 }
             }
             Frame::PathResponse(d) => {
-                if self.path.challenge == Some(d) {
+                if self.on_probe_response(now, d) {
+                    // The client moved to the probed path.
+                } else if self.path.challenge == Some(d) {
                     self.path.validated = true;
                     self.path.challenge = None;
                     self.path.challenge_deadline = None;
@@ -624,7 +666,8 @@ impl Connection {
 
     // ---- migration ----
 
-    fn migrate(&mut self, now: Instant, from: SocketAddr, dgram_len: usize) {
+    /// The client's address changed (server): validate it and follow.
+    fn follow_peer(&mut self, now: Instant, from: SocketAddr, dgram_len: usize) {
         let same_ip = from.ip() == self.path.remote.ip();
         let mut p = Path::new(from, false);
         p.recv_bytes = dgram_len as u64;
@@ -639,12 +682,59 @@ impl Connection {
             self.cc.reset();
             self.rtt = Rtt::new(self.cfg.transport.initial_rtt);
         }
-        // A fresh connection ID for the new path, if the peer gave us one (RFC 9000 9.5).
-        if let Some((&s, _)) = self.remote_cids.range(self.remote_seq + 1..).next() {
+        self.ecn.new_path(self.cfg.ecn());
+        // A fresh connection ID for the new path, if the peer gave us one (RFC 9000 9.5): the
+        // one already used to answer its probes there, if any.
+        let reserved = self
+            .path_cids
+            .iter()
+            .find(|(a, _)| *a == from)
+            .map(|(_, s)| *s);
+        let next = reserved
+            .filter(|s| self.remote_cids.contains_key(s))
+            .or_else(|| {
+                let used: Vec<u64> = self.path_cids.iter().map(|(_, s)| *s).collect();
+                self.remote_cids
+                    .range(self.remote_seq + 1..)
+                    .map(|(s, _)| *s)
+                    .find(|s| !used.contains(s))
+            });
+        if let Some(s) = next {
             let old = self.remote_seq;
             self.remote_seq = s;
             self.remote_cids.remove(&old);
             self.pending.retire_cids.push(old);
+        }
+        self.path_cids.retain(|(a, _)| *a == from);
+    }
+
+    /// The connection ID to send to `to`, a peer address other than the current path's: one
+    /// not used on another path, kept for that address (the current one when none is spare).
+    pub(super) fn path_cid(&mut self, to: SocketAddr) -> ConnectionId {
+        if to == self.path.remote {
+            return self.remote_cid();
+        }
+        if let Some(c) = self
+            .path_cids
+            .iter()
+            .find(|(a, _)| *a == to)
+            .and_then(|(_, s)| self.remote_cids.get(s))
+        {
+            return c.cid;
+        }
+        let used: Vec<u64> = self.path_cids.iter().map(|(_, s)| *s).collect();
+        let probe = self.probe.as_ref().and_then(|p| p.cid_seq);
+        let spare = self
+            .remote_cids
+            .range(self.remote_seq + 1..)
+            .map(|(s, _)| *s)
+            .find(|s| !used.contains(s) && Some(*s) != probe);
+        match spare {
+            Some(s) if self.path_cids.len() < 4 => {
+                self.path_cids.push((to, s));
+                self.remote_cids[&s].cid
+            }
+            _ => self.remote_cid(),
         }
     }
 
@@ -656,6 +746,7 @@ impl Connection {
         sid: SpaceId,
         ranges: &[std::ops::Range<u64>],
         delay: u64,
+        ecn: Option<[u64; 3]>,
     ) -> Result<(), TransportError> {
         let Some(largest) = ranges.first().map(|r| r.end - 1) else {
             return Ok(());
@@ -667,6 +758,7 @@ impl Connection {
             ));
         }
         let mut newly: Vec<(u64, Sent)> = Vec::new();
+        let raised;
         {
             let sp = &mut self.spaces[sid as usize];
             for r in ranges {
@@ -675,11 +767,32 @@ impl Connection {
             if newly.is_empty() {
                 return Ok(());
             }
-            if sp.largest_acked.is_none_or(|l| largest > l) {
+            raised = sp.largest_acked.is_none_or(|l| largest > l);
+            if raised {
                 sp.largest_acked = Some(largest);
             }
         }
+        // ECN validation, on ACK frames that raise the largest acknowledged only (older ones
+        // carry older counts, RFC 9000 section 13.4.2.1).
+        if raised {
+            let marked = newly.iter().filter(|(_, p)| p.ecn).count() as u64;
+            let largest_sent = newly
+                .iter()
+                .find(|(pn, _)| *pn == largest)
+                .map(|(_, p)| p.time);
+            if let ecn::AckEcn::Congestion(ce) = self.ecn.on_ack(sid as usize, marked, ecn) {
+                self.cc.on_lost(ce * u64::from(self.mtu));
+                if let Some(t) = largest_sent {
+                    let before = self.cc.events;
+                    self.cc.on_congestion(now, t);
+                    if self.cc.events > before {
+                        self.stats.ecn_ce_events += 1;
+                    }
+                }
+            }
+        }
         // An RTT sample from the largest acknowledged, if newly acknowledged.
+        let mut rtt_sample = None;
         if let Some((_, p)) = newly.iter().find(|(pn, _)| *pn == largest) {
             if newly.iter().any(|(_, p)| p.ack_eliciting) {
                 let latest = now.saturating_duration_since(p.time);
@@ -694,12 +807,39 @@ impl Connection {
                     ack_delay = ack_delay.min(Duration::from_millis(self.peer.max_ack_delay));
                 }
                 self.rtt.update(latest, ack_delay);
+                rtt_sample = Some(latest);
                 self.first_rtt_sample.get_or_insert(now);
                 self.spaces[sid as usize].largest_acked_time = Some(p.time);
             }
         }
         let app_limited = self.app_limited;
+        // The delivery-rate sample of this acknowledgment: from the newest packet it covers.
+        let mut rs = RateSample {
+            total_delivered: 0,
+            prior_delivered: 0,
+            delivered: 0,
+            interval: Duration::ZERO,
+            acked: 0,
+            app_limited: false,
+            rtt: rtt_sample,
+        };
+        // The newest packet acknowledged: sent at, ages of its flight's first send and of the
+        // last delivery before it.
+        let mut newest: Option<(Instant, u32, u32)> = None;
+        let sampling = self.cc.wants_rate_samples();
         for (pn, mut p) in newly {
+            if sampling && p.in_flight && !p.mtu_probe {
+                let d = &mut self.dlv;
+                d.delivered += u64::from(p.size);
+                d.delivered_time = now;
+                rs.acked += u64::from(p.size);
+                if newest.is_none() || p.delivered >= rs.prior_delivered {
+                    rs.prior_delivered = p.delivered;
+                    rs.app_limited = p.app_limited;
+                    newest = Some((p.time, p.first_sent_age, p.delivered_age));
+                    d.first_sent = p.time;
+                }
+            }
             if p.in_flight {
                 self.bytes_in_flight = self.bytes_in_flight.saturating_sub(u64::from(p.size));
                 if p.ack_eliciting {
@@ -722,7 +862,26 @@ impl Connection {
             }
             self.recycle_frames(frames);
         }
+        if let Some((sent, first_age, delivered_age)) = newest {
+            let back = |us: u32| {
+                sent.checked_sub(Duration::from_micros(u64::from(us)))
+                    .unwrap_or(sent)
+            };
+            let (first_sent, delivered_time) = (back(first_age), back(delivered_age));
+            let d = &mut self.dlv;
+            if d.app_limited_until != 0 && d.delivered > d.app_limited_until {
+                d.app_limited_until = 0;
+            }
+            rs.total_delivered = d.delivered;
+            rs.delivered = d.delivered - rs.prior_delivered;
+            let send_elapsed = sent.saturating_duration_since(first_sent);
+            let ack_elapsed = now.saturating_duration_since(delivered_time);
+            rs.interval = send_elapsed.max(ack_elapsed);
+        }
         self.detect_lost(now, sid);
+        if newest.is_some() {
+            self.cc.on_ack_event(now, &rs, self.bytes_in_flight);
+        }
         self.pto_count = 0;
         Ok(())
     }
@@ -851,6 +1010,9 @@ impl Connection {
                     sp.eliciting_in_flight = sp.eliciting_in_flight.saturating_sub(1);
                 }
             }
+            if p.ecn {
+                self.ecn.on_marked_lost();
+            }
             if p.mtu_probe {
                 self.on_mtu_probe_lost(p.size);
             } else {
@@ -858,6 +1020,7 @@ impl Connection {
                     // Lost ACK-only packets are not counted: nothing is resent for them.
                     self.stats.lost_packets += 1;
                     self.stats.lost_bytes += u64::from(p.size);
+                    self.cc.on_lost(u64::from(p.size));
                     latest_lost = Some(latest_lost.map_or(p.time, |l| l.max(p.time)));
                 }
                 if p.ack_eliciting && self.first_rtt_sample.is_some_and(|f| p.time >= f) {
@@ -957,6 +1120,7 @@ impl Connection {
             return;
         }
         self.pto_count += 1;
+        self.ecn.on_pto();
         let any = self.spaces.iter().any(|s| s.eliciting_in_flight > 0);
         if !any {
             let sp = &mut self.spaces[sid as usize];

@@ -35,7 +35,7 @@ pub fn packet(data: &[u8]) {
             continue;
         }
         for client in [false, true] {
-            let k = initial_keys(&h.dcid, client);
+            let k = initial_keys(&h.dcid, client, h.version.max(1));
             let mut p = pkt.clone();
             let Some((n, tpn)) = packet::unprotect_header(&k.remote.header, &mut p, h.pn_offset)
             else {
@@ -93,7 +93,7 @@ pub fn frames(data: &[u8]) {
     for from_server in [false, true] {
         if let Ok(mut p) = TransportParams::decode(data, from_server) {
             // The preferred address is parsed but not kept, so it does not re-encode.
-            p.preferred_address = false;
+            p.preferred_address = None;
             assert_eq!(
                 TransportParams::decode(&p.encode(), from_server).ok(),
                 Some(p)
@@ -242,10 +242,16 @@ impl Pair {
 
 /// A client Initial packet with `payload` as its frames, padded to 1200 bytes.
 fn forged_initial(dcid: &ConnectionId, payload: &[u8]) -> Vec<u8> {
-    let k = initial_keys(dcid, true);
+    forged_initial_v(dcid, payload, packet::VERSION_1)
+}
+
+/// [`forged_initial`] in QUIC version `version`.
+fn forged_initial_v(dcid: &ConnectionId, payload: &[u8], version: u32) -> Vec<u8> {
+    let k = initial_keys(dcid, true, version);
     let mut buf = Vec::with_capacity(1200);
     let b = PacketBuilder::long(
         &mut buf,
+        version,
         PacketType::Initial,
         dcid,
         &ConnectionId::default(),
@@ -406,6 +412,17 @@ mod tests {
                 &ConnectionId::new(&[1; 8]).expect("cid"),
                 &ConnectionId::new(&[2; 8]).expect("cid"),
                 5,
+                &[packet::VERSION_1, packet::VERSION_2],
+            ),
+        );
+        // A version 2 Initial (RFC 9369).
+        write(
+            "quic_packet",
+            "initial_v2".into(),
+            &forged_initial_v(
+                &ConnectionId::new(&[7; 8]).expect("cid"),
+                &[1, 0, 0],
+                packet::VERSION_2,
             ),
         );
         // quic_frame: one of each frame type.
@@ -417,6 +434,9 @@ mod tests {
         let mut f = Vec::new();
         frame::put_ack(&mut f, &set, 100, 32);
         frames.push(("ack", f));
+        let mut f = Vec::new();
+        frame::put_ack_ecn(&mut f, &set, 100, 32, Some([12, 0, 3]));
+        frames.push(("ack_ecn", f));
         let mut f = Vec::new();
         frame::put_stream_header(&mut f, 4, 100, 5, true);
         f.extend_from_slice(b"hello");

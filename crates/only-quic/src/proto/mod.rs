@@ -3,6 +3,7 @@
 //! and sends what it produces.
 #![allow(unreachable_pub)]
 
+pub(crate) mod bbr;
 pub(crate) mod cid;
 pub(crate) mod coding;
 pub(crate) mod conn;

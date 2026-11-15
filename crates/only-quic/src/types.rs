@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -193,6 +194,41 @@ pub struct ConnectionStats {
     pub lost_bytes: u64,
     /// The path MTU in use.
     pub current_mtu: u16,
+    /// The path passed ECN validation and packets are sent ECT(0) (see
+    /// [`TransportConfig::ecn`]).
+    pub ecn_capable: bool,
+    /// Congestion events signalled by ECN-CE marks the peer reported.
+    pub ecn_ce_events: u64,
+}
+
+/// A QUIC version.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Version {
+    /// QUIC version 1 (RFC 9000), the default.
+    #[default]
+    V1,
+    /// QUIC version 2 (RFC 9369): version 1 with other wire constants (salts, labels, packet
+    /// type bits), against ossification.
+    V2,
+}
+
+impl Version {
+    /// The version number on the wire.
+    pub fn wire(self) -> u32 {
+        match self {
+            Version::V1 => crate::proto::packet::VERSION_1,
+            Version::V2 => crate::proto::packet::VERSION_2,
+        }
+    }
+
+    pub(crate) fn from_wire(v: u32) -> Version {
+        if v == crate::proto::packet::VERSION_2 {
+            Version::V2
+        } else {
+            Version::V1
+        }
+    }
 }
 
 /// The congestion controller of a connection.
@@ -204,7 +240,10 @@ pub enum Congestion {
     Cubic,
     /// NewReno (RFC 9002).
     NewReno,
-    /// BBR (experimental; runs CUBIC for now).
+    /// BBR (experimental): paces at the estimated bottleneck bandwidth with a window of about
+    /// two bandwidth-delay products, instead of backing off on every loss; BBRv1's model and
+    /// state machine with the loss and ECN bound of BBRv2/v3 (a round losing more than 2%
+    /// caps the data in flight).
     Bbr,
 }
 
@@ -244,6 +283,12 @@ pub struct TransportConfig {
     pub datagram_send_buffer_size: usize,
     /// The congestion controller (default CUBIC).
     pub congestion: Congestion,
+    /// Explicit Congestion Notification (RFC 9000 section 13.4; default on): packets are sent
+    /// ECT(0) where the platform can set the codepoint (Linux), the path and the peer are
+    /// validated with the first packets and the ACK_ECN counts, and CE marks are congestion
+    /// signals like losses. A path that fails validation (bleaching or dropping marked packets,
+    /// wrong counts) falls back to unmarked packets. Received codepoints are always reported.
+    pub ecn: bool,
 }
 
 const STREAM_RWND: u64 = 12_500 * 100;
@@ -264,6 +309,7 @@ impl Default for TransportConfig {
             datagram_receive_buffer_size: Some(STREAM_RWND as usize),
             datagram_send_buffer_size: 1024 * 1024,
             congestion: Congestion::Cubic,
+            ecn: true,
         }
     }
 }
@@ -286,6 +332,8 @@ pub(crate) struct ServerInner {
     pub(crate) migration: bool,
     pub(crate) retry: bool,
     pub(crate) key_update: Option<u64>,
+    pub(crate) preferred: (Option<SocketAddrV4>, Option<SocketAddrV6>),
+    pub(crate) versions: Vec<u32>,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -302,7 +350,19 @@ impl ServerConfig {
             migration: true,
             retry: false,
             key_update: None,
+            preferred: (None, None),
+            versions: vec![Version::V1.wire(), Version::V2.wire()],
         })
+    }
+
+    /// The QUIC versions accepted (default: 1 and 2); clients starting with another one get a
+    /// Version Negotiation packet listing these. An empty list keeps the default.
+    #[must_use]
+    pub fn versions(mut self, versions: &[Version]) -> Self {
+        if !versions.is_empty() {
+            self.0.versions = versions.iter().map(|v| v.wire()).collect();
+        }
+        self
     }
 
     /// Uses `transport` for every connection.
@@ -316,6 +376,20 @@ impl ServerConfig {
     #[must_use]
     pub fn migration(mut self, yes: bool) -> Self {
         self.0.migration = yes;
+        self
+    }
+
+    /// Offers `addr` as the server's preferred address (RFC 9000 section 9.6; call once per
+    /// address family): clients may move their connections there with
+    /// [`Connection::migrate`](crate::Connection::migrate). The server must serve it too:
+    /// listen on it with a clone of the same [`QuicServer`](crate::QuicServer), so the
+    /// connections are found whichever address their packets arrive at.
+    #[must_use]
+    pub fn preferred_address(mut self, addr: SocketAddr) -> Self {
+        match addr {
+            SocketAddr::V4(a) => self.0.preferred.0 = Some(a),
+            SocketAddr::V6(a) => self.0.preferred.1 = Some(a),
+        }
         self
     }
 
@@ -350,6 +424,7 @@ pub(crate) struct ClientInner {
     pub(crate) transport: TransportConfig,
     pub(crate) tokens: TokenStore,
     pub(crate) key_update: Option<u64>,
+    pub(crate) version: Version,
 }
 
 impl fmt::Debug for ClientConfig {
@@ -365,7 +440,18 @@ impl ClientConfig {
             transport: TransportConfig::default(),
             tokens: Arc::new(Mutex::new(HashMap::new())),
             key_update: None,
+            version: Version::V1,
         })
+    }
+
+    /// The QUIC version connections start with (default 1). A server that does not speak it
+    /// answers with Version Negotiation and the connection starts over in the other version,
+    /// once, guarded against downgrades by the version_information transport parameter
+    /// (RFC 9368).
+    #[must_use]
+    pub fn version(mut self, version: Version) -> Self {
+        self.0.version = version;
+        self
     }
 
     /// Uses `transport` for connections dialed with this configuration.

@@ -122,6 +122,11 @@ mod tests {
             ack_eliciting: true,
             in_flight: true,
             mtu_probe: false,
+            ecn: false,
+            delivered: 0,
+            delivered_age: 0,
+            first_sent_age: 0,
+            app_limited: false,
             frames: Vec::new(),
         }
     }
