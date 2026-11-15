@@ -7,6 +7,13 @@ use super::crypto::{HeaderKey, PacketKey, TAG_LEN};
 
 /// QUIC version 1.
 pub const VERSION_1: u32 = 1;
+/// QUIC version 2 (RFC 9369).
+pub const VERSION_2: u32 = 0x6b33_43cf;
+
+/// Whether this implementation speaks `version`.
+pub fn supported(version: u32) -> bool {
+    version == VERSION_1 || version == VERSION_2
+}
 
 /// The smallest datagram that may carry a client's Initial packet.
 pub const MIN_INITIAL_SIZE: usize = 1200;
@@ -26,12 +33,32 @@ impl PacketType {
         self != PacketType::Short
     }
 
-    fn long_bits(self) -> u8 {
-        match self {
+    /// The long header type bits; version 2 rotates them (RFC 9369 section 3.2).
+    fn long_bits(self, version: u32) -> u8 {
+        let v1 = match self {
             PacketType::Initial => 0,
             PacketType::ZeroRtt => 1,
             PacketType::Handshake => 2,
             _ => 3,
+        };
+        if version == VERSION_2 {
+            (v1 + 1) & 3
+        } else {
+            v1
+        }
+    }
+
+    fn from_long_bits(bits: u8, version: u32) -> PacketType {
+        let v1 = if version == VERSION_2 {
+            (bits + 3) & 3
+        } else {
+            bits
+        };
+        match v1 {
+            0 => PacketType::Initial,
+            1 => PacketType::ZeroRtt,
+            2 => PacketType::Handshake,
+            _ => PacketType::Retry,
         }
     }
 }
@@ -40,6 +67,8 @@ impl PacketType {
 #[derive(Clone, Debug)]
 pub struct Header<'a> {
     pub ty: PacketType,
+    /// The version of a long header (0 for short headers and Version Negotiation).
+    pub version: u32,
     pub dcid: ConnectionId,
     pub scid: ConnectionId,
     /// The Initial packet's token, or the Retry packet's.
@@ -74,6 +103,7 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
         let dcid = r.bytes(local_cid_len).ok_or(HeaderError::Invalid)?;
         return Ok(Header {
             ty: PacketType::Short,
+            version: 0,
             dcid: ConnectionId::new(dcid).ok_or(HeaderError::Invalid)?,
             scid: ConnectionId::default(),
             token: &[],
@@ -94,6 +124,7 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
     if version == 0 {
         return Ok(Header {
             ty: PacketType::VersionNegotiation,
+            version: 0,
             dcid,
             scid,
             token: r.rest(),
@@ -101,18 +132,13 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
             len: buf.len(),
         });
     }
-    if version != VERSION_1 {
+    if !supported(version) {
         return Err(HeaderError::UnsupportedVersion { dcid, scid });
     }
     if first & 0x40 == 0 {
         return Err(HeaderError::Invalid);
     }
-    let ty = match (first >> 4) & 3 {
-        0 => PacketType::Initial,
-        1 => PacketType::ZeroRtt,
-        2 => PacketType::Handshake,
-        _ => PacketType::Retry,
-    };
+    let ty = PacketType::from_long_bits((first >> 4) & 3, version);
     if ty == PacketType::Retry {
         let rest = r.rest();
         if rest.len() < TAG_LEN {
@@ -120,6 +146,7 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
         }
         return Ok(Header {
             ty,
+            version,
             dcid,
             scid,
             token: &rest[..rest.len() - TAG_LEN],
@@ -141,6 +168,7 @@ pub fn parse_header(buf: &[u8], local_cid_len: usize) -> Result<Header<'_>, Head
         .ok_or(HeaderError::Invalid)?;
     Ok(Header {
         ty,
+        version,
         dcid,
         scid,
         token,
@@ -227,10 +255,11 @@ pub struct PacketBuilder {
 }
 
 impl PacketBuilder {
-    /// Writes a long header (Initial with `token`, Handshake, 0-RTT).
+    /// Writes a long header of `version` (Initial with `token`, Handshake, 0-RTT).
     #[allow(clippy::too_many_arguments)]
     pub fn long(
         buf: &mut Vec<u8>,
+        version: u32,
         ty: PacketType,
         dcid: &ConnectionId,
         scid: &ConnectionId,
@@ -239,8 +268,8 @@ impl PacketBuilder {
         pn_len: usize,
     ) -> PacketBuilder {
         let start = buf.len();
-        buf.push(0xc0 | (ty.long_bits() << 4) | (pn_len as u8 - 1));
-        buf.extend_from_slice(&VERSION_1.to_be_bytes());
+        buf.push(0xc0 | (ty.long_bits(version) << 4) | (pn_len as u8 - 1));
+        buf.extend_from_slice(&version.to_be_bytes());
         buf.push(dcid.len() as u8);
         buf.extend_from_slice(dcid);
         buf.push(scid.len() as u8);
@@ -312,7 +341,12 @@ impl PacketBuilder {
 }
 
 /// A Version Negotiation packet answering a packet with `dcid`/`scid` (their IDs swapped).
-pub fn version_negotiation(dcid: &ConnectionId, scid: &ConnectionId, random: u8) -> Vec<u8> {
+pub fn version_negotiation(
+    dcid: &ConnectionId,
+    scid: &ConnectionId,
+    random: u8,
+    versions: &[u32],
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(64);
     out.push(0x80 | random);
     out.extend_from_slice(&0u32.to_be_bytes());
@@ -320,14 +354,17 @@ pub fn version_negotiation(dcid: &ConnectionId, scid: &ConnectionId, random: u8)
     out.extend_from_slice(scid);
     out.push(dcid.len() as u8);
     out.extend_from_slice(dcid);
-    out.extend_from_slice(&VERSION_1.to_be_bytes());
+    for v in versions {
+        out.extend_from_slice(&v.to_be_bytes());
+    }
     // A reserved version (RFC 9000 section 15) so clients keep handling unknown entries.
     out.extend_from_slice(&0x1a2a_3a4au32.to_be_bytes());
     out
 }
 
-/// A Retry packet to a client whose Initial had `client_scid` / `odcid`.
+/// A Retry packet of `version` to a client whose Initial had `client_scid` / `odcid`.
 pub fn retry(
+    version: u32,
     client_scid: &ConnectionId,
     new_scid: &ConnectionId,
     odcid: &ConnectionId,
@@ -335,14 +372,14 @@ pub fn retry(
     random: u8,
 ) -> Vec<u8> {
     let mut out = Vec::with_capacity(64 + token.len());
-    out.push(0xf0 | (random & 0x0f));
-    out.extend_from_slice(&VERSION_1.to_be_bytes());
+    out.push(0xc0 | (PacketType::Retry.long_bits(version) << 4) | (random & 0x0f));
+    out.extend_from_slice(&version.to_be_bytes());
     out.push(client_scid.len() as u8);
     out.extend_from_slice(client_scid);
     out.push(new_scid.len() as u8);
     out.extend_from_slice(new_scid);
     out.extend_from_slice(token);
-    let tag = super::crypto::retry_tag(odcid, &out);
+    let tag = super::crypto::retry_tag(version, odcid, &out);
     out.extend_from_slice(&tag);
     out
 }
@@ -379,11 +416,12 @@ mod tests {
         // A.2: the client's Initial (CRYPTO frame with the ClientHello, padded to 1162 bytes of
         // payload), header c300000001088394c8f03e5157080000449e00000002.
         let dcid = ConnectionId::new(&unhex("8394c8f03e515708")).unwrap();
-        let k = initial_keys(&dcid, true);
+        let k = initial_keys(&dcid, true, VERSION_1);
         // Seal our own Initial and open it with the server's view of the keys.
         let mut buf = Vec::new();
         let b = PacketBuilder::long(
             &mut buf,
+            VERSION_1,
             PacketType::Initial,
             &dcid,
             &ConnectionId::default(),
@@ -394,7 +432,7 @@ mod tests {
         assert_eq!(buf, unhex("c300000001088394c8f03e5157080000400000000002"));
         buf.extend_from_slice(&[0x01; 1162]);
         b.finish(&mut buf, &k.local.packet, &k.local.header);
-        let server = initial_keys(&dcid, false);
+        let server = initial_keys(&dcid, false, VERSION_1);
         let h = parse_header(&buf, 8).unwrap();
         assert_eq!(h.ty, PacketType::Initial);
         assert_eq!(h.len, buf.len());
@@ -418,7 +456,7 @@ mod tests {
              2158407dd074ee",
         );
         let dcid = ConnectionId::new(&unhex("8394c8f03e515708")).unwrap();
-        let k = initial_keys(&dcid, true);
+        let k = initial_keys(&dcid, true, VERSION_1);
         let h = parse_header(&pkt, 8).unwrap();
         assert_eq!(h.ty, PacketType::Initial);
         assert_eq!(&h.scid[..], &unhex("f067a5502a4262b5")[..]);
@@ -443,7 +481,7 @@ mod tests {
             aead: only_tls::quic::AeadAlg::ChaCha20Poly1305,
             hash: only_tls::quic::HashAlg::Sha256,
         };
-        let k = super::super::crypto::DirKeys::from_secret(&S, &secret);
+        let k = super::super::crypto::DirKeys::from_secret(&S, &secret, VERSION_1);
         let mut buf = Vec::new();
         let b = PacketBuilder::short(&mut buf, &ConnectionId::default(), false, 654_360_564, 3);
         assert_eq!(buf, unhex("4200bff4"));
@@ -461,19 +499,41 @@ mod tests {
     fn headers_parse_and_reject() {
         let d = ConnectionId::new(&[1; 8]).unwrap();
         let s = ConnectionId::new(&[2; 4]).unwrap();
-        let vn = version_negotiation(&d, &s, 0x11);
+        let vn = version_negotiation(&d, &s, 0x11, &[VERSION_1, VERSION_2]);
         let h = parse_header(&vn, 8).unwrap();
         assert_eq!(h.ty, PacketType::VersionNegotiation);
         assert_eq!((h.dcid, h.scid), (s, d));
-        assert_eq!(h.token.len(), 8);
-        let r = retry(&s, &d, &d, b"tok", 3);
-        let h = parse_header(&r, 8).unwrap();
-        assert_eq!((h.ty, h.token), (PacketType::Retry, &b"tok"[..]));
-        // Version 2 is unsupported here.
-        let mut v2 = r.clone();
-        v2[1..5].copy_from_slice(&0x6b33_43cfu32.to_be_bytes());
+        assert_eq!(h.token.len(), 12);
+        for v in [VERSION_1, VERSION_2] {
+            let r = retry(v, &s, &d, &d, b"tok", 3);
+            let h = parse_header(&r, 8).unwrap();
+            assert_eq!(
+                (h.ty, h.token, h.version),
+                (PacketType::Retry, &b"tok"[..], v)
+            );
+            // The type bits differ, the types round-trip.
+            for ty in [
+                PacketType::Initial,
+                PacketType::ZeroRtt,
+                PacketType::Handshake,
+            ] {
+                let mut buf = Vec::new();
+                let b = PacketBuilder::long(&mut buf, v, ty, &d, &s, &[], 0, 1);
+                buf.extend_from_slice(&[0; 20]);
+                let n = buf.len();
+                patch_varint2(&mut buf, b.pn_offset - 2, n - b.pn_offset);
+                assert_eq!(parse_header(&buf, 8).unwrap().ty, ty);
+            }
+        }
+        // Version 2 Initial packets carry type bits 01 (RFC 9369 section 3.2).
+        let mut buf = Vec::new();
+        PacketBuilder::long(&mut buf, VERSION_2, PacketType::Initial, &d, &s, &[], 0, 1);
+        assert_eq!(buf[0] & 0x30, 0x10);
+        // Other versions are unsupported.
+        let mut v3 = retry(VERSION_1, &s, &d, &d, b"tok", 3);
+        v3[1..5].copy_from_slice(&0x6b33_43d0u32.to_be_bytes());
         assert!(matches!(
-            parse_header(&v2, 8),
+            parse_header(&v3, 8),
             Err(HeaderError::UnsupportedVersion { .. })
         ));
         for bad in [
@@ -486,7 +546,16 @@ mod tests {
         }
         // Length beyond the datagram.
         let mut buf = Vec::new();
-        let b = PacketBuilder::long(&mut buf, PacketType::Handshake, &d, &s, &[], 0, 1);
+        let b = PacketBuilder::long(
+            &mut buf,
+            VERSION_1,
+            PacketType::Handshake,
+            &d,
+            &s,
+            &[],
+            0,
+            1,
+        );
         let _ = b;
         buf[b.pn_offset - 1] = 0x50;
         assert_eq!(parse_header(&buf, 8).unwrap_err(), HeaderError::Invalid);

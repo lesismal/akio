@@ -10,7 +10,7 @@ use super::super::coding::Reader;
 use super::super::crypto::{TAG_LEN, initial_keys};
 use super::super::frame::{self, Frame, TransportError, code};
 use super::super::packet::{
-    HeaderError, PacketType, VERSION_1, decode_pn, parse_header, unprotect_header,
+    HeaderError, PacketType, decode_pn, parse_header, supported, unprotect_header,
 };
 use super::super::recovery::{GRANULARITY, PACKET_THRESHOLD, PERSISTENT_CONGESTION_THRESHOLD, Rtt};
 use super::*;
@@ -20,6 +20,7 @@ use crate::types::ConnectionError;
 /// The owned parts of a packet header.
 struct Pkt {
     ty: PacketType,
+    version: u32,
     dcid: ConnectionId,
     scid: ConnectionId,
     token: Vec<u8>,
@@ -94,6 +95,7 @@ impl Connection {
             let h = match parse_header(buf, LOCAL_CID_LEN) {
                 Ok(h) => Pkt {
                     ty: h.ty,
+                    version: h.version,
                     dcid: h.dcid,
                     scid: h.scid,
                     token: if matches!(h.ty, PacketType::Retry | PacketType::VersionNegotiation) {
@@ -106,6 +108,12 @@ impl Connection {
                 },
                 Err(HeaderError::Invalid | HeaderError::UnsupportedVersion { .. }) => break,
             };
+            // Long headers of another version than ours are not for us (a client's late Initial
+            // after it started over, say).
+            if h.ty.is_long() && h.ty != PacketType::VersionNegotiation && h.version != self.version
+            {
+                break;
+            }
             // Coalesced packets must all be for this connection ID (RFC 9000 section 12.2).
             match first_dcid {
                 None => first_dcid = Some(h.dcid),
@@ -155,7 +163,7 @@ impl Connection {
     ) -> Outcome {
         match h.ty {
             PacketType::VersionNegotiation => {
-                self.on_version_negotiation(&h.token);
+                self.on_version_negotiation(now, &h.token);
                 return Outcome::Processed;
             }
             PacketType::Retry => {
@@ -392,14 +400,24 @@ impl Connection {
         Outcome::Processed
     }
 
-    fn on_version_negotiation(&mut self, list: &[u8]) {
+    fn on_version_negotiation(&mut self, now: Instant, list: &[u8]) {
         if self.side != Side::Client || self.got_server_packet || !self.is_handshaking() {
             return;
         }
         let mut r = Reader::new(list);
+        let mut other = None;
         while let Some(v) = r.u32() {
-            if v == VERSION_1 {
+            if v == self.version {
                 // A VN listing our version is bogus (RFC 9000 section 6.2): ignore it.
+                return;
+            }
+            if supported(v) && self.cfg.versions.contains(&v) && other.is_none() {
+                other = Some(v);
+            }
+        }
+        // Start over in a version both sides speak, once.
+        if let Some(v) = other {
+            if self.restart(now, v) {
                 return;
             }
         }
@@ -411,7 +429,10 @@ impl Connection {
             return;
         }
         let (body, tag) = pkt.split_at(pkt.len() - TAG_LEN);
-        let want = super::super::crypto::retry_tag(&self.orig_dcid, body);
+        if h.version != self.version {
+            return;
+        }
+        let want = super::super::crypto::retry_tag(self.version, &self.orig_dcid, body);
         if !only_crypto::ct_eq(&want, tag) || h.token.is_empty() || h.scid == self.orig_dcid {
             return;
         }
@@ -420,7 +441,7 @@ impl Connection {
         if let Some(r) = self.remote_cids.get_mut(&0) {
             r.cid = h.scid;
         }
-        self.spaces[0].keys = Some(initial_keys(&h.scid, true));
+        self.spaces[0].keys = Some(initial_keys(&h.scid, true, self.version));
         // The server kept nothing: everything sent in Initial packets goes again.
         let sent: Vec<Sent> = self.spaces[0].sent.drain().collect();
         for p in sent {
@@ -662,12 +683,58 @@ impl Connection {
             self.rtt = Rtt::new(self.cfg.transport.initial_rtt);
         }
         self.ecn.new_path(self.cfg.ecn());
-        // A fresh connection ID for the new path, if the peer gave us one (RFC 9000 9.5).
-        if let Some((&s, _)) = self.remote_cids.range(self.remote_seq + 1..).next() {
+        // A fresh connection ID for the new path, if the peer gave us one (RFC 9000 9.5): the
+        // one already used to answer its probes there, if any.
+        let reserved = self
+            .path_cids
+            .iter()
+            .find(|(a, _)| *a == from)
+            .map(|(_, s)| *s);
+        let next = reserved
+            .filter(|s| self.remote_cids.contains_key(s))
+            .or_else(|| {
+                let used: Vec<u64> = self.path_cids.iter().map(|(_, s)| *s).collect();
+                self.remote_cids
+                    .range(self.remote_seq + 1..)
+                    .map(|(s, _)| *s)
+                    .find(|s| !used.contains(s))
+            });
+        if let Some(s) = next {
             let old = self.remote_seq;
             self.remote_seq = s;
             self.remote_cids.remove(&old);
             self.pending.retire_cids.push(old);
+        }
+        self.path_cids.retain(|(a, _)| *a == from);
+    }
+
+    /// The connection ID to send to `to`, a peer address other than the current path's: one
+    /// not used on another path, kept for that address (the current one when none is spare).
+    pub(super) fn path_cid(&mut self, to: SocketAddr) -> ConnectionId {
+        if to == self.path.remote {
+            return self.remote_cid();
+        }
+        if let Some(c) = self
+            .path_cids
+            .iter()
+            .find(|(a, _)| *a == to)
+            .and_then(|(_, s)| self.remote_cids.get(s))
+        {
+            return c.cid;
+        }
+        let used: Vec<u64> = self.path_cids.iter().map(|(_, s)| *s).collect();
+        let probe = self.probe.as_ref().and_then(|p| p.cid_seq);
+        let spare = self
+            .remote_cids
+            .range(self.remote_seq + 1..)
+            .map(|(s, _)| *s)
+            .find(|s| !used.contains(s) && Some(*s) != probe);
+        match spare {
+            Some(s) if self.path_cids.len() < 4 => {
+                self.path_cids.push((to, s));
+                self.remote_cids[&s].cid
+            }
+            _ => self.remote_cid(),
         }
     }
 

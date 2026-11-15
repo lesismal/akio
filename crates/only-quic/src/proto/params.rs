@@ -30,6 +30,8 @@ pub struct TransportParams {
     pub max_datagram_frame_size: u64,
     /// The address the server would rather be reached at (RFC 9000 section 9.6).
     pub preferred_address: Option<PreferredAddress>,
+    /// version_information (RFC 9368 section 3): the chosen version, then the available ones.
+    pub version_info: Option<(u32, Vec<u32>)>,
 }
 
 /// The preferred_address transport parameter: an IPv4 and/or an IPv6 address, the connection
@@ -107,6 +109,7 @@ impl Default for TransportParams {
             retry_scid: None,
             max_datagram_frame_size: 0,
             preferred_address: None,
+            version_info: None,
         }
     }
 }
@@ -129,6 +132,7 @@ mod id {
     pub const CID_LIMIT: u64 = 0x0e;
     pub const INITIAL_SCID: u64 = 0x0f;
     pub const RETRY_SCID: u64 = 0x10;
+    pub const VERSION_INFO: u64 = 0x11;
     pub const MAX_DATAGRAM: u64 = 0x20;
 }
 
@@ -205,6 +209,13 @@ impl TransportParams {
         }
         if let Some(a) = &self.preferred_address {
             put_bytes(&mut out, id::PREFERRED_ADDRESS, &a.encode());
+        }
+        if let Some((chosen, avail)) = &self.version_info {
+            let mut v = chosen.to_be_bytes().to_vec();
+            for a in avail {
+                v.extend_from_slice(&a.to_be_bytes());
+            }
+            put_bytes(&mut out, id::VERSION_INFO, &v);
         }
         // A reserved parameter (31 * N + 27) exercises the peer's handling of unknown ones.
         put_bytes(&mut out, 31 * 5 + 27, &[]);
@@ -313,6 +324,19 @@ impl TransportParams {
                     p.retry_scid = Some(cid()?);
                 }
                 id::MAX_DATAGRAM => p.max_datagram_frame_size = int()?,
+                id::VERSION_INFO => {
+                    let vi = (val.len() >= 4 && val.len() % 4 == 0)
+                        .then(|| {
+                            let mut words = val
+                                .chunks(4)
+                                .map(|w| u32::from_be_bytes([w[0], w[1], w[2], w[3]]));
+                            let chosen = words.next()?;
+                            Some((chosen, words.collect::<Vec<u32>>()))
+                        })
+                        .flatten()
+                        .filter(|(c, a)| *c != 0 && !a.contains(&0));
+                    p.version_info = Some(vi.ok_or_else(|| perr("bad version_information"))?);
+                }
                 _ => {}
             }
         }
@@ -350,6 +374,7 @@ mod tests {
                 cid: ConnectionId::new(&[4; 8]).unwrap(),
                 token: [6; 16],
             }),
+            version_info: Some((1, vec![0x6b33_43cf, 1])),
         };
         let b = p.encode();
         assert_eq!(TransportParams::decode(&b, true).unwrap(), p);

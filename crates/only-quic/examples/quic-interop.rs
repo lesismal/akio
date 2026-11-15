@@ -7,7 +7,10 @@
 //! ```
 //!
 //! `retry` validates every client address with a Retry first; `ku N` starts a 1-RTT key update
-//! every N packets; `bulk MB` adds one stream of MB megabytes.
+//! every N packets; `bulk MB` adds one stream of MB megabytes; `v2` uses QUIC version 2 (a
+//! server then accepts version 2 only); `bbr` uses BBR; `migrate` moves the client to a new
+//! local port halfway and checks the echo goes on; `ecn` fails unless the client's path passed
+//! ECN validation (Linux).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -42,6 +45,18 @@ impl QuicHandler for Echo {
     }
     fn on_datagram(&mut self, c: &Connection, data: Bytes) {
         let _ = c.send_datagram(data);
+    }
+    fn on_close(&mut self, c: &Connection, r: ConnectionError) {
+        if !matches!(
+            r,
+            ConnectionError::ApplicationClosed { .. } | ConnectionError::LocallyClosed
+        ) {
+            eprintln!(
+                "connection from {} ({:?}) closed: {r}",
+                c.remote_addr(),
+                c.version()
+            );
+        }
     }
 }
 
@@ -92,6 +107,12 @@ fn server(addr: SocketAddr, args: &[String]) {
     if let Some(n) = opt(args, "ku") {
         cfg = cfg.key_update_interval(n.parse().expect("ku"));
     }
+    if has(args, "v2") {
+        cfg = cfg.versions(&[only_quic::Version::V2]);
+    }
+    if has(args, "bbr") {
+        cfg = cfg.transport(&transport_bbr());
+    }
     let e = Engine::builder()
         .listen(Listener::udp(addr).serve(QuicServer::new(cfg, |_c: &Connection| Echo)))
         .build()
@@ -111,6 +132,12 @@ fn client(addr: SocketAddr, args: &[String]) {
     if let Some(n) = opt(args, "ku") {
         cfg = cfg.key_update_interval(n.parse().expect("ku"));
     }
+    if has(args, "v2") {
+        cfg = cfg.version(only_quic::Version::V2);
+    }
+    if has(args, "bbr") {
+        cfg = cfg.transport(&transport_bbr());
+    }
     let (tx, rx) = mpsc::channel();
     let c = only_quic::dial(
         &e,
@@ -124,9 +151,9 @@ fn client(addr: SocketAddr, args: &[String]) {
     )
     .unwrap_or_else(|e| fail(format!("dial: {e}")));
     let next = |t: u64| match rx.recv_timeout(Duration::from_secs(t)) {
-        Ok(Got::Closed(r)) => fail(format!("closed: {r}")),
+        Ok(Got::Closed(r)) => fail(format!("closed: {r}: {:?}", c.stats())),
         Ok(g) => g,
-        Err(_) => fail("timed out".into()),
+        Err(_) => fail(format!("timed out: {:?}", c.stats())),
     };
     if !matches!(next(10), Got::Connected) {
         fail("no handshake".into());
@@ -134,12 +161,24 @@ fn client(addr: SocketAddr, args: &[String]) {
     if c.alpn().as_deref() != Some(&b"echo"[..]) {
         fail("alpn".into());
     }
+    if has(args, "v2") && c.version() != only_quic::Version::V2 {
+        fail(format!("version {:?}", c.version()));
+    }
     let mut want = HashMap::new();
-    for i in 0..50 {
+    let (streams, unit) = if has(args, "small") {
+        (10, 200)
+    } else {
+        (50, 3000)
+    };
+    for i in 0..streams {
+        if i == 25 && has(args, "migrate") {
+            c.migrate(&e)
+                .unwrap_or_else(|e| fail(format!("migrate: {e}")));
+        }
         let id = c
             .open_bi()
             .unwrap_or_else(|| fail("no stream credit".into()));
-        let body = pattern(i * 3000, i);
+        let body = pattern(i * unit, i);
         c.send(id, body.clone())
             .unwrap_or_else(|e| fail(format!("send: {e}")));
         c.finish(id)
@@ -206,9 +245,27 @@ fn client(addr: SocketAddr, args: &[String]) {
             c.stats()
         );
     }
+    let st = c.stats();
+    if has(args, "ecn") && !st.ecn_capable {
+        fail(format!("ECN not validated: {st:?}"));
+    }
     c.close(0, b"done");
-    println!("ok: 50 streams, {n}/20 datagrams");
+    println!(
+        "ok: {streams} streams, {n}/20 datagrams, {:?}, ecn {}",
+        c.version(),
+        st.ecn_capable
+    );
     e.shutdown();
+}
+
+fn has(args: &[String], name: &str) -> bool {
+    args.iter().any(|a| a == name)
+}
+
+fn transport_bbr() -> only_quic::TransportConfig {
+    let mut t = only_quic::TransportConfig::default();
+    t.congestion = only_quic::Congestion::Bbr;
+    t
 }
 
 fn main() {

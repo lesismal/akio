@@ -365,6 +365,11 @@ pub(crate) struct ConnConfig {
         Option<std::net::SocketAddrV4>,
         Option<std::net::SocketAddrV6>,
     ),
+    /// The QUIC version a client starts with (a server answers in the client's).
+    pub version: u32,
+    /// The versions this side speaks: a server accepts them, a client may start over in them
+    /// after Version Negotiation.
+    pub versions: Vec<u32>,
 }
 
 impl ConnConfig {
@@ -375,6 +380,8 @@ impl ConnConfig {
             key_update_interval: KEY_UPDATE_INTERVAL,
             ecn_io: true,
             preferred_address: (None, None),
+            version: super::packet::VERSION_1,
+            versions: vec![super::packet::VERSION_1, super::packet::VERSION_2],
         }
     }
 
@@ -490,6 +497,14 @@ pub struct Connection {
     probe: Option<migrate::Probe>,
     /// The connection moved to the server's preferred address.
     on_preferred: bool,
+    /// Remote connection IDs used to answer probes from other peer addresses (RFC 9000 9.5).
+    path_cids: Vec<(SocketAddr, u64)>,
+    /// The QUIC version of the long headers and keys.
+    version: u32,
+    /// What a client needs to start over in another version after Version Negotiation (once).
+    restart_with: Option<(only_tls::ClientConfig, String)>,
+    /// The version a client gave up after Version Negotiation (downgrade check).
+    vn_from: Option<u32>,
     /// Frame lists of acknowledged or lost packets, reused for new packets.
     spare_frames: Vec<Vec<SentFrame>>,
     replay: bool,
@@ -615,6 +630,10 @@ impl Connection {
             tx_ecn: false,
             probe: None,
             on_preferred: false,
+            path_cids: Vec::new(),
+            version: cfg.version,
+            restart_with: None,
+            vn_from: None,
             spare_frames: Vec::new(),
             replay: false,
             events: VecDeque::new(),
@@ -657,6 +676,12 @@ impl Connection {
             } else {
                 0
             },
+            // The chosen version first among the available ones (RFC 9368).
+            version_info: Some({
+                let mut avail = vec![cfg.version];
+                avail.extend(cfg.versions.iter().filter(|&&v| v != cfg.version));
+                (cfg.version, avail)
+            }),
             ..TransportParams::default()
         }
     }
@@ -674,6 +699,32 @@ impl Connection {
         token: Vec<u8>,
     ) -> Result<Connection, crate::Error> {
         let local = ConnectionId::random(&mut rng, LOCAL_CID_LEN);
+        Connection::client_with(
+            now,
+            cfg,
+            keys,
+            rng,
+            tls_cfg,
+            server_name,
+            remote,
+            token,
+            local,
+        )
+    }
+
+    /// [`Connection::client`] with the source connection ID `local`.
+    #[allow(clippy::too_many_arguments)]
+    fn client_with(
+        now: Instant,
+        cfg: ConnConfig,
+        keys: Arc<EndpointKeys>,
+        mut rng: ChaChaRng,
+        tls_cfg: &only_tls::ClientConfig,
+        server_name: &str,
+        remote: SocketAddr,
+        token: Vec<u8>,
+        local: ConnectionId,
+    ) -> Result<Connection, crate::Error> {
         let dcid = ConnectionId::random(&mut rng, 8);
         let mut params = Connection::local_params(&cfg);
         params.initial_scid = Some(local);
@@ -692,10 +743,50 @@ impl Connection {
             dcid,
             dcid,
         );
-        c.spaces[0].keys = Some(initial_keys(&dcid, true));
+        c.spaces[0].keys = Some(initial_keys(&dcid, true, c.version));
         c.retry_token = token;
+        c.restart_with = Some((tls_cfg.clone(), server_name.to_string()));
         c.drain_tls(now);
         Ok(c)
+    }
+
+    /// Starts over in `version` after a Version Negotiation packet that does not list ours but
+    /// lists that one (RFC 9000 section 6.2, incompatible negotiation of RFC 9368 section
+    /// 2.1): a new handshake under the same source connection ID. Once per connection.
+    pub(super) fn restart(&mut self, now: Instant, version: u32) -> bool {
+        let Some((tls, name)) = self.restart_with.take() else {
+            return false;
+        };
+        let mut cfg = self.cfg.clone();
+        cfg.version = version;
+        let mut seed = [0u8; 32];
+        self.rng.fill(&mut seed);
+        let local = self.local_cid();
+        let Ok(mut c) = Connection::client_with(
+            now,
+            cfg,
+            self.keys.clone(),
+            ChaChaRng::from_seed(seed),
+            &tls,
+            &name,
+            self.path.remote,
+            Vec::new(),
+            local,
+        ) else {
+            return false;
+        };
+        c.restart_with = None;
+        c.vn_from = Some(self.version);
+        c.events = std::mem::take(&mut self.events);
+        c.ep_events = std::mem::take(&mut self.ep_events);
+        c.stats = self.stats;
+        *self = c;
+        true
+    }
+
+    /// The QUIC version in use.
+    pub fn version(&self) -> u32 {
+        self.version
     }
 
     /// A server connection for a client's first Initial.
@@ -712,7 +803,11 @@ impl Connection {
         orig_dcid: ConnectionId,
         retry_scid: Option<ConnectionId>,
         validated: bool,
+        version: u32,
     ) -> Connection {
+        let mut cfg = cfg;
+        // The server answers in the client's version.
+        cfg.version = version;
         let local = ConnectionId::random(&mut rng, LOCAL_CID_LEN);
         let mut params = Connection::local_params(&cfg);
         params.original_dcid = Some(orig_dcid);
@@ -746,7 +841,7 @@ impl Connection {
             orig_dcid,
             client_scid,
         );
-        c.spaces[0].keys = Some(initial_keys(&initial_dcid, false));
+        c.spaces[0].keys = Some(initial_keys(&initial_dcid, false, version));
         c.peer_initial_scid = Some(client_scid);
         c.retry_scid = retry_scid;
         c.path.validated = validated;
@@ -902,12 +997,12 @@ impl Connection {
         match l {
             Level::Handshake => {
                 self.spaces[1].keys = Some(Keys {
-                    local: super::crypto::DirKeys::from_secret(suite, &ws),
-                    remote: super::crypto::DirKeys::from_secret(suite, &rs),
+                    local: super::crypto::DirKeys::from_secret(suite, &ws, self.version),
+                    remote: super::crypto::DirKeys::from_secret(suite, &rs, self.version),
                 });
             }
             _ => {
-                self.one_rtt = Some(OneRtt::new(suite, ws, rs));
+                self.one_rtt = Some(OneRtt::new(suite, ws, rs, self.version));
             }
         }
         // Packets that arrived before their keys get another try.
@@ -962,6 +1057,18 @@ impl Connection {
         self.params_done = true;
         let p = TransportParams::decode(raw, self.side == Side::Client)?;
         let perr = |r: &str| TransportError::new(code::TRANSPORT_PARAMETER_ERROR, r);
+        // Version negotiation (RFC 9368 section 4): the chosen version is the one in use, and
+        // a server that lists the version a client gave up after Version Negotiation did not
+        // send that Version Negotiation packet (a downgrade).
+        if let Some((chosen, avail)) = &p.version_info {
+            let verr = |r: &str| TransportError::new(code::VERSION_NEGOTIATION_ERROR, r);
+            if *chosen != self.version {
+                return Err(verr("version_information chosen version mismatch"));
+            }
+            if self.vn_from.is_some_and(|v| avail.contains(&v)) {
+                return Err(verr("version downgrade"));
+            }
+        }
         if p.initial_scid != self.peer_initial_scid {
             return Err(perr("initial_source_connection_id mismatch"));
         }

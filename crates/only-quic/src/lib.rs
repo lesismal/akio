@@ -71,7 +71,7 @@ use only_core::{Acceptor, Conn, Handler};
 pub use crate::bytes::Bytes;
 pub use types::{
     ClientConfig, Congestion, ConnectionError, ConnectionStats, Dir, ServerConfig, Side, StreamId,
-    TransportConfig, UdpStats,
+    TransportConfig, UdpStats, Version,
 };
 use types::{TokenStore, config_err};
 
@@ -275,6 +275,11 @@ impl Connection {
         let r = lock(&self.0.state).conn.send_datagram(data.into());
         self.kick();
         r
+    }
+
+    /// The QUIC version in use.
+    pub fn version(&self) -> Version {
+        Version::from_wire(lock(&self.0.state).conn.version())
     }
 
     /// The server's preferred address (RFC 9000 section 9.6), on a client whose server offered
@@ -712,6 +717,7 @@ impl QuicServer {
         }
         cfg.ecn_io = ecn_platform();
         cfg.preferred_address = config.preferred;
+        cfg.versions = config.versions;
         let setup = proto::ServerSetup {
             tls: config.tls,
             cfg,
@@ -896,6 +902,7 @@ pub fn dial<H: QuicHandler>(
         cfg.key_update_interval = n;
     }
     cfg.ecn_io = ecn_platform();
+    cfg.version = config.version.wire();
     let (h, conn) = endpoint.connect(Instant::now(), cfg, &config.tls, server_name, addr, token)?;
     let ep = Arc::new(Ep::new(
         endpoint,

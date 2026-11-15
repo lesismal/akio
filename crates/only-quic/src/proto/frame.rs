@@ -27,6 +27,8 @@ pub mod code {
     pub const CRYPTO_BUFFER_EXCEEDED: u64 = 0xd;
     pub const KEY_UPDATE_ERROR: u64 = 0xe;
     pub const AEAD_LIMIT_REACHED: u64 = 0xf;
+    /// RFC 9368 section 10.2.
+    pub const VERSION_NEGOTIATION_ERROR: u64 = 0x11;
     pub const CRYPTO_ERROR: u64 = 0x100;
 }
 

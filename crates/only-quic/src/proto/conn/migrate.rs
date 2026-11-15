@@ -42,7 +42,7 @@ pub(crate) struct Probe {
     /// The server address on the new path (the current one, or the preferred address).
     pub remote: SocketAddr,
     /// The remote connection ID reserved for it, once one is available.
-    cid_seq: Option<u64>,
+    pub cid_seq: Option<u64>,
     challenge: [u8; 8],
     /// A PATH_CHALLENGE is due.
     send: bool,

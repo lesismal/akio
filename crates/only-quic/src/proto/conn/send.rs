@@ -265,11 +265,27 @@ impl Connection {
                 } else {
                     Vec::new()
                 };
-                PacketBuilder::long(buf, PacketType::Initial, &dcid, &scid, &token, pn, pnl)
+                PacketBuilder::long(
+                    buf,
+                    self.version,
+                    PacketType::Initial,
+                    &dcid,
+                    &scid,
+                    &token,
+                    pn,
+                    pnl,
+                )
             }
-            SpaceId::Handshake => {
-                PacketBuilder::long(buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl)
-            }
+            SpaceId::Handshake => PacketBuilder::long(
+                buf,
+                self.version,
+                PacketType::Handshake,
+                &dcid,
+                &scid,
+                &[],
+                pn,
+                pnl,
+            ),
             SpaceId::Data => {
                 let phase = self.one_rtt.as_ref().is_some_and(|k| k.phase);
                 PacketBuilder::short(buf, &dcid, phase, pn, pnl)
@@ -758,12 +774,14 @@ impl Connection {
         to: SocketAddr,
         data: [u8; 8],
     ) -> Option<Transmit> {
+        // Not the connection ID of the current path: one per destination (RFC 9000 9.5).
+        let dcid = self.path_cid(to);
         let k = self.one_rtt.as_ref()?;
         let sp = &self.spaces[2];
         let pn = sp.next_pn;
         let pnl = pn_len(pn, sp.largest_acked);
         let mut buf = Vec::with_capacity(MIN_INITIAL_SIZE);
-        let b = PacketBuilder::short(&mut buf, &self.remote_cid(), k.phase, pn, pnl);
+        let b = PacketBuilder::short(&mut buf, &dcid, k.phase, pn, pnl);
         buf.push(ty::PATH_RESPONSE as u8);
         buf.extend_from_slice(&data);
         buf.resize(MIN_INITIAL_SIZE - TAG_LEN, 0);
@@ -894,11 +912,27 @@ impl Connection {
                     } else {
                         Vec::new()
                     };
-                    PacketBuilder::long(&mut buf, PacketType::Initial, &dcid, &scid, &tok, pn, pnl)
+                    PacketBuilder::long(
+                        &mut buf,
+                        self.version,
+                        PacketType::Initial,
+                        &dcid,
+                        &scid,
+                        &tok,
+                        pn,
+                        pnl,
+                    )
                 }
-                SpaceId::Handshake => {
-                    PacketBuilder::long(&mut buf, PacketType::Handshake, &dcid, &scid, &[], pn, pnl)
-                }
+                SpaceId::Handshake => PacketBuilder::long(
+                    &mut buf,
+                    self.version,
+                    PacketType::Handshake,
+                    &dcid,
+                    &scid,
+                    &[],
+                    pn,
+                    pnl,
+                ),
                 SpaceId::Data => {
                     let phase = self.one_rtt.as_ref().is_some_and(|k| k.phase);
                     PacketBuilder::short(&mut buf, &dcid, phase, pn, pnl)

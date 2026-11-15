@@ -201,6 +201,36 @@ pub struct ConnectionStats {
     pub ecn_ce_events: u64,
 }
 
+/// A QUIC version.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Version {
+    /// QUIC version 1 (RFC 9000), the default.
+    #[default]
+    V1,
+    /// QUIC version 2 (RFC 9369): version 1 with other wire constants (salts, labels, packet
+    /// type bits), against ossification.
+    V2,
+}
+
+impl Version {
+    /// The version number on the wire.
+    pub fn wire(self) -> u32 {
+        match self {
+            Version::V1 => crate::proto::packet::VERSION_1,
+            Version::V2 => crate::proto::packet::VERSION_2,
+        }
+    }
+
+    pub(crate) fn from_wire(v: u32) -> Version {
+        if v == crate::proto::packet::VERSION_2 {
+            Version::V2
+        } else {
+            Version::V1
+        }
+    }
+}
+
 /// The congestion controller of a connection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -303,6 +333,7 @@ pub(crate) struct ServerInner {
     pub(crate) retry: bool,
     pub(crate) key_update: Option<u64>,
     pub(crate) preferred: (Option<SocketAddrV4>, Option<SocketAddrV6>),
+    pub(crate) versions: Vec<u32>,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -320,7 +351,18 @@ impl ServerConfig {
             retry: false,
             key_update: None,
             preferred: (None, None),
+            versions: vec![Version::V1.wire(), Version::V2.wire()],
         })
+    }
+
+    /// The QUIC versions accepted (default: 1 and 2); clients starting with another one get a
+    /// Version Negotiation packet listing these. An empty list keeps the default.
+    #[must_use]
+    pub fn versions(mut self, versions: &[Version]) -> Self {
+        if !versions.is_empty() {
+            self.0.versions = versions.iter().map(|v| v.wire()).collect();
+        }
+        self
     }
 
     /// Uses `transport` for every connection.
@@ -382,6 +424,7 @@ pub(crate) struct ClientInner {
     pub(crate) transport: TransportConfig,
     pub(crate) tokens: TokenStore,
     pub(crate) key_update: Option<u64>,
+    pub(crate) version: Version,
 }
 
 impl fmt::Debug for ClientConfig {
@@ -397,7 +440,18 @@ impl ClientConfig {
             transport: TransportConfig::default(),
             tokens: Arc::new(Mutex::new(HashMap::new())),
             key_update: None,
+            version: Version::V1,
         })
+    }
+
+    /// The QUIC version connections start with (default 1). A server that does not speak it
+    /// answers with Version Negotiation and the connection starts over in the other version,
+    /// once, guarded against downgrades by the version_information transport parameter
+    /// (RFC 9368).
+    #[must_use]
+    pub fn version(mut self, version: Version) -> Self {
+        self.0.version = version;
+        self
     }
 
     /// Uses `transport` for connections dialed with this configuration.

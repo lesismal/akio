@@ -35,7 +35,7 @@ pub fn packet(data: &[u8]) {
             continue;
         }
         for client in [false, true] {
-            let k = initial_keys(&h.dcid, client);
+            let k = initial_keys(&h.dcid, client, h.version.max(1));
             let mut p = pkt.clone();
             let Some((n, tpn)) = packet::unprotect_header(&k.remote.header, &mut p, h.pn_offset)
             else {
@@ -242,10 +242,11 @@ impl Pair {
 
 /// A client Initial packet with `payload` as its frames, padded to 1200 bytes.
 fn forged_initial(dcid: &ConnectionId, payload: &[u8]) -> Vec<u8> {
-    let k = initial_keys(dcid, true);
+    let k = initial_keys(dcid, true, packet::VERSION_1);
     let mut buf = Vec::with_capacity(1200);
     let b = PacketBuilder::long(
         &mut buf,
+        packet::VERSION_1,
         PacketType::Initial,
         dcid,
         &ConnectionId::default(),
@@ -406,6 +407,7 @@ mod tests {
                 &ConnectionId::new(&[1; 8]).expect("cid"),
                 &ConnectionId::new(&[2; 8]).expect("cid"),
                 5,
+                &[packet::VERSION_1, packet::VERSION_2],
             ),
         );
         // quic_frame: one of each frame type.

@@ -824,6 +824,7 @@ fn new_token_and_resumption() {
 
 #[test]
 fn version_negotiation() {
+    use super::packet::{VERSION_1, VERSION_2};
     let (mut sim, tls) = Sim::default_pair(15);
     let h = sim.connect(
         &tls,
@@ -833,27 +834,108 @@ fn version_negotiation() {
     let now = sim.now;
     let t = sim.cconn(h).poll_transmit(now, 1).expect("initial");
     let mut d = t.data;
-    d[1..5].copy_from_slice(&0x6b33_43cfu32.to_be_bytes());
+    d[1..5].copy_from_slice(&0x6b33_43d0u32.to_be_bytes());
     let from = sim.client.addr;
     let Some(DatagramEvent::Respond(vn)) = sim.server.ep.handle(now, from, &d) else {
         panic!("no version negotiation");
     };
+    // Versions 1 and 2, and a reserved one.
+    assert_eq!(vn.data.len(), 7 + 16 + 12);
     let server = sim.server.addr;
     // It lists version 1, which the client chose: a bogus answer it ignores.
     sim.cconn(h).handle_datagram(now, server, vn.data.clone());
     assert!(sim.cconn(h).poll_event().is_none());
-    // One listing only other versions ends the connection.
-    let mut only_v2 = vn.data;
-    let n = only_v2.len();
-    only_v2.truncate(n - 8);
-    only_v2.extend_from_slice(&0x6b33_43cfu32.to_be_bytes());
-    sim.cconn(h).handle_datagram(now, server, only_v2);
+    // One listing only unknown versions ends the connection.
+    let mut unknown = vn.data[..vn.data.len() - 12].to_vec();
+    unknown.extend_from_slice(&0x0a0a_0a0au32.to_be_bytes());
+    sim.cconn(h).handle_datagram(now, server, unknown);
     let mut c = Collector::default();
     let evs: Vec<Event> = std::iter::from_fn(|| sim.cconn(h).poll_event()).collect();
     c.take(evs);
     assert_eq!(c.closed, Some(ConnectionError::VersionMismatch));
     // Small datagrams with unknown versions get no answer.
     assert!(sim.server.ep.handle(now, from, &d[..100]).is_none());
+
+    // A server that only speaks version 2: the client starts over in it.
+    let (s, tls) = certs();
+    let mut scfg = ConnConfig::new(TransportConfig::default(), true);
+    scfg.versions = vec![VERSION_2];
+    let mut sim = Sim::new(16, scfg, s, false);
+    let h = sim.connect(
+        &tls,
+        ConnConfig::new(TransportConfig::default(), true),
+        Vec::new(),
+    );
+    let now = sim.now;
+    let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
+    let Some(DatagramEvent::Respond(vn)) = sim.server.ep.handle(now, from, &first) else {
+        panic!("no version negotiation for version 1");
+    };
+    sim.cconn(h).handle_datagram(now, server, vn.data);
+    assert_eq!(sim.cconn(h).version(), VERSION_2);
+    let ok = sim.run_until(Duration::from_secs(10), |s| {
+        s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
+    });
+    assert!(ok, "no handshake after starting over");
+    assert_eq!(sim.sconn().version(), VERSION_2);
+    bulk(&mut sim, h, &[50_000], Duration::from_secs(10));
+
+    // A forged Version Negotiation pushing a version 2 client down to version 1: the server's
+    // version_information lists version 2, which gives the downgrade away.
+    let (s, tls) = certs();
+    let mut sim = Sim::new(
+        17,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        false,
+    );
+    let mut cfg = ConnConfig::new(TransportConfig::default(), true);
+    cfg.version = VERSION_2;
+    let h = sim.connect(&tls, cfg, Vec::new());
+    let now = sim.now;
+    let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
+    let hdr = super::packet::parse_header(&first, 8).expect("header");
+    assert_eq!(hdr.version, VERSION_2);
+    let only_v1 = super::packet::version_negotiation(&hdr.dcid, &hdr.scid, 5, &[VERSION_1]);
+    sim.cconn(h).handle_datagram(now, server, only_v1);
+    assert_eq!(sim.cconn(h).version(), VERSION_1);
+    let mut closed = None;
+    sim.run_until(Duration::from_secs(10), |s| {
+        let mut c = Collector::default();
+        c.take(s.events(false, h));
+        if c.closed.is_some() {
+            closed = c.closed;
+        }
+        closed.is_some()
+    });
+    assert!(
+        matches!(
+            closed,
+            Some(ConnectionError::TransportError { code: 0x11, .. })
+        ),
+        "{closed:?}"
+    );
+}
+
+#[test]
+fn version_2_handshake_retry_and_key_update() {
+    use super::packet::VERSION_2;
+    let (s, tls) = certs();
+    let mut sim = Sim::new(
+        18,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        true,
+    );
+    sim.link.loss = 0.05;
+    let mut cfg = ConnConfig::new(TransportConfig::default(), true);
+    cfg.version = VERSION_2;
+    cfg.key_update_interval = 200;
+    let h = sim.handshake(&tls, cfg);
+    assert_eq!(sim.cconn(h).version(), VERSION_2);
+    assert_eq!(sim.sconn().version(), VERSION_2);
+    assert!(sim.sconn().retry_scid.is_some());
+    bulk(&mut sim, h, &[400_000, 1000], Duration::from_secs(30));
 }
 
 #[test]

@@ -1,12 +1,14 @@
 // Raw QUIC interop peer (github.com/quic-go/quic-go) for only-quic: an echo of streams and
 // datagrams, ALPN "echo".
 //
-//	go run . server 127.0.0.1:9500 [retry]      echoes every bidirectional stream and datagram
-//	go run . client 127.0.0.1:9501 [bulk MB]    checks an only-quic echo server
-//	                                            (crates/only-quic/examples/quic-interop.rs)
+//	go run . server 127.0.0.1:9500 [retry] [v2]                 echoes every bidirectional stream and datagram
+//	go run . client 127.0.0.1:9501 [bulk MB] [v2] [migrate]     checks an only-quic echo server
+//	                                                            (crates/only-quic/examples/quic-interop.rs)
 //
 // "retry" makes the server validate every client address with a Retry first. "bulk MB" adds one
-// stream of MB megabytes (150 MB crosses quic-go's key update interval of 100k packets).
+// stream of MB megabytes (150 MB crosses quic-go's key update interval of 100k packets). "v2"
+// speaks QUIC version 2 (RFC 9369) only. "migrate" moves the client to a new UDP socket (a
+// probed and switched path) halfway through the streams.
 package main
 
 import (
@@ -29,6 +31,7 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/qlog"
 )
 
 func fail(format string, args ...any) {
@@ -66,6 +69,25 @@ var qconf = &quic.Config{
 	MaxIncomingStreams:   1000,
 	KeepAlivePeriod:      0,
 	HandshakeIdleTimeout: 10 * time.Second,
+	// A qlog per connection when QLOGDIR is set.
+	Tracer: qlog.DefaultConnectionTracer,
+}
+
+func has(name string) bool {
+	for _, a := range os.Args[3:] {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+func config() *quic.Config {
+	c := qconf.Clone()
+	if has("v2") {
+		c.Versions = []quic.Version{quic.Version2}
+	}
+	return c
 }
 
 func server(addr string, retry bool) {
@@ -77,7 +99,7 @@ func server(addr string, retry bool) {
 	if retry {
 		tr.VerifySourceAddress = func(net.Addr) bool { return true }
 	}
-	ln, err := tr.Listen(&tls.Config{Certificates: []tls.Certificate{cert()}, NextProtos: []string{"echo"}}, qconf)
+	ln, err := tr.Listen(&tls.Config{Certificates: []tls.Certificate{cert()}, NextProtos: []string{"echo"}}, config())
 	if err != nil {
 		fail("listen: %v", err)
 	}
@@ -136,21 +158,48 @@ func client(addr string, bulkMB int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	tlsConf := &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"echo"}, ServerName: "localhost"}
-	c, err := quic.DialAddr(ctx, addr, tlsConf, qconf)
-	if err != nil {
+	var c *quic.Conn
+	var err error
+	if has("migrate") {
+		// Migration needs connection IDs: a transport of its own with 8-byte ones (DialAddr
+		// uses zero-length IDs, which a second path cannot be told apart by).
+		ua, err := net.ResolveUDPAddr("udp", addr)
+		if err != nil {
+			fail("resolve: %v", err)
+		}
+		udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			fail("listen: %v", err)
+		}
+		tr := &quic.Transport{Conn: udp, ConnectionIDLength: 8}
+		c, err = tr.Dial(ctx, ua, tlsConf, config())
+		if err != nil {
+			fail("dial: %v", err)
+		}
+	} else if c, err = quic.DialAddr(ctx, addr, tlsConf, config()); err != nil {
 		fail("dial: %v", err)
 	}
 	if p := c.ConnectionState().TLS.NegotiatedProtocol; p != "echo" {
 		fail("alpn %q", p)
 	}
+	if v := c.ConnectionState().Version; has("v2") && v != quic.Version2 {
+		fail("version %v", v)
+	}
 	// 50 concurrent streams of growing sizes.
 	var wg sync.WaitGroup
 	errs := make(chan error, 64)
-	for i := 0; i < 50; i++ {
+	streams, unit := 50, 3000
+	if has("small") {
+		streams, unit = 10, 200
+	}
+	for i := 0; i < streams; i++ {
+		if i == 25 && has("migrate") {
+			migrate(c)
+		}
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := echoStream(c, pattern(i*3000, i)); err != nil {
+			if err := echoStream(c, pattern(i*unit, i)); err != nil {
 				errs <- err
 			}
 		}(i)
@@ -200,7 +249,28 @@ wait:
 		fmt.Printf("bulk %d MB echoed in %v (sha256 %x...)\n", bulkMB, time.Since(start).Round(time.Millisecond), sum[:4])
 	}
 	_ = c.CloseWithError(0, "done")
-	fmt.Printf("ok: %d streams, %d/20 datagrams\n", 50, n)
+	fmt.Printf("ok: %d streams, %d/20 datagrams, %v\n", streams, n, c.ConnectionState().Version)
+}
+
+// migrate probes a path from a new UDP socket and switches the connection to it.
+func migrate(c *quic.Conn) {
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		fail("migrate: %v", err)
+	}
+	p, err := c.AddPath(&quic.Transport{Conn: udp, ConnectionIDLength: 8})
+	if err != nil {
+		fail("add path: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.Probe(ctx); err != nil {
+		fail("probe: %v", err)
+	}
+	if err := p.Switch(); err != nil {
+		fail("switch: %v", err)
+	}
+	fmt.Println("migrated to", udp.LocalAddr())
 }
 
 func main() {
@@ -210,7 +280,7 @@ func main() {
 	mode, addr := os.Args[1], os.Args[2]
 	switch mode {
 	case "server":
-		server(addr, len(os.Args) > 3 && os.Args[3] == "retry")
+		server(addr, has("retry"))
 	case "client":
 		mb := 0
 		if len(os.Args) > 4 && os.Args[3] == "bulk" {
