@@ -20,3 +20,50 @@ mod sim;
 
 pub(crate) use conn::{ConnConfig, Connection, EndpointEvent, Event, Transmit};
 pub(crate) use endpoint::{ConnHandle, DatagramEvent, Endpoint, ServerSetup};
+
+/// A map keyed by stream ID (or another `u64` the peer only partly chooses: stream IDs are
+/// bounded by the stream limits we grant), hashed by a multiply-rotate with a per-process
+/// random key instead of SipHash, which showed up in bulk transfer profiles.
+pub(crate) type IdMap<V> = std::collections::HashMap<u64, V, IdHash>;
+/// A set of stream IDs (see [`IdMap`]).
+pub(crate) type IdSet = std::collections::HashSet<u64, IdHash>;
+
+/// The `BuildHasher` of [`IdMap`] and [`IdSet`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct IdHash(u64);
+
+impl Default for IdHash {
+    fn default() -> IdHash {
+        use std::hash::BuildHasher;
+        static KEY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        IdHash(
+            *KEY.get_or_init(|| std::collections::hash_map::RandomState::new().hash_one(0u64) | 1),
+        )
+    }
+}
+
+impl std::hash::BuildHasher for IdHash {
+    type Hasher = IdHasher;
+    fn build_hasher(&self) -> IdHasher {
+        IdHasher(self.0, 0)
+    }
+}
+
+/// The hasher of [`IdHash`] (meant for single `u64` keys).
+#[derive(Debug)]
+pub(crate) struct IdHasher(u64, u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.1
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+    fn write_u64(&mut self, v: u64) {
+        let x = (self.1.rotate_left(5) ^ v ^ self.0).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.1 = x ^ (x >> 29);
+    }
+}

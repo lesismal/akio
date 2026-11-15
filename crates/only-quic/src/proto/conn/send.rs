@@ -45,10 +45,10 @@ impl Connection {
         if let Some(t) = self.write_mtu_probe(now) {
             return Some(t);
         }
-        let mut buf = Vec::new();
+        let max = max_datagrams.max(1);
+        let mut buf = Vec::with_capacity(usize::from(self.mtu) * max);
         let mut seg = 0usize;
         let mut n = 0usize;
-        let max = max_datagrams.max(1);
         while n < max {
             let start = buf.len();
             let limit = if n == 0 { usize::from(self.mtu) } else { seg };
@@ -154,10 +154,15 @@ impl Connection {
                 blocked = true;
             }
         }
-        let wants: Vec<SpaceId> = SpaceId::ALL
-            .into_iter()
-            .filter(|&s| self.space_wants(s, now, blocked))
-            .collect();
+        let mut wants = [SpaceId::Data; 3];
+        let mut nwants = 0;
+        for s in SpaceId::ALL {
+            if self.space_wants(s, now, blocked) {
+                wants[nwants] = s;
+                nwants += 1;
+            }
+        }
+        let wants = &wants[..nwants];
         if wants.is_empty() {
             if !blocked {
                 self.app_limited = true;

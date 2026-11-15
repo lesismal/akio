@@ -37,6 +37,22 @@ impl RangeSet {
             return false;
         }
         let (mut start, mut end) = (r.start, r.end);
+        // Fast path: at or after the start of the last range (packet numbers and stream bytes
+        // mostly arrive in order), one lookup.
+        if let Some(mut last) = self.0.last_entry() {
+            let (s, e) = (*last.key(), *last.get());
+            if start >= s {
+                if end <= e {
+                    return false;
+                }
+                if start <= e {
+                    *last.get_mut() = end;
+                } else {
+                    self.0.insert(start, end);
+                }
+                return true;
+            }
+        }
         // Merge with a range starting at or before `start` that reaches it.
         if let Some((&s, &e)) = self.0.range(..=start).next_back() {
             if e >= end {

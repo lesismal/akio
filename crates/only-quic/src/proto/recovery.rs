@@ -248,6 +248,12 @@ impl Pacer {
     }
 
     /// When a packet of `size` bytes may be sent, or `None` for now.
+    ///
+    /// Bursts of about 2 ms worth of window (10 to 256 packets) refill at 1.25 * window / RTT,
+    /// using the measured RTT (a loopback or LAN path may need microseconds, not milliseconds).
+    /// Once the bucket is empty the sender waits until a whole burst has refilled, so a paced
+    /// sender wakes up once per burst and its datagrams leave in GSO-sized batches, rather than
+    /// once per packet.
     pub fn delay(
         &mut self,
         now: Instant,
@@ -256,19 +262,20 @@ impl Pacer {
         window: u64,
         rtt: Duration,
     ) -> Option<Instant> {
-        // Bursts of up to ~2 ms worth of window, at least 10 packets.
-        let rtt = rtt.max(Duration::from_millis(1));
-        let cap = ((u128::from(window) * 2_000_000 / rtt.as_nanos().max(1)) as u64)
+        let rtt_ns = rtt.as_nanos().max(1);
+        let cap = ((u128::from(window) * 2_000_000 / rtt_ns) as u64)
             .clamp(10 * mtu, 256 * mtu)
             .min(window.max(10 * mtu));
         if cap != self.capacity {
             self.capacity = cap;
             self.tokens = self.tokens.min(cap);
         }
+        if self.tokens >= size {
+            return None;
+        }
         let last = *self.last.get_or_insert(now);
-        // Refill at 1.25 * window / rtt.
         let elapsed = now.saturating_duration_since(last);
-        let refill = (u128::from(window) * 5 / 4 * elapsed.as_nanos() / rtt.as_nanos()) as u64;
+        let refill = (u128::from(window) * 5 / 4 * elapsed.as_nanos() / rtt_ns) as u64;
         if refill > 0 {
             self.tokens = self.tokens.saturating_add(refill).min(cap);
             self.last = Some(now);
@@ -276,9 +283,9 @@ impl Pacer {
         if self.tokens >= size {
             return None;
         }
-        let missing = size - self.tokens;
-        let nanos =
-            (u128::from(missing) * rtt.as_nanos() * 4 / (u128::from(window.max(1)) * 5)) as u64;
+        // Wait for a full burst (at least this packet).
+        let missing = size.max(cap) - self.tokens;
+        let nanos = (u128::from(missing) * rtt_ns * 4 / (u128::from(window.max(1)) * 5)) as u64;
         Some(now + Duration::from_nanos(nanos.max(1)))
     }
 
@@ -357,10 +364,30 @@ mod tests {
         }
         assert!((10..=20).contains(&sent), "{sent}");
         let at = p.delay(now, 1200, 1200, window, rtt).unwrap();
-        assert!(at > now && at < now + Duration::from_millis(5));
-        assert!(
-            p.delay(at + Duration::from_millis(1), 1200, 1200, window, rtt)
-                .is_none()
-        );
+        // The bucket (10 packets here) refills at 1.25 windows per RTT: 8 ms.
+        assert!(at > now + Duration::from_millis(7) && at <= now + Duration::from_millis(8));
+        let mut again = 0;
+        while p.delay(at, 1200, 1200, window, rtt).is_none() {
+            p.on_sent(1200);
+            again += 1;
+        }
+        assert!((9..=10).contains(&again), "{again}");
+        // A microsecond RTT (loopback) is not floored: the refill keeps up with the sender.
+        let mut p = Pacer::new();
+        let rtt = Duration::from_micros(50);
+        let t0 = Instant::now();
+        let mut sent = 0u64;
+        let mut t = t0;
+        while t < t0 + Duration::from_millis(1) {
+            match p.delay(t, 1200, 1200, window, rtt) {
+                None => {
+                    p.on_sent(1200);
+                    sent += 1;
+                }
+                Some(at) => t = at,
+            }
+        }
+        // 1.25 windows per 50 us for 1 ms: at least 20 windows.
+        assert!(sent >= 20 * 100, "{sent}");
     }
 }

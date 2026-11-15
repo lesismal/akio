@@ -140,6 +140,13 @@ impl RecordLayer {
         if buf.len() < HEADER_LEN {
             return Ok(None);
         }
+        let total = RecordLayer::record_len(buf)?;
+        Ok((buf.len() >= total).then_some(total))
+    }
+
+    /// The length of a record (header included) from its header, the first `HEADER_LEN`
+    /// bytes of `buf`.
+    pub(crate) fn record_len(buf: &[u8]) -> Result<usize, Fatal> {
         let typ = buf[0];
         if !(CT_CHANGE_CIPHER_SPEC..=CT_APPLICATION_DATA).contains(&typ) {
             return fatal(Alert::UnexpectedMessage, "unknown record type");
@@ -151,14 +158,70 @@ impl RecordLayer {
         if len > MAX_CIPHERTEXT {
             return fatal(Alert::RecordOverflow, "record too long");
         }
-        let total = HEADER_LEN + len;
-        Ok((buf.len() >= total).then_some(total))
+        Ok(HEADER_LEN + len)
+    }
+
+    /// Bytes between the header and the encrypted payload of a record of type `typ` (the
+    /// explicit nonce of TLS 1.2 AES-GCM).
+    fn explicit_len(&self, typ: u8) -> usize {
+        match &self.read {
+            Some(c) if c.kind == Kind::Tls12Gcm && typ != CT_CHANGE_CIPHER_SPEC => 8,
+            _ => 0,
+        }
     }
 
     /// Decrypts the complete record `rec` (header included) in place.
     pub(crate) fn open(&mut self, rec: &mut [u8]) -> Result<Opened, Fatal> {
-        let typ = rec[0];
-        let len = rec.len() - HEADER_LEN;
+        let x = self.explicit_len(rec[0]).min(rec.len() - HEADER_LEN);
+        let (head, rest) = rec.split_at_mut(HEADER_LEN);
+        let (explicit, body) = rest.split_at_mut(x);
+        let o = self.open_body(head, explicit, body)?;
+        let off = HEADER_LEN + x;
+        Ok(Opened {
+            start: o.start + off,
+            end: o.end + off,
+            ..o
+        })
+    }
+
+    /// Decrypts the complete record `rec` (header included) into `dst`: the record content is
+    /// appended (copied once and decrypted where it landed, so application data needs no
+    /// second copy out of a receive buffer). The result's range is the content within `dst`;
+    /// nothing is appended for a skipped record or on error.
+    pub(crate) fn open_into(&mut self, rec: &[u8], dst: &mut Vec<u8>) -> Result<Opened, Fatal> {
+        let x = self.explicit_len(rec[0]).min(rec.len() - HEADER_LEN);
+        let at = dst.len();
+        dst.extend_from_slice(&rec[HEADER_LEN + x..]);
+        let (head, explicit) = (&rec[..HEADER_LEN], &rec[HEADER_LEN..HEADER_LEN + x]);
+        match self.open_body(head, explicit, &mut dst[at..]) {
+            Ok(o) if !o.skipped => {
+                // Content always starts the decrypted body.
+                debug_assert_eq!(o.start, 0);
+                dst.truncate(at + o.end);
+                Ok(Opened {
+                    start: at,
+                    end: at + o.end,
+                    ..o
+                })
+            }
+            r => {
+                dst.truncate(at);
+                r
+            }
+        }
+    }
+
+    /// Decrypts a record given as its header, its explicit nonce (TLS 1.2 AES-GCM, else empty)
+    /// and the rest, which is decrypted in place. The content range is relative to `body`.
+    fn open_body(
+        &mut self,
+        head: &[u8],
+        explicit: &[u8],
+        body: &mut [u8],
+    ) -> Result<Opened, Fatal> {
+        let typ = head[0];
+        let len = explicit.len() + body.len();
+        let blen = body.len();
         // ChangeCipherSpec is never protected; TLS 1.3 uses it only for compatibility.
         let plain = |typ| {
             if len > MAX_PLAINTEXT {
@@ -166,8 +229,8 @@ impl RecordLayer {
             }
             Ok(Opened {
                 typ,
-                start: HEADER_LEN,
-                end: rec.len(),
+                start: 0,
+                end: blen,
                 skipped: false,
             })
         };
@@ -198,7 +261,6 @@ impl RecordLayer {
                     };
                 }
                 let nonce = c.xor_nonce();
-                let (head, body) = rec.split_at_mut(HEADER_LEN);
                 let (ct, tag) = body.split_at_mut(len - TAG_LEN);
                 if c.aead.open(&nonce, head, ct, tag).is_err() {
                     if self.skip_early > 0 {
@@ -217,29 +279,28 @@ impl RecordLayer {
                 let inner = ct[pos];
                 Ok(Opened {
                     typ: inner,
-                    start: HEADER_LEN,
-                    end: HEADER_LEN + pos,
+                    start: 0,
+                    end: pos,
                     skipped: false,
                 })
             }
             Kind::Tls12Gcm | Kind::Tls12ChaCha => {
-                let explicit = if c.kind == Kind::Tls12Gcm { 8 } else { 0 };
-                if len < explicit + TAG_LEN {
+                let need = if c.kind == Kind::Tls12Gcm { 8 } else { 0 };
+                if len < need + TAG_LEN {
                     return fatal(Alert::BadRecordMac, "record too short");
                 }
-                let plen = len - explicit - TAG_LEN;
+                let plen = len - need - TAG_LEN;
                 if plen > MAX_PLAINTEXT {
                     return fatal(Alert::RecordOverflow, "plaintext too long");
                 }
-                let nonce = if explicit > 0 {
+                let nonce = if need > 0 {
                     let mut n = c.iv;
-                    n[4..].copy_from_slice(&rec[HEADER_LEN..HEADER_LEN + 8]);
+                    n[4..].copy_from_slice(&explicit[..8]);
                     n
                 } else {
                     c.xor_nonce()
                 };
                 let aad = c.aad12(typ, plen);
-                let body = &mut rec[HEADER_LEN + explicit..];
                 let (ct, tag) = body.split_at_mut(plen);
                 if c.aead.open(&nonce, &aad, ct, tag).is_err() {
                     return fatal(Alert::BadRecordMac, "record authentication failed");
@@ -247,8 +308,8 @@ impl RecordLayer {
                 c.seq += 1;
                 Ok(Opened {
                     typ,
-                    start: HEADER_LEN + explicit,
-                    end: HEADER_LEN + explicit + plen,
+                    start: 0,
+                    end: plen,
                     skipped: false,
                 })
             }
@@ -273,6 +334,10 @@ impl RecordLayer {
         if data.is_empty() {
             return self.seal_one(typ, data, out);
         }
+        // Room for every record at once: growing `out` record by record would copy what was
+        // already sealed.
+        let records = data.len().div_ceil(MAX_PLAINTEXT);
+        out.reserve(data.len() + records * (HEADER_LEN + 8 + 1 + TAG_LEN));
         for chunk in data.chunks(MAX_PLAINTEXT) {
             self.seal_one(typ, chunk, out)?;
         }

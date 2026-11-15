@@ -348,6 +348,78 @@ What is left: AES-GCM and CRC-32 at 16 KiB trail code that uses 256/512-bit VAES
 ~0.55x rustls); P-256 ECDH keeps complete formulas for every doubling of a secret scalar; RSA has
 no Karatsuba; SHA-512 and MD5 stay portable.
 
+## QUIC and TLS hot paths (performance pass)
+
+Same host (Ryzen 7 7800X3D), services stopped, three rounds with the binaries alternating in each
+round; min–max over the rounds.
+
+### QUIC (`crates/only-h3/examples/quic-bench.rs`, loopback, `taskset -c 2-5`)
+
+"before" is `main` with the own QUIC stack (wave D), "after" this pass, "quinn-proto" the version
+before wave D built with the same benchmark program.
+
+| Case | before | after | quinn-proto | after / before | after / quinn-proto |
+|---|---:|---:|---:|---:|---:|
+| bulk, one stream, 2 GiB (Gbit/s) | 3.43–3.69 | 5.74–5.77 | 4.58–4.60 | 1.6x | 1.25x |
+| HTTP/3 GET, one connection, 64 in flight (req/s) | 170 824 | 415 084–425 981 | 58 021–58 199 | 2.4x | 7.2x |
+| full handshakes, 8 in flight (/s) | 6 485–6 529 | 6 616–6 655 | 6 536–6 674 ¹ | 1.02x | 1.0x |
+
+¹ From the wave D runs: the quinn-proto build's handshake loop failed in this campaign (most
+dials timed out), so its earlier figure is shown.
+
+What the profile (`perf record`, both UDP threads saturated) showed and what changed:
+
+- **Pacing** was the bulk limit. The pacer floored the RTT at 1 ms, which caps a loopback path at
+  1.25 congestion windows per millisecond, and once its bucket was empty it woke the sender for
+  every single packet through the shared timer thread. Per GiB that was 422 766 futex calls,
+  181 798 context switches and 195 416 `sendmmsg` calls, with packets leaving one or two at a time
+  from the timer thread and the state lock contended between it and the I/O thread. The pacer now
+  uses the measured RTT and, when empty, waits until a whole burst (2 ms of window, 10–256
+  packets) has refilled, as quinn-proto does: 5 598 futex calls, 9 463 context switches, 47 454
+  `sendmmsg` per GiB (quinn-proto: 5 449, 8 857, 49 165). The same per-packet wakeups were what
+  held HTTP/3 responses back.
+- Bookkeeping per packet: stream ID maps and pending-frame sets hash with a keyed multiply-rotate
+  instead of SipHash; `RangeSet::insert` extends the last range with one lookup (packet numbers
+  and stream bytes arrive in order); `poll_transmit` allocates its GSO batch buffer once instead
+  of growing it; choosing the packet number spaces of a datagram no longer allocates; a received
+  datagram's timestamp is reused instead of reading the clock twice more. Together 5.3 → 5.7
+  Gbit/s.
+- Already fine, unchanged: receive batching (`recvmmsg`, replies corked per batch), GSO batches of
+  up to 10 segments, header protection and AEAD (AES-GCM with AES-NI/PCLMULQDQ is ~17% of a UDP
+  thread). The receive path still copies each datagram once out of the `recvmmsg` buffer (the
+  decrypted packet is the backing store of the `Bytes` handed to the application).
+
+### TLS 1.3 (`crates/only-tls/examples/tls-bench.rs`, in memory, `taskset -c 2`)
+
+New example: both ends in one thread, the same self-signed ECDSA P-256 certificate verified by
+the client, no tickets; records sealed by the client and opened by the server. rustls 0.23 + ring
+is a dev-dependency of only-tls (default features off, so no aws-lc).
+
+| Case | before | after | rustls + ring | after / rustls |
+|---|---:|---:|---:|---:|
+| full handshakes/s, X25519 | 3 047–3 055 | 3 040–3 047 | 5 006–5 026 | 0.61 |
+| full handshakes/s, secp256r1 | 2 298–2 305 | 2 298–2 301 | 5 125–5 137 | 0.45 |
+| seal + open 1 KiB, AES-128-GCM (MB/s) | 1 517–1 575 | 1 513–1 543 | 1 708–1 807 | 0.86 |
+| seal + open 16 KiB, AES-128-GCM | 2 627–2 641 | 2 612–2 811 | 4 066–4 110 | 0.64–0.69 |
+| seal + open 64 KiB, AES-128-GCM | 2 587–2 673 | 2 787–2 794 | ² | – |
+| seal + open 16 KiB, AES-256-GCM | 2 230–2 271 | 2 250–2 380 | 3 693–3 847 | 0.59–0.63 |
+| seal + open 64 KiB, AES-256-GCM | 2 271–2 299 | 2 308–2 385 | ² | – |
+| seal + open 16 KiB, ChaCha20-Poly1305 | 822–828 | 820–841 | 1 493–1 516 | 0.55 |
+
+² rustls' 64 KiB figure swung between ~2 200 and ~4 100 MB/s from one binary to the next (its
+receive side takes at most 16 KiB of plaintext before it must be read out), so it is not given.
+
+- Records: a received record used to be copied into the receive buffer, decrypted there, copied
+  out to the caller and the rest of the buffer shifted down. Whole records are now copied once,
+  straight into the caller's plaintext buffer, and decrypted where they land; only a partial tail
+  goes through the receive buffer. Sealing already encrypted in place in the output and now
+  reserves room for all records of a large write at once. That is +5–7% for 16–64 KiB records;
+  the rest of the gap to rustls is the AES-GCM and ChaCha20-Poly1305 kernels themselves (ring
+  uses VAES/AVX2 and SIMD Poly1305; see the crypto section above).
+- Handshakes: the profile has over 98% of the time in curve arithmetic and hashing (P-256 and
+  X25519 against ring's assembly); allocation, copying and transcript hashing together are under
+  2%, so nothing cheap was left there and the handshake code is unchanged.
+
 ## Codec micro benchmarks (in-house vs the replaced crates)
 
 `cargo run --release --manifest-path tools/codec-bench/Cargo.toml [http1|hpack|regex]`, a separate

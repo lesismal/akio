@@ -8,7 +8,7 @@ use super::client::Client;
 use super::common::{Action, ClientSettings, ServerSettings};
 use super::msgs::{TLS12, TLS13};
 use super::record::{
-    CT_ALERT, CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, RecordLayer,
+    CT_ALERT, CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, HEADER_LEN, RecordLayer,
 };
 use super::server::Server;
 use super::suites::Suite;
@@ -243,8 +243,7 @@ impl Connection {
         if self.received_close {
             return Ok(());
         }
-        self.rx.extend_from_slice(input);
-        if let Err(e) = self.process(plain, out) {
+        if let Err(e) = self.recv_records(input, plain, out) {
             self.fail(&e, out);
             return Err(e);
         }
@@ -308,102 +307,187 @@ impl Connection {
         self.error = Some(e.clone());
     }
 
-    fn process(&mut self, plain: &mut Vec<u8>, out: &mut Vec<u8>) -> Result<(), Fatal> {
+    /// Takes in `input` after the handshake: completes a record left over from an earlier call,
+    /// then opens whole records straight from `input` into `plain` (one copy instead of two:
+    /// none into a receive buffer, none out of it) and keeps only a partial tail.
+    fn recv_records(
+        &mut self,
+        mut input: &[u8],
+        plain: &mut Vec<u8>,
+        out: &mut Vec<u8>,
+    ) -> Result<(), Fatal> {
+        if !self.rx.is_empty() && !self.m.handshaking() {
+            if self.rx.len() < HEADER_LEN {
+                let take = (HEADER_LEN - self.rx.len()).min(input.len());
+                self.rx.extend_from_slice(&input[..take]);
+                input = &input[take..];
+            }
+            if self.rx.len() >= HEADER_LEN {
+                let total = RecordLayer::record_len(&self.rx)?;
+                let take = total.saturating_sub(self.rx.len()).min(input.len());
+                self.rx.extend_from_slice(&input[..take]);
+                input = &input[take..];
+            }
+            self.process(plain, out)?;
+            if self.received_close {
+                return Ok(());
+            }
+        }
+        if !self.rx.is_empty() || self.m.handshaking() {
+            self.rx.extend_from_slice(input);
+            return self.process(plain, out);
+        }
         let mut pos = 0;
-        let r = self.process_records(&mut pos, plain, out);
-        self.rx.drain(..pos);
+        while let Some(n) = RecordLayer::frame(&input[pos..])? {
+            let rec = &input[pos..pos + n];
+            pos += n;
+            let o = self.rec.open_into(rec, plain)?;
+            if o.skipped {
+                continue;
+            }
+            if o.typ == CT_APPLICATION_DATA {
+                if let Err(e) = self.app_data_ok() {
+                    plain.truncate(o.start);
+                    return Err(e);
+                }
+                continue;
+            }
+            // Post-handshake messages and alerts are rare: move them out of `plain`.
+            let content = plain.split_off(o.start);
+            if !self.on_record(o.typ, &content, plain, out)? {
+                return Ok(());
+            }
+            if self.m.handshaking() {
+                break;
+            }
+        }
+        self.rx.extend_from_slice(&input[pos..]);
+        if self.m.handshaking() {
+            return self.process(plain, out);
+        }
+        Ok(())
+    }
+
+    fn process(&mut self, plain: &mut Vec<u8>, out: &mut Vec<u8>) -> Result<(), Fatal> {
+        // Records are opened in place in `rx`, taken out of `self` meanwhile so their contents
+        // can be handed to `on_record`.
+        let mut rx = std::mem::take(&mut self.rx);
+        let mut pos = 0;
+        let r = self.process_records(&mut rx, &mut pos, plain, out);
+        rx.drain(..pos);
+        self.rx = rx;
         r
     }
 
     fn process_records(
         &mut self,
+        rx: &mut [u8],
         pos: &mut usize,
         plain: &mut Vec<u8>,
         out: &mut Vec<u8>,
     ) -> Result<(), Fatal> {
-        while let Some(n) = RecordLayer::frame(&self.rx[*pos..])? {
+        while let Some(n) = RecordLayer::frame(&rx[*pos..])? {
             let at = *pos;
-            let o = self.rec.open(&mut self.rx[at..at + n])?;
+            let o = self.rec.open(&mut rx[at..at + n])?;
             *pos += n;
             if o.skipped {
                 continue;
             }
-            let (a, b) = (at + o.start, at + o.end);
-            match o.typ {
-                CT_HANDSHAKE => {
-                    if a == b {
-                        return fatal(Alert::UnexpectedMessage, "empty handshake record");
-                    }
-                    self.warnings = 0;
-                    self.hs.extend_from_slice(&self.rx[a..b]);
-                    self.process_handshake(out)?;
-                }
-                CT_APPLICATION_DATA => {
-                    if !self.hs.is_empty() {
-                        return fatal(Alert::UnexpectedMessage, "data inside a handshake message");
-                    }
-                    if self.m.handshaking() {
-                        return fatal(Alert::UnexpectedMessage, "data before the handshake");
-                    }
-                    self.warnings = 0;
-                    plain.extend_from_slice(&self.rx[a..b]);
-                }
-                CT_ALERT => {
-                    if !self.hs.is_empty() {
-                        return fatal(Alert::UnexpectedMessage, "alert inside a handshake message");
-                    }
-                    if a == b {
-                        return fatal(Alert::UnexpectedMessage, "empty alert record");
-                    }
-                    if b - a != 2 {
-                        return fatal(Alert::DecodeError, "bad alert");
-                    }
-                    let (level, desc) = (self.rx[a], Alert::from_code(self.rx[a + 1]));
-                    if desc == Alert::CloseNotify {
-                        self.received_close = true;
-                        return Ok(());
-                    }
-                    let tls13 = self.m.version() == TLS13 || self.rec.read_is_tls13();
-                    if desc == Alert::UserCanceled || (level == 1 && !tls13) {
-                        self.warnings += 1;
-                        if self.warnings > MAX_WARNINGS {
-                            return fatal(Alert::UnexpectedMessage, "too many warning alerts");
-                        }
-                        continue;
-                    }
-                    return Err(Fatal::peer(desc));
-                }
-                CT_CHANGE_CIPHER_SPEC => {
-                    if self.rx[a..b] != [1] {
-                        return fatal(Alert::UnexpectedMessage, "bad ChangeCipherSpec");
-                    }
-                    if !self.hs.is_empty() {
-                        return fatal(Alert::UnexpectedMessage, "CCS inside a handshake message");
-                    }
-                    match self.m.version() {
-                        TLS12 => {
-                            let mut acts = std::mem::take(&mut self.actions);
-                            let r = self
-                                .m
-                                .change_cipher_spec(&mut acts)
-                                .and_then(|()| self.apply(&mut acts, out));
-                            self.actions = acts;
-                            r?;
-                        }
-                        // Middlebox compatibility (RFC 8446 appendix D.4).
-                        // One per handshake.
-                        TLS13 if self.m.handshaking() && !self.compat_ccs => {
-                            self.compat_ccs = true;
-                        }
-                        _ => return fatal(Alert::UnexpectedMessage, "unexpected ChangeCipherSpec"),
-                    }
-                }
-                _ => return fatal(Alert::UnexpectedMessage, "unknown content type"),
+            if !self.on_record(o.typ, &rx[at + o.start..at + o.end], plain, out)? {
+                return Ok(());
             }
         }
         Ok(())
     }
 
+    /// Application data may arrive now.
+    fn app_data_ok(&mut self) -> Result<(), Fatal> {
+        if !self.hs.is_empty() {
+            return fatal(Alert::UnexpectedMessage, "data inside a handshake message");
+        }
+        if self.m.handshaking() {
+            return fatal(Alert::UnexpectedMessage, "data before the handshake");
+        }
+        self.warnings = 0;
+        Ok(())
+    }
+
+    /// Handles the content of one opened record; `false` once close_notify arrived (the rest
+    /// is ignored).
+    fn on_record(
+        &mut self,
+        typ: u8,
+        content: &[u8],
+        plain: &mut Vec<u8>,
+        out: &mut Vec<u8>,
+    ) -> Result<bool, Fatal> {
+        match typ {
+            CT_HANDSHAKE => {
+                if content.is_empty() {
+                    return fatal(Alert::UnexpectedMessage, "empty handshake record");
+                }
+                self.warnings = 0;
+                self.hs.extend_from_slice(content);
+                self.process_handshake(out)?;
+            }
+            CT_APPLICATION_DATA => {
+                self.app_data_ok()?;
+                plain.extend_from_slice(content);
+            }
+            CT_ALERT => {
+                if !self.hs.is_empty() {
+                    return fatal(Alert::UnexpectedMessage, "alert inside a handshake message");
+                }
+                if content.is_empty() {
+                    return fatal(Alert::UnexpectedMessage, "empty alert record");
+                }
+                if content.len() != 2 {
+                    return fatal(Alert::DecodeError, "bad alert");
+                }
+                let (level, desc) = (content[0], Alert::from_code(content[1]));
+                if desc == Alert::CloseNotify {
+                    self.received_close = true;
+                    return Ok(false);
+                }
+                let tls13 = self.m.version() == TLS13 || self.rec.read_is_tls13();
+                if desc == Alert::UserCanceled || (level == 1 && !tls13) {
+                    self.warnings += 1;
+                    if self.warnings > MAX_WARNINGS {
+                        return fatal(Alert::UnexpectedMessage, "too many warning alerts");
+                    }
+                    return Ok(true);
+                }
+                return Err(Fatal::peer(desc));
+            }
+            CT_CHANGE_CIPHER_SPEC => {
+                if content != [1] {
+                    return fatal(Alert::UnexpectedMessage, "bad ChangeCipherSpec");
+                }
+                if !self.hs.is_empty() {
+                    return fatal(Alert::UnexpectedMessage, "CCS inside a handshake message");
+                }
+                match self.m.version() {
+                    TLS12 => {
+                        let mut acts = std::mem::take(&mut self.actions);
+                        let r = self
+                            .m
+                            .change_cipher_spec(&mut acts)
+                            .and_then(|()| self.apply(&mut acts, out));
+                        self.actions = acts;
+                        r?;
+                    }
+                    // Middlebox compatibility (RFC 8446 appendix D.4).
+                    // One per handshake.
+                    TLS13 if self.m.handshaking() && !self.compat_ccs => {
+                        self.compat_ccs = true;
+                    }
+                    _ => return fatal(Alert::UnexpectedMessage, "unexpected ChangeCipherSpec"),
+                }
+            }
+            _ => return fatal(Alert::UnexpectedMessage, "unknown content type"),
+        }
+        Ok(true)
+    }
     fn process_handshake(&mut self, out: &mut Vec<u8>) -> Result<(), Fatal> {
         loop {
             if self.hs.len() < 4 {

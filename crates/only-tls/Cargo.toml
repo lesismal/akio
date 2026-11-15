@@ -25,5 +25,9 @@ only-crypto = { workspace = true }
 only-x509 = { workspace = true }
 only-log = { workspace = true }
 
+[dev-dependencies]
+# Only the comparison in examples/tls-bench.rs; never a dependency of the library.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
 [lints]
 workspace = true

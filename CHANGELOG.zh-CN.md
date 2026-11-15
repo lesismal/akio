@@ -375,6 +375,19 @@ DEV-PLAN“不依赖三方库”第 B 波。公开 API 不变；行为、errno �
   版本的 A/B 对比见 docs/BENCHMARKS.zh-CN.md。
 - `deny.toml`：去掉了 smoltcp 带来的 0BSD 许可证与 `bitflags@1` 重复项。
 
+### 变更（性能）：QUIC 与 TLS 热路径（DEV-PLAN 性能优化）
+
+API 无变化。Ryzen 7 7800X3D，回环，交替运行三轮（见 docs/BENCHMARKS.zh-CN.md）：
+
+- `only-quic`：单流大块吞吐 3.4-3.7 → 5.7-5.8 Gbit/s（quinn-proto 版本的 1.25 倍，之前为 0.72 倍），单连接 64 个并发的
+  HTTP/3 请求 17.1 万 → 41.5-42.6 万次/秒，握手 +2%。pacer 原先把 RTT 下限设为 1 ms，令牌桶一空就通过定时器线程为每个包
+  唤醒一次发送方；现在使用测得的 RTT，并等整批令牌补满再发（与 quinn-proto 相同），被 pacing 的数据以 GSO 批次从 I/O 线程
+  发出（每 GiB：futex 调用 42.3 万 → 5600 次，上下文切换 18.2 万 → 9500 次）。另外每个包的簿记更省（流映射不再用 SipHash，
+  按序插入区间只需一次查找，批次缓冲区与包号空间选择不再逐个数据报分配内存）。
+- `only-tls`：收到的记录只复制一次，直接进入调用方的明文缓冲区并在那里解密（以前经过接收缓冲区再复制出来）；大块写入一次性
+  为所有记录预留空间。16-64 KiB 记录的加密 + 解密提升 5-7%。握手经过剖析：98% 以上是曲线运算与哈希，因此未改动。新增
+  `crates/only-tls/examples/tls-bench.rs`，与 rustls 0.23 + ring 对比（仅为开发依赖）。
+
 ### 变更（性能）：only-deflate 达到 zlib-rs 的速度（DEV-PLAN 性能优化）
 
 `only-deflate`（仍为 `#![forbid(unsafe_code)]`，无依赖，不用 SIMD）的压缩速度现在为使用 zlib-rs
