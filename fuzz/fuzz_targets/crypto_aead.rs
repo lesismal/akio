@@ -74,6 +74,24 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         );
         let mixed = only_crypto::gcm::AesGcm::with_cipher(soft.clone());
         assert_eq!(mixed.encrypt(&nonce, aad, msg), sealed);
+        // The 128-bit AES-NI / PCLMULQDQ kernel against the default one (VAES + VPCLMULQDQ +
+        // AVX-512 when the CPU has them).
+        let narrow = only_crypto::gcm::AesGcm::with_cipher_narrow(ours.clone());
+        assert_eq!(narrow.encrypt(&nonce, aad, msg), sealed);
+        assert_eq!(
+            narrow.decrypt(&nonce, aad, msg).ok(),
+            gcm.decrypt(&nonce, aad, msg).ok()
+        );
+        // Out of place (the TLS record layer): part of the plaintext from a separate buffer.
+        let split = usize::from(data[1]).min(msg.len());
+        let mut dst = msg.to_vec();
+        let tag = gcm.encrypt_detached_from(&nonce, aad, &msg[..split], &mut dst);
+        assert_eq!(dst[..], sealed[..msg.len()]);
+        assert_eq!(tag[..], sealed[msg.len()..]);
+        let mut back = vec![0u8; msg.len()];
+        gcm.decrypt_detached_from(&nonce, aad, &dst, &tag, &mut back)
+            .unwrap();
+        assert_eq!(back, msg);
         let (theirs, opened) = if klen == 16 {
             let g = aes_gcm::Aes128Gcm::new_from_slice(key).unwrap();
             (g.encrypt((&nonce).into(), Payload { msg, aad }).unwrap(), g.decrypt((&nonce).into(), Payload { msg, aad }))

@@ -166,12 +166,12 @@ dev-dependency.
 |---|---:|---:|---:|
 | full handshakes/s, X25519 | 5,027 | 5,025 | 1.00 |
 | full handshakes/s, secp256r1 | 4,552 | 5,126 | 0.89 |
-| seal + open 1 KiB, AES-128-GCM (MB/s) | 1,556 | 1,782 | 0.87 |
-| seal + open 16 KiB, AES-128-GCM | 2,790 | 4,090 | 0.68 |
-| seal + open 64 KiB, AES-128-GCM | 2,784 | ² | – |
-| seal + open 1 KiB, AES-256-GCM | 1,449 | 1,678 | 0.86 |
-| seal + open 16 KiB, AES-256-GCM | 2,371 | 3,821 | 0.62 |
-| seal + open 64 KiB, AES-256-GCM | 2,342 | ² | – |
+| seal + open 1 KiB, AES-128-GCM (MB/s) | 2,697 | 1,760 | 1.53 |
+| seal + open 16 KiB, AES-128-GCM | 6,603 | 3,994 | 1.65 |
+| seal + open 64 KiB, AES-128-GCM | 6,734 | ² | – |
+| seal + open 1 KiB, AES-256-GCM | 2,514 | 1,702 | 1.48 |
+| seal + open 16 KiB, AES-256-GCM | 5,873 | 3,795 | 1.55 |
+| seal + open 64 KiB, AES-256-GCM | 5,858 | ² | – |
 | seal + open 1 KiB, ChaCha20-Poly1305 | 598 | 905 | 0.66 |
 | seal + open 16 KiB, ChaCha20-Poly1305 | 843 | 1,500 | 0.56 |
 | seal + open 64 KiB, ChaCha20-Poly1305 | 839 | 1,167 | 0.72 |
@@ -181,12 +181,17 @@ at most 16 KiB of plaintext before it must be read out), so no ratio is given.
 
 Handshakes were 3,055 (X25519) and 2,306 (secp256r1) per second before the P-256 / X25519
 pass (0.61× and 0.45×; History). The handshake profile is still dominated by curve arithmetic:
-the P-256 doubling of the ECDH and the signature verification, then the X25519 ladder. The record
-gap is the AES-GCM and ChaCha20-Poly1305 kernels (ring uses VAES/AVX2 and a SIMD Poly1305).
+the P-256 doubling of the ECDH and the signature verification, then the X25519 ladder. The AES-GCM
+records run on the VAES + VPCLMULQDQ + AVX-512 kernel and are sealed and opened out of place (the
+AEAD reads the caller's plaintext or the received record and writes the output once; before, a
+copy came first, 30% of the 16 KiB profile): 2.4× the previous release at 16–64 KiB (AES-128
+2,739 → 6,603 MB/s at 16 KiB, 0.69× → 1.65× rustls + ring). The remaining ChaCha20-Poly1305 gap
+is the scalar Poly1305 (ring has a SIMD one).
 
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
-Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, BMI2 + ADX. The comparison
+Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +
+VPCLMULQDQ + AVX-512 (AES-GCM from 256 bytes, CRC folding from 512 bytes), BMI2 + ADX. The comparison
 columns are the RustCrypto crates `only-crypto` replaced (also with run-time CPU detection;
 crc32fast for CRC-32) and ring 0.17 for public-key operations.
 
@@ -197,16 +202,16 @@ crc32fast for CRC-32) and ring 0.17 for public-key operations.
 | SHA-256 | 16 KiB | 2,365 | 2,371 | 1.00 |
 | SHA-256 | 1400 B | 2,189 | 2,221 | 0.99 |
 | HMAC-SHA1 (STUN message) | 100 B | 583 | 624 | 0.94 |
-| CRC-32 | 1400 B | 18,524 | crc32fast 30,448 | 0.61 |
-| CRC-32 | 16 KiB | 20,019 | crc32fast 73,524 | 0.27 |
-| CRC-32C | 1400 B | 18,828 | – | – |
+| CRC-32 | 1400 B | 35,164 | crc32fast 30,400 | 1.16 |
+| CRC-32 | 16 KiB | 74,885 | crc32fast 73,153 | 1.02 |
+| CRC-32C | 1400 B | 40,383 | – | – |
 | AES-128, one block (CFB chain, KCP) | 16 B | 3,197 | 3,486 | 0.92 |
 | AES-128-CTR | 1400 B | 7,716 | 8,493 | 0.91 |
 | AES-128-CTR | 16 KiB | 8,393 | 11,546 | 0.73 |
-| AES-128-GCM seal | 1400 B | 4,421 | aes-gcm 1,955 | 2.26 |
-| AES-128-GCM seal | 16 KiB | 6,533 | aes-gcm 2,178 | 3.00 |
-| AES-128-GCM open | 16 KiB | 5,643 | aes-gcm 2,109 | 2.67 |
-| AES-256-GCM seal | 16 KiB | 5,761 | aes-gcm 2,014 | 2.86 |
+| AES-128-GCM seal | 1400 B | 8,644 | aes-gcm 1,944 | 4.45 |
+| AES-128-GCM seal | 16 KiB | 15,316 | aes-gcm 2,153 | 7.11 |
+| AES-128-GCM open | 16 KiB | 13,262 | aes-gcm 2,083 | 6.37 |
+| AES-256-GCM seal | 16 KiB | 13,335 | aes-gcm 2,002 | 6.66 |
 | ChaCha20-Poly1305 seal | 1400 B | 1,083 | 778 | 1.39 |
 | ChaCha20-Poly1305 seal | 16 KiB | 1,755 | 1,969 | 0.89 |
 | SHA-512 (portable) | 16 KiB | 540 | 823 | 0.66 |
@@ -236,13 +241,56 @@ the RFC 6979 HMACs) P-256 does 0.42× (sign), 0.58× (verify), 0.52× (ECDH) and
 generation) of ring, X25519 0.84×, and the handshakes 0.62× (X25519) and 0.49× (secp256r1) of
 rustls.
 
-What is left: AES-GCM and CRC-32 at 16 KiB trail code that uses 256/512-bit VAES and VPCLMULQDQ
-(newer than the MSRV, 1.85); Poly1305 is scalar; P-256 sign trails ring's 7-bit comb with AVX2
-table scans and the order arithmetic in assembly (ours: a 4-bit comb, about 100-cycle `mod n`
-products), and each P-256 doubling (4M + 4S, ~480 cycles) passes its field elements through
-memory between the assembly routines where ring keeps them in registers; Ed25519 verification and
-X25519 have no assembly beyond the field (Ed25519 verify is portable); RSA has no Karatsuba;
-SHA-512 and MD5 are portable.
+#### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
+
+MB/s of message bytes with 13 bytes of AAD, median of three alternating rounds; before = `main`
+at `a1cc9b49` (AES-NI + PCLMULQDQ, eight blocks per reduction), after = the VAES + VPCLMULQDQ +
+AVX-512 kernel (sixteen blocks per loop iteration and reduction, AES rounds interleaved with the
+GHASH of the previous group) with the fused short tail. Open copies the sealed message into the
+working buffer first on both sides. ring 0.17 runs its VAES/AVX2 kernel on this CPU.
+
+| AES-128-GCM | before | after | ring | after / ring |
+|---|---:|---:|---:|---:|
+| seal 64 B | 611 | 1,185 | 1,073 | 1.10 |
+| seal 1 KiB | 4,539 | 7,623 | 7,809 | 0.98 |
+| seal 1400 B | 4,249 | 8,163 | 7,377 | 1.11 |
+| seal 16 KiB | 6,455 | 15,048 | 12,689 | 1.19 |
+| seal 64 KiB | 6,540 | 15,862 | 12,845 | 1.23 |
+| open 64 B | 532 | 1,120 | 928 | 1.21 |
+| open 1 KiB | 4,034 | 7,178 | 7,053 | 1.02 |
+| open 1400 B | 3,978 | 7,539 | 7,133 | 1.06 |
+| open 16 KiB | 5,671 | 13,296 | 11,035 | 1.20 |
+| open 64 KiB | 5,515 | 12,792 | 11,230 | 1.14 |
+
+| AES-256-GCM | before | after | ring | after / ring |
+|---|---:|---:|---:|---:|
+| seal 64 B | 595 | 1,137 | 1,076 | 1.06 |
+| seal 1 KiB | 4,135 | 6,932 | 7,240 | 0.96 |
+| seal 1400 B | 4,008 | 7,055 | 6,599 | 1.07 |
+| seal 16 KiB | 5,737 | 13,142 | 11,370 | 1.16 |
+| seal 64 KiB | 5,858 | 13,819 | 11,623 | 1.19 |
+| open 64 B | 575 | 1,059 | 926 | 1.14 |
+| open 1 KiB | 3,416 | 6,596 | 6,591 | 1.00 |
+| open 1400 B | 3,320 | 6,533 | 6,642 | 0.98 |
+| open 16 KiB | 4,552 | 11,607 | 10,131 | 1.15 |
+| open 64 KiB | 4,555 | 11,632 | 10,452 | 1.11 |
+
+Width: on Zen 4 (512-bit operations issued as two 256-bit halves) the same kernel on 256-bit
+registers (eight blocks per iteration) was slower at every size, so only the 512-bit kernel
+ships: AES-128 seal 16 KiB 15,100 vs 13,100 MB/s, 1 KiB 7,600 vs 6,800, open 16 KiB 13,150 vs
+11,775. Short messages gained from the tail, not the width: the last bytes of a message and `J0`
+go through AES in one call and a short AAD, the tail ciphertext and the length block through
+one GHASH call (it was three GHASH calls and a separate CTR pass), which doubled 64-byte
+messages for every CPU with AES and carry-less multiplication instructions.
+
+What is left: AES-GCM messages of 1 KiB to 1.4 KiB are at 0.96–1.11× ring (the wide kernel's
+fixed cost; the tail after the last 256-byte group runs on the 128-bit path); CPUs with VAES but
+without AVX-512 (Zen 3, Alder Lake) use the 128-bit path; the TLS record layer still zero-fills
+the output before the AEAD writes it (about 9% of a 16 KiB record); Poly1305 is scalar; P-256
+sign trails ring's 7-bit comb with AVX2 table scans and the order arithmetic in assembly (ours: a
+4-bit comb, about 100-cycle `mod n` products), and each P-256 doubling (4M + 4S, ~480 cycles)
+passes its field elements through memory between the assembly routines where ring keeps them in
+registers; Ed25519 verification is portable; RSA has no Karatsuba; SHA-512 and MD5 are portable.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 
@@ -364,6 +412,11 @@ Short summaries of the per-area passes; the full tables are in the git history o
   generation 54,581 → 108,263; X25519 30,696 → 36,488; Ed25519 sign 67,644 → 89,784; P-384
   1.13–1.47×. Handshakes 3,055 → 5,027/s (X25519, 1.00× rustls) and 2,306 → 4,552/s (secp256r1,
   0.89×).
+- **Wide AES-GCM and CRC** (this host, `a1cc9b49` → after): AES-GCM on VAES + VPCLMULQDQ +
+  AVX-512 (512-bit, chosen over 256-bit by measurement) 2.3–2.5× at 16–64 KiB (AES-128 seal
+  16 KiB 6,455 → 15,048 MB/s, 0.51× → 1.19× ring), the fused tail 1.8–2.1× at 64 B; TLS 1.3
+  records sealed and opened out of place, 2.4× at 16 KiB (0.69× → 1.65× rustls + ring); CRC-32
+  folding on 512-bit registers 16 KiB 19,992 → 74,885 MB/s (0.27× → 1.02× crc32fast).
 - **QUIC and TLS hot paths** (this host): the pacer floored the RTT at 1 ms and woke the sender
   per packet; with the measured RTT and burst refills (as quinn-proto does) bulk went 3.4–3.7 →
   5.7 Gbit/s (1.25× quinn-proto) and HTTP/3 171 k → 420 k req/s (7× quinn-proto). TLS records are
@@ -401,6 +454,7 @@ ulimit -n 1048576; MEM_RUNS=3 tools/bench/mem.sh
 taskset -c 2-5 $CARGO_TARGET_DIR/release/examples/quic-bench bulk 2048   # also: h3 5 64, handshakes 5 8
 cargo run --release -p only-tls --example tls-bench all 1
 cargo run --release -p only-crypto --example bench; cargo run --release -p only-crypto --example pk_bench
+cargo run --release -p only-crypto --example gcm-sizes   # AES-GCM by message size against ring
 BENCH_LEVELS=1,3,6,9 cargo run --release -p only-deflate --example bench SOURCES libc.so.6
 cargo run --release -p only-deflate --example pmd_echo
 cargo run --release --manifest-path tools/codec-bench/Cargo.toml

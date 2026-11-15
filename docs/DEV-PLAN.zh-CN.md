@@ -204,6 +204,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
   - TLS：完整记录直接解密进调用方缓冲区（+5–7%；16 KiB 为 rustls+ring 的 0.64–0.69 倍，其余差距在 AES-GCM 内核）；握手 98% 以上为曲线运算（0.61 / 0.45 倍）。新增 `only-tls/examples/tls-bench.rs`。
   - 未完成：VAES GCM、recvmmsg 接收复制、默认 GRO 与 QUIC 按批 ACK、受内核限制的 keep-alive HTTP/1。
 - [x] 在空闲机器（DPDK 用真实网卡）上重跑基准并更新 `docs/BENCHMARKS.md`：在安静的 Ryzen 7800X3D 主机上基于同一提交 10070cff 重跑，并重写中英文 BENCHMARKS（先写主机与方法，写明局限）。HTTP/1.1、h2c、TLS 上的 h2、WebSocket、TCP/UDP/TLS echo 与每连接内存（epoll 与 io_uring，对比 hyper、tokio、tokio-tungstenite、fib），以及 QUIC/HTTP/3、TLS、密码学、deflate、编解码与用户态协议栈微基准；各领域优化数字在 1–2% 内复现。测试脚本现会跳过被之前运行占用的端口。DPDK 未测（主机无真实网卡）。WebSocket 每连接内存曾回退到 3.5 KB（only-deflate 编解码状态内联存放，未协商压缩时也占用）；改为 Box 后降到 1.4 KB（替换前为 1.66 KB）。
+- [x] 宽 AES-GCM / CRC：VAES + VPCLMULQDQ + AVX-512 `asm!` 内核（512 位；Zen 4 上所有长度均快于 256 位；MSRV 保持 1.85，用 CPUID/XGETBV 检测），融合短尾部，TLS 记录非原地加解密，512 位 CRC 折叠。AES-128-GCM 16 KiB 6.5 → 15.0 GB/s（ring 的 1.19 倍），TLS 1.3 记录 16 KiB 相对 rustls+ring 0.69 倍 → 1.65 倍（1 KiB 1.53 倍），CRC-32 相对 crc32fast 0.27 倍 → 1.02 倍。未完成：无 AVX-512 的 CPU 用的 VAES-AVX2 内核、宽内核内的掩码尾部处理。
 
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。

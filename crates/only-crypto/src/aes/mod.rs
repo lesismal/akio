@@ -128,6 +128,18 @@ impl Aes {
         }
     }
 
+    /// On the hardware path, encrypts the eight blocks `blocks` and XORs them into `data`
+    /// (`false`, nothing done, on the portable path).
+    pub(crate) fn hw_xor8(&self, blocks: &[[u8; 16]; 8], data: &mut [u8; 128]) -> bool {
+        match &self.0 {
+            Keys::Hw(k, _) => {
+                k.ctr8_xor(blocks, data);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The key length in bytes: 16, 24 or 32.
     #[must_use]
     pub fn key_len(&self) -> usize {

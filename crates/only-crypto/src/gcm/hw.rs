@@ -11,8 +11,12 @@
 //! single shift-and-reduce (the same steps as the portable path, on the four product words) per
 //! group. `Hⁱ` are precomputed with the portable constant-time multiplication.
 //!
+//! On x86_64 with VAES, VPCLMULQDQ and AVX-512, whole 256-byte groups go to the wide kernel of
+//! `vaes` first (sixteen blocks per reduction, in `asm!`); this module handles what is left.
+//!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the
-//! `#[target_feature]` functions and their intrinsics, called after the features were detected.
+//! `#[target_feature]` functions and their intrinsics and for the `asm!` kernel of `vaes`, called
+//! after the features were detected.
 #![allow(unsafe_code)]
 // The intrinsics are `unsafe fn` at the MSRV (1.85) and safe inside `#[target_feature]` functions
 // on newer compilers.
@@ -20,9 +24,17 @@
 
 use crate::cpu::{self, Feature};
 
-/// `H¹ … H⁸` as `[lo, hi, lo ^ hi]` (the last word for Karatsuba).
+#[cfg(target_arch = "x86_64")]
+mod vaes;
+
+/// `H¹ … H⁸` as `[lo, hi, lo ^ hi]` (the last word for Karatsuba), and on x86_64 with VAES and
+/// AVX-512 the sixteen powers of the wide kernel (`vaes`).
 #[derive(Clone)]
-pub(super) struct Powers([[u64; 3]; 8]);
+pub(super) struct Powers {
+    k: [[u64; 3]; 8],
+    #[cfg(target_arch = "x86_64")]
+    wide: Option<vaes::WidePowers>,
+}
 
 /// AES round keys from `aes::hw`: the encryption keys and the round count.
 pub(super) type RoundKeys<'a> = (&'a [[u8; 16]; 15], usize);
@@ -32,10 +44,29 @@ fn available() -> bool {
     cpu::cpu_has(Feature::Clmul)
 }
 
+/// Whether this CPU has what the wide kernel needs (the condition for every call into `vaes`):
+/// AES-NI, PCLMULQDQ, VAES, VPCLMULQDQ and AVX-512 F/BW/VL with the OS saving the ZMM state.
+#[cfg(target_arch = "x86_64")]
+fn wide_available() -> bool {
+    cpu::cpu_has(Feature::Aes)
+        && cpu::cpu_has(Feature::Clmul)
+        && cpu::cpu_has(Feature::Vaes)
+        && cpu::cpu_has(Feature::Avx512)
+}
+
+/// The counter block `n` blocks after `ctr` (32-bit big-endian counter, wrapping).
+fn advance(ctr: &[u8; 16], n: usize) -> [u8; 16] {
+    let mut c = *ctr;
+    let v = u32::from_be_bytes([c[12], c[13], c[14], c[15]]).wrapping_add(n as u32);
+    c[12..].copy_from_slice(&v.to_be_bytes());
+    c
+}
+
 impl Powers {
     /// The powers of `h` (`[lo, hi]`), or `None` without carry-less multiplication (or when the
-    /// portable path is forced).
-    pub(super) fn new(h: [u64; 2]) -> Option<Powers> {
+    /// portable path is forced). With `wide` (and a CPU for it, not switched off) also the
+    /// powers of the wide AES-GCM kernel.
+    pub(super) fn new(h: [u64; 2], wide: bool) -> Option<Powers> {
         if !cpu::has(Feature::Clmul) || !available() {
             return None;
         }
@@ -45,7 +76,39 @@ impl Powers {
             *e = [x[0], x[1], x[0] ^ x[1]];
             x = super::gf_mul(x, h);
         }
-        Some(Powers(p))
+        #[cfg(target_arch = "x86_64")]
+        let wide = (wide
+            && cpu::has(Feature::Aes)
+            && cpu::has(Feature::Vaes)
+            && cpu::has(Feature::Avx512)
+            && wide_available())
+        .then(|| {
+            // `x` is H⁹ here.
+            let mut all = [[0u64; 2]; 16];
+            for (a, e) in all.iter_mut().zip(&p) {
+                *a = [e[0], e[1]];
+            }
+            for a in &mut all[8..] {
+                *a = x;
+                x = super::gf_mul(x, h);
+            }
+            vaes::WidePowers::new(&all)
+        });
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = wide;
+        Some(Powers {
+            k: p,
+            #[cfg(target_arch = "x86_64")]
+            wide,
+        })
+    }
+
+    /// Whether AES-GCM runs on the wide (VAES, AVX-512) kernel.
+    pub(super) fn is_wide(&self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        return self.wide.is_some();
+        #[cfg(not(target_arch = "x86_64"))]
+        false
     }
 
     /// Absorbs `data` (whole 16-byte blocks) into the GHASH state `y`.
@@ -61,23 +124,57 @@ impl Powers {
     /// CTR-encrypts (`open == false`) or decrypts (`open == true`) the whole 128-byte groups at
     /// the start of `data` with the AES round keys `rk`, starting at the counter block `ctr`
     /// (32-bit big-endian counter in the last four bytes, wrapping), and absorbs the ciphertext
-    /// into `y`. Returns the number of bytes processed (a multiple of 128).
+    /// into `y`. Returns the number of bytes processed (a multiple of 128): whole 256-byte groups
+    /// on the wide kernel when there is one, then 128-byte groups.
+    ///
+    /// With `src` (at most `data.len()` bytes), the input is `src` followed by
+    /// `data[src.len()..]`: the wide kernel reads its groups from `src` and writes them to
+    /// `data`, the rest of `src` is copied into `data` and processed in place.
     pub(super) fn crypt(
         &self,
         rk: RoundKeys<'_>,
         ctr: &[u8; 16],
         y: &mut [u64; 2],
+        src: Option<&[u8]>,
         data: &mut [u8],
         open: bool,
     ) -> usize {
         if !available() || !cpu::cpu_has(Feature::Aes) {
             unreachable!("round keys and Powers exist only with AES and carry-less multiplication");
         }
-        let n = data.len() & !127;
-        // SAFETY: `cpu_has` confirmed AES and carry-less multiplication (and, on x86_64, the
-        // SSE levels `Feature::Clmul` includes); `n` is a multiple of 128.
-        unsafe { imp::crypt(self, rk, ctr, y, &mut data[..n], open) };
-        n
+        assert!(src.is_none_or(|s| s.len() <= data.len()));
+        #[allow(unused_mut)]
+        let mut done = 0;
+        #[cfg(target_arch = "x86_64")]
+        if let Some(w) = &self.wide {
+            let n = src.map_or(data.len(), <[u8]>::len) / vaes::CHUNK * vaes::CHUNK;
+            if n > 0 {
+                if !wide_available() {
+                    unreachable!("wide powers exist only with VAES and AVX-512");
+                }
+                let dst = data.as_mut_ptr();
+                let from = src.map_or_else(|| dst.cast_const(), <[u8]>::as_ptr);
+                // SAFETY: `wide_available()` confirmed every CPU and OS feature the kernel
+                // needs; `n` is a nonzero multiple of `CHUNK` and at most the length of `data`
+                // and of `src` (when given); `src` is a shared slice and `data` a unique one,
+                // so they do not overlap, and without `src` the kernel works in place on
+                // `data`; `rk` comes from `aes::hw`, whose round count is 10, 12 or 14.
+                unsafe { vaes::crypt(w, rk, ctr, y, from, dst, n, open) };
+                done = n;
+            }
+        }
+        if let Some(s) = src {
+            data[done..s.len()].copy_from_slice(&s[done..]);
+        }
+        let rest = &mut data[done..];
+        let n = rest.len() & !127;
+        if n > 0 {
+            let c = advance(ctr, done / 16);
+            // SAFETY: `cpu_has` confirmed AES and carry-less multiplication (and, on x86_64,
+            // the SSE levels `Feature::Clmul` includes); `n` is a multiple of 128.
+            unsafe { imp::crypt(self, rk, &c, y, &mut rest[..n], open) };
+        }
+        done + n
     }
 }
 
@@ -166,7 +263,7 @@ mod imp {
         unsafe {
             let mut h = [_mm_setzero_si128(); 8];
             let mut hx = [_mm_setzero_si128(); 8];
-            for ((h, hx), w) in h.iter_mut().zip(hx.iter_mut()).zip(&p.0) {
+            for ((h, hx), w) in h.iter_mut().zip(hx.iter_mut()).zip(&p.k) {
                 *h = _mm_set_epi64x(w[1] as i64, w[0] as i64);
                 *hx = _mm_set_epi64x(0, w[2] as i64);
             }
@@ -369,7 +466,7 @@ mod imp {
     unsafe fn ghash_group(p: &Powers, y: [u64; 2], blocks: &[u8]) -> [u64; 2] {
         // SAFETY: every load reads 16 bytes inside `blocks`.
         unsafe {
-            let h = &p.0;
+            let h = &p.k;
             let n = blocks.len() / 16;
             let mut acc = [[0u64; 2]; 3];
             let x = load(&blocks[..16]);

@@ -134,11 +134,16 @@ mod tests {
     #[test]
     fn hardware_matches_table() {
         let mut rng = crate::rand::ChaChaRng::from_seed([8; 32]);
-        let mut data = vec![0u8; 2000];
+        let mut data = vec![0u8; 70_003];
         rng.fill(&mut data);
-        for len in (0..300).chain([511, 512, 513, 1000, 1023, 1024, 1999, 2000]) {
-            for init in [0u32, 0xffff_ffff, 0x1234_5678] {
-                let d = &data[..len];
+        // Short lengths, every length around the 512-bit fold (256-byte steps from 512 bytes,
+        // VPCLMULQDQ + AVX-512 when present) and large ones, at offsets 0 and 3.
+        let lens = (0..300).chain(500..1100).chain([
+            1400, 1999, 2000, 4096, 16_383, 16_384, 16_385, 65_536, 69_999,
+        ]);
+        for len in lens {
+            for (init, off) in [(0u32, 0), (0xffff_ffff, 3), (0x1234_5678, 1)] {
+                let d = &data[off..off + len];
                 assert_eq!(update_ieee(init, d), table_ieee(init, d), "ieee len {len}");
                 assert_eq!(
                     update_castagnoli(init, d),

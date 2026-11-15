@@ -1,10 +1,10 @@
 #![deny(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 //! Dependency-free cryptographic primitives for the `only` crates: everything their protocols
-//! need, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are seven small modules
+//! need, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are eight small modules
 //! that call CPU instructions when the CPU has them, detected at run time: `aes::hw`, `gcm::hw`,
-//! `hash::hw`, `crc::hw`, `chacha::hw`, and the inline-assembly field arithmetic `ec::hw` and
-//! `curve25519::hw`).
+//! `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw` for CPUID, and the inline-assembly field
+//! arithmetic `ec::hw` and `curve25519::hw`).
 //!
 //! Hardware paths, each with a constant-time portable fallback that is also used when the
 //! environment variable `ONLY_CRYPTO_PORTABLE=1` is set (tests, benchmarks):
@@ -12,9 +12,9 @@
 //! | | x86_64 | aarch64 |
 //! |---|---|---|
 //! | AES (block, CTR 8 blocks at a time) | AES-NI | ARMv8 AES |
-//! | AES-GCM (GHASH, fused with CTR) | PCLMULQDQ + AES-NI | PMULL + ARMv8 AES |
+//! | AES-GCM (GHASH, fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 //! | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
-//! | CRC-32, CRC-32C | PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
+//! | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 //! | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes (NEON by the compiler) |
 //! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | portable |
 //!
@@ -58,9 +58,10 @@
 //!
 //! This is an implementation crate of `only` (like `only-sys`): its API follows the needs of the
 //! other crates and may change in any release (docs/api-stability.md). It does not try to be a
-//! general-purpose cryptography library: no key zeroization, and assembly only for the P-256 and
-//! Curve25519 field arithmetic on x86_64 (SHA-512, MD5, Poly1305, RSA and the rest of the
-//! public-key arithmetic are portable Rust).
+//! general-purpose cryptography library: no key zeroization, and assembly only for the wide
+//! AES-GCM kernel and CRC fold (`asm!`: the VAES, VPCLMULQDQ and AVX-512 intrinsics are newer
+//! than the MSRV) and for the P-256 and Curve25519 field arithmetic on x86_64 (SHA-512, MD5,
+//! Poly1305, RSA and the rest of the public-key arithmetic are portable Rust).
 //!
 //! ```
 //! use only_crypto::hash::{Hash, Sha256};

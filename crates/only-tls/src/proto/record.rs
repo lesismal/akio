@@ -175,7 +175,7 @@ impl RecordLayer {
         let x = self.explicit_len(rec[0]).min(rec.len() - HEADER_LEN);
         let (head, rest) = rec.split_at_mut(HEADER_LEN);
         let (explicit, body) = rest.split_at_mut(x);
-        let o = self.open_body(head, explicit, body)?;
+        let o = self.open_body(head, explicit, None, body)?;
         let off = HEADER_LEN + x;
         Ok(Opened {
             start: o.start + off,
@@ -185,15 +185,16 @@ impl RecordLayer {
     }
 
     /// Decrypts the complete record `rec` (header included) into `dst`: the record content is
-    /// appended (copied once and decrypted where it landed, so application data needs no
-    /// second copy out of a receive buffer). The result's range is the content within `dst`;
+    /// appended (decrypted straight from `rec` into `dst`, so application data needs no copy
+    /// into or out of a receive buffer). The result's range is the content within `dst`;
     /// nothing is appended for a skipped record or on error.
     pub(crate) fn open_into(&mut self, rec: &[u8], dst: &mut Vec<u8>) -> Result<Opened, Fatal> {
         let x = self.explicit_len(rec[0]).min(rec.len() - HEADER_LEN);
         let at = dst.len();
-        dst.extend_from_slice(&rec[HEADER_LEN + x..]);
+        let src = &rec[HEADER_LEN + x..];
+        dst.resize(at + src.len(), 0);
         let (head, explicit) = (&rec[..HEADER_LEN], &rec[HEADER_LEN..HEADER_LEN + x]);
-        match self.open_body(head, explicit, &mut dst[at..]) {
+        match self.open_body(head, explicit, Some(src), &mut dst[at..]) {
             Ok(o) if !o.skipped => {
                 // Content always starts the decrypted body.
                 debug_assert_eq!(o.start, 0);
@@ -212,20 +213,25 @@ impl RecordLayer {
     }
 
     /// Decrypts a record given as its header, its explicit nonce (TLS 1.2 AES-GCM, else empty)
-    /// and the rest, which is decrypted in place. The content range is relative to `body`.
+    /// and the rest, which is decrypted in place, or, with `src` (the rest as received, as long
+    /// as `body`), from `src` into `body`. The content range is relative to `body`.
     fn open_body(
         &mut self,
         head: &[u8],
         explicit: &[u8],
+        src: Option<&[u8]>,
         body: &mut [u8],
     ) -> Result<Opened, Fatal> {
         let typ = head[0];
         let len = explicit.len() + body.len();
         let blen = body.len();
         // ChangeCipherSpec is never protected; TLS 1.3 uses it only for compatibility.
-        let plain = |typ| {
+        let plain = |typ, body: &mut [u8]| {
             if len > MAX_PLAINTEXT {
                 return fatal(Alert::RecordOverflow, "plaintext record too long");
+            }
+            if let Some(s) = src {
+                body.copy_from_slice(s);
             }
             Ok(Opened {
                 typ,
@@ -238,17 +244,17 @@ impl RecordLayer {
             if self.skip_early > 0 && typ == CT_APPLICATION_DATA {
                 return self.skip(len);
             }
-            return plain(typ);
+            return plain(typ, body);
         };
         if typ == CT_CHANGE_CIPHER_SPEC {
-            return plain(typ);
+            return plain(typ, body);
         }
         match c.kind {
             Kind::Tls13 => {
                 if typ == CT_ALERT && len == 2 {
                     // An unprotected alert (a peer that failed before or while switching
                     // keys): taken as what it says, never answered.
-                    return plain(typ);
+                    return plain(typ, body);
                 }
                 if typ != CT_APPLICATION_DATA {
                     return fatal(Alert::UnexpectedMessage, "unprotected record after keys");
@@ -262,7 +268,7 @@ impl RecordLayer {
                 }
                 let nonce = c.xor_nonce();
                 let (ct, tag) = body.split_at_mut(len - TAG_LEN);
-                if c.aead.open(&nonce, head, ct, tag).is_err() {
+                if open_aead(&c.aead, &nonce, head, src, ct, tag).is_err() {
                     if self.skip_early > 0 {
                         return self.skip(len);
                     }
@@ -302,7 +308,7 @@ impl RecordLayer {
                 };
                 let aad = c.aad12(typ, plen);
                 let (ct, tag) = body.split_at_mut(plen);
-                if c.aead.open(&nonce, &aad, ct, tag).is_err() {
+                if open_aead(&c.aead, &nonce, &aad, src, ct, tag).is_err() {
                     return fatal(Alert::BadRecordMac, "record authentication failed");
                 }
                 c.seq += 1;
@@ -369,11 +375,13 @@ impl RecordLayer {
                 out.push(CT_APPLICATION_DATA);
                 out.extend_from_slice(&[3, 3]);
                 out.extend_from_slice(&(len as u16).to_be_bytes());
-                out.extend_from_slice(data);
+                // Room for the ciphertext, which the AEAD writes straight from `data` (no copy
+                // of the plaintext into `out` first), then the inner content type.
+                out.resize(at + HEADER_LEN + data.len(), 0);
                 out.push(typ);
                 let nonce = c.xor_nonce();
                 let (head, body) = out[at..].split_at_mut(HEADER_LEN);
-                let tag = c.aead.seal(&nonce, head, body);
+                let tag = c.aead.seal_from(&nonce, head, data, body);
                 out.extend_from_slice(&tag);
             }
             Kind::Tls12Gcm | Kind::Tls12ChaCha => {
@@ -394,13 +402,32 @@ impl RecordLayer {
                 };
                 let aad = c.aad12(typ, data.len());
                 let at = out.len();
-                out.extend_from_slice(data);
-                let tag = c.aead.seal(&nonce, &aad, &mut out[at..]);
+                out.resize(at + data.len(), 0);
+                let tag = c.aead.seal_from(&nonce, &aad, data, &mut out[at..]);
                 out.extend_from_slice(&tag);
             }
         }
         c.seq += 1;
         Ok(())
+    }
+}
+
+/// Opens `ct` with `tag` in place, or, with `src` (the received ciphertext and tag, as long as
+/// `ct` and `tag` together), decrypts `src` into `ct` (`tag` is then unused).
+fn open_aead(
+    aead: &Aead,
+    nonce: &[u8; 12],
+    aad: &[u8],
+    src: Option<&[u8]>,
+    ct: &mut [u8],
+    tag: &[u8],
+) -> Result<(), ()> {
+    match src {
+        Some(s) => {
+            let (sct, stag) = s.split_at(ct.len());
+            aead.open_from(nonce, aad, sct, stag, ct)
+        }
+        None => aead.open(nonce, aad, ct, tag),
     }
 }
 
@@ -455,6 +482,45 @@ mod tests {
             assert_eq!(got, data, "{}", s.name);
             assert_eq!(types, vec![23, 23, 23, 22]);
         }
+    }
+
+    /// `open_into` (decrypting from the received record into the plaintext buffer) agrees with
+    /// `open` (in place) for every suite at sizes around the AES-GCM kernels' groups, appends
+    /// nothing for a forged record, and copies unprotected records.
+    #[test]
+    fn open_into_matches_open() {
+        for s in suites::ALL {
+            let (mut w, mut r) = pair(&keys(s));
+            let mut r2 = r.clone_read();
+            for len in [
+                0usize, 1, 15, 16, 255, 256, 257, 1023, 1024, 1400, 4096, 16_384,
+            ] {
+                let data: Vec<u8> = (0..len).map(|i| (i * 7 + len) as u8).collect();
+                let mut out = Vec::new();
+                w.seal(CT_APPLICATION_DATA, &data, &mut out).unwrap();
+                let mut dst = vec![0xee; 3];
+                let o = r2.open_into(&out, &mut dst).unwrap();
+                assert_eq!(o.typ, CT_APPLICATION_DATA);
+                assert_eq!((o.start, o.end), (3, 3 + len), "{} {len}", s.name);
+                assert_eq!(&dst[..3], &[0xee; 3]);
+                assert_eq!(&dst[3..], &data[..], "{} {len}", s.name);
+                let mut inplace = out.clone();
+                let o = r.open(&mut inplace).unwrap();
+                assert_eq!(&inplace[o.start..o.end], &data[..]);
+            }
+            let mut out = Vec::new();
+            w.seal(CT_APPLICATION_DATA, &[0x42; 700], &mut out).unwrap();
+            let l = out.len();
+            out[l - 20] ^= 4;
+            let mut dst = vec![1, 2];
+            let e = r2.open_into(&out, &mut dst).unwrap_err();
+            assert_eq!(e.alert, Alert::BadRecordMac);
+            assert_eq!(dst, [1, 2]);
+        }
+        let mut r = RecordLayer::new();
+        let mut dst = Vec::new();
+        let o = r.open_into(&[22, 3, 3, 0, 2, 7, 8], &mut dst).unwrap();
+        assert_eq!((o.typ, &dst[o.start..o.end]), (22, &[7u8, 8][..]));
     }
 
     #[test]

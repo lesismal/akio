@@ -7,7 +7,12 @@
 //! tests and benchmarks. Switching off never makes a hardware path reachable on a CPU without the
 //! instructions: the hardware modules check the real detection result before every `unsafe`
 //! call (key schedules made while the hardware path was enabled keep using it). Under Miri
-//! nothing is detected, so `cargo miri test` runs the portable code.
+//! nothing is detected, so `cargo miri test` runs the portable code (and never the `asm!` of the
+//! wide AES-GCM kernel).
+//!
+//! VAES, VPCLMULQDQ, AVX-512, BMI2 and ADX are read from CPUID (and XCR0 for the vector state)
+//! directly (`hw`), independent of the feature names `is_x86_feature_detected!` accepts at the
+//! MSRV.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -34,15 +39,97 @@ pub(crate) enum Feature {
     Crc = 1 << 3,
     /// 256-bit integer vectors: AVX2 (x86_64).
     Avx2 = 1 << 4,
+    /// Vector AES and carry-less multiplication: VAES and VPCLMULQDQ with AVX2 and the OS
+    /// saving the YMM state (x86_64, read from CPUID and XCR0).
+    Vaes = 1 << 5,
+    /// AVX-512 F, BW and VL with the OS saving the opmask and ZMM state (x86_64, read from
+    /// CPUID and XCR0).
+    Avx512 = 1 << 6,
     /// Wide multiplication with two independent carry chains: BMI2 `mulx` and ADX
-    /// `adcx`/`adox` (x86_64).
-    Adx = 1 << 5,
+    /// `adcx`/`adox` (x86_64, read from CPUID).
+    Adx = 1 << 7,
+}
+
+/// CPUID and XCR0, for the features `is_x86_feature_detected!` cannot name at the MSRV (VAES,
+/// VPCLMULQDQ, AVX-512) and for BMI2 + ADX (read the same way, so every leaf-7 feature has one
+/// source): the one `unsafe` of this file.
+#[cfg(all(target_arch = "x86_64", not(miri)))]
+// `__cpuid_count` is an `unsafe fn` at the MSRV (1.85) and safe on newer compilers.
+#[allow(unsafe_code, unused_unsafe)]
+mod hw {
+    use std::arch::x86_64::{__cpuid_count, _xgetbv};
+
+    /// The leaf-7 features as defined by `super::Feature`.
+    pub(super) struct Leaf7 {
+        pub(super) vaes: bool,
+        pub(super) avx512: bool,
+        pub(super) adx: bool,
+    }
+
+    /// `Vaes`, `Avx512` and `Adx` as defined by `super::Feature`.
+    pub(super) fn leaf7() -> Leaf7 {
+        let none = Leaf7 {
+            vaes: false,
+            avx512: false,
+            adx: false,
+        };
+        // SAFETY: CPUID exists on every x86_64 CPU; leaf 0 reports the highest leaf.
+        let max = unsafe { __cpuid_count(0, 0) }.eax;
+        if max < 7 {
+            return none;
+        }
+        // SAFETY: leaf 7 is within `max`.
+        let l7 = unsafe { __cpuid_count(7, 0) };
+        // BMI2 (`mulx`) and ADX (`adcx`/`adox`) are general-purpose instructions: no OS state.
+        let adx = l7.ebx & (1 << 8) != 0 && l7.ebx & (1 << 19) != 0;
+        // SAFETY: as above, leaf 1 is within `max`.
+        let l1 = unsafe { __cpuid_count(1, 0) };
+        // OSXSAVE: the OS enabled XSAVE, so XGETBV is available and XCR0 tells which register
+        // state the OS saves.
+        if l1.ecx & (1 << 27) == 0 {
+            return Leaf7 { adx, ..none };
+        }
+        // SAFETY: OSXSAVE is set, so XGETBV with XCR0 (index 0) does not fault.
+        let xcr0 = unsafe { xcr0() };
+        let avx = l1.ecx & (1 << 28) != 0;
+        let ymm_os = xcr0 & 0x6 == 0x6;
+        let zmm_os = xcr0 & 0xe6 == 0xe6;
+        let avx2 = l7.ebx & (1 << 5) != 0;
+        let vaes = l7.ecx & (1 << 9) != 0;
+        let vpclmulqdq = l7.ecx & (1 << 10) != 0;
+        let avx512 = l7.ebx & (1 << 16) != 0 && l7.ebx & (1 << 30) != 0 && l7.ebx & (1 << 31) != 0;
+        let v = avx && ymm_os && avx2 && vaes && vpclmulqdq;
+        Leaf7 {
+            vaes: v,
+            avx512: v && zmm_os && avx512,
+            adx,
+        }
+    }
+
+    /// # Safety
+    ///
+    /// The CPU must support XSAVE and the OS must have enabled it (CPUID.1:ECX.OSXSAVE).
+    #[target_feature(enable = "xsave")]
+    unsafe fn xcr0() -> u64 {
+        // SAFETY: the caller guarantees OSXSAVE; XCR0 always exists then.
+        unsafe { _xgetbv(0) }
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", not(miri)))]
 fn detect() -> u32 {
     use std::arch::is_x86_feature_detected as has;
     let mut f = 0;
+    let l7 = hw::leaf7();
+    if l7.vaes {
+        f |= Feature::Vaes as u32;
+    }
+    if l7.avx512 {
+        f |= Feature::Avx512 as u32;
+    }
+    if l7.adx {
+        f |= Feature::Adx as u32;
+    }
     if has!("aes") && has!("sse2") {
         f |= Feature::Aes as u32;
     }
@@ -57,9 +144,6 @@ fn detect() -> u32 {
     }
     if has!("avx2") {
         f |= Feature::Avx2 as u32;
-    }
-    if has!("bmi2") && has!("adx") {
-        f |= Feature::Adx as u32;
     }
     f
 }
@@ -142,7 +226,7 @@ pub fn is_portable() -> bool {
 }
 
 /// The hardware paths this CPU uses now, for diagnostics and benchmark labels (for example
-/// `"aes clmul sha crc avx2 adx"`; empty when everything is portable).
+/// `"aes clmul sha crc avx2 vaes avx512 adx"`; empty when everything is portable).
 #[doc(hidden)]
 #[must_use]
 pub fn hardware_features() -> String {
@@ -152,6 +236,8 @@ pub fn hardware_features() -> String {
         (Feature::Sha, "sha"),
         (Feature::Crc, "crc"),
         (Feature::Avx2, "avx2"),
+        (Feature::Vaes, "vaes"),
+        (Feature::Avx512, "avx512"),
         (Feature::Adx, "adx"),
     ];
     names
