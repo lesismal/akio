@@ -28,6 +28,29 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 性能：`only-crypto` 中基于 VAES-AVX2 的 AES-GCM，AVX-512 内核内的掩码尾部
+
+公开 API 不变（新增仅供测试与基准测试使用的 `#[doc(hidden)]` `AesGcm::with_cipher_avx2` 与 `AesGcm::kernel`）。
+
+- 具备 VAES、VPCLMULQDQ 与 AVX-512 的 x86_64：整条消息在 512 位内核的一次调用中完成。不超过 256 字节的
+  AAD 在内核中做 GHASH，最后一个不完整的组（1 到 255 字节）用 AVX-512 字节掩码加载与存储，不再走 128 位路径，
+  长度块与 `E(J0)` 在同一次调用中给出标签；256 字节以下的消息把 AAD、数据与长度块放在一次归约里。
+  AES-128-GCM 加密 1 KiB 7,902 → 10,433 MB/s（ring 的 1.00 倍 → 1.32 倍），1400 B 8,356 → 10,632（1.10 倍 →
+  1.46 倍），64 B 1,204 → 1,383（1.11 倍 → 1.29 倍）；解密 1 KiB 1.04 倍 → 1.22 倍；16–64 KiB 不变（1.16–1.18 倍）。
+- 具备 VAES 与 VPCLMULQDQ 但没有 AVX-512 的 x86_64（Zen 3、Alder Lake / Raptor Lake）：新增 VAES-AVX2 内核，
+  每次迭代用 8 个 256 位寄存器处理 16 个分组，每组一次 GHASH 归约，处理完整的 256 字节组（其余部分走 128 位
+  路径）。在关闭 AVX-512 内核的 Zen 4 上测得（没有 Zen 3 可用）：为这些 CPU 之前所用 128 位内核的 1.55–2.35 倍
+  （AES-128 加密 16 KiB 6,310 → 12,671 MB/s）。
+- `only-tls` 的 TLS 1.3 记录随之提升：AES-128-GCM 1 KiB 为 rustls + ring 的 1.51 倍 → 1.58 倍，16 KiB 1.56 倍 →
+  1.60 倍。记录层在 AEAD 写入之前仍先把输出清零：把明文复制进来再原地加密在 16 KiB 上慢 6%，复用缓冲区只是把
+  memset 换成复制，而跳过清零（16 KiB 快 10%）需要在 `#![forbid(unsafe_code)]` 的 crate 中使用 `unsafe`，因此
+  没有这样做（docs/BENCHMARKS.zh-CN.md）。
+- 测试：每个内核（AVX-512、AVX2、128 位、可移植）在 0..=600 的每个长度、若干大长度、0..=300 及 512 以上的每种
+  AAD 长度上互相比较，覆盖未对齐、原地与非原地，并跑 CAVP 与 Wycheproof 向量；`crypto_aead` 模糊测试目标也比较
+  AVX2 内核。在 Zen 4 上原生运行，也设置 `ONLY_CRYPTO_PORTABLE=1` 运行。
+- `unsafe`：`gcm::hw` / `gcm::hw::vaes` 增加 5 个块与 1 个 `unsafe fn`（AVX2 内核的两个 `asm!` 块、整条消息的
+  调用），见 docs/unsafe-review.zh-CN.md。Miri 永远不会执行到 `asm!`。
+
 ### 性能：`only-crypto` 中基于 AVX-512 与 IFMA 的 ChaCha20-Poly1305，TLS 记录非原地加解密
 
 在 x86_64 上，ChaCha20-Poly1305 加密 16 KiB 为 4,597 MB/s（之前 1,752，ring 的 1.30 倍），1400 B 为

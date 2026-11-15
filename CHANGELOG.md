@@ -30,6 +30,36 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Performance: AES-GCM on VAES-AVX2 and masked tails in the AVX-512 kernel (`only-crypto`)
+
+No public API change (a new `#[doc(hidden)]` `AesGcm::with_cipher_avx2` and `AesGcm::kernel`
+for tests and benchmarks).
+
+- x86_64 with VAES, VPCLMULQDQ and AVX-512: the whole message runs in one call of the 512-bit
+  kernel. An AAD of up to 256 bytes is hashed in the kernel, the last partial group (1 to 255
+  bytes) is loaded and stored under AVX-512 byte masks instead of going through the 128-bit path,
+  and the length block and `E(J0)` give the tag in the same call; messages under 256 bytes hash
+  their AAD, data and length block under one reduction. AES-128-GCM seal 1 KiB 7,902 → 10,433
+  MB/s (1.00× → 1.32× ring), 1400 B 8,356 → 10,632 (1.10× → 1.46×), 64 B 1,204 → 1,383
+  (1.11× → 1.29×); open 1 KiB 1.04× → 1.22×; 16–64 KiB unchanged (1.16–1.18×).
+- x86_64 with VAES and VPCLMULQDQ but no AVX-512 (Zen 3, Alder Lake / Raptor Lake): a new
+  VAES-AVX2 kernel, sixteen blocks per iteration in eight 256-bit registers with one GHASH
+  reduction per group, for whole 256-byte groups (the rest on the 128-bit path). Measured on
+  Zen 4 with the AVX-512 kernel switched off (no Zen 3 available): 1.55–2.35× the 128-bit kernel
+  those CPUs used before (AES-128 seal 16 KiB 6,310 → 12,671 MB/s).
+- TLS 1.3 records in `only-tls` follow: AES-128-GCM 1 KiB 1.51× → 1.58× rustls + ring, 16 KiB
+  1.56× → 1.60×. The record layer still zero-fills its output before the AEAD writes it: copying
+  the plaintext in and sealing in place measured 6% slower at 16 KiB, a reused buffer would trade
+  the memset for a copy, and skipping the fill (+10% at 16 KiB) needs `unsafe` in a
+  `#![forbid(unsafe_code)]` crate, so it was not done (docs/BENCHMARKS.md).
+- Tests: every kernel (AVX-512, AVX2, 128-bit, portable) against the others at every length
+  0..=600, large sizes, every AAD length 0..=300 and past 512, misaligned, in place and out of
+  place, and on the CAVP and Wycheproof vectors; the `crypto_aead` fuzz target compares the AVX2
+  kernel too. Run natively on Zen 4, also with `ONLY_CRYPTO_PORTABLE=1`.
+- `unsafe`: +5 blocks and +1 `unsafe fn` in `gcm::hw` / `gcm::hw::vaes` (the AVX2 kernel's two
+  `asm!` blocks, the whole-message calls), documented in docs/unsafe-review.md. Miri never
+  reaches the `asm!`.
+
 ### Performance: ChaCha20-Poly1305 on AVX-512 and IFMA in `only-crypto`, out-of-place TLS records
 
 On x86_64 ChaCha20-Poly1305 seals 16 KiB at 4,597 MB/s (1,752 before, 1.30× ring), 1400 B at
