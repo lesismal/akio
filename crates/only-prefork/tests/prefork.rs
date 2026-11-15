@@ -284,7 +284,18 @@ fn reload_swaps_workers(mode: ListenMode) -> Failures {
                             seen.insert(b.parse::<u32>().unwrap());
                             ok.fetch_add(1, Ordering::Relaxed);
                         }
-                        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                        // An old worker that drains closes a connection it accepted before
+                        // the request was read: the client sees EOF, or a reset / broken pipe
+                        // when the request bytes had already arrived (seen under load). Same
+                        // race, so counted together and bounded below; a refused connect is not.
+                        Err(e)
+                            if matches!(
+                                e.kind(),
+                                io::ErrorKind::UnexpectedEof
+                                    | io::ErrorKind::ConnectionReset
+                                    | io::ErrorKind::BrokenPipe
+                            ) =>
+                        {
                             unanswered.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(e) => {
@@ -397,10 +408,10 @@ fn main() {
             "reload_swaps_workers_inherit_no_refused",
             Box::new(|| {
                 let f = reload_swaps_workers(ListenMode::Inherit);
-                // The listening socket never stops listening: nothing is refused or reset.
+                // The listening socket never stops listening: nothing is refused.
                 assert_eq!(f.lost, 0, "{f:?}");
-                // A connection an old worker accepted just before its drain whose request had
-                // not arrived yet is closed by only-http's shutdown (it closes connections
+                // A connection an old worker accepted just before its drain, whose request it
+                // had not read yet, is closed by only-http's shutdown (it closes connections
                 // with no request in flight): rare, bounded here.
                 assert!(f.unanswered * 1000 <= f.ok, "{f:?}");
             }),
