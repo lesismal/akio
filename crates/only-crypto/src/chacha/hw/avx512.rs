@@ -1,27 +1,46 @@
-//! ChaCha20 on AVX-512 (x86_64): sixteen blocks per iteration in zmm registers, or four in xmm
-//! registers (for the tail of a message and for short ones), word `j` of the blocks in register
-//! `j` as in the AVX2 code. The rotations are single `vprold` instructions, and with 32 vector
-//! registers the state, the counters and the transpose temporaries all stay in registers.
-//! After the rounds, a 4×4 dword transpose inside each 128-bit lane (and, for sixteen blocks, a
-//! 4×4 transpose of the lanes with `vshufi32x4`) turns the registers back into blocks.
+//! ChaCha20 on AVX-512 (x86_64): sixteen blocks per iteration in zmm registers, eight in ymm or
+//! four in xmm registers (for the tail of a message and for short ones), word `j` of the blocks
+//! in register `j` as in the AVX2 code. The rotations are single `vprold` instructions, and with
+//! 32 vector registers the state, the counters and the transpose temporaries all stay in
+//! registers. After the rounds, a 4×4 dword transpose inside each 128-bit lane (then, for eight
+//! and sixteen blocks, a transpose of the lanes with `vshufi32x4`) turns the registers back into
+//! blocks.
 //!
 //! The AVX-512 target features and intrinsics are not stable at the MSRV (1.85), so each kernel is
 //! one `asm!` block with fixed registers (`clobber_abi("C")` declares the vector registers
 //! clobbered), entered only after `cpu::cpu_has(Feature::Avx512)` (CPUID, with the OS saving the
 //! ZMM state in XCR0). Additions, XORs and rotations only: constant time.
 
-/// Bytes per iteration of the zmm kernel (sixteen blocks).
-pub(super) const WIDE: usize = 1024;
-/// Bytes per iteration of the xmm kernel (four blocks).
-pub(super) const NARROW: usize = 256;
+/// The register width of a kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Width {
+    /// Sixteen blocks (1024 bytes) per iteration in zmm registers.
+    Z,
+    /// Eight blocks (512 bytes) per iteration in ymm registers.
+    Y,
+    /// Four blocks (256 bytes) per iteration in xmm registers.
+    X,
+}
+
+impl Width {
+    /// Bytes per iteration.
+    pub(super) const fn bytes(self) -> usize {
+        match self {
+            Width::Z => 1024,
+            Width::Y => 512,
+            Width::X => 256,
+        }
+    }
+}
 
 /// Counter offsets and steps at fixed offsets: `lanes` (0, lane `i` holds `i`), `inc16` (64, the
-/// step of the zmm kernel) and `inc4` (68, the step of the xmm kernel).
+/// step of the zmm kernel), `inc4` (68, the xmm kernel) and `inc8` (72, the ymm kernel).
 #[repr(C, align(64))]
 struct Consts {
     lanes: [u32; 16],
     inc16: u32,
     inc4: u32,
+    inc8: u32,
 }
 
 const fn consts() -> Consts {
@@ -29,6 +48,7 @@ const fn consts() -> Consts {
         lanes: [0; 16],
         inc16: 16,
         inc4: 4,
+        inc8: 8,
     };
     let mut i = 0;
     while i < 16 {
@@ -84,52 +104,81 @@ macro_rules! double_round {
     };
 }
 
+/// Broadcasts state word `j` (at byte offset `o` of `{s}`) to register `j`.
+macro_rules! load {
+    ($w:literal, $j:literal, $o:literal) => {
+        concat!("vpbroadcastd ", $w, $j, ", dword ptr [{s} + ", $o, "]\n")
+    };
+}
+
+/// Adds state word `j` (at byte offset `o` of `{s}`, broadcast `bc`) to register `j`.
+macro_rules! feed {
+    ($w:literal, $bc:literal, $j:literal, $o:literal) => {
+        concat!(
+            "vpaddd ",
+            $w,
+            $j,
+            ", ",
+            $w,
+            $j,
+            ", dword ptr [{s} + ",
+            $o,
+            "]{{",
+            $bc,
+            "}}\n"
+        )
+    };
+}
+
 /// Loads the state words (`{s}`) into registers 0-15, the counters from register 16; then the
 /// ten double rounds (eax counts) and the feed-forward addition.
 macro_rules! rounds {
     ($w:literal, $bc:literal) => {
         concat!(
-            "vpbroadcastd ", $w, "0, dword ptr [{s}]\n",
-            "vpbroadcastd ", $w, "1, dword ptr [{s} + 4]\n",
-            "vpbroadcastd ", $w, "2, dword ptr [{s} + 8]\n",
-            "vpbroadcastd ", $w, "3, dword ptr [{s} + 12]\n",
-            "vpbroadcastd ", $w, "4, dword ptr [{s} + 16]\n",
-            "vpbroadcastd ", $w, "5, dword ptr [{s} + 20]\n",
-            "vpbroadcastd ", $w, "6, dword ptr [{s} + 24]\n",
-            "vpbroadcastd ", $w, "7, dword ptr [{s} + 28]\n",
-            "vpbroadcastd ", $w, "8, dword ptr [{s} + 32]\n",
-            "vpbroadcastd ", $w, "9, dword ptr [{s} + 36]\n",
-            "vpbroadcastd ", $w, "10, dword ptr [{s} + 40]\n",
-            "vpbroadcastd ", $w, "11, dword ptr [{s} + 44]\n",
-            "vmovdqa64 ", $w, "12, ", $w, "16\n",
-            "vpbroadcastd ", $w, "13, dword ptr [{s} + 52]\n",
-            "vpbroadcastd ", $w, "14, dword ptr [{s} + 56]\n",
-            "vpbroadcastd ", $w, "15, dword ptr [{s} + 60]\n",
+            load!($w, "0", "0"),
+            load!($w, "1", "4"),
+            load!($w, "2", "8"),
+            load!($w, "3", "12"),
+            load!($w, "4", "16"),
+            load!($w, "5", "20"),
+            load!($w, "6", "24"),
+            load!($w, "7", "28"),
+            load!($w, "8", "32"),
+            load!($w, "9", "36"),
+            load!($w, "10", "40"),
+            load!($w, "11", "44"),
+            "vmovdqa64 ",
+            $w,
+            "12, ",
+            $w,
+            "16\n",
+            load!($w, "13", "52"),
+            load!($w, "14", "56"),
+            load!($w, "15", "60"),
             "mov eax, 10\n",
             "3:\n",
             double_round!($w),
             "dec eax\n",
             "jnz 3b\n",
-            "vpaddd ", $w, "0, ", $w, "0, dword ptr [{s}]{{", $bc, "}}\n",
-            "vpaddd ", $w, "1, ", $w, "1, dword ptr [{s} + 4]{{", $bc, "}}\n",
-            "vpaddd ", $w, "2, ", $w, "2, dword ptr [{s} + 8]{{", $bc, "}}\n",
-            "vpaddd ", $w, "3, ", $w, "3, dword ptr [{s} + 12]{{", $bc, "}}\n",
-            "vpaddd ", $w, "4, ", $w, "4, dword ptr [{s} + 16]{{", $bc, "}}\n",
-            "vpaddd ", $w, "5, ", $w, "5, dword ptr [{s} + 20]{{", $bc, "}}\n",
-            "vpaddd ", $w, "6, ", $w, "6, dword ptr [{s} + 24]{{", $bc, "}}\n",
-            "vpaddd ", $w, "7, ", $w, "7, dword ptr [{s} + 28]{{", $bc, "}}\n",
-            "vpaddd ", $w, "8, ", $w, "8, dword ptr [{s} + 32]{{", $bc, "}}\n",
-            "vpaddd ", $w, "9, ", $w, "9, dword ptr [{s} + 36]{{", $bc, "}}\n",
-            "vpaddd ", $w, "10, ", $w, "10, dword ptr [{s} + 40]{{", $bc, "}}\n",
-            "vpaddd ", $w, "11, ", $w, "11, dword ptr [{s} + 44]{{", $bc, "}}\n",
+            feed!($w, $bc, "0", "0"),
+            feed!($w, $bc, "1", "4"),
+            feed!($w, $bc, "2", "8"),
+            feed!($w, $bc, "3", "12"),
+            feed!($w, $bc, "4", "16"),
+            feed!($w, $bc, "5", "20"),
+            feed!($w, $bc, "6", "24"),
+            feed!($w, $bc, "7", "28"),
+            feed!($w, $bc, "8", "32"),
+            feed!($w, $bc, "9", "36"),
+            feed!($w, $bc, "10", "40"),
+            feed!($w, $bc, "11", "44"),
             op3!("vpaddd", $w, "12", "12", "16"),
-            "vpaddd ", $w, "13, ", $w, "13, dword ptr [{s} + 52]{{", $bc, "}}\n",
-            "vpaddd ", $w, "14, ", $w, "14, dword ptr [{s} + 56]{{", $bc, "}}\n",
-            "vpaddd ", $w, "15, ", $w, "15, dword ptr [{s} + 60]{{", $bc, "}}\n",
+            feed!($w, $bc, "13", "52"),
+            feed!($w, $bc, "14", "56"),
+            feed!($w, $bc, "15", "60"),
         )
     };
 }
-
 /// 4×4 dword transpose inside each 128-bit lane of registers `p q r t` (temporaries 18-21):
 /// afterwards register `i` of the four holds dword `i` of each.
 macro_rules! tr4 {
@@ -151,8 +200,25 @@ macro_rules! tr4 {
 macro_rules! xor_store {
     ($w:literal, $size:literal, $r:literal, $off:literal) => {
         concat!(
-            "vpxord ", $w, $r, ", ", $w, $r, ", ", $size, " ptr [rsi + ", $off, "]\n",
-            "vmovdqu64 ", $size, " ptr [rdi + ", $off, "], ", $w, $r, "\n",
+            "vpxord ",
+            $w,
+            $r,
+            ", ",
+            $w,
+            $r,
+            ", ",
+            $size,
+            " ptr [rsi + ",
+            $off,
+            "]\n",
+            "vmovdqu64 ",
+            $size,
+            " ptr [rdi + ",
+            $off,
+            "], ",
+            $w,
+            $r,
+            "\n",
         )
     };
 }
@@ -163,10 +229,26 @@ macro_rules! xor_store {
 macro_rules! lanes4 {
     ($a:literal, $b:literal, $c:literal, $d:literal, $o0:literal, $o1:literal, $o2:literal, $o3:literal) => {
         concat!(
-            "vshufi32x4 zmm22, zmm", $a, ", zmm", $b, ", 0x44\n",
-            "vshufi32x4 zmm23, zmm", $a, ", zmm", $b, ", 0xee\n",
-            "vshufi32x4 zmm24, zmm", $c, ", zmm", $d, ", 0x44\n",
-            "vshufi32x4 zmm25, zmm", $c, ", zmm", $d, ", 0xee\n",
+            "vshufi32x4 zmm22, zmm",
+            $a,
+            ", zmm",
+            $b,
+            ", 0x44\n",
+            "vshufi32x4 zmm23, zmm",
+            $a,
+            ", zmm",
+            $b,
+            ", 0xee\n",
+            "vshufi32x4 zmm24, zmm",
+            $c,
+            ", zmm",
+            $d,
+            ", 0x44\n",
+            "vshufi32x4 zmm25, zmm",
+            $c,
+            ", zmm",
+            $d,
+            ", 0xee\n",
             "vshufi32x4 zmm26, zmm22, zmm24, 0x88\n",
             "vshufi32x4 zmm27, zmm22, zmm24, 0xdd\n",
             "vshufi32x4 zmm28, zmm23, zmm25, 0x88\n",
@@ -199,6 +281,66 @@ macro_rules! wide_kernel {
             op3!("vpaddd", "zmm", "16", "16", "17"),
             "add rsi, 1024\n",
             "add rdi, 1024\n",
+            "dec rcx\n",
+            "jnz 2b\n",
+            "vzeroupper\n",
+        )
+    };
+}
+
+/// After `tr4`, lane `L` of register `4g + i` holds words `4g..4g+4` of block `4L + i`: writes
+/// blocks `i` (offset `o0`) and `4 + i` (`o1`) from registers `a b c d` = `i, 4+i, 8+i, 12+i`.
+macro_rules! lanes2 {
+    ($a:literal, $b:literal, $c:literal, $d:literal, $o0:literal, $o0h:literal, $o1:literal, $o1h:literal) => {
+        concat!(
+            "vshufi32x4 ymm22, ymm",
+            $a,
+            ", ymm",
+            $b,
+            ", 0x0\n",
+            "vshufi32x4 ymm23, ymm",
+            $c,
+            ", ymm",
+            $d,
+            ", 0x0\n",
+            "vshufi32x4 ymm24, ymm",
+            $a,
+            ", ymm",
+            $b,
+            ", 0x3\n",
+            "vshufi32x4 ymm25, ymm",
+            $c,
+            ", ymm",
+            $d,
+            ", 0x3\n",
+            xor_store!("ymm", "ymmword", "22", $o0),
+            xor_store!("ymm", "ymmword", "23", $o0h),
+            xor_store!("ymm", "ymmword", "24", $o1),
+            xor_store!("ymm", "ymmword", "25", $o1h),
+        )
+    };
+}
+
+/// The ymm kernel: `rcx` groups of eight blocks from `rsi` to `rdi`.
+macro_rules! mid_kernel {
+    () => {
+        concat!(
+            "vpbroadcastd ymm16, dword ptr [{s} + 48]\n",
+            "vpaddd ymm16, ymm16, ymmword ptr [{c}]\n",
+            "vpbroadcastd ymm17, dword ptr [{c} + 72]\n",
+            "2:\n",
+            rounds!("ymm", "1to8"),
+            tr4!("ymm", "0", "1", "2", "3"),
+            tr4!("ymm", "4", "5", "6", "7"),
+            tr4!("ymm", "8", "9", "10", "11"),
+            tr4!("ymm", "12", "13", "14", "15"),
+            lanes2!("0", "4", "8", "12", "0", "32", "256", "288"),
+            lanes2!("1", "5", "9", "13", "64", "96", "320", "352"),
+            lanes2!("2", "6", "10", "14", "128", "160", "384", "416"),
+            lanes2!("3", "7", "11", "15", "192", "224", "448", "480"),
+            op3!("vpaddd", "ymm", "16", "16", "17"),
+            "add rsi, 512\n",
+            "add rdi, 512\n",
             "dec rcx\n",
             "jnz 2b\n",
             "vzeroupper\n",
@@ -245,50 +387,43 @@ macro_rules! narrow_kernel {
     };
 }
 
-/// XORs the keystream of `n` groups of sixteen (`wide`) or four blocks, starting at block
-/// `state[12]`, into the bytes at `src` and writes them to `dst` (`src == dst` works in place).
-/// Counters past `2³² - 1` wrap within the 32-bit word.
+/// XORs the keystream of `n` groups of `w.bytes() / 64` blocks, starting at block `state[12]`,
+/// into the bytes at `src` and writes them to `dst` (`src == dst` works in place). Counters past
+/// `2³² - 1` wrap within the 32-bit word.
 ///
 /// # Safety
 ///
 /// The CPU must support AVX-512 F and VL with the OS saving the ZMM state; `n >= 1`; `src` must
-/// be readable and `dst` writable for `n * WIDE` (`wide`) or `n * NARROW` bytes, and the two ranges
-/// must either be the same or not overlap.
-pub(super) unsafe fn xor(state: &[u32; 16], src: *const u8, dst: *mut u8, n: usize, wide: bool) {
+/// be readable and `dst` writable for `n * w.bytes()` bytes, and the two ranges must either be the
+/// same or not overlap.
+pub(super) unsafe fn xor(state: &[u32; 16], src: *const u8, dst: *mut u8, n: usize, w: Width) {
     debug_assert!(n >= 1);
-    if wide {
-        // SAFETY: the caller guarantees the CPU and OS features and the `src` / `dst` ranges.
-        // The kernel reads the 64-byte state and constants and `n * 1024` bytes from `src`,
-        // writes `n * 1024` bytes to `dst` (each 64-byte block is loaded before it is stored, so
-        // `src == dst` works), uses no stack and clobbers only the registers declared here (all
-        // vector registers through `clobber_abi("C")`, the flags), ending with `vzeroupper`.
-        unsafe {
-            core::arch::asm!(
-                wide_kernel!(),
-                s = in(reg) state.as_ptr(),
-                c = in(reg) &raw const CONSTS,
-                inout("rsi") src => _,
-                inout("rdi") dst => _,
-                inout("rcx") n => _,
-                out("rax") _,
-                clobber_abi("C"),
-                options(nostack),
-            );
-        }
-    } else {
-        // SAFETY: as above, with `n * 256` bytes and xmm registers.
-        unsafe {
-            core::arch::asm!(
-                narrow_kernel!(),
-                s = in(reg) state.as_ptr(),
-                c = in(reg) &raw const CONSTS,
-                inout("rsi") src => _,
-                inout("rdi") dst => _,
-                inout("rcx") n => _,
-                out("rax") _,
-                clobber_abi("C"),
-                options(nostack),
-            );
-        }
+    macro_rules! kernel {
+        ($k:ident) => {
+            // SAFETY: the caller guarantees the CPU and OS features and the `src` / `dst`
+            // ranges. The kernel reads the 64-byte state, the constants and `n * w.bytes()`
+            // bytes from `src`, writes `n * w.bytes()` bytes to `dst` (each 64-byte block is
+            // loaded before it is stored, so `src == dst` works), uses no stack and clobbers
+            // only the registers declared here (all vector registers through
+            // `clobber_abi("C")`, the flags), ending with `vzeroupper`.
+            unsafe {
+                core::arch::asm!(
+                    $k!(),
+                    s = in(reg) state.as_ptr(),
+                    c = in(reg) &raw const CONSTS,
+                    inout("rsi") src => _,
+                    inout("rdi") dst => _,
+                    inout("rcx") n => _,
+                    out("rax") _,
+                    clobber_abi("C"),
+                    options(nostack),
+                )
+            }
+        };
+    }
+    match w {
+        Width::Z => kernel!(wide_kernel),
+        Width::Y => kernel!(mid_kernel),
+        Width::X => kernel!(narrow_kernel),
     }
 }

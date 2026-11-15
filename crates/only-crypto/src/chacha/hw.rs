@@ -55,37 +55,47 @@ pub(super) fn xor_wide(state: &[u32; 16], src: Option<&[u8]>, dst: &mut [u8]) ->
     }
     #[cfg(target_arch = "x86_64")]
     {
-        use avx512::{NARROW, WIDE};
-        let mut st = *state;
+        use avx512::Width;
         let len = dst.len();
-        let mut done = 0;
-        for (size, wide) in [(WIDE, true), (NARROW, false)] {
-            let n = (len - done) / size;
-            if n == 0 {
-                continue;
-            }
-            let to = dst[done..].as_mut_ptr();
-            let from = src.map_or(to.cast_const(), |s| s[done..].as_ptr());
-            // SAFETY: `cpu_has` confirmed AVX-512 F/BW/VL and the OS ZMM state; `n >= 1` groups
-            // of `size` bytes fit in `dst[done..]` and in `src[done..]` (of the same length);
-            // `src` is a shared slice and `dst` a unique one, so they do not overlap, and without
-            // `src` the kernel works in place.
-            unsafe { avx512::xor(&st, from, to, n, wide) };
-            done += n * size;
-            st[12] = st[12].wrapping_add((n * size / 64) as u32);
+        // Sixteen blocks at a time, then one group for the rest: of the narrowest width that
+        // covers it (on Zen 4 a zmm group costs less than two ymm ones, and an xmm group
+        // about as much as a ymm one), directly when it fills the group, else through a buffer.
+        let whole = len / Width::Z.bytes();
+        let mut st = *state;
+        if whole > 0 {
+            let to = dst.as_mut_ptr();
+            let from = src.map_or(to.cast_const(), <[u8]>::as_ptr);
+            // SAFETY: `cpu_has` confirmed AVX-512 F/BW/VL and the OS ZMM state; `whole >= 1`
+            // groups of 1024 bytes fit in `dst` and in `src` (of the same length); `src` is a
+            // shared slice and `dst` a unique one, so they do not overlap, and without `src` the
+            // kernel works in place.
+            unsafe { avx512::xor(&st, from, to, whole, Width::Z) };
+            st[12] = st[12].wrapping_add(16 * whole as u32);
         }
+        let done = whole * Width::Z.bytes();
         let rest = len - done;
         if rest > 0 {
-            // The last partial group of four blocks, through a buffer.
-            let mut buf = [0u8; NARROW];
-            match src {
-                Some(s) => buf[..rest].copy_from_slice(&s[done..]),
-                None => buf[..rest].copy_from_slice(&dst[done..]),
+            let w = match rest {
+                513.. => Width::Z,
+                257.. => Width::Y,
+                _ => Width::X,
+            };
+            if rest == w.bytes() {
+                let to = dst[done..].as_mut_ptr();
+                let from = src.map_or(to.cast_const(), |s| s[done..].as_ptr());
+                // SAFETY: as above, one group of exactly `rest` bytes from offset `done`.
+                unsafe { avx512::xor(&st, from, to, 1, w) };
+            } else {
+                let mut buf = [0u8; 1024];
+                match src {
+                    Some(s) => buf[..rest].copy_from_slice(&s[done..]),
+                    None => buf[..rest].copy_from_slice(&dst[done..]),
+                }
+                let p = buf.as_mut_ptr();
+                // SAFETY: as above; one group of at most 1024 bytes in place in `buf`.
+                unsafe { avx512::xor(&st, p, p, 1, w) };
+                dst[done..].copy_from_slice(&buf[..rest]);
             }
-            let p = buf.as_mut_ptr();
-            // SAFETY: as above; one group of 256 bytes in place in `buf`.
-            unsafe { avx512::xor(&st, p, p, 1, false) };
-            dst[done..].copy_from_slice(&buf[..rest]);
         }
         true
     }
@@ -94,13 +104,6 @@ pub(super) fn xor_wide(state: &[u32; 16], src: Option<&[u8]>, dst: &mut [u8]) ->
         let _ = (state, dst);
         false
     }
-}
-
-/// The ChaCha20 keystream of the four blocks starting at `state[12]` (which must not wrap within
-/// them); `None` without AVX-512.
-pub(super) fn keystream4(state: &[u32; 16]) -> Option<[u8; 256]> {
-    let mut ks = [0u8; 256];
-    xor_wide(state, None, &mut ks).then_some(ks)
 }
 
 /// Absorbs the full blocks of `m` (a nonzero multiple of [`POLY_CHUNK`] bytes) into `h`

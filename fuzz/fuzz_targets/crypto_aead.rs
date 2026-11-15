@@ -112,6 +112,27 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         let ours = only_crypto::chacha::ChaCha20Poly1305::new(&k);
         let theirs = chacha20poly1305::ChaCha20Poly1305::new((&k).into());
         let sealed = ours.encrypt(&nonce, aad, msg);
+        // The AVX-512 / IFMA path (the default where the CPU has it) against the AVX2 path and
+        // the portable code, in place, out of place and opening forgeries.
+        for other in [
+            only_crypto::chacha::ChaCha20Poly1305::new_avx2(&k),
+            only_crypto::chacha::ChaCha20Poly1305::new_portable(&k),
+        ] {
+            assert_eq!(other.encrypt(&nonce, aad, msg), sealed);
+            assert_eq!(
+                other.decrypt(&nonce, aad, msg).ok(),
+                ours.decrypt(&nonce, aad, msg).ok()
+            );
+        }
+        let split = usize::from(data[1]).min(msg.len());
+        let mut dst = msg.to_vec();
+        let tag = ours.encrypt_detached_from(&nonce, aad, &msg[..split], &mut dst);
+        assert_eq!(dst[..], sealed[..msg.len()]);
+        assert_eq!(tag[..], sealed[msg.len()..]);
+        let mut back = vec![0u8; msg.len()];
+        ours.decrypt_detached_from(&nonce, aad, &dst, &tag, &mut back)
+            .unwrap();
+        assert_eq!(back, msg);
         assert_eq!(
             sealed,
             theirs

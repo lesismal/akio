@@ -11,9 +11,6 @@
 //! registers, entered only after `cpu::cpu_has(Feature::Ifma)` (CPUID, with the OS saving the ZMM
 //! state in XCR0). Multiplications, additions, shifts and masks only: constant time.
 
-/// Bytes per iteration (eight blocks).
-pub(super) const CHUNK: usize = 128;
-
 /// `vpermi2q` indices gathering the low (offset 0) and the high (64) 64-bit halves of eight
 /// consecutive blocks from two vectors of four.
 #[repr(C, align(64))]
@@ -42,24 +39,60 @@ macro_rules! mul {
             "vpxorq zmm6, zmm6, zmm6\n",
             "vpxorq zmm7, zmm7, zmm7\n",
             "vpxorq zmm8, zmm8, zmm8\n",
-            "vpmadd52luq zmm3, zmm2, zmm", $s1, "\n",
-            "vpmadd52huq zmm4, zmm2, zmm", $s1, "\n",
-            "vpmadd52luq zmm5, zmm2, zmm", $s2, "\n",
-            "vpmadd52huq zmm6, zmm2, zmm", $s2, "\n",
-            "vpmadd52luq zmm7, zmm2, zmm", $r0, "\n",
-            "vpmadd52huq zmm8, zmm2, zmm", $r0, "\n",
-            "vpmadd52luq zmm3, zmm1, zmm", $s2, "\n",
-            "vpmadd52huq zmm4, zmm1, zmm", $s2, "\n",
-            "vpmadd52luq zmm5, zmm1, zmm", $r0, "\n",
-            "vpmadd52huq zmm6, zmm1, zmm", $r0, "\n",
-            "vpmadd52luq zmm7, zmm1, zmm", $r1, "\n",
-            "vpmadd52huq zmm8, zmm1, zmm", $r1, "\n",
-            "vpmadd52luq zmm3, zmm0, zmm", $r0, "\n",
-            "vpmadd52huq zmm4, zmm0, zmm", $r0, "\n",
-            "vpmadd52luq zmm5, zmm0, zmm", $r1, "\n",
-            "vpmadd52huq zmm6, zmm0, zmm", $r1, "\n",
-            "vpmadd52luq zmm7, zmm0, zmm", $r2, "\n",
-            "vpmadd52huq zmm8, zmm0, zmm", $r2, "\n",
+            "vpmadd52luq zmm3, zmm2, zmm",
+            $s1,
+            "\n",
+            "vpmadd52huq zmm4, zmm2, zmm",
+            $s1,
+            "\n",
+            "vpmadd52luq zmm5, zmm2, zmm",
+            $s2,
+            "\n",
+            "vpmadd52huq zmm6, zmm2, zmm",
+            $s2,
+            "\n",
+            "vpmadd52luq zmm7, zmm2, zmm",
+            $r0,
+            "\n",
+            "vpmadd52huq zmm8, zmm2, zmm",
+            $r0,
+            "\n",
+            "vpmadd52luq zmm3, zmm1, zmm",
+            $s2,
+            "\n",
+            "vpmadd52huq zmm4, zmm1, zmm",
+            $s2,
+            "\n",
+            "vpmadd52luq zmm5, zmm1, zmm",
+            $r0,
+            "\n",
+            "vpmadd52huq zmm6, zmm1, zmm",
+            $r0,
+            "\n",
+            "vpmadd52luq zmm7, zmm1, zmm",
+            $r1,
+            "\n",
+            "vpmadd52huq zmm8, zmm1, zmm",
+            $r1,
+            "\n",
+            "vpmadd52luq zmm3, zmm0, zmm",
+            $r0,
+            "\n",
+            "vpmadd52huq zmm4, zmm0, zmm",
+            $r0,
+            "\n",
+            "vpmadd52luq zmm5, zmm0, zmm",
+            $r1,
+            "\n",
+            "vpmadd52huq zmm6, zmm0, zmm",
+            $r1,
+            "\n",
+            "vpmadd52luq zmm7, zmm0, zmm",
+            $r2,
+            "\n",
+            "vpmadd52huq zmm8, zmm0, zmm",
+            $r2,
+            "\n",
             // d0 → h0, carry into d1.
             "vpsrlq zmm21, zmm3, 44\n",
             "vpsllq zmm4, zmm4, 8\n",
@@ -120,7 +153,7 @@ macro_rules! add_blocks {
 /// # Safety
 ///
 /// The CPU must support AVX-512 F and IFMA with the OS saving the ZMM state; `n >= 1`; `m` must be
-/// readable for `n * CHUNK` bytes. The limbs of `acc` must be below 2⁴⁵ and those of `pw` below
+/// readable for `n * 128` bytes. The limbs of `acc` must be below 2⁴⁵ and those of `pw` below
 /// 2⁵² (as `r` and its powers are, partially reduced, with `20·r1`, `20·r2` below 2⁵⁰).
 pub(super) unsafe fn blocks(acc: &mut [u64; 24], pw: &Powers, m: *const u8, n: usize) {
     debug_assert!(n >= 1);
