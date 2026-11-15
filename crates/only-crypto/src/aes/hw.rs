@@ -80,8 +80,7 @@ impl Keys {
                 *b = next();
             }
             let c: &mut [u8; 128] = c.try_into().unwrap_or_else(|_| unreachable!());
-            // SAFETY: a `Keys` exists only if `available()` returned true (see `new`).
-            unsafe { imp::ctr8_xor(self, &b, c) }
+            self.ctr8_xor(&b, c);
         }
         let rest = chunks.into_remainder();
         if !rest.is_empty() {
@@ -90,12 +89,19 @@ impl Keys {
                 *b = next();
             }
             let mut ks = [0u8; 128];
-            // SAFETY: as above.
-            unsafe { imp::ctr8_xor(self, &b, &mut ks) }
+            self.ctr8_xor(&b, &mut ks);
             for (d, k) in rest.iter_mut().zip(ks) {
                 *d ^= k;
             }
         }
+    }
+
+    /// Encrypts the eight blocks `ctr` and XORs them into `data` (the AES-GCM tail: the last
+    /// counter blocks and `J0` in one pass through the pipeline).
+    #[inline]
+    pub(super) fn ctr8_xor(&self, ctr: &[[u8; 16]; 8], data: &mut [u8; 128]) {
+        // SAFETY: a `Keys` exists only if `available()` returned true (see `new`).
+        unsafe { imp::ctr8_xor(self, ctr, data) }
     }
 }
 

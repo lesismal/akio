@@ -77,6 +77,30 @@ the constant-time portable code as fallback (DEV-PLAN "Performance pass"); no AP
   sign 1.46x, Ed25519 verify 1.49x, RSA-2048 sign 1.38x; TLS 1.3 handshakes 1.5x and 16 KiB
   AES-GCM records 15x (0.60x and 0.64x rustls + ring). Tables in docs/BENCHMARKS.md.
 
+### Performance: wide AES-GCM and CRC in `only-crypto`, out-of-place TLS records
+
+No public API change (new `#[doc(hidden)]` helpers only).
+
+- x86_64 with VAES, VPCLMULQDQ and AVX-512 (Zen 4, Ice Lake and later; detected with CPUID and
+  XCR0): AES-GCM seal and open run as one 512-bit pass, sixteen blocks per loop iteration with
+  the AES rounds interleaved with the GHASH of the previous group and one reduction per sixteen
+  blocks (the BoringSSL / Linux `aes-gcm-avx10` design, written as `asm!` because those
+  intrinsics are newer than the MSRV). The 512-bit kernel was faster than the same kernel on
+  256-bit registers at every size on Zen 4, so only it ships; other CPUs keep the AES-NI +
+  PCLMULQDQ kernel. CRC-32 / CRC-32C fold 256 bytes per step on 512-bit registers from 512 bytes.
+- Every CPU with AES and carry-less multiplication: the last bytes of a message and `J0` go
+  through AES in one call, and a short AAD, the tail ciphertext and the length block through one
+  GHASH call (64-byte messages 1.8–2.1x).
+- `only-tls` seals and opens records out of place: the AEAD reads the caller's plaintext or the
+  received record and writes its output once, instead of copying first and working in place
+  (the copy was 30% of a 16 KiB record).
+- Ryzen 7 7800X3D, one core: AES-128-GCM seal 16 KiB 6,455 → 15,048 MB/s (0.51x → 1.19x ring),
+  1400 B 4,249 → 8,163, 64 B 611 → 1,185; TLS 1.3 records seal + open 16 KiB 2,739 → 6,603 MB/s
+  (0.69x → 1.65x rustls + ring); CRC-32 16 KiB 20.0 → 74.9 GB/s (0.27x → 1.02x crc32fast). Tables
+  in docs/BENCHMARKS.md.
+- `unsafe`: the new `gcm::hw::vaes` kernel, the `asm!` CRC fold and CPUID / XGETBV (`cpu::hw`),
+  each documented in docs/unsafe-review.md. Miri never reaches the `asm!` (nothing is detected).
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so

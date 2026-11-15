@@ -7,7 +7,11 @@
 //! tests and benchmarks. Switching off never makes a hardware path reachable on a CPU without the
 //! instructions: the hardware modules check the real detection result before every `unsafe`
 //! call (key schedules made while the hardware path was enabled keep using it). Under Miri
-//! nothing is detected, so `cargo miri test` runs the portable code.
+//! nothing is detected, so `cargo miri test` runs the portable code (and never the `asm!` of the
+//! wide AES-GCM kernel).
+//!
+//! VAES, VPCLMULQDQ and AVX-512 are read from CPUID and XCR0 directly (`hw`), independent of the
+//! feature names `is_x86_feature_detected!` accepts at the MSRV.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -34,12 +38,72 @@ pub(crate) enum Feature {
     Crc = 1 << 3,
     /// 256-bit integer vectors: AVX2 (x86_64).
     Avx2 = 1 << 4,
+    /// Vector AES and carry-less multiplication: VAES and VPCLMULQDQ with AVX2 and the OS
+    /// saving the YMM state (x86_64, read from CPUID and XCR0).
+    Vaes = 1 << 5,
+    /// AVX-512 F, BW and VL with the OS saving the opmask and ZMM state (x86_64, read from
+    /// CPUID and XCR0).
+    Avx512 = 1 << 6,
+}
+
+/// CPUID and XCR0, for the features `is_x86_feature_detected!` cannot name at the MSRV (VAES,
+/// VPCLMULQDQ, AVX-512): the one `unsafe` of this file.
+#[cfg(all(target_arch = "x86_64", not(miri)))]
+// `__cpuid_count` is an `unsafe fn` at the MSRV (1.85) and safe on newer compilers.
+#[allow(unsafe_code, unused_unsafe)]
+mod hw {
+    use std::arch::x86_64::{__cpuid_count, _xgetbv};
+
+    /// `(Vaes, Avx512)` as defined by `super::Feature`.
+    pub(super) fn wide() -> (bool, bool) {
+        // SAFETY: CPUID exists on every x86_64 CPU; leaf 0 reports the highest leaf.
+        let max = unsafe { __cpuid_count(0, 0) }.eax;
+        if max < 7 {
+            return (false, false);
+        }
+        // SAFETY: as above, leaf 1 is within `max`.
+        let l1 = unsafe { __cpuid_count(1, 0) };
+        // OSXSAVE: the OS enabled XSAVE, so XGETBV is available and XCR0 tells which register
+        // state the OS saves.
+        if l1.ecx & (1 << 27) == 0 {
+            return (false, false);
+        }
+        // SAFETY: OSXSAVE is set, so XGETBV with XCR0 (index 0) does not fault.
+        let xcr0 = unsafe { xcr0() };
+        // SAFETY: leaf 7 is within `max`.
+        let l7 = unsafe { __cpuid_count(7, 0) };
+        let avx = l1.ecx & (1 << 28) != 0;
+        let ymm_os = xcr0 & 0x6 == 0x6;
+        let zmm_os = xcr0 & 0xe6 == 0xe6;
+        let avx2 = l7.ebx & (1 << 5) != 0;
+        let vaes = l7.ecx & (1 << 9) != 0;
+        let vpclmulqdq = l7.ecx & (1 << 10) != 0;
+        let avx512 = l7.ebx & (1 << 16) != 0 && l7.ebx & (1 << 30) != 0 && l7.ebx & (1 << 31) != 0;
+        let v = avx && ymm_os && avx2 && vaes && vpclmulqdq;
+        (v, v && zmm_os && avx512)
+    }
+
+    /// # Safety
+    ///
+    /// The CPU must support XSAVE and the OS must have enabled it (CPUID.1:ECX.OSXSAVE).
+    #[target_feature(enable = "xsave")]
+    unsafe fn xcr0() -> u64 {
+        // SAFETY: the caller guarantees OSXSAVE; XCR0 always exists then.
+        unsafe { _xgetbv(0) }
+    }
 }
 
 #[cfg(all(target_arch = "x86_64", not(miri)))]
 fn detect() -> u32 {
     use std::arch::is_x86_feature_detected as has;
     let mut f = 0;
+    let (vaes, avx512) = hw::wide();
+    if vaes {
+        f |= Feature::Vaes as u32;
+    }
+    if avx512 {
+        f |= Feature::Avx512 as u32;
+    }
     if has!("aes") && has!("sse2") {
         f |= Feature::Aes as u32;
     }
@@ -146,6 +210,8 @@ pub fn hardware_features() -> String {
         (Feature::Sha, "sha"),
         (Feature::Crc, "crc"),
         (Feature::Avx2, "avx2"),
+        (Feature::Vaes, "vaes"),
+        (Feature::Avx512, "avx512"),
     ];
     names
         .iter()

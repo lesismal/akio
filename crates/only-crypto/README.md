@@ -3,15 +3,15 @@
 [中文](README.zh-CN.md)
 
 Dependency-free cryptographic primitives for the [`only`](https://github.com/lesismal/only)
-crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are five small modules
+crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are six small modules
 that drive CPU instructions, detected at run time; the OS random syscall lives in `only-sys`).
 
 | Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
 |---|---|---|
 | AES block cipher, CTR (8 blocks in flight) | AES-NI | ARMv8 AES |
-| AES-GCM (GHASH fused with CTR, 8 blocks per reduction) | PCLMULQDQ + AES-NI | PMULL + ARMv8 AES |
+| AES-GCM (GHASH fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
-| CRC-32, CRC-32C | PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
+| CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
 
 `ONLY_CRYPTO_PORTABLE=1` (read once) forces the portable code everywhere; the tests run every
@@ -24,7 +24,7 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR |
-| `gcm` | AES-GCM: PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`) |
+| `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 one 512-bit pass (16 blocks per iteration and reduction), else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`) |
 | `chacha` | ChaCha20 (8 blocks with AVX2, else 4-block lanes), Poly1305 (44-bit limbs, two blocks per step), ChaCha20-Poly1305 (RFC 8439) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
@@ -54,8 +54,9 @@ assert_eq!(gcm.decrypt(&[0u8; 12], b"aad", &sealed).unwrap(), b"plaintext");
 
 This is an implementation crate: its API follows the needs of the other `only` crates and may
 change in any release (internal tier, docs/api-stability.md). It is not a general-purpose
-cryptography library (no key zeroization, no assembly; SHA-512, MD5, Poly1305 and the
-public-key arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
+cryptography library (no key zeroization; assembly only for the wide AES-GCM kernel and CRC fold,
+whose VAES / VPCLMULQDQ / AVX-512 intrinsics are newer than the MSRV; SHA-512, MD5, Poly1305 and
+the public-key arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
 planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x509).
 
 ## Public-key timing
@@ -103,8 +104,10 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 |---|---:|---:|---:|
 | SHA-1, 16 KiB (MB/s) | 697 | 2 543 | 1.00x sha1 |
 | SHA-256, 16 KiB | 366 | 2 383 | 1.00x sha2 |
-| CRC-32, 16 KiB | 2 733 | 20 047 | 0.27x crc32fast |
-| AES-128-GCM seal, 16 KiB | 364 | 6 484 | 2.98x aes-gcm |
+| CRC-32, 16 KiB | 19 992 | 74 885 | 1.02x crc32fast |
+| AES-128-GCM seal, 16 KiB | 6 455 | 15 048 | 1.19x ring |
+| AES-128-GCM seal, 1400 B | 4 249 | 8 163 | 1.11x ring |
+| AES-128-GCM seal, 64 B | 611 | 1 185 | 1.10x ring |
 | ChaCha20-Poly1305 seal, 16 KiB | 588 | 1 757 | 0.89x chacha20poly1305 |
 | Ed25519 verify (op/s) | 18 289 | 27 161 | 0.85x ring |
 | X25519 agreement | 28 865 | 30 945 | 0.84x ring |
@@ -115,9 +118,11 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | RSA-2048 PKCS#1 sign | 871 | 1 199 | 0.49x ring |
 | RSA-2048 PKCS#1 verify | 29 019 | 39 557 | 0.60x ring |
 
-ring uses assembly for AES-GCM, P-256, X25519 and RSA. Follow-ups: VAES / VPCLMULQDQ kernels
-(newer than the MSRV), a SIMD Poly1305, cheaper doublings for secret P-256 scalars, Karatsuba
-for RSA.
+ring uses assembly for AES-GCM, P-256, X25519 and RSA. The AES-GCM and CRC rows compare with the
+previous VAES / VPCLMULQDQ-less code (`--example gcm-sizes` against ring, `--example bench`
+against crc32fast); on Zen 4 the 512-bit kernel beat the same kernel on 256-bit registers at every
+size. Follow-ups: a VAES + AVX2 kernel for CPUs without AVX-512, a SIMD Poly1305, cheaper
+doublings for secret P-256 scalars, Karatsuba for RSA.
 
 ## Testing
 
@@ -125,8 +130,12 @@ for RSA.
   specification, RFC 1321, 2202, 4231, 5869, 6070, 3720, 4648, 8439, and Wycheproof (AES-GCM,
   ChaCha20-Poly1305, HMAC-SHA1/SHA256, HKDF-SHA256), vendored under `tests/data/`.
 - `tests/compat.rs` cross-checks every primitive against the replaced crates (dev-dependencies
-  only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also hardware against
-  portable AES-GCM), `crypto_base64`.
+  only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also the wide, 128-bit
+  and portable AES-GCM paths against each other, in place and out of place), `crypto_base64`.
+- The wide AES-GCM kernel (`gcm::tests`): every length 0..=600 and large sizes against the
+  128-bit and portable paths, misaligned, in place and out of place, the 32-bit counter
+  wrapping inside a group, and large messages against ring; it runs only on a CPU with VAES
+  and AVX-512, so these tests are run natively on one (Zen 4).
 - Hardware paths: unit tests compare each one with the portable code (`hardware_matches_portable`
   for AES, CTR, GCM, SHA-1, SHA-256, `hardware_matches_table` for CRC, the multi-block ChaCha20
   and two-block Poly1305 against one block at a time), and the whole suite also runs with
