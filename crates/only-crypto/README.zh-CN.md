@@ -62,22 +62,27 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
 
 - 与秘密相关的代码没有依赖秘密的分支或内存下标。P-384 以及所有标量域使用 64 位 limb 的 Montgomery 运算
   （CIOS 乘法，平方用半规模乘积加 REDC），最后一步减法用掩码完成，按 limb 数泛型实现，常量在编译期推导。
-  P-256 基域有专用的约简（`-p⁻¹ mod 2⁶⁴ = 1`，每一步只需一次真正的乘法），求逆使用加法链（255 次平方、
-  12 次乘法），P-256 群阶的求逆使用 255 次平方、40 次乘法的加法链；其他求逆以公开指数 `p - 2` 做 4 位固定
-  窗口幂运算。Curve25519 使用 2⁵¹ 进制并有专用平方。
+  P-256 基域有专用的约简（`-p⁻¹ mod 2⁶⁴ = 1`，每一步只需一次真正的乘法）。P-256 基域与群阶的求逆使用
+  safegcd（Bernstein–Yang divsteps，采用 libsecp256k1 的 half-delta 形式与有符号 62 位 limb：十批、每批
+  59 步 divsteps，对每个输入都相同，条件都化为掩码）；其他求逆以公开指数 `p - 2` 做 4 位固定窗口幂运算。Curve25519 使用 2⁵¹ 进制并有专用平方。
 - x86_64 上带 BMI2 + ADX 时（运行时检测；`ONLY_CRYPTO_PORTABLE=1` 可关闭），P-256 的域与群阶运算以及
   X25519 阶梯的域运算用内联汇编实现（`mulx`、`adcx`/`adox`，修正用 `cmov` 与 `sbb` 掩码，直线代码）。
-  P-256 运算在一个与可移植实现共享 Montgomery 表示和基点预计算表的“孪生”曲线类型上执行。
-- aarch64 上（所有 ARMv8.0 CPU 都具备所需指令，无需检测；`ONLY_CRYPTO_PORTABLE=1` 可关闭）同样的运算用内联
-  汇编实现：`MUL`/`UMULH` 求积，`ADDS`/`ADCS`/`SUBS`/`SBCS` 进位链，`CSEL` 修正，两条曲线都用四个 64 位 limb
-  （模 P-256 素数的约简只用移位与减法，同 OpenSSL 的 `ecp_nistz256-armv8`）。设计依据指令数（4×64 乘积是
-  16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个 128 位乘积）；这条路径已测试，但**尚未做性能测试**，
-  因此不给出 aarch64 的性能数字。
+  P-256 运算在一个与可移植实现共享 Montgomery 表示和基点预计算表的“孪生”曲线类型上执行；它的 Jacobian
+  倍点（也可连续 `n` 次）、加法与混合加法各是一个作用于小栈帧的整点 `asm!` 块（乘法、约简与模加减融合，
+  累加值留在寄存器中），safegcd 的 divsteps 也是汇编；有 AVX2 时，查表用 256 位读取加 `vpcmpeqq` 掩码。
+- aarch64 上（所有 ARMv8.0 CPU 都具备所需指令，无需检测；`ONLY_CRYPTO_PORTABLE=1` 可关闭）P-256 的域与群阶
+  运算以及 X25519 阶梯的域运算用内联汇编实现：`MUL`/`UMULH` 求积，`ADDS`/`ADCS`/`SUBS`/`SBCS` 进位链，`CSEL`
+  修正，两条曲线都用四个 64 位 limb（模 P-256 素数的约简只用移位与减法，同 OpenSSL 的 `ecp_nistz256-armv8`）；
+  求逆是 safegcd（可移植的 divsteps），点运算公式、查表与 4 位梳形表是建立在这个域上的可移植实现。设计依据
+  指令数（4×64 乘积是 16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个 128 位乘积）；这条路径已测试，但
+  **尚未做性能测试**，因此不给出 aarch64 的性能数字。
 - P-256 / P-384 的秘密标量乘法使用 Jacobian 坐标（`a = -3`：倍点 4M + 4S，加法 11M + 5S，混合加法
   7M + 4S）。可变基点（ECDH）：Booth 重编码的有符号 5 位窗口（数字在 `[-16, 16]`）作用于 `1·P … 16·P`，每次
   查表读取全部 16 项，取负为掩码选择。固定基点：把 `k` 重新编码为有符号 4 位数字（掩码算术），每个数字加一个
-  仿射梳形表项 `|d|·16ⁱ·G`，每次查表读取该行全部 8 项。Jacobian 公式并不完备：仍为无穷远点的累加值与零数字
-  用掩码选择处理，而对 `[1, n)` 中的标量不会出现两个相同的操作数（证明见 `ec/mod.rs`，需要 `n mod 32 ≥ 17`，
+  仿射梳形表项 `|d|·16ⁱ·G`，每次查表读取该行全部 8 项；P-256 孪生曲线在有 AVX2 时改用 Booth 重编码的有符号 6 位数字与更宽的梳形表
+  （43 行，每行 32 个仿射点 `|d|·2⁶ⁱ·G`，共 88 KiB，首次使用时构造），43 次混合加法，每行都完整读取。
+  Jacobian 公式并不完备：仍为无穷远点的累加值与零数字
+  用掩码选择处理，而对 `[1, n)` 中的标量不会出现两个相同的操作数（证明见 `ec/mod.rs`，宽梳形表的证明见 `ec/hw.rs`，需要 `n mod 32 ≥ 17`，
   由测试检查）。点的解码、校验与预计算表的构造仍用完备公式（Renes–Costello–Batina）。
 - Ed25519 的 `[k]B` 每个有符号 4 位数字加一个仿射 Niels 表项（完备的统一加法，每个数字 7M）。X25519 公钥
   就是把这个 `[k]B` 映射为 `u = (1 + y)/(1 - y)`；共享密钥使用 RFC 7748 的 Montgomery 阶梯和掩码交换。
@@ -90,10 +95,11 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
   `SecretKey::generate` 的拒绝采样、仿射坐标转换对无穷远点的分支（合法秘密标量不会出现）。
 - 局限：掩码经过 `std::hint::black_box`，只能阻止而不能保证优化器不重新引入分支；去掉它时 LLVM 确实会把部分
   带掩码的模修正编译成跳转，因此即使有性能代价也保留这道屏障（汇编不需要这道屏障）。已反汇编秘密标量路径在
-  x86_64（含 BMI2 + ADX 汇编）与 aarch64（含 aarch64 汇编，以及可移植实现）上的 release 代码并列出每个条件分支（方法见 `src/ct.rs`）：P-256 /
-  P-384 的 `ecdh_x_impl`、`base_mul_impl`、`sign_impl` 及其内联的窗口与梳形表循环，Jacobian 倍点与加法，域与
-  群阶的乘法、平方与求逆链，Ed25519 基点乘法与两种 X25519 阶梯。分支只出现在循环计数、公开下标与边界、
-  求逆链的公开指数位、CPU 特性与 `OnceLock` 检查，以及最后“结果为无穷远点”的判断上。尚未运行统计检测
+  x86_64（含汇编）与 aarch64（含 aarch64 汇编，以及可移植实现）上的 release 代码并列出每个条件分支（方法见 `src/ct.rs`）：P-256 /
+  P-384 的 `ecdh_x_impl`、`base_mul_impl`、`sign_impl` 及其内联的窗口与梳形表循环，Jacobian 倍点与加法（含整点
+  汇编），宽梳形表与 AVX2 查表，域与群阶的乘法、平方与求逆（safegcd 及两种 divsteps），Ed25519 基点乘法与
+  两种 X25519 阶梯。分支只出现在循环计数、公开下标与边界、其余费马求逆链的公开指数位、CPU 特性与
+  `OnceLock` 检查、输出编码的长度，以及最后“结果为无穷远点”的判断上。尚未运行统计检测
   （dudect、ctgrind）。密钥不会被清零。所用的 CPU 指令（AES、无进位乘法、SHA、CRC32、AVX2、`mulx`、
   `adcx`/`adox`、`cmov`；aarch64 上的 `MUL`、`UMULH`、设置标志位的加减法与 `CSEL`）是常数时间的。
 
@@ -128,9 +134,12 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 公钥各行与握手数据来自 P-256 / X25519 优化（优化前：P-256 签名 34 152、验签 13 404、ECDH 10 380、X25519
 30 696 次/秒；握手 3 055 与 2 306 次/秒）。ring 的 AES-GCM、P-256、X25519 与 RSA 使用汇编。AES-GCM 与 CRC 行
 对比的是此前没有 VAES / VPCLMULQDQ 的代码（`--example gcm-sizes` 对比 ring，`--example bench` 对比
-crc32fast）；在 Zen 4 上，512 位内核在所有长度上都快于同一内核的 256 位寄存器版本。后续：给没有 AVX-512 的
-CPU 的 VAES + AVX2 内核、SIMD Poly1305、整个倍点用汇编实现（域元素留在寄存器中）与更宽的 P-256 梳形表、
-测量 aarch64 上 P-256 与 X25519 汇编的性能（已测试，尚未做性能测试）、RSA 的 Karatsuba。
+crc32fast）；在 Zen 4 上，512 位内核在所有长度上都快于同一内核的 256 位寄存器版本。P-256 整点优化（汇编倍点与加法、带
+AVX2 扫表的 6 位梳形表、safegcd 求逆）之后，在有负载的机器上同一次运行中与 ring 对比（docs/BENCHMARKS.zh-CN.md）：
+签名 0.77 倍 → 1.25 倍，生成密钥 0.94 倍 → 1.33 倍，验签 0.98 倍 → 1.04 倍，ECDH 0.94 倍 → 0.96 倍，
+secp256r1 握手为 rustls 的 0.94 倍 → 1.12 倍；表中 P-256 各行来自上一轮。后续：给没有 AVX-512 的 CPU 的
+VAES + AVX2 内核、SIMD Poly1305、把约简交织进乘积各行的 P-256 乘法（ECDH）、测量 aarch64 上 P-256 与 X25519 汇编的性能（已测试，尚未做
+性能测试）以及 aarch64 上的整点运算与 divsteps 汇编、RSA 的 Karatsuba。
 
 ## 测试
 
@@ -146,11 +155,13 @@ CPU 的 VAES + AVX2 内核、SIMD Poly1305、整个倍点用汇编实现（域�
 - 硬件路径：单元测试把每条硬件路径与可移植实现比较（AES、CTR、GCM、SHA-1、SHA-256 的
   `hardware_matches_portable`，CRC 的 `hardware_matches_table`，多分组 ChaCha20 与两分组 Poly1305 对比逐分组
   计算，`ec::hw`、`ec::hw_aarch64`、`curve25519::hw` 与 `curve25519::hw_aarch64` 的 `matches_portable` 在随机值
-  与边界值上覆盖每个域运算例程与 X25519 阶梯，`chains_match_portable` 覆盖长串相互依赖的运算，`twin_matches_portable` 覆盖 P-256 的密钥生成、ECDH、签名与验签），整个测试套件还会在 x86_64 与
+  与边界值上覆盖每个域运算例程与 X25519 阶梯，`chains_match_portable` 覆盖长串相互依赖的运算（aarch64），`ec::hw` 的 `points_match_portable` 在随机 `Z` 的随机点、Wycheproof 中全部合法的 ECDH 点、`P + P`、
+  `P + (-P)` 与无穷远点上把整点倍点、加法与混合加法和可移植公式逐 limb 比较，`safegcd` 的 `matches_fermat`
+  覆盖 P-256 的两个模数，`twin_matches_portable` 覆盖 P-256 的密钥生成、ECDH、签名与验签），整个测试套件还会在 x86_64 与
   aarch64 上设置 `ONLY_CRYPTO_PORTABLE=1` 再跑一遍。
 - Jacobian 标量乘法在随机标量与边界标量（`[1, n)` 的两端、每个 Booth 数字对应的 `n - 2|d|`、进位到梳形表
-  最高行的标量）上与完备公式的参考实现（`mul_ref`、`mul_base_ref`）比较，覆盖 P-256、P-384 与 P-256 孪生
-  曲线；由 Edwards 基点表计算的 X25519 公钥与 `u = 9` 上的阶梯结果比较。
+  最高行的标量、宽梳形表的每个最高位数字）上与完备公式的参考实现（`mul_ref`、`mul_base_ref`）比较，覆盖
+  P-256、P-384 与 P-256 孪生曲线（含整点汇编与宽梳形表）；由 Edwards 基点表计算的 X25519 公钥与 `u = 9` 上的阶梯结果比较。
 - `cargo run --release -p only-crypto --example bench` 与被替代的 crate 比较吞吐量。
 - 公钥（`tests/pk_kat.rs`）：Wycheproof 的 X25519、Ed25519、ECDSA P-256/SHA-256（DER 与 P1363）、
   P-384/SHA-384 与 SHA-512、ECDH P-256（SPKI 与原始点）与 P-384、RSA PKCS#1 v1.5 验证（2048/SHA-256、

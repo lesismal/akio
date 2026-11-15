@@ -102,6 +102,7 @@ mod curve25519;
 mod ec;
 mod error;
 mod field;
+mod safegcd;
 
 pub use error::Error;
 

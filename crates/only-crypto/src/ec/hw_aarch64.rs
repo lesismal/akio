@@ -10,6 +10,12 @@
 //! - modulo the group order `n` ([`ord_mul`], [`ord_sqr`], [`P256Na`]): Montgomery
 //!   multiplication and squaring, which the portable `P256N` scalar field calls when [`enabled`].
 //!
+//! Inversions modulo `p` and `n` are safegcd (`crate::safegcd`, portable divsteps) with the final
+//! Montgomery multiplication in this module. The twin keeps the portable defaults of the
+//! `Curve::jac_*` hooks (point formulas, table scans, the 4-bit comb), which run on this field;
+//! the x86_64 twin's whole-point assembly, AVX2 scans and 6-bit comb have no aarch64 counterpart
+//! yet.
+//!
 //! The instructions are in every ARMv8.0-A CPU, so there is nothing to detect: [`enabled`] is
 //! `cpu::has(Feature::Umulh)`, which is set on every aarch64 target outside Miri and cleared by
 //! `ONLY_CRYPTO_PORTABLE=1` / `set_portable(true)`.
@@ -94,8 +100,9 @@ impl Modulus<4> for P256Pa {
         r
     }
 
+    // safegcd (portable divsteps), then the final Montgomery multiplication here.
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
-        Some(super::curves::p256_inv::<Self>(a))
+        Some(crate::safegcd::mont_inv::<Self>(a))
     }
 }
 
@@ -976,18 +983,20 @@ mod tests {
         }
     }
 
-    /// The scalar inversion chain on the assembly matches the portable one.
+    /// The inversions on the assembly (Fermat chains and safegcd) match the portable chains.
     #[test]
-    fn scalar_inverse() {
+    fn inverses() {
         if !cpu::cpu_has(Feature::Umulh) {
             return;
         }
         for a in values(&P256N::P).iter().take(200) {
-            assert_eq!(
-                crate::ec::curves::p256n_inv::<P256Na>(a),
-                crate::ec::curves::p256n_inv::<P256N>(a),
-                "{a:x?}"
-            );
+            let want = crate::ec::curves::p256n_inv::<P256N>(a);
+            assert_eq!(crate::ec::curves::p256n_inv::<P256Na>(a), want, "{a:x?}");
+            assert_eq!(crate::safegcd::mont_inv::<P256Na>(a), want, "{a:x?}");
+        }
+        for a in values(&P256P::P).iter().take(200) {
+            let want = crate::ec::curves::p256_inv::<P256P>(a);
+            assert_eq!(crate::safegcd::mont_inv::<P256Pa>(a), want, "{a:x?}");
         }
     }
 

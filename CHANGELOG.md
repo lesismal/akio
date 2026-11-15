@@ -40,7 +40,9 @@ BMI2 + ADX code; no API change.
   `2ᵏ·a` and `3·a` on four 64-bit limbs with `MUL`/`UMULH` products, `ADDS`/`ADCS`/`SUBS`/`SBCS`
   carry chains and `CSEL` corrections; the reduction modulo `p` needs shifts and subtractions
   only (as OpenSSL's `ecp_nistz256-armv8`), modulo `n` two of the four limb products are shifts.
-  `P256` dispatches to a twin curve on this field, as on x86_64.
+  `P256` dispatches to a twin curve on this field, as on x86_64; inversions are safegcd (portable
+  divsteps) with the final multiplication in assembly, and the twin keeps the portable defaults of
+  the `Curve::jac_*` hooks (point formulas, table scans, 4-bit comb) over the assembly field.
 - X25519: the ladder's field on four 64-bit limbs (16 `MUL` + 16 `UMULH` per product instead of
   the 25 128-bit products of radix 2⁵¹), folds by `2²⁵⁶ ≡ 38` with `CSEL`, masked swaps.
 - Every ARMv8.0 CPU has these instructions: `hardware_features()` reports `umulh` on aarch64;
@@ -164,6 +166,42 @@ No public API change (new `#[doc(hidden)]` helpers only).
   in docs/BENCHMARKS.md.
 - `unsafe`: the new `gcm::hw::vaes` kernel, the `asm!` CRC fold and CPUID / XGETBV (`cpu::hw`),
   each documented in docs/unsafe-review.md. Miri never reaches the `asm!` (nothing is detected).
+
+### Performance: P-256 whole-point assembly, wide comb and safegcd in `only-crypto`
+
+No API change (`tools/api/public-api.sh` unchanged). Measured on one core of the bench host
+against ring 0.17 / rustls 0.23 in the same run (median of five alternating rounds; the host was
+loaded by another benchmark, so absolute rates are 20–30% low, see docs/BENCHMARKS.md): P-256
+sign 0.77× → 1.25× ring, key generation 0.94× → 1.33×, verify 0.98× → 1.04×, ECDH 0.94× → 0.96×;
+TLS 1.3 secp256r1 handshakes 0.94× → 1.12× rustls.
+
+- x86_64 with BMI2 + ADX: the Jacobian doubling (`a = -3`), addition and mixed addition of the
+  P-256 twin are each one `asm!` block over a small stack frame, the products and reductions
+  fused with the modular additions, subtractions and doublings around them (the accumulator stays
+  in registers; the low half of each product is reduced on its own and the high half added
+  after). Consecutive doublings (five per ECDH window, runs between additions in verification)
+  share one frame. A doubling costs ~355 cycles instead of ~480. The curve trait gained hooks
+  for these routines and the table scans, so an aarch64 twin can plug in the same way.
+- Fixed base (key generation, signing) on the twin with AVX2: Booth-recoded signed 6-bit digits
+  over a 43-row comb of 32 affine points each (88 KiB, built on first use), 43 mixed additions
+  instead of 65; every row is scanned with 256-bit loads and `vpcmpeqq` masks. 6- and 7-bit combs
+  measured equal, 5 and 8 bits slower. The ECDH window table is scanned the same way. Without
+  AVX2 the 4-bit comb stays.
+- Inversion modulo the P-256 prime and order by safegcd (Bernstein–Yang divsteps in
+  libsecp256k1's form, new module `safegcd`), constant time, with the divsteps in assembly on
+  x86_64 and masked Rust elsewhere: the scalar inversion of signing 20.9k → 7.0k cycles, the
+  field inversion ~12.7k → ~7–9k. It replaces the Fermat chains on every path, portable included.
+- Correctness: the whole-point routines are compared limb for limb with the portable formulas
+  on random points with random `Z`, every valid Wycheproof ECDH point, `P + P`, `P + (-P)` and
+  the identity; safegcd against Fermat on random and edge inputs for both moduli; the wide comb
+  against the complete-formula reference on random and edge scalars (every top digit); the
+  equal-operand argument for the wide comb is in `ec/hw.rs`.
+- Constant-time evidence (Zen 4 release disassembly): no conditional branch in the point
+  routines, the AVX2 scans and `Fe::invert`; one (the loop counter) in each `divsteps_59`; in
+  `ecdh_x_impl`, `sign_impl` and `hw::mul_base` only CPU-feature and `OnceLock` checks, loop
+  counters, public digit positions and bounds, the output length and the final identity test.
+- `unsafe`: +6 blocks and +2 `unsafe fn` in `ec::hw` (the point blocks share one, the divsteps
+  block, two AVX2 scans and their two calls; docs/unsafe-review.md).
 
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 

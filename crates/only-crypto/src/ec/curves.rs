@@ -3,6 +3,8 @@
 use std::sync::OnceLock;
 
 use super::{BaseTables, Curve, Point, Scalar, Sig};
+#[cfg(target_arch = "x86_64")]
+use super::{Fp, Jac};
 use crate::Error;
 use crate::field::{Modulus, mont_mul_cios, mul_wide, redc, sqr_wide, sub_if_ge};
 use crate::hash::Hash;
@@ -33,17 +35,17 @@ impl Modulus<4> for P256P {
     }
 
     // Inversions also happen outside the twin's operations (encoding a public key): one check
-    // chooses the BMI2 + ADX chain.
+    // chooses the assembly divsteps and multiplication. Both are safegcd (`crate::safegcd`).
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
         #[cfg(target_arch = "x86_64")]
         if super::hw::enabled() {
-            return Some(p256_inv::<super::hw::P256Px>(a));
+            return Some(super::hw::mont_inv_safegcd::<super::hw::P256Px>(a));
         }
         #[cfg(target_arch = "aarch64")]
         if super::hw_aarch64::enabled() {
-            return Some(p256_inv::<super::hw_aarch64::P256Pa>(a));
+            return Some(crate::safegcd::mont_inv::<super::hw_aarch64::P256Pa>(a));
         }
-        Some(p256_inv::<Self>(a))
+        Some(crate::safegcd::mont_inv::<Self>(a))
     }
 }
 
@@ -74,7 +76,10 @@ fn p256_redc(t: &[u64; 8]) -> [u64; 4] {
 
 /// `a^(p-2)` (Montgomery form) by the addition chain of mmcloughlin/addchain for P-256 (255
 /// squarings, 12 multiplications; the same as Go's `p256Invert`): constant time. Generic over
-/// the implementation of the P-256 prime (portable or `hw`).
+/// the implementation of the P-256 prime (portable or `hw`). The reference for the safegcd
+/// inversion in tests.
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn p256_inv<M: Modulus<4>>(a: &[u64; 4]) -> [u64; 4] {
     let mul = |x: &[u64; 4], y: &[u64; 4]| M::mont_mul(x, y);
     let sqn = |x: &[u64; 4], n: usize| {
@@ -139,13 +144,13 @@ impl Modulus<4> for P256N {
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
         #[cfg(target_arch = "x86_64")]
         if super::hw::enabled() {
-            return Some(p256n_inv::<super::hw::P256Nx>(a));
+            return Some(super::hw::mont_inv_safegcd::<super::hw::P256Nx>(a));
         }
         #[cfg(target_arch = "aarch64")]
         if super::hw_aarch64::enabled() {
-            return Some(p256n_inv::<super::hw_aarch64::P256Na>(a));
+            return Some(crate::safegcd::mont_inv::<super::hw_aarch64::P256Na>(a));
         }
-        Some(p256n_inv::<Self>(a))
+        Some(crate::safegcd::mont_inv::<Self>(a))
     }
 }
 
@@ -154,7 +159,9 @@ impl Modulus<4> for P256N {
 /// `a^(2³² - 1)` (31 squarings, 5 multiplications) shifted into place, the bottom half from
 /// sliding windows of up to 4 bits over `a, a³, …, a¹⁵`: 255 squarings and 40 multiplications
 /// (the generic 4-bit windows need 78). Every branch depends on the public exponent
-/// only, so the sequence of operations is the same for every `a`: constant time.
+/// only, so the sequence of operations is the same for every `a`: constant time. The reference
+/// for the safegcd inversion in tests.
+#[cfg(test)]
 pub(crate) fn p256n_inv<M: Modulus<4>>(a: &[u64; 4]) -> [u64; 4] {
     const LOW: [u64; 2] = [0xf3b9_cac2_fc63_254f, 0xbce6_faad_a717_9e84];
     let mul = |x: &[u64; 4], y: &[u64; 4]| M::mont_mul(x, y);
@@ -295,6 +302,37 @@ impl Curve<4> for P256X {
     fn tables() -> &'static BaseTables<4> {
         P256::tables()
     }
+
+    // Whole point operations in assembly (`hw`), same formulas as the portable defaults.
+    #[inline]
+    fn jac_double(p: &Jac<Self, 4>) -> Jac<Self, 4> {
+        Jac::from_raw(super::hw::point_double(&p.raw()))
+    }
+
+    #[inline]
+    fn jac_double_n(p: &Jac<Self, 4>, n: usize) -> Jac<Self, 4> {
+        Jac::from_raw(super::hw::point_double_n(&p.raw(), n))
+    }
+
+    #[inline]
+    fn jac_add_core(p: &Jac<Self, 4>, q: &Jac<Self, 4>) -> Jac<Self, 4> {
+        Jac::from_raw(super::hw::point_add(&p.raw(), &q.raw()))
+    }
+
+    #[inline]
+    fn jac_madd_core(p: &Jac<Self, 4>, x2: &Fp<Self, 4>, y2: &Fp<Self, 4>) -> Jac<Self, 4> {
+        Jac::from_raw(super::hw::point_add_affine(&p.raw(), &x2.l, &y2.l))
+    }
+
+    #[inline]
+    fn jac_lookup(table: &[Jac<Self, 4>; 16], d: u64) -> Jac<Self, 4> {
+        super::hw::lookup_jac(table, d)
+    }
+
+    #[inline]
+    fn jac_mul_base(k: &Scalar<Self, 4>) -> Jac<Self, 4> {
+        super::hw::mul_base(k)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -399,6 +437,25 @@ mod tests {
         v.push(scalar::<C, L>(&top));
         top[0] = 0xf;
         v.push(scalar::<C, L>(&top));
+        // The top window of the wide comb: D·2^(64L-3), D·2^(64L-4) and n minus them, with
+        // and without low bits (every top digit, both signs of the window below).
+        for d in 1..16u64 {
+            for shift in [3u32, 4] {
+                if d >> shift != 0 {
+                    continue;
+                }
+                let mut l = [0u64; L];
+                l[L - 1] = d << (64 - shift);
+                if let Some(s) = Scalar::<C, L>::from_limbs_canonical(&l) {
+                    v.push(s);
+                    let mut nl = [0u64; L];
+                    crate::ct::sub_limbs(&mut nl, &n, &l);
+                    v.push(scalar::<C, L>(&nl));
+                    l[0] = 0x5555;
+                    v.push(scalar::<C, L>(&l));
+                }
+            }
+        }
         v
     }
 
@@ -416,6 +473,7 @@ mod tests {
         assert_eq!(a, c);
         assert_eq!(b, c);
         assert_eq!(enc(Jac::<C, L>::mul_base_ct(&nm1)).unwrap(), c);
+        assert_eq!(enc(C::jac_mul_base(&nm1)).unwrap(), c);
         assert_eq!(enc(Jac::<C, L>::mul_ct(&g, &nm1)).unwrap(), c);
         // G + (n-1)G = identity, 2G = G + G.
         assert!(g.add(&g.neg()).to_affine().is_none());
@@ -454,6 +512,7 @@ mod tests {
             let want = Point::<C, L>::mul_base_ref(&a).to_uncompressed();
             assert_eq!(want, g.mul_ref(&a).to_uncompressed());
             assert_eq!(enc(Jac::<C, L>::mul_base_ct(&a)), want);
+            assert_eq!(enc(C::jac_mul_base(&a)), want);
             assert_eq!(
                 enc(Jac::<C, L>::mul_ct(&q, &a)),
                 q.mul_ref(&a).to_uncompressed()
@@ -468,6 +527,7 @@ mod tests {
             let want = g.mul_ref(&k).to_uncompressed();
             assert_eq!(Point::<C, L>::mul_base_ref(&k).to_uncompressed(), want);
             assert_eq!(enc(Jac::<C, L>::mul_base_ct(&k)), want);
+            assert_eq!(enc(C::jac_mul_base(&k)), want);
             assert_eq!(enc(Jac::<C, L>::mul_ct(&g, &k)), want);
             assert_eq!(
                 enc(Jac::<C, L>::mul_ct(&q, &k)),

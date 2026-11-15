@@ -206,6 +206,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] 在空闲机器（DPDK 用真实网卡）上重跑基准并更新 `docs/BENCHMARKS.md`：在安静的 Ryzen 7800X3D 主机上基于同一提交 10070cff 重跑，并重写中英文 BENCHMARKS（先写主机与方法，写明局限）。HTTP/1.1、h2c、TLS 上的 h2、WebSocket、TCP/UDP/TLS echo 与每连接内存（epoll 与 io_uring，对比 hyper、tokio、tokio-tungstenite、fib），以及 QUIC/HTTP/3、TLS、密码学、deflate、编解码与用户态协议栈微基准；各领域优化数字在 1–2% 内复现。测试脚本现会跳过被之前运行占用的端口。DPDK 未测（主机无真实网卡）。WebSocket 每连接内存曾回退到 3.5 KB（only-deflate 编解码状态内联存放，未协商压缩时也占用）；改为 Box 后降到 1.4 KB（替换前为 1.66 KB）。
 - [x] 宽 AES-GCM / CRC：VAES + VPCLMULQDQ + AVX-512 `asm!` 内核（512 位；Zen 4 上所有长度均快于 256 位；MSRV 保持 1.85，用 CPUID/XGETBV 检测），融合短尾部，TLS 记录非原地加解密，512 位 CRC 折叠。AES-128-GCM 16 KiB 6.5 → 15.0 GB/s（ring 的 1.19 倍），TLS 1.3 记录 16 KiB 相对 rustls+ring 0.69 倍 → 1.65 倍（1 KiB 1.53 倍），CRC-32 相对 crc32fast 0.27 倍 → 1.02 倍。未完成：无 AVX-512 的 CPU 用的 VAES-AVX2 内核、宽内核内的掩码尾部处理。
 - [x] TLS 握手提速：P-256 域与群阶运算（`ec::hw`）及 X25519 阶梯（`curve25519::hw`）改用 BMI2/ADX `asm!`，常数时间 Jacobian 标量乘法（ECDH 用 Booth w=5，生成密钥/签名用有符号梳形表加混合加法），X25519 公钥由 Edwards 基点表计算。握手：X25519 3,055 → 5,027 次/秒（rustls+ring 的 1.00 倍，原 0.61 倍），secp256r1 2,306 → 4,552 次/秒（0.89 倍，原 0.45 倍）；P-256 签名/验签/ECDH/生成密钥为 ring 的 0.79/0.96/0.91/0.96 倍。未完成：寄存器内完成的倍点、更宽的梳形表、aarch64 汇编、RSA、dudect 式计时测试。
+- [x] P-256 整点优化（x86_64）：倍点 / 加法 / 混合加法各为一个 BMI2+ADX `asm!` 块（连续倍点共用一帧），6 位 Booth 梳形表（43×32 个仿射点，88 KiB）与 ECDH 窗口表用 AVX2 掩码扫表，常数时间 safegcd（Bernstein–Yang）求逆，divsteps 用汇编。相对 ring：签名 1.25 倍，生成密钥 1.33 倍，验签 1.04 倍，ECDH 0.96 倍；secp256r1 TLS 握手为 rustls+ring 的 1.12 倍（比例来自同一轮 A/B；主机有外部负载）。未完成：为 ECDH 持平把约简交织进乘积各行。
 
 ## 4. 工程规范
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。

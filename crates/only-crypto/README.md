@@ -67,29 +67,39 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   scalar fields use 64-bit-limb Montgomery arithmetic (CIOS multiplication, squaring as a
   half-size product plus REDC) with masked final subtractions, generic over the limb count,
   constants derived at compile time. The P-256 base field has a dedicated reduction (`-p⁻¹ mod
-  2⁶⁴ = 1`, so each step costs one real multiplication) and inverts by an addition chain (255
-  squarings, 12 multiplications), the P-256 group order by a chain of 255 squarings and 40
-  multiplications; other inversions use 4-bit fixed windows over the public exponent `p - 2`.
-  Curve25519 uses radix 2⁵¹ with a dedicated squaring.
+  2⁶⁴ = 1`, so each step costs one real multiplication). The P-256 base field and group order
+  invert by safegcd (Bernstein–Yang divsteps in libsecp256k1's half-delta form, signed 62-bit
+  limbs: ten batches of 59 divsteps, the same for every input, conditions as masks); other
+  inversions use 4-bit fixed windows over the public exponent `p - 2`. Curve25519 uses radix 2⁵¹
+  with a dedicated squaring.
 - On x86_64 with BMI2 + ADX (detected at run time; off with `ONLY_CRYPTO_PORTABLE=1`) the P-256
   field and order arithmetic and the X25519 ladder's field run in inline assembly (`mulx`,
   `adcx`/`adox`, corrections by `cmov` and `sbb` masks, straight-line code). The P-256
-  operations run on a twin curve type that shares the Montgomery form and the base point tables.
-- On aarch64 (every ARMv8.0 CPU, nothing to detect; off with `ONLY_CRYPTO_PORTABLE=1`) the same
-  operations run in inline assembly with `MUL`/`UMULH` products, `ADDS`/`ADCS`/`SUBS`/`SBCS`
-  carry chains and `CSEL` corrections, on four 64-bit limbs for both curves (the reduction
-  modulo the P-256 prime uses shifts and subtractions only, as in OpenSSL's
-  `ecp_nistz256-armv8`). The design follows the instruction counts (a 4×64 product is 16 `MUL`
-  + 16 `UMULH` against 25 128-bit products in radix 2⁵¹); this path is tested but **not
-  benchmarked yet**, so no aarch64 numbers are claimed.
+  operations run on a twin curve type that shares the Montgomery form and the base point tables;
+  its Jacobian doubling (also `n` in a row), addition and mixed addition are whole-point `asm!`
+  blocks over a small stack frame (products, reductions and the modular additions fused, the
+  accumulator in registers), the safegcd divsteps are assembly too, and with AVX2 the table
+  scans use `vpcmpeqq` masks over 256-bit loads.
+- On aarch64 (every ARMv8.0 CPU, nothing to detect; off with `ONLY_CRYPTO_PORTABLE=1`) the P-256
+  field and order arithmetic and the X25519 ladder's field run in inline assembly with
+  `MUL`/`UMULH` products, `ADDS`/`ADCS`/`SUBS`/`SBCS` carry chains and `CSEL` corrections, on four
+  64-bit limbs for both curves (the reduction modulo the P-256 prime uses shifts and subtractions
+  only, as in OpenSSL's `ecp_nistz256-armv8`); inversions are safegcd with portable divsteps, and
+  the point formulas, table scans and 4-bit comb are the portable ones over that field. The design
+  follows the instruction counts (a 4×64 product is 16 `MUL` + 16 `UMULH` against 25 128-bit
+  products in radix 2⁵¹); this path is tested but **not benchmarked yet**, so no aarch64 numbers
+  are claimed.
 - Secret scalar multiplication on P-256 / P-384 uses Jacobian coordinates (`a = -3`: doubling
   4M + 4S, addition 11M + 5S, mixed addition 7M + 4S). Variable base (ECDH): Booth-recoded signed
   5-bit windows (digits in `[-16, 16]`) over `1·P … 16·P`, every lookup reading all 16 entries,
   the negation a masked select. Fixed base: `k` recoded into signed 4-bit digits (masked
   arithmetic), one affine comb entry `|d|·16ⁱ·G` per digit, each lookup reading all 8 entries of
-  the row. The Jacobian formulas are incomplete: an accumulator still at the identity and a zero
+  the row; on the P-256 twin with AVX2, Booth-recoded signed 6-bit digits over a wider comb (43
+  rows of 32 affine points `|d|·2⁶ⁱ·G`, 88 KiB built on first use), 43 mixed additions and every
+  row read in full. The Jacobian formulas are incomplete: an accumulator still at the identity and a zero
   digit are masked selects, and equal operands cannot occur for scalars in `[1, n)` (the proofs
-  are in `ec/mod.rs`; they need `n mod 32 ≥ 17`, which a test checks). Decoding, validation and
+  are in `ec/mod.rs` and, for the wide comb, `ec/hw.rs`; they need `n mod 32 ≥ 17`, which a test
+  checks). Decoding, validation and
   table construction keep the complete formulas (Renes–Costello–Batina).
 - Ed25519 `[k]B` adds one affine Niels entry per signed 4-bit digit (complete unified addition,
   7M per digit). X25519 public keys are that `[k]B` mapped to `u = (1 + y)/(1 - y)`; the shared
@@ -107,18 +117,20 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   (probability ~2⁻³²), `SecretKey::generate`'s rejection sampling, affine conversion branching
   on the identity (impossible for valid secret scalars).
 - Limits: masks go through `std::hint::black_box`, which discourages but does not forbid the
-  optimizer from reintroducing branches; without it LLVM does turn some masked modular
-  corrections into jumps, so the barrier stays even where it costs speed (the assembly needs no
-  barrier). The release x86_64 code (with the BMI2 + ADX assembly) and aarch64 code (with the
-  aarch64 assembly, and portable) of the secret-scalar paths was disassembled and every conditional branch listed (`src/ct.rs` has the
-  recipe): P-256 / P-384 `ecdh_x_impl`, `base_mul_impl`, `sign_impl` with the inlined window
-  and comb loops, the Jacobian doubling and additions, the field and order multiplication,
-  squaring and inversion chains, the Ed25519 base multiplication and both X25519 ladders. The
-  only branches are loop counters, public indices and bounds, the public exponent bits of the
-  inversion chains, CPU-feature and `OnceLock` checks, and the final "result is the identity"
-  test. No statistical test (dudect, ctgrind) has been run. Keys are not zeroized. The CPU
-  instructions used (AES, carry-less multiplication, SHA, CRC32, AVX2, `mulx`, `adcx`/`adox`,
-  `cmov`; on aarch64 `MUL`, `UMULH`, the flag-setting additions and `CSEL`) take constant time.
+  optimizer from reintroducing branches; without it LLVM does turn some masked modular corrections
+  into jumps, so the barrier stays even where it costs speed (the assembly needs no barrier). The
+  release x86_64 code (with the BMI2 + ADX assembly) and aarch64 code (with the aarch64 assembly,
+  and portable) of the secret-scalar paths was disassembled and every conditional branch listed
+  (`src/ct.rs` has the recipe): P-256 / P-384 `ecdh_x_impl`, `base_mul_impl`, `sign_impl` with the
+  inlined window and comb loops, the Jacobian doubling and additions (the whole-point assembly
+  included), the wide comb and the AVX2 scans, the field and order multiplication, squaring and
+  inversions (safegcd with both divsteps), the Ed25519 base multiplication and both X25519
+  ladders. The only branches are loop counters, public indices and bounds, the public exponent
+  bits of the remaining Fermat chains, CPU-feature and `OnceLock` checks, the length of the output
+  encoding, and the final "result is the identity" test. No statistical test (dudect, ctgrind) has
+  been run. Keys are not zeroized. The CPU instructions used (AES, carry-less multiplication, SHA,
+  CRC32, AVX2, `mulx`, `adcx`/`adox`, `cmov`; on aarch64 `MUL`, `UMULH`, the flag-setting
+  additions and `CSEL`) take constant time.
 
 ## Performance
 
@@ -153,9 +165,14 @@ The public-key rows and the handshakes are from the P-256 / X25519 pass (before 
 assembly for AES-GCM, P-256, X25519 and RSA. The AES-GCM and CRC rows compare with the
 previous VAES / VPCLMULQDQ-less code (`--example gcm-sizes` against ring, `--example bench`
 against crc32fast); on Zen 4 the 512-bit kernel beat the same kernel on 256-bit registers at every
-size. Follow-ups: a VAES + AVX2 kernel for CPUs without AVX-512, a SIMD Poly1305, whole point
-doublings in assembly (field elements kept in registers) and a wider P-256 comb, measuring the
-aarch64 assembly for P-256 and X25519 (tested, not benchmarked), Karatsuba for RSA.
+size. The whole-point P-256 pass (assembly doublings and additions, a 6-bit comb with AVX2
+scans, safegcd inversions) moved P-256 against ring, measured in the same run on a loaded host
+(docs/BENCHMARKS.md): sign 0.77× → 1.25×, key generation 0.94× → 1.33×, verify 0.98× → 1.04×,
+ECDH 0.94× → 0.96×, secp256r1 handshakes 0.94× → 1.12× rustls; the P-256 rows of the table are
+from the pass before. Follow-ups: a VAES + AVX2 kernel for CPUs without AVX-512, a SIMD Poly1305,
+a P-256 reduction interleaved with the product rows (ECDH), measuring the aarch64 assembly for
+P-256 and X25519 (tested, not benchmarked) and aarch64 whole-point routines and divsteps,
+Karatsuba for RSA.
 
 ## Testing
 
@@ -174,13 +191,17 @@ aarch64 assembly for P-256 and X25519 (tested, not benchmarked), Karatsuba for R
   and two-block Poly1305 against one block at a time, `ec::hw`, `ec::hw_aarch64`,
   `curve25519::hw` and `curve25519::hw_aarch64` `matches_portable` for every field routine and
   the X25519 ladder on random and edge values, `chains_match_portable` on long chains of
-  dependent operations,
-  `twin_matches_portable` for P-256 key generation, ECDH, signing and verification), and the
+  dependent operations (aarch64),
+  `ec::hw` `points_match_portable` for the whole-point doubling, addition and mixed addition
+  against the portable formulas, limb for limb, on random points with random `Z`, every valid
+  Wycheproof ECDH point, `P + P`, `P + (-P)` and the identity, `safegcd` `matches_fermat` for
+  both P-256 moduli, `twin_matches_portable` for P-256 key generation, ECDH, signing and
+  verification), and the
   whole suite also runs with `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.
 - The Jacobian scalar multiplications are checked against the complete-formula references
   (`mul_ref`, `mul_base_ref`) on random scalars and on edge scalars (the ends of `[1, n)`,
-  `n - 2|d|` for every Booth digit, carries into the comb's top row), for P-256, P-384 and the
-  P-256 twin; X25519 public keys from the Edwards table against the ladder on `u = 9`.
+  `n - 2|d|` for every Booth digit, carries into the comb's top row, every top digit of the wide
+  comb), for P-256, P-384 and the P-256 twin (with its whole-point assembly and wide comb); X25519 public keys from the Edwards table against the ladder on `u = 9`.
 - `cargo run --release -p only-crypto --example bench` compares throughput with the replaced
   crates.
 - Public key (`tests/pk_kat.rs`): Wycheproof X25519, Ed25519, ECDSA P-256/SHA-256 (DER and

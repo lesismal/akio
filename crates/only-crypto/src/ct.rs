@@ -9,33 +9,41 @@
 //! on the formulation, P-256), although it costs a round trip through memory per mask.
 //!
 //! The inline assembly of `ec::hw` and `curve25519::hw` (P-256 and Curve25519 arithmetic on
-//! x86_64 with BMI2 + ADX) and of `ec::hw_aarch64` and `curve25519::hw_aarch64` (the same on
+//! x86_64 with BMI2 + ADX: field routines, whole Jacobian doublings and additions, the safegcd
+//! divsteps) and of `ec::hw_aarch64` and `curve25519::hw_aarch64` (the field routines on
 //! aarch64) does not need the barrier: the compiler cannot rewrite it, and its corrections are
-//! `cmov` or `sbb` masks (x86_64), `CSEL` on the carry flag or an `SBC` mask (aarch64). None of
-//! the templates contains a branch instruction. The Rust code around it (Jacobian formulas, table
-//! scans, the ladder's swaps, digit recoding) still uses the masks here.
+//! `cmov`, `sbb` or `sar`/`neg` masks (x86_64), `CSEL` on the carry flag or an `SBC` mask
+//! (aarch64); none of the templates contains a branch instruction. The AVX2 table scans of
+//! `ec::hw` select with `vpcmpeqq` masks. The Rust code around them (the masked selects of the
+//! scalar multiplications, the ladder's swaps, digit recoding, the portable safegcd) still uses
+//! the masks here.
 //!
 //! How this is checked: `objdump -d` of a release build (`--example pk_bench`), listing every
 //! conditional branch in the secret-scalar paths: `Jac::{double, add_core, madd_ct}` and the
-//! inlined `mul_ct`/`mul_base_ct`/`lookup`/`booth5` inside `ecdh_x_impl`/`base_mul_impl`
-//! (portable `P256`/`P384` and the `P256X` twin), the field multiplication, squaring and
-//! inversion chains (`p256_inv`, `p256n_inv`, `Fe::invert`), `Point::mul_base` / `add_niels` /
-//! `Completed::to_point` (edwards25519) and `x25519` (both ladders inlined). On x86_64 (with
-//! the assembly) and aarch64 (with the aarch64 assembly: the `P256A` twin's functions,
-//! `p256_inv::<P256Pa>`, `curve25519::hw_aarch64::ladder`; and portable) the only conditional
-//! branches there are loop counters,
-//! public bounds and indices (window positions, table rows), the public exponent bits of the
-//! inversion chains, the CPU-feature checks, `OnceLock` initialization, and the final
-//! "result is the identity" test, which a valid secret scalar never reaches.
+//! inlined `mul_ct`/`mul_base_ct`/`lookup`/`booth`/`booth5` inside `ecdh_x_impl`/`base_mul_impl`
+//! (portable `P256`/`P384`, the `P256X` twin with its whole-point assembly, the `P256A` aarch64
+//! twin), `ec::hw::mul_base` (the wide comb), `ec::hw::lookup_jac_avx2` / `lookup_affine_avx2`,
+//! the field multiplication, squaring and inversion (`Fe::invert`, `P256P`/`P256N::mont_inv`,
+//! `safegcd::inv_with` and both `divsteps_59`), `Point::mul_base` / `add_niels` /
+//! `Completed::to_point` (edwards25519) and `x25519` (both ladders inlined). On x86_64 (with the
+//! assembly) and aarch64 (with the aarch64 assembly, and portable) the only conditional branches
+//! there are loop counters, public bounds and indices (window positions, limb and bit offsets of
+//! a digit, table rows), the public exponent bits of the remaining Fermat chains (P-384,
+//! Ed25519), the CPU-feature checks, `OnceLock` initialization, the length of the output
+//! encoding, and the final "result is the identity" test, which a valid secret scalar never
+//! reaches. Last checked on Zen 4 for the whole-point / safegcd pass: no conditional branch at
+//! all in the point routines, the table scans, `divsteps_59` (assembly: one, the loop counter)
+//! and `Fe::invert`.
 //!
-//! The aarch64 assembly paths, as listed on macOS (Apple silicon, `objdump -d` of the release
-//! `pk_bench`): `curve25519::hw_aarch64::ladder` has 4 conditional branches (the 255-step ladder
-//! counter, three `sqn` loop counters of the inversion chain), `x25519` 5 (the CPU-feature and
-//! portable-switch checks, the portable ladder's counter), `p256_inv::<P256Pa>` 1 (a squaring
-//! loop counter), `Jac::<P256A>::{double, madd_ct, add_core}` none, `Jac::<P256A>::mul_base_ct`
-//! 4 (`OnceLock` state, the digit loop, a table bound), `ecdh_x_impl::<P256A>` 14 (building the
-//! 16-entry table, the 52 windows and their public bit positions, the full table scan, the
-//! identity test, the byte loop of the public-length output).
+//! The aarch64 assembly paths, as listed on macOS (Apple silicon, release `pk_bench`):
+//! `x25519` (both ladders inlined) has 9 conditional branches: the CPU-feature and
+//! portable-switch checks, the two ladder counters, the three `sqn` loop counters of the
+//! aarch64 inversion chain and the portable one's counter; `Curve::<P256A>::{jac_double,
+//! jac_add_core, jac_madd_core}` none; `Jac::<P256A>::mul_base_ct` 4 (`OnceLock` state, the digit
+//! loop, a table bound); `Fe::<P256Pa>::invert` none, `safegcd::inv_with` 2 (the 59-step and the
+//! 10-batch counters); `ecdh_x_impl::<P256A>` 15 (building the 16-entry table, the 52 windows,
+//! their public bit positions, the five doublings, the full table scan, the identity test, the
+//! byte loop of the public-length output).
 
 use std::hint::black_box;
 
