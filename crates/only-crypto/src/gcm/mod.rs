@@ -1,5 +1,10 @@
 //! AES-GCM (NIST SP 800-38D) with 96-bit nonces and 128-bit tags.
 //!
+//! On x86_64 with VAES, VPCLMULQDQ and AVX-512 (detected at run time) the CTR keystream and
+//! GHASH run in one pass over 512-bit vectors, sixteen blocks per loop iteration and per GHASH
+//! reduction (`hw::vaes`); the rest of a message (under 256 bytes) and other CPUs use the
+//! 128-bit path below.
+//!
 //! GHASH multiplies in GF(2^128) on the CPU's carry-less multiplication (PCLMULQDQ on x86_64,
 //! PMULL on aarch64; detected at run time, eight blocks per reduction, see `hw`), else with
 //! BearSSL's constant-time `ctmul64` method (Thomas Pornin, MIT): carry-less 64x64
@@ -36,7 +41,8 @@ const MAX_LEN: u64 = ((1 << 32) - 2) * 16;
 pub struct AesGcm {
     aes: Aes,
     h: (u64, u64),
-    /// `H¹ … H⁸` for the carry-less multiplication instructions, when the CPU has them.
+    /// `H¹ … H⁸` (and `H¹ … H¹⁶` for the wide kernel) for the carry-less multiplication
+    /// instructions, when the CPU has them.
     powers: Option<hw::Powers>,
 }
 
@@ -65,8 +71,25 @@ impl AesGcm {
         AesGcm {
             aes,
             h,
-            powers: hw::Powers::new([h.0, h.1]),
+            powers: hw::Powers::new([h.0, h.1], true),
         }
+    }
+
+    /// The same key on the 128-bit carry-less multiplication and AES paths even when the CPU
+    /// has VAES and AVX-512 (the wide kernel), for tests and benchmarks.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_cipher_narrow(aes: Aes) -> AesGcm {
+        let mut g = Self::with_cipher(aes);
+        g.powers = hw::Powers::new([g.h.0, g.h.1], false);
+        g
+    }
+
+    /// Whether AES-GCM runs on the wide VAES / VPCLMULQDQ / AVX-512 kernel (x86_64).
+    #[doc(hidden)]
+    #[must_use]
+    pub fn is_wide(&self) -> bool {
+        self.powers.as_ref().is_some_and(hw::Powers::is_wide)
     }
 
     /// The same key on the portable GHASH (and the AES path `aes` already has), for tests and
@@ -127,37 +150,175 @@ impl AesGcm {
     ) -> [u8; TAG_LEN] {
         assert!(buf.len() as u64 <= MAX_LEN, "AES-GCM: plaintext too long");
         let j0 = j0(nonce);
-        if let Some(t) = self.fused(&j0, aad, buf, false) {
+        if let Some(t) = self.fused(&j0, aad, None, buf, false) {
             return t;
         }
         self.aes.apply_ctr32(&inc32(j0), buf);
         self.tag(&j0, aad, buf)
     }
 
+    /// Encrypts `src` followed by `dst[src.len()..]` (plaintext already in place) into `dst` and
+    /// returns the tag: [`encrypt_in_place_detached`](Self::encrypt_in_place_detached) of that
+    /// plaintext without copying `src` into `dst` first (the wide kernel reads `src` and writes
+    /// `dst` in the same pass). For the TLS record layer.
+    ///
+    /// # Panics
+    ///
+    /// If `src` is longer than `dst`, or `dst` longer than GCM allows.
+    #[doc(hidden)]
+    pub fn encrypt_detached_from(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        dst: &mut [u8],
+    ) -> [u8; TAG_LEN] {
+        assert!(src.len() <= dst.len(), "AES-GCM: output too short");
+        assert!(dst.len() as u64 <= MAX_LEN, "AES-GCM: plaintext too long");
+        let j0 = j0(nonce);
+        if let Some(t) = self.fused(&j0, aad, Some(src), dst, false) {
+            return t;
+        }
+        dst[..src.len()].copy_from_slice(src);
+        self.aes.apply_ctr32(&inc32(j0), dst);
+        self.tag(&j0, aad, dst)
+    }
+
+    /// Verifies `tag` over the ciphertext `src` and decrypts it into `dst` (of the same length)
+    /// without copying it into `dst` first. On failure `dst` is zeroed. For the TLS record layer.
+    ///
+    /// # Panics
+    ///
+    /// If `src` and `dst` differ in length.
+    #[doc(hidden)]
+    pub fn decrypt_detached_from(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        tag: &[u8],
+        dst: &mut [u8],
+    ) -> Result<(), Error> {
+        assert_eq!(src.len(), dst.len(), "AES-GCM: output length");
+        if tag.len() != TAG_LEN {
+            return Err(Error::InvalidLength);
+        }
+        if src.len() as u64 > MAX_LEN {
+            return Err(Error::Verification);
+        }
+        let j0 = j0(nonce);
+        if let Some(t) = self.fused(&j0, aad, Some(src), dst, true) {
+            if crate::ct_eq(&t, tag) {
+                return Ok(());
+            }
+            dst.fill(0);
+            return Err(Error::Verification);
+        }
+        if !crate::ct_eq(&self.tag(&j0, aad, src), tag) {
+            dst.fill(0);
+            return Err(Error::Verification);
+        }
+        dst.copy_from_slice(src);
+        self.aes.apply_ctr32(&inc32(j0), dst);
+        Ok(())
+    }
+
     /// Encryption (`open == false`) or decryption with the tag computed in the same pass, on AES
     /// and carry-less multiplication instructions; `None` (nothing done) without them. Returns
-    /// the tag (over the ciphertext either way).
-    fn fused(&self, j0: &[u8; 16], aad: &[u8], buf: &mut [u8], open: bool) -> Option<[u8; 16]> {
+    /// the tag (over the ciphertext either way). With `src`, the input is `src` followed by
+    /// `buf[src.len()..]` and the output goes to `buf` (see `hw::Powers::crypt`).
+    fn fused(
+        &self,
+        j0: &[u8; 16],
+        aad: &[u8],
+        src: Option<&[u8]>,
+        buf: &mut [u8],
+        open: bool,
+    ) -> Option<[u8; 16]> {
         let p = self.powers.as_ref()?;
         let rk = self.aes.hw_round_keys()?;
-        let mut g = Ghash::new(self.h, Some(p));
-        g.update_padded(aad);
+        let (aad_len, ct_len) = (aad.len(), buf.len());
+        let mut y = [0u64; 2];
+        // A short message hashes a short AAD together with its blocks (one GHASH call).
+        let joined = ct_len < 128 && aad_len <= SHORT_AAD;
+        if !joined {
+            let mut g = Ghash::new(self.h, Some(p));
+            g.update_padded(aad);
+            y = [g.y0, g.y1];
+        }
         let ctr = inc32(*j0);
-        let mut y = [g.y0, g.y1];
-        let done = p.crypt(rk, &ctr, &mut y, buf, open);
-        [g.y0, g.y1] = y;
-        let rest = &mut buf[done..];
+        let done = p.crypt(rk, &ctr, &mut y, src, buf, open);
         let mut c = ctr;
         let n = u32::from_be_bytes([c[12], c[13], c[14], c[15]]).wrapping_add((done / 16) as u32);
         c[12..].copy_from_slice(&n.to_be_bytes());
-        if open {
-            g.update_padded(rest);
-            self.aes.apply_ctr32(&c, rest);
-        } else {
-            self.aes.apply_ctr32(&c, rest);
-            g.update_padded(rest);
+        let aad = if joined { aad } else { &[] };
+        let tail = Tail {
+            j0,
+            ctr: c,
+            aad,
+            aad_len,
+            ct_len,
+            open,
+        };
+        Some(self.finish_short(p, y, &tail, &mut buf[done..]))
+    }
+
+    /// The last (fewer than 128) bytes `rest` of a fused seal or open, and the tag: the counter
+    /// blocks of `rest` and `J0` go through AES in one call, and `tail.aad` (when joined), the
+    /// ciphertext of `rest` and the length block are hashed in one call.
+    fn finish_short(
+        &self,
+        p: &hw::Powers,
+        mut y: [u64; 2],
+        tail: &Tail<'_>,
+        rest: &mut [u8],
+    ) -> [u8; 16] {
+        debug_assert!(rest.len() < 128 && tail.aad.len() <= SHORT_AAD);
+        let nb = rest.len().div_ceil(16);
+        let mut ctrs = [*tail.j0; 8];
+        let mut c = u32::from_be_bytes([tail.ctr[12], tail.ctr[13], tail.ctr[14], tail.ctr[15]]);
+        for b in ctrs.iter_mut().take(nb) {
+            b[..12].copy_from_slice(&tail.ctr[..12]);
+            b[12..].copy_from_slice(&c.to_be_bytes());
+            c = c.wrapping_add(1);
         }
-        Some(self.finish_tag(g, j0, aad.len(), buf.len()))
+        // `ks` is `rest` followed by zeros: after the XOR it holds the processed `rest` and,
+        // when `nb < 8`, `E(J0)` in block `nb`.
+        let mut ks = [0u8; 128];
+        ks[..rest.len()].copy_from_slice(rest);
+        let mut hb = [0u8; 16 * (SHORT_AAD / 16 + 9)];
+        hb[..tail.aad.len()].copy_from_slice(tail.aad);
+        let at = tail.aad.len().div_ceil(16) * 16;
+        if tail.open {
+            hb[at..at + rest.len()].copy_from_slice(rest);
+        }
+        if !self.aes.hw_xor8(&ctrs, &mut ks) {
+            unreachable!("the fused path runs only on hardware AES");
+        }
+        rest.copy_from_slice(&ks[..rest.len()]);
+        if !tail.open {
+            hb[at..at + rest.len()].copy_from_slice(rest);
+        }
+        let at = at + nb * 16;
+        hb[at..at + 8].copy_from_slice(&((tail.aad_len as u64) << 3).to_be_bytes());
+        hb[at + 8..at + 16].copy_from_slice(&((tail.ct_len as u64) << 3).to_be_bytes());
+        p.update(&mut y, &hb[..at + 16]);
+        let ek: [u8; 16] = if nb < 8 {
+            ks[nb * 16..nb * 16 + 16]
+                .try_into()
+                .unwrap_or_else(|_| unreachable!())
+        } else {
+            let mut e = *tail.j0;
+            self.aes.encrypt_block(&mut e);
+            e
+        };
+        let mut s = [0u8; 16];
+        s[..8].copy_from_slice(&y[1].to_be_bytes());
+        s[8..].copy_from_slice(&y[0].to_be_bytes());
+        for (s, k) in s.iter_mut().zip(ek) {
+            *s ^= k;
+        }
+        s
     }
 
     /// Verifies `tag` and decrypts `buf` in place. On failure ([`Error::Verification`], or
@@ -176,7 +337,7 @@ impl AesGcm {
             return Err(Error::Verification);
         }
         let j0 = j0(nonce);
-        if let Some(t) = self.fused(&j0, aad, buf, true) {
+        if let Some(t) = self.fused(&j0, aad, None, buf, true) {
             if crate::ct_eq(&t, tag) {
                 return Ok(());
             }
@@ -233,6 +394,22 @@ impl AesGcm {
         self.decrypt_in_place(nonce, aad, &mut v)?;
         Ok(v)
     }
+}
+
+/// The longest AAD hashed in the same GHASH call as a short message's blocks (TLS record
+/// headers, QUIC packet headers).
+const SHORT_AAD: usize = 64;
+
+/// What [`AesGcm::finish_short`] needs besides the data: `J0`, the counter block of the first
+/// remaining byte, the AAD when it is hashed with the tail (else empty), the AAD and ciphertext
+/// lengths and the direction.
+struct Tail<'a> {
+    j0: &'a [u8; 16],
+    ctr: [u8; 16],
+    aad: &'a [u8],
+    aad_len: usize,
+    ct_len: usize,
+    open: bool,
 }
 
 fn j0(nonce: &[u8; NONCE_LEN]) -> [u8; 16] {
@@ -524,6 +701,179 @@ mod tests {
             "hardware GHASH: {}",
             AesGcm::new(&[0; 16]).unwrap().is_hardware()
         );
+    }
+
+    /// Seals and opens `len` bytes at offset `off` of a buffer (misaligned when `off > 0`) with
+    /// each key; all must agree with the first, and a bad tag must leave the ciphertext as it
+    /// was.
+    fn agree(keys: &[&AesGcm], len: usize, off: usize, rng: &mut crate::rand::ChaChaRng) {
+        let mut nonce = [0u8; 12];
+        rng.fill(&mut nonce);
+        let mut aad = vec![0u8; len % 41];
+        rng.fill(&mut aad);
+        let mut pt = vec![0u8; len];
+        rng.fill(&mut pt);
+        let mut first: Option<(Vec<u8>, [u8; 16])> = None;
+        for (i, k) in keys.iter().enumerate() {
+            let mut buf = vec![0u8; len + off];
+            buf[off..].copy_from_slice(&pt);
+            let tag = k.encrypt_in_place_detached(&nonce, &aad, &mut buf[off..]);
+            let ct = buf[off..].to_vec();
+            match &first {
+                None => first = Some((ct.clone(), tag)),
+                Some((c, t)) => {
+                    assert!(
+                        *c == ct,
+                        "ciphertext differs: key {i}, len {len}, off {off}"
+                    );
+                    assert_eq!(*t, tag, "tag differs: key {i}, len {len}, off {off}");
+                }
+            }
+            let mut bad = tag;
+            bad[15] ^= 0x40;
+            assert!(
+                k.decrypt_in_place_detached(&nonce, &aad, &mut buf[off..], &bad)
+                    .is_err()
+            );
+            assert!(buf[off..] == ct[..], "restored: key {i}, len {len}");
+            k.decrypt_in_place_detached(&nonce, &aad, &mut buf[off..], &tag)
+                .unwrap();
+            assert!(
+                buf[off..] == pt[..],
+                "opened: key {i}, len {len}, off {off}"
+            );
+
+            // Out of place: the first `split` bytes from a separate (misaligned) buffer, the
+            // rest already in the output; then decryption into a separate buffer.
+            let split = len - len / 3;
+            let mut src = vec![0u8; split + 1];
+            src[1..].copy_from_slice(&pt[..split]);
+            let mut dst = vec![0u8; len + off];
+            dst[off + split..].copy_from_slice(&pt[split..]);
+            let t2 = k.encrypt_detached_from(&nonce, &aad, &src[1..], &mut dst[off..]);
+            assert!(dst[off..] == ct[..], "from: key {i}, len {len}, off {off}");
+            assert_eq!(t2, tag, "from tag: key {i}, len {len}, off {off}");
+            let mut out = vec![0x77u8; len + 2];
+            assert!(
+                k.decrypt_detached_from(&nonce, &aad, &ct, &bad, &mut out[2..])
+                    .is_err()
+            );
+            assert!(
+                out[2..].iter().all(|b| *b == 0),
+                "zeroed: key {i}, len {len}"
+            );
+            k.decrypt_detached_from(&nonce, &aad, &ct, &tag, &mut out[2..])
+                .unwrap();
+            assert!(out[2..] == pt[..], "from opened: key {i}, len {len}");
+        }
+    }
+
+    /// The wide kernel (VAES + VPCLMULQDQ + AVX-512, when this CPU has it), the 128-bit hardware
+    /// path and the portable code agree at every length 0..=600, at large sizes around the
+    /// 256-byte groups, with misaligned buffers, for AES-128, AES-192 and AES-256.
+    #[test]
+    fn wide_narrow_portable_agree() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([5; 32]);
+        for klen in [16, 24, 32] {
+            let mut key = vec![0u8; klen];
+            rng.fill(&mut key);
+            let wide = AesGcm::new(&key).unwrap();
+            let narrow = AesGcm::with_cipher_narrow(Aes::new(&key).unwrap());
+            let sw = AesGcm::with_cipher_portable(Aes::new_portable(&key).unwrap());
+            assert!(!narrow.is_wide() && !sw.is_wide());
+            println!("AES-{} GCM wide kernel: {}", klen * 8, wide.is_wide());
+            for len in 0..=600 {
+                agree(&[&wide, &narrow, &sw], len, len % 5, &mut rng);
+            }
+            for len in [
+                767, 768, 769, 1023, 1024, 1025, 1400, 1500, 4096, 4111, 16383, 16384, 16385,
+                16401, 65536, 65791,
+            ] {
+                for off in [0, 3] {
+                    agree(&[&wide, &narrow, &sw], len, off, &mut rng);
+                }
+            }
+        }
+    }
+
+    /// Large messages against ring (an independent implementation, dev-dependency).
+    #[test]
+    fn matches_ring() {
+        use ring::aead::{AES_128_GCM, AES_256_GCM, Aad, LessSafeKey, Nonce, UnboundKey};
+        let mut rng = crate::rand::ChaChaRng::from_seed([6; 32]);
+        for (klen, alg) in [(16, &AES_128_GCM), (32, &AES_256_GCM)] {
+            let mut key = vec![0u8; klen];
+            rng.fill(&mut key);
+            let ours = AesGcm::new(&key).unwrap();
+            let theirs = LessSafeKey::new(UnboundKey::new(alg, &key).unwrap());
+            for len in [
+                0,
+                1,
+                255,
+                256,
+                257,
+                511,
+                1024,
+                1400,
+                4097,
+                16384,
+                16385,
+                65536 + 300,
+            ] {
+                let mut nonce = [0u8; 12];
+                rng.fill(&mut nonce);
+                let mut aad = vec![0u8; len % 23];
+                rng.fill(&mut aad);
+                let mut a = vec![0u8; len];
+                rng.fill(&mut a);
+                let mut b = a.clone();
+                let ta = ours.encrypt_in_place_detached(&nonce, &aad, &mut a);
+                let tb = theirs
+                    .seal_in_place_separate_tag(
+                        Nonce::assume_unique_for_key(nonce),
+                        Aad::from(&aad),
+                        &mut b,
+                    )
+                    .unwrap();
+                assert!(a == b, "ciphertext, len {len}");
+                assert_eq!(ta[..], tb.as_ref()[..], "tag, len {len}");
+            }
+        }
+    }
+
+    /// The fused kernels directly, with the 32-bit counter wrapping inside a group: the wide
+    /// kernel against the 128-bit one and plain CTR.
+    #[test]
+    fn counter_wraps() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([7; 32]);
+        for klen in [16, 24, 32] {
+            let mut key = vec![0u8; klen];
+            rng.fill(&mut key);
+            let g = AesGcm::new(&key).unwrap();
+            let (Some(p), Some(rk)) = (g.powers.as_ref(), g.aes.hw_round_keys()) else {
+                return;
+            };
+            let narrow = hw::Powers::new([g.h.0, g.h.1], false).unwrap();
+            for start in [0xffff_fff0u32, 0xffff_ffff, 0xffff_ff00, 7] {
+                let mut ctr = [0x3cu8; 16];
+                ctr[12..].copy_from_slice(&start.to_be_bytes());
+                let mut data = vec![0u8; 1024 + 256 + 128 + 48];
+                rng.fill(&mut data);
+                for open in [false, true] {
+                    let (mut d1, mut d2) = (data.clone(), data.clone());
+                    let (mut y1, mut y2) = ([1u64, 2], [1u64, 2]);
+                    let n1 = p.crypt(rk, &ctr, &mut y1, None, &mut d1, open);
+                    let n2 = narrow.crypt(rk, &ctr, &mut y2, None, &mut d2, open);
+                    assert_eq!((n1, n2), (1024 + 256 + 128, 1024 + 256 + 128));
+                    assert!(d1 == d2);
+                    assert_eq!(y1, y2);
+                    let mut d3 = data.clone();
+                    g.aes.apply_ctr32(&ctr, &mut d3[..n1]);
+                    assert!(d1[..n1] == d3[..n1]);
+                    assert!(d1[n1..] == data[n1..]);
+                }
+            }
+        }
     }
 
     #[test]

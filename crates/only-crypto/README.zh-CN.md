@@ -3,15 +3,15 @@
 [English](README.md)
 
 [`only`](https://github.com/lesismal/only) 各 crate 使用的无依赖密码学原语，Rust 实现
-（`#![deny(unsafe_code)]`，只依赖 `std`；例外是五个驱动 CPU 指令的小模块，运行时检测 CPU 特性；操作系统随机数
+（`#![deny(unsafe_code)]`，只依赖 `std`；例外是六个驱动 CPU 指令的小模块，运行时检测 CPU 特性；操作系统随机数
 的系统调用放在 `only-sys` 中）。
 
 | 硬件路径（运行时检测，常数时间的可移植回退实现） | x86_64 | aarch64 |
 |---|---|---|
 | AES 分组密码、CTR（同时处理 8 个分组） | AES-NI | ARMv8 AES |
-| AES-GCM（GHASH 与 CTR 融合，每次归约 8 个分组） | PCLMULQDQ + AES-NI | PMULL + ARMv8 AES |
+| AES-GCM（GHASH 与 CTR 融合） | VAES + VPCLMULQDQ + AVX-512（每次归约 16 个分组），否则 PCLMULQDQ + AES-NI（8 个） | PMULL + ARMv8 AES |
 | SHA-1、SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
-| CRC-32、CRC-32C | PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
+| CRC-32、CRC-32C | VPCLMULQDQ + AVX-512 或 PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 | AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
 
 设置 `ONLY_CRYPTO_PORTABLE=1`（只读取一次）可强制全部使用可移植实现；测试会在设置与不设置时各跑一遍全部已知
@@ -24,7 +24,7 @@
 | `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018） |
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR |
-| `gcm` | AES-GCM：PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，否则使用常数时间 GHASH（BearSSL `ctmul64`） |
+| `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时单趟 512 位处理（每次迭代与每次归约 16 个分组），否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`） |
 | `chacha` | ChaCha20（AVX2 下一次 8 个分组，否则 4 分组并行）、Poly1305（44 位 limb，每步两个分组）、ChaCha20-Poly1305（RFC 8439） |
 | `base64` | 标准 / URL 安全字母表，带或不带填充，严格解码 |
 | `rand` | `fill_random`（getrandom / getentropy / `/dev/urandom`）、`ChaChaRng` |
@@ -53,7 +53,7 @@ assert_eq!(gcm.decrypt(&[0u8; 12], b"aad", &sealed).unwrap(), b"plaintext");
 ```
 
 这是一个实现用的 crate：它的 API 跟随其他 `only` crate 的需要，可能在任何发布中变化（内部层级，见
-docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥，不含汇编；SHA-512、MD5、Poly1305 与公钥运算是可移植的 Rust 代码）。
+docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥；只有宽 AES-GCM 内核与 CRC 折叠使用汇编，因为其 VAES / VPCLMULQDQ / AVX-512 intrinsic 比 MSRV 新；SHA-512、MD5、Poly1305 与公钥运算是可移植的 Rust 代码）。
 公钥部分是 DEV-PLAN 第 C、D 波计划中自研 TLS/DTLS/QUIC 协议栈的基础；证书相关功能在
 [`only-x509`](../only-x509) 中。
 
@@ -89,8 +89,10 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 |---|---:|---:|---:|
 | SHA-1，16 KiB（MB/s） | 697 | 2 543 | sha1 的 1.00 倍 |
 | SHA-256，16 KiB | 366 | 2 383 | sha2 的 1.00 倍 |
-| CRC-32，16 KiB | 2 733 | 20 047 | crc32fast 的 0.27 倍 |
-| AES-128-GCM 加密，16 KiB | 364 | 6 484 | aes-gcm 的 2.98 倍 |
+| CRC-32，16 KiB | 19 992 | 74 885 | crc32fast 的 1.02 倍 |
+| AES-128-GCM 加密，16 KiB | 6 455 | 15 048 | ring 的 1.19 倍 |
+| AES-128-GCM 加密，1400 B | 4 249 | 8 163 | ring 的 1.11 倍 |
+| AES-128-GCM 加密，64 B | 611 | 1 185 | ring 的 1.10 倍 |
 | ChaCha20-Poly1305 加密，16 KiB | 588 | 1 757 | chacha20poly1305 的 0.89 倍 |
 | Ed25519 验签（次/秒） | 18 289 | 27 161 | ring 的 0.85 倍 |
 | X25519 协商 | 28 865 | 30 945 | ring 的 0.84 倍 |
@@ -101,7 +103,9 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 | RSA-2048 PKCS#1 签名 | 871 | 1 199 | ring 的 0.49 倍 |
 | RSA-2048 PKCS#1 验签 | 29 019 | 39 557 | ring 的 0.60 倍 |
 
-ring 的 AES-GCM、P-256、X25519 与 RSA 使用汇编。后续：VAES / VPCLMULQDQ 内核（比 MSRV 新）、SIMD
+ring 的 AES-GCM、P-256、X25519 与 RSA 使用汇编。AES-GCM 与 CRC 行对比的是此前没有 VAES / VPCLMULQDQ
+的代码（`--example gcm-sizes` 对比 ring，`--example bench` 对比 crc32fast）；在 Zen 4 上，512 位内核在所有
+长度上都快于同一内核的 256 位寄存器版本。后续：给没有 AVX-512 的 CPU 的 VAES + AVX2 内核、SIMD
 Poly1305、更便宜的 P-256 秘密标量倍点、RSA 的 Karatsuba。
 
 ## 测试
@@ -110,7 +114,11 @@ Poly1305、更便宜的 P-256 秘密标量倍点、RSA 的 Karatsuba。
   规范、RFC 1321、2202、4231、5869、6070、3720、4648、8439，以及 Wycheproof（AES-GCM、
   ChaCha20-Poly1305、HMAC-SHA1/SHA256、HKDF-SHA256），数据放在 `tests/data/`。
 - `tests/compat.rs` 把每个原语与被替代的 crate 交叉比对（仅作为 dev-dependency）；`fuzz/` 中有差分
-  模糊测试目标 `crypto_hash`、`crypto_aead`（也比较硬件与可移植的 AES-GCM）、`crypto_base64`。
+  模糊测试目标 `crypto_hash`、`crypto_aead`（也让宽内核、128 位与可移植三条 AES-GCM 路径原地与非原地
+  互相比较）、`crypto_base64`。
+- 宽 AES-GCM 内核（`gcm::tests`）：0..=600 的每个长度与若干大长度上与 128 位路径和可移植实现比较，
+  覆盖未对齐、原地与非原地、组内 32 位计数器回绕，大消息还与 ring 比较；它只在具备 VAES 与 AVX-512
+  的 CPU 上运行，因此这些测试要在这样的机器（Zen 4）上原生运行。
 - 硬件路径：单元测试把每条硬件路径与可移植实现比较（AES、CTR、GCM、SHA-1、SHA-256 的
   `hardware_matches_portable`，CRC 的 `hardware_matches_table`，多分组 ChaCha20 与两分组 Poly1305 对比逐分组
   计算），整个测试套件还会在 x86_64 与 aarch64 上设置 `ONLY_CRYPTO_PORTABLE=1` 再跑一遍。

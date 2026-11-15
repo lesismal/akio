@@ -151,12 +151,12 @@ rustls 0.23 + ring 是开发依赖。
 |---|---:|---:|---:|
 | 完整握手/秒，X25519 | 3,041 | 5,015 | 0.61 |
 | 完整握手/秒，secp256r1 | 2,300 | 5,126 | 0.45 |
-| 加密 + 解密 1 KiB，AES-128-GCM（MB/s） | 1,556 | 1,782 | 0.87 |
-| 加密 + 解密 16 KiB，AES-128-GCM | 2,790 | 4,090 | 0.68 |
-| 加密 + 解密 64 KiB，AES-128-GCM | 2,784 | ² | – |
-| 加密 + 解密 1 KiB，AES-256-GCM | 1,449 | 1,678 | 0.86 |
-| 加密 + 解密 16 KiB，AES-256-GCM | 2,371 | 3,821 | 0.62 |
-| 加密 + 解密 64 KiB，AES-256-GCM | 2,342 | ² | – |
+| 加密 + 解密 1 KiB，AES-128-GCM（MB/s） | 2,697 | 1,760 | 1.53 |
+| 加密 + 解密 16 KiB，AES-128-GCM | 6,603 | 3,994 | 1.65 |
+| 加密 + 解密 64 KiB，AES-128-GCM | 6,734 | ² | – |
+| 加密 + 解密 1 KiB，AES-256-GCM | 2,514 | 1,700 | 1.48 |
+| 加密 + 解密 16 KiB，AES-256-GCM | 5,873 | 3,795 | 1.55 |
+| 加密 + 解密 64 KiB，AES-256-GCM | 5,858 | ² | – |
 | 加密 + 解密 1 KiB，ChaCha20-Poly1305 | 598 | 905 | 0.66 |
 | 加密 + 解密 16 KiB，ChaCha20-Poly1305 | 843 | 1,500 | 0.56 |
 | 加密 + 解密 64 KiB，ChaCha20-Poly1305 | 839 | 1,167 | 0.72 |
@@ -164,12 +164,16 @@ rustls 0.23 + ring 是开发依赖。
 ² rustls 在 64 KiB 时每次运行在约 2,200 到约 3,900 MB/s 之间摆动（其接收端最多接收 16 KiB 明文就必须
 被读出），所以不给比值。
 
-握手的剖析中超过 98% 是曲线运算和哈希（P-256、X25519 对比 ring 的汇编）；记录的差距在 AES-GCM 与
-ChaCha20-Poly1305 内核本身（ring 用 VAES/AVX2 和 SIMD Poly1305）。
+握手的剖析中超过 98% 是曲线运算和哈希（P-256、X25519 对比 ring 的汇编）。AES-GCM 记录运行在
+VAES + VPCLMULQDQ + AVX-512 内核上，并且非原地加解密（AEAD 直接读取调用方的明文或收到的记录，只写一次
+输出；之前先复制一遍，占 16 KiB 剖析的 30%）：16–64 KiB 是上一版本的 2.4 倍（AES-128 16 KiB
+2,739 → 6,603 MB/s，相对 rustls + ring 0.69 倍 → 1.65 倍）。ChaCha20-Poly1305 剩下的差距是标量
+Poly1305（ring 有 SIMD 版本）。
 
 ### 密码学（`only-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
-运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2。对比列是被 `only-crypto`
+运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +
+AVX-512（AES-GCM 从 256 字节起，CRC 折叠从 512 字节起）。对比列是被 `only-crypto`
 替换的 RustCrypto crate（同样运行时检测 CPU；CRC-32 用 crc32fast），公钥运算对比 ring 0.17。
 
 | 运算（MB/s） | 大小 | only-crypto | RustCrypto | 比值 |
@@ -179,16 +183,16 @@ ChaCha20-Poly1305 内核本身（ring 用 VAES/AVX2 和 SIMD Poly1305）。
 | SHA-256 | 16 KiB | 2,365 | 2,371 | 1.00 |
 | SHA-256 | 1400 B | 2,189 | 2,221 | 0.99 |
 | HMAC-SHA1（STUN 消息） | 100 B | 583 | 624 | 0.94 |
-| CRC-32 | 1400 B | 18,524 | crc32fast 30,448 | 0.61 |
-| CRC-32 | 16 KiB | 20,019 | crc32fast 73,524 | 0.27 |
-| CRC-32C | 1400 B | 18,828 | – | – |
+| CRC-32 | 1400 B | 35,164 | crc32fast 30,400 | 1.16 |
+| CRC-32 | 16 KiB | 74,885 | crc32fast 73,153 | 1.02 |
+| CRC-32C | 1400 B | 40,383 | – | – |
 | AES-128 单块（CFB 链，KCP） | 16 B | 3,197 | 3,486 | 0.92 |
 | AES-128-CTR | 1400 B | 7,716 | 8,493 | 0.91 |
 | AES-128-CTR | 16 KiB | 8,393 | 11,546 | 0.73 |
-| AES-128-GCM 加密 | 1400 B | 4,421 | aes-gcm 1,955 | 2.26 |
-| AES-128-GCM 加密 | 16 KiB | 6,533 | aes-gcm 2,178 | 3.00 |
-| AES-128-GCM 解密 | 16 KiB | 5,643 | aes-gcm 2,109 | 2.67 |
-| AES-256-GCM 加密 | 16 KiB | 5,761 | aes-gcm 2,014 | 2.86 |
+| AES-128-GCM 加密 | 1400 B | 8,644 | aes-gcm 1,944 | 4.45 |
+| AES-128-GCM 加密 | 16 KiB | 15,316 | aes-gcm 2,153 | 7.11 |
+| AES-128-GCM 解密 | 16 KiB | 13,262 | aes-gcm 2,083 | 6.37 |
+| AES-256-GCM 加密 | 16 KiB | 13,335 | aes-gcm 2,002 | 6.66 |
 | ChaCha20-Poly1305 加密 | 1400 B | 1,083 | 778 | 1.39 |
 | ChaCha20-Poly1305 加密 | 16 KiB | 1,755 | 1,969 | 0.89 |
 | SHA-512（可移植实现） | 16 KiB | 540 | 823 | 0.66 |
@@ -212,9 +216,49 @@ ChaCha20-Poly1305 内核本身（ring 用 VAES/AVX2 和 SIMD Poly1305）。
 | RSA-2048 PKCS#1 签名 | 1,192 | 2,429 | 0.49 |
 | RSA-2048 PKCS#1 验签 | 39,275 | 65,868 | 0.60 |
 
-剩下的差距：16 KiB 的 AES-GCM 与 CRC-32 落后于使用 256/512 位 VAES 和 VPCLMULQDQ 的代码（这些 intrinsic
-比 MSRV 1.85 新）；Poly1305 是标量实现；P-256 对秘密标量的倍点仍用完备公式；RSA 没有 Karatsuba；
-SHA-512 与 MD5 是可移植实现。
+#### 按消息长度的 AES-GCM（`--example gcm-sizes`，CPU 2）
+
+消息字节的 MB/s，AAD 13 字节，三轮交替运行取中位数；优化前 = `main` 的 `a1cc9b49`（AES-NI +
+PCLMULQDQ，每次归约 8 个分组），优化后 = VAES + VPCLMULQDQ + AVX-512 内核（每次循环与每次归约 16 个分组，
+AES 轮函数与上一组的 GHASH 交织）加上融合的短尾部。解密前两边都先把密文复制进工作缓冲区。ring 0.17 在
+这颗 CPU 上运行其 VAES/AVX2 内核。
+
+| AES-128-GCM | 优化前 | 优化后 | ring | 优化后 / ring |
+|---|---:|---:|---:|---:|
+| 加密 64 B | 611 | 1,185 | 1,073 | 1.10 |
+| 加密 1 KiB | 4,539 | 7,623 | 7,809 | 0.98 |
+| 加密 1400 B | 4,249 | 8,163 | 7,377 | 1.11 |
+| 加密 16 KiB | 6,455 | 15,048 | 12,689 | 1.19 |
+| 加密 64 KiB | 6,540 | 15,862 | 12,845 | 1.23 |
+| 解密 64 B | 532 | 1,120 | 928 | 1.21 |
+| 解密 1 KiB | 4,034 | 7,178 | 7,053 | 1.02 |
+| 解密 1400 B | 3,978 | 7,539 | 7,133 | 1.06 |
+| 解密 16 KiB | 5,671 | 13,296 | 11,035 | 1.20 |
+| 解密 64 KiB | 5,515 | 12,792 | 11,230 | 1.14 |
+
+| AES-256-GCM | 优化前 | 优化后 | ring | 优化后 / ring |
+|---|---:|---:|---:|---:|
+| 加密 64 B | 595 | 1,137 | 1,076 | 1.06 |
+| 加密 1 KiB | 4,135 | 6,932 | 7,240 | 0.96 |
+| 加密 1400 B | 4,008 | 7,055 | 6,599 | 1.07 |
+| 加密 16 KiB | 5,737 | 13,142 | 11,370 | 1.16 |
+| 加密 64 KiB | 5,858 | 13,819 | 11,623 | 1.19 |
+| 解密 64 B | 575 | 1,059 | 926 | 1.14 |
+| 解密 1 KiB | 3,416 | 6,596 | 6,591 | 1.00 |
+| 解密 1400 B | 3,320 | 6,533 | 6,642 | 0.98 |
+| 解密 16 KiB | 4,552 | 11,607 | 10,131 | 1.15 |
+| 解密 64 KiB | 4,555 | 11,632 | 10,452 | 1.11 |
+
+位宽：在 Zen 4 上（512 位操作拆成两个 256 位半部执行），同一内核改用 256 位寄存器（每次迭代 8 个分组）在
+所有长度上都更慢，因此只保留 512 位内核：AES-128 加密 16 KiB 15,100 对 13,100 MB/s，1 KiB 7,600 对
+6,800，解密 16 KiB 13,150 对 11,775。短消息的提升来自尾部而不是位宽：消息的最后几个字节与 `J0` 一次
+通过 AES，短 AAD、尾部密文与长度块一次通过 GHASH（之前是三次 GHASH 调用加一趟单独的 CTR），这让所有
+具备 AES 与无进位乘法指令的 CPU 上 64 字节消息的速度翻倍。
+
+剩下的差距：1 KiB 到 1.4 KiB 的 AES-GCM 消息为 ring 的 0.96–1.11 倍（宽内核的固定开销；最后一个 256 字节
+组之后的尾部走 128 位路径）；有 VAES 但没有 AVX-512 的 CPU（Zen 3、Alder Lake）使用 128 位路径；TLS
+记录层在 AEAD 写入之前仍先把输出清零（约占 16 KiB 记录的 9%）；Poly1305 是标量实现；P-256 对秘密标量的
+倍点仍用完备公式；RSA 没有 Karatsuba；SHA-512 与 MD5 是可移植实现。
 
 ### Deflate（`only-deflate`，`--example bench` 与 `--example pmd_echo`，CPU 2）
 
@@ -321,6 +365,11 @@ UDP 一行在各次运行间相差 2.5 倍（每次只有一个交换，测的�
 - **密码学 CPU 加速**（本机，`354f3bc5` → 优化后）：AES-128-GCM 16 KiB 364 → 6,484 MB/s（17.8 倍），
   SHA-256 6.5 倍，SHA-1 3.6 倍，CRC-32 7.3 倍，ChaCha20-Poly1305 3 倍；P-256 签名 1.46 倍、验签 1.67 倍，
   Ed25519 验签 1.49 倍，RSA-2048 1.36–1.38 倍。TLS 记录快 9–15 倍，握手快 1.4–1.5 倍。
+- **宽 AES-GCM 与 CRC**（本机，`a1cc9b49` → 优化后）：AES-GCM 改用 VAES + VPCLMULQDQ + AVX-512
+  （512 位，经测量优于 256 位），16–64 KiB 快 2.3–2.5 倍（AES-128 加密 16 KiB 6,455 → 15,048 MB/s，
+  相对 ring 0.51 倍 → 1.19 倍），融合尾部让 64 B 快 1.8–2.1 倍；TLS 1.3 记录非原地加解密，16 KiB 快
+  2.4 倍（相对 rustls + ring 0.69 倍 → 1.65 倍）；CRC-32 在 512 位寄存器上折叠，16 KiB 19,992 →
+  74,885 MB/s（相对 crc32fast 0.27 倍 → 1.02 倍）。
 - **QUIC 与 TLS 热路径**（本机）：节拍器把 RTT 下限定为 1 ms 并为每个包唤醒发送方；改用测得的 RTT 并按
   突发量补充（与 quinn-proto 相同）后，批量传输 3.4–3.7 → 5.7 Gbit/s（quinn-proto 的 1.25 倍），HTTP/3
   17.1 万 → 42 万请求/秒（quinn-proto 的 7 倍）。TLS 记录直接在调用方缓冲区中解密：16–64 KiB +5–7%。
@@ -353,6 +402,7 @@ ulimit -n 1048576; MEM_RUNS=3 tools/bench/mem.sh
 taskset -c 2-5 $CARGO_TARGET_DIR/release/examples/quic-bench bulk 2048   # 以及：h3 5 64、handshakes 5 8
 cargo run --release -p only-tls --example tls-bench all 1
 cargo run --release -p only-crypto --example bench; cargo run --release -p only-crypto --example pk_bench
+cargo run --release -p only-crypto --example gcm-sizes   # 按消息长度的 AES-GCM，对比 ring
 BENCH_LEVELS=1,3,6,9 cargo run --release -p only-deflate --example bench SOURCES libc.so.6
 cargo run --release -p only-deflate --example pmd_echo
 cargo run --release --manifest-path tools/codec-bench/Cargo.toml

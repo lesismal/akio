@@ -181,12 +181,53 @@ pub(crate) enum Aead {
 pub(crate) const TAG_LEN: usize = 16;
 
 impl Aead {
-    /// Encrypts `buf` in place, returning the tag.
+    /// Encrypts `buf` in place, returning the tag (the record layer uses
+    /// [`seal_from`](Self::seal_from)).
+    #[cfg(test)]
     pub(crate) fn seal(&self, nonce: &[u8; 12], aad: &[u8], buf: &mut [u8]) -> [u8; 16] {
         match self {
             Aead::Gcm(k) => k.encrypt_in_place_detached(nonce, aad, buf),
             Aead::ChaCha(k) => k.encrypt_in_place_detached(nonce, aad, buf),
         }
+    }
+
+    /// Encrypts `src` followed by `dst[src.len()..]` (already in place) into `dst`, returning
+    /// the tag: one pass over the data for AES-GCM instead of a copy and an in-place pass.
+    pub(crate) fn seal_from(
+        &self,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        src: &[u8],
+        dst: &mut [u8],
+    ) -> [u8; 16] {
+        match self {
+            Aead::Gcm(k) => k.encrypt_detached_from(nonce, aad, src, dst),
+            Aead::ChaCha(k) => {
+                dst[..src.len()].copy_from_slice(src);
+                k.encrypt_in_place_detached(nonce, aad, dst)
+            }
+        }
+    }
+
+    /// Verifies and decrypts `src` (ciphertext without the tag) into `dst` (of the same length);
+    /// `dst` holds no plaintext after a failure.
+    pub(crate) fn open_from(
+        &self,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        src: &[u8],
+        tag: &[u8],
+        dst: &mut [u8],
+    ) -> Result<(), ()> {
+        let r = match self {
+            Aead::Gcm(k) => k.decrypt_detached_from(nonce, aad, src, tag, dst),
+            Aead::ChaCha(k) => {
+                // In place on the copy: a failed open leaves the ciphertext there.
+                dst.copy_from_slice(src);
+                k.decrypt_in_place_detached(nonce, aad, dst, tag)
+            }
+        };
+        r.map_err(|_| ())
     }
 
     /// Decrypts `buf` (ciphertext without the tag) in place.

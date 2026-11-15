@@ -68,6 +68,26 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
   验签 1.49 倍，RSA-2048 签名 1.38 倍；TLS 1.3 握手 1.5 倍，16 KiB AES-GCM 记录 15 倍（分别为 rustls + ring
   的 0.60 倍与 0.64 倍）。表格见 docs/BENCHMARKS.zh-CN.md。
 
+### 性能：`only-crypto` 的宽 AES-GCM 与 CRC，TLS 记录非原地加解密
+
+公开 API 不变（只新增 `#[doc(hidden)]` 辅助函数）。
+
+- 具备 VAES、VPCLMULQDQ 与 AVX-512 的 x86_64（Zen 4、Ice Lake 及更新；通过 CPUID 与 XCR0 检测）：AES-GCM
+  加密与解密以一趟 512 位处理完成，每次循环 16 个分组，AES 轮函数与上一组的 GHASH 交织，每 16 个分组归约
+  一次（BoringSSL / Linux `aes-gcm-avx10` 的设计；因为这些 intrinsic 比 MSRV 新，用 `asm!` 编写）。在
+  Zen 4 上 512 位内核在所有长度上都快于同一内核的 256 位寄存器版本，因此只保留它；其他 CPU 继续使用
+  AES-NI + PCLMULQDQ 内核。CRC-32 / CRC-32C 从 512 字节起在 512 位寄存器上每步折叠 256 字节。
+- 所有具备 AES 与无进位乘法指令的 CPU：消息的最后几个字节与 `J0` 一次通过 AES，短 AAD、尾部密文与长度块
+  一次通过 GHASH（64 字节消息快 1.8–2.1 倍）。
+- `only-tls` 非原地加解密记录：AEAD 直接读取调用方的明文或收到的记录，只写一次输出，不再先复制再原地处理
+  （复制占 16 KiB 记录的 30%）。
+- Ryzen 7 7800X3D 单核：AES-128-GCM 加密 16 KiB 6,455 → 15,048 MB/s（ring 的 0.51 倍 → 1.19 倍），
+  1400 B 4,249 → 8,163，64 B 611 → 1,185；TLS 1.3 记录加密 + 解密 16 KiB 2,739 → 6,603 MB/s（rustls + ring
+  的 0.69 倍 → 1.65 倍）；CRC-32 16 KiB 20.0 → 74.9 GB/s（crc32fast 的 0.27 倍 → 1.02 倍）。表格见
+  docs/BENCHMARKS.zh-CN.md。
+- `unsafe`：新的 `gcm::hw::vaes` 内核、`asm!` CRC 折叠以及 CPUID / XGETBV（`cpu::hw`），均记录在
+  docs/unsafe-review.zh-CN.md 中。Miri 永远不会执行到 `asm!`（检测不到任何特性）。
+
 ### 变更（破坏性，1.0.0 之前）：封装 1.0 之前的依赖
 
 rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保护的 API 中，因此 1.0.0 之后
