@@ -221,7 +221,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] ChaCha20-Poly1305 大块性能（TLS 记录原为 rustls+ring 的 0.55 倍）：ChaCha20 AVX-512 `asm!`（zmm 每次 16 个分组，余下部分用 ymm/xmm），Poly1305 用 AVX-512 IFMA（每步 8 个分组，256 B 起）加 2⁶⁴ 进制标量实现，TLS 记录非原地加解密。Zen 4：加密 16 KiB 1,752 → 4,597 MB/s（ring 的 1.30 倍），1400 B 0.96 倍，64 B 0.83 倍；TLS ChaCha 记录 16 KiB 相对 rustls+ring 0.55 倍 → 1.42 倍，1 KiB 0.64 倍 → 1.02 倍。判断在 Zen 4 上把 ChaCha20 与 Poly1305 缝合不值得。未完成：1.4 KiB 以下的小消息仍低于 ring，为没有 IFMA 的 CPU 做 AVX2 Poly1305。
 - [ ] QUIC 数据通路遗留项：不再从 `recvmmsg` 缓冲区复制、已发送包改用环形缓冲、按批 ACK（需要 only-core 的批次结束钩子）、在支持的平台默认开启 GRO
 - [ ] 宽 AES-GCM 遗留项：无 AVX-512 的 CPU 用的 VAES-AVX2 内核、宽内核内的掩码尾部、TLS 记录的预先清零
-- [ ] 对依赖秘密数据的路径做 dudect 式统计计时测试（CI 任务，不作为门禁）
+- [x] 对依赖秘密数据的路径做 dudect 式统计计时测试（CI 任务，不作为门禁）：`tools/ct-dudect`（Welch t 检验，固定对随机秘密，rdtsc / cntvct_el0，分位数裁剪加二阶检验），覆盖 P-256 ECDH/生成密钥/签名、X25519、Ed25519、RSA-2048、AES-GCM / ChaCha20-Poly1305 / HMAC 标签校验、`ct_eq` 与 `ct.rs` 原语，并有 A/A 与两个故意泄漏的自检目标；CI 任务 `ct-dudect`（continue-on-error，不属于 `ci-ok`，上传 t 值）。Zen 4 两条路径：无稳定泄漏。两处细小且时有时无的差异记录在 docs/constant-time.zh-CN.md（仅全零标量的 x25519 生成密钥，≤60 ppm；P-256 可移植签名处于 4.5 阈值边缘），需在安静主机上重测。
 - [ ] `only-deflate` 存储块解码只复制一次
 
 ## 4. 工程规范
