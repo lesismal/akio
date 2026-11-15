@@ -192,7 +192,7 @@ impl Aead {
     }
 
     /// Encrypts `src` followed by `dst[src.len()..]` (already in place) into `dst`, returning
-    /// the tag: one pass over the data for AES-GCM instead of a copy and an in-place pass.
+    /// the tag: one pass over the data instead of a copy and an in-place pass.
     pub(crate) fn seal_from(
         &self,
         nonce: &[u8; 12],
@@ -202,10 +202,7 @@ impl Aead {
     ) -> [u8; 16] {
         match self {
             Aead::Gcm(k) => k.encrypt_detached_from(nonce, aad, src, dst),
-            Aead::ChaCha(k) => {
-                dst[..src.len()].copy_from_slice(src);
-                k.encrypt_in_place_detached(nonce, aad, dst)
-            }
+            Aead::ChaCha(k) => k.encrypt_detached_from(nonce, aad, src, dst),
         }
     }
 
@@ -221,11 +218,7 @@ impl Aead {
     ) -> Result<(), ()> {
         let r = match self {
             Aead::Gcm(k) => k.decrypt_detached_from(nonce, aad, src, tag, dst),
-            Aead::ChaCha(k) => {
-                // In place on the copy: a failed open leaves the ciphertext there.
-                dst.copy_from_slice(src);
-                k.decrypt_in_place_detached(nonce, aad, dst, tag)
-            }
+            Aead::ChaCha(k) => k.decrypt_detached_from(nonce, aad, src, tag, dst),
         };
         r.map_err(|_| ())
     }

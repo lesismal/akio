@@ -17,7 +17,8 @@
 //! | AES-GCM (GHASH, fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 //! | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 //! | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
-//! | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes (NEON by the compiler) |
+//! | ChaCha20 | AVX-512 (`vprold`; 16, 8 or 4 blocks), else AVX2 (8 blocks) | portable 4-block lanes (NEON by the compiler) |
+//! | Poly1305 | AVX-512 IFMA (8 blocks per step, runs of 256 bytes and more), else radix 2⁶⁴ scalar | radix 2⁶⁴ scalar |
 //! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (every ARMv8.0 CPU; not benchmarked yet) |
 //!
 //! - [`hash`]: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 and MD5, streaming or one-shot, behind
@@ -61,9 +62,10 @@
 //! This is an implementation crate of `only` (like `only-sys`): its API follows the needs of the
 //! other crates and may change in any release (docs/api-stability.md). It does not try to be a
 //! general-purpose cryptography library: no key zeroization, and assembly only for the wide
-//! AES-GCM kernel and CRC fold (`asm!`: the VAES, VPCLMULQDQ and AVX-512 intrinsics are newer
-//! than the MSRV) and for the P-256 and Curve25519 field arithmetic on x86_64 (SHA-512, MD5,
-//! Poly1305, RSA and the rest of the public-key arithmetic are portable Rust).
+//! AES-GCM kernel and CRC fold, the AVX-512 ChaCha20 and IFMA Poly1305 kernels (`asm!`: the
+//! VAES, VPCLMULQDQ, AVX-512 and IFMA intrinsics are newer than the MSRV) and for the P-256,
+//! Curve25519 and RSA arithmetic on x86_64 (P-256 and Curve25519 also on aarch64; SHA-512, MD5
+//! and the rest of the public-key arithmetic are portable Rust).
 //!
 //! ```
 //! use only_crypto::hash::{Hash, Sha256};

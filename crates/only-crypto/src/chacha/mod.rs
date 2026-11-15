@@ -2,9 +2,10 @@
 //! construction (additions, rotations and XORs; Poly1305 uses 44-bit limbs and
 //! multiplications only).
 //!
-//! ChaCha20 computes several blocks at once: eight with AVX2 on x86_64 (detected at run time, see
-//! `hw`), else four in a lane-parallel layout that compilers map onto 128-bit vectors (SSE2,
-//! NEON).
+//! ChaCha20 computes several blocks at once: sixteen (zmm) or four (xmm) with AVX-512 on x86_64,
+//! eight with AVX2 (detected at run time, see `hw`), else four in a lane-parallel layout that
+//! compilers map onto 128-bit vectors (SSE2, NEON). Poly1305 absorbs eight blocks per step with
+//! AVX-512 IFMA (runs of 256 bytes and more), else two per step in scalar code.
 //!
 //! ```
 //! use only_crypto::chacha::ChaCha20Poly1305;
@@ -25,6 +26,37 @@ pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 12;
 /// The Poly1305 tag length in bytes.
 pub const TAG_LEN: usize = 16;
+
+/// The widest implementation a key may use; the default allows all, the others exist for
+/// differential tests and benchmarks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+    /// The portable code (also what `ONLY_CRYPTO_PORTABLE` forces).
+    Portable,
+    /// ChaCha20 on AVX2 (eight blocks), scalar Poly1305.
+    Avx2,
+    /// ChaCha20 on AVX-512 (sixteen or four blocks), Poly1305 on AVX-512 IFMA when present.
+    Wide,
+}
+
+impl Level {
+    /// The widest level this CPU allows now (the portable switch included), at most `cap`.
+    #[inline]
+    fn current(cap: Level) -> Level {
+        let best = if hw::wide_enabled() {
+            Level::Wide
+        } else if hw::enabled() {
+            Level::Avx2
+        } else {
+            Level::Portable
+        };
+        best.min(cap)
+    }
+}
+
+/// The shortest run of whole Poly1305 blocks handed to the IFMA kernel: below it, computing the
+/// eight powers of `r` costs more than the kernel saves.
+const IFMA_MIN: usize = 256;
 
 #[inline(always)]
 fn le32(b: &[u8]) -> u32 {
@@ -173,7 +205,12 @@ impl ChaCha20 {
     /// # Panics
     ///
     /// When the 32-bit block counter would wrap (256 GiB from counter 0).
-    pub fn apply_keystream(&mut self, mut data: &mut [u8]) {
+    pub fn apply_keystream(&mut self, data: &mut [u8]) {
+        self.apply(Level::current(Level::Wide), data);
+    }
+
+    /// [`apply_keystream`](Self::apply_keystream) with the implementations of `lvl` at most.
+    fn apply(&mut self, lvl: Level, mut data: &mut [u8]) {
         if self.used < 64 {
             let n = (64 - self.used).min(data.len());
             for (d, k) in data[..n].iter_mut().zip(&self.keystream[self.used..]) {
@@ -182,10 +219,18 @@ impl ChaCha20 {
             self.used += n;
             data = &mut data[n..];
         }
-        // Eight blocks at a time on AVX2, four at a time otherwise, while the counter cannot
-        // wrap inside the group (the single-block path below handles the wrap and exhaustion).
+        // Whole blocks on AVX-512 up to (not including) the last counter value; then eight
+        // blocks at a time on AVX2, four at a time otherwise, while the counter cannot wrap
+        // inside the group (the single-block path below handles the wrap and exhaustion).
+        if !self.exhausted && lvl == Level::Wide {
+            let n = (data.len() / 64).min((u32::MAX - self.state[12]) as usize);
+            if n > 0 && hw::xor_wide(&self.state, None, &mut data[..64 * n]) {
+                self.state[12] += n as u32;
+                data = &mut data[64 * n..];
+            }
+        }
         let mut done = 0;
-        if !self.exhausted && hw::enabled() {
+        if !self.exhausted && lvl >= Level::Avx2 {
             for c in data.chunks_exact_mut(512) {
                 let c: &mut [u8; 512] = c.try_into().unwrap_or_else(|_| unreachable!());
                 if self.state[12] > u32::MAX - 8 || !hw::xor8(&self.state, c) {
@@ -196,6 +241,34 @@ impl ChaCha20 {
             }
         }
         let data = &mut data[done..];
+        // A rest shorter than eight blocks: one more vector call into a buffer (it costs about
+        // as much as one block of the portable code), the last partial block kept for later.
+        if !self.exhausted
+            && lvl >= Level::Avx2
+            && !data.is_empty()
+            && data.len() < 512
+            && self.state[12] <= u32::MAX - 8
+        {
+            let mut ks = [0u8; 512];
+            let nb = data.len().div_ceil(64);
+            let ok = if lvl == Level::Wide {
+                hw::xor_wide(&self.state, None, &mut ks[..64 * nb])
+            } else {
+                hw::xor8(&self.state, &mut ks)
+            };
+            if ok {
+                for (d, k) in data.iter_mut().zip(&ks) {
+                    *d ^= k;
+                }
+                let rest = data.len() % 64;
+                if rest > 0 {
+                    self.keystream.copy_from_slice(&ks[64 * (nb - 1)..64 * nb]);
+                    self.used = rest;
+                }
+                self.state[12] += nb as u32;
+                return;
+            }
+        }
         let mut done = 0;
         if !self.exhausted {
             for c in data.chunks_exact_mut(256) {
@@ -234,14 +307,18 @@ impl ChaCha20 {
 /// messages.
 #[derive(Clone)]
 pub struct Poly1305 {
-    /// `r` in 44/44/42-bit limbs.
-    r: [u64; 3],
+    /// `r` (clamped) as two 64-bit words.
+    r: [u64; 2],
     /// `s` as two 64-bit words.
     s: [u64; 2],
-    /// The accumulator in 44/44/42-bit limbs (partially reduced).
+    /// The accumulator as two 64-bit words and the bits above 2¹²⁸ (partially reduced: below
+    /// 2¹³⁰ plus a little).
     h: [u64; 3],
     buf: [u8; 16],
     pos: usize,
+    /// May use the IFMA kernel (which recomputes `r⁸ … r¹` per call: the struct stays small,
+    /// and the AEAD makes one long call).
+    wide: bool,
 }
 
 impl std::fmt::Debug for Poly1305 {
@@ -258,20 +335,7 @@ fn le64(b: &[u8]) -> u64 {
     u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
 }
 
-/// `h + m` for a 16-byte block `m` with the high bit `hibit` (`1 << 40` for a full block), in
-/// 44/44/42-bit limbs.
-#[inline(always)]
-fn add_block(h: [u64; 3], m: &[u8], hibit: u64) -> [u64; 3] {
-    let t0 = le64(&m[0..]);
-    let t1 = le64(&m[8..]);
-    [
-        h[0] + (t0 & M44),
-        h[1] + (((t0 >> 44) | (t1 << 20)) & M44),
-        h[2] + (((t1 >> 24) & M42) | hibit),
-    ]
-}
-
-/// Carries the product limbs `d` back to 44/44/42 bits (partially reduced: `h0` may exceed 2⁴⁴
+/// Carries the product limbs `d` back to 44/44/42 bits (partially reduced: `h1` may exceed 2⁴⁴
 /// slightly), folding the top through `2¹³⁰ ≡ 5`.
 #[inline(always)]
 fn carry(d: [u128; 3]) -> [u64; 3] {
@@ -291,88 +355,150 @@ fn carry(d: [u128; 3]) -> [u64; 3] {
     [h0, h1, h2]
 }
 
+/// `a·b` modulo `2¹³⁰ - 5` in 44/44/42-bit limbs (partially reduced).
+#[inline(always)]
+fn mul44(a: [u64; 3], b: [u64; 3]) -> [u64; 3] {
+    let (s1, s2) = (b[1] * 20, b[2] * 20);
+    let mm = |a: u64, b: u64| u128::from(a) * u128::from(b);
+    carry([
+        mm(a[0], b[0]) + mm(a[1], s2) + mm(a[2], s1),
+        mm(a[0], b[1]) + mm(a[1], b[0]) + mm(a[2], s2),
+        mm(a[0], b[2]) + mm(a[1], b[1]) + mm(a[2], b[0]),
+    ])
+}
+
+/// A value below 2¹³⁴ in 64/64/rest words as 44/44/rest-bit limbs.
+#[inline(always)]
+fn to44(h: [u64; 3]) -> [u64; 3] {
+    [
+        h[0] & M44,
+        ((h[0] >> 44) | (h[1] << 20)) & M44,
+        (h[1] >> 24) | (h[2] << 40),
+    ]
+}
+
 impl Poly1305 {
     /// A Poly1305 instance keyed with the one-time key `key` (`r` then `s`).
     #[must_use]
     pub fn new(key: &[u8; 32]) -> Self {
-        // poly1305-donna-64: r clamped and split into 44/44/42-bit limbs.
-        let t0 = le64(&key[0..]);
-        let t1 = le64(&key[8..]);
+        Self::with_level(key, Level::Wide)
+    }
+
+    /// A Poly1305 instance that uses the IFMA kernel only with `lvl` [`Level::Wide`].
+    fn with_level(key: &[u8], lvl: Level) -> Self {
         Poly1305 {
             r: [
-                t0 & 0xffc_0fff_ffff,
-                ((t0 >> 44) | (t1 << 20)) & 0xfff_ffc0_ffff,
-                (t1 >> 24) & 0x00f_ffff_fc0f,
+                le64(&key[0..]) & 0x0fff_fffc_0fff_ffff,
+                le64(&key[8..]) & 0x0fff_fffc_0fff_fffc,
             ],
             s: [le64(&key[16..]), le64(&key[24..])],
             h: [0; 3],
             buf: [0; 16],
             pos: 0,
+            wide: lvl == Level::Wide,
         }
     }
 
-    /// Processes one 16-byte block; `hibit` is `1 << 40` for a full block, `0` for the final
-    /// partial block (which carries its own `0x01` terminator).
-    #[inline]
-    fn block(&mut self, m: &[u8], hibit: u64) {
-        let a = add_block(self.h, m, hibit);
-        let r = self.r;
-        let (s1, s2) = (r[1] * 20, r[2] * 20);
-        let mm = |a: u64, b: u64| u128::from(a) * u128::from(b);
-        // r1·20 and r2·20 fold the 2^130 ≡ 5 reduction into the products.
-        self.h = carry([
-            mm(a[0], r[0]) + mm(a[1], s2) + mm(a[2], s1),
-            mm(a[0], r[1]) + mm(a[1], r[0]) + mm(a[2], s2),
-            mm(a[0], r[2]) + mm(a[1], r[1]) + mm(a[2], r[0]),
-        ]);
+    /// `r⁸ … r¹` in the layout of [`hw::Powers`] (limbs below 2⁴⁵, `20·r1` and `20·r2` below
+    /// 2⁵⁰).
+    fn powers(r: [u64; 3]) -> hw::Powers {
+        let r2 = mul44(r, r);
+        let r3 = mul44(r2, r);
+        let r4 = mul44(r2, r2);
+        let p = [
+            mul44(r4, r4),
+            mul44(r4, r3),
+            mul44(r4, r2),
+            mul44(r4, r),
+            r4,
+            r3,
+            r2,
+            r,
+        ];
+        let mut pw = [0u64; 40];
+        for (i, p) in p.iter().enumerate() {
+            pw[i] = p[0];
+            pw[8 + i] = p[1];
+            pw[16 + i] = p[2];
+            pw[24 + i] = 20 * p[1];
+            pw[32 + i] = 20 * p[2];
+        }
+        pw
     }
 
-    /// Two full blocks: `h = (h + m₁)·r² + m₂·r`, one carry chain for both (the two products
-    /// are independent, which roughly doubles the throughput of the dependent chain).
+    /// Absorbs the 16-byte blocks of `data` (a multiple of 16 bytes), each with the bit 2¹²⁸
+    /// set when `hibit` is 1 (full blocks) or not (the final partial block, padded with its own
+    /// `0x01`), in radix 2⁶⁴ (poly1305-donna-64 / OpenSSL): `h = (h + m)·r`, with
+    /// `s1 = r1 + r1/4` folding the products above 2¹³⁰ (`r1` is a multiple of 4).
     #[inline]
-    fn blocks2(&mut self, m: &[u8], r2: &[u64; 3]) {
-        let a = add_block(self.h, &m[..16], 1 << 40);
-        let b = add_block([0; 3], &m[16..32], 1 << 40);
-        let r = self.r;
-        let (s1, s2) = (r[1] * 20, r[2] * 20);
-        let (t1, t2) = (r2[1] * 20, r2[2] * 20);
+    fn blocks64(&mut self, data: &[u8], hibit: u64) {
+        let [r0, r1] = self.r;
+        let s1 = r1 + (r1 >> 2);
+        let [mut h0, mut h1, mut h2] = self.h;
         let mm = |a: u64, b: u64| u128::from(a) * u128::from(b);
-        self.h = carry([
-            mm(a[0], r2[0])
-                + mm(a[1], t2)
-                + mm(a[2], t1)
-                + mm(b[0], r[0])
-                + mm(b[1], s2)
-                + mm(b[2], s1),
-            mm(a[0], r2[1])
-                + mm(a[1], r2[0])
-                + mm(a[2], t2)
-                + mm(b[0], r[1])
-                + mm(b[1], r[0])
-                + mm(b[2], s2),
-            mm(a[0], r2[2])
-                + mm(a[1], r2[1])
-                + mm(a[2], r2[0])
-                + mm(b[0], r[2])
-                + mm(b[1], r[1])
-                + mm(b[2], r[0]),
-        ]);
+        for m in data.chunks_exact(16) {
+            let t = u128::from(h0) + u128::from(le64(&m[0..]));
+            h0 = t as u64;
+            let t = u128::from(h1) + u128::from(le64(&m[8..])) + (t >> 64);
+            h1 = t as u64;
+            h2 += (t >> 64) as u64 + hibit;
+            let d0 = mm(h0, r0) + mm(h1, s1);
+            let d1 = mm(h0, r1) + mm(h1, r0) + u128::from(h2 * s1) + (d0 >> 64);
+            let d2 = h2 * r0 + (d1 >> 64) as u64;
+            // d2 holds the bits from 2¹²⁸: keep two, fold the rest times 5 into h0.
+            let c = (d2 & !3) + (d2 >> 2);
+            let t = u128::from(d0 as u64) + u128::from(c);
+            h0 = t as u64;
+            let t = u128::from(d1 as u64) + (t >> 64);
+            h1 = t as u64;
+            h2 = (d2 & 3) + (t >> 64) as u64;
+        }
+        self.h = [h0, h1, h2];
     }
 
-    /// `r²` (partially reduced limbs, below 2⁴⁵).
-    fn r_squared(&self) -> [u64; 3] {
-        let r = self.r;
-        let (s1, s2) = (r[1] * 20, r[2] * 20);
-        let mm = |a: u64, b: u64| u128::from(a) * u128::from(b);
-        carry([
-            mm(r[0], r[0]) + mm(r[1], s2) + mm(r[2], s1),
-            mm(r[0], r[1]) + mm(r[1], r[0]) + mm(r[2], s2),
-            mm(r[0], r[2]) + mm(r[1], r[1]) + mm(r[2], r[0]),
-        ])
+    /// Whether `len` bytes of whole blocks go through the IFMA kernel.
+    fn uses_ifma(&self, len: usize) -> bool {
+        self.wide && len >= IFMA_MIN && hw::ifma_enabled()
+    }
+
+    /// The powers of `r` for the IFMA kernel.
+    fn ifma_powers(&self) -> hw::Powers {
+        Self::powers(to44([self.r[0], self.r[1], 0]))
+    }
+
+    /// Absorbs the whole 16-byte blocks of `data` (a multiple of 16 bytes), with the powers of
+    /// `r` for the IFMA kernel when the caller computed them already.
+    fn full_blocks(&mut self, mut data: &[u8], pw: Option<&hw::Powers>) {
+        if self.uses_ifma(data.len()) {
+            let n = data.len() / hw::POLY_CHUNK * hw::POLY_CHUNK;
+            let mut h = to44(self.h);
+            let own;
+            let pw = match pw {
+                Some(pw) => pw,
+                None => {
+                    own = self.ifma_powers();
+                    &own
+                }
+            };
+            if hw::poly_blocks(&mut h, pw, &data[..n]) {
+                // Back to radix 2⁶⁴ (carried so that each limb is in range).
+                let [l0, mut l1, mut l2] = carry(h.map(u128::from));
+                l2 += l1 >> 44;
+                l1 &= M44;
+                self.h = [l0 | (l1 << 44), (l1 >> 20) | (l2 << 24), l2 >> 40];
+                data = &data[n..];
+            }
+        }
+        self.blocks64(data, 1);
     }
 
     /// Absorbs `data`.
-    pub fn update(&mut self, mut data: &[u8]) {
+    pub fn update(&mut self, data: &[u8]) {
+        self.update_with(data, None);
+    }
+
+    /// [`update`](Self::update) with precomputed powers for the IFMA kernel.
+    fn update_with(&mut self, mut data: &[u8], pw: Option<&hw::Powers>) {
         if self.pos > 0 {
             let n = (16 - self.pos).min(data.len());
             self.buf[self.pos..self.pos + n].copy_from_slice(&data[..n]);
@@ -382,22 +508,12 @@ impl Poly1305 {
                 return;
             }
             let b = self.buf;
-            self.block(&b, 1 << 40);
+            self.blocks64(&b, 1);
             self.pos = 0;
         }
-        if data.len() >= 64 {
-            let r2 = self.r_squared();
-            let mut pairs = data.chunks_exact(32);
-            for b in &mut pairs {
-                self.blocks2(b, &r2);
-            }
-            data = pairs.remainder();
-        }
-        let mut chunks = data.chunks_exact(16);
-        for b in &mut chunks {
-            self.block(b, 1 << 40);
-        }
-        let rest = chunks.remainder();
+        let whole = data.len() / 16 * 16;
+        self.full_blocks(&data[..whole], pw);
+        let rest = &data[whole..];
         self.buf[..rest.len()].copy_from_slice(rest);
         self.pos = rest.len();
     }
@@ -407,7 +523,7 @@ impl Poly1305 {
         if self.pos > 0 {
             self.buf[self.pos..].fill(0);
             let b = self.buf;
-            self.block(&b, 1 << 40);
+            self.blocks64(&b, 1);
             self.pos = 0;
         }
     }
@@ -419,51 +535,32 @@ impl Poly1305 {
             self.buf[self.pos] = 1;
             self.buf[self.pos + 1..].fill(0);
             let b = self.buf;
-            self.block(&b, 0);
+            self.blocks64(&b, 0);
         }
         let [mut h0, mut h1, mut h2] = self.h;
-        // Full carry (twice: the first pass may leave h1 at 2^44).
-        let mut c;
-        for _ in 0..2 {
-            c = h1 >> 44;
-            h1 &= M44;
-            h2 += c;
-            c = h2 >> 42;
-            h2 &= M42;
-            h0 += c * 5;
-            c = h0 >> 44;
-            h0 &= M44;
-            h1 += c;
-        }
-        c = h1 >> 44;
-        h1 &= M44;
-        h2 += c;
+        // Fold the bits from 2¹³⁰ once more: h < 2¹³⁰ + 2⁶⁴ afterwards.
+        let c = (h2 & !3) + (h2 >> 2);
+        h2 &= 3;
+        let t = u128::from(h0) + u128::from(c);
+        h0 = t as u64;
+        let t = u128::from(h1) + (t >> 64);
+        h1 = t as u64;
+        h2 += (t >> 64) as u64;
 
         // g = h + 5 - 2^130; use g if it did not go negative (constant-time select).
-        let mut g0 = h0 + 5;
-        c = g0 >> 44;
-        g0 &= M44;
-        let mut g1 = h1 + c;
-        c = g1 >> 44;
-        g1 &= M44;
-        let g2 = (h2 + c).wrapping_sub(1 << 42);
-        let mask = (g2 >> 63).wrapping_sub(1); // all ones if g2 did not underflow
-        let nmask = !mask;
-        h0 = (h0 & nmask) | (g0 & mask);
-        h1 = (h1 & nmask) | (g1 & mask);
-        h2 = (h2 & nmask) | (g2 & mask);
+        let t = u128::from(h0) + 5;
+        let g0 = t as u64;
+        let t = u128::from(h1) + (t >> 64);
+        let g1 = t as u64;
+        let g2 = h2 + (t >> 64) as u64;
+        let mask = 0u64.wrapping_sub(g2 >> 2); // all ones if h + 5 >= 2^130
+        h0 = (h0 & !mask) | (g0 & mask);
+        h1 = (h1 & !mask) | (g1 & mask);
 
         // h + s mod 2^128.
-        let [s0, s1] = self.s;
-        h0 += s0 & M44;
-        c = h0 >> 44;
-        h0 &= M44;
-        h1 += (((s0 >> 44) | (s1 << 20)) & M44) + c;
-        c = h1 >> 44;
-        h1 &= M44;
-        h2 = (h2 + ((s1 >> 24) & M42) + c) & M42;
-        let w0 = h0 | (h1 << 44);
-        let w1 = (h1 >> 20) | (h2 << 24);
+        let t = u128::from(h0) + u128::from(self.s[0]);
+        let w0 = t as u64;
+        let w1 = h1.wrapping_add(self.s[1]).wrapping_add((t >> 64) as u64);
 
         let mut out = [0u8; 16];
         out[..8].copy_from_slice(&w0.to_le_bytes());
@@ -487,6 +584,8 @@ const MAX_LEN: u64 = ((1 << 32) - 1) * 64;
 #[derive(Clone)]
 pub struct ChaCha20Poly1305 {
     key: [u8; KEY_LEN],
+    /// The widest implementation this key may use.
+    cap: Level,
 }
 
 impl std::fmt::Debug for ChaCha20Poly1305 {
@@ -495,31 +594,178 @@ impl std::fmt::Debug for ChaCha20Poly1305 {
     }
 }
 
+/// The first keystream blocks of a message: `n` blocks from block 0 (the Poly1305 key) in `ks`.
+struct Head {
+    ks: [u8; 512],
+    n: usize,
+}
+
 impl ChaCha20Poly1305 {
     /// An AEAD key.
     #[must_use]
     pub fn new(key: &[u8; KEY_LEN]) -> Self {
-        ChaCha20Poly1305 { key: *key }
+        ChaCha20Poly1305 {
+            key: *key,
+            cap: Level::Wide,
+        }
     }
 
-    /// The cipher at block 1 and the Poly1305 instance keyed from block 0.
-    fn start(&self, nonce: &[u8; NONCE_LEN]) -> (ChaCha20, Poly1305) {
-        let mut c = ChaCha20::new(&self.key, nonce, 0);
-        let mut otk = [0u8; 64];
-        c.apply_keystream(&mut otk);
-        let mut k = [0u8; 32];
-        k.copy_from_slice(&otk[..32]);
-        (c, Poly1305::new(&k))
+    /// A key that uses at most ChaCha20 on AVX2 and scalar Poly1305 (never the AVX-512 / IFMA
+    /// kernels), for differential tests and benchmarks.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_avx2(key: &[u8; KEY_LEN]) -> Self {
+        ChaCha20Poly1305 {
+            key: *key,
+            cap: Level::Avx2,
+        }
     }
 
-    fn tag(mut p: Poly1305, aad: &[u8], ct: &[u8]) -> [u8; TAG_LEN] {
+    /// A key that uses only the portable code, for differential tests and benchmarks.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_portable(key: &[u8; KEY_LEN]) -> Self {
+        ChaCha20Poly1305 {
+            key: *key,
+            cap: Level::Portable,
+        }
+    }
+
+    /// The level for this call, the cipher state at block 0 and the first keystream blocks
+    /// (block 0 keys Poly1305, the others cover the first bytes of a message of `len` bytes):
+    /// four from one AVX-512 call; eight from one AVX2 call for messages of more than two blocks;
+    /// else the blocks the message needs (at most four), one at a time.
+    fn start(&self, nonce: &[u8; NONCE_LEN], len: usize) -> (Level, [u32; 16], Head) {
+        let lvl = Level::current(self.cap);
+        let st = ChaCha20::new(&self.key, nonce, 0).state;
+        let mut ks = [0u8; 512];
+        let n = if lvl == Level::Wide && hw::xor_wide(&st, None, &mut ks[..256]) {
+            4
+        } else if lvl >= Level::Avx2 && len > 128 && hw::xor8(&st, &mut ks) {
+            8
+        } else {
+            let n = 1 + len.min(192).div_ceil(64);
+            let mut s = st;
+            for b in ks.chunks_exact_mut(64).take(n) {
+                b.copy_from_slice(&block(&s));
+                s[12] += 1;
+            }
+            n
+        };
+        (lvl, st, Head { ks, n })
+    }
+
+    /// XORs the keystream from block 1 into `src` followed by `dst[src.len()..]` (or `dst` in
+    /// place without `src`), written to `dst`; `head` holds the first blocks.
+    fn crypt(lvl: Level, st: &[u32; 16], head: &Head, src: Option<&[u8]>, dst: &mut [u8]) {
+        let hb = 64 * (head.n - 1);
+        let ks = &head.ks[64..64 * head.n];
+        let h = dst.len().min(hb);
+        let from = src.map_or(0, |s| s.len().min(hb));
+        if let Some(s) = src {
+            for ((d, s), k) in dst[..from].iter_mut().zip(s).zip(ks) {
+                *d = s ^ k;
+            }
+        }
+        for (d, k) in dst[from..h].iter_mut().zip(&ks[from..]) {
+            *d ^= k;
+        }
+        if dst.len() == h {
+            return;
+        }
+        let dst = &mut dst[hb..];
+        let src = src.filter(|s| s.len() > hb).map(|s| &s[hb..]);
+        let mut st = *st;
+        st[12] = head.n as u32;
+        if lvl == Level::Wide {
+            // The rest in at most two calls (the counter cannot wrap within a message): out of
+            // place for `src` (its whole blocks unless it is all of the rest), then in place.
+            let n = src.map_or(0, |s| {
+                if s.len() == dst.len() {
+                    s.len()
+                } else {
+                    s.len() / 64 * 64
+                }
+            });
+            if n == 0 || hw::xor_wide(&st, src.map(|s| &s[..n]), &mut dst[..n]) {
+                st[12] += (n / 64) as u32;
+                if let Some(s) = src {
+                    dst[n..s.len()].copy_from_slice(&s[n..]);
+                }
+                if n == dst.len() || hw::xor_wide(&st, None, &mut dst[n..]) {
+                    return;
+                }
+            }
+            unreachable!("Level::Wide only with AVX-512");
+        }
+        if let Some(s) = src {
+            dst[..s.len()].copy_from_slice(s);
+        }
+        let mut c = ChaCha20 {
+            state: st,
+            keystream: [0; 64],
+            used: 64,
+            exhausted: false,
+        };
+        c.apply(lvl, dst);
+    }
+
+    /// The tag of `aad` and `ct` (`pw`: the IFMA powers of `p`'s `r`, when computed already).
+    fn tag(mut p: Poly1305, aad: &[u8], ct: &[u8], pw: Option<&hw::Powers>) -> [u8; TAG_LEN] {
         p.update(aad);
         p.pad16();
-        p.update(ct);
+        p.update_with(ct, pw);
         p.pad16();
         p.update(&(aad.len() as u64).to_le_bytes());
         p.update(&(ct.len() as u64).to_le_bytes());
         p.finalize()
+    }
+
+    /// Seals `src` followed by `dst[src.len()..]` (or `dst` in place) into `dst`.
+    fn seal(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: Option<&[u8]>,
+        dst: &mut [u8],
+    ) -> [u8; TAG_LEN] {
+        assert!(
+            src.is_none_or(|s| s.len() <= dst.len()),
+            "ChaCha20-Poly1305: output too short"
+        );
+        assert!(
+            dst.len() as u64 <= MAX_LEN,
+            "ChaCha20-Poly1305: plaintext too long"
+        );
+        let (lvl, st, head) = self.start(nonce, dst.len());
+        let p = Poly1305::with_level(&head.ks[..32], lvl);
+        // The powers of `r` for the IFMA kernel first: their scalar multiplications overlap the
+        // vector work of the cipher.
+        let pw = p.uses_ifma(dst.len() / 16 * 16).then(|| p.ifma_powers());
+        Self::crypt(lvl, &st, &head, src, dst);
+        Self::tag(p, aad, dst, pw.as_ref())
+    }
+
+    /// Verifies the tag over the ciphertext `src` (or `dst` in place) and decrypts it into `dst`;
+    /// `false` (and `dst` untouched) on a mismatch.
+    fn open(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: Option<&[u8]>,
+        dst: &mut [u8],
+        tag: &[u8],
+    ) -> bool {
+        let (lvl, st, head) = self.start(nonce, dst.len());
+        let ct = src.unwrap_or(dst);
+        if !crate::ct_eq(
+            &Self::tag(Poly1305::with_level(&head.ks[..32], lvl), aad, ct, None),
+            tag,
+        ) {
+            return false;
+        }
+        Self::crypt(lvl, &st, &head, src, dst);
+        true
     }
 
     /// Encrypts `buf` in place and returns the tag.
@@ -533,13 +779,51 @@ impl ChaCha20Poly1305 {
         aad: &[u8],
         buf: &mut [u8],
     ) -> [u8; TAG_LEN] {
-        assert!(
-            buf.len() as u64 <= MAX_LEN,
-            "ChaCha20-Poly1305: plaintext too long"
-        );
-        let (mut c, p) = self.start(nonce);
-        c.apply_keystream(buf);
-        Self::tag(p, aad, buf)
+        self.seal(nonce, aad, None, buf)
+    }
+
+    /// Encrypts `src` followed by `dst[src.len()..]` (plaintext already in place) into `dst` and
+    /// returns the tag: [`encrypt_in_place_detached`](Self::encrypt_in_place_detached) of that
+    /// plaintext without copying `src` into `dst` first. For the TLS record layer.
+    ///
+    /// # Panics
+    ///
+    /// If `src` is longer than `dst`, or `dst` longer than the construction allows.
+    #[doc(hidden)]
+    pub fn encrypt_detached_from(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        dst: &mut [u8],
+    ) -> [u8; TAG_LEN] {
+        self.seal(nonce, aad, Some(src), dst)
+    }
+
+    /// Verifies `tag` over the ciphertext `src` and decrypts it into `dst` (of the same length)
+    /// without copying it into `dst` first. On failure `dst` is zeroed. For the TLS record layer.
+    ///
+    /// # Panics
+    ///
+    /// If `src` and `dst` differ in length.
+    #[doc(hidden)]
+    pub fn decrypt_detached_from(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        tag: &[u8],
+        dst: &mut [u8],
+    ) -> Result<(), Error> {
+        assert_eq!(src.len(), dst.len(), "ChaCha20-Poly1305: output length");
+        if tag.len() != TAG_LEN {
+            return Err(Error::InvalidLength);
+        }
+        if src.len() as u64 > MAX_LEN || !self.open(nonce, aad, Some(src), dst, tag) {
+            dst.fill(0);
+            return Err(Error::Verification);
+        }
+        Ok(())
     }
 
     /// Verifies `tag` and decrypts `buf` in place. On failure ([`Error::Verification`], or
@@ -554,14 +838,9 @@ impl ChaCha20Poly1305 {
         if tag.len() != TAG_LEN {
             return Err(Error::InvalidLength);
         }
-        if buf.len() as u64 > MAX_LEN {
+        if buf.len() as u64 > MAX_LEN || !self.open(nonce, aad, None, buf, tag) {
             return Err(Error::Verification);
         }
-        let (mut c, p) = self.start(nonce);
-        if !crate::ct_eq(&Self::tag(p, aad, buf), tag) {
-            return Err(Error::Verification);
-        }
-        c.apply_keystream(buf);
         Ok(())
     }
 
@@ -763,5 +1042,146 @@ mod tests {
         let mut bad = sealed.clone();
         bad[0] ^= 1;
         assert_eq!(aead.decrypt(&nonce, &aad, &bad), Err(Error::Verification));
+    }
+
+    /// Message lengths for the differential tests: every length up to 600, then sizes around the
+    /// kernel widths and records.
+    fn lengths() -> impl Iterator<Item = usize> {
+        (0..=600).chain([
+            767, 768, 1023, 1024, 1025, 1200, 1216, 1400, 2047, 2048, 4113, 16384, 16385, 16401,
+            65536, 65539,
+        ])
+    }
+
+    /// The AVX-512 / IFMA path (`new`), the AVX2 path and the portable code produce the same
+    /// ciphertexts and tags, in place and out of place, from misaligned buffers, and open each
+    /// other's messages (on CPUs without the wider instructions the paths coincide).
+    #[test]
+    fn aead_paths_agree() {
+        println!("hardware: [{}]", crate::hardware_features());
+        let mut rng = crate::rand::ChaChaRng::from_seed([21; 32]);
+        let mut key = [0u8; 32];
+        rng.fill(&mut key);
+        let keys = [
+            ChaCha20Poly1305::new(&key),
+            ChaCha20Poly1305::new_avx2(&key),
+            ChaCha20Poly1305::new_portable(&key),
+        ];
+        let nonce = [9u8; 12];
+        for (i, len) in lengths().enumerate() {
+            let aad = vec![0x17u8; [0, 5, 13, 16, 17, 300][i % 6]];
+            let mut msg = vec![0u8; len + 3];
+            rng.fill(&mut msg);
+            // Misaligned by 0..=2 bytes.
+            let off = i % 3;
+            let pt = &msg[off..off + len];
+            let want = keys[2].encrypt(&nonce, &aad, pt);
+            for k in &keys {
+                assert_eq!(k.encrypt(&nonce, &aad, pt), want, "len {len}");
+                assert_eq!(k.decrypt(&nonce, &aad, &want).unwrap(), pt, "len {len}");
+                // Out of place, the plaintext split between `src` and `dst`.
+                for split in [0, len / 3, len.saturating_sub(1), len] {
+                    let mut dst = vec![0u8; len + 1];
+                    dst[1 + split..].copy_from_slice(&pt[split..]);
+                    let tag = k.encrypt_detached_from(&nonce, &aad, &pt[..split], &mut dst[1..]);
+                    assert_eq!(dst[1..], want[..len], "len {len} split {split}");
+                    assert_eq!(tag[..], want[len..], "len {len} split {split}");
+                }
+                let mut back = vec![0u8; len + 2];
+                k.decrypt_detached_from(&nonce, &aad, &want[..len], &want[len..], &mut back[2..])
+                    .unwrap();
+                assert_eq!(&back[2..], pt);
+                // A forged tag: rejected, `dst` zeroed (out of place) or untouched (in place).
+                let mut bad = want.clone();
+                bad[len] ^= 0x80;
+                let mut back = vec![0xaau8; len];
+                assert_eq!(
+                    k.decrypt_detached_from(&nonce, &aad, &bad[..len], &bad[len..], &mut back),
+                    Err(Error::Verification)
+                );
+                assert!(back.iter().all(|&b| b == 0));
+                let mut inplace = bad[..len].to_vec();
+                assert_eq!(
+                    k.decrypt_in_place_detached(&nonce, &aad, &mut inplace, &bad[len..]),
+                    Err(Error::Verification)
+                );
+                assert_eq!(inplace, bad[..len]);
+            }
+        }
+    }
+
+    /// The ChaCha20 stream on the widest path against block-at-a-time generation, at counters
+    /// near the wrap-around, from misaligned buffers and split across calls.
+    #[test]
+    fn chacha20_wide_matches_single() {
+        let key = [0x5au8; 32];
+        let nonce = [3u8; 12];
+        for counter in [0u32, 1, 15, u32::MAX - 1100, u32::MAX - 20, u32::MAX - 1] {
+            let max = (u64::from(u32::MAX - counter) + 1) * 64;
+            for len in [
+                1usize, 63, 64, 65, 255, 256, 257, 1000, 1024, 1088, 3000, 4096,
+            ] {
+                if len as u64 > max {
+                    continue;
+                }
+                let mut c = ChaCha20::new(&key, &nonce, counter);
+                let mut want = Vec::new();
+                while want.len() < len {
+                    want.extend_from_slice(&c.next_block());
+                }
+                want.truncate(len);
+                let mut buf = vec![0u8; len + 1];
+                let mut c = ChaCha20::new(&key, &nonce, counter);
+                let (a, b) = buf[1..].split_at_mut(len.min(70));
+                c.apply(Level::Wide, a);
+                c.apply(Level::Wide, b);
+                assert_eq!(buf[1..], want, "counter {counter} len {len}");
+            }
+        }
+    }
+
+    /// Poly1305 with the IFMA kernel against the scalar code: carries stressed with all-ones
+    /// messages and the largest clamped `r`, `s` at both extremes, whole and split updates.
+    #[test]
+    fn poly1305_wide_matches_scalar() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([5; 32]);
+        let mut keys = vec![[0xffu8; 32], [0u8; 32]];
+        let mut k = [0xffu8; 32];
+        k[16..].fill(0);
+        keys.push(k);
+        let mut k = [0u8; 32];
+        k[0] = 1;
+        k[16..].fill(0xff);
+        keys.push(k);
+        for _ in 0..4 {
+            let mut k = [0u8; 32];
+            rng.fill(&mut k);
+            keys.push(k);
+        }
+        for key in &keys {
+            for len in [
+                128usize, 255, 256, 257, 383, 384, 1000, 1024, 1040, 4096, 16400,
+            ] {
+                for fill in [None, Some(0xffu8), Some(0)] {
+                    let mut msg = vec![0u8; len];
+                    match fill {
+                        Some(b) => msg.fill(b),
+                        None => rng.fill(&mut msg),
+                    }
+                    let mut scalar = Poly1305::with_level(key, Level::Avx2);
+                    scalar.update(&msg);
+                    let want = scalar.finalize();
+                    let mut wide = Poly1305::with_level(key, Level::Wide);
+                    wide.update(&msg);
+                    assert_eq!(wide.finalize(), want, "len {len}");
+                    // Split updates (each long enough for the kernel).
+                    let mut wide = Poly1305::with_level(key, Level::Wide);
+                    for c in msg.chunks(300) {
+                        wide.update(c);
+                    }
+                    assert_eq!(wide.finalize(), want, "len {len} split");
+                }
+            }
+        }
     }
 }

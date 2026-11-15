@@ -28,6 +28,27 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 性能：`only-crypto` 中基于 AVX-512 与 IFMA 的 ChaCha20-Poly1305，TLS 记录非原地加解密
+
+在 x86_64 上，ChaCha20-Poly1305 加密 16 KiB 为 4,597 MB/s（之前 1,752，ring 的 1.30 倍），1400 B 为
+2,541（1,070，ring 的 0.96 倍），64 B 为 412（283，0.83 倍）；使用 TLS_CHACHA20_POLY1305_SHA256 的
+TLS 1.3 记录在 16 KiB 时从 rustls + ring 的 0.55 倍提升到 1.42 倍，1 KiB 时从 0.64 倍提升到 1.02 倍
+（AMD Ryzen 7 7800X3D；docs/BENCHMARKS.zh-CN.md）。API 不变。
+
+- ChaCha20 在 zmm 寄存器中每次迭代处理 16 个分组，使用 `vprold` 循环移位，消息余下部分用一组 16、8（ymm）
+  或 4（xmm）个分组处理，均为 `asm!` 内核（`chacha::hw::avx512`；AVX-512 intrinsic 在 MSRV 上不稳定）。
+  没有 AVX-512 的 CPU 仍走 AVX2 路径。
+- 对 256 字节及以上的连续分组，Poly1305 在 AVX-512 IFMA 上每步处理 8 个分组（`chacha::hw::ifma`，在 44 位
+  limb 上使用 `vpmadd52luq` / `vpmadd52huq`），经 `Feature::Ifma` 检测；其余情况，以及其他 CPU 与 aarch64
+  上，用 2⁶⁴ 进制的标量循环替换 44 位两分组循环（AVX2 路径上 16 KiB 快 1.3 倍）。
+- `ChaCha20Poly1305::encrypt_detached_from` / `decrypt_detached_from`（`#[doc(hidden)]`，与 AES-GCM 的相同）：
+  only-tls 非原地加解密 ChaCha20-Poly1305 记录，不再先复制。`new_avx2` / `new_portable`（`#[doc(hidden)]`）
+  把密钥固定在较窄的路径上，供测试、`crypto_aead` 模糊测试目标与 `examples/chacha-sizes.rs`（按长度与 ring
+  对比）使用。
+- 正确性：0..=600 的每个长度与若干大长度经过 AVX-512 / IFMA、AVX2 与可移植三条路径，覆盖未对齐、原地与
+  非原地、伪造标签、接近回绕的计数器，Poly1305 覆盖全 1 分组与极端的 `r` / `s`，在 Zen 4 上分别在设置与不设置
+  `ONLY_CRYPTO_PORTABLE=1` 时原生运行。`unsafe`：+6 个块，+2 个 `unsafe fn`（docs/unsafe-review.zh-CN.md）。
+
 ### 新增：`only-crypto` 中 P-256 与 X25519 的 aarch64 汇编（尚未做性能测试）
 
 aarch64 上 P-256 的域与群阶运算以及 X25519 阶梯的域运算改用内联汇编（`ec::hw_aarch64`、

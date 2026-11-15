@@ -30,6 +30,30 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Performance: ChaCha20-Poly1305 on AVX-512 and IFMA in `only-crypto`, out-of-place TLS records
+
+On x86_64 ChaCha20-Poly1305 seals 16 KiB at 4,597 MB/s (1,752 before, 1.30× ring), 1400 B at
+2,541 (1,070, 0.96× ring) and 64 B at 412 (283, 0.83×); TLS 1.3 records with
+TLS_CHACHA20_POLY1305_SHA256 went from 0.55× to 1.42× rustls + ring at 16 KiB and from 0.64× to
+1.02× at 1 KiB (AMD Ryzen 7 7800X3D; docs/BENCHMARKS.md). No API change.
+
+- ChaCha20 sixteen blocks per iteration in zmm registers with `vprold` rotations, the rest of a
+  message in one group of sixteen, eight (ymm) or four (xmm) blocks, as `asm!` kernels
+  (`chacha::hw::avx512`; the AVX-512 intrinsics are not stable at the MSRV). AVX2 stays the
+  path for CPUs without AVX-512.
+- Poly1305 eight blocks per step on AVX-512 IFMA (`chacha::hw::ifma`, `vpmadd52luq` /
+  `vpmadd52huq` on 44-bit limbs) for runs of 256 bytes and more, detected through
+  `Feature::Ifma`; elsewhere, and everywhere on other CPUs and on aarch64, a radix-2⁶⁴ scalar
+  loop replaces the 44-bit two-block one (1.3× at 16 KiB on the AVX2 path).
+- `ChaCha20Poly1305::encrypt_detached_from` / `decrypt_detached_from` (`#[doc(hidden)]`, like the
+  AES-GCM ones): only-tls seals and opens ChaCha20-Poly1305 records out of place instead of
+  copying first. `new_avx2` / `new_portable` (`#[doc(hidden)]`) pin a key to a narrower path
+  for tests, the `crypto_aead` fuzz target and `examples/chacha-sizes.rs` (sizes against ring).
+- Correctness: every length 0..=600 and large sizes through the AVX-512 / IFMA, AVX2 and
+  portable paths, misaligned, in place and out of place, forged tags, counters near the wrap,
+  Poly1305 on all-ones blocks and extreme `r` / `s`, run natively on Zen 4 with and without
+  `ONLY_CRYPTO_PORTABLE=1`. `unsafe`: +6 blocks, +2 `unsafe fn` (docs/unsafe-review.md).
+
 ### Added: aarch64 assembly for P-256 and X25519 in `only-crypto` (not benchmarked yet)
 
 On aarch64 the P-256 field and group-order arithmetic and the X25519 ladder's field now run in
