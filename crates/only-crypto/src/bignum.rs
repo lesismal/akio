@@ -11,6 +11,8 @@ use crate::field::{mont_mul_cios, neg_inv64, redc, sqr_wide};
 
 #[cfg(all(target_arch = "x86_64", not(miri)))]
 mod hw;
+#[cfg(all(target_arch = "x86_64", not(miri)))]
+mod ifma;
 
 /// The largest modulus: 8192 bits.
 pub(crate) const MAX_LIMBS: usize = 128;
@@ -466,6 +468,10 @@ impl Mont {
     /// ([`lookup`]).
     pub(crate) fn pow(&self, base: &[u64], e: &[u64]) -> Vec<u64> {
         let k = self.m.len();
+        #[cfg(all(target_arch = "x86_64", not(miri)))]
+        if ifma::enabled() && ifma::digits(k).is_some() && hw::avx2_enabled() {
+            return ifma::pow(self, base, e, WINDOW);
+        }
         let entries = 1 << WINDOW;
         // table[j] = base^j: even entries by squaring, odd ones by one multiplication.
         let mut table = vec![0u64; entries * k];
@@ -588,8 +594,8 @@ mod tests {
                 let mut r_m = vec![0u64; k];
                 ct::sub_limbs(&mut r_m, &vec![0u64; k], &m); // R - m
                 let below_m = |v: Vec<u64>| -> Vec<u64> { mont.reduce(&v) };
-                let mut below = vec![vec![0u64; k], one.clone(), m1.clone(), m2.clone()];
-                let mut any = vec![vec![u64::MAX; k], r_m.clone()];
+                let mut below = vec![vec![0u64; k], one, m1, m2];
+                let mut any = vec![vec![u64::MAX; k], r_m];
                 for _ in 0..8 {
                     below.push(below_m(rand_limbs(k)));
                     any.push(rand_limbs(k));
@@ -622,6 +628,53 @@ mod tests {
                     x.copy_from_slice(&f);
                     y.copy_from_slice(&g);
                     assert_eq!(x, y, "chain k={k} step {i}");
+                }
+            }
+        }
+    }
+
+    /// The IFMA exponentiation against square-and-multiply, at each size it covers, with edge
+    /// bases (0, 1, m - 1, R mod m) and exponents (0, 1, all ones), moduli with a full and a
+    /// short top limb.
+    #[cfg(all(target_arch = "x86_64", not(miri)))]
+    #[test]
+    fn ifma_pow_matches() {
+        if !crate::cpu::cpu_has(crate::cpu::Feature::Ifma)
+            || !crate::cpu::cpu_has(crate::cpu::Feature::Avx2)
+        {
+            return;
+        }
+        let mut rng = crate::rand::ChaChaRng::from_seed([20; 32]);
+        let mut rand_limbs = |k: usize| (0..k).map(|_| rng.next_u64()).collect::<Vec<u64>>();
+        for k in [16usize, 24, 32] {
+            for top in [u64::MAX, 1 << 63, 5] {
+                let mut m = rand_limbs(k);
+                m[0] |= 1;
+                m[k - 1] = top;
+                let mont = Mont::new(&m).unwrap();
+                let mut m1 = m.clone();
+                m1[0] -= 1;
+                let bases = [
+                    vec![0u64; k],
+                    mont.one(),
+                    mont.to_mont(&m1),
+                    mont.reduce(&rand_limbs(k)),
+                    mont.reduce(&rand_limbs(k)),
+                ];
+                let mut exps = vec![vec![0u64; k], vec![u64::MAX; k], rand_limbs(k)];
+                exps.push({
+                    let mut e = vec![0u64; k];
+                    e[0] = 1;
+                    e
+                });
+                for b in &bases {
+                    for e in &exps {
+                        assert_eq!(
+                            ifma::pow(&mont, b, e, WINDOW),
+                            mont.pow_vartime(b, e),
+                            "k={k} top={top:x}"
+                        );
+                    }
                 }
             }
         }

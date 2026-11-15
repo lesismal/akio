@@ -30,8 +30,8 @@
 
 use std::arch::asm;
 use std::arch::x86_64::{
-    __m256i, _mm256_and_si256, _mm256_cmpeq_epi64, _mm256_loadu_si256, _mm256_or_si256,
-    _mm256_set1_epi64x, _mm256_setzero_si256, _mm256_storeu_si256,
+    __m256i, _mm256_add_epi64, _mm256_and_si256, _mm256_cmpeq_epi64, _mm256_loadu_si256,
+    _mm256_or_si256, _mm256_set1_epi64x, _mm256_setzero_si256, _mm256_storeu_si256,
 };
 use std::mem::MaybeUninit;
 
@@ -54,10 +54,30 @@ pub(crate) fn avx2_enabled() -> bool {
 /// `idx`. Callers check [`avx2_enabled`] first.
 pub(crate) fn lookup(out: &mut [u64], table: &[u64], k: usize, idx: u64) {
     assert!(k % 4 == 0 && out.len() >= k && cpu::cpu_has(Feature::Avx2));
-    // SAFETY: the CPU has AVX2 (asserted above).
-    unsafe { lookup_avx2(out, table, k, idx) }
+    macro_rules! sizes {
+        ($($v:literal),*) => {
+            match k / 4 {
+                // SAFETY: the CPU has AVX2 (asserted above).
+                $($v => unsafe { lookup_avx2::<$v>(out, table, idx) },)*
+                _ => {
+                    for (o, base) in out[..k].chunks_exact_mut(4).zip((0..k).step_by(4)) {
+                        let col: Vec<u64> = table
+                            .chunks_exact(k)
+                            .flat_map(|e| e[base..base + 4].iter().copied())
+                            .collect();
+                        // SAFETY: as above.
+                        unsafe { lookup_avx2::<1>(o, &col, idx) }
+                    }
+                }
+            }
+        };
+    }
+    sizes!(4, 5, 6, 8, 10, 12, 16);
 }
 
+/// `out[..4V] = table[idx]` for entries of `4V` limbs: one pass over the table with `V`
+/// accumulators.
+///
 /// # Safety
 ///
 /// The CPU must support AVX2.
@@ -65,28 +85,24 @@ pub(crate) fn lookup(out: &mut [u64], table: &[u64], k: usize, idx: u64) {
 // The intrinsics are `unsafe fn`s at the MSRV (1.85) and safe inside `avx2` code on newer
 // compilers.
 #[allow(unused_unsafe)]
-unsafe fn lookup_avx2(out: &mut [u64], table: &[u64], k: usize, idx: u64) {
+unsafe fn lookup_avx2<const V: usize>(out: &mut [u64], table: &[u64], idx: u64) {
     // SAFETY: AVX2 (the caller's contract); register-only intrinsics plus unaligned 32-byte
     // loads from 4-limb chunks of live table entries and stores into 4-limb chunks of `out`.
     unsafe {
         let idx = _mm256_set1_epi64x(idx as i64);
-        // Blocks of up to 16 limbs (four accumulators), each scanned over all entries.
-        for base in (0..k).step_by(16) {
-            let width = (k - base).min(16);
-            let mut acc = [_mm256_setzero_si256(); 4];
-            for (j, entry) in table.chunks_exact(k).enumerate() {
-                let m = _mm256_cmpeq_epi64(_mm256_set1_epi64x(j as i64), idx);
-                for (a, c) in acc
-                    .iter_mut()
-                    .zip(entry[base..base + width].chunks_exact(4))
-                {
-                    let v = _mm256_loadu_si256(c.as_ptr().cast::<__m256i>());
-                    *a = _mm256_or_si256(*a, _mm256_and_si256(m, v));
-                }
+        let one = _mm256_set1_epi64x(1);
+        let mut j = _mm256_setzero_si256();
+        let mut acc = [_mm256_setzero_si256(); V];
+        for entry in table.chunks_exact(4 * V) {
+            let m = _mm256_cmpeq_epi64(j, idx);
+            j = _mm256_add_epi64(j, one);
+            for (a, c) in acc.iter_mut().zip(entry.chunks_exact(4)) {
+                let v = _mm256_loadu_si256(c.as_ptr().cast::<__m256i>());
+                *a = _mm256_or_si256(*a, _mm256_and_si256(m, v));
             }
-            for (a, o) in acc.iter().zip(out[base..base + width].chunks_exact_mut(4)) {
-                _mm256_storeu_si256(o.as_mut_ptr().cast::<__m256i>(), *a);
-            }
+        }
+        for (a, o) in acc.iter().zip(out.chunks_exact_mut(4)) {
+            _mm256_storeu_si256(o.as_mut_ptr().cast::<__m256i>(), *a);
         }
     }
 }
