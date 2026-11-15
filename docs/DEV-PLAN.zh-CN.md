@@ -21,7 +21,7 @@ only/
 │  ├─ only-uring/             # io_uring reactor
 │  ├─ only-ebpf/              # eBPF 加速层（aya），feature 门控
 │  ├─ only-dpdk/              # DPDK reactor + 用户态栈，feature 门控
-│  ├─ only-tls/               # rustls sans-io 集成（+ kTLS 可选）
+│  ├─ only-tls/               # 自研 TLS 1.3/1.2，sans-io（kTLS 已评估，未采用）
 │  ├─ only-http/              # HTTP/1.x、HTTP/2、Router、Context、静态文件
 │  ├─ only-ws/                # WebSocket
 │  ├─ only-mux/               # 同端口多协议嗅探
@@ -111,7 +111,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] UDP 客户端：`Engine::dial_udp`（配合 `EngineBuilder::udp_client_threads`，或使用某个 UDP listener 的线程）：每个拨出的连接有自己 `connect` 过的 socket，因此有独立本地端口；`on_open` 立即执行，每个数据报一次 `on_data`，支持空闲超时与 `close()`；收到 ICMP“端口不可达”会以 `ConnectionRefused` 结束连接。已测试：对 only UDP 服务端（30 个并发拨号 = 30 个不同 peer）、关闭的端口、不应答的服务端、跨线程发送
 - [x] UDP 批量化（Linux）：服务端与拨号 socket 均用 `recvmmsg`；同一接收批次的回复跨 peer 用 `sendmmsg` 发出，同一 peer 的等长数据报合并为 UDP GSO（运行时探测，遇 EIO/EINVAL 永久回退，`ONLY_UDP_GSO=0` 可关闭）；新增 `Conn::send_segments`，only-quic 每次最多发送 10 个数据报；可选 GRO（`Config::udp_gro`）；`Config::udp_max_peers` 限制 peer 数并计数（`Engine::udp_stats`）。突发发送时每数据报服务端 CPU 降低 30–46%，64 B echo 约 +19%。未完成：无连接的 `DatagramsHandler`；io_uring UDP 经评估暂不值得（recvmmsg/sendmmsg 已按批处理）；真实网卡上的测量
 - [x] `only-tls`：rustls 以 sans-io 方式通过 `Conn` 之下的 `Transport` 层驱动（服务端与客户端；`Tls::server` / `Tls::client` 包装任意 acceptor，handler 看到明文），握手在 IO 线程内完成，握手期间发送的应用数据先缓存，`close_after_send` 发送 close_notify，`tls_info`（ALPN、SNI、版本）。会话票据、SNI 证书选择、客户端认证、版本：通过 rustls 自己的配置。已在 epoll 与 io_uring 上测试：echo（3 MiB）、ALPN/SNI、明文垃圾数据与不受信证书的客户端、TLS 上的 `spawn_blocking` + 有序槽、only 拨 only
-- [ ] kTLS 评估（未开始）；TLS 1.3 early data 与客户端证书辅助函数留给 rustls 配置
+- [x] kTLS 评估（2026-11-16）：未采用。Linux 7.0 的软件 kTLS 在所有情形下都比 only-tls 自己的记录层慢（TLS 上的 HTTP/1.1，`tools/bench/ktls.sh`：1 KiB 为 0.83 倍，16 KiB 为 0.65 倍，256 KiB 为 0.40 倍，10 MB 文件用 `sendfile` 对比 pread + 加密为 0.48 倍；每字节服务器 CPU 为 1.3–2.5 倍；内核把每个 16 KiB 记录单独推给 TCP）。见 docs/BENCHMARKS.zh-CN.md“内核 TLS（kTLS）评估”。卸载代码保留在 only-tls 的 `experimental-ktls` feature 之后（测试流、ktls-bench、对 OpenSSL/Go 互通 107/107），未接入 `Tls` 或引擎；在支持 TLS 卸载的网卡上值得重测。客户端证书用 only-tls 自己的构建器配置（`client_cert`、`client_auth_required` / `client_auth_optional`）；TLS 1.3 early data 与 QUIC 0-RTT 一起在性能优化第二轮中跟进。
 - [x] 测试：整套 engine/offload/stress 测试在 epoll 与 io_uring 上都跑（`ONLY_TEST_BACKEND=uring`，Linux CI 也跑）；跨后端混合 listener。另已完成：阻塞投递测试（IO 线程不被阻塞、完成回调在 IO 线程且带 handler 状态、池满、连接提前关闭、有序、槽丢弃、慢回调）
 - **交付**：`examples/blocking-offload`（已完成）、后端对比 benchmark 报告（已完成：[BENCHMARKS.zh-CN.md](BENCHMARKS.zh-CN.md)）
 
