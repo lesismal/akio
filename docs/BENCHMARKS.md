@@ -172,6 +172,21 @@ figure (202/s) is an artifact of the old stack under this harness and is left ou
 handshake row moved from 6,640 to ~9,300 before this pass through the P-256 and X25519 work in
 only-crypto.
 
+**After the HTTP/3 pass** (2026-11-16, same host and pinning, `dbc7563f` → after, median of seven
+alternating rounds; the HTTP/3 row is a later run on a quiet host, bulk and handshakes come from
+a run with outside load in some rounds):
+
+| Case | before | after | after / before |
+|---|---:|---:|---:|
+| HTTP/3 GET, one connection, 64 in flight | 429,038 req/s (407,591–451,293) | 838,721 req/s (837,994–842,671) | 1.95 |
+| bulk, one stream, 2 GiB | 16,414 Mbit/s (15,536–16,573) | 17,255 Mbit/s (16,693–17,467) | 1.05 |
+| full handshakes, 8 in flight | 8,452/s (8,417–8,479) | 8,513/s (8,319–8,542) | 1.01 |
+
+Profile of the HTTP/3 case (`perf`, both ends in one process): the allocator 31.8% → 11.2% of
+the samples, SipHash 7.3% → 0.1%; only-quic and the kernel now take the larger shares (21.6% and
+27.8%). The keyed hasher alone (SipHash build of the same tree against it, seven rounds): bulk
+16,836 → 17,366 Mbit/s (+3%), HTTP/3 flat.
+
 ### TLS 1.3 in memory (`crates/only-tls/examples/tls-bench.rs`, CPU 2)
 
 Both ends in one thread, the same self-signed ECDSA P-256 certificate verified by the client, no
@@ -589,6 +604,14 @@ Short summaries of the per-area passes; the full tables are in the git history o
   and the QUIC timer armed once per batch (15.2 → 16.2). HTTP/3 +3–4%, handshakes flat. 64-byte
   UDP echo with GRO on and off (15 alternating rounds each): within the noise of the case
   (±15% at 64 peers; −0.3% to −0.9% with one exchange in flight).
+- **HTTP/3** (this host, CPUs 2–5, same-run old/new rounds, `dbc7563f` → after): frames read in
+  place, field sections decoded into one reused buffer and copied once into `Headers`, HEADERS
+  QPACK-encoded straight into the output with one QUIC write per response, static-table lookups
+  without SipHash maps (445 k → 730 k req/s); in-order stream ACKs without the range tree
+  (+3.5%), whole requests kept out of the stream table (+2.5%), QPACK integers inline (+2%), the
+  first send chunk of a stream inline (+3%), response headers sized once (+1%). 429 k → 839 k
+  req/s in all (1.95×). A keyed folded-multiply hasher replaced SipHash on only-quic's
+  connection-ID, connection and peer-address tables: bulk +3%.
 - **P-256 point formulas** (this host, CPU 2, median of five alternating rounds on a quiet host,
   `1376b324` → after): OpenSSL's `ecp_nistz256` addition, mixed addition and doubling order in the
   whole-point assembly, a shorter reduction step. Against ring in the same run: ECDH 1.08× →

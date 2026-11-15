@@ -99,6 +99,13 @@ way (`send` for a complete response, `start_stream` returning a `BodySink` for a
 only-h3 implements those sinks on QUIC streams, which is why routers, middleware and handlers
 work unchanged. See [Architecture](../architecture.md).
 
+What a request costs: frames are read in place from the received stream data, the field section
+is decoded into a buffer the connection reuses and copied once into the request's `Headers`, and
+the response's HEADERS frame is QPACK-encoded straight into the buffer handed to QUIC, together
+with a body of up to 16 KiB and the trailers (one write per response; a larger body follows
+without a copy). One connection with 64 requests in flight serves about 840 k req/s on a
+Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md)).
+
 ## Not done
 
 curl/quiche interop runs, WebSocket over HTTP/3 (extended CONNECT), the QPACK dynamic table

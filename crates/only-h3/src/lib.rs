@@ -32,7 +32,9 @@ mod frame;
 pub mod qpack;
 mod table;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{BuildHasherDefault, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -46,6 +48,32 @@ pub use client::{H3Client, H3Error};
 pub use frame::code;
 
 use frame::Reader;
+use qpack::FieldBuf;
+
+/// Hashes stream IDs for the per-connection stream tables: SipHash (the default) showed up in
+/// HTTP/3 profiles. IDs are chosen by the peer, but a table is bounded by the stream limits we
+/// grant, so collisions cannot grow it; the multiply-and-fold spreads the IDs (which step by 4)
+/// over every bucket.
+#[derive(Default)]
+pub(crate) struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(self.0 << 8 | u64::from(b));
+        }
+    }
+    fn write_u64(&mut self, n: u64) {
+        let h = (self.0 ^ n).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        self.0 = h ^ (h >> 29);
+    }
+}
+
+/// A table keyed by stream ID.
+pub(crate) type StreamMap<V> = HashMap<StreamId, V, BuildHasherDefault<IdHasher>>;
 
 /// Server limits.
 #[derive(Clone, Debug)]
@@ -92,8 +120,9 @@ pub fn serve_with<S: Service>(
         cfg: cfg.clone(),
         peer: c.remote_addr(),
         peer_ctrl: None,
-        uni: HashMap::new(),
-        reqs: HashMap::new(),
+        uni: StreamMap::default(),
+        reqs: StreamMap::default(),
+        fields: FieldBuf::default(),
     })
 }
 
@@ -219,9 +248,11 @@ pub(crate) fn on_uni(
 #[derive(Default)]
 struct Req {
     r: Reader,
-    fields: Option<qpack::Fields>,
+    /// The request from the first HEADERS frame (`Err` if malformed, answered once the stream
+    /// ends) and whether it is a HEAD request.
+    head: Option<Result<(Request, bool), ()>>,
     body: Vec<u8>,
-    trailers: Option<qpack::Fields>,
+    trailers: Option<Result<Headers, ()>>,
     done: bool,
 }
 
@@ -230,8 +261,10 @@ struct ServerConn<S> {
     cfg: Arc<H3Config>,
     peer: SocketAddr,
     peer_ctrl: Option<StreamId>,
-    uni: HashMap<StreamId, Uni>,
-    reqs: HashMap<StreamId, Req>,
+    uni: StreamMap<Uni>,
+    reqs: StreamMap<Req>,
+    /// Field sections are decoded here, then copied once into the request's `Headers`.
+    fields: FieldBuf,
 }
 
 /// Why a request stream stopped being read.
@@ -243,8 +276,16 @@ enum Fail {
 
 impl<S: Service> ServerConn<S> {
     fn on_req(&mut self, c: &Connection, id: StreamId, data: &[u8], fin: bool) -> Result<(), Fail> {
-        let req = self.reqs.entry(id).or_default();
-        let Some((request, head_only)) = read_req(req, &self.cfg, self.peer, data, fin)? else {
+        // A request that arrives whole (the usual case) is read without entering the table.
+        let mut whole = Req::default();
+        let req = if fin && !self.reqs.contains_key(&id) {
+            &mut whole
+        } else {
+            self.reqs.entry(id).or_default()
+        };
+        let Some((request, head_only)) =
+            read_req(req, &self.cfg, self.peer, &mut self.fields, data, fin)?
+        else {
             return Ok(());
         };
         let sink = Box::new(Sink {
@@ -257,48 +298,60 @@ impl<S: Service> ServerConn<S> {
     }
 }
 
-/// Reads a request stream's bytes; the request once the stream has ended (`fin`).
+/// Reads a request stream's bytes; the request once the stream has ended (`fin`). Frames are
+/// read in place and field sections decoded into `fields`, so a request that arrives whole
+/// costs no copy before its `Headers` are built.
 fn read_req(
     req: &mut Req,
     cfg: &H3Config,
     peer: SocketAddr,
+    fields: &mut FieldBuf,
     data: &[u8],
     fin: bool,
 ) -> Result<Option<(Request, bool)>, Fail> {
-    {
-        let max_field = cfg.max_field_section_bytes;
-        let max_frame = (cfg.max_body_bytes + max_field) as u64;
-        if req.done {
-            return Ok(None);
-        }
-        req.r.push(data);
-        loop {
-            let f = req.r.frame(max_frame).map_err(|_| Fail::Status(413))?;
-            let Some((ty, p)) = f else { break };
+    let max_field = cfg.max_field_section_bytes;
+    let max_frame = (cfg.max_body_bytes + max_field) as u64;
+    if req.done {
+        return Ok(None);
+    }
+    let Req {
+        r,
+        head,
+        body,
+        trailers,
+        ..
+    } = req;
+    r.feed(
+        data,
+        max_frame,
+        || Fail::Status(413),
+        |ty, p| {
             match ty {
                 frame::HEADERS => {
-                    let fields = qpack::decode(&p, max_field).map_err(|e| match e {
+                    qpack::decode_into(p, max_field, fields).map_err(|e| match e {
                         qpack::QpackError::Decompression => {
                             Fail::Conn(code::QPACK_DECOMPRESSION_FAILED)
                         }
                         qpack::QpackError::TooLarge => Fail::Status(431),
                     })?;
-                    if req.fields.is_none() {
-                        req.fields = Some(fields);
-                    } else if req.trailers.is_none() {
-                        req.trailers = Some(fields);
+                    if head.is_none() {
+                        *head = Some(request_head(fields, peer).ok_or(()));
+                    } else if trailers.is_none() {
+                        let mut t = Headers::with_capacity(fields.len(), fields.bytes());
+                        let ok = fields.strs().and_then(|f| header_list(f, &mut t));
+                        *trailers = Some(ok.map(|()| t).ok_or(()));
                     } else {
                         return Err(Fail::Conn(code::FRAME_UNEXPECTED));
                     }
                 }
                 frame::DATA => {
-                    if req.fields.is_none() || req.trailers.is_some() {
+                    if head.is_none() || trailers.is_some() {
                         return Err(Fail::Conn(code::FRAME_UNEXPECTED));
                     }
-                    if req.body.len() + p.len() > cfg.max_body_bytes {
+                    if body.len() + p.len() > cfg.max_body_bytes {
                         return Err(Fail::Status(413));
                     }
-                    req.body.extend_from_slice(&p);
+                    body.extend_from_slice(p);
                 }
                 frame::SETTINGS
                 | frame::GOAWAY
@@ -308,40 +361,44 @@ fn read_req(
                 t if h2_only(t) => return Err(Fail::Conn(code::FRAME_UNEXPECTED)),
                 _ => {}
             }
-        }
-        if !fin {
-            return Ok(None);
-        }
-        req.done = true;
-        let fields = req
-            .fields
-            .take()
-            .ok_or(Fail::Stream(code::REQUEST_INCOMPLETE))?;
-        let body = std::mem::take(&mut req.body);
-        let trailers = req.trailers.take();
-        build_request(fields, trailers, body, peer)
-            .ok_or(Fail::Stream(code::MESSAGE_ERROR))
-            .map(Some)
+            Ok(())
+        },
+    )?;
+    if !fin {
+        return Ok(None);
     }
+    req.done = true;
+    let head = req
+        .head
+        .take()
+        .ok_or(Fail::Stream(code::REQUEST_INCOMPLETE))?;
+    let body = std::mem::take(&mut req.body);
+    let trailers = req.trailers.take();
+    finish_request(head, trailers, body)
+        .ok_or(Fail::Stream(code::MESSAGE_ERROR))
+        .map(Some)
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
 
-fn header_list(fields: qpack::Fields, out: &mut Headers) -> Option<()> {
+/// Appends regular fields to `out`; `None` if one is malformed (a pseudo-header, an uppercase
+/// or connection-specific name, `te` other than `trailers`, not UTF-8).
+fn header_list<'a>(
+    fields: impl Iterator<Item = (&'a str, &'a str)>,
+    out: &mut Headers,
+) -> Option<()> {
     for (n, v) in fields {
-        let n = String::from_utf8(n).ok()?;
         if n.starts_with(':') || n.bytes().any(|b| b.is_ascii_uppercase()) {
             return None;
         }
         if matches!(
-            n.as_str(),
+            n,
             "connection" | "keep-alive" | "proxy-connection" | "transfer-encoding" | "upgrade"
         ) {
             return None;
         }
-        let v = String::from_utf8(v).ok()?;
         if n == "te" && v != "trailers" {
             return None;
         }
@@ -350,27 +407,21 @@ fn header_list(fields: qpack::Fields, out: &mut Headers) -> Option<()> {
     Some(())
 }
 
-/// A request from its field sections; `None` if malformed (RFC 9114 §4.1.2).
-fn build_request(
-    fields: qpack::Fields,
-    trailers: Option<qpack::Fields>,
-    body: Vec<u8>,
-    peer: SocketAddr,
-) -> Option<(Request, bool)> {
+/// A request (without its body) from its field section; `None` if malformed (RFC 9114
+/// §4.1.2).
+fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> {
     let (mut method, mut scheme, mut authority, mut path) = (None, None, None, None);
-    let mut regular = Vec::new();
     let mut in_pseudo = true;
-    for (n, v) in fields {
-        if n.first() == Some(&b':') {
+    for (n, v) in fields.strs()? {
+        if n.starts_with(':') {
             if !in_pseudo {
                 return None;
             }
-            let v = String::from_utf8(v).ok()?;
-            let slot = match n.as_slice() {
-                b":method" => &mut method,
-                b":scheme" => &mut scheme,
-                b":authority" => &mut authority,
-                b":path" => &mut path,
+            let slot = match n {
+                ":method" => &mut method,
+                ":scheme" => &mut scheme,
+                ":authority" => &mut authority,
+                ":path" => &mut path,
                 _ => return None,
             };
             if slot.replace(v).is_some() {
@@ -378,47 +429,53 @@ fn build_request(
             }
         } else {
             in_pseudo = false;
-            regular.push((n, v));
         }
     }
-    let method = Method::parse(&method?);
+    let method = Method::parse(method?);
     if method == Method::Connect {
         if scheme.is_some() || path.is_some() || authority.is_none() {
             return None;
         }
-    } else if scheme.is_none() || path.as_deref().is_none_or(str::is_empty) {
+    } else if scheme.is_none() || path.is_none_or(str::is_empty) {
         return None;
     }
-    let mut headers = Headers::new();
-    header_list(regular, &mut headers)?;
-    if let Some(a) = authority.as_deref() {
+    let mut headers = Headers::with_capacity(fields.len() + 1, fields.bytes() + 4);
+    header_list(
+        fields.strs()?.filter(|(n, _)| !n.starts_with(':')),
+        &mut headers,
+    )?;
+    if let Some(a) = authority {
         if headers.get("host").is_none() {
-            headers.set("host", a);
+            headers.append("host", a);
         }
     }
-    if let Some(cl) = headers.get("content-length") {
+    let head_only = method == Method::Head;
+    let target = path.or(authority).unwrap_or_default();
+    let mut r = Request::new(method, target);
+    r.version = Version::Http3;
+    r.headers = headers;
+    r.peer = peer;
+    Some((r, head_only))
+}
+
+/// The request once its stream has ended; `None` if malformed (bad fields or trailers, or a
+/// `content-length` that is not the body's).
+fn finish_request(
+    head: Result<(Request, bool), ()>,
+    trailers: Option<Result<Headers, ()>>,
+    body: Vec<u8>,
+) -> Option<(Request, bool)> {
+    let (mut r, head_only) = head.ok()?;
+    if let Some(cl) = r.headers.get("content-length") {
         if cl.parse::<usize>().ok()? != body.len() {
             return None;
         }
     }
-    let mut tr = Headers::new();
     if let Some(t) = trailers {
-        header_list(t, &mut tr)?;
+        r.trailers = t.ok()?;
     }
-    let head_only = method == Method::Head;
-    let target = path.unwrap_or_else(|| authority.clone().unwrap_or_default());
-    Some((
-        {
-            let mut v = Request::new(method, target);
-            v.version = Version::Http3;
-            v.headers = headers;
-            v.trailers = tr;
-            v.body = body;
-            v.peer = peer;
-            v
-        },
-        head_only,
-    ))
+    r.body = body;
+    Some((r, head_only))
 }
 
 impl<S: Service> QuicHandler for ServerConn<S> {
@@ -432,20 +489,21 @@ impl<S: Service> QuicHandler for ServerConn<S> {
     }
 
     fn on_stream_opened(&mut self, _c: &Connection, id: StreamId) {
+        // Request streams get their state with their first bytes that do not end them.
         if id.dir() == Dir::Uni {
             self.uni.insert(id, Uni::Unknown(Reader::default()));
-        } else {
-            self.reqs.insert(id, Req::default());
         }
     }
 
     fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
-        if let Some(u) = self.uni.get_mut(&id) {
-            let mut stop = |id, e| {
-                let _ = c.stop(id, e);
-            };
-            if let Err(e) = on_uni(u, &mut self.peer_ctrl, &mut stop, id, &data, fin, true) {
-                c.close(e, b"");
+        if id.dir() == Dir::Uni {
+            if let Some(u) = self.uni.get_mut(&id) {
+                let mut stop = |id, e| {
+                    let _ = c.stop(id, e);
+                };
+                if let Err(e) = on_uni(u, &mut self.peer_ctrl, &mut stop, id, &data, fin, true) {
+                    c.close(e, b"");
+                }
             }
             return;
         }
@@ -491,30 +549,95 @@ impl<S: Service> QuicHandler for ServerConn<S> {
     }
 }
 
-/// Response fields, lowercase, without connection-specific ones.
-pub(crate) fn encode_fields(first: &[(&str, &str)], headers: &Headers) -> Vec<u8> {
-    let mut list: Vec<(String, String)> = first
-        .iter()
-        .map(|(n, v)| (n.to_string(), v.to_string()))
-        .collect();
-    for (n, v) in headers.iter() {
-        let n = n.to_ascii_lowercase();
-        if matches!(
-            n.as_str(),
-            "connection"
-                | "keep-alive"
-                | "proxy-connection"
-                | "transfer-encoding"
-                | "upgrade"
-                | "host"
-        ) {
-            continue;
+/// Decimal digits of `n`, at the end of `buf`.
+fn digits(buf: &mut [u8; 20], mut n: u64) -> &[u8] {
+    let mut i = buf.len();
+    loop {
+        i -= 1;
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            return &buf[i..];
         }
-        list.push((n, v.replace(['\r', '\n'], "")));
     }
-    let mut out = Vec::new();
-    qpack::encode(list.iter().map(|(n, v)| (n.as_str(), v.as_str())), &mut out);
-    out
+}
+
+thread_local! {
+    /// The current second and its IMF-fixdate.
+    static DATE: RefCell<(u64, String)> = const { RefCell::new((0, String::new())) };
+}
+
+/// Calls `f` with the current HTTP date, formatted once a second per thread.
+fn with_date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    DATE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != secs || c.1.is_empty() {
+            *c = (secs, only_http::message::http_date_now());
+        }
+        f(c.1.as_bytes())
+    })
+}
+
+/// Calls `f` with `n` lowercased (borrowed when it already is).
+fn with_lower<R>(n: &str, f: impl FnOnce(&[u8]) -> R) -> R {
+    let b = n.as_bytes();
+    if !b.iter().any(u8::is_ascii_uppercase) {
+        return f(b);
+    }
+    let mut stack = [0u8; 64];
+    if let Some(t) = stack.get_mut(..b.len()) {
+        t.copy_from_slice(b);
+        t.make_ascii_lowercase();
+        f(t)
+    } else {
+        f(&b.to_ascii_lowercase())
+    }
+}
+
+/// Appends a HEADERS frame, its field section encoded straight into `out`: `pseudo` fields,
+/// then `headers` (names lowercased, connection-specific fields and `host` dropped, CR and LF
+/// removed from values), then `date` when `add_date` and the headers have none, then
+/// `content-length` when given and the headers have none.
+pub(crate) fn put_head(
+    out: &mut Vec<u8>,
+    pseudo: &[(&[u8], &[u8])],
+    headers: &Headers,
+    add_date: bool,
+    content_length: Option<u64>,
+) {
+    let at = frame::begin_frame(out, frame::HEADERS);
+    out.extend_from_slice(&qpack::PREFIX);
+    for &(n, v) in pseudo {
+        qpack::encode_line(out, n, v);
+    }
+    let (mut has_date, mut has_len) = (false, false);
+    for (n, v) in headers.iter() {
+        with_lower(n, |n| {
+            match n {
+                b"connection" | b"keep-alive" | b"proxy-connection" | b"transfer-encoding"
+                | b"upgrade" | b"host" => return,
+                b"date" => has_date = true,
+                b"content-length" => has_len = true,
+                _ => {}
+            }
+            if v.contains(['\r', '\n']) {
+                let v: Vec<u8> = v.bytes().filter(|&b| b != b'\r' && b != b'\n').collect();
+                qpack::encode_line(out, n, &v);
+            } else {
+                qpack::encode_line(out, n, v.as_bytes());
+            }
+        });
+    }
+    if add_date && !has_date {
+        with_date(|d| qpack::encode_line(out, b"date", d));
+    }
+    if let (Some(len), false) = (content_length, has_len) {
+        qpack::encode_line(out, b"content-length", digits(&mut [0; 20], len));
+    }
+    frame::end_frame(out, at);
 }
 
 pub(crate) fn data_frame(data: &[u8]) -> Vec<u8> {
@@ -522,6 +645,10 @@ pub(crate) fn data_frame(data: &[u8]) -> Vec<u8> {
     frame::put_frame(&mut f, frame::DATA, data);
     f
 }
+
+/// Bodies up to this size are copied behind the response head and sent with it; larger ones
+/// are handed to QUIC as they are, after a DATA frame header.
+const COPY_BODY_MAX: usize = 16 << 10;
 
 /// Answers a request stream.
 struct Sink {
@@ -531,30 +658,30 @@ struct Sink {
 }
 
 impl Sink {
-    fn head(&self, resp: &mut Response, streaming: bool) -> bool {
+    /// The HEADERS frame of `resp` in a buffer with room for `extra` more bytes, and whether a
+    /// body may follow.
+    fn head(&self, resp: &Response, streaming: bool, extra: usize) -> (Vec<u8>, bool) {
         let bodyless = resp.status < 200 || resp.status == 204 || resp.status == 304;
-        if resp.headers.get("date").is_none() {
-            resp.headers
-                .set("date", only_http::message::http_date_now());
-        }
-        if !bodyless && !streaming && resp.headers.get("content-length").is_none() {
-            resp.headers
-                .set("content-length", resp.body_len().to_string());
-        }
-        let status = resp.status.to_string();
-        let block = encode_fields(&[(":status", &status)], &resp.headers);
-        let mut f = Vec::with_capacity(block.len() + 9);
-        frame::put_frame(&mut f, frame::HEADERS, &block);
-        let _ = self.c.send(self.id, f);
-        !(bodyless || self.head_only)
+        let len = (!bodyless && !streaming).then(|| resp.body_len());
+        let hint: usize = resp
+            .headers
+            .iter()
+            .map(|(n, v)| n.len() + v.len() + 4)
+            .sum();
+        let mut out = Vec::with_capacity(hint + 64 + extra);
+        let mut b = [0; 20];
+        let status = digits(&mut b, u64::from(resp.status));
+        put_head(&mut out, &[(b":status", status)], &resp.headers, true, len);
+        (out, !(bodyless || self.head_only))
     }
 
-    fn trailers_and_finish(&self, trailers: Option<Headers>) {
+    /// Appends the trailers' HEADERS frame (if any) to `out`, sends it and ends the stream.
+    fn trailers_and_finish(&self, mut out: Vec<u8>, trailers: Option<Headers>) {
         if let Some(t) = trailers.filter(|t| !t.is_empty() && !self.head_only) {
-            let block = encode_fields(&[], &t);
-            let mut f = Vec::new();
-            frame::put_frame(&mut f, frame::HEADERS, &block);
-            let _ = self.c.send(self.id, f);
+            put_head(&mut out, &[], &t, false, None);
+        }
+        if !out.is_empty() {
+            let _ = self.c.send(self.id, out);
         }
         let _ = self.c.finish(self.id);
     }
@@ -562,10 +689,13 @@ impl Sink {
 
 impl ResponseSink for Sink {
     fn send(self: Box<Self>, mut resp: Response) {
-        let body = self.head(&mut resp, false);
+        let small = resp.file.is_none() && resp.body.len() <= COPY_BODY_MAX;
+        let extra = if small { resp.body.len() + 9 } else { 9 };
+        let (mut out, body) = self.head(&resp, false, extra);
         if body {
             if let Some(fb) = resp.file.take() {
                 use std::os::unix::fs::FileExt;
+                let _ = self.c.send(self.id, std::mem::take(&mut out));
                 let mut off = fb.offset;
                 let end = fb.offset + fb.len;
                 let mut buf = vec![0u8; 256 << 10];
@@ -582,18 +712,27 @@ impl ResponseSink for Sink {
                         }
                     }
                 }
-            } else if !resp.body.is_empty() {
-                let _ = self.c.send(self.id, data_frame(&resp.body));
+            } else if small {
+                if !resp.body.is_empty() {
+                    frame::put_frame(&mut out, frame::DATA, &resp.body);
+                }
+            } else {
+                frame::put_varint(&mut out, frame::DATA);
+                frame::put_varint(&mut out, resp.body.len() as u64);
+                let _ = self.c.send(self.id, out);
+                let _ = self.c.send(self.id, std::mem::take(&mut resp.body));
+                out = Vec::new();
             }
         }
-        self.trailers_and_finish(resp.trailers.take());
+        self.trailers_and_finish(out, resp.trailers.take());
     }
 
-    fn start_stream(self: Box<Self>, mut resp: Response) -> Option<Box<dyn BodySink>> {
+    fn start_stream(self: Box<Self>, resp: Response) -> Option<Box<dyn BodySink>> {
         if self.c.is_closed() {
             return None;
         }
-        let body = self.head(&mut resp, true);
+        let (out, body) = self.head(&resp, true, 0);
+        let _ = self.c.send(self.id, out);
         Some(Box::new(Body { s: *self, body }))
     }
 }
@@ -619,6 +758,136 @@ impl BodySink for Body {
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {
-        self.s.trailers_and_finish(trailers);
+        self.s.trailers_and_finish(Vec::new(), trailers);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decoded(wire: &[u8]) -> Vec<(String, String)> {
+        let mut r = Reader::default();
+        let mut out = Vec::new();
+        r.feed(
+            wire,
+            1 << 20,
+            || (),
+            |ty, p| {
+                assert_eq!(ty, frame::HEADERS);
+                for (n, v) in qpack::decode(p, 1 << 20).unwrap() {
+                    out.push((String::from_utf8(n).unwrap(), String::from_utf8(v).unwrap()));
+                }
+                Ok(())
+            },
+        )
+        .unwrap();
+        out
+    }
+
+    #[test]
+    fn head_encoding() {
+        let mut h = Headers::new();
+        h.append("Content-Type", "text/plain");
+        h.append("Connection", "close");
+        h.append("Host", "x");
+        h.append("X-Split", "a\r\nb");
+        h.append(format!("X-{}", "L".repeat(80)), "long name");
+        let mut out = vec![7];
+        put_head(&mut out, &[(b":status", b"200")], &h, true, Some(1234));
+        let got = decoded(&out[1..]);
+        let long = format!("x-{}", "l".repeat(80));
+        let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                ":status",
+                "content-type",
+                "x-split",
+                long.as_str(),
+                "date",
+                "content-length"
+            ]
+        );
+        assert_eq!(got[2].1, "ab");
+        assert_eq!(got[5].1, "1234");
+        // A date and length already present are kept and not repeated; the block is long
+        // enough to need a two-byte frame length.
+        h.append("date", "d");
+        h.append("content-length", "5");
+        h.append("x-pad", "p".repeat(100));
+        let mut out = Vec::new();
+        put_head(&mut out, &[], &h, true, Some(9));
+        let got = decoded(&out);
+        assert_eq!(got.iter().filter(|(n, _)| n == "date").count(), 1);
+        assert_eq!(
+            got.iter().find(|(n, _)| n == "content-length").unwrap().1,
+            "5"
+        );
+        // `:status 200` and `content-type text/plain` are single static references.
+        let mut h = Headers::new();
+        h.append("content-type", "text/plain");
+        let mut out = Vec::new();
+        put_head(&mut out, &[(b":status", b"200")], &h, false, None);
+        assert_eq!(out, [0x01, 0x04, 0, 0, 0xc0 | 25, 0xc0 | 53]);
+        assert_eq!(digits(&mut [0; 20], 0), b"0");
+        assert_eq!(
+            digits(&mut [0; 20], u64::MAX),
+            u64::MAX.to_string().as_bytes()
+        );
+    }
+
+    #[test]
+    fn request_heads() {
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let head = |fields: &[(&str, &str)]| {
+            let mut b = Vec::new();
+            qpack::encode(fields.iter().copied(), &mut b);
+            let mut f = FieldBuf::default();
+            qpack::decode_into(&b, 1 << 16, &mut f).unwrap();
+            request_head(&f, peer)
+        };
+        let base = [
+            (":method", "GET"),
+            (":scheme", "https"),
+            (":authority", "a.example"),
+            (":path", "/p?q"),
+        ];
+        let (r, head_only) = head(&base).unwrap();
+        assert!(!head_only);
+        assert_eq!((r.target.as_str(), r.version), ("/p?q", Version::Http3));
+        assert_eq!(r.headers.get("host"), Some("a.example"));
+        let mut more = base.to_vec();
+        more.push(("host", "b.example"));
+        more.push(("te", "trailers"));
+        let (r, _) = head(&more).unwrap();
+        assert_eq!(r.headers.get_all("host").collect::<Vec<_>>(), ["b.example"]);
+        for bad in [
+            vec![(":method", "GET"), (":path", "/")],
+            vec![(":method", "GET"), (":scheme", "https"), (":path", "")],
+            vec![(":method", "CONNECT"), (":authority", "a"), (":path", "/")],
+            [&base[..], &[("x", "1"), (":path", "/")]].concat(),
+            [&base[..], &[(":method", "GET")]].concat(),
+            [&base[..], &[(":protocol", "x")]].concat(),
+            [&base[..], &[("X-Up", "1")]].concat(),
+            [&base[..], &[("connection", "close")]].concat(),
+            [&base[..], &[("te", "gzip")]].concat(),
+        ] {
+            assert!(head(&bad).is_none(), "{bad:?}");
+        }
+        let (r, _) = head(&[(":method", "CONNECT"), (":authority", "h:443")]).unwrap();
+        assert_eq!(r.target, "h:443");
+        let (r, head_only) = head(&[
+            (":method", "HEAD"),
+            (":scheme", "https"),
+            (":path", "/"),
+            ("content-length", "2"),
+        ])
+        .unwrap();
+        assert!(head_only);
+        assert!(finish_request(Ok((r.clone(), true)), None, b"ab".to_vec()).is_some());
+        assert!(finish_request(Ok((r.clone(), true)), None, b"abc".to_vec()).is_none());
+        assert!(finish_request(Ok((r, true)), Some(Err(())), b"ab".to_vec()).is_none());
+        assert!(finish_request(Err(()), None, Vec::new()).is_none());
     }
 }
