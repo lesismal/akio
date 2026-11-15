@@ -39,6 +39,10 @@ impl Modulus<4> for P256P {
         if super::hw::enabled() {
             return Some(p256_inv::<super::hw::P256Px>(a));
         }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return Some(p256_inv::<super::hw_aarch64::P256Pa>(a));
+        }
         Some(p256_inv::<Self>(a))
     }
 }
@@ -112,6 +116,10 @@ impl Modulus<4> for P256N {
         if super::hw::enabled() {
             return super::hw::ord_mul(a, b);
         }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return super::hw_aarch64::ord_mul(a, b);
+        }
         mont_mul_cios(a, b, &Self::P, Self::N0)
     }
 
@@ -121,6 +129,10 @@ impl Modulus<4> for P256N {
         if super::hw::enabled() {
             return super::hw::ord_sqr(a);
         }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return super::hw_aarch64::ord_sqr(a);
+        }
         redc::<4, 8>(sqr_wide::<4, 8>(a), &Self::P, Self::N0)
     }
 
@@ -128,6 +140,10 @@ impl Modulus<4> for P256N {
         #[cfg(target_arch = "x86_64")]
         if super::hw::enabled() {
             return Some(p256n_inv::<super::hw::P256Nx>(a));
+        }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return Some(p256n_inv::<super::hw_aarch64::P256Na>(a));
         }
         Some(p256n_inv::<Self>(a))
     }
@@ -216,6 +232,10 @@ impl Curve<4> for P256 {
         if super::hw::enabled() {
             return super::base_mul_impl::<P256X, 4>(d).cast();
         }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return super::base_mul_impl::<super::hw_aarch64::P256A, 4>(d).cast();
+        }
         super::base_mul_impl::<Self, 4>(d)
     }
 
@@ -224,6 +244,10 @@ impl Curve<4> for P256 {
         #[cfg(target_arch = "x86_64")]
         if super::hw::enabled() {
             return super::ecdh_x_impl::<P256X, 4>(d, &q.cast(), out);
+        }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return super::ecdh_x_impl::<super::hw_aarch64::P256A, 4>(d, &q.cast(), out);
         }
         super::ecdh_x_impl::<Self, 4>(d, q, out)
     }
@@ -234,6 +258,10 @@ impl Curve<4> for P256 {
         if super::hw::enabled() {
             return super::sign_impl::<P256X, H, 4>(d, h).cast();
         }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return super::sign_impl::<super::hw_aarch64::P256A, H, 4>(d, h).cast();
+        }
         super::sign_impl::<Self, H, 4>(d, h)
     }
 
@@ -242,6 +270,10 @@ impl Curve<4> for P256 {
         #[cfg(target_arch = "x86_64")]
         if super::hw::enabled() {
             return super::verify_impl::<P256X, 4>(&q.cast(), h, &sig.cast());
+        }
+        #[cfg(target_arch = "aarch64")]
+        if super::hw_aarch64::enabled() {
+            return super::verify_impl::<super::hw_aarch64::P256A, 4>(&q.cast(), h, &sig.cast());
         }
         super::verify_impl::<Self, 4>(q, h, sig)
     }
@@ -498,6 +530,10 @@ mod tests {
         #[cfg(target_arch = "x86_64")]
         if crate::cpu::cpu_has(crate::cpu::Feature::Adx) {
             check::<P256X, 4>();
+        }
+        #[cfg(target_arch = "aarch64")]
+        if crate::cpu::cpu_has(crate::cpu::Feature::Umulh) {
+            check::<crate::ec::hw_aarch64::P256A, 4>();
         }
     }
 

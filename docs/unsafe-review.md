@@ -17,7 +17,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 | `only-uring` | `#![deny(unsafe_code)]`, allowed in `group`, `reactor` and `ring` only | io_uring submission entries point into memory the kernel writes asynchronously; `ring` is the own io_uring binding (setup/enter/register, mmap'd SQ/CQ rings; no `io-uring` crate) |
 | `only-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
 | `only-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` and `sys` only; the TCP/IP stack (`net`) is `#![forbid(unsafe_code)]` | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts); TAP (`/dev/net/tun`, `TUNSETIFF`) and AF_PACKET sockets through `only_sys::ffi` |
-| `only-crypto` | `#![deny(unsafe_code)]`, allowed in the eight CPU-instruction modules `aes::hw`, `gcm::hw` (with `gcm::hw::vaes`), `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw`, `ec::hw`, `curve25519::hw` only | AES-NI / ARMv8 AES, PCLMULQDQ / PMULL, SHA-NI / ARMv8 SHA, SSE4.2 / ARMv8 CRC32 and AVX2 intrinsics (`#[target_feature]` functions), `asm!` for the AES-GCM kernel and the CRC fold on VAES / VPCLMULQDQ + AVX-512 (those intrinsics are newer than the MSRV), `asm!` with BMI2 `mulx` and ADX `adcx`/`adox` for the P-256 and Curve25519 field arithmetic, CPUID / XGETBV for detecting VAES, AVX-512, BMI2 and ADX; each call behind the run-time detection of `cpu.rs`; the portable fallbacks and the rest of the public-key code (bignum arithmetic, point formulas, RSA, DER) are safe Rust |
+| `only-crypto` | `#![deny(unsafe_code)]`, allowed in the ten CPU-instruction modules `aes::hw`, `gcm::hw` (with `gcm::hw::vaes`), `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw`, `ec::hw`, `ec::hw_aarch64`, `curve25519::hw`, `curve25519::hw_aarch64` only | AES-NI / ARMv8 AES, PCLMULQDQ / PMULL, SHA-NI / ARMv8 SHA, SSE4.2 / ARMv8 CRC32 and AVX2 intrinsics (`#[target_feature]` functions), `asm!` for the AES-GCM kernel and the CRC fold on VAES / VPCLMULQDQ + AVX-512 (those intrinsics are newer than the MSRV), `asm!` with BMI2 `mulx` and ADX `adcx`/`adox` (x86_64) or `MUL`/`UMULH` and `ADDS`/`ADCS` chains (aarch64) for the P-256 and Curve25519 field arithmetic, CPUID / XGETBV for detecting VAES, AVX-512, BMI2 and ADX; each call behind the run-time detection of `cpu.rs`; the portable fallbacks and the rest of the public-key code (bignum arithmetic, point formulas, RSA, DER) are safe Rust |
 | every other crate (`only`, `only-core`, `only-x509`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-turn`, `only-dtls`, `only-srtp`, `only-rtp`, `only-sctp`, `only-ice`, `only-webrtc`, `only-media`, `tools/echo-bench`, `tools/protobuf-test`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
 Tests, examples and benches are separate crates; they may use `unsafe` for test-only libc calls
@@ -110,16 +110,18 @@ Miri does not interpret SIMD intrinsics either: under Miri `only-crypto` detects
 and runs its portable code (`cargo +nightly miri test -p only-crypto --lib -- aes:: gcm:: hash::
 crc:: chacha:: field:: ec:: curve25519:: x25519:: …`; it cannot run `asm!` either). The
 CPU-instruction modules are checked instead by comparing every hardware path with the portable
-one (unit tests `hardware_matches_portable` / `hardware_matches_table`, `ec::hw` and
-`curve25519::hw` `matches_portable` on random and edge values, `twin_matches_portable` for the
-P-256 operations), by running all KATs (NIST CAVP, RFC, Wycheproof) twice, normally and with
+one (unit tests `hardware_matches_portable` / `hardware_matches_table`, `ec::hw`,
+`ec::hw_aarch64`, `curve25519::hw` and `curve25519::hw_aarch64` `matches_portable` on random
+and edge values, `chains_match_portable` on long chains of dependent operations,
+`twin_matches_portable` for the P-256 operations), by running all KATs (NIST CAVP, RFC, Wycheproof) twice, normally and with
 `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64, and by the differential fuzz targets
 `crypto_hash`, `crypto_aead` and `crypto_sig_verify`. The `asm!` kernel of `gcm::hw::vaes` never runs under Miri
 (nothing is detected) and is compared with the 128-bit kernel and the portable code at every
 length 0..=600 and at large sizes, misaligned, in place and out of place, with the 32-bit
 counter wrapping, and against ring (`gcm::tests`); those tests must run natively on a CPU with
 VAES and AVX-512 (Zen 4, Ice Lake and later) to cover it; the `ec::hw` and `curve25519::hw`
-comparisons likewise need BMI2 and ADX.
+comparisons likewise need BMI2 and ADX, the `ec::hw_aarch64` and `curve25519::hw_aarch64` ones
+run on every aarch64 machine (macOS on Apple silicon, arm64 Linux in Docker).
 
 ## 5. Inventory
 
@@ -133,10 +135,10 @@ contain no `unsafe`.
 | only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
-| only-crypto | 89 | 63 | 0 | 0 |
+| only-crypto | 102 | 63 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **total** | **242** | **73** | **5** | **21** |
+| **total** | **255** | **73** | **5** | **21** |
 
 By purpose:
 
@@ -157,6 +159,8 @@ By purpose:
 | `only-crypto/src/chacha/hw.rs` | 2, 1 `unsafe fn` | ChaCha20 eight blocks at a time with AVX2 (8×8 transpose back into blocks) | called only after `cpu_has(Feature::Avx2)`; loads and stores are 32-byte pieces of a `&mut [u8; 512]`; the counter of the eight blocks cannot wrap (checked by the caller) |
 | `only-crypto/src/ec/hw.rs` | 8 (x86_64 only) | P-256 in `asm!`: Montgomery multiplication and squaring modulo `p` (special reduction, `-p⁻¹ = 1`) and modulo the order `n`, addition, subtraction, `2ᵏ·a`, `3·a` | reached only after `cpu::has(Feature::Adx)` (BMI2 + ADX): the `P256X` twin curve is entered through `P256`'s dispatch, the scalar field checks before each call, every function debug-asserts it; the blocks read only the 32-byte limb arrays behind their pointer operands (`pure`, `readonly` or `nomem`, `nostack`), write only declared registers, and have no branches (corrections by `cmov`/`sbb` masks) |
 | `only-crypto/src/curve25519/hw.rs` | 5 (x86_64 only) | the X25519 ladder's arithmetic modulo `2²⁵⁵ - 19` on four limbs in `asm!` (multiplication, squaring, `121665·a`, addition, subtraction; folds by `2²⁵⁶ ≡ 38`) | `ladder` is called only after `hw::enabled()` (`cpu::has(Feature::Adx)`), debug-asserted in each function; same memory and register discipline as `ec/hw.rs`, no branches |
+| `only-crypto/src/ec/hw_aarch64.rs` | 8 (aarch64 only) | the aarch64 counterpart of `ec/hw.rs` in `asm!`: Montgomery multiplication and squaring modulo `p` (special reduction without multiplications) and modulo `n`, addition, subtraction, `2ᵏ·a`, `3·a`, with `MUL`/`UMULH`, `ADDS`/`ADCS`/`SUBS`/`SBCS` and `CSEL` | base ARMv8.0-A instructions, present on every aarch64 CPU; reached only when `hw_aarch64::enabled()` (`cpu::has(Feature::Umulh)`, set on aarch64 outside Miri, cleared by `ONLY_CRYPTO_PORTABLE`): the `P256A` twin through `P256`'s dispatch, the scalar field per call; the blocks take every operand in registers and touch no memory (`pure`, `nomem`, `nostack`), write only declared registers, and have no branches (corrections by `CSEL` on the carry flag, an `SBC` mask) |
+| `only-crypto/src/curve25519/hw_aarch64.rs` | 5 (aarch64 only) | the aarch64 counterpart of `curve25519/hw.rs`: the X25519 ladder's arithmetic modulo `2²⁵⁵ - 19` on four limbs in `asm!` (multiplication, squaring, `121665·a`, addition, subtraction; folds by `2²⁵⁶ ≡ 38` with `CSEL`) | `ladder` is called only after `hw_aarch64::enabled()` (`cpu::has(Feature::Umulh)`); same register-only discipline as `ec/hw_aarch64.rs`, no branches |
 | `only-sys/src/random.rs` | 2 (one per OS) | `getrandom(2)` (Linux), `getentropy(2)` (macOS) for `only-crypto` | the kernel writes at most `buf.len()` bytes into a live `&mut [u8]` (`getentropy` at most 256 per call); a short `getrandom` read advances by the returned count |
 | `only-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |
 | `only-uring/src/ring.rs` | 16, `unsafe fn push`, `register`, `register_buf_ring` | own io_uring binding: `io_uring_setup`/`enter`/`register` through `syscall(2)`, `mmap` of the SQ/CQ rings and SQE array, SQ/CQ head and tail atomics, probe, enable-rings, buffer-ring registration | offsets from the kernel bounds-checked against each mapping; SQE slot written only when the queue is not full, tail published with `Release`; CQEs read between our head and the `Acquire`-loaded tail, head published with `Release`; `SeqCst` fence before reading `SQ_NEED_WAKEUP` (SQPOLL); mappings live as long as the `Ring` |

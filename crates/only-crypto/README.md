@@ -3,7 +3,7 @@
 [中文](README.zh-CN.md)
 
 Dependency-free cryptographic primitives for the [`only`](https://github.com/lesismal/only)
-crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are eight small modules
+crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are ten small modules
 that drive CPU instructions, detected at run time; the OS random syscall lives in `only-sys`).
 
 | Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
@@ -13,7 +13,7 @@ that drive CPU instructions, detected at run time; the OS random syscall lives i
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
-| P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | portable |
+| P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`; `ec::hw_aarch64`, `curve25519::hw_aarch64`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | inline assembly (`MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL`; every ARMv8.0 CPU; not benchmarked yet) |
 
 `ONLY_CRYPTO_PORTABLE=1` (read once) forces the portable code everywhere; the tests run every
 known-answer vector with and without it. Under Miri nothing is detected.
@@ -57,7 +57,7 @@ This is an implementation crate: its API follows the needs of the other `only` c
 change in any release (internal tier, docs/api-stability.md). It is not a general-purpose
 cryptography library (no key zeroization; assembly only for the wide AES-GCM kernel and CRC fold,
 whose VAES / VPCLMULQDQ / AVX-512 intrinsics are newer than the MSRV, and for the P-256 and
-Curve25519 field arithmetic on x86_64; SHA-512, MD5, Poly1305, RSA and the rest of the public-key
+Curve25519 field arithmetic on x86_64 and aarch64; SHA-512, MD5, Poly1305, RSA and the rest of the public-key
 arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
 planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x509).
 
@@ -75,6 +75,13 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   field and order arithmetic and the X25519 ladder's field run in inline assembly (`mulx`,
   `adcx`/`adox`, corrections by `cmov` and `sbb` masks, straight-line code). The P-256
   operations run on a twin curve type that shares the Montgomery form and the base point tables.
+- On aarch64 (every ARMv8.0 CPU, nothing to detect; off with `ONLY_CRYPTO_PORTABLE=1`) the same
+  operations run in inline assembly with `MUL`/`UMULH` products, `ADDS`/`ADCS`/`SUBS`/`SBCS`
+  carry chains and `CSEL` corrections, on four 64-bit limbs for both curves (the reduction
+  modulo the P-256 prime uses shifts and subtractions only, as in OpenSSL's
+  `ecp_nistz256-armv8`). The design follows the instruction counts (a 4×64 product is 16 `MUL`
+  + 16 `UMULH` against 25 128-bit products in radix 2⁵¹); this path is tested but **not
+  benchmarked yet**, so no aarch64 numbers are claimed.
 - Secret scalar multiplication on P-256 / P-384 uses Jacobian coordinates (`a = -3`: doubling
   4M + 4S, addition 11M + 5S, mixed addition 7M + 4S). Variable base (ECDH): Booth-recoded signed
   5-bit windows (digits in `[-16, 16]`) over `1·P … 16·P`, every lookup reading all 16 entries,
@@ -102,8 +109,8 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
 - Limits: masks go through `std::hint::black_box`, which discourages but does not forbid the
   optimizer from reintroducing branches; without it LLVM does turn some masked modular
   corrections into jumps, so the barrier stays even where it costs speed (the assembly needs no
-  barrier). The release x86_64 code (with the assembly) and aarch64 code (portable) of the
-  secret-scalar paths was disassembled and every conditional branch listed (`src/ct.rs` has the
+  barrier). The release x86_64 code (with the BMI2 + ADX assembly) and aarch64 code (with the
+  aarch64 assembly, and portable) of the secret-scalar paths was disassembled and every conditional branch listed (`src/ct.rs` has the
   recipe): P-256 / P-384 `ecdh_x_impl`, `base_mul_impl`, `sign_impl` with the inlined window
   and comb loops, the Jacobian doubling and additions, the field and order multiplication,
   squaring and inversion chains, the Ed25519 base multiplication and both X25519 ladders. The
@@ -111,7 +118,7 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   inversion chains, CPU-feature and `OnceLock` checks, and the final "result is the identity"
   test. No statistical test (dudect, ctgrind) has been run. Keys are not zeroized. The CPU
   instructions used (AES, carry-less multiplication, SHA, CRC32, AVX2, `mulx`, `adcx`/`adox`,
-  `cmov`) take constant time.
+  `cmov`; on aarch64 `MUL`, `UMULH`, the flag-setting additions and `CSEL`) take constant time.
 
 ## Performance
 
@@ -147,8 +154,8 @@ assembly for AES-GCM, P-256, X25519 and RSA. The AES-GCM and CRC rows compare wi
 previous VAES / VPCLMULQDQ-less code (`--example gcm-sizes` against ring, `--example bench`
 against crc32fast); on Zen 4 the 512-bit kernel beat the same kernel on 256-bit registers at every
 size. Follow-ups: a VAES + AVX2 kernel for CPUs without AVX-512, a SIMD Poly1305, whole point
-doublings in assembly (field elements kept in registers) and a wider P-256 comb, aarch64 assembly
-for the P-256 field, Karatsuba for RSA.
+doublings in assembly (field elements kept in registers) and a wider P-256 comb, measuring the
+aarch64 assembly for P-256 and X25519 (tested, not benchmarked), Karatsuba for RSA.
 
 ## Testing
 
@@ -164,8 +171,10 @@ for the P-256 field, Karatsuba for RSA.
   and AVX-512, so these tests are run natively on one (Zen 4).
 - Hardware paths: unit tests compare each one with the portable code (`hardware_matches_portable`
   for AES, CTR, GCM, SHA-1, SHA-256, `hardware_matches_table` for CRC, the multi-block ChaCha20
-  and two-block Poly1305 against one block at a time, `ec::hw` and `curve25519::hw`
-  `matches_portable` for every field routine and the X25519 ladder on random and edge values,
+  and two-block Poly1305 against one block at a time, `ec::hw`, `ec::hw_aarch64`,
+  `curve25519::hw` and `curve25519::hw_aarch64` `matches_portable` for every field routine and
+  the X25519 ladder on random and edge values, `chains_match_portable` on long chains of
+  dependent operations,
   `twin_matches_portable` for P-256 key generation, ECDH, signing and verification), and the
   whole suite also runs with `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.
 - The Jacobian scalar multiplications are checked against the complete-formula references

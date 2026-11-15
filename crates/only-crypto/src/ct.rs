@@ -9,8 +9,10 @@
 //! on the formulation, P-256), although it costs a round trip through memory per mask.
 //!
 //! The inline assembly of `ec::hw` and `curve25519::hw` (P-256 and Curve25519 arithmetic on
-//! x86_64 with BMI2 + ADX) does not need the barrier: the compiler cannot rewrite it, and its
-//! corrections are `cmov` or `sbb` masks. The Rust code around it (Jacobian formulas, table
+//! x86_64 with BMI2 + ADX) and of `ec::hw_aarch64` and `curve25519::hw_aarch64` (the same on
+//! aarch64) does not need the barrier: the compiler cannot rewrite it, and its corrections are
+//! `cmov` or `sbb` masks (x86_64), `CSEL` on the carry flag or an `SBC` mask (aarch64). None of
+//! the templates contains a branch instruction. The Rust code around it (Jacobian formulas, table
 //! scans, the ladder's swaps, digit recoding) still uses the masks here.
 //!
 //! How this is checked: `objdump -d` of a release build (`--example pk_bench`), listing every
@@ -19,10 +21,21 @@
 //! (portable `P256`/`P384` and the `P256X` twin), the field multiplication, squaring and
 //! inversion chains (`p256_inv`, `p256n_inv`, `Fe::invert`), `Point::mul_base` / `add_niels` /
 //! `Completed::to_point` (edwards25519) and `x25519` (both ladders inlined). On x86_64 (with
-//! the assembly) and aarch64 (portable) the only conditional branches there are loop counters,
+//! the assembly) and aarch64 (with the aarch64 assembly: the `P256A` twin's functions,
+//! `p256_inv::<P256Pa>`, `curve25519::hw_aarch64::ladder`; and portable) the only conditional
+//! branches there are loop counters,
 //! public bounds and indices (window positions, table rows), the public exponent bits of the
 //! inversion chains, the CPU-feature checks, `OnceLock` initialization, and the final
 //! "result is the identity" test, which a valid secret scalar never reaches.
+//!
+//! The aarch64 assembly paths, as listed on macOS (Apple silicon, `objdump -d` of the release
+//! `pk_bench`): `curve25519::hw_aarch64::ladder` has 4 conditional branches (the 255-step ladder
+//! counter, three `sqn` loop counters of the inversion chain), `x25519` 5 (the CPU-feature and
+//! portable-switch checks, the portable ladder's counter), `p256_inv::<P256Pa>` 1 (a squaring
+//! loop counter), `Jac::<P256A>::{double, madd_ct, add_core}` none, `Jac::<P256A>::mul_base_ct`
+//! 4 (`OnceLock` state, the digit loop, a table bound), `ecdh_x_impl::<P256A>` 14 (building the
+//! 16-entry table, the 52 windows and their public bit positions, the full table scan, the
+//! identity test, the byte loop of the public-length output).
 
 use std::hint::black_box;
 

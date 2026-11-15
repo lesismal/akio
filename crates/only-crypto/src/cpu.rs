@@ -1,5 +1,6 @@
 //! Run-time CPU feature detection for the hardware paths (`aes::hw`, `hash::hw`, `gcm::hw`,
-//! `crc::hw`, `chacha::hw`, `ec::hw`), detected once and cached.
+//! `crc::hw`, `chacha::hw`, `ec::hw`, and on aarch64 `ec::hw_aarch64`, `curve25519::hw_aarch64`),
+//! detected once and cached.
 //!
 //! A feature reported here is one the CPU has *and* that has not been switched off: the
 //! environment variable `ONLY_CRYPTO_PORTABLE` (set to anything but `0` or the empty string when
@@ -48,6 +49,9 @@ pub(crate) enum Feature {
     /// Wide multiplication with two independent carry chains: BMI2 `mulx` and ADX
     /// `adcx`/`adox` (x86_64, read from CPUID).
     Adx = 1 << 7,
+    /// The 64×64 → 128-bit products and carry chains of the P-256 and Curve25519 assembly:
+    /// `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (aarch64; base ARMv8.0-A, so always present).
+    Umulh = 1 << 8,
 }
 
 /// CPUID and XCR0, for the features `is_x86_feature_detected!` cannot name at the MSRV (VAES,
@@ -161,6 +165,8 @@ fn detect() -> u32 {
     if has!("crc") {
         f |= Feature::Crc as u32;
     }
+    // Base ARMv8.0-A instructions: every aarch64 CPU has them.
+    f |= Feature::Umulh as u32;
     f
 }
 
@@ -226,7 +232,8 @@ pub fn is_portable() -> bool {
 }
 
 /// The hardware paths this CPU uses now, for diagnostics and benchmark labels (for example
-/// `"aes clmul sha crc avx2 vaes avx512 adx"`; empty when everything is portable).
+/// `"aes clmul sha crc avx2 vaes avx512 adx"` on x86_64, `"aes clmul sha crc umulh"` on
+/// aarch64; empty when everything is portable).
 #[doc(hidden)]
 #[must_use]
 pub fn hardware_features() -> String {
@@ -239,6 +246,7 @@ pub fn hardware_features() -> String {
         (Feature::Vaes, "vaes"),
         (Feature::Avx512, "avx512"),
         (Feature::Adx, "adx"),
+        (Feature::Umulh, "umulh"),
     ];
     names
         .iter()

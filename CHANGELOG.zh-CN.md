@@ -28,6 +28,25 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 新增：`only-crypto` 中 P-256 与 X25519 的 aarch64 汇编（尚未做性能测试）
+
+aarch64 上 P-256 的域与群阶运算以及 X25519 阶梯的域运算改用内联汇编（`ec::hw_aarch64`、
+`curve25519::hw_aarch64`），与 x86_64 的 BMI2 + ADX 代码对应；API 不变。
+
+- P-256：模 `p` 与模 `n` 的 Montgomery 乘法与平方、加法、减法、`2ᵏ·a` 与 `3·a`，四个 64 位 limb，
+  `MUL`/`UMULH` 求积，`ADDS`/`ADCS`/`SUBS`/`SBCS` 进位链，`CSEL` 修正；模 `p` 的约简只用移位与减法（同
+  OpenSSL 的 `ecp_nistz256-armv8`），模 `n` 的约简中四个 limb 乘积有两个用移位代替。与 x86_64 一样，`P256`
+  分派到建立在这个域上的孪生曲线。
+- X25519：阶梯的域运算使用四个 64 位 limb（每次乘积 16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个
+  128 位乘积），用 `CSEL` 按 `2²⁵⁶ ≡ 38` 折叠，交换用掩码。
+- 所有 ARMv8.0 CPU 都有这些指令：aarch64 上 `hardware_features()` 报告 `umulh`；
+  `ONLY_CRYPTO_PORTABLE=1` / `set_portable(true)` 切回可移植实现，Miri 永不执行这些汇编。
+- 正确性：在随机值、边界值以及 20,000–50,000 次相互依赖的运算链上与可移植域运算做差分测试，孪生曲线与
+  可移植曲线比较（密钥生成、ECDH、签名、验签），RFC 7748 向量（包括 1,000,000 次迭代，`--ignored`）与
+  Wycheproof，均在 macOS（Apple 芯片）与 arm64 Linux 上运行。已反汇编秘密路径的 release 代码：汇编中没有
+  条件分支，周围代码只有循环计数、公开边界、CPU 特性检查与最后的无穷远点判断。
+- **尚未做性能测试**：设计依据指令数；在实测之前不声称 aarch64 上有任何加速。
+
 ### 性能：`only-http` 中 HTTP/2 与流水线 HTTP/1 的热路径
 
 在自研替换完成后重新剖析（DEV-PLAN“性能优化”）；API 不变。
