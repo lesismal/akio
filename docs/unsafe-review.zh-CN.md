@@ -15,6 +15,7 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
 | `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `only_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
 | `only-crypto` | `#![deny(unsafe_code)]`，仅十个 CPU 指令模块 `aes::hw`、`gcm::hw`（含 `gcm::hw::vaes`）、`hash::hw`、`crc::hw`、`chacha::hw`、`cpu::hw`、`ec::hw`、`curve25519::hw`、`bignum::hw`、`bignum::ifma` 允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），基于 VAES / VPCLMULQDQ + AVX-512 的 `asm!` AES-GCM 内核与 CRC 折叠（这些 intrinsic 比 MSRV 新），P-256 与 Curve25519 域运算以及 RSA 的 Montgomery 乘法与平方中使用 BMI2 `mulx` 与 ADX `adcx`/`adox` 的 `asm!` 块，RSA 模幂中使用 AVX-512 IFMA 的 `asm!` 块（同样在 MSRV 上不稳定），以及检测 VAES、AVX-512、IFMA、BMI2 与 ADX 所用的 CPUID / XGETBV；每次调用前都经过 `cpu.rs` 的运行时检测；可移植回退实现与其余公钥代码（可移植的大数运算、点运算公式、RSA 协议代码、DER）均为安全 Rust |
+| `tools/ct-dudect` | `#![deny(unsafe_code)]`，仅 `timer` 模块允许 | 统计计时测试（docs/constant-time.zh-CN.md）：两处读取周期计数器的 `asm!`（x86_64 为 `lfence; rdtsc; lfence`，aarch64 为 `isb; mrs cntvct_el0`），只用寄存器、不访问内存；不发布 |
 | 其它所有 crate（`only`、`only-core`、`only-x509`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
@@ -81,7 +82,8 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-crypto | 102 | 66 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **合计** | **255** | **76** | **5** | **21** |
+| ct-dudect | 2 | 0 | 0 | 0 |
+| **合计** | **257** | **76** | **5** | **21** |
 
 按用途：
 

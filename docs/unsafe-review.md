@@ -18,6 +18,7 @@ the procedure for adding new ones, the inventory, and the findings of the 1.0 re
 | `only-ebpf` | `#![deny(unsafe_code)]`, allowed in `sys` only | raw `bpf(2)` and socket options (no libbpf/aya) |
 | `only-dpdk` | `#![deny(unsafe_code)]`, allowed in `pmd` and `sys` only; the TCP/IP stack (`net`) is `#![forbid(unsafe_code)]` | FFI to DPDK through the C shim `csrc/shim.c` (EAL, ports, mbuf rx/tx bursts); TAP (`/dev/net/tun`, `TUNSETIFF`) and AF_PACKET sockets through `only_sys::ffi` |
 | `only-crypto` | `#![deny(unsafe_code)]`, allowed in the ten CPU-instruction modules `aes::hw`, `gcm::hw` (with `gcm::hw::vaes`), `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw`, `ec::hw`, `curve25519::hw`, `bignum::hw`, `bignum::ifma` only | AES-NI / ARMv8 AES, PCLMULQDQ / PMULL, SHA-NI / ARMv8 SHA, SSE4.2 / ARMv8 CRC32 and AVX2 intrinsics (`#[target_feature]` functions), `asm!` for the AES-GCM kernel and the CRC fold on VAES / VPCLMULQDQ + AVX-512 (those intrinsics are newer than the MSRV), `asm!` with BMI2 `mulx` and ADX `adcx`/`adox` for the P-256 and Curve25519 field arithmetic and the RSA Montgomery multiplication and squaring, `asm!` with AVX-512 IFMA for the RSA exponentiation (not stable at the MSRV either), CPUID / XGETBV for detecting VAES, AVX-512, IFMA, BMI2 and ADX; each call behind the run-time detection of `cpu.rs`; the portable fallbacks and the rest of the public-key code (portable bignum arithmetic, point formulas, the RSA protocol code, DER) are safe Rust |
+| `tools/ct-dudect` | `#![deny(unsafe_code)]`, allowed in `timer` only | the statistical timing test (docs/constant-time.md): two `asm!` reads of the cycle counter (`lfence; rdtsc; lfence` on x86_64, `isb; mrs cntvct_el0` on aarch64), registers only, no memory; not published |
 | every other crate (`only`, `only-core`, `only-x509`, `only-buf`, `only-timer`, `only-pool`, `only-epoll`, `only-tls`, `only-http`, `only-ws`, `only-mux`, `only-socks`, `only-arpc`, `only-grpc`, `only-protobuf`, `only-protobuf-build`, `only-kcp`, `only-quic`, `only-h3`, `only-turn`, `only-dtls`, `only-srtp`, `only-rtp`, `only-sctp`, `only-ice`, `only-webrtc`, `only-media`, `tools/echo-bench`, `tools/protobuf-test`) | `#![forbid(unsafe_code)]` | pure Rust on top of the above |
 
 Tests, examples and benches are separate crates; they may use `unsafe` for test-only libc calls
@@ -138,7 +139,8 @@ contain no `unsafe`.
 | only-crypto | 102 | 66 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **total** | **255** | **76** | **5** | **21** |
+| ct-dudect | 2 | 0 | 0 | 0 |
+| **total** | **257** | **76** | **5** | **21** |
 
 By purpose:
 
