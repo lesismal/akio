@@ -14,7 +14,7 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `only-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许 | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
 | `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
 | `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `only_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
-| `only-crypto` | `#![deny(unsafe_code)]`，仅五个 CPU 指令模块 `aes::hw`、`gcm::hw`、`hash::hw`、`crc::hw`、`chacha::hw` 允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），每次调用前都经过 `cpu.rs` 的运行时检测；可移植回退实现与公钥部分（域与大数运算、曲线、RSA、DER）均为安全 Rust |
+| `only-crypto` | `#![deny(unsafe_code)]`，仅七个 CPU 指令模块 `aes::hw`、`gcm::hw`、`hash::hw`、`crc::hw`、`chacha::hw`、`ec::hw`、`curve25519::hw` 允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），以及 P-256 与 Curve25519 域运算中使用 BMI2 `mulx` 与 ADX `adcx`/`adox` 的 `asm!` 块（x86_64），每次调用前都经过 `cpu.rs` 的运行时检测；可移植回退实现与其余公钥代码（大数运算、点运算公式、RSA、DER）均为安全 Rust |
 | 其它所有 crate（`only`、`only-core`、`only-x509`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
@@ -66,7 +66,7 @@ Clippy 只检查为当前主机编译的代码，因此 CI 在 Linux 和 macOS �
 
 Miri 无法执行系统调用（socket、epoll、io_uring、bpf），因此系统调用路径由 sanitizer 和 Linux/macOS 测试套件（epoll 与 io_uring 后端）覆盖；io_uring 中与内核共享内存的逻辑（`BufRing`、`KernelBuf`）有不做系统调用的单元测试，可在 Miri 下运行。
 
-Miri 同样不解释 SIMD intrinsic：在 Miri 下 `only-crypto` 检测不到任何 CPU 特性，只运行可移植实现（`cargo +nightly miri test -p only-crypto --lib -- aes:: gcm:: hash:: crc:: chacha:: …`）。CPU 指令模块改由以下方式验证：单元测试逐一比较硬件路径与可移植路径（`hardware_matches_portable` / `hardware_matches_table`）；所有 KAT（NIST CAVP、RFC、Wycheproof）在 x86_64 与 aarch64 上各跑两遍，一遍默认、一遍设置 `ONLY_CRYPTO_PORTABLE=1`；以及差分模糊测试目标 `crypto_hash` 与 `crypto_aead`。
+Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `only-crypto` 检测不到任何 CPU 特性，只运行可移植实现（`cargo +nightly miri test -p only-crypto --lib -- aes:: gcm:: hash:: crc:: chacha:: field:: ec:: curve25519:: x25519:: …`）。CPU 指令模块改由以下方式验证：单元测试逐一比较硬件路径与可移植路径（`hardware_matches_portable` / `hardware_matches_table`，`ec::hw` 与 `curve25519::hw` 的 `matches_portable` 覆盖随机值与边界值，`twin_matches_portable` 覆盖 P-256 各项运算）；所有 KAT（NIST CAVP、RFC、Wycheproof）在 x86_64 与 aarch64 上各跑两遍，一遍默认、一遍设置 `ONLY_CRYPTO_PORTABLE=1`；以及差分模糊测试目标 `crypto_hash`、`crypto_aead` 与 `crypto_sig_verify`。
 
 ## 5. 清单
 
@@ -78,10 +78,10 @@ Miri 同样不解释 SIMD intrinsic：在 Miri 下 `only-crypto` 检测不到任
 | only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
-| only-crypto | 65 | 59 | 0 | 0 |
+| only-crypto | 78 | 59 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **合计** | **218** | **69** | **5** | **21** |
+| **合计** | **231** | **69** | **5** | **21** |
 
 按用途：
 
@@ -98,6 +98,8 @@ Miri 同样不解释 SIMD intrinsic：在 Miri 下 `only-crypto` 检测不到任
 | `only-crypto/src/hash/hw.rs` | 8 个块、8 个 `unsafe fn`（2 个桩函数） | 基于 SHA-NI（x86_64）与 ARMv8 SHA1/SHA2 指令的 SHA-1、SHA-256 压缩函数 | 包装函数只在 `cpu_has(Feature::Sha)`（SHA + SSSE3 + SSE4.1 / `sha2`）时调用；加载读取分组切片中 64 字节块内的 16 字节片段，状态从存活的 `[u32; 5]` / `[u32; 8]` 加载并写回 |
 | `only-crypto/src/crc/hw.rs` | 11 个块、7 个 `unsafe fn` | CRC-32 / CRC-32C：x86_64 上的 PCLMULQDQ 折叠（4 个 128 位累加器）与 SSE4.2 `crc32` 指令，aarch64 上的 ARMv8 CRC32 指令 | 只在 `cpu_has(Feature::Clmul)` / `cpu_has(Feature::Crc)` 之后调用；折叠循环只在 `len >= 64` 时运行，在偏移 `o` 处读取 16 字节且满足 `o + 16 <= len`（由循环条件保证）；折叠常量是公开多项式的编译期函数 |
 | `only-crypto/src/chacha/hw.rs` | 2 个块、1 个 `unsafe fn` | AVX2 一次计算 8 个 ChaCha20 分组（8×8 转置还原为分组） | 只在 `cpu_has(Feature::Avx2)` 之后调用；加载与存储是 `&mut [u8; 512]` 中的 32 字节片段；8 个分组的计数器不会回绕（由调用方检查） |
+| `only-crypto/src/ec/hw.rs` | 8 个块（仅 x86_64） | `asm!` 实现的 P-256 运算：模 `p`（专用约简，`-p⁻¹ = 1`）与模群阶 `n` 的 Montgomery 乘法与平方、加法、减法、`2ᵏ·a`、`3·a` | 只在 `cpu::has(Feature::Adx)`（BMI2 + ADX）之后到达：`P256X` 孪生曲线经由 `P256` 的分派进入，标量域在每次调用前检查，每个函数都有 debug 断言；汇编块只读取指针操作数指向的 32 字节 limb 数组（`pure`、`readonly` 或 `nomem`、`nostack`），只写声明的寄存器，没有分支（修正用 `cmov`/`sbb` 掩码） |
+| `only-crypto/src/curve25519/hw.rs` | 5 个块（仅 x86_64） | X25519 阶梯在四个 limb 上模 `2²⁵⁵ - 19` 的 `asm!` 运算（乘法、平方、`121665·a`、加法、减法；按 `2²⁵⁶ ≡ 38` 折叠） | 只在 `hw::enabled()`（`cpu::has(Feature::Adx)`）之后调用 `ladder`，每个函数都有 debug 断言；内存与寄存器约束同 `ec/hw.rs`，没有分支 |
 | `only-sys/src/random.rs` | 2（每个系统一个） | 供 `only-crypto` 使用的 `getrandom(2)`（Linux）、`getentropy(2)`（macOS） | 内核最多向存活的 `&mut [u8]` 写入 `buf.len()` 字节（`getentropy` 每次最多 256 字节）；`getrandom` 读到的字节不足时按返回值前移 |
 | `only-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
 | `only-uring/src/ring.rs` | 16，`unsafe fn push`、`register`、`register_buf_ring` | 自有 io_uring 绑定：经 `syscall(2)` 调用 `io_uring_setup`/`enter`/`register`，`mmap` 映射 SQ/CQ ring 与 SQE 数组，SQ/CQ 的 head/tail 原子量，probe、enable-rings、buffer ring 注册 | 内核给出的偏移在使用前对照各自映射做边界检查；仅在队列未满时写入 SQE 槽位，tail 以 `Release` 发布；在自身 head 与以 `Acquire` 读取的 tail 之间读取 CQE，head 以 `Release` 发布；读取 `SQ_NEED_WAKEUP` 前有 `SeqCst` 栅栏（SQPOLL）；映射与 `Ring` 同生命周期 |

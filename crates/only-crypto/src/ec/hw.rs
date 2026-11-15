@@ -812,9 +812,10 @@ mod tests {
                 );
             }
             assert_eq!(sqr(a), P256P::mont_sqr(a), "sqr {a:x?}");
+            // P256P::mont_inv itself dispatches here: compare with the portable chain.
             assert_eq!(
                 P256Px::mont_inv(a),
-                P256P::mont_inv(a),
+                Some(crate::ec::curves::p256_inv::<P256P>(a)),
                 "inv {a:x?} (Montgomery form)"
             );
         }

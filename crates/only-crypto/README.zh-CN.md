@@ -3,7 +3,7 @@
 [English](README.md)
 
 [`only`](https://github.com/lesismal/only) 各 crate 使用的无依赖密码学原语，Rust 实现
-（`#![deny(unsafe_code)]`，只依赖 `std`；例外是五个驱动 CPU 指令的小模块，运行时检测 CPU 特性；操作系统随机数
+（`#![deny(unsafe_code)]`，只依赖 `std`；例外是七个驱动 CPU 指令的小模块，运行时检测 CPU 特性；操作系统随机数
 的系统调用放在 `only-sys` 中）。
 
 | 硬件路径（运行时检测，常数时间的可移植回退实现） | x86_64 | aarch64 |
@@ -13,6 +13,7 @@
 | SHA-1、SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32、CRC-32C | PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 | AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
+| P-256 域与群阶运算、X25519 阶梯（`ec::hw`、`curve25519::hw`） | BMI2 + ADX 内联汇编（`mulx`、`adcx`/`adox`） | 可移植实现 |
 
 设置 `ONLY_CRYPTO_PORTABLE=1`（只读取一次）可强制全部使用可移植实现；测试会在设置与不设置时各跑一遍全部已知
 答案向量。在 Miri 下不会检测到任何特性。
@@ -53,7 +54,7 @@ assert_eq!(gcm.decrypt(&[0u8; 12], b"aad", &sealed).unwrap(), b"plaintext");
 ```
 
 这是一个实现用的 crate：它的 API 跟随其他 `only` crate 的需要，可能在任何发布中变化（内部层级，见
-docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥，不含汇编；SHA-512、MD5、Poly1305 与公钥运算是可移植的 Rust 代码）。
+docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥；只有 x86_64 上 P-256 与 Curve25519 的域运算使用汇编；SHA-512、MD5、Poly1305、RSA 与其余公钥运算是可移植的 Rust 代码）。
 公钥部分是 DEV-PLAN 第 C、D 波计划中自研 TLS/DTLS/QUIC 协议栈的基础；证书相关功能在
 [`only-x509`](../only-x509) 中。
 
@@ -62,22 +63,34 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
 - 与秘密相关的代码没有依赖秘密的分支或内存下标。P-384 以及所有标量域使用 64 位 limb 的 Montgomery 运算
   （CIOS 乘法，平方用半规模乘积加 REDC），最后一步减法用掩码完成，按 limb 数泛型实现，常量在编译期推导。
   P-256 基域有专用的约简（`-p⁻¹ mod 2⁶⁴ = 1`，每一步只需一次真正的乘法），求逆使用加法链（255 次平方、
-  12 次乘法）；其他求逆以公开指数 `p - 2` 做 4 位固定窗口幂运算。Curve25519 使用 2⁵¹ 进制并有专用平方。
-- 点运算使用完备公式（`a = -3` 的 Renes–Costello–Batina 公式，包括与仿射点的混合加法；统一的扩展 Edwards
-  加法），任何输入都走同一路径。`[k]G` 把 `k` 重新编码为有符号 4 位数字（掩码算术），每个数字加一个仿射梳形表
-  项 `|d|·16ⁱ·G`：每次查表用掩码读取该行全部 8 项，取负与跳过零数字都是掩码选择。可变基点的秘密标量乘法
-  使用固定 4 位窗口并读取全部 16 项；X25519 使用 RFC 7748 的 Montgomery 阶梯和掩码交换。
+  12 次乘法），P-256 群阶的求逆使用 255 次平方、40 次乘法的加法链；其他求逆以公开指数 `p - 2` 做 4 位固定
+  窗口幂运算。Curve25519 使用 2⁵¹ 进制并有专用平方。
+- x86_64 上带 BMI2 + ADX 时（运行时检测；`ONLY_CRYPTO_PORTABLE=1` 可关闭），P-256 的域与群阶运算以及
+  X25519 阶梯的域运算用内联汇编实现（`mulx`、`adcx`/`adox`，修正用 `cmov` 与 `sbb` 掩码，直线代码）。
+  P-256 运算在一个与可移植实现共享 Montgomery 表示和基点预计算表的“孪生”曲线类型上执行。
+- P-256 / P-384 的秘密标量乘法使用 Jacobian 坐标（`a = -3`：倍点 4M + 4S，加法 11M + 5S，混合加法
+  7M + 4S）。可变基点（ECDH）：Booth 重编码的有符号 5 位窗口（数字在 `[-16, 16]`）作用于 `1·P … 16·P`，每次
+  查表读取全部 16 项，取负为掩码选择。固定基点：把 `k` 重新编码为有符号 4 位数字（掩码算术），每个数字加一个
+  仿射梳形表项 `|d|·16ⁱ·G`，每次查表读取该行全部 8 项。Jacobian 公式并不完备：仍为无穷远点的累加值与零数字
+  用掩码选择处理，而对 `[1, n)` 中的标量不会出现两个相同的操作数（证明见 `ec/mod.rs`，需要 `n mod 32 ≥ 17`，
+  由测试检查）。点的解码、校验与预计算表的构造仍用完备公式（Renes–Costello–Batina）。
+- Ed25519 的 `[k]B` 每个有符号 4 位数字加一个仿射 Niels 表项（完备的统一加法，每个数字 7M）。X25519 公钥
+  就是把这个 `[k]B` 映射为 `u = (1 + y)/(1 - y)`；共享密钥使用 RFC 7748 的 Montgomery 阶梯和掩码交换。
 - RSA 私钥运算：CRT 下按完整指数长度的固定 4 位窗口幂运算和掩码选表（1024 至 4096 位素数使用定长
   Montgomery 代码，平方使用半规模乘积），基数盲化（每个密钥保存 `rᵉ` 与 `r⁻¹`，在各素数域中用费马求逆，
   每次使用后平方），并在输出签名前检查 `sᵉ = m`。模约简是常数时间的；`p`/`q` 的 limb 数（公开信息）不做隐藏。
 - 已知的可变时间部分，都只涉及公开数据：签名验证（ECDSA 的 `u₁G + u₂Q` 使用 Jacobian 坐标、宽度 7 / 5 的
-  wNAF 与射影坐标下的 `x ≡ r` 检查，Ed25519 的 `[s]B - [k]A` 使用交错 wNAF，RSA 的 `sᵉ`）、预计算表的构造、
+  wNAF、对 `s` 的二进制 GCD 求逆与射影坐标下的 `x ≡ r` 检查，Ed25519 的 `[s]B - [k]A` 使用交错 wNAF，RSA 的 `sᵉ`）、预计算表的构造、
   点的解码与校验、范围检查的 `Option`/`Result` 结果、RFC 6979 的拒绝循环（概率约 2⁻³²）、
   `SecretKey::generate` 的拒绝采样、仿射坐标转换对无穷远点的分支（合法秘密标量不会出现）。
 - 局限：掩码经过 `std::hint::black_box`，只能阻止而不能保证优化器不重新引入分支；去掉它时 LLVM 确实会把部分
-  带掩码的模修正编译成跳转，因此即使有性能代价也保留这道屏障。已检查 P-256 / P-384 点运算、域乘法、平方与
-  求逆以及 X25519 阶梯在 x86_64 与 aarch64 上生成的代码：除循环控制外没有条件分支。尚未运行统计检测
-  （dudect、ctgrind）。密钥不会被清零。所用的 CPU 指令（AES、无进位乘法、SHA、CRC32、AVX2）是常数时间的。
+  带掩码的模修正编译成跳转，因此即使有性能代价也保留这道屏障（汇编不需要这道屏障）。已反汇编秘密标量路径在
+  x86_64（含汇编）与 aarch64（可移植）上的 release 代码并列出每个条件分支（方法见 `src/ct.rs`）：P-256 /
+  P-384 的 `ecdh_x_impl`、`base_mul_impl`、`sign_impl` 及其内联的窗口与梳形表循环，Jacobian 倍点与加法，域与
+  群阶的乘法、平方与求逆链，Ed25519 基点乘法与两种 X25519 阶梯。分支只出现在循环计数、公开下标与边界、
+  求逆链的公开指数位、CPU 特性与 `OnceLock` 检查，以及最后“结果为无穷远点”的判断上。尚未运行统计检测
+  （dudect、ctgrind）。密钥不会被清零。所用的 CPU 指令（AES、无进位乘法、SHA、CRC32、AVX2、`mulx`、
+  `adcx`/`adox`、`cmov`）是常数时间的。
 
 ## 性能
 
@@ -92,17 +105,23 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 | CRC-32，16 KiB | 2 733 | 20 047 | crc32fast 的 0.27 倍 |
 | AES-128-GCM 加密，16 KiB | 364 | 6 484 | aes-gcm 的 2.98 倍 |
 | ChaCha20-Poly1305 加密，16 KiB | 588 | 1 757 | chacha20poly1305 的 0.89 倍 |
-| Ed25519 验签（次/秒） | 18 289 | 27 161 | ring 的 0.85 倍 |
-| X25519 协商 | 28 865 | 30 945 | ring 的 0.84 倍 |
-| P-256 ECDSA 签名 | 23 435 | 34 184 | ring 的 0.45 倍 |
-| P-256 ECDSA 验签 | 8 043 | 13 397 | ring 的 0.51 倍 |
-| P-256 ECDH | 10 075 | 10 390 | ring 的 0.34 倍 |
-| P-384 ECDSA 验签 | 2 426 | 3 798 | ring 的 2.03 倍 |
-| RSA-2048 PKCS#1 签名 | 871 | 1 199 | ring 的 0.49 倍 |
-| RSA-2048 PKCS#1 验签 | 29 019 | 39 557 | ring 的 0.60 倍 |
+| Ed25519 验签（次/秒） | 18 289 | 27 714 | ring 的 0.87 倍 |
+| Ed25519 签名 | – | 89 784 | ring 的 1.53 倍 |
+| X25519 协商 | 28 865 | 36 488 | ring 的 1.00 倍 |
+| P-256 ECDSA 签名 | 23 435 | 59 837 | ring 的 0.79 倍 |
+| P-256 ECDSA 验签 | 8 043 | 25 138 | ring 的 0.96 倍 |
+| P-256 ECDH | 10 075 | 27 288 | ring 的 0.91 倍 |
+| P-256 生成密钥 | – | 108 263 | ring 的 0.96 倍 |
+| P-384 ECDSA 验签 | 2 426 | 4 330 | ring 的 2.34 倍 |
+| RSA-2048 PKCS#1 签名 | 871 | 1 192 | ring 的 0.49 倍 |
+| RSA-2048 PKCS#1 验签 | 29 019 | 39 244 | ring 的 0.59 倍 |
+| TLS 1.3 完整握手/秒，X25519（only-tls 对比 rustls + ring） | – | 5 027 | rustls 的 1.00 倍 |
+| TLS 1.3 完整握手/秒，secp256r1 | – | 4 552 | rustls 的 0.89 倍 |
 
-ring 的 AES-GCM、P-256、X25519 与 RSA 使用汇编。后续：VAES / VPCLMULQDQ 内核（比 MSRV 新）、SIMD
-Poly1305、更便宜的 P-256 秘密标量倍点、RSA 的 Karatsuba。
+公钥各行与握手数据来自 P-256 / X25519 优化（优化前：P-256 签名 34 152、验签 13 404、ECDH 10 380、X25519
+30 696 次/秒；握手 3 055 与 2 306 次/秒）。ring 的 AES-GCM、P-256、X25519 与 RSA 使用汇编。后续：VAES /
+VPCLMULQDQ 内核（比 MSRV 新）、SIMD Poly1305、整个倍点用汇编实现（域元素留在寄存器中）与更宽的 P-256
+梳形表、aarch64 上 P-256 域运算的汇编、RSA 的 Karatsuba。
 
 ## 测试
 
@@ -113,7 +132,12 @@ Poly1305、更便宜的 P-256 秘密标量倍点、RSA 的 Karatsuba。
   模糊测试目标 `crypto_hash`、`crypto_aead`（也比较硬件与可移植的 AES-GCM）、`crypto_base64`。
 - 硬件路径：单元测试把每条硬件路径与可移植实现比较（AES、CTR、GCM、SHA-1、SHA-256 的
   `hardware_matches_portable`，CRC 的 `hardware_matches_table`，多分组 ChaCha20 与两分组 Poly1305 对比逐分组
-  计算），整个测试套件还会在 x86_64 与 aarch64 上设置 `ONLY_CRYPTO_PORTABLE=1` 再跑一遍。
+  计算，`ec::hw` 与 `curve25519::hw` 的 `matches_portable` 在随机值与边界值上覆盖每个域运算例程与 X25519
+  阶梯，`twin_matches_portable` 覆盖 P-256 的密钥生成、ECDH、签名与验签），整个测试套件还会在 x86_64 与
+  aarch64 上设置 `ONLY_CRYPTO_PORTABLE=1` 再跑一遍。
+- Jacobian 标量乘法在随机标量与边界标量（`[1, n)` 的两端、每个 Booth 数字对应的 `n - 2|d|`、进位到梳形表
+  最高行的标量）上与完备公式的参考实现（`mul_ref`、`mul_base_ref`）比较，覆盖 P-256、P-384 与 P-256 孪生
+  曲线；由 Edwards 基点表计算的 X25519 公钥与 `u = 9` 上的阶梯结果比较。
 - `cargo run --release -p only-crypto --example bench` 与被替代的 crate 比较吞吐量。
 - 公钥（`tests/pk_kat.rs`）：Wycheproof 的 X25519、Ed25519、ECDSA P-256/SHA-256（DER 与 P1363）、
   P-384/SHA-384 与 SHA-512、ECDH P-256（SPKI 与原始点）与 P-384、RSA PKCS#1 v1.5 验证（2048/SHA-256、

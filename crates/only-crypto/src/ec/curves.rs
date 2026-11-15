@@ -32,7 +32,13 @@ impl Modulus<4> for P256P {
         p256_redc(&sqr_wide::<4, 8>(a))
     }
 
+    // Inversions also happen outside the twin's operations (encoding a public key): one check
+    // chooses the BMI2 + ADX chain.
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
+        #[cfg(target_arch = "x86_64")]
+        if super::hw::enabled() {
+            return Some(p256_inv::<super::hw::P256Px>(a));
+        }
         Some(p256_inv::<Self>(a))
     }
 }
@@ -205,12 +211,12 @@ impl Curve<4> for P256 {
     }
 
     #[inline]
-    fn base_mul_affine(d: &Scalar<Self, 4>) -> Point<Self, 4> {
+    fn base_mul(d: &Scalar<Self, 4>) -> Point<Self, 4> {
         #[cfg(target_arch = "x86_64")]
         if super::hw::enabled() {
-            return super::base_mul_affine_impl::<P256X, 4>(d).cast();
+            return super::base_mul_impl::<P256X, 4>(d).cast();
         }
-        super::base_mul_affine_impl::<Self, 4>(d)
+        super::base_mul_impl::<Self, 4>(d)
     }
 
     #[inline]
@@ -511,8 +517,8 @@ mod tests {
             let d = Scalar::<P256, 4>::from_be_bytes_reduce(&b).unwrap();
             rng.fill(&mut b);
             let e = Scalar::<P256, 4>::from_be_bytes_reduce(&b).unwrap();
-            let q = super::super::base_mul_affine_impl::<P256, 4>(&e);
-            let qx = super::super::base_mul_affine_impl::<P256X, 4>(&e).cast::<P256>();
+            let q = super::super::base_mul_impl::<P256, 4>(&e);
+            let qx = super::super::base_mul_impl::<P256X, 4>(&e).cast::<P256>();
             assert_eq!(q.to_uncompressed(), qx.to_uncompressed());
             let (mut o1, mut o2) = ([0u8; 32], [0u8; 32]);
             assert!(super::super::ecdh_x_impl::<P256, 4>(&d, &q, &mut o1));
@@ -525,7 +531,7 @@ mod tests {
             let s1 = super::super::sign_impl::<P256, Sha256, 4>(&d, &b);
             let s2 = super::super::sign_impl::<P256X, Sha256, 4>(&d, &b);
             assert_eq!((s1.r.l, s1.s.l), (s2.r.l, s2.s.l));
-            let pd = super::super::base_mul_affine_impl::<P256, 4>(&d);
+            let pd = super::super::base_mul_impl::<P256, 4>(&d);
             assert!(super::super::verify_impl::<P256, 4>(&pd, &b, &s1).is_ok());
             assert!(super::super::verify_impl::<P256X, 4>(&pd.cast(), &b, &s2.cast()).is_ok());
             b[0] ^= 1;

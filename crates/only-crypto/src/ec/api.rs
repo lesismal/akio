@@ -58,7 +58,7 @@ macro_rules! curve_api {
             #[must_use]
             pub fn public_key(&self) -> PublicKey {
                 PublicKey {
-                    q: <C as ec::Curve<$l>>::base_mul_affine(&self.d),
+                    q: <C as ec::Curve<$l>>::base_mul(&self.d),
                 }
             }
 

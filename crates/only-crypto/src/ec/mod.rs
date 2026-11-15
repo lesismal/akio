@@ -58,11 +58,12 @@ pub(crate) trait Curve<const L: usize>: Copy + Send + Sync + 'static {
     /// The base point tables, built once (with [`BaseTables::build`]).
     fn tables() -> &'static BaseTables<L>;
 
-    /// `d·G` as an affine point (`Z = 1`), for a secret `d`. A curve with a hardware twin
-    /// overrides the four operations here to dispatch to it.
+    /// `d·G` for a secret `d`, as a projective point (no inversion: the affine form is computed,
+    /// in constant time, when the point is encoded). A curve with a hardware twin overrides the
+    /// four operations here to dispatch to it.
     #[inline]
-    fn base_mul_affine(d: &Scalar<Self, L>) -> Point<Self, L> {
-        base_mul_affine_impl::<Self, L>(d)
+    fn base_mul(d: &Scalar<Self, L>) -> Point<Self, L> {
+        base_mul_impl::<Self, L>(d)
     }
 
     /// The big-endian x-coordinate of `d·q` into `out` (`8L` bytes) for a secret `d`; `false`
@@ -183,6 +184,7 @@ fn curve_b<C: Curve<L>, const L: usize>() -> Fp<C, L> {
 impl<C: Curve<L>, const L: usize> Point<C, L> {
     pub(crate) const LEN: usize = 8 * L;
 
+    #[cfg(test)]
     pub(crate) fn identity() -> Self {
         Point {
             x: Fp::<C, L>::ZERO,
@@ -825,7 +827,18 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         Some(self.x.mul(&self.z.invert().square()))
     }
 
+    /// The projective form `(X·Z : Y : Z³)` (no inversion; the identity stays `Z = 0`).
+    fn to_projective(self) -> Point<C, L> {
+        Point {
+            x: self.x.mul(&self.z),
+            y: self.y,
+            z: self.z.square().mul(&self.z),
+            _c: PhantomData,
+        }
+    }
+
     /// The affine coordinates (one constant-time inversion); `None` for the identity.
+    #[cfg(test)]
     fn to_affine(self) -> Option<Affine<C, L>> {
         if self.z.is_zero() != 0 {
             return None;
@@ -958,8 +971,9 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         let wb = wnaf(&b.to_limbs(), 5);
         let gt = &C::tables().wnaf;
         let mut qt = [Self::identity(); 8];
-        if let Some(qa) = q.to_affine_vartime() {
-            qt[0] = Self::from_affine(&qa);
+        // Projective to Jacobian without an inversion (keys from `public_key()` have `Z ≠ 1`).
+        if q.is_identity() == 0 {
+            qt[0] = Self::from_point(q);
             let q2 = qt[0].double();
             for i in 1..8 {
                 qt[i] = qt[i - 1].add(&q2);
@@ -1096,17 +1110,9 @@ impl<C: Curve<L>, const L: usize> Sig<C, L> {
     }
 }
 
-/// `d·G` as an affine point (`Z = 1`), constant time.
-pub(crate) fn base_mul_affine_impl<C: Curve<L>, const L: usize>(d: &Scalar<C, L>) -> Point<C, L> {
-    match Jac::<C, L>::mul_base_ct(d).to_affine() {
-        Some((x, y)) => Point {
-            x,
-            y,
-            z: Fp::<C, L>::ONE,
-            _c: PhantomData,
-        },
-        None => Point::identity(),
-    }
+/// `d·G` as a projective point, constant time.
+pub(crate) fn base_mul_impl<C: Curve<L>, const L: usize>(d: &Scalar<C, L>) -> Point<C, L> {
+    Jac::<C, L>::mul_base_ct(d).to_projective()
 }
 
 /// The big-endian x-coordinate of `d·q` into `out`, constant time; `false` for the identity.

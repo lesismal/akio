@@ -77,6 +77,44 @@ the constant-time portable code as fallback (DEV-PLAN "Performance pass"); no AP
   sign 1.46x, Ed25519 verify 1.49x, RSA-2048 sign 1.38x; TLS 1.3 handshakes 1.5x and 16 KiB
   AES-GCM records 15x (0.60x and 0.64x rustls + ring). Tables in docs/BENCHMARKS.md.
 
+### Performance: faster TLS 1.3 handshakes (P-256 and X25519 in `only-crypto`)
+
+The handshake profile was >98% curve arithmetic; no API change (`tools/api/public-api.sh`
+unchanged). Measured in memory on one core of the bench host, against rustls 0.23 + ring:
+full handshakes 3,055 → 5,027/s with X25519 (0.61× → 1.00× rustls) and 2,306 → 4,552/s with
+secp256r1 (0.45× → 0.89×).
+
+- P-256 on x86_64 with BMI2 + ADX (run-time detection, new `cpu` feature `adx`): Montgomery
+  multiplication and squaring modulo `p` and modulo the group order, addition, subtraction and
+  small multiples in inline assembly (`mulx`, `adcx`/`adox`, `cmov`; new hardware module
+  `ec::hw`). The operations run on a twin curve type that shares the Montgomery form and the
+  base point tables, so the dispatch happens once per operation.
+- Constant-time scalar multiplication in Jacobian coordinates with the `a = -3` formulas:
+  Booth-recoded signed 5-bit windows for the variable base (ECDH) and the signed comb with mixed
+  additions for the fixed base (key generation, signing). The identity cases are masked selects;
+  equal operands cannot occur for scalars in `[1, n)` (proof in the code, `n mod 32 ≥ 17` checked
+  by a test). Doublings are 4M + 4S with fused `2ᵏ·a`/`3·a`.
+- The P-256 scalar inversion uses a dedicated chain (255 squarings, 40 multiplications); ECDSA
+  verification inverts `s` (public) with a binary extended Euclidean algorithm and builds its
+  table from projective keys without an inversion. Public keys from `SecretKey::public_key` stay
+  projective until encoded (one constant-time inversion then).
+- X25519: public keys are `[k]B` on edwards25519 mapped to `u = (1 + y)/(1 - y)` (the Ed25519
+  base table, now affine Niels entries with signed digits: 7M per digit), and on x86_64 with
+  BMI2 + ADX the ladder runs on four 64-bit limbs in inline assembly (`curve25519::hw`); the
+  radix-2⁵¹ ladder stays the portable path.
+- Micro-benchmarks against ring (`--example pk_bench`, op/s, before → after): P-256 sign
+  34,152 → 59,837 (0.45× → 0.79×), verify 13,404 → 25,138 (0.51× → 0.96×), ECDH 10,380 → 27,288
+  (0.35× → 0.91×), key generation 54,581 → 108,263 (0.49× → 0.96×); X25519 30,696 → 36,488
+  (0.84× → 1.00×); Ed25519 sign 1.15× → 1.53× ring; P-384 sign, verify, ECDH and key generation
+  1.13–1.47× faster than before. RSA is unchanged.
+- Constant-time evidence: the disassembly of the secret-scalar paths (x86_64 with the assembly,
+  aarch64 portable) has conditional branches only on loop counters, public indices, the public
+  exponent bits of the inversion chains, CPU-feature checks and the "result is the identity"
+  test (`ct.rs`). Every assembly routine is compared with the portable code on random and edge
+  values, and all known-answer tests run with and without `ONLY_CRYPTO_PORTABLE=1`.
+- `unsafe`: +13 `asm!` blocks in `only-crypto` (8 in `ec::hw`, 5 in `curve25519::hw`; see
+  docs/unsafe-review.md).
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so
