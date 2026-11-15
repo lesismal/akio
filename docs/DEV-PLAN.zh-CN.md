@@ -218,7 +218,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 条目：
 - [x] P-256 域/群阶运算与 X25519 阶梯的 aarch64 `asm!`（仅测试）：P-256 模 p 只用移位的约简、模 n、加减/2ᵏ·a/3·a，`P256A` 孪生曲线配 safegcd 求逆；X25519 域为 4×64 limb、按 38 折叠；MUL/UMULH + ADDS/ADCS + CSEL，`Feature::Umulh`。差分、运算链、孪生曲线测试，RFC 7748 百万次迭代与 Wycheproof 在 macOS 与 arm64 Linux 上通过；已反汇编检查常数时间。尚未做性能测试（没有 ARM 基准主机）；aarch64 上的整点汇编、divsteps 汇编与扫表未做。
 - [x] x86_64 上的 RSA 签名/验签（2048 位签名原为 ring 的 0.49 倍，验签 0.59 倍）：BMI2+ADX 的 Montgomery `asm!`（16–64 个 limb），AVX-512 IFMA 以 2⁵² 为基数计算 2048–4096 位密钥 CRT 两半的模幂，带 AVX2 查表的 5 位窗口，R² 用平方（秘密模数）或一次除法（公开模数）。Zen 4：签名为 ring 的 1.61 / 1.85 / 2.19 倍（2048/3072/4096），验签 1.22 / 1.10 / 1.09 倍，含密钥解析的验签 1.02 / 0.95 / 0.95 倍，RSA-2048 证书 TLS 握手相对 rustls+ring 0.43 倍 → 1.44 倍；只有 BMI2+ADX（无 IFMA）时签名约 0.99 倍。后续：在一个 IFMA 汇编块中交错计算 CRT 两半。
-- [ ] ChaCha20-Poly1305 大块性能（AVX2/AVX-512 ChaCha20、SIMD Poly1305；TLS 记录原为 rustls+ring 的 0.55 倍）
+- [x] ChaCha20-Poly1305 大块性能（TLS 记录原为 rustls+ring 的 0.55 倍）：ChaCha20 AVX-512 `asm!`（zmm 每次 16 个分组，余下部分用 ymm/xmm），Poly1305 用 AVX-512 IFMA（每步 8 个分组，256 B 起）加 2⁶⁴ 进制标量实现，TLS 记录非原地加解密。Zen 4：加密 16 KiB 1,752 → 4,597 MB/s（ring 的 1.30 倍），1400 B 0.96 倍，64 B 0.83 倍；TLS ChaCha 记录 16 KiB 相对 rustls+ring 0.55 倍 → 1.42 倍，1 KiB 0.64 倍 → 1.02 倍。判断在 Zen 4 上把 ChaCha20 与 Poly1305 缝合不值得。未完成：1.4 KiB 以下的小消息仍低于 ring，为没有 IFMA 的 CPU 做 AVX2 Poly1305。
 - [ ] QUIC 数据通路遗留项：不再从 `recvmmsg` 缓冲区复制、已发送包改用环形缓冲、按批 ACK（需要 only-core 的批次结束钩子）、在支持的平台默认开启 GRO
 - [ ] 宽 AES-GCM 遗留项：无 AVX-512 的 CPU 用的 VAES-AVX2 内核、宽内核内的掩码尾部、TLS 记录的预先清零
 - [ ] 对依赖秘密数据的路径做 dudect 式统计计时测试（CI 任务，不作为门禁）
