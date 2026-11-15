@@ -1,15 +1,141 @@
-//! ChaCha20 eight blocks at a time with AVX2 (x86_64), chosen at run time. Word `j` of the eight
-//! blocks shares one 256-bit register; after the rounds an 8×8 transpose turns the registers back
-//! into blocks. Additions, XORs and rotations only: constant time like the portable code.
+//! ChaCha20 and Poly1305 on x86_64 vector instructions, chosen at run time:
+//!
+//! - ChaCha20 eight blocks at a time with AVX2 (this file): word `j` of the eight blocks shares
+//!   one 256-bit register; after the rounds an 8×8 transpose turns the registers back into
+//!   blocks.
+//! - ChaCha20 sixteen (zmm) or four (xmm) blocks at a time with AVX-512 (`avx512`, `asm!`).
+//! - Poly1305 eight blocks at a time with AVX-512 IFMA (`ifma`, `asm!`).
+//!
+//! Additions, XORs, rotations and multiplications only: constant time like the portable code.
 //!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the
-//! `#[target_feature]` function and its intrinsics, called after the feature was detected.
+//! `#[target_feature]` function and its intrinsics and for the `asm!` kernels, each called after
+//! its feature was detected.
 #![allow(unsafe_code)]
 // The intrinsics are `unsafe fn` at the MSRV (1.85) and safe inside `#[target_feature]` functions
 // on newer compilers.
 #![allow(unused_unsafe)]
 
 use crate::cpu::{self, Feature};
+
+#[cfg(target_arch = "x86_64")]
+mod avx512;
+#[cfg(target_arch = "x86_64")]
+mod ifma;
+
+/// Powers of `r` for the IFMA kernel: for each of `r0, r1, r2, 20·r1, 20·r2` (in that order),
+/// eight lanes, lane `i` from `r⁸⁻ⁱ`.
+pub(super) type Powers = [u64; 40];
+
+/// Bytes the IFMA kernel absorbs per iteration (eight blocks).
+pub(super) const POLY_CHUNK: usize = 128;
+
+/// Whether to use the AVX-512 ChaCha20 kernels (detected and not switched off).
+#[inline]
+pub(super) fn wide_enabled() -> bool {
+    cpu::has(Feature::Avx512)
+}
+
+/// Whether to use the AVX-512 IFMA Poly1305 kernel (detected and not switched off).
+#[inline]
+pub(super) fn ifma_enabled() -> bool {
+    cpu::has(Feature::Ifma)
+}
+
+/// XORs the keystream starting at block `state[12]` into `dst`: with `src` (of the same length),
+/// the keystream XOR `src` is written to `dst`, else `dst` is worked on in place. The counter must
+/// not wrap within the `dst.len().div_ceil(64)` blocks. `false` (nothing done) without AVX-512.
+#[cfg_attr(not(target_arch = "x86_64"), allow(clippy::needless_pass_by_ref_mut))]
+pub(super) fn xor_wide(state: &[u32; 16], src: Option<&[u8]>, dst: &mut [u8]) -> bool {
+    if !cpu::cpu_has(Feature::Avx512) {
+        return false;
+    }
+    if let Some(s) = src {
+        assert_eq!(s.len(), dst.len(), "ChaCha20: output length");
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        use avx512::{NARROW, WIDE};
+        let mut st = *state;
+        let len = dst.len();
+        let mut done = 0;
+        for (size, wide) in [(WIDE, true), (NARROW, false)] {
+            let n = (len - done) / size;
+            if n == 0 {
+                continue;
+            }
+            let to = dst[done..].as_mut_ptr();
+            let from = src.map_or(to.cast_const(), |s| s[done..].as_ptr());
+            // SAFETY: `cpu_has` confirmed AVX-512 F/BW/VL and the OS ZMM state; `n >= 1` groups
+            // of `size` bytes fit in `dst[done..]` and in `src[done..]` (of the same length);
+            // `src` is a shared slice and `dst` a unique one, so they do not overlap, and without
+            // `src` the kernel works in place.
+            unsafe { avx512::xor(&st, from, to, n, wide) };
+            done += n * size;
+            st[12] = st[12].wrapping_add((n * size / 64) as u32);
+        }
+        let rest = len - done;
+        if rest > 0 {
+            // The last partial group of four blocks, through a buffer.
+            let mut buf = [0u8; NARROW];
+            match src {
+                Some(s) => buf[..rest].copy_from_slice(&s[done..]),
+                None => buf[..rest].copy_from_slice(&dst[done..]),
+            }
+            let p = buf.as_mut_ptr();
+            // SAFETY: as above; one group of 256 bytes in place in `buf`.
+            unsafe { avx512::xor(&st, p, p, 1, false) };
+            dst[done..].copy_from_slice(&buf[..rest]);
+        }
+        true
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (state, dst);
+        false
+    }
+}
+
+/// The ChaCha20 keystream of the four blocks starting at `state[12]` (which must not wrap within
+/// them); `None` without AVX-512.
+pub(super) fn keystream4(state: &[u32; 16]) -> Option<[u8; 256]> {
+    let mut ks = [0u8; 256];
+    xor_wide(state, None, &mut ks).then_some(ks)
+}
+
+/// Absorbs the full blocks of `m` (a nonzero multiple of [`POLY_CHUNK`] bytes) into `h`
+/// (44/44/42-bit limbs, partially reduced as the scalar code leaves them, so below 2⁴⁵) with the
+/// powers `pw` of `r`; `false` (nothing done) without AVX-512 IFMA.
+#[cfg_attr(not(target_arch = "x86_64"), allow(clippy::needless_pass_by_ref_mut))]
+pub(super) fn poly_blocks(h: &mut [u64; 3], pw: &Powers, m: &[u8]) -> bool {
+    if !cpu::cpu_has(Feature::Ifma) {
+        return false;
+    }
+    assert!(
+        !m.is_empty() && m.len() % POLY_CHUNK == 0,
+        "Poly1305: whole groups"
+    );
+    #[cfg(target_arch = "x86_64")]
+    {
+        let mut acc = [0u64; 24];
+        acc[0] = h[0];
+        acc[8] = h[1];
+        acc[16] = h[2];
+        // SAFETY: `cpu_has` confirmed AVX-512 F + IFMA and the OS ZMM state; `m` holds
+        // `m.len() / 128 >= 1` whole groups; `h` comes from the scalar code (limbs below 2⁴⁵)
+        // and `pw` from `Poly1305::powers` (limbs below 2⁵⁰).
+        unsafe { ifma::blocks(&mut acc, pw, m.as_ptr(), m.len() / POLY_CHUNK) };
+        for (l, h) in h.iter_mut().enumerate() {
+            *h = acc[8 * l..8 * l + 8].iter().sum();
+        }
+        true
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (h, pw);
+        false
+    }
+}
 
 /// Whether to use the AVX2 path (detected and not switched off).
 #[inline]

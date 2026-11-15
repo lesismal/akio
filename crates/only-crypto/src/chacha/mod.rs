@@ -2,9 +2,10 @@
 //! construction (additions, rotations and XORs; Poly1305 uses 44-bit limbs and
 //! multiplications only).
 //!
-//! ChaCha20 computes several blocks at once: eight with AVX2 on x86_64 (detected at run time, see
-//! `hw`), else four in a lane-parallel layout that compilers map onto 128-bit vectors (SSE2,
-//! NEON).
+//! ChaCha20 computes several blocks at once: sixteen (zmm) or four (xmm) with AVX-512 on x86_64,
+//! eight with AVX2 (detected at run time, see `hw`), else four in a lane-parallel layout that
+//! compilers map onto 128-bit vectors (SSE2, NEON). Poly1305 absorbs eight blocks per step with
+//! AVX-512 IFMA (runs of 256 bytes and more), else two per step in scalar code.
 //!
 //! ```
 //! use only_crypto::chacha::ChaCha20Poly1305;
@@ -25,6 +26,37 @@ pub const KEY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 12;
 /// The Poly1305 tag length in bytes.
 pub const TAG_LEN: usize = 16;
+
+/// The widest implementation a key may use; the default allows all, the others exist for
+/// differential tests and benchmarks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+    /// The portable code (also what `ONLY_CRYPTO_PORTABLE` forces).
+    Portable,
+    /// ChaCha20 on AVX2 (eight blocks), scalar Poly1305.
+    Avx2,
+    /// ChaCha20 on AVX-512 (sixteen or four blocks), Poly1305 on AVX-512 IFMA when present.
+    Wide,
+}
+
+impl Level {
+    /// The widest level this CPU allows now (the portable switch included), at most `cap`.
+    #[inline]
+    fn current(cap: Level) -> Level {
+        let best = if hw::wide_enabled() {
+            Level::Wide
+        } else if hw::enabled() {
+            Level::Avx2
+        } else {
+            Level::Portable
+        };
+        best.min(cap)
+    }
+}
+
+/// The shortest run of whole Poly1305 blocks handed to the IFMA kernel: below it, computing the
+/// eight powers of `r` costs more than the kernel saves.
+const IFMA_MIN: usize = 256;
 
 #[inline(always)]
 fn le32(b: &[u8]) -> u32 {
@@ -173,7 +205,12 @@ impl ChaCha20 {
     /// # Panics
     ///
     /// When the 32-bit block counter would wrap (256 GiB from counter 0).
-    pub fn apply_keystream(&mut self, mut data: &mut [u8]) {
+    pub fn apply_keystream(&mut self, data: &mut [u8]) {
+        self.apply(Level::current(Level::Wide), data);
+    }
+
+    /// [`apply_keystream`](Self::apply_keystream) with the implementations of `lvl` at most.
+    fn apply(&mut self, lvl: Level, mut data: &mut [u8]) {
         if self.used < 64 {
             let n = (64 - self.used).min(data.len());
             for (d, k) in data[..n].iter_mut().zip(&self.keystream[self.used..]) {
@@ -182,10 +219,18 @@ impl ChaCha20 {
             self.used += n;
             data = &mut data[n..];
         }
-        // Eight blocks at a time on AVX2, four at a time otherwise, while the counter cannot
-        // wrap inside the group (the single-block path below handles the wrap and exhaustion).
+        // Whole blocks on AVX-512 up to (not including) the last counter value; then eight
+        // blocks at a time on AVX2, four at a time otherwise, while the counter cannot wrap
+        // inside the group (the single-block path below handles the wrap and exhaustion).
+        if !self.exhausted && lvl == Level::Wide {
+            let n = (data.len() / 64).min((u32::MAX - self.state[12]) as usize);
+            if n > 0 && hw::xor_wide(&self.state, None, &mut data[..64 * n]) {
+                self.state[12] += n as u32;
+                data = &mut data[64 * n..];
+            }
+        }
         let mut done = 0;
-        if !self.exhausted && hw::enabled() {
+        if !self.exhausted && lvl >= Level::Avx2 {
             for c in data.chunks_exact_mut(512) {
                 let c: &mut [u8; 512] = c.try_into().unwrap_or_else(|_| unreachable!());
                 if self.state[12] > u32::MAX - 8 || !hw::xor8(&self.state, c) {
@@ -242,6 +287,10 @@ pub struct Poly1305 {
     h: [u64; 3],
     buf: [u8; 16],
     pos: usize,
+    /// May use the IFMA kernel.
+    wide: bool,
+    /// `r⁸ … r¹` for the IFMA kernel, once computed.
+    pw: Option<hw::Powers>,
 }
 
 impl std::fmt::Debug for Poly1305 {
@@ -295,6 +344,11 @@ impl Poly1305 {
     /// A Poly1305 instance keyed with the one-time key `key` (`r` then `s`).
     #[must_use]
     pub fn new(key: &[u8; 32]) -> Self {
+        Self::with_level(key, Level::Wide)
+    }
+
+    /// A Poly1305 instance that uses the IFMA kernel only with `lvl` [`Level::Wide`].
+    fn with_level(key: &[u8], lvl: Level) -> Self {
         // poly1305-donna-64: r clamped and split into 44/44/42-bit limbs.
         let t0 = le64(&key[0..]);
         let t1 = le64(&key[8..]);
@@ -308,6 +362,59 @@ impl Poly1305 {
             h: [0; 3],
             buf: [0; 16],
             pos: 0,
+            wide: lvl == Level::Wide,
+            pw: None,
+        }
+    }
+
+    /// `r⁸ … r¹` in the layout of [`hw::Powers`] (limbs below 2⁴⁵, `20·r1` and `20·r2` below
+    /// 2⁵⁰).
+    fn powers(r: [u64; 3]) -> hw::Powers {
+        let mul = |a: [u64; 3], b: [u64; 3]| {
+            let (s1, s2) = (b[1] * 20, b[2] * 20);
+            let mm = |a: u64, b: u64| u128::from(a) * u128::from(b);
+            carry([
+                mm(a[0], b[0]) + mm(a[1], s2) + mm(a[2], s1),
+                mm(a[0], b[1]) + mm(a[1], b[0]) + mm(a[2], s2),
+                mm(a[0], b[2]) + mm(a[1], b[1]) + mm(a[2], b[0]),
+            ])
+        };
+        let r2 = mul(r, r);
+        let r3 = mul(r2, r);
+        let r4 = mul(r2, r2);
+        let p = [mul(r4, r4), mul(r4, r3), mul(r4, r2), mul(r4, r), r4, r3, r2, r];
+        let mut pw = [0u64; 40];
+        for (i, p) in p.iter().enumerate() {
+            pw[i] = p[0];
+            pw[8 + i] = p[1];
+            pw[16 + i] = p[2];
+            pw[24 + i] = 20 * p[1];
+            pw[32 + i] = 20 * p[2];
+        }
+        pw
+    }
+
+    /// Absorbs the whole 16-byte blocks of `data` (a multiple of 16 bytes).
+    fn full_blocks(&mut self, mut data: &[u8]) {
+        if self.wide && data.len() >= IFMA_MIN && hw::ifma_enabled() {
+            let n = data.len() / hw::POLY_CHUNK * hw::POLY_CHUNK;
+            let r = self.r;
+            let pw = self.pw.get_or_insert_with(|| Self::powers(r));
+            if hw::poly_blocks(&mut self.h, pw, &data[..n]) {
+                self.h = carry(self.h.map(u128::from));
+                data = &data[n..];
+            }
+        }
+        if data.len() >= 64 {
+            let r2 = self.r_squared();
+            let mut pairs = data.chunks_exact(32);
+            for b in &mut pairs {
+                self.blocks2(b, &r2);
+            }
+            data = pairs.remainder();
+        }
+        for b in data.chunks_exact(16) {
+            self.block(b, 1 << 40);
         }
     }
 
@@ -385,19 +492,9 @@ impl Poly1305 {
             self.block(&b, 1 << 40);
             self.pos = 0;
         }
-        if data.len() >= 64 {
-            let r2 = self.r_squared();
-            let mut pairs = data.chunks_exact(32);
-            for b in &mut pairs {
-                self.blocks2(b, &r2);
-            }
-            data = pairs.remainder();
-        }
-        let mut chunks = data.chunks_exact(16);
-        for b in &mut chunks {
-            self.block(b, 1 << 40);
-        }
-        let rest = chunks.remainder();
+        let whole = data.len() / 16 * 16;
+        self.full_blocks(&data[..whole]);
+        let rest = &data[whole..];
         self.buf[..rest.len()].copy_from_slice(rest);
         self.pos = rest.len();
     }
