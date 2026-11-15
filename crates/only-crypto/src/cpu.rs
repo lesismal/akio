@@ -11,7 +11,7 @@
 //! nothing is detected, so `cargo miri test` runs the portable code (and never the `asm!` of the
 //! wide AES-GCM kernel).
 //!
-//! VAES, VPCLMULQDQ, AVX-512, BMI2 and ADX are read from CPUID (and XCR0 for the vector state)
+//! VAES, VPCLMULQDQ, AVX-512 (and its IFMA extension), BMI2 and ADX are read from CPUID (and XCR0 for the vector state)
 //! directly (`hw`), independent of the feature names `is_x86_feature_detected!` accepts at the
 //! MSRV.
 
@@ -49,9 +49,12 @@ pub(crate) enum Feature {
     /// Wide multiplication with two independent carry chains: BMI2 `mulx` and ADX
     /// `adcx`/`adox` (x86_64, read from CPUID).
     Adx = 1 << 7,
+    /// 52-bit integer multiply-add: AVX-512 IFMA with [`Avx512`](Feature::Avx512) (x86_64, read
+    /// from CPUID).
+    Ifma = 1 << 8,
     /// The 64×64 → 128-bit products and carry chains of the P-256 and Curve25519 assembly:
     /// `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (aarch64; base ARMv8.0-A, so always present).
-    Umulh = 1 << 8,
+    Umulh = 1 << 9,
 }
 
 /// CPUID and XCR0, for the features `is_x86_feature_detected!` cannot name at the MSRV (VAES,
@@ -68,14 +71,16 @@ mod hw {
         pub(super) vaes: bool,
         pub(super) avx512: bool,
         pub(super) adx: bool,
+        pub(super) ifma: bool,
     }
 
-    /// `Vaes`, `Avx512` and `Adx` as defined by `super::Feature`.
+    /// `Vaes`, `Avx512`, `Adx` and `Ifma` as defined by `super::Feature`.
     pub(super) fn leaf7() -> Leaf7 {
         let none = Leaf7 {
             vaes: false,
             avx512: false,
             adx: false,
+            ifma: false,
         };
         // SAFETY: CPUID exists on every x86_64 CPU; leaf 0 reports the highest leaf.
         let max = unsafe { __cpuid_count(0, 0) }.eax;
@@ -103,10 +108,12 @@ mod hw {
         let vpclmulqdq = l7.ecx & (1 << 10) != 0;
         let avx512 = l7.ebx & (1 << 16) != 0 && l7.ebx & (1 << 30) != 0 && l7.ebx & (1 << 31) != 0;
         let v = avx && ymm_os && avx2 && vaes && vpclmulqdq;
+        let ifma = l7.ebx & (1 << 21) != 0;
         Leaf7 {
             vaes: v,
             avx512: v && zmm_os && avx512,
             adx,
+            ifma: v && zmm_os && avx512 && ifma,
         }
     }
 
@@ -133,6 +140,9 @@ fn detect() -> u32 {
     }
     if l7.adx {
         f |= Feature::Adx as u32;
+    }
+    if l7.ifma {
+        f |= Feature::Ifma as u32;
     }
     if has!("aes") && has!("sse2") {
         f |= Feature::Aes as u32;
@@ -232,7 +242,7 @@ pub fn is_portable() -> bool {
 }
 
 /// The hardware paths this CPU uses now, for diagnostics and benchmark labels (for example
-/// `"aes clmul sha crc avx2 vaes avx512 adx"` on x86_64, `"aes clmul sha crc umulh"` on
+/// `"aes clmul sha crc avx2 vaes avx512 adx ifma"` on x86_64, `"aes clmul sha crc umulh"` on
 /// aarch64; empty when everything is portable).
 #[doc(hidden)]
 #[must_use]
@@ -246,6 +256,7 @@ pub fn hardware_features() -> String {
         (Feature::Vaes, "vaes"),
         (Feature::Avx512, "avx512"),
         (Feature::Adx, "adx"),
+        (Feature::Ifma, "ifma"),
         (Feature::Umulh, "umulh"),
     ];
     names

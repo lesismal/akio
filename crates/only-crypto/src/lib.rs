@@ -1,11 +1,12 @@
 #![deny(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 //! Dependency-free cryptographic primitives for the `only` crates: everything their protocols
-//! need, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are ten small modules
-//! that call CPU instructions when the CPU has them, detected at run time: `aes::hw`, `gcm::hw`,
-//! `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw` for CPUID, and the inline-assembly field
+//! need, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are twelve small
+//! modules that call CPU instructions when the CPU has them, detected at run time: `aes::hw`,
+//! `gcm::hw`, `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw` for CPUID, the inline-assembly field
 //! arithmetic `ec::hw` and `curve25519::hw` (x86_64), `ec::hw_aarch64` and
-//! `curve25519::hw_aarch64` (aarch64)).
+//! `curve25519::hw_aarch64` (aarch64), and the RSA Montgomery arithmetic `bignum::hw` and
+//! `bignum::ifma` (x86_64)).
 //!
 //! Hardware paths, each with a constant-time portable fallback that is also used when the
 //! environment variable `ONLY_CRYPTO_PORTABLE=1` is set (tests, benchmarks):

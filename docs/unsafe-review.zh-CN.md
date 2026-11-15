@@ -14,7 +14,7 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `only-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许 | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
 | `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
 | `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `only_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
-| `only-crypto` | `#![deny(unsafe_code)]`，仅十个 CPU 指令模块 `aes::hw`、`gcm::hw`（含 `gcm::hw::vaes`）、`hash::hw`、`crc::hw`、`chacha::hw`、`cpu::hw`、`ec::hw`、`ec::hw_aarch64`、`curve25519::hw`、`curve25519::hw_aarch64` 允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），基于 VAES / VPCLMULQDQ + AVX-512 的 `asm!` AES-GCM 内核与 CRC 折叠（这些 intrinsic 比 MSRV 新），P-256 与 Curve25519 域运算中使用 BMI2 `mulx` 与 ADX `adcx`/`adox`（x86_64）或 `MUL`/`UMULH` 与 `ADDS`/`ADCS` 进位链（aarch64）的 `asm!` 块，以及检测 VAES、AVX-512、BMI2 与 ADX 所用的 CPUID / XGETBV；每次调用前都经过 `cpu.rs` 的运行时检测；可移植回退实现与其余公钥代码（大数运算、点运算公式、RSA、DER）均为安全 Rust |
+| `only-crypto` | `#![deny(unsafe_code)]`，仅十二个 CPU 指令模块 `aes::hw`、`gcm::hw`（含 `gcm::hw::vaes`）、`hash::hw`、`crc::hw`、`chacha::hw`、`cpu::hw`、`ec::hw`、`ec::hw_aarch64`、`curve25519::hw`、`curve25519::hw_aarch64`、`bignum::hw`、`bignum::ifma` 允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），基于 VAES / VPCLMULQDQ + AVX-512 的 `asm!` AES-GCM 内核与 CRC 折叠（这些 intrinsic 比 MSRV 新），P-256 与 Curve25519 域运算以及 RSA 的 Montgomery 乘法与平方中使用 BMI2 `mulx` 与 ADX `adcx`/`adox` 的 `asm!` 块，RSA 模幂中使用 AVX-512 IFMA 的 `asm!` 块（同样在 MSRV 上不稳定），aarch64 上 P-256 与 Curve25519 域运算中使用 `MUL`/`UMULH` 与 `ADDS`/`ADCS` 进位链的 `asm!` 块，以及检测 VAES、AVX-512、IFMA、BMI2 与 ADX 所用的 CPUID / XGETBV；每次调用前都经过 `cpu.rs` 的运行时检测；可移植回退实现与其余公钥代码（可移植的大数运算、点运算公式、RSA 协议代码、DER）均为安全 Rust |
 | 其它所有 crate（`only`、`only-core`、`only-x509`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
@@ -78,10 +78,10 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
-| only-crypto | 108 | 65 | 0 | 0 |
+| only-crypto | 115 | 66 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **合计** | **261** | **75** | **5** | **21** |
+| **合计** | **268** | **76** | **5** | **21** |
 
 按用途：
 
@@ -104,6 +104,8 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-crypto/src/curve25519/hw.rs` | 5 个块（仅 x86_64） | X25519 阶梯在四个 limb 上模 `2²⁵⁵ - 19` 的 `asm!` 运算（乘法、平方、`121665·a`、加法、减法；按 `2²⁵⁶ ≡ 38` 折叠） | 只在 `hw::enabled()`（`cpu::has(Feature::Adx)`）之后调用 `ladder`，每个函数都有 debug 断言；内存与寄存器约束同 `ec/hw.rs`，没有分支 |
 | `only-crypto/src/ec/hw_aarch64.rs` | 8 个块（仅 aarch64） | `ec/hw.rs` 的 aarch64 对应实现，`asm!`：模 `p`（不用乘法的专用约简）与模 `n` 的 Montgomery 乘法与平方、加法、减法、`2ᵏ·a`、`3·a`，使用 `MUL`/`UMULH`、`ADDS`/`ADCS`/`SUBS`/`SBCS` 与 `CSEL` | 只用 ARMv8.0-A 基础指令，所有 aarch64 CPU 都具备；只在 `hw_aarch64::enabled()`（`cpu::has(Feature::Umulh)`，aarch64 上 Miri 之外均置位，`ONLY_CRYPTO_PORTABLE` 可关闭）时到达：`P256A` 孪生曲线经由 `P256` 的分派进入，标量域逐次检查；汇编块的操作数全部在寄存器中，不访问内存（`pure`、`nomem`、`nostack`），只写声明的寄存器，没有分支（修正用基于进位标志的 `CSEL` 与 `SBC` 掩码） |
 | `only-crypto/src/curve25519/hw_aarch64.rs` | 5 个块（仅 aarch64） | `curve25519/hw.rs` 的 aarch64 对应实现：X25519 阶梯在四个 limb 上模 `2²⁵⁵ - 19` 的 `asm!` 运算（乘法、平方、`121665·a`、加法、减法；用 `CSEL` 按 `2²⁵⁶ ≡ 38` 折叠） | 只在 `hw_aarch64::enabled()`（`cpu::has(Feature::Umulh)`）之后调用 `ladder`；与 `ec/hw_aarch64.rs` 相同的纯寄存器约束，没有分支 |
+| `only-crypto/src/bignum/hw.rs` | 5 个块、1 个 `unsafe fn`（仅 x86_64） | RSA 在 16、24、32、48 与 64 个 limb 上的 Montgomery 乘法与平方 `asm!`（BMI2 `mulx` 加 ADX 进位链，行用 `.rept` 展开，最后的减法用 `cmovnz`）；模幂查表的 AVX2 扫描（`#[target_feature]` 函数） | 汇编块只经 `Mont::mul_into` / `sqr_into` 在 `hw::enabled()`（`cpu::has(Feature::Adx)`）之后进入，每个函数都有 debug 断言；读取 `a`、`b`、`m` 指向的 `N` 个 limb，写入 `N` 个 limb 的输出（独占借用）与局部的 `2N` 个 limb 暂存区（`MaybeUninit`，每个 limb 先写后读），所有位移都小于 `16N` 字节，不使用栈；扫描只在 `cpu_has(Feature::Avx2)`（有断言）之后调用，从存活表项的每个 4-limb 块读取 32 字节；除行计数器外没有分支 |
+| `only-crypto/src/bignum/ifma.rs` | 2 个块（仅 x86_64；每个宏一个，共三个实例） | 基于 AVX-512 IFMA 的 RSA 模幂：在 `ymm` / `zmm` 寄存器中对 20、32、40 个 52 位数字做几乎 Montgomery 乘法，各一个 `asm!` 块（`vpmadd52luq`/`vpmadd52huq`、`valignq`、opmask 进位；这些 intrinsic 在 MSRV 上不稳定） | 只经 `Mont::pow` 在 `ifma::enabled()`（`cpu::has(Feature::Ifma)`：AVX-512 F/BW/VL、IFMA 以及操作系统保存 ZMM 与 opmask 状态）之后进入，有 debug 断言；读取 `a`、`b`、`m` 指向的 `D` 个数字，写入 `D` 个数字的输出，非对齐访问，不使用栈；全部向量与掩码寄存器声明为被破坏（`clobber_abi("C")`），循环期间输出指针暂存在 `xmm31`，结尾执行 `vzeroupper`；除数字计数器外没有分支 |
 | `only-sys/src/random.rs` | 2（每个系统一个） | 供 `only-crypto` 使用的 `getrandom(2)`（Linux）、`getentropy(2)`（macOS） | 内核最多向存活的 `&mut [u8]` 写入 `buf.len()` 字节（`getentropy` 每次最多 256 字节）；`getrandom` 读到的字节不足时按返回值前移 |
 | `only-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
 | `only-uring/src/ring.rs` | 16，`unsafe fn push`、`register`、`register_buf_ring` | 自有 io_uring 绑定：经 `syscall(2)` 调用 `io_uring_setup`/`enter`/`register`，`mmap` 映射 SQ/CQ ring 与 SQE 数组，SQ/CQ 的 head/tail 原子量，probe、enable-rings、buffer ring 注册 | 内核给出的偏移在使用前对照各自映射做边界检查；仅在队列未满时写入 SQE 槽位，tail 以 `Release` 发布；在自身 head 与以 `Acquire` 读取的 tail 之间读取 CQE，head 以 `Release` 发布；读取 `SQ_NEED_WAKEUP` 前有 `SeqCst` 栅栏（SQPOLL）；映射与 `Ring` 同生命周期 |
