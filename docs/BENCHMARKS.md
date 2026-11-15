@@ -228,6 +228,71 @@ copy came first, 30% of the 16 KiB profile): 2.4× the previous release at 16–
 AVX-512 ChaCha20 and IFMA Poly1305 kernels, also out of place: 0.55× → 1.42× rustls + ring at
 16 KiB (below).
 
+### Kernel TLS (kTLS) evaluation (`crates/only-tls/examples/ktls-bench.rs`, `tools/bench/ktls.sh`)
+
+Question: after only-tls finishes a handshake, should the record keys go to the Linux kernel
+(`setsockopt(TCP_ULP, "tls")`, `SOL_TLS` `TLS_TX` / `TLS_RX`), so that the kernel encrypts and
+decrypts records, plaintext flows on the socket and `sendfile(2)` works under TLS? **Answer: no.
+On this host the kernel's software kTLS is slower than only-tls's own record layer in every case
+measured, and slowest exactly where it was supposed to win (large responses and `sendfile`).**
+The offload is kept behind only-tls's `experimental-ktls` feature for re-measuring, and is not
+wired into `Tls` or the engine.
+
+Method: one thread-per-connection HTTP/1.1-over-TLS server (`ktls-bench`) whose record layer is
+either only-tls in user space (`user`: responses sealed by only-tls and written; the file read in
+64 KiB chunks with `pread` and sealed) or the kernel (`ktls`: the same handshake by only-tls, then
+the keys handed over; responses written as plaintext; the file sent with `sendfile`). Same
+binary, same handshake (TLS 1.3, X25519, ECDSA P-256, no tickets), AES-128-GCM unless noted.
+Server on CPUs 0–3, `h2load --h1` with 8 threads on CPUs 4–7 and 12–15, 8 s per run after a 2 s
+warm-up, 3 interleaved rounds (median shown; the rounds agreed within 1–2%), all under
+`quiet.sh`. Linux 7.0, Ryzen 7 7800X3D; the kernel's AES-GCM is `generic-gcm-vaes-avx512`
+(the same VAES + AVX-512 class of code as only-crypto's), ChaCha20-Poly1305 is
+`rfc7539(chacha20-lib,poly1305-generic)`. The server was CPU-bound in every case (4.0 CPU-seconds
+per second), so CPU per byte is server CPU time (user + system, from `/proc`) over bytes served.
+
+| Case (connections) | only-tls req/s | kTLS req/s | kTLS / only | only-tls CPU ns/B | kTLS CPU ns/B | kTLS / only CPU per byte |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 KiB responses (64) | 531,393 | 439,368 | 0.83 | 6.77 | 8.55 | 1.26 |
+| 16 KiB (64) | 358,494 | 233,814 | 0.65 | 0.679 | 1.042 | 1.53 |
+| 256 KiB (32) | 66,057 (16.1 GB/s) | 26,415 (6.45 GB/s) | 0.40 | 0.231 | 0.577 | 2.50 |
+| 10 MB file (16): `pread` + seal vs `sendfile` | 1,391 (13.0 GB/s) | 669 (6.24 GB/s) | 0.48 | 0.288 | 0.597 | 2.07 |
+| 16 KiB, ChaCha20-Poly1305 (64) | 284,155 | 175,070 | 0.62 | 0.858 | 1.393 | 1.62 |
+| 16 KiB, TLS 1.2 AES-128-GCM (64) | 358,377 | 242,912 | 0.68 | 0.680 | 1.003 | 1.47 |
+
+Loopback has a 64 KiB MTU; with the client in a network namespace behind a veth pair with a
+1500-byte MTU (`VETH=1`, GSO/GRO on, as with a NIC) the ratios were the same: 0.83 (1 KiB),
+0.65 (16 KiB), 0.40 (256 KiB), 0.49 (file). Offloading costs 14–20 µs per connection (`TCP_ULP`
+plus two `SOL_TLS` keys), against ~200 µs of CPU for a whole full handshake, both ends together
+(5,027/s in `tls-bench`): a noticeable addition for short connections.
+
+Why (perf, 10 MB file case): with kTLS, 96% of the server's samples are under `tls_sw_sendmsg`,
+but the AES-GCM itself is only ~12%. The kernel pushes every 16 KiB record to TCP on its own
+(`tls_push_record` → `tcp_push`: ~55% of the samples in the TCP/IP transmit path, including the
+loopback receive softirq, against ~29% for user space, which hands TCP 64 KiB of records per
+`write`), and it allocates and zeroes fresh pages for each record (`kernel_init_pages` ~5%). In
+user space the same work is only-crypto's GCM (22%) plus the `pread` and `write` copies (~14%
+each); saving those copies does not make up for the per-record cost in the kernel. Small
+responses lose less (0.83×) because the per-request work there is dominated by the syscalls and
+TCP, which both modes share.
+
+When kTLS could still pay off: a NIC with TLS offload (`tls-hw-tx-offload`, e.g. ConnectX-6 Dx;
+none on this host), where the kernel hands records to the NIC unencrypted and `sendfile` really
+is zero-copy; or a host whose user-space AES-GCM is much slower than the kernel's (no VAES).
+Neither applies to only-tls on x86_64 with VAES; re-measure with `tools/bench/ktls.sh` before
+reconsidering.
+
+What the experimental code covers (tests: `crates/only-tls/tests/ktls.rs` on a kTLS kernel,
+in-memory unit tests anywhere; `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh` passed 107/107
+against OpenSSL 3.0.13 and Go 1.27 with only's side offloaded): TLS 1.3 and 1.2 with AES-128-GCM,
+AES-256-GCM and ChaCha20-Poly1305; the keys and sequence numbers exported after the handshake
+(only when nothing is buffered); alerts, close_notify and post-handshake messages (NewSessionTicket,
+KeyUpdate) through the record-type control message; TLS 1.3 KeyUpdate in both directions by
+re-installing keys (Linux 6.14+; older kernels keep TLS 1.3 in user space, since a peer can rekey
+at any time); fallback to user space when the `tls` module or the suite is missing. Not done:
+the engine integration (epoll / io_uring receive with `TLS_GET_RECORD_TYPE`, control records in
+the write queue), `TLS_RX_EXPECT_NO_PAD`, and sending our own KeyUpdate before the AES-GCM record
+limit (the kernel does not count for us).
+
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

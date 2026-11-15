@@ -15,6 +15,10 @@ pub struct Stream<S> {
     plain_pos: usize,
     out: Vec<u8>,
     eof: bool,
+    buf: Vec<u8>,
+    /// Kernel TLS: the socket and the negotiated (version, AEAD) once offloaded.
+    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    ktls: Option<(std::os::fd::RawFd, bool, crate::proto::suites::AeadAlg)>,
 }
 
 fn err(e: Fatal) -> io::Error {
@@ -41,6 +45,9 @@ impl<S: Read + Write> Stream<S> {
             plain_pos: 0,
             out: Vec::new(),
             eof: false,
+            buf: Vec::new(),
+            #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+            ktls: None,
         }
     }
 
@@ -69,13 +76,19 @@ impl<S: Read + Write> Stream<S> {
 
     /// Reads once from the socket and processes it; false at EOF.
     fn pump(&mut self) -> io::Result<bool> {
-        let mut buf = vec![0u8; 16 * 1024 + 512];
-        let n = self.sock.read(&mut buf)?;
+        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        if self.ktls.is_some() {
+            return self.pump_ktls();
+        }
+        self.buf.resize(16 * 1024 + 512, 0);
+        let n = self.sock.read(&mut self.buf)?;
         if n == 0 {
             self.eof = true;
             return Ok(false);
         }
-        let r = self.conn.recv(&buf[..n], &mut self.plain, &mut self.out);
+        let r = self
+            .conn
+            .recv(&self.buf[..n], &mut self.plain, &mut self.out);
         self.flush_out()?;
         r.map_err(err)?;
         Ok(true)
@@ -99,8 +112,93 @@ impl<S: Read + Write> Stream<S> {
 
     /// Sends close_notify.
     pub fn close(&mut self) -> io::Result<()> {
+        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        if let Some((fd, ..)) = self.ktls {
+            if let Some(crate::proto::OffloadEvent::Send(t, d)) = self.conn.offloaded_close() {
+                crate::ktls::send_all(fd, t, &d)?;
+            }
+            return Ok(());
+        }
         self.conn.close(&mut self.out);
         self.flush_out()
+    }
+
+    /// Whether the record layer is in the kernel.
+    pub fn offloaded(&self) -> bool {
+        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        return self.ktls.is_some();
+        #[cfg(not(all(target_os = "linux", feature = "experimental-ktls")))]
+        false
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+impl<S: Read + Write + std::os::fd::AsRawFd> Stream<S> {
+    /// Asks for kernel TLS: call before the handshake, then [`offload`](Self::offload) after it.
+    pub fn want_ktls(&mut self) {
+        self.conn.set_keep_keys(true);
+    }
+
+    /// Moves the record layer into the kernel if it is ready and the kernel can (`Ok(false)`
+    /// otherwise; the stream carries on in user space). Plaintext then flows on the socket
+    /// itself, so `sendfile(2)` on `get_ref()` sends encrypted records.
+    pub fn offload(&mut self) -> io::Result<bool> {
+        // Application data already decrypted stays readable from `plain`.
+        self.flush_out()?;
+        let Some(o) = self.conn.offload_keys() else {
+            return Ok(false);
+        };
+        let fd = self.sock.as_raw_fd();
+        if !crate::ktls::install(fd, &o)? {
+            self.conn.skip_offload();
+            return Ok(false);
+        }
+        self.conn.commit_offload();
+        self.ktls = Some((fd, o.tls13, o.aead));
+        Ok(true)
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+impl<S: Read + Write> Stream<S> {
+    /// Sends a TLS 1.3 KeyUpdate through the kernel (which must support rekeying, Linux 6.14
+    /// and later). Only once offloaded.
+    pub fn key_update(&mut self) -> io::Result<()> {
+        let Some((fd, tls13, aead)) = self.ktls else {
+            return Err(io::Error::other("not offloaded"));
+        };
+        let mut ev = Vec::new();
+        self.conn.offloaded_key_update(&mut ev).map_err(err)?;
+        crate::ktls::apply(fd, tls13, aead, &mut ev, |t, d| {
+            crate::ktls::send_all(fd, t, d)
+        })
+    }
+
+    fn pump_ktls(&mut self) -> io::Result<bool> {
+        let Some((fd, tls13, aead)) = self.ktls else {
+            return Ok(false);
+        };
+        self.buf.resize(16 * 1024 + 512, 0);
+        let (typ, n) = loop {
+            match only_sys::ktls::ktls_recv(fd, &mut self.buf) {
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                r => break r?,
+            }
+        };
+        if typ == 23 {
+            if n == 0 {
+                self.eof = true;
+                return Ok(false);
+            }
+            self.plain.extend_from_slice(&self.buf[..n]);
+            return Ok(true);
+        }
+        let mut ev = Vec::new();
+        let r = self.conn.offloaded_record(typ, &self.buf[..n], &mut ev);
+        crate::ktls::apply(fd, tls13, aead, &mut ev, |t, d| {
+            crate::ktls::send_all(fd, t, d)
+        })?;
+        r.map_err(err)
     }
 }
 
@@ -133,6 +231,10 @@ impl<S: Read + Write> Write for Stream<S> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.conn.handshaking() {
             self.handshake()?;
+        }
+        #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+        if self.ktls.is_some() {
+            return self.sock.write(buf);
         }
         self.conn.seal(buf, &mut self.out).map_err(err)?;
         self.flush_out()?;

@@ -89,7 +89,7 @@ Data: func(c *fib.Connection, data []byte) {
 
 | fib package | only crate | 差异 |
 |---|---|---|
-| `tls`（crypto/tls 握手，自有记录层） | `only::tls`（底层为 rustls） | `ServerConfig` / `ClientConfig` 构建器；暂无 kTLS |
+| `tls`（crypto/tls 握手，自有记录层） | `only::tls`（自研 TLS 1.3 / 1.2 与记录层） | `ServerConfig` / `ClientConfig` 构建器；不用 kTLS（已评估：比自研记录层慢，见[基准](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)） |
 | `websocket` | `only-ws`（+ `Context::upgrade_websocket`） | 只交付完整消息（不按帧交付）；不支持基于 HTTP/2 或 HTTP/3 的 WebSocket；客户端停机时尚不发送 1001 |
 | `http3`（自有 QUIC） | `only-quic`（自研 QUIC）+ `only-h3` | 无 QPACK 动态表、无推送、客户端无 Alt-Svc 自动切换 |
 | `grpc` | `only-grpc` | 字节或实现 `codec::Message` 的类型（prost 需启用 feature）；没有对应 protoc-gen-go-grpc 的代码生成器 |

@@ -13,6 +13,10 @@
 //!
 //! The server echoes what it reads (`--count` connections, then exits); the client sends a line,
 //! checks the echo and prints what was negotiated, one line per connection.
+//!
+//! `--ktls` (or `ONLY_INTEROP_KTLS=1` in the environment, `=require` to fail when the kernel
+//! refuses; needs Linux and the `experimental-ktls` feature) moves the record layer into the Linux kernel after the handshake (kernel TLS,
+//! evaluation only: docs/BENCHMARKS.md); `--key-update` then rekeys through the kernel.
 #![allow(missing_docs)]
 
 use std::io::{Read, Write};
@@ -42,6 +46,8 @@ struct Opts {
     bytes: usize,
     http: bool,
     http_server: bool,
+    ktls: bool,
+    ktls_required: bool,
 }
 
 fn hex_list(s: &str) -> Vec<u16> {
@@ -71,7 +77,14 @@ fn parse() -> Opts {
         bytes: 0,
         http: false,
         http_server: false,
+        ktls: false,
+        ktls_required: false,
     };
+    match std::env::var("ONLY_INTEROP_KTLS").as_deref() {
+        Ok("1") => o.ktls = true,
+        Ok("require") => (o.ktls, o.ktls_required) = (true, true),
+        _ => {}
+    }
     let mut a = std::env::args().skip(1);
     while let Some(x) = a.next() {
         let mut val = || a.next().expect("missing value");
@@ -94,6 +107,7 @@ fn parse() -> Opts {
             "--bytes" => o.bytes = val().parse().expect("bytes"),
             "--http" => o.http = true,
             "--http-server" => o.http_server = true,
+            "--ktls" => o.ktls = true,
             _ => o.pos.push(x),
         }
     }
@@ -125,6 +139,45 @@ fn describe(c: &only_tls::__proto::Connection) -> String {
     )
 }
 
+/// Asks for kernel TLS before the handshake (Linux).
+#[cfg_attr(
+    not(all(target_os = "linux", feature = "experimental-ktls")),
+    allow(clippy::needless_pass_by_ref_mut)
+)]
+fn want_ktls<S: Read + Write + std::os::fd::AsRawFd>(o: &Opts, s: &mut Stream<S>) {
+    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    if o.ktls {
+        s.want_ktls();
+    }
+    let _ = (o, s);
+}
+
+/// Moves the record layer into the kernel after the handshake; " ktls=on|off" for the report.
+#[cfg_attr(
+    not(all(target_os = "linux", feature = "experimental-ktls")),
+    allow(clippy::needless_pass_by_ref_mut)
+)]
+fn offload<S: Read + Write + std::os::fd::AsRawFd>(o: &Opts, s: &mut Stream<S>) -> &'static str {
+    if !o.ktls {
+        return "";
+    }
+    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    match s.offload() {
+        Ok(true) => return " ktls=on",
+        Ok(false) => {}
+        Err(e) => {
+            println!("kTLS offload failed: {e}");
+            std::process::exit(1);
+        }
+    }
+    let _ = s;
+    if o.ktls_required {
+        println!("kTLS required but unavailable");
+        std::process::exit(1);
+    }
+    " ktls=off"
+}
+
 fn server(o: &Opts) {
     let chain = Certificate::from_pem(&read(o.cert.as_deref().expect("--cert"))).expect("cert");
     let key = PrivateKey::from_pem(&read(o.key.as_deref().expect("--key"))).expect("key");
@@ -154,11 +207,13 @@ fn server(o: &Opts) {
         let (tcp, _) = l.accept().expect("accept");
         tcp.set_read_timeout(Some(Duration::from_secs(20))).ok();
         let mut s = Stream::server(&cfg, tcp);
+        want_ktls(o, &mut s);
         if let Err(e) = s.handshake() {
             println!("handshake failed: {e}");
             continue;
         }
-        println!("server: {}", describe(s.conn()));
+        let k = offload(o, &mut s);
+        println!("server: {}{k}", describe(s.conn()));
         let mut buf = vec![0u8; 64 * 1024];
         let mut req = Vec::new();
         loop {
@@ -223,23 +278,30 @@ fn client(o: &Opts) {
         let tcp = TcpStream::connect(&o.pos[1]).expect("connect");
         tcp.set_read_timeout(Some(Duration::from_secs(20))).ok();
         let mut s = Stream::client(&cfg, &o.pos[2], tcp).expect("client");
+        want_ktls(o, &mut s);
         if let Err(e) = s.handshake() {
             println!("handshake failed: {e}");
             std::process::exit(1);
         }
-        println!("client[{i}]: {}", describe(s.conn()));
+        let k = offload(o, &mut s);
+        println!("client[{i}]: {}{k}", describe(s.conn()));
         if o.expect_resume && i > 0 && !s.conn().resumed() {
             println!("expected a resumed session");
             failed = true;
         }
-        if o.key_update {
+        if o.key_update && !s.offloaded() {
             s.conn_mut().set_key_update_after(1);
         }
+        // Through the kernel: one KeyUpdate before each write.
+        let ktls_key_update = o.key_update && s.offloaded();
         if o.http {
             // `openssl s_server -www` answers a GET with a status page, then closes.
             let pad = "x".repeat(o.bytes);
             let req = format!("GET / HTTP/1.0\r\nX-Pad: {pad}\r\n\r\n").into_bytes();
             for chunk in [&req[..req.len() / 2], &req[req.len() / 2..]] {
+                if ktls_key_update {
+                    key_update(&mut s);
+                }
                 s.write_all(chunk).expect("write");
             }
             let mut resp = Vec::new();
@@ -256,6 +318,9 @@ fn client(o: &Opts) {
         let mut msg = format!("hello from only-tls {i}\n").into_bytes();
         msg.resize(msg.len().max(o.bytes), b'x');
         for chunk in [&msg[..msg.len() / 2], &msg[msg.len() / 2..]] {
+            if ktls_key_update {
+                key_update(&mut s);
+            }
             s.write_all(chunk).expect("write");
         }
         let mut got = vec![0u8; msg.len()];
@@ -273,6 +338,19 @@ fn client(o: &Opts) {
         std::process::exit(2);
     }
     println!("ok");
+}
+
+#[cfg_attr(
+    not(all(target_os = "linux", feature = "experimental-ktls")),
+    allow(clippy::needless_pass_by_ref_mut)
+)]
+fn key_update<S: Read + Write>(s: &mut Stream<S>) {
+    #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]
+    if let Err(e) = s.key_update() {
+        println!("kTLS KeyUpdate failed: {e}");
+        std::process::exit(1);
+    }
+    let _ = s;
 }
 
 fn main() {

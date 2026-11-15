@@ -18,6 +18,11 @@ categories = ["network-programming", "cryptography"]
 unstable = []
 # Fuzz entry points for `fuzz/` (`only_tls::fuzzing`); not a public API.
 fuzzing = []
+# EXPERIMENTAL, not a public API and outside the semver promise: Linux kernel TLS offload for the
+# blocking test stream (`stream::Stream::offload`), the `ktls-bench` example and
+# `tls-interop --ktls`. Measured slower than only-tls's own record layer (docs/BENCHMARKS.md,
+# "Kernel TLS"), so it is not wired into `Tls` / the engine.
+experimental-ktls = ["dep:only-sys"]
 
 [dependencies]
 only-core = { workspace = true }
@@ -25,9 +30,17 @@ only-crypto = { workspace = true }
 only-x509 = { workspace = true }
 only-log = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# `experimental-ktls`: `setsockopt(SOL_TLS)`, record-type control messages.
+only-sys = { workspace = true, optional = true }
+
 [dev-dependencies]
 # Only the comparison in examples/tls-bench.rs; never a dependency of the library.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "ktls-bench"
+required-features = ["experimental-ktls"]

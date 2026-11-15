@@ -6,6 +6,8 @@
 #
 #   tools/interop/tls/run.sh              # needs openssl (3.x+) and go on PATH
 #   OUT=/tmp/x tools/interop/tls/run.sh   # where PKI, logs and binaries go
+#   ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh   # only's side on kernel TLS after the
+#       handshake (Linux with the `tls` module, 6.14+; experimental-ktls feature, docs/BENCHMARKS.md)
 #
 # Linux Docker (Debian's OpenSSL 3 and the Go toolchain from the image are fetched on demand):
 #   docker run --rm -v "$PWD":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
@@ -16,7 +18,9 @@ ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 OUT=${OUT:-$(mktemp -d)}
 mkdir -p "$OUT/pki"
 TARGET=${CARGO_TARGET_DIR:-$ROOT/target}
-(cd "$ROOT" && cargo build -q --release -p only-tls --example tls-interop &&
+KTLS_FEATURE=()
+[ -n "${ONLY_INTEROP_KTLS:-}" ] && KTLS_FEATURE=(--features experimental-ktls)
+(cd "$ROOT" && cargo build -q --release -p only-tls --example tls-interop ${KTLS_FEATURE[@]+"${KTLS_FEATURE[@]}"} &&
     cargo build -q --release -p only-http --example http-bench) || exit 1
 ONLY=$TARGET/release/examples/tls-interop
 HTTP=$TARGET/release/examples/http-bench
