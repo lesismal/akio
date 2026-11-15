@@ -3,7 +3,6 @@
 //! client addresses with Retry and NEW_TOKEN tokens, and sends stateless resets for unknown
 //! connection IDs.
 
-use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,6 +16,7 @@ use super::conn::{
 };
 use super::crypto::TokenKey;
 use super::packet::{self, HeaderError, MIN_INITIAL_SIZE, PacketType};
+use super::{KeyedHash, KeyedMap, KeyedSet};
 
 pub(crate) const TOKEN_RETRY: u8 = 1;
 pub(crate) const TOKEN_NEW: u8 = 2;
@@ -50,10 +50,10 @@ pub(crate) struct Endpoint {
     keys: Arc<EndpointKeys>,
     rng: ChaChaRng,
     server: Option<ServerSetup>,
-    routes: HashMap<ConnectionId, ConnHandle>,
-    initial: HashMap<ConnectionId, ConnHandle>,
-    ids: HashMap<ConnHandle, Vec<ConnectionId>>,
-    handshaking: HashSet<ConnHandle>,
+    routes: KeyedMap<ConnectionId, ConnHandle>,
+    initial: KeyedMap<ConnectionId, ConnHandle>,
+    ids: KeyedMap<ConnHandle, Vec<ConnectionId>>,
+    handshaking: KeyedSet<ConnHandle>,
     next: ConnHandle,
     resets: (Instant, u32),
 }
@@ -79,6 +79,8 @@ impl Endpoint {
         rng.fill(&mut tk);
         let mut seed = [0u8; 32];
         rng.fill(&mut seed);
+        let routes = KeyedHash::from_rng(rng);
+        let initial = KeyedHash::from_rng(rng);
         Endpoint {
             keys: Arc::new(EndpointKeys {
                 reset_key,
@@ -86,10 +88,10 @@ impl Endpoint {
             }),
             rng: ChaChaRng::from_seed(seed),
             server,
-            routes: HashMap::new(),
-            initial: HashMap::new(),
-            ids: HashMap::new(),
-            handshaking: HashSet::new(),
+            routes: KeyedMap::with_hasher(routes),
+            initial: KeyedMap::with_hasher(initial),
+            ids: KeyedMap::default(),
+            handshaking: KeyedSet::default(),
             next: 1,
             resets: (Instant::now(), 0),
         }

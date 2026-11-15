@@ -85,6 +85,46 @@ pub(crate) fn put_frame(out: &mut Vec<u8>, ty: u64, payload: &[u8]) {
     out.extend_from_slice(payload);
 }
 
+/// Starts a frame of type `ty` whose payload the caller appends next; returns where its length
+/// goes, for [`end_frame`]. Encoding straight into the output saves a buffer and a copy.
+pub(crate) fn begin_frame(out: &mut Vec<u8>, ty: u64) -> usize {
+    put_varint(out, ty);
+    out.push(0);
+    out.len() - 1
+}
+
+/// Fills in the length of a frame started with [`begin_frame`] at `at`: in place when the
+/// payload is under 64 bytes, else by widening the placeholder (a short move of the payload).
+pub(crate) fn end_frame(out: &mut Vec<u8>, at: usize) {
+    let len = out.len() - at - 1;
+    if len < 1 << 6 {
+        out[at] = len as u8;
+    } else {
+        let mut v = Vec::with_capacity(8);
+        put_varint(&mut v, len as u64);
+        out.splice(at..=at, v);
+    }
+}
+
+/// The type, header length and frame length of the frame at the start of `r`; `Ok(None)` if
+/// incomplete, `Err(len)` if it announces more than `max` payload bytes.
+fn next_frame(r: &[u8], max: u64) -> Result<Option<(u64, usize, usize)>, u64> {
+    let Some((ty, a)) = get_varint(r) else {
+        return Ok(None);
+    };
+    let Some((len, b)) = get_varint(&r[a..]) else {
+        return Ok(None);
+    };
+    if len > max {
+        return Err(len);
+    }
+    let end = a + b + len as usize;
+    if r.len() < end {
+        return Ok(None);
+    }
+    Ok(Some((ty, a + b, end)))
+}
+
 /// Bytes of a stream, split into frames as they complete.
 #[derive(Default)]
 pub(crate) struct Reader {
@@ -120,22 +160,54 @@ impl Reader {
     /// than `max` payload bytes.
     pub(crate) fn frame(&mut self, max: u64) -> Result<Option<(u64, Vec<u8>)>, u64> {
         let r = self.rest();
-        let Some((ty, a)) = get_varint(r) else {
+        let Some((ty, h, end)) = next_frame(r, max)? else {
             return Ok(None);
         };
-        let Some((len, b)) = get_varint(&r[a..]) else {
-            return Ok(None);
-        };
-        if len > max {
-            return Err(len);
-        }
-        let end = a + b + len as usize;
-        if r.len() < end {
-            return Ok(None);
-        }
-        let payload = r[a + b..end].to_vec();
+        let payload = r[h..end].to_vec();
         self.pos += end;
         Ok(Some((ty, payload)))
+    }
+
+    /// Takes `data` and calls `f` with every frame that completes (type, payload), stopping at
+    /// the first `Err`; a frame announcing more than `max` bytes is `Err(too_large)`. When
+    /// nothing is buffered the frames are read straight from `data` and only a trailing partial
+    /// frame is copied, so a request or response that arrives whole is never copied.
+    pub(crate) fn feed<E>(
+        &mut self,
+        data: &[u8],
+        max: u64,
+        too_large: impl FnOnce() -> E,
+        mut f: impl FnMut(u64, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if self.pos == self.buf.len() {
+            self.buf.clear();
+            self.pos = 0;
+            let mut pos = 0;
+            loop {
+                match next_frame(&data[pos..], max) {
+                    Ok(Some((ty, h, end))) => {
+                        f(ty, &data[pos + h..pos + end])?;
+                        pos += end;
+                    }
+                    Ok(None) => break,
+                    Err(_) => return Err(too_large()),
+                }
+            }
+            self.buf.extend_from_slice(&data[pos..]);
+            return Ok(());
+        }
+        self.push(data);
+        loop {
+            match next_frame(&self.buf[self.pos..], max) {
+                Ok(Some((ty, h, end))) => {
+                    let at = self.pos;
+                    self.pos += end;
+                    f(ty, &self.buf[at + h..at + end])?;
+                }
+                Ok(None) => return Ok(()),
+                Err(_) => return Err(too_large()),
+            }
+        }
     }
 }
 
@@ -182,5 +254,35 @@ mod tests {
         put_varint(&mut big, 5000);
         r.push(&big);
         assert_eq!(r.frame(1000), Err(5000));
+        // `feed` sees the same frames whole or in pieces.
+        for size in [1, 3, 7, 64, wire.len()] {
+            let mut r = Reader::default();
+            let mut fed = Vec::new();
+            for ch in wire.chunks(size) {
+                r.feed(
+                    ch,
+                    1000,
+                    || (),
+                    |t, p| {
+                        fed.push((t, p.to_vec()));
+                        Ok(())
+                    },
+                )
+                .unwrap();
+            }
+            assert_eq!(fed, got);
+        }
+        let mut r = Reader::default();
+        assert_eq!(r.feed(&big, 1000, || 1, |_, _| Ok(())), Err(1));
+        // Lengths of every varint size are filled in by `end_frame`.
+        for n in [0usize, 63, 64, 16383, 16384] {
+            let mut out = vec![9];
+            let at = begin_frame(&mut out, HEADERS);
+            out.extend(std::iter::repeat_n(5u8, n));
+            end_frame(&mut out, at);
+            let mut want = vec![9];
+            put_frame(&mut want, HEADERS, &vec![5u8; n]);
+            assert_eq!(out, want);
+        }
     }
 }

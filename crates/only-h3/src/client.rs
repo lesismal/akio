@@ -1,6 +1,6 @@
 //! An HTTP/3 client: requests multiplexed on one QUIC connection.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 use std::time::Duration;
@@ -10,7 +10,8 @@ use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, StreamId};
 
 use crate::frame::{self, Reader};
-use crate::{Uni, code, qpack};
+use crate::qpack::{self, FieldBuf};
+use crate::{StreamMap, Uni, code};
 
 type Callback = Box<dyn FnOnce(Result<Response, H3Error>) + Send>;
 
@@ -52,7 +53,7 @@ struct State {
     ready: bool,
     closed: Option<String>,
     queue: VecDeque<(Vec<u8>, Callback)>,
-    inflight: HashMap<StreamId, InFlight>,
+    inflight: StreamMap<InFlight>,
 }
 
 fn lock(s: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -86,8 +87,9 @@ impl H3Client {
         let st = Arc::new(Mutex::new(State::default()));
         let handler = ClientConn {
             st: st.clone(),
-            uni: HashMap::new(),
+            uni: StreamMap::default(),
             peer_ctrl: None,
+            fields: FieldBuf::default(),
         };
         let conn = only_quic::dial(engine, addr, server_name, config, handler)?;
         let authority = if addr.port() == 443 {
@@ -117,25 +119,21 @@ impl H3Client {
         body: Vec<u8>,
         cb: impl FnOnce(Result<Response, H3Error>) + Send + 'static,
     ) {
-        let m = method.as_str().to_owned();
-        let mut fields: Vec<(&str, &str)> = vec![
-            (":method", &m),
-            (":scheme", "https"),
-            (":authority", &self.authority),
+        let pseudo: [(&[u8], &[u8]); 4] = [
+            (b":method", method.as_str().as_bytes()),
+            (b":scheme", b"https"),
+            (b":authority", self.authority.as_bytes()),
+            (b":path", path.as_bytes()),
         ];
-        if method != Method::Connect {
-            fields.push((":path", path));
-        }
-        let mut hs = Headers::new();
-        for (n, v) in headers.iter() {
-            hs.append(n, v);
-        }
-        if !body.is_empty() && hs.get("content-length").is_none() {
-            hs.set("content-length", body.len().to_string());
-        }
-        let block = crate::encode_fields(&fields, &hs);
-        let mut wire = Vec::with_capacity(block.len() + body.len() + 16);
-        frame::put_frame(&mut wire, frame::HEADERS, &block);
+        let pseudo = if method == Method::Connect {
+            &pseudo[..3]
+        } else {
+            &pseudo[..]
+        };
+        let hint: usize = headers.iter().map(|(n, v)| n.len() + v.len() + 4).sum();
+        let mut wire = Vec::with_capacity(hint + path.len() + body.len() + 64);
+        let len = (!body.is_empty()).then_some(body.len() as u64);
+        crate::put_head(&mut wire, pseudo, headers, false, len);
         if !body.is_empty() {
             frame::put_frame(&mut wire, frame::DATA, &body);
         }
@@ -204,21 +202,22 @@ fn start_queued(conn: &Connection, st: &Arc<Mutex<State>>) {
 
 struct ClientConn {
     st: Arc<Mutex<State>>,
-    uni: HashMap<StreamId, Uni>,
+    uni: StreamMap<Uni>,
     peer_ctrl: Option<StreamId>,
+    /// Field sections are decoded here, then copied once into the response's `Headers`.
+    fields: FieldBuf,
 }
 
-fn fields_to_response(fields: qpack::Fields) -> Option<Response> {
+fn fields_to_response(fields: &FieldBuf) -> Option<Response> {
     let mut status = None;
-    let mut headers = Headers::new();
-    for (n, v) in fields {
-        let v = String::from_utf8(v).ok()?;
-        if n == b":status" {
+    let mut headers = Headers::with_capacity(fields.len(), fields.bytes());
+    for (n, v) in fields.strs()? {
+        if n == ":status" {
             status = v.parse::<u16>().ok();
-        } else if n.first() == Some(&b':') {
+        } else if n.starts_with(':') {
             return None;
         } else {
-            headers.append(String::from_utf8(n).ok()?, v);
+            headers.append(n, v);
         }
     }
     let mut r = Response::new(status?);
@@ -240,55 +239,51 @@ impl ClientConn {
 
     /// Feeds a response stream; returns the callback to run, if the response is complete.
     fn on_resp(
-        &self,
+        &mut self,
         id: StreamId,
         data: &[u8],
         fin: bool,
     ) -> Option<(Callback, Result<Response, H3Error>)> {
         let mut st = lock(&self.st);
-        let f = st.inflight.get_mut(&id)?;
-        f.r.push(data);
-        let mut err = None;
-        loop {
-            match f.r.frame(1 << 30) {
-                Err(_) => {
-                    err = Some(H3Error::Protocol("frame too large"));
-                    break;
-                }
-                Ok(None) => break,
-                Ok(Some((frame::HEADERS, p))) => {
-                    let Ok(fields) = qpack::decode(&p, 1 << 20) else {
-                        err = Some(H3Error::Protocol("bad field section"));
-                        break;
-                    };
-                    match f.resp.as_mut() {
-                        None => match fields_to_response(fields) {
-                            Some(r) if r.status < 200 => {}
-                            Some(r) => f.resp = Some(r),
-                            None => {
-                                err = Some(H3Error::Protocol("malformed response"));
-                                break;
+        let InFlight { r, resp, .. } = st.inflight.get_mut(&id)?;
+        let fields = &mut self.fields;
+        let fed = r.feed(
+            data,
+            1 << 30,
+            || H3Error::Protocol("frame too large"),
+            |ty, p| {
+                match ty {
+                    frame::HEADERS => {
+                        qpack::decode_into(p, 1 << 20, fields)
+                            .map_err(|_| H3Error::Protocol("bad field section"))?;
+                        match resp.as_mut() {
+                            None => match fields_to_response(fields) {
+                                Some(r) if r.status < 200 => {}
+                                Some(r) => *resp = Some(r),
+                                None => return Err(H3Error::Protocol("malformed response")),
+                            },
+                            Some(r) => {
+                                let mut t = Headers::with_capacity(fields.len(), fields.bytes());
+                                for (n, v) in fields.iter() {
+                                    t.append(
+                                        String::from_utf8_lossy(n),
+                                        String::from_utf8_lossy(v),
+                                    );
+                                }
+                                r.trailers = Some(t);
                             }
-                        },
-                        Some(r) => {
-                            let mut t = Headers::new();
-                            for (n, v) in fields {
-                                t.append(String::from_utf8_lossy(&n), String::from_utf8_lossy(&v));
-                            }
-                            r.trailers = Some(t);
                         }
                     }
+                    frame::DATA => match resp.as_mut() {
+                        Some(r) => r.body.extend_from_slice(p),
+                        None => return Err(H3Error::Protocol("DATA before HEADERS")),
+                    },
+                    _ => {}
                 }
-                Ok(Some((frame::DATA, p))) => match f.resp.as_mut() {
-                    Some(r) => r.body.extend_from_slice(&p),
-                    None => {
-                        err = Some(H3Error::Protocol("DATA before HEADERS"));
-                        break;
-                    }
-                },
-                Ok(Some(_)) => {}
-            }
-        }
+                Ok(())
+            },
+        );
+        let err = fed.err();
         if err.is_none() && !fin {
             return None;
         }
@@ -319,13 +314,16 @@ impl QuicHandler for ClientConn {
     }
 
     fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
-        if let Some(u) = self.uni.get_mut(&id) {
-            let mut stop = |id, e| {
-                let _ = c.stop(id, e);
-            };
-            if let Err(e) = crate::on_uni(u, &mut self.peer_ctrl, &mut stop, id, &data, fin, false)
-            {
-                c.close(e, b"");
+        if id.dir() == Dir::Uni {
+            if let Some(u) = self.uni.get_mut(&id) {
+                let mut stop = |id, e| {
+                    let _ = c.stop(id, e);
+                };
+                if let Err(e) =
+                    crate::on_uni(u, &mut self.peer_ctrl, &mut stop, id, &data, fin, false)
+                {
+                    c.close(e, b"");
+                }
             }
             return;
         }

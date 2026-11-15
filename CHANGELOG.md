@@ -60,6 +60,49 @@ for tests and benchmarks).
   `asm!` blocks, the whole-message calls), documented in docs/unsafe-review.md. Miri never
   reaches the `asm!`.
 
+### Fixed: SOCKS and HTTP CONNECT tunnels could hang under backpressure
+
+- `only-socks`: a tunnel (SOCKS5/4/4a or HTTP `CONNECT`) could stop for good while relaying a
+  large transfer. The engine's write backpressure (`Config::write_high_watermark`) paused reading
+  the upstream connection whenever client data was queued for it, but those reads feed the
+  client, not that queue. An upstream that does not read while its own writes are blocked (an
+  echo server, most request/response servers) then waited on the proxy while the proxy waited on
+  it. It showed up as a rare 10-second hang of `socks5_ipv4_domain_and_backpressure` on a loaded
+  machine (kqueue, epoll and io_uring alike); an upstream that sends before it reads hung every
+  time. Both ends of a tunnel are now paced only by the relay's own pause/resume. Backends honour
+  a new hidden `ConnInner::set_relayed` (epoll, kqueue, io_uring, DPDK). No public API change.
+
+### Performance: HTTP/3 request handling in `only-h3`, keyed fast hashing in `only-quic`
+
+HTTP/3 GET with 64 requests in flight on one connection went from 429,038 to 838,721 req/s
+(1.95×, median of seven alternating rounds; AMD Ryzen 7 7800X3D, loopback, CPUs 2–5); QUIC bulk
++5%, handshakes flat. In the profile the allocator fell from 31.8% to 11.2% of the samples and
+SipHash from 7.3% to 0.1%. No API change; interop with quic-go and fib passes both ways.
+
+- only-h3: request and response frames are read in place from the received stream data (only a
+  trailing partial frame is buffered); a field section is decoded into one reused flat buffer,
+  checked as UTF-8 in one pass and copied once into the request's or response's `Headers`, where
+  it used to cost two `Vec`s per field, a `String` per name and value and a second header list.
+- only-h3: HEADERS frames are QPACK-encoded straight into the outgoing buffer, with `:status`,
+  `date` (formatted once a second per thread) and `content-length` written there instead of being
+  added to the response's headers; static-table references are found by name length instead of
+  two SipHash maps; a response's HEADERS, a body up to 16 KiB and its trailers go to QUIC in one
+  write (larger bodies follow without a copy).
+- only-h3: a request that arrives whole is read without entering the stream table; the stream
+  tables are hashed with a multiply-fold (they are bounded by the stream limits we grant).
+- only-quic: the endpoint's connection-ID tables and the tables of connections and client
+  sockets (by peer address) use a hasher keyed with fresh random words per table (folded
+  64×64→128-bit multiplies) instead of SipHash; a client chooses the connection ID of its first
+  Initial, so the key keeps colliding IDs from being computed in advance. Connection IDs hash
+  only their used bytes. On its own this is +3% bulk (a lookup per datagram); HTTP/3 with many
+  requests per datagram does not notice it.
+- only-quic: in-order stream acknowledgments move the send buffer's front directly instead of
+  through the acknowledged-range tree (a node allocated and freed per acknowledgment), and the
+  first chunk of a stream's send buffer is held inline, so a stream written once costs no queue
+  allocation.
+- only-http: `Response::text` and `Response::with_body` size the header storage once instead of
+  growing it field by field.
+
 ### Performance: ChaCha20-Poly1305 on AVX-512 and IFMA in `only-crypto`, out-of-place TLS records
 
 On x86_64 ChaCha20-Poly1305 seals 16 KiB at 4,597 MB/s (1,752 before, 1.30× ring), 1400 B at

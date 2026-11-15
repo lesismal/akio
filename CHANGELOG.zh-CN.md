@@ -51,6 +51,37 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 - `unsafe`：`gcm::hw` / `gcm::hw::vaes` 增加 5 个块与 1 个 `unsafe fn`（AVX2 内核的两个 `asm!` 块、整条消息的
   调用），见 docs/unsafe-review.zh-CN.md。Miri 永远不会执行到 `asm!`。
 
+### 修复：SOCKS 与 HTTP CONNECT 隧道在背压下可能卡死
+
+- `only-socks`：隧道（SOCKS5/4/4a 或 HTTP `CONNECT`）在转发大量数据时可能永久停住。引擎的写背压
+  （`Config::write_high_watermark`）在上游连接有排队的客户端数据时会暂停读取该上游，但这些读取的数据
+  是发往客户端的，并不进入这个队列。上游如果在自己的写被阻塞时不读（echo 服务器、大多数请求/响应式
+  服务器），就会等代理，而代理也在等它。表现为负载较高时 `socks5_ipv4_domain_and_backpressure` 偶尔
+  卡住 10 秒（kqueue、epoll 与 io_uring 都会）；先发送再读取的上游则每次都会卡住。现在隧道两端只由
+  转发自身的暂停/恢复来调节。各后端（epoll、kqueue、io_uring、DPDK）都遵循新增的隐藏方法
+  `ConnInner::set_relayed`。公共 API 不变。
+
+### 性能：`only-h3` 的 HTTP/3 请求处理，`only-quic` 中带密钥的快速哈希
+
+单连接 64 个请求在途的 HTTP/3 GET 从 429,038 升到 838,721 请求/秒（1.95 倍，交替运行七轮取中位数；
+AMD Ryzen 7 7800X3D，回环，CPU 2–5）；QUIC 批量传输 +5%，握手持平。profile 中内存分配器从 31.8% 降到
+11.2% 的采样，SipHash 从 7.3% 降到 0.1%。API 不变；与 quic-go 和 fib 双向互通测试通过。
+
+- only-h3：请求与响应的帧直接在收到的流数据上原地读取（只缓冲末尾不完整的帧）；字段段解码到一个复用的
+  扁平缓冲区，一次性做 UTF-8 校验，再复制一次进请求或响应的 `Headers`；以前每个字段要两个 `Vec`，
+  每个名字和值各一个 `String`，外加第二份头部列表。
+- only-h3：HEADERS 帧直接用 QPACK 编码进输出缓冲区，`:status`、`date`（每线程每秒格式化一次）和
+  `content-length` 直接写在那里，不再先加进响应头；静态表引用按名字长度查找，不再用两个 SipHash
+  映射；响应的 HEADERS、不超过 16 KiB 的响应体和 trailer 一次写给 QUIC（更大的响应体随后发送，不复制）。
+- only-h3：一次收全的请求不进入流表就读完；流表改用乘法折叠哈希（大小受我们授予的流数量上限约束）。
+- only-quic：endpoint 的连接 ID 表、连接表与客户端 socket 表（按对端地址）改用每张表各取新随机密钥的
+  哈希（64×64→128 位乘法折叠），不再用 SipHash；客户端可以选择第一个 Initial 的连接 ID，密钥使得
+  无法预先算出相互碰撞的 ID。连接 ID 只对实际使用的字节做哈希。单看这一项，批量传输 +3%（每个数据报
+  查一次表）；HTTP/3 一个数据报承载许多请求，几乎看不出差别。
+- only-quic：按序到达的流确认直接前移发送缓冲区的头部，不再经过已确认区间树（每次确认分配并释放一个
+  节点）；流发送缓冲区的第一块数据内联保存，只写一次的流不需要分配队列。
+- only-http：`Response::text` 与 `Response::with_body` 一次分配好头部存储，不再逐个字段扩容。
+
 ### 性能：`only-crypto` 中基于 AVX-512 与 IFMA 的 ChaCha20-Poly1305，TLS 记录非原地加解密
 
 在 x86_64 上，ChaCha20-Poly1305 加密 16 KiB 为 4,597 MB/s（之前 1,752，ring 的 1.30 倍），1400 B 为

@@ -8,10 +8,46 @@ use super::frame::{TransportError, code};
 use super::ranges::RangeSet;
 use crate::Bytes;
 
+/// Written chunks in order, the first one held inline: a request or response written in one
+/// piece (the usual HTTP/3 case) costs no queue allocation.
+#[derive(Debug, Default)]
+struct Chunks {
+    /// The first chunk; `None` only when `rest` is empty too.
+    front: Option<Bytes>,
+    rest: VecDeque<Bytes>,
+}
+
+impl Chunks {
+    fn push_back(&mut self, b: Bytes) {
+        if self.front.is_none() {
+            self.front = Some(b);
+        } else {
+            self.rest.push_back(b);
+        }
+    }
+
+    fn front_mut(&mut self) -> Option<&mut Bytes> {
+        self.front.as_mut()
+    }
+
+    fn pop_front(&mut self) {
+        self.front = self.rest.pop_front();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Bytes> {
+        self.front.iter().chain(&self.rest)
+    }
+
+    fn clear(&mut self) {
+        self.front = None;
+        self.rest.clear();
+    }
+}
+
 /// The send side of a stream: written bytes until acknowledged.
 #[derive(Debug, Default)]
 pub struct SendBuf {
-    chunks: VecDeque<Bytes>,
+    chunks: Chunks,
     /// Offset of the first byte of `chunks`.
     base: u64,
     /// Total bytes written.
@@ -103,7 +139,7 @@ impl SendBuf {
     pub fn copy(&self, r: Range<u64>, out: &mut Vec<u8>) {
         let mut off = self.base;
         let mut need = r.start;
-        for c in &self.chunks {
+        for c in self.chunks.iter() {
             let cend = off + c.len() as u64;
             if cend > need {
                 let from = (need - off) as usize;
@@ -134,6 +170,12 @@ impl SendBuf {
             return 0;
         }
         self.lost.remove(r.clone());
+        if r.start <= self.base && self.acked.is_empty() {
+            // In order (the usual case): move the front without a round trip through `acked`
+            // (a tree node allocated and freed per acknowledgment).
+            self.drop_front(r.end);
+            return self.base - old_base;
+        }
         self.acked.insert(r);
         // Drop what is acknowledged from the front.
         while let Some(f) = self.acked.first() {
@@ -141,22 +183,26 @@ impl SendBuf {
                 break;
             }
             self.acked.pop_first(u64::MAX);
-            let upto = f.end;
-            while self.base < upto {
-                let Some(front) = self.chunks.front_mut() else {
-                    break;
-                };
-                let n = front.len() as u64;
-                if self.base + n <= upto {
-                    self.base += n;
-                    self.chunks.pop_front();
-                } else {
-                    front.advance((upto - self.base) as usize);
-                    self.base = upto;
-                }
-            }
+            self.drop_front(f.end);
         }
         self.base - old_base
+    }
+
+    /// Drops the chunks (and part of a chunk) below `upto`.
+    fn drop_front(&mut self, upto: u64) {
+        while self.base < upto {
+            let Some(front) = self.chunks.front_mut() else {
+                break;
+            };
+            let n = front.len() as u64;
+            if self.base + n <= upto {
+                self.base += n;
+                self.chunks.pop_front();
+            } else {
+                front.advance((upto - self.base) as usize);
+                self.base = upto;
+            }
+        }
     }
 
     pub fn on_lost(&mut self, r: Range<u64>, fin: bool) {

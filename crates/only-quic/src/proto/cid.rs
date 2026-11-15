@@ -13,7 +13,7 @@ pub const MAX_CID_LEN: usize = 20;
 pub const LOCAL_CID_LEN: usize = 8;
 
 /// A connection ID of 0 to 20 bytes.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub struct ConnectionId {
     len: u8,
     bytes: [u8; MAX_CID_LEN],
@@ -48,6 +48,14 @@ impl ConnectionId {
 
     pub fn is_empty(&self) -> bool {
         self.len == 0
+    }
+}
+
+/// Hashes the length and the used bytes only (two words for an 8-byte ID instead of all 20).
+impl std::hash::Hash for ConnectionId {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        h.write_u8(self.len);
+        h.write(self);
     }
 }
 

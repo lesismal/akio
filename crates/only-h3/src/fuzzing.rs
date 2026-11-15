@@ -40,7 +40,29 @@ fn frames(max: u64, ps: &[&[u8]]) -> (Vec<(u64, Vec<u8>)>, Option<u64>) {
     (out, None)
 }
 
-/// `h3_frame`: the frame reader (frames must not depend on read boundaries) and a peer's
+/// [`frames`] through `Reader::feed`, which reads in place what it can.
+fn fed(max: u64, ps: &[&[u8]]) -> (Vec<(u64, Vec<u8>)>, Option<u64>) {
+    let mut r = Reader::default();
+    let mut out = Vec::new();
+    for p in ps {
+        let res = r.feed(
+            p,
+            max,
+            || (),
+            |t, f| {
+                out.push((t, f.to_vec()));
+                Ok(())
+            },
+        );
+        if res.is_err() {
+            return (out, Some(0));
+        }
+    }
+    (out, None)
+}
+
+/// `h3_frame`: the frame reader (frames must not depend on read boundaries, whether buffered or
+/// read in place) and a peer's
 /// unidirectional stream (stream type, control stream SETTINGS and frame rules, QPACK streams).
 /// `data[0]`: bit 0 client side (else server), the rest the frame size limit; `data[1]` splits.
 pub fn h3_frame(data: &[u8]) {
@@ -50,7 +72,12 @@ pub fn h3_frame(data: &[u8]) {
     let max = u64::from(data[0] >> 1) * 64;
     let wire = &data[2..];
     let ps = pieces(data[1], wire);
-    assert_eq!(frames(max, &[wire]), frames(max, &ps));
+    let whole = frames(max, &[wire]);
+    assert_eq!(whole, frames(max, &ps));
+    // Fed in place, the same frames, and the same point where a frame is too large.
+    let m = |(f, e): (Vec<(u64, Vec<u8>)>, Option<u64>)| (f, e.is_some());
+    assert_eq!(m(whole.clone()), m(fed(max, &[wire])));
+    assert_eq!(m(whole), m(fed(max, &ps)));
     let server = data[0] & 1 == 0;
     let mut u = Uni::Unknown(Reader::default());
     let mut ctrl = None;
@@ -107,10 +134,11 @@ pub fn h3_request(data: &[u8]) {
     };
     let peer = "127.0.0.1:4433".parse().expect("addr");
     let mut req = Req::default();
+    let mut fields = qpack::FieldBuf::default();
     let ps = pieces(seed, wire);
     for (i, p) in ps.iter().enumerate() {
         let fin = i + 1 == ps.len();
-        match read_req(&mut req, &cfg, peer, p, fin) {
+        match read_req(&mut req, &cfg, peer, &mut fields, p, fin) {
             Ok(Some((r, _))) => {
                 assert!(r.body.len() <= cfg.max_body_bytes);
                 break;

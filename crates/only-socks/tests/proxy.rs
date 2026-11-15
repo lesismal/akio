@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-use only::{Config, Engine, EngineRef, Listener};
+use only::{Backend, Config, Engine, EngineRef, Listener, UringConfig};
 use only_socks::{Socks, connect_proxy};
 
 /// A thread-per-connection echo server (independent of `only`).
@@ -38,8 +38,86 @@ fn echo_server() -> SocketAddr {
     a
 }
 
+/// An upstream that first sends `n` bytes without reading anything, then echoes. Like many
+/// real servers, it does not read while its own writes are blocked.
+fn talk_first_server(n: usize) -> SocketAddr {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let a = l.local_addr().unwrap();
+    thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            thread::spawn(move || {
+                let mut s = s;
+                if write_pattern(&mut s, n).is_err() {
+                    return;
+                }
+                let mut b = vec![0u8; 64 << 10];
+                loop {
+                    match s.read(&mut b) {
+                        Ok(0) | Err(_) => return,
+                        Ok(k) => {
+                            if s.write_all(&b[..k]).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    a
+}
+
+/// Byte `i` of the test stream.
+fn pattern_byte(i: usize) -> u8 {
+    (i % 251) as u8
+}
+
+/// Writes bytes `0..n` of the test stream, a chunk at a time.
+fn write_pattern(s: &mut TcpStream, n: usize) -> std::io::Result<()> {
+    let chunk: Vec<u8> = (0..251 * 1024).map(pattern_byte).collect(); // whole periods
+    let mut left = n;
+    while left > 0 {
+        let k = left.min(chunk.len());
+        s.write_all(&chunk[..k])?;
+        left -= k;
+    }
+    Ok(())
+}
+
+/// Reads `n` bytes of the test stream and checks them.
+fn read_pattern(s: &mut TcpStream, n: usize) {
+    const B: usize = 64 << 10;
+    let want: Vec<u8> = (0..B + 251).map(pattern_byte).collect();
+    let mut b = vec![0u8; B];
+    let mut at = 0;
+    while at < n {
+        let k = s.read(&mut b[..(n - at).min(B)]).unwrap();
+        assert!(k > 0, "EOF after {at} of {n} bytes");
+        let o = at % 251;
+        assert!(b[..k] == want[o..o + k], "wrong bytes at {at}");
+        at += k;
+    }
+}
+
+/// `ONLY_TEST_BACKEND=uring` runs these on io_uring.
+fn uring() -> bool {
+    std::env::var("ONLY_TEST_BACKEND").as_deref() == Ok("uring")
+}
+
+fn backend() -> Backend {
+    if uring() {
+        let mut v = UringConfig::default();
+        v.strict = true;
+        Backend::IoUring(v)
+    } else {
+        Backend::Epoll
+    }
+}
+
 fn start(socks: Option<Socks>, http: bool, er: &EngineRef) -> Arc<Engine> {
-    let l = Listener::tcp("127.0.0.1:0".parse().unwrap()).threads(2);
+    let l = Listener::tcp("127.0.0.1:0".parse().unwrap())
+        .backend(backend())
+        .threads(2);
     let l = match socks {
         Some(s) => l.serve(s),
         None => {
@@ -55,7 +133,8 @@ fn start(socks: Option<Socks>, http: bool, er: &EngineRef) -> Arc<Engine> {
                 v
             })
             .listen(l)
-            .client_threads(2)
+            // Client threads are always epoll; on io_uring, upstreams share the listener's.
+            .client_threads(if uring() { 0 } else { 2 })
             .build()
             .unwrap(),
     );
@@ -78,7 +157,7 @@ fn read_n(s: &mut TcpStream, n: usize) -> Vec<u8> {
 
 /// Pushes `n` bytes through and reads them back concurrently.
 fn roundtrip(mut s: TcpStream, n: usize) {
-    let data: Vec<u8> = (0..n).map(|i| (i % 251) as u8).collect();
+    let data: Vec<u8> = (0..n).map(pattern_byte).collect();
     let mut w = s.try_clone().unwrap();
     let d2 = data.clone();
     let t = thread::spawn(move || w.write_all(&d2).unwrap());
@@ -172,6 +251,49 @@ fn socks5_ipv4_domain_and_backpressure() {
     req.extend(ipv4(echo));
     s.write_all(&req).unwrap();
     assert_eq!(read_n(&mut s, 2), [5, 7]);
+    e.shutdown();
+    e.wait();
+}
+
+/// Regression: the engine's write backpressure paused reading the upstream while client data
+/// was queued for it. An upstream that does not read while its own writes are blocked then
+/// waited on the proxy while the proxy waited on it, and the tunnel hung. With a plain echo
+/// server it took a slow client (a loaded machine, `socks5_ipv4_domain_and_backpressure` hung
+/// about once in 20 runs); a server that talks first and a client whose data piles up before it
+/// reads hang every time. The relay now paces both directions by itself.
+#[test]
+fn relay_upstream_that_talks_first() {
+    // Well above what the kernel buffers in each direction (a few MiB on loopback).
+    const N: usize = 32 << 20;
+    let up = talk_first_server(N);
+    let run = |mut s: TcpStream| {
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut w = s.try_clone().unwrap();
+        let t = thread::spawn(move || write_pattern(&mut w, N).unwrap());
+        // Let our data pile up in the kernel first, so it rushes at the server's side as soon as
+        // we read.
+        thread::sleep(Duration::from_millis(200));
+        read_pattern(&mut s, N); // what the server sent first
+        read_pattern(&mut s, N); // the echo of ours
+        t.join().unwrap();
+    };
+    // SOCKS5.
+    let er = EngineRef::new();
+    let e = start(Some(Socks::new(er.clone())), false, &er);
+    let (s, r) = socks5_connect(e.local_addrs()[0], &ipv4(up), None);
+    assert_eq!(r[1], 0);
+    run(s);
+    e.shutdown();
+    e.wait();
+    // HTTP CONNECT.
+    let er = EngineRef::new();
+    let e = start(None, true, &er);
+    let mut s = connect(e.local_addrs()[0]);
+    s.write_all(format!("CONNECT {up} HTTP/1.1\r\nHost: {up}\r\n\r\n").as_bytes())
+        .unwrap();
+    let ok = b"HTTP/1.1 200 Connection Established\r\n\r\n";
+    assert_eq!(read_n(&mut s, ok.len()), ok);
+    run(s);
     e.shutdown();
     e.wait();
 }

@@ -314,16 +314,20 @@ impl Response {
 
     /// A `text/plain; charset=utf-8` response.
     pub fn text(status: u16, body: impl Into<String>) -> Response {
-        let mut r = Response::new(status);
-        r.headers.set("Content-Type", "text/plain; charset=utf-8");
-        r.body = body.into().into_bytes();
-        r
+        Response::with_body(
+            status,
+            "text/plain; charset=utf-8",
+            body.into().into_bytes(),
+        )
     }
 
     /// A response with the given content type and body.
     pub fn with_body(status: u16, content_type: &str, body: Vec<u8>) -> Response {
         let mut r = Response::new(status);
-        r.headers.set("Content-Type", content_type);
+        // Room for the content type and a few more fields in one allocation (growing an empty
+        // buffer field by field reallocated it on every response).
+        r.headers = Headers::with_capacity(4, content_type.len() + 64);
+        r.headers.append("Content-Type", content_type);
         r.body = body;
         r
     }
