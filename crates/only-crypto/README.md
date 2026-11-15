@@ -144,7 +144,7 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   only branches are loop counters, public indices and bounds (and the limb-count dispatch,
   slice and allocation checks), the public exponent bits of the
   remaining Fermat chains, CPU-feature and `OnceLock` checks, the length of the output encoding,
-  and the final "result is the identity" test. No statistical test (dudect, ctgrind) has been run. Keys are not zeroized. The CPU
+  and the final "result is the identity" test. A dudect-style statistical timing test (`tools/ct-dudect`, Welch's t-test on fixed vs random secrets, hardware and portable paths) measures these paths as a black box; method and latest results in [docs/constant-time.md](../../docs/constant-time.md). Keys are not zeroized. The CPU
   instructions used (AES, carry-less multiplication, SHA, CRC32, AVX2, `mulx`, `adcx`/`adox`,
   `cmov`, `vpmadd52luq`/`vpmadd52huq`; on aarch64 `MUL`, `UMULH`, the flag-setting additions and
   `CSEL`) take constant time.

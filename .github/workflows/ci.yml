@@ -13,6 +13,10 @@ name: CI
 #                              libtorrent and aria2 for BitTorrent), fuzz (all targets, 5 min
 #                              each), sanitizers (ASan + TSan on the core and backend tests),
 #                              dpdk (only-dpdk with libdpdk: net_tap / TAP against the kernel)
+#   Informational (heavy triggers, `continue-on-error`, not in ci-ok):
+#                              ct-dudect (statistical timing test of only-crypto's secret-
+#                              dependent paths, t-values kept as an artifact;
+#                              docs/constant-time.md)
 #   Deploy (push to main):     book-deploy (GitHub Pages)
 #   ci-ok:                     one status to require in branch protection.
 #
@@ -437,6 +441,54 @@ jobs:
           path: |
             fuzz/artifacts/
             fuzz/logs/
+          if-no-files-found: ignore
+
+  ct-dudect:
+    # dudect-style timing test of only-crypto's secret-dependent paths (docs/constant-time.md),
+    # hardware and portable paths, 15 s per target. Informational, never a gate: a shared runner
+    # is noisy (other tenants, frequency scaling), so |t| > 4.5 here is a lead to re-run on a
+    # quiet machine, not a verdict. `continue-on-error` keeps a red result from failing the
+    # workflow, and the job is deliberately not in `ci-ok.needs`. The t-values are kept as an
+    # artifact and the tables go to the job summary.
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ct-dudect
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo build --release -p ct-dudect
+      - name: Hardware paths
+        timeout-minutes: 10
+        shell: bash # -eo pipefail: the exit status of ct-dudect, not of tee
+        run: target/release/ct-dudect --seconds 15 --json ct-dudect-hw.json | tee ct-dudect-hw.txt
+      - name: Portable paths
+        if: always()
+        timeout-minutes: 8
+        shell: bash
+        env:
+          ONLY_CRYPTO_PORTABLE: "1"
+        run: target/release/ct-dudect --seconds 15 --json ct-dudect-portable.json | tee ct-dudect-portable.txt
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          for f in ct-dudect-hw.txt ct-dudect-portable.txt; do
+            [ -f "$f" ] || continue
+            { echo '```'; cat "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
+      - name: Keep the t-values
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ct-dudect
+          path: |
+            ct-dudect-*.json
+            ct-dudect-*.txt
           if-no-files-found: ignore
 
   supply-chain:

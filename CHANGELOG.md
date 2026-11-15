@@ -310,6 +310,19 @@ certificate signature; ring parses on every call) 5,850 → 67,090 (0.09× → 1
 - `unsafe`: +7 blocks and +1 `unsafe fn` in `only-crypto` (`bignum::hw`: the two Montgomery
   blocks and the AVX2 scan; `bignum::ifma`: the IFMA blocks); see docs/unsafe-review.md.
 
+### Added: statistical timing test for `only-crypto` (`tools/ct-dudect`)
+
+A dudect-style test (Welch's t-test of fixed vs random secrets, random interleaving, `rdtsc` /
+`cntvct_el0`, percentile cropping and a second-order test, `|t| > 4.5` a leak) of the
+secret-dependent paths on the hardware and the portable code: P-256 ECDH, key generation and
+signing, X25519 and its key generation, Ed25519 signing, RSA-2048 signing, AES-GCM and
+ChaCha20-Poly1305 tag checks, HMAC verification, `ct_eq` and the `ct.rs` primitives, with an A/A
+test and two deliberately leaky functions as sanity checks. A new workspace-internal tool (not
+published, no new dependency); runs in CI as the informational job `ct-dudect` (not part of
+`ci-ok`, t-values kept as an artifact). On Zen 4 nothing leaks beyond two small, intermittent
+differences under investigation (the degenerate all-zero X25519 scalar, P-256 portable signing
+at the threshold); method and results in [docs/constant-time.md](docs/constant-time.md).
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so

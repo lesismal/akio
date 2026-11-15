@@ -251,6 +251,16 @@ only-tls 使用 RSA-2048 证书的完整握手（`tls-bench` 新增一行）：7
 - `unsafe`：`only-crypto` 新增 7 个块与 1 个 `unsafe fn`（`bignum::hw`：两个 Montgomery 汇编块与 AVX2 查表；
   `bignum::ifma`：IFMA 汇编块）；见 docs/unsafe-review.zh-CN.md。
 
+### 新增：`only-crypto` 的统计计时测试（`tools/ct-dudect`）
+
+dudect 式测试（对固定与随机秘密做 Welch t 检验，随机交错，`rdtsc` / `cntvct_el0` 计时，分位数裁剪与二阶
+检验，`|t| > 4.5` 视为泄漏），在硬件与可移植代码上测量依赖秘密的路径：P-256 ECDH、生成密钥与签名，X25519
+及其生成密钥，Ed25519 签名，RSA-2048 签名，AES-GCM 与 ChaCha20-Poly1305 的标签校验，HMAC 校验，`ct_eq` 与
+`ct.rs` 原语；以 A/A 测试和两个故意泄漏的函数作为自检。这是新的 workspace 内部工具（不发布，无新依赖）；
+CI 中作为信息性任务 `ct-dudect` 运行（不属于 `ci-ok`，t 值保存为 artifact）。在 Zen 4 上未见泄漏，只有两处
+细小且时有时无的差异有待进一步测量（退化的全零 X25519 标量；P-256 可移植签名处于阈值边缘）；方法与结果见
+[docs/constant-time.zh-CN.md](docs/constant-time.zh-CN.md)。
+
 ### 变更（破坏性，1.0.0 之前）：封装 1.0 之前的依赖
 
 rustls 0.23、quinn-proto 0.11、str0m 0.24 与 prost 0.13 不再出现在受保护的 API 中，因此 1.0.0 之后

@@ -109,8 +109,9 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
   两种 X25519 阶梯；RSA 部分为 `Mont::mul_into` / `sqr_into`（内联了 BMI2 + ADX 汇编块）、`ifma::amm`（三个
   IFMA 汇编块）、`ifma::pow`、`Mont::pow`、AVX2 与可移植的查表、`Mont::new`、`crt_combine` 与
   `private_op`。分支只出现在循环计数、公开下标与边界（以及按 limb 数的分派、切片与内存分配检查）、其余费马求逆链的公开指数位、CPU 特性与
-  `OnceLock` 检查、输出编码的长度，以及最后“结果为无穷远点”的判断上。尚未运行统计检测
-  （dudect、ctgrind）。密钥不会被清零。所用的 CPU 指令（AES、无进位乘法、SHA、CRC32、AVX2、`mulx`、
+  `OnceLock` 检查、输出编码的长度，以及最后“结果为无穷远点”的判断上。另有 dudect 式统计计时测试
+  （`tools/ct-dudect`：对固定与随机秘密做 Welch t 检验，覆盖硬件与可移植路径）从外部黑盒测量这些路径；方法与最新结果见
+  [docs/constant-time.zh-CN.md](../../docs/constant-time.zh-CN.md)。密钥不会被清零。所用的 CPU 指令（AES、无进位乘法、SHA、CRC32、AVX2、`mulx`、
   `adcx`/`adox`、`cmov`、`vpmadd52luq`/`vpmadd52huq`；aarch64 上的 `MUL`、`UMULH`、设置标志位的加减法与 `CSEL`）
   是常数时间的。
 

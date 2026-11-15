@@ -37,6 +37,7 @@ members = [
     "crates/only-media",
     "crates/only-bittorrent",
     "crates/only",
+    "tools/ct-dudect",
     "tools/echo-bench",
     "tools/protobuf-test",
 ]
