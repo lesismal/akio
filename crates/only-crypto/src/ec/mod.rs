@@ -29,7 +29,9 @@
 //!
 //! A curve can route the high-level operations to a twin whose base field uses CPU instructions
 //! (P-256 on x86_64 with BMI2 + ADX: `hw`); the twin shares the Montgomery representation and the
-//! base point tables.
+//! base point tables. The twin also replaces the point formulas, the table scans and the
+//! fixed-base multiplication through the `Curve::jac_*` hooks (whole-point assembly, AVX2 scans,
+//! a 6-bit Booth comb); an aarch64 twin would override the same hooks.
 
 pub(crate) mod api;
 pub(crate) mod curves;
@@ -83,6 +85,50 @@ pub(crate) trait Curve<const L: usize>: Copy + Send + Sync + 'static {
     #[inline]
     fn verify_digest(q: &Point<Self, L>, h: &[u8], sig: &Sig<Self, L>) -> Result<(), Error> {
         verify_impl::<Self, L>(q, h, sig)
+    }
+
+    /// The Jacobian point formulas and table scans under the scalar multiplications. A curve
+    /// whose twin has them as whole-point routines in assembly (`hw` for `P256X`) overrides
+    /// them; the defaults are the portable formulas over `Fp`. Each keeps the contract of the
+    /// portable function it stands for, including constant time.
+    #[inline]
+    fn jac_double(p: &Jac<Self, L>) -> Jac<Self, L> {
+        p.double_formula()
+    }
+
+    /// `2ⁿ·p` (`n` public): [`Curve::jac_double`] `n` times.
+    #[inline]
+    fn jac_double_n(p: &Jac<Self, L>, n: usize) -> Jac<Self, L> {
+        let mut r = *p;
+        for _ in 0..n {
+            r = Self::jac_double(&r);
+        }
+        r
+    }
+
+    /// See [`Curve::jac_double`]; the contract of [`Jac::add_core_formula`].
+    #[inline]
+    fn jac_add_core(p: &Jac<Self, L>, q: &Jac<Self, L>) -> Jac<Self, L> {
+        p.add_core_formula(q)
+    }
+
+    /// See [`Curve::jac_double`]; the contract of [`Jac::madd_core_formula`].
+    #[inline]
+    fn jac_madd_core(p: &Jac<Self, L>, x2: &Fp<Self, L>, y2: &Fp<Self, L>) -> Jac<Self, L> {
+        p.madd_core_formula(x2, y2)
+    }
+
+    /// See [`Curve::jac_double`]; the contract of [`Jac::lookup_scan`].
+    #[inline]
+    fn jac_lookup(table: &[Jac<Self, L>; 16], d: u64) -> Jac<Self, L> {
+        Jac::lookup_scan(table, d)
+    }
+
+    /// `[k]G` for a secret `k`, constant time (the contract of [`Jac::mul_base_ct`], which is
+    /// the default).
+    #[inline]
+    fn jac_mul_base(k: &Scalar<Self, L>) -> Jac<Self, L> {
+        Jac::mul_base_ct(k)
     }
 }
 
@@ -598,32 +644,41 @@ pub(crate) fn comb_digit(nib: u64, carry: u64) -> (u64, u64, u64) {
     (abs, neg, c)
 }
 
-/// The number of signed 5-bit windows of an `L`-limb scalar: the top window's sign bit (bit
-/// `5w - 1`) lies above the scalar, so the top digit is not negative.
-const fn booth_windows(l: usize) -> usize {
-    (64 * l + 5) / 5
+/// The number of signed `W`-bit windows of an `L`-limb scalar: the top window's sign bit (bit
+/// `W·w - 1`) lies above the scalar, so the top digit is not negative.
+pub(crate) const fn booth_windows(l: usize, w: usize) -> usize {
+    (64 * l + w) / w
 }
 
 /// The Booth digit of window `i` of `k`: bits `5i - 1 ..= 5i + 4` (bit -1 is 0) recoded to
 /// `|d| ∈ [0, 16]` and a mask set when `d < 0`, so that `k = Σ dᵢ·32ⁱ` (OpenSSL's
-/// `booth_recode_w5`). The bit positions are public; the digit is computed without branches.
+/// `booth_recode_w5`).
 #[inline]
 fn booth5<const L: usize>(k: &[u64; L], i: usize) -> (u64, u64) {
+    booth::<L, 5>(k, i)
+}
+
+/// The Booth digit of the `W`-bit window `i` of `k` (`W ≤ 8`): bits `W·i - 1 ..= W·i + W - 1`
+/// (bit -1 is 0) recoded to `|d| ∈ [0, 2^(W-1)]` and a mask set when `d < 0`, so that
+/// `k = Σ dᵢ·2^(W·i)`. The bit positions are public; the digit is computed without branches.
+#[inline]
+pub(crate) fn booth<const L: usize, const W: usize>(k: &[u64; L], i: usize) -> (u64, u64) {
+    let all = (1u64 << (W + 1)) - 1;
     let w = if i == 0 {
-        (k[0] << 1) & 63
+        (k[0] << 1) & all
     } else {
-        let pos = 5 * i - 1;
+        let pos = W * i - 1;
         let (limb, off) = (pos / 64, pos % 64);
         let lo = k.get(limb).copied().unwrap_or(0) >> off;
-        let hi = if off > 58 {
+        let hi = if off + W + 1 > 64 {
             k.get(limb + 1).copied().unwrap_or(0) << (64 - off)
         } else {
             0
         };
-        (lo | hi) & 63
+        (lo | hi) & all
     };
-    let s = ct::mask(w >> 5);
-    let d = ((63 - w) & s) | (w & !s);
+    let s = ct::mask(w >> W);
+    let d = ((all - w) & s) | (w & !s);
     ((d >> 1) + (d & 1), s)
 }
 
@@ -631,9 +686,9 @@ fn booth5<const L: usize>(k: &[u64; L], i: usize) -> (u64, u64) {
 /// The `*_ct` operations and the doubling are constant time (secret scalars); the others branch
 /// on their inputs (verification: public points and scalars).
 pub(crate) struct Jac<C: Curve<L>, const L: usize> {
-    x: Fp<C, L>,
-    y: Fp<C, L>,
-    z: Fp<C, L>,
+    pub(crate) x: Fp<C, L>,
+    pub(crate) y: Fp<C, L>,
+    pub(crate) z: Fp<C, L>,
 }
 
 impl<C: Curve<L>, const L: usize> Clone for Jac<C, L> {
@@ -662,9 +717,21 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         }
     }
 
+    /// `self + q` without special cases (the curve's [`Curve::jac_add_core`]).
+    #[inline]
+    fn add_core(&self, q: &Self) -> Self {
+        C::jac_add_core(self, q)
+    }
+
+    /// `self + (x2, y2)` without special cases (the curve's [`Curve::jac_madd_core`]).
+    #[inline]
+    fn madd_core(&self, x2: &Fp<C, L>, y2: &Fp<C, L>) -> Self {
+        C::jac_madd_core(self, x2, y2)
+    }
+
     /// `self + q` (add-2007-bl: 11M + 5S) without special cases: correct when neither operand
     /// is the identity and `self ≠ q`; `self = -q` gives `Z = 0`, the identity.
-    fn add_core(&self, q: &Self) -> Self {
+    pub(crate) fn add_core_formula(&self, q: &Self) -> Self {
         let z1z1 = self.z.square();
         let z2z2 = q.z.square();
         let u1 = self.x.mul(&z2z2);
@@ -688,7 +755,7 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
 
     /// `self + (x2, y2)` (madd-2007-bl: 7M + 4S) without special cases: correct when `self`
     /// is not the identity and not `(x2, y2)`; `self = -(x2, y2)` gives `Z = 0`.
-    fn madd_core(&self, x2: &Fp<C, L>, y2: &Fp<C, L>) -> Self {
+    pub(crate) fn madd_core_formula(&self, x2: &Fp<C, L>, y2: &Fp<C, L>) -> Self {
         let z1z1 = self.z.square();
         let u2 = x2.mul(&z1z1);
         let s2 = y2.mul(&self.z).mul(&z1z1);
@@ -728,9 +795,10 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         Self::select(self.z.is_zero(), &q, &s)
     }
 
-    /// `table[d - 1]` for `d ∈ [1, 16]`, the identity for `d = 0`, reading every entry.
+    /// `table[d - 1]` for `d ∈ [1, 16]`, a point with `Z = 0` (the identity) for `d = 0`,
+    /// reading every entry with masked selects.
     #[inline]
-    fn lookup(table: &[Self; 16], d: u64) -> Self {
+    pub(crate) fn lookup_scan(table: &[Self; 16], d: u64) -> Self {
         let mut r = Self::identity();
         for (j, p) in table.iter().enumerate() {
             r = Self::select(ct::eq(j as u64 + 1, d), p, &r);
@@ -767,14 +835,14 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
                 table[j - 1].add_core(&p1)
             };
         }
-        let w = booth_windows(L);
+        let w = booth_windows(L, 5);
         let mut r = Self::identity();
         for i in (0..w).rev() {
             if i != w - 1 {
-                r = r.double().double().double().double().double();
+                r = C::jac_double_n(&r, 5);
             }
             let (d, neg) = booth5(&k, i);
-            let mut t = Self::lookup(&table, d);
+            let mut t = C::jac_lookup(&table, d);
             t.y = Fe::select(neg, &t.y.neg(), &t.y);
             r = r.add_ct(&t);
         }
@@ -850,11 +918,29 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
 }
 
 impl<C: Curve<L>, const L: usize> Jac<C, L> {
-    fn identity() -> Self {
+    pub(crate) fn identity() -> Self {
         Jac {
             x: Fp::<C, L>::ONE,
             y: Fp::<C, L>::ONE,
             z: Fp::<C, L>::ZERO,
+        }
+    }
+
+    /// The Montgomery-form limbs `[X, Y, Z]` (for the assembly routines).
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+    #[inline]
+    pub(crate) fn raw(&self) -> [[u64; L]; 3] {
+        [self.x.l, self.y.l, self.z.l]
+    }
+
+    /// The point with Montgomery-form limbs `[X, Y, Z]` (each below `p`).
+    #[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
+    #[inline]
+    pub(crate) fn from_raw(r: [[u64; L]; 3]) -> Self {
+        Jac {
+            x: Fe::from_mont(r[0]),
+            y: Fe::from_mont(r[1]),
+            z: Fe::from_mont(r[2]),
         }
     }
 
@@ -878,9 +964,15 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         }
     }
 
+    /// Doubling (the curve's [`Curve::jac_double`]), constant time.
+    #[inline]
+    fn double(&self) -> Self {
+        C::jac_double(self)
+    }
+
     /// Doubling for a = -3 (dbl-2001-b with `Z₃ = 2·Y·Z`: 4M + 4S), constant time; the
     /// identity (`Z = 0`) stays the identity.
-    fn double(&self) -> Self {
+    pub(crate) fn double_formula(&self) -> Self {
         let delta = self.z.square();
         let gamma = self.y.square();
         let beta = self.x.mul(&gamma);
@@ -896,11 +988,22 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         }
     }
 
-    /// `self + (x2, y2)` (madd-2007-bl: 7M + 4S), with the special cases handled by branches.
+    /// `self + (x2, y2)` (madd-2007-bl: 7M + 4S), with the special cases handled by branches
+    /// (public points): the formula without special cases first, and only when that gives
+    /// `Z = 0` (`H = 0`: `q = ±self`) the slow path that tells the two apart.
     fn add_affine(&self, q: &Affine<C, L>) -> Self {
         if self.is_identity() {
             return Self::from_affine(q);
         }
+        let s = self.madd_core(&q.0, &q.1);
+        if !s.is_identity() {
+            return s;
+        }
+        self.add_affine_slow(q)
+    }
+
+    /// [`Jac::add_affine`] with every case decided on `H` and `r`.
+    fn add_affine_slow(&self, q: &Affine<C, L>) -> Self {
         let (x2, y2) = q;
         let z1z1 = self.z.square();
         let u2 = x2.mul(&z1z1);
@@ -928,7 +1031,8 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         }
     }
 
-    /// `self + q` (add-2007-bl: 11M + 5S), with the special cases handled by branches.
+    /// `self + q` (add-2007-bl: 11M + 5S), with the special cases handled by branches (public
+    /// points), as [`Jac::add_affine`].
     fn add(&self, q: &Self) -> Self {
         if self.is_identity() {
             return *q;
@@ -936,6 +1040,15 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         if q.is_identity() {
             return *self;
         }
+        let s = self.add_core(q);
+        if !s.is_identity() {
+            return s;
+        }
+        self.add_slow(q)
+    }
+
+    /// [`Jac::add`] for operands other than the identity, every case decided on `H` and `r`.
+    fn add_slow(&self, q: &Self) -> Self {
         let z1z1 = self.z.square();
         let z2z2 = q.z.square();
         let u1 = self.x.mul(&z2z2);
@@ -980,9 +1093,22 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
             }
         }
         let mut r = Self::identity();
+        // Doublings are batched up to the next addition (no doubling of the identity).
+        let mut pending = 0;
         for i in (0..wa.len().max(wb.len())).rev() {
-            r = r.double();
-            match wa.get(i).copied().unwrap_or(0) {
+            pending += 1;
+            let (da, db) = (
+                wa.get(i).copied().unwrap_or(0),
+                wb.get(i).copied().unwrap_or(0),
+            );
+            if da == 0 && db == 0 {
+                continue;
+            }
+            if !r.is_identity() {
+                r = C::jac_double_n(&r, pending);
+            }
+            pending = 0;
+            match da {
                 0 => {}
                 d if d > 0 => r = r.add_affine(&raw_affine::<C, L>(&gt[(d as usize) >> 1])),
                 d => {
@@ -990,11 +1116,14 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
                     r = r.add_affine(&(x, y.neg()));
                 }
             }
-            match wb.get(i).copied().unwrap_or(0) {
+            match db {
                 0 => {}
                 d if d > 0 => r = r.add(&qt[(d as usize) >> 1]),
                 d => r = r.add(&qt[((-d) as usize) >> 1].neg()),
             }
+        }
+        if !r.is_identity() {
+            r = C::jac_double_n(&r, pending);
         }
         r
     }
@@ -1112,7 +1241,7 @@ impl<C: Curve<L>, const L: usize> Sig<C, L> {
 
 /// `d·G` as a projective point, constant time.
 pub(crate) fn base_mul_impl<C: Curve<L>, const L: usize>(d: &Scalar<C, L>) -> Point<C, L> {
-    Jac::<C, L>::mul_base_ct(d).to_projective()
+    C::jac_mul_base(d).to_projective()
 }
 
 /// The big-endian x-coordinate of `d·q` into `out`, constant time; `false` for the identity.
@@ -1138,7 +1267,7 @@ pub(crate) fn sign_impl<C: Curve<L>, H: Hash, const L: usize>(
     let e = digest_scalar::<C, L>(h);
     loop {
         let k = rfc6979_nonce::<C, H, L>(d, h);
-        let Some(x) = Jac::<C, L>::mul_base_ct(&k).to_affine_x() else {
+        let Some(x) = C::jac_mul_base(&k).to_affine_x() else {
             continue; // unreachable: 0 < k < n
         };
         // r = x mod n (x < p < 2n).
