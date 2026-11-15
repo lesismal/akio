@@ -28,6 +28,16 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 修复：SOCKS 与 HTTP CONNECT 隧道在背压下可能卡死
+
+- `only-socks`：隧道（SOCKS5/4/4a 或 HTTP `CONNECT`）在转发大量数据时可能永久停住。引擎的写背压
+  （`Config::write_high_watermark`）在上游连接有排队的客户端数据时会暂停读取该上游，但这些读取的数据
+  是发往客户端的，并不进入这个队列。上游如果在自己的写被阻塞时不读（echo 服务器、大多数请求/响应式
+  服务器），就会等代理，而代理也在等它。表现为负载较高时 `socks5_ipv4_domain_and_backpressure` 偶尔
+  卡住 10 秒（kqueue、epoll 与 io_uring 都会）；先发送再读取的上游则每次都会卡住。现在隧道两端只由
+  转发自身的暂停/恢复来调节。各后端（epoll、kqueue、io_uring、DPDK）都遵循新增的隐藏方法
+  `ConnInner::set_relayed`。公共 API 不变。
+
 ### 性能：`only-crypto` 中基于 AVX-512 与 IFMA 的 ChaCha20-Poly1305，TLS 记录非原地加解密
 
 在 x86_64 上，ChaCha20-Poly1305 加密 16 KiB 为 4,597 MB/s（之前 1,752，ring 的 1.30 倍），1400 B 为

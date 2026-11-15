@@ -32,6 +32,11 @@ const MAX_HANDSHAKE: usize = 4096;
 const HIGH_WATER: usize = 256 << 10;
 
 /// Forwards `data` read from `from` to `to`, pausing `from` while `to` is backed up.
+///
+/// Both ends are [relayed](ConnInner::set_relayed): this pacing replaces the engine's own write
+/// backpressure, which would stop reading the upstream while it has client data queued for it.
+/// An upstream that only reads once its writes go through (an echo server) then waits on us
+/// while we wait on it, and the tunnel hangs.
 fn forward(from: &Arc<ConnInner>, to: &Arc<ConnInner>, data: &[u8]) {
     if to.send(data).is_err() {
         from.close_after_send();
@@ -72,6 +77,7 @@ struct UpstreamAcceptor {
 impl Acceptor for UpstreamAcceptor {
     type Handler = Upstream;
     fn on_open(&self, c: &Conn<Upstream>) -> Upstream {
+        c.inner().set_relayed();
         *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
         let taken = self.on_up.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(f) = taken {
@@ -249,6 +255,7 @@ impl SocksSession {
 
     fn connect(&mut self, c: &Conn<Self>, target: Target, v5: bool) {
         self.st = St::Connecting;
+        c.inner().set_relayed();
         c.hold_reads(true);
         let engine = self.engine.clone();
         let slot = self.upstream.clone();
@@ -538,6 +545,7 @@ struct Tunnel {
 
 impl RawHandler for Tunnel {
     fn on_open(&mut self, conn: &RawConn) {
+        conn.inner().set_relayed();
         conn.hold_reads(true);
         let (host, port) = self.host.take().expect("opened once");
         let engine = self.engine.clone();

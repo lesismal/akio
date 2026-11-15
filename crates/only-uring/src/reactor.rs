@@ -970,12 +970,12 @@ impl Loop {
         };
         let q = lc.inner.queued_bytes();
         let arm = q > 0 && lc.write_timer.is_none() && self.cfg.write_timeout.is_some();
-        if q >= high {
+        if q >= high && lc.inner.write_backpressure() {
             if !lc.bp {
                 self.shared.stats.backpressure.add_local(1);
             }
             lc.bp = true;
-        } else if q <= high / 4 {
+        } else if q <= high / 4 || !lc.inner.write_backpressure() {
             lc.bp = false;
         }
         let want_read = !lc.inner.read_held() && !lc.bp && !lc.eof && lc.inner.is_open();
