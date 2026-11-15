@@ -119,6 +119,80 @@ fn large_payload_survives_backpressure() {
     stop(&e);
 }
 
+/// Echo that records the longest output queue and every refused send.
+struct QueueWatch(Arc<(AtomicUsize, Mutex<Vec<String>>)>);
+impl Handler for QueueWatch {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if let Err(e) = c.send(data) {
+            self.0.1.lock().unwrap().push(e.to_string());
+        }
+        self.0.0.fetch_max(c.queued_bytes(), Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn reads_stop_at_the_write_watermark() {
+    // A peer that floods and does not read: `on_data` must stop once the output queue reaches
+    // the watermark (it may overshoot by one read), never run it up to `max_queued_bytes`. With
+    // io_uring the multishot recv keeps completing until its cancel lands, so input that
+    // arrives meanwhile has to wait, and the peer's EOF behind it too.
+    const HIGH: usize = 64 << 10;
+    const READ: usize = 16 << 10;
+    let mut cfg = cfg();
+    cfg.write_high_watermark = HIGH;
+    cfg.read_buffer = READ;
+    cfg.max_queued_bytes = 256 << 10;
+    let seen: Arc<(AtomicUsize, Mutex<Vec<String>>)> = Arc::default();
+    let s2 = seen.clone();
+    let e = Engine::builder()
+        .config(cfg)
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |_c: &Conn<QueueWatch>| {
+                    QueueWatch(s2.clone())
+                })),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let data: Vec<u8> = (0..16 << 20).map(|i: usize| (i * 7 % 253) as u8).collect();
+    let mut w = connect(e.local_addrs()[0]);
+    w.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
+    let mut r = w.try_clone().unwrap();
+    let send = data.clone();
+    let writer = thread::spawn(move || {
+        w.write_all(&send).unwrap();
+        w.shutdown(std::net::Shutdown::Write).unwrap();
+    });
+    // Let the writer fill every buffer on the way before reading anything.
+    thread::sleep(Duration::from_millis(300));
+    let mut got = Vec::with_capacity(data.len());
+    let mut buf = vec![0u8; 64 << 10];
+    loop {
+        match common::read_retry(&mut r, &mut buf).unwrap() {
+            0 => break,
+            n => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    writer.join().unwrap();
+    assert!(
+        got == data,
+        "echoed bytes differ ({} of {})",
+        got.len(),
+        data.len()
+    );
+    assert!(
+        seen.1.lock().unwrap().is_empty(),
+        "sends refused: {:?}",
+        seen.1.lock().unwrap()
+    );
+    let maxq = seen.0.load(Ordering::Relaxed);
+    assert!(maxq <= HIGH + READ, "output queue reached {maxq} bytes");
+    stop(&e);
+}
+
 /// Records every connection so another thread can use the handles.
 struct Collect;
 impl Handler for Collect {
