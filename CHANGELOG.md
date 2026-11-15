@@ -175,6 +175,41 @@ TLS 1.3 secp256r1 handshakes 0.94× → 1.12× rustls.
 - `unsafe`: +6 blocks and +2 `unsafe fn` in `ec::hw` (the point blocks share one, the divsteps
   block, two AVX2 scans and their two calls; docs/unsafe-review.md).
 
+### Performance: cheaper P-256 point formulas on x86_64 in `only-crypto`
+
+No API change (`tools/api/public-api.sh` unchanged). Measured on a quiet bench host (Zen 4, CPU 2,
+median of five alternating rounds, ring 0.17 in the same run): P-256 ECDH 1.08× → 1.12× ring
+(32,351 → 33,904 op/s), sign 1.36× → 1.38×, verify 1.08× → 1.10×, key generation 1.36× →
+1.40×. The 0.96× of the previous entry was measured on a loaded host; quiet, the code before this
+change already did 1.08×. TLS 1.3 handshakes did not move (secp256r1 1.07×, X25519 1.08× rustls):
+one ECDH is about 1% of a handshake.
+
+- The whole-point assembly of the P-256 twin uses the formulas of OpenSSL's `ecp_nistz256`: the
+  addition is 12M + 4S with seven modular additions and subtractions instead of add-2007-bl's
+  11M + 5S with thirteen (the products cost the same as the squares here, the linear operations
+  do not), the mixed addition 8M + 3S instead of 7M + 4S (seven against fourteen), and the
+  doubling computes `2Y` first, so `Z₃ = 2Y·Z`, `4β = X·(2Y)²` and `8γ² = ((2Y)²)²/2` (a new
+  modular halving) need ten linear operations instead of fourteen. The additions return another
+  representative of the same point (`(X, Y, Z)` instead of `(4X, 8Y, 2Z)`); the doubling the same
+  limbs.
+- The Montgomery reduction inside the point routines keeps `p₃` in `rdx` for its four steps and
+  splits `m·2⁹⁶` with `shlx`/`shrx` (the compiler-reserved `rbx` holds the count 32, saved and
+  restored in the frame): ten instructions per step become seven.
+- Cycles (`perf stat`, Zen 4): addition 745 → 721, mixed addition 537 → 508, doubling 355 → 348,
+  variable-base multiplication 148.1k → 140.6k, fixed-base (comb) 29.8k → 28.9k. The doubling
+  measures as a fixed ~44 cycles per product: reordering it (independent products first, or the
+  `Y` chain first) made it 8–10% slower, an OpenSSL-style reduction interleaved with the product
+  rows was neutral, and replacing the `cmov` selections by `xor`/`and` masks was 10% slower, so
+  none of them is in.
+- Correctness: `points_match_portable` compares the doublings limb for limb and the additions as
+  points (cross-multiplied, `Z = 0` exactly where the portable formulas give it), now also with
+  the all-zero identity on either side; the halving is checked on random and edge values.
+- Constant time: the release disassembly on Zen 4 has the same conditional branches as before in
+  `ecdh_x_impl` (17: loop counters, public digit positions and bounds, CPU-feature checks, the
+  output length and the final identity test), `hw::mul_base`, `divsteps_59` and `safegcd::inv_with`,
+  and none in the point routines.
+- `unsafe`: no new block; the point block saves and restores `rbx` (docs/unsafe-review.md).
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so

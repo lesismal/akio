@@ -27,9 +27,13 @@
 //! limb and bit offsets of a digit, table rows), the public exponent bits of the remaining
 //! Fermat chains (P-384, Ed25519), the CPU-feature checks, `OnceLock` initialization, the length
 //! of the output encoding, and the final "result is the identity" test, which a valid secret
-//! scalar never reaches. Last checked on Zen 4 for the whole-point / safegcd pass: no
-//! conditional branch at all in the point routines, the table scans, `divsteps_59` (assembly:
-//! one, the loop counter) and `Fe::invert`.
+//! scalar never reaches. Last checked on Zen 4 for the point-formula pass (`ecp_nistz256`
+//! additions, the doubling from `2Y` with a modular halving): no conditional branch at all in the
+//! point routines, the table scans, `divsteps_59` (assembly: one, the loop counter) and
+//! `Fe::invert`; `ecdh_x_impl` for the `P256X` twin has 17, all of the kinds above (the
+//! table-building loop and its public index parity, the window loop and the public bit offset
+//! and limb bound of each digit, the AVX2 feature check and the scalar-scan fallback's loop, the
+//! final identity test and the length of the output encoding), the same set as before the pass.
 
 use std::hint::black_box;
 

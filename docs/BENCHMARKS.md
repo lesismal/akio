@@ -265,6 +265,39 @@ multiplication 40.5k → 31k (43 windows of 6 bits instead of 65 of 4: 6-bit and
 Fermat chains). With `ONLY_CRYPTO_PORTABLE=1` the portable safegcd lifts sign from 0.41× to about
 0.45× ring and ECDH from 0.52× to 0.57×.
 
+#### P-256 point formulas (`--example pk_bench`, `tls-bench handshakes 2`, CPU 2)
+
+Median of five alternating rounds of the previous code (`1376b324`) and this pass, both against
+ring 0.17 / rustls 0.23 in the same run, on a quiet host (load average about 1; the services
+stopped by `quiet.sh`). On the same quiet host the previous code is already ahead of ring in
+ECDH: the 0.96× above was a loaded-host figure.
+
+| op/s (quiet host) | before | after | ring / rustls | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|
+| P-256 ECDSA sign | 103,471 | 105,399 | 76,155–76,287 | 1.36 | 1.38 |
+| P-256 ECDSA verify | 28,319 | 28,834 | 26,268–26,309 | 1.08 | 1.10 |
+| P-256 ECDH | 32,351 | 33,904 | 30,067–30,141 | 1.08 | 1.12 |
+| P-256 key generation | 153,678 | 158,921 | 113,089–113,374 | 1.36 | 1.40 |
+| TLS 1.3 full handshakes/s, secp256r1 | 5,504 | 5,489 | 5,115–5,157 | 1.07 | 1.07 |
+| TLS 1.3 full handshakes/s, X25519 | 5,496 | 5,464 | 5,030–5,062 | 1.09 | 1.08 |
+
+The change: OpenSSL's `ecp_nistz256` formulas in the whole-point assembly (addition 12M + 4S with
+seven modular additions and subtractions instead of 11M + 5S with thirteen, mixed addition
+8M + 3S with seven instead of 7M + 4S with fourteen, the doubling from `2Y` with a modular
+halving: ten linear operations instead of fourteen), and a reduction step of seven instructions
+instead of ten (`p₃` kept in `rdx`, `shlx`/`shrx` by `rbx = 32`). Cycles (`perf stat`, min of
+five alternating rounds): doubling 355 → 348, addition 745 → 721, mixed addition 537 → 508,
+variable-base multiplication 148.1k → 140.6k, the whole ECDH through the public API (decode,
+multiply, invert, encode) 147.7k, fixed-base comb 29.8k → 28.9k, field inversion 6.2k. The
+handshakes did not move: one ECDH is about 1% of a handshake.
+
+Tried and left out, by the same measurement: the doubling's products reordered (independent
+ones first, or the `Y` chain first) 8–10% slower; an OpenSSL-style reduction interleaved with the
+product rows neutral (+1%); the `cmov` selections of the final subtractions replaced by
+`xor`/`and` masks 10% slower. A doubling behaves as about 44 cycles per product whatever the
+order, which is close to the throughput of the `mulx` and flag-reading instructions it issues
+rather than to its dependency chain.
+
 #### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
 
 MB/s of message bytes with 13 bytes of AAD, median of three alternating rounds; before = `main`
@@ -311,8 +344,8 @@ What is left: AES-GCM messages of 1 KiB to 1.4 KiB are at 0.96–1.11× ring (th
 fixed cost; the tail after the last 256-byte group runs on the 128-bit path); CPUs with VAES but
 without AVX-512 (Zen 3, Alder Lake) use the 128-bit path; the TLS record layer still zero-fills
 the output before the AEAD writes it (about 9% of a 16 KiB record); Poly1305 is scalar; P-256
-ECDH is at about 0.96× ring (the doubling, ~355 cycles, is latency-bound on its chain of
-products; a reduction interleaved with the product rows is the next step); Ed25519 verification is portable; RSA has no Karatsuba; SHA-512 and MD5 are portable.
+ECDH is at 1.12× ring (a doubling ~348 cycles, about 44 per product whatever their order);
+Ed25519 verification is portable; RSA has no Karatsuba; SHA-512 and MD5 are portable.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 
@@ -440,6 +473,11 @@ Short summaries of the per-area passes; the full tables are in the git history o
   of the ECDH window table, safegcd inversions with assembly divsteps. Against ring in the same
   run: sign 0.77× → 1.25×, key generation 0.94× → 1.33×, verify 0.98× → 1.04×, ECDH 0.94× →
   0.96×; secp256r1 handshakes 0.94× → 1.12× rustls.
+- **P-256 point formulas** (this host, CPU 2, median of five alternating rounds on a quiet host,
+  `1376b324` → after): OpenSSL's `ecp_nistz256` addition, mixed addition and doubling order in the
+  whole-point assembly, a shorter reduction step. Against ring in the same run: ECDH 1.08× →
+  1.12×, sign 1.36× → 1.38×, verify 1.08× → 1.10×, key generation 1.36× → 1.40×; handshakes
+  unchanged (secp256r1 1.07×, X25519 1.08× rustls).
 - **Wide AES-GCM and CRC** (this host, `a1cc9b49` → after): AES-GCM on VAES + VPCLMULQDQ +
   AVX-512 (512-bit, chosen over 256-bit by measurement) 2.3–2.5× at 16–64 KiB (AES-128 seal
   16 KiB 6,455 → 15,048 MB/s, 0.51× → 1.19× ring), the fused tail 1.8–2.1× at 64 B; TLS 1.3
