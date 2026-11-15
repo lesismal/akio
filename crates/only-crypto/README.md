@@ -3,7 +3,7 @@
 [中文](README.zh-CN.md)
 
 Dependency-free cryptographic primitives for the [`only`](https://github.com/lesismal/only)
-crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are eight small modules
+crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are ten small modules
 that drive CPU instructions, detected at run time; the OS random syscall lives in `only-sys`).
 
 | Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
@@ -14,6 +14,7 @@ that drive CPU instructions, detected at run time; the OS random syscall lives i
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
 | P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | portable |
+| RSA exponentiation (`bignum::ifma`, `bignum::hw`) | AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq`) for the CRT halves of 2048- to 4096-bit keys, else BMI2 + ADX inline assembly (Montgomery multiplication and squaring) | portable |
 
 `ONLY_CRYPTO_PORTABLE=1` (read once) forces the portable code everywhere; the tests run every
 known-answer vector with and without it. Under Miri nothing is detected.
@@ -56,9 +57,9 @@ assert_eq!(gcm.decrypt(&[0u8; 12], b"aad", &sealed).unwrap(), b"plaintext");
 This is an implementation crate: its API follows the needs of the other `only` crates and may
 change in any release (internal tier, docs/api-stability.md). It is not a general-purpose
 cryptography library (no key zeroization; assembly only for the wide AES-GCM kernel and CRC fold,
-whose VAES / VPCLMULQDQ / AVX-512 intrinsics are newer than the MSRV, and for the P-256 and
-Curve25519 field arithmetic on x86_64; SHA-512, MD5, Poly1305, RSA and the rest of the public-key
-arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
+whose VAES / VPCLMULQDQ / AVX-512 intrinsics are newer than the MSRV, for the P-256 and
+Curve25519 field arithmetic and for the RSA Montgomery arithmetic on x86_64; SHA-512, MD5,
+Poly1305 and the rest of the public-key arithmetic are portable Rust). The public-key half is the base of the in-house TLS/DTLS/QUIC stacks
 planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x509).
 
 ## Public-key timing
@@ -96,11 +97,19 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
 - Ed25519 `[k]B` adds one affine Niels entry per signed 4-bit digit (complete unified addition,
   7M per digit). X25519 public keys are that `[k]B` mapped to `u = (1 + y)/(1 - y)`; the shared
   secret is the RFC 7748 ladder with masked swaps.
-- RSA private operations: CRT exponentiation with fixed 4-bit windows over the full exponent
-  length and masked table selection (fixed-size Montgomery code for 1024- to 4096-bit primes,
-  squaring by a half-size product), base blinding (`rᵉ`, `r⁻¹` per key, inverted by Fermat in
-  each prime field, squared after each use) and a check that `sᵉ = m` before releasing the
-  signature. Moduli reductions are constant time; public `p`/`q` limb counts are not hidden.
+- RSA private operations: CRT exponentiation with fixed 5-bit windows over the full exponent
+  length, every lookup reading all 32 table entries (AVX2 `vpcmpeqq` masks, else `ct` masks),
+  base blinding (`rᵉ`, `r⁻¹` per key, inverted by Fermat in each prime field, squared after each
+  use) and a check that `sᵉ = m` before releasing the signature. On x86_64 with AVX-512 IFMA the
+  CRT halves of 2048-, 3072- and 4096-bit keys run in radix 2⁵² (20, 32 and 40 digits in `ymm` /
+  `zmm` registers): almost Montgomery multiplication (results below `2p`, one masked reduction at
+  the end), one `asm!` block per product with the low digit tracked in general-purpose
+  registers, carries normalized with generate / propagate masks; no branch but the digit loop.
+  Otherwise, with BMI2 + ADX, Montgomery multiplication and squaring for 16 to 64 limbs are
+  `asm!` blocks (`mulx` with two carry chains, rows unrolled, the final subtraction by
+  `cmovnz`); the portable code is fixed-size CIOS. `R² mod p` comes from `64 + k` doublings and
+  six Montgomery squarings (constant time; public moduli use one long division). Public `p`/`q`
+  limb counts are not hidden.
 - Known variable-time parts, all on public data: signature verification (ECDSA `u₁G + u₂Q` in
   Jacobian coordinates with width-7 / width-5 wNAF, a binary-GCD inversion of `s` and a
   projective `x ≡ r` check, Ed25519 `[s]B - [k]A` with interleaved wNAF, RSA `sᵉ`), table
@@ -116,12 +125,16 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   recipe): P-256 / P-384 `ecdh_x_impl`, `base_mul_impl`, `sign_impl` with the inlined window
   and comb loops, the Jacobian doubling and additions (the whole-point assembly included), the
   wide comb and the AVX2 scans, the field and order multiplication, squaring and inversions
-  (safegcd with both divsteps), the Ed25519 base multiplication and both X25519 ladders. The
-  only branches are loop counters, public indices and bounds, the public exponent bits of the
+  (safegcd with both divsteps), the Ed25519 base multiplication and both X25519 ladders;
+  for RSA `Mont::mul_into` / `sqr_into` (the BMI2 + ADX blocks inlined), `ifma::amm` (the three
+  IFMA blocks), `ifma::pow`, `Mont::pow`, the AVX2 and portable table scans, `Mont::new`,
+  `crt_combine` and `private_op`. The
+  only branches are loop counters, public indices and bounds (and the limb-count dispatch,
+  slice and allocation checks), the public exponent bits of the
   remaining Fermat chains, CPU-feature and `OnceLock` checks, the length of the output encoding,
   and the final "result is the identity" test. No statistical test (dudect, ctgrind) has been run. Keys are not zeroized. The CPU
   instructions used (AES, carry-less multiplication, SHA, CRC32, AVX2, `mulx`, `adcx`/`adox`,
-  `cmov`) take constant time.
+  `cmov`, `vpmadd52luq`/`vpmadd52huq`) take constant time.
 
 ## Performance
 
@@ -146,10 +159,13 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | P-256 ECDH | 10 075 | 33 904 | 1.12x ring |
 | P-256 key generation | – | 158 921 | 1.40x ring |
 | P-384 ECDSA verify | 2 426 | 4 330 | 2.34x ring |
-| RSA-2048 PKCS#1 sign | 871 | 1 192 | 0.49x ring |
-| RSA-2048 PKCS#1 verify | 29 019 | 39 244 | 0.59x ring |
+| RSA-2048 PKCS#1 sign | 1 192 | 3 910 | 1.61x ring |
+| RSA-2048 PKCS#1 verify | 39 244 | 79 970 | 1.22x ring |
+| RSA-3072 PKCS#1 sign | 371 | 1 455 | 1.85x ring |
+| RSA-4096 PKCS#1 sign | 156 | 755 | 2.19x ring |
 | TLS 1.3 full handshakes/s, X25519 (only-tls vs rustls + ring) | – | 5 027 | 1.00x rustls |
 | TLS 1.3 full handshakes/s, secp256r1 | – | 4 552 | 0.89x rustls |
+| TLS 1.3 full handshakes/s, X25519, RSA-2048 certificate | 775 | 2 586 | 1.44x rustls |
 
 The public-key rows and the handshakes are from the P-256 / X25519 pass (before it: P-256 sign
 34 152, verify 13 404, ECDH 10 380, X25519 30 696 op/s; handshakes 3 055 and 2 306/s). ring uses
@@ -163,9 +179,18 @@ ECDH 0.94× → 0.96×, secp256r1 handshakes 0.94× → 1.12× rustls. On a quie
 `ecp_nistz256` point formulas (fewer modular additions) and a shorter reduction step then took
 ECDH to 1.12×, sign to 1.38×, verify to 1.10× and key generation to 1.40× ring (a doubling 348
 cycles, an addition 721, the variable-base multiplication 140.6k); the P-256 rows of the table
-are from that last pass, on a quiet host. Follow-ups: a VAES + AVX2
-kernel for CPUs without AVX-512, a SIMD Poly1305, aarch64 assembly for the P-256 field,
-Karatsuba for RSA.
+are from that last pass, on a quiet host. The RSA rows are from the RSA
+pass (before = the code before it, same run, quiet host): BMI2 + ADX Montgomery assembly, the
+IFMA exponentiation, 5-bit windows with one-pass AVX2 scans and `R²` by squarings or one
+division took RSA-2048 signing from 0.49× to 1.61× ring (3072: 0.47× → 1.85×, 4096: 0.45× →
+2.19×), verification from 0.60× to 1.22× (1.10×, 1.09×), verification including the key parse
+(one certificate signature) from 0.09× to 1.02× (0.95×, 0.95×), and only-tls handshakes with an
+RSA-2048 certificate from 0.43× to 1.44× rustls. A 1024-bit Montgomery multiplication takes 805
+cycles with BMI2 + ADX (squaring 681), a 1024-bit IFMA multiplication 416; on BMI2 + ADX alone
+(no IFMA) RSA-2048 signing measured 0.99× ring. Karatsuba was not tried: at these sizes the
+assembly row loops leave little to save. Follow-ups: a VAES + AVX2 kernel for CPUs without
+AVX-512, a SIMD Poly1305, aarch64 assembly for the P-256 field, the two CRT halves interleaved
+in one IFMA block.
 
 ## Testing
 
@@ -188,7 +213,11 @@ Karatsuba for RSA.
   formulas on random points with random `Z`, every valid Wycheproof ECDH point, `P + P`,
   `P + (-P)` and the identity in both forms, and the modular halving on edge values, `safegcd` `matches_fermat` for
   both P-256 moduli, `twin_matches_portable` for P-256 key generation, ECDH, signing and
-  verification), and the
+  verification, `bignum` `asm_matches_generic` for the BMI2 + ADX multiplication and squaring at
+  every size against the generic CIOS on random values and 0, 1, m - 1, m - 2, R - 1, R - m with
+  full and short top limbs plus a 200-step chain, `ifma_pow_matches` for the IFMA exponentiation
+  against square-and-multiply with edge bases and exponents, `r2_constructions` for both `R²`
+  computations), and the
   whole suite also runs with `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.
 - The Jacobian scalar multiplications are checked against the complete-formula references
   (`mul_ref`, `mul_base_ref`) on random scalars and on edge scalars (the ends of `[1, n)`,
@@ -202,7 +231,8 @@ Karatsuba for RSA.
   (2048/SHA-256/32, 4096/SHA-512/64), RSA PKCS#1 v1.5 signature generation; RFC 7748, 8032 and
   6979 vectors in unit tests. Every "valid" vector is accepted and every "invalid" one rejected.
 - `tests/pk_compat.rs` cross-checks against ring and RustCrypto p256/p384 (identical Ed25519,
-  ECDSA RFC 6979 and RSA PKCS#1 signatures; mutual verification; identical ECDH and X25519
+  ECDSA RFC 6979 and RSA PKCS#1 signatures, the latter at 2048, 3072 and 4096 bits and also
+  with the portable code forced; mutual verification; identical ECDH and X25519
   secrets; PKCS#8 keys both ways). `tests/sig_diff.rs` replays the `crypto_sig_verify` fuzz
   target (verification of valid, mutated and arbitrary signatures and keys against ring);
   only-x509's tests cover OpenSSL-made keys and signatures.

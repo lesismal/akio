@@ -15,6 +15,14 @@
 //! masks. The Rust code around them (the masked selects of the scalar multiplications, the
 //! ladder's swaps, digit recoding, the portable safegcd) still uses the masks here.
 //!
+//! RSA works the same way: on x86_64 the Montgomery multiplication and squaring of
+//! `bignum::hw` (BMI2 + ADX) and the almost Montgomery multiplication of `bignum::ifma`
+//! (AVX-512 IFMA) are `asm!` blocks whose only branches are row and digit counters; the final
+//! subtraction is a `cmovnz` on an `sbb` mask, the IFMA carry normalization uses opmask merges
+//! from a generate / propagate word. The exponentiation's table scans use `vpcmpeqq` masks (AVX2)
+//! or the masks here; the portable Montgomery code, `Mont::new`'s doublings, the conversion into
+//! the IFMA radix (`shl_mod`) and the final reductions use the masks here.
+//!
 //! How this is checked: `objdump -d` of a release build (`--example pk_bench`), listing every
 //! conditional branch in the secret-scalar paths: `Jac::{double, add_core, madd_ct}` and the
 //! inlined `mul_ct`/`mul_base_ct`/`lookup`/`booth`/`booth5` inside `ecdh_x_impl`/`base_mul_impl`
@@ -34,6 +42,21 @@
 //! table-building loop and its public index parity, the window loop and the public bit offset
 //! and limb bound of each digit, the AVX2 feature check and the scalar-scan fallback's loop, the
 //! final identity test and the length of the output encoding), the same set as before the pass.
+//!
+//! RSA, checked on Zen 4 for the RSA pass (`--example pk_bench`, release): the conditional branches
+//! of `Mont::mul_into` (61) and `Mont::sqr_into` (72; both with the BMI2 + ADX blocks for every
+//! size inlined, and the portable fixed-size code), `ifma::amm` (17, the three IFMA blocks),
+//! `ifma::pow` (77), `ifma::shl_mod` (37), `Mont::pow` (48), `hw::lookup` (22) and
+//! `hw::lookup_avx2::<V>` (3 each), `Mont::new` (23), `crt_combine` (19) and `private_op` (120)
+//! are all of these kinds: the CPU-feature checks, the dispatch on the public limb or digit
+//! count, slice-bound and allocation checks (panic and out-of-memory paths), deallocation of
+//! empty vectors, loop counters (the assembly's `dec ecx; jnz` over rows and digits, Rust loops
+//! over limbs, windows and table entries), the public bit offset of a window digit and the parity
+//! of a table index, vectorization alias checks, the `Mutex` and the cached-blinding `Option`,
+//! the `Result` of a fresh blinding, `Mont::new`'s checks of the public modulus shape (odd, top
+//! limb nonzero) and the final fault check (`sᵉ = m`). None reads a limb of a secret value, an
+//! exponent bit or a table index. The blinding's rejection of a non-invertible `r` (probability
+//! about 2⁻¹⁰²⁴) is the one data-dependent branch, on a random value.
 
 use std::hint::black_box;
 
