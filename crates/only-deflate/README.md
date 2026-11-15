@@ -48,7 +48,8 @@ Tests: round trips over text, binary, incompressible, empty, single-byte and lon
 every level, format and window; interop both ways with zlib-rs (through flate2, a dev-dependency)
 and with `gzip(1)`; every literal, length and distance through the fixed code; sync-flush
 boundaries with context takeover (the class of the miniz_oxide bug Autobahn once found); input
-and output split at every size; streaming with every level, window size and flush kind;
+and output split at every size; stored blocks split at every input byte and output size, and
+stored blocks longer than the window followed by matches into them; streaming with every level, window size and flush kind;
 truncation, bit flips and checksum errors. Fuzz targets `deflate_inflate` (differential against
 zlib-rs) and `deflate_roundtrip`. Miri runs the unit tests.
 
@@ -57,4 +58,5 @@ throughput against flate2 (zlib-rs) at levels 1..=9 (`BENCH_LEVELS=1,6,9` picks 
 generated text, JSON and random data plus each file given; the `pmd_echo` example measures a
 permessage-deflate echo. On x86-64 the output is as small as zlib-rs's at every level (at most
 0.5% larger), compression runs at 0.94-1.48x its speed and decompression at 0.82-1.23x (stored
-blocks 0.4x); see docs/BENCHMARKS.md.
+blocks 0.94x: they are copied straight into the output, and only their last 32 KiB into the
+window); see docs/BENCHMARKS.md.

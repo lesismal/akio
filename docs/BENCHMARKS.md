@@ -409,7 +409,7 @@ the host's `libc.so.6` (2.1 MB). Inflate decodes zlib-rs's output of the same le
 | JSON | 6 | 7.604 / 7.604 | 208 / 214 | 2,266 / 2,478 |
 | JSON | 9 | 7.761 / 7.761 | 121 / 117 | 2,253 / 2,543 |
 | random | 1 | 1.000 / 0.948 | 135 / 144 | 526 / 637 |
-| random | 6 | 1.000 / 1.000 | 80 / 76 | 15,222 / 36,328 |
+| random | 6 | 1.000 / 1.000 | 80 / 76 | 34,278 / 36,688 |
 | Rust sources | 1 | 2.731 / 2.731 | 486 / 387 | 846 / 889 |
 | Rust sources | 3 | 3.833 / 3.833 | 206 / 198 | 959 / 958 |
 | Rust sources | 6 | 4.098 / 4.106 | 99 / 100 | 1,030 / 1,013 |
@@ -420,8 +420,10 @@ the host's `libc.so.6` (2.1 MB). Inflate decodes zlib-rs's output of the same le
 | libc.so.6 | 9 | 2.242 / 2.242 | 41 / 29 | 569 / 653 |
 
 Output is never more than 0.2% larger than zlib-rs's in these cells; compression runs at
-0.94–1.5× zlib-rs's speed, decompression at 0.83–1.25×, except stored blocks (random data at
-levels ≥3) at 0.42×, because they are copied twice (into the window and out of it).
+0.94–1.5× zlib-rs's speed, decompression at 0.83–1.25×. Stored blocks (random data at levels
+≥3) inflate at 0.94×: they are copied once, straight into the output, and only their last 32 KiB
+into the window (0.42× before, when they went through the window; the random level 6 cell is the
+median of five alternating rounds of the old and new binaries, old 15,456 / 36,277).
 
 permessage-deflate echo (client deflate → server inflate → server deflate → client inflate,
 level 6, context takeover, JSON-like messages):

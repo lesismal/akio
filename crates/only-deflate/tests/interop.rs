@@ -721,3 +721,237 @@ fn streaming_every_level_window_and_flush() {
         }
     }
 }
+
+/// Bits written LSB first, as DEFLATE packs them.
+#[derive(Default)]
+struct Bits {
+    out: Vec<u8>,
+    acc: u64,
+    n: u32,
+}
+
+impl Bits {
+    fn put(&mut self, v: u64, n: u32) {
+        self.acc |= v << self.n;
+        self.n += n;
+        while self.n >= 8 {
+            self.out.push(self.acc as u8);
+            self.acc >>= 8;
+            self.n -= 8;
+        }
+    }
+
+    /// A Huffman code (most significant bit first).
+    fn code(&mut self, code: u32, len: u32) {
+        let r = code.reverse_bits() >> (32 - len);
+        self.put(u64::from(r), len);
+    }
+
+    fn align(&mut self) {
+        if self.n % 8 != 0 {
+            self.put(0, 8 - self.n % 8);
+        }
+    }
+
+    fn stored(&mut self, last: bool, data: &[u8]) {
+        self.put(u64::from(last), 3);
+        self.align();
+        let n = data.len() as u16;
+        self.put(u64::from(n), 16);
+        self.put(u64::from(!n), 16);
+        self.out.extend_from_slice(data);
+    }
+
+    /// A fixed-code literal/length symbol.
+    fn fixed_sym(&mut self, sym: u32) {
+        match sym {
+            0..=143 => self.code(0x30 + sym, 8),
+            144..=255 => self.code(0x190 + sym - 144, 9),
+            256..=279 => self.code(sym - 256, 7),
+            _ => self.code(0xc0 + sym - 280, 8),
+        }
+    }
+
+    /// A match of length 258 (symbol 285) at `dist` (1..=32768) in a fixed block.
+    fn fixed_match_258(&mut self, dist: u32) {
+        const BASE: [u32; 30] = [
+            1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025,
+            1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+        ];
+        self.fixed_sym(285);
+        let code = BASE.iter().rposition(|&b| b <= dist).unwrap() as u32;
+        let extra = if code < 4 { 0 } else { code / 2 - 1 };
+        self.code(code, 5);
+        self.put(u64::from(dist - BASE[code as usize]), extra);
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        self.align();
+        self.out
+    }
+}
+
+/// Decodes `wire` with its input cut at `cut` and the output taken `out_step` bytes at a time.
+fn decode_pieces(format: Format, bits: u8, wire: &[u8], cut: usize, out_step: usize) -> Vec<u8> {
+    let mut inf = Inflater::with_window_bits(format, bits);
+    let mut out = Vec::new();
+    let mut buf = vec![0u8; out_step];
+    let mut pos = 0;
+    for end in [cut, wire.len()] {
+        loop {
+            let p = inf.decompress(&wire[pos..end], &mut buf).unwrap();
+            out.extend_from_slice(&buf[..p.produced]);
+            pos += p.consumed;
+            if p.done {
+                assert_eq!(pos, wire.len(), "cut {cut} step {out_step}");
+                return out;
+            }
+            if p.produced < buf.len() {
+                break; // input used up
+            }
+        }
+    }
+    panic!("stream not done: cut {cut} step {out_step}");
+}
+
+/// [`decode_pieces`] through `decompress_vec`, its limit raised `step` bytes at a time.
+fn decode_vec_pieces(format: Format, bits: u8, wire: &[u8], cut: usize, step: usize) -> Vec<u8> {
+    let mut inf = Inflater::with_window_bits(format, bits);
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for end in [cut, wire.len()] {
+        loop {
+            let limit = out.len() + step;
+            let p = inf
+                .decompress_vec(&wire[pos..end], &mut out, limit)
+                .unwrap();
+            pos += p.consumed;
+            if p.done {
+                assert_eq!(pos, wire.len(), "vec: cut {cut} step {step}");
+                return out;
+            }
+            if out.len() < limit {
+                break; // input used up
+            }
+        }
+    }
+    panic!("stream not done (vec): cut {cut} step {step}");
+}
+
+/// Matches of length 258 at each of `dists` appended to `data`.
+fn with_matches(data: &[u8], dists: &[u32]) -> Vec<u8> {
+    let mut want = data.to_vec();
+    for &dist in dists {
+        for _ in 0..258 {
+            want.push(want[want.len() - dist as usize]);
+        }
+    }
+    want
+}
+
+#[test]
+fn stored_blocks_split_at_every_boundary() {
+    // Stored blocks (with an empty one) around a fixed block whose match reaches back into
+    // them, in every format: the input cut at every byte, the output in pieces of many sizes.
+    let data = random(70, 21);
+    let mut b = Bits::default();
+    b.stored(false, &data[..30]);
+    b.stored(false, &[]);
+    b.stored(false, &data[30..55]);
+    b.put(0b010, 3); // fixed, not last
+    b.fixed_sym(u32::from(b'x'));
+    b.fixed_match_258(40);
+    b.fixed_sym(256);
+    b.stored(true, &data[55..]);
+    let raw = b.finish();
+    let mut want = data[..55].to_vec();
+    want.push(b'x');
+    let mut want = with_matches(&want, &[40]);
+    want.extend_from_slice(&data[55..]);
+    assert_eq!(flate2_decompress(Format::Raw, &raw), want);
+    for format in FORMATS {
+        let wire = match format {
+            Format::Raw => raw.clone(),
+            Format::Zlib => {
+                let mut w = vec![0x78, 0x01];
+                w.extend_from_slice(&raw);
+                w.extend_from_slice(&adler32(&want).to_be_bytes());
+                w
+            }
+            Format::Gzip => {
+                let mut w = vec![0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 0, 0xff];
+                w.extend_from_slice(&raw);
+                w.extend_from_slice(&crc32(&want).to_le_bytes());
+                w.extend_from_slice(&(want.len() as u32).to_le_bytes());
+                w
+            }
+        };
+        assert_eq!(flate2_decompress(format, &wire), want);
+        for cut in 0..=wire.len() {
+            for out_step in [1, 2, 3, 7, 29, 30, 31, 55, 64, 400] {
+                let got = decode_pieces(format, 15, &wire, cut, out_step);
+                assert!(got == want, "{format:?} cut {cut} step {out_step}");
+                let got = decode_vec_pieces(format, 15, &wire, cut, out_step);
+                assert!(got == want, "vec: {format:?} cut {cut} step {out_step}");
+            }
+        }
+    }
+}
+
+#[test]
+fn long_stored_blocks_then_matches_into_them() {
+    // Stored blocks longer than the window (one of them the full 65535 bytes), then matches at
+    // the window's largest distance and at distances inside the last stored block, for full
+    // and small windows, with one-shot and piecewise output.
+    let data = random(65_535 + 40_000 + 3_000, 22);
+    for bits in [9u8, 12, 15] {
+        let h = 1u32 << bits;
+        let dists = [h, h - 1, 3_000.min(h), 1, 2_999.min(h), 300];
+        let mut b = Bits::default();
+        b.stored(false, &data[..65_535]);
+        b.stored(false, &data[65_535..105_535]);
+        b.stored(false, &data[105_535..]);
+        b.put(0b011, 3); // fixed, last
+        for &dist in &dists {
+            b.fixed_match_258(dist);
+        }
+        b.fixed_sym(256);
+        let raw = b.finish();
+        let want = with_matches(&data, &dists);
+        assert!(
+            flate2_decompress(Format::Raw, &raw) == want,
+            "zlib-rs, bits {bits}"
+        );
+        let mut inf = Inflater::with_window_bits(Format::Raw, bits);
+        let mut v = Vec::new();
+        let p = inf.decompress_vec(&raw, &mut v, usize::MAX).unwrap();
+        assert!(p.done && v == want, "bits {bits}");
+        for (cut, out_step) in [
+            (10, 1000),
+            (70_000, 4096),
+            (100_000, 33_000),
+            (108_500, 65_536),
+            (raw.len(), 1 << 20),
+        ] {
+            let got = decode_pieces(Format::Raw, bits, &raw, cut, out_step);
+            assert!(got == want, "bits {bits} cut {cut} step {out_step}");
+            let got = decode_vec_pieces(Format::Raw, bits, &raw, cut, out_step);
+            assert!(got == want, "vec: bits {bits} cut {cut} step {out_step}");
+        }
+        // One byte further than the window is rejected.
+        if h < 32_768 {
+            let mut b = Bits::default();
+            b.stored(false, &data[..40_000]);
+            b.put(0b011, 3);
+            b.fixed_match_258(h + 1);
+            b.fixed_sym(256);
+            let mut inf = Inflater::with_window_bits(Format::Raw, bits);
+            let mut v = Vec::new();
+            assert_eq!(
+                inf.decompress_vec(&b.finish(), &mut v, usize::MAX),
+                Err(Error::BadDistance),
+                "bits {bits}"
+            );
+        }
+    }
+}

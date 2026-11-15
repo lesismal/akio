@@ -2,9 +2,11 @@
 //!
 //! The decoder is a resumable state machine: every step (a block header, one code length, one
 //! literal or one length/distance pair) is decoded only once all of its bits are available, so
-//! input may be split anywhere and output may be taken in pieces of any size. Decoded bytes go
-//! to an internal window buffer first (the back-reference history) and are copied out from
-//! there, which bounds the work done beyond the caller's output space to one match (258 bytes).
+//! input may be split anywhere and output may be taken in pieces of any size. Decoded bytes of
+//! compressed blocks go to an internal window buffer first (the back-reference history) and are
+//! copied out from there, which bounds the work done beyond the caller's output space to one
+//! match (258 bytes). Stored blocks are copied straight from the input to the output; only the
+//! last window's worth of them is copied into the history afterwards.
 
 use std::sync::OnceLock;
 
@@ -498,6 +500,9 @@ impl Inflater {
     pub fn decompress(&mut self, input: &[u8], output: &mut [u8]) -> Result<Progress, Error> {
         let mut ip = 0usize;
         let mut op = 0usize;
+        // Output of stored blocks copied straight from the input since `direct`: it still has
+        // to enter the window (only its last `hist` bytes do, once, before the window is used).
+        let mut direct: Option<usize> = None;
         let res = loop {
             op += self.drain(&mut output[op..]);
             if let State::Failed(e) = self.state {
@@ -506,13 +511,31 @@ impl Inflater {
             if self.wpos != self.flushed || self.state == State::Done {
                 break Ok(()); // output full, or finished
             }
+            match self.state {
+                State::Stored => {
+                    let n = self.stored(input, &mut ip, &mut output[op..]);
+                    if n > 0 {
+                        direct.get_or_insert(op);
+                        op += n;
+                    }
+                    match self.state {
+                        State::Stored => break Ok(()), // output full or input used up
+                        State::Done => self.give_back(&mut ip),
+                        _ => {}
+                    }
+                    continue;
+                }
+                State::Block | State::StoredLen => {}
+                _ => {
+                    if let Some(from) = direct.take() {
+                        self.push_history(&output[from..op]);
+                    }
+                }
+            }
             match self.step(input, &mut ip, output.len() - op) {
                 Ok(true) => {
                     if self.state == State::Done {
-                        // Give back whole bytes read ahead (when they came from this input).
-                        ip -= ((self.bitcnt / 8) as usize).min(ip);
-                        self.bitbuf = 0;
-                        self.bitcnt = 0;
+                        self.give_back(&mut ip);
                     }
                 }
                 Ok(false) => {
@@ -525,12 +548,23 @@ impl Inflater {
                 }
             }
         };
+        if let Some(from) = direct {
+            self.push_history(&output[from..op]);
+        }
         self.total_in += ip as u64;
         res.map(|()| Progress {
             consumed: ip,
             produced: op,
             done: self.is_done(),
         })
+    }
+
+    /// At the end of the stream: gives back whole bytes read ahead (when they came from this
+    /// input).
+    fn give_back(&mut self, ip: &mut usize) {
+        *ip -= ((self.bitcnt / 8) as usize).min(*ip);
+        self.bitbuf = 0;
+        self.bitcnt = 0;
     }
 
     /// Decompresses `input`, appending to `out` but never growing it past `limit` bytes in
@@ -547,7 +581,52 @@ impl Inflater {
         let start = out.len();
         let mut consumed = 0;
         let mut done = false;
+        // Stored data appended since `direct`, not yet in the window (see `decompress`).
+        let mut direct: Option<usize> = None;
         while out.len() < limit {
+            let idle = self.wpos == self.flushed;
+            if idle && self.state == State::Stored {
+                // Appended straight from the input: no zero-filled room to write it into.
+                let old = out.len();
+                let mut ip = 0;
+                self.stored_vec(&input[consumed..], &mut ip, out, limit);
+                if out.len() > old {
+                    direct.get_or_insert(old);
+                }
+                if self.state == State::Done {
+                    self.give_back(&mut ip);
+                }
+                self.total_in += ip as u64;
+                consumed += ip;
+                match self.state {
+                    State::Stored => break, // input used up or `limit` reached
+                    State::Done => {
+                        done = self.is_done();
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+            if idle && matches!(self.state, State::Block | State::StoredLen) {
+                // Block headers need no output space (and leave the window alone).
+                let p = match self.decompress(&input[consumed..], &mut []) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        if let Some(from) = direct {
+                            self.push_history(&out[from..]);
+                        }
+                        return Err(e);
+                    }
+                };
+                consumed += p.consumed;
+                if matches!(self.state, State::Block | State::StoredLen) {
+                    break; // input used up
+                }
+                continue;
+            }
+            if let Some(from) = direct.take() {
+                self.push_history(&out[from..]);
+            }
             let room = (limit - out.len()).min(((input.len() - consumed) * 4).clamp(1024, 1 << 18));
             let old = out.len();
             out.resize(old + room, 0);
@@ -568,6 +647,9 @@ impl Inflater {
             if p.produced < room {
                 break; // input used up
             }
+        }
+        if let Some(from) = direct {
+            self.push_history(&out[from..]);
         }
         Ok(Progress {
             consumed,
@@ -794,7 +876,8 @@ impl Inflater {
                 self.stored_left = usize::from(len);
                 self.state = State::Stored;
             }
-            State::Stored => return self.stored(input, ip, budget),
+            // Copied straight to the output by `decompress`.
+            State::Stored => return Ok(false),
             State::DynCounts => {
                 refill(&mut self.bitbuf, &mut self.bitcnt, input, ip);
                 if self.bitcnt < 14 {
@@ -915,43 +998,81 @@ impl Inflater {
         Ok(true)
     }
 
-    fn stored(&mut self, input: &[u8], ip: &mut usize, budget: usize) -> Result<bool, Error> {
-        let mut progressed = false;
-        while self.stored_left > 0 {
-            let pending = self.wpos - self.flushed;
-            if pending >= budget {
-                return Ok(progressed);
-            }
-            if !self.make_room(1) {
-                return Ok(progressed);
-            }
-            let room = (self.win.len() - self.wpos)
-                .min(budget - pending)
-                .min(self.stored_left);
-            let mut n = 0;
-            while n < room && self.bitcnt >= 8 {
-                self.win[self.wpos + n] = self.bitbuf as u8;
-                self.bitbuf >>= 8;
-                self.bitcnt -= 8;
-                n += 1;
-            }
-            let take = (room - n).min(input.len() - *ip);
-            self.win[self.wpos + n..self.wpos + n + take].copy_from_slice(&input[*ip..*ip + take]);
-            *ip += take;
-            n += take;
-            self.wpos += n;
-            self.stored_left -= n;
-            if n == 0 {
-                return Ok(progressed); // input used up
-            }
-            progressed = true;
+    /// Copies stored block data straight into `output` (the window is updated later, by
+    /// [`push_history`](Inflater::push_history)), updating the checksum. Leaves the state when
+    /// the block is complete.
+    fn stored(&mut self, input: &[u8], ip: &mut usize, output: &mut [u8]) -> usize {
+        let room = output.len().min(self.stored_left);
+        let mut n = 0;
+        while n < room && self.bitcnt >= 8 {
+            output[n] = self.bitbuf as u8;
+            self.bitbuf >>= 8;
+            self.bitcnt -= 8;
+            n += 1;
         }
-        if self.last {
-            self.end_of_blocks();
+        let take = (room - n).min(input.len() - *ip);
+        output[n..n + take].copy_from_slice(&input[*ip..*ip + take]);
+        *ip += take;
+        n += take;
+        self.stored_out(&output[..n]);
+        n
+    }
+
+    /// [`stored`](Inflater::stored), appending to `out` up to `limit` bytes in total.
+    fn stored_vec(&mut self, input: &[u8], ip: &mut usize, out: &mut Vec<u8>, limit: usize) {
+        let old = out.len();
+        let room = (limit - old).min(self.stored_left);
+        while out.len() - old < room && self.bitcnt >= 8 {
+            out.push(self.bitbuf as u8);
+            self.bitbuf >>= 8;
+            self.bitcnt -= 8;
+        }
+        let take = (room - (out.len() - old)).min(input.len() - *ip);
+        out.extend_from_slice(&input[*ip..*ip + take]);
+        *ip += take;
+        self.stored_out(&out[old..]);
+    }
+
+    /// Accounts for `data` delivered from a stored block, and leaves the block at its end.
+    fn stored_out(&mut self, data: &[u8]) {
+        self.stored_left -= data.len();
+        match self.format {
+            Format::Raw => {}
+            Format::Zlib => self.adler.update(data),
+            Format::Gzip => self.crc.update(data),
+        }
+        self.total_out += data.len() as u64;
+        if self.stored_left == 0 {
+            if self.last {
+                self.end_of_blocks();
+            } else {
+                self.state = State::Block;
+            }
+        }
+    }
+
+    /// Appends output already delivered to the history: only its last `hist` bytes matter.
+    fn push_history(&mut self, data: &[u8]) {
+        debug_assert_eq!(self.wpos, self.flushed);
+        let h = self.hist();
+        let data = &data[data.len().saturating_sub(h)..];
+        if data.len() == h {
+            if self.win.is_empty() {
+                self.make_room(0);
+            }
+            self.win[..h].copy_from_slice(data);
+            self.wpos = h;
         } else {
-            self.state = State::Block;
+            // With nothing pending, sliding always leaves room for `h` more bytes.
+            let ok = self.make_room(data.len());
+            debug_assert!(ok);
+            if !ok {
+                return;
+            }
+            self.win[self.wpos..self.wpos + data.len()].copy_from_slice(data);
+            self.wpos += data.len();
         }
-        Ok(true)
+        self.flushed = self.wpos;
     }
 
     /// Decodes literals and matches of a compressed block.
@@ -1131,7 +1252,14 @@ impl Inflater {
 /// ```
 pub fn decompress(format: Format, data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
     let mut inf = Inflater::new(format);
-    let mut out = Vec::new();
+    // Room for the output of stored data (or twice the input) up front, so it is not moved
+    // while growing.
+    let mut out = Vec::with_capacity(
+        data.len()
+            .saturating_mul(2)
+            .saturating_add(1024)
+            .min(limit.saturating_add(1)),
+    );
     let p = inf.decompress_vec(data, &mut out, limit.saturating_add(1))?;
     if out.len() > limit {
         return Err(Error::TooLarge);
