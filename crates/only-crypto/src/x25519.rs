@@ -33,6 +33,10 @@ pub fn x25519(scalar: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
     if crate::curve25519::hw::enabled() {
         return crate::curve25519::hw::ladder(&clamp(scalar), u);
     }
+    #[cfg(target_arch = "aarch64")]
+    if crate::curve25519::hw_aarch64::enabled() {
+        return crate::curve25519::hw_aarch64::ladder(&clamp(scalar), u);
+    }
     x25519_portable(scalar, u)
 }
 
@@ -46,7 +50,7 @@ fn clamp(scalar: &[u8; 32]) -> [u8; 32] {
 }
 
 /// [`x25519`] on the portable field (radix 2⁵¹): the fallback, and the reference for the
-/// BMI2 + ADX ladder (`curve25519::hw`).
+/// assembly ladders (`curve25519::hw` on BMI2 + ADX, `curve25519::hw_aarch64`).
 pub(crate) fn x25519_portable(scalar: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
     let k = clamp(scalar);
     let x1 = Fe::from_bytes(u);
@@ -197,6 +201,24 @@ mod tests {
         assert_eq!(
             hex(&b.public_key()),
             "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+        );
+    }
+
+    /// RFC 7748 §5.2, 1,000,000 iterations (minutes in debug builds: `--ignored`, or
+    /// `--release`), on whichever ladder `x25519` dispatches to.
+    #[test]
+    #[ignore = "slow: 1,000,000 ladders"]
+    fn rfc7748_million() {
+        let mut k = BASEPOINT;
+        let mut u = BASEPOINT;
+        for _ in 0..1_000_000 {
+            let r = x25519(&k, &u);
+            u = k;
+            k = r;
+        }
+        assert_eq!(
+            hex(&k),
+            "7c3911e0ab2586fd864497297e575e6f3bc601c0883c30df5f4dd2d24f665424"
         );
     }
 

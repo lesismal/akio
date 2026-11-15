@@ -1,10 +1,12 @@
 #![deny(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 //! Dependency-free cryptographic primitives for the `only` crates: everything their protocols
-//! need, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are eight small modules
-//! that call CPU instructions when the CPU has them, detected at run time: `aes::hw`, `gcm::hw`,
-//! `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw` for CPUID, and the inline-assembly field
-//! arithmetic `ec::hw` and `curve25519::hw`).
+//! need, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are twelve small
+//! modules that call CPU instructions when the CPU has them, detected at run time: `aes::hw`,
+//! `gcm::hw`, `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw` for CPUID, the inline-assembly field
+//! arithmetic `ec::hw` and `curve25519::hw` (x86_64), `ec::hw_aarch64` and
+//! `curve25519::hw_aarch64` (aarch64), and the RSA Montgomery arithmetic `bignum::hw` and
+//! `bignum::ifma` (x86_64)).
 //!
 //! Hardware paths, each with a constant-time portable fallback that is also used when the
 //! environment variable `ONLY_CRYPTO_PORTABLE=1` is set (tests, benchmarks):
@@ -16,7 +18,7 @@
 //! | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 //! | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 //! | ChaCha20 | AVX2 (8 blocks) | portable 4-block lanes (NEON by the compiler) |
-//! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | portable |
+//! | P-256 field and scalar arithmetic, X25519 ladder | BMI2 + ADX (`mulx`, `adcx`/`adox`) | `MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL` (every ARMv8.0 CPU; not benchmarked yet) |
 //!
 //! - [`hash`]: SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 and MD5, streaming or one-shot, behind
 //!   the [`Hash`](hash::Hash) trait.
@@ -46,15 +48,15 @@
 //!
 //! Timing: secret-dependent work (field and scalar arithmetic, scalar multiplication, RSA
 //! private exponentiation) runs without secret-dependent branches or table indices: Montgomery
-//! arithmetic with masked corrections (or `cmov` in the assembly), Jacobian formulas whose
-//! exceptional cases are masked selects or proven unreachable, Booth-recoded fixed windows and a
-//! signed comb with lookups that read every table entry, inversion by fixed exponents (addition
-//! chains, fixed windows), the X25519 Montgomery ladder with masked swaps. Verification and
-//! public-key operations are variable time (their inputs are public: wNAF, a binary-GCD
-//! inversion). The compiler is not formally prevented from reintroducing branches into the Rust
-//! code (masks pass through `black_box`, nothing stronger; the x86_64 and aarch64 code of the
-//! point operations was checked for conditional branches), and keys are not zeroized on drop.
-//! The CPU instructions used take constant time.
+//! arithmetic with masked corrections (or `cmov` / `CSEL` in the assembly), Jacobian formulas
+//! whose exceptional cases are masked selects or proven unreachable, Booth-recoded fixed windows
+//! and a signed comb with lookups that read every table entry, inversion by fixed exponents
+//! (addition chains, fixed windows), the X25519 Montgomery ladder with masked swaps.
+//! Verification and public-key operations are variable time (their inputs are public: wNAF, a
+//! binary-GCD inversion). The compiler is not formally prevented from reintroducing branches
+//! into the Rust code (masks pass through `black_box`, nothing stronger; the x86_64 and aarch64
+//! code of the point operations was checked for conditional branches), and keys are not zeroized
+//! on drop. The CPU instructions used take constant time.
 //!
 //! This is an implementation crate of `only` (like `only-sys`): its API follows the needs of the
 //! other crates and may change in any release (docs/api-stability.md). It does not try to be a

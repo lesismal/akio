@@ -28,15 +28,18 @@
 //! formulas of Renes, Costello and Batina (2016, algorithms 4 and 6 for `a = -3`).
 //!
 //! A curve can route the high-level operations to a twin whose base field uses CPU instructions
-//! (P-256 on x86_64 with BMI2 + ADX: `hw`); the twin shares the Montgomery representation and the
-//! base point tables. The twin also replaces the point formulas, the table scans and the
-//! fixed-base multiplication through the `Curve::jac_*` hooks (whole-point assembly, AVX2 scans,
-//! a 6-bit Booth comb); an aarch64 twin would override the same hooks.
+//! (P-256 on x86_64 with BMI2 + ADX: `hw`; on aarch64: `hw_aarch64`); the twin shares the
+//! Montgomery representation and the base point tables. The x86_64 twin also replaces the point
+//! formulas, the table scans and the fixed-base multiplication through the `Curve::jac_*` hooks
+//! (whole-point assembly, AVX2 scans, a 6-bit Booth comb); the aarch64 twin keeps the portable
+//! defaults of those hooks, which run on its assembly field.
 
 pub(crate) mod api;
 pub(crate) mod curves;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod hw;
+#[cfg(target_arch = "aarch64")]
+pub(crate) mod hw_aarch64;
 
 use std::marker::PhantomData;
 
