@@ -40,7 +40,9 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 - 证书由 `only-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）。
 
 未实现：发送或接受 0-RTT、record_size_limit、证书压缩、OCSP stapling（忽略 status_request）、
-RSA-PSS 密钥、P-521、kTLS。
+RSA-PSS 密钥、P-521。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
+也不例外（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）；代码保留在实验性的 `experimental-ktls`
+feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
 
 ## 内部结构
 

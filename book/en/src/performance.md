@@ -83,7 +83,9 @@ eBPF benchmark has been published yet.
 
 TLS throughput was within noise of tokio-rustls in the report (TLS 1.3, 1 KiB records). Enable
 session resumption (`ticketer`) to make reconnects cheap; offer `h2` in ALPN so HTTP clients
-multiplex instead of opening more connections. kTLS is not implemented.
+multiplex instead of opening more connections. Kernel TLS is not used: on x86_64 with VAES it
+was slower than only-tls's own record layer, `sendfile` of large files included
+([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)).
 
 ## 8. Operating system
 

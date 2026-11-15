@@ -152,6 +152,38 @@ fn linux_layouts() {
         cmsg_type
     );
     same_layout!(super::epoll_event, libc::epoll_event, events, u64);
+    same_layout!(
+        super::tls_crypto_info,
+        libc::tls_crypto_info,
+        version,
+        cipher_type
+    );
+    same_layout!(
+        super::tls12_crypto_info_aes_gcm_128,
+        libc::tls12_crypto_info_aes_gcm_128,
+        info,
+        iv,
+        key,
+        salt,
+        rec_seq
+    );
+    same_layout!(
+        super::tls12_crypto_info_aes_gcm_256,
+        libc::tls12_crypto_info_aes_gcm_256,
+        info,
+        iv,
+        key,
+        salt,
+        rec_seq
+    );
+    same_layout!(
+        super::tls12_crypto_info_chacha20_poly1305,
+        libc::tls12_crypto_info_chacha20_poly1305,
+        info,
+        iv,
+        key,
+        rec_seq
+    );
     same_layout!(super::pollfd, libc::pollfd, fd, events, revents);
     same_layout!(super::cpu_set_t, libc::cpu_set_t);
     same_layout!(super::sigset_t, libc::sigset_t);
@@ -200,6 +232,21 @@ fn linux_constants() {
         MSG_TRUNC,
         MSG_DONTWAIT,
         IFNAMSIZ,
+        EIO,
+        ENOPROTOOPT,
+        EOPNOTSUPP,
+        IPPROTO_TCP,
+        TCP_ULP,
+        SOL_TLS,
+        TLS_TX,
+        TLS_RX,
+        TLS_SET_RECORD_TYPE,
+        TLS_GET_RECORD_TYPE,
+        TLS_1_2_VERSION,
+        TLS_1_3_VERSION,
+        TLS_CIPHER_AES_GCM_128,
+        TLS_CIPHER_AES_GCM_256,
+        TLS_CIPHER_CHACHA20_POLY1305,
         EPOLLIN,
         EPOLLOUT,
         EPOLLERR,
