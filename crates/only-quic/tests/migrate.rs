@@ -129,5 +129,7 @@ fn migrate_to_a_new_port_and_to_the_preferred_address() {
     assert_eq!(c.remote_addr(), preferred);
     echo(&c, &rx, 100_000);
     assert!(!c.is_closed());
+    #[cfg(target_os = "linux")]
+    assert!(c.stats().ecn_capable, "{:?}", c.stats());
     e.shutdown();
 }

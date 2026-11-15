@@ -590,13 +590,12 @@ impl Ep {
             }
             return;
         };
-        // The codepoint applies to what leaves from now on (one connection per peer address).
-        sock.set_ecn(ecn);
         // Several datagrams of `s` bytes: one GSO send where Linux supports it (else one
         // sendmmsg, else one by one); the boundaries survive either way.
-        let _ = match seg {
-            Some(s) => sock.send_segments(data, s),
-            None => sock.send_owned(data),
+        let _ = match (seg, ecn) {
+            (Some(s), _) => sock.send_segments_ecn(data, s, ecn),
+            (None, 0) => sock.send_owned(data),
+            (None, _) => sock.send_segments_ecn(data, 0, ecn),
         };
     }
 
@@ -608,11 +607,7 @@ impl Ep {
             return;
         };
         let (_, seg, data, ecn) = t;
-        sock.set_ecn(ecn);
-        let _ = match seg {
-            Some(s) => sock.send_segments(data, s),
-            None => sock.send_owned(data),
-        };
+        let _ = sock.send_segments_ecn(data, seg.unwrap_or(0), ecn);
     }
 
     /// The probed path was validated: its socket becomes the client's socket, the others close.

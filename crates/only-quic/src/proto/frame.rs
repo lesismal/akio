@@ -371,6 +371,7 @@ pub fn parse<'a>(r: &mut Reader<'a>) -> Result<Frame<'a>, TransportError> {
 // ---- encoding ----
 
 /// Writes an ACK frame for `ranges` (at most `max_ranges` highest), with the raw delay field.
+#[cfg_attr(not(any(test, feature = "fuzzing")), allow(dead_code))]
 pub fn put_ack(out: &mut Vec<u8>, ranges: &RangeSet, delay: u64, max_ranges: usize) {
     put_ack_ecn(out, ranges, delay, max_ranges, None);
 }

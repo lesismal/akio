@@ -1473,6 +1473,8 @@ fn client_migrates_to_a_new_local_port() {
     // Data flows on the new path; the server follows (validating the address itself).
     bulk(&mut sim, h, &[300_000], Duration::from_secs(30));
     assert_eq!(sim.sconn().remote_addr(), new);
+    // ECN was validated again on the new path (the counts carry over).
+    assert!(sim.cconn(h).stats().ecn_capable);
     // And again.
     let newer: SocketAddr = "10.0.0.1:5002".parse().expect("addr");
     sim.client.alt_addr = Some(newer);

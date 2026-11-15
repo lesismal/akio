@@ -70,11 +70,12 @@ impl Ecn {
         }
     }
 
-    /// A new path: validation starts over (unless ECN is off), the received counts go on.
+    /// A new path: validation starts over (unless ECN is off). The counts go on: they are per
+    /// packet number space, not per path.
     pub fn new_path(&mut self, enabled: bool) {
-        let rx = self.rx;
+        let (rx, peer, marked) = (self.rx, self.peer, self.marked_sent);
         *self = Ecn::new(enabled);
-        self.rx = rx;
+        (self.rx, self.peer, self.marked_sent) = (rx, peer, marked);
     }
 
     /// Whether the next datagram is sent ECT(0).

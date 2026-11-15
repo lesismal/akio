@@ -52,8 +52,8 @@ enum Bytes {
     Owned(Vec<u8>),
     Shared(SharedBuf),
     /// UDP: consecutive datagrams of `.1` bytes each (the last may be shorter), see
-    /// [`Conn::send_segments`].
-    Segmented(Vec<u8>, usize),
+    /// [`Conn::send_segments`], sent with ECN codepoint `.2` (0: none).
+    Segmented(Vec<u8>, usize, u8),
     /// `len` bytes of `file` from `start`, sent with `sendfile(2)` (never copied into memory).
     #[cfg(unix)]
     File {
@@ -73,7 +73,7 @@ impl Chunk {
         match &self.bytes {
             Bytes::Owned(v) => &v[self.off..],
             Bytes::Shared(s) => &s[self.off..],
-            Bytes::Segmented(v, _) => &v[self.off..],
+            Bytes::Segmented(v, ..) => &v[self.off..],
             #[cfg(unix)]
             Bytes::File { .. } => &[],
         }
@@ -305,7 +305,7 @@ impl WriteState {
             }
             n -= left;
             if let Some(Chunk {
-                bytes: Bytes::Owned(v) | Bytes::Segmented(v, _),
+                bytes: Bytes::Owned(v) | Bytes::Segmented(v, ..),
                 ..
             }) = self.queue.pop_front()
             {
@@ -316,13 +316,18 @@ impl WriteState {
 
     /// UDP: the datagrams queued, in order.
     fn datagrams(&self) -> impl Iterator<Item = &[u8]> {
+        self.datagrams_ecn().map(|(d, _)| d)
+    }
+
+    /// UDP: the datagrams queued, in order, with their ECN codepoints.
+    fn datagrams_ecn(&self) -> impl Iterator<Item = (&[u8], u8)> {
         self.queue.iter().flat_map(|c| {
             let rest = c.rest();
-            let seg = match c.bytes {
-                Bytes::Segmented(_, seg) => seg,
-                _ => rest.len().max(1),
+            let (seg, ecn) = match c.bytes {
+                Bytes::Segmented(_, seg, ecn) => (seg, ecn),
+                _ => (rest.len().max(1), 0),
             };
-            rest.chunks(seg)
+            rest.chunks(seg).map(move |d| (d, ecn))
         })
     }
 
@@ -335,7 +340,7 @@ impl WriteState {
             };
             let left = front.rest().len();
             let step = match front.bytes {
-                Bytes::Segmented(_, seg) => seg.min(left),
+                Bytes::Segmented(_, seg, _) => seg.min(left),
                 _ => left,
             };
             self.consume(step);
@@ -350,7 +355,7 @@ impl WriteState {
             };
             let left = front.rest().len();
             let step = match front.bytes {
-                Bytes::Segmented(_, seg) => seg.min(left),
+                Bytes::Segmented(_, seg, _) => seg.min(left),
                 _ => left,
             };
             self.wrote(step);
@@ -360,7 +365,7 @@ impl WriteState {
 
     fn clear(&mut self) {
         for c in self.queue.take_all() {
-            if let Bytes::Owned(v) | Bytes::Segmented(v, _) = c.bytes {
+            if let Bytes::Owned(v) | Bytes::Segmented(v, ..) = c.bytes {
                 only_buf::put(v);
             }
         }
@@ -419,13 +424,12 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                     continue;
                 }
                 let dest = it.inner.udp_target().0;
-                let ecn = it.inner.ecn.load(Ordering::Relaxed);
                 let v6 = it.inner.local.is_ipv6();
-                let (mut seg, mut total) = (0, 0);
-                let mut iter = it.w.datagrams().peekable();
-                while let Some(d) = iter.next() {
+                let (mut seg, mut total, mut ecn) = (0, 0, 0);
+                let mut iter = it.w.datagrams_ecn().peekable();
+                while let Some((d, e)) = iter.next() {
                     if parts.is_empty() {
-                        (seg, total) = (d.len(), 0);
+                        (seg, total, ecn) = (d.len(), 0, e);
                     }
                     parts.push(d);
                     total += d.len();
@@ -433,9 +437,9 @@ fn send_datagrams(items: &mut [DgramItem<'_, '_>]) {
                     let joins = gso
                         && d.len() == seg
                         && parts.len() < MAX_GSO_SEGMENTS
-                        && iter
-                            .peek()
-                            .is_some_and(|n| n.len() <= seg && total + n.len() <= MAX_GSO_BYTES);
+                        && iter.peek().is_some_and(|&(n, e)| {
+                            e == ecn && n.len() <= seg && total + n.len() <= MAX_GSO_BYTES
+                        });
                     if joins {
                         continue;
                     }
@@ -573,8 +577,6 @@ pub struct ConnInner {
     hold: AtomicBool,
     /// Exempt from the write backpressure (see [`set_relayed`](Self::set_relayed)).
     relayed: AtomicBool,
-    /// UDP: the ECN codepoint datagrams are sent with (see [`set_ecn`](Self::set_ecn)).
-    ecn: AtomicU8,
     /// UDP: the ECN codepoint of the datagram being delivered (set by the loop).
     rx_ecn: AtomicU8,
     write: Mutex<WriteState>,
@@ -605,7 +607,6 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
-            ecn: AtomicU8::new(0),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
                 stats: link.stats(),
@@ -637,7 +638,6 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
-            ecn: AtomicU8::new(0),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
                 datagram: true,
@@ -674,7 +674,6 @@ impl ConnInner {
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
-            ecn: AtomicU8::new(0),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
                 datagram,
@@ -819,25 +818,6 @@ impl ConnInner {
     /// we stop reading — both sides would wait for each other forever.
     pub fn set_relayed(&self) {
         self.relayed.store(true, Ordering::Release);
-    }
-
-    /// UDP: sends the datagrams that leave from now on with ECN codepoint `codepoint` (its low
-    /// two bits; 0 = not ECN-capable). Returns whether the platform sets it: Linux, on a kernel
-    /// UDP socket, unless `ONLY_UDP_ECN=0`.
-    pub fn set_ecn(&self, codepoint: u8) -> bool {
-        let able = cfg!(target_os = "linux") && matches!(self.sock, Sock::Udp { .. }) && {
-            #[cfg(target_os = "linux")]
-            {
-                only_sys::ecn_available()
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                false
-            }
-        };
-        self.ecn
-            .store(if able { codepoint & 3 } else { 0 }, Ordering::Relaxed);
-        able
     }
 
     /// Loop side, UDP: the ECN codepoint of the datagram about to be delivered.
@@ -1064,11 +1044,29 @@ impl ConnInner {
 
     /// Queues `data` as consecutive datagrams of `seg` bytes (see [`Conn::send_segments`]).
     pub fn send_segments(&self, data: Vec<u8>, seg: usize) -> Result<()> {
+        self.send_segments_ecn(data, seg, 0)
+    }
+
+    /// [`send_segments`](Self::send_segments) with ECN codepoint `ecn` on every datagram (its
+    /// low two bits, RFC 3168; 0 = not ECN-capable). `seg` 0 sends `data` as one datagram. The
+    /// codepoint is set on Linux kernel UDP sockets (unless `ONLY_UDP_ECN=0`), else dropped.
+    pub fn send_segments_ecn(&self, data: Vec<u8>, seg: usize, ecn: u8) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
         let mut w = self.lock();
-        if !w.datagram || w.transport.is_some() || seg == 0 || seg >= data.len() {
+        let (seg, ecn) = if ecn & 3 != 0 && w.datagram && matches!(self.sock, Sock::Udp { .. }) {
+            // A datagram with a codepoint is queued as one segment of its own length.
+            let seg = if seg == 0 {
+                data.len()
+            } else {
+                seg.min(data.len())
+            };
+            (seg, ecn & 3)
+        } else {
+            (seg, 0)
+        };
+        if !w.datagram || w.transport.is_some() || seg == 0 || (seg >= data.len() && ecn == 0) {
             drop(w);
             if seg == 0 || !self.is_datagram_sock() {
                 return self.send_owned(data);
@@ -1082,7 +1080,7 @@ impl ConnInner {
         let was_empty = w.queue.is_empty();
         w.add_queued(data.len());
         w.queue.push_back(Chunk {
-            bytes: Bytes::Segmented(data, seg),
+            bytes: Bytes::Segmented(data, seg, ecn),
             off: 0,
         });
         if w.corked {
@@ -1299,7 +1297,7 @@ impl ConnInner {
         };
         let was_empty = w.queue.is_empty();
         let n = match &bytes {
-            Bytes::Owned(v) | Bytes::Segmented(v, _) => v.len(),
+            Bytes::Owned(v) | Bytes::Segmented(v, ..) => v.len(),
             Bytes::Shared(s) => s.len(),
             #[cfg(unix)]
             Bytes::File { .. } => 0,
@@ -1789,13 +1787,13 @@ impl<H> Conn<H> {
         self.inner.send_segments(data, segment_size)
     }
 
-    /// UDP (internal, outside the stability promise): sends the datagrams that leave from now
-    /// on with ECN codepoint `codepoint` (RFC 3168: 2 = ECT(0), 1 = ECT(1), 0 = not
-    /// ECN-capable). Returns whether the platform marks them (Linux kernel sockets, unless
-    /// `ONLY_UDP_ECN=0`); elsewhere they go out unmarked.
+    /// UDP (internal, outside the stability promise): [`send_segments`](Self::send_segments)
+    /// with ECN codepoint `ecn` on every datagram (RFC 3168: 2 = ECT(0), 1 = ECT(1), 3 = CE,
+    /// 0 = not ECN-capable); `segment_size` 0 sends `data` as one datagram. The codepoint is set
+    /// on Linux kernel sockets (unless `ONLY_UDP_ECN=0`); elsewhere datagrams go out unmarked.
     #[doc(hidden)]
-    pub fn set_ecn(&self, codepoint: u8) -> bool {
-        self.inner.set_ecn(codepoint)
+    pub fn send_segments_ecn(&self, data: Vec<u8>, segment_size: usize, ecn: u8) -> Result<()> {
+        self.inner.send_segments_ecn(data, segment_size, ecn)
     }
 
     /// UDP (internal, outside the stability promise): inside `on_data`, the ECN codepoint the
