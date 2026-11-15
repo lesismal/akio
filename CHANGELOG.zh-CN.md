@@ -101,6 +101,16 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 - `unsafe`：`gcm::hw` / `gcm::hw::vaes` 增加 5 个块与 1 个 `unsafe fn`（AVX2 内核的两个 `asm!` 块、整条消息的
   调用），见 docs/unsafe-review.zh-CN.md。Miri 永远不会执行到 `asm!`。
 
+### 修复：io_uring 在读取暂停后仍调用 `on_data`
+
+- `only-uring`：连接的输出队列达到 `Config::write_high_watermark`，或处理器调用了
+  `hold_reads(true)` 后，后端会取消多次接收（multishot recv），但在取消生效前已到达的完成事件（机器
+  快、对端持续灌数据时可达十几个 16 KiB 的读取）仍会交给 `on_data`。echo 类处理器于是越过水位线一直
+  排队到 `max_queued_bytes`，得到 `Error::Overloaded`；`hold_reads` 也没有真正暂停读取。这使得在
+  16 线程、Linux 7.0 的机器上用 io_uring 运行时 `chaos_engine` 每次都失败（"echo send failed:
+  overloaded"）。现在这些输入按顺序留在连接里（其后的 EOF 也一样），读取恢复时再交付，与 epoll、
+  kqueue 直接停止读取的行为一致。API 不变。
+
 ### 修复：SOCKS 与 HTTP CONNECT 隧道在背压下可能卡死
 
 - `only-socks`：隧道（SOCKS5/4/4a 或 HTTP `CONNECT`）在转发大量数据时可能永久停住。引擎的写背压
