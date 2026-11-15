@@ -92,6 +92,11 @@ only-http 提供了一个 transport 钩子 `only_http::transport`：transport �
 `send`，流式响应用 `start_stream` 返回一个 `BodySink`）。only-h3 在 QUIC stream 上实现了这些
 sink，所以 router、中间件和 handler 都无需改动。见[架构](../architecture.md)。
 
+一个请求的开销：帧直接在收到的流数据上原地读取，字段段解码进连接复用的缓冲区，再复制一次进请求的
+`Headers`；响应的 HEADERS 帧直接用 QPACK 编码进交给 QUIC 的缓冲区，不超过 16 KiB 的响应体和 trailer
+也放在一起（每个响应只写一次；更大的响应体随后发送，不复制）。在 Ryzen 7 7800X3D 上，单连接 64 个请求
+在途约 84 万请求/秒（[性能测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md)）。
+
 ## 尚未完成
 
 curl/quiche 互通测试、基于 HTTP/3 的 WebSocket（extended CONNECT）、QPACK 动态表（宣告容量为

@@ -58,7 +58,7 @@ mod types;
 #[doc(hidden)]
 pub mod fuzzing;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -502,8 +502,9 @@ type Factory = dyn Fn(&Connection) -> Box<dyn QuicHandler> + Send + Sync;
 
 struct Ep {
     endpoint: Mutex<proto::Endpoint>,
-    conns: Mutex<HashMap<proto::ConnHandle, Connection>>,
-    socks: Mutex<HashMap<SocketAddr, Conn<Udp>>>,
+    conns: Mutex<proto::KeyedMap<proto::ConnHandle, Connection>>,
+    /// Client sockets by peer address, looked up for every datagram sent.
+    socks: Mutex<proto::KeyedMap<SocketAddr, Conn<Udp>>>,
     /// A client's datagrams from before its socket was up.
     backlog: Mutex<Vec<Outgoing>>,
     factory: Option<Box<Factory>>,
@@ -519,8 +520,8 @@ impl Ep {
     ) -> Ep {
         Ep {
             endpoint: Mutex::new(endpoint),
-            conns: Mutex::new(HashMap::new()),
-            socks: Mutex::new(HashMap::new()),
+            conns: Mutex::new(proto::KeyedMap::default()),
+            socks: Mutex::new(proto::KeyedMap::default()),
             backlog: Mutex::new(Vec::new()),
             factory,
             tokens,
