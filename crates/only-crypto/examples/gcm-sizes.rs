@@ -6,10 +6,11 @@
 //!
 //! For AES-128 and AES-256, seal and open of 64 B, 1 KiB, 1400 B (a QUIC packet), 16 KiB (a
 //! full TLS record) and 64 KiB, with 13 bytes of AAD (a TLS 1.3 record header is 5): the default
-//! key (the widest kernel this CPU has: VAES + VPCLMULQDQ + AVX-512 on x86_64), the 128-bit
-//! AES-NI + PCLMULQDQ kernel (`narrow`) and ring. Open copies the sealed message into the
-//! working buffer first on every side (a successful open leaves plaintext behind). Each case
-//! runs for `MS` milliseconds (default 300); MB/s of message bytes.
+//! key (the widest kernel this CPU has: VAES + VPCLMULQDQ + AVX-512 on x86_64), the VAES-AVX2
+//! kernel of CPUs without AVX-512 (`avx2`, forced), the 128-bit AES-NI + PCLMULQDQ kernel
+//! (`narrow`) and ring. Open copies the sealed message into the working buffer first on every
+//! side (a successful open leaves plaintext behind). Each case runs for `MS` milliseconds
+//! (default 300); MB/s of message bytes.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -47,14 +48,24 @@ fn main() {
     for (klen, alg) in [(16, &AES_128_GCM), (32, &AES_256_GCM)] {
         let key = vec![7u8; klen];
         let wide = AesGcm::new(&key).expect("key");
+        let avx2 = AesGcm::with_cipher_avx2(Aes::new(&key).expect("key"));
         let narrow = AesGcm::with_cipher_narrow(Aes::new(&key).expect("key"));
         let ring = LessSafeKey::new(UnboundKey::new(alg, &key).expect("key"));
-        println!("AES-{}-GCM (wide kernel: {})", klen * 8, wide.is_wide());
+        println!(
+            "AES-{}-GCM (kernels: only {}, avx2 {}, narrow {})",
+            klen * 8,
+            wide.kernel(),
+            avx2.kernel(),
+            narrow.kernel()
+        );
         for len in [64usize, 1024, 1400, 16 * 1024, 64 * 1024] {
             let mut buf = vec![0x5au8; len];
             let mut rbuf = buf.clone();
             let w = rate(ms, len, || {
                 black_box(wide.encrypt_in_place_detached(&nonce, &aad, black_box(&mut buf)));
+            });
+            let a = rate(ms, len, || {
+                black_box(avx2.encrypt_in_place_detached(&nonce, &aad, black_box(&mut buf)));
             });
             let n = rate(ms, len, || {
                 black_box(narrow.encrypt_in_place_detached(&nonce, &aad, black_box(&mut buf)));
@@ -70,9 +81,9 @@ fn main() {
                 black_box(tag.as_ref());
             });
             println!(
-                "  seal {len:>6} B  only {w:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  only/ring {:.2}  only/narrow {:.2}",
+                "  seal {len:>6} B  only {w:>8.0}  avx2 {a:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  only/ring {:.2}  avx2/narrow {:.2}",
                 w / r,
-                w / n
+                a / n
             );
 
             let pt = vec![0xa5u8; len];
@@ -94,6 +105,11 @@ fn main() {
                 wide.decrypt_in_place_detached(&nonce, &aad, black_box(&mut work), &tag)
                     .expect("open");
             });
+            let a = rate(ms, len, || {
+                work.copy_from_slice(&sealed);
+                avx2.decrypt_in_place_detached(&nonce, &aad, black_box(&mut work), &tag)
+                    .expect("open");
+            });
             let n = rate(ms, len, || {
                 work.copy_from_slice(&sealed);
                 narrow
@@ -112,9 +128,9 @@ fn main() {
                 );
             });
             println!(
-                "  open {len:>6} B  only {w:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  only/ring {:.2}  only/narrow {:.2}",
+                "  open {len:>6} B  only {w:>8.0}  avx2 {a:>8.0}  narrow {n:>8.0}  ring {r:>8.0} MB/s  only/ring {:.2}  avx2/narrow {:.2}",
                 w / r,
-                w / n
+                a / n
             );
         }
     }

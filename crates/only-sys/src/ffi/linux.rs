@@ -31,11 +31,14 @@ pub const EPERM: c_int = 1;
 pub const ENOENT: c_int = 2;
 pub const ESRCH: c_int = 3;
 pub const EINTR: c_int = 4;
+pub const EIO: c_int = 5;
 pub const EBADF: c_int = 9;
 pub const EAGAIN: c_int = 11;
 pub const EBUSY: c_int = 16;
 pub const EINVAL: c_int = 22;
 pub const ENOSYS: c_int = 38;
+pub const ENOPROTOOPT: c_int = 92;
+pub const EOPNOTSUPP: c_int = 95;
 pub const ETIME: c_int = 62;
 pub const ENOBUFS: c_int = 105;
 pub const EINPROGRESS: c_int = 115;
@@ -81,6 +84,20 @@ pub const UDP_GRO: c_int = 104;
 pub const MSG_TRUNC: c_int = 0x20;
 pub const MSG_DONTWAIT: c_int = 0x40;
 pub const IFNAMSIZ: usize = 16;
+pub const IPPROTO_TCP: c_int = 6;
+pub const TCP_ULP: c_int = 31;
+
+// ---- kernel TLS (linux/tls.h) --------------------------------------------------------------
+pub const SOL_TLS: c_int = 282;
+pub const TLS_TX: c_int = 1;
+pub const TLS_RX: c_int = 2;
+pub const TLS_SET_RECORD_TYPE: c_int = 1;
+pub const TLS_GET_RECORD_TYPE: c_int = 2;
+pub const TLS_1_2_VERSION: u16 = 0x0303;
+pub const TLS_1_3_VERSION: u16 = 0x0304;
+pub const TLS_CIPHER_AES_GCM_128: u16 = 51;
+pub const TLS_CIPHER_AES_GCM_256: u16 = 52;
+pub const TLS_CIPHER_CHACHA20_POLY1305: u16 = 54;
 
 // ---- epoll, eventfd, poll ------------------------------------------------------------------
 pub const EPOLLIN: c_int = 0x1;
@@ -201,6 +218,51 @@ pub struct cmsghdr {
     pub cmsg_level: c_int,
     pub cmsg_type: c_int,
 }
+
+/// `struct tls_crypto_info`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct tls_crypto_info {
+    pub version: u16,
+    pub cipher_type: u16,
+}
+
+/// `struct tls12_crypto_info_aes_gcm_128`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct tls12_crypto_info_aes_gcm_128 {
+    pub info: tls_crypto_info,
+    pub iv: [u8; 8],
+    pub key: [u8; 16],
+    pub salt: [u8; 4],
+    pub rec_seq: [u8; 8],
+}
+
+/// `struct tls12_crypto_info_aes_gcm_256`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct tls12_crypto_info_aes_gcm_256 {
+    pub info: tls_crypto_info,
+    pub iv: [u8; 8],
+    pub key: [u8; 32],
+    pub salt: [u8; 4],
+    pub rec_seq: [u8; 8],
+}
+
+/// `struct tls12_crypto_info_chacha20_poly1305` (its `salt` is zero-length).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct tls12_crypto_info_chacha20_poly1305 {
+    pub info: tls_crypto_info,
+    pub iv: [u8; 12],
+    pub key: [u8; 32],
+    pub rec_seq: [u8; 8],
+}
+
+const _: () = assert!(size_of::<tls12_crypto_info_aes_gcm_128>() == 40);
+const _: () = assert!(size_of::<tls12_crypto_info_aes_gcm_256>() == 56);
+const _: () = assert!(size_of::<tls12_crypto_info_chacha20_poly1305>() == 56);
+const _: () = assert!(align_of::<tls12_crypto_info_aes_gcm_128>() == 2);
 
 /// `struct epoll_event`: packed on x86_64 (12 bytes), naturally aligned elsewhere (16 bytes).
 #[cfg_attr(target_arch = "x86_64", repr(C, packed))]
@@ -415,6 +477,8 @@ unsafe extern "C" {
         flags: c_int,
         timeout: *mut timespec,
     ) -> c_int;
+    pub fn recvmsg(fd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
+    pub fn sendmsg(fd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t;
     pub fn sendmmsg(fd: c_int, msgs: *mut mmsghdr, vlen: c_uint, flags: c_int) -> c_int;
     pub fn sendfile(out: c_int, file: c_int, offset: *mut off_t, count: size_t) -> ssize_t;
     pub fn if_nametoindex(name: *const c_char) -> c_uint;

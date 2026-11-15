@@ -9,7 +9,7 @@
 | 硬件路径（运行时检测，常数时间的可移植回退实现） | x86_64 | aarch64 |
 |---|---|---|
 | AES 分组密码、CTR（同时处理 8 个分组） | AES-NI | ARMv8 AES |
-| AES-GCM（GHASH 与 CTR 融合） | VAES + VPCLMULQDQ + AVX-512（每次归约 16 个分组），否则 PCLMULQDQ + AES-NI（8 个） | PMULL + ARMv8 AES |
+| AES-GCM（GHASH 与 CTR 融合） | VAES + VPCLMULQDQ + AVX-512（每次归约 16 个分组，掩码尾部），否则 VAES + VPCLMULQDQ + AVX2（16 个），否则 PCLMULQDQ + AES-NI（8 个） | PMULL + ARMv8 AES |
 | SHA-1、SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32、CRC-32C | VPCLMULQDQ + AVX-512 或 PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20（`chacha::hw`、`chacha::hw::avx512`） | AVX-512 内联汇编（`vprold`；每次迭代 16 个分组，余下部分 8 或 4 个），否则 AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
@@ -27,7 +27,7 @@
 | `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018） |
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR |
-| `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时单趟 512 位处理（每次迭代与每次归约 16 个分组），否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`） |
+| `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时用 256 位寄存器处理完整的 256 字节组，否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`） |
 | `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from`） |
 | `base64` | 标准 / URL 安全字母表，带或不带填充，严格解码 |
 | `rand` | `fill_random`（getrandom / getentropy / `/dev/urandom`）、`ChaChaRng` |
@@ -151,7 +151,10 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 公钥各行与握手数据来自 P-256 / X25519 优化（优化前：P-256 签名 34 152、验签 13 404、ECDH 10 380、X25519
 30 696 次/秒；握手 3 055 与 2 306 次/秒）。ring 的 AES-GCM、P-256、X25519 与 RSA 使用汇编。AES-GCM 与 CRC 行
 对比的是此前没有 VAES / VPCLMULQDQ 的代码（`--example gcm-sizes` 对比 ring，`--example bench` 对比
-crc32fast）；在 Zen 4 上，512 位内核在所有长度上都快于同一内核的 256 位寄存器版本。P-256 整点优化（汇编倍点与加法、带
+crc32fast）；在 Zen 4 上，512 位内核在所有长度上都快于同一内核的 256 位寄存器版本。AES-GCM 各行来自把整条消息
+移进 AVX-512 内核的那一轮（AAD、用字节掩码处理的最后一个不完整组、标签；短消息只做一次归约：1 KiB 为 ring 的
+1.00 倍 → 1.32 倍，1400 B 1.10 倍 → 1.46 倍，64 B 1.11 倍 → 1.29 倍），这一轮还为没有 AVX-512 的 CPU 新增了
+VAES-AVX2 内核（为 128 位内核的 1.55–2.35 倍，在关闭 AVX-512 内核的 Zen 4 上测得）。P-256 整点优化（汇编倍点与加法、带
 AVX2 扫表的 6 位梳形表、safegcd 求逆）之后，在有负载的机器上同一次运行中与 ring 对比（docs/BENCHMARKS.zh-CN.md）：
 签名 0.77 倍 → 1.25 倍，生成密钥 0.94 倍 → 1.33 倍，验签 0.98 倍 → 1.04 倍，ECDH 0.94 倍 → 0.96 倍，
 secp256r1 握手为 rustls 的 0.94 倍 → 1.12 倍。在空闲机器上，那一版的 ECDH 已是
@@ -164,7 +167,8 @@ Montgomery 汇编、IFMA 模幂、带一遍式 AVX2 查表的 5 位窗口，以�
 （0.95 倍、0.95 倍），only-tls 使用 RSA-2048 证书的握手从 rustls 的 0.43 倍提升到 1.44 倍。一次 1024 位
 Montgomery 乘法在 BMI2 + ADX 上需要 805 个周期（平方 681），一次 1024 位 IFMA 乘法 416 个周期；只有
 BMI2 + ADX（没有 IFMA）时 RSA-2048 签名为 ring 的 0.99 倍。没有尝试 Karatsuba：在这些位数下，汇编的行循环
-已没有多少可省。后续：给没有 AVX-512 的 CPU 的 VAES + AVX2 内核、测量 aarch64 上 P-256 与
+已没有多少可省。后续：VAES-AVX2 内核的掩码尾部（消息在 256 字节组之后的部分走 128 位路径）、在 Zen 3 /
+Alder Lake 上测量该内核、测量 aarch64 上 P-256 与
 X25519 汇编的性能（已测试，尚未做性能测试）、aarch64 上的整点运算与 divsteps 汇编、在一个 IFMA 汇编块中交错计算 CRT 的两半。
 
 ## 测试
@@ -173,14 +177,16 @@ X25519 汇编的性能（已测试，尚未做性能测试）、aarch64 上的�
   规范、RFC 1321、2202、4231、5869、6070、3720、4648、8439，以及 Wycheproof（AES-GCM、
   ChaCha20-Poly1305、HMAC-SHA1/SHA256、HKDF-SHA256），数据放在 `tests/data/`。
 - `tests/compat.rs` 把每个原语与被替代的 crate 交叉比对（仅作为 dev-dependency）；`fuzz/` 中有差分
-  模糊测试目标 `crypto_hash`、`crypto_aead`（也让宽内核、128 位与可移植三条 AES-GCM 路径原地与非原地
+  模糊测试目标 `crypto_hash`、`crypto_aead`（也让 VAES-AVX-512、VAES-AVX2、128 位与可移植四条 AES-GCM 路径原地与非原地
   互相比较，并比较 AVX-512 / IFMA、AVX2 与可移植三条 ChaCha20-Poly1305 路径）、`crypto_base64`。
 - AVX-512 ChaCha20 与 IFMA Poly1305 内核（`chacha::tests`）：0..=600 的每个长度与若干大长度上与 AVX2
   路径和可移植实现比较，覆盖未对齐、原地与非原地、伪造标签、接近回绕的计数器，Poly1305 覆盖全 1 分组与
   极端的 `r` / `s`；在具备 AVX-512 IFMA 的 CPU（Zen 4）上原生运行。
-- 宽 AES-GCM 内核（`gcm::tests`）：0..=600 的每个长度与若干大长度上与 128 位路径和可移植实现比较，
-  覆盖未对齐、原地与非原地、组内 32 位计数器回绕，大消息还与 ring 比较；它只在具备 VAES 与 AVX-512
-  的 CPU 上运行，因此这些测试要在这样的机器（Zen 4）上原生运行。
+- 宽 AES-GCM 内核（`gcm::tests`）：AVX-512 与 AVX2 两个内核（后者用 `AesGcm::with_cipher_avx2` 强制启用）
+  互相比较，并在 0..=600 的每个长度、若干大长度、0..=300 及 512 以上的每种 AAD 长度上与 128 位路径和可移植
+  实现比较，覆盖未对齐、原地与非原地（包括 TLS 1.3 记录层那样输入分散在两个缓冲区）、组内 32 位计数器回绕，
+  大消息还与 ring 比较；CAVP 与 Wycheproof 的 AES-GCM 向量在每个内核上都跑一遍。它们需要具备 VAES 与
+  AVX-512 的 CPU，因此这些测试要在这样的机器（Zen 4）上原生运行。
 - 硬件路径：单元测试把每条硬件路径与可移植实现比较（AES、CTR、GCM、SHA-1、SHA-256 的
   `hardware_matches_portable`，CRC 的 `hardware_matches_table`，多分组 ChaCha20 与 Poly1305 对比逐分组
   计算，`ec::hw`、`ec::hw_aarch64`、`curve25519::hw` 与 `curve25519::hw_aarch64` 的 `matches_portable` 在随机值

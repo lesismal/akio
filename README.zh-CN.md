@@ -19,7 +19,7 @@ API 参考：`cargo doc --workspace --no-deps --open`
 | 连接 | `Conn` 是 `Clone + Send + Sync`；任意线程非阻塞 `send`，支持直接写、cork、`writev`、`sendfile`；背压（水位线、`hold_reads`、`on_drain`、`max_queued_bytes`）；空闲超时；异步 dial；优雅停机 |
 | 阻塞任务 | 自适应、有界的逻辑线程池，`Conn::spawn_blocking` 的完成回调回到 I/O 线程，有序响应槽位，慢回调检测 |
 | UDP | 每个对端一个 `Conn`，`recvmmsg`/`sendmmsg`，UDP GSO/GRO，对端数量上限，UDP dial |
-| TLS | rustls 作为连接 transport（服务端与客户端、ALPN、SNI） |
+| TLS | 自研 TLS 1.3 / 1.2（`only-tls`，无第三方代码）作为连接 transport：服务端与客户端、ALPN、SNI、客户端证书、会话恢复 |
 | HTTP | 同一端口上的 HTTP/1.1 与 HTTP/2（h2spec 147/147），流水线，双向流式，Router（静态/正则/参数/通配），9 个中间件，基于 `sendfile` 的静态文件，HTTP/1 与 HTTP/2 客户端 |
 | WebSocket | 服务端与客户端，permessage-deflate，Autobahn 100%（服务端与客户端） |
 | HTTP/3 与 QUIC | 自研 QUIC v1（RFC 9000/9001/9002，数据报、迁移、Retry、密钥更新、GSO），HTTP/3 提供同一个 `Router`，H3 客户端；与 quic-go 和 fib 互通 |

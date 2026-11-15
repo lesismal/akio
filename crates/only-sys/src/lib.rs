@@ -2,7 +2,8 @@
 //! kqueue on macOS), a cross-thread [`Waker`], and socket helpers (`SO_REUSEPORT` listeners,
 //! non-blocking connect, `sendfile`), the kernel CSPRNG (`getrandom` / `getentropy`, for
 //! `only-crypto`), process plumbing for multi-process serving ([`process`]) and, on Linux, batched datagram I/O (`recvmmsg` /
-//! `sendmmsg` with UDP GRO / GSO).
+//! `sendmmsg` with UDP GRO / GSO) and, hidden and experimental, kernel TLS offload (`TCP_ULP` "tls", `SOL_TLS`; only-tls's
+//! `experimental-ktls` feature).
 //!
 //! All `unsafe` in the network stack's hot path lives here, each block with a comment stating the invariant it relies on.
 //!
@@ -13,6 +14,9 @@
 
 #[doc(hidden)]
 pub mod ffi;
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub mod ktls;
 mod net;
 mod poller;
 pub mod process;

@@ -1172,3 +1172,7 @@ fn malformed_records_and_finished() {
     let e = s.recv(&ch, &mut Vec::new(), &mut Vec::new()).unwrap_err();
     assert_eq!(e.alert, Alert::ProtocolVersion);
 }
+
+#[cfg(feature = "experimental-ktls")]
+#[path = "ktls_tests.rs"]
+mod ktls;

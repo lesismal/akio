@@ -11,12 +11,13 @@
 //! single shift-and-reduce (the same steps as the portable path, on the four product words) per
 //! group. `Hⁱ` are precomputed with the portable constant-time multiplication.
 //!
-//! On x86_64 with VAES, VPCLMULQDQ and AVX-512, whole 256-byte groups go to the wide kernel of
-//! `vaes` first (sixteen blocks per reduction, in `asm!`); this module handles what is left.
+//! On x86_64 with VAES and VPCLMULQDQ the kernels of `vaes` take over: with AVX-512 the whole
+//! message (AAD up to 256 bytes, every data byte, the tag) in one call
+//! ([`Powers::crypt_all`]), with AVX2 only whole 256-byte groups (this module handles the rest).
 //!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the
-//! `#[target_feature]` functions and their intrinsics and for the `asm!` kernel of `vaes`, called
-//! after the features were detected.
+//! `#[target_feature]` functions and their intrinsics and for the `asm!` kernels of `vaes`,
+//! called after the features were detected.
 #![allow(unsafe_code)]
 // The intrinsics are `unsafe fn` at the MSRV (1.85) and safe inside `#[target_feature]` functions
 // on newer compilers.
@@ -27,13 +28,32 @@ use crate::cpu::{self, Feature};
 #[cfg(target_arch = "x86_64")]
 mod vaes;
 
-/// `H¹ … H⁸` as `[lo, hi, lo ^ hi]` (the last word for Karatsuba), and on x86_64 with VAES and
-/// AVX-512 the sixteen powers of the wide kernel (`vaes`).
+/// Which kernels a key may use: the widest the CPU has, at most the VAES-AVX2 one, or only the
+/// 128-bit one (the last two for tests and benchmarks).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Mode {
+    Best,
+    Avx2,
+    Narrow,
+}
+
+/// The VAES kernel a key uses (x86_64).
+#[cfg(target_arch = "x86_64")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wide {
+    /// VAES + VPCLMULQDQ + AVX-512: the whole message per call.
+    Avx512,
+    /// VAES + VPCLMULQDQ + AVX2: whole 256-byte groups.
+    Avx2,
+}
+
+/// `H¹ … H⁸` as `[lo, hi, lo ^ hi]` (the last word for Karatsuba), and on x86_64 with VAES the
+/// sixteen powers of the wide kernels (`vaes`) and which kernel to use.
 #[derive(Clone)]
 pub(super) struct Powers {
     k: [[u64; 3]; 8],
     #[cfg(target_arch = "x86_64")]
-    wide: Option<vaes::WidePowers>,
+    wide: Option<(vaes::WidePowers, Wide)>,
 }
 
 /// AES round keys from `aes::hw`: the encryption keys and the round count.
@@ -44,14 +64,20 @@ fn available() -> bool {
     cpu::cpu_has(Feature::Clmul)
 }
 
-/// Whether this CPU has what the wide kernel needs (the condition for every call into `vaes`):
-/// AES-NI, PCLMULQDQ, VAES, VPCLMULQDQ and AVX-512 F/BW/VL with the OS saving the ZMM state.
+/// Whether this CPU has what the AVX2 kernel needs (the condition for every call into
+/// `vaes::crypt256`): AES-NI, PCLMULQDQ, VAES, VPCLMULQDQ and AVX2 with the OS saving the YMM
+/// state.
+#[cfg(target_arch = "x86_64")]
+fn avx2_available() -> bool {
+    cpu::cpu_has(Feature::Aes) && cpu::cpu_has(Feature::Clmul) && cpu::cpu_has(Feature::Vaes)
+}
+
+/// Whether this CPU has what the AVX-512 kernel needs (the condition for every call into
+/// `vaes::crypt512`): the AVX2 kernel's features and AVX-512 F/BW/VL with the OS saving the ZMM
+/// and opmask state.
 #[cfg(target_arch = "x86_64")]
 fn wide_available() -> bool {
-    cpu::cpu_has(Feature::Aes)
-        && cpu::cpu_has(Feature::Clmul)
-        && cpu::cpu_has(Feature::Vaes)
-        && cpu::cpu_has(Feature::Avx512)
+    avx2_available() && cpu::cpu_has(Feature::Avx512)
 }
 
 /// The counter block `n` blocks after `ctr` (32-bit big-endian counter, wrapping).
@@ -64,9 +90,9 @@ fn advance(ctr: &[u8; 16], n: usize) -> [u8; 16] {
 
 impl Powers {
     /// The powers of `h` (`[lo, hi]`), or `None` without carry-less multiplication (or when the
-    /// portable path is forced). With `wide` (and a CPU for it, not switched off) also the
-    /// powers of the wide AES-GCM kernel.
-    pub(super) fn new(h: [u64; 2], wide: bool) -> Option<Powers> {
+    /// portable path is forced). On x86_64 with VAES (and a `mode` that allows it, the CPU
+    /// features not switched off) also the powers of the wide kernels.
+    pub(super) fn new(h: [u64; 2], mode: Mode) -> Option<Powers> {
         if !cpu::has(Feature::Clmul) || !available() {
             return None;
         }
@@ -77,25 +103,29 @@ impl Powers {
             x = super::gf_mul(x, h);
         }
         #[cfg(target_arch = "x86_64")]
-        let wide = (wide
-            && cpu::has(Feature::Aes)
-            && cpu::has(Feature::Vaes)
-            && cpu::has(Feature::Avx512)
-            && wide_available())
-        .then(|| {
-            // `x` is H⁹ here.
-            let mut all = [[0u64; 2]; 16];
-            for (a, e) in all.iter_mut().zip(&p) {
-                *a = [e[0], e[1]];
-            }
-            for a in &mut all[8..] {
-                *a = x;
-                x = super::gf_mul(x, h);
-            }
-            vaes::WidePowers::new(&all)
-        });
+        let wide = {
+            let vaes = cpu::has(Feature::Aes) && cpu::has(Feature::Vaes) && avx2_available();
+            let avx512 = vaes && cpu::has(Feature::Avx512) && wide_available();
+            let kind = match mode {
+                Mode::Best if avx512 => Some(Wide::Avx512),
+                Mode::Best | Mode::Avx2 if vaes => Some(Wide::Avx2),
+                _ => None,
+            };
+            kind.map(|k| {
+                // `x` is H⁹ here.
+                let mut all = [[0u64; 2]; 16];
+                for (a, e) in all.iter_mut().zip(&p) {
+                    *a = [e[0], e[1]];
+                }
+                for a in &mut all[8..] {
+                    *a = x;
+                    x = super::gf_mul(x, h);
+                }
+                (vaes::WidePowers::new(&all), k)
+            })
+        };
         #[cfg(not(target_arch = "x86_64"))]
-        let _ = wide;
+        let _ = mode;
         Some(Powers {
             k: p,
             #[cfg(target_arch = "x86_64")]
@@ -103,10 +133,22 @@ impl Powers {
         })
     }
 
-    /// Whether AES-GCM runs on the wide (VAES, AVX-512) kernel.
-    pub(super) fn is_wide(&self) -> bool {
+    /// The kernel AES-GCM runs on: `"vaes-avx512"`, `"vaes-avx2"` or `"clmul"` (the 128-bit
+    /// one).
+    pub(super) fn kernel(&self) -> &'static str {
         #[cfg(target_arch = "x86_64")]
-        return self.wide.is_some();
+        match self.wide {
+            Some((_, Wide::Avx512)) => return "vaes-avx512",
+            Some((_, Wide::Avx2)) => return "vaes-avx2",
+            None => {}
+        }
+        "clmul"
+    }
+
+    /// Whether [`crypt_all`](Self::crypt_all) does whole messages (the AVX-512 kernel).
+    pub(super) fn whole_message(&self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        return matches!(self.wide, Some((_, Wide::Avx512)));
         #[cfg(not(target_arch = "x86_64"))]
         false
     }
@@ -146,20 +188,42 @@ impl Powers {
         #[allow(unused_mut)]
         let mut done = 0;
         #[cfg(target_arch = "x86_64")]
-        if let Some(w) = &self.wide {
-            let n = src.map_or(data.len(), <[u8]>::len) / vaes::CHUNK * vaes::CHUNK;
+        if let Some((w, kind)) = &self.wide {
+            let chunk = match kind {
+                Wide::Avx512 => vaes::CHUNK,
+                Wide::Avx2 => vaes::CHUNK2,
+            };
+            let n = src.map_or(data.len(), <[u8]>::len) / chunk * chunk;
             if n > 0 {
-                if !wide_available() {
-                    unreachable!("wide powers exist only with VAES and AVX-512");
-                }
                 let dst = data.as_mut_ptr();
                 let from = src.map_or_else(|| dst.cast_const(), <[u8]>::as_ptr);
-                // SAFETY: `wide_available()` confirmed every CPU and OS feature the kernel
-                // needs; `n` is a nonzero multiple of `CHUNK` and at most the length of `data`
-                // and of `src` (when given); `src` is a shared slice and `data` a unique one,
-                // so they do not overlap, and without `src` the kernel works in place on
-                // `data`; `rk` comes from `aes::hw`, whose round count is 10, 12 or 14.
-                unsafe { vaes::crypt(w, rk, ctr, y, from, dst, n, open) };
+                match kind {
+                    Wide::Avx512 => {
+                        if !wide_available() {
+                            unreachable!("AVX-512 powers exist only with VAES and AVX-512");
+                        }
+                        let mut a = vaes::Args::new(ctr, *y);
+                        // SAFETY: `wide_available()` confirmed every CPU and OS feature the
+                        // kernel needs; the `n / CHUNK` whole groups lie within `data` and
+                        // within `src` (when given); `a` has no tail and no AAD, so nothing
+                        // else is read or written; `src` is a shared slice and `data` a unique
+                        // one, so they do not overlap, and without `src` the kernel works in
+                        // place on `data`; `rk` comes from `aes::hw` (round count 10, 12, 14).
+                        unsafe { vaes::crypt512(w, rk, &mut a, from, dst, n / chunk, open) };
+                        *y = a.y();
+                    }
+                    Wide::Avx2 => {
+                        if !avx2_available() {
+                            unreachable!("AVX2 wide powers exist only with VAES");
+                        }
+                        // SAFETY: `avx2_available()` confirmed every CPU and OS feature the
+                        // kernel needs; `n` is a nonzero multiple of `CHUNK2` and at most the
+                        // length of `data` and of `src` (when given); `src` is a shared slice
+                        // and `data` a unique one, so they do not overlap, and without `src`
+                        // the kernel works in place on `data`; `rk` comes from `aes::hw`.
+                        unsafe { vaes::crypt256(w, rk, ctr, y, from, dst, n, open) };
+                    }
+                }
                 done = n;
             }
         }
@@ -175,6 +239,96 @@ impl Powers {
             unsafe { imp::crypt(self, rk, &c, y, &mut rest[..n], open) };
         }
         done + n
+    }
+
+    /// All of AES-GCM after the key schedule on the AVX-512 kernel, when this key has it (else
+    /// `None`, nothing done): `aad` (the whole AAD of `aad_len` bytes when that is at most 256
+    /// bytes, else empty with its GHASH already in `y`) is hashed, `data` encrypted
+    /// (`open == false`) or decrypted in place, or with `src` (at most `data.len()` bytes) from
+    /// `src` followed by `data[src.len()..]`, and the tag over the ciphertext returned.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn crypt_all(
+        &self,
+        rk: RoundKeys<'_>,
+        j0: &[u8; 16],
+        y: [u64; 2],
+        aad: &[u8],
+        aad_len: usize,
+        src: Option<&[u8]>,
+        data: &mut [u8],
+        open: bool,
+    ) -> Option<[u8; 16]> {
+        #[cfg(target_arch = "x86_64")]
+        if let Some((w, Wide::Avx512)) = &self.wide {
+            if !wide_available() {
+                unreachable!("AVX-512 powers exist only with VAES and AVX-512");
+            }
+            assert!(src.is_none_or(|s| s.len() <= data.len()) && aad.len() <= vaes::CHUNK);
+            let len = data.len();
+            let ctr = advance(j0, 1);
+            let mut a = vaes::Args::new(&ctr, y);
+            a.aad(w, aad);
+            // Input partly in `src`, partly in `data`: the whole groups of `src` first (out of
+            // place), then the rest of `src` copied over and everything after it in place.
+            let mut at = 0;
+            let mut from = None;
+            match src {
+                Some(s) if s.len() < len => {
+                    let first = s.len() / vaes::CHUNK * vaes::CHUNK;
+                    if first > 0 {
+                        // SAFETY: `wide_available()` confirmed every CPU and OS feature the
+                        // kernel needs; the `first / CHUNK` whole groups lie within `s` and
+                        // `data`, a shared and a unique slice that do not overlap; `a` has no
+                        // tail, and its AAD was set by `Args::aad` from the live slice `aad`
+                        // with the powers `w`; `rk` comes from `aes::hw` (round count 10, 12 or
+                        // 14).
+                        unsafe {
+                            vaes::crypt512(
+                                w,
+                                rk,
+                                &mut a,
+                                s.as_ptr(),
+                                data.as_mut_ptr(),
+                                first / vaes::CHUNK,
+                                open,
+                            );
+                        }
+                        a = vaes::Args::new(&advance(&ctr, first / 16), a.y());
+                    }
+                    data[first..s.len()].copy_from_slice(&s[first..]);
+                    at = first;
+                }
+                Some(s) => from = Some(s),
+                None => {}
+            }
+            let rest = &mut data[at..];
+            let groups = rest.len() / vaes::CHUNK;
+            let tail = rest.len() - groups * vaes::CHUNK;
+            // The tail is read from where the groups are, just after them.
+            let tail_src = match from {
+                Some(s) => s[groups * vaes::CHUNK..].as_ptr(),
+                None => rest[groups * vaes::CHUNK..].as_ptr(),
+            };
+            let dst = rest.as_mut_ptr();
+            let from = from.map_or_else(|| dst.cast_const(), <[u8]>::as_ptr);
+            a.tail(w, tail_src, tail);
+            a.finish(j0, aad_len, len);
+            if groups == 0 {
+                a.short(w);
+            }
+            // SAFETY: `wide_available()` confirmed every CPU and OS feature the kernel needs;
+            // `rest` (at `dst`) holds `groups` whole groups and then the `tail` bytes, and the
+            // input is either `rest` itself (in place, the tail source then exactly
+            // `dst + 256 * groups`) or all of `src`, a shared slice of the same length that does
+            // not overlap `data` (the tail source then inside it, after the groups); the AAD of
+            // `a` was set by `Args::aad` from the live slice `aad` (or is none) with the powers
+            // `w`, the tail by `Args::tail` with `w` (both moved by `Args::short` within `w`);
+            // `rk` comes from `aes::hw`.
+            unsafe { vaes::crypt512(w, rk, &mut a, from, dst, groups, open) };
+            return Some(a.tag());
+        }
+        let _ = (rk, j0, y, aad, aad_len, src, data, open);
+        None
     }
 }
 

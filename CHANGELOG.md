@@ -30,6 +30,56 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Evaluated: kernel TLS offload (not adopted, experimental feature)
+
+- Handing only-tls's record keys to the Linux kernel after the handshake (kTLS) was measured on
+  Linux 7.0 / Ryzen 7 7800X3D with HTTP/1.1 over TLS (`tools/bench/ktls.sh`): the kernel's
+  software TLS reached 0.83x of only-tls's own record layer at 1 KiB responses, 0.65x at 16 KiB,
+  0.40x at 256 KiB, and 0.48x when it sent a 10 MB file with `sendfile` against only-tls's
+  `pread` plus sealing, with 1.3x to 2.5x the server CPU per byte (docs/BENCHMARKS.md, "Kernel TLS
+  (kTLS) evaluation"). It is not wired into `Tls` or the engine.
+- The offload stays for re-measuring behind a new **experimental** `only-tls` feature,
+  `experimental-ktls` (off by default, outside the semver promise, no public API): the blocking
+  test stream (`only_tls::stream`, hidden) can offload after the handshake (TLS 1.3 and 1.2,
+  AES-128/256-GCM and ChaCha20-Poly1305, alerts, close_notify, NewSessionTicket and KeyUpdate in
+  both directions on Linux 6.14+, fallback to user space), with the `ktls-bench` example,
+  `tls-interop --ktls` / `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh` (107/107 against
+  OpenSSL and Go) and `crates/only-tls/tests/ktls.rs` (skipped without the `tls` kernel module).
+  `only-sys` gained the hidden `ktls` module (`TCP_ULP`, `SOL_TLS`, record-type cmsgs) with the
+  `linux/tls.h` structures checked against `libc` in the layout tests.
+- Docs: the stale "rustls underneath" wording in the README, the book's crate list and the fib
+  migration guide, and the ROADMAP's TLS row, now say what is true (own TLS 1.3 / 1.2).
+
+### Performance: AES-GCM on VAES-AVX2 and masked tails in the AVX-512 kernel (`only-crypto`)
+
+No public API change (a new `#[doc(hidden)]` `AesGcm::with_cipher_avx2` and `AesGcm::kernel`
+for tests and benchmarks).
+
+- x86_64 with VAES, VPCLMULQDQ and AVX-512: the whole message runs in one call of the 512-bit
+  kernel. An AAD of up to 256 bytes is hashed in the kernel, the last partial group (1 to 255
+  bytes) is loaded and stored under AVX-512 byte masks instead of going through the 128-bit path,
+  and the length block and `E(J0)` give the tag in the same call; messages under 256 bytes hash
+  their AAD, data and length block under one reduction. AES-128-GCM seal 1 KiB 7,902 → 10,433
+  MB/s (1.00× → 1.32× ring), 1400 B 8,356 → 10,632 (1.10× → 1.46×), 64 B 1,204 → 1,383
+  (1.11× → 1.29×); open 1 KiB 1.04× → 1.22×; 16–64 KiB unchanged (1.16–1.18×).
+- x86_64 with VAES and VPCLMULQDQ but no AVX-512 (Zen 3, Alder Lake / Raptor Lake): a new
+  VAES-AVX2 kernel, sixteen blocks per iteration in eight 256-bit registers with one GHASH
+  reduction per group, for whole 256-byte groups (the rest on the 128-bit path). Measured on
+  Zen 4 with the AVX-512 kernel switched off (no Zen 3 available): 1.55–2.35× the 128-bit kernel
+  those CPUs used before (AES-128 seal 16 KiB 6,310 → 12,671 MB/s).
+- TLS 1.3 records in `only-tls` follow: AES-128-GCM 1 KiB 1.51× → 1.58× rustls + ring, 16 KiB
+  1.56× → 1.60×. The record layer still zero-fills its output before the AEAD writes it: copying
+  the plaintext in and sealing in place measured 6% slower at 16 KiB, a reused buffer would trade
+  the memset for a copy, and skipping the fill (+10% at 16 KiB) needs `unsafe` in a
+  `#![forbid(unsafe_code)]` crate, so it was not done (docs/BENCHMARKS.md).
+- Tests: every kernel (AVX-512, AVX2, 128-bit, portable) against the others at every length
+  0..=600, large sizes, every AAD length 0..=300 and past 512, misaligned, in place and out of
+  place, and on the CAVP and Wycheproof vectors; the `crypto_aead` fuzz target compares the AVX2
+  kernel too. Run natively on Zen 4, also with `ONLY_CRYPTO_PORTABLE=1`.
+- `unsafe`: +5 blocks and +1 `unsafe fn` in `gcm::hw` / `gcm::hw::vaes` (the AVX2 kernel's two
+  `asm!` blocks, the whole-message calls), documented in docs/unsafe-review.md. Miri never
+  reaches the `asm!`.
+
 ### Fixed: SOCKS and HTTP CONNECT tunnels could hang under backpressure
 
 - `only-socks`: a tunnel (SOCKS5/4/4a or HTTP `CONNECT`) could stop for good while relaying a

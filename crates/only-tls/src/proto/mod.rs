@@ -26,4 +26,6 @@ pub(crate) mod tests;
 pub(crate) use alert::Fatal;
 pub use common::{Keys, Level};
 pub use conn::Connection;
+#[cfg(feature = "experimental-ktls")]
+pub use conn::{DirKeys, Offload, OffloadEvent};
 pub use kx::Group;

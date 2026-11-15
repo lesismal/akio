@@ -198,12 +198,12 @@ dev-dependency.
 | full handshakes/s, X25519 | 5,027 | 5,025 | 1.00 |
 | full handshakes/s, secp256r1 | 4,552 | 5,126 | 0.89 |
 | full handshakes/s, X25519, RSA-2048 certificate ³ | 2,586 | 1,800 | 1.44 |
-| seal + open 1 KiB, AES-128-GCM (MB/s) | 2,697 | 1,760 | 1.53 |
-| seal + open 16 KiB, AES-128-GCM | 6,603 | 3,994 | 1.65 |
-| seal + open 64 KiB, AES-128-GCM | 6,734 | ² | – |
-| seal + open 1 KiB, AES-256-GCM | 2,514 | 1,702 | 1.48 |
-| seal + open 16 KiB, AES-256-GCM | 5,873 | 3,795 | 1.55 |
-| seal + open 64 KiB, AES-256-GCM | 5,858 | ² | – |
+| seal + open 1 KiB, AES-128-GCM (MB/s) ⁴ | 2,948 | 1,869 | 1.58 |
+| seal + open 16 KiB, AES-128-GCM ⁴ | 6,707 | 4,197 | 1.60 |
+| seal + open 64 KiB, AES-128-GCM ⁴ | 6,493 | ² | – |
+| seal + open 1 KiB, AES-256-GCM ⁴ | 2,737 | 1,771 | 1.55 |
+| seal + open 16 KiB, AES-256-GCM ⁴ | 5,976 | 3,832 | 1.56 |
+| seal + open 64 KiB, AES-256-GCM ⁴ | 5,834 | ² | – |
 | seal + open 1 KiB, ChaCha20-Poly1305 | 931 | 913 | 1.02 |
 | seal + open 16 KiB, ChaCha20-Poly1305 | 2,141 | 1,511 | 1.42 |
 | seal + open 64 KiB, ChaCha20-Poly1305 | 2,124 | 1,529 | 1.39 |
@@ -213,6 +213,10 @@ at most 16 KiB of plaintext before it must be read out), so no ratio is given.
 
 ³ The server signs with RSA-PSS, the client verifies the certificate and that signature (the
 RSA pass, below); 775/s (0.43×) before it.
+
+⁴ From the AES-GCM leftovers pass (below), median of five rounds alternated with the previous
+code: 1 KiB AES-128 1.51× → 1.58×, 16 KiB 1.56× → 1.60× in the same runs. rustls measured
+higher in those runs than in the earlier one that gave 1.65× at 16 KiB.
 
 Handshakes were 3,055 (X25519) and 2,306 (secp256r1) per second before the P-256 / X25519
 pass (0.61× and 0.45×; History). The handshake profile is still dominated by curve arithmetic:
@@ -224,10 +228,75 @@ copy came first, 30% of the 16 KiB profile): 2.4× the previous release at 16–
 AVX-512 ChaCha20 and IFMA Poly1305 kernels, also out of place: 0.55× → 1.42× rustls + ring at
 16 KiB (below).
 
+### Kernel TLS (kTLS) evaluation (`crates/only-tls/examples/ktls-bench.rs`, `tools/bench/ktls.sh`)
+
+Question: after only-tls finishes a handshake, should the record keys go to the Linux kernel
+(`setsockopt(TCP_ULP, "tls")`, `SOL_TLS` `TLS_TX` / `TLS_RX`), so that the kernel encrypts and
+decrypts records, plaintext flows on the socket and `sendfile(2)` works under TLS? **Answer: no.
+On this host the kernel's software kTLS is slower than only-tls's own record layer in every case
+measured, and slowest exactly where it was supposed to win (large responses and `sendfile`).**
+The offload is kept behind only-tls's `experimental-ktls` feature for re-measuring, and is not
+wired into `Tls` or the engine.
+
+Method: one thread-per-connection HTTP/1.1-over-TLS server (`ktls-bench`) whose record layer is
+either only-tls in user space (`user`: responses sealed by only-tls and written; the file read in
+64 KiB chunks with `pread` and sealed) or the kernel (`ktls`: the same handshake by only-tls, then
+the keys handed over; responses written as plaintext; the file sent with `sendfile`). Same
+binary, same handshake (TLS 1.3, X25519, ECDSA P-256, no tickets), AES-128-GCM unless noted.
+Server on CPUs 0–3, `h2load --h1` with 8 threads on CPUs 4–7 and 12–15, 8 s per run after a 2 s
+warm-up, 3 interleaved rounds (median shown; the rounds agreed within 1–2%), all under
+`quiet.sh`. Linux 7.0, Ryzen 7 7800X3D; the kernel's AES-GCM is `generic-gcm-vaes-avx512`
+(the same VAES + AVX-512 class of code as only-crypto's), ChaCha20-Poly1305 is
+`rfc7539(chacha20-lib,poly1305-generic)`. The server was CPU-bound in every case (4.0 CPU-seconds
+per second), so CPU per byte is server CPU time (user + system, from `/proc`) over bytes served.
+
+| Case (connections) | only-tls req/s | kTLS req/s | kTLS / only | only-tls CPU ns/B | kTLS CPU ns/B | kTLS / only CPU per byte |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 KiB responses (64) | 531,393 | 439,368 | 0.83 | 6.77 | 8.55 | 1.26 |
+| 16 KiB (64) | 358,494 | 233,814 | 0.65 | 0.679 | 1.042 | 1.53 |
+| 256 KiB (32) | 66,057 (16.1 GB/s) | 26,415 (6.45 GB/s) | 0.40 | 0.231 | 0.577 | 2.50 |
+| 10 MB file (16): `pread` + seal vs `sendfile` | 1,391 (13.0 GB/s) | 669 (6.24 GB/s) | 0.48 | 0.288 | 0.597 | 2.07 |
+| 16 KiB, ChaCha20-Poly1305 (64) | 284,155 | 175,070 | 0.62 | 0.858 | 1.393 | 1.62 |
+| 16 KiB, TLS 1.2 AES-128-GCM (64) | 358,377 | 242,912 | 0.68 | 0.680 | 1.003 | 1.47 |
+
+Loopback has a 64 KiB MTU; with the client in a network namespace behind a veth pair with a
+1500-byte MTU (`VETH=1`, GSO/GRO on, as with a NIC) the ratios were the same: 0.83 (1 KiB),
+0.65 (16 KiB), 0.40 (256 KiB), 0.49 (file). Offloading costs 14–20 µs per connection (`TCP_ULP`
+plus two `SOL_TLS` keys), against ~200 µs of CPU for a whole full handshake, both ends together
+(5,027/s in `tls-bench`): a noticeable addition for short connections.
+
+Why (perf, 10 MB file case): with kTLS, 96% of the server's samples are under `tls_sw_sendmsg`,
+but the AES-GCM itself is only ~12%. The kernel pushes every 16 KiB record to TCP on its own
+(`tls_push_record` → `tcp_push`: ~55% of the samples in the TCP/IP transmit path, including the
+loopback receive softirq, against ~29% for user space, which hands TCP 64 KiB of records per
+`write`), and it allocates and zeroes fresh pages for each record (`kernel_init_pages` ~5%). In
+user space the same work is only-crypto's GCM (22%) plus the `pread` and `write` copies (~14%
+each); saving those copies does not make up for the per-record cost in the kernel. Small
+responses lose less (0.83×) because the per-request work there is dominated by the syscalls and
+TCP, which both modes share.
+
+When kTLS could still pay off: a NIC with TLS offload (`tls-hw-tx-offload`, e.g. ConnectX-6 Dx;
+none on this host), where the kernel hands records to the NIC unencrypted and `sendfile` really
+is zero-copy; or a host whose user-space AES-GCM is much slower than the kernel's (no VAES).
+Neither applies to only-tls on x86_64 with VAES; re-measure with `tools/bench/ktls.sh` before
+reconsidering.
+
+What the experimental code covers (tests: `crates/only-tls/tests/ktls.rs` on a kTLS kernel,
+in-memory unit tests anywhere; `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh` passed 107/107
+against OpenSSL 3.0.13 and Go 1.27 with only's side offloaded): TLS 1.3 and 1.2 with AES-128-GCM,
+AES-256-GCM and ChaCha20-Poly1305; the keys and sequence numbers exported after the handshake
+(only when nothing is buffered); alerts, close_notify and post-handshake messages (NewSessionTicket,
+KeyUpdate) through the record-type control message; TLS 1.3 KeyUpdate in both directions by
+re-installing keys (Linux 6.14+; older kernels keep TLS 1.3 in user space, since a peer can rekey
+at any time); fallback to user space when the `tls` module or the suite is missing. Not done:
+the engine integration (epoll / io_uring receive with `TLS_GET_RECORD_TYPE`, control records in
+the write queue), `TLS_RX_EXPECT_NO_PAD`, and sending our own KeyUpdate before the AES-GCM record
+limit (the kernel does not count for us).
+
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +
-VPCLMULQDQ + AVX-512 (AES-GCM from 256 bytes, CRC folding from 512 bytes), BMI2 + ADX. The comparison
+VPCLMULQDQ + AVX-512 (AES-GCM at every length, CRC folding from 512 bytes), BMI2 + ADX. The comparison
 columns are the RustCrypto crates `only-crypto` replaced (also with run-time CPU detection;
 crc32fast for CRC-32) and ring 0.17 for public-key operations.
 
@@ -414,15 +483,88 @@ go through AES in one call and a short AAD, the tail ciphertext and the length b
 one GHASH call (it was three GHASH calls and a separate CTR pass), which doubled 64-byte
 messages for every CPU with AES and carry-less multiplication instructions.
 
-What is left: AES-GCM messages of 1 KiB to 1.4 KiB are at 0.96–1.11× ring (the wide kernel's
-fixed cost; the tail after the last 256-byte group runs on the 128-bit path); CPUs with VAES but
-without AVX-512 (Zen 3, Alder Lake) use the 128-bit path; the TLS record layer still zero-fills
-the output before the AEAD writes it (about 9% of a 16 KiB record); ChaCha20-Poly1305 below 1.4 KiB
+What was left for AES-GCM after this pass (1 KiB to 1.4 KiB at 0.96–1.11× ring, the 128-bit
+path on CPUs with VAES but no AVX-512, the TLS record zero-fill) is the next subsection. Other
+gaps: ChaCha20-Poly1305 below 1.4 KiB
 is at 0.82–0.96× ring and CPUs without AVX-512 / IFMA run the AVX2 ChaCha20 with a scalar
 Poly1305 (no AVX2 Poly1305); P-256
 ECDH is at 1.12× ring (a doubling ~348 cycles, about 44 per product whatever their order);
 Ed25519 verification is portable; RSA's two CRT halves are not interleaved in one IFMA block,
 and without IFMA RSA-2048 signing is at parity with ring; SHA-512 and MD5 are portable.
+
+#### AES-GCM: VAES-AVX2 kernel, masked tails, record zero-fill (`--example gcm-sizes`, `tls-bench records`, CPU 2)
+
+Median of five alternating rounds of the previous code (`main` at `dbc7563f`) and this pass,
+ring measured in the same runs, 13 bytes of AAD. Another workload kept the load average at
+1.0–1.9 (CPU 2 itself was free); the ratios come from the same runs. "AVX2 kernel" is this
+pass's VAES-AVX2 kernel forced on this Zen 4 (`AesGcm::with_cipher_avx2`): it stands in for CPUs
+with VAES but no AVX-512 (Zen 3, Alder Lake / Raptor Lake), which were not available to measure;
+"128-bit" is the AES-NI + PCLMULQDQ kernel those CPUs ran before.
+
+| AES-128-GCM, MB/s | before | after | ring | after / ring | before / ring | AVX2 kernel | 128-bit | AVX2 / 128-bit |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| seal 64 B | 1,204 | 1,383 | 1,075 | 1.29 | 1.11 | 1,198 | 1,192 | 1.01 |
+| seal 1 KiB | 7,902 | 10,433 | 7,933 | 1.32 | 1.00 | 6,846 | 4,369 | 1.57 |
+| seal 1400 B | 8,356 | 10,632 | 7,271 | 1.46 | 1.10 | 7,533 | 4,770 | 1.58 |
+| seal 16 KiB | 15,273 | 15,610 | 13,435 | 1.16 | 1.18 | 12,671 | 6,310 | 2.01 |
+| seal 64 KiB | 16,071 | 16,037 | 13,717 | 1.17 | 1.23 | 12,546 | 6,461 | 1.94 |
+| open 64 B | 1,103 | 1,336 | 927 | 1.44 | 1.19 | 1,089 | 1,111 | 0.98 |
+| open 1 KiB | 7,240 | 8,878 | 7,283 | 1.22 | 1.04 | 6,256 | 4,040 | 1.55 |
+| open 1400 B | 7,814 | 9,515 | 7,416 | 1.28 | 1.05 | 7,061 | 4,325 | 1.63 |
+| open 16 KiB | 13,588 | 13,784 | 11,727 | 1.18 | 1.20 | 11,112 | 5,589 | 1.99 |
+| open 64 KiB | 13,109 | 13,031 | 11,692 | 1.11 | 1.13 | 11,082 | 5,586 | 1.98 |
+
+| AES-256-GCM, MB/s | before | after | ring | after / ring | before / ring | AVX2 kernel | 128-bit | AVX2 / 128-bit |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| seal 64 B | 1,137 | 1,250 | 1,076 | 1.16 | 1.06 | 1,141 | 1,128 | 1.01 |
+| seal 1 KiB | 7,152 | 9,447 | 7,335 | 1.29 | 0.98 | 6,323 | 3,847 | 1.64 |
+| seal 1400 B | 7,106 | 9,559 | 6,865 | 1.39 | 1.08 | 6,654 | 4,124 | 1.61 |
+| seal 16 KiB | 13,167 | 13,652 | 11,545 | 1.18 | 1.11 | 11,795 | 5,712 | 2.06 |
+| seal 64 KiB | 13,821 | 13,983 | 11,813 | 1.18 | 1.13 | 11,602 | 5,881 | 1.97 |
+| open 64 B | 1,056 | 1,335 | 917 | 1.46 | 1.15 | 1,047 | 1,036 | 1.01 |
+| open 1 KiB | 6,665 | 8,543 | 6,461 | 1.32 | 0.97 | 6,119 | 3,386 | 1.81 |
+| open 1400 B | 7,057 | 8,700 | 6,862 | 1.27 | 1.04 | 6,557 | 3,610 | 1.82 |
+| open 16 KiB | 12,004 | 12,104 | 10,427 | 1.16 | 1.13 | 10,509 | 4,473 | 2.35 |
+| open 64 KiB | 11,490 | 11,584 | 10,019 | 1.16 | 1.12 | 10,202 | 4,478 | 2.28 |
+
+TLS 1.3 records (seal + open, same rounds; rustls + ring in the same runs): AES-128-GCM 1 KiB
+2,721 → 2,948 MB/s (1.51× → 1.58×), 16 KiB 6,555 → 6,707 (1.56× → 1.60×), 64 KiB 6,457 → 6,493;
+AES-256-GCM 1 KiB 2,519 → 2,737 (1.42× → 1.55×), 16 KiB 5,930 → 5,976 (1.56×); ChaCha20-Poly1305
+unchanged (918, 2,157, 2,129).
+
+What changed:
+
+- **The whole message in the AVX-512 kernel.** An AAD of up to 256 bytes is hashed inside the
+  kernel; the last partial group (1 to 255 bytes) is loaded and stored under AVX-512 byte masks
+  (k1–k4; masked-off bytes are neither read nor written) and hashed with `Hⁿ … H¹`, taken by a
+  pointer into a power table padded with sixteen zero entries so the four vector loads never
+  leave it; the length block and `E(J0)` (computed on one lane at the start, overlapping the
+  first group) give the tag in the same call. A message under 256 bytes whose AAD, data and
+  length block fit in sixteen blocks takes a short path: all of them are multiplied by
+  `Hᵀ … H¹` and reduced once, the AAD and (when opening) the ciphertext products overlapping the
+  AES rounds, with one vector each when both are at most 64 bytes. The first version without the
+  short path lost 7% at 64 B (three dependent reductions: AAD, data, length block) and gained the
+  same 32% at 1 KiB; the short path took 64 B from 1,112 to 1,383 MB/s.
+- **VAES-AVX2 kernel** for CPUs without AVX-512, selected when CPUID reports VAES +
+  VPCLMULQDQ + AVX2 with the OS saving the YMM state but no AVX-512: sixteen blocks per
+  iteration in eight ymm registers, the AES rounds interleaved with the GHASH of the previous
+  group (sealing) or the same group (opening), one reduction per sixteen blocks. VEX has only
+  sixteen vector registers, so the round keys are broadcast from memory each round and the
+  constants are memory operands. Eight blocks per iteration (four ymm states) was slower: 16 KiB
+  seal 11,540 vs 12,660 MB/s, 1 KiB 6,530 vs 6,890, open within 1% (four independent AES states
+  do not cover the latency of two AES pipes). It handles whole 256-byte groups; the rest of a
+  message goes through the 128-bit path. Against ring's own VAES-AVX2 code on this host it is at
+  0.86× (seal 1 KiB) to 1.11× (seal 64 B), 0.94× at 16 KiB.
+- **TLS record zero-fill: kept.** Measured in one run (three alternating rounds, AES-128-GCM,
+  seal + open MB/s): the current code (zero-fill, then the AEAD out of place) 16 KiB 6,620 / 6,675,
+  copying the plaintext into the record and sealing in place 6,256 / 6,259 (−6%; 64 KiB −8%,
+  1 KiB −2%), and as a reference only, not committed, no zero-fill through `unsafe` `set_len`
+  7,297 / 7,313 (+10%; 64 KiB +8%, 1 KiB +4%). A record-layer buffer reused across records
+  would trade the memset for a memcpy, the cost of the copy variant. With the caller's `Vec<u8>`
+  as output and `#![forbid(unsafe_code)]` in only-tls, every safe variant writes the output
+  twice, so the zero-fill (the cheaper second write) stays; removing it needs the `unsafe` step.
+  ChaCha20-Poly1305 1 KiB records were 7% faster with the copy and in-place seal (the ChaCha
+  out-of-place path costs more on short messages), 16–64 KiB the same or slower; not changed.
 
 #### ChaCha20-Poly1305 by message size (`--example chacha-sizes`, `tls-bench records`, CPU 2)
 
@@ -628,6 +770,12 @@ Short summaries of the per-area passes; the full tables are in the git history o
   16 KiB 6,455 → 15,048 MB/s, 0.51× → 1.19× ring), the fused tail 1.8–2.1× at 64 B; TLS 1.3
   records sealed and opened out of place, 2.4× at 16 KiB (0.69× → 1.65× rustls + ring); CRC-32
   folding on 512-bit registers 16 KiB 19,992 → 74,885 MB/s (0.27× → 1.02× crc32fast).
+- **AES-GCM leftovers** (this host, `dbc7563f` → after): the AVX-512 kernel takes the whole
+  message (AAD, masked last partial group, length block and `E(J0)`; short messages under one
+  reduction): AES-128 seal 1 KiB 1.00× → 1.32× ring, 1400 B 1.10× → 1.46×, 64 B 1.11× → 1.29×,
+  open 1 KiB 1.04× → 1.22×; a VAES-AVX2 kernel (sixteen blocks in eight ymm) for CPUs without
+  AVX-512, 1.55–2.35× the 128-bit kernel on Zen 4; TLS 1.3 records 1 KiB 1.51× → 1.58× rustls +
+  ring. The record zero-fill stays (every safe alternative measured slower).
 - **QUIC and TLS hot paths** (this host): the pacer floored the RTT at 1 ms and woke the sender
   per packet; with the measured RTT and burst refills (as quinn-proto does) bulk went 3.4–3.7 →
   5.7 Gbit/s (1.25× quinn-proto) and HTTP/3 171 k → 420 k req/s (7× quinn-proto). TLS records are
