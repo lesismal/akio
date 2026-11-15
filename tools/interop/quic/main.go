@@ -2,13 +2,16 @@
 // datagrams, ALPN "echo".
 //
 //	go run . server 127.0.0.1:9500 [retry] [v2]                 echoes every bidirectional stream and datagram
-//	go run . client 127.0.0.1:9501 [bulk MB] [v2] [migrate]     checks an only-quic echo server
+//	go run . client 127.0.0.1:9501 [bulk MB] [v2] [migrate] [small]
+//	                                                            checks an only-quic echo server
 //	                                                            (crates/only-quic/examples/quic-interop.rs)
 //
 // "retry" makes the server validate every client address with a Retry first. "bulk MB" adds one
 // stream of MB megabytes (150 MB crosses quic-go's key update interval of 100k packets). "v2"
 // speaks QUIC version 2 (RFC 9369) only. "migrate" moves the client to a new UDP socket (a
-// probed and switched path) halfway through the streams.
+// probed and switched path) halfway through the streams. "small" sends 10 small streams instead of
+// 50 (under quic-go's first key update, which it derives with the wrong label in version 2). A qlog
+// per connection is written when QLOGDIR is set.
 package main
 
 import (

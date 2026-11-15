@@ -138,6 +138,12 @@ impl Congestion {
         self.bbr.as_ref().map(|b| b.pacing_rate())
     }
 
+    /// Whether the controller uses delivery-rate samples (BBR); the connection only keeps
+    /// them then.
+    pub fn wants_rate_samples(&self) -> bool {
+        self.bbr.is_some()
+    }
+
     /// The BBR model, when that is the controller.
     #[cfg(test)]
     pub fn bbr(&self) -> Option<&Bbr> {
@@ -313,15 +319,13 @@ impl Pacer {
         rtt: Duration,
         rate: Option<u64>,
     ) -> Option<Instant> {
-        let rtt_ns = rtt.as_nanos().max(1);
-        // Bytes per second.
-        let rate = rate
-            .map_or_else(
-                || u128::from(window) * 5 / 4 * 1_000_000_000 / rtt_ns,
-                u128::from,
-            )
-            .max(1);
-        let cap = ((rate * 1_600_000 / 1_000_000_000) as u64)
+        // The rate as `num` bytes per `den` nanoseconds (no division until it is used: this
+        // runs for every datagram).
+        let (num, den) = match rate {
+            Some(r) => (u128::from(r.max(1)), 1_000_000_000u128),
+            None => ((u128::from(window) * 5 / 4).max(1), rtt.as_nanos().max(1)),
+        };
+        let cap = ((num * 1_600_000 / den) as u64)
             .clamp(10 * mtu, 256 * mtu)
             .min(window.max(10 * mtu));
         if cap != self.capacity {
@@ -333,7 +337,7 @@ impl Pacer {
         }
         let last = *self.last.get_or_insert(now);
         let elapsed = now.saturating_duration_since(last);
-        let refill = (rate * elapsed.as_nanos() / 1_000_000_000) as u64;
+        let refill = (num * elapsed.as_nanos() / den) as u64;
         if refill > 0 {
             self.tokens = self.tokens.saturating_add(refill).min(cap);
             self.last = Some(now);
@@ -343,7 +347,7 @@ impl Pacer {
         }
         // Wait for a full burst (at least this packet).
         let missing = size.max(cap) - self.tokens;
-        let nanos = (u128::from(missing) * 1_000_000_000 / rate) as u64;
+        let nanos = (u128::from(missing) * den / num) as u64;
         Some(now + Duration::from_nanos(nanos.max(1)))
     }
 

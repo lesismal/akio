@@ -385,12 +385,24 @@ impl Connection {
         if self.tx_ecn {
             self.ecn.on_marked_sent(sid as usize);
         }
-        if in_flight && self.bytes_in_flight == 0 {
-            // A new flight: its rate intervals start now.
-            self.dlv.first_sent = now;
-            self.dlv.delivered_time = now;
-        }
-        let dlv = self.dlv;
+        // Delivery-rate state, for a controller that samples it (BBR).
+        let (delivered, delivered_age, first_sent_age, app_limited) =
+            if self.cc.wants_rate_samples() {
+                if in_flight && self.bytes_in_flight == 0 {
+                    // A new flight: its rate intervals start now.
+                    self.dlv.first_sent = now;
+                    self.dlv.delivered_time = now;
+                }
+                let d = self.dlv;
+                (
+                    d.delivered,
+                    age_us(now, d.delivered_time),
+                    age_us(now, d.first_sent),
+                    d.app_limited_until != 0,
+                )
+            } else {
+                (0, 0, 0, false)
+            };
         let sp = &mut self.spaces[sid as usize];
         sp.next_pn += 1;
         if eliciting {
@@ -409,10 +421,10 @@ impl Connection {
                 in_flight,
                 mtu_probe: false,
                 ecn: self.tx_ecn,
-                delivered: dlv.delivered,
-                delivered_time: dlv.delivered_time,
-                first_sent: dlv.first_sent,
-                app_limited: dlv.app_limited_until != 0,
+                delivered,
+                delivered_age,
+                first_sent_age,
+                app_limited,
                 frames,
             },
         );
@@ -799,8 +811,8 @@ impl Connection {
                 mtu_probe: false,
                 ecn: false,
                 delivered: self.dlv.delivered,
-                delivered_time: self.dlv.delivered_time,
-                first_sent: self.dlv.first_sent,
+                delivered_age: age_us(now, self.dlv.delivered_time),
+                first_sent_age: age_us(now, self.dlv.first_sent),
                 app_limited: true,
                 frames: Vec::new(),
             },
@@ -850,8 +862,8 @@ impl Connection {
                 mtu_probe: true,
                 ecn: false,
                 delivered: self.dlv.delivered,
-                delivered_time: self.dlv.delivered_time,
-                first_sent: self.dlv.first_sent,
+                delivered_age: age_us(now, self.dlv.delivered_time),
+                first_sent_age: age_us(now, self.dlv.first_sent),
                 app_limited: true,
                 frames: Vec::new(),
             },

@@ -308,7 +308,7 @@ impl RecvBatch {
             while !c.is_null() {
                 if want((*c).cmsg_level, (*c).cmsg_type) {
                     let data = ffi::cmsg_data(c);
-                    let len = (*c).cmsg_len as usize;
+                    let len: usize = (*c).cmsg_len;
                     return if len >= ffi::cmsg_len(size_of::<ffi::c_int>()) {
                         Some(std::ptr::read_unaligned(data.cast::<ffi::c_int>()))
                     } else if len >= ffi::cmsg_len(1) {

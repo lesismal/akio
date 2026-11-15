@@ -124,8 +124,8 @@ mod tests {
             mtu_probe: false,
             ecn: false,
             delivered: 0,
-            delivered_time: Instant::now(),
-            first_sent: Instant::now(),
+            delivered_age: 0,
+            first_sent_age: 0,
             app_limited: false,
             frames: Vec::new(),
         }

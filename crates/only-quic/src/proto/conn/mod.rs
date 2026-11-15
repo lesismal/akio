@@ -124,10 +124,12 @@ pub(crate) struct Sent {
     mtu_probe: bool,
     /// Sent ECT(0).
     ecn: bool,
-    /// Delivery-rate sampling state when it was sent (see [`Delivery`]).
+    /// Delivery-rate sampling state when it was sent (see [`Delivery`]): bytes delivered, and
+    /// how long before `time` the last delivery and the flight's first send were, in
+    /// microseconds (kept small: one of these per packet in flight).
     delivered: u64,
-    delivered_time: Instant,
-    first_sent: Instant,
+    delivered_age: u32,
+    first_sent_age: u32,
     app_limited: bool,
     frames: Vec<SentFrame>,
 }
@@ -142,6 +144,11 @@ pub(crate) struct Delivery {
     first_sent: Instant,
     /// Non-zero while the samples are application-limited: until `delivered` passes it.
     app_limited_until: u64,
+}
+
+/// Microseconds from `then` to `now` (saturating).
+fn age_us(now: Instant, then: Instant) -> u32 {
+    u32::try_from(now.saturating_duration_since(then).as_micros()).unwrap_or(u32::MAX)
 }
 
 impl Delivery {

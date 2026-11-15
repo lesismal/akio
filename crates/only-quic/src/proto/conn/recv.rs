@@ -823,9 +823,12 @@ impl Connection {
             app_limited: false,
             rtt: rtt_sample,
         };
-        let mut newest: Option<(Instant, Instant, Instant)> = None;
+        // The newest packet acknowledged: sent at, ages of its flight's first send and of the
+        // last delivery before it.
+        let mut newest: Option<(Instant, u32, u32)> = None;
+        let sampling = self.cc.wants_rate_samples();
         for (pn, mut p) in newly {
-            if p.in_flight && !p.mtu_probe {
+            if sampling && p.in_flight && !p.mtu_probe {
                 let d = &mut self.dlv;
                 d.delivered += u64::from(p.size);
                 d.delivered_time = now;
@@ -833,7 +836,7 @@ impl Connection {
                 if newest.is_none() || p.delivered >= rs.prior_delivered {
                     rs.prior_delivered = p.delivered;
                     rs.app_limited = p.app_limited;
-                    newest = Some((p.time, p.first_sent, p.delivered_time));
+                    newest = Some((p.time, p.first_sent_age, p.delivered_age));
                     d.first_sent = p.time;
                 }
             }
@@ -859,7 +862,12 @@ impl Connection {
             }
             self.recycle_frames(frames);
         }
-        if let Some((sent, first_sent, delivered_time)) = newest {
+        if let Some((sent, first_age, delivered_age)) = newest {
+            let back = |us: u32| {
+                sent.checked_sub(Duration::from_micros(u64::from(us)))
+                    .unwrap_or(sent)
+            };
+            let (first_sent, delivered_time) = (back(first_age), back(delivered_age));
             let d = &mut self.dlv;
             if d.app_limited_until != 0 && d.delivered > d.app_limited_until {
                 d.app_limited_until = 0;

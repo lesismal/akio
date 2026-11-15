@@ -242,11 +242,16 @@ impl Pair {
 
 /// A client Initial packet with `payload` as its frames, padded to 1200 bytes.
 fn forged_initial(dcid: &ConnectionId, payload: &[u8]) -> Vec<u8> {
-    let k = initial_keys(dcid, true, packet::VERSION_1);
+    forged_initial_v(dcid, payload, packet::VERSION_1)
+}
+
+/// [`forged_initial`] in QUIC version `version`.
+fn forged_initial_v(dcid: &ConnectionId, payload: &[u8], version: u32) -> Vec<u8> {
+    let k = initial_keys(dcid, true, version);
     let mut buf = Vec::with_capacity(1200);
     let b = PacketBuilder::long(
         &mut buf,
-        packet::VERSION_1,
+        version,
         PacketType::Initial,
         dcid,
         &ConnectionId::default(),
@@ -410,6 +415,16 @@ mod tests {
                 &[packet::VERSION_1, packet::VERSION_2],
             ),
         );
+        // A version 2 Initial (RFC 9369).
+        write(
+            "quic_packet",
+            "initial_v2".into(),
+            &forged_initial_v(
+                &ConnectionId::new(&[7; 8]).expect("cid"),
+                &[1, 0, 0],
+                packet::VERSION_2,
+            ),
+        );
         // quic_frame: one of each frame type.
         let cid = ConnectionId::new(&[9; 8]).expect("cid");
         let mut set = RangeSet::new();
@@ -419,6 +434,9 @@ mod tests {
         let mut f = Vec::new();
         frame::put_ack(&mut f, &set, 100, 32);
         frames.push(("ack", f));
+        let mut f = Vec::new();
+        frame::put_ack_ecn(&mut f, &set, 100, 32, Some([12, 0, 3]));
+        frames.push(("ack_ecn", f));
         let mut f = Vec::new();
         frame::put_stream_header(&mut f, 4, 100, 5, true);
         f.extend_from_slice(b"hello");
