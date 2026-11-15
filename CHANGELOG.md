@@ -30,6 +30,45 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Added: ECN, BBR, client migration, preferred_address and QUIC v2 in `only-quic`
+
+- **ECN** (RFC 9000 section 13.4, RFC 9002 section 7.1), `TransportConfig::ecn` (on by
+  default): on Linux packets go out ECT(0) and received codepoints are reported in ACK_ECN
+  frames; the path is validated with a ten-packet testing period and the peer's counts, CE marks
+  are congestion events, and a path that bleaches, re-marks or drops marked packets falls back to
+  unmarked ones. New `ConnectionStats::ecn_capable` / `ecn_ce_events`. The UDP layer carries the
+  codepoint per datagram: `IP_RECVTOS` / `IPV6_RECVTCLASS` on receive, an `IP_TOS` /
+  `IPV6_TCLASS` control message per `sendmmsg` message (`only_sys::enable_ecn`,
+  `ecn_available`, `RecvBatch::ecn`, `Batch::push_ecn`; `ONLY_UDP_ECN=0` turns it off).
+- **BBR**: `Congestion::Bbr` no longer runs CUBIC. It is BBRv1's model and state machine on
+  delivery-rate samples, with BBRv2/v3's bound on rounds that lose or CE-mark more than 2%.
+  Through netem in network namespaces on the bench host (100 Mbit/s, 40 ms RTT, a 40 MB echo
+  each way): 73 against CUBIC's 5 Mbit/s with 1% loss, 75 against 36 Mbit/s with a 60-packet
+  buffer, both 84 Mbit/s on a clean deep buffer. Experimental.
+- **Client migration**: `Connection::migrate(&engine)` moves a client connection to a new
+  local UDP socket, or to the server's preferred address, after probing the new path under a
+  connection ID not used before; it stays on the old path when the probe goes unanswered.
+  `Connection::preferred_address()`, `Error::Migration`.
+- **preferred_address**: `ServerConfig::preferred_address(addr)` offers it (connection ID
+  sequence number 1 and its reset token); `QuicServer` is now `Clone`, so the same server serves
+  that address on a second listener.
+- **QUIC version 2** (RFC 9369): `Version`, `ClientConfig::version`, `ServerConfig::versions`,
+  `Connection::version()`. Servers accept 1 and 2; a client answered with Version Negotiation
+  starts over once in a common version, guarded by RFC 9368's version_information parameter.
+  Compatible version negotiation (switching inside a handshake) is not implemented.
+- Interop (`tools/interop/quic/run.sh`): quic-go both ways in version 2 (below quic-go's first
+  key update: quic-go v0.62 derives version 2 key update secrets with the version 1 label,
+  against RFC 9369 section 3.3.2), client migration both ways, our side with BBR, and on Linux
+  ECN validated against quic-go.
+- Answers to path probes from another address now use a connection ID of their own (RFC 9000
+  section 9.5); quic-go's migrating clients need that.
+- Not done: 0-RTT.
+
+Cost on the loopback benchmarks (`quic-bench`, bench host, CPUs 2–5, median of five alternating
+rounds against the merge base): bulk 18,704 → 18,288 Mbit/s (−2.2%; −1.5% with
+`ONLY_UDP_ECN=0`), HTTP/3 839,148 → 824,949 req/s (−1.7%; −1.0%), full handshakes 9,725 →
+9,615/s (−1.1%; −0.8%). ECN's share is the per-datagram control messages and ACK_ECN counts.
+
 ### Evaluated: kernel TLS offload (not adopted, experimental feature)
 
 - Handing only-tls's record keys to the Linux kernel after the handshake (kTLS) was measured on
