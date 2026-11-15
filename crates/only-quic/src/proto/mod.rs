@@ -36,7 +36,9 @@ impl Default for IdHash {
     fn default() -> IdHash {
         use std::hash::BuildHasher;
         static KEY: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
-        IdHash(*KEY.get_or_init(|| std::collections::hash_map::RandomState::new().hash_one(0u64) | 1))
+        IdHash(
+            *KEY.get_or_init(|| std::collections::hash_map::RandomState::new().hash_one(0u64) | 1),
+        )
     }
 }
 

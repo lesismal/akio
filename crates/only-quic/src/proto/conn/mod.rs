@@ -20,9 +20,9 @@ use super::crypto::{Keys, OneRtt, initial_keys};
 use super::frame::{TransportError, code};
 use super::params::TransportParams;
 use super::ranges::RangeSet;
-use super::{IdMap, IdSet};
 use super::recovery::{CcKind, Congestion, Pacer, Rtt};
 use super::stream::{RecvBuf, SendBuf};
+use super::{IdMap, IdSet};
 use crate::types::{Congestion as CcConfig, ConnectionError, ConnectionStats, Dir, Side, StreamId};
 use crate::{Bytes, TransportConfig};
 
