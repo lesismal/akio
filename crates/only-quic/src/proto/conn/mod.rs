@@ -7,7 +7,7 @@ mod recv;
 mod send;
 mod streams;
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,6 +20,7 @@ use super::crypto::{Keys, OneRtt, initial_keys};
 use super::frame::{TransportError, code};
 use super::params::TransportParams;
 use super::ranges::RangeSet;
+use super::{IdMap, IdSet};
 use super::recovery::{CcKind, Congestion, Pacer, Rtt};
 use super::stream::{RecvBuf, SendBuf};
 use crate::types::{Congestion as CcConfig, ConnectionError, ConnectionStats, Dir, Side, StreamId};
@@ -218,17 +219,17 @@ impl Path {
 #[derive(Default, Debug)]
 pub(crate) struct PendingCtl {
     max_data: bool,
-    max_stream_data: HashSet<u64>,
+    max_stream_data: IdSet,
     max_streams_bidi: bool,
     max_streams_uni: bool,
-    reset_stream: HashSet<u64>,
-    stop_sending: HashSet<u64>,
+    reset_stream: IdSet,
+    stop_sending: IdSet,
     new_cids: Vec<u64>,
     retire_cids: Vec<u64>,
     handshake_done: bool,
     new_token: Option<Bytes>,
     data_blocked: bool,
-    stream_data_blocked: HashSet<u64>,
+    stream_data_blocked: IdSet,
     streams_blocked_bidi: bool,
     streams_blocked_uni: bool,
     path_responses: VecDeque<(SocketAddr, [u8; 8])>,
@@ -386,7 +387,7 @@ pub struct Connection {
     mtu_upper: u16,
     mtu_in_flight: Option<u64>,
     // Streams and flow control.
-    pub(crate) streams: HashMap<u64, StreamState>,
+    pub(crate) streams: IdMap<StreamState>,
     send_queue: VecDeque<u64>,
     next_local: [u64; 2],
     peer_max_streams: [u64; 2],
@@ -507,7 +508,7 @@ impl Connection {
                 mtu
             },
             mtu_in_flight: None,
-            streams: HashMap::new(),
+            streams: IdMap::default(),
             send_queue: VecDeque::new(),
             next_local: [0, 0],
             peer_max_streams: [0, 0],

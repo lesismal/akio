@@ -296,10 +296,16 @@ impl Connection {
     /// Runs the state machine until it is quiet: handler events first, then datagrams to send,
     /// endpoint events and the timer.
     fn drive(&self) {
-        self.collect(false);
+        self.drive_at(None);
+    }
+
+    /// [`Connection::drive`] whose first round uses `now` (the time a datagram was just
+    /// handled at) instead of reading the clock twice more.
+    fn drive_at(&self, mut now: Option<Instant>) {
+        self.collect(false, now);
         loop {
             self.deliver();
-            if !self.collect(true) {
+            if !self.collect(true, now.take()) {
                 return;
             }
         }
@@ -307,7 +313,7 @@ impl Connection {
 
     /// Takes what the state machine produced: datagrams (when `transmit`), events, endpoint
     /// events, the timer. Returns whether new handler events were queued.
-    fn collect(&self, transmit: bool) -> bool {
+    fn collect(&self, transmit: bool, now: Option<Instant>) -> bool {
         let ep = &self.0.ep;
         let mut ep_events = Vec::new();
         let drained;
@@ -317,7 +323,7 @@ impl Connection {
             // handler) is handed on while the state is still locked: another thread driving
             // the same connection cannot slip its batch in between.
             let mut st = lock(&self.0.state);
-            let now = Instant::now();
+            let now = now.unwrap_or_else(Instant::now);
             let State { conn, armed, lost } = &mut *st;
             if transmit {
                 let mut q = lock(&self.0.outq);
@@ -531,7 +537,7 @@ impl Ep {
                     lock(&c.0.state)
                         .conn
                         .handle_datagram(now, peer, data.to_vec());
-                    c.drive();
+                    c.drive_at(Some(now));
                 }
             }
             Some(proto::DatagramEvent::New(h, conn)) => {
