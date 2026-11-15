@@ -2,6 +2,8 @@
 //! scalars modulo the group order `ℓ`.
 
 pub(crate) mod fe;
+#[cfg(target_arch = "x86_64")]
+pub(crate) mod hw;
 
 use std::sync::OnceLock;
 

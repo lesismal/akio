@@ -29,10 +29,26 @@ pub const BASEPOINT: [u8; 32] = {
 /// RFC 7748 specifies). Constant time in both inputs.
 #[must_use]
 pub fn x25519(scalar: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
+    #[cfg(target_arch = "x86_64")]
+    if crate::curve25519::hw::enabled() {
+        return crate::curve25519::hw::ladder(&clamp(scalar), u);
+    }
+    x25519_portable(scalar, u)
+}
+
+/// The scalar as RFC 7748 §5 decodes it: the low three bits and the top bit cleared, bit 254 set.
+fn clamp(scalar: &[u8; 32]) -> [u8; 32] {
     let mut k = *scalar;
     k[0] &= 248;
     k[31] &= 127;
     k[31] |= 64;
+    k
+}
+
+/// [`x25519`] on the portable field (radix 2⁵¹): the fallback, and the reference for the
+/// BMI2 + ADX ladder (`curve25519::hw`).
+pub(crate) fn x25519_portable(scalar: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
+    let k = clamp(scalar);
     let x1 = Fe::from_bytes(u);
     let mut x2 = Fe::ONE;
     let mut z2 = Fe::ZERO;
@@ -97,10 +113,7 @@ impl PrivateKey {
     /// The public key, `x25519(self, 9)`.
     #[must_use]
     pub fn public_key(&self) -> [u8; 32] {
-        let mut k = self.0;
-        k[0] &= 248;
-        k[31] &= 127;
-        k[31] |= 64;
+        let k = clamp(&self.0);
         // u = 9 is the image of the Ed25519 base point B, so x25519(k, 9) = u([k]B); the clamped
         // k is below 2²⁵⁵ as `mul_base` needs.
         Point::mul_base(&k).to_montgomery_u()

@@ -692,7 +692,7 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         let s2 = y2.mul(&self.z).mul(&z1z1);
         let h = u2.sub(&self.x);
         let hh = h.square();
-        let i = hh.double().double();
+        let i = hh.mul_pow2(2);
         let j = h.mul(&i);
         let r = s2.sub(&self.y).double();
         let v = self.x.mul(&i);
@@ -865,19 +865,17 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
         }
     }
 
-    /// Doubling for a = -3 (dbl-2001-b: 3M + 5S), constant time; the identity (`Z = 0`) stays
-    /// the identity (`Z₃ = (Y + Z)² - Y² - Z² = 0`).
+    /// Doubling for a = -3 (dbl-2001-b with `Z₃ = 2·Y·Z`: 4M + 4S), constant time; the
+    /// identity (`Z = 0`) stays the identity.
     fn double(&self) -> Self {
         let delta = self.z.square();
         let gamma = self.y.square();
         let beta = self.x.mul(&gamma);
-        let t = self.x.sub(&delta).mul(&self.x.add(&delta));
-        let alpha = t.double().add(&t);
-        let beta4 = beta.double().double();
+        let alpha = self.x.sub(&delta).mul(&self.x.add(&delta)).mul3();
+        let beta4 = beta.mul_pow2(2);
         let x3 = alpha.square().sub(&beta4.double());
-        let z3 = self.y.add(&self.z).square().sub(&gamma).sub(&delta);
-        let g2 = gamma.square().double();
-        let y3 = alpha.mul(&beta4.sub(&x3)).sub(&g2.double().double());
+        let z3 = self.y.mul(&self.z).double();
+        let y3 = alpha.mul(&beta4.sub(&x3)).sub(&gamma.square().mul_pow2(3));
         Jac {
             x: x3,
             y: y3,
@@ -1153,7 +1151,7 @@ pub(crate) fn verify_impl<C: Curve<L>, const L: usize>(
     sig: &Sig<C, L>,
 ) -> Result<(), Error> {
     let e = digest_scalar::<C, L>(h);
-    let w = sig.s.invert();
+    let w = sig.s.invert_vartime();
     let u1 = e.mul(&w);
     let u2 = sig.r.mul(&w);
     let rj = Jac::<C, L>::mul_add_vartime(q, &u1, &u2);

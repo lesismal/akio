@@ -61,6 +61,23 @@ impl Modulus<4> for P256Px {
         sub(a, b)
     }
 
+    #[inline]
+    fn mod_mul3(a: &[u64; 4]) -> [u64; 4] {
+        mul3(a)
+    }
+
+    #[inline]
+    fn mod_mul_pow2(a: &[u64; 4], k: u32) -> [u64; 4] {
+        if k == 0 {
+            return *a;
+        }
+        let mut r = mul_pow2(a, k.min(3));
+        for _ in 3..k {
+            r = mul_pow2(&r, 1);
+        }
+        r
+    }
+
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
         Some(super::curves::p256_inv::<Self>(a))
     }
@@ -90,6 +107,7 @@ const N0: u64 = 0xf3b9_cac2_fc63_2551;
 const N1: u64 = 0xbce6_faad_a717_9e84;
 const N2: u64 = 0xffff_ffff_ffff_ffff;
 const N3: u64 = 0xffff_ffff_0000_0000;
+#[cfg(test)]
 const NINV: u64 = 0xccd1_c8aa_ee00_bc4f;
 
 /// The 512-bit product `a·b` into `z0..z7` = `r8..r15` (pointers in `{a}`, `{b}`; clobbers `rax`,
@@ -218,6 +236,9 @@ macro_rules! sqr_rows {
         )
     };
 }
+
+// The X25519 ladder (`curve25519::hw`) shares the 512-bit products.
+pub(crate) use {mul_rows, sqr_rows};
 
 /// One step of [`reduce_p`]: `m = zᵢ`, `z += m·p`, with the previous carry in `$c`.
 macro_rules! reduce_p_step {
@@ -560,94 +581,177 @@ pub(crate) fn ord_sqr(a: &[u64; 4]) -> [u64; 4] {
     [r0, r1, r2, r3]
 }
 
-/// `a + b mod p` for `a, b < p`.
+/// `s - p` unless that borrows, for `s = {c}·2²⁵⁶ + ({r0}..{r3}) < 2p`, into `{r0}..{r3}`
+/// (`{t0}..{t3}` scratch, `{p1}`, `{p3}` the limbs of `p`).
+macro_rules! cond_sub_p {
+    () => {
+        concat!(
+            "mov {t0}, {r0}\n",
+            "sub {t0}, -1\n",
+            "mov {t1}, {r1}\n",
+            "sbb {t1}, {p1}\n",
+            "mov {t2}, {r2}\n",
+            "sbb {t2}, 0\n",
+            "mov {t3}, {r3}\n",
+            "sbb {t3}, {p3}\n",
+            "sbb {c}, 0\n",
+            "cmovnc {r0}, {t0}\n",
+            "cmovnc {r1}, {t1}\n",
+            "cmovnc {r2}, {t2}\n",
+            "cmovnc {r3}, {t3}\n",
+        )
+    };
+}
+
+/// `2·({r0}..{r3}) mod p` in place.
+macro_rules! dbl_p {
+    () => {
+        concat!(
+            "xor {c:e}, {c:e}\n",
+            "add {r0}, {r0}\n",
+            "adc {r1}, {r1}\n",
+            "adc {r2}, {r2}\n",
+            "adc {r3}, {r3}\n",
+            "adc {c}, 0\n",
+            cond_sub_p!(),
+        )
+    };
+}
+
+/// `a + b mod p` for `a, b < p`. The operands travel in registers.
 #[inline]
 pub(crate) fn add(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
     debug_assert!(cpu::cpu_has(Feature::Adx));
-    let (r0, r1, r2, r3): (u64, u64, u64, u64);
-    // SAFETY: reads the 4 limbs behind each of `a` and `b` (live 32-byte arrays), writes only the
-    // declared registers. Base x86_64 instructions only (`cmov` included).
+    let [mut r0, mut r1, mut r2, mut r3] = *a;
+    // SAFETY: registers only. Base x86_64 instructions only (`cmov` included).
     unsafe {
         asm!(
-            "mov {r0}, [{a}]",
-            "mov {r1}, [{a} + 8]",
-            "mov {r2}, [{a} + 16]",
-            "mov {r3}, [{a} + 24]",
             "xor {c:e}, {c:e}",
-            "add {r0}, [{b}]",
-            "adc {r1}, [{b} + 8]",
-            "adc {r2}, [{b} + 16]",
-            "adc {r3}, [{b} + 24]",
+            "add {r0}, {t0}",
+            "adc {r1}, {t1}",
+            "adc {r2}, {t2}",
+            "adc {r3}, {t3}",
             "adc {c}, 0",
-            // s = c·2²⁵⁶ + r < 2p: take s - p unless that borrows. {a}, {b} hold p₁ and p₃.
-            "mov {a:e}, 0xffffffff",
-            "mov {b}, 0xffffffff00000001",
-            "mov {t0}, {r0}",
-            "sub {t0}, -1",
-            "mov {t1}, {r1}",
-            "sbb {t1}, {a}",
-            "mov {t2}, {r2}",
-            "sbb {t2}, 0",
-            "mov {t3}, {r3}",
-            "sbb {t3}, {b}",
-            "sbb {c}, 0",
-            "cmovnc {r0}, {t0}",
-            "cmovnc {r1}, {t1}",
-            "cmovnc {r2}, {t2}",
-            "cmovnc {r3}, {t3}",
-            a = inout(reg) a.as_ptr() => _,
-            b = inout(reg) b.as_ptr() => _,
-            r0 = out(reg) r0,
-            r1 = out(reg) r1,
-            r2 = out(reg) r2,
-            r3 = out(reg) r3,
-            t0 = out(reg) _,
-            t1 = out(reg) _,
-            t2 = out(reg) _,
-            t3 = out(reg) _,
+            cond_sub_p!(),
+            r0 = inout(reg) r0,
+            r1 = inout(reg) r1,
+            r2 = inout(reg) r2,
+            r3 = inout(reg) r3,
+            t0 = inout(reg) b[0] => _,
+            t1 = inout(reg) b[1] => _,
+            t2 = inout(reg) b[2] => _,
+            t3 = inout(reg) b[3] => _,
             c = out(reg) _,
-            options(pure, readonly, nostack),
+            p1 = in(reg) 0xffff_ffffu64,
+            p3 = in(reg) P3,
+            options(pure, nomem, nostack),
         );
     }
     [r0, r1, r2, r3]
 }
 
-/// `a - b mod p` for `a, b < p`.
+/// `a - b mod p` for `a, b < p`. The operands travel in registers.
 #[inline]
 pub(crate) fn sub(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
     debug_assert!(cpu::cpu_has(Feature::Adx));
-    let (r0, r1, r2, r3): (u64, u64, u64, u64);
-    // SAFETY: reads the 4 limbs behind each of `a` and `b` (live 32-byte arrays), writes only the
-    // declared registers. Base x86_64 instructions only.
+    let [mut r0, mut r1, mut r2, mut r3] = *a;
+    // SAFETY: registers only. Base x86_64 instructions only.
     unsafe {
         asm!(
-            "mov {r0}, [{a}]",
-            "mov {r1}, [{a} + 8]",
-            "mov {r2}, [{a} + 16]",
-            "mov {r3}, [{a} + 24]",
-            "sub {r0}, [{b}]",
-            "sbb {r1}, [{b} + 8]",
-            "sbb {r2}, [{b} + 16]",
-            "sbb {r3}, [{b} + 24]",
+            "sub {r0}, {b0}",
+            "sbb {r1}, {b1}",
+            "sbb {r2}, {b2}",
+            "sbb {r3}, {b3}",
             // m = -borrow; add p & m (p₀ = 2⁶⁴ - 1, p₁ = 2³² - 1, p₂ = 0).
-            "sbb {m}, {m}",
-            "mov {t1}, {m}",
-            "shr {t1}, 32",
-            "mov {t3}, 0xffffffff00000001",
-            "and {t3}, {m}",
-            "add {r0}, {m}",
-            "adc {r1}, {t1}",
+            "sbb {b0}, {b0}",
+            "mov {b1}, {b0}",
+            "shr {b1}, 32",
+            "mov {b3}, 0xffffffff00000001",
+            "and {b3}, {b0}",
+            "add {r0}, {b0}",
+            "adc {r1}, {b1}",
             "adc {r2}, 0",
-            "adc {r3}, {t3}",
+            "adc {r3}, {b3}",
+            r0 = inout(reg) r0,
+            r1 = inout(reg) r1,
+            r2 = inout(reg) r2,
+            r3 = inout(reg) r3,
+            b0 = inout(reg) b[0] => _,
+            b1 = inout(reg) b[1] => _,
+            b2 = in(reg) b[2],
+            b3 = inout(reg) b[3] => _,
+            options(pure, nomem, nostack),
+        );
+    }
+    [r0, r1, r2, r3]
+}
+
+/// `2ᵏ·a mod p` for `a < p`, `k ∈ {1, 2, 3}` (the doublings of the point formulas fused, in
+/// registers).
+#[inline]
+pub(crate) fn mul_pow2(a: &[u64; 4], k: u32) -> [u64; 4] {
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    debug_assert!((1..=3).contains(&k));
+    let [mut r0, mut r1, mut r2, mut r3] = *a;
+    macro_rules! go {
+        ($($step:expr),+) => {
+            // SAFETY: registers only. Base x86_64 instructions only (`cmov` included).
+            unsafe {
+                asm!(
+                    $($step,)+
+                    r0 = inout(reg) r0,
+                    r1 = inout(reg) r1,
+                    r2 = inout(reg) r2,
+                    r3 = inout(reg) r3,
+                    t0 = out(reg) _,
+                    t1 = out(reg) _,
+                    t2 = out(reg) _,
+                    t3 = out(reg) _,
+                    c = out(reg) _,
+                    p1 = in(reg) 0xffff_ffffu64,
+                    p3 = in(reg) P3,
+                    options(pure, nomem, nostack),
+                );
+            }
+        };
+    }
+    match k {
+        1 => go!(dbl_p!()),
+        2 => go!(dbl_p!(), dbl_p!()),
+        _ => go!(dbl_p!(), dbl_p!(), dbl_p!()),
+    }
+    [r0, r1, r2, r3]
+}
+
+/// `3·a mod p` for `a < p` (the second addition reads `a` from memory).
+#[inline]
+pub(crate) fn mul3(a: &[u64; 4]) -> [u64; 4] {
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    let [mut r0, mut r1, mut r2, mut r3] = *a;
+    // SAFETY: reads the 4 limbs behind `a` (a live 32-byte array), writes only the declared
+    // registers. Base x86_64 instructions only (`cmov` included).
+    unsafe {
+        asm!(
+            dbl_p!(),
+            "xor {c:e}, {c:e}",
+            "add {r0}, [{a}]",
+            "adc {r1}, [{a} + 8]",
+            "adc {r2}, [{a} + 16]",
+            "adc {r3}, [{a} + 24]",
+            "adc {c}, 0",
+            cond_sub_p!(),
+            r0 = inout(reg) r0,
+            r1 = inout(reg) r1,
+            r2 = inout(reg) r2,
+            r3 = inout(reg) r3,
             a = in(reg) a.as_ptr(),
-            b = in(reg) b.as_ptr(),
-            r0 = out(reg) r0,
-            r1 = out(reg) r1,
-            r2 = out(reg) r2,
-            r3 = out(reg) r3,
-            m = out(reg) _,
+            t0 = out(reg) _,
             t1 = out(reg) _,
+            t2 = out(reg) _,
             t3 = out(reg) _,
+            c = out(reg) _,
+            p1 = in(reg) 0xffff_ffffu64,
+            p3 = in(reg) P3,
             options(pure, readonly, nostack),
         );
     }
@@ -698,6 +802,14 @@ mod tests {
                 assert_eq!(mul(x, y), P256P::mont_mul(x, y), "mul {x:x?} {y:x?}");
                 assert_eq!(add(x, y), P256P::mod_add(x, y), "add {x:x?} {y:x?}");
                 assert_eq!(sub(x, y), P256P::mod_sub(x, y), "sub {x:x?} {y:x?}");
+            }
+            assert_eq!(mul3(a), P256P::mod_mul3(a), "mul3 {a:x?}");
+            for k in 0..6 {
+                assert_eq!(
+                    P256Px::mod_mul_pow2(a, k),
+                    P256P::mod_mul_pow2(a, k),
+                    "2^{k} {a:x?}"
+                );
             }
             assert_eq!(sqr(a), P256P::mont_sqr(a), "sqr {a:x?}");
             assert_eq!(
