@@ -90,7 +90,7 @@ a connection at a time. If a handler only parses and replies, nothing changes: i
 
 | fib package | `only` crate | Differences |
 |---|---|---|
-| `tls` (crypto/tls handshakes, own record layer) | `only::tls` (rustls underneath) | `ServerConfig` / `ClientConfig` builders; no kTLS yet |
+| `tls` (crypto/tls handshakes, own record layer) | `only::tls` (own TLS 1.3 / 1.2 and record layer) | `ServerConfig` / `ClientConfig` builders; no kTLS (evaluated: slower than the own record layer, [benchmarks](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)) |
 | `websocket` | `only-ws` (+ `Context::upgrade_websocket`) | complete messages only (no per-frame delivery); no WebSocket over HTTP/2 or HTTP/3; client sends no 1001 on shutdown yet |
 | `http3` (own QUIC) | `only-quic` (own QUIC) + `only-h3` | no QPACK dynamic table, no push, no Alt-Svc auto-switch in the client |
 | `grpc` | `only-grpc` | bytes or `codec::Message` types (prost with a feature); no protoc-gen-go-grpc equivalent code generator |

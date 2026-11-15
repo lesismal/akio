@@ -54,9 +54,9 @@ AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并
 （合适时不发 HelloRetryRequest）。
 
 一致性：RFC 8448 跟踪作为单元测试，tlsfuzzer（`tools/interop/tls/tlsfuzzer.sh`），以及与 OpenSSL、Go `crypto/tls`、curl 和 rustls 的互通矩阵
-（`tools/interop/tls/run.sh`、`tools/interop/grpc/run.sh`、`only` crate 的 TLS 测试）。速度：完整握手
-约为 rustls + ring 的 0.7 倍，大块传输约 0.45 倍（`only-crypto` 还没有 PMULL / PCLMULQDQ 的 GHASH），
-小记录持平。
+（`tools/interop/tls/run.sh`、`tools/interop/grpc/run.sh`、`only` crate 的 TLS 测试）。与 rustls 0.23 +
+ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握手持平，AES-128-GCM 记录在 1 KiB 时为
+1.5 倍、16 KiB 时为 1.65 倍。
 
 ## 配置
 
@@ -87,9 +87,17 @@ AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并
   `server_config_from(&tls_config)`。`only-quic` 的自研 QUIC（DEV-PLAN 第 D 波）用同一份
   `only::tls` 配置驱动 `only-tls` 内不经记录层的 TLS 1.3 内核（内部 API）。
 
+## 内核 TLS
+
+不使用：内核 TLS 卸载（握手后把记录密钥交给 Linux，使 `sendfile` 在 TLS 下可用）已经测量过，比 only-tls
+自己的记录层慢，从 1 KiB 响应的 0.83 倍到 256 KiB 的 0.40 倍，10 MB 文件用 `sendfile` 对比 `pread`
+加加密为 0.48 倍（[测量结果](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#内核-tlsktls评估)）。卸载代码保留在实验性的
+`experimental-ktls` cargo feature 之后（只用于阻塞测试流与基准，没有接入 `Tls`，不在 semver 承诺之内），
+以便重新测量，例如在带 TLS 卸载的网卡上。
+
 ## 尚未完成
 
-kTLS 卸载；发送或接受 TLS 1.3 early data（0-RTT）；record_size_limit、证书压缩、OCSP stapling
+发送或接受 TLS 1.3 early data（0-RTT）；record_size_limit、证书压缩、OCSP stapling
 （忽略 status_request）；RSA-PSS 密钥（`rsa_pss_pss_*`）；P-521；系统根证书（请自行加载到
 `RootCerts`）。
 

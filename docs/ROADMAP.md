@@ -99,7 +99,7 @@ Priority: P0 = required for 1.0; P1 = strongly recommended for 1.0; P2 = after 1
 | --- | --- | --- | --- | --- |
 | TCP / Unix sockets, async dial | ✓ | P0 | M1 | sendfile / splice / writev / cork / half close |
 | UDP (one connection per peer, batched I/O) | ✓ | P0 | M2 | recvmmsg/sendmmsg, GRO/GSO |
-| TLS 1.2/1.3 | ✓ (in-house) | P0 | M2 | rustls sans-io; kTLS optional |
+| TLS 1.2/1.3 | ✓ (in-house) | P0 | M2 | own sans-io TLS (`only-tls`, replaced rustls); kTLS evaluated, not adopted (slower, docs/BENCHMARKS.md) |
 | HTTP/1.x (pipelining, chunked, sendfile) | ✓ | P0 | M3 | in-house or reuse; SIMD parsing ideas from httparse |
 | Router / middleware / static file cache | ✓ | P0 | M3 | chi-style, allocation-free routing |
 | WebSocket (RFC 6455 + permessage-deflate) | ✓ | P0 | M3 | Autobahn suite in CI |

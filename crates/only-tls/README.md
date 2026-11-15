@@ -45,7 +45,11 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 - Certificates are verified with `only-x509` (chain, validity, EKU, DNS names and IP addresses).
 
 Not implemented: sending or accepting 0-RTT, record_size_limit, certificate compression, OCSP
-stapling (status_request is ignored), RSA-PSS keys, P-521, kTLS.
+stapling (status_request is ignored), RSA-PSS keys, P-521. Kernel TLS offload was evaluated and
+is not used: it was slower than this crate's record layer in every case measured, `sendfile`
+included (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"); the code stays behind the
+experimental `experimental-ktls` feature (test stream and benchmark only, outside the semver
+promise).
 
 ## Internals
 

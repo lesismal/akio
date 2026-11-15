@@ -764,6 +764,7 @@ dependencies = [
  "only-core",
  "only-crypto",
  "only-log",
+ "only-sys",
  "only-x509",
  "rustls",
 ]

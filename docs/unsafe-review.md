@@ -143,10 +143,10 @@ contain no `unsafe`.
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 121 | 68 | 0 | 0 |
-| only-sys | 77 | 3 | 3 | 0 |
+| only-sys | 86 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **total** | **276** | **78** | **5** | **21** |
+| **total** | **285** | **78** | **5** | **21** |
 
 By purpose:
 
@@ -157,6 +157,7 @@ By purpose:
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue create, ctl, wait | event buffer has `BATCH` initialised entries; kevent `udata` is an opaque token |
 | `only-sys/src/process.rs` | 12 | prefork plumbing: `pre_exec` hook (`fcntl` clearing `FD_CLOEXEC`, `PR_SET_PDEATHSIG`, `sched_setaffinity`), `take_inherited_fd`, self-pipe signal handler (`sigaction`, `write` from the handler), `kill` | the hook only makes async-signal-safe calls and allocates nothing (all data built before `fork`); an inherited fd is owned at most once per process (`TAKEN` set); the handler saves and restores `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd (Linux) / pipe (macOS) waker, `EventFd` for io_uring | fds owned immediately; 8-byte eventfd writes from a live `u64` |
+| `only-sys/src/ktls.rs` | 9 | kernel TLS (experimental, only-tls `experimental-ktls`): `TCP_ULP` and `SOL_TLS` `setsockopt`, `sendmsg`/`recvmsg` with the record-type cmsg, `uname`, wiping the copied key | crypto-info structs built whole on the stack and checked against `libc` in the layout tests; the cmsg buffer is 8-aligned and `CMSG_SPACE(1)` long; cmsgs walked with `CMSG_*` within `msg_controllen` |
 | `only-sys/src/udp.rs` | 14 + 2 `impl Send` | `recvmmsg`/`sendmmsg`, UDP GSO (`UDP_SEGMENT`) / GRO cmsgs, sockaddr parsing | iovecs inside one allocation (checked size); headers rebuilt before each call; cmsg walked with `CMSG_*` within `msg_controllen`; `Batch<'d>` borrows send data for the call |
 | `only-crypto/src/aes/hw.rs` | 26, 26 `unsafe fn` (x86_64 and aarch64 variants; 6 stubs for other targets, never called) | AES-NI / ARMv8 AES key schedule, block encryption and decryption, CTR eight blocks at a time (round count as a const generic, unrolled) | a `hw::Keys` is only constructed after `cpu::cpu_has(Feature::Aes)` (`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`); loads and stores are unaligned and stay within 16-byte arrays or 16-byte pieces of a `&mut [u8; 128]` chunk; `SubWord` in the key schedule uses the AES instruction, no key-indexed table |
 | `only-crypto/src/gcm/hw.rs` | 18, 17 `unsafe fn` (2 stubs for other targets) | GHASH on PCLMULQDQ / PMULL (eight blocks per reduction, Karatsuba) and AES-GCM encryption/decryption fused into one pass (AES-NI / ARMv8 AES rounds and the carry-less products in the same loop); the call into `vaes` | `Powers` exist only after `cpu_has(Feature::Clmul)` (PCLMULQDQ + SSSE3 + SSE4.1 / the aarch64 AES extension); the safe wrappers re-check `cpu_has` (and `Feature::Aes` for the fused kernel, `Aes`, `Clmul`, `Vaes` and `Avx512` for the wide one) before every call; every load reads 16 bytes inside a slice whose length the wrapper made a multiple of 16 (GHASH) or 128 (fused); the wide kernel gets whole 256-byte groups within both the input and the output slice, and the same pointer twice only when working in place |

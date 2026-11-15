@@ -200,6 +200,58 @@ rustls 0.23 + ring 是开发依赖。
 2,739 → 6,603 MB/s，相对 rustls + ring 0.69 倍 → 1.65 倍）。ChaCha20-Poly1305 记录运行在 AVX-512
 ChaCha20 与 IFMA Poly1305 内核上，同样非原地加解密：16 KiB 时相对 rustls + ring 0.55 倍 → 1.42 倍（见下文）。
 
+### 内核 TLS（kTLS）评估（`crates/only-tls/examples/ktls-bench.rs`、`tools/bench/ktls.sh`）
+
+问题：only-tls 完成握手后，是否应把记录密钥交给 Linux 内核（`setsockopt(TCP_ULP, "tls")`，`SOL_TLS`
+的 `TLS_TX` / `TLS_RX`），由内核加解密记录，让套接字上流动明文、让 `sendfile(2)` 在 TLS 下可用？
+**结论：不应该。在这台主机上，内核的软件 kTLS 在所有测试情形下都比 only-tls 自己的记录层慢，而且恰恰在
+它本该占优的地方（大响应与 `sendfile`）最慢。** 卸载代码保留在 only-tls 的 `experimental-ktls` feature
+之后以便重新测量，没有接入 `Tls` 或引擎。
+
+方法：一个每连接一线程的 TLS 上 HTTP/1.1 服务器（`ktls-bench`），记录层要么是用户态的 only-tls
+（`user`：响应由 only-tls 加密后写出；文件用 `pread` 按 64 KiB 读入后加密），要么是内核（`ktls`：同样
+由 only-tls 握手，然后交出密钥；响应以明文写出；文件用 `sendfile` 发送）。同一个二进制、同样的握手
+（TLS 1.3、X25519、ECDSA P-256、无票据），除注明外均为 AES-128-GCM。服务器在 CPU 0–3，
+`h2load --h1` 8 线程在 CPU 4–7 与 12–15，每次 2 s 预热后测 8 s，交替进行 3 轮（取中位数；各轮相差
+1–2%），全部在 `quiet.sh` 下运行。Linux 7.0，Ryzen 7 7800X3D；内核的 AES-GCM 是
+`generic-gcm-vaes-avx512`（与 only-crypto 同类的 VAES + AVX-512 代码），ChaCha20-Poly1305 是
+`rfc7539(chacha20-lib,poly1305-generic)`。所有情形下服务器都是 CPU 瓶颈（每秒 4.0 CPU 秒），因此每字节
+CPU 为服务器 CPU 时间（用户态 + 内核态，取自 `/proc`）除以发送的字节数。
+
+| 情形（连接数） | only-tls 请求/秒 | kTLS 请求/秒 | kTLS / only | only-tls CPU ns/B | kTLS CPU ns/B | 每字节 CPU kTLS / only |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 KiB 响应（64） | 531,393 | 439,368 | 0.83 | 6.77 | 8.55 | 1.26 |
+| 16 KiB（64） | 358,494 | 233,814 | 0.65 | 0.679 | 1.042 | 1.53 |
+| 256 KiB（32） | 66,057（16.1 GB/s） | 26,415（6.45 GB/s） | 0.40 | 0.231 | 0.577 | 2.50 |
+| 10 MB 文件（16）：`pread` + 加密 对比 `sendfile` | 1,391（13.0 GB/s） | 669（6.24 GB/s） | 0.48 | 0.288 | 0.597 | 2.07 |
+| 16 KiB，ChaCha20-Poly1305（64） | 284,155 | 175,070 | 0.62 | 0.858 | 1.393 | 1.62 |
+| 16 KiB，TLS 1.2 AES-128-GCM（64） | 358,377 | 242,912 | 0.68 | 0.680 | 1.003 | 1.47 |
+
+回环的 MTU 是 64 KiB；把客户端放进网络命名空间、经 MTU 1500 的 veth 对连接（`VETH=1`，GSO/GRO 开启，
+与网卡相同）时比值不变：0.83（1 KiB）、0.65（16 KiB）、0.40（256 KiB）、0.49（文件）。卸载本身每连接
+花费 14–20 µs（`TCP_ULP` 加两次 `SOL_TLS` 设置密钥），而一次完整握手两端合计约 200 µs CPU（`tls-bench`
+中每秒 5,027 次）：对短连接是不可忽视的额外开销。
+
+原因（perf，10 MB 文件情形）：使用 kTLS 时，服务器 96% 的采样位于 `tls_sw_sendmsg` 之下，但 AES-GCM
+本身只占约 12%。内核把每条 16 KiB 记录单独推给 TCP（`tls_push_record` → `tcp_push`：约 55% 的采样在
+TCP/IP 发送路径中，包括回环的接收软中断；用户态每次 `write` 交给 TCP 64 KiB 的记录，只占约 29%），并为
+每条记录分配并清零新页（`kernel_init_pages` 约 5%）。在用户态，同样的工作是 only-crypto 的 GCM（22%）
+加上 `pread` 与 `write` 的拷贝（各约 14%）；省掉这些拷贝抵不上内核中每条记录的开销。小响应损失较小
+（0.83 倍），因为每个请求的开销主要是两种模式共有的系统调用与 TCP。
+
+kTLS 仍可能划算的情况：带 TLS 卸载的网卡（`tls-hw-tx-offload`，如 ConnectX-6 Dx；本机没有），此时内核
+把未加密的记录交给网卡，`sendfile` 才真正零拷贝；或者用户态 AES-GCM 比内核慢得多的主机（没有 VAES）。
+这两种情况都不适用于 x86_64 上带 VAES 的 only-tls；重新考虑之前请先用 `tools/bench/ktls.sh` 重新测量。
+
+实验代码覆盖的内容（测试：在支持 kTLS 的内核上运行 `crates/only-tls/tests/ktls.rs`，内存中的单元测试
+随处可跑；`ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh` 在 only 一侧卸载的情况下对 OpenSSL
+3.0.13 与 Go 1.27 通过 107/107）：TLS 1.3 与 1.2 的 AES-128-GCM、AES-256-GCM 与 ChaCha20-Poly1305；
+握手后导出密钥与序列号（仅当没有任何缓冲数据时）；通过记录类型控制消息收发告警、close_notify 与握手后
+消息（NewSessionTicket、KeyUpdate）；通过重新安装密钥实现双向 TLS 1.3 KeyUpdate（Linux 6.14+；更旧的
+内核让 TLS 1.3 留在用户态，因为对端随时可能更新密钥）；`tls` 模块或套件缺失时回退到用户态。未做：引擎
+集成（epoll / io_uring 接收时处理 `TLS_GET_RECORD_TYPE`、写队列中的控制记录）、`TLS_RX_EXPECT_NO_PAD`，
+以及在 AES-GCM 记录数上限之前主动发送 KeyUpdate（内核不替我们计数）。
+
 ### 密码学（`only-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
 运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +

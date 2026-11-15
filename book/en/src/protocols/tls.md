@@ -60,9 +60,8 @@ fits).
 
 Conformance: RFC 8448 traces as unit tests, tlsfuzzer (`tools/interop/tls/tlsfuzzer.sh`), and an interop matrix against OpenSSL, Go
 `crypto/tls`, curl and rustls (`tools/interop/tls/run.sh`, `tools/interop/grpc/run.sh`, the
-`only` crate's TLS tests). Speed: full handshakes reach about 0.7x of rustls with ring, bulk
-transfer about 0.45x (`only-crypto` has no PMULL / PCLMULQDQ GHASH yet), small records are on
-par.
+`only` crate's TLS tests). Speed against rustls 0.23 with ring (`tls-bench`, x86_64 with VAES):
+X25519 full handshakes on par, AES-128-GCM records 1.5x at 1 KiB and 1.65x at 16 KiB.
 
 ## Configuration
 
@@ -95,9 +94,19 @@ builds naming it keep working).
   record-free TLS 1.3 core inside `only-tls` (internal API) with the same `only::tls`
   configurations.
 
+## Kernel TLS
+
+Not used: kernel TLS offload (handing the record keys to Linux after the handshake, so that
+`sendfile` works under TLS) was measured and is slower than only-tls's own record layer, by
+0.83x at 1 KiB responses down to 0.40x at 256 KiB and 0.48x for `sendfile` of a 10 MB file
+against `pread` plus sealing ([measurements](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#kernel-tls-ktls-evaluation)). The offload is
+kept behind the experimental `experimental-ktls` cargo feature (blocking test stream and
+benchmark only, not wired into `Tls`, outside the semver promise) for re-measuring, for example
+on a NIC with TLS offload.
+
 ## Not done
 
-kTLS offload; sending or accepting TLS 1.3 early data (0-RTT); record_size_limit, certificate
+Sending or accepting TLS 1.3 early data (0-RTT); record_size_limit, certificate
 compression, OCSP stapling (status_request is ignored); RSA-PSS keys (`rsa_pss_pss_*`);
 P-521; system root certificates (load them into `RootCerts`).
 

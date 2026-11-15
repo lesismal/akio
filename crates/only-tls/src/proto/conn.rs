@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use super::alert::{Alert, Fatal, fatal};
 use super::client::Client;
+#[cfg(feature = "experimental-ktls")]
+use super::common::Keys;
 use super::common::{Action, ClientSettings, ServerSettings};
 use super::msgs::{TLS12, TLS13};
 use super::record::{
@@ -12,6 +14,11 @@ use super::record::{
 };
 use super::server::Server;
 use super::suites::Suite;
+
+#[cfg(feature = "experimental-ktls")]
+mod ktls;
+#[cfg(feature = "experimental-ktls")]
+pub use ktls::{DirKeys, Offload, OffloadEvent};
 
 /// Largest handshake message accepted (certificate chains are the big ones).
 pub(crate) const MAX_HANDSHAKE: usize = 1 << 17;
@@ -125,6 +132,16 @@ pub struct Connection {
     warnings: u32,
     compat_ccs: bool,
     key_update_after: u64,
+    /// Kernel TLS: keep the raw traffic keys (`read_keys` / `write_keys`) for an offload.
+    #[cfg(feature = "experimental-ktls")]
+    keep_keys: bool,
+    #[cfg(feature = "experimental-ktls")]
+    read_keys: Option<Keys>,
+    #[cfg(feature = "experimental-ktls")]
+    write_keys: Option<Keys>,
+    /// The record layer moved into the kernel (`commit_offload`).
+    #[cfg(feature = "experimental-ktls")]
+    offloaded: bool,
 }
 
 impl std::fmt::Debug for Connection {
@@ -170,6 +187,14 @@ impl Connection {
             warnings: 0,
             compat_ccs: false,
             key_update_after: KEY_UPDATE_AFTER,
+            #[cfg(feature = "experimental-ktls")]
+            keep_keys: false,
+            #[cfg(feature = "experimental-ktls")]
+            read_keys: None,
+            #[cfg(feature = "experimental-ktls")]
+            write_keys: None,
+            #[cfg(feature = "experimental-ktls")]
+            offloaded: false,
         }
     }
 
@@ -531,11 +556,19 @@ impl Connection {
                 }
                 Action::ReadKeys(_, k) => {
                     self.rec.set_read(&k);
+                    #[cfg(feature = "experimental-ktls")]
+                    if self.keep_keys {
+                        self.read_keys = Some(k);
+                    }
                     read_changed = true;
                 }
                 Action::WriteKeys(_, k) => {
                     self.flush_hs(out)?;
                     self.rec.set_write(&k);
+                    #[cfg(feature = "experimental-ktls")]
+                    if self.keep_keys {
+                        self.write_keys = Some(k);
+                    }
                 }
                 Action::Warning(alert) => {
                     self.flush_hs(out)?;

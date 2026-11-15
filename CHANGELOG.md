@@ -30,6 +30,26 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Evaluated: kernel TLS offload (not adopted, experimental feature)
+
+- Handing only-tls's record keys to the Linux kernel after the handshake (kTLS) was measured on
+  Linux 7.0 / Ryzen 7 7800X3D with HTTP/1.1 over TLS (`tools/bench/ktls.sh`): the kernel's
+  software TLS reached 0.83x of only-tls's own record layer at 1 KiB responses, 0.65x at 16 KiB,
+  0.40x at 256 KiB, and 0.48x when it sent a 10 MB file with `sendfile` against only-tls's
+  `pread` plus sealing, with 1.3x to 2.5x the server CPU per byte (docs/BENCHMARKS.md, "Kernel TLS
+  (kTLS) evaluation"). It is not wired into `Tls` or the engine.
+- The offload stays for re-measuring behind a new **experimental** `only-tls` feature,
+  `experimental-ktls` (off by default, outside the semver promise, no public API): the blocking
+  test stream (`only_tls::stream`, hidden) can offload after the handshake (TLS 1.3 and 1.2,
+  AES-128/256-GCM and ChaCha20-Poly1305, alerts, close_notify, NewSessionTicket and KeyUpdate in
+  both directions on Linux 6.14+, fallback to user space), with the `ktls-bench` example,
+  `tls-interop --ktls` / `ONLY_INTEROP_KTLS=require tools/interop/tls/run.sh` (107/107 against
+  OpenSSL and Go) and `crates/only-tls/tests/ktls.rs` (skipped without the `tls` kernel module).
+  `only-sys` gained the hidden `ktls` module (`TCP_ULP`, `SOL_TLS`, record-type cmsgs) with the
+  `linux/tls.h` structures checked against `libc` in the layout tests.
+- Docs: the stale "rustls underneath" wording in the README, the book's crate list and the fib
+  migration guide, and the ROADMAP's TLS row, now say what is true (own TLS 1.3 / 1.2).
+
 ### Fixed: SOCKS and HTTP CONNECT tunnels could hang under backpressure
 
 - `only-socks`: a tunnel (SOCKS5/4/4a or HTTP `CONNECT`) could stop for good while relaying a

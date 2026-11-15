@@ -135,6 +135,12 @@ impl RecordLayer {
         self.write.as_ref().map_or(0, |c| c.seq)
     }
 
+    /// Records read under the current read keys (kernel TLS offload).
+    #[cfg(feature = "experimental-ktls")]
+    pub(crate) fn read_seq(&self) -> u64 {
+        self.read.as_ref().map_or(0, |c| c.seq)
+    }
+
     /// The length of the record at the start of `buf` (header included), once complete.
     pub(crate) fn frame(buf: &[u8]) -> Result<Option<usize>, Fatal> {
         if buf.len() < HEADER_LEN {
