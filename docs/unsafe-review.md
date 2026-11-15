@@ -111,8 +111,10 @@ and runs its portable code (`cargo +nightly miri test -p only-crypto --lib -- ae
 crc:: chacha:: field:: ec:: curve25519:: x25519:: …`; it cannot run `asm!` either). The
 CPU-instruction modules are checked instead by comparing every hardware path with the portable
 one (unit tests `hardware_matches_portable` / `hardware_matches_table`, `ec::hw` and
-`curve25519::hw` `matches_portable` on random and edge values, `twin_matches_portable` for the
-P-256 operations), by running all KATs (NIST CAVP, RFC, Wycheproof) twice, normally and with
+`curve25519::hw` `matches_portable` on random and edge values, `ec::hw` `points_match_portable`
+for the whole-point routines against the portable formulas limb for limb (random points with
+random `Z`, Wycheproof points, `P + P`, `P + (-P)`, the identity), `twin_matches_portable` for the
+P-256 operations, `safegcd` `matches_fermat`), by running all KATs (NIST CAVP, RFC, Wycheproof) twice, normally and with
 `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64, and by the differential fuzz targets
 `crypto_hash`, `crypto_aead` and `crypto_sig_verify`. The `asm!` kernel of `gcm::hw::vaes` never runs under Miri
 (nothing is detected) and is compared with the 128-bit kernel and the portable code at every
@@ -133,10 +135,10 @@ contain no `unsafe`.
 | only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
-| only-crypto | 89 | 63 | 0 | 0 |
+| only-crypto | 95 | 65 | 0 | 0 |
 | only-sys | 77 | 3 | 3 | 0 |
 | only-uring | 34 | 4 | 1 | 0 |
-| **total** | **242** | **73** | **5** | **21** |
+| **total** | **248** | **75** | **5** | **21** |
 
 By purpose:
 
@@ -155,7 +157,7 @@ By purpose:
 | `only-crypto/src/hash/hw.rs` | 8, 8 `unsafe fn` (2 stubs) | SHA-1 and SHA-256 compression on SHA-NI (x86_64) and the ARMv8 SHA1/SHA2 instructions | the wrappers call only when `cpu_has(Feature::Sha)` (SHA + SSSE3 + SSE4.1 / `sha2`); loads read 16-byte pieces of the 64-byte chunks of the block slice, the state is loaded from and stored to the live `[u32; 5]` / `[u32; 8]` |
 | `only-crypto/src/crc/hw.rs` | 15, 9 `unsafe fn` | CRC-32 / CRC-32C: PCLMULQDQ folding (four 128-bit accumulators), from 512 bytes VPCLMULQDQ + AVX-512 folding (four 512-bit accumulators, 256 bytes per step, one `asm!` block), and the SSE4.2 `crc32` instruction on x86_64, the ARMv8 CRC32 instructions on aarch64 | called only after `cpu_has(Feature::Clmul)` / `cpu_has(Feature::Crc)` (the 512-bit fold also `Vaes` and `Avx512`, re-checked by `wide_available()` before the call); the folding loop reads 16 bytes at offsets `o` with `o + 16 <= len` (checked by the loop conditions), only with `len >= 64`; the `asm!` fold gets a slice of a nonzero multiple of 256 bytes and reads exactly that, the 80 bytes of constants (`#[repr(C)]`, offsets fixed) and writes a 16-byte array; the fold constants are compile-time functions of the public polynomials |
 | `only-crypto/src/chacha/hw.rs` | 2, 1 `unsafe fn` | ChaCha20 eight blocks at a time with AVX2 (8×8 transpose back into blocks) | called only after `cpu_has(Feature::Avx2)`; loads and stores are 32-byte pieces of a `&mut [u8; 512]`; the counter of the eight blocks cannot wrap (checked by the caller) |
-| `only-crypto/src/ec/hw.rs` | 8 (x86_64 only) | P-256 in `asm!`: Montgomery multiplication and squaring modulo `p` (special reduction, `-p⁻¹ = 1`) and modulo the order `n`, addition, subtraction, `2ᵏ·a`, `3·a` | reached only after `cpu::has(Feature::Adx)` (BMI2 + ADX): the `P256X` twin curve is entered through `P256`'s dispatch, the scalar field checks before each call, every function debug-asserts it; the blocks read only the 32-byte limb arrays behind their pointer operands (`pure`, `readonly` or `nomem`, `nostack`), write only declared registers, and have no branches (corrections by `cmov`/`sbb` masks) |
+| `only-crypto/src/ec/hw.rs` | 14, 2 `unsafe fn` (x86_64 only) | P-256 in `asm!`: Montgomery multiplication and squaring modulo `p` (special reduction, `-p⁻¹ = 1`) and modulo the order `n`, addition, subtraction, `2ᵏ·a`, `3·a`; whole Jacobian doubling (also `n` in a row), addition and mixed addition as one block each over a stack frame; 59 safegcd divsteps; AVX2 scans of the ECDH window table and of the wide fixed-base comb (`#[target_feature]` functions) | the field, order and point blocks are reached only after `cpu::has(Feature::Adx)` (BMI2 + ADX): the `P256X` twin curve is entered through `P256`'s dispatch, the scalar field checks before each call, every function debug-asserts it; the field blocks read only the 32-byte limb arrays behind their pointer operands (`pure`, `readonly` or `nomem`, `nostack`) and write only declared registers; a point block reads and writes only its frame (a local `[u64; 44..56]` passed in `rdi`; every address is `rdi` plus a constant below the frame size), `nostack`; the divsteps block is registers only (base instructions); the AVX2 functions are called only after `cpu::cpu_has(Feature::Avx2)` and load 32 bytes from each 4-limb array of a live table entry; no branches but the divsteps loop counter (corrections by `cmov`/`sbb`/`sar` masks) |
 | `only-crypto/src/curve25519/hw.rs` | 5 (x86_64 only) | the X25519 ladder's arithmetic modulo `2²⁵⁵ - 19` on four limbs in `asm!` (multiplication, squaring, `121665·a`, addition, subtraction; folds by `2²⁵⁶ ≡ 38`) | `ladder` is called only after `hw::enabled()` (`cpu::has(Feature::Adx)`), debug-asserted in each function; same memory and register discipline as `ec/hw.rs`, no branches |
 | `only-sys/src/random.rs` | 2 (one per OS) | `getrandom(2)` (Linux), `getentropy(2)` (macOS) for `only-crypto` | the kernel writes at most `buf.len()` bytes into a live `&mut [u8]` (`getentropy` at most 256 per call); a short `getrandom` read advances by the returned count |
 | `only-uring/src/reactor.rs` | 12 + 3 in tests, `unsafe fn slice`, `impl Send for Loop` | SQE push, provided-buffer ring (`BufRing`), kernel-written buffers (`KernelBuf`), accepted fds | nothing in flight when buffers are freed (cancel-all + drain, else leak); kernel-owned buffers never borrowed; ring entries written by raw field pointers; tail stored with `Release` |

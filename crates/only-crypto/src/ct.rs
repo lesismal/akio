@@ -9,20 +9,27 @@
 //! on the formulation, P-256), although it costs a round trip through memory per mask.
 //!
 //! The inline assembly of `ec::hw` and `curve25519::hw` (P-256 and Curve25519 arithmetic on
-//! x86_64 with BMI2 + ADX) does not need the barrier: the compiler cannot rewrite it, and its
-//! corrections are `cmov` or `sbb` masks. The Rust code around it (Jacobian formulas, table
-//! scans, the ladder's swaps, digit recoding) still uses the masks here.
+//! x86_64 with BMI2 + ADX: field routines, whole Jacobian doublings and additions, the safegcd
+//! divsteps) does not need the barrier: the compiler cannot rewrite it, and its corrections are
+//! `cmov`, `sbb` or `sar`/`neg` masks. The AVX2 table scans of `ec::hw` select with `vpcmpeqq`
+//! masks. The Rust code around them (the masked selects of the scalar multiplications, the
+//! ladder's swaps, digit recoding, the portable safegcd) still uses the masks here.
 //!
 //! How this is checked: `objdump -d` of a release build (`--example pk_bench`), listing every
 //! conditional branch in the secret-scalar paths: `Jac::{double, add_core, madd_ct}` and the
-//! inlined `mul_ct`/`mul_base_ct`/`lookup`/`booth5` inside `ecdh_x_impl`/`base_mul_impl`
-//! (portable `P256`/`P384` and the `P256X` twin), the field multiplication, squaring and
-//! inversion chains (`p256_inv`, `p256n_inv`, `Fe::invert`), `Point::mul_base` / `add_niels` /
-//! `Completed::to_point` (edwards25519) and `x25519` (both ladders inlined). On x86_64 (with
-//! the assembly) and aarch64 (portable) the only conditional branches there are loop counters,
-//! public bounds and indices (window positions, table rows), the public exponent bits of the
-//! inversion chains, the CPU-feature checks, `OnceLock` initialization, and the final
-//! "result is the identity" test, which a valid secret scalar never reaches.
+//! inlined `mul_ct`/`mul_base_ct`/`lookup`/`booth`/`booth5` inside `ecdh_x_impl`/`base_mul_impl`
+//! (portable `P256`/`P384` and the `P256X` twin with its whole-point assembly), `ec::hw::mul_base`
+//! (the wide comb), `ec::hw::lookup_jac_avx2` / `lookup_affine_avx2`, the field multiplication,
+//! squaring and inversion (`Fe::invert`, `P256P`/`P256N::mont_inv`, `safegcd::inv_with` and both
+//! `divsteps_59`), `Point::mul_base` / `add_niels` / `Completed::to_point` (edwards25519) and
+//! `x25519` (both ladders inlined). On x86_64 (with the assembly) and aarch64 (portable) the only
+//! conditional branches there are loop counters, public bounds and indices (window positions,
+//! limb and bit offsets of a digit, table rows), the public exponent bits of the remaining
+//! Fermat chains (P-384, Ed25519), the CPU-feature checks, `OnceLock` initialization, the length
+//! of the output encoding, and the final "result is the identity" test, which a valid secret
+//! scalar never reaches. Last checked on Zen 4 for the whole-point / safegcd pass: no
+//! conditional branch at all in the point routines, the table scans, `divsteps_59` (assembly:
+//! one, the loop counter) and `Fe::invert`.
 
 use std::hint::black_box;
 

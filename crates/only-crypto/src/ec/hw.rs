@@ -21,9 +21,17 @@
 #![allow(unsafe_code)]
 
 use std::arch::asm;
+use std::arch::x86_64::{
+    _mm256_add_epi64, _mm256_and_si256, _mm256_cmpeq_epi64, _mm256_loadu_si256, _mm256_or_si256,
+    _mm256_set1_epi64x, _mm256_setzero_si256, _mm256_storeu_si256,
+};
+use std::sync::OnceLock;
 
+use super::curves::P256X;
+use super::{Jac, Point, Scalar};
 use crate::cpu::{self, Feature};
-use crate::field::Modulus;
+use crate::ct;
+use crate::field::{Fe, Modulus};
 
 /// Whether to use this module: the CPU has BMI2 and ADX, and the portable code is not forced.
 #[inline]
@@ -79,7 +87,7 @@ impl Modulus<4> for P256Px {
     }
 
     fn mont_inv(a: &[u64; 4]) -> Option<[u64; 4]> {
-        Some(super::curves::p256_inv::<Self>(a))
+        Some(mont_inv_safegcd::<Self>(a))
     }
 }
 
@@ -116,63 +124,106 @@ const NINV: u64 = 0xccd1_c8aa_ee00_bc4f;
 /// carries, which cannot overflow (the partial product fits its limbs).
 macro_rules! mul_rows {
     () => {
+        mul_rows!("{a}", "{b}")
+    };
+    ($a:literal, $b:literal) => {
         concat!(
-            "mov rdx, [{b}]\n",
-            "mulx r9, r8, [{a}]\n",
-            "mulx r10, rax, [{a} + 8]\n",
+            "mov rdx, [",
+            $b,
+            "]\n",
+            "mulx r9, r8, [",
+            $a,
+            "]\n",
+            "mulx r10, rax, [",
+            $a,
+            " + 8]\n",
             "add r9, rax\n",
-            "mulx r11, rax, [{a} + 16]\n",
+            "mulx r11, rax, [",
+            $a,
+            " + 16]\n",
             "adc r10, rax\n",
-            "mulx r12, rax, [{a} + 24]\n",
+            "mulx r12, rax, [",
+            $a,
+            " + 24]\n",
             "adc r11, rax\n",
             "adc r12, 0\n",
             //
-            "mov rdx, [{b} + 8]\n",
+            "mov rdx, [",
+            $b,
+            " + 8]\n",
             "xor eax, eax\n",
-            "mulx rcx, rax, [{a}]\n",
+            "mulx rcx, rax, [",
+            $a,
+            "]\n",
             "adcx r9, rax\n",
             "adox r10, rcx\n",
-            "mulx rcx, rax, [{a} + 8]\n",
+            "mulx rcx, rax, [",
+            $a,
+            " + 8]\n",
             "adcx r10, rax\n",
             "adox r11, rcx\n",
-            "mulx rcx, rax, [{a} + 16]\n",
+            "mulx rcx, rax, [",
+            $a,
+            " + 16]\n",
             "adcx r11, rax\n",
             "adox r12, rcx\n",
-            "mulx r13, rax, [{a} + 24]\n",
+            "mulx r13, rax, [",
+            $a,
+            " + 24]\n",
             "adcx r12, rax\n",
             "mov eax, 0\n",
             "adox r13, rax\n",
             "adcx r13, rax\n",
             //
-            "mov rdx, [{b} + 16]\n",
+            "mov rdx, [",
+            $b,
+            " + 16]\n",
             "xor eax, eax\n",
-            "mulx rcx, rax, [{a}]\n",
+            "mulx rcx, rax, [",
+            $a,
+            "]\n",
             "adcx r10, rax\n",
             "adox r11, rcx\n",
-            "mulx rcx, rax, [{a} + 8]\n",
+            "mulx rcx, rax, [",
+            $a,
+            " + 8]\n",
             "adcx r11, rax\n",
             "adox r12, rcx\n",
-            "mulx rcx, rax, [{a} + 16]\n",
+            "mulx rcx, rax, [",
+            $a,
+            " + 16]\n",
             "adcx r12, rax\n",
             "adox r13, rcx\n",
-            "mulx r14, rax, [{a} + 24]\n",
+            "mulx r14, rax, [",
+            $a,
+            " + 24]\n",
             "adcx r13, rax\n",
             "mov eax, 0\n",
             "adox r14, rax\n",
             "adcx r14, rax\n",
             //
-            "mov rdx, [{b} + 24]\n",
+            "mov rdx, [",
+            $b,
+            " + 24]\n",
             "xor eax, eax\n",
-            "mulx rcx, rax, [{a}]\n",
+            "mulx rcx, rax, [",
+            $a,
+            "]\n",
             "adcx r11, rax\n",
             "adox r12, rcx\n",
-            "mulx rcx, rax, [{a} + 8]\n",
+            "mulx rcx, rax, [",
+            $a,
+            " + 8]\n",
             "adcx r12, rax\n",
             "adox r13, rcx\n",
-            "mulx rcx, rax, [{a} + 16]\n",
+            "mulx rcx, rax, [",
+            $a,
+            " + 16]\n",
             "adcx r13, rax\n",
             "adox r14, rcx\n",
-            "mulx r15, rax, [{a} + 24]\n",
+            "mulx r15, rax, [",
+            $a,
+            " + 24]\n",
             "adcx r14, rax\n",
             "mov eax, 0\n",
             "adox r15, rax\n",
@@ -185,27 +236,48 @@ macro_rules! mul_rows {
 /// `rdx`): the six cross products once, doubled, plus the four squares.
 macro_rules! sqr_rows {
     () => {
+        sqr_rows!("{a}")
+    };
+    ($a:literal) => {
         concat!(
             // Cross products aᵢ·aⱼ (i < j) into limbs 1..6 (r9..r14).
-            "mov rdx, [{a}]\n",
-            "mulx r10, r9, [{a} + 8]\n",
-            "mulx r11, rax, [{a} + 16]\n",
+            "mov rdx, [",
+            $a,
+            "]\n",
+            "mulx r10, r9, [",
+            $a,
+            " + 8]\n",
+            "mulx r11, rax, [",
+            $a,
+            " + 16]\n",
             "add r10, rax\n",
-            "mulx r12, rax, [{a} + 24]\n",
+            "mulx r12, rax, [",
+            $a,
+            " + 24]\n",
             "adc r11, rax\n",
             "adc r12, 0\n",
-            "mov rdx, [{a} + 8]\n",
+            "mov rdx, [",
+            $a,
+            " + 8]\n",
             "xor eax, eax\n",
-            "mulx rcx, rax, [{a} + 16]\n",
+            "mulx rcx, rax, [",
+            $a,
+            " + 16]\n",
             "adcx r11, rax\n",
             "adox r12, rcx\n",
-            "mulx r13, rax, [{a} + 24]\n",
+            "mulx r13, rax, [",
+            $a,
+            " + 24]\n",
             "adcx r12, rax\n",
             "mov eax, 0\n",
             "adox r13, rax\n",
             "adcx r13, rax\n",
-            "mov rdx, [{a} + 16]\n",
-            "mulx r14, rax, [{a} + 24]\n",
+            "mov rdx, [",
+            $a,
+            " + 16]\n",
+            "mulx r14, rax, [",
+            $a,
+            " + 24]\n",
             "add r13, rax\n",
             "adc r14, 0\n",
             // Doubled into limbs 1..7.
@@ -218,18 +290,26 @@ macro_rules! sqr_rows {
             "adc r14, r14\n",
             "adc r15, 0\n",
             // Plus the squares aᵢ² at limbs 2i, 2i + 1.
-            "mov rdx, [{a}]\n",
+            "mov rdx, [",
+            $a,
+            "]\n",
             "mulx rcx, r8, rdx\n",
             "add r9, rcx\n",
-            "mov rdx, [{a} + 8]\n",
+            "mov rdx, [",
+            $a,
+            " + 8]\n",
             "mulx rcx, rax, rdx\n",
             "adc r10, rax\n",
             "adc r11, rcx\n",
-            "mov rdx, [{a} + 16]\n",
+            "mov rdx, [",
+            $a,
+            " + 16]\n",
             "mulx rcx, rax, rdx\n",
             "adc r12, rax\n",
             "adc r13, rcx\n",
-            "mov rdx, [{a} + 24]\n",
+            "mov rdx, [",
+            $a,
+            " + 24]\n",
             "mulx rcx, rax, rdx\n",
             "adc r14, rax\n",
             "adc r15, rcx\n",
@@ -758,6 +838,716 @@ pub(crate) fn mul3(a: &[u64; 4]) -> [u64; 4] {
     [r0, r1, r2, r3]
 }
 
+// Whole point operations: each one `asm!` block over a frame of 32-byte field elements addressed
+// from `rdi` (`[rdi]` holds `p₃`, the elements start at `rdi + 32`). A product or square leaves
+// its reduced result in the accumulator `r12..r15`; the additions, subtractions and doublings
+// work on the accumulator in place, with the other operand in the frame, so a chain of them costs
+// no stores; the accumulator goes to the frame only where a later product reads it. `rsi`
+// carries the reductions' and additions' top bits, `rax`, `rcx`, `rdx`, `r8..r11` are scratch.
+
+/// `R = (r12..r15) ← a·b·2⁻²⁵⁶ mod p` for frame addresses `a`, `b` (holding values below `p`).
+macro_rules! f_mul {
+    ($a:literal, $b:literal) => {
+        concat!(mul_rows!($a, $b), f_redc!())
+    };
+}
+
+/// `R ← a²·2⁻²⁵⁶ mod p`.
+macro_rules! f_sqr {
+    ($a:literal) => {
+        concat!(sqr_rows!($a), f_redc!())
+    };
+}
+
+/// One step of [`f_redc`] on the low half `L = ($m, $z1, $z2, $z3)`: `L ← (L + m·p)/2⁶⁴` with
+/// `m` the low limb, the result in `($z1, $z2, $z3, $m)`. As in [`reduce_p`], `m·p` adds `m·2⁹⁶`
+/// (two shifted words) and `m·p₃·2¹⁹²`; the top limb of the result is `hi(m·p₃)` plus a carry,
+/// which cannot overflow (`hi(m·p₃) ≤ 2⁶⁴ - 2³²`), and `(L + m·p)/2⁶⁴ < 2¹⁹² + p < 2²⁵⁶`.
+macro_rules! f_redc_step {
+    ($m:literal, $z1:literal, $z2:literal, $z3:literal) => {
+        concat!(
+            "mov rdx, ",
+            $m,
+            "\n",
+            "mov rax, ",
+            $m,
+            "\n",
+            "shl rax, 32\n",
+            "mov rcx, ",
+            $m,
+            "\n",
+            "shr rcx, 32\n",
+            "mulx ",
+            $m,
+            ", rsi, [rdi]\n",
+            "add ",
+            $z1,
+            ", rax\n",
+            "adc ",
+            $z2,
+            ", rcx\n",
+            "adc ",
+            $z3,
+            ", rsi\n",
+            "adc ",
+            $m,
+            ", 0\n",
+        )
+    };
+}
+
+/// The Montgomery reduction `t·2⁻²⁵⁶ mod p` of `t = H·2²⁵⁶ + L` in `r8..r15` (`t < p·2²⁵⁶`) into
+/// `R`, `p₃` read from `[rdi]`: four steps reduce the low half alone to `L' = (L + M·p)/2²⁵⁶ ≤
+/// p` (in `r8..r11` again after the rotation), then `R = H + L' < 2p` with the carry in `rsi`,
+/// and one conditional subtraction.
+macro_rules! f_redc {
+    () => {
+        concat!(
+            f_redc_step!("r8", "r9", "r10", "r11"),
+            f_redc_step!("r9", "r10", "r11", "r8"),
+            f_redc_step!("r10", "r11", "r8", "r9"),
+            f_redc_step!("r11", "r8", "r9", "r10"),
+            "xor esi, esi\n",
+            "add r12, r8\n",
+            "adc r13, r9\n",
+            "adc r14, r10\n",
+            "adc r15, r11\n",
+            "adc rsi, 0\n",
+            f_csub!(),
+        )
+    };
+}
+
+/// `R ← s - p` unless that borrows, for `s = rsi·2²⁵⁶ + R < 2p`: the result is below `p`.
+macro_rules! f_csub {
+    () => {
+        concat!(
+            "mov edx, 0xffffffff\n",
+            "mov rax, r12\n",
+            "sub rax, -1\n",
+            "mov rcx, r13\n",
+            "sbb rcx, rdx\n",
+            "mov r8, r14\n",
+            "sbb r8, 0\n",
+            "mov r9, r15\n",
+            "sbb r9, [rdi]\n",
+            "sbb rsi, 0\n",
+            "cmovnc r12, rax\n",
+            "cmovnc r13, rcx\n",
+            "cmovnc r14, r8\n",
+            "cmovnc r15, r9\n",
+        )
+    };
+}
+
+/// `R ← R + m mod p` (`m` a frame address).
+macro_rules! f_add {
+    ($m:literal) => {
+        concat!(
+            "xor esi, esi\n",
+            "add r12, [",
+            $m,
+            "]\n",
+            "adc r13, [",
+            $m,
+            " + 8]\n",
+            "adc r14, [",
+            $m,
+            " + 16]\n",
+            "adc r15, [",
+            $m,
+            " + 24]\n",
+            "adc rsi, 0\n",
+            f_csub!(),
+        )
+    };
+}
+
+/// `R ← 2·R mod p`.
+macro_rules! f_dbl {
+    () => {
+        concat!(
+            "xor esi, esi\n",
+            "add r12, r12\n",
+            "adc r13, r13\n",
+            "adc r14, r14\n",
+            "adc r15, r15\n",
+            "adc rsi, 0\n",
+            f_csub!(),
+        )
+    };
+}
+
+/// `R ← R - m mod p`: on a borrow, add `p` (its limbs masked from the borrow).
+macro_rules! f_sub {
+    ($m:literal) => {
+        concat!(
+            "sub r12, [",
+            $m,
+            "]\n",
+            "sbb r13, [",
+            $m,
+            " + 8]\n",
+            "sbb r14, [",
+            $m,
+            " + 16]\n",
+            "sbb r15, [",
+            $m,
+            " + 24]\n",
+            "sbb rax, rax\n",
+            "mov rcx, rax\n",
+            "shr rcx, 32\n",
+            "mov rdx, [rdi]\n",
+            "and rdx, rax\n",
+            "add r12, rax\n",
+            "adc r13, rcx\n",
+            "adc r14, 0\n",
+            "adc r15, rdx\n",
+        )
+    };
+}
+
+/// `R ← m`.
+macro_rules! f_ld {
+    ($m:literal) => {
+        concat!(
+            "mov r12, [",
+            $m,
+            "]\n",
+            "mov r13, [",
+            $m,
+            " + 8]\n",
+            "mov r14, [",
+            $m,
+            " + 16]\n",
+            "mov r15, [",
+            $m,
+            " + 24]\n",
+        )
+    };
+}
+
+/// `m ← R`.
+macro_rules! f_st {
+    ($m:literal) => {
+        concat!(
+            "mov [",
+            $m,
+            "], r12\n",
+            "mov [",
+            $m,
+            " + 8], r13\n",
+            "mov [",
+            $m,
+            " + 16], r14\n",
+            "mov [",
+            $m,
+            " + 24], r15\n",
+        )
+    };
+}
+
+/// A Jacobian point `[X, Y, Z]` as the Montgomery-form limbs of its coordinates.
+pub(crate) type JacLimbs = [[u64; 4]; 3];
+
+/// Runs one point routine on `frame`: `frame[0] = p₃`, the coordinates from `frame[4]` on.
+macro_rules! point_asm {
+    ($frame:expr, $($code:expr),+ $(,)?) => {{
+        let f: &mut [u64] = $frame;
+        f[0] = P3;
+        // SAFETY: the block reads and writes only the frame behind `rdi` (a live, exclusively
+        // borrowed array; every address is `rdi` plus a constant inside it, checked against the
+        // frame length by the callers' array types), and the declared registers; no stack, no
+        // branches. `mulx`, `adcx` and `adox` need BMI2 and ADX: only reached through the
+        // `P256X` twin, entered after `cpu::has(Feature::Adx)` (debug-asserted by the callers).
+        unsafe {
+            asm!(
+                $($code,)+
+                in("rdi") f.as_mut_ptr(),
+                out("rax") _,
+                out("rcx") _,
+                out("rdx") _,
+                out("rsi") _,
+                out("r8") _,
+                out("r9") _,
+                out("r10") _,
+                out("r11") _,
+                out("r12") _,
+                out("r13") _,
+                out("r14") _,
+                out("r15") _,
+                options(nostack),
+            );
+        }
+    }};
+}
+
+/// Copies `p` into the frame from limb 4 on.
+#[inline(always)]
+fn load_point(f: &mut [u64], at: usize, p: &JacLimbs) {
+    for (i, c) in p.iter().enumerate() {
+        f[at + 4 * i..at + 4 * i + 4].copy_from_slice(c);
+    }
+}
+
+/// The point at limb 4 of the frame.
+#[inline(always)]
+fn store_point(f: &[u64]) -> JacLimbs {
+    let mut p = [[0u64; 4]; 3];
+    for (i, c) in p.iter_mut().enumerate() {
+        c.copy_from_slice(&f[4 + 4 * i..8 + 4 * i]);
+    }
+    p
+}
+
+/// Jacobian doubling for `a = -3` (dbl-2001-b with `Z₃ = 2·Y·Z`, 4M + 4S), as the portable
+/// `Jac::double`: `δ = Z²`, `γ = Y²`, `β = X·γ`, `α = 3·(X - δ)·(X + δ)`, `X₃ = α² - 8β`,
+/// `Y₃ = α·(4β - X₃) - 8γ²`. The identity (`Z = 0`) stays the identity. Constant time.
+#[inline]
+pub(crate) fn point_double(p: &JacLimbs) -> JacLimbs {
+    point_double_n(p, 1)
+}
+
+/// `2ⁿ·p`: [`point_double`] `n` times on one frame (no copies between the doublings; `n` is
+/// public).
+#[inline]
+pub(crate) fn point_double_n(p: &JacLimbs, n: usize) -> JacLimbs {
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    // X 32, Y 64, Z 96 (in place); δ 128, γ 192, 4β 224, α 256, 3(X - δ) 288, 8γ² 320.
+    // The order puts each output where the next doubling needs it first: Z₃ early (the next
+    // δ), the products off the critical path δ → α → α² → X₃ → Y₃ between its steps.
+    let mut f = [0u64; 44];
+    load_point(&mut f, 4, p);
+    for _ in 0..n {
+        point_asm!(
+            &mut f,
+            f_sqr!("rdi + 96"),
+            f_st!("rdi + 128"),
+            f_sqr!("rdi + 64"),
+            f_st!("rdi + 192"),
+            f_ld!("rdi + 32"),
+            f_add!("rdi + 128"),
+            f_st!("rdi + 256"),
+            f_ld!("rdi + 32"),
+            f_sub!("rdi + 128"),
+            f_st!("rdi + 288"),
+            f_dbl!(),
+            f_add!("rdi + 288"),
+            f_st!("rdi + 288"),
+            f_mul!("rdi + 32", "rdi + 192"),
+            f_dbl!(),
+            f_dbl!(),
+            f_st!("rdi + 224"),
+            f_mul!("rdi + 256", "rdi + 288"),
+            f_st!("rdi + 256"),
+            // Z₃ = 2·Y·Z (Z is not read again).
+            f_mul!("rdi + 64", "rdi + 96"),
+            f_dbl!(),
+            f_st!("rdi + 96"),
+            // X₃ = α² - 2·4β (X is not read again).
+            f_sqr!("rdi + 256"),
+            f_sub!("rdi + 224"),
+            f_sub!("rdi + 224"),
+            f_st!("rdi + 32"),
+            f_sqr!("rdi + 192"),
+            f_dbl!(),
+            f_dbl!(),
+            f_dbl!(),
+            f_st!("rdi + 320"),
+            f_ld!("rdi + 224"),
+            f_sub!("rdi + 32"),
+            f_st!("rdi + 288"),
+            // Y₃ = α·(4β - X₃) - 8γ² (Y is not read again).
+            f_mul!("rdi + 256", "rdi + 288"),
+            f_sub!("rdi + 320"),
+            f_st!("rdi + 64"),
+        );
+    }
+    store_point(&f)
+}
+
+/// `p + q` (add-2007-bl, 11M + 5S) without special cases, as the portable `Jac::add_core`:
+/// correct when neither operand is the identity and `p ≠ q`; `p = -q` gives `Z = 0`. Constant
+/// time.
+#[inline]
+pub(crate) fn point_add(p: &JacLimbs, q: &JacLimbs) -> JacLimbs {
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    // X₁ 32, Y₁ 64, Z₁ 96, X₂ 128, Y₂ 160, Z₂ 192; Z₁Z₁ 224, Z₂Z₂ 256, U₁ 288, H 320, S₁ 352,
+    // r 384, scratch 416.
+    let mut f = [0u64; 56];
+    load_point(&mut f, 4, p);
+    load_point(&mut f, 16, q);
+    point_asm!(
+        &mut f,
+        f_sqr!("rdi + 96"),
+        f_st!("rdi + 224"),
+        f_sqr!("rdi + 192"),
+        f_st!("rdi + 256"),
+        f_mul!("rdi + 32", "rdi + 256"),
+        f_st!("rdi + 288"),
+        // H = U₂ - U₁.
+        f_mul!("rdi + 128", "rdi + 224"),
+        f_sub!("rdi + 288"),
+        f_st!("rdi + 320"),
+        f_mul!("rdi + 64", "rdi + 192"),
+        f_st!("rdi + 352"),
+        f_mul!("rdi + 352", "rdi + 256"),
+        f_st!("rdi + 352"),
+        // r = 2·(S₂ - S₁).
+        f_mul!("rdi + 160", "rdi + 96"),
+        f_st!("rdi + 384"),
+        f_mul!("rdi + 384", "rdi + 224"),
+        f_sub!("rdi + 352"),
+        f_dbl!(),
+        f_st!("rdi + 384"),
+        // Z₃ = ((Z₁ + Z₂)² - Z₁Z₁ - Z₂Z₂)·H (Z₁ is not read again).
+        f_ld!("rdi + 96"),
+        f_add!("rdi + 192"),
+        f_st!("rdi + 416"),
+        f_sqr!("rdi + 416"),
+        f_sub!("rdi + 224"),
+        f_sub!("rdi + 256"),
+        f_st!("rdi + 416"),
+        f_mul!("rdi + 416", "rdi + 320"),
+        f_st!("rdi + 96"),
+        // I = (2H)² over Z₁Z₁, J = H·I over Z₂Z₂, V = U₁·I over U₁.
+        f_ld!("rdi + 320"),
+        f_dbl!(),
+        f_st!("rdi + 224"),
+        f_sqr!("rdi + 224"),
+        f_st!("rdi + 224"),
+        f_mul!("rdi + 320", "rdi + 224"),
+        f_st!("rdi + 256"),
+        f_mul!("rdi + 288", "rdi + 224"),
+        f_st!("rdi + 288"),
+        // X₃ = r² - J - 2V.
+        f_sqr!("rdi + 384"),
+        f_sub!("rdi + 256"),
+        f_sub!("rdi + 288"),
+        f_sub!("rdi + 288"),
+        f_st!("rdi + 32"),
+        f_mul!("rdi + 352", "rdi + 256"),
+        f_dbl!(),
+        f_st!("rdi + 352"),
+        // Y₃ = r·(V - X₃) - 2·S₁·J.
+        f_ld!("rdi + 288"),
+        f_sub!("rdi + 32"),
+        f_st!("rdi + 288"),
+        f_mul!("rdi + 384", "rdi + 288"),
+        f_sub!("rdi + 352"),
+        f_st!("rdi + 64"),
+    );
+    store_point(&f)
+}
+
+/// `p + (x₂, y₂)` (madd-2007-bl, 7M + 4S) without special cases, as the portable
+/// `Jac::madd_core`: correct when `p` is not the identity and not `(x₂, y₂)`; `p = -(x₂, y₂)`
+/// gives `Z = 0`. Constant time.
+#[inline]
+pub(crate) fn point_add_affine(p: &JacLimbs, x2: &[u64; 4], y2: &[u64; 4]) -> JacLimbs {
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    // X₁ 32, Y₁ 64, Z₁ 96, x₂ 128, y₂ 160; Z₁Z₁ 192, H 224, scratch 256, r 288, HH 320,
+    // I then J 352, V 384.
+    let mut f = [0u64; 52];
+    load_point(&mut f, 4, p);
+    f[16..20].copy_from_slice(x2);
+    f[20..24].copy_from_slice(y2);
+    point_asm!(
+        &mut f,
+        f_sqr!("rdi + 96"),
+        f_st!("rdi + 192"),
+        // H = x₂·Z₁Z₁ - X₁.
+        f_mul!("rdi + 128", "rdi + 192"),
+        f_sub!("rdi + 32"),
+        f_st!("rdi + 224"),
+        // r = 2·(y₂·Z₁·Z₁Z₁ - Y₁).
+        f_mul!("rdi + 160", "rdi + 96"),
+        f_st!("rdi + 256"),
+        f_mul!("rdi + 256", "rdi + 192"),
+        f_sub!("rdi + 64"),
+        f_dbl!(),
+        f_st!("rdi + 288"),
+        // HH = H², I = 4·HH, V = X₁·I, J = H·I.
+        f_sqr!("rdi + 224"),
+        f_st!("rdi + 320"),
+        f_dbl!(),
+        f_dbl!(),
+        f_st!("rdi + 352"),
+        f_mul!("rdi + 32", "rdi + 352"),
+        f_st!("rdi + 384"),
+        f_mul!("rdi + 224", "rdi + 352"),
+        f_st!("rdi + 352"),
+        // Z₃ = (Z₁ + H)² - Z₁Z₁ - HH.
+        f_ld!("rdi + 96"),
+        f_add!("rdi + 224"),
+        f_st!("rdi + 256"),
+        f_sqr!("rdi + 256"),
+        f_sub!("rdi + 192"),
+        f_sub!("rdi + 320"),
+        f_st!("rdi + 96"),
+        // X₃ = r² - J - 2V.
+        f_sqr!("rdi + 288"),
+        f_sub!("rdi + 352"),
+        f_sub!("rdi + 384"),
+        f_sub!("rdi + 384"),
+        f_st!("rdi + 32"),
+        f_mul!("rdi + 64", "rdi + 352"),
+        f_dbl!(),
+        f_st!("rdi + 192"),
+        // Y₃ = r·(V - X₃) - 2·Y₁·J.
+        f_ld!("rdi + 384"),
+        f_sub!("rdi + 32"),
+        f_st!("rdi + 384"),
+        f_mul!("rdi + 288", "rdi + 384"),
+        f_sub!("rdi + 192"),
+        f_st!("rdi + 64"),
+    );
+    store_point(&f)
+}
+
+/// 59 Bernstein–Yang divsteps in assembly: [`crate::safegcd::divsteps_59`] step for step, the
+/// conditions turned into masks by `sar`/`neg` (no `black_box` round trip through memory), so
+/// constant time by construction; the only branch is the loop counter. Base x86_64
+/// instructions only.
+pub(crate) fn divsteps_59(zeta: i64, f0: u64, g0: u64) -> (i64, crate::safegcd::Trans) {
+    let (mut zeta, mut f, mut g) = (zeta as u64, f0, g0);
+    let (mut u, mut v, mut q, mut r) = (8u64, 0u64, 0u64, 8u64);
+    // SAFETY: registers only (no memory, no stack); base x86_64 instructions.
+    unsafe {
+        asm!(
+            "mov ecx, 59",
+            "2:",
+            // c1 = δ > 0 (ζ < 0), c2 = g odd.
+            "mov {c1}, {zeta}",
+            "sar {c1}, 63",
+            "mov {c2}, {g}",
+            "and {c2}, 1",
+            "neg {c2}",
+            // (x, y, z) = ±(f, u, v); g, q, r += them where g is odd.
+            "mov {x}, {f}",
+            "xor {x}, {c1}",
+            "sub {x}, {c1}",
+            "mov {y}, {u}",
+            "xor {y}, {c1}",
+            "sub {y}, {c1}",
+            "mov {z}, {v}",
+            "xor {z}, {c1}",
+            "sub {z}, {c1}",
+            "and {x}, {c2}",
+            "add {g}, {x}",
+            "and {y}, {c2}",
+            "add {q}, {y}",
+            "and {z}, {c2}",
+            "add {r}, {z}",
+            // Both: ζ ← -ζ - 2 (δ ← 1 - δ) and f, u, v ← old g, q, r.
+            "and {c1}, {c2}",
+            "xor {zeta}, {c1}",
+            "sub {zeta}, 1",
+            "mov {x}, {g}",
+            "and {x}, {c1}",
+            "add {f}, {x}",
+            "mov {y}, {q}",
+            "and {y}, {c1}",
+            "add {u}, {y}",
+            "mov {z}, {r}",
+            "and {z}, {c1}",
+            "add {v}, {z}",
+            "shr {g}, 1",
+            "shl {u}, 1",
+            "shl {v}, 1",
+            "dec ecx",
+            "jnz 2b",
+            zeta = inout(reg) zeta,
+            f = inout(reg) f,
+            g = inout(reg) g,
+            u = inout(reg) u,
+            v = inout(reg) v,
+            q = inout(reg) q,
+            r = inout(reg) r,
+            c1 = out(reg) _,
+            c2 = out(reg) _,
+            x = out(reg) _,
+            y = out(reg) _,
+            z = out(reg) _,
+            out("rcx") _,
+            options(pure, nomem, nostack),
+        );
+    }
+    let _ = (f, g);
+    (
+        zeta as i64,
+        crate::safegcd::Trans {
+            u: u as i64,
+            v: v as i64,
+            q: q as i64,
+            r: r as i64,
+        },
+    )
+}
+
+/// `a⁻¹·R` from the Montgomery form `a·R` (`0` maps to `0`) by safegcd with the assembly
+/// divsteps: the integer inverse `(aR)⁻¹ = a⁻¹R⁻¹`, then one Montgomery multiplication by `R³`.
+#[inline]
+pub(crate) fn mont_inv_safegcd<M: Modulus<4>>(a: &[u64; 4]) -> [u64; 4] {
+    crate::safegcd::mont_inv_with::<M>(a, divsteps_59)
+}
+
+// Table scans with AVX2: every entry is read with 256-bit loads and kept or dropped by a mask
+// from `vpcmpeqq` of its (public) index against the broadcast secret digit, then OR-ed into the
+// result; no branch and no address depends on the digit.
+
+/// `table[d - 1]` for `d ∈ [1, 16]`, the point `(0, 0, 0)` (`Z = 0`, the identity) for
+/// `d = 0`, reading every entry: [`Jac::lookup_scan`] with AVX2 when the CPU has it.
+#[inline]
+pub(crate) fn lookup_jac(table: &[Jac<P256X, 4>; 16], d: u64) -> Jac<P256X, 4> {
+    if cpu::cpu_has(Feature::Avx2) {
+        // SAFETY: the CPU has AVX2 (checked just above).
+        return Jac::from_raw(unsafe { lookup_jac_avx2(table, d) });
+    }
+    Jac::lookup_scan(table, d)
+}
+
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[target_feature(enable = "avx2")]
+// The intrinsics are `unsafe fn`s at the MSRV (1.85) and safe inside `avx2` code on newer
+// compilers.
+#[allow(unused_unsafe)]
+unsafe fn lookup_jac_avx2(table: &[Jac<P256X, 4>; 16], d: u64) -> JacLimbs {
+    // SAFETY: AVX2 (the caller's contract); register-only intrinsics plus unaligned 32-byte
+    // loads from the 4-limb arrays of live table entries and stores into the local result.
+    unsafe {
+        let idx = _mm256_set1_epi64x(d as i64);
+        let mut acc = [_mm256_setzero_si256(); 3];
+        for (j, e) in table.iter().enumerate() {
+            let m = _mm256_cmpeq_epi64(_mm256_set1_epi64x(j as i64 + 1), idx);
+            for (a, c) in acc.iter_mut().zip([&e.x.l, &e.y.l, &e.z.l]) {
+                let v = _mm256_loadu_si256(c.as_ptr().cast());
+                *a = _mm256_or_si256(*a, _mm256_and_si256(m, v));
+            }
+        }
+        let mut out = [[0u64; 4]; 3];
+        for (o, a) in out.iter_mut().zip(acc) {
+            _mm256_storeu_si256(o.as_mut_ptr().cast(), a);
+        }
+        out
+    }
+}
+
+/// `row[d - 1]` for `d ∈ [1, E]`, `(0, 0)` for `d = 0`, reading every entry with AVX2.
+///
+/// # Safety
+///
+/// The CPU must support AVX2.
+#[target_feature(enable = "avx2")]
+#[allow(unused_unsafe)]
+unsafe fn lookup_affine_avx2<const E: usize>(row: &[[[u64; 4]; 2]; E], d: u64) -> [[u64; 4]; 2] {
+    // SAFETY: as in `lookup_jac_avx2`, over the entries of `row`.
+    unsafe {
+        let idx = _mm256_set1_epi64x(d as i64);
+        let one = _mm256_set1_epi64x(1);
+        let mut j = _mm256_setzero_si256();
+        let (mut x, mut y) = (_mm256_setzero_si256(), _mm256_setzero_si256());
+        for e in row {
+            j = _mm256_add_epi64(j, one);
+            let m = _mm256_cmpeq_epi64(j, idx);
+            x = _mm256_or_si256(
+                x,
+                _mm256_and_si256(m, _mm256_loadu_si256(e[0].as_ptr().cast())),
+            );
+            y = _mm256_or_si256(
+                y,
+                _mm256_and_si256(m, _mm256_loadu_si256(e[1].as_ptr().cast())),
+            );
+        }
+        let mut out = [[0u64; 4]; 2];
+        _mm256_storeu_si256(out[0].as_mut_ptr().cast(), x);
+        _mm256_storeu_si256(out[1].as_mut_ptr().cast(), y);
+        out
+    }
+}
+
+/// The window width of the wide fixed-base comb.
+pub(crate) const COMB_W: usize = 6;
+/// Entries per window, `2^(W-1)`.
+const COMB_E: usize = 1 << (COMB_W - 1);
+/// Windows over a 256-bit scalar (the top one's sign bit above the scalar).
+const COMB_ROWS: usize = super::booth_windows(4, COMB_W);
+
+/// One window of the wide comb: `row[j - 1] = j·2^(W·i)·G` for `1 ≤ j ≤ E`, affine,
+/// Montgomery-form limbs.
+type CombRow = [[[u64; 4]; 2]; COMB_E];
+
+/// The wide comb (`COMB_ROWS · COMB_E` points, 64 bytes each), built once: projective
+/// multiples, then one batched inversion.
+fn comb() -> &'static [CombRow] {
+    static T: OnceLock<Vec<CombRow>> = OnceLock::new();
+    T.get_or_init(|| {
+        let mut pts = Vec::with_capacity(COMB_ROWS * COMB_E);
+        let mut p = Point::<P256X, 4>::generator();
+        for _ in 0..COMB_ROWS {
+            let mut q = p;
+            for _ in 0..COMB_E {
+                pts.push(q);
+                q = q.add(&p);
+            }
+            // 2^W·p = (E·p) doubled.
+            p = pts[pts.len() - 1].double();
+        }
+        let aff = Point::batch_to_affine(&pts);
+        aff.chunks_exact(COMB_E)
+            .map(|c| {
+                let mut row = [[[0u64; 4]; 2]; COMB_E];
+                for (r, (x, y)) in row.iter_mut().zip(c) {
+                    *r = [x.l, y.l];
+                }
+                row
+            })
+            .collect()
+    })
+}
+
+/// `[k]G` for a secret `k`, in constant time, from the wide comb: Booth-recoded signed
+/// `W`-bit digits `k = Σ dᵢ·2^(W·i)`, `dᵢ ∈ [-2^(W-1), 2^(W-1)]` (37 windows for `W = 7`), one
+/// mixed addition per window and no doublings (ring's and OpenSSL's `ecp_nistz256` layout).
+/// Each window's row is read in full with AVX2 masks, the entry negated by a masked select;
+/// the addition of a zero digit is computed and discarded by a masked select, and an
+/// accumulator still at the identity takes the entry by a masked select (`Jac::madd_ct`).
+///
+/// The addition never meets equal operands. Before window `j` the accumulator is
+/// `Sⱼ = Σ_{i<j} dᵢ·2^(Wi)` (times `G`) with `|Sⱼ| ≤ 2^(W-1)·(2^(Wj) - 1)/(2^W - 1) <
+/// 0.51·2^(Wj)`; it is the identity exactly when every lower digit is zero (the masked case).
+/// The entry is `±dⱼ·2^(Wj)` with `1 ≤ |dⱼ| ≤ 2^(W-1)`, so `0 < |Sⱼ ∓ dⱼ·2^(Wj)| <
+/// (2^(W-1) + 0.51)·2^(Wj)`, below `2^252 < n` for every window but the last (`W·j ≤ 245`):
+/// never `≡ 0 (mod n)`. In the last window (`W·j = 252`, digit `D ∈ [0, 16]`, `Sⱼ = k - D·2^252`)
+/// equality means `k ≡ D·2^253 (mod n)`: for `D ≤ 7` that is `k = D·2^253`, whose top digit is
+/// `2D ≠ D`; for `8 ≤ D ≤ 15`, `k = D·2^253 - n = (2D - 16)·2^252 + (2^256 - n)` (and
+/// `2^256 - n < 2^224`), top digit `2D - 16 ≠ D`; for `D = 16`, `k = 2^257 - 2n < 2^225`, top
+/// digit 0. So no scalar meets equal operands; `Sⱼ ≡ -dⱼ·2^(Wj)` would need `k ≡ 0`.
+///
+/// Without AVX2 this is [`Jac::mul_base_ct`] (the 4-bit comb with scalar scans).
+pub(crate) fn mul_base(k: &Scalar<P256X, 4>) -> Jac<P256X, 4> {
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    if !cpu::cpu_has(Feature::Avx2) {
+        return Jac::mul_base_ct(k);
+    }
+    let k = k.to_limbs();
+    let mut r = Jac::<P256X, 4>::identity();
+    for (i, row) in comb().iter().enumerate() {
+        let (d, neg) = super::booth::<4, COMB_W>(&k, i);
+        // SAFETY: the CPU has AVX2 (checked above).
+        let e = unsafe { lookup_affine_avx2(row, d) };
+        let x = Fe::from_mont(e[0]);
+        let y = Fe::from_mont(e[1]);
+        let y = Fe::select(neg, &y.neg(), &y);
+        // d = 0 selected (0, 0), off the curve: the sum is discarded.
+        let sum = r.madd_ct(&x, &y);
+        r = Jac::select(ct::is_zero(d) ^ u64::MAX, &sum, &r);
+    }
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -781,7 +1571,7 @@ mod tests {
             let mut b = [0u8; 32];
             rng.fill(&mut b);
             let mut l = crate::field::be_to_limbs::<4>(&b).unwrap_or([0; 4]);
-            if crate::ct::lt_limbs(&l, m) == 0 {
+            if ct::lt_limbs(&l, m) == 0 {
                 l[3] &= 0x7fff_ffff_ffff_ffff;
             }
             vals.push(l);
@@ -836,5 +1626,229 @@ mod tests {
             assert_eq!(ord_sqr(a), generic(a, a), "ord_sqr {a:x?}");
         }
         assert_eq!(ord_mul(&big, &P256N::R2), generic(&big, &P256N::R2));
+    }
+
+    use crate::ec::curves::{P256, P256X};
+    use crate::ec::{Jac, Point, Scalar};
+
+    fn unhex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// Jacobian points for the differential tests: random multiples of `G` with random `Z`
+    /// (scaled by `λ²`, `λ³`, `λ`), every valid public key of Wycheproof's P-256 ECDH vectors
+    /// (`Z = 1`), the identity in two forms, and `G` with `Z = 1`.
+    fn jac_points() -> Vec<Jac<P256, 4>> {
+        let mut rng = crate::rand::ChaChaRng::from_seed([0x3c; 32]);
+        let mut scalar = || {
+            let mut b = [0u8; 32];
+            rng.fill(&mut b);
+            Scalar::<P256, 4>::from_be_bytes_reduce(&b).unwrap()
+        };
+        let mut pts = vec![
+            Jac::identity(),
+            Jac::from_raw([[0; 4]; 3]),
+            Jac::from_point(&Point::<P256, 4>::generator()),
+        ];
+        for _ in 0..64 {
+            let k = scalar();
+            let lambda = Fe::<P256P, 4>::from_mont(scalar().l);
+            let j = Jac::from_point(&Point::<P256, 4>::mul_base_ref(&k));
+            let l2 = lambda.square();
+            pts.push(Jac {
+                x: j.x.mul(&l2),
+                y: j.y.mul(&l2).mul(&lambda),
+                z: j.z.mul(&lambda),
+            });
+        }
+        let json = include_str!("../../tests/data/wycheproof_ecdh_secp256r1_ecpoint.json");
+        for part in json.split("\"public\":\"").skip(1) {
+            let hex = &part[..part.find('"').unwrap()];
+            if let Some(p) = Point::<P256, 4>::from_sec1(&unhex(hex)) {
+                pts.push(Jac::from_point(&p));
+            }
+        }
+        pts
+    }
+
+    /// The whole-point routines against the portable formulas, limb for limb (both are the
+    /// same formulas over fully reduced values): random points, Wycheproof points, `P + P`,
+    /// `P + (-P)` and the identity on either side.
+    #[test]
+    fn points_match_portable() {
+        if !cpu::cpu_has(Feature::Adx) {
+            return;
+        }
+        let pts = jac_points();
+        assert!(pts.len() > 64 + 3 + 20, "{} points", pts.len());
+        for (i, p) in pts.iter().enumerate() {
+            assert_eq!(point_double(&p.raw()), p.double_formula().raw(), "2P {i}");
+            let mut p5 = *p;
+            for _ in 0..5 {
+                p5 = p5.double_formula();
+            }
+            assert_eq!(point_double_n(&p.raw(), 5), p5.raw(), "32P {i}");
+            let neg = Jac::<P256, 4> {
+                x: p.x,
+                y: p.y.neg(),
+                z: p.z,
+            };
+            let q = pts[(i * 7 + 5) % pts.len()];
+            for q in [q, *p, neg, Jac::identity()] {
+                assert_eq!(
+                    point_add(&p.raw(), &q.raw()),
+                    p.add_core_formula(&q).raw(),
+                    "P + Q {i}"
+                );
+                assert_eq!(
+                    point_add(&q.raw(), &p.raw()),
+                    q.add_core_formula(p).raw(),
+                    "Q + P {i}"
+                );
+                if let Some((x, y)) = q.to_affine() {
+                    assert_eq!(
+                        point_add_affine(&p.raw(), &x.l, &y.l),
+                        p.madd_core_formula(&x, &y).raw(),
+                        "P + affine Q {i}"
+                    );
+                }
+            }
+            if p.z.is_zero() == 0 {
+                let s = point_add(&p.raw(), &neg.raw());
+                assert_eq!(s[2], [0; 4], "P + (-P) has Z = 0");
+                let (x, y) = p.to_affine().unwrap();
+                let s = point_add_affine(&neg.raw(), &x.l, &y.l);
+                assert_eq!(s[2], [0; 4], "-P + affine P has Z = 0");
+            }
+        }
+    }
+
+    /// Nanoseconds per operation, the whole-point routines against the previous formulas over
+    /// the assembly field (`P256X`'s portable formulas): `cargo test --release -p only-crypto
+    /// --lib ec::hw::tests::timings -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing report"]
+    fn timings() {
+        use std::hint::black_box;
+        use std::time::Instant;
+        if !cpu::has(Feature::Adx) {
+            return;
+        }
+        let only = std::env::var("ONLY_TIMING").ok();
+        let reps: u32 = std::env::var("ONLY_TIMING_N")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let time = |name: &str, n: u32, mut f: &mut dyn FnMut()| {
+            if let Some(o) = &only {
+                if o != name {
+                    return;
+                }
+                for _ in 0..reps {
+                    f();
+                }
+                return;
+            }
+            time(name, n, &mut f);
+        };
+        fn time(name: &str, n: u32, f: &mut dyn FnMut()) {
+            for _ in 0..n / 10 {
+                f();
+            }
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = Instant::now();
+                for _ in 0..n {
+                    f();
+                }
+                best = best.min(t.elapsed().as_nanos() as f64 / f64::from(n));
+            }
+            println!("{name:<32} {best:>10.1} ns");
+        }
+        let pts: Vec<Jac<P256X, 4>> = jac_points()
+            .iter()
+            .map(|p| Jac::from_raw(p.raw()))
+            .collect();
+        let (p, q) = (pts[5], pts[9]);
+        let (x2, y2) = q.to_affine().unwrap();
+        time("double (formula)", 200_000, &mut || {
+            black_box(black_box(&p).double_formula());
+        });
+        time("double (asm)", 200_000, &mut || {
+            black_box(point_double(&black_box(&p).raw()));
+        });
+        let mut r = p;
+        time("double chain (formula)", 200_000, &mut || {
+            r = r.double_formula();
+        });
+        let mut r = p.raw();
+        time("double chain (asm)", 200_000, &mut || {
+            r = point_double(&r);
+        });
+        let mut r = p.raw();
+        time("double x5 (asm)", 40_000, &mut || {
+            r = point_double_n(&r, 5);
+        });
+        let mut r = p;
+        time("add chain (formula)", 200_000, &mut || {
+            r = r.add_core_formula(&q);
+        });
+        let mut r = p.raw();
+        time("add chain (asm)", 200_000, &mut || {
+            r = point_add(&r, &q.raw());
+        });
+        black_box(r);
+        time("add_core (formula)", 200_000, &mut || {
+            black_box(black_box(&p).add_core_formula(&q));
+        });
+        time("add_core (asm)", 200_000, &mut || {
+            black_box(point_add(&black_box(&p).raw(), &q.raw()));
+        });
+        time("madd_core (formula)", 200_000, &mut || {
+            black_box(black_box(&p).madd_core_formula(&x2, &y2));
+        });
+        time("madd_core (asm)", 200_000, &mut || {
+            black_box(point_add_affine(&black_box(&p).raw(), &x2.l, &y2.l));
+        });
+        let mut b = [0x5au8; 32];
+        b[0] = 0x7f;
+        let k = Scalar::<P256X, 4>::from_be_bytes_reduce(&b).unwrap();
+        let g = Point::<P256X, 4>::generator();
+        time("mul_base_ct", 20_000, &mut || {
+            black_box(Jac::<P256X, 4>::mul_base_ct(black_box(&k)));
+        });
+        time("jac_mul_base", 20_000, &mut || {
+            black_box(<P256X as crate::ec::Curve<4>>::jac_mul_base(black_box(&k)));
+        });
+        time("mul_ct", 5_000, &mut || {
+            black_box(Jac::<P256X, 4>::mul_ct(&g, black_box(&k)));
+        });
+        time("scalar invert", 20_000, &mut || {
+            black_box(black_box(k).invert());
+        });
+        time("scalar mul", 1_000_000, &mut || {
+            black_box(black_box(k).mul(&k));
+        });
+        time("scalar square", 1_000_000, &mut || {
+            black_box(black_box(k).square());
+        });
+        let nmod = crate::safegcd::Modulus256::new(&P256Nx::P);
+        time("scalar invert (safegcd)", 20_000, &mut || {
+            black_box(crate::safegcd::inv(&black_box(k).l, &nmod));
+        });
+        let pmod = crate::safegcd::Modulus256::new(&P256Px::P);
+        time("field invert (safegcd)", 20_000, &mut || {
+            black_box(crate::safegcd::inv(&black_box(q.z).l, &pmod));
+        });
+        let z = q.z;
+        time("field invert", 20_000, &mut || {
+            black_box(black_box(z).invert());
+        });
+        time("field square", 1_000_000, &mut || {
+            black_box(black_box(z).square());
+        });
     }
 }

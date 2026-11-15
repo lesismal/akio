@@ -239,7 +239,31 @@ The P-256 rows and X25519 run on BMI2 + ADX (`ec::hw`, `curve25519::hw`; `adx` i
 paths). With every hardware path off (`ONLY_CRYPTO_PORTABLE=1`, which also turns off SHA-NI for
 the RFC 6979 HMACs) P-256 does 0.42× (sign), 0.58× (verify), 0.52× (ECDH) and 0.60× (key
 generation) of ring, X25519 0.84×, and the handshakes 0.62× (X25519) and 0.49× (secp256r1) of
-rustls.
+rustls. The P-256 rows above are from the previous pass; the next table has this pass.
+
+#### P-256 whole-point assembly, wide comb, safegcd (`--example pk_bench`, `tls-bench handshakes 2`, CPU 2)
+
+Median of five alternating rounds of the previous code (`7cefa48b`) and this pass. The host was
+busy with another benchmark during the whole window (load average 9–10, the sibling of CPU 2
+loaded), so every absolute rate is 20–30% below the quiet figures in the tables above; the
+ratios are measured in the same run, `only` and ring/rustls back to back.
+
+| op/s (loaded host) | before | after | ring / rustls | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|
+| P-256 ECDSA sign | 46,445 | 73,287 | 72,238 | 0.77 | 1.25 |
+| P-256 ECDSA verify | 18,601 | 19,281 | 19,131 | 0.98 | 1.04 |
+| P-256 ECDH | 19,900 | 20,922 | 21,050 | 0.94 | 0.96 |
+| P-256 key generation | 78,234 | 111,338 | 103,483 | 0.94 | 1.33 |
+| TLS 1.3 full handshakes/s, secp256r1 | 4,363 | 5,290 | 4,027–4,601 | 0.94 | 1.12 |
+| TLS 1.3 full handshakes/s, X25519 | 3,645 | 3,701 | 4,033–4,630 | 0.94 | 1.06 |
+
+Cycles on this CPU (`perf stat`, quiet moments): a doubling 481 → 355 (whole-point assembly,
+five in one frame), an addition 881 → 778, a mixed addition 618 → 564; the fixed-base
+multiplication 40.5k → 31k (43 windows of 6 bits instead of 65 of 4: 6-bit and 7-bit combs tie,
+5 and 8 bits are slower); the variable-base multiplication ~190k → 159k; the scalar inversion
+20.9k → 7.0k and the field inversion 12.7k → ~7–9k (safegcd with assembly divsteps instead of
+Fermat chains). With `ONLY_CRYPTO_PORTABLE=1` the portable safegcd lifts sign from 0.41× to about
+0.45× ring and ECDH from 0.52× to 0.57×.
 
 #### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
 
@@ -287,10 +311,8 @@ What is left: AES-GCM messages of 1 KiB to 1.4 KiB are at 0.96–1.11× ring (th
 fixed cost; the tail after the last 256-byte group runs on the 128-bit path); CPUs with VAES but
 without AVX-512 (Zen 3, Alder Lake) use the 128-bit path; the TLS record layer still zero-fills
 the output before the AEAD writes it (about 9% of a 16 KiB record); Poly1305 is scalar; P-256
-sign trails ring's 7-bit comb with AVX2 table scans and the order arithmetic in assembly (ours: a
-4-bit comb, about 100-cycle `mod n` products), and each P-256 doubling (4M + 4S, ~480 cycles)
-passes its field elements through memory between the assembly routines where ring keeps them in
-registers; Ed25519 verification is portable; RSA has no Karatsuba; SHA-512 and MD5 are portable.
+ECDH is at about 0.96× ring (the doubling, ~355 cycles, is latency-bound on its chain of
+products; a reduction interleaved with the product rows is the next step); Ed25519 verification is portable; RSA has no Karatsuba; SHA-512 and MD5 are portable.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 
@@ -412,6 +434,12 @@ Short summaries of the per-area passes; the full tables are in the git history o
   generation 54,581 → 108,263; X25519 30,696 → 36,488; Ed25519 sign 67,644 → 89,784; P-384
   1.13–1.47×. Handshakes 3,055 → 5,027/s (X25519, 1.00× rustls) and 2,306 → 4,552/s (secp256r1,
   0.89×).
+- **P-256 whole-point assembly** (this host, CPU 2, median of five alternating rounds on a
+  loaded host, `7cefa48b` → after): doubling, addition and mixed addition as single `asm!` blocks
+  (doublings five to a frame), a 6-bit Booth comb with AVX2 scans for the fixed base, AVX2 scans
+  of the ECDH window table, safegcd inversions with assembly divsteps. Against ring in the same
+  run: sign 0.77× → 1.25×, key generation 0.94× → 1.33×, verify 0.98× → 1.04×, ECDH 0.94× →
+  0.96×; secp256r1 handshakes 0.94× → 1.12× rustls.
 - **Wide AES-GCM and CRC** (this host, `a1cc9b49` → after): AES-GCM on VAES + VPCLMULQDQ +
   AVX-512 (512-bit, chosen over 256-bit by measurement) 2.3–2.5× at 16–64 KiB (AES-128 seal
   16 KiB 6,455 → 15,048 MB/s, 0.51× → 1.19× ring), the fused tail 1.8–2.1× at 64 B; TLS 1.3
