@@ -9,7 +9,7 @@ that drive CPU instructions, detected at run time; the OS random syscall lives i
 | Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
 |---|---|---|
 | AES block cipher, CTR (8 blocks in flight) | AES-NI | ARMv8 AES |
-| AES-GCM (GHASH fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
+| AES-GCM (GHASH fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction, masked tails), else VAES + VPCLMULQDQ + AVX2 (16), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 (`chacha::hw`, `chacha::hw::avx512`) | AVX-512 inline assembly (`vprold`; 16 blocks per iteration, 8 or 4 for the rest), else AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
@@ -27,7 +27,7 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR |
-| `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 one 512-bit pass (16 blocks per iteration and reduction), else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`) |
+| `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 whole 256-byte groups on 256-bit registers, else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`) |
 | `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` for the TLS record layer) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
@@ -160,9 +160,10 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | SHA-1, 16 KiB (MB/s) | 697 | 2 543 | 1.00x sha1 |
 | SHA-256, 16 KiB | 366 | 2 383 | 1.00x sha2 |
 | CRC-32, 16 KiB | 19 992 | 74 885 | 1.02x crc32fast |
-| AES-128-GCM seal, 16 KiB | 6 455 | 15 048 | 1.19x ring |
-| AES-128-GCM seal, 1400 B | 4 249 | 8 163 | 1.11x ring |
-| AES-128-GCM seal, 64 B | 611 | 1 185 | 1.10x ring |
+| AES-128-GCM seal, 16 KiB | 6 455 | 15 610 | 1.16x ring |
+| AES-128-GCM seal, 1400 B | 4 249 | 10 632 | 1.46x ring |
+| AES-128-GCM seal, 1 KiB | 4 539 | 10 433 | 1.32x ring |
+| AES-128-GCM seal, 64 B | 611 | 1 383 | 1.29x ring |
 | ChaCha20-Poly1305 seal, 16 KiB | 588 | 4 597 | 1.30x ring |
 | ChaCha20-Poly1305 seal, 1400 B | – | 2 541 | 0.96x ring |
 | ChaCha20-Poly1305 seal, 64 B | – | 412 | 0.83x ring |
@@ -187,7 +188,11 @@ The public-key rows and the handshakes are from the P-256 / X25519 pass (before 
 assembly for AES-GCM, P-256, X25519 and RSA. The AES-GCM and CRC rows compare with the
 previous VAES / VPCLMULQDQ-less code (`--example gcm-sizes` against ring, `--example bench`
 against crc32fast); on Zen 4 the 512-bit kernel beat the same kernel on 256-bit registers at every
-size. The whole-point P-256 pass (assembly doublings and additions, a 6-bit comb with AVX2
+size. The AES-GCM rows are from the pass that moved the whole message into the AVX-512 kernel
+(AAD, the last partial group under byte masks, the tag; short messages under one reduction:
+1 KiB 1.00× → 1.32× ring, 1400 B 1.10× → 1.46×, 64 B 1.11× → 1.29×) and added a VAES-AVX2
+kernel for CPUs without AVX-512 (1.55–2.35× the 128-bit kernel, measured on Zen 4 with the
+AVX-512 kernel switched off). The whole-point P-256 pass (assembly doublings and additions, a 6-bit comb with AVX2
 scans, safegcd inversions) moved P-256 against ring, measured in the same run on a loaded host
 (docs/BENCHMARKS.md): sign 0.77× → 1.25×, key generation 0.94× → 1.33×, verify 0.98× → 1.04×,
 ECDH 0.94× → 0.96×, secp256r1 handshakes 0.94× → 1.12× rustls. On a quiet host that code already did 1.08× ring in ECDH; OpenSSL's
@@ -203,8 +208,9 @@ division took RSA-2048 signing from 0.49× to 1.61× ring (3072: 0.47× → 1.85
 RSA-2048 certificate from 0.43× to 1.44× rustls. A 1024-bit Montgomery multiplication takes 805
 cycles with BMI2 + ADX (squaring 681), a 1024-bit IFMA multiplication 416; on BMI2 + ADX alone
 (no IFMA) RSA-2048 signing measured 0.99× ring. Karatsuba was not tried: at these sizes the
-assembly row loops leave little to save. Follow-ups: a VAES + AVX2 kernel for CPUs without
-AVX-512, measuring the aarch64 assembly for P-256 and X25519 (tested, not
+assembly row loops leave little to save. Follow-ups: masked tails for the VAES-AVX2 kernel
+(the rest of a message after its 256-byte groups runs on the 128-bit path), measuring that kernel
+on Zen 3 / Alder Lake, measuring the aarch64 assembly for P-256 and X25519 (tested, not
 benchmarked), aarch64 whole-point routines and divsteps, the two CRT halves interleaved
 in one IFMA block.
 
@@ -214,17 +220,21 @@ in one IFMA block.
   specification, RFC 1321, 2202, 4231, 5869, 6070, 3720, 4648, 8439, and Wycheproof (AES-GCM,
   ChaCha20-Poly1305, HMAC-SHA1/SHA256, HKDF-SHA256), vendored under `tests/data/`.
 - `tests/compat.rs` cross-checks every primitive against the replaced crates (dev-dependencies
-  only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also the wide, 128-bit
-  and portable AES-GCM paths against each other, in place and out of place, and the AVX-512 /
+  only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also the VAES-AVX-512,
+  VAES-AVX2, 128-bit and portable AES-GCM paths against each other, in place and out of place,
+  and the AVX-512 /
   IFMA, AVX2 and portable ChaCha20-Poly1305 paths), `crypto_base64`.
 - The AVX-512 ChaCha20 and IFMA Poly1305 kernels (`chacha::tests`): every length 0..=600 and
   large sizes against the AVX2 and portable paths, misaligned, in place and out of place,
   forged tags, counters near the wrap, Poly1305 on all-ones blocks and extreme `r` / `s`; run
   natively on a CPU with AVX-512 IFMA (Zen 4).
-- The wide AES-GCM kernel (`gcm::tests`): every length 0..=600 and large sizes against the
-  128-bit and portable paths, misaligned, in place and out of place, the 32-bit counter
-  wrapping inside a group, and large messages against ring; it runs only on a CPU with VAES
-  and AVX-512, so these tests are run natively on one (Zen 4).
+- The wide AES-GCM kernels (`gcm::tests`): the AVX-512 and AVX2 ones (the latter forced with
+  `AesGcm::with_cipher_avx2`) against each other, the 128-bit and the portable paths at every
+  length 0..=600, large sizes and every AAD length 0..=300 and past 512, misaligned, in place and
+  out of place (also with the input split between two buffers as the TLS 1.3 record layer has
+  it), the 32-bit counter wrapping inside a group, and large messages against ring; the CAVP and
+  Wycheproof AES-GCM vectors run on every kernel. They need a CPU with VAES and AVX-512, so these
+  tests are run natively on one (Zen 4).
 - Hardware paths: unit tests compare each one with the portable code (`hardware_matches_portable`
   for AES, CTR, GCM, SHA-1, SHA-256, `hardware_matches_table` for CRC, the multi-block ChaCha20
   and Poly1305 against one block at a time, `ec::hw`, `ec::hw_aarch64`,
