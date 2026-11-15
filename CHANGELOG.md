@@ -210,6 +210,54 @@ one ECDH is about 1% of a handshake.
   and none in the point routines.
 - `unsafe`: no new block; the point block saves and restores `rbx` (docs/unsafe-review.md).
 
+### Performance: RSA on BMI2 + ADX and AVX-512 IFMA in `only-crypto`
+
+No API change (`tools/api/public-api.sh` unchanged). Measured on a quiet bench host (Zen 4,
+CPU 2, three alternating rounds of the old and new binaries, ring 0.17 in the same run, op/s):
+RSA-2048 PKCS#1 v1.5 sign 1,192 → 3,910 (0.49× → 1.61× ring), RSA-3072 371 → 1,455 (0.47× →
+1.85×), RSA-4096 156 → 755 (0.45× → 2.19×); verify 39,250 → 79,970 (0.60× → 1.22×), 18,300 →
+33,440 (1.10×), 10,110 → 19,090 (1.09×); verify including the public-key parse (one
+certificate signature; ring parses on every call) 5,850 → 67,090 (0.09× → 1.02×), 0.95× and
+0.95× at 3072 and 4096 bits. only-tls full handshakes with an RSA-2048 certificate (new
+`tls-bench` row): 775 → 2,586/s, 0.43× → 1.44× rustls + ring.
+
+- On x86_64 with AVX-512 IFMA (new `cpu` feature `ifma`: CPUID leaf 7 with the AVX-512 state)
+  the CRT exponentiations of 2048-, 3072- and 4096-bit keys run in radix 2⁵² (`bignum::ifma`):
+  almost Montgomery multiplication over 20, 32 or 40 digits, one `asm!` block per product with
+  the operands in registers (`ymm` for 20 and 32 digits, `zmm` for 40), two accumulators at 20
+  digits so each register takes two dependent multiply-adds per step, the low digit and the next
+  `yᵢ` computed in general-purpose registers so that chain bypasses the vector unit, the carries
+  normalized with a generate / propagate mask word. Results stay below `2p` through the whole
+  exponentiation; one masked subtraction at the end. A 1024-bit multiplication takes 416 cycles.
+- Without IFMA, with BMI2 + ADX: Montgomery multiplication and squaring for 16 to 64 limbs in
+  `asm!` (`bignum::hw`; operand scanning with `mulx` and the two carry chains, rows unrolled with
+  the assembler's `.rept`, the next reduction factor taken from a register, a dedicated squaring
+  up to 32 limbs, the final subtraction by `cmovnz`): a 1024-bit multiplication 1,240 → 805
+  cycles, squaring 1,490 → 681; RSA-2048 signing on this path alone measured 0.99× ring,
+  verification 1.20×.
+- Exponentiation: fixed 5-bit windows (were 4) over a flat table built with squarings for the
+  even entries, every lookup one pass over all 32 entries with AVX2 `vpcmpeqq` masks (the
+  constant-time `ct` masks without AVX2).
+- `R² mod m`: `64 + k` doublings and six Montgomery squarings instead of `128k` doublings for the
+  secret primes (constant time), one long division for public moduli; key parsing is no longer
+  the cost of a certificate check. The private operation keeps the blinding (now squared with
+  the dedicated squaring), drops four 2048-bit conversions and reduces the blinded input into
+  each prime field with three multiplications.
+- Karatsuba was not tried: at these sizes the assembly row loops leave little to save.
+- Correctness: `asm_matches_generic` (the BMI2 + ADX code at every size against the generic CIOS
+  on random values and 0, 1, m - 1, m - 2, R - 1, R - m, full and short top limbs, a 200-step
+  chain), `ifma_pow_matches` (the IFMA exponentiation against square-and-multiply, edge bases and
+  exponents), `r2_constructions`; `rsa_vs_ring` now signs with 2048-, 3072- (new) and 4096-bit
+  (new) keys and requires byte-identical PKCS#1 v1.5 signatures, also with the portable code
+  forced; the Wycheproof RSA vectors are unchanged and pass on both paths.
+- Constant time: the release disassembly on Zen 4 lists only loop counters, the public limb- and
+  digit-count dispatch, CPU-feature, slice and allocation checks, public window offsets, the
+  blinding cache and the final fault check in `Mont::mul_into` / `sqr_into`, `ifma::amm`,
+  `ifma::pow`, `Mont::pow`, the table scans, `Mont::new`, `crt_combine` and `private_op`
+  (counts in `src/ct.rs`).
+- `unsafe`: +7 blocks and +1 `unsafe fn` in `only-crypto` (`bignum::hw`: the two Montgomery
+  blocks and the AVX2 scan; `bignum::ifma`: the IFMA blocks); see docs/unsafe-review.md.
+
 ### Changed (breaking, before 1.0.0): pre-1.0 dependencies wrapped
 
 rustls 0.23, quinn-proto 0.11, str0m 0.24 and prost 0.13 no longer appear in the covered API, so
