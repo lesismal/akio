@@ -216,7 +216,7 @@ Decisions taken while the user was away (recommended option chosen, review later
 - New SIMD/asm code keeps MSRV 1.85 by using `asm!` plus CPUID/XGETBV detection, never by raising the MSRV.
 
 Items:
-- [ ] aarch64 `asm!` for the P-256 field/order arithmetic and the X25519 ladder (tests only)
+- [x] aarch64 `asm!` for the P-256 field/order arithmetic and the X25519 ladder (tests only): P-256 mod p with a shift-only reduction, mod n, add/sub/2ᵏ·a/3·a on a `P256A` twin with safegcd inversions; the X25519 field in 4×64 limbs folded by 38; MUL/UMULH + ADDS/ADCS + CSEL, `Feature::Umulh`. Differential, chain and twin tests, RFC 7748 1M iterations and Wycheproof pass on macOS and arm64 Linux; constant-time disassembly checked. Not benchmarked yet (no ARM benchmark host); whole-point asm, asm divsteps and table scans on aarch64 are not done.
 - [x] RSA sign/verify on x86_64 (2048 sign was 0.49x ring, verify 0.59x): BMI2+ADX Montgomery `asm!` (16–64 limbs), AVX-512 IFMA radix-2⁵² exponentiation for the CRT halves of 2048–4096-bit keys, 5-bit windows with AVX2 scans, R² by squarings (secret moduli) or one division (public). Zen 4: sign 1.61x / 1.85x / 2.19x ring (2048/3072/4096), verify 1.22x / 1.10x / 1.09x, verify with key parse 1.02x / 0.95x / 0.95x, RSA-2048 TLS handshakes 0.43x → 1.44x rustls+ring; BMI2+ADX alone (no IFMA) about 0.99x sign. Next: interleave both CRT halves in one IFMA block.
 - [ ] ChaCha20-Poly1305 bulk (AVX2/AVX-512 ChaCha20, SIMD Poly1305; TLS records were 0.55x rustls+ring)
 - [ ] QUIC datapath leftovers: no copy out of the `recvmmsg` buffer, a ring buffer for sent packets, per-batch ACKs (needs an only-core batch-end hook), GRO on by default where supported
