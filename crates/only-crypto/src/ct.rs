@@ -22,18 +22,22 @@
 //! conditional branch in the secret-scalar paths: `Jac::{double, add_core, madd_ct}` and the
 //! inlined `mul_ct`/`mul_base_ct`/`lookup`/`booth`/`booth5` inside `ecdh_x_impl`/`base_mul_impl`
 //! (portable `P256`/`P384`, the `P256X` twin with its whole-point assembly, the `P256A` aarch64
-//! twin), `ec::hw::mul_base` (the wide comb), `ec::hw::lookup_jac_avx2` / `lookup_affine_avx2`,
-//! the field multiplication, squaring and inversion (`Fe::invert`, `P256P`/`P256N::mont_inv`,
+//! twin), `ec::hw::mul_base` (the wide comb), `ec::hw::lookup_jac_avx2` / `lookup_affine_avx2`, the
+//! field multiplication, squaring and inversion (`Fe::invert`, `P256P`/`P256N::mont_inv`,
 //! `safegcd::inv_with` and both `divsteps_59`), `Point::mul_base` / `add_niels` /
 //! `Completed::to_point` (edwards25519) and `x25519` (both ladders inlined). On x86_64 (with the
 //! assembly) and aarch64 (with the aarch64 assembly, and portable) the only conditional branches
-//! there are loop counters, public bounds and indices (window positions, limb and bit offsets of
-//! a digit, table rows), the public exponent bits of the remaining Fermat chains (P-384,
-//! Ed25519), the CPU-feature checks, `OnceLock` initialization, the length of the output
-//! encoding, and the final "result is the identity" test, which a valid secret scalar never
-//! reaches. Last checked on Zen 4 for the whole-point / safegcd pass: no conditional branch at
-//! all in the point routines, the table scans, `divsteps_59` (assembly: one, the loop counter)
-//! and `Fe::invert`.
+//! there are loop counters, public bounds and indices (window positions, limb and bit offsets of a
+//! digit, table rows), the public exponent bits of the remaining Fermat chains (P-384, Ed25519),
+//! the CPU-feature checks, `OnceLock` initialization, the length of the output encoding, and the
+//! final "result is the identity" test, which a valid secret scalar never reaches. Last checked on
+//! Zen 4 for the point-formula pass (`ecp_nistz256` additions, the doubling from `2Y` with a
+//! modular halving): no conditional branch at all in the point routines, the table scans,
+//! `divsteps_59` (assembly: one, the loop counter) and `Fe::invert`; `ecdh_x_impl` for the `P256X`
+//! twin has 17, all of the kinds above (the table-building loop and its public index parity, the
+//! window loop and the public bit offset and limb bound of each digit, the AVX2 feature check and
+//! the scalar-scan fallback's loop, the final identity test and the length of the output encoding),
+//! the same set as before the pass.
 //!
 //! The aarch64 assembly paths, as listed on macOS (Apple silicon, release `pk_bench`):
 //! `x25519` (both ladders inlined) has 9 conditional branches: the CPU-feature and

@@ -77,7 +77,7 @@ docs/api-stability.zh-CN.md）。它不是通用密码学库（不清零密钥�
   指令数（4×64 乘积是 16 个 `MUL` + 16 个 `UMULH`，而 2⁵¹ 进制需要 25 个 128 位乘积）；这条路径已测试，但
   **尚未做性能测试**，因此不给出 aarch64 的性能数字。
 - P-256 / P-384 的秘密标量乘法使用 Jacobian 坐标（`a = -3`：倍点 4M + 4S，加法 11M + 5S，混合加法
-  7M + 4S）。可变基点（ECDH）：Booth 重编码的有符号 5 位窗口（数字在 `[-16, 16]`）作用于 `1·P … 16·P`，每次
+  7M + 4S；P-256 孪生曲线的汇编加法用 12M + 4S 与 8M + 3S，模加减次数减半）。可变基点（ECDH）：Booth 重编码的有符号 5 位窗口（数字在 `[-16, 16]`）作用于 `1·P … 16·P`，每次
   查表读取全部 16 项，取负为掩码选择。固定基点：把 `k` 重新编码为有符号 4 位数字（掩码算术），每个数字加一个
   仿射梳形表项 `|d|·16ⁱ·G`，每次查表读取该行全部 8 项；P-256 孪生曲线在有 AVX2 时改用 Booth 重编码的有符号 6 位数字与更宽的梳形表
   （43 行，每行 32 个仿射点 `|d|·2⁶ⁱ·G`，共 88 KiB，首次使用时构造），43 次混合加法，每行都完整读取。
@@ -121,10 +121,10 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 | Ed25519 验签（次/秒） | 18 289 | 27 714 | ring 的 0.87 倍 |
 | Ed25519 签名 | – | 89 784 | ring 的 1.53 倍 |
 | X25519 协商 | 28 865 | 36 488 | ring 的 1.00 倍 |
-| P-256 ECDSA 签名 | 23 435 | 59 837 | ring 的 0.79 倍 |
-| P-256 ECDSA 验签 | 8 043 | 25 138 | ring 的 0.96 倍 |
-| P-256 ECDH | 10 075 | 27 288 | ring 的 0.91 倍 |
-| P-256 生成密钥 | – | 108 263 | ring 的 0.96 倍 |
+| P-256 ECDSA 签名 | 23 435 | 105 399 | ring 的 1.38 倍 |
+| P-256 ECDSA 验签 | 8 043 | 28 834 | ring 的 1.10 倍 |
+| P-256 ECDH | 10 075 | 33 904 | ring 的 1.12 倍 |
+| P-256 生成密钥 | – | 158 921 | ring 的 1.40 倍 |
 | P-384 ECDSA 验签 | 2 426 | 4 330 | ring 的 2.34 倍 |
 | RSA-2048 PKCS#1 签名 | 871 | 1 192 | ring 的 0.49 倍 |
 | RSA-2048 PKCS#1 验签 | 29 019 | 39 244 | ring 的 0.59 倍 |
@@ -137,9 +137,12 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 crc32fast）；在 Zen 4 上，512 位内核在所有长度上都快于同一内核的 256 位寄存器版本。P-256 整点优化（汇编倍点与加法、带
 AVX2 扫表的 6 位梳形表、safegcd 求逆）之后，在有负载的机器上同一次运行中与 ring 对比（docs/BENCHMARKS.zh-CN.md）：
 签名 0.77 倍 → 1.25 倍，生成密钥 0.94 倍 → 1.33 倍，验签 0.98 倍 → 1.04 倍，ECDH 0.94 倍 → 0.96 倍，
-secp256r1 握手为 rustls 的 0.94 倍 → 1.12 倍；表中 P-256 各行来自上一轮。后续：给没有 AVX-512 的 CPU 的
-VAES + AVX2 内核、SIMD Poly1305、把约简交织进乘积各行的 P-256 乘法（ECDH）、测量 aarch64 上 P-256 与 X25519 汇编的性能（已测试，尚未做
-性能测试）以及 aarch64 上的整点运算与 divsteps 汇编、RSA 的 Karatsuba。
+secp256r1 握手为 rustls 的 0.94 倍 → 1.12 倍。在空闲机器上，那一版的 ECDH 已是
+ring 的 1.08 倍；随后改用 OpenSSL `ecp_nistz256` 的点运算公式（模加减更少）并缩短约简步骤，ECDH 达到 ring 的
+1.12 倍，签名 1.38 倍，验签 1.10 倍，生成密钥 1.40 倍（一次倍点 348 个周期，一次加法 721，可变基点标量乘法
+140.6k）；表中 P-256 各行来自这最后一轮，在空闲机器上测得。后续：给没有 AVX-512 的 CPU 的 VAES + AVX2 内核、SIMD Poly1305、测量 aarch64 上 P-256 与 X25519 汇编的性能（已测试，尚未做性能测试）以及
+aarch64 上的整点运算与 divsteps 汇编、
+RSA 的 Karatsuba。
 
 ## 测试
 
@@ -156,7 +159,8 @@ VAES + AVX2 内核、SIMD Poly1305、把约简交织进乘积各行的 P-256 乘
   `hardware_matches_portable`，CRC 的 `hardware_matches_table`，多分组 ChaCha20 与两分组 Poly1305 对比逐分组
   计算，`ec::hw`、`ec::hw_aarch64`、`curve25519::hw` 与 `curve25519::hw_aarch64` 的 `matches_portable` 在随机值
   与边界值上覆盖每个域运算例程与 X25519 阶梯，`chains_match_portable` 覆盖长串相互依赖的运算（aarch64），`ec::hw` 的 `points_match_portable` 在随机 `Z` 的随机点、Wycheproof 中全部合法的 ECDH 点、`P + P`、
-  `P + (-P)` 与无穷远点上把整点倍点、加法与混合加法和可移植公式逐 limb 比较，`safegcd` 的 `matches_fermat`
+  `P + (-P)` 与两种形式的无穷远点上把整点倍点（逐 limb）、加法与混合加法（按点比较：它们的公式给出另一种
+  表示）和可移植公式比较，并在边界值上检查模减半，`safegcd` 的 `matches_fermat`
   覆盖 P-256 的两个模数，`twin_matches_portable` 覆盖 P-256 的密钥生成、ECDH、签名与验签），整个测试套件还会在 x86_64 与
   aarch64 上设置 `ONLY_CRYPTO_PORTABLE=1` 再跑一遍。
 - Jacobian 标量乘法在随机标量与边界标量（`[1, n)` 的两端、每个 Booth 数字对应的 `n - 2|d|`、进位到梳形表

@@ -90,7 +90,8 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   products in radix 2⁵¹); this path is tested but **not benchmarked yet**, so no aarch64 numbers
   are claimed.
 - Secret scalar multiplication on P-256 / P-384 uses Jacobian coordinates (`a = -3`: doubling
-  4M + 4S, addition 11M + 5S, mixed addition 7M + 4S). Variable base (ECDH): Booth-recoded signed
+  4M + 4S, addition 11M + 5S, mixed addition 7M + 4S; the P-256 twin's assembly adds with
+  12M + 4S and 8M + 3S, which need half the modular additions and subtractions). Variable base (ECDH): Booth-recoded signed
   5-bit windows (digits in `[-16, 16]`) over `1·P … 16·P`, every lookup reading all 16 entries,
   the negation a masked select. Fixed base: `k` recoded into signed 4-bit digits (masked
   arithmetic), one affine comb entry `|d|·16ⁱ·G` per digit, each lookup reading all 8 entries of
@@ -150,10 +151,10 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | Ed25519 verify (op/s) | 18 289 | 27 714 | 0.87x ring |
 | Ed25519 sign | – | 89 784 | 1.53x ring |
 | X25519 agreement | 28 865 | 36 488 | 1.00x ring |
-| P-256 ECDSA sign | 23 435 | 59 837 | 0.79x ring |
-| P-256 ECDSA verify | 8 043 | 25 138 | 0.96x ring |
-| P-256 ECDH | 10 075 | 27 288 | 0.91x ring |
-| P-256 key generation | – | 108 263 | 0.96x ring |
+| P-256 ECDSA sign | 23 435 | 105 399 | 1.38x ring |
+| P-256 ECDSA verify | 8 043 | 28 834 | 1.10x ring |
+| P-256 ECDH | 10 075 | 33 904 | 1.12x ring |
+| P-256 key generation | – | 158 921 | 1.40x ring |
 | P-384 ECDSA verify | 2 426 | 4 330 | 2.34x ring |
 | RSA-2048 PKCS#1 sign | 871 | 1 192 | 0.49x ring |
 | RSA-2048 PKCS#1 verify | 29 019 | 39 244 | 0.59x ring |
@@ -168,10 +169,13 @@ against crc32fast); on Zen 4 the 512-bit kernel beat the same kernel on 256-bit 
 size. The whole-point P-256 pass (assembly doublings and additions, a 6-bit comb with AVX2
 scans, safegcd inversions) moved P-256 against ring, measured in the same run on a loaded host
 (docs/BENCHMARKS.md): sign 0.77× → 1.25×, key generation 0.94× → 1.33×, verify 0.98× → 1.04×,
-ECDH 0.94× → 0.96×, secp256r1 handshakes 0.94× → 1.12× rustls; the P-256 rows of the table are
-from the pass before. Follow-ups: a VAES + AVX2 kernel for CPUs without AVX-512, a SIMD Poly1305,
-a P-256 reduction interleaved with the product rows (ECDH), measuring the aarch64 assembly for
-P-256 and X25519 (tested, not benchmarked) and aarch64 whole-point routines and divsteps,
+ECDH 0.94× → 0.96×, secp256r1 handshakes 0.94× → 1.12× rustls. On a quiet host that code already did 1.08× ring in ECDH; OpenSSL's
+`ecp_nistz256` point formulas (fewer modular additions) and a shorter reduction step then took
+ECDH to 1.12×, sign to 1.38×, verify to 1.10× and key generation to 1.40× ring (a doubling 348
+cycles, an addition 721, the variable-base multiplication 140.6k); the P-256 rows of the table
+are from that last pass, on a quiet host. Follow-ups: a VAES + AVX2
+kernel for CPUs without AVX-512, a SIMD Poly1305, measuring the aarch64 assembly for P-256 and X25519 (tested,
+not benchmarked) and aarch64 whole-point routines and divsteps,
 Karatsuba for RSA.
 
 ## Testing
@@ -192,9 +196,10 @@ Karatsuba for RSA.
   `curve25519::hw` and `curve25519::hw_aarch64` `matches_portable` for every field routine and
   the X25519 ladder on random and edge values, `chains_match_portable` on long chains of
   dependent operations (aarch64),
-  `ec::hw` `points_match_portable` for the whole-point doubling, addition and mixed addition
-  against the portable formulas, limb for limb, on random points with random `Z`, every valid
-  Wycheproof ECDH point, `P + P`, `P + (-P)` and the identity, `safegcd` `matches_fermat` for
+  `ec::hw` `points_match_portable` for the whole-point doubling (limb for limb), addition and
+  mixed addition (as points: their formulas give another representative) against the portable
+  formulas on random points with random `Z`, every valid Wycheproof ECDH point, `P + P`,
+  `P + (-P)` and the identity in both forms, and the modular halving on edge values, `safegcd` `matches_fermat` for
   both P-256 moduli, `twin_matches_portable` for P-256 key generation, ECDH, signing and
   verification), and the
   whole suite also runs with `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.

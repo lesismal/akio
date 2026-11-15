@@ -10,8 +10,9 @@
 //!   [`enabled`] (one check per operation; the inversion checks once).
 //!
 //! Constant time: straight-line code, no branches and no memory accesses that depend on the
-//! values; the final corrections use `cmovc`/`cmovnc` or masks from `sbb`. (`black_box` is not
-//! needed here: the compiler cannot rewrite the assembly.)
+//! values; the final corrections use `cmovc`/`cmovnc` or masks from `sbb` (the halving: from
+//! `neg` of the low bit). (`black_box` is not needed here: the compiler cannot rewrite the
+//! assembly.)
 //!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the `asm!`
 //! blocks, which read the 32-byte limb arrays behind their pointer operands and write nothing but
@@ -839,11 +840,12 @@ pub(crate) fn mul3(a: &[u64; 4]) -> [u64; 4] {
 }
 
 // Whole point operations: each one `asm!` block over a frame of 32-byte field elements addressed
-// from `rdi` (`[rdi]` holds `p₃`, the elements start at `rdi + 32`). A product or square leaves
-// its reduced result in the accumulator `r12..r15`; the additions, subtractions and doublings
-// work on the accumulator in place, with the other operand in the frame, so a chain of them costs
-// no stores; the accumulator goes to the frame only where a later product reads it. `rsi`
-// carries the reductions' and additions' top bits, `rax`, `rcx`, `rdx`, `r8..r11` are scratch.
+// from `rdi` (`[rdi]` holds `p₃`, `[rdi + 8]` the caller's `rbx`, the elements start at
+// `rdi + 32`). A product or square leaves its reduced result in the accumulator `r12..r15`; the
+// additions, subtractions, doublings and halvings work on the accumulator in place, with the
+// other operand in the frame, so a chain of them costs no stores; the accumulator goes to the
+// frame only where a later product reads it. `rsi` carries the reductions' and additions' top
+// bits, `rbx` holds the shift count 32, `rax`, `rcx`, `rdx`, `r8..r11` are scratch.
 
 /// `R = (r12..r15) ← a·b·2⁻²⁵⁶ mod p` for frame addresses `a`, `b` (holding values below `p`).
 macro_rules! f_mul {
@@ -861,25 +863,24 @@ macro_rules! f_sqr {
 
 /// One step of [`f_redc`] on the low half `L = ($m, $z1, $z2, $z3)`: `L ← (L + m·p)/2⁶⁴` with
 /// `m` the low limb, the result in `($z1, $z2, $z3, $m)`. As in [`reduce_p`], `m·p` adds `m·2⁹⁶`
-/// (two shifted words) and `m·p₃·2¹⁹²`; the top limb of the result is `hi(m·p₃)` plus a carry,
-/// which cannot overflow (`hi(m·p₃) ≤ 2⁶⁴ - 2³²`), and `(L + m·p)/2⁶⁴ < 2¹⁹² + p < 2²⁵⁶`.
+/// (two shifted words: `shlx`/`shrx` by `rbx = 32`) and `m·p₃·2¹⁹²` (one `mulx`, `rdx = p₃`
+/// for the whole reduction, so no move into `rdx` per step); the top limb of the result is
+/// `hi(m·p₃)` plus a carry, which cannot overflow (`hi(m·p₃) ≤ 2⁶⁴ - 2³²`), and
+/// `(L + m·p)/2⁶⁴ < 2¹⁹² + p < 2²⁵⁶`.
 macro_rules! f_redc_step {
     ($m:literal, $z1:literal, $z2:literal, $z3:literal) => {
         concat!(
-            "mov rdx, ",
+            "shlx rax, ",
             $m,
-            "\n",
-            "mov rax, ",
+            ", rbx\n",
+            "shrx rcx, ",
             $m,
-            "\n",
-            "shl rax, 32\n",
-            "mov rcx, ",
-            $m,
-            "\n",
-            "shr rcx, 32\n",
+            ", rbx\n",
             "mulx ",
             $m,
-            ", rsi, [rdi]\n",
+            ", rsi, ",
+            $m,
+            "\n",
             "add ",
             $z1,
             ", rax\n",
@@ -897,12 +898,13 @@ macro_rules! f_redc_step {
 }
 
 /// The Montgomery reduction `t·2⁻²⁵⁶ mod p` of `t = H·2²⁵⁶ + L` in `r8..r15` (`t < p·2²⁵⁶`) into
-/// `R`, `p₃` read from `[rdi]`: four steps reduce the low half alone to `L' = (L + M·p)/2²⁵⁶ ≤
-/// p` (in `r8..r11` again after the rotation), then `R = H + L' < 2p` with the carry in `rsi`,
-/// and one conditional subtraction.
+/// `R`, `p₃` read from `[rdi]` into `rdx`: four steps reduce the low half alone to
+/// `L' = (L + M·p)/2²⁵⁶ ≤ p` (in `r8..r11` again after the rotation), then `R = H + L' < 2p`
+/// with the carry in `rsi`, and one conditional subtraction.
 macro_rules! f_redc {
     () => {
         concat!(
+            "mov rdx, [rdi]\n",
             f_redc_step!("r8", "r9", "r10", "r11"),
             f_redc_step!("r9", "r10", "r11", "r8"),
             f_redc_step!("r10", "r11", "r8", "r9"),
@@ -1007,6 +1009,32 @@ macro_rules! f_sub {
     };
 }
 
+/// `R ← R/2 mod p`: add `p` when `R` is odd (its limbs masked from the low bit), then shift
+/// the 257-bit sum right by one; `(R + p)/2 < p`.
+macro_rules! f_half {
+    () => {
+        concat!(
+            "mov rax, r12\n",
+            "and eax, 1\n",
+            "neg rax\n",
+            "mov rcx, rax\n",
+            "shr rcx, 32\n",
+            "mov rdx, [rdi]\n",
+            "and rdx, rax\n",
+            "xor esi, esi\n",
+            "add r12, rax\n",
+            "adc r13, rcx\n",
+            "adc r14, 0\n",
+            "adc r15, rdx\n",
+            "adc rsi, 0\n",
+            "shrd r12, r13, 1\n",
+            "shrd r13, r14, 1\n",
+            "shrd r14, r15, 1\n",
+            "shrd r15, rsi, 1\n",
+        )
+    };
+}
+
 /// `R ← m`.
 macro_rules! f_ld {
     ($m:literal) => {
@@ -1057,12 +1085,19 @@ macro_rules! point_asm {
         f[0] = P3;
         // SAFETY: the block reads and writes only the frame behind `rdi` (a live, exclusively
         // borrowed array; every address is `rdi` plus a constant inside it, checked against the
-        // frame length by the callers' array types), and the declared registers; no stack, no
-        // branches. `mulx`, `adcx` and `adox` need BMI2 and ADX: only reached through the
-        // `P256X` twin, entered after `cpu::has(Feature::Adx)` (debug-asserted by the callers).
+        // frame length by the callers' array types), and the declared registers, plus `rbx`
+        // (reserved by the compiler), which it saves in the frame header first and restores
+        // last; no stack, no branches. `mulx`, `adcx`, `adox`, `shlx` and `shrx` need BMI2 and
+        // ADX: only reached through the `P256X` twin, entered after `cpu::has(Feature::Adx)`
+        // (debug-asserted by the callers).
         unsafe {
             asm!(
+                // rbx is reserved by the compiler: saved in the frame, restored at the end; in
+                // between it holds the reductions' shift count.
+                "mov [rdi + 8], rbx",
+                "mov ebx, 32",
                 $($code,)+
+                "mov rbx, [rdi + 8]",
                 in("rdi") f.as_mut_ptr(),
                 out("rax") _,
                 out("rcx") _,
@@ -1100,9 +1135,157 @@ fn store_point(f: &[u64]) -> JacLimbs {
     p
 }
 
-/// Jacobian doubling for `a = -3` (dbl-2001-b with `Z₃ = 2·Y·Z`, 4M + 4S), as the portable
-/// `Jac::double`: `δ = Z²`, `γ = Y²`, `β = X·γ`, `α = 3·(X - δ)·(X + δ)`, `X₃ = α² - 8β`,
-/// `Y₃ = α·(4β - X₃) - 8γ²`. The identity (`Z = 0`) stays the identity. Constant time.
+/// The body of [`point_double`] (frame layout there).
+macro_rules! dbl_body {
+    () => {
+        concat!(
+            f_ld!("rdi + 64"),
+            f_dbl!(),
+            f_st!("rdi + 128"),
+            f_sqr!("rdi + 96"),
+            f_st!("rdi + 160"),
+            // Z₃ = 2Y·Z (Z is not read again).
+            f_mul!("rdi + 128", "rdi + 96"),
+            f_st!("rdi + 96"),
+            f_ld!("rdi + 32"),
+            f_add!("rdi + 160"),
+            f_st!("rdi + 224"),
+            f_ld!("rdi + 32"),
+            f_sub!("rdi + 160"),
+            f_st!("rdi + 256"),
+            f_sqr!("rdi + 128"),
+            f_st!("rdi + 192"),
+            // α = 3·(X + δ)·(X - δ).
+            f_mul!("rdi + 224", "rdi + 256"),
+            f_st!("rdi + 320"),
+            f_dbl!(),
+            f_add!("rdi + 320"),
+            f_st!("rdi + 320"),
+            f_mul!("rdi + 32", "rdi + 192"),
+            f_st!("rdi + 288"),
+            // X₃ = α² - 2·4β (X is not read again).
+            f_sqr!("rdi + 320"),
+            f_sub!("rdi + 288"),
+            f_sub!("rdi + 288"),
+            f_st!("rdi + 32"),
+            f_sqr!("rdi + 192"),
+            f_half!(),
+            f_st!("rdi + 352"),
+            f_ld!("rdi + 288"),
+            f_sub!("rdi + 32"),
+            f_st!("rdi + 224"),
+            // Y₃ = α·(4β - X₃) - 8γ² (Y is not read again).
+            f_mul!("rdi + 320", "rdi + 224"),
+            f_sub!("rdi + 352"),
+            f_st!("rdi + 64"),
+        )
+    };
+}
+
+/// The body of [`point_add`] (frame layout there).
+macro_rules! add_body {
+    () => {
+        concat!(
+            f_sqr!("rdi + 192"),
+            f_st!("rdi + 224"),
+            f_sqr!("rdi + 96"),
+            f_st!("rdi + 256"),
+            f_mul!("rdi + 224", "rdi + 192"),
+            f_st!("rdi + 288"),
+            f_mul!("rdi + 256", "rdi + 96"),
+            f_st!("rdi + 320"),
+            // U₁, H = U₂ - U₁.
+            f_mul!("rdi + 32", "rdi + 224"),
+            f_st!("rdi + 352"),
+            f_mul!("rdi + 128", "rdi + 256"),
+            f_sub!("rdi + 352"),
+            f_st!("rdi + 384"),
+            // S₁, R = S₂ - S₁.
+            f_mul!("rdi + 64", "rdi + 288"),
+            f_st!("rdi + 288"),
+            f_mul!("rdi + 160", "rdi + 320"),
+            f_sub!("rdi + 288"),
+            f_st!("rdi + 320"),
+            // Z₃ = H·Z₁·Z₂ (Z₁ is not read again).
+            f_mul!("rdi + 384", "rdi + 96"),
+            f_st!("rdi + 416"),
+            f_mul!("rdi + 416", "rdi + 192"),
+            f_st!("rdi + 96"),
+            f_sqr!("rdi + 384"),
+            f_st!("rdi + 448"),
+            f_mul!("rdi + 448", "rdi + 384"),
+            f_st!("rdi + 480"),
+            f_mul!("rdi + 352", "rdi + 448"),
+            f_st!("rdi + 512"),
+            // X₃ = R² - H³ - 2·U₁·H² (X₁ is not read again).
+            f_sqr!("rdi + 320"),
+            f_sub!("rdi + 480"),
+            f_sub!("rdi + 512"),
+            f_sub!("rdi + 512"),
+            f_st!("rdi + 32"),
+            f_mul!("rdi + 288", "rdi + 480"),
+            f_st!("rdi + 544"),
+            // Y₃ = R·(U₁·H² - X₃) - S₁·H³ (Y₁ is not read again).
+            f_ld!("rdi + 512"),
+            f_sub!("rdi + 32"),
+            f_st!("rdi + 576"),
+            f_mul!("rdi + 576", "rdi + 320"),
+            f_sub!("rdi + 544"),
+            f_st!("rdi + 64"),
+        )
+    };
+}
+
+/// The body of [`point_add_affine`] (frame layout there).
+macro_rules! madd_body {
+    () => {
+        concat!(
+            f_sqr!("rdi + 96"),
+            f_st!("rdi + 192"),
+            // H = x₂·Z₁² - X₁.
+            f_mul!("rdi + 128", "rdi + 192"),
+            f_sub!("rdi + 32"),
+            f_st!("rdi + 224"),
+            // R = y₂·Z₁³ - Y₁.
+            f_mul!("rdi + 192", "rdi + 96"),
+            f_st!("rdi + 256"),
+            f_mul!("rdi + 160", "rdi + 256"),
+            f_sub!("rdi + 64"),
+            f_st!("rdi + 256"),
+            // Z₃ = H·Z₁ (Z₁ is not read again).
+            f_mul!("rdi + 224", "rdi + 96"),
+            f_st!("rdi + 96"),
+            f_sqr!("rdi + 224"),
+            f_st!("rdi + 288"),
+            f_mul!("rdi + 288", "rdi + 224"),
+            f_st!("rdi + 320"),
+            f_mul!("rdi + 32", "rdi + 288"),
+            f_st!("rdi + 352"),
+            // X₃ = R² - H³ - 2·X₁·H² (X₁ is not read again).
+            f_sqr!("rdi + 256"),
+            f_sub!("rdi + 320"),
+            f_sub!("rdi + 352"),
+            f_sub!("rdi + 352"),
+            f_st!("rdi + 32"),
+            f_mul!("rdi + 64", "rdi + 320"),
+            f_st!("rdi + 384"),
+            // Y₃ = R·(X₁·H² - X₃) - Y₁·H³ (Y₁ is not read again).
+            f_ld!("rdi + 352"),
+            f_sub!("rdi + 32"),
+            f_st!("rdi + 416"),
+            f_mul!("rdi + 416", "rdi + 256"),
+            f_sub!("rdi + 384"),
+            f_st!("rdi + 64"),
+        )
+    };
+}
+
+/// Jacobian doubling for `a = -3` (4M + 4S): `S = 2Y`, `δ = Z²`, `Z₃ = S·Z`, `S² = 4γ`
+/// (`γ = Y²`), `4β = X·S²`, `α = 3·(X + δ)·(X - δ)`, `X₃ = α² - 2·4β`, `8γ² = (S²)²/2`,
+/// `Y₃ = α·(4β - X₃) - 8γ²` (the order of OpenSSL's `ecp_nistz256_point_double`: ten additions,
+/// subtractions, doublings and halvings instead of the fourteen of dbl-2001-b written out). The
+/// same `(X₃, Y₃, Z₃)` as the portable `Jac::double` (every value is fully reduced, so the limbs
+/// match). The identity (`Z = 0`) stays the identity. Constant time.
 #[inline]
 pub(crate) fn point_double(p: &JacLimbs) -> JacLimbs {
     point_double_n(p, 1)
@@ -1113,195 +1296,53 @@ pub(crate) fn point_double(p: &JacLimbs) -> JacLimbs {
 #[inline]
 pub(crate) fn point_double_n(p: &JacLimbs, n: usize) -> JacLimbs {
     debug_assert!(cpu::cpu_has(Feature::Adx));
-    // X 32, Y 64, Z 96 (in place); δ 128, γ 192, 4β 224, α 256, 3(X - δ) 288, 8γ² 320.
-    // The order puts each output where the next doubling needs it first: Z₃ early (the next
-    // δ), the products off the critical path δ → α → α² → X₃ → Y₃ between its steps.
-    let mut f = [0u64; 44];
+    // X 32, Y 64, Z 96 (in place); S 128, δ 160, S² 192, X + δ then 4β - X₃ 224, X - δ 256,
+    // 4β 288, α 320, 8γ² 352. Z₃ comes first (the next doubling's δ), the products off the
+    // critical path δ → α → α² → X₃ → Y₃ between its steps.
+    let mut f = [0u64; 48];
     load_point(&mut f, 4, p);
     for _ in 0..n {
-        point_asm!(
-            &mut f,
-            f_sqr!("rdi + 96"),
-            f_st!("rdi + 128"),
-            f_sqr!("rdi + 64"),
-            f_st!("rdi + 192"),
-            f_ld!("rdi + 32"),
-            f_add!("rdi + 128"),
-            f_st!("rdi + 256"),
-            f_ld!("rdi + 32"),
-            f_sub!("rdi + 128"),
-            f_st!("rdi + 288"),
-            f_dbl!(),
-            f_add!("rdi + 288"),
-            f_st!("rdi + 288"),
-            f_mul!("rdi + 32", "rdi + 192"),
-            f_dbl!(),
-            f_dbl!(),
-            f_st!("rdi + 224"),
-            f_mul!("rdi + 256", "rdi + 288"),
-            f_st!("rdi + 256"),
-            // Z₃ = 2·Y·Z (Z is not read again).
-            f_mul!("rdi + 64", "rdi + 96"),
-            f_dbl!(),
-            f_st!("rdi + 96"),
-            // X₃ = α² - 2·4β (X is not read again).
-            f_sqr!("rdi + 256"),
-            f_sub!("rdi + 224"),
-            f_sub!("rdi + 224"),
-            f_st!("rdi + 32"),
-            f_sqr!("rdi + 192"),
-            f_dbl!(),
-            f_dbl!(),
-            f_dbl!(),
-            f_st!("rdi + 320"),
-            f_ld!("rdi + 224"),
-            f_sub!("rdi + 32"),
-            f_st!("rdi + 288"),
-            // Y₃ = α·(4β - X₃) - 8γ² (Y is not read again).
-            f_mul!("rdi + 256", "rdi + 288"),
-            f_sub!("rdi + 320"),
-            f_st!("rdi + 64"),
-        );
+        point_asm!(&mut f, dbl_body!());
     }
     store_point(&f)
 }
 
-/// `p + q` (add-2007-bl, 11M + 5S) without special cases, as the portable `Jac::add_core`:
-/// correct when neither operand is the identity and `p ≠ q`; `p = -q` gives `Z = 0`. Constant
-/// time.
+/// `p + q` (12M + 4S, OpenSSL's `ecp_nistz256_point_add` without its special cases):
+/// `U₁ = X₁·Z₂²`, `U₂ = X₂·Z₁²`, `S₁ = Y₁·Z₂³`, `S₂ = Y₂·Z₁³`, `H = U₂ - U₁`, `R = S₂ - S₁`,
+/// `X₃ = R² - H³ - 2·U₁·H²`, `Y₃ = R·(U₁·H² - X₃) - S₁·H³`, `Z₃ = H·Z₁·Z₂`. Seven additions and
+/// subtractions against the thirteen of add-2007-bl (11M + 5S, which trades a product for a
+/// square and four of them): the same point as the portable `Jac::add_core`, another
+/// representative (that one is `(4X₃, 8Y₃, 2Z₃)`). Correct when neither operand is the identity
+/// and `p ≠ q`; `p = -q` gives `Z = 0`, and so does an operand with `Z = 0`. Constant time.
 #[inline]
 pub(crate) fn point_add(p: &JacLimbs, q: &JacLimbs) -> JacLimbs {
     debug_assert!(cpu::cpu_has(Feature::Adx));
-    // X₁ 32, Y₁ 64, Z₁ 96, X₂ 128, Y₂ 160, Z₂ 192; Z₁Z₁ 224, Z₂Z₂ 256, U₁ 288, H 320, S₁ 352,
-    // r 384, scratch 416.
-    let mut f = [0u64; 56];
+    // X₁ 32, Y₁ 64, Z₁ 96, X₂ 128, Y₂ 160, Z₂ 192; Z₂² 224, Z₁² 256, Z₂³ then S₁ 288, Z₁³
+    // then R 320, U₁ 352, H 384, H·Z₁ 416, H² 448, H³ 480, U₁·H² 512, S₁·H³ 544,
+    // U₁·H² - X₃ 576.
+    let mut f = [0u64; 76];
     load_point(&mut f, 4, p);
     load_point(&mut f, 16, q);
-    point_asm!(
-        &mut f,
-        f_sqr!("rdi + 96"),
-        f_st!("rdi + 224"),
-        f_sqr!("rdi + 192"),
-        f_st!("rdi + 256"),
-        f_mul!("rdi + 32", "rdi + 256"),
-        f_st!("rdi + 288"),
-        // H = U₂ - U₁.
-        f_mul!("rdi + 128", "rdi + 224"),
-        f_sub!("rdi + 288"),
-        f_st!("rdi + 320"),
-        f_mul!("rdi + 64", "rdi + 192"),
-        f_st!("rdi + 352"),
-        f_mul!("rdi + 352", "rdi + 256"),
-        f_st!("rdi + 352"),
-        // r = 2·(S₂ - S₁).
-        f_mul!("rdi + 160", "rdi + 96"),
-        f_st!("rdi + 384"),
-        f_mul!("rdi + 384", "rdi + 224"),
-        f_sub!("rdi + 352"),
-        f_dbl!(),
-        f_st!("rdi + 384"),
-        // Z₃ = ((Z₁ + Z₂)² - Z₁Z₁ - Z₂Z₂)·H (Z₁ is not read again).
-        f_ld!("rdi + 96"),
-        f_add!("rdi + 192"),
-        f_st!("rdi + 416"),
-        f_sqr!("rdi + 416"),
-        f_sub!("rdi + 224"),
-        f_sub!("rdi + 256"),
-        f_st!("rdi + 416"),
-        f_mul!("rdi + 416", "rdi + 320"),
-        f_st!("rdi + 96"),
-        // I = (2H)² over Z₁Z₁, J = H·I over Z₂Z₂, V = U₁·I over U₁.
-        f_ld!("rdi + 320"),
-        f_dbl!(),
-        f_st!("rdi + 224"),
-        f_sqr!("rdi + 224"),
-        f_st!("rdi + 224"),
-        f_mul!("rdi + 320", "rdi + 224"),
-        f_st!("rdi + 256"),
-        f_mul!("rdi + 288", "rdi + 224"),
-        f_st!("rdi + 288"),
-        // X₃ = r² - J - 2V.
-        f_sqr!("rdi + 384"),
-        f_sub!("rdi + 256"),
-        f_sub!("rdi + 288"),
-        f_sub!("rdi + 288"),
-        f_st!("rdi + 32"),
-        f_mul!("rdi + 352", "rdi + 256"),
-        f_dbl!(),
-        f_st!("rdi + 352"),
-        // Y₃ = r·(V - X₃) - 2·S₁·J.
-        f_ld!("rdi + 288"),
-        f_sub!("rdi + 32"),
-        f_st!("rdi + 288"),
-        f_mul!("rdi + 384", "rdi + 288"),
-        f_sub!("rdi + 352"),
-        f_st!("rdi + 64"),
-    );
+    point_asm!(&mut f, add_body!());
     store_point(&f)
 }
 
-/// `p + (x₂, y₂)` (madd-2007-bl, 7M + 4S) without special cases, as the portable
-/// `Jac::madd_core`: correct when `p` is not the identity and not `(x₂, y₂)`; `p = -(x₂, y₂)`
-/// gives `Z = 0`. Constant time.
+/// `p + (x₂, y₂)` (8M + 3S, OpenSSL's `ecp_nistz256_point_add_affine` without its special
+/// cases): [`point_add`] with `Z₂ = 1`, `Z₃ = H·Z₁`. Seven additions and subtractions against
+/// the fourteen of madd-2007-bl (7M + 4S): the same point as the portable `Jac::madd_core`,
+/// another representative (that one is `(4X₃, 8Y₃, 2Z₃)`). Correct when `p` is not the identity
+/// and not `(x₂, y₂)`; `p = -(x₂, y₂)` gives `Z = 0`, and so does `p` with `Z = 0`. Constant
+/// time.
 #[inline]
 pub(crate) fn point_add_affine(p: &JacLimbs, x2: &[u64; 4], y2: &[u64; 4]) -> JacLimbs {
     debug_assert!(cpu::cpu_has(Feature::Adx));
-    // X₁ 32, Y₁ 64, Z₁ 96, x₂ 128, y₂ 160; Z₁Z₁ 192, H 224, scratch 256, r 288, HH 320,
-    // I then J 352, V 384.
-    let mut f = [0u64; 52];
+    // X₁ 32, Y₁ 64, Z₁ 96, x₂ 128, y₂ 160; Z₁² 192, H 224, Z₁³ then R 256, H² 288, H³ 320,
+    // X₁·H² 352, Y₁·H³ 384, X₁·H² - X₃ 416.
+    let mut f = [0u64; 56];
     load_point(&mut f, 4, p);
     f[16..20].copy_from_slice(x2);
     f[20..24].copy_from_slice(y2);
-    point_asm!(
-        &mut f,
-        f_sqr!("rdi + 96"),
-        f_st!("rdi + 192"),
-        // H = x₂·Z₁Z₁ - X₁.
-        f_mul!("rdi + 128", "rdi + 192"),
-        f_sub!("rdi + 32"),
-        f_st!("rdi + 224"),
-        // r = 2·(y₂·Z₁·Z₁Z₁ - Y₁).
-        f_mul!("rdi + 160", "rdi + 96"),
-        f_st!("rdi + 256"),
-        f_mul!("rdi + 256", "rdi + 192"),
-        f_sub!("rdi + 64"),
-        f_dbl!(),
-        f_st!("rdi + 288"),
-        // HH = H², I = 4·HH, V = X₁·I, J = H·I.
-        f_sqr!("rdi + 224"),
-        f_st!("rdi + 320"),
-        f_dbl!(),
-        f_dbl!(),
-        f_st!("rdi + 352"),
-        f_mul!("rdi + 32", "rdi + 352"),
-        f_st!("rdi + 384"),
-        f_mul!("rdi + 224", "rdi + 352"),
-        f_st!("rdi + 352"),
-        // Z₃ = (Z₁ + H)² - Z₁Z₁ - HH.
-        f_ld!("rdi + 96"),
-        f_add!("rdi + 224"),
-        f_st!("rdi + 256"),
-        f_sqr!("rdi + 256"),
-        f_sub!("rdi + 192"),
-        f_sub!("rdi + 320"),
-        f_st!("rdi + 96"),
-        // X₃ = r² - J - 2V.
-        f_sqr!("rdi + 288"),
-        f_sub!("rdi + 352"),
-        f_sub!("rdi + 384"),
-        f_sub!("rdi + 384"),
-        f_st!("rdi + 32"),
-        f_mul!("rdi + 64", "rdi + 352"),
-        f_dbl!(),
-        f_st!("rdi + 192"),
-        // Y₃ = r·(V - X₃) - 2·Y₁·J.
-        f_ld!("rdi + 384"),
-        f_sub!("rdi + 32"),
-        f_st!("rdi + 384"),
-        f_mul!("rdi + 288", "rdi + 384"),
-        f_sub!("rdi + 192"),
-        f_st!("rdi + 64"),
-    );
+    point_asm!(&mut f, madd_body!());
     store_point(&f)
 }
 
@@ -1674,9 +1715,23 @@ mod tests {
         pts
     }
 
-    /// The whole-point routines against the portable formulas, limb for limb (both are the
-    /// same formulas over fully reduced values): random points, Wycheproof points, `P + P`,
-    /// `P + (-P)` and the identity on either side.
+    /// Whether `a` and `b` are the same point: both `Z = 0`, or `X_a·Z_b² = X_b·Z_a²` and
+    /// `Y_a·Z_b³ = Y_b·Z_a³` with both `Z ≠ 0` (the additions here give another representative
+    /// than the portable formulas).
+    fn same_point(a: &JacLimbs, b: &Jac<P256, 4>) -> bool {
+        let a = Jac::<P256, 4>::from_raw(*a);
+        if a.z.is_zero() != 0 || b.z.is_zero() != 0 {
+            return a.z.is_zero() != 0 && b.z.is_zero() != 0;
+        }
+        let (za2, zb2) = (a.z.square(), b.z.square());
+        a.x.mul(&zb2).ct_eq(&b.x.mul(&za2)) != 0
+            && a.y.mul(&zb2).mul(&b.z).ct_eq(&b.y.mul(&za2).mul(&a.z)) != 0
+    }
+
+    /// The whole-point routines against the portable formulas: the doublings limb for limb (the
+    /// same representative, every value fully reduced), the additions as points (`Z = 0`
+    /// exactly where the portable formulas give it): random points, Wycheproof points, `P + P`,
+    /// `P + (-P)` and the identity (both forms) on either side.
     #[test]
     fn points_match_portable() {
         if !cpu::cpu_has(Feature::Adx) {
@@ -1697,21 +1752,21 @@ mod tests {
                 z: p.z,
             };
             let q = pts[(i * 7 + 5) % pts.len()];
-            for q in [q, *p, neg, Jac::identity()] {
-                assert_eq!(
-                    point_add(&p.raw(), &q.raw()),
-                    p.add_core_formula(&q).raw(),
+            for q in [q, *p, neg, Jac::identity(), Jac::from_raw([[0; 4]; 3])] {
+                assert!(
+                    same_point(&point_add(&p.raw(), &q.raw()), &p.add_core_formula(&q)),
                     "P + Q {i}"
                 );
-                assert_eq!(
-                    point_add(&q.raw(), &p.raw()),
-                    q.add_core_formula(p).raw(),
+                assert!(
+                    same_point(&point_add(&q.raw(), &p.raw()), &q.add_core_formula(p)),
                     "Q + P {i}"
                 );
                 if let Some((x, y)) = q.to_affine() {
-                    assert_eq!(
-                        point_add_affine(&p.raw(), &x.l, &y.l),
-                        p.madd_core_formula(&x, &y).raw(),
+                    assert!(
+                        same_point(
+                            &point_add_affine(&p.raw(), &x.l, &y.l),
+                            &p.madd_core_formula(&x, &y)
+                        ),
                         "P + affine Q {i}"
                     );
                 }
@@ -1724,6 +1779,29 @@ mod tests {
                 assert_eq!(s[2], [0; 4], "-P + affine P has Z = 0");
             }
         }
+        // The halving of the doubling (`8γ² = (4γ)²/2`), on odd and even values and the edges:
+        // `2·(R/2) = R`, and the result is fully reduced.
+        for v in values(&P256P::P) {
+            let mut f = [0u64; 48];
+            f[4..8].copy_from_slice(&v);
+            point_asm!(&mut f, f_ld!("rdi + 32"), f_half!(), f_st!("rdi + 64"));
+            let h: [u64; 4] = f[8..12].try_into().unwrap();
+            assert_eq!(ct::lt_limbs(&h, &P256P::P), u64::MAX, "half {v:x?} reduced");
+            assert_eq!(P256P::mod_add(&h, &h), v, "half {v:x?}");
+        }
+    }
+
+    /// The point routines' assembly (`ONLY_ASM` = `dbl`, `add` or `madd`), for a static
+    /// analysis such as `llvm-mca -mcpu=znver4`.
+    #[test]
+    #[ignore = "prints assembly"]
+    fn print_asm() {
+        let body = match std::env::var("ONLY_ASM").as_deref() {
+            Ok("add") => add_body!(),
+            Ok("madd") => madd_body!(),
+            _ => dbl_body!(),
+        };
+        println!(".intel_syntax noprefix\n{body}");
     }
 
     /// Nanoseconds per operation, the whole-point routines against the previous formulas over
@@ -1825,6 +1903,18 @@ mod tests {
         });
         time("mul_ct", 5_000, &mut || {
             black_box(Jac::<P256X, 4>::mul_ct(&g, black_box(&k)));
+        });
+        let sk = crate::p256::SecretKey::from_bytes(&[7; 32]).unwrap();
+        let peer = crate::p256::SecretKey::from_bytes(&[9; 32])
+            .unwrap()
+            .public_key()
+            .to_uncompressed();
+        time("ecdh (public API)", 5_000, &mut || {
+            let p = crate::p256::PublicKey::from_sec1(black_box(&peer)).unwrap();
+            black_box(sk.diffie_hellman(&p));
+        });
+        time("from_sec1", 100_000, &mut || {
+            black_box(crate::p256::PublicKey::from_sec1(black_box(&peer)).unwrap());
         });
         time("scalar invert", 20_000, &mut || {
             black_box(black_box(k).invert());
