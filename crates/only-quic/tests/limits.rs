@@ -66,7 +66,7 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
 fn defaults_are_bounded() {
     let t = TransportConfig::default();
     assert_eq!(t.receive_window, Some(8 * t.stream_receive_window));
-    assert_eq!(t.stream_send_buffer, 4 << 20);
+    assert_eq!(t.stream_send_buffer, 16 << 20);
     assert_eq!(t.send_buffer, 16 << 20);
     assert!(t.send_buffer > t.send_window);
     assert_eq!(only_quic::DEFAULT_MAX_CONNECTIONS, 10_000);

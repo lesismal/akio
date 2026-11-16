@@ -270,7 +270,8 @@ pub struct TransportConfig {
     pub receive_window: Option<u64>,
     /// Bytes sent but not yet acknowledged, on all streams (default 10 MB).
     pub send_window: u64,
-    /// Bytes one stream holds for sending: written and not yet acknowledged (default 4 MiB).
+    /// Bytes one stream holds for sending: written and not yet acknowledged (default 16 MiB,
+    /// the same as `send_buffer`, so one bulk stream can use the whole connection buffer).
     /// While a stream holds this much, [`Connection::send`](crate::Connection::send) fails with
     /// [`Error::Overloaded`](crate::Error::Overloaded) and
     /// [`QuicHandler::on_stream_writable`](crate::QuicHandler::on_stream_writable) follows once
@@ -314,7 +315,7 @@ impl Default for TransportConfig {
             stream_receive_window: STREAM_RWND,
             receive_window: Some(8 * STREAM_RWND),
             send_window: 8 * STREAM_RWND,
-            stream_send_buffer: 4 << 20,
+            stream_send_buffer: 16 << 20,
             send_buffer: 16 << 20,
             initial_rtt: Duration::from_millis(333),
             initial_mtu: 1200,

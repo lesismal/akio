@@ -49,7 +49,7 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 的切片，不再复制）。写永不阻塞：`send` 把数据排队，按流量控制与拥塞控制允许的速度发出。
 
 发送缓冲区有上限。一个流持有已写入但尚未确认的数据，最多 `TransportConfig::stream_send_buffer`
-（4 MiB），一个连接的所有流合计最多 `send_buffer`（16 MiB）。超过任一上限时，`send` 返回
+（16 MiB），一个连接的所有流合计最多 `send_buffer`（16 MiB）。超过任一上限时，`send` 返回
 `Error::Overloaded` 且不接收数据；当该流和连接的缓冲区降到上限的四分之三时，回调
 `on_stream_writable(c, id)`（每次拒绝回调一次）。生产者写到被拒为止，并在该回调里继续；
 `send_capacity(id)` 返回剩余空间（为零时同样会触发该回调），因此可以只在有空间时才读取文件的下一
@@ -76,7 +76,7 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 | `TransportConfig::stream_receive_window` | 1.25 MB | 对端在一个流上可领先应用读取发送的字节数 |
 | `TransportConfig::receive_window` | 10 MB（流窗口的 8 倍） | 一个连接所有流合计的同类限制（`None`：不限） |
 | `TransportConfig::send_window` | 10 MB | 所有流上已发送未确认的字节数 |
-| `TransportConfig::stream_send_buffer` | 4 MiB | 一个流为发送持有的字节数，超过后 `send` 返回 `Overloaded` |
+| `TransportConfig::stream_send_buffer` | 16 MiB | 一个流为发送持有的字节数，超过后 `send` 返回 `Overloaded` |
 | `TransportConfig::send_buffer` | 16 MiB | 一个连接所有流合计的同类限制 |
 | `TransportConfig::max_idle_timeout` | 30 s | 关闭静默的连接 |
 | `TransportConfig::datagram_receive_buffer_size`、`datagram_send_buffer_size` | 1.25 MB、1 MiB | 两个方向缓冲的不可靠数据报 |

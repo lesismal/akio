@@ -54,7 +54,7 @@ data is a slice of the decrypted packet, so it is not copied again). Writes neve
 queues the bytes, which go out as flow and congestion control allow.
 
 Send buffers are bounded. A stream holds what was written and not yet acknowledged up to
-`TransportConfig::stream_send_buffer` (4 MiB), and all streams of a connection together up to
+`TransportConfig::stream_send_buffer` (16 MiB), and all streams of a connection together up to
 `send_buffer` (16 MiB). Past either, `send` fails with `Error::Overloaded` and does not take the
 data; `on_stream_writable(c, id)` follows once the stream's and the connection's buffers are down
 to three quarters (once per refusal). A producer writes until refused and resumes from that
@@ -84,7 +84,7 @@ Limits and their defaults (every one bounded; the `None` / `MAX` values lift a l
 | `TransportConfig::stream_receive_window` | 1.25 MB | bytes the peer may send on one stream ahead of the application |
 | `TransportConfig::receive_window` | 10 MB (8 × the stream window) | the same over all streams of a connection (`None`: unlimited) |
 | `TransportConfig::send_window` | 10 MB | bytes in flight (sent, not acknowledged) on all streams |
-| `TransportConfig::stream_send_buffer` | 4 MiB | bytes one stream holds for sending before `send` fails with `Overloaded` |
+| `TransportConfig::stream_send_buffer` | 16 MiB | bytes one stream holds for sending before `send` fails with `Overloaded` |
 | `TransportConfig::send_buffer` | 16 MiB | the same over all streams of a connection |
 | `TransportConfig::max_idle_timeout` | 30 s | closes a silent connection |
 | `TransportConfig::datagram_receive_buffer_size`, `datagram_send_buffer_size` | 1.25 MB, 1 MiB | unreliable datagrams buffered each way |
