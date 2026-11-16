@@ -10,6 +10,14 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
+
+only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix
+2²⁶ for runs of 512 bytes and more on x86_64 CPUs without AVX-512 IFMA (Zen 2 and 3, most Intel
+client parts); it was the scalar loop. Measured on Zen 4 through the AVX2 path: ChaCha20-Poly1305
+seal 16–64 KiB +20%, 1 KiB +7% (docs/BENCHMARKS.md). CPUs with IFMA and messages under 512 bytes
+are unchanged. No public API change.
+
 ### Changed: faster ChaCha20-Poly1305 for short messages on AVX-512
 
 On x86_64 with AVX-512, only-crypto's ChaCha20 runs four blocks with one row of each block per
