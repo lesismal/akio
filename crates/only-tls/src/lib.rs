@@ -15,7 +15,8 @@
 //!
 //! Protocol coverage: TLS 1.3 (RFC 8446: full and PSK-resumed handshakes, HelloRetryRequest,
 //! KeyUpdate, client certificates, early data (0-RTT) when both sides enable it, with replay
-//! protection: [`ServerConfigBuilder::early_data`], [`ClientConfigBuilder::early_data`],
+//! protection, shareable across servers through an [`AntiReplayStore`]:
+//! [`ServerConfigBuilder::early_data`], [`ClientConfigBuilder::early_data`],
 //! [`TlsInfo::early_data`]) and TLS 1.2 (RFC 5246 with ECDHE and AEAD
 //! suites only, extended master secret, renegotiation indication with renegotiation refused,
 //! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384;
@@ -52,6 +53,7 @@ mod ktls;
 mod proto;
 #[doc(hidden)]
 pub mod quic;
+mod replay;
 #[doc(hidden)]
 pub mod stream;
 
@@ -61,6 +63,7 @@ pub use config::{
 };
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};
+pub use replay::{AntiReplayStore, MemoryAntiReplay};
 
 /// The protocol core, for tests, fuzzing and interop tools. **Not** a public API.
 #[doc(hidden)]

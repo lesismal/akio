@@ -2,13 +2,15 @@
 //! a client remembers per server.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use only_crypto::chacha::ChaCha20Poly1305;
 
 use super::alert::{Alert, Fatal, fatal};
 use super::codec::{DResult, Reader, put_u8, put_u16, put_u32, put_vec8, put_vec16, put_vec24};
 use super::common::random;
+use crate::replay::AntiReplayStore;
 
 /// A resumable session.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -125,10 +127,15 @@ impl Ticketer {
     pub(crate) fn new() -> Option<Ticketer> {
         let name = random::<16>().ok()?;
         let key = random::<32>().ok()?;
-        Some(Ticketer {
+        Some(Ticketer::from_key(name, &key))
+    }
+
+    /// A ticketer whose tickets every ticketer with the same `name` and `key` opens.
+    pub(crate) fn from_key(name: [u8; 16], key: &[u8; 32]) -> Ticketer {
+        Ticketer {
             name,
-            key: ChaCha20Poly1305::new(&key),
-        })
+            key: ChaCha20Poly1305::new(key),
+        }
     }
 
     pub(crate) fn seal(&self, s: &Session) -> Option<Vec<u8>> {
@@ -194,36 +201,32 @@ impl SessionCache {
     }
 }
 
-/// Binders recorded (first 32 bytes), and their expiry times in order.
-type Seen = (
-    std::collections::HashSet<[u8; 32]>,
-    VecDeque<(u64, [u8; 32])>,
-);
-
 /// The server's 0-RTT anti-replay state (RFC 8446 section 8.2, "ClientHello recording", with
 /// the freshness check of section 8.3): the PSK binder of every ClientHello whose early data
-/// was accepted is kept for twice the freshness window, and a ClientHello whose binder is
-/// already there has its early data rejected (it falls back to a full 1-RTT handshake). Early
-/// data is accepted only when the ticket age the client reports is within the window of the
-/// age the server computes, so a replay that comes after its entry expired fails the freshness
-/// check instead. Bounded: when the cache is full, early data is rejected until entries
-/// expire. One per server configuration (and so per process): servers sharing tickets across
-/// processes or machines need a shared store (or single-use tickets) instead.
-#[derive(Debug)]
+/// was accepted is recorded in the store for twice the freshness window, and a ClientHello
+/// whose binder is already there has its early data rejected (it falls back to a 1-RTT
+/// resumption). Early data is accepted only when the ticket age the client reports is within
+/// the window of the age the server computes, so a replay that comes after its entry expired
+/// fails the freshness check instead. The store is a bounded in-memory record per server
+/// configuration unless the application plugs in a shared one; store errors reject the early
+/// data (fail closed).
 pub(crate) struct AntiReplay {
     /// The freshness window, milliseconds.
     pub(crate) window_ms: u64,
-    cap: usize,
-    inner: Mutex<Seen>,
+    store: Arc<dyn AntiReplayStore>,
+}
+
+impl std::fmt::Debug for AntiReplay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AntiReplay")
+            .field("window_ms", &self.window_ms)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AntiReplay {
-    pub(crate) fn new(window_ms: u64, cap: usize) -> AntiReplay {
-        AntiReplay {
-            window_ms,
-            cap,
-            inner: Mutex::new((std::collections::HashSet::new(), VecDeque::new())),
-        }
+    pub(crate) fn new(window_ms: u64, store: Arc<dyn AntiReplayStore>) -> AntiReplay {
+        AntiReplay { window_ms, store }
     }
 
     /// Whether a ticket issued at `issued_ms` and presented at `now_ms` with the client's view
@@ -233,29 +236,11 @@ impl AntiReplay {
         server_age.abs_diff(u64::from(client_age_ms)) <= self.window_ms
     }
 
-    /// Records the ClientHello identified by `binder` (its first PSK binder) at `now_ms`:
-    /// `false` if it was seen before within the retention time, or if the cache is full.
-    pub(crate) fn record(&self, binder: &[u8], now_ms: u64) -> bool {
-        let Ok(mut g) = self.inner.lock() else {
-            return false;
-        };
-        let (set, order) = &mut *g;
-        while let Some((exp, k)) = order.front() {
-            if *exp > now_ms {
-                break;
-            }
-            set.remove(k);
-            order.pop_front();
-        }
-        let mut key = [0u8; 32];
-        let n = binder.len().min(32);
-        key[..n].copy_from_slice(&binder[..n]);
-        if set.contains(&key) || set.len() >= self.cap {
-            return false;
-        }
-        set.insert(key);
-        order.push_back((now_ms + 2 * self.window_ms, key));
-        true
+    /// Records the ClientHello identified by `binder` (its first PSK binder): `false` if it
+    /// was seen before within the retention time, if the store is full or if it failed.
+    pub(crate) fn record(&self, binder: &[u8]) -> bool {
+        let ttl = Duration::from_millis(self.window_ms.saturating_mul(2));
+        self.store.check_and_insert(binder, ttl).unwrap_or(false)
     }
 }
 
@@ -389,26 +374,40 @@ mod tests {
         *bad.last_mut().unwrap() ^= 1;
         assert!(t.open(&bad).is_none());
         assert!(Ticketer::new().unwrap().open(&sealed).is_none());
+        let (a, b) = (
+            Ticketer::from_key([1; 16], &[2; 32]),
+            Ticketer::from_key([1; 16], &[2; 32]),
+        );
+        assert_eq!(b.open(&a.seal(&s).unwrap()).unwrap(), s);
+        assert!(
+            Ticketer::from_key([1; 16], &[3; 32])
+                .open(&a.seal(&s).unwrap())
+                .is_none()
+        );
         assert!(t.open(&[0; 10]).is_none());
     }
 
     #[test]
     fn anti_replay() {
-        let a = AntiReplay::new(10_000, 2);
+        use crate::replay::MemoryAntiReplay;
+        let a = AntiReplay::new(10_000, Arc::new(MemoryAntiReplay::new(2)));
         assert!(a.fresh(1_000, 5_000, 6_000));
         assert!(a.fresh(1_000, 0, 11_000));
         assert!(!a.fresh(1_000, 0, 11_001));
         assert!(!a.fresh(30_000, 15_000, 30_000));
-        assert!(a.record(&[1; 32], 0));
-        // A replay inside the retention time is refused, also later in it.
-        assert!(!a.record(&[1; 32], 5));
-        assert!(!a.record(&[1; 32], 19_999));
-        assert!(a.record(&[2; 48], 10));
-        // Full: refused, until the oldest entry expires.
-        assert!(!a.record(&[3; 32], 100));
-        assert!(a.record(&[3; 32], 20_000));
-        // The first entry expired: accepted again (the freshness check covers this case).
-        assert!(a.record(&[1; 32], 20_011));
+        assert!(a.record(&[1; 32]));
+        assert!(!a.record(&[1; 32]));
+        assert!(a.record(&[2; 32]));
+        // Full.
+        assert!(!a.record(&[3; 32]));
+        // A failing store fails closed.
+        struct Down;
+        impl AntiReplayStore for Down {
+            fn check_and_insert(&self, _: &[u8], _: Duration) -> std::io::Result<bool> {
+                Err(std::io::Error::other("down"))
+            }
+        }
+        assert!(!AntiReplay::new(10_000, Arc::new(Down)).record(&[4; 32]));
     }
 
     #[test]

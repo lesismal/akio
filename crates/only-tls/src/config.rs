@@ -15,6 +15,7 @@ use crate::proto::kx::{DEFAULT_GROUPS, Group};
 use crate::proto::msgs::{MAX_RECORD_LIMIT13, MIN_RECORD_LIMIT};
 use crate::proto::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
 use crate::proto::suites::{self, Suite};
+use crate::replay::{AntiReplayStore, MemoryAntiReplay};
 
 /// A TLS configuration or certificate problem.
 pub struct Error {
@@ -387,6 +388,8 @@ impl ServerConfig {
             tickets13: 2,
             max_early_data: 0,
             anti_replay: (ANTI_REPLAY_WINDOW_MS, ANTI_REPLAY_ENTRIES),
+            anti_replay_store: None,
+            ticket_key: None,
             record_limit: MAX_RECORD_LIMIT13,
             cert_compression: true,
             ocsp: None,
@@ -424,6 +427,8 @@ pub struct ServerConfigBuilder {
     tickets13: usize,
     max_early_data: u32,
     anti_replay: (u64, usize),
+    anti_replay_store: Option<Arc<dyn AntiReplayStore>>,
+    ticket_key: Option<[u8; 48]>,
     record_limit: u16,
     cert_compression: bool,
     ocsp: Option<Vec<u8>>,
@@ -449,6 +454,11 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("tickets", &self.tickets)
             .field("tls13_only", &self.tls13_only)
             .field("max_early_data", &self.max_early_data)
+            .field(
+                "shared_anti_replay_store",
+                &self.anti_replay_store.is_some(),
+            )
+            .field("shared_ticket_key", &self.ticket_key.is_some())
             .field("record_size_limit", &self.record_limit)
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_response", &self.ocsp.is_some())
@@ -519,7 +529,10 @@ impl ServerConfigBuilder {
     /// **Early data can be replayed**: an attacker who recorded a client's first flight can
     /// send it again. Replays are refused within this server (a bounded record of recent
     /// ClientHellos and a 10-second freshness window on the ticket age; when the record is
-    /// full, early data is rejected), but not across servers sharing tickets. Early data is
+    /// full, early data is rejected); servers sharing tickets
+    /// ([`session_ticket_key`](Self::session_ticket_key)) also need a shared record
+    /// ([`anti_replay_store`](Self::anti_replay_store)), or a replay sent to another server
+    /// is accepted there. Early data is
     /// processed before the handshake completes, so only accept requests that are safe to
     /// repeat: check [`TlsInfo::early_data`](crate::TlsInfo) and
     /// [`TlsInfo::early_data_len`](crate::TlsInfo) (for HTTP, answer `425 Too Early`,
@@ -570,6 +583,30 @@ impl ServerConfigBuilder {
     ) -> Self {
         self.sni_ocsp
             .push((server_name.into().to_ascii_lowercase(), der.into()));
+        self
+    }
+
+    /// Records the ClientHellos whose early data was accepted in `store` instead of this
+    /// configuration's own bounded in-memory record ([`MemoryAntiReplay`] with 100,000
+    /// entries): servers that accept the same tickets (see
+    /// [`session_ticket_key`](Self::session_ticket_key)), in other processes or on other
+    /// machines, share replay protection through it. Each accepted ClientHello is recorded
+    /// for 20 seconds (twice the freshness window). A store error rejects the early data
+    /// (the handshake goes on without it). Only used with [`early_data`](Self::early_data).
+    pub fn anti_replay_store(mut self, store: Arc<dyn AntiReplayStore>) -> Self {
+        self.anti_replay_store = Some(store);
+        self
+    }
+
+    /// Seals session tickets with `key` (16 bytes of key name, then a 32-byte
+    /// ChaCha20-Poly1305 key; secret, random, and the same on every server that should accept
+    /// the others' tickets) instead of a key generated for this configuration, and turns
+    /// session tickets on. Tickets sealed under another key are ignored (a full handshake).
+    /// Rotating the key is up to the caller (build a new configuration); tickets issued under
+    /// the old key are then refused.
+    pub fn session_ticket_key(mut self, key: [u8; 48]) -> Self {
+        self.ticket_key = Some(key);
+        self.tickets = true;
         self
     }
 
@@ -682,7 +719,12 @@ impl ServerConfigBuilder {
         if groups.is_empty() {
             return Err(Error::new("no groups"));
         }
-        let ticketer = if self.tickets {
+        let ticketer = if let Some(k) = &self.ticket_key {
+            let (name, key) = k.split_at(16);
+            let name: [u8; 16] = name.try_into().map_err(|_| Error::new("ticket key"))?;
+            let key: [u8; 32] = key.try_into().map_err(|_| Error::new("ticket key"))?;
+            Some(Ticketer::from_key(name, &key))
+        } else if self.tickets {
             Some(Ticketer::new().ok_or_else(|| Error::new("no randomness for tickets"))?)
         } else {
             None
@@ -712,7 +754,11 @@ impl ServerConfigBuilder {
             ticket_lifetime: 6 * 3600,
             force_hrr: self.force_hrr,
             max_early_data: self.max_early_data,
-            anti_replay: AntiReplay::new(self.anti_replay.0, self.anti_replay.1),
+            anti_replay: AntiReplay::new(
+                self.anti_replay.0,
+                self.anti_replay_store
+                    .unwrap_or_else(|| Arc::new(MemoryAntiReplay::new(self.anti_replay.1))),
+            ),
             record_limit,
             cert_compression: self.cert_compression,
         };

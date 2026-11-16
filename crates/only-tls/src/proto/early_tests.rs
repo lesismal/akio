@@ -1,6 +1,7 @@
 //! TLS 1.3 early data (RFC 8446 section 4.2.10): accepted, rejected (by configuration, after a
-//! HelloRetryRequest, by the replay record, for another ALPN protocol or SNI name), replayed,
-//! the max_early_data_size limits, and the off-by-default switches.
+//! HelloRetryRequest, by the replay record, for another ALPN protocol or SNI name), replayed
+//! (also to another server sharing tickets and a replay store), a failing replay store, the
+//! max_early_data_size limits, and the off-by-default switches.
 
 use super::alert::{Alert, Fatal};
 use super::common::EarlyData;
@@ -203,6 +204,137 @@ fn replayed_client_hello_with_early_data_is_rejected() {
     let r = run(&scfg, &ccfg, "localhost", b"late").unwrap();
     assert!(r.s.resumed());
     assert_rejected(&r, b"late");
+}
+
+/// A "remote" anti-replay store, as an application would back one with Redis or similar
+/// (`SET key 1 NX PX ttl`): a shared map behind a connection that can go down.
+#[derive(Default)]
+struct RemoteStore {
+    map: std::sync::Mutex<std::collections::HashMap<Vec<u8>, std::time::Instant>>,
+    down: std::sync::atomic::AtomicBool,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::AntiReplayStore for RemoteStore {
+    fn check_and_insert(&self, binder: &[u8], ttl: std::time::Duration) -> std::io::Result<bool> {
+        use std::sync::atomic::Ordering::SeqCst;
+        self.calls.fetch_add(1, SeqCst);
+        if self.down.load(SeqCst) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "store unreachable",
+            ));
+        }
+        let now = std::time::Instant::now();
+        let mut m = self.map.lock().unwrap();
+        m.retain(|_, exp| *exp > now);
+        if m.contains_key(binder) {
+            return Ok(false);
+        }
+        m.insert(binder.to_vec(), now + ttl);
+        Ok(true)
+    }
+}
+
+/// Sends a recorded first flight to a fresh connection of `scfg`: what its early data became.
+fn replay_to(scfg: &ServerConfig, flight: &[u8]) -> (EarlyData, Vec<u8>) {
+    let mut s = crate::__proto::server(scfg);
+    let (mut plain, mut out) = (Vec::new(), Vec::new());
+    s.recv(flight, &mut plain, &mut out).unwrap();
+    assert!(s.resumed() || s.handshaking());
+    (s.early_data(), plain)
+}
+
+#[test]
+fn shared_store_rejects_a_replay_on_another_server() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let key = [0x5a; 48];
+    let store = std::sync::Arc::new(RemoteStore::default());
+    // Two servers (two processes or machines) sharing the ticket key and the store.
+    let shared = |store: &std::sync::Arc<RemoteStore>| {
+        server(&p)
+            .session_ticket_key(key)
+            .early_data(16384)
+            .anti_replay_store(store.clone())
+            .build()
+            .unwrap()
+    };
+    let (a, b) = (shared(&store), shared(&store));
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    // A ticket from server A, early data accepted by server B.
+    prime(&a, &ccfg, "localhost");
+    let r = run(&b, &ccfg, "localhost", b"POST /pay").unwrap();
+    assert!(r.s.resumed());
+    assert_eq!(r.s.early_data(), EarlyData::Accepted);
+    assert_eq!(r.s_plain_early, 9);
+    // The recorded flight replayed to server A, then to B: rejected by both.
+    for srv in [&a, &b] {
+        let (ed, plain) = replay_to(srv, &r.first_flight);
+        assert_eq!(ed, EarlyData::Rejected);
+        assert!(
+            plain.is_empty(),
+            "replayed early data reached the application"
+        );
+    }
+    assert_eq!(store.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
+
+    // The same two servers with their own (default) records: the replay gets through on the
+    // other server. This is what the shared store is for.
+    let own = || {
+        server(&p)
+            .session_ticket_key(key)
+            .early_data(16384)
+            .build()
+            .unwrap()
+    };
+    let (a, b) = (own(), own());
+    prime(&a, &ccfg, "localhost");
+    let r = run(&a, &ccfg, "localhost", b"POST /pay").unwrap();
+    assert_eq!(r.s.early_data(), EarlyData::Accepted);
+    assert_eq!(replay_to(&a, &r.first_flight).0, EarlyData::Rejected);
+    let (ed, plain) = replay_to(&b, &r.first_flight);
+    assert_eq!(ed, EarlyData::Accepted);
+    assert_eq!(plain, b"POST /pay");
+}
+
+#[test]
+fn store_failure_rejects_early_data() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let store = std::sync::Arc::new(RemoteStore::default());
+    let scfg = server(&p)
+        .early_data(16384)
+        .anti_replay_store(store.clone())
+        .build()
+        .unwrap();
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    prime(&scfg, &ccfg, "localhost");
+    store.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let r = run(&scfg, &ccfg, "localhost", b"early bytes").unwrap();
+    // Fail closed: resumed, the early data rejected and sent again after the handshake.
+    assert!(r.c.resumed() && r.s.resumed());
+    assert_rejected(&r, b"early bytes");
+    // Back up: accepted again.
+    store.down.store(false, std::sync::atomic::Ordering::SeqCst);
+    prime(&scfg, &ccfg, "localhost");
+    let r = run(&scfg, &ccfg, "localhost", b"again").unwrap();
+    assert_eq!(r.s.early_data(), EarlyData::Accepted);
+}
+
+#[test]
+fn shared_ticket_key() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let a = server(&p).session_ticket_key([1; 48]).build().unwrap();
+    let b = ServerConfig::builder(p.chain.clone(), p.key.clone())
+        .alpn(["h2", "http/1.1"])
+        .session_ticket_key([1; 48])
+        .build()
+        .unwrap();
+    let other = server(&p).session_ticket_key([2; 48]).build().unwrap();
+    let ccfg = client(&p).build().unwrap();
+    prime(&a, &ccfg, "localhost");
+    assert!(run(&b, &ccfg, "localhost", b"").unwrap().s.resumed());
+    prime(&a, &ccfg, "localhost");
+    assert!(!run(&other, &ccfg, "localhost", b"").unwrap().s.resumed());
 }
 
 #[test]
