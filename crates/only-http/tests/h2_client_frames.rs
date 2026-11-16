@@ -451,3 +451,182 @@ fn server_hanging_up_fails_pending_requests() {
     assert!(r.is_err());
     stop(&e, t);
 }
+
+// ---- limits ----------------------------------------------------------------------------------
+
+const CANCEL: u32 = 8;
+
+/// The error code of the next RST_STREAM on `sid`.
+fn rst_code(srv: &mut Srv, sid: u32) -> Option<u32> {
+    let f = srv.until(|f| f.ty == RST_STREAM && f.sid == sid)?;
+    Some(u32::from_be_bytes(f.payload[..4].try_into().unwrap()))
+}
+
+#[test]
+fn h2_defaults_are_bounded() {
+    let o = H2Options::default();
+    assert_eq!(o.max_header_list, 64 << 10);
+    assert_eq!(o.max_body_bytes, 64 << 20);
+    assert_eq!(o.request_timeout, Some(Duration::from_secs(30)));
+}
+
+#[test]
+fn header_block_and_frame_size_violations_end_the_connection() {
+    type Script = Box<dyn FnOnce(&mut Srv, u32) + Send>;
+    let cases: Vec<(&str, u32, Script)> = vec![
+        (
+            // An endless header block: bounded at 2 x max_header_list (at least 64 KiB).
+            "continuation flood",
+            11,
+            Box::new(|srv, sid| {
+                srv.send(HEADERS, 0, sid, &[0x88]);
+                for _ in 0..200 {
+                    srv.send(CONTINUATION, 0, sid, &[0x40; 1024]);
+                }
+            }),
+        ),
+        (
+            "frame over SETTINGS_MAX_FRAME_SIZE",
+            6,
+            Box::new(|srv, sid| srv.send(DATA, 0, sid, &vec![0; 16_385])),
+        ),
+        (
+            "frame inside a header block",
+            1,
+            Box::new(|srv, sid| {
+                srv.send(HEADERS, 0, sid, &[0x88]);
+                srv.send(PING, 0, 0, b"pingpong");
+            }),
+        ),
+        (
+            "continuation on another stream",
+            1,
+            Box::new(|srv, sid| {
+                srv.send(HEADERS, 0, sid, &[0x88]);
+                srv.send(CONTINUATION, END_HEADERS, sid + 2, &[]);
+            }),
+        ),
+    ];
+    for (name, want, script) in cases {
+        let (tx, rx) = mpsc::channel();
+        let (e, c, t) = setup(H2Options::default(), move |srv| {
+            let (sid, _) = srv.request();
+            script(srv, sid);
+            let _ = tx.send(srv.goaway());
+        });
+        let r = c.send(get("/x")).wait();
+        assert!(matches!(r, Err(ClientError::Protocol(_))), "{name}: {r:?}");
+        let code = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(code, Some(want), "{name}");
+        stop(&e, t);
+    }
+}
+
+#[test]
+fn header_list_and_body_limits_reset_the_stream_only() {
+    let mut opts = H2Options::default();
+    opts.max_header_list = 1024;
+    opts.max_body_bytes = 1000;
+    let (tx, rx) = mpsc::channel();
+    let (e, c, t) = setup(opts, move |srv| {
+        // A header list over the limit (one field of 2000 bytes).
+        let (sid, _) = srv.request();
+        let big = "v".repeat(2000);
+        let b = srv.block(&[(":status", "200"), ("x-big", big.as_str())]);
+        srv.send(HEADERS, END_HEADERS, sid, &b);
+        let _ = tx.send(("headers", rst_code(srv, sid)));
+        // A body just under, at and over the limit.
+        for len in [999usize, 1000, 1001] {
+            let (sid, _) = srv.request();
+            let b = srv.block(&[(":status", "200")]);
+            srv.send(HEADERS, END_HEADERS, sid, &b);
+            srv.send(DATA, 0, sid, &vec![b'x'; len - 1]);
+            srv.send(DATA, END_STREAM, sid, b"y");
+            if len > 1000 {
+                let _ = tx.send(("body", rst_code(srv, sid)));
+            }
+        }
+        // The connection is still fine.
+        let (sid, _) = srv.request();
+        srv.respond(sid, b"after");
+    });
+    let r = c.send(get("/big-head")).wait();
+    assert!(matches!(r, Err(ClientError::TooLarge(_))), "{r:?}");
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        ("headers", Some(CANCEL))
+    );
+    for len in [999usize, 1000] {
+        assert_eq!(c.send(get("/b")).wait().unwrap().body.len(), len);
+    }
+    let r = c.send(get("/b")).wait();
+    assert!(matches!(r, Err(ClientError::TooLarge(_))), "{r:?}");
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        ("body", Some(CANCEL))
+    );
+    assert_eq!(c.send(get("/after")).wait().unwrap().body, b"after");
+    stop(&e, t);
+}
+
+#[test]
+fn request_timeout_resets_an_unanswered_stream() {
+    let mut opts = H2Options::default();
+    opts.request_timeout = Some(Duration::from_millis(200));
+    let (tx, rx) = mpsc::channel();
+    let (e, c, t) = setup(opts, move |srv| {
+        // Never answered: the client resets it.
+        let (sid, _) = srv.request();
+        let _ = tx.send(rst_code(srv, sid));
+        // A streamed request has no default timeout; with its own it is reset too.
+        let (s2, _) = srv.request();
+        let (s3, _) = srv.request();
+        let _ = tx.send(rst_code(srv, s3));
+        srv.respond(s2, b"late but fine");
+        // Answered in time after all that.
+        let (sid, _) = srv.request();
+        srv.respond(sid, b"ok");
+    });
+    let t0 = std::time::Instant::now();
+    let r = c.send(get("/silent")).wait();
+    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
+    assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(CANCEL)
+    );
+
+    let (etx, erx) = mpsc::channel();
+    let etx2 = etx.clone();
+    let _a = c.open(get("/stream-no-timeout"), move |ev| {
+        let s = match ev {
+            H2Event::Data(d) => format!("data {}", String::from_utf8_lossy(d)),
+            H2Event::Error(e) => format!("a error {e}"),
+            H2Event::End => "a end".into(),
+            _ => return,
+        };
+        let _ = etx.send(s);
+    });
+    thread::sleep(Duration::from_millis(50));
+    let _b = c.open(
+        get("/stream-own-timeout").timeout(Duration::from_millis(300)),
+        move |ev| {
+            if let H2Event::Error(e) = ev {
+                let _ = etx2.send(format!("b error {e}"));
+            }
+        },
+    );
+    let first = erx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(first, "b error request timed out");
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(CANCEL)
+    );
+    assert_eq!(
+        erx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        "data late but fine"
+    );
+    assert_eq!(erx.recv_timeout(Duration::from_secs(5)).unwrap(), "a end");
+    assert_eq!(c.send(get("/ok")).wait().unwrap().body, b"ok");
+    stop(&e, t);
+}

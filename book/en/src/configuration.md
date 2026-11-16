@@ -86,11 +86,13 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `only_http::files::Files` | `index`: `index.html`, `max_cached_bytes`: 256 KiB, `max_open_files`: 64, `check_interval`: 5 s, `cache_control`: none |
 | `only_http::middleware::Cors` | `allow_origin`: `*`, `allow_methods`: GET, POST, PUT, PATCH, DELETE, OPTIONS, `allow_headers`: Content-Type, Authorization, `max_age`: 600 s |
 | `only_http::middleware::Compress` | `min_bytes`: 1024, `level`: 6 |
-| `only_http::h2client::H2Options` | `initial_window`: 1 MiB, `conn_window`: 16 MiB, `enable_push`: false |
+| `only_http::client::ClientOptions` | `max_head_bytes`: 64 KiB, `max_body_bytes`: 64 MiB, `request_timeout`: 30 s, `idle_timeout`: 90 s, `max_idle_per_host`: 32, `max_idle`: 256 |
+| `only_http::h2client::H2Options` | `initial_window`: 1 MiB, `conn_window`: 16 MiB, `enable_push`: false, `max_header_list`: 64 KiB, `max_body_bytes`: 64 MiB, `request_timeout`: 30 s (buffered requests) |
 | `only_ws::WsConfig` | `max_message_bytes`: 16 MiB, `permessage_deflate`: true, `compress_min_bytes`: 128 |
 | `only_http::WsOptions` | `config`: `WsConfig::default()`, `protocols`: none, `origin_allowed`: none |
 | `only_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s |
 | `only_h3::H3Config` | `max_body`: 8 MiB, `max_field_section`: 64 KiB |
+| `only_h3::H3ClientOptions` | `max_body_bytes`: 8 MiB, `max_field_section_bytes`: 64 KiB, `request_timeout`: 30 s |
 | `only_grpc::GrpcServer` | `max_message`: 4 MiB, `compress`: false |
 | `only_arpc::Routes` | `max_body`: 64 MiB |
 | `only_kcp::KcpConfig` | see [KCP](protocols/kcp.md#config) |

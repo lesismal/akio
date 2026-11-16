@@ -17,11 +17,20 @@
 - `client.send(req)` 返回 `ResponseFuture`；`client.request(req, callback)` 使用回调。
 - `ClientResponse` 包含 `status`、`reason`、`headers`、`body`（已去掉 chunked 编码）、`trailers`。
 - keep-alive 连接按主机复用；在复用连接上发出的请求如果发现连接已失效，会在新连接上重试一次。
-- 地址回退：依次尝试解析出的每个地址（`localhost` 往往先解析出 `::1`）。
-- `ClientError`：`InvalidUrl`、`Io`、`Protocol`、`Closed`。
+- 限制（`Client::with_options(ClientOptions)`），每项都有安全的默认值：
 
-尚未完成：重定向、单请求超时（用 `wait_timeout` 或 engine 的空闲超时）、在调用线程之外做
-域名解析（解析发生在 `send`/`request` 中，可能阻塞）。
+  | 字段 | 默认值 | 超过后 |
+  |---|---|---|
+  | `max_head_bytes` | 64 KiB | 响应头（含 1xx 响应头）→ `ClientError::TooLarge` |
+  | `max_body_bytes` | 64 MiB | 任何分帧方式；更大的 `Content-Length` 立即失败 → `TooLarge`（`usize::MAX` 表示不限制） |
+  | `request_timeout` | 30 s | 总时长，从拨号到最后一个字节 → `ClientError::TimedOut`，并关闭连接；`ClientRequest::timeout(d)` 可覆盖 |
+  | `idle_timeout` | 90 s | 连接池中闲置这么久的连接会被关闭 |
+  | `max_idle_per_host` | 32 | 同一主机更多的空闲连接会被关闭（0：不复用） |
+  | `max_idle` | 256 | 全部空闲连接总数 |
+- 地址回退：依次尝试解析出的每个地址（`localhost` 往往先解析出 `::1`）。
+- `ClientError`：`InvalidUrl`、`Io`、`Protocol`、`Closed`、`TimedOut`、`TooLarge`。
+
+尚未完成：重定向、在调用线程之外做域名解析（解析发生在 `send`/`request` 中，可能阻塞）。
 
 ## HTTP/2：`h2client::H2Client`
 
@@ -35,7 +44,13 @@
 - 一个连接复用所有请求；`H2Client` 克隆开销很小，可在任何线程使用。`send(req)` →
   `ResponseFuture`，`request(req, callback)`。
 - `H2Options`：`initial_window`（1 MiB）、`conn_window`（16 MiB）、`enable_push`（false；开启后
-  `ClientResponse::pushed` 携带被推送的响应）。
+  `ClientResponse::pushed` 携带被推送的响应，每个请求最多 32 个未完成的推送）。
+- 限制：超过默认 `SETTINGS_MAX_FRAME_SIZE`（16 KiB）的帧，以及超过 `max_header_list` 两倍的
+  头部块（HEADERS + CONTINUATION）会结束连接；解码后超过 `max_header_list`（64 KiB，会通告给
+  对端）的头部列表，或超过 `max_body_bytes`（64 MiB）的缓冲 body，会重置该 stream（`CANCEL`）
+  并以 `TooLarge` 使请求失败；`request_timeout`（30 s）会重置缓冲式请求的 stream 并以
+  `TimedOut` 使其失败。流式请求（`open`）不限制 body 大小，只有设置了自己的
+  `ClientRequest::timeout` 才会超时，因为它们可能长期存在（gRPC 流）。
 - 双向流式：`open(req, on_event)` 返回用于写请求 body 的 `H2Upload`（`write`、`finish`），并在
   响应到达时报告 `H2Event::Head`、`Data`、`Trailers`、`End` 或 `Error`。only-grpc 的客户端
   就建立在它之上。

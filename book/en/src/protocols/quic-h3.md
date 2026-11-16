@@ -133,6 +133,10 @@ share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app
 `H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`); requests sent before
 the handshake completes wait for it (unless the client resumes with 0-RTT, see above). `request(method, path, headers, body, callback)`,
 `request_blocking(..)`, `get(path, timeout)`, `close()`, `connection()`.
+`H3Client::dial_with(.., H3ClientOptions)` sets the limits: `max_body_bytes` (8 MiB) and
+`max_field_section_bytes` (64 KiB, advertised) stop the response stream and fail the request
+with `H3Error::TooLarge`; `request_timeout` (30 s, from `request` to the complete response)
+resets the stream and fails it with `H3Error::Timeout` (that callback runs on a timer thread).
 
 ## How HTTP/3 reuses `only-http`
 

@@ -42,6 +42,7 @@ pub only_h3::H3Error::Closed(alloc::string::String)
 pub only_h3::H3Error::Protocol(&'static str)
 pub only_h3::H3Error::Reset(u64)
 pub only_h3::H3Error::Timeout
+pub only_h3::H3Error::TooLarge(&'static str)
 impl core::clone::Clone for only_h3::H3Error
 pub fn only_h3::H3Error::clone(&self) -> Self
 impl core::cmp::Eq for only_h3::H3Error
@@ -63,6 +64,7 @@ impl only_h3::H3Client
 pub fn only_h3::H3Client::close(&self)
 pub fn only_h3::H3Client::connection(&self) -> &only_quic::Connection
 pub fn only_h3::H3Client::dial(&only::Engine, core::net::socket_addr::SocketAddr, &str, only_quic::types::ClientConfig) -> core::result::Result<only_h3::H3Client, only_quic::Error>
+pub fn only_h3::H3Client::dial_with(&only::Engine, core::net::socket_addr::SocketAddr, &str, only_quic::types::ClientConfig, only_h3::H3ClientOptions) -> core::result::Result<only_h3::H3Client, only_quic::Error>
 pub fn only_h3::H3Client::get(&self, &str, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
 pub fn only_h3::H3Client::request(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, impl core::ops::function::FnOnce(core::result::Result<only_http::message::Response, only_h3::H3Error>) + core::marker::Send + 'static)
 pub fn only_h3::H3Client::request_blocking(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
@@ -75,6 +77,21 @@ impl core::marker::Sync for only_h3::H3Client
 impl core::marker::Unpin for only_h3::H3Client
 impl !core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Client
 impl !core::panic::unwind_safe::UnwindSafe for only_h3::H3Client
+#[non_exhaustive] pub struct only_h3::H3ClientOptions
+pub only_h3::H3ClientOptions::max_body_bytes: usize
+pub only_h3::H3ClientOptions::max_field_section_bytes: usize
+pub only_h3::H3ClientOptions::request_timeout: core::option::Option<core::time::Duration>
+impl core::clone::Clone for only_h3::H3ClientOptions
+pub fn only_h3::H3ClientOptions::clone(&self) -> Self
+impl core::default::Default for only_h3::H3ClientOptions
+pub fn only_h3::H3ClientOptions::default() -> only_h3::H3ClientOptions
+impl core::fmt::Debug for only_h3::H3ClientOptions
+pub fn only_h3::H3ClientOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_h3::H3ClientOptions
+impl core::marker::Sync for only_h3::H3ClientOptions
+impl core::marker::Unpin for only_h3::H3ClientOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_h3::H3ClientOptions
+impl core::panic::unwind_safe::UnwindSafe for only_h3::H3ClientOptions
 #[non_exhaustive] pub struct only_h3::H3Config
 pub only_h3::H3Config::max_body_bytes: usize
 pub only_h3::H3Config::max_field_section_bytes: usize

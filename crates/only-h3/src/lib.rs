@@ -51,7 +51,7 @@ use only_http::transport::{BodySink, ResponseSink};
 use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
 
-pub use client::{H3Client, H3Error};
+pub use client::{H3Client, H3ClientOptions, H3Error};
 pub use frame::code;
 
 use frame::Reader;
