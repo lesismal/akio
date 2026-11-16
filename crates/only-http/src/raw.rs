@@ -36,6 +36,12 @@ impl RawConn {
         self.0.hold_reads(hold);
     }
 
+    /// Marks this connection as one end of a relay, so its reads do not pause on its own
+    /// queued output; see `only_core::Conn::set_relayed`. Mark both ends of a relay.
+    pub fn set_relayed(&self, relayed: bool) {
+        self.0.set_relayed(relayed);
+    }
+
     /// Calls `f` once the send queue is empty (or the connection closed).
     pub fn on_drain(&self, f: impl FnOnce() + Send + 'static) {
         self.0.on_drain(Box::new(f));

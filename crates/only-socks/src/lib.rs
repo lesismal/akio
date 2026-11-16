@@ -77,7 +77,7 @@ struct UpstreamAcceptor {
 impl Acceptor for UpstreamAcceptor {
     type Handler = Upstream;
     fn on_open(&self, c: &Conn<Upstream>) -> Upstream {
-        c.inner().set_relayed();
+        c.inner().set_relayed(true);
         *self.slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
         let taken = self.on_up.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some(f) = taken {
@@ -255,7 +255,7 @@ impl SocksSession {
 
     fn connect(&mut self, c: &Conn<Self>, target: Target, v5: bool) {
         self.st = St::Connecting;
-        c.inner().set_relayed();
+        c.inner().set_relayed(true);
         c.hold_reads(true);
         let engine = self.engine.clone();
         let slot = self.upstream.clone();
@@ -545,7 +545,7 @@ struct Tunnel {
 
 impl RawHandler for Tunnel {
     fn on_open(&mut self, conn: &RawConn) {
-        conn.inner().set_relayed();
+        conn.inner().set_relayed(true);
         conn.hold_reads(true);
         let (host, port) = self.host.take().expect("opened once");
         let engine = self.engine.clone();

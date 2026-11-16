@@ -10,6 +10,13 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：供应用自建转发使用的 `Conn::set_relayed`
+
+基于 `hold_reads` / `on_drain` 自建的转发现在可以用 `Conn::set_relayed(true)` 跳过引擎按写水位暂停
+读取的行为（`CONNECT` / 协议升级后的转发用 `only_http::raw::RawConn::set_relayed`）。否则，转发到
+只有能写时才读的对端会死锁：与 only-socks 内部已修复的问题相同，现在应用代码也能避免。立即生效；
+`Config::max_queued_bytes` 仍然适用。公开 API 为增量（快照已更新）。
+
 ### 更名：项目现在叫 `only`
 
 crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名为 **only**（DEV-PLAN“1.0.0 发布决定”）。

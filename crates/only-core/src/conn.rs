@@ -816,8 +816,12 @@ impl ConnInner {
     /// queued (`Config::write_high_watermark`): that output is the other side's data, and a
     /// peer that only reads once it can write (an echo server, say) would never take it while
     /// we stop reading — both sides would wait for each other forever.
-    pub fn set_relayed(&self) {
-        self.relayed.store(true, Ordering::Release);
+    ///
+    /// Takes effect at once: the I/O thread re-checks the connection when the setting changes.
+    pub fn set_relayed(&self, relayed: bool) {
+        if self.relayed.swap(relayed, Ordering::AcqRel) != relayed {
+            self.link.wake_conn(self.id);
+        }
     }
 
     /// Loop side, UDP: the ECN codepoint of the datagram about to be delivered.
@@ -1827,6 +1831,21 @@ impl<H> Conn<H> {
     /// Pauses (`true`) or resumes (`false`) reading from the peer.
     pub fn hold_reads(&self, hold: bool) {
         self.inner.hold_reads(hold);
+    }
+
+    /// Marks (`true`) or unmarks (`false`) this connection as one end of a relay, where what it
+    /// reads is written to *another* connection that you pace with
+    /// [`hold_reads`](Self::hold_reads) and [`on_drain`](Self::on_drain).
+    ///
+    /// By default the engine stops reading a connection while its own output queue is at or
+    /// above `Config::write_high_watermark`. In a two-way relay that queue holds the *other*
+    /// side's data, and a peer that only reads once it can write (an echo server, a proxy
+    /// target that talks first) then never drains it while we stop reading: both sides wait
+    /// for each other forever. A relayed connection skips that pause; your own
+    /// `hold_reads` / `on_drain` pacing bounds memory instead, and `Config::max_queued_bytes`
+    /// still applies. Mark both ends of a relay. Takes effect at once.
+    pub fn set_relayed(&self, relayed: bool) {
+        self.inner.set_relayed(relayed);
     }
 
     /// Calls `f` once everything queued on this connection has been written (right away if

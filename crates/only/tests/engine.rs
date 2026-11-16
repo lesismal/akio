@@ -193,6 +193,71 @@ fn reads_stop_at_the_write_watermark() {
     stop(&e);
 }
 
+#[test]
+fn relayed_connection_keeps_reading_past_the_watermark() {
+    // `set_relayed(true)` opts out of the write-watermark read pause: with the same flooding
+    // peer as above, `on_data` keeps running and the output queue grows past the watermark
+    // (bounded here by `max_queued_bytes`), and everything still arrives intact.
+    const HIGH: usize = 64 << 10;
+    const READ: usize = 16 << 10;
+    let mut cfg = cfg();
+    cfg.write_high_watermark = HIGH;
+    cfg.read_buffer = READ;
+    cfg.max_queued_bytes = 64 << 20;
+    let seen: Arc<(AtomicUsize, Mutex<Vec<String>>)> = Arc::default();
+    let s2 = seen.clone();
+    let e = Engine::builder()
+        .config(cfg)
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(move |c: &Conn<QueueWatch>| {
+                    c.set_relayed(true);
+                    QueueWatch(s2.clone())
+                })),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let data: Vec<u8> = (0..16 << 20).map(|i: usize| (i * 7 % 253) as u8).collect();
+    let mut w = connect(e.local_addrs()[0]);
+    w.set_write_timeout(Some(Duration::from_secs(30))).unwrap();
+    let mut r = w.try_clone().unwrap();
+    let send = data.clone();
+    let writer = thread::spawn(move || {
+        w.write_all(&send).unwrap();
+        w.shutdown(std::net::Shutdown::Write).unwrap();
+    });
+    thread::sleep(Duration::from_millis(300));
+    let mut got = Vec::with_capacity(data.len());
+    let mut buf = vec![0u8; 64 << 10];
+    loop {
+        match common::read_retry(&mut r, &mut buf).unwrap() {
+            0 => break,
+            n => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    writer.join().unwrap();
+    assert!(
+        got == data,
+        "echoed bytes differ ({} of {})",
+        got.len(),
+        data.len()
+    );
+    assert!(
+        seen.1.lock().unwrap().is_empty(),
+        "sends refused: {:?}",
+        seen.1.lock().unwrap()
+    );
+    let maxq = seen.0.load(Ordering::Relaxed);
+    assert!(
+        maxq > HIGH + READ,
+        "reads paused: the queue only reached {maxq} bytes"
+    );
+    stop(&e);
+}
+
 /// Records every connection so another thread can use the handles.
 struct Collect;
 impl Handler for Collect {

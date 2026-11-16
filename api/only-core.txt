@@ -290,6 +290,7 @@ pub fn only_core::Conn<H>::send(&self, &[u8]) -> only_core::Result<()>
 pub fn only_core::Conn<H>::send_owned(&self, alloc::vec::Vec<u8>) -> only_core::Result<()>
 pub fn only_core::Conn<H>::send_segments(&self, alloc::vec::Vec<u8>, usize) -> only_core::Result<()>
 pub fn only_core::Conn<H>::send_shared(&self, only_buf::SharedBuf) -> only_core::Result<()>
+pub fn only_core::Conn<H>::set_relayed(&self, bool)
 pub fn only_core::Conn<H>::with_transport<R>(&self, impl core::ops::function::FnOnce(&mut dyn only_core::Transport) -> R) -> core::option::Option<R>
 impl<H> core::clone::Clone for only_core::Conn<H>
 pub fn only_core::Conn<H>::clone(&self) -> Self

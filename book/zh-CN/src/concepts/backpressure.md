@@ -33,6 +33,13 @@ HTTP 中用 `ResponseStream::queued_bytes` / `BodyStream::queued_bytes`，不要
 - `on_drain(f)` 在该连接排队的数据全部写出后调用 `f`；没有排队数据时立即调用；连接关闭时也
   会调用。它是一次性的：下次需要时再注册。
 
+- 在转发的**两端**都调用 `set_relayed(true)`。否则引擎还会在连接*自己的*输出队列高于
+  `Config::write_high_watermark` 时停止读取它。在转发中，这个队列装的是另一端的数据；若对端只有
+  在能写时才读（回显服务器、先发数据的目标），我们停止读取后它永远不会把队列取走，双方互相等待、
+  永远卡住。标记为转发的连接跳过这一暂停，由你的 `hold_reads` / `on_drain` 节流来限制内存
+  （`Config::max_queued_bytes` 仍然生效）。HTTP `CONNECT` 或协议升级后的转发使用
+  `RawConn::set_relayed`。
+
 only-socks 正是这样在两个方向上转发的。
 
 ## 线程池与协议

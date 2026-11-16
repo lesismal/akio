@@ -10,6 +10,14 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: `Conn::set_relayed` for application-built relays
+
+Relays built on `hold_reads` / `on_drain` can now opt out of the engine's write-watermark read
+pause with `Conn::set_relayed(true)` (and `only_http::raw::RawConn::set_relayed` for `CONNECT` /
+upgrade relays). Without it, a two-way relay to a peer that only reads once it can write could
+deadlock: the same bug fixed inside only-socks, now avoidable in application code. Takes effect
+at once; `Config::max_queued_bytes` still applies. Additive public API (snapshots updated).
+
 ### Renamed: the project is now `only`
 
 The crates.io name `flash` is taken, so the project was renamed from **flash** to **only**

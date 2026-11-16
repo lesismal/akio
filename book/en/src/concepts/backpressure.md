@@ -36,6 +36,14 @@ grows. Stop reading A while B is behind, and resume A when B has drained:
 - `on_drain(f)` calls `f` once everything queued on that connection has been written, right away
   if nothing is queued, or when it closes. It is one-shot: register it again next time.
 
+- `set_relayed(true)` on **both** ends of the relay. Otherwise the engine also stops reading a
+  connection while its *own* output queue is above `Config::write_high_watermark`. In a relay
+  that queue holds the other side's data, and a peer that only reads once it can write (an echo
+  server, a target that talks first) never drains it while you stop reading: both sides wait for
+  each other forever. A relayed connection skips that pause; your `hold_reads` / `on_drain`
+  pacing bounds memory instead (`Config::max_queued_bytes` still applies). HTTP `CONNECT` or
+  upgrade relays use `RawConn::set_relayed`.
+
 only-socks relays exactly this way in both directions.
 
 ## Pools and protocols

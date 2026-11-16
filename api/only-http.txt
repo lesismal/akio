@@ -433,6 +433,7 @@ pub fn only_http::raw::RawConn::peer_addr(&self) -> core::net::socket_addr::Sock
 pub fn only_http::raw::RawConn::queued_bytes(&self) -> usize
 pub fn only_http::raw::RawConn::send(&self, &[u8]) -> only_core::error::Result<()>
 pub fn only_http::raw::RawConn::send_owned(&self, alloc::vec::Vec<u8>) -> only_core::error::Result<()>
+pub fn only_http::raw::RawConn::set_relayed(&self, bool)
 impl core::clone::Clone for only_http::raw::RawConn
 pub fn only_http::raw::RawConn::clone(&self) -> Self
 impl core::fmt::Debug for only_http::raw::RawConn
