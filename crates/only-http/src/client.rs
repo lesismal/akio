@@ -280,6 +280,9 @@ struct Inner {
     engine: Arc<Engine>,
     tls: Option<TlsClientConfig>,
     idle: Mutex<HashMap<Key, Vec<Conn<ClientConn>>>>,
+    /// The engine started a graceful shutdown: connections close once their response is in
+    /// instead of going back to `idle`.
+    shutting_down: std::sync::atomic::AtomicBool,
 }
 
 /// The HTTP client. Cheap to clone.
@@ -303,6 +306,7 @@ impl Client {
                 engine,
                 tls: None,
                 idle: Mutex::new(HashMap::new()),
+                shutting_down: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -315,6 +319,7 @@ impl Client {
                 engine: self.inner.engine.clone(),
                 tls: Some(cfg),
                 idle: Mutex::new(HashMap::new()),
+                shutting_down: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -494,6 +499,29 @@ impl Acceptor for DialAcceptor {
         }
         h
     }
+
+    // Without this, idle keep-alive connections stayed open through the engine's graceful
+    // shutdown, so `Engine::wait` sat out the whole `shutdown_timeout` (10 s by default).
+    // An idle connection closes now; one with a request in flight closes after its response
+    // (`ClientConn::complete`).
+    fn on_shutdown(&self, c: &Conn<ClientConn>) {
+        let inner = &self.client.inner;
+        inner
+            .shutting_down
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut idle = inner.idle.lock().unwrap_or_else(|e| e.into_inner());
+        let mut was_idle = false;
+        for v in idle.values_mut() {
+            let n = v.len();
+            v.retain(|x| x.id() != c.id());
+            was_idle |= v.len() != n;
+        }
+        idle.retain(|_, v| !v.is_empty());
+        drop(idle);
+        if was_idle {
+            c.close();
+        }
+    }
 }
 
 enum RState {
@@ -607,7 +635,13 @@ impl ClientConn {
         self.state = RState::Idle;
         let Some(a) = self.active.take() else { return };
         let resp = a.resp.expect("response head parsed");
+        let shutting_down = self.client.as_ref().is_some_and(|cl| {
+            cl.inner
+                .shutting_down
+                .load(std::sync::atomic::Ordering::Relaxed)
+        });
         let reusable = keep_alive
+            && !shutting_down
             && a.version == Version::Http11
             && !resp.headers.has_token("connection", "close");
         if reusable {
