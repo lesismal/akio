@@ -126,7 +126,7 @@ impl Service for HttpFlv {
         // stream gets a proper status instead of an empty 200.
         let Some(d) = ctx.detach() else { return };
         let out = Arc::new(Out {
-            w: Mutex::new(Some(Writer::Pending(d, h))),
+            w: Mutex::new(Some(Writer::Pending(Box::new((d, h))))),
             sub: Mutex::new(None),
         });
         let sink = FlvSink::new(out.clone(), &self.cfg);
@@ -143,7 +143,8 @@ impl Service for HttpFlv {
 }
 
 enum Writer {
-    Pending(only_http::Detached, Headers),
+    /// Boxed: a `Detached` carries the whole request (over 200 bytes).
+    Pending(Box<(only_http::Detached, Headers)>),
     Http(only_http::BodyStream),
     Ws(WsSender),
 }
@@ -167,7 +168,8 @@ impl Out {
     fn start(&self) {
         let mut g = lock(&self.w);
         if let Some(Writer::Pending(..)) = &*g {
-            if let Some(Writer::Pending(d, h)) = g.take() {
+            if let Some(Writer::Pending(p)) = g.take() {
+                let (d, h) = *p;
                 *g = d.stream_response(200, h).map(Writer::Http);
             }
         }
@@ -182,8 +184,8 @@ impl Out {
         };
         let w = lock(&self.w).take();
         match w {
-            Some(Writer::Pending(d, _)) => {
-                d.respond(only_http::Response::text(status, e.to_string()));
+            Some(Writer::Pending(p)) => {
+                p.0.respond(only_http::Response::text(status, e.to_string()));
             }
             Some(Writer::Http(b)) => b.finish(),
             Some(Writer::Ws(s)) => s.close(4000 + status, &e.to_string()),
@@ -216,8 +218,8 @@ impl Out {
         match w {
             Some(Writer::Http(b)) => b.finish(),
             Some(Writer::Ws(s)) => s.close(1000, ""),
-            Some(Writer::Pending(d, _)) => {
-                d.respond(only_http::Response::text(404, "stream ended"));
+            Some(Writer::Pending(p)) => {
+                p.0.respond(only_http::Response::text(404, "stream ended"));
             }
             None => {}
         }
