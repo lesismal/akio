@@ -57,11 +57,33 @@ struct Shard {
     classes: [AtomicU64; 6],
     buckets: [AtomicU64; NB],
     sum_ns: AtomicU64,
+    /// Requests dispatched on this shard's threads and not answered yet.
+    in_flight: AtomicI64,
+}
+
+impl Shard {
+    fn observe(&self, status: u16, latency: Duration) {
+        let class = match status {
+            100..=599 => (status / 100 - 1) as usize,
+            _ => 5,
+        };
+        self.classes[class].fetch_add(1, Ordering::Relaxed);
+        let secs = latency.as_secs_f64();
+        let b = LATENCY_BUCKETS
+            .iter()
+            .position(|&ub| secs <= ub)
+            .unwrap_or(NB - 1);
+        self.buckets[b].fetch_add(1, Ordering::Relaxed);
+        self.sum_ns
+            .fetch_add(latency.as_nanos() as u64, Ordering::Relaxed);
+    }
 }
 
 struct Inner {
-    shards: Box<[Shard]>,
-    in_flight: AtomicI64,
+    /// Each shard behind its own `Arc`: a request in flight holds its thread's shard, so the
+    /// reference count a request bumps is shared only by the threads of that shard (not by
+    /// every thread, as the metrics' own count would be).
+    shards: Box<[Arc<Shard>]>,
 }
 
 /// Request counters by status class and a latency histogram, cheap enough for every request
@@ -73,8 +95,7 @@ pub struct HttpMetrics(Arc<Inner>);
 impl Default for HttpMetrics {
     fn default() -> Self {
         HttpMetrics(Arc::new(Inner {
-            shards: (0..SHARDS).map(|_| Shard::default()).collect(),
-            in_flight: AtomicI64::new(0),
+            shards: (0..SHARDS).map(|_| Arc::new(Shard::default())).collect(),
         }))
     }
 }
@@ -125,13 +146,13 @@ fn shard_index() -> usize {
 
 /// Decrements `in_flight` however the request ends; records the response when it is sent.
 struct Pending {
-    m: HttpMetrics,
+    shard: Arc<Shard>,
     t0: Instant,
 }
 
 impl Drop for Pending {
     fn drop(&mut self) {
-        self.m.0.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.shard.in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -143,20 +164,7 @@ impl HttpMetrics {
 
     /// Records one response.
     pub fn observe(&self, status: u16, latency: Duration) {
-        let s = &self.0.shards[shard_index()];
-        let class = match status {
-            100..=599 => (status / 100 - 1) as usize,
-            _ => 5,
-        };
-        s.classes[class].fetch_add(1, Ordering::Relaxed);
-        let secs = latency.as_secs_f64();
-        let b = LATENCY_BUCKETS
-            .iter()
-            .position(|&ub| secs <= ub)
-            .unwrap_or(NB - 1);
-        s.buckets[b].fetch_add(1, Ordering::Relaxed);
-        s.sum_ns
-            .fetch_add(latency.as_nanos() as u64, Ordering::Relaxed);
+        self.0.shards[shard_index()].observe(status, latency);
     }
 
     /// Middleware that records every response: status class and the time from dispatch until
@@ -165,13 +173,14 @@ impl HttpMetrics {
     pub fn middleware(&self) -> impl Middleware {
         let m = self.clone();
         move |ctx: &mut Context, next: &dyn Service| {
-            m.0.in_flight.fetch_add(1, Ordering::Relaxed);
+            let shard = m.0.shards[shard_index()].clone();
+            shard.in_flight.fetch_add(1, Ordering::Relaxed);
             let p = Pending {
-                m: m.clone(),
+                shard,
                 t0: Instant::now(),
             };
             ctx.add_response_filter(move |resp: &mut Response, _| {
-                p.m.observe(resp.status, p.t0.elapsed());
+                p.shard.observe(resp.status, p.t0.elapsed());
             });
             next.call(ctx);
         }
@@ -179,12 +188,10 @@ impl HttpMetrics {
 
     /// Sums the shards.
     pub fn snapshot(&self) -> HttpSnapshot {
-        let mut out = HttpSnapshot {
-            in_flight: self.0.in_flight.load(Ordering::Relaxed),
-            ..HttpSnapshot::default()
-        };
+        let mut out = HttpSnapshot::default();
         let mut sum = 0u64;
         for s in &self.0.shards {
+            out.in_flight += s.in_flight.load(Ordering::Relaxed);
             for (o, c) in out.by_class.iter_mut().zip(&s.classes) {
                 *o += c.load(Ordering::Relaxed);
             }

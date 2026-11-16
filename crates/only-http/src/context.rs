@@ -1,6 +1,6 @@
 //! The per-request [`Context`] and the [`Service`] / [`Middleware`] traits.
 
-use std::{net::SocketAddr, sync::Arc, time::Instant};
+use std::{borrow::Cow, net::SocketAddr, sync::Arc, time::Instant};
 
 use only_core::{Part, ResponseSlot, ResponseStream};
 
@@ -143,20 +143,48 @@ impl Out {
     }
 }
 
+/// Response filters: the first two inline (a middleware stack rarely registers more), the rest
+/// in a vector, so a request with filters does not also allocate a list for them.
+#[derive(Default)]
+struct Filters {
+    inline: [Option<Filter>; 2],
+    rest: Vec<Filter>,
+}
+
+impl Filters {
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.inline[0].is_none()
+    }
+
+    fn push(&mut self, f: Filter) {
+        match self.inline.iter_mut().find(|s| s.is_none()) {
+            Some(slot) => *slot = Some(f),
+            None => self.rest.push(f),
+        }
+    }
+
+    /// Takes every filter, in registration order.
+    fn drain(&mut self) -> impl Iterator<Item = Filter> {
+        let [a, b] = std::mem::take(&mut self.inline);
+        a.into_iter().chain(b).chain(std::mem::take(&mut self.rest))
+    }
+}
+
 /// What is applied to a response on its way out.
 struct Finish {
     extra: Headers,
-    filters: Vec<Filter>,
+    filters: Filters,
     /// Set with the time header: reading the clock for every request costs.
     started: Option<Instant>,
-    time_header: Option<String>,
+    time_header: Option<Cow<'static, str>>,
 }
 
 impl Finish {
     fn new() -> Finish {
         Finish {
             extra: Headers::new(),
-            filters: Vec::new(),
+            filters: Filters::default(),
             started: None,
             time_header: None,
         }
@@ -169,7 +197,7 @@ impl Finish {
         if self.filters.is_empty() && self.extra.is_empty() && self.time_header.is_none() {
             return;
         }
-        for f in self.filters.drain(..) {
+        for f in self.filters.drain() {
             f(resp, req);
         }
         for (n, v) in self.extra.iter() {
@@ -178,13 +206,17 @@ impl Finish {
             }
         }
         if let Some(h) = &self.time_header {
-            resp.headers.set(
-                h.clone(),
-                format!(
-                    "{:.3}ms",
-                    self.started.map_or(0.0, |s| s.elapsed().as_secs_f64()) * 1e3
-                ),
-            );
+            use std::io::Write as _;
+            // `<ms>ms` formatted on the stack.
+            let ms = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64()) * 1e3;
+            let mut buf = [0u8; 40];
+            let n = {
+                let mut w = &mut buf[..];
+                let _ = write!(w, "{ms:.3}ms");
+                40 - w.len()
+            };
+            resp.headers
+                .set(&**h, std::str::from_utf8(&buf[..n]).unwrap_or("0ms"));
         }
     }
 }
@@ -426,7 +458,13 @@ impl Context {
     /// Adds `header: <elapsed>ms` (time since this call; at dispatch for the `response_time`
     /// middleware) to the response.
     pub fn set_response_time_header(&mut self, header: &str) {
-        self.fin.time_header = Some(header.to_owned());
+        self.fin.time_header = Some(Cow::Owned(header.to_owned()));
+        self.fin.started.get_or_insert_with(Instant::now);
+    }
+
+    /// [`set_response_time_header`](Self::set_response_time_header) without copying the name.
+    pub(crate) fn set_response_time_header_static(&mut self, header: &'static str) {
+        self.fin.time_header = Some(Cow::Borrowed(header));
         self.fin.started.get_or_insert_with(Instant::now);
     }
 
@@ -734,9 +772,9 @@ impl BodyStream {
                 if data.is_empty() || *head_only {
                     return Ok(());
                 }
-                let mut out = Vec::with_capacity(data.len() + 16);
+                let mut out = Vec::with_capacity(data.len() + 20);
                 if *chunked {
-                    out.extend_from_slice(format!("{:x}\r\n", data.len()).as_bytes());
+                    push_chunk_size(&mut out, data.len());
                     out.extend_from_slice(data);
                     out.extend_from_slice(b"\r\n");
                 } else {
@@ -788,11 +826,13 @@ impl BodyStream {
                 head_only,
             } => {
                 if chunked && !head_only {
-                    let mut t = b"0\r\n".to_vec();
+                    let mut t = Vec::with_capacity(64);
+                    t.extend_from_slice(b"0\r\n");
                     for (n, v) in trailers.iter() {
-                        t.extend_from_slice(
-                            format!("{n}: {}\r\n", v.replace(['\r', '\n'], "")).as_bytes(),
-                        );
+                        t.extend_from_slice(n.as_bytes());
+                        t.extend_from_slice(b": ");
+                        t.extend(v.bytes().filter(|b| *b != b'\r' && *b != b'\n'));
+                        t.extend_from_slice(b"\r\n");
                     }
                     t.extend_from_slice(b"\r\n");
                     let _ = stream.write(t);
@@ -801,6 +841,41 @@ impl BodyStream {
             }
             Inner::H2(s) => s.finish_with(Some(trailers)),
             Inner::Ext(s) => s.finish(Some(trailers)),
+        }
+    }
+}
+
+/// Appends a chunk-size line (`<hex>\r\n`) for `n` bytes.
+fn push_chunk_size(out: &mut Vec<u8>, n: usize) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digits = ((usize::BITS - n.leading_zeros()).div_ceil(4)).max(1) as usize;
+    for i in (0..digits).rev() {
+        out.push(HEX[(n >> (i * 4)) & 15]);
+    }
+    out.extend_from_slice(b"\r\n");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn chunk_size_lines() {
+        for n in [
+            0usize,
+            1,
+            9,
+            10,
+            15,
+            16,
+            255,
+            256,
+            4096,
+            65_535,
+            1 << 20,
+            usize::MAX,
+        ] {
+            let mut out = Vec::new();
+            super::push_chunk_size(&mut out, n);
+            assert_eq!(out, format!("{n:x}\r\n").into_bytes(), "{n}");
         }
     }
 }
