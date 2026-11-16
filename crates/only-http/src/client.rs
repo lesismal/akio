@@ -761,10 +761,10 @@ pub struct ClientConn {
     head: http1::Resume,
     /// Head bytes of interim (1xx) responses already received for the request in flight.
     head_seen: usize,
-    /// Counts requests on this connection, so a late deadline cannot hit the next one.
-    seq: u64,
-    /// The request deadline's timer job.
-    timer: Option<timer::TimerId>,
+    /// When the request in flight times out (`timer::ms`), 0 when none.
+    deadline: u64,
+    /// The connection's one deadline timer, re-armed lazily (no timer message per request).
+    watch: Arc<timer::Watch>,
 }
 
 impl std::fmt::Debug for ClientConn {
@@ -784,8 +784,8 @@ impl ClientConn {
             received_any: false,
             head: http1::Resume::default(),
             head_seen: 0,
-            seq: 0,
-            timer: None,
+            deadline: 0,
+            watch: timer::Watch::new(),
         }
     }
 
@@ -794,16 +794,33 @@ impl ClientConn {
     }
 
     fn disarm(&mut self) {
-        if let Some(t) = self.timer.take() {
-            timer::cancel(t);
-        }
+        self.deadline = 0;
+        self.watch.set(0);
     }
 
-    /// The request deadline passed: fail it and drop the connection (its state is unknown).
-    fn on_deadline(&mut self, c: &Conn<Self>, seq: u64) {
-        if seq == self.seq && self.active.is_some() {
-            self.timer = None;
+    /// Arms the connection's watch for `self.deadline`.
+    fn arm(&self, c: &Conn<Self>) {
+        self.watch.set(self.deadline);
+        let conn = c.clone();
+        self.watch.ensure_armed(move || {
+            let hop = conn.spawn_blocking(|| (), move |h: &mut ClientConn, c, ()| h.on_deadline(c));
+            if hop.is_err() && conn.is_open() {
+                // The pool refused the hop: closing still ends the request (as `Closed`).
+                conn.close();
+            }
+        });
+    }
+
+    /// The watch fired: fail the request in flight if its deadline passed (and drop the
+    /// connection, its state is unknown), else re-arm for the current one.
+    fn on_deadline(&mut self, c: &Conn<Self>) {
+        if self.active.is_none() || self.deadline == 0 {
+            return;
+        }
+        if self.deadline <= timer::now_ms() {
             self.fail(c, ClientError::TimedOut);
+        } else {
+            self.arm(c);
         }
     }
 
@@ -833,7 +850,6 @@ impl ClientConn {
         self.head = http1::Resume::default();
         self.head_seen = 0;
         self.received_any = false;
-        self.seq += 1;
         self.disarm();
         self.client = Some(client);
         self.key = Some(key);
@@ -849,17 +865,8 @@ impl ClientConn {
                 // Spent dialing (the engine's connect timeout may be longer).
                 return self.fail(c, ClientError::TimedOut);
             }
-            let (conn, seq) = (c.clone(), self.seq);
-            self.timer = Some(timer::at(at, move || {
-                let hop = conn.spawn_blocking(
-                    || (),
-                    move |h: &mut ClientConn, c, ()| h.on_deadline(c, seq),
-                );
-                if hop.is_err() {
-                    // The pool refused the hop: closing still ends the request (as `Closed`).
-                    conn.close();
-                }
-            }));
+            self.deadline = timer::ms(at);
+            self.arm(c);
         }
         if c.send_owned(bytes).is_err() {
             self.fail(c, ClientError::Closed);
@@ -1085,7 +1092,7 @@ impl ClientConn {
 pub(crate) mod timer {
     use std::{
         cmp::Reverse,
-        collections::{BinaryHeap, HashMap},
+        collections::BinaryHeap,
         sync::{
             OnceLock,
             atomic::{AtomicU64, Ordering},
@@ -1096,18 +1103,30 @@ pub(crate) mod timer {
 
     type Job = Box<dyn FnOnce() + Send>;
 
-    enum Msg {
-        Add(u64, Instant, Job),
-        Cancel(u64),
+    /// A job in the heap, ordered by when it runs (then by arrival).
+    struct Entry(Instant, u64, Job);
+
+    impl PartialEq for Entry {
+        fn eq(&self, o: &Entry) -> bool {
+            (self.0, self.1) == (o.0, o.1)
+        }
+    }
+    impl Eq for Entry {}
+    impl PartialOrd for Entry {
+        fn partial_cmp(&self, o: &Entry) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(o))
+        }
+    }
+    impl Ord for Entry {
+        fn cmp(&self, o: &Entry) -> std::cmp::Ordering {
+            (self.0, self.1).cmp(&(o.0, o.1))
+        }
     }
 
-    /// A scheduled job, to [`cancel`].
-    pub(crate) type TimerId = u64;
-
-    fn sender() -> &'static Sender<Msg> {
-        static TX: OnceLock<Sender<Msg>> = OnceLock::new();
+    fn sender() -> &'static Sender<(Instant, Job)> {
+        static TX: OnceLock<Sender<(Instant, Job)>> = OnceLock::new();
         TX.get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<Msg>();
+            let (tx, rx) = mpsc::channel::<(Instant, Job)>();
             std::thread::Builder::new()
                 .name("only-http-timer".into())
                 .spawn(move || run(&rx))
@@ -1116,38 +1135,23 @@ pub(crate) mod timer {
         })
     }
 
-    fn run(rx: &mpsc::Receiver<Msg>) {
-        let mut heap: BinaryHeap<Reverse<(Instant, u64)>> = BinaryHeap::new();
-        let mut jobs: HashMap<u64, Job> = HashMap::new();
+    fn run(rx: &mpsc::Receiver<(Instant, Job)>) {
+        let mut heap: BinaryHeap<Reverse<Entry>> = BinaryHeap::new();
+        let mut seq = 0u64;
         loop {
             let now = Instant::now();
-            while let Some(&Reverse((at, id))) = heap.peek() {
-                if at > now {
-                    break;
-                }
-                heap.pop();
-                if let Some(j) = jobs.remove(&id) {
-                    j();
-                }
-            }
-            // Cancelled entries stay in the heap until due: rebuild it when they dominate, so
-            // a busy client's finished requests do not pile up for a whole timeout.
-            if heap.len() > 1024 && heap.len() > 2 * jobs.len() {
-                heap.retain(|Reverse((_, id))| jobs.contains_key(id));
+            while heap.peek().is_some_and(|Reverse(e)| e.0 <= now) {
+                let Reverse(Entry(_, _, job)) = heap.pop().expect("peeked");
+                job();
             }
             let msg = match heap.peek() {
-                Some(&Reverse((at, _))) => {
-                    rx.recv_timeout(at.saturating_duration_since(Instant::now()))
-                }
+                Some(Reverse(e)) => rx.recv_timeout(e.0.saturating_duration_since(Instant::now())),
                 None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
             match msg {
-                Ok(Msg::Add(id, at, job)) => {
-                    heap.push(Reverse((at, id)));
-                    jobs.insert(id, job);
-                }
-                Ok(Msg::Cancel(id)) => {
-                    jobs.remove(&id);
+                Ok((at, job)) => {
+                    seq += 1;
+                    heap.push(Reverse(Entry(at, seq, job)));
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -1155,17 +1159,98 @@ pub(crate) mod timer {
         }
     }
 
-    /// Runs `job` on the timer thread at `at` unless [`cancel`]led first.
-    pub(crate) fn at(at: Instant, job: impl FnOnce() + Send + 'static) -> TimerId {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let _ = sender().send(Msg::Add(id, at, Box::new(job)));
-        id
+    /// Runs `job` on the timer thread at `at`. Callers keep this off the per-request path:
+    /// request deadlines go through a [`Watch`].
+    pub(crate) fn at(at: Instant, job: impl FnOnce() + Send + 'static) {
+        let _ = sender().send((at, Box::new(job)));
     }
 
-    /// Drops a job that has not run yet (no effect once it ran).
-    pub(crate) fn cancel(id: TimerId) {
-        let _ = sender().send(Msg::Cancel(id));
+    fn epoch() -> Instant {
+        static E: OnceLock<Instant> = OnceLock::new();
+        *E.get_or_init(Instant::now)
+    }
+
+    /// `t` in whole milliseconds (rounded up) since a process epoch, never 0.
+    pub(crate) fn ms(t: Instant) -> u64 {
+        let d = t.saturating_duration_since(epoch());
+        (d.as_nanos().div_ceil(1_000_000) as u64) + 1
+    }
+
+    pub(crate) fn now_ms() -> u64 {
+        ms(Instant::now())
+    }
+
+    fn instant(ms: u64) -> Instant {
+        epoch() + std::time::Duration::from_millis(ms.saturating_sub(1))
+    }
+
+    /// One owner's deadline (a connection's): at most one timer job is pending for it. Moving
+    /// the deadline is an atomic store; the job, when it fires, re-arms itself for a later
+    /// deadline, stops on 0, and calls back only once the deadline passed. A request costs no
+    /// timer message unless the watch was idle.
+    pub(crate) struct Watch {
+        at: AtomicU64,
+        /// When the pending job runs (`ms`), 0 when none is pending.
+        armed_at: AtomicU64,
+    }
+
+    impl Watch {
+        pub(crate) fn new() -> std::sync::Arc<Watch> {
+            std::sync::Arc::new(Watch {
+                at: AtomicU64::new(0),
+                armed_at: AtomicU64::new(0),
+            })
+        }
+
+        /// Sets the deadline (`ms`), 0 for none.
+        pub(crate) fn set(&self, at: u64) {
+            self.at.store(at, Ordering::SeqCst);
+        }
+
+        /// Makes sure a job is pending no later than the deadline; `due` runs on the timer
+        /// thread once the deadline passed (it must be quick and decide again on its owner's
+        /// thread). An earlier deadline than the pending job's gets a job of its own; the
+        /// superseded one then does nothing.
+        pub(crate) fn ensure_armed<F: Fn() + Clone + Send + 'static>(
+            self: &std::sync::Arc<Self>,
+            due: F,
+        ) {
+            let at = self.at.load(Ordering::SeqCst);
+            if at == 0 {
+                return;
+            }
+            let mut cur = self.armed_at.load(Ordering::SeqCst);
+            loop {
+                if cur != 0 && cur <= at {
+                    return;
+                }
+                match self
+                    .armed_at
+                    .compare_exchange(cur, at, Ordering::SeqCst, Ordering::SeqCst)
+                {
+                    Ok(_) => break,
+                    Err(now) => cur = now,
+                }
+            }
+            let w = self.clone();
+            self::at(instant(at), move || {
+                if w.armed_at
+                    .compare_exchange(at, 0, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    return; // superseded by an earlier job
+                }
+                let deadline = w.at.load(Ordering::SeqCst);
+                if deadline == 0 {
+                    return;
+                }
+                if deadline > now_ms() {
+                    w.ensure_armed(due);
+                } else {
+                    due();
+                }
+            });
+        }
     }
 }
 

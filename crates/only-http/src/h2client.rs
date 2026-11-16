@@ -361,16 +361,6 @@ struct CStream {
     /// Pushed responses still outstanding for this (parent) stream.
     pending_pushes: u32,
     pushed: Vec<(String, ClientResponse)>,
-    /// The request deadline's timer job.
-    timer: Option<timer::TimerId>,
-}
-
-impl Drop for CStream {
-    fn drop(&mut self) {
-        if let Some(t) = self.timer.take() {
-            timer::cancel(t);
-        }
-    }
 }
 
 /// The connection's handler.
@@ -389,6 +379,11 @@ pub struct H2Conn {
     cont: Option<(u32, Option<u32>, Vec<u8>, bool)>,
     goaway: bool,
     dead: bool,
+    /// Request deadlines (`timer::ms`, stream), earliest first. Finished streams leave their
+    /// entry behind; it is dropped once it reaches the front.
+    deadlines: VecDeque<(u64, u32)>,
+    /// The connection's one deadline timer, set to the front of `deadlines`.
+    watch: Arc<timer::Watch>,
 }
 
 impl std::fmt::Debug for H2Conn {
@@ -420,6 +415,8 @@ impl H2Conn {
             cont: None,
             goaway: false,
             dead: false,
+            deadlines: VecDeque::new(),
+            watch: timer::Watch::new(),
         }
     }
 
@@ -528,21 +525,17 @@ impl H2Conn {
             parent: None,
             pending_pushes: 0,
             pushed: Vec::new(),
-            timer: None,
         };
-        if let Some(d) = timeout {
-            let conn = c.clone();
-            st.timer = Some(timer::at(Instant::now() + d, move || {
-                let hop =
-                    conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.on_deadline(c, sid));
-                if hop.is_err() {
-                    // The pool refused the hop: closing still ends the request (as `Closed`).
-                    conn.close();
-                }
-            }));
-        }
         st.upload_done = st.upload.is_empty() && !is_stream;
         self.streams.insert(sid, st);
+        if let Some(d) = timeout {
+            let at = timer::ms(Instant::now() + d);
+            self.prune_deadlines();
+            // Same timeout for every request: almost always the latest deadline.
+            let i = self.deadlines.partition_point(|&(t, _)| t <= at);
+            self.deadlines.insert(i, (at, sid));
+            self.arm(c);
+        }
         self.send_upload(sid, &mut out);
         let _ = c.send_owned(out);
         if let Some(up) = up {
@@ -720,14 +713,45 @@ impl H2Conn {
         }
     }
 
-    /// The request deadline of `sid` passed.
-    fn on_deadline(&mut self, c: &Conn<Self>, sid: u32) {
-        if let Some(st) = self.streams.get_mut(&sid) {
-            st.timer = None; // it ran
-            let mut out = Vec::new();
+    /// Drops the entries of finished streams from the front of `deadlines`.
+    fn prune_deadlines(&mut self) {
+        while let Some(&(_, sid)) = self.deadlines.front() {
+            if self.streams.contains_key(&sid) {
+                break;
+            }
+            self.deadlines.pop_front();
+        }
+    }
+
+    /// Points the watch at the earliest deadline.
+    fn arm(&self, c: &Conn<Self>) {
+        self.watch.set(self.deadlines.front().map_or(0, |d| d.0));
+        let conn = c.clone();
+        self.watch.ensure_armed(move || {
+            let hop = conn.spawn_blocking(|| (), |h: &mut H2Conn, c, ()| h.on_deadline(c));
+            if hop.is_err() && conn.is_open() {
+                // The pool refused the hop: closing still ends the requests (as `Closed`).
+                conn.close();
+            }
+        });
+    }
+
+    /// The watch fired: reset the streams whose deadline passed, re-arm for the next one.
+    fn on_deadline(&mut self, c: &Conn<Self>) {
+        let now = timer::now_ms();
+        let mut out = Vec::new();
+        while let Some(&(at, sid)) = self.deadlines.front() {
+            if at > now {
+                break;
+            }
+            self.deadlines.pop_front();
             self.abort_stream(&mut out, sid, ClientError::TimedOut);
+        }
+        if !out.is_empty() {
             let _ = c.send_owned(out);
         }
+        self.prune_deadlines();
+        self.arm(c);
     }
 
     /// Delivers the response of `sid` if it is complete (and its pushes are).
@@ -833,7 +857,6 @@ impl H2Conn {
                     parent: Some(sid),
                     pending_pushes: 0,
                     pushed: Vec::new(),
-                    timer: None,
                 },
             );
             return;

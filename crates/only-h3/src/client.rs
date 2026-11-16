@@ -77,33 +77,21 @@ impl std::fmt::Display for H3Error {
 
 impl std::error::Error for H3Error {}
 
-/// A request's timeout job; cancelled when the request leaves the client's tables.
-struct Deadline {
-    /// Identifies the request to the job.
-    token: u64,
-    timer: Option<timer::TimerId>,
-}
-
-impl Drop for Deadline {
-    fn drop(&mut self) {
-        if let Some(t) = self.timer.take() {
-            timer::cancel(t);
-        }
-    }
-}
-
 struct Queued {
     wire: Bytes,
     cb: Callback,
-    deadline: Deadline,
+    /// Identifies the request to its deadline (0: none).
+    token: u64,
 }
 
 struct InFlight {
     r: Reader,
     resp: Option<Response>,
     cb: Option<Callback>,
-    deadline: Deadline,
+    token: u64,
 }
+
+type TokenSet = std::collections::HashSet<u64, std::hash::BuildHasherDefault<crate::IdHasher>>;
 
 #[derive(Default)]
 struct State {
@@ -112,6 +100,30 @@ struct State {
     queue: VecDeque<Queued>,
     inflight: StreamMap<InFlight>,
     next_token: u64,
+    /// Request deadlines in order (every request has the same timeout). Finished requests
+    /// leave their entry behind; it is dropped once it reaches the front.
+    deadlines: VecDeque<(Instant, u64)>,
+    /// Tokens of the requests still waiting for a response.
+    live: TokenSet,
+    /// When the pending timer job runs; one job per connection, not per request.
+    armed_at: Option<Instant>,
+}
+
+impl State {
+    fn finished(&mut self, token: u64) {
+        if token != 0 {
+            self.live.remove(&token);
+        }
+    }
+
+    fn prune(&mut self) {
+        while let Some(&(_, t)) = self.deadlines.front() {
+            if self.live.contains(&t) {
+                break;
+            }
+            self.deadlines.pop_front();
+        }
+    }
 }
 
 fn lock(s: &Mutex<State>) -> MutexGuard<'_, State> {
@@ -236,20 +248,19 @@ impl H3Client {
             drop(st);
             return cb(Err(H3Error::Closed(e)));
         }
-        st.next_token += 1;
-        let token = st.next_token;
-        let timer = self.request_timeout.map(|d| {
-            let (conn, st) = (self.conn.clone(), Arc::downgrade(&self.st));
-            timer::at(Instant::now() + d, move || {
-                if let Some(st) = st.upgrade() {
-                    expire(&conn, &st, token);
-                }
-            })
-        });
+        let mut token = 0;
+        if let Some(d) = self.request_timeout {
+            st.next_token += 1;
+            token = st.next_token;
+            st.live.insert(token);
+            st.prune();
+            st.deadlines.push_back((Instant::now() + d, token));
+            arm(&self.conn, &self.st, &mut st);
+        }
         st.queue.push_back(Queued {
             wire,
             cb: Box::new(cb),
-            deadline: Deadline { token, timer },
+            token,
         });
         let ready = st.ready;
         drop(st);
@@ -285,30 +296,62 @@ impl H3Client {
     }
 }
 
-/// The deadline of request `token` passed: fail it, and reset its stream if it has one.
-fn expire(conn: &Connection, st: &Mutex<State>, token: u64) {
+/// Makes sure a timer job runs by the earliest request deadline (`s` is `st` locked).
+fn arm(conn: &Connection, st: &Arc<Mutex<State>>, s: &mut State) {
+    let Some(&(at, _)) = s.deadlines.front() else {
+        return;
+    };
+    if s.armed_at.is_some_and(|t| t <= at) {
+        return;
+    }
+    s.armed_at = Some(at);
+    let (conn, st) = (conn.clone(), Arc::downgrade(st));
+    timer::at(at, move || {
+        if let Some(st) = st.upgrade() {
+            expire(&conn, &st, at);
+        }
+    });
+}
+
+/// The job armed for `armed` ran: fail the requests whose deadline passed (resetting their
+/// streams), then re-arm for the next deadline.
+fn expire(conn: &Connection, st: &Arc<Mutex<State>>, armed: Instant) {
     let mut s = lock(st);
-    let cb = if let Some(i) = s.queue.iter().position(|q| q.deadline.token == token) {
-        s.queue.remove(i).map(|mut q| {
-            q.deadline.timer = None; // it ran
-            q.cb
-        })
-    } else {
-        let id = s
+    if s.armed_at != Some(armed) {
+        return; // superseded by an earlier job
+    }
+    s.armed_at = None;
+    let now = Instant::now();
+    let mut cbs = Vec::new();
+    while let Some(&(at, token)) = s.deadlines.front() {
+        if at > now {
+            break;
+        }
+        s.deadlines.pop_front();
+        if !s.live.remove(&token) {
+            continue;
+        }
+        if let Some(i) = s.queue.iter().position(|q| q.token == token) {
+            if let Some(q) = s.queue.remove(i) {
+                cbs.push(q.cb);
+            }
+        } else if let Some(id) = s
             .inflight
             .iter()
-            .find(|(_, f)| f.deadline.token == token)
-            .map(|(id, _)| *id);
-        id.and_then(|id| {
-            let mut f = s.inflight.remove(&id)?;
-            f.deadline.timer = None;
+            .find(|(_, f)| f.token == token)
+            .map(|(id, _)| *id)
+        {
+            if let Some(cb) = s.inflight.remove(&id).and_then(|mut f| f.cb.take()) {
+                cbs.push(cb);
+            }
             let _ = conn.reset(id, code::REQUEST_CANCELLED);
             let _ = conn.stop(id, code::REQUEST_CANCELLED);
-            f.cb.take()
-        })
-    };
+        }
+    }
+    s.prune();
+    arm(conn, st, &mut s);
     drop(s);
-    if let Some(cb) = cb {
+    for cb in cbs {
         cb(Err(H3Error::Timeout));
     }
 }
@@ -321,14 +364,14 @@ fn start_queued(conn: &Connection, st: &Arc<Mutex<State>>) {
             return;
         }
         let Some(id) = conn.open_bi() else { return };
-        let Queued { wire, cb, deadline } = s.queue.pop_front().expect("non-empty");
+        let Queued { wire, cb, token } = s.queue.pop_front().expect("non-empty");
         s.inflight.insert(
             id,
             InFlight {
                 r: Reader::default(),
                 resp: None,
                 cb: Some(cb),
-                deadline,
+                token,
             },
         );
         drop(s);
@@ -369,6 +412,8 @@ impl ClientConn {
         st.closed = Some(why.clone());
         let mut cbs: Vec<Callback> = st.queue.drain(..).map(|q| q.cb).collect();
         cbs.extend(st.inflight.drain().filter_map(|(_, mut f)| f.cb.take()));
+        st.deadlines.clear();
+        st.live.clear();
         drop(st);
         for cb in cbs {
             cb(Err(H3Error::Closed(why.clone())));
@@ -436,6 +481,7 @@ impl ClientConn {
             return None;
         }
         let mut f = st.inflight.remove(&id)?;
+        st.finished(f.token);
         let cb = f.cb.take()?;
         let r = match (err, f.resp.take()) {
             (Some(e), _) => Err(e),
@@ -488,7 +534,14 @@ impl QuicHandler for ClientConn {
     }
 
     fn on_stream_reset(&mut self, _c: &Connection, id: StreamId, code: u64) {
-        let f = lock(&self.st).inflight.remove(&id);
+        let f = {
+            let mut st = lock(&self.st);
+            let f = st.inflight.remove(&id);
+            if let Some(f) = &f {
+                st.finished(f.token);
+            }
+            f
+        };
         if let Some(cb) = f.and_then(|mut f| f.cb.take()) {
             cb(Err(H3Error::Reset(code)));
         }
@@ -504,14 +557,14 @@ impl QuicHandler for ClientConn {
 }
 
 /// Request deadlines: one lazily started thread with a heap, fed through a channel. Jobs only
-/// fail a request and reset its stream.
+/// fail requests and reset their streams. A connection has at most one job pending (see
+/// `arm`), so requests cost no timer message.
 mod timer {
     use std::{
         cmp::Reverse,
-        collections::{BinaryHeap, HashMap},
+        collections::BinaryHeap,
         sync::{
             OnceLock,
-            atomic::{AtomicU64, Ordering},
             mpsc::{self, RecvTimeoutError, Sender},
         },
         time::Instant,
@@ -519,17 +572,29 @@ mod timer {
 
     type Job = Box<dyn FnOnce() + Send>;
 
-    enum Msg {
-        Add(u64, Instant, Job),
-        Cancel(u64),
+    struct Entry(Instant, u64, Job);
+
+    impl PartialEq for Entry {
+        fn eq(&self, o: &Entry) -> bool {
+            (self.0, self.1) == (o.0, o.1)
+        }
+    }
+    impl Eq for Entry {}
+    impl PartialOrd for Entry {
+        fn partial_cmp(&self, o: &Entry) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(o))
+        }
+    }
+    impl Ord for Entry {
+        fn cmp(&self, o: &Entry) -> std::cmp::Ordering {
+            (self.0, self.1).cmp(&(o.0, o.1))
+        }
     }
 
-    pub(super) type TimerId = u64;
-
-    fn sender() -> &'static Sender<Msg> {
-        static TX: OnceLock<Sender<Msg>> = OnceLock::new();
+    fn sender() -> &'static Sender<(Instant, Job)> {
+        static TX: OnceLock<Sender<(Instant, Job)>> = OnceLock::new();
         TX.get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<Msg>();
+            let (tx, rx) = mpsc::channel::<(Instant, Job)>();
             std::thread::Builder::new()
                 .name("only-h3-timer".into())
                 .spawn(move || run(&rx))
@@ -538,36 +603,23 @@ mod timer {
         })
     }
 
-    fn run(rx: &mpsc::Receiver<Msg>) {
-        let mut heap: BinaryHeap<Reverse<(Instant, u64)>> = BinaryHeap::new();
-        let mut jobs: HashMap<u64, Job> = HashMap::new();
+    fn run(rx: &mpsc::Receiver<(Instant, Job)>) {
+        let mut heap: BinaryHeap<Reverse<Entry>> = BinaryHeap::new();
+        let mut seq = 0u64;
         loop {
             let now = Instant::now();
-            while let Some(&Reverse((at, id))) = heap.peek() {
-                if at > now {
-                    break;
-                }
-                heap.pop();
-                if let Some(j) = jobs.remove(&id) {
-                    j();
-                }
-            }
-            if heap.len() > 1024 && heap.len() > 2 * jobs.len() {
-                heap.retain(|Reverse((_, id))| jobs.contains_key(id));
+            while heap.peek().is_some_and(|Reverse(e)| e.0 <= now) {
+                let Reverse(Entry(_, _, job)) = heap.pop().expect("peeked");
+                job();
             }
             let msg = match heap.peek() {
-                Some(&Reverse((at, _))) => {
-                    rx.recv_timeout(at.saturating_duration_since(Instant::now()))
-                }
+                Some(Reverse(e)) => rx.recv_timeout(e.0.saturating_duration_since(Instant::now())),
                 None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
             match msg {
-                Ok(Msg::Add(id, at, job)) => {
-                    heap.push(Reverse((at, id)));
-                    jobs.insert(id, job);
-                }
-                Ok(Msg::Cancel(id)) => {
-                    jobs.remove(&id);
+                Ok((at, job)) => {
+                    seq += 1;
+                    heap.push(Reverse(Entry(at, seq, job)));
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -575,14 +627,8 @@ mod timer {
         }
     }
 
-    pub(super) fn at(at: Instant, job: impl FnOnce() + Send + 'static) -> TimerId {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let _ = sender().send(Msg::Add(id, at, Box::new(job)));
-        id
-    }
-
-    pub(super) fn cancel(id: TimerId) {
-        let _ = sender().send(Msg::Cancel(id));
+    /// Runs `job` on the timer thread at `at`.
+    pub(super) fn at(at: Instant, job: impl FnOnce() + Send + 'static) {
+        let _ = sender().send((at, Box::new(job)));
     }
 }

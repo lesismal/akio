@@ -630,3 +630,30 @@ fn request_timeout_resets_an_unanswered_stream() {
     assert_eq!(c.send(get("/ok")).wait().unwrap().body, b"ok");
     stop(&e, t);
 }
+
+#[test]
+fn shorter_request_timeout_after_a_longer_pending_one() {
+    let mut opts = H2Options::default();
+    opts.request_timeout = Some(Duration::from_secs(10));
+    let (tx, rx) = mpsc::channel();
+    let (e, c, t) = setup(opts, move |srv| {
+        let (long, _) = srv.request();
+        let (short, _) = srv.request();
+        let _ = tx.send(rst_code(srv, short));
+        srv.respond(long, b"long");
+    });
+    let long = c.send(get("/long"));
+    thread::sleep(Duration::from_millis(50));
+    let t0 = std::time::Instant::now();
+    let r = c
+        .send(get("/short").timeout(Duration::from_millis(200)))
+        .wait();
+    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(CANCEL)
+    );
+    assert_eq!(long.wait().unwrap().body, b"long");
+    stop(&e, t);
+}

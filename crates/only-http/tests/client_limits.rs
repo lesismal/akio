@@ -453,3 +453,29 @@ fn connection_cut_midway_and_closed_idle_connections() {
     assert_eq!(srv.conns.load(Ordering::SeqCst), 2);
     stop(&e);
 }
+
+#[test]
+fn shorter_timeout_after_a_longer_one_on_the_same_connection() {
+    // The first request arms the connection's deadline timer 10 s out; the second, on the
+    // same connection, must still time out after its own 200 ms.
+    let srv = server(|mut s| {
+        if read_head(&mut s) {
+            let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+        }
+        if read_head(&mut s) {
+            wait_closed(&mut s);
+        }
+    });
+    let e = engine();
+    let c = client(&e, |o| o.request_timeout = Some(Duration::from_secs(10)));
+    assert_eq!(get(&c, &format!("{}/", srv.addr)).unwrap().body, b"ok");
+    let t0 = Instant::now();
+    let r = c
+        .send(ClientRequest::get(&format!("{}/", srv.addr)).timeout(Duration::from_millis(200)))
+        .wait_timeout(Duration::from_secs(10))
+        .unwrap();
+    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    assert_eq!(srv.conns.load(Ordering::SeqCst), 1);
+    stop(&e);
+}
