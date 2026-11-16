@@ -515,6 +515,33 @@ impl Mont {
         r
     }
 
+    /// `(bp^ep, bq^eq)` in the Montgomery forms of `p` and `q`, as two [`pow`](Self::pow)
+    /// calls: the CRT halves of an RSA key. On AVX-512 IFMA, when both moduli have the same
+    /// supported size and the exponents the same length, the two run interleaved in one
+    /// multiplication loop (their reduction chains overlap).
+    pub(crate) fn pow2(
+        p: &Self,
+        bp: &[u64],
+        ep: &[u64],
+        q: &Self,
+        bq: &[u64],
+        eq: &[u64],
+    ) -> (Vec<u64>, Vec<u64>) {
+        #[cfg(all(target_arch = "x86_64", not(miri)))]
+        {
+            let k = p.limbs();
+            if k == q.limbs()
+                && ep.len() == eq.len()
+                && ifma::enabled()
+                && ifma::digits(k).is_some()
+                && hw::avx2_enabled()
+            {
+                return ifma::pow_x2(p, bp, ep, q, bq, eq, WINDOW);
+            }
+        }
+        (p.pow(bp, ep), q.pow(bq, eq))
+    }
+
     /// `base^e` (Montgomery form) for a public exponent, square-and-multiply.
     pub(crate) fn pow_vartime(&self, base: &[u64], e: &[u64]) -> Vec<u64> {
         let mut r = self.one();
@@ -674,6 +701,57 @@ mod tests {
                             ifma::pow(&mont, b, e, WINDOW),
                             mont.pow_vartime(b, e),
                             "k={k} top={top:x}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(all(target_arch = "x86_64", not(miri)))]
+    #[test]
+    fn ifma_pow_x2_matches() {
+        if !crate::cpu::cpu_has(crate::cpu::Feature::Ifma)
+            || !crate::cpu::cpu_has(crate::cpu::Feature::Avx2)
+        {
+            return;
+        }
+        let mut rng = crate::rand::ChaChaRng::from_seed([22; 32]);
+        let mut rand_limbs = |k: usize| (0..k).map(|_| rng.next_u64()).collect::<Vec<u64>>();
+        for k in [16usize, 24, 32] {
+            for (top_p, top_q) in [(u64::MAX, 1 << 63), (5, u64::MAX), (1 << 63, 5)] {
+                let mut mp = rand_limbs(k);
+                mp[0] |= 1;
+                mp[k - 1] = top_p;
+                let mut mq = rand_limbs(k);
+                mq[0] |= 1;
+                mq[k - 1] = top_q;
+                let (p, q) = (Mont::new(&mp).unwrap(), Mont::new(&mq).unwrap());
+                let edge = |m: &Mont, raw: &[u64]| {
+                    let mut m1 = raw.to_vec();
+                    m1[0] -= 1;
+                    m.to_mont(&m1)
+                };
+                let bases = [
+                    (vec![0u64; k], q.one()),
+                    (p.one(), edge(&q, &mq)),
+                    (edge(&p, &mp), vec![0u64; k]),
+                    (p.reduce(&rand_limbs(k)), q.reduce(&rand_limbs(k))),
+                ];
+                let mut one = vec![0u64; k];
+                one[0] = 1;
+                let exps = [
+                    (vec![0u64; k], vec![u64::MAX; k]),
+                    (rand_limbs(k), rand_limbs(k)),
+                    (one.clone(), rand_limbs(k)),
+                    (vec![u64::MAX; k], one),
+                ];
+                for (bp, bq) in &bases {
+                    for (ep, eq) in &exps {
+                        assert_eq!(
+                            ifma::pow_x2(&p, bp, ep, &q, bq, eq, WINDOW),
+                            (p.pow_vartime(bp, ep), q.pow_vartime(bq, eq)),
+                            "k={k} top={top_p:x}/{top_q:x}"
                         );
                     }
                 }
