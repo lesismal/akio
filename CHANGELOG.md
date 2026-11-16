@@ -10,6 +10,17 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: RSA signing runs both CRT halves in one AVX-512 IFMA loop
+
+On x86_64 with AVX-512 IFMA, the two half-exponentiations of an RSA private-key operation (mod p
+and mod q) now advance together, one digit step of each per iteration of one assembly loop, so
+their serial reduction chains overlap instead of each waiting on its own. Zen 4, same-run A/B on a
+quiet host: RSA-2048 PKCS#1 sign 3,867 → 5,231/s (1.63× → 2.20× ring), RSA-3072 1,436 → 1,691
+(2.19×), RSA-4096 753 → 870 (2.55×); TLS 1.3 handshakes with an RSA-2048 certificate 1.45× →
+1.69× rustls + ring (docs/BENCHMARKS.md). Verification, other CPUs and keys whose primes differ in
+size are unchanged. Still constant time (no branch on secret data, checked in the disassembly).
+No public API change.
+
 ### Changed: TLS records sealed and opened without zero-filling the output first
 
 The TLS record layer no longer zero-fills the space for a record's ciphertext or plaintext
