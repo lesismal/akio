@@ -87,5 +87,5 @@ SET only:0rtt:<binder 十六进制> 1 NX PX <ttl 毫秒>  ->  "OK"：Ok(true)   
 - 慢的存储会拖慢该 I/O 线程上的 0-RTT 握手；失效的存储关闭的是 0-RTT，而不是服务。
 - ClientHello 预读只在设置了偏好的服务器上多一次客户端 Initial CRYPTO 数据的拷贝。线路上可见“以 v1
   Initial 开始、以 v2 继续”（按设计如此）。
-- 未做：异步存储接口；多把有效密钥并存的票据密钥轮换；把会话票据与 NEW_TOKEN 令牌绑定到签发它们的 QUIC 版本
-  （RFC 9369 第 5 节有此要求；这早于本决定，而兼容协商让“用切到 v2 的连接签发的票据以 v1 恢复”成为常态）。
+- 未做：异步存储接口；多把有效密钥并存的票据密钥轮换。把会话票据与 NEW_TOKEN 令牌绑定到签发它们的 QUIC
+  版本（RFC 9369 第 5 节，兼容协商让这一点很容易出错）已在 [ADR-014](014-quic-version-bound-resumption.zh-CN.md) 中完成。

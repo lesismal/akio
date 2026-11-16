@@ -110,6 +110,30 @@ Additive API (ADR-013, docs/adr/013-shared-anti-replay-and-compatible-vn.md):
   checks that its clients keep their version against servers preferring the other one.
 - Cost: none measured (BENCHMARKS.md, handshake A/B).
 
+### Changed: QUIC session tickets and tokens are bound to the QUIC version (only-tls, only-quic)
+
+RFC 9369 section 5 (ADR-014, docs/adr/014-quic-version-bound-resumption.md):
+
+- A session ticket or NEW_TOKEN token belongs to the QUIC version of the connection that issued
+  it, the negotiated one after compatible version negotiation. Servers resume only a ticket from
+  the version the client started in (another one gets a full handshake without 0-RTT) and
+  validate addresses only with tokens from it; Retry tokens are bound the same way.
+- Clients never present a v1 ticket or token in v2 or the reverse: they start in the version of
+  their newest ticket for the server (else of their token) when they speak it, instead of
+  `ClientConfig::version`. A client configured for v1 that a server preferring v2 moved to v2
+  starts its next connection in v2 and resumes with 0-RTT, without a switch.
+- Upgrading: tickets and tokens issued before are unbound and no longer accepted by QUIC servers
+  (one full, unvalidated handshake per client). TLS over TCP is unaffected (format 2 sessions
+  still decode). No public API change (the hidden `only_tls::quic` interface gains versioned
+  constructors).
+- Tests: only-tls tickets per version (offered, rejected, moved by `set_ticket_version`, unbound
+  handshakes kept apart); only-quic token checks per version; on the simulated link a client
+  moved to v2 resumes in v2 with ticket, token and 0-RTT, and a v1 ticket is not used in v2.
+  Interop: `tools/interop/quic/ngtcp2-cvn.sh` now also checks that ngtcp2 1.11's client, which
+  restarts in v1 with a ticket from a connection moved to v2, gets a full handshake, and resumes
+  with 0-RTT when it starts in v2 (0-RTT across a switch still checked, with a v1 ticket from a
+  twin port sharing the ticket key).
+
 ### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
 
 only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix

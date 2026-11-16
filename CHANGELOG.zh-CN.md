@@ -90,6 +90,25 @@ only 的所有重要变更都记录在这里。格式遵循
   `tools/interop/quic/run.sh` 检查其客户端在偏好另一版本的服务端上保持原版本。
 - 代价：未测出（BENCHMARKS.zh-CN.md，握手 A/B）。
 
+### 变更：QUIC 会话票据与令牌绑定到 QUIC 版本（only-tls、only-quic）
+
+RFC 9369 第 5 节（ADR-014，docs/adr/014-quic-version-bound-resumption.zh-CN.md）：
+
+- 会话票据或 NEW_TOKEN 令牌属于签发它的连接所用的 QUIC 版本，兼容版本协商之后即协商出的版本。服务端只用
+  客户端起始版本的票据恢复会话（其他版本的票据走不带 0-RTT 的完整握手），也只用该版本的令牌验证地址；
+  Retry 令牌同样绑定版本。
+- 客户端绝不在 v2 中出示 v1 的票据或令牌，反之亦然：只要自己支持，就以该服务端最新票据（没有票据时看
+  令牌）的版本开始，而不是 `ClientConfig::version`。配置为 v1、被偏好 v2 的服务端切到 v2 的客户端，下次
+  直接以 v2 开始并带 0-RTT 恢复，无需切换。
+- 升级：此前签发的票据与令牌未绑定版本，QUIC 服务端不再接受（每个客户端多一次完整、地址未验证的握手）。
+  TCP 上的 TLS 不受影响（格式 2 的会话仍可解码）。公开 API 无变化（隐藏的 `only_tls::quic` 接口新增
+  带版本的构造函数）。
+- 测试：only-tls 按版本区分票据（出示、拒绝、由 `set_ticket_version` 改版本、未绑定的握手互不使用）；
+  only-quic 按版本校验令牌；模拟链路上被切到 v2 的客户端以 v2 带票据、令牌与 0-RTT 恢复，v1 的票据不在
+  v2 中使用。互通：`tools/interop/quic/ngtcp2-cvn.sh` 另外检查 ngtcp2 1.11 的客户端（它对被切到 v2 的
+  连接得到的票据仍以 v1 重新开始）得到完整握手，以 v2 开始时带 0-RTT 恢复（跨切换的 0-RTT 仍有检查，
+  使用共享票据密钥的孪生端口签发的 v1 票据）。
+
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
 在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，only-crypto 的 Poly1305（因而
