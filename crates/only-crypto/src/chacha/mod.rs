@@ -34,7 +34,7 @@ pub const TAG_LEN: usize = 16;
 enum Level {
     /// The portable code (also what `ONLY_CRYPTO_PORTABLE` forces).
     Portable,
-    /// ChaCha20 on AVX2 (eight blocks), scalar Poly1305.
+    /// ChaCha20 on AVX2 (eight blocks), Poly1305 on AVX2 (four blocks, radix 2²⁶).
     Avx2,
     /// ChaCha20 on AVX-512 (sixteen or four blocks), Poly1305 on AVX-512 IFMA when present.
     Wide,
@@ -58,6 +58,10 @@ impl Level {
 /// The shortest run of whole Poly1305 blocks handed to the IFMA kernel: below it, computing the
 /// eight powers of `r` costs more than the kernel saves.
 const IFMA_MIN: usize = 256;
+
+/// The shortest run of whole Poly1305 blocks handed to the AVX2 kernel (without IFMA): below it
+/// the powers of `r` cost more than the kernel saves.
+const AVX2_MIN: usize = 512;
 
 #[inline(always)]
 fn le32(b: &[u8]) -> u32 {
@@ -317,9 +321,10 @@ pub struct Poly1305 {
     h: [u64; 3],
     buf: [u8; 16],
     pos: usize,
-    /// May use the IFMA kernel (which recomputes `r⁸ … r¹` per call: the struct stays small,
-    /// and the AEAD makes one long call).
-    wide: bool,
+    /// The widest kernels it may use: IFMA with [`Level::Wide`], AVX2 from [`Level::Avx2`]
+    /// (each recomputes its powers of `r` per call: the struct stays small, and the AEAD makes
+    /// one long call).
+    lvl: Level,
 }
 
 impl std::fmt::Debug for Poly1305 {
@@ -378,6 +383,63 @@ fn to44(h: [u64; 3]) -> [u64; 3] {
     ]
 }
 
+/// 44/44/42-bit limbs (partially reduced, each below 2⁶³) as a value in 64/64/rest words, with
+/// the bits from 2¹³⁰ folded back once (the result is below 2¹³⁰ plus a little).
+fn from44(l: [u64; 3]) -> [u64; 3] {
+    let [l0, l1, l2] = carry(l.map(u128::from));
+    // l0 < 2⁴⁴, l1 < 2⁴⁴ plus a carry, l2 < 2⁴²: the low 128 bits may carry once more.
+    let (v, c) = (u128::from(l0) + (u128::from(l1) << 44))
+        .overflowing_add(u128::from(l2 & ((1 << 40) - 1)) << 88);
+    [v as u64, (v >> 64) as u64, (l2 >> 40) + u64::from(c)]
+}
+
+/// A value in 64/64/rest words (below 2¹³⁴) as five 26-bit limbs (the top one takes the rest).
+#[inline]
+fn to26(h: [u64; 3]) -> [u64; 5] {
+    const M: u64 = 0x3ff_ffff;
+    [
+        h[0] & M,
+        (h[0] >> 26) & M,
+        ((h[0] >> 52) | (h[1] << 12)) & M,
+        (h[1] >> 14) & M,
+        (h[1] >> 40) | (h[2] << 24),
+    ]
+}
+
+/// Five limbs of about 26 bits (each below 2⁶⁰) back to 64/64/rest words, carried and with the
+/// bits from 2¹³⁰ folded back once.
+#[inline]
+fn from26(t: [u64; 5]) -> [u64; 3] {
+    const M: u64 = 0x3ff_ffff;
+    let [mut t0, mut t1, mut t2, mut t3, mut t4] = t;
+    t1 += t0 >> 26;
+    t0 &= M;
+    t2 += t1 >> 26;
+    t1 &= M;
+    t3 += t2 >> 26;
+    t2 &= M;
+    t4 += t3 >> 26;
+    t3 &= M;
+    t0 += (t4 >> 26) * 5;
+    t4 &= M;
+    // Once more from t0 (the fold can carry all the way up): t0..t3 < 2²⁶ afterwards and
+    // t4 at most 2²⁶, so the low 128 bits below do not overflow.
+    t1 += t0 >> 26;
+    t0 &= M;
+    t2 += t1 >> 26;
+    t1 &= M;
+    t3 += t2 >> 26;
+    t2 &= M;
+    t4 += t3 >> 26;
+    t3 &= M;
+    let v = u128::from(t0)
+        + (u128::from(t1) << 26)
+        + (u128::from(t2) << 52)
+        + (u128::from(t3) << 78)
+        + (u128::from(t4 & 0xff_ffff) << 104);
+    [v as u64, (v >> 64) as u64, t4 >> 24]
+}
+
 impl Poly1305 {
     /// A Poly1305 instance keyed with the one-time key `key` (`r` then `s`).
     #[must_use]
@@ -396,7 +458,7 @@ impl Poly1305 {
             h: [0; 3],
             buf: [0; 16],
             pos: 0,
-            wide: lvl == Level::Wide,
+            lvl,
         }
     }
 
@@ -486,7 +548,7 @@ impl Poly1305 {
 
     /// Whether `len` bytes of whole blocks go through the IFMA kernel.
     fn uses_ifma(&self, len: usize) -> bool {
-        self.wide && len >= IFMA_MIN && hw::ifma_enabled()
+        self.lvl == Level::Wide && len >= IFMA_MIN && hw::ifma_enabled()
     }
 
     /// The powers of `r` for the IFMA kernel.
@@ -516,8 +578,44 @@ impl Poly1305 {
                 self.h = [l0 | (l1 << 44), (l1 >> 20) | (l2 << 24), l2 >> 40];
                 data = &data[n..];
             }
+        } else if self.lvl >= Level::Avx2 && data.len() >= AVX2_MIN && hw::enabled() {
+            let n = data.len() / hw::POLY_AVX2_CHUNK * hw::POLY_AVX2_CHUNK;
+            let mut h = to26(self.h);
+            if hw::poly_avx2(&mut h, &self.avx2_powers(), &data[..n]) {
+                self.h = from26(h);
+                data = &data[n..];
+            }
         }
         self.blocks64(data, 1);
+    }
+
+    /// The powers of `r` for the AVX2 kernel (see [`hw::Avx2Powers`]).
+    fn avx2_powers(&self) -> hw::Avx2Powers {
+        let r = to44([self.r[0], self.r[1], 0]);
+        let r2 = mul44(r, r);
+        let r3 = mul44(r2, r);
+        let r4 = mul44(r2, r2);
+        let limbs = |p: [u64; 3]| {
+            let t = to26(from44(p));
+            [
+                t[0],
+                t[1],
+                t[2],
+                t[3],
+                t[4],
+                5 * t[1],
+                5 * t[2],
+                5 * t[3],
+                5 * t[4],
+            ]
+        };
+        let (p1, p2, p3, p4) = (limbs(r), limbs(r2), limbs(r3), limbs(r4));
+        let mut last = [[0u64; 4]; 9];
+        for (i, l) in last.iter_mut().enumerate() {
+            // The lanes hold blocks 0, 2, 1, 3 of the last group.
+            *l = [p4[i], p2[i], p3[i], p1[i]];
+        }
+        hw::Avx2Powers { r4: p4, last }
     }
 
     /// Absorbs `data`.
@@ -1342,7 +1440,8 @@ mod tests {
         }
         for key in &keys {
             for len in [
-                128usize, 255, 256, 257, 383, 384, 1000, 1024, 1040, 4096, 16400,
+                128usize, 255, 256, 257, 320, 383, 384, 448, 511, 512, 576, 1000, 1024, 1040, 4096,
+                16400,
             ] {
                 for fill in [None, Some(0xffu8), Some(0)] {
                     let mut msg = vec![0u8; len];
@@ -1350,18 +1449,20 @@ mod tests {
                         Some(b) => msg.fill(b),
                         None => rng.fill(&mut msg),
                     }
-                    let mut scalar = Poly1305::with_level(key, Level::Avx2);
+                    let mut scalar = Poly1305::with_level(key, Level::Portable);
                     scalar.update(&msg);
                     let want = scalar.finalize();
-                    let mut wide = Poly1305::with_level(key, Level::Wide);
-                    wide.update(&msg);
-                    assert_eq!(wide.finalize(), want, "len {len}");
-                    // Split updates (each long enough for the kernel).
-                    let mut wide = Poly1305::with_level(key, Level::Wide);
-                    for c in msg.chunks(300) {
-                        wide.update(c);
+                    for lvl in [Level::Avx2, Level::Wide] {
+                        let mut wide = Poly1305::with_level(key, lvl);
+                        wide.update(&msg);
+                        assert_eq!(wide.finalize(), want, "{lvl:?} len {len}");
+                        // Split updates (each long enough for the kernels).
+                        let mut wide = Poly1305::with_level(key, lvl);
+                        for c in msg.chunks(300) {
+                            wide.update(c);
+                        }
+                        assert_eq!(wide.finalize(), want, "{lvl:?} len {len} split");
                     }
-                    assert_eq!(wide.finalize(), want, "len {len} split");
                 }
             }
         }
