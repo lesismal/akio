@@ -122,6 +122,11 @@ longer than `Config::udp_idle_timeout` (60 s) loses data from peers until it sen
 that timeout on a TURN listener. `TurnCore` is the same server without I/O (`TurnEnv` does the
 sending), for embedding or testing. `StunServer` alone answers Binding requests.
 
+`TurnServer` splits allocations into shards by client address (about four per CPU, at least 8),
+each with its own lock: datagrams of different allocations do not contend across I/O threads,
+the expiry sweep takes one shard at a time, and the relay socket of an authenticated Allocate
+is bound before any lock is taken. The quotas stay server-wide.
+
 ## Not done yet
 
 TURN over TCP/TLS and a TURN client in `only-webrtc` (relay candidates for an `Endpoint`); ICE

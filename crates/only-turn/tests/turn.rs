@@ -292,3 +292,188 @@ fn stun_binding_on_both_servers() {
     engine.shutdown();
     engine.wait();
 }
+
+fn server_with(cfg: TurnConfig, threads: usize) -> (Arc<Engine>, TurnServer, SocketAddr) {
+    let turn = TurnServer::new(cfg);
+    let engine = Arc::new(
+        Engine::builder()
+            .listen(
+                Listener::udp("127.0.0.1:0".parse().unwrap())
+                    .threads(threads)
+                    .serve(turn.clone()),
+            )
+            .build()
+            .unwrap(),
+    );
+    turn.set_engine(&engine);
+    engine.start().unwrap();
+    let addr = engine.local_addrs()[0];
+    (engine, turn, addr)
+}
+
+fn allocate(c: &mut Client) -> Result<SocketAddr, u16> {
+    let resp = c.request(Method::ALLOCATE, |b| {
+        b.u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+    });
+    let m = Message::parse(&resp).unwrap();
+    match m.error_code() {
+        Some((code, _)) => Err(code),
+        None => Ok(m.get_xor_addr(attr::XOR_RELAYED_ADDRESS).unwrap()),
+    }
+}
+
+/// The allocation quotas hold for the whole server although allocations live in shards (one per
+/// client address hash): at, then over, the per-user and the total limit; freeing one makes room.
+#[test]
+fn quotas_span_shards() {
+    let auth = static_auth("only", [("alice", "wonderland")]);
+    let mut cfg =
+        TurnConfig::new("only", auth, "127.0.0.1".parse().unwrap()).allow_private_peers(true);
+    cfg.max_allocations_per_user = 5;
+    let (engine, turn, addr) = server_with(cfg, 1);
+    // 12 clients spread over the shards: 5 succeed, the rest hit the per-user quota.
+    let mut clients: Vec<Client> = (0..12).map(|_| Client::new(addr, "wonderland")).collect();
+    let mut ok = Vec::new();
+    for (i, c) in clients.iter_mut().enumerate() {
+        match allocate(c) {
+            Ok(_) => ok.push(i),
+            Err(code) => assert_eq!(code, 486),
+        }
+    }
+    assert_eq!(ok.len(), 5);
+    assert_eq!(turn.stats().allocations, 5);
+    // Freeing one (Refresh with lifetime 0) gives its slot back.
+    let freed = ok[0];
+    let resp = clients[freed].request(Method::REFRESH, |b| b.u32(attr::LIFETIME, 0));
+    assert_eq!(Message::parse(&resp).unwrap().class(), Class::Success);
+    assert_eq!(turn.stats().allocations, 4);
+    let next = (0..12).find(|i| !ok.contains(i)).unwrap();
+    assert!(allocate(&mut clients[next]).is_ok());
+    assert_eq!(turn.stats().allocations, 5);
+    engine.shutdown();
+    engine.wait();
+
+    // The total: two users, 3 allocations in all.
+    let auth = static_auth("only", [("alice", "wonderland")]);
+    let mut cfg =
+        TurnConfig::new("only", auth, "127.0.0.1".parse().unwrap()).allow_private_peers(true);
+    cfg.max_allocations = 3;
+    let (engine, turn, addr) = server_with(cfg, 1);
+    let codes: Vec<Result<SocketAddr, u16>> = (0..8)
+        .map(|_| allocate(&mut Client::new(addr, "wonderland")))
+        .collect();
+    assert_eq!(codes.iter().filter(|r| r.is_ok()).count(), 3);
+    assert!(codes.iter().all(|r| r.is_ok() || *r == Err(508)));
+    assert_eq!(turn.stats().allocations, 3);
+    turn.close_all();
+    assert_eq!(turn.stats().allocations, 0);
+    assert!(allocate(&mut Client::new(addr, "wonderland")).is_ok());
+    engine.shutdown();
+    engine.wait();
+}
+
+/// A token set aside by one client is claimed by another, whatever shard each lands in: the
+/// claimed relay's peer data reaches the claiming client.
+#[test]
+fn reservation_claimed_across_shards() {
+    let (engine, turn, addr) = server_with(
+        TurnConfig::new(
+            "only",
+            static_auth("only", [("alice", "wonderland")]),
+            "127.0.0.1".parse().unwrap(),
+        )
+        .allow_private_peers(true),
+        1,
+    );
+    for _ in 0..6 {
+        let mut rtp = Client::new(addr, "wonderland");
+        let resp = rtp.request(Method::ALLOCATE, |b| {
+            b.u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+                .attr(attr::EVEN_PORT, &[0x80])
+        });
+        let m = Message::parse(&resp).unwrap();
+        if m.error_code().is_some() {
+            continue; // no even/odd port pair free right now
+        }
+        let token = m.get(attr::RESERVATION_TOKEN).unwrap().to_vec();
+        let mut rtcp = Client::new(addr, "wonderland");
+        let resp = rtcp.request(Method::ALLOCATE, |b| {
+            b.u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+                .attr(attr::RESERVATION_TOKEN, &token)
+        });
+        let m = Message::parse(&resp).unwrap();
+        assert_eq!(m.class(), Class::Success, "{:?}", m.error_code());
+        let relay = m.get_xor_addr(attr::XOR_RELAYED_ADDRESS).unwrap();
+        let peer = sock();
+        let pa = peer.local_addr().unwrap();
+        let resp = rtcp.request(Method::CREATE_PERMISSION, |b| {
+            b.xor_addr(attr::XOR_PEER_ADDRESS, pa)
+        });
+        assert_eq!(Message::parse(&resp).unwrap().class(), Class::Success);
+        peer.send_to(b"to rtcp", relay).unwrap();
+        let (d, _) = recv(&rtcp.s);
+        let m = Message::parse(&d).unwrap();
+        assert_eq!(m.method(), Method::DATA);
+        assert_eq!(m.get(attr::DATA), Some(&b"to rtcp"[..]));
+        assert_eq!(m.get_xor_addr(attr::XOR_PEER_ADDRESS), Some(pa));
+    }
+    assert!(turn.stats().allocations >= 2);
+    engine.shutdown();
+    engine.wait();
+}
+
+/// Many allocations relaying at once from several listener threads (each in some shard) keep
+/// their traffic apart.
+#[test]
+fn concurrent_relays() {
+    let (engine, turn, addr) = server_with(
+        TurnConfig::new(
+            "only",
+            static_auth("only", [("alice", "wonderland")]),
+            "127.0.0.1".parse().unwrap(),
+        )
+        .allow_private_peers(true),
+        2,
+    );
+    let mut setups = Vec::new();
+    for i in 0..8u16 {
+        let mut c = Client::new(addr, "wonderland");
+        let relay = allocate(&mut c).unwrap();
+        let peer = sock();
+        let pa = peer.local_addr().unwrap();
+        let ch = 0x4000 + i;
+        let resp = c.request(Method::CHANNEL_BIND, |b| {
+            b.attr(attr::CHANNEL_NUMBER, &[(ch >> 8) as u8, ch as u8, 0, 0])
+                .xor_addr(attr::XOR_PEER_ADDRESS, pa)
+        });
+        assert_eq!(Message::parse(&resp).unwrap().class(), Class::Success);
+        setups.push((c, peer, relay, ch, i));
+    }
+    let threads: Vec<_> = setups
+        .into_iter()
+        .map(|(c, peer, relay, ch, i)| {
+            std::thread::spawn(move || {
+                for k in 0..20u8 {
+                    let payload = [i as u8, k];
+                    let mut d = ch.to_be_bytes().to_vec();
+                    d.extend_from_slice(&2u16.to_be_bytes());
+                    d.extend_from_slice(&payload);
+                    c.s.send_to(&d, c.server).unwrap();
+                    let (got, from) = recv(&peer);
+                    assert_eq!((got.as_slice(), from), (&payload[..], relay));
+                    peer.send_to(&[k, i as u8], relay).unwrap();
+                    let (back, _) = recv(&c.s);
+                    assert_eq!(&back[..2], &ch.to_be_bytes());
+                    assert_eq!(&back[4..6], &[k, i as u8]);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap();
+    }
+    let st = turn.stats();
+    assert_eq!((st.allocations, st.to_peer, st.to_client), (8, 160, 160));
+    engine.shutdown();
+    engine.wait();
+}

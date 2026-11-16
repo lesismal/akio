@@ -11,7 +11,7 @@ use std::{
 };
 
 use only::{Backend, Config, Engine, EngineRef, Listener, UringConfig};
-use only_socks::{Command, Dest, Socks, connect_proxy};
+use only_socks::{Command, Dest, Destinations, ProxyConfig, Socks, connect_proxy_with};
 
 /// A thread-per-connection echo server (independent of `only`).
 fn echo_server() -> SocketAddr {
@@ -114,15 +114,29 @@ fn backend() -> Backend {
     }
 }
 
+/// A config that lets the tests reach their loopback servers.
+fn loopback_ok() -> ProxyConfig {
+    let mut c = ProxyConfig::default();
+    c.destinations = Destinations::Any;
+    c
+}
+
+/// Starts a proxy that may dial loopback (the default policy would deny the test servers).
 fn start(socks: Option<Socks>, http: bool, er: &EngineRef) -> Arc<Engine> {
+    let socks = socks.map(|s| s.destinations(Destinations::Any));
+    start_with(socks, http.then(loopback_ok), er)
+}
+
+/// Starts a SOCKS server as given, or an HTTP CONNECT proxy with `http`.
+fn start_with(socks: Option<Socks>, http: Option<ProxyConfig>, er: &EngineRef) -> Arc<Engine> {
     let l = Listener::tcp("127.0.0.1:0".parse().unwrap())
         .backend(backend())
         .threads(2);
     let l = match socks {
         Some(s) => l.serve(s),
         None => {
-            assert!(http);
-            l.serve(only_http::serve(connect_proxy(er.clone())))
+            let cfg = http.expect("socks or http");
+            l.serve(only_http::serve(connect_proxy_with(er.clone(), cfg)))
         }
     };
     let e = Arc::new(
@@ -723,4 +737,286 @@ fn access_control_hook() {
     );
     assert_eq!(seen[2].3.as_deref(), Some("bob"));
     assert_eq!(seen[5].2, Dest::Addr(uecho));
+}
+
+/// Reads until EOF or error; panics if neither comes within `within`.
+fn expect_closed(s: &mut TcpStream, within: Duration) -> Vec<u8> {
+    s.set_read_timeout(Some(within)).unwrap();
+    let mut all = Vec::new();
+    let mut b = [0u8; 4096];
+    loop {
+        match s.read(&mut b) {
+            Ok(0) => return all,
+            Ok(n) => all.extend_from_slice(&b[..n]),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                panic!("still open after {within:?}")
+            }
+            Err(_) => return all,
+        }
+    }
+}
+
+fn http_connect(proxy: SocketAddr, target: &str) -> TcpStream {
+    let mut s = connect(proxy);
+    s.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes())
+        .unwrap();
+    s
+}
+
+fn read_head(s: &mut TcpStream) -> String {
+    let mut head = Vec::new();
+    let mut b = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        s.read_exact(&mut b).unwrap();
+        head.push(b[0]);
+    }
+    String::from_utf8_lossy(&head).into_owned()
+}
+
+/// The default policy turns away loopback targets, by address and by name, on every protocol.
+#[test]
+fn default_policy_denies_private_destinations() {
+    let echo = echo_server();
+    let er = EngineRef::new();
+    let e = start_with(Some(Socks::new(er.clone())), None, &er);
+    let proxy = e.local_addrs()[0];
+    let (mut s, r) = socks5_connect(proxy, &ipv4(echo), None);
+    assert_eq!(r[1], 2, "not allowed by ruleset");
+    expect_closed(&mut s, Duration::from_secs(5));
+    let mut t = vec![3, 9];
+    t.extend_from_slice(b"localhost");
+    t.extend_from_slice(&echo.port().to_be_bytes());
+    let (_s, r) = socks5_connect(proxy, &t, None);
+    assert!(
+        r[1] == 2 || r[1] == 4,
+        "localhost resolves to loopback: {}",
+        r[1]
+    );
+    // SOCKS4 to 127.0.0.1.
+    let SocketAddr::V4(v4) = echo else {
+        unreachable!()
+    };
+    let mut s = connect(proxy);
+    let mut req = vec![4, 1];
+    req.extend_from_slice(&echo.port().to_be_bytes());
+    req.extend_from_slice(&v4.ip().octets());
+    req.push(0);
+    s.write_all(&req).unwrap();
+    assert_eq!(read_n(&mut s, 8)[1], 0x5b);
+    // 169.254.169.254 (cloud metadata) never gets dialled.
+    let (_s, r) = socks5_connect(proxy, &[1, 169, 254, 169, 254, 0, 80], None);
+    assert_eq!(r[1], 2);
+    e.shutdown();
+    e.wait();
+
+    let er = EngineRef::new();
+    let e = start_with(None, Some(ProxyConfig::default()), &er);
+    let proxy = e.local_addrs()[0];
+    let mut s = http_connect(proxy, &echo.to_string());
+    assert!(read_head(&mut s).starts_with("HTTP/1.1 403"));
+    let mut s = http_connect(proxy, &format!("localhost:{}", echo.port()));
+    let all = String::from_utf8_lossy(&expect_closed(&mut s, Duration::from_secs(5))).into_owned();
+    assert!(
+        all.starts_with("HTTP/1.1 403") || all.starts_with("HTTP/1.1 502"),
+        "{all}"
+    );
+    e.shutdown();
+    e.wait();
+}
+
+fn timeouts(handshake: Option<Duration>, idle: Option<Duration>) -> ProxyConfig {
+    let mut c = loopback_ok();
+    c.handshake_timeout = handshake;
+    c.idle_timeout = idle;
+    c
+}
+
+/// A client that never finishes its greeting, or trickles it a byte at a time, is cut off at the
+/// handshake timeout; one that finishes in time keeps its tunnel past it.
+#[test]
+fn socks_handshake_timeout() {
+    let echo = echo_server();
+    let er = EngineRef::new();
+    let cfg = timeouts(Some(Duration::from_millis(300)), None);
+    let e = start_with(Some(Socks::new(er.clone()).config(cfg)), None, &er);
+    let proxy = e.local_addrs()[0];
+    // Silent client.
+    let mut s = connect(proxy);
+    let t0 = std::time::Instant::now();
+    expect_closed(&mut s, Duration::from_secs(5));
+    assert!(
+        t0.elapsed() >= Duration::from_millis(250),
+        "{:?}",
+        t0.elapsed()
+    );
+    // Slowloris: a byte every 50 ms of a request that would complete after 600 ms.
+    let mut s = connect(proxy);
+    let mut msg = vec![5, 1, 0, 5, 1, 0];
+    msg.extend(ipv4(echo));
+    let mut cut = false;
+    for b in msg {
+        if s.write_all(&[b]).is_err() {
+            cut = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(60));
+    }
+    if !cut {
+        let all = expect_closed(&mut s, Duration::from_secs(5));
+        // It may have got the method reply, never the CONNECT reply.
+        assert!(all.len() <= 2, "{all:?}");
+    }
+    // In time: the tunnel outlives the handshake timeout.
+    let (mut s, r) = socks5_connect(proxy, &ipv4(echo), None);
+    assert_eq!(r[1], 0);
+    thread::sleep(Duration::from_millis(700));
+    s.write_all(b"still here").unwrap();
+    assert_eq!(read_n(&mut s, 10), b"still here");
+    e.shutdown();
+    e.wait();
+}
+
+/// A tunnel that moves data keeps going past the idle timeout; a quiet one is closed.
+#[test]
+fn tunnel_idle_timeout() {
+    let echo = echo_server();
+    let idle = Duration::from_millis(400);
+    for http in [false, true] {
+        let er = EngineRef::new();
+        let cfg = timeouts(None, Some(idle));
+        let e = if http {
+            start_with(None, Some(cfg), &er)
+        } else {
+            start_with(Some(Socks::new(er.clone()).config(cfg)), None, &er)
+        };
+        let proxy = e.local_addrs()[0];
+        let mut s = if http {
+            let mut s = http_connect(proxy, &echo.to_string());
+            assert!(read_head(&mut s).starts_with("HTTP/1.1 200"));
+            s
+        } else {
+            let (s, r) = socks5_connect(proxy, &ipv4(echo), None);
+            assert_eq!(r[1], 0);
+            s
+        };
+        // Busy for well over the idle timeout.
+        for _ in 0..8 {
+            s.write_all(b"ping").unwrap();
+            assert_eq!(read_n(&mut s, 4), b"ping");
+            thread::sleep(Duration::from_millis(150));
+        }
+        // Then quiet.
+        let t0 = std::time::Instant::now();
+        expect_closed(&mut s, Duration::from_secs(5));
+        assert!(
+            t0.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            t0.elapsed()
+        );
+        e.shutdown();
+        e.wait();
+    }
+}
+
+/// HTTP CONNECT whose upstream never answers the SYN is cut off at the handshake timeout
+/// (10.255.255.1 is unroutable on most hosts; if it is refused at once, a 502 comes first).
+#[test]
+fn connect_handshake_timeout() {
+    let er = EngineRef::new();
+    let cfg = timeouts(Some(Duration::from_millis(300)), None);
+    let e = start_with(None, Some(cfg), &er);
+    let mut s = http_connect(e.local_addrs()[0], "10.255.255.1:9");
+    let all = expect_closed(&mut s, Duration::from_secs(5));
+    let all = String::from_utf8_lossy(&all);
+    assert!(all.is_empty() || all.starts_with("HTTP/1.1 502"), "{all}");
+    e.shutdown();
+    e.wait();
+}
+
+/// The default destination policy covers BIND and UDP ASSOCIATE too: a BIND for a private
+/// peer is refused, a connection from a private address is never taken, and datagrams to
+/// private addresses (given directly or by a name resolving to one) are dropped.
+#[test]
+fn default_policy_covers_bind_and_udp() {
+    let uecho = udp_echo();
+    let er = EngineRef::new();
+    let e = start_with(
+        Some(
+            Socks::new(er.clone())
+                .bind(true)
+                .bind_timeout(Duration::from_millis(400))
+                .udp_associate(true),
+        ),
+        None,
+        &er,
+    );
+    let proxy = e.local_addrs()[0];
+    // BIND expecting a loopback peer: not allowed.
+    let mut ctl = connect(proxy);
+    assert_eq!(socks5_request(&mut ctl, 2, &[1, 127, 0, 0, 1, 0, 0]).0, 2);
+    // BIND for any peer: the loopback connection that comes is not taken; timeout reply.
+    let mut ctl = connect(proxy);
+    let (rep, bound) = socks5_request(&mut ctl, 2, &[1, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(rep, 0);
+    let _private_peer = connect(bound);
+    assert_eq!(
+        read_reply(&mut ctl).0,
+        1,
+        "private peer refused, then timeout"
+    );
+    // UDP ASSOCIATE itself is fine (the declared address is the client's own), but datagrams
+    // to loopback are dropped, by address and by name.
+    let mut ctl = connect(proxy);
+    let (rep, relay) = socks5_request(&mut ctl, 3, &[1, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(rep, 0);
+    let u = client_udp();
+    u.send_to(&udp_datagram(0, &ipv4(uecho), b"no"), relay)
+        .unwrap();
+    assert!(recv(&u).is_none(), "relayed to loopback");
+    let mut named = vec![3, 9];
+    named.extend_from_slice(b"localhost");
+    named.extend_from_slice(&uecho.port().to_be_bytes());
+    u.send_to(&udp_datagram(0, &named, b"no"), relay).unwrap();
+    assert!(
+        recv(&u).is_none(),
+        "relayed to a name resolving to loopback"
+    );
+    drop(ctl);
+    e.shutdown();
+    e.wait();
+}
+
+/// The session timeouts hand over to UDP ASSOCIATE's own idle timeout: an association whose
+/// datagrams flow outlives the (shorter) tunnel idle timeout, since its traffic never touches
+/// the control connection.
+#[test]
+fn udp_association_is_not_cut_by_session_timeouts() {
+    let uecho = udp_echo();
+    let er = EngineRef::new();
+    let cfg = timeouts(
+        Some(Duration::from_millis(300)),
+        Some(Duration::from_millis(300)),
+    );
+    let e = start_with(
+        Some(Socks::new(er.clone()).config(cfg).udp_associate(true)),
+        None,
+        &er,
+    );
+    let mut ctl = connect(e.local_addrs()[0]);
+    let (rep, relay) = socks5_request(&mut ctl, 3, &[1, 0, 0, 0, 0, 0, 0]);
+    assert_eq!(rep, 0);
+    let u = client_udp();
+    for _ in 0..6 {
+        u.send_to(&udp_datagram(0, &ipv4(uecho), b"alive"), relay)
+            .unwrap();
+        assert!(recv(&u).expect("association alive").ends_with(b"alive"));
+        thread::sleep(Duration::from_millis(200));
+    }
+    e.shutdown();
+    e.wait();
 }

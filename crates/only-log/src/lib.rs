@@ -68,7 +68,7 @@ mod loggers;
 mod macros;
 
 pub use filter::{ENV_VAR, Filter, ParseFilterError};
-pub use loggers::{FmtLogger, StderrLogger, init, init_from_env};
+pub use loggers::{DEFAULT_QUEUE_LINES, FmtLogger, StderrLogger, init, init_from_env};
 
 // ---- levels ---------------------------------------------------------------------------------
 

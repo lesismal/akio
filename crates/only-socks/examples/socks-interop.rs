@@ -6,7 +6,7 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use only::{Engine, EngineRef, Listener};
-use only_socks::Socks;
+use only_socks::{Destinations, Socks};
 
 fn main() -> std::io::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -16,7 +16,10 @@ fn main() -> std::io::Result<()> {
         .parse()
         .expect("listen address");
     let er = EngineRef::new();
+    // The interop clients relay to echo servers on 127.0.0.1, which the default destination
+    // policy (public addresses only) refuses: allow any, as only a test proxy should.
     let mut socks = Socks::new(er.clone())
+        .destinations(Destinations::Any)
         .bind(true)
         .bind_timeout(Duration::from_secs(10))
         .udp_associate(true)

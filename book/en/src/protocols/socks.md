@@ -26,6 +26,41 @@ when one side cannot keep up, reading from the other side pauses until it drains
 Run `cargo run -p only-socks --example guide-socks`: it performs a SOCKS5 handshake with
 username/password by hand and relays through to a local echo server.
 
+## Limits and destination policy
+
+`ProxyConfig` (`Socks::config`, `connect_proxy_with`) bounds every session. A configuration
+that sets nothing is still bounded:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `handshake_timeout` | 10 s | From accepting the client until its upstream is connected (greeting, authentication, request, name resolution, connect). Past it the client is closed, so a client that never finishes (or trickles) its request cannot hold a session. |
+| `idle_timeout` | 5 min | A tunnel that moved no byte in either direction for this long is closed, both ends. |
+| `destinations` | `Destinations::PublicOnly` | Which addresses may be dialled, checked after name resolution. |
+
+- `Destinations::PublicOnly` denies loopback, private (RFC 1918, IPv6 ULA), carrier-grade NAT,
+  link-local (including the `169.254.169.254` cloud metadata service), multicast, broadcast and
+  reserved targets, and their IPv4-mapped, 6to4 and NAT64 forms. A proxy that others can reach
+  would otherwise be a way into the networks behind it (server-side request forgery, an open
+  relay into `localhost`). SOCKS5 answers `2` (not allowed by ruleset), SOCKS4 `0x5b`,
+  `CONNECT` 403. A host name that resolves to a denied address is denied too.
+  **This is a default change**: earlier versions dialled any destination; set
+  `Destinations::Any` to keep that.
+- `Destinations::Any` restores the old behaviour, for a proxy whose purpose is to reach a
+  private network (a bastion); restrict who can use it (`auth`, a listener on a trusted
+  interface). `Destinations::Custom(f)` takes your own rule.
+- Data a client sends before its upstream is connected is held up to 256 KiB (the relay's
+  pause threshold); more closes the client.
+- `CONNECT` targets are resolved on a small bounded resolver pool (4 threads, 1024 queued
+  requests; 503 when full), never on the I/O thread.
+- The policy covers every command: `CONNECT`, a `BIND`'s expected peer (a refused address gets
+  reply 2, and a connection from a denied address is never accepted) and each `UDP ASSOCIATE`
+  datagram's destination (checked on the resolved address; denied ones are dropped). It applies
+  before and in addition to the `allow` hook.
+- After a `BIND`'s first reply the handshake timeout no longer applies (`bind_timeout` bounds
+  the wait, then the idle timeout the relay); once a `UDP ASSOCIATE` is set up, the session
+  timeouts stop and `udp_idle_timeout` governs the association.
+- Stalled readers are also bounded by the engine's `Config::write_timeout`.
+
 ## BIND and UDP ASSOCIATE
 
 Both SOCKS5 commands are off by default (they open ports on the proxy host on a client's

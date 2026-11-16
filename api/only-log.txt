@@ -131,11 +131,13 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_log::Filter
 impl core::panic::unwind_safe::UnwindSafe for only_log::Filter
 pub struct only_log::FmtLogger
 impl only_log::FmtLogger
+pub fn only_log::FmtLogger::dropped(&self) -> u64
 pub fn only_log::FmtLogger::filter(self, only_log::Filter) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::format(&self, &only_log::Record<'_>) -> alloc::string::String
 pub fn only_log::FmtLogger::init(self, only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>
 pub fn only_log::FmtLogger::init_filtered(self, only_log::Filter) -> core::result::Result<(), only_log::SetLoggerError>
 pub fn only_log::FmtLogger::new() -> only_log::FmtLogger
+pub fn only_log::FmtLogger::non_blocking(self, usize) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::stdout(self) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::target_level(self, impl core::convert::Into<alloc::string::String>, only_log::LevelFilter) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::without_timestamps(self) -> only_log::FmtLogger
@@ -312,6 +314,7 @@ impl<'a> !core::marker::Sync for only_log::Value<'a>
 impl<'a> core::marker::Unpin for only_log::Value<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for only_log::Value<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for only_log::Value<'a>
+pub const only_log::DEFAULT_QUEUE_LINES: usize
 pub const only_log::ENV_VAR: &str
 pub const only_log::STATIC_MAX_LEVEL: only_log::LevelFilter
 pub trait only_log::Logger: core::marker::Send + core::marker::Sync

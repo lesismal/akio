@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use only_crypto::hash::Sha1;
@@ -27,6 +28,11 @@ pub trait TurnEnv {
     fn open_relay(&mut self, client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr>;
     /// Closes the relay socket bound at `relay`.
     fn close_relay(&mut self, relay: SocketAddr);
+    /// The relay bound at `relay`, opened earlier (possibly through another `TurnEnv` of the
+    /// same server, see `EVEN-PORT`) and set aside, now belongs to an allocation of this one.
+    fn adopt_relay(&mut self, relay: SocketAddr) {
+        let _ = relay;
+    }
 }
 
 /// Decides which peers clients may relay to (see [`TurnConfig::peer_allowed`]).
@@ -204,70 +210,69 @@ pub struct TurnStats {
     pub auth_failures: u64,
 }
 
-/// The TURN server state machine (see the module docs).
-pub struct TurnCore {
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What the shards of one server share: the immutable settings and nonce key (read without a
+/// lock), and the server-wide quotas and `EVEN-PORT` reservations (locked only by Allocate,
+/// allocation removal and the sweep, never per datagram).
+pub(crate) struct Shared {
     cfg: TurnConfig,
-    allocs: HashMap<SocketAddr, Allocation>,
-    by_relay: HashMap<SocketAddr, SocketAddr>,
-    /// Relays set aside by `EVEN-PORT` with the R bit, by `RESERVATION-TOKEN`.
-    reservations: HashMap<[u8; 8], (SocketAddr, Instant)>,
     nonce_key: [u8; 32],
     epoch: Instant,
-    stats: TurnStats,
+    /// Allocations open in all shards.
+    allocations: AtomicUsize,
+    /// Allocations open per username (only users with at least one).
+    per_user: Mutex<HashMap<String, usize>>,
+    /// Relays set aside by `EVEN-PORT` with the R bit, by `RESERVATION-TOKEN`: the token may
+    /// come from another 5-tuple, which may live in another shard.
+    reservations: Mutex<HashMap<[u8; 8], (SocketAddr, Instant)>>,
 }
 
-impl fmt::Debug for TurnCore {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TurnCore")
-            .field("allocations", &self.allocs.len())
-            .finish_non_exhaustive()
-    }
-}
-
-struct Reject(u16, &'static str);
-
-/// How long a port reserved by `EVEN-PORT` waits for its `RESERVATION-TOKEN` (RFC 8656: about
-/// 30 seconds).
-const RESERVATION_LIFETIME: Duration = Duration::from_secs(30);
-
-impl TurnCore {
-    /// A server with `cfg`.
-    pub fn new(cfg: TurnConfig) -> TurnCore {
+impl Shared {
+    pub(crate) fn new(cfg: TurnConfig) -> Shared {
         let mut nonce_key = [0u8; 32];
         crate::fill_random(&mut nonce_key);
-        TurnCore {
+        Shared {
             cfg,
-            allocs: HashMap::new(),
-            by_relay: HashMap::new(),
-            reservations: HashMap::new(),
             nonce_key,
             epoch: Instant::now(),
-            stats: TurnStats::default(),
+            allocations: AtomicUsize::new(0),
+            per_user: Mutex::new(HashMap::new()),
+            reservations: Mutex::new(HashMap::new()),
         }
     }
 
-    /// The settings.
-    pub fn config(&self) -> &TurnConfig {
+    pub(crate) fn config(&self) -> &TurnConfig {
         &self.cfg
     }
 
-    /// Counters.
-    pub fn stats(&self) -> TurnStats {
-        let mut s = self.stats;
-        s.allocations = self.allocs.len();
-        s
-    }
-
-    /// The relayed address (as told to the client) of `client`'s allocation.
-    pub fn relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
-        self.allocs.get(&client).map(|a| a.public)
-    }
-
-    fn peer_ok(&self, peer: SocketAddr) -> bool {
-        if let Some(f) = &self.cfg.peer_allowed {
-            return f(peer);
+    /// Takes one allocation of the server-wide and per-user quotas.
+    fn reserve(&self, user: &str) -> Result<(), Reject> {
+        let mut users = lock(&self.per_user);
+        if self.allocations.load(Ordering::Relaxed) >= self.cfg.max_allocations {
+            return Err(Reject(508, "Insufficient Capacity"));
         }
-        self.cfg.allow_private_peers || !denied_by_default(peer.ip())
+        let n = users.get(user).copied().unwrap_or(0);
+        if n >= self.cfg.max_allocations_per_user {
+            return Err(Reject(486, "Allocation Quota Reached"));
+        }
+        users.insert(user.to_owned(), n + 1);
+        self.allocations.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Gives back what [`reserve`](Self::reserve) took.
+    fn release(&self, user: &str) {
+        let mut users = lock(&self.per_user);
+        if let Some(n) = users.get_mut(user) {
+            *n -= 1;
+            if *n == 0 {
+                users.remove(user);
+            }
+        }
+        self.allocations.fetch_sub(1, Ordering::Relaxed);
     }
 
     fn nonce(&self, now: Instant, client: SocketAddr) -> String {
@@ -296,6 +301,116 @@ impl TurnCore {
         };
         let now_s = now.saturating_duration_since(self.epoch).as_secs();
         exp >= now_s && nonce[16..] == self.nonce_mac(exp, client)
+    }
+
+    /// Whether `data` is an authenticated Allocate that asks for a relay on any port (no
+    /// `EVEN-PORT`, no `RESERVATION-TOKEN`): the server binds that relay socket before taking
+    /// the shard's lock. Only a client holding valid credentials and a nonce issued to its own
+    /// address passes, so this cannot be used to make the server bind sockets for free.
+    pub(crate) fn authenticated_allocate(
+        &self,
+        now: Instant,
+        client: SocketAddr,
+        data: &[u8],
+    ) -> bool {
+        if !is_stun(data) {
+            return false;
+        }
+        let Ok(m) = Message::parse(data) else {
+            return false;
+        };
+        if m.class() != Class::Request
+            || m.method() != Method::ALLOCATE
+            || m.has(attr::EVEN_PORT)
+            || m.has(attr::RESERVATION_TOKEN)
+            || !m
+                .get(attr::REQUESTED_TRANSPORT)
+                .is_some_and(|t| t.len() == 4 && t[0] == 17)
+        {
+            return false;
+        }
+        let (Some(user), Some(realm), Some(nonce)) = (
+            m.get_str(attr::USERNAME),
+            m.get_str(attr::REALM),
+            m.get_str(attr::NONCE),
+        ) else {
+            return false;
+        };
+        realm == self.cfg.realm
+            && self.nonce_valid(now, client, nonce)
+            && (self.cfg.auth)(user, realm).is_some_and(|k| m.check_integrity(&k))
+    }
+}
+
+/// The TURN server state machine (see the module docs).
+pub struct TurnCore {
+    shared: Arc<Shared>,
+    allocs: HashMap<SocketAddr, Allocation>,
+    by_relay: HashMap<SocketAddr, SocketAddr>,
+    stats: TurnStats,
+}
+
+impl fmt::Debug for TurnCore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TurnCore")
+            .field("allocations", &self.allocs.len())
+            .finish_non_exhaustive()
+    }
+}
+
+struct Reject(u16, &'static str);
+
+/// How long a port reserved by `EVEN-PORT` waits for its `RESERVATION-TOKEN` (RFC 8656: about
+/// 30 seconds).
+const RESERVATION_LIFETIME: Duration = Duration::from_secs(30);
+
+impl TurnCore {
+    /// A server with `cfg`.
+    pub fn new(cfg: TurnConfig) -> TurnCore {
+        TurnCore::shard(Arc::new(Shared::new(cfg)))
+    }
+
+    /// One shard of a server whose shards share `shared` (quotas, nonce key, reservations).
+    pub(crate) fn shard(shared: Arc<Shared>) -> TurnCore {
+        TurnCore {
+            shared,
+            allocs: HashMap::new(),
+            by_relay: HashMap::new(),
+            stats: TurnStats::default(),
+        }
+    }
+
+    /// The settings.
+    pub fn config(&self) -> &TurnConfig {
+        &self.shared.cfg
+    }
+
+    /// Counters.
+    pub fn stats(&self) -> TurnStats {
+        let mut s = self.stats;
+        s.allocations = self.allocs.len();
+        s
+    }
+
+    /// The relayed address (as told to the client) of `client`'s allocation.
+    pub fn relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
+        self.allocs.get(&client).map(|a| a.public)
+    }
+
+    fn peer_ok(&self, peer: SocketAddr) -> bool {
+        let cfg = &self.shared.cfg;
+        if let Some(f) = &cfg.peer_allowed {
+            return f(peer);
+        }
+        cfg.allow_private_peers || !denied_by_default(peer.ip())
+    }
+
+    fn nonce(&self, now: Instant, client: SocketAddr) -> String {
+        self.shared.nonce(now, client)
+    }
+
+    fn nonce_valid(&self, now: Instant, client: SocketAddr, nonce: &str) -> bool {
+        self.shared.nonce_valid(now, client, nonce)
     }
 
     /// A datagram from `client` on the listening socket: a STUN request or indication, or
@@ -436,16 +551,21 @@ impl TurnCore {
     /// Frees expired allocations (closing their relays), permissions and channels. Call it
     /// about once a second.
     pub fn handle_timeout(&mut self, now: Instant, env: &mut dyn TurnEnv) {
-        let stale: Vec<[u8; 8]> = self
-            .reservations
-            .iter()
-            .filter(|(_, (_, e))| *e <= now)
-            .map(|(t, _)| *t)
-            .collect();
-        for t in stale {
-            if let Some((r, _)) = self.reservations.remove(&t) {
-                env.close_relay(r);
-            }
+        let stale: Vec<SocketAddr> = {
+            let mut res = lock(&self.shared.reservations);
+            let mut out = Vec::new();
+            res.retain(|_, (r, e)| {
+                if *e <= now {
+                    out.push(*r);
+                    false
+                } else {
+                    true
+                }
+            });
+            out
+        };
+        for r in stale {
+            env.close_relay(r);
         }
         let dead: Vec<SocketAddr> = self
             .allocs
@@ -474,7 +594,11 @@ impl TurnCore {
 
     /// Removes every allocation (closing the relays): server shutdown.
     pub fn close_all(&mut self, env: &mut dyn TurnEnv) {
-        for (_, (r, _)) in self.reservations.drain() {
+        let res: Vec<SocketAddr> = lock(&self.shared.reservations)
+            .drain()
+            .map(|(_, (r, _))| r)
+            .collect();
+        for r in res {
             env.close_relay(r);
         }
         let all: Vec<SocketAddr> = self.allocs.keys().copied().collect();
@@ -486,13 +610,14 @@ impl TurnCore {
     fn remove(&mut self, client: SocketAddr, env: &mut dyn TurnEnv) {
         if let Some(a) = self.allocs.remove(&client) {
             self.by_relay.remove(&a.relay);
+            self.shared.release(&a.user);
             env.close_relay(a.relay);
         }
     }
 
     fn base(&self, m: &Message<'_>, class: Class) -> MessageBuilder {
         let mut b = MessageBuilder::response(m, class);
-        if let Some(s) = &self.cfg.software {
+        if let Some(s) = &self.shared.cfg.software {
             b = b.attr(attr::SOFTWARE, s.as_bytes());
         }
         b
@@ -525,7 +650,7 @@ impl TurnCore {
         let b = self
             .base(m, Class::Error)
             .error(code, reason)
-            .attr(attr::REALM, self.cfg.realm.as_bytes())
+            .attr(attr::REALM, self.shared.cfg.realm.as_bytes())
             .attr(attr::NONCE, self.nonce(now, client).as_bytes());
         Self::finish(b, m, None)
     }
@@ -574,8 +699,9 @@ impl TurnCore {
             env.send_to_client(client, &out);
             return;
         }
-        let key = (self.cfg.auth)(user, realm);
-        let Some(key) = key.filter(|k| realm == self.cfg.realm && m.check_integrity(k)) else {
+        let key = (self.shared.cfg.auth)(user, realm);
+        let Some(key) = key.filter(|k| realm == self.shared.cfg.realm && m.check_integrity(k))
+        else {
             let out = self.challenge(now, client, m, 401, "Unauthorized");
             env.send_to_client(client, &out);
             return;
@@ -648,51 +774,84 @@ impl TurnCore {
                 Some(2) => true,
                 _ => return Err(Reject(440, "Address Family not Supported")),
             };
-            if want_v6 != self.cfg.relay_ip.is_ipv6() {
+            if want_v6 != self.shared.cfg.relay_ip.is_ipv6() {
                 return Err(Reject(440, "Address Family not Supported"));
             }
         }
-        if self.allocs.len() >= self.cfg.max_allocations {
-            return Err(Reject(508, "Insufficient Capacity"));
+        let token: Option<[u8; 8]> = match token {
+            Some(t) => Some(t.try_into().map_err(|_| Reject(400, "Bad Request"))?),
+            None => None,
+        };
+        // Server-wide and per-user quotas: O(1), shared by every shard.
+        self.shared.reserve(user)?;
+        match self.open_for(now, client, token, even, env) {
+            Ok((relay, reserved)) => Ok(self.allocated(now, client, m, user, key, relay, reserved)),
+            Err(r) => {
+                self.shared.release(user);
+                Err(r)
+            }
         }
-        if self.allocs.values().filter(|a| a.user == user).count()
-            >= self.cfg.max_allocations_per_user
-        {
-            return Err(Reject(486, "Allocation Quota Reached"));
-        }
+    }
+
+    /// The relay socket of a new allocation, and the token of the port set aside with it.
+    fn open_for(
+        &self,
+        now: Instant,
+        client: SocketAddr,
+        token: Option<[u8; 8]>,
+        even: Option<&[u8]>,
+        env: &mut dyn TurnEnv,
+    ) -> Result<(SocketAddr, Option<[u8; 8]>), Reject> {
         let full = || Reject(508, "Insufficient Capacity");
-        let mut reserved = None;
-        let relay = match (token, even) {
+        match (token, even) {
             // The port an earlier EVEN-PORT allocation set aside.
             (Some(t), _) => {
-                let t: [u8; 8] = t.try_into().map_err(|_| Reject(400, "Bad Request"))?;
-                match self.reservations.remove(&t) {
-                    Some((r, exp)) if exp > now => r,
+                let taken = lock(&self.shared.reservations).remove(&t);
+                match taken {
+                    Some((r, exp)) if exp > now => {
+                        env.adopt_relay(r);
+                        Ok((r, None))
+                    }
                     Some((r, _)) => {
                         env.close_relay(r);
-                        return Err(full());
+                        Err(full())
                     }
-                    None => return Err(full()),
+                    None => Err(full()),
                 }
             }
             (None, Some(e)) => {
                 let reserve = e.first().is_some_and(|b| b & 0x80 != 0);
                 let (r, next) = self.open_even(client, reserve, env).ok_or_else(full)?;
+                let mut reserved = None;
                 if let Some(next) = next {
                     let mut t = [0u8; 8];
                     crate::fill_random(&mut t);
-                    self.reservations
-                        .insert(t, (next, now + RESERVATION_LIFETIME));
+                    lock(&self.shared.reservations).insert(t, (next, now + RESERVATION_LIFETIME));
                     reserved = Some(t);
                 }
-                r
+                Ok((r, reserved))
             }
             (None, None) => env
-                .open_relay(client, SocketAddr::new(self.cfg.relay_ip, 0))
-                .map_err(|_| full())?,
-        };
+                .open_relay(client, SocketAddr::new(self.shared.cfg.relay_ip, 0))
+                .map(|r| (r, None))
+                .map_err(|_| full()),
+        }
+    }
+
+    /// Records a new allocation on `relay` and builds its success response.
+    #[allow(clippy::too_many_arguments)]
+    fn allocated(
+        &mut self,
+        now: Instant,
+        client: SocketAddr,
+        m: &Message<'_>,
+        user: &str,
+        key: [u8; 16],
+        relay: SocketAddr,
+        reserved: Option<[u8; 8]>,
+    ) -> MessageBuilder {
         let public = SocketAddr::new(
-            self.cfg.public_ip.unwrap_or_else(|| relay.ip()),
+            self.shared.cfg.public_ip.unwrap_or_else(|| relay.ip()),
             relay.port(),
         );
         let life = self.lifetime(m);
@@ -719,7 +878,7 @@ impl TurnCore {
         if let Some(t) = reserved {
             b = b.attr(attr::RESERVATION_TOKEN, &t);
         }
-        Ok(b)
+        b
     }
 
     /// Opens a relay on an even port and, with `reserve`, the odd port above it too (RFC 8656
@@ -732,7 +891,7 @@ impl TurnCore {
     ) -> Option<(SocketAddr, Option<SocketAddr>)> {
         for _ in 0..32 {
             let r = env
-                .open_relay(client, SocketAddr::new(self.cfg.relay_ip, 0))
+                .open_relay(client, SocketAddr::new(self.shared.cfg.relay_ip, 0))
                 .ok()?;
             if r.port() % 2 != 0 || r.port() == u16::MAX {
                 env.close_relay(r);
@@ -752,9 +911,9 @@ impl TurnCore {
     fn lifetime(&self, m: &Message<'_>) -> Duration {
         match m.get_u32(attr::LIFETIME) {
             Some(s) => Duration::from_secs(u64::from(s))
-                .max(self.cfg.default_lifetime)
-                .min(self.cfg.max_lifetime),
-            None => self.cfg.default_lifetime,
+                .max(self.shared.cfg.default_lifetime)
+                .min(self.shared.cfg.max_lifetime),
+            None => self.shared.cfg.default_lifetime,
         }
     }
 
@@ -792,7 +951,7 @@ impl TurnCore {
             return Err(Reject(400, "Bad Request"));
         }
         let peers: Vec<SocketAddr> = peers.into_iter().flatten().collect();
-        let v6 = self.cfg.relay_ip.is_ipv6();
+        let v6 = self.shared.cfg.relay_ip.is_ipv6();
         if peers.iter().any(|p| p.is_ipv6() != v6) {
             return Err(Reject(443, "Peer Address Family Mismatch"));
         }
@@ -802,7 +961,8 @@ impl TurnCore {
         {
             return Err(Reject(403, "Forbidden"));
         }
-        let (max, life) = (self.cfg.max_permissions, self.cfg.permission_lifetime);
+        let cfg = &self.shared.cfg;
+        let (max, life) = (cfg.max_permissions, cfg.permission_lifetime);
         let Some(a) = self.allocs.get_mut(&client) else {
             return Err(Reject(437, "Allocation Mismatch"));
         };
@@ -836,13 +996,13 @@ impl TurnCore {
         let Some(peer) = m.get_xor_addr(attr::XOR_PEER_ADDRESS) else {
             return Err(Reject(400, "Bad Request"));
         };
-        if peer.is_ipv6() != self.cfg.relay_ip.is_ipv6() {
+        if peer.is_ipv6() != self.shared.cfg.relay_ip.is_ipv6() {
             return Err(Reject(443, "Peer Address Family Mismatch"));
         }
         if !self.peer_ok(peer) {
             return Err(Reject(403, "Forbidden"));
         }
-        let cfg = &self.cfg;
+        let cfg = &self.shared.cfg;
         let (maxc, maxp) = (cfg.max_channels, cfg.max_permissions);
         let (cl, pl) = (cfg.channel_lifetime, cfg.permission_lifetime);
         let Some(a) = self.allocs.get_mut(&client) else {
@@ -884,8 +1044,10 @@ impl TurnCore {
 impl TurnCore {
     /// Fixed nonce key and clock origin, so fuzz seeds can carry valid nonces.
     pub(crate) fn fuzz_reset(&mut self, start: Instant) {
-        self.nonce_key = [0x42; 32];
-        self.epoch = start;
+        let mut sh = Shared::new(self.shared.cfg.clone());
+        sh.nonce_key = [0x42; 32];
+        sh.epoch = start;
+        self.shared = Arc::new(sh);
     }
 
     #[cfg(test)]
@@ -923,4 +1085,72 @@ fn unknown_required(m: &Message<'_>) -> Option<Vec<u8>> {
         .flat_map(u16::to_be_bytes)
         .collect();
     (!unknown.is_empty()).then_some(unknown)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzzing::{CLIENT, REALM, USER, turn_core};
+    use crate::stun::{long_term_key, transaction_id};
+
+    fn allocate(core: &TurnCore, now: Instant, password: &str, nonce: Option<&str>) -> Vec<u8> {
+        let mut b = MessageBuilder::new(Method::ALLOCATE, Class::Request, transaction_id())
+            .u32(attr::REQUESTED_TRANSPORT, 17 << 24)
+            .attr(attr::USERNAME, USER.0.as_bytes())
+            .attr(attr::REALM, REALM.as_bytes());
+        let n = nonce.map_or_else(|| core.fuzz_nonce(now, CLIENT), str::to_owned);
+        b = b.attr(attr::NONCE, n.as_bytes());
+        b.integrity(&long_term_key(USER.0, REALM, password)).build()
+    }
+
+    /// Only an Allocate with a valid nonce for its own address and valid credentials gets a
+    /// relay bound before the shard is locked.
+    #[test]
+    fn prebind_needs_authentication() {
+        let now = Instant::now();
+        let core = turn_core(now);
+        let sh = &core.shared;
+        assert!(sh.authenticated_allocate(now, CLIENT, &allocate(&core, now, USER.1, None)));
+        assert!(!sh.authenticated_allocate(now, CLIENT, &allocate(&core, now, "nope", None)));
+        let forged = "0".repeat(32);
+        assert!(!sh.authenticated_allocate(
+            now,
+            CLIENT,
+            &allocate(&core, now, USER.1, Some(&forged))
+        ));
+        // A nonce issued to another address.
+        let other: SocketAddr = "10.9.9.9:1".parse().unwrap();
+        assert!(!sh.authenticated_allocate(now, other, &allocate(&core, now, USER.1, None)));
+        // Expired nonce.
+        let later = now + Duration::from_secs(3600);
+        assert!(!sh.authenticated_allocate(later, CLIENT, &allocate(&core, now, USER.1, None)));
+        // Not an Allocate.
+        let b = MessageBuilder::new(Method::REFRESH, Class::Request, transaction_id()).build();
+        assert!(!sh.authenticated_allocate(now, CLIENT, &b));
+        assert!(!sh.authenticated_allocate(now, CLIENT, b"\x40\x00\x00\x00"));
+    }
+
+    /// The per-user count is kept in a map (not by scanning allocations): taken at, refused over
+    /// the limit, and given back.
+    #[test]
+    fn quota_accounting() {
+        let mut cfg = TurnConfig::new(
+            REALM,
+            crate::static_auth(REALM, [USER]),
+            "192.0.2.1".parse().unwrap(),
+        );
+        cfg.max_allocations_per_user = 2;
+        let sh = Shared::new(cfg);
+        assert!(sh.reserve("u").is_ok());
+        assert!(sh.reserve("u").is_ok());
+        assert_eq!(sh.reserve("u").err().map(|r| r.0), Some(486));
+        assert!(sh.reserve("v").is_ok());
+        sh.release("u");
+        assert!(sh.reserve("u").is_ok());
+        sh.release("u");
+        sh.release("u");
+        sh.release("v");
+        assert!(lock(&sh.per_user).is_empty());
+        assert_eq!(sh.allocations.load(Ordering::Relaxed), 0);
+    }
 }

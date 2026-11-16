@@ -28,7 +28,7 @@ use std::{
 use only::{Acceptor, Conn, Handler, UdpBinding};
 use only_core::ConnInner;
 
-use crate::{Allow, Command, Dest, Request};
+use crate::{Allow, Command, Dest, Destinations, Request};
 
 /// Remote addresses remembered per association (for filtering their answers).
 const MAX_SENT_TO: usize = 4096;
@@ -135,6 +135,8 @@ pub(crate) struct Assoc {
     client_tcp: SocketAddr,
     user: Option<String>,
     allow: Option<Allow>,
+    /// Which addresses datagrams may be sent to (checked after resolution).
+    destinations: Destinations,
     /// Port the request said the client sends from (0: learn it from the first datagram).
     declared_port: u16,
     /// The client's UDP address, once known.
@@ -158,6 +160,7 @@ impl Assoc {
         user: Option<String>,
         allow: Option<Allow>,
         declared: Option<SocketAddr>,
+        destinations: Destinations,
         sweeper: &Arc<Sweeper>,
         idle: Duration,
     ) -> std::io::Result<(Arc<Assoc>, SocketAddr)> {
@@ -174,6 +177,7 @@ impl Assoc {
             client_tcp,
             user,
             allow,
+            destinations,
             declared_port,
             client: Mutex::new(None),
             binding: OnceLock::new(),
@@ -243,6 +247,10 @@ impl Assoc {
     fn send_out(&self, to: SocketAddr, payload: &[u8]) {
         let Some(b) = self.binding.get() else { return };
         let to = canon(to);
+        // The destination policy, on the address actually used (after name resolution).
+        if !self.destinations.allows(to) {
+            return;
+        }
         // The socket's family decides how the address is written.
         let wire = match (b.local_addr(), to.ip()) {
             (SocketAddr::V6(_), IpAddr::V4(v4)) => {

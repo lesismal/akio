@@ -19,6 +19,12 @@ service (paths ending in `announce` and `scrape`, compact and dictionary peer li
 `udp()` the acceptor of a UDP listener (BEP 15; connection IDs are an HMAC of a secret, the
 minute and the client address, so nothing is kept per client).
 
+The store is bounded: `TrackerConfig::max_swarms` (100 000) torrents at once, beyond which an
+announce for a new one gets the failure reason `tracker full`, and `max_peers_per_swarm`
+(1000) peers per torrent, beyond which a newcomer still gets a peer list but is not recorded.
+A swarm is dropped when its last peer leaves or expires (`peer_ttl`, 1 h); expiry costs O(1)
+per announce instead of a scan of the swarm, and the store is split into 16 locked shards.
+
 ```rust,ignore
 {{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
@@ -44,6 +50,8 @@ listener shared by uTP and the DHT through a `port::UdpPort`. Trackers go throug
 `tracker::TrackerClient` on the same engine (only-http for HTTP(S), `dial_udp` sockets for
 UDP). Storage reads and writes and every SHA-1 check run on a logical pool (`only-pool`), never
 on an I/O thread.
+Tracker host names are resolved off the calling thread (`only::dns`, for UDP trackers and,
+through only-http's client, HTTP ones), never on the I/O thread that triggered an announce.
 
 - **Torrents** come from a `MetaInfo` (`add_torrent`) or a magnet link (`add_magnet`, the info
   dictionary fetched from peers with ut_metadata, BEP 9/10). `AddOptions` give a storage of the
@@ -87,6 +95,8 @@ address that has not written first it opens a peer on the listener socket with
 `Engine::dial_udp_from`, so a DHT node is reachable at the port it announces and uTP peers see
 the port they were told. `port.connect(addr, handler)` dials uTP; `on_accept` takes incoming
 streams; `send_to` and `on_datagram` carry the rest.
+At most `set_max_inbound(n)` (1024) incoming uTP connections exist at once; a SYN beyond it is
+dropped unanswered (SYNs cost nothing to send and may be spoofed).
 
 ## The protocol layers
 

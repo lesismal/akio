@@ -45,6 +45,7 @@ pub fn only_mux::Mux::max_sniff_bytes(self, usize) -> only_mux::Mux
 pub fn only_mux::Mux::new() -> only_mux::Mux
 pub fn only_mux::Mux::route<A: only_core::handler::Acceptor>(self, only_mux::Rule, A) -> only_mux::Mux
 pub fn only_mux::Mux::route_any(self, only_mux::Rule, impl core::convert::Into<only_core::handler::AnyAcceptor>) -> only_mux::Mux
+pub fn only_mux::Mux::sniff_timeout(self, core::option::Option<core::time::Duration>) -> only_mux::Mux
 impl core::clone::Clone for only_mux::Mux
 pub fn only_mux::Mux::clone(&self) -> Self
 impl core::convert::From<only_mux::Mux> for only_core::handler::AnyAcceptor
@@ -58,3 +59,4 @@ impl core::marker::Sync for only_mux::Mux
 impl core::marker::Unpin for only_mux::Mux
 impl !core::panic::unwind_safe::RefUnwindSafe for only_mux::Mux
 impl !core::panic::unwind_safe::UnwindSafe for only_mux::Mux
+pub const only_mux::DEFAULT_SNIFF_TIMEOUT: core::time::Duration

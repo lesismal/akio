@@ -834,6 +834,7 @@ pub fn only_bittorrent::port::UdpPort::new() -> only_bittorrent::port::UdpPort
 pub fn only_bittorrent::port::UdpPort::on_accept(&self, impl core::ops::function::Fn(&only_bittorrent::port::UtpStream) -> core::option::Option<alloc::boxed::Box<dyn only_bittorrent::port::StreamHandler>> + core::marker::Send + core::marker::Sync + 'static)
 pub fn only_bittorrent::port::UdpPort::on_datagram(&self, impl core::ops::function::Fn(core::net::socket_addr::SocketAddr, &[u8]) + core::marker::Send + core::marker::Sync + 'static)
 pub fn only_bittorrent::port::UdpPort::send_to(&self, core::net::socket_addr::SocketAddr, alloc::vec::Vec<u8>)
+pub fn only_bittorrent::port::UdpPort::set_max_inbound(&self, usize)
 pub fn only_bittorrent::port::UdpPort::utp_connections(&self) -> usize
 impl core::clone::Clone for only_bittorrent::port::UdpPort
 pub fn only_bittorrent::port::UdpPort::clone(&self) -> Self
@@ -869,6 +870,7 @@ pub fn only_bittorrent::port::StreamHandler::on_close(&mut self, &only_bittorren
 pub fn only_bittorrent::port::StreamHandler::on_connect(&mut self, &only_bittorrent::port::UtpStream)
 pub fn only_bittorrent::port::StreamHandler::on_data(&mut self, &only_bittorrent::port::UtpStream, &[u8])
 pub fn only_bittorrent::port::StreamHandler::on_eof(&mut self, &only_bittorrent::port::UtpStream)
+pub const only_bittorrent::port::DEFAULT_MAX_INBOUND_UTP: usize
 pub mod only_bittorrent::tracker
 pub mod only_bittorrent::tracker::http
 pub fn only_bittorrent::tracker::http::announce_url(&str, &only_bittorrent::tracker::AnnounceRequest) -> alloc::string::String
@@ -1079,6 +1081,8 @@ impl !core::panic::unwind_safe::UnwindSafe for only_bittorrent::tracker::Tracker
 pub only_bittorrent::tracker::TrackerConfig::allow: core::option::Option<alloc::vec::Vec<only_bittorrent::metainfo::InfoHash>>
 pub only_bittorrent::tracker::TrackerConfig::interval: u32
 pub only_bittorrent::tracker::TrackerConfig::max_peers: usize
+pub only_bittorrent::tracker::TrackerConfig::max_peers_per_swarm: usize
+pub only_bittorrent::tracker::TrackerConfig::max_swarms: usize
 pub only_bittorrent::tracker::TrackerConfig::peer_ttl: core::time::Duration
 impl core::clone::Clone for only_bittorrent::tracker::TrackerConfig
 pub fn only_bittorrent::tracker::TrackerConfig::clone(&self) -> Self
@@ -1099,6 +1103,7 @@ pub fn only_bittorrent::tracker::TrackerServer::handle_udp(&self, core::net::soc
 pub fn only_bittorrent::tracker::TrackerServer::http(&self) -> only_bittorrent::tracker::HttpTracker
 pub fn only_bittorrent::tracker::TrackerServer::new(only_bittorrent::tracker::TrackerConfig) -> only_bittorrent::tracker::TrackerServer
 pub fn only_bittorrent::tracker::TrackerServer::stats(&self, &only_bittorrent::metainfo::InfoHash) -> only_bittorrent::tracker::ScrapeStats
+pub fn only_bittorrent::tracker::TrackerServer::swarms(&self) -> usize
 pub fn only_bittorrent::tracker::TrackerServer::udp(&self) -> only_bittorrent::tracker::UdpTracker
 impl core::clone::Clone for only_bittorrent::tracker::TrackerServer
 pub fn only_bittorrent::tracker::TrackerServer::clone(&self) -> Self
@@ -1132,6 +1137,8 @@ impl core::marker::Sync for only_bittorrent::tracker::UdpTrackerConn
 impl core::marker::Unpin for only_bittorrent::tracker::UdpTrackerConn
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::tracker::UdpTrackerConn
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::tracker::UdpTrackerConn
+pub const only_bittorrent::tracker::DEFAULT_MAX_PEERS_PER_SWARM: usize
+pub const only_bittorrent::tracker::DEFAULT_MAX_SWARMS: usize
 pub mod only_bittorrent::utp
 #[non_exhaustive] pub enum only_bittorrent::utp::Event
 pub only_bittorrent::utp::Event::Closed(core::option::Option<core::io::error::ErrorKind>)
