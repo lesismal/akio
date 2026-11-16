@@ -13,7 +13,7 @@
 | AES-GCM（GHASH 与 CTR 融合） | VAES + VPCLMULQDQ + AVX-512（每次归约 16 个分组，掩码尾部），否则 VAES + VPCLMULQDQ + AVX2（16 个），否则 PCLMULQDQ + AES-NI（8 个） | PMULL + ARMv8 AES |
 | SHA-1、SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32、CRC-32C | VPCLMULQDQ + AVX-512 或 PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
-| ChaCha20（`chacha::hw`、`chacha::hw::avx512`） | AVX-512 内联汇编（`vprold`；每次迭代 16 个分组，余下部分 8 或 4 个），否则 AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
+| ChaCha20（`chacha::hw`、`chacha::hw::avx512`） | AVX-512 内联汇编（`vprold`；每次迭代 16 个分组，余下部分 8 或 4 个，4 个时每个寄存器存一行；不完整的最后一组在字节掩码下处理），否则 AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
 | Poly1305（`chacha::hw::ifma`） | AVX-512 IFMA 内联汇编（每步 8 个分组，用于 256 字节及以上的连续分组），否则 2⁶⁴ 进制标量实现 | 2⁶⁴ 进制标量实现 |
 | P-256 域与群阶运算、X25519 阶梯（`ec::hw`、`curve25519::hw`；`ec::hw_aarch64`、`curve25519::hw_aarch64`） | BMI2 + ADX 内联汇编（`mulx`、`adcx`/`adox`） | 内联汇编（`MUL`/`UMULH`、`ADDS`/`ADCS`、`CSEL`；所有 ARMv8.0 CPU；尚未做性能测试） |
 | RSA 模幂（`bignum::ifma`、`bignum::hw`） | AVX-512 IFMA（`vpmadd52luq`/`vpmadd52huq`）处理 2048 至 4096 位密钥的 CRT 两半，否则 BMI2 + ADX 内联汇编（Montgomery 乘法与平方） | 可移植实现 |
@@ -132,8 +132,8 @@ AMD Ryzen 7 7800X3D（x86_64，单核），`cargo run --release -p only-crypto -
 | AES-128-GCM 加密，1400 B | 4 249 | 8 163 | ring 的 1.11 倍 |
 | AES-128-GCM 加密，64 B | 611 | 1 185 | ring 的 1.10 倍 |
 | ChaCha20-Poly1305 加密，16 KiB | 588 | 4 597 | ring 的 1.30 倍 |
-| ChaCha20-Poly1305 加密，1400 B | – | 2 541 | ring 的 0.96 倍 |
-| ChaCha20-Poly1305 加密，64 B | – | 412 | ring 的 0.83 倍 |
+| ChaCha20-Poly1305 加密，1400 B | – | 3 137 | ring 的 1.21 倍 |
+| ChaCha20-Poly1305 加密，64 B | – | 481 | ring 的 0.98 倍 |
 | Ed25519 验签（次/秒） | 18 289 | 27 714 | ring 的 0.87 倍 |
 | Ed25519 签名 | – | 89 784 | ring 的 1.53 倍 |
 | X25519 协商 | 28 865 | 36 488 | ring 的 1.00 倍 |

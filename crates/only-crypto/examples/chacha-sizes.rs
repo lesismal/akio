@@ -54,7 +54,8 @@ fn main() {
     ];
     let ring = LessSafeKey::new(UnboundKey::new(&CHACHA20_POLY1305, &key).expect("key"));
     // `PROFILE_LEN=n`: seal n-byte messages with one key only (`PROFILE_KEY`: 0 the default,
-    // 1 AVX2, 2 portable), for a profiler.
+    // 1 AVX2, 2 portable; `PROFILE_OP=open`: open them, after a copy as below; `PROFILE_OP=cipher`:
+    // ChaCha20 alone with the widest path), for a profiler.
     if let Some(len) = std::env::var("PROFILE_LEN")
         .ok()
         .and_then(|s| s.parse().ok())
@@ -64,6 +65,26 @@ fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         let mut buf = vec![0x5au8; len];
+        if std::env::var("PROFILE_OP").is_ok_and(|s| s == "cipher") {
+            let r = rate(ms, len, || {
+                ChaCha20::new(&key, &nonce, 1).apply_keystream(black_box(&mut buf));
+            });
+            println!("  chacha20 {len:>6} B  {r:.0} MB/s");
+            return;
+        }
+        if std::env::var("PROFILE_OP").is_ok_and(|s| s == "open") {
+            let tag = ours[i].1.encrypt_in_place_detached(&nonce, &aad, &mut buf);
+            let sealed = buf.clone();
+            let r = rate(ms, len, || {
+                buf.copy_from_slice(&sealed);
+                ours[i]
+                    .1
+                    .decrypt_in_place_detached(&nonce, &aad, black_box(&mut buf), &tag)
+                    .expect("open");
+            });
+            println!("  open {len:>6} B  {} {r:.0} MB/s", ours[i].0);
+            return;
+        }
         let r = rate(ms, len, || {
             black_box(
                 ours[i]

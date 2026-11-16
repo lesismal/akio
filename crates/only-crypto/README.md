@@ -14,7 +14,7 @@ syscall lives in `only-sys`).
 | AES-GCM (GHASH fused with CTR) | VAES + VPCLMULQDQ + AVX-512 (16 blocks per reduction, masked tails), else VAES + VPCLMULQDQ + AVX2 (16), else PCLMULQDQ + AES-NI (8) | PMULL + ARMv8 AES |
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
-| ChaCha20 (`chacha::hw`, `chacha::hw::avx512`) | AVX-512 inline assembly (`vprold`; 16 blocks per iteration, 8 or 4 for the rest), else AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
+| ChaCha20 (`chacha::hw`, `chacha::hw::avx512`) | AVX-512 inline assembly (`vprold`; 16 blocks per iteration, 8 or 4 for the rest, the 4 one row per register; a partial last group under byte masks), else AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
 | Poly1305 (`chacha::hw::ifma`) | AVX-512 IFMA inline assembly (8 blocks per step, runs of 256 bytes and more), else radix-2⁶⁴ scalar | radix-2⁶⁴ scalar |
 | P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`; `ec::hw_aarch64`, `curve25519::hw_aarch64`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | inline assembly (`MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL`; every ARMv8.0 CPU; not benchmarked yet) |
 | RSA exponentiation (`bignum::ifma`, `bignum::hw`) | AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq`) for the CRT halves of 2048- to 4096-bit keys, else BMI2 + ADX inline assembly (Montgomery multiplication and squaring) | portable |
@@ -170,8 +170,8 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | AES-128-GCM seal, 1 KiB | 4 539 | 10 433 | 1.32x ring |
 | AES-128-GCM seal, 64 B | 611 | 1 383 | 1.29x ring |
 | ChaCha20-Poly1305 seal, 16 KiB | 588 | 4 597 | 1.30x ring |
-| ChaCha20-Poly1305 seal, 1400 B | – | 2 541 | 0.96x ring |
-| ChaCha20-Poly1305 seal, 64 B | – | 412 | 0.83x ring |
+| ChaCha20-Poly1305 seal, 1400 B | – | 3 137 | 1.21x ring |
+| ChaCha20-Poly1305 seal, 64 B | – | 481 | 0.98x ring |
 | Ed25519 verify (op/s) | 18 289 | 27 714 | 0.87x ring |
 | Ed25519 sign | – | 89 784 | 1.53x ring |
 | X25519 agreement | 28 865 | 36 488 | 1.00x ring |
