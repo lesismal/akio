@@ -592,6 +592,43 @@ fn dial_connects_and_runs_handler() {
     stop(&e);
 }
 
+/// `adopt_tcp`: a stream accepted outside the engine (here a std listener) is served like a
+/// dialed connection, on the listener's own I/O threads (so on io_uring too).
+#[test]
+fn adopt_tcp_serves_an_accepted_stream() {
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let outside = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = connect(outside.local_addr().unwrap());
+    let (accepted, _) = outside.accept().unwrap();
+    let opened: Arc<AtomicUsize> = Arc::default();
+    let o = opened.clone();
+    e.adopt_tcp(
+        accepted,
+        fn_acceptor(move |c: &Conn<Echo>| {
+            o.fetch_add(1, Ordering::SeqCst);
+            c.send(b"hi ").unwrap();
+            Echo
+        }),
+        |err| panic!("adopt failed: {err}"),
+    );
+    client.write_all(b"adopted").unwrap();
+    let mut b = [0u8; 10];
+    client.read_exact(&mut b).unwrap();
+    assert_eq!(&b, b"hi adopted");
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+    stop(&e);
+}
+
 #[test]
 fn send_reports_overload_beyond_queue_limit() {
     struct Flood {
