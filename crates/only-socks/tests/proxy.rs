@@ -562,22 +562,21 @@ fn socks5_udp_idle_timeout_and_disabled() {
     assert_eq!(rep, 0);
     let u = client_udp();
     // Traffic keeps it alive past the timeout.
+    let mut last = std::time::Instant::now();
     for _ in 0..4 {
         u.send_to(&udp_datagram(0, &ipv4(echo), b"keep"), relay)
             .unwrap();
         assert!(recv(&u).is_some());
+        last = std::time::Instant::now();
         thread::sleep(Duration::from_millis(250));
     }
-    // Silence ends it: the server closes the control connection.
+    // Silence ends it: the server closes the control connection, an idle timeout (600 ms)
+    // after the last datagram (the echo's answer, just before `last`).
     let mut b = [0u8; 1];
     ctl.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    let t = std::time::Instant::now();
     assert_eq!(ctl.read(&mut b).unwrap(), 0);
-    assert!(
-        t.elapsed() >= Duration::from_millis(400),
-        "{:?}",
-        t.elapsed()
-    );
+    let idle = last.elapsed();
+    assert!(idle >= Duration::from_millis(500), "{idle:?}");
     e.shutdown();
     e.wait();
 
