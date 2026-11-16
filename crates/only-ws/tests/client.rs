@@ -20,7 +20,17 @@ use only_ws::{
     deflate::PmdOffer,
 };
 
-const T: Duration = Duration::from_secs(10);
+/// Wait for one event: 10 s, times `ONLY_TEST_TIMEOUT_SCALE` (an integer, default 1). The
+/// sanitizer runs set it (tools/sanitizers/run.sh): under ThreadSanitizer the 8 MiB
+/// permessage-deflate round trip in a debug build takes longer than 10 s.
+fn wait() -> Duration {
+    let scale = std::env::var("ONLY_TEST_TIMEOUT_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1)
+        .max(1);
+    Duration::from_secs(10) * scale
+}
 
 fn backend() -> Backend {
     match std::env::var("ONLY_TEST_BACKEND").as_deref() {
@@ -184,11 +194,11 @@ fn open(
     let (tx, rx) = mpsc::channel();
     let ws =
         client::dial_blocking(e, url, opts, Rec(tx)).unwrap_or_else(|err| panic!("{url}: {err}"));
-    let proto = match rx.recv_timeout(T).unwrap() {
+    let proto = match rx.recv_timeout(wait()).unwrap() {
         Ev::Open(p) => p,
         other => panic!("{other:?}"),
     };
-    let seen = match rx.recv_timeout(T).unwrap() {
+    let seen = match rx.recv_timeout(wait()).unwrap() {
         Ev::Msg(Message::Text(t)) => t,
         other => panic!("{other:?}"),
     };
@@ -196,7 +206,7 @@ fn open(
 }
 
 fn next_msg(rx: &Receiver<Ev>) -> Message {
-    match rx.recv_timeout(T).unwrap() {
+    match rx.recv_timeout(wait()).unwrap() {
         Ev::Msg(m) => m,
         other => panic!("{other:?}"),
     }
@@ -228,7 +238,7 @@ fn roundtrips(ws: &WsSender, rx: &Receiver<Ev>) {
         assert_eq!(next_msg(rx), Message::Binary(data), "len {len}");
     }
     ws.ping(b"cli").unwrap();
-    assert_eq!(rx.recv_timeout(T).unwrap(), Ev::Pong(b"cli".to_vec()));
+    assert_eq!(rx.recv_timeout(wait()).unwrap(), Ev::Pong(b"cli".to_vec()));
 }
 
 #[test]
@@ -246,17 +256,17 @@ fn plain_echo_ping_and_close_handshake() {
     roundtrips(&ws, &rx);
     // The server pings: the client answers by itself.
     ws.send_text("ping").unwrap();
-    assert_eq!(srx.recv_timeout(T).unwrap(), Ev::Pong(b"srv".to_vec()));
+    assert_eq!(srx.recv_timeout(wait()).unwrap(), Ev::Pong(b"srv".to_vec()));
     // Client-initiated close: the server sees our code, we see its echo.
     ws.close(3001, "done here");
     assert!(!ws.is_open());
     assert!(ws.send_text("late").is_err());
     assert_eq!(
-        srx.recv_timeout(T).unwrap(),
+        srx.recv_timeout(wait()).unwrap(),
         Ev::Close(Some(3001), "done here".into())
     );
     assert_eq!(
-        rx.recv_timeout(T).unwrap(),
+        rx.recv_timeout(wait()).unwrap(),
         Ev::Close(Some(3001), String::new())
     );
     stop(&e);
@@ -270,7 +280,7 @@ fn server_initiated_close_codes() {
         let (ws, rx, _, _) = open(&e, &url, &DialOptions::default());
         ws.send_text(&format!("close:{code}:{reason}")).unwrap();
         assert_eq!(
-            rx.recv_timeout(T).unwrap(),
+            rx.recv_timeout(wait()).unwrap(),
             Ev::Close(Some(code), reason.into())
         );
         assert!(ws.send_text("x").is_err());
@@ -317,7 +327,7 @@ fn compression_negotiation_variants() {
         }
         ws.close(1000, "");
         assert_eq!(
-            rx.recv_timeout(T).unwrap(),
+            rx.recv_timeout(wait()).unwrap(),
             Ev::Close(Some(1000), String::new())
         );
     }
@@ -401,7 +411,7 @@ fn large_and_fragmented_messages_and_limits() {
     ws.send_binary(&[1; 999]).unwrap();
     assert_eq!(next_msg(&rx), Message::Binary(vec![1; 999]));
     ws.send_binary(&pattern(5000, 1)).unwrap();
-    match rx.recv_timeout(T).unwrap() {
+    match rx.recv_timeout(wait()).unwrap() {
         Ev::Close(Some(1009), _) => {}
         other => panic!("{other:?}"),
     }
@@ -524,7 +534,7 @@ fn wss_with_sni_and_custom_roots() {
     assert!(next_msg(&rx) == Message::Binary(big));
     ws.close(1000, "tls bye");
     assert_eq!(
-        rx.recv_timeout(T).unwrap(),
+        rx.recv_timeout(wait()).unwrap(),
         Ev::Close(Some(1000), String::new())
     );
     // By IP with an explicit server name for verification and SNI.
@@ -576,7 +586,7 @@ fn many_concurrent_clients_on_client_threads() {
                 for (ws, rx, _, _) in conns {
                     ws.close(1000, "");
                     assert_eq!(
-                        rx.recv_timeout(T).unwrap(),
+                        rx.recv_timeout(wait()).unwrap(),
                         Ev::Close(Some(1000), String::new())
                     );
                 }
@@ -631,7 +641,7 @@ fn interop_with_external_echo_server() {
         };
         let (tx, rx) = mpsc::channel();
         let ws = client::dial_blocking(&cli, &url, &opts, Rec(tx)).unwrap();
-        assert_eq!(rx.recv_timeout(T).unwrap(), Ev::Open(None));
+        assert_eq!(rx.recv_timeout(wait()).unwrap(), Ev::Open(None));
         roundtrips(&ws, &rx);
         let big = pattern(8 << 20, 11);
         ws.send_binary(&big).unwrap();
@@ -640,7 +650,7 @@ fn interop_with_external_echo_server() {
         ws.send_text_fragmented(&text, 1000).unwrap();
         assert_eq!(next_msg(&rx), Message::Text(text));
         ws.close(1000, "bye");
-        match rx.recv_timeout(T).unwrap() {
+        match rx.recv_timeout(wait()).unwrap() {
             Ev::Close(Some(1000), _) => {}
             other => panic!("{other:?}"),
         }

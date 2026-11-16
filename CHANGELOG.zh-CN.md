@@ -40,6 +40,18 @@ WebSocket 升级需要共享它，`Headers` 内联保存前两个字段的位置
 运行的 A/B 对比：HTTP/3 GET，单连接，64 个并发 820,741 → 883,127 请求/秒（1.08 倍）；HTTP/1.1 与 h2c 在噪声
 范围内不变（docs/BENCHMARKS.zh-CN.md）。没有公共 API 变化。
 
+### 修复：`only_bittorrent::Client::close` 等待其线程退出
+
+TSan 的首次运行（见下）报告了一处线程泄漏：`close` 关闭引擎与磁盘线程池后立即返回，因此之后 I/O 线程回调与 `Storage` 调用仍可能执行，而丢弃 client 会使这些线程脱离（detach）。现在 `close` 在引擎的 I/O 线程、磁盘线程池与维护线程都退出后才返回，因此不能在 client 自己的线程中调用（例如在 `Storage` 方法内）。
+
+### 修复：HTTP 客户端不再拖住引擎的优雅关闭
+
+`only_http::client::Client` 在引擎优雅关闭期间仍把空闲的 keep-alive 连接留在连接池中，因此只要客户端发过请求，`Engine::wait` 就要等满整个 `Config::shutdown_timeout`（默认 10 秒）。现在空闲连接在关闭开始时立即关闭；有请求在途的连接先交付响应，然后关闭而不再放回连接池。
+
+### 新增：AddressSanitizer 与 ThreadSanitizer 运行（`tools/sanitizers/`）
+
+2026-11-16 首次用 ASan（含 LeakSanitizer）与 TSan 运行工作区测试：所有 crate 在 Linux arm64 Docker 中覆盖 epoll 与 io_uring，含 unsafe 代码的 crate 与引擎后端在 x86_64 上运行（包括 AVX-512/IFMA/VAES/BMI2 汇编路径）。没有内存错误、内存泄漏或数据竞争；上述线程泄漏是唯一的报告。`tools/sanitizers/run.sh` 按 crate 运行，可在 Docker 中或原生运行；重型 CI 任务 `sanitizers` 现在用它覆盖整个工作区，而不是原先的八个 crate。其中的 `rustc-wrapper.sh` 让 `compiler_builtins` 不插桩构建，否则在 aarch64 上使用 `-Zbuild-std` 时所有插桩二进制都会在启动时崩溃。为 TSan 调整了两个测试：`only-sys` 的 `signal_to_pipe` 改为在等待的线程上触发信号（信号若落在阻塞于裸 futex 等待的线程上，TSan 永远不会执行其处理函数），only-ws 的客户端测试按 `ONLY_TEST_TIMEOUT_SCALE` 缩放其 10 秒期限。
+
 ### 变更：RSA 签名在同一个 AVX-512 IFMA 循环中计算 CRT 两半
 
 在支持 AVX-512 IFMA 的 x86_64 上，RSA 私钥运算的两个半模幂（模 p 与模 q）现在同步推进：同一个汇编循环的

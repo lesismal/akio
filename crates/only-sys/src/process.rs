@@ -267,10 +267,19 @@ mod tests {
     fn signal_to_pipe() {
         use std::io::Read;
         let mut r = signal_pipe(&[SIGUSR2]).unwrap();
-        kill(std::process::id(), SIGUSR2).unwrap();
+        // Directed at this thread, not the process: a process-directed signal may land on the
+        // test harness's main thread, and under ThreadSanitizer a handler is deferred until its
+        // thread enters an intercepted call. The main thread waits in a raw futex syscall,
+        // which TSan does not intercept, so the byte never arrived and the test hung
+        // (tools/sanitizers/README.md). `raise` targets the reading thread, whose `read`
+        // is intercepted and runs the handler.
+        // SAFETY: raise(3) with a signal whose handler was just installed by `signal_pipe`.
+        assert_eq!(unsafe { libc::raise(SIGUSR2) }, 0);
         let mut b = [0u8; 1];
         r.read_exact(&mut b).unwrap();
         assert_eq!(i32::from(b[0]), SIGUSR2);
+        // kill(2) itself: signal 0 checks the target without delivering anything.
+        kill(std::process::id(), 0).unwrap();
         assert!(kill(0, SIGUSR2).is_err());
     }
 }

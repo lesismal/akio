@@ -47,6 +47,35 @@ request head is checked as UTF-8 once. Zen 4, same-run A/B on a quiet host: HTTP
 connection, 64 in flight 820,741 → 883,127 req/s (1.08×); HTTP/1.1 and h2c unchanged within
 noise (docs/BENCHMARKS.md). No public API change.
 
+### Fixed: `only_bittorrent::Client::close` waits for its threads
+
+TSan's first run (below) reported a thread leak: `close` shut the engine and the disk pool down
+and returned at once, so I/O-thread callbacks and `Storage` calls could still run after it, and
+dropping the client detached the threads. `close` now returns once the engine's I/O threads, the
+disk pool and the maintenance thread have exited. It must therefore not be called from one of the
+client's own threads (inside a `Storage` method, for example).
+
+### Fixed: the HTTP client no longer holds an engine's graceful shutdown open
+
+`only_http::client::Client` kept idle keep-alive connections in its pool through the engine's
+graceful shutdown, so `Engine::wait` waited out the whole `Config::shutdown_timeout` (10 s by
+default) whenever the client had made a request. Idle connections now close when the shutdown
+starts; one with a request in flight delivers the response and then closes instead of going
+back to the pool.
+
+### Added: AddressSanitizer and ThreadSanitizer runs (`tools/sanitizers/`)
+
+First ASan (with LeakSanitizer) and TSan run of the workspace tests, 2026-11-16: every crate in
+Linux arm64 Docker on epoll and io_uring, the crates with unsafe code and the engine backends on
+x86_64 (with the AVX-512/IFMA/VAES/BMI2 assembly paths). No memory error, memory leak or data
+race; the thread leak above was the one report. `tools/sanitizers/run.sh` runs them per crate,
+in Docker or natively, and the heavy CI job `sanitizers` now uses it for the whole workspace
+instead of eight crates. Its `rustc-wrapper.sh` builds `compiler_builtins` uninstrumented, without
+which every sanitized binary crashed at start-up on aarch64 with `-Zbuild-std`. Two tests were
+adjusted for TSan: `only-sys`'s `signal_to_pipe` raises the signal on the waiting thread (TSan
+never ran the handler of a signal delivered to a thread in a raw futex wait), and only-ws's
+client tests scale their 10 s deadlines with `ONLY_TEST_TIMEOUT_SCALE`.
+
 ### Changed: RSA signing runs both CRT halves in one AVX-512 IFMA loop
 
 On x86_64 with AVX-512 IFMA, the two half-exponentiations of an RSA private-key operation (mod p

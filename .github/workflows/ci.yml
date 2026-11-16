@@ -14,7 +14,8 @@ name: CI
 #                  never starts is not a code failure)
 #   Heavy:         interop (Go peers: arpc, grpc, kcp, h3, webrtc + coturn; libtorrent and aria2
 #                  for BitTorrent), fuzz (all targets, 5 min each), sanitizers (ASan + TSan on
-#                  the core and backend tests), dpdk (only-dpdk with libdpdk: net_tap / TAP)
+#                  the workspace tests, epoll and io_uring), dpdk (only-dpdk with libdpdk:
+#                  net_tap / TAP)
 #   Informational (`continue-on-error`, not in ci-ok):
 #                  ct-dudect (statistical timing test of only-crypto's secret-dependent paths,
 #                  t-values kept as an artifact; docs/constant-time.md)
@@ -553,20 +554,18 @@ jobs:
           -p only-ebpf -p only-prefork -p only-bittorrent
 
   sanitizers:
-    # AddressSanitizer and ThreadSanitizer over the core, syscall and backend tests (epoll and
-    # io_uring), where Miri cannot go.
+    # AddressSanitizer (with LeakSanitizer) and ThreadSanitizer over every workspace crate's
+    # tests (epoll), then the crates with io_uring tests on the io_uring backend, where Miri
+    # cannot go. tools/sanitizers/run.sh is the same script used locally (Docker on arm64,
+    # natively on x86_64); its README lists what it sets and why.
     strategy:
       fail-fast: false
       matrix:
         san: [address, thread]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 150
     env:
       RUSTUP_TOOLCHAIN: nightly
-      RUSTFLAGS: -D warnings -Zsanitizer=${{ matrix.san }}
-      RUSTDOCFLAGS: -Zsanitizer=${{ matrix.san }}
-      TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
-      ASAN_OPTIONS: symbolize=1:fast_unwind_on_malloc=0
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -583,19 +582,26 @@ jobs:
         with:
           shared-key: sanitizer-${{ matrix.san }}
           save-if: true
-      - name: Core and syscall crates (epoll)
-        timeout-minutes: 25
-        run: >-
-          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu
-          -p only-core -p only-sys -p only-epoll -p only-buf -p only-pool -p only-timer
-          --lib --tests -- --test-threads=1
+      - name: Workspace (epoll)
+        timeout-minutes: 90
+        env:
+          SAN_LOG_DIR: sanitizer-logs/epoll
+        run: tools/sanitizers/run.sh ${{ matrix.san }}
       - name: io_uring backend
-        timeout-minutes: 25
+        timeout-minutes: 45
         env:
           ONLY_TEST_BACKEND: uring
+          SAN_LOG_DIR: sanitizer-logs/uring
         run: >-
-          cargo test -Zbuild-std --target x86_64-unknown-linux-gnu
-          -p only-uring -p only --lib --tests -- --test-threads=1
+          tools/sanitizers/run.sh ${{ matrix.san }}
+          only-uring only only-http only-prefork only-socks only-ws
+      - name: Keep logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitizer-${{ matrix.san }}
+          path: sanitizer-logs/
+          if-no-files-found: ignore
 
   ci-ok:
     # The single required check. Fails if any gate job failed or was cancelled.

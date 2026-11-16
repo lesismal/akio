@@ -98,8 +98,8 @@ An `unsafe` block is accepted only if its `SAFETY:` comment (or the `# Safety` s
 | Inventory script | counts and comment check, all platforms | `python3 tools/unsafe-inventory.py [--markdown] [--check]` |
 | Miri | UB in pure-Rust code: aliasing (Stacked Borrows), out-of-bounds, uninitialised reads, data races | `cargo +nightly miri test -p <crate> --lib` (Linux nightly image; `MIRIFLAGS=-Zmiri-disable-isolation`) |
 | loom | interleavings of `only-core`'s lock-free primitives | `RUSTFLAGS="--cfg loom" cargo test -p only-core --lib --release -- loom` |
-| AddressSanitizer | out-of-bounds / use-after-free across FFI, including syscall paths Miri cannot run | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test -Zbuild-std --target <host> -p <crate>` |
-| ThreadSanitizer | data races between I/O threads, wakers and senders | as above with `-Zsanitizer=thread` |
+| AddressSanitizer | out-of-bounds / use-after-free / leaks across FFI, including syscall paths Miri cannot run | `tools/sanitizers/run.sh [--docker] address [crate...]` (README there) |
+| ThreadSanitizer | data races between I/O threads, wakers and senders | `tools/sanitizers/run.sh [--docker] thread [crate...]` |
 | Fuzzing | parsers and protocol state machines (remote input) | `cargo fuzz` targets (separate work item) |
 | cargo-deny / cargo-audit | vulnerable, unsound or yanked dependencies | `cargo deny check`, `cargo audit` |
 
@@ -313,9 +313,21 @@ former, see the WebSocket notes; only-deflate has regression tests for that clas
 
 ### Sanitizers
 
-ASan and TSan could not be run in this review: in the available Linux environment (Docker on
-Apple silicon, linuxkit 6.12 aarch64 kernel) even an empty `fn main` built with
-`-Zsanitizer=address` or `-Zsanitizer=thread` crashes with SIGSEGV at start-up (the sanitizer
-runtimes do not support that VM's address-space layout; `setarch -R` does not help and
-`vm.mmap_rnd_bits` cannot be changed). They are proposed as a CI job on `ubuntu-latest`
-(x86_64), where both are supported.
+First run 2026-11-16 (`tools/sanitizers/`, details and the full table in its README):
+AddressSanitizer with LeakSanitizer and ThreadSanitizer over every workspace crate's tests in
+Linux arm64 Docker, epoll and io_uring, and the crates with unsafe code plus the engine backends
+natively on x86_64 (Zen 4, so the AVX-512/IFMA/VAES/BMI2 assembly paths ran). No memory error,
+memory leak or data race was reported; the suppression files are empty. TSan did report a thread
+leak: only-bittorrent's `Client::close` returned without waiting for the engine and disk-pool
+threads (fixed, together with only-http's client keeping idle keep-alive connections open through
+a graceful engine shutdown, which made waiting take the full `shutdown_timeout`).
+
+The start-up SIGSEGV that an earlier version of this section put down to the Docker VM's address
+space was in fact `-Zbuild-std` instrumenting `compiler_builtins`: on aarch64 the sanitizer
+runtimes call its outline-atomics helpers while they initialise. `tools/sanitizers/rustc-wrapper.sh`
+builds that one crate without the sanitizer. The runs also turned up a test that hung under TSan
+(a process-directed signal landing on a thread in a raw `futex` wait, where TSan never runs the
+deferred handler; `only-sys` `signal_to_pipe` now raises the signal on its own thread) and a
+WebSocket test whose 10 s deadline was too short under TSan. Not covered: the loads and stores
+inside `asm!` blocks (not instrumented) and memory synchronised by the kernel (io_uring rings),
+which is Miri's and loom's part.

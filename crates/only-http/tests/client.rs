@@ -282,3 +282,40 @@ fn https_through_only_tls() {
     assert_eq!(a, b);
     stop(&e);
 }
+
+/// An engine that only hosts client connections, with the default 10 s `shutdown_timeout`.
+fn client_engine() -> Arc<Engine> {
+    let e = Engine::builder().client_threads(2).build().unwrap();
+    e.start().unwrap();
+    Arc::new(e)
+}
+
+#[test]
+fn engine_shutdown_does_not_wait_for_idle_keep_alive_connections() {
+    // The server lives on its own engine, so only the client side can end the connections.
+    let server = start(serve(app()));
+    let base = format!("http://{}", server.local_addrs()[0]);
+    let e = client_engine();
+    let c = Client::new(e.clone());
+    let r = c.send(ClientRequest::get(&format!("{base}/hello"))).wait();
+    assert_eq!(r.unwrap().status, 200);
+    // The connection now sits idle in the client's pool. It used to stay open through the
+    // graceful shutdown, so `wait` took the whole 10 s `shutdown_timeout`.
+    let t0 = std::time::Instant::now();
+    stop(&e);
+    assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+
+    // A request in flight when the shutdown starts still gets its response; its connection
+    // then closes instead of going back to the pool.
+    let e = client_engine();
+    let c = Client::new(e.clone());
+    let late = c.send(ClientRequest::get(&format!("{base}/slow")));
+    thread::sleep(Duration::from_millis(100));
+    let t0 = std::time::Instant::now();
+    e.shutdown();
+    let r = late.wait().unwrap();
+    assert_eq!(r.body, b"late");
+    e.wait();
+    assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    stop(&server);
+}

@@ -291,6 +291,8 @@ pub(crate) struct ClientInner {
     req2: Mutex<HashMap<[u8; 20], InfoHash>>,
     lookups: Mutex<HashMap<u64, InfoHash>>,
     closed: AtomicBool,
+    /// The maintenance thread, joined by [`Client::close`].
+    maintenance: Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl ClientInner {
@@ -431,6 +433,7 @@ impl Client {
             req2: Mutex::new(HashMap::new()),
             lookups: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
+            maintenance: Mutex::new(None),
         });
         let _ = cell.set(Arc::downgrade(&inner));
         let w = Arc::downgrade(&inner);
@@ -454,9 +457,10 @@ impl Client {
             }
         }
         let w = Arc::downgrade(&inner);
-        std::thread::Builder::new()
+        let h = std::thread::Builder::new()
             .name("only-bt-client".into())
             .spawn(move || maintenance(&w))?;
+        *inner.maintenance.lock().unwrap_or_else(|p| p.into_inner()) = Some(h);
         Ok(Client { inner })
     }
 
@@ -602,6 +606,11 @@ impl Client {
     }
 
     /// Stops everything: torrents announce `stopped`, connections close, the engine shuts down.
+    /// Returns once the engine's I/O threads, the disk pool and the maintenance thread have
+    /// exited, so no callback of this client (and no [`Storage`] call) runs after it. Calling it
+    /// again, or from another thread while it runs, returns at once. Must not be called from
+    /// one of the client's own threads (inside a [`Storage`] method, say): it would wait for
+    /// itself.
     pub fn close(&self) {
         if self.inner.closed.swap(true, Ordering::Relaxed) {
             return;
@@ -612,7 +621,21 @@ impl Client {
         // Give `stopped` announces a moment.
         std::thread::sleep(Duration::from_millis(50));
         self.inner.engine.shutdown();
+        // Before, the threads were left to exit on their own: `close` returned while they
+        // could still run callbacks, and dropping the client detached them (ThreadSanitizer
+        // "thread leak", tools/sanitizers/README.md).
+        self.inner.engine.wait();
         self.inner.pool.shutdown();
+        self.inner.pool.join();
+        let maintenance = self
+            .inner
+            .maintenance
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(h) = maintenance {
+            let _ = h.join();
+        }
     }
 }
 

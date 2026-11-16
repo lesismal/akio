@@ -60,8 +60,8 @@ Clippy 只检查为当前主机编译的代码，因此 CI 在 Linux 和 macOS �
 | 清单脚本 | 计数与注释检查，覆盖所有平台 | `python3 tools/unsafe-inventory.py [--markdown] [--check]` |
 | Miri | 纯 Rust 代码中的 UB：别名（Stacked Borrows）、越界、未初始化读取、数据竞争 | `cargo +nightly miri test -p <crate> --lib`（Linux nightly 镜像；`MIRIFLAGS=-Zmiri-disable-isolation`） |
 | loom | `only-core` 无锁原语的交错执行 | `RUSTFLAGS="--cfg loom" cargo test -p only-core --lib --release -- loom` |
-| AddressSanitizer | 跨 FFI 的越界 / 释放后使用，包括 Miri 无法运行的系统调用路径 | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test -Zbuild-std --target <host> -p <crate>` |
-| ThreadSanitizer | I/O 线程、唤醒器与发送方之间的数据竞争 | 同上，改用 `-Zsanitizer=thread` |
+| AddressSanitizer | 跨 FFI 的越界 / 释放后使用 / 泄漏，包括 Miri 无法运行的系统调用路径 | `tools/sanitizers/run.sh [--docker] address [crate...]`（见该目录 README） |
+| ThreadSanitizer | I/O 线程、唤醒器与发送方之间的数据竞争 | `tools/sanitizers/run.sh [--docker] thread [crate...]` |
 | 模糊测试 | 解析器与协议状态机（远端输入） | `cargo fuzz` 目标（独立工作项） |
 | cargo-deny / cargo-audit | 有漏洞、不健全或被撤回（yanked）的依赖 | `cargo deny check`、`cargo audit` |
 
@@ -190,4 +190,6 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 
 ### Sanitizer
 
-本次审查未能运行 ASan 和 TSan：在可用的 Linux 环境（Apple 芯片上的 Docker，linuxkit 6.12 aarch64 内核）中，即使是空的 `fn main` 用 `-Zsanitizer=address` 或 `-Zsanitizer=thread` 构建，启动时也会 SIGSEGV（sanitizer 运行时不支持该虚拟机的地址空间布局；`setarch -R` 无效，`vm.mmap_rnd_bits` 也无法修改）。建议作为 CI 任务在 `ubuntu-latest`（x86_64）上运行，两者在那里都受支持。
+首次运行于 2026-11-16（`tools/sanitizers/`，细节与完整表格见其 README）：在 Linux arm64 Docker 中用 AddressSanitizer（含 LeakSanitizer）和 ThreadSanitizer 运行工作区所有 crate 的测试，覆盖 epoll 与 io_uring；并在 x86_64 上原生运行含 unsafe 代码的 crate 与引擎后端（Zen 4，因此 AVX-512/IFMA/VAES/BMI2 汇编路径都运行到了）。没有报告任何内存错误、内存泄漏或数据竞争；抑制文件为空。TSan 报告了一处线程泄漏：only-bittorrent 的 `Client::close` 不等待引擎与磁盘线程池的线程就返回（已修复；同时修复了 only-http 客户端在引擎优雅关闭期间仍保持空闲 keep-alive 连接、使等待要耗满整个 `shutdown_timeout` 的问题）。
+
+本节早先版本归因于 Docker 虚拟机地址空间布局的启动 SIGSEGV，实际上是 `-Zbuild-std` 对 `compiler_builtins` 插桩所致：在 aarch64 上，sanitizer 运行时在初始化期间调用其 outline-atomics 辅助函数。`tools/sanitizers/rustc-wrapper.sh` 让这一个 crate 不带 sanitizer 构建。这几轮运行还发现一个在 TSan 下挂起的测试（发给进程的信号落在阻塞于裸 `futex` 等待的线程上，TSan 永远不会执行被推迟的处理函数；`only-sys` 的 `signal_to_pipe` 现在在自身线程上触发信号），以及一个在 TSan 下 10 秒期限过短的 WebSocket 测试。未覆盖：`asm!` 块内部的读写（不插桩）以及由内核同步的内存（io_uring ring），这部分由 Miri 和 loom 负责。
