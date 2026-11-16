@@ -11,7 +11,8 @@ use only_core::{ConnInner, Error, Result};
 use crate::{
     deflate::{Deflater, Inflater, PmdParams},
     protocol::{
-        Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked, frame_header,
+        Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked,
+        frame_header,
     },
 };
 
