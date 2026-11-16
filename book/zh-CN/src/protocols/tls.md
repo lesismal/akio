@@ -34,8 +34,8 @@
 
 ## 协商结果
 
-`tls_info(&conn)` 返回 `TlsInfo`，包含 `handshaking`、`alpn`、`server_name`（SNI，仅服务端）
-和 `version`；非 TLS 连接返回 `None`。
+`tls_info(&conn)` 返回 `TlsInfo`，包含 `handshaking`、`alpn`、`server_name`（SNI，仅服务端）、
+`version`、`early_data` 与 `early_data_len`（见[早期数据](#早期数据0-rtt)）；非 TLS 连接返回 `None`。
 
 ## 协议支持
 
@@ -45,7 +45,7 @@
 | 密码套件 | AES-128-GCM-SHA256、AES-256-GCM-SHA384、CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA 搭配 AES-128/256-GCM 与 CHACHA20-POLY1305（无 CBC） |
 | 证书 | ECDSA P-256/P-384、Ed25519、RSA（PSS 签名） | 同上，RSA 也可用 PKCS#1 v1.5 |
 | 会话恢复 | 票据 + PSK（`psk_dhe_ke`）：`.session_tickets(true)` 为无状态票据，会话缓存为一次性缓存票据 | 会话 ID（缓存）与 RFC 5077 票据 |
-| 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；客户端提供的 0-RTT 被拒绝并跳过 | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
+| 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；双方开启时支持早期数据（0-RTT），否则拒绝并跳过 | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
 
 两者共有：SNI、ALPN、close_notify、16 KiB 记录、TLS 1.3 内层内容类型与填充、降级哨兵、严格的状态机
 （意外消息、空记录或交错记录、跨密钥切换的握手数据都是致命错误）。证书由 `only-x509` 验证：链接到
@@ -71,6 +71,7 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 | 会话恢复 | `.session_cache(entries)`、`.session_tickets(true)` | `.resumption(false)` 关闭 |
 | 协议版本 | `.tls13_only(true)` | `.tls13_only(true)` |
 | SNI | | `.sni(false)` 不再发送 |
+| 早期数据（0-RTT） | `.early_data(max_bytes)` | `.early_data(true)` |
 | 仅限测试 | | `.insecure_skip_verify()` |
 
 `.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `only::tls::Error`；配置克隆开销
@@ -87,6 +88,38 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
   `server_config_from(&tls_config)`。`only-quic` 的自研 QUIC（DEV-PLAN 第 D 波）用同一份
   `only::tls` 配置驱动 `only-tls` 内不经记录层的 TLS 1.3 内核（内部 API）。
 
+## 早期数据（0-RTT）
+
+默认关闭，需要双方都开启。服务端设置 `.early_data(max_bytes)`（并开启会话恢复）后，签发的票据允许
+这么多早期数据；客户端设置 `.early_data(true)` 并用这样的票据恢复会话时，应用在握手完成前写入的数据
+紧跟在 ClientHello 之后发出，省掉一个往返。服务端在握手完成前就读取它，`on_data` 能早一个往返看到请求。
+
+- 服务端只针对票据的第一个 PSK、密码套件、ALPN 协议与 SNI 名接受早期数据，HelloRetryRequest 之后
+  绝不接受，也不接受超过允许量的数据。
+- 服务端拒绝时（配置不同、HelloRetryRequest、疑似重放），跳过早期记录；客户端在握手后重发同样的
+  字节，应用两种情况下看到的字节流相同。
+- `TlsInfo::early_data` 给出 `NotAttempted`、`Pending`（客户端，收到答复前）、`Accepted` 或
+  `Rejected`；`TlsInfo::early_data_len` 是流开头作为早期数据发送的字节数。only-http 给落在这个范围
+  内的 HTTP/1.1 请求加上 `Early-Data: 1`（RFC 8470；HTTP/2 则是以早期数据开始的连接上的每个请求）。
+
+开启早期数据时**防重放**始终生效：仅当客户端看到的票据年龄与服务端的相差不超过 10 秒时才接受
+（RFC 8446 第 8.3 节），并把每个被接受的 ClientHello 的 PSK binder 记录 20 秒（第 8.2 节）；见过的
+ClientHello 其早期数据被拒绝，按普通会话恢复继续。每个 `ServerConfig` 最多记录 100,000 个 ClientHello，
+满了就拒绝早期数据。
+
+**安全权衡。** 早期数据没有前向保密，且可被重放：上述记录能挡住窗口内对同一服务端的重放，挡不住发往
+共享票据的其他服务端的重放，也挡不住客户端被诱使再次发送的请求。只为可安全重复的请求（无副作用的读取）
+开启它，其余请求回 `425 Too Early`：
+
+```rust,ignore
+.post("/pay", |ctx: &mut Context| {
+    if ctx.header("early-data") == Some("1") {
+        return ctx.text(425, "too early"); // 客户端会在握手后重试
+    }
+    // ...
+})
+```
+
 ## 内核 TLS
 
 不使用：内核 TLS 卸载（握手后把记录密钥交给 Linux，使 `sendfile` 在 TLS 下可用）已经测量过，比 only-tls
@@ -97,7 +130,7 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 
 ## 尚未完成
 
-发送或接受 TLS 1.3 early data（0-RTT）；record_size_limit、证书压缩、OCSP stapling
+record_size_limit、证书压缩、OCSP stapling
 （忽略 status_request）；RSA-PSS 密钥（`rsa_pss_pss_*`）；P-521；系统根证书（请自行加载到
 `RootCerts`）。
 

@@ -37,7 +37,8 @@ fn fixture() -> &'static Fixture {
         let server = build(
             ServerConfig::builder(chain.clone(), pk.clone())
                 .alpn(["h2", "http/1.1"])
-                .session_tickets(true),
+                .session_tickets(true)
+                .early_data(16384),
         );
         let server_auth = build(
             ServerConfig::builder(chain, pk)
@@ -47,6 +48,7 @@ fn fixture() -> &'static Fixture {
         let client = ClientConfig::builder()
             .roots(roots.clone())
             .alpn(["h2"])
+            .early_data(true)
             .build()
             .unwrap_or_else(|_| unreachable!("fixed configuration"));
         let client12 = ClientConfig::builder()

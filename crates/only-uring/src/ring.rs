@@ -8,6 +8,9 @@
 //! tail with `Acquire` and publishes its CQ head with `Release` after copying the entries out.
 //! With SQPOLL, a `SeqCst` fence orders the tail store before reading `IORING_SQ_NEED_WAKEUP`.
 //! Structure layouts are those of `<linux/io_uring.h>`, checked by compile-time assertions.
+//! Items marked `#[cfg(test)]` (`SEND`, `SEND_ZC`, direct accept and registered files,
+//! `MSG_RING`) serve only the measurement harness in `eval.rs` and the unit tests: the engine
+//! does not use them (docs/BENCHMARKS.md, "io_uring features evaluation").
 
 use std::{
     io,
@@ -51,16 +54,44 @@ const OFF_CQ_RING: i64 = 0x0800_0000;
 const OFF_SQES: i64 = 0x1000_0000;
 
 /// `IORING_REGISTER_*`.
+#[cfg(test)]
+const REGISTER_FILES: u32 = 2;
 const REGISTER_PROBE: u32 = 8;
 const REGISTER_ENABLE_RINGS: u32 = 12;
 const REGISTER_PBUF_RING: u32 = 22;
+#[cfg(test)]
+const REGISTER_SEND_MSG_RING: u32 = 31;
 
 /// `IORING_OP_*`.
 pub(crate) const OP_POLL_ADD: u8 = 6;
 pub(crate) const OP_ACCEPT: u8 = 13;
 pub(crate) const OP_ASYNC_CANCEL: u8 = 14;
 pub(crate) const OP_READ: u8 = 22;
+#[cfg(test)]
+const OP_SEND: u8 = 26;
 pub(crate) const OP_RECV: u8 = 27;
+#[cfg(test)]
+const OP_CLOSE: u8 = 19;
+#[cfg(test)]
+const OP_MSG_RING: u8 = 40;
+#[cfg(test)]
+const OP_SEND_ZC: u8 = 47;
+
+/// `IOSQE_FIXED_FILE`: `fd` is an index into the registered file table.
+#[cfg(test)]
+const IOSQE_FIXED_FILE: u8 = 1 << 0;
+/// `IORING_SEND_ZC_REPORT_USAGE` (in `ioprio`): the notification says whether data was copied.
+#[cfg(test)]
+const SEND_ZC_REPORT_USAGE: u16 = 1 << 3;
+/// `IORING_FILE_INDEX_ALLOC`: let the kernel pick a free slot of the file table.
+#[cfg(test)]
+const FILE_INDEX_ALLOC: u32 = !0;
+/// `MSG_NOSIGNAL` (a reset peer fails the send with `EPIPE` instead of raising `SIGPIPE`).
+#[cfg(test)]
+const MSG_NOSIGNAL: u32 = 0x4000;
+/// `IORING_MSG_DATA` (the `MSG_RING` command in `addr`).
+#[cfg(test)]
+const MSG_DATA: u64 = 0;
 
 /// `IOSQE_BUFFER_SELECT`.
 const IOSQE_BUFFER_SELECT: u8 = 1 << 5;
@@ -74,6 +105,11 @@ const ASYNC_CANCEL_ANY: u32 = 1 << 2;
 /// `IORING_CQE_F_*`.
 const CQE_F_BUFFER: u32 = 1 << 0;
 const CQE_F_MORE: u32 = 1 << 1;
+#[cfg(test)]
+const CQE_F_NOTIF: u32 = 1 << 3;
+/// `IORING_NOTIF_USAGE_ZC_COPIED`: in a `SEND_ZC` notification, the kernel copied the data.
+#[cfg(test)]
+const NOTIF_USAGE_ZC_COPIED: i32 = 1 << 31;
 const CQE_BUFFER_SHIFT: u32 = 16;
 
 /// `IO_URING_OP_SUPPORTED`.
@@ -289,6 +325,72 @@ impl Sqe {
         }
     }
 
+    #[cfg(test)]
+    /// `IORING_OP_MSG_RING` / `IORING_MSG_DATA` (5.18+): posts a completion with `user_data`
+    /// and result `res` to the ring `target` (a ring fd), without touching its submission queue.
+    pub(crate) fn msg_ring(target: RawFd, res: u32, user_data: u64) -> Sqe {
+        Sqe {
+            opcode: OP_MSG_RING,
+            fd: target,
+            addr: MSG_DATA,
+            off: user_data,
+            len: res,
+            ..Sqe::default()
+        }
+    }
+
+    #[cfg(test)]
+    /// `IORING_OP_SEND` of `len` bytes at `buf`.
+    pub(crate) fn send(fd: RawFd, buf: *const u8, len: u32) -> Sqe {
+        Sqe {
+            opcode: OP_SEND,
+            fd,
+            addr: buf as u64,
+            len,
+            op_flags: MSG_NOSIGNAL,
+            ..Sqe::default()
+        }
+    }
+
+    #[cfg(test)]
+    /// `IORING_OP_SEND_ZC` (6.0+) of `len` bytes at `buf`: completes once with the result
+    /// (`F_MORE` set), then again with `F_NOTIF` when the kernel no longer uses the buffer.
+    pub(crate) fn send_zc(fd: RawFd, buf: *const u8, len: u32) -> Sqe {
+        Sqe {
+            opcode: OP_SEND_ZC,
+            ioprio: SEND_ZC_REPORT_USAGE,
+            ..Sqe::send(fd, buf, len)
+        }
+    }
+
+    #[cfg(test)]
+    /// Multishot accept straight into the registered file table (`IORING_ACCEPT_DIRECT`, 5.19+):
+    /// each completion's result is the slot the kernel picked, not a descriptor.
+    pub(crate) fn accept_multi_direct(fd: RawFd) -> Sqe {
+        Sqe {
+            file_index: FILE_INDEX_ALLOC,
+            ..Sqe::accept_multi(fd)
+        }
+    }
+
+    #[cfg(test)]
+    /// `IORING_OP_CLOSE` of registered-file slot `slot`.
+    pub(crate) fn close_fixed(slot: u32) -> Sqe {
+        Sqe {
+            opcode: OP_CLOSE,
+            file_index: slot + 1,
+            ..Sqe::default()
+        }
+    }
+
+    #[cfg(test)]
+    /// Names the file by registered-table slot (`IOSQE_FIXED_FILE`) instead of descriptor.
+    #[must_use]
+    pub(crate) fn fixed(mut self) -> Sqe {
+        self.flags |= IOSQE_FIXED_FILE;
+        self
+    }
+
     /// Sets the value the completion carries back.
     #[must_use]
     pub(crate) fn user_data(mut self, v: u64) -> Sqe {
@@ -302,6 +404,18 @@ impl Sqe {
 /// `IORING_CQE_F_MORE`: the (multishot) request stays armed and will complete again.
 pub(crate) fn cqe_more(flags: u32) -> bool {
     flags & CQE_F_MORE != 0
+}
+
+#[cfg(test)]
+/// `IORING_CQE_F_NOTIF`: a `SEND_ZC` notification (the buffer is free again).
+pub(crate) fn cqe_notif(flags: u32) -> bool {
+    flags & CQE_F_NOTIF != 0
+}
+
+#[cfg(test)]
+/// In a `SEND_ZC` notification's result: the kernel fell back to copying the data.
+pub(crate) fn notif_copied(res: i32) -> bool {
+    res & NOTIF_USAGE_ZC_COPIED != 0
 }
 
 /// `IORING_CQE_F_BUFFER`: the provided buffer the kernel selected for this completion.
@@ -646,6 +760,14 @@ impl Ring {
         unsafe { self.register(REGISTER_ENABLE_RINGS, ptr::null(), 0) }.map(drop)
     }
 
+    #[cfg(test)]
+    /// `IORING_REGISTER_FILES` with `n` empty slots (a sparse table for direct descriptors).
+    pub(crate) fn register_files_sparse(&self, n: u32) -> io::Result<()> {
+        let fds = vec![-1i32; n as usize];
+        // SAFETY: `fds` holds `n` descriptors (all -1: empty), read during the call.
+        unsafe { self.register(REGISTER_FILES, fds.as_ptr().cast(), n) }.map(drop)
+    }
+
     /// `IORING_REGISTER_PROBE`: which opcodes this kernel supports.
     pub(crate) fn probe(&self) -> io::Result<Box<Probe>> {
         let mut p = Box::new(Probe {
@@ -693,6 +815,24 @@ impl Ring {
     }
 }
 
+#[cfg(test)]
+/// `IORING_REGISTER_SEND_MSG_RING` (6.13+): sends the `MSG_RING` entry `e` (see
+/// [`Sqe::msg_ring`]) from a thread that has no ring of its own, in one system call.
+pub(crate) fn send_msg_ring(e: &Sqe) -> io::Result<()> {
+    // SAFETY: `e` is a live 64-byte `io_uring_sqe`, read during the call; the ring fd it names
+    // is the caller's business (an fd that is no ring fails with `EBADFD`/`EINVAL`).
+    cvt(unsafe {
+        ffi::syscall(
+            ffi::SYS_io_uring_register,
+            c_long::from(-1),
+            c_long::from(REGISTER_SEND_MSG_RING),
+            (&raw const *e).cast::<c_void>(),
+            c_long::from(1),
+        )
+    })
+    .map(drop)
+}
+
 impl Probe {
     /// Whether `opcode` is supported.
     pub(crate) fn is_supported(&self, opcode: u8) -> bool {
@@ -733,5 +873,46 @@ mod tests {
         assert_eq!(cqe_buffer((5 << 16) | CQE_F_BUFFER | CQE_F_MORE), Some(5));
         assert_eq!(cqe_buffer(5 << 16), None);
         assert!(cqe_more(CQE_F_MORE) && !cqe_more(CQE_F_BUFFER));
+        // `MSG_RING` / `IORING_MSG_DATA`: target ring in `fd`, result in `len`, the target's
+        // `user_data` in `off` (`addr` = 0 is the command).
+        let e = Sqe::msg_ring(11, 7, 0x1234);
+        assert_eq!(
+            (e.opcode, e.fd, e.addr, e.off, e.len, e.op_flags, e.flags),
+            (OP_MSG_RING, 11, 0, 0x1234, 7, 0, 0)
+        );
+        // The evaluation-only entries (`eval.rs`).
+        let e = Sqe::send_zc(3, b.as_ptr(), 8).fixed();
+        assert_eq!(
+            (e.opcode, e.flags, e.ioprio, e.op_flags, e.len),
+            (OP_SEND_ZC, 1, 1 << 3, 0x4000, 8)
+        );
+        let e = Sqe::accept_multi_direct(5);
+        assert_eq!((e.opcode, e.ioprio, e.file_index), (OP_ACCEPT, 1, !0));
+        let e = Sqe::close_fixed(4);
+        assert_eq!((e.opcode, e.fd, e.file_index), (OP_CLOSE, 0, 5));
+        assert!(cqe_notif(CQE_F_NOTIF) && notif_copied(i32::MIN) && !notif_copied(0));
+        let e = Sqe::send(3, b.as_ptr(), 8);
+        assert_eq!(e.opcode, OP_SEND);
+    }
+
+    /// `MSG_RING` from a thread without a ring (`IORING_REGISTER_SEND_MSG_RING`, 6.13+) lands in
+    /// the target's completion queue with the given `user_data` and result. Skipped where
+    /// io_uring or that registration opcode is missing.
+    #[test]
+    fn msg_ring_without_a_source_ring() {
+        let Ok(mut ring) = Ring::new(8, 0, 0, 0) else {
+            return;
+        };
+        let e = Sqe::msg_ring(ring.fd.as_raw_fd(), 7, 0x1234);
+        if send_msg_ring(&e).is_err() {
+            return;
+        }
+        ring.submit_and_wait(1).unwrap();
+        let mut out = Vec::new();
+        ring.reap_into(&mut out);
+        assert_eq!(out, vec![(0x1234, 7, 0)]);
+        // A descriptor that is no ring is refused.
+        let not_a_ring = std::fs::File::open("/dev/null").unwrap();
+        assert!(send_msg_ring(&Sqe::msg_ring(not_a_ring.as_raw_fd(), 0, 1)).is_err());
     }
 }

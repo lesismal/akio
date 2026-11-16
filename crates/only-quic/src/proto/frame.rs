@@ -197,6 +197,19 @@ impl Frame<'_> {
                 | Frame::ConnectionClose { app: false, .. }
         )
     }
+
+    /// Whether the frame may come in a 0-RTT packet (RFC 9000 section 12.4, table 3).
+    pub fn allowed_in_0rtt(&self) -> bool {
+        !matches!(
+            self,
+            Frame::Ack { .. }
+                | Frame::Crypto { .. }
+                | Frame::NewToken(_)
+                | Frame::HandshakeDone
+                | Frame::PathResponse(_)
+                | Frame::RetireConnectionId(_)
+        )
+    }
 }
 
 /// Parses the next frame. `ty` gets the frame type for error reports.

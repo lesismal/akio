@@ -36,7 +36,9 @@ pub(crate) struct RecvSide {
 pub(crate) struct StreamState {
     pub send: Option<SendSide>,
     pub recv: Option<RecvSide>,
-    queued: bool,
+    pub(super) queued: bool,
+    /// Data of the stream arrived in 0-RTT packets (server): possibly replayed.
+    pub early: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -72,7 +74,13 @@ impl Connection {
             send,
             recv,
             queued: false,
+            early: false,
         }
+    }
+
+    /// Whether data of stream `id` arrived in 0-RTT packets (server): it may be a replay.
+    pub fn is_early(&self, id: StreamId) -> bool {
+        self.streams.get(&u64::from(id)).is_some_and(|s| s.early)
     }
 
     /// Opens a stream of `dir`; `None` while the peer's limit is reached.
@@ -283,9 +291,11 @@ impl Connection {
         data: Bytes,
         fin: bool,
     ) -> Result<(), TransportError> {
+        let early = self.rx_early;
         let Some(s) = self.stream_for(raw, Need::Recv)? else {
             return Ok(());
         };
+        s.early |= early;
         let Some(r) = s.recv.as_mut() else {
             return Ok(());
         };

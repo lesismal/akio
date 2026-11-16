@@ -110,6 +110,14 @@ impl<S: Read + Write> Stream<S> {
         Ok(())
     }
 
+    /// Before the handshake: sends `buf` as early data (0-RTT) as far as the client config and
+    /// the ticket allow, and queues the rest for after the handshake. See
+    /// [`Connection::early_data`] for what became of it.
+    pub fn write_early(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.conn.seal(buf, &mut self.out).map_err(err)?;
+        self.flush_out()
+    }
+
     /// Sends close_notify.
     pub fn close(&mut self) -> io::Result<()> {
         #[cfg(all(target_os = "linux", feature = "experimental-ktls"))]

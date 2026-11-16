@@ -5,14 +5,18 @@
 //! tls-interop server <addr> --cert c.pem --key k.pem [--ca ca.pem [--require]] [--alpn h2,..]
 //!                           [--http-server]
 //!                           [--tls12|--tls13] [--suites 0x1301,..] [--groups 0x1d,..]
-//!                           [--tickets] [--count N] [--hrr]
+//!                           [--tickets] [--count N] [--hrr] [--early-data [--early-max N]]
 //! tls-interop client <addr> <name> [--ca ca.pem | --insecure] [--cert c.pem --key k.pem]
 //!                           [--alpn ..] [--tls12|--tls13] [--suites ..] [--groups ..]
 //!                           [--count N] [--expect-resume] [--key-update] [--bytes N] [--http]
+//!                           [--early-data] [--expect-early accepted|rejected]
 //! ```
 //!
 //! The server echoes what it reads (`--count` connections, then exits); the client sends a line,
-//! checks the echo and prints what was negotiated, one line per connection.
+//! checks the echo and prints what was negotiated, one line per connection. With
+//! `--early-data` the client sends its line (or HTTP request) before the handshake, as TLS 1.3
+//! early data when it resumes with a ticket allowing it; `--expect-early` checks what the
+//! server did with it from the second connection on.
 //!
 //! `--ktls` (or `ONLY_INTEROP_KTLS=1` in the environment, `=require` to fail when the kernel
 //! refuses; needs Linux and the `experimental-ktls` feature) moves the record layer into the Linux kernel after the handshake (kernel TLS,
@@ -48,6 +52,8 @@ struct Opts {
     http_server: bool,
     ktls: bool,
     ktls_required: bool,
+    early_data: Option<u32>,
+    expect_early: Option<String>,
 }
 
 fn hex_list(s: &str) -> Vec<u16> {
@@ -79,6 +85,8 @@ fn parse() -> Opts {
         http_server: false,
         ktls: false,
         ktls_required: false,
+        early_data: None,
+        expect_early: None,
     };
     match std::env::var("ONLY_INTEROP_KTLS").as_deref() {
         Ok("1") => o.ktls = true,
@@ -108,6 +116,10 @@ fn parse() -> Opts {
             "--http" => o.http = true,
             "--http-server" => o.http_server = true,
             "--ktls" => o.ktls = true,
+            // Server: accept up to 16384 bytes (or `--early-max`); client: send early.
+            "--early-data" => o.early_data = Some(o.early_data.unwrap_or(16384)),
+            "--early-max" => o.early_data = Some(val().parse().expect("early-max")),
+            "--expect-early" => o.expect_early = Some(val()),
             _ => o.pos.push(x),
         }
     }
@@ -126,7 +138,7 @@ fn roots(p: &str) -> RootCerts {
 
 fn describe(c: &only_tls::__proto::Connection) -> String {
     format!(
-        "version={} suite={} alpn={} resumed={} sni={} peer_certs={}",
+        "version={} suite={} alpn={} resumed={} sni={} peer_certs={} early={:?}/{}",
         c.version_name().unwrap_or("-"),
         c.suite().map_or("-", |s| s.name),
         c.alpn().map_or_else(
@@ -136,6 +148,8 @@ fn describe(c: &only_tls::__proto::Connection) -> String {
         c.resumed(),
         c.server_name().unwrap_or("-"),
         c.peer_certificates().len(),
+        c.early_data(),
+        c.early_data_len(),
     )
 }
 
@@ -186,7 +200,8 @@ fn server(o: &Opts) {
         .session_tickets(o.tickets)
         .tls13_only(o.tls13)
         .__tls12_only(o.tls12)
-        .__force_hello_retry(o.hrr);
+        .__force_hello_retry(o.hrr)
+        .early_data(o.early_data.unwrap_or(0));
     if let Some(ca) = &o.ca {
         b = if o.require {
             b.client_auth_required(roots(ca))
@@ -254,7 +269,8 @@ fn client(o: &Opts) {
     let mut b = ClientConfig::builder()
         .alpn(&o.alpn)
         .tls13_only(o.tls13)
-        .__tls12_only(o.tls12);
+        .__tls12_only(o.tls12)
+        .early_data(o.early_data.is_some());
     if o.insecure {
         b = b.insecure_skip_verify();
     } else if let Some(ca) = &o.ca {
@@ -279,6 +295,18 @@ fn client(o: &Opts) {
         tcp.set_read_timeout(Some(Duration::from_secs(20))).ok();
         let mut s = Stream::client(&cfg, &o.pos[2], tcp).expect("client");
         want_ktls(o, &mut s);
+        let pad = "x".repeat(o.bytes);
+        let req = format!("GET / HTTP/1.0\r\nX-Pad: {pad}\r\n\r\n").into_bytes();
+        let mut msg = format!("hello from only-tls {i}\n").into_bytes();
+        msg.resize(msg.len().max(o.bytes), b'x');
+        if o.early_data.is_some() {
+            // Everything before the handshake: early data if the ticket allows it.
+            let first = if o.http { &req } else { &msg };
+            if let Err(e) = s.write_early(first) {
+                println!("early write: {e}");
+                std::process::exit(1);
+            }
+        }
         if let Err(e) = s.handshake() {
             println!("handshake failed: {e}");
             std::process::exit(1);
@@ -289,6 +317,13 @@ fn client(o: &Opts) {
             println!("expected a resumed session");
             failed = true;
         }
+        if let (Some(want), true) = (&o.expect_early, i > 0) {
+            let got = format!("{:?}", s.conn().early_data()).to_ascii_lowercase();
+            if got != *want || (want == "accepted" && s.conn().early_data_len() == 0) {
+                println!("expected early data {want}, got {got}");
+                failed = true;
+            }
+        }
         if o.key_update && !s.offloaded() {
             s.conn_mut().set_key_update_after(1);
         }
@@ -296,9 +331,12 @@ fn client(o: &Opts) {
         let ktls_key_update = o.key_update && s.offloaded();
         if o.http {
             // `openssl s_server -www` answers a GET with a status page, then closes.
-            let pad = "x".repeat(o.bytes);
-            let req = format!("GET / HTTP/1.0\r\nX-Pad: {pad}\r\n\r\n").into_bytes();
-            for chunk in [&req[..req.len() / 2], &req[req.len() / 2..]] {
+            let chunks: [&[u8]; 2] = if o.early_data.is_some() {
+                [&[], &[]]
+            } else {
+                [&req[..req.len() / 2], &req[req.len() / 2..]]
+            };
+            for chunk in chunks {
                 if ktls_key_update {
                     key_update(&mut s);
                 }
@@ -315,9 +353,12 @@ fn client(o: &Opts) {
             }
             continue;
         }
-        let mut msg = format!("hello from only-tls {i}\n").into_bytes();
-        msg.resize(msg.len().max(o.bytes), b'x');
-        for chunk in [&msg[..msg.len() / 2], &msg[msg.len() / 2..]] {
+        let chunks: [&[u8]; 2] = if o.early_data.is_some() {
+            [&[], &[]]
+        } else {
+            [&msg[..msg.len() / 2], &msg[msg.len() / 2..]]
+        };
+        for chunk in chunks {
             if ktls_key_update {
                 key_update(&mut s);
             }

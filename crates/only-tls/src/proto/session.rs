@@ -27,12 +27,18 @@ pub(crate) struct Session {
     pub(crate) ems: bool,
     /// The client's certificate chain (server side).
     pub(crate) peer_chain: Vec<Vec<u8>>,
+    /// TLS 1.3: the max_early_data_size of the ticket (0: no early data).
+    pub(crate) max_early_data: u32,
+    /// TLS 1.3 early data context. Server: what the early data was bound to besides the
+    /// ticket (QUIC: the transport parameters 0-RTT may use, RFC 9001 section 4.6.2). Client
+    /// (QUIC): the server's transport parameters, remembered for 0-RTT (RFC 9000 7.4.1).
+    pub(crate) early_ctx: Vec<u8>,
 }
 
 impl Session {
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut o = Vec::with_capacity(128);
-        put_u8(&mut o, 1); // format
+        put_u8(&mut o, 2); // format
         put_u16(&mut o, self.version);
         put_u16(&mut o, self.suite);
         put_vec8(&mut o, &self.secret);
@@ -48,6 +54,8 @@ impl Session {
         for c in &self.peer_chain {
             put_vec24(&mut o, c);
         }
+        put_u32(&mut o, self.max_early_data);
+        put_vec16(&mut o, &self.early_ctx);
         o
     }
 
@@ -57,7 +65,7 @@ impl Session {
 
     fn try_decode(b: &[u8]) -> DResult<Session> {
         let mut r = Reader::new(b);
-        if r.u8()? != 1 {
+        if r.u8()? != 2 {
             return fatal(Alert::DecodeError, "session format");
         }
         let version = r.u16()?;
@@ -77,6 +85,8 @@ impl Session {
         for _ in 0..n {
             peer_chain.push(r.vec24()?.to_vec());
         }
+        let max_early_data = r.u32()?;
+        let early_ctx = r.vec16()?.to_vec();
         r.finish()?;
         Ok(Session {
             version,
@@ -89,6 +99,8 @@ impl Session {
             sni: has_sni.then_some(sni),
             ems,
             peer_chain,
+            max_early_data,
+            early_ctx,
         })
     }
 
@@ -179,6 +191,71 @@ impl SessionCache {
         let s = g.0.remove(id)?;
         g.1.retain(|k| k != id);
         Some(s)
+    }
+}
+
+/// Binders recorded (first 32 bytes), and their expiry times in order.
+type Seen = (
+    std::collections::HashSet<[u8; 32]>,
+    VecDeque<(u64, [u8; 32])>,
+);
+
+/// The server's 0-RTT anti-replay state (RFC 8446 section 8.2, "ClientHello recording", with
+/// the freshness check of section 8.3): the PSK binder of every ClientHello whose early data
+/// was accepted is kept for twice the freshness window, and a ClientHello whose binder is
+/// already there has its early data rejected (it falls back to a full 1-RTT handshake). Early
+/// data is accepted only when the ticket age the client reports is within the window of the
+/// age the server computes, so a replay that comes after its entry expired fails the freshness
+/// check instead. Bounded: when the cache is full, early data is rejected until entries
+/// expire. One per server configuration (and so per process): servers sharing tickets across
+/// processes or machines need a shared store (or single-use tickets) instead.
+#[derive(Debug)]
+pub(crate) struct AntiReplay {
+    /// The freshness window, milliseconds.
+    pub(crate) window_ms: u64,
+    cap: usize,
+    inner: Mutex<Seen>,
+}
+
+impl AntiReplay {
+    pub(crate) fn new(window_ms: u64, cap: usize) -> AntiReplay {
+        AntiReplay {
+            window_ms,
+            cap,
+            inner: Mutex::new((std::collections::HashSet::new(), VecDeque::new())),
+        }
+    }
+
+    /// Whether a ticket issued at `issued_ms` and presented at `now_ms` with the client's view
+    /// of its age `client_age_ms` is fresh: both ages within the window of each other.
+    pub(crate) fn fresh(&self, issued_ms: u64, client_age_ms: u32, now_ms: u64) -> bool {
+        let server_age = now_ms.saturating_sub(issued_ms);
+        server_age.abs_diff(u64::from(client_age_ms)) <= self.window_ms
+    }
+
+    /// Records the ClientHello identified by `binder` (its first PSK binder) at `now_ms`:
+    /// `false` if it was seen before within the retention time, or if the cache is full.
+    pub(crate) fn record(&self, binder: &[u8], now_ms: u64) -> bool {
+        let Ok(mut g) = self.inner.lock() else {
+            return false;
+        };
+        let (set, order) = &mut *g;
+        while let Some((exp, k)) = order.front() {
+            if *exp > now_ms {
+                break;
+            }
+            set.remove(k);
+            order.pop_front();
+        }
+        let mut key = [0u8; 32];
+        let n = binder.len().min(32);
+        key[..n].copy_from_slice(&binder[..n]);
+        if set.contains(&key) || set.len() >= self.cap {
+            return false;
+        }
+        set.insert(key);
+        order.push_back((now_ms + 2 * self.window_ms, key));
+        true
     }
 }
 
@@ -289,6 +366,8 @@ mod tests {
             sni: Some("a.test".into()),
             ems: true,
             peer_chain: vec![vec![1, 2], vec![3]],
+            max_early_data: 16384,
+            early_ctx: vec![9, 9],
         }
     }
 
@@ -308,6 +387,25 @@ mod tests {
         assert!(t.open(&bad).is_none());
         assert!(Ticketer::new().unwrap().open(&sealed).is_none());
         assert!(t.open(&[0; 10]).is_none());
+    }
+
+    #[test]
+    fn anti_replay() {
+        let a = AntiReplay::new(10_000, 2);
+        assert!(a.fresh(1_000, 5_000, 6_000));
+        assert!(a.fresh(1_000, 0, 11_000));
+        assert!(!a.fresh(1_000, 0, 11_001));
+        assert!(!a.fresh(30_000, 15_000, 30_000));
+        assert!(a.record(&[1; 32], 0));
+        // A replay inside the retention time is refused, also later in it.
+        assert!(!a.record(&[1; 32], 5));
+        assert!(!a.record(&[1; 32], 19_999));
+        assert!(a.record(&[2; 48], 10));
+        // Full: refused, until the oldest entry expires.
+        assert!(!a.record(&[3; 32], 100));
+        assert!(a.record(&[3; 32], 20_000));
+        // The first entry expired: accepted again (the freshness check covers this case).
+        assert!(a.record(&[1; 32], 20_011));
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub(crate) const HELLO_REQUEST: u8 = 0;
 pub(crate) const CLIENT_HELLO: u8 = 1;
 pub(crate) const SERVER_HELLO: u8 = 2;
 pub(crate) const NEW_SESSION_TICKET: u8 = 4;
+pub(crate) const END_OF_EARLY_DATA: u8 = 5;
 pub(crate) const ENCRYPTED_EXTENSIONS: u8 = 8;
 pub(crate) const CERTIFICATE: u8 = 11;
 pub(crate) const SERVER_KEY_EXCHANGE: u8 = 12;

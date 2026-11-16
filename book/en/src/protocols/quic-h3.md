@@ -91,6 +91,22 @@ reserved and enables nothing (it exposed quinn-proto before the in-house impleme
   under a connection ID not used before and adopted once answered; without an answer within
   three PTOs the connection stays where it was.
 
+### 0-RTT
+
+Off by default: `ServerConfig::zero_rtt(true)` and `ClientConfig::zero_rtt(true)`. A client
+that resumes with a ticket allowing 0-RTT can open streams right after `dial` (under the limits
+the server gave on the earlier connection) and their data leaves in 0-RTT packets with the
+first flight; the server answers in 0.5-RTT, a round trip earlier than after a full handshake.
+The server accepts 0-RTT only under the same transport limits as when it issued the ticket and
+with only-tls's replay protection (a 10-second freshness window and a bounded record of recent
+ClientHellos per server); otherwise, or when 0-RTT packets are lost, the data goes again in
+1-RTT packets (after a Retry, in 0-RTT to the new connection ID). `Connection::early_data()`
+tells the client what happened; `Connection::is_early(stream)` tells the server which streams
+came early, and only-h3 marks such requests `Early-Data: 1` (RFC 8470), so handlers can answer
+`425 Too Early` to what is not safe to repeat. `H3Client` sends its requests in 0-RTT when its
+config enables it. 0-RTT data can be replayed (to another server sharing tickets, or within the
+window by an attacker who can make the client retry) and is not forward secret.
+
 ## HTTP/3
 
 ```rust,ignore
@@ -115,7 +131,7 @@ share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app
 ```
 
 `H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`); requests sent before
-the handshake completes wait for it. `request(method, path, headers, body, callback)`,
+the handshake completes wait for it (unless the client resumes with 0-RTT, see above). `request(method, path, headers, body, callback)`,
 `request_blocking(..)`, `get(path, timeout)`, `close()`, `connection()`.
 
 ## How HTTP/3 reuses `only-http`
@@ -135,5 +151,5 @@ Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/only/blob/main/docs/BE
 
 ## Not done
 
-QUIC 0-RTT, curl/quiche interop runs, WebSocket over HTTP/3 (extended CONNECT), the QPACK dynamic table
+curl/quiche interop runs, WebSocket over HTTP/3 (extended CONNECT), the QPACK dynamic table
 (capacity 0 is advertised), server push, streamed request bodies.

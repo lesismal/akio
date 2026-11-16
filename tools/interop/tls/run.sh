@@ -2,7 +2,7 @@
 # only-tls <-> OpenSSL (s_server / s_client) and Go crypto/tls, both directions:
 # TLS 1.3 and 1.2, every implemented cipher suite and group, RSA / ECDSA P-256 / P-384 /
 # Ed25519 certificates, client authentication, resumption (tickets and session IDs),
-# HelloRetryRequest, ALPN, SNI, KeyUpdate.
+# HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none).
 #
 #   tools/interop/tls/run.sh              # needs openssl (3.x+) and go on PATH
 #   OUT=/tmp/x tools/interop/tls/run.sh   # where PKI, logs and binaries go
@@ -219,6 +219,40 @@ for v in tls1_3 tls1_2; do
         kill $sp 2>/dev/null
         wait $sp 2>/dev/null
     done
+done
+# Early data (0-RTT): only's client sends its request before the handshake when it resumes.
+s_server_case "1.3 early data" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -early_data" \
+    "--count 3 --expect-resume --early-data --expect-early accepted"
+# A HelloRetryRequest (the server wants P-384) rejects it: sent again after the handshake.
+# (OpenSSL's anti-replay uses each ticket once, already for the first ClientHello, so the
+# second one is a full handshake.)
+s_server_case "1.3 early data rejected (HRR)" \
+    "-cert $P/p256.pem -key $P/p256.key -tls1_3 -early_data -groups P-384" \
+    "--count 3 --early-data --expect-early rejected"
+for t in "" "--hrr"; do
+    next_port
+    # shellcheck disable=SC2086
+    "$ONLY" server "127.0.0.1:$PORT" --count 4 $S --tickets --early-data $t > "$OUT/srv.log" 2>&1 &
+    sp=$!
+    wait_port "$PORT"
+    rm -f "$OUT/sess"
+    printf 'early hello\n' > "$OUT/early.txt"
+    (echo a; sleep 0.5) | timeout 10 openssl s_client -connect "127.0.0.1:$PORT" -servername localhost \
+        -CAfile "$P/ca.pem" -tls1_3 -sess_out "$OUT/sess" > "$OUT/cli.log" 2>&1
+    sleep 0.5 | timeout 10 openssl s_client -connect "127.0.0.1:$PORT" -servername localhost \
+        -CAfile "$P/ca.pem" -tls1_3 -sess_in "$OUT/sess" -early_data "$OUT/early.txt" > "$OUT/cli2.log" 2>&1
+    if [ -z "$t" ] && grep -q "^Early data was accepted" "$OUT/cli2.log" &&
+        grep -q "^early hello" "$OUT/cli2.log" && grep -q "early=Accepted/12" "$OUT/srv.log"; then
+        ok "openssl -> only server: 1.3 early data accepted"
+    elif [ -n "$t" ] && grep -q "^Early data was rejected" "$OUT/cli2.log" &&
+        grep -q "early=Rejected/0" "$OUT/srv.log"; then
+        ok "openssl -> only server: 1.3 early data rejected (HRR)"
+    else
+        ko "openssl -> only server: 1.3 early data ${t:-accepted}" "$OUT/cli2.log"
+        sed 's/^/    srv: /' "$OUT/srv.log" | tail -5
+    fi
+    kill $sp 2>/dev/null
+    wait $sp 2>/dev/null
 done
 # ALPN and SNI.
 s_server_case "1.3 ALPN" "-cert $P/p256.pem -key $P/p256.key -alpn h2,http/1.1" "--alpn http/1.1,h2"

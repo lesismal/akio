@@ -293,6 +293,92 @@ the engine integration (epoll / io_uring receive with `TLS_GET_RECORD_TYPE`, con
 the write queue), `TLS_RX_EXPECT_NO_PAD`, and sending our own KeyUpdate before the AES-GCM record
 limit (the kernel does not count for us).
 
+### io_uring features evaluation (`tools/bench/uring-eval.sh`, engine A/B)
+
+Measured 2026-11-16. Question (DEV-PLAN M2): should the io_uring backend use registered files, `SEND_ZC`, `MSG_RING`
+wake-ups or ring-based sends? Rule: adopt only with a clear same-run gain of at least 3% and no
+regression elsewhere. **Answer: none of them, for now.** Ring-based sends are the only one with a
+real signal (2–7% less server CPU per request on a bare ring), but the engine writes from any
+thread straight to the socket, so using them is a redesign of the write path, not a switch.
+`SEND_ZC` loses everywhere on loopback; the others are within noise. Linux 7.0, Ryzen 7 7800X3D,
+everything under `quiet.sh`, server on CPUs 0–3 (4 threads), `h2load` / `echo-bench` with 8
+threads on CPUs 4–7 and 12–15; the backend already uses multishot accept and recv, a
+provided-buffer ring, and `COOP_TASKRUN` + `SINGLE_ISSUER` + `DEFER_TASKRUN` rings.
+
+**Send mechanisms on a bare ring.** The engine cannot switch to ring sends without that
+redesign, so they were measured on a minimal HTTP/1.1 responder driven straight on only-uring's
+ring (the ignored `eval_server` test, `crates/only-uring/src/eval.rs`): the same multishot accept
+and recv as the backend, one fixed response per request from a static buffer (so `SEND_ZC` never
+waits for a buffer to come back: its best case), sent with `write(2)` from the completion handler
+(what the engine does), with `IORING_OP_SEND` entries submitted with the next wait, or with
+`IORING_OP_SEND_ZC`; "+fixed" adds direct accept into a registered file table and
+`IOSQE_FIXED_FILE` on every entry. 256 connections, 5 interleaved rounds of 5 s, medians;
+throughput relative to `write`, and server CPU (user + system, from `/proc`) per request.
+
+| Response (in flight per connection) | `write` req/s | SEND | SEND +fixed | SEND_ZC | SEND_ZC +fixed | CPU µs/req: write / SEND / +fixed / ZC |
+|---|---:|---:|---:|---:|---:|---|
+| 13 B body (16, pipelined) | 9,011,289 | 1.038 | 1.066 | 0.885 | 0.911 | 0.333 / 0.312 / 0.309 / 0.366 |
+| 1 KiB (16, pipelined) | 7,302,214 | 1.035 | 1.046 | 0.880 | 0.866 | 0.546 / 0.527 / 0.525 / 0.622 |
+| 16 KiB (1) | 495,080 | 1.033 | 1.039 | 0.877 | 0.881 | 8.08 / 7.82 / 7.79 / 9.20 |
+| 64 KiB (1) | 296,010 | 1.018 | 1.025 | 0.768 | 0.772 | 13.52 / 13.27 / 13.21 / 17.64 |
+| 256 KiB (1) | 110,173 | 1.011 | 1.016 | 0.733 | 0.738 | 36.3 / 35.8 / 35.8 / 49.5 |
+
+- **`SEND_ZC`: not adopted.** 12–27% slower and 10–36% more CPU per request, worst for the large
+  responses it is meant for. With `IORING_SEND_ZC_REPORT_USAGE` every notification said the
+  kernel had copied the data: loopback (and a veth pair) cannot hand pages to the receiver, so
+  zero-copy turns into a copy plus page pinning plus a second completion per send. It can only
+  win with a real NIC and responses of 16 KiB and up, and then needs the send buffer held until
+  its notification, which the engine's write queue does not do. Re-measure with
+  `tools/bench/uring-eval.sh` on a host with a NIC.
+- **Ring-based sends (`IORING_OP_SEND`): not adopted now; the one candidate worth a project.**
+  +1–4% throughput and 2–6% less CPU per request than `write(2)`, most for small responses (the
+  sends of a whole completion batch go to the kernel in the one `io_uring_enter` the loop makes
+  anyway). In the engine, `Conn::send` from any thread writes straight to the socket and only
+  queues the rest, and that write path is shared with epoll; ring sends need the bytes owned until
+  their completion, one send in flight per connection, and ordering against direct writes from
+  other threads. For the HTTP server the saved ~0.02 µs per pipelined request is ~2–3% of its
+  CPU per request (0.9 µs at 4.5 M req/s on 4 cores), under the bar.
+- **Registered files (direct accept, `IOSQE_FIXED_FILE`): not adopted.** On top of ring sends,
+  +0.4–2.7%. In the engine there is nothing for them to save: counting submissions over a
+  plaintext run (2.3 M requests, and 13.6 M pipelined) showed 520 entries in total, i.e. two per
+  connection (the multishot recv and the reset watch) plus the loops' own; in steady state the
+  backend submits no entry per request, and the only per-request system calls are the response
+  `write` and a shared `io_uring_enter`. Direct descriptors also have no normal fd, which the
+  direct `write` path from other threads needs.
+
+**Engine A/B** (temporary patch of the reactor behind an environment switch, both variants in
+every round, fresh server per run, `http-bench` / `bench-server`):
+
+| Case | Registered ring fd (5 rounds) | `MSG_RING` wake-up, run 1 (5 rounds) | `MSG_RING`, run 2 (7 rounds) |
+|---|---:|---:|---:|
+| HTTP/1.1 plaintext, 256 connections | 0.985 | 0.995 | 1.002 |
+| HTTP/1.1 pipelined 16 x 256 | 1.000 | 1.002 | 1.001 |
+| TCP echo 64 B x 256 | 0.964 | 0.964 | 0.974 |
+| TCP echo 16 KiB x 256 | 0.982 | 1.044 | 0.983 |
+| `spawn_blocking` echo (`block-pool 0`), 64 B x 256 | 1.005 | 1.048 | 1.030 |
+| `spawn_blocking` echo, 64 B x 64 | | | 0.987 |
+| `spawn_blocking` echo, 1 KiB x 256 | | | 1.015 |
+
+- **Registered ring fd (`IORING_REGISTER_RING_FDS` + `IORING_ENTER_REGISTERED_RING`): not
+  adopted.** It saves the fd lookup of each `io_uring_enter`, and the loop makes about one enter
+  per 20 requests at 256 connections: −3.6% to +0.5%, i.e. noise (the plain echo rows move ±10%
+  between rounds on this host).
+- **`MSG_RING` wake-ups: not adopted.** Another thread (a pool thread finishing a
+  `spawn_blocking`, a cross-thread `close`) wakes the loop by writing its eventfd, which a
+  pending `read` on the ring completes; with `IORING_REGISTER_SEND_MSG_RING` (6.13+) a thread
+  without a ring can post a completion straight into the loop's CQ, so the loop no longer
+  re-arms the eventfd read. It works (strace: 8,949 `io_uring_register` calls replaced 5,558
+  eventfd writes in 2 s of pool echo), but the gain is only where wake-ups dominate and not clear:
+  +3.0–4.8% for 64 B pool echo with 256 connections, +1.5% at 1 KiB, −1.3% with 64 connections;
+  pool round trips are dominated by the pool's own futex wake-ups (~94% of the server's syscall
+  time). Cross-thread `Conn::send` needs no wake-up at all unless the socket is full (it writes
+  directly), so it gains nothing.
+- **Already in use**: `COOP_TASKRUN`, `SINGLE_ISSUER`, `DEFER_TASKRUN` (fallbacks when refused),
+  multishot accept and recv, the provided-buffer ring; `SQPOLL` is opt-in (`UringConfig::sqpoll`).
+  Registered buffers would only serve `SEND_ZC` (fixed send buffers) or `READ_FIXED`; with
+  multishot recv on provided buffers and direct writes there is nothing to register. Recv
+  bundles and incremental buffer consumption were not tried.
+
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

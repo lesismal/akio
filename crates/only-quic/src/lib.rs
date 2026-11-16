@@ -223,7 +223,9 @@ impl Connection {
 
     /// Opens a bidirectional stream; `None` while the peer's stream limit is reached (see
     /// [`QuicHandler::on_streams_available`]), which includes before the handshake completes
-    /// (open streams from [`QuicHandler::on_connected`]).
+    /// (open streams from [`QuicHandler::on_connected`]) unless the client resumes with 0-RTT
+    /// ([`ClientConfig::zero_rtt`]): then streams open right after [`dial`], under the limits
+    /// the server gave last time, and their data goes out in 0-RTT packets.
     pub fn open_bi(&self) -> Option<StreamId> {
         // No callbacks run here (callers may hold their own locks); anything the opening
         // queued goes out with the next write.
@@ -275,6 +277,21 @@ impl Connection {
         let r = lock(&self.0.state).conn.send_datagram(data.into());
         self.kick();
         r
+    }
+
+    /// What happened to 0-RTT on this connection (see [`ClientConfig::zero_rtt`] and
+    /// [`ServerConfig::zero_rtt`]). A client knows `Accepted` or `Rejected` once the handshake
+    /// completes; data sent in rejected 0-RTT packets is sent again in 1-RTT packets.
+    pub fn early_data(&self) -> tls::EarlyData {
+        lock(&self.0.state).conn.early_data()
+    }
+
+    /// Whether data of stream `id` arrived in 0-RTT packets (server): it was sent before the
+    /// handshake and may be a **replay** of another connection's, so only act on requests that
+    /// are safe to repeat (HTTP: answer others with `425 Too Early`, RFC 8470). `false` once
+    /// the stream is gone.
+    pub fn is_early(&self, id: StreamId) -> bool {
+        lock(&self.0.state).conn.is_early(id)
     }
 
     /// The QUIC version in use.
@@ -718,6 +735,7 @@ impl QuicServer {
         cfg.ecn_io = ecn_platform();
         cfg.preferred_address = config.preferred;
         cfg.versions = config.versions;
+        cfg.zero_rtt = config.zero_rtt;
         let setup = proto::ServerSetup {
             tls: config.tls,
             cfg,
@@ -883,7 +901,9 @@ impl Acceptor for ClientAcceptor {
 /// Connects to `addr`, verifying the server as `server_name`, with `config` (see
 /// [`client_config`]). The connection uses a UDP socket of its own; the engine needs UDP
 /// client threads ([`only::EngineBuilder::udp_client_threads`]) and must be started. Streams
-/// can be opened once the handshake completes ([`QuicHandler::on_connected`]).
+/// can be opened once the handshake completes ([`QuicHandler::on_connected`]), or right away
+/// when the connection resumes with 0-RTT ([`ClientConfig::zero_rtt`]; check
+/// [`Connection::open_bi`]'s result).
 pub fn dial<H: QuicHandler>(
     engine: &only::Engine,
     addr: SocketAddr,
@@ -903,6 +923,7 @@ pub fn dial<H: QuicHandler>(
     }
     cfg.ecn_io = ecn_platform();
     cfg.version = config.version.wire();
+    cfg.zero_rtt = config.zero_rtt;
     let (h, conn) = endpoint.connect(Instant::now(), cfg, &config.tls, server_name, addr, token)?;
     let ep = Arc::new(Ep::new(
         endpoint,

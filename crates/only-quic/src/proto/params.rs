@@ -153,6 +153,39 @@ fn perr(reason: &str) -> TransportError {
 }
 
 impl TransportParams {
+    /// The parameters a client remembers for 0-RTT (RFC 9000 section 7.4.1, and RFC 9221's
+    /// max_datagram_frame_size): the limits and settings, none of the connection IDs, tokens
+    /// or addresses of the connection they came from.
+    pub fn remembered(&self) -> TransportParams {
+        TransportParams {
+            max_idle_timeout: self.max_idle_timeout,
+            max_udp_payload_size: self.max_udp_payload_size,
+            initial_max_data: self.initial_max_data,
+            initial_max_stream_data_bidi_local: self.initial_max_stream_data_bidi_local,
+            initial_max_stream_data_bidi_remote: self.initial_max_stream_data_bidi_remote,
+            initial_max_stream_data_uni: self.initial_max_stream_data_uni,
+            initial_max_streams_bidi: self.initial_max_streams_bidi,
+            initial_max_streams_uni: self.initial_max_streams_uni,
+            disable_active_migration: self.disable_active_migration,
+            active_connection_id_limit: self.active_connection_id_limit,
+            max_datagram_frame_size: self.max_datagram_frame_size,
+            ..TransportParams::default()
+        }
+    }
+
+    /// Whether the server's parameters for an accepted 0-RTT connection keep every limit the
+    /// client used in 0-RTT (RFC 9000 section 7.4.1): none lower than remembered.
+    pub fn keeps_limits_of(&self, r: &TransportParams) -> bool {
+        self.initial_max_data >= r.initial_max_data
+            && self.initial_max_stream_data_bidi_local >= r.initial_max_stream_data_bidi_local
+            && self.initial_max_stream_data_bidi_remote >= r.initial_max_stream_data_bidi_remote
+            && self.initial_max_stream_data_uni >= r.initial_max_stream_data_uni
+            && self.initial_max_streams_bidi >= r.initial_max_streams_bidi
+            && self.initial_max_streams_uni >= r.initial_max_streams_uni
+            && self.active_connection_id_limit >= r.active_connection_id_limit
+            && self.max_datagram_frame_size >= r.max_datagram_frame_size
+    }
+
     /// Encodes the parameters that differ from the defaults (and the connection IDs).
     pub fn encode(&self) -> Vec<u8> {
         let d = TransportParams::default();

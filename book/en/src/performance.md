@@ -38,6 +38,16 @@ See [Blocking work](concepts/blocking.md).
   workloads, measure, and keep the one that wins; per-listener choice lets you mix.
   `sqpoll` trades a busy kernel thread for fewer syscalls; it only pays off at sustained high
   load.
+- Other io_uring features were measured on Linux 7.0 and left out, since none gained a clear 3%
+  without losing elsewhere (see the benchmark report, "io_uring features evaluation"):
+  registered files and a registered ring fd (in steady state the backend submits no entry per
+  request: the multishot recv stays armed and responses are written directly), `MSG_RING`
+  wake-ups instead of the eventfd (−1.3% to +4.8% on `spawn_blocking` round trips, noise elsewhere),
+  ring-based sends (`IORING_OP_SEND`: +1–4% and 2–6% less CPU per request in a bare-ring prototype,
+  but the engine writes from any thread, so adopting them means redesigning the write path), and
+  `SEND_ZC`, which on loopback or veth always falls back to copying and was 12–27% slower from
+  16 KiB up. Zero-copy sends are worth re-measuring only with a real NIC
+  (`tools/bench/uring-eval.sh`).
 - UDP always uses the readiness backend with `recvmmsg`/`sendmmsg`.
 
 ## 4. Buffers and writes

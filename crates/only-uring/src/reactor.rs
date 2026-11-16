@@ -32,9 +32,9 @@ const OP_OTHER: u64 = 5;
 /// One-shot poll for a socket error (a reset): see `arm_reset_watch`.
 const OP_RESET: u64 = 6;
 
-const BGID: u16 = 0;
+pub(crate) const BGID: u16 = 0;
 /// Provided buffers per loop; a power of two (the buffer ring is indexed with a mask).
-const BUF_COUNT: u16 = 1024;
+pub(crate) const BUF_COUNT: u16 = 1024;
 const MAX_BUF: usize = 16 << 10;
 
 static NEXT_CONN_ID: AtomicU64 = AtomicU64::new(16);
@@ -136,7 +136,7 @@ impl BufRing {
     /// Each `bid` must be given at most once until the kernel hands it back in a completion, so
     /// at most `BUF_COUNT` entries are ever outstanding and the slot at `tail` is never one the
     /// kernel is reading.
-    fn give(&mut self, area: &KernelBuf, size: usize, bid: u16) {
+    pub(crate) fn give(&mut self, area: &KernelBuf, size: usize, bid: u16) {
         assert!(
             bid < BUF_COUNT && (bid as usize + 1) * size <= area.len(),
             "buffer id out of range"
@@ -156,7 +156,7 @@ impl BufRing {
     }
 
     /// Publishes everything given since the last call.
-    fn publish(&self) {
+    pub(crate) fn publish(&self) {
         // SAFETY: the tail is entry 0's `resv`, a 2-aligned `u16` inside the allocation shared
         // with the kernel, which the protocol says to store with release ordering. `AtomicU16`
         // has the size and alignment of `u16`, and this thread is its only writer.

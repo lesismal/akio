@@ -1,6 +1,7 @@
 //! The TLS 1.3 handshake for QUIC (RFC 9001), without records: handshake bytes in and out per
 //! encryption level, traffic secrets per level, the quic_transport_parameters extension, ALPN
-//! required, no middlebox compatibility, 0-RTT rejected. **Internal** (for the in-house QUIC
+//! required, no middlebox compatibility, 0-RTT when the QUIC layer enables it (no
+//! EndOfEarlyData; the 0-RTT keys are an event like the others). **Internal** (for the in-house QUIC
 //! of the next wave): not covered by the semver promise.
 //!
 //! ```
@@ -30,6 +31,7 @@
 
 use std::collections::VecDeque;
 
+pub use crate::EarlyData;
 pub use crate::proto::alert::{Alert, Fatal};
 pub use crate::proto::common::{Keys, Level};
 pub use crate::proto::suites::{AeadAlg, HashAlg, Suite};
@@ -79,7 +81,19 @@ impl QuicTls {
         server_name: &str,
         params: Vec<u8>,
     ) -> Result<QuicTls, Fatal> {
-        let mut c = Client::new(cfg.inner.clone(), server_name, Some(params))?;
+        QuicTls::client_early(cfg, server_name, params, false)
+    }
+
+    /// [`QuicTls::client`], offering 0-RTT with `early` when a ticket allows it: then the
+    /// `WriteKeys(EarlyData)` event follows the ClientHello and
+    /// [`early_params`](Self::early_params) has the server's remembered transport parameters.
+    pub fn client_early(
+        cfg: &ClientConfig,
+        server_name: &str,
+        params: Vec<u8>,
+        early: bool,
+    ) -> Result<QuicTls, Fatal> {
+        let mut c = Client::new(cfg.inner.clone(), server_name, Some(params), early)?;
         let mut acts = Vec::new();
         c.start(&mut acts)?;
         let mut q = QuicTls::new(Machine::Client(Box::new(c)));
@@ -89,9 +103,23 @@ impl QuicTls {
 
     /// A server handshake sending `params` as our transport parameters.
     pub fn server(cfg: &ServerConfig, params: Vec<u8>) -> QuicTls {
+        QuicTls::server_early(cfg, params, None)
+    }
+
+    /// [`QuicTls::server`] accepting 0-RTT with `early_ctx`: the transport parameters 0-RTT
+    /// depends on, encoded. Tickets carry it (and allow 0xffffffff bytes of early data), and
+    /// 0-RTT is accepted only with a ticket carrying the same (plus the TLS conditions and
+    /// replay protection); then the `ReadKeys(EarlyData)` event comes before the handshake
+    /// read keys.
+    pub fn server_early(
+        cfg: &ServerConfig,
+        params: Vec<u8>,
+        early_ctx: Option<Vec<u8>>,
+    ) -> QuicTls {
         QuicTls::new(Machine::Server(Box::new(Server::new(
             cfg.inner.clone(),
             Some(params),
+            early_ctx,
         ))))
     }
 
@@ -113,6 +141,10 @@ impl QuicTls {
                     Some(Event::Data(bl, b)) if *bl == l => b.extend_from_slice(&m),
                     _ => self.events.push_back(Event::Data(l, m)),
                 },
+                // 0-RTT keys are for packets, never for CRYPTO data.
+                Action::ReadKeys(Level::EarlyData, k) => {
+                    self.events.push_back(Event::ReadKeys(Level::EarlyData, k));
+                }
                 Action::ReadKeys(l, k) => {
                     self.read_level = l;
                     read_changed = true;
@@ -120,7 +152,11 @@ impl QuicTls {
                 }
                 Action::WriteKeys(l, k) => self.events.push_back(Event::WriteKeys(l, k)),
                 Action::Done => self.events.push_back(Event::Done),
-                Action::Ccs | Action::Warning(_) | Action::RejectEarlyData => {}
+                Action::Ccs
+                | Action::Warning(_)
+                | Action::RejectEarlyData
+                | Action::EarlyOffered(_)
+                | Action::EarlyAccepted(_) => {}
             }
         }
         read_changed
@@ -212,9 +248,23 @@ impl QuicTls {
         self.m.suite()
     }
 
-    /// 0-RTT is never accepted (yet).
+    /// Whether 0-RTT was accepted (client: known with the server's EncryptedExtensions).
     pub fn early_data_accepted(&self) -> bool {
-        false
+        self.m.early() == EarlyData::Accepted
+    }
+
+    /// What happened to 0-RTT.
+    pub fn early_data(&self) -> EarlyData {
+        self.m.early()
+    }
+
+    /// Client offering 0-RTT: the transport parameters of the server, remembered with the
+    /// ticket (what 0-RTT packets may use, RFC 9000 section 7.4.1).
+    pub fn early_params(&self) -> Option<&[u8]> {
+        match &self.m {
+            Machine::Client(c) => c.early_params(),
+            Machine::Server(_) => None,
+        }
     }
 }
 

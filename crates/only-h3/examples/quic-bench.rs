@@ -5,6 +5,8 @@
 //! quic-bench handshakes SECS PAR   full handshakes per second, PAR dials in flight
 //! quic-bench bulk MB               one stream of MB megabytes to a discarding server
 //! quic-bench h3 SECS CONC          HTTP/3 GET requests per second, CONC in flight on one connection
+//! quic-bench resume N               N sequential resumed connections, each one request: time from
+//!                                   dial to answer, with 1-RTT and with 0-RTT
 //! ```
 
 use std::collections::HashMap;
@@ -231,6 +233,74 @@ fn h3(secs: u64, conc: usize) {
     );
 }
 
+/// One request per connection: tells when the handshake completes and when the answer is in.
+struct Once(mpsc::Sender<bool>);
+impl QuicHandler for Once {
+    fn on_connected(&mut self, _c: &Connection) {
+        let _ = self.0.send(false);
+    }
+    fn on_stream_data(&mut self, _c: &Connection, _id: StreamId, _d: B, fin: bool) {
+        if fin {
+            let _ = self.0.send(true);
+        }
+    }
+}
+
+fn resume(n: usize) {
+    let (certs, key) = certs();
+    let cfg = only_quic::server_config(certs, key, &[b"bench"])
+        .expect("config")
+        .zero_rtt(true);
+    let server = QuicServer::new(cfg, |_c: &Connection| Sink {
+        got: HashMap::new(),
+    });
+    let s = Engine::builder()
+        .listen(Listener::udp("127.0.0.1:0".parse().expect("addr")).serve(server))
+        .build()
+        .expect("engine");
+    s.start().expect("start");
+    let addr = s.local_addrs()[0];
+    let e = client_engine(1);
+    for zero in [false, true] {
+        let cfg = only_quic::client_config_insecure(&[b"bench"])
+            .expect("config")
+            .zero_rtt(zero);
+        let mut times = Vec::with_capacity(n);
+        let mut early = 0;
+        for i in 0..=n {
+            let (tx, rx) = mpsc::channel();
+            let start = Instant::now();
+            let c = only_quic::dial(&e, addr, "localhost", cfg.clone(), Once(tx)).expect("dial");
+            let id = match c.open_bi() {
+                Some(id) => id,
+                None => {
+                    // No 0-RTT: the stream waits for the handshake.
+                    rx.recv_timeout(Duration::from_secs(5)).expect("handshake");
+                    c.open_bi().expect("stream")
+                }
+            };
+            c.send(id, b"GET".to_vec()).expect("send");
+            c.finish(id).expect("finish");
+            while !rx.recv_timeout(Duration::from_secs(5)).expect("answer") {}
+            // The first connection only fetches tickets.
+            if i > 0 {
+                times.push(start.elapsed());
+                early += usize::from(c.early_data() == only::tls::EarlyData::Accepted);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+            c.close(0, b"");
+        }
+        times.sort();
+        let mean = times.iter().sum::<Duration>() / n.max(1) as u32;
+        println!(
+            "resume {}: {n} connections, dial to answer mean {mean:?}, median {:?}, p90 {:?} ({early} with 0-RTT accepted)",
+            if zero { "0-RTT" } else { "1-RTT" },
+            times[n / 2],
+            times[n * 9 / 10],
+        );
+    }
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let arg = |i: usize, d: u64| a.get(i).and_then(|s| s.parse().ok()).unwrap_or(d);
@@ -238,8 +308,9 @@ fn main() {
         Some("handshakes") => handshakes(arg(2, 5), arg(3, 8) as usize),
         Some("bulk") => bulk(arg(2, 1024) as usize),
         Some("h3") => h3(arg(2, 5), arg(3, 64) as usize),
+        Some("resume") => resume(arg(2, 1000).max(1) as usize),
         _ => {
-            println!("usage: quic-bench handshakes SECS PAR | bulk MB | h3 SECS CONC");
+            println!("usage: quic-bench handshakes SECS PAR | bulk MB | h3 SECS CONC | resume N");
             std::process::exit(2);
         }
     }

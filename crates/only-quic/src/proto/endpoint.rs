@@ -97,6 +97,12 @@ impl Endpoint {
         }
     }
 
+    /// The server's TLS configuration (tests: a second server sharing its tickets).
+    #[cfg(test)]
+    pub fn server_tls(&self) -> Option<only_tls::ServerConfig> {
+        self.server.as_ref().map(|s| s.tls.clone())
+    }
+
     fn child_rng(&mut self) -> ChaChaRng {
         let mut s = [0u8; 32];
         self.rng.fill(&mut s);

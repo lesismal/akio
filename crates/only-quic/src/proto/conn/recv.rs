@@ -85,6 +85,7 @@ impl Connection {
     }
 
     fn datagram(&mut self, now: Instant, from: SocketAddr, data: Arc<Vec<u8>>, fresh: bool) {
+        self.rx_late = !fresh;
         let total = data.len();
         let mut off = 0;
         let mut first_dcid: Option<ConnectionId> = None;
@@ -148,7 +149,8 @@ impl Connection {
         match ty {
             PacketType::Initial => Some(SpaceId::Initial),
             PacketType::Handshake => Some(SpaceId::Handshake),
-            PacketType::Short => Some(SpaceId::Data),
+            // 0-RTT and 1-RTT share the application data space.
+            PacketType::Short | PacketType::ZeroRtt => Some(SpaceId::Data),
             _ => None,
         }
     }
@@ -170,9 +172,11 @@ impl Connection {
                 self.on_retry(now, &pkt[..], h);
                 return Outcome::Processed;
             }
-            PacketType::ZeroRtt => return Outcome::Undecryptable,
+            // Only servers read 0-RTT packets.
+            PacketType::ZeroRtt if self.side == Side::Client => return Outcome::Undecryptable,
             _ => {}
         }
+        let zero = h.ty == PacketType::ZeroRtt;
         let Some(sid) = Connection::space_of(h.ty) else {
             return Outcome::Undecryptable;
         };
@@ -183,9 +187,14 @@ impl Connection {
             return Outcome::Processed;
         }
         let have_keys = match sid {
-            SpaceId::Data => self.one_rtt.is_some(),
+            SpaceId::Data if zero => self.zero_rtt.is_some(),
+            SpaceId::Data => self.one_rtt.is_some() && self.one_rtt_read,
             s => self.spaces[s as usize].keys.is_some(),
         };
+        if !have_keys && zero && (self.spaces[1].keys.is_some() || self.tls_done) {
+            // The ClientHello was processed: 0-RTT was rejected, or is over.
+            return Outcome::Undecryptable;
+        }
         if !have_keys {
             if self.buffered.len() < MAX_BUFFERED_PACKETS && !self.is_closed() {
                 self.buffered.push((from, self.rx_ecn, pkt.clone()));
@@ -195,6 +204,7 @@ impl Connection {
         // Header protection.
         let unprot = {
             let hk = match sid {
+                SpaceId::Data if zero => self.zero_rtt.as_ref().map(|k| &k.header),
                 SpaceId::Data => self.one_rtt.as_ref().map(|k| &k.remote_hp),
                 s => self.spaces[s as usize]
                     .keys
@@ -223,6 +233,10 @@ impl Connection {
             let body = &mut rest[..h.len - header_len];
             let (ct, tag) = body.split_at_mut(body.len() - TAG_LEN);
             match sid {
+                SpaceId::Data if zero => self
+                    .zero_rtt
+                    .as_ref()
+                    .is_some_and(|k| k.packet.open(pn, head, ct, tag)),
                 SpaceId::Data => {
                     let k = self.one_rtt.as_ref().expect("checked above");
                     let phase = first & 0x04 != 0;
@@ -266,7 +280,7 @@ impl Connection {
             );
             return Outcome::Processed;
         }
-        if sid == SpaceId::Data {
+        if sid == SpaceId::Data && !zero {
             match used {
                 KeyUse::Next => {
                     // The peer updated its keys: follow (RFC 9001 section 6.2).
@@ -354,7 +368,8 @@ impl Connection {
                     return Outcome::Processed;
                 }
             };
-            if sid != SpaceId::Data && !f.allowed_in_handshake() {
+            if (sid != SpaceId::Data && !f.allowed_in_handshake()) || (zero && !f.allowed_in_0rtt())
+            {
                 self.close_transport(
                     now,
                     TransportError::new(
@@ -366,7 +381,10 @@ impl Connection {
             }
             eliciting |= f.ack_eliciting();
             non_probing |= !f.probing();
-            if let Err(e) = self.on_frame(now, sid, from, &payload, f) {
+            self.rx_early = zero;
+            let r = self.on_frame(now, sid, from, &payload, f);
+            self.rx_early = false;
+            if let Err(e) = r {
                 self.close_transport(now, e);
                 return Outcome::Processed;
             }
@@ -457,6 +475,9 @@ impl Connection {
         self.spaces[0].eliciting_in_flight = 0;
         self.spaces[0].loss_time = None;
         self.pto_count = 0;
+        // 0-RTT packets went to a connection that does not exist: send their data again, to
+        // the new connection ID (RFC 9000 section 17.2.5.3).
+        self.requeue_zero_rtt();
     }
 
     fn on_frame(
@@ -806,8 +827,15 @@ impl Connection {
                 if self.confirmed {
                     ack_delay = ack_delay.min(Duration::from_millis(self.peer.max_ack_delay));
                 }
-                self.rtt.update(latest, ack_delay);
-                rtt_sample = Some(latest);
+                // Not from a packet that waited for its keys here: that wait is no round trip
+                // (a server answering 0-RTT sends 1-RTT ACKs the client reads only later).
+                // Nor from 0-RTT or 0.5-RTT packets: the peer could not read them yet.
+                let early =
+                    sid == SpaceId::Data && self.zero_rtt_last_pn.is_some_and(|l| largest <= l);
+                if !self.rx_late && !early {
+                    self.rtt.update(latest, ack_delay);
+                    rtt_sample = Some(latest);
+                }
                 self.first_rtt_sample.get_or_insert(now);
                 self.spaces[sid as usize].largest_acked_time = Some(p.time);
             }
@@ -913,7 +941,7 @@ impl Connection {
         }
     }
 
-    fn on_frame_lost(&mut self, sid: SpaceId, f: SentFrame) {
+    pub(super) fn on_frame_lost(&mut self, sid: SpaceId, f: SentFrame) {
         match f {
             SentFrame::Stream { id, off, len, fin } => self.on_stream_lost(id, off, len, fin),
             SentFrame::Crypto { off, len } => {
@@ -1068,7 +1096,7 @@ impl Connection {
         }
         let backoff = 1u32 << self.pto_count.min(10);
         let base = self.rtt.pto_base();
-        let any = self.spaces.iter().any(|s| s.eliciting_in_flight > 0);
+        let any = self.eliciting_in_flight();
         if !any {
             // The client keeps probing until the server validated its address
             // (RFC 9002 section 6.2.2.1), so the handshake cannot deadlock.
@@ -1121,7 +1149,7 @@ impl Connection {
         }
         self.pto_count += 1;
         self.ecn.on_pto();
-        let any = self.spaces.iter().any(|s| s.eliciting_in_flight > 0);
+        let any = self.eliciting_in_flight();
         if !any {
             let sp = &mut self.spaces[sid as usize];
             sp.probes = 1;
@@ -1131,6 +1159,15 @@ impl Connection {
         }
         self.spaces[sid as usize].probes = 2;
         self.requeue_for_probe(sid, sid != SpaceId::Data);
+    }
+
+    /// Whether ack-eliciting packets are in flight that the probe timer covers: not 0-RTT
+    /// ones before the handshake is confirmed (no application data PTO then, RFC 9002
+    /// section 6.2.1), or a client waiting on them would not probe the handshake.
+    fn eliciting_in_flight(&self) -> bool {
+        self.spaces.iter().enumerate().any(|(i, s)| {
+            s.eliciting_in_flight > 0 && (i != SpaceId::Data as usize || self.confirmed)
+        })
     }
 
     /// Queues the data of in-flight packets again so a probe carries it (they stay in flight).
