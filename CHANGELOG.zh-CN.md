@@ -10,6 +10,24 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：可插拔的指标收集器（ADR-015）
+
+应用与协议指标出现在 engine 的 `/metrics` 端点上，不依赖第三方 crate。新模块 `only::metrics`
+（`only_core::metrics`）：`Collector` trait、`Families` 快照（Prometheus 文本 0.0.4 或 JSON，或通过
+`iter` / `get` 读取）、度量工具 `Counter`、`Gauge`、`Histogram` 与具名工具的 `Registry`、`fn_collector`、
+`DEFAULT_BUCKETS`。`Telemetry::register_collector(collector, labels)` / `unregister_collector`、
+`Telemetry::collect` 与 `Telemetry::render_prometheus`（先 engine 序列，再收集器），`observe::metrics_handler`
+现在输出后者。现成的收集器：only-http `HttpMetrics`（新增族 `only_http_requests_by_version_total{version}`、
+字段 `HttpSnapshot::by_version`、`observe::VERSION_LABELS`）、only-quic `QuicServer`（`only_quic_*`：连接、
+两个方向的数据报与字节、发送与丢失的包、拥塞事件；总数包含已关闭的连接）以及 only-tls `Tls::stats()` →
+`TlsStats` / `TlsCounts`（`only_tls_handshakes_total{side, version}`、`only_tls_resumed_total`、
+`only_tls_early_data_total{outcome}`）。只有新增 API；engine 自身的序列不变。示例：
+`cargo run -p only-http --example guide-metrics`。
+
+在安静主机上测量了 engine 遥测的开销（同一轮 A/B，docs/BENCHMARKS.zh-CN.md“遥测开销”）：HTTP/1.1
+上没有可测的开销（关闭回调计时或把计数器编译掉为 0.998–1.006×）；echo 各行在噪声之内。带新版本计数的
+`HttpMetrics::middleware()` 为原中间件的 0.997–1.005×。
+
 ### 变更：AVX-512 上短消息的 ChaCha20-Poly1305 更快
 
 在具备 AVX-512 的 x86_64 上，only-crypto 的 ChaCha20 处理四个分组时每个寄存器存放每个分组的一行（用于消息开头与

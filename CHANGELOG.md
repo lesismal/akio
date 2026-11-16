@@ -10,6 +10,27 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: pluggable metrics collectors (ADR-015)
+
+Application and protocol metrics on the engine's `/metrics` endpoint, with no third-party crate.
+New module `only::metrics` (`only_core::metrics`): the `Collector` trait, the `Families` snapshot
+(Prometheus text 0.0.4 or JSON, or read through `iter` / `get`), instruments `Counter`, `Gauge`,
+`Histogram` and a `Registry` of named instruments, `fn_collector`, `DEFAULT_BUCKETS`.
+`Telemetry::register_collector(collector, labels)` / `unregister_collector`, `Telemetry::collect`
+and `Telemetry::render_prometheus` (engine series, then the collectors), which
+`observe::metrics_handler` now serves. Ready-made collectors: only-http `HttpMetrics` (plus a new
+family `only_http_requests_by_version_total{version}`, field `HttpSnapshot::by_version`,
+`observe::VERSION_LABELS`), only-quic `QuicServer` (`only_quic_*`: connections, datagrams and
+bytes each way, packets sent and lost, congestion events; totals include closed connections) and
+only-tls `Tls::stats()` → `TlsStats` / `TlsCounts` (`only_tls_handshakes_total{side, version}`,
+`only_tls_resumed_total`, `only_tls_early_data_total{outcome}`). Additive only; the engine's own
+series are unchanged. Example: `cargo run -p only-http --example guide-metrics`.
+
+The engine's telemetry overhead was measured on a quiet host (same-run A/B, docs/BENCHMARKS.md
+"Telemetry overhead"): no measurable cost on HTTP/1.1 (0.998–1.006× with callback timing off or
+the counters compiled out); echo rows within their noise. `HttpMetrics::middleware()` with the new
+per-version count: 0.997–1.005× the previous middleware.
+
 ### Changed: faster ChaCha20-Poly1305 for short messages on AVX-512
 
 On x86_64 with AVX-512, only-crypto's ChaCha20 runs four blocks with one row of each block per

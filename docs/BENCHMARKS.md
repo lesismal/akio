@@ -416,6 +416,55 @@ every round, fresh server per run, `http-bench` / `bench-server`):
   multishot recv on provided buffers and direct writes there is nothing to register. Recv
   bundles and incremental buffer consumption were not tried.
 
+### Telemetry overhead (engine A/B, `tools/bench`)
+
+Measured 2026-11-16. Question (DEV-PLAN M6 "overhead measured on a quiet host"): what do the
+engine's always-on counters and the callback timing cost? Three builds of the same commit, run
+interleaved in one session under `quiet.sh` (5 rounds of 5 s, medians, a fresh server per run;
+server on CPUs 0–3 with 4 threads, `h2load` / `echo-bench` with 8 threads on CPUs 4–7 and 12–15):
+**default** (counters on, callbacks timed because the slow-callback threshold defaults to 100 ms),
+**no timing** (`slow_callback_threshold: None`), **no counters** (no timing, and every
+per-thread counter update compiled out). Ratios are against the default build; `±` is half the
+min–max spread of the rounds.
+
+| Load | backend | default | no timing | no counters |
+|---|---|---:|---:|---:|
+| HTTP/1.1 plaintext, 256 conns | epoll | 744,197 | 1.001 | 1.006 |
+| HTTP/1.1 plaintext, 256 conns | io_uring | 791,360 | 0.998 | 1.002 |
+| HTTP/1.1 pipelined ×16, 256 conns | epoll | 4,495,865 | 0.999 | 1.004 (±12%) |
+| HTTP/1.1 pipelined ×16, 256 conns | io_uring | 4,632,963 | 0.998 | 1.001 |
+| TCP echo 64 B × 256 (±4–8%) | epoll | 716,872 | 0.972 | 0.969 |
+| TCP echo 64 B × 256 (±4–8%) | io_uring | 731,461 | 1.077 | 1.061 |
+| TCP echo 1 KiB × 256 (±4–9%) | epoll | 702,327 | 1.023 | 1.034 |
+| TCP echo 1 KiB × 256 (±4–9%) | io_uring | 776,740 | 0.990 | 0.983 |
+| UDP echo 64 B × 64 (±9–11%) | epoll | 977,216 | 1.051 | 1.035 |
+
+**Answer: no measurable cost.** The HTTP rows (spread ≤2% except one outlier round) put both
+switches within ±0.6% of the default; the echo rows move both ways by more than any plausible
+effect, inside their round-to-round noise (the closed-loop echo client is the bottleneck, see
+"TCP, UDP and TLS echo"). The counters are plain loads and stores on a cache line owned by the
+I/O thread, and the timing is one clock read per callback reused across a batch, so this matches
+expectations; the defaults stay as they are.
+
+**Collectors (ADR-015).** Registered collectors run only when metrics are rendered; on the request
+path the change touches only `HttpMetrics`, which now also counts the request's HTTP version.
+Same harness, 7 rounds, `http-bench` with and without `HttpMetrics::middleware()`, built from
+`main` at `659f3c90` and from the collectors branch (all four in one session):
+
+| Load | backend | `main`, no middleware | branch, no middleware | `main` + middleware | branch + middleware | branch / `main` with middleware |
+|---|---|---:|---:|---:|---:|---:|
+| HTTP/1.1 plaintext, 256 conns | epoll | 732,560 | 1.000 | 0.979 | 0.984 | 1.005 |
+| HTTP/1.1 plaintext, 256 conns | io_uring | 775,805 | 1.004 | 0.979 | 0.982 | 1.003 |
+| HTTP/1.1 pipelined ×16, 256 conns | epoll | 4,429,622 | 1.002 | 0.903 | 0.900 | 0.997 |
+| HTTP/1.1 pipelined ×16, 256 conns | io_uring | 4,546,534 | 1.008 | 0.904 | 0.902 (±10%) | 0.998 |
+
+No measurable change. The first version of the per-version counter (an extra atomic add at
+dispatch, the version captured in the response closure) measured 0.988 on io_uring pipelined in
+three runs; the version is now read from the request in the response filter, HTTP/1.1 is derived
+(responses minus the other versions, kept monotonic), and the shard's layout keeps the status
+class, latency sum and first latency bucket on one cache line. The middleware itself costs about
+2% at 0.75 M req/s and 10% at 4.5 M req/s pipelined, on `main` as on the branch.
+
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +
