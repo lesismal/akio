@@ -85,8 +85,8 @@ machine and pin the process to one core: the test measures timing differences of
 against the noise of everything else on the machine. A `|t|` slightly above 4.5 on a busy or
 shared machine is a reason to re-run there, quietly and longer, before reading anything into it.
 
-CI runs it as the informational job `ct-dudect` (`.github/workflows/ci.yml`: push to main,
-nightly, manual runs and PRs labelled `full-ci`; 15 s per target on both paths; the job has
+CI runs it as the informational job `ct-dudect` (`.github/workflows/ci.yml`, which runs only on a
+pre-release or a manual run; 15 s per target on both paths; the job has
 `continue-on-error: true` and is not part of `ci-ok`). The tables are in the job summary, the
 JSON t-values in the `ct-dudect` artifact.
 

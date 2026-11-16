@@ -230,6 +230,7 @@ Items:
 - [x] `only-deflate` stored blocks decoded with one copy: straight into the output, `decompress_vec` appends without zero-fill, only the last 32 KiB into the window. Random data level 6 inflate 15.5 → 34.3 GB/s (0.43x → 0.94x zlib-rs); literal-heavy decode unchanged (5 literals per refill tried, no gain).
 
 ## 4. Engineering rules
+- CI (decided by the user, 2026-11-16): GitHub Actions runs only when a pre-release is published or by hand; ordinary commits, pushes and pull requests do not trigger it. Every change is verified locally before it is pushed: macOS, Linux arm64 in Docker (epoll and `ONLY_TEST_BACKEND=uring`), and natively on x86_64 Linux for the x86 assembly, real io_uring and benchmarks.
 - **Branches/commits**: `main` stays releasable; feature branches + PRs; Conventional Commits.
 - **Code**: `#![forbid(unsafe_code)]` by default; unsafe allowed only in `only-sys`, the backends and `only-buf`, each with a `// SAFETY:` comment.
 - **Test pyramid**: unit → loom/miri → integration/interop → chaos → benchmark; new features need tests and protocol parsers need fuzz targets.

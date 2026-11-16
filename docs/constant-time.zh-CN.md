@@ -71,8 +71,7 @@ target/release/ct-dudect --seconds 5 p256 x25519   # 只跑一部分（子串匹
 其它一切的噪声中分辨几个周期的差异。繁忙或共享机器上略高于 4.5 的 `|t|`，应当先在安静的机器上更长时间
 地重跑，再下结论。
 
-CI 中它是信息性任务 `ct-dudect`（`.github/workflows/ci.yml`：推送到 main、每晚、手动运行以及带
-`full-ci` 标签的 PR；两条路径每个目标 15 秒；任务设置 `continue-on-error: true`，不属于 `ci-ok`）。
+CI 中它是信息性任务 `ct-dudect`（`.github/workflows/ci.yml`，只在发布预发布版本或手动运行时执行；两条路径每个目标 15 秒；任务设置 `continue-on-error: true`，不属于 `ci-ok`）。
 表格在任务摘要中，JSON 格式的 t 值在 `ct-dudect` artifact 中。
 
 ## 最新结果

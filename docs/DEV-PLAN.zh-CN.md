@@ -230,6 +230,7 @@ pub enum Accel   { None, Ebpf(EbpfConfig) }
 - [x] `only-deflate` 存储块解码只复制一次：直接写入输出，`decompress_vec` 追加时不填零，只有最后 32 KiB 进窗口。随机数据级别 6 解压 15.5 → 34.3 GB/s（zlib-rs 的 0.43 倍 → 0.94 倍）；以字面量为主的解码不变（试过每次补充解码 5 个字面量，无收益）。
 
 ## 4. 工程规范
+- CI（用户 2026-11-16 决定）：GitHub Actions 只在发布预发布版本或手动运行时执行；普通提交、推送与 PR 不触发。每次改动在推送前于本地验证：macOS、Docker 中的 Linux arm64（epoll 与 `ONLY_TEST_BACKEND=uring`），以及原生 x86_64 Linux（x86 汇编、真实 io_uring 与基准测试）。
 - **分支/提交**：`main` 保持可发布；功能分支 + PR；Conventional Commits。
 - **代码**：`#![forbid(unsafe_code)]` 为默认，仅 `only-sys`、后端、`only-buf` 允许 unsafe，且每处带 `// SAFETY:`。
 - **测试金字塔**：单元 → loom/miri → 集成/互通 → 混沌 → benchmark；新功能必须带测试，协议解析必须带 fuzz target。

@@ -1,42 +1,39 @@
 name: CI
 
-# Layout
-#   Gate (every push and PR):  lint, docs, book, test-linux (epoll + io_uring, x86_64 + arm64),
-#                              msrv, features, miri, loom, coverage, autobahn, h2spec,
-#                              supply-chain (cargo-deny, cargo-audit, unsafe inventory),
-#                              public-api (API snapshots, docs/api-stability.md), semver-checks
-#                              (skipped until 1.0.0 is on crates.io)
-#   Best effort:               test-macos (macOS runners are often not scheduled for capacity;
-#                              a job that never starts is not a code failure)
-#   Heavy (push to main, nightly schedule, manual run, or a PR labelled `full-ci`):
-#                              interop (Go peers: arpc, grpc, kcp, h3, webrtc + coturn;
-#                              libtorrent and aria2 for BitTorrent), fuzz (all targets, 5 min
-#                              each), sanitizers (ASan + TSan on the core and backend tests),
-#                              dpdk (only-dpdk with libdpdk: net_tap / TAP against the kernel)
-#   Informational (heavy triggers, `continue-on-error`, not in ci-ok):
-#                              ct-dudect (statistical timing test of only-crypto's secret-
-#                              dependent paths, t-values kept as an artifact;
-#                              docs/constant-time.md)
-#   Deploy (push to main):     book-deploy (GitHub Pages)
-#   ci-ok:                     one status to require in branch protection.
+# When it runs (decided by the user, 2026-11-16): NOT on ordinary commits, pushes or pull
+# requests. Only when a GitHub release marked "pre-release" is published, or by hand
+# (Actions -> CI -> "Run workflow"). Day-to-day verification is local: macOS, Linux arm64 in
+# Docker, and natively on x86_64 Linux (docs/DEV-PLAN.md, section 4).
+#
+# Layout (every job runs on a pre-release)
+#   Gate:          lint, docs, book, test-linux (epoll + io_uring, x86_64 + arm64), msrv,
+#                  features, miri, loom, coverage, autobahn, h2spec, supply-chain (cargo-deny,
+#                  cargo-audit, unsafe inventory), public-api (API snapshots,
+#                  docs/api-stability.md), semver-checks (skipped until 1.0.0 is on crates.io)
+#   Best effort:   test-macos (macOS runners are often not scheduled for capacity; a job that
+#                  never starts is not a code failure)
+#   Heavy:         interop (Go peers: arpc, grpc, kcp, h3, webrtc + coturn; libtorrent and aria2
+#                  for BitTorrent), fuzz (all targets, 5 min each), sanitizers (ASan + TSan on
+#                  the core and backend tests), dpdk (only-dpdk with libdpdk: net_tap / TAP)
+#   Informational (`continue-on-error`, not in ci-ok):
+#                  ct-dudect (statistical timing test of only-crypto's secret-dependent paths,
+#                  t-values kept as an artifact; docs/constant-time.md)
+#   Deploy:        book-deploy (GitHub Pages), on a pre-release only
+#   ci-ok:         one status to look at.
 #
 # Adding a job: copy the closest job, keep `timeout-minutes`, use Swatinem/rust-cache with its
-# own `shared-key`, and add the job id to `ci-ok.needs`. For a heavy job, put
-#   if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
-# on it (and do not list it in `ci-ok.needs`, or list it and let ci-ok accept `skipped`).
+# own `shared-key`, and add the job id to `ci-ok.needs`.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  schedule:
-    - cron: "23 3 * * *" # nightly: the heavy jobs, and a fresh cache
+  # Only pre-releases (a release published with "Set as a pre-release" checked) and manual
+  # runs. Pushes, pull requests and schedules deliberately do not trigger CI.
+  release:
+    types: [prereleased]
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # New pushes to a PR cancel its running checks; runs on main always finish.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -59,7 +56,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: lint
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features
 
@@ -75,12 +72,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: docs
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: cargo doc --workspace --no-deps --all-features
 
   book:
     # The English and Chinese guides: every included snippet exists and compiles, both books
-    # build. On push to main the result is deployed to GitHub Pages by book-deploy.
+    # build. On a pre-release the result is deployed to GitHub Pages by book-deploy.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -89,7 +86,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: book
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - name: Cache mdBook
         id: mdbook-cache
         uses: actions/cache@v4
@@ -101,13 +98,13 @@ jobs:
         run: cargo install mdbook --locked --version 0.4.52
       - run: book/build.sh
       - name: Upload the site for GitHub Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'release'
         uses: actions/upload-pages-artifact@v3
         with:
           path: target/book
 
   book-deploy:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'release'
     needs: book
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -138,7 +135,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-${{ matrix.os }}
-          save-if: ${{ github.ref == 'refs/heads/main' && matrix.backend == 'epoll' }}
+          save-if: ${{ matrix.backend == 'epoll' }}
       - name: Tests (epoll), whole workspace
         if: matrix.backend == 'epoll'
         # One test at a time, so a hang shows which test it is; the step timeout keeps the log.
@@ -162,7 +159,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: test-macos
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: cargo clippy --workspace --all-targets
       - name: Tests (kqueue)
         timeout-minutes: 15
@@ -182,7 +179,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: msrv
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - name: cargo check on the MSRV
         # rust-toolchain.toml pins `stable`; this job overrides it.
         env:
@@ -203,7 +200,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: features
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: cargo hack check --workspace --feature-powerset --no-dev-deps
       - name: only-http without default features
         timeout-minutes: 10
@@ -255,7 +252,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: loom
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: cargo test -p only-core --lib --release -- loom
         env:
           RUSTFLAGS: --cfg loom
@@ -278,7 +275,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: coverage
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - name: Coverage (both backends)
         timeout-minutes: 30
         run: tools/coverage/run.sh
@@ -311,7 +308,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: conformance
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: >-
           cargo build --release -p only-http --example ws-echo
           -p only-ws --example ws-autobahn-client
@@ -347,7 +344,6 @@ jobs:
     # HTTP/3, pion (WebRTC and TURN, plus coturn's turnutils_uclient in Docker). The arpc and h3
     # suites build against the fib checkout next to this repository (../../../../fib from each
     # suite).
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       fail-fast: false
       matrix:
@@ -371,7 +367,7 @@ jobs:
         with:
           workspaces: only
           shared-key: interop-${{ matrix.suite }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - name: Interop (${{ matrix.suite }})
         env:
           COTURN: ${{ matrix.suite == 'webrtc' && '1' || '0' }}
@@ -383,7 +379,6 @@ jobs:
     # net_tap PMD (1 and 2 queues), TAP and AF_PACKET (with tc netem loss). Needs NET_ADMIN and
     # /dev/net/tun, so it runs
     # in the job's own container; no hugepages or NIC (--no-huge --no-pci, virtual devices).
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -394,7 +389,6 @@ jobs:
   interop-bittorrent:
     # only-bittorrent against libtorrent 2.0 and aria2 1.37, in a Debian container (the script
     # starts it and installs both there).
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -405,7 +399,6 @@ jobs:
   fuzz:
     # Every cargo-fuzz target for 5 minutes, all CPUs. Fails if any target left a crash, leak or
     # timeout input in fuzz/artifacts; artifacts and logs are kept either way.
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -418,7 +411,7 @@ jobs:
         with:
           workspaces: fuzz
           shared-key: fuzz
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - name: Fuzz all targets
         env:
           RUSTFLAGS: "" # cargo-fuzz sets its own; warnings are the lint job's business
@@ -450,7 +443,6 @@ jobs:
     # quiet machine, not a verdict. `continue-on-error` keeps a red result from failing the
     # workflow, and the job is deliberately not in `ci-ok.needs`. The t-values are kept as an
     # artifact and the tables go to the job summary.
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     runs-on: ubuntu-latest
     continue-on-error: true
     timeout-minutes: 30
@@ -460,7 +452,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ct-dudect
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: cargo build --release -p ct-dudect
       - name: Hardware paths
         timeout-minutes: 10
@@ -529,7 +521,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: public-api
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - run: tools/api/public-api.sh
 
   semver-checks:
@@ -563,7 +555,6 @@ jobs:
   sanitizers:
     # AddressSanitizer and ThreadSanitizer over the core, syscall and backend tests (epoll and
     # io_uring), where Miri cannot go.
-    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')
     strategy:
       fail-fast: false
       matrix:
@@ -591,7 +582,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: sanitizer-${{ matrix.san }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: true
       - name: Core and syscall crates (epoll)
         timeout-minutes: 25
         run: >-
