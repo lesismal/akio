@@ -605,7 +605,7 @@ fn dial_gives_up_after_connect_timeout() {
     let mut held = Vec::new();
     let mut hangs = false;
     for _ in 0..1024 {
-        match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
             Ok(s) => held.push(s),
             Err(_) => {
                 hangs = true;
