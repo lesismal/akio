@@ -206,6 +206,8 @@ struct Stats {
     overloaded: AtomicUsize,
     /// Peers whose connection the server closed because the pool was saturated.
     overloaded_peers: Mutex<HashSet<SocketAddr>>,
+    /// Peers whose connection ran `on_close`: a close the client never heard of is not a stall.
+    closed_peers: Mutex<HashSet<SocketAddr>>,
     max_echo_queue: AtomicUsize,
     /// Open connections and their mode, for diagnosing a connection that does not close.
     live: Mutex<HashMap<u64, (Conn<Srv>, u8)>>,
@@ -217,6 +219,9 @@ impl Stats {
     }
     fn was_overloaded(&self, peer: SocketAddr) -> bool {
         self.overloaded_peers.lock().unwrap().contains(&peer)
+    }
+    fn was_closed(&self, peer: SocketAddr) -> bool {
+        self.closed_peers.lock().unwrap().contains(&peer)
     }
 }
 
@@ -358,6 +363,7 @@ impl Handler for Srv {
             self.st.violate("send succeeded inside on_close".into());
         }
         self.st.live.lock().unwrap().remove(&c.id());
+        self.st.closed_peers.lock().unwrap().insert(c.peer_addr());
         self.st.closed.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -586,7 +592,23 @@ fn client(addr: SocketAddr, seed: u64, st: &Stats, tally: &ClientTally) {
             e.kind(),
             io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
         ) {
-            st.violate(format!("{tag}: read stalled after {} bytes", got.len()));
+            // A stall is a lost wake-up or a deadlock only if the server did not close the
+            // connection within the stall limit. On macOS a server that closes with input still
+            // unread (`K` kills at a random moment, mid-stream) amid a burst of resets sometimes
+            // leaves the peer in FIN_WAIT_2 with neither FIN nor an accepted RST: all its data
+            // and its FIN acknowledged, nothing left to send that would draw a new reset, so it
+            // waits forever. A plain std server that drops its socket the same way does it too;
+            // the kernel's RST and challenge-ACK rate limits (`net.inet.tcp.rst_rlc_enable`,
+            // `challengeack_limit`) are the likely cause. Linux delivers the reset.
+            let lost_close = cfg!(target_os = "macos") && st.was_closed(local);
+            if lost_close {
+                eprintln!(
+                    "chaos {tag}: the server closed, the client never heard (after {} bytes)",
+                    got.len()
+                );
+            } else {
+                st.violate(format!("{tag}: read stalled after {} bytes", got.len()));
+            }
         }
     }
     if got.len() > body.len() || got[..] != body[..got.len()] {
