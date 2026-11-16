@@ -144,6 +144,14 @@ impl FieldBuf {
         self.spans.len()
     }
 
+    /// Number of fields that are not pseudo-header fields.
+    pub(crate) fn regular(&self) -> usize {
+        self.spans
+            .iter()
+            .filter(|&&(a, b, _)| a == b || self.buf[a] != b':')
+            .count()
+    }
+
     /// Bytes of names and values.
     pub(crate) fn bytes(&self) -> usize {
         self.buf.len()
@@ -258,6 +266,55 @@ pub(crate) fn encode_line(out: &mut Vec<u8>, n: &[u8], v: &[u8]) {
     out.extend_from_slice(v);
 }
 
+/// Static table indices of `:status` lines (RFC 9204 Appendix A).
+fn status_index(status: u16) -> Option<u8> {
+    Some(match status {
+        103 => 24,
+        200 => 25,
+        304 => 26,
+        404 => 27,
+        503 => 28,
+        100 => 63,
+        204 => 64,
+        206 => 65,
+        302 => 66,
+        400 => 67,
+        403 => 68,
+        421 => 69,
+        425 => 70,
+        500 => 71,
+        _ => return None,
+    })
+}
+
+/// Appends a `:status` line without a table search: an indexed line for the codes the static
+/// table has, else a literal with the name reference.
+pub(crate) fn encode_status(out: &mut Vec<u8>, status: u16) {
+    match status_index(status) {
+        Some(i) => put_int(out, 0xc0, 6, u64::from(i)),
+        None => {
+            let mut b = [0; 20];
+            let v = crate::digits(&mut b, u64::from(status));
+            put_int(out, 0x50, 4, 24);
+            put_int(out, 0, 7, v.len() as u64);
+            out.extend_from_slice(v);
+        }
+    }
+}
+
+/// Appends a `content-length` line without a table search.
+pub(crate) fn encode_content_length(out: &mut Vec<u8>, len: u64) {
+    if len == 0 {
+        put_int(out, 0xc0, 6, 4);
+    } else {
+        let mut b = [0; 20];
+        let v = crate::digits(&mut b, len);
+        put_int(out, 0x50, 4, 4);
+        put_int(out, 0, 7, v.len() as u64);
+        out.extend_from_slice(v);
+    }
+}
+
 /// The field section prefix: no dynamic table references (Required Insert Count 0, Base 0).
 pub(crate) const PREFIX: [u8; 2] = [0, 0];
 
@@ -338,6 +395,19 @@ mod tests {
         );
         assert_eq!(text(b"x-a", &[0xff]), None);
         assert_eq!(text(&[b'x', 0xc3], &[0xa9]), None);
+        // The fast paths encode what the table search does.
+        for status in [100u16, 103, 200, 204, 299, 304, 404, 500, 503, 999, 1000] {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            encode_status(&mut a, status);
+            encode_line(&mut b, b":status", status.to_string().as_bytes());
+            assert_eq!(a, b, "{status}");
+        }
+        for len in [0u64, 1, 9, 10, 1234, u64::MAX] {
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            encode_content_length(&mut a, len);
+            encode_line(&mut b, b"content-length", len.to_string().as_bytes());
+            assert_eq!(a, b, "{len}");
+        }
         // Large integers.
         let mut big = Vec::new();
         put_int(&mut big, 0, 7, 1_000_000);

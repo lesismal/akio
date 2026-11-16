@@ -187,6 +187,40 @@ the samples, SipHash 7.3% → 0.1%; only-quic and the kernel now take the larger
 27.8%). The keyed hasher alone (SipHash build of the same tree against it, seven rounds): bulk
 16,836 → 17,366 Mbit/s (+3%), HTTP/3 flat.
 
+**After the HTTP/3 allocation pass** (2026-11-16, same host and pinning, quiet host, `62ea6318` →
+after, median of seven alternating rounds):
+
+| Case | before | after | after / before |
+|---|---:|---:|---:|
+| HTTP/3 GET, one connection, 64 in flight | 820,741 req/s (807,108–827,664) | 883,127 req/s (875,505–888,021) | 1.08 |
+
+Allocations per request (both ends of the benchmark, counted with a counting allocator) went from
+21.6 to 8.6: stream data reaches the event queue without two temporary vectors per delivery (4 per
+request); small response and request heads are written into only-quic's pooled buffers instead of
+a `Vec` plus the `Arc` of its `Bytes` (4); `Context` owns its request until something needs to
+share it (1); a HEADERS frame of 64 bytes or more widens its length in place instead of splicing
+(1); `Headers` keeps its first two field positions inline (3). The allocator went from 10.8% to
+5.7% of the profile. QPACK writes `:status`, `content-length` and the date line (encoded once a
+second) without a static table search; it was ~2% of the profile each way before and is now
+about the same share of a shorter request. The rest is what a request needs (its target, its
+`Headers` buffer, the response body, the boxed response sink).
+
+The only-http changes are shared with HTTP/1.1 and HTTP/2, checked in the same quiet window
+(`http-bench`, server on CPUs 0–3, h2load as in the table above, three alternating rounds; server
+CPU time per request over 12 M requests is the steadier figure, since these rows sit at the
+client's or the kernel's limit):
+
+| Case | req/s before → after | after / before | server CPU per request before → after |
+|---|---:|---:|---:|
+| HTTP/1.1 `GET /plaintext` | 736,242 → 733,623 | 1.00 | 5,455 → 5,477 ns |
+| HTTP/1.1 pipelined ×16 | 4,424,976 → 4,400,598 | 0.99 | 901 → 905 ns |
+| h2c 64 × 16 | 4,328,640 → 4,297,478 | 0.99 | 925 → 926 ns |
+
+Within run-to-run spread (an earlier window of the same code measured pipelined HTTP/1.1 at 899
+against 903–908 ns). A first version kept four field positions inline: `Headers` grew from 48 to 80
+bytes, and the extra copying of requests and responses cost HTTP/2 about 3% of server CPU per
+request; two positions packed into the vector's niche keep it at 48 bytes.
+
 ### TLS 1.3 in memory (`crates/only-tls/examples/tls-bench.rs`, CPU 2)
 
 Both ends in one thread, the same self-signed ECDSA P-256 certificate verified by the client, no

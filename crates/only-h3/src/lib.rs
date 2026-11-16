@@ -423,24 +423,19 @@ fn header_list<'a>(
 /// §4.1.2).
 fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> {
     let (mut method, mut scheme, mut authority, mut path) = (None, None, None, None);
-    let mut in_pseudo = true;
-    for (n, v) in fields.strs()? {
-        if n.starts_with(':') {
-            if !in_pseudo {
-                return None;
-            }
-            let slot = match n {
-                ":method" => &mut method,
-                ":scheme" => &mut scheme,
-                ":authority" => &mut authority,
-                ":path" => &mut path,
-                _ => return None,
-            };
-            if slot.replace(v).is_some() {
-                return None;
-            }
-        } else {
-            in_pseudo = false;
+    // One pass (and one UTF-8 check): pseudo-header fields come first; one after a regular
+    // field is refused by `header_list`.
+    let mut fs = fields.strs()?.peekable();
+    while let Some((n, v)) = fs.next_if(|(n, _)| n.starts_with(':')) {
+        let slot = match n {
+            ":method" => &mut method,
+            ":scheme" => &mut scheme,
+            ":authority" => &mut authority,
+            ":path" => &mut path,
+            _ => return None,
+        };
+        if slot.replace(v).is_some() {
+            return None;
         }
     }
     let method = Method::parse(method?);
@@ -451,11 +446,9 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
     } else if scheme.is_none() || path.is_none_or(str::is_empty) {
         return None;
     }
-    let mut headers = Headers::with_capacity(fields.len() + 1, fields.bytes() + 4);
-    header_list(
-        fields.strs()?.filter(|(n, _)| !n.starts_with(':')),
-        &mut headers,
-    )?;
+    // Room for `host` too; a request with few fields keeps their positions inline.
+    let mut headers = Headers::with_capacity(fields.regular() + 1, fields.bytes() + 4);
+    header_list(fs, &mut headers)?;
     if let Some(a) = authority {
         if headers.get("host").is_none() {
             headers.append("host", a);
@@ -562,7 +555,7 @@ impl<S: Service> QuicHandler for ServerConn<S> {
 }
 
 /// Decimal digits of `n`, at the end of `buf`.
-fn digits(buf: &mut [u8; 20], mut n: u64) -> &[u8] {
+pub(crate) fn digits(buf: &mut [u8; 20], mut n: u64) -> &[u8] {
     let mut i = buf.len();
     loop {
         i -= 1;
@@ -575,22 +568,28 @@ fn digits(buf: &mut [u8; 20], mut n: u64) -> &[u8] {
 }
 
 thread_local! {
-    /// The current second and its IMF-fixdate.
-    static DATE: RefCell<(u64, String)> = const { RefCell::new((0, String::new())) };
+    /// The current second and its `date` field line, encoded.
+    static DATE: RefCell<(u64, Vec<u8>)> = const { RefCell::new((0, Vec::new())) };
 }
 
-/// Calls `f` with the current HTTP date, formatted once a second per thread.
-fn with_date<R>(f: impl FnOnce(&[u8]) -> R) -> R {
+/// Appends the `date` field line of the current second (encoded once a second per thread).
+fn put_date(out: &mut Vec<u8>) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     DATE.with(|c| {
         let mut c = c.borrow_mut();
         if c.0 != secs || c.1.is_empty() {
-            *c = (secs, only_http::message::http_date_now());
+            c.0 = secs;
+            c.1.clear();
+            qpack::encode_line(
+                &mut c.1,
+                b"date",
+                only_http::message::http_date_now().as_bytes(),
+            );
         }
-        f(c.1.as_bytes())
-    })
+        out.extend_from_slice(&c.1);
+    });
 }
 
 /// Calls `f` with `n` lowercased (borrowed when it already is).
@@ -609,12 +608,13 @@ fn with_lower<R>(n: &str, f: impl FnOnce(&[u8]) -> R) -> R {
     }
 }
 
-/// Appends a HEADERS frame, its field section encoded straight into `out`: `pseudo` fields,
-/// then `headers` (names lowercased, connection-specific fields and `host` dropped, CR and LF
-/// removed from values), then `date` when `add_date` and the headers have none, then
-/// `content-length` when given and the headers have none.
+/// Appends a HEADERS frame, its field section encoded straight into `out`: `:status` when
+/// given and `pseudo` fields, then `headers` (names lowercased, connection-specific fields and
+/// `host` dropped, CR and LF removed from values), then `date` when `add_date` and the headers
+/// have none, then `content-length` when given and the headers have none.
 pub(crate) fn put_head(
     out: &mut Vec<u8>,
+    status: Option<u16>,
     pseudo: &[(&[u8], &[u8])],
     headers: &Headers,
     add_date: bool,
@@ -622,6 +622,9 @@ pub(crate) fn put_head(
 ) {
     let at = frame::begin_frame(out, frame::HEADERS);
     out.extend_from_slice(&qpack::PREFIX);
+    if let Some(s) = status {
+        qpack::encode_status(out, s);
+    }
     for &(n, v) in pseudo {
         qpack::encode_line(out, n, v);
     }
@@ -635,7 +638,7 @@ pub(crate) fn put_head(
                 b"content-length" => has_len = true,
                 _ => {}
             }
-            if v.contains(['\r', '\n']) {
+            if v.bytes().any(|b| b == b'\r' || b == b'\n') {
                 let v: Vec<u8> = v.bytes().filter(|&b| b != b'\r' && b != b'\n').collect();
                 qpack::encode_line(out, n, &v);
             } else {
@@ -644,10 +647,10 @@ pub(crate) fn put_head(
         });
     }
     if add_date && !has_date {
-        with_date(|d| qpack::encode_line(out, b"date", d));
+        put_date(out);
     }
     if let (Some(len), false) = (content_length, has_len) {
-        qpack::encode_line(out, b"content-length", digits(&mut [0; 20], len));
+        qpack::encode_content_length(out, len);
     }
     frame::end_frame(out, at);
 }
@@ -662,6 +665,11 @@ pub(crate) fn data_frame(data: &[u8]) -> Vec<u8> {
 /// are handed to QUIC as they are, after a DATA frame header.
 const COPY_BODY_MAX: usize = 16 << 10;
 
+/// Messages whose body is at most this size are written into a buffer from only-quic's
+/// per-thread pool ([`Bytes::pooled`]): no allocation per message once the pool is warm. The
+/// bound keeps pooled buffers small.
+pub(crate) const POOLED_BODY_MAX: usize = 2 << 10;
+
 /// Answers a request stream.
 struct Sink {
     c: Connection,
@@ -670,28 +678,29 @@ struct Sink {
 }
 
 impl Sink {
-    /// The HEADERS frame of `resp` in a buffer with room for `extra` more bytes, and whether a
-    /// body may follow.
-    fn head(&self, resp: &Response, streaming: bool, extra: usize) -> (Vec<u8>, bool) {
+    /// Appends the HEADERS frame of `resp` to `out`; whether a body may follow.
+    fn head(&self, out: &mut Vec<u8>, resp: &Response, streaming: bool) -> bool {
         let bodyless = resp.status < 200 || resp.status == 204 || resp.status == 304;
         let len = (!bodyless && !streaming).then(|| resp.body_len());
-        let hint: usize = resp
-            .headers
-            .iter()
-            .map(|(n, v)| n.len() + v.len() + 4)
-            .sum();
-        let mut out = Vec::with_capacity(hint + 64 + extra);
-        let mut b = [0; 20];
-        let status = digits(&mut b, u64::from(resp.status));
-        put_head(&mut out, &[(b":status", status)], &resp.headers, true, len);
-        (out, !(bodyless || self.head_only))
+        put_head(out, Some(resp.status), &[], &resp.headers, true, len);
+        !(bodyless || self.head_only)
     }
 
-    /// Appends the trailers' HEADERS frame (if any) to `out`, sends it and ends the stream.
-    fn trailers_and_finish(&self, mut out: Vec<u8>, trailers: Option<Headers>) {
+    /// A buffer for the HEADERS frame of `resp` and `extra` more bytes.
+    fn head_buf(resp: &Response, extra: usize) -> Vec<u8> {
+        Vec::with_capacity(head_hint(&resp.headers) + 64 + extra)
+    }
+
+    /// Appends the trailers' HEADERS frame, if any, to `out`.
+    fn put_trailers(&self, out: &mut Vec<u8>, trailers: Option<&Headers>) {
         if let Some(t) = trailers.filter(|t| !t.is_empty() && !self.head_only) {
-            put_head(&mut out, &[], &t, false, None);
+            put_head(out, None, &[], t, false, None);
         }
+    }
+
+    /// Sends `out` (if not empty) and ends the stream.
+    fn send_and_finish(&self, out: impl Into<Bytes>) {
+        let out = out.into();
         if !out.is_empty() {
             let _ = self.c.send(self.id, out);
         }
@@ -699,11 +708,29 @@ impl Sink {
     }
 }
 
+/// Bytes to reserve for encoding `headers`.
+pub(crate) fn head_hint(headers: &Headers) -> usize {
+    headers.iter().map(|(n, v)| n.len() + v.len() + 4).sum()
+}
+
 impl ResponseSink for Sink {
     fn send(self: Box<Self>, mut resp: Response) {
+        let trailers = resp.trailers.take();
+        if resp.file.is_none() && resp.body.len() <= POOLED_BODY_MAX {
+            // The usual small response: head, body and trailers in one pooled buffer.
+            let hint = head_hint(&resp.headers) + 64 + resp.body.len() + 9;
+            let out = Bytes::pooled(hint, |out| {
+                if self.head(out, &resp, false) && !resp.body.is_empty() {
+                    frame::put_frame(out, frame::DATA, &resp.body);
+                }
+                self.put_trailers(out, trailers.as_ref());
+            });
+            return self.send_and_finish(out);
+        }
         let small = resp.file.is_none() && resp.body.len() <= COPY_BODY_MAX;
         let extra = if small { resp.body.len() + 9 } else { 9 };
-        let (mut out, body) = self.head(&resp, false, extra);
+        let mut out = Sink::head_buf(&resp, extra);
+        let body = self.head(&mut out, &resp, false);
         if body {
             if let Some(fb) = resp.file.take() {
                 use std::os::unix::fs::FileExt;
@@ -736,14 +763,16 @@ impl ResponseSink for Sink {
                 out = Vec::new();
             }
         }
-        self.trailers_and_finish(out, resp.trailers.take());
+        self.put_trailers(&mut out, trailers.as_ref());
+        self.send_and_finish(out);
     }
 
     fn start_stream(self: Box<Self>, resp: Response) -> Option<Box<dyn BodySink>> {
         if self.c.is_closed() {
             return None;
         }
-        let (out, body) = self.head(&resp, true, 0);
+        let mut out = Sink::head_buf(&resp, 0);
+        let body = self.head(&mut out, &resp, true);
         let _ = self.c.send(self.id, out);
         Some(Box::new(Body { s: *self, body }))
     }
@@ -770,7 +799,9 @@ impl BodySink for Body {
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {
-        self.s.trailers_and_finish(Vec::new(), trailers);
+        let mut out = Vec::new();
+        self.s.put_trailers(&mut out, trailers.as_ref());
+        self.s.send_and_finish(out);
     }
 }
 
@@ -806,7 +837,7 @@ mod tests {
         h.append("X-Split", "a\r\nb");
         h.append(format!("X-{}", "L".repeat(80)), "long name");
         let mut out = vec![7];
-        put_head(&mut out, &[(b":status", b"200")], &h, true, Some(1234));
+        put_head(&mut out, Some(200), &[], &h, true, Some(1234));
         let got = decoded(&out[1..]);
         let long = format!("x-{}", "l".repeat(80));
         let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
@@ -829,7 +860,7 @@ mod tests {
         h.append("content-length", "5");
         h.append("x-pad", "p".repeat(100));
         let mut out = Vec::new();
-        put_head(&mut out, &[], &h, true, Some(9));
+        put_head(&mut out, None, &[], &h, true, Some(9));
         let got = decoded(&out);
         assert_eq!(got.iter().filter(|(n, _)| n == "date").count(), 1);
         assert_eq!(
@@ -840,7 +871,7 @@ mod tests {
         let mut h = Headers::new();
         h.append("content-type", "text/plain");
         let mut out = Vec::new();
-        put_head(&mut out, &[(b":status", b"200")], &h, false, None);
+        put_head(&mut out, Some(200), &[], &h, false, None);
         assert_eq!(out, [0x01, 0x04, 0, 0, 0xc0 | 25, 0xc0 | 53]);
         assert_eq!(digits(&mut [0; 20], 0), b"0");
         assert_eq!(

@@ -100,9 +100,20 @@ pub(crate) fn end_frame(out: &mut Vec<u8>, at: usize) {
     if len < 1 << 6 {
         out[at] = len as u8;
     } else {
-        let mut v = Vec::with_capacity(8);
-        put_varint(&mut v, len as u64);
-        out.splice(at..=at, v);
+        // Widen the one-byte placeholder in place (a `splice` allocated twice per frame).
+        let len = len as u64;
+        let (v, n) = if len < 1 << 14 {
+            ((len | 0x4000) << 48, 2)
+        } else if len < 1 << 30 {
+            ((len | 0x8000_0000) << 32, 4)
+        } else {
+            (len | 0xc000_0000_0000_0000, 8)
+        };
+        let v = v.to_be_bytes();
+        let old = out.len();
+        out.resize(old + n - 1, 0);
+        out.copy_within(at + 1..old, at + n);
+        out[at..at + n].copy_from_slice(&v[..n]);
     }
 }
 

@@ -330,25 +330,28 @@ impl Connection {
         let Some(r) = self.streams.get_mut(&raw).and_then(|s| s.recv.as_mut()) else {
             return;
         };
+        // Chunks go straight into the event queue (two temporary vectors per delivery showed up
+        // in HTTP/3 profiles); the last one gets the FIN once the stream is known to be done.
         let mut delivered = 0u64;
-        let mut chunks = Vec::new();
+        let mut n = 0;
         while let Some(c) = r.buf.pop() {
             delivered += c.len() as u64;
             if r.stop_sent.is_none() {
-                chunks.push(c);
+                self.events.push_back(Event::StreamData(id, c, false));
+                n += 1;
             }
         }
         let finished = r.buf.finished();
-        let n = chunks.len();
-        let mut events = Vec::with_capacity(n + 1);
-        for (i, c) in chunks.into_iter().enumerate() {
-            let fin = finished && i + 1 == n;
-            events.push(Event::StreamData(id, c, fin));
+        if finished && n > 0 {
+            if let Some(Event::StreamData(_, _, fin)) = self.events.back_mut() {
+                *fin = true;
+            }
         }
         if finished && !r.fin_delivered {
             r.fin_delivered = true;
             if n == 0 && r.stop_sent.is_none() {
-                events.push(Event::StreamData(id, Bytes::new(), true));
+                self.events
+                    .push_back(Event::StreamData(id, Bytes::new(), true));
             }
         }
         let read = r.buf.read_offset();
@@ -359,7 +362,6 @@ impl Connection {
         if finished {
             r.done = true;
         }
-        self.events.extend(events);
         self.credit_conn(delivered);
         if finished {
             self.maybe_free(raw);
