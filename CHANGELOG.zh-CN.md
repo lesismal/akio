@@ -31,6 +31,31 @@ ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶
 
 无公共 API 变化（`api/only-http.txt` 不变）。
 
+### 新增：TLS record_size_limit、证书压缩与 OCSP stapling（only-tls）
+
+增量配置（ADR-008，docs/adr/008-tls-extensions.zh-CN.md）：
+
+- **record_size_limit**（RFC 8449，TLS 1.3 与 1.2）：`ServerConfigBuilder::record_size_limit` /
+  `ClientConfigBuilder::record_size_limit`（64 到 16385，默认 16385）。客户端总是发送自己的值，服务端在客户端
+  发送时回以自己的值；之后双方写出的受保护记录按对方的限制切分，收到超过自己限制的记录报 `record_overflow`。
+  早期数据遵循签发票据的那条连接上的限制。QUIC 中不使用。对端限制小于 16 KiB 时拒绝（实验性的）内核 TLS 卸载。
+- **证书压缩**（RFC 8879，TLS 1.3，zlib 由 only-deflate 提供；没有自研 brotli/zstd，因此只提供 zlib）：两个构建器
+  上的 `certificate_compression(bool)`，**服务端默认开启**（证书链只压缩一次并复用，每次握手无额外开销），
+  **客户端默认关闭**（解压收到的证书链约需 1–2 µs，约为内存中握手的 1%）。服务端的 CertificateRequest 提供压缩时
+  客户端证书也会压缩。收到的消息最多解压到 128 KiB，长度必须与声明的一致。
+- **OCSP stapling**：`ServerConfigBuilder::ocsp_response(der)` / `sni_ocsp_response(name, der)` 为请求它的客户端
+  装订 DER 响应（TLS 1.3 放在 CertificateEntry 中，TLS 1.2 用 CertificateStatus；会话恢复时不发送）；
+  `ClientConfigBuilder::ocsp_stapling(true)` 请求响应，新增的 `TlsInfo::ocsp_response` 保存收到的响应。**不做验证**
+  （only-x509 尚无 OCSP）；服务端只检查配置的值在结构上是成功的 `OCSPResponse`。
+- ClientHello 现在带有 record_size_limit（6 字节）。`only-tls` 依赖 `only-deflate`。
+- 修复：长度不对的 TLS 1.3 KeyUpdate 报 `decode_error`（原为 `illegal_parameter`；tlsfuzzer 的
+  “large KeyUpdate message” 探测会随机失败）。
+- 测试：带扩展的内存矩阵（两个版本、各密钥类型、双向低至 64 字节的限制、任一方关闭压缩、带 SNI 与会话恢复的
+  OCSP）、反例、fuzz 语料；互通（`tools/interop/tls/run.sh`）覆盖 OpenSSL（OCSP 由 s_client 验证，与 Debian 的
+  OpenSSL 3.5 双向 zlib 压缩，忽略 max_fragment_length）、Go（双向 OCSP）与 GnuTLS（双向 record_size_limit 与
+  OCSP）；tlsfuzzer 的 `test-record-size-limit.py`、`test-tls13-certificate-compression.py` 与
+  `test-tls13-client-certificate-compression.py`。握手性能不变（同批 A/B，docs/BENCHMARKS.zh-CN.md）。
+
 ### 变更：AVX-512 上短消息的 ChaCha20-Poly1305 更快
 
 在具备 AVX-512 的 x86_64 上，only-crypto 的 ChaCha20 处理四个分组时每个寄存器存放每个分组的一行（用于消息开头与

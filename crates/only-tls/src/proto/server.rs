@@ -14,6 +14,7 @@ use super::common::{
     Action, CertKey, EarlyData, Keys, Level, Schedule, ServerSettings, Transcript, finished_mac,
     now_millis, now_secs, random, verify_chain,
 };
+use super::conn::MAX_HANDSHAKE;
 use super::kx::{Group, KeyShare};
 use super::msgs::*;
 use super::session::Session;
@@ -64,12 +65,19 @@ pub(crate) struct Server {
     pub(crate) peer_chain: Vec<Vec<u8>>,
     peer_key: Option<PublicKey>,
     pub(crate) peer_quic: Option<Vec<u8>>,
+    /// The client's certificate came compressed (RFC 8879).
+    pub(crate) cert_compressed: bool,
     // TLS 1.2
     ems: bool,
     master: Vec<u8>,
     share: Option<KeyShare>,
     session_id: Vec<u8>,
     send_ticket12: bool,
+    /// TLS 1.2: our record_size_limit for the ServerHello, when the client sent one.
+    record_limit12: Option<u16>,
+    /// TLS 1.2: the OCSP response goes in a CertificateStatus (status_request in the
+    /// ServerHello).
+    staple12: bool,
     // TLS 1.3 early data.
     pub(crate) early: EarlyData,
     /// QUIC with 0-RTT enabled: what the early data is bound to besides the ticket (the
@@ -144,11 +152,14 @@ impl Server {
             peer_chain: Vec::new(),
             peer_key: None,
             peer_quic: None,
+            cert_compressed: false,
             ems: false,
             master: Vec::new(),
             share: None,
             session_id: Vec::new(),
             send_ticket12: false,
+            record_limit12: None,
+            staple12: false,
             early: EarlyData::NotAttempted,
             early_ctx,
         }
@@ -205,6 +216,12 @@ impl Server {
             }
             (St::WaitEndOfEarlyData, END_OF_EARLY_DATA) => self.end_of_early_data(msg, body, out),
             (St::WaitCert13, CERTIFICATE) => self.certificate13(msg, body),
+            // Offered in our CertificateRequest when compression is on (RFC 8879).
+            (St::WaitCert13, COMPRESSED_CERTIFICATE) if self.cfg.cert_compression => {
+                let plain = decompress_certificate(body, MAX_HANDSHAKE)?;
+                self.cert_compressed = true;
+                self.certificate13(msg, &plain)
+            }
             (St::WaitCertVerify13, CERTIFICATE_VERIFY) => self.certificate_verify13(msg, body),
             (St::WaitFinished13, FINISHED) => self.finished13(msg, body, out),
             (St::Done13, KEY_UPDATE) if self.quic.is_none() => {
@@ -487,6 +504,16 @@ impl Server {
             self.ccs_sent = true;
             out.push(Action::Ccs);
         }
+        // record_size_limit (RFC 8449; not in QUIC): answered with ours, and the client's
+        // applies to everything we protect from here on.
+        let record_limit = ch.record_limit.filter(|_| self.quic.is_none()).map(|peer| {
+            let ours = self.cfg.record_limit.min(MAX_RECORD_LIMIT13);
+            out.push(Action::RecordLimit {
+                read: ours,
+                write: peer,
+            });
+            ours
+        });
         let psk_secret = psk.as_ref().map(|(_, s)| s.secret.clone());
         let early_keys = match (&psk_secret, early) {
             (Some(p), true) => Some(Keys::Tls13 {
@@ -544,6 +571,9 @@ impl Server {
                 if accepted {
                     ext(o, EXT_EARLY_DATA, |_| {});
                 }
+                if let Some(l) = record_limit {
+                    ext(o, EXT_RECORD_SIZE_LIMIT, |o| put_u16(o, l));
+                }
             });
         });
         self.t.add(&ee);
@@ -556,13 +586,22 @@ impl Server {
                         ext(o, EXT_SIGNATURE_ALGORITHMS, |o| {
                             sig_algs_body(o, sig::SUPPORTED);
                         });
+                        if self.cfg.cert_compression {
+                            ext(o, EXT_COMPRESS_CERTIFICATE, cert_comp_body);
+                        }
                     });
                 });
                 self.t.add(&cr);
                 out.push(Action::Msg(Level::Handshake, cr));
                 self.cert_requested = true;
             }
-            let c = certificate13(&[], &cert.chain);
+            // OCSP stapled to the leaf when asked for; compressed when the client takes zlib.
+            let compress = self.cfg.cert_compression
+                && ch
+                    .cert_comp
+                    .as_ref()
+                    .is_some_and(|a| a.contains(&CERT_COMP_ZLIB));
+            let c = cert.certificate13(&[], ch.status_request, compress);
             self.t.add(&c);
             out.push(Action::Msg(Level::Handshake, c));
             let content = sig::tls13_content(true, &self.t.hash());
@@ -662,8 +701,14 @@ impl Server {
         Ok(())
     }
 
+    /// A client Certificate (`body`; decompressed when `msg` is a CompressedCertificate, which
+    /// is what the transcript takes).
     fn certificate13(&mut self, msg: &[u8], body: &[u8]) -> Result<(), Fatal> {
-        let (ctx, chain) = parse_certificate13(body)?;
+        let Certificate13 {
+            context: ctx,
+            chain,
+            ..
+        } = parse_certificate13(body)?;
         if !ctx.is_empty() {
             return fatal(Alert::IllegalParameter, "certificate context mismatch");
         }
@@ -809,6 +854,15 @@ impl Server {
         self.ems = ch.ems;
         self.client_random = ch.random;
         self.sni.clone_from(&ch.sni);
+        if let Some(peer) = ch.record_limit {
+            // record_size_limit (RFC 8449): protected records only, after the CCS.
+            let ours = self.cfg.record_limit.min(MAX_RECORD_LIMIT12);
+            self.record_limit12 = Some(ours);
+            out.push(Action::RecordLimit {
+                read: ours,
+                write: peer,
+            });
+        }
         let cert = self.pick_cert(ch.sni.as_ref());
         let auth = if sig::is_rsa(&cert.key) {
             Auth12::Rsa
@@ -898,6 +952,7 @@ impl Server {
         let scheme = sig::choose(&cert.key, algs, false)
             .ok_or_else(|| Fatal::new(Alert::HandshakeFailure, "no common signature scheme"))?;
         self.suite = Some(suite);
+        self.staple12 = ch.status_request && cert.ocsp.is_some();
         self.send_ticket12 = ch.session_ticket.is_some() && self.cfg.ticketer.is_some();
         self.session_id = if self.cfg.cache.is_some() && !self.send_ticket12 {
             random::<32>()?.to_vec()
@@ -912,6 +967,11 @@ impl Server {
         let c = certificate12(&cert.chain);
         self.t.add(&c);
         out.push(Action::Msg(Level::Initial, c));
+        if let (true, Some(r)) = (self.staple12, &cert.ocsp) {
+            let cs = message(CERTIFICATE_STATUS, |o| certificate_status_body(o, r));
+            self.t.add(&cs);
+            out.push(Action::Msg(Level::Initial, cs));
+        }
         let share = group.generate()?;
         let mut params = vec![3u8];
         params.extend_from_slice(&group.id().to_be_bytes());
@@ -972,6 +1032,12 @@ impl Server {
                 }
                 if self.send_ticket12 && !self.resumed {
                     ext(o, EXT_SESSION_TICKET, |_| {});
+                }
+                if self.staple12 && !self.resumed {
+                    ext(o, EXT_STATUS_REQUEST, |_| {});
+                }
+                if let Some(l) = self.record_limit12 {
+                    ext(o, EXT_RECORD_SIZE_LIMIT, |o| put_u16(o, l));
                 }
             });
         })

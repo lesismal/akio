@@ -6,7 +6,9 @@
 #     -e CARGO_TARGET_DIR=/tmp/t rust:1 tools/interop/tls/tlsfuzzer.sh [script.py ...]
 #
 # The server is `tls-interop server --http-server` (one small HTTP response per request head, as
-# tlsfuzzer expects) with an RSA-2048 certificate.
+# tlsfuzzer expects) with an RSA-2048 certificate and a stapled OCSP response; a second one on
+# port 4434 asks for a client certificate (the client certificate compression script), a third
+# on 4435 answers 240 bytes (the record_size_limit script checks how they are cut).
 # TLS 1.2 scripts get `-d` ((EC)DHE instead of the RSA key exchange only-tls does not offer)
 # and, where they take it, `-C` with an ECDHE + AES-GCM suite (their default is a CBC one).
 set -u
@@ -25,10 +27,26 @@ python3 -m venv venv >/dev/null 2>&1 || { apt-get update -qq && apt-get install 
 ./venv/bin/pip install -q ecdsa "git+https://github.com/tlsfuzzer/tlslite-ng" >/dev/null 2>&1 || exit 1
 openssl req -x509 -newkey rsa:2048 -nodes -keyout key.pem -out cert.pem -days 30 \
     -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" >/dev/null 2>&1
+# An OCSP response for the (self-signed) certificate, signed by itself.
+printf 'V\t491231235959Z\t\t%s\tunknown\t/CN=localhost\n' \
+    "$(openssl x509 -in cert.pem -noout -serial | cut -d= -f2)" > index.txt
+openssl ocsp -issuer cert.pem -cert cert.pem -reqout ocsp-req.der -no_nonce >/dev/null 2>&1
+openssl ocsp -index index.txt -CA cert.pem -rsigner cert.pem -rkey key.pem -reqin ocsp-req.der \
+    -respout ocsp.der -ndays 1 >/dev/null 2>&1
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout client-key.pem \
+    -out client.pem -days 30 -subj "/CN=client" -addext "basicConstraints=critical,CA:FALSE" \
+    -addext "extendedKeyUsage=clientAuth" >/dev/null 2>&1
 
-"$BIN" server 127.0.0.1:4433 --count 1000000 --http-server --cert cert.pem --key key.pem > server.log 2>&1 &
+"$BIN" server 127.0.0.1:4433 --count 1000000 --http-server --cert cert.pem --key key.pem \
+    --ocsp-file ocsp.der > server.log 2>&1 &
 SP=$!
-trap 'kill $SP 2>/dev/null' EXIT
+"$BIN" server 127.0.0.1:4434 --count 1000000 --http-server --cert cert.pem --key key.pem \
+    --ca client.pem --tls13 > server-auth.log 2>&1 &
+SP2=$!
+"$BIN" server 127.0.0.1:4435 --count 1000000 --http-server --http-body 200 --cert cert.pem \
+    --key key.pem > server-big.log 2>&1 &
+SP3=$!
+trap 'kill $SP $SP2 $SP3 2>/dev/null' EXIT
 sleep 1
 
 # script | extra arguments | probes known to fail (the run passes when exactly these fail)
@@ -75,6 +93,18 @@ SCRIPTS=(
     "test-ecdhe-rsa-key-exchange-with-bad-messages.py|-C TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256|0"
     # With -C the AES-256 probe sends an empty cipher list (decode_error, correctly).
     "test-aes-gcm-nonces.py|-d -C TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256|2"
+    # record_size_limit: the 21 probes of TLS 1.0, 1.1 and 1.2 use the RSA key exchange and CBC
+    # suites (sanity twice, sizes sent / accepted, PRFs, too large record, renegotiation,
+    # resumption); the TLS 1.3 probes and the TLS 1.2 extension-parsing ones run.
+    "test-record-size-limit.py|-p 4435 --reply-AD-size 240 -M|21"
+    # Certificate compression (zlib), server certificates and (second server) client ones. The
+    # TLS 1.2 probe offers CBC suites only (its --tls1.2-cipher option is not registered).
+    # Compressed client certificates are fuzzed up to 131,000 bytes: longer messages exceed the
+    # handshake message limit and get decode_error instead of the bad_certificate expected.
+    # test-ocsp-stapling.py offers CBC suites only: OCSP stapling is covered by run.sh against
+    # OpenSSL, Go and GnuTLS.
+    "test-tls13-certificate-compression.py|-d -M --algorithms zlib|1"
+    "test-tls13-client-certificate-compression.py|-p 4434 -c ../client.pem -k ../client-key.pem --algorithms zlib --fuzz-package-limit 131000|0"
 )
 if [ "$#" -gt 0 ]; then
     # Only the named scripts, keeping their arguments from the list above.

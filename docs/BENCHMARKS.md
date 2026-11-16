@@ -265,6 +265,23 @@ copy came first, 30% of the 16 KiB profile): 2.4× the previous release at 16–
 AVX-512 ChaCha20 and IFMA Poly1305 kernels, also out of place: 0.55× → 1.42× rustls + ring at
 16 KiB (below).
 
+#### TLS extensions: handshake A/B (`tls-bench handshakes 2`, CPU 2)
+
+record_size_limit, certificate compression and OCSP stapling (ADR-008), three rounds alternated
+with `659f3c90` on the quiet host, mean full handshakes/s with default configurations (the client
+sends record_size_limit; certificate compression is on for the server and off for the client):
+
+| case | before | after | after / before |
+|---|---:|---:|---:|
+| X25519 | 5,438 | 5,445 | 1.00 |
+| secp256r1 | 5,451 | 5,434 | 1.00 |
+| X25519, RSA-2048 certificate | 3,290 | 3,295 | 1.00 |
+
+A first run with compression on in the client too measured 0.99× in all three cases (5,426 →
+5,376, 5,439 → 5,402, 3,296 → 3,262): inflating the 329-byte compressed certificate costs about
+1.3 µs (2.2 µs for the RSA one), mostly only-deflate's fixed cost per stream, which is why clients
+offer compression only when asked to.
+
 ### Kernel TLS (kTLS) evaluation (`crates/only-tls/examples/ktls-bench.rs`, `tools/bench/ktls.sh`)
 
 Question: after only-tls finishes a handshake, should the record keys go to the Linux kernel

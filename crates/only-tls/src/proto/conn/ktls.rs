@@ -5,7 +5,7 @@
 use super::super::alert::{Alert, Fatal, fatal};
 use super::super::common::{Action, Keys};
 use super::super::msgs::{TLS12, TLS13};
-use super::super::record::{CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE};
+use super::super::record::{CT_ALERT, CT_APPLICATION_DATA, CT_HANDSHAKE, MAX_PLAINTEXT};
 use super::super::suites::AeadAlg;
 use super::{Connection, MAX_HANDSHAKE, MAX_WARNINGS};
 
@@ -107,6 +107,8 @@ impl Connection {
             && !self.sent_close
             && self.read_keys.is_some()
             && self.write_keys.is_some()
+            // The kernel writes full 16 KiB records: not under a peer's smaller limit.
+            && self.rec.max_fragment(CT_APPLICATION_DATA) == MAX_PLAINTEXT
     }
 
     /// The keys for the kernel, `None` unless [`offload_ready`](Self::offload_ready). Nothing
@@ -217,7 +219,8 @@ impl Connection {
                             Action::Ccs
                             | Action::RejectEarlyData
                             | Action::EarlyOffered(_)
-                            | Action::EarlyAccepted(_) => {
+                            | Action::EarlyAccepted(_)
+                            | Action::RecordLimit { .. } => {
                                 return fatal(Alert::UnexpectedMessage, "unexpected message");
                             }
                         }

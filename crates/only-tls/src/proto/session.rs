@@ -266,6 +266,9 @@ pub(crate) struct Ticket13 {
     pub(crate) session: Session,
     /// When it was received, Unix milliseconds.
     pub(crate) received_ms: u64,
+    /// The server's record_size_limit on the connection that sent it (0: none): early data
+    /// sent with it goes under that limit.
+    pub(crate) record_limit: u16,
 }
 
 /// A TLS 1.2 session a client holds.
@@ -429,6 +432,7 @@ mod tests {
                     ticket: vec![i],
                     session: s,
                     received_ms: 0,
+                    record_limit: 0,
                 },
             );
         }

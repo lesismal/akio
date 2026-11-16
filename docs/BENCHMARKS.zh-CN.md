@@ -233,6 +233,20 @@ rustls 0.23 + ring 是开发依赖。
 2,739 → 6,603 MB/s，相对 rustls + ring 0.69 倍 → 1.65 倍）。ChaCha20-Poly1305 记录运行在 AVX-512
 ChaCha20 与 IFMA Poly1305 内核上，同样非原地加解密：16 KiB 时相对 rustls + ring 0.55 倍 → 1.42 倍（见下文）。
 
+#### TLS 扩展：握手 A/B（`tls-bench handshakes 2`，CPU 2）
+
+record_size_limit、证书压缩与 OCSP stapling（ADR-008），在安静的主机上与 `659f3c90` 交替跑三轮，默认配置
+（客户端发送 record_size_limit；证书压缩服务端开启、客户端关闭）下完整握手每秒次数的均值：
+
+| 场景 | 之前 | 之后 | 之后 / 之前 |
+|---|---:|---:|---:|
+| X25519 | 5,438 | 5,445 | 1.00 |
+| secp256r1 | 5,451 | 5,434 | 1.00 |
+| X25519，RSA-2048 证书 | 3,290 | 3,295 | 1.00 |
+
+客户端也开启压缩的第一轮测试三种场景均为 0.99 倍（5,426 → 5,376、5,439 → 5,402、3,296 → 3,262）：解压 329 字节的
+压缩证书约需 1.3 µs（RSA 证书 2.2 µs），主要是 only-deflate 每个流的固定开销，因此客户端只在明确要求时才提供压缩。
+
 ### 内核 TLS（kTLS）评估（`crates/only-tls/examples/ktls-bench.rs`、`tools/bench/ktls.sh`）
 
 问题：only-tls 完成握手后，是否应把记录密钥交给 Linux 内核（`setsockopt(TCP_ULP, "tls")`，`SOL_TLS`

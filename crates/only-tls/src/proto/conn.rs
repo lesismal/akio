@@ -121,6 +121,20 @@ impl Machine {
         }
     }
 
+    pub(crate) fn cert_compressed(&self) -> bool {
+        match self {
+            Machine::Client(c) => c.cert_compressed,
+            Machine::Server(s) => s.cert_compressed,
+        }
+    }
+
+    pub(crate) fn ocsp(&self) -> Option<&[u8]> {
+        match self {
+            Machine::Client(c) => c.ocsp.as_deref(),
+            Machine::Server(_) => None,
+        }
+    }
+
     fn is_client(&self) -> bool {
         matches!(self, Machine::Client(_))
     }
@@ -161,6 +175,9 @@ pub struct Connection {
     early_sent: Vec<u8>,
     /// Bytes sent (client) or received (server) as early data.
     early_len: u64,
+    /// The record_size_limit we advertised once negotiated (0: none), enforced on what is read
+    /// under every key but the early ones.
+    read_limit: u16,
     /// Kernel TLS: keep the raw traffic keys (`read_keys` / `write_keys`) for an offload.
     #[cfg(feature = "experimental-ktls")]
     keep_keys: bool,
@@ -222,6 +239,7 @@ impl Connection {
             early_reading: false,
             early_sent: Vec::new(),
             early_len: 0,
+            read_limit: 0,
             #[cfg(feature = "experimental-ktls")]
             keep_keys: false,
             #[cfg(feature = "experimental-ktls")]
@@ -281,6 +299,23 @@ impl Connection {
     /// What happened to early data (0-RTT): offered, accepted, rejected.
     pub fn early_data(&self) -> EarlyData {
         self.m.early()
+    }
+
+    /// The OCSP response the server stapled to its certificate (client side, when asked for
+    /// with `ocsp_stapling`): DER, not validated.
+    pub fn ocsp_response(&self) -> Option<&[u8]> {
+        self.m.ocsp()
+    }
+
+    /// The peer's certificate came compressed (RFC 8879).
+    pub fn peer_certificate_compressed(&self) -> bool {
+        self.m.cert_compressed()
+    }
+
+    /// The record_size_limit values in force (RFC 8449): `(read, write)`, what we advertised
+    /// and what the peer did; 0 when not negotiated.
+    pub fn record_size_limits(&self) -> (u16, u16) {
+        (self.read_limit, self.rec.write_limit)
     }
 
     /// Bytes of application data sent (client) or received (server) as early data: the first
@@ -641,6 +676,12 @@ impl Connection {
                 }
                 Action::ReadKeys(l, k) => {
                     self.early_reading = l == Level::EarlyData;
+                    // Early data was protected under the limits of an earlier connection.
+                    self.rec.read_limit = if self.early_reading {
+                        0
+                    } else {
+                        self.read_limit
+                    };
                     self.rec.set_read(&k);
                     #[cfg(feature = "experimental-ktls")]
                     if self.keep_keys {
@@ -674,6 +715,15 @@ impl Connection {
                 Action::RejectEarlyData => self.rec.skip_early = self.m.early_skip(),
                 Action::EarlyOffered(max) | Action::EarlyAccepted(max) => {
                     self.early_budget = max as usize;
+                }
+                Action::RecordLimit { read, write } => {
+                    // What is already queued went under the old limit.
+                    self.flush_hs(out)?;
+                    self.read_limit = read;
+                    if !self.early_reading {
+                        self.rec.read_limit = read;
+                    }
+                    self.rec.write_limit = write;
                 }
                 Action::Done => {}
             }

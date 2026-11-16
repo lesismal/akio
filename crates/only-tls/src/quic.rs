@@ -156,7 +156,8 @@ impl QuicTls {
                 | Action::Warning(_)
                 | Action::RejectEarlyData
                 | Action::EarlyOffered(_)
-                | Action::EarlyAccepted(_) => {}
+                | Action::EarlyAccepted(_)
+                | Action::RecordLimit { .. } => {}
             }
         }
         read_changed

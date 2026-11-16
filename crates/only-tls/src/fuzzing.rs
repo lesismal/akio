@@ -4,8 +4,12 @@
 use std::sync::OnceLock;
 
 use crate::proto::Connection;
+use crate::proto::codec::Reader;
 use crate::proto::common::Keys;
-use crate::proto::msgs::{ClientHello, ServerHello, parse_certificate12, parse_certificate13};
+use crate::proto::msgs::{
+    ClientHello, ServerHello, compressed_certificate, decompress_certificate,
+    parse_certificate_status, parse_certificate12, parse_certificate13,
+};
 use crate::proto::record::RecordLayer;
 use crate::proto::suites;
 use crate::{Certificate, ClientConfig, PrivateKey, RootCerts, ServerConfig};
@@ -34,11 +38,16 @@ fn fixture() -> &'static Fixture {
             b.build()
                 .unwrap_or_else(|_| unreachable!("fixed configuration"))
         };
+        // A stand-in OCSP response (only its outer structure is checked).
+        let mut ocsp = vec![0x30, 0, 0x0a, 1, 0, 0xa0, 4, 0x30, 2, 5, 0];
+        ocsp[1] = (ocsp.len() - 2) as u8;
         let server = build(
             ServerConfig::builder(chain.clone(), pk.clone())
                 .alpn(["h2", "http/1.1"])
                 .session_tickets(true)
-                .early_data(16384),
+                .early_data(16384)
+                .record_size_limit(512)
+                .ocsp_response(ocsp),
         );
         let server_auth = build(
             ServerConfig::builder(chain, pk)
@@ -49,11 +58,15 @@ fn fixture() -> &'static Fixture {
             .roots(roots.clone())
             .alpn(["h2"])
             .early_data(true)
+            .record_size_limit(256)
+            .ocsp_stapling(true)
+            .certificate_compression(true)
             .build()
             .unwrap_or_else(|_| unreachable!("fixed configuration"));
         let client12 = ClientConfig::builder()
             .roots(roots)
             .__tls12_only(true)
+            .ocsp_stapling(true)
             .build()
             .unwrap_or_else(|_| unreachable!("fixed configuration"));
         Fixture {
@@ -84,8 +97,9 @@ fn feed(c: &mut Connection, data: &[u8]) {
 }
 
 /// `tls_server`: arbitrary bytes as what a client sends to a server (TLS 1.3 / 1.2, with and
-/// without client authentication and a forced HelloRetryRequest); never panics. Also parses
-/// the input directly as handshake messages.
+/// without client authentication and a forced HelloRetryRequest, record_size_limit, OCSP
+/// stapling); never panics. Also parses the input directly as handshake messages (a
+/// CompressedCertificate among them), and what compresses decompresses to the same bytes.
 pub fn server(data: &[u8]) {
     let f = fixture();
     let cfg = if data.first().is_some_and(|b| b & 1 == 1) {
@@ -98,6 +112,14 @@ pub fn server(data: &[u8]) {
     let _ = ClientHello::parse(data);
     let _ = parse_certificate13(data);
     let _ = parse_certificate12(data);
+    let _ = decompress_certificate(data, 1 << 17);
+    if data.len() <= 4096 {
+        if let Some(m) = compressed_certificate(data) {
+            let back = decompress_certificate(&m[4..], data.len())
+                .unwrap_or_else(|e| panic!("own compressed certificate: {e}"));
+            assert_eq!(back, data);
+        }
+    }
 }
 
 /// `tls_client`: arbitrary bytes as what a server sends back to our ClientHello (dual-version
@@ -114,6 +136,8 @@ pub fn client(data: &[u8]) {
     };
     feed(&mut c, data);
     let _ = ServerHello::parse(data);
+    let _ = parse_certificate_status(&mut Reader::new(data));
+    let _ = decompress_certificate(data, 1 << 17);
 }
 
 /// `tls_record`: arbitrary records decrypted under fixed keys of every suite (TLS 1.3 and 1.2
@@ -259,6 +283,17 @@ mod tests {
             }
         }
         assert_eq!(i, 4);
+        // The new messages' bodies as such: CompressedCertificate, CertificateStatus.
+        let leaf = &f.server.inner.cert.chain[0];
+        let chain = vec![leaf.clone(), leaf.clone()];
+        let mut body = Vec::new();
+        crate::proto::msgs::certificate13_body(&mut body, &[], &chain, None);
+        let m = compressed_certificate(&body).unwrap();
+        write("tls_server", "compressed_certificate", &m[4..]);
+        write("tls_client", "compressed_certificate", &m[4..]);
+        let mut cs = Vec::new();
+        crate::proto::msgs::certificate_status_body(&mut cs, &[0x30, 3, 0x0a, 1, 0]);
+        write("tls_client", "certificate_status", &cs);
         for (n, s) in suites::ALL.iter().enumerate() {
             let sel = n as u8;
             let keys = if s.is_tls13() {

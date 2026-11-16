@@ -161,6 +161,10 @@ fn no_tls12_and_no_compat_in_quic() {
     assert_eq!(hello.versions, Some(vec![0x0304]));
     assert_eq!(hello.quic_params, Some(&[9u8][..]));
     assert!(hello.suites.iter().all(|s| (0x1301..=0x1303).contains(s)));
+    // QUIC has no records: no record_size_limit (RFC 9001 section 4). Certificate compression
+    // is off by default on clients.
+    assert_eq!(hello.record_limit, None);
+    assert_eq!(hello.cert_comp, None);
 }
 
 #[test]

@@ -2,7 +2,11 @@
 # only-tls <-> OpenSSL (s_server / s_client) and Go crypto/tls, both directions:
 # TLS 1.3 and 1.2, every implemented cipher suite and group, RSA / ECDSA P-256 / P-384 /
 # Ed25519 certificates, client authentication, resumption (tickets and session IDs),
-# HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none).
+# HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none),
+# OCSP stapling (OpenSSL, Go, GnuTLS), certificate compression (RFC 8879 zlib: OpenSSL 3.2+ built
+# with zlib, e.g. Debian's; skipped otherwise) and record_size_limit (RFC 8449: GnuTLS when
+# gnutls-cli is installed; OpenSSL and Go have none, so their cases check it is not applied, and
+# OpenSSL's max_fragment_length offer is ignored).
 #
 #   tools/interop/tls/run.sh              # needs openssl (3.x+) and go on PATH
 #   OUT=/tmp/x tools/interop/tls/run.sh   # where PKI, logs and binaries go
@@ -12,7 +16,7 @@
 # Linux Docker (Debian's OpenSSL 3 and the Go toolchain from the image are fetched on demand):
 #   docker run --rm -v "$PWD":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry \
 #     -e CARGO_TARGET_DIR=/tmp/t rust:1 bash -c 'apt-get update -qq && \
-#     apt-get install -y -qq golang-go openssl >/dev/null && tools/interop/tls/run.sh'
+#     apt-get install -y -qq golang-go openssl gnutls-bin >/dev/null && tools/interop/tls/run.sh'
 set -u
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 OUT=${OUT:-$(mktemp -d)}
@@ -47,6 +51,12 @@ leaf p256 -algorithm EC -pkeyopt ec_paramgen_curve:P-256
 leaf p384 -algorithm EC -pkeyopt ec_paramgen_curve:P-384
 leaf ed25519 -algorithm ED25519
 leaf client -algorithm EC -pkeyopt ec_paramgen_curve:P-256
+# An OCSP response for the P-256 leaf, signed by the CA (status good, valid for a day).
+printf 'V\t491231235959Z\t\t%s\tunknown\t/CN=p256\n' \
+    "$(openssl x509 -in p256.pem -noout -serial | cut -d= -f2)" > index.txt
+openssl ocsp -issuer ca.pem -cert p256.pem -reqout ocsp-req.der -no_nonce >/dev/null 2>&1
+openssl ocsp -index index.txt -CA ca.pem -rsigner ca.pem -rkey ca.key -reqin ocsp-req.der \
+    -respout ocsp.der -ndays 1 >/dev/null 2>&1
 cd "$OUT" || exit 1
 
 pass=0
@@ -287,6 +297,93 @@ s_server_case "1.3 KeyUpdate sent by only" "-cert $P/p256.pem -key $P/p256.key -
 # Bulk.
 s_server_case "1.3 64 KiB request" "-cert $P/p256.pem -key $P/p256.key -tls1_3" "--bytes 65536"
 
+# OCSP stapling: s_client checks the response (-ocsp_check_leaf verifies it where OpenSSL has it;
+# OpenSSL fails that check in TLS 1.2 against its own s_server too), only's client checks it is
+# the configured one.
+OCSP_CHECK=""
+openssl s_client -help 2>&1 | grep -q -- -ocsp_check_leaf && OCSP_CHECK="-ocsp_check_leaf"
+s_server_case "1.3 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -status_file $P/ocsp.der" \
+    "--expect-ocsp $P/ocsp.der"
+s_server_case "1.2 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -tls1_2 -status_file $P/ocsp.der" \
+    "--expect-ocsp $P/ocsp.der"
+s_client_case "1.3 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_3 -status $OCSP_CHECK" \
+    "Cert Status: good"
+s_client_case "1.2 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_2 -status" "Cert Status: good"
+# Certificate compression (zlib), both ways, server and client certificates.
+if openssl version -a | grep -q -- '-DZLIB'; then
+    s_client_case "1.3 compressed certificate (zlib)" "$S" "-tls1_3 -trace" "Compression type=zlib"
+    s_client_case "1.3 compressed client certificate (zlib)" "$S --ca $P/ca.pem --require" \
+        "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
+    if grep -q "cert_comp=true" "$OUT/srv.log"; then :; else
+        ko "openssl -> only server: client certificate was not compressed" "$OUT/srv.log"
+    fi
+    s_server_case "1.3 compressed certificate (zlib)" \
+        "-cert $P/p256.pem -key $P/p256.key -tls1_3 -cert_comp -Verify 1" \
+        "--cert $P/client.pem --key $P/client.key"
+    if grep -q "cert_comp=true" "$OUT/cli.log"; then :; else
+        ko "only client -> openssl: certificate was not compressed" "$OUT/cli.log"
+    fi
+else
+    echo "SKIP certificate compression with OpenSSL (built without zlib)"
+fi
+# record_size_limit: OpenSSL has none, so nothing is applied (our 512 is not enforced on its
+# 16 KiB records); its max_fragment_length offer (RFC 6066, not implemented) is ignored, and
+# records it caps itself with -max_send_frag are read as any others.
+s_server_case "1.3 record_size_limit not negotiated" "-cert $P/p256.pem -key $P/p256.key -tls1_3" \
+    "--record-limit 512 --expect-record-limit 0 --bytes 65536"
+s_server_case "1.2 small records (-max_send_frag 512)" \
+    "-cert $P/p256.pem -key $P/p256.key -tls1_2 -max_send_frag 512" "--record-limit 512 --bytes 65536"
+s_client_case "1.3 max_fragment_length offered (ignored)" "$S --record-limit 512" \
+    "-tls1_3 -maxfraglen 512" "hello only"
+s_client_case "1.2 max_fragment_length offered (ignored)" "$S" "-tls1_2 -maxfraglen 1024" "hello only"
+
+# GnuTLS: record_size_limit both ways (it counts the TLS 1.3 content type: --recordsize=512 is
+# 513 on the wire), OCSP stapling both ways. only's client sends 5000 bytes, cut to GnuTLS's
+# limit; gnutls-cli sends one record per line read and drops the rest of a longer line (it does
+# not retry a partial gnutls_record_send), so it sends lines of 500 bytes.
+if command -v gnutls-cli >/dev/null; then
+    for v in 1.3 1.2; do
+        want=512
+        [ "$v" = 1.3 ] && want=513
+        prio="NORMAL:-VERS-ALL:+VERS-TLS$v"
+        next_port
+        # --count 2: wait_port's probe is the first connection.
+        "$ONLY" server "127.0.0.1:$PORT" --count 2 $S --record-limit 1000 --ocsp-file "$P/ocsp.der" \
+            > "$OUT/srv.log" 2>&1 &
+        sp=$!
+        wait_port "$PORT"
+        rm -f "$OUT/got-ocsp.der"
+        (for i in 1 2 3 4 5; do printf 'hello gnutls %d %0484d\n' "$i" 0; sleep 0.2; done; sleep 0.5) |
+            timeout 10 gnutls-cli --x509cafile "$P/ca.pem" -p "$PORT" localhost --recordsize=512 \
+                --priority "$prio" --save-ocsp="$OUT/got-ocsp.der" > "$OUT/cli.log" 2>&1
+        if grep -q "rsl=1000/$want" "$OUT/srv.log" &&
+            [ "$(grep -c -E '^hello gnutls [1-5] 0{484}$' "$OUT/cli.log")" = 5 ] &&
+            cmp -s "$OUT/got-ocsp.der" "$P/ocsp.der"; then
+            ok "gnutls -> only server: $v record_size_limit + OCSP ($(grep -o 'rsl=[0-9/]*' "$OUT/srv.log"))"
+        else
+            ko "gnutls -> only server: $v record_size_limit + OCSP" "$OUT/cli.log"
+            sed 's/^/    srv: /' "$OUT/srv.log" | tail -3
+        fi
+        kill $sp 2>/dev/null
+        wait $sp 2>/dev/null
+        next_port
+        timeout 15 gnutls-serv --echo -p "$PORT" --x509certfile "$P/p256.pem" --x509keyfile "$P/p256.key" \
+            --recordsize=512 --ocsp-response="$P/ocsp.der" --priority "$prio" > "$OUT/srv.log" 2>&1 &
+        sp=$!
+        wait_port "$PORT"
+        if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --record-limit 1000 \
+            --expect-record-limit "$want" --expect-ocsp "$P/ocsp.der" --bytes 5000 > "$OUT/cli.log" 2>&1; then
+            ok "only client -> gnutls: $v record_size_limit + OCSP ($(grep -m1 -o 'rsl=[0-9/]*' "$OUT/cli.log"))"
+        else
+            ko "only client -> gnutls: $v record_size_limit + OCSP" "$OUT/cli.log"
+        fi
+        kill $sp 2>/dev/null
+        wait $sp 2>/dev/null
+    done
+else
+    echo "SKIP GnuTLS cases (no gnutls-cli)"
+fi
+
 # Go crypto/tls.
 for k in rsa p256 p384 ed25519; do
     go_server_case "1.3 $k cert" "-cert $P/$k.pem -key $P/$k.key" ""
@@ -322,6 +419,17 @@ go_server_case "1.3 HelloRetryRequest" "-cert $P/p256.pem -key $P/p256.key -curv
 go_client_case "1.3 HelloRetryRequest (forced)" "$S --hrr" ""
 go_server_case "1.3 KeyUpdate sent by only" "-cert $P/p256.pem -key $P/p256.key" "--key-update --bytes 300000"
 go_client_case "1.3 many records" "$S" "-key-update"
+# OCSP stapling both ways (Go's client always asks); Go has no record_size_limit, so ours is not
+# applied, and no certificate compression.
+go_server_case "1.3 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -ocsp $P/ocsp.der" \
+    "--expect-ocsp $P/ocsp.der"
+go_server_case "1.2 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -ocsp $P/ocsp.der -tls12" \
+    "--tls12 --expect-ocsp $P/ocsp.der"
+go_client_case "1.3 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-expect-ocsp $P/ocsp.der"
+go_client_case "1.2 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-expect-ocsp $P/ocsp.der -tls12"
+go_server_case "1.3 record_size_limit not negotiated" "-cert $P/p256.pem -key $P/p256.key" \
+    "--record-limit 512 --expect-record-limit 0 --bytes 40000"
+go_client_case "1.2 record_size_limit not negotiated" "$S --record-limit 512" "-tls12 -key-update"
 
 # curl against only-http over TLS (HTTP/1.1 and HTTP/2 by ALPN).
 if command -v curl >/dev/null; then

@@ -2,7 +2,9 @@
 //! and encoding.
 
 use super::alert::{Alert, Fatal, fatal};
-use super::codec::{DResult, Reader, put_u8, put_u16, put_u24, put_vec, put_vec8, put_vec16};
+use super::codec::{
+    DResult, Reader, put_u8, put_u16, put_u24, put_vec, put_vec8, put_vec16, put_vec24,
+};
 
 // Handshake message types.
 pub(crate) const HELLO_REQUEST: u8 = 0;
@@ -18,16 +20,21 @@ pub(crate) const SERVER_HELLO_DONE: u8 = 14;
 pub(crate) const CERTIFICATE_VERIFY: u8 = 15;
 pub(crate) const CLIENT_KEY_EXCHANGE: u8 = 16;
 pub(crate) const FINISHED: u8 = 20;
+pub(crate) const CERTIFICATE_STATUS: u8 = 22;
 pub(crate) const KEY_UPDATE: u8 = 24;
+pub(crate) const COMPRESSED_CERTIFICATE: u8 = 25;
 pub(crate) const MESSAGE_HASH: u8 = 254;
 
 // Extensions.
 pub(crate) const EXT_SERVER_NAME: u16 = 0;
+pub(crate) const EXT_STATUS_REQUEST: u16 = 5;
 pub(crate) const EXT_SUPPORTED_GROUPS: u16 = 10;
 pub(crate) const EXT_EC_POINT_FORMATS: u16 = 11;
 pub(crate) const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
 pub(crate) const EXT_ALPN: u16 = 16;
 pub(crate) const EXT_EXTENDED_MASTER_SECRET: u16 = 23;
+pub(crate) const EXT_COMPRESS_CERTIFICATE: u16 = 27;
+pub(crate) const EXT_RECORD_SIZE_LIMIT: u16 = 28;
 pub(crate) const EXT_SESSION_TICKET: u16 = 35;
 pub(crate) const EXT_PRE_SHARED_KEY: u16 = 41;
 pub(crate) const EXT_EARLY_DATA: u16 = 42;
@@ -43,6 +50,20 @@ pub(crate) const TLS13: u16 = 0x0304;
 
 /// psk_dhe_ke (RFC 8446 section 4.2.9).
 pub(crate) const PSK_DHE_KE: u8 = 1;
+
+/// CertificateStatusType ocsp (RFC 6066 section 8).
+pub(crate) const STATUS_OCSP: u8 = 1;
+
+/// CertificateCompressionAlgorithm zlib (RFC 8879 section 3), the only one implemented (no
+/// in-house brotli or zstd).
+pub(crate) const CERT_COMP_ZLIB: u16 = 1;
+
+/// The smallest RecordSizeLimit (RFC 8449 section 4).
+pub(crate) const MIN_RECORD_LIMIT: u16 = 64;
+/// The largest RecordSizeLimit that means something: 2^14 bytes plus the TLS 1.3 content type.
+pub(crate) const MAX_RECORD_LIMIT13: u16 = (1 << 14) + 1;
+/// The same for TLS 1.2 (no inner content type).
+pub(crate) const MAX_RECORD_LIMIT12: u16 = 1 << 14;
 
 /// The ServerHello.random of a HelloRetryRequest (SHA-256 of "HelloRetryRequest").
 pub(crate) const HRR_RANDOM: [u8; 32] = [
@@ -114,6 +135,12 @@ pub(crate) struct ClientHello<'a> {
     pub(crate) session_ticket: Option<&'a [u8]>,
     pub(crate) ec_point_formats: Option<&'a [u8]>,
     pub(crate) quic_params: Option<&'a [u8]>,
+    /// status_request with status_type ocsp (RFC 6066 section 8).
+    pub(crate) status_request: bool,
+    /// record_size_limit (RFC 8449).
+    pub(crate) record_limit: Option<u16>,
+    /// compress_certificate algorithms (RFC 8879).
+    pub(crate) cert_comp: Option<Vec<u16>>,
 }
 
 impl<'a> ClientHello<'a> {
@@ -249,6 +276,18 @@ impl<'a> ClientHello<'a> {
                     ch.ec_point_formats = Some(x.vec8()?);
                 }
                 EXT_QUIC_TRANSPORT_PARAMETERS => ch.quic_params = Some(x.rest()),
+                EXT_STATUS_REQUEST => {
+                    // Other status types are ignored (RFC 6066 section 8).
+                    if x.u8()? == STATUS_OCSP {
+                        x.vec16()?; // responder_id_list
+                        x.vec16()?; // request_extensions
+                        ch.status_request = true;
+                    } else {
+                        x.rest();
+                    }
+                }
+                EXT_RECORD_SIZE_LIMIT => ch.record_limit = Some(parse_record_limit(&mut x)?),
+                EXT_COMPRESS_CERTIFICATE => ch.cert_comp = Some(parse_cert_comp(&mut x)?),
                 _ => {
                     x.rest();
                 }
@@ -257,6 +296,34 @@ impl<'a> ClientHello<'a> {
         }
         Ok(ch)
     }
+}
+
+/// The value of a record_size_limit extension: below 64 is illegal (RFC 8449 section 4); a
+/// value over the protocol's maximum is kept (the peer may know a larger record size).
+pub(crate) fn parse_record_limit(x: &mut Reader<'_>) -> DResult<u16> {
+    let v = x.u16()?;
+    if v < MIN_RECORD_LIMIT {
+        return fatal(Alert::IllegalParameter, "record_size_limit below 64");
+    }
+    Ok(v)
+}
+
+/// A compress_certificate extension body: `algorithms<2..2^8-2>` (RFC 8879 section 3).
+pub(crate) fn parse_cert_comp(x: &mut Reader<'_>) -> DResult<Vec<u16>> {
+    let mut l = x.sub8()?;
+    if l.is_empty() {
+        return fatal(Alert::DecodeError, "empty compress_certificate");
+    }
+    let mut v = Vec::new();
+    while !l.is_empty() {
+        v.push(l.u16()?);
+    }
+    Ok(v)
+}
+
+/// Writes a compress_certificate extension body offering zlib.
+pub(crate) fn cert_comp_body(out: &mut Vec<u8>) {
+    put_vec(out, 1, |o| put_u16(o, CERT_COMP_ZLIB));
 }
 
 /// A host name of a server_name extension: ASCII, no trailing dot, lowercased.
@@ -323,6 +390,10 @@ pub(crate) struct ServerHello<'a> {
     pub(crate) reneg_info: Option<&'a [u8]>,
     pub(crate) session_ticket: bool,
     pub(crate) ec_point_formats: Option<&'a [u8]>,
+    /// TLS 1.2: a CertificateStatus may follow the Certificate (RFC 6066 section 8).
+    pub(crate) status_request: bool,
+    /// TLS 1.2 record_size_limit (RFC 8449).
+    pub(crate) record_limit: Option<u16>,
 }
 
 impl<'a> ServerHello<'a> {
@@ -369,6 +440,8 @@ impl<'a> ServerHello<'a> {
                 EXT_RENEGOTIATION_INFO => sh.reneg_info = Some(x.vec8()?),
                 EXT_SESSION_TICKET => sh.session_ticket = true,
                 EXT_EC_POINT_FORMATS => sh.ec_point_formats = Some(x.vec8()?),
+                EXT_STATUS_REQUEST => sh.status_request = true, // empty: checked by finish
+                EXT_RECORD_SIZE_LIMIT => sh.record_limit = Some(parse_record_limit(&mut x)?),
                 _ => {
                     x.rest();
                 }
@@ -381,39 +454,136 @@ impl<'a> ServerHello<'a> {
 
 /// Encodes a TLS 1.3 Certificate message (`context` empty for server certificates).
 pub(crate) fn certificate13(context: &[u8], chain: &[Vec<u8>]) -> Vec<u8> {
-    message(CERTIFICATE, |o| {
-        put_vec8(o, context);
-        put_vec(o, 3, |o| {
-            for c in chain {
-                put_u24(o, c.len());
-                o.extend_from_slice(c);
-                put_u16(o, 0);
-            }
-        });
-    })
+    message(CERTIFICATE, |o| certificate13_body(o, context, chain, None))
 }
 
-/// Parses a TLS 1.3 Certificate body: `(context, chain)`.
-pub(crate) fn parse_certificate13(body: &[u8]) -> DResult<(Vec<u8>, Vec<Vec<u8>>)> {
+/// Writes a TLS 1.3 Certificate body; `ocsp`: a stapled OCSP response for the leaf (the
+/// status_request extension of its CertificateEntry, RFC 8446 section 4.4.2.1).
+pub(crate) fn certificate13_body(
+    o: &mut Vec<u8>,
+    context: &[u8],
+    chain: &[Vec<u8>],
+    ocsp: Option<&[u8]>,
+) {
+    put_vec8(o, context);
+    put_vec(o, 3, |o| {
+        for (i, c) in chain.iter().enumerate() {
+            put_u24(o, c.len());
+            o.extend_from_slice(c);
+            put_vec(o, 2, |o| {
+                if let (0, Some(r)) = (i, ocsp) {
+                    ext(o, EXT_STATUS_REQUEST, |o| certificate_status_body(o, r));
+                }
+            });
+        }
+    });
+}
+
+/// A parsed TLS 1.3 Certificate body.
+#[derive(Debug, Default)]
+pub(crate) struct Certificate13 {
+    pub(crate) context: Vec<u8>,
+    pub(crate) chain: Vec<Vec<u8>>,
+    /// The OCSP response stapled to the leaf (status_request in its CertificateEntry).
+    pub(crate) ocsp: Option<Vec<u8>>,
+}
+
+/// Parses a TLS 1.3 Certificate body. Entry extensions are checked for well-formedness; the
+/// leaf's status_request (an OCSP response) is kept.
+pub(crate) fn parse_certificate13(body: &[u8]) -> DResult<Certificate13> {
     let mut r = Reader::new(body);
-    let ctx = r.vec8()?.to_vec();
+    let mut out = Certificate13 {
+        context: r.vec8()?.to_vec(),
+        ..Certificate13::default()
+    };
     let mut l = r.sub24()?;
     r.finish()?;
-    let mut chain = Vec::new();
     while !l.is_empty() {
         let c = l.vec24()?;
         if c.is_empty() {
             return fatal(Alert::DecodeError, "empty certificate");
         }
-        let exts = l.vec16()?;
-        let mut e = Reader::new(exts);
+        let mut e = l.sub16()?;
+        let mut seen: Vec<u16> = Vec::new();
         while !e.is_empty() {
-            e.u16()?;
-            e.vec16()?;
+            let t = e.u16()?;
+            let d = e.vec16()?;
+            if seen.contains(&t) {
+                return fatal(Alert::IllegalParameter, "duplicate extension");
+            }
+            seen.push(t);
+            if t == EXT_STATUS_REQUEST && out.chain.is_empty() {
+                let mut x = Reader::new(d);
+                out.ocsp = Some(parse_certificate_status(&mut x)?);
+                x.finish()?;
+            }
         }
-        chain.push(c.to_vec());
+        out.chain.push(c.to_vec());
     }
-    Ok((ctx, chain))
+    Ok(out)
+}
+
+/// Writes a CertificateStatus (RFC 6066 section 8): status_type ocsp and the DER response.
+pub(crate) fn certificate_status_body(o: &mut Vec<u8>, ocsp: &[u8]) {
+    put_u8(o, STATUS_OCSP);
+    put_vec24(o, ocsp);
+}
+
+/// Parses a CertificateStatus: the OCSP response (status_type ocsp, non-empty).
+pub(crate) fn parse_certificate_status(r: &mut Reader<'_>) -> DResult<Vec<u8>> {
+    if r.u8()? != STATUS_OCSP {
+        return fatal(Alert::IllegalParameter, "certificate status is not OCSP");
+    }
+    let resp = r.vec24()?;
+    if resp.is_empty() {
+        return fatal(Alert::DecodeError, "empty OCSP response");
+    }
+    Ok(resp.to_vec())
+}
+
+/// Encodes a CompressedCertificate message (RFC 8879 section 4) carrying `body`, a Certificate
+/// body, compressed with zlib; `None` when that would not be smaller than the Certificate.
+pub(crate) fn compressed_certificate(body: &[u8]) -> Option<Vec<u8>> {
+    let z = only_deflate::compress(only_deflate::Format::Zlib, only_deflate::Level::BEST, body);
+    // Algorithm, uncompressed length and the compressed data's length take 8 bytes.
+    if z.len() + 8 >= body.len() {
+        return None;
+    }
+    Some(message(COMPRESSED_CERTIFICATE, |o| {
+        put_u16(o, CERT_COMP_ZLIB);
+        put_u24(o, body.len());
+        put_vec24(o, &z);
+    }))
+}
+
+/// Decompresses a CompressedCertificate body into the Certificate body it carries
+/// (RFC 8879 section 4): the algorithm must be one we offered (zlib), the result exactly the
+/// announced length, at most `max` bytes; anything else is bad_certificate.
+pub(crate) fn decompress_certificate(body: &[u8], max: usize) -> DResult<Vec<u8>> {
+    let mut r = Reader::new(body);
+    let alg = r.u16()?;
+    let len = r.u24()?;
+    let data = r.vec24()?;
+    r.finish()?;
+    if alg != CERT_COMP_ZLIB {
+        return fatal(
+            Alert::IllegalParameter,
+            "certificate compressed with an algorithm not offered",
+        );
+    }
+    if data.is_empty() {
+        return fatal(Alert::DecodeError, "empty compressed certificate");
+    }
+    if len > max {
+        return fatal(Alert::BadCertificate, "compressed certificate too large");
+    }
+    match only_deflate::decompress(only_deflate::Format::Zlib, data, len) {
+        Ok(c) if c.len() == len => Ok(c),
+        _ => fatal(
+            Alert::BadCertificate,
+            "compressed certificate does not decompress",
+        ),
+    }
 }
 
 /// Encodes a TLS 1.2 Certificate message.
@@ -501,8 +671,12 @@ mod tests {
     fn certificates_roundtrip() {
         let chain = vec![vec![1, 2, 3], vec![4]];
         let m = certificate13(b"ctx", &chain);
-        let (c, ch) = parse_certificate13(&m[4..]).unwrap();
-        assert_eq!((c.as_slice(), ch), (&b"ctx"[..], chain.clone()));
+        let c = parse_certificate13(&m[4..]).unwrap();
+        assert_eq!(
+            (c.context.as_slice(), c.chain.clone()),
+            (&b"ctx"[..], chain.clone())
+        );
+        assert!(c.ocsp.is_none());
         let m = certificate12(&chain);
         assert_eq!(parse_certificate12(&m[4..]).unwrap(), chain);
         assert!(parse_certificate12(&[0, 0, 3, 0, 0, 0]).is_err());

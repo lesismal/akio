@@ -135,7 +135,11 @@ fn rfc8448_messages_parse() {
     let sh_raw = unhex(v::S_SH);
     let sh = ServerHello::parse(&sh_raw[4..]).unwrap();
     assert_eq!((sh.suite, sh.version), (0x1301, Some(0x0304)));
-    let (ctx, chain) = msgs::parse_certificate13(&unhex(v::S_CERT)[4..]).unwrap();
+    let msgs::Certificate13 {
+        context: ctx,
+        chain,
+        ..
+    } = msgs::parse_certificate13(&unhex(v::S_CERT)[4..]).unwrap();
     assert!(ctx.is_empty());
     assert_eq!(chain.len(), 1);
     let hrr_raw = unhex(v::H_HRR);
@@ -269,17 +273,17 @@ pub(crate) fn pki(kind: Kind, names: &[&str]) -> Pki {
     }
 }
 
-fn server(p: &Pki) -> ServerConfigBuilder {
+pub(crate) fn server(p: &Pki) -> ServerConfigBuilder {
     ServerConfig::builder(p.chain.clone(), p.key.clone())
 }
 
-fn client(p: &Pki) -> ClientConfigBuilder {
+pub(crate) fn client(p: &Pki) -> ClientConfigBuilder {
     ClientConfig::builder().roots(p.roots.clone())
 }
 
 /// Which side failed.
 #[derive(Debug)]
-enum Side {
+pub(crate) enum Side {
     Client(Fatal),
     Server(Fatal),
 }
@@ -293,7 +297,7 @@ impl Side {
 }
 
 /// Shuttles bytes between the two until both are idle; `chunk` limits each delivery.
-fn shuttle(c: &mut Connection, s: &mut Connection, chunk: usize) -> Result<(), Side> {
+pub(crate) fn shuttle(c: &mut Connection, s: &mut Connection, chunk: usize) -> Result<(), Side> {
     let (mut c2s, mut s2c) = (Vec::new(), Vec::new());
     let mut plain = Vec::new();
     c.recv(&[], &mut plain, &mut c2s).map_err(Side::Client)?;
@@ -325,7 +329,7 @@ fn shuttle(c: &mut Connection, s: &mut Connection, chunk: usize) -> Result<(), S
     Ok(())
 }
 
-fn connect(
+pub(crate) fn connect(
     scfg: &ServerConfig,
     ccfg: &ClientConfig,
     name: &str,
@@ -338,7 +342,7 @@ fn connect(
 }
 
 /// Sends `data` from `a` to `b` and checks it arrives intact.
-fn transfer(a: &mut Connection, b: &mut Connection, data: &[u8]) {
+pub(crate) fn transfer(a: &mut Connection, b: &mut Connection, data: &[u8]) {
     let mut wire = Vec::new();
     a.seal(data, &mut wire).unwrap();
     let (mut plain, mut back) = (Vec::new(), Vec::new());
@@ -351,7 +355,7 @@ fn transfer(a: &mut Connection, b: &mut Connection, data: &[u8]) {
     }
 }
 
-fn exchange(c: &mut Connection, s: &mut Connection) {
+pub(crate) fn exchange(c: &mut Connection, s: &mut Connection) {
     transfer(c, s, b"ping from the client");
     transfer(s, c, b"pong from the server");
 }
@@ -452,7 +456,7 @@ fn version_negotiation() {
 }
 
 /// Rewrites the first ClientHello in `wire`: renames extension `from` to `to` (same length).
-fn rename_extension(wire: &mut [u8], from: u16, to: u16) {
+pub(crate) fn rename_extension(wire: &mut [u8], from: u16, to: u16) {
     let ch = ClientHello::parse(&wire[9..]).unwrap();
     assert!(ch.exts.iter().any(|(t, _)| *t == from));
     // Walk the extensions to find the type field.

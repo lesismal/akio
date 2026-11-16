@@ -35,7 +35,8 @@
 ## 协商结果
 
 `tls_info(&conn)` 返回 `TlsInfo`，包含 `handshaking`、`alpn`、`server_name`（SNI，仅服务端）、
-`version`、`early_data` 与 `early_data_len`（见[早期数据](#早期数据0-rtt)）；非 TLS 连接返回 `None`。
+`version`、`early_data` 与 `early_data_len`（见[早期数据](#早期数据0-rtt)）以及 `ocsp_response`（客户端，
+见 [OCSP stapling](#ocsp-stapling)）；非 TLS 连接返回 `None`。
 
 ## 协议支持
 
@@ -45,9 +46,11 @@
 | 密码套件 | AES-128-GCM-SHA256、AES-256-GCM-SHA384、CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA 搭配 AES-128/256-GCM 与 CHACHA20-POLY1305（无 CBC） |
 | 证书 | ECDSA P-256/P-384、Ed25519、RSA（PSS 签名） | 同上，RSA 也可用 PKCS#1 v1.5 |
 | 会话恢复 | 票据 + PSK（`psk_dhe_ke`）：`.session_tickets(true)` 为无状态票据，会话缓存为一次性缓存票据 | 会话 ID（缓存）与 RFC 5077 票据 |
-| 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；双方开启时支持早期数据（0-RTT），否则拒绝并跳过 | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
+| 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；双方开启时支持早期数据（0-RTT），否则拒绝并跳过；证书压缩（RFC 8879，zlib） | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
+| record_size_limit（RFC 8449） | 支持 | 支持 |
 
-两者共有：SNI、ALPN、close_notify、16 KiB 记录、TLS 1.3 内层内容类型与填充、降级哨兵、严格的状态机
+两者共有：SNI、ALPN、close_notify、16 KiB 记录（对端设有 record_size_limit 时更小）、OCSP stapling、
+TLS 1.3 内层内容类型与填充、降级哨兵、严格的状态机
 （意外消息、空记录或交错记录、跨密钥切换的握手数据都是致命错误）。证书由 `only-x509` 验证：链接到
 根证书、有效期、扩展密钥用途、DNS 名（RFC 6125 通配符）与 IP 地址。客户端优先 AES-128-GCM，其次
 AES-256-GCM，然后 ChaCha20-Poly1305；服务端按自己的偏好选择，并优先使用客户端已发送的 key share
@@ -72,6 +75,9 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 | 协议版本 | `.tls13_only(true)` | `.tls13_only(true)` |
 | SNI | | `.sni(false)` 不再发送 |
 | 早期数据（0-RTT） | `.early_data(max_bytes)` | `.early_data(true)` |
+| 记录大小限制（RFC 8449） | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
+| 证书压缩 | 默认开启；`.certificate_compression(false)` 关闭 | `.certificate_compression(true)` 开启 |
+| OCSP stapling | `.ocsp_response(der)`、`.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)` |
 | 仅限测试 | | `.insecure_skip_verify()` |
 
 `.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `only::tls::Error`；配置克隆开销
@@ -120,6 +126,43 @@ ClientHello 其早期数据被拒绝，按普通会话恢复继续。每个 `Ser
 })
 ```
 
+## 记录大小限制、证书压缩、OCSP stapling
+
+决定记录在 [ADR-008](https://github.com/lesismal/only/blob/main/docs/adr/008-tls-extensions.zh-CN.md)。
+
+**record_size_limit**（RFC 8449，TLS 1.3 与 1.2）。任一方的 `.record_size_limit(n)` 设定自己接受的最大
+记录：按 RFC 的口径为 64 到 16385 字节（TLS 1.3 中该值包含 1 字节内容类型；TLS 1.2 上限为 16384），默认
+16385。客户端总是发送自己的值，只要客户端发了，服务端就回以自己的值；此后双方写出的受保护记录按对方的
+限制切分，收到超过自己限制的记录则报 `record_overflow`。明文的握手记录不受限制，早期数据遵循签发票据的
+那条连接上的限制。不支持该扩展的对端（OpenSSL、Go）既不会得到也不会被施加限制。QUIC 中不使用（没有记录）。
+
+```rust,ignore
+// 无法缓存 16 KiB 记录的小设备。
+let cfg = ClientConfig::builder().roots(roots).record_size_limit(1024).build()?;
+```
+
+**证书压缩**（RFC 8879，TLS 1.3）。服务端默认开启：对提供 zlib 的客户端，在压缩后更小时发送压缩的证书链
+（每条链只压缩一次并复用，握手没有额外开销），其 CertificateRequest 也为客户端证书提供它。客户端默认关闭：
+解压收到的证书链约需 1–2 µs，约为内存中完整握手的 1%，换来几十到几百字节的节省；更在意线路字节数时用
+`.certificate_compression(true)` 开启。只有 zlib（由自研的 `only-deflate` 提供；没有自研的 brotli 或 zstd）。
+收到的证书最多解压到 128 KiB，长度必须与声明的完全一致。
+
+### OCSP stapling
+
+服务端为请求它的客户端装订一个 DER 格式的 OCSP 响应（TLS 1.3：放在叶证书的 CertificateEntry 中；TLS 1.2：
+CertificateStatus 消息；会话恢复时不发送）：
+
+```rust,ignore
+let ocsp = std::fs::read("leaf.ocsp.der")?; // 从 CA 的响应者获取，由你负责刷新
+let cfg = ServerConfig::builder(chain, key).ocsp_response(ocsp).build()?;
+```
+
+`.build()` 只检查它是否像一个成功的 `OCSPResponse`。响应会过期（通常几天内）：在那之前获取新的响应并构建
+新的配置。
+
+客户端用 `.ocsp_stapling(true)` 请求响应，`tls_info(&conn).ocsp_response` 保存收到的 DER 字节。**它们未经
+验证**：`only-x509` 尚不检查 OCSP（响应者签名、有效期、证书 ID），关心吊销状态的应用必须自己验证该响应。
+
 ## 内核 TLS
 
 不使用：内核 TLS 卸载（握手后把记录密钥交给 Linux，使 `sendfile` 在 TLS 下可用）已经测量过，比 only-tls
@@ -130,9 +173,8 @@ ClientHello 其早期数据被拒绝，按普通会话恢复继续。每个 `Ser
 
 ## 尚未完成
 
-record_size_limit、证书压缩、OCSP stapling
-（忽略 status_request）；RSA-PSS 密钥（`rsa_pss_pss_*`）；P-521；系统根证书（请自行加载到
-`RootCerts`）。
+OCSP 响应验证、brotli/zstd 证书压缩、`status_request_v2`；RSA-PSS 密钥（`rsa_pss_pss_*`）；P-521；
+系统根证书（请自行加载到 `RootCerts`）。
 
 ## 编写自己的 transport
 
