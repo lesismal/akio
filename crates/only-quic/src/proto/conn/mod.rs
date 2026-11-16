@@ -16,10 +16,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use only_crypto::rand::ChaChaRng;
-use only_tls::quic::{Event as TlsEvent, Keys as TlsKeys, Level, QuicTls};
+use only_tls::quic::{EarlyData, Event as TlsEvent, Keys as TlsKeys, Level, QuicTls};
 
 use super::cid::{ConnectionId, LOCAL_CID_LEN, ResetToken, reset_token};
-use super::crypto::{Keys, OneRtt, initial_keys};
+use super::crypto::{DirKeys, Keys, OneRtt, initial_keys};
 use super::frame::{TransportError, code};
 use super::params::TransportParams;
 use super::ranges::RangeSet;
@@ -377,6 +377,9 @@ pub(crate) struct ConnConfig {
     /// The versions this side speaks: a server accepts them, a client may start over in them
     /// after Version Negotiation.
     pub versions: Vec<u32>,
+    /// 0-RTT: a client sends stream data in 0-RTT packets when a ticket allows it, a server
+    /// accepts them (RFC 9001 section 4.6).
+    pub zero_rtt: bool,
 }
 
 impl ConnConfig {
@@ -389,6 +392,7 @@ impl ConnConfig {
             preferred_address: (None, None),
             version: super::packet::VERSION_1,
             versions: vec![super::packet::VERSION_1, super::packet::VERSION_2],
+            zero_rtt: false,
         }
     }
 
@@ -514,6 +518,19 @@ pub struct Connection {
     vn_from: Option<u32>,
     /// Frame lists of acknowledged or lost packets, reused for new packets.
     spare_frames: Vec<Vec<SentFrame>>,
+    /// 0-RTT packet protection: the client's write keys, the server's read keys.
+    zero_rtt: Option<DirKeys>,
+    /// The server's transport parameters remembered with the ticket (client, 0-RTT).
+    remembered: Option<TransportParams>,
+    /// The last packet number sent in a 0-RTT packet (client) or a 0.5-RTT one (server).
+    zero_rtt_last_pn: Option<u64>,
+    /// The packet being processed is a 0-RTT packet (server).
+    rx_early: bool,
+    /// The 1-RTT read keys are in place (a server answering 0-RTT writes 1-RTT packets
+    /// first, RFC 9001 section 4.1.1's 0.5-RTT data).
+    one_rtt_read: bool,
+    /// The datagram being processed was buffered until its keys arrived.
+    rx_late: bool,
     replay: bool,
     events: VecDeque<Event>,
     ep_events: VecDeque<EndpointEvent>,
@@ -642,6 +659,12 @@ impl Connection {
             restart_with: None,
             vn_from: None,
             spare_frames: Vec::new(),
+            zero_rtt: None,
+            remembered: None,
+            zero_rtt_last_pn: None,
+            rx_early: false,
+            one_rtt_read: false,
+            rx_late: false,
             replay: false,
             events: VecDeque::new(),
             ep_events: VecDeque::new(),
@@ -736,8 +759,13 @@ impl Connection {
         let mut params = Connection::local_params(&cfg);
         params.initial_scid = Some(local);
         params.disable_active_migration = false;
-        let tls = QuicTls::client(tls_cfg, server_name, params.encode())
+        let tls = QuicTls::client_early(tls_cfg, server_name, params.encode(), cfg.zero_rtt)
             .map_err(|e| crate::Error::Connect(e.to_string()))?;
+        // 0-RTT starts from the limits the server gave last time (RFC 9000 section 7.4.1).
+        let remembered = tls
+            .early_params()
+            .and_then(|p| TransportParams::decode(p, true).ok())
+            .map(|p| p.remembered());
         let mut c = Connection::base(
             Side::Client,
             now,
@@ -751,6 +779,12 @@ impl Connection {
             dcid,
         );
         c.spaces[0].keys = Some(initial_keys(&dcid, true, c.version));
+        if let Some(r) = remembered {
+            c.peer_max_streams = [r.initial_max_streams_bidi, r.initial_max_streams_uni];
+            c.tx_max_data = r.initial_max_data;
+            c.peer = r.clone();
+            c.remembered = Some(r);
+        }
         c.retry_token = token;
         c.restart_with = Some((tls_cfg.clone(), server_name.to_string()));
         c.drain_tls(now);
@@ -784,6 +818,23 @@ impl Connection {
         };
         c.restart_with = None;
         c.vn_from = Some(self.version);
+        // Streams opened already (0-RTT) carry over, their data all to be sent again.
+        self.requeue_zero_rtt();
+        c.streams = std::mem::take(&mut self.streams);
+        c.send_queue = std::mem::take(&mut self.send_queue);
+        c.next_local = self.next_local;
+        c.tx_data = self.tx_data;
+        for (id, s) in &mut c.streams {
+            s.queued = false;
+            if let Some(snd) = s.send.as_mut() {
+                snd.max_data = initial_send_window(&c.peer, Side::Client, StreamId::from_raw(*id));
+            }
+        }
+        for id in c.send_queue.clone() {
+            if let Some(s) = c.streams.get_mut(&id) {
+                s.queued = true;
+            }
+        }
         c.events = std::mem::take(&mut self.events);
         c.ep_events = std::mem::take(&mut self.ep_events);
         c.stats = self.stats;
@@ -835,7 +886,9 @@ impl Connection {
                 Some(cid)
             }
         };
-        let tls = QuicTls::server(tls_cfg, params.encode());
+        // 0-RTT is accepted with tickets issued under the same limits (RFC 9001 section 4.6.2).
+        let early_ctx = cfg.zero_rtt.then(|| params.remembered().encode());
+        let tls = QuicTls::server_early(tls_cfg, params.encode(), early_ctx);
         let mut c = Connection::base(
             Side::Server,
             now,
@@ -901,6 +954,16 @@ impl Connection {
     #[cfg(test)]
     pub fn resumed(&self) -> bool {
         self.tls.resumed()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_confirmed(&self) -> bool {
+        self.confirmed
+    }
+
+    /// What happened to 0-RTT.
+    pub fn early_data(&self) -> EarlyData {
+        self.tls.early_data()
     }
 
     pub fn stats(&self) -> ConnectionStats {
@@ -986,13 +1049,36 @@ impl Connection {
         let slot = match l {
             Level::Handshake => &mut self.pending_hs_keys,
             Level::Application => &mut self.pending_1rtt_keys,
-            _ => return,
+            Level::EarlyData => {
+                // One direction only: the client writes 0-RTT packets, the server reads them.
+                if let Some(TlsKeys::Tls13 { suite, secret }) = read.or(write) {
+                    self.zero_rtt = Some(DirKeys::from_secret(suite, &secret, self.version));
+                    self.replay = !self.buffered.is_empty();
+                }
+                return;
+            }
+            Level::Initial => return,
         };
         if read.is_some() {
             slot.0 = read;
         }
         if write.is_some() {
             slot.1 = write;
+        }
+        if l == Level::Application && self.side == Side::Server && self.tls.early_data_accepted() {
+            // Accepted 0-RTT is answered right away: write 1-RTT before the client's Finished
+            // brings the read keys (until then 1-RTT packets wait, as without keys).
+            if let Some(TlsKeys::Tls13 { suite, secret }) = slot.1.take() {
+                self.one_rtt = Some(OneRtt::new(suite, secret.clone(), secret, self.version));
+            }
+            if let (Some(TlsKeys::Tls13 { secret, .. }), Some(k)) =
+                (slot.0.take(), self.one_rtt.as_mut())
+            {
+                k.set_remote(secret);
+                self.one_rtt_read = true;
+                self.replay = !self.buffered.is_empty();
+            }
+            return;
         }
         let (Some(TlsKeys::Tls13 { suite, secret: rs }), Some(TlsKeys::Tls13 { secret: ws, .. })) =
             (&slot.0, &slot.1)
@@ -1004,12 +1090,13 @@ impl Connection {
         match l {
             Level::Handshake => {
                 self.spaces[1].keys = Some(Keys {
-                    local: super::crypto::DirKeys::from_secret(suite, &ws, self.version),
-                    remote: super::crypto::DirKeys::from_secret(suite, &rs, self.version),
+                    local: DirKeys::from_secret(suite, &ws, self.version),
+                    remote: DirKeys::from_secret(suite, &rs, self.version),
                 });
             }
             _ => {
                 self.one_rtt = Some(OneRtt::new(suite, ws, rs, self.version));
+                self.one_rtt_read = true;
             }
         }
         // Packets that arrived before their keys get another try.
@@ -1024,6 +1111,13 @@ impl Connection {
         self.tls_done = true;
         if matches!(self.state, State::Handshake) {
             self.state = State::Established;
+        }
+        if self.side == Side::Client {
+            // 1-RTT from now on (RFC 9001 section 4.6.1); rejected 0-RTT data goes again.
+            self.zero_rtt = None;
+            if self.tls.early_data() == EarlyData::Rejected {
+                self.requeue_zero_rtt();
+            }
         }
         self.events.push_back(Event::Connected);
         if self.side == Side::Server {
@@ -1040,6 +1134,9 @@ impl Connection {
             return;
         }
         self.confirmed = true;
+        // The server has the client's Finished: 0-RTT is over (late packets are lost and come
+        // again in 1-RTT).
+        self.zero_rtt = None;
         self.discard_space(now, SpaceId::Handshake);
         self.ep_events.push_back(EndpointEvent::HandshakeDone);
         self.issue_cids();
@@ -1100,6 +1197,15 @@ impl Connection {
                         token: Some(pa.token),
                     },
                 );
+            }
+        }
+        // Accepted 0-RTT: the server may not lower what the client used (RFC 9000 7.4.1).
+        if let Some(r) = &self.remembered {
+            if self.tls.early_data() == EarlyData::Accepted && !p.keeps_limits_of(r) {
+                return Err(TransportError::new(
+                    code::PROTOCOL_VIOLATION,
+                    "0-RTT accepted with lower transport parameters",
+                ));
             }
         }
         self.peer_max_streams = [p.initial_max_streams_bidi, p.initial_max_streams_uni];
@@ -1269,6 +1375,31 @@ impl Connection {
         self.bytes_in_flight = 0;
         self.stream_unacked = 0;
         self.buffered.clear();
+    }
+
+    /// The 0-RTT packets sent (client) are gone: rejected by the server, discarded after a
+    /// Retry or a Version Negotiation. Their data goes again (in 0-RTT after a Retry, else in
+    /// 1-RTT); they are not losses for congestion control.
+    pub(super) fn requeue_zero_rtt(&mut self) {
+        let Some(last) = self.zero_rtt_last_pn.take() else {
+            return;
+        };
+        let pns: Vec<u64> = self.spaces[2].sent.up_to(last).map(|(pn, _)| pn).collect();
+        for pn in pns {
+            let Some(mut p) = self.spaces[2].sent.remove(pn) else {
+                continue;
+            };
+            if p.in_flight {
+                self.bytes_in_flight = self.bytes_in_flight.saturating_sub(u64::from(p.size));
+                if p.ack_eliciting {
+                    let sp = &mut self.spaces[2];
+                    sp.eliciting_in_flight = sp.eliciting_in_flight.saturating_sub(1);
+                }
+            }
+            for f in std::mem::take(&mut p.frames) {
+                self.on_frame_lost(SpaceId::Data, f);
+            }
+        }
     }
 
     /// Discards a packet number space's keys and state (RFC 9002 section 6.4).

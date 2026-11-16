@@ -195,7 +195,10 @@ impl SessionCache {
 }
 
 /// Binders recorded (first 32 bytes), and their expiry times in order.
-type Seen = (std::collections::HashSet<[u8; 32]>, VecDeque<(u64, [u8; 32])>);
+type Seen = (
+    std::collections::HashSet<[u8; 32]>,
+    VecDeque<(u64, [u8; 32])>,
+);
 
 /// The server's 0-RTT anti-replay state (RFC 8446 section 8.2, "ClientHello recording", with
 /// the freshness check of section 8.3): the PSK binder of every ClientHello whose early data

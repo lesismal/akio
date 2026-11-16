@@ -246,6 +246,18 @@ impl OneRtt {
         }
     }
 
+    /// Sets the remote direction (a server answering 0-RTT writes 1-RTT packets before it has
+    /// the client's 1-RTT secret).
+    pub fn set_remote(&mut self, remote_secret: Vec<u8>) {
+        let (s, v) = (self.suite, self.version);
+        let r = DirKeys::from_secret(s, &remote_secret, v);
+        let next = next_secret(s, &remote_secret, v);
+        self.next_remote = DirKeys::from_secret(s, &next, v).packet;
+        self.remote_hp = r.header;
+        self.remote = r.packet;
+        self.remote_secret = remote_secret;
+    }
+
     /// Moves both directions to the next phase; the old remote key stays usable until
     /// `keep_until`.
     pub fn update(&mut self, keep_until: std::time::Instant) {
