@@ -4,7 +4,7 @@
 use only::{Acceptor, EngineRef, Handler};
 use only_core::fuzzing::{conn, split};
 
-use crate::Socks;
+use crate::{Destinations, Socks};
 
 /// `socks_request`: a SOCKS5/4/4a server session's handshake parser (greeting, RFC 1929
 /// authentication, CONNECT requests with IPv4, IPv6 and domain targets). There is no engine,
@@ -15,7 +15,8 @@ pub fn socks_request(data: &[u8]) {
     if data.len() < 2 {
         return;
     }
-    let mut socks = Socks::new(EngineRef::new());
+    // Any destination, so loopback seeds reach the dial path as before.
+    let mut socks = Socks::new(EngineRef::new()).destinations(Destinations::Any);
     if data[0] & 1 == 1 {
         socks = socks.auth(|u, p| u == "u" && p == "p");
     }

@@ -22,6 +22,29 @@
 运行 `cargo run -p only-socks --example guide-socks`：它手工完成一次带用户名/密码的 SOCKS5
 握手，并经代理转发到本地的 echo 服务。
 
+## 限制与目标策略
+
+`ProxyConfig`（`Socks::config`、`connect_proxy_with`）为每个会话设限。什么都不设置的配置
+同样是有界的：
+
+| 字段 | 默认值 | 含义 |
+| --- | --- | --- |
+| `handshake_timeout` | 10 s | 从接受客户端到其上游连接建立（问候、认证、请求、域名解析、连接）。超时则关闭客户端，因此永远不完成（或逐字节慢发）请求的客户端无法占住会话。 |
+| `idle_timeout` | 5 min | 隧道在两个方向上都没有任何字节流动达到该时长即关闭（两端）。 |
+| `destinations` | `Destinations::PublicOnly` | 允许拨号的地址，在域名解析之后检查。 |
+
+- `Destinations::PublicOnly` 拒绝 loopback、私有地址（RFC 1918、IPv6 ULA）、运营商级 NAT、
+  link-local（包括云元数据服务 `169.254.169.254`）、组播、广播和保留地址，以及它们的
+  IPv4 映射、6to4 和 NAT64 形式。否则一个他人可达的代理会成为进入其背后网络的通道（服务端
+  请求伪造、通往 `localhost` 的开放转发）。SOCKS5 回复 `2`（规则不允许），SOCKS4 回复
+  `0x5b`，`CONNECT` 回复 403。解析到被拒地址的域名同样被拒。
+- `Destinations::Any` 恢复旧行为，用于本来就是为了访问私有网络的代理（堡垒机）；请限制谁能
+  使用它（`auth`、只监听可信网卡）。`Destinations::Custom(f)` 使用你自己的规则。
+- 客户端在上游连接建立前发送的数据最多保留 256 KiB（转发的暂停阈值）；超过则关闭客户端。
+- `CONNECT` 目标在一个小的有界解析线程池上解析（4 个线程，最多排队 1024 个请求，满时返回
+  503），从不在 I/O 线程上。
+- 停止读取的对端同样受 engine 的 `Config::write_timeout` 约束。
+
 ## 内核内转发
 
 在 Linux 上做纯 TCP 转发时，`only::ebpf::Relay` 可以用 sockmap（`SOCKHASH` + `sk_skb`

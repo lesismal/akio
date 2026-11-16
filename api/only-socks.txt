@@ -1,7 +1,41 @@
 pub mod only_socks
+#[non_exhaustive] pub enum only_socks::Destinations
+pub only_socks::Destinations::Any
+pub only_socks::Destinations::Custom(alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(core::net::socket_addr::SocketAddr) -> bool + core::marker::Send + core::marker::Sync)>)
+pub only_socks::Destinations::PublicOnly
+impl only_socks::Destinations
+pub fn only_socks::Destinations::allows(&self, core::net::socket_addr::SocketAddr) -> bool
+impl core::clone::Clone for only_socks::Destinations
+pub fn only_socks::Destinations::clone(&self) -> only_socks::Destinations
+impl core::default::Default for only_socks::Destinations
+pub fn only_socks::Destinations::default() -> only_socks::Destinations
+impl core::fmt::Debug for only_socks::Destinations
+pub fn only_socks::Destinations::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_socks::Destinations
+impl core::marker::Sync for only_socks::Destinations
+impl core::marker::Unpin for only_socks::Destinations
+impl !core::panic::unwind_safe::RefUnwindSafe for only_socks::Destinations
+impl !core::panic::unwind_safe::UnwindSafe for only_socks::Destinations
+#[non_exhaustive] pub struct only_socks::ProxyConfig
+pub only_socks::ProxyConfig::destinations: only_socks::Destinations
+pub only_socks::ProxyConfig::handshake_timeout: core::option::Option<core::time::Duration>
+pub only_socks::ProxyConfig::idle_timeout: core::option::Option<core::time::Duration>
+impl core::clone::Clone for only_socks::ProxyConfig
+pub fn only_socks::ProxyConfig::clone(&self) -> only_socks::ProxyConfig
+impl core::default::Default for only_socks::ProxyConfig
+pub fn only_socks::ProxyConfig::default() -> only_socks::ProxyConfig
+impl core::fmt::Debug for only_socks::ProxyConfig
+pub fn only_socks::ProxyConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_socks::ProxyConfig
+impl core::marker::Sync for only_socks::ProxyConfig
+impl core::marker::Unpin for only_socks::ProxyConfig
+impl !core::panic::unwind_safe::RefUnwindSafe for only_socks::ProxyConfig
+impl !core::panic::unwind_safe::UnwindSafe for only_socks::ProxyConfig
 pub struct only_socks::Socks
 impl only_socks::Socks
 pub fn only_socks::Socks::auth(self, impl core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync + 'static) -> only_socks::Socks
+pub fn only_socks::Socks::config(self, only_socks::ProxyConfig) -> only_socks::Socks
+pub fn only_socks::Socks::destinations(self, only_socks::Destinations) -> only_socks::Socks
 pub fn only_socks::Socks::new(only::EngineRef) -> only_socks::Socks
 impl core::fmt::Debug for only_socks::Socks
 pub fn only_socks::Socks::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -24,5 +58,9 @@ impl core::marker::Sync for only_socks::SocksSession
 impl core::marker::Unpin for only_socks::SocksSession
 impl !core::panic::unwind_safe::RefUnwindSafe for only_socks::SocksSession
 impl !core::panic::unwind_safe::UnwindSafe for only_socks::SocksSession
+pub const only_socks::DEFAULT_HANDSHAKE_TIMEOUT: core::time::Duration
+pub const only_socks::DEFAULT_IDLE_TIMEOUT: core::time::Duration
 pub fn only_socks::connect_proxy(only::EngineRef) -> impl only_http::context::Service
+pub fn only_socks::connect_proxy_with(only::EngineRef, only_socks::ProxyConfig) -> impl only_http::context::Service
+pub fn only_socks::is_public(core::net::ip_addr::IpAddr) -> bool
 pub type only_socks::Auth = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &str) -> bool + core::marker::Send + core::marker::Sync)>
