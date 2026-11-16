@@ -38,4 +38,4 @@ only 尚未发布 1.0。在 1.0.0 发布之前，只有 `main` 分支的最新�
 
 - CI 中运行 `cargo deny check`（RustSec 漏洞通告、许可证、重复版本、来源）和 `cargo audit`；见 [deny.toml](deny.toml)。
 - `unsafe` 仅存在于 `only-sys`、`only-uring` 和 `only-ebpf` 的 `sys` 模块；其它 crate 一律 `#![forbid(unsafe_code)]`。每个 `unsafe` 块都用 `SAFETY:` 注释说明其不变式，由 Clippy 强制检查。审查流程见 [docs/unsafe-review.zh-CN.md](docs/unsafe-review.zh-CN.md)。
-- 纯 Rust crate 跑 Miri，`only-core` 的并发原语跑 loom，协议解析器做模糊测试。
+- 纯 Rust crate 跑 Miri，`only-core` 的并发原语跑 loom，协议解析器做模糊测试，工作区测试跑 AddressSanitizer 与 ThreadSanitizer（[tools/sanitizers](tools/sanitizers/README.zh-CN.md)）。

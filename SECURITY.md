@@ -56,4 +56,5 @@ and denial of service that needs more resources than the configured limits allow
   crate is `#![forbid(unsafe_code)]`. Each `unsafe` block states its invariant in a `SAFETY:`
   comment, enforced by Clippy. Review procedure: [docs/unsafe-review.md](docs/unsafe-review.md).
 - Miri on the pure-Rust crates, loom on `only-core`'s concurrency primitives, fuzzing of the
-  protocol parsers.
+  protocol parsers, AddressSanitizer and ThreadSanitizer over the workspace tests
+  ([tools/sanitizers](tools/sanitizers/README.md)).
