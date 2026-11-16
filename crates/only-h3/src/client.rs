@@ -52,7 +52,7 @@ struct InFlight {
 struct State {
     ready: bool,
     closed: Option<String>,
-    queue: VecDeque<(Vec<u8>, Callback)>,
+    queue: VecDeque<(Bytes, Callback)>,
     inflight: StreamMap<InFlight>,
 }
 
@@ -137,13 +137,21 @@ impl H3Client {
         } else {
             &pseudo[..]
         };
-        let hint: usize = headers.iter().map(|(n, v)| n.len() + v.len() + 4).sum();
-        let mut wire = Vec::with_capacity(hint + path.len() + body.len() + 64);
+        let hint = crate::head_hint(headers) + self.authority.len() + path.len() + body.len() + 64;
         let len = (!body.is_empty()).then_some(body.len() as u64);
-        crate::put_head(&mut wire, pseudo, headers, false, len);
-        if !body.is_empty() {
-            frame::put_frame(&mut wire, frame::DATA, &body);
-        }
+        let encode = |wire: &mut Vec<u8>| {
+            crate::put_head(wire, None, pseudo, headers, false, len);
+            if !body.is_empty() {
+                frame::put_frame(wire, frame::DATA, &body);
+            }
+        };
+        let wire = if body.len() <= crate::POOLED_BODY_MAX {
+            Bytes::pooled(hint, encode)
+        } else {
+            let mut wire = Vec::with_capacity(hint);
+            encode(&mut wire);
+            Bytes::from(wire)
+        };
         let mut st = lock(&self.st);
         if let Some(e) = st.closed.clone() {
             drop(st);
