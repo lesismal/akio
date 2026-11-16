@@ -200,7 +200,8 @@ fn full_queue_then_writable() {
             Ok(()) => sent += 1,
             Err(only_kcp::KcpError::Full) => {
                 fulls += 1;
-                assert!(s.wait_send() >= 16, "Full below the limit");
+                // `send` saw 16 waiting under the session lock; acknowledgements may have
+                // drained some since, so the count is not checked here.
                 // No polling: the session says when to go on.
                 rx.recv_timeout(Duration::from_secs(10))
                     .expect("on_writable after Full");
