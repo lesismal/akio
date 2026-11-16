@@ -15,8 +15,10 @@
 //! The protocol core is sans-io (no sockets, threads or clocks of its own): packets and
 //! header protection, all RFC 9000 frames, streams with flow control, loss detection and
 //! congestion control (NewReno, CUBIC) with pacing, connection IDs, Retry and NEW_TOKEN
-//! address validation, path validation and migration, key updates, stateless resets and
-//! version negotiation. Full-size datagrams leave in batches for one GSO send.
+//! address validation, path validation and migration, key updates, stateless resets, QUIC
+//! version 2 and version negotiation (Version Negotiation packets, and compatible negotiation
+//! within the handshake with [`ServerConfig::prefer_version`], RFC 9368). Full-size datagrams
+//! leave in batches for one GSO send.
 //!
 //! ```no_run
 //! use only::{Engine, Listener};
@@ -735,6 +737,7 @@ impl QuicServer {
         cfg.ecn_io = ecn_platform();
         cfg.preferred_address = config.preferred;
         cfg.versions = config.versions;
+        cfg.prefer_version = config.prefer_version;
         cfg.zero_rtt = config.zero_rtt;
         let setup = proto::ServerSetup {
             tls: config.tls,

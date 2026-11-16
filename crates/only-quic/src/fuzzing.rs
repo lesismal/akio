@@ -145,10 +145,14 @@ impl Pair {
             receive_window: Some(256 * 1024),
             ..TransportConfig::default()
         };
+        // The server moves the version 1 client to version 2 (compatible negotiation), so
+        // forged Initials also go through its ClientHello peek.
+        let mut scfg = ConnConfig::new(t.clone(), true);
+        scfg.prefer_version = Some(packet::VERSION_2);
         let server = Endpoint::with_rng(
             Some(ServerSetup {
                 tls: stls.clone(),
-                cfg: ConnConfig::new(t.clone(), true),
+                cfg: scfg,
                 retry: false,
             }),
             &mut rng,
@@ -267,7 +271,8 @@ fn forged_initial_v(dcid: &ConnectionId, payload: &[u8], version: u32) -> Vec<u8
     buf
 }
 
-/// A handshaken client/server pair fed operations from `data`: raw datagrams to either side,
+/// A handshaken client/server pair (moved from QUIC version 1 to 2 by compatible version
+/// negotiation) fed operations from `data`: raw datagrams to either side,
 /// 1-RTT packets with arbitrary frames protected with valid keys (either direction), Initial
 /// packets with arbitrary frames to the server endpoint, and time passing. Nothing panics;
 /// the endpoint survives anything.
@@ -343,6 +348,14 @@ mod tests {
                 f(&g);
             }
         }
+    }
+
+    #[test]
+    fn pair_switches_to_version_2() {
+        let mut p = Pair::new();
+        p.pump(16);
+        assert!(!p.client.is_handshaking());
+        assert_eq!(p.client.version(), packet::VERSION_2);
     }
 
     #[test]

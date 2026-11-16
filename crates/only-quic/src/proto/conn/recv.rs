@@ -35,6 +35,13 @@ enum KeyUse {
     Next,
 }
 
+enum VersionUse {
+    Ours,
+    /// A compatible version the server switched to: try it.
+    Switch,
+    Drop,
+}
+
 enum Outcome {
     Processed,
     /// Could not be decrypted (yet).
@@ -110,10 +117,17 @@ impl Connection {
                 Err(HeaderError::Invalid | HeaderError::UnsupportedVersion { .. }) => break,
             };
             // Long headers of another version than ours are not for us (a client's late Initial
-            // after it started over, say).
-            if h.ty.is_long() && h.ty != PacketType::VersionNegotiation && h.version != self.version
-            {
-                break;
+            // after it started over, say), except around a compatible version switch.
+            let mut switched = false;
+            if h.ty.is_long() && h.ty != PacketType::VersionNegotiation {
+                match self.version_use(&h) {
+                    VersionUse::Ours => {}
+                    VersionUse::Switch => {
+                        self.switch_version(h.version);
+                        switched = true;
+                    }
+                    VersionUse::Drop => break,
+                }
             }
             // Coalesced packets must all be for this connection ID (RFC 9000 section 12.2).
             match first_dcid {
@@ -128,6 +142,9 @@ impl Connection {
             };
             off += h.len;
             let outcome = self.packet(now, from, &mut pkt, &h, total);
+            if switched && matches!(outcome, Outcome::Undecryptable) {
+                self.unswitch_version();
+            }
             pool::recycle(pkt);
             if let Outcome::Processed = outcome {
                 any = true;
@@ -155,7 +172,54 @@ impl Connection {
         }
     }
 
+    /// What to do with a long-header packet in version `h.version` (RFC 9368 section 2.3,
+    /// RFC 9369 section 4.1).
+    fn version_use(&self, h: &Pkt) -> VersionUse {
+        let zero_version = self.orig_version.unwrap_or(self.version);
+        match (self.side, h.ty) {
+            // 0-RTT stays in the client's first version.
+            (_, PacketType::ZeroRtt) if h.version == zero_version => VersionUse::Ours,
+            (_, PacketType::ZeroRtt) => VersionUse::Drop,
+            _ if h.version == self.version => VersionUse::Ours,
+            // A server reads the client's Initials of the first version after switching.
+            (Side::Server, PacketType::Initial) if self.orig_version == Some(h.version) => {
+                VersionUse::Ours
+            }
+            // A client follows a server's compatible switch, once, during the handshake.
+            (Side::Client, PacketType::Initial)
+                if self.orig_version.is_none()
+                    && self.is_handshaking()
+                    && !self.spaces[0].discarded
+                    && supported(h.version)
+                    && self.cfg.versions.contains(&h.version) =>
+            {
+                VersionUse::Switch
+            }
+            _ => VersionUse::Drop,
+        }
+    }
+
     fn packet(
+        &mut self,
+        now: Instant,
+        from: SocketAddr,
+        pkt: &mut Arc<Vec<u8>>,
+        h: &Pkt,
+        dgram_len: usize,
+    ) -> Outcome {
+        // A client's Initial in its first version, after a server switched: its keys.
+        let orig = h.ty == PacketType::Initial && h.version != self.version;
+        if orig {
+            std::mem::swap(&mut self.spaces[0].keys, &mut self.orig_initial);
+        }
+        let o = self.packet_in(now, from, pkt, h, dgram_len);
+        if orig {
+            std::mem::swap(&mut self.spaces[0].keys, &mut self.orig_initial);
+        }
+        o
+    }
+
+    fn packet_in(
         &mut self,
         now: Instant,
         from: SocketAddr,
@@ -501,7 +565,16 @@ impl Connection {
                     ));
                 }
                 while let Some(chunk) = self.spaces[sid as usize].crypto_recv.pop() {
-                    if let Err(e) = self.tls.read_handshake(sid.level(), &chunk) {
+                    // A server that may switch versions reads the whole ClientHello first.
+                    let held = match (&self.compat, sid) {
+                        (Some(_), SpaceId::Initial) => match self.compat_hold(&chunk) {
+                            Some(all) => Some(all),
+                            None => continue,
+                        },
+                        _ => None,
+                    };
+                    let data = held.as_deref().unwrap_or(&chunk);
+                    if let Err(e) = self.tls.read_handshake(sid.level(), data) {
                         return Err(TransportError::new(
                             code::CRYPTO_ERROR + u64::from(e.alert.code()),
                             e.to_string(),
