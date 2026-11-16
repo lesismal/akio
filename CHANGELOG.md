@@ -18,6 +18,26 @@ client parts); it was the scalar loop. Measured on Zen 4 through the AVX2 path: 
 seal 16–64 KiB +20%, 1 KiB +7% (docs/BENCHMARKS.md). CPUs with IFMA and messages under 512 bytes
 are unchanged. No public API change.
 
+### Added: multi-range static file responses, open-file cache eviction, partial-segment routes
+
+- `files::Files` answers several ranges (`Range: bytes=0-9,500-599`) with `206` and a
+  `multipart/byteranges` body (RFC 9110 section 14.6), parts in request order. Overlapping ranges
+  and ranges less than 80 bytes apart are coalesced (section 14.2); ranges past the end are
+  dropped and `416` comes only when none is left; a header with more than 32 ranges, or parts
+  adding up to more than 1 MiB, is ignored and the whole file is sent. `If-Range` applies as for
+  single ranges. Malformed range specs keep answering `416`.
+- The open-file cache (`Files::max_open_files`) evicts the least recently used handle (CLOCK)
+  instead of serving new files uncached once it is full, notices a file renamed over a cached one
+  (device and inode are compared along with size and modification time) and drops entries of
+  deleted files.
+- `Router` patterns may mix literal text and parameters in one segment: `/{name}.txt`,
+  `/v{major:[0-9]+}.{minor}`, `/{owner}/{repo}.git` (ADR-007). Matching is linear, with no
+  backtracking inside a segment; precedence is static > partial > regexp > parameter > wildcard.
+  Lookups stay allocation-free. A static segment containing a `{…}` group is now a pattern, and
+  unbalanced braces panic at registration.
+
+No public API change (`api/only-http.txt` unchanged).
+
 ### Changed: faster ChaCha20-Poly1305 for short messages on AVX-512
 
 On x86_64 with AVX-512, only-crypto's ChaCha20 runs four blocks with one row of each block per

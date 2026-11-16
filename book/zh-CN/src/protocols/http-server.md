@@ -93,5 +93,5 @@ stream 互不影响。handler 一返回，I/O 线程就空闲了。
 
 ## 尚未完成
 
-多区间（multi-range）响应；`/{name}.txt` 这类部分段模式；与 hyper 和 fib 的 HTTP/1 对比报告
+与 hyper 和 fib 的 HTTP/1 对比报告
 （计划在基准测试阶段完成）。

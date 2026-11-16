@@ -193,6 +193,38 @@ fn main() {
             })
             .count()
     });
+
+    // Partial segments: `{number}.json`, `{sha}.diff` and `v{id}` in place of plain parameters.
+    let mut part_router = Router::new();
+    for (m, p) in ROUTES {
+        let p = p
+            .replace(":number", "{number}.json")
+            .replace(":sha", "{sha}.diff")
+            .replace(":id", "v{id}");
+        part_router = part_router.route(Method::parse(m), &p, nop);
+    }
+    let part_reqs: Vec<(Method, String)> = ROUTES
+        .iter()
+        .map(|(m, p)| {
+            let p = concrete(
+                &p.replace(":number", "N.json")
+                    .replace(":sha", "S.diff")
+                    .replace(":id", "v7"),
+            );
+            (Method::parse(m), p)
+        })
+        .collect();
+    for (m, p) in &part_reqs {
+        assert!(part_router.lookup(m, p).is_some(), "{p}");
+    }
+    measure("new, with partial segments", iters, || {
+        part_reqs
+            .iter()
+            .filter(|(m, p)| {
+                black_box(part_router.lookup(m, p).map(|r| r.params().count())).is_some()
+            })
+            .count()
+    });
 }
 
 /// The previous router's lookup, reproduced for comparison.

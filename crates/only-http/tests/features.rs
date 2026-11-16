@@ -477,6 +477,170 @@ fn static_files_serve_ranges_conditionals_index_and_refuse_traversal() {
     );
 }
 
+/// The parts of a `multipart/byteranges` body: `(Content-Range, data)` each.
+fn byteranges(r: &Resp) -> Vec<(String, Vec<u8>)> {
+    let ct = r.header("content-type").expect("content type");
+    let bnd = ct
+        .strip_prefix("multipart/byteranges; boundary=")
+        .unwrap_or_else(|| panic!("not multipart: {ct}"));
+    let delim = format!("--{bnd}");
+    let body = &r.body;
+    let find = |from: usize, pat: &[u8]| {
+        body[from..]
+            .windows(pat.len())
+            .position(|w| w == pat)
+            .map(|i| i + from)
+    };
+    let mut parts = Vec::new();
+    let mut at = find(0, delim.as_bytes()).expect("first boundary");
+    assert_eq!(at, 0, "no preamble");
+    loop {
+        at += delim.len();
+        if body[at..].starts_with(b"--\r\n") {
+            assert_eq!(at + 4, body.len(), "nothing after the close delimiter");
+            return parts;
+        }
+        assert!(body[at..].starts_with(b"\r\n"));
+        let head_end = find(at, b"\r\n\r\n").unwrap();
+        let head = std::str::from_utf8(&body[at + 2..head_end]).unwrap();
+        let cr = head
+            .split("\r\n")
+            .find_map(|l| l.strip_prefix("Content-Range: "))
+            .expect("part Content-Range")
+            .to_owned();
+        assert!(head.contains("Content-Type: "), "part Content-Type");
+        let next = find(head_end, format!("\r\n{delim}").as_bytes()).unwrap();
+        parts.push((cr, body[head_end + 4..next].to_vec()));
+        at = next + 2;
+    }
+}
+
+#[test]
+fn static_files_answer_multi_range_requests() {
+    let dir = tempdir("multirange");
+    let small = pattern(1000);
+    let big = pattern(3 << 20);
+    std::fs::write(dir.join("small.bin"), &small).unwrap();
+    std::fs::write(dir.join("big.bin"), &big).unwrap();
+    let files = Files::new(&dir)
+        .max_cached_bytes(64 << 10)
+        .check_interval(Duration::ZERO);
+    let e = start(Router::new().get("/s/*path", files));
+    let a = e.local_addrs()[0];
+
+    // From the memory cache and from an open file (sendfile is not used for multipart).
+    for (name, data) in [("small.bin", &small), ("big.bin", &big)] {
+        let len = data.len();
+        let path = format!("/s/{name}");
+        let r = get(a, &path, "Range: bytes=0-9,500-599,-5\r\n");
+        assert_eq!(r.status, 206, "{name}");
+        assert!(
+            r.header("content-range").is_none(),
+            "no top-level Content-Range"
+        );
+        assert_eq!(
+            r.header("content-length"),
+            Some(r.body.len().to_string().as_str())
+        );
+        let parts = byteranges(&r);
+        assert_eq!(
+            parts,
+            vec![
+                (format!("bytes 0-9/{len}"), data[..10].to_vec()),
+                (format!("bytes 500-599/{len}"), data[500..600].to_vec()),
+                (
+                    format!("bytes {}-{}/{len}", len - 5, len - 1),
+                    data[len - 5..].to_vec()
+                ),
+            ],
+            "{name}"
+        );
+        // Coalesced down to one range: a plain 206.
+        let r = get(a, &path, "Range: bytes=0-9,5-20,21-30\r\n");
+        assert_eq!(r.status, 206);
+        assert_eq!(
+            r.header("content-range"),
+            Some(format!("bytes 0-30/{len}").as_str())
+        );
+        assert_eq!(r.body, data[..31]);
+        // Unsatisfiable members are dropped.
+        let r = get(a, &path, "Range: bytes=0-1,99999999-,200-201\r\n");
+        assert_eq!(byteranges(&r).len(), 2);
+        let r = get(a, &path, "Range: bytes=99999999-,88888888-\r\n");
+        assert_eq!(r.status, 416);
+        assert_eq!(
+            r.header("content-range"),
+            Some(format!("bytes */{len}").as_str())
+        );
+        // Too many ranges: the whole file.
+        let many: Vec<String> = (0..40).map(|i| format!("{}-{}", i * 20, i * 20)).collect();
+        let r = get(a, &path, &format!("Range: bytes={}\r\n", many.join(",")));
+        assert_eq!(r.status, 200);
+        assert!(r.body == *data);
+    }
+    // If-Range guards multi-range requests too.
+    let etag = get(a, "/s/small.bin", "")
+        .header("etag")
+        .unwrap()
+        .to_owned();
+    let r = get(
+        a,
+        "/s/small.bin",
+        &format!("Range: bytes=0-1,500-501\r\nIf-Range: {etag}\r\n"),
+    );
+    assert_eq!(byteranges(&r).len(), 2);
+    let r = get(
+        a,
+        "/s/small.bin",
+        "Range: bytes=0-1,500-501\r\nIf-Range: \"old\"\r\n",
+    );
+    assert_eq!((r.status, r.body.len()), (200, small.len()));
+    // Parts adding up to more than 1 MiB: the whole file instead.
+    let r = get(a, "/s/big.bin", "Range: bytes=0-699999,1000000-1699999\r\n");
+    assert_eq!(r.status, 200);
+    assert!(r.body == big);
+    // HEAD ignores ranges.
+    let mut s = connect(a);
+    s.write_all(b"HEAD /s/small.bin HTTP/1.1\r\nHost: x\r\nRange: bytes=0-1,5-6\r\n\r\n")
+        .unwrap();
+    let r = read_resp(&mut s, true);
+    assert_eq!((r.status, r.header("content-length")), (200, Some("1000")));
+    stop(&e);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn static_files_open_file_cache_survives_churn() {
+    let dir = tempdir("churn");
+    let names: Vec<String> = (0..12).map(|i| format!("f{i}.bin")).collect();
+    let datas: Vec<Vec<u8>> = (0..12).map(|i| pattern(100_000 + i * 1000)).collect();
+    for (n, d) in names.iter().zip(&datas) {
+        std::fs::write(dir.join(n), d).unwrap();
+    }
+    let files = Files::new(&dir)
+        .max_cached_bytes(1024)
+        .max_open_files(3)
+        .check_interval(Duration::from_secs(3600));
+    let e = start(Router::new().get("/s/*path", files));
+    let a = e.local_addrs()[0];
+    // Many more files than slots, in rounds: every response is right.
+    for round in 0..3 {
+        for i in (0..names.len()).rev().chain(0..names.len()) {
+            let r = get(a, &format!("/s/{}", names[i]), "");
+            assert_eq!(r.status, 200);
+            assert!(r.body == datas[i], "round {round} file {i}");
+            let r = get(
+                a,
+                &format!("/s/{}", names[i]),
+                "Range: bytes=10-19,2000-2009\r\n",
+            );
+            assert_eq!(byteranges(&r)[1].1, datas[i][2000..2010]);
+        }
+    }
+    stop(&e);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- middleware ------------------------------------------------------------------------------
 
 #[test]
