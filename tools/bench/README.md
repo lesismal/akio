@@ -12,6 +12,7 @@ CPUs, several rounds, a fresh server per run. Linux only (taskset, `/proc`, perf
 | `http.sh [cases]` | HTTP/1.1 and HTTP/2: `plaintext`, `pipelined` (16 requests in flight per connection), `json`, `h2` (h2c, 64 connections x 16 streams), `h2many` (h2c, 16 x 128), `h2tls` (HTTP/2 over TLS 1.3 with ALPN, 64 x 16), `ws` (WebSocket echo) |
 | `echo.sh [cases]` | TCP / UDP / TLS echo and TLS handshakes per second |
 | `ktls.sh` | kernel TLS against only-tls's own record layer (HTTP/1.1 over TLS, `ktls-bench` example, `experimental-ktls` feature; `VETH=1` puts the client behind a veth pair) |
+| `uring-eval.sh` | io_uring send mechanisms on a raw ring: `write(2)` vs `IORING_OP_SEND` vs `SEND_ZC`, with and without registered files, by response size (the ignored `eval_server` test of only-uring; server CPU per request from `/proc`) |
 | `mem.sh [proto:kind:conns ...]` | server memory per idle connection |
 | `profile.sh <case> <kind> [secs]` | perf profile of one server under one load (`h1`, `pipelined`, `h2`, `h2tls`, `ws`, `tcp`), with the CPUs the server kept busy |
 | `all.sh <dir>` | everything above, raw TSV into `<dir>` |

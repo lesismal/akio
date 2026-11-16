@@ -28,6 +28,20 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 评估：io_uring 注册文件、`SEND_ZC`、`MSG_RING` 唤醒、基于 ring 的发送（未采用）
+
+- 在 Linux 7.0 / Ryzen 7 7800X3D 上按“同一轮内提升至少 3%、其他场景不退步”的规则测量
+  （docs/BENCHMARKS.zh-CN.md，“io_uring 特性评估”）；没有一项达标，因此 io_uring 后端保持不变。`SEND_ZC`
+  在 16 KiB 到 256 KiB 时慢 12–27%，每请求 CPU 多 10–36%（回环总是拷贝）；没有 ring 的线程发出的
+  `MSG_RING` 唤醒（`IORING_REGISTER_SEND_MSG_RING`）在 `spawn_blocking` 往返上 +1.5–4.8%，其他场景
+  −1.3% 到 +0.2%；注册 ring fd 为 −3.6% 到 +0.5%；注册文件在引擎中没有可节省的东西（稳态下每个请求
+  不提交任何条目）。基于 ring 的发送（`IORING_OP_SEND`）在裸 ring 上 +1–4%、每请求 CPU 少 2–6%，但需要
+  重新设计共用的写路径（写来自任意线程），留作后续工作。
+- 新的测量工具：only-uring 中被忽略的 `eval_server` 测试（`src/eval.rs`，直接在 ring 上运行的最小
+  HTTP/1.1 应答程序：`write` / `SEND` / `SEND_ZC`，可选 direct accept 与注册文件）以及
+  `tools/bench/uring-eval.sh`。它用到的额外 io_uring 绑定（`SEND`、`SEND_ZC`、direct accept、固定文件
+  close、稀疏 `REGISTER_FILES`、`MSG_RING` 与 `REGISTER_SEND_MSG_RING`）只在测试中编译。公共 API 不变。
+
 ### 新增：TLS 1.3 早期数据与 QUIC 0-RTT（需显式开启，带防重放）
 
 - **`only-tls`**：早期数据（RFC 8446 第 4.2.10 节），双方默认关闭。

@@ -255,6 +255,77 @@ kTLS 仍可能划算的情况：带 TLS 卸载的网卡（`tls-hw-tx-offload`，
 集成（epoll / io_uring 接收时处理 `TLS_GET_RECORD_TYPE`、写队列中的控制记录）、`TLS_RX_EXPECT_NO_PAD`，
 以及在 AES-GCM 记录数上限之前主动发送 KeyUpdate（内核不替我们计数）。
 
+### io_uring 特性评估（`tools/bench/uring-eval.sh`、引擎 A/B）
+
+2026-11-16 测量。问题（DEV-PLAN M2）：io_uring 后端是否应使用注册文件、`SEND_ZC`、`MSG_RING` 唤醒或基于 ring 的发送？
+规则：只有同一轮内 A/B 明确提升至少 3%、且其他场景没有退步时才采用。**结论：目前一个都不采用。**
+基于 ring 的发送是唯一有真实信号的（在裸 ring 上每请求服务器 CPU 少 2–7%），但引擎从任意线程直接写
+socket，用它意味着重新设计写路径，而不是打开一个开关。`SEND_ZC` 在回环上全面落后；其他几项都在噪声
+范围内。Linux 7.0，Ryzen 7 7800X3D，全部在 `quiet.sh` 下运行，服务器在 CPU 0–3（4 线程），`h2load` /
+`echo-bench` 用 8 线程跑在 CPU 4–7 与 12–15；后端已经使用 multishot accept 与 recv、provided-buffer
+ring，以及 `COOP_TASKRUN` + `SINGLE_ISSUER` + `DEFER_TASKRUN` 的 ring。
+
+**在裸 ring 上比较发送方式。** 不做上述重新设计，引擎无法改用 ring 发送，所以这部分在一个直接驱动
+only-uring ring 的最小 HTTP/1.1 应答程序上测量（被忽略的 `eval_server` 测试，
+`crates/only-uring/src/eval.rs`）：与后端相同的 multishot accept 和 recv，每个请求从一个静态缓冲区回一个
+固定响应（因此 `SEND_ZC` 永远不必等缓冲区归还：这是它的最好情况），发送方式为在完成事件处理中调用
+`write(2)`（引擎的做法）、随下一次等待一起提交的 `IORING_OP_SEND` 条目，或 `IORING_OP_SEND_ZC`；
+“+fixed” 表示 direct accept 进注册文件表，并在每个条目上设 `IOSQE_FIXED_FILE`。256 连接，5 轮交错、
+每轮 5 秒，取中位数；吞吐量相对 `write`，以及每请求的服务器 CPU（用户态 + 内核态，取自 `/proc`）。
+
+| 响应（每连接在途请求数） | `write` 请求/秒 | SEND | SEND +fixed | SEND_ZC | SEND_ZC +fixed | 每请求 CPU µs：write / SEND / +fixed / ZC |
+|---|---:|---:|---:|---:|---:|---|
+| 13 B 正文（16，pipelined） | 9,011,289 | 1.038 | 1.066 | 0.885 | 0.911 | 0.333 / 0.312 / 0.309 / 0.366 |
+| 1 KiB（16，pipelined） | 7,302,214 | 1.035 | 1.046 | 0.880 | 0.866 | 0.546 / 0.527 / 0.525 / 0.622 |
+| 16 KiB（1） | 495,080 | 1.033 | 1.039 | 0.877 | 0.881 | 8.08 / 7.82 / 7.79 / 9.20 |
+| 64 KiB（1） | 296,010 | 1.018 | 1.025 | 0.768 | 0.772 | 13.52 / 13.27 / 13.21 / 17.64 |
+| 256 KiB（1） | 110,173 | 1.011 | 1.016 | 0.733 | 0.738 | 36.3 / 35.8 / 35.8 / 49.5 |
+
+- **`SEND_ZC`：不采用。** 慢 12–27%，每请求 CPU 多 10–36%，在它本该擅长的大响应上最差。打开
+  `IORING_SEND_ZC_REPORT_USAGE` 后，每个通知都表明内核拷贝了数据：回环（以及 veth 对）无法把页直接交给
+  接收方，零拷贝变成了一次拷贝加页面钉住再加每次发送多一个完成事件。它只可能在真实网卡、16 KiB 及以上
+  的响应上胜出，而且那时需要把发送缓冲区一直保留到通知到达，引擎的写队列并不这样做。请在有网卡的
+  主机上用 `tools/bench/uring-eval.sh` 重新测量。
+- **基于 ring 的发送（`IORING_OP_SEND`）：目前不采用；是唯一值得单独立项的候选。** 比 `write(2)`
+  吞吐量高 1–4%，每请求 CPU 少 2–6%，小响应收益最大（一整批完成事件产生的发送，随事件循环本来就要做的
+  那一次 `io_uring_enter` 一起交给内核）。在引擎中，任意线程的 `Conn::send` 都直接写 socket、只把剩余部分
+  入队，而这条写路径与 epoll 共用；ring 发送要求字节在完成前一直被持有、每连接只有一个在途发送，并与
+  其他线程的直接写保持顺序。对 HTTP 服务器而言，每个 pipelined 请求省下约 0.02 µs，约为它每请求 CPU 的
+  2–3%（4 核 450 万请求/秒时每请求 0.9 µs），达不到门槛。
+- **注册文件（direct accept、`IOSQE_FIXED_FILE`）：不采用。** 在 ring 发送之上再提升 0.4–2.7%。在引擎
+  中它们没有可节省的东西：对一次 plaintext 运行（230 万请求，pipelined 时 1360 万）统计提交条目，总共
+  只有 520 个，即每连接两个（multishot recv 与复位监视）加上事件循环自己的；稳态下后端每个请求不提交
+  任何条目，每请求仅有的系统调用是写响应的 `write` 和一次共享的 `io_uring_enter`。direct 描述符也没有
+  普通 fd，而其他线程的直接 `write` 路径需要它。
+
+**引擎 A/B**（对 reactor 的临时补丁，用环境变量切换，每轮两种变体都跑，每次运行用新启动的服务器，
+`http-bench` / `bench-server`）：
+
+| 场景 | 注册 ring fd（5 轮） | `MSG_RING` 唤醒，第 1 次（5 轮） | `MSG_RING`，第 2 次（7 轮） |
+|---|---:|---:|---:|
+| HTTP/1.1 plaintext，256 连接 | 0.985 | 0.995 | 1.002 |
+| HTTP/1.1 pipelined 16 x 256 | 1.000 | 1.002 | 1.001 |
+| TCP echo 64 B x 256 | 0.964 | 0.964 | 0.974 |
+| TCP echo 16 KiB x 256 | 0.982 | 1.044 | 0.983 |
+| `spawn_blocking` echo（`block-pool 0`），64 B x 256 | 1.005 | 1.048 | 1.030 |
+| `spawn_blocking` echo，64 B x 64 | | | 0.987 |
+| `spawn_blocking` echo，1 KiB x 256 | | | 1.015 |
+
+- **注册 ring fd（`IORING_REGISTER_RING_FDS` + `IORING_ENTER_REGISTERED_RING`）：不采用。** 它省掉每次
+  `io_uring_enter` 的 fd 查找，而 256 连接时事件循环大约每 20 个请求才 enter 一次：−3.6% 到 +0.5%，
+  即噪声（在这台主机上普通 echo 各行在轮次之间浮动 ±10%）。
+- **`MSG_RING` 唤醒：不采用。** 其他线程（完成 `spawn_blocking` 的线程池线程、跨线程的 `close`）通过写
+  eventfd 唤醒事件循环，由 ring 上挂着的 `read` 完成；借助 `IORING_REGISTER_SEND_MSG_RING`（6.13+），
+  没有 ring 的线程也能把完成事件直接投进事件循环的 CQ，事件循环不必再重新挂上 eventfd 的读。它能工作
+  （strace：2 秒的线程池 echo 中，8,949 次 `io_uring_register` 取代了 5,558 次 eventfd 写），但收益只出现在
+  唤醒占主导的场景，而且不明确：256 连接 64 B 线程池 echo +3.0–4.8%，1 KiB +1.5%，64 连接 −1.3%；线程池
+  往返的开销主要是线程池自己的 futex 唤醒（约占服务器系统调用时间的 94%）。跨线程的 `Conn::send` 除非
+  socket 写满，否则根本不需要唤醒（它直接写），因此没有收益。
+- **已在使用**：`COOP_TASKRUN`、`SINGLE_ISSUER`、`DEFER_TASKRUN`（被拒绝时有回退）、multishot accept
+  与 recv、provided-buffer ring；`SQPOLL` 需显式开启（`UringConfig::sqpoll`）。注册缓冲区只会服务于
+  `SEND_ZC`（固定发送缓冲区）或 `READ_FIXED`；在 provided buffers 上的 multishot recv 加直接写的模式下，
+  没有需要注册的东西。recv bundle 与增量缓冲区消费没有尝试。
+
 ### 密码学（`only-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
 运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +

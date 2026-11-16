@@ -12,7 +12,9 @@
 //! * Backpressure and `hold_reads` cancel the multishot `recv` and re-arm it on resume.
 //! * Wake-up: an eventfd read that other threads signal after posting a command.
 //!
-//! Not used: `SEND_ZC`, registered files, `MSG_RING` wake-up.
+//! Measured and not used (docs/BENCHMARKS.md, "io_uring features evaluation"): ring-based sends
+//! (`IORING_OP_SEND`), `SEND_ZC`, registered files with direct accept, a registered ring fd and
+//! `MSG_RING` wake-ups. The test-only `eval` module is the harness for the send and file cases.
 //!
 //! Guide: [Engine, listeners and backends](https://lesismal.github.io/only/en/concepts/engine.html)
 //! (中文: [Engine、Listener 与后端](https://lesismal.github.io/only/zh-CN/concepts/engine.html)).
@@ -20,6 +22,9 @@
 #![warn(clippy::unwrap_used)]
 // `unsafe` is confined to the modules that talk to the kernel; see docs/unsafe-review.md.
 #![deny(unsafe_code)]
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod eval;
 #[allow(unsafe_code)]
 mod group;
 #[allow(unsafe_code)]

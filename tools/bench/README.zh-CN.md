@@ -12,6 +12,7 @@
 | `http.sh [cases]` | HTTP/1.1 与 HTTP/2：`plaintext`、`pipelined`（每连接 16 个请求在途）、`json`、`h2`（h2c，64 连接 × 16 流）、`h2many`（h2c，16 × 128）、`h2tls`（TLS 1.3 + ALPN 上的 HTTP/2，64 × 16）、`ws`（WebSocket echo） |
 | `echo.sh [cases]` | TCP / UDP / TLS echo，以及每秒 TLS 握手数 |
 | `ktls.sh` | 内核 TLS 对比 only-tls 自己的记录层（TLS 上的 HTTP/1.1，`ktls-bench` 示例，`experimental-ktls` feature；`VETH=1` 让客户端位于 veth 对的另一端） |
+| `uring-eval.sh` | 在裸 ring 上比较 io_uring 的发送方式：`write(2)`、`IORING_OP_SEND` 与 `SEND_ZC`，有无注册文件，按响应大小（only-uring 中被忽略的 `eval_server` 测试；每请求服务器 CPU 取自 `/proc`） |
 | `mem.sh [proto:kind:conns ...]` | 服务端每个空闲连接的内存 |
 | `profile.sh <case> <kind> [secs]` | 某个服务端在某种负载下的 perf 剖析（`h1`、`pipelined`、`h2`、`h2tls`、`ws`、`tcp`），并给出服务端占满了几个 CPU |
 | `all.sh <dir>` | 以上全部，原始 TSV 写到 `<dir>` |
