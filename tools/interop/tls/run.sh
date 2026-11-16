@@ -220,15 +220,38 @@ for v in tls1_3 tls1_2; do
         wait $sp 2>/dev/null
     done
 done
-# Early data (0-RTT): only's client sends its request before the handshake when it resumes.
-s_server_case "1.3 early data" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -early_data" \
-    "--count 3 --expect-resume --early-data --expect-early accepted"
+# Early data (0-RTT): only's client sends its line before the handshake when it resumes.
+# s_server runs without -www: OpenSSL 3.0 refuses -early_data with -www/-WWW/-HTTP/-rev
+# (later releases allow it), so the client sends, closes and reads to s_server's close, and
+# s_server's log shows what it did with the early data of the second and third connections.
+s_server_early_case() { # name "s_server args" "only client args" s_server-log-line
+    local name=$1 sargs=$2 cargs=$3 want=$4
+    next_port
+    # s_server stops at EOF on stdin: keep it open for the length of the case.
+    # shellcheck disable=SC2086
+    sleep 15 | openssl s_server -accept "$PORT" -CAfile "$P/ca.pem" -tls1_3 -early_data $sargs \
+        > "$OUT/srv.log" 2>&1 &
+    local sp=$!
+    wait_port "$PORT"
+    # shellcheck disable=SC2086
+    if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --count 3 --early-data \
+        --no-reply $cargs > "$OUT/cli.log" 2>&1 && [ "$(grep -c "^$want" "$OUT/srv.log")" = 2 ] &&
+        grep -q "hello from only-tls 1" "$OUT/srv.log" && grep -q "hello from only-tls 2" "$OUT/srv.log"; then
+        ok "only client -> openssl: $name ($(grep -m1 'client\[1\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
+    else
+        ko "only client -> openssl: $name" "$OUT/cli.log"
+        grep -v '^[A-Za-z0-9+/=]*$' "$OUT/srv.log" | sed 's/^/    srv: /' | tail -8
+    fi
+    kill $sp 2>/dev/null
+    wait $sp 2>/dev/null
+}
+s_server_early_case "1.3 early data" "-cert $P/p256.pem -key $P/p256.key" \
+    "--expect-resume --expect-early accepted" "Early data received"
 # A HelloRetryRequest (the server wants P-384) rejects it: sent again after the handshake.
 # (OpenSSL's anti-replay uses each ticket once, already for the first ClientHello, so the
 # second one is a full handshake.)
-s_server_case "1.3 early data rejected (HRR)" \
-    "-cert $P/p256.pem -key $P/p256.key -tls1_3 -early_data -groups P-384" \
-    "--count 3 --early-data --expect-early rejected"
+s_server_early_case "1.3 early data rejected (HRR)" "-cert $P/p256.pem -key $P/p256.key -groups P-384" \
+    "--expect-early rejected" "Early data was rejected"
 for t in "" "--hrr"; do
     next_port
     # shellcheck disable=SC2086

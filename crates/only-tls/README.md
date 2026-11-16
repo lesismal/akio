@@ -109,7 +109,9 @@ promise).
   downgrade detection, tampering, unexpected and garbage records.
 - Interop (`tools/interop/tls/run.sh`): OpenSSL `s_server` / `s_client` and Go `crypto/tls` in
   both directions over every suite, group, key type, client authentication, resumption, HRR,
-  ALPN and KeyUpdate, plus curl against only-http (HTTP/1.1 and HTTP/2); gRPC over TLS with
+  ALPN, KeyUpdate and early data, plus curl against only-http (HTTP/1.1 and HTTP/2); needs
+  OpenSSL 3.0 or later (the early-data cases run `s_server` without `-www`, which 3.0 refuses
+  with `-early_data`; the client sends, closes and checks `s_server`'s log); gRPC over TLS with
   grpc-go (`tools/interop/grpc/run.sh`); rustls clients in the `only` crate's TLS tests.
 - tlsfuzzer against the server (`tools/interop/tls/tlsfuzzer.sh`, Docker): the 33 scripts that
   apply (no CBC, RSA key exchange, FFDHE, external PSK ...), 985 probes, 5 known failures listed
