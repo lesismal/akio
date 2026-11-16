@@ -98,5 +98,5 @@ with any trailers. No size limit applies to streamed bodies: the sink decides.
 
 ## Not done
 
-Multi-range responses; partial-segment route patterns such as `/{name}.txt`; an HTTP/1
+An HTTP/1
 comparison report against hyper and fib (planned for the benchmark pass).
