@@ -29,20 +29,31 @@ pub(crate) mod pool {
 
     /// A buffer holding a copy of `data`, unshared.
     pub(crate) fn copy(data: &[u8]) -> Arc<Vec<u8>> {
-        let reused = POOL.with(|p| {
-            let mut p = p.borrow_mut();
-            for _ in 0..TRIES.min(p.len()) {
-                let mut b = p.pop_front()?;
-                if let Some(v) = Arc::get_mut(&mut b) {
-                    v.clear();
-                    v.extend_from_slice(data);
-                    return Some(b);
+        fill(data.len(), |v| v.extend_from_slice(data))
+    }
+
+    /// A buffer filled by `f` (from empty), unshared; `hint` sizes a new one.
+    pub(crate) fn fill(hint: usize, f: impl FnOnce(&mut Vec<u8>)) -> Arc<Vec<u8>> {
+        let mut b = POOL
+            .try_with(|p| {
+                let mut p = p.borrow_mut();
+                for _ in 0..TRIES.min(p.len()) {
+                    let mut b = p.pop_front()?;
+                    if Arc::get_mut(&mut b).is_some() {
+                        return Some(b);
+                    }
+                    p.push_back(b);
                 }
-                p.push_back(b);
-            }
-            None
-        });
-        reused.unwrap_or_else(|| Arc::new(data.to_vec()))
+                None
+            })
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| Arc::new(Vec::with_capacity(hint)));
+        if let Some(v) = Arc::get_mut(&mut b) {
+            v.clear();
+            f(v);
+        }
+        b
     }
 
     /// Done with a buffer (slices of it may live on): keep it for a later [`copy`].
@@ -98,6 +109,20 @@ impl Bytes {
     /// A buffer holding a copy of `data`.
     pub fn copy_from_slice(data: &[u8]) -> Bytes {
         Bytes::from(data.to_vec())
+    }
+
+    /// A buffer written by `f`, in storage reused from earlier buffers of this thread once
+    /// every copy of them has dropped: steady traffic allocates nothing per buffer (a
+    /// `Vec` turned into `Bytes` costs two allocations). For small, short-lived buffers such
+    /// as HTTP/3 heads; `hint` sizes a fresh buffer.
+    ///
+    /// `#[doc(hidden)]`: for only-h3, not a public API; it may change in any release.
+    #[doc(hidden)]
+    pub fn pooled(hint: usize, f: impl FnOnce(&mut Vec<u8>)) -> Bytes {
+        let b = pool::fill(hint, f);
+        let out = Bytes::from_shared(b.clone());
+        pool::recycle(b);
+        out
     }
 
     /// The whole of a shared buffer (no copy, no allocation).
