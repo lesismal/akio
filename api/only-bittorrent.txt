@@ -865,12 +865,12 @@ impl core::marker::Sync for only_bittorrent::port::UtpStream
 impl core::marker::Unpin for only_bittorrent::port::UtpStream
 impl !core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::port::UtpStream
 impl !core::panic::unwind_safe::UnwindSafe for only_bittorrent::port::UtpStream
+pub const only_bittorrent::port::DEFAULT_MAX_INBOUND_UTP: usize
 pub trait only_bittorrent::port::StreamHandler: core::marker::Send + 'static
 pub fn only_bittorrent::port::StreamHandler::on_close(&mut self, &only_bittorrent::port::UtpStream, core::option::Option<core::io::error::ErrorKind>)
 pub fn only_bittorrent::port::StreamHandler::on_connect(&mut self, &only_bittorrent::port::UtpStream)
 pub fn only_bittorrent::port::StreamHandler::on_data(&mut self, &only_bittorrent::port::UtpStream, &[u8])
 pub fn only_bittorrent::port::StreamHandler::on_eof(&mut self, &only_bittorrent::port::UtpStream)
-pub const only_bittorrent::port::DEFAULT_MAX_INBOUND_UTP: usize
 pub mod only_bittorrent::tracker
 pub mod only_bittorrent::tracker::http
 pub fn only_bittorrent::tracker::http::announce_url(&str, &only_bittorrent::tracker::AnnounceRequest) -> alloc::string::String

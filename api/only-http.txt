@@ -825,9 +825,9 @@ impl<S> core::fmt::Debug for only_http::Session<S>
 pub fn only_http::Session<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<S> core::ops::drop::Drop for only_http::Session<S>
 pub fn only_http::Session<S>::drop(&mut self)
-impl<S> core::marker::Send for only_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Send, core::option::Option<H2Session<S>>: core::marker::Send
+impl<S> core::marker::Send for only_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Send, core::option::Option<alloc::rcs::arc::Arc<Watch<only_http::Session<S>>>>: core::marker::Send, core::option::Option<H2Session<S>>: core::marker::Send
 impl<S> !core::marker::Sync for only_http::Session<S>
-impl<S> core::marker::Unpin for only_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin, core::option::Option<H2Session<S>>: core::marker::Unpin
+impl<S> core::marker::Unpin for only_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin, core::option::Option<alloc::rcs::arc::Arc<Watch<only_http::Session<S>>>>: core::marker::Unpin, core::option::Option<H2Session<S>>: core::marker::Unpin
 impl<S> !core::panic::unwind_safe::RefUnwindSafe for only_http::Session<S>
 impl<S> !core::panic::unwind_safe::UnwindSafe for only_http::Session<S>
 pub struct only_http::Streaming<S>(pub S)

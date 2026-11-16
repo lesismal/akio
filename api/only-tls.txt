@@ -232,10 +232,6 @@ impl core::marker::Sync for only_tls::TlsInfo
 impl core::marker::Unpin for only_tls::TlsInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_tls::TlsInfo
 impl core::panic::unwind_safe::UnwindSafe for only_tls::TlsInfo
-pub trait only_tls::AntiReplayStore: core::marker::Send + core::marker::Sync
-pub fn only_tls::AntiReplayStore::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
-impl only_tls::AntiReplayStore for only_tls::MemoryAntiReplay
-pub fn only_tls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
 pub struct only_tls::TlsStats(_)
 impl only_tls::TlsStats
 pub fn only_tls::TlsStats::counts(&self) -> only_tls::TlsCounts
@@ -252,4 +248,8 @@ impl core::marker::Sync for only_tls::TlsStats
 impl core::marker::Unpin for only_tls::TlsStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_tls::TlsStats
 impl core::panic::unwind_safe::UnwindSafe for only_tls::TlsStats
+pub trait only_tls::AntiReplayStore: core::marker::Send + core::marker::Sync
+pub fn only_tls::AntiReplayStore::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+impl only_tls::AntiReplayStore for only_tls::MemoryAntiReplay
+pub fn only_tls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
 pub fn only_tls::tls_info<H>(&only_core::conn::Conn<H>) -> core::option::Option<only_tls::TlsInfo>

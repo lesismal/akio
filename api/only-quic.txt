@@ -394,6 +394,7 @@ impl core::marker::Sync for only_quic::UdpStats
 impl core::marker::Unpin for only_quic::UdpStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_quic::UdpStats
 impl core::panic::unwind_safe::UnwindSafe for only_quic::UdpStats
+pub const only_quic::DEFAULT_MAX_CONNECTIONS: usize
 pub trait only_quic::QuicHandler: core::marker::Send + 'static
 pub fn only_quic::QuicHandler::on_close(&mut self, &only_quic::Connection, only_quic::ConnectionError)
 pub fn only_quic::QuicHandler::on_connected(&mut self, &only_quic::Connection)
@@ -404,7 +405,6 @@ pub fn only_quic::QuicHandler::on_stream_reset(&mut self, &only_quic::Connection
 pub fn only_quic::QuicHandler::on_stream_stopped(&mut self, &only_quic::Connection, only_quic::StreamId, u64)
 pub fn only_quic::QuicHandler::on_stream_writable(&mut self, &only_quic::Connection, only_quic::StreamId)
 pub fn only_quic::QuicHandler::on_streams_available(&mut self, &only_quic::Connection, only_quic::Dir)
-pub const only_quic::DEFAULT_MAX_CONNECTIONS: usize
 pub fn only_quic::client_config(only_tls::config::RootCerts, &[&[u8]]) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>
 pub fn only_quic::client_config_from(&only_tls::config::ClientConfig) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>
 pub fn only_quic::client_config_insecure(&[&[u8]]) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>

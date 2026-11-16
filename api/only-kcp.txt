@@ -222,10 +222,10 @@ impl core::marker::Sync for only_kcp::Stats
 impl core::marker::Unpin for only_kcp::Stats
 impl core::panic::unwind_safe::RefUnwindSafe for only_kcp::Stats
 impl core::panic::unwind_safe::UnwindSafe for only_kcp::Stats
+pub const only_kcp::DEFAULT_MAX_SESSIONS: usize
 pub trait only_kcp::KcpHandler: core::marker::Send + 'static
 pub fn only_kcp::KcpHandler::on_close(&mut self, &only_kcp::Session, only_kcp::CloseReason)
 pub fn only_kcp::KcpHandler::on_message(&mut self, &only_kcp::Session, alloc::vec::Vec<u8>)
 pub fn only_kcp::KcpHandler::on_writable(&mut self, &only_kcp::Session)
-pub const only_kcp::DEFAULT_MAX_SESSIONS: usize
 pub fn only_kcp::dial<H: only_kcp::KcpHandler>(&only::Engine, core::net::socket_addr::SocketAddr, only_kcp::KcpConfig, H) -> core::io::error::Result<only_kcp::Session>
 pub fn only_kcp::dial_conv<H: only_kcp::KcpHandler>(&only::Engine, core::net::socket_addr::SocketAddr, u32, only_kcp::KcpConfig, H) -> core::io::error::Result<only_kcp::Session>

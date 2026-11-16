@@ -49,9 +49,9 @@ pub only_socks::Destinations::PublicOnly
 impl only_socks::Destinations
 pub fn only_socks::Destinations::allows(&self, core::net::socket_addr::SocketAddr) -> bool
 impl core::clone::Clone for only_socks::Destinations
-pub fn only_socks::Destinations::clone(&self) -> only_socks::Destinations
+pub fn only_socks::Destinations::clone(&self) -> Self
 impl core::default::Default for only_socks::Destinations
-pub fn only_socks::Destinations::default() -> only_socks::Destinations
+pub fn only_socks::Destinations::default() -> Self
 impl core::fmt::Debug for only_socks::Destinations
 pub fn only_socks::Destinations::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_socks::Destinations
@@ -64,7 +64,7 @@ pub only_socks::ProxyConfig::destinations: only_socks::Destinations
 pub only_socks::ProxyConfig::handshake_timeout: core::option::Option<core::time::Duration>
 pub only_socks::ProxyConfig::idle_timeout: core::option::Option<core::time::Duration>
 impl core::clone::Clone for only_socks::ProxyConfig
-pub fn only_socks::ProxyConfig::clone(&self) -> only_socks::ProxyConfig
+pub fn only_socks::ProxyConfig::clone(&self) -> Self
 impl core::default::Default for only_socks::ProxyConfig
 pub fn only_socks::ProxyConfig::default() -> only_socks::ProxyConfig
 impl core::fmt::Debug for only_socks::ProxyConfig
