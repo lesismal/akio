@@ -208,7 +208,7 @@ fn main() {
 }
 
 fn parallel(c: &H3Client, t: Duration) {
-    let (tx, rx) = std::sync::mpsc::channel();
+    let (tx, rx) = mpsc::channel();
     for i in 0..200 {
         let tx = tx.clone();
         c.request(Method::Get, "/", &Headers::new(), Vec::new(), move |r| {

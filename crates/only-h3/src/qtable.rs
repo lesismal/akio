@@ -312,11 +312,17 @@ fn cacheable(n: &[u8]) -> bool {
     )
 }
 
-fn key(n: &[u8], v: &[u8]) -> Vec<u8> {
-    let mut k = Vec::with_capacity(n.len() + v.len() + 2);
+/// A field's key in the encoder's index: the name's length, the name, the value.
+fn set_key(k: &mut Vec<u8>, n: &[u8], v: &[u8]) {
+    k.clear();
     k.extend_from_slice(&(n.len() as u16).to_le_bytes());
     k.extend_from_slice(n);
     k.extend_from_slice(v);
+}
+
+fn key(n: &[u8], v: &[u8]) -> Vec<u8> {
+    let mut k = Vec::with_capacity(n.len() + v.len() + 2);
+    set_key(&mut k, n, v);
     k
 }
 
@@ -330,19 +336,20 @@ pub(crate) struct Encoder {
     known: u64,
     /// Field → absolute index of its newest entry.
     index: HashMap<Vec<u8>, u64>,
-    /// Per stream, its unacknowledged sections in order: (Required Insert Count, lowest
-    /// absolute index referenced).
-    unacked: HashMap<u64, VecDeque<(u64, u64)>>,
+    /// Unacknowledged sections in the order they were encoded: (stream, Required Insert Count,
+    /// lowest absolute index referenced). An acknowledgement takes its stream's oldest. Few are
+    /// in flight, so a vector beats a map (no allocation per section).
+    unacked: Vec<(u64, u64, u64)>,
+    /// A field's key in `index`, built here to look it up without allocating.
+    key: Vec<u8>,
     /// Encoder stream bytes to send.
     pub(crate) out: Vec<u8>,
     /// Lines of the section being encoded.
     scratch: Vec<u8>,
-    /// Sections in `unacked`: past [`MAX_UNACKED`], no more references (a peer that never
-    /// acknowledges cannot grow this).
-    pending: usize,
 }
 
-/// Unacknowledged sections tracked at most.
+/// Unacknowledged sections tracked at most: past this, no more references (a peer that never
+/// acknowledges cannot grow the encoder).
 const MAX_UNACKED: usize = 1024;
 
 /// What one section referenced, while it is being encoded.
@@ -367,10 +374,10 @@ impl Encoder {
             ring: Ring::new(),
             known: 0,
             index: HashMap::new(),
-            unacked: HashMap::new(),
+            unacked: Vec::new(),
+            key: Vec::new(),
             out,
             scratch: Vec::new(),
-            pending: 0,
         }
     }
 
@@ -381,10 +388,8 @@ impl Encoder {
         if cur.ric > 0 {
             f = f.min(cur.min);
         }
-        for q in self.unacked.values() {
-            for &(_, min) in q {
-                f = f.min(min);
-            }
+        for &(_, _, min) in &self.unacked {
+            f = f.min(min);
         }
         f
     }
@@ -448,9 +453,12 @@ impl Encoder {
             crate::qpack::encode_line(lines, n, v);
             return;
         }
-        let k = key(n, v);
-        match self.index.get(&k).copied() {
-            Some(abs) if abs < self.known && self.pending < MAX_UNACKED => {
+        let mut k = std::mem::take(&mut self.key);
+        set_key(&mut k, n, v);
+        let found = self.index.get(&k[..]).copied();
+        self.key = k;
+        match found {
+            Some(abs) if abs < self.known && self.unacked.len() < MAX_UNACKED => {
                 // Relative to Base = Known Received Count (see `end`).
                 put_int(lines, 0x80, 6, self.known - 1 - abs);
                 if sec.ric == 0 || abs < sec.min {
@@ -475,11 +483,7 @@ impl Encoder {
             // Base is the Known Received Count when the lines were encoded: ric <= base.
             put_int(out, 0, 8, sec.ric % (2 * self.max_entries) + 1);
             put_int(out, 0, 7, self.known - sec.ric);
-            self.unacked
-                .entry(stream)
-                .or_default()
-                .push_back((sec.ric, sec.min));
-            self.pending += 1;
+            self.unacked.push((stream, sec.ric, sec.min));
         }
         out.extend_from_slice(&lines);
         self.scratch = lines;
@@ -493,22 +497,14 @@ impl Encoder {
             let r = if first & 0x80 != 0 {
                 // Section acknowledgement: the stream's oldest unacknowledged section.
                 int(b, &mut pos, 7).and_then(|id| {
-                    let q = self.unacked.get_mut(&id).ok_or(P::Bad)?;
-                    let (ric, _) = q.pop_front().ok_or(P::Bad)?;
-                    if q.is_empty() {
-                        self.unacked.remove(&id);
-                    }
-                    self.pending -= 1;
+                    let at = self.unacked.iter().position(|e| e.0 == id).ok_or(P::Bad)?;
+                    let (_, ric, _) = self.unacked.remove(at);
                     self.known = self.known.max(ric);
                     Ok(())
                 })
             } else if first & 0x40 != 0 {
                 // Stream cancellation.
-                int(b, &mut pos, 6).map(|id| {
-                    if let Some(q) = self.unacked.remove(&id) {
-                        self.pending -= q.len();
-                    }
-                })
+                int(b, &mut pos, 6).map(|id| self.unacked.retain(|e| e.0 != id))
             } else {
                 // Insert count increment.
                 int(b, &mut pos, 6).and_then(|inc| {

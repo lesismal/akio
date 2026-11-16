@@ -333,16 +333,53 @@ impl H3Client {
         body: Vec<u8>,
         cb: impl FnOnce(Result<Response, H3Error>) + Send + 'static,
     ) {
-        let wire = match self.sh.enc.get() {
-            None => Ok(self.encode_now(&method, path, headers, body)),
-            Some(_) => Err(self.encode_later(method, path, headers, body)),
+        let kind = Kind::Plain(Box::new(cb));
+        let Some(enc) = self.sh.enc.get() else {
+            let wire = Ok(self.encode_now(&method, path, headers, body));
+            return self.push(Job {
+                wire,
+                fin: true,
+                up: None,
+                kind,
+            });
         };
-        self.push(Job {
-            wire,
-            fin: true,
-            up: None,
-            kind: Kind::Plain(Box::new(cb)),
-        });
+        match self.open_now(kind) {
+            // A stream right away (the usual case): encoded with its id, nothing copied.
+            Ok(id) => {
+                let wire = encode_with(&method, &self.authority, path, headers, &body, id, enc);
+                let _ = self.conn.send(id, wire);
+                let _ = self.conn.finish(id);
+            }
+            Err(kind) => self.push(Job {
+                wire: Err(self.encode_later(method, path, headers, body)),
+                fin: true,
+                up: None,
+                kind,
+            }),
+        }
+    }
+
+    /// Opens a stream for a request now if nothing is queued before it; `Err` gives `kind`
+    /// back when it has to wait.
+    fn open_now(&self, kind: Kind) -> Result<StreamId, Kind> {
+        let mut st = self.sh.lock();
+        if st.closed.is_some() || !st.ready || !st.queue.is_empty() {
+            return Err(kind);
+        }
+        let Some(id) = self.conn.open_bi() else {
+            return Err(kind);
+        };
+        st.inflight.insert(
+            id,
+            InFlight {
+                r: Reader::default(),
+                resp: None,
+                kind: Some(kind),
+                up: None,
+                blocked: None,
+            },
+        );
+        Ok(id)
     }
 
     /// The request's HEADERS and DATA frames, with static QPACK references and literals.
@@ -370,24 +407,19 @@ impl H3Client {
     /// stream).
     fn encode_later(&self, method: Method, path: &str, headers: &Headers, body: Vec<u8>) -> Encode {
         let (authority, path, headers) = (self.authority.clone(), path.to_owned(), headers.clone());
-        Box::new(move |id, enc| {
-            let pseudo = pseudo(&method, &authority, &path);
-            let pseudo = pseudo_for(&method, &pseudo);
-            let len = (!body.is_empty()).then_some(body.len() as u64);
-            let mut wire = Vec::with_capacity(crate::head_hint(&headers) + body.len() + 64);
-            crate::put_head(
-                &mut wire,
-                None,
-                pseudo,
-                &headers,
-                false,
-                len,
-                enc.map(|e| (e, id)),
-            );
-            if !body.is_empty() {
-                frame::put_frame(&mut wire, frame::DATA, &body);
+        Box::new(move |id, enc| match enc {
+            Some(enc) => encode_with(&method, &authority, &path, &headers, &body, id, enc),
+            None => {
+                let pseudo = pseudo(&method, &authority, &path);
+                let pseudo = pseudo_for(&method, &pseudo);
+                let len = (!body.is_empty()).then_some(body.len() as u64);
+                let mut wire = Vec::with_capacity(crate::head_hint(&headers) + body.len() + 64);
+                crate::put_head(&mut wire, None, pseudo, &headers, false, len, None);
+                if !body.is_empty() {
+                    frame::put_frame(&mut wire, frame::DATA, &body);
+                }
+                wire
             }
-            wire
         })
     }
 
@@ -556,6 +588,35 @@ impl H3Client {
     pub fn close(&self) {
         self.conn.close(code::NO_ERROR, b"");
     }
+}
+
+/// A request's HEADERS (with the dynamic table, for stream `id`) and DATA frames.
+fn encode_with(
+    method: &Method,
+    authority: &str,
+    path: &str,
+    headers: &Headers,
+    body: &[u8],
+    id: StreamId,
+    enc: &EncShared,
+) -> Vec<u8> {
+    let pseudo = pseudo(method, authority, path);
+    let pseudo = pseudo_for(method, &pseudo);
+    let len = (!body.is_empty()).then_some(body.len() as u64);
+    let mut wire = Vec::with_capacity(crate::head_hint(headers) + body.len() + 64);
+    crate::put_head(
+        &mut wire,
+        None,
+        pseudo,
+        headers,
+        false,
+        len,
+        Some((enc, id)),
+    );
+    if !body.is_empty() {
+        frame::put_frame(&mut wire, frame::DATA, body);
+    }
+    wire
 }
 
 /// The request pseudo-header fields (`:path` and `:scheme` are left out of a CONNECT by
