@@ -12,7 +12,8 @@ use std::{
 };
 
 use crate::{
-    LevelFilter, Logger, Metadata, Record, SetLoggerError, set_boxed_logger, set_max_level,
+    Filter, LevelFilter, Logger, Metadata, Record, SetLoggerError, filter::ENV_VAR,
+    set_boxed_logger, set_max_level,
 };
 
 /// Prints `target: message` per record to stderr: the same lines `only` prints when no logger
@@ -40,7 +41,9 @@ impl Logger for StderrLogger {
 /// ```
 ///
 /// Writes each record with one `write` to stderr (or stdout). The global
-/// [`max_level`](crate::max_level) is its level; per-target ceilings can lower it.
+/// [`max_level`](crate::max_level) is its level; per-target ceilings can lower it, and a
+/// [`Filter`] (`ONLY_LOG=info,only_http=debug`, see [`init_from_env`]) sets the level per
+/// target.
 ///
 /// By default the write happens on the thread that logs, under the standard stream's lock:
 /// when stderr is a pipe nobody drains (a stalled log collector), that thread blocks, and an
@@ -57,7 +60,7 @@ impl Logger for StderrLogger {
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct FmtLogger {
-    targets: Vec<(String, LevelFilter)>,
+    filter: Filter,
     stdout: bool,
     no_timestamps: bool,
     sink: Option<Arc<AsyncSink>>,
@@ -174,8 +177,24 @@ impl FmtLogger {
     /// wins.
     #[must_use]
     pub fn target_level(mut self, target: impl Into<String>, level: LevelFilter) -> FmtLogger {
-        self.targets.push((target.into(), level));
+        self.filter = self.filter.directive(target, level);
         self
+    }
+
+    /// Filters records with `filter` (its per-target levels and its default level) instead
+    /// of the ceilings set so far. [`init`](Self::init) still sets the global maximum; use
+    /// [`init_filtered`](Self::init_filtered) to set it from the filter.
+    #[must_use]
+    pub fn filter(mut self, filter: Filter) -> FmtLogger {
+        self.filter = filter;
+        self
+    }
+
+    /// Installs this logger with `filter` and sets the global maximum level to
+    /// [`filter.max_level()`](Filter::max_level).
+    pub fn init_filtered(self, filter: Filter) -> Result<(), SetLoggerError> {
+        let max = filter.max_level();
+        self.filter(filter).init(max)
     }
 
     /// Writes to stdout instead of stderr.
@@ -259,18 +278,7 @@ impl FmtLogger {
 
 impl Logger for FmtLogger {
     fn enabled(&self, m: &Metadata<'_>) -> bool {
-        let t = m.target();
-        let mut best: Option<(usize, LevelFilter)> = None;
-        for (p, l) in &self.targets {
-            let hit = t == p
-                || (t.len() > p.len()
-                    && t.starts_with(p.as_str())
-                    && t[p.len()..].starts_with("::"));
-            if hit && best.is_none_or(|(n, _)| p.len() > n) {
-                best = Some((p.len(), *l));
-            }
-        }
-        best.is_none_or(|(_, l)| m.level() <= l)
+        self.filter.enabled(m)
     }
 
     fn log(&self, record: &Record<'_>) {
@@ -305,6 +313,33 @@ impl Logger for FmtLogger {
 /// ```
 pub fn init(level: LevelFilter) -> Result<(), SetLoggerError> {
     FmtLogger::new().init(level)
+}
+
+/// Installs a [`FmtLogger`] on stderr filtered by the `ONLY_LOG` environment variable
+/// (env_logger-style directives, see [`Filter`]), parsed once, here:
+///
+/// ```text
+/// ONLY_LOG=info,only_http=debug,only_quic::conn=trace,only_http::access=off
+/// ```
+///
+/// When `ONLY_LOG` is unset or blank, `default` is the level of every target (as with
+/// [`init`]). When it does not parse, a line saying why goes to stderr and `default` is used.
+/// The global maximum level becomes the filter's [`max_level`](Filter::max_level). Nothing
+/// reads the variable unless this is called: [`init`] and the default behaviour do not.
+///
+/// ```
+/// only_log::init_from_env(only_log::LevelFilter::Info).ok();
+/// ```
+pub fn init_from_env(default: LevelFilter) -> Result<(), SetLoggerError> {
+    let filter = match Filter::from_env(ENV_VAR) {
+        Some(Ok(f)) => f,
+        Some(Err(e)) => {
+            eprintln!("only-log: ignoring {ENV_VAR}: {e}");
+            Filter::new(default)
+        }
+        None => Filter::new(default),
+    };
+    FmtLogger::new().init_filtered(filter)
 }
 
 /// `YYYY-MM-DDTHH:MM:SS.ffffffZ` (UTC).

@@ -10,19 +10,69 @@ Both clients run their connections on a `only` `Engine` (give it `client_threads
 {{#include ../../../../crates/only-http/examples/guide-http.rs:client}}
 ```
 
-- `Client::new(Arc<Engine>)`, cheap to clone. `with_tls(only::tls::ClientConfig)` enables
-  `https://`.
-- `ClientRequest::get(url)`, `ClientRequest::post(url, body)`, `.header(name, value)`; or fill
-  `method`, `url`, `headers`, `body` yourself. `Host`, `Content-Length` and `Connection` are added.
+- `Client::new(Arc<Engine>)`, cheap to clone. `https://` uses the system's CAs
+  (`only::tls::RootCerts::system()`); `with_tls(only::tls::ClientConfig)` replaces them (your own
+  roots, client certificates, ALPN).
+- `ClientRequest::get(url)`, `ClientRequest::post(url, body)`, `.header(name, value)`,
+  `.timeout(d)`; or fill `method`, `url`, `headers`, `body`, `timeout` yourself. `Host`,
+  `Content-Length` and `Connection` are added.
 - `client.send(req)` returns a `ResponseFuture`; `client.request(req, callback)` calls back.
-- `ClientResponse` has `status`, `reason`, `headers`, `body` (de-chunked), `trailers`.
-- Keep-alive connections are reused per host; a request on a reused connection that turns out to
-  be dead is retried once on a new one.
-- Address fallback: every resolved address is tried in turn (`localhost` is often `::1` first).
-- `ClientError`: `InvalidUrl`, `Io`, `Protocol`, `Closed`.
+- `ClientResponse` has `status`, `reason`, `headers`, `body` (de-chunked), `trailers` and `url`
+  (the URL that answered, after redirects).
+- Keep-alive connections are reused per host (and per proxy); a request on a reused connection
+  that turns out to be dead is retried once on a new one.
+- Names are resolved off the calling thread, on `only::dns`'s resolver threads (at most four,
+  started on demand); IP literals need no lookup. Every resolved address is tried in turn
+  (`localhost` is often `::1` first).
+- `ClientError`: `InvalidUrl`, `Io`, `Protocol`, `Closed`, `Timeout`, `TooManyRedirects`.
 
-Not done: redirects, per-request timeouts (use `wait_timeout`, or the engine's idle timeout),
-name resolution off the calling thread (resolution happens in `send`/`request` and may block).
+Each `with_*` returns a new client with its own connection pool; configure once and clone.
+
+### Redirects
+
+Off by default: a 3xx response is returned as it is. `with_redirects(RedirectPolicy::limit(n))`
+follows 301, 302, 303, 307 and 308 responses that carry a `Location` (relative ones resolved
+against the request URL), following RFC 9110 section 15.4:
+
+| Status | Method and body |
+|---|---|
+| 303 | `GET` without a body (`HEAD` stays `HEAD`) |
+| 301, 302 | `POST` becomes `GET` without a body; other methods kept with their body |
+| 307, 308 | method and body kept |
+
+When the body is dropped, its `Content-*` fields go too. A redirect to another origin (scheme,
+host or port) drops `Authorization`, `Cookie` and `Proxy-Authorization`, for the rest of the
+chain. `https://` to `http://` is not followed (the 3xx is returned) unless
+`RedirectPolicy::limit(n).allow_https_downgrade(true)`. More than `n` redirects (a loop, for
+instance) fails with `ClientError::TooManyRedirects`. There is no cookie jar.
+
+### Timeouts
+
+`ClientRequest::timeout(d)`, or `Client::with_timeout(d)` for every request, limits the whole
+exchange: resolution, connecting, TLS, sending, the complete response and all redirects. When it
+passes the request fails with `ClientError::Timeout` and its connection is closed (never reused
+or retried). `ResponseFuture::wait_timeout` only stops waiting; the request goes on.
+
+### Proxies
+
+```rust,ignore
+use only_http::client::{Client, Proxy};
+let client = Client::new(engine)
+    .with_proxy(Proxy::all("http://user:pass@proxy.internal:3128")?.no_proxy("localhost,.corp"));
+// or, opting in to the environment (http_proxy, https_proxy, no_proxy, upper case too):
+let client = Client::new(engine).with_proxy(Proxy::from_env()?);
+```
+
+`http://` requests go to the proxy in absolute form (`GET http://host/path HTTP/1.1`);
+`https://` goes through a `CONNECT host:port` tunnel with TLS to the target inside it.
+Credentials in the proxy URL become `Proxy-Authorization: Basic`. A proxy that refuses the
+tunnel fails the request with `ClientError::Io` whose error is an `only_http::client::ProxyRefused`
+(`status()`, `reason()`). `NO_PROXY` entries: `*`, host names (and their subdomains), IP
+addresses, CIDR blocks, each optionally with `:port`. Only plain-HTTP proxies are supported (not
+TLS to the proxy, not SOCKS). Nothing reads the environment unless you call `Proxy::from_env()`.
+
+See [ADR-010](https://github.com/lesismal/only/blob/main/docs/adr/010-http-client-gaps.md) for
+the reasoning behind these rules.
 
 ## HTTP/2: `h2client::H2Client`
 
@@ -41,6 +91,9 @@ name resolution off the calling thread (resolution happens in `send`/`request` a
   request body, and reports `H2Event::Head`, `Data`, `Trailers`, `End` or `Error` as the response
   arrives. only-grpc's client is built on it.
 - `is_open()`, `close()`.
+- `ClientRequest::timeout` applies: the stream is reset (`CANCEL`) and the request fails with
+  `ClientError::Timeout`; the connection stays usable. One connection to one origin: no redirects
+  or proxies.
 
 ## HTTP/3
 

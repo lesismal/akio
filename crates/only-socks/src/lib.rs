@@ -3,9 +3,12 @@
 //! proxy ([`connect_proxy`]), both relaying callback to callback with backpressure in both
 //! directions: when one side cannot keep up, reading from the other pauses until it drains.
 //!
-//! Supported: SOCKS5 `CONNECT` with no authentication or username/password (RFC 1929), IPv4,
-//! IPv6 and domain names (resolved on the logical pool); SOCKS4 and 4a `CONNECT`; HTTP
-//! `CONNECT host:port`. Not supported: SOCKS `BIND` and `UDP ASSOCIATE`, a Linux `splice` path.
+//! Supported: SOCKS5 `CONNECT`, `BIND` and `UDP ASSOCIATE` (RFC 1928; the last two opt-in,
+//! [`Socks::bind`], [`Socks::udp_associate`]) with no authentication or username/password
+//! (RFC 1929), IPv4, IPv6 and domain names (resolved on the logical pool); SOCKS4 and 4a
+//! `CONNECT`; HTTP `CONNECT host:port`; an access-control hook over every request
+//! ([`Socks::allow`]). Not supported: UDP fragment reassembly (fragments are dropped, as RFC
+//! 1928 allows), SOCKS4 `BIND`, GSSAPI authentication, a Linux `splice` path.
 //!
 //! Safe defaults ([`ProxyConfig`]): a handshake must complete (upstream connected) within 10 s,
 //! a tunnel with no byte in either direction for 5 minutes is closed, at most 256 KiB of early
@@ -19,8 +22,11 @@
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs},
-    sync::{Arc, Mutex},
-    time::Duration,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
 
 mod guard;
@@ -283,24 +289,124 @@ fn try_dial(
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+mod udp;
 
 // ---- SOCKS ---------------------------------------------------------------------------------
 
 /// Username/password check for SOCKS5.
 pub type Auth = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
+/// Access-control hook: whether a [`Request`] may proceed.
+pub type Allow = Arc<dyn Fn(&Request<'_>) -> bool + Send + Sync>;
+
+/// What a SOCKS client asks for, as the access-control hook ([`Socks::allow`]) sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Command {
+    /// `CONNECT` (SOCKS5, SOCKS4, 4a): a TCP connection to the destination.
+    Connect,
+    /// SOCKS5 `BIND`: accept one TCP connection from the destination (the address the
+    /// client expects it from).
+    Bind,
+    /// SOCKS5 `UDP ASSOCIATE`: open a UDP relay. The destination is the address the client
+    /// says it will send from (often `0.0.0.0:0`).
+    UdpAssociate,
+    /// One destination of a UDP association's datagrams: asked once per destination and
+    /// association, before the first datagram to it is relayed.
+    UdpDatagram,
+}
+
+/// A destination: an address, or a host name the server resolves.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Dest {
+    /// An IPv4 or IPv6 address and port.
+    Addr(SocketAddr),
+    /// A host name (not resolved yet) and port.
+    Name(String, u16),
+}
+
+impl Dest {
+    /// The port.
+    pub fn port(&self) -> u16 {
+        match self {
+            Dest::Addr(a) => a.port(),
+            Dest::Name(_, p) => *p,
+        }
+    }
+}
+
+impl std::fmt::Display for Dest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Dest::Addr(a) => write!(f, "{a}"),
+            Dest::Name(h, p) => write!(f, "{h}:{p}"),
+        }
+    }
+}
+
+/// A request checked by the access-control hook ([`Socks::allow`]).
+#[derive(Clone, Copy, Debug)]
+pub struct Request<'a> {
+    version: u8,
+    client: SocketAddr,
+    user: Option<&'a str>,
+    command: Command,
+    dest: &'a Dest,
+}
+
+impl<'a> Request<'a> {
+    /// The SOCKS version: 5, or 4 (SOCKS4 and 4a).
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// The client's address (its TCP control connection).
+    pub fn client(&self) -> SocketAddr {
+        self.client
+    }
+
+    /// The SOCKS5 user name, when authentication is on ([`Socks::auth`]); the SOCKS4 user id
+    /// otherwise, if not empty.
+    pub fn user(&self) -> Option<&'a str> {
+        self.user
+    }
+
+    /// What is asked.
+    pub fn command(&self) -> Command {
+        self.command
+    }
+
+    /// The destination (see [`Command`] for what it is per command).
+    pub fn dest(&self) -> &'a Dest {
+        self.dest
+    }
+}
+
 /// A SOCKS5/4/4a server. Serve it on a listener (`Listener::tcp(..).serve(socks)`); set the
 /// [`EngineRef`] once the engine is built so it can dial upstream.
+///
+/// `CONNECT` is always available; SOCKS5 `BIND` ([`bind`](Self::bind)) and `UDP ASSOCIATE`
+/// ([`udp_associate`](Self::udp_associate)) are off until enabled, and every command goes
+/// through the access-control hook ([`allow`](Self::allow)) when one is set.
 pub struct Socks {
     engine: EngineRef,
     auth: Option<Auth>,
+    allow: Option<Allow>,
     allow_socks4: bool,
     cfg: Arc<ProxyConfig>,
+    bind: bool,
+    udp: bool,
+    bind_timeout: Duration,
+    udp_idle: Duration,
+    sweeper: Arc<udp::Sweeper>,
 }
 
 impl std::fmt::Debug for Socks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Socks").finish_non_exhaustive()
+        f.debug_struct("Socks")
+            .field("bind", &self.bind)
+            .field("udp_associate", &self.udp)
+            .finish_non_exhaustive()
     }
 }
 
@@ -310,8 +416,14 @@ impl Socks {
         Socks {
             engine,
             auth: None,
+            allow: None,
             allow_socks4: true,
             cfg: Arc::new(ProxyConfig::default()),
+            bind: false,
+            udp: false,
+            bind_timeout: Duration::from_secs(60),
+            udp_idle: Duration::from_secs(120),
+            sweeper: udp::Sweeper::new(),
         }
     }
 
@@ -336,6 +448,66 @@ impl Socks {
         self.allow_socks4 = false;
         self
     }
+
+    /// Access control: `check` decides whether each request may proceed, after
+    /// authentication and before anything is dialed, bound or resolved. A refused SOCKS5
+    /// request gets reply 2 ("connection not allowed by ruleset"), a refused SOCKS4 one 0x5b,
+    /// and a refused UDP destination has its datagrams dropped. Destinations given as host
+    /// names are checked as names ([`Dest::Name`]); resolve them in the hook to check
+    /// addresses.
+    ///
+    /// ```
+    /// use only_socks::{Command, Dest, Socks};
+    /// let socks = Socks::new(only::EngineRef::new())
+    ///     .udp_associate(true)
+    ///     .allow(|r| match r.dest() {
+    ///         // No proxied traffic to the loopback interface, except UDP ASSOCIATE's
+    ///         // own client address.
+    ///         Dest::Addr(a) => r.command() == Command::UdpAssociate || !a.ip().is_loopback(),
+    ///         Dest::Name(host, _) => host != "localhost",
+    ///     });
+    /// # let _ = socks;
+    /// ```
+    #[must_use]
+    pub fn allow(mut self, check: impl Fn(&Request<'_>) -> bool + Send + Sync + 'static) -> Socks {
+        self.allow = Some(Arc::new(check));
+        self
+    }
+
+    /// Enables SOCKS5 `BIND` (off by default): the server listens on a new port of the
+    /// address the client reached it on, replies with it, accepts one connection (from the
+    /// requested address's IP, unless that is unspecified), replies again with the peer's
+    /// address and relays. Gives up after [`bind_timeout`](Self::bind_timeout).
+    #[must_use]
+    pub fn bind(mut self, enabled: bool) -> Socks {
+        self.bind = enabled;
+        self
+    }
+
+    /// How long a `BIND` waits for the incoming connection (default 60 s).
+    #[must_use]
+    pub fn bind_timeout(mut self, timeout: Duration) -> Socks {
+        self.bind_timeout = timeout;
+        self
+    }
+
+    /// Enables SOCKS5 `UDP ASSOCIATE` (off by default): each association gets its own UDP
+    /// socket on the address the client reached the server on. The engine needs UDP I/O
+    /// threads (`EngineBuilder::udp_client_threads`, or a UDP listener); without them the
+    /// request fails with reply 1. Datagrams with a non-zero fragment number are dropped.
+    #[must_use]
+    pub fn udp_associate(mut self, enabled: bool) -> Socks {
+        self.udp = enabled;
+        self
+    }
+
+    /// How long a UDP association lasts without a datagram in either direction (default
+    /// 120 s); it then ends with its control connection. Checked every 250 ms.
+    #[must_use]
+    pub fn udp_idle_timeout(mut self, timeout: Duration) -> Socks {
+        self.udp_idle = timeout;
+        self
+    }
 }
 
 enum St {
@@ -345,6 +517,10 @@ enum St {
     Socks4,
     /// Waiting for the upstream connection.
     Connecting,
+    /// `BIND`: waiting for the incoming connection.
+    Binding,
+    /// `UDP ASSOCIATE`: the control connection only waits to be closed.
+    Associated,
     Relaying,
 }
 
@@ -352,12 +528,21 @@ enum St {
 pub struct SocksSession {
     engine: EngineRef,
     auth: Option<Auth>,
+    allow: Option<Allow>,
     allow_socks4: bool,
+    bind: bool,
+    udp: bool,
+    bind_timeout: Duration,
+    udp_idle: Duration,
+    sweeper: Arc<udp::Sweeper>,
+    user: Option<String>,
     st: St,
     buf: Vec<u8>,
     upstream: UpstreamSlot,
     cfg: Arc<ProxyConfig>,
     watch: Option<Arc<Watch>>,
+    assoc: Option<Arc<udp::Assoc>>,
+    bind_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl std::fmt::Debug for SocksSession {
@@ -379,46 +564,90 @@ impl Acceptor for Socks {
         SocksSession {
             engine: self.engine.clone(),
             auth: self.auth.clone(),
+            allow: self.allow.clone(),
             allow_socks4: self.allow_socks4,
+            bind: self.bind,
+            udp: self.udp,
+            bind_timeout: self.bind_timeout,
+            udp_idle: self.udp_idle,
+            sweeper: self.sweeper.clone(),
+            user: None,
             st: St::Greeting,
             buf: Vec::new(),
             upstream,
             cfg: self.cfg.clone(),
             watch,
+            assoc: None,
+            bind_cancel: None,
         }
     }
 }
 
 /// SOCKS5 reply codes.
 const REP_OK: u8 = 0;
+const REP_FAILURE: u8 = 1;
 const REP_NOT_ALLOWED: u8 = 2;
 const REP_UNREACHABLE: u8 = 4;
 const REP_REFUSED: u8 = 5;
 const REP_CMD: u8 = 7;
 const REP_ATYP: u8 = 8;
 
+/// SOCKS4 "rejected or failed".
+const SOCKS4_FAIL: [u8; 8] = [0, 0x5b, 0, 0, 0, 0, 0, 0];
+
+/// Appends `ATYP ADDR PORT` for `a`.
+pub(crate) fn push_addr(out: &mut Vec<u8>, a: SocketAddr) {
+    match a {
+        SocketAddr::V6(a) => {
+            out.push(4);
+            out.extend_from_slice(&a.ip().octets());
+        }
+        SocketAddr::V4(a) => {
+            out.push(1);
+            out.extend_from_slice(&a.ip().octets());
+        }
+    }
+    out.extend_from_slice(&a.port().to_be_bytes());
+}
+
+/// Parses `ADDR PORT` of address type `atyp` from `b`: the destination and the bytes used.
+/// `None` when `b` is too short or `atyp` unknown.
+pub(crate) fn parse_addr(atyp: u8, b: &[u8]) -> Option<(Dest, usize)> {
+    match atyp {
+        1 => {
+            let b: &[u8; 6] = b.get(..6)?.try_into().ok()?;
+            let ip = Ipv4Addr::new(b[0], b[1], b[2], b[3]);
+            let port = u16::from_be_bytes([b[4], b[5]]);
+            Some((Dest::Addr(SocketAddr::new(IpAddr::V4(ip), port)), 6))
+        }
+        4 => {
+            let b: &[u8; 18] = b.get(..18)?.try_into().ok()?;
+            let mut o = [0u8; 16];
+            o.copy_from_slice(&b[..16]);
+            let port = u16::from_be_bytes([b[16], b[17]]);
+            Some((
+                Dest::Addr(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(o)), port)),
+                18,
+            ))
+        }
+        3 => {
+            let l = *b.first()? as usize;
+            let rest = b.get(1..3 + l)?;
+            let host = String::from_utf8_lossy(&rest[..l]).into_owned();
+            let port = u16::from_be_bytes([rest[l], rest[l + 1]]);
+            Some((Dest::Name(host, port), 3 + l))
+        }
+        _ => None,
+    }
+}
+
 fn socks5_reply(code: u8, bound: Option<SocketAddr>) -> Vec<u8> {
     let mut r = vec![5, code, 0];
     match bound {
-        Some(SocketAddr::V6(a)) => {
-            r.push(4);
-            r.extend_from_slice(&a.ip().octets());
-            r.extend_from_slice(&a.port().to_be_bytes());
-        }
-        Some(SocketAddr::V4(a)) => {
-            r.push(1);
-            r.extend_from_slice(&a.ip().octets());
-            r.extend_from_slice(&a.port().to_be_bytes());
-        }
+        Some(a) => push_addr(&mut r, a),
         None => r.extend_from_slice(&[1, 0, 0, 0, 0, 0, 0]),
     }
     r
-}
-
-/// Where a client asked to go.
-enum Target {
-    Addr(SocketAddr),
-    Name(String, u16),
 }
 
 impl SocksSession {
@@ -428,15 +657,28 @@ impl SocksSession {
         self.st = St::Relaying; // ignore anything else
     }
 
-    fn connect(&mut self, c: &Conn<Self>, target: Target, v5: bool) {
+    /// Asks the access-control hook.
+    fn allowed(&self, c: &Conn<Self>, version: u8, command: Command, dest: &Dest) -> bool {
+        self.allow.as_ref().is_none_or(|f| {
+            f(&Request {
+                version,
+                client: udp::canon(c.peer_addr()),
+                user: self.user.as_deref(),
+                command,
+                dest,
+            })
+        })
+    }
+
+    fn connect(&mut self, c: &Conn<Self>, target: Dest, v5: bool) {
         let denied = move || {
             if v5 {
                 socks5_reply(REP_NOT_ALLOWED, None)
             } else {
-                vec![0, 0x5b, 0, 0, 0, 0, 0, 0]
+                SOCKS4_FAIL.to_vec()
             }
         };
-        if let Target::Addr(a) = target
+        if let Dest::Addr(a) = target
             && !self.cfg.destinations.allows(a)
         {
             return self.fail(c, denied());
@@ -465,14 +707,14 @@ impl SocksSession {
             let reply = if v5 {
                 socks5_reply(REP_REFUSED, None)
             } else {
-                vec![0, 0x5b, 0, 0, 0, 0, 0, 0]
+                SOCKS4_FAIL.to_vec()
             };
             let _ = client2.send_owned(reply);
             client2.close_after_send();
         };
         match target {
-            Target::Addr(a) => dial(&engine, vec![a], ctx, Box::new(ok_reply), Box::new(fail)),
-            Target::Name(host, port) => {
+            Dest::Addr(a) => dial(&engine, vec![a], ctx, Box::new(ok_reply), Box::new(fail)),
+            Dest::Name(host, port) => {
                 // Name resolution blocks: do it on the logical pool.
                 let r = c.spawn_blocking(
                     move || {
@@ -496,7 +738,7 @@ impl SocksSession {
                             let reply = if v5 {
                                 socks5_reply(REP_UNREACHABLE, None)
                             } else {
-                                vec![0, 0x5b, 0, 0, 0, 0, 0, 0]
+                                SOCKS4_FAIL.to_vec()
                             };
                             let _ = c.send_owned(reply);
                             c.close_after_send();
@@ -510,6 +752,134 @@ impl SocksSession {
         }
     }
 
+    /// SOCKS5 `BIND`: listen, reply with the port, accept one connection (on a thread of its
+    /// own, polling so that it notices the client leaving), adopt it into the engine, reply
+    /// with the peer and relay.
+    fn bind(&mut self, c: &Conn<Self>, expected: Dest) {
+        // The destination policy applies to the peer BIND waits for: a stated address must be
+        // allowed, and a connection from a denied address is never taken.
+        if let Dest::Addr(a) = expected
+            && !a.ip().is_unspecified()
+            && !self.cfg.destinations.allows(a)
+        {
+            return self.fail(c, socks5_reply(REP_NOT_ALLOWED, None));
+        }
+        let Some(engine) = self.engine.get() else {
+            return self.fail(c, socks5_reply(REP_FAILURE, None));
+        };
+        let local = SocketAddr::new(udp::canon(c.local_addr()).ip(), 0);
+        let listener = match std::net::TcpListener::bind(local) {
+            Ok(l) if l.set_nonblocking(true).is_ok() => l,
+            _ => return self.fail(c, socks5_reply(REP_FAILURE, None)),
+        };
+        let Ok(bound) = listener.local_addr() else {
+            return self.fail(c, socks5_reply(REP_FAILURE, None));
+        };
+        self.st = St::Binding;
+        c.inner().set_relayed(true);
+        let _ = c.send_owned(socks5_reply(REP_OK, Some(udp::canon(bound))));
+        // The handshake is over; `bind_timeout` bounds the wait, the idle timeout what follows.
+        if let Some(w) = &self.watch {
+            w.established();
+        }
+        let destinations = self.cfg.destinations.clone();
+        let watch = self.watch.clone();
+        // Only a connection from the expected IP is taken (any, when it is unspecified or a
+        // name: the client usually does not know where the peer connects from).
+        let want_ip = match expected {
+            Dest::Addr(a) if !a.ip().is_unspecified() => Some(udp::canon(a).ip()),
+            _ => None,
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.bind_cancel = Some(cancel.clone());
+        let client = c.inner().clone();
+        let slot = self.upstream.clone();
+        let deadline = Instant::now() + self.bind_timeout;
+        let spawned = std::thread::Builder::new()
+            .name("only-socks-bind".into())
+            .spawn(move || {
+                let stream = loop {
+                    if cancel.load(Ordering::Acquire) {
+                        return;
+                    }
+                    match listener.accept() {
+                        Ok((s, peer))
+                            if want_ip.is_none_or(|ip| udp::canon(peer).ip() == ip)
+                                && destinations.allows(udp::canon(peer)) =>
+                        {
+                            break s;
+                        }
+                        Ok(_) => {} // someone else: dropped
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                let _ = client.send_owned(socks5_reply(REP_FAILURE, None));
+                                return client.close_after_send();
+                            }
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => {
+                            let _ = client.send_owned(socks5_reply(REP_FAILURE, None));
+                            return client.close_after_send();
+                        }
+                    }
+                };
+                drop(listener);
+                let client_up = client.clone();
+                let acceptor = UpstreamAcceptor {
+                    client: client.clone(),
+                    slot,
+                    watch,
+                    on_up: Arc::new(Mutex::new(Some(Box::new(move |up: &Arc<ConnInner>| {
+                        if !client_up.is_open() {
+                            return up.close();
+                        }
+                        let _ = client_up
+                            .send_owned(socks5_reply(REP_OK, Some(udp::canon(up.peer_addr()))));
+                    }) as OnUp))),
+                };
+                engine.adopt_tcp(stream, acceptor, move |_e| {
+                    let _ = client.send_owned(socks5_reply(REP_FAILURE, None));
+                    client.close_after_send();
+                });
+            });
+        if spawned.is_err() {
+            self.fail(c, socks5_reply(REP_FAILURE, None));
+        }
+    }
+
+    /// SOCKS5 `UDP ASSOCIATE`: bind the relay socket and reply with its address.
+    fn associate(&mut self, c: &Conn<Self>, declared: Dest) {
+        let Some(engine) = self.engine.get() else {
+            return self.fail(c, socks5_reply(REP_FAILURE, None));
+        };
+        let declared = match declared {
+            Dest::Addr(a) => Some(a),
+            Dest::Name(..) => None,
+        };
+        match udp::Assoc::open(
+            &engine,
+            c.inner().clone(),
+            self.user.clone(),
+            self.allow.clone(),
+            declared,
+            self.cfg.destinations.clone(),
+            &self.sweeper,
+            self.udp_idle,
+        ) {
+            Ok((a, bound)) => {
+                // The association has its own idle timeout (its datagrams never touch the
+                // control connection), so the session's timeouts stop here.
+                if let Some(w) = &self.watch {
+                    w.disarm();
+                }
+                self.assoc = Some(a);
+                self.st = St::Associated;
+                let _ = c.send_owned(socks5_reply(REP_OK, Some(bound)));
+            }
+            Err(_) => self.fail(c, socks5_reply(REP_FAILURE, None)),
+        }
+    }
+
     /// Handles as much of the handshake as is buffered.
     fn step(&mut self, c: &Conn<Self>) {
         loop {
@@ -519,7 +889,7 @@ impl SocksSession {
                     let Some(&ver) = b.first() else { return };
                     if ver == 4 {
                         if !self.allow_socks4 {
-                            return self.fail(c, vec![0, 0x5b, 0, 0, 0, 0, 0, 0]);
+                            return self.fail(c, SOCKS4_FAIL.to_vec());
                         }
                         self.st = St::Socks4;
                         continue;
@@ -561,6 +931,7 @@ impl SocksSession {
                     }
                     let _ = c.send(&[1, 0]);
                     self.buf.drain(..n);
+                    self.user = Some(user);
                     self.st = St::Request;
                 }
                 St::Request => {
@@ -568,43 +939,27 @@ impl SocksSession {
                         return;
                     }
                     let (cmd, atyp) = (b[1], b[3]);
-                    let (target, n) = match atyp {
-                        1 => {
-                            if b.len() < 10 {
-                                return;
-                            }
-                            let ip = Ipv4Addr::new(b[4], b[5], b[6], b[7]);
-                            let port = u16::from_be_bytes([b[8], b[9]]);
-                            (Target::Addr(SocketAddr::new(IpAddr::V4(ip), port)), 10)
-                        }
-                        4 => {
-                            if b.len() < 22 {
-                                return;
-                            }
-                            let mut o = [0u8; 16];
-                            o.copy_from_slice(&b[4..20]);
-                            let port = u16::from_be_bytes([b[20], b[21]]);
-                            (
-                                Target::Addr(SocketAddr::new(IpAddr::V6(Ipv6Addr::from(o)), port)),
-                                22,
-                            )
-                        }
-                        3 => {
-                            if b.len() < 5 || b.len() < 7 + b[4] as usize {
-                                return;
-                            }
-                            let l = b[4] as usize;
-                            let host = String::from_utf8_lossy(&b[5..5 + l]).into_owned();
-                            let port = u16::from_be_bytes([b[5 + l], b[6 + l]]);
-                            (Target::Name(host, port), 7 + l)
-                        }
-                        _ => return self.fail(c, socks5_reply(REP_ATYP, None)),
-                    };
-                    if cmd != 1 {
-                        return self.fail(c, socks5_reply(REP_CMD, None));
+                    if !matches!(atyp, 1 | 3 | 4) {
+                        return self.fail(c, socks5_reply(REP_ATYP, None));
                     }
-                    self.buf.drain(..n);
-                    return self.connect(c, target, true);
+                    let Some((target, n)) = parse_addr(atyp, &b[4..]) else {
+                        return;
+                    };
+                    let command = match cmd {
+                        1 => Command::Connect,
+                        2 if self.bind => Command::Bind,
+                        3 if self.udp => Command::UdpAssociate,
+                        _ => return self.fail(c, socks5_reply(REP_CMD, None)),
+                    };
+                    self.buf.drain(..4 + n);
+                    if !self.allowed(c, 5, command, &target) {
+                        return self.fail(c, socks5_reply(REP_NOT_ALLOWED, None));
+                    }
+                    return match command {
+                        Command::Bind => self.bind(c, target),
+                        Command::UdpAssociate => self.associate(c, target),
+                        _ => self.connect(c, target, true),
+                    };
                 }
                 St::Socks4 => {
                     // VN CD DSTPORT DSTIP USERID NUL [DOMAIN NUL]
@@ -615,10 +970,11 @@ impl SocksSession {
                         return;
                     };
                     if b[1] != 1 {
-                        return self.fail(c, vec![0, 0x5b, 0, 0, 0, 0, 0, 0]);
+                        return self.fail(c, SOCKS4_FAIL.to_vec());
                     }
                     let port = u16::from_be_bytes([b[2], b[3]]);
                     let ip = Ipv4Addr::new(b[4], b[5], b[6], b[7]);
+                    let user = String::from_utf8_lossy(&b[8..uend]).into_owned();
                     let (target, n) = if b[4] == 0 && b[5] == 0 && b[6] == 0 && b[7] != 0 {
                         // 4a: a domain name follows the user id.
                         let Some(dend) = b[uend + 1..]
@@ -629,17 +985,18 @@ impl SocksSession {
                             return;
                         };
                         let host = String::from_utf8_lossy(&b[uend + 1..dend]).into_owned();
-                        (Target::Name(host, port), dend + 1)
+                        (Dest::Name(host, port), dend + 1)
                     } else {
-                        (
-                            Target::Addr(SocketAddr::new(IpAddr::V4(ip), port)),
-                            uend + 1,
-                        )
+                        (Dest::Addr(SocketAddr::new(IpAddr::V4(ip), port)), uend + 1)
                     };
                     self.buf.drain(..n);
+                    self.user = (!user.is_empty()).then_some(user);
+                    if !self.allowed(c, 4, Command::Connect, &target) {
+                        return self.fail(c, SOCKS4_FAIL.to_vec());
+                    }
                     return self.connect(c, target, false);
                 }
-                St::Connecting | St::Relaying => return,
+                St::Connecting | St::Binding | St::Associated | St::Relaying => return,
             }
         }
     }
@@ -647,7 +1004,12 @@ impl SocksSession {
 
 impl Handler for SocksSession {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        if let St::Relaying | St::Connecting = self.st {
+        if let St::Associated = self.st {
+            // RFC 1928: the control connection carries nothing more; its close ends the
+            // association.
+            return;
+        }
+        if let St::Relaying | St::Connecting | St::Binding = self.st {
             let up = self
                 .upstream
                 .lock()
@@ -679,6 +1041,11 @@ impl Handler for SocksSession {
                     }
                     self.buf.extend_from_slice(data);
                 }
+                // A BIND client must wait for the second reply.
+                None if matches!(self.st, St::Binding) => {
+                    self.st = St::Relaying;
+                    c.close();
+                }
                 None => {}
             }
             return;
@@ -695,6 +1062,12 @@ impl Handler for SocksSession {
     }
 
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<only::Error>) {
+        if let Some(cancel) = self.bind_cancel.take() {
+            cancel.store(true, Ordering::Release);
+        }
+        if let Some(a) = self.assoc.take() {
+            a.close();
+        }
         let taken = self
             .upstream
             .lock()

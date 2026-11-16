@@ -21,6 +21,7 @@ use only_tls::quic::{EarlyData, Event as TlsEvent, Keys as TlsKeys, Level, QuicT
 use super::cid::{ConnectionId, LOCAL_CID_LEN, ResetToken, reset_token};
 use super::crypto::{DirKeys, Keys, OneRtt, initial_keys};
 use super::frame::{TransportError, code};
+use super::packet::supported;
 use super::params::TransportParams;
 use super::ranges::RangeSet;
 use super::recovery::{CcKind, Congestion, Pacer, Rtt};
@@ -290,6 +291,8 @@ pub enum Event {
     StreamReset(StreamId, u64),
     StreamStopped(StreamId, u64),
     StreamsAvailable(Dir),
+    /// A stream refused a write (or reported no room) and has room again.
+    StreamWritable(StreamId),
     Datagram(Bytes),
     Closed(ConnectionError),
 }
@@ -375,8 +378,12 @@ pub(crate) struct ConnConfig {
     /// The QUIC version a client starts with (a server answers in the client's).
     pub version: u32,
     /// The versions this side speaks: a server accepts them, a client may start over in them
-    /// after Version Negotiation.
+    /// after Version Negotiation or switch to them when the server negotiates one compatibly.
     pub versions: Vec<u32>,
+    /// A server switches clients that start in another version and list this one as
+    /// available to it within the handshake (compatible version negotiation, RFC 9368
+    /// section 4). `None`: it answers in the client's version.
+    pub prefer_version: Option<u32>,
     /// 0-RTT: a client sends stream data in 0-RTT packets when a ticket allows it, a server
     /// accepts them (RFC 9001 section 4.6).
     pub zero_rtt: bool,
@@ -392,6 +399,7 @@ impl ConnConfig {
             preferred_address: (None, None),
             version: super::packet::VERSION_1,
             versions: vec![super::packet::VERSION_1, super::packet::VERSION_2],
+            prefer_version: None,
             zero_rtt: false,
         }
     }
@@ -413,6 +421,20 @@ struct RemoteCid {
     cid: ConnectionId,
     token: Option<ResetToken>,
 }
+
+/// A server's pending compatible version negotiation (RFC 9368 section 4).
+struct Compat {
+    /// The version to switch to.
+    to: u32,
+    tls: only_tls::ServerConfig,
+    params: TransportParams,
+    early_ctx: Option<Vec<u8>>,
+    /// The Initial CRYPTO stream received so far.
+    hello: Vec<u8>,
+}
+
+/// The most of a ClientHello held back for compatible version negotiation.
+const MAX_COMPAT_HELLO: usize = 16 * 1024;
 
 /// A QUIC connection.
 pub struct Connection {
@@ -483,6 +505,11 @@ pub struct Connection {
     pub(crate) stream_unacked: u64,
     /// New stream data waits for the send window.
     window_blocked: bool,
+    /// Stream bytes held in send buffers (written, not acknowledged from the front), on all
+    /// streams; bounded by `TransportConfig::send_buffer`.
+    pub(crate) send_held: u64,
+    /// Streams waiting for room in their send buffer (`Event::StreamWritable`).
+    pub(crate) writable_wait: Vec<u64>,
     rx_max_data: u64,
     rx_data: u64,
     rx_delivered: u64,
@@ -516,6 +543,16 @@ pub struct Connection {
     restart_with: Option<(only_tls::ClientConfig, String)>,
     /// The version a client gave up after Version Negotiation (downgrade check).
     vn_from: Option<u32>,
+    /// The version of the client's first flight, when compatible version negotiation moved
+    /// the connection to `version` (RFC 9368 section 4): the client's 0-RTT packets stay in
+    /// it, and a server still reads the client's Initial packets in it.
+    orig_version: Option<u32>,
+    /// The Initial keys of `orig_version` (server: until the Initial space goes; client: while
+    /// a packet of the new version is tried).
+    orig_initial: Option<Keys>,
+    /// A server that may switch versions: the client's first ClientHello, held back from TLS
+    /// until it is complete, and what is needed to start TLS again in the other version.
+    compat: Option<Box<Compat>>,
     /// Frame lists of acknowledged or lost packets, reused for new packets.
     spare_frames: Vec<Vec<SentFrame>>,
     /// 0-RTT packet protection: the client's write keys, the server's read keys.
@@ -637,6 +674,8 @@ impl Connection {
             tx_data: 0,
             stream_unacked: 0,
             window_blocked: false,
+            send_held: 0,
+            writable_wait: Vec::new(),
             rx_max_data,
             rx_data: 0,
             rx_delivered: 0,
@@ -658,6 +697,9 @@ impl Connection {
             version: cfg.version,
             restart_with: None,
             vn_from: None,
+            orig_version: None,
+            orig_initial: None,
+            compat: None,
             spare_frames: Vec::new(),
             zero_rtt: None,
             remembered: None,
@@ -824,6 +866,8 @@ impl Connection {
         c.send_queue = std::mem::take(&mut self.send_queue);
         c.next_local = self.next_local;
         c.tx_data = self.tx_data;
+        c.send_held = self.send_held;
+        c.writable_wait = std::mem::take(&mut self.writable_wait);
         for (id, s) in &mut c.streams {
             s.queued = false;
             if let Some(snd) = s.send.as_mut() {
@@ -845,6 +889,66 @@ impl Connection {
     /// The QUIC version in use.
     pub fn version(&self) -> u32 {
         self.version
+    }
+
+    /// The version the client started in, when compatible version negotiation moved the
+    /// connection to another one.
+    #[cfg(test)]
+    pub(crate) fn orig_version(&self) -> Option<u32> {
+        self.orig_version
+    }
+
+    /// The DCID the Initial keys come from: the client's first, or the Retry's source.
+    fn initial_key_dcid(&self) -> ConnectionId {
+        self.retry_scid.unwrap_or(self.orig_dcid)
+    }
+
+    /// Moves the connection to version `v`, compatible with the current one (RFC 9368
+    /// section 2.3): new Initial keys, the old ones kept to read the client's late Initials.
+    fn switch_version(&mut self, v: u32) {
+        let dcid = self.initial_key_dcid();
+        let keys = initial_keys(&dcid, self.side == Side::Client, v);
+        self.orig_initial = self.spaces[0].keys.replace(keys);
+        self.orig_version = Some(self.version);
+        self.version = v;
+        self.cfg.version = v;
+    }
+
+    /// Undoes a client's [`switch_version`](Self::switch_version) for a packet of the new
+    /// version that did not decrypt.
+    fn unswitch_version(&mut self) {
+        if let Some(v) = self.orig_version.take() {
+            self.version = v;
+            self.cfg.version = v;
+            self.spaces[0].keys = self.orig_initial.take();
+        }
+    }
+
+    /// A server choosing whether to switch versions: holds the Initial CRYPTO stream back
+    /// until the ClientHello is complete, then reads the client's version_information and, if
+    /// it lists the preferred version as available, switches to it and starts TLS again with
+    /// that version chosen in our transport parameters. Returns what TLS gets now.
+    fn compat_hold(&mut self, chunk: &[u8]) -> Option<Vec<u8>> {
+        let c = self.compat.as_mut()?;
+        c.hello.extend_from_slice(chunk);
+        let need = only_tls::quic::client_hello_len(&c.hello)?;
+        if c.hello.len() < need && c.hello.len() <= MAX_COMPAT_HELLO {
+            return None;
+        }
+        let mut c = self.compat.take()?;
+        let avail = only_tls::quic::client_hello_transport_params(&c.hello)
+            .and_then(|raw| TransportParams::decode(raw, false).ok())
+            .and_then(|p| p.version_info);
+        if let Some((chosen, avail)) = avail {
+            if chosen == self.version && avail.contains(&c.to) {
+                self.switch_version(c.to);
+                let mut list = vec![c.to];
+                list.extend(self.cfg.versions.iter().filter(|&&v| v != c.to));
+                c.params.version_info = Some((c.to, list));
+                self.tls = QuicTls::server_early(&c.tls, c.params.encode(), c.early_ctx.take());
+            }
+        }
+        Some(std::mem::take(&mut c.hello))
     }
 
     /// A server connection for a client's first Initial.
@@ -888,6 +992,18 @@ impl Connection {
         };
         // 0-RTT is accepted with tickets issued under the same limits (RFC 9001 section 4.6.2).
         let early_ctx = cfg.zero_rtt.then(|| params.remembered().encode());
+        let compat = cfg
+            .prefer_version
+            .filter(|&v| v != version && supported(v) && cfg.versions.contains(&v))
+            .map(|to| {
+                Box::new(Compat {
+                    to,
+                    tls: tls_cfg.clone(),
+                    params: params.clone(),
+                    early_ctx: early_ctx.clone(),
+                    hello: Vec::new(),
+                })
+            });
         let tls = QuicTls::server_early(tls_cfg, params.encode(), early_ctx);
         let mut c = Connection::base(
             Side::Server,
@@ -902,6 +1018,7 @@ impl Connection {
             client_scid,
         );
         c.spaces[0].keys = Some(initial_keys(&initial_dcid, false, version));
+        c.compat = compat;
         c.peer_initial_scid = Some(client_scid);
         c.retry_scid = retry_scid;
         c.path.validated = validated;
@@ -1052,7 +1169,9 @@ impl Connection {
             Level::EarlyData => {
                 // One direction only: the client writes 0-RTT packets, the server reads them.
                 if let Some(TlsKeys::Tls13 { suite, secret }) = read.or(write) {
-                    self.zero_rtt = Some(DirKeys::from_secret(suite, &secret, self.version));
+                    // In the client's first version (RFC 9369 section 4.1).
+                    let v = self.orig_version.unwrap_or(self.version);
+                    self.zero_rtt = Some(DirKeys::from_secret(suite, &secret, v));
                     self.replay = !self.buffered.is_empty();
                 }
                 return;
@@ -1161,12 +1280,17 @@ impl Connection {
         self.params_done = true;
         let p = TransportParams::decode(raw, self.side == Side::Client)?;
         let perr = |r: &str| TransportError::new(code::TRANSPORT_PARAMETER_ERROR, r);
-        // Version negotiation (RFC 9368 section 4): the chosen version is the one in use, and
-        // a server that lists the version a client gave up after Version Negotiation did not
-        // send that Version Negotiation packet (a downgrade).
+        // Version negotiation (RFC 9368 section 4): the chosen version is the one in use (the
+        // client's: the one it started in, before a compatible switch), and a server that
+        // lists the version a client gave up after Version Negotiation did not send that
+        // Version Negotiation packet (a downgrade).
         if let Some((chosen, avail)) = &p.version_info {
             let verr = |r: &str| TransportError::new(code::VERSION_NEGOTIATION_ERROR, r);
-            if *chosen != self.version {
+            let expect = match self.side {
+                Side::Server => self.orig_version.unwrap_or(self.version),
+                Side::Client => self.version,
+            };
+            if *chosen != expect {
                 return Err(verr("version_information chosen version mismatch"));
             }
             if self.vn_from.is_some_and(|v| avail.contains(&v)) {
@@ -1374,6 +1498,8 @@ impl Connection {
         }
         self.bytes_in_flight = 0;
         self.stream_unacked = 0;
+        self.send_held = 0;
+        self.writable_wait.clear();
         self.buffered.clear();
     }
 
@@ -1410,6 +1536,9 @@ impl Connection {
         }
         s.discarded = true;
         s.keys = None;
+        if id == SpaceId::Initial {
+            self.orig_initial = None;
+        }
         let mut flight = 0;
         for p in s.sent.values() {
             if p.in_flight {

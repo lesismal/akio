@@ -141,7 +141,7 @@ fn bulk(mb: usize) {
     let (tx, rx) = mpsc::channel();
     let c = only_quic::dial(&e, addr, "localhost", cfg, Up(tx)).expect("dial");
     rx.recv_timeout(Duration::from_secs(5)).expect("handshake");
-    let chunk = vec![0x5au8; 1 << 20];
+    let chunk = B::from(vec![0x5au8; 1 << 20]);
     let start = Instant::now();
     let id = c.open_bi().expect("stream");
     for _ in 0..mb {
@@ -149,7 +149,12 @@ fn bulk(mb: usize) {
         while c.queued_bytes(id) > 8 << 20 {
             std::thread::sleep(Duration::from_micros(200));
         }
-        c.send(id, chunk.clone()).expect("send");
+        // A send buffer that is full refuses the write (`Overloaded`, in versions that bound
+        // it): try again shortly.
+        while c.send(id, chunk.clone()).is_err() {
+            assert!(!c.is_closed(), "connection closed");
+            std::thread::sleep(Duration::from_micros(100));
+        }
     }
     c.finish(id).expect("finish");
     rx.recv_timeout(Duration::from_secs(600)).expect("ack");

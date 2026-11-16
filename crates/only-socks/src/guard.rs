@@ -93,6 +93,7 @@ pub(crate) struct Watch {
     opened: u64,
     last: AtomicU64,
     relaying: AtomicBool,
+    disarmed: AtomicBool,
     /// 0 when off.
     handshake_ms: u64,
     idle_ms: u64,
@@ -131,6 +132,7 @@ impl Watch {
             opened: now,
             last: AtomicU64::new(now),
             relaying: AtomicBool::new(false),
+            disarmed: AtomicBool::new(false),
             handshake_ms,
             idle_ms,
         });
@@ -156,7 +158,15 @@ impl Watch {
         self.relaying.store(true, Ordering::Relaxed);
     }
 
+    /// Neither timeout applies any more (the session is governed by something else).
+    pub(crate) fn disarm(&self) {
+        self.disarmed.store(true, Ordering::Relaxed);
+    }
+
     fn expired(&self, now: u64) -> bool {
+        if self.disarmed.load(Ordering::Relaxed) {
+            return false;
+        }
         if self.relaying.load(Ordering::Relaxed) {
             self.idle_ms != 0
                 && now.saturating_sub(self.last.load(Ordering::Relaxed)) >= self.idle_ms

@@ -18,7 +18,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use crate::{Config, Pool, PoolStats, SlowCallback, SlowHook};
+use crate::{
+    Config, Pool, PoolStats, SlowCallback, SlowHook,
+    metrics::{Collector, CollectorId, Families},
+};
 
 /// How many slow-callback records [`Telemetry::slow_callbacks`] keeps (oldest dropped first).
 pub const SLOW_RING: usize = 256;
@@ -501,7 +504,11 @@ pub struct Telemetry {
     pool: Mutex<Weak<Pool>>,
     started: Instant,
     log_level: Mutex<Option<only_log::LevelFilter>>,
+    collectors: Mutex<Vec<Registration>>,
+    next_collector: AtomicU64,
 }
+
+type Registration = (CollectorId, Arc<dyn Collector>, Vec<(String, String)>);
 
 impl std::fmt::Debug for Telemetry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -524,6 +531,8 @@ impl Default for Telemetry {
             pool: Mutex::new(Weak::new()),
             started: Instant::now(),
             log_level: Mutex::new(None),
+            collectors: Mutex::new(Vec::new()),
+            next_collector: AtomicU64::new(0),
         }
     }
 }
@@ -839,6 +848,53 @@ impl Telemetry {
             pool: lock(&self.pool).upgrade().map(|p| p.stats()),
             uptime: self.started.elapsed(),
         }
+    }
+
+    // ---- pluggable collectors (ADR-015) ------------------------------------------------------
+
+    /// Adds `collector` to every scrape ([`Telemetry::collect`], [`Telemetry::render_prometheus`],
+    /// only-http's `metrics_handler`), with `labels` added to each of its samples. Use distinct
+    /// labels when two collectors report the same families (two QUIC servers, say).
+    pub fn register_collector(
+        &self,
+        collector: Arc<dyn Collector>,
+        labels: &[(&str, &str)],
+    ) -> CollectorId {
+        let id = CollectorId(self.next_collector.fetch_add(1, Ordering::Relaxed));
+        let labels = labels
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        lock(&self.collectors).push((id, collector, labels));
+        id
+    }
+
+    /// Removes a registration; `false` if it was not registered.
+    pub fn unregister_collector(&self, id: CollectorId) -> bool {
+        let mut g = lock(&self.collectors);
+        let n = g.len();
+        g.retain(|(i, _, _)| *i != id);
+        g.len() != n
+    }
+
+    /// Runs the registered collectors (in registration order) and returns their samples. The
+    /// engine's own series are in [`Telemetry::metrics`].
+    pub fn collect(&self) -> Families {
+        // Collectors run outside the lock: a slow one never blocks a registration.
+        let regs: Vec<Registration> = lock(&self.collectors).clone();
+        let mut out = Families::new();
+        for (_, c, labels) in &regs {
+            out.collect_from(&**c, labels);
+        }
+        out
+    }
+
+    /// The engine's series ([`Metrics::to_prometheus`]) followed by the registered collectors',
+    /// in the Prometheus text format (version 0.0.4).
+    pub fn render_prometheus(&self) -> String {
+        let mut out = self.metrics().to_prometheus();
+        self.collect().write_prometheus(&mut out);
+        out
     }
 
     /// The connection table: every connection of every running I/O thread, gathered by the

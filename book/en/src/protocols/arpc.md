@@ -21,6 +21,8 @@ each serves the other's calls with the `Routes` it was given.
 | `handle_stream(method, open)` | serve streams the peer opens: `open(&Stream)` returns the `FnMut(&Stream, StreamEvent)` that receives `Message(bytes)` and `Eof` |
 | `on_connected(Fn(&Peer))`, `on_disconnected(Fn(&Peer))` | connection events |
 | `max_body_bytes(n)` | longest method + payload accepted (64 MiB); longer closes the connection |
+| `max_streams_per_conn(n)` | most streams the peer may have open on one connection (1024); a stream opened past it is ended at once, like one for a method not served |
+| `call_timeout(Option<Duration>)` | timeout of calls made with `timeout: None` on connections using these routes (30 s); `None` lets them wait until the connection closes |
 
 In a handler, `Context` gives `method()`, `body()`, `is_notify()`, `peer()`, and answers with
 `write(payload)` or `error(text)`, or `detach()` → `Responder` (`write` / `error` later, from any
@@ -42,7 +44,7 @@ and then **keeps reconnecting** every second until `Peer::close()`.
 
 | Method | Meaning |
 |---|---|
-| `call(method, payload, timeout) -> CallFuture` | `wait()` (or `.await`) for `Result<Vec<u8>, CallError>` |
+| `call(method, payload, timeout) -> CallFuture` | `wait()` (or `.await`) for `Result<Vec<u8>, CallError>`; `timeout: None` uses the routes' `call_timeout` (30 s) |
 | `call_async(method, payload, timeout, done)` | callback form |
 | `notify(method, payload) -> bool` | one-way message |
 | `new_stream(method, on_event) -> Stream` | `send`, `close_send`, `id`, `method`, `peer` |

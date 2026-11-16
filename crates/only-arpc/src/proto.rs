@@ -138,11 +138,17 @@ impl std::fmt::Display for FrameError {
 impl std::error::Error for FrameError {}
 
 /// Incremental decoder.
+///
+/// Complete messages are parsed straight from the bytes fed to it; only a message split across
+/// reads is gathered in an internal buffer, and only its own bytes are copied there.
 #[derive(Debug)]
 pub struct Decoder {
     buf: Vec<u8>,
     max_body: usize,
 }
+
+/// A buffer that held a message larger than this is released once the message is decoded.
+const KEEP_BUF: usize = 64 * 1024;
 
 impl Decoder {
     /// A decoder that refuses bodies over `max_body`.
@@ -155,58 +161,106 @@ impl Decoder {
 
     /// Appends `data` and decodes every complete message into `out`.
     pub fn feed(&mut self, data: &[u8], out: &mut Vec<Message>) -> Result<(), FrameError> {
-        self.buf.extend_from_slice(data);
-        let mut pos = 0;
-        while self.buf.len() - pos >= HEAD_LEN {
-            let h = &self.buf[pos..pos + HEAD_LEN];
-            let body = u32::from_le_bytes([h[0], h[1], h[2], h[3]]) as usize;
-            if body > self.max_body {
-                return Err(FrameError("body too long"));
+        self.feed_with(data, |m| out.push(m))
+    }
+
+    /// Decodes every complete message in what was buffered plus `data`, calling `f` with each,
+    /// and keeps the incomplete tail.
+    pub(crate) fn feed_with(
+        &mut self,
+        mut data: &[u8],
+        mut f: impl FnMut(Message),
+    ) -> Result<(), FrameError> {
+        if !self.buf.is_empty() {
+            // Finish the message split across reads, copying only its bytes.
+            if self.buf.len() < HEAD_LEN {
+                let take = (HEAD_LEN - self.buf.len()).min(data.len());
+                self.buf.extend_from_slice(&data[..take]);
+                data = &data[take..];
+                if self.buf.len() < HEAD_LEN {
+                    return Ok(());
+                }
             }
-            if self.buf.len() - pos < HEAD_LEN + body {
+            let total = HEAD_LEN + self.body_len(&self.buf)?;
+            let take = (total - self.buf.len()).min(data.len());
+            self.buf.reserve_exact(total - self.buf.len());
+            self.buf.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if self.buf.len() < total {
+                return Ok(());
+            }
+            decode_one(&self.buf, &mut f)?;
+            self.buf.clear();
+            if self.buf.capacity() > KEEP_BUF {
+                self.buf = Vec::new();
+            }
+        }
+        let mut pos = 0;
+        while data.len() - pos >= HEAD_LEN {
+            let total = HEAD_LEN + self.body_len(&data[pos..])?;
+            if data.len() - pos < total {
                 break;
             }
-            let raw_cmd = h[IDX_CMD];
-            let cmd = Cmd::from_u8(raw_cmd & CMD_MASK).ok_or(FrameError("invalid cmd"))?;
-            let flags = h[IDX_FLAG];
-            let ml = h[7] as usize;
-            let seq = u64::from_le_bytes(h[8..16].try_into().expect("8 bytes"));
-            let reserved = h[4];
-            let b = &self.buf[pos + HEAD_LEN..pos + HEAD_LEN + body];
-            pos += HEAD_LEN + body;
-            if matches!(cmd, Cmd::Ping | Cmd::Pong) {
-                out.push(Message {
-                    cmd,
-                    error: false,
-                    async_flag: false,
-                    stream_local: false,
-                    stream_eof: false,
-                    reserved,
-                    method: String::new(),
-                    seq,
-                    payload: Vec::new(),
-                });
-                continue;
-            }
-            if ml == 0 || ml > MAX_METHOD_LEN || ml > b.len() {
-                // As in Go: a message with an invalid method length is dropped, not fatal.
-                continue;
-            }
-            out.push(Message {
-                cmd,
-                error: flags & FLAG_ERROR != 0,
-                async_flag: flags & FLAG_ASYNC != 0,
-                stream_local: raw_cmd & STREAM_LOCAL != 0,
-                stream_eof: raw_cmd & STREAM_EOF != 0,
-                reserved,
-                method: String::from_utf8_lossy(&b[..ml]).into_owned(),
-                seq,
-                payload: b[ml..].to_vec(),
-            });
+            decode_one(&data[pos..pos + total], &mut f)?;
+            pos += total;
         }
-        self.buf.drain(..pos);
+        self.buf.extend_from_slice(&data[pos..]);
         Ok(())
     }
+
+    /// The body length in the header at the start of `b`, checked against the limit.
+    fn body_len(&self, b: &[u8]) -> Result<usize, FrameError> {
+        let body = u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+        if body > self.max_body {
+            return Err(FrameError("body too long"));
+        }
+        Ok(body)
+    }
+}
+
+/// Decodes one complete message (`frame` is its header and body).
+fn decode_one(frame: &[u8], f: &mut impl FnMut(Message)) -> Result<(), FrameError> {
+    let h = &frame[..HEAD_LEN];
+    let b = &frame[HEAD_LEN..];
+    let raw_cmd = h[IDX_CMD];
+    let cmd = Cmd::from_u8(raw_cmd & CMD_MASK).ok_or(FrameError("invalid cmd"))?;
+    let flags = h[IDX_FLAG];
+    let ml = h[7] as usize;
+    let seq = u64::from_le_bytes(h[8..16].try_into().expect("8 bytes"));
+    let reserved = h[4];
+    if matches!(cmd, Cmd::Ping | Cmd::Pong) {
+        f(Message {
+            cmd,
+            error: false,
+            async_flag: false,
+            stream_local: false,
+            stream_eof: false,
+            reserved,
+            method: String::new(),
+            seq,
+            payload: Vec::new(),
+        });
+        return Ok(());
+    }
+    if ml == 0 || ml > MAX_METHOD_LEN || ml > b.len() {
+        // As in Go: a message with an invalid method length is dropped, not fatal.
+        return Ok(());
+    }
+    f(Message {
+        cmd,
+        error: flags & FLAG_ERROR != 0,
+        async_flag: flags & FLAG_ASYNC != 0,
+        stream_local: raw_cmd & STREAM_LOCAL != 0,
+        stream_eof: raw_cmd & STREAM_EOF != 0,
+        reserved,
+        method: match std::str::from_utf8(&b[..ml]) {
+            Ok(s) => s.to_owned(),
+            Err(_) => String::from_utf8_lossy(&b[..ml]).into_owned(),
+        },
+        seq,
+        payload: b[ml..].to_vec(),
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -246,6 +300,43 @@ mod tests {
             assert!(out[2].stream_local && !out[2].stream_eof);
             assert_eq!(out[2].seq, 9);
         }
+    }
+
+    #[test]
+    fn split_messages_are_gathered_and_big_buffers_released() {
+        let big = encode(
+            Cmd::Request,
+            0,
+            false,
+            false,
+            "/big",
+            2,
+            &vec![5u8; 200_000],
+        );
+        let mut wire = encode(Cmd::Notify, 0, false, false, "/n", 1, b"a");
+        wire.extend(&big);
+        wire.extend(encode(Cmd::Notify, 0, false, false, "/n", 3, b"b"));
+        let mut d = Decoder::new(1 << 20);
+        let mut out = Vec::new();
+        // The first read ends inside the big message's header, the second inside its body.
+        let (a, rest) = wire.split_at(17 + 2 + 8);
+        let (b, c) = rest.split_at(100_000);
+        d.feed(a, &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(d.buf.len(), 8, "only the partial header is kept");
+        d.feed(b, &mut out).unwrap();
+        assert_eq!(out.len(), 1);
+        d.feed(c, &mut out).unwrap();
+        assert_eq!(out.iter().map(|m| m.seq).collect::<Vec<_>>(), [1, 2, 3]);
+        assert_eq!(out[1].payload.len(), 200_000);
+        assert!(d.buf.is_empty() && d.buf.capacity() <= KEEP_BUF);
+        // A body over the limit is refused as soon as its header is complete.
+        let mut d = Decoder::new(1000);
+        d.feed(&big[..10], &mut out).unwrap();
+        assert_eq!(
+            d.feed(&big[10..16], &mut out),
+            Err(FrameError("body too long"))
+        );
     }
 
     #[test]

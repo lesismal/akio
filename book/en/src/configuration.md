@@ -23,6 +23,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `read_buffer` | 64 KiB | no | read buffer per I/O thread; the most `on_data` receives at once (io_uring: buffers of `min(read_buffer, 16 KiB)`) |
 | `write_high_watermark` | 256 KiB | yes | reads pause while a connection has this much queued, resume at a quarter |
 | `max_queued_bytes` | 64 MiB | yes | `send` fails with `Overloaded` beyond this per connection |
+| `max_pending_responses` | 32 | no | ordered (pipelined) responses: reads pause while this many reserved responses are not yet written, and resume at half; responses held back behind a slow one also pause reads at `write_high_watermark` bytes and close the connection past `max_queued_bytes`; `None` = no count limit |
 | `backlog` | 1024 | no | `listen(2)` backlog |
 | `idle_timeout` | `None` | yes | close (with `TimedOut`) when the peer sent nothing for this long |
 | `write_timeout` | 60 s | no | close (with `TimedOut`) when queued output made no progress for this long: a peer that stopped reading; `None` disables it |
@@ -81,8 +82,8 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 
 | Type | Field: default |
 |---|---|
-| `only_http::HttpConfig` | `max_header_bytes`: 64 KiB, `max_body_bytes`: 1 MiB, `h2`: `Some(H2Config::default())` |
-| `only_http::H2Config` | `max_concurrent_streams`: 128, `initial_window`: 1 MiB, `conn_window`: 16 MiB, `max_header_list`: 64 KiB, `max_body_bytes`: 1 MiB, `max_pending_bytes`: 8 MiB |
+| `only_http::HttpConfig` | `max_header_bytes`: 64 KiB, `max_body_bytes`: 1 MiB, `h2`: `Some(H2Config::default())`, `head_timeout`: 10 s, `keep_alive_timeout`: 75 s, `body_timeout`: 60 s |
+| `only_http::H2Config` | `max_concurrent_streams`: 128, `initial_window`: 1 MiB, `conn_window`: 16 MiB, `max_header_list`: 64 KiB, `max_body_bytes`: 1 MiB, `max_pending_bytes`: 8 MiB, `max_conn_pending_bytes`: 32 MiB, `max_resets`: 100, `max_control_frames`: 1000, `reset_window`: 30 s |
 | `only_http::files::Files` | `index`: `index.html`, `max_cached_bytes`: 256 KiB, `max_open_files`: 64, `check_interval`: 5 s, `cache_control`: none |
 | `only_http::middleware::Cors` | `allow_origin`: `*`, `allow_methods`: GET, POST, PUT, PATCH, DELETE, OPTIONS, `allow_headers`: Content-Type, Authorization, `max_age`: 600 s |
 | `only_http::middleware::Compress` | `min_bytes`: 1024, `level`: 6 |
@@ -91,8 +92,9 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `only_http::WsOptions` | `config`: `WsConfig::default()`, `protocols`: none, `origin_allowed`: none |
 | `only_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s |
 | `only_h3::H3Config` | `max_body`: 8 MiB, `max_field_section`: 64 KiB |
-| `only_grpc::GrpcServer` | `max_message`: 4 MiB, `compress`: false |
-| `only_arpc::Routes` | `max_body`: 64 MiB |
+| `only_grpc::GrpcServer` | `max_message`: 4 MiB, `max_collect_bytes`: 64 MiB, `max_deadline`: 24 h, `compress`: false |
+| `only_grpc::GrpcClient` | `max_message_bytes`: 4 MiB, `max_collect_bytes`: 64 MiB, `default_timeout`: 30 s (`unary` / `collect`) |
+| `only_arpc::Routes` | `max_body`: 64 MiB, `max_streams_per_conn`: 1024, `call_timeout`: 30 s |
 | `only_kcp::KcpConfig` | see [KCP](protocols/kcp.md#config) |
 
 ## Environment variables

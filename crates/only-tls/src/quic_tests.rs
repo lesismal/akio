@@ -247,3 +247,40 @@ fn zero_rtt_over_quic() {
     run(&mut c, &mut s).unwrap();
     assert_eq!(s.early_data(), EarlyData::NotAttempted);
 }
+
+#[test]
+fn client_hello_transport_params_peek() {
+    let p = pki(Kind::P256, &["localhost"]);
+    let ccfg = ClientConfig::builder()
+        .roots(p.roots.clone())
+        .alpn(["h3"])
+        .build()
+        .unwrap();
+    let mut c = QuicTls::client(&ccfg, "localhost", b"client params".to_vec()).unwrap();
+    let Some(Event::Data(Level::Initial, hello)) = c.poll_event() else {
+        panic!("no ClientHello");
+    };
+    assert_eq!(client_hello_len(&hello), Some(hello.len()));
+    assert_eq!(client_hello_len(&hello[..3]), None);
+    assert_eq!(
+        client_hello_transport_params(&hello),
+        Some(&b"client params"[..])
+    );
+    // Incomplete, another message, or garbage: nothing.
+    assert_eq!(
+        client_hello_transport_params(&hello[..hello.len() - 1]),
+        None
+    );
+    let mut other = hello.clone();
+    other[0] = 2;
+    assert_eq!(client_hello_transport_params(&other), None);
+    assert_eq!(client_hello_transport_params(&[1, 0, 0, 2, 3, 3]), None);
+    // What was peeked does not disturb the handshake.
+    let scfg = ServerConfig::builder(p.chain.clone(), p.key)
+        .alpn(["h3"])
+        .build()
+        .unwrap();
+    let mut s = QuicTls::server(&scfg, b"server params".to_vec());
+    s.read_handshake(Level::Initial, &hello).unwrap();
+    assert_eq!(s.peer_transport_params(), Some(&b"client params"[..]));
+}

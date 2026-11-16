@@ -24,9 +24,17 @@
 //! # Cost when disabled
 //!
 //! Every macro first compares the record's level with the global maximum ([`max_level`]),
-//! one relaxed atomic load, before it evaluates any argument. [`set_max_level`] changes it at
+//! one relaxed atomic load, before it evaluates any argument. The cargo features
+//! `max_level_*` / `release_max_level_*` set a compile-time cap ([`STATIC_MAX_LEVEL`]) above
+//! which statements are compiled out (the `log` crate's features of the same names). [`set_max_level`] changes it at
 //! run time (`only`'s `Config::log_level` and hot reload call it). The default is
 //! [`LevelFilter::Off`], so nothing is formatted until a level is set ([`init`] sets one).
+//!
+//! # Per-target levels
+//!
+//! A [`Filter`] gives each target its own level, from env_logger-style directives:
+//! [`init_from_env`] reads `ONLY_LOG=info,only_http=debug,only_quic::conn=trace` once and
+//! installs a [`FmtLogger`] with it. Nothing reads the environment unless it is called.
 //!
 //! # No logger installed
 //!
@@ -55,10 +63,12 @@ use std::{
 
 #[cfg(feature = "log")]
 pub mod bridge;
+mod filter;
 mod loggers;
 mod macros;
 
-pub use loggers::{DEFAULT_QUEUE_LINES, FmtLogger, StderrLogger, init};
+pub use filter::{ENV_VAR, Filter, ParseFilterError};
+pub use loggers::{DEFAULT_QUEUE_LINES, FmtLogger, StderrLogger, init, init_from_env};
 
 // ---- levels ---------------------------------------------------------------------------------
 
@@ -230,6 +240,55 @@ impl FromStr for Level {
         s.parse::<LevelFilter>()?
             .to_level()
             .ok_or(ParseLevelError(()))
+    }
+}
+
+// ---- compile-time cap -----------------------------------------------------------------------
+
+/// The compile-time maximum level, set by the cargo features `max_level_*` and
+/// `release_max_level_*` (the latter in builds without `debug_assertions`, where it takes
+/// precedence); [`LevelFilter::Trace`] when none is enabled. The macros compare a record's
+/// level with it first: with a literal level (`trace!`, `debug!` ...) the comparison is a
+/// constant, so statements above the cap are compiled out, arguments and all. When several
+/// features are enabled the most restrictive wins.
+///
+/// The cap only removes statements; the run-time maximum ([`set_max_level`]) still applies
+/// below it. Features are unified across the dependency graph, so only an application should
+/// enable them:
+///
+/// ```toml
+/// only-log = { version = "1", features = ["max_level_debug", "release_max_level_info"] }
+/// ```
+pub const STATIC_MAX_LEVEL: LevelFilter = static_max_level();
+
+const fn static_max_level() -> LevelFilter {
+    if !cfg!(debug_assertions) {
+        if cfg!(feature = "release_max_level_off") {
+            return LevelFilter::Off;
+        } else if cfg!(feature = "release_max_level_error") {
+            return LevelFilter::Error;
+        } else if cfg!(feature = "release_max_level_warn") {
+            return LevelFilter::Warn;
+        } else if cfg!(feature = "release_max_level_info") {
+            return LevelFilter::Info;
+        } else if cfg!(feature = "release_max_level_debug") {
+            return LevelFilter::Debug;
+        } else if cfg!(feature = "release_max_level_trace") {
+            return LevelFilter::Trace;
+        }
+    }
+    if cfg!(feature = "max_level_off") {
+        LevelFilter::Off
+    } else if cfg!(feature = "max_level_error") {
+        LevelFilter::Error
+    } else if cfg!(feature = "max_level_warn") {
+        LevelFilter::Warn
+    } else if cfg!(feature = "max_level_info") {
+        LevelFilter::Info
+    } else if cfg!(feature = "max_level_debug") {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Trace
     }
 }
 
@@ -692,10 +751,12 @@ pub mod __private {
         MAX_LEVEL.load(Ordering::Relaxed)
     }
 
-    /// The macros' first check: `level` within the global maximum.
+    /// The macros' first check: `level` within the compile-time cap (a constant comparison
+    /// for a literal level, so the statement is compiled out above it), then within the global
+    /// maximum.
     #[inline(always)]
     pub fn enabled_fast(level: Level) -> bool {
-        level as usize <= max_level_raw()
+        level as usize <= crate::STATIC_MAX_LEVEL as usize && level as usize <= max_level_raw()
     }
 
     /// Whether the installed logger (or `log`'s, with the bridge) wants this record.

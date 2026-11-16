@@ -297,9 +297,10 @@ impl Connection {
                 pn,
                 pnl,
             ),
+            // 0-RTT stays in the first version after a compatible switch (RFC 9369 4.1).
             SpaceId::Data if zero => PacketBuilder::long(
                 buf,
-                self.version,
+                self.orig_version.unwrap_or(self.version),
                 PacketType::ZeroRtt,
                 &dcid,
                 &scid,

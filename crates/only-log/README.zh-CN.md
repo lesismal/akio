@@ -19,6 +19,12 @@
 - 内置 logger：`init(LevelFilter)` 一次调用安装 `FmtLogger`
   （`2026-11-14T08:00:00.000123Z INFO  only: engine started listeners=[127.0.0.1:8080]`，UTC，
   可按 target 设上限，输出到 stderr 或 stdout）；`StderrLogger` 打印 `target: message`。
+- `Filter`：从 env_logger 风格的指令得到按 target 的级别；`init_from_env(default)` 只读取一次
+  `ONLY_LOG=info,only_http=debug,only_quic::conn=trace` 并据此安装 `FmtLogger`（需显式调用：否则没有
+  代码读取环境变量）。target 按 `::` 边界匹配，最具体者胜出，不支持 `/regex` 过滤。
+- 编译期上限，与 `log` crate 相同：feature `max_level_off` .. `max_level_trace` 与
+  `release_max_level_*` 把超出上限的语句编译掉（`STATIC_MAX_LEVEL`）。只应由应用开启（cargo 会在整个
+  依赖图中合并 feature）。
 - 未安装 logger：记录被丢弃；`log_or_stderr` 会把交给它的记录打印到 stderr（`only` 用它输出错误与
   降级信息，慢回调警告也以同样方式打印，因此不会悄无声息地丢失）。
 
@@ -55,3 +61,5 @@ warn!("{} retries left", 3);
 | 带 2 个键值对的 `info!`，启用，logger 丢弃 | 2.3 | 3.0 |
 
 启用 `log` feature 且未安装 only-log logger 时，禁用检查还会读取 `log::max_level()`（约 0.5 ns）。
+未开启上限 feature 时编译期上限没有任何开销（macOS 上基准二进制逐字节相同；x86_64 上同一轮测得禁用的
+`trace!` 前后为 0.400 ns 与 0.401 ns）；开启上限后，超出的语句不复存在。
