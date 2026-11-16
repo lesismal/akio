@@ -177,9 +177,11 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Responder
 impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Responder
 pub struct only_arpc::Routes
 impl only_arpc::Routes
+pub fn only_arpc::Routes::call_timeout(self, core::option::Option<core::time::Duration>) -> only_arpc::Routes
 pub fn only_arpc::Routes::handle(self, &str, impl core::ops::function::Fn(&mut only_arpc::Context) + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes
 pub fn only_arpc::Routes::handle_stream<F>(self, &str, impl core::ops::function::Fn(&only_arpc::Stream) -> F + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes where F: core::ops::function::FnMut(&only_arpc::Stream, only_arpc::StreamEvent<'_>) + core::marker::Send + 'static
 pub fn only_arpc::Routes::max_body_bytes(self, usize) -> only_arpc::Routes
+pub fn only_arpc::Routes::max_streams_per_conn(self, usize) -> only_arpc::Routes
 pub fn only_arpc::Routes::new() -> only_arpc::Routes
 pub fn only_arpc::Routes::on_connected(self, impl core::ops::function::Fn(&only_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes
 pub fn only_arpc::Routes::on_disconnected(self, impl core::ops::function::Fn(&only_arpc::Peer) + core::marker::Send + core::marker::Sync + 'static) -> only_arpc::Routes
@@ -236,6 +238,8 @@ impl core::marker::Sync for only_arpc::Stream
 impl core::marker::Unpin for only_arpc::Stream
 impl !core::panic::unwind_safe::RefUnwindSafe for only_arpc::Stream
 impl !core::panic::unwind_safe::UnwindSafe for only_arpc::Stream
+pub const only_arpc::DEFAULT_CALL_TIMEOUT: core::time::Duration
+pub const only_arpc::DEFAULT_MAX_STREAMS_PER_CONN: usize
 pub const only_arpc::METHOD_NOT_FOUND: &str
 pub fn only_arpc::dial_blocking(&alloc::rcs::arc::Arc<only::Engine>, core::net::socket_addr::SocketAddr, alloc::rcs::arc::Arc<only_arpc::Routes>) -> core::io::error::Result<only_arpc::Peer>
 pub type only_arpc::CallResult = core::result::Result<alloc::vec::Vec<u8>, only_arpc::CallError>

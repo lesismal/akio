@@ -91,8 +91,9 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `only_http::WsOptions` | `config`: `WsConfig::default()`, `protocols`: none, `origin_allowed`: none |
 | `only_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s |
 | `only_h3::H3Config` | `max_body`: 8 MiB, `max_field_section`: 64 KiB |
-| `only_grpc::GrpcServer` | `max_message`: 4 MiB, `compress`: false |
-| `only_arpc::Routes` | `max_body`: 64 MiB |
+| `only_grpc::GrpcServer` | `max_message`: 4 MiB, `max_collect_bytes`: 64 MiB, `max_deadline`: 24 h, `compress`: false |
+| `only_grpc::GrpcClient` | `max_message_bytes`: 4 MiB, `max_collect_bytes`: 64 MiB, `default_timeout`: 30 s (`unary` / `collect`) |
+| `only_arpc::Routes` | `max_body`: 64 MiB, `max_streams_per_conn`: 1024, `call_timeout`: 30 s |
 | `only_kcp::KcpConfig` | see [KCP](protocols/kcp.md#config) |
 
 ## Environment variables

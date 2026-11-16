@@ -21,12 +21,16 @@ Registering methods (`path` is `/package.Service/Method`):
 
 Other settings: `interceptor(Fn(&Metadata) -> Result<(), Status>)` runs before every call (an
 `Err` ends it with that status), `max_message_bytes(n)` (default 4 MiB), `compress(bool)` (gzip
-responses for clients that accept it; gzip requests are always accepted).
+responses for clients that accept it; gzip requests are always accepted),
+`max_collect_bytes(n)` (default 64 MiB: the most request bytes a `client_stream` method gathers
+for one call, past it `RESOURCE_EXHAUSTED`; set it before registering those methods) and
+`max_deadline(d)` (default 24 h: a longer `grpc-timeout` is shortened to it).
 
 The `Sink` answers, from any thread: `send(msg) -> bool`, `set_header`, `set_trailer`,
 `finish(Status)`, `is_finished`. `Status::ok()`, `Status::new(Code::.., message)`; `Code` has
 the standard gRPC codes. Unknown methods get `Unimplemented`; errors before any message are sent
-as trailers-only responses; `grpc-timeout` deadlines are enforced.
+as trailers-only responses; `grpc-timeout` deadlines are enforced (the timer is removed as soon
+as the call ends).
 
 Handlers run on the I/O thread: answer inline when it is quick, or move the `Sink` to another
 thread (the server-streaming example above does) when it is not.
@@ -46,7 +50,12 @@ Serving it: `only_http::serve(grpc)` on its own, or as the `fallback` (or a rout
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` for streaming calls, also blocking.
 - `bidi(path, opts, on_message, on_done) -> ClientSink` is the non-blocking general form:
   `ClientSink::send`, `close_send`.
-- `CallOptions`: `timeout` (sent as `grpc-timeout`), `metadata`.
+- `CallOptions`: `timeout` (sent as `grpc-timeout`, and enforced by the client as well: the call
+  ends with `DEADLINE_EXCEEDED` when it passes, whatever the server does), `metadata`. Without
+  one, `unary` and `collect` use the client's `default_timeout(Option<Duration>)` (30 s), since
+  they block a thread; `bidi` calls get no deadline.
+- `max_message_bytes(n)` (4 MiB) bounds each response message, `max_collect_bytes(n)` (64 MiB)
+  the responses `unary` and `collect` gather for one call (past it: `RESOURCE_EXHAUSTED`).
 
 ## Messages
 

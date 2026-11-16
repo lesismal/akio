@@ -69,6 +69,9 @@ impl only_grpc::GrpcClient
 pub fn only_grpc::GrpcClient::bidi(&self, &str, only_grpc::CallOptions, impl core::ops::function::FnMut(alloc::vec::Vec<u8>) + core::marker::Send + 'static, impl core::ops::function::FnOnce(only_grpc::Status, only_http::message::Headers) + core::marker::Send + 'static) -> only_grpc::ClientSink
 pub fn only_grpc::GrpcClient::collect(&self, &str, alloc::vec::Vec<alloc::vec::Vec<u8>>, only_grpc::CallOptions) -> (alloc::vec::Vec<alloc::vec::Vec<u8>>, only_grpc::Status)
 pub fn only_grpc::GrpcClient::compress(self, bool) -> only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::default_timeout(self, core::option::Option<core::time::Duration>) -> only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::max_collect_bytes(self, usize) -> only_grpc::GrpcClient
+pub fn only_grpc::GrpcClient::max_message_bytes(self, usize) -> only_grpc::GrpcClient
 pub fn only_grpc::GrpcClient::new(only_http::h2client::H2Client, &str) -> only_grpc::GrpcClient
 pub fn only_grpc::GrpcClient::unary(&self, &str, &[u8], only_grpc::CallOptions) -> core::result::Result<alloc::vec::Vec<u8>, only_grpc::Status>
 impl core::clone::Clone for only_grpc::GrpcClient
@@ -86,6 +89,8 @@ pub fn only_grpc::GrpcServer::bidi(self, &str, impl core::ops::function::Fn(&onl
 pub fn only_grpc::GrpcServer::client_stream(self, &str, impl core::ops::function::Fn(&only_grpc::Metadata, alloc::vec::Vec<alloc::vec::Vec<u8>>, only_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
 pub fn only_grpc::GrpcServer::compress(self, bool) -> only_grpc::GrpcServer
 pub fn only_grpc::GrpcServer::interceptor(self, impl core::ops::function::Fn(&only_grpc::Metadata) -> core::result::Result<(), only_grpc::Status> + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::max_collect_bytes(self, usize) -> only_grpc::GrpcServer
+pub fn only_grpc::GrpcServer::max_deadline(self, core::time::Duration) -> only_grpc::GrpcServer
 pub fn only_grpc::GrpcServer::max_message_bytes(self, usize) -> only_grpc::GrpcServer
 pub fn only_grpc::GrpcServer::new() -> only_grpc::GrpcServer
 pub fn only_grpc::GrpcServer::server_stream(self, &str, impl core::ops::function::Fn(&only_grpc::Metadata, alloc::vec::Vec<u8>, only_grpc::Sink) + core::marker::Send + core::marker::Sync + 'static) -> only_grpc::GrpcServer
@@ -158,5 +163,8 @@ impl core::marker::Sync for only_grpc::Status
 impl core::marker::Unpin for only_grpc::Status
 impl core::panic::unwind_safe::RefUnwindSafe for only_grpc::Status
 impl core::panic::unwind_safe::UnwindSafe for only_grpc::Status
+pub const only_grpc::DEFAULT_MAX_COLLECT: usize
+pub const only_grpc::DEFAULT_MAX_DEADLINE: core::time::Duration
 pub const only_grpc::DEFAULT_MAX_MESSAGE: usize
+pub const only_grpc::DEFAULT_TIMEOUT: core::time::Duration
 pub type only_grpc::OnMessage = alloc::boxed::Box<(dyn core::ops::function::FnMut(core::option::Option<alloc::vec::Vec<u8>>) + core::marker::Send)>
