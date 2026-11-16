@@ -4,7 +4,11 @@
 # only-quic every 5000 packets, and a 150 MB stream (which also crosses quic-go's own key update
 # interval of 100k packets); then QUIC version 2 both ways, client migration to a new socket
 # both ways (only-quic's with BBR), 0-RTT both ways (v1, and v2 kept short), and, on Linux, ECN
-# validated against quic-go. Needs Go.
+# validated against quic-go. Then servers preferring the other version (compatible version
+# negotiation, RFC 9368 section 4): quic-go does not implement RFC 9368 (it sends no
+# version_information and drops packets of another version), so its clients must keep the
+# version they started in; only-quic's own client follows the switch over real UDP sockets
+# (ngtcp2, which implements it, is in ngtcp2-cvn.sh). Needs Go.
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "$ROOT" && cargo build -q --release -p only-quic --example quic-interop
@@ -32,7 +36,11 @@ R4=$!
 G5=$!
 "$RS" server 127.0.0.1:9509 v2 0rtt > "$LOG/quic-rust-server-v2-0rtt.log" 2>&1 &
 R5=$!
-trap 'kill $G1 $G2 $G3 $G4 $G5 $R1 $R2 $R3 $R4 $R5 2>/dev/null || true' EXIT
+"$RS" server 127.0.0.1:9511 prefer-v2 0rtt > "$LOG/quic-rust-server-prefer-v2.log" 2>&1 &
+R6=$!
+"$RS" server 127.0.0.1:9513 prefer-v1 > "$LOG/quic-rust-server-prefer-v1.log" 2>&1 &
+R7=$!
+trap 'kill $G1 $G2 $G3 $G4 $G5 $R1 $R2 $R3 $R4 $R5 $R6 $R7 2>/dev/null || true' EXIT
 sleep 1
 echo "== quic-go client -> only-quic server"
 "$GO" client 127.0.0.1:9501
@@ -67,6 +75,19 @@ grep -q "0-RTT stream" "$LOG/quic-rust-server-v2-0rtt.log" || { echo "FAIL: no v
 echo "== only-quic client -> quic-go server (0-RTT, QUIC v2)"
 "$RS" client 127.0.0.1:9508 0rtt v2 small
 grep -q "0-RTT used" "$LOG/quic-go-server-v2-0rtt.log" || { echo "FAIL: no v2 0-RTT on quic-go"; exit 1; }
+echo "== quic-go client (v1) -> only-quic server preferring v2: stays in v1, 0-RTT too"
+"$GO" client 127.0.0.1:9511
+"$GO" client 127.0.0.1:9511 0rtt
+grep -q "connected in V1" "$LOG/quic-rust-server-prefer-v2.log" || { echo "FAIL: quic-go client not in v1"; exit 1; }
+! grep -q "connected in V2" "$LOG/quic-rust-server-prefer-v2.log" || { echo "FAIL: quic-go client moved to v2"; exit 1; }
+echo "== quic-go client (v2 only) -> only-quic server preferring v1: stays in v2"
+"$GO" client 127.0.0.1:9513 v2 small
+grep -q "connected in V2" "$LOG/quic-rust-server-prefer-v1.log" || { echo "FAIL: quic-go v2 client not in v2"; exit 1; }
+echo "== only-quic client (v1) -> only-quic server preferring v2: moved to v2, 0-RTT across the switch"
+"$RS" client 127.0.0.1:9511 expect-v2 bulk 20
+"$RS" client 127.0.0.1:9511 expect-v2 0rtt small
+echo "== only-quic client (v2) -> only-quic server preferring v1: moved to v1"
+"$RS" client 127.0.0.1:9513 v2 expect-v1
 if [ "$(uname)" = Linux ]; then
     echo "== only-quic client -> quic-go server (ECN validated)"
     "$RS" client 127.0.0.1:9500 ecn
