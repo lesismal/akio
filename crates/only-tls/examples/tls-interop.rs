@@ -9,14 +9,17 @@
 //! tls-interop client <addr> <name> [--ca ca.pem | --insecure] [--cert c.pem --key k.pem]
 //!                           [--alpn ..] [--tls12|--tls13] [--suites ..] [--groups ..]
 //!                           [--count N] [--expect-resume] [--key-update] [--bytes N] [--http]
-//!                           [--early-data] [--expect-early accepted|rejected]
+//!                           [--early-data] [--expect-early accepted|rejected] [--no-reply]
 //! ```
 //!
 //! The server echoes what it reads (`--count` connections, then exits); the client sends a line,
 //! checks the echo and prints what was negotiated, one line per connection. With
 //! `--early-data` the client sends its line (or HTTP request) before the handshake, as TLS 1.3
 //! early data when it resumes with a ticket allowing it; `--expect-early` checks what the
-//! server did with it from the second connection on.
+//! server did with it from the second connection on. `--no-reply` is for a peer that answers
+//! nothing (`openssl s_server` without `-www`, which OpenSSL 3.0 requires with `-early_data`):
+//! the client sends its line, then close_notify, and reads to the peer's close (taking the
+//! session tickets on the way) instead of checking an echo.
 //!
 //! `--ktls` (or `ONLY_INTEROP_KTLS=1` in the environment, `=require` to fail when the kernel
 //! refuses; needs Linux and the `experimental-ktls` feature) moves the record layer into the Linux kernel after the handshake (kernel TLS,
@@ -54,6 +57,7 @@ struct Opts {
     ktls_required: bool,
     early_data: Option<u32>,
     expect_early: Option<String>,
+    no_reply: bool,
 }
 
 fn hex_list(s: &str) -> Vec<u16> {
@@ -87,6 +91,7 @@ fn parse() -> Opts {
         ktls_required: false,
         early_data: None,
         expect_early: None,
+        no_reply: false,
     };
     match std::env::var("ONLY_INTEROP_KTLS").as_deref() {
         Ok("1") => o.ktls = true,
@@ -120,6 +125,7 @@ fn parse() -> Opts {
             "--early-data" => o.early_data = Some(o.early_data.unwrap_or(16384)),
             "--early-max" => o.early_data = Some(val().parse().expect("early-max")),
             "--expect-early" => o.expect_early = Some(val()),
+            "--no-reply" => o.no_reply = true,
             _ => o.pos.push(x),
         }
     }
@@ -363,6 +369,15 @@ fn client(o: &Opts) {
                 key_update(&mut s);
             }
             s.write_all(chunk).expect("write");
+        }
+        if o.no_reply {
+            // Nothing comes back but the tickets and the peer's close_notify.
+            let mut rest = Vec::new();
+            if let Err(e) = s.close().and_then(|()| s.read_to_end(&mut rest)) {
+                println!("close: {e}");
+                std::process::exit(1);
+            }
+            continue;
         }
         let mut got = vec![0u8; msg.len()];
         if let Err(e) = s.read_exact(&mut got) {

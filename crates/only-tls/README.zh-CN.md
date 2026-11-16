@@ -87,8 +87,10 @@ feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
 - 覆盖所有套件、组、证书类型与版本的内存握手，会话恢复、客户端认证、SNI / ALPN、KeyUpdate、低至单字节
   的分片、close_notify、降级检测、篡改、意外记录与垃圾数据。
 - 互通（`tools/interop/tls/run.sh`）：与 OpenSSL `s_server` / `s_client` 及 Go `crypto/tls` 双向互通，
-  覆盖所有套件、组、密钥类型、客户端认证、会话恢复、HRR、ALPN 与 KeyUpdate，另有 curl 对 only-http
-  （HTTP/1.1 与 HTTP/2）；与 grpc-go 的 TLS 上 gRPC（`tools/interop/grpc/run.sh`）；`only` crate 的
+  覆盖所有套件、组、密钥类型、客户端认证、会话恢复、HRR、ALPN、KeyUpdate 与 early data，另有 curl 对
+  only-http（HTTP/1.1 与 HTTP/2）；需要 OpenSSL 3.0 或更新版本（early data 用例以不带 `-www` 的
+  `s_server` 运行，因为 3.0 拒绝 `-www` 与 `-early_data` 同用；客户端发送后关闭连接，再检查 `s_server`
+  的日志）；与 grpc-go 的 TLS 上 gRPC（`tools/interop/grpc/run.sh`）；`only` crate 的
   TLS 测试中使用 rustls 客户端。
 - 以 tlsfuzzer 测试服务端（`tools/interop/tls/tlsfuzzer.sh`，Docker）：适用的 33 个脚本（不含 CBC、RSA 密钥交换、
   FFDHE、外部 PSK 等），985 个探测，5 个已知失败及其原因记录在脚本中。
