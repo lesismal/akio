@@ -3,7 +3,8 @@
 //! - ChaCha20 eight blocks at a time with AVX2 (this file): word `j` of the eight blocks shares
 //!   one 256-bit register; after the rounds an 8×8 transpose turns the registers back into
 //!   blocks.
-//! - ChaCha20 sixteen (zmm) or four (xmm) blocks at a time with AVX-512 (`avx512`, `asm!`).
+//! - ChaCha20 sixteen (zmm), eight (ymm) or four (one row per zmm register) blocks at a time with
+//!   AVX-512 (`avx512`, `asm!`).
 //! - Poly1305 eight blocks at a time with AVX-512 IFMA (`ifma`, `asm!`).
 //!
 //! Additions, XORs, rotations and multiplications only: constant time like the portable code.
@@ -46,6 +47,21 @@ pub(super) fn ifma_enabled() -> bool {
     cpu::has(Feature::Ifma)
 }
 
+/// The relative cost of [`xor_wide`] over `len` bytes (a multiple of 64 or the end of a
+/// message), from the kernel times on Zen 4 (ChaCha20 alone, call overhead excluded: about 63 ns
+/// for a four-block row group, 83 for an eight-block ymm group, 140 for a sixteen-block zmm
+/// group), for choosing how many blocks the head of an AEAD message takes.
+pub(super) const fn wide_cost(len: usize) -> usize {
+    let rest = len % 1024;
+    let last = match rest {
+        0 => 0,
+        1..=256 => 63,
+        257..=512 => 83,
+        _ => 140,
+    };
+    len / 1024 * 140 + last
+}
+
 /// XORs the keystream starting at block `state[12]` into `dst` in place. The counter must not
 /// wrap within the `dst.len().div_ceil(64)` blocks. `false` (nothing done) without AVX-512.
 #[cfg_attr(not(target_arch = "x86_64"), allow(clippy::needless_pass_by_ref_mut))]
@@ -56,8 +72,8 @@ pub(super) fn xor_wide(state: &[u32; 16], dst: &mut [u8]) -> bool {
     #[cfg(target_arch = "x86_64")]
     {
         let len = dst.len();
-        // Sixteen blocks at a time, then one group for the rest (see `Width::last`), directly
-        // when it fills the group, else through a buffer.
+        // Sixteen blocks at a time, then one group for the rest (see `Width::last`), under byte
+        // masks when it does not fill the group.
         let whole = len / Width::Z.bytes();
         let mut st = *state;
         if whole > 0 {
@@ -71,18 +87,10 @@ pub(super) fn xor_wide(state: &[u32; 16], dst: &mut [u8]) -> bool {
         let rest = len - done;
         if rest > 0 {
             let w = Width::last(rest);
-            if rest == w.bytes() {
-                let to = dst[done..].as_mut_ptr();
-                // SAFETY: as above, one group of exactly `rest` bytes from offset `done`.
-                unsafe { avx512::xor(&st, to.cast_const(), to, 1, w) };
-            } else {
-                let mut buf = [0u8; 1024];
-                buf[..rest].copy_from_slice(&dst[done..]);
-                let p = buf.as_mut_ptr();
-                // SAFETY: as above; one group of at most 1024 bytes in place in `buf`.
-                unsafe { avx512::xor(&st, p, p, 1, w) };
-                dst[done..].copy_from_slice(&buf[..rest]);
-            }
+            let to = dst[done..].as_mut_ptr();
+            // SAFETY: as above, one group of `rest` bytes (at most `w.bytes()`) in place from
+            // offset `done`, under byte masks when it is not whole.
+            unsafe { avx512::xor_masked(&st, to.cast_const(), to, rest, w) };
         }
         true
     }
@@ -123,21 +131,12 @@ pub(super) fn xor_wide_into(state: &[u32; 16], src: &[u8], out: &mut Fill<'_>) -
         let rest = len - done;
         if rest > 0 {
             let w = Width::last(rest);
-            if rest == w.bytes() {
-                let to = out.next_ptr(rest);
-                // SAFETY: as above, one group of exactly `rest` bytes from `src[done..]` to
-                // `next_ptr(rest)`.
-                unsafe { avx512::xor(&st, src[done..].as_ptr(), to, 1, w) };
-                // SAFETY: the kernel stored all `rest` bytes at `next_ptr(rest)`.
-                unsafe { out.assume_written(rest) };
-            } else {
-                let mut buf = [0u8; 1024];
-                buf[..rest].copy_from_slice(&src[done..]);
-                let p = buf.as_mut_ptr();
-                // SAFETY: as above; one group of at most 1024 bytes in place in `buf`.
-                unsafe { avx512::xor(&st, p, p, 1, w) };
-                out.push(&buf[..rest]);
-            }
+            let to = out.next_ptr(rest);
+            // SAFETY: as above, one group of `rest` bytes (at most `w.bytes()`) from
+            // `src[done..]` to `next_ptr(rest)`, under byte masks when it is not whole.
+            unsafe { avx512::xor_masked(&st, src[done..].as_ptr(), to, rest, w) };
+            // SAFETY: the kernel stored all `rest` bytes at `next_ptr(rest)`.
+            unsafe { out.assume_written(rest) };
         }
         true
     }

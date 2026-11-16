@@ -1,10 +1,11 @@
-//! ChaCha20 on AVX-512 (x86_64): sixteen blocks per iteration in zmm registers, eight in ymm or
-//! four in xmm registers (for the tail of a message and for short ones), word `j` of the blocks
-//! in register `j` as in the AVX2 code. The rotations are single `vprold` instructions, and with
-//! 32 vector registers the state, the counters and the transpose temporaries all stay in
-//! registers. After the rounds, a 4×4 dword transpose inside each 128-bit lane (then, for eight
-//! and sixteen blocks, a transpose of the lanes with `vshufi32x4`) turns the registers back into
-//! blocks.
+//! ChaCha20 on AVX-512 (x86_64): sixteen blocks per iteration in zmm registers or eight in ymm
+//! registers, word `j` of the blocks in register `j` as in the AVX2 code; four blocks with one
+//! row of each block per register (`row_kernel`) for short messages and tails. The rotations are
+//! single `vprold` instructions, and with 32 vector registers the state, the counters and the
+//! transpose temporaries all stay in registers. After the rounds of the word-sliced kernels, a
+//! 4×4 dword transpose inside each 128-bit lane, then a transpose of the lanes with
+//! `vshufi32x4`, turns the registers back into blocks. A last partial group is read and written
+//! under byte masks (`xor_masked`, AVX-512 BW `vmovdqu8`), with no buffer.
 //!
 //! The AVX-512 target features and intrinsics are not stable at the MSRV (1.85), so each kernel is
 //! one `asm!` block with fixed registers (`clobber_abi("C")` declares the vector registers
@@ -18,7 +19,7 @@ pub(super) enum Width {
     Z,
     /// Eight blocks (512 bytes) per iteration in ymm registers.
     Y,
-    /// Four blocks (256 bytes) per iteration in xmm registers.
+    /// Four blocks (256 bytes) per iteration, one row per zmm register.
     X,
 }
 
@@ -33,8 +34,8 @@ impl Width {
     }
 
     /// The width for one last group of `rest` bytes (under 1024): the narrowest that covers it
-    /// (on Zen 4 a zmm group costs less than two ymm ones, and an xmm group about as much as a
-    /// ymm one).
+    /// (on Zen 4, ChaCha20 alone: about 63 ns for a row group, 83 for a ymm group, 140 for a
+    /// zmm group, so one wider group beats two narrower ones).
     pub(super) const fn last(rest: usize) -> Width {
         match rest {
             513.. => Width::Z,
@@ -45,25 +46,38 @@ impl Width {
 }
 
 /// Counter offsets and steps at fixed offsets: `lanes` (0, lane `i` holds `i`), `inc16` (64, the
-/// step of the zmm kernel), `inc4` (68, the xmm kernel) and `inc8` (72, the ymm kernel).
+/// step of the zmm kernel), `inc8` (72, the ymm kernel), `row` (128, dword `4i` holds `i`: the
+/// counters of the row kernel's four blocks) and `row_inc` (192, 4 in every dword `4i`: its step).
 #[repr(C, align(64))]
 struct Consts {
     lanes: [u32; 16],
     inc16: u32,
-    inc4: u32,
+    _unused: u32,
     inc8: u32,
+    _pad: [u32; 13],
+    row: [u32; 16],
+    row_inc: [u32; 16],
 }
 
 const fn consts() -> Consts {
     let mut c = Consts {
         lanes: [0; 16],
         inc16: 16,
-        inc4: 4,
+        _unused: 0,
         inc8: 8,
+        _pad: [0; 13],
+        row: [0; 16],
+        row_inc: [0; 16],
     };
     let mut i = 0;
     while i < 16 {
         c.lanes[i] = i as u32;
+        i += 1;
+    }
+    let mut i = 0;
+    while i < 4 {
+        c.row[4 * i] = i as u32;
+        c.row_inc[4 * i] = 4;
         i += 1;
     }
     c
@@ -207,9 +221,10 @@ macro_rules! tr4 {
     };
 }
 
-/// XORs register `r` with the input at `off` and stores it to the output at `off`.
-macro_rules! xor_store {
-    ($w:literal, $size:literal, $r:literal, $off:literal) => {
+/// XORs register `r` with the input at `off` and stores it to the output at `off` (`$m`, the
+/// offset of its mask for [`xor_masked`], is unused).
+macro_rules! xs {
+    ($w:literal, $size:literal, $r:literal, $off:literal, $m:literal) => {
         concat!(
             "vpxord ",
             $w,
@@ -234,11 +249,41 @@ macro_rules! xor_store {
     };
 }
 
+/// [`xs`] under a byte mask: the bytes of the mask at offset `m` of `{m}` (`off / 8`: 64 bits
+/// for a zmm store, 32 for a ymm one) select the bytes read and written; the others are neither
+/// read (no fault) nor written. A full mask takes the plain [`xs`] and an empty one skips the
+/// store (branches on the public length): on Zen 4 a masked load or store that crosses a cache
+/// line costs tens of cycles, so only the one partial block of a message pays for it.
+macro_rules! xm {
+    ("zmm", $size:literal, $r:literal, $off:literal, $m:literal) => {
+        xm!(@ "zmm", "kmovq k1, qword", "kortestq", $size, $r, $off, $m)
+    };
+    ("ymm", $size:literal, $r:literal, $off:literal, $m:literal) => {
+        xm!(@ "ymm", "kmovd k1, dword", "kortestd", $size, $r, $off, $m)
+    };
+    (@ $w:literal, $k:literal, $kt:literal, $size:literal, $r:literal, $off:literal, $m:literal) => {
+        concat!(
+            $k, " ptr [{m} + ", $m, "]\n",
+            $kt, " k1, k1\n",
+            "jz 5f\n",
+            "jc 4f\n",
+            "vmovdqu8 ", $w, "30{{k1}}{{z}}, ", $size, " ptr [rsi + ", $off, "]\n",
+            "vpxord ", $w, $r, ", ", $w, $r, ", ", $w, "30\n",
+            "vmovdqu8 ", $size, " ptr [rdi + ", $off, "]{{k1}}, ", $w, $r, "\n",
+            "jmp 5f\n",
+            "4:\n",
+            xs!($w, $size, $r, $off, $m),
+            "5:\n",
+        )
+    };
+}
+
 /// After `tr4` on every group of four registers, lane `L` of register `4g + i` holds words
 /// `4g..4g+4` of block `4L + i`: transposes the lanes of registers `i, 4+i, 8+i, 12+i` (into
 /// 22-29) and writes blocks `i, 4+i, 8+i, 12+i` (output offsets `o0..o3`).
 macro_rules! lanes4 {
-    ($a:literal, $b:literal, $c:literal, $d:literal, $o0:literal, $o1:literal, $o2:literal, $o3:literal) => {
+    ($st:ident, $a:literal, $b:literal, $c:literal, $d:literal, $o0:literal, $o1:literal, $o2:literal, $o3:literal,
+     $m0:literal, $m1:literal, $m2:literal, $m3:literal) => {
         concat!(
             "vshufi32x4 zmm22, zmm",
             $a,
@@ -264,17 +309,17 @@ macro_rules! lanes4 {
             "vshufi32x4 zmm27, zmm22, zmm24, 0xdd\n",
             "vshufi32x4 zmm28, zmm23, zmm25, 0x88\n",
             "vshufi32x4 zmm29, zmm23, zmm25, 0xdd\n",
-            xor_store!("zmm", "zmmword", "26", $o0),
-            xor_store!("zmm", "zmmword", "27", $o1),
-            xor_store!("zmm", "zmmword", "28", $o2),
-            xor_store!("zmm", "zmmword", "29", $o3),
+            $st!("zmm", "zmmword", "26", $o0, $m0),
+            $st!("zmm", "zmmword", "27", $o1, $m1),
+            $st!("zmm", "zmmword", "28", $o2, $m2),
+            $st!("zmm", "zmmword", "29", $o3, $m3),
         )
     };
 }
 
-/// The zmm kernel: `rcx` groups of sixteen blocks from `rsi` to `rdi`.
+/// The zmm kernel: `rcx` groups of sixteen blocks from `rsi` to `rdi`, stored with `st`.
 macro_rules! wide_kernel {
-    () => {
+    ($st:ident) => {
         concat!(
             "vpbroadcastd zmm16, dword ptr [{s} + 48]\n",
             "vpaddd zmm16, zmm16, zmmword ptr [{c}]\n",
@@ -285,10 +330,18 @@ macro_rules! wide_kernel {
             tr4!("zmm", "4", "5", "6", "7"),
             tr4!("zmm", "8", "9", "10", "11"),
             tr4!("zmm", "12", "13", "14", "15"),
-            lanes4!("0", "4", "8", "12", "0", "256", "512", "768"),
-            lanes4!("1", "5", "9", "13", "64", "320", "576", "832"),
-            lanes4!("2", "6", "10", "14", "128", "384", "640", "896"),
-            lanes4!("3", "7", "11", "15", "192", "448", "704", "960"),
+            lanes4!(
+                $st, "0", "4", "8", "12", "0", "256", "512", "768", "0", "32", "64", "96"
+            ),
+            lanes4!(
+                $st, "1", "5", "9", "13", "64", "320", "576", "832", "8", "40", "72", "104"
+            ),
+            lanes4!(
+                $st, "2", "6", "10", "14", "128", "384", "640", "896", "16", "48", "80", "112"
+            ),
+            lanes4!(
+                $st, "3", "7", "11", "15", "192", "448", "704", "960", "24", "56", "88", "120"
+            ),
             op3!("vpaddd", "zmm", "16", "16", "17"),
             "add rsi, 1024\n",
             "add rdi, 1024\n",
@@ -302,7 +355,8 @@ macro_rules! wide_kernel {
 /// After `tr4`, lane `L` of register `4g + i` holds words `4g..4g+4` of block `4L + i`: writes
 /// blocks `i` (offset `o0`) and `4 + i` (`o1`) from registers `a b c d` = `i, 4+i, 8+i, 12+i`.
 macro_rules! lanes2 {
-    ($a:literal, $b:literal, $c:literal, $d:literal, $o0:literal, $o0h:literal, $o1:literal, $o1h:literal) => {
+    ($st:ident, $a:literal, $b:literal, $c:literal, $d:literal, $o0:literal, $o0h:literal, $o1:literal, $o1h:literal,
+     $m0:literal, $m0h:literal, $m1:literal, $m1h:literal) => {
         concat!(
             "vshufi32x4 ymm22, ymm",
             $a,
@@ -324,17 +378,17 @@ macro_rules! lanes2 {
             ", ymm",
             $d,
             ", 0x3\n",
-            xor_store!("ymm", "ymmword", "22", $o0),
-            xor_store!("ymm", "ymmword", "23", $o0h),
-            xor_store!("ymm", "ymmword", "24", $o1),
-            xor_store!("ymm", "ymmword", "25", $o1h),
+            $st!("ymm", "ymmword", "22", $o0, $m0),
+            $st!("ymm", "ymmword", "23", $o0h, $m0h),
+            $st!("ymm", "ymmword", "24", $o1, $m1),
+            $st!("ymm", "ymmword", "25", $o1h, $m1h),
         )
     };
 }
 
-/// The ymm kernel: `rcx` groups of eight blocks from `rsi` to `rdi`.
+/// The ymm kernel: `rcx` groups of eight blocks from `rsi` to `rdi`, stored with `st`.
 macro_rules! mid_kernel {
-    () => {
+    ($st:ident) => {
         concat!(
             "vpbroadcastd ymm16, dword ptr [{s} + 48]\n",
             "vpaddd ymm16, ymm16, ymmword ptr [{c}]\n",
@@ -345,10 +399,18 @@ macro_rules! mid_kernel {
             tr4!("ymm", "4", "5", "6", "7"),
             tr4!("ymm", "8", "9", "10", "11"),
             tr4!("ymm", "12", "13", "14", "15"),
-            lanes2!("0", "4", "8", "12", "0", "32", "256", "288"),
-            lanes2!("1", "5", "9", "13", "64", "96", "320", "352"),
-            lanes2!("2", "6", "10", "14", "128", "160", "384", "416"),
-            lanes2!("3", "7", "11", "15", "192", "224", "448", "480"),
+            lanes2!(
+                $st, "0", "4", "8", "12", "0", "32", "256", "288", "0", "4", "32", "36"
+            ),
+            lanes2!(
+                $st, "1", "5", "9", "13", "64", "96", "320", "352", "8", "12", "40", "44"
+            ),
+            lanes2!(
+                $st, "2", "6", "10", "14", "128", "160", "384", "416", "16", "20", "48", "52"
+            ),
+            lanes2!(
+                $st, "3", "7", "11", "15", "192", "224", "448", "480", "24", "28", "56", "60"
+            ),
             op3!("vpaddd", "ymm", "16", "16", "17"),
             "add rsi, 512\n",
             "add rdi, 512\n",
@@ -359,36 +421,53 @@ macro_rules! mid_kernel {
     };
 }
 
-/// The xmm kernel: `rcx` groups of four blocks from `rsi` to `rdi`.
-macro_rules! narrow_kernel {
-    () => {
+/// Rotates the words of rows `b c d` within each block by `ib`, `ic` and `id` (`vpshufd`
+/// immediates) in each set of row registers, the `b` rows first: they are what the next step
+/// waits for.
+macro_rules! row_shuffle {
+    ($ib:literal, $ic:literal, $id:literal, $($b:literal $c:literal $d:literal)|*) => {
         concat!(
-            "vpbroadcastd xmm16, dword ptr [{s} + 48]\n",
-            "vpaddd xmm16, xmm16, xmmword ptr [{c}]\n",
-            "vpbroadcastd xmm17, dword ptr [{c} + 68]\n",
+            $("vpshufd zmm", $b, ", zmm", $b, ", ", $ib, "\n",)*
+            $("vpshufd zmm", $c, ", zmm", $c, ", ", $ic, "\n",)*
+            $("vpshufd zmm", $d, ", zmm", $d, ", ", $id, "\n",)*
+        )
+    };
+}
+
+/// The row kernel: `rcx` groups of four blocks from `rsi` to `rdi`, stored with `st`. Each zmm
+/// register holds one row (four words) of each of four blocks, so a double round is two quarter
+/// rounds with the diagonal turned into a column by word rotations in between (OpenSSL's
+/// layout): a quarter of the instructions of four blocks word by word in xmm registers, and the
+/// dependency chain of a round is about as long. For short messages, which wait for it.
+macro_rules! row_kernel {
+    ($st:ident) => {
+        concat!(
+            "vbroadcasti32x4 zmm4, xmmword ptr [{s}]\n",
+            "vbroadcasti32x4 zmm5, xmmword ptr [{s} + 16]\n",
+            "vbroadcasti32x4 zmm6, xmmword ptr [{s} + 32]\n",
+            "vbroadcasti32x4 zmm7, xmmword ptr [{s} + 48]\n",
+            "vpaddd zmm7, zmm7, zmmword ptr [{c} + 128]\n",
+            "vmovdqa64 zmm8, zmmword ptr [{c} + 192]\n",
             "2:\n",
-            rounds!("xmm", "1to4"),
-            tr4!("xmm", "0", "1", "2", "3"),
-            tr4!("xmm", "4", "5", "6", "7"),
-            tr4!("xmm", "8", "9", "10", "11"),
-            tr4!("xmm", "12", "13", "14", "15"),
-            xor_store!("xmm", "xmmword", "0", "0"),
-            xor_store!("xmm", "xmmword", "4", "16"),
-            xor_store!("xmm", "xmmword", "8", "32"),
-            xor_store!("xmm", "xmmword", "12", "48"),
-            xor_store!("xmm", "xmmword", "1", "64"),
-            xor_store!("xmm", "xmmword", "5", "80"),
-            xor_store!("xmm", "xmmword", "9", "96"),
-            xor_store!("xmm", "xmmword", "13", "112"),
-            xor_store!("xmm", "xmmword", "2", "128"),
-            xor_store!("xmm", "xmmword", "6", "144"),
-            xor_store!("xmm", "xmmword", "10", "160"),
-            xor_store!("xmm", "xmmword", "14", "176"),
-            xor_store!("xmm", "xmmword", "3", "192"),
-            xor_store!("xmm", "xmmword", "7", "208"),
-            xor_store!("xmm", "xmmword", "11", "224"),
-            xor_store!("xmm", "xmmword", "15", "240"),
-            op3!("vpaddd", "xmm", "16", "16", "17"),
+            "vmovdqa64 zmm0, zmm4\n",
+            "vmovdqa64 zmm1, zmm5\n",
+            "vmovdqa64 zmm2, zmm6\n",
+            "vmovdqa64 zmm3, zmm7\n",
+            "mov eax, 10\n",
+            "3:\n",
+            qr4!("zmm", "0" "1" "2" "3"),
+            row_shuffle!("0x39", "0x4e", "0x93", "1" "2" "3"),
+            qr4!("zmm", "0" "1" "2" "3"),
+            row_shuffle!("0x93", "0x4e", "0x39", "1" "2" "3"),
+            "dec eax\n",
+            "jnz 3b\n",
+            op3!("vpaddd", "zmm", "0", "0", "4"),
+            op3!("vpaddd", "zmm", "1", "1", "5"),
+            op3!("vpaddd", "zmm", "2", "2", "6"),
+            op3!("vpaddd", "zmm", "3", "3", "7"),
+            // Lane `L` of registers 0-3 holds the rows of block `L`.
+            lanes4!($st, "0", "1", "2", "3", "0", "64", "128", "192", "0", "8", "16", "24"),
+            op3!("vpaddd", "zmm", "7", "7", "8"),
             "add rsi, 256\n",
             "add rdi, 256\n",
             "dec rcx\n",
@@ -400,7 +479,8 @@ macro_rules! narrow_kernel {
 
 /// XORs the keystream of `n` groups of `w.bytes() / 64` blocks, starting at block `state[12]`,
 /// into the bytes at `src` and writes them to `dst` (`src == dst` works in place). Counters past
-/// `2³² - 1` wrap within the 32-bit word.
+/// `2³² - 1` wrap within the 32-bit word (the row kernel carries no further either: its four
+/// blocks have their own counter words).
 ///
 /// # Safety
 ///
@@ -419,7 +499,7 @@ pub(super) unsafe fn xor(state: &[u32; 16], src: *const u8, dst: *mut u8, n: usi
             // `clobber_abi("C")`, the flags), ending with `vzeroupper`.
             unsafe {
                 core::arch::asm!(
-                    $k!(),
+                    $k!(xs),
                     s = in(reg) state.as_ptr(),
                     c = in(reg) &raw const CONSTS,
                     inout("rsi") src => _,
@@ -435,6 +515,58 @@ pub(super) unsafe fn xor(state: &[u32; 16], src: *const u8, dst: *mut u8, n: usi
     match w {
         Width::Z => kernel!(wide_kernel),
         Width::Y => kernel!(mid_kernel),
-        Width::X => kernel!(narrow_kernel),
+        Width::X => kernel!(row_kernel),
+    }
+}
+
+/// [`xor`] of one group of width `w` of which only the first `len` bytes (`0 < len <=
+/// w.bytes()`) exist: each 64-byte block is read and written under a byte mask, so nothing
+/// outside `src[..len]` is read and nothing outside `dst[..len]` written (no buffer).
+///
+/// # Safety
+///
+/// As for [`xor`] with `n = 1`, for `len` bytes instead of `w.bytes()`.
+pub(super) unsafe fn xor_masked(
+    state: &[u32; 16],
+    src: *const u8,
+    dst: *mut u8,
+    len: usize,
+    w: Width,
+) {
+    debug_assert!(len > 0 && len <= w.bytes());
+    // The byte mask of each block (bit `i` for byte `i`); the ymm stores read 32-bit halves.
+    let mut masks = [0u64; 16];
+    for (i, m) in masks.iter_mut().enumerate() {
+        let have = len.saturating_sub(64 * i);
+        *m = if have >= 64 { !0 } else { (1u64 << have) - 1 };
+    }
+    macro_rules! kernel {
+        ($k:ident) => {
+            // SAFETY: as in `xor` with one group, except that each block of `src` / `dst` is
+            // read and written whole only when its mask from `masks` is all ones (the block is
+            // below `len`), skipped when it is zero (above `len`), and otherwise through a
+            // `vmovdqu8` under the mask, which neither reads nor writes (nor faults on) the
+            // masked-off bytes: the kernel touches only `src[..len]` and `dst[..len]`. It also reads `masks` (128 bytes on the stack of the caller) and
+            // clobbers `k1` (through `clobber_abi("C")`).
+            unsafe {
+                core::arch::asm!(
+                    $k!(xm),
+                    s = in(reg) state.as_ptr(),
+                    c = in(reg) &raw const CONSTS,
+                    m = in(reg) masks.as_ptr(),
+                    inout("rsi") src => _,
+                    inout("rdi") dst => _,
+                    inout("rcx") 1usize => _,
+                    out("rax") _,
+                    clobber_abi("C"),
+                    options(nostack),
+                )
+            }
+        };
+    }
+    match w {
+        Width::Z => kernel!(wide_kernel),
+        Width::Y => kernel!(mid_kernel),
+        Width::X => kernel!(row_kernel),
     }
 }

@@ -433,28 +433,55 @@ impl Poly1305 {
     /// `s1 = r1 + r1/4` folding the products above 2¹³⁰ (`r1` is a multiple of 4).
     #[inline]
     fn blocks64(&mut self, data: &[u8], hibit: u64) {
+        for m in data.chunks_exact(16) {
+            self.block64(le64(&m[0..]), le64(&m[8..]), hibit);
+        }
+    }
+
+    /// Absorbs one block given as two little-endian words (see [`blocks64`](Self::blocks64)).
+    #[inline(always)]
+    fn block64(&mut self, m0: u64, m1: u64, hibit: u64) {
         let [r0, r1] = self.r;
         let s1 = r1 + (r1 >> 2);
         let [mut h0, mut h1, mut h2] = self.h;
         let mm = |a: u64, b: u64| u128::from(a) * u128::from(b);
-        for m in data.chunks_exact(16) {
-            let t = u128::from(h0) + u128::from(le64(&m[0..]));
-            h0 = t as u64;
-            let t = u128::from(h1) + u128::from(le64(&m[8..])) + (t >> 64);
-            h1 = t as u64;
-            h2 += (t >> 64) as u64 + hibit;
-            let d0 = mm(h0, r0) + mm(h1, s1);
-            let d1 = mm(h0, r1) + mm(h1, r0) + u128::from(h2 * s1) + (d0 >> 64);
-            let d2 = h2 * r0 + (d1 >> 64) as u64;
-            // d2 holds the bits from 2¹²⁸: keep two, fold the rest times 5 into h0.
-            let c = (d2 & !3) + (d2 >> 2);
-            let t = u128::from(d0 as u64) + u128::from(c);
-            h0 = t as u64;
-            let t = u128::from(d1 as u64) + (t >> 64);
-            h1 = t as u64;
-            h2 = (d2 & 3) + (t >> 64) as u64;
-        }
+        let t = u128::from(h0) + u128::from(m0);
+        h0 = t as u64;
+        let t = u128::from(h1) + u128::from(m1) + (t >> 64);
+        h1 = t as u64;
+        h2 += (t >> 64) as u64 + hibit;
+        let d0 = mm(h0, r0) + mm(h1, s1);
+        let d1 = mm(h0, r1) + mm(h1, r0) + u128::from(h2 * s1) + (d0 >> 64);
+        let d2 = h2 * r0 + (d1 >> 64) as u64;
+        // d2 holds the bits from 2¹²⁸: keep two, fold the rest times 5 into h0.
+        let c = (d2 & !3) + (d2 >> 2);
+        let t = u128::from(d0 as u64) + u128::from(c);
+        h0 = t as u64;
+        let t = u128::from(d1 as u64) + (t >> 64);
+        h1 = t as u64;
+        h2 = (d2 & 3) + (t >> 64) as u64;
         self.h = [h0, h1, h2];
+    }
+
+    /// Absorbs `data` padded with zeros to whole 16-byte blocks (the AEAD's padding; nothing
+    /// may be buffered), the last partial block assembled with fixed-size copies (no `memcpy`
+    /// call for these few bytes).
+    fn absorb_padded(&mut self, data: &[u8], pw: Option<&hw::Powers>) {
+        debug_assert_eq!(self.pos, 0);
+        let whole = data.len() / 16 * 16;
+        self.full_blocks(&data[..whole], pw);
+        let rest = &data[whole..];
+        if !rest.is_empty() {
+            let mut b = [0u8; 16];
+            let mut o = 0;
+            for w in [8, 4, 2, 1] {
+                if rest.len() & w != 0 {
+                    b[o..o + w].copy_from_slice(&rest[o..o + w]);
+                    o += w;
+                }
+            }
+            self.block64(le64(&b[0..]), le64(&b[8..]), 1);
+        }
     }
 
     /// Whether `len` bytes of whole blocks go through the IFMA kernel.
@@ -494,12 +521,7 @@ impl Poly1305 {
     }
 
     /// Absorbs `data`.
-    pub fn update(&mut self, data: &[u8]) {
-        self.update_with(data, None);
-    }
-
-    /// [`update`](Self::update) with precomputed powers for the IFMA kernel.
-    fn update_with(&mut self, mut data: &[u8], pw: Option<&hw::Powers>) {
+    pub fn update(&mut self, mut data: &[u8]) {
         if self.pos > 0 {
             let n = (16 - self.pos).min(data.len());
             self.buf[self.pos..self.pos + n].copy_from_slice(&data[..n]);
@@ -513,20 +535,10 @@ impl Poly1305 {
             self.pos = 0;
         }
         let whole = data.len() / 16 * 16;
-        self.full_blocks(&data[..whole], pw);
+        self.full_blocks(&data[..whole], None);
         let rest = &data[whole..];
         self.buf[..rest.len()].copy_from_slice(rest);
         self.pos = rest.len();
-    }
-
-    /// Pads what was absorbed so far with zeros to a 16-byte boundary (the AEAD construction).
-    fn pad16(&mut self) {
-        if self.pos > 0 {
-            self.buf[self.pos..].fill(0);
-            let b = self.buf;
-            self.blocks64(&b, 1);
-            self.pos = 0;
-        }
     }
 
     /// Finishes and returns the tag.
@@ -634,14 +646,25 @@ impl ChaCha20Poly1305 {
 
     /// The level for this call, the cipher state at block 0 and the first keystream blocks
     /// (block 0 keys Poly1305, the others cover the first bytes of a message of `len` bytes):
-    /// four from one AVX-512 call; eight from one AVX2 call for messages of more than two blocks;
-    /// else the blocks the message needs (at most four), one at a time.
+    /// four or eight from one AVX-512 call (see [`hw::wide_cost`]); eight from one AVX2 call for
+    /// messages of more than two blocks; else the blocks the message needs (at most four), one
+    /// at a time.
     fn start(&self, nonce: &[u8; NONCE_LEN], len: usize) -> (Level, [u32; 16], Head) {
         let lvl = Level::current(self.cap);
         let st = ChaCha20::new(&self.key, nonce, 0).state;
         let mut ks = [0u8; 512];
-        let n = if lvl == Level::Wide && hw::xor_wide(&st, &mut ks[..256]) {
+        // Four blocks (one row group) or eight (one ymm group), whichever leaves the cheaper
+        // rest (a public length only).
+        let wide = if len > 192
+            && hw::wide_cost(512) + hw::wide_cost(len.saturating_sub(448))
+                < hw::wide_cost(256) + hw::wide_cost(len - 192)
+        {
+            8
+        } else {
             4
+        };
+        let n = if lvl == Level::Wide && hw::xor_wide(&st, &mut ks[..64 * wide]) {
+            wide
         } else if lvl >= Level::Avx2 && len > 128 && hw::xor8(&st, &mut ks) {
             8
         } else {
@@ -720,12 +743,9 @@ impl ChaCha20Poly1305 {
 
     /// The tag of `aad` and `ct` (`pw`: the IFMA powers of `p`'s `r`, when computed already).
     fn tag(mut p: Poly1305, aad: &[u8], ct: &[u8], pw: Option<&hw::Powers>) -> [u8; TAG_LEN] {
-        p.update(aad);
-        p.pad16();
-        p.update_with(ct, pw);
-        p.pad16();
-        p.update(&(aad.len() as u64).to_le_bytes());
-        p.update(&(ct.len() as u64).to_le_bytes());
+        p.absorb_padded(aad, None);
+        p.absorb_padded(ct, pw);
+        p.block64(aad.len() as u64, ct.len() as u64, 1);
         p.finalize()
     }
 
@@ -1279,6 +1299,31 @@ mod tests {
 
     /// Poly1305 with the IFMA kernel against the scalar code: carries stressed with all-ones
     /// messages and the largest clamped `r`, `s` at both extremes, whole and split updates.
+    #[test]
+    fn wide_tail_stays_in_bounds() {
+        // The last group of the AVX-512 kernels is read and written under byte masks: every
+        // length up to a few groups, with canary bytes after the message, against the
+        // block-at-a-time keystream.
+        let key = [0x11u8; 32];
+        let nonce = [9u8; 12];
+        let mut c = ChaCha20::new(&key, &nonce, 7);
+        let mut want = Vec::new();
+        while want.len() < 2200 {
+            want.extend_from_slice(&c.next_block());
+        }
+        for len in 1..2200 {
+            let mut buf = vec![0xeeu8; len + 80];
+            ChaCha20::new(&key, &nonce, 7).apply(Level::Wide, &mut buf[..len]);
+            for (i, &b) in buf[..len].iter().enumerate() {
+                assert_eq!(b, want[i] ^ 0xee, "len {len} byte {i}");
+            }
+            assert!(
+                buf[len..].iter().all(|&b| b == 0xee),
+                "len {len}: wrote past the end"
+            );
+        }
+    }
+
     #[test]
     fn poly1305_wide_matches_scalar() {
         let mut rng = crate::rand::ChaChaRng::from_seed([5; 32]);
