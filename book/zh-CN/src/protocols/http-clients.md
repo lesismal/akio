@@ -23,7 +23,17 @@
   重试一次。
 - 域名在调用线程之外解析，由 `only::dns` 的解析线程完成（最多 4 个，按需启动）；IP 字面量不需要解析。
   依次尝试解析出的每个地址（`localhost` 往往先解析出 `::1`）。
-- `ClientError`：`InvalidUrl`、`Io`、`Protocol`、`Closed`、`Timeout`、`TooManyRedirects`。
+- `ClientError`：`InvalidUrl`、`Io`、`Protocol`、`Closed`、`Timeout`、`TooManyRedirects`、
+  `TooLarge`。
+- 限制（`Client::with_options(ClientOptions)`），每项都有安全的默认值：
+
+  | 字段 | 默认值 | 超过后 |
+  |---|---|---|
+  | `max_head_bytes` | 64 KiB | 响应头（含 1xx 响应头）→ `ClientError::TooLarge` |
+  | `max_body_bytes` | 64 MiB | 任何分帧方式；更大的 `Content-Length` 立即失败 → `TooLarge`（`usize::MAX` 表示不限制） |
+  | `idle_timeout` | 90 s | 连接池中闲置这么久的连接会被关闭 |
+  | `max_idle_per_host` | 32 | 同一路由更多的空闲连接会被关闭（0：不复用） |
+  | `max_idle` | 256 | 全部空闲连接总数 |
 
 每个 `with_*` 都返回拥有独立连接池的新客户端；配置一次后克隆使用。
 
@@ -81,7 +91,11 @@ SOCKS）。除非调用 `Proxy::from_env()`，否则不会读取环境变量。
 - 一个连接复用所有请求；`H2Client` 克隆开销很小，可在任何线程使用。`send(req)` →
   `ResponseFuture`，`request(req, callback)`。
 - `H2Options`：`initial_window`（1 MiB）、`conn_window`（16 MiB）、`enable_push`（false；开启后
-  `ClientResponse::pushed` 携带被推送的响应）。
+  `ClientResponse::pushed` 携带被推送的响应，每个请求最多 32 个未完成的推送）。
+- 限制：超过默认 `SETTINGS_MAX_FRAME_SIZE`（16 KiB）的帧，以及超过 `max_header_list` 两倍的
+  头部块（HEADERS + CONTINUATION）会结束连接；解码后超过 `max_header_list`（64 KiB，会通告给
+  对端）的头部列表，或超过 `max_body_bytes`（64 MiB）的缓冲 body，会重置该 stream（`CANCEL`）
+  并以 `TooLarge` 使请求失败。流式请求（`open`）的 body 随到随交，不限制大小。
 - 双向流式：`open(req, on_event)` 返回用于写请求 body 的 `H2Upload`（`write`、`finish`），并在
   响应到达时报告 `H2Event::Head`、`Data`、`Trailers`、`End` 或 `Error`。only-grpc 的客户端
   就建立在它之上。

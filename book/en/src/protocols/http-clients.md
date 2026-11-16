@@ -24,7 +24,17 @@ Both clients run their connections on a `only` `Engine` (give it `client_threads
 - Names are resolved off the calling thread, on `only::dns`'s resolver threads (at most four,
   started on demand); IP literals need no lookup. Every resolved address is tried in turn
   (`localhost` is often `::1` first).
-- `ClientError`: `InvalidUrl`, `Io`, `Protocol`, `Closed`, `Timeout`, `TooManyRedirects`.
+- `ClientError`: `InvalidUrl`, `Io`, `Protocol`, `Closed`, `Timeout`, `TooManyRedirects`,
+  `TooLarge`.
+- Limits (`Client::with_options(ClientOptions)`), each with a safe default:
+
+  | Field | Default | What happens past it |
+  |---|---|---|
+  | `max_head_bytes` | 64 KiB | response head (1xx heads included) → `ClientError::TooLarge` |
+  | `max_body_bytes` | 64 MiB | any framing; a larger `Content-Length` fails at once → `TooLarge` (`usize::MAX` opts out) |
+  | `idle_timeout` | 90 s | pooled connections unused this long are closed |
+  | `max_idle_per_host` | 32 | further idle connections to the route are closed (0: no reuse) |
+  | `max_idle` | 256 | idle connections in all |
 
 Each `with_*` returns a new client with its own connection pool; configure once and clone.
 
@@ -86,7 +96,12 @@ the reasoning behind these rules.
 - One connection multiplexes every request; `H2Client` is cheap to clone and usable from any
   thread. `send(req)` → `ResponseFuture`, `request(req, callback)`.
 - `H2Options`: `initial_window` (1 MiB), `conn_window` (16 MiB), `enable_push` (false; when on,
-  `ClientResponse::pushed` carries pushed responses).
+  `ClientResponse::pushed` carries pushed responses, at most 32 outstanding per request).
+- Limits: frames above the default `SETTINGS_MAX_FRAME_SIZE` (16 KiB) and header blocks
+  (HEADERS + CONTINUATION) above twice `max_header_list` end the connection; a decoded header
+  list above `max_header_list` (64 KiB, advertised) or a buffered body above `max_body_bytes`
+  (64 MiB) resets the stream (`CANCEL`) and fails the request with `TooLarge`. Streamed
+  requests (`open`) are handed their body as it arrives and are not limited in size.
 - Streaming both ways: `open(req, on_event)` returns an `H2Upload` (`write`, `finish`) for the
   request body, and reports `H2Event::Head`, `Data`, `Trailers`, `End` or `Error` as the response
   arrives. only-grpc's client is built on it.

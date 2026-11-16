@@ -161,6 +161,10 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 `H3Client::dial(&engine, addr, server_name, client_cfg)`（ALPN `h3`）；握手完成前发出的
 请求会等待握手完成（以 0-RTT 恢复会话时除外，见上文）。`request(method, path, headers, body, callback)`、
 `request_blocking(..)`、`get(path, timeout)`、`close()`、`connection()`。
+`H3Client::dial_with(.., H3ClientOptions)` 设置限制：超过 `max_body_bytes`（8 MiB）或
+`max_field_section_bytes`（64 KiB，会通告给对端）时停止该响应 stream，并以 `H3Error::TooLarge`
+使请求失败；`request_timeout`（30 s，从 `request` 到完整响应）会重置 stream 并以
+`H3Error::Timeout` 使其失败（这个回调在定时器线程上运行）。
 
 ## HTTP/3 如何复用 only-http
 

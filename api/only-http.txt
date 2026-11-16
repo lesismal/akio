@@ -9,6 +9,7 @@ pub only_http::client::ClientError::InvalidUrl(alloc::string::String)
 pub only_http::client::ClientError::Io(core::io::error::Error)
 pub only_http::client::ClientError::Protocol(&'static str)
 pub only_http::client::ClientError::Timeout
+pub only_http::client::ClientError::TooLarge(&'static str)
 pub only_http::client::ClientError::TooManyRedirects
 impl core::error::Error for only_http::client::ClientError
 impl core::fmt::Debug for only_http::client::ClientError
@@ -23,8 +24,10 @@ impl !core::panic::unwind_safe::UnwindSafe for only_http::client::ClientError
 pub struct only_http::client::Client
 impl only_http::client::Client
 pub fn only_http::client::Client::new(alloc::rcs::arc::Arc<only::Engine>) -> only_http::client::Client
+pub fn only_http::client::Client::options(&self) -> &only_http::client::ClientOptions
 pub fn only_http::client::Client::request(&self, only_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<only_http::client::ClientResponse, only_http::client::ClientError>) + core::marker::Send + 'static)
 pub fn only_http::client::Client::send(&self, only_http::client::ClientRequest) -> only_http::client::ResponseFuture
+pub fn only_http::client::Client::with_options(self, only_http::client::ClientOptions) -> only_http::client::Client
 pub fn only_http::client::Client::with_proxy(self, only_ws::proxy::Proxy) -> only_http::client::Client
 pub fn only_http::client::Client::with_redirects(self, only_http::client::RedirectPolicy) -> only_http::client::Client
 pub fn only_http::client::Client::with_timeout(self, core::time::Duration) -> only_http::client::Client
@@ -49,6 +52,23 @@ impl !core::marker::Sync for only_http::client::ClientConn
 impl core::marker::Unpin for only_http::client::ClientConn
 impl !core::panic::unwind_safe::RefUnwindSafe for only_http::client::ClientConn
 impl !core::panic::unwind_safe::UnwindSafe for only_http::client::ClientConn
+#[non_exhaustive] pub struct only_http::client::ClientOptions
+pub only_http::client::ClientOptions::idle_timeout: core::option::Option<core::time::Duration>
+pub only_http::client::ClientOptions::max_body_bytes: usize
+pub only_http::client::ClientOptions::max_head_bytes: usize
+pub only_http::client::ClientOptions::max_idle: usize
+pub only_http::client::ClientOptions::max_idle_per_host: usize
+impl core::clone::Clone for only_http::client::ClientOptions
+pub fn only_http::client::ClientOptions::clone(&self) -> Self
+impl core::default::Default for only_http::client::ClientOptions
+pub fn only_http::client::ClientOptions::default() -> only_http::client::ClientOptions
+impl core::fmt::Debug for only_http::client::ClientOptions
+pub fn only_http::client::ClientOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_http::client::ClientOptions
+impl core::marker::Sync for only_http::client::ClientOptions
+impl core::marker::Unpin for only_http::client::ClientOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::client::ClientOptions
+impl core::panic::unwind_safe::UnwindSafe for only_http::client::ClientOptions
 #[non_exhaustive] pub struct only_http::client::ClientRequest
 pub only_http::client::ClientRequest::body: alloc::vec::Vec<u8>
 pub only_http::client::ClientRequest::headers: only_http::message::Headers
@@ -193,6 +213,8 @@ impl !core::panic::unwind_safe::UnwindSafe for only_http::h2client::H2Conn
 pub only_http::h2client::H2Options::conn_window: u32
 pub only_http::h2client::H2Options::enable_push: bool
 pub only_http::h2client::H2Options::initial_window: u32
+pub only_http::h2client::H2Options::max_body_bytes: usize
+pub only_http::h2client::H2Options::max_header_list: u32
 impl core::clone::Clone for only_http::h2client::H2Options
 pub fn only_http::h2client::H2Options::clone(&self) -> Self
 impl core::default::Default for only_http::h2client::H2Options
