@@ -7,7 +7,7 @@ use super::alert::{Alert, Fatal, fatal};
 use super::client::Client;
 #[cfg(feature = "experimental-ktls")]
 use super::common::Keys;
-use super::common::{Action, ClientSettings, ServerSettings};
+use super::common::{Action, ClientSettings, EarlyData, Level, ServerSettings};
 use super::msgs::{TLS12, TLS13};
 use super::record::{
     CT_ALERT, CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, HEADER_LEN, RecordLayer,
@@ -113,6 +113,25 @@ impl Machine {
             Machine::Server(s) => s.peer_quic.as_deref(),
         }
     }
+
+    pub(crate) fn early(&self) -> EarlyData {
+        match self {
+            Machine::Client(c) => c.early,
+            Machine::Server(s) => s.early,
+        }
+    }
+
+    fn is_client(&self) -> bool {
+        matches!(self, Machine::Client(_))
+    }
+
+    /// Rejected early data a server skips: what its tickets allow, at least 64 KiB.
+    fn early_skip(&self) -> usize {
+        match self {
+            Machine::Client(_) => 0,
+            Machine::Server(s) => EARLY_DATA_SKIP.max(s.max_early_data() as usize),
+        }
+    }
 }
 
 /// A TLS connection: feed it what the peer sent, give it what the application sends, and it
@@ -132,6 +151,16 @@ pub struct Connection {
     warnings: u32,
     compat_ccs: bool,
     key_update_after: u64,
+    /// Early data: bytes the ticket still allows (client) or still accepted (server).
+    early_budget: usize,
+    /// The client writes under the early keys (until the server's first message).
+    early_writing: bool,
+    /// The server reads under the early keys (until EndOfEarlyData).
+    early_reading: bool,
+    /// A copy of what the client sent early, sent again if the server rejects it.
+    early_sent: Vec<u8>,
+    /// Bytes sent (client) or received (server) as early data.
+    early_len: u64,
     /// Kernel TLS: keep the raw traffic keys (`read_keys` / `write_keys`) for an offload.
     #[cfg(feature = "experimental-ktls")]
     keep_keys: bool,
@@ -155,7 +184,8 @@ impl std::fmt::Debug for Connection {
 
 impl Connection {
     pub(crate) fn client(cfg: Arc<ClientSettings>, name: &str) -> Result<Connection, Fatal> {
-        let mut c = Client::new(cfg, name, None)?;
+        let early = cfg.early_data;
+        let mut c = Client::new(cfg, name, None, early)?;
         let mut actions = Vec::new();
         c.start(&mut actions)?;
         let mut conn = Connection::new(Machine::Client(Box::new(c)));
@@ -166,7 +196,7 @@ impl Connection {
     }
 
     pub(crate) fn server(cfg: Arc<ServerSettings>) -> Connection {
-        let mut c = Connection::new(Machine::Server(Box::new(Server::new(cfg, None))));
+        let mut c = Connection::new(Machine::Server(Box::new(Server::new(cfg, None, None))));
         c.rec.first_write = false;
         c
     }
@@ -187,6 +217,11 @@ impl Connection {
             warnings: 0,
             compat_ccs: false,
             key_update_after: KEY_UPDATE_AFTER,
+            early_budget: 0,
+            early_writing: false,
+            early_reading: false,
+            early_sent: Vec::new(),
+            early_len: 0,
             #[cfg(feature = "experimental-ktls")]
             keep_keys: false,
             #[cfg(feature = "experimental-ktls")]
@@ -243,9 +278,27 @@ impl Connection {
         self.m.resumed()
     }
 
+    /// What happened to early data (0-RTT): offered, accepted, rejected.
+    pub fn early_data(&self) -> EarlyData {
+        self.m.early()
+    }
+
+    /// Bytes of application data sent (client) or received (server) as early data: the first
+    /// this many bytes of the stream. A client's count stays when the server rejects them
+    /// (they are sent again after the handshake).
+    pub fn early_data_len(&self) -> u64 {
+        self.early_len
+    }
+
     #[cfg(test)]
     pub(crate) fn test_record_layer(&mut self) -> &mut RecordLayer {
         &mut self.rec
+    }
+
+    /// Tests: lets a client send more early data than its ticket allows.
+    #[cfg(test)]
+    pub(crate) fn test_early_budget(&mut self, bytes: usize) {
+        self.early_budget = bytes;
     }
 
     #[doc(hidden)]
@@ -272,6 +325,9 @@ impl Connection {
             self.fail(&e, out);
             return Err(e);
         }
+        if !self.early_sent.is_empty() && self.m.early() == EarlyData::Accepted {
+            self.early_sent = Vec::new();
+        }
         if !self.m.handshaking() && !self.pending.is_empty() {
             let p = std::mem::take(&mut self.pending);
             self.seal(&p, out)?;
@@ -289,7 +345,22 @@ impl Connection {
             return fatal(Alert::InternalError, "write after close_notify");
         }
         if self.m.handshaking() {
-            self.pending.extend_from_slice(plain);
+            // Early data (client): as much as the ticket allows, in order (nothing queued yet).
+            let n = if self.early_writing && self.pending.is_empty() {
+                plain.len().min(self.early_budget)
+            } else {
+                0
+            };
+            if n > 0 {
+                if let Err(e) = self.rec.seal(CT_APPLICATION_DATA, &plain[..n], out) {
+                    self.fail(&e, out);
+                    return Err(e);
+                }
+                self.early_sent.extend_from_slice(&plain[..n]);
+                self.early_budget -= n;
+                self.early_len += n as u64;
+            }
+            self.pending.extend_from_slice(&plain[n..]);
             return Ok(());
         }
         if self.m.version() == TLS13 && self.rec.write_seq() >= self.key_update_after {
@@ -455,6 +526,18 @@ impl Connection {
                 self.hs.extend_from_slice(content);
                 self.process_handshake(out)?;
             }
+            CT_APPLICATION_DATA if self.early_reading => {
+                if !self.hs.is_empty() {
+                    return fatal(Alert::UnexpectedMessage, "data inside a handshake message");
+                }
+                // max_early_data_size (RFC 8446 section 4.2.10).
+                if content.len() > self.early_budget {
+                    return fatal(Alert::UnexpectedMessage, "too much early data");
+                }
+                self.early_budget -= content.len();
+                self.early_len += content.len() as u64;
+                plain.extend_from_slice(content);
+            }
             CT_APPLICATION_DATA => {
                 self.app_data_ok()?;
                 plain.extend_from_slice(content);
@@ -528,6 +611,8 @@ impl Connection {
                 return Ok(());
             }
             let msg: Vec<u8> = self.hs.drain(..4 + len).collect();
+            // The server answered: no more early data (client).
+            self.early_writing = false;
             let mut acts = std::mem::take(&mut self.actions);
             let r = self
                 .m
@@ -554,7 +639,8 @@ impl Connection {
                     self.flush_hs(out)?;
                     self.rec.seal(CT_CHANGE_CIPHER_SPEC, &[1], out)?;
                 }
-                Action::ReadKeys(_, k) => {
+                Action::ReadKeys(l, k) => {
+                    self.early_reading = l == Level::EarlyData;
                     self.rec.set_read(&k);
                     #[cfg(feature = "experimental-ktls")]
                     if self.keep_keys {
@@ -562,8 +648,9 @@ impl Connection {
                     }
                     read_changed = true;
                 }
-                Action::WriteKeys(_, k) => {
+                Action::WriteKeys(l, k) => {
                     self.flush_hs(out)?;
+                    self.early_writing = l == Level::EarlyData;
                     self.rec.set_write(&k);
                     #[cfg(feature = "experimental-ktls")]
                     if self.keep_keys {
@@ -574,7 +661,20 @@ impl Connection {
                     self.flush_hs(out)?;
                     self.rec.seal(CT_ALERT, &[1, alert.code()], out)?;
                 }
-                Action::RejectEarlyData => self.rec.skip_early = EARLY_DATA_SKIP,
+                Action::RejectEarlyData if self.m.is_client() => {
+                    // Back to plaintext (a ClientHello may follow) until the next keys; what
+                    // went early goes again after the handshake, ahead of anything queued.
+                    self.flush_hs(out)?;
+                    self.rec.clear_write();
+                    self.early_writing = false;
+                    let mut again = std::mem::take(&mut self.early_sent);
+                    again.append(&mut self.pending);
+                    self.pending = again;
+                }
+                Action::RejectEarlyData => self.rec.skip_early = self.m.early_skip(),
+                Action::EarlyOffered(max) | Action::EarlyAccepted(max) => {
+                    self.early_budget = max as usize;
+                }
                 Action::Done => {}
             }
         }

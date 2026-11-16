@@ -10,7 +10,7 @@ use only_x509::RootStore;
 use super::alert::{Alert, Fatal};
 use super::kx::Group;
 use super::msgs::MESSAGE_HASH;
-use super::session::{ClientCache, SessionCache, Ticketer};
+use super::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
 use super::suites::{HashAlg, HashCtx, Suite};
 
 /// An encryption level (QUIC's packet number spaces map onto these).
@@ -70,8 +70,14 @@ pub(crate) enum Action {
     WriteKeys(Level, Keys),
     /// Send a warning alert.
     Warning(Alert),
-    /// The client offered 0-RTT data and it is rejected: skip it.
+    /// The client offered 0-RTT data and it is rejected: skip it (server), or take back what
+    /// was sent early and send it again after the handshake (client).
     RejectEarlyData,
+    /// The client offers early data, at most this many bytes (the ticket's limit); the early
+    /// write keys follow.
+    EarlyOffered(u32),
+    /// Early data is accepted: the server reads at most this many bytes of it.
+    EarlyAccepted(u32),
     /// The handshake is complete.
     Done,
 }
@@ -213,6 +219,24 @@ impl std::fmt::Debug for CertKey {
     }
 }
 
+/// What happened to TLS 1.3 early data (0-RTT) on a connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EarlyData {
+    /// None was sent (client: early data off, or no ticket allowing it; server: the client
+    /// offered none).
+    #[default]
+    NotAttempted,
+    /// The client sent early data and the server has not answered yet (client only).
+    Pending,
+    /// The server accepted the early data: it was processed before the handshake completed,
+    /// and may be a replay of an earlier connection's (see the security notes).
+    Accepted,
+    /// The server rejected the early data: it was skipped by the server, and the client sends
+    /// it again as ordinary data after the handshake.
+    Rejected,
+}
+
 /// What a server runs with.
 #[derive(Debug)]
 pub(crate) struct ServerSettings {
@@ -231,6 +255,10 @@ pub(crate) struct ServerSettings {
     pub(crate) ticket_lifetime: u32,
     /// Send a HelloRetryRequest even when the client's key share is usable (tests).
     pub(crate) force_hrr: bool,
+    /// TLS 1.3 early data accepted over TCP, bytes (0: off; QUIC enables it per connection).
+    pub(crate) max_early_data: u32,
+    /// The ClientHellos whose early data was accepted (replay protection).
+    pub(crate) anti_replay: AntiReplay,
 }
 
 impl ServerSettings {
@@ -253,6 +281,8 @@ pub(crate) struct ClientSettings {
     pub(crate) suites: Vec<&'static Suite>,
     /// Supported groups; a key share is sent for the first.
     pub(crate) groups: Vec<Group>,
+    /// Send early data (0-RTT) when a ticket allows it (TCP; QUIC decides per connection).
+    pub(crate) early_data: bool,
 }
 
 /// Unix time in seconds.

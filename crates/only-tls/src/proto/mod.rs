@@ -19,12 +19,14 @@ pub mod suites;
 pub(crate) mod tls12;
 
 #[cfg(test)]
+mod early_tests;
+#[cfg(test)]
 mod rfc8448;
 #[cfg(test)]
 pub(crate) mod tests;
 
 pub(crate) use alert::Fatal;
-pub use common::{Keys, Level};
+pub use common::{EarlyData, Keys, Level};
 pub use conn::Connection;
 #[cfg(feature = "experimental-ktls")]
 pub use conn::{DirKeys, Offload, OffloadEvent};
