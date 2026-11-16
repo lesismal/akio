@@ -112,13 +112,48 @@ impl Kind {
 
 /// A request waiting for a stream.
 struct Job {
-    /// Its bytes, or how to encode them once the stream id is known (QPACK with a dynamic
-    /// table needs it).
-    wire: Result<Bytes, Encode>,
-    /// End the stream after `wire` (not for uploads and WebSockets).
-    fin: bool,
-    up: Option<Arc<UpState>>,
+    /// Its bytes (empty when `x.encode` encodes them once the stream is open).
+    wire: Bytes,
     kind: Kind,
+    /// What only uploads, WebSockets and dynamic-table encoding need (boxed, so a plain
+    /// request stays small).
+    x: Option<Box<JobX>>,
+}
+
+struct JobX {
+    /// How to encode the request once its stream id is known (QPACK with a dynamic table
+    /// needs it).
+    encode: Option<Encode>,
+    up: Option<Arc<UpState>>,
+    /// End the stream after the request's bytes (not for uploads and WebSockets).
+    fin: bool,
+}
+
+impl Job {
+    /// A request whose bytes are ready and end its stream.
+    fn plain(wire: Bytes, kind: Kind) -> Job {
+        Job {
+            wire,
+            kind,
+            x: None,
+        }
+    }
+
+    fn with(wire: Result<Bytes, Encode>, fin: bool, up: Option<Arc<UpState>>, kind: Kind) -> Job {
+        let (wire, encode) = match wire {
+            Ok(b) => (b, None),
+            Err(f) => (Bytes::default(), Some(f)),
+        };
+        Job {
+            wire,
+            kind,
+            x: Some(Box::new(JobX { encode, up, fin })),
+        }
+    }
+
+    fn up(&self) -> Option<&Arc<UpState>> {
+        self.x.as_ref()?.up.as_ref()
+    }
 }
 
 struct InFlight {
@@ -138,6 +173,7 @@ struct Extra {
 }
 
 impl InFlight {
+    #[inline]
     fn new(kind: Kind, up: Option<Arc<UpState>>) -> InFlight {
         let (cb, ws) = match kind {
             Kind::Plain(cb) => (Some(cb), None),
@@ -385,13 +421,9 @@ impl H3Client {
     ) {
         let kind = Kind::Plain(Box::new(cb));
         let Some(enc) = self.sh.enc.get() else {
-            let wire = Ok(self.encode_now(&method, path, headers, body));
-            return self.push(Job {
-                wire,
-                fin: true,
-                up: None,
-                kind,
-            });
+            // Static QPACK: encoded now, queued (`start_queued` opens streams in order).
+            let wire = self.encode_now(&method, path, headers, body);
+            return self.push(Job::plain(wire, kind));
         };
         match self.open_now(kind) {
             // A stream right away (the usual case): encoded with its id, nothing copied.
@@ -400,12 +432,12 @@ impl H3Client {
                 let _ = self.conn.send(id, wire);
                 let _ = self.conn.finish(id);
             }
-            Err(kind) => self.push(Job {
-                wire: Err(self.encode_later(method, path, headers, body)),
-                fin: true,
-                up: None,
+            Err(kind) => self.push(Job::with(
+                Err(self.encode_later(method, path, headers, body)),
+                true,
+                None,
                 kind,
-            }),
+            )),
         }
     }
 
@@ -465,11 +497,12 @@ impl H3Client {
         })
     }
 
+    #[inline(always)]
     fn push(&self, job: Job) {
         let mut st = self.sh.lock();
         if let Some(e) = st.closed.clone() {
             drop(st);
-            if let Some(up) = &job.up {
+            if let Some(up) = job.up() {
                 up.fail();
             }
             return job.kind.fail(H3Error::Closed(e));
@@ -500,12 +533,12 @@ impl H3Client {
             None => Ok(self.encode_now(&method, path, headers, Vec::new())),
             Some(_) => Err(self.encode_later(method, path, headers, Vec::new())),
         };
-        self.push(Job {
+        self.push(Job::with(
             wire,
-            fin: false,
-            up: Some(up.clone()),
-            kind: Kind::Plain(Box::new(cb)),
-        });
+            false,
+            Some(up.clone()),
+            Kind::Plain(Box::new(cb)),
+        ));
         H3Upload { up }
     }
 
@@ -582,11 +615,11 @@ impl H3Client {
             );
             wire
         });
-        let job = Job {
-            wire: Err(wire),
-            fin: false,
-            up: None,
-            kind: Kind::Ws(Box::new(WsOpen {
+        let job = Job::with(
+            Err(wire),
+            false,
+            None,
+            Kind::Ws(Box::new(WsOpen {
                 handler: Box::new(handler),
                 cfg: opts.config.clone(),
                 pmd,
@@ -594,7 +627,7 @@ impl H3Client {
                 close_timeout: opts.close_timeout,
                 done: Box::new(done),
             })),
-        };
+        );
         let mut st = self.sh.lock();
         match st.settings {
             // Extended CONNECT needs the server's SETTINGS first (RFC 8441 §3).
@@ -692,17 +725,25 @@ fn start_queued(conn: &Connection, sh: &Shared) {
         }
         let Some(id) = conn.open_bi() else { return };
         let job = s.queue.pop_front().expect("non-empty");
-        s.inflight
-            .insert(id, InFlight::new(job.kind, job.up.clone()));
+        let Some(x) = job.x else {
+            // A plain request, its bytes ready.
+            s.inflight.insert(id, InFlight::new(job.kind, None));
+            drop(s);
+            let _ = conn.send(id, job.wire);
+            let _ = conn.finish(id);
+            continue;
+        };
+        let JobX { encode, up, fin } = *x;
+        s.inflight.insert(id, InFlight::new(job.kind, up.clone()));
         drop(s);
-        let wire = match job.wire {
-            Ok(b) => b,
-            Err(f) => Bytes::from(f(id, sh.enc.get().map(|e| &**e))),
+        let wire = match encode {
+            None => job.wire,
+            Some(f) => Bytes::from(f(id, sh.enc.get().map(|e| &**e))),
         };
         let _ = conn.send(id, wire);
-        match &job.up {
+        match &up {
             Some(up) => up.attach(id),
-            None if job.fin => {
+            None if fin => {
                 let _ = conn.finish(id);
             }
             None => {}
@@ -775,6 +816,7 @@ impl ClientConn {
 
     /// Feeds a response stream; what to report, once the response is complete (a WebSocket's
     /// once its head arrived).
+    #[inline(always)]
     fn on_resp(&mut self, id: StreamId, data: &[u8], fin: bool) -> Option<Done> {
         let mut st = self.sh.lock();
         let InFlight { r, resp, x, .. } = st.inflight.get_mut(&id)?;

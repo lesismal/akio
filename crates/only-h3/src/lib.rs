@@ -577,7 +577,7 @@ struct ServerHost<'a, S> {
     svc: &'a S,
     c: &'a Connection,
     id: StreamId,
-    enc: Option<Arc<EncShared>>,
+    enc: &'a Option<Arc<EncShared>>,
 }
 
 impl<S: Service> Host for ServerHost<'_, S> {
@@ -626,7 +626,7 @@ impl<S: Service> ServerConn<S> {
     fn on_req(&mut self, c: &Connection, id: StreamId, data: &[u8], fin: bool) -> Result<(), Fail> {
         // A request that arrives whole (the usual case) is read without entering the table.
         let mut whole = Req::default();
-        let in_table = self.reqs.contains_key(&id);
+        let in_table = !self.reqs.is_empty() && self.reqs.contains_key(&id);
         let req = if fin && !in_table {
             &mut whole
         } else {
@@ -636,7 +636,7 @@ impl<S: Service> ServerConn<S> {
             svc: &*self.svc,
             c,
             id,
-            enc: self.conn.enc.clone(),
+            enc: &self.conn.enc,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -644,7 +644,7 @@ impl<S: Service> ServerConn<S> {
             max_blocked: self.conn.max_blocked,
             stream: sid(id),
         };
-        let ready = read_req(
+        match read_req(
             req,
             &self.cfg,
             self.peer,
@@ -653,18 +653,22 @@ impl<S: Service> ServerConn<S> {
             &mut host,
             data,
             fin,
-        );
-        if whole.blocked.is_some() || whole.sink.is_some() {
-            // Waiting for inserts, or dispatched with a body to come: keep its state.
-            self.reqs.insert(id, whole);
+        ) {
+            Ok(Some((request, head_only))) => {
+                self.dispatch(c, id, request, head_only);
+                Ok(())
+            }
+            res => {
+                if whole.blocked.is_some() || whole.sink.is_some() {
+                    // Waiting for inserts, or dispatched with a body to come: keep its state.
+                    self.reqs.insert(id, whole);
+                }
+                res.map(|_| ())
+            }
         }
-        let Some((request, head_only)) = ready? else {
-            return Ok(());
-        };
-        self.dispatch(c, id, request, head_only);
-        Ok(())
     }
 
+    #[inline(always)]
     fn dispatch(&self, c: &Connection, id: StreamId, mut request: Request, head_only: bool) {
         if c.is_early(id) {
             // Arrived in 0-RTT (maybe a replay): marked as an RFC 8470 intermediary would, so
@@ -716,7 +720,7 @@ impl<S: Service> ServerConn<S> {
             svc: &*self.svc,
             c,
             id,
-            enc: self.conn.enc.clone(),
+            enc: &self.conn.enc,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -795,7 +799,7 @@ impl<S: Service> ServerConn<S> {
                 .send(Response::text(s, msg));
             }
         }
-        if fin {
+        if fin && !self.reqs.is_empty() {
             if let Some(r) = self.reqs.get(&id) {
                 // Still waiting for inserts, its end noted: kept until it can be read.
                 if r.blocked.is_some() {
@@ -1112,6 +1116,7 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
 
 /// The request once its stream has ended; `None` if malformed (bad fields or trailers, or a
 /// `content-length` that is not the body's).
+#[inline(always)]
 fn finish_request(
     head: Result<(Request, bool), ()>,
     trailers: Option<Result<Headers, ()>>,
@@ -1158,8 +1163,11 @@ impl<S: Service> QuicHandler for ServerConn<S> {
             }
             return;
         }
-        let res = self.on_req(c, id, &data, fin);
-        self.after_req(c, id, res, fin);
+        match self.on_req(c, id, &data, fin) {
+            // The usual case: nothing left to clean up.
+            Ok(()) if !fin || self.reqs.is_empty() => {}
+            res => self.after_req(c, id, res, fin),
+        }
         self.conn.flush(c);
     }
 
@@ -1443,7 +1451,11 @@ impl ResponseSink for Sink {
                 }
                 self.put_trailers(out, trailers.as_ref());
             });
-            return self.send_and_finish(out);
+            self.send_and_finish(out);
+            // Dropped field by field: no out-of-line drop of the box.
+            let Sink { c, enc, .. } = *self;
+            drop((c, enc));
+            return;
         }
         let small = resp.file.is_none() && resp.body.len() <= COPY_BODY_MAX;
         let extra = if small { resp.body.len() + 9 } else { 9 };

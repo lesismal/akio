@@ -31,12 +31,14 @@ pub trait BodySink: Send + 'static {
 /// Runs `service` for `req`, answering through `sink`. A handler that neither responds nor
 /// detaches gets a 500 sent for it. The request body is `req.body` (`Context::on_body` is not
 /// called); see [`start`] for a body that arrives later.
+#[inline(always)]
 pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn ResponseSink>) {
     let mut ctx = Context::new_ext(req, sink);
     service.call(&mut ctx);
     finalize(&mut ctx);
 }
 
+#[inline]
 fn finalize(ctx: &mut Context) {
     if !ctx.responded() && !ctx.is_detached() {
         ctx.respond(Response::text(500, "handler did not respond"));
