@@ -696,8 +696,8 @@ What was left for AES-GCM after this pass (1 KiB to 1.4 KiB at 0.96–1.11× rin
 path on CPUs with VAES but no AVX-512, the TLS record zero-fill) is the next subsection. Other
 gaps: ChaCha20-Poly1305 below 1.4 KiB
 was at 0.82–0.96× ring (now 0.98× for a 64-byte seal, 0.85× open, above ring from 1 KiB:
-"ChaCha20-Poly1305 short messages" below) and CPUs without AVX-512 / IFMA run the AVX2 ChaCha20 with a scalar
-Poly1305 (no AVX2 Poly1305); P-256
+"ChaCha20-Poly1305 short messages" below) and CPUs without AVX-512 / IFMA ran the AVX2 ChaCha20 with a scalar
+Poly1305 (now an AVX2 Poly1305: "Poly1305 on AVX2" below); P-256
 ECDH is at 1.12× ring (a doubling ~348 cycles, about 44 per product whatever their order);
 Ed25519 verification is portable; without IFMA RSA-2048 signing is at parity with ring; SHA-512 and MD5 are portable.
 
@@ -921,6 +921,24 @@ rounds): 1 KiB 987 → 1,038 MB/s (+5.2%, 1.09× → 1.15× rustls + ring), 16 K
 2,190 → 2,217. Left: opening 64-byte messages (0.85× ring; the tag must be checked before the
 plaintext is written, so the cipher and the scalar Poly1305 cannot overlap), and the 512-byte
 zeroed head buffer.
+
+#### Poly1305 on AVX2 (`--example chacha-sizes`, the `avx2` key, CPU 2)
+
+CPUs with AVX2 but without AVX-512 IFMA (Zen 2 and 3, most Intel client parts) ran Poly1305 on
+the radix-2⁶⁴ scalar loop. Poly1305 now absorbs four blocks per step on AVX2 in radix 2²⁶
+(poly1305-donna / OpenSSL's layout: limb `j` of four accumulators per register, 25 `vpmuludq`
+per step, every step multiplied by `r⁴` and the last lane by lane by `r⁴, r², r³, r`) for runs
+of 512 bytes and more; below that the powers of `r` cost more than the kernel saves (256–448 B
+were 3–10% slower with it). Two accumulator sets (eight blocks per step) spilled out of the
+sixteen ymm registers and were slower. Writing the differential test found that converting the
+summed lanes back to radix 2⁶⁴ needs a second full carry pass (with `r = 1` and all-ones blocks a
+carry ripples up to bit 128).
+
+Measured on Zen 4 through the AVX2 key (`ChaCha20Poly1305::new_avx2`: AVX2 ChaCha20 and now AVX2
+Poly1305; no host without AVX-512 was available), median of five alternating rounds against
+`main`, MB/s: seal 1 KiB 1,654 → 1,767 (+6.8%), 1400 B 1,998 → 2,200 (+10.1%), 16 KiB 2,270 →
+2,729 (+20.2%), 64 KiB 2,311 → 2,795 (+20.9%); open 16 KiB 2,190 → 2,617 (+19.5%). The default
+path (AVX-512 + IFMA), the portable code and messages under 512 bytes are unchanged.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 

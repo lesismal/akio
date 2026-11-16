@@ -5,7 +5,8 @@
 //!   blocks.
 //! - ChaCha20 sixteen (zmm), eight (ymm) or four (one row per zmm register) blocks at a time with
 //!   AVX-512 (`avx512`, `asm!`).
-//! - Poly1305 eight blocks at a time with AVX-512 IFMA (`ifma`, `asm!`).
+//! - Poly1305 eight blocks at a time with AVX-512 IFMA (`ifma`, `asm!`), else four at a time with
+//!   AVX2 in radix 2²⁶ (this file).
 //!
 //! Additions, XORs, rotations and multiplications only: constant time like the portable code.
 //!
@@ -187,6 +188,44 @@ pub(super) fn enabled() -> bool {
     cpu::has(Feature::Avx2)
 }
 
+/// Powers of `r` for the AVX2 Poly1305 kernel, in 26-bit limbs, each as nine values
+/// `r0 … r4, 5·r1 … 5·r4`: `r4` holds `r⁴` (broadcast to every lane, the multiplier of every
+/// group but the last), `last` the nine values per lane for the last group: `r⁴, r², r³, r¹`
+/// (the lanes hold blocks `0, 2, 1, 3` of a group, see [`poly_avx2`]).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Avx2Powers {
+    pub(super) r4: [u64; 9],
+    pub(super) last: [[u64; 4]; 9],
+}
+
+/// Bytes the AVX2 Poly1305 kernel absorbs per iteration (four blocks).
+pub(super) const POLY_AVX2_CHUNK: usize = 64;
+
+/// Absorbs the blocks of `m` (a nonzero multiple of [`POLY_AVX2_CHUNK`] bytes) into `h` (five
+/// 26-bit limbs, each below 2²⁷) with the powers `pw`; `false` (nothing done) without AVX2.
+#[cfg_attr(not(target_arch = "x86_64"), allow(clippy::needless_pass_by_ref_mut))]
+pub(super) fn poly_avx2(h: &mut [u64; 5], pw: &Avx2Powers, m: &[u8]) -> bool {
+    if !cpu::cpu_has(Feature::Avx2) {
+        return false;
+    }
+    assert!(
+        !m.is_empty() && m.len() % POLY_AVX2_CHUNK == 0,
+        "Poly1305: whole groups"
+    );
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: `cpu_has` confirmed AVX2; `m` holds whole 64-byte groups, read in 32-byte
+        // pieces inside the slice.
+        unsafe { imp::poly(h, pw, m) };
+        true
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (h, pw);
+        false
+    }
+}
+
 /// XORs the keystream of the eight blocks starting at `state` (counter `state[12]`, which must
 /// not wrap within the eight) into `data`; `false` (nothing done) without AVX2.
 #[inline]
@@ -212,6 +251,126 @@ pub(super) fn xor8(state: &[u32; 16], data: &mut [u8; 512]) -> bool {
 #[cfg(target_arch = "x86_64")]
 mod imp {
     use std::arch::x86_64::*;
+
+    /// Poly1305 four blocks per iteration in radix 2²⁶ (poly1305-donna / OpenSSL's AVX2 layout):
+    /// limb `j` of four accumulators in one register, `vpmuludq` for the 32×32-bit products.
+    /// The two 32-byte loads of a group interleave as blocks `0, 2, 1, 3` across the lanes; every
+    /// group but the last is multiplied by `r⁴`, the last lane by lane by the power that leaves
+    /// each block with `r` to the number of blocks after it (`last`), and the lanes are summed.
+    /// Limbs stay below 2²⁸ going in (`h` plus a message limb), multipliers below 2²⁹ (`5·r`),
+    /// so each sum of five products stays below 2⁶⁰. (Two sets of accumulators, eight blocks
+    /// per iteration, ran out of the sixteen ymm registers and were slower.)
+    ///
+    /// # Safety
+    ///
+    /// The CPU must support AVX2; `m.len()` must be a nonzero multiple of 64.
+    #[target_feature(enable = "avx2")]
+    pub(super) unsafe fn poly(h: &mut [u64; 5], pw: &super::Avx2Powers, m: &[u8]) {
+        // SAFETY: the caller guarantees AVX2; loads read 32-byte pieces of the 64-byte groups of
+        // `m` and the 32-byte lane rows of `pw.last` (unaligned), the rest works on registers.
+        unsafe {
+            let mask = _mm256_set1_epi64x(0x3ff_ffff);
+            let hibit = _mm256_set1_epi64x(1 << 24);
+            let mut pr = [_mm256_setzero_si256(); 9];
+            let mut pl = [_mm256_setzero_si256(); 9];
+            for i in 0..9 {
+                pr[i] = _mm256_set1_epi64x(pw.r4[i] as i64);
+                pl[i] = _mm256_loadu_si256(pw.last[i].as_ptr().cast());
+            }
+            let mut a = [_mm256_setzero_si256(); 5];
+            for (v, &x) in a.iter_mut().zip(h.iter()) {
+                *v = _mm256_set_epi64x(0, 0, 0, x as i64);
+            }
+            let groups = m.len() / 64;
+            for g in 0..groups {
+                let p = m[64 * g..].as_ptr();
+                let x = _mm256_loadu_si256(p.cast());
+                let y = _mm256_loadu_si256(p.add(32).cast());
+                let lo = _mm256_unpacklo_epi64(x, y);
+                let hi = _mm256_unpackhi_epi64(x, y);
+                let add = _mm256_add_epi64;
+                let and = _mm256_and_si256;
+                let mul = _mm256_mul_epu32;
+                let a0 = add(a[0], and(lo, mask));
+                let a1 = add(a[1], and(_mm256_srli_epi64::<26>(lo), mask));
+                let a2 = add(
+                    a[2],
+                    and(
+                        _mm256_or_si256(_mm256_srli_epi64::<52>(lo), _mm256_slli_epi64::<12>(hi)),
+                        mask,
+                    ),
+                );
+                let a3 = add(a[3], and(_mm256_srli_epi64::<14>(hi), mask));
+                let a4 = add(a[4], _mm256_or_si256(_mm256_srli_epi64::<40>(hi), hibit));
+                let r = if g + 1 == groups { &pl } else { &pr };
+                // r[0..5] = r0..r4, r[5..9] = 5·r1..5·r4.
+                let d0 = add(
+                    add(
+                        add(mul(a0, r[0]), mul(a1, r[8])),
+                        add(mul(a2, r[7]), mul(a3, r[6])),
+                    ),
+                    mul(a4, r[5]),
+                );
+                let d1 = add(
+                    add(
+                        add(mul(a0, r[1]), mul(a1, r[0])),
+                        add(mul(a2, r[8]), mul(a3, r[7])),
+                    ),
+                    mul(a4, r[6]),
+                );
+                let d2 = add(
+                    add(
+                        add(mul(a0, r[2]), mul(a1, r[1])),
+                        add(mul(a2, r[0]), mul(a3, r[8])),
+                    ),
+                    mul(a4, r[7]),
+                );
+                let d3 = add(
+                    add(
+                        add(mul(a0, r[3]), mul(a1, r[2])),
+                        add(mul(a2, r[1]), mul(a3, r[0])),
+                    ),
+                    mul(a4, r[8]),
+                );
+                let d4 = add(
+                    add(
+                        add(mul(a0, r[4]), mul(a1, r[3])),
+                        add(mul(a2, r[2]), mul(a3, r[1])),
+                    ),
+                    mul(a4, r[0]),
+                );
+                // Carry back to 26 bits, the top through 2¹³⁰ ≡ 5 (two chains side by side:
+                // 0 → 1 → 2 → 3 and 3 → 4 → 0 → 1).
+                let c0 = _mm256_srli_epi64::<26>(d0);
+                let c3 = _mm256_srli_epi64::<26>(d3);
+                let d0 = and(d0, mask);
+                let d3 = and(d3, mask);
+                let d1 = add(d1, c0);
+                let d4 = add(d4, c3);
+                let c1 = _mm256_srli_epi64::<26>(d1);
+                let c4 = _mm256_srli_epi64::<26>(d4);
+                let d1 = and(d1, mask);
+                let d4 = and(d4, mask);
+                let d2 = add(d2, c1);
+                let d0 = add(d0, add(c4, _mm256_slli_epi64::<2>(c4)));
+                let c2 = _mm256_srli_epi64::<26>(d2);
+                let c0 = _mm256_srli_epi64::<26>(d0);
+                let d2 = and(d2, mask);
+                let d0 = and(d0, mask);
+                let d3 = add(d3, c2);
+                let d1 = add(d1, c0);
+                let c3 = _mm256_srli_epi64::<26>(d3);
+                let d3 = and(d3, mask);
+                let d4 = add(d4, c3);
+                a = [d0, d1, d2, d3, d4];
+            }
+            for (x, v) in h.iter_mut().zip(&a) {
+                let mut lanes = [0u64; 4];
+                _mm256_storeu_si256(lanes.as_mut_ptr().cast(), *v);
+                *x = lanes.iter().sum();
+            }
+        }
+    }
 
     /// # Safety
     ///

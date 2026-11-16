@@ -79,11 +79,11 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-dpdk | 31 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
-| only-crypto | 139 | 71 | 0 | 0 |
-| only-sys | 87 | 3 | 3 | 0 |
+| only-crypto | 141 | 72 | 0 | 0 |
+| only-sys | 88 | 3 | 3 | 0 |
 | only-uring | 41 | 4 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **311** | **81** | **5** | **21** |
+| **合计** | **314** | **82** | **5** | **21** |
 
 按用途：
 
@@ -103,7 +103,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-crypto/src/cpu.rs`（`cpu::hw`） | 5 个块、1 个 `unsafe fn` | 用 CPUID（叶 0、1、7）与 XGETBV（XCR0）检测 VAES、VPCLMULQDQ、AVX-512 以及操作系统是否保存 YMM / ZMM 状态，以及 BMI2 + ADX（叶 7，无需操作系统状态） | 每颗 x86_64 CPU 都有 CPUID，只有叶 0 报告存在时才读取叶 1 与叶 7；只在 CPUID.1:ECX.OSXSAVE 置位后执行 XGETBV；Miri 下不编译 |
 | `only-crypto/src/hash/hw.rs` | 8 个块、8 个 `unsafe fn`（2 个桩函数） | 基于 SHA-NI（x86_64）与 ARMv8 SHA1/SHA2 指令的 SHA-1、SHA-256 压缩函数 | 包装函数只在 `cpu_has(Feature::Sha)`（SHA + SSSE3 + SSE4.1 / `sha2`）时调用；加载读取分组切片中 64 字节块内的 16 字节片段，状态从存活的 `[u32; 5]` / `[u32; 8]` 加载并写回 |
 | `only-crypto/src/crc/hw.rs` | 15 个块、9 个 `unsafe fn` | CRC-32 / CRC-32C：x86_64 上的 PCLMULQDQ 折叠（4 个 128 位累加器）、从 512 字节起的 VPCLMULQDQ + AVX-512 折叠（4 个 512 位累加器，每步 256 字节，一个 `asm!` 块）与 SSE4.2 `crc32` 指令，aarch64 上的 ARMv8 CRC32 指令 | 只在 `cpu_has(Feature::Clmul)` / `cpu_has(Feature::Crc)` 之后调用（512 位折叠还要求 `Vaes` 与 `Avx512`，调用前由 `wide_available()` 再次确认）；折叠循环只在 `len >= 64` 时运行，在偏移 `o` 处读取 16 字节且满足 `o + 16 <= len`（由循环条件保证）；`asm!` 折叠拿到长度为 256 的非零整数倍的切片并只读取这些字节、80 字节常量（`#[repr(C)]`，偏移固定），写入一个 16 字节数组；折叠常量是公开多项式的编译期函数 |
-| `only-crypto/src/chacha/hw.rs` | 9 个块、1 个 `unsafe fn` | AVX2 一次计算 8 个 ChaCha20 分组（8×8 转置还原为分组）；对 `chacha::hw::avx512` 与 `chacha::hw::ifma` 的调用 | `xor8` 只在 `cpu_has(Feature::Avx2)` 之后调用；加载与存储是 `&mut [u8; 512]` 中的 32 字节片段；8 个分组的计数器不会回绕（由调用方检查）；`xor_wide`（原地）与 `xor_wide_into`（非原地写入可能未初始化的 `fill::Fill`）再次检查 `cpu_has(Feature::Avx512)`，只把位于 `dst` / `src` 与 `Fill::next_ptr(n)`（带边界检查，只写）之内的整组交给内核，不完整的最后一组用一次带掩码的内核调用处理，范围恰为剩余字节；每次非原地内核调用之后紧跟 `Fill::assume_written(n)`，`n` 恰为内核写入的字节数；`poly_blocks` 再次检查 `cpu_has(Feature::Ifma)`，并断言长度为 128 字节的非零整数倍 |
+| `only-crypto/src/chacha/hw.rs` | 11 个块、2 个 `unsafe fn` | AVX2 一次计算 8 个 ChaCha20 分组（8×8 转置还原为分组）；AVX2 以 2²⁶ 为基数一次处理 4 个 Poly1305 分组（`vpmuludq`）；对 `chacha::hw::avx512` 与 `chacha::hw::ifma` 的调用 | `xor8` 只在 `cpu_has(Feature::Avx2)` 之后调用；加载与存储是 `&mut [u8; 512]` 中的 32 字节片段；8 个分组的计数器不会回绕（由调用方检查）；`xor_wide`（原地）与 `xor_wide_into`（非原地写入可能未初始化的 `fill::Fill`）再次检查 `cpu_has(Feature::Avx512)`，只把位于 `dst` / `src` 与 `Fill::next_ptr(n)`（带边界检查，只写）之内的整组交给内核，不完整的最后一组用一次带掩码的内核调用处理，范围恰为剩余字节；每次非原地内核调用之后紧跟 `Fill::assume_written(n)`，`n` 恰为内核写入的字节数；`poly_blocks` 再次检查 `cpu_has(Feature::Ifma)`，并断言长度为 128 字节的非零整数倍；`poly_avx2` 再次检查 `cpu_has(Feature::Avx2)`，断言长度为 64 字节的非零整数倍，加载每个 64 字节组与 32 字节幂次行中的 32 字节片段 |
 | `only-crypto/src/chacha/hw/avx512.rs` | 2 个块（经宏每个内核一个：整组三个实例，带掩码的最后一组三个实例）、2 个 `unsafe fn`（仅 x86_64） | ChaCha20 每次迭代按字切分处理 16（zmm）或 8（ymm）个分组，或以每个 zmm 寄存器存放一行的方式处理 4 个分组，各一个 `asm!` 块（`vprold` 循环移位，128 位通道内 4×4 转置、`vpshufd` 对角线旋转与 `vshufi32x4` 通道转置还原为分组；这些 intrinsic 在 MSRV 上不稳定）；`xor_masked` 在 AVX-512 BW 字节掩码下处理最后一组 | 只经 `xor_wide` / `xor_wide_into` 在 `cpu_has(Feature::Avx512)`（AVX-512 F/BW/VL 与操作系统保存 ZMM 与 opmask 状态）之后进入；读取 64 字节状态、256 字节常量与 `src` 中的 `n` 组，向 `dst` 写入 `n` 组（每个 64 字节分组先加载再存储，因此可原地处理），非对齐访问，不使用栈；`xor_masked` 还读取由 `len` 生成的 128 字节掩码数组，只访问 `src[..len]` / `dst[..len]`：掩码全为 1 的分组整块读写，掩码为 0 的分组跳过，不完整的分组经 `vmovdqu8` 在掩码下读写（被屏蔽的字节既不读也不写，不会触发缺页）；所有向量与掩码寄存器及标志位声明为被破坏（`clobber_abi("C")`），结尾执行 `vzeroupper`；除轮数与组计数器以及 `xor_masked` 中按公开长度逐块的判断外没有分支 |
 | `only-crypto/src/chacha/hw/ifma.rs` | 1 个块、1 个 `unsafe fn`（仅 x86_64） | 基于 AVX-512 IFMA 的 Poly1305，以 44/44/42 位 limb 每次迭代处理 8 个分组（`vpmadd52luq`/`vpmadd52huq`；在 MSRV 上不稳定），一个 `asm!` 块 | 只经 `poly_blocks` 在 `cpu_has(Feature::Ifma)` 之后进入；读取 192 字节的通道累加器、320 字节的幂次、128 字节常量与 `n * 128` 字节消息，写回累加器，不使用栈；limb 始终小于 2⁵²（输入小于 2⁴⁵，乘数小于 2⁵⁰），因此 52 位乘积是精确的；所有向量寄存器与标志位声明为被破坏，结尾执行 `vzeroupper`；除组计数器外没有分支 |
 | `only-crypto/src/ec/hw.rs` | 14 个块、2 个 `unsafe fn`（仅 x86_64） | `asm!` 实现的 P-256 运算：模 `p`（专用约简，`-p⁻¹ = 1`）与模群阶 `n` 的 Montgomery 乘法与平方、加法、减法、`2ᵏ·a`、`3·a`；整点 Jacobian 倍点（也可连续 `n` 次）、加法与混合加法，各为一个作用于栈上帧的汇编块；59 步 safegcd divsteps；ECDH 窗口表与宽固定基梳表的 AVX2 扫描（`#[target_feature]` 函数） | 域、群阶与点运算汇编块只在 `cpu::has(Feature::Adx)`（BMI2 + ADX）之后到达：`P256X` 孪生曲线经由 `P256` 的分派进入，标量域在每次调用前检查，每个函数都有 debug 断言；域运算块只读取指针操作数指向的 32 字节 limb 数组（`pure`、`readonly` 或 `nomem`、`nostack`），只写声明的寄存器；点运算块只读写自己的帧（经 `rdi` 传入的局部 `[u64; 48..76]`，每个地址都是 `rdi` 加一个小于帧大小的常量），`nostack`，并把编译器保留的 `rbx`（块内存放移位计数 32）存入帧头、在块结束前恢复；divsteps 块只用寄存器（基础指令）；AVX2 函数只在 `cpu::cpu_has(Feature::Avx2)` 之后调用，从存活表项的每个 4-limb 数组读取 32 字节；除 divsteps 的循环计数外没有分支（修正用 `cmov`/`sbb`/`sar` 掩码） |

@@ -14,7 +14,7 @@
 | SHA-1、SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32、CRC-32C | VPCLMULQDQ + AVX-512 或 PCLMULQDQ 折叠、SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20（`chacha::hw`、`chacha::hw::avx512`） | AVX-512 内联汇编（`vprold`；每次迭代 16 个分组，余下部分 8 或 4 个，4 个时每个寄存器存一行；不完整的最后一组在字节掩码下处理），否则 AVX2（8 个分组） | 可移植的 4 分组并行布局，由编译器向量化 |
-| Poly1305（`chacha::hw::ifma`） | AVX-512 IFMA 内联汇编（每步 8 个分组，用于 256 字节及以上的连续分组），否则 2⁶⁴ 进制标量实现 | 2⁶⁴ 进制标量实现 |
+| Poly1305（`chacha::hw::ifma`、`chacha::hw`） | AVX-512 IFMA 内联汇编（每步 8 个分组，用于 256 字节及以上的连续分组），否则 AVX2（以 2²⁶ 为基数每步 4 个分组，用于 512 字节及以上），否则 2⁶⁴ 进制标量实现 | 2⁶⁴ 进制标量实现 |
 | P-256 域与群阶运算、X25519 阶梯（`ec::hw`、`curve25519::hw`；`ec::hw_aarch64`、`curve25519::hw_aarch64`） | BMI2 + ADX 内联汇编（`mulx`、`adcx`/`adox`） | 内联汇编（`MUL`/`UMULH`、`ADDS`/`ADCS`、`CSEL`；所有 ARMv8.0 CPU；尚未做性能测试） |
 | RSA 模幂（`bignum::ifma`、`bignum::hw`） | AVX-512 IFMA（`vpmadd52luq`/`vpmadd52huq`）处理 2048 至 4096 位密钥的 CRT 两半以及 2048 至 4096 位模数的公开运算（验签），否则 BMI2 + ADX 内联汇编（Montgomery 乘法与平方） | 可移植实现 |
 
@@ -29,7 +29,7 @@
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR |
 | `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时用 256 位寄存器处理完整的 256 字节组，否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`）；`encrypt_append` / `decrypt_append`（隐藏 API，供 TLS 记录层使用）直接写入向量的空闲容量，不先清零 |
-| `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from` 与 `*_append`） |
+| `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，AVX2 每步 4 个，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from` 与 `*_append`） |
 | `base64` | 标准 / URL 安全字母表，带或不带填充，严格解码 |
 | `rand` | `fill_random`（getrandom / getentropy / `/dev/urandom`）、`ChaChaRng` |
 | `ct_eq` | 常数时间比较 |

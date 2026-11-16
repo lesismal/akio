@@ -15,7 +15,7 @@ syscall lives in `only-sys`).
 | SHA-1, SHA-256 | SHA-NI | ARMv8 SHA1/SHA2 |
 | CRC-32, CRC-32C | VPCLMULQDQ + AVX-512 or PCLMULQDQ folding, SSE4.2 `crc32` | ARMv8 CRC32 |
 | ChaCha20 (`chacha::hw`, `chacha::hw::avx512`) | AVX-512 inline assembly (`vprold`; 16 blocks per iteration, 8 or 4 for the rest, the 4 one row per register; a partial last group under byte masks), else AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
-| Poly1305 (`chacha::hw::ifma`) | AVX-512 IFMA inline assembly (8 blocks per step, runs of 256 bytes and more), else radix-2⁶⁴ scalar | radix-2⁶⁴ scalar |
+| Poly1305 (`chacha::hw::ifma`, `chacha::hw`) | AVX-512 IFMA inline assembly (8 blocks per step, runs of 256 bytes and more), else AVX2 (4 blocks per step in radix 2²⁶, runs of 512 bytes and more), else radix-2⁶⁴ scalar | radix-2⁶⁴ scalar |
 | P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`; `ec::hw_aarch64`, `curve25519::hw_aarch64`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | inline assembly (`MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL`; every ARMv8.0 CPU; not benchmarked yet) |
 | RSA exponentiation (`bignum::ifma`, `bignum::hw`) | AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq`) for the CRT halves of 2048- to 4096-bit keys and for the public operation (verification) of 2048- to 4096-bit moduli, else BMI2 + ADX inline assembly (Montgomery multiplication and squaring) | portable |
 
@@ -30,7 +30,7 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR |
 | `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 whole 256-byte groups on 256-bit registers, else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`); `encrypt_append` / `decrypt_append` (hidden, for the TLS record layer) write straight into a vector's spare capacity, without zero-filling it first |
-| `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` and `*_append` for the TLS record layer) |
+| `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, AVX2 four, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` and `*_append` for the TLS record layer) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
 | `ct_eq` | constant-time comparison |

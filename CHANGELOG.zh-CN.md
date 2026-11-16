@@ -10,6 +10,13 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
+
+在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，only-crypto 的 Poly1305（因而
+ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶ 为基数每步吸收四个分组，原先是标量循环。在 Zen 4 上
+通过 AVX2 路径测量：ChaCha20-Poly1305 加密 16–64 KiB +20%，1 KiB +7%（docs/BENCHMARKS.zh-CN.md）。有 IFMA 的 CPU
+与 512 字节以下的消息不变。公开 API 无变化。
+
 ### 变更：AVX-512 上短消息的 ChaCha20-Poly1305 更快
 
 在具备 AVX-512 的 x86_64 上，only-crypto 的 ChaCha20 处理四个分组时每个寄存器存放每个分组的一行（用于消息开头与
