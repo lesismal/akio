@@ -7,6 +7,7 @@ use std::fmt;
 use std::io;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
 
 use only_crypto::pkey;
 
@@ -393,6 +394,7 @@ type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
 #[derive(Clone)]
 pub struct ServerConfig {
     pub(crate) inner: Arc<ServerSettings>,
+    pub(crate) handshake_timeout: Option<Duration>,
     parts: Arc<ServerParts>,
     _reserved: NotUnwindSafe,
 }
@@ -430,6 +432,7 @@ impl ServerConfig {
             cert_compression: true,
             ocsp: None,
             sni_ocsp: Vec::new(),
+            handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
         }
     }
 
@@ -470,6 +473,7 @@ pub struct ServerConfigBuilder {
     cert_compression: bool,
     ocsp: Option<Vec<u8>>,
     sni_ocsp: Vec<(String, Vec<u8>)>,
+    handshake_timeout: Option<Duration>,
 }
 
 /// The 0-RTT freshness window (RFC 8446 section 8.3): a ClientHello with early data must
@@ -477,6 +481,9 @@ pub struct ServerConfigBuilder {
 const ANTI_REPLAY_WINDOW_MS: u64 = 10_000;
 /// ClientHellos remembered for replay detection (each for twice the window).
 const ANTI_REPLAY_ENTRIES: usize = 100_000;
+/// Default of [`ServerConfigBuilder::handshake_timeout`] and
+/// [`ClientConfigBuilder::handshake_timeout`].
+pub(crate) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl fmt::Debug for ServerConfigBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -499,6 +506,7 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("record_size_limit", &self.record_limit)
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_response", &self.ocsp.is_some())
+            .field("handshake_timeout", &self.handshake_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -580,6 +588,16 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// How long a connection may take to complete the handshake (default 10 s; `None`: no
+    /// limit). A connection still negotiating after it, such as a client that sent part of a
+    /// ClientHello and stopped, is closed with `ErrorKind::TimedOut` and counted as a failed
+    /// handshake. Applies to [`Tls::server`](crate::Tls::server) on the engine's TCP backends
+    /// (epoll, kqueue, io_uring); QUIC has its own handshake timeout.
+    pub fn handshake_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.handshake_timeout = timeout;
+        self
+    }
+
     /// The largest record this server accepts, as the record_size_limit extension (RFC 8449)
     /// counts it: 64 to 16385 bytes (default 16385, no limit beyond the protocol's; in TLS 1.3
     /// the value includes the one-byte content type, and TLS 1.2 caps it at 16384). Sent to
@@ -650,7 +668,7 @@ impl ServerConfigBuilder {
 
     /// Tests: the 0-RTT anti-replay freshness window and record size.
     #[doc(hidden)]
-    pub fn __anti_replay(mut self, window: std::time::Duration, entries: usize) -> Self {
+    pub fn __anti_replay(mut self, window: Duration, entries: usize) -> Self {
         self.anti_replay = (window.as_millis() as u64, entries);
         self
     }
@@ -807,6 +825,7 @@ impl ServerConfigBuilder {
         };
         Ok(ServerConfig {
             inner: Arc::new(settings),
+            handshake_timeout: self.handshake_timeout,
             parts: Arc::new(parts),
             _reserved: PhantomData,
         })
@@ -820,6 +839,7 @@ impl ServerConfigBuilder {
 #[derive(Clone)]
 pub struct ClientConfig {
     pub(crate) inner: Arc<ClientSettings>,
+    pub(crate) handshake_timeout: Option<Duration>,
     parts: Arc<ClientParts>,
     _reserved: NotUnwindSafe,
 }
@@ -851,6 +871,7 @@ impl ClientConfig {
             record_limit: MAX_RECORD_LIMIT13,
             cert_compression: false,
             ocsp: false,
+            handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
         }
     }
 
@@ -883,6 +904,7 @@ pub struct ClientConfigBuilder {
     record_limit: u16,
     cert_compression: bool,
     ocsp: bool,
+    handshake_timeout: Option<Duration>,
 }
 
 impl fmt::Debug for ClientConfigBuilder {
@@ -899,6 +921,7 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("record_size_limit", &self.record_limit)
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_stapling", &self.ocsp)
+            .field("handshake_timeout", &self.handshake_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -984,6 +1007,16 @@ impl ClientConfigBuilder {
     /// `only-x509` yet): check it yourself if revocation matters.
     pub fn ocsp_stapling(mut self, yes: bool) -> Self {
         self.ocsp = yes;
+        self
+    }
+
+    /// How long a connection may take to complete the handshake once established (default
+    /// 10 s; `None`: no limit). A server that stops answering mid-handshake gets the connection
+    /// closed with `ErrorKind::TimedOut` (its `on_close` sees it), counted as a failed
+    /// handshake. Applies to [`Tls::client`](crate::Tls::client) on the engine's TCP backends;
+    /// the TCP connect itself is bounded by `Config::connect_timeout`.
+    pub fn handshake_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.handshake_timeout = timeout;
         self
     }
 
@@ -1079,6 +1112,7 @@ impl ClientConfigBuilder {
         };
         Ok(ClientConfig {
             inner: Arc::new(settings),
+            handshake_timeout: self.handshake_timeout,
             parts: Arc::new(parts),
             _reserved: PhantomData,
         })

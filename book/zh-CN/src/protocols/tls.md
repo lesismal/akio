@@ -79,6 +79,7 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 | SNI | | `.sni(false)` 不再发送 |
 | 早期数据（0-RTT） | `.early_data(max_bytes)` | `.early_data(true)` |
 | 记录大小限制（RFC 8449） | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
+| 握手超时（默认 10 s：超时仍在握手的连接以 `TimedOut` 关闭，并计入 `only_tls_handshake_failures_total`） | `.handshake_timeout(Some(d))`，`None` 为不限 | `.handshake_timeout(Some(d))` |
 | 证书压缩 | 默认开启；`.certificate_compression(false)` 关闭 | `.certificate_compression(true)` 开启 |
 | OCSP stapling | `.ocsp_response(der)`、`.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)` |
 | 仅限测试 | | `.insecure_skip_verify()` |

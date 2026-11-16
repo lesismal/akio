@@ -86,6 +86,7 @@ WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 | SNI | | `.sni(false)` to stop sending it |
 | early data (0-RTT) | `.early_data(max_bytes)` | `.early_data(true)` |
 | record size limit (RFC 8449) | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
+| handshake timeout (default 10 s: a connection still negotiating after it is closed with `TimedOut` and counted in `only_tls_handshake_failures_total`) | `.handshake_timeout(Some(d))`, `None` for no limit | `.handshake_timeout(Some(d))` |
 | certificate compression | on by default; `.certificate_compression(false)` to disable | `.certificate_compression(true)` to offer it |
 | OCSP stapling | `.ocsp_response(der)`, `.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)` |
 | tests only | | `.insecure_skip_verify()` |

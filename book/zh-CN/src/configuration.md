@@ -23,6 +23,7 @@
 | `read_buffer` | 64 KiB | 否 | 每个 I/O 线程的读缓冲区；`on_data` 一次最多收到的字节数（io_uring：缓冲区大小为 `min(read_buffer, 16 KiB)`） |
 | `write_high_watermark` | 256 KiB | 是 | 连接排队达到此值时暂停读，降到四分之一时恢复 |
 | `max_queued_bytes` | 64 MiB | 是 | 每连接排队超过此值后 `send` 返回 `Overloaded` |
+| `max_pending_responses` | 32 | 否 | 有序（流水线）响应：已预留但尚未写出的响应达到此数时暂停读，降到一半时恢复；排在慢响应之后的响应字节达到 `write_high_watermark` 时同样暂停读，超过 `max_queued_bytes` 时关闭连接；`None` = 不限数量 |
 | `backlog` | 1024 | 否 | `listen(2)` 的 backlog |
 | `idle_timeout` | `None` | 是 | 对端这么久没有发来数据时关闭（`TimedOut`） |
 | `write_timeout` | 60 s | 否 | 排队的输出这么久没有任何进展（对端不再读取）时关闭（`TimedOut`）；`None` 关闭此检查 |

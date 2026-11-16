@@ -483,6 +483,7 @@ pub only_core::Config::connect_timeout: core::option::Option<core::time::Duratio
 pub only_core::Config::idle_timeout: core::option::Option<core::time::Duration>
 pub only_core::Config::log_level: core::option::Option<only_log::LevelFilter>
 pub only_core::Config::max_connections: usize
+pub only_core::Config::max_pending_responses: core::option::Option<usize>
 pub only_core::Config::max_queued_bytes: usize
 pub only_core::Config::read_buffer: usize
 pub only_core::Config::shutdown_timeout: core::time::Duration
@@ -849,6 +850,7 @@ pub fn only_core::Handler::on_close(&mut self, &only_core::Conn<Self>, core::opt
 pub fn only_core::Handler::on_data(&mut self, &only_core::Conn<Self>, &[u8])
 pub trait only_core::Transport: core::marker::Send + 'static
 pub fn only_core::Transport::as_any(&mut self) -> &mut dyn core::any::Any
+pub fn only_core::Transport::handshake_timeout(&self) -> core::option::Option<core::time::Duration>
 pub fn only_core::Transport::handshaking(&self) -> bool
 pub fn only_core::Transport::name(&self) -> &'static str
 pub fn only_core::Transport::recv(&mut self, &[u8], &mut alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>) -> core::io::error::Result<()>
