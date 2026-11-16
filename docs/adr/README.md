@@ -12,3 +12,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 on 20
 - [ADR-006: Role of eBPF](006-ebpf-role.md)
 - [ADR-007: Partial-segment route patterns](007-partial-segment-routes.md)
 - [ADR-008: TLS record_size_limit, certificate compression and OCSP stapling](008-tls-extensions.md)
+- [ADR-013: Shared 0-RTT anti-replay store and QUIC compatible version negotiation](013-shared-anti-replay-and-compatible-vn.md)

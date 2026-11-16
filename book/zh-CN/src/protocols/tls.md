@@ -113,8 +113,43 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 ClientHello 其早期数据被拒绝，按普通会话恢复继续。每个 `ServerConfig` 最多记录 100,000 个 ClientHello，
 满了就拒绝早期数据。
 
-**安全权衡。** 早期数据没有前向保密，且可被重放：上述记录能挡住窗口内对同一服务端的重放，挡不住发往
-共享票据的其他服务端的重放，也挡不住客户端被诱使再次发送的请求。只为可安全重复的请求（无副作用的读取）
+**共享票据的多台服务端**（[ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md)）。
+多个进程或多台机器用同一个 `.session_ticket_key(key)`（48 字节保密随机数：16 字节密钥名加 32 字节密钥；
+轮换即构建新配置）构建时，可接受彼此签发的票据。此时它们还需要共用一份重放记录，否则发往一台服务端的首个
+飞行被截获后可重放到另一台：`.anti_replay_store(store)` 接受任意 `Arc<dyn AntiReplayStore>`，其唯一方法
+把 ClientHello 的 binder 记录一段时间，并告知它是否是新的。它在握手中于 I/O 线程上调用，且只针对本会接受
+早期数据的 ClientHello，因此要保持简短并设超时。出错时**失败即关闭**：拒绝早期数据，客户端在握手后重发。
+默认实现是 `MemoryAntiReplay`（即上文每个配置一份的记录）。用 Redis 时，每次调用一条原子的
+`SET key 1 NX PX ttl`：
+
+```rust,ignore
+use std::{io, sync::Arc, time::Duration};
+use only_tls::{AntiReplayStore, ServerConfig};
+
+struct RedisReplay { pool: MyRedisPool } // 任意设了较短超时的客户端
+
+impl AntiReplayStore for RedisReplay {
+    fn check_and_insert(&self, binder: &[u8], ttl: Duration) -> io::Result<bool> {
+        let key = format!("only:0rtt:{}", hex(binder));
+        // 设置成功（首次出现）返回 "OK"，键已存在（重放）返回 nil。
+        let reply = self.pool.set_nx_px(&key, "1", ttl.as_millis() as u64)
+            .map_err(io::Error::other)?; // 超时同样如此：拒绝早期数据
+        Ok(reply.is_some())
+    }
+}
+
+let cfg = ServerConfig::builder(chain, key)
+    .session_ticket_key(ticket_key)          // 每台服务端相同
+    .early_data(16384)
+    .anti_replay_store(Arc::new(RedisReplay { pool }))
+    .build()?;
+```
+
+存储必须是原子的（先读后写会放过并发的重放）；跨区域且有复制延迟时，每个区域使用自己的存储与票据密钥。
+QUIC 服务端通过 `only_quic::server_config_from(&cfg)` 获得这两项。
+
+**安全权衡。** 早期数据没有前向保密，且可被重放：上述记录能挡住窗口内对同一服务端（或共享其存储的服务端）
+的重放，挡不住客户端被诱使再次发送的请求。只为可安全重复的请求（无副作用的读取）
 开启它，其余请求回 `425 Too Early`：
 
 ```rust,ignore

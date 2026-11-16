@@ -291,6 +291,7 @@ impl !core::panic::unwind_safe::UnwindSafe for only_quic::QuicServer
 pub struct only_quic::ServerConfig(_)
 impl only_quic::ServerConfig
 pub fn only_quic::ServerConfig::migration(self, bool) -> Self
+pub fn only_quic::ServerConfig::prefer_version(self, only_quic::Version) -> Self
 pub fn only_quic::ServerConfig::preferred_address(self, core::net::socket_addr::SocketAddr) -> Self
 pub fn only_quic::ServerConfig::transport(self, &only_quic::TransportConfig) -> Self
 pub fn only_quic::ServerConfig::versions(self, &[only_quic::Version]) -> Self

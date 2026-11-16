@@ -7,7 +7,9 @@ Interop is tested in both directions with quic-go (raw QUIC echo of streams and 
 with Retry, key updates, a 150 MB transfer, version 2 and client migration:
 `tools/interop/quic/run.sh`) and, for HTTP/3,
 with quic-go and fib's QUIC/HTTP/3 (`tools/interop/h3/run.sh`); ngtcp2 and OpenSSL 3.5's QUIC
-stack are checked as clients of our servers in Docker (`tools/interop/quic/docker.sh`).
+stack are checked as clients of our servers in Docker (`tools/interop/quic/docker.sh`), and
+ngtcp2's own client and server for compatible version negotiation, both ways
+(`tools/interop/quic/ngtcp2-cvn.sh`).
 
 ## QUIC
 
@@ -71,8 +73,20 @@ reserved and enables nothing (it exposed quinn-proto before the in-house impleme
   narrows it) and answers in the client's; a client starts in `ClientConfig::version` (v1 by
   default) and, when a server answers with Version Negotiation without it, starts over once in a
   version both speak, the version_information transport parameter (RFC 9368) guarding against a
-  forged downgrade. `Connection::version()` tells which is in use. Compatible version negotiation
-  (switching inside one handshake) is not implemented.
+  forged downgrade. `Connection::version()` tells which is in use.
+- **Compatible version negotiation** (RFC 9368 section 4, [ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md)):
+  `ServerConfig::prefer_version(Version::V2)` moves clients that start in v1 and list v2 in their
+  version_information to v2 within the handshake, without a round trip (and `V1` the other way).
+  Off by default (the server answers in the client's version). The server reads the whole first
+  ClientHello before answering, so it works when the ClientHello spans several packets, after a
+  Retry and with 0-RTT (the client's 0-RTT packets stay in its first version, RFC 9369 section
+  4.1). only-quic clients always follow such a switch. Clients without version_information
+  (quic-go) are never switched; ngtcp2 switches both ways.
+
+  ```rust,ignore
+  let cfg = only_quic::server_config(certs, key, &[b"h3"])?
+      .prefer_version(only_quic::Version::V2);
+  ```
 - **ECN** (`TransportConfig::ecn`, on by default): on Linux packets go out ECT(0), received
   codepoints are read per datagram and reported in ACK_ECN frames, the path is validated (RFC 9000
   section 13.4) and CE marks count as congestion; a path that bleaches or drops marks falls back
@@ -104,8 +118,10 @@ ClientHellos per server); otherwise, or when 0-RTT packets are lost, the data go
 tells the client what happened; `Connection::is_early(stream)` tells the server which streams
 came early, and only-h3 marks such requests `Early-Data: 1` (RFC 8470), so handlers can answer
 `425 Too Early` to what is not safe to repeat. `H3Client` sends its requests in 0-RTT when its
-config enables it. 0-RTT data can be replayed (to another server sharing tickets, or within the
-window by an attacker who can make the client retry) and is not forward secret.
+config enables it. 0-RTT data can be replayed (within the window by an attacker who can make the
+client retry, or to another server sharing tickets unless the servers share the anti-replay
+record: build their TLS configuration with `session_ticket_key` and `anti_replay_store`, see the
+TLS chapter) and is not forward secret.
 
 ## HTTP/3
 
