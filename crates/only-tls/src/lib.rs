@@ -39,7 +39,7 @@
 //! (中文: [TLS](https://lesismal.github.io/only/zh-CN/protocols/tls.html)).
 #![warn(clippy::unwrap_used)]
 
-use std::{any::Any, io};
+use std::{any::Any, io, time::Duration};
 
 use only_core::{Acceptor, Conn, Transport};
 
@@ -136,16 +136,22 @@ impl<A: Acceptor> Acceptor for Tls<A> {
     }
 
     fn transport(&self) -> Option<Box<dyn Transport>> {
-        let conn = match &self.mode {
-            Mode::Server(cfg) => Ok(proto::Connection::server(cfg.inner.clone())),
-            Mode::Client(cfg, name) => proto::Connection::client(cfg.inner.clone(), name),
+        let (conn, timeout) = match &self.mode {
+            Mode::Server(cfg) => (
+                Ok(proto::Connection::server(cfg.inner.clone())),
+                cfg.handshake_timeout,
+            ),
+            Mode::Client(cfg, name) => (
+                proto::Connection::client(cfg.inner.clone(), name),
+                cfg.handshake_timeout,
+            ),
         };
         match conn {
-            Ok(conn) => Some(Box::new(TlsTransport { conn })),
+            Ok(conn) => Some(Box::new(TlsTransport { conn, timeout })),
             Err(e) => {
                 only_log::warn!(target: "only::tls", "cannot start TLS session: {e}");
                 // No transport would mean plaintext; refuse by installing a dead one.
-                Some(Box::new(Failed))
+                Some(Box::new(Failed(timeout)))
             }
         }
     }
@@ -153,7 +159,7 @@ impl<A: Acceptor> Acceptor for Tls<A> {
 
 /// Installed when a session cannot be created: every operation fails, so the connection closes
 /// instead of silently falling back to plaintext.
-struct Failed;
+struct Failed(Option<Duration>);
 
 impl Transport for Failed {
     fn recv(&mut self, _: &[u8], _: &mut Vec<u8>, _: &mut Vec<u8>) -> io::Result<()> {
@@ -172,10 +178,15 @@ impl Transport for Failed {
     fn handshaking(&self) -> bool {
         true
     }
+    fn handshake_timeout(&self) -> Option<Duration> {
+        self.0
+    }
 }
 
 struct TlsTransport {
     conn: proto::Connection,
+    /// [`ServerConfigBuilder::handshake_timeout`] / [`ClientConfigBuilder::handshake_timeout`].
+    timeout: Option<Duration>,
 }
 
 fn io_err(e: proto::Fatal) -> io::Error {
@@ -206,6 +217,10 @@ impl Transport for TlsTransport {
 
     fn handshaking(&self) -> bool {
         self.conn.handshaking()
+    }
+
+    fn handshake_timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 }
 
@@ -297,6 +312,8 @@ mod tests {
         let mut t = tls.transport().unwrap();
         assert_eq!(t.name(), "tls");
         assert!(t.handshaking());
+        // A safe handshake deadline by default.
+        assert_eq!(t.handshake_timeout(), Some(Duration::from_secs(10)));
         // The first call emits the ClientHello.
         let (mut plain, mut out) = (Vec::new(), Vec::new());
         t.recv(&[], &mut plain, &mut out).unwrap();
@@ -305,8 +322,31 @@ mod tests {
     }
 
     #[test]
+    fn handshake_timeout_is_configurable() {
+        let acc = only_core::fn_acceptor(|_c: &Conn<Nop>| Nop);
+        let cfg = ClientConfig::builder()
+            .handshake_timeout(None)
+            .build()
+            .unwrap();
+        let tls = Tls::client(cfg, "localhost", acc).unwrap();
+        assert_eq!(tls.transport().unwrap().handshake_timeout(), None);
+        let acc = only_core::fn_acceptor(|_c: &Conn<Nop>| Nop);
+        let cfg = ClientConfig::builder()
+            .handshake_timeout(Some(Duration::from_millis(1500)))
+            .build()
+            .unwrap();
+        let tls = Tls::client(cfg, "localhost", acc).unwrap();
+        let t = tls.transport().unwrap();
+        assert_eq!(t.handshake_timeout(), Some(Duration::from_millis(1500)));
+        assert_eq!(
+            Failed(Some(Duration::from_secs(1))).handshake_timeout(),
+            Some(Duration::from_secs(1))
+        );
+    }
+
+    #[test]
     fn failed_transport_refuses_everything() {
-        let mut f = Failed;
+        let mut f = Failed(None);
         let (mut a, mut b) = (Vec::new(), Vec::new());
         assert!(f.recv(b"x", &mut a, &mut b).is_err());
         assert!(f.seal(b"x", &mut a).is_err());

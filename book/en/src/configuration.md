@@ -23,6 +23,7 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `read_buffer` | 64 KiB | no | read buffer per I/O thread; the most `on_data` receives at once (io_uring: buffers of `min(read_buffer, 16 KiB)`) |
 | `write_high_watermark` | 256 KiB | yes | reads pause while a connection has this much queued, resume at a quarter |
 | `max_queued_bytes` | 64 MiB | yes | `send` fails with `Overloaded` beyond this per connection |
+| `max_pending_responses` | 32 | no | ordered (pipelined) responses: reads pause while this many reserved responses are not yet written, and resume at half; responses held back behind a slow one also pause reads at `write_high_watermark` bytes and close the connection past `max_queued_bytes`; `None` = no count limit |
 | `backlog` | 1024 | no | `listen(2)` backlog |
 | `idle_timeout` | `None` | yes | close (with `TimedOut`) when the peer sent nothing for this long |
 | `write_timeout` | 60 s | no | close (with `TimedOut`) when queued output made no progress for this long: a peer that stopped reading; `None` disables it |

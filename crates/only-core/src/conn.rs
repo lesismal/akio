@@ -126,6 +126,11 @@ impl<T> InlineDeque<T> {
     }
 
     #[inline]
+    fn len(&self) -> usize {
+        usize::from(self.head.is_some()) + self.rest.len()
+    }
+
+    #[inline]
     fn front(&self) -> Option<&T> {
         self.head.as_ref()
     }
@@ -206,6 +211,13 @@ pub trait Transport: Send + 'static {
     /// Whether the transport is still negotiating (a failure now counts as a failed handshake).
     fn handshaking(&self) -> bool {
         false
+    }
+    /// How long the handshake may take: a connection whose transport is still
+    /// [`handshaking`](Transport::handshaking) this long after it opened is closed with
+    /// `ErrorKind::TimedOut` (and counted as a failed handshake) by the engine's TCP backends.
+    /// `None` (the default): no limit.
+    fn handshake_timeout(&self) -> Option<std::time::Duration> {
+        None
     }
 }
 
@@ -547,6 +559,21 @@ struct Ordered {
     head: u64,
     next: u64,
     entries: InlineDeque<Entry>,
+    /// Bytes held in memory behind the first position: complete responses waiting for it, and
+    /// what streams that are not first in line wrote so far.
+    held: usize,
+}
+
+/// Bytes a response of `parts` holds in memory (files are read when sent).
+fn parts_len(parts: &[Part]) -> usize {
+    parts
+        .iter()
+        .map(|p| match p {
+            Part::Bytes(b) => b.len(),
+            #[cfg(unix)]
+            Part::File { .. } => 0,
+        })
+        .sum()
 }
 
 /// The socket under a connection: its own TCP stream, or a peer on a shared UDP socket.
@@ -575,6 +602,16 @@ pub struct ConnInner {
     id: u64,
     state: AtomicU8,
     hold: AtomicBool,
+    /// Reads paused because too many ordered responses are pending (see
+    /// `Config::max_pending_responses`); separate from `hold`, which is the application's.
+    ordered_hold: AtomicBool,
+    /// The loop corked the connection around a callback ([`set_corked`](Self::set_corked)):
+    /// an atomic, so corking costs no lock. Read together with `WriteState::corked` (the
+    /// application's [`cork`](Self::cork)) under the write lock; cleared under it too.
+    loop_cork: AtomicBool,
+    /// A drain waiter was moved to `drained`: lets [`run_drained`](Self::run_drained) skip its
+    /// lock in the usual case of none.
+    drain_pending: AtomicBool,
     /// Exempt from the write backpressure (see [`set_relayed`](Self::set_relayed)).
     relayed: AtomicBool,
     /// UDP: the ECN codepoint of the datagram being delivered (set by the loop).
@@ -606,6 +643,9 @@ impl ConnInner {
             id,
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
+            ordered_hold: AtomicBool::new(false),
+            loop_cork: AtomicBool::new(false),
+            drain_pending: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
@@ -637,6 +677,9 @@ impl ConnInner {
             id,
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
+            ordered_hold: AtomicBool::new(false),
+            loop_cork: AtomicBool::new(false),
+            drain_pending: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
@@ -673,6 +716,9 @@ impl ConnInner {
             id,
             state: AtomicU8::new(OPEN),
             hold: AtomicBool::new(false),
+            ordered_hold: AtomicBool::new(false),
+            loop_cork: AtomicBool::new(false),
+            drain_pending: AtomicBool::new(false),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
@@ -699,15 +745,15 @@ impl ConnInner {
         let mut w = self.lock();
         let r = Self::drain_virtual(&mut w, sink);
         if matches!(r, Ok(true)) {
-            if let Some(f) = w.drain.take() {
-                *self.drained.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
-            }
+            self.stash_drain(&mut w);
         }
         drop(w);
         self.run_drained();
         r
     }
 
+    /// File chunks are read here, on the owning loop, 16 KiB per step (a userspace stack has no
+    /// `sendfile`): a page-cache miss waits for the disk on that loop.
     fn drain_virtual(w: &mut WriteState, sink: &mut dyn FnMut(&[u8]) -> usize) -> io::Result<bool> {
         if w.datagram {
             loop {
@@ -806,8 +852,10 @@ impl ConnInner {
         self.state.load(Ordering::Acquire) == OPEN
     }
 
+    /// Reads are paused: by the application ([`hold_reads`](Self::hold_reads)) or because too
+    /// many ordered responses are pending (`Config::max_pending_responses`).
     pub fn read_held(&self) -> bool {
-        self.hold.load(Ordering::Acquire)
+        self.hold.load(Ordering::Acquire) || self.ordered_hold.load(Ordering::Acquire)
     }
 
     /// Marks the connection as one end of a relay: what it reads is sent on *another*
@@ -851,19 +899,34 @@ impl ConnInner {
     }
 
     /// Loop side: coalesce writes (`true`) or stop coalescing (`false`, call [`flush_queue`]).
+    /// Takes no lock: a sender reads the flag under the write lock, and a loop that corks
+    /// always ends with [`uncork_flush`](Self::uncork_flush) (or `flush_queue`), which takes it.
     pub fn set_corked(&self, corked: bool) {
-        self.lock().corked = corked;
+        self.loop_cork.store(corked, Ordering::Relaxed);
+        if !corked {
+            // The application's cork ends with the loop's, as it always did.
+            self.lock().corked = false;
+        }
     }
 
-    /// Loop side: end of a callback. Uncorks and writes what the callback queued.
-    /// Returns `Err` if the socket failed.
-    pub fn uncork_flush(&self) -> io::Result<()> {
+    /// Whether sends are being coalesced (call with the write lock held).
+    #[inline]
+    fn corked(&self, w: &WriteState) -> bool {
+        w.corked || self.loop_cork.load(Ordering::Relaxed)
+    }
+
+    /// Loop side: end of a callback. Uncorks and writes what the callback queued. Returns the
+    /// bytes still queued (what [`queued_bytes`](Self::queued_bytes) would say), so the loop
+    /// needs no second lock to check its backpressure; `Err` if the socket failed.
+    pub fn uncork_flush(&self) -> io::Result<usize> {
         let mut w = self.lock();
         w.corked = false;
-        let r = self.write_locked(&mut w).map(drop);
+        self.loop_cork.store(false, Ordering::Relaxed);
+        let r = self.write_locked(&mut w);
+        let q = w.queued + w.file_bytes as usize;
         drop(w);
         self.run_drained();
-        r
+        r.map(|_| q)
     }
 
     /// Loop side: writes as much queued data as the socket takes. `Ok(true)` when empty.
@@ -912,14 +975,29 @@ impl ConnInner {
     fn write_locked(&self, w: &mut WriteState) -> io::Result<bool> {
         let r = self.write_queue(w);
         if matches!(r, Ok(true)) {
-            if let Some(f) = w.drain.take() {
-                *self.drained.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
-            }
+            self.stash_drain(w);
         }
         r
     }
 
+    /// The queue drained: moves the drain waiter, if any, aside for
+    /// [`run_drained`](Self::run_drained) (call with the write lock held).
+    #[inline]
+    fn stash_drain(&self, w: &mut WriteState) {
+        if let Some(f) = w.drain.take() {
+            *self.drained.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+            self.drain_pending.store(true, Ordering::Release);
+        }
+    }
+
     fn run_drained(&self) {
+        // Every path that stashes a waiter calls this afterwards, so a flag still clear here
+        // means there is nothing to run (the usual case: no lock taken).
+        if !self.drain_pending.load(Ordering::Acquire)
+            || !self.drain_pending.swap(false, Ordering::AcqRel)
+        {
+            return;
+        }
         let f = self
             .drained
             .lock()
@@ -1087,7 +1165,7 @@ impl ConnInner {
             bytes: Bytes::Segmented(data, seg, ecn),
             off: 0,
         });
-        if w.corked {
+        if self.corked(&w) {
             return Ok(());
         }
         let r = self.write_locked(&mut w);
@@ -1121,6 +1199,7 @@ impl ConnInner {
                 .zip(guards.iter_mut())
                 .map(|(c, g)| {
                     g.corked = false;
+                    c.loop_cork.store(false, Ordering::Relaxed);
                     DgramItem {
                         inner: c,
                         w: g,
@@ -1132,9 +1211,7 @@ impl ConnInner {
             for it in &mut items {
                 let r = it.res.take().unwrap_or(Ok(true));
                 if matches!(r, Ok(true)) {
-                    if let Some(f) = it.w.drain.take() {
-                        *it.inner.drained.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
-                    }
+                    it.inner.stash_drain(it.w);
                 }
                 out.push(r);
             }
@@ -1201,8 +1278,9 @@ impl ConnInner {
             return Ok(()); // the transport is holding the bytes until it is ready
         }
         let was_empty = w.queue.is_empty();
+        let corked = self.corked(&w);
         // Fast path: nothing queued and not corked -> write straight to the socket.
-        if was_empty && !w.corked {
+        if was_empty && !corked {
             loop {
                 match self.raw_write(data) {
                     Ok(n) if n == data.len() => {
@@ -1223,7 +1301,7 @@ impl ConnInner {
             }
         }
         w.push_copy(data);
-        let need_wake = was_empty && !w.corked;
+        let need_wake = was_empty && !corked;
         drop(w);
         if need_wake {
             self.link.wake_conn(self.id);
@@ -1251,8 +1329,9 @@ impl ConnInner {
             return Ok(());
         }
         let was_empty = w.queue.is_empty();
+        let corked = self.corked(&w);
         let mut off = 0;
-        if was_empty && !w.corked {
+        if was_empty && !corked {
             loop {
                 match self.raw_write(&data[off..]) {
                     Ok(n) => {
@@ -1276,7 +1355,7 @@ impl ConnInner {
             bytes: Bytes::Owned(data),
             off,
         });
-        let need_wake = was_empty && !w.corked;
+        let need_wake = was_empty && !corked;
         drop(w);
         if need_wake {
             self.link.wake_conn(self.id);
@@ -1308,8 +1387,9 @@ impl ConnInner {
         };
         w.add_queued(n);
         w.queue.push_back(Chunk { bytes, off: 0 });
-        let need_wake = was_empty && !w.corked;
-        if !w.corked {
+        let corked = self.corked(&w);
+        let need_wake = was_empty && !corked;
+        if !corked {
             // Try to push it out right away.
             if let Err(e) = self.write_locked(&mut w) {
                 drop(w);
@@ -1331,6 +1411,7 @@ impl ConnInner {
     pub fn flush(&self) -> Result<()> {
         let mut w = self.lock();
         w.corked = false;
+        self.loop_cork.store(false, Ordering::Relaxed);
         match self.write_locked(&mut w) {
             Ok(true) => {
                 drop(w);
@@ -1394,6 +1475,7 @@ impl ConnInner {
         let o: &mut Ordered = g.get_or_insert_with(Box::default);
         o.entries.push_back(Entry::Empty);
         o.next += 1;
+        self.ordered_limit(o);
         o.next - 1
     }
 
@@ -1412,8 +1494,10 @@ impl ConnInner {
             }
         } else {
             let i = (seq - o.head) as usize;
+            o.held += data.len();
             *o.entries.get_mut(i).expect("reserved") =
                 Entry::Ready(vec![Part::Bytes(data)], close_after);
+            self.check_held(o);
         }
         self.advance(o);
     }
@@ -1423,7 +1507,12 @@ impl ConnInner {
         let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
         let o: &mut Ordered = g.get_or_insert_with(Box::default);
         let i = (seq - o.head) as usize;
+        // Counted even when first in line: `advance` takes it off as it sends the parts.
+        o.held += parts_len(&parts);
         *o.entries.get_mut(i).expect("reserved") = Entry::Ready(parts, close_after);
+        if i > 0 {
+            self.check_held(o);
+        }
         self.advance(o);
     }
 
@@ -1432,6 +1521,7 @@ impl ConnInner {
         let mut g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
         let o: &mut Ordered = g.get_or_insert_with(Box::default);
         let i = (seq - o.head) as usize;
+        o.held += head.len();
         *o.entries.get_mut(i).expect("reserved") = Entry::Stream(Stream {
             pending: head,
             live: false,
@@ -1457,6 +1547,8 @@ impl ConnInner {
                     return Err(Error::Overloaded);
                 }
                 s.pending.extend_from_slice(&data);
+                o.held += data.len();
+                self.ordered_limit(o);
                 Ok(())
             }
             _ => Err(Error::Closed),
@@ -1485,6 +1577,7 @@ impl ConnInner {
                         unreachable!()
                     };
                     o.head += 1;
+                    o.held -= parts_len(&parts);
                     for p in parts {
                         let r = self.send_part(p);
                         self.ordered_sent(r);
@@ -1496,6 +1589,7 @@ impl ConnInner {
                 Some(Entry::Stream(s)) => {
                     if !s.live {
                         s.live = true;
+                        o.held -= s.pending.len();
                         if !s.pending.is_empty() {
                             let d = std::mem::take(&mut s.pending);
                             let r = self.send_owned(d);
@@ -1503,7 +1597,7 @@ impl ConnInner {
                         }
                     }
                     if !s.finished {
-                        return; // later responses wait for this stream to end
+                        break; // later responses wait for this stream to end
                     }
                     let close = s.close;
                     o.entries.pop_front();
@@ -1512,9 +1606,57 @@ impl ConnInner {
                         self.close_after_send();
                     }
                 }
-                _ => return,
+                _ => break,
             }
         }
+        self.ordered_limit(o);
+    }
+
+    /// Responses held back behind an unfinished one count toward `max_queued_bytes` together
+    /// with the send queue: past it the connection ends (as a response over it would), so a
+    /// burst of large responses behind a slow one cannot hold unbounded memory.
+    fn check_held(&self, o: &Ordered) {
+        let max = self.cfg.telemetry.live().max_queued_bytes();
+        if o.held > max || o.held + self.queued_bytes() > max {
+            self.ordered_sent(Err(Error::Overloaded));
+        }
+    }
+
+    /// Pauses reads while too many ordered responses are pending, or too many bytes are held
+    /// back behind the first one; resumes them (with hysteresis) once enough went out
+    /// (`Config::max_pending_responses`, `write_high_watermark`).
+    #[inline]
+    fn ordered_limit(&self, o: &Ordered) {
+        let n = o.entries.len();
+        let limit = self.cfg.max_pending_responses;
+        let paused = self.ordered_hold.load(Ordering::Relaxed);
+        if !paused {
+            // The usual case: one response at a time, filled right away.
+            if o.held == 0 && limit.is_none_or(|l| n < l) {
+                return;
+            }
+            let high = self.cfg.telemetry.live().write_high_watermark();
+            if limit.is_some_and(|l| n >= l) || o.held >= high {
+                self.ordered_hold.store(true, Ordering::Release);
+                if let Some(s) = self.lock().stats.as_ref() {
+                    s.backpressure.add(1);
+                }
+                self.link.wake_conn(self.id);
+            }
+        } else {
+            let high = self.cfg.telemetry.live().write_high_watermark();
+            if limit.is_none_or(|l| n <= l / 2) && o.held <= high / 4 {
+                self.ordered_hold.store(false, Ordering::Release);
+                self.link.wake_conn(self.id);
+            }
+        }
+    }
+
+    /// Reserved responses not yet written, and the bytes held in memory behind the first of
+    /// them (for tests and the connection table).
+    pub fn pending_responses(&self) -> (usize, usize) {
+        let g = self.ordered.lock().unwrap_or_else(|p| p.into_inner());
+        g.as_ref().map_or((0, 0), |o| (o.entries.len(), o.held))
     }
 
     /// A response in the ordered stream could not be queued (over `max_queued_bytes`): it
@@ -1542,6 +1684,14 @@ impl ConnInner {
 
     /// Queues `len` bytes of `file` from `offset` to be sent with `sendfile(2)` (read through
     /// memory when the connection has a transport such as TLS). Not for UDP.
+    ///
+    /// Without a transport nothing is read here: the kernel copies the file as the socket
+    /// drains (`sendfile` on a page-cache miss waits for the disk on the writing thread, as
+    /// any `sendfile` server does). With a transport the file is read here, on the calling
+    /// thread, in 64 KiB blocks, and all of it is queued at once: it must fit under
+    /// `max_queued_bytes` (`Overloaded` otherwise, checked before anything is read), and a
+    /// large file read from a slow disk should be sent from the pool (`spawn_blocking`, or a
+    /// detached [`ResponseSlot`]) rather than from an I/O thread.
     #[cfg(unix)]
     pub fn send_file(&self, file: Arc<std::fs::File>, offset: u64, len: u64) -> Result<()> {
         use std::os::unix::fs::FileExt;
@@ -1552,6 +1702,15 @@ impl ConnInner {
             return Err(Error::Io(io::ErrorKind::Unsupported.into()));
         }
         if self.has_transport() {
+            // All of it is queued in memory: refuse up front what cannot fit, rather than read
+            // up to `max_queued_bytes` of it from disk and fail halfway.
+            let max = self.cfg.telemetry.live().max_queued_bytes() as u64;
+            if len.saturating_add(self.queued_bytes() as u64) > max {
+                if let Some(s) = &self.lock().stats {
+                    s.overloaded.add(1);
+                }
+                return Err(Error::Overloaded);
+            }
             // Records must be sealed: pass the file through memory in blocks.
             let (mut pos, mut left) = (offset, len);
             while left > 0 {
@@ -1579,13 +1738,14 @@ impl ConnInner {
             },
             off: 0,
         });
-        if !w.corked {
+        let corked = self.corked(&w);
+        if !corked {
             if let Err(e) = self.write_locked(&mut w) {
                 drop(w);
                 return Err(self.fail(e));
             }
         }
-        let need_wake = was_empty && !w.corked;
+        let need_wake = was_empty && !corked;
         drop(w);
         self.run_drained();
         if need_wake {
@@ -1597,6 +1757,26 @@ impl ConnInner {
     /// Installs the transport layer. Call once, before any data flows.
     pub fn set_transport(&self, t: Box<dyn Transport>) {
         self.lock().transport = Some(t);
+    }
+
+    /// The handshake deadline of the transport, if one is installed, still negotiating and
+    /// has a [`handshake_timeout`](Transport::handshake_timeout). Loop side, once at open.
+    pub fn handshake_timeout(&self) -> Option<std::time::Duration> {
+        let w = self.lock();
+        let t = w.transport.as_ref()?;
+        if t.handshaking() {
+            t.handshake_timeout()
+        } else {
+            None
+        }
+    }
+
+    /// Whether the installed transport is still negotiating (`false` without one).
+    pub fn transport_handshaking(&self) -> bool {
+        self.lock()
+            .transport
+            .as_ref()
+            .is_some_and(|t| t.handshaking())
     }
 
     /// Whether a transport layer is installed.
@@ -1640,7 +1820,7 @@ impl ConnInner {
             bytes: Bytes::Owned(out),
             off: 0,
         });
-        was_empty && !w.corked
+        was_empty && !self.corked(w)
     }
 
     /// Encodes `data` through the transport if there is one.
@@ -2143,6 +2323,55 @@ mod loom_tests {
             // A send that won the lock before mark_closed is cleared by it; one after is rejected.
             assert!(matches!(c.send(b"z"), Err(Error::Closed)));
             assert_eq!(c.queued_bytes(), 0, "data queued after mark_closed");
+        });
+    }
+
+    /// A drain waiter registered while a send races the loop's uncork runs exactly once (the
+    /// `drain_pending` flag never loses or repeats it).
+    #[test]
+    fn loom_drain_waiter_runs_once() {
+        let (s, _peer) = socket_pair();
+        loom::model(move || {
+            let link = Arc::new(FakeLink::default());
+            let c = conn(s.try_clone().unwrap(), link.clone());
+            c.set_corked(true);
+            let ran = Arc::new(AtomicUsize::new(0));
+            let sender = {
+                let c = c.clone();
+                thread::spawn(move || c.send(b"ab").unwrap())
+            };
+            let r = ran.clone();
+            c.on_drain(Box::new(move || {
+                r.fetch_add(1, StdOrd::SeqCst);
+            }));
+            sender.join().unwrap();
+            assert_eq!(c.uncork_flush().unwrap(), 0);
+            assert_eq!(ran.load(StdOrd::SeqCst), 1);
+        });
+    }
+
+    /// Ordered responses: reads pause at `max_pending_responses` on the loop and resume when
+    /// another thread's fill brings them down, whichever fill comes first.
+    #[test]
+    fn loom_ordered_pause_resumes() {
+        let (s, _peer) = socket_pair();
+        loom::model(move || {
+            let link = Arc::new(FakeLink::default());
+            let a = s.local_addr().unwrap();
+            let mut cfg = Config::default();
+            cfg.max_pending_responses = Some(2);
+            let c = ConnInner::new(1, s.try_clone().unwrap(), a, a, link.clone(), Arc::new(cfg));
+            let first = c.reserve();
+            let second = c.reserve();
+            assert!(c.read_held(), "paused at the limit");
+            let t = {
+                let c = c.clone();
+                thread::spawn(move || c.fill(first, b"1".to_vec(), false))
+            };
+            c.fill(second, b"2".to_vec(), false);
+            t.join().unwrap();
+            assert!(!c.read_held(), "resumed once written");
+            assert_eq!(c.pending_responses(), (0, 0));
         });
     }
 

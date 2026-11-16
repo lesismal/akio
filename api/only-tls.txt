@@ -60,6 +60,7 @@ pub fn only_tls::ClientConfigBuilder::build(self) -> core::result::Result<only_t
 pub fn only_tls::ClientConfigBuilder::certificate_compression(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::client_cert(self, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
 pub fn only_tls::ClientConfigBuilder::early_data(self, bool) -> Self
+pub fn only_tls::ClientConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_tls::ClientConfigBuilder::insecure_skip_verify(self) -> Self
 pub fn only_tls::ClientConfigBuilder::ocsp_stapling(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::record_size_limit(self, u16) -> Self
@@ -141,6 +142,7 @@ pub fn only_tls::ServerConfigBuilder::certificate_compression(self, bool) -> Sel
 pub fn only_tls::ServerConfigBuilder::client_auth_optional(self, only_tls::RootCerts) -> Self
 pub fn only_tls::ServerConfigBuilder::client_auth_required(self, only_tls::RootCerts) -> Self
 pub fn only_tls::ServerConfigBuilder::early_data(self, u32) -> Self
+pub fn only_tls::ServerConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_tls::ServerConfigBuilder::ocsp_response(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn only_tls::ServerConfigBuilder::record_size_limit(self, u16) -> Self
 pub fn only_tls::ServerConfigBuilder::session_cache(self, usize) -> Self

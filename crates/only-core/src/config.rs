@@ -9,6 +9,7 @@ pub(crate) const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_UDP_MAX_PEERS: usize = 65536;
+pub(crate) const DEFAULT_MAX_PENDING_RESPONSES: usize = 32;
 
 /// What the slow-callback detector reports.
 #[derive(Clone, Copy, Debug)]
@@ -51,6 +52,15 @@ pub struct Config {
     pub write_high_watermark: usize,
     /// `send` fails with `Overloaded` beyond this many queued bytes per connection.
     pub max_queued_bytes: usize,
+    /// Ordered (pipelined) responses, see `Conn::reserve_response`: reads pause while a
+    /// connection has this many reserved responses not yet written (one slow response holds
+    /// back every later one), and resume once half of them are out. Default 32; `None`: no
+    /// limit on their number. Reads also pause while the responses held back behind an
+    /// unfinished one reach `write_high_watermark` bytes, and the connection is closed if they
+    /// and its send queue together pass `max_queued_bytes`. A request already read is still
+    /// answered, so a connection can go past the limit by the requests of one read
+    /// (`read_buffer`).
+    pub max_pending_responses: Option<usize>,
     /// `listen(2)` backlog.
     pub backlog: i32,
     /// Close a connection (with `ErrorKind::TimedOut`) when the peer has sent nothing for this
@@ -109,7 +119,7 @@ pub struct Config {
     /// Reloadable at runtime (`Engine::reload` / [`Telemetry::reload`]): `idle_timeout`,
     /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
     /// `max_connections`, `shutdown_timeout`, `log_level`. Fixed at build time: `read_buffer`,
-    /// `backlog`, `udp_idle_timeout`, `write_timeout`, `connect_timeout`.
+    /// `max_pending_responses`, `backlog`, `udp_idle_timeout`, `write_timeout`, `connect_timeout`.
     pub telemetry: Arc<Telemetry>,
 }
 
@@ -119,6 +129,7 @@ impl Default for Config {
             read_buffer: 64 << 10,
             write_high_watermark: DEFAULT_WRITE_HIGH_WATERMARK,
             max_queued_bytes: DEFAULT_MAX_QUEUED_BYTES,
+            max_pending_responses: Some(DEFAULT_MAX_PENDING_RESPONSES),
             backlog: 1024,
             idle_timeout: None,
             write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
