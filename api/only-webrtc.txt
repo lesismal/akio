@@ -54,6 +54,7 @@ pub only_webrtc::Error::NoPendingOffer
 pub only_webrtc::Error::Rtc(only_webrtc::RtcError)
 pub only_webrtc::Error::Sdp(alloc::string::String)
 pub only_webrtc::Error::Timeout
+pub only_webrtc::Error::TooManyPeers
 pub only_webrtc::Error::UnknownChannel
 pub only_webrtc::Error::UnknownMedia
 impl core::error::Error for only_webrtc::Error
@@ -233,6 +234,7 @@ pub fn only_webrtc::Endpoint::connect_timeout(self, core::option::Option<core::t
 pub fn only_webrtc::Endpoint::create_offer<H: only_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut only_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(only_webrtc::Peer, alloc::string::String), only_webrtc::Error>
 pub fn only_webrtc::Endpoint::gather_srflx(&self, core::net::socket_addr::SocketAddr, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_webrtc::Endpoint::max_peers(self, usize) -> Self
 pub fn only_webrtc::Endpoint::peers(&self) -> usize
 impl core::clone::Clone for only_webrtc::Endpoint
 pub fn only_webrtc::Endpoint::clone(&self) -> Self
@@ -476,6 +478,7 @@ pub fn only_webrtc::RtcServer::config(self, impl core::ops::function::Fn() -> on
 pub fn only_webrtc::RtcServer::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_webrtc::RtcServer::create_offer<H: only_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut only_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(only_webrtc::Peer, alloc::string::String), only_webrtc::Error>
 pub fn only_webrtc::RtcServer::ice_lite(self, bool) -> Self
+pub fn only_webrtc::RtcServer::max_peers(self, usize) -> Self
 pub fn only_webrtc::RtcServer::new(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> only_webrtc::RtcServer
 pub fn only_webrtc::RtcServer::peers(&self) -> usize
 impl core::clone::Clone for only_webrtc::RtcServer
@@ -529,6 +532,7 @@ impl<'a, 'b> core::marker::Sync for only_webrtc::SdpChanges<'a, 'b>
 impl<'a, 'b> core::marker::Unpin for only_webrtc::SdpChanges<'a, 'b>
 impl<'a, 'b> core::panic::unwind_safe::RefUnwindSafe for only_webrtc::SdpChanges<'a, 'b>
 impl<'a, 'b> !core::panic::unwind_safe::UnwindSafe for only_webrtc::SdpChanges<'a, 'b>
+pub const only_webrtc::DEFAULT_MAX_PEERS: usize
 pub trait only_webrtc::PeerHandler: core::marker::Send + 'static
 pub fn only_webrtc::PeerHandler::on_channel_close(&mut self, &only_webrtc::Peer, only_webrtc::ChannelId)
 pub fn only_webrtc::PeerHandler::on_channel_data(&mut self, &only_webrtc::Peer, only_webrtc::ChannelId, &[u8], bool)

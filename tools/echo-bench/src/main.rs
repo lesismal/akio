@@ -3,7 +3,9 @@
 //!
 //! usage: `echo-bench <addr> [conns=64] [msg_bytes=64] [seconds=10] [threads=4] [mode=tcp]`
 //!
-//! `mode` is `tcp`, `udp`, `ws` (WebSocket binary messages after an upgrade on `/ws`), `tls`, or
+//! `mode` is `tcp`, `udp`, `ws` (WebSocket binary messages after an upgrade on `/ws`), `wsz` (the
+//! same with permessage-deflate negotiated without context takeover: requests are compressed
+//! messages the server inflates, replies whatever the server sends, compressed or not), `tls`, or
 //! `tlshs` (build with `--features tls`; the server certificate is not verified). `tlshs`
 //! measures full TLS handshakes per second instead: each of `conns` workers connects, completes a
 //! handshake (no resumption), and closes, in a loop. Connections are spread over a few client threads; each thread sends one message on
@@ -39,6 +41,8 @@ enum Sock {
         s: TcpStream,
         frame: Vec<u8>,
         hdr: usize,
+        /// `wsz`: reply length read from each header (it may be compressed).
+        parse: bool,
     },
 }
 
@@ -59,10 +63,42 @@ impl Sock {
             Sock::Tcp(s) => s.read_exact(buf).map(|()| true),
             #[cfg(feature = "tls")]
             Sock::Tls(s) => s.read_exact(buf).map(|()| true),
-            Sock::Ws { s, hdr, .. } => {
+            Sock::Ws {
+                s,
+                hdr,
+                parse: false,
+                ..
+            } => {
                 let mut h = [0u8; 10];
                 s.read_exact(&mut h[..*hdr])?;
                 s.read_exact(buf).map(|()| true)
+            }
+            Sock::Ws { s, .. } => {
+                let mut h = [0u8; 10];
+                s.read_exact(&mut h[..2])?;
+                let n = match h[1] & 0x7f {
+                    126 => {
+                        s.read_exact(&mut h[2..4])?;
+                        usize::from(u16::from_be_bytes([h[2], h[3]]))
+                    }
+                    127 => {
+                        s.read_exact(&mut h[2..10])?;
+                        u64::from_be_bytes(h[2..10].try_into().expect("8 bytes")) as usize
+                    }
+                    n => usize::from(n),
+                };
+                let mut left = n;
+                while left > 0 {
+                    let k = left.min(buf.len().max(1));
+                    if buf.is_empty() {
+                        let mut one = [0u8; 1];
+                        s.read_exact(&mut one)?;
+                    } else {
+                        s.read_exact(&mut buf[..k])?;
+                    }
+                    left -= k;
+                }
+                Ok(true)
             }
             Sock::Udp(s) => match s.recv(buf) {
                 Ok(_) => Ok(true),
@@ -163,13 +199,20 @@ fn ws_header(n: usize, mask: bool) -> Vec<u8> {
     h
 }
 
-/// Opens a WebSocket on `/ws` and prepares the masked frame carrying `size` bytes.
-fn ws_connect(addr: &str, size: usize) -> Sock {
+/// Opens a WebSocket on `/ws` and prepares the masked frame carrying `size` bytes. With
+/// `deflate`, permessage-deflate is negotiated (no context takeover either way) and the frame is
+/// a compressed message: the payload in one stored deflate block (RSV1 set).
+fn ws_connect(addr: &str, size: usize, deflate: bool) -> Sock {
     let mut s = TcpStream::connect(addr).expect("connect");
     s.set_nodelay(true).ok();
+    let ext = if deflate {
+        "Sec-WebSocket-Extensions: permessage-deflate; client_no_context_takeover; server_no_context_takeover\r\n"
+    } else {
+        ""
+    };
     let req = format!(
         "GET /ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+         Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n{ext}\r\n"
     );
     s.write_all(req.as_bytes()).expect("upgrade request");
     let mut head = Vec::new();
@@ -179,14 +222,34 @@ fn ws_connect(addr: &str, size: usize) -> Sock {
         head.push(b[0]);
     }
     assert!(head.starts_with(b"HTTP/1.1 101"), "upgrade refused");
+    if deflate {
+        assert!(
+            String::from_utf8_lossy(&head).contains("permessage-deflate"),
+            "permessage-deflate not accepted"
+        );
+    }
     let key = [0x12u8, 0x34, 0x56, 0x78];
-    let mut frame = ws_header(size, true);
+    let mut payload = Vec::with_capacity(size + 5);
+    if deflate {
+        assert!(size <= 0xffff, "wsz: at most 65535 bytes");
+        // A non-final stored block; the receiver appends 00 00 ff ff.
+        let n = size as u16;
+        payload.push(0x00);
+        payload.extend_from_slice(&n.to_le_bytes());
+        payload.extend_from_slice(&(!n).to_le_bytes());
+    }
+    payload.extend(std::iter::repeat_n(0xA5u8, size));
+    let mut frame = ws_header(payload.len(), true);
+    if deflate {
+        frame[0] |= 0x40; // RSV1
+    }
     frame.extend_from_slice(&key);
-    frame.extend((0..size).map(|i| 0xA5 ^ key[i % 4]));
+    frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ key[i % 4]));
     Sock::Ws {
         s,
         frame,
         hdr: ws_header(size, false).len(),
+        parse: deflate,
     }
 }
 
@@ -209,7 +272,8 @@ fn tls_handshake(addr: &str, cfg: &Arc<rustls::ClientConfig>) -> io::Result<()> 
 
 fn connect(addr: &str, mode: &str, size: usize) -> Sock {
     match mode {
-        "ws" => ws_connect(addr, size),
+        "ws" => ws_connect(addr, size, false),
+        "wsz" => ws_connect(addr, size, true),
         "udp" => {
             let s = UdpSocket::bind(if addr.starts_with('[') {
                 "[::]:0"
@@ -241,7 +305,7 @@ fn connect(addr: &str, mode: &str, size: usize) -> Sock {
         }
         other => {
             eprintln!(
-                "unknown mode {other} (tcp, udp, ws{})",
+                "unknown mode {other} (tcp, udp, ws, wsz{})",
                 if cfg!(feature = "tls") {
                     ", tls, tlshs"
                 } else {
@@ -399,7 +463,7 @@ fn hold_one(addr: &str, size: usize, kind: &str) -> io::Result<Box<dyn Send>> {
             Box::new(s)
         }
         "ws" => {
-            let mut s = ws_connect(addr, size);
+            let mut s = ws_connect(addr, size, false);
             s.send(&msg)?;
             s.recv(&mut buf)?;
             Box::new(s)

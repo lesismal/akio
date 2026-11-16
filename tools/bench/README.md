@@ -9,7 +9,7 @@ CPUs, several rounds, a fresh server per run. Linux only (taskset, `/proc`, perf
 | Script | What it runs |
 |---|---|
 | `build.sh` | builds every server and the load generator in release mode into `$CARGO_TARGET_DIR` (default `/tmp/t`); fib-ref needs Go and a fib checkout (`FIB_SRC`, default `/fib`) |
-| `http.sh [cases]` | HTTP/1.1 and HTTP/2: `plaintext`, `pipelined` (16 requests in flight per connection), `json`, `h2` (h2c, 64 connections x 16 streams), `h2many` (h2c, 16 x 128), `h2tls` (HTTP/2 over TLS 1.3 with ALPN, 64 x 16), `ws` (WebSocket echo) |
+| `http.sh [cases]` | HTTP/1.1 and HTTP/2: `plaintext`, `pipelined` (16 requests in flight per connection), `json`, `h2` (h2c, 64 connections x 16 streams), `h2many` (h2c, 16 x 128), `h2tls` (HTTP/2 over TLS 1.3 with ALPN, 64 x 16), `ws` (WebSocket echo), `wsz` (the same with permessage-deflate, not in the default set) |
 | `echo.sh [cases]` | TCP / UDP / TLS echo and TLS handshakes per second |
 | `ktls.sh` | kernel TLS against only-tls's own record layer (HTTP/1.1 over TLS, `ktls-bench` example, `experimental-ktls` feature; `VETH=1` puts the client behind a veth pair) |
 | `uring-eval.sh` | io_uring send mechanisms on a raw ring: `write(2)` vs `IORING_OP_SEND` vs `SEND_ZC`, with and without registered files, by response size (the ignored `eval_server` test of only-uring; server CPU per request from `/proc`) |

@@ -21,6 +21,7 @@
   普通 stream ID 里的查询串会作为 `PeerInfo::query` 交给 hub 的 `on_publish` / `on_subscribe` 钩子。
 - `SrtConfig::on_connect` 能看到请求（地址、stream ID、延迟、是否加密）和解析后的 `StreamId`，
   可以用任意 `RejectReason` 拒绝（`FORBIDDEN` = 1403 等），caller 在握手中收到拒绝码。
+- `SrtConfig::max_conns`（1024；0 表示不限）限制连接数：超出后 caller 以 `OVERLOAD`（1402）被拒绝。
 - **推流者** 在握手期间预留路径（`Hub::reserve`），所以同一路径的第二个推流者在握手时就被拒绝
   （`CONFLICT`，1409）。它的 MPEG-TS 经解复用（`only_media::mpegts::demux`），节目的轨道
   （H.264、H.265、AAC、Opus、MP3）都已知后流才上线。

@@ -235,3 +235,31 @@ fn push_pull_and_encryption() {
         Some(SrtError::Rejected(RejectReason::BAD_SECRET))
     );
 }
+
+/// Connections are bounded by default (1024); at the limit a new caller is rejected with
+/// OVERLOAD, and a slot frees when one leaves.
+#[test]
+fn max_conns_has_a_safe_default_and_rejects_over_it() {
+    assert_eq!(SrtConfig::default().max_conns, 1024);
+    let hub = Hub::default();
+    let mut cfg = SrtConfig::default().play_wait(Duration::from_secs(5));
+    cfg.max_conns = 1;
+    let (e, srv) = engine(&hub, cfg);
+    let addr = e.local_addrs()[0];
+    let (c1, _, _closed1) = collector();
+    let first = srt::dial(&e, addr, Config::default().stream_id("live/x"), c1).unwrap();
+    wait("first connected", || first.is_connected());
+    let (c2, _, closed2) = collector();
+    let _second = srt::dial(&e, addr, Config::default().stream_id("live/x"), c2).unwrap();
+    assert_eq!(
+        closed2.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(SrtError::Rejected(RejectReason::OVERLOAD))
+    );
+    first.close();
+    wait("first gone", || srv.connections() == 0);
+    let (c3, _, _closed3) = collector();
+    let third = srt::dial(&e, addr, Config::default().stream_id("live/x"), c3).unwrap();
+    wait("third connected", || third.is_connected());
+    e.shutdown();
+    e.wait();
+}

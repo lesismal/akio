@@ -143,6 +143,20 @@ pub struct Decoder {
     /// Payload of the control frame being read.
     control: Vec<u8>,
     inflater: Option<Inflater>,
+    /// Buffer of the compressed bytes of the last message, reused by the next compressed one.
+    zbuf: Vec<u8>,
+}
+
+/// Largest buffer kept between messages for reuse; larger ones are freed.
+const KEEP_BUF: usize = 64 << 10;
+
+/// The most raw (compressed) bytes a message decompressing to at most `max` bytes may take.
+/// Deflate never needs more than about 9/8 of the input for any data (fixed Huffman codes of
+/// 9 bits per literal; stored blocks add 5 bytes per 64 KiB), so this never rejects a message
+/// that would inflate within the limit, while bounding what a peer can make the decoder buffer
+/// before any inflating is paid for (RFC 7692 messages fragmented forever without FIN).
+pub(crate) fn max_compressed(max: usize) -> usize {
+    max.saturating_add(max / 8).saturating_add(1024)
 }
 
 impl std::fmt::Debug for Decoder {
@@ -163,6 +177,24 @@ impl Decoder {
             partial: None,
             control: Vec::new(),
             inflater,
+            zbuf: Vec::new(),
+        }
+    }
+
+    /// Hands back the payload of a ping or pong event so the next control frame reuses it.
+    pub(crate) fn recycle_control(&mut self, mut v: Vec<u8>) {
+        if self.control.capacity() == 0 && v.capacity() <= KEEP_BUF {
+            v.clear();
+            self.control = v;
+        }
+    }
+
+    /// The per-message buffer limit for raw bytes: compressed messages get some headroom.
+    fn raw_limit(&self, compressed: bool) -> usize {
+        if compressed {
+            max_compressed(self.max_message)
+        } else {
+            self.max_message
         }
     }
 
@@ -289,10 +321,19 @@ impl Decoder {
                     }
                     compressed = true;
                 }
+                let buf = if compressed {
+                    // Reuse the compressed buffer of the previous message.
+                    std::mem::take(&mut self.zbuf)
+                } else if fin && len <= self.max_message as u64 {
+                    // The whole message is in this frame: size it once.
+                    Vec::with_capacity(len as usize)
+                } else {
+                    Vec::new()
+                };
                 self.partial = Some(Partial {
                     text: opcode == Opcode::Text,
                     compressed,
-                    buf: Vec::new(),
+                    buf,
                     valid: 0,
                 });
             }
@@ -312,10 +353,11 @@ impl Decoder {
             self.finish_frame(fin, opcode, compressed, out)?;
             return Ok(());
         }
-        // Reject early what can never fit, before buffering it.
+        // Reject early what can never fit, before buffering it. Compressed messages are bounded
+        // too (rule 6): their raw bytes by `max_compressed`, their output by the inflater.
         if !opcode.is_control() {
             let have = self.partial.as_ref().map_or(0, |p| p.buf.len()) as u64;
-            if !compressed && have + len > self.max_message as u64 {
+            if have + len > self.raw_limit(compressed) as u64 {
                 return Err(err(close::TOO_BIG, "message too big"));
             }
         }
@@ -349,8 +391,9 @@ impl Decoder {
             unmask(&mut dst[start..], m, mask_pos);
         }
         if !opcode.is_control() {
+            let limit = self.raw_limit(self.partial.as_ref().is_some_and(|p| p.compressed));
             let p = self.partial.as_mut().expect("partial message");
-            if p.buf.len() > self.max_message && !p.compressed {
+            if p.buf.len() > limit {
                 return Err(err(close::TOO_BIG, "message too big"));
             }
             // Fail fast on invalid UTF-8, without waiting for the end of the message. Compressed
@@ -388,12 +431,17 @@ impl Decoder {
         let mut p = self.partial.take().expect("partial message");
         if compressed {
             let inf = self.inflater.as_mut().expect("inflater");
-            p.buf = inf.inflate(&p.buf, self.max_message).map_err(|e| match e {
+            let inflated = inf.inflate(&p.buf, self.max_message).map_err(|e| match e {
                 crate::deflate::InflateError::TooBig => err(close::TOO_BIG, "message too big"),
                 crate::deflate::InflateError::Corrupt => {
                     err(close::INVALID_DATA, "corrupt compressed data")
                 }
             })?;
+            let mut raw = std::mem::replace(&mut p.buf, inflated);
+            if raw.capacity() <= KEEP_BUF {
+                raw.clear();
+                self.zbuf = raw;
+            }
         }
         if p.text {
             match String::from_utf8(p.buf) {
@@ -446,20 +494,45 @@ fn parse_close(payload: &[u8]) -> Result<Event, ProtocolError> {
     }
 }
 
-/// Appends one unmasked (server → client) frame to `out`. `rsv1` marks a compressed message.
-pub fn encode_frame(opcode: Opcode, fin: bool, rsv1: bool, payload: &[u8], out: &mut Vec<u8>) {
-    out.push((u8::from(fin) << 7) | (u8::from(rsv1) << 6) | opcode as u8);
-    match payload.len() {
-        n if n < 126 => out.push(n as u8),
+/// Encodes a frame header (with the masking key when `mask` is set) into a stack buffer;
+/// returns it and its length.
+pub(crate) fn frame_header(
+    opcode: Opcode,
+    fin: bool,
+    rsv1: bool,
+    len: usize,
+    mask: Option<[u8; 4]>,
+) -> ([u8; 14], usize) {
+    let mut h = [0u8; 14];
+    h[0] = (u8::from(fin) << 7) | (u8::from(rsv1) << 6) | opcode as u8;
+    let m = if mask.is_some() { 0x80 } else { 0 };
+    let mut at = match len {
+        n if n < 126 => {
+            h[1] = m | n as u8;
+            2
+        }
         n if n < 65_536 => {
-            out.push(126);
-            out.extend_from_slice(&(n as u16).to_be_bytes());
+            h[1] = m | 126;
+            h[2..4].copy_from_slice(&(n as u16).to_be_bytes());
+            4
         }
         n => {
-            out.push(127);
-            out.extend_from_slice(&(n as u64).to_be_bytes());
+            h[1] = m | 127;
+            h[2..10].copy_from_slice(&(n as u64).to_be_bytes());
+            10
         }
+    };
+    if let Some(k) = mask {
+        h[at..at + 4].copy_from_slice(&k);
+        at += 4;
     }
+    (h, at)
+}
+
+/// Appends one unmasked (server → client) frame to `out`. `rsv1` marks a compressed message.
+pub fn encode_frame(opcode: Opcode, fin: bool, rsv1: bool, payload: &[u8], out: &mut Vec<u8>) {
+    let (h, n) = frame_header(opcode, fin, rsv1, payload.len(), None);
+    out.extend_from_slice(&h[..n]);
     out.extend_from_slice(payload);
 }
 
@@ -472,19 +545,8 @@ pub fn encode_frame_masked(
     key: [u8; 4],
     out: &mut Vec<u8>,
 ) {
-    out.push((u8::from(fin) << 7) | (u8::from(rsv1) << 6) | opcode as u8);
-    match payload.len() {
-        n if n < 126 => out.push(0x80 | n as u8),
-        n if n < 65_536 => {
-            out.push(0x80 | 126);
-            out.extend_from_slice(&(n as u16).to_be_bytes());
-        }
-        n => {
-            out.push(0x80 | 127);
-            out.extend_from_slice(&(n as u64).to_be_bytes());
-        }
-    }
-    out.extend_from_slice(&key);
+    let (h, n) = frame_header(opcode, fin, rsv1, payload.len(), Some(key));
+    out.extend_from_slice(&h[..n]);
     let start = out.len();
     out.extend_from_slice(payload);
     unmask(&mut out[start..], key, 0);
@@ -675,6 +737,73 @@ mod tests {
         w.extend(client_frame(0, true, &[0; 6]));
         assert_eq!(
             d.decode(&w, &mut Vec::new()).unwrap_err().code,
+            close::TOO_BIG
+        );
+    }
+
+    /// A compressed message fragmented without FIN forever is cut at the raw-bytes cap (1009)
+    /// instead of buffering without limit; before the fix `!compressed` skipped both checks.
+    #[test]
+    fn compressed_fragments_without_fin_are_bounded() {
+        let max = 1000;
+        let cap = max_compressed(max);
+        let mut d = Decoder::new(Role::Server, max, Some(Inflater::new(false)));
+        let mut first = client_frame(2, false, &[0u8; 100]);
+        first[0] |= 0x40; // RSV1: compressed
+        let mut out = Vec::new();
+        d.decode(&first, &mut out).unwrap();
+        let mut sent = 100;
+        let e = loop {
+            match d.decode(&client_frame(0, false, &[0u8; 100]), &mut out) {
+                Ok(()) => sent += 100,
+                Err(e) => break e,
+            }
+            assert!(sent <= cap, "buffered {sent} raw bytes past the cap {cap}");
+        };
+        assert_eq!(e.code, close::TOO_BIG);
+        assert!(sent + 100 > cap);
+        // One frame that alone passes the cap is refused from its header, before buffering.
+        let mut d = Decoder::new(Role::Server, max, Some(Inflater::new(false)));
+        let mut f = client_frame(2, false, &vec![0u8; cap + 1]);
+        f[0] |= 0x40;
+        assert_eq!(
+            d.decode(&f[..16], &mut Vec::new()).unwrap_err().code,
+            close::TOO_BIG
+        );
+    }
+
+    /// Incompressible data at exactly the message limit still decodes: the raw cap leaves room
+    /// for deflate's expansion. Messages after it reuse the compressed buffer.
+    #[test]
+    fn compressed_message_at_the_limit_decodes() {
+        let max = 70_000;
+        let mut x = 0x1234_5678u32;
+        let data: Vec<u8> = (0..max)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                x as u8
+            })
+            .collect();
+        let mut def = crate::deflate::Deflater::new(false, 15);
+        let mut d = Decoder::new(Role::Server, max, Some(Inflater::new(false)));
+        for msg in [&data[..], &data[..max - 1], b"small"] {
+            let z = def.deflate(msg);
+            assert!(z.len() <= max_compressed(max));
+            let mut f = client_frame(2, true, &z);
+            f[0] |= 0x40;
+            let mut out = Vec::new();
+            d.decode(&f, &mut out).unwrap();
+            assert_eq!(out, vec![Event::Binary(msg.to_vec())]);
+        }
+        // Over the limit by one byte: refused after inflating.
+        let mut big = data.clone();
+        big.push(1);
+        let mut f = client_frame(2, true, &def.deflate(&big));
+        f[0] |= 0x40;
+        assert_eq!(
+            d.decode(&f, &mut Vec::new()).unwrap_err().code,
             close::TOO_BIG
         );
     }

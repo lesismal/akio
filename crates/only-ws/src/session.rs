@@ -10,7 +10,10 @@ use only_core::{ConnInner, Error, Result};
 
 use crate::{
     deflate::{Deflater, Inflater, PmdParams},
-    protocol::{Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked},
+    protocol::{
+        Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked,
+        frame_header,
+    },
 };
 
 /// A complete WebSocket message.
@@ -75,13 +78,110 @@ struct Tx {
     protocol: Option<String>,
 }
 
-impl Tx {
-    /// Appends one frame, masked on the client side.
-    fn frame(&mut self, op: Opcode, fin: bool, rsv1: bool, payload: &[u8], out: &mut Vec<u8>) {
-        match self.mask.as_mut() {
-            Some(m) => encode_frame_masked(op, fin, rsv1, payload, m.next_key(), out),
-            None => encode_frame(op, fin, rsv1, payload, out),
+/// Frames up to this size go through a reused per-thread scratch buffer and are sent with one
+/// copy into the connection's (pooled) queue, so a message costs no allocation; larger ones are
+/// encoded into a buffer of their own that the connection queues without copying it again.
+const SCRATCH_MAX: usize = 64 << 10;
+
+thread_local! {
+    /// Frame encoding and compression output buffers, per thread rather than per connection so
+    /// idle connections hold nothing. Taken out while in use: a re-entrant send (from a drain
+    /// callback) just starts from an empty buffer.
+    static BUFS: std::cell::Cell<(Vec<u8>, Vec<u8>)> = const { std::cell::Cell::new((Vec::new(), Vec::new())) };
+}
+
+/// Runs `f` with the thread's (scratch, compression) buffers and puts them back, dropping any
+/// that grew past [`SCRATCH_MAX`].
+fn with_bufs<R>(f: impl FnOnce(&mut Vec<u8>, &mut Vec<u8>) -> R) -> R {
+    let (mut a, mut b) = BUFS.with(|c| c.take());
+    let r = f(&mut a, &mut b);
+    if a.capacity() > 2 * SCRATCH_MAX {
+        a = Vec::new();
+    }
+    if b.capacity() > 2 * SCRATCH_MAX {
+        b = Vec::new();
+    }
+    BUFS.with(|c| c.set((a, b)));
+    r
+}
+
+/// Appends one frame to `out`, masked when `mask` hands out keys (client side).
+fn put_frame(
+    mask: Option<&mut MaskGen>,
+    op: Opcode,
+    fin: bool,
+    rsv1: bool,
+    payload: &[u8],
+    out: &mut Vec<u8>,
+) {
+    match mask {
+        Some(m) => encode_frame_masked(op, fin, rsv1, payload, m.next_key(), out),
+        None => {
+            let (h, n) = frame_header(op, fin, rsv1, payload.len(), None);
+            out.extend_from_slice(&h[..n]);
+            out.extend_from_slice(payload);
         }
+    }
+}
+
+impl Tx {
+    /// Encodes the frames of one message (`frame` payload bytes each, 0: one frame; `body`
+    /// already compressed when `rsv1`) and sends them on `conn`.
+    fn send_frames(
+        &mut self,
+        conn: &ConnInner,
+        op: Opcode,
+        rsv1: bool,
+        body: &[u8],
+        frame: usize,
+        scratch: &mut Vec<u8>,
+    ) -> Result<()> {
+        let mask = &mut self.mask;
+        let frame = if frame == 0 { body.len().max(1) } else { frame };
+        let frames = body.len().div_ceil(frame).max(1);
+        let total = body.len() + 14 * frames;
+        let mut own;
+        let out: &mut Vec<u8> = if total <= SCRATCH_MAX {
+            scratch.clear();
+            scratch
+        } else {
+            own = Vec::with_capacity(total);
+            &mut own
+        };
+        if body.is_empty() {
+            put_frame(mask.as_mut(), op, true, rsv1, body, out);
+        } else {
+            for (i, piece) in body.chunks(frame).enumerate() {
+                let first = i == 0;
+                put_frame(
+                    mask.as_mut(),
+                    if first { op } else { Opcode::Continue },
+                    i + 1 == frames,
+                    rsv1 && first,
+                    piece,
+                    out,
+                );
+            }
+        }
+        if total <= SCRATCH_MAX {
+            conn.send(out)
+        } else {
+            conn.send_owned(std::mem::take(out))
+        }
+    }
+
+    /// Sends one control frame (payload already at most 125 bytes) from a stack buffer.
+    fn send_control(&mut self, conn: &ConnInner, op: Opcode, payload: &[u8]) -> Result<()> {
+        let payload = &payload[..payload.len().min(125)];
+        let key = self.mask.as_mut().map(MaskGen::next_key);
+        let (h, n) = frame_header(op, true, false, payload.len(), key);
+        let mut buf = [0u8; 14 + 125];
+        buf[..n].copy_from_slice(&h[..n]);
+        buf[n..n + payload.len()].copy_from_slice(payload);
+        if let Some(k) = key {
+            crate::protocol::unmask(&mut buf[n..n + payload.len()], k, 0);
+        }
+        conn.send(&buf[..n + payload.len()])
     }
 }
 
@@ -181,33 +281,18 @@ impl WsSender {
         if tx.closed {
             return Err(Error::Closed);
         }
-        let compress_min = tx.compress_min;
-        let compressed;
-        let (body, rsv1): (&[u8], bool) = match tx.deflater.as_mut() {
-            Some(d) if payload.len() >= compress_min => {
-                compressed = d.deflate(payload);
-                (&compressed, true)
-            }
-            _ => (payload, false),
-        };
-        let frame = if frame == 0 { body.len().max(1) } else { frame };
-        let frames = body.len().div_ceil(frame).max(1);
-        let mut out = Vec::with_capacity(body.len() + 14 * frames);
-        if body.is_empty() {
-            tx.frame(op, true, rsv1, body, &mut out);
-        } else {
-            for (i, piece) in body.chunks(frame).enumerate() {
-                let first = i == 0;
-                tx.frame(
-                    if first { op } else { Opcode::Continue },
-                    i + 1 == frames,
-                    rsv1 && first,
-                    piece,
-                    &mut out,
-                );
-            }
-        }
-        self.conn.send_owned(out)
+        let tx = &mut *tx;
+        with_bufs(|scratch, zout| {
+            let compressed = match tx.deflater.as_mut() {
+                Some(d) if payload.len() >= tx.compress_min => {
+                    d.deflate_into(payload, zout);
+                    true
+                }
+                _ => false,
+            };
+            let body: &[u8] = if compressed { zout } else { payload };
+            tx.send_frames(&self.conn, op, compressed, body, frame, scratch)
+        })
     }
 
     /// Sends a text message.
@@ -251,9 +336,9 @@ impl WsSender {
             } else {
                 Opcode::Binary
             };
-            let mut out = Vec::with_capacity(f.len() + 4);
-            tx.frame(op, true, false, &f[at..], &mut out);
-            return self.conn.send_owned(out);
+            return with_bufs(|scratch, _| {
+                tx.send_frames(&self.conn, op, false, &f[at..], 0, scratch)
+            });
         }
         // Held across the send for ordering against compressed frames, like `send_data`.
         self.conn.send_shared(m.frame.clone())
@@ -264,15 +349,7 @@ impl WsSender {
         if tx.closed {
             return Err(Error::Closed);
         }
-        let mut out = Vec::with_capacity(payload.len() + 6);
-        tx.frame(
-            op,
-            true,
-            false,
-            &payload[..payload.len().min(125)],
-            &mut out,
-        );
-        self.conn.send_owned(out)
+        tx.send_control(&self.conn, op, payload)
     }
 
     /// Sends a ping; the answer arrives in [`WsHandler::on_pong`].
@@ -308,9 +385,7 @@ impl WsSender {
             Some(c) => close_payload(c, reason),
             None => Vec::new(),
         };
-        let mut out = Vec::with_capacity(payload.len() + 6);
-        tx.frame(Opcode::Close, true, false, &payload, &mut out);
-        let _ = self.conn.send_owned(out);
+        let _ = tx.send_control(&self.conn, Opcode::Close, &payload);
         if tx.mask.is_none() || drop_tcp {
             self.conn.close_after_send();
         } else {
@@ -434,8 +509,12 @@ impl WsSession {
                 Event::Binary(b) => self.handler.on_message(&self.sender, Message::Binary(b)),
                 Event::Ping(p) => {
                     let _ = self.sender.pong(&p);
+                    self.decoder.recycle_control(p);
                 }
-                Event::Pong(p) => self.handler.on_pong(&self.sender, &p),
+                Event::Pong(p) => {
+                    self.handler.on_pong(&self.sender, &p);
+                    self.decoder.recycle_control(p);
+                }
                 Event::Close { code, reason } => {
                     // Echo the status (or an empty close), then end. A server closes the
                     // transport; a client waits for the server to do so.

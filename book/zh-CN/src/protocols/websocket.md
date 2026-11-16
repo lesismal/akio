@@ -44,7 +44,8 @@ pub trait WsHandler: Send + 'static {
 
 `WsOptions`：
 
-- `config: WsConfig`：`max_message_bytes`（16 MiB，按解压后计算；超出以 1009 关闭）、
+- `config: WsConfig`：`max_message_bytes`（16 MiB，按解压后计算；超出以 1009 关闭；消息压缩后的字节数
+  同样受限，为该上限再加八分之一，对端无法无限地分片发送压缩消息）、
   `permessage_deflate`（true：客户端提出时接受）、`compress_min_bytes`（128）。
 - `protocols`：服务端支持的子协议；选择其中客户端最优先的那个。
 - `origin_allowed: Option<fn(&str) -> bool>`：带 `Origin` 头的请求，除非它返回 true，否则以 403

@@ -356,3 +356,51 @@ fn a_peer_that_never_connects_is_closed() {
     e.shutdown();
     e.wait();
 }
+
+/// Peers are bounded with a safe default: offers just under and at the limit are accepted,
+/// over it they fail with `TooManyPeers`, and closing a peer makes room again.
+#[test]
+fn peers_are_bounded() {
+    assert_eq!(only_webrtc::DEFAULT_MAX_PEERS, 1024);
+    let server = RtcServer::new(vec!["127.0.0.1:9".parse().unwrap()]).max_peers(2);
+    let (e, _) = engine_with(Some(server.clone()));
+    let ep = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let offer = || {
+        ep.create_offer(Echo, |api| {
+            api.add_channel("x");
+        })
+        .unwrap()
+        .1
+    };
+    let (p1, _) = server.accept_offer(&offer(), Echo).unwrap();
+    let (_p2, _) = server.accept_offer(&offer(), Echo).unwrap();
+    assert_eq!(server.peers(), 2);
+    let err = server.accept_offer(&offer(), Echo).unwrap_err();
+    assert!(matches!(err, only_webrtc::Error::TooManyPeers), "{err}");
+    assert_eq!(server.peers(), 2);
+    p1.close();
+    let t = Instant::now();
+    while server.peers() > 1 && t.elapsed() < T {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    server.accept_offer(&offer(), Echo).unwrap();
+    // The endpoint side is bounded the same way.
+    let small = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap())
+        .unwrap()
+        .max_peers(1);
+    small
+        .create_offer(Echo, |api| {
+            api.add_channel("x");
+        })
+        .unwrap();
+    assert!(matches!(
+        small.create_offer(Echo, |api| {
+            api.add_channel("x");
+        }),
+        Err(only_webrtc::Error::TooManyPeers)
+    ));
+    small.close();
+    ep.close();
+    e.shutdown();
+    e.wait();
+}

@@ -468,3 +468,94 @@ fn ffmpeg_h264_aac_publish_tcp_play_tcp_udp() {
 fn ffmpeg_h265_opus_publish_udp_play_tcp_udp() {
     interop("udp", "libx265", "libopus", "hevc", "opus");
 }
+
+/// Reads until the server closes the connection; returns how long that took (`None`: still
+/// open after `max`).
+fn closed_within(s: &mut TcpStream, max: Duration) -> Option<Duration> {
+    let t = Instant::now();
+    s.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+    let mut b = vec![0u8; 65536];
+    while t.elapsed() < max {
+        match s.read(&mut b) {
+            Ok(0) => return Some(t.elapsed()),
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return Some(t.elapsed()),
+        }
+    }
+    None
+}
+
+fn timeouts(request_ms: u64, session_ms: u64) -> RtspConfig {
+    let mut cfg = RtspConfig::default();
+    cfg.request_timeout = Duration::from_millis(request_ms);
+    cfg.session_timeout = Duration::from_millis(session_ms);
+    cfg
+}
+
+#[test]
+fn timeouts_have_safe_defaults_and_the_advertised_one_is_configured() {
+    let cfg = RtspConfig::default();
+    assert_eq!(cfg.request_timeout, Duration::from_secs(10));
+    assert_eq!(cfg.session_timeout, Duration::from_secs(60));
+    let mut cfg = RtspConfig::default();
+    cfg.session_timeout = Duration::from_secs(25);
+    let (hub, _engine, addr) = start(cfg);
+    let track = Track::video(Codec::H264, h264::Config::from_sets(SPS, PPS).encode());
+    let _p = hub
+        .publish("cam", Arc::from(vec![track]), PeerInfo::default())
+        .unwrap();
+    let mut c = Client::connect(addr);
+    let (st, head, _) = c.request(
+        "SETUP",
+        &format!("rtsp://{addr}/cam/trackID=0"),
+        "Transport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n",
+        "",
+    );
+    assert_eq!(st, 200, "{head}");
+    assert!(head.contains(";timeout=25"), "{head}");
+}
+
+/// No first request, or a request trickled a byte at a time: closed after the request timeout.
+#[test]
+fn request_timeout_closes_silent_and_trickling_clients() {
+    let (_hub, _engine, addr) = start(timeouts(300, 10_000));
+    let mut s = TcpStream::connect(addr).unwrap();
+    let t = closed_within(&mut s, Duration::from_secs(3)).expect("still open");
+    assert!(t >= Duration::from_millis(250), "closed too early: {t:?}");
+    // A complete request first, then a second one trickled: the partial-request deadline.
+    let mut c = Client::connect(addr);
+    assert_eq!(c.request("OPTIONS", "*", "", "").0, 200);
+    let start = Instant::now();
+    let mut closed = false;
+    for b in b"OPTIONS * RTSP/1.0\r\nCSeq: 9\r\nX-Pad: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+        if c.s.write_all(&[*b]).is_err()
+            || closed_within(&mut c.s, Duration::from_millis(50)).is_some()
+        {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "a trickled request was kept open");
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+/// The advertised session timeout is enforced: silent past it closes; keep-alives under it
+/// (GET_PARAMETER) keep the session.
+#[test]
+fn session_timeout_is_enforced() {
+    let (_hub, _engine, addr) = start(timeouts(5_000, 400));
+    let mut c = Client::connect(addr);
+    assert_eq!(c.request("OPTIONS", "*", "", "").0, 200);
+    let t = closed_within(&mut c.s, Duration::from_secs(3)).expect("still open");
+    assert!(t >= Duration::from_millis(300), "closed too early: {t:?}");
+    let mut c = Client::connect(addr);
+    for _ in 0..12 {
+        assert_eq!(c.request("GET_PARAMETER", "*", "", "").0, 200);
+        assert!(closed_within(&mut c.s, Duration::from_millis(100)).is_none());
+    }
+}

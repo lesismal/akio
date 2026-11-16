@@ -111,15 +111,23 @@ pub type AuthHook = Arc<dyn Fn(&str, &PeerInfo) -> Result<(), String> + Send + S
 /// A hook observing a path's publisher leaving.
 pub type PathHook = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// Default [`HubConfig::max_streams`]: bounds the stream table a client can grow by publishing
+/// or waiting on new paths.
+pub const DEFAULT_MAX_STREAMS: usize = 1024;
+/// Default [`HubConfig::max_subscribers`] per path: each subscriber holds a fan-out queue.
+pub const DEFAULT_MAX_SUBSCRIBERS: usize = 1000;
+
 /// Configures a [`Hub`].
 #[derive(Clone)]
 #[non_exhaustive]
 pub struct HubConfig {
     /// Bound of each stream's GOP cache in bytes; 0 disables the cache.
     pub gop_cache_bytes: usize,
-    /// Most streams (paths with a publisher or waiting subscribers); 0 is unlimited.
+    /// Most streams (paths with a publisher or waiting subscribers); past it publishes and
+    /// subscribes to new paths fail with [`HubError::Limit`]. Default 1024; 0 removes the limit.
     pub max_streams: usize,
-    /// Most subscriptions per path; 0 is unlimited.
+    /// Most subscriptions per path; past it subscribes fail with [`HubError::Limit`]. Default
+    /// 1000; 0 removes the limit.
     pub max_subscribers: usize,
     /// Authorizes a publish (the authentication hook of every ingest). Runs without the hub's
     /// locks held.
@@ -134,8 +142,8 @@ impl Default for HubConfig {
     fn default() -> Self {
         HubConfig {
             gop_cache_bytes: DEFAULT_GOP_CACHE_BYTES,
-            max_streams: 0,
-            max_subscribers: 0,
+            max_streams: DEFAULT_MAX_STREAMS,
+            max_subscribers: DEFAULT_MAX_SUBSCRIBERS,
             on_publish: None,
             on_unpublish: None,
             on_subscribe: None,
@@ -1429,5 +1437,47 @@ mod tests {
         assert_eq!(t.stamp(true, 80 * ms), v + 80 * ms);
         let mut plain = Timeline::new();
         assert_eq!(plain.stamp(true, 5 * ms), 5 * ms);
+    }
+
+    /// The default limits bound streams and subscribers: at the limit works, one more fails
+    /// with `Limit`, and leaving makes room again.
+    #[test]
+    fn default_limits_bound_streams_and_subscribers() {
+        let cfg = HubConfig::default();
+        assert_eq!(cfg.max_streams, DEFAULT_MAX_STREAMS);
+        assert_eq!(cfg.max_subscribers, DEFAULT_MAX_SUBSCRIBERS);
+        let hub = Hub::new(cfg);
+        let mut pubs: Vec<Publisher> = (0..DEFAULT_MAX_STREAMS)
+            .map(|i| {
+                hub.publish(&format!("s{i}"), av_tracks(), PeerInfo::default())
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            hub.publish("one-more", av_tracks(), PeerInfo::default())
+                .unwrap_err(),
+            HubError::Limit
+        );
+        drop(pubs.pop());
+        assert_eq!(pubs.len(), DEFAULT_MAX_STREAMS - 1);
+        let _again = hub
+            .publish("one-more", av_tracks(), PeerInfo::default())
+            .unwrap();
+        let subs: Vec<_> = (0..DEFAULT_MAX_SUBSCRIBERS)
+            .map(|_| {
+                hub.subscribe("s0", Rec::default(), SubscribeOptions::default())
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            hub.subscribe("s0", Rec::default(), SubscribeOptions::default())
+                .unwrap_err(),
+            HubError::Limit
+        );
+        drop(subs);
+        let _s = hub
+            .subscribe("s0", Rec::default(), SubscribeOptions::default())
+            .unwrap();
+        hub.close();
     }
 }

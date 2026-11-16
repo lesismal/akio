@@ -33,7 +33,8 @@
 - 构建方法（须在克隆前调用）：`config(|| rtc_config()...)` 构造每个 peer 的 `RtcConfig`
   （编解码器、RTP 模式、BWE、统计等），`ice_lite(false)` 改为完整 agent，`close_on_disconnect(bool)`
   （默认 true：consent 过期的 peer 被关闭），`connect_timeout(Some(d))`（默认 30 秒：接受了 offer
-  却一直连不上的 peer 被丢弃）。
+  却一直连不上的 peer 被丢弃），`max_peers(n)`（默认 1024，即 `DEFAULT_MAX_PEERS`：超出后 offer 以
+  `Error::TooManyPeers` 失败；0 表示不限；`Endpoint` 上绑定之后也可设置）。
 - `TurnServer::new(TurnConfig::new(realm, auth, relay_ip))` 在另一个 UDP listener 上提供 TURN 与
   STUN。中继 socket 在运行时绑定，因此它需要引擎：`set_engine(&engine)`。
 

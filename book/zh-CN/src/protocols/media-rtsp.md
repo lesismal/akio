@@ -30,7 +30,9 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   B 帧的视频推算解码时间（估计重排深度，不缓存帧）。
 - 编解码：H.264（单 NAL、STAP-A、FU-A）、H.265（单 NAL、AP、FU）、AAC（`mpeg4-generic`
   `AAC-hbr`）、Opus、G.711。
-- 鉴权：设置 `RtspConfig::credentials` 后启用 Digest（MD5）和 Basic。
+- 超时：首个请求，以及任何已开始的请求，须在 `request_timeout`（10 s）内收齐。`Session: <id>;timeout=<s>`
+  通告 `session_timeout`（60 s）并强制执行：客户端这么久什么都没发送（请求、交织的 RTCP，UDP 传输时来自其
+  端口的数据报）的会话被拆除。
 
 已用 ffmpeg 9 测试（`crates/only-media/tests/rtsp_interop.rs`）：
 
@@ -61,7 +63,8 @@ ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 WHIP 推流通过 hub 预占路径，因此 `on_publish` 同样生效；URL 没有查询串时，
 `Authorization: Bearer <token>` 以 `token=<token>` 的形式传给钩子。媒体本身（ICE、DTLS-SRTP、
 RTP）由 `WebRtcEngine` 负责：其 `publish` 拿到预占的 `Publisher`，`play` 自行订阅 hub。占位实现
-`NoMedia` 对所有 offer 返回 `501 Not Implemented`，直到接入 WebRTC 引擎。
+`NoMedia` 对所有 offer 返回 `501 Not Implemented`，直到接入 WebRTC 引擎。`WhipConfig::max_sessions`
+（256）限制并发会话，超出后的 offer 得到 503。
 
 ## 统计
 

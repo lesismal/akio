@@ -90,6 +90,13 @@ false）。
 | `only_ws::WsConfig` | `max_message_bytes`：16 MiB，`permessage_deflate`：true，`compress_min_bytes`：128 |
 | `only_http::WsOptions` | `config`：`WsConfig::default()`，`protocols`：无，`origin_allowed`：无 |
 | `only_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s |
+| `only_media::HubConfig` | `gop_cache_bytes`：16 MiB，`max_streams`：1024，`max_subscribers`：每路径 1000（0：不限） |
+| `only_media::rtmp::RtmpConfig` | `chunk_size`：4096，`write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`handshake_timeout`：10 s，`idle_timeout`：60 s（播放者除外）；消息 16 MiB，每连接未完成消息合计 32 MiB |
+| `only_media::rtsp::RtspConfig` | `write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`request_timeout`：10 s，`session_timeout`：60 s（通告并强制执行） |
+| `only_media::srt::SrtConfig` | `max_send_backlog`：2 MiB，`max_conns`：1024（0：不限） |
+| `only_media::whip::WhipConfig` | `max_sessions`：256（0：不限） |
+| `only_media::hls::HlsConfig` | `target_duration`：2 s，`playlist_size`：6，`keep_segments`：3，`max_bytes`：64 MiB（也约束正在写的分段），`idle_timeout`：30 s |
+| `only_webrtc::RtcServer` / `Endpoint` | `max_peers`：1024（0：不限），`connect_timeout`：30 s |
 | `only_h3::H3Config` | `max_body`：8 MiB，`max_field_section`：64 KiB |
 | `only_grpc::GrpcServer` | `max_message`：4 MiB，`max_collect_bytes`：64 MiB，`max_deadline`：24 小时，`compress`：false |
 | `only_grpc::GrpcClient` | `max_message_bytes`：4 MiB，`max_collect_bytes`：64 MiB，`default_timeout`：30 秒（`unary` / `collect`） |

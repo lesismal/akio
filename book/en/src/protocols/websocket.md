@@ -49,7 +49,8 @@ behind an upgrade request.
 `WsOptions`:
 
 - `config: WsConfig`: `max_message_bytes` (16 MiB, after decompression; larger closes with
-  1009), `permessage_deflate` (true: accepted when the client offers it), `compress_min_bytes`
+  1009; the compressed bytes of a message are bounded too, at the limit plus an eighth, so a
+  peer cannot fragment a compressed message forever), `permessage_deflate` (true: accepted when the client offers it), `compress_min_bytes`
   (128).
 - `protocols`: subprotocols the server speaks; the client's first choice among them is selected.
 - `origin_allowed: Option<fn(&str) -> bool>`: requests with an `Origin` header are refused (403)
