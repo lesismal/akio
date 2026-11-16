@@ -23,6 +23,13 @@ pub trait Service: Send + Sync + 'static {
     fn body_mode(&self, _req: &Request) -> BodyMode {
         BodyMode::Buffered
     }
+
+    /// Whether [`body_mode`](Self::body_mode) may answer [`BodyMode::Stream`] for some request.
+    /// `false` lets the server skip asking for every request with a body (for a router, a
+    /// second route lookup). The default, `true`, is always correct.
+    fn streams_bodies(&self) -> bool {
+        true
+    }
 }
 
 /// How a request body reaches the service.
@@ -52,6 +59,9 @@ impl<S: Service> Service for Streaming<S> {
     fn body_mode(&self, _req: &Request) -> BodyMode {
         BodyMode::Stream
     }
+    fn streams_bodies(&self) -> bool {
+        true
+    }
 }
 
 /// A piece of a streamed request body; see [`Context::on_body`].
@@ -77,6 +87,9 @@ where
 {
     fn call(&self, ctx: &mut Context) {
         self(ctx);
+    }
+    fn streams_bodies(&self) -> bool {
+        false
     }
 }
 

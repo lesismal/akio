@@ -10,6 +10,7 @@ use std::{
     hash::{BuildHasherDefault, Hasher},
     net::SocketAddr,
     sync::{Arc, Mutex, MutexGuard, Weak},
+    time::{Duration, Instant},
 };
 
 use crate::hpack::{Decoder, Encoder};
@@ -18,6 +19,7 @@ use only_core::ConnInner;
 use crate::{
     context::{BodyEvent, BodyMode, Context, Service},
     message::{FileBody, Headers, Method, Request, Response, Version},
+    session::Phase,
 };
 
 /// The client connection preface.
@@ -28,9 +30,11 @@ pub(crate) mod err {
     pub(crate) const PROTOCOL: u32 = 1;
     pub(crate) const INTERNAL: u32 = 2;
     pub(crate) const FLOW_CONTROL: u32 = 3;
+    pub(crate) const SETTINGS_TIMEOUT: u32 = 4;
     pub(crate) const STREAM_CLOSED: u32 = 5;
     pub(crate) const FRAME_SIZE: u32 = 6;
     pub(crate) const REFUSED_STREAM: u32 = 7;
+    pub(crate) const CANCEL: u32 = 8;
     pub(crate) const COMPRESSION: u32 = 9;
     pub(crate) const ENHANCE: u32 = 11;
 }
@@ -76,6 +80,24 @@ pub struct H2Config {
     pub max_body_bytes: usize,
     /// Bytes a response may hold back for a slow peer before writers get `Overloaded`.
     pub max_pending_bytes: usize,
+    /// Response bytes held in memory for a slow peer over the whole connection (every stream's
+    /// queued body, from `respond` and from streamed writes; file bodies are read as the peer's
+    /// windows open and do not count). A response that would go past it is reset with
+    /// `ENHANCE_YOUR_CALM`, a streamed write gets `Overloaded`. Default 32 MiB.
+    pub max_conn_pending_bytes: usize,
+    /// Streams the peer may reset (`RST_STREAM`), or make the server reset by sending invalid
+    /// frames on them, per [`reset_window`](Self::reset_window); past it the connection is
+    /// closed with `GOAWAY ENHANCE_YOUR_CALM` (Rapid Reset, CVE-2023-44487, and its
+    /// server-triggered variant). Default 100.
+    pub max_resets: u32,
+    /// Frames that make no progress (`PRIORITY`, `SETTINGS`, empty `DATA` without
+    /// `END_STREAM`, empty `CONTINUATION`) the peer may send per
+    /// [`reset_window`](Self::reset_window); past it the connection is closed with
+    /// `GOAWAY ENHANCE_YOUR_CALM` (CVE-2019-9518 and friends). Default 1000.
+    pub max_control_frames: u32,
+    /// The window [`max_resets`](Self::max_resets) and
+    /// [`max_control_frames`](Self::max_control_frames) are counted over. Default 30 s.
+    pub reset_window: Duration,
 }
 
 impl Default for H2Config {
@@ -87,6 +109,10 @@ impl Default for H2Config {
             max_header_list: 64 << 10,
             max_body_bytes: 1 << 20,
             max_pending_bytes: 8 << 20,
+            max_conn_pending_bytes: 32 << 20,
+            max_resets: 100,
+            max_control_frames: 1000,
+            reset_window: Duration::from_secs(30),
         }
     }
 }
@@ -159,6 +185,13 @@ struct Stream {
 }
 
 impl Stream {
+    /// A peer request whose buffered body is still arriving.
+    fn receiving_buffered(&self) -> bool {
+        !self.pushed
+            && !self.streaming
+            && matches!(self.state, SState::Open | SState::HalfClosedLocal)
+    }
+
     fn new(state: SState, send_window: i64, recv_window: i64) -> Stream {
         Stream {
             state,
@@ -195,8 +228,8 @@ enum Action {
     Dispatch(Box<Context>),
     /// A streamed request began: run the service, then park its context on the stream.
     Start(u32, Box<Context>),
-    /// Body bytes for a streamed request.
-    Chunk(u32, Vec<u8>),
+    /// Body bytes for a streamed request: a range of the buffer being parsed.
+    Chunk(u32, std::ops::Range<usize>),
     /// End of a streamed request body.
     End(u32, Headers),
 }
@@ -299,6 +332,14 @@ struct Core {
     enc_fields: Fields,
     /// Connection-level receive window consumed and not yet given back.
     conn_recv_owed: u32,
+    /// Response bytes queued in memory over every stream (see `max_conn_pending_bytes`).
+    queued_mem: usize,
+    /// Start of the current budget window, and what was spent in it.
+    budget_start: Option<Instant>,
+    resets: u32,
+    control: u32,
+    /// Offset of the buffer `next_frame` is looking at within the whole buffer being parsed.
+    at: usize,
 }
 
 type Shared = Arc<Mutex<Core>>;
@@ -427,6 +468,15 @@ impl Core {
             if sid % 2 == 1 && !s.pushed {
                 self.open_peer = self.open_peer.saturating_sub(1);
             }
+            let mem: usize = s
+                .out
+                .iter()
+                .map(|c| match c {
+                    OutChunk::Bytes(v, off) => v.len() - off,
+                    OutChunk::File { .. } => 0,
+                })
+                .sum();
+            self.queued_mem = self.queued_mem.saturating_sub(mem);
             self.dropped.push(s);
         }
         self.maybe_close_after_goaway();
@@ -438,6 +488,44 @@ impl Core {
             self.flush_now();
             self.conn.close_after_send();
         }
+    }
+
+    /// Spends one unit of the peer's reset (`reset`) or control-frame budget; a connection
+    /// error once it is exhausted.
+    fn charge(&mut self, reset: bool) -> R<()> {
+        let now = Instant::now();
+        if self
+            .budget_start
+            .is_none_or(|t| now.duration_since(t) >= self.cfg.reset_window)
+        {
+            self.budget_start = Some(now);
+            self.resets = 0;
+            self.control = 0;
+        }
+        let (n, max) = if reset {
+            self.resets += 1;
+            (self.resets, self.cfg.max_resets)
+        } else {
+            self.control += 1;
+            (self.control, self.cfg.max_control_frames)
+        };
+        if n > max {
+            return Err(Fail::Conn(err::ENHANCE));
+        }
+        Ok(())
+    }
+
+    /// A stream error caused by the peer: reset the stream, charged to the reset budget (the
+    /// "made you reset" variant of Rapid Reset).
+    fn peer_rst(&mut self, sid: u32, code: u32) -> R<()> {
+        self.rst(sid, code);
+        self.charge(true)
+    }
+
+    /// `peer_rst` for a stream that was never registered.
+    fn peer_rst_new(&mut self, sid: u32, code: u32) -> R<()> {
+        self.rst_new(sid, code);
+        self.charge(true)
     }
 
     // ---- sending ---------------------------------------------------------------------------
@@ -558,6 +646,15 @@ impl Core {
         let len = resp.body_len();
         let content_length = (!bodyless && !resp.streaming).then_some(len);
         let no_body = head_only || bodyless || len == 0;
+        if !no_body
+            && resp.file.is_none()
+            && self.queued_mem + resp.body.len() > self.cfg.max_conn_pending_bytes
+        {
+            // The peer is not reading what it asked for: do not hold more of it in memory.
+            self.rst(sid, err::ENHANCE);
+            self.flush();
+            return;
+        }
         let trailers = resp.trailers.take().filter(|_| !head_only);
         let end_with_head = no_body && trailers.is_none();
         self.write_headers(
@@ -606,6 +703,7 @@ impl Core {
                     st.out_bytes += n;
                     st.out
                         .push_back(OutChunk::Bytes(std::mem::take(&mut resp.body), 0));
+                    self.queued_mem += n;
                 }
             }
             st.end_pending = true;
@@ -654,6 +752,7 @@ impl Core {
                 st.out_bytes = st.out_bytes.saturating_sub(n);
                 st.send_window -= n as i64;
                 self.conn_send -= n as i64;
+                self.queued_mem = self.queued_mem.saturating_sub(n);
                 if st.out.is_empty() && st.end_pending && st.trailers.is_none() {
                     st.sent_end = true;
                     st.end_pending = false;
@@ -774,6 +873,59 @@ impl Core {
         }
     }
 
+    // ---- deadlines ---------------------------------------------------------------------------
+
+    /// Which deadline fits the connection now: the preface until the peer's first `SETTINGS`,
+    /// body progress while a buffered request body is incomplete, idleness otherwise. Streamed
+    /// request bodies (gRPC streams, say) are paced by their service and do not count.
+    fn phase(&self) -> Phase {
+        if self.dead {
+            Phase::Off
+        } else if !self.got_settings {
+            Phase::Head
+        } else if self.streams.values().any(Stream::receiving_buffered) {
+            Phase::Body
+        } else {
+            Phase::Idle
+        }
+    }
+
+    /// The armed deadline passed (see [`H2Session::on_deadline`]).
+    fn on_deadline(&mut self) -> Option<Phase> {
+        if self.dead {
+            return None;
+        }
+        if !self.got_settings {
+            self.conn_error(err::SETTINGS_TIMEOUT);
+            return None;
+        }
+        let stalled: Vec<u32> = self
+            .streams
+            .iter()
+            .filter(|(_, s)| s.receiving_buffered())
+            .map(|(id, _)| *id)
+            .collect();
+        if stalled.is_empty() && self.streams.is_empty() {
+            self.goaway(err::NO_ERROR);
+            self.flush();
+            self.maybe_close_after_goaway();
+            return None;
+        }
+        for sid in stalled {
+            let answered = self.streams.get(&sid).is_none_or(|s| s.head_sent);
+            if answered {
+                self.rst(sid, err::CANCEL);
+            } else {
+                if let Some(st) = self.streams.get_mut(&sid) {
+                    st.body = Vec::new();
+                }
+                self.send_response(sid, Response::text(408, "Request Timeout"));
+            }
+        }
+        self.flush();
+        Some(self.phase())
+    }
+
     // ---- receiving -------------------------------------------------------------------------
 
     /// Parses and handles at most one frame at the start of `buf`, appending what the driver
@@ -854,13 +1006,13 @@ impl Core {
         if sid == 0 {
             return Err(Fail::Conn(err::PROTOCOL));
         }
+        self.charge(false)?;
         if p.len() != 5 {
-            self.rst(sid, err::FRAME_SIZE);
-            return Ok(());
+            return self.peer_rst(sid, err::FRAME_SIZE);
         }
         let dep = u32::from_be_bytes([p[0], p[1], p[2], p[3]]) & 0x7fff_ffff;
         if dep == sid {
-            self.rst(sid, err::PROTOCOL);
+            return self.peer_rst(sid, err::PROTOCOL);
         }
         Ok(())
     }
@@ -876,7 +1028,9 @@ impl Core {
             return Err(Fail::Conn(err::PROTOCOL));
         }
         self.close_stream(sid);
-        Ok(())
+        // Rapid Reset (CVE-2023-44487): opening streams and cancelling them at once costs the
+        // server a dispatch each and the peer nothing.
+        self.charge(true)
     }
 
     /// An id the peer has not opened yet (or one of ours we have not promised).
@@ -900,6 +1054,10 @@ impl Core {
         }
         if p.len() % 6 != 0 {
             return Err(Fail::Conn(err::FRAME_SIZE));
+        }
+        if self.got_settings {
+            // Every SETTINGS is acknowledged and walks the streams: the first one is free.
+            self.charge(false)?;
         }
         self.got_settings = true;
         for c in p.chunks_exact(6) {
@@ -964,16 +1122,14 @@ impl Core {
             return Err(Fail::Conn(err::PROTOCOL));
         }
         if inc == 0 {
-            self.rst(sid, err::PROTOCOL);
-            return Ok(());
+            return self.peer_rst(sid, err::PROTOCOL);
         }
         let Some(s) = self.streams.get_mut(&sid) else {
             return Ok(()); // closed: allowed to arrive late
         };
         s.send_window += inc;
         if s.send_window > MAX_WINDOW {
-            self.rst(sid, err::FLOW_CONTROL);
-            return Ok(());
+            return self.peer_rst(sid, err::FLOW_CONTROL);
         }
         self.flush_stream(sid);
         Ok(())
@@ -989,7 +1145,9 @@ impl Core {
             return Err(Fail::Conn(err::FLOW_CONTROL));
         }
         let mut data = p;
+        let mut data_at = self.at + 9;
         if flags & flag::PADDED != 0 {
+            data_at += 1;
             let Some((&pad, rest)) = p.split_first() else {
                 return Err(Fail::Conn(err::FRAME_SIZE));
             };
@@ -1004,7 +1162,13 @@ impl Core {
         if self.is_idle(sid) {
             return Err(Fail::Conn(err::PROTOCOL));
         }
+        let end = flags & flag::END_STREAM != 0;
+        if data.is_empty() && !end {
+            self.charge(false)?; // an empty DATA frame carries nothing (CVE-2019-9518)
+        }
         let Some(st) = self.streams.get_mut(&sid) else {
+            // Frames still in flight on a stream that just closed: not the peer's fault, and
+            // bounded by the connection window, so not charged.
             self.rst(sid, err::STREAM_CLOSED);
             return Ok(());
         };
@@ -1014,22 +1178,18 @@ impl Core {
         }
         st.recv_window -= total;
         if st.recv_window < 0 {
-            self.rst(sid, err::FLOW_CONTROL);
-            return Ok(());
+            return self.peer_rst(sid, err::FLOW_CONTROL);
         }
         st.received += data.len() as u64;
         if let Some(cl) = st.content_length {
             if st.received > cl {
-                self.rst(sid, err::PROTOCOL);
-                return Ok(());
+                return self.peer_rst(sid, err::PROTOCOL);
             }
         }
-        let end = flags & flag::END_STREAM != 0;
         if end {
             if let Some(cl) = st.content_length {
                 if st.received != cl {
-                    self.rst(sid, err::PROTOCOL);
-                    return Ok(());
+                    return self.peer_rst(sid, err::PROTOCOL);
                 }
             }
         }
@@ -1046,18 +1206,11 @@ impl Core {
         let st = self.streams.get_mut(&sid).expect("present");
         if st.streaming {
             if !data.is_empty() {
-                actions.push(Action::Chunk(sid, data.to_vec()));
+                actions.push(Action::Chunk(sid, data_at..data_at + data.len()));
             }
             if end {
                 st.state = SState::HalfClosedRemote;
-                let tr = std::mem::take(
-                    &mut st
-                        .head
-                        .as_mut()
-                        .map(|h| h.trailers.clone())
-                        .unwrap_or_default(),
-                );
-                actions.push(Action::End(sid, tr));
+                actions.push(Action::End(sid, Headers::new()));
             }
         } else {
             if st.body.len() + data.len() > self.cfg.max_body_bytes {
@@ -1132,6 +1285,9 @@ impl Core {
         if sid != c.stream {
             return Err(Fail::Conn(err::PROTOCOL));
         }
+        if p.is_empty() && flags & flag::END_HEADERS == 0 {
+            self.charge(false)?;
+        }
         c.block.extend_from_slice(p);
         if c.block.len()
             > (self.cfg.max_header_list as usize)
@@ -1189,15 +1345,13 @@ impl Core {
         if let Some((s, code)) = self.pending_rst.take() {
             if s == sid {
                 self.last_peer = self.last_peer.max(sid);
-                self.rst(sid, code);
-                return Ok(());
+                return self.peer_rst_new(sid, code);
             }
         }
         let existing = self.streams.contains_key(&sid);
         if existing {
             if size > limit {
-                self.rst(sid, err::PROTOCOL); // trailers past the header list limit
-                return Ok(());
+                return self.peer_rst(sid, err::PROTOCOL); // trailers past the header list limit
             }
             return self.trailers(sid, fields, end_stream, actions);
         }
@@ -1209,26 +1363,18 @@ impl Core {
         if self.goaway_sent {
             return Ok(()); // ignored after our GOAWAY
         }
-        if self.open_peer >= self.cfg.max_concurrent_streams {
+        if self.open_peer >= self.cfg.max_concurrent_streams || size > limit {
             self.frame_refuse(sid);
-            return Ok(());
-        }
-        if size > limit {
-            self.frame_refuse(sid);
-            return Ok(());
+            return self.charge(true);
         }
         let Ok(req) = self.build_request(fields) else {
-            self.rst_new(sid, err::PROTOCOL);
-            return Ok(());
+            return self.peer_rst_new(sid, err::PROTOCOL);
         };
         let content_length = match req.headers.get("content-length") {
             None => None,
             Some(v) => match v.parse::<u64>() {
                 Ok(n) => Some(n),
-                Err(_) => {
-                    self.rst_new(sid, err::PROTOCOL);
-                    return Ok(());
-                }
+                Err(_) => return self.peer_rst_new(sid, err::PROTOCOL),
             },
         };
         self.open_peer += 1;
@@ -1243,8 +1389,7 @@ impl Core {
         if end_stream {
             self.streams.insert(sid, st);
             if content_length.is_some_and(|cl| cl != 0) {
-                self.rst(sid, err::PROTOCOL);
-                return Ok(());
+                return self.peer_rst(sid, err::PROTOCOL);
             }
             // A request without a body: dispatched right away, nothing parked on the stream.
             let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
@@ -1257,9 +1402,9 @@ impl Core {
             .as_ref()
             .map_or(BodyMode::Buffered, |f| f(&req));
         if mode == BodyMode::Stream {
+            // The request goes to the service now; trailers reach it with the end event.
             st.streaming = true;
             let resp = H2Responder::new(self.me.clone(), sid, req.method == Method::Head);
-            st.head = Some(req.clone());
             self.streams.insert(sid, st);
             actions.push(Action::Start(sid, Box::new(Context::new_h2(req, resp))));
             return Ok(());
@@ -1295,19 +1440,16 @@ impl Core {
             return Ok(());
         };
         if st.state == SState::HalfClosedRemote {
-            self.rst(sid, err::STREAM_CLOSED);
-            return Ok(());
+            return self.peer_rst(sid, err::STREAM_CLOSED);
         }
         if !end_stream {
             // Trailers must end the stream.
-            self.rst(sid, err::PROTOCOL);
-            return Ok(());
+            return self.peer_rst(sid, err::PROTOCOL);
         }
         let mut tr = Headers::new();
         for (n, v) in fields.iter() {
             if n.first() == Some(&b':') || n.iter().any(u8::is_ascii_uppercase) {
-                self.rst(sid, err::PROTOCOL);
-                return Ok(());
+                return self.peer_rst(sid, err::PROTOCOL);
             }
             if let (Ok(n), Ok(v)) = (std::str::from_utf8(n), std::str::from_utf8(v)) {
                 tr.append(n, v);
@@ -1316,17 +1458,16 @@ impl Core {
         let st = self.streams.get_mut(&sid).expect("present");
         if let Some(cl) = st.content_length {
             if st.received != cl {
-                self.rst(sid, err::PROTOCOL);
-                return Ok(());
+                return self.peer_rst(sid, err::PROTOCOL);
             }
         }
         st.state = SState::HalfClosedRemote;
-        if let Some(h) = st.head.as_mut() {
-            h.trailers = tr.clone();
-        }
         if st.streaming {
             actions.push(Action::End(sid, tr));
             return Ok(());
+        }
+        if let Some(h) = st.head.as_mut() {
+            h.trailers = tr;
         }
         actions.extend(self.complete_request(sid));
         Ok(())
@@ -1557,14 +1698,16 @@ impl H2Stream {
         let core = self.core.upgrade().ok_or(only_core::Error::Closed)?;
         let mut c = lock(&core);
         let max = c.cfg.max_pending_bytes;
+        let conn_full = c.queued_mem + data.len() > c.cfg.max_conn_pending_bytes;
         let Some(st) = c.streams.get_mut(&self.sid) else {
             return Err(only_core::Error::Closed);
         };
-        if st.out_bytes + data.len() > max {
+        if conn_full || st.out_bytes + data.len() > max {
             return Err(only_core::Error::Overloaded);
         }
         st.out_bytes += data.len();
         st.out.push_back(OutChunk::Bytes(data.to_vec(), 0));
+        c.queued_mem += data.len();
         c.flush_stream(self.sid);
         c.flush();
         Ok(())
@@ -1618,6 +1761,8 @@ impl Drop for H2Stream {
 pub(crate) struct H2Session<S> {
     core: Shared,
     service: Arc<S>,
+    /// The deadline phase after the last read (computed under the lock it takes anyway).
+    phase: std::cell::Cell<Phase>,
 }
 
 impl<S: Service> H2Session<S> {
@@ -1673,7 +1818,9 @@ impl<S: Service> H2Session<S> {
                     svc_push.call(&mut ctx);
                     finalize(&mut ctx);
                 })),
-                mode_of: Some(Arc::new(move |r: &Request| svc_mode.body_mode(r))),
+                mode_of: svc_mode.streams_bodies().then(|| -> ModeFn {
+                    Arc::new(move |r: &Request| svc_mode.body_mode(r))
+                }),
                 me: me.clone(),
                 pending_rst: None,
                 open_peer: 0,
@@ -1682,9 +1829,18 @@ impl<S: Service> H2Session<S> {
                 fields: Fields::default(),
                 enc_fields: Fields::default(),
                 conn_recv_owed: 0,
+                queued_mem: 0,
+                budget_start: None,
+                resets: 0,
+                control: 0,
+                at: 0,
             })
         });
-        let s = H2Session { core, service };
+        let s = H2Session {
+            core,
+            service,
+            phase: std::cell::Cell::new(Phase::Head),
+        };
         let mut first = Vec::new();
         {
             let mut c = lock(&s.core);
@@ -1731,7 +1887,7 @@ impl<S: Service> H2Session<S> {
             c.flush();
         }
         for a in first {
-            s.run(a);
+            s.run(a, &[]);
         }
         s.feed(initial);
         s
@@ -1748,6 +1904,7 @@ impl<S: Service> H2Session<S> {
         let held = {
             let mut c = lock(&self.core);
             if c.dead {
+                self.phase.set(Phase::Off);
                 return;
             }
             c.batching = true;
@@ -1767,13 +1924,16 @@ impl<S: Service> H2Session<S> {
                 let mut c = lock(&self.core);
                 loop {
                     if c.dead {
+                        self.phase.set(Phase::Off);
                         return;
                     }
+                    c.at = pos;
                     match c.next_frame(&buf[pos..], &mut actions) {
                         Ok(None) => break false,
                         Ok(Some(n)) => pos += n,
                         Err(Fail::Conn(code)) => {
                             c.conn_error(code);
+                            self.phase.set(Phase::Off);
                             return;
                         }
                     }
@@ -1784,7 +1944,7 @@ impl<S: Service> H2Session<S> {
             };
             // The service runs without the lock.
             for a in actions.drain(..) {
-                self.run(a);
+                self.run(a, buf);
             }
             if !more {
                 break;
@@ -1799,11 +1959,12 @@ impl<S: Service> H2Session<S> {
             }
             None => c.rbuf.extend_from_slice(&data[pos..]),
         }
+        self.phase.set(c.phase());
         drop(c);
         drop(batch);
     }
 
-    fn run(&self, a: Action) {
+    fn run(&self, a: Action, buf: &[u8]) {
         match a {
             Action::Dispatch(mut ctx) => {
                 self.service.call(&mut ctx);
@@ -1816,9 +1977,9 @@ impl<S: Service> H2Session<S> {
                     st.ctx = Some(ctx);
                 }
             }
-            Action::Chunk(sid, data) => {
+            Action::Chunk(sid, range) => {
                 if let Some(mut ctx) = self.take_ctx(sid) {
-                    ctx.deliver(BodyEvent::Chunk(&data));
+                    ctx.deliver(BodyEvent::Chunk(&buf[range]));
                     let mut c = lock(&self.core);
                     if let Some(st) = c.streams.get_mut(&sid) {
                         st.ctx = Some(ctx);
@@ -1836,6 +1997,18 @@ impl<S: Service> H2Session<S> {
 
     fn take_ctx(&self, sid: u32) -> Option<Box<Context>> {
         lock(&self.core).streams.get_mut(&sid)?.ctx.take()
+    }
+
+    /// The deadline phase after the last read.
+    pub(crate) fn phase(&self) -> Phase {
+        self.phase.get()
+    }
+
+    /// The armed deadline passed: an unfinished preface closes the connection, stalled
+    /// buffered uploads are answered `408`, and a connection without streams is closed
+    /// gracefully. Returns the deadline to arm next, if the connection stays.
+    pub(crate) fn on_deadline(&self) -> Option<Phase> {
+        lock(&self.core).on_deadline()
     }
 
     /// Graceful shutdown: GOAWAY now, close when the open streams have finished.

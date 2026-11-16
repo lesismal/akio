@@ -57,6 +57,9 @@ fn backend() -> Backend {
 fn app() -> Router {
     Router::new()
         .get("/hello", |ctx: &mut Context| ctx.text(200, "hello"))
+        .get("/big", |ctx: &mut Context| {
+            ctx.bytes(200, "application/octet-stream", vec![b'b'; 60_000]);
+        })
         .post("/echo", |ctx: &mut Context| {
             let b = ctx.body().to_vec();
             ctx.bytes(200, "application/octet-stream", b);
@@ -107,6 +110,10 @@ fn app() -> Router {
 fn start_with(h2: H2Config) -> Arc<Engine> {
     let mut cfg = HttpConfig::default();
     cfg.h2 = Some(h2);
+    start_cfg(cfg)
+}
+
+fn start_cfg(cfg: HttpConfig) -> Arc<Engine> {
     let e = Arc::new(
         Engine::builder()
             .config({
@@ -797,4 +804,191 @@ fn shutdown_sends_goaway_and_ignores_new_streams() {
     p.request(3, "GET", "/hello", true);
     assert_eq!(p.response(1).2, b"slow");
     t.join().unwrap();
+}
+
+const SETTINGS_TIMEOUT: u32 = 4;
+const CANCEL: u32 = 8;
+
+/// Opens `n` streams that the service answers later and cancels each at once.
+fn reset_streams(p: &mut Peer, first: u32, n: u32) -> u32 {
+    let mut sid = first;
+    for _ in 0..n {
+        p.request(sid, "GET", "/slow", true);
+        p.send(RST_STREAM, 0, sid, &CANCEL.to_be_bytes());
+        sid += 2;
+    }
+    sid
+}
+
+#[test]
+fn rapid_reset_is_cut_off_past_the_budget() {
+    let mut h2 = H2Config::default();
+    h2.max_resets = 20;
+    let e = start_with(h2);
+    // At the budget the connection still serves requests.
+    let mut p = Peer::open(&e, &[]);
+    let sid = reset_streams(&mut p, 1, 20);
+    p.request(sid, "GET", "/hello", true);
+    assert_eq!(p.response(sid).0, 200);
+    // One reset more: GOAWAY ENHANCE_YOUR_CALM.
+    reset_streams(&mut p, sid + 2, 1);
+    assert_eq!(p.goaway(), ENHANCE);
+
+    // Streams the server has to reset because of the peer's frames count too ("made you
+    // reset"): WINDOW_UPDATE 0 on an open stream is a stream error.
+    let mut p = Peer::open(&e, &[]);
+    let mut sid = 1;
+    for _ in 0..21 {
+        p.request(sid, "GET", "/slow", true);
+        p.send(WINDOW_UPDATE, 0, sid, &0u32.to_be_bytes());
+        sid += 2;
+    }
+    assert_eq!(p.goaway(), ENHANCE);
+    stop(&e);
+}
+
+#[test]
+fn control_frame_floods_are_cut_off_past_the_budget() {
+    let mut h2 = H2Config::default();
+    h2.max_control_frames = 10;
+    let e = start_with(h2);
+    // PRIORITY frames: ten are fine, the eleventh is not.
+    let mut p = Peer::open(&e, &[]);
+    for i in 0..10u32 {
+        p.send(PRIORITY, 0, 101 + 2 * i, &[0, 0, 0, 0, 16]);
+    }
+    p.send(PING, 0, 0, b"still ok");
+    assert_eq!(p.until(|f| f.ty == PING).payload, b"still ok");
+    p.send(PRIORITY, 0, 99, &[0, 0, 0, 0, 16]);
+    assert_eq!(p.goaway(), ENHANCE);
+
+    // Empty DATA frames without END_STREAM.
+    let mut p = Peer::open(&e, &[]);
+    p.request(1, "POST", "/echo", false);
+    for _ in 0..11 {
+        p.send(DATA, 0, 1, &[]);
+    }
+    assert_eq!(p.goaway(), ENHANCE);
+
+    // SETTINGS after the first one.
+    let mut p = Peer::open(&e, &[]);
+    for _ in 0..11 {
+        p.send(SETTINGS, 0, 0, &[]);
+    }
+    assert_eq!(p.goaway(), ENHANCE);
+    stop(&e);
+}
+
+#[test]
+fn queued_response_bytes_are_capped_per_connection() {
+    let mut h2 = H2Config::default();
+    h2.max_conn_pending_bytes = 100_000;
+    let e = start_with(h2);
+    // The peer opens no stream window: every response body stays queued.
+    let mut p = Peer::open(&e, &[(4, 0)]);
+    p.request(1, "GET", "/big", true);
+    let f = p.until(|f| f.ty == HEADERS && f.sid == 1);
+    assert_eq!(f.flags & END_STREAM, 0);
+    p.dec.decode(&f.payload).unwrap();
+    // 60 000 + 60 000 > 100 000: the second response is refused, the first one stays.
+    p.request(3, "GET", "/big", true);
+    assert_eq!(p.rst(3), ENHANCE);
+    p.send(WINDOW_UPDATE, 0, 1, &100_000u32.to_be_bytes());
+    let mut got = 0;
+    while got < 60_000 {
+        let f = p.until(|f| f.ty == DATA && f.sid == 1);
+        got += f.payload.len();
+    }
+    // Once drained, the budget is free again.
+    p.send(WINDOW_UPDATE, 0, 0, &1_000_000u32.to_be_bytes());
+    p.send(SETTINGS, 0, 0, &[0, 4, 0, 1, 0, 0]);
+    p.request(5, "GET", "/big", true);
+    assert_eq!(p.response(5).2.len(), 60_000);
+    stop(&e);
+}
+
+fn timeouts(head: u64, idle: u64, body: u64) -> HttpConfig {
+    let mut cfg = HttpConfig::default();
+    cfg.head_timeout = Some(Duration::from_millis(head));
+    cfg.keep_alive_timeout = Some(Duration::from_millis(idle));
+    cfg.body_timeout = Some(Duration::from_millis(body));
+    cfg
+}
+
+/// Reads until the server closes the connection; panics if it does not within 5 s.
+fn read_to_eof(s: &mut TcpStream) -> Vec<u8> {
+    let mut all = Vec::new();
+    s.read_to_end(&mut all).expect("the server closes the connection");
+    all
+}
+
+#[test]
+fn preface_and_settings_must_arrive_within_the_head_timeout() {
+    let e = start_cfg(timeouts(300, 10_000, 10_000));
+    // The preface and no SETTINGS: GOAWAY SETTINGS_TIMEOUT, then the connection closes.
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let t0 = std::time::Instant::now();
+    s.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").unwrap();
+    let all = read_to_eof(&mut s);
+    assert!(t0.elapsed() >= Duration::from_millis(300), "{:?}", t0.elapsed());
+    let at = all
+        .windows(9)
+        .position(|w| w == [0, 0, 8, GOAWAY, 0, 0, 0, 0, 0])
+        .expect("a GOAWAY");
+    let code = &all[at + 9 + 4..at + 9 + 8];
+    assert_eq!(u32::from_be_bytes(code.try_into().unwrap()), SETTINGS_TIMEOUT);
+    // Half a preface: the same deadline.
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(b"PRI * HTTP/2.0\r\n").unwrap();
+    read_to_eof(&mut s);
+    stop(&e);
+}
+
+#[test]
+fn idle_connections_get_goaway_and_busy_ones_stay() {
+    let e = start_cfg(timeouts(10_000, 300, 10_000));
+    let mut p = Peer::open(&e, &[]);
+    // A response that takes longer than the idle timeout is still delivered.
+    p.request(1, "GET", "/slow", true);
+    assert_eq!(p.response(1).0, 200);
+    let t0 = std::time::Instant::now();
+    assert_eq!(p.goaway(), NO_ERROR);
+    assert!(t0.elapsed() >= Duration::from_millis(200), "{:?}", t0.elapsed());
+    read_to_eof(&mut p.s);
+    // Traffic keeps a connection open past the timeout.
+    let mut p = Peer::open(&e, &[]);
+    for _ in 0..6 {
+        thread::sleep(Duration::from_millis(100));
+        p.send(PING, 0, 0, b"keepopen");
+        p.until(|f| f.ty == PING);
+    }
+    p.request(1, "GET", "/hello", true);
+    assert_eq!(p.response(1).0, 200);
+    stop(&e);
+}
+
+#[test]
+fn stalled_uploads_are_answered_408_and_streamed_ones_left_alone() {
+    let e = start_cfg(timeouts(10_000, 10_000, 300));
+    let mut p = Peer::open(&e, &[]);
+    p.request(1, "POST", "/echo", false);
+    p.send(DATA, 0, 1, b"part");
+    let (status, ..) = p.response(1);
+    assert_eq!(status, 408);
+    // A streamed upload (the service paces it, gRPC-style) is not timed out.
+    p.request(3, "POST", "/sum", false);
+    thread::sleep(Duration::from_millis(800));
+    p.send(DATA, END_STREAM, 3, b"abc");
+    assert_eq!(p.response(3).2, b"3 -");
+    // A body that keeps arriving is not cut, however long it takes in total.
+    p.request(5, "POST", "/echo", false);
+    for _ in 0..6 {
+        thread::sleep(Duration::from_millis(100));
+        p.send(DATA, 0, 5, b"x");
+    }
+    p.send(DATA, END_STREAM, 5, b"y");
+    assert_eq!(p.response(5).2, b"xxxxxxy");
+    stop(&e);
 }
