@@ -10,6 +10,19 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: fewer allocations per HTTP/3 request
+
+An HTTP/3 request and its response now cost 8.6 allocations at both ends of `quic-bench h3`
+instead of 21.6: only-quic hands stream data to the application without temporary vectors;
+only-h3 writes small response and request heads into only-quic's per-thread pooled buffers
+(a hidden `Bytes::pooled`, not a public API) and widens a HEADERS frame's length in place;
+only-http's `Context` owns its request until a `Detached` or a WebSocket upgrade shares it, and
+`Headers` keeps its first two field positions inline (still 48 bytes). QPACK writes `:status`,
+`content-length` and the date line (encoded once a second) without a static table search, and a
+request head is checked as UTF-8 once. Zen 4, same-run A/B on a quiet host: HTTP/3 GET, one
+connection, 64 in flight 820,741 → 883,127 req/s (1.08×); HTTP/1.1 and h2c unchanged within
+noise (docs/BENCHMARKS.md). No public API change.
+
 ### Changed: RSA signing runs both CRT halves in one AVX-512 IFMA loop
 
 On x86_64 with AVX-512 IFMA, the two half-exponentiations of an RSA private-key operation (mod p

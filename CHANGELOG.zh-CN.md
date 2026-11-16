@@ -10,6 +10,16 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：每个 HTTP/3 请求的内存分配更少
+
+`quic-bench h3` 两端合计，一个 HTTP/3 请求及其响应的分配次数从 21.6 降到 8.6：only-quic 把流数据交给应用时
+不再经过临时向量；only-h3 把较小的响应头与请求头写进 only-quic 的每线程池化缓冲区（隐藏的 `Bytes::pooled`，
+不是公共 API），并原地加宽 HEADERS 帧的长度字段；only-http 的 `Context` 自己持有请求，直到 `Detached` 或
+WebSocket 升级需要共享它，`Headers` 内联保存前两个字段的位置（仍是 48 字节）。QPACK 写 `:status`、
+`content-length` 与 date 行（每秒编码一次）时不再查静态表，请求头只做一次 UTF-8 检查。Zen 4，空闲机器上同一次
+运行的 A/B 对比：HTTP/3 GET，单连接，64 个并发 820,741 → 883,127 请求/秒（1.08 倍）；HTTP/1.1 与 h2c 在噪声
+范围内不变（docs/BENCHMARKS.zh-CN.md）。没有公共 API 变化。
+
 ### 变更：RSA 签名在同一个 AVX-512 IFMA 循环中计算 CRT 两半
 
 在支持 AVX-512 IFMA 的 x86_64 上，RSA 私钥运算的两个半模幂（模 p 与模 q）现在同步推进：同一个汇编循环的
