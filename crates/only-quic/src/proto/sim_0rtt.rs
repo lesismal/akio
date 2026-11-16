@@ -255,6 +255,30 @@ fn replayed_zero_rtt_flight_is_rejected() {
     );
 }
 
+/// Seeds for the `quic_packet` fuzz target: a client's first datagram with an Initial and a
+/// coalesced 0-RTT packet, in QUIC v1 and v2.
+/// `cargo test -p only-quic --lib write_zero_rtt_corpus -- --ignored`.
+#[test]
+#[ignore = "writes fuzz/corpus"]
+fn write_zero_rtt_corpus() {
+    let dir = format!(
+        "{}/../../fuzz/corpus/quic_packet",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    for (name, version) in [("zero_rtt_v1", None), ("zero_rtt_v2", Some(VERSION_2))] {
+        let (mut sim, tls) = zsim(52, true, false);
+        let mut cfg = zcfg();
+        if let Some(v) = version {
+            cfg.version = v;
+        }
+        prime(&mut sim, &tls, cfg.clone());
+        sim.record_0rtt = true;
+        request(&mut sim, &tls, cfg, b"GET /");
+        let d = sim.first_client_datagram.clone().expect("recorded");
+        std::fs::write(format!("{dir}/{name}"), d).expect("write");
+    }
+}
+
 #[test]
 fn zero_rtt_packet_types_on_the_wire() {
     let (mut sim, tls) = zsim(51, true, false);

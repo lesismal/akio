@@ -295,3 +295,40 @@ fn early_data_after_quic_ticket_and_tls12() {
     assert_eq!(r.c.early_data(), EarlyData::NotAttempted);
     assert_eq!(r.s_plain, b"abc");
 }
+
+/// Seeds for the fuzz targets: an early-data first flight (ClientHello with early_data and a
+/// PSK, CCS, early records), the server's answer, and the ClientHello alone.
+/// `cargo test -p only-tls --lib write_early_corpus -- --ignored`.
+#[test]
+#[ignore = "writes fuzz/corpus"]
+fn write_early_corpus() {
+    let base = format!("{}/../../fuzz/corpus", env!("CARGO_MANIFEST_DIR"));
+    let write = |t: &str, name: &str, d: &[u8]| {
+        let dir = format!("{base}/{t}");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(format!("{dir}/{name}"), d).unwrap();
+    };
+    let p = pki(Kind::P256, &["localhost"]);
+    let scfg = server(&p).early_data(16384).build().unwrap();
+    let ccfg = client(&p).early_data(true).build().unwrap();
+    prime(&scfg, &ccfg, "localhost");
+    let mut c = crate::__proto::client(&ccfg, "localhost").unwrap();
+    let mut s = crate::__proto::server(&scfg);
+    let mut c2s = Vec::new();
+    c.seal(b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", &mut c2s)
+        .unwrap();
+    let flight = c2s.clone();
+    let mut s2c = Vec::new();
+    s.recv(&c2s, &mut Vec::new(), &mut s2c).unwrap();
+    let mut rest = Vec::new();
+    c.recv(&s2c, &mut Vec::new(), &mut rest).unwrap();
+    assert_eq!(c.early_data(), EarlyData::Accepted);
+    let mut all = flight.clone();
+    all.extend_from_slice(&rest);
+    write("tls_server", "early_flight", &flight);
+    write("tls_server", "early_handshake", &all);
+    write("tls_client", "early_accepted", &s2c);
+    // The ClientHello alone (record and handshake headers off): the direct parser.
+    let len = usize::from(u16::from_be_bytes([flight[3], flight[4]]));
+    write("tls_server", "early_client_hello_body", &flight[9..5 + len]);
+}
