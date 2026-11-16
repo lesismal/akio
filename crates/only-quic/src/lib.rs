@@ -63,12 +63,15 @@ pub mod fuzzing;
 use std::collections::VecDeque;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Instant;
 
 use only::tls;
-use only_core::{Acceptor, Conn, Handler};
+use only_core::{
+    Acceptor, Conn, Handler,
+    metrics::{Collector, Families},
+};
 
 pub use crate::bytes::Bytes;
 pub use types::{
@@ -396,6 +399,7 @@ impl Connection {
         let ep = &self.0.ep;
         let mut ep_events = Vec::new();
         let drained;
+        let mut final_stats = None;
         let mut queued = false;
         {
             // Everything that must keep its order (datagrams on the wire, events for the
@@ -431,6 +435,9 @@ impl Connection {
                 }
             }
             drained = conn.is_drained();
+            if drained {
+                final_stats = Some(conn.stats());
+            }
             if drained && !std::mem::replace(lost, true) {
                 evs.push_back(proto::Event::Closed(ConnectionError::LocallyClosed));
                 queued = true;
@@ -461,7 +468,12 @@ impl Connection {
         if drained {
             let empty = {
                 let mut conns = lock(&ep.conns);
-                conns.remove(&self.0.h);
+                if conns.remove(&self.0.h).is_some() {
+                    if let Some(st) = final_stats {
+                        ep.closed.fetch_add(1, Ordering::Relaxed);
+                        add_stats(&mut lock(&ep.closed_stats), &st);
+                    }
+                }
                 conns.is_empty()
             };
             if empty && ep.factory.is_none() {
@@ -586,6 +598,25 @@ struct Ep {
     factory: Option<Box<Factory>>,
     /// A client's token store and the server name its tokens are kept under.
     tokens: Option<(TokenStore, String)>,
+    /// Connections accepted and closed, and the summed statistics of the closed ones (so the
+    /// totals a scrape reports never go down).
+    accepted: AtomicU64,
+    closed: AtomicU64,
+    closed_stats: Mutex<ConnectionStats>,
+}
+
+/// Adds the counters of `b` to `a` (gauges such as RTT and the window are left alone).
+fn add_stats(a: &mut ConnectionStats, b: &ConnectionStats) {
+    for (x, y) in [(&mut a.udp_tx, &b.udp_tx), (&mut a.udp_rx, &b.udp_rx)] {
+        x.datagrams = x.datagrams.wrapping_add(y.datagrams);
+        x.bytes = x.bytes.wrapping_add(y.bytes);
+        x.ios = x.ios.wrapping_add(y.ios);
+    }
+    a.sent_packets = a.sent_packets.wrapping_add(b.sent_packets);
+    a.lost_packets = a.lost_packets.wrapping_add(b.lost_packets);
+    a.lost_bytes = a.lost_bytes.wrapping_add(b.lost_bytes);
+    a.congestion_events = a.congestion_events.wrapping_add(b.congestion_events);
+    a.ecn_ce_events = a.ecn_ce_events.wrapping_add(b.ecn_ce_events);
 }
 
 impl Ep {
@@ -603,6 +634,9 @@ impl Ep {
             probe_backlog: Mutex::new(Vec::new()),
             factory,
             tokens,
+            accepted: AtomicU64::new(0),
+            closed: AtomicU64::new(0),
+            closed_stats: Mutex::new(ConnectionStats::default()),
         }
     }
 
@@ -702,6 +736,7 @@ impl Ep {
             Some(proto::DatagramEvent::New(h, conn)) => {
                 let c = Connection::new(h, *conn, self.clone());
                 lock(&self.conns).insert(h, c.clone());
+                self.accepted.fetch_add(1, Ordering::Relaxed);
                 if let Some(f) = &self.factory {
                     let handler = f(&c);
                     *lock(&c.0.handler) = Some(handler);
@@ -761,6 +796,102 @@ impl QuicServer {
         let all: Vec<Connection> = lock(&self.0.conns).values().cloned().collect();
         for c in all {
             c.close(code, reason);
+        }
+    }
+}
+
+/// Reports the server's connections (ADR-015): `only_quic_connections_open` (gauge),
+/// `only_quic_connections_accepted_total`, `only_quic_connections_closed_total`,
+/// `only_quic_datagrams_total{dir}`, `only_quic_bytes_total{dir}`, `only_quic_packets_sent_total`,
+/// `only_quic_packets_lost_total`, `only_quic_lost_bytes_total`,
+/// `only_quic_congestion_events_total` and `only_quic_ecn_ce_events_total`. Totals cover open
+/// connections and the ones that already closed. Register it with
+/// `Telemetry::register_collector` (with a label telling servers apart if there are several).
+impl Collector for QuicServer {
+    fn collect(&self, out: &mut Families) {
+        let ep = &self.0;
+        let open: Vec<Connection> = lock(&ep.conns).values().cloned().collect();
+        let mut t = *lock(&ep.closed_stats);
+        for c in &open {
+            add_stats(&mut t, &c.stats());
+        }
+        out.gauge(
+            "only_quic_connections_open",
+            "QUIC connections open now.",
+            &[],
+            open.len() as f64,
+        );
+        type Row<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], u64);
+        let counters: [Row<'_>; 11] = [
+            (
+                "only_quic_connections_accepted_total",
+                "QUIC connections accepted.",
+                &[],
+                ep.accepted.load(Ordering::Relaxed),
+            ),
+            (
+                "only_quic_connections_closed_total",
+                "QUIC connections closed.",
+                &[],
+                ep.closed.load(Ordering::Relaxed),
+            ),
+            (
+                "only_quic_datagrams_total",
+                "UDP datagrams of QUIC connections.",
+                &[("dir", "rx")],
+                t.udp_rx.datagrams,
+            ),
+            (
+                "only_quic_datagrams_total",
+                "UDP datagrams of QUIC connections.",
+                &[("dir", "tx")],
+                t.udp_tx.datagrams,
+            ),
+            (
+                "only_quic_bytes_total",
+                "UDP payload bytes of QUIC connections.",
+                &[("dir", "rx")],
+                t.udp_rx.bytes,
+            ),
+            (
+                "only_quic_bytes_total",
+                "UDP payload bytes of QUIC connections.",
+                &[("dir", "tx")],
+                t.udp_tx.bytes,
+            ),
+            (
+                "only_quic_packets_sent_total",
+                "QUIC packets sent.",
+                &[],
+                t.sent_packets,
+            ),
+            (
+                "only_quic_packets_lost_total",
+                "QUIC packets declared lost.",
+                &[],
+                t.lost_packets,
+            ),
+            (
+                "only_quic_lost_bytes_total",
+                "Bytes in QUIC packets declared lost.",
+                &[],
+                t.lost_bytes,
+            ),
+            (
+                "only_quic_congestion_events_total",
+                "QUIC congestion events.",
+                &[],
+                t.congestion_events,
+            ),
+            (
+                "only_quic_ecn_ce_events_total",
+                "QUIC congestion events signalled by ECN-CE.",
+                &[],
+                t.ecn_ce_events,
+            ),
+        ];
+        for (name, help, labels, v) in counters {
+            out.counter(name, help, labels, v as f64);
         }
     }
 }

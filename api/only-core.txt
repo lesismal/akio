@@ -2,6 +2,236 @@ pub mod only_core
 pub use only_core::PoolConfig
 pub use only_core::PoolStats
 pub use only_core::SharedBuf
+pub mod only_core::metrics
+#[non_exhaustive] pub enum only_core::metrics::Kind
+pub only_core::metrics::Kind::Counter
+pub only_core::metrics::Kind::Gauge
+pub only_core::metrics::Kind::Histogram
+impl only_core::metrics::Kind
+pub fn only_core::metrics::Kind::as_str(self) -> &'static str
+impl core::clone::Clone for only_core::metrics::Kind
+pub fn only_core::metrics::Kind::clone(&self) -> Self
+impl core::cmp::Eq for only_core::metrics::Kind
+impl core::cmp::PartialEq for only_core::metrics::Kind
+pub fn only_core::metrics::Kind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_core::metrics::Kind
+pub fn only_core::metrics::Kind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_core::metrics::Kind
+pub fn only_core::metrics::Kind::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_core::metrics::Kind
+impl core::marker::StructuralPartialEq for only_core::metrics::Kind
+impl core::marker::Send for only_core::metrics::Kind
+impl core::marker::Sync for only_core::metrics::Kind
+impl core::marker::Unpin for only_core::metrics::Kind
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Kind
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Kind
+#[non_exhaustive] pub enum only_core::metrics::Value
+pub only_core::metrics::Value::Counter(f64)
+pub only_core::metrics::Value::Gauge(f64)
+pub only_core::metrics::Value::Histogram(only_core::metrics::HistogramSnapshot)
+impl core::clone::Clone for only_core::metrics::Value
+pub fn only_core::metrics::Value::clone(&self) -> Self
+impl core::cmp::PartialEq for only_core::metrics::Value
+pub fn only_core::metrics::Value::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_core::metrics::Value
+pub fn only_core::metrics::Value::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_core::metrics::Value
+impl core::marker::Send for only_core::metrics::Value
+impl core::marker::Sync for only_core::metrics::Value
+impl core::marker::Unpin for only_core::metrics::Value
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Value
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Value
+pub struct only_core::metrics::CollectorId(_)
+impl core::clone::Clone for only_core::metrics::CollectorId
+pub fn only_core::metrics::CollectorId::clone(&self) -> Self
+impl core::cmp::Eq for only_core::metrics::CollectorId
+impl core::cmp::PartialEq for only_core::metrics::CollectorId
+pub fn only_core::metrics::CollectorId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_core::metrics::CollectorId
+pub fn only_core::metrics::CollectorId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_core::metrics::CollectorId
+pub fn only_core::metrics::CollectorId::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_core::metrics::CollectorId
+impl core::marker::StructuralPartialEq for only_core::metrics::CollectorId
+impl core::marker::Send for only_core::metrics::CollectorId
+impl core::marker::Sync for only_core::metrics::CollectorId
+impl core::marker::Unpin for only_core::metrics::CollectorId
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::CollectorId
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::CollectorId
+pub struct only_core::metrics::Counter(_)
+impl only_core::metrics::Counter
+pub fn only_core::metrics::Counter::add(&self, u64)
+pub fn only_core::metrics::Counter::get(&self) -> u64
+pub fn only_core::metrics::Counter::inc(&self)
+pub fn only_core::metrics::Counter::new() -> only_core::metrics::Counter
+impl core::clone::Clone for only_core::metrics::Counter
+pub fn only_core::metrics::Counter::clone(&self) -> Self
+impl core::default::Default for only_core::metrics::Counter
+pub fn only_core::metrics::Counter::default() -> Self
+impl core::fmt::Debug for only_core::metrics::Counter
+pub fn only_core::metrics::Counter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::metrics::Counter
+impl core::marker::Sync for only_core::metrics::Counter
+impl core::marker::Unpin for only_core::metrics::Counter
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Counter
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Counter
+pub struct only_core::metrics::Families
+impl only_core::metrics::Families
+pub fn only_core::metrics::Families::collect_from<K: core::convert::AsRef<str>, V: core::convert::AsRef<str>>(&mut self, &dyn only_core::metrics::Collector, &[(K, V)])
+pub fn only_core::metrics::Families::counter(&mut self, &str, &str, &[(&str, &str)], f64)
+pub fn only_core::metrics::Families::dropped(&self) -> usize
+pub fn only_core::metrics::Families::gauge(&mut self, &str, &str, &[(&str, &str)], f64)
+pub fn only_core::metrics::Families::get(&self, &str) -> core::option::Option<&only_core::metrics::Family>
+pub fn only_core::metrics::Families::histogram(&mut self, &str, &str, &[(&str, &str)], &only_core::metrics::HistogramSnapshot)
+pub fn only_core::metrics::Families::is_empty(&self) -> bool
+pub fn only_core::metrics::Families::iter(&self) -> core::slice::iter::Iter<'_, only_core::metrics::Family>
+pub fn only_core::metrics::Families::len(&self) -> usize
+pub fn only_core::metrics::Families::new() -> only_core::metrics::Families
+pub fn only_core::metrics::Families::to_json(&self) -> alloc::string::String
+pub fn only_core::metrics::Families::to_prometheus(&self) -> alloc::string::String
+pub fn only_core::metrics::Families::write_prometheus(&self, &mut alloc::string::String)
+impl core::clone::Clone for only_core::metrics::Families
+pub fn only_core::metrics::Families::clone(&self) -> Self
+impl core::default::Default for only_core::metrics::Families
+pub fn only_core::metrics::Families::default() -> Self
+impl core::fmt::Debug for only_core::metrics::Families
+pub fn only_core::metrics::Families::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::metrics::Families
+impl core::marker::Sync for only_core::metrics::Families
+impl core::marker::Unpin for only_core::metrics::Families
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Families
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Families
+#[non_exhaustive] pub struct only_core::metrics::Family
+pub only_core::metrics::Family::help: alloc::string::String
+pub only_core::metrics::Family::kind: only_core::metrics::Kind
+pub only_core::metrics::Family::name: alloc::string::String
+pub only_core::metrics::Family::samples: alloc::vec::Vec<only_core::metrics::Sample>
+impl core::clone::Clone for only_core::metrics::Family
+pub fn only_core::metrics::Family::clone(&self) -> Self
+impl core::cmp::PartialEq for only_core::metrics::Family
+pub fn only_core::metrics::Family::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_core::metrics::Family
+pub fn only_core::metrics::Family::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_core::metrics::Family
+impl core::marker::Send for only_core::metrics::Family
+impl core::marker::Sync for only_core::metrics::Family
+impl core::marker::Unpin for only_core::metrics::Family
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Family
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Family
+pub struct only_core::metrics::FnCollector<F>(_)
+impl<F: core::ops::function::Fn(&mut only_core::metrics::Families) + core::marker::Send + core::marker::Sync> only_core::metrics::Collector for only_core::metrics::FnCollector<F>
+pub fn only_core::metrics::FnCollector<F>::collect(&self, &mut only_core::metrics::Families)
+impl<F> core::fmt::Debug for only_core::metrics::FnCollector<F>
+pub fn only_core::metrics::FnCollector<F>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<F> core::marker::Send for only_core::metrics::FnCollector<F> where F: core::marker::Send
+impl<F> core::marker::Sync for only_core::metrics::FnCollector<F> where F: core::marker::Sync
+impl<F> core::marker::Unpin for only_core::metrics::FnCollector<F> where F: core::marker::Unpin
+impl<F> core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::FnCollector<F> where F: core::panic::unwind_safe::RefUnwindSafe
+impl<F> core::panic::unwind_safe::UnwindSafe for only_core::metrics::FnCollector<F> where F: core::panic::unwind_safe::UnwindSafe
+pub struct only_core::metrics::Gauge(_)
+impl only_core::metrics::Gauge
+pub fn only_core::metrics::Gauge::add(&self, f64)
+pub fn only_core::metrics::Gauge::dec(&self)
+pub fn only_core::metrics::Gauge::get(&self) -> f64
+pub fn only_core::metrics::Gauge::inc(&self)
+pub fn only_core::metrics::Gauge::new() -> only_core::metrics::Gauge
+pub fn only_core::metrics::Gauge::set(&self, f64)
+impl core::clone::Clone for only_core::metrics::Gauge
+pub fn only_core::metrics::Gauge::clone(&self) -> Self
+impl core::default::Default for only_core::metrics::Gauge
+pub fn only_core::metrics::Gauge::default() -> Self
+impl core::fmt::Debug for only_core::metrics::Gauge
+pub fn only_core::metrics::Gauge::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::metrics::Gauge
+impl core::marker::Sync for only_core::metrics::Gauge
+impl core::marker::Unpin for only_core::metrics::Gauge
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Gauge
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Gauge
+pub struct only_core::metrics::Histogram(_)
+impl only_core::metrics::Histogram
+pub fn only_core::metrics::Histogram::exponential(f64, f64, usize) -> only_core::metrics::Histogram
+pub fn only_core::metrics::Histogram::new(&[f64]) -> only_core::metrics::Histogram
+pub fn only_core::metrics::Histogram::observe(&self, f64)
+pub fn only_core::metrics::Histogram::observe_duration(&self, core::time::Duration)
+pub fn only_core::metrics::Histogram::snapshot(&self) -> only_core::metrics::HistogramSnapshot
+impl core::clone::Clone for only_core::metrics::Histogram
+pub fn only_core::metrics::Histogram::clone(&self) -> Self
+impl core::default::Default for only_core::metrics::Histogram
+pub fn only_core::metrics::Histogram::default() -> only_core::metrics::Histogram
+impl core::fmt::Debug for only_core::metrics::Histogram
+pub fn only_core::metrics::Histogram::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_core::metrics::Histogram
+impl core::marker::Sync for only_core::metrics::Histogram
+impl core::marker::Unpin for only_core::metrics::Histogram
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Histogram
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Histogram
+#[non_exhaustive] pub struct only_core::metrics::HistogramSnapshot
+pub only_core::metrics::HistogramSnapshot::bounds: alloc::vec::Vec<f64>
+pub only_core::metrics::HistogramSnapshot::counts: alloc::vec::Vec<u64>
+pub only_core::metrics::HistogramSnapshot::sum: f64
+impl only_core::metrics::HistogramSnapshot
+pub fn only_core::metrics::HistogramSnapshot::count(&self) -> u64
+pub fn only_core::metrics::HistogramSnapshot::new(alloc::vec::Vec<f64>, alloc::vec::Vec<u64>, f64) -> core::option::Option<only_core::metrics::HistogramSnapshot>
+impl core::clone::Clone for only_core::metrics::HistogramSnapshot
+pub fn only_core::metrics::HistogramSnapshot::clone(&self) -> Self
+impl core::cmp::PartialEq for only_core::metrics::HistogramSnapshot
+pub fn only_core::metrics::HistogramSnapshot::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_core::metrics::HistogramSnapshot
+pub fn only_core::metrics::HistogramSnapshot::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_core::metrics::HistogramSnapshot
+impl core::marker::Send for only_core::metrics::HistogramSnapshot
+impl core::marker::Sync for only_core::metrics::HistogramSnapshot
+impl core::marker::Unpin for only_core::metrics::HistogramSnapshot
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::HistogramSnapshot
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::HistogramSnapshot
+pub struct only_core::metrics::Registry(_)
+impl only_core::metrics::Registry
+pub fn only_core::metrics::Registry::counter(&self, &str, &str, &[(&str, &str)]) -> only_core::metrics::Counter
+pub fn only_core::metrics::Registry::gauge(&self, &str, &str, &[(&str, &str)]) -> only_core::metrics::Gauge
+pub fn only_core::metrics::Registry::histogram(&self, &str, &str, &[(&str, &str)], &[f64]) -> only_core::metrics::Histogram
+pub fn only_core::metrics::Registry::new() -> only_core::metrics::Registry
+impl core::clone::Clone for only_core::metrics::Registry
+pub fn only_core::metrics::Registry::clone(&self) -> Self
+impl core::default::Default for only_core::metrics::Registry
+pub fn only_core::metrics::Registry::default() -> Self
+impl core::fmt::Debug for only_core::metrics::Registry
+pub fn only_core::metrics::Registry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::metrics::Collector for only_core::metrics::Registry
+pub fn only_core::metrics::Registry::collect(&self, &mut only_core::metrics::Families)
+impl core::marker::Send for only_core::metrics::Registry
+impl core::marker::Sync for only_core::metrics::Registry
+impl core::marker::Unpin for only_core::metrics::Registry
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Registry
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Registry
+#[non_exhaustive] pub struct only_core::metrics::Sample
+pub only_core::metrics::Sample::labels: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_core::metrics::Sample::value: only_core::metrics::Value
+impl only_core::metrics::Sample
+pub fn only_core::metrics::Sample::label(&self, &str) -> core::option::Option<&str>
+impl core::clone::Clone for only_core::metrics::Sample
+pub fn only_core::metrics::Sample::clone(&self) -> Self
+impl core::cmp::PartialEq for only_core::metrics::Sample
+pub fn only_core::metrics::Sample::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_core::metrics::Sample
+pub fn only_core::metrics::Sample::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_core::metrics::Sample
+impl core::marker::Send for only_core::metrics::Sample
+impl core::marker::Sync for only_core::metrics::Sample
+impl core::marker::Unpin for only_core::metrics::Sample
+impl core::panic::unwind_safe::RefUnwindSafe for only_core::metrics::Sample
+impl core::panic::unwind_safe::UnwindSafe for only_core::metrics::Sample
+pub const only_core::metrics::DEFAULT_BUCKETS: [f64; 11]
+pub trait only_core::metrics::Collector: core::marker::Send + core::marker::Sync
+pub fn only_core::metrics::Collector::collect(&self, &mut only_core::metrics::Families)
+impl only_core::metrics::Collector for only_core::metrics::Registry
+pub fn only_core::metrics::Registry::collect(&self, &mut only_core::metrics::Families)
+impl<C: only_core::metrics::Collector + ?core::marker::Sized> only_core::metrics::Collector for alloc::boxed::Box<C>
+pub fn alloc::boxed::Box<C>::collect(&self, &mut only_core::metrics::Families)
+impl<C: only_core::metrics::Collector + ?core::marker::Sized> only_core::metrics::Collector for alloc::rcs::arc::Arc<C>
+pub fn alloc::rcs::arc::Arc<C>::collect(&self, &mut only_core::metrics::Families)
+impl<F: core::ops::function::Fn(&mut only_core::metrics::Families) + core::marker::Send + core::marker::Sync> only_core::metrics::Collector for only_core::metrics::FnCollector<F>
+pub fn only_core::metrics::FnCollector<F>::collect(&self, &mut only_core::metrics::Families)
+pub fn only_core::metrics::fn_collector<F: core::ops::function::Fn(&mut only_core::metrics::Families) + core::marker::Send + core::marker::Sync>(F) -> only_core::metrics::FnCollector<F>
 pub mod only_core::telemetry
 #[non_exhaustive] pub struct only_core::telemetry::ConnInfo
 pub only_core::telemetry::ConnInfo::age: core::time::Duration
@@ -180,15 +410,19 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_core::telemetry::SlowRecor
 impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::SlowRecord
 pub struct only_core::telemetry::Telemetry
 impl only_core::telemetry::Telemetry
+pub fn only_core::telemetry::Telemetry::collect(&self) -> only_core::metrics::Families
 pub fn only_core::telemetry::Telemetry::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>
 pub fn only_core::telemetry::Telemetry::live(&self) -> &only_core::telemetry::Live
 pub fn only_core::telemetry::Telemetry::metrics(&self) -> only_core::telemetry::Metrics
 pub fn only_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>
 pub fn only_core::telemetry::Telemetry::notify_reload(&self)
 pub fn only_core::telemetry::Telemetry::open_connections(&self) -> usize
+pub fn only_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn only_core::metrics::Collector>, &[(&str, &str)]) -> only_core::metrics::CollectorId
 pub fn only_core::telemetry::Telemetry::reload(&self, &only_core::Config) -> only_core::telemetry::ReloadReport
+pub fn only_core::telemetry::Telemetry::render_prometheus(&self) -> alloc::string::String
 pub fn only_core::telemetry::Telemetry::set_log_level(&self, only_log::LevelFilter)
 pub fn only_core::telemetry::Telemetry::slow_callbacks(&self) -> alloc::vec::Vec<only_core::telemetry::SlowRecord>
+pub fn only_core::telemetry::Telemetry::unregister_collector(&self, only_core::metrics::CollectorId) -> bool
 impl core::default::Default for only_core::telemetry::Telemetry
 pub fn only_core::telemetry::Telemetry::default() -> Self
 impl core::fmt::Debug for only_core::telemetry::Telemetry
@@ -545,15 +779,19 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_core::telemetry::SlowRecor
 impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::SlowRecord
 pub struct only_core::Telemetry
 impl only_core::telemetry::Telemetry
+pub fn only_core::telemetry::Telemetry::collect(&self) -> only_core::metrics::Families
 pub fn only_core::telemetry::Telemetry::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>
 pub fn only_core::telemetry::Telemetry::live(&self) -> &only_core::telemetry::Live
 pub fn only_core::telemetry::Telemetry::metrics(&self) -> only_core::telemetry::Metrics
 pub fn only_core::telemetry::Telemetry::new() -> alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>
 pub fn only_core::telemetry::Telemetry::notify_reload(&self)
 pub fn only_core::telemetry::Telemetry::open_connections(&self) -> usize
+pub fn only_core::telemetry::Telemetry::register_collector(&self, alloc::rcs::arc::Arc<dyn only_core::metrics::Collector>, &[(&str, &str)]) -> only_core::metrics::CollectorId
 pub fn only_core::telemetry::Telemetry::reload(&self, &only_core::Config) -> only_core::telemetry::ReloadReport
+pub fn only_core::telemetry::Telemetry::render_prometheus(&self) -> alloc::string::String
 pub fn only_core::telemetry::Telemetry::set_log_level(&self, only_log::LevelFilter)
 pub fn only_core::telemetry::Telemetry::slow_callbacks(&self) -> alloc::vec::Vec<only_core::telemetry::SlowRecord>
+pub fn only_core::telemetry::Telemetry::unregister_collector(&self, only_core::metrics::CollectorId) -> bool
 impl core::default::Default for only_core::telemetry::Telemetry
 pub fn only_core::telemetry::Telemetry::default() -> Self
 impl core::fmt::Debug for only_core::telemetry::Telemetry

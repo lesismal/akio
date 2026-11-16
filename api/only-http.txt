@@ -422,6 +422,8 @@ impl core::default::Default for only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::default() -> Self
 impl core::fmt::Debug for only_http::observe::HttpMetrics
 pub fn only_http::observe::HttpMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::metrics::Collector for only_http::observe::HttpMetrics
+pub fn only_http::observe::HttpMetrics::collect(&self, &mut only_core::metrics::Families)
 impl core::marker::Send for only_http::observe::HttpMetrics
 impl core::marker::Sync for only_http::observe::HttpMetrics
 impl core::marker::Unpin for only_http::observe::HttpMetrics
@@ -430,6 +432,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_http::observe::HttpMetrics
 #[non_exhaustive] pub struct only_http::observe::HttpSnapshot
 pub only_http::observe::HttpSnapshot::buckets: [u64; 15]
 pub only_http::observe::HttpSnapshot::by_class: [u64; 6]
+pub only_http::observe::HttpSnapshot::by_version: [u64; 4]
 pub only_http::observe::HttpSnapshot::in_flight: i64
 pub only_http::observe::HttpSnapshot::sum: core::time::Duration
 impl only_http::observe::HttpSnapshot
@@ -450,6 +453,7 @@ impl core::marker::Unpin for only_http::observe::HttpSnapshot
 impl core::panic::unwind_safe::RefUnwindSafe for only_http::observe::HttpSnapshot
 impl core::panic::unwind_safe::UnwindSafe for only_http::observe::HttpSnapshot
 pub const only_http::observe::LATENCY_BUCKETS: [f64; 14]
+pub const only_http::observe::VERSION_LABELS: [&str; 4]
 pub fn only_http::observe::access_log() -> impl only_http::Middleware
 pub fn only_http::observe::debug_handler(alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>, core::option::Option<alloc::string::String>) -> impl only_http::Service
 pub fn only_http::observe::metrics_handler(alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>, core::option::Option<only_http::observe::HttpMetrics>) -> impl only_http::Service

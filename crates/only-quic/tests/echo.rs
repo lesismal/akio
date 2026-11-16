@@ -213,3 +213,95 @@ fn version_2() {
     }
     e.shutdown();
 }
+
+/// ADR-015: `QuicServer` is a collector whose totals survive closed connections.
+#[test]
+fn server_collector_reports_connections() {
+    use only::metrics::{Families, Value};
+
+    fn value(f: &Families, name: &str, label: Option<(&str, &str)>) -> f64 {
+        let fam = f.get(name).unwrap_or_else(|| panic!("no {name}"));
+        let s = fam
+            .samples
+            .iter()
+            .find(|s| label.is_none_or(|(k, v)| s.label(k) == Some(v)))
+            .unwrap();
+        match s.value {
+            Value::Counter(v) | Value::Gauge(v) => v,
+            _ => panic!("{name} is a histogram"),
+        }
+    }
+
+    let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+    let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
+    let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
+    let cfg = only_quic::server_config(vec![cert], key, &[b"echo"]).unwrap();
+    let server = QuicServer::new(cfg, |_c: &Connection| Echo);
+    let e = Engine::builder()
+        .listen(
+            Listener::udp("127.0.0.1:0".parse().unwrap())
+                .threads(1)
+                .serve(server.clone()),
+        )
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let tel = e.telemetry().clone();
+    tel.register_collector(Arc::new(server), &[("server", "echo")]);
+    let addr = e.local_addrs()[0];
+
+    let (tx, rx) = mpsc::channel();
+    let ccfg = only_quic::client_config_insecure(&[b"echo"]).unwrap();
+    let c = only_quic::dial(
+        &e,
+        addr,
+        "localhost",
+        ccfg,
+        Client {
+            tx,
+            bufs: HashMap::new(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Got::Connected
+    ));
+    let id = c.open_bi().unwrap();
+    c.send(id, vec![7u8; 100_000]).unwrap();
+    c.finish(id).unwrap();
+    loop {
+        if let Got::Stream(_, b) = rx.recv_timeout(Duration::from_secs(10)).unwrap() {
+            assert_eq!(b.len(), 100_000);
+            break;
+        }
+    }
+    let f = tel.collect();
+    assert_eq!(value(&f, "only_quic_connections_open", None), 1.0);
+    assert_eq!(value(&f, "only_quic_connections_accepted_total", None), 1.0);
+    assert_eq!(value(&f, "only_quic_connections_closed_total", None), 0.0);
+    let rx_bytes = value(&f, "only_quic_bytes_total", Some(("dir", "rx")));
+    let tx_pkts = value(&f, "only_quic_packets_sent_total", None);
+    assert!(rx_bytes >= 100_000.0, "{rx_bytes}");
+    assert!(tx_pkts > 0.0);
+    assert!(
+        f.get("only_quic_connections_open").unwrap().samples[0].label("server") == Some("echo")
+    );
+
+    c.close(0, b"bye");
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let f = loop {
+        let f = tel.collect();
+        if value(&f, "only_quic_connections_open", None) == 0.0 {
+            break f;
+        }
+        assert!(std::time::Instant::now() < deadline, "server never drained");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(value(&f, "only_quic_connections_closed_total", None), 1.0);
+    assert!(value(&f, "only_quic_bytes_total", Some(("dir", "rx"))) >= rx_bytes);
+    assert!(value(&f, "only_quic_packets_sent_total", None) >= tx_pkts);
+    let text = tel.render_prometheus();
+    assert!(text.contains("only_quic_connections_closed_total{server=\"echo\"} 1\n"));
+}
