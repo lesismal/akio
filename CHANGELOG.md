@@ -30,6 +30,23 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Evaluated: io_uring registered files, `SEND_ZC`, `MSG_RING` wake-ups, ring-based sends (not adopted)
+
+- Measured on Linux 7.0 / Ryzen 7 7800X3D against the rule "same-run gain of at least 3%, no
+  regression elsewhere" (docs/BENCHMARKS.md, "io_uring features evaluation"); none qualified, so
+  the io_uring backend is unchanged. `SEND_ZC` was 12–27% slower with 10–36% more CPU per request
+  from 16 KiB to 256 KiB (loopback always copies); `MSG_RING` wake-ups from threads without a ring
+  (`IORING_REGISTER_SEND_MSG_RING`) gave +1.5–4.8% on `spawn_blocking` round trips and −1.3% to
+  +0.2% elsewhere; a registered ring fd −3.6% to +0.5%; registered files have nothing to save in
+  the engine (no submission per request in steady state). Ring-based sends (`IORING_OP_SEND`)
+  were +1–4% with 2–6% less CPU per request on a bare ring, but need a redesign of the shared
+  write path (writes come from any thread) and are left as a follow-up.
+- New measurement harness: the ignored `eval_server` test in only-uring (`src/eval.rs`, a minimal
+  HTTP/1.1 responder on the raw ring: `write` / `SEND` / `SEND_ZC`, optional direct accept and
+  registered files) and `tools/bench/uring-eval.sh`. The extra io_uring bindings it uses
+  (`SEND`, `SEND_ZC`, direct accept, fixed-file close, sparse `REGISTER_FILES`, `MSG_RING` and
+  `REGISTER_SEND_MSG_RING`) are compiled for tests only. No public API change.
+
 ### Added: TLS 1.3 early data and QUIC 0-RTT (opt-in, with replay protection)
 
 - **`only-tls`**: early data (RFC 8446 section 4.2.10), off by default on both sides.
