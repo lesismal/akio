@@ -282,6 +282,26 @@ A first run with compression on in the client too measured 0.99× in all three c
 1.3 µs (2.2 µs for the RSA one), mostly only-deflate's fixed cost per stream, which is why clients
 offer compression only when asked to.
 
+#### Shared anti-replay store and compatible version negotiation: handshake A/B
+
+ADR-013 (2026-11-17, `46c3c9ab` → branch, alternated rounds on the quiet host through `quiet.sh`;
+default configurations, so no store call and no version switch, which is the path every
+connection takes). QUIC with `quic-bench` on CPUs 2–5 (seven rounds of `handshakes 5 8`, three
+of `resume 300`), TLS with `tls-bench handshakes 2` on CPU 2 (three rounds):
+
+| case | before | after | after / before |
+|---|---:|---:|---:|
+| QUIC full handshakes/s, 8 in flight (median) | 9,496 | 9,497 | 1.00 |
+| QUIC resumed, 0-RTT: dial to answer (median of medians) | 228.4 µs | 225.5 µs | 0.99 |
+| QUIC resumed, 1-RTT: dial to answer (median of medians) | 270.2 µs | 268.0 µs | 0.99 |
+| TLS full handshakes/s, X25519 (mean) | 5,431 | 5,425 | 1.00 |
+| TLS full handshakes/s, secp256r1 (mean) | 5,439 | 5,441 | 1.00 |
+| TLS full handshakes/s, X25519, RSA-2048 certificate (mean) | 3,290 | 3,293 | 1.00 |
+
+A server with `prefer_version` copies the client's first Initial CRYPTO data (one ClientHello,
+about 300 bytes to a few KiB) once per connection; the store is called only for ClientHellos
+whose early data would be accepted.
+
 ### Kernel TLS (kTLS) evaluation (`crates/only-tls/examples/ktls-bench.rs`, `tools/bench/ktls.sh`)
 
 Question: after only-tls finishes a handshake, should the record keys go to the Linux kernel
