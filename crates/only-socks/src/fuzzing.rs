@@ -7,10 +7,13 @@ use only_core::fuzzing::{conn, split};
 use crate::Socks;
 
 /// `socks_request`: a SOCKS5/4/4a server session's handshake parser (greeting, RFC 1929
-/// authentication, CONNECT requests with IPv4, IPv6 and domain targets). There is no engine,
-/// so every dial fails and name resolution is refused, which ends the session the way a
-/// failed upstream does. `data[0]`: bit 0 requires authentication (user `u`, password `p`);
-/// `data[1]` splits the reads.
+/// authentication, CONNECT / BIND / UDP ASSOCIATE requests with IPv4, IPv6 and domain targets,
+/// the access-control hook) and the UDP ASSOCIATE datagram header parser. There is no engine,
+/// so every dial, bind and association fails and name resolution is refused, which ends the
+/// session the way a failed upstream does. `data[0]`: bit 0 requires authentication (user
+/// `u`, password `p`), bit 1 enables BIND and UDP ASSOCIATE, bit 2 sets a hook refusing port
+/// 0; `data[1]` splits the reads. The bytes after `data[0]` are also parsed as a UDP datagram
+/// header, whose address must round-trip.
 pub fn socks_request(data: &[u8]) {
     if data.len() < 2 {
         return;
@@ -18,6 +21,17 @@ pub fn socks_request(data: &[u8]) {
     let mut socks = Socks::new(EngineRef::new());
     if data[0] & 1 == 1 {
         socks = socks.auth(|u, p| u == "u" && p == "p");
+    }
+    if data[0] & 2 == 2 {
+        socks = socks.bind(true).udp_associate(true);
+    }
+    if data[0] & 4 == 4 {
+        socks = socks.allow(|r| r.dest().port() != 0);
+    }
+    if let Some((_, crate::Dest::Addr(a), n)) = crate::udp::parse_header(&data[1..]) {
+        let mut h = Vec::new();
+        crate::udp::push_header(&mut h, a);
+        assert_eq!(h[3..], data[1..][3..n]);
     }
     let c = conn();
     let mut s = socks.on_open(&c);
@@ -35,7 +49,7 @@ mod tests {
     const DIR: &str = env!("CARGO_MANIFEST_DIR");
 
     fn seeds() -> Vec<Vec<u8>> {
-        let wires: [(u8, &[u8]); 8] = [
+        let wires: [(u8, &[u8]); 13] = [
             (0, &[5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80]),
             (
                 0,
@@ -52,6 +66,18 @@ mod tests {
             (0, b"\x04\x01\x00\x50\x7f\x00\x00\x01user\x00"),
             (0, b"\x04\x01\x00\x50\x00\x00\x00\x01\x00example.com\x00"),
             (0, &[5, 1, 0, 5, 2, 0, 9, 1, 2, 3, 4, 0, 1]),
+            // BIND and UDP ASSOCIATE (enabled, then refused by the hook, then disabled).
+            (2, &[5, 1, 0, 5, 2, 0, 1, 127, 0, 0, 1, 0, 21]),
+            (2, &[5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0]),
+            (6, &[5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0]),
+            (
+                0,
+                &[
+                    5, 1, 0, 5, 3, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                ],
+            ),
+            // A UDP datagram header (FRAG 0, a domain destination) as the whole input.
+            (2, b"\x00\x00\x00\x03\x0bexample.com\x00\x35data"),
         ];
         let mut v = Vec::new();
         for (cfg, w) in wires {

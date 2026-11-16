@@ -48,6 +48,34 @@ All notable changes to `only` are documented here. The format follows
 - The WebSocket client closes its open connections with 1001 (going away) when its engine shuts
   down gracefully (they ended with 1006).
 
+### Added: SOCKS5 BIND and UDP ASSOCIATE, a SOCKS access-control hook, `Engine::adopt_tcp`
+
+- `only-socks` serves SOCKS5 `BIND` and `UDP ASSOCIATE` (RFC 1928), both off by default
+  (`Socks::bind(true)`, `Socks::udp_associate(true)`; `bind_timeout`, `udp_idle_timeout`).
+  UDP: one relay socket per association (the engine needs `udp_client_threads`), client
+  recognised by IP and port, fragments dropped, answers relayed only from destinations the
+  client sent to, ends with the control connection or after the idle timeout. BIND: listener on
+  the proxy's address, two replies, the accepted connection relayed with backpressure.
+- `Socks::allow(|request| ..)`: an access-control hook over `CONNECT` (SOCKS5/4/4a), `BIND`,
+  `UDP ASSOCIATE` and each UDP destination, with the new `Command`, `Dest` and `Request` types.
+  Refusals answer reply 2 (SOCKS4: 0x5b) or drop the datagram.
+- `Engine::adopt_tcp(stream, acceptor, on_error)` serves a TCP stream accepted outside the engine
+  like a dialed connection (epoll and io_uring).
+- Interop: `tools/interop/socks/run.sh` (curl, PySocks, BIND and UDP edge cases; Dante as the
+  reference server). ADR-012. Additive API (`api/only-socks.txt`, `api/only.txt`).
+
+### Added: `ONLY_LOG` filter directives and compile-time log level caps
+
+- `only::log::Filter`: per-target levels from env_logger-style directives
+  (`info,only_http=debug,only_quic::conn=trace,only_http::access=off`), parsed once.
+  `only::log::init_from_env(default)` installs the formatted logger filtered by `ONLY_LOG`; it is
+  opt-in, nothing reads the environment otherwise. `FmtLogger::filter` / `init_filtered` take a
+  filter built in code.
+- only-log cargo features `max_level_*` / `release_max_level_*` and `STATIC_MAX_LEVEL`, as in
+  the `log` crate: statements above the cap are compiled out. Without them the generated code is
+  unchanged (disabled `trace!`: 0.400 → 0.401 ns on x86_64, same binary on macOS). ADR-012.
+  Additive API (`api/only-log.txt`).
+
 ### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
 
 only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix

@@ -86,6 +86,25 @@ only::log::FmtLogger::new()
 stderr（`only: ...`），不会悄无声息地丢失；其余记录被丢弃。最大级别默认为 `Off`，并且最先检查，只需
 一次 relaxed 原子读，因此被禁用的语句开销远低于一纳秒。
 
+**从环境变量按 target 设置级别。** `only::log::init_from_env(default)` 只读取一次 `ONLY_LOG`，
+其中是 env_logger 风格的指令，并据此安装格式化 logger：
+
+```text
+ONLY_LOG=info,only_http=debug,only_quic::conn=trace,only_http::access=off ./server
+```
+
+`level` 设置没有指令点名的 target 的级别（没有时它们关闭），`target=level` 设置某个 target 及其子模块
+（`target::...`）的级别，单独的 `target` 表示 `trace`；最具体的 target 胜出。未设置时 `default` 作用于
+所有 target；无法解析时 stderr 上会有一行说明原因，并使用 `default`。不调用 `init_from_env` 就没有代码
+读取该变量。同样的语法可以在代码中构造过滤器：`"info,only_http=debug".parse::<only::log::Filter>()`，再
+`FmtLogger::new().init_filtered(filter)`，或在自己的 `Logger` 中调用 `filter.enabled(metadata)`。与
+env_logger 不同，`only=debug` 不匹配 `only_http`（target 按 `::` 边界匹配），也不支持 `/regex` 消息过滤。
+
+**编译期上限。** only-log 的 feature `max_level_off` …… `max_level_trace` 以及 `release_max_level_*`
+（后者用于没有 debug assertions 的构建）在编译期移除超出上限的语句，与 `log` crate 相同；结果是
+`only::log::STATIC_MAX_LEVEL`。只应在应用中开启（feature 在整个依赖图中合并）：
+`only-log = { version = "1", features = ["release_max_level_info"] }`。
+
 **已有的 `log` 配置（env_logger、`tracing-log`、fern ……）。** 开启 `log` feature
 （`only = { version = "1", features = ["log"] }`）。未安装 only-log logger 时，每条记录都以相同的
 级别、target、消息和键值对交给 `log` crate 的 logger，有效最大级别为 `log::max_level()`；

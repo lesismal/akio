@@ -62,6 +62,21 @@ pub trait Group: Send + Sync {
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     );
 
+    /// Serves the already connected, non-blocking TCP stream `stream` with `acceptor`, as a
+    /// dialed connection that has just connected (`on_open` on an I/O thread); `on_error` if
+    /// it cannot be registered. TCP groups implement it.
+    fn adopt(
+        &self,
+        _stream: std::net::TcpStream,
+        _acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        on_error(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this group cannot adopt a TCP stream",
+        ));
+    }
+
     /// Opens a peer "connection" to `peer` on this UDP listener's own socket (datagrams leave
     /// from the listener's port), served by `acceptor` instead of the listener's. Only UDP
     /// listener groups implement it.

@@ -41,6 +41,31 @@ only 的所有重要变更都记录在这里。格式遵循
   `io::Error`。
 - 客户端所在 engine 优雅停机时，WebSocket 客户端以 1001（going away）关闭已打开的连接（以前以 1006 结束）。
 
+### 新增：SOCKS5 BIND 与 UDP ASSOCIATE、SOCKS 访问控制钩子、`Engine::adopt_tcp`
+
+- `only-socks` 支持 SOCKS5 `BIND` 与 `UDP ASSOCIATE`（RFC 1928），默认均关闭
+  （`Socks::bind(true)`、`Socks::udp_associate(true)`；`bind_timeout`、`udp_idle_timeout`）。
+  UDP：每个关联一个转发 socket（engine 需要 `udp_client_threads`），按 IP 和端口识别客户端，丢弃
+  分片，只转发来自客户端发送过的目的地的应答，随控制连接或空闲超时结束。BIND：在代理地址上监听，
+  两次回复，接受到的连接带背压转发。
+- `Socks::allow(|request| ..)`：覆盖 `CONNECT`（SOCKS5/4/4a）、`BIND`、`UDP ASSOCIATE` 以及每个 UDP
+  目的地的访问控制钩子，新增 `Command`、`Dest`、`Request` 类型。拒绝时回复 2（SOCKS4：0x5b）或丢弃
+  数据报。
+- `Engine::adopt_tcp(stream, acceptor, on_error)` 把在 engine 之外 accept 的 TCP 流当作拨号连接来
+  服务（epoll 与 io_uring）。
+- 互操作：`tools/interop/socks/run.sh`（curl、PySocks、BIND 与 UDP 边界情况；以 Dante 作为参考
+  服务器）。ADR-012。新增 API（`api/only-socks.txt`、`api/only.txt`）。
+
+### 新增：`ONLY_LOG` 过滤指令与编译期日志级别上限
+
+- `only::log::Filter`：从 env_logger 风格的指令（`info,only_http=debug,only_quic::conn=trace,only_http::access=off`）
+  得到按 target 的级别，只解析一次。`only::log::init_from_env(default)` 安装按 `ONLY_LOG` 过滤的格式化
+  logger；需显式调用，否则没有代码读取环境变量。`FmtLogger::filter` / `init_filtered` 接受在代码中
+  构造的过滤器。
+- only-log 的 cargo feature `max_level_*` / `release_max_level_*` 与 `STATIC_MAX_LEVEL`，与 `log`
+  crate 相同：超出上限的语句被编译掉。不开启时生成的代码不变（禁用的 `trace!`：x86_64 上
+  0.400 → 0.401 ns，macOS 上二进制相同）。ADR-012。新增 API（`api/only-log.txt`）。
+
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
 在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，only-crypto 的 Poly1305（因而

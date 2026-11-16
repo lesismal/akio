@@ -742,6 +742,28 @@ impl Engine {
         }
     }
 
+    /// Serves an already connected TCP stream (one accepted outside the engine, e.g. on a
+    /// listening socket opened at run time) with `acceptor`, like a [`dial`](Self::dial)ed
+    /// connection that has just connected: `acceptor.on_open` runs on an I/O thread, then
+    /// `on_data` / `on_close` as for any connection. The stream is made non-blocking. On
+    /// failure (no TCP I/O threads, engine shutting down) `on_error` is called and the stream
+    /// is closed. Uses the same I/O threads as `dial`. The engine must have been
+    /// [`start`](Self::start)ed.
+    pub fn adopt_tcp<A: Acceptor>(
+        &self,
+        stream: std::net::TcpStream,
+        acceptor: A,
+        on_error: impl FnOnce(io::Error) + Send + 'static,
+    ) {
+        match self.tcp_dial.and_then(|i| self.groups.get(i)) {
+            Some(g) => g.adopt(stream, Arc::new(acceptor), Box::new(on_error)),
+            None => on_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "engine has no I/O threads",
+            )),
+        }
+    }
+
     /// Connects to `addr` without blocking. When established, `acceptor.on_open` runs on an I/O
     /// thread exactly as for an accepted connection; on failure `on_error` is called instead.
     /// The engine must have been [`start`](Self::start)ed.
