@@ -80,14 +80,16 @@ touches the public API of only-h3, only-http and only-ws.
 
 ## Consequences
 
-- `Request` grows by 24 bytes (`protocol`); the only-http and only-ws changes alone measure
-  1.006x on `quic-bench h3`. The full change measures **0.976x** of the previous release
-  (858.8k vs 879.9k req/s, same run, gpu51 CPUs 2-5, 7 alternating rounds), down from 0.956x
-  before the hot paths were trimmed (static-only decoding for sections without dynamic
-  references, whole frames in place for requests that arrive whole, a boxed side state for
-  uploads, WebSockets and blocked sections). A hybrid build with the previous client puts
-  about 0.9 points of the rest on the server and 1.3 on the client, spread over the new paths
-  with no single hot spot. Accepted as the price of the features, to be revisited.
+- `Request` grows by 24 bytes (`protocol`). With the encoder off, `quic-bench h3` runs at the
+  previous release's speed: two same-run A/Bs of 7 alternating rounds each on gpu51 (CPUs
+  2-5) gave 0.998x and 1.003x, 1.001x over all 14 rounds (883.2k vs 882.7k req/s); cycles
+  per request are equal and instructions per request +0.8%. The first complete version
+  measured 0.956x. Getting back to parity took static-only decoding for sections without
+  dynamic references; whole frames read in place for requests that arrive whole; boxed side
+  state for uploads, WebSockets, blocked sections and queued requests that need more than
+  their bytes; and keeping the per-request calls inlined (the request is 232 bytes and was
+  being copied through every out-of-line call). Exact per-function instruction counts came
+  from callgrind (arm64, Docker).
 - The server's SETTINGS now carry a 4 KiB table, 16 blocked streams and extended CONNECT, and
   it opens a QPACK decoder stream; peers that compress use the table at once. Interop: quic-go
   (WebSocket over HTTP/3 both ways, streamed uploads both ways; its QPACK has no dynamic table)

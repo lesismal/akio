@@ -32,9 +32,9 @@ only 的所有重要变更都记录在这里。格式遵循
 - 互通：quic-go（双向 HTTP/3 WebSocket 与流式上传），Docker 中通过 libcurl 的 ngtcp2/nghttp3 和
   OpenSSL QUIC（nghttp3 会填充我方解码器的表）。新增 fuzz 目标 `qpack_dynamic`；`h3_frame` 和
   `h3_request` 覆盖 QPACK 流、被阻塞的字段段、extended CONNECT 和流式读取器。
-- HTTP/3 吞吐：`quic-bench h3` 同轮 A/B 为上一版本的 0.976 倍（gpu51 上 85.88 万 vs 87.99 万
-  请求/秒，编码器关闭）；剩余 2.4% 分散在新的请求和响应路径上。两端都开启 QPACK 编码器时在该基准上
-  再慢 18%（请求很小，每个都要确认一次），这正是编码器默认关闭的原因。
+- 编码器关闭时 HTTP/3 吞吐不变：`quic-bench h3` 同轮 A/B 为上一版本的 1.001 倍（gpu51 上 88.32 万
+  vs 88.27 万 请求/秒，两次各 7 轮交替：0.998 倍和 1.003 倍）。两端都开启 QPACK 编码器时在该基准上
+  慢 18%（请求很小，每个都要确认一次），这正是编码器默认关闭的原因。
 
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
