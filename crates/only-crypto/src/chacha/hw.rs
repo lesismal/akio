@@ -10,16 +10,20 @@
 //!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the
 //! `#[target_feature]` function and its intrinsics and for the `asm!` kernels, each called after
-//! its feature was detected.
+//! its feature was detected, and for recording what the AVX-512 kernel wrote out of place into a
+//! possibly uninitialised `Fill` (`Fill::assume_written`).
 #![allow(unsafe_code)]
 // The intrinsics are `unsafe fn` at the MSRV (1.85) and safe inside `#[target_feature]` functions
 // on newer compilers.
 #![allow(unused_unsafe)]
 
 use crate::cpu::{self, Feature};
+use crate::fill::Fill;
 
 #[cfg(target_arch = "x86_64")]
 mod avx512;
+#[cfg(target_arch = "x86_64")]
+use avx512::Width;
 #[cfg(target_arch = "x86_64")]
 mod ifma;
 
@@ -42,55 +46,38 @@ pub(super) fn ifma_enabled() -> bool {
     cpu::has(Feature::Ifma)
 }
 
-/// XORs the keystream starting at block `state[12]` into `dst`: with `src` (of the same length),
-/// the keystream XOR `src` is written to `dst`, else `dst` is worked on in place. The counter must
-/// not wrap within the `dst.len().div_ceil(64)` blocks. `false` (nothing done) without AVX-512.
+/// XORs the keystream starting at block `state[12]` into `dst` in place. The counter must not
+/// wrap within the `dst.len().div_ceil(64)` blocks. `false` (nothing done) without AVX-512.
 #[cfg_attr(not(target_arch = "x86_64"), allow(clippy::needless_pass_by_ref_mut))]
-pub(super) fn xor_wide(state: &[u32; 16], src: Option<&[u8]>, dst: &mut [u8]) -> bool {
+pub(super) fn xor_wide(state: &[u32; 16], dst: &mut [u8]) -> bool {
     if !cpu::cpu_has(Feature::Avx512) {
         return false;
     }
-    if let Some(s) = src {
-        assert_eq!(s.len(), dst.len(), "ChaCha20: output length");
-    }
     #[cfg(target_arch = "x86_64")]
     {
-        use avx512::Width;
         let len = dst.len();
-        // Sixteen blocks at a time, then one group for the rest: of the narrowest width that
-        // covers it (on Zen 4 a zmm group costs less than two ymm ones, and an xmm group
-        // about as much as a ymm one), directly when it fills the group, else through a buffer.
+        // Sixteen blocks at a time, then one group for the rest (see `Width::last`), directly
+        // when it fills the group, else through a buffer.
         let whole = len / Width::Z.bytes();
         let mut st = *state;
         if whole > 0 {
             let to = dst.as_mut_ptr();
-            let from = src.map_or_else(|| to.cast_const(), <[u8]>::as_ptr);
             // SAFETY: `cpu_has` confirmed AVX-512 F/BW/VL and the OS ZMM state; `whole >= 1`
-            // groups of 1024 bytes fit in `dst` and in `src` (of the same length); `src` is a
-            // shared slice and `dst` a unique one, so they do not overlap, and without `src` the
-            // kernel works in place.
-            unsafe { avx512::xor(&st, from, to, whole, Width::Z) };
+            // groups of 1024 bytes fit in `dst`, worked on in place.
+            unsafe { avx512::xor(&st, to.cast_const(), to, whole, Width::Z) };
             st[12] = st[12].wrapping_add(16 * whole as u32);
         }
         let done = whole * Width::Z.bytes();
         let rest = len - done;
         if rest > 0 {
-            let w = match rest {
-                513.. => Width::Z,
-                257.. => Width::Y,
-                _ => Width::X,
-            };
+            let w = Width::last(rest);
             if rest == w.bytes() {
                 let to = dst[done..].as_mut_ptr();
-                let from = src.map_or_else(|| to.cast_const(), |s| s[done..].as_ptr());
                 // SAFETY: as above, one group of exactly `rest` bytes from offset `done`.
-                unsafe { avx512::xor(&st, from, to, 1, w) };
+                unsafe { avx512::xor(&st, to.cast_const(), to, 1, w) };
             } else {
                 let mut buf = [0u8; 1024];
-                match src {
-                    Some(s) => buf[..rest].copy_from_slice(&s[done..]),
-                    None => buf[..rest].copy_from_slice(&dst[done..]),
-                }
+                buf[..rest].copy_from_slice(&dst[done..]);
                 let p = buf.as_mut_ptr();
                 // SAFETY: as above; one group of at most 1024 bytes in place in `buf`.
                 unsafe { avx512::xor(&st, p, p, 1, w) };
@@ -102,6 +89,61 @@ pub(super) fn xor_wide(state: &[u32; 16], src: Option<&[u8]>, dst: &mut [u8]) ->
     #[cfg(not(target_arch = "x86_64"))]
     {
         let _ = (state, dst);
+        false
+    }
+}
+
+/// Writes the keystream starting at block `state[12]` XOR `src` to the next `src.len()` bytes
+/// of `out` (which may be uninitialised: they are only written), as [`xor_wide`] does in place.
+/// The counter must not wrap within the `src.len().div_ceil(64)` blocks. `false` (nothing done)
+/// without AVX-512.
+#[cfg_attr(not(target_arch = "x86_64"), allow(clippy::needless_pass_by_ref_mut))]
+pub(super) fn xor_wide_into(state: &[u32; 16], src: &[u8], out: &mut Fill<'_>) -> bool {
+    if !cpu::cpu_has(Feature::Avx512) {
+        return false;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        let len = src.len();
+        let whole = len / Width::Z.bytes();
+        let mut st = *state;
+        if whole > 0 {
+            let n = whole * Width::Z.bytes();
+            let to = out.next_ptr(n);
+            // SAFETY: `cpu_has` confirmed AVX-512 F/BW/VL and the OS ZMM state; `whole >= 1`
+            // groups of 1024 bytes fit in `src` (readable) and at `to` (`next_ptr(n)`,
+            // writable; the kernel only writes there); `src` is a shared slice and `out` holds a
+            // unique borrow, so they do not overlap.
+            unsafe { avx512::xor(&st, src.as_ptr(), to, whole, Width::Z) };
+            // SAFETY: the kernel stored all `n` bytes at `next_ptr(n)`.
+            unsafe { out.assume_written(n) };
+            st[12] = st[12].wrapping_add(16 * whole as u32);
+        }
+        let done = whole * Width::Z.bytes();
+        let rest = len - done;
+        if rest > 0 {
+            let w = Width::last(rest);
+            if rest == w.bytes() {
+                let to = out.next_ptr(rest);
+                // SAFETY: as above, one group of exactly `rest` bytes from `src[done..]` to
+                // `next_ptr(rest)`.
+                unsafe { avx512::xor(&st, src[done..].as_ptr(), to, 1, w) };
+                // SAFETY: the kernel stored all `rest` bytes at `next_ptr(rest)`.
+                unsafe { out.assume_written(rest) };
+            } else {
+                let mut buf = [0u8; 1024];
+                buf[..rest].copy_from_slice(&src[done..]);
+                let p = buf.as_mut_ptr();
+                // SAFETY: as above; one group of at most 1024 bytes in place in `buf`.
+                unsafe { avx512::xor(&st, p, p, 1, w) };
+                out.push(&buf[..rest]);
+            }
+        }
+        true
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = (state, src, out);
         false
     }
 }

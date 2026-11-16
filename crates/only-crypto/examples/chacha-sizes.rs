@@ -9,7 +9,10 @@
 //! Poly1305 on AVX-512 IFMA on x86_64), the AVX2 path (`avx2`: eight-block ChaCha20, scalar
 //! Poly1305), the portable code and ring. Open copies the sealed message into the working buffer
 //! first on every side. Then the two halves alone at 16 KiB: the ChaCha20 stream and Poly1305.
-//! Each case runs for `MS` milliseconds (default 300); MB/s of message bytes.
+//! Then the TLS record layer's paths per implementation at 64 B to 64 KiB: in place after a
+//! copy, into a zero-filled vector (`from`, `*_detached_from`) and straight into its spare
+//! capacity (`append`, `*_append`). Each case runs for `MS` milliseconds (default 300); MB/s of
+//! message bytes.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -138,4 +141,45 @@ fn main() {
         black_box(Poly1305::mac(&key, black_box(&big)));
     });
     println!("  16 KiB alone: ChaCha20 {c:.0} MB/s  Poly1305 {p:.0} MB/s");
+    // The TLS record layer's out-of-place paths against in place: `in place` copies the
+    // plaintext into the output first, `from` zero-fills the output vector (the record layer
+    // before `encrypt_append`), `append` writes into its spare capacity.
+    for len in [64usize, 256, 1024, 16 * 1024, 64 * 1024] {
+        for (name, k) in &ours {
+            let pt = vec![0x5au8; len];
+            let mut out = Vec::with_capacity(len);
+            let si = rate(ms, len, || {
+                out.clear();
+                out.extend_from_slice(black_box(&pt));
+                black_box(k.encrypt_in_place_detached(&nonce, &aad, &mut out));
+            });
+            let sf = rate(ms, len, || {
+                out.clear();
+                out.resize(len, 0);
+                black_box(k.encrypt_detached_from(&nonce, &aad, black_box(&pt), &mut out));
+            });
+            let sa = rate(ms, len, || {
+                out.clear();
+                black_box(k.encrypt_append(&nonce, &aad, black_box(&pt), &[], &mut out));
+            });
+            let mut ct = pt;
+            let tag = k.encrypt_in_place_detached(&nonce, &aad, &mut ct);
+            let of = rate(ms, len, || {
+                out.clear();
+                out.resize(len, 0);
+                k.decrypt_detached_from(&nonce, &aad, black_box(&ct), &tag, &mut out)
+                    .expect("open");
+            });
+            let oa = rate(ms, len, || {
+                out.clear();
+                k.decrypt_append(&nonce, &aad, black_box(&ct), &tag, &mut out)
+                    .expect("open");
+            });
+            println!(
+                "  record {len:>6} B {name:>8}  seal in place {si:>7.0} from {sf:>7.0} append {sa:>7.0} ({:+.1}%)  open from {of:>7.0} append {oa:>7.0} ({:+.1}%) MB/s",
+                (sa / sf - 1.0) * 100.0,
+                (oa / of - 1.0) * 100.0
+            );
+        }
+    }
 }

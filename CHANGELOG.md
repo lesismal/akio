@@ -10,6 +10,17 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: TLS records sealed and opened without zero-filling the output first
+
+The TLS record layer no longer zero-fills the space for a record's ciphertext or plaintext
+before the AEAD writes it: only-crypto's AES-GCM and ChaCha20-Poly1305 gained hidden
+`encrypt_append` / `decrypt_append`, which write straight into a `Vec<u8>`'s spare capacity
+(through a small `unsafe` module, `only_crypto::fill`, that extends the vector only once every
+byte was written; a failed open appends nothing and zeroes what it wrote). only-tls stays
+`#![forbid(unsafe_code)]`. TLS 1.3 records on Zen 4 (seal + open, same-run A/B): AES-128-GCM
++6.9–8.3%, AES-256-GCM +7.4–8.7%, ChaCha20-Poly1305 +3.3–6.4% (docs/BENCHMARKS.md). No public
+API change.
+
 ### Added: `Conn::set_relayed` for application-built relays
 
 Relays built on `hold_reads` / `on_drain` can now opt out of the engine's write-watermark read

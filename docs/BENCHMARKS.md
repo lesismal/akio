@@ -198,15 +198,15 @@ dev-dependency.
 | full handshakes/s, X25519 | 5,027 | 5,025 | 1.00 |
 | full handshakes/s, secp256r1 | 4,552 | 5,126 | 0.89 |
 | full handshakes/s, X25519, RSA-2048 certificate ³ | 2,586 | 1,800 | 1.44 |
-| seal + open 1 KiB, AES-128-GCM (MB/s) ⁴ | 2,948 | 1,869 | 1.58 |
-| seal + open 16 KiB, AES-128-GCM ⁴ | 6,707 | 4,197 | 1.60 |
-| seal + open 64 KiB, AES-128-GCM ⁴ | 6,493 | ² | – |
-| seal + open 1 KiB, AES-256-GCM ⁴ | 2,737 | 1,771 | 1.55 |
-| seal + open 16 KiB, AES-256-GCM ⁴ | 5,976 | 3,832 | 1.56 |
-| seal + open 64 KiB, AES-256-GCM ⁴ | 5,834 | ² | – |
-| seal + open 1 KiB, ChaCha20-Poly1305 | 931 | 913 | 1.02 |
-| seal + open 16 KiB, ChaCha20-Poly1305 | 2,141 | 1,511 | 1.42 |
-| seal + open 64 KiB, ChaCha20-Poly1305 | 2,124 | 1,529 | 1.39 |
+| seal + open 1 KiB, AES-128-GCM (MB/s) ⁴ | 3,168 | 1,810 | 1.75 |
+| seal + open 16 KiB, AES-128-GCM ⁴ | 7,062 | 4,116 | 1.72 |
+| seal + open 64 KiB, AES-128-GCM ⁴ | 6,876 | ² | – |
+| seal + open 1 KiB, AES-256-GCM ⁴ | 2,906 | 1,692 | 1.72 |
+| seal + open 16 KiB, AES-256-GCM ⁴ | 6,283 | 3,754 | 1.67 |
+| seal + open 64 KiB, AES-256-GCM ⁴ | 6,119 | ² | – |
+| seal + open 1 KiB, ChaCha20-Poly1305 ⁴ | 974 | 904 | 1.08 |
+| seal + open 16 KiB, ChaCha20-Poly1305 ⁴ | 2,216 | 1,497 | 1.48 |
+| seal + open 64 KiB, ChaCha20-Poly1305 ⁴ | 2,206 | 1,519 | 1.45 |
 
 ² rustls at 64 KiB swings between ~2,200 and ~3,900 MB/s from run to run (its receive side takes
 at most 16 KiB of plaintext before it must be read out), so no ratio is given.
@@ -214,9 +214,10 @@ at most 16 KiB of plaintext before it must be read out), so no ratio is given.
 ³ The server signs with RSA-PSS, the client verifies the certificate and that signature (the
 RSA pass, below); 775/s (0.43×) before it.
 
-⁴ From the AES-GCM leftovers pass (below), median of five rounds alternated with the previous
-code: 1 KiB AES-128 1.51× → 1.58×, 16 KiB 1.56× → 1.60× in the same runs. rustls measured
-higher in those runs than in the earlier one that gave 1.65× at 16 KiB.
+⁴ From the record zero-fill removal (below), median of five rounds alternated with the previous
+code, rustls in the same runs: AES-128 1 KiB 1.62× → 1.75×, 16 KiB 1.58× → 1.72×, AES-256 16 KiB
+1.54× → 1.67×, ChaCha20-Poly1305 1 KiB 1.01× → 1.08×, 16 KiB 1.43× → 1.48×. Before it, the AES-GCM
+leftovers pass had taken AES-128 1 KiB from 1.51× to 1.58×.
 
 Handshakes were 3,055 (X25519) and 2,306 (secp256r1) per second before the P-256 / X25519
 pass (0.61× and 0.45×; History). The handshake profile is still dominated by curve arithmetic:
@@ -641,7 +642,8 @@ What changed:
   do not cover the latency of two AES pipes). It handles whole 256-byte groups; the rest of a
   message goes through the 128-bit path. Against ring's own VAES-AVX2 code on this host it is at
   0.86× (seal 1 KiB) to 1.11× (seal 64 B), 0.94× at 16 KiB.
-- **TLS record zero-fill: kept.** Measured in one run (three alternating rounds, AES-128-GCM,
+- **TLS record zero-fill: kept at the time, removed since** (an `unsafe` step in only-crypto,
+  see "TLS record zero-fill removed" below). Measured in one run (three alternating rounds, AES-128-GCM,
   seal + open MB/s): the current code (zero-fill, then the AEAD out of place) 16 KiB 6,620 / 6,675,
   copying the plaintext into the record and sealing in place 6,256 / 6,259 (−6%; 64 KiB −8%,
   1 KiB −2%), and as a reference only, not committed, no zero-fill through `unsafe` `set_len`
@@ -695,6 +697,63 @@ two kernels alone bound a sequential seal at about 4,850 MB/s at 16 KiB and the 
 is within 6% of it; on Zen 4 both use the same vector pipes, and a scalar Poly1305 stitched
 into the vector ChaCha20 (ring's design) is slower than IFMA. 64-byte messages are at 0.83×
 ring: one four-block xmm call (latency-bound) and the scalar Poly1305 of six blocks.
+
+#### TLS record zero-fill removed (`gcm-sizes`, `chacha-sizes`, `tls-bench records`, CPU 2)
+
+The record layer zero-filled the space for a record's ciphertext (seal) or plaintext (open) in
+the output `Vec<u8>` before the AEAD wrote it out of place (above: kept, because every safe
+alternative wrote the output twice). only-crypto now has hidden `encrypt_append` /
+`decrypt_append` for AES-GCM and ChaCha20-Poly1305 that write straight into the vector's spare
+capacity: the vector kernels through raw pointers they already took, the rest (the bytes after
+the kernels' whole groups, the portable paths, the ChaCha20 head blocks) with
+`MaybeUninit::write`, and the vector grows only once every byte holds a value (`only_crypto::fill`,
+docs/unsafe-review.md; Miri-checked on the portable paths). A failed open appends nothing and
+zeroes what it wrote. only-tls keeps `#![forbid(unsafe_code)]`.
+
+Same-run A/B on this host, median of five alternating rounds of the previous code (`main` at
+`f34c79e3`) and this change (both with `taskset -c 2`, `quiet.sh`), rustls 0.23 + ring in the
+same runs. TLS 1.3 records, seal + open MB/s:
+
+| Suite | Size | before | after | after / before | rustls + ring | after / rustls |
+|---|---|---:|---:|---:|---:|---:|
+| AES-128-GCM | 1 KiB | 2,924 | 3,168 | +8.3% | 1,810 | 1.75 |
+| AES-128-GCM | 16 KiB | 6,518 | 7,062 | +8.3% | 4,116 | 1.72 |
+| AES-128-GCM | 64 KiB | 6,435 | 6,876 | +6.9% | 4,156 ² | – |
+| AES-256-GCM | 1 KiB | 2,688 | 2,906 | +8.1% | 1,692 | 1.72 |
+| AES-256-GCM | 16 KiB | 5,781 | 6,283 | +8.7% | 3,754 | 1.67 |
+| AES-256-GCM | 64 KiB | 5,695 | 6,119 | +7.4% | 3,892 ² | – |
+| ChaCha20-Poly1305 | 1 KiB | 915 | 974 | +6.4% | 904 | 1.08 |
+| ChaCha20-Poly1305 | 16 KiB | 2,146 | 2,216 | +3.3% | 1,497 | 1.48 |
+| ChaCha20-Poly1305 | 64 KiB | 2,130 | 2,206 | +3.6% | 1,519 | 1.45 |
+
+The AEAD alone, out of place as the record layer runs it (`--example gcm-sizes` /
+`chacha-sizes`, same runs, MB/s): `from` zero-fills the vector first (the old record path),
+`append` writes into its spare capacity.
+
+| AEAD (kernel) | Size | seal from | seal append | open from | open append |
+|---|---|---:|---:|---:|---:|
+| AES-128-GCM (VAES-AVX-512) | 64 B | 1,223 | 1,266 (+3.5%) | 1,180 | 1,204 (+2.0%) |
+| AES-128-GCM (VAES-AVX-512) | 1 KiB | 8,964 | 9,877 (+10.2%) | 8,747 | 9,637 (+10.2%) |
+| AES-128-GCM (VAES-AVX-512) | 16 KiB | 14,211 | 15,657 (+10.2%) | 14,172 | 15,705 (+10.8%) |
+| AES-128-GCM (VAES-AVX-512) | 64 KiB | 14,548 | 16,171 (+11.2%) | 14,603 | 16,247 (+11.3%) |
+| AES-128-GCM (VAES-AVX2) | 16 KiB | 10,706 | 11,489 (+7.3%) | 11,131 | 11,862 (+6.6%) |
+| AES-128-GCM (VAES-AVX2) | 64 KiB | 10,866 | 12,602 (+16.0%) | 11,687 | 12,639 (+8.1%) |
+| AES-128-GCM (AES-NI + PCLMULQDQ) | 16 KiB | 5,709 | 5,916 (+3.6%) | 5,288 | 5,455 (+3.2%) |
+| AES-256-GCM (VAES-AVX-512) | 16 KiB | 12,356 | 13,402 (+8.5%) | 12,380 | 13,524 (+9.2%) |
+| ChaCha20-Poly1305 (AVX-512 / IFMA) | 64 B | 394 | 406 (+3.0%) | 383 | 395 (+3.1%) |
+| ChaCha20-Poly1305 (AVX-512 / IFMA) | 1 KiB | 2,387 | 2,430 (+1.8%) | 2,367 | 2,441 (+3.1%) |
+| ChaCha20-Poly1305 (AVX-512 / IFMA) | 16 KiB | 4,481 | 4,610 (+2.9%) | 4,475 | 4,631 (+3.5%) |
+| ChaCha20-Poly1305 (AVX2) | 16 KiB | 2,148 | 2,180 (+1.5%) | 2,148 | 2,177 (+1.4%) |
+| ChaCha20-Poly1305 (portable) | 16 KiB | 641 | 644 (+0.5%) | 642 | 644 (+0.3%) |
+
+The ChaCha20-Poly1305 short-record cost of the out-of-place path (the earlier note: copy and
+seal in place was faster at 1 KiB) is mostly gone: against a copy into the vector and an
+in-place seal, `append` is −1.5% at 64 B (406 vs 412 MB/s), equal at 256 B and 1 KiB and +6% at
+16 KiB; `from` was −4.4% at 64 B. In-place AES-GCM and ChaCha20-Poly1305 (the same
+`gcm-sizes` / `chacha-sizes` rows of the earlier subsections) moved by −2.2% to +4.7% between
+the two builds, within this host's run-to-run spread; an intermediate build without `#[inline]`
+on the `Fill` helpers was 4–6% slower on 64-byte in-place messages (128-bit AES-GCM seal,
+ChaCha20-Poly1305 open), which the final build does not show.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 
@@ -862,6 +921,11 @@ Short summaries of the per-area passes; the full tables are in the git history o
   open 1 KiB 1.04× → 1.22×; a VAES-AVX2 kernel (sixteen blocks in eight ymm) for CPUs without
   AVX-512, 1.55–2.35× the 128-bit kernel on Zen 4; TLS 1.3 records 1 KiB 1.51× → 1.58× rustls +
   ring. The record zero-fill stays (every safe alternative measured slower).
+- **TLS record zero-fill removed** (this host, `f34c79e3` → after): the record layer seals and
+  opens straight into the output vector's spare capacity (only-crypto `encrypt_append` /
+  `decrypt_append`, a small `unsafe` module; only-tls stays `forbid(unsafe_code)`): TLS 1.3
+  records AES-128-GCM +6.9–8.3% (16 KiB 1.58× → 1.72× rustls + ring), AES-256-GCM +7.4–8.7%,
+  ChaCha20-Poly1305 +3.3–6.4%; the AEAD alone out of place +10–11% at 1–64 KiB on VAES-AVX-512.
 - **QUIC and TLS hot paths** (this host): the pacer floored the RTT at 1 ms and woke the sender
   per packet; with the measured RTT and burst refills (as quinn-proto does) bulk went 3.4–3.7 →
   5.7 Gbit/s (1.25× quinn-proto) and HTTP/3 171 k → 420 k req/s (7× quinn-proto). TLS records are

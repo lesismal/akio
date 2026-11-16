@@ -79,7 +79,7 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         let avx2 = only_crypto::gcm::AesGcm::with_cipher_avx2(ours.clone());
         let narrow = only_crypto::gcm::AesGcm::with_cipher_narrow(ours.clone());
         let split = usize::from(data[1]).min(msg.len());
-        for k in [&gcm, &avx2, &narrow] {
+        for k in [&gcm, &avx2, &narrow, &soft_gcm] {
             assert_eq!(k.encrypt(&nonce, aad, msg), sealed);
             assert_eq!(
                 k.decrypt(&nonce, aad, msg).ok(),
@@ -94,6 +94,31 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
             k.decrypt_detached_from(&nonce, aad, &dst, &tag, &mut back)
                 .unwrap();
             assert_eq!(back, msg);
+            // Appended into a vector's spare capacity (not zero-filled), after existing bytes,
+            // the plaintext split between `src` and a trailer; a failed open appends nothing.
+            let mut out = data[..usize::from(data[2] % 8)].to_vec();
+            let head = out.len();
+            let tag = k.encrypt_append(&nonce, aad, &msg[..split], &msg[split..], &mut out);
+            assert_eq!(out[..head], data[..head]);
+            assert_eq!(out[head..], sealed[..msg.len()]);
+            assert_eq!(tag[..], sealed[msg.len()..]);
+            let before = out.clone();
+            let mut bad = tag;
+            bad[usize::from(data[3]) % 16] ^= 1 << (data[3] >> 5);
+            assert!(k.decrypt_append(&nonce, aad, &before[head..], &bad, &mut out).is_err());
+            assert_eq!(out, before);
+            k.decrypt_append(&nonce, aad, &before[head..], &tag, &mut out)
+                .unwrap();
+            assert_eq!(out[..before.len()], before[..]);
+            assert_eq!(out[before.len()..], msg[..]);
+            // Opening `msg` as a forged ciphertext: the same verdict as `decrypt`.
+            if msg.len() >= 16 {
+                let (ct, t) = msg.split_at(msg.len() - 16);
+                let ok = gcm.decrypt(&nonce, aad, msg).is_ok();
+                let mut v = Vec::new();
+                assert_eq!(k.decrypt_append(&nonce, aad, ct, t, &mut v).is_ok(), ok);
+                assert_eq!(v.len(), if ok { ct.len() } else { 0 });
+            }
         }
         let (theirs, opened) = if klen == 16 {
             let g = aes_gcm::Aes128Gcm::new_from_slice(key).unwrap();
@@ -136,6 +161,37 @@ libfuzzer_sys::fuzz_target!(|data: &[u8]| {
         ours.decrypt_detached_from(&nonce, aad, &dst, &tag, &mut back)
             .unwrap();
         assert_eq!(back, msg);
+        // Appended into a vector's spare capacity (not zero-filled) on every path, after
+        // existing bytes, the plaintext split between `src` and a trailer; a failed open
+        // appends nothing.
+        let forged_ok = ours.decrypt(&nonce, aad, msg).is_ok();
+        for c in [
+            ours.clone(),
+            only_crypto::chacha::ChaCha20Poly1305::new_avx2(&k),
+            only_crypto::chacha::ChaCha20Poly1305::new_portable(&k),
+        ] {
+            let mut out = data[..usize::from(data[2] % 8)].to_vec();
+            let head = out.len();
+            let tag = c.encrypt_append(&nonce, aad, &msg[..split], &msg[split..], &mut out);
+            assert_eq!(out[..head], data[..head]);
+            assert_eq!(out[head..], sealed[..msg.len()]);
+            assert_eq!(tag[..], sealed[msg.len()..]);
+            let before = out.clone();
+            let mut bad = tag;
+            bad[usize::from(data[3]) % 16] ^= 1 << (data[3] >> 5);
+            assert!(c.decrypt_append(&nonce, aad, &before[head..], &bad, &mut out).is_err());
+            assert_eq!(out, before);
+            c.decrypt_append(&nonce, aad, &before[head..], &tag, &mut out)
+                .unwrap();
+            assert_eq!(out[..before.len()], before[..]);
+            assert_eq!(out[before.len()..], msg[..]);
+            if msg.len() >= 16 {
+                let (ct, t) = msg.split_at(msg.len() - 16);
+                let mut v = Vec::new();
+                assert_eq!(c.decrypt_append(&nonce, aad, ct, t, &mut v).is_ok(), forged_ok);
+                assert_eq!(v.len(), if forged_ok { ct.len() } else { 0 });
+            }
+        }
         assert_eq!(
             sealed,
             theirs

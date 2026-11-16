@@ -9,8 +9,10 @@
 //! key (the widest kernel this CPU has: VAES + VPCLMULQDQ + AVX-512 on x86_64), the VAES-AVX2
 //! kernel of CPUs without AVX-512 (`avx2`, forced), the 128-bit AES-NI + PCLMULQDQ kernel
 //! (`narrow`) and ring. Open copies the sealed message into the working buffer first on every
-//! side (a successful open leaves plaintext behind). Each case runs for `MS` milliseconds
-//! (default 300); MB/s of message bytes.
+//! side (a successful open leaves plaintext behind). Then the TLS record layer's out-of-place
+//! paths per kernel at 64 B to 64 KiB: into a zero-filled vector (`from`, `*_detached_from`)
+//! against straight into its spare capacity (`append`, `*_append`). Each case runs for `MS`
+//! milliseconds (default 300); MB/s of message bytes.
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -133,5 +135,47 @@ fn main() {
                 a / n
             );
         }
+        // The TLS record layer's out-of-place paths: into a zero-filled vector (`from`, the
+        // record layer before `encrypt_append`) and straight into the spare capacity
+        // (`append`).
+        for len in [64usize, 1024, 16 * 1024, 64 * 1024] {
+            for (name, k) in [("only", &wide), ("avx2", &avx2), ("narrow", &narrow)] {
+                record_paths(ms, len, name, k, &nonce, &aad);
+            }
+        }
     }
+}
+
+/// Seal and open of `len` bytes out of place, as the TLS record layer runs them: `from` zero-fills
+/// the output vector first, `append` writes into its spare capacity.
+fn record_paths(ms: u64, len: usize, name: &str, k: &AesGcm, nonce: &[u8; 12], aad: &[u8]) {
+    let pt = vec![0x5au8; len];
+    let mut out = Vec::with_capacity(len);
+    let sf = rate(ms, len, || {
+        out.clear();
+        out.resize(len, 0);
+        black_box(k.encrypt_detached_from(nonce, aad, black_box(&pt), &mut out));
+    });
+    let sa = rate(ms, len, || {
+        out.clear();
+        black_box(k.encrypt_append(nonce, aad, black_box(&pt), &[], &mut out));
+    });
+    let mut ct = pt;
+    let tag = k.encrypt_in_place_detached(nonce, aad, &mut ct);
+    let of = rate(ms, len, || {
+        out.clear();
+        out.resize(len, 0);
+        k.decrypt_detached_from(nonce, aad, black_box(&ct), &tag, &mut out)
+            .expect("open");
+    });
+    let oa = rate(ms, len, || {
+        out.clear();
+        k.decrypt_append(nonce, aad, black_box(&ct), &tag, &mut out)
+            .expect("open");
+    });
+    println!(
+        "  record {len:>6} B {name:>6}  seal from {sf:>8.0} append {sa:>8.0} ({:+.1}%)  open from {of:>8.0} append {oa:>8.0} ({:+.1}%) MB/s",
+        (sa / sf - 1.0) * 100.0,
+        (oa / of - 1.0) * 100.0
+    );
 }

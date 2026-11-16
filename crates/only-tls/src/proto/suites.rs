@@ -182,7 +182,7 @@ pub(crate) const TAG_LEN: usize = 16;
 
 impl Aead {
     /// Encrypts `buf` in place, returning the tag (the record layer uses
-    /// [`seal_from`](Self::seal_from)).
+    /// [`seal_append`](Self::seal_append)).
     #[cfg(test)]
     pub(crate) fn seal(&self, nonce: &[u8; 12], aad: &[u8], buf: &mut [u8]) -> [u8; 16] {
         match self {
@@ -191,34 +191,36 @@ impl Aead {
         }
     }
 
-    /// Encrypts `src` followed by `dst[src.len()..]` (already in place) into `dst`, returning
-    /// the tag: one pass over the data instead of a copy and an in-place pass.
-    pub(crate) fn seal_from(
+    /// Appends the ciphertext of `src` followed by `trailer` to `out`, returning the tag: one
+    /// pass over the data straight into `out`'s spare capacity (no copy of the plaintext and no
+    /// zero-fill of the space first).
+    pub(crate) fn seal_append(
         &self,
         nonce: &[u8; 12],
         aad: &[u8],
         src: &[u8],
-        dst: &mut [u8],
+        trailer: &[u8],
+        out: &mut Vec<u8>,
     ) -> [u8; 16] {
         match self {
-            Aead::Gcm(k) => k.encrypt_detached_from(nonce, aad, src, dst),
-            Aead::ChaCha(k) => k.encrypt_detached_from(nonce, aad, src, dst),
+            Aead::Gcm(k) => k.encrypt_append(nonce, aad, src, trailer, out),
+            Aead::ChaCha(k) => k.encrypt_append(nonce, aad, src, trailer, out),
         }
     }
 
-    /// Verifies and decrypts `src` (ciphertext without the tag) into `dst` (of the same length);
-    /// `dst` holds no plaintext after a failure.
-    pub(crate) fn open_from(
+    /// Verifies `src` (ciphertext without the tag) and appends its plaintext to `out`; nothing
+    /// is appended after a failure.
+    pub(crate) fn open_append(
         &self,
         nonce: &[u8; 12],
         aad: &[u8],
         src: &[u8],
         tag: &[u8],
-        dst: &mut [u8],
+        out: &mut Vec<u8>,
     ) -> Result<(), ()> {
         let r = match self {
-            Aead::Gcm(k) => k.decrypt_detached_from(nonce, aad, src, tag, dst),
-            Aead::ChaCha(k) => k.decrypt_detached_from(nonce, aad, src, tag, dst),
+            Aead::Gcm(k) => k.decrypt_append(nonce, aad, src, tag, out),
+            Aead::ChaCha(k) => k.decrypt_append(nonce, aad, src, tag, out),
         };
         r.map_err(|_| ())
     }
