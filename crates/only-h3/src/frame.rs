@@ -142,7 +142,7 @@ fn next_frame(r: &[u8], max: u64) -> Result<Option<(u64, usize, usize)>, u64> {
     Ok(Some((ty, a + b, end)))
 }
 
-/// A piece of a request stream read by [`Reader::feed_stream`].
+/// A piece of a request stream read by [`StreamReader::feed_stream`].
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Piece<'a> {
     /// A whole HEADERS frame's payload.
@@ -159,13 +159,32 @@ pub(crate) enum Piece<'a> {
 pub(crate) struct Reader {
     buf: Vec<u8>,
     pos: usize,
-    /// [`Reader::feed_stream`]: payload bytes left of the current DATA (or skipped) frame.
+}
+
+/// A [`Reader`] that streams DATA payloads ([`StreamReader::feed_stream`]); a separate type so
+/// streams read whole frames only (responses, control streams) stay small.
+#[derive(Default)]
+pub(crate) struct StreamReader {
+    r: Reader,
+    /// Payload bytes left of the current DATA (or skipped) frame.
     left: u64,
     skip: bool,
 }
 
-/// Splits `b` into pieces for [`Reader::feed_stream`]; the bytes taken (an incomplete frame
+impl From<Reader> for StreamReader {
+    /// Continues where `r` stopped (at a frame boundary).
+    fn from(r: Reader) -> StreamReader {
+        StreamReader {
+            r,
+            left: 0,
+            skip: false,
+        }
+    }
+}
+
+/// Splits `b` into pieces for [`StreamReader::feed_stream`]; the bytes taken (an incomplete frame
 /// header or HEADERS frame is left).
+#[inline]
 fn pieces<E, T: FnMut() -> E, F: FnMut(Piece<'_>) -> Result<(), E>>(
     left: &mut u64,
     skip: &mut bool,
@@ -256,44 +275,6 @@ impl Reader {
         Ok(Some((ty, payload)))
     }
 
-    /// Takes `data` and calls `f` with its pieces: whole HEADERS frames (`Err(too_large)` for one
-    /// over `max` bytes), DATA payloads as they arrive (never buffered), and the types of other
-    /// frames (skipped). Only an incomplete frame header or HEADERS frame is kept for the next
-    /// call, so a large body streams through without being held.
-    pub(crate) fn feed_stream<E>(
-        &mut self,
-        data: &[u8],
-        max: u64,
-        mut too_large: impl FnMut() -> E,
-        mut f: impl FnMut(Piece<'_>) -> Result<(), E>,
-    ) -> Result<(), E> {
-        if self.pos == self.buf.len() {
-            self.buf.clear();
-            self.pos = 0;
-            let n = pieces(
-                &mut self.left,
-                &mut self.skip,
-                data,
-                max,
-                &mut too_large,
-                &mut f,
-            )?;
-            self.buf.extend_from_slice(&data[n..]);
-            return Ok(());
-        }
-        self.push(data);
-        let n = pieces(
-            &mut self.left,
-            &mut self.skip,
-            &self.buf[self.pos..],
-            max,
-            &mut too_large,
-            &mut f,
-        )?;
-        self.pos += n;
-        Ok(())
-    }
-
     /// Takes `data` and calls `f` with every frame that completes (type, payload), stopping at
     /// the first `Err`; a frame announcing more than `max` bytes is `Err(too_large)`. When
     /// nothing is buffered the frames are read straight from `data` and only a trailing partial
@@ -334,6 +315,49 @@ impl Reader {
                 Err(_) => return Err(too_large()),
             }
         }
+    }
+}
+
+impl StreamReader {
+    /// Nothing buffered and no frame in progress.
+    pub(crate) fn idle(&self) -> bool {
+        self.r.pos == self.r.buf.len() && self.left == 0
+    }
+
+    /// Takes `data` and calls `f` with its pieces: whole HEADERS frames (`Err(too_large)` for one
+    /// over `max` bytes), DATA payloads as they arrive (never buffered), and the types of other
+    /// frames (skipped). Only an incomplete frame header or HEADERS frame is kept for the next
+    /// call, so a large body streams through without being held.
+    pub(crate) fn feed_stream<E>(
+        &mut self,
+        data: &[u8],
+        max: u64,
+        mut too_large: impl FnMut() -> E,
+        mut f: impl FnMut(Piece<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let StreamReader { r, left, skip } = self;
+        if r.pos == r.buf.len() {
+            r.buf.clear();
+            r.pos = 0;
+            let n = pieces(left, skip, data, max, &mut too_large, &mut f)?;
+            r.buf.extend_from_slice(&data[n..]);
+            return Ok(());
+        }
+        r.push(data);
+        let n = pieces(left, skip, &r.buf[r.pos..], max, &mut too_large, &mut f)?;
+        r.pos += n;
+        Ok(())
+    }
+
+    /// [`Reader::feed`] (whole frames), when nothing is streaming.
+    pub(crate) fn feed<E>(
+        &mut self,
+        data: &[u8],
+        max: u64,
+        too_large: impl FnOnce() -> E,
+        f: impl FnMut(u64, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.r.feed(data, max, too_large, f)
     }
 }
 
@@ -409,7 +433,7 @@ mod tests {
         put_frame(&mut wire, DATA, &[7; 5000]);
         put_frame(&mut wire, HEADERS, b"trailers");
         let run = |size: usize| {
-            let mut r = Reader::default();
+            let mut r = StreamReader::default();
             let (mut heads, mut data, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
             for ch in wire.chunks(size) {
                 r.feed_stream(
@@ -426,7 +450,11 @@ mod tests {
                     },
                 )
                 .unwrap();
-                assert!(r.buf.len() - r.pos < 64, "buffered {}", r.buf.len() - r.pos);
+                assert!(
+                    r.r.buf.len() - r.r.pos < 64,
+                    "buffered {}",
+                    r.r.buf.len() - r.r.pos
+                );
             }
             (heads, data, skipped)
         };
@@ -440,7 +468,7 @@ mod tests {
         put_varint(&mut big, HEADERS);
         put_varint(&mut big, 101);
         assert_eq!(
-            Reader::default().feed_stream(&big, 100, || 1, |_| Ok(())),
+            StreamReader::default().feed_stream(&big, 100, || 1, |_| Ok(())),
             Err(1)
         );
         // Lengths of every varint size are filled in by `end_frame`.

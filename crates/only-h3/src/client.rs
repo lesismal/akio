@@ -12,7 +12,7 @@ use only_http::ws::{WsConfig, WsHandler, WsSender, WsSession};
 use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, StreamId};
 
-use crate::frame::{self, Piece, Reader};
+use crate::frame::{self, Piece, Reader, StreamReader};
 use crate::qpack::{self, FieldBuf, SectionError};
 use crate::{Blocked, EncShared, H3Config, Peer, Settings, StreamLink, StreamMap, Uni, code, sid};
 
@@ -124,9 +124,58 @@ struct Job {
 struct InFlight {
     r: Reader,
     resp: Option<Response>,
-    kind: Option<Kind>,
+    cb: Option<Callback>,
+    /// What only uploads, WebSockets and blocked responses need (boxed, so a plain request's
+    /// state stays small).
+    x: Option<Box<Extra>>,
+}
+
+#[derive(Default)]
+struct Extra {
+    ws: Option<Box<WsOpen>>,
     up: Option<Arc<UpState>>,
     blocked: Option<Box<Blocked>>,
+}
+
+impl InFlight {
+    fn new(kind: Kind, up: Option<Arc<UpState>>) -> InFlight {
+        let (cb, ws) = match kind {
+            Kind::Plain(cb) => (Some(cb), None),
+            Kind::Ws(w) => (None, Some(w)),
+        };
+        let x = (ws.is_some() || up.is_some()).then(|| {
+            Box::new(Extra {
+                ws,
+                up,
+                blocked: None,
+            })
+        });
+        InFlight {
+            r: Reader::default(),
+            resp: None,
+            cb,
+            x,
+        }
+    }
+
+    fn take_kind(&mut self) -> Option<Kind> {
+        match self.cb.take() {
+            Some(cb) => Some(Kind::Plain(cb)),
+            None => self.x.as_mut()?.ws.take().map(Kind::Ws),
+        }
+    }
+
+    fn up(&self) -> Option<&Arc<UpState>> {
+        self.x.as_ref()?.up.as_ref()
+    }
+
+    fn blocked(&self) -> Option<&Blocked> {
+        self.x.as_ref()?.blocked.as_deref()
+    }
+
+    fn take_blocked(&mut self) -> Option<Box<Blocked>> {
+        self.x.as_mut()?.blocked.take()
+    }
 }
 
 #[derive(Default)]
@@ -299,6 +348,7 @@ impl H3Client {
             peer: Peer::new(h3),
             uni: StreamMap::default(),
             ws: StreamMap::default(),
+            ws_answer: None,
             fields: FieldBuf::default(),
         };
         let conn = only_quic::dial(engine, addr, server_name, config, handler)?;
@@ -369,20 +419,12 @@ impl H3Client {
         let Some(id) = self.conn.open_bi() else {
             return Err(kind);
         };
-        st.inflight.insert(
-            id,
-            InFlight {
-                r: Reader::default(),
-                resp: None,
-                kind: Some(kind),
-                up: None,
-                blocked: None,
-            },
-        );
+        st.inflight.insert(id, InFlight::new(kind, None));
         Ok(id)
     }
 
     /// The request's HEADERS and DATA frames, with static QPACK references and literals.
+    #[inline]
     fn encode_now(&self, method: &Method, path: &str, headers: &Headers, body: Vec<u8>) -> Bytes {
         let pseudo = pseudo(method, &self.authority, path);
         let pseudo = pseudo_for(method, &pseudo);
@@ -650,16 +692,8 @@ fn start_queued(conn: &Connection, sh: &Shared) {
         }
         let Some(id) = conn.open_bi() else { return };
         let job = s.queue.pop_front().expect("non-empty");
-        s.inflight.insert(
-            id,
-            InFlight {
-                r: Reader::default(),
-                resp: None,
-                kind: Some(job.kind),
-                up: job.up.clone(),
-                blocked: None,
-            },
-        );
+        s.inflight
+            .insert(id, InFlight::new(job.kind, job.up.clone()));
         drop(s);
         let wire = match job.wire {
             Ok(b) => b,
@@ -681,8 +715,10 @@ struct ClientConn {
     cfg: H3Config,
     peer: Peer,
     uni: StreamMap<Uni>,
+    /// A WebSocket's answer `on_resp` just took off its stream, for `report`.
+    ws_answer: Option<Box<WsAnswer>>,
     /// Open WebSockets, by stream.
-    ws: StreamMap<(Reader, WsSession)>,
+    ws: StreamMap<(StreamReader, WsSession)>,
     /// Field sections are decoded here, then copied once into the response's `Headers`.
     fields: FieldBuf,
 }
@@ -704,14 +740,17 @@ fn fields_to_response(fields: &FieldBuf) -> Option<Response> {
     Some(r)
 }
 
-/// What a response stream produced.
-enum Done {
-    /// The response, or why there is none.
-    Plain(Callback, Result<Response, H3Error>),
-    /// A WebSocket's answer (its body: the WebSocket bytes that came with it), whether the
-    /// stream already ended, and the stream's reader (holding the start of a frame, maybe).
-    Ws(Box<WsOpen>, Result<Response, H3Error>, bool, Reader),
+/// A WebSocket's answer (its body: the WebSocket bytes that came with it), whether the stream
+/// already ended, and the stream's reader (holding the start of a frame, maybe).
+struct WsAnswer {
+    w: Box<WsOpen>,
+    r: Result<Response, H3Error>,
+    fin: bool,
+    reader: Reader,
 }
+
+/// A finished request: its callback and the response, or why there is none.
+type Done = (Callback, Result<Response, H3Error>);
 
 impl ClientConn {
     fn fail_all(&mut self, why: String) {
@@ -719,11 +758,11 @@ impl ClientConn {
         st.closed = Some(why.clone());
         let mut kinds: Vec<Kind> = st.queue.drain(..).map(|j| j.kind).collect();
         kinds.extend(st.ws_wait.drain(..).map(|j| j.kind));
-        for (_, f) in st.inflight.drain() {
-            if let Some(up) = f.up {
+        for (_, mut f) in st.inflight.drain() {
+            if let Some(up) = f.up() {
                 up.fail();
             }
-            kinds.extend(f.kind);
+            kinds.extend(f.take_kind());
         }
         drop(st);
         for k in kinds {
@@ -738,13 +777,7 @@ impl ClientConn {
     /// once its head arrived).
     fn on_resp(&mut self, id: StreamId, data: &[u8], fin: bool) -> Option<Done> {
         let mut st = self.sh.lock();
-        let InFlight {
-            r,
-            resp,
-            kind,
-            blocked,
-            ..
-        } = st.inflight.get_mut(&id)?;
+        let InFlight { r, resp, x, .. } = st.inflight.get_mut(&id)?;
         let fields = &mut self.fields;
         let peer = &mut self.peer;
         let max_field = self.cfg.max_field_section_bytes;
@@ -753,7 +786,7 @@ impl ClientConn {
             1 << 30,
             || H3Error::Protocol("frame too large"),
             |ty, p| {
-                if let Some(b) = blocked.as_mut() {
+                if let Some(b) = x.as_mut().and_then(|x| x.blocked.as_mut()) {
                     // Held back, in order, until the section before them can be decoded.
                     frame::put_frame(&mut b.rest, ty, p);
                     return Ok(());
@@ -768,12 +801,13 @@ impl ClientConn {
                                     return Err(H3Error::Protocol("too many blocked streams"));
                                 }
                                 peer.blocked += 1;
-                                *blocked = Some(Box::new(Blocked {
-                                    ric,
-                                    section: p.to_vec(),
-                                    rest: Vec::new(),
-                                    fin: false,
-                                }));
+                                x.get_or_insert_with(Box::default).blocked =
+                                    Some(Box::new(Blocked {
+                                        ric,
+                                        section: p.to_vec(),
+                                        rest: Vec::new(),
+                                        fin: false,
+                                    }));
                                 return Ok(());
                             }
                             Err(SectionError::Bad(_)) => {
@@ -809,40 +843,54 @@ impl ClientConn {
         );
         let err = fed.err();
         if err.is_none() {
-            if let Some(b) = blocked.as_mut() {
+            if let Some(b) = x.as_mut().and_then(|x| x.blocked.as_mut()) {
                 b.fin |= fin;
                 return None;
             }
         }
-        let ws_head = matches!(kind, Some(Kind::Ws(_))) && resp.is_some();
+        let ws_head = resp.is_some() && x.as_ref().is_some_and(|x| x.ws.is_some());
         if err.is_none() && !fin && !ws_head {
             return None;
         }
         let mut f = st.inflight.remove(&id)?;
-        if let Some(b) = f.blocked.take() {
-            drop(b);
-            self.peer.blocked -= 1;
-        }
-        if let Some(up) = &f.up {
-            up.fail();
+        if f.x.is_some() {
+            if f.take_blocked().is_some() {
+                self.peer.blocked -= 1;
+            }
+            if let Some(up) = f.up() {
+                up.fail();
+            }
         }
         let r = match (err, f.resp.take()) {
             (Some(e), _) => Err(e),
             (None, Some(r)) => Ok(r),
             (None, None) => Err(H3Error::Protocol("stream ended without a response")),
         };
-        Some(match f.kind.take()? {
-            Kind::Plain(cb) => Done::Plain(cb, r),
-            Kind::Ws(w) => Done::Ws(w, r, fin, std::mem::take(&mut f.r)),
-        })
+        match f.take_kind()? {
+            Kind::Plain(cb) => Some((cb, r)),
+            Kind::Ws(w) => {
+                // Started by the caller (`report`), outside the lock.
+                self.ws_answer = Some(Box::new(WsAnswer {
+                    w,
+                    r,
+                    fin,
+                    reader: std::mem::take(&mut f.r),
+                }));
+                None
+            }
+        }
     }
 
     /// Reports what a response stream produced (without the state lock: callbacks may send
     /// requests).
-    fn report(&mut self, c: &Connection, id: StreamId, done: Done) {
-        match done {
-            Done::Plain(cb, r) => cb(r),
-            Done::Ws(w, r, fin, reader) => self.ws_open(c, id, *w, r, fin, reader),
+    #[inline]
+    fn report(&mut self, c: &Connection, id: StreamId, done: Option<Done>) {
+        if let Some((cb, r)) = done {
+            return cb(r);
+        }
+        if let Some(a) = self.ws_answer.take() {
+            let WsAnswer { w, r, fin, reader } = *a;
+            self.ws_open(c, id, *w, r, fin, reader);
         }
     }
 
@@ -908,7 +956,7 @@ impl ClientConn {
         if fin {
             ws.on_transport_closed();
         } else {
-            self.ws.insert(id, (reader, ws));
+            self.ws.insert(id, (StreamReader::from(reader), ws));
         }
         (w.done)(Ok(sender));
     }
@@ -954,7 +1002,7 @@ impl ClientConn {
             .lock()
             .inflight
             .iter()
-            .filter(|(_, f)| f.blocked.as_ref().is_some_and(|b| b.ric <= have))
+            .filter(|(_, f)| f.blocked().is_some_and(|b| b.ric <= have))
             .map(|(&id, _)| id)
             .collect();
         for id in ready {
@@ -963,7 +1011,7 @@ impl ClientConn {
                 let Some(f) = st.inflight.get_mut(&id) else {
                     continue;
                 };
-                let Some(b) = f.blocked.take() else { continue };
+                let Some(b) = f.take_blocked() else { continue };
                 (b, std::mem::take(&mut f.r))
             };
             self.peer.blocked -= 1;
@@ -975,12 +1023,10 @@ impl ClientConn {
             if let Some(f) = self.sh.lock().inflight.get_mut(&id) {
                 f.r = held;
             }
-            if done.is_none() && b.fin {
+            if done.is_none() && self.ws_answer.is_none() && b.fin {
                 done = self.on_resp(id, &[], true);
             }
-            if let Some(d) = done {
-                self.report(c, id, d);
-            }
+            self.report(c, id, done);
         }
     }
 }
@@ -1021,11 +1067,13 @@ impl QuicHandler for ClientConn {
             }
             return;
         }
-        if self.ws.contains_key(&id) {
+        if !self.ws.is_empty() && self.ws.contains_key(&id) {
             return self.on_ws(c, id, &data, fin);
         }
-        if let Some(d) = self.on_resp(id, &data, fin) {
-            self.report(c, id, d);
+        match self.on_resp(id, &data, fin) {
+            Some((cb, r)) => cb(r),
+            None if self.ws_answer.is_some() => self.report(c, id, None),
+            None => {}
         }
         self.peer.flush(c);
     }
@@ -1036,15 +1084,15 @@ impl QuicHandler for ClientConn {
         }
         let f = self.sh.lock().inflight.remove(&id);
         if let Some(mut f) = f {
-            if f.blocked.take().is_some() {
+            if f.take_blocked().is_some() {
                 self.peer.blocked -= 1;
                 self.peer.dec.cancel(sid(id));
                 self.peer.flush(c);
             }
-            if let Some(up) = &f.up {
+            if let Some(up) = f.up() {
                 up.fail();
             }
-            if let Some(k) = f.kind {
+            if let Some(k) = f.take_kind() {
                 k.fail(H3Error::Reset(code));
             }
         }

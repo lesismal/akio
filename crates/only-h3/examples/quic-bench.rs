@@ -167,7 +167,8 @@ fn bulk(mb: usize) {
     );
 }
 
-/// `QB_H3_QPACK=N` (versions with a QPACK dynamic table): both encoders use an N-byte table.
+/// `QB_H3_QPACK=N` (versions with a QPACK dynamic table): both encoders use an N-byte table;
+/// `QB_H3_DTABLE=N`: both decoders allow an N-byte table (4096 by default).
 fn h3(secs: u64, conc: usize) {
     let (certs, key) = certs();
     let app = Router::new().get("/", |ctx: &mut Context| ctx.text(200, "hello h3"));
@@ -178,6 +179,12 @@ fn h3(secs: u64, conc: usize) {
         .and_then(|v| v.parse().ok())
     {
         h3cfg.qpack_encoder_capacity = n;
+    }
+    if let Some(n) = std::env::var("QB_H3_DTABLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        h3cfg.qpack_max_table_capacity = n;
     }
     let s = Engine::builder()
         .listen(

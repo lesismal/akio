@@ -67,7 +67,7 @@ use only_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, Strea
 pub use client::{H3Client, H3Error, H3Upload, H3WsOptions};
 pub use frame::code;
 
-use frame::{Piece, Reader};
+use frame::{Piece, Reader, StreamReader};
 use qpack::{FieldBuf, QpackError, SectionError};
 use qtable::{DecTable, Encoder, Section};
 
@@ -525,7 +525,7 @@ pub(crate) struct Blocked {
 
 #[derive(Default)]
 pub(crate) struct Req {
-    r: Reader,
+    r: StreamReader,
     /// The request from the first HEADERS frame (`Err` if malformed, answered once the stream
     /// ends) and whether it is a HEAD request.
     head: Option<Result<(Request, bool), ()>>,
@@ -856,110 +856,118 @@ pub(crate) fn read_req(
         decided,
         ..
     } = req;
-    r.feed_stream(
-        data,
-        max_field as u64,
-        || Fail::Status(431),
-        |piece| {
-            if let Some(b) = blocked.as_mut() {
-                // Held back, in order, until the section before them can be decoded.
-                match piece {
-                    Piece::Headers(p) => frame::put_frame(&mut b.rest, frame::HEADERS, p),
-                    Piece::Data(p) => frame::put_frame(&mut b.rest, frame::DATA, p),
-                    Piece::Skip(t) => check_request_frame(t)?,
-                }
-                return Ok(());
-            }
+    let mut on_piece = |piece: Piece<'_>| -> Result<(), Fail> {
+        if let Some(b) = blocked.as_mut() {
+            // Held back, in order, until the section before them can be decoded.
             match piece {
-                Piece::Headers(p) => {
-                    let ric = match qpack::decode_section(p, max_field, q.dec, fields) {
-                        Ok(ric) => ric,
-                        Err(SectionError::Blocked(ric)) => {
-                            if *q.blocked >= q.max_blocked {
-                                return Err(Fail::Conn(code::QPACK_DECOMPRESSION_FAILED));
-                            }
-                            *q.blocked += 1;
-                            *blocked = Some(Box::new(Blocked {
-                                ric,
-                                section: p.to_vec(),
-                                rest: Vec::new(),
-                                fin: false,
-                            }));
-                            return Ok(());
-                        }
-                        Err(SectionError::Bad(QpackError::TooLarge)) => {
-                            return Err(Fail::Status(431));
-                        }
-                        Err(SectionError::Bad(_)) => {
-                            return Err(Fail::Conn(code::QPACK_DECOMPRESSION_FAILED));
-                        }
-                    };
-                    if ric > 0 {
-                        q.dec.section_ack(q.stream, ric);
-                    }
-                    if head.is_none() {
-                        match request_head(fields, peer) {
-                            Some((request, head_only)) => {
-                                if let Some(v) = request.headers.get("content-length") {
-                                    let cl =
-                                        v.parse().map_err(|_| Fail::Stream(code::MESSAGE_ERROR))?;
-                                    *content_length = Some(cl);
-                                }
-                                if request.protocol.is_some() {
-                                    // Extended CONNECT: dispatched now, the stream's bytes
-                                    // follow to the sink.
-                                    *sink = Some(host.start(request, head_only));
-                                    *head = Some(Err(()));
-                                } else {
-                                    *head = Some(Ok((request, head_only)));
-                                }
-                            }
-                            None => *head = Some(Err(())),
-                        }
-                    } else if trailers.is_none() {
-                        let mut t = Headers::with_capacity(fields.len(), fields.bytes());
-                        let ok = fields.strs().and_then(|f| header_list(f, &mut t));
-                        *trailers = Some(ok.map(|()| t).ok_or(()));
-                    } else {
-                        return Err(Fail::Conn(code::FRAME_UNEXPECTED));
-                    }
-                }
-                Piece::Data(p) => {
-                    if head.is_none() || trailers.is_some() {
-                        return Err(Fail::Conn(code::FRAME_UNEXPECTED));
-                    }
-                    *len += p.len() as u64;
-                    if content_length.is_some_and(|cl| *len > cl) {
-                        return Err(Fail::Stream(code::MESSAGE_ERROR));
-                    }
-                    if sink.is_none() && !*decided {
-                        // The body's first bytes: does the service take it as a stream? (Asked
-                        // only now, so requests without a body never ask.)
-                        *decided = true;
-                        if matches!(head, Some(Ok((r, _))) if host.streams(r)) {
-                            if let Some(Ok((request, head_only))) = head.take() {
-                                *sink = Some(host.start(request, head_only));
-                                *head = Some(Err(()));
-                            }
-                        }
-                    }
-                    match sink {
-                        Some(Body::Started(s)) => s.body(p),
-                        Some(Body::Ws(w)) => w.on_data(p),
-                        Some(Body::Discard) => {}
-                        None => {
-                            if body.len() + p.len() > cfg.max_body_bytes {
-                                return Err(Fail::Status(413));
-                            }
-                            body.extend_from_slice(p);
-                        }
-                    }
-                }
+                Piece::Headers(p) => frame::put_frame(&mut b.rest, frame::HEADERS, p),
+                Piece::Data(p) => frame::put_frame(&mut b.rest, frame::DATA, p),
                 Piece::Skip(t) => check_request_frame(t)?,
             }
-            Ok(())
-        },
-    )?;
+            return Ok(());
+        }
+        match piece {
+            Piece::Headers(p) => {
+                let ric = match qpack::decode_section(p, max_field, q.dec, fields) {
+                    Ok(ric) => ric,
+                    Err(SectionError::Blocked(ric)) => {
+                        if *q.blocked >= q.max_blocked {
+                            return Err(Fail::Conn(code::QPACK_DECOMPRESSION_FAILED));
+                        }
+                        *q.blocked += 1;
+                        *blocked = Some(Box::new(Blocked {
+                            ric,
+                            section: p.to_vec(),
+                            rest: Vec::new(),
+                            fin: false,
+                        }));
+                        return Ok(());
+                    }
+                    Err(SectionError::Bad(QpackError::TooLarge)) => {
+                        return Err(Fail::Status(431));
+                    }
+                    Err(SectionError::Bad(_)) => {
+                        return Err(Fail::Conn(code::QPACK_DECOMPRESSION_FAILED));
+                    }
+                };
+                if ric > 0 {
+                    q.dec.section_ack(q.stream, ric);
+                }
+                if head.is_none() {
+                    match request_head(fields, peer) {
+                        Some((request, head_only)) => {
+                            if request.protocol.is_some() {
+                                // Extended CONNECT: dispatched now, the stream's bytes
+                                // follow to the sink.
+                                *content_length = sink_length(&request)?;
+                                *sink = Some(host.start(request, head_only));
+                                *head = Some(Err(()));
+                            } else {
+                                *head = Some(Ok((request, head_only)));
+                            }
+                        }
+                        None => *head = Some(Err(())),
+                    }
+                } else if trailers.is_none() {
+                    let mut t = Headers::with_capacity(fields.len(), fields.bytes());
+                    let ok = fields.strs().and_then(|f| header_list(f, &mut t));
+                    *trailers = Some(ok.map(|()| t).ok_or(()));
+                } else {
+                    return Err(Fail::Conn(code::FRAME_UNEXPECTED));
+                }
+            }
+            Piece::Data(p) => {
+                if head.is_none() || trailers.is_some() {
+                    return Err(Fail::Conn(code::FRAME_UNEXPECTED));
+                }
+                *len += p.len() as u64;
+                if sink.is_none() && !*decided {
+                    // The body's first bytes: does the service take it as a stream? (Asked
+                    // only now, so requests without a body never ask.)
+                    *decided = true;
+                    if matches!(head, Some(Ok((r, _))) if host.streams(r)) {
+                        if let Some(Ok((request, head_only))) = head.take() {
+                            *content_length = sink_length(&request)?;
+                            *sink = Some(host.start(request, head_only));
+                            *head = Some(Err(()));
+                        }
+                    }
+                }
+                if content_length.is_some_and(|cl| *len > cl) {
+                    return Err(Fail::Stream(code::MESSAGE_ERROR));
+                }
+                match sink {
+                    Some(Body::Started(s)) => s.body(p),
+                    Some(Body::Ws(w)) => w.on_data(p),
+                    Some(Body::Discard) => {}
+                    None => {
+                        if body.len() + p.len() > cfg.max_body_bytes {
+                            return Err(Fail::Status(413));
+                        }
+                        body.extend_from_slice(p);
+                    }
+                }
+            }
+            Piece::Skip(t) => check_request_frame(t)?,
+        }
+        Ok(())
+    };
+    if fin && r.idle() {
+        // The whole request is here (the usual case): frames read in place, no streaming.
+        r.feed(
+            data,
+            data.len() as u64,
+            || Fail::Status(413),
+            |ty, p| match ty {
+                frame::HEADERS => on_piece(Piece::Headers(p)),
+                frame::DATA if p.is_empty() => Ok(()),
+                frame::DATA => on_piece(Piece::Data(p)),
+                t => on_piece(Piece::Skip(t)),
+            },
+        )?;
+    } else {
+        r.feed_stream(data, max_field as u64, || Fail::Status(431), on_piece)?;
+    }
     if !fin {
         return Ok(None);
     }
@@ -991,6 +999,18 @@ pub(crate) fn read_req(
     finish_request(head, trailers, body)
         .ok_or(Fail::Stream(code::MESSAGE_ERROR))
         .map(Some)
+}
+
+/// The `content-length` of a request whose body goes to a sink (checked as it streams; a
+/// buffered body is checked whole by `finish_request`).
+fn sink_length(r: &Request) -> Result<Option<u64>, Fail> {
+    match r.headers.get("content-length") {
+        Some(v) => v
+            .parse()
+            .map(Some)
+            .map_err(|_| Fail::Stream(code::MESSAGE_ERROR)),
+        None => Ok(None),
+    }
 }
 
 /// Frames that may not appear on a request stream.

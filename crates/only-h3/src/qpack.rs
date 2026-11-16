@@ -194,6 +194,48 @@ fn dyn_entry(t: &DecTable, ric: u64, abs: Option<u64>) -> Result<(&[u8], &[u8]),
     }
 }
 
+/// The field lines of a section without dynamic references, from `pos`.
+fn decode_static(
+    b: &[u8],
+    mut pos: usize,
+    max: usize,
+    out: &mut FieldBuf,
+) -> Result<(), SectionError> {
+    let mut size = 0usize;
+    while pos < b.len() {
+        let first = b[pos];
+        let a = out.buf.len();
+        let mid;
+        if first & 0xc0 == 0xc0 {
+            // Indexed field line, static table: 11 index(6).
+            let (n, v) = static_entry(get_int(b, &mut pos, 6)?)?;
+            out.buf.extend_from_slice(n.as_bytes());
+            mid = out.buf.len();
+            out.buf.extend_from_slice(v.as_bytes());
+        } else if first & 0xd0 == 0x50 {
+            // Literal with static name reference: 01 N 1 index(4).
+            let (n, _) = static_entry(get_int(b, &mut pos, 4)?)?;
+            out.buf.extend_from_slice(n.as_bytes());
+            mid = out.buf.len();
+            get_str(b, &mut pos, 7, &mut out.buf)?;
+        } else if first & 0xe0 == 0x20 {
+            // Literal with literal name: 001 N H len(3).
+            get_str(b, &mut pos, 3, &mut out.buf)?;
+            mid = out.buf.len();
+            get_str(b, &mut pos, 7, &mut out.buf)?;
+        } else {
+            // A dynamic reference in a section that declares none.
+            return Err(SectionError::Bad(QpackError::Decompression));
+        }
+        size += out.buf.len() - a + 32;
+        if size > max {
+            return Err(SectionError::Bad(QpackError::TooLarge));
+        }
+        out.spans.push((a, mid, out.buf.len()));
+    }
+    Ok(())
+}
+
 /// Decodes a field section into `out` (cleared first) with the dynamic table `t`; its Required
 /// Insert Count (0 when it references no dynamic entry; acknowledge it otherwise). `max` bounds
 /// the sum of name + value + 32 per field (RFC 9114 `SETTINGS_MAX_FIELD_SECTION_SIZE`).
@@ -207,6 +249,11 @@ pub(crate) fn decode_section(
     out.spans.clear();
     let mut pos = 0;
     let ric = get_int(b, &mut pos, 8)?;
+    if ric == 0 {
+        // No dynamic references (the usual case): the static-only loop.
+        let _delta_base = get_int(b, &mut pos, 7)?;
+        return decode_static(b, pos, max, out).map(|()| 0);
+    }
     let ric = t.required_insert_count(ric)?;
     let neg = b.get(pos).is_some_and(|&x| x & 0x80 != 0);
     let delta = get_int(b, &mut pos, 7)?;

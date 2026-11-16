@@ -3,7 +3,7 @@
 
 use only_quic::{Dir, Side, StreamId};
 
-use crate::frame::{Piece, Reader};
+use crate::frame::{Piece, Reader, StreamReader};
 use crate::qpack::{FieldBuf, SectionError, decode_section};
 use crate::qtable::{DecTable, Encoder};
 use crate::{H3Config, NoHost, Peer, Qd, Req, Uni, qpack, read_req};
@@ -63,9 +63,9 @@ fn fed(max: u64, ps: &[&[u8]]) -> (Vec<(u64, Vec<u8>)>, Option<u64>) {
     (out, None)
 }
 
-/// [`Reader::feed_stream`]'s pieces, DATA bytes joined (their split depends on reads).
+/// [`StreamReader::feed_stream`]'s pieces, DATA bytes joined (their split depends on reads).
 fn streamed(max: u64, ps: &[&[u8]]) -> (Vec<(u8, Vec<u8>)>, bool) {
-    let mut r = Reader::default();
+    let mut r = StreamReader::default();
     let mut out: Vec<(u8, Vec<u8>)> = Vec::new();
     for p in ps {
         let res = r.feed_stream(
