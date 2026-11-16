@@ -10,6 +10,37 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
+
+Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):
+
+- **WebSocket over HTTP/3** (RFC 9220). Servers advertise extended CONNECT;
+  `Context::upgrade_websocket` accepts it with the same checks, subprotocols and
+  `permessage-deflate` as on HTTP/1.1, answers `200` and carries the WebSocket on the request
+  stream with the same `WsHandler` / `WsSender`. `Router` routes an extended CONNECT for
+  `websocket` to the path's GET route, so one `.get("/ws", ...)` serves HTTP/1.1 and HTTP/3.
+  New `Request::protocol` (`:protocol`). Client: `H3Client::websocket` /
+  `websocket_blocking` with `H3WsOptions`; `H3Error::Status` for a refusal.
+- **QPACK dynamic table** (RFC 9204), configured in `H3Config`, which the client now takes too
+  (`H3Client::dial_with`): `qpack_max_table_capacity` (4096) and `qpack_blocked_streams` (16)
+  for our decoder (encoder/decoder streams, blocked sections held in order, acknowledgements,
+  increments and cancellations), `qpack_encoder_capacity` (0, off) for our encoder, which only
+  references acknowledged entries so it never blocks the peer. New error codes
+  `code::QPACK_ENCODER_STREAM_ERROR` / `QPACK_DECODER_STREAM_ERROR`. Servers now advertise a
+  4 KiB table: nghttp3 (curl) and OpenSSL's QUIC use it at once.
+- **Streamed request bodies on HTTP/3**: services with `BodyMode::Stream` get the body through
+  `Context::on_body` as it arrives, as on HTTP/1 and HTTP/2, without `max_body_bytes`; the
+  request reader never holds DATA payloads. Client: `H3Client::upload` returns an `H3Upload`
+  (`write`, `finish`, `queued_bytes`).
+- Interop: quic-go (WebSocket over HTTP/3 and streamed uploads both ways), libcurl with
+  ngtcp2/nghttp3 and OpenSSL QUIC in Docker (nghttp3 fills our decoder's table). New fuzz
+  target `qpack_dynamic`; `h3_frame` and `h3_request` cover the QPACK streams, blocked sections,
+  extended CONNECT and the streaming reader.
+- HTTP/3 throughput: `quic-bench h3` same-run A/B is 0.976x of the previous release (858.8k vs
+  879.9k req/s on gpu51, encoder off); the remaining 2.4% is spread over the new request and
+  response paths. Both QPACK encoders on cost a further 18% on that benchmark (tiny requests,
+  one acknowledgement each), which is why the encoder is off by default.
+
 ### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
 
 only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix

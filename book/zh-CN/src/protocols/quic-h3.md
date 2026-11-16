@@ -100,9 +100,10 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 `only_h3::serve(quic_cfg, service)`（或 `serve_with(.., H3Config)`）返回一个通过 HTTP/3 提供
 该 service 的 `QuicServer`。`only_h3::server_config(certs, key)` 就是 ALPN 为 `h3` 的
 `server_config`。handler 拿到的 `Context` 与 HTTP/1.1 和 HTTP/2 上相同，包括 `detach`、
-`stream_response` 和 trailer；`ctx.req().version` 为 `Version::Http3`。请求 body 以缓冲方式
-到达。`H3Config`：`max_body`（8 MiB，超出返回 413）和 `max_field_section`（64 KiB，作为
-`SETTINGS_MAX_FIELD_SECTION_SIZE` 发送；超出返回 431）。
+`stream_response`、trailer、流式请求 body 和 WebSocket 升级（见下文）；`ctx.req().version` 为
+`Version::Http3`。`H3Config`：`max_body_bytes`（8 MiB，更大的缓冲 body 返回 413）、
+`max_field_section_bytes`（64 KiB，作为 `SETTINGS_MAX_FIELD_SECTION_SIZE` 发送；超出返回 431）
+以及下文介绍的 QPACK 设置。
 
 常见的部署方式是在一个 engine 里同时在 TCP（TLS 上的 HTTP/1.1 + HTTP/2）和 UDP（HTTP/3）上
 提供同一个应用：两个 listener 使用同一个端口号。`Router` 会被移入它的 acceptor 且不是
@@ -114,9 +115,58 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 {{#include ../../../../crates/only-h3/examples/guide-h3.rs:client}}
 ```
 
-`H3Client::dial(&engine, addr, server_name, client_cfg)`（ALPN `h3`）；握手完成前发出的
+`H3Client::dial(&engine, addr, server_name, client_cfg)`（ALPN `h3`），或用
+`dial_with(.., &H3Config)` 指定字段段和 QPACK 设置；握手完成前发出的
 请求会等待握手完成（以 0-RTT 恢复会话时除外，见上文）。`request(method, path, headers, body, callback)`、
-`request_blocking(..)`、`get(path, timeout)`、`close()`、`connection()`。
+`request_blocking(..)`、`get(path, timeout)`、`upload(..)`、`websocket(..)`、`close()`、
+`connection()`。响应以缓冲方式到达。
+
+### 流式请求 body
+
+`body_mode` 为 `BodyMode::Stream` 的 service（用 `Streaming` 包装）会在请求的第一批 body 字节
+到达时被调用，并通过 `ctx.on_body` 随 QUIC 交付逐段收到 body，与 HTTP/1.1 和 HTTP/2 完全一样；
+`max_body_bytes` 对它不适用，而且读取器从不暂存 DATA 帧（只暂存不完整的帧头或 HEADERS 帧），所以
+几 GB 的上传也以常量内存通过。`content-length` 与 body 不一致时重置该流（`H3_MESSAGE_ERROR`）。
+缓冲模式的 service 不受影响。
+
+客户端的 `upload(method, path, &headers, callback)` 立即发送头部并返回一个 `H3Upload`：可从任意
+线程调用 `write(&[u8])`，然后 `finish()`，用 `queued_bytes()` 控制写入节奏；响应交给 callback。
+
+```rust,ignore
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:upload}}
+```
+
+### HTTP/3 上的 WebSocket
+
+服务端宣告 extended CONNECT（RFC 9220），`ctx.upgrade_websocket(handler, &WsOptions)` 接受它：
+子协议、origin 检查和 `permessage-deflate` 与 HTTP/1.1 上相同，应答为 `200`，此后请求流承载
+WebSocket，由 only-ws 分帧，`WsHandler` 回调和 `WsSender` 不变。`Router` 把 `websocket` 的
+extended CONNECT 路由到该路径的 GET 路由，所以一个 `.get("/ws", ...)` 同时服务 HTTP/1.1 升级和
+HTTP/3。这种请求的 `ctx.req().protocol` 为 `Some("websocket")`。不支持 HTTP/2 上的 WebSocket
+（RFC 8441）。
+
+`H3Client::websocket(path, &H3WsOptions, handler, done)`（或 `websocket_blocking`）在客户端的连接
+上与普通请求并存地打开一个 WebSocket：它先等待服务端的 SETTINGS，服务端应答 `200` 后 `done` 拿到
+`WsSender`（否则为 `H3Error::Status`）。
+
+```rust,ignore
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:websocket}}
+```
+
+### QPACK 动态表
+
+QPACK（RFC 9204）用一张由各自编码器通过 encoder stream 填充的表来压缩重复的头部字段。`H3Config`
+中：
+
+- `qpack_max_table_capacity`（4096）和 `qpack_blocked_streams`（16）：对端编码器可以对我方解码器
+  使用多少。引用了尚未收到的插入的字段段会等待它们，最多到 blocked streams 上限；确认通过我方
+  decoder stream 发回。nghttp3（curl）和 OpenSSL QUIC 等对端一旦看到这张表就会使用。容量设为 0
+  则只允许静态引用和字面量。
+- `qpack_encoder_capacity`（0，关闭）：我方编码器的表，最多为对端允许的容量。它只引用对端已确认的
+  条目，所以从不让对端等待；只插入会重复的字段（不插路径、日期、长度、校验器、凭据和 cookie）。
+  在携带大量相同自定义字段的连接上它能省字节，代价是每个消息一次加锁；quic-go 和 fib 不宣告动态表，
+  与它们通信时它不起作用。默认值的理由见
+  [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md)。
 
 ## HTTP/3 如何复用 only-http
 
@@ -132,5 +182,5 @@ sink，所以 router、中间件和 handler 都无需改动。见[架构](../arc
 
 ## 尚未完成
 
-curl/quiche 互通测试、基于 HTTP/3 的 WebSocket（extended CONNECT）、QPACK 动态表（宣告容量为
-0）、服务端推送、流式请求 body。
+服务端推送；HTTP/2 上的 WebSocket（RFC 8441）；客户端的流式响应（`H3Client` 缓冲响应）；我方 QPACK
+编码器的 Duplicate 指令和动态名称引用。

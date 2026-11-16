@@ -12,3 +12,4 @@
 - [ADR-006：eBPF 的定位](006-ebpf-role.zh-CN.md)
 - [ADR-007：段内部分匹配的路由模式](007-partial-segment-routes.zh-CN.md)
 - [ADR-008：TLS record_size_limit、证书压缩与 OCSP stapling](008-tls-extensions.zh-CN.md)
+- [ADR-011：HTTP/3 上的 WebSocket（RFC 9220）、QPACK 动态表与流式请求 body](011-h3-websocket-qpack-streaming.zh-CN.md)
