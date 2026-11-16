@@ -501,8 +501,8 @@ pub(crate) enum Body {
     Discard,
     /// The service's `Context::on_body` sink.
     Started(Started),
-    /// A WebSocket over HTTP/3 (RFC 9220).
-    Ws(WsSession),
+    /// A WebSocket over HTTP/3 (RFC 9220), boxed to keep every request's state small.
+    Ws(Box<WsSession>),
 }
 
 /// What reading a request stream calls out to: whether a body streams, and dispatching a
@@ -601,7 +601,7 @@ impl<S: Service> Host for ServerHost<'_, S> {
             let link = Arc::new(StreamLink::new(self.c.clone(), self.id));
             if let Some(mut w) = st.take_websocket(link) {
                 w.open();
-                return Body::Ws(w);
+                return Body::Ws(Box::new(w));
             }
         }
         Body::Started(st)
