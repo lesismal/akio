@@ -10,7 +10,10 @@
 //! datagram or on the shared timer thread; they must not block.
 //!
 //! Writes never block: [`Connection::send`] queues the bytes, and they go out as flow and
-//! congestion control allow ([`Connection::queued_bytes`] paces a producer).
+//! congestion control allow. Send buffers are bounded per stream and per connection
+//! ([`TransportConfig::stream_send_buffer`], [`TransportConfig::send_buffer`]): past them `send`
+//! fails with [`Error::Overloaded`] and [`QuicHandler::on_stream_writable`] says when to go on.
+//! A server holds at most [`ServerConfig::max_connections`] connections.
 //!
 //! The protocol core is sans-io (no sockets, threads or clocks of its own): packets and
 //! header protection, all RFC 9000 frames, streams with flow control, loss detection and
@@ -70,8 +73,8 @@ use only_core::{Acceptor, Conn, Handler};
 
 pub use crate::bytes::Bytes;
 pub use types::{
-    ClientConfig, Congestion, ConnectionError, ConnectionStats, Dir, ServerConfig, Side, StreamId,
-    TransportConfig, UdpStats, Version,
+    ClientConfig, Congestion, ConnectionError, ConnectionStats, DEFAULT_MAX_CONNECTIONS, Dir,
+    ServerConfig, Side, StreamId, TransportConfig, UdpStats, Version,
 };
 use types::{TokenStore, config_err};
 
@@ -93,6 +96,11 @@ pub enum Error {
     Migration(String),
     /// A TLS or QUIC configuration problem.
     Config(String),
+    /// The stream's or the connection's send buffer is full
+    /// ([`TransportConfig::stream_send_buffer`], [`TransportConfig::send_buffer`]): wait for
+    /// [`QuicHandler::on_stream_writable`]. For [`Connection::spawn_blocking`]: the engine's
+    /// logical pool is full.
+    Overloaded,
 }
 
 impl fmt::Display for Error {
@@ -105,6 +113,7 @@ impl fmt::Display for Error {
             Error::Connect(e) => write!(f, "quic: connect: {e}"),
             Error::Migration(e) => write!(f, "quic: migration: {e}"),
             Error::Config(e) => write!(f, "quic: config: {e}"),
+            Error::Overloaded => f.write_str("quic: overloaded"),
         }
     }
 }
@@ -125,6 +134,10 @@ pub trait QuicHandler: Send + 'static {
     fn on_stream_stopped(&mut self, _c: &Connection, _id: StreamId, _code: u64) {}
     /// More streams of `dir` may be opened (after `open_*` returned `None`).
     fn on_streams_available(&mut self, _c: &Connection, _dir: Dir) {}
+    /// A stream whose write was refused with [`Error::Overloaded`] (or whose
+    /// [`send_capacity`](Connection::send_capacity) was zero) has room again: its send buffer
+    /// and the connection's are down to three quarters of their limits. Called once per refusal.
+    fn on_stream_writable(&mut self, _c: &Connection, _id: StreamId) {}
     /// An unreliable datagram (RFC 9221).
     fn on_datagram(&mut self, _c: &Connection, _data: Bytes) {}
     /// The connection is over; called once, last.
@@ -239,11 +252,48 @@ impl Connection {
         lock(&self.0.state).conn.open(Dir::Uni)
     }
 
-    /// Queues bytes on a stream; they go out as flow and congestion control allow.
+    /// Queues bytes on a stream; they go out as flow and congestion control allow. Fails with
+    /// [`Error::Overloaded`] while the stream's or the connection's send buffer is full
+    /// ([`TransportConfig::stream_send_buffer`], [`TransportConfig::send_buffer`]): the data
+    /// is not queued, and [`QuicHandler::on_stream_writable`] follows once there is room.
     pub fn send(&self, id: StreamId, data: impl Into<Bytes>) -> Result<(), Error> {
         let r = lock(&self.0.state).conn.write(id, data.into());
-        self.kick();
+        if r.is_ok() {
+            self.kick();
+        }
         r
+    }
+
+    /// Bytes [`send`](Self::send) would take on a stream now before refusing writes (the
+    /// smaller of the stream's and the connection's room). When it is zero,
+    /// [`QuicHandler::on_stream_writable`] follows once there is room, so a producer can check
+    /// before it reads or builds the next piece.
+    pub fn send_capacity(&self, id: StreamId) -> Result<usize, Error> {
+        lock(&self.0.state)
+            .conn
+            .send_capacity(id)
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+    }
+
+    /// Runs `work` on the engine's logical pool, off the I/O threads: for what may block (disk
+    /// reads, DNS) on behalf of this connection. `work` may use the connection (it is usable
+    /// from any thread). Fails with [`Error::Overloaded`] when the pool's queue is full and
+    /// [`Error::Closed`] when the connection or its socket is gone.
+    pub fn spawn_blocking(&self, work: impl FnOnce() + Send + 'static) -> Result<(), Error> {
+        let addr = self.remote_addr();
+        let sock = {
+            let socks = lock(&self.0.ep.socks);
+            socks
+                .get(&addr)
+                .cloned()
+                .or_else(|| socks.values().next().cloned())
+        };
+        let sock = sock.ok_or(Error::Closed)?;
+        sock.spawn_blocking(work, |_: &mut Udp, _, ()| {})
+            .map_err(|e| match e {
+                only_core::Error::Overloaded => Error::Overloaded,
+                _ => Error::Closed,
+            })
     }
 
     /// Ends a stream once its queued bytes are out.
@@ -523,6 +573,7 @@ impl Connection {
                     proto::Event::StreamReset(id, c) => h.on_stream_reset(self, id, c),
                     proto::Event::StreamStopped(id, c) => h.on_stream_stopped(self, id, c),
                     proto::Event::StreamsAvailable(d) => h.on_streams_available(self, d),
+                    proto::Event::StreamWritable(id) => h.on_stream_writable(self, id),
                     proto::Event::Datagram(d) => h.on_datagram(self, d),
                     proto::Event::Closed(r) => {
                         self.0.done.store(true, Ordering::Release);
@@ -740,6 +791,7 @@ impl QuicServer {
             tls: config.tls,
             cfg,
             retry: config.retry,
+            max_connections: config.max_connections,
         };
         QuicServer(Arc::new(Ep::new(
             proto::Endpoint::new(Some(setup)),
@@ -751,6 +803,12 @@ impl QuicServer {
     /// Open connections.
     pub fn connections(&self) -> usize {
         lock(&self.0.conns).len()
+    }
+
+    /// New connections refused since the server started because it held
+    /// [`max_connections`](ServerConfig::max_connections).
+    pub fn refused_connections(&self) -> u64 {
+        lock(&self.0.endpoint).refused()
     }
 
     /// Closes every connection with `code` and `reason`.

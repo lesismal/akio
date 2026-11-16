@@ -22,7 +22,8 @@
 
 - `KcpServer` 是一个 **UDP listener** 的 acceptor。每个开始会话的对端地址从工厂得到一个
   `Session` 和一个 `KcpHandler`；同一地址的新会话 ID 会替换旧会话。`max_sessions(n)` 限制会话
-  数，`sessions()` 返回当前数量。
+  数（默认 4096；0 取消限制）：超出后开始会话的对端得不到会话，其数据报被丢弃。`sessions()`
+  返回当前数量。
 - `only_kcp::dial(&engine, addr, cfg, handler)` 以随机会话 ID 发起客户端会话（用 `dial_conv`
   指定 ID）。engine 需要 `udp_client_threads(n)`。可以立即发送消息。
 - `KcpHandler::on_message(&mut self, &Session, Vec<u8>)` 在 I/O 线程上按顺序收到完整的消息
@@ -31,7 +32,8 @@
   `udp_idle_timeout`、ICMP 错误、停机）。因此，空闲的 KCP 会话会在 `Config::udp_idle_timeout`
   （60 s）后结束，除非应用更频繁地发送保活消息。
 - `Session`（可克隆，可在任何线程使用）：`send(msg)`（发送队列满时返回 `KcpError::Full`：排队
-  或丢弃，永远不要在回调里等待）、`close()`、`conv()`、`remote_addr()`、`is_open()`、
+  或丢弃，永远不要在回调里等待；队列降到一半时回调 `KcpHandler::on_writable`，所以中继在 `Full`
+  时暂停来源、在该回调里恢复）、`close()`、`conv()`、`remote_addr()`、`is_open()`、
   `wait_send()`、`stats()`（发送、重传、快速重传、丢失、FEC 恢复）。
 - 会话由其 I/O 线程读到的数据报、一个共享的定时器线程（按 KCP 的 `next_flush` 调度）以及
   `send` 驱动。输出按需刷出。
@@ -52,7 +54,7 @@
 | `dead_link` | 20 | 同一段传输这么多次后以 `DeadLink` 关闭 |
 | `crypt` | 无 | `Crypt::new(name, key)`：`none`、`xor`、`aes`（32 字节密钥）、`aes-128`、`aes-192`、`aes-128-gcm` |
 | `data_shards`、`parity_shards` | 0、0 | kcp-go 的 Reed–Solomon FEC（kcptun 用 10/3）；任一为 0 即关闭 |
-| `write_queue` | 0 | 等待的段超过此数后 `send` 失败（0 = 发送窗口的两倍） |
+| `write_queue` | 0 | 等待（排队或在途）的段超过此数后 `send` 失败（0 = 发送窗口的两倍）；降到一半时回调 `on_writable` |
 
 `KcpConfig::fast()` 即 kcptun 的 "fast3"：nodelay、10 ms 间隔、2 次重复 ACK 后重传、无拥塞控制。
 密钥按已派生的形式传入：kcptun 用 PBKDF2-SHA1 从口令派生（salt 为 `kcp-go`，4096 轮，32 字节）。

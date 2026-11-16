@@ -150,6 +150,7 @@ impl Pair {
                 tls: stls.clone(),
                 cfg: ConnConfig::new(t.clone(), true),
                 retry: false,
+                max_connections: usize::MAX,
             }),
             &mut rng,
         );

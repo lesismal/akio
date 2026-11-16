@@ -290,6 +290,8 @@ pub enum Event {
     StreamReset(StreamId, u64),
     StreamStopped(StreamId, u64),
     StreamsAvailable(Dir),
+    /// A stream refused a write (or reported no room) and has room again.
+    StreamWritable(StreamId),
     Datagram(Bytes),
     Closed(ConnectionError),
 }
@@ -483,6 +485,11 @@ pub struct Connection {
     pub(crate) stream_unacked: u64,
     /// New stream data waits for the send window.
     window_blocked: bool,
+    /// Stream bytes held in send buffers (written, not acknowledged from the front), on all
+    /// streams; bounded by `TransportConfig::send_buffer`.
+    pub(crate) send_held: u64,
+    /// Streams waiting for room in their send buffer (`Event::StreamWritable`).
+    pub(crate) writable_wait: Vec<u64>,
     rx_max_data: u64,
     rx_data: u64,
     rx_delivered: u64,
@@ -637,6 +644,8 @@ impl Connection {
             tx_data: 0,
             stream_unacked: 0,
             window_blocked: false,
+            send_held: 0,
+            writable_wait: Vec::new(),
             rx_max_data,
             rx_data: 0,
             rx_delivered: 0,
@@ -824,6 +833,8 @@ impl Connection {
         c.send_queue = std::mem::take(&mut self.send_queue);
         c.next_local = self.next_local;
         c.tx_data = self.tx_data;
+        c.send_held = self.send_held;
+        c.writable_wait = std::mem::take(&mut self.writable_wait);
         for (id, s) in &mut c.streams {
             s.queued = false;
             if let Some(snd) = s.send.as_mut() {
@@ -1374,6 +1385,8 @@ impl Connection {
         }
         self.bytes_in_flight = 0;
         self.stream_unacked = 0;
+        self.send_held = 0;
+        self.writable_wait.clear();
         self.buffered.clear();
     }
 
