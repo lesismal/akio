@@ -17,7 +17,7 @@ syscall lives in `only-sys`).
 | ChaCha20 (`chacha::hw`, `chacha::hw::avx512`) | AVX-512 inline assembly (`vprold`; 16 blocks per iteration, 8 or 4 for the rest), else AVX2 (8 blocks) | portable 4-block lanes, vectorized by the compiler |
 | Poly1305 (`chacha::hw::ifma`) | AVX-512 IFMA inline assembly (8 blocks per step, runs of 256 bytes and more), else radix-2⁶⁴ scalar | radix-2⁶⁴ scalar |
 | P-256 field and order arithmetic, X25519 ladder (`ec::hw`, `curve25519::hw`; `ec::hw_aarch64`, `curve25519::hw_aarch64`) | BMI2 + ADX inline assembly (`mulx`, `adcx`/`adox`) | inline assembly (`MUL`/`UMULH`, `ADDS`/`ADCS`, `CSEL`; every ARMv8.0 CPU; not benchmarked yet) |
-| RSA exponentiation (`bignum::ifma`, `bignum::hw`) | AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq`) for the CRT halves of 2048- to 4096-bit keys, else BMI2 + ADX inline assembly (Montgomery multiplication and squaring) | portable |
+| RSA exponentiation (`bignum::ifma`, `bignum::hw`) | AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq`) for the CRT halves of 2048- to 4096-bit keys and for the public operation (verification) of 2048- to 4096-bit moduli, else BMI2 + ADX inline assembly (Montgomery multiplication and squaring) | portable |
 
 `ONLY_CRYPTO_PORTABLE=1` (read once) forces the portable code everywhere; the tests run every
 known-answer vector with and without it. Under Miri nothing is detected.
@@ -119,7 +119,10 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   the end), one `asm!` block per product with the low digit tracked in general-purpose
   registers, carries normalized with generate / propagate masks; no branch but the digit loop.
   The two halves of one signature run interleaved, one digit step of each per loop iteration
-  (`Mont::pow2`, `ifma::pow_x2`), so their serial reduction chains overlap.
+  (`Mont::pow2`, `ifma::pow_x2`), so their serial reduction chains overlap. The public operation
+  `sᵉ mod n` (verification and that check) is square-and-multiply over the public exponent
+  (`Mont::pow_public`), 16 squarings and two multiplications for `e = 65537`, on IFMA for 2048-,
+  3072- and 4096-bit moduli (40, 60 and 80 digits).
   Otherwise, with BMI2 + ADX, Montgomery multiplication and squaring for 16 to 64 limbs are
   `asm!` blocks (`mulx` with two carry chains, rows unrolled, the final subtraction by
   `cmovnz`); the portable code is fixed-size CIOS. `R² mod p` comes from `64 + k` doublings and
@@ -142,8 +145,9 @@ planned in DEV-PLAN waves C and D; certificates are in [`only-x509`](../only-x50
   and comb loops, the Jacobian doubling and additions (the whole-point assembly included), the
   wide comb and the AVX2 scans, the field and order multiplication, squaring and inversions
   (safegcd with both divsteps), the Ed25519 base multiplication and both X25519 ladders;
-  for RSA `Mont::mul_into` / `sqr_into` (the BMI2 + ADX blocks inlined), `ifma::amm` (the three
-  IFMA blocks), `ifma::amm_x2` (the three interleaved blocks), `ifma::pow`, `ifma::pow_x2`,
+  for RSA `Mont::mul_into` / `sqr_into` (the BMI2 + ADX blocks inlined), `ifma::amm` (the
+  IFMA blocks; the 64- and 80-digit ones serve the public operation, which also checks each
+  signature before it is released: `Mont::pow_public` branches only on the public exponent), `ifma::amm_x2` (the three interleaved blocks), `ifma::pow`, `ifma::pow_x2`,
   `Mont::pow`, `Mont::pow2`, the AVX2 and portable table scans, `Mont::new`,
   `crt_combine` and `private_op`. The
   only branches are loop counters, public indices and bounds (and the limb-count dispatch,
@@ -180,13 +184,16 @@ numbers are in [docs/BENCHMARKS.md](../../docs/BENCHMARKS.md#cryptography-only-c
 | P-256 ECDH | 10 075 | 33 904 | 1.12x ring |
 | P-256 key generation | – | 158 921 | 1.40x ring |
 | P-384 ECDSA verify | 2 426 | 4 330 | 2.34x ring |
-| RSA-2048 PKCS#1 sign | 1 192 | 5 231 | 2.20x ring |
-| RSA-2048 PKCS#1 verify | 39 244 | 79 970 | 1.22x ring |
-| RSA-3072 PKCS#1 sign | 371 | 1 691 | 2.19x ring |
-| RSA-4096 PKCS#1 sign | 156 | 870 | 2.55x ring |
+| RSA-2048 PKCS#1 sign | 1 192 | 5 511 | 2.26x ring |
+| RSA-2048 PKCS#1 verify | 39 244 | 200 748 | 3.07x ring |
+| RSA-2048 verify + key parse | 5 850 | 153 716 | 2.35x ring |
+| RSA-3072 PKCS#1 sign | 371 | 1 766 | 2.24x ring |
+| RSA-3072 verify + key parse | 2 627 | 80 470 | 2.64x ring |
+| RSA-4096 PKCS#1 sign | 156 | 899 | 2.60x ring |
+| RSA-4096 verify + key parse | 1 400 | 50 850 | 2.90x ring |
 | TLS 1.3 full handshakes/s, X25519 (only-tls vs rustls + ring) | – | 5 027 | 1.00x rustls |
 | TLS 1.3 full handshakes/s, secp256r1 | – | 4 552 | 0.89x rustls |
-| TLS 1.3 full handshakes/s, X25519, RSA-2048 certificate | 775 | 2 976 | 1.69x rustls |
+| TLS 1.3 full handshakes/s, X25519, RSA-2048 certificate | 775 | 3 270 | 1.82x rustls |
 
 The public-key rows and the handshakes are from the P-256 / X25519 pass (before it: P-256 sign
 34 152, verify 13 404, ECDH 10 380, X25519 30 696 op/s; handshakes 3 055 and 2 306/s). ring uses
@@ -214,7 +221,11 @@ RSA-2048 certificate from 0.43× to 1.44× rustls. A 1024-bit Montgomery multipl
 cycles with BMI2 + ADX (squaring 681), a 1024-bit IFMA multiplication 416; on BMI2 + ADX alone
 (no IFMA) RSA-2048 signing measured 0.99× ring. Running both CRT halves through one IFMA loop
 then took signing to 2.20× ring (3072: 2.19×, 4096: 2.55×) and the RSA-2048 certificate
-handshakes to 1.69× rustls; the sign rows of the table are from that change. Karatsuba was not tried: at these sizes the
+handshakes to 1.69× rustls. The public operation on IFMA (new 60- and 80-digit multiplications,
+18 products for `e = 65537`, `R²` by a faster division) then took verification to 3.07× ring
+(3072: 3.30×, 4096: 3.70×), verification with the key parse to 2.35× (2.64×, 2.90×; was 1.02×,
+0.95×, 0.95×) and the handshakes to 1.82× rustls; the RSA and handshake rows of the table are
+from that change, run against the previous code in the same runs. Karatsuba was not tried: at these sizes the
 assembly row loops leave little to save. Follow-ups: masked tails for the VAES-AVX2 kernel
 (the rest of a message after its 256-byte groups runs on the 128-bit path), measuring that kernel
 on Zen 3 / Alder Lake, measuring the aarch64 assembly for P-256 and X25519 (tested, not
@@ -266,7 +277,10 @@ benchmarked), aarch64 whole-point routines and divsteps.
   full and short top limbs plus a 200-step chain, `ifma_pow_matches` for the IFMA exponentiation
   against square-and-multiply with edge bases and exponents, `ifma_pow_x2_matches` for the
   interleaved pair (moduli with different top limbs, edge bases and exponents per half), `r2_constructions` for both `R²`
-  computations), and the
+  computations, `pow_public_matches` for the public operation (IFMA or not) and `pow_vartime`
+  against square-and-multiply on the generic CIOS with edge bases and exponents,
+  `rem_matches_bitwise` for the long division against shift-and-subtract with dividends that
+  need the quotient corrections, `be_conversions` for the byte conversions), and the
   whole suite also runs with `ONLY_CRYPTO_PORTABLE=1`, on x86_64 and aarch64.
 - The Jacobian scalar multiplications are checked against the complete-formula references
   (`mul_ref`, `mul_base_ref`) on random scalars and on edge scalars (the ends of `[1, n)`,
