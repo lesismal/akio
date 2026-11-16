@@ -197,7 +197,7 @@ dev-dependency.
 |---|---:|---:|---:|
 | full handshakes/s, X25519 | 5,027 | 5,025 | 1.00 |
 | full handshakes/s, secp256r1 | 4,552 | 5,126 | 0.89 |
-| full handshakes/s, X25519, RSA-2048 certificate ³ | 2,976 | 1,760 | 1.69 |
+| full handshakes/s, X25519, RSA-2048 certificate ³ | 3,270 | 1,802 | 1.82 |
 | seal + open 1 KiB, AES-128-GCM (MB/s) ⁴ | 3,168 | 1,810 | 1.75 |
 | seal + open 16 KiB, AES-128-GCM ⁴ | 7,062 | 4,116 | 1.72 |
 | seal + open 64 KiB, AES-128-GCM ⁴ | 6,876 | ² | – |
@@ -212,8 +212,8 @@ dev-dependency.
 at most 16 KiB of plaintext before it must be read out), so no ratio is given.
 
 ³ The server signs with RSA-PSS, the client verifies the certificate and that signature (the
-RSA pass and the interleaved CRT halves, below); 775/s (0.43×) before the RSA pass, 2,586/s
-(1.44×) before the interleaving.
+RSA pass, the interleaved CRT halves and verification on IFMA, below); 775/s (0.43×) before the
+RSA pass, 2,586/s (1.44×) before the interleaving, 3,002/s (1.67×) before verification on IFMA.
 
 ⁴ From the record zero-fill removal (below), median of five rounds alternated with the previous
 code, rustls in the same runs: AES-128 1 KiB 1.62× → 1.75×, 16 KiB 1.58× → 1.72×, AES-256 16 KiB
@@ -426,10 +426,13 @@ crc32fast for CRC-32) and ring 0.17 for public-key operations.
 | P-384 ECDSA verify | 4,330 | 1,849 | 2.34 |
 | P-384 ECDH | 4,387 | 3,579 | 1.23 |
 | P-384 key generation | 19,331 | 3,586 | 5.39 |
-| RSA-2048 PKCS#1 sign | 5,231 | 2,372 | 2.20 |
-| RSA-2048 PKCS#1 verify | 79,970 | 65,600 | 1.22 |
-| RSA-3072 PKCS#1 sign | 1,691 | 770 | 2.19 |
-| RSA-4096 PKCS#1 sign | 870 | 341 | 2.55 |
+| RSA-2048 PKCS#1 sign | 5,511 | 2,434 | 2.26 |
+| RSA-2048 PKCS#1 verify | 200,748 | 65,392 | 3.07 |
+| RSA-2048 verify + key parse | 153,716 | 65,392 | 2.35 |
+| RSA-3072 PKCS#1 sign | 1,766 | 789 | 2.24 |
+| RSA-3072 PKCS#1 verify | 100,719 | 30,486 | 3.30 |
+| RSA-4096 PKCS#1 sign | 899 | 346 | 2.60 |
+| RSA-4096 PKCS#1 verify | 64,911 | 17,534 | 3.70 |
 
 The P-256 rows and X25519 run on BMI2 + ADX (`ec::hw`, `curve25519::hw`; `adx` in the detected
 paths). With every hardware path off (`ONLY_CRYPTO_PORTABLE=1`, which also turns off SHA-NI for
@@ -562,7 +565,56 @@ Three alternating rounds of `a965d26c` and this change on a quiet host (RSA-4096
 Verification (public exponent, one modulus) is unchanged. Tried and left out: issuing both scalar
 parts before both vector parts (it needs a second pair of broadcast registers, and the loop
 already runs at about 15 cycles per half-step against roughly 13.5 cycles of multiply, shift and
-broadcast work on the two shared pipes).
+broadcast work on the two shared pipes). Verification moved to IFMA later (next subsection).
+
+#### RSA verification on IFMA (`--example pk_bench rsa`, `tls-bench handshakes`, CPU 2)
+
+The public operation `sᵉ mod n` (verification, and the check of each signature before it is
+released) now runs on AVX-512 IFMA as well, as left-to-right square-and-multiply over `e`: two new
+single-modulus AMMs for public moduli, `amm64` (3,072 bits: eight `zmm` registers per number,
+60 digit steps over operands padded to 64 digits) and `amm80` (4,096 bits: ten registers per
+number, 30 of the 32, so the top lane shifts in zero by masking, the output pointer waits in `k7`,
+the constants are set after the loop in registers of `m`, and the final carry ripple runs over
+80 lanes in two words); 2,048 bits use the existing `amm40`. Into the `2^(52D)` form with one
+AMM by `R'² mod n` (from `R² mod n` by a short division) and out of it with the last product, by
+`s` instead of `s·R'`: 18 AMMs for `e = 65537`. The 64-bit path (no IFMA, and other sizes) does
+the same in its own Montgomery form, 16 squarings and two multiplications instead of 17 + 2
+plus the two conversions (one squaring was of 1). Building the key got cheaper too: `R mod n` and
+`R² mod n` both from the long division (no Montgomery multiplication), whose quotient digits now
+come from a precomputed reciprocal of the divisor's top limb (Möller–Granlund) with 64-bit
+products instead of a 128-bit division and 128-bit products per digit; the byte conversions work
+a limb at a time. Per operation (timing probe `bignum::ifma::tests::timing`, CPU 2):
+
+| modulus | AMM | `s^65537 mod n` |
+|---|---:|---:|
+| 2,048 bits (40 digits) | 246 ns | 4.9 µs |
+| 3,072 bits (60 of 64 digits) | 497 ns | 10.1 µs |
+| 4,096 bits (80 digits) | 789 ns | 15.3 µs |
+
+(3,072 bits ran 524 ns per AMM with all 64 steps. A whole verification on BMI2 + ADX took 12.5,
+29.8 and 52.2 µs before.) Three alternating rounds of `62ea6318` and
+this change on a quiet host, ring / rustls in the same runs; the rounds agreed within 1%:
+
+| op/s | before | after | ring / rustls | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|
+| RSA-2048 PKCS#1 verify | 80,005 | 200,748 | 65,392 | 1.22 | 3.07 |
+| RSA-2048 verify + key parse | 66,674 | 153,716 | 65,392 | 1.02 | 2.35 |
+| RSA-3072 PKCS#1 verify | 33,541 | 100,719 | 30,486 | 1.10 | 3.30 |
+| RSA-3072 verify + key parse | 29,116 | 80,470 | 30,486 | 0.95 | 2.64 |
+| RSA-4096 PKCS#1 verify | 19,170 | 64,911 | 17,534 | 1.09 | 3.70 |
+| RSA-4096 verify + key parse | 16,707 | 50,850 | 17,534 | 0.95 | 2.90 |
+| RSA-2048 PKCS#1 sign | 5,285 | 5,511 | 2,434 | 2.17 | 2.26 |
+| RSA-3072 PKCS#1 sign | 1,712 | 1,766 | 789 | 2.17 | 2.24 |
+| RSA-4096 PKCS#1 sign | 869 | 899 | 346 | 2.52 | 2.60 |
+| TLS 1.3 full handshakes/s, X25519, RSA-2048 certificate | 3,002 | 3,270 | 1,802 | 1.67 | 1.82 |
+
+Verification is 2.51× / 3.00× / 3.39× the previous code, 2.31× / 2.76× / 3.04× with the key
+parse; signing gains 2–4% from the cheaper check. With `ONLY_CRYPTO_PORTABLE=1` (two alternating
+rounds): verify 0.59× → 0.70× ring at 2,048 bits (0.60× → 0.70×, 0.57× → 0.69× at 3,072 and
+4,096), with the key parse 0.53× → 0.66× (0.53× → 0.67×, 0.52× → 0.65×). The key parse is now
+about a quarter of "verify + key parse" at 2,048 bits (1.8 µs: the division for `R²`, the copies,
+the allocations); the AMMs themselves are latency-bound on one chain here, with no second
+exponentiation to interleave.
 
 #### AES-GCM by message size (`--example gcm-sizes`, CPU 2)
 
@@ -995,6 +1047,11 @@ Short summaries of the per-area passes; the full tables are in the git history o
   of a signature in one IFMA loop, their reduction chains overlapping. Against ring: RSA-2048 sign
   1.63× → 2.20×, 3072 1.87× → 2.19×, 4096 2.21× → 2.55×; RSA-2048 certificate handshakes 1.45× →
   1.69× rustls; verification unchanged.
+- **RSA verification on IFMA** (this host, CPU 2, `62ea6318` → after): the public operation in
+  radix 2⁵² (new 3,072- and 4,096-bit AMMs), 18 products for `e = 65537`, `R²` by a faster
+  division. Against ring: verify 1.22× → 3.07× / 1.10× → 3.30× / 1.09× → 3.70× (2048 / 3072 /
+  4096), with the key parse 1.02× → 2.35× / 0.95× → 2.64× / 0.95× → 2.90×; sign 2.26× / 2.24× /
+  2.60×; RSA-2048 certificate handshakes 1.67× → 1.82× rustls.
 - **Wide AES-GCM and CRC** (this host, `a1cc9b49` → after): AES-GCM on VAES + VPCLMULQDQ +
   AVX-512 (512-bit, chosen over 256-bit by measurement) 2.3–2.5× at 16–64 KiB (AES-128 seal
   16 KiB 6,455 → 15,048 MB/s, 0.51× → 1.19× ring), the fused tail 1.8–2.1× at 64 B; TLS 1.3

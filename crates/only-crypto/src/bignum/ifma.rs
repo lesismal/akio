@@ -1,9 +1,11 @@
 //! Modular exponentiation for RSA on x86_64 with AVX-512 IFMA (`vpmadd52luq`/`vpmadd52huq` on
-//! 256-bit registers), for the CRT halves of 2048-, 3072- and 4096-bit keys (moduli of 16, 24
-//! and 32 limbs), one modulus at a time or both halves interleaved in one loop.
+//! 256- and 512-bit registers): for the CRT halves of 2048-, 3072- and 4096-bit keys (moduli of
+//! 16, 24 and 32 limbs), one modulus at a time or both halves interleaved in one loop, and the
+//! public operation `sᵉ mod n` of 2048-, 3072- and 4096-bit moduli (32, 48 and 64 limbs:
+//! verification and the fault check after signing).
 //!
-//! Numbers are vectors of `D` digits of 52 bits in 64-bit lanes (`D` = 20, 32, 40: four digits
-//! per `ymm` register). The core is the almost Montgomery multiplication `AMM(a, b) = a·b·2^(-52D)
+//! Numbers are vectors of `D` digits of 52 bits in 64-bit lanes (`D` = 20, 32, 40, 64 (60 used)
+//! and 80: four digits per `ymm` register, eight per `zmm`). The core is the almost Montgomery multiplication `AMM(a, b) = a·b·2^(-52D)
 //! mod m`, with the result below `2m` instead of `m` (inputs below `2m`, `4m < 2^(52D)`), so the
 //! exponentiation never subtracts conditionally; one reduction at the end. Per digit `bᵢ` of `b`:
 //! the low halves of `a·bᵢ` and `m·yᵢ` are added lane by lane, the lanes shift down one digit,
@@ -21,8 +23,8 @@
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the `asm!`
 //! blocks, which read the `D`-digit arrays behind `a`, `b` and `m` and write the `D`-digit
 //! output. Their instructions need AVX-512 F + VL + IFMA with the OS saving the ZMM and opmask
-//! state: they are reached only from [`pow`] and [`pow_x2`] (the two CRT halves interleaved)
-//! after [`enabled`] (`cpu::has(Feature::Ifma)`), and every multiplication debug-asserts it.
+//! state: they are reached only from [`pow`], [`pow_x2`] (the two CRT halves interleaved) and
+//! [`pow_public`] after [`enabled`] (`cpu::has(Feature::Ifma)`), and every multiplication debug-asserts it.
 #![allow(unsafe_code)]
 
 use std::arch::asm;
@@ -259,28 +261,31 @@ macro_rules! amm_dual {
 }
 
 /// `AMM(a, b)` with one accumulator in `$v` registers (`$up` the lanes per register minus one,
-/// `$bits` the lanes per register). Per register: the accumulator, the `a` register (the carries
-/// in the normalization), the `m` register, the byte offset; then the shift neighbours as for
-/// `amm_dual`.
+/// `$bits` the lanes per register), over the first `$s` of the `$d` digits of `b` (`$s < $d`
+/// when the digit count is padded to whole registers: the digits of `a`, `b` and `m` from `$s`
+/// up are zero, and the result is `a·b·2^(-52·$s)`). Per register: the accumulator, the `a`
+/// register (the carries in the normalization), the `m` register, the byte offset; then the
+/// shift neighbours as for `amm_dual`.
 macro_rules! amm_single {
     (
-        $name:ident, $d:literal, $v:literal, $up:literal, $bits:literal,
+        $name:ident, $d:literal, steps: $st:literal, $v:literal, $up:literal, $bits:literal,
         [$(($r:literal, $ra:literal, $rm:literal, $off:literal)),*],
         shift: [$(($s:literal, $sn:literal)),*], last: $last:literal,
         carry: [$(($cu:literal, $cl:literal)),*], first: $first:literal,
         rev: [$($rv:literal),*]
     ) => {
-        /// `out = a·b·2^(-52D) mod m`, below `2m`, digits below `2⁵²`, for `a, b < 2m` with
-        /// digits below `2⁵²`, `4m < 2^(52D)` and `k0 = -m⁻¹ mod 2⁵²`.
+        /// `out = a·b·2^(-52S) mod m` (`S` the step count), below `2m`, digits below `2⁵²`,
+        /// for `a, b < 2m` with digits below `2⁵²` (zero from digit `S` up), `4m < 2^(52S)`
+        /// and `k0 = -m⁻¹ mod 2⁵²`.
         fn $name(out: &mut [u64; $d], a: &[u64; $d], b: &[u64; $d], m: &[u64; $d], k0: u64) {
             debug_assert!(cpu::cpu_has(Feature::Ifma));
-            // SAFETY: as for `amm20`: reads the D digits behind `a`, `b` and `m`, writes the D
-            // digits behind `out`; no stack; every register used is declared clobbered; reached
-            // only after `enabled()`.
+            // SAFETY: as for `amm20`: reads the D digits behind `a` and `m` and the first S
+            // behind `b`, writes the D digits behind `out`; no stack; every register used is
+            // declared clobbered; reached only after `enabled()`.
             unsafe {
                 amm_asm!(
                     out, a, b, m, k0,
-                    amm_setup!($v, $d),
+                    amm_setup!($v, $st),
                     $(concat!("vmovdqu64 ", $v, $ra, ", ", $v, "word ptr [rsi + ", $off, "]"),)*
                     $(concat!("vmovdqu64 ", $v, $rm, ", ", $v, "word ptr [r8 + ", $off, "]"),)*
                     $(concat!("vpxorq ", $v, $r, ", ", $v, $r, ", ", $v, $r),)*
@@ -327,7 +332,7 @@ amm_dual!(
 );
 
 amm_single!(
-    amm32, 32, "ymm", "3", "4",
+    amm32, 32, steps: "32", "ymm", "3", "4",
     [
         ("0", "8", "16", "0"), ("1", "9", "17", "32"), ("2", "10", "18", "64"),
         ("3", "11", "19", "96"), ("4", "12", "20", "128"), ("5", "13", "21", "160"),
@@ -344,7 +349,7 @@ amm_single!(
 );
 
 amm_single!(
-    amm40, 40, "zmm", "7", "8",
+    amm40, 40, steps: "40", "zmm", "7", "8",
     [
         ("0", "8", "16", "0"), ("1", "9", "17", "64"), ("2", "10", "18", "128"),
         ("3", "11", "19", "192"), ("4", "12", "20", "256")
@@ -353,6 +358,207 @@ amm_single!(
     carry: [("12", "11"), ("11", "10"), ("10", "9"), ("9", "8")], first: "8",
     rev: ["4", "3", "2", "1", "0"]
 );
+
+// 64 digits (`amm64`, 3072-bit public moduli): `zmm`, the layout of `amm32` with eight registers
+// per number: the accumulator zmm0-7, `a` in zmm8-15 (the carries), `m` in zmm16-23. 60 digits
+// hold 3072 bits (`4m < 2^3120`), so the loop runs 60 steps over operands padded to 64.
+amm_single!(
+    amm64, 64, steps: "60", "zmm", "7", "8",
+    [
+        ("0", "8", "16", "0"), ("1", "9", "17", "64"), ("2", "10", "18", "128"),
+        ("3", "11", "19", "192"), ("4", "12", "20", "256"), ("5", "13", "21", "320"),
+        ("6", "14", "22", "384"), ("7", "15", "23", "448")
+    ],
+    shift: [("0", "1"), ("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "6"), ("6", "7")],
+    last: "7",
+    carry: [
+        ("15", "14"), ("14", "13"), ("13", "12"), ("12", "11"), ("11", "10"), ("10", "9"),
+        ("9", "8")
+    ],
+    first: "8",
+    rev: ["7", "6", "5", "4", "3", "2", "1", "0"]
+);
+
+// 80 digits (`amm80`, 4096-bit public moduli): `zmm`, ten registers per number, 30 of the 32:
+// the accumulator zmm0-9, `a` in zmm10-19 (the carries), `m` in zmm20-25 and zmm28-31, 26 and
+// 27 the broadcasts. As in the `_x2` blocks, the top register shifts in a zero lane by
+// zero-masking (k3) and the output pointer waits in k7; the constants (zero, the 52-bit mask,
+// ones) are set after the loop, in registers of `m`. The ripple masks have 80 bits: the low 64
+// lanes in r12 (G) and r13 (P), the top 16 in rsi and rdi, added with a carry between them.
+/// `out = a·b·2^(-52·80) mod m`, below `2m`, digits below `2⁵²`, for `a, b < 2m` with digits
+/// below `2⁵²`, `4m < 2^(52·80)` and `k0 = -m⁻¹ mod 2⁵²`.
+fn amm80(out: &mut [u64; 80], a: &[u64; 80], b: &[u64; 80], m: &[u64; 80], k0: u64) {
+    debug_assert!(cpu::cpu_has(Feature::Ifma));
+    // Per register: the accumulator, `a`, `m`, the byte offset.
+    macro_rules! regs {
+        ($mac:ident) => {
+            $mac!(
+                ("0", "10", "20", "0"),
+                ("1", "11", "21", "64"),
+                ("2", "12", "22", "128"),
+                ("3", "13", "23", "192"),
+                ("4", "14", "24", "256"),
+                ("5", "15", "25", "320"),
+                ("6", "16", "28", "384"),
+                ("7", "17", "29", "448"),
+                ("8", "18", "30", "512"),
+                ("9", "19", "31", "576")
+            )
+        };
+    }
+    macro_rules! load {
+        ($(($r:literal, $ra:literal, $rm:literal, $off:literal)),*) => {
+            concat!(
+                $("vmovdqu64 zmm", $ra, ", zmmword ptr [rsi + ", $off, "]\n",)*
+                $("vmovdqu64 zmm", $rm, ", zmmword ptr [r8 + ", $off, "]\n",)*
+                $("vpxorq zmm", $r, ", zmm", $r, ", zmm", $r, "\n",)*
+            )
+        };
+    }
+    macro_rules! madd {
+        ($op:literal, $(($r:literal, $ra:literal, $rm:literal, $off:literal)),*) => {
+            concat!(
+                $("vpmadd52", $op, "uq zmm", $r, ", zmm26, zmm", $ra, "\n",)*
+                $("vpmadd52", $op, "uq zmm", $r, ", zmm27, zmm", $rm, "\n",)*
+            )
+        };
+    }
+    macro_rules! madd_lo {
+        ($($t:tt)*) => { madd!("l", $($t)*) };
+    }
+    macro_rules! madd_hi {
+        ($($t:tt)*) => { madd!("h", $($t)*) };
+    }
+    // Normalization: carries (a registers) = r >> 52, r &= mask.
+    macro_rules! split {
+        ($(($r:literal, $ra:literal, $rm:literal, $off:literal)),*) => {
+            concat!(
+                $("vpsrlq zmm", $ra, ", zmm", $r, ", 52\n",)*
+                $("vpandq zmm", $r, ", zmm", $r, ", zmm29\n",)*
+            )
+        };
+    }
+    macro_rules! add_carries {
+        ($(($r:literal, $ra:literal, $rm:literal, $off:literal)),*) => {
+            concat!($("vpaddq zmm", $r, ", zmm", $r, ", zmm", $ra, "\n",)*)
+        };
+    }
+    // The G (`> mask`) and P (`== mask`) bits of one register into `$g`, `$p` (8 bits each).
+    macro_rules! gp {
+        ($g:literal, $p:literal, $($r:literal),*) => {
+            concat!($(
+                "vpcmpuq k1, zmm", $r, ", zmm29, 6\n",
+                "vpcmpuq k2, zmm", $r, ", zmm29, 0\n",
+                "kmovw r11d, k1\n",
+                "shl ", $g, ", 8\n",
+                "or ", $g, ", r11\n",
+                "kmovw r11d, k2\n",
+                "shl ", $p, ", 8\n",
+                "or ", $p, ", r11\n",
+            )*)
+        };
+    }
+    // Add the carries of `$c` (8 bits per register, from the bottom; `$c32` its low half) and
+    // store.
+    macro_rules! apply {
+        ($c:literal, $c32:literal, $(($r:literal, $off:literal)),*) => {
+            concat!($(
+                "kmovw k1, ", $c32, "\n",
+                "vpaddq zmm", $r, " {{k1}}, zmm", $r, ", zmm30\n",
+                "vpandq zmm", $r, ", zmm", $r, ", zmm29\n",
+                "shr ", $c, ", 8\n",
+                "vmovdqu64 zmmword ptr [r9 + ", $off, "], zmm", $r, "\n",
+            )*)
+        };
+    }
+    // SAFETY: reads the 80 digits behind `a`, `b` and `m` (live arrays; `b` one digit at a
+    // time, the counter stops after 80) and writes the 80 digits behind `out` (an exclusive
+    // borrow), all with unaligned accesses; no stack. The vector and mask registers and the
+    // caller-saved GPRs are declared clobbered (`clobber_abi("C")`), r11-r15 explicitly, rsi,
+    // rdi and r8 as `inout`. AVX-512 F/BW/VL/IFMA with the OS state: reached only after
+    // `enabled()` (asserted in debug builds above).
+    unsafe {
+        amm_asm!(
+            out,
+            a,
+            b,
+            m,
+            k0,
+            "kmovq k7, r9",
+            "mov r14, {mask}",
+            "mov r11d, 0x7f",
+            "kmovw k3, r11d",
+            "xor eax, eax",
+            "mov ecx, 80",
+            regs!(load),
+            "2:",
+            amm_scalar!("zmm", "vpextrq r15, xmm0, 1\n"),
+            regs!(madd_lo),
+            "valignq zmm0, zmm1, zmm0, 1",
+            "valignq zmm1, zmm2, zmm1, 1",
+            "valignq zmm2, zmm3, zmm2, 1",
+            "valignq zmm3, zmm4, zmm3, 1",
+            "valignq zmm4, zmm5, zmm4, 1",
+            "valignq zmm5, zmm6, zmm5, 1",
+            "valignq zmm6, zmm7, zmm6, 1",
+            "valignq zmm7, zmm8, zmm7, 1",
+            "valignq zmm8, zmm9, zmm8, 1",
+            "valignq zmm9 {{k3}}{{z}}, zmm9, zmm9, 1",
+            regs!(madd_hi),
+            "lea rdi, [rdi + 8]",
+            "dec ecx",
+            "jnz 2b",
+            "mov r11d, 1",
+            "kmovw k1, r11d",
+            "vpbroadcastq zmm0 {{k1}}, rax",
+            // The constants, in registers of `m`.
+            "vpbroadcastq zmm29, r14",
+            "mov eax, 1",
+            "vpbroadcastq zmm30, rax",
+            "vpxorq zmm28, zmm28, zmm28",
+            regs!(split),
+            "valignq zmm19, zmm19, zmm18, 7",
+            "valignq zmm18, zmm18, zmm17, 7",
+            "valignq zmm17, zmm17, zmm16, 7",
+            "valignq zmm16, zmm16, zmm15, 7",
+            "valignq zmm15, zmm15, zmm14, 7",
+            "valignq zmm14, zmm14, zmm13, 7",
+            "valignq zmm13, zmm13, zmm12, 7",
+            "valignq zmm12, zmm12, zmm11, 7",
+            "valignq zmm11, zmm11, zmm10, 7",
+            "valignq zmm10, zmm10, zmm28, 7",
+            regs!(add_carries),
+            // The second carry over 80 lanes: G and P in rsi:r12 and rdi:r13.
+            "xor esi, esi",
+            "xor edi, edi",
+            "xor r12d, r12d",
+            "xor r13d, r13d",
+            gp!("rsi", "rdi", "9", "8"),
+            gp!("r12", "r13", "7", "6", "5", "4", "3", "2", "1", "0"),
+            "add r12, r12",
+            "adc rsi, rsi",
+            "add r12, r13",
+            "adc rsi, rdi",
+            "xor r12, r13",
+            "xor rsi, rdi",
+            "kmovq r9, k7",
+            apply!(
+                "r12",
+                "r12d",
+                ("0", "0"),
+                ("1", "64"),
+                ("2", "128"),
+                ("3", "192"),
+                ("4", "256"),
+                ("5", "320"),
+                ("6", "384"),
+                ("7", "448")
+            ),
+            apply!("rsi", "esi", ("8", "512"), ("9", "576")),
+            "vzeroupper",
+        );
+    }
+}
 
 // Two independent AMMs in one loop (`amm*_x2`), for the two CRT halves of an RSA private key:
 // each step runs the scalar part and the vector part of half 1, then those of half 2. The `yᵢ`
@@ -652,7 +858,7 @@ fn shl_mod(mont: &Mont, x: &[u64], s: usize) -> Vec<u64> {
     x
 }
 
-/// One AMM at the digit count `d` (20, 32 or 40).
+/// One AMM at the digit count `d` (20, 32, 40, 64 or 80).
 fn amm(d: usize, out: &mut [u64], a: &[u64], b: &[u64], m: &[u64], k0: u64) {
     macro_rules! go {
         ($f:ident, $n:literal) => {
@@ -670,7 +876,9 @@ fn amm(d: usize, out: &mut [u64], a: &[u64], b: &[u64], m: &[u64], k0: u64) {
     match d {
         20 => go!(amm20, 20),
         32 => go!(amm32, 32),
-        _ => go!(amm40, 40),
+        40 => go!(amm40, 40),
+        64 => go!(amm64, 64),
+        _ => go!(amm80, 80),
     }
 }
 
@@ -682,6 +890,69 @@ pub(crate) fn digits(k: usize) -> Option<usize> {
         32 => Some(40),
         _ => None,
     }
+}
+
+/// The digit count and the AMM step count for a public modulus of `k` limbs in [`pow_public`],
+/// if this module handles it: 2048-, 3072- and 4096-bit RSA moduli (3072 bits in 60 digits,
+/// padded to 64 for whole `zmm` registers).
+pub(crate) fn public_digits(k: usize) -> Option<(usize, usize)> {
+    match k {
+        32 => Some((40, 40)),
+        48 => Some((64, 60)),
+        64 => Some((80, 80)),
+        _ => None,
+    }
+}
+
+/// [`Mont::pow_public`] on IFMA: `s^e mod m` in normal form for `s < m` in normal form,
+/// left-to-right square-and-multiply over the bits of a public `e ≥ 1` (variable time in `e`
+/// only). Into the form of `R' = 2^(52·steps)` with one AMM by `R'² mod m` (from `R² mod m`
+/// shifted by `R'²/R²` and a short division), and out of it with the last multiplication, by
+/// `s` itself instead of `s·R'`: `AMM(x·R', s) = x·s`.
+pub(crate) fn pow_public(mont: &Mont, s: &[u64], e: u64) -> Vec<u64> {
+    let k = mont.limbs();
+    let (d, steps) = public_digits(k).unwrap_or_else(|| unreachable!());
+    debug_assert!(e != 0);
+    let m = to_digits(&mont.m, d);
+    let k0 = mont.n0 & MASK52;
+    // R² mod m times 2^(2(52·steps - 64k)).
+    let shift = 2 * (52 * steps - 64 * k);
+    let (limbs, bits) = (shift / 64, shift % 64);
+    let mut wide = vec![0u64; limbs + k + 1];
+    for (i, &x) in mont.r2.iter().enumerate() {
+        wide[limbs + i] |= x << bits;
+        if bits > 0 {
+            wide[limbs + i + 1] = x >> (64 - bits);
+        }
+    }
+    let rr = to_digits(&super::rem_vartime(&wide, &mont.m), d);
+    let sd = to_digits(s, d);
+    let mut base = vec![0u64; d];
+    amm(d, &mut base, &sd, &rr, &m, k0);
+    let mut x = base.clone();
+    let mut t = vec![0u64; d];
+    let top = 63 - e.leading_zeros();
+    // x = s^(e >> i)·R' for i from `top` down to 1.
+    for i in (1..top).rev() {
+        amm(d, &mut t, &x, &x, &m, k0);
+        if (e >> i) & 1 == 1 {
+            amm(d, &mut x, &t, &base, &m, k0);
+        } else {
+            std::mem::swap(&mut x, &mut t);
+        }
+    }
+    // Bit 0 (below the top bit): one more squaring, then the factor of bit 0 in normal form.
+    let mut last = vec![0u64; d];
+    last[0] = 1;
+    if top > 0 {
+        amm(d, &mut t, &x, &x, &m, k0);
+        std::mem::swap(&mut x, &mut t);
+        if e & 1 == 1 {
+            last = sd;
+        }
+    }
+    amm(d, &mut t, &x, &last, &m, k0);
+    finish(mont, &t)
 }
 
 /// [`Mont::pow`] on IFMA: `base^e` with `base` and the result in the 64-bit Montgomery form of
@@ -922,6 +1193,37 @@ mod tests {
             println!(
                 "{:>5} bits ({d} digits): amm {ns:8.1} ns  pow {us:8.1} us  \
                  x2 per half: amm {ns2:8.1} ns  pow {us2:8.1} us",
+                64 * k
+            );
+        }
+        // The public exponentiation (e = 65537) of RSA verification, per modulus size.
+        for k in [32usize, 48, 64] {
+            let (d, _) = public_digits(k).unwrap();
+            let mut m: Vec<u64> = (0..k).map(|_| rng.next_u64()).collect();
+            m[0] |= 1;
+            m[k - 1] |= 1 << 63;
+            let mont = Mont::new_public(&m).unwrap();
+            let md = to_digits(&m, d);
+            let k0 = mont.n0 & MASK52;
+            let s = mont.reduce(&(0..k).map(|_| rng.next_u64()).collect::<Vec<_>>());
+            let mut x = to_digits(&s, d);
+            let mut y = vec![0u64; d];
+            let iters = 4_000_000 / k;
+            let t = std::time::Instant::now();
+            for _ in 0..iters {
+                amm(d, &mut y, &x, &x, &md, k0);
+                amm(d, &mut x, &y, &y, &md, k0);
+            }
+            let ns = t.elapsed().as_nanos() as f64 / (2 * iters) as f64;
+            std::hint::black_box(&x);
+            let iters = 400_000 / k;
+            let t = std::time::Instant::now();
+            for _ in 0..iters {
+                std::hint::black_box(pow_public(&mont, &s, 65537));
+            }
+            let us = t.elapsed().as_nanos() as f64 / iters as f64 / 1000.0;
+            println!(
+                "{:>5} bits ({d} digits): amm {ns:8.1} ns  s^65537 {us:8.2} us",
                 64 * k
             );
         }

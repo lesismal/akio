@@ -20,6 +20,20 @@ MB/s (0.83× → 0.98× ring), 1 KiB 1.00× → 1.08×, 1400 B 0.99× → 1.21×
 TLS 1.3 ChaCha20-Poly1305 records at 1 KiB 1.09× → 1.15× rustls + ring (docs/BENCHMARKS.md).
 16 KiB and up unchanged. No public API change.
 
+### Changed: RSA verification on AVX-512 IFMA, about 2.5–3.4× faster
+
+On x86_64 with AVX-512 IFMA, the RSA public operation `sᵉ mod n` (signature verification, and the
+check of each signature before it is released) now runs in radix 2⁵² for 2048-, 3072- and 4096-bit
+moduli (new 3072- and 4096-bit almost-Montgomery multiplications), with 18 products for
+`e = 65537` instead of 21; building a public key computes `R² mod n` with a faster long division
+and no Montgomery multiplication. Zen 4, same-run A/B on a quiet host: RSA-2048 / 3072 / 4096
+PKCS#1 verify 2.51× / 3.00× / 3.39× faster (1.22× / 1.10× / 1.09× → 3.07× / 3.30× / 3.70× ring),
+verify including the key parse 2.31× / 2.76× / 3.04× (1.02× / 0.95× / 0.95× → 2.35× / 2.64× /
+2.90× ring), signing 2–4%; TLS 1.3 handshakes with an RSA-2048 certificate 1.67× → 1.82× rustls +
+ring (docs/BENCHMARKS.md). Without IFMA (and with `ONLY_CRYPTO_PORTABLE=1`) the fewer products and
+the faster division still help: portable verify 0.59× → 0.70× ring at 2048 bits. Private-key
+exponentiation and its constant-time properties are unchanged. No public API change.
+
 ### Changed: RSA signing runs both CRT halves in one AVX-512 IFMA loop
 
 On x86_64 with AVX-512 IFMA, the two half-exponentiations of an RSA private-key operation (mod p
