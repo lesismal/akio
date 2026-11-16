@@ -467,7 +467,6 @@ fn h2_defaults_are_bounded() {
     let o = H2Options::default();
     assert_eq!(o.max_header_list, 64 << 10);
     assert_eq!(o.max_body_bytes, 64 << 20);
-    assert_eq!(o.request_timeout, Some(Duration::from_secs(30)));
 }
 
 #[test]
@@ -571,85 +570,33 @@ fn header_list_and_body_limits_reset_the_stream_only() {
 
 #[test]
 fn request_timeout_resets_an_unanswered_stream() {
-    let mut opts = H2Options::default();
-    opts.request_timeout = Some(Duration::from_millis(200));
     let (tx, rx) = mpsc::channel();
-    let (e, c, t) = setup(opts, move |srv| {
+    let (e, c, t) = setup(H2Options::default(), move |srv| {
         // Never answered: the client resets it.
         let (sid, _) = srv.request();
         let _ = tx.send(rst_code(srv, sid));
-        // A streamed request has no default timeout; with its own it is reset too.
-        let (s2, _) = srv.request();
-        let (s3, _) = srv.request();
-        let _ = tx.send(rst_code(srv, s3));
-        srv.respond(s2, b"late but fine");
-        // Answered in time after all that.
-        let (sid, _) = srv.request();
-        srv.respond(sid, b"ok");
-    });
-    let t0 = std::time::Instant::now();
-    let r = c.send(get("/silent")).wait();
-    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
-    assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        Some(CANCEL)
-    );
-
-    let (etx, erx) = mpsc::channel();
-    let etx2 = etx.clone();
-    let _a = c.open(get("/stream-no-timeout"), move |ev| {
-        let s = match ev {
-            H2Event::Data(d) => format!("data {}", String::from_utf8_lossy(d)),
-            H2Event::Error(e) => format!("a error {e}"),
-            H2Event::End => "a end".into(),
-            _ => return,
-        };
-        let _ = etx.send(s);
-    });
-    thread::sleep(Duration::from_millis(50));
-    let _b = c.open(
-        get("/stream-own-timeout").timeout(Duration::from_millis(300)),
-        move |ev| {
-            if let H2Event::Error(e) = ev {
-                let _ = etx2.send(format!("b error {e}"));
-            }
-        },
-    );
-    let first = erx.recv_timeout(Duration::from_secs(5)).unwrap();
-    assert_eq!(first, "b error request timed out");
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        Some(CANCEL)
-    );
-    assert_eq!(
-        erx.recv_timeout(Duration::from_secs(5)).unwrap(),
-        "data late but fine"
-    );
-    assert_eq!(erx.recv_timeout(Duration::from_secs(5)).unwrap(), "a end");
-    assert_eq!(c.send(get("/ok")).wait().unwrap().body, b"ok");
-    stop(&e, t);
-}
-
-#[test]
-fn shorter_request_timeout_after_a_longer_pending_one() {
-    let mut opts = H2Options::default();
-    opts.request_timeout = Some(Duration::from_secs(10));
-    let (tx, rx) = mpsc::channel();
-    let (e, c, t) = setup(opts, move |srv| {
+        // A longer request still pending gets its answer after a shorter one timed out.
         let (long, _) = srv.request();
         let (short, _) = srv.request();
         let _ = tx.send(rst_code(srv, short));
         srv.respond(long, b"long");
     });
-    let long = c.send(get("/long"));
-    thread::sleep(Duration::from_millis(50));
     let t0 = std::time::Instant::now();
+    let r = c
+        .send(get("/silent").timeout(Duration::from_millis(200)))
+        .wait();
+    assert!(matches!(r, Err(ClientError::Timeout)), "{r:?}");
+    assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        Some(CANCEL)
+    );
+    let long = c.send(get("/long").timeout(Duration::from_secs(10)));
+    thread::sleep(Duration::from_millis(50));
     let r = c
         .send(get("/short").timeout(Duration::from_millis(200)))
         .wait();
-    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
-    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    assert!(matches!(r, Err(ClientError::Timeout)), "{r:?}");
     assert_eq!(
         rx.recv_timeout(Duration::from_secs(5)).unwrap(),
         Some(CANCEL)

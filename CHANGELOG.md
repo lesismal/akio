@@ -22,6 +22,94 @@ All notable changes to `only` are documented here. The format follows
   streamed and bounded, linked backpressure, timeouts and safe-default limits everywhere, build
   time over request time on the hot path, verification sized to the change.
 
+### Added: HTTP and WebSocket client redirects, timeouts, proxies, system roots (ADR-010)
+
+- Redirects, opt-in: `client::RedirectPolicy` (`none()` by default, `limit(n)`,
+  `allow_https_downgrade`) with `Client::with_redirects`. 301/302/303/307/308 with RFC 9110
+  section 15.4 method and body rules, relative `Location`s, `Authorization` / `Cookie` /
+  `Proxy-Authorization` dropped on a redirect to another origin, https → http not followed by
+  default, `ClientError::TooManyRedirects` past the limit; `ClientResponse::url` is the URL that
+  answered. The WebSocket handshake follows them with `DialOptions::max_redirects` (default 0;
+  `WsClientError::TooManyRedirects`).
+- Per-request timeout: `ClientRequest::timeout` / `.timeout(d)` and `Client::with_timeout`,
+  covering resolution, connecting, TLS, the response and redirects (`ClientError::Timeout`, the
+  connection is closed). `H2Client` honours it by resetting the stream.
+- Name resolution off the calling thread: new `only::dns::resolve` (a dependency-free pool of up
+  to four resolver threads; IP literals inline), used by the HTTP/1 and WebSocket clients.
+- System root certificates: `only::tls::RootCerts::system()` (`SSL_CERT_FILE` / `SSL_CERT_DIR`,
+  macOS keychains via `/usr/bin/security`, Linux/BSD CA bundles and directories). **Behaviour
+  change:** `Client` without `with_tls` and `DialOptions::tls = None` now use it for `https://` /
+  `wss://` instead of failing.
+- HTTP proxies: `only_ws::proxy::Proxy` (re-exported as `only_http::client::Proxy`; `all`,
+  `http`, `https`, `no_proxy`, opt-in `from_env` for `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`),
+  `Client::with_proxy`, `DialOptions::proxy`. `http://` in absolute form, `https://`, `ws://` and
+  `wss://` through `CONNECT`; credentials in the proxy URL become `Proxy-Authorization: Basic`;
+  a refusal is an `io::Error` carrying `ProxyRefused`.
+- The WebSocket client closes its open connections with 1001 (going away) when its engine shuts
+  down gracefully (they ended with 1006).
+
+### Added: SOCKS5 BIND and UDP ASSOCIATE, a SOCKS access-control hook, `Engine::adopt_tcp`
+
+- `only-socks` serves SOCKS5 `BIND` and `UDP ASSOCIATE` (RFC 1928), both off by default
+  (`Socks::bind(true)`, `Socks::udp_associate(true)`; `bind_timeout`, `udp_idle_timeout`).
+  UDP: one relay socket per association (the engine needs `udp_client_threads`), client
+  recognised by IP and port, fragments dropped, answers relayed only from destinations the
+  client sent to, ends with the control connection or after the idle timeout. BIND: listener on
+  the proxy's address, two replies, the accepted connection relayed with backpressure.
+- `Socks::allow(|request| ..)`: an access-control hook over `CONNECT` (SOCKS5/4/4a), `BIND`,
+  `UDP ASSOCIATE` and each UDP destination, with the new `Command`, `Dest` and `Request` types.
+  Refusals answer reply 2 (SOCKS4: 0x5b) or drop the datagram.
+- `Engine::adopt_tcp(stream, acceptor, on_error)` serves a TCP stream accepted outside the engine
+  like a dialed connection (epoll and io_uring).
+- Interop: `tools/interop/socks/run.sh` (curl, PySocks, BIND and UDP edge cases; Dante as the
+  reference server). ADR-012. Additive API (`api/only-socks.txt`, `api/only.txt`).
+
+### Added: `ONLY_LOG` filter directives and compile-time log level caps
+
+- `only::log::Filter`: per-target levels from env_logger-style directives
+  (`info,only_http=debug,only_quic::conn=trace,only_http::access=off`), parsed once.
+  `only::log::init_from_env(default)` installs the formatted logger filtered by `ONLY_LOG`; it is
+  opt-in, nothing reads the environment otherwise. `FmtLogger::filter` / `init_filtered` take a
+  filter built in code.
+- only-log cargo features `max_level_*` / `release_max_level_*` and `STATIC_MAX_LEVEL`, as in
+  the `log` crate: statements above the cap are compiled out. Without them the generated code is
+  unchanged (disabled `trace!`: 0.400 → 0.401 ns on x86_64, same binary on macOS). ADR-012.
+  Additive API (`api/only-log.txt`).
+
+### Added: shared 0-RTT anti-replay store (only-tls) and compatible version negotiation (only-quic)
+
+Additive API (ADR-013, docs/adr/013-shared-anti-replay-and-compatible-vn.md):
+
+- **`AntiReplayStore`** (only-tls): where a server records the ClientHellos whose early data it
+  accepted. One method, `check_and_insert(binder, ttl) -> io::Result<bool>`, atomic, called on
+  the handshake path only for ClientHellos whose early data would otherwise be accepted. Errors
+  **fail closed** (the early data is rejected, the client sends it again after the handshake).
+  `MemoryAntiReplay` is the default (the existing bounded per-configuration record, 100,000
+  entries), now public. `ServerConfigBuilder::anti_replay_store(Arc<dyn AntiReplayStore>)`
+  plugs in a shared one (Redis `SET key 1 NX PX ttl`, sketched in the book's TLS chapter);
+  `ServerConfigBuilder::session_ticket_key([u8; 48])` lets servers in several processes or
+  machines accept each other's tickets in the first place. QUIC servers get both through their
+  TLS configuration. Accepted ClientHellos are now kept 30 s (was 20 s): twice the 10 s
+  freshness window plus one window for the clocks of servers sharing a store to differ by.
+- **Compatible version negotiation** (only-quic, RFC 9368 section 4):
+  `ServerConfig::prefer_version(Version)` moves clients that start in the other version and list
+  the preferred one in their version_information to it within the handshake, without a round
+  trip; also when the ClientHello spans several packets, after a Retry, and with 0-RTT (whose
+  packets stay in the client's first version, RFC 9369 section 4.1). Off by default: the server
+  answers in the client's version. only-quic clients always follow such a switch (a forged
+  Initial of the other version that does not decrypt does not move them).
+- Tests: two TLS servers sharing a ticket key and a "remote" store reject a ClientHello replayed
+  from one to the other (accepted with separate records), a failing store rejects early data,
+  the same over QUIC on the simulated link; compatible negotiation on the simulated link (no
+  extra round trip, Retry and 15% loss, a ClientHello over two packets, 0-RTT across the switch, v2
+  to v1, no switch without the preference or without v2 in the client's list, a forged Initial).
+  Fuzzing: the `quic_conn` pair now switches to v2, and `tls_server` also runs the ClientHello
+  peek. Interop: `tools/interop/quic/ngtcp2-cvn.sh` (new) with ngtcp2 1.11, which implements RFC
+  9368, both ways in Docker (its client moved to v2 by only-h3, with 0-RTT; only-quic moved to v2
+  and to v1 by its server); quic-go does not implement RFC 9368, so `tools/interop/quic/run.sh`
+  checks that its clients keep their version against servers preferring the other one.
+- Cost: none measured (BENCHMARKS.md, handshake A/B).
+
 ### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
 
 only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix
@@ -84,6 +172,27 @@ Additive configuration (ADR-008, docs/adr/008-tls-extensions.md):
   `test-record-size-limit.py`, `test-tls13-certificate-compression.py` and
   `test-tls13-client-certificate-compression.py`. Handshakes unchanged (same-run A/B,
   docs/BENCHMARKS.md).
+
+### Added: pluggable metrics collectors (ADR-015)
+
+Application and protocol metrics on the engine's `/metrics` endpoint, with no third-party crate.
+New module `only::metrics` (`only_core::metrics`): the `Collector` trait, the `Families` snapshot
+(Prometheus text 0.0.4 or JSON, or read through `iter` / `get`), instruments `Counter`, `Gauge`,
+`Histogram` and a `Registry` of named instruments, `fn_collector`, `DEFAULT_BUCKETS`.
+`Telemetry::register_collector(collector, labels)` / `unregister_collector`, `Telemetry::collect`
+and `Telemetry::render_prometheus` (engine series, then the collectors), which
+`observe::metrics_handler` now serves. Ready-made collectors: only-http `HttpMetrics` (plus a new
+family `only_http_requests_by_version_total{version}`, field `HttpSnapshot::by_version`,
+`observe::VERSION_LABELS`), only-quic `QuicServer` (`only_quic_*`: connections, datagrams and
+bytes each way, packets sent and lost, congestion events; totals include closed connections) and
+only-tls `Tls::stats()` → `TlsStats` / `TlsCounts` (`only_tls_handshakes_total{side, version}`,
+`only_tls_resumed_total`, `only_tls_early_data_total{outcome}`). Additive only; the engine's own
+series are unchanged. Example: `cargo run -p only-http --example guide-metrics`.
+
+The engine's telemetry overhead was measured on a quiet host (same-run A/B, docs/BENCHMARKS.md
+"Telemetry overhead"): no measurable cost on HTTP/1.1 (0.998–1.006× with callback timing off or
+the counters compiled out); echo rows within their noise. `HttpMetrics::middleware()` with the new
+per-version count: 0.997–1.005× the previous middleware.
 
 ### Changed: faster ChaCha20-Poly1305 for short messages on AVX-512
 

@@ -110,7 +110,6 @@ fn defaults_are_bounded() {
     let o = ClientOptions::default();
     assert_eq!(o.max_head_bytes, 64 << 10);
     assert_eq!(o.max_body_bytes, 64 << 20);
-    assert_eq!(o.request_timeout, Some(Duration::from_secs(30)));
     assert_eq!(o.idle_timeout, Some(Duration::from_secs(90)));
     assert_eq!((o.max_idle_per_host, o.max_idle), (32, 256));
 }
@@ -251,7 +250,7 @@ fn body_limit_for_every_framing() {
 
 #[test]
 fn request_timeout_ends_silent_and_trickling_servers() {
-    // Never answers: the request fails with TimedOut and the connection is closed.
+    // Never answers: the request fails with Timeout and the connection is closed.
     let closed = Arc::new(AtomicUsize::new(0));
     let cl = closed.clone();
     let srv = server(move |mut s| {
@@ -260,10 +259,10 @@ fn request_timeout_ends_silent_and_trickling_servers() {
         }
     });
     let e = engine();
-    let c = client(&e, |o| o.request_timeout = Some(Duration::from_millis(300)));
+    let c = client(&e, |_| {}).with_timeout(Duration::from_millis(300));
     let t0 = Instant::now();
     let r = get(&c, &format!("{}/", srv.addr));
-    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
+    assert!(matches!(r, Err(ClientError::Timeout)), "{r:?}");
     let took = t0.elapsed();
     assert!(
         took >= Duration::from_millis(250) && took < Duration::from_secs(3),
@@ -294,21 +293,21 @@ fn request_timeout_ends_silent_and_trickling_servers() {
         }
     });
     let r = get(&c, &format!("{}/", srv.addr));
-    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
+    assert!(matches!(r, Err(ClientError::Timeout)), "{r:?}");
 
-    // The per-request timeout overrides the client's (here: none at all on the client).
+    // The per-request timeout (here: none at all on the client).
     let srv = server(|mut s| {
         if read_head(&mut s) {
             wait_closed(&mut s);
         }
     });
-    let c = client(&e, |o| o.request_timeout = None);
+    let c = client(&e, |_| {});
     let t0 = Instant::now();
     let r = c
         .send(ClientRequest::get(&format!("{}/", srv.addr)).timeout(Duration::from_millis(150)))
         .wait_timeout(Duration::from_secs(10))
         .unwrap();
-    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
+    assert!(matches!(r, Err(ClientError::Timeout)), "{r:?}");
     assert!(t0.elapsed() < Duration::from_secs(3));
 
     // A response that arrives in time is not affected, and its connection is reused (the
@@ -322,7 +321,7 @@ fn request_timeout_ends_silent_and_trickling_servers() {
             }
         }
     });
-    let c = client(&e, |o| o.request_timeout = Some(Duration::from_millis(200)));
+    let c = client(&e, |_| {}).with_timeout(Duration::from_millis(200));
     for _ in 0..3 {
         assert_eq!(get(&c, &format!("{}/", srv.addr)).unwrap().body, b"ok");
         thread::sleep(Duration::from_millis(120));
@@ -456,8 +455,7 @@ fn connection_cut_midway_and_closed_idle_connections() {
 
 #[test]
 fn shorter_timeout_after_a_longer_one_on_the_same_connection() {
-    // The first request arms the connection's deadline timer 10 s out; the second, on the
-    // same connection, must still time out after its own 200 ms.
+    // The client's 10 s timeout, then a request on the same connection with its own 200 ms.
     let srv = server(|mut s| {
         if read_head(&mut s) {
             let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
@@ -467,14 +465,14 @@ fn shorter_timeout_after_a_longer_one_on_the_same_connection() {
         }
     });
     let e = engine();
-    let c = client(&e, |o| o.request_timeout = Some(Duration::from_secs(10)));
+    let c = client(&e, |_| {}).with_timeout(Duration::from_secs(10));
     assert_eq!(get(&c, &format!("{}/", srv.addr)).unwrap().body, b"ok");
     let t0 = Instant::now();
     let r = c
         .send(ClientRequest::get(&format!("{}/", srv.addr)).timeout(Duration::from_millis(200)))
         .wait_timeout(Duration::from_secs(10))
         .unwrap();
-    assert!(matches!(r, Err(ClientError::TimedOut)), "{r:?}");
+    assert!(matches!(r, Err(ClientError::Timeout)), "{r:?}");
     assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
     assert_eq!(srv.conns.load(Ordering::SeqCst), 1);
     stop(&e);

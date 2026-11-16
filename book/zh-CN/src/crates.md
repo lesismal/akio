@@ -16,7 +16,7 @@ $ cargo doc --workspace --no-deps --open
 |---|---|---|
 | `only` | facade：`Engine`、`Listener`、`Backend`、`Accel`，重新导出核心 API、`tls`、`ebpf` | [核心概念](concepts/index.md) |
 | `only-core` | `Conn`、`Handler`、`Acceptor`、`Config`、`Transport`、`Telemetry`；面向后端的 trait | [Handler](concepts/handlers.md) |
-| `only-log`（`only::log`） | 日志门面：级别、target、键值对、`Logger`、内置 logger、可选 `log` 桥接 | [可观测性](observability.md) |
+| `only-log`（`only::log`） | 日志门面：级别、target、键值对、`Logger`、内置 logger、`ONLY_LOG` 过滤、编译期上限、可选 `log` 桥接 | [可观测性](observability.md) |
 | `only-pool` | 逻辑（阻塞任务）线程池 | [阻塞任务](concepts/blocking.md) |
 | `only-buf` | 分级缓冲池、`SharedBuf` | [架构](architecture.md) |
 | `only-timer` | I/O 事件循环使用的分层时间轮 | [架构](architecture.md) |
@@ -35,7 +35,7 @@ $ cargo doc --workspace --no-deps --open
 | `only-grpc` | gRPC 服务端与客户端 | [gRPC](protocols/grpc.md) |
 | `only-protobuf`、`only-protobuf-build` | protobuf 运行时，以及供 `build.rs` 使用的 `.proto` 代码生成器（无需 protoc，生成 gRPC 桩代码） | [gRPC](protocols/grpc.md) |
 | `only-arpc` | arpc（lesismal/arpc 线路格式） | [arpc](protocols/arpc.md) |
-| `only-socks` | SOCKS4/4a/5 与 HTTP CONNECT 代理 | [SOCKS](protocols/socks.md) |
+| `only-socks` | SOCKS4/4a/5（CONNECT、BIND、UDP ASSOCIATE、访问控制）与 HTTP CONNECT 代理 | [SOCKS](protocols/socks.md) |
 | `only-mux` | 一个端口上的多种协议 | [协议复用](protocols/mux.md) |
 | `only-kcp` | KCP（兼容 kcp-go） | [KCP](protocols/kcp.md) |
 | `only-webrtc` | 基于自研协议栈（`only-ice`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`）的 WebRTC：ICE、DTLS-SRTP、数据通道、媒体 | [WebRTC](protocols/webrtc.md) |

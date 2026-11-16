@@ -13,14 +13,14 @@
 //!
 //! Responses are bounded by [`H2Options`]: frames by the default `SETTINGS_MAX_FRAME_SIZE`
 //! (16 KiB), header lists by `max_header_list` (64 KiB, advertised), buffered bodies by
-//! `max_body_bytes` (64 MiB), and buffered requests by `request_timeout` (30 s).
+//! `max_body_bytes` (64 MiB). Request timeouts are [`ClientRequest::timeout`].
 
 use std::{
     collections::{HashMap, VecDeque},
     io,
     net::SocketAddr,
     sync::{Arc, Mutex, mpsc},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use crate::hpack::{Decoder, Encoder};
@@ -32,7 +32,7 @@ use only::{
 use crate::{
     client::{
         ClientError, ClientRequest, ClientResponse, FutureShared, Outcome, ResponseFuture,
-        parse_url, timer,
+        parse_url,
     },
     h2::{DEFAULT_FRAME, DEFAULT_WINDOW, MAX_WINDOW, PREFACE, err, flag, frame, ty},
     message::{Headers, Method},
@@ -58,12 +58,6 @@ pub struct H2Options {
     /// fails with [`ClientError::TooLarge`]. Streamed responses ([`open`](H2Client::open)) are
     /// handed over as they arrive and not limited. Default 64 MiB.
     pub max_body_bytes: usize,
-    /// Total time for a buffered request ([`request`](H2Client::request),
-    /// [`send`](H2Client::send)); past it the stream is reset (`CANCEL`) and the request fails
-    /// with [`ClientError::TimedOut`]. [`ClientRequest::timeout`] overrides it, and is the only
-    /// timeout of a streamed request ([`open`](H2Client::open)), which may be long-lived.
-    /// `None` opts out. Default 30 s.
-    pub request_timeout: Option<Duration>,
 }
 
 impl Default for H2Options {
@@ -74,13 +68,10 @@ impl Default for H2Options {
             enable_push: false,
             max_header_list: 64 << 10,
             max_body_bytes: 64 << 20,
-            request_timeout: Some(Duration::from_secs(30)),
         }
     }
 }
 
-/// `CANCEL` (RFC 9113 §7).
-const CANCEL: u32 = 8;
 /// Pushed responses outstanding per request; further promises are refused.
 const MAX_PUSHES_PER_STREAM: u32 = 32;
 
@@ -207,16 +198,46 @@ impl H2Client {
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "h2 connect timed out"))?
     }
 
-    /// Sends a request on a new stream; `done` is called once with the outcome.
+    /// Sends a request on a new stream; `done` is called once with the outcome. With
+    /// [`ClientRequest::timeout`], the stream is reset (`CANCEL`) and the request fails with
+    /// [`ClientError::Timeout`] when it passes (`done` then runs on the timer thread).
     pub fn request(&self, req: ClientRequest, done: impl FnOnce(Outcome) + Send + 'static) {
-        let slot = Arc::new(Mutex::new(Some((req, Box::new(done) as Callback))));
+        let timeout = req.timeout;
+        let mut done: Callback = Box::new(done);
+        // The stream the request got (0 until started), for the timeout to cancel.
+        let sid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        if let Some(d) = timeout {
+            let once = Arc::new(Mutex::new(Some(done)));
+            let (o2, sid2, conn) = (once.clone(), sid.clone(), self.conn.clone());
+            crate::timer::after(d, move || {
+                let cb = o2.lock().unwrap_or_else(|p| p.into_inner()).take();
+                let Some(cb) = cb else { return };
+                let id = sid2.load(std::sync::atomic::Ordering::Acquire);
+                if id != 0 {
+                    let _ =
+                        conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.cancel(c, id));
+                }
+                cb(Err(ClientError::Timeout));
+            });
+            done = Box::new(move |r| {
+                let cb = once.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(cb) = cb {
+                    cb(r);
+                }
+            });
+        }
+        let slot = Arc::new(Mutex::new(Some((req, done))));
         let s2 = slot.clone();
         let queued = self.conn.spawn_blocking(
             || (),
             move |h: &mut H2Conn, c, ()| {
                 let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
                 if let Some((req, cb)) = taken {
+                    let id = h.next_id;
                     h.start(c, req, cb);
+                    if h.streams.contains_key(&id) {
+                        sid.store(id, std::sync::atomic::Ordering::Release);
+                    }
                 }
             },
         );
@@ -338,6 +359,8 @@ impl Acceptor for H2Acceptor {
 }
 
 struct CStream {
+    /// The request URL (the pushed path for a pushed stream).
+    url: String,
     cb: Option<Callback>,
     status: u16,
     headers: Headers,
@@ -379,11 +402,6 @@ pub struct H2Conn {
     cont: Option<(u32, Option<u32>, Vec<u8>, bool)>,
     goaway: bool,
     dead: bool,
-    /// Request deadlines (`timer::ms`, stream), earliest first. Finished streams leave their
-    /// entry behind; it is dropped once it reaches the front.
-    deadlines: VecDeque<(u64, u32)>,
-    /// The connection's one deadline timer, set to the front of `deadlines`.
-    watch: Arc<timer::Watch>,
 }
 
 impl std::fmt::Debug for H2Conn {
@@ -415,13 +433,20 @@ impl H2Conn {
             cont: None,
             goaway: false,
             dead: false,
-            deadlines: VecDeque::new(),
-            watch: timer::Watch::new(),
         }
     }
 
     fn start(&mut self, c: &Conn<Self>, req: ClientRequest, cb: Callback) {
         self.start_full(c, req, Some(cb), None);
+    }
+
+    /// Abandons stream `sid` (its request timed out): reset it and forget it.
+    fn cancel(&mut self, c: &Conn<Self>, sid: u32) {
+        if self.streams.remove(&sid).is_some() && !self.dead {
+            let mut out = Vec::new();
+            frame(&mut out, ty::RST_STREAM, 0, sid, &err::CANCEL.to_be_bytes());
+            let _ = c.send_owned(out);
+        }
     }
 
     fn start_full(
@@ -447,11 +472,6 @@ impl H2Conn {
             Err(e) => return fail(cb, streaming, e),
         };
         let is_stream = streaming.is_some();
-        let timeout = req.timeout.or(if is_stream {
-            None
-        } else {
-            self.opts.request_timeout
-        });
         let sid = self.next_id;
         self.next_id += 2;
         let mut list: Vec<(Vec<u8>, Vec<u8>)> = vec![
@@ -507,6 +527,7 @@ impl H2Conn {
             None => (None, None),
         };
         let mut st = CStream {
+            url: req.url.clone(),
             cb,
             status: 0,
             headers: Headers::new(),
@@ -528,14 +549,6 @@ impl H2Conn {
         };
         st.upload_done = st.upload.is_empty() && !is_stream;
         self.streams.insert(sid, st);
-        if let Some(d) = timeout {
-            let at = timer::ms(Instant::now() + d);
-            self.prune_deadlines();
-            // Same timeout for every request: almost always the latest deadline.
-            let i = self.deadlines.partition_point(|&(t, _)| t <= at);
-            self.deadlines.insert(i, (at, sid));
-            self.arm(c);
-        }
         self.send_upload(sid, &mut out);
         let _ = c.send_owned(out);
         if let Some(up) = up {
@@ -671,7 +684,7 @@ impl H2Conn {
         let msg = |e: &ClientError| match e {
             ClientError::Protocol(m) => ClientError::Protocol(m),
             ClientError::TooLarge(m) => ClientError::TooLarge(m),
-            ClientError::TimedOut => ClientError::TimedOut,
+            ClientError::Timeout => ClientError::Timeout,
             ClientError::Io(x) => ClientError::Io(io::Error::new(x.kind(), x.to_string())),
             _ => ClientError::Closed,
         };
@@ -699,7 +712,7 @@ impl H2Conn {
         let Some(mut s) = self.streams.remove(&sid) else {
             return;
         };
-        frame(out, ty::RST_STREAM, 0, sid, &CANCEL.to_be_bytes());
+        frame(out, ty::RST_STREAM, 0, sid, &err::CANCEL.to_be_bytes());
         if let Some(cb) = s.cb.take() {
             cb(Err(e));
         } else if let Some(ev) = s.events.as_mut() {
@@ -711,47 +724,6 @@ impl H2Conn {
             }
             self.try_finish(parent);
         }
-    }
-
-    /// Drops the entries of finished streams from the front of `deadlines`.
-    fn prune_deadlines(&mut self) {
-        while let Some(&(_, sid)) = self.deadlines.front() {
-            if self.streams.contains_key(&sid) {
-                break;
-            }
-            self.deadlines.pop_front();
-        }
-    }
-
-    /// Points the watch at the earliest deadline.
-    fn arm(&self, c: &Conn<Self>) {
-        self.watch.set(self.deadlines.front().map_or(0, |d| d.0));
-        let conn = c.clone();
-        self.watch.ensure_armed(move || {
-            let hop = conn.spawn_blocking(|| (), |h: &mut H2Conn, c, ()| h.on_deadline(c));
-            if hop.is_err() && conn.is_open() {
-                // The pool refused the hop: closing still ends the requests (as `Closed`).
-                conn.close();
-            }
-        });
-    }
-
-    /// The watch fired: reset the streams whose deadline passed, re-arm for the next one.
-    fn on_deadline(&mut self, c: &Conn<Self>) {
-        let now = timer::now_ms();
-        let mut out = Vec::new();
-        while let Some(&(at, sid)) = self.deadlines.front() {
-            if at > now {
-                break;
-            }
-            self.deadlines.pop_front();
-            self.abort_stream(&mut out, sid, ClientError::TimedOut);
-        }
-        if !out.is_empty() {
-            let _ = c.send_owned(out);
-        }
-        self.prune_deadlines();
-        self.arm(c);
     }
 
     /// Delivers the response of `sid` if it is complete (and its pushes are).
@@ -774,6 +746,7 @@ impl H2Conn {
             body: std::mem::take(&mut st.body),
             trailers: std::mem::take(&mut st.trailers),
             pushed: std::mem::take(&mut st.pushed),
+            url: std::mem::take(&mut st.url),
         };
         match (st.parent, st.pushed_path.take()) {
             (Some(parent), Some(path)) => {
@@ -839,6 +812,7 @@ impl H2Conn {
             self.streams.insert(
                 pid,
                 CStream {
+                    url: path.clone(),
                     cb: None,
                     status: 0,
                     headers: Headers::new(),

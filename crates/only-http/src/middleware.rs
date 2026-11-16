@@ -14,7 +14,7 @@ use std::{
 
 use crate::{
     context::{Context, Middleware, Service},
-    message::{Method, Request, Response},
+    message::{Headers, Method, Request, Response},
 };
 
 /// Turns a panic in the wrapped service into a `500` instead of closing the connection.
@@ -38,12 +38,27 @@ pub fn request_id() -> impl Middleware {
                 let t = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos() as u64);
-                format!("{t:016x}-{n:x}")
+                // `{t:016x}-{n:x}`, written straight into the one string it ends up in.
+                let mut id = String::with_capacity(33);
+                push_hex(&mut id, t, 16);
+                id.push('-');
+                push_hex(&mut id, n, 1);
+                id
             }
         };
-        ctx.add_response_header("X-Request-Id", id.clone());
+        ctx.add_response_header("X-Request-Id", &id);
         ctx.set_local("request_id", id);
         next.call(ctx);
+    }
+}
+
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+/// Appends `n` in lowercase hex, at least `width` digits.
+fn push_hex(out: &mut String, n: u64, width: usize) {
+    let digits = (16 - n.leading_zeros() as usize / 4).max(width).min(16);
+    for i in (0..digits).rev() {
+        out.push(char::from(HEX[(n >> (i * 4)) as usize & 15]));
     }
 }
 
@@ -75,6 +90,16 @@ impl Default for Cors {
 /// Answers CORS preflights (`OPTIONS` with `Origin` and `Access-Control-Request-Method`) with 204
 /// and adds the allow-origin header to every other response to a request that has an `Origin`.
 pub fn cors(policy: Cors) -> impl Middleware {
+    // The preflight answer's fields never change: built once.
+    let mut preflight_headers = Headers::new();
+    preflight_headers.append("Access-Control-Allow-Origin", &policy.allow_origin);
+    preflight_headers.append("Access-Control-Allow-Methods", &policy.allow_methods);
+    preflight_headers.append("Access-Control-Allow-Headers", &policy.allow_headers);
+    preflight_headers.append(
+        "Access-Control-Max-Age",
+        policy.max_age.as_secs().to_string(),
+    );
+    preflight_headers.append("Vary", "Origin");
     move |ctx: &mut Context, next: &dyn Service| {
         if ctx.header("origin").is_none() {
             return next.call(ctx);
@@ -82,18 +107,11 @@ pub fn cors(policy: Cors) -> impl Middleware {
         let preflight = *ctx.method() == Method::Options
             && ctx.header("access-control-request-method").is_some();
         if preflight {
-            let resp = Response::new(204)
-                .header("Access-Control-Allow-Origin", policy.allow_origin.clone())
-                .header("Access-Control-Allow-Methods", policy.allow_methods.clone())
-                .header("Access-Control-Allow-Headers", policy.allow_headers.clone())
-                .header(
-                    "Access-Control-Max-Age",
-                    policy.max_age.as_secs().to_string(),
-                )
-                .header("Vary", "Origin");
+            let mut resp = Response::new(204);
+            resp.headers = preflight_headers.clone();
             return ctx.respond(resp);
         }
-        ctx.add_response_header("Access-Control-Allow-Origin", policy.allow_origin.clone());
+        ctx.add_response_header("Access-Control-Allow-Origin", &policy.allow_origin);
         ctx.add_response_header("Vary", "Origin");
         next.call(ctx);
     }
@@ -133,7 +151,7 @@ pub fn logger(log: impl Fn(&LogRecord) + Send + Sync + 'static) -> impl Middlewa
 /// Adds `X-Response-Time: <ms>` to every response (time since the request was dispatched).
 pub fn response_time() -> impl Middleware {
     |ctx: &mut Context, next: &dyn Service| {
-        ctx.set_response_time_header("X-Response-Time");
+        ctx.set_response_time_header_static("X-Response-Time");
         next.call(ctx);
     }
 }
@@ -181,25 +199,25 @@ fn accepted_encoding(accept: &str) -> Option<&'static str> {
 
 /// Compresses text-like response bodies with gzip or deflate when the client accepts it.
 pub fn compress(cfg: Compress) -> impl Middleware {
+    // Decided once: the level, and the format of each encoding.
+    let level = only_deflate::Level::new(cfg.level);
+    let min_bytes = cfg.min_bytes;
     move |ctx: &mut Context, next: &dyn Service| {
         if let Some(enc) = ctx.header("accept-encoding").and_then(accepted_encoding) {
-            let cfg = cfg.clone();
+            let format = if enc == "gzip" {
+                only_deflate::Format::Gzip
+            } else {
+                only_deflate::Format::Zlib
+            };
             ctx.add_response_filter(move |resp: &mut Response, _req: &Request| {
-                let ct = resp.headers.get("content-type").unwrap_or("").to_owned();
                 if resp.status != 200
                     || resp.file.is_some()
-                    || resp.body.len() < cfg.min_bytes
+                    || resp.body.len() < min_bytes
                     || resp.headers.get("content-encoding").is_some()
-                    || !compressible(&ct)
+                    || !compressible(resp.headers.get("content-type").unwrap_or(""))
                 {
                     return;
                 }
-                let level = only_deflate::Level::new(cfg.level);
-                let format = if enc == "gzip" {
-                    only_deflate::Format::Gzip
-                } else {
-                    only_deflate::Format::Zlib
-                };
                 let body = only_deflate::compress(format, level, &resp.body);
                 if body.len() < resp.body.len() {
                     resp.body = body;
@@ -253,11 +271,11 @@ pub fn etag() -> impl Middleware {
     }
 }
 
-/// `n` random bytes as lowercase hex, from the operating system.
-fn random_hex(n: usize) -> String {
-    use std::io::Read;
-    let mut b = vec![0u8; n];
-    let ok = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b));
+/// 16 random bytes as lowercase hex, from the operating system (one `getrandom`/`getentropy`
+/// call, no file to open).
+fn random_hex() -> String {
+    let mut b = [0u8; 16];
+    let ok = only_crypto::rand::fill_random(&mut b);
     if ok.is_err() {
         // No OS randomness: mix clock and a counter. Weaker, but never a constant.
         static C: AtomicU64 = AtomicU64::new(1);
@@ -269,7 +287,12 @@ fn random_hex(n: usize) -> String {
             *x = (seed >> ((i % 8) * 8)) as u8 ^ (i as u8).wrapping_mul(31);
         }
     }
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    let mut out = String::with_capacity(2 * b.len());
+    for x in b {
+        out.push(char::from(HEX[usize::from(x >> 4)]));
+        out.push(char::from(HEX[usize::from(x & 15)]));
+    }
+    out
 }
 
 /// Constant-time equality for secrets of equal length.
@@ -305,7 +328,7 @@ pub fn csrf() -> impl Middleware {
         let token = match cookie {
             Some(t) => t,
             None => {
-                let t = random_hex(16);
+                let t = random_hex();
                 ctx.add_response_header(
                     "Set-Cookie",
                     format!("csrf_token={t}; Path=/; SameSite=Lax"),
@@ -321,14 +344,26 @@ pub fn csrf() -> impl Middleware {
 /// Per-client-IP token bucket: `rate` requests per second with bursts of `burst`; over the limit
 /// gets `429` with `Retry-After`.
 pub fn limiter(rate: f64, burst: u32) -> impl Middleware {
+    // Sharded by client address: threads serving different clients rarely share a lock.
     type Buckets = Mutex<(HashMap<IpAddr, (f64, Instant)>, u64)>;
-    let b: Buckets = Mutex::new((HashMap::new(), 0));
+    const SHARDS: usize = 16;
+    let shards: Box<[Buckets]> = (0..SHARDS)
+        .map(|_| Mutex::new((HashMap::new(), 0)))
+        .collect();
     let burst = f64::from(burst.max(1));
     move |ctx: &mut Context, next: &dyn Service| {
         let ip = ctx.peer().ip();
+        let shard = match ip {
+            IpAddr::V4(a) => u64::from(a.to_bits()),
+            IpAddr::V6(a) => {
+                let b = a.to_bits();
+                (b as u64) ^ ((b >> 64) as u64)
+            }
+        };
+        let shard = (shard.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 60) as usize % SHARDS;
         let now = Instant::now();
         let wait = {
-            let mut g = b.lock().unwrap_or_else(|p| p.into_inner());
+            let mut g = shards[shard].lock().unwrap_or_else(|p| p.into_inner());
             g.1 += 1;
             if g.1 % 1024 == 0 {
                 // Forget clients that have been quiet long enough to be full again.
@@ -351,5 +386,33 @@ pub fn limiter(rate: f64, burst: u32) -> impl Middleware {
                 Response::text(429, "Too Many Requests").header("Retry-After", secs.to_string()),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_helpers_match_format() {
+        for (n, w) in [
+            (0u64, 1),
+            (0, 16),
+            (1, 1),
+            (0xabc, 1),
+            (0xabc, 16),
+            (u64::MAX, 1),
+        ] {
+            let mut s = String::new();
+            push_hex(&mut s, n, w);
+            assert_eq!(s, format!("{n:0w$x}"), "{n} {w}");
+        }
+        let t = random_hex();
+        assert_eq!(t.len(), 32);
+        assert!(
+            t.bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+        assert_ne!(t, random_hex());
     }
 }

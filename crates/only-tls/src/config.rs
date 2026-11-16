@@ -7,6 +7,7 @@ use std::fmt;
 use std::io;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Duration;
 
 use only_crypto::pkey;
 
@@ -15,6 +16,7 @@ use crate::proto::kx::{DEFAULT_GROUPS, Group};
 use crate::proto::msgs::{MAX_RECORD_LIMIT13, MIN_RECORD_LIMIT};
 use crate::proto::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
 use crate::proto::suites::{self, Suite};
+use crate::replay::{AntiReplayStore, MemoryAntiReplay};
 
 /// A TLS configuration or certificate problem.
 pub struct Error {
@@ -221,6 +223,42 @@ impl RootCerts {
         Ok(certs.len())
     }
 
+    /// The operating system's trusted CAs (ADR-010), read once per process and cached:
+    /// `SSL_CERT_FILE` / `SSL_CERT_DIR` when set; on macOS the system keychains (exported with
+    /// `/usr/bin/security`, falling back to `/etc/ssl/cert.pem`); on other Unix systems the
+    /// distribution's CA bundle (`/etc/ssl/certs/ca-certificates.crt`,
+    /// `/etc/pki/tls/certs/ca-bundle.crt`, ...) or certificate directory. Certificates that do
+    /// not parse are skipped; macOS trust settings (a CA marked as distrusted) are not applied.
+    /// Fails when no certificate was found.
+    pub fn system() -> Result<RootCerts, Error> {
+        static CACHE: std::sync::OnceLock<Result<RootCerts, String>> = std::sync::OnceLock::new();
+        CACHE
+            .get_or_init(|| {
+                let found = crate::system::load();
+                let mut roots = RootCerts::empty();
+                for pem in &found.pems {
+                    let Ok(ders) = only_crypto::pem::decode_label(pem, "CERTIFICATE") else {
+                        continue;
+                    };
+                    for der in ders {
+                        if let Ok(c) = only_x509::Certificate::from_der(der) {
+                            roots.0.add(c);
+                        }
+                    }
+                }
+                if roots.is_empty() {
+                    Err(format!(
+                        "no system CA certificates found (tried {})",
+                        found.tried.join(", ")
+                    ))
+                } else {
+                    Ok(roots)
+                }
+            })
+            .clone()
+            .map_err(Error::new)
+    }
+
     /// Number of roots.
     pub fn len(&self) -> usize {
         self.0.len()
@@ -356,6 +394,7 @@ type NotUnwindSafe = PhantomData<Box<dyn std::any::Any + Send + Sync>>;
 #[derive(Clone)]
 pub struct ServerConfig {
     pub(crate) inner: Arc<ServerSettings>,
+    pub(crate) handshake_timeout: Option<Duration>,
     parts: Arc<ServerParts>,
     _reserved: NotUnwindSafe,
 }
@@ -387,10 +426,13 @@ impl ServerConfig {
             tickets13: 2,
             max_early_data: 0,
             anti_replay: (ANTI_REPLAY_WINDOW_MS, ANTI_REPLAY_ENTRIES),
+            anti_replay_store: None,
+            ticket_key: None,
             record_limit: MAX_RECORD_LIMIT13,
             cert_compression: true,
             ocsp: None,
             sni_ocsp: Vec::new(),
+            handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
         }
     }
 
@@ -424,10 +466,14 @@ pub struct ServerConfigBuilder {
     tickets13: usize,
     max_early_data: u32,
     anti_replay: (u64, usize),
+    /// Wrapped so the builder stays unwind safe (a store is only called after `build`).
+    anti_replay_store: Option<std::panic::AssertUnwindSafe<Arc<dyn AntiReplayStore>>>,
+    ticket_key: Option<[u8; 48]>,
     record_limit: u16,
     cert_compression: bool,
     ocsp: Option<Vec<u8>>,
     sni_ocsp: Vec<(String, Vec<u8>)>,
+    handshake_timeout: Option<Duration>,
 }
 
 /// The 0-RTT freshness window (RFC 8446 section 8.3): a ClientHello with early data must
@@ -435,6 +481,9 @@ pub struct ServerConfigBuilder {
 const ANTI_REPLAY_WINDOW_MS: u64 = 10_000;
 /// ClientHellos remembered for replay detection (each for twice the window).
 const ANTI_REPLAY_ENTRIES: usize = 100_000;
+/// Default of [`ServerConfigBuilder::handshake_timeout`] and
+/// [`ClientConfigBuilder::handshake_timeout`].
+pub(crate) const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl fmt::Debug for ServerConfigBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -449,9 +498,15 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("tickets", &self.tickets)
             .field("tls13_only", &self.tls13_only)
             .field("max_early_data", &self.max_early_data)
+            .field(
+                "shared_anti_replay_store",
+                &self.anti_replay_store.is_some(),
+            )
+            .field("shared_ticket_key", &self.ticket_key.is_some())
             .field("record_size_limit", &self.record_limit)
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_response", &self.ocsp.is_some())
+            .field("handshake_timeout", &self.handshake_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -519,7 +574,10 @@ impl ServerConfigBuilder {
     /// **Early data can be replayed**: an attacker who recorded a client's first flight can
     /// send it again. Replays are refused within this server (a bounded record of recent
     /// ClientHellos and a 10-second freshness window on the ticket age; when the record is
-    /// full, early data is rejected), but not across servers sharing tickets. Early data is
+    /// full, early data is rejected); servers sharing tickets
+    /// ([`session_ticket_key`](Self::session_ticket_key)) also need a shared record
+    /// ([`anti_replay_store`](Self::anti_replay_store)), or a replay sent to another server
+    /// is accepted there. Early data is
     /// processed before the handshake completes, so only accept requests that are safe to
     /// repeat: check [`TlsInfo::early_data`](crate::TlsInfo) and
     /// [`TlsInfo::early_data_len`](crate::TlsInfo) (for HTTP, answer `425 Too Early`,
@@ -527,6 +585,16 @@ impl ServerConfigBuilder {
     /// handshake.
     pub fn early_data(mut self, max_bytes: u32) -> Self {
         self.max_early_data = max_bytes;
+        self
+    }
+
+    /// How long a connection may take to complete the handshake (default 10 s; `None`: no
+    /// limit). A connection still negotiating after it, such as a client that sent part of a
+    /// ClientHello and stopped, is closed with `ErrorKind::TimedOut` and counted as a failed
+    /// handshake. Applies to [`Tls::server`](crate::Tls::server) on the engine's TCP backends
+    /// (epoll, kqueue, io_uring); QUIC has its own handshake timeout.
+    pub fn handshake_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.handshake_timeout = timeout;
         self
     }
 
@@ -573,9 +641,34 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Records the ClientHellos whose early data was accepted in `store` instead of this
+    /// configuration's own bounded in-memory record ([`MemoryAntiReplay`] with 100,000
+    /// entries): servers that accept the same tickets (see
+    /// [`session_ticket_key`](Self::session_ticket_key)), in other processes or on other
+    /// machines, share replay protection through it. Each accepted ClientHello is recorded
+    /// for 30 seconds: twice the 10-second freshness window, plus one window for the clocks
+    /// of the servers sharing the store to differ by (keep them within 10 s of each other). A store error rejects the early data
+    /// (the handshake goes on without it). Only used with [`early_data`](Self::early_data).
+    pub fn anti_replay_store(mut self, store: Arc<dyn AntiReplayStore>) -> Self {
+        self.anti_replay_store = Some(std::panic::AssertUnwindSafe(store));
+        self
+    }
+
+    /// Seals session tickets with `key` (16 bytes of key name, then a 32-byte
+    /// ChaCha20-Poly1305 key; secret, random, and the same on every server that should accept
+    /// the others' tickets) instead of a key generated for this configuration, and turns
+    /// session tickets on. Tickets sealed under another key are ignored (a full handshake).
+    /// Rotating the key is up to the caller (build a new configuration); tickets issued under
+    /// the old key are then refused.
+    pub fn session_ticket_key(mut self, key: [u8; 48]) -> Self {
+        self.ticket_key = Some(key);
+        self.tickets = true;
+        self
+    }
+
     /// Tests: the 0-RTT anti-replay freshness window and record size.
     #[doc(hidden)]
-    pub fn __anti_replay(mut self, window: std::time::Duration, entries: usize) -> Self {
+    pub fn __anti_replay(mut self, window: Duration, entries: usize) -> Self {
         self.anti_replay = (window.as_millis() as u64, entries);
         self
     }
@@ -682,7 +775,12 @@ impl ServerConfigBuilder {
         if groups.is_empty() {
             return Err(Error::new("no groups"));
         }
-        let ticketer = if self.tickets {
+        let ticketer = if let Some(k) = &self.ticket_key {
+            let (name, key) = k.split_at(16);
+            let name: [u8; 16] = name.try_into().map_err(|_| Error::new("ticket key"))?;
+            let key: [u8; 32] = key.try_into().map_err(|_| Error::new("ticket key"))?;
+            Some(Ticketer::from_key(name, &key))
+        } else if self.tickets {
             Some(Ticketer::new().ok_or_else(|| Error::new("no randomness for tickets"))?)
         } else {
             None
@@ -712,12 +810,22 @@ impl ServerConfigBuilder {
             ticket_lifetime: 6 * 3600,
             force_hrr: self.force_hrr,
             max_early_data: self.max_early_data,
-            anti_replay: AntiReplay::new(self.anti_replay.0, self.anti_replay.1),
+            anti_replay: AntiReplay::new(
+                self.anti_replay.0,
+                self.anti_replay_store.map_or_else(
+                    || {
+                        Arc::new(MemoryAntiReplay::new(self.anti_replay.1))
+                            as Arc<dyn AntiReplayStore>
+                    },
+                    |s| s.0,
+                ),
+            ),
             record_limit,
             cert_compression: self.cert_compression,
         };
         Ok(ServerConfig {
             inner: Arc::new(settings),
+            handshake_timeout: self.handshake_timeout,
             parts: Arc::new(parts),
             _reserved: PhantomData,
         })
@@ -731,6 +839,7 @@ impl ServerConfigBuilder {
 #[derive(Clone)]
 pub struct ClientConfig {
     pub(crate) inner: Arc<ClientSettings>,
+    pub(crate) handshake_timeout: Option<Duration>,
     parts: Arc<ClientParts>,
     _reserved: NotUnwindSafe,
 }
@@ -762,6 +871,7 @@ impl ClientConfig {
             record_limit: MAX_RECORD_LIMIT13,
             cert_compression: false,
             ocsp: false,
+            handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
         }
     }
 
@@ -794,6 +904,7 @@ pub struct ClientConfigBuilder {
     record_limit: u16,
     cert_compression: bool,
     ocsp: bool,
+    handshake_timeout: Option<Duration>,
 }
 
 impl fmt::Debug for ClientConfigBuilder {
@@ -810,6 +921,7 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("record_size_limit", &self.record_limit)
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_stapling", &self.ocsp)
+            .field("handshake_timeout", &self.handshake_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -895,6 +1007,16 @@ impl ClientConfigBuilder {
     /// `only-x509` yet): check it yourself if revocation matters.
     pub fn ocsp_stapling(mut self, yes: bool) -> Self {
         self.ocsp = yes;
+        self
+    }
+
+    /// How long a connection may take to complete the handshake once established (default
+    /// 10 s; `None`: no limit). A server that stops answering mid-handshake gets the connection
+    /// closed with `ErrorKind::TimedOut` (its `on_close` sees it), counted as a failed
+    /// handshake. Applies to [`Tls::client`](crate::Tls::client) on the engine's TCP backends;
+    /// the TCP connect itself is bounded by `Config::connect_timeout`.
+    pub fn handshake_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.handshake_timeout = timeout;
         self
     }
 
@@ -990,6 +1112,7 @@ impl ClientConfigBuilder {
         };
         Ok(ClientConfig {
             inner: Arc::new(settings),
+            handshake_timeout: self.handshake_timeout,
             parts: Arc::new(parts),
             _reserved: PhantomData,
         })

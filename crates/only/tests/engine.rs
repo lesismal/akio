@@ -605,7 +605,7 @@ fn dial_gives_up_after_connect_timeout() {
     let mut held = Vec::new();
     let mut hangs = false;
     for _ in 0..1024 {
-        match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
             Ok(s) => held.push(s),
             Err(_) => {
                 hangs = true;
@@ -651,6 +651,43 @@ fn default_config_is_bounded() {
     assert_eq!(c.write_timeout, Some(Duration::from_secs(60)));
     assert_eq!(c.connect_timeout, Some(Duration::from_secs(10)));
     assert_eq!(c.udp_max_peers, Some(65536));
+}
+
+/// `adopt_tcp`: a stream accepted outside the engine (here a std listener) is served like a
+/// dialed connection, on the listener's own I/O threads (so on io_uring too).
+#[test]
+fn adopt_tcp_serves_an_accepted_stream() {
+    let e = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let outside = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = connect(outside.local_addr().unwrap());
+    let (accepted, _) = outside.accept().unwrap();
+    let opened: Arc<AtomicUsize> = Arc::default();
+    let o = opened.clone();
+    e.adopt_tcp(
+        accepted,
+        fn_acceptor(move |c: &Conn<Echo>| {
+            o.fetch_add(1, Ordering::SeqCst);
+            c.send(b"hi ").unwrap();
+            Echo
+        }),
+        |err| panic!("adopt failed: {err}"),
+    );
+    client.write_all(b"adopted").unwrap();
+    let mut b = [0u8; 10];
+    client.read_exact(&mut b).unwrap();
+    assert_eq!(&b, b"hi adopted");
+    assert_eq!(opened.load(Ordering::SeqCst), 1);
+    stop(&e);
 }
 
 #[test]

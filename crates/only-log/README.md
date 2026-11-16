@@ -21,6 +21,13 @@ in every `only` library; an optional bridge keeps `log`-based setups (env_logger
 - Built-in loggers: `init(LevelFilter)` installs `FmtLogger` in one call
   (`2026-11-14T08:00:00.000123Z INFO  only: engine started listeners=[127.0.0.1:8080]`, UTC,
   per-target ceilings, stderr or stdout); `StderrLogger` prints `target: message`.
+- `Filter`: per-target levels from env_logger-style directives; `init_from_env(default)` reads
+  `ONLY_LOG=info,only_http=debug,only_quic::conn=trace` once and installs `FmtLogger` with it
+  (opt-in: nothing reads the environment otherwise). Targets match on `::` boundaries, the most
+  specific wins, `/regex` filters are not supported.
+- Compile-time caps, as in the `log` crate: features `max_level_off` .. `max_level_trace` and
+  `release_max_level_*` compile statements above the cap out (`STATIC_MAX_LEVEL`). For
+  applications only (cargo unifies features across the dependency graph).
 - No logger installed: records are dropped; `log_or_stderr` prints the records it is given to
   stderr (`only` uses it for errors and fallbacks, and prints slow-callback warnings the same
   way, so they are never lost silently).
@@ -60,4 +67,6 @@ The two directions never loop. The feature follows `log` 0.4 and is outside the 
 | `info!` with 2 key-values, enabled, logger discards | 2.3 | 3.0 |
 
 With the `log` feature and no only-log logger installed, the disabled check also reads
-`log::max_level()` (about 0.5 ns).
+`log::max_level()` (about 0.5 ns). The compile-time cap adds nothing when no cap feature is on
+(the benchmark binary is byte-identical on macOS; on x86_64 a disabled `trace!` measured 0.400 ns
+before and 0.401 ns after, same run); with a cap, statements above it are gone.

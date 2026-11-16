@@ -199,7 +199,7 @@ impl Server {
         }
         let now = now_millis();
         let ar = &self.cfg.anti_replay;
-        ar.fresh(s.created * 1000, age.wrapping_sub(s.age_add), now) && ar.record(binder, now)
+        ar.fresh(s.created * 1000, age.wrapping_sub(s.age_add), now) && ar.record(binder)
     }
 
     pub(crate) fn handshaking(&self) -> bool {

@@ -1,30 +1,55 @@
 //! An asynchronous HTTP/1.1 client on `only`'s engine: callbacks or a waitable/awaitable result,
 //! keep-alive connection reuse per host, chunked and close-delimited bodies, HTTPS through
-//! `only::tls`.
+//! `only::tls` (the system's CAs by default), opt-in redirects ([`RedirectPolicy`]), per-request
+//! timeouts, HTTP proxies ([`Proxy`]) and name resolution off the calling thread
+//! ([`only::dns`]). See ADR-010 for the rules.
 //!
-//! Callbacks run on an I/O thread and must not block. Name resolution and building the request
-//! happen on the calling thread (resolution may block). Redirects are not followed.
+//! ```no_run
+//! # use std::{sync::Arc, time::Duration};
+//! use only::Engine;
+//! use only_http::client::{Client, ClientRequest, Proxy, RedirectPolicy};
 //!
-//! Every request is bounded by [`ClientOptions`]: the response head (64 KiB) and body (64 MiB)
-//! sizes, a total request timeout (30 s), and the idle pool (32 connections per host, 256 in
-//! all, closed after 90 s unused).
+//! let engine = Arc::new(Engine::builder().client_threads(1).build().unwrap());
+//! engine.start().unwrap();
+//! let client = Client::new(engine)
+//!     .with_redirects(RedirectPolicy::limit(10))
+//!     .with_timeout(Duration::from_secs(30))
+//!     .with_proxy(Proxy::from_env().unwrap());
+//! let r = client.send(ClientRequest::get("https://example.com/")).wait().unwrap();
+//! println!("{} from {}", r.status, r.url);
+//! ```
+//!
+//! Callbacks run on an I/O thread (a resolver thread when a name does not resolve, the timer
+//! thread on a timeout, the calling thread for an invalid URL) and must not block.
+//!
+//! Responses and the keep-alive pool are bounded by [`ClientOptions`]: the response head
+//! (64 KiB) and body (64 MiB), and the idle pool (32 connections per host, 256 in all, closed
+//! after 90 s unused).
 
 use std::{
     collections::HashMap,
     future::Future,
     io,
-    net::{SocketAddr, ToSocketAddrs},
+    net::SocketAddr,
     pin::Pin,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex, OnceLock, Weak,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
     task::{Context as TaskContext, Poll, Waker},
     time::{Duration, Instant},
 };
 
 use only::{
     Acceptor, Conn, Engine, Handler,
-    tls::{ClientConfig as TlsClientConfig, Tls},
+    tls::{ClientConfig as TlsClientConfig, RootCerts, Tls},
 };
-use only_ws::http1;
+use only_core::ConnInner;
+pub use only_ws::proxy::{Proxy, ProxyRefused};
+use only_ws::{
+    http1,
+    proxy::{Connect, ProxyServer, Refusal},
+};
 
 use crate::{
     message::{Headers, Method, Version},
@@ -43,9 +68,9 @@ pub struct ClientRequest {
     pub headers: Headers,
     /// Request body.
     pub body: Vec<u8>,
-    /// Total time allowed for this request, overriding the client's
-    /// [`ClientOptions::request_timeout`] (for an HTTP/2 [`open`](crate::h2client::H2Client::open)
-    /// stream, the only timeout). `None`: the client's default.
+    /// Limit for this request from start to the complete response, redirects included; `None`
+    /// uses the client's ([`Client::with_timeout`]). On expiry the request fails with
+    /// [`ClientError::Timeout`] and its connection is closed.
     pub timeout: Option<Duration>,
 }
 
@@ -85,7 +110,7 @@ impl ClientRequest {
         self
     }
 
-    /// Sets the total time allowed for this request (see [`timeout`](Self#structfield.timeout)).
+    /// Sets this request's timeout ([`timeout`](Self::timeout)).
     #[must_use]
     pub fn timeout(mut self, d: Duration) -> ClientRequest {
         self.timeout = Some(d);
@@ -93,7 +118,8 @@ impl ClientRequest {
     }
 }
 
-/// Limits of a [`Client`]. Every one has a safe default; raise them where a peer is trusted.
+/// Limits of a [`Client`] ([`Client::with_options`]). Every one has a safe default; raise them
+/// where a peer is trusted. The request timeout is [`Client::with_timeout`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct ClientOptions {
@@ -104,16 +130,11 @@ pub struct ClientOptions {
     /// delimited); a `Content-Length` over it fails at once, other bodies once they pass it,
     /// with [`ClientError::TooLarge`]. `usize::MAX` opts out. Default 64 MiB.
     pub max_body_bytes: usize,
-    /// Total time from [`Client::request`] to the complete response (connecting, sending,
-    /// waiting and receiving). Past it the request fails with [`ClientError::TimedOut`] and its
-    /// connection is closed. [`ClientRequest::timeout`] overrides it per request; `None` opts
-    /// out. Default 30 s.
-    pub request_timeout: Option<Duration>,
     /// Keep-alive connections unused for this long are closed. `None` keeps them until the
     /// server closes them. Default 90 s (Go's `IdleConnTimeout`).
     pub idle_timeout: Option<Duration>,
-    /// Idle keep-alive connections kept per host (`host`, `port`, scheme); a connection that
-    /// would exceed it is closed instead. 0 disables reuse. Default 32.
+    /// Idle keep-alive connections kept per route (host, port, scheme, proxy); a connection
+    /// that would exceed it is closed instead. 0 disables reuse. Default 32.
     pub max_idle_per_host: usize,
     /// Idle keep-alive connections kept in all. Default 256.
     pub max_idle: usize,
@@ -124,7 +145,6 @@ impl Default for ClientOptions {
         ClientOptions {
             max_head_bytes: 64 << 10,
             max_body_bytes: 64 << 20,
-            request_timeout: Some(Duration::from_secs(30)),
             idle_timeout: Some(Duration::from_secs(90)),
             max_idle_per_host: 32,
             max_idle: 256,
@@ -148,6 +168,8 @@ pub struct ClientResponse {
     pub trailers: Headers,
     /// Responses the server pushed with this one (HTTP/2 only; empty otherwise).
     pub pushed: Vec<(String, ClientResponse)>,
+    /// The URL that answered: the request's, or the last redirect's target (HTTP/1 client).
+    pub url: String,
 }
 
 /// Why a request failed.
@@ -162,10 +184,11 @@ pub enum ClientError {
     Protocol(&'static str),
     /// The connection closed before a complete response arrived.
     Closed,
-    /// No complete response within the request timeout
-    /// ([`ClientOptions::request_timeout`], [`ClientRequest::timeout`]).
-    TimedOut,
-    /// The response passed a size limit (which one).
+    /// The request's timeout passed ([`ClientRequest::timeout`], [`Client::with_timeout`]).
+    Timeout,
+    /// More redirects than the [`RedirectPolicy`] allows (or a redirect loop).
+    TooManyRedirects,
+    /// The response passed a size limit of [`ClientOptions`] (which one).
     TooLarge(&'static str),
 }
 
@@ -176,7 +199,8 @@ impl std::fmt::Display for ClientError {
             ClientError::Io(e) => write!(f, "io: {e}"),
             ClientError::Protocol(m) => write!(f, "protocol: {m}"),
             ClientError::Closed => f.write_str("connection closed before a complete response"),
-            ClientError::TimedOut => f.write_str("request timed out"),
+            ClientError::Timeout => f.write_str("request timed out"),
+            ClientError::TooManyRedirects => f.write_str("too many redirects"),
             ClientError::TooLarge(what) => write!(f, "too large: {what}"),
         }
     }
@@ -273,6 +297,8 @@ pub(crate) struct Key {
     pub(crate) host: String,
     pub(crate) port: u16,
     pub(crate) tls: bool,
+    /// The proxy the connection goes through (connections are pooled per route).
+    pub(crate) proxy: Option<(String, u16)>,
 }
 
 pub(crate) struct ParsedUrl {
@@ -321,10 +347,161 @@ pub(crate) fn parse_url(url: &str) -> Result<ParsedUrl, ClientError> {
         authority.to_owned()
     };
     Ok(ParsedUrl {
-        key: Key { host, port, tls },
+        key: Key {
+            host,
+            port,
+            tls,
+            proxy: None,
+        },
         target,
         host_header,
     })
+}
+
+/// Which redirects [`Client`] follows (ADR-010). The default follows none: a 3xx response is
+/// returned as it is.
+///
+/// With a limit, 301, 302, 303, 307 and 308 responses that carry a `Location` are followed
+/// (relative references resolved against the request URL), per RFC 9110 section 15.4:
+/// 303 turns any method but `HEAD` into `GET` without a body, 301 and 302 turn `POST` into `GET`
+/// without a body, everything else keeps its method and body. A redirect to another origin
+/// (scheme, host or port) drops `Authorization`, `Cookie` and `Proxy-Authorization`; from
+/// `https` to `http` is not followed unless [`allow_https_downgrade`](Self::allow_https_downgrade)
+/// (the 3xx response is returned instead). One redirect more than the limit (a loop ends there)
+/// fails with [`ClientError::TooManyRedirects`]. 300, 304 and 305 are never followed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RedirectPolicy {
+    max: u32,
+    downgrade: bool,
+}
+
+impl RedirectPolicy {
+    /// Follows no redirect (the default).
+    pub fn none() -> RedirectPolicy {
+        RedirectPolicy::default()
+    }
+
+    /// Follows up to `max` redirects per request (browsers allow 20, curl 50, Go 10).
+    pub fn limit(max: u32) -> RedirectPolicy {
+        RedirectPolicy {
+            max,
+            downgrade: false,
+        }
+    }
+
+    /// Also follows redirects from `https://` to `http://` (off by default).
+    #[must_use]
+    pub fn allow_https_downgrade(mut self, yes: bool) -> RedirectPolicy {
+        self.downgrade = yes;
+        self
+    }
+
+    /// The limit (0: none followed).
+    pub fn max(&self) -> u32 {
+        self.max
+    }
+}
+
+/// Header fields that describe a request body, dropped when a redirect drops the body.
+const BODY_HEADERS: &[&str] = &[
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "content-language",
+    "content-location",
+    "transfer-encoding",
+];
+
+/// Header fields that carry credentials, dropped on a redirect to another origin.
+const CREDENTIAL_HEADERS: &[&str] = &["authorization", "cookie", "proxy-authorization"];
+
+/// The request a redirect leads to: `Ok(None)` when `resp` is not one to follow (it is then the
+/// answer), an error when the policy's limit is passed or the target is unusable.
+fn redirect(
+    policy: RedirectPolicy,
+    hops: u32,
+    req: &ClientRequest,
+    resp: &ClientResponse,
+) -> Result<Option<ClientRequest>, ClientError> {
+    let status = resp.status;
+    if policy.max == 0 || !matches!(status, 301 | 302 | 303 | 307 | 308) {
+        return Ok(None);
+    }
+    let Some(loc) = resp.headers.get("location") else {
+        return Ok(None);
+    };
+    if hops >= policy.max {
+        return Err(ClientError::TooManyRedirects);
+    }
+    let url = only_ws::url::resolve(&req.url, loc)
+        .ok_or_else(|| ClientError::InvalidUrl(loc.to_owned()))?;
+    let (from, to) = (parse_url(&req.url)?, parse_url(&url)?);
+    if from.key.tls && !to.key.tls && !policy.downgrade {
+        return Ok(None);
+    }
+    let mut next = req.clone();
+    next.url = url;
+    let drop_body = match status {
+        303 => req.method != Method::Head,
+        301 | 302 => req.method == Method::Post,
+        _ => false,
+    };
+    if drop_body {
+        next.method = Method::Get;
+        next.body = Vec::new();
+        for h in BODY_HEADERS {
+            next.headers.remove(h);
+        }
+    }
+    let same_origin = from.key.tls == to.key.tls
+        && from.key.host.eq_ignore_ascii_case(&to.key.host)
+        && from.key.port == to.key.port;
+    if !same_origin {
+        for h in CREDENTIAL_HEADERS {
+            next.headers.remove(h);
+        }
+    }
+    Ok(Some(next))
+}
+
+/// One logical request across its attempts (retries, redirects): delivers the outcome once and
+/// carries the timeout.
+struct Exchange {
+    done: Mutex<Option<Callback>>,
+    /// The connection serving the current attempt, for the timeout to close.
+    conn: Mutex<Option<Weak<ConnInner>>>,
+    expired: AtomicBool,
+    hops: AtomicU32,
+}
+
+impl Exchange {
+    fn finish(&self, r: Outcome) {
+        let cb = self.done.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(cb) = cb {
+            cb(r);
+        }
+    }
+
+    fn expired(&self) -> bool {
+        self.expired.load(Ordering::Acquire)
+    }
+
+    /// The timeout passed: fail the request and close its connection.
+    fn expire(&self) {
+        let cb = self.done.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some(cb) = cb else { return };
+        self.expired.store(true, Ordering::Release);
+        let conn = self
+            .conn
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .and_then(|w| w.upgrade());
+        if let Some(c) = conn {
+            c.close();
+        }
+        cb(Err(ClientError::Timeout));
+    }
 }
 
 struct Pending {
@@ -332,14 +509,24 @@ struct Pending {
     head_only: bool,
     retryable: bool,
     key: Key,
-    /// Every resolved address, tried in order until one connects.
+    /// The proxy to dial (instead of the target), if any.
+    proxy: Option<ProxyServer>,
+    /// Every resolved address, tried in order until one connects (empty until resolved).
     addrs: Vec<SocketAddr>,
-    /// When the whole request times out (set when it was made, so it covers dialing too).
-    deadline: Option<Instant>,
+    ex: Arc<Exchange>,
     cb: Callback,
 }
 
-/// Idle keep-alive connections, newest last per host, with when each became idle.
+#[derive(Clone, Default)]
+struct Settings {
+    tls: Option<TlsClientConfig>,
+    redirects: RedirectPolicy,
+    timeout: Option<Duration>,
+    proxy: Proxy,
+    opts: ClientOptions,
+}
+
+/// Idle keep-alive connections, newest last per route, with when each became idle.
 #[derive(Default)]
 struct Pool {
     hosts: HashMap<Key, Vec<(Conn<ClientConn>, Instant)>>,
@@ -364,32 +551,28 @@ impl Pool {
         found
     }
 
-    /// Takes every connection idle since before `cutoff` out of the pool.
+    /// Takes every connection idle since `cutoff` or before out of the pool, into `out`.
     fn expire(&mut self, cutoff: Instant, out: &mut Vec<Conn<ClientConn>>) {
+        let before = out.len();
         self.hosts.retain(|_, v| {
             // Oldest first: the expired ones are a prefix.
             let n = v.iter().take_while(|(_, t)| *t <= cutoff).count();
             out.extend(v.drain(..n).map(|(c, _)| c));
             !v.is_empty()
         });
-        self.total -= out.len();
+        self.total -= out.len() - before;
     }
 }
 
 struct Inner {
     engine: Arc<Engine>,
-    tls: Option<TlsClientConfig>,
-    opts: ClientOptions,
+    settings: Settings,
+    /// The system's CAs, built on first `https://` use without [`Client::with_tls`].
+    system_tls: OnceLock<Result<TlsClientConfig, String>>,
     idle: Mutex<Pool>,
     /// The engine started a graceful shutdown: connections close once their response is in
     /// instead of going back to `idle`.
-    shutting_down: std::sync::atomic::AtomicBool,
-}
-
-impl Inner {
-    fn pool(&self) -> std::sync::MutexGuard<'_, Pool> {
-        self.idle.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    shutting_down: AtomicBool,
 }
 
 /// The HTTP client. Cheap to clone.
@@ -408,74 +591,120 @@ impl Client {
     /// A client that runs its connections on `engine` (built with `client_threads(n)`, or with a
     /// listener whose threads may host them). The engine must be started.
     pub fn new(engine: Arc<Engine>) -> Client {
-        Client::build(engine, None, ClientOptions::default())
+        Client::with_settings(engine, Settings::default())
     }
 
-    fn build(engine: Arc<Engine>, tls: Option<TlsClientConfig>, opts: ClientOptions) -> Client {
+    fn with_settings(engine: Arc<Engine>, settings: Settings) -> Client {
         Client {
             inner: Arc::new(Inner {
                 engine,
-                tls,
-                opts,
+                settings,
+                system_tls: OnceLock::new(),
                 idle: Mutex::new(Pool::default()),
-                shutting_down: std::sync::atomic::AtomicBool::new(false),
+                shutting_down: AtomicBool::new(false),
             }),
         }
     }
 
-    /// Enables `https://` with the given TLS client configuration (a new client: connections
-    /// are not shared with `self`).
-    #[must_use]
-    pub fn with_tls(self, cfg: TlsClientConfig) -> Client {
-        Client::build(
-            self.inner.engine.clone(),
-            Some(cfg),
-            self.inner.opts.clone(),
-        )
+    /// A client with the same settings but `change` applied (and its own connections).
+    fn rebuild(self, change: impl FnOnce(&mut Settings)) -> Client {
+        let mut s = self.inner.settings.clone();
+        change(&mut s);
+        Client::with_settings(self.inner.engine.clone(), s)
     }
 
-    /// Replaces the limits (a new client: connections are not shared with `self`).
+    /// Uses `cfg` for `https://` instead of the system's CAs ([`RootCerts::system`]).
+    #[must_use]
+    pub fn with_tls(self, cfg: TlsClientConfig) -> Client {
+        self.rebuild(|s| s.tls = Some(cfg))
+    }
+
+    /// Follows redirects as `policy` says (none by default).
+    #[must_use]
+    pub fn with_redirects(self, policy: RedirectPolicy) -> Client {
+        self.rebuild(|s| s.redirects = policy)
+    }
+
+    /// Default limit for each request, from start to the complete response, redirects included
+    /// (none by default); [`ClientRequest::timeout`] overrides it.
+    #[must_use]
+    pub fn with_timeout(self, d: Duration) -> Client {
+        self.rebuild(|s| s.timeout = Some(d))
+    }
+
+    /// Replaces the limits ([`ClientOptions`]).
     #[must_use]
     pub fn with_options(self, opts: ClientOptions) -> Client {
-        Client::build(self.inner.engine.clone(), self.inner.tls.clone(), opts)
+        self.rebuild(|s| s.opts = opts)
     }
 
     /// The limits in force.
     pub fn options(&self) -> &ClientOptions {
-        &self.inner.opts
+        &self.inner.settings.opts
     }
 
-    /// Sends `req`; `done` is called once, on an I/O thread, with the outcome.
+    /// Sends requests through `proxy` where it applies: `https://` through a `CONNECT` tunnel,
+    /// `http://` as absolute-form requests to the proxy. None by default; the environment is
+    /// only read through [`Proxy::from_env`].
+    #[must_use]
+    pub fn with_proxy(self, proxy: Proxy) -> Client {
+        self.rebuild(|s| s.proxy = proxy)
+    }
+
+    /// Sends `req`; `done` is called once with the outcome (on an I/O thread, or as the module
+    /// documentation says).
     pub fn request(
         &self,
         req: ClientRequest,
         done: impl FnOnce(Result<ClientResponse, ClientError>) + Send + 'static,
     ) {
-        let cb: Callback = Box::new(done);
+        let ex = Arc::new(Exchange {
+            done: Mutex::new(Some(Box::new(done))),
+            conn: Mutex::new(None),
+            expired: AtomicBool::new(false),
+            hops: AtomicU32::new(0),
+        });
+        if let Some(d) = req.timeout.or(self.inner.settings.timeout) {
+            let weak = Arc::downgrade(&ex);
+            crate::timer::after(d, move || {
+                if let Some(ex) = weak.upgrade() {
+                    ex.expire();
+                }
+            });
+        }
+        self.attempt(ex, req);
+    }
+
+    /// Sends `req` (the first one, or a redirect's) as part of `ex`.
+    fn attempt(&self, ex: Arc<Exchange>, req: ClientRequest) {
         let pu = match parse_url(&req.url) {
             Ok(p) => p,
-            Err(e) => return cb(Err(e)),
+            Err(e) => return ex.finish(Err(e)),
         };
-        let addrs: Vec<SocketAddr> = match (pu.key.host.as_str(), pu.key.port)
-            .to_socket_addrs()
-            .map_err(ClientError::Io)
-        {
-            Ok(a) => a.collect(),
-            Err(e) => return cb(Err(e)),
-        };
-        if addrs.is_empty() {
-            return cb(Err(ClientError::Protocol("host did not resolve")));
-        }
+        let proxy = self
+            .inner
+            .settings
+            .proxy
+            .select(pu.key.tls, &pu.key.host, pu.key.port)
+            .cloned();
+        let absolute = proxy.as_ref().filter(|_| !pu.key.tls);
         let mut bytes = Vec::with_capacity(160 + req.body.len());
+        let scheme_host = match absolute {
+            Some(_) => format!("http://{}", pu.host_header),
+            None => String::new(),
+        };
         bytes.extend_from_slice(
             format!(
-                "{} {} HTTP/1.1\r\nHost: {}\r\n",
+                "{} {scheme_host}{} HTTP/1.1\r\nHost: {}\r\n",
                 req.method.as_str(),
                 pu.target,
                 pu.host_header
             )
             .as_bytes(),
         );
+        if let Some(auth) = absolute.and_then(|p| p.authorization.as_deref()) {
+            bytes.extend_from_slice(format!("Proxy-Authorization: {auth}\r\n").as_bytes());
+        }
         for (n, v) in req.headers.iter() {
             if !n.eq_ignore_ascii_case("host") && !n.eq_ignore_ascii_case("content-length") {
                 bytes.extend_from_slice(
@@ -492,47 +721,71 @@ impl Client {
         }
         bytes.extend_from_slice(b"\r\n");
         bytes.extend_from_slice(&req.body);
-        let deadline = req
-            .timeout
-            .or(self.inner.opts.request_timeout)
-            .map(|d| Instant::now() + d);
-        let pending = Pending {
-            bytes,
-            head_only: req.method == Method::Head,
-            retryable: matches!(req.method, Method::Get | Method::Head | Method::Options),
-            key: pu.key,
-            addrs,
-            deadline,
-            cb,
+        let mut key = pu.key;
+        key.proxy = proxy.as_ref().map(|p| (p.host.clone(), p.port));
+        let head_only = req.method == Method::Head;
+        let retryable = matches!(req.method, Method::Get | Method::Head | Method::Options);
+        // The request is kept only when a redirect may need it again.
+        let policy = self.inner.settings.redirects;
+        let (url, saved) = if policy.max > 0 {
+            (req.url.clone(), Some(req))
+        } else {
+            (req.url, None)
         };
-        self.dispatch(pending);
+        let (me, ex2) = (self.clone(), ex.clone());
+        let cb: Callback = Box::new(move |r| match r {
+            Ok(mut resp) => {
+                if let Some(req) = saved {
+                    let hops = ex2.hops.load(Ordering::Relaxed);
+                    match redirect(policy, hops, &req, &resp) {
+                        Ok(Some(next)) => {
+                            ex2.hops.store(hops + 1, Ordering::Relaxed);
+                            if !ex2.expired() {
+                                me.attempt(ex2, next);
+                            }
+                            return;
+                        }
+                        Ok(None) => {}
+                        Err(e) => return ex2.finish(Err(e)),
+                    }
+                }
+                resp.url = url;
+                ex2.finish(Ok(resp));
+            }
+            Err(e) => ex2.finish(Err(e)),
+        });
+        self.dispatch(Pending {
+            bytes,
+            head_only,
+            retryable,
+            key,
+            proxy,
+            addrs: Vec::new(),
+            ex,
+            cb,
+        });
     }
 
     /// Sends `req` and returns a handle to wait on or await.
     pub fn send(&self, req: ClientRequest) -> ResponseFuture {
-        let shared = Arc::new(FutureShared {
-            slot: Mutex::new((None, None)),
-            cv: Condvar::new(),
-        });
+        let shared = FutureShared::new();
         let s = shared.clone();
-        self.request(req, move |r| {
-            let mut g = s.slot.lock().unwrap_or_else(|p| p.into_inner());
-            g.0 = Some(r);
-            if let Some(w) = g.1.take() {
-                w.wake();
-            }
-            s.cv.notify_all();
-        });
+        self.request(req, move |r| s.complete(r));
         ResponseFuture { shared }
+    }
+
+    fn pool(&self) -> std::sync::MutexGuard<'_, Pool> {
+        self.inner.idle.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Reuses an idle keep-alive connection when there is one, else dials.
     fn dispatch(&self, p: Pending) {
         let mut expired = Vec::new();
         let idle = {
-            let mut pool = self.inner.pool();
+            let mut pool = self.pool();
             let cutoff = self
                 .inner
+                .settings
                 .opts
                 .idle_timeout
                 .and_then(|d| Instant::now().checked_sub(d));
@@ -586,9 +839,9 @@ impl Client {
     /// Puts a connection whose response is complete back into the pool, unless the pool is
     /// full; whether it was kept (the caller closes it otherwise).
     fn put_idle(&self, key: &Key, c: &Conn<ClientConn>) -> bool {
-        let opts = &self.inner.opts;
+        let opts = &self.inner.settings.opts;
         let arm = {
-            let mut pool = self.inner.pool();
+            let mut pool = self.pool();
             let total = pool.total;
             let v = pool.hosts.entry(key.clone()).or_default();
             if v.len() >= opts.max_idle_per_host || total >= opts.max_idle {
@@ -603,28 +856,25 @@ impl Client {
             pool.sweep_armed |= arm;
             arm
         };
-        if arm {
-            Client::arm_sweep(
-                Arc::downgrade(&self.inner),
-                Instant::now() + opts.idle_timeout.unwrap_or_default(),
-            );
+        if let (true, Some(d)) = (arm, opts.idle_timeout) {
+            Client::arm_sweep(Arc::downgrade(&self.inner), d);
         }
         true
     }
 
-    /// Schedules a sweep of expired idle connections at `at`. The sweep holds the client weakly
-    /// and re-arms itself while connections are idle, so an unused client still lets its idle
-    /// connections go.
-    fn arm_sweep(inner: std::sync::Weak<Inner>, at: Instant) {
-        timer::at(at, move || {
+    /// Schedules a sweep of expired idle connections after `delay`. The sweep holds the client
+    /// weakly and re-arms itself while connections are idle, so an unused client still lets its
+    /// idle connections go. At most one sweep per client is pending.
+    fn arm_sweep(inner: Weak<Inner>, delay: Duration) {
+        crate::timer::after(delay, move || {
             let Some(inner) = inner.upgrade() else { return };
-            let Some(d) = inner.opts.idle_timeout else {
+            let Some(d) = inner.settings.opts.idle_timeout else {
                 return;
             };
             let now = Instant::now();
             let mut expired = Vec::new();
             let next = {
-                let mut pool = inner.pool();
+                let mut pool = inner.idle.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(cutoff) = now.checked_sub(d) {
                     pool.expire(cutoff, &mut expired);
                 }
@@ -642,24 +892,56 @@ impl Client {
             }
             if let Some(t) = next {
                 // A little slack batches connections that went idle together.
-                Client::arm_sweep(
-                    Arc::downgrade(&inner),
-                    (t + d).max(now + Duration::from_millis(100)),
-                );
+                let due = (t + d).saturating_duration_since(now);
+                Client::arm_sweep(Arc::downgrade(&inner), due.max(Duration::from_millis(100)));
             }
         });
     }
 
-    fn dial(&self, p: Pending) {
+    /// The TLS configuration for `https://`.
+    fn tls(&self) -> io::Result<TlsClientConfig> {
+        if let Some(c) = &self.inner.settings.tls {
+            return Ok(c.clone());
+        }
+        self.inner
+            .system_tls
+            .get_or_init(|| {
+                RootCerts::system()
+                    .and_then(|r| TlsClientConfig::builder().roots(r).build())
+                    .map_err(|e| e.to_string())
+            })
+            .clone()
+            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))
+    }
+
+    fn dial(&self, mut p: Pending) {
+        if p.ex.expired() {
+            return;
+        }
+        if p.addrs.is_empty() {
+            // Resolve the proxy (when there is one) or the target, off this thread.
+            let (host, port) = match &p.proxy {
+                Some(s) => (s.host.clone(), s.port),
+                None => (p.key.host.clone(), p.key.port),
+            };
+            let me = self.clone();
+            return only::dns::resolve(&host, port, move |r| match r {
+                Ok(a) => {
+                    p.addrs = a;
+                    me.dial(p);
+                }
+                Err(e) => (p.cb)(Err(ClientError::Io(e))),
+            });
+        }
+        let key = p.key.clone();
+        let addr = p.addrs[0];
+        let tunnel = key.tls.then(|| p.proxy.clone()).flatten();
         let slot = Arc::new(Mutex::new(Some(p)));
-        let (key, addr) = {
-            let g = slot.lock().unwrap_or_else(|e| e.into_inner());
-            let p = g.as_ref().expect("just stored");
-            (p.key.clone(), p.addrs[0])
-        };
+        let refusal = tunnel.as_ref().map(|_| Refusal::default());
         let acceptor = DialAcceptor {
             pending: slot.clone(),
             client: self.clone(),
+            refusal: refusal.clone(),
         };
         let fail = {
             let (slot, me) = (slot, self.clone());
@@ -677,15 +959,17 @@ impl Client {
             }
         };
         if key.tls {
-            let Some(cfg) = self.inner.tls.clone() else {
-                return fail(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "https needs Client::with_tls",
-                ));
+            let cfg = match self.tls() {
+                Ok(c) => c,
+                Err(e) => return fail(e),
             };
-            match Tls::client(cfg, &key.host, acceptor) {
-                Ok(a) => self.inner.engine.dial(addr, a, fail),
-                Err(e) => fail(e),
+            match (Tls::client(cfg, &key.host, acceptor), tunnel, refusal) {
+                (Ok(a), Some(proxy), Some(r)) => {
+                    let a = Connect::new(&key.host, key.port, &proxy, r, a);
+                    self.inner.engine.dial(addr, a, fail);
+                }
+                (Ok(a), _, _) => self.inner.engine.dial(addr, a, fail),
+                (Err(e), _, _) => fail(e),
             }
         } else {
             self.inner.engine.dial(addr, acceptor, fail);
@@ -696,6 +980,7 @@ impl Client {
 struct DialAcceptor {
     pending: Arc<Mutex<Option<Pending>>>,
     client: Client,
+    refusal: Option<Refusal>,
 }
 
 impl Acceptor for DialAcceptor {
@@ -703,6 +988,7 @@ impl Acceptor for DialAcceptor {
 
     fn on_open(&self, c: &Conn<ClientConn>) -> ClientConn {
         let mut h = ClientConn::new();
+        h.refusal = self.refusal.clone();
         let taken = self
             .pending
             .lock()
@@ -720,10 +1006,8 @@ impl Acceptor for DialAcceptor {
     // (`ClientConn::complete`).
     fn on_shutdown(&self, c: &Conn<ClientConn>) {
         let inner = &self.client.inner;
-        inner
-            .shutting_down
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        let was_idle = inner.pool().remove(c.id());
+        inner.shutting_down.store(true, Ordering::Relaxed);
+        let was_idle = self.client.pool().remove(c.id());
         if was_idle {
             c.close();
         }
@@ -761,10 +1045,10 @@ pub struct ClientConn {
     head: http1::Resume,
     /// Head bytes of interim (1xx) responses already received for the request in flight.
     head_seen: usize,
-    /// When the request in flight times out (`timer::ms`), 0 when none.
-    deadline: u64,
-    /// The connection's one deadline timer, re-armed lazily (no timer message per request).
-    watch: Arc<timer::Watch>,
+    /// The exchange of the request in flight (its timeout closes this connection).
+    ex: Option<Arc<Exchange>>,
+    /// Where the proxy tunnel (if any) records a refusal.
+    refusal: Option<Refusal>,
 }
 
 impl std::fmt::Debug for ClientConn {
@@ -784,44 +1068,13 @@ impl ClientConn {
             received_any: false,
             head: http1::Resume::default(),
             head_seen: 0,
-            deadline: 0,
-            watch: timer::Watch::new(),
+            ex: None,
+            refusal: None,
         }
     }
 
     fn opts(&self) -> Option<&ClientOptions> {
-        self.client.as_ref().map(|c| &c.inner.opts)
-    }
-
-    fn disarm(&mut self) {
-        self.deadline = 0;
-        self.watch.set(0);
-    }
-
-    /// Arms the connection's watch for `self.deadline`.
-    fn arm(&self, c: &Conn<Self>) {
-        self.watch.set(self.deadline);
-        let conn = c.clone();
-        self.watch.ensure_armed(move || {
-            let hop = conn.spawn_blocking(|| (), move |h: &mut ClientConn, c, ()| h.on_deadline(c));
-            if hop.is_err() && conn.is_open() {
-                // The pool refused the hop: closing still ends the request (as `Closed`).
-                conn.close();
-            }
-        });
-    }
-
-    /// The watch fired: fail the request in flight if its deadline passed (and drop the
-    /// connection, its state is unknown), else re-arm for the current one.
-    fn on_deadline(&mut self, c: &Conn<Self>) {
-        if self.active.is_none() || self.deadline == 0 {
-            return;
-        }
-        if self.deadline <= timer::now_ms() {
-            self.fail(c, ClientError::TimedOut);
-        } else {
-            self.arm(c);
-        }
+        self.client.as_ref().map(|c| &c.inner.settings.opts)
     }
 
     /// Starts `p` on this connection: remember the callback, write the request.
@@ -831,26 +1084,38 @@ impl ClientConn {
             head_only,
             retryable,
             key,
+            proxy,
             addrs,
-            deadline,
+            ex,
             cb,
         } = p;
+        {
+            let mut slot = ex.conn.lock().unwrap_or_else(|e| e.into_inner());
+            if ex.expired() {
+                // Timed out while this connection was being set up: nobody waits any more.
+                drop(slot);
+                c.close();
+                return;
+            }
+            *slot = Some(Arc::downgrade(c.inner()));
+        }
         // Kept so a reused connection that turns out dead can be retried on a fresh one.
         let retry = (reused && retryable).then(|| Pending {
             bytes: bytes.clone(),
             head_only,
             retryable,
             key: key.clone(),
+            proxy,
             addrs,
-            deadline,
+            ex: ex.clone(),
             cb: Box::new(|_| {}),
         });
+        self.ex = Some(ex);
         self.state = RState::Head;
         self.buf.clear();
         self.head = http1::Resume::default();
         self.head_seen = 0;
         self.received_any = false;
-        self.disarm();
         self.client = Some(client);
         self.key = Some(key);
         self.active = Some(Active {
@@ -860,14 +1125,6 @@ impl ClientConn {
             resp: None,
             version: Version::Http11,
         });
-        if let Some(at) = deadline {
-            if at <= Instant::now() {
-                // Spent dialing (the engine's connect timeout may be longer).
-                return self.fail(c, ClientError::TimedOut);
-            }
-            self.deadline = timer::ms(at);
-            self.arm(c);
-        }
         if c.send_owned(bytes).is_err() {
             self.fail(c, ClientError::Closed);
         }
@@ -875,11 +1132,22 @@ impl ClientConn {
 
     fn fail(&mut self, c: &Conn<Self>, e: ClientError) {
         self.state = RState::Idle;
-        self.disarm();
+        // A proxy that refused the tunnel says why.
+        let refused = self.refusal.as_ref().and_then(|r| {
+            r.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .map(ProxyRefused::to_io)
+        });
+        let e = match refused {
+            Some(io) => ClientError::Io(io),
+            None => e,
+        };
+        let expired = self.ex.as_ref().is_some_and(|x| x.expired());
         if let Some(a) = self.active.take() {
             // A reused connection the server had already closed: one retry on a fresh one.
-            if let (Some(mut p), Some(client), false) =
-                (a.retry, self.client.clone(), self.received_any)
+            if let (Some(mut p), Some(client), false, false) =
+                (a.retry, self.client.clone(), self.received_any, expired)
             {
                 if matches!(e, ClientError::Closed | ClientError::Io(_)) {
                     p.cb = a.cb;
@@ -896,14 +1164,12 @@ impl ClientConn {
     /// Finishes the response in flight.
     fn complete(&mut self, c: &Conn<Self>, keep_alive: bool) {
         self.state = RState::Idle;
-        self.disarm();
         let Some(a) = self.active.take() else { return };
         let resp = a.resp.expect("response head parsed");
-        let shutting_down = self.client.as_ref().is_some_and(|cl| {
-            cl.inner
-                .shutting_down
-                .load(std::sync::atomic::Ordering::Relaxed)
-        });
+        let shutting_down = self
+            .client
+            .as_ref()
+            .is_some_and(|cl| cl.inner.shutting_down.load(Ordering::Relaxed));
         let reusable = keep_alive
             && !shutting_down
             && a.version == Version::Http11
@@ -1006,6 +1272,7 @@ impl ClientConn {
                             body: Vec::with_capacity(reserve),
                             trailers: Headers::new(),
                             pushed: Vec::new(),
+                            url: String::new(),
                         });
                     }
                     match next {
@@ -1035,7 +1302,7 @@ impl ClientConn {
                     let max_body = self
                         .client
                         .as_ref()
-                        .map_or(usize::MAX, |c| c.inner.opts.max_body_bytes);
+                        .map_or(usize::MAX, |c| c.inner.settings.opts.max_body_bytes);
                     let have = self
                         .active
                         .as_ref()
@@ -1067,7 +1334,7 @@ impl ClientConn {
                     let max_body = self
                         .client
                         .as_ref()
-                        .map_or(usize::MAX, |c| c.inner.opts.max_body_bytes);
+                        .map_or(usize::MAX, |c| c.inner.settings.opts.max_body_bytes);
                     let mut over = false;
                     if let Some(r) = self.active.as_mut().and_then(|a| a.resp.as_mut()) {
                         over = r.body.len() + self.buf.len() > max_body;
@@ -1082,174 +1349,6 @@ impl ClientConn {
                     return;
                 }
             }
-        }
-    }
-}
-
-/// Request and idle deadlines of the HTTP clients: one lazily started thread with a heap,
-/// fed through a channel (no lock shared by the I/O threads). Jobs must be quick: they only hand
-/// work to a connection's I/O thread or close connections.
-pub(crate) mod timer {
-    use std::{
-        cmp::Reverse,
-        collections::BinaryHeap,
-        sync::{
-            OnceLock,
-            atomic::{AtomicU64, Ordering},
-            mpsc::{self, RecvTimeoutError, Sender},
-        },
-        time::Instant,
-    };
-
-    type Job = Box<dyn FnOnce() + Send>;
-
-    /// A job in the heap, ordered by when it runs (then by arrival).
-    struct Entry(Instant, u64, Job);
-
-    impl PartialEq for Entry {
-        fn eq(&self, o: &Entry) -> bool {
-            (self.0, self.1) == (o.0, o.1)
-        }
-    }
-    impl Eq for Entry {}
-    impl PartialOrd for Entry {
-        fn partial_cmp(&self, o: &Entry) -> Option<std::cmp::Ordering> {
-            Some(self.cmp(o))
-        }
-    }
-    impl Ord for Entry {
-        fn cmp(&self, o: &Entry) -> std::cmp::Ordering {
-            (self.0, self.1).cmp(&(o.0, o.1))
-        }
-    }
-
-    fn sender() -> &'static Sender<(Instant, Job)> {
-        static TX: OnceLock<Sender<(Instant, Job)>> = OnceLock::new();
-        TX.get_or_init(|| {
-            let (tx, rx) = mpsc::channel::<(Instant, Job)>();
-            std::thread::Builder::new()
-                .name("only-http-timer".into())
-                .spawn(move || run(&rx))
-                .expect("spawn only-http timer thread");
-            tx
-        })
-    }
-
-    fn run(rx: &mpsc::Receiver<(Instant, Job)>) {
-        let mut heap: BinaryHeap<Reverse<Entry>> = BinaryHeap::new();
-        let mut seq = 0u64;
-        loop {
-            let now = Instant::now();
-            while heap.peek().is_some_and(|Reverse(e)| e.0 <= now) {
-                let Reverse(Entry(_, _, job)) = heap.pop().expect("peeked");
-                job();
-            }
-            let msg = match heap.peek() {
-                Some(Reverse(e)) => rx.recv_timeout(e.0.saturating_duration_since(Instant::now())),
-                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
-            };
-            match msg {
-                Ok((at, job)) => {
-                    seq += 1;
-                    heap.push(Reverse(Entry(at, seq, job)));
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => return,
-            }
-        }
-    }
-
-    /// Runs `job` on the timer thread at `at`. Callers keep this off the per-request path:
-    /// request deadlines go through a [`Watch`].
-    pub(crate) fn at(at: Instant, job: impl FnOnce() + Send + 'static) {
-        let _ = sender().send((at, Box::new(job)));
-    }
-
-    fn epoch() -> Instant {
-        static E: OnceLock<Instant> = OnceLock::new();
-        *E.get_or_init(Instant::now)
-    }
-
-    /// `t` in whole milliseconds (rounded up) since a process epoch, never 0.
-    pub(crate) fn ms(t: Instant) -> u64 {
-        let d = t.saturating_duration_since(epoch());
-        (d.as_nanos().div_ceil(1_000_000) as u64) + 1
-    }
-
-    pub(crate) fn now_ms() -> u64 {
-        ms(Instant::now())
-    }
-
-    fn instant(ms: u64) -> Instant {
-        epoch() + std::time::Duration::from_millis(ms.saturating_sub(1))
-    }
-
-    /// One owner's deadline (a connection's): at most one timer job is pending for it. Moving
-    /// the deadline is an atomic store; the job, when it fires, re-arms itself for a later
-    /// deadline, stops on 0, and calls back only once the deadline passed. A request costs no
-    /// timer message unless the watch was idle.
-    pub(crate) struct Watch {
-        at: AtomicU64,
-        /// When the pending job runs (`ms`), 0 when none is pending.
-        armed_at: AtomicU64,
-    }
-
-    impl Watch {
-        pub(crate) fn new() -> std::sync::Arc<Watch> {
-            std::sync::Arc::new(Watch {
-                at: AtomicU64::new(0),
-                armed_at: AtomicU64::new(0),
-            })
-        }
-
-        /// Sets the deadline (`ms`), 0 for none.
-        pub(crate) fn set(&self, at: u64) {
-            self.at.store(at, Ordering::SeqCst);
-        }
-
-        /// Makes sure a job is pending no later than the deadline; `due` runs on the timer
-        /// thread once the deadline passed (it must be quick and decide again on its owner's
-        /// thread). An earlier deadline than the pending job's gets a job of its own; the
-        /// superseded one then does nothing.
-        pub(crate) fn ensure_armed<F: Fn() + Clone + Send + 'static>(
-            self: &std::sync::Arc<Self>,
-            due: F,
-        ) {
-            let at = self.at.load(Ordering::SeqCst);
-            if at == 0 {
-                return;
-            }
-            let mut cur = self.armed_at.load(Ordering::SeqCst);
-            loop {
-                if cur != 0 && cur <= at {
-                    return;
-                }
-                match self
-                    .armed_at
-                    .compare_exchange(cur, at, Ordering::SeqCst, Ordering::SeqCst)
-                {
-                    Ok(_) => break,
-                    Err(now) => cur = now,
-                }
-            }
-            let w = self.clone();
-            self::at(instant(at), move || {
-                if w.armed_at
-                    .compare_exchange(at, 0, Ordering::SeqCst, Ordering::SeqCst)
-                    .is_err()
-                {
-                    return; // superseded by an earlier job
-                }
-                let deadline = w.at.load(Ordering::SeqCst);
-                if deadline == 0 {
-                    return;
-                }
-                if deadline > now_ms() {
-                    w.ensure_armed(due);
-                } else {
-                    due();
-                }
-            });
         }
     }
 }
@@ -1291,9 +1390,8 @@ impl Handler for ClientConn {
             RState::UntilClose => self.complete(c, false),
             RState::Idle => {
                 // Closed while idle (by the server, or expired): leave the pool.
-                self.disarm();
                 if let Some(cl) = &self.client {
-                    cl.inner.pool().remove(c.id());
+                    cl.pool().remove(c.id());
                 }
             }
             _ => self.fail(c, ClientError::Closed),
@@ -1304,6 +1402,81 @@ impl Handler for ClientConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn resp(status: u16, location: &str) -> ClientResponse {
+        let mut headers = Headers::new();
+        headers.append("Location", location);
+        ClientResponse {
+            status,
+            reason: String::new(),
+            headers,
+            body: Vec::new(),
+            trailers: Headers::new(),
+            pushed: Vec::new(),
+            url: String::new(),
+        }
+    }
+
+    #[test]
+    fn redirect_rules() {
+        let p = RedirectPolicy::limit(2);
+        let req = ClientRequest::post("https://a.example/x/y", b"b".to_vec())
+            .header("Authorization", "t")
+            .header("Cookie", "c")
+            .header("Content-Type", "text/plain")
+            .header("X-Keep", "1");
+        // Relative, same origin: everything kept but the body (302 POST -> GET).
+        let n = redirect(p, 0, &req, &resp(302, "z")).unwrap().unwrap();
+        assert_eq!(n.url, "https://a.example/x/z");
+        assert_eq!((n.method, n.body.len()), (Method::Get, 0));
+        assert_eq!(n.headers.get("authorization"), Some("t"));
+        assert_eq!(n.headers.get("content-type"), None);
+        // Another host, scheme or port: credentials dropped, other fields kept.
+        for loc in [
+            "https://b.example/",
+            "https://a.example:444/",
+            "//b.example/",
+        ] {
+            let n = redirect(p, 0, &req, &resp(307, loc)).unwrap().unwrap();
+            assert_eq!(n.headers.get("authorization"), None, "{loc}");
+            assert_eq!(n.headers.get("cookie"), None, "{loc}");
+            assert_eq!(n.headers.get("x-keep"), Some("1"), "{loc}");
+            assert_eq!((n.method, n.body.len()), (Method::Post, 1), "{loc}");
+        }
+        // Host names compare without case.
+        let n = redirect(p, 0, &req, &resp(308, "https://A.EXAMPLE/q"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(n.headers.get("authorization"), Some("t"));
+        // https -> http: returned as is unless allowed.
+        assert!(
+            redirect(p, 0, &req, &resp(301, "http://a.example/"))
+                .unwrap()
+                .is_none()
+        );
+        let n = redirect(
+            p.allow_https_downgrade(true),
+            0,
+            &req,
+            &resp(301, "http://a.example/"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(n.headers.get("authorization"), None);
+        // Not followed: other codes, no policy; the limit.
+        for code in [300, 304, 305, 306, 200] {
+            assert!(redirect(p, 0, &req, &resp(code, "/")).unwrap().is_none());
+        }
+        assert!(
+            redirect(RedirectPolicy::none(), 0, &req, &resp(302, "/"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            redirect(p, 2, &req, &resp(302, "/")),
+            Err(ClientError::TooManyRedirects)
+        ));
+    }
 
     #[test]
     fn url_parsing() {

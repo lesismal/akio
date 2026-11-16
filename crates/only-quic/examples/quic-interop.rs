@@ -13,6 +13,11 @@
 //! ECN validation (Linux); `0rtt` accepts 0-RTT (server; it prints "0-RTT stream" for each
 //! connection whose streams came early), or (client) resumes a first connection with 0-RTT,
 //! sending its first stream before the handshake, and fails unless the server accepted it.
+//! `prefer-v2` / `prefer-v1` (server) moves clients that list that version to it within the
+//! handshake (compatible version negotiation, RFC 9368); the server prints "connected in V1" or
+//! "V2" per connection. `expect-v1` / `expect-v2` (client) fails unless the connection ended up
+//! in that version. `alpn P` uses ALPN `P` instead of `echo`, and `handshake-only` (client)
+//! stops after the handshake: a check against servers of another protocol (ngtcp2's HTTP/3).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -42,6 +47,9 @@ struct Echo {
     early_seen: bool,
 }
 impl QuicHandler for Echo {
+    fn on_connected(&mut self, c: &Connection) {
+        println!("connected in {:?} from {}", c.version(), c.remote_addr());
+    }
     fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
         if !self.early_seen && c.is_early(id) {
             self.early_seen = true;
@@ -110,9 +118,16 @@ fn certs() -> (Vec<only::tls::Certificate>, only::tls::PrivateKey) {
 
 fn server(addr: SocketAddr, args: &[String]) {
     let (certs, key) = certs();
-    let mut cfg = only_quic::server_config(certs, key, &[b"echo"])
+    let alpn = opt(args, "alpn").unwrap_or_else(|| "echo".into());
+    let mut cfg = only_quic::server_config(certs, key, &[alpn.as_bytes()])
         .expect("config")
         .retry(args.iter().any(|a| a == "retry"));
+    if has(args, "prefer-v2") {
+        cfg = cfg.prefer_version(only_quic::Version::V2);
+    }
+    if has(args, "prefer-v1") {
+        cfg = cfg.prefer_version(only_quic::Version::V1);
+    }
     if let Some(n) = opt(args, "ku") {
         cfg = cfg.key_update_interval(n.parse().expect("ku"));
     }
@@ -138,7 +153,8 @@ fn client(addr: SocketAddr, args: &[String]) {
         .build()
         .expect("engine");
     e.start().expect("start");
-    let mut cfg = only_quic::client_config_insecure(&[b"echo"]).expect("config");
+    let alpn = opt(args, "alpn").unwrap_or_else(|| "echo".into());
+    let mut cfg = only_quic::client_config_insecure(&[alpn.as_bytes()]).expect("config");
     if let Some(n) = opt(args, "ku") {
         cfg = cfg.key_update_interval(n.parse().expect("ku"));
     }
@@ -219,11 +235,24 @@ fn client(addr: SocketAddr, args: &[String]) {
             fail(format!("stream {id} differs"));
         }
     }
-    if c.alpn().as_deref() != Some(&b"echo"[..]) {
+    if c.alpn().as_deref() != Some(alpn.as_bytes()) {
         fail("alpn".into());
     }
-    if has(args, "v2") && c.version() != only_quic::Version::V2 {
+    let want_version = if has(args, "expect-v1") {
+        Some(only_quic::Version::V1)
+    } else if has(args, "expect-v2") || has(args, "v2") {
+        Some(only_quic::Version::V2)
+    } else {
+        None
+    };
+    if want_version.is_some_and(|v| v != c.version()) {
         fail(format!("version {:?}", c.version()));
+    }
+    if has(args, "handshake-only") {
+        c.close(0, b"done");
+        println!("ok: handshake in {:?}", c.version());
+        e.shutdown();
+        return;
     }
     let (streams, unit) = if has(args, "small") {
         (10, 200)

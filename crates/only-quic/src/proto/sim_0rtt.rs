@@ -1,12 +1,13 @@
 //! 0-RTT on the simulated network (RFC 9001 section 4.6, RFC 9000 sections 7.4.1 and 17.2.3):
 //! accepted, rejected (changed limits, server without 0-RTT) with the data sent again in
-//! 1-RTT, lost 0-RTT packets, Retry with 0-RTT, a replayed first flight, and QUIC version 2.
+//! 1-RTT, lost 0-RTT packets, Retry with 0-RTT, a replayed first flight (also to another server
+//! sharing tickets and the anti-replay store), and QUIC version 2.
 
 use super::*;
 use crate::proto::packet::{PacketType, VERSION_2, parse_header};
 use only_tls::EarlyData;
 
-fn zcfg() -> ConnConfig {
+pub(super) fn zcfg() -> ConnConfig {
     let mut c = ConnConfig::new(TransportConfig::default(), true);
     c.zero_rtt = true;
     c
@@ -21,7 +22,7 @@ fn zsim(seed: u8, server_0rtt: bool, retry: bool) -> (Sim, only_tls::ClientConfi
 }
 
 /// A first connection, closed once the tickets arrived.
-fn prime(sim: &mut Sim, tls: &only_tls::ClientConfig, cfg: ConnConfig) {
+pub(super) fn prime(sim: &mut Sim, tls: &only_tls::ClientConfig, cfg: ConnConfig) {
     let h = sim.handshake(tls, cfg);
     // The tickets come with HANDSHAKE_DONE.
     assert!(sim.run_until(Duration::from_secs(5), |s| s.cconn(h).is_confirmed()));
@@ -35,19 +36,24 @@ fn prime(sim: &mut Sim, tls: &only_tls::ClientConfig, cfg: ConnConfig) {
 }
 
 /// What the server saw of a request sent in 0-RTT, and when the client had its echo.
-struct Outcome {
-    h: ConnHandle,
+pub(super) struct Outcome {
+    pub(super) h: ConnHandle,
     /// The server had the stream data before the handshake completed.
-    data_before_connected: bool,
+    pub(super) data_before_connected: bool,
     /// The server flagged the stream as early.
-    early_stream: bool,
+    pub(super) early_stream: bool,
     /// Time from the connect to the echo.
-    elapsed: Duration,
+    pub(super) elapsed: Duration,
 }
 
 /// Connects and sends `req` on a stream opened right away (0-RTT if possible, else after the
 /// handshake); the server echoes it.
-fn request(sim: &mut Sim, tls: &only_tls::ClientConfig, cfg: ConnConfig, req: &[u8]) -> Outcome {
+pub(super) fn request(
+    sim: &mut Sim,
+    tls: &only_tls::ClientConfig,
+    cfg: ConnConfig,
+    req: &[u8],
+) -> Outcome {
     let start = sim.now;
     let h = sim.connect(tls, cfg, Vec::new());
     let mut id = sim.cconn(h).open(Dir::Bi);
@@ -252,6 +258,91 @@ fn replayed_zero_rtt_flight_is_rejected() {
     assert!(
         !evs.iter().any(|e| matches!(e, Event::StreamData(..))),
         "replayed 0-RTT data reached the application"
+    );
+}
+
+/// An anti-replay store standing for a shared remote one (Redis or similar).
+#[derive(Default)]
+struct SharedStore(std::sync::Mutex<std::collections::HashSet<Vec<u8>>>);
+
+impl only_tls::AntiReplayStore for SharedStore {
+    fn check_and_insert(&self, binder: &[u8], _ttl: Duration) -> std::io::Result<bool> {
+        Ok(self.0.lock().expect("store").insert(binder.to_vec()))
+    }
+}
+
+/// Server TLS configurations sharing a certificate and a ticket key, each with `store` (or
+/// its own record), and the client's.
+fn shared_tls(
+    stores: &[Option<std::sync::Arc<SharedStore>>],
+) -> (Vec<only_tls::ServerConfig>, only_tls::ClientConfig) {
+    let (cert, key) = only_x509::generate_simple_self_signed(["localhost"]).expect("cert");
+    let chain = vec![only_tls::Certificate::from_der(cert.as_der().to_vec())];
+    let mut roots = only_tls::RootCerts::empty();
+    roots.add(&chain[0]).expect("root");
+    let key = only_tls::PrivateKey::from_pkcs8_der(key.to_pkcs8_der());
+    let servers = stores
+        .iter()
+        .map(|st| {
+            let mut b = only_tls::ServerConfig::builder(chain.clone(), key.clone())
+                .alpn(["sim"])
+                .tls13_only(true)
+                .session_ticket_key([0x42; 48]);
+            if let Some(st) = st {
+                b = b.anti_replay_store(st.clone());
+            }
+            b.build().expect("server tls")
+        })
+        .collect();
+    let c = only_tls::ClientConfig::builder()
+        .roots(roots)
+        .alpn(["sim"])
+        .tls13_only(true)
+        .build()
+        .expect("client tls");
+    (servers, c)
+}
+
+/// What a server made of `flight`, a client's first datagram replayed by an attacker.
+fn replay_first_flight(seed: u8, tls: only_tls::ServerConfig, flight: Vec<u8>) -> EarlyData {
+    let mut cfg = ConnConfig::new(TransportConfig::default(), true);
+    cfg.zero_rtt = true;
+    let mut sim = Sim::new(seed, cfg, tls, false);
+    let attacker: SocketAddr = "10.0.0.9:6000".parse().expect("addr");
+    let to = sim.server.addr;
+    sim.inject(attacker, to, flight);
+    sim.run_until(Duration::from_millis(100), |_| false);
+    let c = sim
+        .server
+        .conns
+        .values()
+        .find(|c| c.remote_addr() == attacker)
+        .expect("replayed connection");
+    c.early_data()
+}
+
+#[test]
+fn replay_to_another_server_sharing_the_anti_replay_store() {
+    let store = std::sync::Arc::new(SharedStore::default());
+    let (servers, tls) = shared_tls(&[Some(store.clone()), Some(store), None]);
+    // A client's 0-RTT request to server A.
+    let mut cfg = ConnConfig::new(TransportConfig::default(), true);
+    cfg.zero_rtt = true;
+    let mut sim = Sim::new(53, cfg, servers[0].clone(), false);
+    prime(&mut sim, &tls, zcfg());
+    sim.record_0rtt = true;
+    let o = request(&mut sim, &tls, zcfg(), b"POST /pay");
+    assert!(o.data_before_connected);
+    let flight = sim.first_client_datagram.clone().expect("recorded");
+    // Replayed to server B, which accepts the ticket and shares A's store: rejected.
+    assert_eq!(
+        replay_first_flight(54, servers[1].clone(), flight.clone()),
+        EarlyData::Rejected
+    );
+    // Server C accepts the ticket but keeps its own record: the replay gets through there.
+    assert_eq!(
+        replay_first_flight(55, servers[2].clone(), flight),
+        EarlyData::Accepted
     );
 }
 

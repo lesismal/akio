@@ -13,3 +13,7 @@
 - [ADR-007：段内部分匹配的路由模式](007-partial-segment-routes.zh-CN.md)
 - [ADR-008：TLS record_size_limit、证书压缩与 OCSP stapling](008-tls-extensions.zh-CN.md)
 - [ADR-009：引擎上限与超时的安全默认值](009-safe-defaults.zh-CN.md)
+- [ADR-010：HTTP 与 WebSocket 客户端：重定向、超时、解析、系统根证书、代理](010-http-client-gaps.zh-CN.md)
+- [ADR-012：SOCKS5 BIND / UDP ASSOCIATE、`Engine::adopt_tcp` 与 only-log 过滤器](012-socks-commands-and-log-filters.zh-CN.md)
+- [ADR-013：共享的 0-RTT 防重放存储与 QUIC 兼容版本协商](013-shared-anti-replay-and-compatible-vn.zh-CN.md)
+- [ADR-015：可插拔的指标收集器](015-metrics-collectors.zh-CN.md)（2026-11-16 采纳）

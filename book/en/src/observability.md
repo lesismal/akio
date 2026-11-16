@@ -20,6 +20,7 @@ locked or allocated per event); snapshots are assembled on demand.
 | `Engine::pool_stats()` | logical pool threads, idle, queued, completed, panicked, rejected |
 | `Engine::udp_stats()` | UDP peers open and datagrams rejected by `udp_max_peers` |
 | `Engine::accel_status()` | eBPF steering per listener |
+| `Telemetry::collect()`, `Telemetry::render_prometheus()` | the registered collectors' `Families` (Prometheus or JSON); the engine's series followed by the collectors', as served by `metrics_handler` |
 
 ## Prometheus
 
@@ -42,7 +43,15 @@ Engine series (one per I/O thread, labelled `listener`, `backend`, `thread`):
 
 HTTP series from `observe::HttpMetrics`: `only_http_requests_total{class="2xx"...}`,
 `only_http_request_duration_seconds` (histogram, buckets from 0.5 ms to 10 s),
-`only_http_requests_in_flight`.
+`only_http_requests_in_flight`, `only_http_requests_by_version_total{version="1.0|1.1|2|3"}`
+(responses by the request's protocol version; on h2 and h3 that is the number of answered request streams).
+QUIC and TLS series come from their collectors, see [Your own metrics](#your-own-metrics).
+
+**Cost.** The counters are always on and callback timing is on while a slow-callback threshold
+is set (the default). A same-run A/B on a quiet host (Ryzen 7 7800X3D, Linux 7.0, 5 rounds) found
+no measurable cost: HTTP/1.1 plaintext and pipelined at 0.998–1.006× with timing off or with the
+counters compiled out, TCP and UDP echo within their ±5–10% noise (docs/BENCHMARKS.md, "Telemetry
+overhead").
 
 `only_loop_callback_seconds_total / only_loop_iterations_total` and the slow-callback counter
 are the first things to watch: they tell you whether handlers are keeping the I/O threads busy.
@@ -54,7 +63,8 @@ are the first things to watch: they tell you whether handlers are keeping the I/
 ```
 
 - `observe::metrics_handler(telemetry, Some(http_metrics))` answers the Prometheus text format
-  (0.0.4).
+  (0.0.4): the engine's series, every registered collector (see
+  [Your own metrics](#your-own-metrics)) and `http_metrics` if given.
 - `observe::debug_handler(telemetry, token)` is an opt-in runtime debug endpoint (`only`'s
   counterpart of Go's pprof pages), answering JSON. Mount it under a wildcard route; the last
   path segment picks the view: `conns` (connection table), `loops` (per-thread counters, totals,
@@ -65,6 +75,45 @@ are the first things to watch: they tell you whether handlers are keeping the I/
 - `HttpMetrics::middleware()` counts requests by status class, observes latency, tracks
   in-flight requests.
 - `observe::access_log()` writes one structured record per response through `only::log`.
+
+## Your own metrics
+
+Anything that implements `only::metrics::Collector` can be registered with the telemetry hub and
+then appears on the same `/metrics` endpoint, after the engine's series (ADR-015). No third-party
+crate is involved.
+
+```rust,ignore
+{{#include ../../../crates/only-http/examples/guide-metrics.rs:collectors}}
+```
+
+- `Registry` owns named `Counter`, `Gauge` and `Histogram` instruments (shared atomics, no lock per
+  update); asking again for the same name and labels returns the same instrument.
+- `fn_collector(|out| ...)` turns a closure into a collector run on every scrape; `out.counter`,
+  `out.gauge` and `out.histogram` add samples. Invalid names, duplicate label names and kind clashes
+  are dropped (counted in `Families::dropped()`), never a panic.
+- `Telemetry::register_collector(collector, labels)` adds constant labels to every sample of that
+  collector: give each registration its own labels when two collectors report the same families
+  (two QUIC servers, say). `unregister_collector(id)` removes it.
+- `metrics_handler(telemetry, http)` serves `Telemetry::render_prometheus()` (engine series, then
+  the collectors); pass `None` for `http` when `HttpMetrics` is registered as a collector.
+
+The same data without HTTP, as a snapshot:
+
+```rust,ignore
+{{#include ../../../crates/only-http/examples/guide-metrics.rs:snapshot}}
+```
+
+Ready-made collectors:
+
+| Collector | Series |
+|---|---|
+| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`, `only_http_request_duration_seconds`, `only_http_requests_in_flight`, `only_http_requests_by_version_total{version}` |
+| `only_quic::QuicServer` (also what `only_h3::serve` returns) | `only_quic_connections_open` (gauge), `only_quic_connections_accepted_total`, `only_quic_connections_closed_total`, `only_quic_datagrams_total{dir}`, `only_quic_bytes_total{dir}`, `only_quic_packets_sent_total`, `only_quic_packets_lost_total`, `only_quic_lost_bytes_total`, `only_quic_congestion_events_total`, `only_quic_ecn_ce_events_total` |
+| `only::tls::TlsStats` from `Tls::stats()` | `only_tls_handshakes_total{side, version}`, `only_tls_resumed_total{side}`, `only_tls_early_data_total{side, outcome}` |
+
+QUIC totals include connections that already closed, so they never go down. Collectors run on
+the thread serving the scrape, never on an I/O thread's hot path: keep them cheap. Push export
+(StatsD, OTLP) is not built in; `Families` holds everything such an exporter needs.
 
 ## Logs
 
@@ -92,6 +141,28 @@ Without a logger installed, errors and slow-callback warnings go to stderr (`onl
 are never lost silently; everything else is dropped. The maximum level defaults to `Off` and is
 checked first, with one relaxed atomic load, so disabled statements cost well under a
 nanosecond.
+
+**Per-target levels from the environment.** `only::log::init_from_env(default)` reads `ONLY_LOG`
+once, with env_logger-style directives, and installs the formatted logger with them:
+
+```text
+ONLY_LOG=info,only_http=debug,only_quic::conn=trace,only_http::access=off ./server
+```
+
+`level` sets the level of targets no directive names (without one they are off), `target=level`
+the level of a target and its submodules (`target::...`), a bare `target` means `trace`; the most
+specific target wins. Unset, `default` applies to everything; unparsable, a line on stderr says
+why and `default` applies. Nothing reads the variable unless `init_from_env` is called. The same
+syntax builds a filter in code: `"info,only_http=debug".parse::<only::log::Filter>()`, then
+`FmtLogger::new().init_filtered(filter)`, or `filter.enabled(metadata)` in your own `Logger`.
+Unlike env_logger, `only=debug` does not match `only_http` (targets match on `::` boundaries) and
+`/regex` message filters are not supported.
+
+**Compile-time caps.** The only-log features `max_level_off` ... `max_level_trace` and
+`release_max_level_*` (the latter for builds without debug assertions) remove statements above
+the cap at compile time, as in the `log` crate; `only::log::STATIC_MAX_LEVEL` is the result.
+Enable them in the application only (features are unified across the dependency graph):
+`only-log = { version = "1", features = ["release_max_level_info"] }`.
 
 **Existing `log` setups (env_logger, `tracing-log`, fern ...).** Enable the `log` feature
 (`only = { version = "1", features = ["log"] }`). While no only-log logger is installed, every

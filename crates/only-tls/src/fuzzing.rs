@@ -99,7 +99,8 @@ fn feed(c: &mut Connection, data: &[u8]) {
 /// `tls_server`: arbitrary bytes as what a client sends to a server (TLS 1.3 / 1.2, with and
 /// without client authentication and a forced HelloRetryRequest, record_size_limit, OCSP
 /// stapling); never panics. Also parses the input directly as handshake messages (a
-/// CompressedCertificate among them), and what compresses decompresses to the same bytes.
+/// CompressedCertificate among them, and the QUIC transport parameters peek of a whole
+/// ClientHello), and what compresses decompresses to the same bytes.
 pub fn server(data: &[u8]) {
     let f = fixture();
     let cfg = if data.first().is_some_and(|b| b & 1 == 1) {
@@ -110,6 +111,7 @@ pub fn server(data: &[u8]) {
     let mut c = Connection::server(cfg.inner.clone());
     feed(&mut c, data);
     let _ = ClientHello::parse(data);
+    let _ = crate::quic::client_hello_transport_params(data);
     let _ = parse_certificate13(data);
     let _ = parse_certificate12(data);
     let _ = decompress_certificate(data, 1 << 17);

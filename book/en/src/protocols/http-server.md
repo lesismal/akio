@@ -17,11 +17,23 @@ listener directly, or wrap it in `Tls::server` for HTTPS. `HttpConfig`:
 | `max_header_bytes` | 64 KiB | request line + headers; larger gets 431 |
 | `max_body_bytes` | 1 MiB | buffered request body; larger gets 413 |
 | `h2` | `Some(H2Config::default())` | HTTP/2 settings, `None` for HTTP/1 only |
+| `head_timeout` | 10 s | from the first byte of a request head to its end (from the connection start for the first one), so a peer trickling bytes cannot hold a half-received head (slowloris); 408 and close. HTTP/2: until the client's `SETTINGS` (GOAWAY `SETTINGS_TIMEOUT`) |
+| `keep_alive_timeout` | 75 s | wait for the next request; responses still being prepared are sent before the close. HTTP/2: no frame for this long and no open stream, then GOAWAY |
+| `body_timeout` | 60 s | no progress on a request body for this long: 408 (a streamed HTTP/1 body is cut). HTTP/2: buffered uploads only (streamed ones, gRPC streams say, are paced by their service) |
+
+Each timeout is `None` to disable it. They are checked by one sweeper thread per process at a
+fraction of the shortest timeout (5 ms to 1 s), so they fire between the timeout and two ticks
+after it, never early.
 
 `H2Config`: `max_concurrent_streams` (128), `initial_window` (1 MiB per stream),
 `conn_window` (16 MiB), `max_header_list` (64 KiB), `max_body_bytes` (1 MiB, buffered bodies),
 `max_pending_bytes` (8 MiB a response may hold back for a slow peer before writers get
-`Overloaded`).
+`Overloaded`), `max_conn_pending_bytes` (32 MiB of response bodies held in memory over all the
+connection's streams; past it a response is reset with `ENHANCE_YOUR_CALM` and streamed writes
+get `Overloaded`), `max_resets` (100 streams reset by the peer, or reset by the server because
+of the peer's frames, per `reset_window`: Rapid Reset, CVE-2023-44487), `max_control_frames`
+(1000 `PRIORITY`, extra `SETTINGS`, empty `DATA` or `CONTINUATION` frames per `reset_window`)
+and `reset_window` (30 s). Past either budget the connection gets `GOAWAY ENHANCE_YOUR_CALM`.
 
 HTTP/2 is selected per connection: the client preface (prior knowledge, and TLS with ALPN `h2`)
 or an `Upgrade: h2c` request. The same service and middleware serve both versions; HTTP/3 reuses

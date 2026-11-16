@@ -18,6 +18,7 @@
 #![warn(clippy::unwrap_used)]
 
 pub mod codec;
+mod deadline;
 
 /// The header map of metadata and trailers (re-exported from `only-http`).
 pub use only_http::Headers;
@@ -28,11 +29,13 @@ pub mod fuzzing;
 use std::{
     collections::HashMap,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
+
+use deadline::Timer;
 
 use only_http::{
     BodyEvent, BodyMode, BodyStream, Context, Method, Request, Response, Service,
@@ -118,7 +121,11 @@ impl Status {
     }
 
     fn put(&self, h: &mut Headers) {
-        h.set("grpc-status", (self.code as i32).to_string());
+        const CODES: [&str; 17] = [
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15",
+            "16",
+        ];
+        h.set("grpc-status", CODES[self.code as usize]);
         if !self.message.is_empty() {
             h.set("grpc-message", pct_encode(&self.message));
         }
@@ -162,27 +169,50 @@ fn pct_decode(s: &str) -> String {
 /// Default largest message (4 MiB, as in grpc-go).
 pub const DEFAULT_MAX_MESSAGE: usize = 4 << 20;
 
-fn frame(msg: &[u8], gzip: bool) -> Vec<u8> {
-    let (flag, body) = if gzip {
-        (
-            1u8,
-            only_deflate::compress(
-                only_deflate::Format::Gzip,
-                only_deflate::Level::DEFAULT,
-                msg,
-            ),
-        )
+/// Default most bytes of messages gathered for one call by [`GrpcClient::collect`] /
+/// [`GrpcClient::unary`] (responses) and by [`GrpcServer::client_stream`] (requests): 64 MiB.
+pub const DEFAULT_MAX_COLLECT: usize = 64 << 20;
+
+/// Default longest deadline a client may ask for with `grpc-timeout`
+/// ([`GrpcServer::max_deadline`]): 24 hours.
+pub const DEFAULT_MAX_DEADLINE: Duration = Duration::from_secs(24 * 3600);
+
+/// Default deadline of [`GrpcClient::unary`] and [`GrpcClient::collect`] calls that set none
+/// ([`GrpcClient::default_timeout`]): 30 s.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A buffer that held a message larger than this is released afterwards.
+const KEEP_BUF: usize = 64 * 1024;
+
+/// Appends the length-prefixed message to `out`: the 5-byte prefix and the message are written
+/// into one buffer (one copy of an uncompressed message).
+fn frame_into(out: &mut Vec<u8>, msg: &[u8], gzip: bool) {
+    if gzip {
+        let body = only_deflate::compress(
+            only_deflate::Format::Gzip,
+            only_deflate::Level::DEFAULT,
+            msg,
+        );
+        out.reserve(5 + body.len());
+        out.push(1);
+        out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+        out.extend_from_slice(&body);
     } else {
-        (0, msg.to_vec())
-    };
-    let mut out = Vec::with_capacity(5 + body.len());
-    out.push(flag);
-    out.extend_from_slice(&(body.len() as u32).to_be_bytes());
-    out.extend_from_slice(&body);
+        out.reserve(5 + msg.len());
+        out.push(0);
+        out.extend_from_slice(&(msg.len() as u32).to_be_bytes());
+        out.extend_from_slice(msg);
+    }
+}
+
+fn frame(msg: &[u8], gzip: bool) -> Vec<u8> {
+    let mut out = Vec::new();
+    frame_into(&mut out, msg, gzip);
     out
 }
 
-/// Splits a byte stream into messages.
+/// Splits a byte stream into messages. Complete messages are taken straight from the bytes fed
+/// to it; only a message split across reads is gathered in its buffer.
 struct Deframer {
     buf: Vec<u8>,
     max: usize,
@@ -198,52 +228,80 @@ impl Deframer {
         }
     }
 
+    #[cfg(any(test, feature = "fuzzing"))]
     fn feed(&mut self, data: &[u8], out: &mut Vec<Vec<u8>>) -> Result<(), Status> {
-        self.buf.extend_from_slice(data);
-        let mut pos = 0;
-        while self.buf.len() - pos >= 5 {
-            let flag = self.buf[pos];
-            let len = u32::from_be_bytes([
-                self.buf[pos + 1],
-                self.buf[pos + 2],
-                self.buf[pos + 3],
-                self.buf[pos + 4],
-            ]) as usize;
-            if len > self.max {
-                return Err(Status::new(
-                    Code::ResourceExhausted,
-                    "message larger than the limit",
-                ));
+        self.feed_with(data, |m| out.push(m))
+    }
+
+    fn feed_with(&mut self, mut data: &[u8], mut f: impl FnMut(Vec<u8>)) -> Result<(), Status> {
+        if !self.buf.is_empty() {
+            if self.buf.len() < 5 {
+                let take = (5 - self.buf.len()).min(data.len());
+                self.buf.extend_from_slice(&data[..take]);
+                data = &data[take..];
+                if self.buf.len() < 5 {
+                    return Ok(());
+                }
             }
-            if self.buf.len() - pos < 5 + len {
+            let total = 5 + self.len(&self.buf)?;
+            let take = (total - self.buf.len()).min(data.len());
+            self.buf.reserve_exact(total - self.buf.len());
+            self.buf.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            if self.buf.len() < total {
+                return Ok(());
+            }
+            f(self.message(&self.buf)?);
+            self.buf.clear();
+            if self.buf.capacity() > KEEP_BUF {
+                self.buf = Vec::new();
+            }
+        }
+        let mut pos = 0;
+        while data.len() - pos >= 5 {
+            let total = 5 + self.len(&data[pos..])?;
+            if data.len() - pos < total {
                 break;
             }
-            let body = &self.buf[pos + 5..pos + 5 + len];
-            let msg = if flag == 1 {
-                if !self.gzip {
-                    return Err(Status::new(
-                        Code::Internal,
-                        "compressed message without grpc-encoding",
-                    ));
-                }
-                match only_deflate::decompress(only_deflate::Format::Gzip, body, self.max) {
-                    Ok(v) => v,
-                    Err(only_deflate::Error::TooLarge) => {
-                        return Err(Status::new(
-                            Code::ResourceExhausted,
-                            "message larger than the limit",
-                        ));
-                    }
-                    Err(_) => return Err(Status::new(Code::Internal, "bad gzip message")),
-                }
-            } else {
-                body.to_vec()
-            };
-            out.push(msg);
-            pos += 5 + len;
+            f(self.message(&data[pos..pos + total])?);
+            pos += total;
         }
-        self.buf.drain(..pos);
+        self.buf.extend_from_slice(&data[pos..]);
         Ok(())
+    }
+
+    /// The length in the prefix at the start of `b`, checked against the limit.
+    fn len(&self, b: &[u8]) -> Result<usize, Status> {
+        let len = u32::from_be_bytes([b[1], b[2], b[3], b[4]]) as usize;
+        if len > self.max {
+            return Err(Status::new(
+                Code::ResourceExhausted,
+                "message larger than the limit",
+            ));
+        }
+        Ok(len)
+    }
+
+    /// The message of one complete frame (prefix and body).
+    fn message(&self, frame: &[u8]) -> Result<Vec<u8>, Status> {
+        let body = &frame[5..];
+        if frame[0] != 1 {
+            return Ok(body.to_vec());
+        }
+        if !self.gzip {
+            return Err(Status::new(
+                Code::Internal,
+                "compressed message without grpc-encoding",
+            ));
+        }
+        match only_deflate::decompress(only_deflate::Format::Gzip, body, self.max) {
+            Ok(v) => Ok(v),
+            Err(only_deflate::Error::TooLarge) => Err(Status::new(
+                Code::ResourceExhausted,
+                "message larger than the limit",
+            )),
+            Err(_) => Err(Status::new(Code::Internal, "bad gzip message")),
+        }
     }
 
     fn leftover(&self) -> bool {
@@ -277,64 +335,6 @@ fn format_timeout(d: Duration) -> String {
     format!("{}m", d.as_millis().max(1))
 }
 
-// ---- timers ----------------------------------------------------------------------------------
-
-type TimerFn = Box<dyn FnOnce() + Send>;
-
-fn after(at: Instant, f: impl FnOnce() + Send + 'static) {
-    struct T {
-        q: Mutex<Vec<(Instant, TimerFn)>>,
-        cv: Condvar,
-    }
-    static TIMERS: std::sync::OnceLock<&'static T> = std::sync::OnceLock::new();
-    let t = TIMERS.get_or_init(|| {
-        let t: &'static T = Box::leak(Box::new(T {
-            q: Mutex::new(Vec::new()),
-            cv: Condvar::new(),
-        }));
-        std::thread::Builder::new()
-            .name("only-grpc-deadlines".into())
-            .spawn(move || {
-                let mut g = t.q.lock().unwrap_or_else(|p| p.into_inner());
-                loop {
-                    let now = Instant::now();
-                    let mut due = Vec::new();
-                    let mut i = 0;
-                    while i < g.len() {
-                        if g[i].0 <= now {
-                            due.push(g.swap_remove(i).1);
-                        } else {
-                            i += 1;
-                        }
-                    }
-                    if !due.is_empty() {
-                        drop(g);
-                        for f in due {
-                            f();
-                        }
-                        g = t.q.lock().unwrap_or_else(|p| p.into_inner());
-                        continue;
-                    }
-                    let next = g.iter().map(|(a, _)| *a).min();
-                    g = match next {
-                        Some(a) => {
-                            t.cv.wait_timeout(g, a.saturating_duration_since(now))
-                                .unwrap_or_else(|p| p.into_inner())
-                                .0
-                        }
-                        None => t.cv.wait(g).unwrap_or_else(|p| p.into_inner()),
-                    };
-                }
-            })
-            .expect("deadline thread");
-        t
-    });
-    t.q.lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .push((at, Box::new(f)));
-    t.cv.notify_one();
-}
-
 // ---- server ----------------------------------------------------------------------------------
 
 /// The request side of a call: its metadata.
@@ -363,12 +363,27 @@ enum Out {
     Done,
 }
 
+/// A call's response side, behind the sink's one lock.
+struct SinkState {
+    out: Out,
+    headers: Headers,
+    trailers: Headers,
+    /// Reused to frame each message.
+    scratch: Vec<u8>,
+}
+
 struct SinkInner {
-    out: Mutex<Out>,
-    headers: Mutex<Headers>,
-    trailers: Mutex<Headers>,
+    state: Mutex<SinkState>,
     gzip: bool,
     finished: AtomicBool,
+    /// The call's deadline, removed when the call ends first.
+    deadline: Option<Timer>,
+}
+
+impl SinkInner {
+    fn state(&self) -> std::sync::MutexGuard<'_, SinkState> {
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
 }
 
 /// Sends a call's response messages and ends it with a status. Cheap to clone, usable from any
@@ -382,51 +397,60 @@ impl std::fmt::Debug for Sink {
     }
 }
 
+/// Ends a response that sent no message: a trailers-only response (one HEADERS frame).
+fn respond_trailers_only(d: only_http::Detached, headers: Headers, trailers: &Headers) {
+    let mut r = Response::new(200);
+    r.headers = headers;
+    r.headers.set("content-type", "application/grpc");
+    for (k, v) in trailers.iter() {
+        r.headers.set(k, v);
+    }
+    d.respond(r);
+}
+
 impl Sink {
     /// Adds response header metadata (before the first message only).
     pub fn set_header(&self, key: &str, value: &str) {
-        self.0
-            .headers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .set(key, value);
+        self.0.state().headers.set(key, value);
     }
 
     /// Adds trailer metadata.
     pub fn set_trailer(&self, key: &str, value: &str) {
-        self.0
-            .trailers
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .set(key, value);
+        self.0.state().trailers.set(key, value);
     }
 
     /// Sends the response head (with the headers set so far) if it has not gone out yet.
-    fn start(&self, out: &mut Out) {
-        if let Out::Pending(_) = out {
-            let Out::Pending(d) = std::mem::replace(out, Out::Done) else {
+    fn start(&self, st: &mut SinkState) {
+        if let Out::Pending(_) = st.out {
+            let Out::Pending(d) = std::mem::replace(&mut st.out, Out::Done) else {
                 unreachable!()
             };
-            let mut h =
-                std::mem::take(&mut *self.0.headers.lock().unwrap_or_else(|p| p.into_inner()));
+            let mut h = std::mem::take(&mut st.headers);
             h.set("content-type", "application/grpc");
             if self.0.gzip {
                 h.set("grpc-encoding", "gzip");
             }
             if let Some(s) = d.stream_response(200, h) {
-                *out = Out::Streaming(s);
+                st.out = Out::Streaming(s);
             }
         }
     }
 
     /// Sends one response message. `false` once the call is over.
     pub fn send(&self, msg: &[u8]) -> bool {
-        let mut out = self.0.out.lock().unwrap_or_else(|p| p.into_inner());
-        self.start(&mut out);
-        match &*out {
-            Out::Streaming(s) => s.write(&frame(msg, self.0.gzip)).is_ok(),
-            _ => false,
+        let mut g = self.0.state();
+        let st = &mut *g;
+        self.start(st);
+        let Out::Streaming(s) = &st.out else {
+            return false;
+        };
+        frame_into(&mut st.scratch, msg, self.0.gzip);
+        let ok = s.write(&st.scratch).is_ok();
+        st.scratch.clear();
+        if st.scratch.capacity() > KEEP_BUF {
+            st.scratch = Vec::new();
         }
+        ok
     }
 
     /// Encodes `msg` ([`codec::Message`]) and sends it. `false` once the call is over.
@@ -439,23 +463,15 @@ impl Sink {
         if self.0.finished.swap(true, Ordering::AcqRel) {
             return;
         }
-        let mut trailers =
-            std::mem::take(&mut *self.0.trailers.lock().unwrap_or_else(|p| p.into_inner()));
+        if let Some(t) = &self.0.deadline {
+            t.cancel();
+        }
+        let mut g = self.0.state();
+        let mut trailers = std::mem::take(&mut g.trailers);
         status.put(&mut trailers);
-        let mut out = self.0.out.lock().unwrap_or_else(|p| p.into_inner());
-        match std::mem::replace(&mut *out, Out::Done) {
+        match std::mem::replace(&mut g.out, Out::Done) {
             Out::Streaming(s) => s.finish_with_trailers(trailers),
-            Out::Pending(d) => {
-                // No message was sent: a trailers-only response (one HEADERS frame).
-                let mut r = Response::new(200);
-                r.headers =
-                    std::mem::take(&mut *self.0.headers.lock().unwrap_or_else(|p| p.into_inner()));
-                r.headers.set("content-type", "application/grpc");
-                for (k, v) in trailers.iter() {
-                    r.headers.set(k, v);
-                }
-                d.respond(r);
-            }
+            Out::Pending(d) => respond_trailers_only(d, std::mem::take(&mut g.headers), &trailers),
             Out::Done => {}
         }
     }
@@ -468,24 +484,18 @@ impl Sink {
 
 impl Drop for SinkInner {
     fn drop(&mut self) {
+        if let Some(t) = &self.deadline {
+            t.cancel();
+        }
         if self.finished.load(Ordering::Acquire) {
             return;
         }
         let mut t = Headers::new();
         Status::new(Code::Internal, "handler dropped the call").put(&mut t);
-        match std::mem::replace(
-            self.out.get_mut().unwrap_or_else(|p| p.into_inner()),
-            Out::Done,
-        ) {
+        let st = self.state.get_mut().unwrap_or_else(|p| p.into_inner());
+        match std::mem::replace(&mut st.out, Out::Done) {
             Out::Streaming(s) => s.finish_with_trailers(t),
-            Out::Pending(d) => {
-                let mut r = Response::new(200);
-                r.headers.set("content-type", "application/grpc");
-                for (k, v) in t.iter() {
-                    r.headers.set(k, v);
-                }
-                d.respond(r);
-            }
+            Out::Pending(d) => respond_trailers_only(d, Headers::new(), &t),
             Out::Done => {}
         }
     }
@@ -494,18 +504,35 @@ impl Drop for SinkInner {
 /// Request messages of a call, as they arrive: a message, or `None` when the client has
 /// finished sending.
 pub type OnMessage = Box<dyn FnMut(Option<Vec<u8>>) + Send>;
-type OpenFn = Arc<dyn Fn(&Metadata, Sink) -> OnMessage + Send + Sync>;
+/// Opens a call. Gets the metadata shared, so a method that needs it after `open` returns keeps
+/// a reference instead of a copy.
+type OpenFn = Arc<dyn Fn(&Arc<Metadata>, Sink) -> OnMessage + Send + Sync>;
 type Interceptor = Arc<dyn Fn(&Metadata) -> Result<(), Status> + Send + Sync>;
 
 /// A gRPC server: register methods, then serve it with `only_http::serve` (alone, or mounted in
 /// a router's fallback next to ordinary routes). The listener should speak HTTP/2 (prior
 /// knowledge, or TLS with ALPN `h2`).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct GrpcServer {
     methods: HashMap<String, OpenFn>,
     interceptors: Vec<Interceptor>,
     max_message: Option<usize>,
+    max_collect: usize,
+    max_deadline: Duration,
     compress: bool,
+}
+
+impl Default for GrpcServer {
+    fn default() -> Self {
+        GrpcServer {
+            methods: HashMap::new(),
+            interceptors: Vec::new(),
+            max_message: None,
+            max_collect: DEFAULT_MAX_COLLECT,
+            max_deadline: DEFAULT_MAX_DEADLINE,
+            compress: false,
+        }
+    }
 }
 
 impl std::fmt::Debug for GrpcServer {
@@ -520,16 +547,24 @@ impl GrpcServer {
         GrpcServer::default()
     }
 
+    fn insert(
+        mut self,
+        path: &str,
+        open: impl Fn(&Arc<Metadata>, Sink) -> OnMessage + Send + Sync + 'static,
+    ) -> GrpcServer {
+        self.methods.insert(path.to_owned(), Arc::new(open));
+        self
+    }
+
     /// The general form: `open` runs when a call starts and returns the function that receives
     /// its request messages (then `None` at the client's half-close). Answer with the [`Sink`].
     #[must_use]
     pub fn bidi(
-        mut self,
+        self,
         path: &str,
         open: impl Fn(&Metadata, Sink) -> OnMessage + Send + Sync + 'static,
     ) -> GrpcServer {
-        self.methods.insert(path.to_owned(), Arc::new(open));
-        self
+        self.insert(path, move |md, sink| open(md, sink))
     }
 
     /// A unary method: one request message, `f` answers through the sink (`send` then `finish`).
@@ -540,7 +575,7 @@ impl GrpcServer {
         f: impl Fn(&Metadata, Vec<u8>, Sink) + Send + Sync + 'static,
     ) -> GrpcServer {
         let f = Arc::new(f);
-        self.bidi(path, move |md, sink| {
+        self.insert(path, move |md, sink| {
             let (f, md) = (f.clone(), md.clone());
             let mut req: Option<Vec<u8>> = None;
             let mut count = 0;
@@ -571,6 +606,9 @@ impl GrpcServer {
     }
 
     /// A client-streaming method: `f` gets every request message once the client finishes.
+    /// The messages of one call are gathered up to
+    /// [`max_collect_bytes`](Self::max_collect_bytes) (64 MiB by default); past it the call
+    /// ends with `RESOURCE_EXHAUSTED`. Use [`bidi`](Self::bidi) to process them as they come.
     #[must_use]
     pub fn client_stream(
         self,
@@ -578,12 +616,31 @@ impl GrpcServer {
         f: impl Fn(&Metadata, Vec<Vec<u8>>, Sink) + Send + Sync + 'static,
     ) -> GrpcServer {
         let f = Arc::new(f);
-        self.bidi(path, move |md, sink| {
+        let max = self.max_collect;
+        self.insert(path, move |md, sink| {
             let (f, md) = (f.clone(), md.clone());
             let mut all = Vec::new();
+            let mut total = 0usize;
             Box::new(move |m| match m {
-                Some(m) => all.push(m),
-                None => f(&md, std::mem::take(&mut all), sink.clone()),
+                Some(m) => {
+                    if sink.is_finished() {
+                        return;
+                    }
+                    total = total.saturating_add(m.len());
+                    if total > max {
+                        all = Vec::new();
+                        return sink.finish(Status::new(
+                            Code::ResourceExhausted,
+                            "request messages larger than the limit",
+                        ));
+                    }
+                    all.push(m);
+                }
+                None => {
+                    if !sink.is_finished() {
+                        f(&md, std::mem::take(&mut all), sink.clone());
+                    }
+                }
             })
         })
     }
@@ -602,6 +659,24 @@ impl GrpcServer {
     #[must_use]
     pub fn max_message_bytes(mut self, n: usize) -> GrpcServer {
         self.max_message = Some(n);
+        self
+    }
+
+    /// Most bytes of request messages a [`client_stream`](Self::client_stream) method gathers
+    /// for one call (default [`DEFAULT_MAX_COLLECT`], 64 MiB). Applies to the methods
+    /// registered after it is set.
+    #[must_use]
+    pub fn max_collect_bytes(mut self, n: usize) -> GrpcServer {
+        self.max_collect = n;
+        self
+    }
+
+    /// Longest deadline a client may set with `grpc-timeout` (default
+    /// [`DEFAULT_MAX_DEADLINE`], 24 h); a longer one is shortened to it, and
+    /// [`Metadata::deadline`] shows the shortened deadline.
+    #[must_use]
+    pub fn max_deadline(mut self, d: Duration) -> GrpcServer {
+        self.max_deadline = d;
         self
     }
 
@@ -630,24 +705,23 @@ impl Service for GrpcServer {
         if *ctx.method() != Method::Post || !ct.starts_with("application/grpc") {
             return ctx.text(415, "gRPC requests are POSTs of application/grpc");
         }
-        let path = ctx.path().to_owned();
-        let md = Metadata {
-            method: path.clone(),
+        let md = Arc::new(Metadata {
+            method: ctx.path().to_owned(),
             headers: ctx.req().headers.clone(),
             deadline: ctx
                 .header("grpc-timeout")
                 .and_then(parse_timeout)
-                .and_then(|d| Instant::now().checked_add(d)),
-        };
+                .and_then(|d| Instant::now().checked_add(d.min(self.max_deadline))),
+        });
         for i in &self.interceptors {
             if let Err(s) = i(&md) {
                 return GrpcServer::trailers_only(ctx, s);
             }
         }
-        let Some(open) = self.methods.get(&path).cloned() else {
+        let Some(open) = self.methods.get(md.method.as_str()) else {
             return GrpcServer::trailers_only(
                 ctx,
-                Status::new(Code::Unimplemented, format!("unknown method {path}")),
+                Status::new(Code::Unimplemented, format!("unknown method {}", md.method)),
             );
         };
         let req_gzip = match ctx.header("grpc-encoding") {
@@ -667,45 +741,44 @@ impl Service for GrpcServer {
         let Some(detached) = ctx.detach() else {
             return;
         };
-        let sink = Sink(Arc::new(SinkInner {
-            out: Mutex::new(Out::Pending(detached)),
-            headers: Mutex::new(Headers::new()),
-            trailers: Mutex::new(Headers::new()),
-            gzip: resp_gzip,
-            finished: AtomicBool::new(false),
-        }));
-        if let Some(at) = md.deadline {
-            let weak = Arc::downgrade(&sink.0);
-            after(at, move || {
-                if let Some(s) = weak.upgrade() {
-                    Sink(s).finish(Status::new(Code::DeadlineExceeded, "deadline exceeded"));
-                }
+        let sink = Sink(Arc::new_cyclic(|weak: &std::sync::Weak<SinkInner>| {
+            let deadline = md.deadline.map(|at| {
+                let weak = weak.clone();
+                Timer::at(at, move || {
+                    if let Some(s) = weak.upgrade() {
+                        Sink(s).finish(Status::new(Code::DeadlineExceeded, "deadline exceeded"));
+                    }
+                })
             });
-        }
+            SinkInner {
+                state: Mutex::new(SinkState {
+                    out: Out::Pending(detached),
+                    headers: Headers::new(),
+                    trailers: Headers::new(),
+                    scratch: Vec::new(),
+                }),
+                gzip: resp_gzip,
+                finished: AtomicBool::new(false),
+                deadline,
+            }
+        }));
         let mut on_msg = open(&md, sink.clone());
         let mut deframer = Deframer::new(self.max_message.unwrap_or(DEFAULT_MAX_MESSAGE), req_gzip);
-        let sink2 = sink;
         ctx.on_body(move |_ctx, ev| match ev {
             BodyEvent::Chunk(b) => {
-                if sink2.is_finished() {
+                if sink.is_finished() {
                     return;
                 }
-                let mut msgs = Vec::new();
-                match deframer.feed(b, &mut msgs) {
-                    Ok(()) => {
-                        for m in msgs {
-                            on_msg(Some(m));
-                        }
-                    }
-                    Err(s) => sink2.finish(s),
+                if let Err(s) = deframer.feed_with(b, |m| on_msg(Some(m))) {
+                    sink.finish(s);
                 }
             }
             BodyEvent::End(_) => {
-                if sink2.is_finished() {
+                if sink.is_finished() {
                     return;
                 }
                 if deframer.leftover() {
-                    return sink2.finish(Status::new(Code::Internal, "truncated message"));
+                    return sink.finish(Status::new(Code::Internal, "truncated message"));
                 }
                 on_msg(None);
             }
@@ -722,19 +795,47 @@ pub struct GrpcClient {
     base: String,
     gzip: bool,
     max_message: usize,
+    max_collect: usize,
+    default_timeout: Option<Duration>,
 }
 
 /// Call options.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct CallOptions {
-    /// Deadline, sent as `grpc-timeout`.
+    /// Deadline, sent as `grpc-timeout` and enforced by the client too: when it passes, the
+    /// call ends with `DEADLINE_EXCEEDED` whatever the server does. `None`: for
+    /// [`GrpcClient::unary`] and [`GrpcClient::collect`], the client's
+    /// [`default_timeout`](GrpcClient::default_timeout) (30 s unless changed); for
+    /// [`GrpcClient::bidi`], no deadline (a streaming call may last as long as both sides
+    /// want; set one when the server might never end it).
     pub timeout: Option<Duration>,
     /// Custom metadata.
     pub metadata: Vec<(String, String)>,
 }
 
 type DoneFn = Box<dyn FnOnce(Status, Headers) + Send>;
+
+/// What the response events and the client-side deadline share: whoever ends the call first
+/// calls `done`.
+struct ClientCall {
+    done: Mutex<Option<DoneFn>>,
+    over: AtomicBool,
+    deadline: OnceLock<Timer>,
+}
+
+impl ClientCall {
+    fn end(&self, status: Status, trailers: Headers) {
+        let done = self.done.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(d) = done {
+            self.over.store(true, Ordering::Release);
+            if let Some(t) = self.deadline.get() {
+                t.cancel();
+            }
+            d(status, trailers);
+        }
+    }
+}
 
 /// The sending half of a streaming call.
 #[derive(Debug)]
@@ -768,6 +869,8 @@ impl GrpcClient {
             base: base.trim_end_matches('/').to_owned(),
             gzip: false,
             max_message: DEFAULT_MAX_MESSAGE,
+            max_collect: DEFAULT_MAX_COLLECT,
+            default_timeout: Some(DEFAULT_TIMEOUT),
         }
     }
 
@@ -778,8 +881,36 @@ impl GrpcClient {
         self
     }
 
+    /// Largest response message accepted (default 4 MiB); a larger one ends the call with
+    /// `RESOURCE_EXHAUSTED`.
+    #[must_use]
+    pub fn max_message_bytes(mut self, n: usize) -> GrpcClient {
+        self.max_message = n;
+        self
+    }
+
+    /// Most bytes of response messages [`collect`](Self::collect) and
+    /// [`unary`](Self::unary) gather for one call (default [`DEFAULT_MAX_COLLECT`], 64 MiB);
+    /// past it the call returns `RESOURCE_EXHAUSTED` at once.
+    #[must_use]
+    pub fn max_collect_bytes(mut self, n: usize) -> GrpcClient {
+        self.max_collect = n;
+        self
+    }
+
+    /// Deadline of [`unary`](Self::unary) and [`collect`](Self::collect) calls whose
+    /// [`CallOptions::timeout`] is `None` (default [`DEFAULT_TIMEOUT`], 30 s): they block the
+    /// calling thread, so they do not wait for ever on a server that never answers. `None`
+    /// waits as long as the connection lives.
+    #[must_use]
+    pub fn default_timeout(mut self, t: Option<Duration>) -> GrpcClient {
+        self.default_timeout = t;
+        self
+    }
+
     /// The general form: `on_message` receives response messages, `done` the final status and
-    /// trailers; the returned sink sends requests.
+    /// trailers; the returned sink sends requests. With [`CallOptions::timeout`] set, `done`
+    /// gets `DEADLINE_EXCEEDED` when it passes, and later messages are dropped.
     pub fn bidi(
         &self,
         path: &str,
@@ -800,7 +931,22 @@ impl GrpcClient {
         for (k, v) in &opts.metadata {
             req.headers.append(k.as_str(), v.as_str());
         }
-        let mut done: Option<DoneFn> = Some(Box::new(done));
+        let call = Arc::new(ClientCall {
+            done: Mutex::new(Some(Box::new(done))),
+            over: AtomicBool::new(false),
+            deadline: OnceLock::new(),
+        });
+        if let Some(at) = opts.timeout.and_then(|t| Instant::now().checked_add(t)) {
+            let weak = Arc::downgrade(&call);
+            let _ = call.deadline.set(Timer::at(at, move || {
+                if let Some(c) = weak.upgrade() {
+                    c.end(
+                        Status::new(Code::DeadlineExceeded, "deadline exceeded"),
+                        Headers::new(),
+                    );
+                }
+            }));
+        }
         let mut deframer: Option<Deframer> = None;
         let max = self.max_message;
         let mut status: Option<Status> = None;
@@ -825,40 +971,32 @@ impl GrpcClient {
                 deframer = Some(Deframer::new(max, gz));
             }
             H2Event::Data(b) => {
-                let mut msgs = Vec::new();
+                if call.over.load(Ordering::Acquire) || status.is_some() {
+                    return;
+                }
                 if let Some(d) = deframer.as_mut() {
-                    if let Err(s) = d.feed(b, &mut msgs) {
+                    if let Err(s) = d.feed_with(b, &mut on_message) {
                         status = Some(s);
                     }
-                }
-                for m in msgs {
-                    on_message(m);
                 }
             }
             H2Event::Trailers(t) => {
                 if let Some(s) = Status::from_headers(t) {
-                    status = Some(s);
+                    // A local error (a message over the limit) wins over the server's status.
+                    status.get_or_insert(s);
                 }
                 trailers = t.clone();
             }
-            H2Event::End => {
-                if let Some(d) = done.take() {
-                    d(
-                        status
-                            .take()
-                            .unwrap_or_else(|| Status::new(Code::Internal, "no grpc-status")),
-                        std::mem::take(&mut trailers),
-                    );
-                }
-            }
-            H2Event::Error(e) => {
-                if let Some(d) = done.take() {
-                    d(
-                        Status::new(Code::Unavailable, e.to_string()),
-                        Headers::new(),
-                    );
-                }
-            }
+            H2Event::End => call.end(
+                status
+                    .take()
+                    .unwrap_or_else(|| Status::new(Code::Internal, "no grpc-status")),
+                std::mem::take(&mut trailers),
+            ),
+            H2Event::Error(e) => call.end(
+                Status::new(Code::Unavailable, e.to_string()),
+                Headers::new(),
+            ),
         });
         ClientSink {
             up,
@@ -866,7 +1004,9 @@ impl GrpcClient {
         }
     }
 
-    /// A unary call; blocks until the answer (use [`bidi`](Self::bidi) for callbacks).
+    /// A unary call; blocks until the answer, the deadline (`opts.timeout`, else the
+    /// client's [`default_timeout`](Self::default_timeout)) or the connection's end. Use
+    /// [`bidi`](Self::bidi) for callbacks.
     pub fn unary(&self, path: &str, msg: &[u8], opts: CallOptions) -> Result<Vec<u8>, Status> {
         let (msgs, st) = self.collect(path, vec![msg.to_vec()], opts);
         match st.code {
@@ -879,24 +1019,53 @@ impl GrpcClient {
     }
 
     /// Sends `requests`, half-closes, and returns every response message with the status.
-    /// Covers server-streaming and client-streaming calls.
+    /// Covers server-streaming and client-streaming calls. Blocks until the end, the deadline
+    /// (as for [`unary`](Self::unary)) or [`max_collect_bytes`](Self::max_collect_bytes) of
+    /// responses (`RESOURCE_EXHAUSTED`).
     pub fn collect(
         &self,
         path: &str,
         requests: Vec<Vec<u8>>,
-        opts: CallOptions,
+        mut opts: CallOptions,
     ) -> (Vec<Vec<u8>>, Status) {
-        let out = Arc::new(Mutex::new(Vec::new()));
-        let fin = Arc::new((Mutex::new(None::<Status>), Condvar::new()));
-        let (o2, f2) = (out.clone(), fin.clone());
+        if opts.timeout.is_none() {
+            opts.timeout = self.default_timeout;
+        }
+        type Fin = (Mutex<Option<Status>>, Condvar);
+        fn finish(f: &Fin, s: Status) {
+            let mut g = f.0.lock().unwrap_or_else(|p| p.into_inner());
+            if g.is_none() {
+                *g = Some(s);
+                f.1.notify_all();
+            }
+        }
+        let out = Arc::new(Mutex::new((Vec::new(), 0usize)));
+        let fin: Arc<Fin> = Arc::new((Mutex::new(None), Condvar::new()));
+        let (o2, f2, f3) = (out.clone(), fin.clone(), fin.clone());
+        let max = self.max_collect;
         let sink = self.bidi(
             path,
             opts,
-            move |m| o2.lock().unwrap_or_else(|p| p.into_inner()).push(m),
-            move |s, _| {
-                *f2.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(s);
-                f2.1.notify_all();
+            move |m| {
+                let mut g = o2.lock().unwrap_or_else(|p| p.into_inner());
+                if g.1 > max {
+                    return; // over already: the call has returned
+                }
+                g.1 = g.1.saturating_add(m.len());
+                if g.1 > max {
+                    g.0 = Vec::new();
+                    drop(g);
+                    return finish(
+                        &f2,
+                        Status::new(
+                            Code::ResourceExhausted,
+                            "response messages larger than the limit",
+                        ),
+                    );
+                }
+                g.0.push(m);
             },
+            move |s, _| finish(&f3, s),
         );
         for r in &requests {
             sink.send(r);
@@ -907,14 +1076,202 @@ impl GrpcClient {
             g = fin.1.wait(g).unwrap_or_else(|p| p.into_inner());
         }
         let st = g.take().expect("set");
-        let msgs = std::mem::take(&mut *out.lock().unwrap_or_else(|p| p.into_inner()));
+        let msgs = std::mem::take(&mut out.lock().unwrap_or_else(|p| p.into_inner()).0);
         (msgs, st)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, thread};
+
+    use only::{Config, Engine, Listener};
+    use only_http::h2client::H2Options;
+
     use super::*;
+
+    fn setup<S: Service>(svc: S) -> (Arc<Engine>, GrpcClient) {
+        let e = Arc::new(
+            Engine::builder()
+                .config({
+                    let mut v = Config::default();
+                    v.shutdown_timeout = Duration::from_millis(300);
+                    v
+                })
+                .listen(
+                    Listener::tcp("127.0.0.1:0".parse().expect("addr"))
+                        .threads(1)
+                        .serve(only_http::serve(svc)),
+                )
+                .client_threads(1)
+                .build()
+                .expect("engine"),
+        );
+        e.start().expect("start");
+        let addr = e.local_addrs()[0];
+        let h2 = H2Client::dial_blocking(&e, addr, None, H2Options::default()).expect("dial");
+        (e, GrpcClient::new(h2, &format!("http://{addr}")))
+    }
+
+    fn opts(t: Option<Duration>) -> CallOptions {
+        CallOptions {
+            timeout: t,
+            ..CallOptions::default()
+        }
+    }
+
+    /// Calls that finish before their deadline leave no timer behind, on either side, and
+    /// a long-deadline flood does not grow the timer table.
+    #[test]
+    fn finished_calls_leave_no_deadline_timer() {
+        let (e, c) = setup(GrpcServer::new().unary("/t.S/Echo", |_md, req, sink| {
+            sink.send(&req);
+            sink.finish(Status::ok());
+        }));
+        let before = deadline::pending();
+        let hour = Some(Duration::from_secs(3600));
+        let threads: Vec<_> = (0..4)
+            .map(|_| {
+                let c = c.clone();
+                thread::spawn(move || {
+                    for _ in 0..500 {
+                        assert_eq!(c.unary("/t.S/Echo", b"x", opts(hour)).expect("ok"), b"x");
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("join");
+        }
+        let after = deadline::pending();
+        assert!(after < before + 50, "timers left: {before} -> {after}");
+        e.shutdown();
+        e.wait();
+    }
+
+    /// The server shortens a client's deadline to `max_deadline`.
+    #[test]
+    fn peer_deadlines_are_clamped() {
+        let held = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(None));
+        let (h2, s2) = (held.clone(), seen.clone());
+        let (e, c) = setup(
+            GrpcServer::new()
+                .max_deadline(Duration::from_millis(100))
+                .unary("/t.S/Hold", move |md, _req, sink| {
+                    *s2.lock().expect("lock") = md.deadline;
+                    h2.lock().expect("lock").push(sink); // never answered
+                }),
+        );
+        let t0 = Instant::now();
+        let st = c
+            .unary("/t.S/Hold", b"", opts(Some(Duration::from_secs(3600))))
+            .unwrap_err();
+        assert_eq!(st.code, Code::DeadlineExceeded);
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        let d = seen.lock().expect("lock").expect("deadline");
+        assert!(d <= Instant::now() + Duration::from_millis(100));
+        assert!(held.lock().expect("lock").iter().all(Sink::is_finished));
+        e.shutdown();
+        e.wait();
+    }
+
+    /// The client ends a call at its deadline even if the server never answers (and ignores
+    /// `grpc-timeout`); unary calls get the client's default deadline.
+    #[test]
+    fn client_enforces_deadlines() {
+        struct Silent(Mutex<Vec<only_http::Detached>>);
+        impl Service for Silent {
+            fn call(&self, ctx: &mut Context) {
+                if let Some(d) = ctx.detach() {
+                    self.0.lock().expect("lock").push(d);
+                }
+            }
+        }
+        let (e, c) = setup(Silent(Mutex::new(Vec::new())));
+        let t0 = Instant::now();
+        let st = c
+            .unary("/t.S/X", b"", opts(Some(Duration::from_millis(100))))
+            .unwrap_err();
+        assert_eq!(st.code, Code::DeadlineExceeded);
+        assert!(t0.elapsed() >= Duration::from_millis(100));
+        let c2 = c.clone().default_timeout(Some(Duration::from_millis(50)));
+        assert_eq!(
+            c2.unary("/t.S/X", b"", CallOptions::default())
+                .unwrap_err()
+                .code,
+            Code::DeadlineExceeded
+        );
+        // A streaming call with a deadline: `done` once, with DEADLINE_EXCEEDED.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _sink = c.bidi(
+            "/t.S/X",
+            opts(Some(Duration::from_millis(50))),
+            |_| {},
+            move |st, _| {
+                let _ = tx.send(st.code);
+            },
+        );
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(5)).expect("done"),
+            Code::DeadlineExceeded
+        );
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        e.shutdown();
+        e.wait();
+    }
+
+    /// `client_stream` requests and `collect` responses are gathered up to their limits.
+    #[test]
+    fn gathered_messages_are_bounded() {
+        let server = GrpcServer::new()
+            .max_collect_bytes(1000)
+            .client_stream("/t.S/Sum", |_md, msgs, sink| {
+                let n: usize = msgs.iter().map(Vec::len).sum();
+                sink.send(n.to_string().as_bytes());
+                sink.finish(Status::ok());
+            })
+            .server_stream("/t.S/Many", |_md, req, sink| {
+                let n: usize = String::from_utf8_lossy(&req).parse().expect("n");
+                for _ in 0..n {
+                    sink.send(&[7; 250]);
+                }
+                sink.finish(Status::ok());
+            });
+        let (e, c) = setup(server);
+        let o = || opts(None);
+        let sum = |sizes: &[usize]| {
+            let (m, st) = c.collect("/t.S/Sum", sizes.iter().map(|&n| vec![1; n]).collect(), o());
+            (
+                m.first().map(|m| String::from_utf8_lossy(m).into_owned()),
+                st.code,
+            )
+        };
+        assert_eq!(sum(&[400, 599]), (Some("999".into()), Code::Ok));
+        assert_eq!(sum(&[400, 600]), (Some("1000".into()), Code::Ok));
+        assert_eq!(sum(&[400, 601]), (None, Code::ResourceExhausted));
+        let c = c.max_collect_bytes(1000);
+        let (m, st) = c.collect("/t.S/Many", vec![b"4".to_vec()], o());
+        assert_eq!((m.len(), st.code), (4, Code::Ok), "at the limit");
+        let (m, st) = c.collect("/t.S/Many", vec![b"5".to_vec()], o());
+        assert_eq!((m.len(), st.code), (0, Code::ResourceExhausted), "over");
+        // Messages over the client's per-message limit.
+        let small = c.max_message_bytes(100);
+        let (_, st) = small.collect("/t.S/Many", vec![b"1".to_vec()], o());
+        assert_eq!(st.code, Code::ResourceExhausted);
+        e.shutdown();
+        e.wait();
+    }
+
+    #[test]
+    fn status_codes_are_written_without_formatting() {
+        for v in 0..=16 {
+            let mut h = Headers::new();
+            Status::new(Code::from_i32(v), "").put(&mut h);
+            assert_eq!(h.get("grpc-status"), Some(v.to_string().as_str()));
+            assert_eq!(Status::from_headers(&h).expect("status").code as i32, v);
+        }
+    }
 
     /// Regression (found by fuzzing): `grpc-timeout: 18446744073709551615H` overflowed the
     /// multiplication (a panic in debug builds) and a huge deadline panicked in `Instant + d`.
@@ -958,6 +1315,29 @@ mod tests {
                 .unwrap_err()
                 .code,
             Code::ResourceExhausted
+        );
+    }
+
+    #[test]
+    fn deframer_parses_in_place_and_releases_big_buffers() {
+        let mut wire = frame(b"a", false);
+        wire.extend(frame(&vec![3u8; 200_000], false));
+        wire.extend(frame(b"b", false));
+        let mut d = Deframer::new(1 << 20, false);
+        let mut out = Vec::new();
+        d.feed(&wire[..8], &mut out).unwrap(); // "a", then 2 bytes of the next prefix
+        assert_eq!((out.len(), d.buf.len()), (1, 2));
+        d.feed(&wire[8..100_000], &mut out).unwrap();
+        d.feed(&wire[100_000..], &mut out).unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!((out[1].len(), &out[2][..]), (200_000, &b"b"[..]));
+        assert!(!d.leftover() && d.buf.capacity() <= KEEP_BUF);
+        let mut d = Deframer::new(10, false);
+        d.feed(&wire[6..8], &mut Vec::new()).unwrap();
+        assert_eq!(
+            d.feed(&wire[8..12], &mut Vec::new()).unwrap_err().code,
+            Code::ResourceExhausted,
+            "refused once the prefix is complete"
         );
     }
 

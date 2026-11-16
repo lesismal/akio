@@ -16,6 +16,8 @@ pub(crate) struct SendSide {
     pub reset: Option<(u64, u64, bool)>,
     /// STOP_SENDING code from the peer.
     pub stopped: Option<u64>,
+    /// A write was refused (or no room reported): `Event::StreamWritable` once there is room.
+    pub wait_writable: bool,
 }
 
 /// A stream's receive side.
@@ -129,12 +131,78 @@ impl Connection {
         Ok(snd)
     }
 
-    /// Queues bytes on a stream.
+    /// The send buffer limits (`TransportConfig::stream_send_buffer` and `send_buffer`).
+    fn send_caps(&self) -> (u64, u64) {
+        let t = &self.cfg.transport;
+        (t.stream_send_buffer.max(1), t.send_buffer.max(1))
+    }
+
+    /// Queues bytes on a stream. Refused with `Overloaded` while the stream holds
+    /// `stream_send_buffer` bytes or the connection `send_buffer` bytes (written and not
+    /// acknowledged yet); `Event::StreamWritable` follows once there is room again. A write
+    /// accepted below the limits may pass them: a stream holds at most its limit plus one write.
     pub fn write(&mut self, id: StreamId, data: Bytes) -> Result<(), Error> {
+        let (scap, ccap) = self.send_caps();
+        let conn_full = self.send_held >= ccap;
+        let raw = u64::from(id);
         let snd = self.send_side(id)?;
+        if conn_full || snd.buf.held() >= scap {
+            if !std::mem::replace(&mut snd.wait_writable, true) {
+                self.writable_wait.push(raw);
+            }
+            return Err(Error::Overloaded);
+        }
+        let n = data.len() as u64;
         snd.buf.write(data);
-        self.enqueue(u64::from(id));
+        self.send_held += n;
+        self.enqueue(raw);
         Ok(())
+    }
+
+    /// Bytes a stream can take before writes are refused (the smaller of its own room and the
+    /// connection's). When it is zero, `Event::StreamWritable` follows once there is room.
+    pub fn send_capacity(&mut self, id: StreamId) -> Result<u64, Error> {
+        let (scap, ccap) = self.send_caps();
+        let conn_room = ccap.saturating_sub(self.send_held);
+        let raw = u64::from(id);
+        let snd = self.send_side(id)?;
+        let room = scap.saturating_sub(snd.buf.held()).min(conn_room);
+        if room == 0 && !std::mem::replace(&mut snd.wait_writable, true) {
+            self.writable_wait.push(raw);
+        }
+        Ok(room)
+    }
+
+    /// Streams waiting for room get `Event::StreamWritable` once their buffer and the
+    /// connection's are back to three quarters of their limits (so a writer is not woken for
+    /// every acknowledgment). Streams reset, stopped or finished meanwhile are dropped.
+    fn check_writable(&mut self) {
+        if self.writable_wait.is_empty() {
+            return;
+        }
+        let (scap, ccap) = self.send_caps();
+        if self.send_held > ccap - ccap / 4 {
+            return;
+        }
+        let low = scap - scap / 4;
+        let mut wait = std::mem::take(&mut self.writable_wait);
+        let (streams, events) = (&mut self.streams, &mut self.events);
+        wait.retain(|&raw| {
+            let Some(snd) = streams.get_mut(&raw).and_then(|s| s.send.as_mut()) else {
+                return false;
+            };
+            if snd.reset.is_some() || snd.stopped.is_some() || snd.buf.fin {
+                snd.wait_writable = false;
+                return false;
+            }
+            if snd.buf.held() > low {
+                return true;
+            }
+            snd.wait_writable = false;
+            events.push_back(Event::StreamWritable(StreamId::from_raw(raw)));
+            false
+        });
+        self.writable_wait = wait;
     }
 
     /// Ends a stream after its queued bytes.
@@ -164,9 +232,12 @@ impl Connection {
         }
         let final_size = snd.buf.sent();
         snd.reset = Some((code, final_size, false));
+        let held = snd.buf.held();
         let dropped = snd.buf.clear();
         self.stream_unacked = self.stream_unacked.saturating_sub(dropped);
+        self.send_held = self.send_held.saturating_sub(held);
         self.pending.reset_stream.insert(raw);
+        self.check_writable();
         Ok(())
     }
 
@@ -429,7 +500,11 @@ impl Connection {
         Ok(())
     }
 
-    pub(super) fn on_stop_sending(&mut self, raw: u64, code: u64) -> Result<(), TransportError> {
+    pub(in crate::proto) fn on_stop_sending(
+        &mut self,
+        raw: u64,
+        code: u64,
+    ) -> Result<(), TransportError> {
         let Some(s) = self.stream_for(raw, Need::Send)? else {
             return Ok(());
         };
@@ -445,12 +520,15 @@ impl Connection {
             // Answer with RESET_STREAM (RFC 9000 section 3.5).
             let final_size = snd.buf.sent();
             snd.reset = Some((code, final_size, false));
+            let held = snd.buf.held();
             let dropped = snd.buf.clear();
             self.stream_unacked = self.stream_unacked.saturating_sub(dropped);
+            self.send_held = self.send_held.saturating_sub(held);
             self.pending.reset_stream.insert(raw);
         }
         self.events
             .push_back(Event::StreamStopped(StreamId::from_raw(raw), code));
+        self.check_writable();
         Ok(())
     }
 
@@ -499,9 +577,13 @@ impl Connection {
         }
         let moved = snd.buf.on_ack(off..off + len, fin);
         self.stream_unacked = self.stream_unacked.saturating_sub(moved);
+        self.send_held = self.send_held.saturating_sub(moved);
         if self.window_blocked && self.stream_unacked < self.cfg.transport.send_window {
             self.window_blocked = false;
             self.requeue_all_streams();
+        }
+        if moved > 0 {
+            self.check_writable();
         }
         let Some(snd) = self.streams.get_mut(&raw).and_then(|s| s.send.as_mut()) else {
             return;

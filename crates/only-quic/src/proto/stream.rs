@@ -81,6 +81,11 @@ impl SendBuf {
         self.sent
     }
 
+    /// Bytes held in memory: written and not acknowledged from the front yet.
+    pub fn held(&self) -> u64 {
+        self.end - self.base
+    }
+
     /// Bytes written but never sent.
     pub fn unsent(&self) -> u64 {
         self.end - self.sent

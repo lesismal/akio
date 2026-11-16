@@ -21,6 +21,7 @@ mod error;
 pub mod fuzzing;
 mod group;
 mod handler;
+pub mod metrics;
 mod sync;
 pub mod telemetry;
 

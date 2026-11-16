@@ -52,8 +52,11 @@ only-socks relays exactly this way in both directions.
   `Overloaded` instead of queueing without limit.
 - HTTP/2 enforces flow control both ways and limits what a response may hold back for a slow
   peer (`H2Config::max_pending_bytes`).
-- QUIC (`Connection::queued_bytes(stream)`) and KCP (`Session::send` failing with
-  `KcpError::Full`, `Config::write_queue`) expose their own send windows.
+- QUIC bounds each stream's and each connection's send buffer (`TransportConfig::
+  stream_send_buffer`, `send_buffer`): `send` fails with `Overloaded` and
+  `QuicHandler::on_stream_writable` says when to go on. KCP's `Session::send` fails with
+  `KcpError::Full` past `KcpConfig::write_queue` and `KcpHandler::on_writable` follows at half.
+  HTTP/3 responses and file bodies follow the QUIC buffers.
 - UDP has no backpressure: datagrams the socket refuses are dropped, as UDP allows.
 
 ## Limits worth setting

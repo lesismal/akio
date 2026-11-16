@@ -261,7 +261,15 @@ fn session_config() -> HttpConfig {
             max_header_list: 16 << 10,
             max_body_bytes: 64 << 10,
             max_pending_bytes: 1 << 20,
+            max_conn_pending_bytes: 4 << 20,
+            max_resets: 100,
+            max_control_frames: 1000,
+            reset_window: std::time::Duration::from_secs(30),
         }),
+        // No deadline thread in fuzz runs: every read is driven by the harness.
+        head_timeout: None,
+        keep_alive_timeout: None,
+        body_timeout: None,
     }
 }
 

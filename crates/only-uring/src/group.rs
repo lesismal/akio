@@ -244,4 +244,24 @@ impl Group for UringGroup {
             on_error,
         });
     }
+
+    fn adopt(
+        &self,
+        stream: std::net::TcpStream,
+        acceptor: Arc<dyn DynAcceptor>,
+        on_error: Box<dyn FnOnce(io::Error) + Send>,
+    ) {
+        // A connected stream goes through the dial path: it is writable at once and has no
+        // pending error, so the loop opens it right away.
+
+        if let Err(e) = stream.set_nonblocking(true) {
+            return on_error(e);
+        }
+        let i = self.rr.fetch_add(1, Ordering::Relaxed) % self.shared.len();
+        self.shared[i].post(Cmd::Dial {
+            stream,
+            acceptor,
+            on_error,
+        });
+    }
 }
