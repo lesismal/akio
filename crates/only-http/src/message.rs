@@ -64,8 +64,8 @@ impl Method {
 
 /// HTTP header fields: ordered, names compared case-insensitively, duplicates allowed.
 ///
-/// All names and values live in one string, and the positions of the first few fields are
-/// kept inline, so a small set of fields costs one allocation and a large one two, however
+/// All names and values live in one string, and the positions of the first two fields are
+/// kept inline, so a small set of fields costs one allocation and a larger one two, however
 /// many fields it holds (a parsed request head used to cost two per field).
 #[derive(Clone, Default)]
 pub struct Headers {
@@ -76,19 +76,41 @@ pub struct Headers {
 /// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`.
 type Span = (usize, usize, usize);
 
-/// Fields kept inline before [`Spans`] moves to the heap.
-const INLINE: usize = 4;
+/// Fields whose positions [`Spans`] keeps inline.
+const INLINE: usize = 2;
 
-/// Field positions: up to [`INLINE`] inline (as `u32`), then in a vector.
+/// Field positions: up to [`INLINE`] inline (as `u16`, in the vector's niche, so `Spans` is
+/// no larger than a `Vec`: `Headers` is moved around inside every request and response), then
+/// in a vector.
 #[derive(Clone)]
 enum Spans {
-    Inline(u8, [[u32; 3]; INLINE]),
+    Inline(u8, [[u16; 3]; INLINE]),
     Heap(Vec<Span>),
 }
 
 impl Default for Spans {
     fn default() -> Spans {
         Spans::Inline(0, [[0; 3]; INLINE])
+    }
+}
+
+/// Iterates [`Spans`].
+enum SpanIter<'a> {
+    Inline(std::slice::Iter<'a, [u16; 3]>),
+    Heap(std::slice::Iter<'a, Span>),
+}
+
+impl Iterator for SpanIter<'_> {
+    type Item = Span;
+
+    #[inline]
+    fn next(&mut self) -> Option<Span> {
+        match self {
+            SpanIter::Inline(i) => i
+                .next()
+                .map(|&[x, y, z]| (usize::from(x), usize::from(y), usize::from(z))),
+            SpanIter::Heap(i) => i.next().copied(),
+        }
     }
 }
 
@@ -110,30 +132,23 @@ impl Spans {
     }
 
     #[inline]
-    fn get(&self, i: usize) -> Span {
+    fn iter(&self) -> SpanIter<'_> {
         match self {
-            Spans::Inline(_, a) => {
-                let [x, y, z] = a[i];
-                (x as usize, y as usize, z as usize)
-            }
-            Spans::Heap(v) => v[i],
+            Spans::Inline(n, a) => SpanIter::Inline(a[..usize::from(*n)].iter()),
+            Spans::Heap(v) => SpanIter::Heap(v.iter()),
         }
-    }
-
-    fn iter(&self) -> impl Iterator<Item = Span> + '_ {
-        (0..self.len()).map(move |i| self.get(i))
     }
 
     fn push(&mut self, f: Span) {
         if let Spans::Inline(n, a) = self {
             let i = usize::from(*n);
-            if let (true, Ok(z)) = (i < INLINE, u32::try_from(f.2)) {
+            if let (true, Ok(z)) = (i < INLINE, u16::try_from(f.2)) {
                 // `f.0 <= f.1 <= f.2`, so they fit too.
-                a[i] = [f.0 as u32, f.1 as u32, z];
+                a[i] = [f.0 as u16, f.1 as u16, z];
                 *n += 1;
                 return;
             }
-            let mut v = Vec::with_capacity(2 * INLINE);
+            let mut v = Vec::with_capacity(4 * INLINE);
             v.extend(self.iter());
             *self = Spans::Heap(v);
         }
@@ -148,7 +163,7 @@ impl Spans {
                 let mut w = 0;
                 for r in 0..usize::from(*n) {
                     let [x, y, z] = a[r];
-                    if keep((x as usize, y as usize, z as usize)) {
+                    if keep((usize::from(x), usize::from(y), usize::from(z))) {
                         a[w] = a[r];
                         w += 1;
                     }
@@ -679,6 +694,14 @@ mod tests {
             }
         }
         assert!(Headers::with_capacity(INLINE + 1, 0).is_empty());
+        // Positions past `u16` move to the heap.
+        let mut h = Headers::new();
+        h.append("a", "x".repeat(70_000));
+        h.append("b", "y");
+        assert_eq!(h.get("b"), Some("y"));
+        assert_eq!(h.get("a").map(str::len), Some(70_000));
+        // No larger than before the inline positions (two `Vec`s' worth).
+        assert_eq!(size_of::<Headers>(), 2 * size_of::<Vec<u8>>());
     }
 
     #[test]

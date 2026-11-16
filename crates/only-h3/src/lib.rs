@@ -609,9 +609,9 @@ fn with_lower<R>(n: &str, f: impl FnOnce(&[u8]) -> R) -> R {
 }
 
 /// Appends a HEADERS frame, its field section encoded straight into `out`: `:status` when
-/// given and `pseudo` fields, then `headers` (names lowercased, connection-specific fields and `host` dropped, CR and LF
-/// removed from values), then `date` when `add_date` and the headers have none, then
-/// `content-length` when given and the headers have none.
+/// given and `pseudo` fields, then `headers` (names lowercased, connection-specific fields and
+/// `host` dropped, CR and LF removed from values), then `date` when `add_date` and the headers
+/// have none, then `content-length` when given and the headers have none.
 pub(crate) fn put_head(
     out: &mut Vec<u8>,
     status: Option<u16>,

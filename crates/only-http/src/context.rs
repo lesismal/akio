@@ -150,7 +150,12 @@ impl Finish {
     }
 
     /// Runs the filters, then adds the extra headers the response did not set.
+    #[inline]
     fn apply(&mut self, resp: &mut Response, req: &Request) {
+        // Most responses have none of these: skip the draining and lookups.
+        if self.filters.is_empty() && self.extra.is_empty() && self.time_header.is_none() {
+            return;
+        }
         for f in self.filters.drain(..) {
             f(resp, req);
         }
