@@ -204,7 +204,7 @@ dev-dependency.
 | seal + open 1 KiB, AES-256-GCM ⁴ | 2,906 | 1,692 | 1.72 |
 | seal + open 16 KiB, AES-256-GCM ⁴ | 6,283 | 3,754 | 1.67 |
 | seal + open 64 KiB, AES-256-GCM ⁴ | 6,119 | ² | – |
-| seal + open 1 KiB, ChaCha20-Poly1305 ⁴ | 974 | 904 | 1.08 |
+| seal + open 1 KiB, ChaCha20-Poly1305 ⁴ | 1,038 | 905 | 1.15 |
 | seal + open 16 KiB, ChaCha20-Poly1305 ⁴ | 2,216 | 1,497 | 1.48 |
 | seal + open 64 KiB, ChaCha20-Poly1305 ⁴ | 2,206 | 1,519 | 1.45 |
 
@@ -218,7 +218,8 @@ RSA pass and the interleaved CRT halves, below); 775/s (0.43×) before the RSA p
 ⁴ From the record zero-fill removal (below), median of five rounds alternated with the previous
 code, rustls in the same runs: AES-128 1 KiB 1.62× → 1.75×, 16 KiB 1.58× → 1.72×, AES-256 16 KiB
 1.54× → 1.67×, ChaCha20-Poly1305 1 KiB 1.01× → 1.08×, 16 KiB 1.43× → 1.48×. Before it, the AES-GCM
-leftovers pass had taken AES-128 1 KiB from 1.51× to 1.58×.
+leftovers pass had taken AES-128 1 KiB from 1.51× to 1.58×. The ChaCha20-Poly1305 short-message
+pass (below) then took the 1 KiB row from 1.09× to 1.15× (987 → 1,038 MB/s, same-run A/B).
 
 Handshakes were 3,055 (X25519) and 2,306 (secp256r1) per second before the P-256 / X25519
 pass (0.61× and 0.45×; History). The handshake profile is still dominated by curve arithmetic:
@@ -608,7 +609,8 @@ messages for every CPU with AES and carry-less multiplication instructions.
 What was left for AES-GCM after this pass (1 KiB to 1.4 KiB at 0.96–1.11× ring, the 128-bit
 path on CPUs with VAES but no AVX-512, the TLS record zero-fill) is the next subsection. Other
 gaps: ChaCha20-Poly1305 below 1.4 KiB
-is at 0.82–0.96× ring and CPUs without AVX-512 / IFMA run the AVX2 ChaCha20 with a scalar
+was at 0.82–0.96× ring (now 0.98× for a 64-byte seal, 0.85× open, above ring from 1 KiB:
+"ChaCha20-Poly1305 short messages" below) and CPUs without AVX-512 / IFMA run the AVX2 ChaCha20 with a scalar
 Poly1305 (no AVX2 Poly1305); P-256
 ECDH is at 1.12× ring (a doubling ~348 cycles, about 44 per product whatever their order);
 Ed25519 verification is portable; without IFMA RSA-2048 signing is at parity with ring; SHA-512 and MD5 are portable.
@@ -788,6 +790,51 @@ in-place seal, `append` is −1.5% at 64 B (406 vs 412 MB/s), equal at 256 B and
 the two builds, within this host's run-to-run spread; an intermediate build without `#[inline]`
 on the `Fill` helpers was 4–6% slower on 64-byte in-place messages (128-bit AES-GCM seal,
 ChaCha20-Poly1305 open), which the final build does not show.
+
+#### ChaCha20-Poly1305 short messages (`--example chacha-sizes`, `tls-bench records`, CPU 2)
+
+Messages under about 1.4 KiB were below ring (64 B at 0.83×, 1 KiB 0.94–1.00×): a short message
+is one latency-bound cipher call plus a scalar Poly1305, and the profile of a 64-byte seal was
+62% the four-block xmm call that makes the Poly1305 key and the first three message blocks (about
+21 cycles per round: sixteen registers, 48 instructions per round for four blocks). What changed:
+
+- Four blocks run with one row of each block per zmm register (OpenSSL's layout: the column
+  round, `vpshufd` turns the diagonals into columns, the diagonal round, back): 15 instructions
+  per round instead of 48, with about the same dependency chain. It replaces the xmm kernel for
+  the head of a message and for tails of up to four blocks. Kept: the word-sliced ymm (eight
+  blocks) and zmm (sixteen) kernels. Two row sets side by side as an eight-block kernel was
+  slower than the ymm one (ChaCha20 alone, 512 B: 127 vs 108 ns per call).
+- A last partial group goes through the kernel under AVX-512 BW byte masks instead of a zeroed
+  1 KiB buffer and two copies. Whole blocks of that group still use plain loads and stores: a
+  first version masked every block of the group and lost 5–8% at 16 KiB when the buffer was not
+  64-byte aligned (on Zen 4 a masked access that crosses a cache line costs tens of cycles).
+- The head of a message is four or eight blocks, whichever leaves the cheaper rest by the
+  measured kernel times (about 63 ns for a row group, 83 for a ymm group, 140 for a zmm group):
+  256 B and 1400 B take one call fewer.
+- The AEAD's Poly1305 absorbs the padded AAD, the ciphertext and the length block directly
+  (fixed-size copies for a partial block) instead of going through the streaming buffer: no
+  `memcpy` calls for a few bytes.
+
+Median of five alternating rounds of the previous code (`main` at `62ea6318`) and this change,
+ring in the same runs, MB/s (AVX-512 + IFMA path; the AVX2 and portable paths moved by 0–3%):
+
+| MB/s | before | after | after / before | ring | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|---:|
+| seal 64 B | 408 | 481 | 1.18 | 489 | 0.83 | 0.98 |
+| seal 1 KiB | 2,440 | 2,646 | 1.08 | 2,440 | 1.00 | 1.08 |
+| seal 1400 B | 2,566 | 3,137 | 1.22 | 2,598 | 0.99 | 1.21 |
+| seal 16 KiB | 4,642 | 4,690 | 1.01 | 3,461 | 1.34 | 1.36 |
+| open 64 B | 366 | 410 | 1.12 | 482 | 0.76 | 0.85 |
+| open 1 KiB | 2,410 | 2,547 | 1.06 | 2,433 | 0.99 | 1.05 |
+| open 1400 B | 2,534 | 3,056 | 1.21 | 2,576 | 0.98 | 1.19 |
+| open 16 KiB | 4,315 | 4,385 | 1.02 | 3,289 | 1.31 | 1.33 |
+
+Seal by size (`PROFILE_LEN`, three rounds): 192 B +15%, 256 B +47%, 448 B +38%, 512 B +11%,
+960 B +19%, 2 KiB +4%. TLS 1.3 records with TLS_CHACHA20_POLY1305_SHA256 (seal + open, three
+rounds): 1 KiB 987 → 1,038 MB/s (+5.2%, 1.09× → 1.15× rustls + ring), 16 KiB 2,225 → 2,240, 64 KiB
+2,190 → 2,217. Left: opening 64-byte messages (0.85× ring; the tag must be checked before the
+plaintext is written, so the cipher and the scalar Poly1305 cannot overlap), and the 512-byte
+zeroed head buffer.
 
 ### Deflate (`only-deflate`, `--example bench` and `--example pmd_echo`, CPU 2)
 

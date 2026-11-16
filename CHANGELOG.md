@@ -10,6 +10,16 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: faster ChaCha20-Poly1305 for short messages on AVX-512
+
+On x86_64 with AVX-512, only-crypto's ChaCha20 runs four blocks with one row of each block per
+register (the head of a message and short tails), puts a partial last group through the kernel
+under byte masks instead of a buffer, and picks a head of four or eight blocks by measured kernel
+cost; the AEAD's Poly1305 skips its streaming buffer. Zen 4, same-run A/B: seal 64 B 408 → 481
+MB/s (0.83× → 0.98× ring), 1 KiB 1.00× → 1.08×, 1400 B 0.99× → 1.21×; open 64 B 0.76× → 0.85×;
+TLS 1.3 ChaCha20-Poly1305 records at 1 KiB 1.09× → 1.15× rustls + ring (docs/BENCHMARKS.md).
+16 KiB and up unchanged. No public API change.
+
 ### Changed: RSA signing runs both CRT halves in one AVX-512 IFMA loop
 
 On x86_64 with AVX-512 IFMA, the two half-exponentiations of an RSA private-key operation (mod p
