@@ -106,6 +106,7 @@ pub fn only_http::files::Files::fmt(&self, &mut core::fmt::Formatter<'_>) -> cor
 impl only_http::Service for only_http::files::Files
 pub fn only_http::files::Files::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn only_http::files::Files::call(&self, &mut only_http::Context)
+pub fn only_http::files::Files::streams_bodies(&self) -> bool
 impl core::marker::Send for only_http::files::Files
 impl core::marker::Sync for only_http::files::Files
 impl core::marker::Unpin for only_http::files::Files
@@ -602,8 +603,12 @@ pub only_http::H2Config::conn_window: u32
 pub only_http::H2Config::initial_window: u32
 pub only_http::H2Config::max_body_bytes: usize
 pub only_http::H2Config::max_concurrent_streams: u32
+pub only_http::H2Config::max_conn_pending_bytes: usize
+pub only_http::H2Config::max_control_frames: u32
 pub only_http::H2Config::max_header_list: u32
 pub only_http::H2Config::max_pending_bytes: usize
+pub only_http::H2Config::max_resets: u32
+pub only_http::H2Config::reset_window: core::time::Duration
 impl core::clone::Clone for only_http::H2Config
 pub fn only_http::H2Config::clone(&self) -> Self
 impl core::default::Default for only_http::H2Config
@@ -655,7 +660,10 @@ impl<S> core::marker::Unpin for only_http::HttpAcceptor<S> where alloc::rcs::arc
 impl<S> core::panic::unwind_safe::RefUnwindSafe for only_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::RefUnwindSafe
 impl<S> core::panic::unwind_safe::UnwindSafe for only_http::HttpAcceptor<S> where alloc::rcs::arc::Arc<S>: core::panic::unwind_safe::UnwindSafe
 #[non_exhaustive] pub struct only_http::HttpConfig
+pub only_http::HttpConfig::body_timeout: core::option::Option<core::time::Duration>
 pub only_http::HttpConfig::h2: core::option::Option<only_http::H2Config>
+pub only_http::HttpConfig::head_timeout: core::option::Option<core::time::Duration>
+pub only_http::HttpConfig::keep_alive_timeout: core::option::Option<core::time::Duration>
 pub only_http::HttpConfig::max_body_bytes: usize
 pub only_http::HttpConfig::max_header_bytes: usize
 impl core::clone::Clone for only_http::HttpConfig
@@ -745,6 +753,7 @@ pub fn only_http::Router::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt
 impl only_http::Service for only_http::Router
 pub fn only_http::Router::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn only_http::Router::call(&self, &mut only_http::Context)
+pub fn only_http::Router::streams_bodies(&self) -> bool
 impl core::marker::Send for only_http::Router
 impl core::marker::Sync for only_http::Router
 impl core::marker::Unpin for only_http::Router
@@ -756,6 +765,8 @@ pub fn only_http::Session<S>::on_close(&mut self, &only_core::conn::Conn<Self>, 
 pub fn only_http::Session<S>::on_data(&mut self, &only_core::conn::Conn<Self>, &[u8])
 impl<S> core::fmt::Debug for only_http::Session<S>
 pub fn only_http::Session<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<S> core::ops::drop::Drop for only_http::Session<S>
+pub fn only_http::Session<S>::drop(&mut self)
 impl<S> core::marker::Send for only_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Send, core::option::Option<H2Session<S>>: core::marker::Send
 impl<S> !core::marker::Sync for only_http::Session<S>
 impl<S> core::marker::Unpin for only_http::Session<S> where alloc::rcs::arc::Arc<S>: core::marker::Unpin, core::option::Option<H2Session<S>>: core::marker::Unpin
@@ -765,6 +776,7 @@ pub struct only_http::Streaming<S>(pub S)
 impl<S: only_http::Service> only_http::Service for only_http::Streaming<S>
 pub fn only_http::Streaming<S>::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn only_http::Streaming<S>::call(&self, &mut only_http::Context)
+pub fn only_http::Streaming<S>::streams_bodies(&self) -> bool
 impl<S> core::fmt::Debug for only_http::Streaming<S>
 pub fn only_http::Streaming<S>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl<S> core::marker::Send for only_http::Streaming<S> where S: core::marker::Send
@@ -794,17 +806,22 @@ pub fn F::handle(&self, &mut only_http::Context, &dyn only_http::Service)
 pub trait only_http::Service: core::marker::Send + core::marker::Sync + 'static
 pub fn only_http::Service::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn only_http::Service::call(&self, &mut only_http::Context)
+pub fn only_http::Service::streams_bodies(&self) -> bool
 impl only_http::Service for only_http::Router
 pub fn only_http::Router::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn only_http::Router::call(&self, &mut only_http::Context)
+pub fn only_http::Router::streams_bodies(&self) -> bool
 impl only_http::Service for only_http::files::Files
 pub fn only_http::files::Files::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn only_http::files::Files::call(&self, &mut only_http::Context)
+pub fn only_http::files::Files::streams_bodies(&self) -> bool
 impl<F> only_http::Service for F where F: core::ops::function::Fn(&mut only_http::Context) + core::marker::Send + core::marker::Sync + 'static
 pub fn F::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn F::call(&self, &mut only_http::Context)
+pub fn F::streams_bodies(&self) -> bool
 impl<S: only_http::Service> only_http::Service for only_http::Streaming<S>
 pub fn only_http::Streaming<S>::body_mode(&self, &only_http::message::Request) -> only_http::BodyMode
 pub fn only_http::Streaming<S>::call(&self, &mut only_http::Context)
+pub fn only_http::Streaming<S>::streams_bodies(&self) -> bool
 pub fn only_http::serve<S: only_http::Service>(S) -> only_http::HttpAcceptor<S>
 pub fn only_http::serve_with<S: only_http::Service>(only_http::HttpConfig, S) -> only_http::HttpAcceptor<S>
