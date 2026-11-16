@@ -37,12 +37,15 @@ struct Seen {
     paused: AtomicBool,
     /// Reads were no longer paused once the slow response went out.
     resumed: AtomicBool,
+    /// `resumed` is set (after the slow response was filled, so possibly after the client
+    /// already read it).
+    resumed_checked: AtomicBool,
     /// `on_close` ran with an error.
     closed_err: AtomicBool,
 }
 
 /// `d`: a response prepared on the pool (slow); `r`: a one-byte response filled at once;
-/// `R`: a 16 KiB response filled at once.
+/// `R`: a 16 KiB response filled at once; `.`: padding, not a request.
 struct H {
     seen: Arc<Seen>,
     delay: Duration,
@@ -53,6 +56,9 @@ const BIG: usize = 16 << 10;
 impl Handler for H {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         for &b in data {
+            if b == b'.' {
+                continue;
+            }
             let Ok(slot) = c.reserve_response() else {
                 return;
             };
@@ -66,6 +72,7 @@ impl Handler for H {
                             seen.slow.store(false, Ordering::SeqCst);
                             slot.fill(b"D".to_vec());
                             seen.resumed.store(!inner.read_held(), Ordering::SeqCst);
+                            seen.resumed_checked.store(true, Ordering::SeqCst);
                         },
                         |_, _, ()| {},
                     )
@@ -114,6 +121,15 @@ fn start(cfg: Config, delay: Duration) -> (Engine, Arc<Seen>) {
     (e, seen)
 }
 
+/// Whether reads resumed after the slow response (waits for the pool thread to tell).
+fn resumed(seen: &Seen) -> bool {
+    let t0 = Instant::now();
+    while !seen.resumed_checked.load(Ordering::SeqCst) && t0.elapsed() < Duration::from_secs(5) {
+        thread::sleep(Duration::from_millis(1));
+    }
+    seen.resumed.load(Ordering::SeqCst)
+}
+
 fn base() -> Config {
     let mut v = Config::default();
     v.shutdown_timeout = Duration::from_millis(300);
@@ -157,7 +173,7 @@ fn pipelined_behind_slow_response_is_bounded() {
     assert!(read <= 32 + 2 * 1024, "read {read} requests behind the slow one");
     assert!(max <= 32 + 1024, "{max} responses pending at once");
     assert!(seen.paused.load(Ordering::SeqCst));
-    assert!(seen.resumed.load(Ordering::SeqCst));
+    assert!(resumed(&seen));
     e.shutdown();
     e.wait();
 }
@@ -177,7 +193,7 @@ fn pending_limit_under_and_at() {
         assert_eq!(got[0], b'D');
         assert_eq!(seen.max_pending.load(Ordering::SeqCst), behind + 1);
         assert_eq!(seen.paused.load(Ordering::SeqCst), pauses, "{behind} behind");
-        assert!(seen.resumed.load(Ordering::SeqCst));
+        assert!(resumed(&seen));
         e.shutdown();
         e.wait();
     }
@@ -206,21 +222,25 @@ fn held_bytes_pause_at_watermark() {
     cfg.max_pending_responses = None;
     cfg.write_high_watermark = 64 << 10;
     cfg.max_queued_bytes = 16 << 20;
-    cfg.read_buffer = 16; // 16 requests per read at most
+    // Requests of 64 bytes and reads of 512 (io_uring's smallest buffer): 8 requests per read.
+    cfg.read_buffer = 512;
     let (e, seen) = start(cfg, Duration::from_millis(300));
     let mut s = connect(&e);
     let n = 200;
     let mut req = vec![b'd'];
-    req.extend(std::iter::repeat_n(b'R', n));
+    for _ in 0..n {
+        req.push(b'R');
+        req.extend_from_slice(&[b'.'; 63]);
+    }
     let got = exchange(&mut s, req, 1 + n * BIG);
     assert_eq!(got[0], b'D');
     assert!(got[1..].iter().all(|&b| b == b'R'));
     assert!(seen.paused.load(Ordering::SeqCst));
     let held = seen.max_held.load(Ordering::SeqCst);
     // Paused once 64 KiB (4 responses) were held: what one read already carried may add to it.
-    assert!(held <= (64 << 10) + 16 * BIG, "held {held}");
+    assert!(held <= (64 << 10) + 8 * BIG, "held {held}");
     let read = seen.read_while_slow.load(Ordering::SeqCst);
-    assert!(read <= 4 + 2 * 16, "read {read} requests behind the slow one");
+    assert!(read <= 4 + 2 * 8, "read {read} requests behind the slow one");
     e.shutdown();
     e.wait();
 }
