@@ -10,7 +10,9 @@
 //! every N packets; `bulk MB` adds one stream of MB megabytes; `v2` uses QUIC version 2 (a
 //! server then accepts version 2 only); `bbr` uses BBR; `migrate` moves the client to a new
 //! local port halfway and checks the echo goes on; `ecn` fails unless the client's path passed
-//! ECN validation (Linux).
+//! ECN validation (Linux); `0rtt` accepts 0-RTT (server; it prints "0-RTT stream" for each
+//! connection whose streams came early), or (client) resumes a first connection with 0-RTT,
+//! sending its first stream before the handshake, and fails unless the server accepted it.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -35,9 +37,16 @@ fn opt(args: &[String], name: &str) -> Option<String> {
         .and_then(|i| args.get(i + 1).cloned())
 }
 
-struct Echo;
+#[derive(Default)]
+struct Echo {
+    early_seen: bool,
+}
 impl QuicHandler for Echo {
     fn on_stream_data(&mut self, c: &Connection, id: StreamId, data: Bytes, fin: bool) {
+        if !self.early_seen && c.is_early(id) {
+            self.early_seen = true;
+            println!("0-RTT stream from {}", c.remote_addr());
+        }
         let _ = c.send(id, data);
         if fin {
             let _ = c.finish(id);
@@ -113,8 +122,9 @@ fn server(addr: SocketAddr, args: &[String]) {
     if has(args, "bbr") {
         cfg = cfg.transport(&transport_bbr());
     }
+    cfg = cfg.zero_rtt(has(args, "0rtt"));
     let e = Engine::builder()
-        .listen(Listener::udp(addr).serve(QuicServer::new(cfg, |_c: &Connection| Echo)))
+        .listen(Listener::udp(addr).serve(QuicServer::new(cfg, |_c: &Connection| Echo::default())))
         .build()
         .expect("engine");
     e.start().expect("start");
@@ -138,6 +148,28 @@ fn client(addr: SocketAddr, args: &[String]) {
     if has(args, "bbr") {
         cfg = cfg.transport(&transport_bbr());
     }
+    let zero_rtt = has(args, "0rtt");
+    if zero_rtt {
+        // A first connection for the session ticket.
+        cfg = cfg.zero_rtt(true);
+        let (tx, rx) = mpsc::channel();
+        let c = only_quic::dial(
+            &e,
+            addr,
+            "localhost",
+            cfg.clone(),
+            Client {
+                tx,
+                bufs: HashMap::new(),
+            },
+        )
+        .unwrap_or_else(|e| fail(format!("dial: {e}")));
+        if !matches!(rx.recv_timeout(Duration::from_secs(10)), Ok(Got::Connected)) {
+            fail("no first handshake".into());
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        c.close(0, b"");
+    }
     let (tx, rx) = mpsc::channel();
     let c = only_quic::dial(
         &e,
@@ -155,8 +187,37 @@ fn client(addr: SocketAddr, args: &[String]) {
         Ok(g) => g,
         Err(_) => fail(format!("timed out: {:?}", c.stats())),
     };
-    if !matches!(next(10), Got::Connected) {
-        fail("no handshake".into());
+    let mut want = HashMap::new();
+    if zero_rtt {
+        // Sent before the handshake: in 0-RTT.
+        let id = c
+            .open_bi()
+            .unwrap_or_else(|| fail("no 0-RTT stream credit (no ticket?)".into()));
+        let body = pattern(5000, 99);
+        c.send(id, body.clone())
+            .unwrap_or_else(|e| fail(format!("send: {e}")));
+        c.finish(id)
+            .unwrap_or_else(|e| fail(format!("finish: {e}")));
+        want.insert(id, body);
+    }
+    let mut early_back = Vec::new();
+    loop {
+        match next(10) {
+            Got::Connected => break,
+            Got::Stream(id, b) => early_back.push((id, b)),
+            _ => {}
+        }
+    }
+    if zero_rtt {
+        if c.early_data() != only::tls::EarlyData::Accepted {
+            fail(format!("0-RTT not accepted: {:?}", c.early_data()));
+        }
+        println!("0-RTT accepted");
+    }
+    for (id, b) in early_back {
+        if want.remove(&id).is_some_and(|w| w != b) {
+            fail(format!("stream {id} differs"));
+        }
     }
     if c.alpn().as_deref() != Some(&b"echo"[..]) {
         fail("alpn".into());
@@ -164,7 +225,6 @@ fn client(addr: SocketAddr, args: &[String]) {
     if has(args, "v2") && c.version() != only_quic::Version::V2 {
         fail(format!("version {:?}", c.version()));
     }
-    let mut want = HashMap::new();
     let (streams, unit) = if has(args, "small") {
         (10, 200)
     } else {

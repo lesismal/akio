@@ -1,8 +1,8 @@
 // Raw QUIC interop peer (github.com/quic-go/quic-go) for only-quic: an echo of streams and
 // datagrams, ALPN "echo".
 //
-//	go run . server 127.0.0.1:9500 [retry] [v2]                 echoes every bidirectional stream and datagram
-//	go run . client 127.0.0.1:9501 [bulk MB] [v2] [migrate] [small]
+//	go run . server 127.0.0.1:9500 [retry] [v2] [0rtt]          echoes every bidirectional stream and datagram
+//	go run . client 127.0.0.1:9501 [bulk MB] [v2] [migrate] [small] [0rtt]
 //	                                                            checks an only-quic echo server
 //	                                                            (crates/only-quic/examples/quic-interop.rs)
 //
@@ -10,8 +10,10 @@
 // stream of MB megabytes (150 MB crosses quic-go's key update interval of 100k packets). "v2"
 // speaks QUIC version 2 (RFC 9369) only. "migrate" moves the client to a new UDP socket (a
 // probed and switched path) halfway through the streams. "small" sends 10 small streams instead of
-// 50 (under quic-go's first key update, which it derives with the wrong label in version 2). A qlog
-// per connection is written when QLOGDIR is set.
+// 50 (under quic-go's first key update, which it derives with the wrong label in version 2). "0rtt"
+// accepts 0-RTT (server; it prints "0-RTT used" per connection that did), or (client) resumes a
+// first connection's session with 0-RTT, sending its first stream before the handshake completes,
+// and fails unless the server accepted it. A qlog per connection is written when QLOGDIR is set.
 package main
 
 import (
@@ -102,7 +104,9 @@ func server(addr string, retry bool) {
 	if retry {
 		tr.VerifySourceAddress = func(net.Addr) bool { return true }
 	}
-	ln, err := tr.Listen(&tls.Config{Certificates: []tls.Certificate{cert()}, NextProtos: []string{"echo"}}, config())
+	conf := config()
+	conf.Allow0RTT = has("0rtt")
+	ln, err := tr.ListenEarly(&tls.Config{Certificates: []tls.Certificate{cert()}, NextProtos: []string{"echo"}}, conf)
 	if err != nil {
 		fail("listen: %v", err)
 	}
@@ -112,6 +116,15 @@ func server(addr string, retry bool) {
 		if err != nil {
 			fail("accept: %v", err)
 		}
+		go func() {
+			select {
+			case <-c.HandshakeComplete():
+				if c.ConnectionState().Used0RTT {
+					fmt.Println("0-RTT used")
+				}
+			case <-c.Context().Done():
+			}
+		}()
 		go func() {
 			go func() {
 				for {
@@ -163,7 +176,30 @@ func client(addr string, bulkMB int) {
 	tlsConf := &tls.Config{InsecureSkipVerify: true, NextProtos: []string{"echo"}, ServerName: "localhost"}
 	var c *quic.Conn
 	var err error
-	if has("migrate") {
+	if has("0rtt") {
+		// A first connection for the session ticket, then 0-RTT with it.
+		tlsConf.ClientSessionCache = tls.NewLRUClientSessionCache(8)
+		first, err := quic.DialAddr(ctx, addr, tlsConf, config())
+		if err != nil {
+			fail("dial: %v", err)
+		}
+		if err := echoStream(first, pattern(100, 1)); err != nil {
+			fail("echo: %v", err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		_ = first.CloseWithError(0, "")
+		if c, err = quic.DialAddrEarly(ctx, addr, tlsConf, config()); err != nil {
+			fail("dial early: %v", err)
+		}
+		if err := echoStream(c, pattern(5000, 9)); err != nil {
+			fail("0-RTT echo: %v", err)
+		}
+		<-c.HandshakeComplete()
+		if !c.ConnectionState().Used0RTT {
+			fail("0-RTT was not accepted")
+		}
+		fmt.Println("0-RTT accepted")
+	} else if has("migrate") {
 		// Migration needs connection IDs: a transport of its own with 8-byte ones (DialAddr
 		// uses zero-length IDs, which a second path cannot be told apart by).
 		ua, err := net.ResolveUDPAddr("udp", addr)
