@@ -340,6 +340,8 @@ struct Core {
     control: u32,
     /// Offset of the buffer `next_frame` is looking at within the whole buffer being parsed.
     at: usize,
+    /// A stream finished since the last read (the idle period restarts from it).
+    finished: bool,
 }
 
 type Shared = Arc<Mutex<Core>>;
@@ -468,6 +470,7 @@ impl Core {
             if sid % 2 == 1 && !s.pushed {
                 self.open_peer = self.open_peer.saturating_sub(1);
             }
+            self.finished = true;
             let mem: usize = s
                 .out
                 .iter()
@@ -906,6 +909,11 @@ impl Core {
             .map(|(id, _)| *id)
             .collect();
         if stalled.is_empty() && self.streams.is_empty() {
+            if std::mem::take(&mut self.finished) {
+                // The last stream finished (a response sent later, from the pool, say) after
+                // the last read: idle from then on.
+                return Some(Phase::Idle);
+            }
             self.goaway(err::NO_ERROR);
             self.flush();
             self.maybe_close_after_goaway();
@@ -1818,9 +1826,9 @@ impl<S: Service> H2Session<S> {
                     svc_push.call(&mut ctx);
                     finalize(&mut ctx);
                 })),
-                mode_of: svc_mode.streams_bodies().then(|| -> ModeFn {
-                    Arc::new(move |r: &Request| svc_mode.body_mode(r))
-                }),
+                mode_of: svc_mode
+                    .streams_bodies()
+                    .then(|| -> ModeFn { Arc::new(move |r: &Request| svc_mode.body_mode(r)) }),
                 me: me.clone(),
                 pending_rst: None,
                 open_peer: 0,
@@ -1834,6 +1842,7 @@ impl<S: Service> H2Session<S> {
                 resets: 0,
                 control: 0,
                 at: 0,
+                finished: false,
             })
         });
         let s = H2Session {
@@ -1960,6 +1969,8 @@ impl<S: Service> H2Session<S> {
             None => c.rbuf.extend_from_slice(&data[pos..]),
         }
         self.phase.set(c.phase());
+        // Streams finished during this read are covered by the deadline armed after it.
+        c.finished = false;
         drop(c);
         drop(batch);
     }

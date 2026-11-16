@@ -126,14 +126,9 @@ impl<H: OnDeadline> Entry for Watch<H> {
         {
             return true;
         }
-        let conn = self
-            .conn
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
+        let conn = self.conn.lock().unwrap_or_else(|p| p.into_inner()).clone();
         let Some(c) = conn else { return false };
-        if c
-            .spawn_blocking(|| (), |h: &mut H, c, ()| h.on_deadline(c))
+        if c.spawn_blocking(|| (), |h: &mut H, c, ()| h.on_deadline(c))
             .is_err()
         {
             c.close();

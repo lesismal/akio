@@ -89,7 +89,8 @@ fn connect(e: &Engine) -> TcpStream {
 /// Everything until the server closes the connection.
 fn read_to_eof(s: &mut TcpStream) -> String {
     let mut all = Vec::new();
-    s.read_to_end(&mut all).expect("the server closes the connection");
+    s.read_to_end(&mut all)
+        .expect("the server closes the connection");
     String::from_utf8_lossy(&all).into_owned()
 }
 
@@ -104,7 +105,11 @@ fn read_resp(s: &mut TcpStream) -> (String, String) {
     let head = String::from_utf8(buf).unwrap();
     let len: usize = head
         .lines()
-        .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap()))
+        .find_map(|l| {
+            l.to_ascii_lowercase()
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().parse().unwrap())
+        })
         .unwrap_or(0);
     let mut body = vec![0; len];
     s.read_exact(&mut body).unwrap();
@@ -188,7 +193,11 @@ fn keep_alive_connections_close_when_idle() {
     }
     let t0 = Instant::now();
     assert_eq!(read_to_eof(&mut s), "");
-    assert!(t0.elapsed() >= Duration::from_millis(100), "{:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() >= Duration::from_millis(100),
+        "{:?}",
+        t0.elapsed()
+    );
     stop(&e);
 }
 
@@ -196,7 +205,8 @@ fn keep_alive_connections_close_when_idle() {
 fn a_response_slower_than_the_idle_timeout_is_still_sent() {
     let e = start(10_000, 200, 10_000);
     let mut s = connect(&e);
-    s.write_all(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    s.write_all(b"GET /slow HTTP/1.1\r\nHost: x\r\n\r\n")
+        .unwrap();
     assert_eq!(read_resp(&mut s).1, "slow");
     assert_eq!(read_to_eof(&mut s), "");
     stop(&e);

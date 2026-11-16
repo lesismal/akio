@@ -918,7 +918,8 @@ fn timeouts(head: u64, idle: u64, body: u64) -> HttpConfig {
 /// Reads until the server closes the connection; panics if it does not within 5 s.
 fn read_to_eof(s: &mut TcpStream) -> Vec<u8> {
     let mut all = Vec::new();
-    s.read_to_end(&mut all).expect("the server closes the connection");
+    s.read_to_end(&mut all)
+        .expect("the server closes the connection");
     all
 }
 
@@ -931,13 +932,20 @@ fn preface_and_settings_must_arrive_within_the_head_timeout() {
     let t0 = std::time::Instant::now();
     s.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n").unwrap();
     let all = read_to_eof(&mut s);
-    assert!(t0.elapsed() >= Duration::from_millis(300), "{:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() >= Duration::from_millis(300),
+        "{:?}",
+        t0.elapsed()
+    );
     let at = all
         .windows(9)
         .position(|w| w == [0, 0, 8, GOAWAY, 0, 0, 0, 0, 0])
         .expect("a GOAWAY");
     let code = &all[at + 9 + 4..at + 9 + 8];
-    assert_eq!(u32::from_be_bytes(code.try_into().unwrap()), SETTINGS_TIMEOUT);
+    assert_eq!(
+        u32::from_be_bytes(code.try_into().unwrap()),
+        SETTINGS_TIMEOUT
+    );
     // Half a preface: the same deadline.
     let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
@@ -955,7 +963,11 @@ fn idle_connections_get_goaway_and_busy_ones_stay() {
     assert_eq!(p.response(1).0, 200);
     let t0 = std::time::Instant::now();
     assert_eq!(p.goaway(), NO_ERROR);
-    assert!(t0.elapsed() >= Duration::from_millis(200), "{:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() >= Duration::from_millis(200),
+        "{:?}",
+        t0.elapsed()
+    );
     read_to_eof(&mut p.s);
     // Traffic keeps a connection open past the timeout.
     let mut p = Peer::open(&e, &[]);

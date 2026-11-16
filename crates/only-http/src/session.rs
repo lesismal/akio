@@ -62,10 +62,14 @@ impl Default for HttpConfig {
 impl HttpConfig {
     /// The shortest timeout configured, if any.
     fn shortest_timeout(&self) -> Option<Duration> {
-        [self.head_timeout, self.keep_alive_timeout, self.body_timeout]
-            .into_iter()
-            .flatten()
-            .min()
+        [
+            self.head_timeout,
+            self.keep_alive_timeout,
+            self.body_timeout,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 }
 
