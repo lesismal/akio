@@ -1416,6 +1416,7 @@ impl Core {
             trailers: Headers::new(),
             body: Vec::new(),
             peer: self.peer,
+            protocol: None,
         })
     }
 }
@@ -1533,6 +1534,7 @@ impl H2Responder {
                 trailers: Headers::new(),
                 body: Vec::new(),
                 peer: c.peer,
+                protocol: None,
             };
             (promised, hook, req)
         };
