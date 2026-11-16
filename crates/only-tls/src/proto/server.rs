@@ -83,6 +83,11 @@ pub(crate) struct Server {
     /// QUIC with 0-RTT enabled: what the early data is bound to besides the ticket (the
     /// transport parameters 0-RTT may use).
     early_ctx: Option<Vec<u8>>,
+    /// QUIC: the version a resumed ticket must have been issued in, the client's first
+    /// (RFC 9369 section 5); 0 for TCP or a QUIC handshake not bound to a version.
+    pub(crate) quic_accept_version: u32,
+    /// QUIC: the version tickets are issued in, the negotiated one.
+    pub(crate) quic_ticket_version: u32,
 }
 
 /// The parts of ClientHello1 that ClientHello2 must repeat: everything but the key shares,
@@ -162,6 +167,8 @@ impl Server {
             staple12: false,
             early: EarlyData::NotAttempted,
             early_ctx,
+            quic_accept_version: 0,
+            quic_ticket_version: 0,
         }
     }
 
@@ -438,7 +445,8 @@ impl Server {
                     let usable = s.version == TLS13
                         && !s.expired(now)
                         && suites::by_id(s.suite).is_some_and(|x| x.hash == suite.hash)
-                        && s.sni == self.sni;
+                        && s.sni == self.sni
+                        && s.quic_version == self.quic_accept_version;
                     if !usable {
                         continue;
                     }
@@ -797,6 +805,7 @@ impl Server {
                     peer_chain: self.peer_chain.clone(),
                     max_early_data,
                     early_ctx: self.early_ctx.clone().unwrap_or_default(),
+                    quic_version: self.quic_ticket_version,
                 };
                 let ticket = match (&self.cfg.ticketer, &self.cfg.cache) {
                     (Some(t), _) => t.seal(&session),
@@ -1124,6 +1133,7 @@ impl Server {
                 peer_chain: self.peer_chain.clone(),
                 max_early_data: 0,
                 early_ctx: Vec::new(),
+                quic_version: 0,
             };
             if self.send_ticket12 {
                 let ticket = self

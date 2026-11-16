@@ -640,7 +640,11 @@ fn dial_gives_up_after_connect_timeout() {
         .recv_timeout(Duration::from_secs(5))
         .expect("on_error not called after connect_timeout");
     assert_eq!(kind, std::io::ErrorKind::TimedOut);
-    assert!(t0.elapsed() >= Duration::from_millis(250), "{:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() >= Duration::from_millis(250),
+        "{:?}",
+        t0.elapsed()
+    );
     drop(held);
     stop(&e);
 }

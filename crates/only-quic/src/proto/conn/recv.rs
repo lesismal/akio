@@ -595,7 +595,10 @@ impl Connection {
                     ));
                 }
                 self.ep_events
-                    .push_back(EndpointEvent::NewToken(t.to_vec()));
+                    .push_back(EndpointEvent::NewToken(ClientToken {
+                        version: self.version,
+                        data: t.to_vec(),
+                    }));
             }
             Frame::Stream {
                 id,

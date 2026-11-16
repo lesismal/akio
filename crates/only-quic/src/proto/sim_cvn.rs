@@ -169,10 +169,17 @@ fn no_switch_without_preference_or_client_support() {
 #[test]
 fn zero_rtt_across_a_compatible_switch() {
     let (s, tls) = certs();
-    let mut scfg = prefer_v2();
+    // The ticket comes from a version 1 connection; then the server starts preferring
+    // version 2 (a rollout), and moves the resuming client there.
+    let mut scfg = client_cfg();
     scfg.zero_rtt = true;
     let mut sim = Sim::new(72, scfg, s, false);
     prime(&mut sim, &tls, zcfg());
+    sim.server
+        .ep
+        .server_cfg_mut()
+        .expect("server")
+        .prefer_version = Some(VERSION_2);
     sim.record_0rtt = true;
     let o = request(&mut sim, &tls, zcfg(), b"GET /early");
     assert_eq!(sim.cconn(o.h).early_data(), EarlyData::Accepted);
@@ -186,9 +193,94 @@ fn zero_rtt_across_a_compatible_switch() {
 }
 
 #[test]
+fn tickets_and_tokens_follow_the_negotiated_version() {
+    // A version 1 client moved to version 2: the ticket and the token it got are version
+    // 2's (RFC 9369 section 5), so the next connection starts in version 2 and uses both:
+    // resumed with 0-RTT, the address validated by the token, no switch needed.
+    let (s, tls) = certs();
+    let mut scfg = prefer_v2();
+    scfg.zero_rtt = true;
+    let mut sim = Sim::new(74, scfg, s, false);
+    let h = sim.handshake(&tls, zcfg());
+    assert_eq!(sim.cconn(h).orig_version(), Some(VERSION_1));
+    assert!(sim.run_until(Duration::from_secs(5), |s| !s.client.tokens.is_empty()));
+    let token = sim.client.tokens[0].clone();
+    assert_eq!(token.version, VERSION_2);
+    assert_eq!(
+        only_tls::quic::ticket_version(&tls, "localhost"),
+        Some(VERSION_2)
+    );
+    let n = sim.now;
+    sim.cconn(h).close(n, 0, b"");
+    sim.run_until(Duration::from_secs(5), |s| {
+        s.client.conns.is_empty() && s.server.conns.is_empty()
+    });
+    sim.record_long = true;
+    sim.long_seen.clear();
+    // Configured to start in version 1, as before.
+    let h = sim.connect(&tls, zcfg(), Some(token));
+    // The token validated the address with the first Initial.
+    assert!(sim.run_until(Duration::from_secs(5), |s| s.server_handle().is_some()));
+    assert!(sim.sconn().path.validated);
+    let ok = sim.run_until(Duration::from_secs(10), |s| {
+        s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
+    });
+    assert!(ok);
+    assert_eq!(sim.long_seen[0], (true, PacketType::Initial, VERSION_2));
+    assert_eq!(sim.cconn(h).version(), VERSION_2);
+    assert_eq!(sim.cconn(h).orig_version(), None);
+    assert_eq!(sim.sconn().orig_version(), None);
+    assert!(sim.cconn(h).resumed());
+    assert_eq!(sim.cconn(h).early_data(), EarlyData::Accepted);
+}
+
+#[test]
+fn a_version_1_ticket_is_not_used_in_version_2() {
+    // A ticket and token from a version 1 connection; the client is then configured to start
+    // in version 2. It must not use them there (RFC 9369 section 5): it starts in version 1,
+    // the version they belong to, and resumes.
+    let (s, tls) = certs();
+    let mut scfg = client_cfg();
+    scfg.zero_rtt = true;
+    let mut sim = Sim::new(75, scfg, s, false);
+    prime(&mut sim, &tls, zcfg());
+    let token = sim.client.tokens.last().cloned().expect("token");
+    assert_eq!(token.version, VERSION_1);
+    let mut cfg = zcfg();
+    cfg.version = VERSION_2;
+    let h = sim.connect(&tls, cfg.clone(), Some(token.clone()));
+    assert!(sim.run_until(Duration::from_secs(5), |s| s.server_handle().is_some()));
+    assert!(sim.sconn().path.validated);
+    let ok = sim.run_until(Duration::from_secs(10), |s| {
+        s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
+    });
+    assert!(ok);
+    assert_eq!(sim.cconn(h).version(), VERSION_1);
+    assert!(sim.cconn(h).resumed());
+    let n = sim.now;
+    sim.cconn(h).close(n, 0, b"");
+    sim.run_until(Duration::from_secs(5), |s| {
+        s.client.conns.is_empty() && s.server.conns.is_empty()
+    });
+    // A client that speaks only version 2 starts there without them: a full handshake,
+    // the address not validated.
+    cfg.versions = vec![VERSION_2];
+    let h = sim.connect(&tls, cfg, Some(token));
+    assert!(sim.run_until(Duration::from_secs(5), |s| s.server_handle().is_some()));
+    assert!(!sim.sconn().path.validated);
+    let ok = sim.run_until(Duration::from_secs(10), |s| {
+        s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
+    });
+    assert!(ok);
+    assert_eq!(sim.cconn(h).version(), VERSION_2);
+    assert!(!sim.cconn(h).resumed());
+    assert_eq!(sim.cconn(h).early_data(), EarlyData::NotAttempted);
+}
+
+#[test]
 fn forged_initial_of_another_version_is_ignored() {
     let (mut sim, tls) = Sim::default_pair(73);
-    let h = sim.connect(&tls, client_cfg(), Vec::new());
+    let h = sim.connect(&tls, client_cfg(), None);
     let now = sim.now;
     let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
     // The client's own Initial, relabelled as a version 2 Initial (type bits 01): it parses,

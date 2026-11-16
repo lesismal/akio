@@ -19,7 +19,7 @@ pub(crate) mod stream;
 #[cfg(test)]
 mod sim;
 
-pub(crate) use conn::{ConnConfig, Connection, EndpointEvent, Event, Transmit};
+pub(crate) use conn::{ClientToken, ConnConfig, Connection, EndpointEvent, Event, Transmit};
 pub(crate) use endpoint::{ConnHandle, DatagramEvent, Endpoint, ServerSetup};
 
 /// A map keyed by stream ID (or another `u64` the peer only partly chooses: stream IDs are

@@ -317,8 +317,8 @@ impl Default for TransportConfig {
 // ---- endpoint configurations ----
 
 /// Address-validation tokens (NEW_TOKEN) a client keeps per server name for later
-/// connections.
-pub(crate) type TokenStore = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+/// connections, each with the QUIC version it was issued in.
+pub(crate) type TokenStore = Arc<Mutex<HashMap<String, crate::proto::ClientToken>>>;
 
 /// A QUIC server configuration: TLS (see [`server_config`](crate::server_config)) plus
 /// transport settings. Cheap to clone.

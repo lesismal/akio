@@ -12,7 +12,7 @@ use only_crypto::rand::ChaChaRng;
 use super::cid::{ConnectionId, LOCAL_CID_LEN, reset_token};
 use super::coding::Reader;
 use super::conn::{
-    ConnConfig, Connection, EndpointEvent, EndpointKeys, Transmit, push_ip, unix_secs,
+    ClientToken, ConnConfig, Connection, EndpointEvent, EndpointKeys, Transmit, push_ip, unix_secs,
 };
 use super::crypto::TokenKey;
 use super::packet::{self, HeaderError, MIN_INITIAL_SIZE, PacketType};
@@ -103,6 +103,12 @@ impl Endpoint {
         self.server.as_ref().map(|s| s.tls.clone())
     }
 
+    /// The server's connection settings (tests: changing them between connections).
+    #[cfg(test)]
+    pub fn server_cfg_mut(&mut self) -> Option<&mut ConnConfig> {
+        self.server.as_mut().map(|s| &mut s.cfg)
+    }
+
     fn child_rng(&mut self) -> ChaChaRng {
         let mut s = [0u8; 32];
         self.rng.fill(&mut s);
@@ -122,7 +128,7 @@ impl Endpoint {
         tls: &only_tls::ClientConfig,
         server_name: &str,
         addr: SocketAddr,
-        token: Vec<u8>,
+        token: Option<ClientToken>,
     ) -> Result<(ConnHandle, Connection), crate::Error> {
         let rng = self.child_rng();
         let c = Connection::client(
@@ -200,7 +206,8 @@ impl Endpoint {
             return None;
         }
         let version = h.version;
-        let (orig, retry_scid, validated) = match self.check_token(from, h.token, &h.dcid) {
+        let (orig, retry_scid, validated) = match self.check_token(from, h.token, &h.dcid, version)
+        {
             TokenCheck::Retry(odcid) => (odcid, Some(h.dcid), true),
             TokenCheck::New => (h.dcid, None, true),
             TokenCheck::Invalid => return None,
@@ -277,6 +284,7 @@ impl Endpoint {
         let new_scid = ConnectionId::random(&mut self.rng, LOCAL_CID_LEN);
         let mut plain = Vec::with_capacity(64);
         plain.extend_from_slice(&unix_secs().to_be_bytes());
+        plain.extend_from_slice(&version.to_be_bytes());
         plain.push(odcid.len() as u8);
         plain.extend_from_slice(odcid);
         plain.push(new_scid.len() as u8);
@@ -294,7 +302,15 @@ impl Endpoint {
         })
     }
 
-    fn check_token(&self, from: SocketAddr, token: &[u8], dcid: &ConnectionId) -> TokenCheck {
+    /// Checks the token of an Initial in `version`: Retry and NEW_TOKEN tokens carry the
+    /// version they were issued in and count only for it (RFC 9369 section 5).
+    fn check_token(
+        &self,
+        from: SocketAddr,
+        token: &[u8],
+        dcid: &ConnectionId,
+        version: u32,
+    ) -> TokenCheck {
         if token.is_empty() {
             return TokenCheck::None;
         }
@@ -310,6 +326,7 @@ impl Endpoint {
             return TokenCheck::None;
         };
         let age = unix_secs().saturating_sub(ts);
+        let same_version = r.u32() == Some(version);
         let mut ip = Vec::new();
         push_ip(&mut ip, from);
         match kind {
@@ -322,14 +339,17 @@ impl Endpoint {
                     Some((odcid, scid, addr == &ip[..] && port == from.port()))
                 })();
                 match parsed {
-                    Some((odcid, scid, true)) if age <= RETRY_TOKEN_LIFETIME && scid == *dcid => {
+                    Some((odcid, scid, true))
+                        if same_version && age <= RETRY_TOKEN_LIFETIME && scid == *dcid =>
+                    {
                         TokenCheck::Retry(odcid)
                     }
                     _ => TokenCheck::Invalid,
                 }
             }
             TOKEN_NEW => {
-                if age <= NEW_TOKEN_LIFETIME && r.rest() == &ip[..] {
+                // Another version's token leaves the address unvalidated.
+                if same_version && age <= NEW_TOKEN_LIFETIME && r.rest() == &ip[..] {
                     TokenCheck::New
                 } else {
                     TokenCheck::None
@@ -406,6 +426,7 @@ impl Endpoint {
     }
 }
 
+#[cfg_attr(test, derive(Debug, PartialEq))]
 enum TokenCheck {
     None,
     Invalid,
@@ -421,5 +442,60 @@ impl<'a> ReaderExt<'a> for Reader<'a> {
     fn vbytes_u8(&mut self) -> Option<&'a [u8]> {
         let n = usize::from(self.u8()?);
         self.bytes(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::packet::{VERSION_1, VERSION_2};
+
+    #[test]
+    fn tokens_are_bound_to_the_version() {
+        let mut rng = ChaChaRng::from_seed([7; 32]);
+        let ep = Endpoint::with_rng(None, &mut rng);
+        let from: SocketAddr = "10.0.0.1:5000".parse().expect("addr");
+        let dcid = ConnectionId::new(&[1; 8]).expect("cid");
+        // A NEW_TOKEN token issued in version 1 (as Connection::new_token seals it).
+        let mut plain = unix_secs().to_be_bytes().to_vec();
+        plain.extend_from_slice(&VERSION_1.to_be_bytes());
+        push_ip(&mut plain, from);
+        let tok = ep.keys.token_key.seal(&mut rng, TOKEN_NEW, &plain);
+        assert_eq!(
+            ep.check_token(from, &tok, &dcid, VERSION_1),
+            TokenCheck::New
+        );
+        // In another version it validates nothing (RFC 9369 section 5).
+        assert_eq!(
+            ep.check_token(from, &tok, &dcid, VERSION_2),
+            TokenCheck::None
+        );
+        // Neither does a token sealed before tokens carried the version.
+        let mut old = unix_secs().to_be_bytes().to_vec();
+        push_ip(&mut old, from);
+        let tok = ep.keys.token_key.seal(&mut rng, TOKEN_NEW, &old);
+        assert_eq!(
+            ep.check_token(from, &tok, &dcid, VERSION_1),
+            TokenCheck::None
+        );
+        // A Retry token is only good in the version of the Retry.
+        let mut plain = unix_secs().to_be_bytes().to_vec();
+        plain.extend_from_slice(&VERSION_2.to_be_bytes());
+        plain.push(8);
+        plain.extend_from_slice(&[2; 8]);
+        plain.push(8);
+        plain.extend_from_slice(&dcid);
+        push_ip(&mut plain, from);
+        plain.extend_from_slice(&from.port().to_be_bytes());
+        let tok = ep.keys.token_key.seal(&mut rng, TOKEN_RETRY, &plain);
+        let odcid = ConnectionId::new(&[2; 8]).expect("cid");
+        assert_eq!(
+            ep.check_token(from, &tok, &dcid, VERSION_2),
+            TokenCheck::Retry(odcid)
+        );
+        assert_eq!(
+            ep.check_token(from, &tok, &dcid, VERSION_1),
+            TokenCheck::Invalid
+        );
     }
 }

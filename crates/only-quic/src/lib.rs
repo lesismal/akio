@@ -915,10 +915,7 @@ pub fn dial<H: QuicHandler>(
     handler: H,
 ) -> Result<Connection, Error> {
     let config = config.0;
-    let token = lock(&config.tokens)
-        .get(server_name)
-        .cloned()
-        .unwrap_or_default();
+    let token = lock(&config.tokens).get(server_name).cloned();
     let mut endpoint = proto::Endpoint::new(None);
     let mut cfg = proto::ConnConfig::new(config.transport.clone(), true);
     if let Some(n) = config.key_update {

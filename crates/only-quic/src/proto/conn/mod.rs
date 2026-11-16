@@ -305,7 +305,7 @@ pub enum EndpointEvent {
     /// The handshake is confirmed: the client's original destination ID may be forgotten.
     HandshakeDone,
     /// A token for future connections to this server (client).
-    NewToken(Vec<u8>),
+    NewToken(ClientToken),
     /// The probed path was validated: the connection moved to it (client; send the transmits
     /// over the probe's socket from now on and close the old one).
     Migrated { remote: SocketAddr },
@@ -406,6 +406,15 @@ impl ConnConfig {
     fn ecn(&self) -> bool {
         self.transport.ecn && self.ecn_io
     }
+}
+
+/// A NEW_TOKEN token a client keeps for later connections, with the QUIC version of the
+/// connection it came on: it is presented only by a connection starting in that version
+/// (RFC 9369 section 5).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClientToken {
+    pub version: u32,
+    pub data: Vec<u8>,
 }
 
 /// Secrets shared by the endpoint and its connections.
@@ -759,9 +768,15 @@ impl Connection {
         tls_cfg: &only_tls::ClientConfig,
         server_name: &str,
         remote: SocketAddr,
-        token: Vec<u8>,
+        token: Option<ClientToken>,
     ) -> Result<Connection, crate::Error> {
         let local = ConnectionId::random(&mut rng, LOCAL_CID_LEN);
+        let mut cfg = cfg;
+        cfg.version = start_version(&cfg, tls_cfg, server_name, token.as_ref());
+        let token = token
+            .filter(|t| t.version == cfg.version)
+            .map(|t| t.data)
+            .unwrap_or_default();
         Connection::client_with(
             now,
             cfg,
@@ -792,8 +807,15 @@ impl Connection {
         let mut params = Connection::local_params(&cfg);
         params.initial_scid = Some(local);
         params.disable_active_migration = false;
-        let tls = QuicTls::client_early(tls_cfg, server_name, params.encode(), cfg.zero_rtt)
-            .map_err(|e| crate::Error::Connect(e.to_string()))?;
+        // Only a ticket of the version we start in is offered (RFC 9369 section 5).
+        let tls = QuicTls::client_versioned(
+            tls_cfg,
+            server_name,
+            params.encode(),
+            cfg.zero_rtt,
+            cfg.version,
+        )
+        .map_err(|e| crate::Error::Connect(e.to_string()))?;
         // 0-RTT starts from the limits the server gave last time (RFC 9000 section 7.4.1).
         let remembered = tls
             .early_params()
@@ -901,6 +923,8 @@ impl Connection {
         self.orig_version = Some(self.version);
         self.version = v;
         self.cfg.version = v;
+        // Tickets from now on belong to the negotiated version (RFC 9369 section 5).
+        self.tls.set_ticket_version(v);
     }
 
     /// Undoes a client's [`switch_version`](Self::switch_version) for a packet of the new
@@ -910,6 +934,7 @@ impl Connection {
             self.version = v;
             self.cfg.version = v;
             self.spaces[0].keys = self.orig_initial.take();
+            self.tls.set_ticket_version(v);
         }
     }
 
@@ -930,11 +955,15 @@ impl Connection {
             .and_then(|p| p.version_info);
         if let Some((chosen, avail)) = avail {
             if chosen == self.version && avail.contains(&c.to) {
-                self.switch_version(c.to);
+                let from = self.version;
                 let mut list = vec![c.to];
                 list.extend(self.cfg.versions.iter().filter(|&&v| v != c.to));
                 c.params.version_info = Some((c.to, list));
-                self.tls = QuicTls::server_early(&c.tls, c.params.encode(), c.early_ctx.take());
+                // The client's ticket was issued in the version it started in; the ones we
+                // issue belong to the negotiated version (RFC 9369 section 5).
+                self.tls =
+                    QuicTls::server_versioned(&c.tls, c.params.encode(), c.early_ctx.take(), from);
+                self.switch_version(c.to);
             }
         }
         Some(std::mem::take(&mut c.hello))
@@ -993,7 +1022,8 @@ impl Connection {
                     hello: Vec::new(),
                 })
             });
-        let tls = QuicTls::server_early(tls_cfg, params.encode(), early_ctx);
+        // Tickets are bound to the version (RFC 9369 section 5).
+        let tls = QuicTls::server_versioned(tls_cfg, params.encode(), early_ctx, version);
         let mut c = Connection::base(
             Side::Server,
             now,
@@ -1257,6 +1287,9 @@ impl Connection {
     fn new_token(&mut self) -> Bytes {
         let mut plain = Vec::with_capacity(32);
         plain.extend_from_slice(&unix_secs().to_be_bytes());
+        // Issued in the negotiated version, valid only for connections starting in it
+        // (RFC 9369 section 5).
+        plain.extend_from_slice(&self.version.to_be_bytes());
         push_ip(&mut plain, self.path.remote);
         Bytes::from(
             self.keys
@@ -1642,6 +1675,24 @@ impl Connection {
             }
         }
     }
+}
+
+/// The version a client starts in: the one its newest session ticket for `server_name` was
+/// issued in, else its token's, else the configured one, as long as it speaks it. Tickets
+/// and tokens are bound to the version of the connection that issued them, and one moved
+/// to another version by compatible negotiation got them in that version (RFC 9369 section
+/// 5): starting there lets them be used, and the server would move it there again anyway.
+fn start_version(
+    cfg: &ConnConfig,
+    tls: &only_tls::ClientConfig,
+    server_name: &str,
+    token: Option<&ClientToken>,
+) -> u32 {
+    let usable = |v: &u32| supported(*v) && cfg.versions.contains(v);
+    only_tls::quic::ticket_version(tls, server_name)
+        .filter(usable)
+        .or_else(|| token.map(|t| t.version).filter(usable))
+        .unwrap_or(cfg.version)
 }
 
 /// The send window the peer's parameters give a stream we can send on.

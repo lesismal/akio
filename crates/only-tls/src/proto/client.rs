@@ -67,6 +67,9 @@ pub(crate) struct Client {
     s_ap: Vec<u8>,
     res_master: Vec<u8>,
     pub(crate) resumed: bool,
+    /// QUIC: the version new tickets are kept under (RFC 9369 section 5), the one the
+    /// connection started in until compatible version negotiation moves it.
+    pub(crate) quic_ticket_version: u32,
     cert_req: Option<(Vec<u8>, Vec<u16>)>,
     pub(crate) peer_chain: Vec<Vec<u8>>,
     peer_key: Option<PublicKey>,
@@ -101,18 +104,21 @@ pub(crate) struct Client {
 impl Client {
     /// Starts a handshake with `name` (a DNS name or an IP address); `quic` carries our QUIC
     /// transport parameters for a QUIC handshake.
-    /// `early`: offer early data (0-RTT) when the ticket allows it.
+    /// `early`: offer early data (0-RTT) when the ticket allows it. `quic_version`: the QUIC
+    /// version the connection starts in, only tickets of which are offered (0: TCP, or a QUIC
+    /// handshake not bound to a version).
     pub(crate) fn new(
         cfg: Arc<ClientSettings>,
         name: &str,
         quic: Option<Vec<u8>>,
         early: bool,
+        quic_version: u32,
     ) -> Result<Client, Fatal> {
         let is_ip = name.parse::<std::net::IpAddr>().is_ok();
         let sni = (cfg.sni && !is_ip).then(|| name.trim_end_matches('.').to_ascii_lowercase());
         let now = now_secs();
         let psk13 = match &cfg.cache {
-            Some(c) if cfg.tls13 => c.take_ticket13(name, now),
+            Some(c) if cfg.tls13 => c.take_ticket13(name, now, quic_version),
             _ => None,
         };
         let resume12 = match &cfg.cache {
@@ -174,6 +180,7 @@ impl Client {
             s_ap: Vec::new(),
             res_master: Vec::new(),
             resumed: false,
+            quic_ticket_version: quic_version,
             cert_req: None,
             peer_chain: Vec::new(),
             peer_key: None,
@@ -987,6 +994,7 @@ impl Client {
                     peer_chain: Vec::new(),
                     max_early_data,
                     early_ctx: self.peer_quic.clone().unwrap_or_default(),
+                    quic_version: self.quic_ticket_version,
                 },
                 received_ms: now_millis(),
                 record_limit: self.peer_record_limit,
@@ -1230,6 +1238,7 @@ impl Client {
                             peer_chain: Vec::new(),
                             max_early_data: 0,
                             early_ctx: Vec::new(),
+                            quic_version: 0,
                         },
                     }),
                 );

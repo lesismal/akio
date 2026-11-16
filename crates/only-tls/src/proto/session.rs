@@ -35,12 +35,15 @@ pub(crate) struct Session {
     /// ticket (QUIC: the transport parameters 0-RTT may use, RFC 9001 section 4.6.2). Client
     /// (QUIC): the server's transport parameters, remembered for 0-RTT (RFC 9000 7.4.1).
     pub(crate) early_ctx: Vec<u8>,
+    /// QUIC: the version of the connection the ticket belongs to (RFC 9369 section 5);
+    /// 0 for TLS over TCP and for QUIC handshakes not bound to a version.
+    pub(crate) quic_version: u32,
 }
 
 impl Session {
     pub(crate) fn encode(&self) -> Vec<u8> {
         let mut o = Vec::with_capacity(128);
-        put_u8(&mut o, 2); // format
+        put_u8(&mut o, 3); // format
         put_u16(&mut o, self.version);
         put_u16(&mut o, self.suite);
         put_vec8(&mut o, &self.secret);
@@ -58,6 +61,7 @@ impl Session {
         }
         put_u32(&mut o, self.max_early_data);
         put_vec16(&mut o, &self.early_ctx);
+        put_u32(&mut o, self.quic_version);
         o
     }
 
@@ -67,7 +71,9 @@ impl Session {
 
     fn try_decode(b: &[u8]) -> DResult<Session> {
         let mut r = Reader::new(b);
-        if r.u8()? != 2 {
+        // Format 2 predates the QUIC version (read as 0, unbound).
+        let format = r.u8()?;
+        if format != 2 && format != 3 {
             return fatal(Alert::DecodeError, "session format");
         }
         let version = r.u16()?;
@@ -89,6 +95,7 @@ impl Session {
         }
         let max_early_data = r.u32()?;
         let early_ctx = r.vec16()?.to_vec();
+        let quic_version = if format == 3 { r.u32()? } else { 0 };
         r.finish()?;
         Ok(Session {
             version,
@@ -103,6 +110,7 @@ impl Session {
             peer_chain,
             max_early_data,
             early_ctx,
+            quic_version,
         })
     }
 
@@ -317,17 +325,35 @@ impl ClientCache {
         });
     }
 
-    /// Takes the newest usable ticket (tickets are single use).
-    pub(crate) fn take_ticket13(&self, server: &str, now: u64) -> Option<Ticket13> {
+    /// Takes the newest usable ticket for QUIC version `quic_version` (0: TLS over TCP or an
+    /// unbound QUIC handshake); tickets are single use. Expired ones are dropped, tickets of
+    /// other versions stay.
+    pub(crate) fn take_ticket13(
+        &self,
+        server: &str,
+        now: u64,
+        quic_version: u32,
+    ) -> Option<Ticket13> {
         self.with(server, |e| {
-            while let Some(t) = e.tls13.pop_back() {
-                if !t.session.expired(now) {
-                    return Some(t);
-                }
-            }
-            None
+            e.tls13.retain(|t| !t.session.expired(now));
+            let i = e
+                .tls13
+                .iter()
+                .rposition(|t| t.session.quic_version == quic_version)?;
+            e.tls13.remove(i)
         })
         .flatten()
+    }
+
+    /// The QUIC version of the newest usable QUIC ticket for `server`, if any.
+    pub(crate) fn quic_ticket_version(&self, server: &str, now: u64) -> Option<u32> {
+        let g = self.inner.lock().ok()?;
+        g.0.get(server)?
+            .tls13
+            .iter()
+            .rev()
+            .find(|t| t.session.quic_version != 0 && !t.session.expired(now))
+            .map(|t| t.session.quic_version)
     }
 
     pub(crate) fn set_tls12(&self, server: &str, r: Option<Resume12>) {
@@ -360,6 +386,7 @@ mod tests {
             peer_chain: vec![vec![1, 2], vec![3]],
             max_early_data: 16384,
             early_ctx: vec![9, 9],
+            quic_version: 0x6b33_43cf,
         }
     }
 
@@ -368,6 +395,13 @@ mod tests {
         let s = session();
         assert_eq!(Session::decode(&s.encode()).unwrap(), s);
         assert!(Session::decode(&s.encode()[..10]).is_none());
+        // Format 2 (before the QUIC version): unbound.
+        let mut old = s.encode();
+        old[0] = 2;
+        old.truncate(old.len() - 4);
+        let o = Session::decode(&old).unwrap();
+        assert_eq!(o.quic_version, 0);
+        assert_eq!(o.early_ctx, s.early_ctx);
         assert!(!s.expired(105));
         assert!(s.expired(111));
         assert!(s.expired(99));
@@ -439,9 +473,34 @@ mod tests {
                 },
             );
         }
-        assert_eq!(cc.take_ticket13("a", 105).unwrap().ticket, vec![9]);
-        assert!(cc.take_ticket13("a", 1000).is_none());
-        assert!(cc.take_ticket13("b", 105).is_none());
+        // Tickets of another QUIC version stay for a connection in that version.
+        let mut v1 = session();
+        v1.quic_version = 1;
+        cc.add_ticket13(
+            "a",
+            Ticket13 {
+                ticket: vec![100],
+                session: v1,
+                received_ms: 0,
+                record_limit: 0,
+            },
+        );
+        assert_eq!(cc.quic_ticket_version("a", 105), Some(1));
+        assert_eq!(cc.take_ticket13("a", 105, 1).unwrap().ticket, vec![100]);
+        assert!(cc.take_ticket13("a", 105, 1).is_none());
+        assert!(cc.take_ticket13("a", 105, 0).is_none());
+        assert_eq!(cc.quic_ticket_version("a", 105), Some(0x6b33_43cf));
+        assert_eq!(
+            cc.take_ticket13("a", 105, 0x6b33_43cf).unwrap().ticket,
+            vec![9]
+        );
+        assert_eq!(
+            cc.take_ticket13("a", 105, 0x6b33_43cf).unwrap().ticket,
+            vec![8]
+        );
+        assert!(cc.take_ticket13("a", 1000, 0x6b33_43cf).is_none());
+        assert_eq!(cc.quic_ticket_version("a", 105), None);
+        assert!(cc.take_ticket13("b", 105, 0x6b33_43cf).is_none());
         cc.set_tls12(
             "a",
             Some(Resume12 {

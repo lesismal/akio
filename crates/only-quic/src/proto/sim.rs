@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use only_crypto::rand::ChaChaRng;
 
-use super::conn::{ConnConfig, Connection, EndpointEvent, Event};
+use super::conn::{ClientToken, ConnConfig, Connection, EndpointEvent, Event};
 use super::endpoint::{ConnHandle, DatagramEvent, Endpoint, ServerSetup};
 use crate::Bytes;
 use crate::types::{ConnectionError, Dir, StreamId, TransportConfig};
@@ -64,7 +64,7 @@ pub(crate) struct Node {
     pub conns: HashMap<ConnHandle, Connection>,
     pub events: HashMap<ConnHandle, Vec<Event>>,
     pub addr: SocketAddr,
-    pub tokens: Vec<Vec<u8>>,
+    pub tokens: Vec<ClientToken>,
     /// Server: a second address it serves (its preferred address). Client: the address of the
     /// socket a migration probes from.
     pub alt_addr: Option<SocketAddr>,
@@ -209,7 +209,7 @@ impl Sim {
         &mut self,
         tls: &only_tls::ClientConfig,
         cfg: ConnConfig,
-        token: Vec<u8>,
+        token: Option<ClientToken>,
     ) -> ConnHandle {
         let (h, c) = self
             .client
@@ -541,7 +541,7 @@ impl Sim {
 
     /// Connects and waits for both sides to report the handshake.
     pub fn handshake(&mut self, tls: &only_tls::ClientConfig, cfg: ConnConfig) -> ConnHandle {
-        let h = self.connect(tls, cfg, Vec::new());
+        let h = self.connect(tls, cfg, None);
         let ok = self.run_until(Duration::from_secs(30), |s| {
             s.connected(false, h) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
         });
@@ -892,7 +892,7 @@ fn new_token_and_resumption() {
     let h2 = sim.connect(
         &tls,
         ConnConfig::new(TransportConfig::default(), true),
-        token,
+        Some(token),
     );
     let ok = sim.run_until(Duration::from_secs(10), |s| {
         s.connected(false, h2) && s.server_handle().is_some_and(|sh| s.connected(true, sh))
@@ -909,7 +909,7 @@ fn version_negotiation() {
     let h = sim.connect(
         &tls,
         ConnConfig::new(TransportConfig::default(), true),
-        Vec::new(),
+        None,
     );
     let now = sim.now;
     let t = sim.cconn(h).poll_transmit(now, 1).expect("initial");
@@ -944,7 +944,7 @@ fn version_negotiation() {
     let h = sim.connect(
         &tls,
         ConnConfig::new(TransportConfig::default(), true),
-        Vec::new(),
+        None,
     );
     let now = sim.now;
     let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
@@ -971,7 +971,7 @@ fn version_negotiation() {
     );
     let mut cfg = ConnConfig::new(TransportConfig::default(), true);
     cfg.version = VERSION_2;
-    let h = sim.connect(&tls, cfg, Vec::new());
+    let h = sim.connect(&tls, cfg, None);
     let now = sim.now;
     let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
     let hdr = super::packet::parse_header(&first, 8).expect("header");
@@ -1109,7 +1109,7 @@ fn close_during_handshake_uses_transport_close() {
     let h = sim.connect(
         &tls,
         ConnConfig::new(TransportConfig::default(), true),
-        Vec::new(),
+        None,
     );
     sim.step();
     sim.step();
@@ -1286,7 +1286,7 @@ fn bad_certificate_is_a_crypto_error() {
     let h = sim.connect(
         &other,
         ConnConfig::new(TransportConfig::default(), true),
-        Vec::new(),
+        None,
     );
     let mut c = Collector::default();
     let ok = sim.run_until(Duration::from_secs(5), |s| {
@@ -1366,7 +1366,7 @@ fn late_initial_does_not_start_a_second_connection() {
     let h = sim.connect(
         &tls,
         ConnConfig::new(TransportConfig::default(), true),
-        Vec::new(),
+        None,
     );
     let now = sim.now;
     let first = sim.cconn(h).poll_transmit(now, 1).expect("initial").data;
