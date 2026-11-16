@@ -1,5 +1,5 @@
 //! The server handshake: TLS 1.3 (HelloRetryRequest, PSK resumption with stateless or cached
-//! tickets, client certificates, 0-RTT rejected) and TLS 1.2 (ECDHE, extended master secret,
+//! tickets, client certificates, early data when enabled, with replay protection) and TLS 1.2 (ECDHE, extended master secret,
 //! session IDs and tickets, client certificates, renegotiation refused).
 
 use std::sync::Arc;
@@ -11,8 +11,8 @@ use super::alert::{Alert, Fatal, fatal};
 use super::client::{key_update, send_key_update};
 use super::codec::{Reader, put_u16, put_u32, put_vec, put_vec8, put_vec16};
 use super::common::{
-    Action, CertKey, Keys, Level, Schedule, ServerSettings, Transcript, finished_mac, now_secs,
-    random, verify_chain,
+    Action, CertKey, EarlyData, Keys, Level, Schedule, ServerSettings, Transcript, finished_mac,
+    now_millis, now_secs, random, verify_chain,
 };
 use super::kx::{Group, KeyShare};
 use super::msgs::*;
@@ -25,6 +25,7 @@ use super::tls12;
 enum St {
     WaitClientHello,
     WaitClientHello2,
+    WaitEndOfEarlyData,
     WaitCert13,
     WaitCertVerify13,
     WaitFinished13,
@@ -69,6 +70,11 @@ pub(crate) struct Server {
     share: Option<KeyShare>,
     session_id: Vec<u8>,
     send_ticket12: bool,
+    // TLS 1.3 early data.
+    pub(crate) early: EarlyData,
+    /// QUIC with 0-RTT enabled: what the early data is bound to besides the ticket (the
+    /// transport parameters 0-RTT may use).
+    early_ctx: Option<Vec<u8>>,
 }
 
 /// The parts of ClientHello1 that ClientHello2 must repeat: everything but the key shares,
@@ -108,7 +114,12 @@ impl Ch1 {
 const LIFETIME12: u32 = 6 * 3600;
 
 impl Server {
-    pub(crate) fn new(cfg: Arc<ServerSettings>, quic: Option<Vec<u8>>) -> Server {
+    /// `early_ctx`: QUIC with 0-RTT, see [`Server::early_ctx`].
+    pub(crate) fn new(
+        cfg: Arc<ServerSettings>,
+        quic: Option<Vec<u8>>,
+        early_ctx: Option<Vec<u8>>,
+    ) -> Server {
         Server {
             cfg,
             quic,
@@ -138,7 +149,46 @@ impl Server {
             share: None,
             session_id: Vec::new(),
             send_ticket12: false,
+            early: EarlyData::NotAttempted,
+            early_ctx,
         }
+    }
+
+    /// The early data limit tickets carry and accepted early data is held to: QUIC 0-RTT
+    /// uses 0xffffffff (RFC 9001 section 4.6.1), TCP the configured size; 0 when off.
+    pub(crate) fn max_early_data(&self) -> u32 {
+        match (&self.quic, &self.early_ctx) {
+            (Some(_), Some(_)) => u32::MAX,
+            (Some(_), None) => 0,
+            (None, _) => self.cfg.max_early_data,
+        }
+    }
+
+    /// Whether the early data of a ClientHello resuming `s` with PSK identity `index`
+    /// (obfuscated age `age`, first binder `binder`) is accepted (RFC 8446 section 4.2.10):
+    /// enabled here, the first identity, a ticket allowing it, the same suite, ALPN protocol,
+    /// SNI name (checked with the ticket) and QUIC parameters, fresh and not a replay.
+    fn accept_early(
+        &self,
+        suite: &'static Suite,
+        s: &Session,
+        index: usize,
+        age: u32,
+        binder: &[u8],
+    ) -> bool {
+        if self.max_early_data() == 0
+            || index != 0
+            || self.hrr.is_some()
+            || s.max_early_data == 0
+            || s.suite != suite.id
+            || s.alpn != self.alpn
+            || self.early_ctx.as_ref().is_some_and(|c| *c != s.early_ctx)
+        {
+            return false;
+        }
+        let now = now_millis();
+        let ar = &self.cfg.anti_replay;
+        ar.fresh(s.created * 1000, age.wrapping_sub(s.age_add), now) && ar.record(binder, now)
     }
 
     pub(crate) fn handshaking(&self) -> bool {
@@ -153,6 +203,7 @@ impl Server {
             (St::WaitClientHello | St::WaitClientHello2, CLIENT_HELLO) => {
                 self.client_hello(msg, body, out)
             }
+            (St::WaitEndOfEarlyData, END_OF_EARLY_DATA) => self.end_of_early_data(msg, body, out),
             (St::WaitCert13, CERTIFICATE) => self.certificate13(msg, body),
             (St::WaitCertVerify13, CERTIFICATE_VERIFY) => self.certificate_verify13(msg, body),
             (St::WaitFinished13, FINISHED) => self.finished13(msg, body, out),
@@ -355,11 +406,12 @@ impl Server {
             );
         }
         let mut psk: Option<(usize, Session)> = None;
+        let mut early = false;
         if let (Some(offer), true) = (&ch.psk, self.cfg.resumption()) {
             let dhe = ch.psk_modes.is_some_and(|m| m.contains(&PSK_DHE_KE));
             if dhe {
                 let now = now_secs();
-                for (i, (identity, _age)) in offer.identities.iter().enumerate() {
+                for (i, (identity, age)) in offer.identities.iter().enumerate() {
                     let s = match (&self.cfg.ticketer, &self.cfg.cache) {
                         (Some(t), _) => t.open(identity),
                         (None, Some(c)) => c.take(identity),
@@ -380,6 +432,8 @@ impl Server {
                     if !ct_eq(&expect, offer.binders[i]) {
                         return fatal(Alert::DecryptError, "PSK binder does not verify");
                     }
+                    early =
+                        ch.early_data && self.accept_early(suite, &s, i, *age, offer.binders[i]);
                     psk = Some((i, s));
                     break;
                 }
@@ -396,7 +450,10 @@ impl Server {
                     Fatal::new(Alert::HandshakeFailure, "no common signature scheme")
                 })?)
             };
-        if ch.early_data {
+        if early {
+            self.early = EarlyData::Accepted;
+        } else if ch.early_data {
+            self.early = EarlyData::Rejected;
             out.push(Action::RejectEarlyData);
         }
         self.suite = Some(suite);
@@ -431,6 +488,14 @@ impl Server {
             out.push(Action::Ccs);
         }
         let psk_secret = psk.as_ref().map(|(_, s)| s.secret.clone());
+        let early_keys = match (&psk_secret, early) {
+            (Some(p), true) => Some(Keys::Tls13 {
+                suite,
+                secret: Schedule::early(suite.hash, Some(p))
+                    .derive(b"c e traffic", &suite.hash.digest(msg)),
+            }),
+            _ => None,
+        };
         if let Some((_, s)) = psk {
             self.resumed = true;
             self.peer_chain = s.peer_chain;
@@ -447,13 +512,24 @@ impl Server {
                 secret: s_hs.clone(),
             },
         ));
-        out.push(Action::ReadKeys(
-            Level::Handshake,
-            Keys::Tls13 {
-                suite,
-                secret: self.c_hs.clone(),
-            },
-        ));
+        let hs_read = Keys::Tls13 {
+            suite,
+            secret: self.c_hs.clone(),
+        };
+        let mut wait_eoed = false;
+        if let Some(k) = early_keys {
+            out.push(Action::EarlyAccepted(self.max_early_data()));
+            out.push(Action::ReadKeys(Level::EarlyData, k));
+            // Over TCP the early data ends with EndOfEarlyData; QUIC has its own packets.
+            if self.quic.is_none() {
+                wait_eoed = true;
+            } else {
+                out.push(Action::ReadKeys(Level::Handshake, hs_read));
+            }
+        } else {
+            out.push(Action::ReadKeys(Level::Handshake, hs_read));
+        }
+        let accepted = self.early == EarlyData::Accepted;
         let ee = message(ENCRYPTED_EXTENSIONS, |o| {
             put_vec(o, 2, |o| {
                 if let Some(p) = &self.alpn {
@@ -464,6 +540,9 @@ impl Server {
                 }
                 if let Some(q) = &self.quic {
                     ext(o, EXT_QUIC_TRANSPORT_PARAMETERS, |o| o.extend_from_slice(q));
+                }
+                if accepted {
+                    ext(o, EXT_EARLY_DATA, |_| {});
                 }
             });
         });
@@ -508,6 +587,35 @@ impl Server {
                 secret: self.s_ap.clone(),
             },
         ));
+        self.st = if wait_eoed {
+            St::WaitEndOfEarlyData
+        } else if self.cert_requested {
+            St::WaitCert13
+        } else {
+            St::WaitFinished13
+        };
+        Ok(())
+    }
+
+    /// EndOfEarlyData (TCP): the client's handshake keys follow.
+    fn end_of_early_data(
+        &mut self,
+        msg: &[u8],
+        body: &[u8],
+        out: &mut Vec<Action>,
+    ) -> Result<(), Fatal> {
+        if !body.is_empty() {
+            return fatal(Alert::DecodeError, "EndOfEarlyData with a body");
+        }
+        let suite = self.suite_or_err()?;
+        self.t.add(msg);
+        out.push(Action::ReadKeys(
+            Level::Handshake,
+            Keys::Tls13 {
+                suite,
+                secret: self.c_hs.clone(),
+            },
+        ));
         self.st = if self.cert_requested {
             St::WaitCert13
         } else {
@@ -544,6 +652,7 @@ impl Server {
             out.push(Action::Ccs);
         }
         if ch.early_data {
+            self.early = EarlyData::Rejected;
             out.push(Action::RejectEarlyData);
         }
         self.hrr = Some((suite, group));
@@ -621,6 +730,7 @@ impl Server {
             .as_ref()
             .map(|s| s.derive(b"res master", &th))
             .unwrap_or_default();
+        let max_early_data = self.max_early_data();
         if self.cfg.resumption() {
             for i in 0..self.cfg.tickets13 {
                 let nonce = [i as u8];
@@ -640,6 +750,8 @@ impl Server {
                     sni: self.sni.clone(),
                     ems: false,
                     peer_chain: self.peer_chain.clone(),
+                    max_early_data,
+                    early_ctx: self.early_ctx.clone().unwrap_or_default(),
                 };
                 let ticket = match (&self.cfg.ticketer, &self.cfg.cache) {
                     (Some(t), _) => t.seal(&session),
@@ -656,7 +768,11 @@ impl Server {
                     put_u32(o, age_add);
                     put_vec8(o, &nonce);
                     put_vec16(o, &ticket);
-                    put_u16(o, 0);
+                    put_vec(o, 2, |o| {
+                        if max_early_data > 0 {
+                            ext(o, EXT_EARLY_DATA, |o| put_u32(o, max_early_data));
+                        }
+                    });
                 });
                 out.push(Action::Msg(Level::Application, nst));
             }
@@ -940,6 +1056,8 @@ impl Server {
                 sni: self.sni.clone(),
                 ems: self.ems,
                 peer_chain: self.peer_chain.clone(),
+                max_early_data: 0,
+                early_ctx: Vec::new(),
             };
             if self.send_ticket12 {
                 let ticket = self

@@ -20,6 +20,13 @@
 //! engine.run().unwrap();
 //! ```
 //!
+//! 0-RTT (off by default, [`only_quic::ServerConfig::zero_rtt`]): a request that arrived in
+//! 0-RTT packets carries `Early-Data: 1` (RFC 8470 section 5.1), as if an intermediary had
+//! forwarded it early; it may be a replay, so answer what is not safe to repeat (anything
+//! but a GET or HEAD without side effects, say) with `425 Too Early` and the client retries
+//! it after the handshake. [`H3Client`] sends its requests in 0-RTT when its QUIC config
+//! enables it ([`only_quic::ClientConfig::zero_rtt`]) and it resumes.
+//!
 //! Not implemented: server push, a QPACK dynamic table, extended CONNECT (WebSocket over
 //! HTTP/3), streamed request bodies.
 //!
@@ -283,11 +290,16 @@ impl<S: Service> ServerConn<S> {
         } else {
             self.reqs.entry(id).or_default()
         };
-        let Some((request, head_only)) =
+        let Some((mut request, head_only)) =
             read_req(req, &self.cfg, self.peer, &mut self.fields, data, fin)?
         else {
             return Ok(());
         };
+        if c.is_early(id) {
+            // Arrived in 0-RTT (maybe a replay): marked as an RFC 8470 intermediary would, so
+            // the application can answer 425 Too Early to what is not safe to repeat.
+            request.headers.append("early-data", "1");
+        }
         let sink = Box::new(Sink {
             c: c.clone(),
             id,

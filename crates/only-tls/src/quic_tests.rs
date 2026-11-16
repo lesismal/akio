@@ -202,3 +202,44 @@ fn rfc9001_initial_secrets() {
         iv
     );
 }
+
+#[test]
+fn zero_rtt_over_quic() {
+    let (scfg, ccfg) = configs(&["h3"]);
+    let ctx = b"limits v1".to_vec();
+    // First connection: a ticket allowing 0-RTT, with the server's parameters remembered.
+    let mut c = QuicTls::client_early(&ccfg, "localhost", vec![1], true).unwrap();
+    let mut s = QuicTls::server_early(&scfg, b"server params".to_vec(), Some(ctx.clone()));
+    run(&mut c, &mut s).unwrap();
+    assert_eq!(c.early_data(), EarlyData::NotAttempted);
+    assert!(c.early_params().is_none());
+    // Resumed with 0-RTT: early keys on both sides, the same, no EndOfEarlyData.
+    let mut c = QuicTls::client_early(&ccfg, "localhost", vec![1], true).unwrap();
+    assert_eq!(c.early_params(), Some(&b"server params"[..]));
+    let mut s = QuicTls::server_early(&scfg, b"server params".to_vec(), Some(ctx.clone()));
+    let (sc, ss) = run(&mut c, &mut s).unwrap();
+    assert!(c.early_data_accepted() && s.early_data_accepted());
+    let cw = &sc.write.iter().find(|x| x.0 == Level::EarlyData).unwrap().1;
+    let sr = &ss.read.iter().find(|x| x.0 == Level::EarlyData).unwrap().1;
+    assert_eq!(cw, sr);
+    assert!(sc.done && ss.done);
+    // Changed transport parameters on the server: 0-RTT rejected, resumption goes on.
+    let mut c = QuicTls::client_early(&ccfg, "localhost", vec![1], true).unwrap();
+    let mut s = QuicTls::server_early(&scfg, b"server params".to_vec(), Some(b"v2".to_vec()));
+    let (_, ss) = run(&mut c, &mut s).unwrap();
+    assert!(c.resumed());
+    assert_eq!(c.early_data(), EarlyData::Rejected);
+    assert_eq!(s.early_data(), EarlyData::Rejected);
+    assert!(!ss.read.iter().any(|x| x.0 == Level::EarlyData));
+    // A server without 0-RTT rejects it, and its tickets do not allow it.
+    let mut c = QuicTls::client_early(&ccfg, "localhost", vec![1], true).unwrap();
+    let mut s = QuicTls::server(&scfg, b"server params".to_vec());
+    run(&mut c, &mut s).unwrap();
+    assert_eq!(c.early_data(), EarlyData::Rejected);
+    // The client without 0-RTT does not offer it.
+    let mut c = QuicTls::client(&ccfg, "localhost", vec![1]).unwrap();
+    assert!(c.early_params().is_none());
+    let mut s = QuicTls::server_early(&scfg, b"server params".to_vec(), Some(ctx));
+    run(&mut c, &mut s).unwrap();
+    assert_eq!(s.early_data(), EarlyData::NotAttempted);
+}

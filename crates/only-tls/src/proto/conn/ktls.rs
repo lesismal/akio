@@ -214,7 +214,10 @@ impl Connection {
                                 ev.push(OffloadEvent::Send(CT_ALERT, vec![1, alert.code()]));
                             }
                             Action::Done => {}
-                            Action::Ccs | Action::RejectEarlyData => {
+                            Action::Ccs
+                            | Action::RejectEarlyData
+                            | Action::EarlyOffered(_)
+                            | Action::EarlyAccepted(_) => {
                                 return fatal(Alert::UnexpectedMessage, "unexpected message");
                             }
                         }

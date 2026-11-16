@@ -79,6 +79,18 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
   服务；客户端用 `Connection::preferred_address()` 查看）。新路径先用一个未用过的连接 ID 探测，得到
   回应后切换；三个 PTO 内无回应则留在原路径。
 
+### 0-RTT
+
+默认关闭：`ServerConfig::zero_rtt(true)` 与 `ClientConfig::zero_rtt(true)`。客户端用允许 0-RTT 的票据
+恢复会话时，`dial` 之后即可打开流（使用服务端在上一次连接中给出的限额），流数据随第一批包以 0-RTT 包
+发出；服务端以 0.5-RTT 应答，比完整握手早一个往返。服务端只在传输限额与签发票据时相同的情况下接受
+0-RTT，并使用 only-tls 的防重放（10 秒新鲜度窗口加上每个服务端一份有上限的近期 ClientHello 记录）；
+否则，或 0-RTT 包丢失时，数据以 1-RTT 包重发（Retry 之后以 0-RTT 发往新的连接 ID）。客户端用
+`Connection::early_data()` 得知结果；服务端用 `Connection::is_early(stream)` 判断哪些流来自 0-RTT，
+only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可对不能安全重复的请求回
+`425 Too Early`。配置开启时 `H3Client` 会以 0-RTT 发送请求。0-RTT 数据可被重放（发往共享票据的其他
+服务端，或在窗口内由能诱使客户端重试的攻击者发起），且没有前向保密。
+
 ## HTTP/3
 
 ```rust,ignore
@@ -103,7 +115,7 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 ```
 
 `H3Client::dial(&engine, addr, server_name, client_cfg)`（ALPN `h3`）；握手完成前发出的
-请求会等待握手完成。`request(method, path, headers, body, callback)`、
+请求会等待握手完成（以 0-RTT 恢复会话时除外，见上文）。`request(method, path, headers, body, callback)`、
 `request_blocking(..)`、`get(path, timeout)`、`close()`、`connection()`。
 
 ## HTTP/3 如何复用 only-http
@@ -120,5 +132,5 @@ sink，所以 router、中间件和 handler 都无需改动。见[架构](../arc
 
 ## 尚未完成
 
-QUIC 0-RTT、curl/quiche 互通测试、基于 HTTP/3 的 WebSocket（extended CONNECT）、QPACK 动态表（宣告容量为
+curl/quiche 互通测试、基于 HTTP/3 的 WebSocket（extended CONNECT）、QPACK 动态表（宣告容量为
 0）、服务端推送、流式请求 body。

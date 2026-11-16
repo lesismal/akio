@@ -114,6 +114,12 @@ pub(crate) struct Sim {
     /// The server address each client address last sent to: the server answers from it (a
     /// socket per listener address, as the I/O layer has).
     server_local: HashMap<SocketAddr, SocketAddr>,
+    /// Lose every 0-RTT packet to the server (a coalesced one is blanked out).
+    pub drop_zero_rtt: bool,
+    /// Record the client's 0-RTT packets: the first datagram carrying one, their versions.
+    pub record_0rtt: bool,
+    pub first_client_datagram: Option<Vec<u8>>,
+    pub zero_rtt_seen: Vec<u32>,
 }
 
 pub(crate) fn certs() -> (only_tls::ServerConfig, only_tls::ClientConfig) {
@@ -166,6 +172,10 @@ impl Sim {
             ect_sent: 0,
             blocked: Vec::new(),
             server_local: HashMap::new(),
+            drop_zero_rtt: false,
+            record_0rtt: false,
+            first_client_datagram: None,
+            zero_rtt_seen: Vec::new(),
             client: Node::new(client, "10.0.0.1:5000".parse().expect("addr")),
             server: Node::new(server, "10.0.0.2:4433".parse().expect("addr")),
             link: Link::default(),
@@ -213,8 +223,57 @@ impl Sim {
         a == self.server.addr || Some(a) == self.server.alt_addr
     }
 
+    /// Delivers a datagram to the server now, outside the link (an attacker's).
+    pub fn inject(&mut self, from: SocketAddr, to: SocketAddr, data: Vec<u8>) {
+        self.seq += 1;
+        self.queue
+            .insert((self.now, self.seq), (true, from, to, 0, data));
+    }
+
+    /// The 0-RTT packets of a client datagram: recorded, or blanked out (`None`: drop it).
+    fn zero_rtt_filter(&mut self, mut data: Vec<u8>) -> Option<Vec<u8>> {
+        let mut off = 0;
+        while off < data.len() {
+            let Ok(h) = super::packet::parse_header(&data[off..], 8) else {
+                break;
+            };
+            let (ty, version, len) = (h.ty, h.version, h.len);
+            if ty == super::packet::PacketType::ZeroRtt {
+                if self.record_0rtt {
+                    self.zero_rtt_seen.push(version);
+                    if self.first_client_datagram.is_none() {
+                        self.first_client_datagram = Some(data.clone());
+                    }
+                }
+                if self.drop_zero_rtt {
+                    if off == 0 {
+                        return None;
+                    }
+                    data[off..].fill(0);
+                    break;
+                }
+            }
+            if !ty.is_long() {
+                break;
+            }
+            off += len;
+        }
+        Some(data)
+    }
+
     fn send(&mut self, from: SocketAddr, to: SocketAddr, mut ecn: u8, data: Vec<u8>) {
         let to_server = self.is_server(to);
+        let data = if to_server && (self.drop_zero_rtt || self.record_0rtt) {
+            match self.zero_rtt_filter(data) {
+                Some(d) => d,
+                None => {
+                    self.dropped += 1;
+                    return;
+                }
+            }
+        } else {
+            data
+        };
         if ecn != 0 {
             self.ect_sent += 1;
         }
@@ -1647,3 +1706,6 @@ fn client_moves_to_the_preferred_address() {
     assert!(migration_outcome(&mut sim).is_ok());
     bulk(&mut sim, h, &[20_000], Duration::from_secs(30));
 }
+
+#[path = "sim_0rtt.rs"]
+mod zero_rtt;

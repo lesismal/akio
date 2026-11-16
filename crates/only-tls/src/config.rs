@@ -12,7 +12,7 @@ use only_crypto::pkey;
 
 use crate::proto::common::{CertKey, ClientSettings, ServerSettings};
 use crate::proto::kx::{DEFAULT_GROUPS, Group};
-use crate::proto::session::{ClientCache, SessionCache, Ticketer};
+use crate::proto::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
 use crate::proto::suites::{self, Suite};
 
 /// A TLS configuration or certificate problem.
@@ -331,6 +331,8 @@ impl ServerConfig {
             groups: None,
             force_hrr: false,
             tickets13: 2,
+            max_early_data: 0,
+            anti_replay: (ANTI_REPLAY_WINDOW_MS, ANTI_REPLAY_ENTRIES),
         }
     }
 
@@ -362,7 +364,15 @@ pub struct ServerConfigBuilder {
     groups: Option<Vec<u16>>,
     force_hrr: bool,
     tickets13: usize,
+    max_early_data: u32,
+    anti_replay: (u64, usize),
 }
+
+/// The 0-RTT freshness window (RFC 8446 section 8.3): a ClientHello with early data must
+/// arrive within this long of when its ticket age says it was sent.
+const ANTI_REPLAY_WINDOW_MS: u64 = 10_000;
+/// ClientHellos remembered for replay detection (each for twice the window).
+const ANTI_REPLAY_ENTRIES: usize = 100_000;
 
 impl fmt::Debug for ServerConfigBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -376,6 +386,7 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("session_cache", &self.session_cache)
             .field("tickets", &self.tickets)
             .field("tls13_only", &self.tls13_only)
+            .field("max_early_data", &self.max_early_data)
             .finish_non_exhaustive()
     }
 }
@@ -432,6 +443,32 @@ impl ServerConfigBuilder {
     /// Accepts TLS 1.3 only (default: TLS 1.2 and 1.3).
     pub fn tls13_only(mut self, yes: bool) -> Self {
         self.tls13_only = yes;
+        self
+    }
+
+    /// Accepts TLS 1.3 early data (0-RTT, RFC 8446 section 4.2.10) of up to `max_bytes` per
+    /// connection from clients resuming a session (default 0: off). Tickets issued from then
+    /// on allow it; it needs session resumption ([`session_tickets`](Self::session_tickets)
+    /// or the session cache).
+    ///
+    /// **Early data can be replayed**: an attacker who recorded a client's first flight can
+    /// send it again. Replays are refused within this server (a bounded record of recent
+    /// ClientHellos and a 10-second freshness window on the ticket age; when the record is
+    /// full, early data is rejected), but not across servers sharing tickets. Early data is
+    /// processed before the handshake completes, so only accept requests that are safe to
+    /// repeat: check [`TlsInfo::early_data`](crate::TlsInfo) and
+    /// [`TlsInfo::early_data_len`](crate::TlsInfo) (for HTTP, answer `425 Too Early`,
+    /// RFC 8470). Rejected early data is skipped and the client sends it again after the
+    /// handshake.
+    pub fn early_data(mut self, max_bytes: u32) -> Self {
+        self.max_early_data = max_bytes;
+        self
+    }
+
+    /// Tests: the 0-RTT anti-replay freshness window and record size.
+    #[doc(hidden)]
+    pub fn __anti_replay(mut self, window: std::time::Duration, entries: usize) -> Self {
+        self.anti_replay = (window.as_millis() as u64, entries);
         self
     }
 
@@ -553,6 +590,8 @@ impl ServerConfigBuilder {
             tickets13: self.tickets13,
             ticket_lifetime: 6 * 3600,
             force_hrr: self.force_hrr,
+            max_early_data: self.max_early_data,
+            anti_replay: AntiReplay::new(self.anti_replay.0, self.anti_replay.1),
         };
         Ok(ServerConfig {
             inner: Arc::new(settings),
@@ -596,6 +635,7 @@ impl ClientConfig {
             tls12_only: false,
             suites: None,
             groups: None,
+            early_data: false,
         }
     }
 
@@ -624,6 +664,7 @@ pub struct ClientConfigBuilder {
     tls12_only: bool,
     suites: Option<Vec<u16>>,
     groups: Option<Vec<u16>>,
+    early_data: bool,
 }
 
 impl fmt::Debug for ClientConfigBuilder {
@@ -636,6 +677,7 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("sni", &self.sni)
             .field("resumption", &self.resumption)
             .field("tls13_only", &self.tls13_only)
+            .field("early_data", &self.early_data)
             .finish_non_exhaustive()
     }
 }
@@ -678,6 +720,21 @@ impl ClientConfigBuilder {
     /// Accepts TLS 1.3 only (default: TLS 1.2 and 1.3).
     pub fn tls13_only(mut self, yes: bool) -> Self {
         self.tls13_only = yes;
+        self
+    }
+
+    /// Sends TLS 1.3 early data (0-RTT) when resuming with a ticket that allows it (default
+    /// off): what the application sends before the handshake completes goes out with the
+    /// ClientHello, up to the ticket's limit, saving a round trip. The server may reject it;
+    /// then it is sent again after the handshake, so the stream is the same either way.
+    /// [`TlsInfo::early_data`](crate::TlsInfo) and
+    /// [`TlsInfo::early_data_len`](crate::TlsInfo) tell which bytes went early and what
+    /// became of them.
+    ///
+    /// Early data can be **replayed** by an attacker and is not forward secret: only send
+    /// requests early that are safe to repeat (no orders, payments or other state changes).
+    pub fn early_data(mut self, yes: bool) -> Self {
+        self.early_data = yes;
         self
     }
 
@@ -767,6 +824,7 @@ impl ClientConfigBuilder {
             tls13: suites.iter().any(|s| s.is_tls13()),
             suites,
             groups,
+            early_data: self.early_data,
         };
         Ok(ClientConfig {
             inner: Arc::new(settings),

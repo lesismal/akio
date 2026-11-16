@@ -10,8 +10,8 @@ use only_crypto::pkey::PublicKey;
 use super::alert::{Alert, Fatal, fatal};
 use super::codec::{Reader, put_u8, put_u16, put_vec, put_vec8, put_vec16};
 use super::common::{
-    Action, CertKey, ClientSettings, Keys, Level, Schedule, Transcript, finished_mac, leaf_key,
-    next_secret, now_millis, now_secs, random, verify_chain,
+    Action, CertKey, ClientSettings, EarlyData, Keys, Level, Schedule, Transcript, finished_mac,
+    leaf_key, next_secret, now_millis, now_secs, random, verify_chain,
 };
 use super::kx::{Group, KeyShare};
 use super::msgs::*;
@@ -80,15 +80,21 @@ pub(crate) struct Client {
     ticket_expected: bool,
     new_ticket12: Option<(u32, Vec<u8>)>,
     sh_session_id: Vec<u8>,
+    // TLS 1.3 early data.
+    pub(crate) early: EarlyData,
+    /// Over TCP, the handshake write keys wait until EndOfEarlyData is sent.
+    deferred_write: Option<Keys>,
 }
 
 impl Client {
     /// Starts a handshake with `name` (a DNS name or an IP address); `quic` carries our QUIC
     /// transport parameters for a QUIC handshake.
+    /// `early`: offer early data (0-RTT) when the ticket allows it.
     pub(crate) fn new(
         cfg: Arc<ClientSettings>,
         name: &str,
         quic: Option<Vec<u8>>,
+        early: bool,
     ) -> Result<Client, Fatal> {
         let is_ip = name.parse::<std::net::IpAddr>().is_ok();
         let sni = (cfg.sni && !is_ip).then(|| name.trim_end_matches('.').to_ascii_lowercase());
@@ -118,6 +124,19 @@ impl Client {
         } else {
             None
         };
+        // Early data goes with the first PSK (ours is the only one), under its suite, and only
+        // for the ALPN protocol and (QUIC) transport parameters it was issued with
+        // (RFC 8446 section 4.2.10, RFC 9001 section 4.6.1).
+        let early = early
+            && psk13.as_ref().is_some_and(|p| {
+                p.session.max_early_data > 0
+                    && cfg.suites.iter().any(|s| s.id == p.session.suite)
+                    && p.session
+                        .alpn
+                        .as_ref()
+                        .is_none_or(|a| cfg.alpn.iter().any(|x| x == a))
+                    && (quic.is_none() || !p.session.early_ctx.is_empty())
+            });
         Ok(Client {
             tls12: cfg.tls12 && quic.is_none(),
             name: name.to_owned(),
@@ -156,6 +175,12 @@ impl Client {
             ticket_expected: false,
             new_ticket12: None,
             sh_session_id: Vec::new(),
+            early: if early {
+                EarlyData::Pending
+            } else {
+                EarlyData::NotAttempted
+            },
+            deferred_write: None,
             cfg,
         })
     }
@@ -164,8 +189,60 @@ impl Client {
     pub(crate) fn start(&mut self, out: &mut Vec<Action>) -> Result<(), Fatal> {
         let ch = self.client_hello();
         self.t.add(&ch);
+        let early = self.early_keys(&ch)?;
         out.push(Action::Msg(Level::Initial, ch));
+        if let Some((max, keys)) = early {
+            if self.compat() {
+                // Middlebox compatibility: the CCS goes before the first protected record.
+                self.ccs_sent = true;
+                out.push(Action::Ccs);
+            }
+            out.push(Action::EarlyOffered(max));
+            out.push(Action::WriteKeys(Level::EarlyData, keys));
+        }
         Ok(())
+    }
+
+    /// The early traffic keys over ClientHello `ch` and the ticket's early data limit, when
+    /// early data is offered.
+    fn early_keys(&self, ch: &[u8]) -> Result<Option<(u32, Keys)>, Fatal> {
+        if self.early != EarlyData::Pending {
+            return Ok(None);
+        }
+        let p = self
+            .psk13
+            .as_ref()
+            .ok_or_else(|| Fatal::new(Alert::InternalError, "early data without a ticket"))?;
+        let suite = suites::by_id(p.session.suite)
+            .ok_or_else(|| Fatal::new(Alert::InternalError, "ticket suite"))?;
+        let h = suite.hash;
+        let secret =
+            Schedule::early(h, Some(&p.session.secret)).derive(b"c e traffic", &h.digest(ch));
+        Ok(Some((
+            p.session.max_early_data,
+            Keys::Tls13 { suite, secret },
+        )))
+    }
+
+    /// The server's transport parameters remembered with the ticket early data is sent with
+    /// (QUIC 0-RTT, RFC 9000 section 7.4.1).
+    pub(crate) fn early_params(&self) -> Option<&[u8]> {
+        match (&self.early, &self.psk13) {
+            (EarlyData::Pending | EarlyData::Accepted, Some(p)) => Some(&p.session.early_ctx),
+            _ => None,
+        }
+    }
+
+    /// Early data is rejected: say so, and (TCP) use the handshake write keys held back.
+    fn reject_early(&mut self, out: &mut Vec<Action>) {
+        if self.early != EarlyData::Pending {
+            return;
+        }
+        self.early = EarlyData::Rejected;
+        out.push(Action::RejectEarlyData);
+        if let Some(k) = self.deferred_write.take() {
+            out.push(Action::WriteKeys(Level::Handshake, k));
+        }
     }
 
     pub(crate) fn handshaking(&self) -> bool {
@@ -266,6 +343,9 @@ impl Client {
                     if let Some(c) = &self.cookie {
                         e(EXT_COOKIE, o, &|o| put_vec16(o, c));
                     }
+                    if self.early == EarlyData::Pending && self.hrr_suite.is_none() {
+                        e(EXT_EARLY_DATA, o, &|_| {});
+                    }
                 }
                 if let Some(q) = &self.quic {
                     e(EXT_QUIC_TRANSPORT_PARAMETERS, o, &|o| {
@@ -310,7 +390,7 @@ impl Client {
         match (self.st, typ) {
             (St::WaitServerHello, SERVER_HELLO) => self.server_hello(msg, body, out),
             (St::WaitEncryptedExtensions, ENCRYPTED_EXTENSIONS) => {
-                self.encrypted_extensions(msg, body)
+                self.encrypted_extensions(msg, body, out)
             }
             (St::WaitCertOrRequest, CERTIFICATE_REQUEST) => self.certificate_request13(msg, body),
             (St::WaitCertOrRequest | St::WaitCert, CERTIFICATE) => self.certificate13(msg, body),
@@ -465,6 +545,11 @@ impl Client {
         if psk.is_some() {
             self.resumed = true;
         }
+        // Early data needs the first PSK accepted, under the ticket's own suite.
+        let early_suite = self.psk13.as_ref().map(|p| p.session.suite);
+        if psk.is_none() || early_suite != Some(suite.id) {
+            self.reject_early(out);
+        }
         let mut sched = Schedule::early(suite.hash, psk.as_deref());
         sched.next(Some(&shared));
         let th = self.t.hash();
@@ -482,13 +567,16 @@ impl Client {
                 secret: self.s_hs.clone(),
             },
         ));
-        out.push(Action::WriteKeys(
-            Level::Handshake,
-            Keys::Tls13 {
-                suite,
-                secret: self.c_hs.clone(),
-            },
-        ));
+        let hs_write = Keys::Tls13 {
+            suite,
+            secret: self.c_hs.clone(),
+        };
+        if self.early == EarlyData::Pending && self.compat() {
+            // Over TCP early data stays under its keys up to EndOfEarlyData.
+            self.deferred_write = Some(hs_write);
+        } else {
+            out.push(Action::WriteKeys(Level::Handshake, hs_write));
+        }
         self.st = St::WaitEncryptedExtensions;
         Ok(())
     }
@@ -533,6 +621,8 @@ impl Client {
             self.share = Some(group.generate()?);
         }
         self.cookie = sh.cookie.map(<[u8]>::to_vec);
+        // No early data after a HelloRetryRequest (RFC 8446 section 4.2.10).
+        self.reject_early(out);
         if self
             .psk13
             .as_ref()
@@ -550,7 +640,12 @@ impl Client {
         Ok(())
     }
 
-    fn encrypted_extensions(&mut self, msg: &[u8], body: &[u8]) -> Result<(), Fatal> {
+    fn encrypted_extensions(
+        &mut self,
+        msg: &[u8],
+        body: &[u8],
+        out: &mut Vec<Action>,
+    ) -> Result<(), Fatal> {
         let mut r = Reader::new(body);
         let exts = extensions(&mut r)?;
         r.finish()?;
@@ -558,8 +653,15 @@ impl Client {
             return fatal(Alert::DecodeError, "EncryptedExtensions without extensions");
         }
         let mut alpn = None;
+        let mut early = false;
         for (t, d) in &exts {
             match *t {
+                EXT_EARLY_DATA if self.early == EarlyData::Pending => {
+                    if !d.is_empty() {
+                        return fatal(Alert::DecodeError, "bad early_data answer");
+                    }
+                    early = true;
+                }
                 EXT_SERVER_NAME => {
                     if !d.is_empty() || self.sni.is_none() {
                         return fatal(Alert::IllegalParameter, "bad server_name answer");
@@ -579,6 +681,18 @@ impl Client {
             return fatal(Alert::MissingExtension, "no QUIC transport parameters");
         }
         self.check_alpn(alpn)?;
+        if early {
+            // Accepted early data was for the ticket's protocol (RFC 8446 section 4.2.10).
+            if self.psk13.as_ref().map(|p| &p.session.alpn) != Some(&self.alpn) {
+                return fatal(
+                    Alert::IllegalParameter,
+                    "early data accepted for another ALPN protocol",
+                );
+            }
+            self.early = EarlyData::Accepted;
+        } else {
+            self.reject_early(out);
+        }
         self.t.add(msg);
         self.st = if self.resumed {
             St::WaitFinished
@@ -679,6 +793,15 @@ impl Client {
                 secret: self.s_ap.clone(),
             },
         ));
+        if self.early == EarlyData::Accepted && self.compat() {
+            // The end of the early data, under the early keys (not in QUIC).
+            let m = message(END_OF_EARLY_DATA, |_| {});
+            self.t.add(&m);
+            out.push(Action::Msg(Level::EarlyData, m));
+        }
+        if let Some(k) = self.deferred_write.take() {
+            out.push(Action::WriteKeys(Level::Handshake, k));
+        }
         if let Some((ctx, algs)) = self.cert_req.take() {
             let chosen = self
                 .cfg
@@ -738,10 +861,13 @@ impl Client {
         if lifetime > 604_800 {
             return fatal(Alert::IllegalParameter, "ticket lifetime over 7 days");
         }
-        for (t, _) in exts {
-            if t != EXT_EARLY_DATA {
-                // Unknown NewSessionTicket extensions are ignored (RFC 8446 section 4.6.1).
-                continue;
+        let mut max_early_data = 0;
+        for (t, d) in exts {
+            // Unknown NewSessionTicket extensions are ignored (RFC 8446 section 4.6.1).
+            if t == EXT_EARLY_DATA {
+                let mut x = Reader::new(d);
+                max_early_data = x.u32()?;
+                x.finish()?;
             }
         }
         let (Some(cache), Some(suite)) = (&self.cfg.cache, self.suite) else {
@@ -768,6 +894,8 @@ impl Client {
                     sni: self.sni.clone(),
                     ems: false,
                     peer_chain: Vec::new(),
+                    max_early_data,
+                    early_ctx: self.peer_quic.clone().unwrap_or_default(),
                 },
                 received_ms: now_millis(),
             },
@@ -995,6 +1123,8 @@ impl Client {
                             sni: self.sni.clone(),
                             ems: true,
                             peer_chain: Vec::new(),
+                            max_early_data: 0,
+                            early_ctx: Vec::new(),
                         },
                     }),
                 );

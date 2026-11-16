@@ -278,6 +278,9 @@ struct Core {
     dead: bool,
     peer: SocketAddr,
     tls: bool,
+    /// The connection began with TLS early data: every request is marked `Early-Data: 1`
+    /// (offsets are not followed through the framing, so this errs on the safe side).
+    early: bool,
     push_hook: Option<PushHook>,
     mode_of: Option<ModeFn>,
     me: Weak<Mutex<Core>>,
@@ -1396,6 +1399,9 @@ impl Core {
                 headers.append("host", a);
             }
         }
+        if self.early {
+            headers.append("early-data", "1");
+        }
         Ok(Request {
             method: Method::parse(method),
             target: path.to_owned(),
@@ -1618,6 +1624,7 @@ impl<S: Service> H2Session<S> {
         peer: SocketAddr,
         initial: &[u8],
         upgrade: Option<(Request, Vec<u8>)>,
+        early: bool,
     ) -> H2Session<S> {
         let tls = conn.has_transport();
         let svc_mode = service.clone();
@@ -1654,6 +1661,7 @@ impl<S: Service> H2Session<S> {
                 dead: false,
                 peer,
                 tls,
+                early,
                 push_hook: Some(Arc::new(move |req: Request, resp: H2Responder| {
                     let mut ctx = Context::new_h2(req, resp);
                     svc_push.call(&mut ctx);

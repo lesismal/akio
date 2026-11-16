@@ -334,6 +334,7 @@ pub(crate) struct ServerInner {
     pub(crate) key_update: Option<u64>,
     pub(crate) preferred: (Option<SocketAddrV4>, Option<SocketAddrV6>),
     pub(crate) versions: Vec<u32>,
+    pub(crate) zero_rtt: bool,
 }
 
 impl fmt::Debug for ServerConfig {
@@ -352,7 +353,25 @@ impl ServerConfig {
             key_update: None,
             preferred: (None, None),
             versions: vec![Version::V1.wire(), Version::V2.wire()],
+            zero_rtt: false,
         })
+    }
+
+    /// Accepts 0-RTT (RFC 9001 section 4.6; default off): clients resuming with a ticket from
+    /// this server may send stream data in their first flight, saving a round trip. Tickets
+    /// issued from then on allow it (0xffffffff bytes, as QUIC requires), and 0-RTT is
+    /// accepted only under the same transport limits as when the ticket was issued.
+    ///
+    /// **0-RTT data can be replayed** by an attacker who recorded it, and it is processed
+    /// before the handshake completes. Replays of a ClientHello are refused within this server
+    /// (the TLS layer keeps a bounded record of recent ClientHellos and a 10-second freshness
+    /// window; see `only_tls::ServerConfigBuilder::early_data`), not across servers sharing
+    /// tickets. Check [`Connection::is_early`](crate::Connection::is_early) and act only on
+    /// requests safe to repeat.
+    #[must_use]
+    pub fn zero_rtt(mut self, yes: bool) -> Self {
+        self.0.zero_rtt = yes;
+        self
     }
 
     /// The QUIC versions accepted (default: 1 and 2); clients starting with another one get a
@@ -425,6 +444,7 @@ pub(crate) struct ClientInner {
     pub(crate) tokens: TokenStore,
     pub(crate) key_update: Option<u64>,
     pub(crate) version: Version,
+    pub(crate) zero_rtt: bool,
 }
 
 impl fmt::Debug for ClientConfig {
@@ -441,7 +461,22 @@ impl ClientConfig {
             tokens: Arc::new(Mutex::new(HashMap::new())),
             key_update: None,
             version: Version::V1,
+            zero_rtt: false,
         })
+    }
+
+    /// Sends 0-RTT data when resuming with a ticket that allows it (default off): streams
+    /// open right after [`dial`](crate::dial), under the limits the server gave on the
+    /// connection the ticket came from, and their data goes out with the first flight. If the
+    /// server rejects 0-RTT, the data is sent again once the handshake completes;
+    /// [`Connection::early_data`](crate::Connection::early_data) tells which happened.
+    ///
+    /// 0-RTT data can be **replayed** and is not forward secret: only send requests that are
+    /// safe to repeat before the handshake completes.
+    #[must_use]
+    pub fn zero_rtt(mut self, yes: bool) -> Self {
+        self.0.zero_rtt = yes;
+        self
     }
 
     /// The QUIC version connections start with (default 1). A server that does not speak it

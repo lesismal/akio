@@ -89,9 +89,14 @@ impl Connection {
         })
     }
 
+    /// The application data space sends 0-RTT packets (client, before the 1-RTT keys).
+    fn zero_rtt_mode(&self) -> bool {
+        self.one_rtt.is_none() && self.zero_rtt.is_some() && self.side == Side::Client
+    }
+
     fn space_ready(&self, sid: SpaceId) -> bool {
         match sid {
-            SpaceId::Data => self.one_rtt.is_some(),
+            SpaceId::Data => self.one_rtt.is_some() || self.zero_rtt_mode(),
             s => !self.spaces[s as usize].discarded && self.spaces[s as usize].keys.is_some(),
         }
     }
@@ -133,6 +138,10 @@ impl Connection {
         }
         if sid != SpaceId::Data {
             return false;
+        }
+        if self.zero_rtt_mode() {
+            // Stream data only.
+            return !self.send_queue.is_empty();
         }
         let p = &self.pending;
         p.ping
@@ -216,8 +225,9 @@ impl Connection {
                 pad |= sp.probes > 0 || (!blocked && sp.crypto_send.wants_send(u64::MAX));
             }
             let pad_end = (pad && last).then(|| start + MIN_INITIAL_SIZE.min(limit));
+            let zero = sid == SpaceId::Data && self.zero_rtt_mode();
             if let Some(w) = self.write_packet(now, sid, buf, start, limit, blocked, pad_end) {
-                long |= sid != SpaceId::Data;
+                long |= sid != SpaceId::Data || zero;
                 wrote_hs |= sid == SpaceId::Handshake;
                 let _ = w;
             }
@@ -254,6 +264,7 @@ impl Connection {
         let pkt_start = buf.len();
         let dcid = self.remote_cid();
         let scid = self.local_cid();
+        let zero = sid == SpaceId::Data && self.zero_rtt_mode();
         let (pn, pnl) = {
             let sp = &self.spaces[sid as usize];
             (sp.next_pn, pn_len(sp.next_pn, sp.largest_acked))
@@ -286,6 +297,16 @@ impl Connection {
                 pn,
                 pnl,
             ),
+            SpaceId::Data if zero => PacketBuilder::long(
+                buf,
+                self.version,
+                PacketType::ZeroRtt,
+                &dcid,
+                &scid,
+                &[],
+                pn,
+                pnl,
+            ),
             SpaceId::Data => {
                 let phase = self.one_rtt.as_ref().is_some_and(|k| k.phase);
                 PacketBuilder::short(buf, &dcid, phase, pn, pnl)
@@ -304,7 +325,7 @@ impl Connection {
         {
             let counts = self.ecn.report(sid as usize);
             let sp = &mut self.spaces[sid as usize];
-            if sp.rx_new && !sp.rx.is_empty() && buf.len() + ack_room(sp) <= max_end {
+            if !zero && sp.rx_new && !sp.rx.is_empty() && buf.len() + ack_room(sp) <= max_end {
                 let delay = if sid == SpaceId::Data {
                     let d = sp
                         .largest_rx_time
@@ -324,7 +345,16 @@ impl Connection {
             }
         }
         let allow = !blocked || self.spaces[sid as usize].probes > 0;
-        if allow {
+        if allow && zero {
+            // 0-RTT: stream data (RFC 9000 section 12.4 allows more; nothing else is needed).
+            let before = frames.len();
+            self.write_streams(buf, max_end, &mut frames, &mut eliciting);
+            fill = frames.len() > before && max_end.saturating_sub(buf.len()) < 32;
+            if self.spaces[sid as usize].probes > 0 && !eliciting && buf.len() < max_end {
+                buf.push(ty::PING as u8);
+                eliciting = true;
+            }
+        } else if allow {
             if sid == SpaceId::Data {
                 path_frame = self.write_control(buf, max_end, &mut frames, &mut eliciting);
             }
@@ -371,9 +401,18 @@ impl Connection {
         }
         // Seal.
         match sid {
+            SpaceId::Data if zero => {
+                let k = self.zero_rtt.as_ref()?;
+                b.finish(buf, &k.packet, &k.header);
+                self.zero_rtt_last_pn = Some(pn);
+            }
             SpaceId::Data => {
                 let k = self.one_rtt.as_ref()?;
                 b.finish(buf, &k.local, &k.local_hp);
+                if !self.tls_done {
+                    // 0.5-RTT (server answering 0-RTT).
+                    self.zero_rtt_last_pn = Some(pn);
+                }
             }
             s => {
                 let k = self.spaces[s as usize].keys.as_ref()?;

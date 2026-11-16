@@ -77,7 +77,10 @@ impl std::fmt::Debug for H3Client {
 impl H3Client {
     /// Connects to `addr`, verifying it as `server_name`, with a QUIC client config offering
     /// ALPN `h3` (for example `only_quic::client_config(roots, &[b"h3"])`). The engine needs
-    /// UDP client threads. Requests sent before the handshake completes wait for it.
+    /// UDP client threads. Requests sent before the handshake completes wait for it, unless
+    /// the connection resumes with 0-RTT (`only_quic::ClientConfig::zero_rtt`): then they go
+    /// out at once, in 0-RTT packets that may be **replayed**, so make only requests that are
+    /// safe to repeat on such a client (a server may answer `425 Too Early`, RFC 8470).
     pub fn dial(
         engine: &only::Engine,
         addr: SocketAddr,
@@ -92,6 +95,10 @@ impl H3Client {
             fields: FieldBuf::default(),
         };
         let conn = only_quic::dial(engine, addr, server_name, config, handler)?;
+        // Resuming with 0-RTT: requests go out before the handshake completes.
+        if conn.early_data() == only::tls::EarlyData::Pending {
+            lock(&st).ready = true;
+        }
         let authority = if addr.port() == 443 {
             server_name.to_owned()
         } else {

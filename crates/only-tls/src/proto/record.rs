@@ -126,6 +126,12 @@ impl RecordLayer {
         self.write = Some(Cipher::new(keys));
     }
 
+    /// Writes plaintext records again (a client's early keys after its early data is
+    /// rejected, before a second ClientHello).
+    pub(crate) fn clear_write(&mut self) {
+        self.write = None;
+    }
+
     pub(crate) fn read_is_tls13(&self) -> bool {
         self.read.as_ref().is_some_and(|c| c.kind == Kind::Tls13)
     }

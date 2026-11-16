@@ -201,6 +201,7 @@ pub struct only_quic::ClientConfig(_)
 impl only_quic::ClientConfig
 pub fn only_quic::ClientConfig::transport(self, &only_quic::TransportConfig) -> Self
 pub fn only_quic::ClientConfig::version(self, only_quic::Version) -> Self
+pub fn only_quic::ClientConfig::zero_rtt(self, bool) -> Self
 impl core::clone::Clone for only_quic::ClientConfig
 pub fn only_quic::ClientConfig::clone(&self) -> Self
 impl core::fmt::Debug for only_quic::ClientConfig
@@ -214,8 +215,10 @@ pub struct only_quic::Connection(_)
 impl only_quic::Connection
 pub fn only_quic::Connection::alpn(&self) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn only_quic::Connection::close(&self, u32, &[u8])
+pub fn only_quic::Connection::early_data(&self) -> only_tls::EarlyData
 pub fn only_quic::Connection::finish(&self, only_quic::StreamId) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::is_closed(&self) -> bool
+pub fn only_quic::Connection::is_early(&self, only_quic::StreamId) -> bool
 pub fn only_quic::Connection::migrate(&self, &only::Engine) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::open_bi(&self) -> core::option::Option<only_quic::StreamId>
 pub fn only_quic::Connection::open_uni(&self) -> core::option::Option<only_quic::StreamId>
@@ -291,6 +294,7 @@ pub fn only_quic::ServerConfig::migration(self, bool) -> Self
 pub fn only_quic::ServerConfig::preferred_address(self, core::net::socket_addr::SocketAddr) -> Self
 pub fn only_quic::ServerConfig::transport(self, &only_quic::TransportConfig) -> Self
 pub fn only_quic::ServerConfig::versions(self, &[only_quic::Version]) -> Self
+pub fn only_quic::ServerConfig::zero_rtt(self, bool) -> Self
 impl core::clone::Clone for only_quic::ServerConfig
 pub fn only_quic::ServerConfig::clone(&self) -> Self
 impl core::fmt::Debug for only_quic::ServerConfig

@@ -75,6 +75,9 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             h2: None,
             started: false,
             head: Resume::default(),
+            early_probe: true,
+            early_len: 0,
+            consumed: 0,
         }
     }
 
@@ -129,6 +132,12 @@ pub struct Session<S> {
     started: bool,
     /// Progress on the head being received (so a head arriving in pieces is scanned once).
     head: Resume,
+    /// TLS early data may still be arriving: ask the transport how much there is.
+    early_probe: bool,
+    /// The first this many bytes of the connection came as TLS early data (0-RTT).
+    early_len: u64,
+    /// Bytes consumed so far, while within the early data.
+    consumed: u64,
 }
 
 impl<S> std::fmt::Debug for Session<S> {
@@ -148,6 +157,16 @@ fn h1_shutdown<S: Service>(c: &Conn<Session<S>>) {
 
 impl<S: Service> Handler for Session<S> {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        if self.early_probe {
+            // TLS early data comes first and ends with the handshake; plain TCP has none.
+            match only::tls::tls_info(c) {
+                Some(i) => {
+                    self.early_len = i.early_data_len;
+                    self.early_probe = i.handshaking;
+                }
+                None => self.early_probe = false,
+            }
+        }
         if let Some(h2) = &self.h2 {
             return h2.on_data(data);
         }
@@ -173,6 +192,7 @@ impl<S: Service> Handler for Session<S> {
                             c.peer_addr(),
                             &seen,
                             None,
+                            self.early_len > 0,
                         ));
                     } else {
                         self.buf = seen; // wait for the rest of the preface
@@ -204,12 +224,14 @@ impl<S: Service> Handler for Session<S> {
         let mut owned = std::mem::take(&mut self.buf);
         if owned.is_empty() {
             let used = self.process(c, data);
+            self.count_early(used);
             if !matches!(self.state, State::Closed) && used < data.len() {
                 self.buf = data[used..].to_vec();
             }
         } else {
             owned.extend_from_slice(data);
             let used = self.process(c, &owned);
+            self.count_early(used);
             if !matches!(self.state, State::Closed) && used < owned.len() {
                 // Keep the allocation: an incomplete head grows in place.
                 owned.drain(..used);
@@ -232,6 +254,19 @@ impl<S: Service> Handler for Session<S> {
 }
 
 impl<S: Service> Session<S> {
+    /// Counts consumed bytes while they may be early data.
+    fn count_early(&mut self, used: usize) {
+        if self.early_probe || self.consumed < self.early_len {
+            self.consumed += used as u64;
+        }
+    }
+
+    /// Whether a request head starting `pos` bytes into what `process` got arrived as TLS
+    /// early data.
+    fn early_at(&self, pos: usize) -> bool {
+        self.consumed + (pos as u64) < self.early_len
+    }
+
     fn shutdown(&self, c: &Conn<Self>) {
         match &self.h2 {
             Some(h2) => h2.shutdown(),
@@ -273,8 +308,9 @@ impl<S: Service> Session<S> {
                                 self.fail(c, 431);
                                 return src.len();
                             }
+                            let early = self.early_at(pos);
                             pos += n;
-                            self.on_head(c, head);
+                            self.on_head(c, head, early);
                         }
                         Err(e) => {
                             self.fail(
@@ -392,7 +428,12 @@ impl<S: Service> Session<S> {
     }
 
     /// Validates a head, decides how the body is framed, and either dispatches or waits for it.
-    fn on_head(&mut self, c: &Conn<Self>, head: Head) {
+    fn on_head(&mut self, c: &Conn<Self>, mut head: Head, early: bool) {
+        if early {
+            // Arrived as TLS early data (maybe a replay): marked as an RFC 8470 intermediary
+            // would, so the application can answer 425 Too Early.
+            head.headers.append("early-data", "1");
+        }
         let h = &head.headers;
         // One pass over the fields for everything framing needs (a lookup per header name
         // cost ~4% of pipelined throughput).
@@ -513,6 +554,7 @@ impl<S: Service> Session<S> {
                     c.peer_addr(),
                     &[],
                     Some((req, settings)),
+                    self.early_len > 0,
                 ));
                 return;
             }
