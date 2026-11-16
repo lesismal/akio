@@ -5,9 +5,9 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use only::Engine;
@@ -604,62 +604,6 @@ struct TrackerInner {
     next: std::sync::atomic::AtomicU64,
     timeout: Duration,
     retries: u32,
-    /// Resolves tracker host names (started on first use).
-    resolver: OnceLock<mpsc::SyncSender<Job>>,
-}
-
-/// Work for a resolver thread; called with `false` when the queue is full (fail fast).
-type Job = Box<dyn FnOnce(bool) + Send>;
-
-/// Threads resolving tracker host names per [`TrackerClient`], and how many requests may wait.
-const RESOLVERS: usize = 2;
-const RESOLVE_QUEUE: usize = 256;
-
-impl TrackerInner {
-    /// Runs `job(true)` on a resolver thread, or `job(false)` here when the queue is full.
-    fn offload(&self, job: Job) {
-        let tx = self.resolver.get_or_init(|| {
-            let (tx, rx) = mpsc::sync_channel::<Job>(RESOLVE_QUEUE);
-            let rx = Arc::new(Mutex::new(rx));
-            for i in 0..RESOLVERS {
-                let rx = rx.clone();
-                let _ = std::thread::Builder::new()
-                    .name(format!("only-bt-dns-{i}"))
-                    .spawn(move || {
-                        loop {
-                            let job = rx.lock().unwrap_or_else(|p| p.into_inner()).recv();
-                            let Ok(job) = job else { return };
-                            job(true);
-                        }
-                    });
-            }
-            tx
-        });
-        if let Err(mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job)) =
-            tx.try_send(job)
-        {
-            job(false);
-        }
-    }
-}
-
-/// Whether the host of tracker `url` is a name (resolving it may block), not an IP literal.
-fn host_needs_dns(url: &str) -> bool {
-    let rest = url.split_once("://").map_or(url, |(_, r)| r);
-    let hostport = rest.split(['/', '?']).next().unwrap_or(rest);
-    let hostport = hostport.rsplit_once('@').map_or(hostport, |(_, h)| h);
-    if hostport.parse::<SocketAddr>().is_ok() {
-        return false;
-    }
-    let host = match hostport.strip_prefix('[') {
-        Some(v6) => v6.split(']').next().unwrap_or(v6),
-        None => hostport.rsplit_once(':').map_or(hostport, |(h, _)| h),
-    };
-    host.parse::<IpAddr>().is_err()
-}
-
-fn queue_full() -> TrackerError {
-    TrackerError::Io("tracker resolver queue full".into())
 }
 
 /// Announces and scrapes over HTTP(S) (through only-http's client) and UDP (BEP 15, on
@@ -686,7 +630,6 @@ impl TrackerClient {
             next: std::sync::atomic::AtomicU64::new(1),
             timeout,
             retries,
-            resolver: OnceLock::new(),
         });
         let weak = Arc::downgrade(&inner);
         let _ = std::thread::Builder::new()
@@ -696,29 +639,10 @@ impl TrackerClient {
     }
 
     /// Announces `req` to `url` (`http://`, `https://` or `udp://`); `done` runs once, on an
-    /// I/O, timer or resolver thread. Never blocks: a tracker given by host name is resolved on
-    /// one of the client's resolver threads (2, with 256 requests queued at most; past that the
-    /// announce fails at once), so it may be called from an I/O thread.
+    /// I/O, timer or resolver thread. Never blocks: a tracker given by host name is resolved
+    /// off the calling thread ([`only::dns`], by only-http's client for HTTP(S) and here for
+    /// UDP), so it may be called from an I/O thread.
     pub fn announce(
-        &self,
-        url: &str,
-        req: &AnnounceRequest,
-        done: impl FnOnce(Result<AnnounceResponse, TrackerError>) + Send + 'static,
-    ) {
-        if host_needs_dns(url) {
-            let (me, url, req) = (self.clone(), url.to_owned(), req.clone());
-            return self.inner.offload(Box::new(move |run| {
-                if run {
-                    me.announce_now(&url, &req, done);
-                } else {
-                    done(Err(queue_full()));
-                }
-            }));
-        }
-        self.announce_now(url, req, done);
-    }
-
-    fn announce_now(
         &self,
         url: &str,
         req: &AnnounceRequest,
@@ -756,25 +680,6 @@ impl TrackerClient {
         hashes: &[InfoHash],
         done: impl FnOnce(Result<HashMap<InfoHash, ScrapeStats>, TrackerError>) + Send + 'static,
     ) {
-        if host_needs_dns(url) {
-            let (me, url, hashes) = (self.clone(), url.to_owned(), hashes.to_vec());
-            return self.inner.offload(Box::new(move |run| {
-                if run {
-                    me.scrape_now(&url, &hashes, done);
-                } else {
-                    done(Err(queue_full()));
-                }
-            }));
-        }
-        self.scrape_now(url, hashes, done);
-    }
-
-    fn scrape_now(
-        &self,
-        url: &str,
-        hashes: &[InfoHash],
-        done: impl FnOnce(Result<HashMap<InfoHash, ScrapeStats>, TrackerError>) + Send + 'static,
-    ) {
         if url.starts_with("http://") || url.starts_with("https://") {
             let Some(u) = http::scrape_url(url, hashes) else {
                 return done(Err(TrackerError::BadUrl(url.to_owned())));
@@ -801,13 +706,26 @@ impl TrackerClient {
         }
     }
 
-    /// Starts a UDP exchange. `hostport` was checked to be an address literal or this runs on
-    /// a resolver thread, so `to_socket_addrs` never blocks an I/O thread.
+    /// Starts a UDP exchange: resolves the tracker's host off the calling thread
+    /// ([`only::dns::resolve`]; IP literals at once), then dials.
     fn udp(&self, hostport: &str, what: UdpWhat, done: Done) {
         let hp = hostport.split('/').next().unwrap_or(hostport);
-        let Ok(Some(addr)) = hp.to_socket_addrs().map(|mut a| a.next()) else {
+        let parsed = hp
+            .rsplit_once(':')
+            .and_then(|(h, p)| Some((h.to_owned(), p.parse::<u16>().ok()?)));
+        let Some((host, port)) = parsed else {
             return fail(done, TrackerError::BadUrl(hostport.to_owned()));
         };
+        let (me, bad) = (self.clone(), hostport.to_owned());
+        only::dns::resolve(&host, port, move |r| {
+            match r.ok().and_then(|a| a.first().copied()) {
+                Some(addr) => me.udp_to(addr, what, done),
+                None => fail(done, TrackerError::BadUrl(bad)),
+            }
+        });
+    }
+
+    fn udp_to(&self, addr: SocketAddr, what: UdpWhat, done: Done) {
         let id = self.inner.next.fetch_add(1, Ordering::Relaxed);
         let tid = crate::rand_u32();
         let packet = udp::connect_request(tid);
@@ -1528,27 +1446,6 @@ mod tests {
             TrackerError::Failure("nope".into())
         );
         assert!(http::parse_announce(b"d14:failure").is_err());
-    }
-
-    #[test]
-    fn host_names_are_told_from_literals() {
-        for u in [
-            "udp://1.2.3.4:6969/announce",
-            "http://1.2.3.4/announce",
-            "http://[::1]:80/announce",
-            "https://[2001:db8::1]/a?x=1",
-            "udp://[::1]:1",
-            "http://u:p@10.0.0.1:8080/announce",
-        ] {
-            assert!(!host_needs_dns(u), "{u}");
-        }
-        for u in [
-            "udp://tracker.example.org:6969/announce",
-            "http://localhost/announce",
-            "https://t.example/announce?x",
-        ] {
-            assert!(host_needs_dns(u), "{u}");
-        }
     }
 
     fn announce_as(

@@ -45,8 +45,8 @@ announce 得到失败原因 `tracker full`；`max_peers_per_swarm`（1000）限�
 通过 `port::UdpPort` 由 uTP 和 DHT 共享。tracker 请求经由同一 engine 上的
 `tracker::TrackerClient`（HTTP(S) 用 only-http，UDP 用 `dial_udp` 套接字）。存储读写和每一次
 SHA-1 校验都在逻辑池（`only-pool`）上运行，从不占用 I/O 线程。
-tracker 主机名在 tracker 客户端自己的解析线程上解析（2 个线程，最多排队 256 个请求），从不在
-触发 announce 的 I/O 线程上解析。
+tracker 主机名在调用线程之外解析（UDP tracker 用 `only::dns`，HTTP tracker 经由 only-http 的客户端），
+从不在触发 announce 的 I/O 线程上解析。
 
 - **种子**来自 `MetaInfo`（`add_torrent`）或磁力链接（`add_magnet`，info 字典通过 ut_metadata
   从 peer 获取，BEP 9/10）。`AddOptions` 可以为种子指定独立存储（`MemoryStorage`，或任何实现

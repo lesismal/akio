@@ -50,8 +50,8 @@ listener shared by uTP and the DHT through a `port::UdpPort`. Trackers go throug
 `tracker::TrackerClient` on the same engine (only-http for HTTP(S), `dial_udp` sockets for
 UDP). Storage reads and writes and every SHA-1 check run on a logical pool (`only-pool`), never
 on an I/O thread.
-Tracker host names are resolved on the tracker client's own resolver threads (2, at most 256
-requests queued), never on the I/O thread that triggered an announce.
+Tracker host names are resolved off the calling thread (`only::dns`, for UDP trackers and,
+through only-http's client, HTTP ones), never on the I/O thread that triggered an announce.
 
 - **Torrents** come from a `MetaInfo` (`add_torrent`) or a magnet link (`add_magnet`, the info
   dictionary fetched from peers with ut_metadata, BEP 9/10). `AddOptions` give a storage of the

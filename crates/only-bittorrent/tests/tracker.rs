@@ -81,8 +81,9 @@ fn announce_and_scrape_over_http_and_udp() {
     assert_eq!(e, TrackerError::Timeout);
 }
 
-/// A tracker given by host name is resolved on the client's resolver threads, never on the
-/// caller's: `announce` returns at once and the outcome arrives from a resolver thread.
+/// A tracker given by host name is resolved off the caller's thread (`only::dns`, for UDP and,
+/// through only-http's client, HTTP): `announce` returns at once and the outcome arrives from a
+/// resolver thread.
 #[test]
 fn host_names_resolve_off_the_calling_thread() {
     let engine = Arc::new(
@@ -112,8 +113,7 @@ fn host_names_resolve_off_the_calling_thread() {
         let (r, name) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert!(r.is_err(), "{url}");
         assert!(
-            name.as_deref()
-                .is_some_and(|n| n.starts_with("only-bt-dns")),
+            name.as_deref().is_some_and(|n| n.starts_with("only-dns")),
             "{url}: done ran on {name:?}"
         );
     }
