@@ -54,8 +54,8 @@ pub struct Config {
     pub max_queued_bytes: usize,
     /// Ordered (pipelined) responses, see `Conn::reserve_response`: reads pause while a
     /// connection has this many reserved responses not yet written (one slow response holds
-    /// back every later one), and resume once half of them are out. Default 32; `None`: no
-    /// limit on their number. Reads also pause while the responses held back behind an
+    /// back every later one), and resume once half of them are out. Default 32 (0 counts as
+    /// 1); `None`: no limit on their number. Reads also pause while the responses held back behind an
     /// unfinished one reach `write_high_watermark` bytes, and the connection is closed if they
     /// and its send queue together pass `max_queued_bytes`. A request already read is still
     /// answered, so a connection can go past the limit by the requests of one read

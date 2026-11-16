@@ -1628,7 +1628,8 @@ impl ConnInner {
     #[inline]
     fn ordered_limit(&self, o: &Ordered) {
         let n = o.entries.len();
-        let limit = self.cfg.max_pending_responses;
+        // 0 would pause before every response; it means 1.
+        let limit = self.cfg.max_pending_responses.map(|l| l.max(1));
         let paused = self.ordered_hold.load(Ordering::Relaxed);
         if !paused {
             // The usual case: one response at a time, filled right away.
