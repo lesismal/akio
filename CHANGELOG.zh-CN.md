@@ -28,6 +28,37 @@ crates.io 上的 `flash` 名称已被占用，因此项目从 **flash** 更名�
 
 在仓库本身改名之前，GitHub 仓库与文档站点仍使用 `lesismal/only` 的 URL。
 
+### 新增：TLS 1.3 早期数据与 QUIC 0-RTT（需显式开启，带防重放）
+
+- **`only-tls`**：早期数据（RFC 8446 第 4.2.10 节），双方默认关闭。
+  `ServerConfigBuilder::early_data(max_bytes)` 签发带 `max_early_data_size` 的票据，并在票据的第一个
+  PSK、密码套件、ALPN 协议与 SNI 名都一致时接受早期数据（HelloRetryRequest 之后绝不接受；超量为
+  `unexpected_message`）；它在握手完成前被读取，以 EndOfEarlyData 结束。`ClientConfigBuilder::early_data(true)`
+  把应用在握手前写入的数据作为早期数据发送（不超过票据上限），服务端拒绝时（包括 HelloRetryRequest
+  之后）在握手后重发。新增 `EarlyData`（`NotAttempted`、`Pending`、`Accepted`、`Rejected`）与
+  `TlsInfo::early_data` / `early_data_len`。
+- **防重放**（开启早期数据时始终生效）：票据年龄的 10 秒新鲜度窗口（RFC 8446 第 8.3 节），以及每个
+  `ServerConfig` 一份被接受 ClientHello 的 PSK binder 记录，保留 20 秒、上限 100,000 条（第 8.2 节）：
+  重放的 ClientHello 其早期数据被拒绝，记录满时拒绝早期数据直到条目过期。不覆盖共享票据的多个进程或
+  机器（已在文档中说明）。
+- **`only-quic`**：0-RTT（RFC 9001 第 4.6 节），`ServerConfig::zero_rtt` / `ClientConfig::zero_rtt`
+  （默认关闭）。恢复会话的客户端从记住的传输参数起步（RFC 9000 第 7.4.1 节），`dial` 后立即打开流并以
+  0-RTT 包发送（v1 与 v2），合并在 Initial 之后。服务端只在限额与签发票据时相同的情况下接受 0-RTT，
+  以 0.5-RTT 应答；客户端重发被拒或丢失的 0-RTT 数据（Retry 之后以 0-RTT，否则以 1-RTT）。新增
+  `Connection::early_data` 与 `Connection::is_early(stream)`。
+- **HTTP**：only-h3 给以 0-RTT 到达的请求加上 `Early-Data: 1`（RFC 8470），配置开启时 `H3Client` 以 0-RTT
+  发送请求；TLS 上的 only-http 标记作为早期数据到达的 HTTP/1.1 请求（以及以早期数据开始的连接上的每个
+  HTTP/2 请求）。处理函数对不能安全重复的请求回 `425 Too Early`。
+- 测试：TLS 状态机（接受、拒绝、HelloRetryRequest、重放、过期的票据年龄、ALPN/SNI 绑定、
+  `max_early_data` 上限），模拟网络上的 QUIC（接受、拒绝、0-RTT 包丢失、Retry、重放的首批包、v2），
+  回环上的 QUIC、HTTP/3 与 TLS 上的 HTTP/1.1。互通：与 quic-go 双向的 v1 与 v2 0-RTT
+  （`tools/interop/quic/run.sh`），与 OpenSSL `s_client` / `s_server -early_data` 双向的早期数据，接受与
+  拒绝两种情况（`tools/interop/tls/run.sh`）。0-RTT 包与早期数据握手的 fuzz 种子。
+- 另外：等待密钥后才处理的包、0-RTT / 0.5-RTT 包不再产生 RTT 样本；在途的 0-RTT 包不会推迟握手的探测
+  定时器。
+- 安全：早期数据与 0-RTT 没有前向保密，并且可能被单个服务端的记录之外的方式重放；README 与指南说明了
+  何时（不）应开启。
+
 ### 新增：`only-quic` 的 ECN、BBR、客户端迁移、preferred_address 与 QUIC v2
 
 - **ECN**（RFC 9000 第 13.4 节、RFC 9002 第 7.1 节），`TransportConfig::ecn`（默认开启）：Linux 上

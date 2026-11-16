@@ -38,7 +38,8 @@ Run both with `cargo run -p only --example guide-tls`.
 ## What it negotiated
 
 `tls_info(&conn)` returns a `TlsInfo` with `handshaking`, `alpn`, `server_name` (SNI, server
-side) and `version`, or `None` for a non-TLS connection.
+side), `version`, `early_data` and `early_data_len` (see [Early data](#early-data-0-rtt)), or
+`None` for a non-TLS connection.
 
 ## Protocol support
 
@@ -48,7 +49,7 @@ side) and `version`, or `None` for a non-TLS connection.
 | cipher suites | AES-128-GCM-SHA256, AES-256-GCM-SHA384, CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA with AES-128/256-GCM and CHACHA20-POLY1305 (no CBC) |
 | certificates | ECDSA P-256/P-384, Ed25519, RSA (PSS signatures) | the same, RSA also with PKCS#1 v1.5 |
 | resumption | tickets + PSK (`psk_dhe_ke`): stateless with `.session_tickets(true)`, single-use cached tickets with the session cache | session IDs (cache) and RFC 5077 tickets |
-| other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, 0-RTT offered by a client is rejected and skipped | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
+| other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, early data (0-RTT) when both sides enable it (else rejected and skipped) | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
 
 Both: SNI, ALPN, close_notify, 16 KiB records, TLS 1.3 inner content types and padding, the
 downgrade sentinel, strict state machines (unexpected messages, empty or interleaved records,
@@ -76,6 +77,7 @@ Configuration uses `only`'s own types; the protocol internals are not part of th
 | session resumption | `.session_cache(entries)`, `.session_tickets(true)` | `.resumption(false)` to disable |
 | protocol versions | `.tls13_only(true)` | `.tls13_only(true)` |
 | SNI | | `.sni(false)` to stop sending it |
+| early data (0-RTT) | `.early_data(max_bytes)` | `.early_data(true)` |
 | tests only | | `.insecure_skip_verify()` |
 
 `.build()` checks the certificates and key (including that the key belongs to the leaf
@@ -94,6 +96,44 @@ builds naming it keep working).
   record-free TLS 1.3 core inside `only-tls` (internal API) with the same `only::tls`
   configurations.
 
+## Early data (0-RTT)
+
+Off by default; both sides must enable it. A server with `.early_data(max_bytes)` (and session
+resumption) issues tickets allowing that much early data; a client with `.early_data(true)` that
+resumes with such a ticket sends what the application writes before the handshake completes
+right behind its ClientHello, saving a round trip. The server reads it before the handshake
+completes, so `on_data` can see a request one round trip earlier.
+
+- The server accepts early data only for the ticket's first PSK, cipher suite, ALPN protocol
+  and SNI name, never after a HelloRetryRequest, and never more than it allowed.
+- When the server rejects it (another configuration, a HelloRetryRequest, a suspected replay),
+  it skips the early records; the client sends the same bytes again after the handshake, so
+  the application sees the same stream either way.
+- `TlsInfo::early_data` tells `NotAttempted`, `Pending` (client, before the answer), `Accepted`
+  or `Rejected`; `TlsInfo::early_data_len` is how many bytes at the start of the stream went
+  early. only-http marks HTTP/1.1 requests in that range with `Early-Data: 1` (RFC 8470; on
+  HTTP/2, every request of a connection that started with early data).
+
+**Replay protection** is always on with early data: the server accepts it only when the
+client's view of the ticket age is within 10 seconds of its own (RFC 8446 section 8.3) and
+records the PSK binder of each accepted ClientHello for 20 seconds (section 8.2); a ClientHello
+seen before gets its early data rejected and continues as an ordinary resumption. The record
+holds 100,000 ClientHellos per `ServerConfig`; when full, early data is rejected.
+
+**Security trade-offs.** Early data is not forward secret and can be replayed: the record stops
+replays to the same server within the window, not to other servers sharing tickets, nor a
+request the client itself is made to send again. Enable it only for requests that are safe to
+repeat (reads without side effects), and answer the others `425 Too Early`:
+
+```rust,ignore
+.post("/pay", |ctx: &mut Context| {
+    if ctx.header("early-data") == Some("1") {
+        return ctx.text(425, "too early"); // the client retries after the handshake
+    }
+    // ...
+})
+```
+
 ## Kernel TLS
 
 Not used: kernel TLS offload (handing the record keys to Linux after the handshake, so that
@@ -106,8 +146,7 @@ on a NIC with TLS offload.
 
 ## Not done
 
-Sending or accepting TLS 1.3 early data (0-RTT); record_size_limit, certificate
-compression, OCSP stapling (status_request is ignored); RSA-PSS keys (`rsa_pss_pss_*`);
+record_size_limit, certificate compression, OCSP stapling (status_request is ignored); RSA-PSS keys (`rsa_pss_pss_*`);
 P-521; system root certificates (load them into `RootCerts`).
 
 ## Writing your own transport

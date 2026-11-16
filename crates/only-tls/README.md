@@ -28,8 +28,9 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 - **TLS 1.3** (RFC 8446): full handshake on both sides, HelloRetryRequest (cookie echoed), the key
   schedule, KeyUpdate (answered; sent before the AES-GCM record limit), NewSessionTicket and
   PSK resumption with `psk_dhe_ke` (stateless tickets, or single-use tickets from the session
-  cache), client certificates (CertificateRequest), middlebox compatibility mode; 0-RTT is
-  rejected (and skipped as RFC 8446 4.2.10 says).
+  cache), client certificates (CertificateRequest), middlebox compatibility mode; early data
+  (0-RTT) when both sides enable it (see below), else rejected and skipped as RFC 8446 4.2.10
+  says.
 - **TLS 1.2** (RFC 5246, RFC 7627 extended master secret, RFC 5746 renegotiation indication):
   ECDHE with ECDSA, Ed25519 or RSA certificates and AEAD suites only (no CBC, no RSA key
   exchange, no static DH), session IDs and RFC 5077 tickets, client certificates; renegotiation
@@ -44,7 +45,40 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   checks.
 - Certificates are verified with `only-x509` (chain, validity, EKU, DNS names and IP addresses).
 
-Not implemented: sending or accepting 0-RTT, record_size_limit, certificate compression, OCSP
+### Early data (0-RTT)
+
+Off by default on both sides. `ServerConfigBuilder::early_data(max_bytes)` makes new tickets
+carry `max_early_data_size` and accepts early data from clients resuming with them;
+`ClientConfigBuilder::early_data(true)` makes a client send what the application writes before
+the handshake completes as early data (up to the ticket's limit), right behind the ClientHello.
+
+- **Accepted** only for the first PSK, with the ticket's cipher suite, ALPN protocol and SNI
+  name, and not after a HelloRetryRequest (RFC 8446 4.2.10); the server reads it before the
+  handshake completes and EndOfEarlyData ends it. A server reading more than it allowed fails
+  with `unexpected_message`.
+- **Rejected** early data is skipped by the server; the client keeps a copy and sends it again
+  as ordinary data after the handshake, so the byte stream is the same either way.
+- **Visible**: `TlsInfo::early_data` (`NotAttempted`, `Pending`, `Accepted`, `Rejected`) and
+  `TlsInfo::early_data_len` (the first that many bytes of the stream went early). only-http
+  marks HTTP/1.1 requests that arrived early with `Early-Data: 1` (RFC 8470; on HTTP/2 every
+  request of such a connection), so a handler can answer `425 Too Early`.
+- **Replay protection** (mandatory, always on with early data): the server accepts early data
+  only when the ticket age the client reports is within 10 seconds of the age the server
+  computes (RFC 8446 8.3), and records the PSK binder of every ClientHello whose early data it
+  accepted, for twice that window (RFC 8446 8.2, "ClientHello recording"); a ClientHello whose
+  binder is recorded has its early data rejected (the handshake still completes, in 1-RTT). The
+  record is bounded (100,000 entries per `ServerConfig`): when it is full, early data is
+  rejected until entries expire. Chosen over single-use tickets because it works with stateless
+  tickets and costs one lookup per resumed ClientHello.
+
+**Security trade-offs.** Early data is not forward secret (it is protected by the resumption
+secret only) and can be **replayed**: the record above stops replays to the same server process
+within the window, but not to another process or machine sharing tickets, nor a replay of the
+same request in a new ClientHello by an attacker who can make the client retry. Only enable it
+for requests that are safe to repeat (idempotent reads), check `TlsInfo::early_data` /
+`Early-Data: 1` before acting on anything else, and answer `425 Too Early` to the rest.
+
+Not implemented: record_size_limit, certificate compression, OCSP
 stapling (status_request is ignored), RSA-PSS keys, P-521. Kernel TLS offload was evaluated and
 is not used: it was slower than this crate's record layer in every case measured, `sendfile`
 included (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"); the code stays behind the

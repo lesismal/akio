@@ -105,8 +105,21 @@ engine.run().unwrap();
   they are all dropped. Sent packets are tracked in a ring indexed by packet number. A shared
   timer thread drives timeouts.
 
-Not implemented: 0-RTT (sending or accepting; `only-tls` rejects early data), compatible
-version negotiation (RFC 9368 section 4: switching versions inside one handshake), ECN marks on
+**0-RTT** (RFC 9001 section 4.6), off by default on both sides: `ServerConfig::zero_rtt(true)`
+and `ClientConfig::zero_rtt(true)`. A client resuming with a ticket that allows it starts from
+the transport parameters the server gave last time (RFC 9000 7.4.1: limits only, no connection
+IDs, tokens or addresses), opens streams right after `dial` and sends their data in 0-RTT
+packets (the application data packet number space, coalesced behind the Initial; version 1 and
+2). The server accepts 0-RTT only under the same limits as when the ticket was issued, with
+`only-tls`'s replay protection (a 10-second freshness window and a bounded record of recent
+ClientHellos per server, see its README), and answers in 0.5-RTT. Rejected or lost 0-RTT data is
+sent again (in 1-RTT, or in 0-RTT to the new connection ID after a Retry). The client sees
+`Connection::early_data()`; the server sees `Connection::is_early(stream)`, and only-h3 marks
+such requests `Early-Data: 1` (RFC 8470). **0-RTT data can be replayed** (to another server
+sharing tickets, or within the window by an attacker who can make the client retry) and is not
+forward secret: only act on requests that are safe to repeat, answer the others `425 Too Early`.
+
+Not implemented: compatible version negotiation (RFC 9368 section 4: switching versions inside one handshake), ECN marks on
 platforms other than Linux and under userspace stacks (validation then fails and connections
 send unmarked packets).
 

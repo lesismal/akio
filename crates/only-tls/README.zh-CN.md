@@ -27,7 +27,7 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 - **TLS 1.3**（RFC 8446）：双方完整握手、HelloRetryRequest（回显 cookie）、密钥调度、KeyUpdate
   （应答；在达到 AES-GCM 记录上限前主动发送）、NewSessionTicket 与使用 `psk_dhe_ke` 的 PSK 恢复
   （无状态票据，或来自会话缓存的一次性票据）、客户端证书（CertificateRequest）、中间设备兼容模式；
-  拒绝 0-RTT（并按 RFC 8446 4.2.10 跳过）。
+  双方都开启时支持早期数据（0-RTT，见下文），否则拒绝并按 RFC 8446 4.2.10 跳过。
 - **TLS 1.2**（RFC 5246、RFC 7627 扩展主密钥、RFC 5746 重协商指示）：仅 ECDHE 搭配 ECDSA、Ed25519
   或 RSA 证书与 AEAD 套件（无 CBC、无 RSA 密钥交换、无静态 DH），会话 ID 与 RFC 5077 票据，客户端
   证书；以 `no_renegotiation` 警告拒绝重协商。
@@ -39,7 +39,32 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   记录重组且绝不跨密钥切换、告警与 close_notify、常量时间的 Finished / 绑定值校验。
 - 证书由 `only-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）。
 
-未实现：发送或接受 0-RTT、record_size_limit、证书压缩、OCSP stapling（忽略 status_request）、
+### 早期数据（0-RTT）
+
+双方默认关闭。`ServerConfigBuilder::early_data(max_bytes)` 让新票据携带 `max_early_data_size`，
+并接受用这些票据恢复会话的客户端发来的早期数据；`ClientConfigBuilder::early_data(true)` 让客户端把
+应用在握手完成前写入的数据作为早期数据（不超过票据的上限）紧跟在 ClientHello 之后发出。
+
+- **接受**：只针对第一个 PSK，且套件、ALPN 协议、SNI 名都与票据一致，HelloRetryRequest 之后不接受
+  （RFC 8446 4.2.10）；服务端在握手完成前读取它，以 EndOfEarlyData 结束。读到超过允许量的数据时
+  以 `unexpected_message` 失败。
+- **拒绝**：服务端跳过被拒的早期数据；客户端保留副本，握手后作为普通数据重发，字节流两种情况下完全
+  相同。
+- **可见**：`TlsInfo::early_data`（`NotAttempted`、`Pending`、`Accepted`、`Rejected`）与
+  `TlsInfo::early_data_len`（流开头这么多字节是早期数据）。only-http 给作为早期数据到达的 HTTP/1.1
+  请求加上 `Early-Data: 1`（RFC 8470；HTTP/2 则是这种连接上的每个请求），处理函数可以回 `425 Too Early`。
+- **防重放**（开启早期数据时强制生效）：仅当客户端报告的票据年龄与服务端计算的年龄相差不超过 10 秒
+  时才接受早期数据（RFC 8446 8.3），并把每个被接受早期数据的 ClientHello 的 PSK binder 记录两倍窗口
+  时长（RFC 8446 8.2，“ClientHello 记录”）；binder 已在记录中的 ClientHello，其早期数据被拒绝（握手仍以
+  1-RTT 完成）。记录有上限（每个 `ServerConfig` 100,000 条）：满了就拒绝早期数据，直到条目过期。之所以
+  选它而不是一次性票据，是因为它适用于无状态票据，且每个恢复会话的 ClientHello 只多一次查找。
+
+**安全权衡。** 早期数据没有前向保密（只受恢复密钥保护），且**可被重放**：上述记录能挡住窗口内对同一
+服务端进程的重放，但挡不住发往共享票据的其他进程或机器的重放，也挡不住攻击者诱使客户端重试、在新
+ClientHello 中再次发送同一请求。只为可安全重复的请求（幂等读取）开启它，其他操作前先检查
+`TlsInfo::early_data` / `Early-Data: 1`，对其余请求回 `425 Too Early`。
+
+未实现：record_size_limit、证书压缩、OCSP stapling（忽略 status_request）、
 RSA-PSS 密钥、P-521。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
 也不例外（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）；代码保留在实验性的 `experimental-ktls`
 feature 之后（只用于测试流与基准，不在 semver 承诺之内）。

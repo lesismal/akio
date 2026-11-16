@@ -30,6 +30,44 @@ the entries below already use the new names.
 The GitHub repository and the documentation site keep their `lesismal/only` URLs until the
 repository itself is renamed.
 
+### Added: TLS 1.3 early data and QUIC 0-RTT (opt-in, with replay protection)
+
+- **`only-tls`**: early data (RFC 8446 section 4.2.10), off by default on both sides.
+  `ServerConfigBuilder::early_data(max_bytes)` issues tickets with `max_early_data_size` and
+  accepts early data for the ticket's first PSK, cipher suite, ALPN protocol and SNI name (never
+  after a HelloRetryRequest; more than allowed is `unexpected_message`); it is read before the
+  handshake completes and EndOfEarlyData ends it. `ClientConfigBuilder::early_data(true)` sends
+  what the application writes before the handshake as early data, up to the ticket's limit, and
+  sends it again after the handshake if the server rejects it (also after a HelloRetryRequest).
+  New `EarlyData` (`NotAttempted`, `Pending`, `Accepted`, `Rejected`) and
+  `TlsInfo::early_data` / `early_data_len`.
+- **Replay protection** (always on with early data): a 10-second freshness window on the
+  ticket age (RFC 8446 section 8.3) and a per-`ServerConfig` record of the PSK binders of
+  accepted ClientHellos, kept for 20 seconds and bounded at 100,000 (section 8.2): a replayed
+  ClientHello's early data is rejected, a full record rejects early data until entries expire.
+  Not across processes or machines sharing tickets (documented).
+- **`only-quic`**: 0-RTT (RFC 9001 section 4.6), `ServerConfig::zero_rtt` /
+  `ClientConfig::zero_rtt` (default off). Resuming clients start from the remembered transport
+  parameters (RFC 9000 section 7.4.1), open streams right after `dial` and send them in 0-RTT
+  packets (v1 and v2), coalesced behind the Initial. Servers accept 0-RTT only under the limits
+  the ticket was issued with, answer in 0.5-RTT, and the client resends rejected or lost 0-RTT
+  data (in 0-RTT after a Retry, else in 1-RTT). New `Connection::early_data` and
+  `Connection::is_early(stream)`.
+- **HTTP**: only-h3 marks requests that arrived in 0-RTT with `Early-Data: 1` (RFC 8470), and
+  `H3Client` sends its requests in 0-RTT when its QUIC config enables it; only-http over TLS
+  marks HTTP/1.1 requests that arrived as early data (and every HTTP/2 request of a connection
+  that began with early data). Handlers answer `425 Too Early` to what is not safe to repeat.
+- Tests: TLS state machine (accept, reject, HelloRetryRequest, replay, stale ticket age,
+  ALPN/SNI binding, `max_early_data` limits), QUIC on the simulated network (accept, reject,
+  lost 0-RTT packets, Retry, a replayed first flight, v2), loopback QUIC, HTTP/3 and HTTP/1.1
+  over TLS. Interop: 0-RTT with quic-go both ways in v1 and v2 (`tools/interop/quic/run.sh`),
+  early data with OpenSSL `s_client` / `s_server -early_data` both ways, accepted and rejected
+  (`tools/interop/tls/run.sh`). Fuzz seeds for 0-RTT packets and early-data handshakes.
+- Also: packets processed after waiting for their keys, and 0-RTT / 0.5-RTT packets, no longer
+  give RTT samples; 0-RTT in flight does not hold back the handshake probe timer.
+- Security: early data and 0-RTT are not forward secret and can be replayed beyond what one
+  server's record sees; the READMEs and the guide say when (not) to enable them.
+
 ### Added: ECN, BBR, client migration, preferred_address and QUIC v2 in `only-quic`
 
 - **ECN** (RFC 9000 section 13.4, RFC 9002 section 7.1), `TransportConfig::ecn` (on by
