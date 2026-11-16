@@ -210,10 +210,7 @@ impl PublicKey {
         if !bignum::lt_vartime(&s, &self.n.m) {
             return Err(Error::Verification);
         }
-        let m = self
-            .n
-            .out_of_mont(&self.n.pow_vartime(&self.n.to_mont(&s), &[self.e]));
-        Ok(bignum::to_be(&m, self.len))
+        Ok(bignum::to_be(&self.n.pow_public(&s, self.e), self.len))
     }
 
     /// Verifies a PKCS#1 v1.5 signature (RSASSA-PKCS1-v1_5) on `msg`.
@@ -567,7 +564,7 @@ impl PrivateKey {
         // m·r⁻¹ in normal form, likewise.
         let m = n.mul(&mb, &bl.r_inv);
         // Fault check: mᵉ = c.
-        let back = n.out_of_mont(&n.pow_vartime(&n.to_mont(&m), &[self.public.e]));
+        let back = n.pow_public(&m, self.public.e);
         if back != cl {
             return Err(Error::Verification);
         }

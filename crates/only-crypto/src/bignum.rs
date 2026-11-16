@@ -5,7 +5,8 @@
 //! the constant computation in [`Mont::new`]) take time that depends only on the limb counts:
 //! Montgomery multiplication with a masked final subtraction (BMI2 + ADX assembly in `hw`,
 //! portable CIOS otherwise), fixed 5-bit exponent windows with full-table lookups (on AVX-512
-//! IFMA in radix 2⁵², `ifma`). Functions named `_vartime` are for public values only.
+//! IFMA in radix 2⁵², `ifma`). Functions named `_vartime` are for public values only, as is the
+//! exponent of [`Mont::pow_public`] (the RSA public operation).
 
 use crate::ct;
 use crate::field::{mont_mul_cios, neg_inv64, redc, sqr_wide};
@@ -26,8 +27,16 @@ pub(crate) fn from_be(b: &[u8], k: usize) -> Option<Vec<u64>> {
         return None;
     }
     let mut l = vec![0u64; k];
-    for (i, &byte) in b.iter().rev().enumerate() {
-        l[i / 8] |= u64::from(byte) << (8 * (i % 8));
+    // Whole limbs from the end, then the partial top limb.
+    let mut chunks = b.rchunks_exact(8);
+    for (limb, c) in l.iter_mut().zip(&mut chunks) {
+        *limb = u64::from_be_bytes(c.try_into().unwrap_or_else(|_| unreachable!()));
+    }
+    let rest = chunks.remainder();
+    if !rest.is_empty() {
+        let mut top = [0u8; 8];
+        top[8 - rest.len()..].copy_from_slice(rest);
+        l[b.len() / 8] = u64::from_be_bytes(top);
     }
     Some(l)
 }
@@ -35,11 +44,15 @@ pub(crate) fn from_be(b: &[u8], k: usize) -> Option<Vec<u64>> {
 /// Limbs as exactly `len` big-endian bytes (the value must fit).
 pub(crate) fn to_be(l: &[u64], len: usize) -> Vec<u8> {
     let mut out = vec![0u8; len];
-    for i in 0..len {
-        let limb = i / 8;
-        if limb < l.len() {
-            out[len - 1 - i] = (l[limb] >> (8 * (i % 8))) as u8;
-        }
+    let mut chunks = out.rchunks_exact_mut(8);
+    for (c, &limb) in (&mut chunks).zip(l) {
+        c.copy_from_slice(&limb.to_be_bytes());
+    }
+    let rest = chunks.into_remainder();
+    let i = len / 8;
+    if !rest.is_empty() && i < l.len() {
+        let n = rest.len();
+        rest.copy_from_slice(&l[i].to_be_bytes()[8 - n..]);
     }
     out
 }
@@ -65,7 +78,9 @@ pub(crate) fn lt_vartime(a: &[u64], b: &[u64]) -> bool {
 }
 
 /// `x mod d` (Knuth's algorithm D, variable time: public values only), `d.len()` limbs; the
-/// top limb of `d` must be nonzero.
+/// top limb of `d` must be nonzero. Each quotient digit is estimated from the top two limbs
+/// with a precomputed reciprocal of the divisor's top limb (Möller and Granlund, "Improved
+/// division by invariant integers", algorithm 4) instead of a 128-bit division.
 pub(crate) fn rem_vartime(x: &[u64], d: &[u64]) -> Vec<u64> {
     let k = d.len();
     debug_assert!(k > 0 && d[k - 1] != 0);
@@ -93,43 +108,56 @@ pub(crate) fn rem_vartime(x: &[u64], d: &[u64]) -> Vec<u64> {
     };
     let dn = &shl(d, 1)[..k];
     let mut un = shl(x, 1);
-    let (dt, ds) = (u128::from(dn[k - 1]), u128::from(dn[k - 2]));
+    let (dt, ds) = (dn[k - 1], dn[k - 2]);
+    // v = ⌊(2¹²⁸ - 1) / dt⌋ - 2⁶⁴ (dt has its top bit set, so v < 2⁶⁴).
+    let v = (((u128::from(!dt)) << 64) | u128::from(u64::MAX)) / u128::from(dt);
+    let v = v as u64;
     for j in (0..un.len() - k).rev() {
-        let top = (u128::from(un[j + k]) << 64) | u128::from(un[j + k - 1]);
-        let mut qhat = top / dt;
-        let mut rhat = top % dt;
-        while qhat >> 64 != 0 || qhat * ds > ((rhat << 64) | u128::from(un[j + k - 2])) {
-            qhat -= 1;
-            rhat += dt;
-            if rhat >> 64 != 0 {
+        let (u1, u0) = (un[j + k], un[j + k - 1]);
+        // qhat = ⌊(u1·2⁶⁴ + u0) / dt⌋ capped at 2⁶⁴ - 1, rhat the remainder (None: ≥ 2⁶⁴).
+        let (mut qhat, mut rhat) = if u1 >= dt {
+            // u1 = dt (the partial remainder is below dn·2⁶⁴): qhat = 2⁶⁴ - 1.
+            let (r, over) = u0.overflowing_add(dt);
+            (u64::MAX, if over { None } else { Some(r) })
+        } else {
+            let (q, r) = div2by1(u1, u0, dt, v);
+            (q, Some(r))
+        };
+        // At most two corrections from the second divisor limb.
+        while let Some(r) = rhat {
+            if u128::from(qhat) * u128::from(ds)
+                <= ((u128::from(r) << 64) | u128::from(un[j + k - 2]))
+            {
                 break;
             }
+            qhat -= 1;
+            let (r, over) = r.overflowing_add(dt);
+            rhat = if over { None } else { Some(r) };
         }
         // un[j..=j+k] -= qhat·dn.
-        let mut borrow = 0u128;
-        let mut carry = 0u128;
+        let mut borrow = 0u64;
+        let mut carry = 0u64;
         for i in 0..k {
-            let p = qhat * u128::from(dn[i]) + carry;
-            carry = p >> 64;
-            let t = u128::from(un[i + j])
-                .wrapping_sub(p & u128::from(u64::MAX))
-                .wrapping_sub(borrow);
-            un[i + j] = t as u64;
-            borrow = (t >> 64) & 1;
+            let p = u128::from(qhat) * u128::from(dn[i]) + u128::from(carry);
+            carry = (p >> 64) as u64;
+            let (t, b1) = un[i + j].overflowing_sub(p as u64);
+            let (t, b2) = t.overflowing_sub(borrow);
+            un[i + j] = t;
+            borrow = u64::from(b1 | b2);
         }
-        let t = u128::from(un[j + k])
-            .wrapping_sub(carry)
-            .wrapping_sub(borrow);
-        un[j + k] = t as u64;
-        if (t >> 64) & 1 != 0 {
+        let (t, b1) = un[j + k].overflowing_sub(carry);
+        let (t, b2) = t.overflowing_sub(borrow);
+        un[j + k] = t;
+        if b1 | b2 {
             // qhat was one too large: add dn back.
-            let mut c = 0u128;
+            let mut c = 0u64;
             for i in 0..k {
-                let t = u128::from(un[i + j]) + u128::from(dn[i]) + c;
-                un[i + j] = t as u64;
-                c = t >> 64;
+                let (t, c1) = un[i + j].overflowing_add(dn[i]);
+                let (t, c2) = t.overflowing_add(c);
+                un[i + j] = t;
+                c = u64::from(c1 | c2);
             }
-            un[j + k] = un[j + k].wrapping_add(c as u64);
+            un[j + k] = un[j + k].wrapping_add(c);
         }
     }
     // Unnormalize the remainder.
@@ -139,6 +167,24 @@ pub(crate) fn rem_vartime(x: &[u64], d: &[u64]) -> Vec<u64> {
             (un[i] >> s) | hi
         })
         .collect()
+}
+
+/// `(⌊(u1·2⁶⁴ + u0) / d⌋, remainder)` for `u1 < d`, `d`'s top bit set and `v` its reciprocal
+/// `⌊(2¹²⁸ - 1) / d⌋ - 2⁶⁴` (Möller and Granlund, algorithm 4).
+fn div2by1(u1: u64, u0: u64, d: u64, v: u64) -> (u64, u64) {
+    let q = u128::from(v) * u128::from(u1) + ((u128::from(u1) << 64) | u128::from(u0));
+    let mut q1 = ((q >> 64) as u64).wrapping_add(1);
+    let q0 = q as u64;
+    let mut r = u0.wrapping_sub(q1.wrapping_mul(d));
+    if r > q0 {
+        q1 = q1.wrapping_sub(1);
+        r = r.wrapping_add(d);
+    }
+    if r >= d {
+        q1 += 1;
+        r -= d;
+    }
+    (q1, r)
 }
 
 /// `a · b` (schoolbook), `a.len() + b.len()` limbs.
@@ -254,25 +300,24 @@ impl Mont {
     }
 
     /// The context for a public `m` (as [`new`](Self::new)), faster and in variable time:
-    /// `R² mod m` by one long division.
+    /// `R mod m` by one step of long division and `R² mod m = (R mod m)·R mod m` by `k` more.
     pub(crate) fn new_public(m: &[u64]) -> Option<Mont> {
         let k = m.len();
         if k == 0 || k > MAX_LIMBS || m[0] & 1 == 0 || m[k - 1] == 0 || (k == 1 && m[0] == 1) {
             return None;
         }
-        let mut r2_in = vec![0u64; 2 * k + 1];
-        r2_in[2 * k] = 1;
-        let r2 = rem_vartime(&r2_in, m);
-        let mut mont = Mont {
+        let mut wide = vec![0u64; 2 * k];
+        wide[k] = 1;
+        let r1 = rem_vartime(&wide[..=k], m);
+        wide[..k].fill(0);
+        wide[k..].copy_from_slice(&r1);
+        let r2 = rem_vartime(&wide, m);
+        Some(Mont {
             m: m.to_vec(),
             n0: neg_inv64(m[0]),
             r2,
-            r1: Vec::new(),
-        };
-        let mut one = vec![0u64; k];
-        one[0] = 1;
-        mont.r1 = mont.mul(&mont.r2, &one);
-        Some(mont)
+            r1,
+        })
     }
 
     pub(crate) fn limbs(&self) -> usize {
@@ -542,19 +587,61 @@ impl Mont {
         (p.pow(bp, ep), q.pow(bq, eq))
     }
 
-    /// `base^e` (Montgomery form) for a public exponent, square-and-multiply.
+    /// `base^e` (Montgomery form) for a public exponent, square-and-multiply from the top bit
+    /// (`base` itself, so no squaring of 1).
     pub(crate) fn pow_vartime(&self, base: &[u64], e: &[u64]) -> Vec<u64> {
-        let mut r = self.one();
         let bits = bit_len_vartime(e);
+        if bits == 0 {
+            return self.one();
+        }
+        let mut r = base[..self.m.len()].to_vec();
         let mut tmp = vec![0u64; self.m.len()];
-        for i in (0..bits).rev() {
+        for i in (0..bits - 1).rev() {
             self.sqr_into(&mut tmp, &r);
-            r.copy_from_slice(&tmp);
             if (e[i / 64] >> (i % 64)) & 1 == 1 {
-                r = self.mul(&r, base);
+                self.mul_into(&mut r, &tmp, base);
+            } else {
+                std::mem::swap(&mut r, &mut tmp);
             }
         }
         r
+    }
+
+    /// `s^e mod m` in normal form for `s < m` in normal form and a public `e ≥ 1`: the RSA
+    /// public operation. Square-and-multiply, variable time in `e` only; into the Montgomery
+    /// form with one multiplication by `R² mod m`, and out of it with the last one, by `s`
+    /// instead of `s·R` (`REDC(x·R·s) = x·s`): for `e = 65537`, 16 squarings and two
+    /// multiplications. On AVX-512 IFMA for 2048- to 4096-bit moduli (`ifma::pow_public`).
+    pub(crate) fn pow_public(&self, s: &[u64], e: u64) -> Vec<u64> {
+        let k = self.m.len();
+        debug_assert!(e != 0 && s.len() == k);
+        #[cfg(all(target_arch = "x86_64", not(miri)))]
+        if ifma::enabled() && ifma::public_digits(k).is_some() {
+            return ifma::pow_public(self, s, e);
+        }
+        let base = self.to_mont(s);
+        let mut x = base.clone();
+        let mut t = vec![0u64; k];
+        let top = 63 - e.leading_zeros();
+        for i in (1..top).rev() {
+            self.sqr_into(&mut t, &x);
+            if (e >> i) & 1 == 1 {
+                self.mul_into(&mut x, &t, &base);
+            } else {
+                std::mem::swap(&mut x, &mut t);
+            }
+        }
+        let mut last = vec![0u64; k];
+        last[0] = 1;
+        if top > 0 {
+            self.sqr_into(&mut t, &x);
+            std::mem::swap(&mut x, &mut t);
+            if e & 1 == 1 {
+                last.copy_from_slice(s);
+            }
+        }
+        self.mul_into(&mut t, &x, &last);
+        t
     }
 }
 
@@ -656,6 +743,181 @@ mod tests {
                     x.copy_from_slice(&f);
                     y.copy_from_slice(&g);
                     assert_eq!(x, y, "chain k={k} step {i}");
+                }
+            }
+        }
+    }
+
+    /// `from_be` and `to_be` against byte-by-byte conversions, every length up to 40 bytes,
+    /// with leading zero bytes and too-short limb counts.
+    #[test]
+    fn be_conversions() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([25; 32]);
+        for len in 0..=40usize {
+            for lead in [0usize, 1, 9] {
+                let mut b = vec![0u8; lead + len];
+                for x in &mut b[lead..] {
+                    *x = rng.next_u64() as u8 | 1;
+                }
+                for k in [len.div_ceil(8).max(1), len.div_ceil(8) + 2, len / 8] {
+                    let mut want = vec![0u64; k];
+                    let fits = len <= 8 * k;
+                    if fits {
+                        for (i, &byte) in b.iter().rev().enumerate() {
+                            if byte != 0 {
+                                want[i / 8] |= u64::from(byte) << (8 * (i % 8));
+                            }
+                        }
+                    }
+                    let got = from_be(&b, k);
+                    assert_eq!(
+                        got,
+                        fits.then(|| want.clone()),
+                        "len={len} lead={lead} k={k}"
+                    );
+                    if fits {
+                        for out_len in [len, len + 3] {
+                            let mut b2 = vec![0u8; out_len - len];
+                            b2.extend_from_slice(&b[lead..]);
+                            assert_eq!(to_be(&want, out_len), b2, "to_be len={len} k={k}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// `rem_vartime` against bit-by-bit shift-and-subtract, for random and edge dividends
+    /// (all ones, `d·2⁶⁴ⁱ - 1`, `d·2⁶⁴ⁱ`, where the quotient estimate needs its corrections) and
+    /// divisors (top limb 1, 2⁶³, all ones; low limbs 0 or all ones).
+    #[test]
+    fn rem_matches_bitwise() {
+        fn rem_bits(x: &[u64], d: &[u64]) -> Vec<u64> {
+            let k = d.len();
+            let mut d1 = d.to_vec();
+            d1.push(0);
+            let mut r = vec![0u64; k + 1];
+            for i in (0..64 * x.len()).rev() {
+                let mut carry = (x[i / 64] >> (i % 64)) & 1;
+                for l in &mut r {
+                    let v = *l;
+                    *l = (v << 1) | carry;
+                    carry = v >> 63;
+                }
+                if !lt_vartime(&r, &d1) {
+                    let mut t = vec![0u64; k + 1];
+                    ct::sub_limbs(&mut t, &r, &d1);
+                    r = t;
+                }
+            }
+            r.truncate(k);
+            r
+        }
+        let mut rng = crate::rand::ChaChaRng::from_seed([24; 32]);
+        let mut next = || rng.next_u64();
+        for k in [2usize, 3, 7, 32] {
+            for (top, low) in [
+                (1u64, 0u64),
+                (1 << 63, 0),
+                (u64::MAX, u64::MAX),
+                (3, u64::MAX),
+            ] {
+                let mut ds: Vec<Vec<u64>> = vec![{
+                    let mut d = vec![low; k];
+                    d[k - 1] = top;
+                    d
+                }];
+                ds.push((0..k).map(|_| next()).collect());
+                ds[1][k - 1] = top | (ds[1][k - 1] & (top >> 1));
+                for d in &ds {
+                    let mut xs: Vec<Vec<u64>> = vec![vec![u64::MAX; 2 * k + 1]];
+                    for extra in 1..=k + 1 {
+                        // d·2^(64·extra), and one less.
+                        let mut x = vec![0u64; extra];
+                        x.extend_from_slice(d);
+                        xs.push(x.clone());
+                        let mut i = 0;
+                        while x[i] == 0 {
+                            x[i] = u64::MAX;
+                            i += 1;
+                        }
+                        x[i] -= 1;
+                        xs.push(x);
+                        xs.push((0..k + extra).map(|_| next()).collect());
+                    }
+                    for x in &xs {
+                        assert_eq!(rem_vartime(x, d), rem_bits(x, d), "k={k} d={d:x?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// `pow_public` (on IFMA where the CPU has it, else the 64-bit Montgomery code) and
+    /// `pow_vartime` against square-and-multiply from 1 on the generic CIOS, for public moduli
+    /// of the RSA sizes (and one without fixed-size code), with a full and a short top limb,
+    /// edge bases (0, 1, m - 1, m - 2) and exponents (1, 2, 3, 2¹⁶ + 1, 2³² + 1, 2⁶⁴ - 1, odd
+    /// and even random ones).
+    #[test]
+    fn pow_public_matches() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([23; 32]);
+        let mut next = || rng.next_u64();
+        for k in [32usize, 48, 64, 33] {
+            for top in [u64::MAX, 1 << 63, 0x8000_0000_0000_0001] {
+                let mut m: Vec<u64> = (0..k).map(|_| next()).collect();
+                m[0] |= 1;
+                m[k - 1] = top;
+                let mont = Mont::new_public(&m).unwrap();
+                let reference = |s: &[u64], e: u64| {
+                    let base = {
+                        let mut out = vec![0u64; k];
+                        mont.mul_into_generic(&mut out, s, &mont.r2);
+                        out
+                    };
+                    let mut x = mont.r1.clone();
+                    let mut t = vec![0u64; k];
+                    for i in (0..64).rev() {
+                        mont.mul_into_generic(&mut t, &x, &x);
+                        x.copy_from_slice(&t);
+                        if (e >> i) & 1 == 1 {
+                            mont.mul_into_generic(&mut t, &x, &base);
+                            x.copy_from_slice(&t);
+                        }
+                    }
+                    let mut one = vec![0u64; k];
+                    one[0] = 1;
+                    mont.mul_into_generic(&mut t, &x, &one);
+                    t
+                };
+                let mut bases = vec![vec![0u64; k], vec![0u64; k], m.clone(), m.clone()];
+                bases[1][0] = 1;
+                bases[2][0] -= 1;
+                bases[3][0] -= 2;
+                for _ in 0..3 {
+                    let r: Vec<u64> = (0..k).map(|_| next()).collect();
+                    bases.push(mont.reduce(&r));
+                }
+                let exps = [
+                    1,
+                    2,
+                    3,
+                    65537,
+                    (1 << 32) + 1,
+                    u64::MAX,
+                    next() | 1,
+                    next() & !1,
+                ];
+                for s in &bases {
+                    for &e in &exps {
+                        let want = reference(s, e);
+                        assert_eq!(mont.pow_public(s, e), want, "k={k} top={top:x} e={e}");
+                        let sm = mont.to_mont(s);
+                        assert_eq!(
+                            mont.out_of_mont(&mont.pow_vartime(&sm, &[e])),
+                            want,
+                            "pow_vartime k={k} top={top:x} e={e}"
+                        );
+                    }
                 }
             }
         }
