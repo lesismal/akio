@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -61,13 +62,30 @@ struct Route {
 struct Entry {
     conn: Connection,
     handler: Shared,
+    /// Accepted from a SYN (counted against [`UdpPort::set_max_inbound`]).
+    inbound: bool,
 }
 
 #[derive(Default)]
 struct State {
     routes: HashMap<SocketAddr, Route>,
     utp: HashMap<(SocketAddr, u16), Entry>,
+    /// Entries of `utp` with `inbound` set.
+    inbound: usize,
 }
+
+impl State {
+    fn remove_utp(&mut self, k: &(SocketAddr, u16)) -> Option<Entry> {
+        let e = self.utp.remove(k)?;
+        if e.inbound {
+            self.inbound -= 1;
+        }
+        Some(e)
+    }
+}
+
+/// Default [`UdpPort::set_max_inbound`].
+pub const DEFAULT_MAX_INBOUND_UTP: usize = 1024;
 
 struct Inner {
     engine: EngineRef,
@@ -76,6 +94,7 @@ struct Inner {
     on_accept: Mutex<Option<AcceptFn>>,
     on_datagram: Mutex<Option<DatagramFn>>,
     epoch: Instant,
+    max_inbound: AtomicUsize,
 }
 
 /// A UDP port shared by uTP and other datagram protocols. Cheap to clone.
@@ -130,6 +149,7 @@ impl UdpPort {
             on_accept: Mutex::new(None),
             on_datagram: Mutex::new(None),
             epoch: Instant::now(),
+            max_inbound: AtomicUsize::new(DEFAULT_MAX_INBOUND_UTP),
         });
         let weak = Arc::downgrade(&inner);
         let _ = std::thread::Builder::new()
@@ -173,6 +193,14 @@ impl UdpPort {
         *lock(&self.inner.on_accept) = Some(Arc::new(f));
     }
 
+    /// Most incoming uTP connections at once (default 1024). A SYN beyond it is dropped without
+    /// an answer or an `on_accept` call: a SYN costs its sender nothing and may come from a
+    /// spoofed address, so without a cap a flood would fill the table (each accepted stream
+    /// lives until its idle timeout). Outgoing connections are not counted.
+    pub fn set_max_inbound(&self, n: usize) {
+        self.inner.max_inbound.store(n, Ordering::Relaxed);
+    }
+
     /// Receives every datagram that is not uTP (on an I/O thread; `data` valid during the call).
     pub fn on_datagram(&self, f: impl Fn(SocketAddr, &[u8]) + Send + Sync + 'static) {
         *lock(&self.inner.on_datagram) = Some(Arc::new(f));
@@ -202,6 +230,7 @@ impl UdpPort {
                 Entry {
                     conn,
                     handler: Arc::new(Mutex::new(Box::new(handler))),
+                    inbound: false,
                 },
             );
         }
@@ -314,7 +343,7 @@ fn tick(inner: &Arc<Inner>) {
             }
         }
         for k in gone {
-            st.utp.remove(&k);
+            st.remove_utp(&k);
         }
     }
     for (peer, id, sends, evs) in work {
@@ -339,6 +368,9 @@ fn on_utp(inner: &Arc<Inner>, peer: SocketAddr, data: &[u8]) {
                 e.conn
                     .on_packet(&h, sack, payload, now, &mut sends, &mut ev);
             } else {
+                if st.inbound >= inner.max_inbound.load(Ordering::Relaxed) {
+                    return;
+                }
                 let accept = lock(&inner.on_accept).clone();
                 let Some(accept) = accept else { return };
                 let stream = UtpStream {
@@ -352,7 +384,15 @@ fn on_utp(inner: &Arc<Inner>, peer: SocketAddr, data: &[u8]) {
                 let conn = Connection::accept(&h, now, &mut sends);
                 let handler: Shared = Arc::new(Mutex::new(handler));
                 evs.push((handler.clone(), Delivery::Connect));
-                st.utp.insert((peer, id), Entry { conn, handler });
+                st.utp.insert(
+                    (peer, id),
+                    Entry {
+                        conn,
+                        handler,
+                        inbound: true,
+                    },
+                );
+                st.inbound += 1;
             }
         } else if let Some(e) = st.utp.get_mut(&(peer, id)) {
             let mut ev = Vec::new();
@@ -363,7 +403,7 @@ fn on_utp(inner: &Arc<Inner>, peer: SocketAddr, data: &[u8]) {
                     .map(|x| (e.handler.clone(), Delivery::Event(x))),
             );
             if e.conn.is_closed() {
-                st.utp.remove(&(peer, id));
+                st.remove_utp(&(peer, id));
             }
         } else if h.typ != utp::ST_RESET {
             sends.push(utp::reset_for(&h, now));
@@ -416,7 +456,7 @@ impl UtpStream {
         let mut sends = Vec::new();
         let handler = {
             let mut st = lock(&inner.state);
-            st.utp.remove(&(self.peer, self.id)).map(|mut e| {
+            st.remove_utp(&(self.peer, self.id)).map(|mut e| {
                 e.conn.abort(now, &mut sends);
                 e.handler
             })

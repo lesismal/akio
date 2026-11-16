@@ -3,10 +3,11 @@
 //! speaks both on a `only` engine, and a [`TrackerServer`] that serves both from one in-memory
 //! swarm store (a only-http service and a UDP acceptor).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::{Duration, Instant};
 
 use only::Engine;
@@ -603,6 +604,62 @@ struct TrackerInner {
     next: std::sync::atomic::AtomicU64,
     timeout: Duration,
     retries: u32,
+    /// Resolves tracker host names (started on first use).
+    resolver: OnceLock<mpsc::SyncSender<Job>>,
+}
+
+/// Work for a resolver thread; called with `false` when the queue is full (fail fast).
+type Job = Box<dyn FnOnce(bool) + Send>;
+
+/// Threads resolving tracker host names per [`TrackerClient`], and how many requests may wait.
+const RESOLVERS: usize = 2;
+const RESOLVE_QUEUE: usize = 256;
+
+impl TrackerInner {
+    /// Runs `job(true)` on a resolver thread, or `job(false)` here when the queue is full.
+    fn offload(&self, job: Job) {
+        let tx = self.resolver.get_or_init(|| {
+            let (tx, rx) = mpsc::sync_channel::<Job>(RESOLVE_QUEUE);
+            let rx = Arc::new(Mutex::new(rx));
+            for i in 0..RESOLVERS {
+                let rx = rx.clone();
+                let _ = std::thread::Builder::new()
+                    .name(format!("only-bt-dns-{i}"))
+                    .spawn(move || {
+                        loop {
+                            let job = rx.lock().unwrap_or_else(|p| p.into_inner()).recv();
+                            let Ok(job) = job else { return };
+                            job(true);
+                        }
+                    });
+            }
+            tx
+        });
+        if let Err(mpsc::TrySendError::Full(job) | mpsc::TrySendError::Disconnected(job)) =
+            tx.try_send(job)
+        {
+            job(false);
+        }
+    }
+}
+
+/// Whether the host of tracker `url` is a name (resolving it may block), not an IP literal.
+fn host_needs_dns(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let hostport = rest.split(['/', '?']).next().unwrap_or(rest);
+    let hostport = hostport.rsplit_once('@').map_or(hostport, |(_, h)| h);
+    if hostport.parse::<SocketAddr>().is_ok() {
+        return false;
+    }
+    let host = match hostport.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().unwrap_or(v6),
+        None => hostport.rsplit_once(':').map_or(hostport, |(h, _)| h),
+    };
+    host.parse::<IpAddr>().is_err()
+}
+
+fn queue_full() -> TrackerError {
+    TrackerError::Io("tracker resolver queue full".into())
 }
 
 /// Announces and scrapes over HTTP(S) (through only-http's client) and UDP (BEP 15, on
@@ -629,6 +686,7 @@ impl TrackerClient {
             next: std::sync::atomic::AtomicU64::new(1),
             timeout,
             retries,
+            resolver: OnceLock::new(),
         });
         let weak = Arc::downgrade(&inner);
         let _ = std::thread::Builder::new()
@@ -638,8 +696,29 @@ impl TrackerClient {
     }
 
     /// Announces `req` to `url` (`http://`, `https://` or `udp://`); `done` runs once, on an
-    /// I/O or timer thread.
+    /// I/O, timer or resolver thread. Never blocks: a tracker given by host name is resolved on
+    /// one of the client's resolver threads (2, with 256 requests queued at most; past that the
+    /// announce fails at once), so it may be called from an I/O thread.
     pub fn announce(
+        &self,
+        url: &str,
+        req: &AnnounceRequest,
+        done: impl FnOnce(Result<AnnounceResponse, TrackerError>) + Send + 'static,
+    ) {
+        if host_needs_dns(url) {
+            let (me, url, req) = (self.clone(), url.to_owned(), req.clone());
+            return self.inner.offload(Box::new(move |run| {
+                if run {
+                    me.announce_now(&url, &req, done);
+                } else {
+                    done(Err(queue_full()));
+                }
+            }));
+        }
+        self.announce_now(url, req, done);
+    }
+
+    fn announce_now(
         &self,
         url: &str,
         req: &AnnounceRequest,
@@ -669,8 +748,28 @@ impl TrackerClient {
         }
     }
 
-    /// Scrapes `hashes` at the tracker whose announce URL is `url`.
+    /// Scrapes `hashes` at the tracker whose announce URL is `url`. Never blocks, like
+    /// [`announce`](Self::announce).
     pub fn scrape(
+        &self,
+        url: &str,
+        hashes: &[InfoHash],
+        done: impl FnOnce(Result<HashMap<InfoHash, ScrapeStats>, TrackerError>) + Send + 'static,
+    ) {
+        if host_needs_dns(url) {
+            let (me, url, hashes) = (self.clone(), url.to_owned(), hashes.to_vec());
+            return self.inner.offload(Box::new(move |run| {
+                if run {
+                    me.scrape_now(&url, &hashes, done);
+                } else {
+                    done(Err(queue_full()));
+                }
+            }));
+        }
+        self.scrape_now(url, hashes, done);
+    }
+
+    fn scrape_now(
         &self,
         url: &str,
         hashes: &[InfoHash],
@@ -702,6 +801,8 @@ impl TrackerClient {
         }
     }
 
+    /// Starts a UDP exchange. `hostport` was checked to be an address literal or this runs on
+    /// a resolver thread, so `to_socket_addrs` never blocks an I/O thread.
     fn udp(&self, hostport: &str, what: UdpWhat, done: Done) {
         let hp = hostport.split('/').next().unwrap_or(hostport);
         let Ok(Some(addr)) = hp.to_socket_addrs().map(|mut a| a.next()) else {
@@ -710,7 +811,7 @@ impl TrackerClient {
         let id = self
             .inner
             .next
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed);
         let tid = crate::rand_u32();
         let packet = udp::connect_request(tid);
         self.inner
@@ -922,7 +1023,83 @@ struct PeerEntry {
 #[derive(Debug, Default)]
 struct Swarm {
     peers: HashMap<PeerId, PeerEntry>,
+    /// `(seen, id)` in announce order, oldest first: expiry pops from the front instead of
+    /// scanning every peer. A peer that announced again has a later entry; earlier ones whose
+    /// time no longer matches are skipped.
+    order: VecDeque<(Instant, PeerId)>,
+    seeders: u32,
     downloaded: u32,
+}
+
+impl Swarm {
+    /// Drops peers not heard from for `ttl`: amortized O(1) per announce.
+    fn expire(&mut self, now: Instant, ttl: Duration) {
+        while let Some(&(seen, id)) = self.order.front() {
+            if now.duration_since(seen) < ttl {
+                break;
+            }
+            self.order.pop_front();
+            if self.peers.get(&id).is_some_and(|p| p.seen == seen) {
+                self.remove(&id);
+            }
+        }
+    }
+
+    fn remove(&mut self, id: &PeerId) {
+        if let Some(p) = self.peers.remove(id) {
+            if p.seeder {
+                self.seeders -= 1;
+            }
+        }
+    }
+
+    /// Records `p` for `id`; `false` (nothing recorded) when it is new and the swarm is full.
+    fn upsert(&mut self, id: PeerId, p: PeerEntry, max: usize) -> bool {
+        let seen = p.seen;
+        match self.peers.get_mut(&id) {
+            Some(old) => {
+                if old.seeder != p.seeder {
+                    if p.seeder {
+                        self.seeders += 1;
+                    } else {
+                        self.seeders -= 1;
+                    }
+                }
+                *old = p;
+            }
+            None => {
+                if self.peers.len() >= max {
+                    return false;
+                }
+                if p.seeder {
+                    self.seeders += 1;
+                }
+                self.peers.insert(id, p);
+            }
+        }
+        self.order.push_back((seen, id));
+        // Re-announces leave stale entries behind; compact once they dominate.
+        if self.order.len() > 2 * self.peers.len() + 64 {
+            let peers = &self.peers;
+            self.order
+                .retain(|(s, id)| peers.get(id).is_some_and(|p| p.seen == *s));
+        }
+        true
+    }
+}
+
+/// Default [`TrackerConfig::max_swarms`].
+pub const DEFAULT_MAX_SWARMS: usize = 100_000;
+/// Default [`TrackerConfig::max_peers_per_swarm`].
+pub const DEFAULT_MAX_PEERS_PER_SWARM: usize = 1000;
+
+/// Swarm store shards (by info hash), each with its own lock.
+const SWARM_SHARDS: usize = 16;
+
+struct SwarmShard {
+    swarms: HashMap<InfoHash, Swarm>,
+    /// When the shard is next swept for swarms whose peers all went silent.
+    next_sweep: Instant,
 }
 
 /// Tracker server settings.
@@ -937,6 +1114,12 @@ pub struct TrackerConfig {
     pub max_peers: usize,
     /// If set, only these torrents are tracked.
     pub allow: Option<Vec<InfoHash>>,
+    /// Swarms (torrents) tracked at once; an announce for a new one beyond it gets a failure
+    /// reason (`tracker full`). Empty swarms are dropped. Default 100 000.
+    pub max_swarms: usize,
+    /// Peers recorded per swarm; a new peer beyond it still gets a peer list but is not
+    /// recorded until others leave or expire. Default 1000.
+    pub max_peers_per_swarm: usize,
 }
 
 impl Default for TrackerConfig {
@@ -946,14 +1129,25 @@ impl Default for TrackerConfig {
             peer_ttl: Duration::from_secs(3600),
             max_peers: 50,
             allow: None,
+            max_swarms: DEFAULT_MAX_SWARMS,
+            max_peers_per_swarm: DEFAULT_MAX_PEERS_PER_SWARM,
         }
     }
 }
 
 struct ServerInner {
     cfg: TrackerConfig,
-    swarms: Mutex<HashMap<InfoHash, Swarm>>,
+    shards: Box<[Mutex<SwarmShard>]>,
+    /// Swarms in all shards.
+    swarm_count: AtomicUsize,
     secret: [u8; 16],
+}
+
+impl ServerInner {
+    fn shard(&self, ih: &InfoHash) -> std::sync::MutexGuard<'_, SwarmShard> {
+        let i = usize::from(ih.0[0]) % self.shards.len();
+        self.shards[i].lock().unwrap_or_else(|p| p.into_inner())
+    }
 }
 
 /// A tracker over HTTP and UDP sharing one in-memory store: [`TrackerServer::http`] is a
@@ -1005,7 +1199,15 @@ impl TrackerServer {
         TrackerServer {
             inner: Arc::new(ServerInner {
                 cfg,
-                swarms: Mutex::new(HashMap::new()),
+                shards: (0..SWARM_SHARDS)
+                    .map(|_| {
+                        Mutex::new(SwarmShard {
+                            swarms: HashMap::new(),
+                            next_sweep: Instant::now(),
+                        })
+                    })
+                    .collect(),
+                swarm_count: AtomicUsize::new(0),
                 secret,
             }),
         }
@@ -1023,10 +1225,16 @@ impl TrackerServer {
 
     /// Scrape statistics of `info_hash`.
     pub fn stats(&self, info_hash: &InfoHash) -> ScrapeStats {
-        let swarms = self.inner.swarms.lock().unwrap_or_else(|p| p.into_inner());
-        swarms
+        self.inner
+            .shard(info_hash)
+            .swarms
             .get(info_hash)
             .map_or_else(ScrapeStats::default, stats_of)
+    }
+
+    /// Swarms tracked now.
+    pub fn swarms(&self) -> usize {
+        self.inner.swarm_count.load(Ordering::Relaxed)
     }
 
     /// Handles an announce from `from`: records the peer and returns the answer.
@@ -1041,29 +1249,59 @@ impl TrackerServer {
             }
         }
         let now = Instant::now();
-        let mut swarms = self.inner.swarms.lock().unwrap_or_else(|p| p.into_inner());
-        let ttl = self.inner.cfg.peer_ttl;
-        let s = swarms.entry(req.info_hash).or_default();
-        s.peers.retain(|_, p| now.duration_since(p.seen) < ttl);
+        let cfg = &self.inner.cfg;
+        let ttl = cfg.peer_ttl;
+        let mut sh = self.inner.shard(&req.info_hash);
+        if now >= sh.next_sweep {
+            // Swarms whose peers all went silent are found here, a shard at a time.
+            sh.next_sweep = now + ttl.min(Duration::from_secs(60));
+            let before = sh.swarms.len();
+            sh.swarms.retain(|_, s| {
+                s.expire(now, ttl);
+                !s.peers.is_empty()
+            });
+            let gone = before - sh.swarms.len();
+            self.inner.swarm_count.fetch_sub(gone, Ordering::Relaxed);
+        }
+        let s = match sh.swarms.entry(req.info_hash) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                if req.event == Event::Stopped {
+                    // Nothing to forget, and no empty swarm to create.
+                    return Ok(AnnounceResponse {
+                        interval: cfg.interval,
+                        min_interval: None,
+                        peers: Vec::new(),
+                        seeders: Some(0),
+                        leechers: Some(0),
+                        warning: None,
+                    });
+                }
+                if self.inner.swarm_count.fetch_add(1, Ordering::Relaxed) >= cfg.max_swarms {
+                    self.inner.swarm_count.fetch_sub(1, Ordering::Relaxed);
+                    return Err(TrackerError::Failure("tracker full".into()));
+                }
+                v.insert(Swarm::default())
+            }
+        };
+        s.expire(now, ttl);
         let seeder = req.left == 0;
         if req.event == Event::Stopped {
-            s.peers.remove(&req.peer_id);
+            s.remove(&req.peer_id);
         } else {
             if req.event == Event::Completed {
-                s.downloaded += 1;
+                s.downloaded = s.downloaded.saturating_add(1);
             }
-            s.peers.insert(
-                req.peer_id,
-                PeerEntry {
-                    addr: SocketAddr::new(from, req.port),
-                    seeder,
-                    seen: now,
-                },
-            );
+            let entry = PeerEntry {
+                addr: SocketAddr::new(from, req.port),
+                seeder,
+                seen: now,
+            };
+            s.upsert(req.peer_id, entry, cfg.max_peers_per_swarm);
         }
         let want = usize::try_from(req.num_want)
-            .unwrap_or(self.inner.cfg.max_peers)
-            .min(self.inner.cfg.max_peers);
+            .unwrap_or(cfg.max_peers)
+            .min(cfg.max_peers);
         let peers = s
             .peers
             .iter()
@@ -1072,6 +1310,11 @@ impl TrackerServer {
             .take(want)
             .collect();
         let st = stats_of(s);
+        let empty = s.peers.is_empty();
+        if empty {
+            sh.swarms.remove(&req.info_hash);
+            self.inner.swarm_count.fetch_sub(1, Ordering::Relaxed);
+        }
         Ok(AnnounceResponse {
             interval: self.inner.cfg.interval,
             min_interval: None,
@@ -1222,11 +1465,10 @@ impl TrackerServer {
 }
 
 fn stats_of(s: &Swarm) -> ScrapeStats {
-    let complete = s.peers.values().filter(|p| p.seeder).count() as u32;
     ScrapeStats {
-        complete,
+        complete: s.seeders,
         downloaded: s.downloaded,
-        incomplete: s.peers.len() as u32 - complete,
+        incomplete: s.peers.len() as u32 - s.seeders,
     }
 }
 
@@ -1289,6 +1531,126 @@ mod tests {
             TrackerError::Failure("nope".into())
         );
         assert!(http::parse_announce(b"d14:failure").is_err());
+    }
+
+    #[test]
+    fn host_names_are_told_from_literals() {
+        for u in [
+            "udp://1.2.3.4:6969/announce",
+            "http://1.2.3.4/announce",
+            "http://[::1]:80/announce",
+            "https://[2001:db8::1]/a?x=1",
+            "udp://[::1]:1",
+            "http://u:p@10.0.0.1:8080/announce",
+        ] {
+            assert!(!host_needs_dns(u), "{u}");
+        }
+        for u in [
+            "udp://tracker.example.org:6969/announce",
+            "http://localhost/announce",
+            "https://t.example/announce?x",
+        ] {
+            assert!(host_needs_dns(u), "{u}");
+        }
+    }
+
+    fn announce_as(s: &TrackerServer, ih: u8, peer: u8, ev: Event) -> Result<AnnounceResponse, TrackerError> {
+        let mut r = AnnounceRequest::new(InfoHash([ih; 20]), [peer; 20], 6881, 1);
+        r.event = ev;
+        s.announce("10.0.0.1".parse().unwrap(), &r)
+    }
+
+    /// Swarms are capped (just under, at, over), dropped when their last peer leaves, and a
+    /// `stopped` for an unknown torrent creates nothing.
+    #[test]
+    fn swarm_cap_and_eviction() {
+        let s = TrackerServer::new(TrackerConfig {
+            max_swarms: 3,
+            ..Default::default()
+        });
+        for ih in 1..=3 {
+            assert!(announce_as(&s, ih, 1, Event::Started).is_ok());
+        }
+        assert_eq!(s.swarms(), 3);
+        assert_eq!(
+            announce_as(&s, 4, 1, Event::Started).unwrap_err(),
+            TrackerError::Failure("tracker full".into())
+        );
+        // Known swarms still work at the cap.
+        assert!(announce_as(&s, 2, 9, Event::None).is_ok());
+        // Stopped for an unknown torrent: no swarm.
+        assert!(announce_as(&s, 5, 1, Event::Stopped).is_ok());
+        assert_eq!(s.swarms(), 3);
+        // The last peer of swarm 1 leaves: the swarm goes, making room.
+        assert!(announce_as(&s, 1, 1, Event::Stopped).is_ok());
+        assert_eq!(s.swarms(), 2);
+        assert!(announce_as(&s, 4, 1, Event::Started).is_ok());
+        assert_eq!(s.swarms(), 3);
+    }
+
+    /// Peers per swarm are capped: a new peer past it gets peers but is not recorded; known
+    /// peers keep re-announcing; one leaving makes room.
+    #[test]
+    fn peers_per_swarm_cap() {
+        let s = TrackerServer::new(TrackerConfig {
+            max_peers_per_swarm: 4,
+            ..Default::default()
+        });
+        let ih = InfoHash([7; 20]);
+        for p in 1..=4 {
+            announce_as(&s, 7, p, Event::Started).unwrap();
+        }
+        assert_eq!(s.stats(&ih).incomplete, 4);
+        let r = announce_as(&s, 7, 5, Event::Started).unwrap();
+        assert_eq!(r.peers.len(), 4, "the newcomer still gets peers");
+        assert_eq!(s.stats(&ih).incomplete, 4, "but is not recorded");
+        // Re-announces do not count as new, and switching to seeder updates the counts.
+        let mut r = AnnounceRequest::new(ih, [2; 20], 6881, 0);
+        r.event = Event::Completed;
+        s.announce("10.0.0.1".parse().unwrap(), &r).unwrap();
+        let st = s.stats(&ih);
+        assert_eq!((st.complete, st.incomplete, st.downloaded), (1, 3, 1));
+        announce_as(&s, 7, 3, Event::Stopped).unwrap();
+        announce_as(&s, 7, 5, Event::None).unwrap();
+        assert_eq!(s.stats(&ih).incomplete, 3);
+        assert_eq!(s.stats(&ih).complete, 1);
+    }
+
+    /// Peers expire after `peer_ttl` without a scan per announce, and swarms whose peers all
+    /// went silent are swept away.
+    #[test]
+    fn expiry_without_scans() {
+        let s = TrackerServer::new(TrackerConfig {
+            peer_ttl: Duration::from_millis(200),
+            ..Default::default()
+        });
+        let ih = InfoHash([8; 20]);
+        announce_as(&s, 8, 1, Event::Started).unwrap();
+        announce_as(&s, 8, 2, Event::Started).unwrap();
+        // Peer 1 keeps announcing; its stale order entries must not expire it.
+        for _ in 0..4 {
+            std::thread::sleep(Duration::from_millis(80));
+            announce_as(&s, 8, 1, Event::None).unwrap();
+        }
+        let st = s.stats(&ih);
+        assert_eq!(st.incomplete, 1, "peer 2 expired, peer 1 stayed");
+        // Another swarm (same shard: same first byte) whose only peer goes silent is dropped
+        // by the shard sweep.
+        let mut other = [8u8; 20];
+        other[19] = 1;
+        let mut r = AnnounceRequest::new(InfoHash(other), [3; 20], 6881, 1);
+        r.event = Event::Started;
+        s.announce("10.0.0.1".parse().unwrap(), &r).unwrap();
+        assert_eq!(s.swarms(), 2);
+        std::thread::sleep(Duration::from_millis(300));
+        announce_as(&s, 8, 1, Event::None).unwrap();
+        assert_eq!(s.swarms(), 1);
+        // Many re-announces keep the order queue bounded.
+        for _ in 0..1000 {
+            announce_as(&s, 8, 1, Event::None).unwrap();
+        }
+        let sh = s.inner.shard(&ih);
+        assert!(sh.swarms[&ih].order.len() <= 2 * sh.swarms[&ih].peers.len() + 65);
     }
 
     #[test]

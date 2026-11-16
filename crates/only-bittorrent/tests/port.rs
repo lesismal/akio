@@ -141,3 +141,61 @@ fn utp_connect_to_nobody_times_out() {
     let r = rx.recv_timeout(Duration::from_secs(20)).unwrap();
     assert_eq!(r, "error");
 }
+
+/// A raw uTP SYN (BEP 29 header: type 4, version 1) for connection id `id`.
+fn syn(id: u16) -> Vec<u8> {
+    let mut b = vec![0x41, 0];
+    b.extend_from_slice(&id.to_be_bytes());
+    b.extend_from_slice(&1u32.to_be_bytes()); // timestamp
+    b.extend_from_slice(&0u32.to_be_bytes()); // timestamp difference
+    b.extend_from_slice(&(1u32 << 20).to_be_bytes()); // window
+    b.extend_from_slice(&1u16.to_be_bytes()); // seq
+    b.extend_from_slice(&0u16.to_be_bytes()); // ack
+    b
+}
+
+/// A SYN flood (the sender may be spoofed and never answers) fills the inbound table only up to
+/// its cap; SYNs beyond it are dropped unanswered, and the cap can be raised.
+#[test]
+fn utp_inbound_table_is_capped() {
+    let (b, _eb, baddr) = port();
+    b.set_max_inbound(4);
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let acc = accepted.clone();
+    let (tx, _rx) = mpsc::channel();
+    b.on_accept(move |_s| {
+        acc.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Some(Box::new(Sink {
+            got: Arc::default(),
+            done: tx.clone(),
+            want: usize::MAX,
+            echo: false,
+        }))
+    });
+    let flood = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    flood
+        .set_read_timeout(Some(Duration::from_millis(300)))
+        .unwrap();
+    for id in 0..20u16 {
+        flood.send_to(&syn(id * 2), baddr).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(b.utp_connections(), 4);
+    assert_eq!(accepted.load(std::sync::atomic::Ordering::Relaxed), 4);
+    // Only the accepted ones were answered (one STATE each).
+    let mut answers = 0;
+    let mut buf = [0u8; 1500];
+    while flood.recv_from(&mut buf).is_ok() {
+        answers += 1;
+    }
+    assert_eq!(answers, 4);
+    // A retransmitted SYN of an accepted connection is still handled (no new entry).
+    flood.send_to(&syn(0), baddr).unwrap();
+    // Raising the cap admits more.
+    b.set_max_inbound(6);
+    for id in 100..110u16 {
+        flood.send_to(&syn(id * 2), baddr).unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(b.utp_connections(), 6);
+}
