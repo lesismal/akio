@@ -120,6 +120,9 @@ pub(crate) struct Sim {
     pub record_0rtt: bool,
     pub first_client_datagram: Option<Vec<u8>>,
     pub zero_rtt_seen: Vec<u32>,
+    /// Record the long-header packets sent: (to the server, type, version).
+    pub record_long: bool,
+    pub long_seen: Vec<(bool, super::packet::PacketType, u32)>,
 }
 
 pub(crate) fn certs() -> (only_tls::ServerConfig, only_tls::ClientConfig) {
@@ -176,6 +179,8 @@ impl Sim {
             record_0rtt: false,
             first_client_datagram: None,
             zero_rtt_seen: Vec::new(),
+            record_long: false,
+            long_seen: Vec::new(),
             client: Node::new(client, "10.0.0.1:5000".parse().expect("addr")),
             server: Node::new(server, "10.0.0.2:4433".parse().expect("addr")),
             link: Link::default(),
@@ -263,6 +268,22 @@ impl Sim {
 
     fn send(&mut self, from: SocketAddr, to: SocketAddr, mut ecn: u8, data: Vec<u8>) {
         let to_server = self.is_server(to);
+        if self.record_long {
+            let mut off = 0;
+            while let Ok(h) = super::packet::parse_header(&data[off..], 8) {
+                if !h.ty.is_long() {
+                    break;
+                }
+                self.long_seen.push((to_server, h.ty, h.version));
+                if h.ty == super::packet::PacketType::VersionNegotiation {
+                    break;
+                }
+                off += h.len;
+                if off >= data.len() {
+                    break;
+                }
+            }
+        }
         let data = if to_server && (self.drop_zero_rtt || self.record_0rtt) {
             match self.zero_rtt_filter(data) {
                 Some(d) => d,
@@ -1709,3 +1730,6 @@ fn client_moves_to_the_preferred_address() {
 
 #[path = "sim_0rtt.rs"]
 mod zero_rtt;
+
+#[path = "sim_cvn.rs"]
+mod compatible_vn;

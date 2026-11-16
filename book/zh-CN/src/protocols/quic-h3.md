@@ -6,7 +6,8 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 数据报的原生 QUIC 回显，含 Retry、密钥更新、150 MB 传输、版本 2 与客户端迁移：
 `tools/interop/quic/run.sh`），HTTP/3
 则与 quic-go 以及 fib 自己的 QUIC/HTTP/3 双向互通（`tools/interop/h3/run.sh`）；ngtcp2 与 OpenSSL 3.5
-的 QUIC 实现作为我方服务端的客户端在 Docker 中验证（`tools/interop/quic/docker.sh`）。
+的 QUIC 实现作为我方服务端的客户端在 Docker 中验证（`tools/interop/quic/docker.sh`），兼容版本协商则
+与 ngtcp2 自己的客户端和服务端双向验证（`tools/interop/quic/ngtcp2-cvn.sh`）。
 
 ## QUIC
 
@@ -64,7 +65,18 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 - **版本**：QUIC v1 与 v2（RFC 9369）。服务端两者都接受（可用 `ServerConfig::versions` 收窄），并以
   客户端的版本应答；客户端以 `ClientConfig::version`（默认 v1）开始，服务端回以不含该版本的版本协商
   包时，在双方都支持的版本上重新开始一次，并以 version_information 传输参数（RFC 9368）防止伪造的
-  降级。`Connection::version()` 返回所用版本。未实现兼容版本协商（在一次握手中切换版本）。
+  降级。`Connection::version()` 返回所用版本。
+- **兼容版本协商**（RFC 9368 第 4 节，[ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md)）：
+  `ServerConfig::prefer_version(Version::V2)` 让以 v1 开始、并在 version_information 中列出 v2 的客户端
+  在握手内切换到 v2，不多花往返（`V1` 则反向）。默认关闭（服务端用客户端的版本应答）。服务端在应答前读完
+  整个首个 ClientHello，因此 ClientHello 跨多个包、Retry 之后以及 0-RTT 时都可用（客户端的 0-RTT 包保持
+  首个版本，RFC 9369 第 4.1 节）。only-quic 客户端总会跟随切换。不带 version_information 的客户端
+  （quic-go）不会被切换；ngtcp2 双向都能切换。
+
+  ```rust,ignore
+  let cfg = only_quic::server_config(certs, key, &[b"h3"])?
+      .prefer_version(only_quic::Version::V2);
+  ```
 - **ECN**（`TransportConfig::ecn`，默认开启）：Linux 上以 ECT(0) 发送，逐个数据报读取收到的码点并在
   ACK_ECN 帧中报告，验证路径（RFC 9000 第 13.4 节），CE 标记视为拥塞；清除或丢弃标记的路径回退为不带
   标记发送。其他平台不打标记（Linux 上也可用 `ONLY_UDP_ECN=0` 关闭）。`stats().ecn_capable` /
@@ -88,8 +100,9 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 否则，或 0-RTT 包丢失时，数据以 1-RTT 包重发（Retry 之后以 0-RTT 发往新的连接 ID）。客户端用
 `Connection::early_data()` 得知结果；服务端用 `Connection::is_early(stream)` 判断哪些流来自 0-RTT，
 only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可对不能安全重复的请求回
-`425 Too Early`。配置开启时 `H3Client` 会以 0-RTT 发送请求。0-RTT 数据可被重放（发往共享票据的其他
-服务端，或在窗口内由能诱使客户端重试的攻击者发起），且没有前向保密。
+`425 Too Early`。配置开启时 `H3Client` 会以 0-RTT 发送请求。0-RTT 数据可被重放（在窗口内由能诱使
+客户端重试的攻击者发起；或发往共享票据的其他服务端，除非这些服务端共享防重放记录：用
+`session_ticket_key` 与 `anti_replay_store` 构建其 TLS 配置，见 TLS 章节），且没有前向保密。
 
 ## HTTP/3
 

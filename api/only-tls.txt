@@ -88,6 +88,18 @@ impl core::marker::Sync for only_tls::Error
 impl core::marker::Unpin for only_tls::Error
 impl !core::panic::unwind_safe::RefUnwindSafe for only_tls::Error
 impl !core::panic::unwind_safe::UnwindSafe for only_tls::Error
+pub struct only_tls::MemoryAntiReplay
+impl only_tls::MemoryAntiReplay
+pub fn only_tls::MemoryAntiReplay::new(usize) -> only_tls::MemoryAntiReplay
+impl core::fmt::Debug for only_tls::MemoryAntiReplay
+pub fn only_tls::MemoryAntiReplay::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_tls::AntiReplayStore for only_tls::MemoryAntiReplay
+pub fn only_tls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+impl core::marker::Send for only_tls::MemoryAntiReplay
+impl core::marker::Sync for only_tls::MemoryAntiReplay
+impl core::marker::Unpin for only_tls::MemoryAntiReplay
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::MemoryAntiReplay
+impl core::panic::unwind_safe::UnwindSafe for only_tls::MemoryAntiReplay
 pub struct only_tls::PrivateKey(_)
 impl only_tls::PrivateKey
 pub fn only_tls::PrivateKey::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<only_tls::PrivateKey, only_tls::Error>
@@ -137,6 +149,7 @@ impl !core::panic::unwind_safe::UnwindSafe for only_tls::ServerConfig
 pub struct only_tls::ServerConfigBuilder
 impl only_tls::ServerConfigBuilder
 pub fn only_tls::ServerConfigBuilder::alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
+pub fn only_tls::ServerConfigBuilder::anti_replay_store(self, alloc::rcs::arc::Arc<dyn only_tls::AntiReplayStore>) -> Self
 pub fn only_tls::ServerConfigBuilder::build(self) -> core::result::Result<only_tls::ServerConfig, only_tls::Error>
 pub fn only_tls::ServerConfigBuilder::certificate_compression(self, bool) -> Self
 pub fn only_tls::ServerConfigBuilder::client_auth_optional(self, only_tls::RootCerts) -> Self
@@ -145,6 +158,7 @@ pub fn only_tls::ServerConfigBuilder::early_data(self, u32) -> Self
 pub fn only_tls::ServerConfigBuilder::ocsp_response(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn only_tls::ServerConfigBuilder::record_size_limit(self, u16) -> Self
 pub fn only_tls::ServerConfigBuilder::session_cache(self, usize) -> Self
+pub fn only_tls::ServerConfigBuilder::session_ticket_key(self, [u8; 48]) -> Self
 pub fn only_tls::ServerConfigBuilder::session_tickets(self, bool) -> Self
 pub fn only_tls::ServerConfigBuilder::sni_cert(self, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
 pub fn only_tls::ServerConfigBuilder::sni_ocsp_response(self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
@@ -193,4 +207,8 @@ impl core::marker::Sync for only_tls::TlsInfo
 impl core::marker::Unpin for only_tls::TlsInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_tls::TlsInfo
 impl core::panic::unwind_safe::UnwindSafe for only_tls::TlsInfo
+pub trait only_tls::AntiReplayStore: core::marker::Send + core::marker::Sync
+pub fn only_tls::AntiReplayStore::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
+impl only_tls::AntiReplayStore for only_tls::MemoryAntiReplay
+pub fn only_tls::MemoryAntiReplay::check_and_insert(&self, &[u8], core::time::Duration) -> core::io::error::Result<bool>
 pub fn only_tls::tls_info<H>(&only_core::conn::Conn<H>) -> core::option::Option<only_tls::TlsInfo>

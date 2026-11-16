@@ -66,6 +66,30 @@ only 的所有重要变更都记录在这里。格式遵循
   crate 相同：超出上限的语句被编译掉。不开启时生成的代码不变（禁用的 `trace!`：x86_64 上
   0.400 → 0.401 ns，macOS 上二进制相同）。ADR-012。新增 API（`api/only-log.txt`）。
 
+### 新增：共享的 0-RTT 防重放存储（only-tls）与兼容版本协商（only-quic）
+
+新增 API（ADR-013，docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md）：
+
+- **`AntiReplayStore`**（only-tls）：服务端记录已接受早期数据的 ClientHello 的地方。只有一个方法
+  `check_and_insert(binder, ttl) -> io::Result<bool>`，须为原子操作，只针对本会接受早期数据的 ClientHello 在
+  握手路径上调用。出错时**失败即关闭**（拒绝早期数据，客户端在握手后重发）。默认实现 `MemoryAntiReplay`（即原有
+  的每配置一份、有界的记录，10 万条）现已公开。`ServerConfigBuilder::anti_replay_store(Arc<dyn AntiReplayStore>)`
+  接入共享存储（Redis `SET key 1 NX PX ttl`，示意见本书 TLS 章节）；`ServerConfigBuilder::session_ticket_key([u8; 48])`
+  让多个进程或多台机器上的服务端能接受彼此的票据。QUIC 服务端经由其 TLS 配置获得这两项。已接受的 ClientHello 现保留 30 秒（原为 20 秒）：10 秒新鲜度窗口的两倍，再加一个窗口
+  容许共享存储的服务端之间时钟有偏差。
+- **兼容版本协商**（only-quic，RFC 9368 第 4 节）：`ServerConfig::prefer_version(Version)` 让以另一版本开始、
+  并在 version_information 中列出偏好版本的客户端在握手内切换过去，不多花往返；ClientHello 跨多个包、Retry
+  之后以及 0-RTT 时同样可用（0-RTT 包保持客户端的首个版本，RFC 9369 第 4.1 节）。默认关闭：服务端用客户端的
+  版本应答。only-quic 客户端总会跟随这种切换（无法解密的、伪造的另一版本 Initial 不会让它切换）。
+- 测试：共享票据密钥与“远程”存储的两台 TLS 服务端拒绝从一台重放到另一台的 ClientHello（各自记录时则被接受），
+  存储失败时拒绝早期数据，在模拟链路上对 QUIC 做同样的检查；模拟链路上的兼容协商（无额外往返、Retry 加 15%
+  丢包、跨两个包的 ClientHello、跨切换的 0-RTT、v2 切到 v1、无偏好或客户端列表无 v2 时不切换、伪造的 Initial）。
+  Fuzz：`quic_conn` 的连接对现在会切换到 v2，`tls_server` 也会运行 ClientHello 预读。互通：新增
+  `tools/interop/quic/ngtcp2-cvn.sh`，在 Docker 中与实现了 RFC 9368 的 ngtcp2 1.11 双向验证（其客户端被 only-h3
+  切到 v2，含 0-RTT；only-quic 被其服务端切到 v2 与 v1）；quic-go 未实现 RFC 9368，因此
+  `tools/interop/quic/run.sh` 检查其客户端在偏好另一版本的服务端上保持原版本。
+- 代价：未测出（BENCHMARKS.zh-CN.md，握手 A/B）。
+
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
 在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，only-crypto 的 Poly1305（因而

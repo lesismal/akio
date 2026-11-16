@@ -1,7 +1,11 @@
 //! HTTP/3 interop peer for tools/interop/h3 (quic-go):
 //!
 //! ```text
-//! h3-interop server 127.0.0.1:9401   serves /, /user/:id, /echo, /stream (with trailers)
+//! h3-interop server 127.0.0.1:9401 [prefer-v2] [0rtt]
+//!                                    serves /, /user/:id, /echo, /stream (with trailers);
+//!                                    prefer-v2 moves clients to QUIC v2 (RFC 9368), 0rtt
+//!                                    accepts 0-RTT (prints "early request" for a GET / that
+//!                                    came in 0-RTT)
 //! h3-interop client 127.0.0.1:9400   checks a quic-go server
 //! h3-interop client-fib 127.0.0.1:9402   checks a fib server (/ and /echo only)
 //! ```
@@ -30,7 +34,12 @@ fn main() {
         let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
         let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
         let app = Router::new()
-            .get("/", |ctx: &mut Context| ctx.text(200, "hello h3"))
+            .get("/", |ctx: &mut Context| {
+                if ctx.header("early-data") == Some("1") {
+                    println!("early request");
+                }
+                ctx.text(200, "hello h3");
+            })
             .get("/user/:id", |ctx: &mut Context| {
                 let id = ctx.param("id").unwrap_or("?").to_owned();
                 ctx.text(200, format!("user {id} {:?}", ctx.req().version));
@@ -50,7 +59,15 @@ fn main() {
                 t.set("x-checksum", "abc");
                 s.finish_with_trailers(t);
             });
-        let quic = only_h3::server_config(vec![cert], key).expect("config");
+        let mut quic = only_h3::server_config(vec![cert], key).expect("config");
+        if a.iter().any(|x| x == "prefer-v2") {
+            // Compatible version negotiation (RFC 9368): version 1 clients listing version 2
+            // move to it within the handshake.
+            quic = quic.prefer_version(only_quic::Version::V2);
+        }
+        if a.iter().any(|x| x == "0rtt") {
+            quic = quic.zero_rtt(true);
+        }
         let e = Engine::builder()
             .listen(Listener::udp(addr).serve(only_h3::serve(quic, app)))
             .build()

@@ -126,13 +126,52 @@ completes, so `on_data` can see a request one round trip earlier.
 
 **Replay protection** is always on with early data: the server accepts it only when the
 client's view of the ticket age is within 10 seconds of its own (RFC 8446 section 8.3) and
-records the PSK binder of each accepted ClientHello for 20 seconds (section 8.2); a ClientHello
+records the PSK binder of each accepted ClientHello for 30 seconds (section 8.2: twice the window, plus one for clocks of servers sharing a store to differ by); a ClientHello
 seen before gets its early data rejected and continues as an ordinary resumption. The record
 holds 100,000 ClientHellos per `ServerConfig`; when full, early data is rejected.
 
+**Servers sharing tickets** ([ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md)).
+Several processes or machines accept each other's tickets when built with the same
+`.session_ticket_key(key)` (48 secret random bytes: a 16-byte key name and a 32-byte key; rotate
+by building new configurations). They then also need one replay record, or a first flight
+recorded on its way to one server can be replayed to another: `.anti_replay_store(store)` takes
+any `Arc<dyn AntiReplayStore>`, whose one method records a ClientHello's binder for a time and
+says whether it was new. It is called on the I/O thread during the handshake, only for
+ClientHellos whose early data would otherwise be accepted, so keep it short and bounded by a
+timeout. Errors **fail closed**: the early data is rejected and the client sends it again after
+the handshake. The default is `MemoryAntiReplay` (the per-configuration record above). With
+Redis, one atomic `SET key 1 NX PX ttl` per call:
+
+```rust,ignore
+use std::{io, sync::Arc, time::Duration};
+use only_tls::{AntiReplayStore, ServerConfig};
+
+struct RedisReplay { pool: MyRedisPool } // any client with a short timeout
+
+impl AntiReplayStore for RedisReplay {
+    fn check_and_insert(&self, binder: &[u8], ttl: Duration) -> io::Result<bool> {
+        let key = format!("only:0rtt:{}", hex(binder));
+        // "OK" if the key was set (first time), nil if it existed (a replay).
+        let reply = self.pool.set_nx_px(&key, "1", ttl.as_millis() as u64)
+            .map_err(io::Error::other)?; // timeouts too: early data rejected
+        Ok(reply.is_some())
+    }
+}
+
+let cfg = ServerConfig::builder(chain, key)
+    .session_ticket_key(ticket_key)          // the same on every server
+    .early_data(16384)
+    .anti_replay_store(Arc::new(RedisReplay { pool }))
+    .build()?;
+```
+
+The store must be atomic (a read then a write lets a concurrent replay through); across regions
+with replication lag, give each region its own store and ticket key. QUIC servers get both
+through `only_quic::server_config_from(&cfg)`.
+
 **Security trade-offs.** Early data is not forward secret and can be replayed: the record stops
-replays to the same server within the window, not to other servers sharing tickets, nor a
-request the client itself is made to send again. Enable it only for requests that are safe to
+replays to the same server (or the servers sharing its store) within the window, not a request
+the client itself is made to send again. Enable it only for requests that are safe to
 repeat (reads without side effects), and answer the others `425 Too Early`:
 
 ```rust,ignore

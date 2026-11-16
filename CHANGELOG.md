@@ -76,6 +76,40 @@ All notable changes to `only` are documented here. The format follows
   unchanged (disabled `trace!`: 0.400 → 0.401 ns on x86_64, same binary on macOS). ADR-012.
   Additive API (`api/only-log.txt`).
 
+### Added: shared 0-RTT anti-replay store (only-tls) and compatible version negotiation (only-quic)
+
+Additive API (ADR-013, docs/adr/013-shared-anti-replay-and-compatible-vn.md):
+
+- **`AntiReplayStore`** (only-tls): where a server records the ClientHellos whose early data it
+  accepted. One method, `check_and_insert(binder, ttl) -> io::Result<bool>`, atomic, called on
+  the handshake path only for ClientHellos whose early data would otherwise be accepted. Errors
+  **fail closed** (the early data is rejected, the client sends it again after the handshake).
+  `MemoryAntiReplay` is the default (the existing bounded per-configuration record, 100,000
+  entries), now public. `ServerConfigBuilder::anti_replay_store(Arc<dyn AntiReplayStore>)`
+  plugs in a shared one (Redis `SET key 1 NX PX ttl`, sketched in the book's TLS chapter);
+  `ServerConfigBuilder::session_ticket_key([u8; 48])` lets servers in several processes or
+  machines accept each other's tickets in the first place. QUIC servers get both through their
+  TLS configuration. Accepted ClientHellos are now kept 30 s (was 20 s): twice the 10 s
+  freshness window plus one window for the clocks of servers sharing a store to differ by.
+- **Compatible version negotiation** (only-quic, RFC 9368 section 4):
+  `ServerConfig::prefer_version(Version)` moves clients that start in the other version and list
+  the preferred one in their version_information to it within the handshake, without a round
+  trip; also when the ClientHello spans several packets, after a Retry, and with 0-RTT (whose
+  packets stay in the client's first version, RFC 9369 section 4.1). Off by default: the server
+  answers in the client's version. only-quic clients always follow such a switch (a forged
+  Initial of the other version that does not decrypt does not move them).
+- Tests: two TLS servers sharing a ticket key and a "remote" store reject a ClientHello replayed
+  from one to the other (accepted with separate records), a failing store rejects early data,
+  the same over QUIC on the simulated link; compatible negotiation on the simulated link (no
+  extra round trip, Retry and 15% loss, a ClientHello over two packets, 0-RTT across the switch, v2
+  to v1, no switch without the preference or without v2 in the client's list, a forged Initial).
+  Fuzzing: the `quic_conn` pair now switches to v2, and `tls_server` also runs the ClientHello
+  peek. Interop: `tools/interop/quic/ngtcp2-cvn.sh` (new) with ngtcp2 1.11, which implements RFC
+  9368, both ways in Docker (its client moved to v2 by only-h3, with 0-RTT; only-quic moved to v2
+  and to v1 by its server); quic-go does not implement RFC 9368, so `tools/interop/quic/run.sh`
+  checks that its clients keep their version against servers preferring the other one.
+- Cost: none measured (BENCHMARKS.md, handshake A/B).
+
 ### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
 
 only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix

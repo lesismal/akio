@@ -269,6 +269,27 @@ impl QuicTls {
     }
 }
 
+/// How much of a ClientHello handshake message (header included) `hs`, the start of the
+/// Initial CRYPTO stream, needs to be complete: `None` until the 4-byte header is there.
+pub fn client_hello_len(hs: &[u8]) -> Option<usize> {
+    let h = hs.get(..4)?;
+    Some(4 + ((usize::from(h[1]) << 16) | (usize::from(h[2]) << 8) | usize::from(h[3])))
+}
+
+/// The quic_transport_parameters of a complete ClientHello handshake message (header
+/// included), without running the handshake: what a QUIC server reads to choose a compatible
+/// version (RFC 9368 section 4) before it answers. `None` if it is not a ClientHello that
+/// parses, or carries no parameters.
+pub fn client_hello_transport_params(msg: &[u8]) -> Option<&[u8]> {
+    if msg.first() != Some(&crate::proto::msgs::CLIENT_HELLO) {
+        return None;
+    }
+    let body = msg.get(4..client_hello_len(msg)?)?;
+    crate::proto::msgs::ClientHello::parse(body)
+        .ok()?
+        .quic_params
+}
+
 /// QUIC v1 initial salt (RFC 9001 section 5.2).
 pub const V1_INITIAL_SALT: [u8; 20] = [
     0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17, 0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad,
