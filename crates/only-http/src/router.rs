@@ -17,11 +17,15 @@
 //!    empty).
 //!
 //! Lookup does not allocate: parameters are byte ranges into the request path kept in a small
-//! inline buffer, and their names are shared with the tree. Values are percent-decoded once, when
+//! inline buffer, and their names are interned when the route is built (dispatch copies a
+//! reference, not a shared count). Values are percent-decoded once, when
 //! a route is dispatched, and only if they contain an escape ([`Context::param`]); the raw text
 //! stays available ([`Context::param_raw`]).
 
-use std::sync::Arc;
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use crate::{
     context::{BodyMode, Context, Middleware, Service},
@@ -73,17 +77,38 @@ impl Ranges {
     }
 }
 
+/// Parameter name lists, interned: each distinct list is allocated once per process and lives
+/// as long as it, so a dispatched request refers to its route's names without touching a
+/// reference count shared by every thread. Bounded by the distinct lists routes declare.
+fn intern(names: Vec<Box<str>>) -> &'static [Box<str>] {
+    if names.is_empty() {
+        return &[];
+    }
+    static NAMES: OnceLock<Mutex<HashSet<&'static [Box<str>]>>> = OnceLock::new();
+    let mut set = NAMES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    if let Some(n) = set.get(names.as_slice()) {
+        return n;
+    }
+    let leaked: &'static [Box<str>] = Box::leak(names.into_boxed_slice());
+    set.insert(leaked);
+    leaked
+}
+
 /// The parameters of the route a request was dispatched to.
 #[derive(Default)]
 pub(crate) struct Params {
-    names: Option<Arc<[Box<str>]>>,
+    /// Empty for a route without parameters.
+    names: &'static [Box<str>],
     ranges: Ranges,
     /// Percent-decoded values, only for the parameters that contain an escape.
     decoded: Vec<(usize, String)>,
 }
 
 impl Params {
-    fn new(names: Arc<[Box<str>]>, ranges: Ranges, path: &str) -> Params {
+    fn new(names: &'static [Box<str>], ranges: Ranges, path: &str) -> Params {
         let mut decoded = Vec::new();
         for i in 0..ranges.len() {
             let raw = &path[ranges.get(i)];
@@ -94,7 +119,7 @@ impl Params {
             }
         }
         Params {
-            names: Some(names),
+            names,
             ranges,
             decoded,
         }
@@ -102,11 +127,11 @@ impl Params {
 
     /// Moves the parameters to the heap, if there are any.
     pub(crate) fn boxed(self) -> Option<Box<Params>> {
-        self.names.is_some().then(|| Box::new(self))
+        (!self.names.is_empty()).then(|| Box::new(self))
     }
 
     fn index(&self, name: &str) -> Option<usize> {
-        self.names.as_ref()?.iter().position(|n| &**n == name)
+        self.names.iter().position(|n| &**n == name)
     }
 
     /// The value of `name` as sent, from the request path `path`.
@@ -150,7 +175,9 @@ struct Route {
 struct Leaf {
     routes: Vec<Route>,
     /// Parameter names in path order (the same for every route of the leaf).
-    names: Arc<[Box<str>]>,
+    names: &'static [Box<str>],
+    /// The `Allow` value of a 405 for this path, kept up to date as routes are added.
+    allow: Box<str>,
 }
 
 struct RegexChild {
@@ -415,7 +442,8 @@ impl Leaf {
     fn new(names: Vec<Box<str>>) -> Leaf {
         Leaf {
             routes: Vec::new(),
-            names: names.into(),
+            names: intern(names),
+            allow: Box::default(),
         }
     }
 
@@ -426,6 +454,7 @@ impl Leaf {
             method.as_str()
         );
         self.routes.push(Route { method, svc });
+        self.allow = allow(self).into();
     }
 }
 
@@ -442,6 +471,10 @@ impl Service for Layered {
 
     fn body_mode(&self, req: &Request) -> BodyMode {
         self.next.body_mode(req)
+    }
+
+    fn streams_bodies(&self) -> bool {
+        self.next.streams_bodies()
     }
 }
 
@@ -460,6 +493,10 @@ impl Service for DefaultFallback {
             None => ctx.text(404, "Not Found"),
         }
     }
+
+    fn streams_bodies(&self) -> bool {
+        false
+    }
 }
 
 /// Routes requests to [`Service`]s by method and path. A `Router` is itself a [`Service`].
@@ -474,6 +511,9 @@ pub struct Router {
     /// Every registration, kept so a router can be nested into another.
     registered: Vec<(Method, String, Arc<dyn Service>)>,
     fallback: Arc<dyn Service>,
+    /// Some route (or the fallback) may take its body as a stream: only then is `body_mode`
+    /// worth a route lookup.
+    streams: bool,
 }
 
 impl std::fmt::Debug for Router {
@@ -495,6 +535,7 @@ impl Router {
             root: Node::default(),
             registered: Vec::new(),
             fallback: Arc::new(DefaultFallback),
+            streams: false,
         }
     }
 
@@ -516,6 +557,7 @@ impl Router {
     }
 
     fn insert(&mut self, method: Method, path: String, svc: Arc<dyn Service>) {
+        self.streams |= svc.streams_bodies();
         let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut names: Vec<Box<str>> = Vec::new();
         let mut node = &mut self.root;
@@ -648,7 +690,12 @@ impl Router {
     #[must_use]
     pub fn fallback(mut self, svc: impl Service) -> Router {
         self.fallback = Arc::new(svc);
+        self.streams = self.streams_of_registered();
         self
+    }
+
+    fn streams_of_registered(&self) -> bool {
+        self.fallback.streams_bodies() || self.registered.iter().any(|(_, _, s)| s.streams_bodies())
     }
 
     /// Wraps every route registered so far, and the fallback, in `mw` (the last layer added is
@@ -664,10 +711,12 @@ impl Router {
         };
         let old = std::mem::take(&mut self.registered);
         self.root = Node::default();
+        self.streams = false;
         for (m, p, svc) in old {
             self.insert(m, p, wrap(svc));
         }
         self.fallback = wrap(self.fallback.clone());
+        self.streams = self.streams_of_registered();
         self
     }
 
@@ -744,7 +793,7 @@ impl Router {
                 .flatten()
         });
         match route {
-            Some(r) => Resolved::Route(r, &leaf.names),
+            Some(r) => Resolved::Route(r, leaf.names),
             None => Resolved::NotAllowed(leaf),
         }
     }
@@ -791,7 +840,7 @@ impl<'r, 'p> RouteMatch<'r, 'p> {
 
 /// Where a request goes.
 enum Resolved<'a> {
-    Route(&'a Route, &'a Arc<[Box<str>]>),
+    Route(&'a Route, &'static [Box<str>]),
     /// The path exists, the method does not.
     NotAllowed(&'a Leaf),
     NotFound,
@@ -812,12 +861,13 @@ impl Service for Router {
         let mut ranges = Ranges::default();
         match self.resolve(ctx.path(), ctx.method(), &mut ranges) {
             Resolved::Route(r, names) => {
-                let params = Params::new(names.clone(), ranges, ctx.path());
-                ctx.set_params(params);
+                if !names.is_empty() {
+                    ctx.set_params(Params::new(names, ranges, ctx.path()));
+                }
                 r.svc.call(ctx);
             }
             Resolved::NotAllowed(leaf) => {
-                ctx.set_local(ALLOW, allow(leaf));
+                ctx.set_local(ALLOW, &*leaf.allow);
                 self.fallback.call(ctx);
             }
             Resolved::NotFound => self.fallback.call(ctx),
@@ -825,11 +875,18 @@ impl Service for Router {
     }
 
     fn body_mode(&self, req: &Request) -> BodyMode {
+        if !self.streams {
+            return BodyMode::Buffered;
+        }
         let mut ranges = Ranges::default();
         match self.resolve(req.path(), &req.method, &mut ranges) {
             Resolved::Route(r, _) => r.svc.body_mode(req),
             _ => self.fallback.body_mode(req),
         }
+    }
+
+    fn streams_bodies(&self) -> bool {
+        self.streams
     }
 }
 
@@ -1146,7 +1203,7 @@ mod tests {
         let path = "/f/a%20b/c%2Fd/%zz";
         let mut ranges = Ranges::default();
         let leaf = Router::find(&r.root, path, 0, &mut ranges).unwrap();
-        let params = Params::new(leaf.names.clone(), ranges, path);
+        let params = Params::new(leaf.names, ranges, path);
         assert_eq!(params.get("name", path), Some("a b"));
         assert_eq!(params.raw("name", path), Some("a%20b"));
         // A malformed escape leaves the raw text.
@@ -1155,7 +1212,7 @@ mod tests {
         let path = "/f/x/y%2Fz";
         let mut ranges = Ranges::default();
         let leaf = Router::find(&r.root, path, 0, &mut ranges).unwrap();
-        let params = Params::new(leaf.names.clone(), ranges, path);
+        let params = Params::new(leaf.names, ranges, path);
         assert_eq!(params.get("rest", path), Some("y/z"));
         assert_eq!(params.raw("rest", path), Some("y%2Fz"));
     }
@@ -1182,6 +1239,30 @@ mod tests {
         let r = router();
         assert!(matched(&r, "/users/42/").is_some());
         assert!(matched(&r, "//users//42").is_some());
+    }
+
+    #[test]
+    fn body_mode_is_asked_only_when_a_route_streams() {
+        use crate::context::Streaming;
+        let plain = Router::new().post("/a", |c: &mut Context| c.text(200, "a"));
+        assert!(!plain.streams_bodies());
+        let plain = plain.layer(|c: &mut Context, n: &dyn Service| n.call(c));
+        assert!(!plain.streams_bodies());
+        let streaming = plain.post("/s", Streaming(|c: &mut Context| c.text(200, "s")));
+        assert!(streaming.streams_bodies());
+        let req = Request::new(Method::Post, "/s");
+        assert_eq!(streaming.body_mode(&req), BodyMode::Stream);
+        let req = Request::new(Method::Post, "/a");
+        assert_eq!(streaming.body_mode(&req), BodyMode::Buffered);
+        // Interned names: the same list is shared, and routes without parameters have none.
+        let r = Router::new()
+            .get("/u/:id", |c: &mut Context| c.text(200, ""))
+            .get("/v/:id", |c: &mut Context| c.text(200, ""));
+        let mut ranges = Ranges::default();
+        let a = Router::find(&r.root, "/u/1", 0, &mut ranges).unwrap().names;
+        let mut ranges = Ranges::default();
+        let b = Router::find(&r.root, "/v/1", 0, &mut ranges).unwrap().names;
+        assert!(std::ptr::eq(a, b));
     }
 
     #[test]

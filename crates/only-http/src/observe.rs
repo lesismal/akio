@@ -63,14 +63,41 @@ struct Shard {
     /// Responses per version: HTTP/1.0, (unused), HTTP/2, HTTP/3. HTTP/1.1 is the rest of the
     /// responses, so the most common version costs no extra atomic add.
     versions: [AtomicU64; 4],
+    /// Requests dispatched on this shard's threads and not answered yet.
+    in_flight: AtomicI64,
+}
+
+impl Shard {
+    /// Records one response, and its request's version (index into [`VERSION_LABELS`]).
+    #[inline]
+    fn observe(&self, status: u16, latency: Duration, version: Option<usize>) {
+        if let Some(v) = version.filter(|&v| v != 1) {
+            self.versions[v].fetch_add(1, Ordering::Relaxed);
+        }
+        let class = match status {
+            100..=599 => (status / 100 - 1) as usize,
+            _ => 5,
+        };
+        self.classes[class].fetch_add(1, Ordering::Relaxed);
+        let secs = latency.as_secs_f64();
+        let b = LATENCY_BUCKETS
+            .iter()
+            .position(|&ub| secs <= ub)
+            .unwrap_or(NB - 1);
+        self.buckets[b].fetch_add(1, Ordering::Relaxed);
+        self.sum_ns
+            .fetch_add(latency.as_nanos() as u64, Ordering::Relaxed);
+    }
 }
 
 /// Label values of [`HttpSnapshot::by_version`], in order.
 pub const VERSION_LABELS: [&str; 4] = ["1.0", "1.1", "2", "3"];
 
 struct Inner {
-    shards: Box<[Shard]>,
-    in_flight: AtomicI64,
+    /// Each shard behind its own `Arc`: a request in flight holds its thread's shard, so the
+    /// reference count a request bumps is shared only by the threads of that shard (not by
+    /// every thread, as the metrics' own count would be).
+    shards: Box<[Arc<Shard>]>,
     /// Highest HTTP/1.1 count a snapshot reported: the count is derived from shards read one
     /// after the other, and must not appear to go down when a response lands mid-read.
     h11_seen: AtomicU64,
@@ -85,8 +112,7 @@ pub struct HttpMetrics(Arc<Inner>);
 impl Default for HttpMetrics {
     fn default() -> Self {
         HttpMetrics(Arc::new(Inner {
-            shards: (0..SHARDS).map(|_| Shard::default()).collect(),
-            in_flight: AtomicI64::new(0),
+            shards: (0..SHARDS).map(|_| Arc::new(Shard::default())).collect(),
             h11_seen: AtomicU64::new(0),
         }))
     }
@@ -142,13 +168,13 @@ fn shard_index() -> usize {
 
 /// Decrements `in_flight` however the request ends; records the response when it is sent.
 struct Pending {
-    m: HttpMetrics,
+    shard: Arc<Shard>,
     t0: Instant,
 }
 
 impl Drop for Pending {
     fn drop(&mut self) {
-        self.m.0.in_flight.fetch_sub(1, Ordering::Relaxed);
+        self.shard.in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -160,29 +186,7 @@ impl HttpMetrics {
 
     /// Records one response.
     pub fn observe(&self, status: u16, latency: Duration) {
-        self.record(status, latency, None);
-    }
-
-    /// Records one response, and its request's version (index into [`VERSION_LABELS`]).
-    #[inline]
-    fn record(&self, status: u16, latency: Duration, version: Option<usize>) {
-        let s = &self.0.shards[shard_index()];
-        if let Some(v) = version.filter(|&v| v != 1) {
-            s.versions[v].fetch_add(1, Ordering::Relaxed);
-        }
-        let class = match status {
-            100..=599 => (status / 100 - 1) as usize,
-            _ => 5,
-        };
-        s.classes[class].fetch_add(1, Ordering::Relaxed);
-        let secs = latency.as_secs_f64();
-        let b = LATENCY_BUCKETS
-            .iter()
-            .position(|&ub| secs <= ub)
-            .unwrap_or(NB - 1);
-        s.buckets[b].fetch_add(1, Ordering::Relaxed);
-        s.sum_ns
-            .fetch_add(latency.as_nanos() as u64, Ordering::Relaxed);
+        self.0.shards[shard_index()].observe(status, latency, None);
     }
 
     /// Middleware that records every response: status class, request version and the time from dispatch until
@@ -191,9 +195,10 @@ impl HttpMetrics {
     pub fn middleware(&self) -> impl Middleware {
         let m = self.clone();
         move |ctx: &mut Context, next: &dyn Service| {
-            m.0.in_flight.fetch_add(1, Ordering::Relaxed);
+            let shard = m.0.shards[shard_index()].clone();
+            shard.in_flight.fetch_add(1, Ordering::Relaxed);
             let p = Pending {
-                m: m.clone(),
+                shard,
                 t0: Instant::now(),
             };
             ctx.add_response_filter(move |resp: &mut Response, req: &Request| {
@@ -203,7 +208,7 @@ impl HttpMetrics {
                     Version::Http2 => 2,
                     Version::Http3 => 3,
                 };
-                p.m.record(resp.status, p.t0.elapsed(), Some(v));
+                p.shard.observe(resp.status, p.t0.elapsed(), Some(v));
             });
             next.call(ctx);
         }
@@ -211,12 +216,10 @@ impl HttpMetrics {
 
     /// Sums the shards.
     pub fn snapshot(&self) -> HttpSnapshot {
-        let mut out = HttpSnapshot {
-            in_flight: self.0.in_flight.load(Ordering::Relaxed),
-            ..HttpSnapshot::default()
-        };
+        let mut out = HttpSnapshot::default();
         let mut sum = 0u64;
         for s in &self.0.shards {
+            out.in_flight += s.in_flight.load(Ordering::Relaxed);
             for (o, c) in out.by_class.iter_mut().zip(&s.classes) {
                 *o += c.load(Ordering::Relaxed);
             }
