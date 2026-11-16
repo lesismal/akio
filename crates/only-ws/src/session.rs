@@ -8,6 +8,96 @@ use std::{
 use only_buf::SharedBuf;
 use only_core::{ConnInner, Error, Result};
 
+/// A transport other than a TCP connection that carries a WebSocket connection's bytes (an
+/// HTTP/3 request stream for RFC 9220). Used by only-h3; `#[doc(hidden)]`, outside the semver
+/// promise.
+#[doc(hidden)]
+pub trait WsLink: Send + Sync + 'static {
+    /// Queues bytes (whole frames) for the peer; `Err` when the transport is gone.
+    fn send(&self, data: Vec<u8>) -> Result<()>;
+    /// Ends the transport once what is queued is out (the server side after a close frame).
+    fn close_after_send(&self);
+    /// Ends the transport now (the client after its close timeout, or the peer went away).
+    fn close(&self);
+    /// Whether the transport can still send.
+    fn is_open(&self) -> bool;
+    /// Bytes queued but not yet sent.
+    fn queued_bytes(&self) -> usize;
+}
+
+/// Where a session's frames go: a TCP (or TLS) connection, or another transport.
+#[derive(Clone)]
+enum Link {
+    Tcp(Arc<ConnInner>),
+    Ext(Arc<dyn WsLink>),
+}
+
+enum WeakLink {
+    Tcp(std::sync::Weak<ConnInner>),
+    Ext(std::sync::Weak<dyn WsLink>),
+}
+
+impl Link {
+    fn send_owned(&self, data: Vec<u8>) -> Result<()> {
+        match self {
+            Link::Tcp(c) => c.send_owned(data),
+            Link::Ext(l) => l.send(data),
+        }
+    }
+
+    fn send_shared(&self, data: SharedBuf) -> Result<()> {
+        match self {
+            Link::Tcp(c) => c.send_shared(data),
+            Link::Ext(l) => l.send(data[..].to_vec()),
+        }
+    }
+
+    fn close_after_send(&self) {
+        match self {
+            Link::Tcp(c) => c.close_after_send(),
+            Link::Ext(l) => l.close_after_send(),
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        match self {
+            Link::Tcp(c) => c.is_open(),
+            Link::Ext(l) => l.is_open(),
+        }
+    }
+
+    fn queued_bytes(&self) -> usize {
+        match self {
+            Link::Tcp(c) => c.queued_bytes(),
+            Link::Ext(l) => l.queued_bytes(),
+        }
+    }
+
+    fn downgrade(&self) -> WeakLink {
+        match self {
+            Link::Tcp(c) => WeakLink::Tcp(Arc::downgrade(c)),
+            Link::Ext(l) => WeakLink::Ext(Arc::downgrade(l)),
+        }
+    }
+}
+
+impl WeakLink {
+    fn close(&self) {
+        match self {
+            WeakLink::Tcp(w) => {
+                if let Some(c) = w.upgrade() {
+                    c.close();
+                }
+            }
+            WeakLink::Ext(w) => {
+                if let Some(l) = w.upgrade() {
+                    l.close();
+                }
+            }
+        }
+    }
+}
+
 use crate::{
     deflate::{Deflater, Inflater, PmdParams},
     protocol::{Decoder, Event, Opcode, Role, close_payload, encode_frame, encode_frame_masked},
@@ -117,7 +207,7 @@ impl MaskGen {
 /// threads never interleave.
 #[derive(Clone)]
 pub struct WsSender {
-    conn: Arc<ConnInner>,
+    conn: Link,
     tx: Arc<Mutex<Tx>>,
 }
 
@@ -155,7 +245,7 @@ impl PreparedMessage {
 }
 
 impl WsSender {
-    fn new(conn: Arc<ConnInner>, deflater: Option<Deflater>, compress_min: usize) -> WsSender {
+    fn new(conn: Link, deflater: Option<Deflater>, compress_min: usize) -> WsSender {
         WsSender {
             conn,
             tx: Arc::new(Mutex::new(Tx {
@@ -314,12 +404,8 @@ impl WsSender {
         if tx.mask.is_none() || drop_tcp {
             self.conn.close_after_send();
         } else {
-            let weak = Arc::downgrade(&self.conn);
-            crate::timer::after(tx.close_timeout, move || {
-                if let Some(c) = weak.upgrade() {
-                    c.close();
-                }
-            });
+            let weak = self.conn.downgrade();
+            crate::timer::after(tx.close_timeout, move || weak.close());
         }
     }
 
@@ -366,6 +452,25 @@ impl WsSession {
         pmd: Option<PmdParams>,
         handler: Box<dyn WsHandler>,
     ) -> WsSession {
+        WsSession::server(Link::Tcp(conn), cfg, pmd, handler)
+    }
+
+    /// The server side of a connection carried by `link` (WebSocket over HTTP/3).
+    pub fn with_link(
+        link: Arc<dyn WsLink>,
+        cfg: &WsConfig,
+        pmd: Option<PmdParams>,
+        handler: Box<dyn WsHandler>,
+    ) -> WsSession {
+        WsSession::server(Link::Ext(link), cfg, pmd, handler)
+    }
+
+    fn server(
+        conn: Link,
+        cfg: &WsConfig,
+        pmd: Option<PmdParams>,
+        handler: Box<dyn WsHandler>,
+    ) -> WsSession {
         let inflater = pmd.map(|p| Inflater::new(p.client_no_context_takeover));
         let deflater =
             pmd.map(|p| Deflater::new(p.server_no_context_takeover, p.server_max_window_bits));
@@ -381,6 +486,30 @@ impl WsSession {
     /// The client side of a connection whose handshake agreed `pmd` and `protocol`.
     pub(crate) fn client(
         conn: Arc<ConnInner>,
+        cfg: &WsConfig,
+        pmd: Option<PmdParams>,
+        handler: Box<dyn WsHandler>,
+        protocol: Option<String>,
+        close_timeout: Duration,
+    ) -> WsSession {
+        WsSession::client_on(Link::Tcp(conn), cfg, pmd, handler, protocol, close_timeout)
+    }
+
+    /// The client side of a connection carried by `link` (WebSocket over HTTP/3) whose
+    /// handshake agreed `pmd` and `protocol`.
+    pub fn client_with_link(
+        link: Arc<dyn WsLink>,
+        cfg: &WsConfig,
+        pmd: Option<PmdParams>,
+        handler: Box<dyn WsHandler>,
+        protocol: Option<String>,
+        close_timeout: Duration,
+    ) -> WsSession {
+        WsSession::client_on(Link::Ext(link), cfg, pmd, handler, protocol, close_timeout)
+    }
+
+    fn client_on(
+        conn: Link,
         cfg: &WsConfig,
         pmd: Option<PmdParams>,
         handler: Box<dyn WsHandler>,
@@ -404,6 +533,16 @@ impl WsSession {
             events: Vec::new(),
             ended: false,
         }
+    }
+
+    /// The session's sender.
+    pub fn sender(&self) -> &WsSender {
+        &self.sender
+    }
+
+    /// Whether the session has ended (close handshake done or failed).
+    pub fn ended(&self) -> bool {
+        self.ended
     }
 
     /// Calls `on_open`. Do this before feeding data.
@@ -450,6 +589,10 @@ impl WsSession {
     /// The transport closed. Calls `on_close` with 1006 unless the close handshake already ended
     /// the session.
     pub fn on_transport_closed(&mut self) {
+        if let Link::Ext(l) = &self.sender.conn {
+            // The peer ended its side: end ours too (a TCP connection is already gone).
+            l.close();
+        }
         if !self.ended {
             self.sender.lock().closed = true;
             self.end(Some(1006), "connection closed without a close handshake");
