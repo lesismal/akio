@@ -50,8 +50,9 @@ fn main() -> std::io::Result<()> {
         Engine::builder()
             .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(socks))
             .listen(
-                Listener::tcp("127.0.0.1:0".parse().unwrap())
-                    .serve(only_http::serve(connect_proxy_with(engine_ref.clone(), http_cfg))),
+                Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(only_http::serve(
+                    connect_proxy_with(engine_ref.clone(), http_cfg),
+                )),
             )
             .client_threads(2) // upstream connections
             .build()?,

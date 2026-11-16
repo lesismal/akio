@@ -105,11 +105,15 @@ fn host_names_resolve_off_the_calling_thread() {
             let name = std::thread::current().name().map(str::to_owned);
             tx.send((r, name)).unwrap();
         });
-        assert!(t0.elapsed() < Duration::from_millis(50), "announce returned at once");
+        assert!(
+            t0.elapsed() < Duration::from_millis(50),
+            "announce returned at once"
+        );
         let (r, name) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert!(r.is_err(), "{url}");
         assert!(
-            name.as_deref().is_some_and(|n| n.starts_with("only-bt-dns")),
+            name.as_deref()
+                .is_some_and(|n| n.starts_with("only-bt-dns")),
             "{url}: done ran on {name:?}"
         );
     }

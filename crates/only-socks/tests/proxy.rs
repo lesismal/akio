@@ -462,7 +462,11 @@ fn default_policy_denies_private_destinations() {
     t.extend_from_slice(b"localhost");
     t.extend_from_slice(&echo.port().to_be_bytes());
     let (_s, r) = socks5_connect(proxy, &t, None);
-    assert!(r[1] == 2 || r[1] == 4, "localhost resolves to loopback: {}", r[1]);
+    assert!(
+        r[1] == 2 || r[1] == 4,
+        "localhost resolves to loopback: {}",
+        r[1]
+    );
     // SOCKS4 to 127.0.0.1.
     let SocketAddr::V4(v4) = echo else {
         unreachable!()
@@ -487,7 +491,10 @@ fn default_policy_denies_private_destinations() {
     assert!(read_head(&mut s).starts_with("HTTP/1.1 403"));
     let mut s = http_connect(proxy, &format!("localhost:{}", echo.port()));
     let all = String::from_utf8_lossy(&expect_closed(&mut s, Duration::from_secs(5))).into_owned();
-    assert!(all.starts_with("HTTP/1.1 403") || all.starts_with("HTTP/1.1 502"), "{all}");
+    assert!(
+        all.starts_with("HTTP/1.1 403") || all.starts_with("HTTP/1.1 502"),
+        "{all}"
+    );
     e.shutdown();
     e.wait();
 }
@@ -512,7 +519,11 @@ fn socks_handshake_timeout() {
     let mut s = connect(proxy);
     let t0 = std::time::Instant::now();
     expect_closed(&mut s, Duration::from_secs(5));
-    assert!(t0.elapsed() >= Duration::from_millis(250), "{:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() >= Duration::from_millis(250),
+        "{:?}",
+        t0.elapsed()
+    );
     // Slowloris: a byte every 50 ms of a request that would complete after 600 ms.
     let mut s = connect(proxy);
     let mut msg = vec![5, 1, 0, 5, 1, 0];
@@ -572,7 +583,11 @@ fn tunnel_idle_timeout() {
         // Then quiet.
         let t0 = std::time::Instant::now();
         expect_closed(&mut s, Duration::from_secs(5));
-        assert!(t0.elapsed() >= Duration::from_millis(250), "{:?}", t0.elapsed());
+        assert!(
+            t0.elapsed() >= Duration::from_millis(250),
+            "{:?}",
+            t0.elapsed()
+        );
         e.shutdown();
         e.wait();
     }

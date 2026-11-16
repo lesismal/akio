@@ -427,7 +427,10 @@ mod tests {
         assert!(t0.elapsed() < Duration::from_secs(1), "never blocked");
         // The writer holds at most one batch; the queue at most 8 lines.
         let dropped = f.dropped();
-        assert!((100 - 8 - 64..=100 - 8).contains(&(dropped as i64)), "{dropped}");
+        assert!(
+            (100 - 8 - 64..=100 - 8).contains(&(dropped as i64)),
+            "{dropped}"
+        );
         // Release the output: the queued lines and a drop report come out.
         *gate.0.lock().unwrap() = true;
         gate.1.notify_all();

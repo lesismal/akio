@@ -1154,4 +1154,3 @@ mod tests {
         assert_eq!(sh.allocations.load(Ordering::Relaxed), 0);
     }
 }
-

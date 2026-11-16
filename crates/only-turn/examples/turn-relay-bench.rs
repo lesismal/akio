@@ -12,7 +12,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use only::{Engine, Listener};
-use only_turn::stun::{Class, Message, MessageBuilder, Method, attr, long_term_key, transaction_id};
+use only_turn::stun::{
+    Class, Message, MessageBuilder, Method, attr, long_term_key, transaction_id,
+};
 use only_turn::{TurnConfig, TurnServer, static_auth};
 
 struct Client {
@@ -92,7 +94,8 @@ fn main() {
         let peer = UdpSocket::bind("127.0.0.1:0").expect("peer");
         let paddr = peer.local_addr().expect("addr");
         let s = UdpSocket::bind("127.0.0.1:0").expect("client");
-        s.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
+        s.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("timeout");
         let mut c = Client {
             s,
             server,
@@ -160,11 +163,17 @@ fn main() {
     }
     // Warm up, then measure.
     thread::sleep(Duration::from_secs(1));
-    let (p0, c0) = (to_peer.load(Ordering::Relaxed), to_client.load(Ordering::Relaxed));
+    let (p0, c0) = (
+        to_peer.load(Ordering::Relaxed),
+        to_client.load(Ordering::Relaxed),
+    );
     let t0 = Instant::now();
     thread::sleep(Duration::from_secs(secs));
     let el = t0.elapsed().as_secs_f64();
-    let (p1, c1) = (to_peer.load(Ordering::Relaxed), to_client.load(Ordering::Relaxed));
+    let (p1, c1) = (
+        to_peer.load(Ordering::Relaxed),
+        to_client.load(Ordering::Relaxed),
+    );
     stop.store(true, Ordering::Relaxed);
     for j in joins {
         let _ = j.join();

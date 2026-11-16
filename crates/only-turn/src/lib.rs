@@ -56,8 +56,8 @@ use std::time::{Duration, Instant};
 use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 
 pub use crate::auth::{AuthFn, ephemeral_auth, ephemeral_credentials, static_auth};
-pub use crate::core::{PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default};
 use crate::core::Shared;
+pub use crate::core::{PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default};
 
 pub(crate) fn fill_random(buf: &mut [u8]) {
     if only_crypto::rand::fill_random(buf).is_err() {
@@ -163,7 +163,11 @@ impl Inner {
     }
 
     /// Binds a relay socket whose peers' datagrams go to shard `route`.
-    fn bind_relay(&self, addr: SocketAddr, route: usize) -> io::Result<(UdpBinding, Arc<AtomicUsize>)> {
+    fn bind_relay(
+        &self,
+        addr: SocketAddr,
+        route: usize,
+    ) -> io::Result<(UdpBinding, Arc<AtomicUsize>)> {
         let route = Arc::new(AtomicUsize::new(route));
         let b = self
             .engine()?
@@ -390,7 +394,10 @@ impl Handler for TurnClient {
         // An authenticated Allocate gets its relay socket bound before the shard is locked.
         let prebound = if inner.shared.authenticated_allocate(now, client, data) {
             inner
-                .bind_relay(SocketAddr::new(inner.shared.config().relay_ip, 0), self.shard)
+                .bind_relay(
+                    SocketAddr::new(inner.shared.config().relay_ip, 0),
+                    self.shard,
+                )
                 .ok()
         } else {
             None

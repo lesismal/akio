@@ -808,10 +808,7 @@ impl TrackerClient {
         let Ok(Some(addr)) = hp.to_socket_addrs().map(|mut a| a.next()) else {
             return fail(done, TrackerError::BadUrl(hostport.to_owned()));
         };
-        let id = self
-            .inner
-            .next
-            .fetch_add(1, Ordering::Relaxed);
+        let id = self.inner.next.fetch_add(1, Ordering::Relaxed);
         let tid = crate::rand_u32();
         let packet = udp::connect_request(tid);
         self.inner
@@ -1554,7 +1551,12 @@ mod tests {
         }
     }
 
-    fn announce_as(s: &TrackerServer, ih: u8, peer: u8, ev: Event) -> Result<AnnounceResponse, TrackerError> {
+    fn announce_as(
+        s: &TrackerServer,
+        ih: u8,
+        peer: u8,
+        ev: Event,
+    ) -> Result<AnnounceResponse, TrackerError> {
         let mut r = AnnounceRequest::new(InfoHash([ih; 20]), [peer; 20], 6881, 1);
         r.event = ev;
         s.announce("10.0.0.1".parse().unwrap(), &r)
