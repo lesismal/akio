@@ -31,8 +31,9 @@
 
 use std::collections::VecDeque;
 
+pub use crate::EarlyData;
 pub use crate::proto::alert::{Alert, Fatal};
-pub use crate::proto::common::{EarlyData, Keys, Level};
+pub use crate::proto::common::{Keys, Level};
 pub use crate::proto::suites::{AeadAlg, HashAlg, Suite};
 
 use crate::config::{ClientConfig, ServerConfig};

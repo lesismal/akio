@@ -1,4 +1,27 @@
 pub mod only_tls
+#[non_exhaustive] pub enum only_tls::EarlyData
+pub only_tls::EarlyData::Accepted
+pub only_tls::EarlyData::NotAttempted
+pub only_tls::EarlyData::Pending
+pub only_tls::EarlyData::Rejected
+impl core::clone::Clone for only_tls::EarlyData
+pub fn only_tls::EarlyData::clone(&self) -> Self
+impl core::cmp::Eq for only_tls::EarlyData
+impl core::cmp::PartialEq for only_tls::EarlyData
+pub fn only_tls::EarlyData::eq(&self, &Self) -> bool
+impl core::default::Default for only_tls::EarlyData
+pub fn only_tls::EarlyData::default() -> Self
+impl core::fmt::Debug for only_tls::EarlyData
+pub fn only_tls::EarlyData::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_tls::EarlyData
+pub fn only_tls::EarlyData::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_tls::EarlyData
+impl core::marker::StructuralPartialEq for only_tls::EarlyData
+impl core::marker::Send for only_tls::EarlyData
+impl core::marker::Sync for only_tls::EarlyData
+impl core::marker::Unpin for only_tls::EarlyData
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::EarlyData
+impl core::panic::unwind_safe::UnwindSafe for only_tls::EarlyData
 pub struct only_tls::Certificate(_)
 impl only_tls::Certificate
 pub fn only_tls::Certificate::as_der(&self) -> &[u8]
@@ -35,6 +58,7 @@ impl only_tls::ClientConfigBuilder
 pub fn only_tls::ClientConfigBuilder::alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
 pub fn only_tls::ClientConfigBuilder::build(self) -> core::result::Result<only_tls::ClientConfig, only_tls::Error>
 pub fn only_tls::ClientConfigBuilder::client_cert(self, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
+pub fn only_tls::ClientConfigBuilder::early_data(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::insecure_skip_verify(self) -> Self
 pub fn only_tls::ClientConfigBuilder::resumption(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::roots(self, only_tls::RootCerts) -> Self
@@ -112,6 +136,7 @@ pub fn only_tls::ServerConfigBuilder::alpn<I, P>(self, I) -> Self where I: core:
 pub fn only_tls::ServerConfigBuilder::build(self) -> core::result::Result<only_tls::ServerConfig, only_tls::Error>
 pub fn only_tls::ServerConfigBuilder::client_auth_optional(self, only_tls::RootCerts) -> Self
 pub fn only_tls::ServerConfigBuilder::client_auth_required(self, only_tls::RootCerts) -> Self
+pub fn only_tls::ServerConfigBuilder::early_data(self, u32) -> Self
 pub fn only_tls::ServerConfigBuilder::session_cache(self, usize) -> Self
 pub fn only_tls::ServerConfigBuilder::session_tickets(self, bool) -> Self
 pub fn only_tls::ServerConfigBuilder::sni_cert(self, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
@@ -141,6 +166,8 @@ impl<A> !core::panic::unwind_safe::RefUnwindSafe for only_tls::Tls<A>
 impl<A> !core::panic::unwind_safe::UnwindSafe for only_tls::Tls<A>
 #[non_exhaustive] pub struct only_tls::TlsInfo
 pub only_tls::TlsInfo::alpn: core::option::Option<alloc::vec::Vec<u8>>
+pub only_tls::TlsInfo::early_data: only_tls::EarlyData
+pub only_tls::TlsInfo::early_data_len: u64
 pub only_tls::TlsInfo::handshaking: bool
 pub only_tls::TlsInfo::server_name: core::option::Option<alloc::string::String>
 pub only_tls::TlsInfo::version: core::option::Option<alloc::string::String>

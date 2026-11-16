@@ -61,7 +61,6 @@ pub use config::{
 };
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};
-pub use proto::EarlyData;
 
 /// The protocol core, for tests, fuzzing and interop tools. **Not** a public API.
 #[doc(hidden)]
@@ -208,6 +207,24 @@ impl Transport for TlsTransport {
     fn handshaking(&self) -> bool {
         self.conn.handshaking()
     }
+}
+
+/// What happened to TLS 1.3 early data (0-RTT) on a connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum EarlyData {
+    /// None was sent (client: early data off, or no ticket allowing it; server: the client
+    /// offered none).
+    #[default]
+    NotAttempted,
+    /// The client sent early data and the server has not answered yet (client only).
+    Pending,
+    /// The server accepted the early data: it was processed before the handshake completed,
+    /// and may be a replay of an earlier connection's (see the security notes).
+    Accepted,
+    /// The server rejected the early data: it was skipped by the server, and the client sends
+    /// it again as ordinary data after the handshake.
+    Rejected,
 }
 
 /// What a connection negotiated; see [`tls_info`].
