@@ -99,7 +99,7 @@ fn read_resp(s: &mut TcpStream) -> (String, String) {
     let mut buf = Vec::new();
     let mut b = [0u8; 1];
     while !buf.ends_with(b"\r\n\r\n") {
-        assert_eq!(s.read(&mut b).unwrap(), 1, "closed before a response head");
+        s.read_exact(&mut b).expect("a response head");
         buf.push(b[0]);
     }
     let head = String::from_utf8(buf).unwrap();
@@ -131,9 +131,16 @@ fn a_head_trickled_byte_by_byte_gets_408() {
     let reader = thread::spawn(move || {
         let mut all = Vec::new();
         let mut b = [0u8; 256];
-        while let Ok(n @ 1..) = r.read(&mut b) {
-            all.extend_from_slice(&b[..n]);
-            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        loop {
+            match r.read(&mut b) {
+                Ok(0) => break,
+                Ok(n) => {
+                    all.extend_from_slice(&b[..n]);
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break,
+            }
         }
         String::from_utf8_lossy(&all).into_owned()
     });
