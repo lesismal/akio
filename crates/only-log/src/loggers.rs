@@ -3,7 +3,12 @@
 use std::{
     fmt::Write as _,
     io::Write as _,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
@@ -37,6 +42,12 @@ impl Logger for StderrLogger {
 /// Writes each record with one `write` to stderr (or stdout). The global
 /// [`max_level`](crate::max_level) is its level; per-target ceilings can lower it.
 ///
+/// By default the write happens on the thread that logs, under the standard stream's lock:
+/// when stderr is a pipe nobody drains (a stalled log collector), that thread blocks, and an
+/// `only` I/O thread logging then stalls every connection it serves. [`non_blocking`]
+/// (Self::non_blocking) hands lines to a writer thread through a bounded queue instead and
+/// drops (and counts) lines when it is full: use it in servers whose log output may back up.
+///
 /// ```
 /// use only_log::{FmtLogger, LevelFilter};
 /// FmtLogger::new()
@@ -49,6 +60,108 @@ pub struct FmtLogger {
     targets: Vec<(String, LevelFilter)>,
     stdout: bool,
     no_timestamps: bool,
+    sink: Option<Arc<AsyncSink>>,
+}
+
+/// A suggested [`FmtLogger::non_blocking`] queue size: 16 384 lines (a few MiB at most).
+pub const DEFAULT_QUEUE_LINES: usize = 16_384;
+
+enum Msg {
+    Line(String),
+    Flush(mpsc::SyncSender<()>),
+}
+
+/// The queue and counters of a non-blocking [`FmtLogger`].
+struct AsyncSink {
+    tx: mpsc::SyncSender<Msg>,
+    dropped: Arc<AtomicU64>,
+    /// Serialises the blocking `Flush` send (rare) against itself.
+    flushing: Mutex<()>,
+}
+
+impl std::fmt::Debug for AsyncSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AsyncSink")
+            .field("dropped", &self.dropped.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl AsyncSink {
+    /// A writer thread draining up to `lines` queued lines into `out`.
+    fn start(lines: usize, mut out: Box<dyn std::io::Write + Send>) -> AsyncSink {
+        let (tx, rx) = mpsc::sync_channel::<Msg>(lines.max(1));
+        let dropped = Arc::new(AtomicU64::new(0));
+        let seen = dropped.clone();
+        let _ = std::thread::Builder::new()
+            .name("only-log".into())
+            .spawn(move || {
+                let mut reported = 0u64;
+                let mut buf = Vec::with_capacity(64 << 10);
+                while let Ok(first) = rx.recv() {
+                    let mut acks = Vec::new();
+                    let mut take = |m: Msg, buf: &mut Vec<u8>| match m {
+                        Msg::Line(l) => buf.extend_from_slice(l.as_bytes()),
+                        Msg::Flush(ack) => acks.push(ack),
+                    };
+                    take(first, &mut buf);
+                    // Batch what is already queued into one write.
+                    while buf.len() < (64 << 10) {
+                        match rx.try_recv() {
+                            Ok(m) => take(m, &mut buf),
+                            Err(_) => break,
+                        }
+                    }
+                    let d = seen.load(Ordering::Relaxed);
+                    if d > reported {
+                        let _ = writeln!(
+                            buf,
+                            "only_log: {} log lines dropped (queue full)",
+                            d - reported
+                        );
+                        reported = d;
+                    }
+                    let _ = out.write_all(&buf);
+                    buf.clear();
+                    if !acks.is_empty() {
+                        let _ = out.flush();
+                        for a in acks {
+                            let _ = a.send(());
+                        }
+                    }
+                }
+            });
+        AsyncSink {
+            tx,
+            dropped,
+            flushing: Mutex::new(()),
+        }
+    }
+
+    fn push(&self, line: String) {
+        if self.tx.try_send(Msg::Line(line)).is_err() {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Waits (at most a second) until everything queued before it is written.
+    fn flush(&self) {
+        let _g = self.flushing.lock().unwrap_or_else(|p| p.into_inner());
+        let (ack, done) = mpsc::sync_channel(1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let mut m = Msg::Flush(ack);
+        loop {
+            match self.tx.try_send(m) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(back)) if std::time::Instant::now() < deadline => {
+                    m = back;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(_) => return,
+            }
+        }
+        let _ = done.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()));
+    }
 }
 
 impl FmtLogger {
@@ -77,6 +190,33 @@ impl FmtLogger {
     pub fn without_timestamps(mut self) -> FmtLogger {
         self.no_timestamps = true;
         self
+    }
+
+    /// Writes from a writer thread of its own instead of the logging thread: each record is
+    /// formatted where it is logged and queued (up to `lines` lines,
+    /// [`DEFAULT_QUEUE_LINES`] is a good size); when the queue is full the line is dropped and
+    /// counted ([`dropped`](Self::dropped)), and the writer reports the count in a line of its
+    /// own once it catches up. Logging never blocks on the output, so a stalled stderr pipe
+    /// cannot stall an I/O thread. Call it after [`stdout`](Self::stdout);
+    /// [`flush`](crate::flush) waits (at most a second) for the queue to be written, so call it
+    /// before the process exits.
+    #[must_use]
+    pub fn non_blocking(mut self, lines: usize) -> FmtLogger {
+        let out: Box<dyn std::io::Write + Send> = if self.stdout {
+            Box::new(std::io::stdout())
+        } else {
+            Box::new(std::io::stderr())
+        };
+        self.sink = Some(Arc::new(AsyncSink::start(lines, out)));
+        self
+    }
+
+    /// Lines dropped because the [`non_blocking`](Self::non_blocking) queue was full (0 when
+    /// writing synchronously). Clones share the count: keep one before [`init`](Self::init).
+    pub fn dropped(&self) -> u64 {
+        self.sink
+            .as_ref()
+            .map_or(0, |s| s.dropped.load(Ordering::Relaxed))
     }
 
     /// Installs this logger and sets the global maximum level to `level`.
@@ -135,6 +275,9 @@ impl Logger for FmtLogger {
 
     fn log(&self, record: &Record<'_>) {
         let line = self.format(record);
+        if let Some(sink) = &self.sink {
+            return sink.push(line);
+        }
         let _ = if self.stdout {
             std::io::stdout().lock().write_all(line.as_bytes())
         } else {
@@ -143,6 +286,9 @@ impl Logger for FmtLogger {
     }
 
     fn flush(&self) {
+        if let Some(sink) = &self.sink {
+            return sink.flush();
+        }
         let _ = if self.stdout {
             std::io::stdout().flush()
         } else {
@@ -239,6 +385,67 @@ mod tests {
             Record::new(Level::Info, "only", format_args!("connection {}", "opened"))
                 .with_key_values(&kvs),
         );
+    }
+
+    /// An output that blocks until released, like a pipe nobody reads.
+    struct Stalled {
+        gate: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        got: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for Stalled {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            let (m, cv) = &*self.gate;
+            let mut open = m.lock().unwrap();
+            while !*open {
+                open = cv.wait(open).unwrap();
+            }
+            self.got.lock().unwrap().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// With the output stalled, logging returns at once: lines beyond the queue are dropped and
+    /// counted, and the count is reported once the output drains.
+    #[test]
+    fn non_blocking_drops_and_counts() {
+        let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let out = Stalled {
+            gate: gate.clone(),
+            got: got.clone(),
+        };
+        let mut f = FmtLogger::new().without_timestamps();
+        f.sink = Some(Arc::new(AsyncSink::start(8, Box::new(out))));
+        let t0 = std::time::Instant::now();
+        for i in 0..100 {
+            f.log(&Record::new(Level::Info, "t", format_args!("line {i}")));
+        }
+        assert!(t0.elapsed() < Duration::from_secs(1), "never blocked");
+        // The writer holds at most one batch; the queue at most 8 lines.
+        let dropped = f.dropped();
+        assert!((100 - 8 - 64..=100 - 8).contains(&(dropped as i64)), "{dropped}");
+        // Release the output: the queued lines and a drop report come out.
+        *gate.0.lock().unwrap() = true;
+        gate.1.notify_all();
+        f.flush();
+        assert_eq!(f.dropped(), dropped, "nothing dropped once drained");
+        f.log(&Record::new(Level::Info, "t", format_args!("after")));
+        f.flush();
+        let text = String::from_utf8(got.lock().unwrap().clone()).unwrap();
+        // Drops are reported as they are noticed, possibly over several lines.
+        let reports: Vec<u64> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("only_log: "))
+            .map(|l| l.split(' ').next().unwrap().parse().unwrap())
+            .collect();
+        assert_eq!(reports.iter().sum::<u64>(), dropped, "{text}");
+        assert!(text.ends_with("INFO  t: after\n"), "{text}");
+        let logged = text.lines().filter(|l| l.starts_with("INFO")).count() as u64;
+        assert_eq!(logged, 100 - dropped + 1);
     }
 
     #[test]

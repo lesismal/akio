@@ -58,7 +58,7 @@ pub mod bridge;
 mod loggers;
 mod macros;
 
-pub use loggers::{FmtLogger, StderrLogger, init};
+pub use loggers::{DEFAULT_QUEUE_LINES, FmtLogger, StderrLogger, init};
 
 // ---- levels ---------------------------------------------------------------------------------
 

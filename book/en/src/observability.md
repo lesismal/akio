@@ -93,6 +93,14 @@ are never lost silently; everything else is dropped. The maximum level defaults 
 checked first, with one relaxed atomic load, so disabled statements cost well under a
 nanosecond.
 
+`FmtLogger` writes each line on the thread that logs, under the stream's lock: if stderr is a
+pipe nobody drains, that thread (possibly an I/O thread) blocks. For a server whose log output
+may back up, `.non_blocking(only::log::DEFAULT_QUEUE_LINES)` queues formatted lines to a writer
+thread (16 384 lines); when the queue is full lines are dropped, counted (`dropped()` on a
+clone kept before `init`) and reported in a line of their own once the writer catches up. Call
+`only::log::flush()` before exiting. The default stays synchronous, so no line is lost when a
+process exits without flushing.
+
 **Existing `log` setups (env_logger, `tracing-log`, fern ...).** Enable the `log` feature
 (`only = { version = "1", features = ["log"] }`). While no only-log logger is installed, every
 record goes to the `log` crate's logger with the same level, target, message and key-values, and

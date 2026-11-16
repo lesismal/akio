@@ -100,9 +100,11 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_log::LevelFilter
 impl core::panic::unwind_safe::UnwindSafe for only_log::LevelFilter
 pub struct only_log::FmtLogger
 impl only_log::FmtLogger
+pub fn only_log::FmtLogger::dropped(&self) -> u64
 pub fn only_log::FmtLogger::format(&self, &only_log::Record<'_>) -> alloc::string::String
 pub fn only_log::FmtLogger::init(self, only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>
 pub fn only_log::FmtLogger::new() -> only_log::FmtLogger
+pub fn only_log::FmtLogger::non_blocking(self, usize) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::stdout(self) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::target_level(self, impl core::convert::Into<alloc::string::String>, only_log::LevelFilter) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::without_timestamps(self) -> only_log::FmtLogger
@@ -314,6 +316,7 @@ impl only_log::ToValue for usize
 pub fn usize::to_value(&self) -> only_log::Value<'_>
 impl<T: only_log::ToValue + ?core::marker::Sized> only_log::ToValue for &T
 pub fn &T::to_value(&self) -> only_log::Value<'_>
+pub const only_log::DEFAULT_QUEUE_LINES: usize
 pub fn only_log::enabled(only_log::Level, &str) -> bool
 pub fn only_log::flush()
 pub fn only_log::init(only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>

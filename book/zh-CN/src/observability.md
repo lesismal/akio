@@ -86,6 +86,12 @@ only::log::FmtLogger::new()
 stderr（`only: ...`），不会悄无声息地丢失；其余记录被丢弃。最大级别默认为 `Off`，并且最先检查，只需
 一次 relaxed 原子读，因此被禁用的语句开销远低于一纳秒。
 
+`FmtLogger` 在记录日志的线程上、持有流的锁写出每一行：如果 stderr 是一个无人读取的管道，该线程
+（可能是 I/O 线程）就会阻塞。对于日志输出可能积压的服务器，`.non_blocking(only::log::DEFAULT_QUEUE_LINES)`
+把格式化好的行放入队列交给写线程（16 384 行）；队列满时行被丢弃并计数（在 `init` 之前保留一个克隆，
+调用 `dropped()`），写线程赶上后用单独一行报告丢弃数。退出前调用 `only::log::flush()`。默认仍是同步
+写出，因此进程未 flush 就退出时不会丢行。
+
 **已有的 `log` 配置（env_logger、`tracing-log`、fern ……）。** 开启 `log` feature
 （`only = { version = "1", features = ["log"] }`）。未安装 only-log logger 时，每条记录都以相同的
 级别、target、消息和键值对交给 `log` crate 的 logger，有效最大级别为 `log::max_level()`；
