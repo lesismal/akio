@@ -12,3 +12,4 @@
 - [ADR-006：eBPF 的定位](006-ebpf-role.zh-CN.md)
 - [ADR-007：段内部分匹配的路由模式](007-partial-segment-routes.zh-CN.md)
 - [ADR-008：TLS record_size_limit、证书压缩与 OCSP stapling](008-tls-extensions.zh-CN.md)
+- [ADR-012：SOCKS5 BIND / UDP ASSOCIATE、`Engine::adopt_tcp` 与 only-log 过滤器](012-socks-commands-and-log-filters.zh-CN.md)

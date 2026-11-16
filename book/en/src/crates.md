@@ -17,7 +17,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 |---|---|---|
 | `only` | facade: `Engine`, `Listener`, `Backend`, `Accel`, re-exports of the core API, `tls`, `ebpf` | [Concepts](concepts/index.md) |
 | `only-core` | `Conn`, `Handler`, `Acceptor`, `Config`, `Transport`, `Telemetry`; backend-facing traits | [Handlers](concepts/handlers.md) |
-| `only-log` (`only::log`) | logging facade: levels, targets, key-values, `Logger`, built-in loggers, optional `log` bridge | [Observability](observability.md) |
+| `only-log` (`only::log`) | logging facade: levels, targets, key-values, `Logger`, built-in loggers, `ONLY_LOG` filters, compile-time caps, optional `log` bridge | [Observability](observability.md) |
 | `only-pool` | the logical (blocking-work) pool | [Blocking work](concepts/blocking.md) |
 | `only-buf` | size-class buffer pool, `SharedBuf` | [Architecture](architecture.md) |
 | `only-timer` | hierarchical timer wheel used by the I/O loops | [Architecture](architecture.md) |
@@ -36,7 +36,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 | `only-grpc` | gRPC server and client | [gRPC](protocols/grpc.md) |
 | `only-protobuf`, `only-protobuf-build` | protobuf runtime, and the `.proto` code generator for `build.rs` (no protoc, gRPC stubs) | [gRPC](protocols/grpc.md) |
 | `only-arpc` | arpc (lesismal/arpc wire format) | [arpc](protocols/arpc.md) |
-| `only-socks` | SOCKS4/4a/5 and HTTP CONNECT proxies | [SOCKS](protocols/socks.md) |
+| `only-socks` | SOCKS4/4a/5 (CONNECT, BIND, UDP ASSOCIATE, access control) and HTTP CONNECT proxies | [SOCKS](protocols/socks.md) |
 | `only-mux` | several protocols on one port | [Multiplexing](protocols/mux.md) |
 | `only-kcp` | KCP (kcp-go compatible) | [KCP](protocols/kcp.md) |
 | `only-webrtc` | WebRTC on the in-house stack (`only-ice`, `only-dtls`, `only-srtp`, `only-rtp`, `only-sctp`): ICE, DTLS-SRTP, data channels, media | [WebRTC](protocols/webrtc.md) |

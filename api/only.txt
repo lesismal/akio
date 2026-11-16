@@ -95,6 +95,7 @@ impl core::panic::unwind_safe::UnwindSafe for only::EbpfConfig
 pub struct only::Engine
 impl only::Engine
 pub fn only::Engine::accel_status(&self) -> &[only::AccelStatus]
+pub fn only::Engine::adopt_tcp<A: only_core::handler::Acceptor>(&self, std::net::tcp::TcpStream, A, impl core::ops::function::FnOnce(core::io::error::Error) + core::marker::Send + 'static)
 pub fn only::Engine::bind_udp<A: only_core::handler::Acceptor>(&self, core::net::socket_addr::SocketAddr, A) -> core::io::error::Result<only_core::group::UdpBinding>
 pub fn only::Engine::builder() -> only::EngineBuilder
 pub fn only::Engine::connections(&self, core::time::Duration) -> alloc::vec::Vec<only_core::telemetry::ConnInfo>

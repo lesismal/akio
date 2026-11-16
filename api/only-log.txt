@@ -98,10 +98,43 @@ impl core::marker::Sync for only_log::LevelFilter
 impl core::marker::Unpin for only_log::LevelFilter
 impl core::panic::unwind_safe::RefUnwindSafe for only_log::LevelFilter
 impl core::panic::unwind_safe::UnwindSafe for only_log::LevelFilter
+pub struct only_log::Filter
+impl only_log::Filter
+pub fn only_log::Filter::default_level(self, only_log::LevelFilter) -> only_log::Filter
+pub fn only_log::Filter::default_level_filter(&self) -> only_log::LevelFilter
+pub fn only_log::Filter::directive(self, impl core::convert::Into<alloc::string::String>, only_log::LevelFilter) -> only_log::Filter
+pub fn only_log::Filter::directives(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&str, only_log::LevelFilter)>
+pub fn only_log::Filter::enabled(&self, &only_log::Metadata<'_>) -> bool
+pub fn only_log::Filter::from_env(&str) -> core::option::Option<core::result::Result<only_log::Filter, only_log::ParseFilterError>>
+pub fn only_log::Filter::level_for(&self, &str) -> only_log::LevelFilter
+pub fn only_log::Filter::max_level(&self) -> only_log::LevelFilter
+pub fn only_log::Filter::new(only_log::LevelFilter) -> only_log::Filter
+impl core::clone::Clone for only_log::Filter
+pub fn only_log::Filter::clone(&self) -> Self
+impl core::cmp::Eq for only_log::Filter
+impl core::cmp::PartialEq for only_log::Filter
+pub fn only_log::Filter::eq(&self, &Self) -> bool
+impl core::default::Default for only_log::Filter
+pub fn only_log::Filter::default() -> only_log::Filter
+impl core::fmt::Debug for only_log::Filter
+pub fn only_log::Filter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::Filter
+pub fn only_log::Filter::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::Filter
+impl core::str::traits::FromStr for only_log::Filter
+pub type only_log::Filter::Err = only_log::ParseFilterError
+pub fn only_log::Filter::from_str(&str) -> core::result::Result<only_log::Filter, only_log::ParseFilterError>
+impl core::marker::Send for only_log::Filter
+impl core::marker::Sync for only_log::Filter
+impl core::marker::Unpin for only_log::Filter
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::Filter
+impl core::panic::unwind_safe::UnwindSafe for only_log::Filter
 pub struct only_log::FmtLogger
 impl only_log::FmtLogger
+pub fn only_log::FmtLogger::filter(self, only_log::Filter) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::format(&self, &only_log::Record<'_>) -> alloc::string::String
 pub fn only_log::FmtLogger::init(self, only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>
+pub fn only_log::FmtLogger::init_filtered(self, only_log::Filter) -> core::result::Result<(), only_log::SetLoggerError>
 pub fn only_log::FmtLogger::new() -> only_log::FmtLogger
 pub fn only_log::FmtLogger::stdout(self) -> only_log::FmtLogger
 pub fn only_log::FmtLogger::target_level(self, impl core::convert::Into<alloc::string::String>, only_log::LevelFilter) -> only_log::FmtLogger
@@ -161,6 +194,25 @@ impl<'a> core::marker::Sync for only_log::Metadata<'a>
 impl<'a> core::marker::Unpin for only_log::Metadata<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_log::Metadata<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for only_log::Metadata<'a>
+pub struct only_log::ParseFilterError
+impl only_log::ParseFilterError
+pub fn only_log::ParseFilterError::directive(&self) -> &str
+impl core::clone::Clone for only_log::ParseFilterError
+pub fn only_log::ParseFilterError::clone(&self) -> Self
+impl core::cmp::Eq for only_log::ParseFilterError
+impl core::cmp::PartialEq for only_log::ParseFilterError
+pub fn only_log::ParseFilterError::eq(&self, &Self) -> bool
+impl core::error::Error for only_log::ParseFilterError
+impl core::fmt::Debug for only_log::ParseFilterError
+pub fn only_log::ParseFilterError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_log::ParseFilterError
+pub fn only_log::ParseFilterError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_log::ParseFilterError
+impl core::marker::Send for only_log::ParseFilterError
+impl core::marker::Sync for only_log::ParseFilterError
+impl core::marker::Unpin for only_log::ParseFilterError
+impl core::panic::unwind_safe::RefUnwindSafe for only_log::ParseFilterError
+impl core::panic::unwind_safe::UnwindSafe for only_log::ParseFilterError
 pub struct only_log::ParseLevelError(_)
 impl core::clone::Clone for only_log::ParseLevelError
 pub fn only_log::ParseLevelError::clone(&self) -> Self
@@ -260,6 +312,8 @@ impl<'a> !core::marker::Sync for only_log::Value<'a>
 impl<'a> core::marker::Unpin for only_log::Value<'a>
 impl<'a> !core::panic::unwind_safe::RefUnwindSafe for only_log::Value<'a>
 impl<'a> !core::panic::unwind_safe::UnwindSafe for only_log::Value<'a>
+pub const only_log::ENV_VAR: &str
+pub const only_log::STATIC_MAX_LEVEL: only_log::LevelFilter
 pub trait only_log::Logger: core::marker::Send + core::marker::Sync
 pub fn only_log::Logger::enabled(&self, &only_log::Metadata<'_>) -> bool
 pub fn only_log::Logger::flush(&self)
@@ -317,6 +371,7 @@ pub fn &T::to_value(&self) -> only_log::Value<'_>
 pub fn only_log::enabled(only_log::Level, &str) -> bool
 pub fn only_log::flush()
 pub fn only_log::init(only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>
+pub fn only_log::init_from_env(only_log::LevelFilter) -> core::result::Result<(), only_log::SetLoggerError>
 pub fn only_log::log_or_stderr(only_log::Level, &str, core::fmt::Arguments<'_>)
 pub fn only_log::logger() -> core::option::Option<&'static dyn only_log::Logger>
 pub fn only_log::max_level() -> only_log::LevelFilter

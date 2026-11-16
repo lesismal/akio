@@ -93,6 +93,28 @@ are never lost silently; everything else is dropped. The maximum level defaults 
 checked first, with one relaxed atomic load, so disabled statements cost well under a
 nanosecond.
 
+**Per-target levels from the environment.** `only::log::init_from_env(default)` reads `ONLY_LOG`
+once, with env_logger-style directives, and installs the formatted logger with them:
+
+```text
+ONLY_LOG=info,only_http=debug,only_quic::conn=trace,only_http::access=off ./server
+```
+
+`level` sets the level of targets no directive names (without one they are off), `target=level`
+the level of a target and its submodules (`target::...`), a bare `target` means `trace`; the most
+specific target wins. Unset, `default` applies to everything; unparsable, a line on stderr says
+why and `default` applies. Nothing reads the variable unless `init_from_env` is called. The same
+syntax builds a filter in code: `"info,only_http=debug".parse::<only::log::Filter>()`, then
+`FmtLogger::new().init_filtered(filter)`, or `filter.enabled(metadata)` in your own `Logger`.
+Unlike env_logger, `only=debug` does not match `only_http` (targets match on `::` boundaries) and
+`/regex` message filters are not supported.
+
+**Compile-time caps.** The only-log features `max_level_off` ... `max_level_trace` and
+`release_max_level_*` (the latter for builds without debug assertions) remove statements above
+the cap at compile time, as in the `log` crate; `only::log::STATIC_MAX_LEVEL` is the result.
+Enable them in the application only (features are unified across the dependency graph):
+`only-log = { version = "1", features = ["release_max_level_info"] }`.
+
 **Existing `log` setups (env_logger, `tracing-log`, fern ...).** Enable the `log` feature
 (`only = { version = "1", features = ["log"] }`). While no only-log logger is installed, every
 record goes to the `log` crate's logger with the same level, target, message and key-values, and
