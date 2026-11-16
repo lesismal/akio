@@ -42,6 +42,8 @@ that sets nothing is still bounded:
   would otherwise be a way into the networks behind it (server-side request forgery, an open
   relay into `localhost`). SOCKS5 answers `2` (not allowed by ruleset), SOCKS4 `0x5b`,
   `CONNECT` 403. A host name that resolves to a denied address is denied too.
+  **This is a default change**: earlier versions dialled any destination; set
+  `Destinations::Any` to keep that.
 - `Destinations::Any` restores the old behaviour, for a proxy whose purpose is to reach a
   private network (a bastion); restrict who can use it (`auth`, a listener on a trusted
   interface). `Destinations::Custom(f)` takes your own rule.
