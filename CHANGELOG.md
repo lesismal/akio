@@ -10,17 +10,74 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
-### Changed: safe engine defaults (ADR-009, docs/rules.md)
+### Changed: safe defaults everywhere, loop-safe I/O, leaner hot paths (ADR-009, docs/rules.md)
 
-- `Config::write_timeout` defaults to 60 s (was `None`): a peer that stops reading no longer
-  pins its connection and up to `max_queued_bytes` of queued output forever.
-- `Config::udp_max_peers` defaults to 65536 per listener (was `None`): spoofed source addresses
-  can no longer grow the peer table without limit.
-- New `Config::connect_timeout` (default 10 s): `Engine::dial` abandons a connection that is not
-  established in time and calls `on_error` with `ErrorKind::TimedOut` (epoll, kqueue, io_uring).
-- New development rules, docs/rules.md, adapted from fit's: never block an I/O thread, bodies
-  streamed and bounded, linked backpressure, timeouts and safe-default limits everywhere, build
-  time over request time on the hot path, verification sized to the change.
+New development rules (docs/rules.md, adapted from fit's): never block an I/O thread, bodies
+streamed and bounded, linked backpressure, timeouts and safe-default limits everywhere, build
+time over request time on the hot path, verification sized to the change. The code was audited
+against them; every limit below has a safe default, and 0 / `None` stays the explicit opt-out.
+
+**Engine (only-core, loops, only-tls)**
+- `Config::write_timeout` 60 s (was `None`); `Config::udp_max_peers` 65536 (was `None`); new
+  `Config::connect_timeout` (10 s) for `Engine::dial` on epoll, kqueue and io_uring.
+- New `Config::max_pending_responses` (32): pipelined responses behind an unfinished one pause
+  reads (and count toward the write watermark / `max_queued_bytes`) instead of piling up.
+- TLS handshake timeout: `ServerConfigBuilder::handshake_timeout` /
+  `ClientConfigBuilder::handshake_timeout` (10 s), enforced by the loops through the new
+  `Transport::handshake_timeout`.
+- Hot path: cork state is an atomic, the drain lock is skipped when nothing waits, command
+  queues keep their capacity; ~7 → 4 uncontended lock operations per pipelined request.
+
+**HTTP server (only-http)**
+- `HttpConfig::head_timeout` 10 s (slowloris; 408), `keep_alive_timeout` 75 s, `body_timeout`
+  60 s; HTTP/2 preface/SETTINGS deadline and idle GOAWAY.
+- HTTP/2 Rapid Reset and flood budgets: `H2Config::max_resets` (100 per 30 s, MadeYouReset
+  counted), `max_control_frames` (1000 per window) → GOAWAY ENHANCE_YOUR_CALM;
+  `max_conn_pending_bytes` (32 MiB) over all streams.
+- Static files touch the disk only on a pool (16 threads, 4096 queued, 503 when full); cache
+  hits stay on the I/O thread, compressed twins (and their absence) are cached, headers are
+  formatted once per entry, the cache is 16 RwLock shards.
+- Request path: no shared `Arc` bump per routed request, 405 `Allow` precomputed, requests with
+  a body routed once, metrics `in_flight` per shard, inline response filters, CORS / compress /
+  limiter / csrf / request_id without per-request formatting or global locks. Pipelined
+  HTTP/1.1 and h2c about +3–4% (same-run A/B), plain HTTP/1.1 within 1%.
+
+**HTTP clients (only-http, only-h3)**: HTTP/1 response head 64 KiB, body 64 MiB, request
+timeout 30 s, idle pool 32 per host / 256 in all, 90 s idle expiry; HTTP/2 frame size checked
+before buffering, header blocks 2 × `max_header_list`, body 64 MiB, at most 32 pushes per
+request; HTTP/3 body 8 MiB, field sections 64 KiB, request timeout 30 s. New
+`ClientError::TimedOut` / `TooLarge`, `H3Error::TooLarge`.
+
+**gRPC and arpc**: the global `Mutex<Vec>` deadline threads are replaced by a cancellable,
+sharded deadline service (calls with a deadline: gRPC ×17, arpc ×278 calls/s; without: +1%).
+`grpc-timeout` clamped to `GrpcServer::max_deadline` (24 h), `GrpcClient::default_timeout`
+(30 s), `max_collect_bytes` (64 MiB); arpc `Routes::max_streams_per_conn` (1024) and
+`call_timeout` (30 s); fewer copies and locks per message.
+
+**WebSocket, media, WebRTC**: compressed (permessage-deflate) messages are bounded too (close
+1009); frames encoded on the stack and buffers reused (plain echo at 1 KiB +7–11%). RTMP chunk
+reader parses in place (was O(n²) copying) with a 32 MiB partial cap; HLS segments cut at
+`max_bytes` without keyframes; hub 1024 streams / 1000 subscribers per path, WHIP 256 sessions,
+SRT 1024 connections, RTMP handshake 10 s / idle 60 s, RTSP session timeout enforced (60 s) and
+request timeout 10 s; `RtcServer` / `Endpoint::max_peers` (1024).
+
+**QUIC, HTTP/3, KCP**: per-stream (4 MiB) and per-connection (16 MiB) QUIC send buffers with
+`Error::Overloaded` and `QuicHandler::on_stream_writable`; `receive_window` 10 MB (was
+unlimited); `ServerConfig::max_connections` (10,000, stateless CONNECTION_REFUSED). HTTP/3 file
+bodies are read on the pool only as the stream has room. KCP `max_sessions` 4096 and
+`KcpHandler::on_writable`. QUIC single-stream bulk −2.7% under the 4 MiB stream default.
+
+**SOCKS, mux, TURN, BitTorrent, log, DTLS**
+- SOCKS / HTTP CONNECT: **destinations default to public addresses only** (loopback, private,
+  link-local, CGNAT, multicast and reserved refused after resolution, including mapped forms;
+  also for BIND and UDP ASSOCIATE); handshake 10 s, idle 5 min, early data capped at 256 KiB,
+  CONNECT DNS on a bounded pool.
+- only-mux sniff timeout 5 s. TURN allocations sharded by client (relay throughput about
+  140k → 513k datagrams/s). BitTorrent tracker DNS off the I/O threads, tracker server 100k
+  swarms / 1000 peers per swarm with eviction, uTP inbound table 1024. only-dtls bounds
+  reassembly before the cookie exchange.
+- only-log: opt-in `FmtLogger::non_blocking` (bounded queue, drops and counts); the default
+  stays synchronous.
 
 ### Added: HTTP and WebSocket client redirects, timeouts, proxies, system roots (ADR-010)
 

@@ -49,5 +49,8 @@ Changing a default changes behaviour for existing configurations, so it is recor
   being allowed to stall for more than 60 s, or more than 65536 UDP peers per listener sets the
   field explicitly.
 - `Config::connect_timeout` is additive public API (`Config` is `#[non_exhaustive]`).
-- Protocol crates follow the same rule for their own resources (head-read and keep-alive
-  timeouts, stream, session and message limits); each records its new defaults in the changelog.
+- Protocol crates follow the same rule for their own resources; the defaults chosen in the same
+  change (HTTP, gRPC/arpc, WebSocket, media, QUIC/HTTP/3, KCP, SOCKS, mux, TURN, BitTorrent,
+  DTLS) are listed in the CHANGELOG entry "safe defaults everywhere". Two were the user's call:
+  SOCKS and HTTP CONNECT refuse non-public destinations by default (open-proxy / SSRF), and
+  only-log keeps writing synchronously by default (`FmtLogger::non_blocking` is opt-in).

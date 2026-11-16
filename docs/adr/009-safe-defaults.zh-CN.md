@@ -41,5 +41,7 @@
   dial 等待超过 10 s、允许对端停滞超过 60 s 或每个 listener 超过 65536 个 UDP 对端的代码需要显式设置
   对应字段。
 - `Config::connect_timeout` 是新增的公开 API（`Config` 是 `#[non_exhaustive]`）。
-- 各协议 crate 对自己的资源遵循同样的规则（读请求头和 keep-alive 超时，流、会话和消息上限）；新的默认值
-  各自记录在变更日志中。
+- 各协议 crate 对自己的资源遵循同样的规则；同一改动中选定的默认值（HTTP、gRPC/arpc、WebSocket、媒体、
+  QUIC/HTTP/3、KCP、SOCKS、mux、TURN、BitTorrent、DTLS）列在 CHANGELOG 的"处处安全默认值"条目中。其中两项由
+  用户决定：SOCKS 和 HTTP CONNECT 默认拒绝非公网目标（开放代理 / SSRF），only-log 默认仍同步写出
+  （`FmtLogger::non_blocking` 需显式开启）。

@@ -10,15 +10,62 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
-### 变更：引擎的安全默认值（ADR-009，docs/rules.zh-CN.md）
+### 变更：处处安全默认值、不阻塞事件循环的 I/O、更精简的热路径（ADR-009，docs/rules.zh-CN.md）
 
-- `Config::write_timeout` 默认 60 s（原为 `None`）：不再读取的对端不能再让它的连接和最多
-  `max_queued_bytes` 的排队输出永远存在。
-- `Config::udp_max_peers` 默认每个 listener 65536（原为 `None`）：伪造的源地址不能再让对端表无限增长。
-- 新增 `Config::connect_timeout`（默认 10 s）：`Engine::dial` 放弃未能按时建立的连接，并以
-  `ErrorKind::TimedOut` 调用 `on_error`（epoll、kqueue、io_uring）。
-- 新的开发规则 docs/rules.zh-CN.md，改编自 fit：绝不阻塞 I/O 线程、消息体流式且有界、背压联动、处处有
-  超时和带安全默认值的上限、热路径上构建时优先于请求时、验证与改动相称。
+新的开发规则（docs/rules.zh-CN.md，改编自 fit）：绝不阻塞 I/O 线程、消息体流式且有界、背压联动、处处有超时和
+带安全默认值的上限、热路径上构建时优先于请求时、验证与改动相称。代码已按这些规则审查；下列每个上限都有安全
+默认值，0 / `None` 仍是显式的关闭方式。
+
+**引擎（only-core、事件循环、only-tls）**
+- `Config::write_timeout` 60 s（原为 `None`）；`Config::udp_max_peers` 65536（原为 `None`）；新增
+  `Config::connect_timeout`（10 s），用于 epoll、kqueue 和 io_uring 上的 `Engine::dial`。
+- 新增 `Config::max_pending_responses`（32）：排在未完成响应之后的流水线响应会暂停读取（并计入写水位线 /
+  `max_queued_bytes`），不再无限堆积。
+- TLS 握手超时：`ServerConfigBuilder::handshake_timeout` / `ClientConfigBuilder::handshake_timeout`
+  （10 s），由事件循环通过新的 `Transport::handshake_timeout` 执行。
+- 热路径：cork 状态改为原子量，无人等待时跳过 drain 锁，命令队列保留容量；每个流水线请求的无竞争加锁操作
+  约从 7 次降到 4 次。
+
+**HTTP 服务端（only-http）**
+- `HttpConfig::head_timeout` 10 s（slowloris；408）、`keep_alive_timeout` 75 s、`body_timeout` 60 s；
+  HTTP/2 的 preface/SETTINGS 截止时间和空闲 GOAWAY。
+- HTTP/2 Rapid Reset 与洪泛预算：`H2Config::max_resets`（每 30 s 100 次，含 MadeYouReset）、
+  `max_control_frames`（每窗口 1000）→ GOAWAY ENHANCE_YOUR_CALM；所有流合计的 `max_conn_pending_bytes`
+  （32 MiB）。
+- 静态文件只在线程池上访问磁盘（16 线程、4096 排队，满时 503）；缓存命中留在 I/O 线程，压缩副本（及其不存在）
+  被缓存，响应头每个条目只格式化一次，缓存分为 16 个 RwLock 分片。
+- 请求路径：每个路由请求不再增减共享 `Arc`，405 的 `Allow` 预先计算，带消息体的请求只路由一次，metrics 的
+  `in_flight` 按分片，响应过滤器内联存放，CORS / compress / limiter / csrf / request_id 不再每请求格式化或
+  使用全局锁。流水线 HTTP/1.1 和 h2c 约 +3–4%（同一轮 A/B），普通 HTTP/1.1 在 1% 以内。
+
+**HTTP 客户端（only-http、only-h3）**：HTTP/1 响应头 64 KiB、消息体 64 MiB、请求超时 30 s、空闲连接池每主机
+32 个 / 总计 256 个、空闲 90 s 过期；HTTP/2 在缓冲前检查帧大小，头块上限 2 × `max_header_list`，消息体 64 MiB，
+每个请求最多 32 个 push；HTTP/3 消息体 8 MiB、字段段 64 KiB、请求超时 30 s。新增 `ClientError::TimedOut` /
+`TooLarge`、`H3Error::TooLarge`。
+
+**gRPC 与 arpc**：全局 `Mutex<Vec>` 截止时间线程被可取消、分片的截止时间服务取代（带截止时间的调用：gRPC ×17、
+arpc ×278 调用/秒；不带：+1%）。`grpc-timeout` 限制在 `GrpcServer::max_deadline`（24 h）以内，
+`GrpcClient::default_timeout`（30 s），`max_collect_bytes`（64 MiB）；arpc `Routes::max_streams_per_conn`
+（1024）和 `call_timeout`（30 s）；每条消息更少的复制和加锁。
+
+**WebSocket、媒体、WebRTC**：压缩（permessage-deflate）消息也受限（关闭码 1009）；帧头在栈上编码、缓冲区复用
+（1 KiB 普通回显 +7–11%）。RTMP 分块读取器原地解析（原为 O(n²) 复制），未完成消息上限 32 MiB；没有关键帧时
+HLS 分段在 `max_bytes` 处切分；hub 每路径 1024 个流 / 1000 个订阅者，WHIP 256 个会话，SRT 1024 个连接，RTMP
+握手 10 s / 空闲 60 s，RTSP 会话超时被执行（60 s）且请求超时 10 s；`RtcServer` / `Endpoint::max_peers`（1024）。
+
+**QUIC、HTTP/3、KCP**：每流（4 MiB）和每连接（16 MiB）的 QUIC 发送缓冲区上限，配合 `Error::Overloaded` 和
+`QuicHandler::on_stream_writable`；`receive_window` 10 MB（原为不限）；`ServerConfig::max_connections`
+（10,000，无状态 CONNECTION_REFUSED）。HTTP/3 文件消息体只在流有空间时在线程池上读取。KCP `max_sessions` 4096
+和 `KcpHandler::on_writable`。在 4 MiB 每流默认值下 QUIC 单流批量传输 −2.7%。
+
+**SOCKS、mux、TURN、BitTorrent、log、DTLS**
+- SOCKS / HTTP CONNECT：**目标地址默认只允许公网**（解析后拒绝回环、私网、链路本地、CGNAT、组播和保留地址，
+  包括映射形式；BIND 和 UDP ASSOCIATE 同样适用）；握手 10 s、空闲 5 min、早期数据上限 256 KiB、CONNECT 的
+  DNS 在有界线程池上解析。
+- only-mux 嗅探超时 5 s。TURN 分配按客户端分片（中继吞吐约 140k → 513k 数据报/秒）。BitTorrent tracker 的 DNS
+  移出 I/O 线程，tracker 服务端 10 万个 swarm / 每 swarm 1000 个对端并带淘汰，uTP 入站表 1024。only-dtls 在
+  cookie 交换前限制重组缓冲。
+- only-log：可选的 `FmtLogger::non_blocking`（有界队列，满时丢弃并计数）；默认仍为同步。
 
 ### 新增：HTTP 与 WebSocket 客户端的重定向、超时、代理、系统根证书（ADR-010）
 
