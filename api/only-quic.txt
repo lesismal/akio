@@ -283,6 +283,8 @@ pub fn only_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 impl only_core::handler::Acceptor for only_quic::QuicServer
 pub type only_quic::QuicServer::Handler = Udp
 pub fn only_quic::QuicServer::on_open(&self, &only_core::conn::Conn<Udp>) -> Udp
+impl only_core::metrics::Collector for only_quic::QuicServer
+pub fn only_quic::QuicServer::collect(&self, &mut only_core::metrics::Families)
 impl core::marker::Send for only_quic::QuicServer
 impl core::marker::Sync for only_quic::QuicServer
 impl core::marker::Unpin for only_quic::QuicServer

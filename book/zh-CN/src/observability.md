@@ -19,6 +19,7 @@
 | `Engine::pool_stats()` | 逻辑线程池的线程数、空闲数、排队数、完成数、panic 数、拒绝数 |
 | `Engine::udp_stats()` | 打开的 UDP 对端数，以及被 `udp_max_peers` 拒绝的数据报数 |
 | `Engine::accel_status()` | 每个 listener 的 eBPF 分流状态 |
+| `Telemetry::collect()`、`Telemetry::render_prometheus()` | 已注册收集器的 `Families`（Prometheus 或 JSON）；engine 序列加收集器序列，即 `metrics_handler` 输出的内容 |
 
 ## Prometheus
 
@@ -41,7 +42,14 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 
 `observe::HttpMetrics` 提供的 HTTP 指标：`only_http_requests_total{class="2xx"...}`、
 `only_http_request_duration_seconds`（直方图，桶从 0.5 ms 到 10 s）、
-`only_http_requests_in_flight`。
+`only_http_requests_in_flight`、`only_http_requests_by_version_total{version="1.0|1.1|2|3"}`
+（按请求的协议版本统计的响应数；在 h2 和 h3 上即已应答的请求流数量）。QUIC 与 TLS 指标来自各自的收集器，
+见[自定义指标](#自定义指标)。
+
+**开销。** 计数器始终开启；设置了慢回调阈值（默认）时还会对回调计时。在安静主机上做的同一轮 A/B
+（Ryzen 7 7800X3D、Linux 7.0、5 轮）没有测到开销：关闭计时或把计数器编译掉后，HTTP/1.1 plaintext
+与 pipelined 为 0.998–1.006×，TCP 与 UDP echo 在各自 ±5–10% 的噪声之内（docs/BENCHMARKS.zh-CN.md
+“遥测开销”）。
 
 `only_loop_callback_seconds_total / only_loop_iterations_total` 和慢回调计数是最先要看的：
 它们告诉你 handler 是否让 I/O 线程一直忙碌。
@@ -52,7 +60,8 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
 {{#include ../../../crates/only-http/examples/guide-observe.rs:endpoints}}
 ```
 
-- `observe::metrics_handler(telemetry, Some(http_metrics))` 以 Prometheus 文本格式（0.0.4）应答。
+- `observe::metrics_handler(telemetry, Some(http_metrics))` 以 Prometheus 文本格式（0.0.4）应答：
+  engine 序列、每个已注册的收集器（见[自定义指标](#自定义指标)），以及传入的 `http_metrics`。
 - `observe::debug_handler(telemetry, token)` 是一个需要显式启用的运行时调试端点（相当于 Go 的
   pprof 页面），以 JSON 应答。把它挂在通配路由下；路径最后一段选择视图：`conns`（连接表）、
   `loops`（每线程计数器、汇总、线程池）、`slow`（最近的慢回调）、`live`（当前实时设置）。设置了
@@ -60,6 +69,42 @@ engine 指标（每个 I/O 线程一条序列，标签为 `listener`、`backend`
   辅助线程上收集，从不在服务该请求的 I/O 线程上收集。没有 token 时不要对外公开它。
 - `HttpMetrics::middleware()` 按状态类别计数请求、记录延迟、跟踪在途请求。
 - `observe::access_log()` 通过 `log` facade 为每个响应写一条结构化记录。
+
+## 自定义指标
+
+任何实现了 `only::metrics::Collector` 的东西都可以注册到遥测中心，随后出现在同一个 `/metrics`
+端点上，位于 engine 自身序列之后（ADR-015）。不涉及任何第三方 crate。
+
+```rust,ignore
+{{#include ../../../crates/only-http/examples/guide-metrics.rs:collectors}}
+```
+
+- `Registry` 持有具名的 `Counter`、`Gauge`、`Histogram`（共享原子量，更新不加锁）；以相同名称和
+  标签再次获取会返回同一个工具。
+- `fn_collector(|out| ...)` 把闭包变成每次抓取都会运行的收集器；`out.counter`、`out.gauge`、
+  `out.histogram` 添加样本。非法名称、重复的标签名和类型冲突会被丢弃（计入 `Families::dropped()`），
+  从不 panic。
+- `Telemetry::register_collector(collector, labels)` 给该收集器的每个样本加上常量标签：两个收集器
+  输出相同的族时（比如两个 QUIC 服务器），给每次注册不同的标签。`unregister_collector(id)` 取消注册。
+- `metrics_handler(telemetry, http)` 输出 `Telemetry::render_prometheus()`（先 engine 序列，再收集器）；
+  若 `HttpMetrics` 已作为收集器注册，`http` 传 `None`。
+
+不经 HTTP，以快照形式取得同样的数据：
+
+```rust,ignore
+{{#include ../../../crates/only-http/examples/guide-metrics.rs:snapshot}}
+```
+
+现成的收集器：
+
+| 收集器 | 序列 |
+|---|---|
+| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`、`only_http_request_duration_seconds`、`only_http_requests_in_flight`、`only_http_requests_by_version_total{version}` |
+| `only_quic::QuicServer`（`only_h3::serve` 返回的也是它） | `only_quic_connections_open`（gauge）、`only_quic_connections_accepted_total`、`only_quic_connections_closed_total`、`only_quic_datagrams_total{dir}`、`only_quic_bytes_total{dir}`、`only_quic_packets_sent_total`、`only_quic_packets_lost_total`、`only_quic_lost_bytes_total`、`only_quic_congestion_events_total`、`only_quic_ecn_ce_events_total` |
+| `only::tls::TlsStats`，来自 `Tls::stats()` | `only_tls_handshakes_total{side, version}`、`only_tls_resumed_total{side}`、`only_tls_early_data_total{side, outcome}` |
+
+QUIC 的总数包含已关闭的连接，因此不会下降。收集器运行在处理抓取的线程上，从不在 I/O 线程的热路径上：
+请让它们保持轻量。没有内置推送导出（StatsD、OTLP）；`Families` 里有这类导出器需要的全部数据。
 
 ## 日志
 

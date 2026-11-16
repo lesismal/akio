@@ -170,3 +170,115 @@ fn metrics_endpoint_exposes_engine_and_http_metrics() {
     e.shutdown();
     e.wait();
 }
+
+/// ADR-015: collectors registered with the telemetry hub appear on the same endpoint.
+#[test]
+fn registered_collectors_are_scraped_over_http() {
+    use only::metrics::{DEFAULT_BUCKETS, Registry};
+    use std::sync::Arc;
+
+    let mut cfg = Config::default();
+    cfg.shutdown_timeout = Duration::from_millis(300);
+    let tel = cfg.telemetry.clone();
+    let http = HttpMetrics::new();
+    let reg = Registry::new();
+    let jobs = reg.counter("app_jobs_total", "Jobs finished.", &[("queue", "mail")]);
+    let depth = reg.gauge("app_queue_depth", "Jobs waiting.", &[]);
+    let lat = reg.histogram("app_job_seconds", "Job time.", &[], &DEFAULT_BUCKETS);
+    let app_id = tel.register_collector(Arc::new(reg), &[("app", "demo")]);
+    tel.register_collector(Arc::new(http.clone()), &[]);
+
+    let app = Router::new()
+        .get("/job", move |ctx: &mut Context| {
+            jobs.inc();
+            ctx.text(200, "done");
+        })
+        // `http` is registered, so it is not passed again.
+        .get("/metrics", observe::metrics_handler(tel.clone(), None))
+        .layer(http.middleware());
+    let e = Engine::builder()
+        .config(cfg)
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .backend(backend())
+                .threads(2)
+                .serve(serve(app)),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+
+    for _ in 0..3 {
+        assert_eq!(get(addr, "/job", "").0, 200);
+    }
+    // One HTTP/1.0 request.
+    {
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        s.write_all(b"GET /job HTTP/1.0\r\n\r\n").unwrap();
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out);
+        assert!(out.starts_with(b"HTTP/1.0 200") || out.starts_with(b"HTTP/1.1 200"));
+    }
+    depth.set(7.0);
+    lat.observe(0.02);
+
+    let (st, body) = get(addr, "/metrics", "");
+    assert_eq!(st, 200);
+    // Engine series first, then the collectors.
+    assert!(
+        body.starts_with("# HELP only_connections_accepted_total"),
+        "{body}"
+    );
+    assert_eq!(
+        sample(&body, "app_jobs_total{app=\"demo\",queue=\"mail\"}"),
+        4.0
+    );
+    assert_eq!(sample(&body, "app_queue_depth{app=\"demo\"}"), 7.0);
+    assert_eq!(
+        sample(&body, "app_job_seconds_bucket{app=\"demo\",le=\"0.025\"}"),
+        1.0
+    );
+    assert_eq!(
+        sample(
+            &body,
+            "only_http_requests_by_version_total{version=\"1.1\"}"
+        ),
+        3.0 // the /metrics request is not answered yet while it renders
+    );
+    assert_eq!(
+        sample(
+            &body,
+            "only_http_requests_by_version_total{version=\"1.0\"}"
+        ),
+        1.0
+    );
+    assert_eq!(
+        sample(&body, "only_http_requests_total{class=\"2xx\"}"),
+        4.0
+    );
+    // Every family has exactly one header.
+    for fam in [
+        "only_http_requests_total",
+        "app_jobs_total",
+        "only_connections_open",
+    ] {
+        assert_eq!(
+            body.matches(&format!("# TYPE {fam} ")).count(),
+            1,
+            "{fam} in\n{body}"
+        );
+    }
+    assert_eq!(http.snapshot().by_version, [1, 4, 0, 0]); // now the scrape is answered too
+
+    // The same snapshot as JSON, and unregistering removes the series.
+    let json = tel.collect().to_json();
+    assert!(json.contains("\"name\":\"app_jobs_total\""), "{json}");
+    assert!(tel.unregister_collector(app_id));
+    assert!(!tel.unregister_collector(app_id));
+    let (_, body) = get(addr, "/metrics", "");
+    assert!(!body.contains("app_jobs_total"));
+    assert!(body.contains("only_http_requests_by_version_total"));
+    e.shutdown();
+}

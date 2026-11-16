@@ -34,12 +34,13 @@ use std::{
 
 use only_core::{
     Telemetry,
-    telemetry::{connections_json, json_str, prometheus_header, slow_callbacks_json},
+    metrics::{Collector, Families, HistogramSnapshot},
+    telemetry::{connections_json, json_str, slow_callbacks_json},
 };
 
 use crate::{
     context::{Context, Middleware, Service},
-    message::Response,
+    message::{Request, Response, Version},
 };
 
 /// Upper bounds (seconds) of the request-latency histogram buckets.
@@ -50,18 +51,29 @@ const NB: usize = LATENCY_BUCKETS.len() + 1; // + the +Inf bucket
 const SHARDS: usize = 16;
 
 /// One shard of counters; threads are spread over shards so I/O threads rarely share a line.
-#[repr(align(128))]
+/// Laid out so that a typical response (any class, the first latency bucket) touches one cache
+/// line: `classes`, `sum_ns` and `buckets[0]` share the first 64 bytes.
+#[repr(C, align(128))]
 #[derive(Default)]
 struct Shard {
     /// 1xx, 2xx, 3xx, 4xx, 5xx, other.
     classes: [AtomicU64; 6],
-    buckets: [AtomicU64; NB],
     sum_ns: AtomicU64,
+    buckets: [AtomicU64; NB],
+    /// Responses per version: HTTP/1.0, (unused), HTTP/2, HTTP/3. HTTP/1.1 is the rest of the
+    /// responses, so the most common version costs no extra atomic add.
+    versions: [AtomicU64; 4],
 }
+
+/// Label values of [`HttpSnapshot::by_version`], in order.
+pub const VERSION_LABELS: [&str; 4] = ["1.0", "1.1", "2", "3"];
 
 struct Inner {
     shards: Box<[Shard]>,
     in_flight: AtomicI64,
+    /// Highest HTTP/1.1 count a snapshot reported: the count is derived from shards read one
+    /// after the other, and must not appear to go down when a response lands mid-read.
+    h11_seen: AtomicU64,
 }
 
 /// Request counters by status class and a latency histogram, cheap enough for every request
@@ -75,6 +87,7 @@ impl Default for HttpMetrics {
         HttpMetrics(Arc::new(Inner {
             shards: (0..SHARDS).map(|_| Shard::default()).collect(),
             in_flight: AtomicI64::new(0),
+            h11_seen: AtomicU64::new(0),
         }))
     }
 }
@@ -99,6 +112,10 @@ pub struct HttpSnapshot {
     pub sum: Duration,
     /// Requests dispatched whose response has not been sent yet.
     pub in_flight: i64,
+    /// Responses per HTTP version of the request (see [`VERSION_LABELS`]), counted by
+    /// [`HttpMetrics::middleware`]: on h2 and h3 this is the number of answered request streams.
+    /// Responses recorded with [`HttpMetrics::observe`] directly count as HTTP/1.1.
+    pub by_version: [u64; 4],
 }
 
 impl HttpSnapshot {
@@ -143,7 +160,16 @@ impl HttpMetrics {
 
     /// Records one response.
     pub fn observe(&self, status: u16, latency: Duration) {
+        self.record(status, latency, None);
+    }
+
+    /// Records one response, and its request's version (index into [`VERSION_LABELS`]).
+    #[inline]
+    fn record(&self, status: u16, latency: Duration, version: Option<usize>) {
         let s = &self.0.shards[shard_index()];
+        if let Some(v) = version.filter(|&v| v != 1) {
+            s.versions[v].fetch_add(1, Ordering::Relaxed);
+        }
         let class = match status {
             100..=599 => (status / 100 - 1) as usize,
             _ => 5,
@@ -159,7 +185,7 @@ impl HttpMetrics {
             .fetch_add(latency.as_nanos() as u64, Ordering::Relaxed);
     }
 
-    /// Middleware that records every response: status class and the time from dispatch until
+    /// Middleware that records every response: status class, request version and the time from dispatch until
     /// the response is handed to the connection (detached responses included). Streamed
     /// responses and upgrades are not counted.
     pub fn middleware(&self) -> impl Middleware {
@@ -170,8 +196,14 @@ impl HttpMetrics {
                 m: m.clone(),
                 t0: Instant::now(),
             };
-            ctx.add_response_filter(move |resp: &mut Response, _| {
-                p.m.observe(resp.status, p.t0.elapsed());
+            ctx.add_response_filter(move |resp: &mut Response, req: &Request| {
+                let v = match req.version {
+                    Version::Http10 => 0,
+                    Version::Http11 => 1,
+                    Version::Http2 => 2,
+                    Version::Http3 => 3,
+                };
+                p.m.record(resp.status, p.t0.elapsed(), Some(v));
             });
             next.call(ctx);
         }
@@ -191,58 +223,80 @@ impl HttpMetrics {
             for (o, c) in out.buckets.iter_mut().zip(&s.buckets) {
                 *o += c.load(Ordering::Relaxed);
             }
+            for (o, c) in out.by_version.iter_mut().zip(&s.versions) {
+                *o += c.load(Ordering::Relaxed);
+            }
             sum += s.sum_ns.load(Ordering::Relaxed);
         }
         out.sum = Duration::from_nanos(sum);
+        let others = out.by_version[0] + out.by_version[2] + out.by_version[3];
+        let h11 = out.count().saturating_sub(others);
+        out.by_version[1] = self.0.h11_seen.fetch_max(h11, Ordering::Relaxed).max(h11);
         out
     }
 
     /// Appends the Prometheus rendering (`only_http_requests_total{class}`,
-    /// `only_http_request_duration_seconds` histogram, `only_http_requests_in_flight`).
+    /// `only_http_request_duration_seconds` histogram, `only_http_requests_in_flight`,
+    /// `only_http_requests_by_version_total{version}`); the same series [`Collector::collect`]
+    /// reports.
     pub fn write_prometheus(&self, out: &mut String) {
+        let mut f = Families::new();
+        self.collect(&mut f);
+        f.write_prometheus(out);
+    }
+}
+
+impl Collector for HttpMetrics {
+    fn collect(&self, out: &mut Families) {
         let s = self.snapshot();
-        prometheus_header(
-            out,
-            "only_http_requests_total",
-            "counter",
-            "HTTP responses by status class.",
-        );
         for (i, class) in ["1xx", "2xx", "3xx", "4xx", "5xx", "other"]
             .iter()
             .enumerate()
         {
-            let _ = writeln!(
-                out,
-                "only_http_requests_total{{class=\"{class}\"}} {}",
-                s.by_class[i]
+            out.counter(
+                "only_http_requests_total",
+                "HTTP responses by status class.",
+                &[("class", class)],
+                s.by_class[i] as f64,
             );
         }
-        let name = "only_http_request_duration_seconds";
-        prometheus_header(out, name, "histogram", "Time from dispatch to response.");
-        let mut cum = 0;
-        for (i, ub) in LATENCY_BUCKETS.iter().enumerate() {
-            cum += s.buckets[i];
-            let _ = writeln!(out, "{name}_bucket{{le=\"{ub}\"}} {cum}");
-        }
-        cum += s.buckets[NB - 1];
-        let _ = writeln!(out, "{name}_bucket{{le=\"+Inf\"}} {cum}");
-        let _ = writeln!(out, "{name}_sum {}", s.sum.as_secs_f64());
-        let _ = writeln!(out, "{name}_count {cum}");
-        prometheus_header(
-            out,
-            "only_http_requests_in_flight",
-            "gauge",
-            "Requests dispatched but not answered yet.",
+        let h = HistogramSnapshot::new(
+            LATENCY_BUCKETS.to_vec(),
+            s.buckets.to_vec(),
+            s.sum.as_secs_f64(),
         );
-        let _ = writeln!(out, "only_http_requests_in_flight {}", s.in_flight);
+        if let Some(h) = h {
+            out.histogram(
+                "only_http_request_duration_seconds",
+                "Time from dispatch to response.",
+                &[],
+                &h,
+            );
+        }
+        out.gauge(
+            "only_http_requests_in_flight",
+            "Requests dispatched but not answered yet.",
+            &[],
+            s.in_flight as f64,
+        );
+        for (i, v) in VERSION_LABELS.iter().enumerate() {
+            out.counter(
+                "only_http_requests_by_version_total",
+                "HTTP responses by request protocol version (h2/h3: request streams).",
+                &[("version", v)],
+                s.by_version[i] as f64,
+            );
+        }
     }
 }
 
-/// A service answering with the engine's metrics (and `http`'s, if given) in the Prometheus text
-/// format. Mount it on a route such as `/metrics`.
+/// A service answering with the engine's metrics, the collectors registered with
+/// [`Telemetry::register_collector`] and `http`'s metrics (if given; pass `None` when `http` is
+/// registered as a collector already) in the Prometheus text format. Mount it on a route such as
+/// `/metrics`.
 pub fn metrics_handler(tel: Arc<Telemetry>, http: Option<HttpMetrics>) -> impl Service {
     move |ctx: &mut Context| {
-        let mut body = tel.metrics().to_prometheus();
+        let mut body = tel.render_prometheus();
         if let Some(h) = &http {
             h.write_prometheus(&mut body);
         }

@@ -30,6 +30,7 @@ pub use only::UdpStats
 pub use only::ebpf
 pub use only::fn_acceptor
 pub use only::log
+pub use only::metrics
 pub use only::telemetry
 pub use only::tls
 #[non_exhaustive] pub enum only::Accel

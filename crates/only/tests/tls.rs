@@ -408,3 +408,54 @@ fn failed_handshakes_are_counted_and_tls_shows_in_the_connection_table() {
     drop(good);
     stop(&e);
 }
+
+/// ADR-015: `Tls::stats` counts completed handshakes and exports them as a collector.
+#[test]
+fn tls_stats_count_completed_handshakes() {
+    let p = pki();
+    let tls = Tls::server(server_cfg(&p, &[]), fn_acceptor(|_c: &Conn<Echo>| Echo));
+    let stats = tls.stats();
+    let e = Engine::builder()
+        .config(quick())
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(2)
+                .serve(tls),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    e.telemetry()
+        .register_collector(Arc::new(stats.clone()), &[]);
+    let addr = e.local_addrs()[0];
+    let cfg = client_cfg(&p.cert, &[]);
+    for _ in 0..2 {
+        let mut c = tls_client(addr, cfg.clone());
+        c.write_all(b"hi").unwrap();
+        let mut b = [0u8; 2];
+        c.read_exact(&mut b).unwrap();
+    }
+    // A failed handshake is the engine's counter, not this one.
+    let mut bad = TcpStream::connect(addr).unwrap();
+    bad.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    bad.write_all(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut sink = Vec::new();
+    let _ = bad.read_to_end(&mut sink);
+
+    let n = stats.counts();
+    assert_eq!(n.tls13, 2, "{n:?}");
+    assert_eq!(n.tls12, 0);
+    assert!(n.resumed <= 1);
+    let text = e.telemetry().render_prometheus();
+    assert!(
+        text.contains("only_tls_handshakes_total{side=\"server\",version=\"1.3\"} 2\n"),
+        "{text}"
+    );
+    assert!(text.contains(&format!(
+        "only_tls_resumed_total{{side=\"server\"}} {}\n",
+        n.resumed
+    )));
+    assert_eq!(e.metrics().total.handshake_failures, 1);
+    stop(&e);
+}

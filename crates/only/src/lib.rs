@@ -49,7 +49,7 @@ pub use only_core::{
     Acceptor, AnyAcceptor, Config, Conn, ConnInfo, Error, FnAcceptor, Handler, Live, LoopCounters,
     LoopMeta, LoopMetrics, Metrics, Part, PoolConfig, PoolStats, ReloadReport, ResponseSlot,
     ResponseStream, Result, SharedBuf, SlowCallback, SlowHook, SlowRecord, Telemetry, Transport,
-    UdpBinding, UdpStats, fn_acceptor, telemetry,
+    UdpBinding, UdpStats, fn_acceptor, metrics, telemetry,
 };
 #[doc(hidden)]
 pub use only_core::{DynAcceptor, DynHandler};
