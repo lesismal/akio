@@ -28,6 +28,8 @@ experimental-ktls = ["dep:only-sys"]
 only-core = { workspace = true }
 only-crypto = { workspace = true }
 only-x509 = { workspace = true }
+# RFC 8879 certificate compression (zlib).
+only-deflate = { workspace = true }
 only-log = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

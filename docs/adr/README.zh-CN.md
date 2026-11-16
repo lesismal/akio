@@ -10,3 +10,4 @@
 - [ADR-004：Reactor 抽象与每 listener 后端](004-reactor-abstraction.zh-CN.md)
 - [ADR-005：依赖策略](005-dependency-policy.zh-CN.md)
 - [ADR-006：eBPF 的定位](006-ebpf-role.zh-CN.md)
+- [ADR-008：TLS record_size_limit、证书压缩与 OCSP stapling](008-tls-extensions.zh-CN.md)

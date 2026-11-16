@@ -10,3 +10,4 @@ Status of all records: **accepted** (2026-11-13).
 - [ADR-004: Reactor abstraction and per-listener backends](004-reactor-abstraction.md)
 - [ADR-005: Dependency policy](005-dependency-policy.md)
 - [ADR-006: Role of eBPF](006-ebpf-role.md)
+- [ADR-008: TLS record_size_limit, certificate compression and OCSP stapling](008-tls-extensions.md)

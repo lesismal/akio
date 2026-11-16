@@ -667,6 +667,7 @@ version = "1.0.0-rc.1"
 dependencies = [
  "only-core",
  "only-crypto",
+ "only-deflate",
  "only-log",
  "only-x509",
 ]

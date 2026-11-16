@@ -1,14 +1,20 @@
 // Go crypto/tls peer for only-tls interop runs (tools/interop/tls/run.sh).
 //
 //	tlsgo server -addr A -cert C -key K [-ca CA -require] [-tls12|-tls13] [-alpn h2,..] [-count N]
+//	             [-ocsp resp.der]
 //	tlsgo client -addr A -name N [-ca CA|-insecure] [-cert C -key K] [-tls12|-tls13]
 //	             [-alpn ..] [-count N] [-expect-resume] [-suite 0xc02b] [-curve 23]
+//	             [-expect-ocsp resp.der]
+//
+// -ocsp staples a DER OCSP response; -expect-ocsp checks the server stapled exactly that one
+// (Go's client always asks for one).
 //
 // The server echoes; the client writes a line, checks the echo and prints what was negotiated.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -66,6 +72,8 @@ func main() {
 	suite := fs.String("suite", "", "TLS 1.2 cipher suite id")
 	curve := fs.Int("curve", 0, "only this curve id")
 	keyUpdate := fs.Bool("key-update", false, "client: send many records")
+	ocspF := fs.String("ocsp", "", "server: DER OCSP response to staple")
+	expectOCSP := fs.String("expect-ocsp", "", "client: the OCSP response the server must staple")
 	must(fs.Parse(os.Args[2:]))
 
 	cfg := &tls.Config{ServerName: *name}
@@ -89,6 +97,10 @@ func main() {
 	if *certF != "" {
 		c, err := tls.LoadX509KeyPair(*certF, *keyF)
 		must(err)
+		if *ocspF != "" {
+			c.OCSPStaple, err = os.ReadFile(*ocspF)
+			must(err)
+		}
 		cfg.Certificates = []tls.Certificate{c}
 	}
 	switch mode {
@@ -133,6 +145,14 @@ func main() {
 			if *expectResume && i > 0 && !st.DidResume {
 				fmt.Println("expected a resumed session")
 				os.Exit(2)
+			}
+			if *expectOCSP != "" && !st.DidResume {
+				want, err := os.ReadFile(*expectOCSP)
+				must(err)
+				if !bytes.Equal(st.OCSPResponse, want) {
+					fmt.Printf("expected the stapled OCSP response of %s, got %d bytes\n", *expectOCSP, len(st.OCSPResponse))
+					os.Exit(2)
+				}
 			}
 			msgs := 1
 			if *keyUpdate {

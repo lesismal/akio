@@ -12,6 +12,7 @@ use only_crypto::pkey;
 
 use crate::proto::common::{CertKey, ClientSettings, ServerSettings};
 use crate::proto::kx::{DEFAULT_GROUPS, Group};
+use crate::proto::msgs::{MAX_RECORD_LIMIT13, MIN_RECORD_LIMIT};
 use crate::proto::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
 use crate::proto::suites::{self, Suite};
 
@@ -241,6 +242,59 @@ fn suites_from_ids(ids: &[u16]) -> Result<Vec<&'static Suite>, Error> {
         .collect()
 }
 
+/// Checks a record_size_limit value (RFC 8449): 64 to 16385 bytes.
+fn check_record_limit(limit: u16) -> Result<u16, Error> {
+    if (MIN_RECORD_LIMIT..=MAX_RECORD_LIMIT13).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err(Error::new(format!(
+            "record size limit {limit} outside 64..=16385"
+        )))
+    }
+}
+
+/// A light check that `der` looks like a successful OCSPResponse (RFC 6960 section 4.2.1):
+/// `SEQUENCE { responseStatus ENUMERATED successful(0), responseBytes [0] ... }` spanning the
+/// whole input. The response itself (signature, validity, certificate) is not verified.
+fn check_ocsp_response(der: &[u8]) -> Result<(), Error> {
+    // One DER length at `b[*i..]`.
+    fn len(b: &[u8], i: &mut usize) -> Option<usize> {
+        let first = *b.get(*i)?;
+        *i += 1;
+        if first < 0x80 {
+            return Some(usize::from(first));
+        }
+        let n = usize::from(first & 0x7f);
+        if n == 0 || n > 3 {
+            return None;
+        }
+        let mut v = 0usize;
+        for _ in 0..n {
+            v = (v << 8) | usize::from(*b.get(*i)?);
+            *i += 1;
+        }
+        Some(v)
+    }
+    let ok = (|| {
+        let mut i = 0;
+        if *der.first()? != 0x30 {
+            return None;
+        }
+        i += 1;
+        let l = len(der, &mut i)?;
+        if i + l != der.len() {
+            return None;
+        }
+        // responseStatus ENUMERATED (successful = 0), then responseBytes [0].
+        if der.get(i..i + 3)? != [0x0a, 0x01, 0x00] {
+            return None;
+        }
+        i += 3;
+        (*der.get(i)? == 0xa0).then_some(())
+    })();
+    ok.ok_or_else(|| Error::new("not a successful DER OCSP response"))
+}
+
 fn groups_from_ids(ids: &[u16]) -> Result<Vec<Group>, Error> {
     ids.iter()
         .map(|id| Group::from_id(*id).ok_or_else(|| Error::new(format!("unknown group {id:#06x}"))))
@@ -333,6 +387,10 @@ impl ServerConfig {
             tickets13: 2,
             max_early_data: 0,
             anti_replay: (ANTI_REPLAY_WINDOW_MS, ANTI_REPLAY_ENTRIES),
+            record_limit: MAX_RECORD_LIMIT13,
+            cert_compression: true,
+            ocsp: None,
+            sni_ocsp: Vec::new(),
         }
     }
 
@@ -366,6 +424,10 @@ pub struct ServerConfigBuilder {
     tickets13: usize,
     max_early_data: u32,
     anti_replay: (u64, usize),
+    record_limit: u16,
+    cert_compression: bool,
+    ocsp: Option<Vec<u8>>,
+    sni_ocsp: Vec<(String, Vec<u8>)>,
 }
 
 /// The 0-RTT freshness window (RFC 8446 section 8.3): a ClientHello with early data must
@@ -387,6 +449,9 @@ impl fmt::Debug for ServerConfigBuilder {
             .field("tickets", &self.tickets)
             .field("tls13_only", &self.tls13_only)
             .field("max_early_data", &self.max_early_data)
+            .field("record_size_limit", &self.record_limit)
+            .field("certificate_compression", &self.cert_compression)
+            .field("ocsp_response", &self.ocsp.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -465,6 +530,49 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// The largest record this server accepts, as the record_size_limit extension (RFC 8449)
+    /// counts it: 64 to 16385 bytes (default 16385, no limit beyond the protocol's; in TLS 1.3
+    /// the value includes the one-byte content type, and TLS 1.2 caps it at 16384). Sent to
+    /// clients that send theirs; their limit is honoured either way, whatever this value.
+    /// Constrained peers (small devices) use it to bound their receive buffers. Not used over
+    /// QUIC.
+    pub fn record_size_limit(mut self, limit: u16) -> Self {
+        self.record_limit = limit;
+        self
+    }
+
+    /// Sends the certificate chain compressed with zlib (RFC 8879, TLS 1.3) to clients that
+    /// accept it, and accepts compressed client certificates (default on). The compressed
+    /// chain is computed once per certificate and reused, so a handshake costs nothing more;
+    /// a chain that does not get smaller is sent as it is. zlib is the only algorithm (no
+    /// in-house brotli or zstd).
+    pub fn certificate_compression(mut self, yes: bool) -> Self {
+        self.cert_compression = yes;
+        self
+    }
+
+    /// Staples `der`, an OCSP response (RFC 6960) for the default chain's leaf, for clients
+    /// asking for one (status_request: in the leaf's CertificateEntry in TLS 1.3, in a
+    /// CertificateStatus message in TLS 1.2). It is only checked to be a successful DER
+    /// OCSPResponse, not verified: fetching and refreshing it before it expires is up to the
+    /// caller (build a new configuration with a fresh one).
+    pub fn ocsp_response(mut self, der: impl Into<Vec<u8>>) -> Self {
+        self.ocsp = Some(der.into());
+        self
+    }
+
+    /// Staples `der` for the chain served to clients asking for `server_name` (see
+    /// [`sni_cert`](Self::sni_cert) and [`ocsp_response`](Self::ocsp_response)).
+    pub fn sni_ocsp_response(
+        mut self,
+        server_name: impl Into<String>,
+        der: impl Into<Vec<u8>>,
+    ) -> Self {
+        self.sni_ocsp
+            .push((server_name.into().to_ascii_lowercase(), der.into()));
+        self
+    }
+
     /// Tests: the 0-RTT anti-replay freshness window and record size.
     #[doc(hidden)]
     pub fn __anti_replay(mut self, window: std::time::Duration, entries: usize) -> Self {
@@ -522,22 +630,35 @@ impl ServerConfigBuilder {
             if pk != k.public_key() {
                 return Err(Error::new("private key does not match the certificate"));
             }
-            Ok(CertKey {
-                chain: chain.iter().map(|c| c.0.clone()).collect(),
-                key: k,
-            })
+            Ok(CertKey::new(chain.iter().map(|c| c.0.clone()).collect(), k))
         };
+        let record_limit = check_record_limit(self.record_limit)?;
+        if let Some(r) = &self.ocsp {
+            check_ocsp_response(r)?;
+        }
         if self.client_auth.as_ref().is_some_and(|(r, _)| r.is_empty()) {
             return Err(Error::new("client authentication roots: no roots"));
         }
-        let default = certified(&self.chain, &self.key)?;
+        let mut default = certified(&self.chain, &self.key)?;
+        default.ocsp.clone_from(&self.ocsp);
         let mut by_name = HashMap::new();
         let mut sni_parts = Vec::new();
+        for (name, _) in &self.sni_ocsp {
+            if !self.sni.iter().any(|(n, _, _)| n == name) {
+                return Err(Error::new(format!(
+                    "OCSP response for {name}: no sni_cert for that name"
+                )));
+            }
+        }
         for (name, chain, key) in &self.sni {
             if chain.is_empty() {
                 return Err(Error::new("empty certificate chain"));
             }
-            let ck = certified(chain, key)?;
+            let mut ck = certified(chain, key)?;
+            if let Some((_, r)) = self.sni_ocsp.iter().rev().find(|(n, _)| n == name) {
+                check_ocsp_response(r)?;
+                ck.ocsp = Some(r.clone());
+            }
             sni_parts.push((name.clone(), ck.chain.clone(), ck.key.to_pkcs8_der()));
             by_name.insert(name.clone(), Arc::new(ck));
         }
@@ -592,6 +713,8 @@ impl ServerConfigBuilder {
             force_hrr: self.force_hrr,
             max_early_data: self.max_early_data,
             anti_replay: AntiReplay::new(self.anti_replay.0, self.anti_replay.1),
+            record_limit,
+            cert_compression: self.cert_compression,
         };
         Ok(ServerConfig {
             inner: Arc::new(settings),
@@ -636,6 +759,9 @@ impl ClientConfig {
             suites: None,
             groups: None,
             early_data: false,
+            record_limit: MAX_RECORD_LIMIT13,
+            cert_compression: false,
+            ocsp: false,
         }
     }
 
@@ -665,6 +791,9 @@ pub struct ClientConfigBuilder {
     suites: Option<Vec<u16>>,
     groups: Option<Vec<u16>>,
     early_data: bool,
+    record_limit: u16,
+    cert_compression: bool,
+    ocsp: bool,
 }
 
 impl fmt::Debug for ClientConfigBuilder {
@@ -678,6 +807,9 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("resumption", &self.resumption)
             .field("tls13_only", &self.tls13_only)
             .field("early_data", &self.early_data)
+            .field("record_size_limit", &self.record_limit)
+            .field("certificate_compression", &self.cert_compression)
+            .field("ocsp_stapling", &self.ocsp)
             .finish_non_exhaustive()
     }
 }
@@ -738,6 +870,34 @@ impl ClientConfigBuilder {
         self
     }
 
+    /// The largest record this client accepts, sent as the record_size_limit extension
+    /// (RFC 8449): 64 to 16385 bytes (default 16385, no limit beyond the protocol's; in TLS 1.3
+    /// the value includes the one-byte content type). It takes effect when the server answers
+    /// with its own limit, which this client then honours when sending. Not used over QUIC.
+    pub fn record_size_limit(mut self, limit: u16) -> Self {
+        self.record_limit = limit;
+        self
+    }
+
+    /// Accepts certificate chains compressed with zlib (RFC 8879, TLS 1.3), and compresses the
+    /// client certificate for servers that accept it (default off: inflating a received chain
+    /// costs about 1–2 µs per full handshake, a percent of an in-memory one, for a few hundred
+    /// bytes to a kilobyte or two less on the wire). zlib is the only algorithm offered (no
+    /// in-house brotli or zstd).
+    pub fn certificate_compression(mut self, yes: bool) -> Self {
+        self.cert_compression = yes;
+        self
+    }
+
+    /// Asks the server for a stapled OCSP response (status_request, RFC 6066 section 8 /
+    /// RFC 8446 section 4.4.2.1; default off). What the server sends is available as
+    /// [`TlsInfo::ocsp_response`](crate::TlsInfo) (DER); **it is not verified** (no OCSP in
+    /// `only-x509` yet): check it yourself if revocation matters.
+    pub fn ocsp_stapling(mut self, yes: bool) -> Self {
+        self.ocsp = yes;
+        self
+    }
+
     /// Accepts **any** server certificate, without verifying it: for tests and interop runs
     /// against self-signed servers only, never in production.
     pub fn insecure_skip_verify(mut self) -> Self {
@@ -774,12 +934,11 @@ impl ClientConfigBuilder {
                 if chain.is_empty() {
                     return Err(Error::new("empty client certificate chain"));
                 }
-                Some(Arc::new(CertKey {
-                    chain: chain.iter().map(|c| c.0.clone()).collect(),
-                    key: key
-                        .parse()
+                Some(Arc::new(CertKey::new(
+                    chain.iter().map(|c| c.0.clone()).collect(),
+                    key.parse()
                         .map_err(|e| Error::wrap("client certificate", e))?,
-                }))
+                )))
             }
         };
         let mut suites = match &self.suites {
@@ -825,6 +984,9 @@ impl ClientConfigBuilder {
             suites,
             groups,
             early_data: self.early_data,
+            record_limit: check_record_limit(self.record_limit)?,
+            cert_compression: self.cert_compression,
+            ocsp: self.ocsp,
         };
         Ok(ClientConfig {
             inner: Arc::new(settings),

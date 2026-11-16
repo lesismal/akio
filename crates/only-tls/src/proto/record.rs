@@ -96,6 +96,11 @@ pub(crate) struct RecordLayer {
     pub(crate) first_write: bool,
     /// Bytes of rejected 0-RTT data still allowed to be skipped.
     pub(crate) skip_early: usize,
+    /// The record_size_limit we advertised (RFC 8449), enforced on protected records read; 0
+    /// for none. TLS 1.3 counts the inner plaintext (content, type and padding).
+    pub(crate) read_limit: u16,
+    /// The record_size_limit the peer advertised, for protected records written; 0 for none.
+    pub(crate) write_limit: u16,
 }
 
 /// A record decoded in place: content type and the plaintext range within the buffer.
@@ -115,6 +120,26 @@ impl RecordLayer {
             write: None,
             first_write: true,
             skip_early: 0,
+            read_limit: 0,
+            write_limit: 0,
+        }
+    }
+
+    /// The largest content of one record of type `typ` written now: 16 KiB, or less under the
+    /// peer's record_size_limit for protected records (TLS 1.3: one byte of it is the inner
+    /// content type).
+    pub(crate) fn max_fragment(&self, typ: u8) -> usize {
+        let limit = usize::from(self.write_limit);
+        match &self.write {
+            Some(c) if limit > 0 && typ != CT_CHANGE_CIPHER_SPEC => {
+                let room = if c.kind == Kind::Tls13 {
+                    limit - 1
+                } else {
+                    limit
+                };
+                room.min(MAX_PLAINTEXT)
+            }
+            _ => MAX_PLAINTEXT,
         }
     }
 
@@ -272,6 +297,9 @@ impl RecordLayer {
                         fatal(Alert::RecordOverflow, "bad protected record length")
                     };
                 }
+                if self.read_limit > 0 && len - TAG_LEN > usize::from(self.read_limit) {
+                    return fatal(Alert::RecordOverflow, "record over record_size_limit");
+                }
                 let nonce = c.xor_nonce();
                 let Ok(ct) = body.open(&c.aead, &nonce, head) else {
                     if self.skip_early > 0 {
@@ -303,6 +331,9 @@ impl RecordLayer {
                 let plen = len - need - TAG_LEN;
                 if plen > MAX_PLAINTEXT {
                     return fatal(Alert::RecordOverflow, "plaintext too long");
+                }
+                if self.read_limit > 0 && plen > usize::from(self.read_limit) {
+                    return fatal(Alert::RecordOverflow, "record over record_size_limit");
                 }
                 let nonce = if need > 0 {
                     let mut n = c.iv;
@@ -339,16 +370,18 @@ impl RecordLayer {
         })
     }
 
-    /// Appends `data` as records of type `typ` (fragmented to 16 KiB) to `out`.
+    /// Appends `data` as records of type `typ` (fragmented to 16 KiB, or to the peer's
+    /// record_size_limit) to `out`.
     pub(crate) fn seal(&mut self, typ: u8, data: &[u8], out: &mut Vec<u8>) -> Result<(), Fatal> {
         if data.is_empty() {
             return self.seal_one(typ, data, out);
         }
+        let frag = self.max_fragment(typ);
         // Room for every record at once: growing `out` record by record would copy what was
         // already sealed.
-        let records = data.len().div_ceil(MAX_PLAINTEXT);
+        let records = data.len().div_ceil(frag);
         out.reserve(data.len() + records * (HEADER_LEN + 8 + 1 + TAG_LEN));
-        for chunk in data.chunks(MAX_PLAINTEXT) {
+        for chunk in data.chunks(frag) {
             self.seal_one(typ, chunk, out)?;
         }
         Ok(())
@@ -603,6 +636,50 @@ mod tests {
         assert_eq!(r.open(&mut hs).unwrap_err().alert, Alert::UnexpectedMessage);
     }
 
+    /// record_size_limit (RFC 8449): records written are cut to the peer's limit (TLS 1.3: the
+    /// content type counts), protected records read over ours are record_overflow, and
+    /// unprotected records are not limited.
+    #[test]
+    fn record_size_limits() {
+        for s in suites::ALL {
+            let k = keys(s);
+            let (mut w, mut r) = pair(&k);
+            w.write_limit = 100;
+            r.read_limit = 100;
+            let room = if s.is_tls13() { 99 } else { 100 };
+            assert_eq!(w.max_fragment(CT_APPLICATION_DATA), room, "{}", s.name);
+            let data = vec![7u8; 1000];
+            let mut out = Vec::new();
+            w.seal(CT_APPLICATION_DATA, &data, &mut out).unwrap();
+            let mut pos = 0;
+            let mut got = Vec::new();
+            while pos < out.len() {
+                let n = RecordLayer::frame(&out[pos..]).unwrap().unwrap();
+                let o = r.open(&mut out[pos..pos + n]).unwrap();
+                assert!(o.end - o.start <= room);
+                got.extend_from_slice(&out[pos + o.start..pos + o.end]);
+                pos += n;
+            }
+            assert_eq!(got, data);
+            assert_eq!(w.write_seq(), 1000u64.div_ceil(room as u64));
+            // A writer ignoring the limit.
+            let (mut w2, mut r2) = pair(&k);
+            r2.read_limit = 100;
+            let mut out = Vec::new();
+            w2.seal(CT_APPLICATION_DATA, &[1; 101], &mut out).unwrap();
+            assert_eq!(r2.open(&mut out).unwrap_err().alert, Alert::RecordOverflow);
+        }
+        // Unprotected records are not limited.
+        let mut w = RecordLayer::new();
+        w.write_limit = 64;
+        assert_eq!(w.max_fragment(CT_HANDSHAKE), MAX_PLAINTEXT);
+        let mut r = RecordLayer::new();
+        r.read_limit = 64;
+        let mut rec = vec![22, 3, 3, 0, 200];
+        rec.resize(205, 1);
+        assert!(r.open(&mut rec).is_ok());
+    }
+
     #[test]
     fn skips_rejected_early_data() {
         let mut r = RecordLayer::new();
@@ -626,6 +703,8 @@ mod tests {
                 write: None,
                 first_write: false,
                 skip_early: 0,
+                read_limit: 0,
+                write_limit: 0,
             }
         }
     }

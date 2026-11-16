@@ -10,6 +10,41 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TLS record_size_limit, certificate compression and OCSP stapling (only-tls)
+
+Additive configuration (ADR-008, docs/adr/008-tls-extensions.md):
+
+- **record_size_limit** (RFC 8449, TLS 1.3 and 1.2): `ServerConfigBuilder::record_size_limit` /
+  `ClientConfigBuilder::record_size_limit` (64 to 16385, default 16385). The client always sends
+  its value, the server answers with its own when the client sent one; each side then cuts the
+  protected records it writes to the peer's limit and refuses records over its own
+  (`record_overflow`). Early data goes under the limit of the connection that issued the ticket.
+  Not used over QUIC. Kernel TLS offload (experimental) is refused under a peer limit below
+  16 KiB.
+- **Certificate compression** (RFC 8879, TLS 1.3, zlib through only-deflate; no in-house
+  brotli/zstd, so only zlib is offered): `certificate_compression(bool)` on both builders, **on
+  by default on the server** (chains compressed once and reused, no cost per handshake) and
+  **off by default on the client** (inflating a received chain costs about 1–2 µs, ~1% of an
+  in-memory handshake). Client certificates are compressed when the server's
+  CertificateRequest offers it. Received messages are inflated into
+  at most 128 KiB and must match the announced length.
+- **OCSP stapling**: `ServerConfigBuilder::ocsp_response(der)` / `sni_ocsp_response(name, der)`
+  staple a DER response for clients that ask (TLS 1.3 CertificateEntry, TLS 1.2
+  CertificateStatus; not on resumption); `ClientConfigBuilder::ocsp_stapling(true)` asks, and
+  the new `TlsInfo::ocsp_response` holds the response. **Not validated** (no OCSP in only-x509
+  yet); the server only checks the configured value is a successful `OCSPResponse` in shape.
+- ClientHellos now carry record_size_limit (6 bytes). `only-tls` depends on `only-deflate`.
+- Fixed: a TLS 1.3 KeyUpdate of the wrong length is `decode_error` (was `illegal_parameter`;
+  tlsfuzzer's "large KeyUpdate message" probe failed at random).
+- Tests: in-memory matrix with the extensions (both versions, key types, limits down to 64
+  bytes both ways, compression either side off, OCSP with SNI and resumption), negative cases,
+  fuzz corpora; interop (`tools/interop/tls/run.sh`) with OpenSSL (OCSP verified by s_client,
+  zlib compression both ways with Debian's OpenSSL 3.5, max_fragment_length ignored), Go (OCSP
+  both ways) and GnuTLS (record_size_limit and OCSP both ways); tlsfuzzer
+  `test-record-size-limit.py`, `test-tls13-certificate-compression.py` and
+  `test-tls13-client-certificate-compression.py`. Handshakes unchanged (same-run A/B,
+  docs/BENCHMARKS.md).
+
 ### Changed: faster ChaCha20-Poly1305 for short messages on AVX-512
 
 On x86_64 with AVX-512, only-crypto's ChaCha20 runs four blocks with one row of each block per

@@ -13,6 +13,7 @@ use super::common::{
     Action, CertKey, ClientSettings, EarlyData, Keys, Level, Schedule, Transcript, finished_mac,
     leaf_key, next_secret, now_millis, now_secs, random, verify_chain,
 };
+use super::conn::MAX_HANDSHAKE;
 use super::kx::{Group, KeyShare};
 use super::msgs::*;
 use super::session::{Resume12, Session, Ticket13};
@@ -84,6 +85,17 @@ pub(crate) struct Client {
     pub(crate) early: EarlyData,
     /// Over TCP, the handshake write keys wait until EndOfEarlyData is sent.
     deferred_write: Option<Keys>,
+    /// The OCSP response stapled to the server's certificate (when asked for).
+    pub(crate) ocsp: Option<Vec<u8>>,
+    /// The server's certificate came compressed (RFC 8879).
+    pub(crate) cert_compressed: bool,
+    /// The server's CertificateRequest accepts zlib-compressed certificates (RFC 8879).
+    peer_cert_comp: bool,
+    /// TLS 1.2: the ServerHello announced a CertificateStatus.
+    status12: bool,
+    /// The record_size_limit the server advertised (0: none), kept with tickets for the early
+    /// data of a later connection.
+    peer_record_limit: u16,
 }
 
 impl Client {
@@ -181,6 +193,11 @@ impl Client {
                 EarlyData::NotAttempted
             },
             deferred_write: None,
+            ocsp: None,
+            cert_compressed: false,
+            peer_cert_comp: false,
+            status12: false,
+            peer_record_limit: 0,
             cfg,
         })
     }
@@ -198,6 +215,16 @@ impl Client {
                 out.push(Action::Ccs);
             }
             out.push(Action::EarlyOffered(max));
+            // Early data goes under the record_size_limit of the connection that issued the
+            // ticket (RFC 8449 section 4: the limits of the handshake that made the keys).
+            if let Some(l) = self
+                .psk13
+                .as_ref()
+                .map(|p| p.record_limit)
+                .filter(|l| *l > 0)
+            {
+                out.push(Action::RecordLimit { read: 0, write: l });
+            }
             out.push(Action::WriteKeys(Level::EarlyData, keys));
         }
         Ok(())
@@ -320,6 +347,21 @@ impl Client {
                 if !cfg.alpn.is_empty() {
                     e(EXT_ALPN, o, &|o| alpn_body(o, &cfg.alpn));
                 }
+                if cfg.ocsp {
+                    // status_request: OCSP, no responder IDs, no request extensions.
+                    e(EXT_STATUS_REQUEST, o, &|o| {
+                        put_u8(o, STATUS_OCSP);
+                        put_u16(o, 0);
+                        put_u16(o, 0);
+                    });
+                }
+                if self.quic.is_none() {
+                    // QUIC has no records (RFC 9001 section 4).
+                    e(EXT_RECORD_SIZE_LIMIT, o, &|o| put_u16(o, cfg.record_limit));
+                }
+                if cfg.tls13 && cfg.cert_compression {
+                    e(EXT_COMPRESS_CERTIFICATE, o, &|o| cert_comp_body(o));
+                }
                 if cfg.tls13 {
                     e(EXT_SUPPORTED_VERSIONS, o, &|o| {
                         put_vec(o, 1, |o| {
@@ -394,11 +436,26 @@ impl Client {
             }
             (St::WaitCertOrRequest, CERTIFICATE_REQUEST) => self.certificate_request13(msg, body),
             (St::WaitCertOrRequest | St::WaitCert, CERTIFICATE) => self.certificate13(msg, body),
+            (St::WaitCertOrRequest | St::WaitCert, COMPRESSED_CERTIFICATE)
+                if self.sent_exts.contains(&EXT_COMPRESS_CERTIFICATE) =>
+            {
+                let plain = decompress_certificate(body, MAX_HANDSHAKE)?;
+                self.cert_compressed = true;
+                self.certificate13(msg, &plain)
+            }
             (St::WaitCertVerify, CERTIFICATE_VERIFY) => self.certificate_verify13(msg, body),
             (St::WaitFinished, FINISHED) => self.finished13(msg, body, out),
             (St::Done13, NEW_SESSION_TICKET) => self.new_session_ticket13(body),
             (St::Done13, KEY_UPDATE) if self.quic.is_none() => self.key_update(body, out),
             (St::WaitCert12, CERTIFICATE) => self.certificate12(msg, body),
+            (St::WaitServerKx12, CERTIFICATE_STATUS) if self.status12 && self.ocsp.is_none() => {
+                let mut r = Reader::new(body);
+                let resp = parse_certificate_status(&mut r)?;
+                r.finish()?;
+                self.t.add(msg);
+                self.ocsp = Some(resp);
+                Ok(())
+            }
             (St::WaitServerKx12, SERVER_KEY_EXCHANGE) => self.server_key_exchange(msg, body),
             (St::WaitHelloDone12, CERTIFICATE_REQUEST) if self.cert_req.is_none() => {
                 self.certificate_request12(msg, body)
@@ -508,7 +565,7 @@ impl Client {
         self.t.set_hash(suite.hash);
         self.t.add(msg);
         if version == TLS12 {
-            return self.server_hello12(&sh, suite);
+            return self.server_hello12(&sh, suite, out);
         }
         if sh.session_id != self.session_id.as_slice() {
             return fatal(Alert::IllegalParameter, "session id not echoed");
@@ -654,8 +711,14 @@ impl Client {
         }
         let mut alpn = None;
         let mut early = false;
+        let mut record_limit = 0;
         for (t, d) in &exts {
             match *t {
+                EXT_RECORD_SIZE_LIMIT if self.sent_exts.contains(&EXT_RECORD_SIZE_LIMIT) => {
+                    let mut x = Reader::new(d);
+                    record_limit = parse_record_limit(&mut x)?;
+                    x.finish()?;
+                }
                 EXT_EARLY_DATA if self.early == EarlyData::Pending => {
                     if !d.is_empty() {
                         return fatal(Alert::DecodeError, "bad early_data answer");
@@ -681,6 +744,19 @@ impl Client {
             return fatal(Alert::MissingExtension, "no QUIC transport parameters");
         }
         self.check_alpn(alpn)?;
+        if self.quic.is_none() {
+            // Ours applies once the server answered with its own (RFC 8449 section 4); also
+            // drops a limit early data went under.
+            self.peer_record_limit = record_limit;
+            out.push(Action::RecordLimit {
+                read: if record_limit > 0 {
+                    self.cfg.record_limit
+                } else {
+                    0
+                },
+                write: record_limit,
+            });
+        }
         if early {
             // Accepted early data was for the ticket's protocol (RFC 8446 section 4.2.10).
             if self.psk13.as_ref().map(|p| &p.session.alpn) != Some(&self.alpn) {
@@ -709,11 +785,17 @@ impl Client {
         r.finish()?;
         let mut algs = None;
         for (t, d) in exts {
-            if t == EXT_SIGNATURE_ALGORITHMS {
-                let mut x = Reader::new(d);
-                algs = Some(x.u16_list()?);
-                x.finish()?;
+            let mut x = Reader::new(d);
+            match t {
+                EXT_SIGNATURE_ALGORITHMS => algs = Some(x.u16_list()?),
+                EXT_COMPRESS_CERTIFICATE => {
+                    self.peer_cert_comp = parse_cert_comp(&mut x)?.contains(&CERT_COMP_ZLIB);
+                }
+                _ => {
+                    x.rest();
+                }
             }
+            x.finish()?;
         }
         let Some(algs) = algs else {
             return fatal(
@@ -741,12 +823,17 @@ impl Client {
         Ok(())
     }
 
+    /// The server's Certificate (`body`; decompressed when `msg` is a CompressedCertificate,
+    /// which is what the transcript takes).
     fn certificate13(&mut self, msg: &[u8], body: &[u8]) -> Result<(), Fatal> {
-        let (ctx, chain) = parse_certificate13(body)?;
-        if !ctx.is_empty() {
+        let c = parse_certificate13(body)?;
+        if !c.context.is_empty() {
             return fatal(Alert::IllegalParameter, "server certificate with a context");
         }
-        self.peer_certificate(chain)?;
+        self.peer_certificate(c.chain)?;
+        if self.cfg.ocsp {
+            self.ocsp = c.ocsp;
+        }
         self.t.add(msg);
         self.st = St::WaitCertVerify;
         Ok(())
@@ -810,7 +897,11 @@ impl Client {
                 .and_then(|c| sig::choose(&c.key, &algs, true).map(|s| (c.clone(), s)));
             match chosen {
                 Some((ck, scheme)) => {
-                    let m = certificate13(&ctx, &ck.chain);
+                    let m = ck.certificate13(
+                        &ctx,
+                        false,
+                        self.cfg.cert_compression && self.peer_cert_comp,
+                    );
                     self.t.add(&m);
                     out.push(Action::Msg(Level::Handshake, m));
                     let content = sig::tls13_content(false, &self.t.hash());
@@ -898,6 +989,7 @@ impl Client {
                     early_ctx: self.peer_quic.clone().unwrap_or_default(),
                 },
                 received_ms: now_millis(),
+                record_limit: self.peer_record_limit,
             },
         );
         Ok(())
@@ -918,7 +1010,12 @@ impl Client {
 
     // ---- TLS 1.2 ----
 
-    fn server_hello12(&mut self, sh: &ServerHello<'_>, suite: &'static Suite) -> Result<(), Fatal> {
+    fn server_hello12(
+        &mut self,
+        sh: &ServerHello<'_>,
+        suite: &'static Suite,
+        out: &mut Vec<Action>,
+    ) -> Result<(), Fatal> {
         if let Some(ri) = sh.reneg_info {
             if !ri.is_empty() {
                 return fatal(Alert::HandshakeFailure, "non-empty renegotiation_info");
@@ -930,6 +1027,14 @@ impl Client {
             }
         }
         self.check_alpn(sh.alpn.clone())?;
+        if let Some(l) = sh.record_limit {
+            // Protected records only (after the CCS); solicited (check_exts).
+            out.push(Action::RecordLimit {
+                read: self.cfg.record_limit,
+                write: l,
+            });
+        }
+        self.status12 = sh.status_request;
         self.server_random = sh.random;
         self.ems = sh.ems;
         self.ticket_expected = sh.session_ticket;
@@ -1148,7 +1253,10 @@ pub(crate) fn key_update(
     let requested = match body {
         [0] => false,
         [1] => true,
-        _ => return fatal(Alert::IllegalParameter, "bad KeyUpdate"),
+        // RFC 8446 section 4.6.3: another value is illegal_parameter; another length does not
+        // decode.
+        [_] => return fatal(Alert::IllegalParameter, "bad KeyUpdate request_update"),
+        _ => return fatal(Alert::DecodeError, "KeyUpdate of the wrong length"),
     };
     *read = next_secret(suite.hash, read);
     out.push(Action::ReadKeys(

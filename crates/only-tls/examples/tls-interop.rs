@@ -3,14 +3,22 @@
 //!
 //! ```text
 //! tls-interop server <addr> --cert c.pem --key k.pem [--ca ca.pem [--require]] [--alpn h2,..]
-//!                           [--http-server]
+//!                           [--http-server [--http-body N]]
 //!                           [--tls12|--tls13] [--suites 0x1301,..] [--groups 0x1d,..]
 //!                           [--tickets] [--count N] [--hrr] [--early-data [--early-max N]]
+//!                           [--record-limit N] [--no-cert-comp] [--ocsp-file resp.der]
 //! tls-interop client <addr> <name> [--ca ca.pem | --insecure] [--cert c.pem --key k.pem]
 //!                           [--alpn ..] [--tls12|--tls13] [--suites ..] [--groups ..]
 //!                           [--count N] [--expect-resume] [--key-update] [--bytes N] [--http]
 //!                           [--early-data] [--expect-early accepted|rejected] [--no-reply]
+//!                           [--record-limit N] [--expect-record-limit N] [--no-cert-comp]
+//!                           [--ocsp] [--expect-ocsp resp.der]
 //! ```
+//!
+//! `--record-limit` sets the record_size_limit sent (RFC 8449), `--expect-record-limit` checks
+//! the peer's (0: none negotiated); `--no-cert-comp` turns certificate compression (RFC 8879)
+//! off; `--ocsp-file` staples a DER OCSP response, `--ocsp` asks for one and
+//! `--expect-ocsp` checks it is exactly that file.
 //!
 //! The server echoes what it reads (`--count` connections, then exits); the client sends a line,
 //! checks the echo and prints what was negotiated, one line per connection. With
@@ -53,11 +61,18 @@ struct Opts {
     bytes: usize,
     http: bool,
     http_server: bool,
+    http_body: usize,
     ktls: bool,
     ktls_required: bool,
     early_data: Option<u32>,
     expect_early: Option<String>,
     no_reply: bool,
+    record_limit: Option<u16>,
+    expect_record_limit: Option<u16>,
+    no_cert_comp: bool,
+    ocsp_file: Option<String>,
+    ocsp: bool,
+    expect_ocsp: Option<String>,
 }
 
 fn hex_list(s: &str) -> Vec<u16> {
@@ -87,11 +102,18 @@ fn parse() -> Opts {
         bytes: 0,
         http: false,
         http_server: false,
+        http_body: 3,
         ktls: false,
         ktls_required: false,
         early_data: None,
         expect_early: None,
         no_reply: false,
+        record_limit: None,
+        expect_record_limit: None,
+        no_cert_comp: false,
+        ocsp_file: None,
+        ocsp: false,
+        expect_ocsp: None,
     };
     match std::env::var("ONLY_INTEROP_KTLS").as_deref() {
         Ok("1") => o.ktls = true,
@@ -120,12 +142,21 @@ fn parse() -> Opts {
             "--bytes" => o.bytes = val().parse().expect("bytes"),
             "--http" => o.http = true,
             "--http-server" => o.http_server = true,
+            "--http-body" => o.http_body = val().parse().expect("http-body"),
             "--ktls" => o.ktls = true,
             // Server: accept up to 16384 bytes (or `--early-max`); client: send early.
             "--early-data" => o.early_data = Some(o.early_data.unwrap_or(16384)),
             "--early-max" => o.early_data = Some(val().parse().expect("early-max")),
             "--expect-early" => o.expect_early = Some(val()),
             "--no-reply" => o.no_reply = true,
+            "--record-limit" => o.record_limit = Some(val().parse().expect("record-limit")),
+            "--expect-record-limit" => {
+                o.expect_record_limit = Some(val().parse().expect("expect-record-limit"));
+            }
+            "--no-cert-comp" => o.no_cert_comp = true,
+            "--ocsp-file" => o.ocsp_file = Some(val()),
+            "--ocsp" => o.ocsp = true,
+            "--expect-ocsp" => (o.ocsp, o.expect_ocsp) = (true, Some(val())),
             _ => o.pos.push(x),
         }
     }
@@ -144,7 +175,7 @@ fn roots(p: &str) -> RootCerts {
 
 fn describe(c: &only_tls::__proto::Connection) -> String {
     format!(
-        "version={} suite={} alpn={} resumed={} sni={} peer_certs={} early={:?}/{}",
+        "version={} suite={} alpn={} resumed={} sni={} peer_certs={} early={:?}/{} rsl={}/{} ocsp={} cert_comp={}",
         c.version_name().unwrap_or("-"),
         c.suite().map_or("-", |s| s.name),
         c.alpn().map_or_else(
@@ -156,6 +187,10 @@ fn describe(c: &only_tls::__proto::Connection) -> String {
         c.peer_certificates().len(),
         c.early_data(),
         c.early_data_len(),
+        c.record_size_limits().0,
+        c.record_size_limits().1,
+        c.ocsp_response().map_or(0, <[u8]>::len),
+        c.peer_certificate_compressed(),
     )
 }
 
@@ -207,7 +242,14 @@ fn server(o: &Opts) {
         .tls13_only(o.tls13)
         .__tls12_only(o.tls12)
         .__force_hello_retry(o.hrr)
-        .early_data(o.early_data.unwrap_or(0));
+        .early_data(o.early_data.unwrap_or(0))
+        .certificate_compression(!o.no_cert_comp);
+    if let Some(l) = o.record_limit {
+        b = b.record_size_limit(l);
+    }
+    if let Some(f) = &o.ocsp_file {
+        b = b.ocsp_response(read(f));
+    }
     if let Some(ca) = &o.ca {
         b = if o.require {
             b.client_auth_required(roots(ca))
@@ -250,8 +292,13 @@ fn server(o: &Opts) {
                         .or_else(|| req.windows(2).position(|w| w == b"\n\n").map(|e| (e, 2)))
                     {
                         req.drain(..end + n);
-                        let r = b"HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nok\n";
-                        if s.write_all(r).is_err() {
+                        let mut body = vec![b'x'; o.http_body.saturating_sub(3)];
+                        body.extend_from_slice(&b"ok\n"[..o.http_body.min(3)]);
+                        let mut r =
+                            format!("HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n", body.len())
+                                .into_bytes();
+                        r.extend_from_slice(&body);
+                        if s.write_all(&r).is_err() {
                             break;
                         }
                     }
@@ -276,7 +323,12 @@ fn client(o: &Opts) {
         .alpn(&o.alpn)
         .tls13_only(o.tls13)
         .__tls12_only(o.tls12)
-        .early_data(o.early_data.is_some());
+        .early_data(o.early_data.is_some())
+        .certificate_compression(!o.no_cert_comp)
+        .ocsp_stapling(o.ocsp);
+    if let Some(l) = o.record_limit {
+        b = b.record_size_limit(l);
+    }
     if o.insecure {
         b = b.insecure_skip_verify();
     } else if let Some(ca) = &o.ca {
@@ -304,7 +356,12 @@ fn client(o: &Opts) {
         let pad = "x".repeat(o.bytes);
         let req = format!("GET / HTTP/1.0\r\nX-Pad: {pad}\r\n\r\n").into_bytes();
         let mut msg = format!("hello from only-tls {i}\n").into_bytes();
-        msg.resize(msg.len().max(o.bytes), b'x');
+        if msg.len() < o.bytes {
+            // Padded, still one line (line-based echo servers such as `gnutls-serv --echo`).
+            msg.truncate(msg.len() - 1);
+            msg.resize(o.bytes - 1, b'x');
+            msg.push(b'\n');
+        }
         if o.early_data.is_some() {
             // Everything before the handshake: early data if the ticket allows it.
             let first = if o.http { &req } else { &msg };
@@ -327,6 +384,19 @@ fn client(o: &Opts) {
             let got = format!("{:?}", s.conn().early_data()).to_ascii_lowercase();
             if got != *want || (want == "accepted" && s.conn().early_data_len() == 0) {
                 println!("expected early data {want}, got {got}");
+                failed = true;
+            }
+        }
+        if let Some(want) = o.expect_record_limit {
+            if s.conn().record_size_limits().1 != want {
+                println!("expected the peer's record_size_limit {want}");
+                failed = true;
+            }
+        }
+        if let Some(f) = &o.expect_ocsp {
+            // A resumed session has no certificate, so no OCSP response either.
+            if !s.conn().resumed() && s.conn().ocsp_response() != Some(&read(f)[..]) {
+                println!("expected the OCSP response of {f}");
                 failed = true;
             }
         }

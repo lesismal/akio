@@ -38,8 +38,9 @@ Run both with `cargo run -p only --example guide-tls`.
 ## What it negotiated
 
 `tls_info(&conn)` returns a `TlsInfo` with `handshaking`, `alpn`, `server_name` (SNI, server
-side), `version`, `early_data` and `early_data_len` (see [Early data](#early-data-0-rtt)), or
-`None` for a non-TLS connection.
+side), `version`, `early_data` and `early_data_len` (see [Early data](#early-data-0-rtt)) and
+`ocsp_response` (client side, see [OCSP stapling](#ocsp-stapling)), or `None` for a non-TLS
+connection.
 
 ## Protocol support
 
@@ -49,9 +50,11 @@ side), `version`, `early_data` and `early_data_len` (see [Early data](#early-dat
 | cipher suites | AES-128-GCM-SHA256, AES-256-GCM-SHA384, CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA with AES-128/256-GCM and CHACHA20-POLY1305 (no CBC) |
 | certificates | ECDSA P-256/P-384, Ed25519, RSA (PSS signatures) | the same, RSA also with PKCS#1 v1.5 |
 | resumption | tickets + PSK (`psk_dhe_ke`): stateless with `.session_tickets(true)`, single-use cached tickets with the session cache | session IDs (cache) and RFC 5077 tickets |
-| other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, early data (0-RTT) when both sides enable it (else rejected and skipped) | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
+| other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, early data (0-RTT) when both sides enable it (else rejected and skipped), certificate compression (RFC 8879, zlib) | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
+| record_size_limit (RFC 8449) | yes | yes |
 
-Both: SNI, ALPN, close_notify, 16 KiB records, TLS 1.3 inner content types and padding, the
+Both: SNI, ALPN, close_notify, 16 KiB records (smaller under a peer's record_size_limit), OCSP
+stapling, TLS 1.3 inner content types and padding, the
 downgrade sentinel, strict state machines (unexpected messages, empty or interleaved records,
 handshake data across key changes are fatal). Certificates are verified with `only-x509`:
 chain to the roots, validity, extended key usage, DNS names (RFC 6125 wildcards) and IP
@@ -78,6 +81,9 @@ Configuration uses `only`'s own types; the protocol internals are not part of th
 | protocol versions | `.tls13_only(true)` | `.tls13_only(true)` |
 | SNI | | `.sni(false)` to stop sending it |
 | early data (0-RTT) | `.early_data(max_bytes)` | `.early_data(true)` |
+| record size limit (RFC 8449) | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
+| certificate compression | on by default; `.certificate_compression(false)` to disable | `.certificate_compression(true)` to offer it |
+| OCSP stapling | `.ocsp_response(der)`, `.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)` |
 | tests only | | `.insecure_skip_verify()` |
 
 `.build()` checks the certificates and key (including that the key belongs to the leaf
@@ -134,6 +140,51 @@ repeat (reads without side effects), and answer the others `425 Too Early`:
 })
 ```
 
+## Record size limit, certificate compression, OCSP stapling
+
+Decided in [ADR-008](https://github.com/lesismal/only/blob/main/docs/adr/008-tls-extensions.md).
+
+**record_size_limit** (RFC 8449, TLS 1.3 and 1.2). `.record_size_limit(n)` on either side sets
+the largest record it accepts: 64 to 16385 bytes counted as the RFC does (in TLS 1.3 the value
+includes the one-byte content type; TLS 1.2 caps it at 16384), default 16385. The client always
+sends its value and the server answers with its own whenever the client sent one; from then on
+each side cuts the protected records it writes to the peer's limit and refuses records over its
+own (`record_overflow`). Unprotected handshake records are not limited, and early data goes under
+the limit of the connection that issued the ticket. Peers without the extension (OpenSSL, Go)
+neither get nor apply a limit. Not used inside QUIC (no records).
+
+```rust,ignore
+// A small device that cannot buffer 16 KiB records.
+let cfg = ClientConfig::builder().roots(roots).record_size_limit(1024).build()?;
+```
+
+**Certificate compression** (RFC 8879, TLS 1.3). On by default on the server: it sends its chain
+compressed to clients that offer zlib, when that is smaller (each chain is compressed once and
+reused, so handshakes cost nothing more), and its CertificateRequest offers it for client
+certificates. Off by default on the client: inflating a received chain costs about 1–2 µs, about
+1% of an in-memory full handshake, for tens to hundreds of bytes saved; turn it on with
+`.certificate_compression(true)` when bytes on the wire matter more. zlib only (through the
+in-house `only-deflate`; there is no in-house brotli or zstd). Received certificates are inflated
+into at most 128 KiB and must have exactly the announced length.
+
+### OCSP stapling
+
+The server staples a DER OCSP response for clients that ask (TLS 1.3: in the leaf's
+CertificateEntry; TLS 1.2: a CertificateStatus message; never on resumption):
+
+```rust,ignore
+let ocsp = std::fs::read("leaf.ocsp.der")?; // fetched from the CA's responder, refreshed by you
+let cfg = ServerConfig::builder(chain, key).ocsp_response(ocsp).build()?;
+```
+
+`.build()` only checks that it looks like a successful `OCSPResponse`. Responses expire (often
+within days): fetch a new one and build a new configuration before then.
+
+A client with `.ocsp_stapling(true)` asks for one, and `tls_info(&conn).ocsp_response` holds the
+DER bytes. **They are not verified**: `only-x509` does not check OCSP yet (the responder's
+signature, validity, the certificate ID), so an application that cares about revocation must
+verify the response itself.
+
 ## Kernel TLS
 
 Not used: kernel TLS offload (handing the record keys to Linux after the handshake, so that
@@ -146,8 +197,8 @@ on a NIC with TLS offload.
 
 ## Not done
 
-record_size_limit, certificate compression, OCSP stapling (status_request is ignored); RSA-PSS keys (`rsa_pss_pss_*`);
-P-521; system root certificates (load them into `RootCerts`).
+OCSP response validation, brotli/zstd certificate compression, `status_request_v2`; RSA-PSS keys
+(`rsa_pss_pss_*`); P-521; system root certificates (load them into `RootCerts`).
 
 ## Writing your own transport
 

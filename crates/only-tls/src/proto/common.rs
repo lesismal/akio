@@ -2,14 +2,14 @@
 //! transcript, the TLS 1.3 key schedule and the settings they run with.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use only_crypto::pkey::PrivateKey;
 use only_x509::RootStore;
 
 use super::alert::{Alert, Fatal};
 use super::kx::Group;
-use super::msgs::MESSAGE_HASH;
+use super::msgs::{CERTIFICATE, MESSAGE_HASH, certificate13_body, compressed_certificate, message};
 use super::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
 use super::suites::{HashAlg, HashCtx, Suite};
 pub(crate) use crate::EarlyData;
@@ -79,6 +79,10 @@ pub(crate) enum Action {
     EarlyOffered(u32),
     /// Early data is accepted: the server reads at most this many bytes of it.
     EarlyAccepted(u32),
+    /// record_size_limit (RFC 8449) values from now on, 0 for none: `read` is what we
+    /// advertised (records we accept, except early data), `write` what the peer advertised
+    /// (records we send under keys).
+    RecordLimit { read: u16, write: u16 },
     /// The handshake is complete.
     Done,
 }
@@ -210,12 +214,54 @@ pub(crate) fn next_secret(hash: HashAlg, secret: &[u8]) -> Vec<u8> {
 pub(crate) struct CertKey {
     pub(crate) chain: Vec<Vec<u8>>,
     pub(crate) key: PrivateKey,
+    /// A DER OCSP response stapled for clients asking for one (server certificates).
+    pub(crate) ocsp: Option<Vec<u8>>,
+    /// The TLS 1.3 CompressedCertificate messages (empty context; without and with the OCSP
+    /// response), compressed on first use: `None` when compression does not make them smaller.
+    compressed: [OnceLock<Option<Vec<u8>>>; 2],
+}
+
+impl CertKey {
+    pub(crate) fn new(chain: Vec<Vec<u8>>, key: PrivateKey) -> CertKey {
+        CertKey {
+            chain,
+            key,
+            ocsp: None,
+            compressed: [OnceLock::new(), OnceLock::new()],
+        }
+    }
+
+    /// The TLS 1.3 Certificate message for this chain under `context`, stapling the OCSP
+    /// response when `ocsp`; compressed with zlib (RFC 8879) when `compress` and smaller.
+    pub(crate) fn certificate13(&self, context: &[u8], ocsp: bool, compress: bool) -> Vec<u8> {
+        let ocsp = self.ocsp.as_deref().filter(|_| ocsp);
+        let body = |o: &mut Vec<u8>| certificate13_body(o, context, &self.chain, ocsp);
+        if compress {
+            let make = || {
+                let mut b = Vec::new();
+                body(&mut b);
+                compressed_certificate(&b)
+            };
+            let c = if context.is_empty() {
+                self.compressed[usize::from(ocsp.is_some())]
+                    .get_or_init(make)
+                    .clone()
+            } else {
+                make()
+            };
+            if let Some(c) = c {
+                return c;
+            }
+        }
+        message(CERTIFICATE, body)
+    }
 }
 
 impl std::fmt::Debug for CertKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CertKey")
             .field("chain_len", &self.chain.len())
+            .field("ocsp", &self.ocsp.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -242,6 +288,12 @@ pub(crate) struct ServerSettings {
     pub(crate) max_early_data: u32,
     /// The ClientHellos whose early data was accepted (replay protection).
     pub(crate) anti_replay: AntiReplay,
+    /// The record_size_limit advertised to clients that send one (RFC 8449; capped to the
+    /// protocol's maximum when sent).
+    pub(crate) record_limit: u16,
+    /// Send compressed certificates (RFC 8879, zlib) to clients that accept them, and accept
+    /// compressed client certificates.
+    pub(crate) cert_compression: bool,
 }
 
 impl ServerSettings {
@@ -266,6 +318,13 @@ pub(crate) struct ClientSettings {
     pub(crate) groups: Vec<Group>,
     /// Send early data (0-RTT) when a ticket allows it (TCP; QUIC decides per connection).
     pub(crate) early_data: bool,
+    /// The record_size_limit sent in the ClientHello (RFC 8449; not over QUIC).
+    pub(crate) record_limit: u16,
+    /// Offer to receive compressed certificates (RFC 8879, zlib) and compress our own when the
+    /// server offers it.
+    pub(crate) cert_compression: bool,
+    /// Ask for a stapled OCSP response (status_request, RFC 6066 / RFC 8446 section 4.4.2.1).
+    pub(crate) ocsp: bool,
 }
 
 /// Unix time in seconds.

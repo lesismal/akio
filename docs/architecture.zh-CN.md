@@ -66,6 +66,7 @@ flowchart BT
     deflate --> ws
     deflate --> http
     deflate --> grpc
+    deflate --> tls
     facade --> http
     ws --> http
     http --> grpc

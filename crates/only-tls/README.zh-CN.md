@@ -3,14 +3,16 @@
 [English](README.md)
 
 [`only`](https://github.com/lesismal/only) 的 TLS 1.3 与 1.2，由本 crate 依据 RFC、基于
-[`only-crypto`](../only-crypto) 与 [`only-x509`](../only-x509) 实现：sans-io、安全 Rust
+[`only-crypto`](../only-crypto) 与 [`only-x509`](../only-x509)（证书压缩另用
+[`only-deflate`](../only-deflate)）实现：sans-io、安全 Rust
 （`#![forbid(unsafe_code)]`）、无第三方依赖。它在 API 不变的前提下替代了 rustls 与 ring（DEV-PLAN
 第 C 波）。
 
 用 `Tls::server`（或供 `Engine::dial` 使用的 `Tls::client`）包装任意 acceptor，其 handler 看到的就是
 明文；握手在连接所属的 I/O 线程上进行，从不阻塞。用 `ServerConfig::builder(chain, key)`（SNI 证书、
-ALPN、客户端认证、会话缓存与票据、`tls13_only`）与 `ClientConfig::builder()`（根证书、ALPN、客户端
-证书、SNI、会话恢复、仅供测试的 `insecure_skip_verify`）配置；`tls_info` 读取协商结果。
+ALPN、客户端认证、会话缓存与票据、`tls13_only`、记录大小限制、证书压缩、装订的 OCSP 响应）与
+`ClientConfig::builder()`（根证书、ALPN、客户端证书、SNI、会话恢复、记录大小限制、证书压缩、OCSP
+stapling、仅供测试的 `insecure_skip_verify`）配置；`tls_info` 读取协商结果。
 
 ```rust,no_run
 use only_tls::{Certificate, PrivateKey, ServerConfig, Tls};
@@ -38,6 +40,32 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 - 记录层：16 KiB 分片、TLS 1.3 内层内容类型与填充、带降级哨兵的版本协商、严格的状态机、握手消息跨
   记录重组且绝不跨密钥切换、告警与 close_notify、常量时间的 Finished / 绑定值校验。
 - 证书由 `only-x509` 验证（链、有效期、EKU、DNS 名与 IP 地址）。
+- 扩展：record_size_limit（RFC 8449）、证书压缩（RFC 8879，zlib）与 OCSP stapling（RFC 6066 /
+  RFC 8446 4.4.2.1），见下文。
+
+### record_size_limit、证书压缩、OCSP stapling
+
+决定记录在 [ADR-008](../../docs/adr/008-tls-extensions.zh-CN.md)。
+
+- **record_size_limit**（RFC 8449，TLS 1.3 与 1.2，QUIC 中不用）：两个构建器上的
+  `record_size_limit(n)` 设定我们接受的最大记录，按 RFC 的口径为 64 到 16385 字节（TLS 1.3 含内容类型
+  字节；TLS 1.2 上限 16384），默认 16385。客户端总是发送自己的值；只要客户端发了，服务端就回以自己的值。
+  之后双方写出的受保护记录按对方的限制切分，收到超过自己限制的受保护记录则以 `record_overflow` 拒绝；
+  明文记录不受限制。早期数据遵循签发票据的那条连接上的限制。不支持该扩展的对端（OpenSSL、Go）不会得到也
+  不会被施加限制。未实现 OpenSSL 的 max_fragment_length（RFC 6066）：按 RFC 8449 对已支持
+  record_size_limit 一方的建议，忽略该请求。
+- **证书压缩**（RFC 8879，TLS 1.3）：只有 zlib，由 `only-deflate` 提供（没有自研的 brotli 或 zstd）。
+  服务端默认开启：对提供该扩展的客户端，在压缩后更小时发送压缩的证书链（每张证书只压缩一次并复用，每次握手
+  没有额外开销），并在 CertificateRequest 中为客户端证书提供它。客户端默认关闭（`certificate_compression(true)`
+  开启）：每收到一条压缩的证书链要解压一次，约 1–2 µs，约为内存中完整握手的 1%。收到的压缩证书
+  最多解压到 128 KiB，长度必须与声明的完全一致（否则 `bad_certificate`）；其他算法报
+  `illegal_parameter`。
+- **OCSP stapling**：`ServerConfigBuilder::ocsp_response(der)`（SNI 证书链用 `sni_ocsp_response`）
+  为请求它的客户端装订一个 DER 格式的 OCSP 响应（TLS 1.3：放在叶证书的 CertificateEntry 中；TLS 1.2：
+  ServerHello 中的 `status_request` 加 CertificateStatus 消息；会话恢复时不发送）。该响应只检查是否像一个
+  成功的 `OCSPResponse`；按时刷新由调用方负责。`ClientConfigBuilder::ocsp_stapling(true)` 请求响应，
+  `TlsInfo::ocsp_response` 保存收到的内容。**客户端不验证它**：`only-x509` 还不支持 OCSP（响应者签名、
+  有效期、证书 ID），因此用它检查吊销状态由应用负责。
 
 ### 早期数据（0-RTT）
 
@@ -64,8 +92,8 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 ClientHello 中再次发送同一请求。只为可安全重复的请求（幂等读取）开启它，其他操作前先检查
 `TlsInfo::early_data` / `Early-Data: 1`，对其余请求回 `425 Too Early`。
 
-未实现：record_size_limit、证书压缩、OCSP stapling（忽略 status_request）、
-RSA-PSS 密钥、P-521。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
+未实现：OCSP 响应验证、brotli/zstd 证书压缩、TLS 1.3 客户端认证中客户端的 OCSP 响应、
+`status_request_v2`、RSA-PSS 密钥、P-521。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
 也不例外（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）；代码保留在实验性的 `experimental-ktls`
 feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
 
@@ -85,13 +113,18 @@ feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
 - RFC 8448 跟踪向量（简单 1-RTT、恢复绑定值、HelloRetryRequest）：密钥调度、transcript、Finished 值与
   受保护记录逐字节一致；RFC 9001 附录 A 的密钥派生向量。
 - 覆盖所有套件、组、证书类型与版本的内存握手，会话恢复、客户端认证、SNI / ALPN、KeyUpdate、低至单字节
-  的分片、close_notify、降级检测、篡改、意外记录与垃圾数据。
+  的分片、close_notify、降级检测、篡改、意外记录与垃圾数据；record_size_limit（两个版本、双向低至 64 字节的
+  限制、超限记录、遵循票据限制的早期数据）、证书压缩（服务端与客户端证书、任一方关闭、格式错误的消息）与
+  OCSP stapling（两个版本、SNI、会话恢复），单独及组合测试。
 - 互通（`tools/interop/tls/run.sh`）：与 OpenSSL `s_server` / `s_client` 及 Go `crypto/tls` 双向互通，
-  覆盖所有套件、组、密钥类型、客户端认证、会话恢复、HRR、ALPN、KeyUpdate 与 early data，另有 curl 对
+  覆盖所有套件、组、密钥类型、客户端认证、会话恢复、HRR、ALPN、KeyUpdate、early data 与 OCSP stapling（由
+  `s_client` 验证），与以 zlib 构建的 OpenSSL 3.2+（如 Debian 的）测试 zlib 证书压缩，安装了 GnuTLS 时测试
+  record_size_limit 与 OCSP，另有 curl 对
   only-http（HTTP/1.1 与 HTTP/2）；需要 OpenSSL 3.0 或更新版本（early data 用例以不带 `-www` 的
   `s_server` 运行，因为 3.0 拒绝 `-www` 与 `-early_data` 同用；客户端发送后关闭连接，再检查 `s_server`
   的日志）；与 grpc-go 的 TLS 上 gRPC（`tools/interop/grpc/run.sh`）；`only` crate 的
   TLS 测试中使用 rustls 客户端。
-- 以 tlsfuzzer 测试服务端（`tools/interop/tls/tlsfuzzer.sh`，Docker）：适用的 33 个脚本（不含 CBC、RSA 密钥交换、
-  FFDHE、外部 PSK 等），985 个探测，5 个已知失败及其原因记录在脚本中。
+- 以 tlsfuzzer 测试服务端（`tools/interop/tls/tlsfuzzer.sh`，Docker）：适用的 36 个脚本（不含 CBC、RSA 密钥交换、
+  FFDHE、外部 PSK 等），包括 record_size_limit 与证书压缩（服务端与客户端证书），共 1,096 个探测；已知失败（在
+  其余适用的脚本中使用 CBC 套件、RSA 密钥交换或 TLS 1.0/1.1 的探测，以及少数其他探测）及其原因记录在脚本中。
 - Fuzz：`fuzz/` 中的 `tls_server`、`tls_client`、`tls_record`；`fuzzing::tests` 在 stable 上回放其语料。

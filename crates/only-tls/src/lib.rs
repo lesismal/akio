@@ -246,6 +246,9 @@ pub struct TlsInfo {
     /// [`ServerConfigBuilder::early_data`]), or the first this many bytes the client sent
     /// (client; sent again after the handshake if `early_data` is `Rejected`).
     pub early_data_len: u64,
+    /// The OCSP response (DER) the server stapled to its certificate: client side, when asked
+    /// for with [`ClientConfigBuilder::ocsp_stapling`]. **Not verified.**
+    pub ocsp_response: Option<Vec<u8>>,
 }
 
 /// TLS details of `c`, or `None` if it is not a TLS connection.
@@ -259,6 +262,7 @@ pub fn tls_info<H>(c: &Conn<H>) -> Option<TlsInfo> {
             version: t.conn.version_name().map(str::to_owned),
             early_data: t.conn.early_data(),
             early_data_len: t.conn.early_data_len(),
+            ocsp_response: t.conn.ocsp_response().map(<[u8]>::to_vec),
         })
     })
     .flatten()
