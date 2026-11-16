@@ -31,6 +31,7 @@ pub(crate) mod err {
     pub(crate) const STREAM_CLOSED: u32 = 5;
     pub(crate) const FRAME_SIZE: u32 = 6;
     pub(crate) const REFUSED_STREAM: u32 = 7;
+    pub(crate) const CANCEL: u32 = 8;
     pub(crate) const COMPRESSION: u32 = 9;
     pub(crate) const ENHANCE: u32 = 11;
 }

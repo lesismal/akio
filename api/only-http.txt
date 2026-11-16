@@ -1,11 +1,15 @@
 pub mod only_http
 pub use only_http::ws
 pub mod only_http::client
+pub use only_http::client::Proxy
+pub use only_http::client::ProxyRefused
 #[non_exhaustive] pub enum only_http::client::ClientError
 pub only_http::client::ClientError::Closed
 pub only_http::client::ClientError::InvalidUrl(alloc::string::String)
 pub only_http::client::ClientError::Io(core::io::error::Error)
 pub only_http::client::ClientError::Protocol(&'static str)
+pub only_http::client::ClientError::Timeout
+pub only_http::client::ClientError::TooManyRedirects
 impl core::error::Error for only_http::client::ClientError
 impl core::fmt::Debug for only_http::client::ClientError
 pub fn only_http::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -21,6 +25,9 @@ impl only_http::client::Client
 pub fn only_http::client::Client::new(alloc::rcs::arc::Arc<only::Engine>) -> only_http::client::Client
 pub fn only_http::client::Client::request(&self, only_http::client::ClientRequest, impl core::ops::function::FnOnce(core::result::Result<only_http::client::ClientResponse, only_http::client::ClientError>) + core::marker::Send + 'static)
 pub fn only_http::client::Client::send(&self, only_http::client::ClientRequest) -> only_http::client::ResponseFuture
+pub fn only_http::client::Client::with_proxy(self, only_ws::proxy::Proxy) -> only_http::client::Client
+pub fn only_http::client::Client::with_redirects(self, only_http::client::RedirectPolicy) -> only_http::client::Client
+pub fn only_http::client::Client::with_timeout(self, core::time::Duration) -> only_http::client::Client
 pub fn only_http::client::Client::with_tls(self, only_tls::config::ClientConfig) -> only_http::client::Client
 impl core::clone::Clone for only_http::client::Client
 pub fn only_http::client::Client::clone(&self) -> Self
@@ -46,6 +53,7 @@ impl !core::panic::unwind_safe::UnwindSafe for only_http::client::ClientConn
 pub only_http::client::ClientRequest::body: alloc::vec::Vec<u8>
 pub only_http::client::ClientRequest::headers: only_http::message::Headers
 pub only_http::client::ClientRequest::method: only_http::message::Method
+pub only_http::client::ClientRequest::timeout: core::option::Option<core::time::Duration>
 pub only_http::client::ClientRequest::url: alloc::string::String
 impl only_http::client::ClientRequest
 pub fn only_http::client::ClientRequest::body(self, alloc::vec::Vec<u8>) -> only_http::client::ClientRequest
@@ -53,6 +61,7 @@ pub fn only_http::client::ClientRequest::get(&str) -> only_http::client::ClientR
 pub fn only_http::client::ClientRequest::header(self, &str, &str) -> only_http::client::ClientRequest
 pub fn only_http::client::ClientRequest::new(only_http::message::Method, &str) -> only_http::client::ClientRequest
 pub fn only_http::client::ClientRequest::post(&str, alloc::vec::Vec<u8>) -> only_http::client::ClientRequest
+pub fn only_http::client::ClientRequest::timeout(self, core::time::Duration) -> only_http::client::ClientRequest
 impl core::clone::Clone for only_http::client::ClientRequest
 pub fn only_http::client::ClientRequest::clone(&self) -> Self
 impl core::fmt::Debug for only_http::client::ClientRequest
@@ -69,6 +78,7 @@ pub only_http::client::ClientResponse::pushed: alloc::vec::Vec<(alloc::string::S
 pub only_http::client::ClientResponse::reason: alloc::string::String
 pub only_http::client::ClientResponse::status: u16
 pub only_http::client::ClientResponse::trailers: only_http::message::Headers
+pub only_http::client::ClientResponse::url: alloc::string::String
 impl core::clone::Clone for only_http::client::ClientResponse
 pub fn only_http::client::ClientResponse::clone(&self) -> Self
 impl core::fmt::Debug for only_http::client::ClientResponse
@@ -78,6 +88,28 @@ impl core::marker::Sync for only_http::client::ClientResponse
 impl core::marker::Unpin for only_http::client::ClientResponse
 impl core::panic::unwind_safe::RefUnwindSafe for only_http::client::ClientResponse
 impl core::panic::unwind_safe::UnwindSafe for only_http::client::ClientResponse
+pub struct only_http::client::RedirectPolicy
+impl only_http::client::RedirectPolicy
+pub fn only_http::client::RedirectPolicy::allow_https_downgrade(self, bool) -> only_http::client::RedirectPolicy
+pub fn only_http::client::RedirectPolicy::limit(u32) -> only_http::client::RedirectPolicy
+pub fn only_http::client::RedirectPolicy::max(&self) -> u32
+pub fn only_http::client::RedirectPolicy::none() -> only_http::client::RedirectPolicy
+impl core::clone::Clone for only_http::client::RedirectPolicy
+pub fn only_http::client::RedirectPolicy::clone(&self) -> Self
+impl core::cmp::Eq for only_http::client::RedirectPolicy
+impl core::cmp::PartialEq for only_http::client::RedirectPolicy
+pub fn only_http::client::RedirectPolicy::eq(&self, &Self) -> bool
+impl core::default::Default for only_http::client::RedirectPolicy
+pub fn only_http::client::RedirectPolicy::default() -> Self
+impl core::fmt::Debug for only_http::client::RedirectPolicy
+pub fn only_http::client::RedirectPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_http::client::RedirectPolicy
+impl core::marker::StructuralPartialEq for only_http::client::RedirectPolicy
+impl core::marker::Send for only_http::client::RedirectPolicy
+impl core::marker::Sync for only_http::client::RedirectPolicy
+impl core::marker::Unpin for only_http::client::RedirectPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for only_http::client::RedirectPolicy
+impl core::panic::unwind_safe::UnwindSafe for only_http::client::RedirectPolicy
 pub struct only_http::client::ResponseFuture
 impl only_http::client::ResponseFuture
 pub fn only_http::client::ResponseFuture::wait(self) -> core::result::Result<only_http::client::ClientResponse, only_http::client::ClientError>

@@ -221,6 +221,42 @@ impl RootCerts {
         Ok(certs.len())
     }
 
+    /// The operating system's trusted CAs (ADR-010), read once per process and cached:
+    /// `SSL_CERT_FILE` / `SSL_CERT_DIR` when set; on macOS the system keychains (exported with
+    /// `/usr/bin/security`, falling back to `/etc/ssl/cert.pem`); on other Unix systems the
+    /// distribution's CA bundle (`/etc/ssl/certs/ca-certificates.crt`,
+    /// `/etc/pki/tls/certs/ca-bundle.crt`, ...) or certificate directory. Certificates that do
+    /// not parse are skipped; macOS trust settings (a CA marked as distrusted) are not applied.
+    /// Fails when no certificate was found.
+    pub fn system() -> Result<RootCerts, Error> {
+        static CACHE: std::sync::OnceLock<Result<RootCerts, String>> = std::sync::OnceLock::new();
+        CACHE
+            .get_or_init(|| {
+                let found = crate::system::load();
+                let mut roots = RootCerts::empty();
+                for pem in &found.pems {
+                    let Ok(ders) = only_crypto::pem::decode_label(pem, "CERTIFICATE") else {
+                        continue;
+                    };
+                    for der in ders {
+                        if let Ok(c) = only_x509::Certificate::from_der(der) {
+                            roots.0.add(c);
+                        }
+                    }
+                }
+                if roots.is_empty() {
+                    Err(format!(
+                        "no system CA certificates found (tried {})",
+                        found.tried.join(", ")
+                    ))
+                } else {
+                    Ok(roots)
+                }
+            })
+            .clone()
+            .map_err(Error::new)
+    }
+
     /// Number of roots.
     pub fn len(&self) -> usize {
         self.0.len()

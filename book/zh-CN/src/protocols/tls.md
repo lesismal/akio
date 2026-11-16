@@ -64,7 +64,10 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 ## 配置
 
 配置使用 only 自己的类型；协议内部细节不属于 API。`Certificate::from_pem` / `from_der`、`PrivateKey::from_pem` /
-`from_der` / `from_pkcs8_der` 与 `RootCerts` 负责加载证书材料。
+`from_der` / `from_pkcs8_der` 与 `RootCerts` 负责加载证书材料。`RootCerts::system()` 是操作系统的
+信任库，每个进程读取一次：设置了 `SSL_CERT_FILE` / `SSL_CERT_DIR` 时用它们，macOS 上用系统钥匙串（通过
+`/usr/bin/security` 导出；不应用信任设置），其他 Unix 上用发行版的 CA 证书包或证书目录。未提供
+`ClientConfig` 时，HTTP 和 WebSocket 客户端使用它（ADR-010）。
 
 | 需求 | 服务端：`ServerConfig::builder(chain, key)` | 客户端：`ClientConfig::builder()` |
 |---|---|---|
@@ -174,7 +177,7 @@ let cfg = ServerConfig::builder(chain, key).ocsp_response(ocsp).build()?;
 ## 尚未完成
 
 OCSP 响应验证、brotli/zstd 证书压缩、`status_request_v2`；RSA-PSS 密钥（`rsa_pss_pss_*`）；P-521；
-系统根证书（请自行加载到 `RootCerts`）。
+Windows 证书库与 macOS 信任设置。
 
 ## 编写自己的 transport
 

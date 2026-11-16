@@ -7,6 +7,7 @@ pub only_ws::client::WsClientError::InvalidUrl(alloc::string::String)
 pub only_ws::client::WsClientError::Io(core::io::error::Error)
 pub only_ws::client::WsClientError::Status(u16, alloc::string::String)
 pub only_ws::client::WsClientError::Timeout
+pub only_ws::client::WsClientError::TooManyRedirects
 impl core::error::Error for only_ws::client::WsClientError
 impl core::fmt::Debug for only_ws::client::WsClientError
 pub fn only_ws::client::WsClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -22,9 +23,11 @@ pub only_ws::client::DialOptions::close_timeout: core::time::Duration
 pub only_ws::client::DialOptions::config: only_ws::WsConfig
 pub only_ws::client::DialOptions::handshake_timeout: core::time::Duration
 pub only_ws::client::DialOptions::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_ws::client::DialOptions::max_redirects: u32
 pub only_ws::client::DialOptions::origin: core::option::Option<alloc::string::String>
 pub only_ws::client::DialOptions::pmd: only_ws::deflate::PmdOffer
 pub only_ws::client::DialOptions::protocols: alloc::vec::Vec<alloc::string::String>
+pub only_ws::client::DialOptions::proxy: only_ws::proxy::Proxy
 pub only_ws::client::DialOptions::server_name: core::option::Option<alloc::string::String>
 pub only_ws::client::DialOptions::tls: core::option::Option<only_tls::config::ClientConfig>
 impl core::clone::Clone for only_ws::client::DialOptions
@@ -223,6 +226,52 @@ impl core::panic::unwind_safe::UnwindSafe for only_ws::protocol::ProtocolError
 pub fn only_ws::protocol::close_payload(u16, &str) -> alloc::vec::Vec<u8>
 pub fn only_ws::protocol::encode_frame(only_ws::protocol::Opcode, bool, bool, &[u8], &mut alloc::vec::Vec<u8>)
 pub fn only_ws::protocol::encode_frame_masked(only_ws::protocol::Opcode, bool, bool, &[u8], [u8; 4], &mut alloc::vec::Vec<u8>)
+pub mod only_ws::proxy
+pub struct only_ws::proxy::Proxy
+impl only_ws::proxy::Proxy
+pub fn only_ws::proxy::Proxy::all(&str) -> core::io::error::Result<only_ws::proxy::Proxy>
+pub fn only_ws::proxy::Proxy::applies(&self, bool, &str, u16) -> bool
+pub fn only_ws::proxy::Proxy::from_env() -> core::io::error::Result<only_ws::proxy::Proxy>
+pub fn only_ws::proxy::Proxy::http(self, &str) -> core::io::error::Result<only_ws::proxy::Proxy>
+pub fn only_ws::proxy::Proxy::https(self, &str) -> core::io::error::Result<only_ws::proxy::Proxy>
+pub fn only_ws::proxy::Proxy::is_empty(&self) -> bool
+pub fn only_ws::proxy::Proxy::no_proxy(self, &str) -> only_ws::proxy::Proxy
+pub fn only_ws::proxy::Proxy::none() -> only_ws::proxy::Proxy
+impl core::clone::Clone for only_ws::proxy::Proxy
+pub fn only_ws::proxy::Proxy::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::proxy::Proxy
+impl core::cmp::PartialEq for only_ws::proxy::Proxy
+pub fn only_ws::proxy::Proxy::eq(&self, &Self) -> bool
+impl core::default::Default for only_ws::proxy::Proxy
+pub fn only_ws::proxy::Proxy::default() -> Self
+impl core::fmt::Debug for only_ws::proxy::Proxy
+pub fn only_ws::proxy::Proxy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ws::proxy::Proxy
+impl core::marker::Send for only_ws::proxy::Proxy
+impl core::marker::Sync for only_ws::proxy::Proxy
+impl core::marker::Unpin for only_ws::proxy::Proxy
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::proxy::Proxy
+impl core::panic::unwind_safe::UnwindSafe for only_ws::proxy::Proxy
+pub struct only_ws::proxy::ProxyRefused
+impl only_ws::proxy::ProxyRefused
+pub fn only_ws::proxy::ProxyRefused::reason(&self) -> &str
+pub fn only_ws::proxy::ProxyRefused::status(&self) -> u16
+impl core::clone::Clone for only_ws::proxy::ProxyRefused
+pub fn only_ws::proxy::ProxyRefused::clone(&self) -> Self
+impl core::cmp::Eq for only_ws::proxy::ProxyRefused
+impl core::cmp::PartialEq for only_ws::proxy::ProxyRefused
+pub fn only_ws::proxy::ProxyRefused::eq(&self, &Self) -> bool
+impl core::error::Error for only_ws::proxy::ProxyRefused
+impl core::fmt::Debug for only_ws::proxy::ProxyRefused
+pub fn only_ws::proxy::ProxyRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_ws::proxy::ProxyRefused
+pub fn only_ws::proxy::ProxyRefused::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_ws::proxy::ProxyRefused
+impl core::marker::Send for only_ws::proxy::ProxyRefused
+impl core::marker::Sync for only_ws::proxy::ProxyRefused
+impl core::marker::Unpin for only_ws::proxy::ProxyRefused
+impl core::panic::unwind_safe::RefUnwindSafe for only_ws::proxy::ProxyRefused
+impl core::panic::unwind_safe::UnwindSafe for only_ws::proxy::ProxyRefused
 pub enum only_ws::Message
 pub only_ws::Message::Binary(alloc::vec::Vec<u8>)
 pub only_ws::Message::Text(alloc::string::String)

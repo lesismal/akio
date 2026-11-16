@@ -221,3 +221,13 @@ fn bad_keys_and_errors_are_reported() {
     assert!(format!("{:?}", ServerConfig::builder(vec![], srv.key)).contains("tls13_only"));
     assert!(format!("{:?}", ClientConfig::builder()).contains("roots"));
 }
+
+#[test]
+fn system_roots_load() {
+    // Every CI host (Linux with ca-certificates, macOS) has a system store.
+    let r = RootCerts::system().expect("system roots");
+    assert!(r.len() > 10, "{}", r.len());
+    // Cached: the second call returns the same set.
+    assert_eq!(RootCerts::system().unwrap().len(), r.len());
+    ClientConfig::builder().roots(r).build().unwrap();
+}

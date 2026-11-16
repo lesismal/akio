@@ -179,16 +179,46 @@ impl H2Client {
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "h2 connect timed out"))?
     }
 
-    /// Sends a request on a new stream; `done` is called once with the outcome.
+    /// Sends a request on a new stream; `done` is called once with the outcome. With
+    /// [`ClientRequest::timeout`], the stream is reset (`CANCEL`) and the request fails with
+    /// [`ClientError::Timeout`] when it passes (`done` then runs on the timer thread).
     pub fn request(&self, req: ClientRequest, done: impl FnOnce(Outcome) + Send + 'static) {
-        let slot = Arc::new(Mutex::new(Some((req, Box::new(done) as Callback))));
+        let timeout = req.timeout;
+        let mut done: Callback = Box::new(done);
+        // The stream the request got (0 until started), for the timeout to cancel.
+        let sid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        if let Some(d) = timeout {
+            let once = Arc::new(Mutex::new(Some(done)));
+            let (o2, sid2, conn) = (once.clone(), sid.clone(), self.conn.clone());
+            crate::timer::after(d, move || {
+                let cb = o2.lock().unwrap_or_else(|p| p.into_inner()).take();
+                let Some(cb) = cb else { return };
+                let id = sid2.load(std::sync::atomic::Ordering::Acquire);
+                if id != 0 {
+                    let _ =
+                        conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.cancel(c, id));
+                }
+                cb(Err(ClientError::Timeout));
+            });
+            done = Box::new(move |r| {
+                let cb = once.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(cb) = cb {
+                    cb(r);
+                }
+            });
+        }
+        let slot = Arc::new(Mutex::new(Some((req, done))));
         let s2 = slot.clone();
         let queued = self.conn.spawn_blocking(
             || (),
             move |h: &mut H2Conn, c, ()| {
                 let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
                 if let Some((req, cb)) = taken {
+                    let id = h.next_id;
                     h.start(c, req, cb);
+                    if h.streams.contains_key(&id) {
+                        sid.store(id, std::sync::atomic::Ordering::Release);
+                    }
                 }
             },
         );
@@ -309,6 +339,8 @@ impl Acceptor for H2Acceptor {
 }
 
 struct CStream {
+    /// The request URL (the pushed path for a pushed stream).
+    url: String,
     cb: Option<Callback>,
     status: u16,
     headers: Headers,
@@ -386,6 +418,15 @@ impl H2Conn {
 
     fn start(&mut self, c: &Conn<Self>, req: ClientRequest, cb: Callback) {
         self.start_full(c, req, Some(cb), None);
+    }
+
+    /// Abandons stream `sid` (its request timed out): reset it and forget it.
+    fn cancel(&mut self, c: &Conn<Self>, sid: u32) {
+        if self.streams.remove(&sid).is_some() && !self.dead {
+            let mut out = Vec::new();
+            frame(&mut out, ty::RST_STREAM, 0, sid, &err::CANCEL.to_be_bytes());
+            let _ = c.send_owned(out);
+        }
     }
 
     fn start_full(
@@ -466,6 +507,7 @@ impl H2Conn {
             None => (None, None),
         };
         let mut st = CStream {
+            url: req.url.clone(),
             cb,
             status: 0,
             headers: Headers::new(),
@@ -663,6 +705,7 @@ impl H2Conn {
             body: std::mem::take(&mut st.body),
             trailers: std::mem::take(&mut st.trailers),
             pushed: std::mem::take(&mut st.pushed),
+            url: std::mem::take(&mut st.url),
         };
         match (st.parent, st.pushed_path.take()) {
             (Some(parent), Some(path)) => {
@@ -717,6 +760,7 @@ impl H2Conn {
             self.streams.insert(
                 pid,
                 CStream {
+                    url: path.clone(),
                     cb: None,
                     status: 0,
                     headers: Headers::new(),

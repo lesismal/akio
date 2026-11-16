@@ -20,6 +20,27 @@ only 的所有重要变更都记录在这里。格式遵循
 - 新的开发规则 docs/rules.zh-CN.md，改编自 fit：绝不阻塞 I/O 线程、消息体流式且有界、背压联动、处处有
   超时和带安全默认值的上限、热路径上构建时优先于请求时、验证与改动相称。
 
+### 新增：HTTP 与 WebSocket 客户端的重定向、超时、代理、系统根证书（ADR-010）
+
+- 重定向，需显式开启：`client::RedirectPolicy`（默认 `none()`、`limit(n)`、`allow_https_downgrade`），
+  配合 `Client::with_redirects`。跟随 301/302/303/307/308，方法与请求体遵循 RFC 9110 第 15.4 节，支持相对
+  `Location`，重定向到其他源时删除 `Authorization` / `Cookie` / `Proxy-Authorization`，默认不跟随
+  https → http，超过上限时返回 `ClientError::TooManyRedirects`；`ClientResponse::url` 是最终应答的 URL。
+  WebSocket 握手通过 `DialOptions::max_redirects`（默认 0；`WsClientError::TooManyRedirects`）跟随重定向。
+- 单请求超时：`ClientRequest::timeout` / `.timeout(d)` 与 `Client::with_timeout`，覆盖解析、连接、TLS、
+  响应与重定向（`ClientError::Timeout`，连接被关闭）。`H2Client` 通过重置流来遵守它。
+- 在调用线程之外解析域名：新增 `only::dns::resolve`（无依赖的解析线程池，最多 4 个线程；IP 字面量直接应答），
+  HTTP/1 与 WebSocket 客户端使用它。
+- 系统根证书：`only::tls::RootCerts::system()`（`SSL_CERT_FILE` / `SSL_CERT_DIR`、通过 `/usr/bin/security`
+  读取 macOS 钥匙串、Linux/BSD 的 CA 证书包与目录）。**行为变化：**没有 `with_tls` 的 `Client` 和
+  `DialOptions::tls = None` 现在对 `https://` / `wss://` 使用它，而不是报错。
+- HTTP 代理：`only_ws::proxy::Proxy`（在 `only_http::client::Proxy` 重新导出；`all`、`http`、`https`、
+  `no_proxy`，以及需显式调用的 `from_env`，读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`）、
+  `Client::with_proxy`、`DialOptions::proxy`。`http://` 用绝对形式，`https://`、`ws://` 和 `wss://` 经
+  `CONNECT`；代理 URL 中的凭据变成 `Proxy-Authorization: Basic`；被拒绝时是携带 `ProxyRefused` 的
+  `io::Error`。
+- 客户端所在 engine 优雅停机时，WebSocket 客户端以 1001（going away）关闭已打开的连接（以前以 1006 结束）。
+
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
 在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，only-crypto 的 Poly1305（因而

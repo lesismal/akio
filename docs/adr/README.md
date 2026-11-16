@@ -13,3 +13,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-007: Partial-segment route patterns](007-partial-segment-routes.md)
 - [ADR-008: TLS record_size_limit, certificate compression and OCSP stapling](008-tls-extensions.md)
 - [ADR-009: Safe defaults for engine limits and timeouts](009-safe-defaults.md)
+- [ADR-010: HTTP and WebSocket client: redirects, timeouts, resolution, system roots, proxies](010-http-client-gaps.md)

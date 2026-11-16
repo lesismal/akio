@@ -406,6 +406,12 @@ impl WsSession {
         }
     }
 
+    /// Starts the close handshake with 1001 (going away), as an engine shutdown does.
+    pub(crate) fn going_away(&self) {
+        self.sender
+            .close(crate::protocol::close::GOING_AWAY, "going away");
+    }
+
     /// Calls `on_open`. Do this before feeding data.
     pub fn open(&mut self) {
         self.handler.on_open(&self.sender);

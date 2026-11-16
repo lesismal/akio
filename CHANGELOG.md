@@ -22,6 +22,32 @@ All notable changes to `only` are documented here. The format follows
   streamed and bounded, linked backpressure, timeouts and safe-default limits everywhere, build
   time over request time on the hot path, verification sized to the change.
 
+### Added: HTTP and WebSocket client redirects, timeouts, proxies, system roots (ADR-010)
+
+- Redirects, opt-in: `client::RedirectPolicy` (`none()` by default, `limit(n)`,
+  `allow_https_downgrade`) with `Client::with_redirects`. 301/302/303/307/308 with RFC 9110
+  section 15.4 method and body rules, relative `Location`s, `Authorization` / `Cookie` /
+  `Proxy-Authorization` dropped on a redirect to another origin, https → http not followed by
+  default, `ClientError::TooManyRedirects` past the limit; `ClientResponse::url` is the URL that
+  answered. The WebSocket handshake follows them with `DialOptions::max_redirects` (default 0;
+  `WsClientError::TooManyRedirects`).
+- Per-request timeout: `ClientRequest::timeout` / `.timeout(d)` and `Client::with_timeout`,
+  covering resolution, connecting, TLS, the response and redirects (`ClientError::Timeout`, the
+  connection is closed). `H2Client` honours it by resetting the stream.
+- Name resolution off the calling thread: new `only::dns::resolve` (a dependency-free pool of up
+  to four resolver threads; IP literals inline), used by the HTTP/1 and WebSocket clients.
+- System root certificates: `only::tls::RootCerts::system()` (`SSL_CERT_FILE` / `SSL_CERT_DIR`,
+  macOS keychains via `/usr/bin/security`, Linux/BSD CA bundles and directories). **Behaviour
+  change:** `Client` without `with_tls` and `DialOptions::tls = None` now use it for `https://` /
+  `wss://` instead of failing.
+- HTTP proxies: `only_ws::proxy::Proxy` (re-exported as `only_http::client::Proxy`; `all`,
+  `http`, `https`, `no_proxy`, opt-in `from_env` for `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`),
+  `Client::with_proxy`, `DialOptions::proxy`. `http://` in absolute form, `https://`, `ws://` and
+  `wss://` through `CONNECT`; credentials in the proxy URL become `Proxy-Authorization: Basic`;
+  a refusal is an `io::Error` carrying `ProxyRefused`.
+- The WebSocket client closes its open connections with 1001 (going away) when its engine shuts
+  down gracefully (they ended with 1006).
+
 ### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
 
 only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix

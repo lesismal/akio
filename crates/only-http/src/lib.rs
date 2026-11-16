@@ -63,6 +63,7 @@ pub mod raw;
 pub mod re;
 mod router;
 mod session;
+mod timer;
 // The seam between HTTP transports and services (only-h3 dispatches through it):
 // `#[doc(hidden)]`, unstable, outside the semver promise (docs/api-stability.md).
 #[doc(hidden)]
