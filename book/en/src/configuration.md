@@ -25,11 +25,13 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `max_queued_bytes` | 64 MiB | yes | `send` fails with `Overloaded` beyond this per connection |
 | `backlog` | 1024 | no | `listen(2)` backlog |
 | `idle_timeout` | `None` | yes | close (with `TimedOut`) when the peer sent nothing for this long |
+| `write_timeout` | 60 s | no | close (with `TimedOut`) when queued output made no progress for this long: a peer that stopped reading; `None` disables it |
 | `slow_callback_threshold` | `Some(100 ms)` | yes | report callbacks running longer; `None` disables timing |
 | `slow_hook` | `None` | yes | `SlowHook(Arc<dyn Fn(&SlowCallback)>)` receiving reports (else log/stderr) |
 | `udp_idle_timeout` | 60 s | no | drop a silent UDP peer (`idle_timeout` wins when set and shorter) |
-| `udp_max_peers` | `None` | no | most peers per UDP listener; new peers beyond are dropped and counted |
+| `udp_max_peers` | 65536 | no | most peers per UDP listener; new peers beyond are dropped and counted; `None` = no limit |
 | `udp_gro` | true | no | Linux UDP GRO where the kernel supports it; needs `read_buffer` >= 64 KiB |
+| `connect_timeout` | 10 s | no | `Engine::dial` gives up (`TimedOut` to `on_error`) when not connected after this long; `None` leaves it to the OS |
 | `shutdown_timeout` | 10 s | yes | after `shutdown`, force-close what is still open after this long |
 | `max_connections` | 0 (none) | yes | accepted connections beyond this many open ones are closed right away (engine-wide count, dialed and UDP peers included) |
 | `log_level` | `None` | yes | `only::log::LevelFilter`; calls `only::log::set_max_level` with it |

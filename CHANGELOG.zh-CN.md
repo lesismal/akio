@@ -10,6 +10,16 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：引擎的安全默认值（ADR-009，docs/rules.zh-CN.md）
+
+- `Config::write_timeout` 默认 60 s（原为 `None`）：不再读取的对端不能再让它的连接和最多
+  `max_queued_bytes` 的排队输出永远存在。
+- `Config::udp_max_peers` 默认每个 listener 65536（原为 `None`）：伪造的源地址不能再让对端表无限增长。
+- 新增 `Config::connect_timeout`（默认 10 s）：`Engine::dial` 放弃未能按时建立的连接，并以
+  `ErrorKind::TimedOut` 调用 `on_error`（epoll、kqueue、io_uring）。
+- 新的开发规则 docs/rules.zh-CN.md，改编自 fit：绝不阻塞 I/O 线程、消息体流式且有界、背压联动、处处有
+  超时和带安全默认值的上限、热路径上构建时优先于请求时、验证与改动相称。
+
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
 在没有 AVX-512 IFMA 的 x86_64 CPU（Zen 2 与 Zen 3、大多数 Intel 客户端处理器）上，only-crypto 的 Poly1305（因而

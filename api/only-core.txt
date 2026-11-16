@@ -245,6 +245,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_core::AnyAcceptor
 impl !core::panic::unwind_safe::UnwindSafe for only_core::AnyAcceptor
 #[non_exhaustive] pub struct only_core::Config
 pub only_core::Config::backlog: i32
+pub only_core::Config::connect_timeout: core::option::Option<core::time::Duration>
 pub only_core::Config::idle_timeout: core::option::Option<core::time::Duration>
 pub only_core::Config::log_level: core::option::Option<only_log::LevelFilter>
 pub only_core::Config::max_connections: usize

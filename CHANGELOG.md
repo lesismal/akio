@@ -10,6 +10,18 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: safe engine defaults (ADR-009, docs/rules.md)
+
+- `Config::write_timeout` defaults to 60 s (was `None`): a peer that stops reading no longer
+  pins its connection and up to `max_queued_bytes` of queued output forever.
+- `Config::udp_max_peers` defaults to 65536 per listener (was `None`): spoofed source addresses
+  can no longer grow the peer table without limit.
+- New `Config::connect_timeout` (default 10 s): `Engine::dial` abandons a connection that is not
+  established in time and calls `on_error` with `ErrorKind::TimedOut` (epoll, kqueue, io_uring).
+- New development rules, docs/rules.md, adapted from fit's: never block an I/O thread, bodies
+  streamed and bounded, linked backpressure, timeouts and safe-default limits everywhere, build
+  time over request time on the hot path, verification sized to the change.
+
 ### Changed: Poly1305 on AVX2 for CPUs without AVX-512 IFMA
 
 only-crypto's Poly1305 (and so ChaCha20-Poly1305) absorbs four blocks per step on AVX2 in radix

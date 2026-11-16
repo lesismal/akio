@@ -592,6 +592,67 @@ fn dial_connects_and_runs_handler() {
     stop(&e);
 }
 
+/// A dial to an address that never answers its SYN is abandoned after `connect_timeout`.
+/// Linux only: macOS sometimes resets connections past a full accept queue instead of dropping
+/// the SYN, so it cannot simulate an unanswered SYN reliably.
+#[cfg(target_os = "linux")]
+#[test]
+fn dial_gives_up_after_connect_timeout() {
+    // A listener whose accept queue is full drops further SYNs: fill it with
+    // blocking connects until one of them hangs.
+    let full = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = full.local_addr().unwrap();
+    let mut held = Vec::new();
+    let mut hangs = false;
+    for _ in 0..1024 {
+        match std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)) {
+            Ok(s) => held.push(s),
+            Err(_) => {
+                hangs = true;
+                break;
+            }
+        }
+    }
+    if !hangs {
+        eprintln!("skipped: this host answers SYNs past a full accept queue");
+        return;
+    }
+    let mut c = cfg();
+    c.connect_timeout = Some(Duration::from_millis(300));
+    let e = Engine::builder()
+        .config(c)
+        .listen(
+            Listener::tcp(localhost())
+                .backend(common::backend())
+                .threads(1)
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let t0 = std::time::Instant::now();
+    e.dial(addr, fn_acceptor(|_c: &Conn<Echo>| Echo), move |err| {
+        tx.send(err.kind()).unwrap();
+    });
+    let kind = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("on_error not called after connect_timeout");
+    assert_eq!(kind, std::io::ErrorKind::TimedOut);
+    assert!(t0.elapsed() >= Duration::from_millis(250), "{:?}", t0.elapsed());
+    drop(held);
+    stop(&e);
+}
+
+#[test]
+fn default_config_is_bounded() {
+    let c = Config::default();
+    assert_eq!(c.write_timeout, Some(Duration::from_secs(60)));
+    assert_eq!(c.connect_timeout, Some(Duration::from_secs(10)));
+    assert_eq!(c.udp_max_peers, Some(65536));
+}
+
 #[test]
 fn send_reports_overload_beyond_queue_limit() {
     struct Flood {

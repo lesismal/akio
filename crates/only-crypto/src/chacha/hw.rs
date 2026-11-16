@@ -193,6 +193,7 @@ pub(super) fn enabled() -> bool {
 /// group but the last), `last` the nine values per lane for the last group: `r⁴, r², r³, r¹`
 /// (the lanes hold blocks `0, 2, 1, 3` of a group, see [`poly_avx2`]).
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))] // read by the x86_64 kernel only
 pub(super) struct Avx2Powers {
     pub(super) r4: [u64; 9],
     pub(super) last: [[u64; 4]; 9],

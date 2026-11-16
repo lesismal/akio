@@ -46,6 +46,8 @@ thread_local! {
 
 /// Marks a wheel entry as a write-timeout check (connection ids never reach bit 63).
 const WRITE_TIMER: u64 = 1 << 63;
+/// Timer ids with this bit set are connect deadlines of pending dials (`Config::connect_timeout`).
+const CONNECT_TIMER: u64 = 1 << 62;
 
 fn ud(id: u64, op: u64) -> u64 {
     (id << 4) | op
@@ -1002,6 +1004,7 @@ impl Loop {
                 on_error: Some(on_error),
             },
         );
+        self.arm_connect(id);
     }
 
     fn finish_connect(&mut self, id: u64) {
@@ -1294,6 +1297,41 @@ impl Loop {
         lc.write_timer = Some(self.wheel.schedule(at, id | WRITE_TIMER));
     }
 
+    /// Arms the connect deadline of a pending dial (if `connect_timeout` is set). The timer is
+    /// not cancelled when the dial completes: the connection then lives under a new id, and a
+    /// stale deadline finds no pending dial.
+    fn arm_connect(&mut self, id: u64) {
+        let Some(ct) = self.cfg.connect_timeout else {
+            return;
+        };
+        let now = self.tick();
+        if self.wheel.is_empty() {
+            self.wheel.advance(now, drop);
+        }
+        let at = now + (ct.as_millis() as u64).max(1);
+        self.wheel.schedule(at, id | CONNECT_TIMER);
+    }
+
+    /// A dial's connect deadline is due: abandon it if it is still pending.
+    fn on_connect_timer(&mut self, id: u64) {
+        if !matches!(self.slots.get(&id), Some(Slot::Connecting { .. })) {
+            return;
+        }
+        let Some(Slot::Connecting {
+            stream, on_error, ..
+        }) = self.slots.remove(&id)
+        else {
+            return;
+        };
+        // Cancel the pending POLLOUT so the ring drops its reference and the socket closes.
+        let e = Sqe::async_cancel(ud(id, OP_POLL)).user_data(ud(id, OP_OTHER));
+        self.push(e);
+        drop(stream);
+        if let Some(f) = on_error {
+            f(io::Error::new(io::ErrorKind::TimedOut, "connect timeout"));
+        }
+    }
+
     /// A write-timeout check is due: close the connection if output is still queued and nothing
     /// was written since the last check, else check again later.
     fn on_write_timer(&mut self, id: u64, now: u64) {
@@ -1328,6 +1366,10 @@ impl Loop {
         let mut due = Vec::new();
         self.wheel.advance(now, |id| due.push(id));
         for id in due {
+            if id & CONNECT_TIMER != 0 {
+                self.on_connect_timer(id & !CONNECT_TIMER);
+                continue;
+            }
             if id & WRITE_TIMER != 0 {
                 self.on_write_timer(id & !WRITE_TIMER, now);
                 continue;

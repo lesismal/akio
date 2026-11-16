@@ -65,7 +65,7 @@ fn main() -> std::io::Result<()> {
     cfg.read_buffer = 64 << 10; // per I/O thread; on_data sees at most this much
     cfg.backlog = 1024; // listen(2) backlog
     cfg.udp_idle_timeout = Duration::from_secs(60);
-    cfg.udp_max_peers = Some(100_000); // None = unlimited
+    cfg.udp_max_peers = Some(100_000); // default 65536; None = unlimited
     cfg.udp_gro = true; // Linux UDP GRO (the default), needs read_buffer >= 64 KiB
     // Reloadable with Engine::reload.
     cfg.write_high_watermark = 256 << 10; // pause reads above this many queued bytes
