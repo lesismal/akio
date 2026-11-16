@@ -1343,8 +1343,14 @@ impl Core {
 
     fn build_request(&self, fields: &Fields) -> Result<Request, ()> {
         let (mut method, mut path, mut authority, mut scheme) = (None, None, None, None);
-        // The regular fields fit in one allocation (the pseudo-headers are not kept as fields).
-        let mut headers = Headers::with_capacity(fields.spans.len(), fields.buf.len());
+        // The regular fields fit in one allocation (the pseudo-headers are not kept as fields;
+        // a request with few regular fields keeps their positions inline).
+        let n = fields
+            .spans
+            .iter()
+            .filter(|&&(a, b, _)| a == b || fields.buf[a] != b':')
+            .count();
+        let mut headers = Headers::with_capacity(n, fields.buf.len());
         let mut regular = false;
         let mut cookies: Option<String> = None;
         for (n, v) in fields.iter() {

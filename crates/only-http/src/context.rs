@@ -111,17 +111,17 @@ enum Out {
 }
 
 impl Out {
-    fn send(self, mut resp: Response, fin: &mut Finish) -> u16 {
+    fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
         match self {
-            Out::H1(r) => r.send(resp, fin),
+            Out::H1(r) => r.send(resp, fin, req),
             Out::H2(r) => {
-                fin.apply(&mut resp);
+                fin.apply(&mut resp, req);
                 let status = resp.status;
                 r.send(resp);
                 status
             }
             Out::Ext(r) => {
-                fin.apply(&mut resp);
+                fin.apply(&mut resp, req);
                 let status = resp.status;
                 r.send(resp);
                 status
@@ -137,14 +137,22 @@ struct Finish {
     /// Set with the time header: reading the clock for every request costs.
     started: Option<Instant>,
     time_header: Option<String>,
-    req: Arc<Request>,
 }
 
 impl Finish {
+    fn new() -> Finish {
+        Finish {
+            extra: Headers::new(),
+            filters: Vec::new(),
+            started: None,
+            time_header: None,
+        }
+    }
+
     /// Runs the filters, then adds the extra headers the response did not set.
-    fn apply(&mut self, resp: &mut Response) {
+    fn apply(&mut self, resp: &mut Response, req: &Request) {
         for f in self.filters.drain(..) {
-            f(resp, &self.req);
+            f(resp, req);
         }
         for (n, v) in self.extra.iter() {
             if resp.headers.get(n).is_none() {
@@ -164,8 +172,8 @@ impl Finish {
 }
 
 impl Responder {
-    fn send(self, mut resp: Response, fin: &mut Finish) -> u16 {
-        fin.apply(&mut resp);
+    fn send(self, mut resp: Response, fin: &mut Finish, req: &Request) -> u16 {
+        fin.apply(&mut resp, req);
         let status = resp.status;
         let mut head = Vec::with_capacity(192 + resp.body.len());
         resp.encode(self.version, self.keep_alive, self.head_only, &mut head);
@@ -189,9 +197,40 @@ impl Responder {
     }
 }
 
+/// The request of a [`Context`]: owned (no allocation) until a [`Detached`] or a WebSocket
+/// upgrade needs to share it.
+// Inline on purpose: boxing the request is the allocation this saves.
+#[allow(clippy::large_enum_variant)]
+enum ReqCell {
+    Own(Request),
+    Shared(Arc<Request>),
+}
+
+impl ReqCell {
+    /// The request, shared from now on.
+    fn share(&mut self) -> Arc<Request> {
+        let a = match self {
+            ReqCell::Shared(a) => return a.clone(),
+            ReqCell::Own(r) => Arc::new(std::mem::replace(r, Request::new(Method::Get, ""))),
+        };
+        *self = ReqCell::Shared(a.clone());
+        a
+    }
+}
+
+impl std::ops::Deref for ReqCell {
+    type Target = Request;
+    fn deref(&self) -> &Request {
+        match self {
+            ReqCell::Own(r) => r,
+            ReqCell::Shared(a) => a,
+        }
+    }
+}
+
 /// One request being handled, and the means to answer it.
 pub struct Context {
-    req: Arc<Request>,
+    req: ReqCell,
     params: crate::router::Params,
     locals: Vec<(String, String)>,
     fin: Finish,
@@ -233,7 +272,6 @@ pub struct WsOptions {
 impl Context {
     pub(crate) fn new(req: Request, slot: ResponseSlot, keep_alive: bool) -> Context {
         let head_only = req.method == Method::Head;
-        let req = Arc::new(req);
         Context {
             responder: Some(Out::H1(Responder {
                 slot,
@@ -241,14 +279,8 @@ impl Context {
                 keep_alive,
                 head_only,
             })),
-            fin: Finish {
-                extra: Headers::new(),
-                filters: Vec::new(),
-                started: None,
-                time_header: None,
-                req: req.clone(),
-            },
-            req,
+            fin: Finish::new(),
+            req: ReqCell::Own(req),
             params: Default::default(),
             locals: Vec::new(),
             status: None,
@@ -267,16 +299,9 @@ impl Context {
     }
 
     fn new_h2_like(req: Request) -> Context {
-        let req = Arc::new(req);
         Context {
-            fin: Finish {
-                extra: Headers::new(),
-                filters: Vec::new(),
-                started: None,
-                time_header: None,
-                req: req.clone(),
-            },
-            req,
+            fin: Finish::new(),
+            req: ReqCell::Own(req),
             params: Default::default(),
             locals: Vec::new(),
             status: None,
@@ -290,16 +315,9 @@ impl Context {
 
     /// A context for a request on an HTTP/2 stream.
     pub(crate) fn new_h2(req: Request, responder: H2Responder) -> Context {
-        let req = Arc::new(req);
         Context {
-            fin: Finish {
-                extra: Headers::new(),
-                filters: Vec::new(),
-                started: None,
-                time_header: None,
-                req: req.clone(),
-            },
-            req,
+            fin: Finish::new(),
+            req: ReqCell::Own(req),
             params: Default::default(),
             locals: Vec::new(),
             status: None,
@@ -423,7 +441,7 @@ impl Context {
     /// Sends `resp`. Only the first response counts; later calls are ignored.
     pub fn respond(&mut self, resp: Response) {
         if let Some(r) = self.responder.take() {
-            self.status = Some(r.send(resp, &mut self.fin));
+            self.status = Some(r.send(resp, &mut self.fin, &self.req));
         }
     }
 
@@ -444,14 +462,13 @@ impl Context {
         let responder = self.responder.take()?;
         self.detached = true;
         Some(Detached {
-            req: self.req.clone(),
+            req: self.req.share(),
             params: std::mem::take(&mut self.params).boxed(),
             fin: Finish {
                 extra: std::mem::take(&mut self.fin.extra),
                 filters: std::mem::take(&mut self.fin.filters),
                 started: self.fin.started,
                 time_header: self.fin.time_header.take(),
-                req: self.req.clone(),
             },
             responder,
         })
@@ -466,7 +483,7 @@ impl Context {
         let out = self.responder.take()?;
         self.detached = true;
         self.status = Some(status);
-        start_stream(out, &mut self.fin, status, headers)
+        start_stream(out, &mut self.fin, &self.req, status, headers)
     }
 
     /// Server push (HTTP/2): promises `GET path` to the client and serves it with the same
@@ -491,7 +508,7 @@ impl Context {
         if self.responder.is_none() {
             return false;
         }
-        let r = self.req.clone();
+        let r = self.req.share();
         let h = &r.headers;
         if r.method != Method::Get || r.version != Version::Http11 {
             self.text(400, "WebSocket upgrade needs GET over HTTP/1.1");
@@ -620,16 +637,22 @@ impl Detached {
 
     /// Sends the response. Safe from any thread.
     pub fn respond(mut self, resp: Response) {
-        self.responder.send(resp, &mut self.fin);
+        self.responder.send(resp, &mut self.fin, &self.req);
     }
 
     /// Starts a streamed response, as [`Context::stream_response`] does, from any thread.
     pub fn stream_response(mut self, status: u16, headers: Headers) -> Option<BodyStream> {
-        start_stream(self.responder, &mut self.fin, status, headers)
+        start_stream(self.responder, &mut self.fin, &self.req, status, headers)
     }
 }
 
-fn start_stream(out: Out, fin: &mut Finish, status: u16, headers: Headers) -> Option<BodyStream> {
+fn start_stream(
+    out: Out,
+    fin: &mut Finish,
+    req: &Request,
+    status: u16,
+    headers: Headers,
+) -> Option<BodyStream> {
     let mut resp = Response::new(status);
     resp.headers = headers;
     resp.streaming = true;
@@ -639,7 +662,7 @@ fn start_stream(out: Out, fin: &mut Finish, status: u16, headers: Headers) -> Op
             if chunked {
                 resp.headers.set("Transfer-Encoding", "chunked");
             }
-            fin.apply(&mut resp);
+            fin.apply(&mut resp, req);
             let mut head = Vec::with_capacity(192);
             resp.encode(r.version, r.keep_alive, r.head_only, &mut head);
             Some(BodyStream(Inner::H1 {
@@ -650,11 +673,11 @@ fn start_stream(out: Out, fin: &mut Finish, status: u16, headers: Headers) -> Op
             }))
         }
         Out::H2(r) => {
-            fin.apply(&mut resp);
+            fin.apply(&mut resp, req);
             r.start_stream(resp).map(|s| BodyStream(Inner::H2(s)))
         }
         Out::Ext(r) => {
-            fin.apply(&mut resp);
+            fin.apply(&mut resp, req);
             r.start_stream(resp).map(|s| BodyStream(Inner::Ext(s)))
         }
     }

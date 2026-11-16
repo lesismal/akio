@@ -64,13 +64,100 @@ impl Method {
 
 /// HTTP header fields: ordered, names compared case-insensitively, duplicates allowed.
 ///
-/// All names and values live in one string, so a set of fields costs two allocations however
+/// All names and values live in one string, and the positions of the first few fields are
+/// kept inline, so a small set of fields costs one allocation and a large one two, however
 /// many fields it holds (a parsed request head used to cost two per field).
 #[derive(Clone, Default)]
 pub struct Headers {
     buf: String,
-    /// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`.
-    fields: Vec<(usize, usize, usize)>,
+    fields: Spans,
+}
+
+/// Per field: name at `buf[.0...1]`, value at `buf[.1...2]`.
+type Span = (usize, usize, usize);
+
+/// Fields kept inline before [`Spans`] moves to the heap.
+const INLINE: usize = 4;
+
+/// Field positions: up to [`INLINE`] inline (as `u32`), then in a vector.
+#[derive(Clone)]
+enum Spans {
+    Inline(u8, [[u32; 3]; INLINE]),
+    Heap(Vec<Span>),
+}
+
+impl Default for Spans {
+    fn default() -> Spans {
+        Spans::Inline(0, [[0; 3]; INLINE])
+    }
+}
+
+impl Spans {
+    fn with_capacity(n: usize) -> Spans {
+        if n <= INLINE {
+            Spans::default()
+        } else {
+            Spans::Heap(Vec::with_capacity(n))
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            Spans::Inline(n, _) => usize::from(*n),
+            Spans::Heap(v) => v.len(),
+        }
+    }
+
+    #[inline]
+    fn get(&self, i: usize) -> Span {
+        match self {
+            Spans::Inline(_, a) => {
+                let [x, y, z] = a[i];
+                (x as usize, y as usize, z as usize)
+            }
+            Spans::Heap(v) => v[i],
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = Span> + '_ {
+        (0..self.len()).map(move |i| self.get(i))
+    }
+
+    fn push(&mut self, f: Span) {
+        if let Spans::Inline(n, a) = self {
+            let i = usize::from(*n);
+            if let (true, Ok(z)) = (i < INLINE, u32::try_from(f.2)) {
+                // `f.0 <= f.1 <= f.2`, so they fit too.
+                a[i] = [f.0 as u32, f.1 as u32, z];
+                *n += 1;
+                return;
+            }
+            let mut v = Vec::with_capacity(2 * INLINE);
+            v.extend(self.iter());
+            *self = Spans::Heap(v);
+        }
+        if let Spans::Heap(v) = self {
+            v.push(f);
+        }
+    }
+
+    fn retain(&mut self, mut keep: impl FnMut(Span) -> bool) {
+        match self {
+            Spans::Inline(n, a) => {
+                let mut w = 0;
+                for r in 0..usize::from(*n) {
+                    let [x, y, z] = a[r];
+                    if keep((x as usize, y as usize, z as usize)) {
+                        a[w] = a[r];
+                        w += 1;
+                    }
+                }
+                *n = w as u8;
+            }
+            Spans::Heap(v) => v.retain(|&f| keep(f)),
+        }
+    }
 }
 
 impl Headers {
@@ -83,12 +170,12 @@ impl Headers {
     pub fn with_capacity(fields: usize, bytes: usize) -> Headers {
         Headers {
             buf: String::with_capacity(bytes),
-            fields: Vec::with_capacity(fields),
+            fields: Spans::with_capacity(fields),
         }
     }
 
     #[inline]
-    fn field(&self, f: &(usize, usize, usize)) -> (&str, &str) {
+    fn field(&self, f: &Span) -> (&str, &str) {
         (&self.buf[f.0..f.1], &self.buf[f.1..f.2])
     }
 
@@ -150,7 +237,7 @@ impl Headers {
 
     /// All fields in order.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.fields.iter().map(|f| self.field(f))
+        self.fields.iter().map(|f| self.field(&f))
     }
 
     /// Number of fields.
@@ -160,7 +247,7 @@ impl Headers {
 
     /// Whether there are no fields.
     pub fn is_empty(&self) -> bool {
-        self.fields.is_empty()
+        self.fields.len() == 0
     }
 }
 
@@ -558,6 +645,40 @@ mod tests {
         assert!(!h.has_token("connection", "close"));
         h.set("accept", "c");
         assert_eq!(h.get_all("Accept").collect::<Vec<_>>(), ["c"]);
+    }
+
+    #[test]
+    fn headers_inline_then_heap() {
+        // The first fields' positions are inline; more move them to the heap, in order, and
+        // removal works the same way in both forms.
+        for n in [0, 1, INLINE - 1, INLINE, INLINE + 1, 3 * INLINE] {
+            for cap in [0, n] {
+                let mut h = Headers::with_capacity(cap, 0);
+                for i in 0..n {
+                    h.append(format!("x-{i}"), i.to_string());
+                }
+                assert_eq!(h.len(), n);
+                let want: Vec<(String, String)> =
+                    (0..n).map(|i| (format!("x-{i}"), i.to_string())).collect();
+                let got: Vec<(String, String)> = h
+                    .iter()
+                    .map(|(a, b)| (a.to_string(), b.to_string()))
+                    .collect();
+                assert_eq!(got, want);
+                h.remove("x-0");
+                h.remove("X-2");
+                let left = (0..n).filter(|&i| i != 0 && i != 2).count();
+                assert_eq!(h.len(), left);
+                assert!(h.get("x-0").is_none() && h.get("x-2").is_none());
+                if n > 3 {
+                    assert_eq!(h.get("x-3"), Some("3"));
+                }
+                h.append("y", "z");
+                assert_eq!(h.iter().last(), Some(("y", "z")));
+                assert!(!h.is_empty());
+            }
+        }
+        assert!(Headers::with_capacity(INLINE + 1, 0).is_empty());
     }
 
     #[test]
