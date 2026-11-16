@@ -23,7 +23,8 @@ Additive API (ADR-013, docs/adr/013-shared-anti-replay-and-compatible-vn.md):
   plugs in a shared one (Redis `SET key 1 NX PX ttl`, sketched in the book's TLS chapter);
   `ServerConfigBuilder::session_ticket_key([u8; 48])` lets servers in several processes or
   machines accept each other's tickets in the first place. QUIC servers get both through their
-  TLS configuration.
+  TLS configuration. Accepted ClientHellos are now kept 30 s (was 20 s): twice the 10 s
+  freshness window plus one window for the clocks of servers sharing a store to differ by.
 - **Compatible version negotiation** (only-quic, RFC 9368 section 4):
   `ServerConfig::prefer_version(Version)` moves clients that start in the other version and list
   the preferred one in their version_information to it within the handshake, without a round

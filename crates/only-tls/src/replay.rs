@@ -28,7 +28,7 @@ use crate::proto::common::now_millis;
 /// failure. The book's TLS chapter has a full sketch.
 pub trait AntiReplayStore: Send + Sync {
     /// Records `binder` (the first PSK binder of a ClientHello, 32 or 48 bytes; unique per
-    /// ClientHello and unpredictable) for `ttl`, atomically: `Ok(true)` if it was not
+    /// ClientHello and unpredictable) for `ttl` (30 seconds), atomically: `Ok(true)` if it was not
     /// recorded yet (the early data is accepted), `Ok(false)` if it was (a replay: the early
     /// data is rejected). `Ok(false)` is also the answer when the store cannot take more
     /// entries.

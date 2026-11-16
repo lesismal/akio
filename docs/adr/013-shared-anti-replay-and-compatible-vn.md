@@ -33,8 +33,10 @@ Two items were left open when TLS 1.3 early data and QUIC 0-RTT landed:
    ```
 
    `binder` is the ClientHello's first PSK binder (32 or 48 bytes, an HMAC over the
-   ClientHello: unique and unpredictable, so usable as a key as it is); `ttl` is twice the
-   freshness window (20 s). `Ok(true)`: first time, early data accepted; `Ok(false)`: seen
+   ClientHello: unique and unpredictable, so usable as a key as it is); `ttl` is three freshness
+   windows (30 s): a replay passes the freshness check up to two windows after the first use,
+   and one more covers servers whose clocks differ by up to a window (it was two windows, 20 s,
+   when the record was private to one server and one clock). `Ok(true)`: first time, early data accepted; `Ok(false)`: seen
    (or the store is full), rejected. The freshness check (ticket age within 10 s) stays in the
    server and runs first, so the store sees only fresh ClientHellos and keys older than the TTL
    can never be accepted again.
@@ -86,8 +88,8 @@ with a switch that makes it fail.
    starts TLS with its own version_information naming the new version. Nothing has been
    answered by TLS yet at that point, so no extra round trip and no TLS state to rewind. A
    server without a preference never holds anything back.
-4. **How (client)**: a client in its handshake that receives an Initial of another version it
-   supports switches to it if that packet decrypts with the new version's Initial keys (and
+4. **How (client)**: a client in its handshake, before it has processed a ServerHello, that
+   receives an Initial of another version it supports switches to it if that packet decrypts with the new version's Initial keys (and
    switches back if not, so a forged packet cannot move it). Its 0-RTT packets stay in the
    first version (RFC 9369 section 4.1). Both sides check version_information as RFC 9368
    says: the server against the client's first version, the client against the version in use.
@@ -109,4 +111,7 @@ with a switch that makes it fail.
   not the service.
 - The ClientHello peek costs a copy of the client's Initial CRYPTO data, only on servers with a
   preference. Sending a v1 Initial and continuing in v2 is visible on the wire (by design).
-- Not done: an asynchronous store interface; ticket key rotation with several live keys.
+- Not done: an asynchronous store interface; ticket key rotation with several live keys; binding
+  session tickets and NEW_TOKEN tokens to the QUIC version that issued them (RFC 9369 section 5
+  asks for it; it predates this decision, and compatible negotiation makes a v1 resumption with a
+  ticket from a connection moved to v2 routine).

@@ -592,7 +592,8 @@ impl ServerConfigBuilder {
     /// entries): servers that accept the same tickets (see
     /// [`session_ticket_key`](Self::session_ticket_key)), in other processes or on other
     /// machines, share replay protection through it. Each accepted ClientHello is recorded
-    /// for 20 seconds (twice the freshness window). A store error rejects the early data
+    /// for 30 seconds: twice the 10-second freshness window, plus one window for the clocks
+    /// of the servers sharing the store to differ by (keep them within 10 s of each other). A store error rejects the early data
     /// (the handshake goes on without it). Only used with [`early_data`](Self::early_data).
     pub fn anti_replay_store(mut self, store: Arc<dyn AntiReplayStore>) -> Self {
         self.anti_replay_store = Some(std::panic::AssertUnwindSafe(store));

@@ -185,11 +185,15 @@ impl Connection {
             (Side::Server, PacketType::Initial) if self.orig_version == Some(h.version) => {
                 VersionUse::Ours
             }
-            // A client follows a server's compatible switch, once, during the handshake.
+            // A client follows a server's compatible switch, once, before it has the server's
+            // ServerHello (later, a re-encrypted Initial could only stall the handshake).
             (Side::Client, PacketType::Initial)
                 if self.orig_version.is_none()
                     && self.is_handshaking()
                     && !self.spaces[0].discarded
+                    && self.spaces[1].keys.is_none()
+                    && self.pending_hs_keys.0.is_none()
+                    && self.pending_hs_keys.1.is_none()
                     && supported(h.version)
                     && self.cfg.versions.contains(&h.version) =>
             {

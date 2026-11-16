@@ -19,7 +19,8 @@ only 的所有重要变更都记录在这里。格式遵循
   握手路径上调用。出错时**失败即关闭**（拒绝早期数据，客户端在握手后重发）。默认实现 `MemoryAntiReplay`（即原有
   的每配置一份、有界的记录，10 万条）现已公开。`ServerConfigBuilder::anti_replay_store(Arc<dyn AntiReplayStore>)`
   接入共享存储（Redis `SET key 1 NX PX ttl`，示意见本书 TLS 章节）；`ServerConfigBuilder::session_ticket_key([u8; 48])`
-  让多个进程或多台机器上的服务端能接受彼此的票据。QUIC 服务端经由其 TLS 配置获得这两项。
+  让多个进程或多台机器上的服务端能接受彼此的票据。QUIC 服务端经由其 TLS 配置获得这两项。已接受的 ClientHello 现保留 30 秒（原为 20 秒）：10 秒新鲜度窗口的两倍，再加一个窗口
+  容许共享存储的服务端之间时钟有偏差。
 - **兼容版本协商**（only-quic，RFC 9368 第 4 节）：`ServerConfig::prefer_version(Version)` 让以另一版本开始、
   并在 version_information 中列出偏好版本的客户端在握手内切换过去，不多花往返；ClientHello 跨多个包、Retry
   之后以及 0-RTT 时同样可用（0-RTT 包保持客户端的首个版本，RFC 9369 第 4.1 节）。默认关闭：服务端用客户端的

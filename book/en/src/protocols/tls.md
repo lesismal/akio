@@ -122,7 +122,7 @@ completes, so `on_data` can see a request one round trip earlier.
 
 **Replay protection** is always on with early data: the server accepts it only when the
 client's view of the ticket age is within 10 seconds of its own (RFC 8446 section 8.3) and
-records the PSK binder of each accepted ClientHello for 20 seconds (section 8.2); a ClientHello
+records the PSK binder of each accepted ClientHello for 30 seconds (section 8.2: twice the window, plus one for clocks of servers sharing a store to differ by); a ClientHello
 seen before gets its early data rejected and continues as an ordinary resumption. The record
 holds 100,000 ClientHellos per `ServerConfig`; when full, early data is rejected.
 

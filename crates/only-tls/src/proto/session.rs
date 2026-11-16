@@ -203,7 +203,7 @@ impl SessionCache {
 
 /// The server's 0-RTT anti-replay state (RFC 8446 section 8.2, "ClientHello recording", with
 /// the freshness check of section 8.3): the PSK binder of every ClientHello whose early data
-/// was accepted is recorded in the store for twice the freshness window, and a ClientHello
+/// was accepted is recorded in the store for three freshness windows, and a ClientHello
 /// whose binder is already there has its early data rejected (it falls back to a 1-RTT
 /// resumption). Early data is accepted only when the ticket age the client reports is within
 /// the window of the age the server computes, so a replay that comes after its entry expired
@@ -238,8 +238,12 @@ impl AntiReplay {
 
     /// Records the ClientHello identified by `binder` (its first PSK binder): `false` if it
     /// was seen before within the retention time, if the store is full or if it failed.
+    ///
+    /// Retention: a replay passes the freshness check up to twice the window after the first
+    /// use on the same clock; servers sharing a store may disagree on the time, so one more
+    /// window covers clocks up to that far apart (three windows, 30 s by default).
     pub(crate) fn record(&self, binder: &[u8]) -> bool {
-        let ttl = Duration::from_millis(self.window_ms.saturating_mul(2));
+        let ttl = Duration::from_millis(self.window_ms.saturating_mul(3));
         self.store.check_and_insert(binder, ttl).unwrap_or(false)
     }
 }
