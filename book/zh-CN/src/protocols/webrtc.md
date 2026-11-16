@@ -110,6 +110,10 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 来自对端的数据：TURN 监听器应调大该超时。`TurnCore` 是不含 I/O 的同一服务器（由 `TurnEnv` 负责
 发送），便于嵌入或测试。单独的 `StunServer` 只应答 Binding 请求。
 
+`TurnServer` 按客户端地址把分配分成若干分片（约每个 CPU 四个，至少 8 个），每个分片有自己的锁：
+不同分配的数据报不会在 I/O 线程之间争用，过期清扫每次只持有一个分片，已认证的 Allocate 的中继
+socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
+
 ## 尚未完成
 
 TCP/TLS 上的 TURN，以及 `only-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的

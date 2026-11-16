@@ -12,8 +12,9 @@
 //!   [`only::Engine::bind_udp`]. It also answers Binding requests, so it is a STUN server too.
 //! - [`TurnCore`]: the same server as a sans-io state machine.
 //!
-//! Callbacks run on the I/O thread that read the datagram (the listener's or a relay's);
-//! expiry is swept by one background thread per server.
+//! Callbacks run on the I/O thread that read the datagram (the listener's or a relay's) and
+//! lock only the shard of the allocation concerned; expiry is swept shard by shard by one
+//! background thread per server.
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -45,8 +46,10 @@ pub mod stun;
 
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{BuildHasher, RandomState};
 use std::io;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
@@ -54,6 +57,7 @@ use only::{Acceptor, Conn, Engine, Handler, UdpBinding};
 
 pub use crate::auth::{AuthFn, ephemeral_auth, ephemeral_credentials, static_auth};
 pub use crate::core::{PeerFilter, TurnConfig, TurnCore, TurnEnv, TurnStats, denied_by_default};
+use crate::core::Shared;
 
 pub(crate) fn fill_random(buf: &mut [u8]) {
     if only_crypto::rand::fill_random(buf).is_err() {
@@ -117,49 +121,136 @@ impl Handler for StunPeer {
 
 // ---- TURN server ----
 
+/// One shard of a server: the allocations of the clients whose address hashes to it, and their
+/// listener connections. A datagram locks only its own shard.
+struct Shard {
+    core: TurnCore,
+    clients: HashMap<SocketAddr, Conn<TurnClient>>,
+}
+
+/// A relay socket and the shard its allocation lives in (an `EVEN-PORT` reservation can be
+/// claimed from another shard, which moves it).
+struct Relay {
+    binding: UdpBinding,
+    route: Arc<AtomicUsize>,
+}
+
 struct Inner {
-    core: Mutex<TurnCore>,
-    clients: Mutex<HashMap<SocketAddr, Conn<TurnClient>>>,
-    relays: Mutex<HashMap<SocketAddr, UdpBinding>>,
+    shared: Arc<Shared>,
+    shards: Box<[Mutex<Shard>]>,
+    /// Relay sockets by bound address, sharded by that address.
+    relays: Box<[Mutex<HashMap<SocketAddr, Relay>>]>,
+    /// Keyed per server, so clients cannot choose to crowd into one shard.
+    hasher: RandomState,
     engine: OnceLock<Weak<Engine>>,
     me: Weak<Inner>,
 }
 
-/// The `only` side of [`TurnEnv`]: listener connections for clients, bound sockets for relays.
-struct Env<'a>(&'a Inner);
+impl Inner {
+    fn shard_of(&self, addr: SocketAddr) -> usize {
+        (self.hasher.hash_one(addr) as usize) & (self.shards.len() - 1)
+    }
+
+    fn relays_of(&self, relay: SocketAddr) -> &Mutex<HashMap<SocketAddr, Relay>> {
+        &self.relays[(self.hasher.hash_one(relay) as usize) & (self.relays.len() - 1)]
+    }
+
+    fn engine(&self) -> io::Result<Arc<Engine>> {
+        self.engine
+            .get()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| io::Error::other("TurnServer::set_engine was not called"))
+    }
+
+    /// Binds a relay socket whose peers' datagrams go to shard `route`.
+    fn bind_relay(&self, addr: SocketAddr, route: usize) -> io::Result<(UdpBinding, Arc<AtomicUsize>)> {
+        let route = Arc::new(AtomicUsize::new(route));
+        let b = self
+            .engine()?
+            .bind_udp(addr, RelayAcceptor(self.me.clone(), route.clone()))?;
+        Ok((b, route))
+    }
+
+    /// Runs `f` on shard `i`'s state machine with the `only` environment.
+    fn with_shard<R>(
+        &self,
+        i: usize,
+        prebound: Option<(UdpBinding, Arc<AtomicUsize>)>,
+        f: impl FnOnce(&mut TurnCore, &mut Env<'_>) -> R,
+    ) -> R {
+        let mut g = lock(&self.shards[i]);
+        let Shard { core, clients } = &mut *g;
+        let mut env = Env {
+            inner: self,
+            shard: i,
+            clients,
+            prebound,
+        };
+        let r = f(core, &mut env);
+        let unused = env.prebound.take();
+        drop(g);
+        if let Some((b, _)) = unused {
+            b.close();
+        }
+        r
+    }
+}
+
+fn shard_count() -> usize {
+    let cpus = std::thread::available_parallelism().map_or(4, usize::from);
+    (cpus * 4).next_power_of_two().clamp(8, 256)
+}
+
+/// The `only` side of [`TurnEnv`] for one shard: its listener connections for clients, the
+/// relay table for relays.
+struct Env<'a> {
+    inner: &'a Inner,
+    shard: usize,
+    clients: &'a mut HashMap<SocketAddr, Conn<TurnClient>>,
+    /// A relay bound before the shard was locked, for an authenticated Allocate.
+    prebound: Option<(UdpBinding, Arc<AtomicUsize>)>,
+}
 
 impl TurnEnv for Env<'_> {
     fn send_to_client(&mut self, client: SocketAddr, data: &[u8]) {
-        let c = lock(&self.0.clients).get(&client).cloned();
-        if let Some(c) = c {
+        if let Some(c) = self.clients.get(&client) {
             let _ = c.send(data);
         }
     }
 
     fn send_to_peer(&mut self, relay: SocketAddr, peer: SocketAddr, data: &[u8]) {
-        let b = lock(&self.0.relays).get(&relay).cloned();
-        if let Some(b) = b {
-            let _ = b.send_to(data, peer);
+        if let Some(r) = lock(self.inner.relays_of(relay)).get(&relay) {
+            let _ = r.binding.send_to(data, peer);
         }
     }
 
     fn open_relay(&mut self, _client: SocketAddr, addr: SocketAddr) -> io::Result<SocketAddr> {
-        let engine = self
-            .0
-            .engine
-            .get()
-            .and_then(Weak::upgrade)
-            .ok_or_else(|| io::Error::other("TurnServer::set_engine was not called"))?;
-        let b = engine.bind_udp(addr, RelayAcceptor(self.0.me.clone()))?;
-        let addr = b.local_addr();
-        lock(&self.0.relays).insert(addr, b);
-        Ok(addr)
+        let any_port = addr.port() == 0 && addr.ip() == self.inner.shared.config().relay_ip;
+        let (binding, route) = match self.prebound.take() {
+            Some(p) if any_port => p,
+            other => {
+                self.prebound = other;
+                // EVEN-PORT allocations (a given port, or retries until an even one) still
+                // bind here, under the shard's lock: they are rare.
+                self.inner.bind_relay(addr, self.shard)?
+            }
+        };
+        route.store(self.shard, Ordering::Relaxed);
+        let bound = binding.local_addr();
+        lock(self.inner.relays_of(bound)).insert(bound, Relay { binding, route });
+        Ok(bound)
     }
 
     fn close_relay(&mut self, relay: SocketAddr) {
-        let b = lock(&self.0.relays).remove(&relay);
-        if let Some(b) = b {
-            b.close();
+        let r = lock(self.inner.relays_of(relay)).remove(&relay);
+        if let Some(r) = r {
+            r.binding.close();
+        }
+    }
+
+    fn adopt_relay(&mut self, relay: SocketAddr) {
+        if let Some(r) = lock(self.inner.relays_of(relay)).get(&relay) {
+            r.route.store(self.shard, Ordering::Relaxed);
         }
     }
 }
@@ -172,6 +263,10 @@ impl TurnEnv for Env<'_> {
 /// until it sends again (a refresh, a permission, data): keep that timeout above the
 /// permission refresh interval (the default 60s is fine for clients refreshing every 5
 /// minutes only if they also send keepalives; raise it for receive-only clients).
+///
+/// Allocations are split into shards by client address (about four per CPU), each with its own
+/// lock: datagrams of different allocations do not contend, the expiry sweep holds one shard at
+/// a time, and the relay socket of an authenticated Allocate is bound before any lock is taken.
 #[derive(Clone)]
 pub struct TurnServer(Arc<Inner>);
 
@@ -186,10 +281,20 @@ impl fmt::Debug for TurnServer {
 impl TurnServer {
     /// A server with `cfg`.
     pub fn new(cfg: TurnConfig) -> TurnServer {
+        let shared = Arc::new(Shared::new(cfg));
+        let n = shard_count();
         let inner = Arc::new_cyclic(|me| Inner {
-            core: Mutex::new(TurnCore::new(cfg)),
-            clients: Mutex::new(HashMap::new()),
-            relays: Mutex::new(HashMap::new()),
+            shards: (0..n)
+                .map(|_| {
+                    Mutex::new(Shard {
+                        core: TurnCore::shard(shared.clone()),
+                        clients: HashMap::new(),
+                    })
+                })
+                .collect(),
+            relays: (0..n).map(|_| Mutex::new(HashMap::new())).collect(),
+            shared,
+            hasher: RandomState::new(),
             engine: OnceLock::new(),
             me: me.clone(),
         });
@@ -200,7 +305,12 @@ impl TurnServer {
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
                     let Some(inner) = weak.upgrade() else { return };
-                    lock(&inner.core).handle_timeout(Instant::now(), &mut Env(&inner));
+                    // One shard at a time: datagrams of the others go on meanwhile.
+                    for i in 0..inner.shards.len() {
+                        inner.with_shard(i, None, |core, env| {
+                            core.handle_timeout(Instant::now(), env);
+                        });
+                    }
                 }
             });
         TurnServer(inner)
@@ -212,27 +322,46 @@ impl TurnServer {
         let _ = self.0.engine.set(Arc::downgrade(engine));
     }
 
-    /// Counters (allocations open, datagrams relayed, authentication failures).
+    /// Counters (allocations open, datagrams relayed, authentication failures), summed over
+    /// the shards.
     pub fn stats(&self) -> TurnStats {
-        lock(&self.0.core).stats()
+        let mut t = TurnStats::default();
+        for s in &self.0.shards {
+            let st = lock(s).core.stats();
+            t.allocations += st.allocations;
+            t.to_peer += st.to_peer;
+            t.to_client += st.to_client;
+            t.auth_failures += st.auth_failures;
+        }
+        t
     }
 
     /// The relayed address of `client`'s allocation.
     pub fn relay_of(&self, client: SocketAddr) -> Option<SocketAddr> {
-        lock(&self.0.core).relay_of(client)
+        lock(&self.0.shards[self.0.shard_of(client)])
+            .core
+            .relay_of(client)
     }
 
     /// Frees every allocation and closes the relay sockets.
     pub fn close_all(&self) {
-        lock(&self.0.core).close_all(&mut Env(&self.0));
+        for i in 0..self.0.shards.len() {
+            self.0.with_shard(i, None, |core, env| core.close_all(env));
+        }
     }
 }
 
 impl Acceptor for TurnServer {
     type Handler = TurnClient;
     fn on_open(&self, c: &Conn<TurnClient>) -> TurnClient {
-        lock(&self.0.clients).insert(c.peer_addr(), c.clone());
-        TurnClient(self.0.clone())
+        let shard = self.0.shard_of(c.peer_addr());
+        lock(&self.0.shards[shard])
+            .clients
+            .insert(c.peer_addr(), c.clone());
+        TurnClient {
+            inner: self.0.clone(),
+            shard,
+        }
     }
 
     fn on_shutdown(&self, _c: &Conn<TurnClient>) {
@@ -242,7 +371,10 @@ impl Acceptor for TurnServer {
 
 /// One client 5-tuple of a [`TurnServer`] (internal).
 #[doc(hidden)]
-pub struct TurnClient(Arc<Inner>);
+pub struct TurnClient {
+    inner: Arc<Inner>,
+    shard: usize,
+}
 
 impl fmt::Debug for TurnClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -252,22 +384,35 @@ impl fmt::Debug for TurnClient {
 
 impl Handler for TurnClient {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        let inner = &self.0;
-        lock(&inner.core).handle_client(Instant::now(), c.peer_addr(), data, &mut Env(inner));
+        let inner = &self.inner;
+        let now = Instant::now();
+        let client = c.peer_addr();
+        // An authenticated Allocate gets its relay socket bound before the shard is locked.
+        let prebound = if inner.shared.authenticated_allocate(now, client, data) {
+            inner
+                .bind_relay(SocketAddr::new(inner.shared.config().relay_ip, 0), self.shard)
+                .ok()
+        } else {
+            None
+        };
+        inner.with_shard(self.shard, prebound, |core, env| {
+            core.handle_client(now, client, data, env);
+        });
     }
 
     fn on_close(&mut self, c: &Conn<Self>, _err: Option<only::Error>) {
-        let mut clients = lock(&self.0.clients);
-        if clients
+        let mut shard = lock(&self.inner.shards[self.shard]);
+        if shard
+            .clients
             .get(&c.peer_addr())
             .is_some_and(|x| x.id() == c.id())
         {
-            clients.remove(&c.peer_addr());
+            shard.clients.remove(&c.peer_addr());
         }
     }
 }
 
-struct RelayAcceptor(Weak<Inner>);
+struct RelayAcceptor(Weak<Inner>, Arc<AtomicUsize>);
 
 impl Acceptor for RelayAcceptor {
     type Handler = RelayPeer;
@@ -275,6 +420,7 @@ impl Acceptor for RelayAcceptor {
         RelayPeer {
             inner: self.0.clone(),
             relay: c.local_addr(),
+            route: self.1.clone(),
         }
     }
 }
@@ -284,6 +430,8 @@ impl Acceptor for RelayAcceptor {
 pub struct RelayPeer {
     inner: Weak<Inner>,
     relay: SocketAddr,
+    /// The shard of the allocation this relay belongs to.
+    route: Arc<AtomicUsize>,
 }
 
 impl fmt::Debug for RelayPeer {
@@ -299,12 +447,9 @@ impl Handler for RelayPeer {
         let Some(inner) = self.inner.upgrade() else {
             return;
         };
-        lock(&inner.core).handle_peer(
-            Instant::now(),
-            self.relay,
-            c.peer_addr(),
-            data,
-            &mut Env(&inner),
-        );
+        let shard = self.route.load(Ordering::Relaxed);
+        inner.with_shard(shard, None, |core, env| {
+            core.handle_peer(Instant::now(), self.relay, c.peer_addr(), data, env);
+        });
     }
 }
