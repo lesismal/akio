@@ -427,7 +427,8 @@ pub struct ServerConfigBuilder {
     tickets13: usize,
     max_early_data: u32,
     anti_replay: (u64, usize),
-    anti_replay_store: Option<Arc<dyn AntiReplayStore>>,
+    /// Wrapped so the builder stays unwind safe (a store is only called after `build`).
+    anti_replay_store: Option<std::panic::AssertUnwindSafe<Arc<dyn AntiReplayStore>>>,
     ticket_key: Option<[u8; 48]>,
     record_limit: u16,
     cert_compression: bool,
@@ -594,7 +595,7 @@ impl ServerConfigBuilder {
     /// for 20 seconds (twice the freshness window). A store error rejects the early data
     /// (the handshake goes on without it). Only used with [`early_data`](Self::early_data).
     pub fn anti_replay_store(mut self, store: Arc<dyn AntiReplayStore>) -> Self {
-        self.anti_replay_store = Some(store);
+        self.anti_replay_store = Some(std::panic::AssertUnwindSafe(store));
         self
     }
 
@@ -756,8 +757,13 @@ impl ServerConfigBuilder {
             max_early_data: self.max_early_data,
             anti_replay: AntiReplay::new(
                 self.anti_replay.0,
-                self.anti_replay_store
-                    .unwrap_or_else(|| Arc::new(MemoryAntiReplay::new(self.anti_replay.1))),
+                self.anti_replay_store.map_or_else(
+                    || {
+                        Arc::new(MemoryAntiReplay::new(self.anti_replay.1))
+                            as Arc<dyn AntiReplayStore>
+                    },
+                    |s| s.0,
+                ),
             ),
             record_limit,
             cert_compression: self.cert_compression,
