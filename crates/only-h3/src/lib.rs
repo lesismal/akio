@@ -1,9 +1,9 @@
 #![forbid(unsafe_code)]
-//! HTTP/3 (RFC 9114) for `only`, on [`only_quic`] with QPACK (static table and literals).
+//! HTTP/3 (RFC 9114) for `only`, on [`only_quic`] with QPACK (RFC 9204).
 //!
 //! [`serve`] serves any [`only_http::Service`] (a [`only_http::Router`] with its
 //! middleware) over QUIC: handlers get the same [`only_http::Context`] as on HTTP/1.1 and
-//! HTTP/2, including `detach` and `stream_response`; request bodies arrive buffered.
+//! HTTP/2, including `detach`, `stream_response` and streamed request bodies.
 //! [`H3Client`] sends requests on one QUIC connection.
 //!
 //! ```no_run
@@ -27,8 +27,19 @@
 //! it after the handshake. [`H3Client`] sends its requests in 0-RTT when its QUIC config
 //! enables it ([`only_quic::ClientConfig::zero_rtt`]) and it resumes.
 //!
-//! Not implemented: server push, a QPACK dynamic table, extended CONNECT (WebSocket over
-//! HTTP/3), streamed request bodies.
+//! QPACK uses a dynamic table ([`H3Config`]): the decoder accepts the peer's inserts (4 KiB and
+//! 16 blocked streams by default); the encoder is off by default and, when enabled, only
+//! references entries the peer has acknowledged, so it never blocks the peer.
+//!
+//! WebSocket over HTTP/3 (RFC 9220): servers advertise extended CONNECT, and
+//! `Context::upgrade_websocket` accepts it (a [`Router`](only_http::Router) GET route answers
+//! it as it answers an HTTP/1.1 upgrade); [`H3Client::websocket`] opens one.
+//!
+//! Request bodies stream: a service whose `body_mode` is `Stream` gets the body through
+//! `Context::on_body` as it arrives, as on HTTP/2; [`H3Client::upload`] sends one piece by
+//! piece.
+//!
+//! Not implemented: server push.
 //!
 //! Guide: [QUIC and HTTP/3](https://lesismal.github.io/only/en/protocols/quic-h3.html)
 //! (中文: [QUIC 与 HTTP/3](https://lesismal.github.io/only/zh-CN/protocols/quic-h3.html)).
@@ -37,25 +48,28 @@
 mod client;
 mod frame;
 pub mod qpack;
+mod qtable;
 mod table;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use only_http::Service;
 use only_http::message::{Headers, Method, Request, Response, Version};
-use only_http::transport::{BodySink, ResponseSink};
+use only_http::transport::{BodySink, ResponseSink, Started};
+use only_http::ws::{WsLink, WsSession};
 use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
 
-pub use client::{H3Client, H3Error};
+pub use client::{H3Client, H3Error, H3Upload, H3WsOptions};
 pub use frame::code;
 
-use frame::Reader;
-use qpack::FieldBuf;
+use frame::{Piece, Reader};
+use qpack::{FieldBuf, QpackError, SectionError};
+use qtable::{DecTable, Encoder, Section};
 
 /// Hashes stream IDs for the per-connection stream tables: SipHash (the default) showed up in
 /// HTTP/3 profiles. IDs are chosen by the peer, but a table is bounded by the stream limits we
@@ -82,14 +96,27 @@ impl Hasher for IdHasher {
 /// A table keyed by stream ID.
 pub(crate) type StreamMap<V> = HashMap<StreamId, V, BuildHasherDefault<IdHasher>>;
 
-/// Server limits.
+/// HTTP/3 limits and QPACK settings. The server uses all of them ([`serve_with`]); a client
+/// ([`H3Client::dial_with`]) uses the field section and QPACK ones.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct H3Config {
-    /// Largest request body (larger ones get 413).
+    /// Largest request body (larger ones get 413). Bodies a service takes as a stream
+    /// (`only_http::BodyMode::Stream`) are not limited.
     pub max_body_bytes: usize,
     /// Largest field section, as `SETTINGS_MAX_FIELD_SECTION_SIZE`.
     pub max_field_section_bytes: usize,
+    /// The QPACK dynamic table the peer's encoder may fill for this side's decoder
+    /// (`SETTINGS_QPACK_MAX_TABLE_CAPACITY`), in bytes; 0 allows static references and literals
+    /// only. Default 4096.
+    pub qpack_max_table_capacity: usize,
+    /// Streams the peer may leave waiting for QPACK inserts (`SETTINGS_QPACK_BLOCKED_STREAMS`).
+    /// Default 16.
+    pub qpack_blocked_streams: usize,
+    /// The QPACK dynamic table this side's encoder uses (at most what the peer allows), in
+    /// bytes; 0 (the default) encodes with static references and literals only. The encoder
+    /// never makes the peer wait: it references only entries the peer has acknowledged.
+    pub qpack_encoder_capacity: usize,
 }
 
 impl Default for H3Config {
@@ -97,6 +124,9 @@ impl Default for H3Config {
         H3Config {
             max_body_bytes: 8 << 20,
             max_field_section_bytes: 64 << 10,
+            qpack_max_table_capacity: 4096,
+            qpack_blocked_streams: 16,
+            qpack_encoder_capacity: 0,
         }
     }
 }
@@ -124,25 +154,37 @@ pub fn serve_with<S: Service>(
     let cfg = Arc::new(cfg);
     QuicServer::new(quic, move |c: &Connection| ServerConn {
         svc: svc.clone(),
-        cfg: cfg.clone(),
         peer: c.remote_addr(),
-        peer_ctrl: None,
+        conn: Peer::new(&cfg),
+        cfg: cfg.clone(),
         uni: StreamMap::default(),
         reqs: StreamMap::default(),
         fields: FieldBuf::default(),
     })
 }
 
-/// The SETTINGS frame both sides send: no dynamic table, our field section limit.
-pub(crate) fn control_stream_preamble(max_field: usize) -> Vec<u8> {
+/// The control stream preamble both sides send: SETTINGS with our QPACK decoder's limits, our
+/// field section limit and, from a server, extended CONNECT (RFC 9220).
+pub(crate) fn control_stream_preamble(cfg: &H3Config, server: bool) -> Vec<u8> {
     let mut p = Vec::new();
-    for (id, v) in [
-        (frame::SETTINGS_QPACK_MAX_TABLE_CAPACITY, 0),
-        (frame::SETTINGS_QPACK_BLOCKED_STREAMS, 0),
-        (frame::SETTINGS_MAX_FIELD_SECTION_SIZE, max_field as u64),
-    ] {
+    let mut set = |id, v: u64| {
         frame::put_varint(&mut p, id);
         frame::put_varint(&mut p, v);
+    };
+    set(
+        frame::SETTINGS_QPACK_MAX_TABLE_CAPACITY,
+        cfg.qpack_max_table_capacity as u64,
+    );
+    set(
+        frame::SETTINGS_QPACK_BLOCKED_STREAMS,
+        cfg.qpack_blocked_streams as u64,
+    );
+    set(
+        frame::SETTINGS_MAX_FIELD_SECTION_SIZE,
+        cfg.max_field_section_bytes as u64,
+    );
+    if server {
+        set(frame::SETTINGS_ENABLE_CONNECT_PROTOCOL, 1);
     }
     let mut out = Vec::new();
     frame::put_varint(&mut out, frame::STREAM_CONTROL);
@@ -150,21 +192,40 @@ pub(crate) fn control_stream_preamble(max_field: usize) -> Vec<u8> {
     out
 }
 
-/// Checks a SETTINGS payload: well formed, no HTTP/2 identifiers, no duplicates.
-pub(crate) fn check_settings(p: &[u8]) -> Result<(), u32> {
+/// What the peer's SETTINGS said.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Settings {
+    pub(crate) qpack_max_table_capacity: u64,
+    pub(crate) connect_protocol: bool,
+}
+
+/// Checks a SETTINGS payload (well formed, no HTTP/2 identifiers, no duplicates, a valid
+/// extended CONNECT flag) and reads the values we use.
+pub(crate) fn check_settings(p: &[u8]) -> Result<Settings, u32> {
     let mut seen = Vec::new();
+    let mut out = Settings::default();
     let mut pos = 0;
     while pos < p.len() {
         let (id, a) = frame::get_varint(&p[pos..]).ok_or(code::FRAME_ERROR)?;
         pos += a;
-        let (_, b) = frame::get_varint(&p[pos..]).ok_or(code::FRAME_ERROR)?;
+        let (v, b) = frame::get_varint(&p[pos..]).ok_or(code::FRAME_ERROR)?;
         pos += b;
         if (0x2..=0x5).contains(&id) || seen.contains(&id) {
             return Err(code::SETTINGS_ERROR);
         }
+        match id {
+            frame::SETTINGS_QPACK_MAX_TABLE_CAPACITY => out.qpack_max_table_capacity = v,
+            frame::SETTINGS_ENABLE_CONNECT_PROTOCOL => {
+                if v > 1 {
+                    return Err(code::SETTINGS_ERROR);
+                }
+                out.connect_protocol = v == 1;
+            }
+            _ => {}
+        }
         seen.push(id);
     }
-    Ok(())
+    Ok(out)
 }
 
 /// Frame types reserved by HTTP/2 that must not appear in HTTP/3.
@@ -172,12 +233,146 @@ pub(crate) fn h2_only(ty: u64) -> bool {
     matches!(ty, 0x2 | 0x6 | 0x8 | 0x9)
 }
 
+/// The QUIC stream id as a QPACK instruction carries it.
+pub(crate) fn sid(id: StreamId) -> u64 {
+    let side = match id.initiator() {
+        only_quic::Side::Client => 0,
+        only_quic::Side::Server => 1,
+    };
+    let dir = match id.dir() {
+        Dir::Bi => 0,
+        Dir::Uni => 2,
+    };
+    (id.index() << 2) | dir | side
+}
+
 /// A peer's unidirectional stream.
 pub(crate) enum Uni {
     Unknown(Reader),
-    Control { r: Reader, settings: bool },
-    Critical,
+    Control {
+        r: Reader,
+        settings: bool,
+    },
+    /// The peer's QPACK encoder stream: an incomplete instruction's bytes.
+    Encoder(Vec<u8>),
+    /// The peer's QPACK decoder stream: an incomplete instruction's bytes.
+    Decoder(Vec<u8>),
     Skip,
+}
+
+/// This side's QPACK encoder with its dynamic table, shared by everything that encodes on the
+/// connection (responses are sent from any thread).
+pub(crate) struct EncShared {
+    c: Connection,
+    /// Our encoder stream.
+    stream: StreamId,
+    e: Mutex<Encoder>,
+}
+
+impl EncShared {
+    /// Encodes a field section for stream `id` into `out` with `f` adding its lines, then sends
+    /// the inserts it made (under the lock, so encoder stream instructions stay in order).
+    fn section(
+        &self,
+        out: &mut Vec<u8>,
+        id: StreamId,
+        f: impl FnOnce(&mut Encoder, &mut Vec<u8>, &mut Section),
+    ) {
+        let mut e = self.e.lock().unwrap_or_else(|p| p.into_inner());
+        let (mut lines, mut sec) = e.begin();
+        f(&mut e, &mut lines, &mut sec);
+        e.end(out, lines, sec, sid(id));
+        if !e.out.is_empty() {
+            let ins = std::mem::take(&mut e.out);
+            let _ = self.c.send(self.stream, ins);
+        }
+    }
+}
+
+/// Connection state both sides keep: the peer's control stream and SETTINGS, and QPACK (our
+/// decoder's table, our encoder once the peer allows one).
+pub(crate) struct Peer {
+    pub(crate) ctrl: Option<StreamId>,
+    pub(crate) settings: Option<Settings>,
+    /// SETTINGS arrived during the last call.
+    pub(crate) new_settings: bool,
+    encoder_seen: bool,
+    decoder_seen: bool,
+    pub(crate) dec: DecTable,
+    /// Our decoder stream (when our table capacity is not 0).
+    pub(crate) dec_stream: Option<StreamId>,
+    /// Streams waiting for inserts, and how many may.
+    pub(crate) blocked: usize,
+    pub(crate) max_blocked: usize,
+    pub(crate) enc: Option<Arc<EncShared>>,
+    enc_capacity: u64,
+    /// The table got inserts during the last call: blocked streams may go on.
+    pub(crate) inserted: bool,
+}
+
+impl Peer {
+    pub(crate) fn new(cfg: &H3Config) -> Peer {
+        Peer {
+            ctrl: None,
+            settings: None,
+            new_settings: false,
+            encoder_seen: false,
+            decoder_seen: false,
+            dec: DecTable::new(cfg.qpack_max_table_capacity as u64),
+            dec_stream: None,
+            blocked: 0,
+            max_blocked: cfg.qpack_blocked_streams,
+            enc: None,
+            enc_capacity: cfg.qpack_encoder_capacity as u64,
+            inserted: false,
+        }
+    }
+
+    /// Opens our control stream (with `preamble`) and, when our decoder has a table, our
+    /// decoder stream.
+    pub(crate) fn open(&mut self, c: &Connection, preamble: Vec<u8>) {
+        if let Some(id) = c.open_uni() {
+            let _ = c.send(id, preamble);
+        }
+        if self.dec.max_capacity() > 0 {
+            if let Some(id) = c.open_uni() {
+                let _ = c.send(id, vec![frame::STREAM_QPACK_DECODER as u8]);
+                self.dec_stream = Some(id);
+            }
+        }
+    }
+
+    /// Acts on what the last stream data did: starts our encoder once the peer's SETTINGS
+    /// allow it, and sends what our decoder has to say.
+    pub(crate) fn after(&mut self, c: &Connection) {
+        if std::mem::take(&mut self.new_settings) {
+            let max = self.settings.map_or(0, |s| s.qpack_max_table_capacity);
+            if self.enc_capacity > 0 && max > 0 {
+                if let Some(id) = c.open_uni() {
+                    let mut e = Encoder::new(self.enc_capacity, max);
+                    let mut first = vec![frame::STREAM_QPACK_ENCODER as u8];
+                    first.append(&mut e.out);
+                    let _ = c.send(id, first);
+                    self.enc = Some(Arc::new(EncShared {
+                        c: c.clone(),
+                        stream: id,
+                        e: Mutex::new(e),
+                    }));
+                }
+            }
+        }
+        self.flush(c);
+    }
+
+    /// Sends our decoder stream's pending instructions.
+    pub(crate) fn flush(&mut self, c: &Connection) {
+        if !self.dec.out.is_empty() {
+            let out = std::mem::take(&mut self.dec.out);
+            if let Some(id) = self.dec_stream {
+                let _ = c.send(id, out);
+            }
+        }
+    }
 }
 
 /// Feeds a peer's unidirectional stream; `Err(code)` is a connection error. Shared by both
@@ -185,7 +380,7 @@ pub(crate) enum Uni {
 /// stop sending on a stream (`STOP_SENDING`).
 pub(crate) fn on_uni(
     u: &mut Uni,
-    peer_ctrl: &mut Option<StreamId>,
+    peer: &mut Peer,
     stop: &mut dyn FnMut(StreamId, u32),
     id: StreamId,
     data: &[u8],
@@ -200,23 +395,34 @@ pub(crate) fn on_uni(
         let rest = r.rest().to_vec();
         *u = match ty {
             frame::STREAM_CONTROL => {
-                if peer_ctrl.is_some() {
+                if peer.ctrl.is_some() {
                     return Err(code::STREAM_CREATION_ERROR);
                 }
-                *peer_ctrl = Some(id);
+                peer.ctrl = Some(id);
                 Uni::Control {
                     r: Reader::default(),
                     settings: false,
                 }
             }
-            frame::STREAM_QPACK_ENCODER | frame::STREAM_QPACK_DECODER => Uni::Critical,
+            frame::STREAM_QPACK_ENCODER => {
+                if std::mem::replace(&mut peer.encoder_seen, true) {
+                    return Err(code::STREAM_CREATION_ERROR);
+                }
+                Uni::Encoder(Vec::new())
+            }
+            frame::STREAM_QPACK_DECODER => {
+                if std::mem::replace(&mut peer.decoder_seen, true) {
+                    return Err(code::STREAM_CREATION_ERROR);
+                }
+                Uni::Decoder(Vec::new())
+            }
             frame::STREAM_PUSH if server => return Err(code::STREAM_CREATION_ERROR),
             _ => {
                 stop(id, code::STREAM_CREATION_ERROR);
                 Uni::Skip
             }
         };
-        return on_uni(u, peer_ctrl, stop, id, &rest, fin, server);
+        return on_uni(u, peer, stop, id, &rest, fin, server);
     }
     match u {
         Uni::Control { r, settings } => {
@@ -228,7 +434,8 @@ pub(crate) fn on_uni(
                     if ty != frame::SETTINGS {
                         return Err(code::MISSING_SETTINGS);
                     }
-                    check_settings(&p)?;
+                    peer.settings = Some(check_settings(&p)?);
+                    peer.new_settings = true;
                     *settings = true;
                     continue;
                 }
@@ -246,14 +453,78 @@ pub(crate) fn on_uni(
                 return Err(code::CLOSED_CRITICAL_STREAM);
             }
         }
-        Uni::Critical if fin => return Err(code::CLOSED_CRITICAL_STREAM),
+        Uni::Encoder(buf) => {
+            let before = peer.dec.inserted();
+            let n = if buf.is_empty() {
+                let n = peer.dec.on_encoder_stream(data)?;
+                buf.extend_from_slice(&data[n..]);
+                n
+            } else {
+                buf.extend_from_slice(data);
+                let n = peer.dec.on_encoder_stream(buf)?;
+                buf.drain(..n);
+                n
+            };
+            if n > 0 && peer.dec.inserted() != before {
+                peer.inserted = true;
+            }
+            if fin {
+                return Err(code::CLOSED_CRITICAL_STREAM);
+            }
+        }
+        Uni::Decoder(buf) => {
+            buf.extend_from_slice(data);
+            let n = match &peer.enc {
+                Some(e) => {
+                    e.e.lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .on_decoder_stream(buf)?
+                }
+                // No encoder: only cancellations can come (acknowledgements and increments
+                // of a table we never filled are errors).
+                None => Encoder::new(0, 0).on_decoder_stream(buf)?,
+            };
+            buf.drain(..n);
+            if fin {
+                return Err(code::CLOSED_CRITICAL_STREAM);
+            }
+        }
         _ => {}
     }
     Ok(())
 }
 
+/// Where a streamed request body goes.
+pub(crate) enum Body {
+    /// Nowhere (the fuzz harness).
+    #[cfg_attr(not(any(test, feature = "fuzzing")), allow(dead_code))]
+    Discard,
+    /// The service's `Context::on_body` sink.
+    Started(Started),
+    /// A WebSocket over HTTP/3 (RFC 9220).
+    Ws(WsSession),
+}
+
+/// What reading a request stream calls out to: whether a body streams, and dispatching a
+/// request before its body.
+pub(crate) trait Host {
+    /// Whether the service takes `req`'s body as a stream.
+    fn streams(&self, req: &Request) -> bool;
+    /// Dispatches `req` now; its body follows to the returned sink.
+    fn start(&mut self, req: Request, head_only: bool) -> Body;
+}
+
+/// A HEADERS frame waiting for QPACK inserts, and what the stream carried after it.
+pub(crate) struct Blocked {
+    pub(crate) ric: u64,
+    pub(crate) section: Vec<u8>,
+    /// The frames after it, re-encoded (DATA pieces as DATA frames).
+    pub(crate) rest: Vec<u8>,
+    pub(crate) fin: bool,
+}
+
 #[derive(Default)]
-struct Req {
+pub(crate) struct Req {
     r: Reader,
     /// The request from the first HEADERS frame (`Err` if malformed, answered once the stream
     /// ends) and whether it is a HEAD request.
@@ -261,13 +532,33 @@ struct Req {
     body: Vec<u8>,
     trailers: Option<Result<Headers, ()>>,
     done: bool,
+    /// The request was dispatched with its head: its body goes to `sink` as it arrives.
+    sink: Option<Body>,
+    /// Body bytes so far (streamed) and the announced length.
+    len: u64,
+    content_length: Option<u64>,
+    /// Whether `Host::streams` was asked.
+    decided: bool,
+    blocked: Option<Box<Blocked>>,
+}
+
+impl Req {
+    /// Ends a dispatched request: the body is complete (`Ok`, its trailers) or it never will be.
+    fn finish_sink(&mut self, ok: Option<&Headers>) {
+        match (self.sink.take(), ok) {
+            (Some(Body::Started(s)), Some(t)) => s.end(t),
+            (Some(Body::Started(s)), None) => s.abort(),
+            (Some(Body::Ws(mut w)), _) => w.on_transport_closed(),
+            _ => {}
+        }
+    }
 }
 
 struct ServerConn<S> {
     svc: Arc<S>,
     cfg: Arc<H3Config>,
     peer: SocketAddr,
-    peer_ctrl: Option<StreamId>,
+    conn: Peer,
     uni: StreamMap<Uni>,
     reqs: StreamMap<Req>,
     /// Field sections are decoded here, then copied once into the request's `Headers`.
@@ -275,26 +566,106 @@ struct ServerConn<S> {
 }
 
 /// Why a request stream stopped being read.
-enum Fail {
+pub(crate) enum Fail {
     Conn(u32),
     Stream(u32),
     Status(u16),
+}
+
+/// [`Host`] for a server stream.
+struct ServerHost<'a, S> {
+    svc: &'a S,
+    c: &'a Connection,
+    id: StreamId,
+    enc: Option<Arc<EncShared>>,
+}
+
+impl<S: Service> Host for ServerHost<'_, S> {
+    fn streams(&self, req: &Request) -> bool {
+        self.svc.body_mode(req) == only_http::BodyMode::Stream
+    }
+
+    fn start(&mut self, mut request: Request, head_only: bool) -> Body {
+        if self.c.is_early(self.id) {
+            request.headers.append("early-data", "1");
+        }
+        let ws = request.protocol.as_deref() == Some("websocket");
+        let sink = Box::new(Sink {
+            c: self.c.clone(),
+            id: self.id,
+            head_only,
+            enc: self.enc.clone(),
+        });
+        let mut st = only_http::transport::start(self.svc, request, sink);
+        if ws {
+            let link = Arc::new(StreamLink::new(self.c.clone(), self.id));
+            if let Some(mut w) = st.take_websocket(link) {
+                w.open();
+                return Body::Ws(w);
+            }
+        }
+        Body::Started(st)
+    }
+}
+
+/// [`Host`] for a request read without a service (unit tests, fuzzing).
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) struct NoHost(pub(crate) bool);
+
+#[cfg(any(test, feature = "fuzzing"))]
+impl Host for NoHost {
+    fn streams(&self, _req: &Request) -> bool {
+        self.0
+    }
+    fn start(&mut self, _req: Request, _head_only: bool) -> Body {
+        Body::Discard
+    }
 }
 
 impl<S: Service> ServerConn<S> {
     fn on_req(&mut self, c: &Connection, id: StreamId, data: &[u8], fin: bool) -> Result<(), Fail> {
         // A request that arrives whole (the usual case) is read without entering the table.
         let mut whole = Req::default();
-        let req = if fin && !self.reqs.contains_key(&id) {
+        let in_table = self.reqs.contains_key(&id);
+        let req = if fin && !in_table {
             &mut whole
         } else {
             self.reqs.entry(id).or_default()
         };
-        let Some((mut request, head_only)) =
-            read_req(req, &self.cfg, self.peer, &mut self.fields, data, fin)?
-        else {
+        let mut host = ServerHost {
+            svc: &*self.svc,
+            c,
+            id,
+            enc: self.conn.enc.clone(),
+        };
+        let mut q = Qd {
+            dec: &mut self.conn.dec,
+            blocked: &mut self.conn.blocked,
+            max_blocked: self.conn.max_blocked,
+            stream: sid(id),
+        };
+        let ready = read_req(
+            req,
+            &self.cfg,
+            self.peer,
+            &mut self.fields,
+            &mut q,
+            &mut host,
+            data,
+            fin,
+        );
+        if whole.blocked.is_some() || whole.sink.is_some() {
+            // Waiting for inserts, or dispatched with a body to come: keep its state.
+            self.reqs.insert(id, whole);
+        }
+        let Some((request, head_only)) = ready? else {
             return Ok(());
         };
+        self.dispatch(c, id, request, head_only);
+        Ok(())
+    }
+
+    fn dispatch(&self, c: &Connection, id: StreamId, mut request: Request, head_only: bool) {
         if c.is_early(id) {
             // Arrived in 0-RTT (maybe a replay): marked as an RFC 8470 intermediary would, so
             // the application can answer 425 Too Early to what is not safe to repeat.
@@ -304,25 +675,172 @@ impl<S: Service> ServerConn<S> {
             c: c.clone(),
             id,
             head_only,
+            enc: self.conn.enc.clone(),
         });
         only_http::transport::dispatch(&*self.svc, request, sink);
+    }
+
+    /// Streams whose field sections the last inserts made decodable go on.
+    fn unblock(&mut self, c: &Connection) {
+        if !std::mem::take(&mut self.conn.inserted) || self.conn.blocked == 0 {
+            return;
+        }
+        let have = self.conn.dec.inserted();
+        let ready: Vec<StreamId> = self
+            .reqs
+            .iter()
+            .filter(|(_, r)| r.blocked.as_ref().is_some_and(|b| b.ric <= have))
+            .map(|(&id, _)| id)
+            .collect();
+        for id in ready {
+            let res = self.replay(c, id);
+            self.after_req(c, id, res, false);
+        }
+    }
+
+    /// Reads a stream's blocked section again, then the frames held back behind it.
+    fn replay(&mut self, c: &Connection, id: StreamId) -> Result<(), Fail> {
+        let Some(req) = self.reqs.get_mut(&id) else {
+            return Ok(());
+        };
+        let Some(b) = req.blocked.take() else {
+            return Ok(());
+        };
+        self.conn.blocked -= 1;
+        let mut data = Vec::with_capacity(b.section.len() + b.rest.len() + 9);
+        frame::put_frame(&mut data, frame::HEADERS, &b.section);
+        data.extend_from_slice(&b.rest);
+        // The held-back frames come before whatever the stream's reader still holds.
+        let held = std::mem::take(&mut req.r);
+        let mut host = ServerHost {
+            svc: &*self.svc,
+            c,
+            id,
+            enc: self.conn.enc.clone(),
+        };
+        let mut q = Qd {
+            dec: &mut self.conn.dec,
+            blocked: &mut self.conn.blocked,
+            max_blocked: self.conn.max_blocked,
+            stream: sid(id),
+        };
+        let res = read_req(
+            req,
+            &self.cfg,
+            self.peer,
+            &mut self.fields,
+            &mut q,
+            &mut host,
+            &data,
+            false,
+        );
+        req.r = held;
+        res?;
+        if b.fin {
+            if let Some(blocked) = req.blocked.as_mut() {
+                blocked.fin = true;
+                return Ok(());
+            }
+            let res = read_req(
+                req,
+                &self.cfg,
+                self.peer,
+                &mut self.fields,
+                &mut q,
+                &mut host,
+                &[],
+                true,
+            );
+            if let Some((request, head_only)) = res? {
+                self.dispatch(c, id, request, head_only);
+            }
+            self.reqs.remove(&id);
+        }
         Ok(())
+    }
+
+    /// Acts on the outcome of reading a request stream.
+    fn after_req(&mut self, c: &Connection, id: StreamId, res: Result<(), Fail>, fin: bool) {
+        match res {
+            Ok(()) => {}
+            Err(Fail::Conn(e)) => c.close(e, b""),
+            Err(Fail::Stream(e)) => {
+                if let Some(mut r) = self.reqs.remove(&id) {
+                    self.forget(id, &mut r);
+                }
+                let _ = c.stop(id, e);
+                let _ = c.reset(id, e);
+            }
+            Err(Fail::Status(s)) => {
+                if let Some(r) = self.reqs.get_mut(&id) {
+                    if r.sink.is_some() {
+                        // Already dispatched: the handler may have answered.
+                        return self.after_req(c, id, Err(Fail::Stream(code::MESSAGE_ERROR)), fin);
+                    }
+                    r.done = true;
+                    r.body = Vec::new();
+                }
+                let _ = c.stop(id, code::NO_ERROR);
+                let msg = if s == 413 {
+                    "request body too large"
+                } else {
+                    "request header fields too large"
+                };
+                Box::new(Sink {
+                    c: c.clone(),
+                    id,
+                    head_only: false,
+                    enc: None,
+                })
+                .send(Response::text(s, msg));
+            }
+        }
+        if fin {
+            if let Some(r) = self.reqs.get(&id) {
+                // Still waiting for inserts, its end noted: kept until it can be read.
+                if r.blocked.is_some() {
+                    return;
+                }
+            }
+            self.reqs.remove(&id);
+        }
+    }
+
+    /// A request stream that will not be read further: its sink hears nothing more and a
+    /// blocked section is cancelled.
+    fn forget(&mut self, id: StreamId, r: &mut Req) {
+        if r.blocked.take().is_some() {
+            self.conn.blocked -= 1;
+            self.conn.dec.cancel(sid(id));
+        }
+        r.finish_sink(None);
     }
 }
 
-/// Reads a request stream's bytes; the request once the stream has ended (`fin`). Frames are
-/// read in place and field sections decoded into `fields`, so a request that arrives whole
-/// costs no copy before its `Headers` are built.
-fn read_req(
+/// QPACK decoding context for one request stream.
+pub(crate) struct Qd<'a> {
+    pub(crate) dec: &'a mut DecTable,
+    pub(crate) blocked: &'a mut usize,
+    pub(crate) max_blocked: usize,
+    pub(crate) stream: u64,
+}
+
+/// Reads a request stream's bytes; the request once the stream has ended (`fin`), unless
+/// `host` took it at its head (a streamed body, an extended CONNECT). Frames are read in place
+/// and field sections decoded into `fields`, so a request that arrives whole costs no copy
+/// before its `Headers` are built; DATA payloads are never buffered by the reader.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_req(
     req: &mut Req,
     cfg: &H3Config,
     peer: SocketAddr,
     fields: &mut FieldBuf,
+    q: &mut Qd<'_>,
+    host: &mut dyn Host,
     data: &[u8],
     fin: bool,
 ) -> Result<Option<(Request, bool)>, Fail> {
     let max_field = cfg.max_field_section_bytes;
-    let max_frame = (cfg.max_body_bytes + max_field) as u64;
     if req.done {
         return Ok(None);
     }
@@ -331,23 +849,73 @@ fn read_req(
         head,
         body,
         trailers,
+        sink,
+        len,
+        content_length,
+        blocked,
+        decided,
         ..
     } = req;
-    r.feed(
+    r.feed_stream(
         data,
-        max_frame,
-        || Fail::Status(413),
-        |ty, p| {
-            match ty {
-                frame::HEADERS => {
-                    qpack::decode_into(p, max_field, fields).map_err(|e| match e {
-                        qpack::QpackError::Decompression => {
-                            Fail::Conn(code::QPACK_DECOMPRESSION_FAILED)
+        max_field as u64,
+        || Fail::Status(431),
+        |piece| {
+            if let Some(b) = blocked.as_mut() {
+                // Held back, in order, until the section before them can be decoded.
+                match piece {
+                    Piece::Headers(p) => frame::put_frame(&mut b.rest, frame::HEADERS, p),
+                    Piece::Data(p) => frame::put_frame(&mut b.rest, frame::DATA, p),
+                    Piece::Skip(t) => check_request_frame(t)?,
+                }
+                return Ok(());
+            }
+            match piece {
+                Piece::Headers(p) => {
+                    let ric = match qpack::decode_section(p, max_field, q.dec, fields) {
+                        Ok(ric) => ric,
+                        Err(SectionError::Blocked(ric)) => {
+                            if *q.blocked >= q.max_blocked {
+                                return Err(Fail::Conn(code::QPACK_DECOMPRESSION_FAILED));
+                            }
+                            *q.blocked += 1;
+                            *blocked = Some(Box::new(Blocked {
+                                ric,
+                                section: p.to_vec(),
+                                rest: Vec::new(),
+                                fin: false,
+                            }));
+                            return Ok(());
                         }
-                        qpack::QpackError::TooLarge => Fail::Status(431),
-                    })?;
+                        Err(SectionError::Bad(QpackError::TooLarge)) => {
+                            return Err(Fail::Status(431));
+                        }
+                        Err(SectionError::Bad(_)) => {
+                            return Err(Fail::Conn(code::QPACK_DECOMPRESSION_FAILED));
+                        }
+                    };
+                    if ric > 0 {
+                        q.dec.section_ack(q.stream, ric);
+                    }
                     if head.is_none() {
-                        *head = Some(request_head(fields, peer).ok_or(()));
+                        match request_head(fields, peer) {
+                            Some((request, head_only)) => {
+                                if let Some(v) = request.headers.get("content-length") {
+                                    let cl =
+                                        v.parse().map_err(|_| Fail::Stream(code::MESSAGE_ERROR))?;
+                                    *content_length = Some(cl);
+                                }
+                                if request.protocol.is_some() {
+                                    // Extended CONNECT: dispatched now, the stream's bytes
+                                    // follow to the sink.
+                                    *sink = Some(host.start(request, head_only));
+                                    *head = Some(Err(()));
+                                } else {
+                                    *head = Some(Ok((request, head_only)));
+                                }
+                            }
+                            None => *head = Some(Err(())),
+                        }
                     } else if trailers.is_none() {
                         let mut t = Headers::with_capacity(fields.len(), fields.bytes());
                         let ok = fields.strs().and_then(|f| header_list(f, &mut t));
@@ -356,22 +924,38 @@ fn read_req(
                         return Err(Fail::Conn(code::FRAME_UNEXPECTED));
                     }
                 }
-                frame::DATA => {
+                Piece::Data(p) => {
                     if head.is_none() || trailers.is_some() {
                         return Err(Fail::Conn(code::FRAME_UNEXPECTED));
                     }
-                    if body.len() + p.len() > cfg.max_body_bytes {
-                        return Err(Fail::Status(413));
+                    *len += p.len() as u64;
+                    if content_length.is_some_and(|cl| *len > cl) {
+                        return Err(Fail::Stream(code::MESSAGE_ERROR));
                     }
-                    body.extend_from_slice(p);
+                    if sink.is_none() && !*decided {
+                        // The body's first bytes: does the service take it as a stream? (Asked
+                        // only now, so requests without a body never ask.)
+                        *decided = true;
+                        if matches!(head, Some(Ok((r, _))) if host.streams(r)) {
+                            if let Some(Ok((request, head_only))) = head.take() {
+                                *sink = Some(host.start(request, head_only));
+                                *head = Some(Err(()));
+                            }
+                        }
+                    }
+                    match sink {
+                        Some(Body::Started(s)) => s.body(p),
+                        Some(Body::Ws(w)) => w.on_data(p),
+                        Some(Body::Discard) => {}
+                        None => {
+                            if body.len() + p.len() > cfg.max_body_bytes {
+                                return Err(Fail::Status(413));
+                            }
+                            body.extend_from_slice(p);
+                        }
+                    }
                 }
-                frame::SETTINGS
-                | frame::GOAWAY
-                | frame::MAX_PUSH_ID
-                | frame::CANCEL_PUSH
-                | frame::PUSH_PROMISE => return Err(Fail::Conn(code::FRAME_UNEXPECTED)),
-                t if h2_only(t) => return Err(Fail::Conn(code::FRAME_UNEXPECTED)),
-                _ => {}
+                Piece::Skip(t) => check_request_frame(t)?,
             }
             Ok(())
         },
@@ -379,7 +963,25 @@ fn read_req(
     if !fin {
         return Ok(None);
     }
+    if let Some(b) = req.blocked.as_mut() {
+        b.fin = true;
+        return Ok(None);
+    }
     req.done = true;
+    if req.sink.is_some() {
+        if req.content_length.is_some_and(|cl| cl != req.len)
+            || matches!(req.trailers, Some(Err(())))
+        {
+            req.finish_sink(None);
+            return Err(Fail::Stream(code::MESSAGE_ERROR));
+        }
+        let t = match req.trailers.take() {
+            Some(Ok(t)) => t,
+            _ => Headers::new(),
+        };
+        req.finish_sink(Some(&t));
+        return Ok(None);
+    }
     let head = req
         .head
         .take()
@@ -389,6 +991,19 @@ fn read_req(
     finish_request(head, trailers, body)
         .ok_or(Fail::Stream(code::MESSAGE_ERROR))
         .map(Some)
+}
+
+/// Frames that may not appear on a request stream.
+fn check_request_frame(ty: u64) -> Result<(), Fail> {
+    match ty {
+        frame::SETTINGS
+        | frame::GOAWAY
+        | frame::MAX_PUSH_ID
+        | frame::CANCEL_PUSH
+        | frame::PUSH_PROMISE => Err(Fail::Conn(code::FRAME_UNEXPECTED)),
+        t if h2_only(t) => Err(Fail::Conn(code::FRAME_UNEXPECTED)),
+        _ => Ok(()),
+    }
 }
 
 #[cfg(any(test, feature = "fuzzing"))]
@@ -420,9 +1035,10 @@ fn header_list<'a>(
 }
 
 /// A request (without its body) from its field section; `None` if malformed (RFC 9114
-/// §4.1.2).
+/// §4.1.2, and RFC 9220 / RFC 8441 §4 for an extended CONNECT).
 fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> {
-    let (mut method, mut scheme, mut authority, mut path) = (None, None, None, None);
+    let (mut method, mut scheme, mut authority, mut path, mut protocol) =
+        (None, None, None, None, None);
     // One pass (and one UTF-8 check): pseudo-header fields come first; one after a regular
     // field is refused by `header_list`.
     let mut fs = fields.strs()?.peekable();
@@ -432,6 +1048,7 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
             ":scheme" => &mut scheme,
             ":authority" => &mut authority,
             ":path" => &mut path,
+            ":protocol" => &mut protocol,
             _ => return None,
         };
         if slot.replace(v).is_some() {
@@ -439,7 +1056,16 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
         }
     }
     let method = Method::parse(method?);
-    if method == Method::Connect {
+    if protocol.is_some() {
+        // Extended CONNECT: every pseudo-header field.
+        if method != Method::Connect
+            || scheme.is_none()
+            || path.is_none_or(str::is_empty)
+            || authority.is_none()
+        {
+            return None;
+        }
+    } else if method == Method::Connect {
         if scheme.is_some() || path.is_some() || authority.is_none() {
             return None;
         }
@@ -460,6 +1086,7 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
     r.version = Version::Http3;
     r.headers = headers;
     r.peer = peer;
+    r.protocol = protocol.map(str::to_owned);
     Some((r, head_only))
 }
 
@@ -485,12 +1112,7 @@ fn finish_request(
 
 impl<S: Service> QuicHandler for ServerConn<S> {
     fn on_connected(&mut self, c: &Connection) {
-        if let Some(id) = c.open_uni() {
-            let _ = c.send(
-                id,
-                control_stream_preamble(self.cfg.max_field_section_bytes),
-            );
-        }
+        self.conn.open(c, control_stream_preamble(&self.cfg, true));
     }
 
     fn on_stream_opened(&mut self, _c: &Connection, id: StreamId) {
@@ -506,51 +1128,85 @@ impl<S: Service> QuicHandler for ServerConn<S> {
                 let mut stop = |id, e| {
                     let _ = c.stop(id, e);
                 };
-                if let Err(e) = on_uni(u, &mut self.peer_ctrl, &mut stop, id, &data, fin, true) {
+                if let Err(e) = on_uni(u, &mut self.conn, &mut stop, id, &data, fin, true) {
                     c.close(e, b"");
+                    return;
                 }
+                self.unblock(c);
+                self.conn.dec.increment();
+                self.conn.after(c);
             }
             return;
         }
-        match self.on_req(c, id, &data, fin) {
-            Ok(()) => {}
-            Err(Fail::Conn(e)) => c.close(e, b""),
-            Err(Fail::Stream(e)) => {
-                self.reqs.remove(&id);
-                let _ = c.stop(id, e);
-                let _ = c.reset(id, e);
-            }
-            Err(Fail::Status(s)) => {
-                if let Some(r) = self.reqs.get_mut(&id) {
-                    r.done = true;
-                    r.body = Vec::new();
-                }
-                let _ = c.stop(id, code::NO_ERROR);
-                let msg = if s == 413 {
-                    "request body too large"
-                } else {
-                    "request header fields too large"
-                };
-                Box::new(Sink {
-                    c: c.clone(),
-                    id,
-                    head_only: false,
-                })
-                .send(Response::text(s, msg));
-            }
-        }
-        if fin {
-            self.reqs.remove(&id);
-        }
+        let res = self.on_req(c, id, &data, fin);
+        self.after_req(c, id, res, fin);
+        self.conn.flush(c);
     }
 
-    fn on_stream_reset(&mut self, _c: &Connection, id: StreamId, _code: u64) {
-        self.reqs.remove(&id);
+    fn on_stream_reset(&mut self, c: &Connection, id: StreamId, _code: u64) {
+        if let Some(mut r) = self.reqs.remove(&id) {
+            self.forget(id, &mut r);
+            self.conn.flush(c);
+        }
     }
 
     fn on_close(&mut self, _c: &Connection, _reason: ConnectionError) {
-        self.reqs.clear();
+        for (_, mut r) in self.reqs.drain() {
+            r.finish_sink(None);
+        }
         self.uni.clear();
+    }
+}
+
+/// A request stream carrying a WebSocket (RFC 9220): frames go out in DATA frames, closing
+/// ends the stream.
+pub(crate) struct StreamLink {
+    c: Connection,
+    id: StreamId,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl StreamLink {
+    pub(crate) fn new(c: Connection, id: StreamId) -> StreamLink {
+        StreamLink {
+            c,
+            id,
+            done: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn end(&self) {
+        use std::sync::atomic::Ordering;
+        if !self.done.swap(true, Ordering::AcqRel) {
+            let _ = self.c.finish(self.id);
+        }
+    }
+}
+
+impl WsLink for StreamLink {
+    fn send(&self, data: Vec<u8>) -> only_core::Result<()> {
+        if !self.is_open() {
+            return Err(only_core::Error::Closed);
+        }
+        self.c
+            .send(self.id, data_frame(&data))
+            .map_err(|_| only_core::Error::Closed)
+    }
+
+    fn close_after_send(&self) {
+        self.end();
+    }
+
+    fn close(&self) {
+        self.end();
+    }
+
+    fn is_open(&self) -> bool {
+        !self.done.load(std::sync::atomic::Ordering::Acquire) && !self.c.is_closed()
+    }
+
+    fn queued_bytes(&self) -> usize {
+        self.c.queued_bytes(self.id)
     }
 }
 
@@ -611,7 +1267,8 @@ fn with_lower<R>(n: &str, f: impl FnOnce(&[u8]) -> R) -> R {
 /// Appends a HEADERS frame, its field section encoded straight into `out`: `:status` when
 /// given and `pseudo` fields, then `headers` (names lowercased, connection-specific fields and
 /// `host` dropped, CR and LF removed from values), then `date` when `add_date` and the headers
-/// have none, then `content-length` when given and the headers have none.
+/// have none, then `content-length` when given and the headers have none. With `enc` (the
+/// connection's QPACK encoder and the stream), fields may be dynamic table references.
 pub(crate) fn put_head(
     out: &mut Vec<u8>,
     status: Option<u16>,
@@ -619,14 +1276,52 @@ pub(crate) fn put_head(
     headers: &Headers,
     add_date: bool,
     content_length: Option<u64>,
+    enc: Option<(&EncShared, StreamId)>,
 ) {
     let at = frame::begin_frame(out, frame::HEADERS);
-    out.extend_from_slice(&qpack::PREFIX);
+    match enc {
+        None => {
+            out.extend_from_slice(&qpack::PREFIX);
+            head_lines(
+                out,
+                status,
+                pseudo,
+                headers,
+                add_date,
+                content_length,
+                &mut |o, n, v| qpack::encode_line(o, n, v),
+            );
+        }
+        Some((e, id)) => e.section(out, id, |e, lines, sec| {
+            head_lines(
+                lines,
+                status,
+                pseudo,
+                headers,
+                add_date,
+                content_length,
+                &mut |o, n, v| e.line(o, sec, n, v),
+            );
+        }),
+    }
+    frame::end_frame(out, at);
+}
+
+/// The field lines of [`put_head`], each through `line` except the ones with a fast path.
+fn head_lines<F: FnMut(&mut Vec<u8>, &[u8], &[u8])>(
+    out: &mut Vec<u8>,
+    status: Option<u16>,
+    pseudo: &[(&[u8], &[u8])],
+    headers: &Headers,
+    add_date: bool,
+    content_length: Option<u64>,
+    line: &mut F,
+) {
     if let Some(s) = status {
         qpack::encode_status(out, s);
     }
     for &(n, v) in pseudo {
-        qpack::encode_line(out, n, v);
+        line(out, n, v);
     }
     let (mut has_date, mut has_len) = (false, false);
     for (n, v) in headers.iter() {
@@ -640,9 +1335,9 @@ pub(crate) fn put_head(
             }
             if v.bytes().any(|b| b == b'\r' || b == b'\n') {
                 let v: Vec<u8> = v.bytes().filter(|&b| b != b'\r' && b != b'\n').collect();
-                qpack::encode_line(out, n, &v);
+                line(out, n, &v);
             } else {
-                qpack::encode_line(out, n, v.as_bytes());
+                line(out, n, v.as_bytes());
             }
         });
     }
@@ -652,7 +1347,6 @@ pub(crate) fn put_head(
     if let (Some(len), false) = (content_length, has_len) {
         qpack::encode_content_length(out, len);
     }
-    frame::end_frame(out, at);
 }
 
 pub(crate) fn data_frame(data: &[u8]) -> Vec<u8> {
@@ -675,6 +1369,8 @@ struct Sink {
     c: Connection,
     id: StreamId,
     head_only: bool,
+    /// The connection's QPACK encoder, when it has a dynamic table.
+    enc: Option<Arc<EncShared>>,
 }
 
 impl Sink {
@@ -682,7 +1378,8 @@ impl Sink {
     fn head(&self, out: &mut Vec<u8>, resp: &Response, streaming: bool) -> bool {
         let bodyless = resp.status < 200 || resp.status == 204 || resp.status == 304;
         let len = (!bodyless && !streaming).then(|| resp.body_len());
-        put_head(out, Some(resp.status), &[], &resp.headers, true, len);
+        let enc = self.enc.as_deref().map(|e| (e, self.id));
+        put_head(out, Some(resp.status), &[], &resp.headers, true, len, enc);
         !(bodyless || self.head_only)
     }
 
@@ -694,7 +1391,8 @@ impl Sink {
     /// Appends the trailers' HEADERS frame, if any, to `out`.
     fn put_trailers(&self, out: &mut Vec<u8>, trailers: Option<&Headers>) {
         if let Some(t) = trailers.filter(|t| !t.is_empty() && !self.head_only) {
-            put_head(out, None, &[], t, false, None);
+            let enc = self.enc.as_deref().map(|e| (e, self.id));
+            put_head(out, None, &[], t, false, None, enc);
         }
     }
 
@@ -774,16 +1472,16 @@ impl ResponseSink for Sink {
         let mut out = Sink::head_buf(&resp, 0);
         let body = self.head(&mut out, &resp, true);
         let _ = self.c.send(self.id, out);
-        Some(Box::new(Body { s: *self, body }))
+        Some(Box::new(StreamBody { s: *self, body }))
     }
 }
 
-struct Body {
+struct StreamBody {
     s: Sink,
     body: bool,
 }
 
-impl BodySink for Body {
+impl BodySink for StreamBody {
     fn write(&self, data: &[u8]) -> only_core::Result<()> {
         if !self.body || data.is_empty() {
             return Ok(());
@@ -837,7 +1535,7 @@ mod tests {
         h.append("X-Split", "a\r\nb");
         h.append(format!("X-{}", "L".repeat(80)), "long name");
         let mut out = vec![7];
-        put_head(&mut out, Some(200), &[], &h, true, Some(1234));
+        put_head(&mut out, Some(200), &[], &h, true, Some(1234), None);
         let got = decoded(&out[1..]);
         let long = format!("x-{}", "l".repeat(80));
         let names: Vec<&str> = got.iter().map(|(n, _)| n.as_str()).collect();
@@ -860,7 +1558,7 @@ mod tests {
         h.append("content-length", "5");
         h.append("x-pad", "p".repeat(100));
         let mut out = Vec::new();
-        put_head(&mut out, None, &[], &h, true, Some(9));
+        put_head(&mut out, None, &[], &h, true, Some(9), None);
         let got = decoded(&out);
         assert_eq!(got.iter().filter(|(n, _)| n == "date").count(), 1);
         assert_eq!(
@@ -871,7 +1569,7 @@ mod tests {
         let mut h = Headers::new();
         h.append("content-type", "text/plain");
         let mut out = Vec::new();
-        put_head(&mut out, Some(200), &[], &h, false, None);
+        put_head(&mut out, Some(200), &[], &h, false, None, None);
         assert_eq!(out, [0x01, 0x04, 0, 0, 0xc0 | 25, 0xc0 | 53]);
         assert_eq!(digits(&mut [0; 20], 0), b"0");
         assert_eq!(

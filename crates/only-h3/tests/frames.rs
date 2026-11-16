@@ -2,6 +2,7 @@
 //! streams and checks the error codes the server closes or resets with (RFC 9114 §8).
 #![allow(missing_docs)]
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
@@ -446,6 +447,274 @@ fn request_stream_errors() {
     c.send(id, get("/")).unwrap();
     c.finish(id).unwrap();
     assert!(response(&rx, id).is_ok());
+    e.shutdown();
+    e.wait();
+}
+
+const STREAM_QPACK_DECODER: u64 = 0x3;
+
+/// Stream bytes (and whether they ended) as they arrive, until `done` says enough.
+fn collect(
+    rx: &mpsc::Receiver<Got>,
+    done: impl Fn(&HashMap<StreamId, (Vec<u8>, bool)>) -> bool,
+) -> HashMap<StreamId, (Vec<u8>, bool)> {
+    let mut by_stream: HashMap<StreamId, (Vec<u8>, bool)> = HashMap::new();
+    while !done(&by_stream) {
+        match rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("stream data")
+        {
+            Got::Data(id, d, fin) => {
+                let e = by_stream.entry(id).or_default();
+                e.0.extend(d);
+                e.1 |= fin;
+            }
+            Got::Closed(c) => panic!("closed: {c:?}"),
+            _ => {}
+        }
+    }
+    by_stream
+}
+
+/// The server's QPACK decoder stream, if its first bytes are in `m`.
+fn decoder_id(m: &HashMap<StreamId, (Vec<u8>, bool)>) -> Option<StreamId> {
+    m.iter()
+        .find(|(id, (b, _))| {
+            id.dir() == only_quic::Dir::Uni && b.first() == Some(&(STREAM_QPACK_DECODER as u8))
+        })
+        .map(|(id, _)| *id)
+}
+
+/// The server's QPACK decoder stream bytes (after its type byte).
+fn decoder_stream(m: &HashMap<StreamId, (Vec<u8>, bool)>) -> &[u8] {
+    decoder_id(m).map_or(&[], |id| &m[&id].0[1..])
+}
+
+/// A field section with Required Insert Count 2 (220-byte table) referencing two inserts by
+/// post-base index: `:authority` and `:path` from RFC 9204 Appendix B.2, plus `:method GET`
+/// and `:scheme https` from the static table.
+fn blocked_get() -> Vec<u8> {
+    let mut out = Vec::new();
+    frame(&mut out, HEADERS, &[0x03, 0x81, 0xd1, 0xd7, 0x10, 0x11]);
+    out
+}
+
+/// The encoder stream of RFC 9204 Appendix B.2, minus its type: capacity 220, then two inserts
+/// (`:authority www.example.com`, `:path /`).
+fn inserts() -> Vec<u8> {
+    let mut b = vec![0x3f, 0xbd, 0x01, 0xc0, 0x0f];
+    b.extend_from_slice(b"www.example.com");
+    b.extend_from_slice(&[0xc1, 0x01, b'/']);
+    b
+}
+
+#[test]
+fn qpack_blocked_streams() {
+    let (e, addr) = setup();
+    // SETTINGS name our own decoder limits; the server's decoder allows 4 KiB, 16 blocked.
+    let (c, rx) = connect(&e, addr);
+    uni(&c, control(&[]), false);
+    let enc = c.open_uni().unwrap();
+    c.send(enc, vec![STREAM_QPACK_ENCODER as u8]).unwrap();
+    // Two requests wait for inserts that are not there yet; a third, static, goes through.
+    let a = c.open_bi().unwrap();
+    let mut req = blocked_get();
+    frame(&mut req, 0x21, b"held behind the section");
+    c.send(a, req).unwrap();
+    c.finish(a).unwrap();
+    let b = c.open_bi().unwrap();
+    c.send(b, blocked_get()).unwrap();
+    c.finish(b).unwrap();
+    let s = c.open_bi().unwrap();
+    c.send(s, get("/")).unwrap();
+    c.finish(s).unwrap();
+    assert!(response(&rx, s).is_ok());
+    // The inserts arrive in two pieces: both blocked requests are answered.
+    let ins = inserts();
+    c.send(enc, ins[..7].to_vec()).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    c.send(enc, ins[7..].to_vec()).unwrap();
+    let ra = response(&rx, a).unwrap();
+    let rb = response(&rx, b).unwrap();
+    assert!(ra.windows(4).any(|w| w == b"root"), "{ra:?}");
+    assert!(rb.windows(4).any(|w| w == b"root"), "{rb:?}");
+    c.close(0, b"");
+
+    // Section acknowledgements for both streams arrive on the server's decoder stream (the
+    // order of the two depends on the unblocking order), and a blocked stream that is reset
+    // is cancelled.
+    let (c, rx) = connect(&e, addr);
+    uni(&c, control(&[]), false);
+    let enc = c.open_uni().unwrap();
+    c.send(enc, vec![STREAM_QPACK_ENCODER as u8]).unwrap();
+    let a = c.open_bi().unwrap();
+    c.send(a, blocked_get()).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    c.reset(a, 0x10c).unwrap();
+    let m = collect(&rx, |m| !decoder_stream(m).is_empty());
+    // Stream Cancellation of stream 0.
+    assert_eq!(decoder_stream(&m), [0x40]);
+    let b = c.open_bi().unwrap();
+    c.send(b, blocked_get()).unwrap();
+    c.finish(b).unwrap();
+    c.send(enc, inserts()).unwrap();
+    // Section Acknowledgement of stream 4 (Required Insert Count 2 covers both inserts, so
+    // no Insert Count Increment), and the response.
+    let dec = decoder_id(&m).unwrap();
+    let m = collect(&rx, |m| {
+        m.contains_key(&dec) && m.get(&b).is_some_and(|(_, fin)| *fin)
+    });
+    assert_eq!(m[&dec].0, [0x84]);
+    // Inserts no section references are acknowledged with an increment.
+    let mut more = vec![0xc0, 0x01, b'x'];
+    more.extend_from_slice(&[0xc0, 0x01, b'y']);
+    c.send(enc, more).unwrap();
+    let m = collect(&rx, |m| m.contains_key(&dec));
+    assert_eq!(m[&dec].0, [0x02]);
+    c.close(0, b"");
+
+    // More blocked streams than the server allows: QPACK_DECOMPRESSION_FAILED.
+    let (c, rx) = connect(&e, addr);
+    uni(&c, control(&[]), false);
+    for _ in 0..17 {
+        let id = c.open_bi().unwrap();
+        c.send(id, blocked_get()).unwrap();
+    }
+    assert_eq!(
+        closed_with(&rx),
+        Some(u64::from(code::QPACK_DECOMPRESSION_FAILED))
+    );
+
+    // Encoder stream errors: a capacity above the server's maximum, a reference to an entry
+    // that does not exist; a second encoder stream; decoder stream instructions for a table
+    // the server never filled.
+    let mut over = vec![STREAM_QPACK_ENCODER as u8];
+    over.extend_from_slice(&[0x3f, 0xe2, 0x1f]); // 4099
+    let mut bad_ref = vec![STREAM_QPACK_ENCODER as u8];
+    bad_ref.extend_from_slice(&[0x3f, 0xbd, 0x01, 0x80, 0x01, b'x']);
+    let mut ack = vec![STREAM_QPACK_DECODER as u8];
+    ack.push(0x80);
+    let mut increment = vec![STREAM_QPACK_DECODER as u8];
+    increment.push(0x01);
+    let enc_only = vec![STREAM_QPACK_ENCODER as u8];
+    let cases: Vec<(&str, Streams, u32)> = vec![
+        (
+            "capacity over the maximum",
+            vec![(over, false)],
+            code::QPACK_ENCODER_STREAM_ERROR,
+        ),
+        (
+            "insert with a missing name",
+            vec![(bad_ref, false)],
+            code::QPACK_ENCODER_STREAM_ERROR,
+        ),
+        (
+            "two encoder streams",
+            vec![(enc_only.clone(), false), (enc_only, false)],
+            code::STREAM_CREATION_ERROR,
+        ),
+        (
+            "acknowledgement of nothing",
+            vec![(ack, false)],
+            code::QPACK_DECODER_STREAM_ERROR,
+        ),
+        (
+            "increment past the inserts",
+            vec![(increment, false)],
+            code::QPACK_DECODER_STREAM_ERROR,
+        ),
+    ];
+    for (name, streams, want) in cases {
+        let (c, rx) = connect(&e, addr);
+        for (bytes, fin) in streams {
+            uni(&c, bytes, fin);
+        }
+        assert_eq!(closed_with(&rx), Some(u64::from(want)), "{name}");
+    }
+
+    // The server's SETTINGS: its QPACK limits and extended CONNECT.
+    let (c, rx) = connect(&e, addr);
+    uni(&c, control(&[]), false);
+    let mut want = vec![STREAM_CONTROL as u8];
+    want.extend(settings(&[
+        (0x1, 4096),
+        (0x7, 16),
+        (0x6, 64 << 10),
+        (0x8, 1),
+    ]));
+    let m = collect(&rx, |m| {
+        m.values()
+            .any(|(b, _)| b.first() == Some(&(STREAM_CONTROL as u8)) && b.len() >= want.len())
+    });
+    let ctrl = m
+        .values()
+        .map(|(b, _)| b)
+        .find(|b| b.first() == Some(&(STREAM_CONTROL as u8)))
+        .unwrap();
+    let mut want = vec![STREAM_CONTROL as u8];
+    want.extend(settings(&[
+        (0x1, 4096),
+        (0x7, 16),
+        (0x6, 64 << 10),
+        (0x8, 1),
+    ]));
+    assert!(ctrl.starts_with(&want), "{ctrl:?}");
+    e.shutdown();
+    e.wait();
+}
+
+#[test]
+fn extended_connect_rules() {
+    let (e, addr) = setup();
+    let (c, rx) = connect(&e, addr);
+    uni(&c, control(&[]), false);
+    // `:protocol` needs CONNECT with every pseudo-header field.
+    for bad in [
+        vec![
+            (":method", "GET"),
+            (":protocol", "websocket"),
+            (":scheme", "https"),
+            (":authority", "h"),
+            (":path", "/"),
+        ],
+        vec![
+            (":method", "CONNECT"),
+            (":protocol", "websocket"),
+            (":authority", "h"),
+            (":path", "/"),
+        ],
+        vec![
+            (":method", "CONNECT"),
+            (":protocol", "websocket"),
+            (":scheme", "https"),
+            (":authority", "h"),
+        ],
+    ] {
+        let id = c.open_bi().unwrap();
+        c.send(id, headers(&bad)).unwrap();
+        c.finish(id).unwrap();
+        assert_eq!(
+            response(&rx, id),
+            Err(u64::from(code::MESSAGE_ERROR)),
+            "{bad:?}"
+        );
+    }
+    // A WebSocket request to a GET route that does not upgrade it: an ordinary answer.
+    let id = c.open_bi().unwrap();
+    c.send(
+        id,
+        headers(&[
+            (":method", "CONNECT"),
+            (":protocol", "websocket"),
+            (":scheme", "https"),
+            (":authority", "h"),
+            (":path", "/"),
+            ("sec-websocket-version", "13"),
+        ]),
+    )
+    .unwrap();
+    let body = response(&rx, id).unwrap();
+    assert!(body.windows(4).any(|w| w == b"root"));
     e.shutdown();
     e.wait();
 }

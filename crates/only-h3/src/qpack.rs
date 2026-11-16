@@ -1,9 +1,11 @@
-//! QPACK (RFC 9204) without a dynamic table: we advertise a table capacity of 0, so a peer may
-//! only use static references and literals; we encode with the same. Huffman-coded strings
-//! from the peer are decoded (with HPACK's code, which QPACK shares).
+//! QPACK (RFC 9204) field sections: static references, literals and (with a table the peer's
+//! encoder stream fills, see `qtable`) dynamic references. Huffman-coded strings from the peer
+//! are decoded (with HPACK's code, which QPACK shares). The public [`decode`] and [`encode`]
+//! work without a dynamic table.
 
 use std::sync::OnceLock;
 
+use crate::qtable::{DecTable, NO_TABLE};
 use crate::table::STATIC;
 
 /// A decoded field section: (name, value) pairs in order.
@@ -158,17 +160,68 @@ impl FieldBuf {
     }
 }
 
-/// Decodes a field section into `out` (cleared first); `max` bounds the sum of name + value +
-/// 32 per field (RFC 9114 `SETTINGS_MAX_FIELD_SECTION_SIZE`).
+/// Decodes a field section into `out` (cleared first) without a dynamic table; `max` bounds the
+/// sum of name + value + 32 per field (RFC 9114 `SETTINGS_MAX_FIELD_SECTION_SIZE`).
 pub(crate) fn decode_into(b: &[u8], max: usize, out: &mut FieldBuf) -> Result<(), QpackError> {
+    match decode_section(b, max, &NO_TABLE, out) {
+        Ok(_) => Ok(()),
+        Err(SectionError::Bad(e)) => Err(e),
+        Err(SectionError::Blocked(_)) => Err(QpackError::Decompression),
+    }
+}
+
+/// Why a field section was not decoded.
+#[derive(Debug)]
+pub(crate) enum SectionError {
+    /// Malformed or too large.
+    Bad(QpackError),
+    /// It needs this Required Insert Count, more than the table has received: decode it again
+    /// once the inserts arrive (RFC 9204 §2.1.2).
+    Blocked(u64),
+}
+
+impl From<QpackError> for SectionError {
+    fn from(e: QpackError) -> SectionError {
+        SectionError::Bad(e)
+    }
+}
+
+/// The dynamic entry at absolute index `abs`, which must be below `ric`.
+fn dyn_entry(t: &DecTable, ric: u64, abs: Option<u64>) -> Result<(&[u8], &[u8]), QpackError> {
+    match abs {
+        Some(abs) if abs < ric => t.get(abs).ok_or(QpackError::Decompression),
+        _ => Err(QpackError::Decompression),
+    }
+}
+
+/// Decodes a field section into `out` (cleared first) with the dynamic table `t`; its Required
+/// Insert Count (0 when it references no dynamic entry; acknowledge it otherwise). `max` bounds
+/// the sum of name + value + 32 per field (RFC 9114 `SETTINGS_MAX_FIELD_SECTION_SIZE`).
+pub(crate) fn decode_section(
+    b: &[u8],
+    max: usize,
+    t: &DecTable,
+    out: &mut FieldBuf,
+) -> Result<u64, SectionError> {
     out.buf.clear();
     out.spans.clear();
     let mut pos = 0;
     let ric = get_int(b, &mut pos, 8)?;
-    if ric != 0 {
-        return Err(QpackError::Decompression);
+    let ric = t.required_insert_count(ric)?;
+    let neg = b.get(pos).is_some_and(|&x| x & 0x80 != 0);
+    let delta = get_int(b, &mut pos, 7)?;
+    let base = if ric == 0 {
+        0
+    } else if neg {
+        // Base = RIC - delta - 1, which cannot be negative.
+        ric.checked_sub(delta + 1)
+            .ok_or(QpackError::Decompression)?
+    } else {
+        ric.checked_add(delta).ok_or(QpackError::Decompression)?
+    };
+    if ric > t.inserted() {
+        return Err(SectionError::Blocked(ric));
     }
-    let _delta_base = get_int(b, &mut pos, 7)?;
     let mut size = 0usize;
     while pos < b.len() {
         let first = b[pos];
@@ -176,20 +229,25 @@ pub(crate) fn decode_into(b: &[u8], max: usize, out: &mut FieldBuf) -> Result<()
         let mid;
         if first & 0x80 != 0 {
             // Indexed field line: 1 T index(6).
-            if first & 0x40 == 0 {
-                return Err(QpackError::Decompression);
-            }
-            let (n, v) = static_entry(get_int(b, &mut pos, 6)?)?;
-            out.buf.extend_from_slice(n.as_bytes());
+            let i = get_int(b, &mut pos, 6)?;
+            let (n, v) = if first & 0x40 != 0 {
+                let (n, v) = static_entry(i)?;
+                (n.as_bytes(), v.as_bytes())
+            } else {
+                dyn_entry(t, ric, base.checked_sub(i + 1))?
+            };
+            out.buf.extend_from_slice(n);
             mid = out.buf.len();
-            out.buf.extend_from_slice(v.as_bytes());
+            out.buf.extend_from_slice(v);
         } else if first & 0x40 != 0 {
             // Literal with name reference: 01 N T index(4).
-            if first & 0x10 == 0 {
-                return Err(QpackError::Decompression);
+            let i = get_int(b, &mut pos, 4)?;
+            if first & 0x10 != 0 {
+                out.buf.extend_from_slice(static_entry(i)?.0.as_bytes());
+            } else {
+                let (n, _) = dyn_entry(t, ric, base.checked_sub(i + 1))?;
+                out.buf.extend_from_slice(n);
             }
-            let (n, _) = static_entry(get_int(b, &mut pos, 4)?)?;
-            out.buf.extend_from_slice(n.as_bytes());
             mid = out.buf.len();
             get_str(b, &mut pos, 7, &mut out.buf)?;
         } else if first & 0x20 != 0 {
@@ -197,17 +255,28 @@ pub(crate) fn decode_into(b: &[u8], max: usize, out: &mut FieldBuf) -> Result<()
             get_str(b, &mut pos, 3, &mut out.buf)?;
             mid = out.buf.len();
             get_str(b, &mut pos, 7, &mut out.buf)?;
+        } else if first & 0x10 != 0 {
+            // Indexed field line with post-base index: 0001 index(4).
+            let i = get_int(b, &mut pos, 4)?;
+            let (n, v) = dyn_entry(t, ric, base.checked_add(i))?;
+            out.buf.extend_from_slice(n);
+            mid = out.buf.len();
+            out.buf.extend_from_slice(v);
         } else {
-            // Post-base forms refer to the dynamic table.
-            return Err(QpackError::Decompression);
+            // Literal with post-base name reference: 0000 N index(3).
+            let i = get_int(b, &mut pos, 3)?;
+            let (n, _) = dyn_entry(t, ric, base.checked_add(i))?;
+            out.buf.extend_from_slice(n);
+            mid = out.buf.len();
+            get_str(b, &mut pos, 7, &mut out.buf)?;
         }
         size += out.buf.len() - a + 32;
         if size > max {
-            return Err(QpackError::TooLarge);
+            return Err(SectionError::Bad(QpackError::TooLarge));
         }
         out.spans.push((a, mid, out.buf.len()));
     }
-    Ok(())
+    Ok(ric)
 }
 
 /// Decodes a field section; `max` bounds the sum of name + value + 32 per field (RFC 9114
@@ -241,14 +310,32 @@ fn by_len() -> &'static ByLen {
     })
 }
 
+/// The static table indices of name `n`, the first one being the name reference.
+fn static_indices(n: &[u8]) -> Option<&'static [u8]> {
+    by_len()
+        .get(n.len())
+        .and_then(|row| row.iter().find(|(m, _)| *m == n))
+        .map(|(_, ix)| ix.as_slice())
+}
+
+/// The static table index of name `n`.
+pub(crate) fn static_name(n: &[u8]) -> Option<u8> {
+    static_indices(n).map(|ix| ix[0])
+}
+
+/// The static table index of field `n: v`.
+pub(crate) fn static_exact(n: &[u8], v: &[u8]) -> Option<u8> {
+    static_indices(n)?
+        .iter()
+        .copied()
+        .find(|&i| STATIC[usize::from(i)].1.as_bytes() == v)
+}
+
 /// Appends one field line: an indexed line when the static table has the field, a literal with
 /// a name reference when it has the name, else a literal with a literal name. `n` must already
 /// be lowercase.
 pub(crate) fn encode_line(out: &mut Vec<u8>, n: &[u8], v: &[u8]) {
-    let ix = by_len()
-        .get(n.len())
-        .and_then(|row| row.iter().find(|(m, _)| *m == n))
-        .map(|(_, ix)| ix.as_slice());
+    let ix = static_indices(n);
     if let Some(ix) = ix {
         if let Some(&i) = ix
             .iter()
