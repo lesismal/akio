@@ -42,6 +42,9 @@ records and SPS (picture size), and frame ADTS.
   refusal happens in the handshake.
 - **Auth hooks.** `on_publish` and `on_subscribe` authorize every protocol at once;
   `on_unpublish` observes publishers leaving. Hooks run without any hub lock held.
+- **Limits.** `max_streams` (1024) and `max_subscribers` (1000 per path) bound the tables a
+  client grows; past them publishes and plays fail with `HubError::Limit` (503 over HTTP,
+  OVERLOAD over SRT). 0 removes a limit.
 - **GOP cache, fast start.** Each stream keeps every packet since the last video keyframe (an
   audio-only stream its last second), bounded by `gop_cache_bytes`. A new subscriber hears the
   tracks and the cache before anything newer, so playback starts at once with a picture.
@@ -85,7 +88,11 @@ aborts, aggregate messages, acknowledgements), and answers `connect`, `releaseSt
 including H.265 as id 12, and Enhanced RTMP FourCCs `hvc1`, `Opus`, `mp4a`); players get
 onMetaData and the sequence headers first, then the GOP cache, written by `flv::Encoder`
 (H.265 as `hvc1`, or codec id 12 with `EncoderConfig::legacy_hevc`). `RtmpConfig::on_connect`
-can reject connections by app and tcUrl. RTMPS is RTMP behind only-tls.
+can reject connections by app and tcUrl. RTMPS is RTMP behind only-tls. A client must finish
+the handshake within `handshake_timeout` (10 s), and a connection that sends nothing for
+`idle_timeout` (60 s) is closed (players are exempt: a player that stops reading is bounded by
+the engine's write timeout). Messages are limited to 16 MiB and unfinished messages over all
+chunk streams of a connection to 32 MiB.
 
 ## HTTP-FLV, WS-FLV and HLS
 
@@ -103,7 +110,8 @@ can reject connections by app and tcUrl. RTMPS is RTMP behind only-tls.
 - **`Hls`**: `GET /app/name/index.m3u8` starts a muxer on first request (it subscribes to the
   hub and stops after `idle_timeout` without requests) that cuts MPEG-TS segments in memory at
   keyframes after `target_duration`, keeps a sliding window of `playlist_size` segments plus
-  `keep_segments` for late readers, bounded by `max_bytes`, and marks republishes with
+  `keep_segments` for late readers, bounded by `max_bytes` (a segment that reaches it without a
+  keyframe to cut at is cut there), and marks republishes with
   `EXT-X-DISCONTINUITY`. With `part_duration` it adds the Low-Latency HLS tags:
   `EXT-X-PART`, `EXT-X-PRELOAD-HINT`, `EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`, and blocking
   playlist reloads (`?_HLS_msn=&_HLS_part=`). Requests that must wait are parked (no thread is

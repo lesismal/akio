@@ -25,6 +25,8 @@ pushing to and pulling from ffmpeg in `mode=listener`.
 - `SrtConfig::on_connect` sees the request (address, stream ID, latency, whether it
   encrypts) and the parsed `StreamId`, and may reject with any `RejectReason`
   (`FORBIDDEN` = 1403, ...), which the caller hears in the handshake.
+- `SrtConfig::max_conns` (1024; 0 removes it) bounds connections: past it callers are
+  rejected with `OVERLOAD` (1402).
 - A **publisher** reserves its path during the handshake (`Hub::reserve`), so a second
   publisher of a busy path is rejected there (`CONFLICT`, 1409). Its MPEG-TS is demuxed
   (`only_media::mpegts::demux`) and the stream goes live once the program's tracks are known

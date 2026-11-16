@@ -753,7 +753,6 @@ mod tests {
                 match e {
                     Event::Tracks(t) => tracks = Some(t),
                     Event::Packet(p) => pkts.push(p),
-                    _ => {}
                 }
             }
         }
@@ -788,10 +787,11 @@ mod tests {
     #[test]
     fn segment_without_keyframes_is_cut_at_max_bytes() {
         let (tracks, pkts) = sample();
-        let mut cfg = HlsConfig::default();
-        cfg.max_bytes = 20_000;
-        cfg.part_duration = Some(Duration::from_millis(200)); // parts count toward the bound
-        let mut s = sink(cfg);
+        let mut s = sink(HlsConfig {
+            max_bytes: 20_000,
+            part_duration: Some(Duration::from_millis(200)), // parts count toward the bound
+            ..HlsConfig::default()
+        });
         s.on_tracks(&tracks);
         let mut seen_key = false;
         let mut fed = 0;

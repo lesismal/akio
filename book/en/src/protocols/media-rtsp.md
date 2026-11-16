@@ -36,6 +36,10 @@ tokens travel).
 - Codecs: H.264 (single NAL, STAP-A, FU-A), H.265 (single, AP, FU), AAC (`mpeg4-generic`
   `AAC-hbr`), Opus, G.711.
 - Authentication: `RtspConfig::credentials` turns on Digest (MD5) and Basic.
+- Timeouts: the first request, and any request once begun, must arrive within
+  `request_timeout` (10 s). `Session: <id>;timeout=<s>` advertises `session_timeout` (60 s) and
+  it is enforced: a session whose client sends nothing (requests, interleaved RTCP, or for UDP
+  transports datagrams from its ports) for that long is torn down.
 
 Tested with ffmpeg 9 (`crates/only-media/tests/rtsp_interop.rs`):
 
@@ -68,6 +72,7 @@ A WHIP publish reserves the path through the hub, so `on_publish` applies; an
 query. The media itself (ICE, DTLS-SRTP, RTP) is the job of a `WebRtcEngine`: its `publish`
 gets the reserved `Publisher` and its `play` subscribes to the hub. `NoMedia`, the placeholder,
 answers every offer with `501 Not Implemented` until a WebRTC engine is plugged in.
+`WhipConfig::max_sessions` (256) bounds concurrent sessions; offers past it get 503.
 
 ## Statistics
 

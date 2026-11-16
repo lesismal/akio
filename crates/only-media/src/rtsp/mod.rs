@@ -79,6 +79,17 @@ pub struct RtspConfig {
     pub play_wait: Option<Duration>,
     /// Interval of the RTCP sender reports to players.
     pub sender_report_interval: Duration,
+    /// The session timeout advertised in `Session: <id>;timeout=<s>` (in whole seconds, one at
+    /// least) and enforced: a connection that sends nothing (no request, no interleaved RTCP, and
+    /// for UDP transports no datagram from the client's ports) for this long is torn down and
+    /// closed. Clients keep sessions alive with RTCP receiver reports or `GET_PARAMETER`, as
+    /// RFC 2326 section 12.37 asks. Default 60 s; `Duration::ZERO` disables enforcement (60
+    /// is still advertised).
+    pub session_timeout: Duration,
+    /// Time allowed for the first request after accept, and for any request once its first
+    /// byte arrived; a client trickling a request is closed. Default 10 s; `Duration::ZERO`
+    /// disables it.
+    pub request_timeout: Duration,
 }
 
 impl Default for RtspConfig {
@@ -90,6 +101,8 @@ impl Default for RtspConfig {
             max_write_queue: 16 << 20,
             play_wait: None,
             sender_report_interval: Duration::from_secs(3),
+            session_timeout: Duration::from_secs(60),
+            request_timeout: Duration::from_secs(10),
         }
     }
 }
@@ -100,6 +113,8 @@ impl fmt::Debug for RtspConfig {
             .field("realm", &self.realm)
             .field("write_queue_limit", &self.write_queue_limit)
             .field("max_write_queue", &self.max_write_queue)
+            .field("session_timeout", &self.session_timeout)
+            .field("request_timeout", &self.request_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -110,8 +125,11 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Where a UDP datagram from a client goes.
 struct Route {
+    /// The recording session the datagram feeds (dangling for a player's ports).
     rec: Weak<Mutex<Recorder>>,
     media: usize,
+    /// The session's deadlines: any datagram from its client keeps it alive.
+    watch: Weak<crate::watch::Watch>,
 }
 
 struct Udp {
@@ -208,9 +226,12 @@ fn read_udp(sock: &UdpSocket, server: &Weak<Inner>) {
             return;
         };
         let Ok((n, from)) = r else { continue };
-        let route = lock(&inner.routes)
-            .get(&from)
-            .map(|r| (r.rec.clone(), r.media));
+        let route = lock(&inner.routes).get(&from).map(|r| {
+            if let Some(w) = r.watch.upgrade() {
+                w.touch();
+            }
+            (r.rec.clone(), r.media)
+        });
         if let Some((rec, media)) = route {
             if let Some(rec) = rec.upgrade() {
                 if !rtp::is_rtcp(&buf[..n]) {
@@ -224,11 +245,27 @@ fn read_udp(sock: &UdpSocket, server: &Weak<Inner>) {
 impl Acceptor for RtspServer {
     type Handler = RtspSession;
 
-    fn on_open(&self, _c: &Conn<RtspSession>) -> RtspSession {
+    fn on_open(&self, c: &Conn<RtspSession>) -> RtspSession {
+        let cfg = &self.0.cfg;
+        let watch = crate::watch::watch(
+            c.inner(),
+            crate::watch::Deadlines {
+                handshake: cfg.request_timeout,
+                idle: cfg.session_timeout,
+                message: cfg.request_timeout,
+            },
+        );
+        let secs = if cfg.session_timeout.is_zero() {
+            60
+        } else {
+            cfg.session_timeout.as_secs().max(1)
+        };
+        let id = random_hex(8);
         RtspSession {
+            session_hdr: format!("{id};timeout={secs}"),
+            watch,
             srv: self.0.clone(),
             parser: Parser::default(),
-            id: random_hex(8),
             nonce: random_hex(16),
             path: None,
             query: String::new(),
@@ -321,7 +358,9 @@ impl Recorder {
 pub struct RtspSession {
     srv: Arc<Inner>,
     parser: Parser,
-    id: String,
+    /// `Session` header value: the id and the advertised timeout.
+    session_hdr: String,
+    watch: Arc<crate::watch::Watch>,
     nonce: String,
     path: Option<String>,
     query: String,
@@ -373,11 +412,19 @@ fn hub_status(e: &HubError) -> u16 {
 
 impl Handler for RtspSession {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        self.watch.touch();
         let mut frames = Vec::new();
         if self.parser.feed(data, &mut frames).is_err() {
             let _ = c.send(&Response::new(400).encode(None));
             c.close_after_send();
             return;
+        }
+        self.watch.set_partial(self.parser.pending());
+        if frames
+            .iter()
+            .any(|f| matches!(f, Frame::Request(_) | Frame::Response(_)))
+        {
+            self.watch.ready();
         }
         for f in frames {
             match f {
@@ -408,6 +455,8 @@ impl RtspSession {
             lock(&self.srv.routes).retain(|_, r| !r.rec.ptr_eq(&weak));
             lock(&rec).publisher.close();
         }
+        let w = Arc::downgrade(&self.watch);
+        lock(&self.srv.routes).retain(|_, r| !r.watch.ptr_eq(&w));
         self.setups.clear();
     }
 
@@ -438,7 +487,7 @@ impl RtspSession {
                     .header("WWW-Authenticate", b);
             }
         }
-        let session_hdr = format!("{};timeout=60", self.id);
+        let session_hdr = self.session_hdr.clone();
         let session = || ("Session", session_hdr.clone());
         match req.method.as_str() {
             "OPTIONS" => Response::new(200).header(
@@ -613,17 +662,22 @@ impl RtspSession {
             let ip = c.peer_addr().ip();
             let (rtp_addr, rtcp_addr) = (SocketAddr::new(ip, a), SocketAddr::new(ip, b));
             reply.server_port = Some(udp.ports);
-            if let Some(rec) = &self.recorder {
-                let mut routes = lock(&self.srv.routes);
-                for addr in [rtp_addr, rtcp_addr] {
-                    routes.insert(
-                        addr,
-                        Route {
-                            rec: Arc::downgrade(rec),
-                            media: index,
-                        },
-                    );
-                }
+            // Recording: datagrams feed the recorder. Playing: the client's RTCP receiver
+            // reports only keep the session alive.
+            let rec = self
+                .recorder
+                .as_ref()
+                .map_or_else(Weak::new, Arc::downgrade);
+            let mut routes = lock(&self.srv.routes);
+            for addr in [rtp_addr, rtcp_addr] {
+                routes.insert(
+                    addr,
+                    Route {
+                        rec: rec.clone(),
+                        media: index,
+                        watch: Arc::downgrade(&self.watch),
+                    },
+                );
             }
             Path::Udp {
                 rtp: rtp_addr,
@@ -633,12 +687,12 @@ impl RtspSession {
         self.setups.insert(index, path);
         Response::new(200)
             .header("Transport", reply.to_string())
-            .header("Session", format!("{};timeout=60", self.id))
+            .header("Session", self.session_hdr.clone())
     }
 
     fn play_response(&self) -> Response {
         Response::new(200)
-            .header("Session", format!("{};timeout=60", self.id))
+            .header("Session", self.session_hdr.clone())
             .header("Range", "npt=0.000-")
     }
 

@@ -163,7 +163,8 @@ pub struct WhipConfig {
     pub whep_prefix: String,
     /// Prefix of session resources (`Location`).
     pub resource_prefix: String,
-    /// Most concurrent sessions; 0 is unlimited.
+    /// Most concurrent sessions (each holds an ICE/DTLS/SRTP peer); past it offers are
+    /// answered 503. Default 256; 0 removes the limit.
     pub max_sessions: usize,
     /// `Access-Control-Allow-Origin` value, `None` for no CORS headers.
     pub cors_origin: Option<String>,
@@ -177,7 +178,7 @@ impl Default for WhipConfig {
             whip_prefix: "/whip".to_owned(),
             whep_prefix: "/whep".to_owned(),
             resource_prefix: "/webrtc/session".to_owned(),
-            max_sessions: 0,
+            max_sessions: 256,
             cors_origin: Some("*".to_owned()),
             ice_links: Vec::new(),
         }
@@ -617,5 +618,52 @@ mod tests {
         assert_eq!(srv.sessions(), 0);
         assert!(handles(&Method::Post));
         engine.shutdown();
+    }
+
+    /// Sessions are bounded by default (256); at the limit new offers get 503 and a deleted
+    /// session frees its slot.
+    #[test]
+    fn max_sessions_has_a_safe_default_and_answers_503_over_it() {
+        assert_eq!(WhipConfig::default().max_sessions, 256);
+        let hub = Hub::default();
+        let srv = WhipServer::new(
+            hub,
+            Arc::new(Echo {
+                closed: Arc::new(AtomicUsize::new(0)),
+            }),
+            WhipConfig {
+                max_sessions: 2,
+                ..WhipConfig::default()
+            },
+        );
+        let engine = Engine::builder()
+            .listen(
+                Listener::tcp("127.0.0.1:0".parse().unwrap())
+                    .serve(serve(srv.routes(Router::new()))),
+            )
+            .build()
+            .unwrap();
+        engine.start().unwrap();
+        let addr = engine.local_addrs()[0];
+        let r = post(addr, "/whip/live/1", "application/sdp", OFFER);
+        assert!(r.starts_with("HTTP/1.1 201"), "{r}");
+        let loc = r
+            .lines()
+            .find_map(|l| l.strip_prefix("Location: "))
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert!(post(addr, "/whip/live/2", "application/sdp", OFFER).starts_with("HTTP/1.1 201"));
+        assert_eq!(srv.sessions(), 2);
+        let over = post(addr, "/whip/live/3", "application/sdp", OFFER);
+        assert!(over.starts_with("HTTP/1.1 503"), "{over}");
+        let d = http(
+            addr,
+            &format!("DELETE {loc} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n"),
+        );
+        assert!(d.starts_with("HTTP/1.1 200"), "{d}");
+        assert!(post(addr, "/whip/live/3", "application/sdp", OFFER).starts_with("HTTP/1.1 201"));
+        engine.shutdown();
+        engine.wait();
     }
 }

@@ -90,6 +90,13 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `only_ws::WsConfig` | `max_message_bytes`: 16 MiB, `permessage_deflate`: true, `compress_min_bytes`: 128 |
 | `only_http::WsOptions` | `config`: `WsConfig::default()`, `protocols`: none, `origin_allowed`: none |
 | `only_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s |
+| `only_media::HubConfig` | `gop_cache_bytes`: 16 MiB, `max_streams`: 1024, `max_subscribers`: 1000 per path (0: no limit) |
+| `only_media::rtmp::RtmpConfig` | `chunk_size`: 4096, `write_queue_limit`: 2 MiB, `max_write_queue`: 16 MiB, `handshake_timeout`: 10 s, `idle_timeout`: 60 s (players exempt); messages 16 MiB, unfinished messages 32 MiB per connection |
+| `only_media::rtsp::RtspConfig` | `write_queue_limit`: 2 MiB, `max_write_queue`: 16 MiB, `request_timeout`: 10 s, `session_timeout`: 60 s (advertised and enforced) |
+| `only_media::srt::SrtConfig` | `max_send_backlog`: 2 MiB, `max_conns`: 1024 (0: no limit) |
+| `only_media::whip::WhipConfig` | `max_sessions`: 256 (0: no limit) |
+| `only_media::hls::HlsConfig` | `target_duration`: 2 s, `playlist_size`: 6, `keep_segments`: 3, `max_bytes`: 64 MiB (bounds the segment being written too), `idle_timeout`: 30 s |
+| `only_webrtc::RtcServer` / `Endpoint` | `max_peers`: 1024 (0: no limit), `connect_timeout`: 30 s |
 | `only_h3::H3Config` | `max_body`: 8 MiB, `max_field_section`: 64 KiB |
 | `only_grpc::GrpcServer` | `max_message`: 4 MiB, `compress`: false |
 | `only_arpc::Routes` | `max_body`: 64 MiB |

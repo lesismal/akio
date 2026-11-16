@@ -814,6 +814,8 @@ impl core::marker::Unpin for only_media::hub::Timeline
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Timeline
 impl core::panic::unwind_safe::UnwindSafe for only_media::hub::Timeline
 pub const only_media::hub::DEFAULT_GOP_CACHE_BYTES: usize
+pub const only_media::hub::DEFAULT_MAX_STREAMS: usize
+pub const only_media::hub::DEFAULT_MAX_SUBSCRIBERS: usize
 pub trait only_media::hub::Sink: core::marker::Send + 'static
 pub fn only_media::hub::Sink::attach(&mut self, &alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>)
 pub fn only_media::hub::Sink::on_close(&mut self, only_media::hub::HubError)
@@ -927,6 +929,7 @@ pub fn only_media::rtmp::chunk::ChunkReader::chunk_size(&self) -> usize
 pub fn only_media::rtmp::chunk::ChunkReader::feed(&mut self, &[u8]) -> core::result::Result<alloc::vec::Vec<only_media::rtmp::chunk::Message>, only_media::rtmp::chunk::ChunkError>
 pub fn only_media::rtmp::chunk::ChunkReader::new() -> only_media::rtmp::chunk::ChunkReader
 pub fn only_media::rtmp::chunk::ChunkReader::received(&self) -> u64
+pub fn only_media::rtmp::chunk::ChunkReader::with_limits(usize, usize) -> only_media::rtmp::chunk::ChunkReader
 impl core::default::Default for only_media::rtmp::chunk::ChunkReader
 pub fn only_media::rtmp::chunk::ChunkReader::default() -> Self
 impl core::fmt::Debug for only_media::rtmp::chunk::ChunkReader
@@ -1003,6 +1006,8 @@ pub fn only_media::rtmp::handshake::server_reply(&[u8]) -> core::result::Result<
 #[non_exhaustive] pub struct only_media::rtmp::RtmpConfig
 pub only_media::rtmp::RtmpConfig::chunk_size: u32
 pub only_media::rtmp::RtmpConfig::encoder: only_media::flv::EncoderConfig
+pub only_media::rtmp::RtmpConfig::handshake_timeout: core::time::Duration
+pub only_media::rtmp::RtmpConfig::idle_timeout: core::time::Duration
 pub only_media::rtmp::RtmpConfig::max_write_queue: usize
 pub only_media::rtmp::RtmpConfig::on_connect: core::option::Option<only_media::rtmp::ConnectHook>
 pub only_media::rtmp::RtmpConfig::play_wait: core::option::Option<core::time::Duration>
@@ -1362,7 +1367,9 @@ pub only_media::rtsp::RtspConfig::credentials: core::option::Option<only_media::
 pub only_media::rtsp::RtspConfig::max_write_queue: usize
 pub only_media::rtsp::RtspConfig::play_wait: core::option::Option<core::time::Duration>
 pub only_media::rtsp::RtspConfig::realm: alloc::string::String
+pub only_media::rtsp::RtspConfig::request_timeout: core::time::Duration
 pub only_media::rtsp::RtspConfig::sender_report_interval: core::time::Duration
+pub only_media::rtsp::RtspConfig::session_timeout: core::time::Duration
 pub only_media::rtsp::RtspConfig::write_queue_limit: usize
 impl core::clone::Clone for only_media::rtsp::RtspConfig
 pub fn only_media::rtsp::RtspConfig::clone(&self) -> Self

@@ -103,6 +103,11 @@ impl Parser {
         }
     }
 
+    /// Whether part of a message is buffered (its first bytes arrived, not all of it).
+    pub(crate) fn pending(&self) -> bool {
+        !self.buf.is_empty()
+    }
+
     /// Feeds bytes; appends complete frames to `out`.
     pub fn feed(&mut self, data: &[u8], out: &mut Vec<Frame>) -> Result<(), RtspError> {
         self.buf.extend_from_slice(data);
