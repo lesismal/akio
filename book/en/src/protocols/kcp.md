@@ -22,8 +22,9 @@ through a relay that drops every seventh datagram (`tools/interop/kcp/run.sh`).
 
 - A `KcpServer` is the acceptor of a **UDP listener**. Each peer address that starts a
   conversation gets a `Session` and a `KcpHandler` from the factory; a new conversation id from
-  the same address replaces the old session. `max_sessions(n)` caps them; `sessions()` counts
-  them.
+  the same address replaces the old session. `max_sessions(n)` caps them (default 4096; 0
+  lifts the limit): a peer starting a conversation beyond it gets no session and its datagrams
+  are dropped. `sessions()` counts them.
 - `only_kcp::dial(&engine, addr, cfg, handler)` starts a client session with a random
   conversation id (`dial_conv` to choose it). The engine needs `udp_client_threads(n)`. Messages
   may be sent right away.
@@ -34,7 +35,9 @@ through a relay that drops every seventh datagram (`tools/interop/kcp/run.sh`).
   shutdown). An idle KCP session therefore ends after `Config::udp_idle_timeout` (60 s) unless
   the application sends keep-alives more often.
 - `Session` (cloneable, any thread): `send(msg)` (fails with `KcpError::Full` when the send
-  queue is full: queue or drop, never wait for it inside a callback), `close()`, `conv()`,
+  queue is full: queue or drop, never wait for it inside a callback; `KcpHandler::on_writable`
+  runs once the queue is down to half, so a relay pauses its source on `Full` and resumes it
+  there), `close()`, `conv()`,
   `remote_addr()`, `is_open()`, `wait_send()`, `stats()` (sent, retransmitted,
   fast-retransmitted, lost, FEC-recovered).
 - A session is driven by the datagrams its I/O thread reads, by one shared timer thread
@@ -56,7 +59,7 @@ Both sides should agree on the KCP knobs and **must** agree on crypt and FEC.
 | `dead_link` | 20 | transmissions of one segment before closing with `DeadLink` |
 | `crypt` | none | `Crypt::new(name, key)`: `none`, `xor`, `aes` (32-byte key), `aes-128`, `aes-192`, `aes-128-gcm` |
 | `data_shards`, `parity_shards` | 0, 0 | kcp-go Reed–Solomon FEC (kcptun uses 10/3); either 0 turns it off |
-| `write_queue` | 0 | `send` fails beyond this many waiting segments (0 = twice the send window) |
+| `write_queue` | 0 | `send` fails beyond this many waiting segments, queued or in flight (0 = twice the send window); `on_writable` follows at half |
 
 `KcpConfig::fast()` is kcptun's "fast3": nodelay, 10 ms interval, resend after 2, no congestion
 control. Keys are taken as already derived: kcptun derives them with PBKDF2-SHA1 from the

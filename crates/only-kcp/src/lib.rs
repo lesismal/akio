@@ -83,8 +83,9 @@ pub struct KcpConfig {
     pub data_shards: usize,
     /// See `data_shards`.
     pub parity_shards: usize,
-    /// [`Session::send`] fails with `KcpError::Full` once this many segments wait (0: twice
-    /// the send window).
+    /// [`Session::send`] fails with `KcpError::Full` once this many segments wait, queued or
+    /// in flight (0: twice the send window); [`KcpHandler::on_writable`] follows once they are
+    /// down to half.
     pub write_queue: usize,
 }
 
@@ -153,6 +154,10 @@ pub trait KcpHandler: Send + 'static {
     /// thread that also reads the peer's ACKs, so it must not block waiting for
     /// [`Session::send`] to stop failing with `KcpError::Full`: queue or drop instead.
     fn on_message(&mut self, s: &Session, msg: Vec<u8>);
+    /// A [`Session::send`] failed with `KcpError::Full` and the segments waiting are down to
+    /// half of `KcpConfig::write_queue`: send again (link a relay's backpressure here: pause
+    /// the source on `Full`, resume it here). Called once per refusal, on the I/O thread.
+    fn on_writable(&mut self, _s: &Session) {}
     /// The session closed; called once.
     fn on_close(&mut self, _s: &Session, _why: CloseReason) {}
 }
@@ -180,6 +185,8 @@ struct State {
     out: Vec<Vec<u8>>,
     closed: Option<CloseReason>,
     armed: Option<Instant>,
+    /// A send was refused (`Full`): `on_writable` once the queue is down to half.
+    want_writable: bool,
 }
 
 struct Shared {
@@ -236,6 +243,7 @@ impl Session {
                 out: Vec::new(),
                 closed: None,
                 armed: None,
+                want_writable: false,
             }),
             handler: Mutex::new(None),
             client: owner.is_none(),
@@ -284,6 +292,7 @@ impl Session {
             return Err(KcpError::Closed);
         }
         if st.kcp.wait_send() >= self.0.write_queue {
+            st.want_writable = true;
             return Err(KcpError::Full);
         }
         st.kcp.send(msg)?;
@@ -385,18 +394,26 @@ impl Session {
         while let Some(m) = st.kcp.recv() {
             msgs.push(m);
         }
+        // Acknowledgments may have made room for a refused sender.
+        let writable = st.want_writable && st.kcp.wait_send() <= self.0.write_queue / 2;
+        if writable {
+            st.want_writable = false;
+        }
         self.unlock(st);
-        if !msgs.is_empty() {
-            self.deliver(msgs);
+        if !msgs.is_empty() || writable {
+            self.deliver(msgs, writable);
         }
     }
 
-    fn deliver(&self, msgs: Vec<Vec<u8>>) {
+    fn deliver(&self, msgs: Vec<Vec<u8>>, writable: bool) {
         let Some(mut h) = lock(&self.0.handler).take() else {
             return;
         };
         for m in msgs {
             h.on_message(self, m);
+        }
+        if writable && self.is_open() {
+            h.on_writable(self);
         }
         *lock(&self.0.handler) = Some(h);
         // A close while the handler was out could not notify it.
@@ -546,6 +563,9 @@ fn ticker() -> &'static Ticker {
 
 type Factory = dyn Fn(&Session) -> Box<dyn KcpHandler> + Send + Sync;
 
+/// Sessions a [`KcpServer`] holds at once by default (see [`KcpServer::max_sessions`]).
+pub const DEFAULT_MAX_SESSIONS: usize = 4096;
+
 struct ServerShared {
     cfg: KcpConfig,
     factory: Box<Factory>,
@@ -575,12 +595,16 @@ impl KcpServer {
         Ok(KcpServer(Arc::new(ServerShared {
             cfg,
             factory: Box::new(move |s| Box::new(factory(s))),
-            max_sessions: 0,
+            max_sessions: DEFAULT_MAX_SESSIONS,
             sessions: AtomicUsize::new(0),
         })))
     }
 
-    /// Bounds the open sessions (0, the default, is unlimited).
+    /// Bounds the open sessions (default [`DEFAULT_MAX_SESSIONS`], 4096; 0 lifts the limit).
+    /// A peer starting a conversation beyond it gets no session: its datagrams are dropped
+    /// until a session closes. Every session holds KCP windows and buffers (up to
+    /// `write_queue` segments of `mtu` bytes queued), so the limit bounds the server's memory
+    /// against peers that open conversations and leave.
     #[must_use]
     pub fn max_sessions(mut self, n: usize) -> KcpServer {
         if let Some(s) = Arc::get_mut(&mut self.0) {

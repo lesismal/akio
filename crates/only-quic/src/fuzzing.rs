@@ -154,6 +154,7 @@ impl Pair {
                 tls: stls.clone(),
                 cfg: scfg,
                 retry: false,
+                max_connections: usize::MAX,
             }),
             &mut rng,
         );

@@ -266,10 +266,21 @@ pub struct TransportConfig {
     /// 1.25 MB).
     pub stream_receive_window: u64,
     /// Bytes the peer may send on all streams together ahead of the application (default
-    /// `None`: unlimited).
+    /// 10 MB, eight times `stream_receive_window`; `None` lifts the limit).
     pub receive_window: Option<u64>,
     /// Bytes sent but not yet acknowledged, on all streams (default 10 MB).
     pub send_window: u64,
+    /// Bytes one stream holds for sending: written and not yet acknowledged (default 4 MiB).
+    /// While a stream holds this much, [`Connection::send`](crate::Connection::send) fails with
+    /// [`Error::Overloaded`](crate::Error::Overloaded) and
+    /// [`QuicHandler::on_stream_writable`](crate::QuicHandler::on_stream_writable) follows once
+    /// it is down to three quarters; a write accepted below the limit may pass it, so a stream
+    /// holds at most the limit plus one write. `u64::MAX` lifts the limit.
+    pub stream_send_buffer: u64,
+    /// Bytes all streams of a connection hold for sending together, as `stream_send_buffer`
+    /// does for one (default 16 MiB, above `send_window` so a full window can be in flight
+    /// with data waiting behind it). `u64::MAX` lifts the limit.
+    pub send_buffer: u64,
     /// Round-trip time assumed before it is measured (default 333 ms).
     pub initial_rtt: Duration,
     /// UDP payload size used before path MTU discovery (default 1200, the minimum).
@@ -301,8 +312,10 @@ impl Default for TransportConfig {
             max_idle_timeout: Some(Duration::from_secs(30)),
             keep_alive_interval: None,
             stream_receive_window: STREAM_RWND,
-            receive_window: None,
+            receive_window: Some(8 * STREAM_RWND),
             send_window: 8 * STREAM_RWND,
+            stream_send_buffer: 4 << 20,
+            send_buffer: 16 << 20,
             initial_rtt: Duration::from_millis(333),
             initial_mtu: 1200,
             mtu_discovery: true,
@@ -336,7 +349,12 @@ pub(crate) struct ServerInner {
     pub(crate) versions: Vec<u32>,
     pub(crate) prefer_version: Option<u32>,
     pub(crate) zero_rtt: bool,
+    pub(crate) max_connections: usize,
 }
+
+/// Connections a server endpoint holds at once by default (see
+/// [`ServerConfig::max_connections`]).
+pub const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
 
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -356,7 +374,19 @@ impl ServerConfig {
             versions: vec![Version::V1.wire(), Version::V2.wire()],
             prefer_version: None,
             zero_rtt: false,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
         })
+    }
+
+    /// Connections the server holds at once, handshaking, open or closing (default 10,000;
+    /// `usize::MAX` lifts the limit). A client starting a connection beyond it is refused at
+    /// once with `CONNECTION_REFUSED` in an Initial packet (RFC 9000 section 5.2.2), without any
+    /// state kept for it; these answers are rate limited like stateless resets. A clone of the
+    /// [`QuicServer`](crate::QuicServer) serving several listeners shares the limit.
+    #[must_use]
+    pub fn max_connections(mut self, n: usize) -> Self {
+        self.0.max_connections = n;
+        self
     }
 
     /// Accepts 0-RTT (RFC 9001 section 4.6; default off): clients resuming with a ticket from

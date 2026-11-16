@@ -40,14 +40,23 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
   一次接收整批 GSO 数据。
 
 `QuicHandler` 回调：`on_connected`、`on_stream_opened`、`on_stream_data(c, id, data, fin)`
-（必须实现）、`on_stream_reset`、`on_stream_stopped`、`on_streams_available`、`on_datagram`、
-`on_close(reason)`。
+（必须实现）、`on_stream_reset`、`on_stream_stopped`、`on_streams_available`、
+`on_stream_writable`、`on_datagram`、`on_close(reason)`。
 
 `Connection`（可克隆，可在任何线程使用）：`open_bi`、`open_uni`、`send(id, data)`、`finish`、
-`reset`、`stop`、`queued_bytes(id)`、`send_datagram`、`close(code, reason)`、`remote_addr`、
-`alpn`、`server_name`、`rtt`、`stats`、`is_closed`。负载类型是 `only_quic::Bytes`（引用计数、
-可切片；收到的数据是解密后数据包的切片，不再复制）。写永不阻塞：`send` 把数据排队，按流量控制与
-拥塞控制允许的速度发出；用 `queued_bytes`（尚未发出的字节数）控制生产者节奏。
+`reset`、`stop`、`queued_bytes(id)`、`send_capacity(id)`、`send_datagram`、
+`spawn_blocking(work)`、`close(code, reason)`、`remote_addr`、`alpn`、`server_name`、`rtt`、
+`stats`、`is_closed`。负载类型是 `only_quic::Bytes`（引用计数、可切片；收到的数据是解密后数据包
+的切片，不再复制）。写永不阻塞：`send` 把数据排队，按流量控制与拥塞控制允许的速度发出。
+
+发送缓冲区有上限。一个流持有已写入但尚未确认的数据，最多 `TransportConfig::stream_send_buffer`
+（4 MiB），一个连接的所有流合计最多 `send_buffer`（16 MiB）。超过任一上限时，`send` 返回
+`Error::Overloaded` 且不接收数据；当该流和连接的缓冲区降到上限的四分之三时，回调
+`on_stream_writable(c, id)`（每次拒绝回调一次）。生产者写到被拒为止，并在该回调里继续；
+`send_capacity(id)` 返回剩余空间（为零时同样会触发该回调），因此可以只在有空间时才读取文件的下一
+块。在上限之下被接收的一次写入可以越过上限，所以一个流最多持有上限加一次写入。
+`spawn_blocking(work)` 在 engine 的逻辑池上执行 `work`（磁盘读取等阻塞工作），`work` 里可以调用
+该连接。
 
 配置（TLS 1.3）：`server_config(certs, key, alpn)`（使用 `only::tls::Certificate` /
 `PrivateKey`）、`server_config_from(&only::tls::ServerConfig)`、`client_config(roots, alpn)`
@@ -59,6 +68,22 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
 下次连接时可免去地址验证的限制。`unstable` cargo feature 保留但不启用任何内容（自研实现之前它
 暴露 quinn-proto）。
 `QuicServer::connections()` 和 `close_all(code, reason)` 在停机时有用。
+
+各项上限及默认值（全部有界；`None` / `MAX` 取消上限）：
+
+| 设置 | 默认值 | 含义 |
+|---|---|---|
+| `TransportConfig::max_concurrent_bidi_streams`、`max_concurrent_uni_streams` | 100、100 | 对端可同时打开的流数 |
+| `TransportConfig::stream_receive_window` | 1.25 MB | 对端在一个流上可领先应用读取发送的字节数 |
+| `TransportConfig::receive_window` | 10 MB（流窗口的 8 倍） | 一个连接所有流合计的同类限制（`None`：不限） |
+| `TransportConfig::send_window` | 10 MB | 所有流上已发送未确认的字节数 |
+| `TransportConfig::stream_send_buffer` | 4 MiB | 一个流为发送持有的字节数，超过后 `send` 返回 `Overloaded` |
+| `TransportConfig::send_buffer` | 16 MiB | 一个连接所有流合计的同类限制 |
+| `TransportConfig::max_idle_timeout` | 30 s | 关闭静默的连接 |
+| `TransportConfig::datagram_receive_buffer_size`、`datagram_send_buffer_size` | 1.25 MB、1 MiB | 两个方向缓冲的不可靠数据报 |
+| `ServerConfig::max_connections(n)` | 10,000 | 服务器同时持有的连接数（握手中、打开或关闭中）；超过后新客户端立即收到 `CONNECTION_REFUSED`，服务器不保留任何状态（与无状态重置一起限速；由 `QuicServer::refused_connections()` 计数） |
+
+进行中的握手超过 4096 个时，新客户端还必须先用 Retry 证明其地址。
 
 ### 版本、ECN、BBR 与迁移
 
@@ -116,6 +141,12 @@ only-h3 会给这类请求加上 `Early-Data: 1`（RFC 8470），处理函数可
 `stream_response` 和 trailer；`ctx.req().version` 为 `Version::Http3`。请求 body 以缓冲方式
 到达。`H3Config`：`max_body`（8 MiB，超出返回 413）和 `max_field_section`（64 KiB，作为
 `SETTINGS_MAX_FIELD_SECTION_SIZE` 发送；超出返回 431）。
+
+响应遵循 QUIC 发送缓冲区：流暂时接收不了的部分随响应等待，在 `on_stream_writable` 报告有空间时
+发出，因此不给流控额度的客户端最多让服务器为每个流持有 `stream_send_buffer`。文件 body
+（`Response::from_file`、静态文件）每次读取 256 KiB，在 engine 的逻辑池上进行，且只在流有空间
+容纳这一块时才读，绝不在 I/O 线程上读（逻辑池满时就地读取一块）。流式 body 的 `write` 在缓冲区
+满时返回 `Overloaded`，与 HTTP/1.1 和 HTTP/2 一致：等 `queued_bytes()` 下降后再写。
 
 常见的部署方式是在一个 engine 里同时在 TCP（TLS 上的 HTTP/1.1 + HTTP/2）和 UDP（HTTP/3）上
 提供同一个应用：两个 listener 使用同一个端口号。`Router` 会被移入它的 acceptor 且不是
