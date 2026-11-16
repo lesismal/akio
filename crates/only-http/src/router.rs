@@ -4,10 +4,16 @@
 //! specific branch falls back to a less specific one):
 //!
 //! 1. static: `users`;
-//! 2. regexp parameter: `{id:[0-9]+}` (chi style; the expression must match the whole segment
+//! 2. partial segment: literal text and parameters in one segment, `{name}.txt`, `v{major}`,
+//!    `{a}-{b:[0-9]+}` (ADR-007). Each parameter is non-empty and ends at the first occurrence of
+//!    the literal text that follows it, except that a literal at the end of the segment is
+//!    matched at the end (`{name}.txt` takes `a.b.txt` with `name = a.b`); a regexp parameter
+//!    must also match its whole value. Two parameters must be separated by literal text. Among
+//!    partial segments, more literal text is tried first, then registration order;
+//! 3. regexp parameter: `{id:[0-9]+}` (chi style; the expression must match the whole segment
 //!    and cannot contain `/`; the in-house linear-time engine in `crate::re`);
-//! 3. plain parameter: `:id` or `{id}` (one non-empty segment);
-//! 4. wildcard: `*rest` or `{*rest}`, last segment only, matching the rest of the path (possibly
+//! 4. plain parameter: `:id` or `{id}` (one non-empty segment);
+//! 5. wildcard: `*rest` or `{*rest}`, last segment only, matching the rest of the path (possibly
 //!    empty).
 //!
 //! Lookup does not allocate: parameters are byte ranges into the request path kept in a small
@@ -154,9 +160,86 @@ struct RegexChild {
     node: Node,
 }
 
+/// One piece of a partial segment.
+enum Piece {
+    Lit(Box<str>),
+    /// A parameter, with its regexp if it has one.
+    Param(Option<Matcher>),
+}
+
+/// A partial segment (`{name}.txt`): literal text and parameters, never two parameters in a row.
+struct PartialChild {
+    /// The pattern without parameter names (`{}.txt`, `{:[0-9]+}-{}`): equal shapes are one child.
+    shape: Box<str>,
+    names: Vec<Box<str>>,
+    pieces: Vec<Piece>,
+    /// Bytes of literal text: more is tried first.
+    lit_len: usize,
+    node: Node,
+}
+
+impl PartialChild {
+    /// Whether `seg` (at byte `base` of the path) matches; pushes one range per parameter onto
+    /// `out`, and leaves `out` as it was when it does not match. Linear in the segment length:
+    /// no backtracking inside the segment.
+    fn matches(&self, seg: &str, base: usize, out: &mut Ranges) -> bool {
+        let mut pieces = &self.pieces[..];
+        let (mut rest, mut off) = (seg, base);
+        if let Some((Piece::Lit(l), tail)) = pieces.split_first() {
+            let Some(r) = rest.strip_prefix(&**l) else {
+                return false;
+            };
+            (rest, off, pieces) = (r, off + l.len(), tail);
+        }
+        if let Some((Piece::Lit(l), head)) = pieces.split_last() {
+            let Some(r) = rest.strip_suffix(&**l) else {
+                return false;
+            };
+            (rest, pieces) = (r, head);
+        }
+        // Now parameter, literal, parameter, …, parameter.
+        let mark = out.len();
+        let mut i = 0;
+        while i < pieces.len() {
+            let Piece::Param(re) = &pieces[i] else {
+                unreachable!("parameters and literals alternate")
+            };
+            let end = match pieces.get(i + 1) {
+                Some(Piece::Lit(l)) => {
+                    // Non-empty: search from the second character.
+                    let first = rest.chars().next().map_or(0, char::len_utf8);
+                    match rest.get(first..).and_then(|r| r.find(&**l)) {
+                        Some(k) => first + k,
+                        None => break,
+                    }
+                }
+                _ => rest.len(),
+            };
+            let value = &rest[..end];
+            if value.is_empty() || re.as_ref().is_some_and(|m| !m.is_match(value)) {
+                break;
+            }
+            out.push(off, off + end);
+            let skip = match pieces.get(i + 1) {
+                Some(Piece::Lit(l)) => end + l.len(),
+                _ => end,
+            };
+            (rest, off) = (&rest[skip..], off + skip);
+            i += 2;
+        }
+        if i >= pieces.len() && rest.is_empty() {
+            return true;
+        }
+        out.truncate(mark);
+        false
+    }
+}
+
 #[derive(Default)]
 struct Node {
     statics: Vec<(Box<str>, Node)>,
+    /// Partial segments, most literal text first.
+    partials: Vec<PartialChild>,
     regexes: Vec<RegexChild>,
     param: Option<(Box<str>, Box<Node>)>,
     /// A trailing wildcard: matches the rest of the path (possibly empty).
@@ -170,6 +253,77 @@ enum Seg<'a> {
     Param(&'a str),
     Regex(&'a str, &'a str),
     Wild(&'a str),
+    /// Literal text and `{…}` groups mixed in one segment.
+    Partial(Vec<Part<'a>>),
+}
+
+/// A piece of a segment pattern as written.
+enum Part<'a> {
+    Lit(&'a str),
+    /// The inside of a `{…}` group.
+    Group(&'a str),
+}
+
+/// Splits `seg` into literal text and `{…}` groups. Braces inside a group nest (regexp counts
+/// such as `\d{4}`); a backslash escapes the next character and braces inside `[…]` classes
+/// are literal. `None` when the braces do not balance.
+fn split_groups(seg: &str) -> Option<Vec<Part<'_>>> {
+    let b = seg.as_bytes();
+    let mut parts = Vec::new();
+    let (mut i, mut lit) = (0, 0);
+    while i < b.len() {
+        match b[i] {
+            b'{' => {
+                if lit < i {
+                    parts.push(Part::Lit(&seg[lit..i]));
+                }
+                let start = i + 1;
+                let (mut depth, mut class) = (1, false);
+                i += 1;
+                while i < b.len() && depth > 0 {
+                    match b[i] {
+                        b'\\' => i += 1,
+                        b'[' if !class => {
+                            class = true;
+                            // `]` right after `[` or `[^` is literal.
+                            if b.get(i + 1) == Some(&b'^') {
+                                i += 1;
+                            }
+                            if b.get(i + 1) == Some(&b']') {
+                                i += 1;
+                            }
+                        }
+                        b']' if class => class = false,
+                        b'{' if !class => depth += 1,
+                        b'}' if !class => depth -= 1,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                if depth > 0 {
+                    return None;
+                }
+                parts.push(Part::Group(&seg[start..i - 1]));
+                lit = i;
+            }
+            b'}' => return None,
+            _ => i += 1,
+        }
+    }
+    if lit < b.len() {
+        parts.push(Part::Lit(&seg[lit..]));
+    }
+    Some(parts)
+}
+
+fn parse_group(inner: &str) -> Seg<'_> {
+    match inner.split_once(':') {
+        Some((n, re)) => Seg::Regex(n, re),
+        None => match inner.strip_prefix('*') {
+            Some(n) => Seg::Wild(n),
+            None => Seg::Param(inner),
+        },
+    }
 }
 
 fn parse_seg(seg: &str) -> Seg<'_> {
@@ -179,16 +333,20 @@ fn parse_seg(seg: &str) -> Seg<'_> {
     if let Some(n) = seg.strip_prefix(':') {
         return Seg::Param(n);
     }
-    if let Some(inner) = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-        return match inner.split_once(':') {
-            Some((n, re)) => Seg::Regex(n, re),
-            None => match inner.strip_prefix('*') {
-                Some(n) => Seg::Wild(n),
-                None => Seg::Param(inner),
-            },
-        };
+    match split_groups(seg) {
+        Some(mut parts) if parts.len() == 1 && matches!(parts[0], Part::Group(_)) => {
+            let Some(Part::Group(inner)) = parts.pop() else {
+                unreachable!()
+            };
+            parse_group(inner)
+        }
+        Some(parts) if parts.iter().any(|p| matches!(p, Part::Group(_))) => Seg::Partial(parts),
+        // A whole-segment group the splitter cannot balance (a regexp with an unescaped brace
+        // in an odd place) keeps its old meaning.
+        None if seg.starts_with('{') && seg.ends_with('}') => parse_group(&seg[1..seg.len() - 1]),
+        None => panic!("unbalanced braces in route segment {seg:?}"),
+        _ => Seg::Static(seg),
     }
-    Seg::Static(seg)
 }
 
 /// The next non-empty segment of `path` at or after byte `pos`, as `(start, end)`.
@@ -206,6 +364,51 @@ fn next_seg(path: &str, mut pos: usize) -> Option<(usize, usize)> {
         .position(|&c| c == b'/')
         .map_or(b.len(), |n| pos + n);
     Some((pos, end))
+}
+
+impl PartialChild {
+    fn new(parts: &[Part<'_>], path: &str) -> PartialChild {
+        let (mut shape, mut names, mut pieces, mut lit_len) =
+            (String::new(), Vec::new(), Vec::new(), 0);
+        for p in parts {
+            match p {
+                Part::Lit(l) => {
+                    shape.push_str(l);
+                    lit_len += l.len();
+                    pieces.push(Piece::Lit((*l).into()));
+                }
+                Part::Group(g) => {
+                    assert!(
+                        !matches!(pieces.last(), Some(Piece::Param(_))),
+                        "two parameters in a row in {path}: separate them with literal text"
+                    );
+                    let (name, re) = match parse_group(g) {
+                        Seg::Param(n) => (n, None),
+                        Seg::Regex(n, src) => {
+                            shape.push_str("{:");
+                            shape.push_str(src);
+                            shape.push('}');
+                            (n, Some(Matcher::new(src, path)))
+                        }
+                        _ => panic!("a wildcard must be a whole segment: {path}"),
+                    };
+                    if re.is_none() {
+                        shape.push_str("{}");
+                    }
+                    assert!(!name.is_empty(), "unnamed parameter in {path}");
+                    names.push(name.into());
+                    pieces.push(Piece::Param(re));
+                }
+            }
+        }
+        PartialChild {
+            shape: shape.into(),
+            names,
+            pieces,
+            lit_len,
+            node: Node::default(),
+        }
+    }
 }
 
 impl Leaf {
@@ -261,10 +464,11 @@ impl Service for DefaultFallback {
 
 /// Routes requests to [`Service`]s by method and path. A `Router` is itself a [`Service`].
 ///
-/// Patterns are made of `/`-separated segments: `users` (static), `{id:[0-9]+}` (regexp
-/// parameter), `:id` or `{id}` (parameter), `*rest` or `{*rest}` (wildcard, last only). At each
-/// level static beats regexp beats plain parameter beats wildcard, with backtracking. Routing
-/// does not allocate; see [`Context::param`] for how values are decoded.
+/// Patterns are made of `/`-separated segments: `users` (static), `{name}.txt` or `v{n:[0-9]+}`
+/// (partial segment: literal text and parameters), `{id:[0-9]+}` (regexp parameter), `:id` or
+/// `{id}` (parameter), `*rest` or `{*rest}` (wildcard, last only). At each level static beats
+/// partial beats regexp beats plain parameter beats wildcard, with backtracking. Routing does
+/// not allocate; see [`Context::param`] for how values are decoded.
 pub struct Router {
     root: Node,
     /// Every registration, kept so a router can be nested into another.
@@ -294,13 +498,17 @@ impl Router {
         }
     }
 
-    /// Registers `svc` for `method` and `path`. Segments: `users` (static), `{id:[0-9]+}`
-    /// (regexp, whole segment, no `/` inside), `:id` / `{id}` (one segment), `*rest` / `{*rest}`
-    /// (everything after, last segment only).
+    /// Registers `svc` for `method` and `path`. Segments: `users` (static), `{name}.txt`,
+    /// `v{major}.{minor}` (partial: literal text and `{…}` parameters, a parameter ending at the
+    /// first occurrence of the text after it, a trailing literal matched at the end),
+    /// `{id:[0-9]+}` (regexp, whole segment, no `/` inside), `:id` / `{id}` (one segment),
+    /// `*rest` / `{*rest}` (everything after, last segment only).
     ///
     /// # Panics
     /// On a duplicate route, a parameter name that conflicts with a sibling, a wildcard that is
-    /// not last, or an invalid or unsupported regexp (syntax: the routing chapter of the guide).
+    /// not last or shares its segment, two parameters with no literal text between them,
+    /// unbalanced braces, or an invalid or unsupported regexp (syntax: the routing chapter of
+    /// the guide).
     #[must_use]
     pub fn route(mut self, method: Method, path: &str, svc: impl Service) -> Router {
         self.insert(method, path.to_owned(), Arc::new(svc));
@@ -360,6 +568,31 @@ impl Router {
                     };
                     names.push(name.into());
                     node = &mut node.regexes[at].node;
+                }
+                Seg::Partial(parts) => {
+                    let child = PartialChild::new(&parts, &path);
+                    let at = match node.partials.iter().position(|c| c.shape == child.shape) {
+                        Some(at) => {
+                            assert!(
+                                node.partials[at].names == child.names,
+                                "parameter name conflict in {path}: {seg} vs {{{}}}",
+                                node.partials[at].names.join("},{")
+                            );
+                            at
+                        }
+                        None => {
+                            // Most literal text first; equal amounts keep registration order.
+                            let at = node
+                                .partials
+                                .iter()
+                                .position(|c| c.lit_len < child.lit_len)
+                                .unwrap_or(node.partials.len());
+                            node.partials.insert(at, child);
+                            at
+                        }
+                    };
+                    names.extend(node.partials[at].names.iter().cloned());
+                    node = &mut node.partials[at].node;
                 }
                 Seg::Static(seg) => {
                     let at = match node.statics.iter().position(|(s, _)| &**s == seg) {
@@ -469,6 +702,14 @@ impl Router {
             }
         }
         let mark = out.len();
+        for c in &node.partials {
+            if c.matches(seg, s, out) {
+                if let Some(l) = Self::find(&c.node, path, e, out) {
+                    return Some(l);
+                }
+                out.truncate(mark);
+            }
+        }
         for c in &node.regexes {
             if c.re.is_match(seg) {
                 out.push(s, e);
@@ -699,6 +940,163 @@ mod tests {
             Some((1, p(&[("date", "2026-11")])))
         );
         assert_eq!(matched(&r, "/d/2026-1"), None);
+    }
+
+    #[test]
+    fn partial_segments_match_literal_text_around_params() {
+        let nop = |_: &mut Context| {};
+        let r = Router::new()
+            .get("/f/{name}.txt", nop)
+            .get("/f/{name}.tar.gz", nop)
+            .get("/f/{name}.{ext}", nop)
+            .get("/api/v{version}/x", nop)
+            .get("/api/v{major:[0-9]+}.{minor:[0-9]+}/y", nop)
+            .get("/r/{from}-{to:[0-9]+}", nop)
+            .get("/p/pre-{mid}-post", nop);
+        assert_eq!(matched(&r, "/f/a.txt"), Some((1, p(&[("name", "a")]))));
+        // A trailing literal is matched at the end of the segment.
+        assert_eq!(matched(&r, "/f/a.b.txt"), Some((1, p(&[("name", "a.b")]))));
+        // More literal text wins: `.tar.gz` before `.{ext}`.
+        assert_eq!(matched(&r, "/f/x.tar.gz"), Some((1, p(&[("name", "x")]))));
+        // A parameter ends at the first occurrence of the literal after it.
+        assert_eq!(
+            matched(&r, "/f/a.b.c"),
+            Some((1, p(&[("name", "a"), ("ext", "b.c")])))
+        );
+        assert_eq!(matched(&r, "/f/.txt"), None, "parameters are not empty");
+        assert_eq!(matched(&r, "/f/txt"), None);
+        assert_eq!(matched(&r, "/api/v2/x"), Some((1, p(&[("version", "2")]))));
+        assert_eq!(matched(&r, "/api/v/x"), None);
+        assert_eq!(
+            matched(&r, "/api/v1.10/y"),
+            Some((1, p(&[("major", "1"), ("minor", "10")])))
+        );
+        assert_eq!(matched(&r, "/api/v1.x/y"), None, "regexp pieces must match");
+        assert_eq!(
+            matched(&r, "/r/a-b-12"),
+            None,
+            "`from` ends at the first `-`, and `to` = `b-12` fails its regexp"
+        );
+        assert_eq!(
+            matched(&r, "/r/ab-12"),
+            Some((1, p(&[("from", "ab"), ("to", "12")])))
+        );
+        assert_eq!(
+            matched(&r, "/p/pre-a-b-post"),
+            Some((1, p(&[("mid", "a-b")])))
+        );
+        assert_eq!(matched(&r, "/p/pre--post"), None);
+        assert_eq!(
+            matched(&r, "/p/pre-post"),
+            None,
+            "prefix and suffix overlap"
+        );
+        // Non-ASCII text before a literal.
+        assert_eq!(matched(&r, "/f/é.txt"), Some((1, p(&[("name", "é")]))));
+        assert_eq!(
+            matched(&r, "/f/éé.x"),
+            Some((1, p(&[("name", "éé"), ("ext", "x")])))
+        );
+    }
+
+    #[test]
+    fn partial_segments_sit_between_static_and_regexp() {
+        let nop = |_: &mut Context| {};
+        let r = Router::new()
+            .get("/u/me.json", nop)
+            .get("/u/{id}.json", nop)
+            .post("/u/{id}.json", nop)
+            .get("/u/{any:.+}", nop)
+            .put("/u/{any:.+}", nop)
+            .get("/u/{name}", nop)
+            .get("/v{n}/deep/end", nop)
+            .get("/{seg:v[0-9]+}/deep/other", nop)
+            .get("/*rest", nop);
+        assert_eq!(matched(&r, "/u/me.json"), Some((1, vec![])), "static first");
+        assert_eq!(
+            matched(&r, "/u/7.json"),
+            Some((2, p(&[("id", "7")]))),
+            "partial before regexp"
+        );
+        assert_eq!(matched(&r, "/u/7.xml"), Some((2, p(&[("any", "7.xml")]))));
+        // The partial branch dead-ends below: backtrack into the regexp, then the wildcard.
+        assert_eq!(
+            matched(&r, "/v1/deep/other"),
+            Some((1, p(&[("seg", "v1")])))
+        );
+        assert_eq!(matched(&r, "/v1/deep/end"), Some((1, p(&[("n", "1")]))));
+        assert_eq!(
+            matched(&r, "/v1/deep/none"),
+            Some((1, p(&[("rest", "v1/deep/none")])))
+        );
+    }
+
+    #[test]
+    fn partial_segment_lookup_reports_params_in_path_order() {
+        let nop = |_: &mut Context| {};
+        let r = Router::new().get("/{owner}/{repo}.git/info/{ref}..{other}", nop);
+        let m = r.lookup(&Method::Get, "/me/only.git/info/a..b").unwrap();
+        assert_eq!(
+            m.params().collect::<Vec<_>>(),
+            vec![
+                ("owner", "me"),
+                ("repo", "only"),
+                ("ref", "a"),
+                ("other", "b")
+            ]
+        );
+    }
+
+    #[test]
+    fn literal_braces_and_regexp_counts_still_parse() {
+        // A regexp with a brace in a class keeps working as a whole segment.
+        let nop = |_: &mut Context| {};
+        let r = Router::new()
+            .get("/a/{x:[{]+}", nop)
+            .get("/b/{d:\\d{2}}.{e:[a-z]{2,3}}", nop);
+        assert_eq!(matched(&r, "/a/{{"), Some((1, p(&[("x", "{{")]))));
+        assert_eq!(
+            matched(&r, "/b/12.txt"),
+            Some((1, p(&[("d", "12"), ("e", "txt")])))
+        );
+        assert_eq!(matched(&r, "/b/123.txt"), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "two parameters in a row")]
+    fn adjacent_partial_params_panic() {
+        let nop = |_: &mut Context| {};
+        let _ = Router::new().get("/a/x{a}{b}", nop);
+    }
+
+    #[test]
+    #[should_panic(expected = "wildcard must be a whole segment")]
+    fn wildcard_in_a_partial_segment_panics() {
+        let nop = |_: &mut Context| {};
+        let _ = Router::new().get("/a/x-{*rest}", nop);
+    }
+
+    #[test]
+    #[should_panic(expected = "unbalanced braces")]
+    fn unbalanced_braces_panic() {
+        let nop = |_: &mut Context| {};
+        let _ = Router::new().get("/a/x{y", nop);
+    }
+
+    #[test]
+    #[should_panic(expected = "parameter name conflict")]
+    fn conflicting_partial_param_names_panic() {
+        let nop = |_: &mut Context| {};
+        let _ = Router::new()
+            .get("/a/{x}.txt", nop)
+            .get("/a/{y}.txt/b", nop);
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate route")]
+    fn duplicate_partial_routes_panic() {
+        let nop = |_: &mut Context| {};
+        let _ = Router::new().get("/a/{x}.txt", nop).get("/a/{x}.txt", nop);
     }
 
     #[test]
