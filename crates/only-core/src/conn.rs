@@ -562,6 +562,15 @@ struct Ordered {
     /// Bytes held in memory behind the first position: complete responses waiting for it, and
     /// what streams that are not first in line wrote so far.
     held: usize,
+    /// Reads are paused by the limits (mirrors `ConnInner::ordered_hold`, which the loop
+    /// reads; this copy is only touched under the lock, so the per-response check needs no
+    /// atomic).
+    paused: bool,
+}
+
+/// `Config::max_pending_responses` as a count (0 would pause before every response: it means 1).
+fn pending_limit(cfg: &Config) -> usize {
+    cfg.max_pending_responses.map_or(usize::MAX, |l| l.max(1))
 }
 
 /// Bytes a response of `parts` holds in memory (files are read when sent).
@@ -612,6 +621,8 @@ pub struct ConnInner {
     /// A drain waiter was moved to `drained`: lets [`run_drained`](Self::run_drained) skip its
     /// lock in the usual case of none.
     drain_pending: AtomicBool,
+    /// `Config::max_pending_responses`, resolved once (`usize::MAX`: none).
+    pending_limit: usize,
     /// Exempt from the write backpressure (see [`set_relayed`](Self::set_relayed)).
     relayed: AtomicBool,
     /// UDP: the ECN codepoint of the datagram being delivered (set by the loop).
@@ -646,6 +657,7 @@ impl ConnInner {
             ordered_hold: AtomicBool::new(false),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
+            pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
@@ -680,6 +692,7 @@ impl ConnInner {
             ordered_hold: AtomicBool::new(false),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
+            pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
@@ -719,6 +732,7 @@ impl ConnInner {
             ordered_hold: AtomicBool::new(false),
             loop_cork: AtomicBool::new(false),
             drain_pending: AtomicBool::new(false),
+            pending_limit: pending_limit(&cfg),
             relayed: AtomicBool::new(false),
             rx_ecn: AtomicU8::new(0),
             write: Mutex::new(WriteState {
@@ -1492,6 +1506,9 @@ impl ConnInner {
             if close_after {
                 self.close_after_send();
             }
+            if o.entries.is_empty() && !o.paused {
+                return; // nothing waits behind it
+            }
         } else {
             let i = (seq - o.head) as usize;
             o.held += data.len();
@@ -1626,30 +1643,34 @@ impl ConnInner {
     /// back behind the first one; resumes them (with hysteresis) once enough went out
     /// (`Config::max_pending_responses`, `write_high_watermark`).
     #[inline]
-    fn ordered_limit(&self, o: &Ordered) {
+    fn ordered_limit(&self, o: &mut Ordered) {
+        // The usual case: one response at a time, filled right away.
+        if !o.paused && o.held == 0 && o.entries.len() < self.pending_limit {
+            return;
+        }
+        self.ordered_limit_slow(o);
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn ordered_limit_slow(&self, o: &mut Ordered) {
         let n = o.entries.len();
-        // 0 would pause before every response; it means 1.
-        let limit = self.cfg.max_pending_responses.map(|l| l.max(1));
-        let paused = self.ordered_hold.load(Ordering::Relaxed);
-        if !paused {
-            // The usual case: one response at a time, filled right away.
-            if o.held == 0 && limit.is_none_or(|l| n < l) {
-                return;
-            }
-            let high = self.cfg.telemetry.live().write_high_watermark();
-            if limit.is_some_and(|l| n >= l) || o.held >= high {
+        let high = self.cfg.telemetry.live().write_high_watermark();
+        if !o.paused {
+            if n >= self.pending_limit || o.held >= high {
+                o.paused = true;
                 self.ordered_hold.store(true, Ordering::Release);
                 if let Some(s) = self.lock().stats.as_ref() {
                     s.backpressure.add(1);
                 }
                 self.link.wake_conn(self.id);
             }
-        } else {
-            let high = self.cfg.telemetry.live().write_high_watermark();
-            if limit.is_none_or(|l| n <= l / 2) && o.held <= high / 4 {
-                self.ordered_hold.store(false, Ordering::Release);
-                self.link.wake_conn(self.id);
-            }
+        } else if (self.pending_limit == usize::MAX || n <= self.pending_limit / 2)
+            && o.held <= high / 4
+        {
+            o.paused = false;
+            self.ordered_hold.store(false, Ordering::Release);
+            self.link.wake_conn(self.id);
         }
     }
 
