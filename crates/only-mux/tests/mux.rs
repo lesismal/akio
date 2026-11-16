@@ -125,3 +125,94 @@ fn tls_http1_http2_custom_prefix_and_fallback_share_a_port() {
     e.shutdown();
     e.wait();
 }
+
+fn mux_engine(timeout: Option<Duration>) -> Engine {
+    let mux = Mux::new()
+        .route(
+            Rule::Prefix(b"PING".to_vec()),
+            fn_acceptor(|_c: &Conn<Prefixed>| Prefixed(b"PONG:")),
+        )
+        .fallback(fn_acceptor(|_c: &Conn<Prefixed>| Prefixed(b"raw:")))
+        .sniff_timeout(timeout);
+    let backend = if std::env::var("ONLY_TEST_BACKEND").as_deref() == Ok("uring") {
+        let mut v = only::UringConfig::default();
+        v.strict = true;
+        only::Backend::IoUring(v)
+    } else {
+        only::Backend::Epoll
+    };
+    let e = Engine::builder()
+        .config({
+            let mut v = Config::default();
+            v.shutdown_timeout = Duration::from_millis(300);
+            v
+        })
+        .listen(
+            Listener::tcp("127.0.0.1:0".parse().unwrap())
+                .backend(backend)
+                .serve_any(mux),
+        )
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    e
+}
+
+/// Reads to EOF; how long it took, or `None` if the connection stayed open for `within`.
+fn closed_within(s: &mut TcpStream, within: Duration) -> Option<Duration> {
+    let t0 = std::time::Instant::now();
+    s.set_read_timeout(Some(within)).unwrap();
+    let mut b = [0u8; 64];
+    loop {
+        match s.read(&mut b) {
+            Ok(0) => return Some(t0.elapsed()),
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return None;
+            }
+            Err(_) => return Some(t0.elapsed()),
+        }
+    }
+}
+
+/// A silent client, or one that sends an undecided prefix and stops, is closed at the sniff
+/// deadline; one that decides in time is routed and outlives it.
+#[test]
+fn sniff_deadline() {
+    let e = mux_engine(Some(Duration::from_millis(300)));
+    let addr = e.local_addrs()[0];
+    // Silent.
+    let mut s = TcpStream::connect(addr).unwrap();
+    let t = closed_within(&mut s, Duration::from_secs(5)).expect("closed");
+    assert!(t >= Duration::from_millis(250), "{t:?}");
+    // Undecided prefix ("PI" could still be "PING"), then nothing.
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.write_all(b"PI").unwrap();
+    closed_within(&mut s, Duration::from_secs(5)).expect("closed");
+    // Trickled, but decided in time (about 150 ms): served, and the deadline no longer applies.
+    let mut s = TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    for b in b"PIN" {
+        s.write_all(&[*b]).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    s.write_all(b"G").unwrap();
+    assert_eq!(read_some(&mut s), b"PONG:PING");
+    std::thread::sleep(Duration::from_millis(600));
+    s.write_all(b"!").unwrap();
+    assert_eq!(read_some(&mut s), b"PONG:!");
+    e.shutdown();
+    e.wait();
+
+    // Without a timeout, a silent client waits.
+    let e = mux_engine(None);
+    let mut s = TcpStream::connect(e.local_addrs()[0]).unwrap();
+    assert_eq!(closed_within(&mut s, Duration::from_millis(800)), None);
+    e.shutdown();
+    e.wait();
+}

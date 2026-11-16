@@ -23,6 +23,10 @@ Rules, tried in the order the routes were added:
 `max_sniff_bytes(n)` bytes (default 64); without a fallback they are closed. Serve the mux with
 `Listener::serve_any(mux)` (a `Mux` converts into a type-erased `only::AnyAcceptor`). Configure it completely before serving it.
 
+`sniff_timeout(Some(d))` (default 5 s) bounds how long a client may take to send enough bytes
+for a decision: a silent client, or one trickling a prefix several rules share, is closed at the
+deadline (not handed to the fallback). `sniff_timeout(None)` waits forever.
+
 Once a rule matches, the connection belongs to that route's acceptor as if it had accepted it:
 the sniffed bytes are replayed to its handler, `spawn_blocking` completions reach it, and
 graceful shutdown calls *its* `on_shutdown`. A route can be a `Tls::server(..)` acceptor (TLS

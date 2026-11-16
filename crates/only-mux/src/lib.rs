@@ -20,6 +20,9 @@
 //! graceful shutdown reach it. Protocols where the server speaks first cannot be told apart this
 //! way; give them their own port.
 //!
+//! A client that has not sent enough bytes to decide within the sniff timeout (default 5 s,
+//! [`Mux::sniff_timeout`]) is closed, so silent or trickling connections cannot pile up.
+//!
 //! Guide: [Protocol multiplexing](https://lesismal.github.io/only/en/protocols/mux.html)
 //! (中文: [协议复用](https://lesismal.github.io/only/zh-CN/protocols/mux.html)).
 #![warn(clippy::unwrap_used)]
@@ -27,7 +30,14 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
+    time::Duration,
 };
+
+mod deadline;
+use deadline::Pending;
+
+/// Default [`Mux::sniff_timeout`].
+pub const DEFAULT_SNIFF_TIMEOUT: Duration = Duration::from_secs(5);
 
 use only_core::{Acceptor, AnyAcceptor, ConnInner, DynAcceptor, DynHandler, Error, Task};
 
@@ -154,6 +164,7 @@ struct Inner {
     routes: Vec<(Rule, Arc<dyn DynAcceptor>)>,
     fallback: Option<Arc<dyn DynAcceptor>>,
     max_sniff_bytes: usize,
+    sniff_timeout: Option<Duration>,
     /// Which acceptor each connection went to (for graceful shutdown).
     chosen: Mutex<HashMap<u64, Arc<dyn DynAcceptor>>>,
 }
@@ -175,12 +186,13 @@ impl Default for Mux {
 }
 
 impl Mux {
-    /// No routes yet; 64 bytes are looked at at most.
+    /// No routes yet; 64 bytes are looked at at most, for at most 5 s.
     pub fn new() -> Mux {
         Mux(Arc::new(Inner {
             routes: Vec::new(),
             fallback: None,
             max_sniff_bytes: 64,
+            sniff_timeout: Some(DEFAULT_SNIFF_TIMEOUT),
             chosen: Mutex::new(HashMap::new()),
         }))
     }
@@ -220,6 +232,15 @@ impl Mux {
         self
     }
 
+    /// How long a connection may take to send enough bytes for a decision (default 5 s). A
+    /// client still undecided then (silent, or trickling a prefix that several rules share) is
+    /// closed. `None` waits forever.
+    #[must_use]
+    pub fn sniff_timeout(mut self, d: Option<Duration>) -> Mux {
+        self.inner_mut().sniff_timeout = d;
+        self
+    }
+
     /// The form `only::Listener::serve_any` takes (`From<Mux>` does the same).
     pub fn into_any(self) -> AnyAcceptor {
         AnyAcceptor::from_dyn(Arc::new(self))
@@ -254,6 +275,7 @@ impl DynAcceptor for Mux {
             conn: inner.clone(),
             buf: Vec::new(),
             target: None,
+            pending: self.0.sniff_timeout.map(|d| Pending::start(inner, d)),
         })
     }
 
@@ -277,6 +299,8 @@ struct MuxConn {
     conn: Arc<ConnInner>,
     buf: Vec<u8>,
     target: Option<Box<dyn DynHandler>>,
+    /// The sniff deadline, until a route is chosen.
+    pending: Option<Arc<Pending>>,
 }
 
 impl DynHandler for MuxConn {
@@ -289,6 +313,9 @@ impl DynHandler for MuxConn {
             None => {}
             Some(None) => self.conn.close(),
             Some(Some(acc)) => {
+                if let Some(p) = self.pending.take() {
+                    p.decided();
+                }
                 self.mux
                     .0
                     .chosen
