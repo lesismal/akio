@@ -187,7 +187,7 @@ impl RecordLayer {
         let x = self.explicit_len(rec[0]).min(rec.len() - HEADER_LEN);
         let (head, rest) = rec.split_at_mut(HEADER_LEN);
         let (explicit, body) = rest.split_at_mut(x);
-        let o = self.open_body(head, explicit, None, body)?;
+        let o = self.open_body(head, explicit, Body::InPlace(body))?;
         let off = HEADER_LEN + x;
         Ok(Opened {
             start: o.start + off,
@@ -197,16 +197,16 @@ impl RecordLayer {
     }
 
     /// Decrypts the complete record `rec` (header included) into `dst`: the record content is
-    /// appended (decrypted straight from `rec` into `dst`, so application data needs no copy
-    /// into or out of a receive buffer). The result's range is the content within `dst`;
-    /// nothing is appended for a skipped record or on error.
+    /// appended (decrypted straight from `rec` into `dst`'s spare capacity, so application data
+    /// needs no copy into or out of a receive buffer, and the space is not zero-filled first).
+    /// The result's range is the content within `dst`; nothing is appended for a skipped record
+    /// or on error.
     pub(crate) fn open_into(&mut self, rec: &[u8], dst: &mut Vec<u8>) -> Result<Opened, Fatal> {
         let x = self.explicit_len(rec[0]).min(rec.len() - HEADER_LEN);
         let at = dst.len();
-        let src = &rec[HEADER_LEN + x..];
-        dst.resize(at + src.len(), 0);
-        let (head, explicit) = (&rec[..HEADER_LEN], &rec[HEADER_LEN..HEADER_LEN + x]);
-        match self.open_body(head, explicit, Some(src), &mut dst[at..]) {
+        let (head, rest) = rec.split_at(HEADER_LEN);
+        let (explicit, src) = rest.split_at(x);
+        match self.open_body(head, explicit, Body::Into { src, dst }) {
             Ok(o) if !o.skipped => {
                 // Content always starts the decrypted body.
                 debug_assert_eq!(o.start, 0);
@@ -225,25 +225,19 @@ impl RecordLayer {
     }
 
     /// Decrypts a record given as its header, its explicit nonce (TLS 1.2 AES-GCM, else empty)
-    /// and the rest, which is decrypted in place, or, with `src` (the rest as received, as long
-    /// as `body`), from `src` into `body`. The content range is relative to `body`.
-    fn open_body(
-        &mut self,
-        head: &[u8],
-        explicit: &[u8],
-        src: Option<&[u8]>,
-        body: &mut [u8],
-    ) -> Result<Opened, Fatal> {
+    /// and the rest (`body`). The content range is relative to the start of the body (in place)
+    /// or to the length `dst` had (appended).
+    fn open_body(&mut self, head: &[u8], explicit: &[u8], body: Body<'_>) -> Result<Opened, Fatal> {
         let typ = head[0];
-        let len = explicit.len() + body.len();
         let blen = body.len();
+        let len = explicit.len() + blen;
         // ChangeCipherSpec is never protected; TLS 1.3 uses it only for compatibility.
-        let plain = |typ, body: &mut [u8]| {
+        let plain = |typ, body: Body<'_>| {
             if len > MAX_PLAINTEXT {
                 return fatal(Alert::RecordOverflow, "plaintext record too long");
             }
-            if let Some(s) = src {
-                body.copy_from_slice(s);
+            if let Body::Into { src, dst } = body {
+                dst.extend_from_slice(src);
             }
             Ok(Opened {
                 typ,
@@ -279,13 +273,12 @@ impl RecordLayer {
                     };
                 }
                 let nonce = c.xor_nonce();
-                let (ct, tag) = body.split_at_mut(len - TAG_LEN);
-                if open_aead(&c.aead, &nonce, head, src, ct, tag).is_err() {
+                let Ok(ct) = body.open(&c.aead, &nonce, head) else {
                     if self.skip_early > 0 {
                         return self.skip(len);
                     }
                     return fatal(Alert::BadRecordMac, "record authentication failed");
-                }
+                };
                 self.skip_early = 0;
                 c.seq += 1;
                 let Some(pos) = ct.iter().rposition(|b| *b != 0) else {
@@ -319,8 +312,7 @@ impl RecordLayer {
                     c.xor_nonce()
                 };
                 let aad = c.aad12(typ, plen);
-                let (ct, tag) = body.split_at_mut(plen);
-                if open_aead(&c.aead, &nonce, &aad, src, ct, tag).is_err() {
+                if body.open(&c.aead, &nonce, &aad).is_err() {
                     return fatal(Alert::BadRecordMac, "record authentication failed");
                 }
                 c.seq += 1;
@@ -382,18 +374,14 @@ impl RecordLayer {
         match c.kind {
             Kind::Tls13 => {
                 let len = data.len() + 1 + TAG_LEN;
-                let at = out.len();
                 out.reserve(HEADER_LEN + len);
-                out.push(CT_APPLICATION_DATA);
-                out.extend_from_slice(&[3, 3]);
-                out.extend_from_slice(&(len as u16).to_be_bytes());
-                // Room for the ciphertext, which the AEAD writes straight from `data` (no copy
-                // of the plaintext into `out` first), then the inner content type.
-                out.resize(at + HEADER_LEN + data.len(), 0);
-                out.push(typ);
+                let [hi, lo] = (len as u16).to_be_bytes();
+                let head = [CT_APPLICATION_DATA, 3, 3, hi, lo];
+                out.extend_from_slice(&head);
+                // The AEAD writes the ciphertext of `data` and the inner content type straight
+                // into `out` (no copy of the plaintext first, no zero-fill of the space).
                 let nonce = c.xor_nonce();
-                let (head, body) = out[at..].split_at_mut(HEADER_LEN);
-                let tag = c.aead.seal_from(&nonce, head, data, body);
+                let tag = c.aead.seal_append(&nonce, &head, data, &[typ], out);
                 out.extend_from_slice(&tag);
             }
             Kind::Tls12Gcm | Kind::Tls12ChaCha => {
@@ -413,9 +401,7 @@ impl RecordLayer {
                     c.xor_nonce()
                 };
                 let aad = c.aad12(typ, data.len());
-                let at = out.len();
-                out.resize(at + data.len(), 0);
-                let tag = c.aead.seal_from(&nonce, &aad, data, &mut out[at..]);
+                let tag = c.aead.seal_append(&nonce, &aad, data, &[], out);
                 out.extend_from_slice(&tag);
             }
         }
@@ -424,22 +410,39 @@ impl RecordLayer {
     }
 }
 
-/// Opens `ct` with `tag` in place, or, with `src` (the received ciphertext and tag, as long as
-/// `ct` and `tag` together), decrypts `src` into `ct` (`tag` is then unused).
-fn open_aead(
-    aead: &Aead,
-    nonce: &[u8; 12],
-    aad: &[u8],
-    src: Option<&[u8]>,
-    ct: &mut [u8],
-    tag: &[u8],
-) -> Result<(), ()> {
-    match src {
-        Some(s) => {
-            let (sct, stag) = s.split_at(ct.len());
-            aead.open_from(nonce, aad, sct, stag, ct)
+/// Where a protected record's body (ciphertext and tag) is decrypted.
+enum Body<'a> {
+    /// In place in the receive buffer.
+    InPlace(&'a mut [u8]),
+    /// From the record as received (`src`), appended to `dst`.
+    Into { src: &'a [u8], dst: &'a mut Vec<u8> },
+}
+
+impl<'a> Body<'a> {
+    fn len(&self) -> usize {
+        match self {
+            Body::InPlace(b) => b.len(),
+            Body::Into { src, .. } => src.len(),
         }
-        None => aead.open(nonce, aad, ct, tag),
+    }
+
+    /// Verifies and decrypts the body (at least `TAG_LEN` bytes, the tag last), returning the
+    /// plaintext; nothing is appended on failure.
+    fn open(self, aead: &Aead, nonce: &[u8; 12], aad: &[u8]) -> Result<&'a [u8], ()> {
+        match self {
+            Body::InPlace(b) => {
+                let n = b.len() - TAG_LEN;
+                let (ct, tag) = b.split_at_mut(n);
+                aead.open(nonce, aad, ct, tag)?;
+                Ok(ct)
+            }
+            Body::Into { src, dst } => {
+                let (ct, tag) = src.split_at(src.len() - TAG_LEN);
+                let at = dst.len();
+                aead.open_append(nonce, aad, ct, tag, dst)?;
+                Ok(&dst[at..])
+            }
+        }
     }
 }
 

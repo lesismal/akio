@@ -6,7 +6,8 @@
 //! `gcm::hw`, `hash::hw`, `crc::hw`, `chacha::hw`, `cpu::hw` for CPUID, the inline-assembly field
 //! arithmetic `ec::hw` and `curve25519::hw` (x86_64), `ec::hw_aarch64` and
 //! `curve25519::hw_aarch64` (aarch64), and the RSA Montgomery arithmetic `bignum::hw` and
-//! `bignum::ifma` (x86_64)).
+//! `bignum::ifma` (x86_64); and `fill`, the AEAD output buffer that lets the TLS record layer
+//! seal and open straight into a vector's spare capacity without zero-filling it first).
 //!
 //! Hardware paths, each with a constant-time portable fallback that is also used when the
 //! environment variable `ONLY_CRYPTO_PORTABLE=1` is set (tests, benchmarks):
@@ -105,6 +106,7 @@ mod curve25519;
 mod ec;
 mod error;
 mod field;
+mod fill;
 mod safegcd;
 
 pub use error::Error;

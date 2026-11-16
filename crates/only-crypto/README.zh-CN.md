@@ -3,7 +3,8 @@
 [English](README.md)
 
 [`only`](https://github.com/lesismal/only) 各 crate 使用的无依赖密码学原语，Rust 实现
-（`#![deny(unsafe_code)]`，只依赖 `std`；例外是十二个驱动 CPU 指令的小模块，运行时检测 CPU 特性；操作系统随机数
+（`#![deny(unsafe_code)]`，只依赖 `std`；例外是十二个驱动 CPU 指令的小模块（运行时检测 CPU 特性），以及让 TLS 记录层
+直接在向量空闲容量中加密和解密的 AEAD 输出缓冲区模块 `fill`；操作系统随机数
 的系统调用放在 `only-sys` 中）。
 
 | 硬件路径（运行时检测，常数时间的可移植回退实现） | x86_64 | aarch64 |
@@ -27,8 +28,8 @@
 | `kdf` | HKDF（RFC 5869）、PBKDF2-HMAC（RFC 8018） |
 | `crc` | CRC-32（IEEE，与 `crc32fast` 一致）、CRC-32C（Castagnoli）：CPU 指令，否则 slicing-by-8 |
 | `aes` | AES-128/192/256：CPU 支持时使用 AES-NI / ARMv8 AES（运行时检测），否则使用常数时间的 fixsliced 软件实现（没有以密钥为下标的查表）；ECB 分组、CTR |
-| `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时用 256 位寄存器处理完整的 256 字节组，否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`） |
-| `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from`） |
+| `gcm` | AES-GCM：具备 VAES + VPCLMULQDQ + AVX-512 时整条消息在一次 512 位调用中完成（每次迭代与每次归约 16 个分组，最后一个不完整的组用字节掩码处理），具备 VAES + VPCLMULQDQ + AVX2 时用 256 位寄存器处理完整的 256 字节组，否则 PCLMULQDQ / PMULL GHASH 与 AES-NI / ARMv8 的 CTR 单趟融合，再否则使用常数时间 GHASH（BearSSL `ctmul64`）；`encrypt_append` / `decrypt_append`（隐藏 API，供 TLS 记录层使用）直接写入向量的空闲容量，不先清零 |
+| `chacha` | ChaCha20（AVX-512 下一次 16 / 8 / 4 个分组，AVX2 下 8 个，否则 4 分组并行）、Poly1305（IFMA 每步 8 个分组，否则 2⁶⁴ 进制）、ChaCha20-Poly1305（RFC 8439；供 TLS 记录层使用的非原地 `*_detached_from` 与 `*_append`） |
 | `base64` | 标准 / URL 安全字母表，带或不带填充，严格解码 |
 | `rand` | `fill_random`（getrandom / getentropy / `/dev/urandom`）、`ChaChaRng` |
 | `ct_eq` | 常数时间比较 |
@@ -178,7 +179,12 @@ X25519 汇编的性能（已测试，尚未做性能测试）、aarch64 上的�
   ChaCha20-Poly1305、HMAC-SHA1/SHA256、HKDF-SHA256），数据放在 `tests/data/`。
 - `tests/compat.rs` 把每个原语与被替代的 crate 交叉比对（仅作为 dev-dependency）；`fuzz/` 中有差分
   模糊测试目标 `crypto_hash`、`crypto_aead`（也让 VAES-AVX-512、VAES-AVX2、128 位与可移植四条 AES-GCM 路径原地与非原地
-  互相比较，并比较 AVX-512 / IFMA、AVX2 与可移植三条 ChaCha20-Poly1305 路径）、`crypto_base64`。
+  互相比较，并比较 AVX-512 / IFMA、AVX2 与可移植三条 ChaCha20-Poly1305 路径，两者都包括追加路径）、`crypto_base64`。
+- 追加路径（`encrypt_append` / `decrypt_append`，直接写入向量的空闲容量，不先清零）：在每个 AES-GCM 与
+  ChaCha20-Poly1305 内核上，于 0..=600 的每个长度与若干大长度上和原地路径比较，覆盖向量中已有数据、空闲容量
+  恰好、更大或不足、明文分在 `src` 与尾部字节（TLS 1.3 内层内容类型）两处；打开失败时向量保持原样。可移植的
+  追加路径与 `fill::tests` 还在 Miri 下运行（`append_portable`、`aead_rfc8439`、`gcm_spec_vectors`、`rejects_forgeries`
+  以及 only-tls 的四个 `record::` 测试），检查空闲容量中的每个字节在写入之前都不会被读取或暴露。
 - AVX-512 ChaCha20 与 IFMA Poly1305 内核（`chacha::tests`）：0..=600 的每个长度与若干大长度上与 AVX2
   路径和可移植实现比较，覆盖未对齐、原地与非原地、伪造标签、接近回绕的计数器，Poly1305 覆盖全 1 分组与
   极端的 `r` / `s`；在具备 AVX-512 IFMA 的 CPU（Zen 4）上原生运行。

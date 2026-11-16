@@ -29,6 +29,7 @@ mod hw;
 
 use crate::Error;
 use crate::aes::Aes;
+use crate::fill::{self, Fill};
 
 /// The nonce length in bytes.
 pub const NONCE_LEN: usize = 12;
@@ -171,19 +172,13 @@ impl AesGcm {
         aad: &[u8],
         buf: &mut [u8],
     ) -> [u8; TAG_LEN] {
-        assert!(buf.len() as u64 <= MAX_LEN, "AES-GCM: plaintext too long");
-        let j0 = j0(nonce);
-        if let Some(t) = self.fused(&j0, aad, None, buf, false) {
-            return t;
-        }
-        self.aes.apply_ctr32(&inc32(j0), buf);
-        self.tag(&j0, aad, buf)
+        self.seal(nonce, aad, None, &mut Fill::init(buf))
     }
 
     /// Encrypts `src` followed by `dst[src.len()..]` (plaintext already in place) into `dst` and
     /// returns the tag: [`encrypt_in_place_detached`](Self::encrypt_in_place_detached) of that
     /// plaintext without copying `src` into `dst` first (the wide kernel reads `src` and writes
-    /// `dst` in the same pass). For the TLS record layer.
+    /// `dst` in the same pass).
     ///
     /// # Panics
     ///
@@ -197,18 +192,36 @@ impl AesGcm {
         dst: &mut [u8],
     ) -> [u8; TAG_LEN] {
         assert!(src.len() <= dst.len(), "AES-GCM: output too short");
-        assert!(dst.len() as u64 <= MAX_LEN, "AES-GCM: plaintext too long");
-        let j0 = j0(nonce);
-        if let Some(t) = self.fused(&j0, aad, Some(src), dst, false) {
-            return t;
-        }
-        dst[..src.len()].copy_from_slice(src);
-        self.aes.apply_ctr32(&inc32(j0), dst);
-        self.tag(&j0, aad, dst)
+        self.seal(nonce, aad, Some(src), &mut Fill::init(dst))
+    }
+
+    /// Appends the ciphertext of `src` followed by `trailer` to `out` and returns the tag:
+    /// [`encrypt_detached_from`](Self::encrypt_detached_from) into `out`'s spare capacity, which
+    /// is not zero-filled first (every byte is written before `out` grows). For the TLS record
+    /// layer (`trailer`: the TLS 1.3 inner content type).
+    ///
+    /// # Panics
+    ///
+    /// If the plaintext is longer than GCM allows (`out` unchanged).
+    #[doc(hidden)]
+    pub fn encrypt_append(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        trailer: &[u8],
+        out: &mut Vec<u8>,
+    ) -> [u8; TAG_LEN] {
+        let n = src.len().saturating_add(trailer.len());
+        assert!(n as u64 <= MAX_LEN, "AES-GCM: plaintext too long");
+        fill::append(out, n, |f| {
+            f.push_back(trailer);
+            (self.seal(nonce, aad, Some(src), f), true)
+        })
     }
 
     /// Verifies `tag` over the ciphertext `src` and decrypts it into `dst` (of the same length)
-    /// without copying it into `dst` first. On failure `dst` is zeroed. For the TLS record layer.
+    /// without copying it into `dst` first. On failure `dst` is zeroed.
     ///
     /// # Panics
     ///
@@ -223,44 +236,97 @@ impl AesGcm {
         dst: &mut [u8],
     ) -> Result<(), Error> {
         assert_eq!(src.len(), dst.len(), "AES-GCM: output length");
-        if tag.len() != TAG_LEN {
-            return Err(Error::InvalidLength);
+        check_open(src.len(), tag)?;
+        if self.open_from(nonce, aad, src, tag, &mut Fill::init(dst)) {
+            return Ok(());
         }
-        if src.len() as u64 > MAX_LEN {
-            return Err(Error::Verification);
-        }
+        dst.fill(0);
+        Err(Error::Verification)
+    }
+
+    /// Verifies `tag` over the ciphertext `src` and appends its plaintext to `out`:
+    /// [`decrypt_detached_from`](Self::decrypt_detached_from) into `out`'s spare capacity, which
+    /// is not zero-filled first. On failure `out` keeps its length, and spare bytes that held
+    /// unverified plaintext are zeroed. For the TLS record layer.
+    #[doc(hidden)]
+    pub fn decrypt_append(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        tag: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        check_open(src.len(), tag)?;
+        let ok = fill::append(out, src.len(), |f| {
+            let ok = self.open_from(nonce, aad, src, tag, f);
+            (ok, ok)
+        });
+        if ok { Ok(()) } else { Err(Error::Verification) }
+    }
+
+    /// Seals `src` followed by the initialised rest of `out` (or `out` in place) into `out`,
+    /// returning the tag; `out` is full afterwards.
+    fn seal(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: Option<&[u8]>,
+        out: &mut Fill<'_>,
+    ) -> [u8; TAG_LEN] {
+        assert!(out.len() as u64 <= MAX_LEN, "AES-GCM: plaintext too long");
         let j0 = j0(nonce);
-        if let Some(t) = self.fused(&j0, aad, Some(src), dst, true) {
-            if crate::ct_eq(&t, tag) {
-                return Ok(());
-            }
-            dst.fill(0);
-            return Err(Error::Verification);
+        if let Some(t) = self.fused(&j0, aad, src, out, false) {
+            return t;
+        }
+        if let Some(s) = src {
+            out.push(s);
+        }
+        let buf = out.filled();
+        self.aes.apply_ctr32(&inc32(j0), buf);
+        self.tag(&j0, aad, buf)
+    }
+
+    /// Verifies `tag` (16 bytes) over the ciphertext `src` (as long as `out`, nothing written
+    /// yet) and decrypts it into `out`; `false` on a mismatch, with `out` either untouched or
+    /// (the fused path) holding the unverified plaintext, for the caller to wipe.
+    fn open_from(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        tag: &[u8],
+        out: &mut Fill<'_>,
+    ) -> bool {
+        debug_assert_eq!(src.len(), out.len());
+        let j0 = j0(nonce);
+        if let Some(t) = self.fused(&j0, aad, Some(src), out, true) {
+            return crate::ct_eq(&t, tag);
         }
         if !crate::ct_eq(&self.tag(&j0, aad, src), tag) {
-            dst.fill(0);
-            return Err(Error::Verification);
+            return false;
         }
-        dst.copy_from_slice(src);
-        self.aes.apply_ctr32(&inc32(j0), dst);
-        Ok(())
+        out.push(src);
+        self.aes.apply_ctr32(&inc32(j0), out.filled());
+        true
     }
 
     /// Encryption (`open == false`) or decryption with the tag computed in the same pass, on AES
     /// and carry-less multiplication instructions; `None` (nothing done) without them. Returns
-    /// the tag (over the ciphertext either way). With `src`, the input is `src` followed by
-    /// `buf[src.len()..]` and the output goes to `buf` (see `hw::Powers::crypt`).
+    /// the tag (over the ciphertext either way). Without `src` the message is `out`, worked on
+    /// in place; with `src`, it is `src` followed by the initialised rest of `out`, and the
+    /// output goes to `out` (see `hw::Powers::crypt`). `out` is full afterwards.
     fn fused(
         &self,
         j0: &[u8; 16],
         aad: &[u8],
         src: Option<&[u8]>,
-        buf: &mut [u8],
+        out: &mut Fill<'_>,
         open: bool,
     ) -> Option<[u8; 16]> {
         let p = self.powers.as_ref()?;
         let rk = self.aes.hw_round_keys()?;
-        let (aad_len, ct_len) = (aad.len(), buf.len());
+        let (aad_len, ct_len) = (aad.len(), out.len());
         let mut y = [0u64; 2];
         // The AVX-512 kernel does everything in one call (an AAD over 256 bytes hashed first).
         if p.whole_message() {
@@ -271,7 +337,7 @@ impl AesGcm {
                 g.update_padded(aad);
                 (&[][..], [g.y0, g.y1])
             };
-            return p.crypt_all(rk, j0, wide_y, wide_aad, aad_len, src, buf, open);
+            return p.crypt_all(rk, j0, wide_y, wide_aad, aad_len, src, out, open);
         }
         // A short message hashes a short AAD together with its blocks (one GHASH call).
         let joined = ct_len < 128 && aad_len <= SHORT_AAD;
@@ -281,7 +347,7 @@ impl AesGcm {
             y = [g.y0, g.y1];
         }
         let ctr = inc32(*j0);
-        let done = p.crypt(rk, &ctr, &mut y, src, buf, open);
+        let done = p.crypt(rk, &ctr, &mut y, src, out, open);
         let mut c = ctr;
         let n = u32::from_be_bytes([c[12], c[13], c[14], c[15]]).wrapping_add((done / 16) as u32);
         c[12..].copy_from_slice(&n.to_be_bytes());
@@ -294,7 +360,7 @@ impl AesGcm {
             ct_len,
             open,
         };
-        Some(self.finish_short(p, y, &tail, &mut buf[done..]))
+        Some(self.finish_short(p, y, &tail, &mut out.filled()[done..]))
     }
 
     /// The last (fewer than 128) bytes `rest` of a fused seal or open, and the tag: the counter
@@ -371,7 +437,7 @@ impl AesGcm {
             return Err(Error::Verification);
         }
         let j0 = j0(nonce);
-        if let Some(t) = self.fused(&j0, aad, None, buf, true) {
+        if let Some(t) = self.fused(&j0, aad, None, &mut Fill::init(buf), true) {
             if crate::ct_eq(&t, tag) {
                 return Ok(());
             }
@@ -447,6 +513,17 @@ struct Tail<'a> {
     aad_len: usize,
     ct_len: usize,
     open: bool,
+}
+
+/// The checks of an open before any work: a 16-byte tag and a ciphertext GCM allows.
+fn check_open(len: usize, tag: &[u8]) -> Result<(), Error> {
+    if tag.len() != TAG_LEN {
+        return Err(Error::InvalidLength);
+    }
+    if len as u64 > MAX_LEN {
+        return Err(Error::Verification);
+    }
+    Ok(())
 }
 
 fn j0(nonce: &[u8; NONCE_LEN]) -> [u8; 16] {
@@ -818,6 +895,90 @@ mod tests {
             k.decrypt_detached_from(&nonce, &aad, &ct, &tag, &mut out[2..])
                 .unwrap();
             assert!(out[2..] == pt[..], "from opened: key {i}, len {len}");
+            append_agrees(
+                k,
+                &nonce,
+                &aad,
+                &pt,
+                &ct,
+                &tag,
+                &format!("key {i}, len {len}"),
+            );
+        }
+    }
+
+    /// `encrypt_append` / `decrypt_append` agree with the ciphertext `ct` and tag `tag` of `pt`:
+    /// after bytes already in the vector, with the spare capacity exact, larger or grown by the
+    /// call, and the plaintext split between `src` and a trailer (none, the last byte as the
+    /// TLS 1.3 record layer has it, a third); a failed open leaves the vector as it was.
+    fn append_agrees(
+        k: &AesGcm,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        pt: &[u8],
+        ct: &[u8],
+        tag: &[u8; 16],
+        what: &str,
+    ) {
+        let len = pt.len();
+        for (j, trailer) in [0, len.min(1), len / 3].into_iter().enumerate() {
+            let split = len - trailer;
+            let head = (len + j) % 4;
+            let mut out: Vec<u8> = (1..=head as u8).collect();
+            match j {
+                0 => out.reserve_exact(len),
+                1 => out.reserve(len + 100),
+                _ => {}
+            }
+            let t = k.encrypt_append(nonce, aad, &pt[..split], &pt[split..], &mut out);
+            assert_eq!(out.len(), head + len, "append len: {what}");
+            assert!(out[..head].iter().copied().eq(1..=head as u8), "{what}");
+            assert!(out[head..] == ct[..], "append: {what}, trailer {trailer}");
+            assert_eq!(t, *tag, "append tag: {what}, trailer {trailer}");
+            let before = out.clone();
+            let mut bad = *tag;
+            bad[(len + j) % 16] ^= 0x10;
+            assert_eq!(
+                k.decrypt_append(nonce, aad, ct, &bad, &mut out),
+                Err(Error::Verification)
+            );
+            assert!(out == before, "failed open appends nothing: {what}");
+            assert_eq!(
+                k.decrypt_append(nonce, aad, ct, &tag[..15], &mut out),
+                Err(Error::InvalidLength)
+            );
+            assert!(out == before);
+            k.decrypt_append(nonce, aad, ct, tag, &mut out).unwrap();
+            assert!(out[..head + len] == before[..], "{what}");
+            assert!(out[head + len..] == pt[..], "append opened: {what}");
+        }
+    }
+
+    /// The append paths on the portable code alone, at small sizes and around the block sizes:
+    /// the test that runs under Miri (`cargo miri test -p only-crypto --lib -- append`), which
+    /// checks that every byte they write into a vector's spare capacity is written before it is
+    /// read or exposed.
+    #[test]
+    fn append_portable() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([8; 32]);
+        let mut key = [0u8; 16];
+        rng.fill(&mut key);
+        let k = AesGcm::with_cipher_portable(Aes::new_portable(&key).unwrap());
+        let lens: Vec<usize> = if cfg!(miri) {
+            vec![0, 1, 15, 16, 17, 33, 127, 128, 129, 300]
+        } else {
+            (0..=300).chain([1000, 4096, 16385]).collect()
+        };
+        for len in lens {
+            let mut nonce = [0u8; 12];
+            rng.fill(&mut nonce);
+            let mut aad = vec![0u8; len % 23];
+            rng.fill(&mut aad);
+            let mut pt = vec![0u8; len];
+            rng.fill(&mut pt);
+            let mut ct = pt.clone();
+            let tag = k.encrypt_in_place_detached(&nonce, &aad, &mut ct);
+            append_agrees(&k, &nonce, &aad, &pt, &ct, &tag, &format!("len {len}"));
         }
     }
 
@@ -932,9 +1093,9 @@ mod tests {
                 for open in [false, true] {
                     let (mut d1, mut d2, mut d4) = (data.clone(), data.clone(), data.clone());
                     let (mut y1, mut y2, mut y4) = ([1u64, 2], [1u64, 2], [1u64, 2]);
-                    let n1 = p.crypt(rk, &ctr, &mut y1, None, &mut d1, open);
-                    let n2 = narrow.crypt(rk, &ctr, &mut y2, None, &mut d2, open);
-                    let n4 = avx2.crypt(rk, &ctr, &mut y4, None, &mut d4, open);
+                    let n1 = p.crypt(rk, &ctr, &mut y1, None, &mut Fill::init(&mut d1), open);
+                    let n2 = narrow.crypt(rk, &ctr, &mut y2, None, &mut Fill::init(&mut d2), open);
+                    let n4 = avx2.crypt(rk, &ctr, &mut y4, None, &mut Fill::init(&mut d4), open);
                     assert_eq!((n1, n2, n4), (1024 + 256 + 128, 1024 + 256 + 128, 1408));
                     assert!(d1 == d2 && d4 == d2);
                     assert_eq!(y1, y2);

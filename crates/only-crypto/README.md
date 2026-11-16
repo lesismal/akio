@@ -4,7 +4,9 @@
 
 Dependency-free cryptographic primitives for the [`only`](https://github.com/lesismal/only)
 crates, in Rust on `std` only (`#![deny(unsafe_code)]`; the exceptions are twelve small modules
-that drive CPU instructions, detected at run time; the OS random syscall lives in `only-sys`).
+that drive CPU instructions, detected at run time, and `fill`, the AEAD output buffer that lets
+the TLS record layer seal and open straight into a vector's spare capacity; the OS random
+syscall lives in `only-sys`).
 
 | Hardware path (run-time detection, constant-time portable fallback) | x86_64 | aarch64 |
 |---|---|---|
@@ -27,8 +29,8 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
 | `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR |
-| `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 whole 256-byte groups on 256-bit registers, else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`) |
-| `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` for the TLS record layer) |
+| `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 whole 256-byte groups on 256-bit registers, else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`); `encrypt_append` / `decrypt_append` (hidden, for the TLS record layer) write straight into a vector's spare capacity, without zero-filling it first |
+| `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` and `*_append` for the TLS record layer) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |
 | `rand` | `fill_random` (getrandom / getentropy / `/dev/urandom`), `ChaChaRng` |
 | `ct_eq` | constant-time comparison |
@@ -223,7 +225,16 @@ in one IFMA block.
   only); `fuzz/` has differential targets `crypto_hash`, `crypto_aead` (also the VAES-AVX-512,
   VAES-AVX2, 128-bit and portable AES-GCM paths against each other, in place and out of place,
   and the AVX-512 /
-  IFMA, AVX2 and portable ChaCha20-Poly1305 paths), `crypto_base64`.
+  IFMA, AVX2 and portable ChaCha20-Poly1305 paths, the append paths of both included),
+  `crypto_base64`.
+- The append paths (`encrypt_append` / `decrypt_append`, which write into a vector's spare
+  capacity without zero-filling it): on every AES-GCM and ChaCha20-Poly1305 kernel at every
+  length 0..=600 and large sizes against the in-place paths, after bytes already in the vector,
+  with exact, larger and missing spare capacity, the plaintext split between `src` and a trailer
+  (the TLS 1.3 inner content type); a failed open leaves the vector as it was. The portable
+  append paths and `fill::tests` also run under Miri (`append_portable`, `aead_rfc8439`, `gcm_spec_vectors`,
+  `rejects_forgeries`, and four only-tls `record::` tests), which checks that no byte of the spare capacity
+  is read or exposed before it is written.
 - The AVX-512 ChaCha20 and IFMA Poly1305 kernels (`chacha::tests`): every length 0..=600 and
   large sizes against the AVX2 and portable paths, misaligned, in place and out of place,
   forged tags, counters near the wrap, Poly1305 on all-ones blocks and extreme `r` / `s`; run

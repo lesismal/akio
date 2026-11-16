@@ -10,6 +10,15 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：TLS 记录加密和解密前不再预先清零输出
+
+TLS 记录层在 AEAD 写入记录的密文或明文之前不再清零那段空间：only-crypto 的 AES-GCM 与
+ChaCha20-Poly1305 新增隐藏的 `encrypt_append` / `decrypt_append`，直接写入 `Vec<u8>` 的空闲容量（经由一个
+很小的 `unsafe` 模块 `only_crypto::fill`，只有每个字节都写入后才扩展向量；打开失败时不追加任何内容，并把已写
+的字节清零）。only-tls 仍是 `#![forbid(unsafe_code)]`。Zen 4 上的 TLS 1.3 记录（加密 + 解密，同一次运行
+A/B）：AES-128-GCM +6.9–8.3%，AES-256-GCM +7.4–8.7%，ChaCha20-Poly1305 +3.3–6.4%（docs/BENCHMARKS.zh-CN.md）。
+公开 API 不变。
+
 ### 新增：供应用自建转发使用的 `Conn::set_relayed`
 
 基于 `hold_reads` / `on_drain` 自建的转发现在可以用 `Conn::set_relayed(true)` 跳过引擎按写水位暂停

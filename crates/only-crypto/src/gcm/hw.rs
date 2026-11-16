@@ -17,13 +17,15 @@
 //!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the
 //! `#[target_feature]` functions and their intrinsics and for the `asm!` kernels of `vaes`,
-//! called after the features were detected.
+//! called after the features were detected, and for recording what those kernels wrote out of
+//! place into a possibly uninitialised `Fill` (`Fill::assume_written`).
 #![allow(unsafe_code)]
 // The intrinsics are `unsafe fn` at the MSRV (1.85) and safe inside `#[target_feature]` functions
 // on newer compilers.
 #![allow(unused_unsafe)]
 
 use crate::cpu::{self, Feature};
+use crate::fill::Fill;
 
 #[cfg(target_arch = "x86_64")]
 mod vaes;
@@ -164,27 +166,29 @@ impl Powers {
     }
 
     /// CTR-encrypts (`open == false`) or decrypts (`open == true`) the whole 128-byte groups at
-    /// the start of `data` with the AES round keys `rk`, starting at the counter block `ctr`
+    /// the start of the message with the AES round keys `rk`, starting at the counter block `ctr`
     /// (32-bit big-endian counter in the last four bytes, wrapping), and absorbs the ciphertext
     /// into `y`. Returns the number of bytes processed (a multiple of 128): whole 256-byte groups
     /// on the wide kernel when there is one, then 128-byte groups.
     ///
-    /// With `src` (at most `data.len()` bytes), the input is `src` followed by
-    /// `data[src.len()..]`: the wide kernel reads its groups from `src` and writes them to
-    /// `data`, the rest of `src` is copied into `data` and processed in place.
+    /// Without `src` the message is `out` (initialised), worked on in place. With `src` (at most
+    /// `out.len()` bytes, nothing written to `out` from the front yet), the message is `src`
+    /// followed by the bytes of `out` after `src.len()` (which hold values): the wide kernel
+    /// reads its groups from `src` and writes them to `out` (which may be uninitialised), the
+    /// rest of `src` is copied into `out` and processed in place. `out` is full afterwards.
     pub(super) fn crypt(
         &self,
         rk: RoundKeys<'_>,
         ctr: &[u8; 16],
         y: &mut [u64; 2],
         src: Option<&[u8]>,
-        data: &mut [u8],
+        out: &mut Fill<'_>,
         open: bool,
     ) -> usize {
         if !available() || !cpu::cpu_has(Feature::Aes) {
             unreachable!("round keys and Powers exist only with AES and carry-less multiplication");
         }
-        assert!(src.is_none_or(|s| s.len() <= data.len()));
+        assert!(src.is_none_or(|s| s.len() <= out.len() && out.pos() == 0));
         #[allow(unused_mut)]
         let mut done = 0;
         #[cfg(target_arch = "x86_64")]
@@ -193,10 +197,15 @@ impl Powers {
                 Wide::Avx512 => vaes::CHUNK,
                 Wide::Avx2 => vaes::CHUNK2,
             };
-            let n = src.map_or(data.len(), <[u8]>::len) / chunk * chunk;
+            let n = src.map_or(out.len(), <[u8]>::len) / chunk * chunk;
             if n > 0 {
-                let dst = data.as_mut_ptr();
-                let from = src.map_or_else(|| dst.cast_const(), <[u8]>::as_ptr);
+                let (from, dst) = match src {
+                    Some(s) => (s.as_ptr(), out.next_ptr(n)),
+                    None => {
+                        let d = out.filled().as_mut_ptr();
+                        (d.cast_const(), d)
+                    }
+                };
                 match kind {
                     Wide::Avx512 => {
                         if !wide_available() {
@@ -204,11 +213,13 @@ impl Powers {
                         }
                         let mut a = vaes::Args::new(ctr, *y);
                         // SAFETY: `wide_available()` confirmed every CPU and OS feature the
-                        // kernel needs; the `n / CHUNK` whole groups lie within `data` and
-                        // within `src` (when given); `a` has no tail and no AAD, so nothing
-                        // else is read or written; `src` is a shared slice and `data` a unique
-                        // one, so they do not overlap, and without `src` the kernel works in
-                        // place on `data`; `rk` comes from `aes::hw` (round count 10, 12, 14).
+                        // kernel needs; the `n / CHUNK` whole groups lie within `src` (when
+                        // given) and within `out` at `dst` (`next_ptr(n)`, writable and only
+                        // written by the kernel when out of place, or the initialised `out`
+                        // in place); `a` has no tail and no AAD, so nothing else is read or
+                        // written; `src` is a shared slice and `out` holds a unique borrow, so
+                        // they do not overlap, and without `src` the kernel works in place;
+                        // `rk` comes from `aes::hw` (round count 10, 12, 14).
                         unsafe { vaes::crypt512(w, rk, &mut a, from, dst, n / chunk, open) };
                         *y = a.y();
                     }
@@ -218,19 +229,26 @@ impl Powers {
                         }
                         // SAFETY: `avx2_available()` confirmed every CPU and OS feature the
                         // kernel needs; `n` is a nonzero multiple of `CHUNK2` and at most the
-                        // length of `data` and of `src` (when given); `src` is a shared slice
-                        // and `data` a unique one, so they do not overlap, and without `src`
-                        // the kernel works in place on `data`; `rk` comes from `aes::hw`.
+                        // length of `src` (when given) and of `out`, whose `n` bytes at `dst`
+                        // are writable (the kernel reads output bytes only after writing them:
+                        // the GHASH of a sealed group); `src` is a shared slice and `out` holds
+                        // a unique borrow, so they do not overlap, and without `src` the kernel
+                        // works in place; `rk` comes from `aes::hw`.
                         unsafe { vaes::crypt256(w, rk, ctr, y, from, dst, n, open) };
                     }
+                }
+                if src.is_some() {
+                    // SAFETY: out of place the kernel stored all `n` bytes (whole groups) at
+                    // `next_ptr(n)`.
+                    unsafe { out.assume_written(n) };
                 }
                 done = n;
             }
         }
         if let Some(s) = src {
-            data[done..s.len()].copy_from_slice(&s[done..]);
+            out.push(&s[done..]);
         }
-        let rest = &mut data[done..];
+        let rest = &mut out.filled()[done..];
         let n = rest.len() & !127;
         if n > 0 {
             let c = advance(ctr, done / 16);
@@ -243,9 +261,10 @@ impl Powers {
 
     /// All of AES-GCM after the key schedule on the AVX-512 kernel, when this key has it (else
     /// `None`, nothing done): `aad` (the whole AAD of `aad_len` bytes when that is at most 256
-    /// bytes, else empty with its GHASH already in `y`) is hashed, `data` encrypted
-    /// (`open == false`) or decrypted in place, or with `src` (at most `data.len()` bytes) from
-    /// `src` followed by `data[src.len()..]`, and the tag over the ciphertext returned.
+    /// bytes, else empty with its GHASH already in `y`) is hashed, the message encrypted
+    /// (`open == false`) or decrypted, and the tag over the ciphertext returned. The message is
+    /// as for [`crypt`](Self::crypt): `out` in place, or `src` followed by the initialised bytes
+    /// of `out` after `src.len()`, written to `out` (full afterwards).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn crypt_all(
         &self,
@@ -255,7 +274,7 @@ impl Powers {
         aad: &[u8],
         aad_len: usize,
         src: Option<&[u8]>,
-        data: &mut [u8],
+        out: &mut Fill<'_>,
         open: bool,
     ) -> Option<[u8; 16]> {
         #[cfg(target_arch = "x86_64")]
@@ -263,71 +282,94 @@ impl Powers {
             if !wide_available() {
                 unreachable!("AVX-512 powers exist only with VAES and AVX-512");
             }
-            assert!(src.is_none_or(|s| s.len() <= data.len()) && aad.len() <= vaes::CHUNK);
-            let len = data.len();
+            assert!(
+                src.is_none_or(|s| s.len() <= out.len() && out.pos() == 0)
+                    && aad.len() <= vaes::CHUNK
+            );
+            let len = out.len();
             let ctr = advance(j0, 1);
             let mut a = vaes::Args::new(&ctr, y);
             a.aad(w, aad);
-            // Input partly in `src`, partly in `data`: the whole groups of `src` first (out of
-            // place), then the rest of `src` copied over and everything after it in place.
             let mut at = 0;
-            let mut from = None;
             match src {
-                Some(s) if s.len() < len => {
+                // All of the input in `src`: one call out of place, the tail read from `src`.
+                Some(s) if s.len() == len => {
+                    let groups = len / vaes::CHUNK;
+                    let tail = len - groups * vaes::CHUNK;
+                    a.tail(w, s[groups * vaes::CHUNK..].as_ptr(), tail);
+                    a.finish(j0, aad_len, len);
+                    if groups == 0 {
+                        a.short(w);
+                    }
+                    let dst = out.next_ptr(len);
+                    // SAFETY: `wide_available()` confirmed every CPU and OS feature the kernel
+                    // needs; `s` holds the `groups` whole groups and then the `tail` bytes (the
+                    // tail source inside `s`, after the groups), and `dst` (`next_ptr(len)`)
+                    // is writable for all `len` bytes, which the kernel only writes; `s` is a
+                    // shared slice and `out` holds a unique borrow, so they do not overlap; the
+                    // AAD of `a` was set by `Args::aad` from the live slice `aad` (or is none)
+                    // with the powers `w`, the tail by `Args::tail` with `w` (both moved by
+                    // `Args::short` within `w`); `rk` comes from `aes::hw`.
+                    unsafe { vaes::crypt512(w, rk, &mut a, s.as_ptr(), dst, groups, open) };
+                    // SAFETY: the kernel stored all `len` bytes: the groups and the masked
+                    // tail (its mask covers exactly `tail` bytes).
+                    unsafe { out.assume_written(len) };
+                    return Some(a.tag());
+                }
+                // Input partly in `src`, partly in `out`: the whole groups of `src` first (out
+                // of place), then the rest of `src` copied over and everything after it in
+                // place.
+                Some(s) => {
                     let first = s.len() / vaes::CHUNK * vaes::CHUNK;
                     if first > 0 {
+                        let dst = out.next_ptr(first);
                         // SAFETY: `wide_available()` confirmed every CPU and OS feature the
                         // kernel needs; the `first / CHUNK` whole groups lie within `s` and
-                        // `data`, a shared and a unique slice that do not overlap; `a` has no
-                        // tail, and its AAD was set by `Args::aad` from the live slice `aad`
-                        // with the powers `w`; `rk` comes from `aes::hw` (round count 10, 12 or
-                        // 14).
+                        // at `dst` (`next_ptr(first)`, writable, only written), a shared slice
+                        // and a unique borrow that do not overlap; `a` has no tail, and its
+                        // AAD was set by `Args::aad` from the live slice `aad` with the powers
+                        // `w`; `rk` comes from `aes::hw` (round count 10, 12 or 14).
                         unsafe {
                             vaes::crypt512(
                                 w,
                                 rk,
                                 &mut a,
                                 s.as_ptr(),
-                                data.as_mut_ptr(),
+                                dst,
                                 first / vaes::CHUNK,
                                 open,
                             );
                         }
+                        // SAFETY: the kernel stored the `first` bytes of whole groups.
+                        unsafe { out.assume_written(first) };
                         a = vaes::Args::new(&advance(&ctr, first / 16), a.y());
                     }
-                    data[first..s.len()].copy_from_slice(&s[first..]);
+                    out.push(&s[first..]);
                     at = first;
                 }
-                Some(s) => from = Some(s),
                 None => {}
             }
-            let rest = &mut data[at..];
+            let rest = &mut out.filled()[at..];
             let groups = rest.len() / vaes::CHUNK;
             let tail = rest.len() - groups * vaes::CHUNK;
-            // The tail is read from where the groups are, just after them.
-            let tail_src = match from {
-                Some(s) => s[groups * vaes::CHUNK..].as_ptr(),
-                None => rest[groups * vaes::CHUNK..].as_ptr(),
-            };
+            // In place: the tail is read from where it is written, just after the groups.
+            let tail_src = rest[groups * vaes::CHUNK..].as_ptr();
             let dst = rest.as_mut_ptr();
-            let from = from.map_or_else(|| dst.cast_const(), <[u8]>::as_ptr);
             a.tail(w, tail_src, tail);
             a.finish(j0, aad_len, len);
             if groups == 0 {
                 a.short(w);
             }
             // SAFETY: `wide_available()` confirmed every CPU and OS feature the kernel needs;
-            // `rest` (at `dst`) holds `groups` whole groups and then the `tail` bytes, and the
-            // input is either `rest` itself (in place, the tail source then exactly
-            // `dst + 256 * groups`) or all of `src`, a shared slice of the same length that does
-            // not overlap `data` (the tail source then inside it, after the groups); the AAD of
-            // `a` was set by `Args::aad` from the live slice `aad` (or is none) with the powers
-            // `w`, the tail by `Args::tail` with `w` (both moved by `Args::short` within `w`);
-            // `rk` comes from `aes::hw`.
-            unsafe { vaes::crypt512(w, rk, &mut a, from, dst, groups, open) };
+            // `rest` (at `dst`, initialised) holds `groups` whole groups and then the `tail`
+            // bytes, worked on in place (the tail source exactly `dst + 256 * groups`); the AAD
+            // of `a` was set by `Args::aad` from the live slice `aad` (or is none, after a
+            // first call) with the powers `w`, the tail by `Args::tail` with `w` (both moved by
+            // `Args::short` within `w`); `rk` comes from `aes::hw`.
+            unsafe { vaes::crypt512(w, rk, &mut a, dst.cast_const(), dst, groups, open) };
             return Some(a.tag());
         }
-        let _ = (rk, j0, y, aad, aad_len, src, data, open);
+        let _ = (rk, j0, y, aad, aad_len, src, out, open);
         None
     }
 }

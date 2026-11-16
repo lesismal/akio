@@ -17,6 +17,7 @@
 //! ```
 
 use crate::Error;
+use crate::fill::{self, Fill};
 
 mod hw;
 
@@ -224,7 +225,7 @@ impl ChaCha20 {
         // inside the group (the single-block path below handles the wrap and exhaustion).
         if !self.exhausted && lvl == Level::Wide {
             let n = (data.len() / 64).min((u32::MAX - self.state[12]) as usize);
-            if n > 0 && hw::xor_wide(&self.state, None, &mut data[..64 * n]) {
+            if n > 0 && hw::xor_wide(&self.state, &mut data[..64 * n]) {
                 self.state[12] += n as u32;
                 data = &mut data[64 * n..];
             }
@@ -252,7 +253,7 @@ impl ChaCha20 {
             let mut ks = [0u8; 512];
             let nb = data.len().div_ceil(64);
             let ok = if lvl == Level::Wide {
-                hw::xor_wide(&self.state, None, &mut ks[..64 * nb])
+                hw::xor_wide(&self.state, &mut ks[..64 * nb])
             } else {
                 hw::xor8(&self.state, &mut ks)
             };
@@ -639,7 +640,7 @@ impl ChaCha20Poly1305 {
         let lvl = Level::current(self.cap);
         let st = ChaCha20::new(&self.key, nonce, 0).state;
         let mut ks = [0u8; 512];
-        let n = if lvl == Level::Wide && hw::xor_wide(&st, None, &mut ks[..256]) {
+        let n = if lvl == Level::Wide && hw::xor_wide(&st, &mut ks[..256]) {
             4
         } else if lvl >= Level::Avx2 && len > 128 && hw::xor8(&st, &mut ks) {
             8
@@ -655,51 +656,58 @@ impl ChaCha20Poly1305 {
         (lvl, st, Head { ks, n })
     }
 
-    /// XORs the keystream from block 1 into `src` followed by `dst[src.len()..]` (or `dst` in
-    /// place without `src`), written to `dst`; `head` holds the first blocks.
-    fn crypt(lvl: Level, st: &[u32; 16], head: &Head, src: Option<&[u8]>, dst: &mut [u8]) {
+    /// XORs the keystream from block 1 into the message, written to `out`: without `src` the
+    /// message is `out` (initialised), worked on in place; with `src` (nothing written to `out`
+    /// from the front yet) it is `src` followed by the initialised bytes of `out` after
+    /// `src.len()`. `head` holds the first blocks. `out` is full afterwards.
+    fn crypt(lvl: Level, st: &[u32; 16], head: &Head, src: Option<&[u8]>, out: &mut Fill<'_>) {
         let hb = 64 * (head.n - 1);
         let ks = &head.ks[64..64 * head.n];
-        let h = dst.len().min(hb);
-        let from = src.map_or(0, |s| s.len().min(hb));
-        if let Some(s) = src {
-            for ((d, s), k) in dst[..from].iter_mut().zip(s).zip(ks) {
-                *d = s ^ k;
-            }
-        }
-        for (d, k) in dst[from..h].iter_mut().zip(&ks[from..]) {
-            *d ^= k;
-        }
-        if dst.len() == h {
-            return;
-        }
-        let dst = &mut dst[hb..];
-        let src = src.filter(|s| s.len() > hb).map(|s| &s[hb..]);
+        let len = out.len();
         let mut st = *st;
         st[12] = head.n as u32;
-        if lvl == Level::Wide {
-            // The rest in at most two calls (the counter cannot wrap within a message): out of
-            // place for `src` (its whole blocks unless it is all of the rest), then in place.
-            let n = src.map_or(0, |s| {
-                if s.len() == dst.len() {
-                    s.len()
+        // Bytes of `out` written from `src` (the rest is processed in place below).
+        let mut at = 0;
+        if let Some(s) = src {
+            assert!(s.len() <= len && out.pos() == 0);
+            at = s.len().min(hb);
+            out.push_xor(&s[..at], ks);
+            // On AVX-512 the whole blocks of `src` after the head (all of it when `src` is all
+            // of the rest) go straight into `out` (the counter cannot wrap within a message).
+            if lvl == Level::Wide && s.len() > hb {
+                let rest = &s[hb..];
+                let n = if s.len() == len {
+                    rest.len()
                 } else {
-                    s.len() / 64 * 64
-                }
-            });
-            if n == 0 || hw::xor_wide(&st, src.map(|s| &s[..n]), &mut dst[..n]) {
-                st[12] += (n / 64) as u32;
-                if let Some(s) = src {
-                    dst[n..s.len()].copy_from_slice(&s[n..]);
-                }
-                if n == dst.len() || hw::xor_wide(&st, None, &mut dst[n..]) {
-                    return;
+                    rest.len() / 64 * 64
+                };
+                if n > 0 {
+                    if !hw::xor_wide_into(&st, &rest[..n], out) {
+                        unreachable!("Level::Wide only with AVX-512");
+                    }
+                    st[12] += (n / 64) as u32;
+                    at = hb + n;
                 }
             }
-            unreachable!("Level::Wide only with AVX-512");
+            out.push(&s[at..]);
         }
-        if let Some(s) = src {
-            dst[..s.len()].copy_from_slice(s);
+        let buf = out.filled();
+        let h = len.min(hb);
+        if at < h {
+            for (d, k) in buf[at..h].iter_mut().zip(&ks[at..]) {
+                *d ^= k;
+            }
+        }
+        let from = at.max(hb);
+        if from >= len {
+            return;
+        }
+        let dst = &mut buf[from..];
+        if lvl == Level::Wide {
+            if hw::xor_wide(&st, dst) {
+                return;
+            }
+            unreachable!("Level::Wide only with AVX-512");
         }
         let mut c = ChaCha20 {
             state: st,
@@ -721,50 +729,48 @@ impl ChaCha20Poly1305 {
         p.finalize()
     }
 
-    /// Seals `src` followed by `dst[src.len()..]` (or `dst` in place) into `dst`.
+    /// Seals `src` followed by the initialised rest of `out` (or `out` in place) into `out`.
     fn seal(
         &self,
         nonce: &[u8; NONCE_LEN],
         aad: &[u8],
         src: Option<&[u8]>,
-        dst: &mut [u8],
+        out: &mut Fill<'_>,
     ) -> [u8; TAG_LEN] {
         assert!(
-            src.is_none_or(|s| s.len() <= dst.len()),
-            "ChaCha20-Poly1305: output too short"
-        );
-        assert!(
-            dst.len() as u64 <= MAX_LEN,
+            out.len() as u64 <= MAX_LEN,
             "ChaCha20-Poly1305: plaintext too long"
         );
-        let (lvl, st, head) = self.start(nonce, dst.len());
+        let len = out.len();
+        let (lvl, st, head) = self.start(nonce, len);
         let p = Poly1305::with_level(&head.ks[..32], lvl);
         // The powers of `r` for the IFMA kernel first: their scalar multiplications overlap the
         // vector work of the cipher.
-        let pw = p.uses_ifma(dst.len() / 16 * 16).then(|| p.ifma_powers());
-        Self::crypt(lvl, &st, &head, src, dst);
-        Self::tag(p, aad, dst, pw.as_ref())
+        let pw = p.uses_ifma(len / 16 * 16).then(|| p.ifma_powers());
+        Self::crypt(lvl, &st, &head, src, out);
+        Self::tag(p, aad, out.filled(), pw.as_ref())
     }
 
-    /// Verifies the tag over the ciphertext `src` (or `dst` in place) and decrypts it into `dst`;
-    /// `false` (and `dst` untouched) on a mismatch.
+    /// Verifies the tag over the ciphertext `src` (or `out` in place) and decrypts it into `out`;
+    /// `false` (and `out` untouched) on a mismatch.
     fn open(
         &self,
         nonce: &[u8; NONCE_LEN],
         aad: &[u8],
         src: Option<&[u8]>,
-        dst: &mut [u8],
+        out: &mut Fill<'_>,
         tag: &[u8],
     ) -> bool {
-        let (lvl, st, head) = self.start(nonce, dst.len());
-        let ct = src.unwrap_or(dst);
-        if !crate::ct_eq(
-            &Self::tag(Poly1305::with_level(&head.ks[..32], lvl), aad, ct, None),
-            tag,
-        ) {
+        let (lvl, st, head) = self.start(nonce, out.len());
+        let ct: &[u8] = match src {
+            Some(s) => s,
+            None => out.filled(),
+        };
+        let t = Self::tag(Poly1305::with_level(&head.ks[..32], lvl), aad, ct, None);
+        if !crate::ct_eq(&t, tag) {
             return false;
         }
-        Self::crypt(lvl, &st, &head, src, dst);
+        Self::crypt(lvl, &st, &head, src, out);
         true
     }
 
@@ -779,12 +785,12 @@ impl ChaCha20Poly1305 {
         aad: &[u8],
         buf: &mut [u8],
     ) -> [u8; TAG_LEN] {
-        self.seal(nonce, aad, None, buf)
+        self.seal(nonce, aad, None, &mut Fill::init(buf))
     }
 
     /// Encrypts `src` followed by `dst[src.len()..]` (plaintext already in place) into `dst` and
     /// returns the tag: [`encrypt_in_place_detached`](Self::encrypt_in_place_detached) of that
-    /// plaintext without copying `src` into `dst` first. For the TLS record layer.
+    /// plaintext without copying `src` into `dst` first.
     ///
     /// # Panics
     ///
@@ -797,11 +803,40 @@ impl ChaCha20Poly1305 {
         src: &[u8],
         dst: &mut [u8],
     ) -> [u8; TAG_LEN] {
-        self.seal(nonce, aad, Some(src), dst)
+        assert!(
+            src.len() <= dst.len(),
+            "ChaCha20-Poly1305: output too short"
+        );
+        self.seal(nonce, aad, Some(src), &mut Fill::init(dst))
+    }
+
+    /// Appends the ciphertext of `src` followed by `trailer` to `out` and returns the tag:
+    /// [`encrypt_detached_from`](Self::encrypt_detached_from) into `out`'s spare capacity, which
+    /// is not zero-filled first (every byte is written before `out` grows). For the TLS record
+    /// layer (`trailer`: the TLS 1.3 inner content type).
+    ///
+    /// # Panics
+    ///
+    /// If the plaintext is longer than the construction allows (`out` unchanged).
+    #[doc(hidden)]
+    pub fn encrypt_append(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        trailer: &[u8],
+        out: &mut Vec<u8>,
+    ) -> [u8; TAG_LEN] {
+        let n = src.len().saturating_add(trailer.len());
+        assert!(n as u64 <= MAX_LEN, "ChaCha20-Poly1305: plaintext too long");
+        fill::append(out, n, |f| {
+            f.push_back(trailer);
+            (self.seal(nonce, aad, Some(src), f), true)
+        })
     }
 
     /// Verifies `tag` over the ciphertext `src` and decrypts it into `dst` (of the same length)
-    /// without copying it into `dst` first. On failure `dst` is zeroed. For the TLS record layer.
+    /// without copying it into `dst` first. On failure `dst` is zeroed.
     ///
     /// # Panics
     ///
@@ -819,11 +854,39 @@ impl ChaCha20Poly1305 {
         if tag.len() != TAG_LEN {
             return Err(Error::InvalidLength);
         }
-        if src.len() as u64 > MAX_LEN || !self.open(nonce, aad, Some(src), dst, tag) {
+        if src.len() as u64 > MAX_LEN
+            || !self.open(nonce, aad, Some(src), &mut Fill::init(dst), tag)
+        {
             dst.fill(0);
             return Err(Error::Verification);
         }
         Ok(())
+    }
+
+    /// Verifies `tag` over the ciphertext `src` and appends its plaintext to `out`:
+    /// [`decrypt_detached_from`](Self::decrypt_detached_from) into `out`'s spare capacity, which
+    /// is not zero-filled first. On failure `out` is left as it was (the tag is checked before
+    /// anything is decrypted). For the TLS record layer.
+    #[doc(hidden)]
+    pub fn decrypt_append(
+        &self,
+        nonce: &[u8; NONCE_LEN],
+        aad: &[u8],
+        src: &[u8],
+        tag: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<(), Error> {
+        if tag.len() != TAG_LEN {
+            return Err(Error::InvalidLength);
+        }
+        if src.len() as u64 > MAX_LEN {
+            return Err(Error::Verification);
+        }
+        let ok = fill::append(out, src.len(), |f| {
+            let ok = self.open(nonce, aad, Some(src), f, tag);
+            (ok, ok)
+        });
+        if ok { Ok(()) } else { Err(Error::Verification) }
     }
 
     /// Verifies `tag` and decrypts `buf` in place. On failure ([`Error::Verification`], or
@@ -838,7 +901,7 @@ impl ChaCha20Poly1305 {
         if tag.len() != TAG_LEN {
             return Err(Error::InvalidLength);
         }
-        if buf.len() as u64 > MAX_LEN || !self.open(nonce, aad, None, buf, tag) {
+        if buf.len() as u64 > MAX_LEN || !self.open(nonce, aad, None, &mut Fill::init(buf), tag) {
             return Err(Error::Verification);
         }
         Ok(())
@@ -1106,7 +1169,81 @@ mod tests {
                     Err(Error::Verification)
                 );
                 assert_eq!(inplace, bad[..len]);
+                append_agrees(k, &nonce, &aad, pt, &want, &format!("len {len}"));
             }
+        }
+    }
+
+    /// `encrypt_append` / `decrypt_append` agree with `sealed` (ciphertext and tag of `pt`):
+    /// after bytes already in the vector, with the spare capacity exact, larger or grown by the
+    /// call, and the plaintext split between `src` and a trailer (none, the last byte as the
+    /// TLS 1.3 record layer has it, a third); a failed open leaves the vector as it was.
+    fn append_agrees(
+        k: &ChaCha20Poly1305,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        pt: &[u8],
+        sealed: &[u8],
+        what: &str,
+    ) {
+        let len = pt.len();
+        let (ct, tag) = sealed.split_at(len);
+        for (j, trailer) in [0, len.min(1), len / 3].into_iter().enumerate() {
+            let split = len - trailer;
+            let head = (len + j) % 4;
+            let mut out: Vec<u8> = (1..=head as u8).collect();
+            match j {
+                0 => out.reserve_exact(len),
+                1 => out.reserve(len + 100),
+                _ => {}
+            }
+            let t = k.encrypt_append(nonce, aad, &pt[..split], &pt[split..], &mut out);
+            assert_eq!(out.len(), head + len, "append len: {what}");
+            assert!(out[..head].iter().copied().eq(1..=head as u8), "{what}");
+            assert!(out[head..] == ct[..], "append: {what}, trailer {trailer}");
+            assert_eq!(t[..], tag[..], "append tag: {what}, trailer {trailer}");
+            let before = out.clone();
+            let mut bad = t;
+            bad[(len + j) % 16] ^= 0x10;
+            assert_eq!(
+                k.decrypt_append(nonce, aad, ct, &bad, &mut out),
+                Err(Error::Verification)
+            );
+            assert!(out == before, "failed open appends nothing: {what}");
+            assert_eq!(
+                k.decrypt_append(nonce, aad, ct, &tag[..15], &mut out),
+                Err(Error::InvalidLength)
+            );
+            assert!(out == before);
+            k.decrypt_append(nonce, aad, ct, tag, &mut out).unwrap();
+            assert!(out[..head + len] == before[..], "{what}");
+            assert!(out[head + len..] == pt[..], "append opened: {what}");
+        }
+    }
+
+    /// The append paths on the portable code alone, at small sizes and around the head and
+    /// block sizes: the test that runs under Miri (`cargo miri test -p only-crypto --lib --
+    /// append`), which checks that every byte they write into a vector's spare capacity is
+    /// written before it is read or exposed.
+    #[test]
+    fn append_portable() {
+        let mut rng = crate::rand::ChaChaRng::from_seed([22; 32]);
+        let mut key = [0u8; 32];
+        rng.fill(&mut key);
+        let k = ChaCha20Poly1305::new_portable(&key);
+        let lens: Vec<usize> = if cfg!(miri) {
+            vec![0, 1, 63, 64, 65, 128, 191, 192, 193, 300, 513]
+        } else {
+            (0..=600).chain([1000, 4096, 16385]).collect()
+        };
+        for len in lens {
+            let mut nonce = [0u8; 12];
+            rng.fill(&mut nonce);
+            let aad = vec![0x5au8; len % 19];
+            let mut pt = vec![0u8; len];
+            rng.fill(&mut pt);
+            let sealed = k.encrypt(&nonce, &aad, &pt);
+            append_agrees(&k, &nonce, &aad, &pt, &sealed, &format!("len {len}"));
         }
     }
 

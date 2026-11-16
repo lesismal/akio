@@ -31,6 +31,17 @@ impl Width {
             Width::X => 256,
         }
     }
+
+    /// The width for one last group of `rest` bytes (under 1024): the narrowest that covers it
+    /// (on Zen 4 a zmm group costs less than two ymm ones, and an xmm group about as much as a
+    /// ymm one).
+    pub(super) const fn last(rest: usize) -> Width {
+        match rest {
+            513.. => Width::Z,
+            257.. => Width::Y,
+            _ => Width::X,
+        }
+    }
 }
 
 /// Counter offsets and steps at fixed offsets: `lanes` (0, lane `i` holds `i`), `inc16` (64, the
