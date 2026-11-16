@@ -72,19 +72,29 @@ authentication, rate limiting, logging) applies to the handshake request.
   returns the `WsSender`; do not call it on an I/O thread of the same engine.
 - `client::dial(&engine, url, &opts, handler, on_error)` is the non-blocking form: `on_open`
   runs on success, `on_error(WsClientError)` once on failure (`InvalidUrl`, `Io`, `Status`,
-  `Handshake`, `Timeout`, `Closed`).
+  `Handshake`, `Timeout`, `Closed`, `TooManyRedirects`).
 - `DialOptions`: `config` (limits; `permessage_deflate` decides whether it is offered), `pmd`
   (what the offer asks for), `protocols`, `origin`, `headers` (e.g. `Authorization`, cookies),
-  `tls` (required for `wss://`; do not offer `h2` in its ALPN), `server_name`,
-  `handshake_timeout` (10 s), `close_timeout` (3 s).
-- Frames are masked with unpredictable keys; every resolved address is tried in turn; name
-  resolution runs on the calling thread.
+  `tls` (`None`: the system's CAs; do not offer `h2` in its ALPN), `server_name`,
+  `handshake_timeout` (10 s, redirects included), `close_timeout` (3 s), `proxy` (none;
+  `only_ws::proxy::Proxy::from_env()` opts in to the environment) and `max_redirects` (0).
+- Proxies: every connection a proxy applies to (`ws://` and `wss://`) goes through a
+  `CONNECT host:port` tunnel; a refusal is `WsClientError::Io` carrying a
+  `only_ws::proxy::ProxyRefused`. Same `Proxy` type and rules as the
+  [HTTP client](http-clients.md#proxies).
+- Redirects (`max_redirects > 0`): 301, 302, 303, 307 and 308 with a `Location`; `http`/`https`
+  locations become `ws`/`wss`; `wss://` never goes to `ws://`; another origin drops
+  `Authorization`, `Cookie` and `Proxy-Authorization` from `headers`. Browsers do not follow
+  WebSocket redirects, hence off by default.
+- When the client's engine shuts down gracefully, open connections are closed with 1001 (going
+  away) and the close handshake.
+- Frames are masked with unpredictable keys; every resolved address is tried in turn; names are
+  resolved off the calling thread (`only::dns`).
 
 Run `cargo run -p only-ws --example guide-ws` for a chat room with two clients, and see
 `crates/only-http/examples/ws-chat.rs` for a browser chat.
 
 ## Not done
 
-Client: system root certificates (load them into `only::tls::RootCerts`), proxies, redirects, sending 1001 on
-engine shutdown (connections currently end with 1006). Server: WebSocket over HTTP/2 or HTTP/3
+Client: TLS or SOCKS proxies, cookies across redirects. Server: WebSocket over HTTP/2 or HTTP/3
 (extended CONNECT).

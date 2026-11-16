@@ -32,6 +32,11 @@ pub use only::fn_acceptor
 pub use only::log
 pub use only::telemetry
 pub use only::tls
+pub mod only::dns
+pub const only::dns::IDLE: core::time::Duration
+pub const only::dns::MAX_THREADS: usize
+pub fn only::dns::literal(&str) -> core::option::Option<core::net::ip_addr::IpAddr>
+pub fn only::dns::resolve(&str, u16, impl core::ops::function::FnOnce(core::io::error::Result<alloc::vec::Vec<core::net::socket_addr::SocketAddr>>) + core::marker::Send + 'static)
 #[non_exhaustive] pub enum only::Accel
 pub only::Accel::Ebpf(only::EbpfConfig)
 pub only::Accel::None

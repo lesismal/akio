@@ -109,6 +109,7 @@ pub fn only_tls::RootCerts::add_pem(&mut self, &[u8]) -> core::result::Result<us
 pub fn only_tls::RootCerts::empty() -> only_tls::RootCerts
 pub fn only_tls::RootCerts::is_empty(&self) -> bool
 pub fn only_tls::RootCerts::len(&self) -> usize
+pub fn only_tls::RootCerts::system() -> core::result::Result<only_tls::RootCerts, only_tls::Error>
 impl core::clone::Clone for only_tls::RootCerts
 pub fn only_tls::RootCerts::clone(&self) -> Self
 impl core::default::Default for only_tls::RootCerts

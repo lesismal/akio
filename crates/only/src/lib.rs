@@ -25,6 +25,8 @@
 
 use std::{io, net::SocketAddr, sync::Arc, time::Duration};
 
+pub mod dns;
+
 /// TLS: wrap an acceptor in [`tls::Tls`] to serve or dial over TLS (configs: [`tls::ServerConfig`],
 /// [`tls::ClientConfig`]).
 pub use only_tls as tls;

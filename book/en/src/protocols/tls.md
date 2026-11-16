@@ -70,7 +70,11 @@ X25519 full handshakes on par, AES-128-GCM records about 1.6x at 1 KiB and at 16
 ## Configuration
 
 Configuration uses `only`'s own types; the protocol internals are not part of the API. `Certificate::from_pem` / `from_der`, `PrivateKey::from_pem` / `from_der` /
-`from_pkcs8_der` and `RootCerts` load the material.
+`from_pkcs8_der` and `RootCerts` load the material. `RootCerts::system()` is the operating
+system's trust store, read once per process: `SSL_CERT_FILE` / `SSL_CERT_DIR` when set, the
+system keychains on macOS (exported with `/usr/bin/security`; trust settings are not applied),
+the distribution's CA bundle or certificate directory on other Unix systems. The HTTP and
+WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 
 | Need | Server: `ServerConfig::builder(chain, key)` | Client: `ClientConfig::builder()` |
 |---|---|---|
@@ -198,7 +202,7 @@ on a NIC with TLS offload.
 ## Not done
 
 OCSP response validation, brotli/zstd certificate compression, `status_request_v2`; RSA-PSS keys
-(`rsa_pss_pss_*`); P-521; system root certificates (load them into `RootCerts`).
+(`rsa_pss_pss_*`); P-521; the Windows certificate store and macOS trust settings.
 
 ## Writing your own transport
 

@@ -1,11 +1,15 @@
 //! The WebSocket client: dial `ws://` and `wss://` URLs on a `only` [`Engine`].
 //!
-//! [`dial`] resolves the host (on the calling thread), connects without blocking (trying every
-//! resolved address in turn), runs TLS through `only::tls` for `wss://`, performs the opening
-//! handshake and then serves the connection with the same [`WsHandler`] model the server uses:
-//! callbacks on the connection's I/O thread, [`WsSender`] to send from any thread. Frames are
-//! masked, `permessage-deflate` is offered when [`WsConfig::permessage_deflate`] is set.
-//! [`dial_blocking`] is the blocking convenience that waits for the handshake.
+//! [`dial`] resolves the host (on a resolver thread, [`only::dns`]), connects without blocking
+//! (trying every resolved address in turn, through a [`Proxy`] with `CONNECT` when one applies),
+//! runs TLS through `only::tls` for `wss://` (the system's CAs unless [`DialOptions::tls`] says
+//! otherwise), performs the opening handshake (following redirects when
+//! [`DialOptions::max_redirects`] allows) and then serves the connection with the same
+//! [`WsHandler`] model the server uses: callbacks on the connection's I/O thread, [`WsSender`] to
+//! send from any thread. Frames are masked, `permessage-deflate` is offered when
+//! [`WsConfig::permessage_deflate`] is set. When the engine shuts down gracefully, open
+//! connections are closed with status 1001 (going away). [`dial_blocking`] is the blocking
+//! convenience that waits for the handshake.
 //!
 //! ```no_run
 //! use std::sync::Arc;
@@ -27,19 +31,22 @@
 
 use std::{
     io,
-    net::{SocketAddr, ToSocketAddrs},
-    sync::{Arc, Mutex, Weak, mpsc},
-    time::Duration,
+    net::SocketAddr,
+    sync::{Arc, Mutex, OnceLock, Weak, mpsc},
+    time::{Duration, Instant},
 };
 
 use only::{
     Acceptor, Conn, Engine, Handler,
-    tls::{ClientConfig as TlsClientConfig, Tls},
+    tls::{ClientConfig as TlsClientConfig, RootCerts, Tls},
 };
 use only_core::ConnInner;
 
 use crate::{
-    Message, WsConfig, WsHandler, WsSender, WsSession, accept_key, deflate::PmdOffer, http1,
+    Message, WsConfig, WsHandler, WsSender, WsSession, accept_key,
+    deflate::PmdOffer,
+    http1,
+    proxy::{Connect, Proxy, Refusal},
 };
 
 /// How to dial.
@@ -58,8 +65,8 @@ pub struct DialOptions {
     /// Extra request header fields (e.g. `Authorization`, cookies). Fields the handshake itself
     /// sets (`Host`, `Upgrade`, `Connection`, `Sec-WebSocket-*`) are ignored here.
     pub headers: Vec<(String, String)>,
-    /// TLS client configuration for `wss://` (roots, client certificate, ALPN...). Required for
-    /// `wss://`; do not offer `h2` in its ALPN list.
+    /// TLS client configuration for `wss://` (roots, client certificate, ALPN...); do not offer
+    /// `h2` in its ALPN list. `None`: the system's trusted CAs ([`RootCerts::system`]).
     pub tls: Option<TlsClientConfig>,
     /// Name for certificate verification and SNI; the URL's host by default.
     pub server_name: Option<String>,
@@ -68,6 +75,16 @@ pub struct DialOptions {
     /// After the close handshake, how long to wait for the server to close the TCP connection
     /// before closing it from this side.
     pub close_timeout: Duration,
+    /// HTTP proxy: every connection it applies to is tunnelled with `CONNECT`. None by default;
+    /// [`Proxy::from_env`] reads the usual environment variables.
+    pub proxy: Proxy,
+    /// How many redirects (301, 302, 303, 307, 308 with a `Location`) the handshake may follow;
+    /// 0 (the default) reports them as [`WsClientError::Status`]. `http`/`https` locations
+    /// become `ws`/`wss`; a `wss://` handshake never follows a redirect to `ws://`; a redirect
+    /// to another origin drops `Authorization`, `Cookie` and `Proxy-Authorization` from
+    /// [`headers`](Self::headers). The [`handshake_timeout`](Self::handshake_timeout) covers the
+    /// whole chain.
+    pub max_redirects: u32,
 }
 
 impl Default for DialOptions {
@@ -82,6 +99,8 @@ impl Default for DialOptions {
             server_name: None,
             handshake_timeout: Duration::from_secs(10),
             close_timeout: Duration::from_secs(3),
+            proxy: Proxy::none(),
+            max_redirects: 0,
         }
     }
 }
@@ -98,6 +117,8 @@ impl std::fmt::Debug for DialOptions {
             .field("server_name", &self.server_name)
             .field("handshake_timeout", &self.handshake_timeout)
             .field("close_timeout", &self.close_timeout)
+            .field("proxy", &self.proxy)
+            .field("max_redirects", &self.max_redirects)
             .finish()
     }
 }
@@ -118,6 +139,8 @@ pub enum WsClientError {
     Timeout,
     /// The connection closed before the handshake completed.
     Closed,
+    /// More redirects than [`DialOptions::max_redirects`] allows (or a redirect loop).
+    TooManyRedirects,
 }
 
 impl std::fmt::Display for WsClientError {
@@ -129,6 +152,7 @@ impl std::fmt::Display for WsClientError {
             WsClientError::Handshake(m) => write!(f, "bad handshake: {m}"),
             WsClientError::Timeout => f.write_str("handshake timed out"),
             WsClientError::Closed => f.write_str("connection closed during the handshake"),
+            WsClientError::TooManyRedirects => f.write_str("too many redirects"),
         }
     }
 }
@@ -223,7 +247,21 @@ impl Pending {
 /// Everything a dial needs, shared by its address attempts.
 struct Plan {
     engine: Arc<Engine>,
-    addrs: Vec<SocketAddr>,
+    /// The URL this handshake goes to (after any redirects).
+    url: String,
+    secure: bool,
+    host: String,
+    port: u16,
+    opts: DialOptions,
+    /// Redirects still allowed.
+    redirects_left: u32,
+    deadline: Instant,
+    /// The resolved addresses (of the target, or of the proxy).
+    addrs: OnceLock<Vec<SocketAddr>>,
+    /// The proxy this dial goes through, if any.
+    proxy: Option<crate::proxy::ProxyServer>,
+    /// Where the current attempt's tunnel records a refusal.
+    refusal: Mutex<Option<Refusal>>,
     tls: Option<(TlsClientConfig, String)>,
     request: Vec<u8>,
     expected_accept: String,
@@ -250,17 +288,31 @@ impl Plan {
             cb(e);
         }
     }
+
+    /// The proxy's refusal of the current tunnel, as the error to report.
+    fn refused(&self) -> Option<WsClientError> {
+        let slot = self.refusal.lock().unwrap_or_else(|p| p.into_inner());
+        let r = slot.as_ref()?.lock().unwrap_or_else(|p| p.into_inner());
+        r.as_ref().map(|r| WsClientError::Io(r.to_io()))
+    }
+}
+
+/// The system's CAs as a client configuration.
+fn system_tls() -> io::Result<TlsClientConfig> {
+    RootCerts::system()
+        .and_then(|r| TlsClientConfig::builder().roots(r).build())
+        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))
 }
 
 /// Dials `url` and serves the connection with `handler` once the handshake succeeds
 /// (`on_open` runs then, on an I/O thread). On failure before that, `on_error` is called once
-/// instead (on an I/O thread, the calling thread for an invalid URL or a failed resolution, or
-/// the timer thread when the handshake times out while connecting); the handler is dropped
-/// unused.
+/// instead (on an I/O thread, a resolver thread when the name does not resolve, the calling
+/// thread for an invalid URL, or the timer thread when the handshake times out while
+/// connecting); the handler is dropped unused.
 ///
 /// The engine must be started; connections run on its client threads
 /// ([`EngineBuilder::client_threads`](only::EngineBuilder::client_threads)) when it has them.
-/// Name resolution happens on the calling thread and may block.
+/// Names are resolved off the calling thread ([`only::dns::resolve`]).
 pub fn dial(
     engine: &Arc<Engine>,
     url: &str,
@@ -268,16 +320,35 @@ pub fn dial(
     handler: impl WsHandler,
     on_error: impl FnOnce(WsClientError) + Send + 'static,
 ) {
-    let u = match parse_url(url) {
+    start(
+        engine.clone(),
+        url.to_owned(),
+        opts.clone(),
+        opts.max_redirects,
+        Instant::now() + opts.handshake_timeout,
+        Box::new(handler),
+        Box::new(on_error),
+    );
+}
+
+/// One handshake attempt (the first, or one after a redirect).
+fn start(
+    engine: Arc<Engine>,
+    url: String,
+    opts: DialOptions,
+    redirects_left: u32,
+    deadline: Instant,
+    handler: Box<dyn WsHandler>,
+    on_error: ErrCb,
+) {
+    let u = match parse_url(&url) {
         Ok(u) => u,
         Err(e) => return on_error(e),
     };
     let tls = if u.tls {
-        let Some(cfg) = opts.tls.clone() else {
-            return on_error(WsClientError::Io(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "wss:// needs DialOptions::tls",
-            )));
+        let cfg = match opts.tls.clone().map_or_else(system_tls, Ok) {
+            Ok(c) => c,
+            Err(e) => return on_error(WsClientError::Io(e)),
         };
         Some((
             cfg,
@@ -286,22 +357,25 @@ pub fn dial(
     } else {
         None
     };
-    let addrs: Vec<SocketAddr> = match (u.host.as_str(), u.port).to_socket_addrs() {
-        Ok(a) => a.collect(),
-        Err(e) => return on_error(WsClientError::Io(e)),
-    };
-    if addrs.is_empty() {
-        return on_error(WsClientError::Io(io::Error::new(
-            io::ErrorKind::NotFound,
-            "host did not resolve",
-        )));
-    }
     let key = new_key();
     let pmd = opts.config.permessage_deflate.then_some(opts.pmd);
-    let request = build_request(&u, &key, opts, pmd.as_ref());
+    let request = build_request(&u, &key, &opts, pmd.as_ref());
+    let proxy = opts.proxy.select(u.tls, &u.host, u.port).cloned();
+    let (dial_host, dial_port) = match &proxy {
+        Some(p) => (p.host.clone(), p.port),
+        None => (u.host.clone(), u.port),
+    };
     let plan = Arc::new(Plan {
-        engine: engine.clone(),
-        addrs,
+        engine,
+        url,
+        secure: u.tls,
+        host: u.host,
+        port: u.port,
+        redirects_left,
+        deadline,
+        addrs: OnceLock::new(),
+        proxy,
+        refusal: Mutex::new(None),
         tls,
         request,
         expected_accept: accept_key(&key),
@@ -309,36 +383,51 @@ pub fn dial(
         pmd,
         protocols: opts.protocols.clone(),
         close_timeout: opts.close_timeout,
+        opts,
         pending: Mutex::new(Pending {
-            handler: Some(Box::new(handler)),
-            on_error: Some(Box::new(on_error)),
+            handler: Some(handler),
+            on_error: Some(on_error),
             conn: None,
             timed_out: false,
         }),
     });
     let weak = Arc::downgrade(&plan);
-    crate::timer::after(opts.handshake_timeout, move || {
-        let Some(plan) = weak.upgrade() else { return };
-        let conn = {
-            let mut p = plan.lock();
-            if p.resolved() {
-                return;
+    crate::timer::after(
+        deadline.saturating_duration_since(Instant::now()),
+        move || {
+            let Some(plan) = weak.upgrade() else { return };
+            let conn = {
+                let mut p = plan.lock();
+                if p.resolved() {
+                    return;
+                }
+                p.timed_out = true;
+                p.conn.as_ref().map(Weak::upgrade)
+            };
+            match conn {
+                // Handshaking: closing it reports the timeout from the I/O thread.
+                Some(Some(c)) => c.close(),
+                // Resolving, connecting (or the connection is already gone): report it now.
+                _ => plan.fail(WsClientError::Timeout),
             }
-            p.timed_out = true;
-            p.conn.as_ref().map(Weak::upgrade)
-        };
-        match conn {
-            // Handshaking: closing it reports the timeout from the I/O thread.
-            Some(Some(c)) => c.close(),
-            // Still connecting (or the connection is already gone): report it now.
-            _ => plan.fail(WsClientError::Timeout),
+        },
+    );
+    only::dns::resolve(&dial_host, dial_port, move |r| match r {
+        Ok(addrs) => {
+            let _ = plan.addrs.set(addrs);
+            dial_addr(plan, 0);
         }
+        Err(e) => plan.fail(WsClientError::Io(e)),
     });
-    dial_addr(plan, 0);
 }
 
 fn dial_addr(plan: Arc<Plan>, i: usize) {
-    let addr = plan.addrs[i];
+    if plan.lock().resolved() {
+        return; // timed out while resolving
+    }
+    let Some(&addr) = plan.addrs.get().and_then(|a| a.get(i)) else {
+        return plan.fail(WsClientError::Closed);
+    };
     let acceptor = ClientAcceptor { plan: plan.clone() };
     let on_err = {
         let plan = plan.clone();
@@ -346,7 +435,7 @@ fn dial_addr(plan: Arc<Plan>, i: usize) {
             if plan.lock().resolved() {
                 return;
             }
-            if i + 1 < plan.addrs.len() {
+            if i + 1 < plan.addrs.get().map_or(0, Vec::len) {
                 // Next address (`localhost` is often ::1 first, then 127.0.0.1).
                 dial_addr(plan, i + 1);
             } else {
@@ -354,13 +443,65 @@ fn dial_addr(plan: Arc<Plan>, i: usize) {
             }
         }
     };
-    match &plan.tls {
-        Some((cfg, name)) => match Tls::client(cfg.clone(), name, acceptor) {
-            Ok(a) => plan.engine.dial(addr, a, on_err),
+    let engine = plan.engine.clone();
+    let tunnel = || {
+        let r = Refusal::default();
+        *plan.refusal.lock().unwrap_or_else(|p| p.into_inner()) = Some(r.clone());
+        r
+    };
+    match (&plan.tls, &plan.proxy) {
+        (Some((cfg, name)), proxy) => match Tls::client(cfg.clone(), name, acceptor) {
+            Ok(a) => match proxy {
+                Some(p) => {
+                    let a = Connect::new(&plan.host, plan.port, p, tunnel(), a);
+                    engine.dial(addr, a, on_err);
+                }
+                None => engine.dial(addr, a, on_err),
+            },
             Err(e) => plan.fail(WsClientError::Io(e)),
         },
-        None => plan.engine.dial(addr, acceptor, on_err),
+        (None, Some(p)) => {
+            let a = Connect::new(&plan.host, plan.port, p, tunnel(), acceptor);
+            engine.dial(addr, a, on_err);
+        }
+        (None, None) => engine.dial(addr, acceptor, on_err),
     }
+}
+
+/// Where a redirect response sends the handshake: `Ok(None)` when it is not one to follow.
+fn redirect_target(plan: &Plan, buf: &[u8]) -> Result<Option<String>, WsClientError> {
+    let mut storage = [http1::Header::EMPTY; 64];
+    let Ok(http1::Status::Complete(r)) =
+        http1::parse_response(buf, &mut storage, &mut http1::Resume::default())
+    else {
+        return Ok(None);
+    };
+    if plan.opts.max_redirects == 0 || !matches!(r.code, 301 | 302 | 303 | 307 | 308) {
+        return Ok(None);
+    }
+    let Some(loc) = r
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("location"))
+        .and_then(|h| std::str::from_utf8(h.value).ok())
+    else {
+        return Ok(None);
+    };
+    if plan.redirects_left == 0 {
+        return Err(WsClientError::TooManyRedirects);
+    }
+    let next = crate::url::resolve(&plan.url, loc)
+        .ok_or_else(|| WsClientError::InvalidUrl(loc.to_owned()))?;
+    let next = match next.split_once("://") {
+        Some(("http", rest)) => format!("ws://{rest}"),
+        Some(("https", rest)) => format!("wss://{rest}"),
+        Some(("ws" | "wss", _)) => next,
+        _ => return Err(WsClientError::InvalidUrl(next)),
+    };
+    if plan.secure && next.starts_with("ws://") {
+        return Ok(None); // never downgrade from TLS
+    }
+    Ok(Some(next))
 }
 
 /// Like [`dial`], blocking until the handshake completes; returns the connection's sender.
@@ -488,6 +629,21 @@ impl Acceptor for ClientAcceptor {
             ws: None,
         }
     }
+
+    // A graceful engine shutdown closes open WebSocket connections with 1001 (going away) and
+    // the close handshake; a connection still handshaking is dropped.
+    fn on_shutdown(&self, c: &Conn<ClientConn>) {
+        let queued = c.spawn_blocking(
+            || (),
+            |h: &mut ClientConn, c, ()| match &h.ws {
+                Some(ws) => ws.going_away(),
+                None => c.close(),
+            },
+        );
+        if queued.is_err() {
+            c.close();
+        }
+    }
 }
 
 /// The connection handler of a dialed WebSocket: handshake, then the session.
@@ -520,8 +676,15 @@ impl ClientConn {
             }
             Err(e) => {
                 self.plan = None;
-                plan.fail(e);
                 c.close();
+                if let WsClientError::Status(..) = e {
+                    match redirect_target(&plan, &self.buf) {
+                        Ok(Some(next)) => return follow(&plan, next),
+                        Ok(None) => {}
+                        Err(e) => return plan.fail(e),
+                    }
+                }
+                plan.fail(e);
             }
             Ok(Some(ok)) => {
                 self.plan = None;
@@ -553,6 +716,39 @@ impl ClientConn {
             }
         }
     }
+}
+
+/// Starts the handshake again at `next`, moving the handler and error callback over.
+fn follow(plan: &Plan, next: String) {
+    let (handler, on_error) = {
+        let mut p = plan.lock();
+        (p.handler.take(), p.on_error.take())
+    };
+    let (Some(handler), Some(on_error)) = (handler, on_error) else {
+        return; // timed out meanwhile
+    };
+    let mut opts = plan.opts.clone();
+    let same_origin = parse_url(&next).is_ok_and(|u| {
+        u.tls == plan.secure && u.host.eq_ignore_ascii_case(&plan.host) && u.port == plan.port
+    });
+    if !same_origin {
+        opts.headers.retain(|(n, _)| {
+            !["authorization", "cookie", "proxy-authorization"]
+                .iter()
+                .any(|s| n.eq_ignore_ascii_case(s))
+        });
+        // The server name given for the first host does not apply to another one.
+        opts.server_name = None;
+    }
+    start(
+        plan.engine.clone(),
+        next,
+        opts,
+        plan.redirects_left - 1,
+        plan.deadline,
+        handler,
+        on_error,
+    );
 }
 
 pub(crate) struct Accepted {
@@ -649,11 +845,13 @@ impl Handler for ClientConn {
         }
         if let Some(plan) = self.plan.take() {
             let timed_out = plan.lock().timed_out;
-            plan.fail(match err {
+            let refused = plan.refused();
+            plan.fail(match (err, refused) {
                 _ if timed_out => WsClientError::Timeout,
-                Some(only::Error::Io(e)) => WsClientError::Io(e),
-                Some(e) => WsClientError::Io(io::Error::other(e.to_string())),
-                None => WsClientError::Closed,
+                (_, Some(r)) => r,
+                (Some(only::Error::Io(e)), None) => WsClientError::Io(e),
+                (Some(e), None) => WsClientError::Io(io::Error::other(e.to_string())),
+                (None, None) => WsClientError::Closed,
             });
         }
     }
