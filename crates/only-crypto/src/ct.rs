@@ -69,7 +69,11 @@
 //! of a table index, vectorization alias checks, the `Mutex` and the cached-blinding `Option`,
 //! the `Result` of a fresh blinding, `Mont::new`'s checks of the public modulus shape (odd, top
 //! limb nonzero) and the final fault check (`sᵉ = m`). None reads a limb of a secret value, an
-//! exponent bit or a table index. The blinding's rejection of a non-invertible `r` (probability
+//! exponent bit or a table index. Rechecked when the CRT halves were interleaved (Zen 4):
+//! `ifma::amm_x2` (17: the digit-count dispatch, the operand lengths, the three loop counters),
+//! `ifma::pow_x2` (147) with its window-lookup closure (7), `ifma::finish` (16), `Mont::pow2`
+//! (13) and `private_op` (127) have only the kinds above (plus allocation-size checks and the
+//! public table-index parity). The blinding's rejection of a non-invertible `r` (probability
 //! about 2⁻¹⁰²⁴) is the one data-dependent branch, on a random value.
 
 use std::hint::black_box;

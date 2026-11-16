@@ -554,8 +554,15 @@ impl PrivateKey {
                 h.to_mont(&h.reduce_any(&cb))
             }
         };
-        let m1 = self.p.out_of_mont(&self.p.pow(&to_half(&self.p), &self.dp));
-        let m2 = self.q.out_of_mont(&self.q.pow(&to_half(&self.q), &self.dq));
+        let (m1, m2) = Mont::pow2(
+            &self.p,
+            &to_half(&self.p),
+            &self.dp,
+            &self.q,
+            &to_half(&self.q),
+            &self.dq,
+        );
+        let (m1, m2) = (self.p.out_of_mont(&m1), self.q.out_of_mont(&m2));
         let mb = self.crt_combine(&m1, &m2);
         // m·r⁻¹ in normal form, likewise.
         let m = n.mul(&mb, &bl.r_inv);
