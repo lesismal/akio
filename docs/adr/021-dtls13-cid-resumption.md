@@ -93,6 +93,9 @@ version and PSK availability, so DTLS 1.2-only behaviour is unchanged).
   negotiation and downgrade, HRR (cookie and group), small MTUs, KeyUpdate, resumption, PSKs,
   CIDs (wolfSSL, both versions); pion/dtls v3 for DTLS 1.2 CIDs and PSK suites both ways.
 - The DTLS 1.2 path is unchanged for configurations that do not use the new options; WebRTC
-  keeps its handshake byte for byte.
+  keeps its handshake byte for byte. Record path, same-run A/B on gpu51 against ab65d376
+  (`dtls-bench`, three interleaved rounds, branch/base): 64-byte records 0.97-1.00 (AES-128-GCM)
+  and 0.99-1.01 (ChaCha20), 1 KiB records 1.00-1.01 and 1.01-1.02, after boxing the session in
+  `Event::NewSession` and keeping the receive path free of per-record allocations.
 - Not done: 0-RTT, NewConnectionId / RequestConnectionId, post-handshake client
   authentication, DTLS 1.3 for WebRTC by default.

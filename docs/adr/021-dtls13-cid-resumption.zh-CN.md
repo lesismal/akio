@@ -69,5 +69,7 @@ DTLS 1.3 与 PSK 套件（按版本和是否有 PSK 过滤，只用 DTLS 1.2 时
 - 互通（`tools/interop/dtls/run.sh`）：OpenSSL 4.1（在 `tools/interop/dtls/Dockerfile` 中构建；Debian 的
   OpenSSL 3.5 没有 DTLS 1.3）和 wolfSSL 5.8.4 覆盖 DTLS 1.3 双向、版本协商与降级、HRR（cookie 与组）、
   小 MTU、KeyUpdate、会话恢复、PSK、CID（wolfSSL，两个版本）；pion/dtls v3 覆盖 DTLS 1.2 CID 与 PSK 套件双向。
-- 不使用新选项的配置，DTLS 1.2 路径不变；WebRTC 的握手逐字节相同。
+- 不使用新选项的配置，DTLS 1.2 路径不变；WebRTC 的握手逐字节相同。记录层在 gpu51 上与 ab65d376 同轮 A/B
+  （`dtls-bench`，三轮交替，分支/基线）：64 字节记录 0.97-1.00（AES-128-GCM）与 0.99-1.01（ChaCha20），1 KiB
+  记录 1.00-1.01 与 1.01-1.02；前提是 `Event::NewSession` 中的会话装箱、接收路径不再每条记录分配内存。
 - 未做：0-RTT、NewConnectionId / RequestConnectionId、握手后客户端认证、WebRTC 默认使用 DTLS 1.3。

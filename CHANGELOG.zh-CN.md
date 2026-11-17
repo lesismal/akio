@@ -39,7 +39,8 @@ only 的所有重要变更都记录在这里。格式遵循
   ACK 丢失，cookie，会话恢复，PSK，版本协商；密钥计划对照 RFC 8448。互通（`tools/interop/dtls/run.sh`，
   新增 `Dockerfile` 与 `dtls13.sh`）：OpenSSL 4.1 与 wolfSSL 5.8.4（DTLS 1.3 双向、HRR、MTU 300、
   KeyUpdate、会话恢复、PSK、版本协商、与 wolfSSL 的 CID），pion/dtls v3（CID、PSK 套件）。fuzz 目标
-  `dtls_record` 与 `dtls_handshake` 覆盖 CID 与统一头记录以及 DTLS 1.3 状态机。
+  `dtls_record` 与 `dtls_handshake` 覆盖 CID 与统一头记录以及 DTLS 1.3 状态机。DTLS 1.2 记录层在 gpu51 上
+  同轮 A/B（新增 `dtls-bench` 示例）：64 字节记录为原来的 0.97-1.01，1 KiB 为 1.00-1.02。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 

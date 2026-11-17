@@ -44,7 +44,8 @@ Internal-tier crate):
   (`tools/interop/dtls/run.sh`, new `Dockerfile` and `dtls13.sh`): OpenSSL 4.1 and wolfSSL 5.8.4
   (DTLS 1.3 both ways, HRR, MTU 300, KeyUpdate, resumption, PSKs, version negotiation, CIDs with
   wolfSSL), pion/dtls v3 (CIDs, PSK suites). Fuzz targets `dtls_record` and `dtls_handshake`
-  cover CID and unified-header records and the DTLS 1.3 machines.
+  cover CID and unified-header records and the DTLS 1.3 machines. DTLS 1.2 record path, same-run
+  A/B on gpu51 (new `dtls-bench` example): 64-byte records 0.97-1.01, 1 KiB 1.00-1.02 of before.
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
