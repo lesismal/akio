@@ -30,6 +30,8 @@ only 的所有重要变更都记录在这里。格式遵循
 - **等待应答的调用有上限**：`Routes::max_pending_calls`（默认每连接
   `DEFAULT_MAX_PENDING_CALLS` = 65536）；超出时调用以新增的 `CallError::Overloaded` 失败。新增
   `Peer::pending_calls`、`Peer::ping`。
+- 实测（gpu51，同轮 A/B，10 轮中位数）：无中间件的调用为之前的 0.98 倍，一个中间件为无中间件的
+  1.00 倍，均在约 4% 的噪声内；每次调用的用户态指令 +1.5%，周期数不变。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 

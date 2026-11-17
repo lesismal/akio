@@ -33,6 +33,9 @@ Additive (ADR-023, docs/adr/023-arpc-middleware-coders-pools.md):
 - **Bounded pending calls**: `Routes::max_pending_calls` (default
   `DEFAULT_MAX_PENDING_CALLS` = 65536 per connection); past it a call fails with the new
   `CallError::Overloaded`. New `Peer::pending_calls`, `Peer::ping`.
+- Measured (gpu51, same-run A/B, medians of 10 rounds): calls without middleware 0.98x of
+  before and one middleware 1.00x of none, both within the ~4% noise; +1.5% user instructions
+  per call, cycles per call unchanged.
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 

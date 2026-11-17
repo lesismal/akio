@@ -87,6 +87,10 @@ parser, split-invariance, decoded size bound, encode/decode identity).
 
 - Additive API; existing programs unchanged except that more than 65536 calls pending on one
   connection now fail with `Overloaded` (raise it with `max_pending_calls`).
-- Same-run A/B on gpu51 (`arpc-bench 8 64 5 64`): see the commit and CHANGELOG for the numbers;
-  no middleware is at parity with main, one pass-through middleware costs a few percent.
+- Same-run A/B on gpu51 (`arpc-bench 8 64 5 64`, 10 alternating rounds, medians): main 8.37M
+  calls/s, this change without middleware 8.22M (0.98x), with one pass-through middleware 8.22M
+  (1.00x of no middleware); round-to-round spread is about 4%, so these are within noise.
+  `perf stat` per call: user instructions 4963 → 5034 (+1.5%, the pending bound and the coder and
+  heartbeat checks) and +40 per middleware; cycles per call unchanged (7008 / 6939 / 6865);
+  syscalls per call identical.
 - `only-arpc` now depends on `only-deflate` (in-workspace, ADR-005 unaffected).
