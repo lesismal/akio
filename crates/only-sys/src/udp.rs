@@ -169,6 +169,9 @@ pub struct RecvBatch {
     gro: bool,
     msgs: Vec<ffi::mmsghdr>,
     got: usize,
+    /// Slots the last `recvmmsg` may have written (`got` plus the one it stopped at): only
+    /// these need their header, iovec and slab looked at again before the next one.
+    dirty: usize,
 }
 
 impl std::fmt::Debug for RecvBatch {
@@ -226,11 +229,15 @@ impl RecvBatch {
             // SAFETY: as above.
             msgs: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
             got: 0,
+            dirty: slots,
         }
     }
 
     fn reset(&mut self) {
-        for i in 0..self.msgs.len() {
+        // The kernel writes only the headers of the datagrams it returns, so the others still
+        // hold what an earlier `reset` put there; a request/response peer that gets one or two
+        // datagrams per call thus costs one or two slots here, not all of them.
+        for i in 0..self.dirty.min(self.msgs.len()) {
             // A slot whose slab has less than a datagram's room left starts over: in the same
             // slab when the datagrams cut from it have dropped (still in cache), else in another.
             if self.free[i].len() < self.size {
@@ -278,12 +285,16 @@ impl RecvBatch {
         if n < 0 {
             let e = io::Error::last_os_error();
             return if e.kind() == io::ErrorKind::WouldBlock {
+                self.dirty = 1;
                 Ok(0)
             } else {
+                // Unknown how far the kernel got: start over on every slot.
+                self.dirty = self.msgs.len();
                 Err(e)
             };
         }
         self.got = n as usize;
+        self.dirty = self.got + 1;
         Ok(self.got)
     }
 
