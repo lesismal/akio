@@ -44,16 +44,15 @@ fn main() {
 
     // Ed25519.
     if all {
-        ed_x25519(&msg, &rand);
+        ed_x25519(msg, &rand);
     }
-    ec_all(&msg, &rand, all);
+    ec_all(msg, &rand, all);
     if all {
         rsa_all(&msg, &rand);
     }
 }
 
-fn ed_x25519(msg: &[u8; 64], rand: &ring::rand::SystemRandom) {
-    let msg = &msg[..];
+fn ed_x25519(msg: [u8; 64], rand: &ring::rand::SystemRandom) {
     let ek = ed25519::SigningKey::from_seed(&[1; 32]);
     let rk = rs::Ed25519KeyPair::from_seed_unchecked(&[1; 32]).expect("ring key");
     let sig = ek.sign(&msg);
@@ -91,8 +90,7 @@ fn ed_x25519(msg: &[u8; 64], rand: &ring::rand::SystemRandom) {
     );
 }
 
-fn ec_all(msg: &[u8; 64], rand: &ring::rand::SystemRandom, all: bool) {
-    let msg = &msg[..];
+fn ec_all(msg: [u8; 64], rand: &ring::rand::SystemRandom, all: bool) {
     macro_rules! ec {
         ($label:literal, $m:ident, $wrap:ident, $len:literal, $ring_sign:expr, $ring_verify:expr, $ag:expr) => {{
             let k = $m::SecretKey::from_bytes(&[7; $len]).expect("key");

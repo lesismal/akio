@@ -10,6 +10,10 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：P-256 生成密钥、签名与 ECDH 更快；无 IFMA 时 RSA 平方用 Karatsuba
+
+only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表与 ECDH 乘法在整个标量乘法中把累加点留在同一个汇编帧里。Zen 4 上对比 ring：生成密钥 1.40 倍 → 1.57 倍，签名 1.38 倍 → 1.49 倍，ECDH 1.12 倍 → 1.15 倍，secp256r1 TLS 握手为 rustls+ring 的 1.07 倍 → 1.08 倍。在没有 AVX-512 IFMA 的 x86_64 CPU 上，3072 与 4096 位 RSA 的平方改为一层 Karatsuba：验签 +5% / +9%。常数时间性质不变（`tools/ct-dudect`：无泄漏）。无公开 API 变更（docs/BENCHMARKS.zh-CN.md）。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

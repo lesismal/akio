@@ -30,7 +30,8 @@
 //! conditional branch in the secret-scalar paths: `Jac::{double, add_core, madd_ct}` and the
 //! inlined `mul_ct`/`mul_base_ct`/`lookup`/`booth`/`booth5` inside `ecdh_x_impl`/`base_mul_impl`
 //! (portable `P256`/`P384`, the `P256X` twin with its whole-point assembly, the `P256A` aarch64
-//! twin), `ec::hw::mul_base` (the wide comb), `ec::hw::lookup_jac_avx2` / `lookup_affine_avx2`, the
+//! twin), `ec::hw::mul_base` (the wide comb) and `ec::hw::mul_var` (ECDH; both keep the accumulator in
+//! one assembly frame), `ec::hw::lookup_jac_avx2` / `lookup_affine_avx2`, the
 //! field multiplication, squaring and inversion (`Fe::invert`, `P256P`/`P256N::mont_inv`,
 //! `safegcd::inv_with` and both `divsteps_59`), `Point::mul_base` / `add_niels` /
 //! `Completed::to_point` (edwards25519) and `x25519` (both ladders inlined). On x86_64 (with the

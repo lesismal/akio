@@ -617,6 +617,39 @@ product rows neutral (+1%); the `cmov` selections of the final subtractions repl
 order, which is close to the throughput of the `mulx` and flag-reading instructions it issues
 rather than to its dependency chain.
 
+#### P-256 frame-resident comb and ECDH, RSA Karatsuba squaring (`--example pk_bench`, `tls-bench handshakes 2`, CPU 2)
+
+2026-11-18, three alternating rounds of `main` (`ab65d376`) and this pass, against ring 0.17 /
+rustls 0.23 in the same run, on the quiet host (`quiet.sh`); medians.
+
+| op/s (quiet host) | before | after | ring / rustls | before / ring | after / ring |
+|---|---:|---:|---:|---:|---:|
+| P-256 ECDSA sign | 106,718 | 114,996 | 76,891–77,187 | 1.38 | 1.49 |
+| P-256 ECDSA verify | 28,935 | 29,069 | 26,318–26,405 | 1.10 | 1.10 |
+| P-256 ECDH | 33,886 | 34,701 | 30,223–30,328 | 1.12 | 1.15 |
+| P-256 key generation | 159,957 | 179,385 | 114,507–114,982 | 1.40 | 1.57 |
+| TLS 1.3 full handshakes/s, secp256r1 | 5,436 | 5,528 | 5,072–5,142 | 1.07 | 1.08 |
+| TLS 1.3 full handshakes/s, X25519 | 5,417 | 5,468 | 4,913–5,002 | 1.08 | 1.10 |
+
+The change: the fixed-base comb and the ECDH multiplication keep the accumulator in one assembly
+frame for the whole multiplication. Each window's table entry is scanned with AVX2 and negated by
+masks straight into the frame, the doublings and the addition run on it in place, and the special
+cases (an accumulator at the identity, a zero digit) are masked selects on the frame instead of
+`Jac` values copied in and out of every point routine. Key generation +12%, signing +8%, ECDH
++2.5%. Tried and left out: a 7-bit comb (37 rows of 64 points, 151 KiB) measured the same as the
+6-bit one before this change and 2–3% slower after it (key generation 179k → 175k/s); an affine
+ECDH table (one batched inversion, then mixed additions) and skipping the reductions of values
+only multiplied in the doubling (one of its ten linear operations qualifies) were estimated at
+break-even and 0.5%.
+
+RSA on x86_64 without AVX-512 IFMA (measured on the same Zen 4 with the IFMA path switched off in
+both builds): squaring at 48 and 64 limbs is now one level of Karatsuba over the 24- and 32-limb
+squaring assembly, instead of a full multiplication. Verify 3072 39,851 → 41,994/s (+5.4%), 4096
+22,170 → 24,155/s (+9.0%), with key parse +5.9% / +3.8%; 2048 and signing (CRT halves of 16–32
+limbs) unchanged. A Karatsuba multiplication at 48 / 64 limbs was correct but is used only twice
+per verification and was left out. CPUs with IFMA run 2048–4096-bit RSA on IFMA and do not reach
+this code. `tools/ct-dudect p256` (60 s per target, hardware path): no leak (max |t| 3.48).
+
 #### RSA (`--example pk_bench rsa`, `tls-bench handshakes`, CPU 2)
 
 Three alternating rounds of the previous code (`7f5c483a`, with this pass's benchmark files) and
