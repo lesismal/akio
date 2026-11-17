@@ -3,8 +3,9 @@
 [English](README.md)
 
 [only](https://github.com/lesismal/only) 的内核旁路后端（**实验性**）：由 only I/O 线程驱动的
-自研用户态 TCP/IP 协议栈（以太网、ARP、带分片的 IPv4、ICMP、UDP，以及支持 SACK、快速恢复、
-CUBIC / NewReno、窗口缩放、时间戳、SYN cookie 的 TCP；安全 Rust，`#![forbid(unsafe_code)]`，
+自研用户态 TCP/IP 协议栈（以太网、ARP、带分片的 IPv4、ICMP、带 NDP、ICMPv6 与分片的 IPv6（双栈
+listener）、UDP，以及支持 SACK、快速恢复、CUBIC / NewReno、窗口缩放、时间戳、SYN cookie、可选 ECN 与
+pacing 的 TCP；安全 Rust，`#![forbid(unsafe_code)]`，
 无依赖），底层可以是
 
 - **DPDK** 端口（feature `pmd`，Linux，通过 `pkg-config` 链接 libdpdk）：按 `EalConfig` 初始化

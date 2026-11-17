@@ -184,20 +184,28 @@ impl Hasher for MixHasher {
     }
 }
 
-/// A connection-table key: (local port, remote address). Hashed as two words (an IPv4
-/// address as its IPv4-mapped IPv6 form), whatever the family.
+/// A connection-table key: (local port, remote address), packed in 20 bytes whatever the
+/// family (an IPv4 address as its IPv4-mapped IPv6 form): the remote address's four words, then
+/// both ports. Hashed as two words.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Key(u16, SocketAddr);
+struct Key([u32; 5]);
+
+impl Key {
+    fn new(local_port: u16, remote: SocketAddr) -> Key {
+        let ip = match remote.ip() {
+            IpAddr::V4(a) => [0, 0, 0xffff, u32::from(a)],
+            IpAddr::V6(a) => words(IpAddr::V6(a)),
+        };
+        let ports = (u32::from(local_port) << 16) | u32::from(remote.port());
+        Key([ip[0], ip[1], ip[2], ip[3], ports])
+    }
+}
 
 impl Hash for Key {
     fn hash<H: Hasher>(&self, h: &mut H) {
-        let ip = match self.1.ip() {
-            IpAddr::V4(a) => u128::from(a.to_ipv6_mapped()),
-            IpAddr::V6(a) => u128::from(a),
-        };
-        let ports = (u64::from(self.0) << 16) | u64::from(self.1.port());
-        h.write_u64(ip as u64 ^ (ports << 32));
-        h.write_u64((ip >> 64) as u64);
+        let w = &self.0;
+        h.write_u64((u64::from(w[3]) << 32 | u64::from(w[4])) ^ u64::from(w[2]));
+        h.write_u64(u64::from(w[0]) << 32 | u64::from(w[1]));
     }
 }
 
@@ -931,7 +939,8 @@ impl Iface {
                 frag_id: (seed >> 16) as u32,
                 pmtu: HashMap::new(),
                 mcast_macs,
-                mld_at: Some(now),
+                // One report for the device (queue 0); any queue answers a query.
+                mld_at: (cfg.queue == 0).then_some(now),
             }
         });
         let net = Net {
@@ -1050,7 +1059,7 @@ impl Iface {
     // ---- slots ----------------------------------------------------------------------------
 
     fn alloc(&mut self, tcb: Tcb) -> u32 {
-        let key = Key(tcb.local.port(), tcb.remote);
+        let key = Key::new(tcb.local.port(), tcb.remote);
         let idx = match self.free.pop() {
             Some(i) => {
                 let s = &mut self.slots[i as usize];
@@ -1175,7 +1184,7 @@ impl Iface {
             }
         }
         if tcb.is_dead() {
-            let key = Key(tcb.local.port(), tcb.remote);
+            let key = Key::new(tcb.local.port(), tcb.remote);
             if let Some(p) = slot.half_open.take() {
                 if let Some(l) = self.listeners.get_mut(&p) {
                     l.half_open = l.half_open.saturating_sub(1);
@@ -1222,14 +1231,14 @@ impl Iface {
         if !self.net.routable(remote.ip()) {
             return Err(CallError::Unreachable);
         }
-        if let Some(&idx) = self.table.get(&Key(port, remote)) {
+        if let Some(&idx) = self.table.get(&Key::new(port, remote)) {
             // TIME-WAIT reuse for a new connection (its ISN is larger: the clock moved on).
             match self.slots[idx as usize].tcb.as_deref() {
                 Some(t) if t.state == State::TimeWait => {
                     let s = &mut self.slots[idx as usize];
                     s.tcb = None;
                     s.ver = s.ver.wrapping_add(1);
-                    self.table.remove(&Key(port, remote));
+                    self.table.remove(&Key::new(port, remote));
                     self.free.push(idx);
                 }
                 _ => return Err(CallError::AddrInUse),
@@ -1248,7 +1257,7 @@ impl Iface {
     pub(crate) fn tcp_in_use(&self, port: u16, remote: SocketAddr) -> bool {
         let remote = SocketAddr::new(remote.ip(), remote.port());
         self.table
-            .get(&Key(port, remote))
+            .get(&Key::new(port, remote))
             .and_then(|&i| self.slots[i as usize].tcb.as_deref())
             .is_some_and(|t| t.state != State::TimeWait)
     }
@@ -1713,7 +1722,7 @@ impl Iface {
                 }
             }
             PROTO_TCP => {
-                let Some(&idx) = self.table.get(&Key(q.src_port, remote)) else {
+                let Some(&idx) = self.table.get(&Key::new(q.src_port, remote)) else {
                     return;
                 };
                 if let Some(t) = self.slots[idx as usize].tcb.as_deref_mut() {
@@ -1971,7 +1980,7 @@ impl Iface {
         seg.ecn = p.ecn;
 
         let remote = SocketAddr::new(p.src, seg.src_port);
-        let key = Key(seg.dst_port, remote);
+        let key = Key::new(seg.dst_port, remote);
         let clock = self.clock(now);
         if let Some(&idx) = self.table.get(&key) {
             let slot = &mut self.slots[idx as usize];

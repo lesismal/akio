@@ -10,6 +10,28 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: IPv6, ECN and pacing in only-dpdk's userspace stack
+
+Additive (ADR-026, docs/adr/026-userspace-ipv6-ecn-pacing.md; only-dpdk is experimental):
+
+- **IPv6** on `Backend::Dpdk`: `DpdkConfig::address6` turns it on (plus a link-local address
+  from the MAC), with `prefix_len6` (64) and `gateway6`. Listeners are dual-stack (the port
+  serves both families; listener addresses `::`, `address6` or the link-local one), `dial` /
+  `dial_udp` take IPv6 peers. Extension headers walked with limits and parameter problems,
+  fragmentation and reassembly (RFC 5722 overlap discard, atomic fragments), ICMPv6 echo and
+  errors, a path-MTU cache, NDP with the ARP cache's pending queue (no first-SYN drop), DAD
+  probes for our addresses answered, MLDv2 reports; NDP frames fanned out to every queue,
+  AF_PACKET joins all-multicast. Static addresses: no SLAAC, router advertisements or DAD.
+- **ECN** (`DpdkConfig::tcp_ecn`, RFC 3168) and **pacing** (`DpdkConfig::tcp_pacing`, rate
+  `cwnd / srtt` times 2 in slow start, 1.2 after), both off by default. Simulated 20-frame
+  bottleneck: ECN 0 drops instead of 29, pacing 14 instead of 29.
+- The neighbour cache bounds the bytes queued for unresolved neighbours (4 MiB per stack).
+- Not done: checksum / TSO / LRO offloads (the PMDs in reach do them in software).
+- Tests: IPv6 and ECN / pacing on the simulated lossy link, dual-stack memory-wire tests,
+  kernel interop over IPv6 in Docker (TAP, AF_PACKET, DPDK `net_tap` with two queues: `ping -6`,
+  UDP with fragments, TCP both ways, `netem` loss with ECN and pacing); fuzz targets
+  `dpdk_ipv6`, `dpdk_icmpv6`, `dpdk_ndp`.
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):

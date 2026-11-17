@@ -10,6 +10,26 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：only-dpdk 用户态协议栈的 IPv6、ECN 与 pacing
+
+新增 API（ADR-026，docs/adr/026-userspace-ipv6-ecn-pacing.zh-CN.md；only-dpdk 属实验性）：
+
+- `Backend::Dpdk` 支持 **IPv6**：设置 `DpdkConfig::address6` 即启用（外加由 MAC 派生的链路本地
+  地址），另有 `prefix_len6`（64）与 `gateway6`。listener 为双栈（端口同时服务两种地址族；listener
+  地址可为 `::`、`address6` 或链路本地地址），`dial` / `dial_udp` 接受 IPv6 对端。带上限地遍历扩展
+  首部并回应参数问题，分片与重组（按 RFC 5722 丢弃重叠分片，原子分片），ICMPv6 回显与差错报文，路径
+  MTU 缓存，NDP 复用 ARP 缓存的待解析队列（首个 SYN 不再丢失），回应针对本栈地址的 DAD 探测，MLDv2
+  报告；NDP 帧复制到每个队列，AF_PACKET 加入 all-multicast。地址为静态配置：没有 SLAAC、路由器通告
+  与 DAD。
+- **ECN**（`DpdkConfig::tcp_ecn`，RFC 3168）与 **pacing**（`DpdkConfig::tcp_pacing`，速率为
+  `cwnd / srtt`，慢启动时乘 2，之后乘 1.2），默认均关闭。模拟的 20 帧瓶颈队列上：ECN 丢包由 29 次
+  降为 0，pacing 由 29 次降为 14。
+- 邻居缓存限制为未解析邻居排队的字节数（每个协议栈 4 MiB）。
+- 未完成：校验和 / TSO / LRO 卸载（手头的 PMD 用软件实现）。
+- 测试：模拟有损链路上的 IPv6 与 ECN / pacing，双栈内存链路测试，Docker 中基于 IPv6 的内核互通
+  （TAP、AF_PACKET、双队列 DPDK `net_tap`：`ping -6`、含分片的 UDP、双向 TCP、开启 ECN 与 pacing 的
+  `netem` 丢包）；模糊测试目标 `dpdk_ipv6`、`dpdk_icmpv6`、`dpdk_ndp`。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

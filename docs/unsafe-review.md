@@ -147,7 +147,7 @@ contain no `unsafe`.
 | Crate | blocks | `unsafe fn` | `unsafe impl` | tests/examples/benches |
 |---|---:|---:|---:|---:|
 | `only` | 0 | 0 | 0 | 12 |
-| only-dpdk | 31 | 0 | 1 | 0 |
+| only-dpdk | 32 | 0 | 1 | 0 |
 | only-ebpf | 11 | 3 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 141 | 72 | 0 | 0 |
@@ -189,7 +189,7 @@ By purpose:
 | `only-uring/src/eval.rs` (`#[cfg(test)]`) | 5 | the io_uring features evaluation harness (an ignored test): SQE push, provided-buffer reads, `write`/`close` of its own sockets, `setsockopt(TCP_NODELAY)` | entries point only into a leaked static response buffer or the provided buffers, which are never freed (the harness ends the process); a buffer is borrowed only between its completion and its return to the ring; a descriptor is closed only once no entry refers to it |
 | `only-uring/src/group.rs` | 3 | `uname` for the kernel-version probe | zeroed `utsname`; kernel NUL-terminates `release` |
 | `only-dpdk/src/pmd.rs` | 17, `impl Send for Queue` | calls into the C shim (`rte_eal_init`, port setup, `rte_eth_rx_burst`/`tx_burst`, mbuf alloc/free); frames borrowed from mbufs; a staged tx mbuf written in place | the shim's ABI is integers and opaque pointers only (no DPDK struct layouts in Rust); EAL argv leaked (outlives the EAL), init once (`OnceLock`); an mbuf is owned by exactly one `Queue`/`Mbuf` and freed once (frames not taken by `tx_burst` freed, received ones freed on drop); slices only over the single data segment the shim returned, for the mbuf's lifetime; a `Queue` is used by one thread at a time (moved once to its I/O thread); the staged tx mbuf is freed if not committed |
-| `only-dpdk/src/sys.rs` | 14 | TAP (`open`, `TUNSETIFF`), AF_PACKET (`socket`, `bind`, `setsockopt`), `read` / `recvfrom` / `write`, `ppoll` | fds owned immediately (`OwnedFd`); `#[repr(C)]` `ifreq` with the UAPI size; buffers and address structs live across each call, lengths passed are their sizes |
+| `only-dpdk/src/sys.rs` | 15 | TAP (`open`, `TUNSETIFF`), AF_PACKET (`socket`, `bind`, `setsockopt`, including the all-multicast `PACKET_ADD_MEMBERSHIP`), `read` / `recvfrom` / `write`, `ppoll` | fds owned immediately (`OwnedFd`); `#[repr(C)]` `ifreq` and `packet_mreq` with the UAPI sizes (compile-time asserted); buffers and address structs live across each call, lengths passed are their sizes |
 | `only-ebpf/src/sys.rs` | 11, 3 `unsafe fn` | `bpf(2)` (`MAP_CREATE`, `MAP_UPDATE/DELETE_ELEM`, `PROG_LOAD`, `PROG_ATTACH`), `SO_ATTACH_REUSEPORT_[CE]BPF`, `SO_COOKIE` | `#[repr(C)]` attr prefixes identical to UAPI; pointer fields live for the call; key/value sizes fixed by `Map<K, V>` |
 
 ### The own syscall layer (`only_sys::ffi`, `only-uring` `ring`)
