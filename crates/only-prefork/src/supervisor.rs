@@ -50,6 +50,8 @@ pub struct Status {
     pub restarts: u64,
     /// Reloads requested.
     pub reloads: u64,
+    /// In-place reloads requested ([`Controller::reload_in_place`]).
+    pub in_place_reloads: u64,
     /// Shutdown was requested.
     pub stopping: bool,
 }
@@ -67,6 +69,7 @@ impl Status {
 
 enum Cmd {
     Reload,
+    ReloadInPlace,
     Shutdown,
 }
 
@@ -80,6 +83,7 @@ impl std::fmt::Debug for Cmd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Cmd::Reload => "Reload",
+            Cmd::ReloadInPlace => "ReloadInPlace",
             Cmd::Shutdown => "Shutdown",
         })
     }
@@ -92,6 +96,17 @@ impl Controller {
     /// up a new binary if the program file was replaced.
     pub fn reload(&self) {
         let _ = self.tx.send(Cmd::Reload);
+    }
+
+    /// Reload in place: asks every running worker (serving, or a reload's not yet ready one)
+    /// to run its [`Worker::on_reload`](crate::Worker::on_reload) hook, which typically re-reads
+    /// its configuration and applies it with `Engine::reload` and `Engine::set_threads`. No
+    /// process is replaced and no connection is touched: only live settings change (ADR-028).
+    /// A worker without a hook ignores it. A worker started later (a restart after a crash, a
+    /// [`reload`](Self::reload)) starts from whatever its start-up code loads, so keep the
+    /// configuration source up to date. SIGUSR1 to the supervisor does the same.
+    pub fn reload_in_place(&self) {
+        let _ = self.tx.send(Cmd::ReloadInPlace);
     }
 
     /// Graceful shutdown: asks every worker to drain and stop, kills those still running after
@@ -151,6 +166,7 @@ impl Supervisor {
             generation: 0,
             restarts: 0,
             reloads: 0,
+            in_place_reloads: 0,
             stopping: false,
             status: status.clone(),
         };
@@ -225,6 +241,11 @@ impl Supervisor {
         self.ctl.reload();
     }
 
+    /// See [`Controller::reload_in_place`].
+    pub fn reload_in_place(&self) {
+        self.ctl.reload_in_place();
+    }
+
     /// See [`Controller::shutdown`].
     pub fn shutdown(&self) {
         self.ctl.shutdown();
@@ -250,9 +271,10 @@ impl Drop for Supervisor {
     }
 }
 
-/// Forwards the supervisor's SIGTERM / SIGINT (shutdown) and SIGHUP (reload) to `ctl`.
+/// Forwards the supervisor's SIGTERM / SIGINT (shutdown), SIGHUP (reload) and SIGUSR1 (reload
+/// in place) to `ctl`.
 pub(crate) fn forward_signals(ctl: Controller) -> io::Result<()> {
-    let mut pipe = sys::signal_pipe(&[sys::SIGTERM, sys::SIGINT, sys::SIGHUP])?;
+    let mut pipe = sys::signal_pipe(&[sys::SIGTERM, sys::SIGINT, sys::SIGHUP, sys::SIGUSR1])?;
     std::thread::Builder::new()
         .name("only-prefork-sig".into())
         .spawn(move || {
@@ -261,6 +283,7 @@ pub(crate) fn forward_signals(ctl: Controller) -> io::Result<()> {
                 match pipe.read(&mut b) {
                     Ok(1) => match i32::from(b[0]) {
                         s if s == sys::SIGHUP => ctl.reload(),
+                        s if s == sys::SIGUSR1 => ctl.reload_in_place(),
                         s if s == sys::SIGTERM || s == sys::SIGINT => ctl.shutdown(),
                         _ => {}
                     },
@@ -380,6 +403,12 @@ impl Proc {
         }
     }
 
+    /// Asks the worker to reload in place (a full control socket drops the request: the
+    /// worker has a reload pending anyway).
+    fn reload_in_place(&mut self) {
+        let _ = self.ctl.write(&[env::MSG_RELOAD]);
+    }
+
     /// Asks the worker to drain and stop, and arms its kill deadline.
     fn stop(&mut self, timeout: Duration) {
         if self.stop_deadline.is_none() {
@@ -427,6 +456,7 @@ struct State {
     generation: u64,
     restarts: u64,
     reloads: u64,
+    in_place_reloads: u64,
     stopping: bool,
     status: Arc<Mutex<Status>>,
 }
@@ -436,6 +466,7 @@ impl State {
         loop {
             match rx.recv_timeout(TICK) {
                 Ok(Cmd::Reload) => self.reload(),
+                Ok(Cmd::ReloadInPlace) => self.reload_in_place(),
                 Ok(Cmd::Shutdown) => self.shutdown(),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 // Every handle is gone: nobody can stop us any more, so stop now.
@@ -477,6 +508,21 @@ impl State {
                     format_args!("{e}; keeping the running worker"),
                 ),
             }
+        }
+    }
+
+    fn reload_in_place(&mut self) {
+        if self.stopping {
+            return;
+        }
+        self.in_place_reloads += 1;
+        for p in self
+            .slots
+            .iter_mut()
+            .filter_map(|s| s.proc.as_mut())
+            .chain(self.pending.iter_mut())
+        {
+            p.reload_in_place();
         }
     }
 
@@ -648,6 +694,7 @@ impl State {
             workers,
             restarts: self.restarts,
             reloads: self.reloads,
+            in_place_reloads: self.in_place_reloads,
             stopping: self.stopping,
         };
     }

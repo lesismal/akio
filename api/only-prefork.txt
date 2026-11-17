@@ -41,6 +41,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_prefork::ListenMode
 pub struct only_prefork::Controller
 impl only_prefork::Controller
 pub fn only_prefork::Controller::reload(&self)
+pub fn only_prefork::Controller::reload_in_place(&self)
 pub fn only_prefork::Controller::shutdown(&self)
 impl core::clone::Clone for only_prefork::Controller
 pub fn only_prefork::Controller::clone(&self) -> Self
@@ -81,6 +82,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_prefork::Prefork
 impl core::panic::unwind_safe::UnwindSafe for only_prefork::Prefork
 #[non_exhaustive] pub struct only_prefork::Status
 pub only_prefork::Status::generation: u64
+pub only_prefork::Status::in_place_reloads: u64
 pub only_prefork::Status::reloads: u64
 pub only_prefork::Status::restarts: u64
 pub only_prefork::Status::stopping: bool
@@ -107,6 +109,7 @@ impl only_prefork::Supervisor
 pub fn only_prefork::Supervisor::addrs(&self) -> &[core::net::socket_addr::SocketAddr]
 pub fn only_prefork::Supervisor::controller(&self) -> only_prefork::Controller
 pub fn only_prefork::Supervisor::reload(&self)
+pub fn only_prefork::Supervisor::reload_in_place(&self)
 pub fn only_prefork::Supervisor::shutdown(&self)
 pub fn only_prefork::Supervisor::status(&self) -> only_prefork::Status
 pub fn only_prefork::Supervisor::wait(self) -> core::io::error::Result<()>
@@ -128,7 +131,9 @@ pub fn only_prefork::Worker::index(&self) -> usize
 pub fn only_prefork::Worker::is_supervised(&self) -> bool
 pub fn only_prefork::Worker::listener(&self, usize) -> core::io::error::Result<only::Listener>
 pub fn only_prefork::Worker::mode(&self) -> only_prefork::ListenMode
+pub fn only_prefork::Worker::on_reload(&self, impl core::ops::function::Fn() + core::marker::Send + core::marker::Sync + 'static)
 pub fn only_prefork::Worker::ready(&self)
+pub fn only_prefork::Worker::reloads(&self) -> u64
 pub fn only_prefork::Worker::serve(&self, &only::Engine) -> core::io::error::Result<()>
 pub fn only_prefork::Worker::stop_requested(&self) -> bool
 pub fn only_prefork::Worker::wait_for_stop(&self)

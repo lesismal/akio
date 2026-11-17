@@ -37,7 +37,13 @@ fn backend() -> Backend {
 
 fn worker(w: Worker) -> io::Result<()> {
     let info = format!("{} {} {}", w.index(), w.workers(), w.generation());
+    let engine_ref = only::EngineRef::new();
+    let er = engine_ref.clone();
     let app = Router::new()
+        .get("/threads", move |ctx: &mut Context| {
+            let n = er.get().map_or(0, |e| e.threads()[0]);
+            ctx.text(200, format!("{} {n}", std::process::id()));
+        })
         .get("/pid", |ctx: &mut Context| {
             ctx.text(200, std::process::id().to_string());
         })
@@ -55,15 +61,31 @@ fn worker(w: Worker) -> io::Result<()> {
         .get("/crash", |_ctx: &mut Context| std::process::exit(3));
     let mut cfg = Config::default();
     cfg.shutdown_timeout = Duration::from_secs(5);
-    let engine = Engine::builder()
-        .config(cfg)
-        .listen(
-            w.listener(0)?
-                .backend(backend())
-                .threads(2)
-                .serve(serve(app)),
-        )
-        .build()?;
+    let engine = Arc::new(
+        Engine::builder()
+            .config(cfg)
+            .listen(
+                w.listener(0)?
+                    .backend(backend())
+                    .threads(2)
+                    .serve(serve(app)),
+            )
+            .build()?,
+    );
+    engine_ref.set(&engine);
+    // In-place reload: the thread count comes from a file the test rewrites.
+    if let Ok(path) = std::env::var("ONLY_TEST_THREADS_FILE") {
+        let e = engine.clone();
+        w.on_reload(move || {
+            let n: usize = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(2);
+            if let Err(err) = e.set_threads(0, n) {
+                eprintln!("worker: set_threads({n}): {err}");
+            }
+        });
+    }
     w.serve(&engine)
 }
 
@@ -348,6 +370,73 @@ fn reload_swaps_workers(mode: ListenMode) -> Failures {
     f
 }
 
+/// In-place reloads change each worker's I/O thread count (grow and shrink) under traffic: no
+/// process is replaced and no request fails.
+fn reload_in_place_resizes_workers(mode: ListenMode) {
+    let file = std::env::temp_dir().join(format!(
+        "only-prefork-threads-{}-{mode:?}",
+        std::process::id()
+    ));
+    std::fs::write(&file, "2").unwrap();
+    let sup = prefork(2, mode)
+        .env("ONLY_TEST_THREADS_FILE", &file)
+        .spawn()
+        .unwrap();
+    let addr = sup.addrs()[0];
+    let before = pids(&wait_until(&sup, 20, "2 ready workers", settled(2)));
+    let stop = Arc::new(AtomicBool::new(false));
+    let failed = Arc::new(AtomicUsize::new(0));
+    let ok = Arc::new(AtomicUsize::new(0));
+    let clients: Vec<_> = (0..6)
+        .map(|_| {
+            let (stop, failed, ok) = (stop.clone(), failed.clone(), ok.clone());
+            thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    match get(addr, "/pid") {
+                        Ok(_) => ok.fetch_add(1, Ordering::Relaxed),
+                        Err(e) => {
+                            eprintln!("    request failed during an in-place reload: {e}");
+                            failed.fetch_add(1, Ordering::Relaxed)
+                        }
+                    };
+                }
+            })
+        })
+        .collect();
+    for n in [4usize, 1, 3] {
+        std::fs::write(&file, n.to_string()).unwrap();
+        sup.reload_in_place();
+        // Every worker (by pid) reports `n` threads.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut done = HashSet::new();
+        while done.len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "{mode:?}: workers at {n} threads: {done:?}"
+            );
+            let r = get(addr, "/threads").unwrap();
+            let (pid, t) = r.split_once(' ').unwrap();
+            if t.parse::<usize>().unwrap() == n {
+                done.insert(pid.parse::<u32>().unwrap());
+            }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    stop.store(true, Ordering::Relaxed);
+    for c in clients {
+        c.join().unwrap();
+    }
+    let st = sup.status();
+    assert_eq!(pids(&st), before, "no worker was replaced");
+    assert_eq!((st.generation, st.reloads, st.in_place_reloads), (0, 0, 3));
+    let (ok, failed) = (ok.load(Ordering::Relaxed), failed.load(Ordering::Relaxed));
+    println!("    {mode:?}: {ok} requests answered during 3 in-place reloads, {failed} failed");
+    assert_eq!(failed, 0);
+    sup.shutdown();
+    sup.wait().unwrap();
+    let _ = std::fs::remove_file(&file);
+}
+
 fn bad_program_fails_spawn() {
     let err = prefork(2, ListenMode::Inherit)
         .program("/nonexistent/only-prefork-worker")
@@ -417,6 +506,10 @@ fn main() {
             }),
         ),
         ("second_shutdown_kills", Box::new(second_shutdown_kills)),
+        (
+            "reload_in_place_resizes_workers_inherit",
+            Box::new(|| reload_in_place_resizes_workers(ListenMode::Inherit)),
+        ),
     ];
     if cfg!(target_os = "linux") {
         tests.push((
@@ -429,6 +522,10 @@ fn main() {
         ));
         // SO_REUSEPORT drops what an old worker's sockets had queued unless the kernel
         // migrates it (net.ipv4.tcp_migrate_req): reported, not asserted.
+        tests.push((
+            "reload_in_place_resizes_workers_reuseport",
+            Box::new(|| reload_in_place_resizes_workers(ListenMode::ReusePort)),
+        ));
         tests.push((
             "reload_swaps_workers_reuseport",
             Box::new(|| {

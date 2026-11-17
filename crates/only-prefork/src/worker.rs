@@ -6,7 +6,7 @@ use std::{
     os::unix::net::UnixStream,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -69,6 +69,39 @@ pub struct Worker {
     ready_sent: AtomicBool,
     stop: Arc<Latch>,
     supervised: bool,
+    reload: Arc<ReloadHook>,
+}
+
+/// The [`Worker::on_reload`] hook and how often it ran.
+#[derive(Default)]
+struct ReloadHook {
+    hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    runs: AtomicU64,
+}
+
+impl std::fmt::Debug for ReloadHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReloadHook")
+            .field("runs", &self.runs.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl ReloadHook {
+    /// Runs the hook (on the calling thread: the control or signal thread, never an I/O
+    /// thread); a panic in it is caught and logged.
+    fn run(&self) {
+        let hook = self.hook.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        if let Some(h) = hook {
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| h())).is_err() {
+                only::telemetry::log_or_stderr(
+                    only_log::Level::Error,
+                    format_args!("prefork: the on_reload hook panicked"),
+                );
+            }
+        }
+        self.runs.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 impl Worker {
@@ -109,15 +142,18 @@ impl Worker {
         }
         let ctl = UnixStream::from(sys::take_inherited_fd(env::number(env::CTL)?)?);
         let stop = Arc::new(Latch::default());
-        // The supervisor writes MSG_STOP, or dies (EOF): either way, stop.
+        let reload = Arc::new(ReloadHook::default());
+        // The supervisor writes MSG_STOP, or dies (EOF): either way, stop. MSG_RELOAD runs the
+        // reload hook here.
         let mut reader = ctl.try_clone()?;
-        let s = stop.clone();
+        let (s, r) = (stop.clone(), reload.clone());
         std::thread::Builder::new()
             .name("only-prefork-ctl".into())
             .spawn(move || {
                 let mut b = [0u8; 1];
                 loop {
                     match reader.read(&mut b) {
+                        Ok(1) if b[0] == env::MSG_RELOAD => r.run(),
                         Ok(1) if b[0] != env::MSG_STOP => {}
                         Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                         _ => break,
@@ -125,7 +161,7 @@ impl Worker {
                 }
                 s.set();
             })?;
-        watch_signals(stop.clone())?;
+        watch_signals(stop.clone(), reload.clone())?;
         Ok(Some(Worker {
             index,
             workers,
@@ -138,13 +174,15 @@ impl Worker {
             ready_sent: AtomicBool::new(false),
             stop,
             supervised: true,
+            reload,
         }))
     }
 
     /// The single worker of `Prefork::workers(0)`: binds the listeners in this process.
     pub(crate) fn standalone(cfg: &Prefork) -> io::Result<Worker> {
         let stop = Arc::new(Latch::default());
-        watch_signals(stop.clone())?;
+        let reload = Arc::new(ReloadHook::default());
+        watch_signals(stop.clone(), reload.clone())?;
         Ok(Worker {
             index: 0,
             workers: 1,
@@ -157,6 +195,7 @@ impl Worker {
             ready_sent: AtomicBool::new(false),
             stop,
             supervised: false,
+            reload,
         })
     }
 
@@ -241,6 +280,23 @@ impl Worker {
         }
     }
 
+    /// Sets what an in-place reload runs in this worker: [`Controller::reload_in_place`]
+    /// (or SIGUSR1) to the supervisor, or SIGUSR1 to this process. Typically it re-reads the
+    /// configuration and applies it to the running engine with `Engine::reload` and
+    /// `Engine::set_threads`, which change live settings and I/O thread counts without
+    /// touching a connection (ADR-028). It runs on the worker's control thread, never on an
+    /// I/O thread, so it may read files; reloads run one at a time. Replaces an earlier hook.
+    ///
+    /// [`Controller::reload_in_place`]: crate::Controller::reload_in_place
+    pub fn on_reload(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.reload.hook.lock().unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(hook));
+    }
+
+    /// How many in-place reloads this worker ran (with or without a hook).
+    pub fn reloads(&self) -> u64 {
+        self.reload.runs.load(Ordering::Relaxed)
+    }
+
     /// Whether this worker has been asked to stop.
     pub fn stop_requested(&self) -> bool {
         self.stop.is_set()
@@ -292,9 +348,9 @@ impl Worker {
     }
 }
 
-/// Sets `stop` on SIGTERM or SIGINT.
-fn watch_signals(stop: Arc<Latch>) -> io::Result<()> {
-    let mut pipe = sys::signal_pipe(&[sys::SIGTERM, sys::SIGINT])?;
+/// Sets `stop` on SIGTERM or SIGINT; runs the reload hook on SIGUSR1.
+fn watch_signals(stop: Arc<Latch>, reload: Arc<ReloadHook>) -> io::Result<()> {
+    let mut pipe = sys::signal_pipe(&[sys::SIGTERM, sys::SIGINT, sys::SIGUSR1])?;
     std::thread::Builder::new()
         .name("only-prefork-sig".into())
         .spawn(move || {
@@ -305,6 +361,8 @@ fn watch_signals(stop: Arc<Latch>) -> io::Result<()> {
                         let sig = i32::from(b[0]);
                         if sig == sys::SIGTERM || sig == sys::SIGINT {
                             stop.set();
+                        } else if sig == sys::SIGUSR1 {
+                            reload.run();
                         }
                     }
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
