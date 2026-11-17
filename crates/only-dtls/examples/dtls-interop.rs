@@ -28,7 +28,7 @@
 //! psk=.. local_cid=.. peer_cid=..`, `SRTP_MATERIAL <hex>` (the `EXTRACTOR-dtls_srtp` export,
 //! as OpenSSL's `-keymatexport` prints it), `RECV <text>`.
 
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -259,9 +259,13 @@ fn main() {
     let config = Arc::new(opts.config.clone());
     let mut buf = vec![0u8; 65536];
     if mode == "client" {
+        // Unconnected sockets: `send_to` on a connected one fails on macOS.
+        let peer: SocketAddr = addr
+            .to_socket_addrs()
+            .expect("address")
+            .next()
+            .expect("address");
         let sock = UdpSocket::bind("0.0.0.0:0").expect("bind");
-        sock.connect(addr).expect("connect");
-        let peer = sock.peer_addr().expect("peer");
         let mut conn = Connection::client(config.clone(), Instant::now()).expect("client");
         let session = run(&sock, peer, &mut conn, &opts, &mut buf);
         if opts.resume {
@@ -272,7 +276,6 @@ fn main() {
             println!("RESUMING");
             std::thread::sleep(Duration::from_millis(300));
             let sock = UdpSocket::bind("0.0.0.0:0").expect("bind");
-            sock.connect(addr).expect("connect");
             let mut conn =
                 Connection::client_resume(config, Instant::now(), &session).expect("client");
             run(&sock, peer, &mut conn, &opts, &mut buf);

@@ -39,6 +39,8 @@ same_material() {
   [ -n "$a" ] && [ "$a" = "$b" ] || fail "$3: keying material '$a' vs '$b'"
 }
 PSK=00112233445566778899aabbccddeeff
+# A CID as wolfSSL's examples print it: each byte with %x (no zero padding).
+wolfhex() { for b in $(echo "$1" | sed 's/../& /g'); do printf '%x' "0x$b"; done; }
 port=26430
 next() { port=$((port + 1)); }
 # Background helpers. s_server is started inline with its stdin from `sleep` (a background
@@ -214,7 +216,7 @@ for v in 1.3 1.2; do
   sleep 1 # wolfSSL's example server flushes its log on exit
   want "oc-cid-$v.log" "peer_cid=7778797A" "wolf cid $v"
   want "oc-cid-$v.log" "^RECV I hear you" "wolf cid $v"
-  local_cid=$(sed -n 's/.*local_cid=\([0-9A-F]*\).*/\1/p' "oc-cid-$v.log" | tr 'A-F' 'a-f')
+  local_cid=$(wolfhex "$(sed -n 's/.*local_cid=\([0-9A-F]*\).*/\1/p' "oc-cid-$v.log")")
   want "ws-cid-$v.log" "Sending CID is $local_cid" "wolf cid $v"
   echo "ok   wolfssl-server -v $wv --cid <- only-dtls --cid: DTLS $v, CIDs both ways"
   sleep 0.5
@@ -223,27 +225,25 @@ for v in 1.3 1.2; do
   (cd "$WOLF" && timeout 8 wolfssl-client -u -v "$wv" -p "$port" -d --cid abc) >"wc-cid-$v.log" 2>&1 || true
   want "os-cid-$v.log" "peer_cid=616263" "wolf client cid $v"
   want "os-cid-$v.log" "^RECV hello wolfssl" "wolf client cid $v"
-  local_cid=$(sed -n 's/.*local_cid=\([0-9A-F]*\).*/\1/p' "os-cid-$v.log" | tr 'A-F' 'a-f')
+  local_cid=$(wolfhex "$(sed -n 's/.*local_cid=\([0-9A-F]*\).*/\1/p' "os-cid-$v.log")")
   want "wc-cid-$v.log" "Sending CID is $local_cid" "wolf client cid $v"
   echo "ok   wolfssl-client -v $wv --cid -> only-dtls --cid: DTLS $v, CIDs both ways"
 done
 
 # wolfSSL client: HelloRetryRequest for the group (-J), KeyUpdate before data (-I),
-# resumption (-r), PSK (-s).
-for c in "hrr:-J" "keyupdate:-I" "resume:-r" "psk:-s"; do
+# resumption (-r). (Its example client sends no pre_shared_key in DTLS 1.3 with -s, so PSKs
+# are covered by OpenSSL above and pion in run.sh.)
+for c in "hrr:-J" "keyupdate:-I" "resume:-r"; do
   IFS=: read -r name wargs <<<"$c"
   next
   sflags=(--no-client-cert)
   [ "$name" = resume ] && sflags+=(--resumption --accept 2)
-  # wolfSSL's example PSK: identity Client_identity, key 1a2b3c4d.
-  [ "$name" = psk ] && sflags+=(--psk Client_identity:1a2b3c4d)
   start "$BIN" server "127.0.0.1:$port" --versions 1.3 "${sflags[@]}" >"os-$name.log" 2>&1
   # shellcheck disable=SC2086
   (cd "$WOLF" && timeout 10 wolfssl-client -u -v 4 -p "$port" -d $wargs) >"wc-$name.log" 2>&1 || true
   want "os-$name.log" "^RECV hello wolfssl" "wolf $name"
   case $name in
   resume) grep "^INFO" "os-$name.log" | sed -n 2p | grep -q "resumed=true" || fail "wolf resume: not resumed" ;;
-  psk) want "os-$name.log" "psk=Client_identity" "wolf psk" ;;
   esac
   echo "ok   wolfssl-client -v 4 $wargs -> only-dtls: $name ($(suite "os-$name.log"))"
 done
