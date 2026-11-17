@@ -50,6 +50,10 @@ The variable is read at build time only; the I/O paths are untouched.
 
 - `ONLY_DEFAULT_BACKEND=uring book/check-guides.sh` runs every guide example on io_uring; the
   script fails an example whose engine fell back to epoll.
+- Hot path: the variable is read in `build` only. On gpu51 the release `echo` binaries built
+  from main and from this change have identical `only_core` / `only_epoll` machine code (54,412
+  instructions, addresses normalized); a same-run echo A/B (12 rounds) was within the machine's
+  noise (total 0.98x, rounds 0.83-1.11x).
 - Test: `crates/only/tests/default_backend.rs` (Linux) runs child processes with the variable unset,
   `epoll`, `uring`, `io_uring` and an unknown value, and checks that the default TCP listener
   follows it while an explicit `Backend::Epoll` listener and a UDP listener do not.

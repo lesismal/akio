@@ -45,6 +45,9 @@ I/O 路径不受影响。
 
 - `ONLY_DEFAULT_BACKEND=uring book/check-guides.sh` 在 io_uring 上运行每个指南示例；若某个示例的引擎
   回退到了 epoll，脚本判其失败。
+- 热路径：该变量只在 `build` 中读取。在 gpu51 上，由 main 与本改动分别构建的 release `echo` 二进制中
+  `only_core` / `only_epoll` 的机器码完全相同（54,412 条指令，地址已归一化）；同一轮次的 echo A/B（12 轮）
+  落在机器噪声范围内（总计 0.98x，各轮 0.83-1.11x）。
 - 测试：`crates/only/tests/default_backend.rs`（Linux）在子进程中分别以未设置、`epoll`、`uring`、
   `io_uring` 和未知值运行，检查默认 TCP listener 随之变化，而显式 `Backend::Epoll` 的 listener 与 UDP
   listener 不变。

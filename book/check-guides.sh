@@ -76,20 +76,35 @@ run_bounded() {
 # port_free PROTO PORT: fails, naming the holder, when something already listens there.
 port_free() {
   python3 - "$1" "$2" <<'EOF'
-import socket, sys
-proto, port = sys.argv[1], int(sys.argv[2])
-if proto == "tcp":  # SO_REUSEPORT listeners do not stop a bind: try to connect too
+import socket, sys, time
+
+
+def busy(proto, port):
+    if proto == "tcp":  # SO_REUSEPORT listeners do not stop a bind: try to connect too
+        try:
+            socket.create_connection(("127.0.0.1", port), 1).close()
+            return "something accepts connections there"
+        except OSError:
+            pass
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM if proto == "tcp" else socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # TIME_WAIT from a last run is fine
     try:
-        socket.create_connection(("127.0.0.1", port), 1).close()
-        sys.exit(f"tcp port {port} is busy (something accepts connections there)")
-    except OSError:
-        pass
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM if proto == "tcp" else socket.SOCK_DGRAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # TIME_WAIT from a last run is fine
-try:
-    s.bind(("127.0.0.1", port))
-except OSError as e:
-    sys.exit(f"{proto} port {port} is busy ({e.strerror})")
+        s.bind(("127.0.0.1", port))
+    except OSError as e:
+        return e.strerror
+    finally:
+        s.close()
+    return None
+
+
+proto, port = sys.argv[1], int(sys.argv[2])
+# The previous example's sockets can outlive its process briefly (io_uring tears its ring down
+# asynchronously, with the listening socket still attached): wait up to 5 s.
+deadline = time.time() + 5
+while (why := busy(proto, port)) and time.time() < deadline:
+    time.sleep(0.1)
+if why:
+    sys.exit(f"{proto} port {port} is busy ({why})")
 EOF
 }
 
