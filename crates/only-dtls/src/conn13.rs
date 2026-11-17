@@ -1016,7 +1016,15 @@ impl Conn13 {
         if self.ack_records.is_empty() {
             return;
         }
-        let epoch = self.current_epoch();
+        // The epoch of the newest record acknowledged, if we can still send in it (RFC 9147
+        // §7 allows any epoch at least that; OpenSSL 4.1 clients only accept an ACK of their
+        // final flight in the handshake epoch), else the current one.
+        let newest = self.ack_records.iter().map(|r| r.0).max().unwrap_or(0);
+        let epoch = if newest == 2 && self.write_hs.is_some() {
+            2
+        } else {
+            self.current_epoch()
+        };
         if epoch == 0 {
             return;
         }
@@ -1904,6 +1912,9 @@ impl Conn13 {
         self.transcript.clear();
         if let Some((c, raw_cookie)) = &cookie {
             self.hrr = true;
+            // After a stateless HelloRetryRequest (sent with ClientHello1's record number)
+            // continue from ClientHello2's, so no record number repeats (RFC 9147 §5.1).
+            self.epoch0_seq = self.epoch0_seq.max(self.last_record_seq);
             self.transcript
                 .extend_from_slice(&hs::transcript13(hs::MESSAGE_HASH, &c.ch1_hash));
             let hrr = cookie::hrr_body(&ch.session_id, suite, c.group, raw_cookie);

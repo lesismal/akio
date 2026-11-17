@@ -23,3 +23,6 @@ RUN git clone --depth 1 -b "$WOLFSSL_TAG" https://github.com/wolfSSL/wolfssl /sr
     cp -r certs /opt/wolfssl/certs && rm -rf /src/wolfssl
 ENV LD_LIBRARY_PATH=/opt/openssl/lib:/opt/wolfssl/lib
 ENV PATH=/opt/openssl/bin:/opt/wolfssl/bin:$PATH
+# install_sw installs no openssl.cnf; Debian's works. OPENSSL_armcap=0: OpenSSL 4.1's ARM
+# capability probing dies with SIGILL under Docker Desktop on Apple silicon (no effect on x86).
+ENV OPENSSL_CONF=/etc/ssl/openssl.cnf OPENSSL_armcap=0
