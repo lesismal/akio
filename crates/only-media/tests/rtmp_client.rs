@@ -5,7 +5,7 @@
 //! `cargo test -p only-media --test rtmp_client -- --ignored mediamtx`).
 
 use std::{
-    net::{SocketAddr, TcpListener, TcpStream},
+    net::{SocketAddr, TcpListener},
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
@@ -404,6 +404,15 @@ struct Container(String);
 
 impl Drop for Container {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            if let Ok(o) = Command::new("docker").args(["logs", &self.0]).output() {
+                eprintln!(
+                    "mediamtx logs:\n{}{}",
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+        }
         let _ = Command::new("docker")
             .args(["rm", "-f", &self.0])
             .stdout(Stdio::null())
@@ -432,8 +441,12 @@ fn mediamtx_push_and_pull() {
     );
     let _c = Container(String::from_utf8_lossy(&out.stdout).trim().to_owned());
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    // Docker Desktop accepts on the mapped port before mediamtx listens: wait for its log line.
     wait_for("mediamtx", 30, || {
-        TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+        Command::new("docker")
+            .args(["logs", &_c.0])
+            .output()
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("[RTMP] started"))
     });
     let e = client_engine();
     for (flv, codec, name) in [(H264, Codec::H264, "h264"), (H265, Codec::H265, "hevc")] {
@@ -446,19 +459,47 @@ fn mediamtx_push_and_pull() {
         wait_for("push subscribed", 10, || {
             streaming(&pusher) && hub_a.stream_info("src").is_some_and(|s| s.subscribers == 1)
         });
-        let feeder = publish_paced(&hub_a, "src", flv, 4);
-        std::thread::sleep(Duration::from_millis(1500));
-        let (got, _sub) = count(&hub_c, "pulled");
-        let puller = client::pull(&e, &url, &hub_c, "pulled", RtmpClientConfig::default()).unwrap();
-        wait_for("pulled video", 10, || {
-            got.video.load(Ordering::Relaxed) >= 25
-        });
+        let feeder = publish_paced(&hub_a, "src", flv, 6);
+        // mediamtx makes the path available once it has seen every track (about 2 s): a pull
+        // before that is closed ("no stream is available"), so retry.
+        let t = Instant::now();
+        let mut attempt = 0;
+        let (got, _sub, puller) = loop {
+            attempt += 1;
+            let path = format!("pulled{attempt}");
+            let (got, sub) = count(&hub_c, &path);
+            let puller = until_connected(|| {
+                client::pull(&e, &url, &hub_c, &path, RtmpClientConfig::default()).unwrap()
+            });
+            while got.video.load(Ordering::Relaxed) < 25 && !puller.is_closed() {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if got.video.load(Ordering::Relaxed) >= 25 {
+                break (got, sub, puller);
+            }
+            if t.elapsed() > Duration::from_secs(10) {
+                let logs = Command::new("docker")
+                    .args(["logs", &_c.0])
+                    .output()
+                    .unwrap();
+                panic!(
+                    "pull: {:?} video {}\n{}{}",
+                    puller.error(),
+                    got.video.load(Ordering::Relaxed),
+                    String::from_utf8_lossy(&logs.stdout),
+                    String::from_utf8_lossy(&logs.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        };
         assert_eq!(got.codecs(), [codec, Codec::Aac], "{name}");
         assert!(got.audio.load(Ordering::Relaxed) > 0);
         if have("ffprobe") {
             let probe = Command::new("ffprobe")
-                .args(["-v", "error", "-rw_timeout", "5000000", "-show_entries"])
-                .args(["stream=codec_name", "-of", "csv=p=0", &url])
+                .args(["-v", "error", "-rw_timeout", "5000000"])
+                // mediamtx sends H.265 only to a client announcing it (Enhanced RTMP).
+                .args(["-rtmp_enhanced_codecs", "hvc1,mp4a"])
+                .args(["-show_entries", "stream=codec_name", "-of", "csv=p=0", &url])
                 .output()
                 .unwrap();
             let probe = String::from_utf8_lossy(&probe.stdout).into_owned();
