@@ -17,7 +17,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 |---|---|---|
 | `only` | facade: `Engine`, `Listener`, `Backend`, `Accel`, re-exports of the core API, `tls`, `ebpf` | [Concepts](concepts/index.md) |
 | `only-core` | `Conn`, `Handler`, `Acceptor`, `Config`, `Transport`, `Telemetry`; backend-facing traits | [Handlers](concepts/handlers.md) |
-| `only-log` (`only::log`) | logging facade: levels, targets, key-values, `Logger`, built-in loggers, `ONLY_LOG` filters, compile-time caps, optional `log` bridge | [Observability](observability.md) |
+| `only-log` (`only::log`) | logging facade: levels, targets, key-values, `Logger`, built-in loggers, `ONLY_LOG` filters, compile-time caps, spans with W3C trace context, optional `log` bridge | [Observability](observability.md) |
 | `only-pool` | the logical (blocking-work) pool | [Blocking work](concepts/blocking.md) |
 | `only-buf` | size-class buffer pool, `SharedBuf` | [Architecture](architecture.md) |
 | `only-timer` | hierarchical timer wheel used by the I/O loops | [Architecture](architecture.md) |
@@ -30,6 +30,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 | `only-dpdk` (`only::dpdk`, experimental) | kernel bypass: its own userspace TCP/IP stack over DPDK / TAP / AF_PACKET | [Kernel bypass (DPDK)](dpdk.md) |
 | `only-tls` (`only::tls`) | TLS 1.3 / 1.2 (in-house) as a connection transport | [TLS](protocols/tls.md) |
 | `only-http` | HTTP/1.1, HTTP/2, Router, middleware, static files, clients, observability | [HTTP servers](protocols/http-server.md) |
+| `only-export` | push export: metrics and spans over OTLP/HTTP (protobuf, JSON) and StatsD / DogStatsD, from a background thread | [Observability](observability.md#push-export-otlp-and-statsd) |
 | `only-ws` | WebSocket server session and client | [WebSocket](protocols/websocket.md) |
 | `only-quic` | QUIC v1 (own implementation) | [QUIC and HTTP/3](protocols/quic-h3.md) |
 | `only-h3` | HTTP/3 and QPACK | [QUIC and HTTP/3](protocols/quic-h3.md) |

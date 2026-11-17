@@ -107,13 +107,113 @@ Ready-made collectors:
 
 | Collector | Series |
 |---|---|
-| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`, `only_http_request_duration_seconds`, `only_http_requests_in_flight`, `only_http_requests_by_version_total{version}` |
+| `only_http::observe::HttpMetrics` | `only_http_requests_total{class}`, `only_http_request_duration_seconds`, `only_http_requests_in_flight`, `only_http_requests_by_version_total{version}`; with `with_routes(n)` also `only_http_route_requests_total{method, route, class}` and `only_http_route_request_duration_seconds{method, route}` |
+| `only_http::observe::H2Stats` (set in `H2Config::stats`) | `only_http2_connections_open`, `only_http2_connections_total`, `only_http2_streams_open`, `only_http2_streams_total`, `only_http2_resets_total{direction}`, `only_http2_goaways_total{direction}` |
+| `only_export::Exporter::collector()` | `only_export_pushes_total{sink, signal, result}`, `only_export_spans_exported_total`, `only_export_spans_dropped_total`, `only_export_spans_queued`, `only_export_statsd_dropped_series_total` |
 | `only_quic::QuicServer` (also what `only_h3::serve` returns) | `only_quic_connections_open` (gauge), `only_quic_connections_accepted_total`, `only_quic_connections_closed_total`, `only_quic_datagrams_total{dir}`, `only_quic_bytes_total{dir}`, `only_quic_packets_sent_total`, `only_quic_packets_lost_total`, `only_quic_lost_bytes_total`, `only_quic_congestion_events_total`, `only_quic_ecn_ce_events_total` |
 | `only::tls::TlsStats` from `Tls::stats()` | `only_tls_handshakes_total{side, version}`, `only_tls_resumed_total{side}`, `only_tls_early_data_total{side, outcome}` |
 
 QUIC totals include connections that already closed, so they never go down. Collectors run on
-the thread serving the scrape, never on an I/O thread's hot path: keep them cheap. Push export
-(StatsD, OTLP) is not built in; `Families` holds everything such an exporter needs.
+the thread serving the scrape (or the exporter's thread, see [Push export](#push-export-otlp-and-statsd)),
+never on an I/O thread's hot path: keep them cheap.
+
+## Per-route metrics and HTTP/2
+
+```rust,ignore
+{{#include ../../../crates/only-export/examples/guide-export.rs:routes}}
+```
+
+- `HttpMetrics::with_routes(n)` adds a row per route: the method and the **pattern** the router
+  matched (`GET /users/:id`), never the raw path, so the number of series is bounded by the
+  routes you registered and by `n` (at most 4096). Routes seen after `n` share
+  `route="other"`; requests no route matched (404, 405) are `method="*", route="unmatched"`. The
+  route is known only inside the router, so install the middleware with `Router::layer`. A
+  route's slot is found with one lock-free table probe; the counters are sharded like the
+  totals (about 200 bytes per route and shard). `route_snapshot()` reads them without
+  Prometheus. `Context::route()` gives the matched `RouteInfo` to your own middleware.
+- `H2Stats` counts HTTP/2 connections and streams as the server sees them: gauges of what is
+  open now (a stream is open from its `HEADERS` until it is closed or reset; a connection's
+  streams close with it), totals, `RST_STREAM` and `GOAWAY` frames sent and received. One
+  `H2Stats` can serve several listeners; without `H2Config::stats` nothing is counted.
+
+## Spans
+
+`only::log` has spans as well as records: timed units of work with fields, a parent, a kind and a
+status, identified by a W3C trace id and span id. They go to a `Tracer` (an exporter, see below)
+when they end, and have their own maximum level, `Off` by default: until it is raised a span
+statement costs one relaxed atomic load and creates nothing.
+
+```rust,ignore
+{{#include ../../../crates/only-export/examples/guide-export.rs:spans}}
+```
+
+- `span!(target: .., Level::Info, "name", key = value, ...)` and `info_span!` ... start a span
+  (the fields use the record syntax, without `;` and message). `record`, `set_name`,
+  `set_status`, `set_kind` change it; dropping it ends it. `span.enter()` makes it the
+  thread's current span until the guard drops: spans started meanwhile are its children, and
+  `FmtLogger` adds `trace_id=.. span_id=..` to the records written meanwhile. On an event loop,
+  enter a span only around code that runs for it, never across callbacks;
+  `only::log::span::enter_context(ctx)` carries a context to another thread.
+- only-http starts a **request span** (target `only_http::request`, level `info`, kind server)
+  for every HTTP/1.1, HTTP/2 and HTTP/3 request while request spans are enabled: named
+  `GET /users/:id` once the router matched (the method alone for unmatched requests), with
+  `http.request.method`, `url.path`, `http.route`, `network.protocol.version`,
+  `client.address` and `http.response.status_code`; 5xx sets the error status. It is the current
+  span while the handler runs and ends when the response head is sent (a detached response ends
+  it when it is sent from wherever it is). An incoming `traceparent` header makes it the child of
+  the caller's span; `ctx.span_context()` gives the context to propagate downstream
+  (`to_traceparent()`).
+- **Connection spans** (target `only_http::connection`, level `debug`) cover one connection from
+  accept to close, with the client address and protocol version.
+- Sampling is decided once per trace by the tracer (`sample_ratio` of the exporter); a caller's
+  `traceparent` flag is followed. An unsampled span still carries its ids (its children and
+  outgoing headers stay unsampled) but records nothing.
+- Your own tracer: implement `only::log::span::Tracer` (`enabled`, `sample`, `on_end`) and
+  install it with `set_tracer` plus `set_max_span_level`. `on_end` runs on the thread that ended
+  the span, often an I/O thread: queue the span, never block.
+
+There is no `tracing` bridge: `tracing`'s subscribers need `'static` callsite metadata created
+by its own macros, so forwarding only-log spans would mean leaking metadata per span name or
+hiding names in fields; OTLP export covers the usual destination, and a `Tracer` can feed
+anything else (ADR-020).
+
+## Push export (OTLP and StatsD)
+
+The `only-export` crate pushes metrics and spans from one background thread, without
+dependencies:
+
+```rust,ignore
+{{#include ../../../crates/only-export/examples/guide-export.rs:export}}
+```
+
+- **What is sent.** Every `interval` (default 10 s), the same snapshot a scrape renders: the
+  engine's series and every registered collector (`Telemetry::collect_all()`), plus collectors
+  passed with `.collector(..)`. Spans every `span_interval` (default 2 s), or sooner once a batch
+  (512) is queued.
+- **OTLP/HTTP** (`otlp_http`, or `otlp_http_with(endpoint, Encoding::Json, headers)`):
+  `POST /v1/metrics` and `/v1/traces` to a collector, protobuf (`application/x-protobuf`) or
+  OTLP/JSON. Counters become cumulative monotonic sums, gauges gauges, histograms explicit-bucket
+  histograms; labels become attributes, `service.name` and `resource_attr(..)` the resource.
+  Spans are grouped into one instrumentation scope per target. Plain `http://` only: send to a
+  local collector or agent (or a TLS-terminating sidecar). `otlp_traces_only()` keeps metrics
+  out of OTLP when they are scraped or go to StatsD.
+- **StatsD** (`statsd(addr, Flavor::DogStatsd | Flavor::Statsd)`, `statsd_options(prefix,
+  max_packet, max_series)`): counters as the delta since the previous push (`name:3|c`), gauges
+  as values (`|g`), histograms as `.count`, `.sum` and per-bucket `.bucket` deltas (with an `le`
+  tag). DogStatsD carries labels as tags (`|#route:/users/:id,class:2xx`); plain StatsD appends
+  them to the name (`name.class.2xx`). Lines are packed into datagrams of at most 1432 bytes.
+  Spans are not sent to StatsD.
+- **Off the I/O threads, bounded.** The I/O threads only hand finished spans to a sharded queue
+  (default 4096 spans): past it, spans are dropped and counted, never waited for. A failed push is
+  counted and dropped, not retried: metrics are cumulative and complete again at the next push.
+  The StatsD delta table keeps at most `max_series` series (default 10 000). Each OTLP step
+  (connect, write, read) has a timeout (default 5 s) and responses are read up to 1 MiB.
+- `flush()` pushes now and waits; `shutdown()` (or dropping the exporter) pushes once more and
+  stops the thread. The tracer can be installed once per process: a second exporter with
+  `traces(..)` fails to start.
+
+`tools/otel/e2e.sh` runs the end-to-end test against the OpenTelemetry Collector (contrib) in
+Docker: OTLP protobuf and JSON into its OTLP receiver, DogStatsD into its statsd receiver.
 
 ## Logs
 

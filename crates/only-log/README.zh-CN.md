@@ -25,6 +25,10 @@
 - 编译期上限，与 `log` crate 相同：feature `max_level_off` .. `max_level_trace` 与
   `release_max_level_*` 把超出上限的语句编译掉（`STATIC_MAX_LEVEL`）。只应由应用开启（cargo 会在整个
   依赖图中合并 feature）。
+- Span（`only_log::span`）：`span!` / `info_span!` …… 启动带字段的计时 span，带 W3C trace context
+  （`SpanContext`，`traceparent` 的解析与输出），父级来自 `parent:` 或线程上进入的 span；结束的 span 交给
+  `Tracer`（`set_tracer`）。它们有独立的最大级别（`set_max_span_level`），默认关闭，启用前一条 span 语句只花
+  一次 relaxed 读。`only-export` 提供把它们发往 OpenTelemetry collector 的 tracer。
 - 未安装 logger：记录被丢弃；`log_or_stderr` 会把交给它的记录打印到 stderr（`only` 用它输出错误与
   降级信息，慢回调警告也以同样方式打印，因此不会悄无声息地丢失）。
 
