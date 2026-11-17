@@ -115,7 +115,10 @@ bandwidths needs simulcast from its publishers.
   `Endpoint::{gather_relay, listen_tcp}`, `Error::Turn` (the enum is `#[non_exhaustive]`),
   `SdpChanges::add_simulcast_media`, `Peer::write_simulcast`. Snapshots refreshed. The UDP
   datapath of `TurnServer` gains one branch per message sent to a client (the connection kind)
-  and the shard table doubles (half for streams).
+  and the shard table doubles (half for streams). Same-run A/B against main ab65d376 on gpu51
+  (`quiet.sh`, CPUs 2-9, 7 alternating rounds): `turn-relay-bench 64 5 4` 1.057x (65.7k vs
+  62.1k datagrams/s, new at least equal in every round), a loopback data-channel throughput
+  bench between two `Endpoint`s 1.020x (193.2 vs 189.5 MB/s, within noise): no regression.
 - New fuzz targets `turn_stream` (stream framing into the server, server messages into the
   client) and `ice_tcp` (RFC 4571 framing into an agent with a passive candidate); `webrtc_sdp`
   covers simulcast offers and answers and TCP candidates.

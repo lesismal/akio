@@ -89,7 +89,9 @@ simulcast。
   `TurnCore::remove_client`、`TurnEnv::pads_channel_data`（带默认实现）；`Endpoint::{gather_relay,
   listen_tcp}`、`Error::Turn`（该枚举为 `#[non_exhaustive]`）、`SdpChanges::add_simulcast_media`、
   `Peer::write_simulcast`。快照已刷新。`TurnServer` 的 UDP 数据路径在每条发往客户端的消息上多一个分支
-  （连接类型），分片表加倍（一半给流式客户端）。
+  （连接类型），分片表加倍（一半给流式客户端）。在 gpu51 上与 main ab65d376 同轮 A/B（`quiet.sh`，CPU 2-9，
+  7 轮交替）：`turn-relay-bench 64 5 4` 为 1.057 倍（65.7k 对 62.1k 数据报/秒，每轮不低于基线），两个
+  `Endpoint` 之间的回环数据通道吞吐为 1.020 倍（193.2 对 189.5 MB/s，噪声范围内）：无回退。
 - 新模糊测试目标 `turn_stream`（流分帧送入服务器，服务器消息送入客户端）与 `ice_tcp`（RFC 4571 分帧送入
   带被动候选的 agent）；`webrtc_sdp` 覆盖 simulcast offer/answer 与 TCP 候选。
 - 互通（`tools/interop/webrtc/run.sh`、`linux.sh`）：pion/turn 客户端经 UDP、TCP、TLS 对 `only-turn`；
