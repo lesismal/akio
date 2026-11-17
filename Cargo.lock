@@ -666,6 +666,7 @@ dependencies = [
  "only-core",
  "only-crypto",
  "only-http",
+ "only-webrtc",
 ]
 
 [[package]]
