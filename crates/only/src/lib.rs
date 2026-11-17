@@ -621,12 +621,63 @@ impl Engine {
 
     /// Applies the runtime-changeable settings of `cfg` without a restart: `idle_timeout`,
     /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
-    /// `max_connections`, `shutdown_timeout` and `log_level`. Open connections pick up the new
-    /// idle timeout and watermark right away. Settings fixed at build time (`read_buffer`,
-    /// `backlog`, `udp_idle_timeout`, listeners, backends, thread and pool sizes) are reported in
-    /// [`ReloadReport::ignored`] when they differ.
+    /// `max_connections`, `shutdown_timeout`, `retire_timeout`, `log_level`, `read_buffer`,
+    /// `backlog` and `udp_idle_timeout`. Open connections pick up the new idle timeouts and
+    /// watermark right away, and the new read buffer at their next read; listening sockets are
+    /// `listen`ed again with the new backlog (see [`Live`]). Settings fixed at build time
+    /// (`max_pending_responses`, `write_timeout`, `connect_timeout`, `udp_max_peers`,
+    /// `udp_gro`) are reported in [`ReloadReport::ignored`] when they differ. Thread counts
+    /// change with [`set_threads`](Self::set_threads); listeners, backends and pool sizes need
+    /// a restart.
     pub fn reload(&self, cfg: &Config) -> ReloadReport {
         self.telemetry.reload(cfg)
+    }
+
+    /// Active I/O threads of each listener (and client group), in
+    /// [`local_addrs`](Self::local_addrs) order. Retiring threads (see
+    /// [`set_threads`](Self::set_threads)) are not counted.
+    pub fn threads(&self) -> Vec<usize> {
+        self.groups.iter().map(|g| g.threads()).collect()
+    }
+
+    /// Changes the number of I/O threads of group `index` (in [`local_addrs`](Self::local_addrs)
+    /// order: the listeners, then the client groups) to `threads` (at least 1) while the engine
+    /// runs (ADR-028). TCP listeners and client groups on epoll, kqueue and io_uring support it.
+    ///
+    /// * **Growing** starts new I/O threads (or reactivates retiring ones) and gives each a
+    ///   listening socket: on Linux a new `SO_REUSEPORT` socket in the listener's group, from
+    ///   which the kernel sends it its share of new connections; elsewhere, and for an inherited
+    ///   listener, a clone of the shared socket. New dials are spread over all active threads.
+    /// * **Shrinking** retires the highest threads: they stop taking new connections at once and
+    ///   hand their listening sockets to the remaining threads (the sockets stay open, so no
+    ///   connection waiting in an accept queue is reset), and keep serving the connections they
+    ///   own until those close. **Connections never move between threads** (ADR-001); a retired
+    ///   thread exits once its last connection is gone. With `Config::retire_timeout` the
+    ///   connections still open after it are shut down gracefully, as by
+    ///   [`shutdown`](Self::shutdown).
+    ///
+    /// Returns once the change is posted to the I/O threads; it never waits for them.
+    /// [`Metrics::loops`] shows retiring threads (`retiring`). Errors: `Unsupported` for UDP
+    /// listeners (a socket added or removed from a UDP `SO_REUSEPORT` group would move peers
+    /// between threads), DPDK groups and listeners with BPF steering (`Accel::Ebpf`); `NotFound`
+    /// for an index out of range; `InvalidInput` before [`start`](Self::start); `NotConnected`
+    /// after [`shutdown`](Self::shutdown).
+    pub fn set_threads(&self, index: usize, threads: usize) -> io::Result<()> {
+        let g = self.groups.get(index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("no listener or client group {index}"),
+            )
+        })?;
+        if matches!(self.accel.get(index), Some(AccelStatus::Steering(_))) {
+            return Err(unsupported(
+                "changing the thread count of a listener with BPF steering",
+            ));
+        }
+        let before = g.threads();
+        g.set_threads(threads)?;
+        only_log::info!(target: "only", group = index, local:% = g.local_addr(), from = before, to = threads.max(1); "I/O threads changed");
+        Ok(())
     }
 
     /// Blocks until [`shutdown`](Self::shutdown) has completed.

@@ -258,19 +258,27 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_core::telemetry::ConnInfo
 impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::ConnInfo
 pub struct only_core::telemetry::Live
 impl only_core::telemetry::Live
+pub fn only_core::telemetry::Live::backlog(&self) -> i32
 pub fn only_core::telemetry::Live::idle_timeout(&self) -> core::option::Option<core::time::Duration>
 pub fn only_core::telemetry::Live::max_connections(&self) -> usize
 pub fn only_core::telemetry::Live::max_queued_bytes(&self) -> usize
+pub fn only_core::telemetry::Live::read_buffer(&self) -> usize
+pub fn only_core::telemetry::Live::retire_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn only_core::telemetry::Live::set_backlog(&self, i32)
 pub fn only_core::telemetry::Live::set_idle_timeout(&self, core::option::Option<core::time::Duration>)
 pub fn only_core::telemetry::Live::set_max_connections(&self, usize)
 pub fn only_core::telemetry::Live::set_max_queued_bytes(&self, usize)
+pub fn only_core::telemetry::Live::set_read_buffer(&self, usize)
+pub fn only_core::telemetry::Live::set_retire_timeout(&self, core::option::Option<core::time::Duration>)
 pub fn only_core::telemetry::Live::set_shutdown_timeout(&self, core::time::Duration)
 pub fn only_core::telemetry::Live::set_slow_callback_threshold(&self, core::option::Option<core::time::Duration>)
 pub fn only_core::telemetry::Live::set_slow_hook(&self, core::option::Option<only_core::SlowHook>)
+pub fn only_core::telemetry::Live::set_udp_idle_timeout(&self, core::time::Duration)
 pub fn only_core::telemetry::Live::set_write_high_watermark(&self, usize)
 pub fn only_core::telemetry::Live::shutdown_timeout(&self) -> core::time::Duration
 pub fn only_core::telemetry::Live::slow_callback_threshold(&self) -> core::option::Option<core::time::Duration>
 pub fn only_core::telemetry::Live::slow_hook(&self) -> core::option::Option<only_core::SlowHook>
+pub fn only_core::telemetry::Live::udp_idle_timeout(&self) -> core::time::Duration
 pub fn only_core::telemetry::Live::write_high_watermark(&self) -> usize
 impl core::default::Default for only_core::telemetry::Live
 pub fn only_core::telemetry::Live::default() -> only_core::telemetry::Live
@@ -343,6 +351,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::LoopMeta
 #[non_exhaustive] pub struct only_core::telemetry::LoopMetrics
 pub only_core::telemetry::LoopMetrics::counters: only_core::telemetry::LoopCounters
 pub only_core::telemetry::LoopMetrics::owner: only_core::telemetry::LoopMeta
+pub only_core::telemetry::LoopMetrics::retiring: bool
 pub only_core::telemetry::LoopMetrics::running: bool
 impl only_core::telemetry::LoopMetrics
 pub fn only_core::telemetry::LoopMetrics::open(&self) -> u64
@@ -486,6 +495,7 @@ pub only_core::Config::max_connections: usize
 pub only_core::Config::max_pending_responses: core::option::Option<usize>
 pub only_core::Config::max_queued_bytes: usize
 pub only_core::Config::read_buffer: usize
+pub only_core::Config::retire_timeout: core::option::Option<core::time::Duration>
 pub only_core::Config::shutdown_timeout: core::time::Duration
 pub only_core::Config::slow_callback_threshold: core::option::Option<core::time::Duration>
 pub only_core::Config::slow_hook: core::option::Option<only_core::SlowHook>
@@ -575,19 +585,27 @@ impl<H, F> core::panic::unwind_safe::RefUnwindSafe for only_core::FnAcceptor<H, 
 impl<H, F> core::panic::unwind_safe::UnwindSafe for only_core::FnAcceptor<H, F> where F: core::panic::unwind_safe::UnwindSafe, core::marker::PhantomData<fn() -> H>: core::panic::unwind_safe::UnwindSafe
 pub struct only_core::Live
 impl only_core::telemetry::Live
+pub fn only_core::telemetry::Live::backlog(&self) -> i32
 pub fn only_core::telemetry::Live::idle_timeout(&self) -> core::option::Option<core::time::Duration>
 pub fn only_core::telemetry::Live::max_connections(&self) -> usize
 pub fn only_core::telemetry::Live::max_queued_bytes(&self) -> usize
+pub fn only_core::telemetry::Live::read_buffer(&self) -> usize
+pub fn only_core::telemetry::Live::retire_timeout(&self) -> core::option::Option<core::time::Duration>
+pub fn only_core::telemetry::Live::set_backlog(&self, i32)
 pub fn only_core::telemetry::Live::set_idle_timeout(&self, core::option::Option<core::time::Duration>)
 pub fn only_core::telemetry::Live::set_max_connections(&self, usize)
 pub fn only_core::telemetry::Live::set_max_queued_bytes(&self, usize)
+pub fn only_core::telemetry::Live::set_read_buffer(&self, usize)
+pub fn only_core::telemetry::Live::set_retire_timeout(&self, core::option::Option<core::time::Duration>)
 pub fn only_core::telemetry::Live::set_shutdown_timeout(&self, core::time::Duration)
 pub fn only_core::telemetry::Live::set_slow_callback_threshold(&self, core::option::Option<core::time::Duration>)
 pub fn only_core::telemetry::Live::set_slow_hook(&self, core::option::Option<only_core::SlowHook>)
+pub fn only_core::telemetry::Live::set_udp_idle_timeout(&self, core::time::Duration)
 pub fn only_core::telemetry::Live::set_write_high_watermark(&self, usize)
 pub fn only_core::telemetry::Live::shutdown_timeout(&self) -> core::time::Duration
 pub fn only_core::telemetry::Live::slow_callback_threshold(&self) -> core::option::Option<core::time::Duration>
 pub fn only_core::telemetry::Live::slow_hook(&self) -> core::option::Option<only_core::SlowHook>
+pub fn only_core::telemetry::Live::udp_idle_timeout(&self) -> core::time::Duration
 pub fn only_core::telemetry::Live::write_high_watermark(&self) -> usize
 impl core::default::Default for only_core::telemetry::Live
 pub fn only_core::telemetry::Live::default() -> only_core::telemetry::Live
@@ -660,6 +678,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_core::telemetry::LoopMeta
 #[non_exhaustive] pub struct only_core::LoopMetrics
 pub only_core::LoopMetrics::counters: only_core::telemetry::LoopCounters
 pub only_core::LoopMetrics::owner: only_core::telemetry::LoopMeta
+pub only_core::LoopMetrics::retiring: bool
 pub only_core::LoopMetrics::running: bool
 impl only_core::telemetry::LoopMetrics
 pub fn only_core::telemetry::LoopMetrics::open(&self) -> u64

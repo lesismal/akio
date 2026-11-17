@@ -165,7 +165,9 @@ fn main() -> std::io::Result<()> {
     let mut next = cfg;
     next.idle_timeout = Some(Duration::from_secs(30));
     next.max_connections = 10_000;
-    next.read_buffer = 128 << 10; // fixed at build time: reported, not applied
+    next.read_buffer = 128 << 10; // open connections read with it from their next read on
+    next.backlog = 4096; // listening sockets are listen()ed again
+    next.write_timeout = None; // fixed at build time: reported, not applied
     let report = engine.reload(&next);
     println!(
         "applied {:?}, needs restart {:?}",
@@ -173,6 +175,11 @@ fn main() -> std::io::Result<()> {
     );
     // The live values, as the I/O threads see them:
     assert_eq!(telemetry.live().max_connections(), 10_000);
+    // I/O threads per listener, in local_addrs() order; grow the first listener to 4 threads,
+    // then shrink it to 1: retired threads finish their connections, none is moved or closed.
+    println!("threads: {:?}", engine.threads());
+    engine.set_threads(0, 4)?;
+    engine.set_threads(0, 1)?;
     // ANCHOR_END: reload
 
     engine.shutdown();

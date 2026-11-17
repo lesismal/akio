@@ -12,7 +12,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, RwLock, Weak,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     time::{Duration, Instant, SystemTime},
@@ -96,6 +96,7 @@ macro_rules! loop_counters {
         pub struct LoopStats {
             meta: LoopMeta,
             running: AtomicBool,
+            retiring: AtomicBool,
             $( #[doc(hidden)] pub $field: Counter, )*
         }
 
@@ -109,7 +110,7 @@ macro_rules! loop_counters {
         impl LoopStats {
             /// Counters of a thread described by `meta`.
             pub fn new(meta: LoopMeta) -> LoopStats {
-                LoopStats { meta, running: AtomicBool::new(false), $( $field: Counter::default(), )* }
+                LoopStats { meta, running: AtomicBool::new(false), retiring: AtomicBool::new(false), $( $field: Counter::default(), )* }
             }
 
             /// Copies the counters.
@@ -203,6 +204,17 @@ impl LoopStats {
     /// Whether the thread is running.
     pub fn running(&self) -> bool {
         self.running.load(Ordering::Acquire)
+    }
+
+    /// Marks the thread as retiring (`Engine::set_threads` shrank its group: it takes no new
+    /// connections and exits once its own are closed) or active again.
+    pub fn set_retiring(&self, r: bool) {
+        self.retiring.store(r, Ordering::Release);
+    }
+
+    /// Whether the thread is retiring.
+    pub fn retiring(&self) -> bool {
+        self.retiring.load(Ordering::Acquire)
     }
 
     /// Counts one received datagram of `n` bytes.
@@ -318,14 +330,24 @@ pub struct SlowRecord {
 }
 
 /// The settings that take effect without a restart. Change them with the setters (or
-/// `Engine::reload`); the I/O threads read them on every use (one relaxed load). After changing
-/// `idle_timeout` or `write_high_watermark` through a setter, call
-/// [`Telemetry::notify_reload`] so already open connections re-arm their idle timers and
-/// re-evaluate backpressure ([`Telemetry::reload`] does this itself). UDP listeners keep the idle
-/// timeout they were built with (`udp_idle_timeout`, capped by the initial `idle_timeout`).
+/// `Engine::reload`); the I/O threads read them on every use (one relaxed load), or, for the
+/// read buffer, the listen backlog and the UDP idle timeout, when they are told settings
+/// changed. After changing anything but the queue limit, the connection limit, the slow-callback
+/// settings and the shutdown timeout through a setter, call [`Telemetry::notify_reload`] so the
+/// I/O threads apply it to what is already open ([`Telemetry::reload`] does this itself):
 ///
-/// Not reloadable (fixed when the engine is built): `read_buffer`, `backlog`, `udp_idle_timeout`,
-/// listeners, backends, thread counts and the pool sizes.
+/// * `idle_timeout`, `udp_idle_timeout`: idle timers of open connections and UDP peers are
+///   re-armed against the new value.
+/// * `write_high_watermark`: backpressure is re-evaluated.
+/// * `read_buffer`: each I/O thread replaces its read buffer between two batches of events, when
+///   no `on_data` holds a borrow of it, so open connections get the new size at their next read
+///   (io_uring: a new provided-buffer group; each connection moves to it when its multishot
+///   receive is re-armed). UDP threads with GRO on keep at least 64 KiB.
+/// * `backlog`: every listening socket is `listen(2)`ed again with the new value.
+///
+/// Not reloadable (fixed when the engine is built): `max_pending_responses`, `write_timeout`,
+/// `connect_timeout`, `udp_max_peers`, `udp_gro`, listeners, backends and pool sizes. Thread
+/// counts change with `Engine::set_threads` (ADR-028).
 pub struct Live {
     idle_ms: AtomicU64,
     slow_ns: AtomicU64,
@@ -334,6 +356,10 @@ pub struct Live {
     high_wm: AtomicUsize,
     max_conns: AtomicUsize,
     shutdown_ms: AtomicU64,
+    read_buffer: AtomicUsize,
+    backlog: AtomicI32,
+    udp_idle_ms: AtomicU64,
+    retire_ms: AtomicU64,
 }
 
 fn opt_ms(d: Option<Duration>) -> u64 {
@@ -352,6 +378,10 @@ impl Default for Live {
             high_wm: AtomicUsize::new(DEFAULT_WRITE_HIGH_WATERMARK),
             max_conns: AtomicUsize::new(0),
             shutdown_ms: AtomicU64::new(DEFAULT_SHUTDOWN_TIMEOUT.as_millis() as u64),
+            read_buffer: AtomicUsize::new(DEFAULT_READ_BUFFER),
+            backlog: AtomicI32::new(DEFAULT_BACKLOG),
+            udp_idle_ms: AtomicU64::new(DEFAULT_UDP_IDLE_TIMEOUT.as_millis() as u64),
+            retire_ms: AtomicU64::new(0),
         }
     }
 }
@@ -365,6 +395,10 @@ impl Live {
         self.set_write_high_watermark(c.write_high_watermark);
         self.set_max_connections(c.max_connections);
         self.set_shutdown_timeout(c.shutdown_timeout);
+        self.set_read_buffer(c.read_buffer);
+        self.set_backlog(c.backlog);
+        self.set_udp_idle_timeout(c.udp_idle_timeout);
+        self.set_retire_timeout(c.retire_timeout);
     }
 
     /// Current `Config::idle_timeout`.
@@ -460,6 +494,65 @@ impl Live {
         self.shutdown_ms
             .store(d.as_millis() as u64, Ordering::Relaxed);
     }
+
+    /// Current `Config::read_buffer`.
+    #[inline]
+    pub fn read_buffer(&self) -> usize {
+        self.read_buffer.load(Ordering::Relaxed)
+    }
+
+    /// Sets the read buffer size (at least 1 byte); each I/O thread switches to it at its next
+    /// reload notification ([`Telemetry::notify_reload`]), between two batches of events.
+    pub fn set_read_buffer(&self, n: usize) {
+        self.read_buffer.store(n.max(1), Ordering::Relaxed);
+    }
+
+    /// Current `Config::backlog`.
+    #[inline]
+    pub fn backlog(&self) -> i32 {
+        self.backlog.load(Ordering::Relaxed)
+    }
+
+    /// Sets the `listen(2)` backlog; listening sockets are `listen`ed again with it at the next
+    /// reload notification. The kernel caps it (`net.core.somaxconn` on Linux,
+    /// `kern.ipc.somaxconn` on macOS).
+    pub fn set_backlog(&self, n: i32) {
+        self.backlog.store(n, Ordering::Relaxed);
+    }
+
+    /// Current `Config::udp_idle_timeout`.
+    #[inline]
+    pub fn udp_idle_timeout(&self) -> Duration {
+        Duration::from_millis(self.udp_idle_ms.load(Ordering::Relaxed))
+    }
+
+    /// UDP idle timeout in milliseconds (at least 1).
+    #[doc(hidden)]
+    #[inline]
+    pub fn udp_idle_ms(&self) -> u64 {
+        self.udp_idle_ms.load(Ordering::Relaxed)
+    }
+
+    /// Sets the UDP peer idle timeout; open peers' timers are re-armed at the next reload
+    /// notification.
+    pub fn set_udp_idle_timeout(&self, d: Duration) {
+        self.udp_idle_ms.store(opt_ms(Some(d)), Ordering::Relaxed);
+    }
+
+    /// Current `Config::retire_timeout`.
+    pub fn retire_timeout(&self) -> Option<Duration> {
+        match self.retire_ms.load(Ordering::Relaxed) {
+            0 => None,
+            ms => Some(Duration::from_millis(ms)),
+        }
+    }
+
+    /// Sets how long a retiring I/O thread (see `Engine::set_threads`) serves its connections
+    /// before it shuts the rest down gracefully; `None` lets them run until they close.
+    /// Read when a thread starts retiring.
+    pub fn set_retire_timeout(&self, d: Option<Duration>) {
+        self.retire_ms.store(opt_ms(d), Ordering::Relaxed);
+    }
 }
 
 impl std::fmt::Debug for Live {
@@ -471,6 +564,10 @@ impl std::fmt::Debug for Live {
             .field("write_high_watermark", &self.write_high_watermark())
             .field("max_connections", &self.max_connections())
             .field("shutdown_timeout", &self.shutdown_timeout())
+            .field("read_buffer", &self.read_buffer())
+            .field("backlog", &self.backlog())
+            .field("udp_idle_timeout", &self.udp_idle_timeout())
+            .field("retire_timeout", &self.retire_timeout())
             .finish()
     }
 }
@@ -478,9 +575,11 @@ impl std::fmt::Debug for Live {
 /// The settings fixed at build time, kept to tell what a reload could not change.
 #[derive(Clone)]
 struct Fixed {
-    read_buffer: usize,
-    backlog: i32,
-    udp_idle_timeout: Duration,
+    max_pending_responses: Option<usize>,
+    write_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
+    udp_max_peers: Option<usize>,
+    udp_gro: bool,
 }
 
 /// What [`Telemetry::reload`] did.
@@ -562,9 +661,11 @@ impl Telemetry {
         }
         self.live.apply(cfg);
         *lock(&self.fixed) = Some(Fixed {
-            read_buffer: cfg.read_buffer,
-            backlog: cfg.backlog,
-            udp_idle_timeout: cfg.udp_idle_timeout,
+            max_pending_responses: cfg.max_pending_responses,
+            write_timeout: cfg.write_timeout,
+            connect_timeout: cfg.connect_timeout,
+            udp_max_peers: cfg.udp_max_peers,
+            udp_gro: cfg.udp_gro,
         });
         if let Some(l) = cfg.log_level {
             self.set_log_level(l);
@@ -583,10 +684,17 @@ impl Telemetry {
         *lock(&self.pool) = Arc::downgrade(pool);
     }
 
-    /// Registers an I/O thread: its counters and how to send it a [`LoopCmd`]. Backend-facing.
+    /// Registers an I/O thread: its counters and how to send it a [`LoopCmd`]. A thread that
+    /// replaces an exited one with the same counters (`Engine::set_threads` growing a group
+    /// again) takes over its entry, so the series stay continuous and the table stays bounded.
+    /// Backend-facing.
     #[doc(hidden)]
     pub fn register_loop(&self, stats: Arc<LoopStats>, post: Box<dyn Fn(LoopCmd) + Send + Sync>) {
-        lock(&self.loops).push(LoopEntry { stats, post });
+        let mut loops = lock(&self.loops);
+        match loops.iter_mut().find(|l| Arc::ptr_eq(&l.stats, &stats)) {
+            Some(l) => l.post = post,
+            None => loops.push(LoopEntry { stats, post }),
+        }
     }
 
     /// Applies the reloadable settings of `cfg` to the running engine and reports what changed
@@ -641,15 +749,33 @@ impl Telemetry {
             *lock(&self.log_level) != cfg.log_level && cfg.log_level.is_some(),
             "log_level",
         );
+        note(l.read_buffer() != cfg.read_buffer.max(1), "read_buffer");
+        note(l.backlog() != cfg.backlog, "backlog");
+        note(
+            l.udp_idle_timeout() != Duration::from_millis(opt_ms(Some(cfg.udp_idle_timeout))),
+            "udp_idle_timeout",
+        );
+        note(
+            l.retire_timeout()
+                != cfg
+                    .retire_timeout
+                    .map(|d| Duration::from_millis(opt_ms(Some(d)))),
+            "retire_timeout",
+        );
         if let Some(f) = fixed.as_ref() {
-            if f.read_buffer != cfg.read_buffer {
-                r.ignored.push("read_buffer");
-            }
-            if f.backlog != cfg.backlog {
-                r.ignored.push("backlog");
-            }
-            if f.udp_idle_timeout != cfg.udp_idle_timeout {
-                r.ignored.push("udp_idle_timeout");
+            for (differs, name) in [
+                (
+                    f.max_pending_responses != cfg.max_pending_responses,
+                    "max_pending_responses",
+                ),
+                (f.write_timeout != cfg.write_timeout, "write_timeout"),
+                (f.connect_timeout != cfg.connect_timeout, "connect_timeout"),
+                (f.udp_max_peers != cfg.udp_max_peers, "udp_max_peers"),
+                (f.udp_gro != cfg.udp_gro, "udp_gro"),
+            ] {
+                if differs {
+                    r.ignored.push(name);
+                }
             }
         }
         l.apply(cfg);
@@ -834,6 +960,7 @@ impl Telemetry {
             .map(|l| LoopMetrics {
                 owner: l.stats.meta.clone(),
                 running: l.stats.running(),
+                retiring: l.stats.retiring(),
                 counters: l.stats.snapshot(),
             })
             .collect();
@@ -937,6 +1064,9 @@ pub struct LoopMetrics {
     pub owner: LoopMeta,
     /// Whether it is running.
     pub running: bool,
+    /// Whether it is retiring: a smaller thread count (`Engine::set_threads`) took it out of
+    /// its group; it serves the connections it has and exits once they are closed.
+    pub retiring: bool,
     /// Its counters.
     pub counters: LoopCounters,
 }
@@ -1043,6 +1173,17 @@ impl Metrics {
             loop_labels(out, &l.owner);
             let _ = writeln!(out, " {}", u8::from(l.running));
         }
+        prometheus_header(
+            out,
+            "only_loop_retiring",
+            "gauge",
+            "Whether the I/O thread is retiring (taking no new connections).",
+        );
+        for l in &self.loops {
+            out.push_str("only_loop_retiring");
+            loop_labels(out, &l.owner);
+            let _ = writeln!(out, " {}", u8::from(l.retiring));
+        }
         if let Some(p) = &self.pool {
             for (name, kind, help, v) in [
                 (
@@ -1115,8 +1256,9 @@ impl Metrics {
             meta_json(&mut o, &l.owner);
             let _ = write!(
                 o,
-                ",\"running\":{},\"open\":{},\"counters\":",
+                ",\"running\":{},\"retiring\":{},\"open\":{},\"counters\":",
                 l.running,
+                l.retiring,
                 l.open()
             );
             counters_json(&mut o, &l.counters);

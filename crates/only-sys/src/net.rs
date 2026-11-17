@@ -117,6 +117,41 @@ pub fn listen(addr: SocketAddr, reuseport: bool, backlog: i32) -> io::Result<Tcp
     Ok(TcpListener::from(fd))
 }
 
+/// Calls `listen(2)` again on a listening socket with a new `backlog`: Linux and macOS update
+/// the queue limit of the live socket in place (connections already queued stay queued). The
+/// kernel caps the value (`net.core.somaxconn`, `kern.ipc.somaxconn`).
+pub fn set_backlog(listener: &TcpListener, backlog: i32) -> io::Result<()> {
+    let raw = std::os::fd::AsRawFd::as_raw_fd(listener);
+    // SAFETY: plain syscall on a descriptor `listener` keeps open.
+    cvt(unsafe { ffi::listen(raw, backlog) }).map(drop)
+}
+
+/// The accept-queue limit the kernel applies to a listening socket (Linux: `tcpi_sacked` of
+/// `TCP_INFO`, which holds `sk_max_ack_backlog` for listeners). For tests.
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub fn listen_backlog(listener: &TcpListener) -> io::Result<u32> {
+    let raw = std::os::fd::AsRawFd::as_raw_fd(listener);
+    // `struct tcp_info`: 8 bytes of u8 fields, then u32s: rto, ato, snd_mss, rcv_mss, unacked,
+    // sacked, ...; 104 bytes cover every kernel since 2.6.
+    let mut buf = [0u8; 104];
+    let mut len = buf.len() as ffi::socklen_t;
+    // SAFETY: `buf` is valid for `len` bytes of writes; the kernel writes at most `len`.
+    cvt(unsafe {
+        ffi::getsockopt(
+            raw,
+            ffi::IPPROTO_TCP,
+            ffi::TCP_INFO,
+            buf.as_mut_ptr().cast(),
+            &raw mut len,
+        )
+    })?;
+    if (len as usize) < 32 {
+        return Err(io::Error::other("short tcp_info"));
+    }
+    Ok(u32::from_ne_bytes([buf[28], buf[29], buf[30], buf[31]]))
+}
+
 /// Binds a TCP socket on `addr` with `SO_REUSEADDR` and `SO_REUSEPORT`, without listening.
 pub(crate) fn bind_reuseport(addr: SocketAddr) -> io::Result<TcpListener> {
     let fd = socket(&addr)?;

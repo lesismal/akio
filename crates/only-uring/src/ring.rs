@@ -59,6 +59,7 @@ const REGISTER_FILES: u32 = 2;
 const REGISTER_PROBE: u32 = 8;
 const REGISTER_ENABLE_RINGS: u32 = 12;
 const REGISTER_PBUF_RING: u32 = 22;
+const UNREGISTER_PBUF_RING: u32 = 23;
 #[cfg(test)]
 const REGISTER_SEND_MSG_RING: u32 = 31;
 
@@ -812,6 +813,27 @@ impl Ring {
         // SAFETY: `reg` is a valid `io_uring_buf_reg` read during the call; the memory it names
         // satisfies the registration's requirements (caller).
         unsafe { self.register(REGISTER_PBUF_RING, (&raw const reg).cast(), 1) }.map(drop)
+    }
+
+    /// `IORING_UNREGISTER_PBUF_RING`: removes buffer group `bgid`. Once it returns the kernel no
+    /// longer refers to the ring's memory; buffers it handed out in completions stay the
+    /// caller's.
+    ///
+    /// # Safety
+    ///
+    /// No operation that selects buffers from `bgid` may be in flight (it would complete with
+    /// `ENOBUFS` at best).
+    pub(crate) unsafe fn unregister_buf_ring(&self, bgid: u16) -> io::Result<()> {
+        let reg = BufReg {
+            ring_addr: 0,
+            ring_entries: 0,
+            bgid,
+            flags: 0,
+            resv: [0; 3],
+        };
+        // SAFETY: `reg` is a valid `io_uring_buf_reg` (only `bgid` is read), read during the
+        // call.
+        unsafe { self.register(UNREGISTER_PBUF_RING, (&raw const reg).cast(), 1) }.map(drop)
     }
 }
 

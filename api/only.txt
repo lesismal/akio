@@ -113,10 +113,12 @@ pub fn only::Engine::metrics(&self) -> only_core::telemetry::Metrics
 pub fn only::Engine::pool_stats(&self) -> only_pool::PoolStats
 pub fn only::Engine::reload(&self, &only_core::config::Config) -> only_core::telemetry::ReloadReport
 pub fn only::Engine::run(&self) -> core::io::error::Result<()>
+pub fn only::Engine::set_threads(&self, usize, usize) -> core::io::error::Result<()>
 pub fn only::Engine::shutdown(&self)
 pub fn only::Engine::slow_callbacks(&self) -> alloc::vec::Vec<only_core::telemetry::SlowRecord>
 pub fn only::Engine::start(&self) -> core::io::error::Result<()>
 pub fn only::Engine::telemetry(&self) -> &alloc::rcs::arc::Arc<only_core::telemetry::Telemetry>
+pub fn only::Engine::threads(&self) -> alloc::vec::Vec<usize>
 pub fn only::Engine::udp_stats(&self) -> only_core::group::UdpStats
 pub fn only::Engine::wait(&self)
 impl core::fmt::Debug for only::Engine

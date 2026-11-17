@@ -5,8 +5,8 @@ use std::{
     os::fd::AsRawFd,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -19,7 +19,9 @@ use only_sys::{Event, Poller, Waker};
 use only_timer::{TimerId, Wheel};
 
 const WAKER: u64 = 0;
-const LISTENER: u64 = 1;
+/// Poll tokens with this bit set are listening sockets; the rest is the listener's index in its
+/// group (connection ids never reach this bit).
+const LISTEN_BIT: u64 = 1 << 62;
 const FIRST_CONN: u64 = 16;
 const MAX_ACCEPT_PER_EVENT: usize = 64;
 const MAX_READS_PER_EVENT: usize = 16;
@@ -72,11 +74,100 @@ pub(crate) enum Cmd {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     },
+    /// Thread resizing (ADR-028): accept on listening socket `.0` (the group's listener index)
+    /// from now on.
+    AddListener(usize, TcpListener),
+    /// Thread resizing: if this loop holds listener `idx`, hand it to `to`.
+    GiveListener {
+        idx: usize,
+        to: Arc<LoopShared>,
+    },
+    /// Thread resizing: stop taking new connections, hand the listening sockets to the active
+    /// loops (`forward`; otherwise they are clones of one socket the others hold too and are
+    /// just closed), exit once the connections are gone.
+    Retire {
+        forward: bool,
+    },
+    /// Thread resizing: a retiring loop becomes active again.
+    Revive,
+}
+
+/// `LoopShared::state`: taking new connections.
+const ACTIVE: u8 = 0;
+/// Retired by a smaller thread count; exits once its connections are gone.
+const RETIRING: u8 = 1;
+/// Exited (or committed to exit) after retiring; a larger thread count starts a new loop.
+const EXITED: u8 = 2;
+
+/// The active loops of a group (ADR-028): where dials and handed-over listening sockets go.
+/// Written only by `set_threads` (under the group's lock); read on the control path (dials,
+/// listener handover), never per event.
+pub(crate) struct Roster {
+    active: RwLock<Vec<Arc<LoopShared>>>,
+    rr: AtomicUsize,
+    /// Listener `idx` has a home: active loop `idx % active` (`SO_REUSEPORT` groups, one socket
+    /// per loop index). Otherwise the loops hold clones of one socket and nothing is routed.
+    routed: bool,
+}
+
+impl Roster {
+    pub(crate) fn new(routed: bool) -> Roster {
+        Roster {
+            active: RwLock::new(Vec::new()),
+            rr: AtomicUsize::new(0),
+            routed,
+        }
+    }
+
+    pub(crate) fn set(&self, v: Vec<Arc<LoopShared>>) {
+        *self.active.write().unwrap_or_else(|p| p.into_inner()) = v;
+    }
+
+    /// Posts `cmd` to the next active loop in turn. The read lock is held while posting, so a
+    /// loop that `set_threads` retires right after receives the command before its `Retire`.
+    /// `Err(cmd)` when no loop is active.
+    pub(crate) fn post_next(&self, cmd: Cmd) -> Result<(), Cmd> {
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        if g.is_empty() {
+            return Err(cmd);
+        }
+        let i = self.rr.fetch_add(1, Ordering::Relaxed) % g.len();
+        g[i].post(cmd);
+        Ok(())
+    }
+
+    /// Where listener `idx` belongs, if that is not `me`: then it is posted there and `None`
+    /// returned. A socket that went to the wrong loop while the group was being resized (handed
+    /// on by a retiring loop after the group had grown again, say) thus ends up at home.
+    fn route(&self, idx: usize, l: TcpListener, me: &LoopShared) -> Option<TcpListener> {
+        if !self.routed {
+            return Some(l);
+        }
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        match g.get(idx % g.len().max(1)) {
+            Some(home) if home.uid != me.uid => {
+                home.post(Cmd::AddListener(idx, l));
+                None
+            }
+            _ => Some(l),
+        }
+    }
+
+    /// Hands listener `idx` to an active loop (spread by index).
+    fn forward_listener(&self, idx: usize, l: TcpListener) {
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        if !g.is_empty() {
+            g[idx % g.len()].post(Cmd::AddListener(idx, l));
+        }
+        // No active loop: the group is gone or shutting down, and the socket closes.
+    }
 }
 
 /// The part of a loop other threads can reach: its command queue and waker.
 pub(crate) struct LoopShared {
     uid: usize,
+    /// `ACTIVE`, `RETIRING` or `EXITED` (thread resizing).
+    state: AtomicU8,
     waker: Waker,
     cmds: Mutex<Vec<Cmd>>,
     wake_pending: AtomicBool,
@@ -92,13 +183,24 @@ impl LoopShared {
         cfg: &Config,
         meta: only_core::LoopMeta,
     ) -> io::Result<Arc<LoopShared>> {
+        Self::with_stats(poller, pool, cfg, Arc::new(LoopStats::new(meta)))
+    }
+
+    /// As `new`, reusing the counters of a loop that exited (a group growing again).
+    pub(crate) fn with_stats(
+        poller: &Poller,
+        pool: Arc<Pool>,
+        cfg: &Config,
+        stats: Arc<LoopStats>,
+    ) -> io::Result<Arc<LoopShared>> {
         let sh = Arc::new(LoopShared {
             uid: NEXT_LOOP_UID.fetch_add(1, Ordering::Relaxed),
+            state: AtomicU8::new(ACTIVE),
             waker: Waker::new(poller, WAKER)?,
             cmds: Mutex::new(Vec::new()),
             wake_pending: AtomicBool::new(false),
             pool,
-            stats: Arc::new(LoopStats::new(meta)),
+            stats,
         });
         let weak = Arc::downgrade(&sh);
         cfg.telemetry.register_loop(
@@ -128,6 +230,26 @@ impl LoopShared {
 
     pub(crate) fn waker(&self) -> &Waker {
         &self.waker
+    }
+
+    /// Group side: the loop is being retired (its `Retire` command follows).
+    pub(crate) fn mark_retiring(&self) {
+        self.state.store(RETIRING, Ordering::Release);
+    }
+
+    /// Group side: makes a retiring loop active again; false if it already exited (or
+    /// committed to), in which case a new loop takes its place.
+    pub(crate) fn try_revive(&self) -> bool {
+        self.state
+            .compare_exchange(RETIRING, ACTIVE, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Loop side: commits a retiring loop to exiting; false if the group revived it meanwhile.
+    fn try_exit(&self) -> bool {
+        self.state
+            .compare_exchange(RETIRING, EXITED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     pub(crate) fn take(&self) -> Vec<Cmd> {
@@ -215,11 +337,25 @@ enum Slot {
 pub(crate) struct Loop {
     poller: Poller,
     shared: Arc<LoopShared>,
-    listener: Option<(TcpListener, Arc<dyn DynAcceptor>)>,
+    /// Listening sockets this loop accepts on, with their index in the group (usually one; a
+    /// loop also takes over those of retired loops until the group grows again).
+    listeners: Vec<(usize, TcpListener)>,
+    /// The acceptor of the group's listener (`None` in a client-only group).
+    acceptor: Option<Arc<dyn DynAcceptor>>,
+    /// The group's active loops (thread resizing).
+    roster: Arc<Roster>,
+    /// The backlog the listening sockets were last `listen`ed with.
+    backlog: i32,
     slots: only_core::IdMap<Slot>,
     scratch: Vec<u8>,
     cfg: Arc<Config>,
     draining: Option<Instant>,
+    /// Retired by a smaller thread count: no new connections; exits once its own are closed.
+    retiring: bool,
+    /// While retiring: when the connections still open are shut down gracefully
+    /// (`Config::retire_timeout`), and, once they were, when the rest is closed.
+    retire_at: Option<Instant>,
+    retire_kill: Option<Instant>,
     /// The listener is out of the poller until then, after a failed `accept`.
     accept_paused_until: Option<Instant>,
     /// Idle-timeout timers (connection ids); empty unless `Config::idle_timeout` is set.
@@ -248,21 +384,30 @@ impl Loop {
     pub(crate) fn new(
         poller: Poller,
         shared: Arc<LoopShared>,
-        listener: Option<(TcpListener, Arc<dyn DynAcceptor>)>,
+        listeners: Vec<(usize, TcpListener)>,
+        acceptor: Option<Arc<dyn DynAcceptor>>,
+        roster: Arc<Roster>,
         cfg: Arc<Config>,
     ) -> io::Result<Loop> {
-        if let Some((l, _)) = &listener {
+        for (idx, l) in &listeners {
             l.set_nonblocking(true)?;
-            poller.add(l.as_raw_fd(), LISTENER, true, false)?;
+            poller.add(l.as_raw_fd(), LISTEN_BIT | *idx as u64, true, false)?;
         }
+        let live = cfg.telemetry.live();
         Ok(Loop {
             poller,
             shared,
-            listener,
+            listeners,
+            acceptor,
+            roster,
+            backlog: live.backlog(),
             slots: Default::default(),
-            scratch: vec![0; cfg.read_buffer],
+            scratch: vec![0; live.read_buffer()],
             cfg,
             draining: None,
+            retiring: false,
+            retire_at: None,
+            retire_kill: None,
             accept_paused_until: None,
             wheel: Wheel::new(0),
             epoch: Instant::now(),
@@ -274,15 +419,33 @@ impl Loop {
     pub(crate) fn run(&mut self) {
         self.run_inner();
         self.shared.stats.set_running(false);
-        // Pending telemetry requests are dropped, which answers them (as "nothing").
-        drop(self.shared.take());
+        self.shared.stats.set_retiring(false);
+        // Pending telemetry requests are dropped, which answers them (as "nothing"). A loop
+        // that retired passes on what must not be lost (the roster no longer names it, so
+        // nothing new should arrive; this covers a command already on its way).
+        for cmd in self.shared.take() {
+            match cmd {
+                Cmd::AddListener(idx, l) => self.roster.forward_listener(idx, l),
+                c @ Cmd::Dial { .. } => {
+                    if let Err(Cmd::Dial { on_error, .. }) = self.roster.post_next(c) {
+                        on_error(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "engine shutting down",
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn run_inner(&mut self) {
         CURRENT_LOOP.with(|c| c.set(self.shared.uid));
         let mut events: Vec<Event> = Vec::with_capacity(1024);
         loop {
-            let mut timeout = self.draining.map(|_| Duration::from_millis(50));
+            let mut timeout =
+                (self.draining.is_some() || self.retire_at.is_some() || self.retire_kill.is_some())
+                    .then_some(Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 // Round up: waking a hair late is fine, spinning on a not-yet-due tick is not.
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
@@ -303,13 +466,16 @@ impl Loop {
             for ev in &events {
                 match ev.token {
                     WAKER => self.shared.waker.drain(),
-                    LISTENER => self.accept(),
+                    t if t & LISTEN_BIT != 0 => self.accept((t & !LISTEN_BIT) as usize),
                     id => self.on_event(id, *ev),
                 }
             }
             self.drain_cmds();
             self.fire_timers();
             self.resume_accept();
+            if self.retiring && self.retire_step() {
+                break;
+            }
             if let Some(deadline) = self.draining {
                 if self.slots.is_empty() {
                     break;
@@ -569,6 +735,119 @@ impl Loop {
                 acceptor,
                 on_error,
             } => self.begin_dial(stream, addr, acceptor, on_error),
+            Cmd::AddListener(idx, l) => self.add_listener(idx, l),
+            Cmd::GiveListener { idx, to } => {
+                if let Some(pos) = self.listeners.iter().position(|(i, _)| *i == idx) {
+                    let (_, l) = self.listeners.swap_remove(pos);
+                    self.poller.delete(l.as_raw_fd());
+                    to.post(Cmd::AddListener(idx, l));
+                }
+            }
+            Cmd::Retire { forward } => self.retire(forward),
+            Cmd::Revive => {
+                self.retiring = false;
+                self.retire_at = None;
+                self.retire_kill = None;
+                self.shared.stats.set_retiring(false);
+            }
+        }
+    }
+
+    // ---- thread resizing (ADR-028) ----------------------------------------------------------
+
+    /// Starts accepting on listener `idx` (passed on by a retiring loop, or given back to a
+    /// loop the group grew again), or passes it on if this loop is retiring itself.
+    fn add_listener(&mut self, idx: usize, l: TcpListener) {
+        if self.draining.is_some() {
+            return; // shutting down: the socket closes with the others
+        }
+        if self.retiring {
+            self.roster.forward_listener(idx, l);
+            return;
+        }
+        let Some(l) = self.roster.route(idx, l, &self.shared) else {
+            return;
+        };
+        if l.set_nonblocking(true).is_err() {
+            return;
+        }
+        if self.accept_paused_until.is_none() {
+            if let Err(e) = self
+                .poller
+                .add(l.as_raw_fd(), LISTEN_BIT | idx as u64, true, false)
+            {
+                log_or_stderr(
+                    only_log::Level::Warn,
+                    format_args!("adding a listening socket: {e}; passing it on"),
+                );
+                self.roster.forward_listener(idx, l);
+                return;
+            }
+        }
+        let backlog = self.cfg.telemetry.live().backlog();
+        if backlog != self.backlog {
+            let _ = only_sys::set_backlog(&l, backlog);
+        }
+        self.listeners.push((idx, l));
+        // Connections may have queued while the socket was on its way.
+        self.accept(idx);
+    }
+
+    /// This loop leaves the group's active set: its listening sockets go to the active loops
+    /// (they keep listening throughout, so queued connections wait instead of being reset),
+    /// its connections stay here until they close.
+    fn retire(&mut self, forward: bool) {
+        if self.draining.is_some() {
+            return;
+        }
+        self.retiring = true;
+        self.shared.stats.set_retiring(true);
+        let now = Instant::now();
+        self.retire_at = self.cfg.telemetry.live().retire_timeout().map(|d| now + d);
+        self.retire_kill = None;
+        for (idx, l) in std::mem::take(&mut self.listeners) {
+            self.poller.delete(l.as_raw_fd());
+            if forward {
+                self.roster.forward_listener(idx, l);
+            }
+        }
+    }
+
+    /// Once per iteration while retiring: applies `retire_timeout`, and exits (true) when no
+    /// connection is left and the group did not revive the loop meanwhile.
+    fn retire_step(&mut self) -> bool {
+        let now = Instant::now();
+        if self.retire_at.is_some_and(|t| now >= t) {
+            self.retire_at = None;
+            self.retire_kill = Some(now + self.cfg.telemetry.live().shutdown_timeout());
+            self.notify_shutdown();
+        }
+        if self.retire_kill.is_some_and(|t| now >= t) {
+            self.retire_kill = None;
+            let ids: Vec<u64> = self.slots.keys().copied().collect();
+            for id in ids {
+                match self.slots.get(&id) {
+                    Some(Slot::Conn(_)) => self.finalize(id, None),
+                    _ => self.abort_dial(id, "I/O thread retired"),
+                }
+            }
+        }
+        self.slots.is_empty() && self.shared.try_exit()
+    }
+
+    /// Removes a pending dial and reports `why` to its caller.
+    fn abort_dial(&mut self, id: u64, why: &str) {
+        if let Some(Slot::Connecting {
+            stream, on_error, ..
+        }) = self.slots.remove(&id)
+        {
+            self.poller.delete(stream.as_raw_fd());
+            if let Some(f) = on_error {
+                f(io::Error::new(
+                    io::ErrorKind::ConnectionAborted,
+                    why.to_owned(),
+                ));
+            }
         }
     }
 
@@ -602,7 +881,26 @@ impl Loop {
     /// Live settings changed: re-arm idle timers for the new timeout and re-evaluate
     /// backpressure against the new watermark.
     fn on_reload(&mut self) {
-        let idle = self.cfg.telemetry.live().idle_ms();
+        let live = self.cfg.telemetry.live();
+        // Between two batches of events no `on_data` borrows the buffer: open connections read
+        // into the new one from their next read on.
+        let rb = live.read_buffer();
+        if rb != self.scratch.len() {
+            self.scratch = vec![0; rb];
+        }
+        let backlog = live.backlog();
+        if backlog != self.backlog {
+            self.backlog = backlog;
+            for (_, l) in &self.listeners {
+                if let Err(e) = only_sys::set_backlog(l, backlog) {
+                    log_or_stderr(
+                        only_log::Level::Warn,
+                        format_args!("listen({backlog}) on a live socket: {e}"),
+                    );
+                }
+            }
+        }
+        let idle = live.idle_ms();
         let ids: Vec<u64> = self.slots.keys().copied().collect();
         if self.wheel.is_empty() && idle != 0 {
             self.wheel.advance(self.tick(), drop);
@@ -627,9 +925,15 @@ impl Loop {
             return;
         }
         self.draining = Some(Instant::now() + self.cfg.telemetry.live().shutdown_timeout());
-        if let Some((l, _)) = self.listener.take() {
+        for (_, l) in std::mem::take(&mut self.listeners) {
             self.poller.delete(l.as_raw_fd());
         }
+        self.notify_shutdown();
+    }
+
+    /// Runs `on_shutdown` for every connection and aborts pending dials (engine shutdown, or a
+    /// retiring thread's `retire_timeout`).
+    fn notify_shutdown(&mut self) {
         let ids: Vec<u64> = self.slots.keys().copied().collect();
         for id in ids {
             match self.slots.get_mut(&id) {
@@ -639,20 +943,7 @@ impl Loop {
                         self.finalize(id, Some(panic_error()));
                     }
                 }
-                Some(Slot::Connecting { .. }) => {
-                    if let Some(Slot::Connecting {
-                        stream, on_error, ..
-                    }) = self.slots.remove(&id)
-                    {
-                        self.poller.delete(stream.as_raw_fd());
-                        if let Some(f) = on_error {
-                            f(io::Error::new(
-                                io::ErrorKind::ConnectionAborted,
-                                "engine shutting down",
-                            ));
-                        }
-                    }
-                }
+                Some(Slot::Connecting { .. }) => self.abort_dial(id, "engine shutting down"),
                 None => {}
             }
         }
@@ -660,9 +951,12 @@ impl Loop {
 
     // ---- accept / dial --------------------------------------------------------------------
 
-    fn accept(&mut self) {
+    fn accept(&mut self, idx: usize) {
+        let Some(pos) = self.listeners.iter().position(|(i, _)| *i == idx) else {
+            return;
+        };
         for _ in 0..MAX_ACCEPT_PER_EVENT {
-            let Some((l, acceptor)) = &self.listener else {
+            let (Some((_, l)), Some(acceptor)) = (self.listeners.get(pos), &self.acceptor) else {
                 return;
             };
             match l.accept() {
@@ -681,7 +975,9 @@ impl Loop {
                         only_log::Level::Warn,
                         format_args!("accept: {e}; pausing accepts for {ACCEPT_BACKOFF:?}"),
                     );
-                    self.poller.delete(l.as_raw_fd());
+                    for (_, l) in &self.listeners {
+                        self.poller.delete(l.as_raw_fd());
+                    }
                     self.accept_paused_until = Some(Instant::now() + ACCEPT_BACKOFF);
                     return;
                 }
@@ -698,13 +994,20 @@ impl Loop {
             return;
         }
         self.accept_paused_until = None;
-        if let Some((l, _)) = &self.listener {
-            if let Err(e) = self.poller.add(l.as_raw_fd(), LISTENER, true, false) {
+        for (idx, l) in &self.listeners {
+            if let Err(e) = self
+                .poller
+                .add(l.as_raw_fd(), LISTEN_BIT | *idx as u64, true, false)
+            {
                 log_or_stderr(
                     only_log::Level::Warn,
                     format_args!("re-arming the listener: {e}"),
                 );
+                for (_, l) in &self.listeners {
+                    self.poller.delete(l.as_raw_fd());
+                }
                 self.accept_paused_until = Some(Instant::now() + ACCEPT_BACKOFF);
+                break;
             }
         }
     }

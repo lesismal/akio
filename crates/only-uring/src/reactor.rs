@@ -5,8 +5,8 @@ use std::{
     os::fd::{AsRawFd, FromRawFd},
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -31,6 +31,14 @@ const OP_WAKE: u64 = 4;
 const OP_OTHER: u64 = 5;
 /// One-shot poll for a socket error (a reset): see `arm_reset_watch`.
 const OP_RESET: u64 = 6;
+/// A multishot recv on buffer group 1 (`OP_RECV` is group 0): the group a completion's buffer
+/// belongs to while a read-buffer reload swaps groups (`BufGroup`).
+const OP_RECV1: u64 = 7;
+
+/// The recv operation kind for buffer group `bgid`.
+fn recv_op(bgid: u16) -> u64 {
+    if bgid == 0 { OP_RECV } else { OP_RECV1 }
+}
 
 pub(crate) const BGID: u16 = 0;
 /// Provided buffers per loop; a power of two (the buffer ring is indexed with a mask).
@@ -129,12 +137,12 @@ impl BufRing {
         })
     }
 
-    /// Registers the ring with the kernel as buffer group `BGID`.
-    pub(crate) fn register(&self, ring: &Ring) -> io::Result<()> {
+    /// Registers the ring with the kernel as buffer group `bgid`.
+    pub(crate) fn register(&self, ring: &Ring, bgid: u16) -> io::Result<()> {
         // SAFETY: `base` points to `BUF_COUNT` zeroed, page-aligned entries that stay allocated
         // until `self` is dropped, which happens after the io_uring instance that holds the
-        // registration (see field order in `Loop`).
-        unsafe { ring.register_buf_ring(self.base as u64, BUF_COUNT, BGID) }
+        // registration (see field order in `Loop`) or after `BufGroup::release` unregistered it.
+        unsafe { ring.register_buf_ring(self.base as u64, BUF_COUNT, bgid) }
     }
 
     /// Makes buffer `bid` (a `size`-byte slot at `area + bid * size`) available to the kernel.
@@ -248,6 +256,70 @@ impl Drop for KernelBuf {
     }
 }
 
+/// One provided-buffer group: the ring the kernel picks receive buffers from and the memory
+/// they live in. A loop has one, and two while a read-buffer reload moves its connections from
+/// the old group to the new one (each when its multishot recv is re-armed).
+pub(crate) struct BufGroup {
+    ring: BufRing,
+    bufs: KernelBuf,
+    size: usize,
+    bgid: u16,
+    /// Multishot recvs on this group whose final completion has not been reaped.
+    armed: usize,
+}
+
+impl BufGroup {
+    /// `BUF_COUNT` buffers of `size` bytes, for group `bgid` (not registered yet).
+    fn alloc(size: usize, bgid: u16) -> io::Result<BufGroup> {
+        Ok(BufGroup {
+            ring: BufRing::new()?,
+            bufs: KernelBuf::new(size * BUF_COUNT as usize)?,
+            size,
+            bgid,
+            armed: 0,
+        })
+    }
+
+    /// Hands the group to the kernel with every buffer in it. On the ring's own thread.
+    fn install(&mut self, ring: &Ring) -> io::Result<()> {
+        self.ring.register(ring, self.bgid)?;
+        for bid in 0..BUF_COUNT {
+            self.ring.give(&self.bufs, self.size, bid);
+        }
+        self.ring.publish();
+        Ok(())
+    }
+
+    /// Returns buffer `bid` to the kernel (published with `publish`).
+    fn give_back(&mut self, bid: u16) {
+        self.ring.give(&self.bufs, self.size, bid);
+    }
+
+    /// Unregisters the group, once no recv uses it, and frees it; leaks it if the kernel
+    /// refuses (it may then still refer to the memory).
+    fn release(mut self, ring: &Ring) {
+        debug_assert_eq!(self.armed, 0);
+        // SAFETY: no operation selecting buffers from this group is in flight (`armed == 0`:
+        // every multishot recv armed on it delivered its final completion).
+        if let Err(e) = unsafe { ring.unregister_buf_ring(self.bgid) } {
+            log_or_stderr(
+                only_log::Level::Warn,
+                format_args!(
+                    "io_uring: unregistering buffer group {}: {e}; leaking it",
+                    self.bgid
+                ),
+            );
+            self.leak();
+        }
+    }
+
+    /// Never frees the memory (the kernel may still use it).
+    fn leak(&mut self) {
+        self.bufs.leaked = true;
+        self.ring.leaked = true;
+    }
+}
+
 pub(crate) enum Cmd {
     Wake(u64),
     Close(u64, Option<io::Error>),
@@ -260,11 +332,97 @@ pub(crate) enum Cmd {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     },
+    /// Thread resizing (ADR-028): accept on listening socket `.0` (the group's listener index).
+    AddListener(usize, TcpListener),
+    /// Thread resizing: if this loop holds listener `idx`, hand it to `to`.
+    GiveListener {
+        idx: usize,
+        to: Arc<LoopShared>,
+    },
+    /// Thread resizing: stop taking new connections, hand the listening sockets to the active
+    /// loops (`forward`; otherwise they are clones the others hold too and are just closed),
+    /// exit once the connections are gone.
+    Retire {
+        forward: bool,
+    },
+    /// Thread resizing: a retiring loop becomes active again.
+    Revive,
+}
+
+/// `LoopShared::state`: taking new connections.
+const ACTIVE: u8 = 0;
+/// Retired by a smaller thread count; exits once its connections are gone.
+const RETIRING: u8 = 1;
+/// Exited (or committed to exit) after retiring.
+const EXITED: u8 = 2;
+
+/// The active loops of a group (ADR-028): where dials and handed-over listening sockets go.
+/// Written only by `set_threads` (under the group's lock); read on the control path.
+pub(crate) struct Roster {
+    active: RwLock<Vec<Arc<LoopShared>>>,
+    rr: AtomicUsize,
+    /// Listener `idx` has a home: active loop `idx % active` (`SO_REUSEPORT` groups, one socket
+    /// per loop index). Otherwise the loops hold clones of one socket and nothing is routed.
+    routed: bool,
+}
+
+impl Roster {
+    pub(crate) fn new(routed: bool) -> Roster {
+        Roster {
+            active: RwLock::new(Vec::new()),
+            rr: AtomicUsize::new(0),
+            routed,
+        }
+    }
+
+    pub(crate) fn set(&self, v: Vec<Arc<LoopShared>>) {
+        *self.active.write().unwrap_or_else(|p| p.into_inner()) = v;
+    }
+
+    /// Posts `cmd` to the next active loop in turn. The read lock is held while posting, so a
+    /// loop that `set_threads` retires right after receives the command before its `Retire`.
+    /// `Err(cmd)` when no loop is active.
+    pub(crate) fn post_next(&self, cmd: Cmd) -> Result<(), Cmd> {
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        if g.is_empty() {
+            return Err(cmd);
+        }
+        let i = self.rr.fetch_add(1, Ordering::Relaxed) % g.len();
+        g[i].post(cmd);
+        Ok(())
+    }
+
+    /// Where listener `idx` belongs, if that is not `me`: then it is posted there and `None`
+    /// returned. A socket that went to the wrong loop while the group was being resized (handed
+    /// on by a retiring loop after the group had grown again, say) thus ends up at home.
+    fn route(&self, idx: usize, l: TcpListener, me: &LoopShared) -> Option<TcpListener> {
+        if !self.routed {
+            return Some(l);
+        }
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        match g.get(idx % g.len().max(1)) {
+            Some(home) if home.uid != me.uid => {
+                home.post(Cmd::AddListener(idx, l));
+                None
+            }
+            _ => Some(l),
+        }
+    }
+
+    /// Hands listener `idx` to an active loop (spread by index).
+    fn forward_listener(&self, idx: usize, l: TcpListener) {
+        let g = self.active.read().unwrap_or_else(|p| p.into_inner());
+        if !g.is_empty() {
+            g[idx % g.len()].post(Cmd::AddListener(idx, l));
+        }
+    }
 }
 
 /// The part of a loop other threads can reach: its command queue and eventfd.
 pub(crate) struct LoopShared {
     uid: usize,
+    /// `ACTIVE`, `RETIRING` or `EXITED` (thread resizing).
+    state: AtomicU8,
     waker: EventFd,
     cmds: Mutex<Vec<Cmd>>,
     wake_pending: AtomicBool,
@@ -279,13 +437,23 @@ impl LoopShared {
         cfg: &Config,
         meta: LoopMeta,
     ) -> io::Result<Arc<LoopShared>> {
+        Self::with_stats(pool, cfg, Arc::new(LoopStats::new(meta)))
+    }
+
+    /// As `new`, reusing the counters of a loop that exited (a group growing again).
+    pub(crate) fn with_stats(
+        pool: Arc<Pool>,
+        cfg: &Config,
+        stats: Arc<LoopStats>,
+    ) -> io::Result<Arc<LoopShared>> {
         let sh = Arc::new(LoopShared {
             uid: NEXT_LOOP_UID.fetch_add(1, Ordering::Relaxed),
+            state: AtomicU8::new(ACTIVE),
             waker: EventFd::new()?,
             cmds: Mutex::new(Vec::new()),
             wake_pending: AtomicBool::new(false),
             pool,
-            stats: Arc::new(LoopStats::new(meta)),
+            stats,
         });
         let weak = Arc::downgrade(&sh);
         cfg.telemetry.register_loop(
@@ -311,6 +479,26 @@ impl LoopShared {
         {
             self.waker.wake();
         }
+    }
+
+    /// Group side: the loop is being retired (its `Retire` command follows).
+    pub(crate) fn mark_retiring(&self) {
+        self.state.store(RETIRING, Ordering::Release);
+    }
+
+    /// Group side: makes a retiring loop active again; false if it already exited (or
+    /// committed to), in which case a new loop takes its place.
+    pub(crate) fn try_revive(&self) -> bool {
+        self.state
+            .compare_exchange(RETIRING, ACTIVE, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    /// Loop side: commits a retiring loop to exiting; false if the group revived it meanwhile.
+    fn try_exit(&self) -> bool {
+        self.state
+            .compare_exchange(RETIRING, EXITED, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     fn take(&self) -> Vec<Cmd> {
@@ -355,6 +543,8 @@ struct LoopConn {
     acceptor: Arc<dyn DynAcceptor>,
     /// A multishot recv is in flight (until a completion without `F_MORE` arrives).
     recv_armed: bool,
+    /// The buffer group that recv takes its buffers from.
+    recv_bgid: u16,
     /// A cancel for the recv was submitted.
     cancel_sent: bool,
     /// A `poll(POLLOUT)` is in flight.
@@ -397,14 +587,34 @@ enum Slot {
     },
 }
 
+/// A listening socket of a loop, by its index in the group. `l` is `None` once the socket was
+/// handed on (or closed) while its multishot accept is still being cancelled: until that ends,
+/// connections it accepts are served here.
+struct Lsn {
+    idx: usize,
+    l: Option<TcpListener>,
+    armed: bool,
+}
+
 pub(crate) struct Loop {
     ring: Ring,
-    /// Declared after `ring` so the kernel's registration is gone before the memory is freed.
-    buf_ring: BufRing,
+    /// Provided receive buffers (declared after `ring` so the kernel's registration is gone
+    /// before the memory is freed), and, during a read-buffer reload, the group being left.
+    bufs: BufGroup,
+    old_bufs: Option<BufGroup>,
     needs_enable: bool,
     shared: Arc<LoopShared>,
-    listener: Option<(TcpListener, Arc<dyn DynAcceptor>)>,
-    accept_armed: bool,
+    listeners: Vec<Lsn>,
+    /// The acceptor of the group's listener (`None` in a client-only group).
+    acceptor: Option<Arc<dyn DynAcceptor>>,
+    /// The group's active loops (thread resizing).
+    roster: Arc<Roster>,
+    /// The backlog the listening sockets were last `listen`ed with.
+    backlog: i32,
+    /// Retired by a smaller thread count (see the epoll backend).
+    retiring: bool,
+    retire_at: Option<Instant>,
+    retire_kill: Option<Instant>,
     /// After a failed accept (EMFILE...) do not re-arm before this instant.
     accept_retry_at: Option<Instant>,
     /// While draining: the listener's acceptor, for connections the multishot accept completed
@@ -413,9 +623,6 @@ pub(crate) struct Loop {
     /// Target of the eventfd `Read` (never read by Rust).
     wake_buf: KernelBuf,
     wake_armed: bool,
-    /// Provided buffers: `BUF_COUNT` slots of `buf_size` bytes. Never reallocated.
-    bufs: KernelBuf,
-    buf_size: usize,
     slots: only_core::IdMap<Slot>,
     cfg: Arc<Config>,
     draining: Option<Instant>,
@@ -438,7 +645,7 @@ pub(crate) struct Loop {
 }
 
 // SAFETY: a `Loop` is built on one thread and then moved to, and used only by, its I/O thread.
-// The raw pointers inside submitted entries point into `bufs`/`wake_buf`/`buf_ring`, heap
+// The raw pointers inside submitted entries point into `bufs`/`old_bufs`/`wake_buf`, heap
 // allocations that move with it without changing address and are freed only after `ring`.
 unsafe impl Send for Loop {}
 
@@ -493,7 +700,9 @@ fn feed(
 impl Loop {
     pub(crate) fn new(
         shared: Arc<LoopShared>,
-        listener: Option<(TcpListener, Arc<dyn DynAcceptor>)>,
+        listeners: Vec<(usize, TcpListener)>,
+        acceptor: Option<Arc<dyn DynAcceptor>>,
+        roster: Arc<Roster>,
         cfg: Arc<Config>,
         opts: &UringOptions,
     ) -> io::Result<Loop> {
@@ -503,23 +712,36 @@ impl Loop {
             opts.entries
         };
         let (ring, needs_enable) = make_ring(entries, opts.sqpoll)?;
-        if let Some((l, _)) = &listener {
+        for (_, l) in &listeners {
             l.set_nonblocking(true)?;
         }
-        let buf_size = cfg.read_buffer.clamp(512, MAX_BUF);
+        let live = cfg.telemetry.live();
+        let buf_size = live.read_buffer().clamp(512, MAX_BUF);
+        let backlog = live.backlog();
         Ok(Loop {
             ring,
-            buf_ring: BufRing::new()?,
+            bufs: BufGroup::alloc(buf_size, BGID)?,
+            old_bufs: None,
             needs_enable,
             shared,
-            listener,
-            accept_armed: false,
+            listeners: listeners
+                .into_iter()
+                .map(|(idx, l)| Lsn {
+                    idx,
+                    l: Some(l),
+                    armed: false,
+                })
+                .collect(),
+            acceptor,
+            roster,
+            backlog,
+            retiring: false,
+            retire_at: None,
+            retire_kill: None,
             accept_retry_at: None,
             drain_acceptor: None,
             wake_buf: KernelBuf::new(8)?,
             wake_armed: false,
-            bufs: KernelBuf::new(buf_size * BUF_COUNT as usize)?,
-            buf_size,
             slots: Default::default(),
             cfg,
             draining: None,
@@ -539,12 +761,7 @@ impl Loop {
         if self.needs_enable {
             self.ring.enable_rings()?;
         }
-        self.buf_ring.register(&self.ring)?;
-        for bid in 0..BUF_COUNT {
-            self.buf_ring.give(&self.bufs, self.buf_size, bid);
-        }
-        self.buf_ring.publish();
-        Ok(())
+        self.bufs.install(&self.ring)
     }
 
     /// Queues an entry, submitting first if the submission queue is full.
@@ -561,9 +778,13 @@ impl Loop {
         }
     }
 
-    /// Returns a receive buffer to the kernel (no syscall; published with `publish`).
-    fn give_back(&mut self, bid: u16) {
-        self.buf_ring.give(&self.bufs, self.buf_size, bid);
+    /// The buffer group `bgid`, current or being left.
+    fn group(&mut self, bgid: u16) -> Option<&mut BufGroup> {
+        if self.bufs.bgid == bgid {
+            Some(&mut self.bufs)
+        } else {
+            self.old_bufs.as_mut().filter(|g| g.bgid == bgid)
+        }
     }
 
     fn tick(&self) -> u64 {
@@ -574,8 +795,28 @@ impl Loop {
         self.run_inner();
         self.drain_inflight();
         self.shared.stats.set_running(false);
-        // Pending telemetry requests are dropped, which answers them (as "nothing").
-        drop(self.shared.take());
+        self.shared.stats.set_retiring(false);
+        // Pending telemetry requests are dropped, which answers them (as "nothing"). A loop
+        // that retired passes on what must not be lost (see the epoll backend).
+        for cmd in self.shared.take() {
+            match cmd {
+                Cmd::AddListener(idx, l) => self.roster.forward_listener(idx, l),
+                c @ Cmd::Dial { .. } => {
+                    if let Err(Cmd::Dial { on_error, .. }) = self.roster.post_next(c) {
+                        on_error(io::Error::new(
+                            io::ErrorKind::ConnectionAborted,
+                            "engine shutting down",
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A multishot accept of some listening socket is in flight.
+    fn accepts_armed(&self) -> bool {
+        self.listeners.iter().any(|l| l.armed)
     }
 
     fn run_inner(&mut self) {
@@ -597,7 +838,9 @@ impl Loop {
                     self.graveyard.clear();
                 }
             }
-            let mut timeout = self.draining.map(|_| Duration::from_millis(50));
+            let mut timeout =
+                (self.draining.is_some() || self.retire_at.is_some() || self.retire_kill.is_some())
+                    .then_some(Duration::from_millis(50));
             if let Some(next) = self.wheel.next_deadline() {
                 let wait = Duration::from_millis(next.saturating_sub(self.tick()) + 1);
                 timeout = Some(timeout.map_or(wait, |t| t.min(wait)));
@@ -631,10 +874,13 @@ impl Loop {
             self.cqes = cqes;
             self.drain_cmds();
             self.fire_timers();
+            if self.retiring && self.draining.is_none() && self.retire_step() {
+                break;
+            }
             if let Some(deadline) = self.draining {
-                // Done once every connection closed and the cancelled multishot accept has
-                // ended: until then it may still deliver connections, which are served.
-                if self.slots.is_empty() && !self.accept_armed {
+                // Done once every connection closed and the cancelled multishot accepts have
+                // ended: until then they may still deliver connections, which are served.
+                if self.slots.is_empty() && !self.accepts_armed() {
                     self.quiesce();
                     break;
                 }
@@ -685,9 +931,11 @@ impl Loop {
                     self.inflight
                 ),
             );
-            self.bufs.leaked = true;
+            self.bufs.leak();
+            if let Some(g) = &mut self.old_bufs {
+                g.leak();
+            }
             self.wake_buf.leaked = true;
-            self.buf_ring.leaked = true;
         }
     }
 
@@ -698,7 +946,7 @@ impl Loop {
         // The drain is over: what the accept still delivers now is closed.
         self.drain_acceptor = None;
         for _ in 0..200 {
-            if !self.accept_armed {
+            if !self.accepts_armed() {
                 break;
             }
             let _ = self.ring.submit_with_timeout(1, Duration::from_millis(10));
@@ -720,11 +968,18 @@ impl Loop {
             self.wake_armed = true;
         }
         let backoff_over = self.accept_retry_at.is_none_or(|t| Instant::now() >= t);
-        if !self.accept_armed && self.draining.is_none() && backoff_over {
-            if let Some((l, _)) = &self.listener {
-                let e = Sqe::accept_multi(l.as_raw_fd()).user_data(ud(0, OP_ACCEPT));
+        if self.draining.is_none() && !self.retiring && backoff_over {
+            let mut arm = Vec::new();
+            for ls in &mut self.listeners {
+                if let (false, Some(l)) = (ls.armed, &ls.l) {
+                    arm.push(
+                        Sqe::accept_multi(l.as_raw_fd()).user_data(ud(ls.idx as u64, OP_ACCEPT)),
+                    );
+                    ls.armed = true;
+                }
+            }
+            for e in arm {
                 self.push(e);
-                self.accept_armed = true;
             }
         }
     }
@@ -738,17 +993,23 @@ impl Loop {
         let (id, op) = (data >> 4, data & 0xf);
         match op {
             OP_WAKE => self.wake_armed = false,
-            OP_ACCEPT => self.on_accept(res, flags),
-            OP_RECV => self.on_recv(id, res, flags),
+            OP_ACCEPT => self.on_accept(id as usize, res, flags),
+            OP_RECV => self.on_recv(id, 0, res, flags),
+            OP_RECV1 => self.on_recv(id, 1, res, flags),
             OP_POLL => self.on_poll(id),
             OP_RESET => self.on_reset_watch(id),
             _ => {} // buffer provisioning, cancels
         }
     }
 
-    fn on_accept(&mut self, res: i32, flags: u32) {
+    fn on_accept(&mut self, idx: usize, res: i32, flags: u32) {
         if !cqe_more(flags) {
-            self.accept_armed = false;
+            if let Some(pos) = self.listeners.iter().position(|l| l.idx == idx && l.armed) {
+                self.listeners[pos].armed = false;
+                if self.listeners[pos].l.is_none() {
+                    self.listeners.swap_remove(pos);
+                }
+            }
         }
         if res < 0 {
             if res != -ffi::ECANCELED && res != -ffi::EINTR {
@@ -781,10 +1042,11 @@ impl Loop {
             }
             return;
         }
-        let Some((_, acceptor)) = &self.listener else {
+        // Also a connection accepted after the socket was handed on (before the cancellation
+        // of this loop's accept took effect): it is served here.
+        let Some(acceptor) = self.acceptor.clone() else {
             return;
         };
-        let acceptor = acceptor.clone();
         self.open(stream, peer, acceptor, false);
     }
 
@@ -799,9 +1061,14 @@ impl Loop {
         }
     }
 
-    fn on_recv(&mut self, id: u64, res: i32, flags: u32) {
+    fn on_recv(&mut self, id: u64, bgid: u16, res: i32, flags: u32) {
         let bid = cqe_buffer(flags);
         let more = cqe_more(flags);
+        if !more {
+            if let Some(g) = self.group(bgid) {
+                g.armed = g.armed.saturating_sub(1);
+            }
+        }
         let now = self.clock.saturating_duration_since(self.epoch).as_millis() as u64;
         let mut done = Done::No;
         let mut fed = false;
@@ -814,7 +1081,14 @@ impl Loop {
                 let n = res as usize;
                 if let Some(bid) = bid {
                     if !lc.eof && !lc.held_eof && lc.inner.is_open() {
-                        let off = bid as usize * self.buf_size;
+                        let g = if self.bufs.bgid == bgid {
+                            &self.bufs
+                        } else if let Some(g) = self.old_bufs.as_ref().filter(|g| g.bgid == bgid) {
+                            g
+                        } else {
+                            return; // cannot happen: a group lives while recvs use it
+                        };
+                        let off = bid as usize * g.size;
                         lc.last_active = now;
                         lc.bytes_in += n as u64;
                         let st = &self.shared.stats;
@@ -823,7 +1097,7 @@ impl Loop {
                         // SAFETY: the kernel handed buffer `bid` over in this completion; it is
                         // not in the ring again until `give_back` below, so nothing writes it
                         // while `data` lives. `slice` bounds-checks the range.
-                        let data = unsafe { self.bufs.slice(off, n.min(self.buf_size)) };
+                        let data = unsafe { g.bufs.slice(off, n.min(g.size)) };
                         // `refresh` ran after the previous completion, so `bp` is current.
                         if !lc.held_in.is_empty() || lc.bp || lc.inner.read_held() {
                             // Reads are paused, but the multishot recv runs until its cancel
@@ -853,8 +1127,13 @@ impl Loop {
             // ENOBUFS/ECANCELED/EINTR end the multishot; `refresh` re-arms it if still wanted.
         }
         if let Some(bid) = bid {
-            self.give_back(bid);
-            self.buf_ring.publish();
+            if let Some(g) = self.group(bgid) {
+                g.give_back(bid);
+                g.ring.publish();
+            }
+        }
+        if self.old_bufs.as_ref().is_some_and(|g| g.armed == 0) {
+            self.release_old_bufs();
         }
         self.after_data(id, done, fed);
     }
@@ -863,7 +1142,7 @@ impl Loop {
     /// Called by `refresh` once reads may resume.
     fn replay(&mut self, id: u64) {
         let high = self.cfg.telemetry.live().write_high_watermark();
-        let chunk = self.buf_size;
+        let chunk = self.bufs.size;
         let mut done = Done::No;
         let mut fed = false;
         if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
@@ -968,6 +1247,7 @@ impl Loop {
                 handler,
                 acceptor,
                 recv_armed: false,
+                recv_bgid: 0,
                 cancel_sent: false,
                 poll_armed: false,
                 bp: false,
@@ -1112,10 +1392,15 @@ impl Loop {
         let mut entries: Vec<Sqe> = Vec::new();
         if want_read && !lc.recv_armed {
             lc.recv_armed = true;
-            entries.push(Sqe::recv_multi(fd, BGID).user_data(ud(id, OP_RECV)));
+            lc.recv_bgid = self.bufs.bgid;
+            self.bufs.armed += 1;
+            entries.push(
+                Sqe::recv_multi(fd, self.bufs.bgid).user_data(ud(id, recv_op(self.bufs.bgid))),
+            );
         } else if !want_read && lc.recv_armed && !lc.cancel_sent {
             lc.cancel_sent = true;
-            entries.push(Sqe::async_cancel(ud(id, OP_RECV)).user_data(ud(id, OP_OTHER)));
+            entries
+                .push(Sqe::async_cancel(ud(id, recv_op(lc.recv_bgid))).user_data(ud(id, OP_OTHER)));
         }
         if q > 0 && !lc.poll_armed {
             lc.poll_armed = true;
@@ -1178,6 +1463,19 @@ impl Loop {
                         acceptor,
                         on_error,
                     } => self.begin_dial(stream, acceptor, on_error),
+                    Cmd::AddListener(idx, l) => self.add_listener(idx, l),
+                    Cmd::GiveListener { idx, to } => {
+                        if let Some(l) = self.drop_listener(idx) {
+                            to.post(Cmd::AddListener(idx, l));
+                        }
+                    }
+                    Cmd::Retire { forward } => self.retire(forward),
+                    Cmd::Revive => {
+                        self.retiring = false;
+                        self.retire_at = None;
+                        self.retire_kill = None;
+                        self.shared.stats.set_retiring(false);
+                    }
                 }
             }
         }
@@ -1216,6 +1514,21 @@ impl Loop {
     /// Live settings changed: re-arm idle timers for the new timeout and re-evaluate
     /// backpressure against the new watermark.
     fn on_reload(&mut self) {
+        self.apply_read_buffer();
+        let backlog = self.cfg.telemetry.live().backlog();
+        if backlog != self.backlog {
+            self.backlog = backlog;
+            for ls in &self.listeners {
+                if let Some(l) = &ls.l {
+                    if let Err(e) = only_sys::set_backlog(l, backlog) {
+                        log_or_stderr(
+                            only_log::Level::Warn,
+                            format_args!("listen({backlog}) on a live socket: {e}"),
+                        );
+                    }
+                }
+            }
+        }
         let idle = self.cfg.telemetry.live().idle_ms();
         let ids: Vec<u64> = self.slots.keys().copied().collect();
         if self.wheel.is_empty() && idle != 0 {
@@ -1241,15 +1554,182 @@ impl Loop {
             return;
         }
         self.draining = Some(Instant::now() + self.cfg.telemetry.live().shutdown_timeout());
-        let listener = self.listener.take();
-        if self.accept_armed {
-            self.drain_acceptor = listener.as_ref().map(|(_, a)| a.clone());
+        if self.accepts_armed() {
+            self.drain_acceptor = self.acceptor.clone();
         }
-        if listener.is_some() && self.accept_armed {
-            // The multishot accept keeps the listening socket alive until it is cancelled.
-            let e = Sqe::async_cancel(ud(0, OP_ACCEPT)).user_data(ud(0, OP_OTHER));
+        // A multishot accept keeps its listening socket alive until it is cancelled.
+        let idxs: Vec<usize> = self.listeners.iter().map(|l| l.idx).collect();
+        for idx in idxs {
+            drop(self.drop_listener(idx));
+        }
+        self.notify_shutdown();
+    }
+
+    // ---- thread resizing (ADR-028) ----------------------------------------------------------
+
+    /// Stops accepting on listener `idx` and returns the socket (if this loop holds it). An
+    /// armed multishot accept is cancelled; until its final completion the entry stays (with
+    /// no socket), and what it still accepts is served here.
+    fn drop_listener(&mut self, idx: usize) -> Option<TcpListener> {
+        let pos = self
+            .listeners
+            .iter()
+            .position(|l| l.idx == idx && l.l.is_some())?;
+        let l = self.listeners[pos].l.take();
+        if self.listeners[pos].armed {
+            let e = Sqe::async_cancel(ud(idx as u64, OP_ACCEPT)).user_data(ud(0, OP_OTHER));
+            self.push(e);
+        } else {
+            self.listeners.swap_remove(pos);
+        }
+        l
+    }
+
+    /// Starts accepting on listener `idx`, or passes it on if this loop is retiring.
+    fn add_listener(&mut self, idx: usize, l: TcpListener) {
+        if self.draining.is_some() {
+            return;
+        }
+        if self.retiring {
+            self.roster.forward_listener(idx, l);
+            return;
+        }
+        let Some(l) = self.roster.route(idx, l, &self.shared) else {
+            return;
+        };
+        if l.set_nonblocking(true).is_err() {
+            return;
+        }
+        let backlog = self.cfg.telemetry.live().backlog();
+        if backlog != self.backlog {
+            let _ = only_sys::set_backlog(&l, backlog);
+        }
+        // An entry still cancelling the accept of this very socket (handed on and back) takes
+        // it again; the accept is re-armed once the cancellation ended.
+        match self
+            .listeners
+            .iter_mut()
+            .find(|e| e.idx == idx && e.l.is_none())
+        {
+            Some(e) => e.l = Some(l),
+            None => self.listeners.push(Lsn {
+                idx,
+                l: Some(l),
+                armed: false,
+            }),
+        }
+    }
+
+    fn retire(&mut self, forward: bool) {
+        if self.draining.is_some() {
+            return;
+        }
+        self.retiring = true;
+        self.shared.stats.set_retiring(true);
+        let now = Instant::now();
+        self.retire_at = self.cfg.telemetry.live().retire_timeout().map(|d| now + d);
+        self.retire_kill = None;
+        let idxs: Vec<usize> = self.listeners.iter().map(|l| l.idx).collect();
+        for idx in idxs {
+            if let Some(l) = self.drop_listener(idx) {
+                if forward {
+                    self.roster.forward_listener(idx, l);
+                }
+            }
+        }
+    }
+
+    /// Once per iteration while retiring: applies `retire_timeout`, and exits (true) once no
+    /// connection and no accept is left and the group did not revive the loop meanwhile.
+    fn retire_step(&mut self) -> bool {
+        let now = Instant::now();
+        if self.retire_at.is_some_and(|t| now >= t) {
+            self.retire_at = None;
+            self.retire_kill = Some(now + self.cfg.telemetry.live().shutdown_timeout());
+            self.notify_shutdown();
+        }
+        if self.retire_kill.is_some_and(|t| now >= t) {
+            self.retire_kill = None;
+            let ids: Vec<u64> = self.slots.keys().copied().collect();
+            for id in ids {
+                match self.slots.get(&id) {
+                    Some(Slot::Conn(_)) => self.finalize(id, None),
+                    _ => {
+                        if let Some(Slot::Connecting {
+                            on_error: Some(f), ..
+                        }) = self.slots.remove(&id)
+                        {
+                            f(io::Error::new(
+                                io::ErrorKind::ConnectionAborted,
+                                "I/O thread retired",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        self.slots.is_empty() && !self.accepts_armed() && self.shared.try_exit()
+    }
+
+    /// Switches to a buffer group of the reloaded `read_buffer` size (clamped as at start):
+    /// connections move to it when their multishot recv is next armed, which the cancellation
+    /// here forces; the old group is released once no recv uses it. A further change waits
+    /// until then.
+    fn apply_read_buffer(&mut self) {
+        let want = self.cfg.telemetry.live().read_buffer().clamp(512, MAX_BUF);
+        if want == self.bufs.size || self.old_bufs.is_some() {
+            return;
+        }
+        let mut g = match BufGroup::alloc(want, 1 - self.bufs.bgid) {
+            Ok(g) => g,
+            Err(e) => {
+                log_or_stderr(
+                    only_log::Level::Warn,
+                    format_args!("io_uring: new read buffers ({want} bytes): {e}"),
+                );
+                return;
+            }
+        };
+        if let Err(e) = g.install(&self.ring) {
+            log_or_stderr(
+                only_log::Level::Warn,
+                format_args!("io_uring: registering read buffers ({want} bytes): {e}"),
+            );
+            return;
+        }
+        let old = std::mem::replace(&mut self.bufs, g);
+        let old_bgid = old.bgid;
+        self.old_bufs = Some(old);
+        let mut cancels = Vec::new();
+        for (&id, slot) in self.slots.iter_mut() {
+            if let Slot::Conn(lc) = slot {
+                if lc.recv_armed && !lc.cancel_sent && lc.recv_bgid == old_bgid {
+                    lc.cancel_sent = true;
+                    cancels.push(
+                        Sqe::async_cancel(ud(id, recv_op(old_bgid))).user_data(ud(id, OP_OTHER)),
+                    );
+                }
+            }
+        }
+        for e in cancels {
             self.push(e);
         }
+        if self.old_bufs.as_ref().is_some_and(|g| g.armed == 0) {
+            self.release_old_bufs();
+        }
+    }
+
+    /// Frees the group being left (no recv uses it any more), then applies a `read_buffer`
+    /// changed again meanwhile.
+    fn release_old_bufs(&mut self) {
+        if let Some(g) = self.old_bufs.take() {
+            g.release(&self.ring);
+        }
+        self.apply_read_buffer();
+    }
+
+    /// Runs `on_shutdown` for every connection and aborts pending dials.
+    fn notify_shutdown(&mut self) {
         let ids: Vec<u64> = self.slots.keys().copied().collect();
         for id in ids {
             match self.slots.get_mut(&id) {
