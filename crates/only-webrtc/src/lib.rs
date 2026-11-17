@@ -395,14 +395,42 @@ impl Peer {
         rtp_time: MediaTime,
         data: &[u8],
     ) -> Result<(), Error> {
+        self.write_rid(mid, None, pt, wallclock, rtp_time, data)
+    }
+
+    /// [`write_media`](Self::write_media) for the simulcast encoding `rid` of a line added
+    /// with [`SdpChanges::add_simulcast_media`]: each encoding is its own RTP stream (the
+    /// application encodes each at its own resolution and bitrate). Samples for an encoding
+    /// the answer did not accept are dropped; an unknown `rid` is [`Error::UnknownMedia`].
+    pub fn write_simulcast(
+        &self,
+        mid: Mid,
+        rid: &str,
+        pt: Pt,
+        wallclock: Instant,
+        rtp_time: MediaTime,
+        data: &[u8],
+    ) -> Result<(), Error> {
+        self.write_rid(mid, Some(rid), pt, wallclock, rtp_time, data)
+    }
+
+    fn write_rid(
+        &self,
+        mid: Mid,
+        rid: Option<&str>,
+        pt: Pt,
+        wallclock: Instant,
+        rtp_time: MediaTime,
+        data: &[u8],
+    ) -> Result<(), Error> {
         let _ = wallclock;
-        self.with_rtc_inner(
-            |rtc| match rtc.write_media(Instant::now(), mid, pt, rtp_time, data) {
+        self.with_rtc_inner(|rtc| {
+            match rtc.write_media(Instant::now(), mid, rid, pt, rtp_time, data) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err(Error::UnknownMedia),
                 Err(e) => Err(rtc_err(e)),
-            },
-        )?
+            }
+        })?
     }
 
     /// The payload type negotiated on `mid` for a codec, e.g. [`Codec::Vp8`].
