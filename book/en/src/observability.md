@@ -211,13 +211,53 @@ without a restart and returns a `ReloadReport` with `applied` (what changed) and
 
 | Reloadable | Fixed at build time |
 |---|---|
-| `idle_timeout`, `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`, `max_connections`, `shutdown_timeout`, `log_level` | `read_buffer`, `backlog`, `udp_idle_timeout`, listeners, backends, thread counts, pool sizes |
+| `idle_timeout`, `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`, `max_connections`, `shutdown_timeout`, `retire_timeout`, `log_level`, `read_buffer`, `backlog`, `udp_idle_timeout` | `max_pending_responses`, `write_timeout`, `connect_timeout`, `udp_max_peers`, `udp_gro`, listeners, backends, pool sizes |
 
-Open connections pick up a new idle timeout and watermark right away (timers are re-armed and
-backpressure re-evaluated). UDP listeners keep the idle timeout they were built with. The I/O
-threads read live settings with one relaxed load per use, so reloading costs nothing on the hot
-path. Individual values can also be changed with the setters on `Telemetry::live()` followed by
+What happens to what is already open:
+
+- **Idle timeouts** (`idle_timeout`, `udp_idle_timeout`): timers of open connections and UDP peers
+  are re-armed against the new value; UDP peers use the shorter of the two.
+- **`write_high_watermark`**: backpressure is re-evaluated for every connection.
+- **`read_buffer`**: each I/O thread swaps its read buffer between two batches of events, when no
+  `on_data` is borrowing it, so open connections read with the new size from their next read on.
+  On io_uring the thread registers a second provided-buffer group of the new size (still capped at
+  16 KiB) and moves each connection to it when its multishot receive is re-armed; the old group is
+  freed once no receive uses it. UDP threads with GRO on keep slots of at least 64 KiB.
+- **`backlog`**: every listening socket is `listen(2)`ed again; the kernel updates the queue limit
+  of the live socket (capped by `net.core.somaxconn` / `kern.ipc.somaxconn`).
+
+The I/O threads read most live settings with one relaxed load per use and apply the others when
+they handle the reload notification, so reloading costs nothing on the hot path. Individual
+values can also be changed with the setters on `Telemetry::live()` followed by
 `Telemetry::notify_reload()`.
+
+### I/O thread counts
+
+`Engine::threads()` lists the active I/O threads of each listener and client group (in
+`local_addrs()` order); `Engine::set_threads(index, n)` changes one while the engine runs
+(ADR-028). It returns once the change is posted to the I/O threads, without waiting for it to
+take effect (growing into the index of a retired thread that is just exiting joins it first).
+
+- **Growing** starts threads (or reactivates retiring ones). On Linux each new thread binds its own
+  `SO_REUSEPORT` socket in the listener's group and the kernel sends it its share of new
+  connections; on macOS, and for inherited listeners, it accepts on a clone of the shared socket.
+  Dials are spread over all active threads.
+- **Shrinking** retires the highest threads. A retiring thread stops accepting at once and hands
+  its listening socket to a remaining thread; the socket stays open throughout, so nothing waiting
+  in its accept queue is reset. **No connection moves between threads**: a retiring thread keeps
+  serving the connections it owns and exits after the last one closed. With
+  `Config::retire_timeout`, the ones still open when it expires get `on_shutdown` (HTTP finishes
+  the response in flight and closes, WebSocket sends 1001), and are closed `shutdown_timeout`
+  later if still open; clients reconnect to the active threads.
+- Retiring threads show up in `Metrics::loops` (`retiring: true`), in the Prometheus gauge
+  `only_loop_retiring` and in the JSON (`"retiring"`); a thread that exited reports
+  `running: false`, and a thread started again at the same index continues its counters.
+- Not available for UDP listeners (adding or removing a socket of a UDP `SO_REUSEPORT` group would
+  move peers between threads), DPDK, and listeners with `Accel::Ebpf` steering: `Unsupported`.
+
+Under only-prefork, `Controller::reload_in_place()` (or SIGUSR1 to the supervisor) runs each
+worker's `Worker::on_reload` hook, where the worker re-reads its configuration and calls
+`Engine::reload` and `Engine::set_threads`: see [prefork](prefork.md#reload-in-place).
 
 `only` does not watch configuration files itself: trigger `reload` from whatever you use (a
 `SIGHUP` handler, a file watcher, an admin route as in the example above).

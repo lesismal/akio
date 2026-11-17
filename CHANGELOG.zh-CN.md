@@ -10,6 +10,28 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：读缓冲区、backlog 和 UDP 空闲超时的热更新；I/O 线程数调整
+
+ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
+
+- `Engine::reload` 现在会应用 **`read_buffer`**（每个 I/O 线程在两批事件之间替换缓冲区，已打开的
+  连接从下一次读开始使用新大小；io_uring 在连接的接收重新挂起时把它们转到新的 provided-buffer 组）、
+  **`backlog`**（对活的监听套接字重新 `listen`；新增 `only_sys::set_backlog`）和
+  **`udp_idle_timeout`**（重新设置已打开对端的定时器）。`ReloadReport::ignored` 现在列出
+  `max_pending_responses`、`write_timeout`、`connect_timeout`、`udp_max_peers`、`udp_gro`。
+  `Live` 为这三项新增 getter/setter。
+- **`Engine::threads()` / `Engine::set_threads(index, n)`**：在 engine 运行时增减 TCP listener 或
+  client 组的 I/O 线程（epoll、kqueue、io_uring）。扩容为每个新线程增加一个 `SO_REUSEPORT` 套接字
+  （Linux）或共享套接字的克隆；缩容让编号最大的线程退役，它们把监听套接字交给其他线程（排队的连接
+  不会被重置），并继续服务自己的连接直到关闭：连接从不在线程之间迁移。新增
+  `Config::retire_timeout`（默认 `None`，可热更新），到期后优雅关闭退役线程仍在服务的连接。
+  `LoopMetrics::retiring`，Prometheus `only_loop_retiring`。UDP listener、DPDK 和启用 BPF 分流的
+  listener 返回 `Unsupported`。
+- only-prefork：**原地重载**：`Controller::reload_in_place` / `Supervisor::reload_in_place` 和
+  SIGUSR1 让每个 worker 执行 `Worker::on_reload` 钩子（不替换进程即应用新配置和线程数）；
+  `Worker::reloads`、`Status::in_place_reloads`。
+- 热路径不变（同轮 A/B 见 docs/BENCHMARKS.zh-CN.md 的“热更新”）。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

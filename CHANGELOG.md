@@ -10,6 +10,30 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: hot reload of the read buffer, backlog and UDP idle timeout; I/O thread resizing
+
+ADR-028 (docs/adr/028-hot-reload-buffers-backlog-threads.md):
+
+- `Engine::reload` now applies **`read_buffer`** (each I/O thread swaps its buffer between two
+  batches of events, so open connections read with the new size from their next read; io_uring
+  moves connections to a new provided-buffer group as their receives are re-armed), **`backlog`**
+  (live listening sockets are `listen`ed again; new `only_sys::set_backlog`) and
+  **`udp_idle_timeout`** (open peers' timers re-armed). `ReloadReport::ignored` now names
+  `max_pending_responses`, `write_timeout`, `connect_timeout`, `udp_max_peers`, `udp_gro`.
+  New `Live` getters/setters for the three settings.
+- **`Engine::threads()` / `Engine::set_threads(index, n)`**: grow or shrink the I/O threads of a
+  TCP listener or client group while the engine runs (epoll, kqueue, io_uring). Growing adds a
+  `SO_REUSEPORT` socket per new thread (Linux) or a clone of the shared socket; shrinking retires
+  the highest threads, which hand their listening sockets to the others (nothing queued is reset)
+  and keep serving their own connections until they close: connections never move between
+  threads. New `Config::retire_timeout` (default `None`, reloadable) shuts down what a retired
+  thread still serves after it. `LoopMetrics::retiring`, Prometheus `only_loop_retiring`. UDP
+  listeners, DPDK and BPF-steered listeners return `Unsupported`.
+- only-prefork: **reload in place**: `Controller::reload_in_place` / `Supervisor::reload_in_place`
+  and SIGUSR1 run each worker's `Worker::on_reload` hook (apply a new configuration and thread
+  count without replacing processes); `Worker::reloads`, `Status::in_place_reloads`.
+- Hot path unchanged (same-run A/B in docs/BENCHMARKS.md, "Hot reload").
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):
