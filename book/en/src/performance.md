@@ -81,13 +81,17 @@ See [Blocking work](concepts/blocking.md).
 `Accel::Ebpf` decides which I/O thread gets each new connection or UDP peer:
 
 - `Steering::Cpu` keeps a flow on the thread matching the CPU that received its packets. Combine
-  it with NIC RSS/RPS and pinned I/O threads for cache locality (thread pinning itself is not
-  provided by `only` yet).
+  it with NIC RSS/RPS and `EbpfConfig::pin_threads` (thread `i` runs on the CPUs `c % n == i`)
+  for cache locality.
 - `Steering::Hash` (consistent hashing by source IP, or IP and port) keeps a client on the same
   thread across reconnects, useful for per-client caches.
 
-Classic BPF works unprivileged; check `Engine::accel_status()` to see what was attached. No
-eBPF benchmark has been published yet.
+Classic BPF works unprivileged; check `Engine::accel_status()` to see what was attached.
+
+For proxies, `ProxyConfig::sockmap` splices tunnels in the kernel. In the
+[benchmark](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh)
+it doubled a SOCKS upload's throughput, at more CPU per byte over loopback.
+`ebpf::xdp::RateLimiter` drops floods from a few sources before the network stack sees them.
 
 ## 7. TLS
 

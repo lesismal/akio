@@ -134,7 +134,7 @@ let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
   丢掉内核中的转发积压。
 
 使用 io_uring 时，若两端都开着而一个在拼接前已完成的读交来了负载，隧道会被关闭，避免乱序。
-吞吐量见[基准测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速)。
+吞吐量见[基准测试](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.zh-CN.md#ebpf-加速toolsbenchebpfsh)。
 
 ## 不支持
 

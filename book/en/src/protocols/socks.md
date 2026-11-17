@@ -154,7 +154,7 @@ Spliced bytes bypass the engine's write watermarks. Timeouts and closing still w
   queue, since closing a socket drops the kernel's relay backlog.
 
 With io_uring, if a read that completed before the splice delivers payload while both ends are
-open, the tunnel is closed rather than risk reordering. Throughput: see [the benchmark](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#ebpf-acceleration).
+open, the tunnel is closed rather than risk reordering. Throughput: see [the benchmark](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#ebpf-acceleration-toolsbenchebpfsh).
 
 ## Not supported
 
