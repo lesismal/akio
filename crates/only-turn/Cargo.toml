@@ -1,6 +1,6 @@
 [package]
 name = "only-turn"
-description = "only STUN and TURN servers (RFC 8489, RFC 8656) over only UDP sockets"
+description = "only STUN and TURN (RFC 8489, RFC 8656): servers over only UDP, TCP and TLS, and a sans-io client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,6 +22,7 @@ only-crypto = { workspace = true }
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }
+only-x509 = { workspace = true }
 
 [lints]
 workspace = true

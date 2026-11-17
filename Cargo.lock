@@ -777,6 +777,7 @@ dependencies = [
  "only",
  "only-core",
  "only-crypto",
+ "only-x509",
 ]
 
 [[package]]

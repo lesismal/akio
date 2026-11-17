@@ -124,6 +124,58 @@ pub fn turn_server(data: &[u8]) {
     }
 }
 
+/// `turn_stream`: TURN over a byte stream. The first byte picks the side; the rest is a
+/// sequence of length-prefixed reads ([`packets`]).
+///
+/// - even: the server reads them as one TCP stream ([`FrameReader`](crate::framing::FrameReader)
+///   then [`TurnCore`]), as a stream client (ChannelData padded);
+/// - odd: a [`Client`](crate::client::Client) over a stream reads them as the server's side
+///   (responses, ChannelData, Data indications), sending to a peer and advancing its clock
+///   between reads.
+pub fn turn_stream(data: &[u8]) {
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    let start = Instant::now();
+    let mut reader = crate::framing::FrameReader::new();
+    if mode % 2 == 0 {
+        let mut core = turn_core(start);
+        let mut env = NullEnv { next_port: 0 };
+        for p in packets(rest) {
+            let r = reader.push(p, |m| core.handle_client(start, CLIENT, m, &mut env));
+            assert!(reader.buffered() < crate::framing::MAX_FRAME);
+            if r.is_err() {
+                return;
+            }
+        }
+        core.remove_client(CLIENT, &mut env);
+        assert_eq!(core.stats().allocations, 0);
+    } else {
+        let server: SocketAddr = "192.0.2.1:3478".parse().expect("addr");
+        let cfg = crate::client::ClientConfig::new(server, USER.0, USER.1).stream(true);
+        let mut c = crate::client::Client::new(cfg, start);
+        let mut now = start;
+        let peer: SocketAddr = "203.0.113.1:9".parse().expect("addr");
+        for p in packets(rest) {
+            let r = reader.push(p, |m| {
+                if let Some((from, d)) = c.handle_input(now, m) {
+                    assert!(d.len() <= m.len());
+                    let _ = from;
+                }
+            });
+            if r.is_err() {
+                return;
+            }
+            let _ = c.send_to(now, peer, p);
+            now += Duration::from_secs(7);
+            c.handle_timeout(now);
+            while c.poll_transmit().is_some() {}
+            while c.poll_event().is_some() {}
+            assert!(c.pending_bytes() <= c.config().max_pending);
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod seeds {
     use super::*;
@@ -218,6 +270,42 @@ pub(crate) mod seeds {
         ];
         vec![join(&pkts)]
     }
+
+    /// The server session above as one stream (client messages only, ChannelData padded),
+    /// cut at odd places; and a client fed a challenge and server messages.
+    pub(crate) fn turn_stream() -> Vec<Vec<u8>> {
+        let mut stream = Vec::new();
+        for p in packets(&turn_server()[0]) {
+            if p.first() == Some(&0) {
+                let mut m = p[1..].to_vec();
+                if crate::stun::is_channel_data(&m) {
+                    m.resize(m.len() + crate::framing::channel_data_padding(m.len()), 0);
+                }
+                stream.extend_from_slice(&m);
+            }
+        }
+        let cuts: Vec<Vec<u8>> = stream.chunks(37).map(<[u8]>::to_vec).collect();
+        let server_side = [&[0u8][..], &join(&cuts)].concat();
+        let tid = [9u8; 12];
+        let challenge = MessageBuilder::new(Method::ALLOCATE, Class::Error, tid)
+            .error(401, "Unauthorized")
+            .attr(attr::REALM, REALM.as_bytes())
+            .attr(attr::NONCE, b"0123456789abcdef")
+            .build();
+        let data = MessageBuilder::new(Method::DATA, Class::Indication, tid)
+            .xor_addr(
+                attr::XOR_PEER_ADDRESS,
+                "203.0.113.1:9".parse().expect("addr"),
+            )
+            .attr(attr::DATA, b"payload")
+            .build();
+        let client_side = [
+            &[1u8][..],
+            &join(&[challenge, data, vec![0x40, 0, 0, 1, 7, 0, 0, 0]]),
+        ]
+        .concat();
+        vec![server_side, client_side]
+    }
 }
 
 #[cfg(test)]
@@ -229,7 +317,9 @@ mod tests {
 
     #[test]
     fn replay_corpora() {
-        let n = replay(DIR, "stun_message", stun_message) + replay(DIR, "turn_server", turn_server);
+        let n = replay(DIR, "stun_message", stun_message)
+            + replay(DIR, "turn_server", turn_server)
+            + replay(DIR, "turn_stream", turn_stream);
         assert!(n > 0);
     }
 
@@ -241,6 +331,9 @@ mod tests {
         for s in &seeds::turn_server() {
             turn_server(s);
         }
+        for s in &seeds::turn_stream() {
+            turn_stream(s);
+        }
     }
 
     /// Regenerates the seed files: `cargo test -p only-turn --lib write_fuzz_seeds -- --ignored`.
@@ -249,5 +342,6 @@ mod tests {
     fn write_fuzz_seeds() {
         write_target_seeds(DIR, "stun_message", &seeds::stun_message());
         write_target_seeds(DIR, "turn_server", &seeds::turn_server());
+        write_target_seeds(DIR, "turn_stream", &seeds::turn_stream());
     }
 }

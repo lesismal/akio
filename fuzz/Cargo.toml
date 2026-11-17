@@ -547,3 +547,10 @@ path = "fuzz_targets/quic_conn.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "turn_stream"
+path = "fuzz_targets/turn_stream.rs"
+test = false
+doc = false
+bench = false
