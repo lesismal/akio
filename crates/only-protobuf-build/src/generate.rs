@@ -7,7 +7,10 @@ use std::{
 
 use crate::{
     Config, features,
-    parse::{Constant, EnumDef, Field, File, Label, MessageDef, Presence, Scalar, Service, TypeRef},
+    parse::{
+        Constant, EnumDef, Field, File, Label, MessageDef, Options as _, Presence, Scalar, Service,
+        TypeRef,
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1164,6 +1167,7 @@ impl Gen<'_> {
         ranges.sort_unstable();
         let uf = self.cfg.unknown_fields;
         let ext = !ranges.is_empty();
+        let message_set = m.options.flag("message_set_wire_format") == Some(true);
         let use_pb = "        use ::only_protobuf::encoding as __pb;\n";
         let _ = writeln!(out, "impl ::only_protobuf::Message for {name} {{");
 
@@ -1219,7 +1223,11 @@ impl Gen<'_> {
             let _ = writeln!(out, "        {line}");
         }
         for &(a, b) in &ranges[next_range..] {
-            let _ = writeln!(out, "        self.extensions.encode_range({a}, {b}, buf);");
+            if message_set {
+                out.push_str("        self.extensions.encode_message_set(buf);\n");
+            } else {
+                let _ = writeln!(out, "        self.extensions.encode_range({a}, {b}, buf);");
+            }
         }
         if uf {
             out.push_str("        self.unknown_fields.encode(buf);\n");
@@ -1272,13 +1280,21 @@ impl Gen<'_> {
             terms.push(t);
         }
         if ext {
-            terms.push("self.extensions.encoded_len()".into());
+            terms.push(if message_set {
+                "self.extensions.message_set_len()".into()
+            } else {
+                "self.extensions.encoded_len()".into()
+            });
         }
         if uf {
             terms.push("self.unknown_fields.encoded_len()".into());
         }
         if terms.is_empty() {
             terms.push("0".into());
+        }
+        if terms.len() > 1 && terms[0].starts_with("match") {
+            // A leading `match` would be a statement, not the sum's first operand.
+            terms[0] = format!("({})", terms[0]);
         }
         let _ = writeln!(out, "        {}", terms.join("\n            + "));
         out.push_str("    }\n\n");
@@ -1302,10 +1318,18 @@ impl Gen<'_> {
         } else {
             "&mut ::only_protobuf::UnknownFields::new()"
         };
-        if plans.is_empty() && !ext {
+        if message_set {
+            // MessageSet: extensions travel as `repeated group Item = 1 { type_id = 2; message = 3 }`.
+            let _ = writeln!(
+                out,
+                "        match field {{\n            1 if wire_type == ::only_protobuf::encoding::WireType::StartGroup => self.extensions.merge_message_set_item(r),\n            _ => {fallback},\n        }}"
+            );
+        } else if plans.is_empty() && !ext {
             let _ = writeln!(out, "        {fallback}");
         } else {
-            out.push_str(use_pb);
+            if !plans.is_empty() {
+                out.push_str(use_pb);
+            }
             out.push_str("        match field {\n");
             for p in &sorted {
                 let (n, c, f) = (p.f.number, &p.codec, &p.name);
@@ -1542,6 +1566,9 @@ impl Gen<'_> {
                 &v.doc,
                 &format!("`{}` = {}.", v.name, v.number),
             );
+            if c.chars().any(|ch| ch.is_ascii_lowercase()) {
+                out.push_str("    #[allow(non_upper_case_globals)]\n");
+            }
             let _ = writeln!(out, "    pub const {c}: {name} = {name}({});", v.number);
         }
         out.push_str("\n    /// The value with this name in the `.proto` file.\n");
@@ -1896,9 +1923,26 @@ fn const_names(e: &EnumDef) -> Vec<String> {
         .all(|s| !s.is_empty() && !s.starts_with(|c: char| c.is_ascii_digit()))
         && stripped.iter().collect::<HashSet<_>>().len() == stripped.len();
     let names = if ok { stripped } else { plain };
+    // Aliases whose names differ only in case (`MOO`, `moo`) keep their own spelling.
+    let mut seen = HashSet::new();
     names
         .into_iter()
-        .map(|n| if n == "SELF" { "SELF_".into() } else { n })
+        .zip(&e.values)
+        .enumerate()
+        .map(|(i, (n, v))| {
+            let n = if n == "SELF" { "SELF_".to_owned() } else { n };
+            if seen.insert(n.clone()) {
+                return n;
+            }
+            let own = ident(&v.name);
+            if seen.insert(own.clone()) {
+                own
+            } else {
+                let n = format!("{n}_{i}");
+                seen.insert(n.clone());
+                n
+            }
+        })
         .collect()
 }
 

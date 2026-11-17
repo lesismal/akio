@@ -1,0 +1,9 @@
+# protobuf_test_messages.editions.proto2.TestAllTypesProto2
+optional_int32: 1
+repeated_int32: [1, 2]
+packed_int32: [3, 4]
+optional_nested_enum: BAZ
+data { group_int32: -2 group_uint32: 3 }
+multiwordgroupfield { group_int32: 4 }
+[protobuf_test_messages.editions.proto2.extension_int32]: 77
+[protobuf_test_messages.editions.proto2.groupfield] { group_int32: 5 }

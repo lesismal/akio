@@ -10,7 +10,12 @@ cd "$(dirname "$0")"
 for t in *.txtpb; do
     type=$(head -1 "$t" | sed 's/^# //')
     file=all_types.proto
-    case "$type" in test.p2.*) file=proto2.proto ;; esac
-    protoc -I ../proto --encode="$type" "$file" <"$t" >"${t%.txtpb}.bin"
+    case "$type" in
+    test.p2.*) file=proto2.proto ;;
+    protobuf_test_messages.proto2.*) file=google/protobuf/test_messages_proto2.proto ;;
+    protobuf_test_messages.editions.proto2.*) file=editions/golden/test_messages_proto2_editions.proto ;;
+    protobuf_test_messages.editions.*) file=conformance/test_protos/test_messages_edition2023.proto ;;
+    esac
+    protoc -I ../proto -I ../conformance/proto --encode="$type" "$file" <"$t" >"${t%.txtpb}.bin"
 done
 protoc --version

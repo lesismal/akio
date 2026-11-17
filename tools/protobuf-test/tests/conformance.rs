@@ -273,3 +273,153 @@ fn unknown_fields_survive_a_round_trip_through_an_older_message() {
     let back = Extended::decode(&s2.encode_to_vec()).unwrap();
     assert_eq!((back.f_int32, back.extra_string.as_str()), (4, "unknown"));
 }
+
+/// Decodes a golden encoding and checks that the decoded value re-encodes to it byte for byte.
+fn roundtrip<M: Message + PartialEq + std::fmt::Debug>(name: &str) -> M {
+    let bin = golden(name);
+    let got = M::decode(&bin).unwrap_or_else(|e| panic!("{name}: {e}"));
+    assert_eq!(got.encode_to_vec(), bin, "{name}: re-encoding");
+    assert_eq!(got.encoded_len(), bin.len(), "{name}: encoded_len");
+    got
+}
+
+#[test]
+fn proto2_groups_extensions_and_message_sets() {
+    use protobuf_test::protobuf_test_messages::proto2::{
+        self as p2m, GroupField, TestAllTypesProto2, test_all_types_proto2 as t,
+    };
+    let got: TestAllTypesProto2 = roundtrip("p2_groups_ext");
+    assert_eq!(
+        got.data,
+        Some(t::Data {
+            group_int32: Some(-2),
+            group_uint32: Some(3),
+            ..Default::default()
+        })
+    );
+    assert_eq!(got.multiwordgroupfield.as_ref().unwrap().group_int32, Some(4));
+    assert_eq!(got.optional_nested_enum, Some(t::NestedEnum::BAZ));
+    assert_eq!(got.packed_nested_enum, [t::NestedEnum::BAZ, t::NestedEnum::FOO]);
+    assert_eq!(got.extension(&p2m::EXTENSION_INT32).unwrap(), Some(77));
+    assert_eq!(
+        got.extension(&p2m::EXTENSION_STRING).unwrap().as_deref(),
+        Some("ext")
+    );
+    assert_eq!(
+        got.extension(&p2m::GROUPFIELD).unwrap(),
+        Some(GroupField {
+            group_int32: Some(5),
+            group_uint32: Some(6),
+            ..Default::default()
+        })
+    );
+    let set = got.message_set_correct.as_ref().unwrap();
+    let e1 = set
+        .extension(&t::message_set_correct_extension1::MESSAGE_SET_EXTENSION)
+        .unwrap()
+        .unwrap();
+    assert_eq!(e1.str.as_deref(), Some("in a set"));
+    let e2 = set
+        .extension(&t::message_set_correct_extension2::MESSAGE_SET_EXTENSION)
+        .unwrap()
+        .unwrap();
+    assert_eq!(e2.i, Some(9));
+
+    // Built from scratch through the typed API, the encoding is protoc's.
+    let mut want = TestAllTypesProto2 {
+        optional_int32: Some(1),
+        optional_nested_enum: Some(t::NestedEnum::BAZ),
+        repeated_nested_enum: vec![t::NestedEnum::FOO, t::NestedEnum::BAR],
+        packed_nested_enum: vec![t::NestedEnum::BAZ, t::NestedEnum::FOO],
+        data: got.data.clone(),
+        multiwordgroupfield: got.multiwordgroupfield.clone(),
+        default_int32: Some(0),
+        map_string_nested_enum: std::iter::once(("k".to_string(), t::NestedEnum::BAR)).collect(),
+        oneof_field: Some(t::OneofField::OneofUint32(8)),
+        ..Default::default()
+    };
+    want.set_extension(&p2m::EXTENSION_INT32, &77);
+    want.set_extension(&p2m::EXTENSION_STRING, &"ext".to_string());
+    want.set_extension(
+        &p2m::GROUPFIELD,
+        &GroupField {
+            group_int32: Some(5),
+            group_uint32: Some(6),
+            ..Default::default()
+        },
+    );
+    let mut set = t::MessageSetCorrect::default();
+    set.set_extension(
+        &t::message_set_correct_extension1::MESSAGE_SET_EXTENSION,
+        &t::MessageSetCorrectExtension1 {
+            str: Some("in a set".into()),
+            ..Default::default()
+        },
+    );
+    set.set_extension(
+        &t::message_set_correct_extension2::MESSAGE_SET_EXTENSION,
+        &t::MessageSetCorrectExtension2 {
+            i: Some(9),
+            ..Default::default()
+        },
+    );
+    want.message_set_correct = Some(set);
+    assert_eq!(want, got);
+    assert_eq!(want.encode_to_vec(), golden("p2_groups_ext"));
+}
+
+#[test]
+fn closed_enums_keep_unknown_numbers_as_unknown_fields() {
+    use protobuf_test::protobuf_test_messages::proto2::{TestAllTypesProto2, test_all_types_proto2 as t};
+    // optional_nested_enum (21) = 7, repeated_nested_enum (51) = [1, 9] unpacked, packed (88)
+    // = [2, 10], map_string_nested_enum (73) {"a": 11}, oneof_enum (119) = 12.
+    let bin = [
+        0xa8, 0x01, 0x07, // 21: 7 (unknown)
+        0x98, 0x03, 0x01, // 51: BAR
+        0x98, 0x03, 0x09, // 51: 9 (unknown)
+        0xc2, 0x05, 0x02, 0x02, 0x0a, // 88 packed: BAZ, 10 (unknown)
+        0xca, 0x04, 0x05, 0x0a, 0x01, b'a', 0x10, 0x0b, // 73 {"a": 11} (unknown)
+        0xb8, 0x07, 0x0c, // 119: 12 (unknown)
+    ];
+    let m = TestAllTypesProto2::decode(&bin).unwrap();
+    assert_eq!(m.optional_nested_enum, None);
+    assert_eq!(m.repeated_nested_enum, [t::NestedEnum::BAR]);
+    assert_eq!(m.packed_nested_enum, [t::NestedEnum::BAZ]);
+    assert!(m.map_string_nested_enum.is_empty());
+    assert_eq!(m.oneof_field, None);
+    // The unknown numbers come back after the known fields (unpacked), in the order read.
+    let mut want = vec![0x98, 0x03, 0x01, 0xc2, 0x05, 0x01, 0x02];
+    want.extend_from_slice(&[0xa8, 0x01, 0x07, 0x98, 0x03, 0x09, 0xc0, 0x05, 0x0a]);
+    want.extend_from_slice(&[0xca, 0x04, 0x05, 0x0a, 0x01, b'a', 0x10, 0x0b, 0xb8, 0x07, 0x0c]);
+    assert_eq!(m.encode_to_vec(), want);
+}
+
+#[test]
+fn editions_features() {
+    use protobuf_test::protobuf_test_messages::editions::{
+        self as e23, GroupLikeType, TestAllTypesEdition2023, proto2 as ep2,
+    };
+    // proto2 semantics in edition 2023: closed enums, expanded repeated fields, delimited groups.
+    let got: ep2::TestAllTypesProto2 = roundtrip("editions_p2");
+    assert_eq!(got.optional_int32, Some(1), "explicit presence");
+    assert_eq!(got.data.as_ref().unwrap().group_int32, Some(-2));
+    assert_eq!(
+        got.extension(&ep2::GROUPFIELD).unwrap().unwrap().group_int32,
+        Some(5)
+    );
+    // Edition 2023 with DELIMITED as the file default.
+    let got: TestAllTypesEdition2023 = roundtrip("edition2023");
+    assert_eq!(got.optional_int32, Some(7));
+    assert_eq!(got.groupliketype.as_ref().unwrap().group_int32, Some(6));
+    assert_eq!(got.delimited_field.as_ref().unwrap().group_int32, Some(8));
+    assert_eq!(
+        got.extension(&e23::GROUPLIKETYPE).unwrap(),
+        Some(GroupLikeType {
+            c: Some(9),
+            ..Default::default()
+        })
+    );
+    assert_eq!(got.extension(&e23::DELIMITED_EXT).unwrap().unwrap().c, Some(10));
+    assert_eq!(got.map_recursive[&1].optional_int32, Some(11));
+    assert_eq!(got.repeated_int32, [1, 2, 3], "packed by default in 2023");
+}

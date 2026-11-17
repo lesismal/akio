@@ -32,4 +32,33 @@ pub mod helloworld {
     only_protobuf::include_proto!("helloworld");
 }
 
+/// The conformance suite's messages.
+pub mod conformance {
+    only_protobuf::include_proto!("conformance");
+}
+
+/// The conformance suite's test messages.
+pub mod protobuf_test_messages {
+    /// proto2.
+    pub mod proto2 {
+        only_protobuf::include_proto!("protobuf_test_messages.proto2");
+    }
+    /// proto3.
+    pub mod proto3 {
+        only_protobuf::include_proto!("protobuf_test_messages.proto3");
+    }
+    /// Edition 2023.
+    pub mod editions {
+        only_protobuf::include_proto!("protobuf_test_messages.editions");
+        /// proto2 semantics in edition 2023.
+        pub mod proto2 {
+            only_protobuf::include_proto!("protobuf_test_messages.editions.proto2");
+        }
+        /// proto3 semantics in edition 2023.
+        pub mod proto3 {
+            only_protobuf::include_proto!("protobuf_test_messages.editions.proto3");
+        }
+    }
+}
+
 pub mod service;

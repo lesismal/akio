@@ -132,6 +132,77 @@ impl ExtensionSet {
         self.fields.range(start..=end).map(|(_, v)| v.len()).sum()
     }
 
+    /// Reads one MessageSet item (`group Item = 1 { required int32 type_id = 2; required bytes
+    /// message = 3; }`, its start tag just read) and keeps it as extension `type_id`, a
+    /// length-delimited message.
+    pub fn merge_message_set_item(&mut self, r: &mut Reader<'_>) -> Result<(), DecodeError> {
+        let raw = r.skip_field(1, WireType::StartGroup)?;
+        let mut item = Reader::new(raw);
+        let mut type_id = None;
+        let mut message: Option<&[u8]> = None;
+        loop {
+            let (f, wt) = item.read_tag()?;
+            match (f, wt) {
+                (1, WireType::EndGroup) => break,
+                (2, WireType::Varint) => type_id = Some(item.read_varint()?),
+                (3, WireType::Len) => message = Some(item.read_bytes()?),
+                _ => {
+                    item.skip_field(f, wt)?;
+                }
+            }
+        }
+        let id = type_id
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| (1..=encoding::MAX_FIELD_NUMBER).contains(v))
+            .ok_or(DecodeError::new(crate::DecodeErrorKind::InvalidTag).in_field(1))?;
+        let rec = self.fields.entry(id).or_default();
+        encoding::put_tag(rec, id, WireType::Len);
+        encoding::put_bytes(rec, message.unwrap_or_default());
+        Ok(())
+    }
+
+    /// Appends every field as a MessageSet item (each occurrence of a field becomes an item).
+    pub fn encode_message_set(&self, buf: &mut Vec<u8>) {
+        self.for_each_item(|id, msg| {
+            encoding::put_tag(buf, 1, WireType::StartGroup);
+            encoding::put_tag(buf, 2, WireType::Varint);
+            encoding::put_varint(buf, u64::from(id));
+            encoding::put_tag(buf, 3, WireType::Len);
+            encoding::put_bytes(buf, msg);
+            encoding::put_tag(buf, 1, WireType::EndGroup);
+        });
+    }
+
+    /// The length of [`encode_message_set`](Self::encode_message_set)'s output.
+    pub fn message_set_len(&self) -> usize {
+        let mut n = 0;
+        self.for_each_item(|id, msg| {
+            n += 2 * encoding::tag_len(1)
+                + encoding::tag_len(2)
+                + encoding::varint_len(u64::from(id))
+                + encoding::tag_len(3)
+                + encoding::varint_len(msg.len() as u64)
+                + msg.len();
+        });
+        n
+    }
+
+    fn for_each_item(&self, mut f: impl FnMut(u32, &[u8])) {
+        for (&id, raw) in &self.fields {
+            let mut r = Reader::new(raw);
+            while let Ok((_, wt)) = r.read_tag() {
+                if wt == WireType::Len {
+                    match r.read_bytes() {
+                        Ok(b) => f(id, b),
+                        Err(_) => break,
+                    }
+                } else if r.skip_field(id, wt).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
     /// Replaces field `number` with already encoded records (tags included).
     pub fn set_raw(&mut self, number: u32, records: Vec<u8>) {
         if records.is_empty() {
