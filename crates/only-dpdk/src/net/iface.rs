@@ -998,20 +998,16 @@ impl Iface {
     /// RFC 6528 initial sequence number: a keyed hash of the connection plus a 4 µs clock.
     fn isn(&self, local: SocketAddr, remote: SocketAddr, now: Instant) -> u32 {
         let t = (now.saturating_duration_since(self.epoch).as_micros() / 4) as u32;
-        let (l, r) = (words(local.ip()), words(remote.ip()));
-        self.keyed(&[
-            l[0],
-            l[1],
-            l[2],
-            l[3],
-            u32::from(local.port()),
-            r[0],
-            r[1],
-            r[2],
-            r[3],
-            u32::from(remote.port()),
-        ])
-        .wrapping_add(t)
+        let (lp, rp) = (u32::from(local.port()), u32::from(remote.port()));
+        let h = match (local.ip(), remote.ip()) {
+            // IPv4 hashes the four words it always did.
+            (IpAddr::V4(l), IpAddr::V4(r)) => self.keyed(&[u32::from(l), lp, u32::from(r), rp]),
+            (l, r) => {
+                let (l, r) = (words(l), words(r));
+                self.keyed(&[l[0], l[1], l[2], l[3], lp, r[0], r[1], r[2], r[3], rp])
+            }
+        };
+        h.wrapping_add(t)
     }
 
     /// Frames waiting to be handed to other queues.
@@ -2087,23 +2083,39 @@ impl Iface {
         count: u32,
         mss_idx: u32,
     ) -> u32 {
-        let (l, r) = (words(local.ip()), words(remote.ip()));
-        self.keyed(&[
-            l[0],
-            l[1],
-            l[2],
-            l[3],
-            u32::from(local.port()),
-            r[0],
-            r[1],
-            r[2],
-            r[3],
-            u32::from(remote.port()),
-            client_isn,
-            count,
-            mss_idx,
-            0x0c00_c1e5,
-        ]) & 0x00ff_ffff
+        let (lp, rp) = (u32::from(local.port()), u32::from(remote.port()));
+        let h = match (local.ip(), remote.ip()) {
+            (IpAddr::V4(l), IpAddr::V4(r)) => self.keyed(&[
+                u32::from(l),
+                lp,
+                u32::from(r),
+                rp,
+                client_isn,
+                count,
+                mss_idx,
+                0x0c00_c1e5,
+            ]),
+            (l, r) => {
+                let (l, r) = (words(l), words(r));
+                self.keyed(&[
+                    l[0],
+                    l[1],
+                    l[2],
+                    l[3],
+                    lp,
+                    r[0],
+                    r[1],
+                    r[2],
+                    r[3],
+                    rp,
+                    client_isn,
+                    count,
+                    mss_idx,
+                    0x0c00_c1e5,
+                ])
+            }
+        };
+        h & 0x00ff_ffff
     }
 
     fn cookie_count(&self, now: Instant) -> u32 {
@@ -2287,6 +2299,15 @@ impl Iface {
             self.arp_retry = retry;
             self.arp_failed = failed;
         }
+        if self.net.v6.is_some() {
+            self.poll6(now, tx);
+        }
+        self.reasm.expire(now);
+    }
+
+    /// The IPv6 part of `poll`: neighbor solicitation retries, the MLD report.
+    #[inline(never)]
+    fn poll6(&mut self, now: Instant, tx: &mut dyn Tx) {
         if let Some(v6) = self.net.v6.as_mut() {
             if v6.ndp.next_deadline().is_some_and(|t| now >= t) {
                 let mut retry = std::mem::take(&mut self.nd_retry);
@@ -2306,7 +2327,6 @@ impl Iface {
                 self.net.send_mld_report(tx);
             }
         }
-        self.reasm.expire(now);
     }
 
     /// Connections in the table (tests, stats).

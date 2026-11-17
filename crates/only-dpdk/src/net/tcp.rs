@@ -198,6 +198,7 @@ pub(crate) enum Endpoints {
 }
 
 impl Endpoints {
+    #[inline]
     pub(crate) fn new(local: SocketAddr, remote: SocketAddr) -> Endpoints {
         match (local, remote) {
             (SocketAddr::V4(l), SocketAddr::V4(r)) => Endpoints::V4(l, r),
@@ -330,6 +331,7 @@ pub(crate) struct Tcb {
 }
 
 impl Tcb {
+    #[inline]
     fn new(mut p: Params, local: SocketAddr, remote: SocketAddr, iss: u32, clock: Clock) -> Tcb {
         if remote.is_ipv6() {
             p.mss = p.mss.saturating_sub(V6_EXTRA).max(64);

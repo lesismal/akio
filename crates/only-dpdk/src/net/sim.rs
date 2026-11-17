@@ -1729,3 +1729,75 @@ fn bench_request_response() {
         el.as_nanos() as f64 / f64::from(n)
     );
 }
+
+/// Stack-only cost of a short connection (handshake, 64-byte request and response, close by
+/// the client, the server's FIN), like `stack-bench`'s sequential connections:
+/// `cargo test --release -p only-dpdk --lib bench_connection_cycle -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn bench_connection_cycle() {
+    let link = LinkCfg {
+        delay: Duration::ZERO,
+        ..LinkCfg::default()
+    };
+    let mut s = Sim::new(link, params(), params());
+    s.b.tcp_listen(80);
+    let n: u16 = std::env::var("ONLY_CC_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10_000);
+    let req = [7u8; 64];
+    let mut buf = [0u8; 4096];
+    let mut now = s.now;
+    let (mut ca, mut cb) = (Cap::default(), Cap::default());
+    let mut ev = Vec::new();
+    // Moves frames both ways until nothing is left to send.
+    fn pump(s: &mut Sim, now: Instant, ca: &mut Cap, cb: &mut Cap) {
+        for _ in 0..8 {
+            s.a.poll(now, ca);
+            for f in ca.0.drain(..) {
+                s.b.receive(now, &f, cb);
+            }
+            s.b.poll(now, cb);
+            if cb.0.is_empty() {
+                break;
+            }
+            for f in cb.0.drain(..) {
+                s.a.receive(now, &f, ca);
+            }
+        }
+    }
+    let t0 = Instant::now();
+    for i in 0..n {
+        let ha = s.a.tcp_connect(20000 + i, sa(B, 80), now).expect("connect");
+        pump(&mut s, now, &mut ca, &mut cb);
+        s.b.take_events(&mut ev);
+        let hb = ev
+            .iter()
+            .find_map(|e| match e {
+                Event::Accepted { h, .. } => Some(*h),
+                _ => None,
+            })
+            .expect("accepted");
+        ev.clear();
+        s.a.tcp_send(ha, &req);
+        pump(&mut s, now, &mut ca, &mut cb);
+        while s.b.tcp_recv(hb, &mut buf) > 0 {}
+        s.b.tcp_send(hb, &req);
+        pump(&mut s, now, &mut ca, &mut cb);
+        while s.a.tcp_recv(ha, &mut buf) > 0 {}
+        s.a.tcp_close(ha, now);
+        pump(&mut s, now, &mut ca, &mut cb);
+        s.b.tcp_close(hb, now);
+        pump(&mut s, now, &mut ca, &mut cb);
+        s.a.take_events(&mut ev);
+        s.b.take_events(&mut ev);
+        ev.clear();
+        now += Duration::from_micros(10);
+    }
+    let el = t0.elapsed();
+    eprintln!(
+        "CC {n} connections: {:.1} ns each",
+        el.as_nanos() as f64 / f64::from(n)
+    );
+}
