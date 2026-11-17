@@ -108,9 +108,7 @@ pub(crate) fn responded(s: Span, resp: &Response) {
     if s.is_recording() {
         s.record("http.response.status_code", u64::from(resp.status));
         if resp.status >= 500 {
-            s.set_status(SpanStatus::Error(std::borrow::Cow::Borrowed(
-                "server error",
-            )));
+            s.set_status(SpanStatus::Error(Cow::Borrowed("server error")));
         }
     }
 }
