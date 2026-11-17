@@ -297,9 +297,15 @@ fn proto2_groups_extensions_and_message_sets() {
             ..Default::default()
         })
     );
-    assert_eq!(got.multiwordgroupfield.as_ref().unwrap().group_int32, Some(4));
+    assert_eq!(
+        got.multiwordgroupfield.as_ref().unwrap().group_int32,
+        Some(4)
+    );
     assert_eq!(got.optional_nested_enum, Some(t::NestedEnum::BAZ));
-    assert_eq!(got.packed_nested_enum, [t::NestedEnum::BAZ, t::NestedEnum::FOO]);
+    assert_eq!(
+        got.packed_nested_enum,
+        [t::NestedEnum::BAZ, t::NestedEnum::FOO]
+    );
     assert_eq!(got.extension(&p2m::EXTENSION_INT32).unwrap(), Some(77));
     assert_eq!(
         got.extension(&p2m::EXTENSION_STRING).unwrap().as_deref(),
@@ -370,7 +376,9 @@ fn proto2_groups_extensions_and_message_sets() {
 
 #[test]
 fn closed_enums_keep_unknown_numbers_as_unknown_fields() {
-    use protobuf_test::protobuf_test_messages::proto2::{TestAllTypesProto2, test_all_types_proto2 as t};
+    use protobuf_test::protobuf_test_messages::proto2::{
+        TestAllTypesProto2, test_all_types_proto2 as t,
+    };
     // optional_nested_enum (21) = 7, repeated_nested_enum (51) = [1, 9] unpacked, packed (88)
     // = [2, 10], map_string_nested_enum (73) {"a": 11}, oneof_enum (119) = 12.
     let bin = [
@@ -390,7 +398,9 @@ fn closed_enums_keep_unknown_numbers_as_unknown_fields() {
     // The unknown numbers come back after the known fields (unpacked), in the order read.
     let mut want = vec![0x98, 0x03, 0x01, 0xc2, 0x05, 0x01, 0x02];
     want.extend_from_slice(&[0xa8, 0x01, 0x07, 0x98, 0x03, 0x09, 0xc0, 0x05, 0x0a]);
-    want.extend_from_slice(&[0xca, 0x04, 0x05, 0x0a, 0x01, b'a', 0x10, 0x0b, 0xb8, 0x07, 0x0c]);
+    want.extend_from_slice(&[
+        0xca, 0x04, 0x05, 0x0a, 0x01, b'a', 0x10, 0x0b, 0xb8, 0x07, 0x0c,
+    ]);
     assert_eq!(m.encode_to_vec(), want);
 }
 
@@ -404,7 +414,10 @@ fn editions_features() {
     assert_eq!(got.optional_int32, Some(1), "explicit presence");
     assert_eq!(got.data.as_ref().unwrap().group_int32, Some(-2));
     assert_eq!(
-        got.extension(&ep2::GROUPFIELD).unwrap().unwrap().group_int32,
+        got.extension(&ep2::GROUPFIELD)
+            .unwrap()
+            .unwrap()
+            .group_int32,
         Some(5)
     );
     // Edition 2023 with DELIMITED as the file default.
@@ -419,7 +432,10 @@ fn editions_features() {
             ..Default::default()
         })
     );
-    assert_eq!(got.extension(&e23::DELIMITED_EXT).unwrap().unwrap().c, Some(10));
+    assert_eq!(
+        got.extension(&e23::DELIMITED_EXT).unwrap().unwrap().c,
+        Some(10)
+    );
     assert_eq!(got.map_recursive[&1].optional_int32, Some(11));
     assert_eq!(got.repeated_int32, [1, 2, 3], "packed by default in 2023");
 }

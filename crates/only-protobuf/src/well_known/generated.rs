@@ -41,6 +41,14 @@ impl ::only_protobuf::Name for Any {
     const FULL_NAME: &'static str = "google.protobuf.Any";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Any {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Any is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.Api` message.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Api {
@@ -110,6 +118,14 @@ impl ::only_protobuf::Message for Api {
 
 impl ::only_protobuf::Name for Api {
     const FULL_NAME: &'static str = "google.protobuf.Api";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for Api {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Api is not in the descriptor pool"))
+    }
 }
 
 /// The `google.protobuf.Method` message.
@@ -183,6 +199,14 @@ impl ::only_protobuf::Name for Method {
     const FULL_NAME: &'static str = "google.protobuf.Method";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Method {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Method is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.Mixin` message.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Mixin {
@@ -222,6 +246,14 @@ impl ::only_protobuf::Message for Mixin {
 
 impl ::only_protobuf::Name for Mixin {
     const FULL_NAME: &'static str = "google.protobuf.Mixin";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for Mixin {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Mixin is not in the descriptor pool"))
+    }
 }
 
 /// The `google.protobuf.FileDescriptorSet` message.
@@ -272,6 +304,14 @@ impl ::only_protobuf::Extendable for FileDescriptorSet {
 
 impl ::only_protobuf::Name for FileDescriptorSet {
     const FULL_NAME: &'static str = "google.protobuf.FileDescriptorSet";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for FileDescriptorSet {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FileDescriptorSet is not in the descriptor pool"))
+    }
 }
 
 /// The `google.protobuf.FileDescriptorProto` message.
@@ -399,6 +439,14 @@ impl ::only_protobuf::Name for FileDescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.FileDescriptorProto";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for FileDescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FileDescriptorProto is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.DescriptorProto` message.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct DescriptorProto {
@@ -501,6 +549,14 @@ impl ::only_protobuf::Name for DescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.DescriptorProto";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for DescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.DescriptorProto is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.DescriptorProto`.
 pub mod descriptor_proto {
     /// The `google.protobuf.DescriptorProto.ExtensionRange` message.
@@ -560,6 +616,14 @@ pub mod descriptor_proto {
         const FULL_NAME: &'static str = "google.protobuf.DescriptorProto.ExtensionRange";
     }
 
+    impl ::only_protobuf::reflect::ReflectMessage for ExtensionRange {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.DescriptorProto.ExtensionRange is not in the descriptor pool"))
+        }
+    }
+
     /// The `google.protobuf.DescriptorProto.ReservedRange` message.
     #[derive(Clone, PartialEq, Eq, Debug, Default)]
     pub struct ReservedRange {
@@ -610,6 +674,14 @@ pub mod descriptor_proto {
 
     impl ::only_protobuf::Name for ReservedRange {
         const FULL_NAME: &'static str = "google.protobuf.DescriptorProto.ReservedRange";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for ReservedRange {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.DescriptorProto.ReservedRange is not in the descriptor pool"))
+        }
     }
 }
 
@@ -692,6 +764,14 @@ impl ::only_protobuf::Name for ExtensionRangeOptions {
     const FULL_NAME: &'static str = "google.protobuf.ExtensionRangeOptions";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for ExtensionRangeOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.ExtensionRangeOptions is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.ExtensionRangeOptions`.
 pub mod extension_range_options {
     /// The `google.protobuf.ExtensionRangeOptions.Declaration` message.
@@ -771,6 +851,14 @@ pub mod extension_range_options {
 
     impl ::only_protobuf::Name for Declaration {
         const FULL_NAME: &'static str = "google.protobuf.ExtensionRangeOptions.Declaration";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for Declaration {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.ExtensionRangeOptions.Declaration is not in the descriptor pool"))
+        }
     }
 
     /// The `VerificationState` enum.
@@ -974,6 +1062,14 @@ impl ::only_protobuf::Message for FieldDescriptorProto {
 
 impl ::only_protobuf::Name for FieldDescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.FieldDescriptorProto";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for FieldDescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FieldDescriptorProto is not in the descriptor pool"))
+    }
 }
 
 /// Nested types of `google.protobuf.FieldDescriptorProto`.
@@ -1221,6 +1317,14 @@ impl ::only_protobuf::Name for OneofDescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.OneofDescriptorProto";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for OneofDescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.OneofDescriptorProto is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.EnumDescriptorProto` message.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct EnumDescriptorProto {
@@ -1298,6 +1402,14 @@ impl ::only_protobuf::Name for EnumDescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.EnumDescriptorProto";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for EnumDescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.EnumDescriptorProto is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.EnumDescriptorProto`.
 pub mod enum_descriptor_proto {
     /// The `google.protobuf.EnumDescriptorProto.EnumReservedRange` message.
@@ -1350,6 +1462,14 @@ pub mod enum_descriptor_proto {
 
     impl ::only_protobuf::Name for EnumReservedRange {
         const FULL_NAME: &'static str = "google.protobuf.EnumDescriptorProto.EnumReservedRange";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for EnumReservedRange {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.EnumDescriptorProto.EnumReservedRange is not in the descriptor pool"))
+        }
     }
 }
 
@@ -1410,6 +1530,14 @@ impl ::only_protobuf::Name for EnumValueDescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.EnumValueDescriptorProto";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for EnumValueDescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.EnumValueDescriptorProto is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.ServiceDescriptorProto` message.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct ServiceDescriptorProto {
@@ -1461,6 +1589,14 @@ impl ::only_protobuf::Message for ServiceDescriptorProto {
 
 impl ::only_protobuf::Name for ServiceDescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.ServiceDescriptorProto";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for ServiceDescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.ServiceDescriptorProto is not in the descriptor pool"))
+    }
 }
 
 /// The `google.protobuf.MethodDescriptorProto` message.
@@ -1545,6 +1681,14 @@ impl ::only_protobuf::Message for MethodDescriptorProto {
 
 impl ::only_protobuf::Name for MethodDescriptorProto {
     const FULL_NAME: &'static str = "google.protobuf.MethodDescriptorProto";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for MethodDescriptorProto {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.MethodDescriptorProto is not in the descriptor pool"))
+    }
 }
 
 /// The `google.protobuf.FileOptions` message.
@@ -1783,6 +1927,14 @@ impl ::only_protobuf::Name for FileOptions {
     const FULL_NAME: &'static str = "google.protobuf.FileOptions";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for FileOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FileOptions is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.FileOptions`.
 pub mod file_options {
     /// The `OptimizeMode` enum.
@@ -1958,6 +2110,14 @@ impl ::only_protobuf::Name for MessageOptions {
     const FULL_NAME: &'static str = "google.protobuf.MessageOptions";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for MessageOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.MessageOptions is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.FieldOptions` message.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct FieldOptions {
@@ -2129,6 +2289,14 @@ impl ::only_protobuf::Name for FieldOptions {
     const FULL_NAME: &'static str = "google.protobuf.FieldOptions";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for FieldOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FieldOptions is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.FieldOptions`.
 pub mod field_options {
     /// The `google.protobuf.FieldOptions.EditionDefault` message.
@@ -2186,6 +2354,14 @@ pub mod field_options {
 
     impl ::only_protobuf::Name for EditionDefault {
         const FULL_NAME: &'static str = "google.protobuf.FieldOptions.EditionDefault";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for EditionDefault {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.FieldOptions.EditionDefault is not in the descriptor pool"))
+        }
     }
 
     /// The `google.protobuf.FieldOptions.FeatureSupport` message.
@@ -2280,6 +2456,14 @@ pub mod field_options {
 
     impl ::only_protobuf::Name for FeatureSupport {
         const FULL_NAME: &'static str = "google.protobuf.FieldOptions.FeatureSupport";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for FeatureSupport {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.FieldOptions.FeatureSupport is not in the descriptor pool"))
+        }
     }
 
     /// The `CType` enum.
@@ -2636,6 +2820,14 @@ impl ::only_protobuf::Name for OneofOptions {
     const FULL_NAME: &'static str = "google.protobuf.OneofOptions";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for OneofOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.OneofOptions is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.EnumOptions` message.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct EnumOptions {
@@ -2723,6 +2915,14 @@ impl ::only_protobuf::Name for EnumOptions {
     const FULL_NAME: &'static str = "google.protobuf.EnumOptions";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for EnumOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.EnumOptions is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.EnumValueOptions` message.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct EnumValueOptions {
@@ -2806,6 +3006,14 @@ impl ::only_protobuf::Name for EnumValueOptions {
     const FULL_NAME: &'static str = "google.protobuf.EnumValueOptions";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for EnumValueOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.EnumValueOptions is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.ServiceOptions` message.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct ServiceOptions {
@@ -2873,6 +3081,14 @@ impl ::only_protobuf::Extendable for ServiceOptions {
 
 impl ::only_protobuf::Name for ServiceOptions {
     const FULL_NAME: &'static str = "google.protobuf.ServiceOptions";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for ServiceOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.ServiceOptions is not in the descriptor pool"))
+    }
 }
 
 /// The `google.protobuf.MethodOptions` message.
@@ -2956,6 +3172,14 @@ impl ::only_protobuf::Extendable for MethodOptions {
 
 impl ::only_protobuf::Name for MethodOptions {
     const FULL_NAME: &'static str = "google.protobuf.MethodOptions";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for MethodOptions {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.MethodOptions is not in the descriptor pool"))
+    }
 }
 
 /// Nested types of `google.protobuf.MethodOptions`.
@@ -3121,6 +3345,14 @@ impl ::only_protobuf::Name for UninterpretedOption {
     const FULL_NAME: &'static str = "google.protobuf.UninterpretedOption";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for UninterpretedOption {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.UninterpretedOption is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.UninterpretedOption`.
 pub mod uninterpreted_option {
     /// The `google.protobuf.UninterpretedOption.NamePart` message.
@@ -3162,6 +3394,14 @@ pub mod uninterpreted_option {
 
     impl ::only_protobuf::Name for NamePart {
         const FULL_NAME: &'static str = "google.protobuf.UninterpretedOption.NamePart";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for NamePart {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.UninterpretedOption.NamePart is not in the descriptor pool"))
+        }
     }
 }
 
@@ -3329,6 +3569,14 @@ impl ::only_protobuf::Name for FeatureSet {
     const FULL_NAME: &'static str = "google.protobuf.FeatureSet";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for FeatureSet {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FeatureSet is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.FeatureSet`.
 pub mod feature_set {
     /// The `google.protobuf.FeatureSet.VisibilityFeature` message.
@@ -3356,6 +3604,14 @@ pub mod feature_set {
 
     impl ::only_protobuf::Name for VisibilityFeature {
         const FULL_NAME: &'static str = "google.protobuf.FeatureSet.VisibilityFeature";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for VisibilityFeature {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.FeatureSet.VisibilityFeature is not in the descriptor pool"))
+        }
     }
 
     /// Nested types of `google.protobuf.FeatureSet.VisibilityFeature`.
@@ -3981,6 +4237,14 @@ impl ::only_protobuf::Name for FeatureSetDefaults {
     const FULL_NAME: &'static str = "google.protobuf.FeatureSetDefaults";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for FeatureSetDefaults {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FeatureSetDefaults is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.FeatureSetDefaults`.
 pub mod feature_set_defaults {
     /// The `google.protobuf.FeatureSetDefaults.FeatureSetEditionDefault` message.
@@ -4040,6 +4304,14 @@ pub mod feature_set_defaults {
     impl ::only_protobuf::Name for FeatureSetEditionDefault {
         const FULL_NAME: &'static str = "google.protobuf.FeatureSetDefaults.FeatureSetEditionDefault";
     }
+
+    impl ::only_protobuf::reflect::ReflectMessage for FeatureSetEditionDefault {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.FeatureSetDefaults.FeatureSetEditionDefault is not in the descriptor pool"))
+        }
+    }
 }
 
 /// The `google.protobuf.SourceCodeInfo` message.
@@ -4090,6 +4362,14 @@ impl ::only_protobuf::Extendable for SourceCodeInfo {
 
 impl ::only_protobuf::Name for SourceCodeInfo {
     const FULL_NAME: &'static str = "google.protobuf.SourceCodeInfo";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for SourceCodeInfo {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.SourceCodeInfo is not in the descriptor pool"))
+    }
 }
 
 /// Nested types of `google.protobuf.SourceCodeInfo`.
@@ -4160,6 +4440,14 @@ pub mod source_code_info {
     impl ::only_protobuf::Name for Location {
         const FULL_NAME: &'static str = "google.protobuf.SourceCodeInfo.Location";
     }
+
+    impl ::only_protobuf::reflect::ReflectMessage for Location {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.SourceCodeInfo.Location is not in the descriptor pool"))
+        }
+    }
 }
 
 /// The `google.protobuf.GeneratedCodeInfo` message.
@@ -4196,6 +4484,14 @@ impl ::only_protobuf::Message for GeneratedCodeInfo {
 
 impl ::only_protobuf::Name for GeneratedCodeInfo {
     const FULL_NAME: &'static str = "google.protobuf.GeneratedCodeInfo";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for GeneratedCodeInfo {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.GeneratedCodeInfo is not in the descriptor pool"))
+    }
 }
 
 /// Nested types of `google.protobuf.GeneratedCodeInfo`.
@@ -4278,6 +4574,14 @@ pub mod generated_code_info {
 
     impl ::only_protobuf::Name for Annotation {
         const FULL_NAME: &'static str = "google.protobuf.GeneratedCodeInfo.Annotation";
+    }
+
+    impl ::only_protobuf::reflect::ReflectMessage for Annotation {
+        fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+            super::descriptor_pool()
+                .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+                .unwrap_or_else(|| ::core::panic!("google.protobuf.GeneratedCodeInfo.Annotation is not in the descriptor pool"))
+        }
     }
 
     /// Nested types of `google.protobuf.GeneratedCodeInfo.Annotation`.
@@ -4571,6 +4875,14 @@ impl ::only_protobuf::Name for Duration {
     const FULL_NAME: &'static str = "google.protobuf.Duration";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Duration {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Duration is not in the descriptor pool"))
+    }
+}
+
 /// A generic empty message, for methods that take or return nothing.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Empty {
@@ -4596,6 +4908,14 @@ impl ::only_protobuf::Message for Empty {
 
 impl ::only_protobuf::Name for Empty {
     const FULL_NAME: &'static str = "google.protobuf.Empty";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for Empty {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Empty is not in the descriptor pool"))
+    }
 }
 
 /// A set of symbolic field paths, such as `user.display_name`.
@@ -4634,6 +4954,14 @@ impl ::only_protobuf::Name for FieldMask {
     const FULL_NAME: &'static str = "google.protobuf.FieldMask";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for FieldMask {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FieldMask is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.SourceContext` message.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct SourceContext {
@@ -4670,6 +4998,14 @@ impl ::only_protobuf::Name for SourceContext {
     const FULL_NAME: &'static str = "google.protobuf.SourceContext";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for SourceContext {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.SourceContext is not in the descriptor pool"))
+    }
+}
+
 /// A JSON object: field names to dynamically typed values.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct Struct {
@@ -4704,6 +5040,14 @@ impl ::only_protobuf::Message for Struct {
 
 impl ::only_protobuf::Name for Struct {
     const FULL_NAME: &'static str = "google.protobuf.Struct";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for Struct {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Struct is not in the descriptor pool"))
+    }
 }
 
 /// A dynamically typed JSON value.
@@ -4820,6 +5164,14 @@ impl ::only_protobuf::Name for Value {
     const FULL_NAME: &'static str = "google.protobuf.Value";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Value {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Value is not in the descriptor pool"))
+    }
+}
+
 /// Nested types of `google.protobuf.Value`.
 pub mod value {
     /// The kind of value.
@@ -4875,6 +5227,14 @@ impl ::only_protobuf::Message for ListValue {
 
 impl ::only_protobuf::Name for ListValue {
     const FULL_NAME: &'static str = "google.protobuf.ListValue";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for ListValue {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.ListValue is not in the descriptor pool"))
+    }
 }
 
 /// The JSON `null` value.
@@ -4978,6 +5338,14 @@ impl ::only_protobuf::Name for Timestamp {
     const FULL_NAME: &'static str = "google.protobuf.Timestamp";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Timestamp {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Timestamp is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.Type` message.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Type {
@@ -5042,6 +5410,14 @@ impl ::only_protobuf::Message for Type {
 
 impl ::only_protobuf::Name for Type {
     const FULL_NAME: &'static str = "google.protobuf.Type";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for Type {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Type is not in the descriptor pool"))
+    }
 }
 
 /// The `google.protobuf.Field` message.
@@ -5123,6 +5499,14 @@ impl ::only_protobuf::Message for Field {
 
 impl ::only_protobuf::Name for Field {
     const FULL_NAME: &'static str = "google.protobuf.Field";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for Field {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Field is not in the descriptor pool"))
+    }
 }
 
 /// Nested types of `google.protobuf.Field`.
@@ -5391,6 +5775,14 @@ impl ::only_protobuf::Name for Enum {
     const FULL_NAME: &'static str = "google.protobuf.Enum";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Enum {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Enum is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.EnumValue` message.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct EnumValue {
@@ -5437,6 +5829,14 @@ impl ::only_protobuf::Name for EnumValue {
     const FULL_NAME: &'static str = "google.protobuf.EnumValue";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for EnumValue {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.EnumValue is not in the descriptor pool"))
+    }
+}
+
 /// The `google.protobuf.Option` message.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Option {
@@ -5476,6 +5876,14 @@ impl ::only_protobuf::Message for Option {
 
 impl ::only_protobuf::Name for Option {
     const FULL_NAME: &'static str = "google.protobuf.Option";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for Option {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Option is not in the descriptor pool"))
+    }
 }
 
 /// The `Syntax` enum.
@@ -5581,6 +5989,14 @@ impl ::only_protobuf::Name for DoubleValue {
     const FULL_NAME: &'static str = "google.protobuf.DoubleValue";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for DoubleValue {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.DoubleValue is not in the descriptor pool"))
+    }
+}
+
 /// Wrapper message for `float`.
 #[derive(Clone, PartialEq, Debug, Default)]
 pub struct FloatValue {
@@ -5615,6 +6031,14 @@ impl ::only_protobuf::Message for FloatValue {
 
 impl ::only_protobuf::Name for FloatValue {
     const FULL_NAME: &'static str = "google.protobuf.FloatValue";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for FloatValue {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.FloatValue is not in the descriptor pool"))
+    }
 }
 
 /// Wrapper message for `int64`.
@@ -5653,6 +6077,14 @@ impl ::only_protobuf::Name for Int64Value {
     const FULL_NAME: &'static str = "google.protobuf.Int64Value";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Int64Value {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Int64Value is not in the descriptor pool"))
+    }
+}
+
 /// Wrapper message for `uint64`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct UInt64Value {
@@ -5687,6 +6119,14 @@ impl ::only_protobuf::Message for UInt64Value {
 
 impl ::only_protobuf::Name for UInt64Value {
     const FULL_NAME: &'static str = "google.protobuf.UInt64Value";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for UInt64Value {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.UInt64Value is not in the descriptor pool"))
+    }
 }
 
 /// Wrapper message for `int32`.
@@ -5725,6 +6165,14 @@ impl ::only_protobuf::Name for Int32Value {
     const FULL_NAME: &'static str = "google.protobuf.Int32Value";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for Int32Value {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.Int32Value is not in the descriptor pool"))
+    }
+}
+
 /// Wrapper message for `uint32`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct UInt32Value {
@@ -5759,6 +6207,14 @@ impl ::only_protobuf::Message for UInt32Value {
 
 impl ::only_protobuf::Name for UInt32Value {
     const FULL_NAME: &'static str = "google.protobuf.UInt32Value";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for UInt32Value {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.UInt32Value is not in the descriptor pool"))
+    }
 }
 
 /// Wrapper message for `bool`.
@@ -5797,6 +6253,14 @@ impl ::only_protobuf::Name for BoolValue {
     const FULL_NAME: &'static str = "google.protobuf.BoolValue";
 }
 
+impl ::only_protobuf::reflect::ReflectMessage for BoolValue {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.BoolValue is not in the descriptor pool"))
+    }
+}
+
 /// Wrapper message for `string`.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct StringValue {
@@ -5831,6 +6295,14 @@ impl ::only_protobuf::Message for StringValue {
 
 impl ::only_protobuf::Name for StringValue {
     const FULL_NAME: &'static str = "google.protobuf.StringValue";
+}
+
+impl ::only_protobuf::reflect::ReflectMessage for StringValue {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.StringValue is not in the descriptor pool"))
+    }
 }
 
 /// Wrapper message for `bytes`.
@@ -5868,3 +6340,426 @@ impl ::only_protobuf::Message for BytesValue {
 impl ::only_protobuf::Name for BytesValue {
     const FULL_NAME: &'static str = "google.protobuf.BytesValue";
 }
+
+impl ::only_protobuf::reflect::ReflectMessage for BytesValue {
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {
+        descriptor_pool()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!("google.protobuf.BytesValue is not in the descriptor pool"))
+    }
+}
+
+/// The descriptor pool of this package's files and the files they import (built from
+/// [`FILE_DESCRIPTOR_SET`] on first use).
+pub fn descriptor_pool() -> &'static ::only_protobuf::reflect::DescriptorPool {
+    static POOL: ::std::sync::OnceLock<::only_protobuf::reflect::DescriptorPool> =
+        ::std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        ::only_protobuf::reflect::DescriptorPool::decode(FILE_DESCRIPTOR_SET)
+            .unwrap_or_else(|e| ::core::panic!("{e}"))
+    })
+}
+
+/// The descriptors of this package's files and of the files they import: an encoded
+/// `google.protobuf.FileDescriptorSet`.
+pub const FILE_DESCRIPTOR_SET: &[u8] = b"\
+    \x0a\xe4\x01\x0a\x19google/protobuf/any.proto\x12\x0fgoogle.protobuf\"\
+    6\x0a\x03Any\x12\x19\x0a\x08type_url\x18\x01 \x01(\x09R\x07typeUrl\x12\x14\x0a\x05value\x18\x02 \x01(\x0c\
+    R\x05valueBv\x0a\x13com.google.protobufB\x08AnyProtoP\x01Z,goog\
+    le.golang.org/protobuf/types/known/anypb\xa2\x02\x03GPB\xaa\x02\
+    \x1eGoogle.Protobuf.WellKnownTypesb\x06proto3\x0a\xfa\x01\x0a$goog\
+    le/protobuf/source_context.proto\x12\x0fgoogle.protobu\
+    f\",\x0a\x0dSourceContext\x12\x1b\x0a\x09file_name\x18\x01 \x01(\x09R\x08fileNameB\
+    \x8a\x01\x0a\x13com.google.protobufB\x12SourceContextProtoP\x01Z6g\
+    oogle.golang.org/protobuf/types/known/sourcecont\
+    extpb\xa2\x02\x03GPB\xaa\x02\x1eGoogle.Protobuf.WellKnownTypesb\x06pr\
+    oto3\x0a\xeb\x0e\x0a\x1agoogle/protobuf/type.proto\x12\x0fgoogle.prot\
+    obuf\x1a\x19google/protobuf/any.proto\x1a$google/protobuf\
+    /source_context.proto\"\xa7\x02\x0a\x04Type\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04na\
+    me\x12.\x0a\x06fields\x18\x02 \x03(\x0b2\x16.google.protobuf.FieldR\x06fiel\
+    ds\x12\x16\x0a\x06oneofs\x18\x03 \x03(\x09R\x06oneofs\x121\x0a\x07options\x18\x04 \x03(\x0b2\x17.go\
+    ogle.protobuf.OptionR\x07options\x12E\x0a\x0esource_context\x18\
+    \x05 \x01(\x0b2\x1e.google.protobuf.SourceContextR\x0dsourceCon\
+    text\x12/\x0a\x06syntax\x18\x06 \x01(\x0e2\x17.google.protobuf.SyntaxR\x06s\
+    yntax\x12\x18\x0a\x07edition\x18\x07 \x01(\x09R\x07edition\"\xb4\x06\x0a\x05Field\x12/\x0a\x04kin\
+    d\x18\x01 \x01(\x0e2\x1b.google.protobuf.Field.KindR\x04kind\x12D\x0a\x0bca\
+    rdinality\x18\x02 \x01(\x0e2\".google.protobuf.Field.Cardinal\
+    ityR\x0bcardinality\x12\x16\x0a\x06number\x18\x03 \x01(\x05R\x06number\x12\x12\x0a\x04name\
+    \x18\x04 \x01(\x09R\x04name\x12\x19\x0a\x08type_url\x18\x06 \x01(\x09R\x07typeUrl\x12\x1f\x0a\x0boneof\
+    _index\x18\x07 \x01(\x05R\x0aoneofIndex\x12\x16\x0a\x06packed\x18\x08 \x01(\x08R\x06packed\
+    \x121\x0a\x07options\x18\x09 \x03(\x0b2\x17.google.protobuf.OptionR\x07opti\
+    ons\x12\x1b\x0a\x09json_name\x18\x0a \x01(\x09R\x08jsonName\x12#\x0a\x0ddefault_valu\
+    e\x18\x0b \x01(\x09R\x0cdefaultValue\"\xc8\x02\x0a\x04Kind\x12\x10\x0a\x0cTYPE_UNKNOWN\x10\x00\
+    \x12\x0f\x0a\x0bTYPE_DOUBLE\x10\x01\x12\x0e\x0a\x0aTYPE_FLOAT\x10\x02\x12\x0e\x0a\x0aTYPE_INT64\x10\
+    \x03\x12\x0f\x0a\x0bTYPE_UINT64\x10\x04\x12\x0e\x0a\x0aTYPE_INT32\x10\x05\x12\x10\x0a\x0cTYPE_FIXED\
+    64\x10\x06\x12\x10\x0a\x0cTYPE_FIXED32\x10\x07\x12\x0d\x0a\x09TYPE_BOOL\x10\x08\x12\x0f\x0a\x0bTYPE_ST\
+    RING\x10\x09\x12\x0e\x0a\x0aTYPE_GROUP\x10\x0a\x12\x10\x0a\x0cTYPE_MESSAGE\x10\x0b\x12\x0e\x0a\x0aTYPE\
+    _BYTES\x10\x0c\x12\x0f\x0a\x0bTYPE_UINT32\x10\x0d\x12\x0d\x0a\x09TYPE_ENUM\x10\x0e\x12\x11\x0a\x0dTYPE\
+    _SFIXED32\x10\x0f\x12\x11\x0a\x0dTYPE_SFIXED64\x10\x10\x12\x0f\x0a\x0bTYPE_SINT32\x10\x11\x12\
+    \x0f\x0a\x0bTYPE_SINT64\x10\x12\"t\x0a\x0bCardinality\x12\x17\x0a\x13CARDINALITY_U\
+    NKNOWN\x10\x00\x12\x18\x0a\x14CARDINALITY_OPTIONAL\x10\x01\x12\x18\x0a\x14CARDINALIT\
+    Y_REQUIRED\x10\x02\x12\x18\x0a\x14CARDINALITY_REPEATED\x10\x03\"\x99\x02\x0a\x04Enum\x12\
+    \x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x128\x0a\x09enumvalue\x18\x02 \x03(\x0b2\x1a.google.\
+    protobuf.EnumValueR\x09enumvalue\x121\x0a\x07options\x18\x03 \x03(\x0b2\x17\
+    .google.protobuf.OptionR\x07options\x12E\x0a\x0esource_conte\
+    xt\x18\x04 \x01(\x0b2\x1e.google.protobuf.SourceContextR\x0dsource\
+    Context\x12/\x0a\x06syntax\x18\x05 \x01(\x0e2\x17.google.protobuf.Syntax\
+    R\x06syntax\x12\x18\x0a\x07edition\x18\x06 \x01(\x09R\x07edition\"j\x0a\x09EnumValue\x12\
+    \x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x12\x16\x0a\x06number\x18\x02 \x01(\x05R\x06number\x121\x0a\x07o\
+    ptions\x18\x03 \x03(\x0b2\x17.google.protobuf.OptionR\x07options\"H\
+    \x0a\x06Option\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x12*\x0a\x05value\x18\x02 \x01(\x0b2\x14.go\
+    ogle.protobuf.AnyR\x05value*C\x0a\x06Syntax\x12\x11\x0a\x0dSYNTAX_PRO\
+    TO2\x10\x00\x12\x11\x0a\x0dSYNTAX_PROTO3\x10\x01\x12\x13\x0a\x0fSYNTAX_EDITIONS\x10\x02B{\x0a\
+    \x13com.google.protobufB\x09TypeProtoP\x01Z-google.golang\
+    .org/protobuf/types/known/typepb\xf8\x01\x01\xa2\x02\x03GPB\xaa\x02\x1eGoog\
+    le.Protobuf.WellKnownTypesb\x06proto3\x0a\xd4\x07\x0a\x19google/pr\
+    otobuf/api.proto\x12\x0fgoogle.protobuf\x1a$google/protob\
+    uf/source_context.proto\x1a\x1agoogle/protobuf/type.pr\
+    oto\"\xdb\x02\x0a\x03Api\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x121\x0a\x07methods\x18\x02 \x03(\x0b\
+    2\x17.google.protobuf.MethodR\x07methods\x121\x0a\x07options\x18\x03 \
+    \x03(\x0b2\x17.google.protobuf.OptionR\x07options\x12\x18\x0a\x07version\
+    \x18\x04 \x01(\x09R\x07version\x12E\x0a\x0esource_context\x18\x05 \x01(\x0b2\x1e.google\
+    .protobuf.SourceContextR\x0dsourceContext\x12.\x0a\x06mixins\
+    \x18\x06 \x03(\x0b2\x16.google.protobuf.MixinR\x06mixins\x12/\x0a\x06syntax\
+    \x18\x07 \x01(\x0e2\x17.google.protobuf.SyntaxR\x06syntax\x12\x18\x0a\x07editi\
+    on\x18\x08 \x01(\x09R\x07edition\"\xd4\x02\x0a\x06Method\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\
+    \x12(\x0a\x10request_type_url\x18\x02 \x01(\x09R\x0erequestTypeUrl\x12+\x0a\x11re\
+    quest_streaming\x18\x03 \x01(\x08R\x10requestStreaming\x12*\x0a\x11respo\
+    nse_type_url\x18\x04 \x01(\x09R\x0fresponseTypeUrl\x12-\x0a\x12response_\
+    streaming\x18\x05 \x01(\x08R\x11responseStreaming\x121\x0a\x07options\x18\x06 \
+    \x03(\x0b2\x17.google.protobuf.OptionR\x07options\x123\x0a\x06syntax\x18\
+    \x07 \x01(\x0e2\x17.google.protobuf.SyntaxB\x02\x18\x01R\x06syntax\x12\x1c\x0a\x07ed\
+    ition\x18\x08 \x01(\x09B\x02\x18\x01R\x07edition\"/\x0a\x05Mixin\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\
+    \x04name\x12\x12\x0a\x04root\x18\x02 \x01(\x09R\x04rootBv\x0a\x13com.google.protobuf\
+    B\x08ApiProtoP\x01Z,google.golang.org/protobuf/types/k\
+    nown/apipb\xa2\x02\x03GPB\xaa\x02\x1eGoogle.Protobuf.WellKnownType\
+    sb\x06proto3\x0a\x87j\x0a google/protobuf/descriptor.proto\x12\x0f\
+    google.protobuf\"[\x0a\x11FileDescriptorSet\x128\x0a\x04file\x18\x01 \x03\
+    (\x0b2$.google.protobuf.FileDescriptorProtoR\x04file*\x0c\
+    \x08\x80\xec\xca\xff\x01\x10\x81\xec\xca\xff\x01\"\xc5\x05\x0a\x13FileDescriptorProto\x12\x12\x0a\x04name\x18\x01 \x01\
+    (\x09R\x04name\x12\x18\x0a\x07package\x18\x02 \x01(\x09R\x07package\x12\x1e\x0a\x0adependency\
+    \x18\x03 \x03(\x09R\x0adependency\x12+\x0a\x11public_dependency\x18\x0a \x03(\x05R\x10p\
+    ublicDependency\x12'\x0a\x0fweak_dependency\x18\x0b \x03(\x05R\x0eweakDe\
+    pendency\x12+\x0a\x11option_dependency\x18\x0f \x03(\x09R\x10optionDepen\
+    dency\x12C\x0a\x0cmessage_type\x18\x04 \x03(\x0b2 .google.protobuf.De\
+    scriptorProtoR\x0bmessageType\x12A\x0a\x09enum_type\x18\x05 \x03(\x0b2$.\
+    google.protobuf.EnumDescriptorProtoR\x08enumType\x12A\x0a\
+    \x07service\x18\x06 \x03(\x0b2'.google.protobuf.ServiceDescript\
+    orProtoR\x07service\x12C\x0a\x09extension\x18\x07 \x03(\x0b2%.google.pro\
+    tobuf.FieldDescriptorProtoR\x09extension\x126\x0a\x07options\
+    \x18\x08 \x01(\x0b2\x1c.google.protobuf.FileOptionsR\x07options\x12I\x0a\
+    \x10source_code_info\x18\x09 \x01(\x0b2\x1f.google.protobuf.Source\
+    CodeInfoR\x0esourceCodeInfo\x12\x16\x0a\x06syntax\x18\x0c \x01(\x09R\x06syntax\
+    \x122\x0a\x07edition\x18\x0e \x01(\x0e2\x18.google.protobuf.EditionR\x07edi\
+    tion\"\xfc\x06\x0a\x0fDescriptorProto\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x12;\x0a\x05\
+    field\x18\x02 \x03(\x0b2%.google.protobuf.FieldDescriptorPro\
+    toR\x05field\x12C\x0a\x09extension\x18\x06 \x03(\x0b2%.google.protobuf.F\
+    ieldDescriptorProtoR\x09extension\x12A\x0a\x0bnested_type\x18\x03 \
+    \x03(\x0b2 .google.protobuf.DescriptorProtoR\x0anestedTyp\
+    e\x12A\x0a\x09enum_type\x18\x04 \x03(\x0b2$.google.protobuf.EnumDescr\
+    iptorProtoR\x08enumType\x12X\x0a\x0fextension_range\x18\x05 \x03(\x0b2/.\
+    google.protobuf.DescriptorProto.ExtensionRangeR\x0e\
+    extensionRange\x12D\x0a\x0aoneof_decl\x18\x08 \x03(\x0b2%.google.prot\
+    obuf.OneofDescriptorProtoR\x09oneofDecl\x129\x0a\x07options\x18\
+    \x07 \x01(\x0b2\x1f.google.protobuf.MessageOptionsR\x07options\x12\
+    U\x0a\x0ereserved_range\x18\x09 \x03(\x0b2..google.protobuf.Descri\
+    ptorProto.ReservedRangeR\x0dreservedRange\x12#\x0a\x0dreserv\
+    ed_name\x18\x0a \x03(\x09R\x0creservedName\x12A\x0a\x0avisibility\x18\x0b \x01(\x0e2\
+    !.google.protobuf.SymbolVisibilityR\x0avisibility\x1az\
+    \x0a\x0eExtensionRange\x12\x14\x0a\x05start\x18\x01 \x01(\x05R\x05start\x12\x10\x0a\x03end\x18\x02 \
+    \x01(\x05R\x03end\x12@\x0a\x07options\x18\x03 \x01(\x0b2&.google.protobuf.Exte\
+    nsionRangeOptionsR\x07options\x1a7\x0a\x0dReservedRange\x12\x14\x0a\x05s\
+    tart\x18\x01 \x01(\x05R\x05start\x12\x10\x0a\x03end\x18\x02 \x01(\x05R\x03end\"\xd4\x04\x0a\x15Extensio\
+    nRangeOptions\x12X\x0a\x14uninterpreted_option\x18\xe7\x07 \x03(\x0b2$.g\
+    oogle.protobuf.UninterpretedOptionR\x13uninterprete\
+    dOption\x12Y\x0a\x0bdeclaration\x18\x02 \x03(\x0b22.google.protobuf.E\
+    xtensionRangeOptions.DeclarationB\x03\x88\x01\x02R\x0bdeclarati\
+    on\x127\x0a\x08features\x182 \x01(\x0b2\x1b.google.protobuf.FeatureSe\
+    tR\x08features\x12m\x0a\x0cverification\x18\x03 \x01(\x0e28.google.proto\
+    buf.ExtensionRangeOptions.VerificationState:\x0aUNV\
+    ERIFIEDB\x03\x88\x01\x02R\x0cverification\x1a\x94\x01\x0a\x0bDeclaration\x12\x16\x0a\x06nu\
+    mber\x18\x01 \x01(\x05R\x06number\x12\x1b\x0a\x09full_name\x18\x02 \x01(\x09R\x08fullName\x12\
+    \x12\x0a\x04type\x18\x03 \x01(\x09R\x04type\x12\x1a\x0a\x08reserved\x18\x05 \x01(\x08R\x08reserved\x12\
+    \x1a\x0a\x08repeated\x18\x06 \x01(\x08R\x08repeatedJ\x04\x08\x04\x10\x05\"4\x0a\x11Verificatio\
+    nState\x12\x0f\x0a\x0bDECLARATION\x10\x00\x12\x0e\x0a\x0aUNVERIFIED\x10\x01*\x06\x08\xde\x07\x10\xe7\x07*\
+    \x09\x08\xe8\x07\x10\x80\x80\x80\x80\x02\"\xc1\x06\x0a\x14FieldDescriptorProto\x12\x12\x0a\x04name\x18\x01 \x01(\
+    \x09R\x04name\x12\x16\x0a\x06number\x18\x03 \x01(\x05R\x06number\x12A\x0a\x05label\x18\x04 \x01(\x0e2+\
+    .google.protobuf.FieldDescriptorProto.LabelR\x05lab\
+    el\x12>\x0a\x04type\x18\x05 \x01(\x0e2*.google.protobuf.FieldDescript\
+    orProto.TypeR\x04type\x12\x1b\x0a\x09type_name\x18\x06 \x01(\x09R\x08typeName\x12\
+    \x1a\x0a\x08extendee\x18\x02 \x01(\x09R\x08extendee\x12#\x0a\x0ddefault_value\x18\x07 \x01\
+    (\x09R\x0cdefaultValue\x12\x1f\x0a\x0boneof_index\x18\x09 \x01(\x05R\x0aoneofInde\
+    x\x12\x1b\x0a\x09json_name\x18\x0a \x01(\x09R\x08jsonName\x127\x0a\x07options\x18\x08 \x01(\x0b2\
+    \x1d.google.protobuf.FieldOptionsR\x07options\x12'\x0a\x0fproto\
+    3_optional\x18\x11 \x01(\x08R\x0eproto3Optional\"\xb6\x02\x0a\x04Type\x12\x0f\x0a\x0bTYP\
+    E_DOUBLE\x10\x01\x12\x0e\x0a\x0aTYPE_FLOAT\x10\x02\x12\x0e\x0a\x0aTYPE_INT64\x10\x03\x12\x0f\x0a\x0bTY\
+    PE_UINT64\x10\x04\x12\x0e\x0a\x0aTYPE_INT32\x10\x05\x12\x10\x0a\x0cTYPE_FIXED64\x10\x06\x12\x10\x0a\
+    \x0cTYPE_FIXED32\x10\x07\x12\x0d\x0a\x09TYPE_BOOL\x10\x08\x12\x0f\x0a\x0bTYPE_STRING\x10\x09\x12\
+    \x0e\x0a\x0aTYPE_GROUP\x10\x0a\x12\x10\x0a\x0cTYPE_MESSAGE\x10\x0b\x12\x0e\x0a\x0aTYPE_BYTES\x10\
+    \x0c\x12\x0f\x0a\x0bTYPE_UINT32\x10\x0d\x12\x0d\x0a\x09TYPE_ENUM\x10\x0e\x12\x11\x0a\x0dTYPE_SFIXED\
+    32\x10\x0f\x12\x11\x0a\x0dTYPE_SFIXED64\x10\x10\x12\x0f\x0a\x0bTYPE_SINT32\x10\x11\x12\x0f\x0a\x0bTYPE\
+    _SINT64\x10\x12\"C\x0a\x05Label\x12\x12\x0a\x0eLABEL_OPTIONAL\x10\x01\x12\x12\x0a\x0eLABEL_\
+    REPEATED\x10\x03\x12\x12\x0a\x0eLABEL_REQUIRED\x10\x02\"c\x0a\x14OneofDescripto\
+    rProto\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x127\x0a\x07options\x18\x02 \x01(\x0b2\x1d.go\
+    ogle.protobuf.OneofOptionsR\x07options\"\xa6\x03\x0a\x13EnumDesc\
+    riptorProto\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x12?\x0a\x05value\x18\x02 \x03(\x0b2)\
+    .google.protobuf.EnumValueDescriptorProtoR\x05value\
+    \x126\x0a\x07options\x18\x03 \x01(\x0b2\x1c.google.protobuf.EnumOptionsR\
+    \x07options\x12]\x0a\x0ereserved_range\x18\x04 \x03(\x0b26.google.protob\
+    uf.EnumDescriptorProto.EnumReservedRangeR\x0dreserv\
+    edRange\x12#\x0a\x0dreserved_name\x18\x05 \x03(\x09R\x0creservedName\x12A\x0a\x0a\
+    visibility\x18\x06 \x01(\x0e2!.google.protobuf.SymbolVisibil\
+    ityR\x0avisibility\x1a;\x0a\x11EnumReservedRange\x12\x14\x0a\x05start\x18\x01 \
+    \x01(\x05R\x05start\x12\x10\x0a\x03end\x18\x02 \x01(\x05R\x03end\"\x83\x01\x0a\x18EnumValueDescri\
+    ptorProto\x12\x12\x0a\x04name\x18\x01 \x01(\x09R\x04name\x12\x16\x0a\x06number\x18\x02 \x01(\x05R\x06n\
+    umber\x12;\x0a\x07options\x18\x03 \x01(\x0b2!.google.protobuf.EnumVal\
+    ueOptionsR\x07options\"\xb5\x01\x0a\x16ServiceDescriptorProto\x12\x12\x0a\
+    \x04name\x18\x01 \x01(\x09R\x04name\x12>\x0a\x06method\x18\x02 \x03(\x0b2&.google.proto\
+    buf.MethodDescriptorProtoR\x06method\x129\x0a\x07options\x18\x03 \x01\
+    (\x0b2\x1f.google.protobuf.ServiceOptionsR\x07optionsJ\x04\x08\x04\
+    \x10\x05R\x06stream\"\x89\x02\x0a\x15MethodDescriptorProto\x12\x12\x0a\x04name\x18\x01 \x01\
+    (\x09R\x04name\x12\x1d\x0a\x0ainput_type\x18\x02 \x01(\x09R\x09inputType\x12\x1f\x0a\x0boutpu\
+    t_type\x18\x03 \x01(\x09R\x0aoutputType\x128\x0a\x07options\x18\x04 \x01(\x0b2\x1e.goog\
+    le.protobuf.MethodOptionsR\x07options\x120\x0a\x10client_str\
+    eaming\x18\x05 \x01(\x08:\x05falseR\x0fclientStreaming\x120\x0a\x10server_s\
+    treaming\x18\x06 \x01(\x08:\x05falseR\x0fserverStreaming\"\xfa\x0a\x0a\x0bFileO\
+    ptions\x12!\x0a\x0cjava_package\x18\x01 \x01(\x09R\x0bjavaPackage\x120\x0a\x14jav\
+    a_outer_classname\x18\x08 \x01(\x09R\x12javaOuterClassname\x12\xf9\x01\x0a\x13\
+    java_multiple_files\x18\x0a \x01(\x08:\x05falseB\xc1\x01\xb2\x01\xbd\x01\x08\xe6\x07 \xe9\x07*\xb4\x01\
+    This behavior is enabled by default in editions \
+    2024 and above. To disable it, you can set `feat\
+    ures.(pb.java).nest_in_file_class = YES` on indi\
+    vidual messages, enums, or services.R\x11javaMultip\
+    leFiles\x12D\x0a\x1djava_generate_equals_and_hash\x18\x14 \x01(\x08B\x02\
+    \x18\x01R\x19javaGenerateEqualsAndHash\x12:\x0a\x16java_string_che\
+    ck_utf8\x18\x1b \x01(\x08:\x05falseR\x13javaStringCheckUtf8\x12S\x0a\x0copt\
+    imize_for\x18\x09 \x01(\x0e2).google.protobuf.FileOptions.Op\
+    timizeMode:\x05SPEEDR\x0boptimizeFor\x12\x1d\x0a\x0ago_package\x18\x0b \x01\
+    (\x09R\x09goPackage\x125\x0a\x13cc_generic_services\x18\x10 \x01(\x08:\x05fals\
+    eR\x11ccGenericServices\x129\x0a\x15java_generic_services\x18\x11 \
+    \x01(\x08:\x05falseR\x13javaGenericServices\x125\x0a\x13py_generic_se\
+    rvices\x18\x12 \x01(\x08:\x05falseR\x11pyGenericServices\x12%\x0a\x0adeprec\
+    ated\x18\x17 \x01(\x08:\x05falseR\x0adeprecated\x12.\x0a\x10cc_enable_arena\
+    s\x18\x1f \x01(\x08:\x04trueR\x0eccEnableArenas\x12*\x0a\x11objc_class_pref\
+    ix\x18$ \x01(\x09R\x0fobjcClassPrefix\x12)\x0a\x10csharp_namespace\x18% \
+    \x01(\x09R\x0fcsharpNamespace\x12!\x0a\x0cswift_prefix\x18' \x01(\x09R\x0bswif\
+    tPrefix\x12(\x0a\x10php_class_prefix\x18( \x01(\x09R\x0ephpClassPrefi\
+    x\x12#\x0a\x0dphp_namespace\x18) \x01(\x09R\x0cphpNamespace\x124\x0a\x16php_me\
+    tadata_namespace\x18, \x01(\x09R\x14phpMetadataNamespace\x12!\x0a\x0c\
+    ruby_package\x18- \x01(\x09R\x0brubyPackage\x127\x0a\x08features\x182 \x01(\
+    \x0b2\x1b.google.protobuf.FeatureSetR\x08features\x12X\x0a\x14unin\
+    terpreted_option\x18\xe7\x07 \x03(\x0b2$.google.protobuf.Uninte\
+    rpretedOptionR\x13uninterpretedOption\":\x0a\x0cOptimizeMo\
+    de\x12\x09\x0a\x05SPEED\x10\x01\x12\x0d\x0a\x09CODE_SIZE\x10\x02\x12\x10\x0a\x0cLITE_RUNTIME\x10\x03*\x06\
+    \x08\xde\x07\x10\xe7\x07*\x09\x08\xe8\x07\x10\x80\x80\x80\x80\x02J\x04\x08*\x10+J\x04\x08&\x10'R\x14php_generic_servi\
+    ces\"\xfc\x03\x0a\x0eMessageOptions\x12<\x0a\x17message_set_wire_forma\
+    t\x18\x01 \x01(\x08:\x05falseR\x14messageSetWireFormat\x12L\x0a\x1fno_stand\
+    ard_descriptor_accessor\x18\x02 \x01(\x08:\x05falseR\x1cnoStandard\
+    DescriptorAccessor\x12%\x0a\x0adeprecated\x18\x03 \x01(\x08:\x05falseR\x0ad\
+    eprecated\x12\x1b\x0a\x09map_entry\x18\x07 \x01(\x08R\x08mapEntry\x12V\x0a&deprec\
+    ated_legacy_json_field_conflicts\x18\x0b \x01(\x08B\x02\x18\x01R\"depr\
+    ecatedLegacyJsonFieldConflicts\x127\x0a\x08features\x18\x0c \x01(\x0b\
+    2\x1b.google.protobuf.FeatureSetR\x08features\x12X\x0a\x14unint\
+    erpreted_option\x18\xe7\x07 \x03(\x0b2$.google.protobuf.Uninter\
+    pretedOptionR\x13uninterpretedOption*\x06\x08\xde\x07\x10\xe7\x07*\x09\x08\xe8\x07\x10\x80\
+    \x80\x80\x80\x02J\x04\x08\x04\x10\x05J\x04\x08\x05\x10\x06J\x04\x08\x06\x10\x07J\x04\x08\x08\x10\x09J\x04\x08\x09\x10\x0a\"\xce\x0d\x0a\x0cFieldOpti\
+    ons\x12A\x0a\x05ctype\x18\x01 \x01(\x0e2#.google.protobuf.FieldOption\
+    s.CType:\x06STRINGR\x05ctype\x12\x16\x0a\x06packed\x18\x02 \x01(\x08R\x06packed\x12G\
+    \x0a\x06jstype\x18\x06 \x01(\x0e2$.google.protobuf.FieldOptions.JS\
+    Type:\x09JS_NORMALR\x06jstype\x12\x19\x0a\x04lazy\x18\x05 \x01(\x08:\x05falseR\x04la\
+    zy\x12.\x0a\x0funverified_lazy\x18\x0f \x01(\x08:\x05falseR\x0eunverifiedLa\
+    zy\x12%\x0a\x0adeprecated\x18\x03 \x01(\x08:\x05falseR\x0adeprecated\x12\x1d\x0a\x04wea\
+    k\x18\x0a \x01(\x08:\x05falseB\x02\x18\x01R\x04weak\x12(\x0a\x0cdebug_redact\x18\x10 \x01(\x08:\x05\
+    falseR\x0bdebugRedact\x12K\x0a\x09retention\x18\x11 \x01(\x0e2-.google.p\
+    rotobuf.FieldOptions.OptionRetentionR\x09retention\x12\
+    H\x0a\x07targets\x18\x13 \x03(\x0e2..google.protobuf.FieldOptions.\
+    OptionTargetTypeR\x07targets\x12W\x0a\x10edition_defaults\x18\x14 \
+    \x03(\x0b2,.google.protobuf.FieldOptions.EditionDefaul\
+    tR\x0feditionDefaults\x127\x0a\x08features\x18\x15 \x01(\x0b2\x1b.google.pr\
+    otobuf.FeatureSetR\x08features\x12U\x0a\x0ffeature_support\x18\x16\
+    \x20\x01(\x0b2,.google.protobuf.FieldOptions.FeatureSuppo\
+    rtR\x0efeatureSupport\x12X\x0a\x14uninterpreted_option\x18\xe7\x07 \x03(\
+    \x0b2$.google.protobuf.UninterpretedOptionR\x13uninter\
+    pretedOption\x1aZ\x0a\x0eEditionDefault\x122\x0a\x07edition\x18\x03 \x01(\x0e2\
+    \x18.google.protobuf.EditionR\x07edition\x12\x14\x0a\x05value\x18\x02 \x01(\
+    \x09R\x05value\x1a\xbb\x02\x0a\x0eFeatureSupport\x12G\x0a\x12edition_introduce\
+    d\x18\x01 \x01(\x0e2\x18.google.protobuf.EditionR\x11editionIntrod\
+    uced\x12G\x0a\x12edition_deprecated\x18\x02 \x01(\x0e2\x18.google.protob\
+    uf.EditionR\x11editionDeprecated\x12/\x0a\x13deprecation_war\
+    ning\x18\x03 \x01(\x09R\x12deprecationWarning\x12A\x0a\x0fedition_remove\
+    d\x18\x04 \x01(\x0e2\x18.google.protobuf.EditionR\x0eeditionRemove\
+    d\x12#\x0a\x0dremoval_error\x18\x05 \x01(\x09R\x0cremovalError\"/\x0a\x05CType\x12\
+    \x0a\x0a\x06STRING\x10\x00\x12\x08\x0a\x04CORD\x10\x01\x12\x10\x0a\x0cSTRING_PIECE\x10\x02\"5\x0a\x06JSTyp\
+    e\x12\x0d\x0a\x09JS_NORMAL\x10\x00\x12\x0d\x0a\x09JS_STRING\x10\x01\x12\x0d\x0a\x09JS_NUMBER\x10\x02\"U\
+    \x0a\x0fOptionRetention\x12\x15\x0a\x11RETENTION_UNKNOWN\x10\x00\x12\x15\x0a\x11RETE\
+    NTION_RUNTIME\x10\x01\x12\x14\x0a\x10RETENTION_SOURCE\x10\x02\"\x8c\x02\x0a\x10Option\
+    TargetType\x12\x17\x0a\x13TARGET_TYPE_UNKNOWN\x10\x00\x12\x14\x0a\x10TARGET_TY\
+    PE_FILE\x10\x01\x12\x1f\x0a\x1bTARGET_TYPE_EXTENSION_RANGE\x10\x02\x12\x17\x0a\x13TA\
+    RGET_TYPE_MESSAGE\x10\x03\x12\x15\x0a\x11TARGET_TYPE_FIELD\x10\x04\x12\x15\x0a\x11TA\
+    RGET_TYPE_ONEOF\x10\x05\x12\x14\x0a\x10TARGET_TYPE_ENUM\x10\x06\x12\x1a\x0a\x16TARGE\
+    T_TYPE_ENUM_ENTRY\x10\x07\x12\x17\x0a\x13TARGET_TYPE_SERVICE\x10\x08\x12\x16\x0a\x12\
+    TARGET_TYPE_METHOD\x10\x09*\x06\x08\xde\x07\x10\xe7\x07*\x09\x08\xe8\x07\x10\x80\x80\x80\x80\x02J\x04\x08\x04\x10\x05J\x04\x08\
+    \x12\x10\x13\"\xb4\x01\x0a\x0cOneofOptions\x127\x0a\x08features\x18\x01 \x01(\x0b2\x1b.google.\
+    protobuf.FeatureSetR\x08features\x12X\x0a\x14uninterpreted_o\
+    ption\x18\xe7\x07 \x03(\x0b2$.google.protobuf.UninterpretedOpti\
+    onR\x13uninterpretedOption*\x06\x08\xde\x07\x10\xe7\x07*\x09\x08\xe8\x07\x10\x80\x80\x80\x80\x02\"\xd9\x02\x0a\x0bE\
+    numOptions\x12\x1f\x0a\x0ballow_alias\x18\x02 \x01(\x08R\x0aallowAlias\x12%\x0a\x0ad\
+    eprecated\x18\x03 \x01(\x08:\x05falseR\x0adeprecated\x12V\x0a&deprecated\
+    _legacy_json_field_conflicts\x18\x06 \x01(\x08B\x02\x18\x01R\"deprecat\
+    edLegacyJsonFieldConflicts\x127\x0a\x08features\x18\x07 \x01(\x0b2\x1b.g\
+    oogle.protobuf.FeatureSetR\x08features\x12X\x0a\x14uninterpr\
+    eted_option\x18\xe7\x07 \x03(\x0b2$.google.protobuf.Uninterpret\
+    edOptionR\x13uninterpretedOption*\x06\x08\xde\x07\x10\xe7\x07*\x09\x08\xe8\x07\x10\x80\x80\x80\x80\x02\
+    J\x04\x08\x05\x10\x06\"\xe0\x02\x0a\x10EnumValueOptions\x12%\x0a\x0adeprecated\x18\x01 \x01(\x08:\
+    \x05falseR\x0adeprecated\x127\x0a\x08features\x18\x02 \x01(\x0b2\x1b.google.pr\
+    otobuf.FeatureSetR\x08features\x12(\x0a\x0cdebug_redact\x18\x03 \x01(\
+    \x08:\x05falseR\x0bdebugRedact\x12U\x0a\x0ffeature_support\x18\x04 \x01(\x0b2,\
+    .google.protobuf.FieldOptions.FeatureSupportR\x0efe\
+    atureSupport\x12X\x0a\x14uninterpreted_option\x18\xe7\x07 \x03(\x0b2$.go\
+    ogle.protobuf.UninterpretedOptionR\x13uninterpreted\
+    Option*\x06\x08\xde\x07\x10\xe7\x07*\x09\x08\xe8\x07\x10\x80\x80\x80\x80\x02\"\xdd\x01\x0a\x0eServiceOptions\x127\x0a\x08\
+    features\x18\" \x01(\x0b2\x1b.google.protobuf.FeatureSetR\x08fea\
+    tures\x12%\x0a\x0adeprecated\x18! \x01(\x08:\x05falseR\x0adeprecated\x12X\x0a\x14\
+    uninterpreted_option\x18\xe7\x07 \x03(\x0b2$.google.protobuf.Un\
+    interpretedOptionR\x13uninterpretedOption*\x06\x08\xde\x07\x10\xe7\x07*\x09\
+    \x08\xe8\x07\x10\x80\x80\x80\x80\x02\"\xa1\x03\x0a\x0dMethodOptions\x12%\x0a\x0adeprecated\x18! \x01(\x08:\
+    \x05falseR\x0adeprecated\x12q\x0a\x11idempotency_level\x18\" \x01(\x0e2/.\
+    google.protobuf.MethodOptions.IdempotencyLevel:\x13\
+    IDEMPOTENCY_UNKNOWNR\x10idempotencyLevel\x127\x0a\x08feature\
+    s\x18# \x01(\x0b2\x1b.google.protobuf.FeatureSetR\x08features\x12X\
+    \x0a\x14uninterpreted_option\x18\xe7\x07 \x03(\x0b2$.google.protobuf.\
+    UninterpretedOptionR\x13uninterpretedOption\"P\x0a\x10Idem\
+    potencyLevel\x12\x17\x0a\x13IDEMPOTENCY_UNKNOWN\x10\x00\x12\x13\x0a\x0fNO_SIDE\
+    _EFFECTS\x10\x01\x12\x0e\x0a\x0aIDEMPOTENT\x10\x02*\x06\x08\xde\x07\x10\xe7\x07*\x09\x08\xe8\x07\x10\x80\x80\x80\x80\x02\"\x9a\x03\
+    \x0a\x13UninterpretedOption\x12A\x0a\x04name\x18\x02 \x03(\x0b2-.google.pro\
+    tobuf.UninterpretedOption.NamePartR\x04name\x12)\x0a\x10iden\
+    tifier_value\x18\x03 \x01(\x09R\x0fidentifierValue\x12,\x0a\x12positive_\
+    int_value\x18\x04 \x01(\x04R\x10positiveIntValue\x12,\x0a\x12negative_in\
+    t_value\x18\x05 \x01(\x03R\x10negativeIntValue\x12!\x0a\x0cdouble_value\x18\
+    \x06 \x01(\x01R\x0bdoubleValue\x12!\x0a\x0cstring_value\x18\x07 \x01(\x0cR\x0bstring\
+    Value\x12'\x0a\x0faggregate_value\x18\x08 \x01(\x09R\x0eaggregateValue\x1aJ\
+    \x0a\x08NamePart\x12\x1b\x0a\x09name_part\x18\x01 \x02(\x09R\x08namePart\x12!\x0a\x0cis_ex\
+    tension\x18\x02 \x02(\x08R\x0bisExtension\"\xae\x0f\x0a\x0aFeatureSet\x12\x91\x01\x0a\x0efi\
+    eld_presence\x18\x01 \x01(\x0e2).google.protobuf.FeatureSet.\
+    FieldPresenceB?\x88\x01\x01\x98\x01\x04\x98\x01\x01\xa2\x01\x0d\x12\x08EXPLICIT\x18\x84\x07\xa2\x01\x0d\x12\x08IMP\
+    LICIT\x18\xe7\x07\xa2\x01\x0d\x12\x08EXPLICIT\x18\xe8\x07\xb2\x01\x03\x08\xe8\x07R\x0dfieldPresence\x12l\x0a\
+    \x09enum_type\x18\x02 \x01(\x0e2$.google.protobuf.FeatureSet.En\
+    umTypeB)\x88\x01\x01\x98\x01\x06\x98\x01\x01\xa2\x01\x0b\x12\x06CLOSED\x18\x84\x07\xa2\x01\x09\x12\x04OPEN\x18\xe7\x07\xb2\x01\x03\x08\xe8\
+    \x07R\x08enumType\x12\x98\x01\x0a\x17repeated_field_encoding\x18\x03 \x01(\x0e21.\
+    google.protobuf.FeatureSet.RepeatedFieldEncoding\
+    B-\x88\x01\x01\x98\x01\x04\x98\x01\x01\xa2\x01\x0d\x12\x08EXPANDED\x18\x84\x07\xa2\x01\x0b\x12\x06PACKED\x18\xe7\x07\xb2\x01\x03\x08\xe8\x07R\
+    \x15repeatedFieldEncoding\x12~\x0a\x0futf8_validation\x18\x04 \x01(\x0e2\
+    *.google.protobuf.FeatureSet.Utf8ValidationB)\x88\x01\x01\
+    \x98\x01\x04\x98\x01\x01\xa2\x01\x09\x12\x04NONE\x18\x84\x07\xa2\x01\x0b\x12\x06VERIFY\x18\xe7\x07\xb2\x01\x03\x08\xe8\x07R\x0eutf8Vali\
+    dation\x12~\x0a\x10message_encoding\x18\x05 \x01(\x0e2+.google.protob\
+    uf.FeatureSet.MessageEncodingB&\x88\x01\x01\x98\x01\x04\x98\x01\x01\xa2\x01\x14\x12\x0fLEN\
+    GTH_PREFIXED\x18\x84\x07\xb2\x01\x03\x08\xe8\x07R\x0fmessageEncoding\x12\x82\x01\x0a\x0bjson_\
+    format\x18\x06 \x01(\x0e2&.google.protobuf.FeatureSet.JsonFo\
+    rmatB9\x88\x01\x01\x98\x01\x03\x98\x01\x06\x98\x01\x01\xa2\x01\x17\x12\x12LEGACY_BEST_EFFORT\x18\x84\x07\xa2\x01\x0a\x12\
+    \x05ALLOW\x18\xe7\x07\xb2\x01\x03\x08\xe8\x07R\x0ajsonFormat\x12\xbc\x01\x0a\x14enforce_naming_s\
+    tyle\x18\x07 \x01(\x0e2..google.protobuf.FeatureSet.EnforceN\
+    amingStyleBZ\x88\x01\x02\x98\x01\x01\x98\x01\x02\x98\x01\x03\x98\x01\x04\x98\x01\x05\x98\x01\x06\x98\x01\x07\x98\x01\x08\x98\x01\x09\xa2\x01\x11\x12\x0cS\
+    TYLE_LEGACY\x18\x84\x07\xa2\x01\x0e\x12\x09STYLE2024\x18\xe9\x07\xa2\x01\x0e\x12\x09STYLE2026\x18\x8fN\
+    \xb2\x01\x03\x08\xe9\x07R\x12enforceNamingStyle\x12\xb9\x01\x0a\x19default_symbol_vi\
+    sibility\x18\x08 \x01(\x0e2E.google.protobuf.FeatureSet.Visi\
+    bilityFeature.DefaultSymbolVisibilityB6\x88\x01\x02\x98\x01\x01\xa2\x01\x0f\
+    \x12\x0aEXPORT_ALL\x18\x84\x07\xa2\x01\x15\x12\x10EXPORT_TOP_LEVEL\x18\xe9\x07\xb2\x01\x03\x08\xe9\x07R\x17d\
+    efaultSymbolVisibility\x1a\xa1\x01\x0a\x11VisibilityFeature\"\x81\x01\x0a\
+    \x17DefaultSymbolVisibility\x12%\x0a!DEFAULT_SYMBOL_VISIB\
+    ILITY_UNKNOWN\x10\x00\x12\x0e\x0a\x0aEXPORT_ALL\x10\x01\x12\x14\x0a\x10EXPORT_TOP_LE\
+    VEL\x10\x02\x12\x0d\x0a\x09LOCAL_ALL\x10\x03\x12\x0a\x0a\x06STRICT\x10\x04J\x08\x08\x01\x10\x80\x80\x80\x80\x02\"\\\x0a\x0dFi\
+    eldPresence\x12\x1a\x0a\x16FIELD_PRESENCE_UNKNOWN\x10\x00\x12\x0c\x0a\x08EXPLI\
+    CIT\x10\x01\x12\x0c\x0a\x08IMPLICIT\x10\x02\x12\x13\x0a\x0fLEGACY_REQUIRED\x10\x03\"7\x0a\x08Enum\
+    Type\x12\x15\x0a\x11ENUM_TYPE_UNKNOWN\x10\x00\x12\x08\x0a\x04OPEN\x10\x01\x12\x0a\x0a\x06CLOSED\x10\
+    \x02\"V\x0a\x15RepeatedFieldEncoding\x12#\x0a\x1fREPEATED_FIELD_ENC\
+    ODING_UNKNOWN\x10\x00\x12\x0a\x0a\x06PACKED\x10\x01\x12\x0c\x0a\x08EXPANDED\x10\x02\"I\x0a\x0eUtf\
+    8Validation\x12\x1b\x0a\x17UTF8_VALIDATION_UNKNOWN\x10\x00\x12\x0a\x0a\x06VERI\
+    FY\x10\x02\x12\x08\x0a\x04NONE\x10\x03\"\x04\x08\x01\x10\x01\"S\x0a\x0fMessageEncoding\x12\x1c\x0a\x18MESSA\
+    GE_ENCODING_UNKNOWN\x10\x00\x12\x13\x0a\x0fLENGTH_PREFIXED\x10\x01\x12\x0d\x0a\x09DE\
+    LIMITED\x10\x02\"H\x0a\x0aJsonFormat\x12\x17\x0a\x13JSON_FORMAT_UNKNOWN\x10\x00\
+    \x12\x09\x0a\x05ALLOW\x10\x01\x12\x16\x0a\x12LEGACY_BEST_EFFORT\x10\x02\"f\x0a\x12EnforceNa\
+    mingStyle\x12 \x0a\x1cENFORCE_NAMING_STYLE_UNKNOWN\x10\x00\x12\x0d\x0a\x09S\
+    TYLE2024\x10\x01\x12\x10\x0a\x0cSTYLE_LEGACY\x10\x02\x12\x0d\x0a\x09STYLE2026\x10\x03*\x06\x08\xe8\x07\
+    \x10\x8bN*\x06\x08\x8bN\x10\x90N*\x06\x08\x90N\x10\x91NJ\x06\x08\xe7\x07\x10\xe8\x07\"\xef\x03\x0a\x12FeatureSetDefaul\
+    ts\x12X\x0a\x08defaults\x18\x01 \x03(\x0b2<.google.protobuf.FeatureSe\
+    tDefaults.FeatureSetEditionDefaultR\x08defaults\x12A\x0a\x0f\
+    minimum_edition\x18\x04 \x01(\x0e2\x18.google.protobuf.EditionR\
+    \x0eminimumEdition\x12A\x0a\x0fmaximum_edition\x18\x05 \x01(\x0e2\x18.googl\
+    e.protobuf.EditionR\x0emaximumEdition\x1a\xf8\x01\x0a\x18FeatureSe\
+    tEditionDefault\x122\x0a\x07edition\x18\x03 \x01(\x0e2\x18.google.protob\
+    uf.EditionR\x07edition\x12N\x0a\x14overridable_features\x18\x04 \x01(\
+    \x0b2\x1b.google.protobuf.FeatureSetR\x13overridableFeatu\
+    res\x12B\x0a\x0efixed_features\x18\x05 \x01(\x0b2\x1b.google.protobuf.Fe\
+    atureSetR\x0dfixedFeaturesJ\x04\x08\x01\x10\x02J\x04\x08\x02\x10\x03R\x08features\"\xb5\x02\
+    \x0a\x0eSourceCodeInfo\x12D\x0a\x08location\x18\x01 \x03(\x0b2(.google.prot\
+    obuf.SourceCodeInfo.LocationR\x08location\x1a\xce\x01\x0a\x08Locat\
+    ion\x12\x16\x0a\x04path\x18\x01 \x03(\x05B\x02\x10\x01R\x04path\x12\x16\x0a\x04span\x18\x02 \x03(\x05B\x02\x10\x01R\x04s\
+    pan\x12)\x0a\x10leading_comments\x18\x03 \x01(\x09R\x0fleadingComments\x12+\
+    \x0a\x11trailing_comments\x18\x04 \x01(\x09R\x10trailingComments\x12:\x0a\x19l\
+    eading_detached_comments\x18\x06 \x03(\x09R\x17leadingDetachedC\
+    omments*\x0c\x08\x80\xec\xca\xff\x01\x10\x81\xec\xca\xff\x01\"\xd0\x02\x0a\x11GeneratedCodeInfo\x12M\x0a\x0aa\
+    nnotation\x18\x01 \x03(\x0b2-.google.protobuf.GeneratedCodeI\
+    nfo.AnnotationR\x0aannotation\x1a\xeb\x01\x0a\x0aAnnotation\x12\x16\x0a\x04pat\
+    h\x18\x01 \x03(\x05B\x02\x10\x01R\x04path\x12\x1f\x0a\x0bsource_file\x18\x02 \x01(\x09R\x0asourceFi\
+    le\x12\x14\x0a\x05begin\x18\x03 \x01(\x05R\x05begin\x12\x10\x0a\x03end\x18\x04 \x01(\x05R\x03end\x12R\x0a\x08se\
+    mantic\x18\x05 \x01(\x0e26.google.protobuf.GeneratedCodeInfo\
+    .Annotation.SemanticR\x08semantic\"(\x0a\x08Semantic\x12\x08\x0a\x04NO\
+    NE\x10\x00\x12\x07\x0a\x03SET\x10\x01\x12\x09\x0a\x05ALIAS\x10\x02*\xd1\x02\x0a\x07Edition\x12\x13\x0a\x0fEDITION_\
+    UNKNOWN\x10\x00\x12\x13\x0a\x0eEDITION_LEGACY\x10\x84\x07\x12\x13\x0a\x0eEDITION_PROTO2\
+    \x10\xe6\x07\x12\x13\x0a\x0eEDITION_PROTO3\x10\xe7\x07\x12\x11\x0a\x0cEDITION_2023\x10\xe8\x07\x12\x11\x0a\x0cE\
+    DITION_2024\x10\xe9\x07\x12\x11\x0a\x0cEDITION_2026\x10\xea\x07\x12\x15\x0a\x10EDITION_UNS\
+    TABLE\x10\x8fN\x12\x17\x0a\x13EDITION_1_TEST_ONLY\x10\x01\x12\x17\x0a\x13EDITION_2_T\
+    EST_ONLY\x10\x02\x12\x1d\x0a\x17EDITION_99997_TEST_ONLY\x10\x9d\x8d\x06\x12\x1d\x0a\x17EDI\
+    TION_99998_TEST_ONLY\x10\x9e\x8d\x06\x12\x1d\x0a\x17EDITION_99999_TEST_O\
+    NLY\x10\x9f\x8d\x06\x12\x13\x0a\x0bEDITION_MAX\x10\xff\xff\xff\xff\x07*U\x0a\x10SymbolVisibility\
+    \x12\x14\x0a\x10VISIBILITY_UNSET\x10\x00\x12\x14\x0a\x10VISIBILITY_LOCAL\x10\x01\x12\x15\x0a\x11\
+    VISIBILITY_EXPORT\x10\x02B~\x0a\x13com.google.protobufB\x10Desc\
+    riptorProtosH\x01Z-google.golang.org/protobuf/types\
+    /descriptorpb\xf8\x01\x01\xa2\x02\x03GPB\xaa\x02\x1aGoogle.Protobuf.Reflect\
+    ion\x0a\xfb\x01\x0a\x1egoogle/protobuf/duration.proto\x12\x0fgoogle.p\
+    rotobuf\":\x0a\x08Duration\x12\x18\x0a\x07seconds\x18\x01 \x01(\x03R\x07seconds\x12\x14\x0a\
+    \x05nanos\x18\x02 \x01(\x05R\x05nanosB\x83\x01\x0a\x13com.google.protobufB\x0dDur\
+    ationProtoP\x01Z1google.golang.org/protobuf/types/k\
+    nown/durationpb\xf8\x01\x01\xa2\x02\x03GPB\xaa\x02\x1eGoogle.Protobuf.WellK\
+    nownTypesb\x06proto3\x0a\xbe\x01\x0a\x1bgoogle/protobuf/empty.prot\
+    o\x12\x0fgoogle.protobuf\"\x07\x0a\x05EmptyB}\x0a\x13com.google.protob\
+    ufB\x0aEmptyProtoP\x01Z.google.golang.org/protobuf/typ\
+    es/known/emptypb\xf8\x01\x01\xa2\x02\x03GPB\xaa\x02\x1eGoogle.Protobuf.Well\
+    KnownTypesb\x06proto3\x0a\xe6\x01\x0a google/protobuf/field_mas\
+    k.proto\x12\x0fgoogle.protobuf\"!\x0a\x09FieldMask\x12\x14\x0a\x05paths\x18\x01\
+    \x20\x03(\x09R\x05pathsB\x85\x01\x0a\x13com.google.protobufB\x0eFieldMaskPr\
+    otoP\x01Z2google.golang.org/protobuf/types/known/fi\
+    eldmaskpb\xf8\x01\x01\xa2\x02\x03GPB\xaa\x02\x1eGoogle.Protobuf.WellKnownTy\
+    pesb\x06proto3\x0a\xe2\x05\x0a\x1cgoogle/protobuf/struct.proto\x12\x0fgo\
+    ogle.protobuf\"\x98\x01\x0a\x06Struct\x12;\x0a\x06fields\x18\x01 \x03(\x0b2#.googl\
+    e.protobuf.Struct.FieldsEntryR\x06fields\x1aQ\x0a\x0bFieldsE\
+    ntry\x12\x10\x0a\x03key\x18\x01 \x01(\x09R\x03key\x12,\x0a\x05value\x18\x02 \x01(\x0b2\x16.google.p\
+    rotobuf.ValueR\x05value:\x028\x01\"\xb2\x02\x0a\x05Value\x12;\x0a\x0anull_value\
+    \x18\x01 \x01(\x0e2\x1a.google.protobuf.NullValueH\x00R\x09nullValue\x12\
+    #\x0a\x0cnumber_value\x18\x02 \x01(\x01H\x00R\x0bnumberValue\x12#\x0a\x0cstring_v\
+    alue\x18\x03 \x01(\x09H\x00R\x0bstringValue\x12\x1f\x0a\x0abool_value\x18\x04 \x01(\x08H\x00R\
+    \x09boolValue\x12<\x0a\x0cstruct_value\x18\x05 \x01(\x0b2\x17.google.protob\
+    uf.StructH\x00R\x0bstructValue\x12;\x0a\x0alist_value\x18\x06 \x01(\x0b2\x1a.g\
+    oogle.protobuf.ListValueH\x00R\x09listValueB\x06\x0a\x04kind\";\x0a\
+    \x09ListValue\x12.\x0a\x06values\x18\x01 \x03(\x0b2\x16.google.protobuf.Val\
+    ueR\x06values*\x1b\x0a\x09NullValue\x12\x0e\x0a\x0aNULL_VALUE\x10\x00B\x7f\x0a\x13com.g\
+    oogle.protobufB\x0bStructProtoP\x01Z/google.golang.org\
+    /protobuf/types/known/structpb\xf8\x01\x01\xa2\x02\x03GPB\xaa\x02\x1eGoogle\
+    .Protobuf.WellKnownTypesb\x06proto3\x0a\xff\x01\x0a\x1fgoogle/prot\
+    obuf/timestamp.proto\x12\x0fgoogle.protobuf\";\x0a\x09Timesta\
+    mp\x12\x18\x0a\x07seconds\x18\x01 \x01(\x03R\x07seconds\x12\x14\x0a\x05nanos\x18\x02 \x01(\x05R\x05nan\
+    osB\x85\x01\x0a\x13com.google.protobufB\x0eTimestampProtoP\x01Z2go\
+    ogle.golang.org/protobuf/types/known/timestamppb\
+    \xf8\x01\x01\xa2\x02\x03GPB\xaa\x02\x1eGoogle.Protobuf.WellKnownTypesb\x06prot\
+    o3\x0a\x86\x04\x0a\x1egoogle/protobuf/wrappers.proto\x12\x0fgoogle.pr\
+    otobuf\"#\x0a\x0bDoubleValue\x12\x14\x0a\x05value\x18\x01 \x01(\x01R\x05value\"\"\x0a\x0aF\
+    loatValue\x12\x14\x0a\x05value\x18\x01 \x01(\x02R\x05value\"\"\x0a\x0aInt64Value\x12\x14\x0a\
+    \x05value\x18\x01 \x01(\x03R\x05value\"#\x0a\x0bUInt64Value\x12\x14\x0a\x05value\x18\x01 \x01(\
+    \x04R\x05value\"\"\x0a\x0aInt32Value\x12\x14\x0a\x05value\x18\x01 \x01(\x05R\x05value\"#\x0a\x0b\
+    UInt32Value\x12\x14\x0a\x05value\x18\x01 \x01(\x0dR\x05value\"!\x0a\x09BoolValue\x12\x14\
+    \x0a\x05value\x18\x01 \x01(\x08R\x05value\"#\x0a\x0bStringValue\x12\x14\x0a\x05value\x18\x01 \x01\
+    (\x09R\x05value\"\"\x0a\x0aBytesValue\x12\x14\x0a\x05value\x18\x01 \x01(\x0cR\x05valueB\x83\x01\
+    \x0a\x13com.google.protobufB\x0dWrappersProtoP\x01Z1google.g\
+    olang.org/protobuf/types/known/wrapperspb\xf8\x01\x01\xa2\x02\x03G\
+    PB\xaa\x02\x1eGoogle.Protobuf.WellKnownTypesb\x06proto3\
+";

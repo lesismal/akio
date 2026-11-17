@@ -316,6 +316,20 @@ impl<'a> Reader<'a> {
         r
     }
 
+    /// One level deeper, in the same buffer (a group).
+    pub(crate) fn enter(&mut self) -> Result<(), DecodeError> {
+        if self.depth >= RECURSION_LIMIT {
+            return Err(err(DecodeErrorKind::RecursionLimit));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Back out of [`enter`](Self::enter).
+    pub(crate) fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
     fn skip_group(&mut self, field: u32) -> Result<(), DecodeError> {
         if self.depth >= RECURSION_LIMIT {
             return Err(err(DecodeErrorKind::RecursionLimit));

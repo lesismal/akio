@@ -268,7 +268,11 @@ impl Builder<'_> {
             d.extension_range.push(descriptor_proto::ExtensionRange {
                 start: Some(r.start as i32),
                 end: Some(r.end as i32 + 1),
-                options: self.options(".google.protobuf.ExtensionRangeOptions", &r.options, &name)?,
+                options: self.options(
+                    ".google.protobuf.ExtensionRangeOptions",
+                    &r.options,
+                    &name,
+                )?,
             });
         }
         for r in &m.reserved_ranges {
@@ -323,7 +327,9 @@ impl Builder<'_> {
         let label = if f.label == Label::Repeated {
             fdp::Label::REPEATED
         } else if f.label == Label::Required
-            || (self.file.edition.is_editions() && f.resolved.presence == Presence::Required && false)
+            || (self.file.edition.is_editions()
+                && f.resolved.presence == Presence::Required
+                && false)
         {
             fdp::Label::REQUIRED
         } else {
@@ -383,10 +389,11 @@ impl Builder<'_> {
             });
         }
         for &(a, b) in &e.reserved_ranges {
-            d.reserved_range.push(enum_descriptor_proto::EnumReservedRange {
-                start: Some(a),
-                end: Some(b),
-            });
+            d.reserved_range
+                .push(enum_descriptor_proto::EnumReservedRange {
+                    start: Some(a),
+                    end: Some(b),
+                });
         }
         Ok(d)
     }
@@ -411,7 +418,9 @@ impl Builder<'_> {
         if buf.is_empty() {
             return Ok(None);
         }
-        let buf = self.canonical(target, &buf).map_err(|e| format!("{scope}: options: {e}"))?;
+        let buf = self
+            .canonical(target, &buf)
+            .map_err(|e| format!("{scope}: options: {e}"))?;
         decode_opts(&buf, scope).map(Some)
     }
 
@@ -445,7 +454,10 @@ impl Builder<'_> {
         let mut i = 0;
         while i < recs.len() {
             let n = recs[i].0;
-            let j = recs[i..].iter().position(|r| r.0 != n).map_or(recs.len(), |k| i + k);
+            let j = recs[i..]
+                .iter()
+                .position(|r| r.0 != n)
+                .map_or(recs.len(), |k| i + k);
             let group = &recs[i..j];
             match self.field_by_number(msg, n) {
                 Some(f) if f.label != Label::Repeated => {
@@ -455,7 +467,9 @@ impl Builder<'_> {
                             match wt {
                                 WireType::Len => {
                                     let mut rr = encoding::Reader::new(raw);
-                                    inner.extend_from_slice(rr.read_bytes().map_err(|e| e.to_string())?);
+                                    inner.extend_from_slice(
+                                        rr.read_bytes().map_err(|e| e.to_string())?,
+                                    );
                                 }
                                 WireType::StartGroup => {
                                     // raw = fields + end tag
@@ -540,7 +554,13 @@ impl Builder<'_> {
     }
 
     /// Encodes one value (or each item of a list) of field `f`.
-    fn encode_field(&self, f: &Field, value: &Constant, scope: &str, out: &mut Vec<u8>) -> DResult<()> {
+    fn encode_field(
+        &self,
+        f: &Field,
+        value: &Constant,
+        scope: &str,
+        out: &mut Vec<u8>,
+    ) -> DResult<()> {
         if let Constant::List(items) = value {
             if f.label != Label::Repeated {
                 return Err(format!("{} is not repeated", f.name));
@@ -569,7 +589,11 @@ impl Builder<'_> {
             }
             (TypeRef::Message(_), _) => return Err(format!("{} takes a message", f.name)),
             (TypeRef::Enum(e), Constant::Ident(v)) => {
-                let en = self.ix.enums.get(e).ok_or_else(|| format!("unknown enum {e}"))?;
+                let en = self
+                    .ix
+                    .enums
+                    .get(e)
+                    .ok_or_else(|| format!("unknown enum {e}"))?;
                 let num = en
                     .values
                     .iter()
@@ -627,19 +651,27 @@ fn encode_scalar(s: Scalar, n: u32, v: &Constant, out: &mut Vec<u8>) -> DResult<
     let bad = || format!("invalid {s:?} value");
     let int = |lo: i128, hi: i128| -> DResult<i128> {
         match v {
-            Constant::Int(t) => int_value(t).filter(|x| (lo..=hi).contains(x)).ok_or_else(bad),
+            Constant::Int(t) => int_value(t)
+                .filter(|x| (lo..=hi).contains(x))
+                .ok_or_else(bad),
             _ => Err(bad()),
         }
     };
     match s {
-        Scalar::Int32 => encode_varint_field(out, n, int(i32::MIN.into(), i32::MAX.into())? as i64 as u64),
-        Scalar::Int64 => encode_varint_field(out, n, int(i64::MIN.into(), i64::MAX.into())? as i64 as u64),
+        Scalar::Int32 => {
+            encode_varint_field(out, n, int(i32::MIN.into(), i32::MAX.into())? as i64 as u64)
+        }
+        Scalar::Int64 => {
+            encode_varint_field(out, n, int(i64::MIN.into(), i64::MAX.into())? as i64 as u64)
+        }
         Scalar::Uint32 => encode_varint_field(out, n, int(0, u32::MAX.into())? as u64),
         Scalar::Uint64 => encode_varint_field(out, n, int(0, u64::MAX.into())? as u64),
         Scalar::Sint32 => encode_varint_field(
             out,
             n,
-            u64::from(encoding::zigzag32(int(i32::MIN.into(), i32::MAX.into())? as i32)),
+            u64::from(encoding::zigzag32(
+                int(i32::MIN.into(), i32::MAX.into())? as i32
+            )),
         ),
         Scalar::Sint64 => encode_varint_field(
             out,

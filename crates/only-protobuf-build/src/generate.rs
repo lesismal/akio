@@ -380,9 +380,13 @@ pub(crate) fn generate_all(
     Ok((code, full_set))
 }
 
-/// The package-level descriptor items: the encoded set as a byte string, split in lines.
+/// The package-level descriptor items: the encoded set as a byte string, split in lines, and
+/// the pool built from it.
 fn descriptor_items(set: &[u8]) -> String {
     let mut out = String::from(
+        "/// The descriptor pool of this package's files and the files they import (built from\n/// [`FILE_DESCRIPTOR_SET`] on first use).\npub fn descriptor_pool() -> &'static ::only_protobuf::reflect::DescriptorPool {\n    static POOL: ::std::sync::OnceLock<::only_protobuf::reflect::DescriptorPool> =\n        ::std::sync::OnceLock::new();\n    POOL.get_or_init(|| {\n        ::only_protobuf::reflect::DescriptorPool::decode(FILE_DESCRIPTOR_SET)\n            .unwrap_or_else(|e| ::core::panic!(\"{e}\"))\n    })\n}\n\n",
+    );
+    out.push_str(
         "/// The descriptors of this package's files and of the files they import: an encoded\n/// `google.protobuf.FileDescriptorSet`.\npub const FILE_DESCRIPTOR_SET: &[u8] = b\"\\\n",
     );
     for chunk in set.chunks(48) {
@@ -1132,6 +1136,27 @@ impl Gen<'_> {
             "impl ::only_protobuf::Name for {name} {{\n    const FULL_NAME: &'static str = \"{}\";\n}}\n",
             &fqn[1..]
         );
+        if self.cfg.descriptors {
+            let sym = &self.syms[fqn];
+            let pkg: Vec<String> = if sym.package.is_empty() {
+                Vec::new()
+            } else {
+                sym.package.split('.').map(ident).collect()
+            };
+            let pool = rel(module, &pkg, "descriptor_pool");
+            let _ = writeln!(
+                out,
+                "impl ::only_protobuf::reflect::ReflectMessage for {name} {{
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {{
+        {pool}()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!(\"{} is not in the descriptor pool\"))
+    }}
+}}
+",
+                &fqn[1..]
+            );
+        }
         if self.grpc {
             let _ = writeln!(
                 out,
@@ -1220,7 +1245,11 @@ impl Gen<'_> {
     ) {
         let mut sorted: Vec<&Plan<'_>> = plans.iter().collect();
         sorted.sort_by_key(|p| p.f.number);
-        let mut ranges: Vec<(u32, u32)> = m.extension_ranges.iter().map(|r| (r.start, r.end)).collect();
+        let mut ranges: Vec<(u32, u32)> = m
+            .extension_ranges
+            .iter()
+            .map(|r| (r.start, r.end))
+            .collect();
         ranges.sort_unstable();
         let uf = self.cfg.unknown_fields;
         let ext = !ranges.is_empty();
@@ -1464,15 +1493,21 @@ impl Gen<'_> {
         let single = format!("__pb::accepts::<{}>(wire_type)", p.codec);
         match p.shape {
             Shape::Implicit | Shape::Required => (
-                format!("{{\n                if let ::core::option::Option::Some(v) = {read} {{\n                    self.{f} = v;\n                }}\n                ::core::result::Result::Ok(())\n            }}"),
+                format!(
+                    "{{\n                if let ::core::option::Option::Some(v) = {read} {{\n                    self.{f} = v;\n                }}\n                ::core::result::Result::Ok(())\n            }}"
+                ),
                 single,
             ),
             Shape::Optional { .. } => (
-                format!("{{\n                if let ::core::option::Option::Some(v) = {read} {{\n                    self.{f} = ::core::option::Option::Some(v);\n                }}\n                ::core::result::Result::Ok(())\n            }}"),
+                format!(
+                    "{{\n                if let ::core::option::Option::Some(v) = {read} {{\n                    self.{f} = ::core::option::Option::Some(v);\n                }}\n                ::core::result::Result::Ok(())\n            }}"
+                ),
                 single,
             ),
             Shape::Repeated { .. } => (
-                format!("__pb::merge_closed_enum_repeated::<{e}>({n}, wire_type, r, &mut self.{f}, {unknown})"),
+                format!(
+                    "__pb::merge_closed_enum_repeated::<{e}>({n}, wire_type, r, &mut self.{f}, {unknown})"
+                ),
                 format!("__pb::accepts_repeated::<{}>(wire_type)", p.codec),
             ),
             Shape::Map => (

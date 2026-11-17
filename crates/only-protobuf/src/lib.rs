@@ -71,6 +71,7 @@ pub mod encoding;
 mod error;
 mod extension;
 mod message;
+pub mod reflect;
 pub mod well_known;
 
 pub use error::{DecodeError, DecodeErrorKind};

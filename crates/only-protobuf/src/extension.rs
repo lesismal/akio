@@ -331,7 +331,11 @@ pub struct RepeatedExtension<M, C> {
 
 impl<M, C> RepeatedExtension<M, C> {
     /// See [`Extension::new`].
-    pub const fn new(number: u32, full_name: &'static str, packed: bool) -> RepeatedExtension<M, C> {
+    pub const fn new(
+        number: u32,
+        full_name: &'static str,
+        packed: bool,
+    ) -> RepeatedExtension<M, C> {
         RepeatedExtension {
             number,
             full_name,
@@ -405,7 +409,11 @@ pub trait Extendable: Message {
     }
 
     /// Replaces the values of the repeated `ext` (unset when `v` is empty).
-    fn set_repeated_extension<C: Codec>(&mut self, ext: &RepeatedExtension<Self, C>, v: &[C::Value]) {
+    fn set_repeated_extension<C: Codec>(
+        &mut self,
+        ext: &RepeatedExtension<Self, C>,
+        v: &[C::Value],
+    ) {
         self.extension_set_mut()
             .set_repeated::<C>(ext.number, v, ext.packed);
     }

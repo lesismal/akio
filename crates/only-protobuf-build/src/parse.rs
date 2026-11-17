@@ -811,7 +811,11 @@ impl Parser<'_> {
 
     /// `1, 2 to 5, 9 to max` (`max` is `max`); the keyword already consumed.
     fn ranges(&mut self, max: i64) -> PResult<Vec<(i64, i64)>> {
-        Ok(self.ranges_max(max)?.into_iter().map(|(a, b, _)| (a, b)).collect())
+        Ok(self
+            .ranges_max(max)?
+            .into_iter()
+            .map(|(a, b, _)| (a, b))
+            .collect())
     }
 
     /// [`ranges`](Self::ranges), telling which end was `max`.
@@ -1058,7 +1062,10 @@ impl Parser<'_> {
                         self.pos += 1;
                         m.options.push(self.option_statement()?);
                     }
-                    "reserved" if !matches!(self.peek_at(1), Some(Tok::Sym('.'))) && !self.is_field_decl() => {
+                    "reserved"
+                        if !matches!(self.peek_at(1), Some(Tok::Sym('.')))
+                            && !self.is_field_decl() =>
+                    {
                         self.pos += 1;
                         let (ranges, names) = self.reserved(MAX_FIELD)?;
                         for (a, b) in ranges {
@@ -1071,7 +1078,10 @@ impl Parser<'_> {
                         }
                         m.reserved_names.extend(names);
                     }
-                    "extensions" if !matches!(self.peek_at(1), Some(Tok::Sym('.'))) && !self.is_field_decl() => {
+                    "extensions"
+                        if !matches!(self.peek_at(1), Some(Tok::Sym('.')))
+                            && !self.is_field_decl() =>
+                    {
                         self.pos += 1;
                         let ranges = self.ranges_max(MAX_FIELD)?;
                         let options = self.field_options()?;
@@ -1163,7 +1173,8 @@ impl Parser<'_> {
     /// Whether the tokens ahead are a field declaration whose type is a keyword-like name
     /// (`reserved r = 1;`, `extensions e = 2;`): `<ident> <ident> =`.
     fn is_field_decl(&self) -> bool {
-        matches!(self.peek_at(1), Some(Tok::Ident(_))) && matches!(self.peek_at(2), Some(Tok::Sym('=')))
+        matches!(self.peek_at(1), Some(Tok::Ident(_)))
+            && matches!(self.peek_at(2), Some(Tok::Sym('=')))
     }
 
     /// A field; `forced` is the label of oneof members (no label written). Returns the message
@@ -1226,9 +1237,14 @@ impl Parser<'_> {
             }
             map_key = Some(key);
             v
-        } else if self.is_ident("group") && matches!(self.peek_at(1), Some(Tok::Ident(_))) && matches!(self.peek_at(2), Some(Tok::Sym('='))) {
+        } else if self.is_ident("group")
+            && matches!(self.peek_at(1), Some(Tok::Ident(_)))
+            && matches!(self.peek_at(2), Some(Tok::Sym('=')))
+        {
             if self.edition != Edition::Proto2 {
-                return self.err("groups are only allowed in proto2 (use features.message_encoding = DELIMITED)");
+                return self.err(
+                    "groups are only allowed in proto2 (use features.message_encoding = DELIMITED)",
+                );
             }
             if label == Label::Implicit && forced.is_none() {
                 return self.err("proto2 fields need a label (optional, required or repeated)");
@@ -1528,8 +1544,7 @@ fn check(f: &File) -> Result<(), String> {
             if m.reserved_names.contains(&fl.name) {
                 return Err(format!("{}: field name {} is reserved", m.name, fl.name));
             }
-            if m
-                .extension_ranges
+            if m.extension_ranges
                 .iter()
                 .any(|r| (r.start..=r.end).contains(&fl.number))
             {
@@ -1576,11 +1591,20 @@ fn check(f: &File) -> Result<(), String> {
     }
     fn enumeration(e: &EnumDef, edition: Edition) -> Result<(), String> {
         if edition == Edition::Proto3 && e.values[0].number != 0 {
-            return Err(format!("the first value of proto3 enum {} must be 0", e.name));
+            return Err(format!(
+                "the first value of proto3 enum {} must be 0",
+                e.name
+            ));
         }
         for v in &e.values {
-            if e.reserved_ranges.iter().any(|&(a, b)| (a..=b).contains(&v.number)) {
-                return Err(format!("{}: value {} uses a reserved number", e.name, v.name));
+            if e.reserved_ranges
+                .iter()
+                .any(|&(a, b)| (a..=b).contains(&v.number))
+            {
+                return Err(format!(
+                    "{}: value {} uses a reserved number",
+                    e.name, v.name
+                ));
             }
             if e.reserved_names.contains(&v.name) {
                 return Err(format!("{}: value name {} is reserved", e.name, v.name));
@@ -1801,7 +1825,10 @@ mod more_tests {
         assert_eq!(m.fields[0].name, "data");
         assert_eq!(m.fields[2].oneof, Some(0));
         assert_eq!(
-            m.messages.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+            m.messages
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
             ["Data", "Item", "Choice"]
         );
         assert_eq!(m.extension_ranges.len(), 2);

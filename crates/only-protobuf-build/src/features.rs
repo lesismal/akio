@@ -90,7 +90,9 @@ fn apply(
     for o in options {
         let Some(name) = o.name.strip_prefix("features.") else {
             if o.name == "features" {
-                return Err(format!("{what}: set features one by one (features.<name> = ...)"));
+                return Err(format!(
+                    "{what}: set features one by one (features.<name> = ...)"
+                ));
             }
             continue;
         };
@@ -106,7 +108,9 @@ fn apply(
         };
         let bad = || format!("{what}: invalid value {v} for features.{name}");
         let allowed: &[Target] = match name {
-            "field_presence" | "repeated_field_encoding" | "utf8_validation"
+            "field_presence"
+            | "repeated_field_encoding"
+            | "utf8_validation"
             | "message_encoding" => &[Target::File, Target::Field],
             "enum_type" => &[Target::File, Target::Enum],
             "json_format" => &[Target::File, Target::Message, Target::Enum],
@@ -348,7 +352,9 @@ impl Ctx {
         let what = format!("{}:{}: {}", self.file, fl.line, fl.name);
         let f = apply(parent, &fl.options, self.edition, Target::Field, &what)?;
         if f.style2024 && !is_snake(&fl.name) {
-            return Err(format!("{what}: field names should be snake_case (enforce_naming_style)"));
+            return Err(format!(
+                "{what}: field names should be snake_case (enforce_naming_style)"
+            ));
         }
         let is_msg = matches!(fl.ty, TypeRef::Message(_)) && fl.map_key.is_none();
         let repeated = fl.label == Label::Repeated;
@@ -369,16 +375,22 @@ impl Ctx {
                     return Err(format!("{what}: extensions cannot set field_presence"));
                 }
                 if is_msg && f.presence == Presence::Implicit {
-                    return Err(format!("{what}: message fields cannot have implicit presence"));
+                    return Err(format!(
+                        "{what}: message fields cannot have implicit presence"
+                    ));
                 }
             }
-            if is_set(opts, "features.repeated_field_encoding") && (!repeated || fl.map_key.is_some()) {
+            if is_set(opts, "features.repeated_field_encoding")
+                && (!repeated || fl.map_key.is_some())
+            {
                 return Err(format!(
                     "{what}: only repeated fields can set repeated_field_encoding"
                 ));
             }
             if is_set(opts, "features.repeated_field_encoding") && f.packed && !packable {
-                return Err(format!("{what}: only repeated primitive fields can be packed"));
+                return Err(format!(
+                    "{what}: only repeated primitive fields can be packed"
+                ));
             }
             if is_set(opts, "features.message_encoding")
                 && (!matches!(fl.ty, TypeRef::Message(_)) || fl.map_key.is_some())
@@ -386,14 +398,18 @@ impl Ctx {
                 if fl.map_key.is_some() && !f.delimited {
                     // LENGTH_PREFIXED on a map is the only encoding anyway.
                 } else {
-                    return Err(format!("{what}: only message fields can set message_encoding"));
+                    return Err(format!(
+                        "{what}: only message fields can set message_encoding"
+                    ));
                 }
             }
             if is_set(opts, "features.utf8_validation")
                 && !matches!(fl.ty, TypeRef::Scalar(crate::parse::Scalar::String))
                 && fl.map_key != Some(crate::parse::Scalar::String)
             {
-                return Err(format!("{what}: only string fields can set utf8_validation"));
+                return Err(format!(
+                    "{what}: only string fields can set utf8_validation"
+                ));
             }
         }
         let presence = if repeated {
@@ -410,7 +426,9 @@ impl Ctx {
             }
         };
         if presence == Presence::Implicit && fl.default.is_some() && !repeated {
-            return Err(format!("{what}: implicit presence fields cannot have defaults"));
+            return Err(format!(
+                "{what}: implicit presence fields cannot have defaults"
+            ));
         }
         if presence == Presence::Implicit && !repeated {
             if let TypeRef::Enum(e) = &fl.ty {
@@ -450,7 +468,9 @@ fn check_package_style(p: &str) -> Result<(), String> {
     if p.is_empty() || p.split('.').all(is_snake) {
         Ok(())
     } else {
-        Err(format!("package {p} should be lower_snake_case (enforce_naming_style)"))
+        Err(format!(
+            "package {p} should be lower_snake_case (enforce_naming_style)"
+        ))
     }
 }
 

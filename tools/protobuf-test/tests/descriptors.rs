@@ -82,7 +82,10 @@ fn conformance_files() {
             ours(&[p]);
         }
     }
-    compare("conformance.pb", &["conformance/proto/conformance/conformance.proto"]);
+    compare(
+        "conformance.pb",
+        &["conformance/proto/conformance/conformance.proto"],
+    );
     compare(
         "test_messages_proto2.pb",
         &["conformance/proto/google/protobuf/test_messages_proto2.proto"],
