@@ -10,6 +10,30 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: fMP4 HLS, RTMP and RTSP clients, WebRTC media in only-media
+
+Additive (ADR-016, docs/adr/016-media-fmp4-clients-webrtc.md):
+
+- **fMP4 / CMAF HLS**: `HlsConfig::format = SegmentFormat::Fmp4` serves `init-<n>.mp4`,
+  `seg-<n>.m4s` and LL-HLS parts `part-<n>.<m>.m4s` (H.264, H.265, AAC, Opus) next to MPEG-TS,
+  which stays the default. New module `fmp4` (`Muxer`, `Demuxer`, `write_styp`).
+- **RTMP client** `rtmp::client::{push, pull}`: relays a hub stream to an RTMP server or pulls one
+  into the hub (Enhanced RTMP H.265/Opus), with timeouts for connect, handshake, each command and
+  idle, bounded messages and send queues.
+- **RTSP client** `rtsp::client::{pull, push}` (play and record, TCP interleaved or UDP, Digest and
+  Basic auth, keep-alives, RTCP reports); `rtsp::message::Reply` and `Parser::client`.
+- **WHIP/WHEP media**: with the new cargo feature `webrtc`, `webrtc::RtcMedia` carries H.264,
+  H.265, Opus and G.711 through only-webrtc: WHIP into the hub, WHEP out of it. `WhipServer`
+  drops sessions whose peer ended without a `DELETE`.
+- **Keyframe requests**: `Publisher::on_keyframe_request`, `Subscription::request_keyframe`,
+  `Hub::request_keyframe`, throttled by `HubConfig::keyframe_request_interval` (500 ms); WebRTC
+  viewers' PLI/FIR reach WHIP publishers as PLI.
+- Interop: ffmpeg/ffprobe (fMP4 HLS plain and LL-HLS, RTMP and RTSP listen modes), mediamtx (RTMP,
+  RTSP over TCP and UDP), ffmpeg's WHIP muxer and pion (WHIP, WHEP, PLI round trip). New fuzz
+  targets `fmp4_demux`, `rtmp_client`, `rtsp_client`.
+- Fixed: only-webrtc `Endpoint::config`, `close_on_disconnect` and `connect_timeout` panicked
+  after `bind`.
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):

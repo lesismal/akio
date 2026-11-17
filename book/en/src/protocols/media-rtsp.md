@@ -71,8 +71,70 @@ A WHIP publish reserves the path through the hub, so `on_publish` applies; an
 `Authorization: Bearer <token>` header reaches the hook as `token=<token>` when the URL has no
 query. The media itself (ICE, DTLS-SRTP, RTP) is the job of a `WebRtcEngine`: its `publish`
 gets the reserved `Publisher` and its `play` subscribes to the hub. `NoMedia`, the placeholder,
-answers every offer with `501 Not Implemented` until a WebRTC engine is plugged in.
-`WhipConfig::max_sessions` (256) bounds concurrent sessions; offers past it get 503.
+answers every offer with `501 Not Implemented`.
+`WhipConfig::max_sessions` (256) bounds concurrent sessions; offers past it get 503, and a
+session whose peer ended without a `DELETE` frees its slot.
+
+### WebRTC media (`webrtc` feature)
+
+With the cargo feature `webrtc`, `only_media::webrtc::RtcMedia` is the engine, on an
+`only-webrtc` `RtcServer` (ICE-lite on one UDP port):
+
+```rust,ignore
+use only_media::webrtc::{RtcMedia, RtcMediaConfig};
+
+// The address browsers reach the UDP listener at goes into every answer.
+let rtc = RtcMedia::rtc_server(vec!["203.0.113.7:8189".parse()?]);
+let media = RtcMedia::new(rtc.clone(), RtcMediaConfig::default());
+let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
+// serve `rtc` on Listener::udp("0.0.0.0:8189") and `whip.routes(router)` over HTTP
+```
+
+- **WHIP in**: H.264 and H.265 (Annex B over RTP) become AVCC with the configuration record
+  built from the in-band parameter sets; Opus, PCMU and PCMA pass through. The stream goes live
+  when every line is ready (or after `track_timeout`, 5 s, with those that are); what arrives
+  before is held within `max_pending_packets` / `max_pending_bytes`. VP8, VP9, AV1 and G.722 are
+  not carried by the hub: an offer with nothing else gets 406.
+- **WHEP out**: the viewer is subscribed once ICE and DTLS are up, from the next keyframe (set
+  `play_gop_cache` to start from the cached GOP), H.264/H.265 with the parameter sets before
+  each keyframe, Opus and G.711 as they are. AAC and MP3 are not sent (no transcoding): publish
+  Opus for WebRTC viewers, and video without B-frames (`-bf 0`).
+- **Keyframes**: a viewer's PLI or FIR goes to the hub (`Subscription::request_keyframe`), which
+  passes it to the publisher at most every `HubConfig::keyframe_request_interval` (500 ms); a WHIP
+  publisher turns it into a PLI to its sender. A viewer joining without a cached keyframe asks at
+  once.
+
+`crates/only-media/examples/whip-server.rs` runs it; `tools/interop/webrtc/media.sh` checks it
+against ffmpeg's WHIP muxer and pion (WHIP in, WHEP out, PLI round trip, RTMP in to WHEP out).
+
+## RTSP client
+
+`only_media::rtsp::client` plays from an RTSP server into the hub (`pull`) or records a hub
+stream to one (`push`), over TCP interleaved (default) or UDP:
+
+```rust,ignore
+use only_media::rtsp::{RtspClientConfig, RtspTransport, client};
+
+let cam = client::pull(&engine, "rtsp://admin:secret@192.0.2.20/stream1", &hub, "cams/door",
+                       RtspClientConfig::default())?;
+let mut udp = RtspClientConfig::default();
+udp.transport = RtspTransport::Udp;
+let out = client::push(&engine, "rtsp://198.51.100.4:8554/live/door", &hub, "cams/door", udp)?;
+```
+
+`pull` and `push` return once PLAY or RECORD is answered: they wait for the handshake, so call
+them off the I/O threads (host names are resolved there too; `RtspClientConfig::addr` skips the
+lookup). The session then runs on the engine; `error()` says why it ended and `close()` (or
+dropping the handle) sends TEARDOWN. Credentials in the URL answer Digest or Basic challenges.
+Keep-alives (GET_PARAMETER, else OPTIONS) go at half the server's session timeout. UDP binds an
+RTP/RTCP port pair per track with `Engine::bind_udp`, so the engine needs
+`udp_client_threads` or a UDP listener. Bounds: connect and each response 10 s, a pull without
+media for 10 s ends, responses under the parser's head and body limits, and a TCP push that falls
+behind is cut back to keyframes, then disconnected.
+
+Interop: ffmpeg's listen mode receives our push (TCP and UDP); mediamtx records our push and
+serves our pull, TCP and UDP (`tools/interop/media/rtsp-client.sh`; UDP runs in a container on
+mediamtx's network because Docker Desktop's NAT drops it).
 
 ## Statistics
 
@@ -83,4 +145,5 @@ answers every offer with `501 Not Implemented` until a WebRTC engine is plugged 
 ## Not supported
 
 RTSP 2.0, RTSPS and HTTP tunnelling, multicast, seeking (streams are live), sessions that
-outlive their connection; RTCP receiver reports to recorders.
+outlive their connection; RTCP receiver reports to recorders. Client: redirects, reconnects and
+RTCP-based A/V sync. WebRTC: VP8 / VP9 / AV1, simulcast, transcoding.

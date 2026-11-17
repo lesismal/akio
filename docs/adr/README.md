@@ -19,3 +19,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-013: Shared 0-RTT anti-replay store and QUIC compatible version negotiation](013-shared-anti-replay-and-compatible-vn.md)
 - [ADR-014: QUIC session tickets and tokens bound to the QUIC version](014-quic-version-bound-resumption.md)
 - [ADR-015: Pluggable metrics collectors](015-metrics-collectors.md) (accepted 2026-11-16)
+- [ADR-016: fMP4 HLS, RTMP and RTSP clients, WebRTC media in the media hub](016-media-fmp4-clients-webrtc.md) (accepted 2026-11-17)

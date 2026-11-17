@@ -63,7 +63,24 @@ All additions are additive; existing behaviour and defaults are unchanged.
 
 ### RTSP client (`only_media::rtsp::client`)
 
-RTSP_CLIENT_SECTION
+- `pull(engine, url, hub, path, RtspClientConfig) -> Result<RtspClient, ClientError>` plays from
+  an RTSP server into the hub (the path is reserved at once; the stream goes live when the video
+  parameter sets are known, from the SDP or in band); `push(...)` records a hub stream to a server
+  (ANNOUNCE, SETUP `mode=record`, RECORD). `RtspTransport` (`Tcp` default, interleaved; `Udp`, an
+  even/odd RTP/RTCP pair per track bound with `Engine::bind_udp`). `RtspClient`: `path`, `close`
+  (TEARDOWN best effort), `is_closed`, `error`; dropping it closes. Re-exported from `rtsp`.
+- Unlike the RTMP client, `pull` and `push` return once PLAY or RECORD is answered, so they block
+  the caller for the handshake and must not run on an I/O thread (documented); the session then
+  runs on the engine. Host names are resolved on the caller's thread; `RtspClientConfig::addr`
+  avoids it.
+- Digest (MD5, `qop=auth`) and Basic authentication from the URL's userinfo, at most two retries per
+  request; keep-alives with GET_PARAMETER (or OPTIONS) at half the server's session timeout (else
+  30 s); periodic RTCP sender reports when recording, receiver reports over UDP when playing.
+- `rtsp::message`: `Reply` (`header`, `headers_named`, `cseq`), `Frame::Reply`, `Parser::client`
+  (whole responses under the same head and body bounds as requests).
+- Bounds and timeouts (defaults): connect 10 s, each response 10 s, pull idle 10 s, head and body
+  as the server's parser, TCP push `write_queue_limit` 2 MiB / `max_write_queue` 16 MiB,
+  `push_wait` 10 s.
 
 ### WebRTC media (`only_media::webrtc`, cargo feature `webrtc`)
 
@@ -102,6 +119,9 @@ RTSP_CLIENT_SECTION
 - New fuzz targets: `fmp4_demux`, `rtmp_client`, `rtsp_client`.
 - The hub, HLS and the clients keep every buffer bounded with a default and every exchange under a
   timeout (rules 7 to 10).
+- `only-webrtc` fix found on the way: `Endpoint::config`, `close_on_disconnect` and
+  `connect_timeout` always panicked after `bind`; they now apply to peers created afterwards
+  (same signatures).
 - One behaviour change in TS mode: while the segment being written starts with a discontinuity and
   has no parts yet, the playlist leaves out `EXT-X-PRELOAD-HINT` (the hinted part could not carry
   that tag).
