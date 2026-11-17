@@ -98,5 +98,5 @@ decode 出错会关闭连接。ping 和 pong 不经过 coder。
 / `notify` 选择一个在线的连接：`Balance::RoundRobin`（默认，每线程游标，选择时不共享计数器）或
 `Balance::LeastPending`（等待应答的调用最少）。断开的连接每隔 `reconnect_interval`（1 秒）重连，
 期间被跳过；全部断开时调用立即以 `Closed` 失败。`heartbeat(Some(interval))`（15 秒）定期 ping 每个
-连接，两个间隔内没有收到任何数据就关闭它，从而替换掉沉默的对端。每个连接有自己的
+连接，若某次 ping 在一个间隔内没有收到任何数据就关闭它，从而替换掉沉默的对端。每个连接有自己的
 `max_pending_calls`，每个调用有自己的截止时间。`peer()`、`peers()`、`connected()`、`close()`。

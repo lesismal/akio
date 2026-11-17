@@ -82,6 +82,7 @@ pub struct Message {
 }
 
 /// Encodes one message.
+#[inline]
 pub fn encode(
     cmd: Cmd,
     flags: u8,

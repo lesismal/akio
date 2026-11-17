@@ -59,8 +59,8 @@ Additive API in `only-arpc` (one new `CallError` variant; the enum is `#[non_exh
   `Balance::RoundRobin` (default; per-thread cursor, no shared counter) or
   `Balance::LeastPending` (fewest `pending_calls`, ties in turn). Connections that are down are
   skipped (a per-peer `connected` flag, no lock); with none up a call fails at once with
-  `Closed`. The heartbeat pings every interval and closes a connection that received nothing
-  for two intervals, so its reconnect replaces it. `Pool::{peer, peers, connected, call,
+  `Closed`. The heartbeat pings every interval and closes a connection whose ping got nothing
+  back within an interval, so its reconnect replaces it. `Pool::{peer, peers, connected, call,
   call_with, call_async, notify, close}`.
 
 Interop: `tools/interop/arpc/run.sh` runs, besides the plain checks, a fib Go arpc server and

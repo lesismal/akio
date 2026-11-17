@@ -182,7 +182,7 @@ fn heartbeat_replaces_a_silent_connection() {
         .reconnect_interval(Duration::from_millis(50))
         .dial(&e, addr, Arc::new(Routes::new()))
         .unwrap();
-    // Silent for two intervals: closed and dialed again, repeatedly.
+    // Pings never answered: closed and dialed again, repeatedly.
     wait_until("redialed", || accepted.load(Ordering::SeqCst) >= 3);
     pool.close();
     stop(&e);

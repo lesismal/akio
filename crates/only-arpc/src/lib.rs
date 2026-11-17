@@ -403,6 +403,8 @@ struct PeerInner {
     heartbeat: Option<Duration>,
     /// When the connection last received anything, in [`now_ms`] (heartbeat only).
     last_rx: AtomicU64,
+    /// When the heartbeat last sent a ping, in [`now_ms`] (0: none since connecting).
+    last_ping: AtomicU64,
 }
 
 /// How a client reconnects.
@@ -432,10 +434,12 @@ impl PeerInner {
             stopped: AtomicBool::new(false),
             heartbeat,
             last_rx: AtomicU64::new(now_ms()),
+            last_ping: AtomicU64::new(0),
         }
     }
 
     /// Encodes a message and runs the coders over it.
+    #[inline]
     #[allow(clippy::too_many_arguments)]
     fn frame(
         &self,
@@ -1223,6 +1227,7 @@ impl Acceptor for Attach {
     fn on_open(&self, c: &Conn<ArpcConn>) -> ArpcConn {
         *self.peer.0.conn.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
         self.peer.0.last_rx.store(now_ms(), Ordering::Relaxed);
+        self.peer.0.last_ping.store(0, Ordering::Relaxed);
         self.peer.0.connected.store(true, Ordering::Release);
         if let Some(f) = &self.peer.0.routes.on_connected {
             f(&self.peer);

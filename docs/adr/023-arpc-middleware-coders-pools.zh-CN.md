@@ -52,7 +52,7 @@ Go 的 `Use` 依赖注册顺序：中间件在其后注册的 handler 之前执�
   必须建立，否则拨号失败并关闭其余连接（与 Go 相同）。`Balance::RoundRobin`（默认；每线程游标，
   无共享计数器）或 `Balance::LeastPending`（`pending_calls` 最少，相同则轮流）。跳过断开的连接
   （每个 peer 一个 `connected` 标志，无锁）；全部断开时调用立即以 `Closed` 失败。心跳每个间隔
-  ping 一次，两个间隔内没有收到任何数据的连接会被关闭，由重连替换。
+  ping 一次，某次 ping 在一个间隔内没有收到任何数据的连接会被关闭，由重连替换。
   `Pool::{peer, peers, connected, call, call_with, call_async, notify, close}`。
 
 互通：`tools/interop/arpc/run.sh` 除原有检查外，还用 fib 的 Go arpc 服务端和客户端（带 arpcex 的

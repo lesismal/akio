@@ -53,8 +53,8 @@ impl PoolBuilder {
         self
     }
 
-    /// Pings each connection every `interval` and closes it (it then reconnects) when nothing
-    /// has been received for two intervals, so a connection to a peer that went silent is
+    /// Pings each connection every `interval` and closes it (it then reconnects) when a ping
+    /// got no answer (nothing at all received) within an interval, so a connection to a peer that went silent is
     /// replaced instead of collecting calls that time out. Default 15 s; `None` turns it off.
     #[must_use]
     pub fn heartbeat(mut self, interval: Option<Duration>) -> PoolBuilder {
@@ -125,8 +125,8 @@ impl PoolBuilder {
     }
 }
 
-/// Pings the connection every `every` and closes it once nothing has been received for two
-/// intervals; stops with the peer.
+/// Pings the connection every `every` and closes it once a ping got nothing back within an
+/// interval; stops with the peer.
 fn schedule_heartbeat(weak: Weak<PeerInner>, every: Duration) {
     Timer::at(Instant::now() + every, move || {
         let Some(inner) = weak.upgrade() else {
@@ -137,12 +137,17 @@ fn schedule_heartbeat(weak: Weak<PeerInner>, every: Duration) {
         }
         let peer = Peer(inner);
         if peer.0.connected.load(Ordering::Acquire) {
-            let silent = now_ms().saturating_sub(peer.0.last_rx.load(Ordering::Relaxed));
-            if u128::from(silent) >= 2 * every.as_millis() {
+            // Judged by the last ping, not the clock, so a late timer is not taken for silence:
+            // closed only when a ping got nothing back for a whole interval.
+            let now = now_ms();
+            let ping = peer.0.last_ping.load(Ordering::Relaxed);
+            let rx = peer.0.last_rx.load(Ordering::Relaxed);
+            if ping != 0 && rx < ping && u128::from(now - ping) >= every.as_millis() {
                 if let Some(c) = peer.conn() {
                     c.close();
                 }
             } else {
+                peer.0.last_ping.store(now.max(1), Ordering::Relaxed);
                 peer.ping();
             }
         }

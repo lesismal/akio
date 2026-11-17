@@ -106,6 +106,6 @@ coded.
 cursor, so picking shares no counter) or `Balance::LeastPending` (fewest calls waiting). Lost
 connections reconnect every `reconnect_interval` (1 s) and are skipped meanwhile; with none up,
 calls fail at once with `Closed`. `heartbeat(Some(interval))` (15 s) pings each connection and
-closes one that received nothing for two intervals, so a silent peer is replaced. Each
+closes one whose ping got nothing back within an interval, so a silent peer is replaced. Each
 connection keeps its own `max_pending_calls` and every call its deadline. `peer()`, `peers()`,
 `connected()`, `close()`.
