@@ -631,8 +631,13 @@ impl Host for NoHost {
 impl<S: Service> ServerConn<S> {
     fn on_req(&mut self, c: &Connection, id: StreamId, data: &[u8], fin: bool) -> Result<(), Fail> {
         // A request that arrives whole (the usual case) is read without entering the table.
-        let mut whole = Req::default();
         let in_table = !self.reqs.is_empty() && self.reqs.contains_key(&id);
+        if fin && !in_table {
+            if let Some(res) = self.read_whole(c, id, data) {
+                return res;
+            }
+        }
+        let mut whole = Req::default();
         let req = if fin && !in_table {
             &mut whole
         } else {
@@ -673,6 +678,48 @@ impl<S: Service> ServerConn<S> {
                 res.map(|_| ())
             }
         }
+    }
+
+    /// Reads a stream that arrived whole as one HEADERS frame and at most one DATA frame (the
+    /// usual case) without a [`Req`] or a frame reader. `None` leaves it to [`read_req`]: other
+    /// frames, a section that is malformed, too large or blocked, an extended CONNECT, a body
+    /// too large or for a service that streams it.
+    #[inline(always)]
+    fn read_whole(
+        &mut self,
+        c: &Connection,
+        id: StreamId,
+        data: &[u8],
+    ) -> Option<Result<(), Fail>> {
+        let (section, rest) = frame::frame_at(data, frame::HEADERS)?;
+        let body = match rest {
+            [] => &[][..],
+            _ => match frame::frame_at(rest, frame::DATA)? {
+                (b, []) if b.len() <= self.cfg.max_body_bytes => b,
+                _ => return None,
+            },
+        };
+        let max_field = self.cfg.max_field_section_bytes;
+        let ric =
+            qpack::decode_section(section, max_field, &self.conn.dec, &mut self.fields).ok()?;
+        let (request, head_only) = request_head(&self.fields, self.peer)?;
+        if request.protocol.is_some()
+            || (!body.is_empty() && self.svc.body_mode(&request) == only_http::BodyMode::Stream)
+        {
+            return None;
+        }
+        if ric > 0 {
+            self.conn.dec.section_ack(sid(id), ric);
+        }
+        Some(
+            match finish_request(Ok((request, head_only)), None, body.to_vec()) {
+                Some((request, head_only)) => {
+                    self.dispatch(c, id, request, head_only);
+                    Ok(())
+                }
+                None => Err(Fail::Stream(code::MESSAGE_ERROR)),
+            },
+        )
     }
 
     #[inline(always)]

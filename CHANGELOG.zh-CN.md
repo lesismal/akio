@@ -32,9 +32,11 @@ only 的所有重要变更都记录在这里。格式遵循
 - 互通：quic-go（双向 HTTP/3 WebSocket 与流式上传），Docker 中通过 libcurl 的 ngtcp2/nghttp3 和
   OpenSSL QUIC（nghttp3 会填充我方解码器的表）。新增 fuzz 目标 `qpack_dynamic`；`h3_frame` 和
   `h3_request` 覆盖 QPACK 流、被阻塞的字段段、extended CONNECT 和流式读取器。
-- 编码器关闭时的 HTTP/3 吞吐：`quic-bench h3` 同轮 A/B 为不含这些功能的版本的 0.980 倍（gpu51 上
-  84.25 万 vs 85.96 万 请求/秒，两次各 7 轮交替：0.984 倍和 0.977 倍）：每请求多约 250 条指令，分散
-  在请求路径上（动态表检查、`Request::protocol`、装箱的附加状态）。两端都开启 QPACK 编码器时在该
+- 编码器关闭时的 HTTP/3 吞吐：`quic-bench h3` 同轮 A/B 为不含这些功能的版本的 1.025 倍（gpu51 上
+  88.13 万 vs 85.96 万 请求/秒，两次各 7 轮交替：1.024 倍和 1.027 倍，14 轮全部更快），每请求少约
+  300 条指令（x86 callgrind）。完整到达的请求或响应（一个 HEADERS 帧、至多一个 DATA 帧）不经帧读取器
+  和每流状态直接读取，客户端在加锁前解码；请求截止时间按 token 下标索引队列而不再哈希；请求在已持有的
+  锁下直接打开流。两端都开启 QPACK 编码器时在该
   基准上慢 18%（请求很小，每个都要确认一次），这正是编码器默认关闭的原因。
 
 ### 变更：处处安全默认值、不阻塞事件循环的 I/O、更精简的热路径（ADR-009，docs/rules.zh-CN.md）

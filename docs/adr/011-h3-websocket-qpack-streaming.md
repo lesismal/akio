@@ -92,11 +92,16 @@ touches the public API of only-h3, only-http and only-ws.
   being copied through every out-of-line call). Exact per-function instruction counts came
   from callgrind (arm64, Docker).
 - Against main 2d1f5720, which added the client bounds (response limits, request deadlines) and
-  QUIC send caps, the merged branch measured 0.980x on the same benchmark (842.5k vs 859.6k
-  req/s; 0.984x and 0.977x, lower in all 14 rounds). The features' own cost did not change
-  (callgrind, arm64: +169 instructions per request in only-h3/only-http, as before the merge);
-  on x86 it is +252 instructions (+1.6% per request in all, cycles +2.6%), spread over the request
-  path with no single hot spot.
+  QUIC send caps, the merged branch first measured 0.980x on the same benchmark (842.5k vs
+  859.6k req/s), +252 instructions per request on x86 spread over the request path. Four changes
+  then took it to 1.025x of main (881.3k vs 859.6k; 1.024x and 1.027x, faster in all 14 rounds;
+  x86 callgrind 18525 vs 18826 instructions per request): a request (server) or response
+  (client) that arrives whole, as one HEADERS frame and at most one DATA frame, is read without
+  the frame reader or per-stream state, falling back to the general path for anything else; the
+  client decodes such a response before taking its state lock, then only removes the request;
+  request deadlines are kept for consecutive tokens, so finishing one indexes the queue instead
+  of a hash set; and a plain request opens its stream under the lock it already holds instead of
+  queueing and locking again.
 - The server's SETTINGS now carry a 4 KiB table, 16 blocked streams and extended CONNECT, and
   it opens a QPACK decoder stream; peers that compress use the table at once. Interop: quic-go
   (WebSocket over HTTP/3 both ways, streamed uploads both ways; its QPACK has no dynamic table)

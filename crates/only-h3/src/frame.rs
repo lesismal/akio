@@ -73,6 +73,7 @@ pub(crate) fn put_varint(out: &mut Vec<u8>, v: u64) {
 }
 
 /// A varint at the start of `b` and its length; `None` if incomplete.
+#[inline]
 pub(crate) fn get_varint(b: &[u8]) -> Option<(u64, usize)> {
     let first = *b.first()?;
     let n = 1usize << (first >> 6);
@@ -82,6 +83,19 @@ pub(crate) fn get_varint(b: &[u8]) -> Option<(u64, usize)> {
         v = (v << 8) | u64::from(x);
     }
     Some((v, n))
+}
+
+/// A whole frame of type `ty` at the start of `b`: its payload and the bytes after it.
+#[inline]
+pub(crate) fn frame_at(b: &[u8], ty: u64) -> Option<(&[u8], &[u8])> {
+    let (t, n) = get_varint(b)?;
+    if t != ty {
+        return None;
+    }
+    let (len, m) = get_varint(&b[n..])?;
+    let rest = &b[n + m..];
+    let len = usize::try_from(len).ok().filter(|&l| l <= rest.len())?;
+    Some(rest.split_at(len))
 }
 
 /// Appends a frame.
@@ -240,6 +254,11 @@ fn pieces<E, T: FnMut() -> E, F: FnMut(Piece<'_>) -> Result<(), E>>(
 }
 
 impl Reader {
+    /// Nothing buffered.
+    pub(crate) fn idle(&self) -> bool {
+        self.pos == self.buf.len()
+    }
+
     pub(crate) fn push(&mut self, data: &[u8]) {
         if self.pos > 0 && self.pos == self.buf.len() {
             self.buf.clear();

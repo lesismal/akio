@@ -295,11 +295,12 @@ struct State {
     /// WebSockets waiting for the server's SETTINGS (extended CONNECT allowed?).
     ws_wait: Vec<Job>,
     next_token: u64,
-    /// Request deadlines in order (every request has the same timeout). Finished requests
-    /// leave their entry behind; it is dropped once it reaches the front.
-    deadlines: VecDeque<(Instant, u64)>,
-    /// Tokens of the requests still waiting for a response.
-    live: TokenSet,
+    /// Request deadlines in order (every request has the same timeout), for consecutive
+    /// tokens from `first`; `false` once the request finished. A finished request's entry
+    /// is dropped once it reaches the front.
+    deadlines: VecDeque<(Instant, bool)>,
+    /// The token of `deadlines[0]`.
+    first: u64,
     /// When the pending timer job runs; one job per connection, not per request.
     armed_at: Option<Instant>,
     /// Streams whose blocked response a timeout gave up: the connection's handler cancels
@@ -307,32 +308,39 @@ struct State {
     expired_blocked: Vec<StreamId>,
 }
 
-type TokenSet = std::collections::HashSet<u64, std::hash::BuildHasherDefault<crate::IdHasher>>;
-
 impl State {
     fn finished(&mut self, token: u64) {
-        if token != 0 {
-            self.live.remove(&token);
+        // Tokens below `first` left with their entries; 0 is no deadline.
+        if let Some(i) = token.checked_sub(self.first) {
+            if let Some(d) = self.deadlines.get_mut(i as usize) {
+                d.1 = false;
+            }
         }
     }
 
+    /// Drops the front deadline: its time, its token, and whether its request still waits.
+    fn pop_front(&mut self) -> Option<(Instant, u64, bool)> {
+        let (at, live) = self.deadlines.pop_front()?;
+        self.first += 1;
+        Some((at, self.first - 1, live))
+    }
+
     fn prune(&mut self) {
-        while let Some(&(_, t)) = self.deadlines.front() {
-            if self.live.contains(&t) {
-                break;
-            }
-            self.deadlines.pop_front();
+        while self.deadlines.front().is_some_and(|d| !d.1) {
+            self.pop_front();
         }
     }
 
     /// A deadline for a new request (0 without a timeout).
     fn deadline(&mut self, timeout: Option<Duration>) -> u64 {
         let Some(d) = timeout else { return 0 };
+        self.prune();
         self.next_token += 1;
         let token = self.next_token;
-        self.live.insert(token);
-        self.prune();
-        self.deadlines.push_back((Instant::now() + d, token));
+        if self.deadlines.is_empty() {
+            self.first = token;
+        }
+        self.deadlines.push_back((Instant::now() + d, true));
         token
     }
 }
@@ -556,9 +564,16 @@ impl H3Client {
     ) {
         let kind = Kind::Plain(Box::new(cb));
         let Some(enc) = self.sh.enc.get() else {
-            // Static QPACK: encoded now, queued (`start_queued` opens streams in order).
+            // Static QPACK: encoded now, sent on a stream opened under the same lock (the
+            // usual case), else queued (`start_queued` opens streams in order).
             let wire = self.encode_now(&method, path, headers, body);
-            return self.push(Job::plain(wire, kind));
+            return match self.open_now(kind) {
+                Ok(id) => {
+                    let _ = self.conn.send(id, wire);
+                    let _ = self.conn.finish(id);
+                }
+                Err(kind) => self.push(Job::plain(wire, kind)),
+            };
         };
         match self.open_now(kind) {
             // A stream right away (the usual case): encoded with its id, nothing copied.
@@ -899,14 +914,10 @@ fn expire(conn: &Connection, sh: &Arc<Shared>, armed: Instant) {
     s.armed_at = None;
     let now = Instant::now();
     let mut kinds = Vec::new();
-    while let Some(&(at, token)) = s.deadlines.front() {
-        if at > now {
-            break;
-        }
-        s.deadlines.pop_front();
-        if !s.live.remove(&token) {
+    while s.deadlines.front().is_some_and(|d| d.0 <= now) {
+        let Some((_, token, true)) = s.pop_front() else {
             continue;
-        }
+        };
         if let Some(i) = s.queue.iter().position(|j| j.token == token) {
             kinds.extend(s.queue.remove(i).map(|j| j.kind));
         } else if let Some(i) = s.ws_wait.iter().position(|j| j.token == token) {
@@ -1016,6 +1027,16 @@ struct WsAnswer {
 /// A finished request: its callback and the response, or why there is none.
 type Done = (Callback, Result<Response, H3Error>);
 
+/// Blocked responses a timeout gave up: their sections are cancelled.
+fn cancel_expired(peer: &mut Peer, st: &mut State) {
+    if !st.expired_blocked.is_empty() {
+        for b in std::mem::take(&mut st.expired_blocked) {
+            peer.blocked -= 1;
+            peer.dec.cancel(sid(b));
+        }
+    }
+}
+
 impl ClientConn {
     fn fail_all(&mut self, why: String) {
         let mut st = self.sh.lock();
@@ -1023,7 +1044,6 @@ impl ClientConn {
         let mut kinds: Vec<Kind> = st.queue.drain(..).map(|j| j.kind).collect();
         kinds.extend(st.ws_wait.drain(..).map(|j| j.kind));
         st.deadlines.clear();
-        st.live.clear();
         st.expired_blocked.clear();
         for (_, mut f) in st.inflight.drain() {
             if let Some(up) = f.up() {
@@ -1044,14 +1064,13 @@ impl ClientConn {
     /// once its head arrived).
     #[inline(always)]
     fn on_resp(&mut self, id: StreamId, data: &[u8], fin: bool) -> Option<Done> {
-        let mut st = self.sh.lock();
-        if !st.expired_blocked.is_empty() {
-            // Blocked responses a timeout gave up: their sections are cancelled.
-            for b in std::mem::take(&mut st.expired_blocked) {
-                self.peer.blocked -= 1;
-                self.peer.dec.cancel(sid(b));
+        if fin {
+            if let Some(done) = self.whole_resp(id, data) {
+                return Some(done);
             }
         }
+        let mut st = self.sh.lock();
+        cancel_expired(&mut self.peer, &mut st);
         let InFlight { r, resp, x, .. } = st.inflight.get_mut(&id)?;
         let fields = &mut self.fields;
         let peer = &mut self.peer;
@@ -1161,6 +1180,43 @@ impl ClientConn {
                 None
             }
         }
+    }
+
+    /// A plain request's response that arrived whole as one HEADERS frame and at most one DATA
+    /// frame (the usual case): decoded before the state is locked, without a frame reader.
+    /// `None` leaves it to the general path: other frames, an interim or malformed head, a
+    /// section that is blocked or too large, a body too large, or a stream that is not a plain
+    /// request with nothing read yet.
+    #[inline(always)]
+    fn whole_resp(&mut self, id: StreamId, data: &[u8]) -> Option<Done> {
+        let (section, rest) = frame::frame_at(data, frame::HEADERS)?;
+        let body = match rest {
+            [] => &[][..],
+            _ => match frame::frame_at(rest, frame::DATA)? {
+                (b, []) if b.len() <= self.max_body => b,
+                _ => return None,
+            },
+        };
+        let max_field = self.cfg.max_field_section_bytes;
+        let ric =
+            qpack::decode_section(section, max_field, &self.peer.dec, &mut self.fields).ok()?;
+        let mut r = fields_to_response(&self.fields).filter(|r| r.status >= 200)?;
+        let mut st = self.sh.lock();
+        cancel_expired(&mut self.peer, &mut st);
+        let std::collections::hash_map::Entry::Occupied(e) = st.inflight.entry(id) else {
+            return None;
+        };
+        if !(e.get().x.is_none() && e.get().cb.is_some() && e.get().r.idle()) {
+            return None;
+        }
+        let mut f = e.remove();
+        st.finished(f.token);
+        drop(st);
+        if ric > 0 {
+            self.peer.dec.section_ack(sid(id), ric);
+        }
+        r.body = body.to_vec();
+        Some((f.cb.take()?, Ok(r)))
     }
 
     /// Reports what a response stream produced (without the state lock: callbacks may send

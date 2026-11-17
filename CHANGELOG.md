@@ -36,10 +36,13 @@ Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):
   ngtcp2/nghttp3 and OpenSSL QUIC in Docker (nghttp3 fills our decoder's table). New fuzz
   target `qpack_dynamic`; `h3_frame` and `h3_request` cover the QPACK streams, blocked sections,
   extended CONNECT and the streaming reader.
-- HTTP/3 throughput with the encoder off: `quic-bench h3` same-run A/B is 0.980x of the release
-  without these features (842.5k vs 859.6k req/s on gpu51, two runs of 7 alternating rounds:
-  0.984x and 0.977x): about 250 more instructions per request, spread over the request path
-  (dynamic-table checks, `Request::protocol`, the boxed side state). Both QPACK encoders on cost
+- HTTP/3 throughput with the encoder off: `quic-bench h3` same-run A/B is 1.025x of the release
+  without these features (881.3k vs 859.6k req/s on gpu51, two runs of 7 alternating rounds:
+  1.024x and 1.027x, faster in all 14), about 300 fewer instructions per request (x86
+  callgrind). A request or response that arrives whole (one HEADERS frame, at most one DATA
+  frame) is read without the frame reader or per-stream state, the client decodes it before
+  taking its lock, request deadlines index their queue by token instead of hashing, and a
+  request opens its stream under the lock it already holds. Both QPACK encoders on cost
   18% on that benchmark (tiny requests, one acknowledgement each), which is why the encoder is
   off by default.
 
