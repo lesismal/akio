@@ -62,7 +62,6 @@ impl Header {
 /// `tls12_cid` records are skipped (see [`split_cid`]).
 pub(crate) fn split(datagram: &[u8]) -> Vec<(Header, &[u8])> {
     split_cid(datagram, 0)
-        .into_iter()
         .filter_map(|r| match r {
             Wire::Plain {
                 h,
@@ -104,39 +103,51 @@ pub(crate) struct Unified<'a> {
 
 /// Splits a datagram into records of either header form; `cid_len` is the length of the
 /// connection ID this endpoint asked the peer to use (0: none). Stops at the first malformed
-/// record.
-pub(crate) fn split_cid(datagram: &[u8], cid_len: usize) -> Vec<Wire<'_>> {
-    let mut out = Vec::new();
-    let mut rest = datagram;
-    while let Some(&first) = rest.first() {
+/// record. Lazy: nothing is allocated.
+pub(crate) fn split_cid(datagram: &[u8], cid_len: usize) -> Records<'_> {
+    Records {
+        rest: datagram,
+        cid_len,
+    }
+}
+
+/// The records of a datagram (see [`split_cid`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Records<'a> {
+    rest: &'a [u8],
+    cid_len: usize,
+}
+
+impl<'a> Iterator for Records<'a> {
+    type Item = Wire<'a>;
+
+    fn next(&mut self) -> Option<Wire<'a>> {
+        let rest = self.rest;
+        let &first = rest.first()?;
+        // A malformed record ends the datagram.
+        self.rest = &[];
         if first & 0xe0 == 0x20 {
-            let Some((u, n)) = parse_unified(rest, cid_len) else {
-                break;
-            };
-            out.push(Wire::Unified(u));
-            rest = &rest[n..];
-            continue;
+            let (u, n) = parse_unified(rest, self.cid_len)?;
+            self.rest = &rest[n..];
+            return Some(Wire::Unified(u));
         }
         let mut r = Reader::new(rest);
-        let Ok(h) = read_header(&mut r) else { break };
+        let h = read_header(&mut r).ok()?;
         let cid = if h.content_type == CT_TLS12_CID {
-            if cid_len == 0 {
-                break;
+            if self.cid_len == 0 {
+                return None;
             }
-            let Ok(c) = r.bytes(cid_len) else { break };
-            Some(c)
+            Some(r.bytes(self.cid_len).ok()?)
         } else {
             None
         };
-        let Ok(fragment) = r.vec16() else { break };
+        let fragment = r.vec16().ok()?;
         if fragment.len() > MAX_CIPHERTEXT {
-            break;
+            return None;
         }
-        out.push(Wire::Plain { h, cid, fragment });
-        let used = rest.len() - r.rest().len();
-        rest = &rest[used..];
+        self.rest = r.rest();
+        Some(Wire::Plain { h, cid, fragment })
     }
-    out
 }
 
 fn parse_unified(d: &[u8], cid_len: usize) -> Option<(Unified<'_>, usize)> {
@@ -229,7 +240,7 @@ pub fn connection_id(datagram: &[u8], cid_len: usize) -> Option<&[u8]> {
     if cid_len == 0 {
         return None;
     }
-    match split_cid(datagram, cid_len).into_iter().next()? {
+    match split_cid(datagram, cid_len).next()? {
         Wire::Plain { cid, .. } => cid,
         Wire::Unified(u) => u.cid,
     }
@@ -323,7 +334,7 @@ mod tests {
         c.extend_from_slice(b"cid!");
         c.extend_from_slice(&[0, 2, 7, 7]);
         assert_eq!(split(&c).len(), 2, "CID records need the CID length");
-        let w = split_cid(&c, 4);
+        let w: Vec<_> = split_cid(&c, 4).collect();
         assert_eq!(w.len(), 3);
         assert!(matches!(
             &w[2],
@@ -357,7 +368,7 @@ mod tests {
         // Then one without CID, 8-bit sequence number and no length: the rest.
         d.extend_from_slice(&[0x23, 0x56]);
         d.extend_from_slice(&[8; 20]);
-        let w = split_cid(&d, 2);
+        let w: Vec<_> = split_cid(&d, 2).collect();
         assert_eq!(w.len(), 2);
         let Wire::Unified(u) = &w[0] else { panic!() };
         assert_eq!(
@@ -373,8 +384,8 @@ mod tests {
         );
         assert_eq!(connection_id(&d, 2), Some(&b"ab"[..]));
         // A CID bit without a CID length, or a truncated length: nothing.
-        assert!(split_cid(&d, 0).is_empty());
-        assert!(split_cid(&d[..10], 2).is_empty());
+        assert!(split_cid(&d, 0).next().is_none());
+        assert!(split_cid(&d[..10], 2).next().is_none());
     }
 
     #[test]

@@ -394,16 +394,16 @@ impl RecordProtection {
 
     /// The plaintext of a protected fragment, or `None` if it does not authenticate.
     pub(crate) fn open(&self, h: &Header, fragment: &[u8]) -> Option<Vec<u8>> {
-        self.open_aad(h, fragment, |n| Self::aad(h, n).to_vec())
+        self.open_aad(h, fragment, |n| Self::aad(h, n))
     }
 
     /// The plaintext of a protected fragment; `aad` builds the additional data from the
     /// plaintext length.
-    pub(crate) fn open_aad(
+    pub(crate) fn open_aad<A: AsRef<[u8]>>(
         &self,
         h: &Header,
         fragment: &[u8],
-        aad: impl Fn(usize) -> Vec<u8>,
+        aad: impl Fn(usize) -> A,
     ) -> Option<Vec<u8>> {
         match &self.aead {
             Aead::Gcm(g) => {
@@ -413,14 +413,15 @@ impl RecordProtection {
                 let mut nonce = self.iv;
                 nonce[4..].copy_from_slice(&fragment[..8]);
                 let ct = &fragment[8..];
-                g.decrypt(&nonce, &aad(ct.len() - 16), ct).ok()
+                g.decrypt(&nonce, aad(ct.len() - 16).as_ref(), ct).ok()
             }
             Aead::ChaCha(c) => {
                 if fragment.len() < 16 {
                     return None;
                 }
                 let nonce = self.nonce(h.epoch_seq());
-                c.decrypt(&nonce, &aad(fragment.len() - 16), fragment).ok()
+                c.decrypt(&nonce, aad(fragment.len() - 16).as_ref(), fragment)
+                    .ok()
             }
         }
     }
