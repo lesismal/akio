@@ -402,6 +402,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "protobuf_descriptor"
+path = "fuzz_targets/protobuf_descriptor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "dpdk_tcp"
 path = "fuzz_targets/dpdk_tcp.rs"
 test = false
