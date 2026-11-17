@@ -27,6 +27,9 @@ use crate::UpstreamSlot;
 
 const SHARDS: usize = 16;
 
+/// See [`Watch::set_probe`].
+pub(crate) type Probe = Box<dyn Fn() -> u64 + Send + Sync>;
+
 /// Watchdog period bounds: a quarter of the shortest timeout in use, within these.
 const MIN_TICK_MS: u64 = 10;
 const MAX_TICK_MS: u64 = 1000;
@@ -67,6 +70,12 @@ fn spawn_watchdog(tick: u64) -> &'static Watchdog {
                                 return false;
                             }
                             // Activity since the last tick happened before now.
+                            if let Some(p) = watch.probe.get() {
+                                let v = p();
+                                if watch.probe_last.swap(v, Ordering::Relaxed) != v {
+                                    watch.active.store(true, Ordering::Relaxed);
+                                }
+                            }
                             if watch.active.swap(false, Ordering::Relaxed) {
                                 watch.last.store(now, Ordering::Relaxed);
                             }
@@ -105,6 +114,10 @@ pub(crate) struct Watch {
     active: AtomicBool,
     relaying: AtomicBool,
     disarmed: AtomicBool,
+    /// Activity counter of a spliced tunnel (its bytes never reach the handlers): a change
+    /// since the last tick is activity.
+    probe: OnceLock<Probe>,
+    probe_last: AtomicU64,
     /// 0 when off.
     handshake_ms: u64,
     idle_ms: u64,
@@ -162,6 +175,8 @@ impl Watch {
             active: AtomicBool::new(false),
             relaying: AtomicBool::new(false),
             disarmed: AtomicBool::new(false),
+            probe: OnceLock::new(),
+            probe_last: AtomicU64::new(0),
             handshake_ms,
             idle_ms,
         });
@@ -179,6 +194,11 @@ impl Watch {
         if self.idle_ms != 0 && !self.active.load(Ordering::Relaxed) {
             self.active.store(true, Ordering::Relaxed);
         }
+    }
+
+    /// From now on activity is read from `probe` (a counter that changes while bytes move).
+    pub(crate) fn set_probe(&self, probe: Probe) {
+        let _ = self.probe.set(probe);
     }
 
     /// The upstream is connected: the handshake timeout no longer applies.
