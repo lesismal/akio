@@ -1,0 +1,82 @@
+name: Pages
+
+# The documentation site at https://lesismal.github.io/only/: the English and Chinese books
+# (book/en, book/zh-CN) with a language switch, and the rustdoc of every published crate under
+# /api/. Built by book/site.sh and link-checked by book/check-site.py, exactly as you can run
+# them locally:
+#
+#   book/site.sh && python3 book/check-site.py target/site --base /only/
+#
+# When it runs (same rule as ci.yml, decided by the user 2026-11-16): never on pushes or pull
+# requests. Only when a release (or pre-release) is published, or by hand (Actions -> Pages ->
+# "Run workflow"; `deploy: false` builds and checks without publishing).
+#
+# One-time repository setting, done by a maintainer: Settings -> Pages -> Source "GitHub
+# Actions". Until then the deploy job fails at actions/configure-pages and nothing is published.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish to GitHub Pages (false = build and check only)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUSTFLAGS: -D warnings
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: book
+          save-if: false
+      - name: Cache mdBook
+        id: mdbook-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/mdbook
+          key: mdbook-0.4.52-${{ runner.os }}-${{ runner.arch }}
+      - name: Install mdBook
+        if: steps.mdbook-cache.outputs.cache-hit != 'true'
+        run: cargo install mdbook --locked --version 0.4.52
+      - name: Build the site (both books + rustdoc)
+        # The base path is the repository name, so a fork publishes at <owner>.github.io/<repo>/.
+        run: book/site.sh --base "/${{ github.event.repository.name }}/"
+      - name: Check every link (served under the same base path)
+        run: python3 book/check-site.py target/site --base "/${{ github.event.repository.name }}/"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/site
+
+  deploy:
+    if: github.event_name == 'release' || inputs.deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1066,7 +1066,7 @@ impl ServerInner {
 }
 
 /// A tracker over HTTP and UDP sharing one in-memory store: [`TrackerServer::http`] is a
-/// only-http [`Service`](only_http::Service) (it answers paths ending in `announce` and
+/// only-http [`Service`][only_http::Service] (it answers paths ending in `announce` and
 /// `scrape`), [`TrackerServer::udp`] the acceptor of a UDP [`only::Listener`]. UDP connection
 /// IDs are derived from a secret, the minute and the client address, so no state is kept per
 /// client. Cheap to clone.
