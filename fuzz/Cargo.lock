@@ -614,6 +614,9 @@ version = "1.0.0-rc.1"
 [[package]]
 name = "only-protobuf-build"
 version = "1.0.0-rc.1"
+dependencies = [
+ "only-protobuf",
+]
 
 [[package]]
 name = "only-quic"

@@ -107,6 +107,21 @@ impl ExtensionSet {
         Ok(())
     }
 
+    /// [`merge_field`](Self::merge_field) for a `string` extension that must be UTF-8.
+    pub fn merge_utf8_field(
+        &mut self,
+        field: u32,
+        wire_type: WireType,
+        r: &mut Reader<'_>,
+    ) -> Result<(), DecodeError> {
+        let mut peek = r.clone();
+        let b = peek.read_bytes().map_err(|e| e.in_field(field))?;
+        if std::str::from_utf8(b).is_err() {
+            return Err(DecodeError::new(crate::DecodeErrorKind::InvalidUtf8).in_field(field));
+        }
+        self.merge_field(field, wire_type, r)
+    }
+
     /// Appends every field.
     pub fn encode(&self, buf: &mut Vec<u8>) {
         for v in self.fields.values() {
@@ -154,7 +169,7 @@ impl ExtensionSet {
         let id = type_id
             .and_then(|v| u32::try_from(v).ok())
             .filter(|v| (1..=encoding::MAX_FIELD_NUMBER).contains(v))
-            .ok_or(DecodeError::new(crate::DecodeErrorKind::InvalidTag).in_field(1))?;
+            .ok_or_else(|| DecodeError::new(crate::DecodeErrorKind::InvalidTag).in_field(1))?;
         let rec = self.fields.entry(id).or_default();
         encoding::put_tag(rec, id, WireType::Len);
         encoding::put_bytes(rec, message.unwrap_or_default());

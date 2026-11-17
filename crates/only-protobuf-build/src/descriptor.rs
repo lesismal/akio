@@ -659,10 +659,10 @@ fn encode_scalar(s: Scalar, n: u32, v: &Constant, out: &mut Vec<u8>) -> DResult<
     };
     match s {
         Scalar::Int32 => {
-            encode_varint_field(out, n, int(i32::MIN.into(), i32::MAX.into())? as i64 as u64)
+            encode_varint_field(out, n, int(i32::MIN.into(), i32::MAX.into())? as i64 as u64);
         }
         Scalar::Int64 => {
-            encode_varint_field(out, n, int(i64::MIN.into(), i64::MAX.into())? as i64 as u64)
+            encode_varint_field(out, n, int(i64::MIN.into(), i64::MAX.into())? as i64 as u64);
         }
         Scalar::Uint32 => encode_varint_field(out, n, int(0, u32::MAX.into())? as u64),
         Scalar::Uint64 => encode_varint_field(out, n, int(0, u64::MAX.into())? as u64),

@@ -674,7 +674,7 @@ fn write_scalar(v: &Value, k: Kind, buf: &mut Vec<u8>) {
         (Kind::Uint32, Value::U32(x)) => encoding::put_varint(buf, u64::from(*x)),
         (Kind::Uint64, Value::U64(x)) => encoding::put_varint(buf, *x),
         (Kind::Sint32, Value::I32(x)) => {
-            encoding::put_varint(buf, u64::from(encoding::zigzag32(*x)))
+            encoding::put_varint(buf, u64::from(encoding::zigzag32(*x)));
         }
         (Kind::Sint64, Value::I64(x)) => encoding::put_varint(buf, encoding::zigzag64(*x)),
         (Kind::Fixed32, Value::U32(x)) => buf.extend_from_slice(&x.to_le_bytes()),
