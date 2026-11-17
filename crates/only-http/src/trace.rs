@@ -10,6 +10,8 @@
 //! * `http.server.connection` spans (level `debug`, target `only_http::connection`): one per
 //!   connection, from accept to close, with `client.address` and the protocol version.
 
+use std::borrow::Cow;
+
 use only_log::{
     Level,
     span::{self, Entered, Parent, Span, SpanBuilder, SpanContext, SpanKind, SpanStatus},
@@ -17,7 +19,7 @@ use only_log::{
 
 use crate::{
     context::Context,
-    message::{Request, Response, Version},
+    message::{Method, Request, Response, Version},
     router::RouteInfo,
 };
 
@@ -59,22 +61,44 @@ fn request_span(req: &Request) -> Span {
         .headers
         .get("traceparent")
         .and_then(SpanContext::from_traceparent);
-    let method = req.method.as_str().to_owned();
-    SpanBuilder::new(Level::Info, REQUEST_TARGET, method.clone())
+    // Fields are added only once the span is known to record: an unsampled request span costs
+    // its box and ids, nothing formatted.
+    let mut s = SpanBuilder::new(Level::Info, REQUEST_TARGET, "HTTP")
         .kind(SpanKind::Server)
         .parent(Parent::Explicit(parent))
-        .field("http.request.method", method)
-        .field("url.path", req.path().to_owned())
-        .field("network.protocol.version", version_str(req.version))
-        .field("client.address", req.peer.ip().to_string())
-        .start()
+        .start();
+    if s.is_recording() {
+        let method = method_name(&req.method);
+        s.set_name(method.clone());
+        s.record("http.request.method", method);
+        s.record("url.path", req.path().to_owned());
+        s.record("network.protocol.version", version_str(req.version));
+        s.record("client.address", req.peer.ip().to_string());
+    }
+    s
+}
+
+/// The method as a span name or field, without allocating for the standard ones.
+fn method_name(m: &Method) -> Cow<'static, str> {
+    match m {
+        Method::Get => Cow::Borrowed("GET"),
+        Method::Head => Cow::Borrowed("HEAD"),
+        Method::Post => Cow::Borrowed("POST"),
+        Method::Put => Cow::Borrowed("PUT"),
+        Method::Delete => Cow::Borrowed("DELETE"),
+        Method::Patch => Cow::Borrowed("PATCH"),
+        Method::Options => Cow::Borrowed("OPTIONS"),
+        Method::Connect => Cow::Borrowed("CONNECT"),
+        Method::Trace => Cow::Borrowed("TRACE"),
+        other => Cow::Owned(other.as_str().to_owned()),
+    }
 }
 
 /// The router matched `route`: rename the span and record the route.
-pub(crate) fn routed(s: &mut Span, route: &RouteInfo) {
+pub(crate) fn routed(s: &mut Span, route: &'static RouteInfo) {
     if s.is_recording() {
         s.set_name(format!("{} {}", route.method().as_str(), route.pattern()));
-        s.record("http.route", route.pattern().to_owned());
+        s.record("http.route", route.pattern());
     }
 }
 
