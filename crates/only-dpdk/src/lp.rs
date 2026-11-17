@@ -593,7 +593,7 @@ impl Loop {
                 Event::UdpUnreachable { port, remote } => {
                     if let Some(&id) = self.udp_dialed.get(&port) {
                         let matches = self.conns.get(&id).is_some_and(
-                            |c| matches!(c.kind, Kind::Udp { peer, .. } if peer == remote),
+                            |c| matches!(c.kind, Kind::Udp { peer, .. } if peer == *remote),
                         );
                         if matches {
                             let e = io::Error::new(

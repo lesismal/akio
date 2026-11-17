@@ -81,7 +81,7 @@ pub(crate) struct TcpHandle {
 }
 
 /// What the interface tells its owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
     /// A connection to listener `port` completed its handshake.
     Accepted {
@@ -97,10 +97,11 @@ pub(crate) enum Event {
     /// A connection the owner holds ended without the owner closing it (reset, timeout, or
     /// the closing exchange finished). The handle is stale afterwards.
     Closed(TcpHandle, Option<TcpError>),
-    /// ICMP port / host unreachable for a datagram sent from `port` to `remote`.
+    /// ICMP port / host unreachable for a datagram sent from `port` to `remote` (boxed: the
+    /// address would triple the size of every event).
     UdpUnreachable {
         port: u16,
-        remote: SocketAddr,
+        remote: Box<SocketAddr>,
     },
 }
 
@@ -1719,7 +1720,7 @@ impl Iface {
                 if udp_hard && self.udp_ports.contains(&q.src_port) {
                     self.events.push(Event::UdpUnreachable {
                         port: q.src_port,
-                        remote,
+                        remote: Box::new(remote),
                     });
                 }
             }

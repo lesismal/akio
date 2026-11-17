@@ -194,6 +194,15 @@ impl SynOpts {
     }
 }
 
+/// Pacing state of a connection.
+#[derive(Debug)]
+struct Pace {
+    /// Earliest time the next paced segment may go.
+    next: Instant,
+    /// Output held back by pacing: run it then.
+    at: Option<Instant>,
+}
+
 /// A TCP connection.
 #[derive(Debug)]
 pub(crate) struct Tcb {
@@ -277,11 +286,9 @@ pub(crate) struct Tcb {
     unacked_segs: u8,
     quickacks: u8,
 
-    // pacing
-    /// Earliest time the next paced segment may go.
-    pace_next: Instant,
-    /// Output held back by pacing: run it then.
-    pace_at: Option<Instant>,
+    /// Pacing state, when pacing is on (boxed: most connections do not pace, and the
+    /// connection's hot fields stay in fewer cache lines).
+    pace: Option<Box<Pace>>,
 
     // timers
     rto_at: Option<Instant>,
@@ -363,8 +370,12 @@ impl Tcb {
             ack_now: false,
             unacked_segs: 0,
             quickacks: QUICKACKS,
-            pace_next: clock.now,
-            pace_at: None,
+            pace: p.pacing.then(|| {
+                Box::new(Pace {
+                    next: clock.now,
+                    at: None,
+                })
+            }),
             rto_at: None,
             delack_at: None,
             persist_at: None,
@@ -1283,7 +1294,7 @@ impl Tcb {
             self.persist_at,
             self.keepalive_at,
             self.close_at,
-            self.pace_at,
+            self.pace.as_ref().and_then(|p| p.at),
         ]
         .into_iter()
         .flatten()
@@ -1310,8 +1321,12 @@ impl Tcb {
             self.delack_at = None;
             self.ack_now = true;
         }
-        if self.pace_at.is_some_and(|t| now >= t) {
-            self.pace_at = None; // `output` below sends what pacing held back
+        if let Some(p) = self
+            .pace
+            .as_mut()
+            .filter(|p| p.at.is_some_and(|t| now >= t))
+        {
+            p.at = None; // `output` below sends what pacing held back
         }
         if self.rto_at.is_some_and(|t| now >= t) {
             self.rto_at = None;
@@ -1574,7 +1589,7 @@ impl Tcb {
         let payload = self.tx.slices(off, len);
         out.segment(self.local, self.remote, &hdr, payload);
         self.last_send = clock.now;
-        if self.p.pacing {
+        if self.pace.is_some() {
             self.pace_sent(len, clock.now);
         }
     }
@@ -1601,23 +1616,28 @@ impl Tcb {
     }
 
     fn pace_sent(&mut self, len: usize, now: Instant) {
-        if let Some(gap) = self.pace_gap(len) {
-            self.pace_next = self.pace_next.max(now) + gap;
+        if let (Some(gap), Some(p)) = (self.pace_gap(len), self.pace.as_deref()) {
+            let next = p.next.max(now) + gap;
+            if let Some(p) = self.pace.as_mut() {
+                p.next = next;
+            }
         }
     }
 
     /// Pacing lets a segment go now; otherwise arms the pacing timer.
     fn pace_ok(&mut self, now: Instant) -> bool {
-        if !self.p.pacing {
+        let Some(next) = self.pace.as_ref().map(|p| p.next) else {
             return true;
-        }
+        };
         let slack = self
             .pace_gap(self.mss() as usize)
             .map_or(PACE_SLACK, |g| (g * 2).max(PACE_SLACK));
-        if self.pace_next <= now + slack {
+        if next <= now + slack {
             return true;
         }
-        self.pace_at = Some(self.pace_next.checked_sub(slack).unwrap_or(now));
+        if let Some(p) = self.pace.as_mut() {
+            p.at = Some(next.checked_sub(slack).unwrap_or(now));
+        }
         false
     }
 

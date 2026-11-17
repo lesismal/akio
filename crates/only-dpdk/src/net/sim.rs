@@ -916,7 +916,7 @@ fn udp_fragmentation_and_port_unreachable() {
     s.run_until(Duration::from_secs(1), |s| {
         unreachable |= s.ev_a.contains(&Event::UdpUnreachable {
             port: 5000,
-            remote: sa(B, 6001),
+            remote: Box::new(sa(B, 6001)),
         });
         unreachable
     });
@@ -1291,7 +1291,7 @@ fn ipv6_udp_fragments_and_port_unreachable() {
     s.run_until(Duration::from_secs(1), |s| {
         unreachable |= s.ev_a.contains(&Event::UdpUnreachable {
             port: 5000,
-            remote: sa(B6, 6001),
+            remote: Box::new(sa(B6, 6001)),
         });
         unreachable
     });
