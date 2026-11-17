@@ -304,6 +304,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fmp4_demux"
+path = "fuzz_targets/fmp4_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "srt_listener"
 path = "fuzz_targets/srt_listener.rs"
 test = false
