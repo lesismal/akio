@@ -329,6 +329,46 @@ fn keep_alive_close_http10_and_split_delivery() {
     stop(&e);
 }
 
+/// A connection reuses a finished request's target buffer for the next one (ADR-025): targets
+/// of every length, a detached request (which keeps its own) and one too long to keep, all
+/// pipelined in one write, each answered with its own target.
+#[test]
+fn pipelined_targets_reuse_the_buffer_and_stay_exact() {
+    let app = Router::new()
+        .get("/t/*rest", |ctx: &mut Context| {
+            let t = ctx.req().target.clone();
+            ctx.text(200, t);
+        })
+        .get("/d/*rest", |ctx: &mut Context| {
+            let d = ctx.detach().unwrap();
+            thread::spawn(move || {
+                let t = d.req().target.clone();
+                d.respond(Response::text(200, t));
+            });
+        });
+    let e = start(serve(app));
+    let mut s = connect(e.local_addrs()[0]);
+    let long = format!("/t/{}", "x".repeat(2000));
+    let targets = [
+        "/t/a-fairly-long-first-target?q=1".to_owned(),
+        "/t/b".to_owned(),
+        "/d/detached-one".to_owned(),
+        "/t/c?after=detached".to_owned(),
+        long,
+        "/t/d".to_owned(),
+        "/t/".to_owned(),
+    ];
+    let raw: String = targets
+        .iter()
+        .map(|t| format!("GET {t} HTTP/1.1\r\nHost: x\r\n\r\n"))
+        .collect();
+    s.write_all(raw.as_bytes()).unwrap();
+    for t in &targets {
+        assert_eq!(&read_resp(&mut s).text(), t);
+    }
+    stop(&e);
+}
+
 #[test]
 fn pipelined_requests_are_answered_in_order_even_when_finished_out_of_order() {
     // Later requests finish first.

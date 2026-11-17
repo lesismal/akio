@@ -16,9 +16,9 @@ use only_ws::http1::Resume;
 /// fed in growing prefixes cut as `data[0]` says (resumed parsing) must reach the same outcome
 /// as in one go.
 pub fn http1_request(data: &[u8]) {
-    if let Ok(Some((head, n))) = parse_head(data, &mut Resume::default()) {
+    if let Ok(Some((head, n))) = parse_head(data, &mut Resume::default(), &mut String::new()) {
         assert!(n <= data.len());
-        let (again, m) = parse_head(&data[..n], &mut Resume::default())
+        let (again, m) = parse_head(&data[..n], &mut Resume::default(), &mut String::new())
             .expect("a complete head parses alone")
             .expect("and is complete");
         assert_eq!(m, n);
@@ -26,12 +26,12 @@ pub fn http1_request(data: &[u8]) {
         assert_eq!(again.headers.len(), head.headers.len());
     }
     let stream = data.get(1..).unwrap_or_default();
-    let once = parse_head(stream, &mut Resume::default());
+    let once = parse_head(stream, &mut Resume::default(), &mut String::new());
     let mut resume = Resume::default();
     let mut end = 0;
     for piece in split(data) {
         end += piece.len();
-        match parse_head(&stream[..end], &mut resume) {
+        match parse_head(&stream[..end], &mut resume, &mut String::new()) {
             Ok(None) => {}
             Ok(Some((head, n))) => {
                 let Ok(Some((h, m))) = &once else {

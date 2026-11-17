@@ -120,7 +120,34 @@ struct Responder {
 enum Out {
     H1(Responder),
     H2(H2Responder),
-    Ext(Box<dyn crate::transport::ResponseSink>),
+    Ext(ExtOut),
+}
+
+/// A response for a transport outside this crate (HTTP/3).
+pub(crate) enum ExtOut {
+    /// One boxed sink per request (the older [`ResponseSink`](crate::transport::ResponseSink)).
+    #[allow(deprecated)]
+    Boxed(Box<dyn crate::transport::ResponseSink>),
+    /// The connection's sink, shared by its requests, and the transport's tag for this one.
+    Conn(Arc<dyn crate::transport::ConnSink>, u64),
+}
+
+#[allow(deprecated)]
+impl ExtOut {
+    #[inline]
+    fn send(self, resp: Response) {
+        match self {
+            ExtOut::Boxed(s) => s.send(resp),
+            ExtOut::Conn(s, tag) => s.send(tag, resp),
+        }
+    }
+
+    fn start_stream(self, resp: Response) -> Option<Box<dyn crate::transport::BodySink>> {
+        match self {
+            ExtOut::Boxed(s) => s.start_stream(resp),
+            ExtOut::Conn(s, tag) => s.start_stream(tag, resp),
+        }
+    }
 }
 
 impl Out {
@@ -278,6 +305,20 @@ impl std::ops::Deref for ReqCell {
     }
 }
 
+/// A target buffer larger than this is not kept for the next request (an occasional long
+/// target should not pin its memory to the connection).
+pub(crate) const SPARE_TARGET_MAX: usize = 1024;
+
+/// Fills `spare` with `target` for a new request: the previous request's buffer (see
+/// [`Context::take_target`]) when it has room, so a connection's requests do not allocate one
+/// each.
+#[inline]
+pub(crate) fn fill_target(spare: &mut String, target: &str) -> String {
+    let mut t = std::mem::take(spare);
+    t.push_str(target);
+    t
+}
+
 /// One request being handled, and the means to answer it.
 pub struct Context {
     req: ReqCell,
@@ -345,10 +386,26 @@ impl Context {
     }
 
     /// A context whose response goes to a transport outside this crate.
-    pub(crate) fn new_ext(req: Request, sink: Box<dyn crate::transport::ResponseSink>) -> Context {
+    #[inline(always)]
+    pub(crate) fn new_ext(req: Request, sink: ExtOut) -> Context {
         let mut c = Context::new_h2_like(req);
         c.responder = Some(Out::Ext(sink));
         c
+    }
+
+    /// The request's target, emptied, if this context still owns the request (the handler
+    /// neither detached nor upgraded): the connection reuses it for the next request's target.
+    /// Empty (no capacity) otherwise, or when the target grew past what is worth keeping.
+    #[inline]
+    pub(crate) fn take_target(&mut self) -> String {
+        match &mut self.req {
+            ReqCell::Own(r) if r.target.capacity() <= SPARE_TARGET_MAX => {
+                let mut t = std::mem::take(&mut r.target);
+                t.clear();
+                t
+            }
+            _ => String::new(),
+        }
     }
 
     fn new_h2_like(req: Request) -> Context {

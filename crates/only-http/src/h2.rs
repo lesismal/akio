@@ -328,6 +328,8 @@ struct Core {
     batching: bool,
     /// The header block being decoded.
     fields: Fields,
+    /// A finished request's target buffer, for the next request's (see `H2Session::spare`).
+    spare: String,
     /// Scratch for encoding a header block: lowercased names and cleaned values.
     enc_fields: Fields,
     /// Connection-level receive window consumed and not yet given back.
@@ -1490,7 +1492,7 @@ impl Core {
         Some(Action::Dispatch(Box::new(Context::new_h2(req, resp))))
     }
 
-    fn build_request(&self, fields: &Fields) -> Result<Request, ()> {
+    fn build_request(&mut self, fields: &Fields) -> Result<Request, ()> {
         let (mut method, mut path, mut authority, mut scheme) = (None, None, None, None);
         // The regular fields fit in one allocation (the pseudo-headers are not kept as fields;
         // a request with few regular fields keeps their positions inline).
@@ -1559,7 +1561,7 @@ impl Core {
         }
         Ok(Request {
             method: Method::parse(method),
-            target: path.to_owned(),
+            target: crate::context::fill_target(&mut self.spare, path),
             version: Version::Http2,
             headers,
             trailers: Headers::new(),
@@ -1773,6 +1775,9 @@ pub(crate) struct H2Session<S> {
     service: Arc<S>,
     /// The deadline phase after the last read (computed under the lock it takes anyway).
     phase: std::cell::Cell<Phase>,
+    /// The target buffer of a request the service finished with (dispatched without the lock),
+    /// handed to `Core::spare` the next time the lock is taken.
+    spare: std::cell::Cell<String>,
 }
 
 impl<S: Service> H2Session<S> {
@@ -1837,6 +1842,7 @@ impl<S: Service> H2Session<S> {
                 dropped: Vec::new(),
                 batching: false,
                 fields: Fields::default(),
+                spare: String::new(),
                 enc_fields: Fields::default(),
                 conn_recv_owed: 0,
                 queued_mem: 0,
@@ -1851,6 +1857,7 @@ impl<S: Service> H2Session<S> {
             core,
             service,
             phase: std::cell::Cell::new(Phase::Head),
+            spare: std::cell::Cell::new(String::new()),
         };
         let mut first = Vec::new();
         {
@@ -1933,6 +1940,9 @@ impl<S: Service> H2Session<S> {
         loop {
             let more = {
                 let mut c = lock(&self.core);
+                if c.spare.capacity() == 0 {
+                    c.spare = self.spare.take();
+                }
                 loop {
                     if c.dead {
                         self.phase.set(Phase::Off);
@@ -1982,6 +1992,7 @@ impl<S: Service> H2Session<S> {
             Action::Dispatch(mut ctx) => {
                 self.service.call(&mut ctx);
                 finalize(&mut ctx);
+                self.spare.set(ctx.take_target());
             }
             Action::Start(sid, mut ctx) => {
                 self.service.call(&mut ctx);
