@@ -708,8 +708,9 @@ fn af_packet_window_scaling_large_transfer() {
         "window scaling: 32 MiB echoed in {took:?} ({mbps:.1} MB/s each way); ss: {}",
         info.lines().last().unwrap_or("").trim()
     );
-    // The kernel saw our window scale (4 MiB buffer: shift 7).
-    assert!(info.contains("wscale:") && info.contains(",7"), "{info}");
+    // The kernel saw our window scale (4 MiB buffer: shift 7; `ss` prints ours first, then
+    // the kernel's own, which depends on its buffers).
+    assert!(info.contains("wscale:7,"), "{info}");
     assert!(mbps > 4.0, "{mbps:.1} MB/s: window scaling not effective");
     engine.shutdown();
     engine.wait();
@@ -787,6 +788,13 @@ fn dpdk_net_tap_kernel_peer() {
         Ipv4Addr::new(10, 79, 0, 2).into(),
         Ipv4Addr::new(10, 79, 0, 1).into(),
     );
+}
+
+#[test]
+fn dpdk_net_tap_kernel_peer_ipv6() {
+    if !enabled("ONLY_DPDK_TEST") {
+        return;
+    }
     // IPv6 over two queues: neighbor discovery fanned out between them.
     kernel_peer(
         Device::Dpdk(eal("fldtap2", 2)),
