@@ -78,18 +78,27 @@ pub(crate) fn fold(mut acc: u64) -> u16 {
 
 /// The pseudo-header sum for an upper-layer checksum: IPv4 (RFC 793) or IPv6 (RFC 8200 8.1),
 /// by the family of the addresses (mixed families never occur: both come from one packet).
+#[inline]
 pub(crate) fn pseudo(src: IpAddr, dst: IpAddr, proto: u8, len: usize) -> u64 {
-    let addrs = match (src, dst) {
-        (IpAddr::V4(s), IpAddr::V4(d)) => sum(&s.octets(), 0) + sum(&d.octets(), 0),
-        (s, d) => sum(&v6_octets(s), 0) + sum(&v6_octets(d), 0),
-    };
-    addrs + u64::from(proto) + len as u64
+    addr_sum(src) + addr_sum(dst) + u64::from(proto) + len as u64
 }
 
-fn v6_octets(a: IpAddr) -> [u8; 16] {
+/// An address's 16-bit words, summed (an IPv4 address: its two words, without loading 16
+/// bytes).
+#[inline]
+fn addr_sum(a: IpAddr) -> u64 {
     match a {
-        IpAddr::V4(a) => a.to_ipv6_mapped().octets(),
-        IpAddr::V6(a) => a.octets(),
+        IpAddr::V4(a) => {
+            let x = u32::from(a);
+            u64::from(x >> 16) + u64::from(x & 0xffff)
+        }
+        IpAddr::V6(a) => {
+            let x = u128::from(a);
+            let hi = (x >> 64) as u64;
+            let lo = x as u64;
+            let words = |w: u64| (w & 0xffff) + (w >> 16 & 0xffff) + (w >> 32 & 0xffff) + (w >> 48);
+            words(hi) + words(lo)
+        }
     }
 }
 
@@ -641,6 +650,23 @@ mod tests {
         assert_eq!(checksum(&h), 0);
         // Odd length.
         assert_eq!(fold(sum(&[0xab], 0)), !0xab00);
+    }
+
+    #[test]
+    fn pseudo_header_sums_match_bytewise() {
+        let addrs: [IpAddr; 4] = [
+            A,
+            IpAddr::V4(Ipv4Addr::new(255, 254, 1, 0)),
+            "fd00::1:ffff:fe12:3456".parse().unwrap(),
+            "ffff:fffe:fdfc:8000:1:2:3:ffff".parse().unwrap(),
+        ];
+        for a in addrs {
+            let bytes = match a {
+                IpAddr::V4(x) => sum(&x.octets(), 0),
+                IpAddr::V6(x) => sum(&x.octets(), 0),
+            };
+            assert_eq!(addr_sum(a), bytes, "{a}");
+        }
     }
 
     #[test]

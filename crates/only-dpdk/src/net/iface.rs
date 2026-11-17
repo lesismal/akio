@@ -442,6 +442,7 @@ impl Net {
     /// Sends an IP packet whose `o.len`-byte payload `write` fills in (over IPv4 or IPv6, by
     /// the destination). Packets larger than the (path) MTU are fragmented (unless `o.df`, then
     /// dropped). Returns `false` if the packet could not be sent or queued.
+    #[inline]
     fn send_ip(
         &mut self,
         now: Instant,
@@ -846,6 +847,7 @@ struct NetOut<'a> {
 }
 
 impl SegOut for NetOut<'_> {
+    #[inline]
     fn segment(
         &mut self,
         local: SocketAddr,
