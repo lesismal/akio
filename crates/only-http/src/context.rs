@@ -295,15 +295,22 @@ impl std::ops::Deref for ReqCell {
 }
 
 /// A target buffer larger than this is not kept for the next request (an occasional long
-/// target should not pin its memory to the connection).
+/// target should not pin its memory to the thread).
 pub(crate) const SPARE_TARGET_MAX: usize = 1024;
 
-/// Fills `spare` with `target` for a new request: the previous request's buffer (see
-/// [`Context::take_target`]) when it has room, so a connection's requests do not allocate one
-/// each.
+thread_local! {
+    /// The target buffer of the last request this thread finished with, emptied, for the next
+    /// request's target. Per thread rather than per connection: the next request parsed on
+    /// this thread finds it still in cache, as the allocator's own free list would (a buffer
+    /// kept per connection is cold when that connection's turn comes again; measured on h2c).
+    static SPARE_TARGET: std::cell::Cell<String> = const { std::cell::Cell::new(String::new()) };
+}
+
+/// A new request's target: `target` written into this thread's spare buffer (see
+/// [`Context::recycle_target`]), so requests do not allocate one each.
 #[inline]
-pub(crate) fn fill_target(spare: &mut String, target: &str) -> String {
-    let mut t = std::mem::take(spare);
+pub(crate) fn new_target(target: &str) -> String {
+    let mut t = SPARE_TARGET.take();
     t.push_str(target);
     t
 }
@@ -382,18 +389,17 @@ impl Context {
         c
     }
 
-    /// The request's target, emptied, if this context still owns the request (the handler
-    /// neither detached nor upgraded): the connection reuses it for the next request's target.
-    /// Empty (no capacity) otherwise, or when the target grew past what is worth keeping.
+    /// Once the handler is done: if this context still owns the request (the handler neither
+    /// detached nor upgraded it), its target buffer becomes the thread's spare for the next
+    /// request's target (see [`new_target`]), unless it grew past what is worth keeping.
     #[inline]
-    pub(crate) fn take_target(&mut self) -> String {
-        match &mut self.req {
-            ReqCell::Own(r) if r.target.capacity() <= SPARE_TARGET_MAX => {
+    pub(crate) fn recycle_target(&mut self) {
+        if let ReqCell::Own(r) = &mut self.req {
+            if r.target.capacity() <= SPARE_TARGET_MAX {
                 let mut t = std::mem::take(&mut r.target);
                 t.clear();
-                t
+                SPARE_TARGET.set(t);
             }
-            _ => String::new(),
         }
     }
 

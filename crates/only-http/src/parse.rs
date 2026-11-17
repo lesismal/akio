@@ -24,12 +24,10 @@ pub(crate) enum ParseError {
 }
 
 /// Parses a head from `buf`. `Ok(None)`: incomplete. `Ok(Some((head, n)))`: `n` bytes consumed.
-/// `resume` carries the progress over calls on the same growing buffer (see [`Resume`]). The
-/// target is written into `spare` (the previous request's buffer, emptied) when one is parsed.
+/// `resume` carries the progress over calls on the same growing buffer (see [`Resume`]).
 pub(crate) fn parse_head(
     buf: &[u8],
     resume: &mut Resume,
-    spare: &mut String,
 ) -> Result<Option<(Head, usize)>, ParseError> {
     // Most heads have a handful of fields: try with room for 32 (filling the storage costs per
     // request), and only parse again with room for the limit when that is not enough. A failed
@@ -38,14 +36,14 @@ pub(crate) fn parse_head(
     const MAX_HEADERS: usize = 100;
     let mut few = [Header::EMPTY; FEW_HEADERS];
     match http1::parse_request(buf, &mut few, resume) {
-        Ok(http1::Status::Complete(r)) => return head(r, spare),
+        Ok(http1::Status::Complete(r)) => return head(r),
         Ok(http1::Status::Partial) => return Ok(None),
         Err(http1::Error::TooManyHeaders) => {}
         Err(e) => return Err(parse_error(e)),
     }
     let mut storage = [Header::EMPTY; MAX_HEADERS];
     match http1::parse_request(buf, &mut storage, resume) {
-        Ok(http1::Status::Complete(r)) => head(r, spare),
+        Ok(http1::Status::Complete(r)) => head(r),
         Ok(http1::Status::Partial) => Ok(None),
         Err(e) => Err(parse_error(e)),
     }
@@ -59,10 +57,7 @@ fn parse_error(e: http1::Error) -> ParseError {
     }
 }
 
-fn head(
-    req: http1::Request<'_, '_>,
-    spare: &mut String,
-) -> Result<Option<(Head, usize)>, ParseError> {
+fn head(req: http1::Request<'_, '_>) -> Result<Option<(Head, usize)>, ParseError> {
     let version = if req.minor == 0 {
         Version::Http10
     } else {
@@ -82,7 +77,7 @@ fn head(
     Ok(Some((
         Head {
             method: Method::parse(req.method),
-            target: crate::context::fill_target(spare, req.target),
+            target: crate::context::new_target(req.target),
             version,
             headers,
         },
@@ -326,15 +321,13 @@ mod tests {
     }
 
     fn parse_head_once(b: &[u8]) -> Result<Option<(Head, usize)>, ParseError> {
-        parse_head(b, &mut Resume::default(), &mut String::new())
+        parse_head(b, &mut Resume::default())
     }
 
     #[test]
     fn head_parsing() {
         let wire = b"POST /x?y=1 HTTP/1.1\r\nHost: a\r\nContent-Length:  3 \r\n\r\nabc";
-        let (h, n) = parse_head(wire, &mut Resume::default(), &mut String::new())
-            .unwrap()
-            .unwrap();
+        let (h, n) = parse_head(wire, &mut Resume::default()).unwrap().unwrap();
         assert_eq!(h.method, Method::Post);
         assert_eq!(h.target, "/x?y=1");
         assert_eq!(h.version, Version::Http11);

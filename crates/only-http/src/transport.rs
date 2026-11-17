@@ -126,21 +126,23 @@ pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn Re
 /// request body is `req.body` (`Context::on_body` is not called); see [`start_conn`] for a body
 /// that arrives later.
 ///
-/// Returns the request's target buffer, emptied, when the handler did not keep the request
-/// (it neither detached nor upgraded it): build the connection's next [`Request::target`] in
-/// it and that request allocates no target of its own. Otherwise an empty `String` (no
-/// capacity).
+/// When the handler did not keep the request (it neither detached nor upgraded it), the
+/// request's target buffer is kept for the next target built with [`request_target`] on this
+/// thread.
 #[inline(always)]
-pub fn dispatch_conn<S: Service + ?Sized>(
-    service: &S,
-    req: Request,
-    sink: &SharedSink,
-    tag: u64,
-) -> String {
+pub fn dispatch_conn<S: Service + ?Sized>(service: &S, req: Request, sink: &SharedSink, tag: u64) {
     let mut ctx = Context::new_ext(req, ExtOut(sink.clone(), tag));
     service.call(&mut ctx);
     finalize(&mut ctx);
-    ctx.take_target()
+    ctx.recycle_target();
+}
+
+/// A [`Request::target`] for a new request: `target` copied into the buffer of a request this
+/// thread finished with earlier (see [`dispatch_conn`]), so it allocates only when there is
+/// none or it is too small. HTTP/1.1 and HTTP/2 build their targets the same way.
+#[inline]
+pub fn request_target(target: &str) -> String {
+    crate::context::new_target(target)
 }
 
 #[inline]
@@ -164,7 +166,10 @@ pub fn start<S: Service + ?Sized>(
     req: Request,
     sink: Box<dyn ResponseSink>,
 ) -> Started {
-    let mut ctx = Box::new(Context::new_ext(req, ExtOut(SharedSink::new(Boxed::new(sink)), 0)));
+    let mut ctx = Box::new(Context::new_ext(
+        req,
+        ExtOut(SharedSink::new(Boxed::new(sink)), 0),
+    ));
     service.call(&mut ctx);
     Started { ctx }
 }
@@ -256,7 +261,7 @@ mod tests {
     }
 
     #[test]
-    fn conn_sink_answers_by_tag_and_hands_the_target_back() {
+    fn conn_sink_answers_by_tag_and_reuses_targets() {
         let kept = Arc::new(Mutex::new(Vec::new()));
         let k = kept.clone();
         let svc = Router::new()
@@ -272,31 +277,41 @@ mod tests {
         let shared = SharedSink::new(ArcSink(sink.clone()));
         let s = || &shared;
 
-        // Answered right away: the target comes back emptied, with its capacity.
-        let t = dispatch_conn(&svc, Request::new(Method::Get, "/a/first"), s(), 7);
-        assert!(t.is_empty() && t.capacity() >= "/a/first".len());
-        // It serves as the next request's target.
-        let mut next = t;
-        next.push_str("/a/2");
-        let t = dispatch_conn(&svc, Request::new(Method::Get, next), s(), 8);
-        assert!(t.capacity() > 0);
-        // Detached: the request is kept, nothing comes back; answered later with its tag.
-        let t = dispatch_conn(&svc, Request::new(Method::Get, "/later"), s(), 9);
-        assert_eq!(t.capacity(), 0);
-        // No response: a 500 for it, the target back.
-        let t = dispatch_conn(&svc, Request::new(Method::Get, "/none"), s(), 10);
-        assert!(t.capacity() > 0);
-        // A target too long to keep is not handed back.
+        // Answered right away: the target's buffer is kept for the thread's next target.
+        let first = String::from("/a/first-and-longer");
+        let (ptr, cap) = (first.as_ptr(), first.capacity());
+        dispatch_conn(&svc, Request::new(Method::Get, first), s(), 7);
+        let next = request_target("/a/2");
+        assert_eq!(
+            (next.as_ptr(), next.capacity(), next.as_str()),
+            (ptr, cap, "/a/2")
+        );
+        dispatch_conn(&svc, Request::new(Method::Get, next), s(), 8);
+        // Detached: the request is kept, its buffer too; answered later with its tag.
+        let later = request_target("/later");
+        assert_eq!(later.as_ptr(), ptr);
+        dispatch_conn(&svc, Request::new(Method::Get, later), s(), 9);
+        let t = request_target("/none");
+        assert_ne!(t.as_ptr(), ptr);
+        // No response: a 500 for it, the buffer kept.
+        let p = t.as_ptr();
+        dispatch_conn(&svc, Request::new(Method::Get, t), s(), 10);
+        let again = request_target("");
+        assert_eq!(again.as_ptr(), p);
+        drop(again);
+        // A target too long to keep is not.
         let long = format!("/a/{}", "z".repeat(crate::context::SPARE_TARGET_MAX));
-        let t = dispatch_conn(&svc, Request::new(Method::Get, long), s(), 11);
-        assert_eq!(t.capacity(), 0);
+        let p = long.as_ptr();
+        dispatch_conn(&svc, Request::new(Method::Get, long), s(), 11);
+        let x = request_target("/x");
+        assert_ne!(x.as_ptr(), p);
         let d = kept.lock().unwrap().pop().unwrap();
         assert_eq!(d.req().target, "/later");
         d.respond(Response::text(202, "late"));
 
         let got = sink.0.lock().unwrap().clone();
         let got: Vec<(u64, u16, &[u8])> = got.iter().map(|(t, s, b)| (*t, *s, &b[..])).collect();
-        assert_eq!(got[0], (7, 200, &b"first"[..]));
+        assert_eq!(got[0], (7, 200, &b"first-and-longer"[..]));
         assert_eq!(got[1], (8, 200, &b"2"[..]));
         assert_eq!((got[2].0, got[2].1), (10, 500));
         assert_eq!((got[3].0, got[3].1), (11, 200));

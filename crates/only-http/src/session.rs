@@ -121,7 +121,6 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             h2: None,
             started: false,
             head: Resume::default(),
-            spare: String::new(),
             early_probe: true,
             early_len: 0,
             consumed: 0,
@@ -197,8 +196,6 @@ pub struct Session<S> {
     started: bool,
     /// Progress on the head being received (so a head arriving in pieces is scanned once).
     head: Resume,
-    /// The last request's target buffer, for the next one's (see `Context::take_target`).
-    spare: String,
     /// TLS early data may still be arriving: ask the transport how much there is.
     early_probe: bool,
     /// The first this many bytes of the connection came as TLS early data (0-RTT).
@@ -461,7 +458,7 @@ impl<S: Service> Session<S> {
                     if pos == src.len() {
                         return pos;
                     }
-                    match parse_head(&src[pos..], &mut self.head, &mut self.spare) {
+                    match parse_head(&src[pos..], &mut self.head) {
                         Ok(None) => {
                             if src.len() - pos > self.cfg.max_header_bytes {
                                 self.fail(c, 431);
@@ -734,7 +731,7 @@ impl<S: Service> Session<S> {
         if !ctx.responded() && !ctx.is_detached() {
             ctx.respond(Response::text(500, "handler did not respond"));
         }
-        self.spare = ctx.take_target();
+        ctx.recycle_target();
         if let Some(mut h) = ctx.take_raw() {
             let rc = crate::raw::RawConn(c.inner().clone());
             h.on_open(&rc);

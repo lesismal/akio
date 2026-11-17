@@ -169,7 +169,6 @@ pub fn serve_with<S: Service>(
             fields: FieldBuf::default(),
             sink: SharedSink::new(out.clone()),
             out,
-            spare: String::new(),
         }
     })
 }
@@ -579,8 +578,6 @@ struct ServerConn<S> {
     out: H3Out,
     /// `out` as the connection's response sink, shared by its requests.
     sink: SharedSink,
-    /// The last request's target buffer, for the next one's.
-    spare: String,
 }
 
 /// Why a request stream stopped being read.
@@ -708,7 +705,7 @@ impl<S: Service> ServerConn<S> {
         let max_field = self.cfg.max_field_section_bytes;
         let ric =
             qpack::decode_section(section, max_field, &self.conn.dec, &mut self.fields).ok()?;
-        let (request, head_only) = request_head(&self.fields, self.peer, &mut self.spare)?;
+        let (request, head_only) = request_head(&self.fields, self.peer)?;
         if request.protocol.is_some()
             || (!body.is_empty() && self.svc.body_mode(&request) == only_http::BodyMode::Stream)
         {
@@ -729,18 +726,13 @@ impl<S: Service> ServerConn<S> {
     }
 
     #[inline(always)]
-    fn dispatch(&mut self, c: &Connection, id: StreamId, mut request: Request, head_only: bool) {
+    fn dispatch(&self, c: &Connection, id: StreamId, mut request: Request, head_only: bool) {
         if c.is_early(id) {
             // Arrived in 0-RTT (maybe a replay): marked as an RFC 8470 intermediary would, so
             // the application can answer 425 Too Early to what is not safe to repeat.
             request.headers.append("early-data", "1");
         }
-        self.spare = only_http::transport::dispatch_conn(
-            &*self.svc,
-            request,
-            &self.sink,
-            tag(id, head_only),
-        );
+        only_http::transport::dispatch_conn(&*self.svc, request, &self.sink, tag(id, head_only));
     }
 
     /// Streams whose field sections the last inserts made decodable go on.
@@ -956,7 +948,7 @@ pub(crate) fn read_req(
                     q.dec.section_ack(q.stream, ric);
                 }
                 if head.is_none() {
-                    match request_head(fields, peer, &mut String::new()) {
+                    match request_head(fields, peer) {
                         Some((request, head_only)) => {
                             if request.protocol.is_some() {
                                 // Extended CONNECT: dispatched now, the stream's bytes
@@ -1118,11 +1110,7 @@ fn header_list<'a>(
 
 /// A request (without its body) from its field section; `None` if malformed (RFC 9114
 /// §4.1.2, and RFC 9220 / RFC 8441 §4 for an extended CONNECT).
-fn request_head(
-    fields: &FieldBuf,
-    peer: SocketAddr,
-    spare: &mut String,
-) -> Option<(Request, bool)> {
+fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> {
     let (mut method, mut scheme, mut authority, mut path, mut protocol) =
         (None, None, None, None, None);
     // One pass (and one UTF-8 check): pseudo-header fields come first; one after a regular
@@ -1168,11 +1156,7 @@ fn request_head(
     }
     let head_only = method == Method::Head;
     let target = path.or(authority).unwrap_or_default();
-    let mut r = Request::new(method, {
-        let mut t = std::mem::take(spare);
-        t.push_str(target);
-        t
-    });
+    let mut r = Request::new(method, only_http::transport::request_target(target));
     r.version = Version::Http3;
     r.headers = headers;
     r.peer = peer;
@@ -2132,7 +2116,7 @@ mod tests {
             qpack::encode(fields.iter().copied(), &mut b);
             let mut f = FieldBuf::default();
             qpack::decode_into(&b, 1 << 16, &mut f).unwrap();
-            request_head(&f, peer, &mut String::new())
+            request_head(&f, peer)
         };
         let base = [
             (":method", "GET"),
