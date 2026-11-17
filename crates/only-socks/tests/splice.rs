@@ -249,9 +249,9 @@ fn early_data_and_greeting_servers_relay_in_userspace() {
     req.extend(b"early");
     s.write_all(&req).unwrap();
     assert_eq!(read_n(&mut s, 10)[1], 0);
-    assert_eq!(read_n(&mut s, 5), b"early");
+    // (The session forwards bytes held behind the request with the client's next data.)
     s.write_all(b"later").unwrap();
-    assert_eq!(read_n(&mut s, 5), b"later");
+    assert_eq!(read_n(&mut s, 10), b"earlylater");
     assert_eq!(spliced_tunnels(), before);
     // A server that greets first: whether or not the greeting beat the splice, it arrives,
     // and so does what follows.
