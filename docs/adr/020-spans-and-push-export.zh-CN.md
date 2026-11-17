@@ -90,7 +90,8 @@ only-http 在三个分派点（HTTP/1.x、HTTP/2 流和 push、only-h3 使用的
 
 - only-log、only-core、only-http 的公开 API 只有新增（`H2Config` 多了一个字段；它是 `#[non_exhaustive]`，
   只有 crate 内部的结构体字面量需要修改），外加一个新 crate。
-- 全部关闭时，请求路径多一次原子读（span）、一次指针写入（路由）和两个预测良好的分支；测量结果见
-  docs/BENCHMARKS.md（“可观测性开销”）。
+- 全部关闭时，请求路径多一次原子读（span）、一次指针写入（路由）和两个预测良好的分支：没有可测变化
+  （docs/BENCHMARKS.zh-CN.md“可观测性开销”）。开启时：`H2Stats` 无开销，按路由标签约 0.5%，在每秒 460 万
+  pipelined 请求下 span 采样 1% 约 12%，100% 并导出约 46%。
 - tracer 按进程安装：每个进程一个带 traces 的导出器。
 - 未完成：gRPC 上的 OTLP、到 collector 的 TLS、OTLP 日志、span 事件和链接、exemplar、`tracing` 桥接。

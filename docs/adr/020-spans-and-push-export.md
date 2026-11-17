@@ -111,8 +111,9 @@ plain HTTP/1.1 over `std::net`, meant for a local collector or agent.
 - Additive public API in only-log, only-core, only-http (`H2Config` gains a field; it is
   `#[non_exhaustive]`, so only struct literals inside the crate change) and a new crate.
 - With everything off, the request path adds one atomic load (spans), one pointer store
-  (route) and two well-predicted branches; measured in docs/BENCHMARKS.md ("Observability
-  overhead").
+  (route) and two well-predicted branches: no measurable change (docs/BENCHMARKS.md,
+  "Observability overhead"). Switched on: `H2Stats` free, per-route labels ~0.5%, spans 12% at
+  1% sampling and 46% at 100% sampling with export on 4.6M pipelined requests/s.
 - A tracer is per process: one exporter with traces per process.
 - Not done: OTLP over gRPC, TLS to the collector, OTLP logs, span events and links, exemplars,
   a `tracing` bridge.

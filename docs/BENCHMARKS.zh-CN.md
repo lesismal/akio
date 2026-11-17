@@ -429,6 +429,25 @@ only-uring ring 的最小 HTTP/1.1 应答程序上测量（被忽略的 `eval_se
 状态码分类、延迟总和与第一个延迟桶位于同一缓存行。中间件本身在 0.75 M req/s 时约占 2%，在 4.5 M req/s
 pipelined 时约占 10%，`main` 与本分支相同。
 
+### 可观测性开销（ADR-020，`tools/bench`）
+
+2026-11-18 在 gpu51 上用 `quiet.sh` 测量（每轮 5 秒，取中位数，每次新起服务器；服务器 4 线程在 CPU 0–3，
+`h2load` 8 线程在 CPU 4–7 与 12–15）。**关闭**：main（ab65d376）对本分支的 `http-bench`，7 轮。**开启**：
+`crates/only-export/examples/obs-bench.rs`（路由相同）每次只开一项，5 轮，对本分支的 `http-bench`（span：
+对 main，取自修复“延迟字段”之后的一轮）。`±` 是最小最大值之差的一半。
+
+| 负载（epoll） | 关闭：分支 / main | `HttpMetrics` | + 按路由标签 | `H2Stats` | span 采样 1% | span 100% 并导出 |
+|---|---:|---:|---:|---:|---:|---:|
+| HTTP/1.1 plaintext，256 连接 | 1.000 / 1.050（±4%）（io_uring 1.005） | 0.987 | 0.987 | 1.002 | 0.972（±9%） | 0.746 |
+| HTTP/1.1 pipelined ×16 | 0.989 / 0.998（±3%）（io_uring 0.999） | 0.928 | 0.925 | 0.997 | 0.883 | 0.540 |
+| h2c 64 连接 × 16 流 | 1.080 / 0.993（±13% / ±2%）（io_uring 1.019） | 0.923（±9%） | 0.918 | 0.992 | 0.875（±5%） | 0.547 |
+
+**结论。** 全部关闭时请求路径不变（两轮：epoll pipelined 0.989 和 0.998，其余在 ±1% 或噪声之内）。`H2Stats`
+没有可测开销；按路由标签在现有 `HttpMetrics` 中间件之上只多约 0.5%（中间件自身在每秒 460 万 pipelined 请求下的
+约 7% 来自每个请求的闭包和响应过滤器，本次未改动）。span 的开销如实列出：采样 1% 时，未采样的请求 span 只是一个
+box、两个随机 id 和线程局部的 enter（每秒 460 万请求时约 12%，70 万时约 3%）；100% 时每个请求还要分配字段，
+导出线程在同样四个 CPU 上每秒编码并发送约 250 万个 span。生产环境请采样（`sample_ratio`），或给导出线程单独的 CPU。
+
 ### 密码学（`only-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
 运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +
