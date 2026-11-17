@@ -261,7 +261,7 @@ impl Peer {
                 rtc,
                 armed: None,
                 closed: false,
-                connect_by: hub.connect_timeout.map(|d| Instant::now() + d),
+                connect_by: (*lock(&hub.connect_timeout)).map(|d| Instant::now() + d),
             }),
             events: Mutex::new(VecDeque::new()),
             handler: Mutex::new(Some(handler)),
@@ -465,7 +465,9 @@ impl Peer {
         let hub = self.0.hub.upgrade();
         let mut evs = Vec::new();
         let mut died = false;
-        let close_on_disconnect = hub.as_ref().is_some_and(|h| h.close_on_disconnect);
+        let close_on_disconnect = hub
+            .as_ref()
+            .is_some_and(|h| h.close_on_disconnect.load(Ordering::Relaxed));
         {
             let mut st = lock(&self.0.state);
             if st.closed {
@@ -620,9 +622,11 @@ struct Hub {
     ice_lite: bool,
     /// Atomic so it can be set after an [`Endpoint`] is bound (its socket holds a reference).
     max_peers: AtomicUsize,
-    close_on_disconnect: bool,
-    connect_timeout: Option<Duration>,
-    config: Box<ConfigFn>,
+    // Settings behind interior mutability: an `Endpoint`'s socket holds a reference to the hub
+    // from `bind` on, so they cannot be set through `Arc::get_mut`.
+    close_on_disconnect: AtomicBool,
+    connect_timeout: Mutex<Option<Duration>>,
+    config: Mutex<Arc<ConfigFn>>,
     candidates: Mutex<Vec<only_ice::Candidate>>,
     peers: Mutex<HashMap<u64, Peer>>,
     by_ufrag: Mutex<HashMap<String, u64>>,
@@ -636,9 +640,9 @@ impl Hub {
             tx,
             ice_lite,
             max_peers: AtomicUsize::new(DEFAULT_MAX_PEERS),
-            close_on_disconnect: true,
-            connect_timeout: Some(Duration::from_secs(30)),
-            config: Box::new(rtc_config),
+            close_on_disconnect: AtomicBool::new(true),
+            connect_timeout: Mutex::new(Some(Duration::from_secs(30))),
+            config: Mutex::new(Arc::new(rtc_config)),
             candidates: Mutex::new(candidates),
             peers: Mutex::new(HashMap::new()),
             by_ufrag: Mutex::new(HashMap::new()),
@@ -648,8 +652,8 @@ impl Hub {
     }
 
     fn new_rtc(&self) -> Result<Rtc, Error> {
-        let mut rtc =
-            Rtc::new((self.config)().0, self.ice_lite, Instant::now()).map_err(rtc_err)?;
+        let config = lock(&self.config).clone();
+        let mut rtc = Rtc::new(config().0, self.ice_lite, Instant::now()).map_err(rtc_err)?;
         for c in lock(&self.candidates).iter() {
             rtc.add_local_candidate(c.clone());
         }
@@ -872,8 +876,8 @@ impl RtcServer {
     /// Builds every peer's configuration with `f` (start from [`rtc_config`]); the crypto
     /// provider and the ICE mode are set over it. Call before cloning the server.
     #[must_use]
-    pub fn config(mut self, f: impl Fn() -> RtcConfig + Send + Sync + 'static) -> Self {
-        self.hub_mut().config = Box::new(f);
+    pub fn config(self, f: impl Fn() -> RtcConfig + Send + Sync + 'static) -> Self {
+        *lock(&self.0.config) = Arc::new(f);
         self
     }
 
@@ -888,16 +892,16 @@ impl RtcServer {
     /// Whether a peer whose ICE goes `Disconnected` (consent freshness lost) is closed
     /// (default `true`). Call before cloning the server.
     #[must_use]
-    pub fn close_on_disconnect(mut self, yes: bool) -> Self {
-        self.hub_mut().close_on_disconnect = yes;
+    pub fn close_on_disconnect(self, yes: bool) -> Self {
+        self.0.close_on_disconnect.store(yes, Ordering::Relaxed);
         self
     }
 
     /// Closes a peer that is not connected (ICE and DTLS up) this long after it was created
     /// (default 30 seconds; `None` waits forever). Call before cloning.
     #[must_use]
-    pub fn connect_timeout(mut self, t: Option<Duration>) -> Self {
-        self.hub_mut().connect_timeout = t;
+    pub fn connect_timeout(self, t: Option<Duration>) -> Self {
+        *lock(&self.0.connect_timeout) = t;
         self
     }
 
@@ -1099,31 +1103,27 @@ impl Endpoint {
         Ok(mapped)
     }
 
-    fn hub_mut(&mut self) -> &mut Hub {
-        Arc::get_mut(&mut self.0).expect("configure the endpoint before cloning it")
-    }
-
-    /// Builds every peer's configuration with `f` (start from [`rtc_config`]). Call before
-    /// cloning the endpoint.
+    /// Builds every peer's configuration with `f` (start from [`rtc_config`]); applies to the
+    /// peers created after the call.
     #[must_use]
-    pub fn config(mut self, f: impl Fn() -> RtcConfig + Send + Sync + 'static) -> Self {
-        self.hub_mut().config = Box::new(f);
+    pub fn config(self, f: impl Fn() -> RtcConfig + Send + Sync + 'static) -> Self {
+        *lock(&self.0.config) = Arc::new(f);
         self
     }
 
-    /// Whether a peer whose ICE goes `Disconnected` is closed (default `true`). Call before
-    /// cloning the endpoint.
+    /// Whether a peer whose ICE goes `Disconnected` is closed (default `true`).
     #[must_use]
-    pub fn close_on_disconnect(mut self, yes: bool) -> Self {
-        self.hub_mut().close_on_disconnect = yes;
+    pub fn close_on_disconnect(self, yes: bool) -> Self {
+        self.0.close_on_disconnect.store(yes, Ordering::Relaxed);
         self
     }
 
     /// Closes a peer that is not connected (ICE and DTLS up) this long after it was created
-    /// (default 30 seconds; `None` waits forever). Call before cloning.
+    /// (default 30 seconds; `None` waits forever); applies to the peers created after the
+    /// call.
     #[must_use]
-    pub fn connect_timeout(mut self, t: Option<Duration>) -> Self {
-        self.hub_mut().connect_timeout = t;
+    pub fn connect_timeout(self, t: Option<Duration>) -> Self {
+        *lock(&self.0.connect_timeout) = t;
         self
     }
 

@@ -10,10 +10,11 @@
 //! ingest (the `Authorization: Bearer` token is passed in [`PeerInfo::query`] as
 //! `token=<value>` when the URL has no query).
 //!
-//! The media side (ICE, DTLS-SRTP, RTP) is a [`WebRtcEngine`]: the WebRTC crate implements it,
-//! turning an offer into an answer and bridging media into the [`Publisher`] it is handed
-//! (WHIP) or out of a hub subscription it makes itself (WHEP). [`NoMedia`] is the placeholder
-//! engine: every offer gets `501 Not Implemented`.
+//! The media side (ICE, DTLS-SRTP, RTP) is a [`WebRtcEngine`], turning an offer into an
+//! answer and bridging media into the [`Publisher`] it is handed (WHIP) or out of a hub
+//! subscription it makes itself (WHEP). With the `webrtc` cargo feature,
+//! `only_media::webrtc::RtcMedia` is that engine on the in-house WebRTC stack (`only-webrtc`).
+//! [`NoMedia`] is the placeholder engine: every offer gets `501 Not Implemented`.
 
 use std::{
     collections::HashMap,
@@ -100,6 +101,12 @@ pub trait WebRtcSession: Send + 'static {
     }
     /// Ends the session.
     fn close(&mut self) {}
+    /// Whether the session ended on its own (the peer closed: ICE consent lost, DTLS close,
+    /// connect timeout). Closed sessions are dropped from the [`WhipServer`]'s table, so they
+    /// stop counting against [`WhipConfig::max_sessions`]. The default is `false`.
+    fn is_closed(&self) -> bool {
+        false
+    }
 }
 
 /// An answer to an offer and the session it starts.
@@ -236,9 +243,20 @@ impl WhipServer {
         }))
     }
 
-    /// The number of live sessions.
+    /// The number of live sessions (sessions that ended on their own are dropped first).
     pub fn sessions(&self) -> usize {
-        lock(&self.0.sessions).len()
+        let (n, ended) = {
+            let mut map = lock(&self.0.sessions);
+            let ended: Vec<String> = map
+                .iter()
+                .filter(|(_, e)| e.session.is_closed())
+                .map(|(k, _)| k.clone())
+                .collect();
+            let ended: Vec<Entry> = ended.iter().filter_map(|k| map.remove(k)).collect();
+            (map.len(), ended)
+        };
+        drop(ended); // outside the lock: dropping a session may unpublish
+        n
     }
 
     /// Ends every session.

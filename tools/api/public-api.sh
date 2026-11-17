@@ -32,10 +32,11 @@ else
     crates=("${all[@]}")
 fi
 
-# Every covered (non-`fuzzing`, non-`unstable`) feature of a crate beyond the defaults (none today;
-# `prost` is outside the promise, docs/api-stability.md).
+# Every covered (non-`fuzzing`, non-`unstable`) feature of a crate beyond the defaults (`prost`
+# is outside the promise, docs/api-stability.md).
 features_for() {
     case "$1" in
+    only-media) echo "--features webrtc" ;;
     *) echo "" ;;
     esac
 }

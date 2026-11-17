@@ -9,7 +9,8 @@
 //!   dropping ([`hub::Dropper`]), auth hooks, waiting for publishers, [`hub::Timeline`], stats.
 //! * Ingest and egress: [`rtmp::RtmpServer`], [`rtsp::RtspServer`], [`srt::SrtServer`] (and
 //!   the [`srt`] caller), [`httpflv::HttpFlv`] (HTTP-FLV and WS-FLV), [`hls::Hls`] (with LL-HLS),
-//!   [`http::MediaHttp`] dispatching the HTTP formats, [`whip::WhipServer`] (signalling).
+//!   [`http::MediaHttp`] dispatching the HTTP formats, [`whip::WhipServer`] (signalling), and
+//!   with the `webrtc` cargo feature `webrtc::RtcMedia` (WHIP/WHEP media over `only-webrtc`).
 //! * Formats and codecs: [`flv`], [`mpegts`], [`rtp`], [`sdp`], [`amf`], [`codec`].
 //!
 //! Guide: [Streaming media](https://lesismal.github.io/only/en/protocols/media.html),
@@ -41,6 +42,8 @@ pub mod sdp;
 pub mod srt;
 mod timer;
 mod watch;
+#[cfg(feature = "webrtc")]
+pub mod webrtc;
 pub mod whip;
 
 pub use av::{Codec, Packet, Track, Tracks};
