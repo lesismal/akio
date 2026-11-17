@@ -59,12 +59,13 @@ struct GroupRt {
     conns: usize,
 }
 
-#[derive(Clone, Copy)]
 enum Kind {
     /// A UDP peer: of a listener (`own == false`), or a dialed connection with its own port.
+    /// The peer is boxed: a `SocketAddr` would make every connection's `Kind` (TCP ones
+    /// included) 36 bytes instead of 16.
     Udp {
         port: u16,
-        peer: SocketAddr,
+        peer: Box<SocketAddr>,
         own: bool,
     },
     Tcp {
@@ -413,7 +414,7 @@ impl Loop {
                 }
                 let kind = Kind::Udp {
                     port: local,
-                    peer: remote,
+                    peer: Box::new(remote),
                     own: true,
                 };
                 let local = SocketAddr::new(self.iface.local_for(remote.ip()), local);
@@ -490,16 +491,16 @@ impl Loop {
         }
         rt.conns += 1;
         let now = Instant::now();
-        match kind {
+        match &kind {
             Kind::Udp {
                 port,
                 peer,
                 own: false,
             } => {
-                self.udp_peers.insert((port, peer), id);
+                self.udp_peers.insert((*port, **peer), id);
             }
             Kind::Tcp { h } => {
-                self.tcp_ids.insert(h, id);
+                self.tcp_ids.insert(*h, id);
             }
             Kind::Udp { .. } => {}
         }
@@ -593,7 +594,7 @@ impl Loop {
                 Event::UdpUnreachable { port, remote } => {
                     if let Some(&id) = self.udp_dialed.get(&port) {
                         let matches = self.conns.get(&id).is_some_and(
-                            |c| matches!(c.kind, Kind::Udp { peer, .. } if peer == *remote),
+                            |c| matches!(&c.kind, Kind::Udp { peer, .. } if **peer == *remote),
                         );
                         if matches {
                             let e = io::Error::new(
@@ -613,7 +614,7 @@ impl Loop {
                 let ok = self
                     .conns
                     .get(&id)
-                    .is_some_and(|c| matches!(c.kind, Kind::Udp { peer, .. } if peer == from));
+                    .is_some_and(|c| matches!(&c.kind, Kind::Udp { peer, .. } if **peer == from));
                 if ok {
                     self.deliver(id, n);
                 }
@@ -691,7 +692,7 @@ impl Loop {
                 };
                 let kind = Kind::Udp {
                     port,
-                    peer: from,
+                    peer: Box::new(from),
                     own: false,
                 };
                 let local = SocketAddr::new(self.iface.local_for(from.ip()), port);
@@ -800,7 +801,8 @@ impl Loop {
         let now = Instant::now();
         let iface = &mut self.iface;
         let r = match c.kind {
-            Kind::Udp { port, peer, .. } => {
+            Kind::Udp { port, ref peer, .. } => {
+                let peer = **peer;
                 let tx = &mut self.port;
                 c.inner.drain_output(&mut |d| {
                     // A datagram that cannot be sent is dropped, as UDP does.
@@ -830,12 +832,16 @@ impl Loop {
         self.paused.remove(&id);
         let now = Instant::now();
         match c.kind {
-            Kind::Udp { port, peer, own } => {
+            Kind::Udp {
+                port,
+                ref peer,
+                own,
+            } => {
                 if own {
                     self.iface.udp_unbind(port);
                     self.udp_dialed.remove(&port);
                 } else {
-                    self.udp_peers.remove(&(port, peer));
+                    self.udp_peers.remove(&(port, **peer));
                     if let Some(rt) = self.groups.get(&c.gid) {
                         rt.spec.peers.fetch_sub(1, Ordering::Relaxed);
                     }
