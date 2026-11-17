@@ -28,8 +28,11 @@
 //! peer is closed when the client `DELETE`s its session.
 //!
 //! **WHEP** (play): the answer sends on the offer's (receive-only) lines. Once the peer is
-//! connected (media written earlier would be dropped) it subscribes to the stream, starting
-//! from the GOP cache; video goes out as Annex B with the parameter sets of the track's
+//! connected (media written earlier would be dropped) it subscribes to the stream. Video
+//! starts at the next keyframe, which the hub asks the publisher for at once (a WebRTC
+//! publisher answers within a round trip, an RTMP encoder at its next GOP), rather than with
+//! a burst of the cached GOP that a WebRTC receiver would play late or fast; set
+//! [`RtcMediaConfig::play_gop_cache`] for the cache. Video goes out as Annex B with the parameter sets of the track's
 //! configuration before each keyframe, on the RTP clock of 90 kHz, audio (Opus, G.711) as it
 //! came. A PLI or FIR from the viewer becomes a keyframe request to the stream's publisher
 //! ([`Subscription::request_keyframe`]). The peer is closed when the stream ends, and the
@@ -131,6 +134,9 @@ pub struct RtcMediaConfig {
     pub max_pending_packets: usize,
     /// Most payload bytes a WHIP ingest holds while its stream is not live yet. Default 8 MiB.
     pub max_pending_bytes: usize,
+    /// WHEP viewers start with the stream's GOP cache (a picture at once, sent as a burst)
+    /// instead of at the next keyframe (asked for from the publisher). Default `false`.
+    pub play_gop_cache: bool,
 }
 
 impl Default for RtcMediaConfig {
@@ -139,6 +145,7 @@ impl Default for RtcMediaConfig {
             track_timeout: Duration::from_secs(5),
             max_pending_packets: 512,
             max_pending_bytes: 8 << 20,
+            play_gop_cache: false,
         }
     }
 }
@@ -293,6 +300,7 @@ impl WebRtcEngine for RtcMedia {
             hub: hub.clone(),
             path: info.path.clone(),
             info: info.peer.clone(),
+            gop_cache: self.cfg.play_gop_cache,
         };
         let (peer, sdp) = self
             .server
@@ -679,6 +687,7 @@ struct Player {
     hub: Hub,
     path: String,
     info: PeerInfo,
+    gop_cache: bool,
 }
 
 /// Where one kind of track goes: the stream's track and the line, payload type and clock.
@@ -763,8 +772,9 @@ impl PeerHandler for Player {
 
     fn on_connected(&mut self, p: &Peer) {
         // Media written before now would be dropped, so the subscription starts here; it is
-        // made on the timer thread, since subscribing writes the GOP to this peer, which may
-        // run this peer's callbacks.
+        // made on the timer thread, since subscribing may write the GOP to this peer, which
+        // may run this peer's callbacks.
+        let gop_cache = self.gop_cache;
         let (shared, hub, path, info, peer) = (
             self.shared.clone(),
             self.hub.clone(),
@@ -785,7 +795,9 @@ impl PeerHandler for Player {
                 announced: false,
                 buf: Vec::new(),
             };
-            match hub.subscribe(&path, sink, SubscribeOptions::new(info)) {
+            let mut opts = SubscribeOptions::new(info);
+            opts.no_gop_cache = !gop_cache;
+            match hub.subscribe(&path, sink, opts) {
                 Ok(sub) => {
                     let mut g = lock(&shared.sub);
                     if shared.closed.load(Ordering::Acquire) {
@@ -942,6 +954,7 @@ mod tests {
         let d = RtcMediaConfig::default();
         assert_eq!(d.track_timeout, Duration::from_secs(5));
         assert_eq!((d.max_pending_packets, d.max_pending_bytes), (512, 8 << 20));
+        assert!(!d.play_gop_cache);
         let s = format!("{:?}", rtc_config());
         assert!(s.contains("H265") && !s.contains("Vp8"), "{s}");
         let mut opus = Learn::new(false);
