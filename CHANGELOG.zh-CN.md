@@ -10,6 +10,40 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：HTTP 请求不再每次装箱响应 sink、不再每次分配 target（ADR-025）
+
+HTTP/3 分配优化之后点名的最后两处每请求分配已去掉
+（docs/adr/025-per-connection-response-sink.zh-CN.md）：
+
+- **复用 target 缓冲。** handler 处理完一个它没有 detach、也没有升级的请求后，该请求的 target 缓冲
+  （不超过 1 KiB）成为本线程的备用缓冲。该线程上解析的下一个请求把 target 写进去，HTTP/1.1、HTTP/2
+  和 HTTP/3 都如此。之所以按线程而非按连接：按连接的缓冲在轮到该连接时已不在缓存中，第一版因此让
+  h2c 每请求多约 100 个周期。`Request::target` 仍是 `String`，handler、router 和中间件不变。
+- **每个连接一个响应 sink。** only-http 的 transport 钩子（`only_http::transport`，
+  `#[doc(hidden)]`，不在 semver 承诺内）新增：
+  - `ConnSink`：`send` / `start_stream`，都带每请求的 `u64` tag；
+  - `SharedSink`：指向它的瘦句柄；
+  - `dispatch_conn` / `start_conn`，以及供构造请求的 transport 使用的 `request_target`。
+
+  only-h3 对一个连接的所有请求都通过同一个 sink 应答（tag：流序号与 HEAD 标志），不再每请求装箱
+  一个 sink 并克隆三个 `Arc`。由于句柄是瘦指针，`Context` 的 responder 保持 16 字节。胖指针
+  `Arc<dyn ConnSink>` 加 tag 会让 `Context` 增大 8 字节；HTTP/2 每个请求装箱一个 `Context`，h2c
+  因此多花约 1% 的周期。
+- 每请求分配器调用（x86_64 上用 bpftrace 计数）：`quic-bench h3` 两端 11.0 → 9.0；HTTP/1.1 服务端
+  6.0 → 5.0，pipeline 6.0 → 5.0，h2c 6.5 → 5.5。此前 HTTP/3 条目中的 8.6 用的是另一种计数方式；
+  按本方法，ADR-011 之前的 776f001e 为 10.8。
+- gpu51（Zen 4，空闲主机）同一次运行的 A/B：
+  - HTTP/3 GET，一个连接、64 个并发：1.0059 倍（两次各 7 轮交替：1.0087 倍和 1.0032 倍）。
+  - 服务端每请求用户态周期（`perf stat`，7 轮中位数）：HTTP/1.1 0.951 倍，pipeline 0.968 倍，h2c
+    0.973 倍；指令数减少 1.2%–1.4%。
+
+| 之前（已弃用，仍可编译） | 之后 |
+|---|---|
+| `impl ResponseSink for S`（`send(self: Box<Self>, resp)`） | `impl ConnSink for C`（`send(&self, tag, resp)`），每个连接一个 |
+| `transport::dispatch(&svc, req, Box::new(s))` | 每个连接一次 `let sink = SharedSink::new(c);`，然后 `transport::dispatch_conn(&svc, req, &sink, tag)` |
+| `transport::start(&svc, req, Box::new(s))` | `transport::start_conn(&svc, req, &sink, tag)` |
+| `Request::new(m, path.to_owned())` | `Request::new(m, transport::request_target(path))`（可选） |
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

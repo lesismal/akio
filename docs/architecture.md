@@ -335,7 +335,7 @@ flowchart TB
     subgraph UDP["UDP listener"]
       udp["UDP peers"] --> quic["only-quic Endpoint, then QuicHandler"]
       quic --> h3["only-h3 ServerConn"]
-      h3 -- "transport::dispatch + ResponseSink" --> svc2["the same Service: Context"]
+      h3 -- "transport::dispatch_conn + ConnSink" --> svc2["the same Service: Context"]
       udp --> kcp["only-kcp sessions, then KcpHandler"]
     end
 ```
@@ -353,10 +353,12 @@ flowchart TB
   whose responder is either an ordered `ResponseSlot` (HTTP/1, so pipelined responses stay in
   order even when detached) or an HTTP/2 stream.
 - **Transport hook for HTTP/3.** `only_http::transport` lets a transport outside the crate serve
-  a `Service`: it parses a request and calls `dispatch(service, request, sink)`, where the sink
-  implements `ResponseSink` (`send`, `start_stream` returning a `BodySink`). only-h3 implements
-  those on QUIC streams, so routers, middleware, `detach` and `stream_response` behave the same
-  on HTTP/3.
+  a `Service`: it parses a request and calls `dispatch_conn(service, request, sink, tag)`, where
+  the sink is the connection's `ConnSink` (`send`, `start_stream` returning a `BodySink`, each
+  given the request's tag), shared through a thin `SharedSink`; targets are built with
+  `request_target`, which reuses a finished request's buffer kept per thread (ADR-025). only-h3 implements those on QUIC streams, so routers, middleware, `detach`
+  and `stream_response` behave the same on HTTP/3. The older per-request `ResponseSink`
+  (`dispatch`, `start`) is deprecated.
 - **Upgrades.** `Context::upgrade_websocket` answers 101 and replaces the HTTP state machine with
   a `WsSession` on the same connection; `Context::upgrade_raw` hands the raw byte stream to a
   `RawHandler` (the HTTP CONNECT proxy). The WebSocket session keeps the type-erased

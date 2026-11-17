@@ -225,9 +225,11 @@ QPACK（RFC 9204）用一张由各自编码器通过 encoder stream 填充的表
 
 ## HTTP/3 如何复用 only-http
 
-only-http 提供了一个 transport 钩子 `only_http::transport`：transport 解析出请求后调用
-`dispatch(service, request, sink)`，其中 `ResponseSink` 用它自己的方式写响应（完整响应用
-`send`，流式响应用 `start_stream` 返回一个 `BodySink`）。only-h3 在 QUIC stream 上实现了这些
+only-http 提供了一个 transport 钩子 `only_http::transport`：transport 解析出请求后用连接的
+`ConnSink` 调用 `dispatch_conn(service, request, sink, tag)`，sink 用它自己的方式把响应写给 tag
+指明的请求（完整响应用 `send`，流式响应用 `start_stream` 返回一个 `BodySink`）。sink 由连接的
+所有请求共享（经瘦句柄 `SharedSink`），请求 target 用 `request_target` 写进按线程保留的已完成请求的缓冲，所以两者都不再每请求分配一次
+（ADR-025；旧的装箱 `ResponseSink` 与 `dispatch` 已弃用）。only-h3 在 QUIC stream 上实现了这个
 sink，所以 router、中间件和 handler 都无需改动。见[架构](../architecture.md)。
 
 一个请求的开销：帧直接在收到的流数据上原地读取，字段段解码进连接复用的缓冲区，再复制一次进请求的
