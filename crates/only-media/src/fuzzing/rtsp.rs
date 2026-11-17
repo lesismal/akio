@@ -27,6 +27,18 @@ pub fn rtsp_server(data: &[u8]) {
     s.on_close(&c, None);
 }
 
+/// `rtsp_client`: an RTSP client session fed what a server sends (responses, interleaved
+/// frames, server requests). `data[0]` bit 0 picks push (else pull), bit 1 UDP (else TCP);
+/// `data[1]` splits the reads. Covers the response parser, Digest/Basic answers, SDP and
+/// `Transport` handling, the RTP ingest of a pull and, for a push that gets to RECORD, the
+/// packetizing sink.
+pub fn rtsp_client(data: &[u8]) {
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    crate::rtsp::client::fuzz(mode & 1 != 0, mode & 2 != 0, &split(rest));
+}
+
 /// `sdp_parse`: the SDP parser and the media-to-track mapping.
 pub fn sdp_parse(data: &[u8]) {
     let Ok(text) = std::str::from_utf8(data) else {
@@ -132,6 +144,88 @@ mod tests {
         v
     }
 
+    /// What a server answers a client, in order: `(status line and headers, body)`.
+    fn replies(rs: &[(&str, &str)]) -> Vec<u8> {
+        let mut w = Vec::new();
+        for (i, (head, body)) in rs.iter().enumerate() {
+            w.extend_from_slice(
+                format!(
+                    "{head}\r\nCSeq: {}\r\nContent-Length: {}\r\n\r\n{body}",
+                    i + 1,
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+        w
+    }
+
+    fn client_seeds() -> Vec<Vec<u8>> {
+        let ok = "RTSP/1.0 200 OK";
+        let setup_tcp0 = "RTSP/1.0 200 OK\r\nSession: 12345678;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1";
+        let setup_tcp1 = "RTSP/1.0 200 OK\r\nSession: 12345678;timeout=60\r\nTransport: RTP/AVP/TCP;unicast;interleaved=2-3";
+        let setup_udp0 = "RTSP/1.0 200 OK\r\nSession: 12345678;timeout=60\r\nTransport: RTP/AVP;unicast;client_port=5000-5001;server_port=8000-8001";
+        let setup_udp1 = "RTSP/1.0 200 OK\r\nSession: 12345678;timeout=60\r\nTransport: RTP/AVP;unicast;client_port=5002-5003;server_port=8000-8001";
+        let describe = "RTSP/1.0 200 OK\r\nContent-Type: application/sdp\r\nContent-Base: rtsp://127.0.0.1:8554/live/s/";
+        let deny = "RTSP/1.0 401 Unauthorized\r\nWWW-Authenticate: Digest realm=\"only\", nonce=\"abc\", qop=\"auth\"";
+        let public =
+            "RTSP/1.0 200 OK\r\nPublic: OPTIONS, DESCRIBE, SETUP, PLAY, GET_PARAMETER, TEARDOWN";
+        let mut play_tcp = replies(&[
+            (public, ""),
+            (deny, ""),
+            (describe, SDP),
+            (setup_tcp0, ""),
+            (setup_tcp1, ""),
+            (ok, ""),
+        ]);
+        let track = Track::video(Codec::H264, vec![]);
+        let mut p = Packetizer::new(&track, 96).mtu(200);
+        let mut out = Vec::new();
+        p.packetize(
+            &crate::av::Packet::new(
+                0,
+                0,
+                0,
+                true,
+                h264::to_avcc([&[0x67u8, 0x64, 0, 0x0d][..], &[0x68, 1], &[0x65; 500]]),
+            ),
+            &mut out,
+        );
+        for r in &out {
+            interleaved(0, r, &mut play_tcp);
+        }
+        interleaved(1, &crate::rtp::sender_report(1, 2, 3, 4, 5), &mut play_tcp);
+        let play_udp = replies(&[
+            (ok, ""),
+            (describe, SDP),
+            (setup_udp0, ""),
+            (setup_udp1, ""),
+            (ok, ""),
+        ]);
+        let rec_tcp = replies(&[
+            (ok, ""),
+            (deny, ""),
+            (ok, ""),
+            (setup_tcp0, ""),
+            (setup_tcp1, ""),
+            (ok, ""),
+        ]);
+        let rec_udp = replies(&[
+            (ok, ""),
+            (ok, ""),
+            (setup_udp0, ""),
+            (setup_udp1, ""),
+            (ok, ""),
+        ]);
+        let mut v = Vec::new();
+        for (mode, w) in [(0u8, play_tcp), (2, play_udp), (1, rec_tcp), (3, rec_udp)] {
+            v.push([&[mode, 0][..], &w].concat());
+            v.push([&[mode, 9][..], &w].concat());
+        }
+        v.push(vec![0, 0, b'$', 0, 0xff]);
+        v
+    }
+
     fn sdp_seeds() -> Vec<Vec<u8>> {
         vec![
             SDP.as_bytes().to_vec(),
@@ -156,6 +250,7 @@ mod tests {
     #[test]
     fn replay_corpora() {
         assert!(replay(DIR, "rtsp_server", rtsp_server) > 0);
+        assert!(replay(DIR, "rtsp_client", rtsp_client) > 0);
         assert!(replay(DIR, "sdp_parse", sdp_parse) > 0);
         assert!(replay(DIR, "rtp_depacketize", rtp_depacketize) > 0);
     }
@@ -165,6 +260,11 @@ mod tests {
         for s in server_seeds() {
             rtsp_server(&s);
         }
+        for s in client_seeds() {
+            rtsp_client(&s);
+        }
+        rtsp_client(&[]);
+        rtsp_client(&[1]);
         for s in sdp_seeds() {
             sdp_parse(&s);
         }
@@ -182,5 +282,13 @@ mod tests {
         write_target_seeds(DIR, "rtsp_server", &server_seeds());
         write_target_seeds(DIR, "sdp_parse", &sdp_seeds());
         write_target_seeds(DIR, "rtp_depacketize", &rtp_seeds());
+    }
+
+    /// Regenerates the `rtsp_client` seeds:
+    /// `cargo test -p only-media --lib write_rtsp_client_fuzz_seeds -- --ignored`.
+    #[test]
+    #[ignore]
+    fn write_rtsp_client_fuzz_seeds() {
+        write_target_seeds(DIR, "rtsp_client", &client_seeds());
     }
 }
