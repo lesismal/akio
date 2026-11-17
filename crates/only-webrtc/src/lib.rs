@@ -64,6 +64,7 @@ pub mod fuzzing;
 mod relay;
 mod rtc;
 mod sdp;
+mod tcp;
 mod timer;
 mod types;
 
@@ -635,6 +636,8 @@ struct Hub {
     stun_waiters: Mutex<HashMap<[u8; 12], mpsc::Sender<SocketAddr>>>,
     /// TURN allocations ([`Endpoint::gather_relay`]), at most [`MAX_RELAYS`].
     relays: Mutex<Vec<Arc<relay::Relay>>>,
+    /// The passive ICE-TCP candidate's listener ([`Endpoint::listen_tcp`]).
+    tcp: OnceLock<Arc<tcp::TcpSide>>,
 }
 
 /// Most TURN allocations of one [`Endpoint`].
@@ -655,6 +658,29 @@ impl Hub {
             by_addr: Mutex::new(HashMap::new()),
             stun_waiters: Mutex::new(HashMap::new()),
             relays: Mutex::new(Vec::new()),
+            tcp: OnceLock::new(),
+        }
+    }
+
+    fn peer_by_ufrag(&self, ufrag: &str) -> Option<u64> {
+        lock(&self.by_ufrag).get(ufrag).copied()
+    }
+
+    /// Hands a datagram to peer `id`; `false` if it is gone.
+    fn input_peer(
+        &self,
+        id: u64,
+        source: SocketAddr,
+        destination: SocketAddr,
+        data: &[u8],
+    ) -> bool {
+        let p = lock(&self.peers).get(&id).cloned();
+        match p {
+            Some(p) => {
+                p.input(source, destination, data);
+                true
+            }
+            None => false,
         }
     }
 
@@ -754,10 +780,17 @@ impl Hub {
             lock(&self.by_ufrag).remove(&p.0.ufrag);
         }
         lock(&self.by_addr).retain(|_, v| *v != id);
+        if let Some(t) = self.tcp.get() {
+            t.close_peer(id);
+        }
     }
 
     fn transmit(&self, id: u64, src: SocketAddr, dest: SocketAddr, data: &[u8]) {
         // Replies from where we send belong to this peer (full ICE agents send first).
+        if let Some(t) = self.tcp.get().filter(|t| t.local == src) {
+            t.send(dest, data);
+            return;
+        }
         lock(&self.by_addr).entry(dest).or_insert(id);
         if let Some(r) = self.relay_at(src) {
             r.send(dest, data);
@@ -1211,6 +1244,54 @@ impl Endpoint {
         Ok(relayed)
     }
 
+    /// Listens for ICE-TCP connections (RFC 6544) on `addr` and adds a passive TCP host
+    /// candidate for new peers: remote agents with active TCP candidates (browsers, pion)
+    /// connect to it and run checks, DTLS and media over the connection (RFC 4571 framing).
+    /// The candidate is `addr`, or with the unspecified address the endpoint's primary
+    /// address, with the bound port, which must differ from the UDP port (port 0 picks one).
+    /// Returns the candidate's address. A dedicated thread accepts (at most 256 connections at
+    /// once); a connection whose first frame is not a check for one of this endpoint's peers
+    /// within 10 seconds is closed, and so are a peer's connections when it closes. Once per
+    /// endpoint; needs an engine with TCP I/O threads ([`only::EngineBuilder::client_threads`]
+    /// or a TCP listener).
+    pub fn listen_tcp(&self, engine: &Arc<Engine>, addr: SocketAddr) -> Result<SocketAddr, Error> {
+        if self.0.tcp.get().is_some() {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the endpoint listens on TCP already",
+            )));
+        }
+        let udp = self.local_addr().ok_or(Error::Closed)?;
+        let mut l = std::net::TcpListener::bind(addr).map_err(Error::Io)?;
+        if l.local_addr().map_err(Error::Io)?.port() == udp.port() {
+            if addr.port() != 0 {
+                return Err(Error::InvalidCandidate(format!(
+                    "{addr}: the TCP port must differ from the UDP port"
+                )));
+            }
+            l = std::net::TcpListener::bind(addr).map_err(Error::Io)?;
+        }
+        let bound = l.local_addr().map_err(Error::Io)?;
+        let local = if bound.ip().is_unspecified() {
+            SocketAddr::new(primary_ip(bound.is_ipv6()), bound.port())
+        } else {
+            bound
+        };
+        let side = tcp::TcpSide::start(&self.0, engine, l, local).map_err(Error::Io)?;
+        if self.0.tcp.set(side.clone()).is_err() {
+            side.close();
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the endpoint listens on TCP already",
+            )));
+        }
+        lock(&self.0.candidates).push(only_ice::Candidate::host_tcp(
+            local,
+            only_ice::TcpType::Passive,
+        ));
+        Ok(local)
+    }
+
     fn hub_mut(&mut self) -> &mut Hub {
         Arc::get_mut(&mut self.0).expect("configure the endpoint before cloning it")
     }
@@ -1277,6 +1358,9 @@ impl Endpoint {
         let relays = std::mem::take(&mut *lock(&self.0.relays));
         for r in relays {
             r.close();
+        }
+        if let Some(t) = self.0.tcp.get() {
+            t.close();
         }
         if let Some(b) = self.binding() {
             b.close();

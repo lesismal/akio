@@ -554,3 +554,10 @@ path = "fuzz_targets/turn_stream.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ice_tcp"
+path = "fuzz_targets/ice_tcp.rs"
+test = false
+doc = false
+bench = false

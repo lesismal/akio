@@ -109,14 +109,55 @@ impl CandidateKind {
     }
 }
 
+/// The `tcptype` of a TCP candidate (RFC 6544 §4.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TcpType {
+    /// Opens connections, never accepts them (its port is 9 in the SDP).
+    Active,
+    /// Accepts connections, never opens them.
+    Passive,
+    /// Simultaneous open.
+    So,
+}
+
+impl TcpType {
+    /// The SDP token.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TcpType::Active => "active",
+            TcpType::Passive => "passive",
+            TcpType::So => "so",
+        }
+    }
+
+    /// The direction preference of RFC 6544 §4.2 (host and server-reflexive candidates,
+    /// UDP-preferring order: active 6, passive 4, so 2).
+    fn direction_pref(self) -> u32 {
+        match self {
+            TcpType::Active => 6,
+            TcpType::Passive => 4,
+            TcpType::So => 2,
+        }
+    }
+
+    /// Whether a local candidate of this type pairs with a remote one of type `remote`
+    /// (RFC 6544 §6.2: active with passive, so with so).
+    pub fn pairs_with(self, remote: TcpType) -> bool {
+        matches!(
+            (self, remote),
+            (TcpType::Active, TcpType::Passive)
+                | (TcpType::Passive, TcpType::Active)
+                | (TcpType::So, TcpType::So)
+        )
+    }
+}
+
 /// Why a candidate line was not accepted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParseError {
     /// Not a valid `candidate` attribute.
     Syntax(&'static str),
-    /// A TCP candidate (RFC 6544): valid but unsupported here.
-    Tcp,
     /// The address is an mDNS name (`*.local`, as browsers hide host addresses).
     Mdns,
     /// The address is another fully qualified domain name.
@@ -125,7 +166,7 @@ pub enum ParseError {
 
 impl ParseError {
     /// Whether the line is well formed but describes a candidate this agent does not use
-    /// (TCP, mDNS, FQDN): callers usually skip those silently.
+    /// (mDNS, FQDN): callers usually skip those silently.
     pub fn is_unsupported(&self) -> bool {
         !matches!(self, ParseError::Syntax(_))
     }
@@ -135,7 +176,6 @@ impl fmt::Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ParseError::Syntax(why) => write!(f, "ice candidate: {why}"),
-            ParseError::Tcp => f.write_str("ice candidate: TCP candidates are not supported"),
             ParseError::Mdns => f.write_str("ice candidate: mDNS address not resolved"),
             ParseError::Fqdn => f.write_str("ice candidate: FQDN address not resolved"),
         }
@@ -144,7 +184,8 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
-/// An ICE candidate (always UDP, component 1 when created locally).
+/// An ICE candidate: UDP, or TCP with a [`TcpType`] (RFC 6544); component 1 when created
+/// locally.
 ///
 /// For candidates created with the constructors, [`Candidate::base`] is the local address
 /// the candidate sends from; for parsed (remote) candidates it equals [`Candidate::addr`] and
@@ -160,6 +201,29 @@ pub struct Candidate {
     related: Option<SocketAddr>,
     ufrag: Option<String>,
     generation: Option<u32>,
+    tcp: Option<TcpType>,
+}
+
+/// Type preferences of TCP candidates: below every UDP type so that UDP pairs win when both
+/// work (RFC 6544 §4.2 leaves the values to the implementation; these are Chrome's).
+fn tcp_type_preference(kind: CandidateKind) -> u32 {
+    match kind {
+        CandidateKind::Host => 90,
+        CandidateKind::PeerReflexive => 80,
+        CandidateKind::ServerReflexive => 65,
+        CandidateKind::Relayed => 0,
+    }
+}
+
+/// Local preference of a TCP candidate, RFC 6544 §4.2: `2^13 * direction-pref + other-pref`,
+/// the other preference ranking IPv6 above IPv4.
+fn tcp_local_preference(addr: &SocketAddr, t: TcpType) -> u32 {
+    let other = match addr.ip() {
+        IpAddr::V6(ip) if (ip.segments()[0] & 0xffc0) == 0xfe80 => 2047,
+        IpAddr::V6(_) => 8191,
+        IpAddr::V4(_) => 4095,
+    };
+    (t.direction_pref() << 13) + other
 }
 
 /// Local preference: IPv6 above IPv4 (RFC 8421 style), leaving room below.
@@ -178,7 +242,7 @@ pub(crate) fn priority(type_pref: u32, local_pref: u32, component: u16) -> u32 {
 
 /// A stable foundation (RFC 8445 §5.1.1.3): same type, base IP and transport give the same
 /// value. FNV-1a, printed in decimal (ice-chars).
-fn foundation(kind: CandidateKind, base: &SocketAddr) -> String {
+fn foundation(kind: CandidateKind, base: &SocketAddr, tcp: bool) -> String {
     let mut h: u32 = 0x811c_9dc5;
     let mut eat = |b: u8| h = (h ^ u32::from(b)).wrapping_mul(0x0100_0193);
     eat(kind.type_preference() as u8);
@@ -186,7 +250,7 @@ fn foundation(kind: CandidateKind, base: &SocketAddr) -> String {
         IpAddr::V4(ip) => ip.octets().into_iter().for_each(&mut eat),
         IpAddr::V6(ip) => ip.octets().into_iter().for_each(&mut eat),
     }
-    eat(b'u');
+    eat(if tcp { b't' } else { b'u' });
     h.to_string()
 }
 
@@ -194,7 +258,7 @@ impl Candidate {
     fn local(kind: CandidateKind, addr: SocketAddr, base: SocketAddr, prio: Option<u32>) -> Self {
         let lp = local_preference(&base);
         Candidate {
-            foundation: foundation(kind, &base),
+            foundation: foundation(kind, &base, false),
             component: 1,
             priority: prio.unwrap_or_else(|| priority(kind.type_preference(), lp, 1)),
             addr,
@@ -203,6 +267,7 @@ impl Candidate {
             related: (kind != CandidateKind::Host).then_some(base),
             ufrag: None,
             generation: None,
+            tcp: None,
         }
     }
 
@@ -222,6 +287,21 @@ impl Candidate {
     /// client, and passes the relayed address as the destination of what it unwraps.
     pub fn relayed(addr: SocketAddr, base: SocketAddr) -> Candidate {
         Candidate::local(CandidateKind::Relayed, addr, base, None)
+    }
+
+    /// A TCP host candidate (RFC 6544) on the local address `addr`: for
+    /// [`TcpType::Passive`], the address of a listening socket.
+    pub fn host_tcp(addr: SocketAddr, tcp: TcpType) -> Candidate {
+        let kind = CandidateKind::Host;
+        let mut c = Candidate::local(kind, addr, addr, None);
+        c.tcp = Some(tcp);
+        c.foundation = foundation(kind, &addr, true);
+        c.priority = priority(
+            tcp_type_preference(kind),
+            tcp_local_preference(&addr, tcp),
+            1,
+        );
+        c
     }
 
     /// A peer-reflexive candidate with an explicit priority.
@@ -274,6 +354,22 @@ impl Candidate {
         self.generation
     }
 
+    /// The `tcptype` of a TCP candidate; `None` for UDP.
+    pub fn tcp_type(&self) -> Option<TcpType> {
+        self.tcp
+    }
+
+    /// Whether candidates `self` (local) and `remote` can form a pair: same IP family and
+    /// transport, and for TCP compatible types.
+    pub(crate) fn pairs_with(&self, remote: &Candidate) -> bool {
+        self.send_addr().is_ipv4() == remote.addr().is_ipv4()
+            && match (self.tcp, remote.tcp) {
+                (None, None) => true,
+                (Some(l), Some(r)) => l.pairs_with(r),
+                _ => false,
+            }
+    }
+
     /// The address the agent sends from for this local candidate: the base, except for a
     /// relayed candidate (the relayed address).
     pub(crate) fn send_addr(&self) -> SocketAddr {
@@ -289,27 +385,43 @@ impl Candidate {
         (self.priority >> 8) & 0xffff
     }
 
-    pub(crate) fn remote_prflx(addr: SocketAddr, priority: u32) -> Candidate {
+    /// A remote peer-reflexive candidate learned from a check that arrived over `tcp` (the
+    /// type of the remote end of that connection), or over UDP.
+    pub(crate) fn remote_prflx(addr: SocketAddr, priority: u32, tcp: Option<TcpType>) -> Candidate {
         let mut c = Candidate::local(CandidateKind::PeerReflexive, addr, addr, Some(priority));
         c.related = None;
+        c.tcp = tcp;
+        if tcp.is_some() {
+            c.foundation = foundation(c.kind, &addr, true);
+        }
         c
     }
 
     /// The SDP attribute value (without `a=`):
-    /// `candidate:<foundation> <component> udp <priority> <ip> <port> typ <type>[ raddr <ip>
-    /// rport <port>]`.
+    /// `candidate:<foundation> <component> udp|tcp <priority> <ip> <port> typ <type>[ raddr
+    /// <ip> rport <port>][ tcptype <type>]`. An active TCP candidate's port is 9 (RFC 6544
+    /// §4.5).
     pub fn to_sdp(&self) -> String {
+        let port = match self.tcp {
+            Some(TcpType::Active) => 9,
+            _ => self.addr.port(),
+        };
         let mut s = format!(
-            "candidate:{} {} udp {} {} {} typ {}",
+            "candidate:{} {} {} {} {} {} typ {}",
             self.foundation,
             self.component,
+            if self.tcp.is_some() { "tcp" } else { "udp" },
             self.priority,
             self.addr.ip(),
-            self.addr.port(),
+            port,
             self.kind.as_str()
         );
         if let Some(r) = self.related {
             s.push_str(&format!(" raddr {} rport {}", r.ip(), r.port()));
+        }
+        if let Some(t) = self.tcp {
+            s.push_str(" tcptype ");
+            s.push_str(t.as_str());
         }
         s
     }
@@ -371,6 +483,7 @@ impl Candidate {
         let mut rport: Option<u16> = None;
         let mut ufrag = None;
         let mut generation = None;
+        let mut tcptype = None;
         while let Some(name) = it.next() {
             let value = it
                 .next()
@@ -391,6 +504,14 @@ impl Candidate {
                     );
                 }
                 "ufrag" => ufrag = Some(value.to_owned()),
+                "tcptype" => {
+                    tcptype = Some(match value {
+                        "active" => TcpType::Active,
+                        "passive" => TcpType::Passive,
+                        "so" => TcpType::So,
+                        _ => return Err(ParseError::Syntax("bad tcptype")),
+                    });
+                }
                 "network-id" | "network-cost" => {
                     let _: u32 = value
                         .parse()
@@ -399,8 +520,8 @@ impl Candidate {
                 _ => {}
             }
         }
-        if tcp {
-            return Err(ParseError::Tcp);
+        if tcp && tcptype.is_none() {
+            return Err(ParseError::Syntax("tcp candidate without tcptype"));
         }
         let ip: IpAddr = match host.parse() {
             Ok(ip) => ip,
@@ -417,6 +538,7 @@ impl Candidate {
             related: raddr.map(|ip| SocketAddr::new(ip, rport.unwrap_or(0))),
             ufrag,
             generation,
+            tcp: if tcp { tcptype } else { None },
         })
     }
 }
@@ -490,6 +612,40 @@ mod tests {
     }
 
     #[test]
+    fn tcp_candidates() {
+        let p = Candidate::host_tcp(a("192.168.1.2:5001"), TcpType::Passive);
+        let u = Candidate::host(a("192.168.1.2:5000"));
+        // Below every UDP host candidate, above UDP server-reflexive ones.
+        assert!(p.priority() < u.priority());
+        assert_eq!(p.priority() >> 24, 90);
+        assert_eq!((p.priority() >> 8) & 0xffff, (4 << 13) + 4095);
+        assert_ne!(p.foundation(), u.foundation());
+        let s = p.to_sdp();
+        assert!(
+            s.contains(" tcp ") && s.ends_with(" typ host tcptype passive"),
+            "{s}"
+        );
+        let back = Candidate::parse(&s).unwrap();
+        assert_eq!(back.tcp_type(), Some(TcpType::Passive));
+        assert_eq!((back.addr(), back.priority()), (p.addr(), p.priority()));
+        let act = Candidate::host_tcp(a("192.168.1.2:40000"), TcpType::Active);
+        assert!(
+            act.to_sdp()
+                .contains(" 192.168.1.2 9 typ host tcptype active")
+        );
+        // Pairing: passive with active only, never across transports.
+        let ra =
+            Candidate::parse("candidate:1 1 tcp 1 10.0.0.9 9 typ host tcptype active").unwrap();
+        let rp =
+            Candidate::parse("candidate:1 1 tcp 1 10.0.0.9 7 typ host tcptype passive").unwrap();
+        let ru = Candidate::parse("candidate:1 1 udp 1 10.0.0.9 7 typ host").unwrap();
+        assert!(p.pairs_with(&ra));
+        assert!(!p.pairs_with(&rp) && !p.pairs_with(&ru) && !u.pairs_with(&ra));
+        assert!(u.pairs_with(&ru));
+        assert!(TcpType::So.pairs_with(TcpType::So));
+    }
+
+    #[test]
     fn sdp_round_trip() {
         for c in [
             Candidate::host(a("192.168.1.2:5000")),
@@ -550,13 +706,21 @@ mod tests {
             Candidate::parse("candidate:1 1 udp 2122260223 example.com 5000 typ host"),
             Err(ParseError::Fqdn)
         );
-        assert_eq!(
-            Candidate::parse(
-                "candidate:1 1 tcp 1518280447 192.168.1.2 9 typ host tcptype active generation 0"
-            ),
-            Err(ParseError::Tcp)
-        );
-        assert!(ParseError::Tcp.is_unsupported());
+        let t = Candidate::parse(
+            "candidate:1 1 tcp 1518280447 192.168.1.2 9 typ host tcptype active generation 0",
+        )
+        .unwrap();
+        assert_eq!(t.tcp_type(), Some(TcpType::Active));
+        assert_eq!(t.addr(), a("192.168.1.2:9"));
+        assert!(matches!(
+            Candidate::parse("candidate:1 1 tcp 1518280447 192.168.1.2 9 typ host"),
+            Err(ParseError::Syntax(_))
+        ));
+        assert!(matches!(
+            Candidate::parse("candidate:1 1 tcp 1 1.2.3.4 9 typ host tcptype both"),
+            Err(ParseError::Syntax(_))
+        ));
+        assert!(ParseError::Mdns.is_unsupported());
         assert!(!ParseError::Syntax("x").is_unsupported());
         for bad in [
             "nonsense",
