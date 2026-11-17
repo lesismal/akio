@@ -18,6 +18,20 @@ const IFF_TAP: ffi::c_short = 0x0002;
 const IFF_NO_PI: ffi::c_short = 0x1000;
 const ETH_P_ALL: u16 = 0x0003;
 const PACKET_OUTGOING: u8 = 4;
+const SOL_PACKET: ffi::c_int = 263;
+const PACKET_ADD_MEMBERSHIP: ffi::c_int = 1;
+const PACKET_MR_ALLMULTI: u16 = 2;
+
+/// `struct packet_mreq` (`linux/if_packet.h`).
+#[repr(C)]
+struct PacketMreq {
+    ifindex: ffi::c_int,
+    kind: u16,
+    alen: u16,
+    address: [u8; 8],
+}
+
+const _: () = assert!(size_of::<PacketMreq>() == 16);
 
 /// `struct ifreq` with the `ifr_flags` member of its union (40 bytes on Linux).
 #[repr(C)]
@@ -133,6 +147,25 @@ impl LinkFd {
                 break;
             }
         }
+        // Multicast frames (IPv6 neighbor discovery to solicited-node groups) must reach us on
+        // NICs that filter them: receive all multicast on the interface (best effort; a veth
+        // or TAP does not filter).
+        let mreq = PacketMreq {
+            ifindex: index as ffi::c_int,
+            kind: PACKET_MR_ALLMULTI,
+            alen: 0,
+            address: [0; 8],
+        };
+        // SAFETY: `mreq` is a valid `struct packet_mreq` of the length passed.
+        let _ = unsafe {
+            ffi::setsockopt(
+                fd.as_raw_fd(),
+                SOL_PACKET,
+                PACKET_ADD_MEMBERSHIP,
+                (&raw const mreq).cast(),
+                size_of::<PacketMreq>() as ffi::socklen_t,
+            )
+        };
         Ok(LinkFd { fd, packet: true })
     }
 

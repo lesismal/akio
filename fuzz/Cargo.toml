@@ -430,6 +430,27 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dpdk_ipv6"
+path = "fuzz_targets/dpdk_ipv6.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_icmpv6"
+path = "fuzz_targets/dpdk_icmpv6.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dpdk_ndp"
+path = "fuzz_targets/dpdk_ndp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "dpdk_stack"
 path = "fuzz_targets/dpdk_stack.rs"
 test = false

@@ -1,20 +1,22 @@
 //! One TCP connection (RFC 9293): the state machine, send and receive buffers, retransmission
 //! (RFC 6298 timer, fast retransmit / recovery with SACK, RFC 2018 / RFC 6675, or NewReno,
 //! RFC 6582, without it), congestion control (`cc`), window scaling and timestamps with PAWS
-//! (RFC 7323), delayed ACKs, zero-window probing, keepalive and TIME-WAIT.
+//! (RFC 7323), delayed ACKs, zero-window probing, keepalive and TIME-WAIT; optionally ECN
+//! (RFC 3168: ECT(0) on new data, ECE / CWR) and pacing (a rate of `gain * cwnd / srtt`,
+//! timer driven). Connections run over IPv4 or IPv6 (the MSS accounts for the larger header).
 //!
 //! A `Tcb` never touches the network itself: segments go out through [`SegOut`], and what the
 //! application should learn is left in [`Notes`] for the interface to turn into events.
 
 use std::{
-    net::SocketAddrV4,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
 use super::{
     buf::{Assembler, Ring},
     cc::{Cc, CcKind, MAX_RTO, Rtt},
-    wire::{ACK, FIN, MAX_SACK, PSH, RST, SYN, Tcp, TcpOpts, TcpOut},
+    wire::{ACK, CWR, ECE, ECN_CE, ECN_MASK, FIN, MAX_SACK, PSH, RST, SYN, Tcp, TcpOpts, TcpOut},
 };
 
 // ---- sequence arithmetic --------------------------------------------------------------------
@@ -59,11 +61,20 @@ const KEEPALIVE_PROBES: u32 = 9;
 const DEFAULT_MSS: u32 = 536;
 /// Timestamps older than this are not checked by PAWS (RFC 7323 5.5: 24 days).
 const PAWS_IDLE: Duration = Duration::from_secs(24 * 24 * 3600);
+/// IPv6 header less IPv4 header: an IPv6 connection's MSS is this much smaller.
+const V6_EXTRA: u16 = 20;
+/// Pacing gain in slow start and in congestion avoidance (Linux `tcp_pacing_ss_ratio` /
+/// `tcp_pacing_ca_ratio`), percent.
+const PACE_SS: u64 = 200;
+const PACE_CA: u64 = 120;
+/// A paced connection may run this far ahead of its rate (and at least two segments'
+/// time): the loop's timer granularity, so pacing does not idle the link between wake-ups.
+const PACE_SLACK: Duration = Duration::from_micros(100);
 
 /// Connection-wide settings, from the interface configuration.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Params {
-    /// Our MSS: IP MTU - 40.
+    /// Our MSS over IPv4: IP MTU - 40 (IPv6 connections use 20 less).
     pub(crate) mss: u16,
     pub(crate) rx_buf: usize,
     pub(crate) tx_buf: usize,
@@ -74,6 +85,10 @@ pub(crate) struct Params {
     pub(crate) wscale: bool,
     pub(crate) timestamps: bool,
     pub(crate) sack: bool,
+    /// Negotiate ECN (RFC 3168).
+    pub(crate) ecn: bool,
+    /// Pace transmissions.
+    pub(crate) pacing: bool,
 }
 
 impl Params {
@@ -111,6 +126,15 @@ pub(crate) enum TcpError {
     Unreachable,
 }
 
+/// An ICMP / ICMPv6 error about one of the connection's segments.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IcmpError {
+    /// Destination unreachable (hard during the handshake, soft afterwards).
+    Unreachable,
+    /// Fragmentation needed / packet too big, with the next-hop MTU.
+    TooBig(u32),
+}
+
 /// What happened to a connection since the interface last looked (bit set).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Notes(u8);
@@ -134,8 +158,8 @@ pub(crate) trait SegOut {
     /// Sends one segment; `payload` is the concatenation of the two slices.
     fn segment(
         &mut self,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
+        local: SocketAddr,
+        remote: SocketAddr,
         hdr: &TcpOut,
         payload: (&[u8], &[u8]),
     );
@@ -174,8 +198,8 @@ impl SynOpts {
 #[derive(Debug)]
 pub(crate) struct Tcb {
     pub(crate) state: State,
-    pub(crate) local: SocketAddrV4,
-    pub(crate) remote: SocketAddrV4,
+    pub(crate) local: SocketAddr,
+    pub(crate) remote: SocketAddr,
     /// Port of the listener that accepted it (passive open).
     pub(crate) listener: Option<u16>,
     p: Params,
@@ -217,6 +241,14 @@ pub(crate) struct Tcb {
     ts_recent_at: Instant,
     sack_ok: bool,
     wscale_ok: bool,
+    /// ECN negotiated (RFC 3168 6.1.1).
+    ecn_ok: bool,
+    /// Receiver: a CE mark arrived; ECE on every ACK until the sender's CWR.
+    ece_pending: bool,
+    /// Sender: reduced the window for an ECE; CWR on the next new data segment.
+    cwr_pending: bool,
+    /// Sender: no further ECE reduction until `snd_una` passes this (once per window).
+    ecn_recover: u32,
 
     // loss recovery
     /// Sacked ranges above `snd_una`, sorted, disjoint.
@@ -245,6 +277,12 @@ pub(crate) struct Tcb {
     unacked_segs: u8,
     quickacks: u8,
 
+    // pacing
+    /// Earliest time the next paced segment may go.
+    pace_next: Instant,
+    /// Output held back by pacing: run it then.
+    pace_at: Option<Instant>,
+
     // timers
     rto_at: Option<Instant>,
     delack_at: Option<Instant>,
@@ -268,7 +306,10 @@ pub(crate) struct Tcb {
 }
 
 impl Tcb {
-    fn new(p: Params, local: SocketAddrV4, remote: SocketAddrV4, iss: u32, clock: Clock) -> Tcb {
+    fn new(mut p: Params, local: SocketAddr, remote: SocketAddr, iss: u32, clock: Clock) -> Tcb {
+        if remote.is_ipv6() {
+            p.mss = p.mss.saturating_sub(V6_EXTRA).max(64);
+        }
         let mss = u32::from(p.mss);
         Tcb {
             state: State::Closed,
@@ -301,6 +342,10 @@ impl Tcb {
             ts_recent_at: clock.now,
             sack_ok: false,
             wscale_ok: false,
+            ecn_ok: false,
+            ece_pending: false,
+            cwr_pending: false,
+            ecn_recover: iss,
             sacked: Vec::new(),
             sacked_bytes: 0,
             dupacks: 0,
@@ -318,6 +363,8 @@ impl Tcb {
             ack_now: false,
             unacked_segs: 0,
             quickacks: QUICKACKS,
+            pace_next: clock.now,
+            pace_at: None,
             rto_at: None,
             delack_at: None,
             persist_at: None,
@@ -336,8 +383,8 @@ impl Tcb {
     /// Active open: the SYN goes out with the next `output`.
     pub(crate) fn connect(
         p: Params,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
+        local: SocketAddr,
+        remote: SocketAddr,
         iss: u32,
         clock: Clock,
     ) -> Tcb {
@@ -350,8 +397,8 @@ impl Tcb {
     /// Passive open from a SYN: the SYN-ACK goes out with the next `output`.
     pub(crate) fn accept(
         p: Params,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
+        local: SocketAddr,
+        remote: SocketAddr,
         iss: u32,
         syn: &Tcp<'_>,
         clock: Clock,
@@ -361,6 +408,8 @@ impl Tcb {
         t.irs = syn.seq;
         t.rcv_nxt = syn.seq.wrapping_add(1);
         t.apply_syn_opts(SynOpts::of(&syn.opts), clock);
+        // RFC 3168 6.1.1: an ECN-setup SYN carries ECE and CWR.
+        t.ecn_ok = p.ecn && syn.flags & (ECE | CWR) == ECE | CWR;
         // The SYN's window is never scaled.
         t.snd_wnd = u32::from(syn.window);
         t.snd_wl1 = syn.seq;
@@ -372,8 +421,8 @@ impl Tcb {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_cookie(
         p: Params,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
+        local: SocketAddr,
+        remote: SocketAddr,
         iss: u32,
         irs: u32,
         opts: SynOpts,
@@ -565,6 +614,7 @@ impl Tcb {
                 flags: RST | ACK,
                 window: 0,
                 opts: TcpOpts::default(),
+                ect: false,
             };
             out.segment(self.local, self.remote, &hdr, (&[], &[]));
         }
@@ -627,6 +677,8 @@ impl Tcb {
         self.rcv_nxt = seg.seq.wrapping_add(1);
         self.apply_syn_opts(SynOpts::of(&seg.opts), clock);
         if f & ACK != 0 {
+            // RFC 3168 6.1.1: an ECN-setup SYN-ACK carries ECE but not CWR.
+            self.ecn_ok = self.p.ecn && f & (ECE | CWR) == ECE;
             self.snd_una = seg.ack;
             self.syn_pending = false;
             self.on_rtt_ack(seg, clock);
@@ -769,6 +821,18 @@ impl Tcb {
         if self.state == State::Closed {
             return;
         }
+        if self.ecn_ok {
+            // RFC 3168 6.1.3: ECE until a CWR arrives; a CE mark (re)starts it.
+            if f & CWR != 0 {
+                self.ece_pending = false;
+            }
+            if seg.ecn & ECN_MASK == ECN_CE && !seg.payload.is_empty() {
+                if !self.ece_pending {
+                    self.ack_now = true; // tell the sender at once
+                }
+                self.ece_pending = true;
+            }
+        }
         // Data and FIN.
         if matches!(
             self.state,
@@ -810,6 +874,9 @@ impl Tcb {
         }
         if self.sack_ok && seg.opts.sack_n > 0 {
             self.update_sacks(seg.opts.sacks());
+        }
+        if self.ecn_ok && seg.flags & ECE != 0 {
+            self.on_ece(ack);
         }
         if seq_lt(ack, self.snd_una) {
             return true; // old duplicate: ignore its ACK
@@ -898,6 +965,21 @@ impl Tcb {
             }
         }
         true
+    }
+
+    /// ECN-Echo (RFC 3168 6.1.2): reduce the window as for a loss, at most once per window of
+    /// data, without retransmitting; CWR goes out with the next new data.
+    fn on_ece(&mut self, ack: u32) {
+        if self.in_recovery
+            || self.in_rto_recovery
+            || seq_lt(seq_max(ack, self.snd_una), self.ecn_recover)
+        {
+            return; // already reduced for this window
+        }
+        let flight = self.snd_max.wrapping_sub(self.snd_una);
+        self.cc.on_loss(flight, self.mss());
+        self.ecn_recover = self.snd_max;
+        self.cwr_pending = true;
     }
 
     fn on_rtt_ack(&mut self, seg: &Tcp<'_>, clock: Clock) {
@@ -1164,17 +1246,22 @@ impl Tcb {
         self.notes.0 |= Notes::CLOSED;
     }
 
-    /// ICMP destination unreachable for this connection (RFC 1122 4.2.3.9 / RFC 5927): fatal
-    /// during the handshake, ignored afterwards (soft error). Fragmentation needed lowers the
-    /// MSS (path MTU discovery, RFC 1191).
-    pub(crate) fn on_icmp_unreachable(&mut self, code: u8, next_mtu: u16, seq: u32) {
+    /// ICMP / ICMPv6 error for this connection (RFC 1122 4.2.3.9 / RFC 5927 / RFC 4443):
+    /// destination unreachable is fatal during the handshake, ignored afterwards (soft error).
+    /// Fragmentation needed / packet too big lowers the MSS (path MTU discovery, RFC 1191 /
+    /// RFC 8201).
+    pub(crate) fn on_icmp_error(&mut self, err: IcmpError, seq: u32) {
         if !(seq_le(self.snd_una, seq) && seq_lt(seq, self.snd_max.wrapping_add(1))) {
             return; // RFC 5927 4.1: must quote a segment in flight
         }
-        if code == super::wire::UNREACH_FRAG_NEEDED {
-            let mtu = u32::from(next_mtu);
-            if (576..=u32::from(self.p.mss) + 40).contains(&mtu) {
-                self.peer_mss = self.peer_mss.min(mtu - 40);
+        if let IcmpError::TooBig(mtu) = err {
+            let (hdr, min) = if self.remote.is_ipv6() {
+                (60, 1280)
+            } else {
+                (40, 576)
+            };
+            if (min..=u32::from(self.p.mss) + hdr).contains(&mtu) {
+                self.peer_mss = self.peer_mss.min(mtu - hdr);
                 self.rxt_next = self.snd_una;
                 self.lost_end = self.snd_max;
                 self.rxt_now = true;
@@ -1196,6 +1283,7 @@ impl Tcb {
             self.persist_at,
             self.keepalive_at,
             self.close_at,
+            self.pace_at,
         ]
         .into_iter()
         .flatten()
@@ -1221,6 +1309,9 @@ impl Tcb {
         if self.delack_at.is_some_and(|t| now >= t) {
             self.delack_at = None;
             self.ack_now = true;
+        }
+        if self.pace_at.is_some_and(|t| now >= t) {
+            self.pace_at = None; // `output` below sends what pacing held back
         }
         if self.rto_at.is_some_and(|t| now >= t) {
             self.rto_at = None;
@@ -1302,7 +1393,7 @@ impl Tcb {
             if seq_lt(self.snd_max, avail) && self.snd_max == self.snd_una {
                 let off = self.snd_max.wrapping_sub(self.tx_seq) as usize;
                 let seq = self.snd_max;
-                self.emit(seq, off, 1, false, clock, out);
+                self.emit(seq, off, 1, false, false, clock, out);
                 self.snd_max = self.snd_max.wrapping_add(1);
                 if self.rto_at.is_none() {
                     self.rto_at = Some(clock.now + self.backed_off_rto());
@@ -1418,6 +1509,16 @@ impl Tcb {
             }
             opts.sack_n = n;
         }
+        let mut flags = flags;
+        if syn {
+            if self.p.ecn && self.state == State::SynSent {
+                flags |= ECE | CWR;
+            } else if self.ecn_ok && self.state == State::SynReceived {
+                flags |= ECE;
+            }
+        } else if self.ecn_ok && self.ece_pending && flags & RST == 0 {
+            flags |= ECE;
+        }
         if flags & ACK != 0 || !syn {
             self.ack_now = false;
             self.unacked_segs = 0;
@@ -1431,6 +1532,7 @@ impl Tcb {
             flags,
             window,
             opts,
+            ect: false,
         }
     }
 
@@ -1444,13 +1546,16 @@ impl Tcb {
     }
 
     /// Sends `len` bytes of `tx` starting `off` bytes past `tx_seq` at sequence `seq` (plus
-    /// FIN when `fin`).
+    /// FIN when `fin`). `fresh`: new data (not a retransmission or a probe), which is what
+    /// ECN marks ECN-capable (RFC 3168 6.1.5) and carries CWR.
+    #[allow(clippy::too_many_arguments)]
     fn emit(
         &mut self,
         seq: u32,
         off: usize,
         len: usize,
         fin: bool,
+        fresh: bool,
         clock: Clock,
         out: &mut dyn SegOut,
     ) {
@@ -1461,10 +1566,59 @@ impl Tcb {
         if len > 0 && off + len == self.tx.len() {
             flags |= PSH;
         }
-        let hdr = self.header(seq, flags, clock, true);
+        if fresh && len > 0 && self.ecn_ok && std::mem::take(&mut self.cwr_pending) {
+            flags |= CWR;
+        }
+        let mut hdr = self.header(seq, flags, clock, true);
+        hdr.ect = fresh && len > 0 && self.ecn_ok;
         let payload = self.tx.slices(off, len);
         out.segment(self.local, self.remote, &hdr, payload);
         self.last_send = clock.now;
+        if self.p.pacing {
+            self.pace_sent(len, clock.now);
+        }
+    }
+
+    /// The pacing rate, bytes per second: `gain * cwnd / srtt` (none before an RTT sample).
+    fn pace_rate(&self) -> Option<u64> {
+        let srtt = self.rtt.srtt()?.as_nanos().max(1) as u64;
+        let gain = if self.cc.in_slow_start() {
+            PACE_SS
+        } else {
+            PACE_CA
+        };
+        let rate = u64::from(self.cc.cwnd) * gain * 10_000_000 / srtt;
+        Some(rate.max(1))
+    }
+
+    /// Time one `bytes`-byte segment takes at the pacing rate.
+    fn pace_gap(&self, bytes: usize) -> Option<Duration> {
+        let rate = self.pace_rate()?;
+        let wire = (bytes + 54) as u64; // headers: what the link carries
+        Some(Duration::from_nanos(
+            wire.saturating_mul(1_000_000_000) / rate,
+        ))
+    }
+
+    fn pace_sent(&mut self, len: usize, now: Instant) {
+        if let Some(gap) = self.pace_gap(len) {
+            self.pace_next = self.pace_next.max(now) + gap;
+        }
+    }
+
+    /// Pacing lets a segment go now; otherwise arms the pacing timer.
+    fn pace_ok(&mut self, now: Instant) -> bool {
+        if !self.p.pacing {
+            return true;
+        }
+        let slack = self
+            .pace_gap(self.mss() as usize)
+            .map_or(PACE_SLACK, |g| (g * 2).max(PACE_SLACK));
+        if self.pace_next <= now + slack {
+            return true;
+        }
+        self.pace_at = Some(self.pace_next.checked_sub(slack).unwrap_or(now));
+        false
     }
 
     /// Sends what the connection's state calls for: SYN / SYN-ACK, retransmissions, new data
@@ -1532,9 +1686,12 @@ impl Tcb {
                 self.rxt_now = false;
                 break;
             };
+            if !self.pace_ok(clock.now) {
+                break;
+            }
             self.rxt_now = false;
             let off = seq.wrapping_sub(self.tx_seq) as usize;
-            self.emit(seq, off, len, fin, clock, out);
+            self.emit(seq, off, len, fin, false, clock, out);
             sent_any = true;
             self.rxt_next = seq.wrapping_add(len as u32 + u32::from(fin));
             if self.rto_at.is_none() || self.retries > 0 {
@@ -1575,10 +1732,13 @@ impl Tcb {
             if len < pending.min(mss) && len < mss / 2 && self.snd_una != self.snd_max {
                 break;
             }
+            if !self.pace_ok(clock.now) {
+                break;
+            }
             let fin = fin_unsent && len == pending;
             let seq = self.snd_max;
             let off = seq.wrapping_sub(self.tx_seq) as usize;
-            self.emit(seq, off, len, fin, clock, out);
+            self.emit(seq, off, len, fin, true, clock, out);
             sent_any = true;
             if self.rtt_seq.is_none() && !self.ts_ok && len > 0 && self.retries == 0 {
                 self.rtt_seq = Some((seq, clock.now));

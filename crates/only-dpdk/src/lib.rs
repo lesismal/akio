@@ -1,7 +1,8 @@
 #![deny(unsafe_code)] // `unsafe` is confined to the DPDK FFI (`pmd`) and TAP / AF_PACKET (`sys`)
 //! `only`'s kernel-bypass backend (experimental): its own userspace TCP/IP stack (Ethernet,
-//! ARP, IPv4, ICMP, UDP, TCP with SACK, CUBIC / NewReno, window scaling and timestamps; safe
-//! Rust, `#![forbid(unsafe_code)]`, no dependencies) driven by `only` I/O threads, over
+//! ARP, IPv4, ICMP, IPv6 with NDP and ICMPv6, UDP, TCP with SACK, CUBIC / NewReno, window
+//! scaling and timestamps, optional ECN and pacing; safe Rust, `#![forbid(unsafe_code)]`, no
+//! dependencies) driven by `only` I/O threads, over
 //!
 //! * a **DPDK** port ([`Device::Dpdk`], cargo feature `pmd`, Linux, links `libdpdk`): the EAL is
 //!   initialised from [`EalConfig`], each I/O thread polls one rx/tx queue pair with
@@ -27,16 +28,21 @@
 //!   moves the bytes into the stack's send buffers after each callback (no locks on the wire
 //!   path besides the per-connection queue lock). The thread works from the stack's events and
 //!   timer heap: no per-iteration scan of all connections.
-//! * With several queues, the NIC's RSS keeps a flow on one queue; ARP frames are copied to every
-//!   queue so each stack resolves its neighbours, and dialed connections use local ports that
-//!   name their queue (`port % queues`), so replies RSS puts elsewhere are handed over.
+//! * With several queues, the NIC's RSS keeps a flow on one queue; ARP and NDP frames are copied
+//!   to every queue so each stack resolves its neighbours, and dialed connections use local ports
+//!   that name their queue (`port % queues`), so replies RSS puts elsewhere are handed over.
+//! * IPv6 is on when [`DpdkConfig::address6`] is set: the stack then also has a link-local
+//!   address derived from the MAC, answers neighbor solicitations and pings, and listeners
+//!   accept both families on their port (dual-stack). Addresses are static: no SLAAC, router
+//!   advertisements are not processed, and no duplicate address detection is run (our
+//!   addresses are defended against other nodes' detection).
 //!
 //! Guide: [Kernel bypass (DPDK)](https://lesismal.github.io/only/en/dpdk.html)
 //! (中文: [内核旁路（DPDK）](https://lesismal.github.io/only/zh-CN/dpdk.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -129,6 +135,16 @@ pub struct DpdkConfig {
     pub prefix_len: u8,
     /// Default gateway, for peers outside the local subnet.
     pub gateway: Option<Ipv4Addr>,
+    /// The stack's IPv6 address (global or unique local). `None` (the default): IPv4 only.
+    /// When set, IPv6 is on: the stack also takes the link-local address derived from its MAC
+    /// (`fe80::` + modified EUI-64), and listeners accept IPv6 on their port. Needs an MTU of
+    /// at least 1280.
+    pub address6: Option<Ipv6Addr>,
+    /// Prefix length of the IPv6 subnet (default 64): destinations inside it, and link-local
+    /// ones, are on the link.
+    pub prefix_len6: u8,
+    /// IPv6 default router (usually its link-local address), for peers off the link.
+    pub gateway6: Option<Ipv6Addr>,
     /// MAC address. `None`: the DPDK port's own address, or a locally administered address
     /// derived from `address` for the other devices.
     pub mac: Option<[u8; 6]>,
@@ -146,6 +162,13 @@ pub struct DpdkConfig {
     pub syn_cookies: bool,
     /// TCP congestion control (default [`Congestion::Cubic`]).
     pub congestion: Congestion,
+    /// Negotiate ECN on TCP connections (RFC 3168: data sent ECN-capable, congestion marks
+    /// answered like a loss without the retransmission). Default `false`.
+    pub tcp_ecn: bool,
+    /// Pace TCP transmissions at about `cwnd / srtt` (twice that in slow start) instead of
+    /// sending each window as a burst: fewer drops at shallow bottleneck queues, at some CPU
+    /// cost. Default `false`.
+    pub tcp_pacing: bool,
     /// Idle time before TCP keepalive probes start (`None`, the default: no keepalive; the
     /// engine's idle timeout usually covers dead peers). Probes repeat every
     /// `min(keepalive, 75 s)`; 9 unanswered ones reset the connection.
@@ -164,6 +187,9 @@ impl DpdkConfig {
             address,
             prefix_len: 24,
             gateway: None,
+            address6: None,
+            prefix_len6: 64,
+            gateway6: None,
             mac: None,
             mtu: 1500,
             tcp_buffer: 64 << 10,
@@ -171,6 +197,8 @@ impl DpdkConfig {
             tcp_backlog: 64,
             syn_cookies: true,
             congestion: Congestion::Cubic,
+            tcp_ecn: false,
+            tcp_pacing: false,
             tcp_keepalive: None,
             busy_poll: false,
         }
