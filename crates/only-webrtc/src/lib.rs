@@ -664,6 +664,9 @@ struct Hub {
     stun_waiters: Mutex<HashMap<[u8; 12], mpsc::Sender<SocketAddr>>>,
     /// TURN allocations ([`Endpoint::gather_relay`]), at most [`MAX_RELAYS`].
     relays: Mutex<Vec<Arc<relay::Relay>>>,
+    /// `relays.len()`, read without the lock on every datagram (endpoints without TURN
+    /// allocations never take it).
+    relay_count: AtomicUsize,
     /// The passive ICE-TCP candidate's listener ([`Endpoint::listen_tcp`]).
     tcp: OnceLock<Arc<tcp::TcpSide>>,
 }
@@ -686,6 +689,7 @@ impl Hub {
             by_addr: Mutex::new(HashMap::new()),
             stun_waiters: Mutex::new(HashMap::new()),
             relays: Mutex::new(Vec::new()),
+            relay_count: AtomicUsize::new(0),
             tcp: OnceLock::new(),
         }
     }
@@ -721,11 +725,10 @@ impl Hub {
 
     /// The relay whose allocation has the relayed address `addr`.
     fn relay_at(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
-        let relays = lock(&self.relays);
-        if relays.is_empty() {
+        if self.relay_count.load(Ordering::Acquire) == 0 {
             return None;
         }
-        relays
+        lock(&self.relays)
             .iter()
             .find(|r| r.relayed.get() == Some(&addr))
             .cloned()
@@ -733,11 +736,21 @@ impl Hub {
 
     /// The relay whose TURN server is at `addr`.
     fn relay_of_server(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
-        let relays = lock(&self.relays);
-        if relays.is_empty() {
+        if self.relay_count.load(Ordering::Acquire) == 0 {
             return None;
         }
-        relays.iter().find(|r| r.server == addr).cloned()
+        lock(&self.relays)
+            .iter()
+            .find(|r| r.server == addr)
+            .cloned()
+    }
+
+    /// Changes the relay list, keeping `relay_count` in step.
+    fn with_relays<R>(&self, f: impl FnOnce(&mut Vec<Arc<relay::Relay>>) -> R) -> R {
+        let mut relays = lock(&self.relays);
+        let r = f(&mut relays);
+        self.relay_count.store(relays.len(), Ordering::Release);
+        r
     }
 
     fn new_rtc(&self) -> Result<Rtc, Error> {
@@ -1229,8 +1242,7 @@ impl Endpoint {
         let b = self.binding().ok_or(Error::Closed)?.clone();
         let (tx, rx) = mpsc::channel();
         let cfg = only_turn::client::ClientConfig::new(turn_server, username, password);
-        let r = {
-            let mut relays = lock(&self.0.relays);
+        let r = self.0.with_relays(|relays| {
             relays.retain(|r| !r.is_dead());
             if relays.len() >= MAX_RELAYS {
                 return Err(Error::Turn("too many TURN allocations".into()));
@@ -1242,8 +1254,8 @@ impl Endpoint {
             }
             let r = relay::Relay::new(&self.0, cfg, tx);
             relays.push(r.clone());
-            r
-        };
+            Ok(r)
+        })?;
         // The first Allocate goes out on this kick.
         r.send_nothing();
         let res = match rx.recv_timeout(timeout) {
@@ -1255,7 +1267,8 @@ impl Endpoint {
             Ok(a) => a,
             Err(e) => {
                 r.close();
-                lock(&self.0.relays).retain(|x| !Arc::ptr_eq(x, &r));
+                self.0
+                    .with_relays(|relays| relays.retain(|x| !Arc::ptr_eq(x, &r)));
                 return Err(e);
             }
         };
@@ -1383,7 +1396,7 @@ impl Endpoint {
     /// Closes every peer, deletes the TURN allocations and closes the socket.
     pub fn close(&self) {
         self.0.close_all();
-        let relays = std::mem::take(&mut *lock(&self.0.relays));
+        let relays = self.0.with_relays(std::mem::take);
         for r in relays {
             r.close();
         }
