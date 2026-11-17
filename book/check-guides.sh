@@ -12,6 +12,10 @@
 #   book/check-guides.sh                 # all of them
 #   book/check-guides.sh guide-h3 echo   # only these
 #   GUIDE_TIMEOUT=120 book/check-guides.sh
+#   ONLY_DEFAULT_BACKEND=uring book/check-guides.sh   # on io_uring (Linux; ADR-029)
+#
+# With ONLY_DEFAULT_BACKEND=uring every TCP listener that does not choose a backend runs on
+# io_uring, and an example whose engine fell back to epoll fails.
 #
 # The serve-only examples listen on fixed ports (8080, 1935, 8554, 8000-8001, 7002). On
 # Linux the script re-runs itself in a private network namespace (`unshare -rn`) when it can,
@@ -281,6 +285,10 @@ for name in "${all[@]}"; do
       ;;
   esac
   secs=$(($(date +%s) - start))
+  if [[ $rc == 0 && "${ONLY_DEFAULT_BACKEND:-}" == *uring* ]] && grep -q "io_uring unavailable" "$log"; then
+    echo "asked for io_uring, but the engine fell back to epoll" >>"$log"
+    rc=3
+  fi
   if [[ $rc == 0 ]]; then
     printf 'ok    %-20s %3ss\n' "$name" "$secs"
     pass+=("$name")
@@ -291,6 +299,6 @@ for name in "${all[@]}"; do
   fi
 done
 
-echo "${#pass[@]} passed, ${#fail[@]} failed ($(uname -sm)${ONLY_GUIDES_NETNS:+, private netns})"
+echo "${#pass[@]} passed, ${#fail[@]} failed ($(uname -sm)${ONLY_GUIDES_NETNS:+, private netns}${ONLY_DEFAULT_BACKEND:+, ONLY_DEFAULT_BACKEND=$ONLY_DEFAULT_BACKEND})"
 [[ ${#fail[@]} == 0 && -z "${GUIDE_KEEP_LOGS:-}" ]] && rm -rf "$logs"
 [[ ${#fail[@]} == 0 ]]

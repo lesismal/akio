@@ -60,6 +60,7 @@ is a one-time step for a maintainer.
 ```console
 $ book/check-guides.sh             # every guide-* example plus echo, udp-echo, hello, prefork-http
 $ book/check-guides.sh guide-h3    # one of them
+$ ONLY_DEFAULT_BACKEND=uring book/check-guides.sh   # on io_uring (Linux, ADR-029)
 ```
 
 Self-checking examples must exit 0; the serving ones are probed from outside and stopped. On

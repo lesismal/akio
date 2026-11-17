@@ -21,7 +21,11 @@ only 的所有重要变更都记录在这里。格式遵循
 - `book/check-guides.sh` 运行书中引用代码的每个程序：21 个 `guide-*` 示例（各自以 0 退出或失败）、
   只提供服务的示例（`guide-media`、`guide-media-rtsp`、`echo`、`udp-echo`、`hello`、`prefork-http`，
   从外部探测）以及 gRPC 一章生成的桩代码；在 Linux 上于私有网络命名空间中运行。在 macOS、Linux arm64
-  与 Linux x86_64 上通过。
+  与 Linux x86_64 上通过，epoll 与 io_uring（`ONLY_DEFAULT_BACKEND=uring`）均通过。
+- `ONLY_DEFAULT_BACKEND=uring`（ADR-029，Linux）：未调用 `Listener::backend` 的 TCP listener 由 io_uring
+  服务（非 strict：不可用时回退到 epoll 并给出警告）。显式选择的后端总是优先；UDP listener 与客户端线程
+  不受影响；每次 `Engine::build` 读取一次。这是测试与诊断开关，使不改代码的程序（指南示例）也能在 io_uring
+  上运行。没有公共 API 变化。
 - `book/check-includes.py` 还会检查 `book/en` 与 `book/zh-CN` 章节相同，且各章的标题、引用、代码块、
   表格行与列表项一致。
 - 文档与代码对齐：HTTP/3 上的 WebSocket 不再列为未完成；配置参考中的 `H3Config` / `H3ClientOptions`

@@ -115,6 +115,12 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `ONLY_UDP_ECN=0` | never set an ECN codepoint on outgoing UDP datagrams (QUIC marks ECT(0) on Linux otherwise) |
 | `ONLY_LOG=...` | log filter directives (`info,only_http=debug`), read only when the application calls `only::log::init_from_env` |
 
+Test and diagnostic knob (ADR-029), not a tuning setting: `ONLY_DEFAULT_BACKEND=uring` (Linux)
+serves every TCP listener that does not call `Listener::backend` with io_uring (non-strict: it falls
+back to epoll with a warning where io_uring is unavailable), so an unchanged program can be run
+on io_uring; `book/check-guides.sh` uses it. An explicit `Listener::backend` always wins; UDP
+listeners and client threads are not affected; it is read once per `Engine::build`.
+
 The test suite also reads `ONLY_TEST_BACKEND=uring` (run the engine tests on io_uring) and
 `ONLY_TEST_EXPECT_EBPF=1` (fail instead of skip when eBPF is unavailable).
 

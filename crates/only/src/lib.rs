@@ -142,6 +142,8 @@ pub struct Listener {
     addr: SocketAddr,
     udp: bool,
     backend: Backend,
+    /// Set by [`Listener::backend`]; `ONLY_DEFAULT_BACKEND` applies only when it is not.
+    backend_explicit: bool,
     accel: Accel,
     threads: usize,
     acceptor: Option<Arc<dyn DynAcceptor>>,
@@ -162,6 +164,7 @@ impl Listener {
             addr,
             udp: false,
             backend: Backend::default(),
+            backend_explicit: false,
             accel: Accel::default(),
             threads: std::thread::available_parallelism().map_or(1, |n| n.get()),
             acceptor: None,
@@ -198,10 +201,13 @@ impl Listener {
         }
     }
 
-    /// Chooses this listener's backend.
+    /// Chooses this listener's backend. A listener without this call uses [`Backend::Epoll`],
+    /// or io_uring when `ONLY_DEFAULT_BACKEND=uring` is set on Linux (a test and diagnostic
+    /// knob, ADR-029); a backend chosen here always wins over the environment.
     #[must_use]
     pub fn backend(mut self, b: Backend) -> Self {
         self.backend = b;
+        self.backend_explicit = true;
         self
     }
 
@@ -298,7 +304,13 @@ impl EngineBuilder {
         let mut udp_listeners: Vec<usize> = Vec::new();
         // Each listener adds exactly one group, at index `groups.len()` when it starts.
         let mut accels: Vec<Accel> = Vec::new();
-        for l in self.listeners {
+        let env_backend = env_default_backend(); // read once per build (ADR-029)
+        for mut l in self.listeners {
+            if let Some(b) = &env_backend {
+                if !l.backend_explicit && !l.udp {
+                    l.backend = b.clone();
+                }
+            }
             accels.push(l.accel.clone());
             let acceptor = l.acceptor.ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "listener without .serve(..)")
@@ -549,6 +561,32 @@ impl EngineRef {
     /// The engine, if set and still alive.
     pub fn get(&self) -> Option<Arc<Engine>> {
         self.0.get().and_then(std::sync::Weak::upgrade)
+    }
+}
+
+/// `ONLY_DEFAULT_BACKEND` (ADR-029): the backend of TCP listeners that do not choose one with
+/// [`Listener::backend`]. `uring` (or `io_uring`) selects a non-strict io_uring backend, which
+/// falls back to epoll with a warning where the kernel lacks io_uring; unset, empty or `epoll`
+/// keeps the default. Linux only: elsewhere the variable is ignored. A test and diagnostic knob
+/// (run an unchanged program on io_uring), not a tuning setting.
+fn env_default_backend() -> Option<Backend> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    parse_default_backend(std::env::var("ONLY_DEFAULT_BACKEND").ok().as_deref())
+}
+
+fn parse_default_backend(v: Option<&str>) -> Option<Backend> {
+    match v? {
+        "uring" | "io_uring" => Some(Backend::IoUring(UringConfig::default())),
+        "" | "epoll" => None,
+        other => {
+            log_or_stderr(
+                only_log::Level::Warn,
+                format_args!("ONLY_DEFAULT_BACKEND={other:?} is not `uring` or `epoll`; ignored"),
+            );
+            None
+        }
     }
 }
 

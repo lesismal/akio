@@ -114,6 +114,11 @@ false）。
 | `ONLY_UDP_ECN=0` | 发出的 UDP 数据报一律不带 ECN 码点（否则 QUIC 在 Linux 上标记 ECT(0)） |
 | `ONLY_LOG=...` | 日志过滤指令（`info,only_http=debug`），仅当应用调用 `only::log::init_from_env` 时读取 |
 
+测试与诊断开关（ADR-029），不是调优设置：`ONLY_DEFAULT_BACKEND=uring`（Linux）让每个未调用
+`Listener::backend` 的 TCP listener 由 io_uring 服务（非 strict：io_uring 不可用时回退到 epoll 并给出
+警告），这样不改代码的程序也能在 io_uring 上运行；`book/check-guides.sh` 用的就是它。显式的
+`Listener::backend` 总是优先；UDP listener 和客户端线程不受影响；每次 `Engine::build` 读取一次。
+
 测试套件还会读取 `ONLY_TEST_BACKEND=uring`（在 io_uring 上运行 engine 测试）和
 `ONLY_TEST_EXPECT_EBPF=1`（eBPF 不可用时失败而不是跳过）。
 

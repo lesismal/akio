@@ -58,6 +58,7 @@ $ python3 book/check-site.py target/site --serve 8000   # http://127.0.0.1:8000/
 ```console
 $ book/check-guides.sh             # 每个 guide-* 示例，以及 echo、udp-echo、hello、prefork-http
 $ book/check-guides.sh guide-h3    # 只运行其中一个
+$ ONLY_DEFAULT_BACKEND=uring book/check-guides.sh   # 在 io_uring 上运行（Linux，ADR-029）
 ```
 
 自检型示例必须以 0 退出；服务型示例从外部探测后停止。部分示例使用固定端口（8080、1935、8554、

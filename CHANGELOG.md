@@ -23,7 +23,12 @@ All notable changes to `only` are documented here. The format follows
   examples (each exits 0 or fails), the serve-only ones (`guide-media`, `guide-media-rtsp`,
   `echo`, `udp-echo`, `hello`, `prefork-http`, probed from outside) and the gRPC chapter's
   generated stubs; on Linux in a private network namespace. Passes on macOS, Linux arm64 and
-  Linux x86_64.
+  Linux x86_64, on epoll and (`ONLY_DEFAULT_BACKEND=uring`) on io_uring.
+- `ONLY_DEFAULT_BACKEND=uring` (ADR-029, Linux): TCP listeners that do not call
+  `Listener::backend` are served by io_uring (non-strict: falls back to epoll with a warning).
+  An explicit backend always wins; UDP listeners and client threads are not affected; read once
+  per `Engine::build`. A test and diagnostic knob, so unchanged programs (the guide examples) can
+  run on io_uring. No public API change.
 - `book/check-includes.py` also checks that `book/en` and `book/zh-CN` have the same chapters
   with the same headings, includes, code blocks, table rows and list items.
 - Docs brought in line with the code: WebSocket over HTTP/3 is no longer listed as missing;
