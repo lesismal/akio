@@ -19,3 +19,4 @@
 - [ADR-013：共享的 0-RTT 防重放存储与 QUIC 兼容版本协商](013-shared-anti-replay-and-compatible-vn.zh-CN.md)
 - [ADR-014：QUIC 会话票据与令牌绑定到 QUIC 版本](014-quic-version-bound-resumption.zh-CN.md)
 - [ADR-015：可插拔的指标收集器](015-metrics-collectors.zh-CN.md)（2026-11-16 采纳）
+- [ADR-021：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复](021-dtls13-cid-resumption.zh-CN.md)

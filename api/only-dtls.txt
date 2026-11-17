@@ -13,12 +13,14 @@ pub only_dtls::AlertDescription::HandshakeFailure
 pub only_dtls::AlertDescription::IllegalParameter
 pub only_dtls::AlertDescription::InsufficientSecurity
 pub only_dtls::AlertDescription::InternalError
+pub only_dtls::AlertDescription::MissingExtension
 pub only_dtls::AlertDescription::NoRenegotiation
 pub only_dtls::AlertDescription::Other(u8)
 pub only_dtls::AlertDescription::ProtocolVersion
 pub only_dtls::AlertDescription::RecordOverflow
 pub only_dtls::AlertDescription::UnexpectedMessage
 pub only_dtls::AlertDescription::UnknownCa
+pub only_dtls::AlertDescription::UnknownPskIdentity
 pub only_dtls::AlertDescription::UnsupportedCertificate
 pub only_dtls::AlertDescription::UnsupportedExtension
 pub only_dtls::AlertDescription::UserCanceled
@@ -47,14 +49,27 @@ impl core::panic::unwind_safe::UnwindSafe for only_dtls::AlertDescription
 pub only_dtls::CipherSuite::EcdheEcdsaAes128GcmSha256
 pub only_dtls::CipherSuite::EcdheEcdsaAes256GcmSha384
 pub only_dtls::CipherSuite::EcdheEcdsaChacha20Poly1305Sha256
+pub only_dtls::CipherSuite::EcdhePskAes128GcmSha256
+pub only_dtls::CipherSuite::EcdhePskAes256GcmSha384
+pub only_dtls::CipherSuite::EcdhePskChacha20Poly1305Sha256
 pub only_dtls::CipherSuite::EcdheRsaAes128GcmSha256
 pub only_dtls::CipherSuite::EcdheRsaAes256GcmSha384
 pub only_dtls::CipherSuite::EcdheRsaChacha20Poly1305Sha256
+pub only_dtls::CipherSuite::PskAes128GcmSha256
+pub only_dtls::CipherSuite::PskAes256GcmSha384
+pub only_dtls::CipherSuite::PskChacha20Poly1305Sha256
+pub only_dtls::CipherSuite::Tls13Aes128GcmSha256
+pub only_dtls::CipherSuite::Tls13Aes256GcmSha384
+pub only_dtls::CipherSuite::Tls13Chacha20Poly1305Sha256
 impl only_dtls::CipherSuite
 pub const only_dtls::CipherSuite::ALL: [only_dtls::CipherSuite; 6]
+pub const only_dtls::CipherSuite::PSK: [only_dtls::CipherSuite; 6]
+pub const only_dtls::CipherSuite::TLS13: [only_dtls::CipherSuite; 3]
 pub fn only_dtls::CipherSuite::from_id(u16) -> core::option::Option<only_dtls::CipherSuite>
 pub fn only_dtls::CipherSuite::id(self) -> u16
 pub fn only_dtls::CipherSuite::is_ecdsa(self) -> bool
+pub fn only_dtls::CipherSuite::is_psk(self) -> bool
+pub fn only_dtls::CipherSuite::is_tls13(self) -> bool
 impl core::clone::Clone for only_dtls::CipherSuite
 pub fn only_dtls::CipherSuite::clone(&self) -> Self
 impl core::cmp::Eq for only_dtls::CipherSuite
@@ -108,6 +123,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_dtls::Error
 pub only_dtls::Event::ApplicationData(alloc::vec::Vec<u8>)
 pub only_dtls::Event::Closed
 pub only_dtls::Event::Connected(alloc::boxed::Box<only_dtls::HandshakeInfo>)
+pub only_dtls::Event::NewSession(only_dtls::Session)
 impl core::clone::Clone for only_dtls::Event
 pub fn only_dtls::Event::clone(&self) -> Self
 impl core::fmt::Debug for only_dtls::Event
@@ -216,6 +232,31 @@ impl core::marker::Sync for only_dtls::SrtpProfile
 impl core::marker::Unpin for only_dtls::SrtpProfile
 impl core::panic::unwind_safe::RefUnwindSafe for only_dtls::SrtpProfile
 impl core::panic::unwind_safe::UnwindSafe for only_dtls::SrtpProfile
+#[non_exhaustive] pub enum only_dtls::Version
+pub only_dtls::Version::Dtls12
+pub only_dtls::Version::Dtls13
+impl core::clone::Clone for only_dtls::Version
+pub fn only_dtls::Version::clone(&self) -> Self
+impl core::cmp::Eq for only_dtls::Version
+impl core::cmp::Ord for only_dtls::Version
+pub fn only_dtls::Version::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_dtls::Version
+pub fn only_dtls::Version::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_dtls::Version
+pub fn only_dtls::Version::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for only_dtls::Version
+pub fn only_dtls::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_dtls::Version
+pub fn only_dtls::Version::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_dtls::Version
+pub fn only_dtls::Version::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_dtls::Version
+impl core::marker::StructuralPartialEq for only_dtls::Version
+impl core::marker::Send for only_dtls::Version
+impl core::marker::Sync for only_dtls::Version
+impl core::marker::Unpin for only_dtls::Version
+impl core::panic::unwind_safe::RefUnwindSafe for only_dtls::Version
+impl core::panic::unwind_safe::UnwindSafe for only_dtls::Version
 pub struct only_dtls::Config
 impl only_dtls::Config
 pub fn only_dtls::Config::handshake_timeout(&self) -> core::time::Duration
@@ -223,14 +264,20 @@ pub fn only_dtls::Config::identity(&self) -> core::option::Option<&only_dtls::Id
 pub fn only_dtls::Config::new(only_dtls::Identity) -> only_dtls::Config
 pub fn only_dtls::Config::webrtc(only_dtls::Identity, only_dtls::PeerVerifier) -> only_dtls::Config
 pub fn only_dtls::Config::with_cipher_suites(self, alloc::vec::Vec<only_dtls::CipherSuite>) -> only_dtls::Config
+pub fn only_dtls::Config::with_connection_id(self, core::option::Option<u8>) -> only_dtls::Config
 pub fn only_dtls::Config::with_handshake_timeout(self, core::time::Duration) -> only_dtls::Config
 pub fn only_dtls::Config::with_hello_verify(self, bool) -> only_dtls::Config
 pub fn only_dtls::Config::with_mtu(self, usize) -> only_dtls::Config
+pub fn only_dtls::Config::with_psks(self, alloc::vec::Vec<only_dtls::Psk>) -> only_dtls::Config
 pub fn only_dtls::Config::with_require_client_certificate(self, bool) -> only_dtls::Config
 pub fn only_dtls::Config::with_require_extended_master_secret(self, bool) -> only_dtls::Config
 pub fn only_dtls::Config::with_retransmit(self, core::time::Duration, core::time::Duration) -> only_dtls::Config
+pub fn only_dtls::Config::with_session_resumption(self, bool) -> only_dtls::Config
 pub fn only_dtls::Config::with_srtp_profiles(self, alloc::vec::Vec<only_dtls::SrtpProfile>) -> only_dtls::Config
+pub fn only_dtls::Config::with_ticket_key(self, only_dtls::TicketKey) -> only_dtls::Config
+pub fn only_dtls::Config::with_ticket_lifetime(self, core::time::Duration) -> only_dtls::Config
 pub fn only_dtls::Config::with_verifier(self, only_dtls::PeerVerifier) -> only_dtls::Config
+pub fn only_dtls::Config::with_versions(self, alloc::vec::Vec<only_dtls::Version>) -> only_dtls::Config
 pub fn only_dtls::Config::without_identity() -> only_dtls::Config
 impl core::clone::Clone for only_dtls::Config
 pub fn only_dtls::Config::clone(&self) -> Self
@@ -244,6 +291,7 @@ impl !core::panic::unwind_safe::UnwindSafe for only_dtls::Config
 pub struct only_dtls::Connection
 impl only_dtls::Connection
 pub fn only_dtls::Connection::client(alloc::rcs::arc::Arc<only_dtls::Config>, std::time::Instant) -> core::result::Result<only_dtls::Connection, only_dtls::Error>
+pub fn only_dtls::Connection::client_resume(alloc::rcs::arc::Arc<only_dtls::Config>, std::time::Instant, &only_dtls::Session) -> core::result::Result<only_dtls::Connection, only_dtls::Error>
 pub fn only_dtls::Connection::close(&mut self)
 pub fn only_dtls::Connection::export_keying_material(&self, &str, core::option::Option<&[u8]>, usize) -> core::result::Result<alloc::vec::Vec<u8>, only_dtls::Error>
 pub fn only_dtls::Connection::handle_datagram(&mut self, std::time::Instant, &[u8]) -> core::result::Result<(), only_dtls::Error>
@@ -251,6 +299,7 @@ pub fn only_dtls::Connection::handle_timeout(&mut self, std::time::Instant) -> c
 pub fn only_dtls::Connection::handshake_info(&self) -> core::option::Option<&only_dtls::HandshakeInfo>
 pub fn only_dtls::Connection::is_closed(&self) -> bool
 pub fn only_dtls::Connection::is_connected(&self) -> bool
+pub fn only_dtls::Connection::local_connection_id(&self) -> core::option::Option<&[u8]>
 pub fn only_dtls::Connection::new(alloc::rcs::arc::Arc<only_dtls::Config>, only_dtls::Role, std::time::Instant, &[u8]) -> core::result::Result<only_dtls::Connection, only_dtls::Error>
 pub fn only_dtls::Connection::poll_event(&mut self) -> core::option::Option<only_dtls::Event>
 pub fn only_dtls::Connection::poll_timeout(&self) -> core::option::Option<std::time::Instant>
@@ -258,6 +307,8 @@ pub fn only_dtls::Connection::poll_transmit(&mut self) -> core::option::Option<a
 pub fn only_dtls::Connection::role(&self) -> only_dtls::Role
 pub fn only_dtls::Connection::send_application_data(&mut self, &[u8]) -> core::result::Result<(), only_dtls::Error>
 pub fn only_dtls::Connection::server(alloc::rcs::arc::Arc<only_dtls::Config>, std::time::Instant, &[u8]) -> core::result::Result<only_dtls::Connection, only_dtls::Error>
+pub fn only_dtls::Connection::update_keys(&mut self, bool) -> core::result::Result<(), only_dtls::Error>
+pub fn only_dtls::Connection::version(&self) -> only_dtls::Version
 impl core::fmt::Debug for only_dtls::Connection
 pub fn only_dtls::Connection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_dtls::Connection
@@ -292,10 +343,15 @@ impl core::panic::unwind_safe::UnwindSafe for only_dtls::Fingerprint
 #[non_exhaustive] pub struct only_dtls::HandshakeInfo
 pub only_dtls::HandshakeInfo::cipher_suite: only_dtls::CipherSuite
 pub only_dtls::HandshakeInfo::extended_master_secret: bool
+pub only_dtls::HandshakeInfo::local_connection_id: core::option::Option<alloc::vec::Vec<u8>>
 pub only_dtls::HandshakeInfo::peer_certificates: alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub only_dtls::HandshakeInfo::peer_connection_id: core::option::Option<alloc::vec::Vec<u8>>
 pub only_dtls::HandshakeInfo::peer_fingerprint: core::option::Option<only_dtls::Fingerprint>
+pub only_dtls::HandshakeInfo::psk_identity: core::option::Option<alloc::vec::Vec<u8>>
+pub only_dtls::HandshakeInfo::resumed: bool
 pub only_dtls::HandshakeInfo::srtp_keys: core::option::Option<only_dtls::SrtpKeys>
 pub only_dtls::HandshakeInfo::srtp_profile: core::option::Option<only_dtls::SrtpProfile>
+pub only_dtls::HandshakeInfo::version: only_dtls::Version
 impl core::clone::Clone for only_dtls::HandshakeInfo
 pub fn only_dtls::HandshakeInfo::clone(&self) -> Self
 impl core::fmt::Debug for only_dtls::HandshakeInfo
@@ -336,6 +392,38 @@ impl core::marker::Sync for only_dtls::Identity
 impl core::marker::Unpin for only_dtls::Identity
 impl core::panic::unwind_safe::RefUnwindSafe for only_dtls::Identity
 impl core::panic::unwind_safe::UnwindSafe for only_dtls::Identity
+pub struct only_dtls::Psk
+impl only_dtls::Psk
+pub fn only_dtls::Psk::identity(&self) -> &[u8]
+pub fn only_dtls::Psk::new(impl core::convert::Into<alloc::vec::Vec<u8>>, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<only_dtls::Psk, only_dtls::Error>
+impl core::clone::Clone for only_dtls::Psk
+pub fn only_dtls::Psk::clone(&self) -> Self
+impl core::cmp::Eq for only_dtls::Psk
+impl core::cmp::PartialEq for only_dtls::Psk
+pub fn only_dtls::Psk::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_dtls::Psk
+pub fn only_dtls::Psk::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_dtls::Psk
+impl core::marker::Send for only_dtls::Psk
+impl core::marker::Sync for only_dtls::Psk
+impl core::marker::Unpin for only_dtls::Psk
+impl core::panic::unwind_safe::RefUnwindSafe for only_dtls::Psk
+impl core::panic::unwind_safe::UnwindSafe for only_dtls::Psk
+pub struct only_dtls::Session
+impl only_dtls::Session
+pub fn only_dtls::Session::cipher_suite(&self) -> only_dtls::CipherSuite
+pub fn only_dtls::Session::expires(&self) -> std::time::Instant
+pub fn only_dtls::Session::has_ticket(&self) -> bool
+pub fn only_dtls::Session::version(&self) -> only_dtls::Version
+impl core::clone::Clone for only_dtls::Session
+pub fn only_dtls::Session::clone(&self) -> Self
+impl core::fmt::Debug for only_dtls::Session
+pub fn only_dtls::Session::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_dtls::Session
+impl core::marker::Sync for only_dtls::Session
+impl core::marker::Unpin for only_dtls::Session
+impl core::panic::unwind_safe::RefUnwindSafe for only_dtls::Session
+impl core::panic::unwind_safe::UnwindSafe for only_dtls::Session
 pub struct only_dtls::SrtpKeys
 pub only_dtls::SrtpKeys::client_master_key: alloc::vec::Vec<u8>
 pub only_dtls::SrtpKeys::client_master_salt: alloc::vec::Vec<u8>
@@ -358,5 +446,19 @@ impl core::marker::Sync for only_dtls::SrtpKeys
 impl core::marker::Unpin for only_dtls::SrtpKeys
 impl core::panic::unwind_safe::RefUnwindSafe for only_dtls::SrtpKeys
 impl core::panic::unwind_safe::UnwindSafe for only_dtls::SrtpKeys
+pub struct only_dtls::TicketKey
+impl only_dtls::TicketKey
+pub fn only_dtls::TicketKey::from_secret(&[u8; 32]) -> core::result::Result<only_dtls::TicketKey, only_dtls::Error>
+pub fn only_dtls::TicketKey::generate() -> core::result::Result<only_dtls::TicketKey, only_dtls::Error>
+impl core::clone::Clone for only_dtls::TicketKey
+pub fn only_dtls::TicketKey::clone(&self) -> Self
+impl core::fmt::Debug for only_dtls::TicketKey
+pub fn only_dtls::TicketKey::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_dtls::TicketKey
+impl core::marker::Sync for only_dtls::TicketKey
+impl core::marker::Unpin for only_dtls::TicketKey
+impl core::panic::unwind_safe::RefUnwindSafe for only_dtls::TicketKey
+impl core::panic::unwind_safe::UnwindSafe for only_dtls::TicketKey
 pub const only_dtls::SRTP_EXPORTER_LABEL: &str
+pub fn only_dtls::connection_id(&[u8], usize) -> core::option::Option<&[u8]>
 pub type only_dtls::VerifyFn = (dyn core::ops::function::Fn(&[alloc::vec::Vec<u8>]) -> core::result::Result<(), alloc::string::String> + core::marker::Send + core::marker::Sync)

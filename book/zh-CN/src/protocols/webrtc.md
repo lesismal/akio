@@ -5,7 +5,7 @@
 - `only-webrtc` 在 only UDP socket 上运行 WebRTC peer，基于自研、sans-io、无第三方依赖的协议栈
   （DEV-PLAN 第 D 波），每层一个 crate，均为 `#![forbid(unsafe_code)]` 并构建于 `only-crypto` 之上：
   `only-ice`（完整 ICE agent 与 ICE-lite、检查列表、提名、角色冲突、peer-reflexive 候选、trickle、
-  重启、consent freshness）、`only-dtls`（带证书指纹校验的 DTLS 1.2 与 DTLS-SRTP 密钥）、
+  重启、consent freshness）、`only-dtls`（带证书指纹校验的 DTLS 1.2 与 1.3 及 DTLS-SRTP 密钥，见下文）、
   `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放）、
   `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
   无序）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
@@ -115,8 +115,31 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 不同分配的数据报不会在 I/O 线程之间争用，过期清扫每次只持有一个分片，已认证的 Allocate 的中继
 socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
 
+## DTLS 层：WebRTC 用 DTLS 1.2，按需开启 DTLS 1.3
+
+`only-dtls` 是 sans-io 连接（`Connection`：喂入数据报和定时器到期，发送 `poll_transmit` 返回的
+内容），支持 DTLS 1.2（RFC 6347）与 DTLS 1.3（RFC 9147）。WebRTC 使用 DTLS 1.2：`Config::webrtc`
+只启用它，因为 pion 和浏览器的协议栈协商的是 DTLS 1.2，提供 1.3 只会让 ClientHello 变大（ADR-021）。
+WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 同时提供两个版本，
+遇到只支持 1.2 的对端时回退到 DTLS 1.2（带 RFC 8446 降级检查）。
+
+- **DTLS 1.3**：带加密记录号的统一记录头，随 KeyUpdate 递增的 epoch（`Connection::update_keys`，
+  密钥接近使用上限前也会自动更新），用 ACK 只重传一轮中丢失的分片，无状态的 HelloRetryRequest
+  cookie（也可由连接前面的 `HelloVerifier::check` 发出）。
+- **连接 ID**（`Config::with_connection_id`）：DTLS 1.2 用 RFC 9146 的 `tls12_cid` 记录，DTLS 1.3
+  把 CID 放在统一头里。监听方用 `only_dtls::connection_id(datagram, len)` 而不是地址分发数据报，
+  NAT 映射变化的对端仍能保住连接。
+- **会话恢复**（`Config::with_session_resumption`）：DTLS 1.2 会话 ID（有上限的缓存）与 RFC 5077
+  票据，DTLS 1.3 NewSessionTicket（`psk_dhe_ke`，始终前向安全）。客户端收到
+  `Event::NewSession(session)`，用 `Connection::client_resume` 重连；票据用可在服务端之间共享的
+  `TicketKey` 封装，恢复时校验器会再次检查对端证书。
+- **外部 PSK**（`Config::with_psks`）：DTLS 1.2 的 PSK 与 ECDHE-PSK AEAD 套件以及 DTLS 1.3
+  `psk_dhe_ke`；只做 PSK 的服务端不需要证书。
+
+互通测试覆盖 OpenSSL 3.5 / 4.1、wolfSSL 5.8 和 pion/dtls（`tools/interop/dtls/run.sh`）。
+
 ## 尚未完成
 
 TCP/TLS 上的 TURN，以及 `only-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的
 ICE；解析 mDNS 候选（使用它们的对端仍可通过 peer-reflexive 候选连通）；simulcast 发送与分层
-选择；FEC；RTCP XR；DTLS 1.3。
+选择；FEC；RTCP XR；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与 NewConnectionId。

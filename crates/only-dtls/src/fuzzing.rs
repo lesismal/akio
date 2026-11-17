@@ -161,7 +161,7 @@ pub fn handshake(data: &[u8]) {
             .with_srtp_profiles(crate::SrtpProfile::ALL.to_vec())
             .with_mtu(256),
     );
-    let Ok(mut client) = Connection::client(client_cfg.clone(), now) else {
+    let Ok(client) = Connection::client(client_cfg.clone(), now) else {
         return;
     };
     let psk = Psk::new("fuzz", vec![7; 16]).ok();

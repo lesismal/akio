@@ -6,7 +6,8 @@ Two crates:
   third-party dependencies (DEV-PLAN wave D), one crate per layer, all `#![forbid(unsafe_code)]`
   on `only-crypto`: `only-ice` (ICE full agent and ICE-lite, checklists, nomination, role
   conflicts, peer-reflexive candidates, trickle, restarts, consent freshness), `only-dtls`
-  (DTLS 1.2 with certificate fingerprint verification and DTLS-SRTP keys), `only-srtp`
+  (DTLS 1.2 and 1.3 with certificate fingerprint verification and DTLS-SRTP keys; see below),
+  `only-srtp`
   (SRTP/SRTCP with AES-CM-HMAC-SHA1-80/32 and AEAD-AES-128/256-GCM, replay protection),
   `only-sctp` (SCTP over DTLS with congestion control, PR-SCTP, stream reset, DCEP data
   channels: reliable or not, ordered or not) and `only-rtp` (RTP/RTCP, Opus, G.711, G.722, VP8,
@@ -127,8 +128,37 @@ each with its own lock: datagrams of different allocations do not contend across
 the expiry sweep takes one shard at a time, and the relay socket of an authenticated Allocate
 is bound before any lock is taken. The quotas stay server-wide.
 
+## The DTLS layer: DTLS 1.2 for WebRTC, DTLS 1.3 when asked
+
+`only-dtls` is a sans-io connection (`Connection`: feed datagrams and timer expiries, send what
+`poll_transmit` returns) that speaks DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147). WebRTC uses
+DTLS 1.2: `Config::webrtc` enables only it, because pion and the browsers' stacks negotiate
+DTLS 1.2 and offering 1.3 would only make the ClientHello larger (ADR-021). Outside WebRTC,
+`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` offers both and falls back to
+DTLS 1.2 for a 1.2-only peer (with the RFC 8446 downgrade check).
+
+- **DTLS 1.3**: unified record headers with encrypted record numbers, epochs with KeyUpdate
+  (`Connection::update_keys`, also automatic before a key's usage limit), ACKs so that only
+  the lost fragments of a flight are resent, stateless HelloRetryRequest cookies (also from
+  `HelloVerifier::check` in front of the connections).
+- **Connection IDs** (`Config::with_connection_id`): RFC 9146 `tls12_cid` records in DTLS 1.2,
+  the CID in the unified header in DTLS 1.3. A listener routes datagrams with
+  `only_dtls::connection_id(datagram, len)` instead of the address, so a peer whose NAT
+  binding changes keeps its connection.
+- **Resumption** (`Config::with_session_resumption`): DTLS 1.2 session IDs (bounded cache) and
+  RFC 5077 tickets, DTLS 1.3 NewSessionTicket (`psk_dhe_ke`, always forward secret). The client
+  gets `Event::NewSession(session)` and reconnects with `Connection::client_resume`; tickets
+  are sealed with a `TicketKey` that servers can share, and the peer certificate is checked
+  again by the verifier on resumption.
+- **External PSKs** (`Config::with_psks`): the DTLS 1.2 PSK and ECDHE-PSK AEAD suites and
+  DTLS 1.3 `psk_dhe_ke`; a PSK-only server needs no certificate.
+
+Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
+(`tools/interop/dtls/run.sh`).
+
 ## Not done yet
 
 TURN over TCP/TLS and a TURN client in `only-webrtc` (relay candidates for an `Endpoint`); ICE
 over TCP; resolving mDNS candidates (peers using them are still reached through peer-reflexive
-candidates); simulcast sending and layer selection; FEC; RTCP XR; DTLS 1.3.
+candidates); simulcast sending and layer selection; FEC; RTCP XR; DTLS 1.3 for WebRTC by
+default; DTLS 1.3 0-RTT and NewConnectionId.

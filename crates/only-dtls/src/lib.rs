@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
-//! Sans-io DTLS 1.2 (RFC 6347) for the `only` crates, on [`only_crypto`] and [`only_x509`] with
+//! Sans-io DTLS 1.2 (RFC 6347) and DTLS 1.3 (RFC 9147) for the `only` crates, on [`only_crypto`] and [`only_x509`] with
 //! no other dependencies: the DTLS layer of the in-house WebRTC stack (DTLS-SRTP, SCTP data
 //! channels).
 //!
@@ -28,8 +28,17 @@
 //!   [`Connection::export_keying_material`].
 //! - Alerts: close_notify both ways, fatal alerts on protocol errors.
 //!
-//! Not implemented: DTLS 1.3 (RFC 9147) and its ACKs, session resumption, connection IDs
-//! (RFC 9146), PSK and non-ECDHE key exchanges, CBC suites.
+//! - DTLS 1.3 (opt-in with [`Config::with_versions`]; DTLS 1.2 stays the default, also for
+//!   WebRTC): unified record headers with record number encryption, epochs and KeyUpdate
+//!   ([`Connection::update_keys`]), ACKs with retransmission of only the unacknowledged
+//!   fragments, stateless HelloRetryRequest cookies; fallback to DTLS 1.2 for a 1.2-only peer.
+//! - Connection IDs ([`Config::with_connection_id`], RFC 9146 and DTLS 1.3) with
+//!   [`connection_id`] for routing; session resumption ([`Config::with_session_resumption`],
+//!   [`Event::NewSession`], [`Connection::client_resume`]: DTLS 1.2 session IDs and tickets,
+//!   DTLS 1.3 tickets); external pre-shared keys ([`Psk`], [`Config::with_psks`]).
+//!
+//! Not implemented: DTLS 1.3 0-RTT, NewConnectionId, post-handshake client authentication,
+//! non-ECDHE certificate key exchanges, CBC suites.
 //!
 //! ```
 //! use std::sync::Arc;
