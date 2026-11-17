@@ -112,6 +112,63 @@ fn cpu_set(cpus: &[usize]) -> Option<ffi::cpu_set_t> {
     Some(set)
 }
 
+/// The CPUs the calling thread may run on (`sched_getaffinity`), ascending. Linux only;
+/// `Unsupported` elsewhere (macOS has no CPU affinity API).
+pub fn allowed_cpus() -> io::Result<Vec<usize>> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut set = ffi::cpu_set_t::new();
+        // SAFETY: `set` is a valid, writable cpu_set_t of the size passed.
+        let r = unsafe {
+            ffi::sched_getaffinity(0, size_of::<ffi::cpu_set_t>(), std::ptr::from_mut(&mut set))
+        };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((0..ffi::cpu_set_t::CAPACITY)
+            .filter(|&c| set.is_set(c))
+            .collect())
+    }
+    #[cfg(not(target_os = "linux"))]
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "CPU affinity is Linux-only",
+    ))
+}
+
+/// Restricts the calling thread to `cpus` (`sched_setaffinity` on the thread). Linux only;
+/// `Unsupported` elsewhere, `InvalidInput` when `cpus` names no CPU below 1024.
+pub fn pin_current_thread(cpus: &[usize]) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let Some(set) =
+            cpu_set(cpus).filter(|s| (0..ffi::cpu_set_t::CAPACITY).any(|c| s.is_set(c)))
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no CPU to pin to",
+            ));
+        };
+        // SAFETY: `set` is a fully initialised cpu_set_t of the size passed; pid 0 is the
+        // calling thread.
+        let r = unsafe {
+            ffi::sched_setaffinity(0, size_of::<ffi::cpu_set_t>(), std::ptr::from_ref(&set))
+        };
+        if r < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = cpus;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "CPU affinity is Linux-only",
+        ))
+    }
+}
+
 /// Fds already taken by [`take_inherited_fd`] in this process.
 static TAKEN: Mutex<Option<HashSet<RawFd>>> = Mutex::new(None);
 
