@@ -533,7 +533,7 @@ pub struct Connection {
     last_eliciting_sent_any: Option<Instant>,
     pacing_until: Option<Instant>,
     /// Packets that arrived before their keys: sender, ECN codepoint, packet.
-    buffered: Vec<(SocketAddr, u8, Arc<Vec<u8>>)>,
+    buffered: Vec<(SocketAddr, u8, crate::bytes::PktBuf)>,
     /// ECN state of the current path.
     ecn: Ecn,
     /// The ECN codepoint of the datagram being processed.

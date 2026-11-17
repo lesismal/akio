@@ -756,23 +756,20 @@ impl Ep {
         self: &Arc<Ep>,
         peer: SocketAddr,
         ecn: u8,
-        data: &[u8],
+        data: Rx<'_>,
         batch: Option<&mut Vec<Connection>>,
     ) {
         let now = Instant::now();
-        let ev = lock(&self.endpoint).handle_ecn(now, peer, ecn, data);
+        let ev = lock(&self.endpoint).handle_ecn(now, peer, ecn, &data);
         match ev {
             None => {}
             Some(proto::DatagramEvent::Respond(t)) => self.transmit(t.dest, None, t.data, t.ecn),
             Some(proto::DatagramEvent::Conn(h)) => {
                 let c = lock(&self.conns).get(&h).cloned();
                 if let Some(c) = c {
-                    lock(&c.0.state).conn.handle_shared_ecn(
-                        now,
-                        peer,
-                        ecn,
-                        bytes::pool::copy(data),
-                    );
+                    lock(&c.0.state)
+                        .conn
+                        .handle_shared_ecn(now, peer, ecn, data.into_pkt());
                     match batch {
                         Some(b) => {
                             c.drive_received(now);
@@ -1000,10 +997,47 @@ impl fmt::Debug for Udp {
     }
 }
 
+/// A datagram from the UDP layer: borrowed (copied into a pooled buffer if it reaches a
+/// connection), or owned, cut off the receive slab, and then decrypted where it was received.
+enum Rx<'a> {
+    Slice(&'a [u8]),
+    Owned(only_buf::slab::ChunkMut),
+}
+
+impl Rx<'_> {
+    fn into_pkt(self) -> bytes::PktBuf {
+        match self {
+            Rx::Slice(d) => bytes::PktBuf::Vec(bytes::pool::copy(d)),
+            Rx::Owned(c) => bytes::PktBuf::Chunk(c),
+        }
+    }
+}
+
+impl std::ops::Deref for Rx<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Rx::Slice(d) => d,
+            Rx::Owned(c) => c,
+        }
+    }
+}
+
 impl Handler for Udp {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         let batch = self.batched.then_some(&mut self.pending);
-        self.ep.on_datagram(c.peer_addr(), c.rx_ecn(), data, batch);
+        self.ep
+            .on_datagram(c.peer_addr(), c.rx_ecn(), Rx::Slice(data), batch);
+    }
+
+    /// Datagrams arrive as their own range of the receive slab: decrypted in place there, and
+    /// their frames' `Bytes` share it (no copy at all, ADR-024).
+    const OWNED_DATA: bool = true;
+
+    fn on_data_owned(&mut self, c: &Conn<Self>, data: only_buf::slab::ChunkMut) {
+        let batch = self.batched.then_some(&mut self.pending);
+        self.ep
+            .on_datagram(c.peer_addr(), c.rx_ecn(), Rx::Owned(data), batch);
     }
 
     fn on_batch_end(&mut self, _c: &Conn<Self>) {

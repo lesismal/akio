@@ -14,6 +14,8 @@ categories = ["network-programming", "memory-management"]
 
 [dependencies]
 
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
 
 [lints]
 workspace = true

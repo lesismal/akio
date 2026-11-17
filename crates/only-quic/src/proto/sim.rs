@@ -448,7 +448,7 @@ impl Sim {
         match node.ep.handle_ecn(now, from, ecn, &data) {
             Some(DatagramEvent::Conn(h)) => {
                 if let Some(c) = node.conns.get_mut(&h) {
-                    c.handle_shared_ecn(now, from, ecn, std::sync::Arc::new(data));
+                    c.handle_shared_ecn(now, from, ecn, std::sync::Arc::new(data).into());
                 }
             }
             Some(DatagramEvent::New(h, c)) => {

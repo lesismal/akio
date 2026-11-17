@@ -481,6 +481,7 @@ version = "1.0.0-rc.1"
 dependencies = [
  "libc",
  "log",
+ "only-buf",
  "only-core",
  "only-dpdk",
  "only-ebpf",
@@ -515,6 +516,9 @@ dependencies = [
 [[package]]
 name = "only-buf"
 version = "1.0.0-rc.1"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "only-core"
@@ -589,6 +593,7 @@ dependencies = [
 name = "only-epoll"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-buf",
  "only-core",
  "only-log",
  "only-sys",
@@ -708,6 +713,7 @@ name = "only-quic"
 version = "1.0.0-rc.1"
 dependencies = [
  "only",
+ "only-buf",
  "only-core",
  "only-crypto",
  "only-tls",
@@ -751,6 +757,7 @@ name = "only-sys"
 version = "1.0.0-rc.1"
 dependencies = [
  "libc",
+ "only-buf",
 ]
 
 [[package]]

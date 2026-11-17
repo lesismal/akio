@@ -76,6 +76,90 @@ pub(crate) mod pool {
 enum Repr {
     Static(&'static [u8]),
     Shared(Arc<Vec<u8>>),
+    /// A range of the UDP receive slab the datagram arrived in (ADR-024): no copy at all.
+    Chunk(only_buf::slab::Chunk),
+}
+
+/// A received packet being processed: a pooled buffer (see [`pool`]), or the datagram's own
+/// range of the UDP receive slab (`only_buf::slab`, ADR-024), decrypted in place either way.
+/// Its frames become [`Bytes`] slices of it ([`PktBuf::share`]).
+#[derive(Default)]
+pub(crate) enum PktBuf {
+    Vec(Arc<Vec<u8>>),
+    /// Exclusive, writable (not shared yet).
+    Chunk(only_buf::slab::ChunkMut),
+    /// Shared by `Bytes` slices: read-only.
+    Frozen(only_buf::slab::Chunk),
+    #[default]
+    Empty,
+}
+
+impl PktBuf {
+    /// The bytes, writable: a shared buffer is copied first (into the pool) and replaced by the
+    /// copy, as `Arc::make_mut` does.
+    pub(crate) fn make_mut(&mut self) -> &mut [u8] {
+        if let PktBuf::Frozen(c) = self {
+            *self = PktBuf::Vec(pool::copy(c));
+        }
+        match self {
+            PktBuf::Vec(v) => Arc::make_mut(v).as_mut_slice(),
+            PktBuf::Chunk(c) => c,
+            PktBuf::Frozen(_) | PktBuf::Empty => &mut [],
+        }
+    }
+
+    /// The whole buffer as a [`Bytes`] its holder can keep: a slab range is frozen (read-only
+    /// from now on) and shared, not copied.
+    pub(crate) fn share(&mut self) -> Bytes {
+        if matches!(self, PktBuf::Chunk(_)) {
+            if let PktBuf::Chunk(c) = std::mem::replace(self, PktBuf::Empty) {
+                *self = PktBuf::Frozen(c.freeze());
+            }
+        }
+        match self {
+            PktBuf::Vec(v) => Bytes::from_shared(v.clone()),
+            PktBuf::Frozen(c) => {
+                let end = c.len();
+                Bytes {
+                    repr: Repr::Chunk(c.clone()),
+                    start: 0,
+                    end,
+                }
+            }
+            PktBuf::Chunk(_) | PktBuf::Empty => Bytes::new(),
+        }
+    }
+
+    /// Done with it (slices of it may live on): a pooled buffer goes back to the pool.
+    pub(crate) fn recycle(self) {
+        if let PktBuf::Vec(v) = self {
+            pool::recycle(v);
+        }
+    }
+}
+
+impl Deref for PktBuf {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            PktBuf::Vec(v) => v,
+            PktBuf::Chunk(c) => c,
+            PktBuf::Frozen(c) => c,
+            PktBuf::Empty => &[],
+        }
+    }
+}
+
+impl From<Arc<Vec<u8>>> for PktBuf {
+    fn from(v: Arc<Vec<u8>>) -> PktBuf {
+        PktBuf::Vec(v)
+    }
+}
+
+impl From<only_buf::slab::ChunkMut> for PktBuf {
+    fn from(c: only_buf::slab::ChunkMut) -> PktBuf {
+        PktBuf::Chunk(c)
+    }
 }
 
 /// An immutable, reference-counted byte buffer: cloning and slicing share the bytes instead of
@@ -149,6 +233,7 @@ impl Bytes {
         match &self.repr {
             Repr::Static(s) => s,
             Repr::Shared(v) => v,
+            Repr::Chunk(c) => c,
         }
     }
 

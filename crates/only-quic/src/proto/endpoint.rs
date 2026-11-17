@@ -16,7 +16,7 @@ use super::conn::{
 };
 use super::crypto::TokenKey;
 use super::packet::{self, HeaderError, MIN_INITIAL_SIZE, PacketType};
-use super::{KeyedHash, KeyedMap, KeyedSet};
+use super::{KeyedMap, KeyedSet, keyed_from_rng};
 
 pub(crate) const TOKEN_RETRY: u8 = 1;
 pub(crate) const TOKEN_NEW: u8 = 2;
@@ -83,8 +83,8 @@ impl Endpoint {
         rng.fill(&mut tk);
         let mut seed = [0u8; 32];
         rng.fill(&mut seed);
-        let routes = KeyedHash::from_rng(rng);
-        let initial = KeyedHash::from_rng(rng);
+        let routes = keyed_from_rng(rng);
+        let initial = keyed_from_rng(rng);
         Endpoint {
             keys: Arc::new(EndpointKeys {
                 reset_key,
@@ -262,7 +262,7 @@ impl Endpoint {
         self.initial.insert(h.dcid, handle);
         self.ids.entry(handle).or_default().push(h.dcid);
         self.handshaking.insert(handle);
-        c.handle_shared_ecn(now, from, ecn, crate::bytes::pool::copy(data));
+        c.handle_shared_ecn(now, from, ecn, crate::bytes::pool::copy(data).into());
         Some(DatagramEvent::New(handle, Box::new(c)))
     }
 

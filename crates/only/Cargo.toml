@@ -14,6 +14,7 @@ categories = ["network-programming"]
 
 [dependencies]
 only-core = { workspace = true }
+only-buf = { workspace = true }
 only-epoll = { workspace = true }
 only-ebpf = { workspace = true }
 only-tls = { workspace = true }
@@ -46,6 +47,7 @@ workspace = true
 rustls = { version = "0.23", default-features = false, features = ["std", "ring", "tls12"] }
 libc = "0.2"
 only-core = { workspace = true }
+only-buf = { workspace = true }
 only-x509 = { workspace = true }
 # tests/logging_bridge.rs: the `log` bridge, with a `log` crate logger.
 only-log = { workspace = true, features = ["log"] }

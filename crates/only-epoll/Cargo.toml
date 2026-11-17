@@ -13,6 +13,7 @@ keywords = ["network", "epoll", "kqueue", "event-loop"]
 categories = ["network-programming", "os::unix-apis"]
 
 [dependencies]
+only-buf = { workspace = true }
 only-core = { workspace = true }
 only-sys = { workspace = true }
 only-timer = { workspace = true }

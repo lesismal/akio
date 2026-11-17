@@ -26,6 +26,22 @@ pub trait Handler: Send + Sized + 'static {
     /// call it, so a handler must not wait for it before it has seen one.
     #[doc(hidden)]
     fn on_batch_end(&mut self, _c: &Conn<Self>) {}
+
+    /// UDP (internal, outside the stability promise): the handler wants datagrams as owned,
+    /// writable receive-slab ranges ([`on_data_owned`](Self::on_data_owned)) rather than
+    /// borrowed slices, so it can keep or decrypt them in place without a copy (ADR-024).
+    #[doc(hidden)]
+    const OWNED_DATA: bool = false;
+
+    /// UDP (internal, outside the stability promise): one datagram, owned. Called instead of
+    /// `on_data` by the UDP loops of the epoll backend (which also serves io_uring and kqueue
+    /// UDP) when [`OWNED_DATA`](Self::OWNED_DATA) is set and no transport layer is installed;
+    /// everywhere else datagrams keep arriving through `on_data`. The default passes the bytes
+    /// to `on_data`.
+    #[doc(hidden)]
+    fn on_data_owned(&mut self, c: &Conn<Self>, data: only_buf::slab::ChunkMut) {
+        self.on_data(c, &data);
+    }
 }
 
 /// Creates a [`Handler`] for each accepted or dialed connection. Shared by all I/O threads.
@@ -124,6 +140,15 @@ pub trait DynHandler: Send {
     fn run_task(&mut self, task: Task);
     /// The receive batch that called `on_data` is over ([`Handler::on_batch_end`]).
     fn on_batch_end(&mut self) {}
+    /// Datagrams should go to [`on_data_owned`](Self::on_data_owned) ([`Handler::OWNED_DATA`]).
+    /// Asked once, when the connection opens.
+    fn wants_owned(&self) -> bool {
+        false
+    }
+    /// One datagram, owned ([`Handler::on_data_owned`]).
+    fn on_data_owned(&mut self, data: only_buf::slab::ChunkMut) {
+        self.on_data(&data);
+    }
 }
 
 /// Type-erased acceptor. `#[doc(hidden)]`: backend-facing.
@@ -168,6 +193,15 @@ impl<H: Handler> DynHandler for HandlerBox<H> {
     }
     fn on_batch_end(&mut self) {
         self.h.on_batch_end(&self.conn);
+    }
+    fn wants_owned(&self) -> bool {
+        H::OWNED_DATA && !self.secured
+    }
+    fn on_data_owned(&mut self, data: only_buf::slab::ChunkMut) {
+        if self.secured {
+            return self.on_data(&data);
+        }
+        self.h.on_data_owned(&self.conn, data);
     }
     fn run_task(&mut self, task: Task) {
         if let Ok(f) = task.downcast::<Completion<H>>() {
