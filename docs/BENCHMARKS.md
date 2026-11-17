@@ -1149,7 +1149,9 @@ Splicing doubles the tunnels' throughput (1.97×), because the relay no longer r
 proxy's 2 I/O threads: the kernel relays in softirq and in the psock backlog workers on every
 CPU. It is not cheaper per byte here. Over loopback, the clients, the sink and the relay share
 the machine's 16 CPUs, so it spends about 1.9× the CPU per GB to go twice as fast. All 8 tunnels
-were spliced.
+were spliced. The userspace relay is unchanged by the fast path's checks: in a same-run A/B
+against `ab65d376` (5 alternating rounds) it ran at 1.00× on epoll (66.7 Gbit/s) and 0.99× on
+io_uring (31.3 vs 31.7 Gbit/s, inside io_uring's ±7% spread).
 
 **XDP rate limiter** (`ebpf-bench`: a UDP flood of 64-byte datagrams from 4 threads in one
 network namespace over a veth pair to another; the limiter counts every packet at 1/s per
