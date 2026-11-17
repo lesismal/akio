@@ -47,8 +47,8 @@ impl Logger for StderrLogger {
 ///
 /// By default the write happens on the thread that logs, under the standard stream's lock:
 /// when stderr is a pipe nobody drains (a stalled log collector), that thread blocks, and an
-/// `only` I/O thread logging then stalls every connection it serves. [`non_blocking`]
-/// (Self::non_blocking) hands lines to a writer thread through a bounded queue instead and
+/// `only` I/O thread logging then stalls every connection it serves.
+/// [`non_blocking`](Self::non_blocking) hands lines to a writer thread through a bounded queue instead and
 /// drops (and counts) lines when it is full: use it in servers whose log output may back up.
 ///
 /// ```

@@ -44,7 +44,7 @@
 //!
 //! # Spans
 //!
-//! The [`span`] module adds timed, nested spans with fields and W3C trace context
+//! The [`span`](mod@span) module adds timed, nested spans with fields and W3C trace context
 //! ([`span!`], [`info_span!`] ..., [`Span::enter`]), handed to a [`Tracer`](span::Tracer) when
 //! they end. They have their own maximum level ([`span::set_max_span_level`], off by default),
 //! so a disabled span costs the same single atomic load as a disabled log statement.
