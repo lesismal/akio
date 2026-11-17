@@ -29,6 +29,8 @@ pub struct FileStorage {
     info: Info,
     paths: Vec<PathBuf>,
     files: Vec<Mutex<Option<File>>>,
+    /// Empty files were created (they get no write of their own).
+    empty_done: std::sync::atomic::AtomicBool,
 }
 
 impl FileStorage {
@@ -49,6 +51,7 @@ impl FileStorage {
             .collect::<Vec<_>>();
         FileStorage {
             files: paths.iter().map(|_| Mutex::new(None)).collect(),
+            empty_done: std::sync::atomic::AtomicBool::new(false),
             paths,
             info: info.clone(),
         }
@@ -127,6 +130,16 @@ impl Storage for FileStorage {
     }
 
     fn write(&self, offset: u64, data: &[u8]) -> io::Result<()> {
+        if !self
+            .empty_done
+            .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            for (i, f) in self.info.files.iter().enumerate() {
+                if f.length == 0 && !f.padding {
+                    self.with_file(i, true, |_| Ok(()))?;
+                }
+            }
+        }
         let mut pos = 0usize;
         for s in self.info.segments(offset, data.len() as u64) {
             let n = s.len as usize;

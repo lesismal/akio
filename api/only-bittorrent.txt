@@ -141,10 +141,14 @@ pub only_bittorrent::client::TorrentEvent::MetadataReceived
 pub only_bittorrent::client::TorrentEvent::PeerConnected(core::net::socket_addr::SocketAddr)
 pub only_bittorrent::client::TorrentEvent::PeerDisconnected(core::net::socket_addr::SocketAddr)
 pub only_bittorrent::client::TorrentEvent::PieceVerified(u32)
+pub only_bittorrent::client::TorrentEvent::SeedLimitReached
 pub only_bittorrent::client::TorrentEvent::StateChanged(only_bittorrent::client::TorrentStatus)
 pub only_bittorrent::client::TorrentEvent::TrackerError
 pub only_bittorrent::client::TorrentEvent::TrackerError::error: alloc::string::String
 pub only_bittorrent::client::TorrentEvent::TrackerError::url: alloc::string::String
+pub only_bittorrent::client::TorrentEvent::WebSeedError
+pub only_bittorrent::client::TorrentEvent::WebSeedError::error: alloc::string::String
+pub only_bittorrent::client::TorrentEvent::WebSeedError::url: alloc::string::String
 impl core::clone::Clone for only_bittorrent::client::TorrentEvent
 pub fn only_bittorrent::client::TorrentEvent::clone(&self) -> Self
 impl core::cmp::Eq for only_bittorrent::client::TorrentEvent
@@ -184,9 +188,12 @@ impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::TorrentSt
 #[non_exhaustive] pub struct only_bittorrent::client::AddOptions
 pub only_bittorrent::client::AddOptions::paused: bool
 pub only_bittorrent::client::AddOptions::peers: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub only_bittorrent::client::AddOptions::rate_limits: only_bittorrent::client::RateLimits
 pub only_bittorrent::client::AddOptions::seed: bool
+pub only_bittorrent::client::AddOptions::seed_limits: core::option::Option<only_bittorrent::client::SeedLimits>
 pub only_bittorrent::client::AddOptions::storage: core::option::Option<alloc::rcs::arc::Arc<dyn only_bittorrent::client::storage::Storage>>
 pub only_bittorrent::client::AddOptions::trackers: alloc::vec::Vec<alloc::string::String>
+pub only_bittorrent::client::AddOptions::web_seeds: alloc::vec::Vec<alloc::string::String>
 impl core::clone::Clone for only_bittorrent::client::AddOptions
 pub fn only_bittorrent::client::AddOptions::clone(&self) -> Self
 impl core::default::Default for only_bittorrent::client::AddOptions
@@ -205,11 +212,14 @@ pub fn only_bittorrent::client::Client::add_torrent(&self, only_bittorrent::meta
 pub fn only_bittorrent::client::Client::close(&self)
 pub fn only_bittorrent::client::Client::dht_bootstrap(&self, &[core::net::socket_addr::SocketAddr])
 pub fn only_bittorrent::client::Client::dht_nodes(&self) -> usize
+pub fn only_bittorrent::client::Client::dht_nodes6(&self) -> usize
 pub fn only_bittorrent::client::Client::engine(&self) -> &alloc::rcs::arc::Arc<only::Engine>
 pub fn only_bittorrent::client::Client::listen_addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn only_bittorrent::client::Client::new(only_bittorrent::client::ClientConfig) -> core::io::error::Result<only_bittorrent::client::Client>
 pub fn only_bittorrent::client::Client::peer_id(&self) -> only_bittorrent::wire::PeerId
+pub fn only_bittorrent::client::Client::rate_limits(&self) -> only_bittorrent::client::RateLimits
 pub fn only_bittorrent::client::Client::remove(&self, &only_bittorrent::metainfo::InfoHash) -> core::option::Option<only_bittorrent::client::Torrent>
+pub fn only_bittorrent::client::Client::set_rate_limits(&self, only_bittorrent::client::RateLimits)
 pub fn only_bittorrent::client::Client::torrent(&self, &only_bittorrent::metainfo::InfoHash) -> core::option::Option<only_bittorrent::client::Torrent>
 pub fn only_bittorrent::client::Client::torrents(&self) -> alloc::vec::Vec<only_bittorrent::client::Torrent>
 impl core::clone::Clone for only_bittorrent::client::Client
@@ -228,15 +238,19 @@ pub only_bittorrent::client::ClientConfig::dht_bootstrap: alloc::vec::Vec<core::
 pub only_bittorrent::client::ClientConfig::disk_threads: usize
 pub only_bittorrent::client::ClientConfig::encryption: only_bittorrent::mse::Policy
 pub only_bittorrent::client::ClientConfig::listen: core::net::socket_addr::SocketAddr
+pub only_bittorrent::client::ClientConfig::lsd: bool
 pub only_bittorrent::client::ClientConfig::max_peers_per_torrent: usize
 pub only_bittorrent::client::ClientConfig::on_event: core::option::Option<only_bittorrent::client::EventFn>
 pub only_bittorrent::client::ClientConfig::peer_id: core::option::Option<only_bittorrent::wire::PeerId>
 pub only_bittorrent::client::ClientConfig::pex: bool
+pub only_bittorrent::client::ClientConfig::rate_limits: only_bittorrent::client::RateLimits
+pub only_bittorrent::client::ClientConfig::seed_limits: only_bittorrent::client::SeedLimits
 pub only_bittorrent::client::ClientConfig::threads: usize
 pub only_bittorrent::client::ClientConfig::tracker_timeout: core::time::Duration
 pub only_bittorrent::client::ClientConfig::trackers: bool
 pub only_bittorrent::client::ClientConfig::upload_slots: usize
 pub only_bittorrent::client::ClientConfig::utp: bool
+pub only_bittorrent::client::ClientConfig::web_seeds: bool
 impl core::clone::Clone for only_bittorrent::client::ClientConfig
 pub fn only_bittorrent::client::ClientConfig::clone(&self) -> Self
 impl core::default::Default for only_bittorrent::client::ClientConfig
@@ -304,17 +318,65 @@ impl core::marker::Sync for only_bittorrent::client::PeerInfo
 impl core::marker::Unpin for only_bittorrent::client::PeerInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::PeerInfo
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::PeerInfo
+#[non_exhaustive] pub struct only_bittorrent::client::RateLimits
+pub only_bittorrent::client::RateLimits::download: core::option::Option<u64>
+pub only_bittorrent::client::RateLimits::upload: core::option::Option<u64>
+impl only_bittorrent::client::RateLimits
+pub fn only_bittorrent::client::RateLimits::new(core::option::Option<u64>, core::option::Option<u64>) -> only_bittorrent::client::RateLimits
+impl core::clone::Clone for only_bittorrent::client::RateLimits
+pub fn only_bittorrent::client::RateLimits::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::client::RateLimits
+impl core::cmp::PartialEq for only_bittorrent::client::RateLimits
+pub fn only_bittorrent::client::RateLimits::eq(&self, &Self) -> bool
+impl core::default::Default for only_bittorrent::client::RateLimits
+pub fn only_bittorrent::client::RateLimits::default() -> Self
+impl core::fmt::Debug for only_bittorrent::client::RateLimits
+pub fn only_bittorrent::client::RateLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_bittorrent::client::RateLimits
+impl core::marker::StructuralPartialEq for only_bittorrent::client::RateLimits
+impl core::marker::Send for only_bittorrent::client::RateLimits
+impl core::marker::Sync for only_bittorrent::client::RateLimits
+impl core::marker::Unpin for only_bittorrent::client::RateLimits
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::RateLimits
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::RateLimits
+#[non_exhaustive] pub struct only_bittorrent::client::SeedLimits
+pub only_bittorrent::client::SeedLimits::ratio: core::option::Option<f64>
+pub only_bittorrent::client::SeedLimits::time: core::option::Option<core::time::Duration>
+impl only_bittorrent::client::SeedLimits
+pub fn only_bittorrent::client::SeedLimits::new(core::option::Option<f64>, core::option::Option<core::time::Duration>) -> only_bittorrent::client::SeedLimits
+impl core::clone::Clone for only_bittorrent::client::SeedLimits
+pub fn only_bittorrent::client::SeedLimits::clone(&self) -> Self
+impl core::cmp::PartialEq for only_bittorrent::client::SeedLimits
+pub fn only_bittorrent::client::SeedLimits::eq(&self, &Self) -> bool
+impl core::default::Default for only_bittorrent::client::SeedLimits
+pub fn only_bittorrent::client::SeedLimits::default() -> Self
+impl core::fmt::Debug for only_bittorrent::client::SeedLimits
+pub fn only_bittorrent::client::SeedLimits::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_bittorrent::client::SeedLimits
+impl core::marker::StructuralPartialEq for only_bittorrent::client::SeedLimits
+impl core::marker::Send for only_bittorrent::client::SeedLimits
+impl core::marker::Sync for only_bittorrent::client::SeedLimits
+impl core::marker::Unpin for only_bittorrent::client::SeedLimits
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::client::SeedLimits
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::client::SeedLimits
 pub struct only_bittorrent::client::Torrent
 impl only_bittorrent::client::Torrent
 pub fn only_bittorrent::client::Torrent::add_peers(&self, &[core::net::socket_addr::SocketAddr])
+pub fn only_bittorrent::client::Torrent::add_web_seed(&self, &str)
 pub fn only_bittorrent::client::Torrent::info(&self) -> core::option::Option<only_bittorrent::metainfo::Info>
 pub fn only_bittorrent::client::Torrent::info_hash(&self) -> only_bittorrent::metainfo::InfoHash
+pub fn only_bittorrent::client::Torrent::info_hash_v2(&self) -> core::option::Option<only_bittorrent::metainfo::InfoHashV2>
 pub fn only_bittorrent::client::Torrent::is_complete(&self) -> bool
 pub fn only_bittorrent::client::Torrent::metainfo(&self) -> core::option::Option<only_bittorrent::metainfo::MetaInfo>
 pub fn only_bittorrent::client::Torrent::name(&self) -> core::option::Option<alloc::string::String>
 pub fn only_bittorrent::client::Torrent::pause(&self)
 pub fn only_bittorrent::client::Torrent::peers(&self) -> alloc::vec::Vec<only_bittorrent::client::PeerInfo>
+pub fn only_bittorrent::client::Torrent::piece_layers(&self) -> only_bittorrent::metainfo::PieceLayers
+pub fn only_bittorrent::client::Torrent::rate_limits(&self) -> only_bittorrent::client::RateLimits
 pub fn only_bittorrent::client::Torrent::resume(&self)
+pub fn only_bittorrent::client::Torrent::seed_limits(&self) -> only_bittorrent::client::SeedLimits
+pub fn only_bittorrent::client::Torrent::set_rate_limits(&self, only_bittorrent::client::RateLimits)
+pub fn only_bittorrent::client::Torrent::set_seed_limits(&self, only_bittorrent::client::SeedLimits)
 pub fn only_bittorrent::client::Torrent::stats(&self) -> only_bittorrent::client::TorrentStats
 pub fn only_bittorrent::client::Torrent::wait_complete(&self, core::time::Duration) -> bool
 pub fn only_bittorrent::client::Torrent::wait_metadata(&self, core::time::Duration) -> bool
@@ -336,9 +398,11 @@ pub only_bittorrent::client::TorrentStats::peers: usize
 pub only_bittorrent::client::TorrentStats::pieces_have: usize
 pub only_bittorrent::client::TorrentStats::pieces_total: usize
 pub only_bittorrent::client::TorrentStats::seeders: usize
+pub only_bittorrent::client::TorrentStats::seeding_time: core::time::Duration
 pub only_bittorrent::client::TorrentStats::status: only_bittorrent::client::TorrentStatus
 pub only_bittorrent::client::TorrentStats::total_size: u64
 pub only_bittorrent::client::TorrentStats::uploaded: u64
+pub only_bittorrent::client::TorrentStats::web_seeds_active: usize
 impl core::clone::Clone for only_bittorrent::client::TorrentStats
 pub fn only_bittorrent::client::TorrentStats::clone(&self) -> Self
 impl core::cmp::Eq for only_bittorrent::client::TorrentStats
@@ -428,8 +492,10 @@ pub fn only_bittorrent::dht::Node::handle(&mut self, core::net::socket_addr::Soc
 pub fn only_bittorrent::dht::Node::id(&self) -> only_bittorrent::dht::NodeId
 pub fn only_bittorrent::dht::Node::new(only_bittorrent::dht::NodeId) -> only_bittorrent::dht::Node
 pub fn only_bittorrent::dht::Node::ping(&mut self, core::net::socket_addr::SocketAddr)
+pub fn only_bittorrent::dht::Node::set_ipv6(&mut self, bool)
 pub fn only_bittorrent::dht::Node::set_read_only(&mut self, bool)
 pub fn only_bittorrent::dht::Node::stored_peers(&self, &only_bittorrent::metainfo::InfoHash) -> alloc::vec::Vec<core::net::socket_addr::SocketAddr>
+pub fn only_bittorrent::dht::Node::table6_len(&self) -> usize
 pub fn only_bittorrent::dht::Node::table_len(&self) -> usize
 pub fn only_bittorrent::dht::Node::take_events(&mut self) -> alloc::vec::Vec<only_bittorrent::dht::DhtEvent>
 pub fn only_bittorrent::dht::Node::take_outgoing(&mut self) -> alloc::vec::Vec<(core::net::socket_addr::SocketAddr, alloc::vec::Vec<u8>)>
@@ -490,16 +556,46 @@ impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::dht::NodeInfo
 pub const only_bittorrent::dht::ALPHA: usize
 pub const only_bittorrent::dht::K: usize
 pub fn only_bittorrent::dht::compact_nodes(&[only_bittorrent::dht::NodeInfo]) -> alloc::vec::Vec<u8>
+pub fn only_bittorrent::dht::compact_nodes6(&[only_bittorrent::dht::NodeInfo]) -> alloc::vec::Vec<u8>
 pub fn only_bittorrent::dht::parse_compact_nodes(&[u8]) -> alloc::vec::Vec<only_bittorrent::dht::NodeInfo>
+pub fn only_bittorrent::dht::parse_compact_nodes6(&[u8]) -> alloc::vec::Vec<only_bittorrent::dht::NodeInfo>
+pub mod only_bittorrent::lsd
+#[non_exhaustive] pub struct only_bittorrent::lsd::Announce
+pub only_bittorrent::lsd::Announce::cookie: core::option::Option<alloc::string::String>
+pub only_bittorrent::lsd::Announce::info_hashes: alloc::vec::Vec<only_bittorrent::metainfo::InfoHash>
+pub only_bittorrent::lsd::Announce::port: u16
+impl only_bittorrent::lsd::Announce
+pub fn only_bittorrent::lsd::Announce::encode(&self, &str) -> alloc::vec::Vec<u8>
+pub fn only_bittorrent::lsd::Announce::new(u16, alloc::vec::Vec<only_bittorrent::metainfo::InfoHash>) -> only_bittorrent::lsd::Announce
+pub fn only_bittorrent::lsd::Announce::parse(&[u8]) -> core::option::Option<only_bittorrent::lsd::Announce>
+impl core::clone::Clone for only_bittorrent::lsd::Announce
+pub fn only_bittorrent::lsd::Announce::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::lsd::Announce
+impl core::cmp::PartialEq for only_bittorrent::lsd::Announce
+pub fn only_bittorrent::lsd::Announce::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_bittorrent::lsd::Announce
+pub fn only_bittorrent::lsd::Announce::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_bittorrent::lsd::Announce
+impl core::marker::Send for only_bittorrent::lsd::Announce
+impl core::marker::Sync for only_bittorrent::lsd::Announce
+impl core::marker::Unpin for only_bittorrent::lsd::Announce
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::lsd::Announce
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::lsd::Announce
+pub const only_bittorrent::lsd::MAX_INFO_HASHES: usize
+pub const only_bittorrent::lsd::MAX_MESSAGE: usize
+pub const only_bittorrent::lsd::MULTICAST_V4: core::net::socket_addr::SocketAddr
+pub const only_bittorrent::lsd::MULTICAST_V6: core::net::socket_addr::SocketAddr
 pub mod only_bittorrent::magnet
 #[non_exhaustive] pub struct only_bittorrent::magnet::Magnet
 pub only_bittorrent::magnet::Magnet::info_hash: only_bittorrent::metainfo::InfoHash
+pub only_bittorrent::magnet::Magnet::info_hash_v2: core::option::Option<only_bittorrent::metainfo::InfoHashV2>
 pub only_bittorrent::magnet::Magnet::length: core::option::Option<u64>
 pub only_bittorrent::magnet::Magnet::name: core::option::Option<alloc::string::String>
 pub only_bittorrent::magnet::Magnet::peers: alloc::vec::Vec<core::net::socket_addr::SocketAddr>
 pub only_bittorrent::magnet::Magnet::trackers: alloc::vec::Vec<alloc::string::String>
 pub only_bittorrent::magnet::Magnet::web_seeds: alloc::vec::Vec<alloc::string::String>
 impl only_bittorrent::magnet::Magnet
+pub fn only_bittorrent::magnet::Magnet::is_v2_only(&self) -> bool
 pub fn only_bittorrent::magnet::Magnet::new(only_bittorrent::metainfo::InfoHash) -> only_bittorrent::magnet::Magnet
 pub fn only_bittorrent::magnet::Magnet::parse(&str) -> core::result::Result<only_bittorrent::magnet::Magnet, only_bittorrent::magnet::MagnetError>
 impl core::clone::Clone for only_bittorrent::magnet::Magnet
@@ -534,6 +630,42 @@ impl core::marker::Sync for only_bittorrent::magnet::MagnetError
 impl core::marker::Unpin for only_bittorrent::magnet::MagnetError
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::magnet::MagnetError
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::magnet::MagnetError
+pub mod only_bittorrent::merkle
+pub struct only_bittorrent::merkle::MerkleTree
+impl only_bittorrent::merkle::MerkleTree
+pub fn only_bittorrent::merkle::MerkleTree::base_height(&self) -> u32
+pub fn only_bittorrent::merkle::MerkleTree::from_layer(&[only_bittorrent::merkle::Hash], u32, u32) -> only_bittorrent::merkle::MerkleTree
+pub fn only_bittorrent::merkle::MerkleTree::hashes(&self, u64, u32, u32) -> core::option::Option<alloc::vec::Vec<only_bittorrent::merkle::Hash>>
+pub fn only_bittorrent::merkle::MerkleTree::node(&self, u32, u64) -> core::option::Option<only_bittorrent::merkle::Hash>
+pub fn only_bittorrent::merkle::MerkleTree::root(&self) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::MerkleTree::root_height(&self) -> u32
+pub fn only_bittorrent::merkle::MerkleTree::uncles(&self, u32, u64, u32, u32) -> core::option::Option<alloc::vec::Vec<only_bittorrent::merkle::Hash>>
+impl core::clone::Clone for only_bittorrent::merkle::MerkleTree
+pub fn only_bittorrent::merkle::MerkleTree::clone(&self) -> Self
+impl core::fmt::Debug for only_bittorrent::merkle::MerkleTree
+pub fn only_bittorrent::merkle::MerkleTree::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_bittorrent::merkle::MerkleTree
+impl core::marker::Sync for only_bittorrent::merkle::MerkleTree
+impl core::marker::Unpin for only_bittorrent::merkle::MerkleTree
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::merkle::MerkleTree
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::merkle::MerkleTree
+pub const only_bittorrent::merkle::BLOCK: usize
+pub const only_bittorrent::merkle::MAX_REQUEST_HASHES: u32
+pub fn only_bittorrent::merkle::block_hashes(&[u8]) -> alloc::vec::Vec<only_bittorrent::merkle::Hash>
+pub fn only_bittorrent::merkle::blocks_per_piece(u32) -> u32
+pub fn only_bittorrent::merkle::file_root(&[u8]) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::hash_pair(&only_bittorrent::merkle::Hash, &only_bittorrent::merkle::Hash) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::num_blocks(u64) -> u64
+pub fn only_bittorrent::merkle::pad_hash(u32) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::piece_height(u32) -> u32
+pub fn only_bittorrent::merkle::piece_root(&[u8], u32) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::root_from_piece_layer(&[only_bittorrent::merkle::Hash], u32, u64) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::root_height(u64) -> u32
+pub fn only_bittorrent::merkle::sha256(&[u8]) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::subtree_root(&[only_bittorrent::merkle::Hash], u32, usize) -> only_bittorrent::merkle::Hash
+pub fn only_bittorrent::merkle::uncle_count(u32, u32) -> usize
+pub fn only_bittorrent::merkle::verify_hashes(&[only_bittorrent::merkle::Hash], u32, u64, &[only_bittorrent::merkle::Hash], &only_bittorrent::merkle::Hash, u32) -> bool
+pub type only_bittorrent::merkle::Hash = [u8; 32]
 pub mod only_bittorrent::metainfo
 #[non_exhaustive] pub enum only_bittorrent::metainfo::MetaError
 pub only_bittorrent::metainfo::MetaError::Bencode(only_bittorrent::bencode::Error)
@@ -555,6 +687,28 @@ impl core::marker::Sync for only_bittorrent::metainfo::MetaError
 impl core::marker::Unpin for only_bittorrent::metainfo::MetaError
 impl !core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::metainfo::MetaError
 impl !core::panic::unwind_safe::UnwindSafe for only_bittorrent::metainfo::MetaError
+#[non_exhaustive] pub enum only_bittorrent::metainfo::TorrentVersion
+pub only_bittorrent::metainfo::TorrentVersion::Hybrid
+pub only_bittorrent::metainfo::TorrentVersion::V1
+pub only_bittorrent::metainfo::TorrentVersion::V2
+impl core::clone::Clone for only_bittorrent::metainfo::TorrentVersion
+pub fn only_bittorrent::metainfo::TorrentVersion::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::metainfo::TorrentVersion
+impl core::cmp::PartialEq for only_bittorrent::metainfo::TorrentVersion
+pub fn only_bittorrent::metainfo::TorrentVersion::eq(&self, &Self) -> bool
+impl core::default::Default for only_bittorrent::metainfo::TorrentVersion
+pub fn only_bittorrent::metainfo::TorrentVersion::default() -> Self
+impl core::fmt::Debug for only_bittorrent::metainfo::TorrentVersion
+pub fn only_bittorrent::metainfo::TorrentVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_bittorrent::metainfo::TorrentVersion
+pub fn only_bittorrent::metainfo::TorrentVersion::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_bittorrent::metainfo::TorrentVersion
+impl core::marker::StructuralPartialEq for only_bittorrent::metainfo::TorrentVersion
+impl core::marker::Send for only_bittorrent::metainfo::TorrentVersion
+impl core::marker::Sync for only_bittorrent::metainfo::TorrentVersion
+impl core::marker::Unpin for only_bittorrent::metainfo::TorrentVersion
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::metainfo::TorrentVersion
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::metainfo::TorrentVersion
 pub struct only_bittorrent::metainfo::Builder
 impl only_bittorrent::metainfo::Builder
 pub fn only_bittorrent::metainfo::Builder::build_bytes(&self, &[u8]) -> core::result::Result<only_bittorrent::metainfo::MetaInfo, only_bittorrent::metainfo::MetaError>
@@ -566,6 +720,7 @@ pub fn only_bittorrent::metainfo::Builder::node(self, impl core::convert::Into<a
 pub fn only_bittorrent::metainfo::Builder::piece_length(self, u32) -> only_bittorrent::metainfo::Builder
 pub fn only_bittorrent::metainfo::Builder::private(self, bool) -> only_bittorrent::metainfo::Builder
 pub fn only_bittorrent::metainfo::Builder::tracker(self, impl core::convert::Into<alloc::string::String>) -> only_bittorrent::metainfo::Builder
+pub fn only_bittorrent::metainfo::Builder::version(self, only_bittorrent::metainfo::TorrentVersion) -> only_bittorrent::metainfo::Builder
 pub fn only_bittorrent::metainfo::Builder::web_seed(self, impl core::convert::Into<alloc::string::String>) -> only_bittorrent::metainfo::Builder
 impl core::clone::Clone for only_bittorrent::metainfo::Builder
 pub fn only_bittorrent::metainfo::Builder::clone(&self) -> Self
@@ -581,6 +736,7 @@ pub only_bittorrent::metainfo::FileEntry::length: u64
 pub only_bittorrent::metainfo::FileEntry::offset: u64
 pub only_bittorrent::metainfo::FileEntry::padding: bool
 pub only_bittorrent::metainfo::FileEntry::path: alloc::vec::Vec<alloc::string::String>
+pub only_bittorrent::metainfo::FileEntry::pieces_root: core::option::Option<only_bittorrent::merkle::Hash>
 impl core::clone::Clone for only_bittorrent::metainfo::FileEntry
 pub fn only_bittorrent::metainfo::FileEntry::clone(&self) -> Self
 impl core::cmp::Eq for only_bittorrent::metainfo::FileEntry
@@ -602,16 +758,28 @@ pub only_bittorrent::metainfo::Info::pieces: alloc::vec::Vec<[u8; 20]>
 pub only_bittorrent::metainfo::Info::private: bool
 pub only_bittorrent::metainfo::Info::single_file: bool
 pub only_bittorrent::metainfo::Info::total_length: u64
+pub only_bittorrent::metainfo::Info::version: only_bittorrent::metainfo::TorrentVersion
 impl only_bittorrent::metainfo::Info
+pub fn only_bittorrent::metainfo::Info::can_verify(&self, &only_bittorrent::metainfo::PieceLayers, usize) -> bool
+pub fn only_bittorrent::metainfo::Info::check_piece_layer(&self, &only_bittorrent::merkle::Hash, &[only_bittorrent::merkle::Hash]) -> bool
+pub fn only_bittorrent::metainfo::Info::file_of_root(&self, &only_bittorrent::merkle::Hash) -> core::option::Option<usize>
+pub fn only_bittorrent::metainfo::Info::file_pieces(&self, usize) -> core::ops::range::Range<usize>
+pub fn only_bittorrent::metainfo::Info::has_v1(&self) -> bool
+pub fn only_bittorrent::metainfo::Info::has_v2(&self) -> bool
 pub fn only_bittorrent::metainfo::Info::info_hash(&self) -> only_bittorrent::metainfo::InfoHash
+pub fn only_bittorrent::metainfo::Info::info_hash_v1(&self) -> core::option::Option<only_bittorrent::metainfo::InfoHash>
+pub fn only_bittorrent::metainfo::Info::info_hash_v2(&self) -> core::option::Option<only_bittorrent::metainfo::InfoHashV2>
+pub fn only_bittorrent::metainfo::Info::needs_piece_layer(&self, usize) -> bool
 pub fn only_bittorrent::metainfo::Info::num_pieces(&self) -> usize
 pub fn only_bittorrent::metainfo::Info::parse(&[u8]) -> core::result::Result<only_bittorrent::metainfo::Info, only_bittorrent::metainfo::MetaError>
+pub fn only_bittorrent::metainfo::Info::piece_file(&self, usize) -> core::option::Option<(usize, u64)>
 pub fn only_bittorrent::metainfo::Info::piece_offset(&self, usize) -> u64
 pub fn only_bittorrent::metainfo::Info::piece_segments(&self, usize) -> alloc::vec::Vec<only_bittorrent::metainfo::Segment>
 pub fn only_bittorrent::metainfo::Info::piece_size(&self, usize) -> u32
 pub fn only_bittorrent::metainfo::Info::raw(&self) -> &[u8]
 pub fn only_bittorrent::metainfo::Info::segments(&self, u64, u64) -> alloc::vec::Vec<only_bittorrent::metainfo::Segment>
 pub fn only_bittorrent::metainfo::Info::verify_piece(&self, usize, &[u8]) -> bool
+pub fn only_bittorrent::metainfo::Info::verify_piece_with(&self, &only_bittorrent::metainfo::PieceLayers, usize, &[u8]) -> bool
 impl core::clone::Clone for only_bittorrent::metainfo::Info
 pub fn only_bittorrent::metainfo::Info::clone(&self) -> Self
 impl core::fmt::Debug for only_bittorrent::metainfo::Info
@@ -650,6 +818,36 @@ impl core::marker::Sync for only_bittorrent::metainfo::InfoHash
 impl core::marker::Unpin for only_bittorrent::metainfo::InfoHash
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::metainfo::InfoHash
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::metainfo::InfoHash
+pub struct only_bittorrent::metainfo::InfoHashV2(pub [u8; 32])
+impl only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::from_hex(&str) -> core::option::Option<only_bittorrent::metainfo::InfoHashV2>
+pub fn only_bittorrent::metainfo::InfoHashV2::of(&[u8]) -> only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::to_hex(&self) -> alloc::string::String
+pub fn only_bittorrent::metainfo::InfoHashV2::truncated(&self) -> only_bittorrent::metainfo::InfoHash
+impl core::clone::Clone for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::metainfo::InfoHashV2
+impl core::cmp::Ord for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::default() -> Self
+impl core::fmt::Debug for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_bittorrent::metainfo::InfoHashV2
+pub fn only_bittorrent::metainfo::InfoHashV2::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_bittorrent::metainfo::InfoHashV2
+impl core::marker::StructuralPartialEq for only_bittorrent::metainfo::InfoHashV2
+impl core::marker::Send for only_bittorrent::metainfo::InfoHashV2
+impl core::marker::Sync for only_bittorrent::metainfo::InfoHashV2
+impl core::marker::Unpin for only_bittorrent::metainfo::InfoHashV2
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::metainfo::InfoHashV2
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::metainfo::InfoHashV2
 #[non_exhaustive] pub struct only_bittorrent::metainfo::MetaInfo
 pub only_bittorrent::metainfo::MetaInfo::announce: core::option::Option<alloc::string::String>
 pub only_bittorrent::metainfo::MetaInfo::announce_list: alloc::vec::Vec<alloc::vec::Vec<alloc::string::String>>
@@ -658,7 +856,9 @@ pub only_bittorrent::metainfo::MetaInfo::created_by: core::option::Option<alloc:
 pub only_bittorrent::metainfo::MetaInfo::creation_date: core::option::Option<i64>
 pub only_bittorrent::metainfo::MetaInfo::info: only_bittorrent::metainfo::Info
 pub only_bittorrent::metainfo::MetaInfo::info_hash: only_bittorrent::metainfo::InfoHash
+pub only_bittorrent::metainfo::MetaInfo::info_hash_v2: core::option::Option<only_bittorrent::metainfo::InfoHashV2>
 pub only_bittorrent::metainfo::MetaInfo::nodes: alloc::vec::Vec<(alloc::string::String, u16)>
+pub only_bittorrent::metainfo::MetaInfo::piece_layers: only_bittorrent::metainfo::PieceLayers
 pub only_bittorrent::metainfo::MetaInfo::url_list: alloc::vec::Vec<alloc::string::String>
 impl only_bittorrent::metainfo::MetaInfo
 pub fn only_bittorrent::metainfo::MetaInfo::from_info(only_bittorrent::metainfo::Info) -> only_bittorrent::metainfo::MetaInfo
@@ -667,6 +867,7 @@ pub fn only_bittorrent::metainfo::MetaInfo::magnet(&self) -> only_bittorrent::ma
 pub fn only_bittorrent::metainfo::MetaInfo::parse(&[u8]) -> core::result::Result<only_bittorrent::metainfo::MetaInfo, only_bittorrent::metainfo::MetaError>
 pub fn only_bittorrent::metainfo::MetaInfo::to_bytes(&self) -> alloc::vec::Vec<u8>
 pub fn only_bittorrent::metainfo::MetaInfo::trackers(&self) -> alloc::vec::Vec<alloc::vec::Vec<alloc::string::String>>
+pub fn only_bittorrent::metainfo::MetaInfo::verify_piece(&self, usize, &[u8]) -> bool
 impl core::clone::Clone for only_bittorrent::metainfo::MetaInfo
 pub fn only_bittorrent::metainfo::MetaInfo::clone(&self) -> Self
 impl core::fmt::Debug for only_bittorrent::metainfo::MetaInfo
@@ -676,6 +877,31 @@ impl core::marker::Sync for only_bittorrent::metainfo::MetaInfo
 impl core::marker::Unpin for only_bittorrent::metainfo::MetaInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::metainfo::MetaInfo
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::metainfo::MetaInfo
+pub struct only_bittorrent::metainfo::PieceLayers
+impl only_bittorrent::metainfo::PieceLayers
+pub fn only_bittorrent::metainfo::PieceLayers::get(&self, &only_bittorrent::merkle::Hash) -> core::option::Option<&[only_bittorrent::merkle::Hash]>
+pub fn only_bittorrent::metainfo::PieceLayers::insert(&mut self, &only_bittorrent::metainfo::Info, only_bittorrent::merkle::Hash, alloc::vec::Vec<only_bittorrent::merkle::Hash>) -> bool
+pub fn only_bittorrent::metainfo::PieceLayers::is_complete(&self, &only_bittorrent::metainfo::Info) -> bool
+pub fn only_bittorrent::metainfo::PieceLayers::is_empty(&self) -> bool
+pub fn only_bittorrent::metainfo::PieceLayers::iter(&self) -> impl core::iter::traits::iterator::Iterator<Item = (&only_bittorrent::merkle::Hash, &[only_bittorrent::merkle::Hash])>
+pub fn only_bittorrent::metainfo::PieceLayers::len(&self) -> usize
+pub fn only_bittorrent::metainfo::PieceLayers::missing(&self, &only_bittorrent::metainfo::Info) -> alloc::vec::Vec<usize>
+pub fn only_bittorrent::metainfo::PieceLayers::new() -> only_bittorrent::metainfo::PieceLayers
+impl core::clone::Clone for only_bittorrent::metainfo::PieceLayers
+pub fn only_bittorrent::metainfo::PieceLayers::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::metainfo::PieceLayers
+impl core::cmp::PartialEq for only_bittorrent::metainfo::PieceLayers
+pub fn only_bittorrent::metainfo::PieceLayers::eq(&self, &Self) -> bool
+impl core::default::Default for only_bittorrent::metainfo::PieceLayers
+pub fn only_bittorrent::metainfo::PieceLayers::default() -> Self
+impl core::fmt::Debug for only_bittorrent::metainfo::PieceLayers
+pub fn only_bittorrent::metainfo::PieceLayers::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_bittorrent::metainfo::PieceLayers
+impl core::marker::Send for only_bittorrent::metainfo::PieceLayers
+impl core::marker::Sync for only_bittorrent::metainfo::PieceLayers
+impl core::marker::Unpin for only_bittorrent::metainfo::PieceLayers
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::metainfo::PieceLayers
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::metainfo::PieceLayers
 #[non_exhaustive] pub struct only_bittorrent::metainfo::Segment
 pub only_bittorrent::metainfo::Segment::file: usize
 pub only_bittorrent::metainfo::Segment::len: u64
@@ -1250,6 +1476,11 @@ pub only_bittorrent::wire::Message::Choke
 pub only_bittorrent::wire::Message::Extended
 pub only_bittorrent::wire::Message::Extended::id: u8
 pub only_bittorrent::wire::Message::Extended::payload: alloc::vec::Vec<u8>
+pub only_bittorrent::wire::Message::HashReject(only_bittorrent::wire::HashRequest)
+pub only_bittorrent::wire::Message::HashRequest(only_bittorrent::wire::HashRequest)
+pub only_bittorrent::wire::Message::Hashes
+pub only_bittorrent::wire::Message::Hashes::hashes: alloc::vec::Vec<[u8; 32]>
+pub only_bittorrent::wire::Message::Hashes::req: only_bittorrent::wire::HashRequest
 pub only_bittorrent::wire::Message::Have(u32)
 pub only_bittorrent::wire::Message::HaveAll
 pub only_bittorrent::wire::Message::HaveNone
@@ -1398,6 +1629,7 @@ pub fn only_bittorrent::wire::Handshake::extended(&self) -> bool
 pub fn only_bittorrent::wire::Handshake::fast(&self) -> bool
 pub fn only_bittorrent::wire::Handshake::new(only_bittorrent::metainfo::InfoHash, only_bittorrent::wire::PeerId) -> only_bittorrent::wire::Handshake
 pub fn only_bittorrent::wire::Handshake::parse(&[u8]) -> core::option::Option<only_bittorrent::wire::Handshake>
+pub fn only_bittorrent::wire::Handshake::v2(&self) -> bool
 impl core::clone::Clone for only_bittorrent::wire::Handshake
 pub fn only_bittorrent::wire::Handshake::clone(&self) -> Self
 impl core::cmp::Eq for only_bittorrent::wire::Handshake
@@ -1412,6 +1644,30 @@ impl core::marker::Sync for only_bittorrent::wire::Handshake
 impl core::marker::Unpin for only_bittorrent::wire::Handshake
 impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::wire::Handshake
 impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::wire::Handshake
+#[non_exhaustive] pub struct only_bittorrent::wire::HashRequest
+pub only_bittorrent::wire::HashRequest::base_layer: u32
+pub only_bittorrent::wire::HashRequest::index: u32
+pub only_bittorrent::wire::HashRequest::length: u32
+pub only_bittorrent::wire::HashRequest::pieces_root: [u8; 32]
+pub only_bittorrent::wire::HashRequest::proof_layers: u32
+impl only_bittorrent::wire::HashRequest
+pub fn only_bittorrent::wire::HashRequest::new([u8; 32], u32, u32, u32, u32) -> only_bittorrent::wire::HashRequest
+impl core::clone::Clone for only_bittorrent::wire::HashRequest
+pub fn only_bittorrent::wire::HashRequest::clone(&self) -> Self
+impl core::cmp::Eq for only_bittorrent::wire::HashRequest
+impl core::cmp::PartialEq for only_bittorrent::wire::HashRequest
+pub fn only_bittorrent::wire::HashRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_bittorrent::wire::HashRequest
+pub fn only_bittorrent::wire::HashRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_bittorrent::wire::HashRequest
+pub fn only_bittorrent::wire::HashRequest::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_bittorrent::wire::HashRequest
+impl core::marker::StructuralPartialEq for only_bittorrent::wire::HashRequest
+impl core::marker::Send for only_bittorrent::wire::HashRequest
+impl core::marker::Sync for only_bittorrent::wire::HashRequest
+impl core::marker::Unpin for only_bittorrent::wire::HashRequest
+impl core::panic::unwind_safe::RefUnwindSafe for only_bittorrent::wire::HashRequest
+impl core::panic::unwind_safe::UnwindSafe for only_bittorrent::wire::HashRequest
 pub struct only_bittorrent::wire::Parser
 impl only_bittorrent::wire::Parser
 pub fn only_bittorrent::wire::Parser::buffered(&self) -> usize

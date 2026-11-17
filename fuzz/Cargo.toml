@@ -547,3 +547,17 @@ path = "fuzz_targets/quic_conn.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "bt_lsd"
+path = "fuzz_targets/bt_lsd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bt_merkle"
+path = "fuzz_targets/bt_merkle.rs"
+test = false
+doc = false
+bench = false

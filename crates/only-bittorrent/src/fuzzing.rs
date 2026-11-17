@@ -9,7 +9,9 @@ use std::net::SocketAddr;
 
 use crate::bencode;
 use crate::dht::{Msg, Node, NodeId};
+use crate::lsd::Announce;
 use crate::magnet::Magnet;
+use crate::merkle::{self, Hash, MerkleTree};
 use crate::metainfo::{Info, InfoHash, MetaInfo};
 use crate::mse::{CRYPTO_PLAINTEXT, CRYPTO_RC4, Initiator, Receiver};
 use crate::tracker::{http, udp};
@@ -50,7 +52,8 @@ fn packets(mut data: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-/// Bencoding, .torrent files, info dictionaries and magnet links.
+/// Bencoding, .torrent files (v1, v2, hybrid) with their piece layers, info dictionaries and
+/// magnet links (btih and btmh).
 pub fn bt_bencode(data: &[u8]) {
     if let Ok(v) = bencode::decode(data) {
         // Canonical re-encoding decodes to the same value.
@@ -70,7 +73,17 @@ pub fn bt_bencode(data: &[u8]) {
                 segs.iter().map(|s| s.len).sum::<u64>(),
                 u64::from(i.piece_size(p))
             );
+            // v2: a piece lies in one file, which starts on a piece boundary.
+            if let Some((f, local)) = i.piece_file(p) {
+                assert!(i.file_pieces(f).contains(&p));
+                assert_eq!(i.file_pieces(f).start as u64 + local, p as u64);
+            }
+            let size = i.piece_size(p) as usize;
+            if size <= 1 << 16 {
+                let _ = mi.verify_piece(p, &vec![0; size]);
+            }
         }
+        assert!(mi.piece_layers.is_complete(i));
     }
     let _ = Info::parse(data);
     if let Ok(s) = std::str::from_utf8(data) {
@@ -93,6 +106,19 @@ pub fn bt_peer_wire(data: &[u8]) {
                     let _ = ExtendedHandshake::decode(&payload);
                     let _ = MetadataMsg::decode(&payload);
                     let _ = Pex::decode(&payload);
+                }
+                Ok(Some(crate::wire::Message::Hashes { req, hashes })) => {
+                    // Checking hostile hashes against a root never panics.
+                    let count = (req.length as usize).min(hashes.len());
+                    let (nodes, uncles) = hashes.split_at(count);
+                    let _ = merkle::verify_hashes(
+                        nodes,
+                        req.base_layer % 64,
+                        u64::from(req.index),
+                        uncles,
+                        &req.pieces_root,
+                        req.proof_layers % 64,
+                    );
                 }
                 Ok(Some(m)) => {
                     // Every message re-encodes to what decodes back to it.
@@ -119,6 +145,64 @@ pub fn bt_krpc(data: &[u8]) {
         n.handle(to, data);
     }
     n.tick();
+    // A dual-stack node (BEP 32) hearing the same from an IPv6 address.
+    let mut n6 = Node::new(NodeId([8; 20]));
+    n6.set_ipv6(true);
+    let from6 = SocketAddr::from(([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1], 6881));
+    n6.handle(from6, data);
+    n6.handle(from, data);
+    let _ = n6.take_outgoing();
+    n6.get_peers(InfoHash([1; 20]), Some(0));
+    for (to, _) in n6.take_outgoing() {
+        n6.handle(to, data);
+    }
+    n6.tick();
+}
+
+/// Local Service Discovery announcements (BEP 14).
+pub fn bt_lsd(data: &[u8]) {
+    if let Some(a) = Announce::parse(data) {
+        assert!(a.port != 0 && !a.info_hashes.is_empty());
+        assert!(a.info_hashes.len() <= crate::lsd::MAX_INFO_HASHES);
+        let again = Announce::parse(&a.encode("239.192.152.143:6771"));
+        assert_eq!(again.map(|b| b.info_hashes), Some(a.info_hashes));
+    }
+}
+
+/// BEP 52 merkle trees: a tree from a fuzzed layer answers fuzzed hash requests, and every
+/// answer checks out against the root.
+pub fn bt_merkle(data: &[u8]) {
+    let Some((head, rest)) = data.split_first_chunk::<8>() else {
+        return;
+    };
+    let layer: Vec<Hash> = rest
+        .chunks_exact(32)
+        .take(300)
+        .map(|c| c.try_into().unwrap_or([0; 32]))
+        .collect();
+    let height = u32::from(head[0] % 4);
+    let levels = (layer.len().max(1).next_power_of_two().trailing_zeros()) + u32::from(head[1] % 3);
+    let root_height = height + levels;
+    let t = MerkleTree::from_layer(&layer, height, root_height);
+    let count = 1u32 << (head[2] % 10);
+    let index = u64::from(u16::from_le_bytes([head[3], head[4]])) * u64::from(count);
+    let proof = u32::from(head[5] % 12);
+    if let Some(h) = t.hashes(index, count, proof) {
+        let (nodes, uncles) = h.split_at(count as usize);
+        assert_eq!(uncles.len(), merkle::uncle_count(count, proof));
+        if proof + 1 == levels {
+            assert!(merkle::verify_hashes(
+                nodes,
+                height,
+                index,
+                uncles,
+                &t.root(),
+                root_height
+            ));
+        }
+    }
+    let _ = merkle::subtree_root(&layer, height, layer.len());
+    let _ = merkle::verify_hashes(&layer, height, index, &[], &t.root(), root_height);
 }
 
 /// uTP: header parsing, and a connection accepted from the first SYN taking the rest.
@@ -194,6 +278,28 @@ pub(crate) mod seeds {
         v
     }
 
+    pub(crate) fn bt_lsd() -> Vec<Vec<u8>> {
+        let mut a = Announce::new(6881, vec![InfoHash([0xab; 20]), InfoHash([1; 20])]);
+        a.cookie = Some("c00k1e".into());
+        vec![
+            a.encode("239.192.152.143:6771"),
+            a.encode("[ff15::efc0:988f]:6771"),
+            format!(
+                "BT-SEARCH * HTTP/1.1\nHost: 239.192.152.143:6771\nPort: 7000\nInfohash: {}\n\n\n",
+                "AB".repeat(20)
+            )
+            .into_bytes(),
+        ]
+    }
+
+    pub(crate) fn bt_merkle() -> Vec<Vec<u8>> {
+        let layer: Vec<u8> = (0..37u8).flat_map(|i| [i; 32]).collect();
+        vec![
+            [&[1u8, 1, 1, 0, 0, 4, 0, 0][..], &layer].concat(),
+            [&[0u8, 0, 9, 0, 0, 5, 0, 0][..], &layer[..32 * 8]].concat(),
+        ]
+    }
+
     pub(crate) fn bt_bencode() -> Vec<Vec<u8>> {
         let one = Builder::new("a.bin")
             .piece_length(16)
@@ -210,9 +316,34 @@ pub(crate) mod seeds {
             .build_files(&files)
             .map(|m| m.to_bytes())
             .unwrap_or_default();
+        let tree = vec![
+            (vec!["a".to_owned()], vec![3u8; 40_000]),
+            (vec!["b".to_owned(), "c".to_owned()], vec![4u8; 5]),
+            (vec!["e".to_owned()], Vec::new()),
+        ];
+        let v2 = Builder::new("v2")
+            .piece_length(16384)
+            .version(crate::metainfo::TorrentVersion::V2)
+            .build_files(&tree)
+            .map(|m| m.to_bytes())
+            .unwrap_or_default();
+        let hybrid = Builder::new("h")
+            .piece_length(16384)
+            .version(crate::metainfo::TorrentVersion::Hybrid)
+            .build_files(&tree)
+            .map(|m| m.to_bytes())
+            .unwrap_or_default();
         vec![
             one,
             multi,
+            v2,
+            hybrid,
+            format!(
+                "magnet:?xt=urn:btih:{}&xt=urn:btmh:1220{}",
+                "ab".repeat(20),
+                "cd".repeat(32)
+            )
+            .into_bytes(),
             b"d1:ai1e1:bl1:x1:yee".to_vec(),
             format!(
                 "magnet:?xt=urn:btih:{}&dn=x&tr=udp%3A%2F%2Ft%3A1",
@@ -241,6 +372,12 @@ pub(crate) mod seeds {
             },
             Message::HaveAll,
             Message::AllowedFast(3),
+            Message::HashRequest(crate::wire::HashRequest::new([5; 32], 2, 0, 4, 3)),
+            Message::Hashes {
+                req: crate::wire::HashRequest::new([5; 32], 0, 2, 2, 1),
+                hashes: vec![[1; 32], [2; 32], [3; 32]],
+            },
+            Message::HashReject(crate::wire::HashRequest::new([6; 32], 0, 0, 2, 0)),
             Message::Extended {
                 id: 0,
                 payload: ExtendedHandshake::default().encode(),
@@ -275,6 +412,15 @@ pub(crate) mod seeds {
         let mut v: Vec<Vec<u8>> = n.take_outgoing().into_iter().map(|(_, b)| b).collect();
         v.push(b"d1:rd2:id20:aaaaaaaaaaaaaaaaaaaa5:nodes26:bbbbbbbbbbbbbbbbbbbb\x7f\0\0\x01\x1a\xe15:token2:tke1:t2:\0\x011:y1:re".to_vec());
         v.push(b"d1:eli201e3:bade1:t2:aa1:y1:ee".to_vec());
+        // BEP 32: a find_node asking for both families, a response with nodes6.
+        v.push(b"d1:ad2:id20:aaaaaaaaaaaaaaaaaaaa6:target20:bbbbbbbbbbbbbbbbbbbb4:wantl2:n42:n6ee1:q9:find_node1:t2:ab1:y1:qe".to_vec());
+        let mut r = b"d1:rd2:id20:aaaaaaaaaaaaaaaaaaaa6:nodes638:".to_vec();
+        r.extend_from_slice(&[b'c'; 20]);
+        r.extend_from_slice(&[
+            0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0x1a, 0xe1,
+        ]);
+        r.extend_from_slice(b"e1:t2:\0\x011:y1:re");
+        v.push(r);
         v
     }
 
@@ -337,7 +483,9 @@ mod tests {
             + replay(DIR, "bt_krpc", bt_krpc)
             + replay(DIR, "bt_utp", bt_utp)
             + replay(DIR, "bt_tracker", bt_tracker)
-            + replay(DIR, "bt_mse", bt_mse);
+            + replay(DIR, "bt_mse", bt_mse)
+            + replay(DIR, "bt_lsd", bt_lsd)
+            + replay(DIR, "bt_merkle", bt_merkle);
         assert!(n > 0);
     }
 
@@ -350,6 +498,8 @@ mod tests {
             (bt_utp, seeds::bt_utp()),
             (bt_tracker, seeds::bt_tracker()),
             (bt_mse, seeds::bt_mse()),
+            (bt_lsd, seeds::bt_lsd()),
+            (bt_merkle, seeds::bt_merkle()),
         ] {
             for x in &s {
                 f(x);
@@ -367,5 +517,7 @@ mod tests {
         write_target_seeds(DIR, "bt_utp", &seeds::bt_utp());
         write_target_seeds(DIR, "bt_tracker", &seeds::bt_tracker());
         write_target_seeds(DIR, "bt_mse", &seeds::bt_mse());
+        write_target_seeds(DIR, "bt_lsd", &seeds::bt_lsd());
+        write_target_seeds(DIR, "bt_merkle", &seeds::bt_merkle());
     }
 }

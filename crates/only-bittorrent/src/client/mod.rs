@@ -225,6 +225,7 @@ pub type EventFn = Arc<dyn Fn(InfoHash, &TorrentEvent) + Send + Sync>;
 #[non_exhaustive]
 pub struct ClientConfig {
     /// Address for TCP and UDP (default `0.0.0.0:6881`; port 0 picks a port free for both).
+    /// `[::]:port` listens dual-stack: IPv4 and IPv6 peers, and an IPv6 DHT table (BEP 32).
     pub listen: SocketAddr,
     /// Directory torrents are stored below (default: the working directory).
     pub data_dir: PathBuf,

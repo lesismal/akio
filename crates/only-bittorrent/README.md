@@ -2,11 +2,12 @@
 
 [中文](README.zh-CN.md)
 
-BitTorrent on [`only`](https://github.com/lesismal/only): bencoding, .torrent files and magnet
-links, HTTP and UDP trackers (client and server), the peer wire protocol with the Fast extension,
-the extension protocol, metadata exchange, PEX and Message Stream Encryption, uTP with LEDBAT,
-the mainline DHT, and a client that downloads and seeds with all of them on one `only` engine
-and one port number. Wire compatible with libtorrent and aria2
+BitTorrent on [`only`](https://github.com/lesismal/only): bencoding, v1, v2 and hybrid .torrent
+files and magnet links (BEP 52), HTTP and UDP trackers (client and server), the peer wire protocol
+with the Fast extension, the extension protocol, metadata exchange, PEX and Message Stream
+Encryption, uTP with LEDBAT, the mainline DHT over IPv4 and IPv6, Local Service Discovery, web
+seeds, and a client that downloads and seeds with all of them on one `only` engine and one port
+number, with rate and seed limits. Wire compatible with libtorrent and aria2
 (`tools/interop/bittorrent/run.sh`).
 
 ```rust,no_run
@@ -26,15 +27,16 @@ println!("{:?}", t.stats());
 | Module | What it is | BEPs |
 |---|---|---|
 | `bencode` | `Value`, strict decoding (depth-limited), canonical encoding, raw spans | 3 |
-| `metainfo` | .torrent v1, info hash, piece/file layout, path safety, `Builder` | 3, 12, 19, 27, 47 |
-| `magnet` | magnet links (hex and base32) | 9 |
-| `wire` | handshake, messages, `Parser`, `Bitfield`, extension payloads, allowed-fast set | 3, 5, 6, 9, 10, 11 |
+| `metainfo` | .torrent v1, v2 and hybrid, info hashes, piece/file layout, piece layers, path safety, `Builder` | 3, 12, 19, 27, 47, 52 |
+| `merkle` | SHA-256 merkle trees: roots, piece layers, hash request proofs | 52 |
+| `magnet` | magnet links (`btih` hex and base32, `btmh`) | 9, 52 |
+| `wire` | handshake, messages, `Parser`, `Bitfield`, extension payloads, allowed-fast set, hash messages | 3, 5, 6, 9, 10, 11, 52 |
 | `mse` | MSE/PE: DH-768 + RC4, `Initiator` and `Receiver` without I/O | MSE |
 | `tracker` | HTTP and UDP codecs, `TrackerClient`, `TrackerServer` | 3, 7, 15, 23, 48 |
 | `utp` | uTP `Connection` without I/O: SACK, fast retransmit, RTO, LEDBAT | 29 |
-| `dht` | DHT `Node` without I/O: routing table, tokens, iterative lookups | 5, 43 |
+| `dht` | DHT `Node` without I/O: routing tables (IPv4, IPv6), tokens, iterative lookups | 5, 32, 43 |
+| `lsd` | Local Service Discovery announcements | 14 |
 | `port` | `UdpPort`: uTP + DHT on one `only` UDP listener, sending from its port | – |
-| `client` | `Client`, `Torrent`, rarest-first picker, endgame, choking, storage on the pool | – |
+| `client` | `Client`, `Torrent`, rarest-first picker, endgame, choking, storage on the pool, web seeds, LSD, rate and seed limits | 19, 14 |
 
-Not done yet: BitTorrent v2/hybrid (BEP 52), web seeds, LSD, BEP 44, IPv6 DHT, fast-resume files,
-rate limits. Guide: [BitTorrent](https://lesismal.github.io/only/en/protocols/bittorrent.html).
+Not done: fast-resume files; BEP 44 is left out on purpose (ADR-018). Guide: [BitTorrent](https://lesismal.github.io/only/en/protocols/bittorrent.html).

@@ -10,6 +10,38 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: BitTorrent v2 and hybrid torrents, web seeds, LSD, IPv6 DHT, rate and seed limits
+
+`only-bittorrent` (ADR-018, docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.md):
+
+- **BEP 52 v2 and hybrid torrents.** New `merkle` module (SHA-256 trees, piece layers, hash
+  request proofs as libtorrent sends them). `metainfo`: `InfoHashV2`, `TorrentVersion`,
+  `FileEntry::pieces_root`, `PieceLayers`, `MetaInfo::{info_hash_v2, piece_layers,
+  verify_piece}`, `Info::{verify_piece_with, piece_file, file_pieces, ...}`,
+  `Builder::version`. v2 files are laid out on piece boundaries (padding files synthesized for
+  v2-only torrents), so one piece space serves all three kinds. `MetaInfo::info_hash` is the
+  hash peers use (truncated SHA-256 for v2-only torrents). Magnet `urn:btmh:`. Peer wire: the v2
+  handshake bit, hash request / hashes / hash reject. The client announces and accepts hybrid
+  torrents under both hashes, fetches missing piece layers of magnet links with hash requests
+  and answers them. Parsing refuses piece layers that do not match their roots and hybrid
+  torrents whose two parts disagree.
+- **Web seeds (BEP 19)** through only-http's client: `ClientConfig::web_seeds` (on),
+  `AddOptions::web_seeds`, `Torrent::add_web_seed`, `TorrentEvent::WebSeedError`; range requests
+  of at most 4 MiB, one piece per web seed, backoff up to 10 minutes.
+- **Local Service Discovery (BEP 14)**: module `lsd`, `ClientConfig::lsd` (on; never for
+  private torrents), on a thread of its own, bounded to 50 announcements a second.
+- **IPv6**: a client listening on `[::]:port` is dual-stack (IPv4 peers keep plain addresses);
+  the DHT keeps an IPv6 routing table (BEP 32: `nodes6`, `want`, `Node::set_ipv6`,
+  `compact_nodes6`, `Client::dht_nodes6`).
+- **Rate limits** (`RateLimits`; `ClientConfig::rate_limits`, `Client::set_rate_limits`,
+  `AddOptions::rate_limits`, `Torrent::set_rate_limits`) and **seed limits** (`SeedLimits`
+  ratio and time; `TorrentEvent::SeedLimitReached` pauses the torrent). `TorrentStats` gains
+  `seeding_time` and `web_seeds_active`.
+- Interop: v2 and hybrid torrents both ways with libtorrent 2.0 (by .torrent and by magnet),
+  hybrid torrents with aria2 1.37, web seeds from nginx, LSD on a Docker network. Fuzz targets
+  `bt_lsd` and `bt_merkle`; `bt_bencode`, `bt_peer_wire`, `bt_krpc` extended.
+- BEP 44 is not implemented, on purpose (ADR-018).
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):

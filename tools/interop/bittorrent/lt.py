@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """libtorrent-rasterbar (python3-libtorrent) side of tools/interop/bittorrent/run.sh.
 
+  lt.py make  <file-or-dir> <out.torrent> v1|v2|hybrid [piece-length]   prints the info hash
+  lt.py magnet <torrent>                            prints libtorrent's magnet link
   lt.py seed  <torrent> <dir> <port> [options]     seed until killed
   lt.py leech <torrent|magnet> <dir> <port> [options]   download, exit 0 once complete
   options: --peer host:port  --utp-only  --tcp-only  --enc forced|enabled|disabled
            --dht host:port (enable the DHT, bootstrapping there)  --timeout secs
+           --lsd (Local Service Discovery)  --web-seed url  --listen-ip ip (default 127.0.0.1)
 """
+import os
 import sys
 import time
 
@@ -15,10 +19,35 @@ import libtorrent as lt
 UTP_SOCKET = int(getattr(lt.peer_info, "utp_socket", 1 << 17))
 
 
+def make(path, out, kind, piece_length):
+    fs = lt.file_storage()
+    lt.add_files(fs, path)
+    flags = 0
+    ct_flags = getattr(lt, "create_torrent_flags_t", lt.create_torrent)
+    if kind == "v1":
+        flags = ct_flags.v1_only
+    elif kind == "v2":
+        flags = ct_flags.v2_only
+    ct = lt.create_torrent(fs, piece_length, flags=flags)
+    lt.set_piece_hashes(ct, os.path.dirname(os.path.abspath(path)))
+    with open(out, "wb") as f:
+        f.write(lt.bencode(ct.generate()))
+    ti = lt.torrent_info(out)
+    ih = ti.info_hashes()
+    print(ih.v1 if ih.has_v1() else ih.v2)
+
+
 def main():
+    if sys.argv[1] == "make":
+        make(sys.argv[2], sys.argv[3], sys.argv[4], int(sys.argv[5]) if len(sys.argv) > 5 else 0)
+        return
+    if sys.argv[1] == "magnet":
+        print(lt.make_magnet_uri(lt.torrent_info(sys.argv[2])))
+        return
     cmd, src, save, port = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
     peers, dht, enc, timeout = [], None, "enabled", 120
-    utp_only = tcp_only = False
+    utp_only = tcp_only = lsd = False
+    web_seeds, listen_ip = [], "127.0.0.1"
     a = sys.argv[5:]
     i = 0
     while i < len(a):
@@ -35,6 +64,14 @@ def main():
         elif a[i] == "--timeout":
             timeout = int(a[i + 1])
             i += 1
+        elif a[i] == "--web-seed":
+            web_seeds.append(a[i + 1])
+            i += 1
+        elif a[i] == "--listen-ip":
+            listen_ip = a[i + 1]
+            i += 1
+        elif a[i] == "--lsd":
+            lsd = True
         elif a[i] == "--utp-only":
             utp_only = True
         elif a[i] == "--tcp-only":
@@ -46,9 +83,9 @@ def main():
     policy = {"forced": lt.enc_policy.forced, "enabled": lt.enc_policy.enabled,
               "disabled": lt.enc_policy.disabled}[enc]
     s = {
-        "listen_interfaces": "127.0.0.1:%d" % port,
+        "listen_interfaces": "%s:%d" % (listen_ip, port),
         "enable_dht": dht is not None,
-        "enable_lsd": False,
+        "enable_lsd": lsd,
         "enable_upnp": False,
         "enable_natpmp": False,
         "allow_multiple_connections_per_ip": True,
@@ -82,6 +119,8 @@ def main():
         params.ti = lt.torrent_info(src)
     params.save_path = save
     h = sess.add_torrent(params)
+    for u in web_seeds:
+        h.add_url_seed(u)
     for p in peers:
         h.connect_peer(p)
     start = time.time()

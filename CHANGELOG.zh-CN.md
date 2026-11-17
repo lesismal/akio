@@ -10,6 +10,34 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：BitTorrent v2 与混合种子、web seed、LSD、IPv6 DHT、速率与做种限制
+
+`only-bittorrent`（ADR-018，docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md）：
+
+- **BEP 52 v2 与混合种子。** 新模块 `merkle`（SHA-256 默克尔树、分片层、按 libtorrent 方式生成的
+  哈希请求证明）。`metainfo`：`InfoHashV2`、`TorrentVersion`、`FileEntry::pieces_root`、
+  `PieceLayers`、`MetaInfo::{info_hash_v2, piece_layers, verify_piece}`、
+  `Info::{verify_piece_with, piece_file, file_pieces, ...}`、`Builder::version`。v2 文件按分片
+  边界排布（纯 v2 种子由解析器合成填充文件），三种种子共用一个分片空间。`MetaInfo::info_hash` 为
+  对等方使用的哈希（纯 v2 种子为截断的 SHA-256）。磁力链接 `urn:btmh:`。peer wire：v2 握手位，
+  hash request / hashes / hash reject。客户端以两个哈希公告并接受混合种子，为磁力链接用哈希请求
+  获取缺失的分片层，并应答对方的哈希请求。解析时拒绝与根不符的分片层，以及两部分不一致的混合种子。
+- **Web seed（BEP 19）**，经 only-http 客户端：`ClientConfig::web_seeds`（默认开启）、
+  `AddOptions::web_seeds`、`Torrent::add_web_seed`、`TorrentEvent::WebSeedError`；每个范围请求
+  最多 4 MiB，每个 web seed 同时一个分片，退避最长 10 分钟。
+- **本地服务发现（BEP 14）**：模块 `lsd`，`ClientConfig::lsd`（默认开启；私有种子从不使用），在
+  独立线程上运行，每秒最多处理 50 条公告。
+- **IPv6**：监听 `[::]:port` 的客户端为双栈（IPv4 对等方保持普通地址）；DHT 维护 IPv6 路由表
+  （BEP 32：`nodes6`、`want`、`Node::set_ipv6`、`compact_nodes6`、`Client::dht_nodes6`）。
+- **速率限制**（`RateLimits`；`ClientConfig::rate_limits`、`Client::set_rate_limits`、
+  `AddOptions::rate_limits`、`Torrent::set_rate_limits`）与**做种限制**（`SeedLimits` 分享率与
+  时间；`TorrentEvent::SeedLimitReached` 并暂停种子）。`TorrentStats` 新增 `seeding_time` 与
+  `web_seeds_active`。
+- 互操作：与 libtorrent 2.0 双向互通 v2 与混合种子（.torrent 与磁力链接），与 aria2 1.37 互通混合
+  种子，从 nginx 获取 web seed，Docker 网络上的 LSD。新增模糊测试目标 `bt_lsd` 与 `bt_merkle`；
+  扩展 `bt_bencode`、`bt_peer_wire`、`bt_krpc`。
+- 有意不实现 BEP 44（ADR-018）。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

@@ -13,7 +13,8 @@
 //! In the piece space every kind shares, a v2 file starts on a piece boundary: the gaps are
 //! padding files, real ones (BEP 47) in a hybrid torrent and synthesized ones (path
 //! `.pad/<size>`, [`FileEntry::padding`]) in a v2-only torrent, so piece `i` covers the same
-//! bytes in both views and storage never writes padding.
+//! bytes in both views and storage never writes padding. A v2-only torrent's last file is
+//! padded to a whole piece as well, as libtorrent does: every v2-only piece is whole.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -405,6 +406,7 @@ impl Info {
                 return Err(MetaError::Invalid("empty file tree"));
             }
             let single = tf.len() == 1 && tf[0].path.len() == 1 && tree.len() == 1;
+            // A v2 single-file torrent has its padding entry after the file too.
             let mut files = Vec::with_capacity(tf.len() * 2);
             let mut offset = 0u64;
             for f in tf {
@@ -431,6 +433,19 @@ impl Info {
                     .filter(|o| *o < 1 << 62)
                     .ok_or(MetaError::Invalid("total length overflows"))?;
             }
+            // The last piece is whole too: libtorrent pads the last file as well, and asks for
+            // whole blocks of it.
+            if offset % pl != 0 {
+                let pad = pl - offset % pl;
+                files.push(FileEntry {
+                    path: vec![".pad".to_owned(), pad.to_string()],
+                    length: pad,
+                    offset,
+                    padding: true,
+                    pieces_root: None,
+                });
+                offset += pad;
+            }
             check_clashes(&files)?;
             v2 = Some((files, single, offset));
         }
@@ -446,7 +461,7 @@ impl Info {
                             && a.length == b.length
                             && (a.length == 0 || a.offset == b.offset)
                     })
-                    && t2.div_ceil(pl) == pieces.len() as u64;
+                    && t2 / pl == pieces.len() as u64;
                 if !same {
                     return Err(MetaError::Invalid("hybrid torrent: v1 and v2 files differ"));
                 }
@@ -1646,10 +1661,11 @@ mod tests {
                 .position(|f| f.path == ["z"])
                 .unwrap();
             assert_eq!(back.info.file_pieces(z), 9..12);
-            assert_eq!(
-                back.info.piece_file(10),
-                Some((back.info.files.len() - 1, 1))
-            );
+            assert_eq!(back.info.piece_file(10), Some((z, 1)));
+            // Every v2-only piece is whole (the last file is padded too).
+            if v == TorrentVersion::V2 {
+                assert_eq!(back.info.total_length % 16384, 0);
+            }
         }
     }
 

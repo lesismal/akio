@@ -1,12 +1,14 @@
 # BitTorrent
 
-`only-bittorrent` is BitTorrent on `only`: bencoding, .torrent files and magnet links, HTTP and
-UDP trackers (client and server), the peer wire protocol with its extensions and Message Stream
-Encryption, uTP and the mainline DHT, and a client that downloads and seeds with all of them.
-It is a port of fib's `bittorrent` packages and is wire compatible with mainstream clients:
-`tools/interop/bittorrent/run.sh` checks it against **libtorrent 2.0** (uTP with RC4, TCP,
-magnet links both ways, the DHT both ways) and **aria2 1.37** (both directions, MSE, magnet,
-HTTP and UDP trackers).
+`only-bittorrent` is BitTorrent on `only`: bencoding, v1, v2 and hybrid .torrent files and
+magnet links, HTTP and UDP trackers (client and server), the peer wire protocol with its
+extensions and Message Stream Encryption, uTP, the mainline DHT over IPv4 and IPv6, Local
+Service Discovery, web seeds, and a client that downloads and seeds with all of them, with rate
+and seed limits. It is a port of fib's `bittorrent` packages and is wire compatible with
+mainstream clients: `tools/interop/bittorrent/run.sh` checks it against **libtorrent 2.0** (uTP
+with RC4, TCP, magnet links both ways, the DHT both ways, v2 and hybrid torrents both ways, LSD
+both ways on a Docker network) and **aria2 1.37** (both directions, MSE, magnet, HTTP and UDP
+trackers, hybrid torrents), and web seeds against nginx.
 
 ## A tracker, a seeder and a leecher
 
@@ -29,11 +31,12 @@ per announce instead of a scan of the swarm, and the store is split into 16 lock
 {{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
 
-`metainfo::Builder` hashes bytes, in-memory files or a path (streaming) into a v1 torrent with
-trackers (BEP 12 tiers), DHT nodes, web seeds and the private flag. `MetaInfo::parse` refuses
-what a client must not trust: paths that could escape the download directory, clashing paths,
-piece hashes that do not match the length. v2-only torrents are refused; hybrid ones are read
-as their v1 part.
+`metainfo::Builder` hashes bytes, in-memory files or a path (streaming) into a v1, v2 or hybrid
+torrent (`Builder::version`) with trackers (BEP 12 tiers), DHT nodes, web seeds and the private
+flag. `MetaInfo::parse` refuses what a client must not trust: paths that could escape the
+download directory, clashing paths, piece hashes that do not match the length, v2 piece layers
+that do not match their file's root, and hybrid torrents whose two parts describe different
+files.
 
 ```rust,ignore
 {{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:seeder}}
@@ -82,6 +85,57 @@ through only-http's client, HTTP ones), never on the I/O thread that triggered a
   there are few peers; `port` messages both ways), PEX (BEP 11, a message a minute per peer), a
   magnet's `x.pe` and `add_peers`. A private torrent (BEP 27) uses its trackers alone.
 
+## v2 and hybrid torrents (BEP 52)
+
+A v2 torrent hashes each file on its own into a SHA-256 merkle tree of 16 KiB blocks: the info
+dictionary carries each file's root (`FileEntry::pieces_root`), the .torrent's `piece layers`
+the tree's layer at which one hash covers one piece (`MetaInfo::piece_layers`, checked against
+the roots). A hybrid torrent carries both formats for the same files.
+
+- **One piece space.** v2 starts every file on a piece boundary. A hybrid torrent has BEP 47
+  padding files in its v1 list for that; for a v2-only torrent the parser adds them
+  (`.pad/<size>`, `padding: true`). So piece `i` is the same bytes in every view, storage never
+  writes padding, and `Info::verify_piece_with(layers, i, data)` checks SHA-1 and the merkle
+  hash on the same buffer.
+- **Hashes.** `InfoHashV2` is the SHA-256 of the info dictionary; `MetaInfo::info_hash` is the
+  hash peers use: SHA-1 for v1 and hybrid, the truncated v2 hash for v2-only torrents. Magnet
+  links carry `urn:btmh:1220<hex>` (`Magnet::info_hash_v2`).
+- **The client** announces a hybrid torrent under both hashes (trackers, DHT, LSD) and accepts
+  connections under either, including a peer that answers our v1 handshake with the v2 hash.
+  A magnet link's torrent fetches missing piece layers from v2 peers with hash requests (512
+  hashes each, proven up to the file's root; 4 in flight per peer, 10 s timeout) and does not
+  pick a v2-only file's pieces before its layer is known. It answers hash requests for the
+  layers it has, and for the block hashes of pieces it has (read on the pool).
+- `merkle` has the tree arithmetic: `file_root`, `piece_root`, `root_from_piece_layer`,
+  `MerkleTree` (answers `hashes`/`uncles` as libtorrent expects them) and `verify_hashes`.
+
+## Web seeds, LSD, IPv6, limits
+
+- **Web seeds (BEP 19)**: the torrent's `url-list`, `AddOptions::web_seeds` and
+  `Torrent::add_web_seed` (at most 16). An idle web seed takes a missing piece (one no connected
+  peer has first) and fetches it with `Range` requests of at most 4 MiB through only-http's
+  client, skipping padding; the piece is then checked and written like one from a peer. A
+  failure or a piece that fails its check backs the web seed off (10 s, doubling, at most 10
+  minutes) and reports `TorrentEvent::WebSeedError`. A single-file torrent's URL names the file
+  (or a directory, when it ends in `/`); a multi-file torrent's is the directory holding
+  `<name>/<path>`.
+- **LSD (BEP 14)**: `ClientConfig::lsd` (on by default, never for private torrents) multicasts
+  `BT-SEARCH` announcements on 239.192.152.143:6771 (and `[ff15::efc0:988f]:6771` when
+  dual-stack) from a thread of its own, when a torrent is added and every 5 minutes, and adds
+  the peers it hears (at most 50 announcements a second, 16 hashes each; its own recognised by
+  a cookie). The `lsd` module is the codec.
+- **IPv6**: listening on `[::]:port` serves IPv4 and IPv6 on one dual-stack TCP and UDP pair;
+  IPv4 peers keep their plain addresses. The DHT then keeps an IPv6 routing table too (BEP 32:
+  `nodes6`, `want`; `Client::dht_nodes6`). PEX and trackers carry IPv6 peers.
+- **Rate limits**: `RateLimits { upload, download }` in bytes per second for the client
+  (`ClientConfig::rate_limits`, `Client::set_rate_limits`) and per torrent
+  (`AddOptions::rate_limits`, `Torrent::set_rate_limits`). Requests take download tokens before
+  they go out; uploads wait for upload tokens before storage is read.
+- **Seed limits**: `SeedLimits { ratio, time }` (`ClientConfig::seed_limits`,
+  `AddOptions::seed_limits`, `Torrent::set_seed_limits`): a complete torrent that reaches its
+  ratio (uploaded over downloaded this session, or over its size if nothing was downloaded) or
+  its seeding time pauses and reports `TorrentEvent::SeedLimitReached`.
+
 ## One UDP port: `UdpPort`
 
 ```text
@@ -105,8 +159,8 @@ Each protocol is usable alone, without I/O:
 - `bencode`: `Value`, `decode` (strict: no leading zeros, no `-0`, depth limit 256),
   `decode_prefix` (a ut_metadata message's dictionary followed by data), `encode` (sorted keys),
   `raw_value` (the info dictionary's exact bytes, for the info hash).
-- `wire`: `Handshake` (reserved bits for BEP 10, the DHT and the Fast extension), `Message` (BEP
-  3, `port`, BEP 6), an incremental `Parser`, `Bitfield`, `ExtendedHandshake`, `MetadataMsg`,
+- `wire`: `Handshake` (reserved bits for BEP 10, the DHT, the Fast extension and v2), `Message`
+  (BEP 3, `port`, BEP 6, BEP 52's hash request, hashes and hash reject), an incremental `Parser`, `Bitfield`, `ExtendedHandshake`, `MetadataMsg`,
   `Pex`, `allowed_fast_set` (BEP 6's algorithm, checked against its test vector).
 - `mse`: `Initiator` and `Receiver` take bytes and return bytes to write until `Established`
   (768-bit Diffie-Hellman in Montgomery arithmetic, RC4 with 1024 bytes dropped,
@@ -118,7 +172,9 @@ Each protocol is usable alone, without I/O:
 - `dht`: `Node` takes datagrams and the clock, and queues datagrams and `DhtEvent`s: a routing
   table of K = 8 buckets (only nodes that answered enter; new queriers are pinged first),
   ping/find_node/get_peers/announce_peer with `implied_port`, tokens bound to the asker's IP
-  and rotated every 5 minutes, iterative lookups with 3 queries in flight, BEP 43 read-only.
+  and rotated every 5 minutes, iterative lookups with 3 queries in flight, BEP 43 read-only,
+  and BEP 32 (`set_ipv6`: a second routing table for IPv6 nodes, `nodes6`, `want`).
+- `merkle`: BEP 52 trees (see above). `lsd`: BEP 14 announcements.
 - `tracker`: `http` and `udp` codecs, `TrackerClient`, `TrackerServer`.
 
 ## Testing and interop
@@ -131,10 +187,18 @@ Each protocol is usable alone, without I/O:
   aria2 leeching from `only` (plaintext, MSE required, magnet) and seeding to it (UDP tracker,
   plaintext and MSE); libtorrent leeching from `only` over uTP with RC4 and over TCP, and by
   magnet, seeding to `only` the same three ways, and the DHT both ways (a `only` node bootstraps
-  libtorrent; each finds the other's seed by magnet alone).
-- Fuzz targets: `bt_bencode` (bencode, metainfo, magnet), `bt_peer_wire`, `bt_krpc`, `bt_utp`,
-  `bt_tracker`, `bt_mse`, with their seed corpora replayed by `cargo test`.
+  libtorrent; each finds the other's seed by magnet alone). Suite `v2`: v2-only and hybrid
+  multi-file torrents made by `only` and by libtorrent, each side leeching from the other by
+  .torrent and by magnet (a v2 magnet exercises hash requests both ways), and aria2 leeching and
+  seeding a hybrid torrent. Suite `webseed`: v1, hybrid and v2 torrents downloaded from nginx
+  alone. Suite `lsd`: two containers on a Docker network find each other by LSD, both ways.
+- `tests/extensions.rs`: v2 and hybrid swarms, a v2 magnet fetching piece layers, a hybrid
+  torrent reached by its v2 hash, web seeds from an only-http file server, LSD, a dual-stack
+  seeder with IPv4 and IPv6 leechers, the DHT over IPv6 alone, rate limits, seed limits.
+- Fuzz targets: `bt_bencode` (bencode, v1/v2/hybrid metainfo, magnet), `bt_peer_wire` (hash
+  messages included), `bt_krpc` (IPv4 and dual-stack nodes), `bt_utp`, `bt_tracker`, `bt_mse`,
+  `bt_lsd`, `bt_merkle`, with their seed corpora replayed by `cargo test`.
 
-Not done yet: BitTorrent v2 and hybrid torrents (BEP 52), web seeds (BEP 19, parsed but not
-used), local service discovery (BEP 14), BEP 44 DHT items, IPv6 DHT (BEP 32), fast resume
-files, seed ratio limits, rate limits.
+Not done: fast resume files. BEP 44 (DHT arbitrary data) is left out on purpose: downloading
+and seeding never need it, and it would add signed per-item storage keyed by remote input to the
+DHT ([ADR-018](https://github.com/lesismal/only/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.md)).

@@ -2328,7 +2328,9 @@ impl TorrentState {
                     .peers
                     .iter()
                     .filter(|(k, p)| {
-                        p.v2 && p.hash_rejects < 3
+                        // libtorrent does not set the v2 bit in the handshake it answers
+                        // with: any peer of a v2 torrent may be asked.
+                        p.hash_rejects < 3
                             && p.hash_asked + asked.get(*k).copied().unwrap_or(0) < MAX_HASH_ASKED
                             && span.clone().any(|i| p.have.get(i))
                     })
