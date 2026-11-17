@@ -10,6 +10,7 @@
 //! * `h2stats`: `H2Config::stats`;
 //! * `spans`: request spans (`info`) through only-export's span queue, sent over OTLP/HTTP to a
 //!   blackhole collector in this process every 100 ms;
+//! * `spans1`: the same with 1% of the traces sampled;
 //! * `push`: metrics pushed over OTLP/HTTP and StatsD every second (to the blackhole and a UDP
 //!   socket nobody reads).
 
@@ -120,7 +121,7 @@ fn main() -> std::io::Result<()> {
             h
         });
     }
-    let _exporter = if on("spans") || on("push") {
+    let _exporter = if on("spans") || on("spans1") || on("push") {
         let sink = blackhole()?;
         let mut b = Exporter::builder()
             .service_name("obs-bench")
@@ -136,8 +137,11 @@ fn main() -> std::io::Result<()> {
         } else {
             b = b.otlp_traces_only();
         }
-        if on("spans") {
+        if on("spans") || on("spans1") {
             b = b.traces(LevelFilter::Info);
+        }
+        if on("spans1") {
+            b = b.sample_ratio(0.01);
         }
         Some(b.start()?)
     } else {
