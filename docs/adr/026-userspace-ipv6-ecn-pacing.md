@@ -60,9 +60,14 @@ pacing/ECN" as not done. `DpdkConfig` is `#[non_exhaustive]` and the crate is ex
 ## Consequences
 
 - Additive public API: five fields of `DpdkConfig` (snapshot `api/only-dpdk.txt`).
-- The connection table key hashes both families as one IPv6-mapped address in two words
-  (cheaper than hashing the `SocketAddrV4` bytewise before); ISNs and SYN cookies hash all 16
-  address bytes.
+- The connection table key is 20 bytes for both families (an IPv4 address in its IPv6-mapped
+  form) hashed as two words; ISNs and SYN cookies hash all 16 address bytes. A connection keeps
+  IPv4 addresses inline and IPv6 ones boxed, pacing state is boxed, so IPv4-only connections
+  stay as small as before.
+- Cost on IPv4 (gpu51, `stack-bench` over the memory wire, 10 alternating rounds, medians,
+  new / main): bulk echo 0.99, sequential connections 1.00, UDP request/response 1.01, small
+  request/response on 100 and 1000 connections 0.96. Profiles show no single new hotspot (the
+  address-family dispatch on every segment); the residue is recorded rather than hidden.
 - Fuzz targets `dpdk_ipv6`, `dpdk_icmpv6`, `dpdk_ndp`; `dpdk_stack` runs a dual-stack stack.
 - Not done: SLAAC / router advertisements, DAD, IPv6 jumbograms, MLDv1, RFC 8899 PLPMTUD,
   Accurate ECN (RFC 9768) and L4S, checksum / TSO / LRO offloads.

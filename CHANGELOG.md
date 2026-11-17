@@ -26,6 +26,8 @@ Additive (ADR-026, docs/adr/026-userspace-ipv6-ecn-pacing.md; only-dpdk is exper
   `cwnd / srtt` times 2 in slow start, 1.2 after), both off by default. Simulated 20-frame
   bottleneck: ECN 0 drops instead of 29, pacing 14 instead of 29.
 - The neighbour cache bounds the bytes queued for unresolved neighbours (4 MiB per stack).
+- Cost on IPv4 (memory-wire `stack-bench`, x86): bulk, connection setup and UDP unchanged
+  (0.99-1.01), small TCP request/response 0.96.
 - Not done: checksum / TSO / LRO offloads (the PMDs in reach do them in software).
 - Tests: IPv6 and ECN / pacing on the simulated lossy link, dual-stack memory-wire tests,
   kernel interop over IPv6 in Docker (TAP, AF_PACKET, DPDK `net_tap` with two queues: `ping -6`,

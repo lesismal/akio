@@ -25,6 +25,8 @@ only 的所有重要变更都记录在这里。格式遵循
   `cwnd / srtt`，慢启动时乘 2，之后乘 1.2），默认均关闭。模拟的 20 帧瓶颈队列上：ECN 丢包由 29 次
   降为 0，pacing 由 29 次降为 14。
 - 邻居缓存限制为未解析邻居排队的字节数（每个协议栈 4 MiB）。
+- IPv4 上的开销（x86，内存链路 `stack-bench`）：大块传输、建连与 UDP 不变（0.99-1.01），TCP 小请求/
+  响应 0.96。
 - 未完成：校验和 / TSO / LRO 卸载（手头的 PMD 用软件实现）。
 - 测试：模拟有损链路上的 IPv6 与 ECN / pacing，双栈内存链路测试，Docker 中基于 IPv6 的内核互通
   （TAP、AF_PACKET、双队列 DPDK `net_tap`：`ping -6`、含分片的 UDP、双向 TCP、开启 ECN 与 pacing 的
