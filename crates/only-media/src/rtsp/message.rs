@@ -1,6 +1,7 @@
 //! The RTSP message layer, sans-IO: [`Parser`] splits what a connection reads into requests,
 //! responses and interleaved frames, bounding each header and body; [`Response`] and
-//! [`interleaved`] write them; [`Transport`] reads and writes the `Transport` header.
+//! [`interleaved`] write them; [`Transport`] reads and writes the `Transport` header. A parser
+//! made with [`Parser::client`] returns whole responses ([`Reply`]), as an RTSP client needs.
 
 use std::fmt::{self, Write as _};
 
@@ -68,8 +69,11 @@ impl Request {
 pub enum Frame {
     /// A request.
     Request(Request),
-    /// A response (its status code); the server ignores them.
+    /// A response (its status code); the server ignores them. A [`Parser::client`] returns
+    /// [`Frame::Reply`] instead.
     Response(u16),
+    /// A whole response, from a [`Parser::client`].
+    Reply(Reply),
     /// An interleaved binary frame (`$`, channel, length, data).
     Interleaved {
         /// The channel.
@@ -79,12 +83,50 @@ pub enum Frame {
     },
 }
 
+/// An RTSP response as a client reads it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Reply {
+    /// The status code.
+    pub status: u16,
+    /// The reason phrase.
+    pub reason: String,
+    /// The headers in order.
+    pub headers: Vec<(String, String)>,
+    /// The body.
+    pub body: Vec<u8>,
+}
+
+impl Reply {
+    /// The first header `name` (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// Every header `name` (case-insensitive), in order (`WWW-Authenticate` may repeat).
+    pub fn headers_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.headers
+            .iter()
+            .filter(move |(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The `CSeq`.
+    pub fn cseq(&self) -> Option<&str> {
+        self.header("cseq")
+    }
+}
+
 /// Splits a byte stream into [`Frame`]s.
 #[derive(Debug)]
 pub struct Parser {
     buf: Vec<u8>,
     max_head: usize,
     max_body: usize,
+    replies: bool,
 }
 
 impl Default for Parser {
@@ -100,6 +142,16 @@ impl Parser {
             buf: Vec::new(),
             max_head,
             max_body,
+            replies: false,
+        }
+    }
+
+    /// A parser for a client connection: like [`new`](Self::new), but responses come out
+    /// whole, as [`Frame::Reply`] (headers and body), rather than as [`Frame::Response`].
+    pub fn client(max_head: usize, max_body: usize) -> Parser {
+        Parser {
+            replies: true,
+            ..Parser::new(max_head, max_body)
         }
     }
 
@@ -192,7 +244,17 @@ impl Parser {
                 .next()
                 .and_then(|c| c.parse().ok())
                 .ok_or(RtspError::Malformed)?;
-            Frame::Response(code)
+            if self.replies {
+                let reason = start.splitn(3, ' ').nth(2).unwrap_or("").trim().to_owned();
+                Frame::Reply(Reply {
+                    status: code,
+                    reason,
+                    headers,
+                    body,
+                })
+            } else {
+                Frame::Response(code)
+            }
         } else {
             let uri = parts.next().ok_or(RtspError::Malformed)?;
             let ver = parts.next().ok_or(RtspError::Malformed)?;
@@ -479,5 +541,56 @@ mod tests {
         let mut b = Vec::new();
         interleaved(3, &[1, 2], &mut b);
         assert_eq!(b, vec![b'$', 3, 0, 2, 1, 2]);
+    }
+
+    #[test]
+    fn client_parser_returns_whole_replies() {
+        let wire = b"RTSP/1.0 200 OK\r\nCSeq: 2\r\nContent-Base: rtsp://h/s/\r\nContent-Length: 4\r\n\r\nv=0\n$\x00\x00\x02hi\r\nRTSP/1.0 401 Unauthorized\r\nCSeq: 3\r\nWWW-Authenticate: Digest realm=\"r\", nonce=\"n\"\r\nWWW-Authenticate: Basic realm=\"r\"\r\n\r\nOPTIONS * RTSP/1.0\r\nCSeq: 9\r\n\r\n";
+        for step in [1, 3, 7, wire.len()] {
+            let mut p = Parser::client(MAX_HEAD, MAX_BODY);
+            let mut out = Vec::new();
+            for c in wire.chunks(step) {
+                p.feed(c, &mut out).unwrap();
+            }
+            assert!(!p.pending());
+            assert_eq!(out.len(), 4, "chunks of {step}");
+            let Frame::Reply(r) = &out[0] else { panic!() };
+            assert_eq!((r.status, r.reason.as_str()), (200, "OK"));
+            assert_eq!(r.cseq(), Some("2"));
+            assert_eq!(r.header("content-base"), Some("rtsp://h/s/"));
+            assert_eq!(r.body, b"v=0\n");
+            assert_eq!(
+                out[1],
+                Frame::Interleaved {
+                    channel: 0,
+                    data: b"hi".to_vec()
+                }
+            );
+            let Frame::Reply(r) = &out[2] else { panic!() };
+            assert_eq!(r.status, 401);
+            assert_eq!(r.reason, "Unauthorized");
+            assert_eq!(r.headers_named("www-authenticate").count(), 2);
+            assert!(matches!(&out[3], Frame::Request(q) if q.method == "OPTIONS"));
+        }
+        // A partial head is pending; past the bound it is an error.
+        let mut p = Parser::client(64, 8);
+        let mut out = Vec::new();
+        p.feed(b"RTSP/1.0 200 OK\r\nCSeq: 1\r\n", &mut out).unwrap();
+        assert!(out.is_empty() && p.pending());
+        assert_eq!(p.feed(&[b'x'; 64], &mut out), Err(RtspError::HeadTooLarge));
+        let mut p = Parser::client(1024, 8);
+        assert_eq!(
+            p.feed(b"RTSP/1.0 200 OK\r\nContent-Length: 9\r\n\r\n", &mut out),
+            Err(RtspError::BodyTooLarge)
+        );
+        let mut p = Parser::client(1024, 8);
+        assert_eq!(
+            p.feed(b"RTSP/1.0 abc OK\r\n\r\n", &mut out),
+            Err(RtspError::Malformed)
+        );
+        // The server's parser still reports status codes only.
+        let mut p = Parser::default();
+        p.feed(b"RTSP/1.0 404 Not Found\r\n\r\n", &mut out).unwrap();
+        assert_eq!(out.last(), Some(&Frame::Response(404)));
     }
 }
