@@ -9,7 +9,7 @@
 //! application should learn is left in [`Notes`] for the interface to turn into events.
 
 use std::{
-    net::SocketAddr,
+    net::{SocketAddr, SocketAddrV4, SocketAddrV6},
     time::{Duration, Instant},
 };
 
@@ -194,6 +194,29 @@ impl SynOpts {
     }
 }
 
+/// A connection's addresses: IPv4 inline (16 bytes), IPv6 boxed, so the common case keeps the
+/// connection as small as it was before IPv6.
+#[derive(Debug)]
+enum Addrs {
+    V4(SocketAddrV4, SocketAddrV4),
+    V6(Box<(SocketAddrV6, SocketAddrV6)>),
+}
+
+impl Addrs {
+    fn new(local: SocketAddr, remote: SocketAddr) -> Addrs {
+        match (local, remote) {
+            (SocketAddr::V4(l), SocketAddr::V4(r)) => Addrs::V4(l, r),
+            (l, r) => {
+                let v6 = |a: SocketAddr| match a {
+                    SocketAddr::V6(a) => a,
+                    SocketAddr::V4(a) => SocketAddrV6::new(a.ip().to_ipv6_mapped(), a.port(), 0, 0),
+                };
+                Addrs::V6(Box::new((v6(l), v6(r))))
+            }
+        }
+    }
+}
+
 /// Pacing state of a connection.
 #[derive(Debug)]
 struct Pace {
@@ -207,8 +230,7 @@ struct Pace {
 #[derive(Debug)]
 pub(crate) struct Tcb {
     pub(crate) state: State,
-    pub(crate) local: SocketAddr,
-    pub(crate) remote: SocketAddr,
+    addrs: Addrs,
     /// Port of the listener that accepted it (passive open).
     pub(crate) listener: Option<u16>,
     p: Params,
@@ -320,8 +342,7 @@ impl Tcb {
         let mss = u32::from(p.mss);
         Tcb {
             state: State::Closed,
-            local,
-            remote,
+            addrs: Addrs::new(local, remote),
             listener: None,
             p,
             iss,
@@ -490,6 +511,22 @@ impl Tcb {
 
     // ---- accessors ------------------------------------------------------------------------
 
+    #[inline]
+    pub(crate) fn local(&self) -> SocketAddr {
+        match &self.addrs {
+            Addrs::V4(l, _) => SocketAddr::V4(*l),
+            Addrs::V6(b) => SocketAddr::V6(b.0),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn remote(&self) -> SocketAddr {
+        match &self.addrs {
+            Addrs::V4(_, r) => SocketAddr::V4(*r),
+            Addrs::V6(b) => SocketAddr::V6(b.1),
+        }
+    }
+
     /// Payload bytes per full segment (MSS minus the timestamp option, RFC 6691).
     pub(crate) fn mss(&self) -> u32 {
         let m = self.peer_mss.min(u32::from(self.p.mss));
@@ -618,8 +655,8 @@ impl Tcb {
                 | State::CloseWait
         ) {
             let hdr = TcpOut {
-                src_port: self.local.port(),
-                dst_port: self.remote.port(),
+                src_port: self.local().port(),
+                dst_port: self.remote().port(),
                 seq: self.snd_max,
                 ack: self.rcv_nxt,
                 flags: RST | ACK,
@@ -627,7 +664,7 @@ impl Tcb {
                 opts: TcpOpts::default(),
                 ect: false,
             };
-            out.segment(self.local, self.remote, &hdr, (&[], &[]));
+            out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
         }
         self.state = State::Closed;
     }
@@ -650,23 +687,23 @@ impl Tcb {
         }
         let hdr = if seg.flags & ACK != 0 {
             TcpOut {
-                src_port: self.local.port(),
-                dst_port: self.remote.port(),
+                src_port: self.local().port(),
+                dst_port: self.remote().port(),
                 seq: seg.ack,
                 flags: RST,
                 ..TcpOut::default()
             }
         } else {
             TcpOut {
-                src_port: self.local.port(),
-                dst_port: self.remote.port(),
+                src_port: self.local().port(),
+                dst_port: self.remote().port(),
                 seq: 0,
                 ack: seg.seq.wrapping_add(seg.seg_len()),
                 flags: RST | ACK,
                 ..TcpOut::default()
             }
         };
-        out.segment(self.local, self.remote, &hdr, (&[], &[]));
+        out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
     }
 
     fn on_syn_sent(&mut self, seg: &Tcp<'_>, clock: Clock, out: &mut dyn SegOut) {
@@ -1266,7 +1303,7 @@ impl Tcb {
             return; // RFC 5927 4.1: must quote a segment in flight
         }
         if let IcmpError::TooBig(mtu) = err {
-            let (hdr, min) = if self.remote.is_ipv6() {
+            let (hdr, min) = if self.remote().is_ipv6() {
                 (60, 1280)
             } else {
                 (40, 576)
@@ -1421,7 +1458,7 @@ impl Tcb {
             }
         } else {
             let hdr = self.header(self.snd_una.wrapping_sub(1), ACK, clock, false);
-            out.segment(self.local, self.remote, &hdr, (&[], &[]));
+            out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
         }
     }
 
@@ -1540,8 +1577,8 @@ impl Tcb {
             self.delack_at = None;
         }
         TcpOut {
-            src_port: self.local.port(),
-            dst_port: self.remote.port(),
+            src_port: self.local().port(),
+            dst_port: self.remote().port(),
             seq,
             ack: if flags & ACK != 0 { self.rcv_nxt } else { 0 },
             flags,
@@ -1587,7 +1624,7 @@ impl Tcb {
         let mut hdr = self.header(seq, flags, clock, true);
         hdr.ect = fresh && len > 0 && self.ecn_ok;
         let payload = self.tx.slices(off, len);
-        out.segment(self.local, self.remote, &hdr, payload);
+        out.segment(self.local(), self.remote(), &hdr, payload);
         self.last_send = clock.now;
         if self.pace.is_some() {
             self.pace_sent(len, clock.now);
@@ -1656,7 +1693,7 @@ impl Tcb {
                     SYN | ACK
                 };
                 let hdr = self.header(self.iss, flags, clock, false);
-                out.segment(self.local, self.remote, &hdr, (&[], &[]));
+                out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
                 self.snd_max = self.iss.wrapping_add(1);
                 if self.retries == 0 && self.rtt_seq.is_none() {
                     self.rtt_seq = Some((self.iss, clock.now));
@@ -1671,7 +1708,7 @@ impl Tcb {
         if self.state == State::TimeWait {
             if self.ack_now {
                 let hdr = self.header(self.snd_max, ACK, clock, false);
-                out.segment(self.local, self.remote, &hdr, (&[], &[]));
+                out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
             }
             return;
         }
@@ -1778,7 +1815,7 @@ impl Tcb {
         // 3. A bare ACK if one is due and nothing carried it.
         if self.ack_now && !sent_any {
             let hdr = self.header(self.snd_max, ACK, clock, true);
-            out.segment(self.local, self.remote, &hdr, (&[], &[]));
+            out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
         }
     }
 

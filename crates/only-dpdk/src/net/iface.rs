@@ -1062,7 +1062,7 @@ impl Iface {
     // ---- slots ----------------------------------------------------------------------------
 
     fn alloc(&mut self, tcb: Tcb) -> u32 {
-        let key = Key::new(tcb.local.port(), tcb.remote);
+        let key = Key::new(tcb.local().port(), tcb.remote());
         let idx = match self.free.pop() {
             Some(i) => {
                 let s = &mut self.slots[i as usize];
@@ -1187,7 +1187,7 @@ impl Iface {
             }
         }
         if tcb.is_dead() {
-            let key = Key::new(tcb.local.port(), tcb.remote);
+            let key = Key::new(tcb.local().port(), tcb.remote());
             if let Some(p) = slot.half_open.take() {
                 if let Some(l) = self.listeners.get_mut(&p) {
                     l.half_open = l.half_open.saturating_sub(1);
@@ -1266,11 +1266,11 @@ impl Iface {
     }
 
     pub(crate) fn tcp_peer(&self, h: TcpHandle) -> Option<SocketAddr> {
-        self.slot(h).map(|t| t.remote)
+        self.slot(h).map(|t| t.remote())
     }
 
     pub(crate) fn tcp_local(&self, h: TcpHandle) -> Option<SocketAddr> {
-        self.slot(h).map(|t| t.local)
+        self.slot(h).map(|t| t.local())
     }
 
     /// The stack has an address of `a`'s family.
