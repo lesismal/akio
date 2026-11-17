@@ -325,6 +325,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "rtmp_client"
+path = "fuzz_targets/rtmp_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "flv_demux"
 path = "fuzz_targets/flv_demux.rs"
 test = false

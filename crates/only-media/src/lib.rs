@@ -7,8 +7,8 @@
 //!
 //! * [`hub`]: streams by path, one publisher and many subscribers, GOP cache, slow-player
 //!   dropping ([`hub::Dropper`]), auth hooks, waiting for publishers, [`hub::Timeline`], stats.
-//! * Ingest and egress: [`rtmp::RtmpServer`], [`rtsp::RtspServer`], [`srt::SrtServer`] (and
-//!   the [`srt`] caller), [`httpflv::HttpFlv`] (HTTP-FLV and WS-FLV), [`hls::Hls`] (with LL-HLS),
+//! * Ingest and egress: [`rtmp::RtmpServer`] (and the [`rtmp::client`]), [`rtsp::RtspServer`],
+//!   [`srt::SrtServer`] (and the [`srt`] caller), [`httpflv::HttpFlv`] (HTTP-FLV and WS-FLV), [`hls::Hls`] (with LL-HLS),
 //!   [`http::MediaHttp`] dispatching the HTTP formats, [`whip::WhipServer`] (signalling).
 //! * Formats and codecs: [`flv`], [`mpegts`], [`rtp`], [`sdp`], [`amf`], [`codec`].
 //!
