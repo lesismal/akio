@@ -36,6 +36,7 @@
 //! (中文: [gRPC](https://lesismal.github.io/only/zh-CN/protocols/grpc.html)).
 #![warn(clippy::unwrap_used)]
 
+mod features;
 mod generate;
 mod parse;
 mod wkt;

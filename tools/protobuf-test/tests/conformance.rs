@@ -2,11 +2,11 @@
 //! text-format cases in `golden/` (`golden/regen.sh`): the generated messages must decode them
 //! to the expected values and re-encode them byte for byte.
 
-use only_protobuf::{Message, well_known};
+use only_protobuf::{Extendable, Message, well_known};
 use protobuf_test::test::{
     all::{AllTypes, Color, Extended, Small, all_types},
     common::Shared,
-    p2::{Level, P2},
+    p2::{self, Level, P2},
 };
 
 fn golden(name: &str) -> Vec<u8> {
@@ -177,7 +177,7 @@ fn oneofs_recursion_and_well_known_types() {
 }
 
 #[test]
-fn proto2_presence_defaults_and_extensions_as_unknown_fields() {
+fn proto2_presence_defaults_and_extensions() {
     let bin = golden("p2");
     let got = P2::decode(&bin).unwrap();
     assert_eq!(
@@ -199,8 +199,11 @@ fn proto2_presence_defaults_and_extensions_as_unknown_fields() {
     );
     assert_eq!(got.flag, Some(false));
     assert_eq!(got.m.get(&1).map(String::as_str), Some("one"));
-    // The extension (field 100) is an unknown field: tag 100 << 3 = 0x320 -> a0 06, value 9.
-    assert_eq!(got.unknown_fields.as_bytes(), [0xa0, 0x06, 0x09]);
+    // The extension (field 100) is kept in the extension set, as read (tag 100 << 3 = 0x320 ->
+    // a0 06, value 9), and readable through the generated constant.
+    assert!(got.unknown_fields.is_empty());
+    assert_eq!(got.extensions.raw(100), Some(&[0xa0, 0x06, 0x09][..]));
+    assert_eq!(got.extension(&p2::EXT).unwrap(), Some(9));
     assert_eq!(got.encode_to_vec(), bin);
 
     // Unset optional fields read as their declared defaults; required ones use theirs.
