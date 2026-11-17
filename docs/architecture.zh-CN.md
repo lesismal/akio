@@ -277,6 +277,10 @@ flowchart TD
   发送）。处理一批接收时产生的回复按 socket 收集，
   用 `sendmmsg` 跨对端发出；发往同一对端的等长连续数据报合并为一条 GSO 消息（`UDP_SEGMENT`，
   只探测一次，遇到 `EIO`/`EINVAL` 永久关闭）。
+- 接收槽位是池化的 slab（`only_buf::slab`，ADR-024）：要求以所有权方式接收数据报的 handler
+  （隐藏的 `Handler::OWNED_DATA`，only-quic）会以可写区间的形式拿到每个数据报——它是从所在 slab 上
+  切下来的（`on_data_owned`），可以保留；only-quic 就地解密，因此 1-RTT 数据报从内核到应用之间不再
+  复制。其它 handler 原地读取。对端表用 `only_core::hash` 的带密钥折叠乘法对地址做哈希。
 - `dial_udp` 为每个 dial 出的连接创建一个 `connect` 过的 socket，因此 ICMP 错误会报告给它
   （`ConnectionRefused` 会关闭它）。
 - QUIC 和 KCP 建立在此之上：它们的 acceptor 通过 `on_data` 接收数据报，运行各自的 sans-io 状态

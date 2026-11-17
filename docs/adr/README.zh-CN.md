@@ -19,3 +19,4 @@
 - [ADR-013：共享的 0-RTT 防重放存储与 QUIC 兼容版本协商](013-shared-anti-replay-and-compatible-vn.zh-CN.md)
 - [ADR-014：QUIC 会话票据与令牌绑定到 QUIC 版本](014-quic-version-bound-resumption.zh-CN.md)
 - [ADR-015：可插拔的指标收集器](015-metrics-collectors.zh-CN.md)（2026-11-16 采纳）
+- [ADR-024：UDP 接收缓冲区的所有权交付与带密钥的对端表](024-udp-owned-receive-buffers.zh-CN.md)（2026-11-17 采纳）
