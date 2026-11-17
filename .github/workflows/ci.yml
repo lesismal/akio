@@ -202,7 +202,15 @@ jobs:
         with:
           shared-key: features
           save-if: true
-      - run: cargo hack check --workspace --feature-powerset --no-dev-deps
+      # only-log's 12 compile-time level features would multiply the powerset by 4096: they
+      # are left out of it and covered by the static_level test below.
+      - run: >-
+          cargo hack check --workspace --feature-powerset --no-dev-deps
+          --exclude-features max_level_off,max_level_error,max_level_warn,max_level_info,max_level_debug,max_level_trace,release_max_level_off,release_max_level_error,release_max_level_warn,release_max_level_info,release_max_level_debug,release_max_level_trace
+      - name: only-log compile-time level caps
+        run: |
+          cargo test -p only-log --features max_level_info --test static_level
+          cargo test -p only-log --release --features max_level_info,release_max_level_warn --test static_level
       - name: only-http without default features
         timeout-minutes: 10
         run: cargo test -p only-http --no-default-features -- --test-threads=1

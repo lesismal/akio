@@ -20,7 +20,7 @@ only 的所有重要变更都记录在这里。格式遵循
   `websocket` 的 extended CONNECT 路由到该路径的 GET 路由，所以一个 `.get("/ws", ...)` 同时服务
   HTTP/1.1 和 HTTP/3。新增 `Request::protocol`（`:protocol`）。客户端：`H3Client::websocket` /
   `websocket_blocking` 与 `H3WsOptions`；被拒绝时返回 `H3Error::Status`。
-- **QPACK 动态表**（RFC 9204），在 `H3Config` 中配置，客户端现在也接受它（`H3Client::dial_with`）：
+- **QPACK 动态表**（RFC 9204），服务端在 `H3Config`、客户端在 `H3ClientOptions`（`H3Client::dial_with`）中配置：
   `qpack_max_table_capacity`（4096）和 `qpack_blocked_streams`（16）用于我方解码器（encoder/decoder
   stream、按顺序暂存被阻塞的字段段、确认、增量和取消），`qpack_encoder_capacity`（0，关闭）用于我方
   编码器，它只引用已确认的条目，因此从不阻塞对端。新增错误码 `code::QPACK_ENCODER_STREAM_ERROR` /
@@ -32,9 +32,137 @@ only 的所有重要变更都记录在这里。格式遵循
 - 互通：quic-go（双向 HTTP/3 WebSocket 与流式上传），Docker 中通过 libcurl 的 ngtcp2/nghttp3 和
   OpenSSL QUIC（nghttp3 会填充我方解码器的表）。新增 fuzz 目标 `qpack_dynamic`；`h3_frame` 和
   `h3_request` 覆盖 QPACK 流、被阻塞的字段段、extended CONNECT 和流式读取器。
-- 编码器关闭时 HTTP/3 吞吐不变：`quic-bench h3` 同轮 A/B 为上一版本的 1.001 倍（gpu51 上 88.32 万
-  vs 88.27 万 请求/秒，两次各 7 轮交替：0.998 倍和 1.003 倍）。两端都开启 QPACK 编码器时在该基准上
-  慢 18%（请求很小，每个都要确认一次），这正是编码器默认关闭的原因。
+- 编码器关闭时的 HTTP/3 吞吐：`quic-bench h3` 同轮 A/B 为不含这些功能的版本的 0.980 倍（gpu51 上
+  84.25 万 vs 85.96 万 请求/秒，两次各 7 轮交替：0.984 倍和 0.977 倍）：每请求多约 250 条指令，分散
+  在请求路径上（动态表检查、`Request::protocol`、装箱的附加状态）。两端都开启 QPACK 编码器时在该
+  基准上慢 18%（请求很小，每个都要确认一次），这正是编码器默认关闭的原因。
+
+### 变更：处处安全默认值、不阻塞事件循环的 I/O、更精简的热路径（ADR-009，docs/rules.zh-CN.md）
+
+新的开发规则（docs/rules.zh-CN.md，改编自 fit）：绝不阻塞 I/O 线程、消息体流式且有界、背压联动、处处有超时和
+带安全默认值的上限、热路径上构建时优先于请求时、验证与改动相称。代码已按这些规则审查；下列每个上限都有安全
+默认值，0 / `None` 仍是显式的关闭方式。
+
+**引擎（only-core、事件循环、only-tls）**
+- `Config::write_timeout` 60 s（原为 `None`）；`Config::udp_max_peers` 65536（原为 `None`）；新增
+  `Config::connect_timeout`（10 s），用于 epoll、kqueue 和 io_uring 上的 `Engine::dial`。
+- 新增 `Config::max_pending_responses`（32）：排在未完成响应之后的流水线响应会暂停读取（并计入写水位线 /
+  `max_queued_bytes`），不再无限堆积。
+- TLS 握手超时：`ServerConfigBuilder::handshake_timeout` / `ClientConfigBuilder::handshake_timeout`
+  （10 s），由事件循环通过新的 `Transport::handshake_timeout` 执行。
+- 热路径：cork 状态改为原子量，无人等待时跳过 drain 锁，命令队列保留容量；每个流水线请求的无竞争加锁操作
+  约从 7 次降到 4 次。
+
+**HTTP 服务端（only-http）**
+- `HttpConfig::head_timeout` 10 s（slowloris；408）、`keep_alive_timeout` 75 s、`body_timeout` 60 s；
+  HTTP/2 的 preface/SETTINGS 截止时间和空闲 GOAWAY。
+- HTTP/2 Rapid Reset 与洪泛预算：`H2Config::max_resets`（每 30 s 100 次，含 MadeYouReset）、
+  `max_control_frames`（每窗口 1000）→ GOAWAY ENHANCE_YOUR_CALM；所有流合计的 `max_conn_pending_bytes`
+  （32 MiB）。
+- 静态文件只在线程池上访问磁盘（16 线程、4096 排队，满时 503）；缓存命中留在 I/O 线程，压缩副本（及其不存在）
+  被缓存，响应头每个条目只格式化一次，缓存分为 16 个 RwLock 分片。
+- 请求路径：每个路由请求不再增减共享 `Arc`，405 的 `Allow` 预先计算，带消息体的请求只路由一次，metrics 的
+  `in_flight` 按分片，响应过滤器内联存放，CORS / compress / limiter / csrf / request_id 不再每请求格式化或
+  使用全局锁。流水线 HTTP/1.1 和 h2c 约 +3–4%（同一轮 A/B），普通 HTTP/1.1 在 1% 以内。
+
+**HTTP 客户端（only-http、only-h3）**：HTTP/1 响应头 64 KiB、消息体 64 MiB、请求超时 30 s、空闲连接池每主机
+32 个 / 总计 256 个、空闲 90 s 过期；HTTP/2 在缓冲前检查帧大小，头块上限 2 × `max_header_list`，消息体 64 MiB，
+每个请求最多 32 个 push；HTTP/3 消息体 8 MiB、字段段 64 KiB、请求超时 30 s。新增 `ClientError::TimedOut` /
+`TooLarge`、`H3Error::TooLarge`。
+
+**gRPC 与 arpc**：全局 `Mutex<Vec>` 截止时间线程被可取消、分片的截止时间服务取代（带截止时间的调用：gRPC ×17、
+arpc ×278 调用/秒；不带：+1%）。`grpc-timeout` 限制在 `GrpcServer::max_deadline`（24 h）以内，
+`GrpcClient::default_timeout`（30 s），`max_collect_bytes`（64 MiB）；arpc `Routes::max_streams_per_conn`
+（1024）和 `call_timeout`（30 s）；每条消息更少的复制和加锁。
+
+**WebSocket、媒体、WebRTC**：压缩（permessage-deflate）消息也受限（关闭码 1009）；帧头在栈上编码、缓冲区复用
+（1 KiB 普通回显 +7–11%）。RTMP 分块读取器原地解析（原为 O(n²) 复制），未完成消息上限 32 MiB；没有关键帧时
+HLS 分段在 `max_bytes` 处切分；hub 每路径 1024 个流 / 1000 个订阅者，WHIP 256 个会话，SRT 1024 个连接，RTMP
+握手 10 s / 空闲 60 s，RTSP 会话超时被执行（60 s）且请求超时 10 s；`RtcServer` / `Endpoint::max_peers`（1024）。
+
+**QUIC、HTTP/3、KCP**：每流（4 MiB）和每连接（16 MiB）的 QUIC 发送缓冲区上限，配合 `Error::Overloaded` 和
+`QuicHandler::on_stream_writable`；`receive_window` 10 MB（原为不限）；`ServerConfig::max_connections`
+（10,000，无状态 CONNECTION_REFUSED）。HTTP/3 文件消息体只在流有空间时在线程池上读取。KCP `max_sessions` 4096
+和 `KcpHandler::on_writable`。在 4 MiB 每流默认值下 QUIC 单流批量传输 −2.7%。
+
+**SOCKS、mux、TURN、BitTorrent、log、DTLS**
+- SOCKS / HTTP CONNECT：**目标地址默认只允许公网**（解析后拒绝回环、私网、链路本地、CGNAT、组播和保留地址，
+  包括映射形式；BIND 和 UDP ASSOCIATE 同样适用）；握手 10 s、空闲 5 min、早期数据上限 256 KiB、CONNECT 的
+  DNS 在有界线程池上解析。
+- only-mux 嗅探超时 5 s。TURN 分配按客户端分片（中继吞吐约 140k → 513k 数据报/秒）。BitTorrent tracker 的 DNS
+  移出 I/O 线程，tracker 服务端 10 万个 swarm / 每 swarm 1000 个对端并带淘汰，uTP 入站表 1024。only-dtls 在
+  cookie 交换前限制重组缓冲。
+- only-log：可选的 `FmtLogger::non_blocking`（有界队列，满时丢弃并计数）；默认仍为同步。
+
+### 新增：HTTP 与 WebSocket 客户端的重定向、超时、代理、系统根证书（ADR-010）
+
+- 重定向，需显式开启：`client::RedirectPolicy`（默认 `none()`、`limit(n)`、`allow_https_downgrade`），
+  配合 `Client::with_redirects`。跟随 301/302/303/307/308，方法与请求体遵循 RFC 9110 第 15.4 节，支持相对
+  `Location`，重定向到其他源时删除 `Authorization` / `Cookie` / `Proxy-Authorization`，默认不跟随
+  https → http，超过上限时返回 `ClientError::TooManyRedirects`；`ClientResponse::url` 是最终应答的 URL。
+  WebSocket 握手通过 `DialOptions::max_redirects`（默认 0；`WsClientError::TooManyRedirects`）跟随重定向。
+- 单请求超时：`ClientRequest::timeout` / `.timeout(d)` 与 `Client::with_timeout`，覆盖解析、连接、TLS、
+  响应与重定向（`ClientError::Timeout`，连接被关闭）。`H2Client` 通过重置流来遵守它。
+- 在调用线程之外解析域名：新增 `only::dns::resolve`（无依赖的解析线程池，最多 4 个线程；IP 字面量直接应答），
+  HTTP/1 与 WebSocket 客户端使用它。
+- 系统根证书：`only::tls::RootCerts::system()`（`SSL_CERT_FILE` / `SSL_CERT_DIR`、通过 `/usr/bin/security`
+  读取 macOS 钥匙串、Linux/BSD 的 CA 证书包与目录）。**行为变化：**没有 `with_tls` 的 `Client` 和
+  `DialOptions::tls = None` 现在对 `https://` / `wss://` 使用它，而不是报错。
+- HTTP 代理：`only_ws::proxy::Proxy`（在 `only_http::client::Proxy` 重新导出；`all`、`http`、`https`、
+  `no_proxy`，以及需显式调用的 `from_env`，读取 `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`）、
+  `Client::with_proxy`、`DialOptions::proxy`。`http://` 用绝对形式，`https://`、`ws://` 和 `wss://` 经
+  `CONNECT`；代理 URL 中的凭据变成 `Proxy-Authorization: Basic`；被拒绝时是携带 `ProxyRefused` 的
+  `io::Error`。
+- 客户端所在 engine 优雅停机时，WebSocket 客户端以 1001（going away）关闭已打开的连接（以前以 1006 结束）。
+
+### 新增：SOCKS5 BIND 与 UDP ASSOCIATE、SOCKS 访问控制钩子、`Engine::adopt_tcp`
+
+- `only-socks` 支持 SOCKS5 `BIND` 与 `UDP ASSOCIATE`（RFC 1928），默认均关闭
+  （`Socks::bind(true)`、`Socks::udp_associate(true)`；`bind_timeout`、`udp_idle_timeout`）。
+  UDP：每个关联一个转发 socket（engine 需要 `udp_client_threads`），按 IP 和端口识别客户端，丢弃
+  分片，只转发来自客户端发送过的目的地的应答，随控制连接或空闲超时结束。BIND：在代理地址上监听，
+  两次回复，接受到的连接带背压转发。
+- `Socks::allow(|request| ..)`：覆盖 `CONNECT`（SOCKS5/4/4a）、`BIND`、`UDP ASSOCIATE` 以及每个 UDP
+  目的地的访问控制钩子，新增 `Command`、`Dest`、`Request` 类型。拒绝时回复 2（SOCKS4：0x5b）或丢弃
+  数据报。
+- `Engine::adopt_tcp(stream, acceptor, on_error)` 把在 engine 之外 accept 的 TCP 流当作拨号连接来
+  服务（epoll 与 io_uring）。
+- 互操作：`tools/interop/socks/run.sh`（curl、PySocks、BIND 与 UDP 边界情况；以 Dante 作为参考
+  服务器）。ADR-012。新增 API（`api/only-socks.txt`、`api/only.txt`）。
+
+### 新增：`ONLY_LOG` 过滤指令与编译期日志级别上限
+
+- `only::log::Filter`：从 env_logger 风格的指令（`info,only_http=debug,only_quic::conn=trace,only_http::access=off`）
+  得到按 target 的级别，只解析一次。`only::log::init_from_env(default)` 安装按 `ONLY_LOG` 过滤的格式化
+  logger；需显式调用，否则没有代码读取环境变量。`FmtLogger::filter` / `init_filtered` 接受在代码中
+  构造的过滤器。
+- only-log 的 cargo feature `max_level_*` / `release_max_level_*` 与 `STATIC_MAX_LEVEL`，与 `log`
+  crate 相同：超出上限的语句被编译掉。不开启时生成的代码不变（禁用的 `trace!`：x86_64 上
+  0.400 → 0.401 ns，macOS 上二进制相同）。ADR-012。新增 API（`api/only-log.txt`）。
+
+### 新增：共享的 0-RTT 防重放存储（only-tls）与兼容版本协商（only-quic）
+
+新增 API（ADR-013，docs/adr/013-shared-anti-replay-and-compatible-vn.zh-CN.md）：
+
+- **`AntiReplayStore`**（only-tls）：服务端记录已接受早期数据的 ClientHello 的地方。只有一个方法
+  `check_and_insert(binder, ttl) -> io::Result<bool>`，须为原子操作，只针对本会接受早期数据的 ClientHello 在
+  握手路径上调用。出错时**失败即关闭**（拒绝早期数据，客户端在握手后重发）。默认实现 `MemoryAntiReplay`（即原有
+  的每配置一份、有界的记录，10 万条）现已公开。`ServerConfigBuilder::anti_replay_store(Arc<dyn AntiReplayStore>)`
+  接入共享存储（Redis `SET key 1 NX PX ttl`，示意见本书 TLS 章节）；`ServerConfigBuilder::session_ticket_key([u8; 48])`
+  让多个进程或多台机器上的服务端能接受彼此的票据。QUIC 服务端经由其 TLS 配置获得这两项。已接受的 ClientHello 现保留 30 秒（原为 20 秒）：10 秒新鲜度窗口的两倍，再加一个窗口
+  容许共享存储的服务端之间时钟有偏差。
+- **兼容版本协商**（only-quic，RFC 9368 第 4 节）：`ServerConfig::prefer_version(Version)` 让以另一版本开始、
+  并在 version_information 中列出偏好版本的客户端在握手内切换过去，不多花往返；ClientHello 跨多个包、Retry
+  之后以及 0-RTT 时同样可用（0-RTT 包保持客户端的首个版本，RFC 9369 第 4.1 节）。默认关闭：服务端用客户端的
+  版本应答。only-quic 客户端总会跟随这种切换（无法解密的、伪造的另一版本 Initial 不会让它切换）。
+- 测试：共享票据密钥与“远程”存储的两台 TLS 服务端拒绝从一台重放到另一台的 ClientHello（各自记录时则被接受），
+  存储失败时拒绝早期数据，在模拟链路上对 QUIC 做同样的检查；模拟链路上的兼容协商（无额外往返、Retry 加 15%
+  丢包、跨两个包的 ClientHello、跨切换的 0-RTT、v2 切到 v1、无偏好或客户端列表无 v2 时不切换、伪造的 Initial）。
+  Fuzz：`quic_conn` 的连接对现在会切换到 v2，`tls_server` 也会运行 ClientHello 预读。互通：新增
+  `tools/interop/quic/ngtcp2-cvn.sh`，在 Docker 中与实现了 RFC 9368 的 ngtcp2 1.11 双向验证（其客户端被 only-h3
+  切到 v2，含 0-RTT；only-quic 被其服务端切到 v2 与 v1）；quic-go 未实现 RFC 9368，因此
+  `tools/interop/quic/run.sh` 检查其客户端在偏好另一版本的服务端上保持原版本。
+- 代价：未测出（BENCHMARKS.zh-CN.md，握手 A/B）。
 
 ### 变更：没有 AVX-512 IFMA 的 CPU 上 Poly1305 使用 AVX2
 
@@ -81,6 +209,24 @@ ChaCha20-Poly1305）对 512 字节及以上的连续分组在 AVX2 上以 2²⁶
   OpenSSL 3.5 双向 zlib 压缩，忽略 max_fragment_length）、Go（双向 OCSP）与 GnuTLS（双向 record_size_limit 与
   OCSP）；tlsfuzzer 的 `test-record-size-limit.py`、`test-tls13-certificate-compression.py` 与
   `test-tls13-client-certificate-compression.py`。握手性能不变（同批 A/B，docs/BENCHMARKS.zh-CN.md）。
+
+### 新增：可插拔的指标收集器（ADR-015）
+
+应用与协议指标出现在 engine 的 `/metrics` 端点上，不依赖第三方 crate。新模块 `only::metrics`
+（`only_core::metrics`）：`Collector` trait、`Families` 快照（Prometheus 文本 0.0.4 或 JSON，或通过
+`iter` / `get` 读取）、度量工具 `Counter`、`Gauge`、`Histogram` 与具名工具的 `Registry`、`fn_collector`、
+`DEFAULT_BUCKETS`。`Telemetry::register_collector(collector, labels)` / `unregister_collector`、
+`Telemetry::collect` 与 `Telemetry::render_prometheus`（先 engine 序列，再收集器），`observe::metrics_handler`
+现在输出后者。现成的收集器：only-http `HttpMetrics`（新增族 `only_http_requests_by_version_total{version}`、
+字段 `HttpSnapshot::by_version`、`observe::VERSION_LABELS`）、only-quic `QuicServer`（`only_quic_*`：连接、
+两个方向的数据报与字节、发送与丢失的包、拥塞事件；总数包含已关闭的连接）以及 only-tls `Tls::stats()` →
+`TlsStats` / `TlsCounts`（`only_tls_handshakes_total{side, version}`、`only_tls_resumed_total`、
+`only_tls_early_data_total{outcome}`）。只有新增 API；engine 自身的序列不变。示例：
+`cargo run -p only-http --example guide-metrics`。
+
+在安静主机上测量了 engine 遥测的开销（同一轮 A/B，docs/BENCHMARKS.zh-CN.md“遥测开销”）：HTTP/1.1
+上没有可测的开销（关闭回调计时或把计数器编译掉为 0.998–1.006×）；echo 各行在噪声之内。带新版本计数的
+`HttpMetrics::middleware()` 为原中间件的 0.997–1.005×。
 
 ### 变更：AVX-512 上短消息的 ChaCha20-Poly1305 更快
 

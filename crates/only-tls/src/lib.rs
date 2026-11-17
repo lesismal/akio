@@ -15,7 +15,8 @@
 //!
 //! Protocol coverage: TLS 1.3 (RFC 8446: full and PSK-resumed handshakes, HelloRetryRequest,
 //! KeyUpdate, client certificates, early data (0-RTT) when both sides enable it, with replay
-//! protection: [`ServerConfigBuilder::early_data`], [`ClientConfigBuilder::early_data`],
+//! protection, shareable across servers through an [`AntiReplayStore`]:
+//! [`ServerConfigBuilder::early_data`], [`ClientConfigBuilder::early_data`],
 //! [`TlsInfo::early_data`]) and TLS 1.2 (RFC 5246 with ECDHE and AEAD
 //! suites only, extended master secret, renegotiation indication with renegotiation refused,
 //! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384;
@@ -39,9 +40,20 @@
 //! (中文: [TLS](https://lesismal.github.io/only/zh-CN/protocols/tls.html)).
 #![warn(clippy::unwrap_used)]
 
-use std::{any::Any, io};
+use std::{
+    any::Any,
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
-use only_core::{Acceptor, Conn, Transport};
+use only_core::{
+    Acceptor, Conn, Transport,
+    metrics::{Collector, Families},
+};
 
 mod config;
 #[cfg(any(test, feature = "fuzzing"))]
@@ -52,8 +64,10 @@ mod ktls;
 mod proto;
 #[doc(hidden)]
 pub mod quic;
+mod replay;
 #[doc(hidden)]
 pub mod stream;
+mod system;
 
 pub use config::{
     Certificate, ClientConfig, ClientConfigBuilder, Error, PrivateKey, RootCerts, ServerConfig,
@@ -61,6 +75,7 @@ pub use config::{
 };
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};
+pub use replay::{AntiReplayStore, MemoryAntiReplay};
 
 /// The protocol core, for tests, fuzzing and interop tools. **Not** a public API.
 #[doc(hidden)]
@@ -86,6 +101,122 @@ pub mod __proto {
 pub struct Tls<A> {
     mode: Mode,
     inner: A,
+    stats: TlsStats,
+}
+
+/// Handshake outcomes of the connections of one [`Tls`] acceptor, from [`Tls::stats`]; cheap to
+/// clone (shared counters). A [`Collector`] (ADR-015) reporting
+/// `only_tls_handshakes_total{side, version}`, `only_tls_resumed_total{side}` and
+/// `only_tls_early_data_total{side, outcome}` (`accepted` / `rejected`). Failed handshakes are
+/// counted by the engine (`only_tls_handshake_failures_total`).
+#[derive(Clone, Debug, Default)]
+pub struct TlsStats(Arc<StatsInner>);
+
+#[derive(Debug, Default)]
+struct StatsInner {
+    server: bool,
+    tls13: AtomicU64,
+    tls12: AtomicU64,
+    resumed: AtomicU64,
+    early_accepted: AtomicU64,
+    early_rejected: AtomicU64,
+}
+
+/// A snapshot of [`TlsStats`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TlsCounts {
+    /// Completed TLS 1.3 handshakes.
+    pub tls13: u64,
+    /// Completed TLS 1.2 handshakes.
+    pub tls12: u64,
+    /// Handshakes that resumed a session.
+    pub resumed: u64,
+    /// Handshakes whose early data (0-RTT) was accepted.
+    pub early_accepted: u64,
+    /// Handshakes whose early data was rejected.
+    pub early_rejected: u64,
+}
+
+impl TlsStats {
+    fn new(server: bool) -> TlsStats {
+        TlsStats(Arc::new(StatsInner {
+            server,
+            ..StatsInner::default()
+        }))
+    }
+
+    /// Current counts.
+    pub fn counts(&self) -> TlsCounts {
+        let s = &self.0;
+        TlsCounts {
+            tls13: s.tls13.load(Ordering::Relaxed),
+            tls12: s.tls12.load(Ordering::Relaxed),
+            resumed: s.resumed.load(Ordering::Relaxed),
+            early_accepted: s.early_accepted.load(Ordering::Relaxed),
+            early_rejected: s.early_rejected.load(Ordering::Relaxed),
+        }
+    }
+
+    fn handshake_done(&self, c: &proto::Connection) {
+        let s = &self.0;
+        match c.version_name() {
+            Some("TLSv1_2") => &s.tls12,
+            _ => &s.tls13,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+        if c.resumed() {
+            s.resumed.fetch_add(1, Ordering::Relaxed);
+        }
+        match c.early_data() {
+            EarlyData::Accepted => {
+                s.early_accepted.fetch_add(1, Ordering::Relaxed);
+            }
+            EarlyData::Rejected => {
+                s.early_rejected.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Collector for TlsStats {
+    fn collect(&self, out: &mut Families) {
+        let c = self.counts();
+        let side = if self.0.server { "server" } else { "client" };
+        let h = "Completed TLS handshakes.";
+        out.counter(
+            "only_tls_handshakes_total",
+            h,
+            &[("side", side), ("version", "1.3")],
+            c.tls13 as f64,
+        );
+        out.counter(
+            "only_tls_handshakes_total",
+            h,
+            &[("side", side), ("version", "1.2")],
+            c.tls12 as f64,
+        );
+        out.counter(
+            "only_tls_resumed_total",
+            "TLS handshakes that resumed a session.",
+            &[("side", side)],
+            c.resumed as f64,
+        );
+        let h = "TLS handshakes with early data (0-RTT), by outcome.";
+        out.counter(
+            "only_tls_early_data_total",
+            h,
+            &[("side", side), ("outcome", "accepted")],
+            c.early_accepted as f64,
+        );
+        out.counter(
+            "only_tls_early_data_total",
+            h,
+            &[("side", side), ("outcome", "rejected")],
+            c.early_rejected as f64,
+        );
+    }
 }
 
 impl<A> std::fmt::Debug for Tls<A> {
@@ -105,6 +236,7 @@ impl<A: Acceptor> Tls<A> {
         Tls {
             mode: Mode::Server(config),
             inner,
+            stats: TlsStats::new(true),
         }
     }
 
@@ -120,7 +252,14 @@ impl<A: Acceptor> Tls<A> {
         Ok(Tls {
             mode: Mode::Client(config, server_name.to_owned()),
             inner,
+            stats: TlsStats::new(false),
         })
+    }
+
+    /// The handshake counters of this acceptor's connections (clones share them); register
+    /// them with `Telemetry::register_collector` to export them.
+    pub fn stats(&self) -> TlsStats {
+        self.stats.clone()
     }
 }
 
@@ -136,16 +275,26 @@ impl<A: Acceptor> Acceptor for Tls<A> {
     }
 
     fn transport(&self) -> Option<Box<dyn Transport>> {
-        let conn = match &self.mode {
-            Mode::Server(cfg) => Ok(proto::Connection::server(cfg.inner.clone())),
-            Mode::Client(cfg, name) => proto::Connection::client(cfg.inner.clone(), name),
+        let (conn, timeout) = match &self.mode {
+            Mode::Server(cfg) => (
+                Ok(proto::Connection::server(cfg.inner.clone())),
+                cfg.handshake_timeout,
+            ),
+            Mode::Client(cfg, name) => (
+                proto::Connection::client(cfg.inner.clone(), name),
+                cfg.handshake_timeout,
+            ),
         };
         match conn {
-            Ok(conn) => Some(Box::new(TlsTransport { conn })),
+            Ok(conn) => Some(Box::new(TlsTransport {
+                conn,
+                stats: Some(self.stats.clone()),
+                timeout,
+            })),
             Err(e) => {
                 only_log::warn!(target: "only::tls", "cannot start TLS session: {e}");
                 // No transport would mean plaintext; refuse by installing a dead one.
-                Some(Box::new(Failed))
+                Some(Box::new(Failed(timeout)))
             }
         }
     }
@@ -153,7 +302,7 @@ impl<A: Acceptor> Acceptor for Tls<A> {
 
 /// Installed when a session cannot be created: every operation fails, so the connection closes
 /// instead of silently falling back to plaintext.
-struct Failed;
+struct Failed(Option<Duration>);
 
 impl Transport for Failed {
     fn recv(&mut self, _: &[u8], _: &mut Vec<u8>, _: &mut Vec<u8>) -> io::Result<()> {
@@ -172,10 +321,17 @@ impl Transport for Failed {
     fn handshaking(&self) -> bool {
         true
     }
+    fn handshake_timeout(&self) -> Option<Duration> {
+        self.0
+    }
 }
 
 struct TlsTransport {
     conn: proto::Connection,
+    /// Taken when the completed handshake has been counted.
+    stats: Option<TlsStats>,
+    /// [`ServerConfigBuilder::handshake_timeout`] / [`ClientConfigBuilder::handshake_timeout`].
+    timeout: Option<Duration>,
 }
 
 fn io_err(e: proto::Fatal) -> io::Error {
@@ -185,7 +341,13 @@ fn io_err(e: proto::Fatal) -> io::Error {
 impl Transport for TlsTransport {
     fn recv(&mut self, cipher: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()> {
         // An empty input still gives a client the chance to emit its first flight.
-        self.conn.recv(cipher, plain, out).map_err(io_err)
+        self.conn.recv(cipher, plain, out).map_err(io_err)?;
+        if self.stats.is_some() && !self.conn.handshaking() {
+            if let Some(s) = self.stats.take() {
+                s.handshake_done(&self.conn);
+            }
+        }
+        Ok(())
     }
 
     fn seal(&mut self, plain: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
@@ -206,6 +368,10 @@ impl Transport for TlsTransport {
 
     fn handshaking(&self) -> bool {
         self.conn.handshaking()
+    }
+
+    fn handshake_timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 }
 
@@ -297,6 +463,8 @@ mod tests {
         let mut t = tls.transport().unwrap();
         assert_eq!(t.name(), "tls");
         assert!(t.handshaking());
+        // A safe handshake deadline by default.
+        assert_eq!(t.handshake_timeout(), Some(Duration::from_secs(10)));
         // The first call emits the ClientHello.
         let (mut plain, mut out) = (Vec::new(), Vec::new());
         t.recv(&[], &mut plain, &mut out).unwrap();
@@ -305,8 +473,31 @@ mod tests {
     }
 
     #[test]
+    fn handshake_timeout_is_configurable() {
+        let acc = only_core::fn_acceptor(|_c: &Conn<Nop>| Nop);
+        let cfg = ClientConfig::builder()
+            .handshake_timeout(None)
+            .build()
+            .unwrap();
+        let tls = Tls::client(cfg, "localhost", acc).unwrap();
+        assert_eq!(tls.transport().unwrap().handshake_timeout(), None);
+        let acc = only_core::fn_acceptor(|_c: &Conn<Nop>| Nop);
+        let cfg = ClientConfig::builder()
+            .handshake_timeout(Some(Duration::from_millis(1500)))
+            .build()
+            .unwrap();
+        let tls = Tls::client(cfg, "localhost", acc).unwrap();
+        let t = tls.transport().unwrap();
+        assert_eq!(t.handshake_timeout(), Some(Duration::from_millis(1500)));
+        assert_eq!(
+            Failed(Some(Duration::from_secs(1))).handshake_timeout(),
+            Some(Duration::from_secs(1))
+        );
+    }
+
+    #[test]
     fn failed_transport_refuses_everything() {
-        let mut f = Failed;
+        let mut f = Failed(None);
         let (mut a, mut b) = (Vec::new(), Vec::new());
         assert!(f.recv(b"x", &mut a, &mut b).is_err());
         assert!(f.seal(b"x", &mut a).is_err());

@@ -1,11 +1,14 @@
 //! The HTTP/1.1 connection state machine and its `only` `Acceptor`.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use only_core::{Acceptor, Conn, Error, Handler};
 use only_ws::{WsSession, http1::Resume};
 
-use crate::h2::{H2Config, H2Session, PREFACE};
+use crate::{
+    deadline::{OnDeadline, Watch},
+    h2::{H2Config, H2Session, PREFACE},
+};
 
 use crate::{
     context::{BodyEvent, BodyMode, Context, Service},
@@ -24,6 +27,23 @@ pub struct HttpConfig {
     /// HTTP/2 settings, or `None` to serve HTTP/1 only. HTTP/2 is detected from the client
     /// preface (prior knowledge, and TLS with ALPN `h2`) or an `Upgrade: h2c` request.
     pub h2: Option<H2Config>,
+    /// Longest time a request head may take to arrive, measured from its first byte to its
+    /// end, so a peer trickling a byte at a time cannot keep a half-received head alive
+    /// (slowloris). When it passes the request is answered `408` and the connection closed.
+    /// On HTTP/2 it bounds the time from the connection start to the client's `SETTINGS`.
+    /// Default 10 s; `None` disables it.
+    pub head_timeout: Option<Duration>,
+    /// Longest time a keep-alive connection may wait for its next request. It starts once a
+    /// request has been read; when it passes, the connection is closed after the responses
+    /// still being prepared have been sent. On HTTP/2 it is the time without any frame from
+    /// the peer, after which a connection with no open stream is closed with `GOAWAY`.
+    /// Default 75 s; `None` disables it.
+    pub keep_alive_timeout: Option<Duration>,
+    /// Longest time without progress while a request body is being received: no body byte
+    /// for this long answers a buffered request `408` (a streamed one is cut) and closes the
+    /// connection. On HTTP/2, no frame for this long while request bodies are incomplete
+    /// answers those streams `408` (streamed ones are reset). Default 60 s; `None` disables it.
+    pub body_timeout: Option<Duration>,
 }
 
 impl Default for HttpConfig {
@@ -32,7 +52,24 @@ impl Default for HttpConfig {
             max_header_bytes: 64 << 10,
             max_body_bytes: 1 << 20,
             h2: Some(H2Config::default()),
+            head_timeout: Some(Duration::from_secs(10)),
+            keep_alive_timeout: Some(Duration::from_secs(75)),
+            body_timeout: Some(Duration::from_secs(60)),
         }
+    }
+}
+
+impl HttpConfig {
+    /// The shortest timeout configured, if any.
+    fn shortest_timeout(&self) -> Option<Duration> {
+        [
+            self.head_timeout,
+            self.keep_alive_timeout,
+            self.body_timeout,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 }
 
@@ -45,14 +82,14 @@ pub fn serve<S: Service>(service: S) -> HttpAcceptor<S> {
 pub fn serve_with<S: Service>(cfg: HttpConfig, service: S) -> HttpAcceptor<S> {
     HttpAcceptor {
         service: Arc::new(service),
-        cfg,
+        cfg: Arc::new(cfg),
     }
 }
 
 /// The `only` acceptor created by [`serve`].
 pub struct HttpAcceptor<S> {
     service: Arc<S>,
-    cfg: HttpConfig,
+    cfg: Arc<HttpConfig>,
 }
 
 impl<S> std::fmt::Debug for HttpAcceptor<S> {
@@ -64,10 +101,19 @@ impl<S> std::fmt::Debug for HttpAcceptor<S> {
 impl<S: Service> Acceptor for HttpAcceptor<S> {
     type Handler = Session<S>;
 
-    fn on_open(&self, _c: &Conn<Session<S>>) -> Session<S> {
+    fn on_open(&self, c: &Conn<Session<S>>) -> Session<S> {
+        // The first head is timed from the connection's start (a peer that connects and sends
+        // nothing, or stalls in the TLS handshake, is covered too).
+        let watch = self.cfg.shortest_timeout().map(|t| {
+            let w = Watch::register(c, t);
+            w.arm(self.cfg.head_timeout);
+            w
+        });
         Session {
             service: self.service.clone(),
             cfg: self.cfg.clone(),
+            watch,
+            armed: Phase::Head,
             buf: Vec::new(),
             state: State::Head,
             ws: None,
@@ -115,10 +161,28 @@ enum State {
     Closed,
 }
 
+/// Which deadline is armed on a connection.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Phase {
+    /// None (or one that must be re-armed at the next read).
+    Off,
+    /// A request head is arriving (measured from its first byte).
+    Head,
+    /// Waiting for the next request.
+    Idle,
+    /// A request body is arriving (re-armed on progress).
+    Body,
+}
+
 /// The per-connection handler: parses requests and dispatches them to the [`Service`].
 pub struct Session<S> {
     service: Arc<S>,
-    cfg: HttpConfig,
+    /// Shared by every connection of the acceptor.
+    cfg: Arc<HttpConfig>,
+    /// The connection's deadline, when any timeout is configured.
+    watch: Option<Arc<Watch<Session<S>>>>,
+    /// What `watch` is armed for.
+    armed: Phase,
     /// Bytes of an incomplete head, carried over to the next `on_data`.
     buf: Vec<u8>,
     state: State,
@@ -157,6 +221,119 @@ fn h1_shutdown<S: Service>(c: &Conn<Session<S>>) {
 
 impl<S: Service> Handler for Session<S> {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        self.read(c, data);
+        if self.watch.is_some() {
+            self.rearm();
+        }
+    }
+
+    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {
+        if let Some(w) = &self.watch {
+            w.release();
+        }
+        if let Some(h2) = &self.h2 {
+            h2.on_close();
+        }
+        if let Some(ws) = &mut self.ws {
+            ws.on_transport_closed();
+        }
+        if let Some((_, h)) = &mut self.raw {
+            h.on_close();
+        }
+    }
+}
+
+impl<S> Drop for Session<S> {
+    fn drop(&mut self) {
+        if let Some(w) = &self.watch {
+            w.release();
+        }
+    }
+}
+
+impl<S: Service> OnDeadline for Session<S> {
+    fn on_deadline(&mut self, c: &Conn<Self>) {
+        let Some(w) = &self.watch else { return };
+        if !w.fired() {
+            return; // re-armed since it fired
+        }
+        self.armed = Phase::Off;
+        if let Some(h2) = &self.h2 {
+            if let Some(p) = h2.on_deadline() {
+                self.arm_h2(p, true);
+            }
+            return;
+        }
+        if self.ws.is_some() || self.raw.is_some() {
+            return;
+        }
+        match &self.state {
+            State::Closed => {}
+            // Waiting for the next request: close once the pending responses are out.
+            State::Head if self.buf.is_empty() => {
+                self.state = State::Closed;
+                h1_shutdown(c);
+            }
+            State::Head | State::Body { .. } => {
+                self.buf = Vec::new();
+                self.fail(c, 408);
+            }
+            // The service already runs and owns the response: the request cannot be answered.
+            State::Stream { .. } => {
+                self.state = State::Closed;
+                c.close();
+            }
+        }
+    }
+}
+
+impl<S: Service> Session<S> {
+    /// Arms the deadline that fits the connection's state after a read.
+    fn rearm(&mut self) {
+        if let Some(h2) = &self.h2 {
+            let p = h2.phase();
+            return self.arm_h2(p, false);
+        }
+        let (phase, t) = if self.ws.is_some() || self.raw.is_some() {
+            (Phase::Off, None)
+        } else {
+            match self.state {
+                State::Closed => (Phase::Off, None),
+                State::Head if self.buf.is_empty() => (Phase::Idle, self.cfg.keep_alive_timeout),
+                State::Head => (Phase::Head, self.cfg.head_timeout),
+                State::Body { .. } | State::Stream { .. } => (Phase::Body, self.cfg.body_timeout),
+            }
+        };
+        // A head is timed from its first byte and idleness from the end of the last request:
+        // only progress on a body re-arms an armed deadline.
+        if phase == self.armed && phase != Phase::Body {
+            return;
+        }
+        self.armed = phase;
+        if let Some(w) = &self.watch {
+            w.arm(t);
+        }
+    }
+
+    /// HTTP/2: the preface deadline runs from the connection start; the others restart with
+    /// every read.
+    fn arm_h2(&mut self, phase: Phase, force: bool) {
+        if phase == Phase::Head && self.armed == Phase::Head && !force {
+            return;
+        }
+        let t = match phase {
+            Phase::Off => None,
+            Phase::Head => self.cfg.head_timeout,
+            Phase::Idle => self.cfg.keep_alive_timeout,
+            Phase::Body => self.cfg.body_timeout,
+        };
+        self.armed = phase;
+        if let Some(w) = &self.watch {
+            w.arm(t);
+        }
+    }
+
+    fn read(&mut self, c: &Conn<Self>, data: &[u8]) {
         if self.early_probe {
             // TLS early data comes first and ends with the handshake; plain TCP has none.
             match only::tls::tls_info(c) {
@@ -240,20 +417,6 @@ impl<S: Service> Handler for Session<S> {
         }
     }
 
-    fn on_close(&mut self, _c: &Conn<Self>, _err: Option<Error>) {
-        if let Some(h2) = &self.h2 {
-            h2.on_close();
-        }
-        if let Some(ws) = &mut self.ws {
-            ws.on_transport_closed();
-        }
-        if let Some((_, h)) = &mut self.raw {
-            h.on_close();
-        }
-    }
-}
-
-impl<S: Service> Session<S> {
     /// Counts consumed bytes while they may be early data.
     fn count_early(&mut self, used: usize) {
         if self.early_probe || self.consumed < self.early_len {
@@ -310,6 +473,8 @@ impl<S: Service> Session<S> {
                             }
                             let early = self.early_at(pos);
                             pos += n;
+                            // The next head and the next idle period are timed afresh.
+                            self.armed = Phase::Off;
                             self.on_head(c, head, early);
                         }
                         Err(e) => {
@@ -437,8 +602,10 @@ impl<S: Service> Session<S> {
         let h = &head.headers;
         // One pass over the fields for everything framing needs (a lookup per header name
         // cost ~4% of pipelined throughput).
-        let (mut host, mut close, mut keep, mut te, mut te_n, mut cl_n, mut expect) =
-            (false, false, false, None, 0, 0, None);
+        let (mut host, mut close, mut keep, mut te, mut te_n, mut expect) =
+            (false, false, false, None, 0, None);
+        // Content-Length: every value must parse and agree.
+        let (mut cl, mut cl_bad) = (None::<usize>, false);
         for (n, v) in h.iter() {
             let token = |t: &str| v.split(',').any(|x| x.trim().eq_ignore_ascii_case(t));
             match n.len() {
@@ -450,7 +617,10 @@ impl<S: Service> Session<S> {
                     close |= token("close");
                     keep |= token("keep-alive");
                 }
-                14 if n.eq_ignore_ascii_case("content-length") => cl_n += 1,
+                14 if n.eq_ignore_ascii_case("content-length") => match v.parse::<usize>() {
+                    Ok(len) if cl.is_none_or(|l| l == len) => cl = Some(len),
+                    _ => cl_bad = true,
+                },
                 17 if n.eq_ignore_ascii_case("transfer-encoding") => {
                     te = te.or(Some(v));
                     te_n += 1;
@@ -466,13 +636,8 @@ impl<S: Service> Session<S> {
             Version::Http10 => keep,
             Version::Http2 | Version::Http3 => true,
         };
-        let cl = if cl_n == 0 {
-            Vec::new()
-        } else {
-            h.get_all("content-length").collect::<Vec<_>>()
-        };
         let mut declared = 0usize;
-        let kind = match (te, cl.is_empty()) {
+        let kind = match (te, cl.is_none() && !cl_bad) {
             (Some(_), false) => return self.fail(c, 400), // request smuggling vector
             (Some(te), true) => {
                 let last = te.rsplit(',').next().unwrap_or("").trim();
@@ -482,14 +647,10 @@ impl<S: Service> Session<S> {
                 Some(Kind::Chunked(Box::new(ChunkDecoder::new())))
             }
             (None, false) => {
-                let mut len = None;
-                for v in &cl {
-                    match v.parse::<usize>() {
-                        Ok(n) if len.is_none_or(|l| l == n) => len = Some(n),
-                        _ => return self.fail(c, 400),
-                    }
+                if cl_bad {
+                    return self.fail(c, 400);
                 }
-                declared = len.unwrap_or(0);
+                declared = cl.unwrap_or(0);
                 (declared > 0).then_some(Kind::Length(declared))
             }
             (None, true) => None,
@@ -509,7 +670,8 @@ impl<S: Service> Session<S> {
         let Some(kind) = kind else {
             return self.dispatch(c, req, keep_alive);
         };
-        let stream = self.service.body_mode(&req) == BodyMode::Stream;
+        let stream =
+            self.service.streams_bodies() && self.service.body_mode(&req) == BodyMode::Stream;
         if !stream && declared > self.cfg.max_body_bytes {
             return self.fail(c, 413);
         }

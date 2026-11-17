@@ -73,7 +73,8 @@ impl Message {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ChunkError {
-    /// A message over the reader's size limit.
+    /// A message over the reader's size limit, or unfinished messages over all chunk streams
+    /// holding more than the reader allows.
     TooLarge,
     /// A continuation chunk (format 1-3) on a chunk stream never started with format 0.
     NoHeader,
@@ -118,6 +119,10 @@ pub struct ChunkReader {
     chunk_size: usize,
     streams: HashMap<u32, Stream>,
     max_message: usize,
+    /// Bytes held in unfinished messages over all chunk streams.
+    partial_bytes: usize,
+    /// Limit on `partial_bytes`.
+    max_partial: usize,
     received: u64,
 }
 
@@ -130,13 +135,23 @@ impl Default for ChunkReader {
 const MAX_STREAMS: usize = 256;
 
 impl ChunkReader {
-    /// A reader with chunk size 128 and a 16 MiB message limit.
+    /// A reader with chunk size 128, a 16 MiB message limit and at most 32 MiB (twice the
+    /// message limit) held in unfinished messages over all chunk streams.
     pub fn new() -> ChunkReader {
+        ChunkReader::with_limits(16 << 20, 32 << 20)
+    }
+
+    /// A reader accepting messages up to `max_message` bytes and holding at most `max_partial`
+    /// bytes of unfinished messages over all its chunk streams; past either, `feed` fails with
+    /// [`ChunkError::TooLarge`].
+    pub fn with_limits(max_message: usize, max_partial: usize) -> ChunkReader {
         ChunkReader {
             buf: Vec::new(),
             chunk_size: 128,
             streams: HashMap::new(),
-            max_message: 16 << 20,
+            max_message,
+            partial_bytes: 0,
+            max_partial,
             received: 0,
         }
     }
@@ -164,7 +179,11 @@ impl ChunkReader {
         Ok(out)
     }
 
-    /// Parses one chunk at `p`; `None` when the buffer does not hold all of it yet.
+    /// Parses one chunk at `p`; `None` when the buffer does not hold all of it yet, in which
+    /// case nothing has changed (the chunk is parsed again once more bytes arrive).
+    ///
+    /// The chunk stream's state is updated in place: the partial payload is never copied, so a
+    /// large message in small chunks costs O(n), not O(n^2).
     fn chunk(&mut self, mut p: usize, out: &mut Vec<Message>) -> Result<Option<usize>, ChunkError> {
         let b = &self.buf;
         let Some(&b0) = b.get(p) else { return Ok(None) };
@@ -187,49 +206,57 @@ impl ChunkReader {
             _ => {}
         }
         let hlen = [11, 7, 3, 0][usize::from(fmt)];
-        let Some(h) = b.get(p..p + hlen) else {
+        let Some(hs) = b.get(p..p + hlen) else {
             return Ok(None);
         };
-        let h = h.to_vec();
+        let mut h = [0u8; 11];
+        h[..hlen].copy_from_slice(hs);
         p += hlen;
-        if !self.streams.contains_key(&csid) && self.streams.len() >= MAX_STREAMS {
+        let known = self.streams.get(&csid);
+        if known.is_none() && self.streams.len() >= MAX_STREAMS {
             return Err(ChunkError::TooManyStreams);
         }
-        let mut st = self.streams.get(&csid).cloned().unwrap_or_default();
-        if fmt != 0 && !st.has_header {
+        // Work on a copy of the header state (not the payload); commit it once the chunk is
+        // complete.
+        let empty = Stream::default();
+        let cur = known.unwrap_or(&empty);
+        if fmt != 0 && !cur.has_header {
             return Err(ChunkError::NoHeader);
         }
         let u24 = |x: &[u8]| (u32::from(x[0]) << 16) | (u32::from(x[1]) << 8) | u32::from(x[2]);
-        let mut continuing = st.started && !st.payload.is_empty();
-        if fmt != 3 && continuing {
-            // A new header in the middle of a message: the peer abandoned it.
-            st.payload.clear();
-            continuing = false;
-        }
+        let have = cur.payload.len();
+        // A new header in the middle of a message: the peer abandoned it.
+        let continuing = cur.started && have > 0 && fmt == 3;
+        let mut timestamp = cur.timestamp;
+        let mut delta = cur.delta;
+        let mut length = cur.length;
+        let mut msg_type = cur.msg_type;
+        let mut stream_id = cur.stream_id;
+        let mut extended = cur.extended;
         let mut ts_field = 0;
         if fmt <= 2 {
             ts_field = u24(&h[0..3]);
-            st.extended = ts_field == 0xff_ffff;
+            extended = ts_field == 0xff_ffff;
         }
         if fmt <= 1 {
-            st.length = u24(&h[3..6]) as usize;
-            st.msg_type = h[6];
-            if st.length > self.max_message {
+            length = u24(&h[3..6]) as usize;
+            msg_type = h[6];
+            if length > self.max_message {
                 return Err(ChunkError::TooLarge);
             }
         }
         if fmt == 0 {
-            st.stream_id = u32::from_le_bytes([h[7], h[8], h[9], h[10]]);
+            stream_id = u32::from_le_bytes([h[7], h[8], h[9], h[10]]);
         }
         let mut ext = None;
-        if st.extended {
-            let Some(x) = self.buf.get(p..p + 4) else {
+        if extended {
+            let Some(x) = b.get(p..p + 4) else {
                 return Ok(None);
             };
             let v = u32::from_be_bytes([x[0], x[1], x[2], x[3]]);
-            if fmt == 3 && continuing {
+            if continuing {
                 // Continuation chunks repeat the extended timestamp; some peers leave it out.
-                if v == st.timestamp || v == st.delta {
+                if v == timestamp || v == delta {
                     p += 4;
                 }
             } else {
@@ -241,28 +268,49 @@ impl ChunkReader {
             let field = ext.unwrap_or(ts_field);
             match fmt {
                 0 => {
-                    st.timestamp = field;
-                    st.delta = 0;
+                    timestamp = field;
+                    delta = 0;
                 }
                 1 | 2 => {
-                    st.delta = field;
-                    st.timestamp = st.timestamp.wrapping_add(field);
+                    delta = field;
+                    timestamp = timestamp.wrapping_add(field);
                 }
-                _ => st.timestamp = st.timestamp.wrapping_add(st.delta),
+                _ => timestamp = timestamp.wrapping_add(delta),
             }
         }
-        st.has_header = true;
-        let need = st.length - st.payload.len();
-        let n = need.min(self.chunk_size);
-        let Some(data) = self.buf.get(p..p + n) else {
+        let base = if continuing { have } else { 0 };
+        let n = (length - base).min(self.chunk_size);
+        let Some(data) = b.get(p..p + n) else {
             return Ok(None);
         };
+        // Bytes held in partial messages over all chunk streams are bounded too (rule 6): with
+        // up to 256 chunk streams, each a message short of `max_message`, a peer could otherwise
+        // make one connection hold gigabytes.
+        let dropped = if continuing { 0 } else { have };
+        let pending = self.partial_bytes - dropped + n;
+        if base + n < length && pending > self.max_partial {
+            return Err(ChunkError::TooLarge);
+        }
+        // Complete: commit.
+        let st = self.streams.entry(csid).or_default();
+        if !continuing {
+            st.payload.clear();
+        }
+        st.timestamp = timestamp;
+        st.delta = delta;
+        st.length = length;
+        st.msg_type = msg_type;
+        st.stream_id = stream_id;
+        st.extended = extended;
+        st.has_header = true;
         st.payload.extend_from_slice(data);
         st.started = true;
         p += n;
         if st.payload.len() == st.length {
             let payload = std::mem::take(&mut st.payload);
             st.started = false;
+            self.partial_bytes -= dropped;
+            self.partial_bytes -= base;
             let m = Message {
                 csid,
                 msg_type: st.msg_type,
@@ -270,11 +318,10 @@ impl ChunkReader {
                 timestamp: st.timestamp,
                 payload,
             };
-            self.streams.insert(csid, st);
             self.control(&m)?;
             out.push(m);
         } else {
-            self.streams.insert(csid, st);
+            self.partial_bytes = pending;
         }
         Ok(Some(p))
     }
@@ -295,6 +342,7 @@ impl ChunkReader {
                 if let Some(x) = m.payload.get(..4) {
                     let id = u32::from_be_bytes([x[0], x[1], x[2], x[3]]);
                     if let Some(s) = self.streams.get_mut(&id) {
+                        self.partial_bytes -= s.payload.len();
                         s.payload.clear();
                         s.started = false;
                     }
@@ -472,5 +520,90 @@ mod tests {
             (subs[1].msg_type, subs[1].timestamp, subs[1].payload.clone()),
             (8, 5040, vec![3])
         );
+    }
+
+    /// A 16 MiB (less one byte) message in 128-byte chunks, fed in pieces that end mid-chunk: the partial
+    /// payload is updated in place (before: the whole stream state, payload included, was cloned
+    /// per chunk and per incomplete retry, O(n^2) copying that stalled the loop for seconds).
+    #[test]
+    fn large_message_in_small_chunks_is_linear() {
+        let len = (16 << 20) - 1; // the largest length a chunk header can carry
+        let m = Message::new(6, VIDEO, 1, 0, (0..len).map(|i| i as u8).collect());
+        let mut wire = Vec::new();
+        write_message(&mut wire, &m, 128);
+        let mut r = ChunkReader::new();
+        let t = std::time::Instant::now();
+        let mut got = Vec::new();
+        for c in wire.chunks(1000) {
+            got.extend(r.feed(c).unwrap());
+        }
+        assert_eq!(got, vec![m]);
+        assert_eq!(r.partial_bytes, 0);
+        // Linear even in a debug build; the quadratic version took minutes here.
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(20),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    /// Unfinished messages over all chunk streams are bounded: just under the limit is fine,
+    /// over it fails; finishing or aborting a message releases its bytes.
+    #[test]
+    fn partial_bytes_over_all_streams_are_bounded() {
+        // Starts a 1000-byte message on `csid` with its first 128-byte chunk.
+        let start = |csid: u8| {
+            let mut w = vec![csid, 0, 0, 0, 0, 0x03, 0xe8, VIDEO, 1, 0, 0, 0];
+            w.extend_from_slice(&[7; 128]);
+            w
+        };
+        let mut r = ChunkReader::with_limits(1000, 128 * 3);
+        for csid in 3..6 {
+            r.feed(&start(csid)).unwrap(); // 128, 256, 384 = the limit
+        }
+        assert_eq!(r.partial_bytes, 384);
+        assert_eq!(r.feed(&start(6)).unwrap_err(), ChunkError::TooLarge);
+
+        let mut r = ChunkReader::with_limits(1000, 1000);
+        r.feed(&start(3)).unwrap();
+        r.feed(&start(4)).unwrap();
+        // Abort chunk stream 3 (on the control stream): its bytes are released.
+        let mut abort = Vec::new();
+        write_message(&mut abort, &control_u32(ABORT, 3), 128);
+        r.feed(&abort).unwrap();
+        assert_eq!(r.partial_bytes, 128);
+        // A new header on chunk stream 4 abandons its message: released too.
+        r.feed(&start(4)).unwrap();
+        assert_eq!(r.partial_bytes, 128);
+        // Finish it: 1000 - 128 bytes in format 3 chunks, then nothing is held.
+        let mut rest = Vec::new();
+        for piece in [0usize; 1000 - 128].chunks(128) {
+            rest.push(0xc4);
+            rest.extend(piece.iter().map(|_| 7u8));
+        }
+        let got = r.feed(&rest).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].payload, vec![7; 1000]);
+        assert_eq!(r.partial_bytes, 0);
+    }
+
+    /// A chunk cut at every possible byte leaves the reader unchanged until it is complete.
+    #[test]
+    fn chunks_split_at_every_byte() {
+        let msgs = vec![
+            Message::new(5, VIDEO, 1, 0x0100_0000, vec![1; 300]),
+            Message::new(5, VIDEO, 1, 0x0100_0010, vec![2; 50]),
+        ];
+        let mut wire = Vec::new();
+        for m in &msgs {
+            write_message(&mut wire, m, 128);
+        }
+        for cut in 1..wire.len() {
+            let mut r = ChunkReader::new();
+            let mut got = r.feed(&wire[..cut]).unwrap();
+            got.extend(r.feed(&wire[cut..]).unwrap());
+            assert_eq!(got, msgs, "cut {cut}");
+            assert_eq!(r.partial_bytes, 0);
+        }
     }
 }

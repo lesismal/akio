@@ -574,6 +574,13 @@ impl Connection {
         };
         let mut retransmit = false;
         for f in frags {
+            if self.expect == Expect::ClientHello
+                && (f.msg_type != hs::CLIENT_HELLO || f.length > hs::MAX_CLIENT_HELLO)
+            {
+                // Before the cookie exchange the peer's address is unproven: only a ClientHello
+                // of plausible size is reassembled (and only it may restart reassembly).
+                continue;
+            }
             if self.state == State::Handshake
                 && self.expect == Expect::ClientHello
                 && f.msg_type == hs::CLIENT_HELLO
@@ -586,9 +593,6 @@ impl Connection {
                     self.recv_seq = f.seq;
                     self.cur_peer_flight_start = f.seq;
                 }
-            }
-            if self.expect == Expect::ClientHello && f.msg_type != hs::CLIENT_HELLO {
-                continue;
             }
             if f.seq < self.recv_seq {
                 if Some(f.seq) == self.prev_peer_flight_start && f.offset == 0 {
@@ -1244,5 +1248,61 @@ impl Connection {
             Expect::ClientKeyExchange
         };
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Identity;
+
+    /// A datagram holding one plaintext handshake record with one fragment.
+    fn hello_fragment(seq: u64, length: usize, frag: &[u8]) -> Vec<u8> {
+        let hs = hs::encode_fragment(hs::CLIENT_HELLO, 0, length, 0, frag);
+        let mut d = Vec::new();
+        Header {
+            content_type: 22,
+            version: 0xfefd,
+            epoch: 0,
+            seq,
+        }
+        .encode(hs.len(), &mut d);
+        d.extend_from_slice(&hs);
+        d
+    }
+
+    /// Before the cookie exchange a server reassembles nothing but a plausibly sized
+    /// ClientHello, and what it holds grows with the bytes received, not with the length a
+    /// fragment claims (just under, at and over the cap).
+    #[test]
+    fn pre_cookie_reassembly_is_bounded() {
+        let id = Identity::generate_self_signed().unwrap();
+        let now = Instant::now();
+        let mut s = Connection::server(Arc::new(Config::new(id)), now, b"10.0.0.1:1").unwrap();
+        // Over the cap: dropped, nothing held.
+        s.handle_datagram(now, &hello_fragment(0, hs::MAX_CLIENT_HELLO + 1, &[1; 16]))
+            .unwrap();
+        assert!(s.partials.is_empty());
+        // At the cap and under it: held, but only as much as arrived.
+        for (seq, len) in [(1, hs::MAX_CLIENT_HELLO), (2, hs::MAX_CLIENT_HELLO - 1)] {
+            s.handle_datagram(now, &hello_fragment(seq, len, &[1; 16]))
+                .unwrap();
+            assert_eq!(s.partials.len(), 1);
+            let held: usize = s.partials.values().map(|(_, p)| p.allocated()).sum();
+            assert!(held < 1024, "{held}");
+        }
+        // Other message types are not reassembled before a ClientHello at all.
+        let mut d = Vec::new();
+        let cert = hs::encode_fragment(hs::CERTIFICATE, 5, hs::MAX_MESSAGE, 0, &[0; 16]);
+        Header {
+            content_type: 22,
+            version: 0xfefd,
+            epoch: 0,
+            seq: 9,
+        }
+        .encode(cert.len(), &mut d);
+        d.extend_from_slice(&cert);
+        s.handle_datagram(now, &d).unwrap();
+        assert!(s.partials.keys().all(|k| *k == 0));
     }
 }

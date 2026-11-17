@@ -1,10 +1,13 @@
 //! An HTTP/3 client: requests multiplexed on one QUIC connection, request bodies streamed
 //! ([`H3Client::upload`]) and WebSocket over HTTP/3 ([`H3Client::websocket`]).
+//!
+//! Responses are bounded by [`H3ClientOptions`]: body (8 MiB), field sections (64 KiB,
+//! advertised as `SETTINGS_MAX_FIELD_SECTION_SIZE`) and a total request timeout (30 s).
 
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use only_http::message::{Headers, Method, Response};
 use only_http::ws::deflate::PmdOffer;
@@ -20,6 +23,62 @@ type Callback = Box<dyn FnOnce(Result<Response, H3Error>) + Send>;
 type WsDone = Box<dyn FnOnce(Result<WsSender, H3Error>) + Send>;
 type Encode = Box<dyn FnOnce(StreamId, Option<&EncShared>) -> Vec<u8> + Send>;
 
+/// Limits and QPACK settings of an [`H3Client`]. Every one has a safe default.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct H3ClientOptions {
+    /// Largest response body; past it the request stream is stopped and the request fails
+    /// with [`H3Error::TooLarge`]. Default 8 MiB (as `H3Config::max_body_bytes`).
+    pub max_body_bytes: usize,
+    /// Largest response field section (headers or trailers, decoded), advertised as
+    /// `SETTINGS_MAX_FIELD_SECTION_SIZE`; larger ones fail the request with
+    /// [`H3Error::TooLarge`]. Default 64 KiB (as `H3Config::max_field_section_bytes`).
+    pub max_field_section_bytes: usize,
+    /// Total time from [`H3Client::request`] (or [`H3Client::websocket`]) to the complete
+    /// response (a WebSocket's: its head), waiting for the handshake or a stream included.
+    /// Past it the request stream is reset (`H3_REQUEST_CANCELLED`) and the request fails with
+    /// [`H3Error::Timeout`]; that callback runs on the client's timer thread. Uploads
+    /// ([`H3Client::upload`]) have no timeout. `None` opts out. Default 30 s.
+    pub request_timeout: Option<Duration>,
+    /// QPACK dynamic table capacity this client's decoder allows the server
+    /// (as `H3Config::qpack_max_table_capacity`). Default 4096.
+    pub qpack_max_table_capacity: usize,
+    /// Response streams that may wait for QPACK inserts at once
+    /// (as `H3Config::qpack_blocked_streams`). Default 16.
+    pub qpack_blocked_streams: usize,
+    /// Dynamic table capacity this client's encoder uses, at most what the server allows
+    /// (as `H3Config::qpack_encoder_capacity`). Default 0: off.
+    pub qpack_encoder_capacity: usize,
+}
+
+impl Default for H3ClientOptions {
+    fn default() -> H3ClientOptions {
+        let h3 = H3Config::default();
+        H3ClientOptions {
+            max_body_bytes: 8 << 20,
+            max_field_section_bytes: 64 << 10,
+            request_timeout: Some(Duration::from_secs(30)),
+            qpack_max_table_capacity: h3.qpack_max_table_capacity,
+            qpack_blocked_streams: h3.qpack_blocked_streams,
+            qpack_encoder_capacity: h3.qpack_encoder_capacity,
+        }
+    }
+}
+
+impl H3ClientOptions {
+    /// The HTTP/3 settings these options make.
+    fn h3(&self) -> H3Config {
+        H3Config {
+            max_field_section_bytes: self.max_field_section_bytes,
+            max_body_bytes: self.max_body_bytes,
+            qpack_max_table_capacity: self.qpack_max_table_capacity,
+            qpack_blocked_streams: self.qpack_blocked_streams,
+            qpack_encoder_capacity: self.qpack_encoder_capacity,
+            ..H3Config::default()
+        }
+    }
+}
+
 /// Why an HTTP/3 request got no response.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -30,10 +89,13 @@ pub enum H3Error {
     Reset(u64),
     /// The response broke the protocol (what was wrong).
     Protocol(&'static str),
-    /// No response within the timeout of a blocking call.
+    /// No response within the timeout of a blocking call or
+    /// [`H3ClientOptions::request_timeout`].
     Timeout,
     /// The server refused a WebSocket ([`H3Client::websocket`]) with this status.
     Status(u16),
+    /// The response passed a size limit of [`H3ClientOptions`] (which one).
+    TooLarge(&'static str),
 }
 
 impl std::fmt::Display for H3Error {
@@ -44,6 +106,7 @@ impl std::fmt::Display for H3Error {
             H3Error::Protocol(what) => write!(f, "HTTP/3 protocol error: {what}"),
             H3Error::Timeout => f.write_str("timed out"),
             H3Error::Status(s) => write!(f, "WebSocket refused with status {s}"),
+            H3Error::TooLarge(what) => write!(f, "too large: {what}"),
         }
     }
 }
@@ -118,6 +181,8 @@ struct Job {
     /// What only uploads, WebSockets and dynamic-table encoding need (boxed, so a plain
     /// request stays small).
     x: Option<Box<JobX>>,
+    /// Identifies the request to its deadline (0: none).
+    token: u64,
 }
 
 struct JobX {
@@ -136,6 +201,7 @@ impl Job {
             wire,
             kind,
             x: None,
+            token: 0,
         }
     }
 
@@ -148,6 +214,7 @@ impl Job {
             wire,
             kind,
             x: Some(Box::new(JobX { encode, up, fin })),
+            token: 0,
         }
     }
 
@@ -163,6 +230,8 @@ struct InFlight {
     /// What only uploads, WebSockets and blocked responses need (boxed, so a plain request's
     /// state stays small).
     x: Option<Box<Extra>>,
+    /// Identifies the request to its deadline (0: none).
+    token: u64,
 }
 
 #[derive(Default)]
@@ -174,7 +243,7 @@ struct Extra {
 
 impl InFlight {
     #[inline]
-    fn new(kind: Kind, up: Option<Arc<UpState>>) -> InFlight {
+    fn new(kind: Kind, up: Option<Arc<UpState>>, token: u64) -> InFlight {
         let (cb, ws) = match kind {
             Kind::Plain(cb) => (Some(cb), None),
             Kind::Ws(w) => (None, Some(w)),
@@ -191,6 +260,7 @@ impl InFlight {
             resp: None,
             cb,
             x,
+            token,
         }
     }
 
@@ -224,6 +294,47 @@ struct State {
     settings: Option<Settings>,
     /// WebSockets waiting for the server's SETTINGS (extended CONNECT allowed?).
     ws_wait: Vec<Job>,
+    next_token: u64,
+    /// Request deadlines in order (every request has the same timeout). Finished requests
+    /// leave their entry behind; it is dropped once it reaches the front.
+    deadlines: VecDeque<(Instant, u64)>,
+    /// Tokens of the requests still waiting for a response.
+    live: TokenSet,
+    /// When the pending timer job runs; one job per connection, not per request.
+    armed_at: Option<Instant>,
+    /// Streams whose blocked response a timeout gave up: the connection's handler cancels
+    /// them on the decoder stream (the timer thread cannot).
+    expired_blocked: Vec<StreamId>,
+}
+
+type TokenSet = std::collections::HashSet<u64, std::hash::BuildHasherDefault<crate::IdHasher>>;
+
+impl State {
+    fn finished(&mut self, token: u64) {
+        if token != 0 {
+            self.live.remove(&token);
+        }
+    }
+
+    fn prune(&mut self) {
+        while let Some(&(_, t)) = self.deadlines.front() {
+            if self.live.contains(&t) {
+                break;
+            }
+            self.deadlines.pop_front();
+        }
+    }
+
+    /// A deadline for a new request (0 without a timeout).
+    fn deadline(&mut self, timeout: Option<Duration>) -> u64 {
+        let Some(d) = timeout else { return 0 };
+        self.next_token += 1;
+        let token = self.next_token;
+        self.live.insert(token);
+        self.prune();
+        self.deadlines.push_back((Instant::now() + d, token));
+        token
+    }
 }
 
 struct Shared {
@@ -244,6 +355,7 @@ pub struct H3Client {
     conn: Connection,
     sh: Arc<Shared>,
     authority: String,
+    request_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for H3Client {
@@ -273,9 +385,12 @@ struct UpState {
 struct Up {
     /// The stream, once open (the head is sent first).
     id: Option<StreamId>,
-    /// DATA frames written before the stream opened.
+    /// DATA frames written before the stream opened, or refused while its send buffer was
+    /// full; they go out in order once there is room.
     queued: Vec<u8>,
     finished: bool,
+    /// The stream's end was sent.
+    ended: bool,
     failed: bool,
 }
 
@@ -288,11 +403,23 @@ impl UpState {
     fn attach(&self, id: StreamId) {
         let mut u = self.lock();
         u.id = Some(id);
+        self.flush(&mut u);
+    }
+
+    /// Sends what waits (as far as the send buffer takes it), then the end if finished.
+    fn flush(&self, u: &mut Up) {
+        let Some(id) = u.id else { return };
         if !u.queued.is_empty() {
-            let q = std::mem::take(&mut u.queued);
-            let _ = self.c.send(id, q);
+            let q = Bytes::from(std::mem::take(&mut u.queued));
+            match self.c.send(id, q.clone()) {
+                Ok(()) => {}
+                // Again once the stream is writable (`on_stream_writable`).
+                Err(only_quic::Error::Overloaded) => return u.queued = q.to_vec(),
+                Err(_) => return u.failed = true,
+            }
         }
-        if u.finished {
+        if u.finished && !u.ended {
+            u.ended = true;
             let _ = self.c.finish(id);
         }
     }
@@ -304,6 +431,8 @@ impl UpState {
 
 impl H3Upload {
     /// Sends body bytes (in a DATA frame). `false` once the request failed or was finished.
+    /// What the stream's send buffer cannot take yet is kept here until it can: pace the
+    /// writer with [`queued_bytes`](Self::queued_bytes).
     pub fn write(&self, data: &[u8]) -> bool {
         let mut u = self.up.lock();
         if u.failed || u.finished {
@@ -313,8 +442,15 @@ impl H3Upload {
             return true;
         }
         match u.id {
-            Some(id) => self.up.c.send(id, crate::data_frame(data)).is_ok(),
-            None => {
+            Some(id) if u.queued.is_empty() => match self.up.c.send(id, crate::data_frame(data)) {
+                Ok(()) => true,
+                Err(only_quic::Error::Overloaded) => {
+                    frame::put_frame(&mut u.queued, frame::DATA, data);
+                    true
+                }
+                Err(_) => false,
+            },
+            _ => {
                 frame::put_frame(&mut u.queued, frame::DATA, data);
                 true
             }
@@ -328,20 +464,15 @@ impl H3Upload {
             return false;
         }
         if !std::mem::replace(&mut u.finished, true) {
-            if let Some(id) = u.id {
-                return self.up.c.finish(id).is_ok();
-            }
+            self.up.flush(&mut u);
         }
-        true
+        !u.failed
     }
 
     /// Bytes written but not yet sent, for pacing the writer.
     pub fn queued_bytes(&self) -> usize {
         let u = self.up.lock();
-        match u.id {
-            Some(id) => self.up.c.queued_bytes(id),
-            None => u.queued.len(),
-        }
+        u.queued.len() + u.id.map_or(0, |id| self.up.c.queued_bytes(id))
     }
 }
 
@@ -358,30 +489,33 @@ impl H3Client {
         server_name: &str,
         config: only_quic::ClientConfig,
     ) -> Result<H3Client, only_quic::Error> {
-        let h3 = H3Config {
-            max_field_section_bytes: 1 << 20,
-            ..H3Config::default()
-        };
-        H3Client::dial_with(engine, addr, server_name, config, &h3)
+        H3Client::dial_with(
+            engine,
+            addr,
+            server_name,
+            config,
+            H3ClientOptions::default(),
+        )
     }
 
-    /// [`dial`](Self::dial) with HTTP/3 settings: the field section limit and the QPACK ones
-    /// (`max_body_bytes` does not apply to responses).
+    /// [`dial`](Self::dial) with limits and QPACK settings.
     pub fn dial_with(
         engine: &only::Engine,
         addr: SocketAddr,
         server_name: &str,
         config: only_quic::ClientConfig,
-        h3: &H3Config,
+        opts: H3ClientOptions,
     ) -> Result<H3Client, only_quic::Error> {
+        let h3 = opts.h3();
         let sh = Arc::new(Shared {
             st: Mutex::new(State::default()),
             enc: OnceLock::new(),
         });
         let handler = ClientConn {
             sh: sh.clone(),
-            cfg: h3.clone(),
-            peer: Peer::new(h3),
+            peer: Peer::new(&h3),
+            cfg: h3,
+            max_body: opts.max_body_bytes,
             uni: StreamMap::default(),
             ws: StreamMap::default(),
             ws_answer: None,
@@ -401,6 +535,7 @@ impl H3Client {
             conn,
             sh,
             authority,
+            request_timeout: opts.request_timeout,
         })
     }
 
@@ -451,7 +586,8 @@ impl H3Client {
         let Some(id) = self.conn.open_bi() else {
             return Err(kind);
         };
-        st.inflight.insert(id, InFlight::new(kind, None));
+        let token = self.timed(&mut st);
+        st.inflight.insert(id, InFlight::new(kind, None, token));
         Ok(id)
     }
 
@@ -497,8 +633,20 @@ impl H3Client {
         })
     }
 
+    /// A deadline for a request (0 without a timeout), the timer armed for it (`st` is
+    /// locked).
+    #[inline]
+    fn timed(&self, st: &mut State) -> u64 {
+        if self.request_timeout.is_none() {
+            return 0;
+        }
+        let token = st.deadline(self.request_timeout);
+        arm(&self.conn, &self.sh, st);
+        token
+    }
+
     #[inline(always)]
-    fn push(&self, job: Job) {
+    fn push(&self, mut job: Job) {
         let mut st = self.sh.lock();
         if let Some(e) = st.closed.clone() {
             drop(st);
@@ -506,6 +654,10 @@ impl H3Client {
                 up.fail();
             }
             return job.kind.fail(H3Error::Closed(e));
+        }
+        if job.up().is_none() && job.token == 0 {
+            // Uploads have no deadline.
+            job.token = self.timed(&mut st);
         }
         st.queue.push_back(job);
         let ready = st.ready;
@@ -631,7 +783,11 @@ impl H3Client {
         let mut st = self.sh.lock();
         match st.settings {
             // Extended CONNECT needs the server's SETTINGS first (RFC 8441 §3).
-            None if st.closed.is_none() => st.ws_wait.push(job),
+            None if st.closed.is_none() => {
+                let mut job = job;
+                job.token = self.timed(&mut st);
+                st.ws_wait.push(job);
+            }
             Some(s) if !s.connect_protocol => {
                 drop(st);
                 job.kind
@@ -716,6 +872,69 @@ fn pseudo_for<'a, 'b>(
     }
 }
 
+/// Makes sure a timer job runs by the earliest request deadline (`s` is `sh` locked).
+fn arm(conn: &Connection, sh: &Arc<Shared>, s: &mut State) {
+    let Some(&(at, _)) = s.deadlines.front() else {
+        return;
+    };
+    if s.armed_at.is_some_and(|t| t <= at) {
+        return;
+    }
+    s.armed_at = Some(at);
+    let (conn, sh) = (conn.clone(), Arc::downgrade(sh));
+    timer::at(at, move || {
+        if let Some(sh) = sh.upgrade() {
+            expire(&conn, &sh, at);
+        }
+    });
+}
+
+/// The job armed for `armed` ran: fail the requests whose deadline passed (resetting their
+/// streams), then re-arm for the next deadline.
+fn expire(conn: &Connection, sh: &Arc<Shared>, armed: Instant) {
+    let mut s = sh.lock();
+    if s.armed_at != Some(armed) {
+        return; // superseded by an earlier job
+    }
+    s.armed_at = None;
+    let now = Instant::now();
+    let mut kinds = Vec::new();
+    while let Some(&(at, token)) = s.deadlines.front() {
+        if at > now {
+            break;
+        }
+        s.deadlines.pop_front();
+        if !s.live.remove(&token) {
+            continue;
+        }
+        if let Some(i) = s.queue.iter().position(|j| j.token == token) {
+            kinds.extend(s.queue.remove(i).map(|j| j.kind));
+        } else if let Some(i) = s.ws_wait.iter().position(|j| j.token == token) {
+            kinds.push(s.ws_wait.swap_remove(i).kind);
+        } else if let Some(id) = s
+            .inflight
+            .iter()
+            .find(|(_, f)| f.token == token)
+            .map(|(id, _)| *id)
+        {
+            if let Some(mut f) = s.inflight.remove(&id) {
+                if f.take_blocked().is_some() {
+                    s.expired_blocked.push(id);
+                }
+                kinds.extend(f.take_kind());
+            }
+            let _ = conn.reset(id, code::REQUEST_CANCELLED);
+            let _ = conn.stop(id, code::REQUEST_CANCELLED);
+        }
+    }
+    s.prune();
+    arm(conn, sh, &mut s);
+    drop(s);
+    for k in kinds {
+        k.fail(H3Error::Timeout);
+    }
+}
+
 /// Opens streams for queued requests while the peer allows.
 fn start_queued(conn: &Connection, sh: &Shared) {
     loop {
@@ -727,14 +946,16 @@ fn start_queued(conn: &Connection, sh: &Shared) {
         let job = s.queue.pop_front().expect("non-empty");
         let Some(x) = job.x else {
             // A plain request, its bytes ready.
-            s.inflight.insert(id, InFlight::new(job.kind, None));
+            s.inflight
+                .insert(id, InFlight::new(job.kind, None, job.token));
             drop(s);
             let _ = conn.send(id, job.wire);
             let _ = conn.finish(id);
             continue;
         };
         let JobX { encode, up, fin } = *x;
-        s.inflight.insert(id, InFlight::new(job.kind, up.clone()));
+        s.inflight
+            .insert(id, InFlight::new(job.kind, up.clone(), job.token));
         drop(s);
         let wire = match encode {
             None => job.wire,
@@ -754,6 +975,8 @@ fn start_queued(conn: &Connection, sh: &Shared) {
 struct ClientConn {
     sh: Arc<Shared>,
     cfg: H3Config,
+    /// Largest response body.
+    max_body: usize,
     peer: Peer,
     uni: StreamMap<Uni>,
     /// A WebSocket's answer `on_resp` just took off its stream, for `report`.
@@ -799,6 +1022,9 @@ impl ClientConn {
         st.closed = Some(why.clone());
         let mut kinds: Vec<Kind> = st.queue.drain(..).map(|j| j.kind).collect();
         kinds.extend(st.ws_wait.drain(..).map(|j| j.kind));
+        st.deadlines.clear();
+        st.live.clear();
+        st.expired_blocked.clear();
         for (_, mut f) in st.inflight.drain() {
             if let Some(up) = f.up() {
                 up.fail();
@@ -819,14 +1045,21 @@ impl ClientConn {
     #[inline(always)]
     fn on_resp(&mut self, id: StreamId, data: &[u8], fin: bool) -> Option<Done> {
         let mut st = self.sh.lock();
+        if !st.expired_blocked.is_empty() {
+            // Blocked responses a timeout gave up: their sections are cancelled.
+            for b in std::mem::take(&mut st.expired_blocked) {
+                self.peer.blocked -= 1;
+                self.peer.dec.cancel(sid(b));
+            }
+        }
         let InFlight { r, resp, x, .. } = st.inflight.get_mut(&id)?;
         let fields = &mut self.fields;
         let peer = &mut self.peer;
-        let max_field = self.cfg.max_field_section_bytes;
+        let (max_body, max_field) = (self.max_body, self.cfg.max_field_section_bytes);
         let fed = r.feed(
             data,
-            1 << 30,
-            || H3Error::Protocol("frame too large"),
+            max_body.saturating_add(max_field) as u64,
+            || H3Error::TooLarge("response frame too large"),
             |ty, p| {
                 if let Some(b) = x.as_mut().and_then(|x| x.blocked.as_mut()) {
                     // Held back, in order, until the section before them can be decoded.
@@ -852,6 +1085,9 @@ impl ClientConn {
                                     }));
                                 return Ok(());
                             }
+                            Err(SectionError::Bad(qpack::QpackError::TooLarge)) => {
+                                return Err(H3Error::TooLarge("response field section too large"));
+                            }
                             Err(SectionError::Bad(_)) => {
                                 return Err(H3Error::Protocol("bad field section"));
                             }
@@ -875,6 +1111,9 @@ impl ClientConn {
                         }
                     }
                     frame::DATA => match resp.as_mut() {
+                        Some(r) if r.body.len() + p.len() > max_body => {
+                            return Err(H3Error::TooLarge("response body too large"));
+                        }
                         Some(r) => r.body.extend_from_slice(p),
                         None => return Err(H3Error::Protocol("DATA before HEADERS")),
                     },
@@ -895,6 +1134,7 @@ impl ClientConn {
             return None;
         }
         let mut f = st.inflight.remove(&id)?;
+        st.finished(f.token);
         if f.x.is_some() {
             if f.take_blocked().is_some() {
                 self.peer.blocked -= 1;
@@ -928,6 +1168,10 @@ impl ClientConn {
     #[inline]
     fn report(&mut self, c: &Connection, id: StreamId, done: Option<Done>) {
         if let Some((cb, r)) = done {
+            if r.is_err() {
+                // Given up (maybe before the server finished): tell it to stop sending.
+                let _ = c.stop(id, code::REQUEST_CANCELLED);
+            }
             return cb(r);
         }
         if let Some(a) = self.ws_answer.take() {
@@ -1113,7 +1357,13 @@ impl QuicHandler for ClientConn {
             return self.on_ws(c, id, &data, fin);
         }
         match self.on_resp(id, &data, fin) {
-            Some((cb, r)) => cb(r),
+            Some((cb, r)) => {
+                if r.is_err() && !fin {
+                    // Given up before the server finished: tell it to stop sending.
+                    let _ = c.stop(id, code::REQUEST_CANCELLED);
+                }
+                cb(r);
+            }
             None if self.ws_answer.is_some() => self.report(c, id, None),
             None => {}
         }
@@ -1124,7 +1374,14 @@ impl QuicHandler for ClientConn {
         if let Some((_, mut ws)) = self.ws.remove(&id) {
             return ws.on_transport_closed();
         }
-        let f = self.sh.lock().inflight.remove(&id);
+        let f = {
+            let mut st = self.sh.lock();
+            let f = st.inflight.remove(&id);
+            if let Some(f) = &f {
+                st.finished(f.token);
+            }
+            f
+        };
         if let Some(mut f) = f {
             if f.take_blocked().is_some() {
                 self.peer.blocked -= 1;
@@ -1137,6 +1394,20 @@ impl QuicHandler for ClientConn {
             if let Some(k) = f.take_kind() {
                 k.fail(H3Error::Reset(code));
             }
+        }
+    }
+
+    fn on_stream_writable(&mut self, _c: &Connection, id: StreamId) {
+        // An upload whose writes were refused goes on.
+        let up = self
+            .sh
+            .lock()
+            .inflight
+            .get(&id)
+            .and_then(|f| f.up().cloned());
+        if let Some(up) = up {
+            let mut u = up.lock();
+            up.flush(&mut u);
         }
     }
 
@@ -1170,5 +1441,81 @@ impl ClientConn {
                     .fail(H3Error::Protocol("server does not allow extended CONNECT"));
             }
         }
+    }
+}
+/// Request deadlines: one lazily started thread with a heap, fed through a channel. Jobs only
+/// fail requests and reset their streams. A connection has at most one job pending (see
+/// `arm`), so requests cost no timer message.
+mod timer {
+    use std::{
+        cmp::Reverse,
+        collections::BinaryHeap,
+        sync::{
+            OnceLock,
+            mpsc::{self, RecvTimeoutError, Sender},
+        },
+        time::Instant,
+    };
+
+    type Job = Box<dyn FnOnce() + Send>;
+
+    struct Entry(Instant, u64, Job);
+
+    impl PartialEq for Entry {
+        fn eq(&self, o: &Entry) -> bool {
+            (self.0, self.1) == (o.0, o.1)
+        }
+    }
+    impl Eq for Entry {}
+    impl PartialOrd for Entry {
+        fn partial_cmp(&self, o: &Entry) -> Option<std::cmp::Ordering> {
+            Some(self.cmp(o))
+        }
+    }
+    impl Ord for Entry {
+        fn cmp(&self, o: &Entry) -> std::cmp::Ordering {
+            (self.0, self.1).cmp(&(o.0, o.1))
+        }
+    }
+
+    fn sender() -> &'static Sender<(Instant, Job)> {
+        static TX: OnceLock<Sender<(Instant, Job)>> = OnceLock::new();
+        TX.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<(Instant, Job)>();
+            std::thread::Builder::new()
+                .name("only-h3-timer".into())
+                .spawn(move || run(&rx))
+                .expect("spawn only-h3 timer thread");
+            tx
+        })
+    }
+
+    fn run(rx: &mpsc::Receiver<(Instant, Job)>) {
+        let mut heap: BinaryHeap<Reverse<Entry>> = BinaryHeap::new();
+        let mut seq = 0u64;
+        loop {
+            let now = Instant::now();
+            while heap.peek().is_some_and(|Reverse(e)| e.0 <= now) {
+                let Reverse(Entry(_, _, job)) = heap.pop().expect("peeked");
+                job();
+            }
+            let msg = match heap.peek() {
+                Some(Reverse(e)) => rx.recv_timeout(e.0.saturating_duration_since(Instant::now())),
+                None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            };
+            match msg {
+                Ok((at, job)) => {
+                    seq += 1;
+                    heap.push(Reverse(Entry(at, seq, job)));
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    }
+
+    /// Runs `job` on the timer thread at `at`.
+    pub(super) fn at(at: Instant, job: impl FnOnce() + Send + 'static) {
+        let _ = sender().send((at, Box::new(job)));
     }
 }

@@ -120,6 +120,9 @@ pub(crate) struct Sim {
     pub record_0rtt: bool,
     pub first_client_datagram: Option<Vec<u8>>,
     pub zero_rtt_seen: Vec<u32>,
+    /// Record the long-header packets sent: (to the server, type, version).
+    pub record_long: bool,
+    pub long_seen: Vec<(bool, super::packet::PacketType, u32)>,
 }
 
 pub(crate) fn certs() -> (only_tls::ServerConfig, only_tls::ClientConfig) {
@@ -160,6 +163,7 @@ impl Sim {
                 tls,
                 cfg: server_cfg,
                 retry,
+                max_connections: usize::MAX,
             }),
             &mut rng,
         );
@@ -176,6 +180,8 @@ impl Sim {
             record_0rtt: false,
             first_client_datagram: None,
             zero_rtt_seen: Vec::new(),
+            record_long: false,
+            long_seen: Vec::new(),
             client: Node::new(client, "10.0.0.1:5000".parse().expect("addr")),
             server: Node::new(server, "10.0.0.2:4433".parse().expect("addr")),
             link: Link::default(),
@@ -263,6 +269,22 @@ impl Sim {
 
     fn send(&mut self, from: SocketAddr, to: SocketAddr, mut ecn: u8, data: Vec<u8>) {
         let to_server = self.is_server(to);
+        if self.record_long {
+            let mut off = 0;
+            while let Ok(h) = super::packet::parse_header(&data[off..], 8) {
+                if !h.ty.is_long() {
+                    break;
+                }
+                self.long_seen.push((to_server, h.ty, h.version));
+                if h.ty == super::packet::PacketType::VersionNegotiation {
+                    break;
+                }
+                off += h.len;
+                if off >= data.len() {
+                    break;
+                }
+            }
+        }
         let data = if to_server && (self.drop_zero_rtt || self.record_0rtt) {
             match self.zero_rtt_filter(data) {
                 Some(d) => d,
@@ -540,6 +562,7 @@ pub(crate) struct Collector {
     pub datagrams: Vec<Bytes>,
     pub closed: Option<ConnectionError>,
     pub available: Vec<Dir>,
+    pub writable: Vec<StreamId>,
 }
 
 impl Collector {
@@ -559,6 +582,7 @@ impl Collector {
                 Event::Datagram(d) => self.datagrams.push(d),
                 Event::Closed(r) => self.closed = Some(r),
                 Event::StreamsAvailable(d) => self.available.push(d),
+                Event::StreamWritable(id) => self.writable.push(id),
                 Event::Connected => {}
             }
         }
@@ -1709,3 +1733,205 @@ fn client_moves_to_the_preferred_address() {
 
 #[path = "sim_0rtt.rs"]
 mod zero_rtt;
+
+#[path = "sim_cvn.rs"]
+mod compatible_vn;
+
+/// A producer writing `total` bytes on one stream in `chunk`-byte pieces, as fast as the send
+/// buffer allows: refused writes wait for `StreamWritable`. Returns the largest buffer held.
+fn produce(
+    sim: &mut Sim,
+    h: ConnHandle,
+    id: StreamId,
+    total: usize,
+    chunk: usize,
+    held_cap: u64,
+) -> (u64, usize) {
+    let data = body(total, 9);
+    let mut at = 0;
+    let mut max_held = 0;
+    let mut refusals = 0;
+    let mut wait = false;
+    let mut got = 0usize;
+    let ok = sim.run_until(Duration::from_secs(120), |s| {
+        for e in s.events(false, h) {
+            if let Event::StreamWritable(w) = e {
+                assert_eq!(w, id);
+                assert!(wait, "writable without a refusal");
+                wait = false;
+            }
+        }
+        while !wait && at < total {
+            let end = (at + chunk).min(total);
+            let c = s.cconn(h);
+            match c.write(id, Bytes::copy_from_slice(&data[at..end])) {
+                Ok(()) => at = end,
+                Err(crate::Error::Overloaded) => {
+                    refusals += 1;
+                    wait = true;
+                }
+                Err(e) => panic!("write: {e}"),
+            }
+            if at == total {
+                c.finish(id).expect("finish");
+            }
+            let held = c.streams[&u64::from(id)]
+                .send
+                .as_ref()
+                .map_or(0, |x| x.buf.held());
+            max_held = max_held.max(held);
+            assert!(held <= held_cap, "held {held} over {held_cap}");
+        }
+        if let Some(sh) = s.server_handle() {
+            for e in s.events(true, sh) {
+                if let Event::StreamData(sid, d, fin) = e {
+                    if sid != id {
+                        continue;
+                    }
+                    assert_eq!(d[..], data[got..got + d.len()]);
+                    got += d.len();
+                    if fin {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    });
+    assert!(ok && got == total, "sent {at}, got {got} of {total}");
+    (max_held, refusals)
+}
+
+#[test]
+fn stream_send_buffer_is_bounded_and_drains() {
+    let t = TransportConfig {
+        stream_send_buffer: 64 * 1024,
+        ..TransportConfig::default()
+    };
+    let (s, tls) = certs();
+    let mut sim = Sim::new(
+        40,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        false,
+    );
+    sim.link.delay = Duration::from_millis(20);
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    let id = sim.cconn(h).open(Dir::Bi).expect("stream");
+    // Just under, at and over the limit.
+    let c = sim.cconn(h);
+    c.write(id, Bytes::from(vec![1u8; 64 * 1024 - 1]))
+        .expect("under");
+    assert_eq!(c.send_capacity(id).expect("capacity"), 1);
+    c.write(id, Bytes::from(vec![1u8; 10]))
+        .expect("one byte of room takes a write");
+    assert_eq!(c.send_held, 64 * 1024 + 9);
+    assert!(matches!(
+        c.write(id, Bytes::from(vec![1u8; 1])),
+        Err(crate::Error::Overloaded)
+    ));
+    assert_eq!(c.send_capacity(id).expect("capacity"), 0);
+    assert_eq!(c.writable_wait, [u64::from(id)]);
+    // Acknowledgments bring the room back; one event.
+    let mut writable = 0;
+    assert!(sim.run_until(Duration::from_secs(10), |s| {
+        writable += s
+            .events(false, h)
+            .iter()
+            .filter(|e| matches!(e, Event::StreamWritable(_)))
+            .count();
+        writable > 0
+    }));
+    assert_eq!(writable, 1);
+    assert!(sim.cconn(h).send_held <= 48 * 1024);
+    assert!(sim.cconn(h).writable_wait.is_empty());
+    // A producer of 2 MB in 16 KiB pieces: never more than the limit plus one piece held.
+    let id = sim.cconn(h).open(Dir::Bi).expect("stream");
+    let (max, refusals) = produce(&mut sim, h, id, 2 << 20, 16 << 10, 64 * 1024 + 16 * 1024);
+    assert!(
+        refusals > 0 && max >= 64 * 1024,
+        "max {max}, {refusals} refusals"
+    );
+}
+
+#[test]
+fn connection_send_buffer_spans_streams() {
+    let t = TransportConfig {
+        stream_send_buffer: 64 * 1024,
+        send_buffer: 100 * 1024,
+        ..TransportConfig::default()
+    };
+    let (s, tls) = certs();
+    let mut sim = Sim::new(
+        41,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        false,
+    );
+    sim.link.delay = Duration::from_millis(20);
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    let c = sim.cconn(h);
+    let a = c.open(Dir::Bi).expect("stream");
+    let b = c.open(Dir::Bi).expect("stream");
+    c.write(a, Bytes::from(vec![1u8; 60 * 1024])).expect("a");
+    c.write(b, Bytes::from(vec![2u8; 50 * 1024])).expect("b");
+    // Both streams are under their own limit; the connection is over its.
+    assert!(matches!(
+        c.write(a, Bytes::from_static(b"x")),
+        Err(crate::Error::Overloaded)
+    ));
+    assert!(matches!(
+        c.write(b, Bytes::from_static(b"x")),
+        Err(crate::Error::Overloaded)
+    ));
+    assert_eq!(c.send_capacity(a).expect("capacity"), 0);
+    // Resetting one frees its share; the other is woken once the rest drains.
+    c.reset(a, 7).expect("reset");
+    assert_eq!(c.send_held, 50 * 1024);
+    let mut woke = Vec::new();
+    assert!(sim.run_until(Duration::from_secs(10), |s| {
+        for e in s.events(false, h) {
+            if let Event::StreamWritable(id) = e {
+                woke.push(id);
+            }
+        }
+        !woke.is_empty()
+    }));
+    assert_eq!(woke, [b], "the reset stream is not woken");
+    assert!(sim.cconn(h).writable_wait.is_empty());
+    sim.cconn(h)
+        .write(b, Bytes::from_static(b"more"))
+        .expect("room again");
+    sim.cconn(h).finish(b).expect("finish");
+    assert!(sim.run_until(Duration::from_secs(10), |s| s.cconn(h).send_held == 0));
+}
+
+#[test]
+fn stopped_stream_leaves_the_writable_wait() {
+    let t = TransportConfig {
+        stream_send_buffer: 16 * 1024,
+        ..TransportConfig::default()
+    };
+    let (s, tls) = certs();
+    let mut sim = Sim::new(
+        42,
+        ConnConfig::new(TransportConfig::default(), true),
+        s,
+        false,
+    );
+    let h = sim.handshake(&tls, ConnConfig::new(t, true));
+    let id = sim.cconn(h).open(Dir::Bi).expect("stream");
+    let c = sim.cconn(h);
+    c.write(id, Bytes::from(vec![1u8; 20 * 1024]))
+        .expect("write");
+    assert!(c.write(id, Bytes::from_static(b"x")).is_err());
+    // STOP_SENDING from the peer (before any acknowledgment): the stream is reset, its bytes
+    // dropped; it leaves the wait list without a writable event.
+    let c = sim.cconn(h);
+    c.on_stop_sending(u64::from(id), 3).expect("stop");
+    assert!(c.writable_wait.is_empty());
+    assert_eq!(c.send_held, 0);
+    let evs: Vec<Event> = std::iter::from_fn(|| c.poll_event()).collect();
+    assert!(evs.iter().any(|e| matches!(e, Event::StreamStopped(..))));
+    assert!(!evs.iter().any(|e| matches!(e, Event::StreamWritable(_))));
+}

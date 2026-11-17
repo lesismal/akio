@@ -52,10 +52,11 @@ mod qtable;
 mod table;
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use only_http::Service;
 use only_http::message::{Headers, Method, Request, Response, Version};
@@ -64,7 +65,7 @@ use only_http::ws::{WsLink, WsSession};
 use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
 
-pub use client::{H3Client, H3Error, H3Upload, H3WsOptions};
+pub use client::{H3Client, H3ClientOptions, H3Error, H3Upload, H3WsOptions};
 pub use frame::code;
 
 use frame::{Piece, Reader, StreamReader};
@@ -96,8 +97,8 @@ impl Hasher for IdHasher {
 /// A table keyed by stream ID.
 pub(crate) type StreamMap<V> = HashMap<StreamId, V, BuildHasherDefault<IdHasher>>;
 
-/// HTTP/3 limits and QPACK settings. The server uses all of them ([`serve_with`]); a client
-/// ([`H3Client::dial_with`]) uses the field section and QPACK ones.
+/// HTTP/3 limits and QPACK settings of a server ([`serve_with`]); a client takes its own
+/// through [`H3ClientOptions`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct H3Config {
@@ -160,6 +161,7 @@ pub fn serve_with<S: Service>(
         uni: StreamMap::default(),
         reqs: StreamMap::default(),
         fields: FieldBuf::default(),
+        outs: Arc::default(),
     })
 }
 
@@ -563,6 +565,8 @@ struct ServerConn<S> {
     reqs: StreamMap<Req>,
     /// Field sections are decoded here, then copied once into the request's `Headers`.
     fields: FieldBuf,
+    /// Responses waiting for room in their stream's send buffer.
+    outs: Arc<Outs>,
 }
 
 /// Why a request stream stopped being read.
@@ -578,6 +582,7 @@ struct ServerHost<'a, S> {
     c: &'a Connection,
     id: StreamId,
     enc: &'a Option<Arc<EncShared>>,
+    outs: &'a Arc<Outs>,
 }
 
 impl<S: Service> Host for ServerHost<'_, S> {
@@ -592,6 +597,7 @@ impl<S: Service> Host for ServerHost<'_, S> {
         let ws = request.protocol.as_deref() == Some("websocket");
         let sink = Box::new(Sink {
             c: self.c.clone(),
+            outs: self.outs.clone(),
             id: self.id,
             head_only,
             enc: self.enc.clone(),
@@ -637,6 +643,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             enc: &self.conn.enc,
+            outs: &self.outs,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -677,6 +684,7 @@ impl<S: Service> ServerConn<S> {
         }
         let sink = Box::new(Sink {
             c: c.clone(),
+            outs: self.outs.clone(),
             id,
             head_only,
             enc: self.conn.enc.clone(),
@@ -721,6 +729,7 @@ impl<S: Service> ServerConn<S> {
             c,
             id,
             enc: &self.conn.enc,
+            outs: &self.outs,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -792,6 +801,7 @@ impl<S: Service> ServerConn<S> {
                 };
                 Box::new(Sink {
                     c: c.clone(),
+                    outs: self.outs.clone(),
                     id,
                     head_only: false,
                     enc: None,
@@ -1178,11 +1188,21 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         }
     }
 
+    fn on_stream_stopped(&mut self, _c: &Connection, id: StreamId, _code: u64) {
+        // The response is not wanted any more: what waits for it is dropped.
+        lock(&self.outs).remove(&id);
+    }
+
+    fn on_stream_writable(&mut self, c: &Connection, id: StreamId) {
+        pump(c, &self.outs, id);
+    }
+
     fn on_close(&mut self, _c: &Connection, _reason: ConnectionError) {
         for (_, mut r) in self.reqs.drain() {
             r.finish_sink(None);
         }
         self.uni.clear();
+        lock(&self.outs).clear();
     }
 }
 
@@ -1191,7 +1211,7 @@ impl<S: Service> QuicHandler for ServerConn<S> {
 pub(crate) struct StreamLink {
     c: Connection,
     id: StreamId,
-    done: std::sync::atomic::AtomicBool,
+    done: AtomicBool,
 }
 
 impl StreamLink {
@@ -1199,12 +1219,11 @@ impl StreamLink {
         StreamLink {
             c,
             id,
-            done: std::sync::atomic::AtomicBool::new(false),
+            done: AtomicBool::new(false),
         }
     }
 
     fn end(&self) {
-        use std::sync::atomic::Ordering;
         if !self.done.swap(true, Ordering::AcqRel) {
             let _ = self.c.finish(self.id);
         }
@@ -1218,7 +1237,10 @@ impl WsLink for StreamLink {
         }
         self.c
             .send(self.id, data_frame(&data))
-            .map_err(|_| only_core::Error::Closed)
+            .map_err(|e| match e {
+                only_quic::Error::Overloaded => only_core::Error::Overloaded,
+                _ => only_core::Error::Closed,
+            })
     }
 
     fn close_after_send(&self) {
@@ -1230,7 +1252,7 @@ impl WsLink for StreamLink {
     }
 
     fn is_open(&self) -> bool {
-        !self.done.load(std::sync::atomic::Ordering::Acquire) && !self.c.is_closed()
+        !self.done.load(Ordering::Acquire) && !self.c.is_closed()
     }
 
     fn queued_bytes(&self) -> usize {
@@ -1392,9 +1414,212 @@ const COPY_BODY_MAX: usize = 16 << 10;
 /// bound keeps pooled buffers small.
 pub(crate) const POOLED_BODY_MAX: usize = 2 << 10;
 
+/// File bodies are read this much at a time, on the engine's logical pool, each piece once the
+/// stream's send buffer has room for more (so a client that grants no flow-control credit holds
+/// at most `TransportConfig::stream_send_buffer` plus one piece of a file in memory).
+const FILE_CHUNK: usize = 256 << 10;
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// What waits to be sent on response streams of a connection, by stream.
+type Outs = Mutex<StreamMap<Out>>;
+
+/// The rest of a response the stream's send buffer could not take yet, in order: bytes, then
+/// a file's range, then the trailers, then the end of the stream.
+#[derive(Default)]
+struct Out {
+    chunks: VecDeque<Bytes>,
+    /// Bytes in `chunks`.
+    bytes: usize,
+    file: Option<FileOut>,
+    tail: Option<Bytes>,
+    finish: bool,
+    /// A pump runs (or a file read is in flight): others leave the work to it.
+    busy: bool,
+    /// The stream became writable while the pump ran: it tries again before stopping.
+    again: bool,
+}
+
+struct FileOut {
+    file: Arc<std::fs::File>,
+    off: u64,
+    end: u64,
+}
+
+impl Out {
+    fn push(&mut self, b: Bytes) {
+        if !b.is_empty() {
+            self.bytes += b.len();
+            self.chunks.push_back(b);
+        }
+    }
+}
+
+/// The next thing a pump does.
+enum Step {
+    Send(Bytes),
+    Read(Arc<std::fs::File>, u64, usize),
+    End(bool),
+    Gone,
+}
+
+/// Sends what waits on stream `id` as the send buffer takes it; runs on any thread, one pump
+/// per stream at a time. No lock is held while calling into the connection (whose handler may
+/// run from inside `send` and pump again).
+fn pump(c: &Connection, outs: &Arc<Outs>, id: StreamId) {
+    {
+        let mut m = lock(outs);
+        let Some(o) = m.get_mut(&id) else { return };
+        if o.busy {
+            o.again = true;
+            return;
+        }
+        o.busy = true;
+    }
+    run(c, outs, id);
+}
+
+/// The pump's loop (the stream's `busy` is held).
+fn run(c: &Connection, outs: &Arc<Outs>, id: StreamId) {
+    loop {
+        let step = {
+            let mut m = lock(outs);
+            match m.get_mut(&id) {
+                None => Step::Gone,
+                Some(o) => {
+                    if let Some(b) = o.chunks.pop_front() {
+                        o.bytes -= b.len();
+                        Step::Send(b)
+                    } else if let Some(f) = o.file.as_ref().filter(|f| f.off < f.end) {
+                        let n = ((f.end - f.off) as usize).min(FILE_CHUNK);
+                        Step::Read(f.file.clone(), f.off, n)
+                    } else if let Some(t) = o.tail.take() {
+                        Step::Send(t)
+                    } else {
+                        let fin = o.finish;
+                        m.remove(&id);
+                        Step::End(fin)
+                    }
+                }
+            }
+        };
+        match step {
+            Step::Gone => return,
+            Step::End(fin) => {
+                if fin {
+                    let _ = c.finish(id);
+                }
+                return;
+            }
+            Step::Send(b) => match c.send(id, b.clone()) {
+                Ok(()) => {}
+                Err(only_quic::Error::Overloaded) => {
+                    if let Some(o) = lock(outs).get_mut(&id) {
+                        o.bytes += b.len();
+                        o.chunks.push_front(b);
+                    }
+                    if park(outs, id) {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    lock(outs).remove(&id);
+                    return;
+                }
+            },
+            Step::Read(file, off, n) => {
+                match c.send_capacity(id) {
+                    Ok(0) => {
+                        if park(outs, id) {
+                            return;
+                        }
+                        continue;
+                    }
+                    Ok(_) => {}
+                    Err(_) => {
+                        lock(outs).remove(&id);
+                        return;
+                    }
+                }
+                // Off the I/O thread; the read's completion goes on pumping from the pool.
+                let (c2, outs2, f2) = (c.clone(), outs.clone(), file.clone());
+                let job = move || {
+                    let r = read_chunk(&f2, off, n);
+                    if read_done(&c2, &outs2, id, r) {
+                        run(&c2, &outs2, id);
+                    }
+                };
+                if c.spawn_blocking(job).is_ok() {
+                    return;
+                }
+                // The pool is full or gone: read here (one piece; the stream stays bounded).
+                if !read_done(c, outs, id, read_chunk(&file, off, n)) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// File bytes read for responses (tests).
+#[cfg(test)]
+static FILE_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn read_chunk(file: &std::fs::File, off: u64, n: usize) -> std::io::Result<Vec<u8>> {
+    use std::os::unix::fs::FileExt;
+    let mut buf = vec![0u8; n];
+    let got = file.read_at(&mut buf, off)?;
+    #[cfg(test)]
+    FILE_READ.fetch_add(got as u64, Ordering::Relaxed);
+    if got == 0 {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+    buf.truncate(got);
+    Ok(buf)
+}
+
+/// Queues a piece read from a file as a DATA frame; `false` (and the stream reset) when the
+/// read failed (the file shrank or broke: the response cannot be completed), or the stream is
+/// gone.
+fn read_done(c: &Connection, outs: &Outs, id: StreamId, r: std::io::Result<Vec<u8>>) -> bool {
+    let mut m = lock(outs);
+    let Some(o) = m.get_mut(&id) else {
+        return false;
+    };
+    match (r, o.file.as_mut()) {
+        (Ok(buf), Some(f)) => {
+            f.off += buf.len() as u64;
+            o.push(Bytes::from(data_frame(&buf)));
+            true
+        }
+        _ => {
+            m.remove(&id);
+            drop(m);
+            let _ = c.reset(id, code::INTERNAL_ERROR);
+            false
+        }
+    }
+}
+
+/// The pump stops until the stream is writable; `false` if it already became so (go on).
+fn park(outs: &Outs, id: StreamId) -> bool {
+    let mut m = lock(outs);
+    let Some(o) = m.get_mut(&id) else {
+        return true;
+    };
+    if std::mem::take(&mut o.again) {
+        return false;
+    }
+    o.busy = false;
+    true
+}
+
 /// Answers a request stream.
 struct Sink {
     c: Connection,
+    outs: Arc<Outs>,
     id: StreamId,
     head_only: bool,
     /// The connection's QPACK encoder, when it has a dynamic table.
@@ -1424,14 +1649,50 @@ impl Sink {
         }
     }
 
-    /// Sends `out` (if not empty) and ends the stream.
+    /// Sends `out` (if not empty) and ends the stream; when the send buffer is full, both wait
+    /// for room.
     fn send_and_finish(&self, out: impl Into<Bytes>) {
         let out = out.into();
         if !out.is_empty() {
-            let _ = self.c.send(self.id, out);
+            match self.c.send(self.id, out.clone()) {
+                Ok(()) => {}
+                Err(only_quic::Error::Overloaded) => {
+                    let mut o = Out {
+                        finish: true,
+                        ..Out::default()
+                    };
+                    o.push(out);
+                    return self.queue(o);
+                }
+                Err(_) => return,
+            }
         }
         let _ = self.c.finish(self.id);
     }
+
+    /// Hands `o` to the stream's pump (after what already waits there).
+    fn queue(&self, o: Out) {
+        queue(&self.c, &self.outs, self.id, o);
+    }
+}
+
+/// Adds `o` to what waits on stream `id` and pumps.
+fn queue(c: &Connection, outs: &Arc<Outs>, id: StreamId, o: Out) {
+    {
+        let mut m = lock(outs);
+        let e = m.entry(id).or_default();
+        for b in o.chunks {
+            e.push(b);
+        }
+        if o.file.is_some() {
+            e.file = o.file;
+        }
+        if o.tail.is_some() {
+            e.tail = o.tail;
+        }
+        e.finish |= o.finish;
+    }
+    pump(c, outs, id);
 }
 
 /// Bytes to reserve for encoding `headers`.
@@ -1453,8 +1714,8 @@ impl ResponseSink for Sink {
             });
             self.send_and_finish(out);
             // Dropped field by field: no out-of-line drop of the box.
-            let Sink { c, enc, .. } = *self;
-            drop((c, enc));
+            let Sink { c, outs, enc, .. } = *self;
+            drop((c, outs, enc));
             return;
         }
         let small = resp.file.is_none() && resp.body.len() <= COPY_BODY_MAX;
@@ -1463,34 +1724,40 @@ impl ResponseSink for Sink {
         let body = self.head(&mut out, &resp, false);
         if body {
             if let Some(fb) = resp.file.take() {
-                use std::os::unix::fs::FileExt;
-                let _ = self.c.send(self.id, std::mem::take(&mut out));
-                let mut off = fb.offset;
-                let end = fb.offset + fb.len;
-                let mut buf = vec![0u8; 256 << 10];
-                while off < end {
-                    let want = ((end - off) as usize).min(buf.len());
-                    match fb.file.read_at(&mut buf[..want], off) {
-                        Ok(0) | Err(_) => {
-                            let _ = self.c.reset(self.id, code::INTERNAL_ERROR);
-                            return;
-                        }
-                        Ok(n) => {
-                            let _ = self.c.send(self.id, data_frame(&buf[..n]));
-                            off += n as u64;
-                        }
-                    }
-                }
+                // The head now; the file in pieces as the stream takes them, read on the pool.
+                let mut tail = Vec::new();
+                self.put_trailers(&mut tail, trailers.as_ref());
+                let mut o = Out {
+                    file: Some(FileOut {
+                        file: fb.file,
+                        off: fb.offset,
+                        end: fb.offset + fb.len,
+                    }),
+                    tail: (!tail.is_empty()).then(|| Bytes::from(tail)),
+                    finish: true,
+                    ..Out::default()
+                };
+                o.push(Bytes::from(out));
+                return self.queue(o);
             } else if small {
                 if !resp.body.is_empty() {
                     frame::put_frame(&mut out, frame::DATA, &resp.body);
                 }
             } else {
+                // A large body in memory: the head with the DATA frame header, then the body
+                // as it is; whatever the send buffer refuses waits for room.
                 frame::put_varint(&mut out, frame::DATA);
                 frame::put_varint(&mut out, resp.body.len() as u64);
-                let _ = self.c.send(self.id, out);
-                let _ = self.c.send(self.id, std::mem::take(&mut resp.body));
-                out = Vec::new();
+                let mut o = Out {
+                    finish: true,
+                    ..Out::default()
+                };
+                o.push(Bytes::from(out));
+                o.push(Bytes::from(std::mem::take(&mut resp.body)));
+                let mut tail = Vec::new();
+                self.put_trailers(&mut tail, trailers.as_ref());
+                o.push(Bytes::from(tail));
+                return self.queue(o);
             }
         }
         self.put_trailers(&mut out, trailers.as_ref());
@@ -1503,34 +1770,87 @@ impl ResponseSink for Sink {
         }
         let mut out = Sink::head_buf(&resp, 0);
         let body = self.head(&mut out, &resp, true);
-        let _ = self.c.send(self.id, out);
-        Some(Box::new(StreamBody { s: *self, body }))
+        let out = Bytes::from(out);
+        let queued = match self.c.send(self.id, out.clone()) {
+            Ok(()) => false,
+            Err(only_quic::Error::Overloaded) => {
+                let mut o = Out::default();
+                o.push(out);
+                self.queue(o);
+                true
+            }
+            Err(_) => return None,
+        };
+        Some(Box::new(StreamBody {
+            s: *self,
+            body,
+            queued: AtomicBool::new(queued),
+        }))
     }
 }
 
 struct StreamBody {
     s: Sink,
     body: bool,
+    /// Part of the response (its head) waited for room; writes are refused until it is out.
+    queued: AtomicBool,
+}
+
+impl StreamBody {
+    /// Whether earlier parts of the response still wait for room.
+    fn waiting(&self) -> bool {
+        if !self.queued.load(Ordering::Acquire) {
+            return false;
+        }
+        if lock(&self.s.outs).contains_key(&self.s.id) {
+            return true;
+        }
+        self.queued.store(false, Ordering::Release);
+        false
+    }
 }
 
 impl BodySink for StreamBody {
+    /// Fails with `Overloaded`, the data not taken, while the stream's or the connection's
+    /// send buffer is full (`TransportConfig::stream_send_buffer`, `send_buffer`), as on
+    /// HTTP/1.1 and HTTP/2: write again once [`queued_bytes`](BodySink::queued_bytes) went
+    /// down.
     fn write(&self, data: &[u8]) -> only_core::Result<()> {
         if !self.body || data.is_empty() {
             return Ok(());
         }
+        if self.waiting() {
+            return Err(only_core::Error::Overloaded);
+        }
         self.s
             .c
             .send(self.s.id, data_frame(data))
-            .map_err(|_| only_core::Error::Closed)
+            .map_err(|e| match e {
+                only_quic::Error::Overloaded => only_core::Error::Overloaded,
+                _ => only_core::Error::Closed,
+            })
     }
 
     fn queued_bytes(&self) -> usize {
-        self.s.c.queued_bytes(self.s.id)
+        let waiting = if self.queued.load(Ordering::Acquire) {
+            lock(&self.s.outs).get(&self.s.id).map_or(0, |o| o.bytes)
+        } else {
+            0
+        };
+        self.s.c.queued_bytes(self.s.id) + waiting
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {
         let mut out = Vec::new();
         self.s.put_trailers(&mut out, trailers.as_ref());
+        if self.waiting() {
+            let mut o = Out {
+                finish: true,
+                ..Out::default()
+            };
+            o.push(Bytes::from(out));
+            return self.s.queue(o);
+        }
         self.s.send_and_finish(out);
     }
 }
@@ -1538,6 +1858,93 @@ impl BodySink for StreamBody {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A client that asks for `/f` and counts the response stream's bytes.
+    struct Fetch {
+        got: Arc<std::sync::atomic::AtomicU64>,
+    }
+    impl QuicHandler for Fetch {
+        fn on_connected(&mut self, c: &Connection) {
+            let id = c.open_bi().expect("stream");
+            let mut req = Vec::new();
+            put_head(
+                &mut req,
+                None,
+                &[
+                    (b":method", b"GET"),
+                    (b":scheme", b"https"),
+                    (b":authority", b"localhost"),
+                    (b":path", b"/f"),
+                ],
+                &Headers::new(),
+                false,
+                None,
+                None,
+            );
+            c.send(id, req).expect("request");
+            c.finish(id).expect("finish");
+        }
+        fn on_stream_data(&mut self, _c: &Connection, id: StreamId, d: Bytes, _fin: bool) {
+            if id.dir() == Dir::Bi {
+                self.got.fetch_add(d.len() as u64, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// A file body is read as the client takes it: a client that goes away midway leaves at
+    /// most the stream's send buffer and a piece or two read ahead of what it acknowledged.
+    #[test]
+    fn file_reads_follow_the_peer() {
+        use std::sync::atomic::AtomicU64;
+        const LEN: u64 = 64 << 20;
+        let path = std::env::temp_dir().join(format!("only-h3-file-{}", std::process::id()));
+        std::fs::File::create(&path).unwrap().set_len(LEN).unwrap();
+        let file = Arc::new(std::fs::File::open(&path).unwrap());
+        let _ = std::fs::remove_file(&path);
+        let app = only_http::Router::new().get("/f", move |ctx: &mut only_http::Context| {
+            let fb = only_http::message::FileBody::new(file.clone(), 0, LEN);
+            ctx.respond(Response::from_file(200, "application/octet-stream", fb));
+        });
+        let ck = only_x509::generate_simple_self_signed(["localhost"]).unwrap();
+        let cert = only::tls::Certificate::from_der(ck.0.as_der().to_vec());
+        let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
+        let mut t = only_quic::TransportConfig::default();
+        t.stream_send_buffer = 1 << 20;
+        let quic = server_config(vec![cert], key).unwrap().transport(&t);
+        let s = only::Engine::builder()
+            .listen(only::Listener::udp("127.0.0.1:0".parse().unwrap()).serve(serve(quic, app)))
+            .build()
+            .unwrap();
+        s.start().unwrap();
+        let addr = s.local_addrs()[0];
+        let e = only::Engine::builder()
+            .udp_client_threads(1)
+            .build()
+            .unwrap();
+        e.start().unwrap();
+        let got = Arc::new(AtomicU64::new(0));
+        let mut ct = only_quic::TransportConfig::default();
+        ct.stream_receive_window = 128 << 10;
+        let cc = only_quic::client_config_insecure(&[b"h3"])
+            .unwrap()
+            .transport(&ct);
+        let _c = only_quic::dial(&e, addr, "localhost", cc, Fetch { got: got.clone() }).unwrap();
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while got.load(Ordering::Relaxed) < 4 << 20 {
+            assert!(std::time::Instant::now() < end, "no data");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // The client vanishes: nothing more is acknowledged.
+        e.shutdown();
+        e.wait();
+        let received = got.load(Ordering::Relaxed);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let read = FILE_READ.load(Ordering::Relaxed);
+        let bound = received + (1 << 20) + 2 * FILE_CHUNK as u64 + (64 << 10);
+        assert!(read <= bound, "read {read}, client got {received}");
+        assert!(read < LEN);
+        s.shutdown();
+    }
 
     fn decoded(wire: &[u8]) -> Vec<(String, String)> {
         let mut r = Reader::default();

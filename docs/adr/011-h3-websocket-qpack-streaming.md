@@ -38,8 +38,9 @@ touches the public API of only-h3, only-http and only-ws.
    before) or a `WsLink` trait object (`#[doc(hidden)]`, outside the semver promise like
    `WsSession`), with `WsSession::with_link` / `client_with_link`. The TCP path is an enum
    match, not a virtual call.
-4. **QPACK dynamic table (RFC 9204), both directions, settings in `H3Config`** (which the
-   client now takes too: `H3Client::dial_with(.., &H3Config)`):
+4. **QPACK dynamic table (RFC 9204), both directions, settings in `H3Config`** (servers) and
+   in `H3ClientOptions` (clients: `H3Client::dial_with(.., H3ClientOptions)`, next to the response limits and the
+   request timeout):
    - `qpack_max_table_capacity` (default **4096**) and `qpack_blocked_streams` (default
      **16**) bound what the peer's encoder may do to our decoder: inserts arrive on its encoder
      stream; a field section that needs inserts not yet received waits (its stream's later bytes
@@ -90,6 +91,12 @@ touches the public API of only-h3, only-http and only-ws.
   their bytes; and keeping the per-request calls inlined (the request is 232 bytes and was
   being copied through every out-of-line call). Exact per-function instruction counts came
   from callgrind (arm64, Docker).
+- Against main 2d1f5720, which added the client bounds (response limits, request deadlines) and
+  QUIC send caps, the merged branch measured 0.980x on the same benchmark (842.5k vs 859.6k
+  req/s; 0.984x and 0.977x, lower in all 14 rounds). The features' own cost did not change
+  (callgrind, arm64: +169 instructions per request in only-h3/only-http, as before the merge);
+  on x86 it is +252 instructions (+1.6% per request in all, cycles +2.6%), spread over the request
+  path with no single hot spot.
 - The server's SETTINGS now carry a 4 KiB table, 16 blocked streams and extended CONNECT, and
   it opens a QPACK decoder stream; peers that compress use the table at once. Interop: quic-go
   (WebSocket over HTTP/3 both ways, streamed uploads both ways; its QPACK has no dynamic table)

@@ -33,7 +33,8 @@
 - 构建方法（须在克隆前调用）：`config(|| rtc_config()...)` 构造每个 peer 的 `RtcConfig`
   （编解码器、RTP 模式、BWE、统计等），`ice_lite(false)` 改为完整 agent，`close_on_disconnect(bool)`
   （默认 true：consent 过期的 peer 被关闭），`connect_timeout(Some(d))`（默认 30 秒：接受了 offer
-  却一直连不上的 peer 被丢弃）。
+  却一直连不上的 peer 被丢弃），`max_peers(n)`（默认 1024，即 `DEFAULT_MAX_PEERS`：超出后 offer 以
+  `Error::TooManyPeers` 失败；0 表示不限；`Endpoint` 上绑定之后也可设置）。
 - `TurnServer::new(TurnConfig::new(realm, auth, relay_ip))` 在另一个 UDP listener 上提供 TURN 与
   STUN。中继 socket 在运行时绑定，因此它需要引擎：`set_engine(&engine)`。
 
@@ -109,6 +110,10 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 监听器上的连接发送，因此静默超过 `Config::udp_idle_timeout`（60 秒）的客户端在再次发送之前收不到
 来自对端的数据：TURN 监听器应调大该超时。`TurnCore` 是不含 I/O 的同一服务器（由 `TurnEnv` 负责
 发送），便于嵌入或测试。单独的 `StunServer` 只应答 Binding 请求。
+
+`TurnServer` 按客户端地址把分配分成若干分片（约每个 CPU 四个，至少 8 个），每个分片有自己的锁：
+不同分配的数据报不会在 I/O 线程之间争用，过期清扫每次只持有一个分片，已认证的 Allocate 的中继
+socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
 
 ## 尚未完成
 

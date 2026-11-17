@@ -22,6 +22,10 @@
 连接；没有 fallback 时这些连接被关闭。用 `Listener::serve_any(mux)`（`Mux` 可转换为类型擦除的 `only::AnyAcceptor`） 提供 mux。在
 开始提供服务之前完成全部配置。
 
+`sniff_timeout(Some(d))`（默认 5 s）限制客户端发送足以判断的字节所用的时间：沉默的客户端、或慢慢
+发送多条规则共有前缀的客户端，在截止时被关闭（不会交给 fallback）。`sniff_timeout(None)` 表示
+一直等待。
+
 一旦某条规则匹配，连接就归该路由的 acceptor 所有，如同由它 accept 的一样：嗅探到的字节会重放
 给它的 handler，`spawn_blocking` 的完成回调会送达它，优雅停机调用的也是*它的* `on_shutdown`。
 路由可以是 `Tls::server(..)` acceptor（嗅探之后再终止 TLS），也可以是另一个 `Mux`

@@ -45,6 +45,7 @@
 
 pub mod client;
 mod context;
+mod deadline;
 pub mod files;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -63,6 +64,7 @@ pub mod raw;
 pub mod re;
 mod router;
 mod session;
+mod timer;
 // The seam between HTTP transports and services (only-h3 dispatches through it):
 // `#[doc(hidden)]`, unstable, outside the semver promise (docs/api-stability.md).
 #[doc(hidden)]

@@ -57,6 +57,14 @@ pub struct RtmpConfig {
     pub encoder: EncoderConfig,
     /// Authorizes `connect`.
     pub on_connect: Option<ConnectHook>,
+    /// Time from accept to the end of the handshake (C0, C1, C2); a slower client is closed.
+    /// Default 10 s; `Duration::ZERO` disables it.
+    pub handshake_timeout: Duration,
+    /// A connection that sends nothing for this long is closed, except while it plays (a player
+    /// may only read; one that stops reading is bounded by the engine's write timeout). A
+    /// publisher sends media continuously and clients acknowledge. Default 60 s (nginx-rtmp's
+    /// `timeout`); `Duration::ZERO` disables it.
+    pub idle_timeout: Duration,
 }
 
 impl Default for RtmpConfig {
@@ -69,6 +77,8 @@ impl Default for RtmpConfig {
             play_wait: None,
             encoder: EncoderConfig::default(),
             on_connect: None,
+            handshake_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -81,6 +91,8 @@ impl fmt::Debug for RtmpConfig {
             .field("write_queue_limit", &self.write_queue_limit)
             .field("max_write_queue", &self.max_write_queue)
             .field("play_wait", &self.play_wait)
+            .field("handshake_timeout", &self.handshake_timeout)
+            .field("idle_timeout", &self.idle_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -117,8 +129,18 @@ impl RtmpServer {
 impl Acceptor for RtmpServer {
     type Handler = RtmpSession;
 
-    fn on_open(&self, _c: &Conn<RtmpSession>) -> RtmpSession {
+    fn on_open(&self, c: &Conn<RtmpSession>) -> RtmpSession {
+        let cfg = &self.0.cfg;
+        let watch = crate::watch::watch(
+            c.inner(),
+            crate::watch::Deadlines {
+                handshake: cfg.handshake_timeout,
+                idle: cfg.idle_timeout,
+                message: Duration::ZERO,
+            },
+        );
         RtmpSession {
+            watch,
             srv: self.0.clone(),
             st: State::C0C1,
             buf: Vec::new(),
@@ -148,6 +170,7 @@ struct Ingest {
 
 /// One RTMP connection.
 pub struct RtmpSession {
+    watch: Arc<crate::watch::Watch>,
     srv: Arc<Inner>,
     st: State,
     buf: Vec<u8>,
@@ -203,6 +226,7 @@ fn status(level: &str, code: &str, desc: &str) -> Value {
 
 impl Handler for RtmpSession {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        self.watch.touch();
         match self.st {
             State::C0C1 | State::C2 => {
                 self.buf.extend_from_slice(data);
@@ -224,6 +248,7 @@ impl Handler for RtmpSession {
                 }
                 self.buf.drain(..handshake::SIZE);
                 self.st = State::Chunks;
+                self.watch.ready();
                 let rest = std::mem::take(&mut self.buf);
                 if !rest.is_empty() {
                     self.chunks(c, &rest);
@@ -518,6 +543,7 @@ impl RtmpSession {
                     );
                 }
                 self.play = None;
+                self.watch.set_exempt(false);
                 if name == "FCUnpublish" && tx != 0.0 {
                     self.command(
                         c,
@@ -610,7 +636,10 @@ impl RtmpSession {
             cfg.write_queue_limit,
         );
         match self.srv.hub.subscribe(&path, sink, opts) {
-            Ok(sub) => self.play = Some(sub),
+            Ok(sub) => {
+                self.play = Some(sub);
+                self.watch.set_exempt(true);
+            }
             Err(e) => {
                 self.on_status(
                     c,

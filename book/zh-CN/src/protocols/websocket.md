@@ -44,7 +44,8 @@ pub trait WsHandler: Send + 'static {
 
 `WsOptions`：
 
-- `config: WsConfig`：`max_message_bytes`（16 MiB，按解压后计算；超出以 1009 关闭）、
+- `config: WsConfig`：`max_message_bytes`（16 MiB，按解压后计算；超出以 1009 关闭；消息压缩后的字节数
+  同样受限，为该上限再加八分之一，对端无法无限地分片发送压缩消息）、
   `permessage_deflate`（true：客户端提出时接受）、`compress_min_bytes`（128）。
 - `protocols`：服务端支持的子协议；选择其中客户端最优先的那个。
 - `origin_allowed: Option<fn(&str) -> bool>`：带 `Origin` 头的请求，除非它返回 true，否则以 403
@@ -66,17 +67,24 @@ pub trait WsHandler: Send + 'static {
   engine 的 I/O 线程上调用它。
 - `client::dial(&engine, url, &opts, handler, on_error)` 是非阻塞形式：成功时执行 `on_open`，
   失败时调用一次 `on_error(WsClientError)`（`InvalidUrl`、`Io`、`Status`、`Handshake`、
-  `Timeout`、`Closed`）。
+  `Timeout`、`Closed`、`TooManyRedirects`）。
 - `DialOptions`：`config`（各项上限；`permessage_deflate` 决定是否提出压缩）、`pmd`（压缩提议
-  的参数）、`protocols`、`origin`、`headers`（如 `Authorization`、cookie）、`tls`（`wss://`
-  必需；ALPN 中不要提供 `h2`）、`server_name`、`handshake_timeout`（10 s）、`close_timeout`
-  （3 s）。
-- 帧用不可预测的密钥加掩码；依次尝试解析出的每个地址；域名解析在调用线程上进行。
+  的参数）、`protocols`、`origin`、`headers`（如 `Authorization`、cookie）、`tls`（`None`：使用
+  系统 CA；ALPN 中不要提供 `h2`）、`server_name`、`handshake_timeout`（10 s，含重定向）、
+  `close_timeout`（3 s）、`proxy`（默认无；`only_ws::proxy::Proxy::from_env()` 显式启用环境变量）
+  和 `max_redirects`（0）。
+- 代理：代理适用的每个连接（`ws://` 和 `wss://`）都经 `CONNECT host:port` 隧道；被拒绝时是携带
+  `only_ws::proxy::ProxyRefused` 的 `WsClientError::Io`。`Proxy` 类型和规则与
+  [HTTP 客户端](http-clients.md#代理)相同。
+- 重定向（`max_redirects > 0`）：带 `Location` 的 301、302、303、307 和 308；`http`/`https` 的
+  location 变为 `ws`/`wss`；`wss://` 从不转到 `ws://`；跨源时从 `headers` 中删除 `Authorization`、
+  `Cookie` 和 `Proxy-Authorization`。浏览器不跟随 WebSocket 重定向，因此默认关闭。
+- 客户端所在的 engine 优雅停机时，已打开的连接以 1001（going away）和关闭握手关闭。
+- 帧用不可预测的密钥加掩码；依次尝试解析出的每个地址；域名在调用线程之外解析（`only::dns`）。
 
 运行 `cargo run -p only-ws --example guide-ws` 可以看到一个有两个客户端的聊天室，浏览器聊天
 示例见 `crates/only-http/examples/ws-chat.rs`。
 
 ## 尚未完成
 
-客户端：系统根证书（请自行加载到 `only::tls::RootCerts`）、代理、重定向、engine 停机时发送 1001（目前连接以
-1006 结束）。服务端：基于 HTTP/2 或 HTTP/3 的 WebSocket（extended CONNECT）。
+客户端：TLS 或 SOCKS 代理、跨重定向携带 cookie。服务端：基于 HTTP/2 或 HTTP/3 的 WebSocket（extended CONNECT）。

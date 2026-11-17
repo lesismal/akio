@@ -75,6 +75,7 @@ pub only_quic::Error::Config(alloc::string::String)
 pub only_quic::Error::Connect(alloc::string::String)
 pub only_quic::Error::Datagram(alloc::string::String)
 pub only_quic::Error::Migration(alloc::string::String)
+pub only_quic::Error::Overloaded
 pub only_quic::Error::Stopped(u64)
 pub only_quic::Error::UnknownStream
 impl core::error::Error for only_quic::Error
@@ -228,8 +229,10 @@ pub fn only_quic::Connection::remote_addr(&self) -> core::net::socket_addr::Sock
 pub fn only_quic::Connection::reset(&self, only_quic::StreamId, u32) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::rtt(&self) -> core::time::Duration
 pub fn only_quic::Connection::send(&self, only_quic::StreamId, impl core::convert::Into<only_quic::Bytes>) -> core::result::Result<(), only_quic::Error>
+pub fn only_quic::Connection::send_capacity(&self, only_quic::StreamId) -> core::result::Result<usize, only_quic::Error>
 pub fn only_quic::Connection::send_datagram(&self, impl core::convert::Into<only_quic::Bytes>) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::server_name(&self) -> core::option::Option<alloc::string::String>
+pub fn only_quic::Connection::spawn_blocking(&self, impl core::ops::function::FnOnce() + core::marker::Send + 'static) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::stats(&self) -> only_quic::ConnectionStats
 pub fn only_quic::Connection::stop(&self, only_quic::StreamId, u32) -> core::result::Result<(), only_quic::Error>
 pub fn only_quic::Connection::version(&self) -> only_quic::Version
@@ -276,6 +279,7 @@ impl only_quic::QuicServer
 pub fn only_quic::QuicServer::close_all(&self, u32, &[u8])
 pub fn only_quic::QuicServer::connections(&self) -> usize
 pub fn only_quic::QuicServer::new<H: only_quic::QuicHandler, F>(only_quic::ServerConfig, F) -> only_quic::QuicServer where F: core::ops::function::Fn(&only_quic::Connection) -> H + core::marker::Send + core::marker::Sync + 'static
+pub fn only_quic::QuicServer::refused_connections(&self) -> u64
 impl core::clone::Clone for only_quic::QuicServer
 pub fn only_quic::QuicServer::clone(&self) -> only_quic::QuicServer
 impl core::fmt::Debug for only_quic::QuicServer
@@ -283,6 +287,8 @@ pub fn only_quic::QuicServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core:
 impl only_core::handler::Acceptor for only_quic::QuicServer
 pub type only_quic::QuicServer::Handler = Udp
 pub fn only_quic::QuicServer::on_open(&self, &only_core::conn::Conn<Udp>) -> Udp
+impl only_core::metrics::Collector for only_quic::QuicServer
+pub fn only_quic::QuicServer::collect(&self, &mut only_core::metrics::Families)
 impl core::marker::Send for only_quic::QuicServer
 impl core::marker::Sync for only_quic::QuicServer
 impl core::marker::Unpin for only_quic::QuicServer
@@ -290,7 +296,9 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_quic::QuicServer
 impl !core::panic::unwind_safe::UnwindSafe for only_quic::QuicServer
 pub struct only_quic::ServerConfig(_)
 impl only_quic::ServerConfig
+pub fn only_quic::ServerConfig::max_connections(self, usize) -> Self
 pub fn only_quic::ServerConfig::migration(self, bool) -> Self
+pub fn only_quic::ServerConfig::prefer_version(self, only_quic::Version) -> Self
 pub fn only_quic::ServerConfig::preferred_address(self, core::net::socket_addr::SocketAddr) -> Self
 pub fn only_quic::ServerConfig::transport(self, &only_quic::TransportConfig) -> Self
 pub fn only_quic::ServerConfig::versions(self, &[only_quic::Version]) -> Self
@@ -347,8 +355,10 @@ pub only_quic::TransportConfig::max_concurrent_uni_streams: u32
 pub only_quic::TransportConfig::max_idle_timeout: core::option::Option<core::time::Duration>
 pub only_quic::TransportConfig::mtu_discovery: bool
 pub only_quic::TransportConfig::receive_window: core::option::Option<u64>
+pub only_quic::TransportConfig::send_buffer: u64
 pub only_quic::TransportConfig::send_window: u64
 pub only_quic::TransportConfig::stream_receive_window: u64
+pub only_quic::TransportConfig::stream_send_buffer: u64
 impl core::clone::Clone for only_quic::TransportConfig
 pub fn only_quic::TransportConfig::clone(&self) -> Self
 impl core::cmp::Eq for only_quic::TransportConfig
@@ -384,6 +394,7 @@ impl core::marker::Sync for only_quic::UdpStats
 impl core::marker::Unpin for only_quic::UdpStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_quic::UdpStats
 impl core::panic::unwind_safe::UnwindSafe for only_quic::UdpStats
+pub const only_quic::DEFAULT_MAX_CONNECTIONS: usize
 pub trait only_quic::QuicHandler: core::marker::Send + 'static
 pub fn only_quic::QuicHandler::on_close(&mut self, &only_quic::Connection, only_quic::ConnectionError)
 pub fn only_quic::QuicHandler::on_connected(&mut self, &only_quic::Connection)
@@ -392,6 +403,7 @@ pub fn only_quic::QuicHandler::on_stream_data(&mut self, &only_quic::Connection,
 pub fn only_quic::QuicHandler::on_stream_opened(&mut self, &only_quic::Connection, only_quic::StreamId)
 pub fn only_quic::QuicHandler::on_stream_reset(&mut self, &only_quic::Connection, only_quic::StreamId, u64)
 pub fn only_quic::QuicHandler::on_stream_stopped(&mut self, &only_quic::Connection, only_quic::StreamId, u64)
+pub fn only_quic::QuicHandler::on_stream_writable(&mut self, &only_quic::Connection, only_quic::StreamId)
 pub fn only_quic::QuicHandler::on_streams_available(&mut self, &only_quic::Connection, only_quic::Dir)
 pub fn only_quic::client_config(only_tls::config::RootCerts, &[&[u8]]) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>
 pub fn only_quic::client_config_from(&only_tls::config::ClientConfig) -> core::result::Result<only_quic::ClientConfig, only_quic::Error>

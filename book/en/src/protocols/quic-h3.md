@@ -7,7 +7,9 @@ Interop is tested in both directions with quic-go (raw QUIC echo of streams and 
 with Retry, key updates, a 150 MB transfer, version 2 and client migration:
 `tools/interop/quic/run.sh`) and, for HTTP/3,
 with quic-go and fib's QUIC/HTTP/3 (`tools/interop/h3/run.sh`); ngtcp2 and OpenSSL 3.5's QUIC
-stack are checked as clients of our servers in Docker (`tools/interop/quic/docker.sh`).
+stack are checked as clients of our servers in Docker (`tools/interop/quic/docker.sh`), and
+ngtcp2's own client and server for compatible version negotiation, both ways
+(`tools/interop/quic/ngtcp2-cvn.sh`).
 
 ## QUIC
 
@@ -43,15 +45,26 @@ How it fits on `only`:
   GRO (`Config::udp_gro`, on by default on Linux) lets a bulk receiver take whole GSO batches.
 
 `QuicHandler` callbacks: `on_connected`, `on_stream_opened`, `on_stream_data(c, id, data, fin)`
-(required), `on_stream_reset`, `on_stream_stopped`, `on_streams_available`, `on_datagram`,
-`on_close(reason)`.
+(required), `on_stream_reset`, `on_stream_stopped`, `on_streams_available`,
+`on_stream_writable`, `on_datagram`, `on_close(reason)`.
 
 `Connection` (cloneable, usable from any thread): `open_bi`, `open_uni`, `send(id, data)`,
-`finish`, `reset`, `stop`, `queued_bytes(id)`, `send_datagram`, `close(code, reason)`,
-`remote_addr`, `alpn`, `server_name`, `rtt`, `stats`, `is_closed`. Payloads are
-`only_quic::Bytes` (reference counted and sliceable; received data is a slice of the decrypted
-packet, so it is not copied again). Writes never block: `send` queues the bytes, which go out as
-flow and congestion control allow; pace producers with `queued_bytes` (bytes not sent yet).
+`finish`, `reset`, `stop`, `queued_bytes(id)`, `send_capacity(id)`, `send_datagram`,
+`spawn_blocking(work)`, `close(code, reason)`, `remote_addr`, `alpn`, `server_name`, `rtt`,
+`stats`, `is_closed`. Payloads are `only_quic::Bytes` (reference counted and sliceable; received
+data is a slice of the decrypted packet, so it is not copied again). Writes never block: `send`
+queues the bytes, which go out as flow and congestion control allow.
+
+Send buffers are bounded. A stream holds what was written and not yet acknowledged up to
+`TransportConfig::stream_send_buffer` (4 MiB), and all streams of a connection together up to
+`send_buffer` (16 MiB). Past either, `send` fails with `Error::Overloaded` and does not take the
+data; `on_stream_writable(c, id)` follows once the stream's and the connection's buffers are down
+to three quarters (once per refusal). A producer writes until refused and resumes from that
+callback; `send_capacity(id)` tells the room left (and arms the same callback when it is zero),
+so a file can be read only when there is room for the piece. A write accepted below the limit may
+pass it, so a stream holds at most its limit plus one write. `spawn_blocking(work)` runs `work`
+on the engine's logical pool (disk reads and other blocking work), from where it may call the
+connection.
 
 Configuration (TLS 1.3): `server_config(certs, key, alpn)` with `only::tls::Certificate` /
 `PrivateKey`, `server_config_from(&only::tls::ServerConfig)`, `client_config(roots, alpn)` with
@@ -65,14 +78,42 @@ skip the address-validation limits on the next connection. The `unstable` cargo 
 reserved and enables nothing (it exposed quinn-proto before the in-house implementation).
 `QuicServer::connections()` and `close_all(code, reason)` help at shutdown.
 
+Limits and their defaults (every one bounded; the `None` / `MAX` values lift a limit):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `TransportConfig::max_concurrent_bidi_streams`, `max_concurrent_uni_streams` | 100, 100 | streams the peer may have open at once |
+| `TransportConfig::stream_receive_window` | 1.25 MB | bytes the peer may send on one stream ahead of the application |
+| `TransportConfig::receive_window` | 10 MB (8 × the stream window) | the same over all streams of a connection (`None`: unlimited) |
+| `TransportConfig::send_window` | 10 MB | bytes in flight (sent, not acknowledged) on all streams |
+| `TransportConfig::stream_send_buffer` | 4 MiB | bytes one stream holds for sending before `send` fails with `Overloaded` |
+| `TransportConfig::send_buffer` | 16 MiB | the same over all streams of a connection |
+| `TransportConfig::max_idle_timeout` | 30 s | closes a silent connection |
+| `TransportConfig::datagram_receive_buffer_size`, `datagram_send_buffer_size` | 1.25 MB, 1 MiB | unreliable datagrams buffered each way |
+| `ServerConfig::max_connections(n)` | 10,000 | connections a server holds (handshaking, open or closing); beyond it a new client is refused at once with `CONNECTION_REFUSED`, keeping no state (rate limited like stateless resets; counted by `QuicServer::refused_connections()`) |
+
+Above 4096 handshakes in progress, new clients must also prove their address with a Retry.
+
 ### Versions, ECN, BBR and migration
 
 - **Versions**: QUIC v1 and v2 (RFC 9369). A server accepts both (`ServerConfig::versions`
   narrows it) and answers in the client's; a client starts in `ClientConfig::version` (v1 by
   default) and, when a server answers with Version Negotiation without it, starts over once in a
   version both speak, the version_information transport parameter (RFC 9368) guarding against a
-  forged downgrade. `Connection::version()` tells which is in use. Compatible version negotiation
-  (switching inside one handshake) is not implemented.
+  forged downgrade. `Connection::version()` tells which is in use.
+- **Compatible version negotiation** (RFC 9368 section 4, [ADR-013](https://github.com/lesismal/only/blob/main/docs/adr/013-shared-anti-replay-and-compatible-vn.md)):
+  `ServerConfig::prefer_version(Version::V2)` moves clients that start in v1 and list v2 in their
+  version_information to v2 within the handshake, without a round trip (and `V1` the other way).
+  Off by default (the server answers in the client's version). The server reads the whole first
+  ClientHello before answering, so it works when the ClientHello spans several packets, after a
+  Retry and with 0-RTT (the client's 0-RTT packets stay in its first version, RFC 9369 section
+  4.1). only-quic clients always follow such a switch. Clients without version_information
+  (quic-go) are never switched; ngtcp2 switches both ways.
+
+  ```rust,ignore
+  let cfg = only_quic::server_config(certs, key, &[b"h3"])?
+      .prefer_version(only_quic::Version::V2);
+  ```
 - **ECN** (`TransportConfig::ecn`, on by default): on Linux packets go out ECT(0), received
   codepoints are read per datagram and reported in ACK_ECN frames, the path is validated (RFC 9000
   section 13.4) and CE marks count as congestion; a path that bleaches or drops marks falls back
@@ -104,8 +145,10 @@ ClientHellos per server); otherwise, or when 0-RTT packets are lost, the data go
 tells the client what happened; `Connection::is_early(stream)` tells the server which streams
 came early, and only-h3 marks such requests `Early-Data: 1` (RFC 8470), so handlers can answer
 `425 Too Early` to what is not safe to repeat. `H3Client` sends its requests in 0-RTT when its
-config enables it. 0-RTT data can be replayed (to another server sharing tickets, or within the
-window by an attacker who can make the client retry) and is not forward secret.
+config enables it. 0-RTT data can be replayed (within the window by an attacker who can make the
+client retry, or to another server sharing tickets unless the servers share the anti-replay
+record: build their TLS configuration with `session_ticket_key` and `anti_replay_store`, see the
+TLS chapter) and is not forward secret.
 
 ## HTTP/3
 
@@ -121,6 +164,14 @@ ALPN `h3`. Handlers get the same `Context` as on HTTP/1.1 and HTTP/2, including 
 body gets 413), `max_field_section_bytes` (64 KiB, sent as `SETTINGS_MAX_FIELD_SECTION_SIZE`;
 larger gets 431) and the QPACK settings described below.
 
+Responses follow the QUIC send buffers: what a stream cannot take yet waits with the response
+and goes out as `on_stream_writable` reports room, so a client that grants no flow-control credit
+holds the server to `stream_send_buffer` per stream. A file body (`Response::from_file`, static
+files) is read 256 KiB at a time on the engine's logical pool, each piece only once the stream
+has room for it, never on the I/O thread (if the pool is full, one piece is read in place). A
+streamed body's `write` fails with `Overloaded` while the buffer is full, as on HTTP/1.1 and
+HTTP/2: write again once `queued_bytes()` went down.
+
 A common deployment serves the same application on TCP (HTTP/1.1 + HTTP/2 over TLS) and on UDP
 (HTTP/3) in one engine: two listeners on the same port number. A `Router` is moved into its
 acceptor and is not `Clone`, so either build it with a function called once per listener, or
@@ -131,11 +182,17 @@ share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app
 {{#include ../../../../crates/only-h3/examples/guide-h3.rs:client}}
 ```
 
-`H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`), or `dial_with(.., &H3Config)`
-for the field section and QPACK settings; requests sent before
+`H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`), or `dial_with(.., H3ClientOptions)`
+for limits and QPACK settings; requests sent before
 the handshake completes wait for it (unless the client resumes with 0-RTT, see above). `request(method, path, headers, body, callback)`,
 `request_blocking(..)`, `get(path, timeout)`, `upload(..)`, `websocket(..)`, `close()`,
 `connection()`. Responses arrive buffered.
+`H3Client::dial_with(.., H3ClientOptions)` sets the limits: `max_body_bytes` (8 MiB) and
+`max_field_section_bytes` (64 KiB, advertised) stop the response stream and fail the request
+with `H3Error::TooLarge`; `request_timeout` (30 s, from `request` or `websocket` to the
+complete response, a WebSocket's head; uploads have none) resets the stream and fails it with
+`H3Error::Timeout` (that callback runs on a timer thread). It also takes the QPACK settings
+(below).
 
 ### Streamed request bodies
 
@@ -175,7 +232,7 @@ gets the `WsSender` once the server answered `200` (`H3Error::Status` otherwise)
 ### QPACK dynamic table
 
 QPACK (RFC 9204) compresses repeated header fields with a table each side's encoder fills
-through an encoder stream. In `H3Config`:
+through an encoder stream. In `H3Config` (servers) and `H3ClientOptions` (clients):
 
 - `qpack_max_table_capacity` (4096) and `qpack_blocked_streams` (16): what the peer's encoder
   may use against our decoder. A field section that refers to inserts not received yet waits

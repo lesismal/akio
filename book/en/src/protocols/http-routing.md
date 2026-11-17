@@ -145,6 +145,11 @@ an atomic `rename` over a file is noticed even with the same size and time, and 
 file is deleted (after the check interval). A response being sent keeps its own handle, so an
 evicted file is closed when its last response finishes.
 
-A cache miss reads the file on the I/O thread, so keep cached files small and the check interval
-reasonable. Not done: inotify-based invalidation (the stat interval is used instead); the
+Only a cache hit inside its trust window is answered on the I/O thread. A miss, a re-check and
+anything else that touches the disk (`stat`, `open`, reading a small file into the cache, the
+parts of a multi-range response from a large file) is detached to a small disk pool shared by
+every `Files` (up to 16 threads and 4096 queued requests; past that the answer is `503` with
+`Retry-After: 1`), and the response is sent from there. Whether `file.br` / `file.gz` exist is
+cached with the file, and the validators and fixed headers are formatted once per entry. Not
+done: inotify-based invalidation (the stat interval is used instead); the
 in-memory cache of small files is bounded by the files that exist, not by a byte budget.

@@ -38,7 +38,9 @@ echoed back by an `RtcServer` and decoded by Chrome (`tools/interop/webrtc/brows
 - Builder methods (call them before cloning): `config(|| rtc_config()...)` builds every peer's
   `RtcConfig` (codecs, RTP mode, BWE, statistics...), `ice_lite(false)` for a full agent,
   `close_on_disconnect(bool)` (default true: a peer whose consent expires is closed),
-  `connect_timeout(Some(d))` (default 30 s: an accepted offer that never connects is dropped).
+  `connect_timeout(Some(d))` (default 30 s: an accepted offer that never connects is dropped),
+  `max_peers(n)` (default 1024, `DEFAULT_MAX_PEERS`: offers past it fail with
+  `Error::TooManyPeers`; 0 removes the limit; on an `Endpoint` it may be set after binding).
 - `TurnServer::new(TurnConfig::new(realm, auth, relay_ip))` serves TURN and STUN on another UDP
   listener. Relay sockets are bound at run time, so it needs the engine: `set_engine(&engine)`.
 
@@ -119,6 +121,11 @@ echoed. Relayed traffic goes through the client's listener connection, so a clie
 longer than `Config::udp_idle_timeout` (60 s) loses data from peers until it sends again: raise
 that timeout on a TURN listener. `TurnCore` is the same server without I/O (`TurnEnv` does the
 sending), for embedding or testing. `StunServer` alone answers Binding requests.
+
+`TurnServer` splits allocations into shards by client address (about four per CPU, at least 8),
+each with its own lock: datagrams of different allocations do not contend across I/O threads,
+the expiry sweep takes one shard at a time, and the relay socket of an authenticated Allocate
+is bound before any lock is taken. The quotas stay server-wide.
 
 ## Not done yet
 

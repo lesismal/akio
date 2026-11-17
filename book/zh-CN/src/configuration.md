@@ -23,13 +23,16 @@
 | `read_buffer` | 64 KiB | 否 | 每个 I/O 线程的读缓冲区；`on_data` 一次最多收到的字节数（io_uring：缓冲区大小为 `min(read_buffer, 16 KiB)`） |
 | `write_high_watermark` | 256 KiB | 是 | 连接排队达到此值时暂停读，降到四分之一时恢复 |
 | `max_queued_bytes` | 64 MiB | 是 | 每连接排队超过此值后 `send` 返回 `Overloaded` |
+| `max_pending_responses` | 32 | 否 | 有序（流水线）响应：已预留但尚未写出的响应达到此数时暂停读，降到一半时恢复；排在慢响应之后的响应字节达到 `write_high_watermark` 时同样暂停读，超过 `max_queued_bytes` 时关闭连接；`None` = 不限数量 |
 | `backlog` | 1024 | 否 | `listen(2)` 的 backlog |
 | `idle_timeout` | `None` | 是 | 对端这么久没有发来数据时关闭（`TimedOut`） |
+| `write_timeout` | 60 s | 否 | 排队的输出这么久没有任何进展（对端不再读取）时关闭（`TimedOut`）；`None` 关闭此检查 |
 | `slow_callback_threshold` | `Some(100 ms)` | 是 | 报告运行超过此时长的回调；`None` 关闭计时 |
 | `slow_hook` | `None` | 是 | 接收报告的 `SlowHook(Arc<dyn Fn(&SlowCallback)>)`（否则写日志/stderr） |
 | `udp_idle_timeout` | 60 s | 否 | 丢弃静默的 UDP 对端（设置了更短的 `idle_timeout` 时以它为准） |
-| `udp_max_peers` | `None` | 否 | 每个 UDP listener 的最大对端数；超出后新对端被丢弃并计数 |
+| `udp_max_peers` | 65536 | 否 | 每个 UDP listener 的最大对端数；超出后新对端被丢弃并计数；`None` 为不限 |
 | `udp_gro` | true | 否 | 内核支持时启用 Linux UDP GRO；需要 `read_buffer` >= 64 KiB |
+| `connect_timeout` | 10 s | 否 | `Engine::dial` 这么久仍未连上时放弃（`on_error` 收到 `TimedOut`）；`None` 交给操作系统 |
 | `shutdown_timeout` | 10 s | 是 | `shutdown` 之后，超过这么久仍未关闭的连接被强制关闭 |
 | `max_connections` | 0（不限） | 是 | 打开的连接数达到此值后，新 accept 的连接立即关闭（全 engine 计数，含 dial 的连接和 UDP 对端） |
 | `log_level` | `None` | 是 | `only::log::LevelFilter`；用它调用 `only::log::set_max_level` |
@@ -78,18 +81,28 @@ false）。
 
 | 类型 | 字段：默认值 |
 |---|---|
-| `only_http::HttpConfig` | `max_header_bytes`：64 KiB，`max_body_bytes`：1 MiB，`h2`：`Some(H2Config::default())` |
-| `only_http::H2Config` | `max_concurrent_streams`：128，`initial_window`：1 MiB，`conn_window`：16 MiB，`max_header_list`：64 KiB，`max_body_bytes`：1 MiB，`max_pending_bytes`：8 MiB |
+| `only_http::HttpConfig` | `max_header_bytes`：64 KiB，`max_body_bytes`：1 MiB，`h2`：`Some(H2Config::default())`，`head_timeout`：10 s，`keep_alive_timeout`：75 s，`body_timeout`：60 s |
+| `only_http::H2Config` | `max_concurrent_streams`：128，`initial_window`：1 MiB，`conn_window`：16 MiB，`max_header_list`：64 KiB，`max_body_bytes`：1 MiB，`max_pending_bytes`：8 MiB，`max_conn_pending_bytes`：32 MiB，`max_resets`：100，`max_control_frames`：1000，`reset_window`：30 s |
 | `only_http::files::Files` | `index`：`index.html`，`max_cached_bytes`：256 KiB，`max_open_files`：64，`check_interval`：5 s，`cache_control`：无 |
 | `only_http::middleware::Cors` | `allow_origin`：`*`，`allow_methods`：GET, POST, PUT, PATCH, DELETE, OPTIONS，`allow_headers`：Content-Type, Authorization，`max_age`：600 s |
 | `only_http::middleware::Compress` | `min_bytes`：1024，`level`：6 |
-| `only_http::h2client::H2Options` | `initial_window`：1 MiB，`conn_window`：16 MiB，`enable_push`：false |
+| `only_http::client::ClientOptions` | `max_head_bytes`：64 KiB，`max_body_bytes`：64 MiB，`idle_timeout`：90 s，`max_idle_per_host`：32，`max_idle`：256 |
+| `only_http::h2client::H2Options` | `initial_window`：1 MiB，`conn_window`：16 MiB，`enable_push`：false，`max_header_list`：64 KiB，`max_body_bytes`：64 MiB（缓冲式响应） |
 | `only_ws::WsConfig` | `max_message_bytes`：16 MiB，`permessage_deflate`：true，`compress_min_bytes`：128 |
 | `only_http::WsOptions` | `config`：`WsConfig::default()`，`protocols`：无，`origin_allowed`：无 |
 | `only_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s |
+| `only_media::HubConfig` | `gop_cache_bytes`：16 MiB，`max_streams`：1024，`max_subscribers`：每路径 1000（0：不限） |
+| `only_media::rtmp::RtmpConfig` | `chunk_size`：4096，`write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`handshake_timeout`：10 s，`idle_timeout`：60 s（播放者除外）；消息 16 MiB，每连接未完成消息合计 32 MiB |
+| `only_media::rtsp::RtspConfig` | `write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`request_timeout`：10 s，`session_timeout`：60 s（通告并强制执行） |
+| `only_media::srt::SrtConfig` | `max_send_backlog`：2 MiB，`max_conns`：1024（0：不限） |
+| `only_media::whip::WhipConfig` | `max_sessions`：256（0：不限） |
+| `only_media::hls::HlsConfig` | `target_duration`：2 s，`playlist_size`：6，`keep_segments`：3，`max_bytes`：64 MiB（也约束正在写的分段），`idle_timeout`：30 s |
+| `only_webrtc::RtcServer` / `Endpoint` | `max_peers`：1024（0：不限），`connect_timeout`：30 s |
 | `only_h3::H3Config` | `max_body`：8 MiB，`max_field_section`：64 KiB |
-| `only_grpc::GrpcServer` | `max_message`：4 MiB，`compress`：false |
-| `only_arpc::Routes` | `max_body`：64 MiB |
+| `only_h3::H3ClientOptions` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`request_timeout`：30 s |
+| `only_grpc::GrpcServer` | `max_message`：4 MiB，`max_collect_bytes`：64 MiB，`max_deadline`：24 小时，`compress`：false |
+| `only_grpc::GrpcClient` | `max_message_bytes`：4 MiB，`max_collect_bytes`：64 MiB，`default_timeout`：30 秒（`unary` / `collect`） |
+| `only_arpc::Routes` | `max_body`：64 MiB，`max_streams_per_conn`：1024，`call_timeout`：30 秒 |
 | `only_kcp::KcpConfig` | 见 [KCP](protocols/kcp.md#config) |
 
 ## 环境变量

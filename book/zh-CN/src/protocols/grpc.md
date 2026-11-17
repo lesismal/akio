@@ -21,12 +21,14 @@
 
 其他设置：`interceptor(Fn(&Metadata) -> Result<(), Status>)` 在每次调用前执行（返回 `Err`
 时以该状态结束调用），`max_message_bytes(n)`（默认 4 MiB），`compress(bool)`（对接受 gzip 的客户端
-压缩响应；gzip 压缩的请求总是被接受）。
+压缩响应；gzip 压缩的请求总是被接受），`max_collect_bytes(n)`（默认 64 MiB：`client_stream`
+方法为一次调用收集的请求字节上限，超出时返回 `RESOURCE_EXHAUSTED`；需在注册这些方法之前设置），
+以及 `max_deadline(d)`（默认 24 小时：更长的 `grpc-timeout` 会被缩短到该值）。
 
 `Sink` 可在任何线程上答复：`send(msg) -> bool`、`set_header`、`set_trailer`、
 `finish(Status)`、`is_finished`。`Status::ok()`、`Status::new(Code::.., message)`；`Code`
 包含标准的 gRPC 状态码。未知方法返回 `Unimplemented`；在发送任何消息之前出错时以
-trailers-only 响应发送；`grpc-timeout` 截止时间会被执行。
+trailers-only 响应发送；`grpc-timeout` 截止时间会被执行（调用结束时计时器立即移除）。
 
 handler 在 I/O 线程上执行：处理很快时直接答复，否则把 `Sink` 移到其他线程（上例的
 server-streaming 方法就是这样做的）。
@@ -46,7 +48,11 @@ server-streaming 方法就是这样做的）。
 - `collect(path, requests, opts) -> (Vec<Vec<u8>>, Status)` 用于流式调用，同样是阻塞的。
 - `bidi(path, opts, on_message, on_done) -> ClientSink` 是非阻塞的通用形式：
   `ClientSink::send`、`close_send`。
-- `CallOptions`：`timeout`（作为 `grpc-timeout` 发送）、`metadata`。
+- `CallOptions`：`timeout`（作为 `grpc-timeout` 发送，客户端也会执行：到期时无论服务端如何，
+  调用都以 `DEADLINE_EXCEEDED` 结束）、`metadata`。未设置时，`unary` 和 `collect` 使用客户端的
+  `default_timeout(Option<Duration>)`（30 秒），因为它们会阻塞线程；`bidi` 调用没有截止时间。
+- `max_message_bytes(n)`（4 MiB）限制每条响应消息，`max_collect_bytes(n)`（64 MiB）限制
+  `unary` 和 `collect` 为一次调用收集的响应总量（超出：`RESOURCE_EXHAUSTED`）。
 
 ## 消息
 

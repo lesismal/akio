@@ -45,7 +45,9 @@ pub struct HlsConfig {
     pub playlist_size: usize,
     /// Segments kept after leaving the playlist, for clients that read it just before.
     pub keep_segments: usize,
-    /// Bound of the bytes a stream's segments take.
+    /// Bound of the bytes a stream's segments take. The segment being written is bounded by it
+    /// too: one that reaches it without a keyframe to cut at (a stream without keyframes, or a
+    /// very long GOP) is cut there, and the next segment starts without a keyframe.
     pub max_bytes: usize,
     /// When set, segments are also published in parts of about this length (LL-HLS).
     pub part_duration: Option<Duration>,
@@ -126,6 +128,13 @@ struct Building {
     part_offset: usize,
     part_independent: bool,
     last: Time,
+}
+
+impl Building {
+    /// Memory held: the segment and its parts (which copy the segment's bytes).
+    fn bytes(&self) -> usize {
+        self.data.len() + self.parts.iter().map(|p| p.data.len()).sum::<usize>()
+    }
 }
 
 enum Want {
@@ -212,6 +221,7 @@ impl Hls {
             has_video: false,
             started: false,
             disc_pending: false,
+            forced_cut: false,
         };
         let sub = self.0.hub.subscribe(path, sink, opts)?;
         *lock(&st.sub) = Some(sub);
@@ -555,6 +565,8 @@ struct HlsSink {
     has_video: bool,
     started: bool,
     disc_pending: bool,
+    /// The last segment was cut at `max_bytes` without a keyframe: the next one starts at once.
+    forced_cut: bool,
 }
 
 impl HlsSink {
@@ -644,16 +656,20 @@ impl Sink for HlsSink {
             };
             let mut woke = false;
             if let Some(b) = &g.building {
-                if cut_point && dts - b.start >= target {
+                // Without a keyframe the segment would grow forever: cut it at `max_bytes`.
+                let full = b.bytes() + pkt.data.len() > self.st.cfg.max_bytes;
+                if (cut_point && dts - b.start >= target) || full {
                     Self::close_segment(&self.st, &mut g, dts);
                     woke = true;
+                    self.forced_cut = !cut_point;
                 }
-            } else if self.has_video && !(video && pkt.keyframe) {
+            } else if self.has_video && !(video && pkt.keyframe) && !self.forced_cut {
                 // Segments start at a keyframe.
                 return;
             }
             let first = g.building.is_none();
             if first {
+                self.forced_cut = false;
                 let seq = g.next_seq;
                 let disc = std::mem::take(&mut self.disc_pending) && !g.segments.is_empty();
                 g.building = Some(Building {
@@ -724,5 +740,112 @@ mod tests {
         );
         assert_eq!(blocking_params(Some("x=1")), (None, None));
         assert_eq!(blocking_params(None), (None, None));
+    }
+
+    /// Packets of the sample stream (H.264 + AAC) and its tracks.
+    fn sample() -> (Tracks, Vec<Packet>) {
+        use crate::flv::{Decoder, Demuxer, Event};
+        let mut dec = Decoder::new();
+        let (mut tracks, mut pkts) = (None, Vec::new());
+        let data = include_bytes!("../testdata/h264_aac.flv");
+        for t in Demuxer::new().feed(data).expect("flv") {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    Event::Tracks(t) => tracks = Some(t),
+                    Event::Packet(p) => pkts.push(p),
+                }
+            }
+        }
+        (tracks.expect("tracks"), pkts)
+    }
+
+    fn sink(cfg: HlsConfig) -> HlsSink {
+        HlsSink {
+            st: Arc::new(Stream {
+                path: "t".to_owned(),
+                cors: None,
+                state: Mutex::new(State {
+                    target: dur_ns(cfg.target_duration),
+                    ..State::default()
+                }),
+                cfg,
+                sub: Mutex::new(None),
+            }),
+            muxer: None,
+            timeline: Timeline::from_zero(),
+            video: Vec::new(),
+            has_video: false,
+            started: false,
+            disc_pending: false,
+            forced_cut: false,
+        }
+    }
+
+    /// A video stream with a single keyframe: before the fix the segment being written grew
+    /// without limit (it is only cut at keyframes). Now it is cut at `max_bytes`, the stream
+    /// keeps flowing into new segments, and memory stays bounded.
+    #[test]
+    fn segment_without_keyframes_is_cut_at_max_bytes() {
+        let (tracks, pkts) = sample();
+        let mut s = sink(HlsConfig {
+            max_bytes: 20_000,
+            part_duration: Some(Duration::from_millis(200)), // parts count toward the bound
+            ..HlsConfig::default()
+        });
+        s.on_tracks(&tracks);
+        let mut seen_key = false;
+        let mut fed = 0;
+        for round in 0..20i64 {
+            for p in &pkts {
+                // Only the very first keyframe stays one.
+                let key = p.keyframe && !seen_key && round == 0;
+                seen_key |= key;
+                let shift = round * 10 * SECOND;
+                let q = Arc::new(Packet::new(
+                    p.track,
+                    p.dts + shift,
+                    p.pts + shift,
+                    key,
+                    p.data.clone(),
+                ));
+                fed += q.data.len();
+                s.on_packet(&q);
+                let g = lock(&s.st.state);
+                let building = g.building.as_ref().map_or(0, Building::bytes);
+                let biggest = 64 << 10; // one packet's overshoot (TS overhead included)
+                assert!(building <= 20_000 + biggest, "building {building}");
+                assert!(g.bytes <= 2 * 20_000 + 2 * biggest, "kept {}", g.bytes);
+            }
+        }
+        let g = lock(&s.st.state);
+        assert!(fed > 200_000, "fed only {fed}");
+        assert!(g.next_seq > 5, "segments cut: {}", g.next_seq);
+        // Every packet after the cut went somewhere: segments keep coming (no drop until a
+        // keyframe that never arrives).
+        assert!(g.segments.iter().all(|seg| !seg.data.is_empty()));
+    }
+
+    /// With keyframes, segments are still cut only at keyframes when under `max_bytes`.
+    #[test]
+    fn segments_still_start_at_keyframes_under_the_limit() {
+        let (tracks, pkts) = sample();
+        let mut s = sink(HlsConfig::default());
+        s.on_tracks(&tracks);
+        for round in 0..20i64 {
+            let shift = round * 10 * SECOND;
+            for p in &pkts {
+                let q = Packet::new(
+                    p.track,
+                    p.dts + shift,
+                    p.pts + shift,
+                    p.keyframe,
+                    p.data.clone(),
+                );
+                s.on_packet(&Arc::new(q));
+                assert!(!s.forced_cut);
+            }
+        }
+        let g = lock(&s.st.state);
+        assert!(g.next_seq >= 1, "no segment cut");
     }
 }

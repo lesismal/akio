@@ -70,7 +70,7 @@ use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::io;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
@@ -127,6 +127,9 @@ pub enum Error {
     Timeout,
     /// A candidate could not be made from these addresses.
     InvalidCandidate(String),
+    /// The server or endpoint already has its maximum of peers
+    /// ([`RtcServer::max_peers`], [`Endpoint::max_peers`]).
+    TooManyPeers,
 }
 
 impl fmt::Display for Error {
@@ -141,6 +144,7 @@ impl fmt::Display for Error {
             Error::Io(e) => write!(f, "webrtc: {e}"),
             Error::Timeout => f.write_str("webrtc: timed out"),
             Error::InvalidCandidate(e) => write!(f, "webrtc: invalid candidate: {e}"),
+            Error::TooManyPeers => f.write_str("webrtc: too many peers"),
         }
     }
 }
@@ -602,9 +606,20 @@ enum Tx {
     Bound(OnceLock<UdpBinding>),
 }
 
+/// Default most peers of an [`RtcServer`] or [`Endpoint`]: each holds ICE, DTLS and SRTP state,
+/// and offers come from the network (signalling), so the table needs a bound.
+pub const DEFAULT_MAX_PEERS: usize = 1024;
+
+/// Source addresses remembered per peer: a peer's ICE candidates plus a margin. Connectivity
+/// checks naming a peer's ufrag from more addresses than this are not remembered (they still
+/// reach the peer through the ufrag lookup).
+const ADDRS_PER_PEER: usize = 16;
+
 struct Hub {
     tx: Tx,
     ice_lite: bool,
+    /// Atomic so it can be set after an [`Endpoint`] is bound (its socket holds a reference).
+    max_peers: AtomicUsize,
     close_on_disconnect: bool,
     connect_timeout: Option<Duration>,
     config: Box<ConfigFn>,
@@ -620,6 +635,7 @@ impl Hub {
         Hub {
             tx,
             ice_lite,
+            max_peers: AtomicUsize::new(DEFAULT_MAX_PEERS),
             close_on_disconnect: true,
             connect_timeout: Some(Duration::from_secs(30)),
             config: Box::new(rtc_config),
@@ -640,11 +656,22 @@ impl Hub {
         Ok(rtc)
     }
 
-    fn register(self: &Arc<Hub>, rtc: Rtc, handler: Box<dyn PeerHandler>) -> Peer {
+    fn full(&self) -> bool {
+        let max = self.max_peers.load(Ordering::Relaxed);
+        max != 0 && lock(&self.peers).len() >= max
+    }
+
+    fn register(self: &Arc<Hub>, rtc: Rtc, handler: Box<dyn PeerHandler>) -> Result<Peer, Error> {
+        let max = self.max_peers.load(Ordering::Relaxed);
+        let mut peers = lock(&self.peers);
+        if max != 0 && peers.len() >= max {
+            return Err(Error::TooManyPeers);
+        }
         let p = Peer::new(self, rtc, handler);
+        peers.insert(p.0.id, p.clone());
+        drop(peers);
         lock(&self.by_ufrag).insert(p.0.ufrag.clone(), p.0.id);
-        lock(&self.peers).insert(p.0.id, p.clone());
-        p
+        Ok(p)
     }
 
     fn accept_offer(
@@ -652,9 +679,12 @@ impl Hub {
         offer: &str,
         handler: Box<dyn PeerHandler>,
     ) -> Result<(Peer, String), Error> {
+        if self.full() {
+            return Err(Error::TooManyPeers); // before paying for the DTLS identity and SDP
+        }
         let mut rtc = self.new_rtc()?;
         let answer = rtc.accept_offer(Instant::now(), offer).map_err(sdp_err)?;
-        let p = self.register(rtc, handler);
+        let p = self.register(rtc, handler)?;
         p.drive();
         Ok((p, answer))
     }
@@ -664,6 +694,9 @@ impl Hub {
         handler: Box<dyn PeerHandler>,
         f: impl FnOnce(&mut SdpChanges<'_, '_>),
     ) -> Result<(Peer, String), Error> {
+        if self.full() {
+            return Err(Error::TooManyPeers);
+        }
         let mut rtc = self.new_rtc()?;
         let mut ch = rtc.changes();
         f(&mut SdpChanges(&mut ch));
@@ -671,7 +704,7 @@ impl Hub {
             .apply(Instant::now(), ch)
             .map_err(rtc_err)?
             .ok_or_else(|| Error::Sdp("an offer needs at least one media or channel".into()))?;
-        let p = self.register(rtc, handler);
+        let p = self.register(rtc, handler)?;
         p.drive();
         Ok((p, offer))
     }
@@ -736,7 +769,13 @@ impl Hub {
                     let ours = u.split(':').next().unwrap_or("");
                     id = lock(&self.by_ufrag).get(ours).copied();
                     if let Some(i) = id {
-                        lock(&self.by_addr).insert(source, i);
+                        // The ufrag is public (it is in the SDP): checks from spoofed sources
+                        // must not grow the address table without bound.
+                        let cap = lock(&self.peers).len().max(1) * ADDRS_PER_PEER;
+                        let mut by_addr = lock(&self.by_addr);
+                        if by_addr.len() < cap {
+                            by_addr.insert(source, i);
+                        }
                     }
                 }
             }
@@ -859,6 +898,14 @@ impl RtcServer {
     #[must_use]
     pub fn connect_timeout(mut self, t: Option<Duration>) -> Self {
         self.hub_mut().connect_timeout = t;
+        self
+    }
+
+    /// Most peers at once (default [`DEFAULT_MAX_PEERS`]); offers past it fail with
+    /// [`Error::TooManyPeers`]. 0 removes the limit.
+    #[must_use]
+    pub fn max_peers(self, n: usize) -> Self {
+        self.0.max_peers.store(n, Ordering::Relaxed);
         self
     }
 
@@ -1077,6 +1124,14 @@ impl Endpoint {
     #[must_use]
     pub fn connect_timeout(mut self, t: Option<Duration>) -> Self {
         self.hub_mut().connect_timeout = t;
+        self
+    }
+
+    /// Most peers at once (default [`DEFAULT_MAX_PEERS`]); offers past it fail with
+    /// [`Error::TooManyPeers`]. 0 removes the limit.
+    #[must_use]
+    pub fn max_peers(self, n: usize) -> Self {
+        self.0.max_peers.store(n, Ordering::Relaxed);
         self
     }
 

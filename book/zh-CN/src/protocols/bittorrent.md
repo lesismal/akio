@@ -17,6 +17,11 @@
 UDP listener 的 acceptor（BEP 15；连接 ID 是密钥、当前分钟和客户端地址的 HMAC，因此不为每个
 客户端保存状态）。
 
+该存储是有界的：`TrackerConfig::max_swarms`（100 000）限制同时跟踪的种子数，超过后新种子的
+announce 得到失败原因 `tracker full`；`max_peers_per_swarm`（1000）限制每个种子的 peer 数，
+超过后新来者仍能拿到 peer 列表但不会被记录。种子的最后一个 peer 离开或过期（`peer_ttl`，1 小时）
+时该 swarm 被删除；过期处理每次 announce 只需 O(1)，不再扫描整个 swarm，存储分为 16 个各自加锁的分片。
+
 ```rust,ignore
 {{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
@@ -40,6 +45,8 @@ UDP listener 的 acceptor（BEP 15；连接 ID 是密钥、当前分钟和客户
 通过 `port::UdpPort` 由 uTP 和 DHT 共享。tracker 请求经由同一 engine 上的
 `tracker::TrackerClient`（HTTP(S) 用 only-http，UDP 用 `dial_udp` 套接字）。存储读写和每一次
 SHA-1 校验都在逻辑池（`only-pool`）上运行，从不占用 I/O 线程。
+tracker 主机名在调用线程之外解析（UDP tracker 用 `only::dns`，HTTP tracker 经由 only-http 的客户端），
+从不在触发 announce 的 I/O 线程上解析。
 
 - **种子**来自 `MetaInfo`（`add_torrent`）或磁力链接（`add_magnet`，info 字典通过 ut_metadata
   从 peer 获取，BEP 9/10）。`AddOptions` 可以为种子指定独立存储（`MemoryStorage`，或任何实现
@@ -77,6 +84,8 @@ SHA-1 校验都在逻辑池（`only-pool`）上运行，从不占用 I/O 线程�
 `Engine::dial_udp_from` 在 listener 套接字上打开一个 peer，这样 DHT 节点在它宣告的端口上可达，
 uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发起 uTP 连接；`on_accept` 接收
 入站流；`send_to` 和 `on_datagram` 处理其余数据报。
+同时存在的入站 uTP 连接最多 `set_max_inbound(n)`（1024）个；超过时 SYN 被直接丢弃、不作应答
+（SYN 发送成本为零且源地址可能被伪造）。
 
 ## 协议层
 

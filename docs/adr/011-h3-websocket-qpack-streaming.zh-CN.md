@@ -32,8 +32,8 @@ HTTP/1 和 HTTP/2 上可用而在 HTTP/3 上不行，上传受 `max_body_bytes` 
 3. **only-ws 增加传输接缝：** `WsSender` 通过 TCP 连接（与以前一样）或一个 `WsLink` trait 对象
    （`#[doc(hidden)]`，与 `WsSession` 一样不在 semver 承诺内）写出，配套
    `WsSession::with_link` / `client_with_link`。TCP 路径是一次枚举匹配，而不是虚调用。
-4. **QPACK 动态表（RFC 9204），双向，设置放在 `H3Config`**（客户端现在也接受它：
-   `H3Client::dial_with(.., &H3Config)`）：
+4. **QPACK 动态表（RFC 9204），双向，服务端设置放在 `H3Config`**，客户端放在 `H3ClientOptions`
+   （`H3Client::dial_with(.., H3ClientOptions)`，与响应限制和请求超时并列）：
    - `qpack_max_table_capacity`（默认 **4096**）和 `qpack_blocked_streams`（默认 **16**）约束对端
      编码器能对我方解码器做什么：插入经对端的 encoder stream 到达；需要尚未收到的插入的字段段会
      等待（该流后续字节按顺序重新编码暂存），最多到 blocked streams 上限，超过则以
@@ -73,6 +73,10 @@ HTTP/1 和 HTTP/2 上可用而在 HTTP/3 上不行，上传受 `max_body_bytes` 
   靠的是：没有动态引用的字段段走纯静态解码；整个到达的请求原地读取完整帧；上传、WebSocket、被阻塞
   字段段以及除字节外还需要别的东西的排队请求，其附加状态装箱；每请求的调用保持内联（请求有 232
   字节，每经过一次非内联调用就被复制一次）。精确到函数的指令数来自 callgrind（arm64，Docker）。
+- 与加入了客户端上限（响应限制、请求截止时间）和 QUIC 发送上限的 main 2d1f5720 相比，合并后的分支在
+  同一基准上为 0.980 倍（84.25 万 vs 85.96 万 请求/秒；0.984 倍和 0.977 倍，14 轮全部更低）。功能本身
+  的开销没有变化（callgrind，arm64：only-h3/only-http 每请求 +169 条指令，与合并前相同）；在 x86 上为
+  +252 条指令（整体每请求 +1.6%，周期数 +2.6%），分散在请求路径上，没有单一热点。
 - 服务端的 SETTINGS 现在带有 4 KiB 动态表、16 个 blocked streams 和 extended CONNECT，并会打开一个
   QPACK decoder stream；会压缩的对端立即使用这张表。互通：quic-go（双向 HTTP/3 WebSocket、双向
   流式上传；它的 QPACK 没有动态表），以及 Docker 中通过 libcurl 的 ngtcp2/nghttp3 和 OpenSSL QUIC，

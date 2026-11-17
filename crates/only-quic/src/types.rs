@@ -266,10 +266,21 @@ pub struct TransportConfig {
     /// 1.25 MB).
     pub stream_receive_window: u64,
     /// Bytes the peer may send on all streams together ahead of the application (default
-    /// `None`: unlimited).
+    /// 10 MB, eight times `stream_receive_window`; `None` lifts the limit).
     pub receive_window: Option<u64>,
     /// Bytes sent but not yet acknowledged, on all streams (default 10 MB).
     pub send_window: u64,
+    /// Bytes one stream holds for sending: written and not yet acknowledged (default 4 MiB).
+    /// While a stream holds this much, [`Connection::send`](crate::Connection::send) fails with
+    /// [`Error::Overloaded`](crate::Error::Overloaded) and
+    /// [`QuicHandler::on_stream_writable`](crate::QuicHandler::on_stream_writable) follows once
+    /// it is down to three quarters; a write accepted below the limit may pass it, so a stream
+    /// holds at most the limit plus one write. `u64::MAX` lifts the limit.
+    pub stream_send_buffer: u64,
+    /// Bytes all streams of a connection hold for sending together, as `stream_send_buffer`
+    /// does for one (default 16 MiB, above `send_window` so a full window can be in flight
+    /// with data waiting behind it). `u64::MAX` lifts the limit.
+    pub send_buffer: u64,
     /// Round-trip time assumed before it is measured (default 333 ms).
     pub initial_rtt: Duration,
     /// UDP payload size used before path MTU discovery (default 1200, the minimum).
@@ -301,8 +312,10 @@ impl Default for TransportConfig {
             max_idle_timeout: Some(Duration::from_secs(30)),
             keep_alive_interval: None,
             stream_receive_window: STREAM_RWND,
-            receive_window: None,
+            receive_window: Some(8 * STREAM_RWND),
             send_window: 8 * STREAM_RWND,
+            stream_send_buffer: 4 << 20,
+            send_buffer: 16 << 20,
             initial_rtt: Duration::from_millis(333),
             initial_mtu: 1200,
             mtu_discovery: true,
@@ -334,8 +347,14 @@ pub(crate) struct ServerInner {
     pub(crate) key_update: Option<u64>,
     pub(crate) preferred: (Option<SocketAddrV4>, Option<SocketAddrV6>),
     pub(crate) versions: Vec<u32>,
+    pub(crate) prefer_version: Option<u32>,
     pub(crate) zero_rtt: bool,
+    pub(crate) max_connections: usize,
 }
+
+/// Connections a server endpoint holds at once by default (see
+/// [`ServerConfig::max_connections`]).
+pub const DEFAULT_MAX_CONNECTIONS: usize = 10_000;
 
 impl fmt::Debug for ServerConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -353,8 +372,21 @@ impl ServerConfig {
             key_update: None,
             preferred: (None, None),
             versions: vec![Version::V1.wire(), Version::V2.wire()],
+            prefer_version: None,
             zero_rtt: false,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
         })
+    }
+
+    /// Connections the server holds at once, handshaking, open or closing (default 10,000;
+    /// `usize::MAX` lifts the limit). A client starting a connection beyond it is refused at
+    /// once with `CONNECTION_REFUSED` in an Initial packet (RFC 9000 section 5.2.2), without any
+    /// state kept for it; these answers are rate limited like stateless resets. A clone of the
+    /// [`QuicServer`](crate::QuicServer) serving several listeners shares the limit.
+    #[must_use]
+    pub fn max_connections(mut self, n: usize) -> Self {
+        self.0.max_connections = n;
+        self
     }
 
     /// Accepts 0-RTT (RFC 9001 section 4.6; default off): clients resuming with a ticket from
@@ -365,9 +397,10 @@ impl ServerConfig {
     /// **0-RTT data can be replayed** by an attacker who recorded it, and it is processed
     /// before the handshake completes. Replays of a ClientHello are refused within this server
     /// (the TLS layer keeps a bounded record of recent ClientHellos and a 10-second freshness
-    /// window; see `only_tls::ServerConfigBuilder::early_data`), not across servers sharing
-    /// tickets. Check [`Connection::is_early`](crate::Connection::is_early) and act only on
-    /// requests safe to repeat.
+    /// window; see `only_tls::ServerConfigBuilder::early_data`); servers sharing tickets
+    /// share it through `only_tls::ServerConfigBuilder::anti_replay_store`. Check
+    /// [`Connection::is_early`](crate::Connection::is_early) and act only on requests safe to
+    /// repeat.
     #[must_use]
     pub fn zero_rtt(mut self, yes: bool) -> Self {
         self.0.zero_rtt = yes;
@@ -381,6 +414,23 @@ impl ServerConfig {
         if !versions.is_empty() {
             self.0.versions = versions.iter().map(|v| v.wire()).collect();
         }
+        self
+    }
+
+    /// Moves clients that start in another version, and list `version` among the versions
+    /// they support, to `version` within the handshake, without a round trip (compatible
+    /// version negotiation, RFC 9368 section 4; versions 1 and 2 are compatible both ways).
+    /// Default none: the server answers in the version the client started in. `version` must
+    /// also be accepted (see [`versions`](Self::versions)), or this has no effect.
+    ///
+    /// The client's 0-RTT packets stay in its first version, the rest of the connection is in
+    /// `version`; [`Connection::version`](crate::Connection::version) tells which one a
+    /// connection ended up in. Clients of this crate, quic-go and other implementations of RFC
+    /// 9368 follow the switch; clients that do not send the version_information transport
+    /// parameter are never switched.
+    #[must_use]
+    pub fn prefer_version(mut self, version: Version) -> Self {
+        self.0.prefer_version = Some(version.wire());
         self
     }
 
@@ -482,7 +532,9 @@ impl ClientConfig {
     /// The QUIC version connections start with (default 1). A server that does not speak it
     /// answers with Version Negotiation and the connection starts over in the other version,
     /// once, guarded against downgrades by the version_information transport parameter
-    /// (RFC 9368).
+    /// (RFC 9368). A server preferring the other version may also move the connection to it
+    /// within the handshake (compatible negotiation, RFC 9368 section 4), which the client
+    /// follows.
     #[must_use]
     pub fn version(mut self, version: Version) -> Self {
         self.0.version = version;

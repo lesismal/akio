@@ -48,8 +48,10 @@ only-socks 正是这样在两个方向上转发的。
   而不是无限排队。
 - HTTP/2 在两个方向上执行流控，并限制一个响应为慢对端积压的数据量
   （`H2Config::max_pending_bytes`）。
-- QUIC（`Connection::queued_bytes(stream)`）和 KCP（`Session::send` 返回 `KcpError::Full`、
-  `Config::write_queue`）暴露各自的发送窗口。
+- QUIC 限制每个流和每个连接的发送缓冲区（`TransportConfig::stream_send_buffer`、
+  `send_buffer`）：`send` 返回 `Overloaded`，`QuicHandler::on_stream_writable` 通知何时继续。
+  KCP 的 `Session::send` 超过 `KcpConfig::write_queue` 时返回 `KcpError::Full`，降到一半时回调
+  `KcpHandler::on_writable`。HTTP/3 响应和文件 body 遵循 QUIC 的缓冲区。
 - UDP 没有背压：socket 拒收的数据报被丢弃，这是 UDP 允许的。
 
 ## 值得设置的上限

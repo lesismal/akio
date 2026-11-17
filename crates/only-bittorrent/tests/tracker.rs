@@ -80,3 +80,43 @@ fn announce_and_scrape_over_http_and_udp() {
         .unwrap_err();
     assert_eq!(e, TrackerError::Timeout);
 }
+
+/// A tracker given by host name is resolved off the caller's thread (`only::dns`, for UDP and,
+/// through only-http's client, HTTP): `announce` returns at once and the outcome arrives from a
+/// resolver thread.
+#[test]
+fn host_names_resolve_off_the_calling_thread() {
+    let engine = Arc::new(
+        Engine::builder()
+            .client_threads(1)
+            .udp_client_threads(1)
+            .build()
+            .unwrap(),
+    );
+    engine.start().unwrap();
+    let c = TrackerClient::new(engine.clone(), Duration::from_millis(200), 0);
+    let req = AnnounceRequest::new(InfoHash([1; 20]), [1; 20], 1, 1);
+    for url in [
+        "udp://does-not-exist.invalid:6969/announce",
+        "http://does-not-exist.invalid:80/announce",
+    ] {
+        let (tx, rx) = mpsc::channel();
+        let t0 = std::time::Instant::now();
+        c.announce(url, &req, move |r| {
+            let name = std::thread::current().name().map(str::to_owned);
+            tx.send((r, name)).unwrap();
+        });
+        assert!(
+            t0.elapsed() < Duration::from_millis(50),
+            "announce returned at once"
+        );
+        let (r, name) = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(r.is_err(), "{url}");
+        assert!(
+            name.as_deref().is_some_and(|n| n.starts_with("only-dns")),
+            "{url}: done ran on {name:?}"
+        );
+    }
+    engine.shutdown();
+    engine.wait();
+}

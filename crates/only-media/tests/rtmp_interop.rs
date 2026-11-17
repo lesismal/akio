@@ -374,3 +374,103 @@ fn ffmpeg_publish_and_play() {
     }
     engine.shutdown();
 }
+
+/// Reads until the server closes the connection; returns how long that took (`None`: still
+/// open after `max`).
+fn closed_within(s: &mut TcpStream, max: Duration) -> Option<Duration> {
+    let t = Instant::now();
+    s.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+    let mut b = vec![0u8; 65536];
+    while t.elapsed() < max {
+        match s.read(&mut b) {
+            Ok(0) => return Some(t.elapsed()),
+            Ok(_) => {}
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => return Some(t.elapsed()),
+        }
+    }
+    None
+}
+
+fn timeouts(handshake_ms: u64, idle_ms: u64) -> RtmpConfig {
+    let mut cfg = RtmpConfig::default();
+    cfg.handshake_timeout = Duration::from_millis(handshake_ms);
+    cfg.idle_timeout = Duration::from_millis(idle_ms);
+    cfg
+}
+
+#[test]
+fn timeouts_have_safe_defaults() {
+    let cfg = RtmpConfig::default();
+    assert_eq!(cfg.handshake_timeout, Duration::from_secs(10));
+    assert_eq!(cfg.idle_timeout, Duration::from_secs(60));
+}
+
+/// A client that stops halfway through the handshake (slowloris) is closed after the
+/// handshake timeout, even while it trickles bytes.
+#[test]
+fn handshake_timeout_closes_a_stalled_handshake() {
+    let (_hub, _engine, addr) = start(timeouts(300, 10_000));
+    // Silent.
+    let mut s = TcpStream::connect(addr).unwrap();
+    let t = closed_within(&mut s, Duration::from_secs(3)).expect("still open");
+    assert!(t >= Duration::from_millis(250), "closed too early: {t:?}");
+    // Trickling C0C1 one byte every 50 ms.
+    let mut s = TcpStream::connect(addr).unwrap();
+    let hello = handshake::client_hello(true);
+    let start = Instant::now();
+    let mut closed = false;
+    for b in hello.iter().take(40) {
+        if s.write_all(&[*b]).is_err() {
+            closed = true;
+            break;
+        }
+        if closed_within(&mut s, Duration::from_millis(50)).is_some() {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "a trickled handshake was kept open");
+    assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+/// After the handshake, a silent connection is closed after the idle timeout; one that keeps
+/// sending stays open well past it; a player is exempt.
+#[test]
+fn idle_timeout_closes_silent_connections_but_not_players() {
+    let mut cfg = timeouts(5_000, 400);
+    cfg.play_wait = Some(Duration::from_secs(30));
+    let (_hub, _engine, addr) = start(cfg);
+    // Silent after connect + createStream.
+    let mut c = Client::connect(addr, "live", true);
+    let t = closed_within(&mut c.s, Duration::from_secs(3)).expect("still open");
+    assert!(t >= Duration::from_millis(300), "closed too early: {t:?}");
+    // Talking every 100 ms (under the limit): open after 3 idle periods.
+    let mut c = Client::connect(addr, "live", true);
+    for _ in 0..12 {
+        c.send(&Message::new(
+            2,
+            chunk::ACK,
+            0,
+            0,
+            1u32.to_be_bytes().to_vec(),
+        ));
+        assert!(closed_within(&mut c.s, Duration::from_millis(100)).is_none());
+    }
+    // A player waiting for a stream says nothing and stays.
+    let mut p = Client::connect(addr, "live", true);
+    p.command(
+        1,
+        &[
+            Value::from("play"),
+            Value::Number(4.0),
+            Value::Null,
+            Value::from("nobody"),
+        ],
+    );
+    assert!(closed_within(&mut p.s, Duration::from_millis(1500)).is_none());
+}

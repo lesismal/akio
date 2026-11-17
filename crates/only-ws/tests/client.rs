@@ -478,10 +478,12 @@ fn handshake_failures() {
         fail("http://x/", &d),
         WsClientError::InvalidUrl(_)
     ));
-    assert!(matches!(
-        fail(&format!("wss://127.0.0.1:{port}/ws"), &d),
-        WsClientError::Io(_)
-    ));
+    // No `tls`: the system's CAs; TLS to a plaintext server fails.
+    let err = fail(&format!("wss://127.0.0.1:{port}/ws"), &d);
+    assert!(
+        matches!(err, WsClientError::Io(_) | WsClientError::Closed),
+        "{err}"
+    );
     // Nothing listens there.
     let free = TcpListener::bind("127.0.0.1:0").unwrap();
     let dead = free.local_addr().unwrap().port();
@@ -656,4 +658,127 @@ fn interop_with_external_echo_server() {
         }
     }
     stop(&cli);
+}
+
+#[path = "../../only-http/tests/support/proxy.rs"]
+mod proxy;
+
+fn redirecting(base_other: Option<String>) -> Router {
+    echo_router(WsOptions::default(), None)
+        .get("/old", |ctx: &mut Context| {
+            ctx.respond(only_http::Response::new(301).header("Location", "/ws"));
+        })
+        .get("/http-old", |ctx: &mut Context| {
+            // An http:// location for a ws:// handshake becomes ws://.
+            let host = ctx.header("host").unwrap_or("").to_owned();
+            ctx.respond(
+                only_http::Response::new(307).header("Location", format!("http://{host}/ws")),
+            );
+        })
+        .get("/loop", |ctx: &mut Context| {
+            ctx.respond(only_http::Response::new(302).header("Location", "/loop"));
+        })
+        .get("/away", move |ctx: &mut Context| {
+            let to = base_other.clone().unwrap_or_default();
+            ctx.respond(only_http::Response::new(302).header("Location", format!("{to}/ws")));
+        })
+}
+
+#[test]
+fn handshake_redirects() {
+    let (other, oport) = start(redirecting(None));
+    let (e, port) = start(redirecting(Some(format!("ws://127.0.0.1:{oport}"))));
+    let base = format!("ws://127.0.0.1:{port}");
+    // Off by default.
+    let err = client::dial_blocking(
+        &e,
+        &format!("{base}/old"),
+        &DialOptions::default(),
+        Rec(mpsc::channel().0),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(err, WsClientError::Status(301, _)), "{err}");
+    let mut opts = DialOptions::default();
+    opts.max_redirects = 3;
+    opts.headers = vec![("Authorization".into(), "Bearer t".into())];
+    // Same origin: followed, credentials kept.
+    let (ws, rx, _, seen) = open(&e, &format!("{base}/old"), &opts);
+    assert!(seen.contains("authorization=Bearer t"), "{seen}");
+    roundtrips(&ws, &rx);
+    let (_, _, _, seen) = open(&e, &format!("{base}/http-old"), &opts);
+    assert!(seen.contains("authorization=Bearer t"), "{seen}");
+    // Another origin: credentials dropped.
+    let (_, _, _, seen) = open(&e, &format!("{base}/away"), &opts);
+    assert!(seen.contains("authorization=-"), "{seen}");
+    // A loop ends at the limit.
+    let err = client::dial_blocking(&e, &format!("{base}/loop"), &opts, Rec(mpsc::channel().0))
+        .err()
+        .unwrap();
+    assert!(matches!(err, WsClientError::TooManyRedirects), "{err}");
+    stop(&e);
+    stop(&other);
+}
+
+#[test]
+fn through_a_proxy_with_connect() {
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let p = proxy::start(Some("Basic dTpw")); // u:p
+    let mut opts = DialOptions::default();
+    opts.proxy = only_ws::proxy::Proxy::all(&format!("http://u:p@{}", p.addr)).unwrap();
+    let (ws, rx, _, _) = open(&e, &format!("ws://127.0.0.1:{port}/ws"), &opts);
+    roundtrips(&ws, &rx);
+    let seen = p.seen();
+    assert_eq!(seen.len(), 1);
+    assert!(
+        seen[0].starts_with(&format!("CONNECT 127.0.0.1:{port} HTTP/1.1\r\n")),
+        "{seen:?}"
+    );
+    // Refused: the error carries the proxy's status.
+    opts.proxy = only_ws::proxy::Proxy::all(&format!("http://{}", p.addr)).unwrap();
+    let err = client::dial_blocking(
+        &e,
+        &format!("ws://127.0.0.1:{port}/ws"),
+        &opts,
+        Rec(mpsc::channel().0),
+    )
+    .err()
+    .unwrap();
+    let WsClientError::Io(io) = &err else {
+        panic!("{err}")
+    };
+    let r = io
+        .get_ref()
+        .and_then(|e| e.downcast_ref::<only_ws::proxy::ProxyRefused>())
+        .unwrap();
+    assert_eq!(r.status(), 407);
+    stop(&e);
+}
+
+#[test]
+fn engine_shutdown_closes_with_going_away() {
+    let (stx, srx) = mpsc::channel();
+    let (server, port) = start(echo_router(WsOptions::default(), Some(stx)));
+    // The client lives on its own engine, which is the one shutting down.
+    let ce = Arc::new(Engine::builder().client_threads(1).build().unwrap());
+    ce.start().unwrap();
+    let (_ws, rx, _, _) = open(
+        &ce,
+        &format!("ws://127.0.0.1:{port}/ws"),
+        &DialOptions::default(),
+    );
+    let t0 = std::time::Instant::now();
+    ce.shutdown();
+    // The server sees 1001, the client the echoed close.
+    assert_eq!(
+        srx.recv_timeout(wait()).unwrap(),
+        Ev::Close(Some(1001), "going away".into())
+    );
+    match rx.recv_timeout(wait()).unwrap() {
+        Ev::Close(Some(1001), _) => {}
+        other => panic!("{other:?}"),
+    }
+    ce.wait();
+    assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    stop(&server);
 }

@@ -56,7 +56,7 @@ pub struct SrtConfig {
     /// Unacknowledged bytes above which a player's packets are dropped (video to the next
     /// keyframe).
     pub max_send_backlog: usize,
-    /// Most connections; 0 is unlimited.
+    /// Most connections; past it handshakes are rejected. Default 1024; 0 removes the limit.
     pub max_conns: usize,
     /// Receive buffer / flow window in packets.
     pub flow_window: usize,
@@ -75,7 +75,7 @@ impl Default for SrtConfig {
             play_wait: None,
             play_gop_cache: true,
             max_send_backlog: DEFAULT_MAX_SEND_BACKLOG,
-            max_conns: 0,
+            max_conns: 1024,
             flow_window: c.flow_window,
             peer_idle_timeout: c.peer_idle_timeout,
             on_connect: None,

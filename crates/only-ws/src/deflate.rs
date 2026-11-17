@@ -100,20 +100,28 @@ impl Deflater {
 
     /// Compresses one message, returning the payload without the trailing `00 00 ff ff`.
     pub fn deflate(&mut self, data: &[u8]) -> Vec<u8> {
+        let mut out: Vec<u8> = Vec::with_capacity(data.len() / 2 + 64);
+        self.deflate_into(data, &mut out);
+        out
+    }
+
+    /// [`deflate`](Self::deflate) into `out` (cleared first), so a sender can reuse one buffer.
+    pub(crate) fn deflate_into(&mut self, data: &[u8], out: &mut Vec<u8>) {
+        out.clear();
         if data.is_empty() {
             // RFC 7692 7.2.3.6: an empty message is the single octet 0x00 (an empty stored block
             // once the tail is appended); a sync flush of nothing would emit no bytes at all.
-            return vec![0x00];
+            out.push(0x00);
+            return;
         }
-        let mut out: Vec<u8> = Vec::with_capacity(data.len() / 2 + 64);
-        self.c.compress(data, &mut out, Flush::Sync);
+        out.reserve(data.len() / 2 + 64);
+        self.c.compress(data, out, Flush::Sync);
         if out.ends_with(&TAIL) {
             out.truncate(out.len() - 4);
         }
         if self.reset_each_message {
             self.c.reset();
         }
-        out
     }
 }
 

@@ -20,6 +20,10 @@ pub(crate) const FINISHED: u8 = 20;
 pub(crate) const HEADER_LEN: usize = 12;
 /// Largest handshake message accepted (certificate chains included).
 pub(crate) const MAX_MESSAGE: usize = 1 << 16;
+/// Largest ClientHello accepted. It is the one message a server reassembles before the cookie
+/// exchange has proven the client's address, so it gets a tighter bound than [`MAX_MESSAGE`]
+/// (real DTLS 1.2 ClientHellos are a few hundred bytes).
+pub(crate) const MAX_CLIENT_HELLO: usize = 8 << 10;
 
 pub(crate) const EXT_SUPPORTED_GROUPS: u16 = 10;
 pub(crate) const EXT_EC_POINT_FORMATS: u16 = 11;
@@ -89,10 +93,13 @@ pub(crate) fn encode_message(msg_type: u8, seq: u16, body: &[u8]) -> Vec<u8> {
     encode_fragment(msg_type, seq, body.len(), 0, body)
 }
 
-/// A message being reassembled from fragments.
+/// A message being reassembled from fragments. The buffer grows with the fragments received
+/// (up to the highest byte seen), not with the length a fragment claims: a single small
+/// datagram claiming a 64 KiB message costs what it carries, not 64 KiB.
 #[derive(Debug, Clone)]
 pub(crate) struct Partial {
     msg_type: u8,
+    length: usize,
     body: Vec<u8>,
     /// Received byte ranges, sorted and merged.
     ranges: Vec<(usize, usize)>,
@@ -102,17 +109,27 @@ impl Partial {
     pub(crate) fn new(f: &Fragment<'_>) -> Partial {
         Partial {
             msg_type: f.msg_type,
-            body: vec![0; f.length],
+            length: f.length,
+            body: Vec::new(),
             ranges: Vec::new(),
         }
     }
 
+    /// Bytes held for the message so far.
+    #[cfg(test)]
+    pub(crate) fn allocated(&self) -> usize {
+        self.body.capacity()
+    }
+
     /// Adds a fragment; inconsistent ones (other type or length) are ignored.
     pub(crate) fn add(&mut self, f: &Fragment<'_>) {
-        if f.msg_type != self.msg_type || f.length != self.body.len() || f.body.is_empty() {
+        if f.msg_type != self.msg_type || f.length != self.length || f.body.is_empty() {
             return;
         }
         let (s, e) = (f.offset, f.offset + f.body.len());
+        if self.body.len() < e {
+            self.body.resize(e, 0);
+        }
         self.body[s..e].copy_from_slice(f.body);
         self.ranges.push((s, e));
         self.ranges.sort_unstable();
@@ -127,11 +144,13 @@ impl Partial {
     }
 
     pub(crate) fn is_complete(&self) -> bool {
-        self.body.is_empty() || self.ranges.first() == Some(&(0, self.body.len()))
+        self.length == 0 || self.ranges.first() == Some(&(0, self.length))
     }
 
     pub(crate) fn into_message(self) -> (u8, Vec<u8>) {
-        (self.msg_type, self.body)
+        let mut body = self.body;
+        body.resize(self.length, 0);
+        (self.msg_type, body)
     }
 }
 
@@ -618,12 +637,45 @@ mod tests {
         p.add(&frag(40, 10));
         assert!(p.is_complete());
         assert_eq!(p.into_message(), (CERTIFICATE, body.clone()));
+        // Out of order: the tail first.
+        let mut p = Partial::new(&frag(90, 10));
+        p.add(&frag(90, 10));
+        p.add(&frag(0, 90));
+        assert!(p.is_complete());
+        assert_eq!(p.into_message(), (CERTIFICATE, body.clone()));
+        // An empty message is complete at once.
+        let empty = Fragment {
+            msg_type: CERTIFICATE,
+            length: 0,
+            seq: 1,
+            offset: 0,
+            body: &[],
+        };
+        assert_eq!(Partial::new(&empty).into_message(), (CERTIFICATE, vec![]));
         let enc = encode_fragment(CERTIFICATE, 3, 100, 10, &body[10..20]);
         let f = parse_fragments(&enc).unwrap();
         assert_eq!(f, vec![frag(10, 10)]);
         // Offset past the end.
         let enc = encode_fragment(CERTIFICATE, 3, 5, 10, &body[10..20]);
         assert!(parse_fragments(&enc).is_err());
+    }
+
+    /// A fragment claiming the largest message allocates what it carries, not the claim.
+    #[test]
+    fn reassembly_grows_with_data() {
+        let small = [7u8; 10];
+        let f = Fragment {
+            msg_type: CERTIFICATE,
+            length: MAX_MESSAGE,
+            seq: 0,
+            offset: 0,
+            body: &small,
+        };
+        let mut p = Partial::new(&f);
+        assert_eq!(p.allocated(), 0);
+        p.add(&f);
+        assert!(p.allocated() < 1024, "{}", p.allocated());
+        assert!(!p.is_complete());
     }
 
     #[test]

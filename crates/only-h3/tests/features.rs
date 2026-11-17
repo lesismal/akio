@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use only::{Engine, Listener};
-use only_h3::{H3Client, H3Config, H3Error, H3WsOptions};
+use only_h3::{H3Client, H3ClientOptions, H3Config, H3Error, H3WsOptions};
 use only_http::message::{Headers, Method};
 use only_http::ws::{Message, WsConfig, WsHandler, WsSender};
 use only_http::{BodyEvent, Context, Router, Streaming, WsOptions};
@@ -124,7 +124,11 @@ fn server(cfg: H3Config) -> (Arc<Engine>, SocketAddr) {
 
 fn client(e: &Engine, addr: SocketAddr, cfg: &H3Config) -> H3Client {
     let cc = only_quic::client_config_insecure(&[b"h3"]).unwrap();
-    H3Client::dial_with(e, addr, "localhost", cc, cfg).unwrap()
+    let mut opts = H3ClientOptions::default();
+    opts.qpack_max_table_capacity = cfg.qpack_max_table_capacity;
+    opts.qpack_blocked_streams = cfg.qpack_blocked_streams;
+    opts.qpack_encoder_capacity = cfg.qpack_encoder_capacity;
+    H3Client::dial_with(e, addr, "localhost", cc, opts).unwrap()
 }
 
 #[test]
@@ -236,6 +240,25 @@ fn streamed_request_bodies() {
     assert_eq!(
         String::from_utf8(r.body).unwrap(),
         format!("{total} {want:x} true -")
+    );
+    // Unpaced: far more than the stream's send buffer (4 MiB) at once. What QUIC refuses
+    // waits in the upload and goes out as the stream drains.
+    let (tx, rx) = mpsc::channel();
+    let up = c.upload(Method::Post, "/count", &Headers::new(), move |r| {
+        let _ = tx.send(r);
+    });
+    let big: Vec<u8> = (0..1 << 20).map(|i| (i * 13 % 251) as u8).collect();
+    let mut want = FNV0;
+    for _ in 0..32 {
+        assert!(up.write(&big));
+        want = fnv(want, &big);
+    }
+    assert!(up.queued_bytes() > 0);
+    assert!(up.finish());
+    let r = rx.recv_timeout(Duration::from_secs(60)).unwrap().unwrap();
+    assert_eq!(
+        String::from_utf8(r.body).unwrap(),
+        format!("{} {want:x} true -", 32u64 << 20)
     );
     // Written before the stream opened, and a body that arrives with its head.
     let (tx, rx) = mpsc::channel();

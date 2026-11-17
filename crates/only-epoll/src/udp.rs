@@ -128,6 +128,8 @@ struct UdpLoop {
     /// end of each timed callback, which is also the start of the next one, so a datagram costs
     /// one clock read (for the slow-callback check) or none.
     clock: Instant,
+    /// The command vector traded with `shared` (see `LoopShared::take_into`).
+    spare_cmds: Vec<Cmd>,
 }
 
 /// GRO (`Config::udp_gro`, on by default) coalesces up to 64 KiB into one receive: only safe
@@ -194,6 +196,7 @@ impl UdpLoop {
             wheel: Wheel::new(0),
             epoch: Instant::now(),
             clock: Instant::now(),
+            spare_cmds: Vec::new(),
         })
     }
 
@@ -931,12 +934,13 @@ impl UdpLoop {
     }
 
     fn drain_cmds(&mut self) {
+        let mut batch = std::mem::take(&mut self.spare_cmds);
         loop {
-            let cmds = self.shared.take();
-            if cmds.is_empty() {
-                return;
+            self.shared.take_into(&mut batch);
+            if batch.is_empty() {
+                break;
             }
-            for cmd in cmds {
+            for cmd in batch.drain(..) {
                 match cmd {
                     Cmd::Wake(id) => self.on_wake(id),
                     Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
@@ -975,6 +979,9 @@ impl UdpLoop {
                     )),
                 }
             }
+        }
+        if batch.capacity() <= crate::reactor::MAX_SPARE_CMDS {
+            self.spare_cmds = batch;
         }
     }
 

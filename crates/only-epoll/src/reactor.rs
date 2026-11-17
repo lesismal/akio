@@ -134,7 +134,22 @@ impl LoopShared {
         self.wake_pending.store(false, Ordering::Release);
         std::mem::take(&mut *self.cmds.lock().unwrap_or_else(|p| p.into_inner()))
     }
+
+    /// Swaps the queued commands into `batch` (which must be empty), leaving `batch`'s
+    /// allocation behind for the next posts: the loop and its posters trade two vectors back
+    /// and forth instead of allocating one after every drain.
+    pub(crate) fn take_into(&self, batch: &mut Vec<Cmd>) {
+        debug_assert!(batch.is_empty());
+        self.wake_pending.store(false, Ordering::Release);
+        std::mem::swap(
+            &mut *self.cmds.lock().unwrap_or_else(|p| p.into_inner()),
+            batch,
+        );
+    }
 }
+
+/// Command batches above this capacity are not kept for reuse after a burst.
+pub(crate) const MAX_SPARE_CMDS: usize = 1024;
 
 impl LoopLink for LoopShared {
     fn wake_conn(&self, id: u64) {
@@ -178,6 +193,11 @@ struct LoopConn {
     /// was armed.
     write_timer: Option<TimerId>,
     write_mark: u64,
+    /// Pending handshake deadline of its transport (`Transport::handshake_timeout`).
+    hs_timer: Option<TimerId>,
+    /// Bytes queued as the last `uncork_flush` / `flush_queue` reported them, for the next
+    /// `refresh` (saves it a lock); taken by it.
+    q_hint: Option<usize>,
     /// Wheel tick when it opened, and bytes read (connection table).
     opened: u64,
     bytes_in: u64,
@@ -209,10 +229,16 @@ pub(crate) struct Loop {
     /// the next callback and the "now" of idle accounting, so a request costs one clock read
     /// instead of three. (A timed `on_data` therefore includes the `read` just before it.)
     clock: Instant,
+    /// The command vector traded with `shared` (see `LoopShared::take_into`).
+    spare_cmds: Vec<Cmd>,
 }
 
 /// Marks a wheel entry as a write-timeout check (connection ids never reach bit 63).
 const WRITE_TIMER: u64 = 1 << 63;
+/// Timer ids with this bit set are connect deadlines of pending dials (`Config::connect_timeout`).
+const CONNECT_TIMER: u64 = 1 << 62;
+/// Timer ids with this bit set are handshake deadlines (`Transport::handshake_timeout`).
+const HANDSHAKE_TIMER: u64 = 1 << 61;
 
 fn panic_error() -> Error {
     Error::Io(io::Error::other("handler panicked"))
@@ -241,6 +267,7 @@ impl Loop {
             wheel: Wheel::new(0),
             epoch: Instant::now(),
             clock: Instant::now(),
+            spare_cmds: Vec::new(),
         })
     }
 
@@ -322,8 +349,11 @@ impl Loop {
             lc.inner.set_corked(true);
             if catch_unwind(AssertUnwindSafe(|| lc.handler.run_task(task))).is_err() {
                 failed = Some(panic_error());
-            } else if let Err(e) = lc.inner.uncork_flush() {
-                failed = Some(Error::Io(e));
+            } else {
+                match lc.inner.uncork_flush() {
+                    Ok(q) => lc.q_hint = Some(q),
+                    Err(e) => failed = Some(Error::Io(e)),
+                }
             }
         }
         self.check_slow("spawn_blocking completion", id, t0);
@@ -372,6 +402,71 @@ impl Loop {
         lc.write_timer = Some(self.wheel.schedule(at, id | WRITE_TIMER));
     }
 
+    /// Arms the connect deadline of a pending dial (if `connect_timeout` is set). The timer is
+    /// not cancelled when the dial completes: the connection then lives under a new id, and a
+    /// stale deadline finds no pending dial.
+    fn arm_connect(&mut self, id: u64) {
+        let Some(ct) = self.cfg.connect_timeout else {
+            return;
+        };
+        let now = self.tick();
+        if self.wheel.is_empty() {
+            self.wheel.advance(now, drop);
+        }
+        let at = now + (ct.as_millis() as u64).max(1);
+        self.wheel.schedule(at, id | CONNECT_TIMER);
+    }
+
+    /// Arms the handshake deadline of a connection whose transport is negotiating and has a
+    /// `handshake_timeout`.
+    fn arm_handshake(&mut self, id: u64) {
+        let Some(Slot::Conn(lc)) = self.slots.get(&id) else {
+            return;
+        };
+        let Some(d) = lc.inner.handshake_timeout() else {
+            return;
+        };
+        let now = self.tick();
+        if self.wheel.is_empty() {
+            self.wheel.advance(now, drop);
+        }
+        let at = now + (d.as_millis() as u64).max(1);
+        let t = self.wheel.schedule(at, id | HANDSHAKE_TIMER);
+        if let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) {
+            lc.hs_timer = Some(t);
+        }
+    }
+
+    /// A handshake deadline is due: close the connection if its transport is still negotiating.
+    fn on_handshake_timer(&mut self, id: u64) {
+        let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
+            return;
+        };
+        lc.hs_timer = None;
+        if lc.inner.transport_handshaking() {
+            lc.inner.note_transport_error();
+            let e = io::Error::new(io::ErrorKind::TimedOut, "handshake timeout");
+            self.finalize(id, Some(Error::Io(e)));
+        }
+    }
+
+    /// A dial's connect deadline is due: abandon it if it is still pending.
+    fn on_connect_timer(&mut self, id: u64) {
+        if !matches!(self.slots.get(&id), Some(Slot::Connecting { .. })) {
+            return;
+        }
+        let Some(Slot::Connecting {
+            stream, on_error, ..
+        }) = self.slots.remove(&id)
+        else {
+            return;
+        };
+        self.poller.delete(stream.as_raw_fd());
+        if let Some(f) = on_error {
+            f(io::Error::new(io::ErrorKind::TimedOut, "connect timeout"));
+        }
+    }
+
     /// A write-timeout check is due: close the connection if output is still queued and nothing
     /// was written since the last check, else check again later.
     fn on_write_timer(&mut self, id: u64, now: u64) {
@@ -406,6 +501,14 @@ impl Loop {
         let mut due = Vec::new();
         self.wheel.advance(now, |id| due.push(id));
         for id in due {
+            if id & CONNECT_TIMER != 0 {
+                self.on_connect_timer(id & !CONNECT_TIMER);
+                continue;
+            }
+            if id & HANDSHAKE_TIMER != 0 {
+                self.on_handshake_timer(id & !HANDSHAKE_TIMER);
+                continue;
+            }
             if id & WRITE_TIMER != 0 {
                 self.on_write_timer(id & !WRITE_TIMER, now);
                 continue;
@@ -432,32 +535,40 @@ impl Loop {
     // ---- commands -------------------------------------------------------------------------
 
     fn drain_cmds(&mut self) {
+        let mut batch = std::mem::take(&mut self.spare_cmds);
         loop {
-            let cmds = self.shared.take();
-            if cmds.is_empty() {
-                return;
+            self.shared.take_into(&mut batch);
+            if batch.is_empty() {
+                break;
             }
-            for cmd in cmds {
-                match cmd {
-                    Cmd::Wake(id) => self.on_wake(id),
-                    Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
-                    Cmd::Task(id, task) => self.on_task(id, task),
-                    Cmd::Shutdown => self.begin_shutdown(),
-                    Cmd::Core(c) => self.on_core(c),
-                    // Only UDP loops are sent these.
-                    Cmd::DialUdp { .. } | Cmd::BindUdp { .. } | Cmd::Unbind(_) => {}
-                    Cmd::OpenPeer { on_error, .. } => on_error(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "not a UDP listener",
-                    )),
-                    Cmd::Dial {
-                        stream,
-                        addr,
-                        acceptor,
-                        on_error,
-                    } => self.begin_dial(stream, addr, acceptor, on_error),
-                }
+            for cmd in batch.drain(..) {
+                self.on_cmd(cmd);
             }
+        }
+        if batch.capacity() <= MAX_SPARE_CMDS {
+            self.spare_cmds = batch;
+        }
+    }
+
+    fn on_cmd(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Wake(id) => self.on_wake(id),
+            Cmd::Close(id, err) => self.finalize(id, err.map(Error::Io)),
+            Cmd::Task(id, task) => self.on_task(id, task),
+            Cmd::Shutdown => self.begin_shutdown(),
+            Cmd::Core(c) => self.on_core(c),
+            // Only UDP loops are sent these.
+            Cmd::DialUdp { .. } | Cmd::BindUdp { .. } | Cmd::Unbind(_) => {}
+            Cmd::OpenPeer { on_error, .. } => on_error(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "not a UDP listener",
+            )),
+            Cmd::Dial {
+                stream,
+                addr,
+                acceptor,
+                on_error,
+            } => self.begin_dial(stream, addr, acceptor, on_error),
         }
     }
 
@@ -658,10 +769,13 @@ impl Loop {
                 idle_timer,
                 write_timer: None,
                 write_mark: 0,
+                hs_timer: None,
+                q_hint: None,
                 opened: now,
                 bytes_in: 0,
             }),
         );
+        self.arm_handshake(id);
         // `on_open` may already have queued output or closed the connection.
         self.on_wake(id);
     }
@@ -691,6 +805,7 @@ impl Loop {
                 on_error: Some(on_error),
             },
         );
+        self.arm_connect(id);
     }
 
     fn finish_connect(&mut self, id: u64) {
@@ -750,6 +865,7 @@ impl Loop {
                 if empty && lc.inner.close_after_send_requested() {
                     self.finalize(id, None);
                 } else {
+                    lc.q_hint = empty.then_some(0);
                     self.refresh(id);
                 }
             }
@@ -802,16 +918,20 @@ impl Loop {
                             done = Done::Panic;
                             break;
                         }
-                        if let Err(e) = lc.inner.uncork_flush() {
-                            done = Done::Err(e);
-                            break;
-                        }
+                        let q = match lc.inner.uncork_flush() {
+                            Ok(q) => q,
+                            Err(e) => {
+                                done = Done::Err(e);
+                                break;
+                            }
+                        };
+                        lc.q_hint = Some(q);
                         // Stop early on a short read (socket drained), or if the handler asked to
                         // stop reading / close / the queue got long.
                         if n < self.scratch.len()
                             || !lc.inner.is_open()
                             || lc.inner.read_held()
-                            || (lc.inner.write_backpressure() && lc.inner.queued_bytes() >= high)
+                            || (q >= high && lc.inner.write_backpressure())
                         {
                             break;
                         }
@@ -844,7 +964,12 @@ impl Loop {
         let Some(Slot::Conn(lc)) = self.slots.get_mut(&id) else {
             return;
         };
-        let q = lc.inner.queued_bytes();
+        // The count the last flush on this thread reported, if nothing ran since: output
+        // queued by another thread meanwhile either went out directly or woke the loop.
+        let q = match lc.q_hint.take() {
+            Some(q) => q,
+            None => lc.inner.queued_bytes(),
+        };
         if q >= high && lc.inner.write_backpressure() {
             if !lc.bp {
                 self.shared.stats.backpressure.add_local(1);
@@ -882,6 +1007,9 @@ impl Loop {
             self.wheel.cancel(t);
         }
         if let Some(t) = lc.write_timer.take() {
+            self.wheel.cancel(t);
+        }
+        if let Some(t) = lc.hs_timer.take() {
             self.wheel.cancel(t);
         }
         self.poller.delete(lc.inner.stream().as_raw_fd());

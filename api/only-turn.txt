@@ -266,6 +266,7 @@ impl core::marker::Unpin for only_turn::TurnStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_turn::TurnStats
 impl core::panic::unwind_safe::UnwindSafe for only_turn::TurnStats
 pub trait only_turn::TurnEnv
+pub fn only_turn::TurnEnv::adopt_relay(&mut self, core::net::socket_addr::SocketAddr)
 pub fn only_turn::TurnEnv::close_relay(&mut self, core::net::socket_addr::SocketAddr)
 pub fn only_turn::TurnEnv::open_relay(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::io::error::Result<core::net::socket_addr::SocketAddr>
 pub fn only_turn::TurnEnv::send_to_client(&mut self, core::net::socket_addr::SocketAddr, &[u8])

@@ -20,6 +20,8 @@
 | `handle_stream(method, open)` | 处理对端打开的 stream：`open(&Stream)` 返回接收 `Message(bytes)` 和 `Eof` 的 `FnMut(&Stream, StreamEvent)` |
 | `on_connected(Fn(&Peer))`、`on_disconnected(Fn(&Peer))` | 连接事件 |
 | `max_body_bytes(n)` | 方法名 + 载荷的最大长度（64 MiB）；超出则关闭连接 |
+| `max_streams_per_conn(n)` | 对端在一个连接上同时打开的 stream 上限（1024）；超出后新打开的 stream 立即被结束，与未提供的方法相同 |
+| `call_timeout(Option<Duration>)` | 使用这些路由的连接上以 `timeout: None` 发起的调用的超时（30 秒）；设为 `None` 则一直等到连接关闭 |
 
 在 handler 中，`Context` 提供 `method()`、`body()`、`is_notify()`、`peer()`，用 `write(payload)`
 或 `error(text)` 答复，或者 `detach()` 得到 `Responder`（稍后在任何线程 `write` / `error`）。
@@ -41,7 +43,7 @@ handler 在 I/O 线程上执行，不能阻塞。
 
 | 方法 | 含义 |
 |---|---|
-| `call(method, payload, timeout) -> CallFuture` | `wait()`（或 `.await`）得到 `Result<Vec<u8>, CallError>` |
+| `call(method, payload, timeout) -> CallFuture` | `wait()`（或 `.await`）得到 `Result<Vec<u8>, CallError>`；`timeout: None` 使用路由的 `call_timeout`（30 秒） |
 | `call_async(method, payload, timeout, done)` | 回调形式 |
 | `notify(method, payload) -> bool` | 单向消息 |
 | `new_stream(method, on_event) -> Stream` | `send`、`close_send`、`id`、`method`、`peer` |

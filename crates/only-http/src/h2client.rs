@@ -10,6 +10,10 @@
 //! ```
 //!
 //! Callbacks run on an I/O thread and must not block.
+//!
+//! Responses are bounded by [`H2Options`]: frames by the default `SETTINGS_MAX_FRAME_SIZE`
+//! (16 KiB), header lists by `max_header_list` (64 KiB, advertised), buffered bodies by
+//! `max_body_bytes` (64 MiB). Request timeouts are [`ClientRequest::timeout`].
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -44,6 +48,16 @@ pub struct H2Options {
     pub conn_window: u32,
     /// Accept server push (`ClientResponse::pushed` then carries the pushed responses).
     pub enable_push: bool,
+    /// Largest response header list (uncompressed: name + value + 32 per field), advertised as
+    /// `SETTINGS_MAX_HEADER_LIST_SIZE`. A larger response fails its request with
+    /// [`ClientError::TooLarge`]; a header block (HEADERS + CONTINUATION) whose compressed
+    /// size passes twice this (at least 64 KiB) ends the connection. Default 64 KiB.
+    pub max_header_list: u32,
+    /// Largest buffered response body ([`request`](H2Client::request),
+    /// [`send`](H2Client::send), pushed responses); past it the stream is reset and the request
+    /// fails with [`ClientError::TooLarge`]. Streamed responses ([`open`](H2Client::open)) are
+    /// handed over as they arrive and not limited. Default 64 MiB.
+    pub max_body_bytes: usize,
 }
 
 impl Default for H2Options {
@@ -52,9 +66,14 @@ impl Default for H2Options {
             initial_window: 1 << 20,
             conn_window: 1 << 24,
             enable_push: false,
+            max_header_list: 64 << 10,
+            max_body_bytes: 64 << 20,
         }
     }
 }
+
+/// Pushed responses outstanding per request; further promises are refused.
+const MAX_PUSHES_PER_STREAM: u32 = 32;
 
 type Callback = Box<dyn FnOnce(Outcome) + Send>;
 type EventCb = Box<dyn FnMut(H2Event<'_>) + Send>;
@@ -179,16 +198,46 @@ impl H2Client {
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "h2 connect timed out"))?
     }
 
-    /// Sends a request on a new stream; `done` is called once with the outcome.
+    /// Sends a request on a new stream; `done` is called once with the outcome. With
+    /// [`ClientRequest::timeout`], the stream is reset (`CANCEL`) and the request fails with
+    /// [`ClientError::Timeout`] when it passes (`done` then runs on the timer thread).
     pub fn request(&self, req: ClientRequest, done: impl FnOnce(Outcome) + Send + 'static) {
-        let slot = Arc::new(Mutex::new(Some((req, Box::new(done) as Callback))));
+        let timeout = req.timeout;
+        let mut done: Callback = Box::new(done);
+        // The stream the request got (0 until started), for the timeout to cancel.
+        let sid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        if let Some(d) = timeout {
+            let once = Arc::new(Mutex::new(Some(done)));
+            let (o2, sid2, conn) = (once.clone(), sid.clone(), self.conn.clone());
+            crate::timer::after(d, move || {
+                let cb = o2.lock().unwrap_or_else(|p| p.into_inner()).take();
+                let Some(cb) = cb else { return };
+                let id = sid2.load(std::sync::atomic::Ordering::Acquire);
+                if id != 0 {
+                    let _ =
+                        conn.spawn_blocking(|| (), move |h: &mut H2Conn, c, ()| h.cancel(c, id));
+                }
+                cb(Err(ClientError::Timeout));
+            });
+            done = Box::new(move |r| {
+                let cb = once.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(cb) = cb {
+                    cb(r);
+                }
+            });
+        }
+        let slot = Arc::new(Mutex::new(Some((req, done))));
         let s2 = slot.clone();
         let queued = self.conn.spawn_blocking(
             || (),
             move |h: &mut H2Conn, c, ()| {
                 let taken = s2.lock().unwrap_or_else(|p| p.into_inner()).take();
                 if let Some((req, cb)) = taken {
+                    let id = h.next_id;
                     h.start(c, req, cb);
+                    if h.streams.contains_key(&id) {
+                        sid.store(id, std::sync::atomic::Ordering::Release);
+                    }
                 }
             },
         );
@@ -290,6 +339,7 @@ impl Acceptor for H2Acceptor {
         for (id, v) in [
             (2u16, u32::from(self.opts.enable_push)),
             (4, self.opts.initial_window),
+            (6, self.opts.max_header_list),
         ] {
             p.extend_from_slice(&id.to_be_bytes());
             p.extend_from_slice(&v.to_be_bytes());
@@ -309,6 +359,8 @@ impl Acceptor for H2Acceptor {
 }
 
 struct CStream {
+    /// The request URL (the pushed path for a pushed stream).
+    url: String,
     cb: Option<Callback>,
     status: u16,
     headers: Headers,
@@ -386,6 +438,15 @@ impl H2Conn {
 
     fn start(&mut self, c: &Conn<Self>, req: ClientRequest, cb: Callback) {
         self.start_full(c, req, Some(cb), None);
+    }
+
+    /// Abandons stream `sid` (its request timed out): reset it and forget it.
+    fn cancel(&mut self, c: &Conn<Self>, sid: u32) {
+        if self.streams.remove(&sid).is_some() && !self.dead {
+            let mut out = Vec::new();
+            frame(&mut out, ty::RST_STREAM, 0, sid, &err::CANCEL.to_be_bytes());
+            let _ = c.send_owned(out);
+        }
     }
 
     fn start_full(
@@ -466,6 +527,7 @@ impl H2Conn {
             None => (None, None),
         };
         let mut st = CStream {
+            url: req.url.clone(),
             cb,
             status: 0,
             headers: Headers::new(),
@@ -621,6 +683,8 @@ impl H2Conn {
         self.dead = true;
         let msg = |e: &ClientError| match e {
             ClientError::Protocol(m) => ClientError::Protocol(m),
+            ClientError::TooLarge(m) => ClientError::TooLarge(m),
+            ClientError::Timeout => ClientError::Timeout,
             ClientError::Io(x) => ClientError::Io(io::Error::new(x.kind(), x.to_string())),
             _ => ClientError::Closed,
         };
@@ -643,6 +707,25 @@ impl H2Conn {
         c.close_after_send();
     }
 
+    /// Resets stream `sid` (`CANCEL`) and fails its request with `e`.
+    fn abort_stream(&mut self, out: &mut Vec<u8>, sid: u32, e: ClientError) {
+        let Some(mut s) = self.streams.remove(&sid) else {
+            return;
+        };
+        frame(out, ty::RST_STREAM, 0, sid, &err::CANCEL.to_be_bytes());
+        if let Some(cb) = s.cb.take() {
+            cb(Err(e));
+        } else if let Some(ev) = s.events.as_mut() {
+            ev(H2Event::Error(e));
+        }
+        if let Some(parent) = s.parent {
+            if let Some(pp) = self.streams.get_mut(&parent) {
+                pp.pending_pushes = pp.pending_pushes.saturating_sub(1);
+            }
+            self.try_finish(parent);
+        }
+    }
+
     /// Delivers the response of `sid` if it is complete (and its pushes are).
     fn try_finish(&mut self, sid: u32) {
         let Some(st) = self.streams.get(&sid) else {
@@ -663,6 +746,7 @@ impl H2Conn {
             body: std::mem::take(&mut st.body),
             trailers: std::mem::take(&mut st.trailers),
             pushed: std::mem::take(&mut st.pushed),
+            url: std::mem::take(&mut st.url),
         };
         match (st.parent, st.pushed_path.take()) {
             (Some(parent), Some(path)) => {
@@ -688,17 +772,28 @@ impl H2Conn {
         block: Vec<u8>,
         end_stream: bool,
     ) {
-        let Ok(list) = self.dec.decode(&block) else {
+        // The whole block is decoded even past the limit: HPACK state must stay in step.
+        let limit = self.opts.max_header_list as usize;
+        let Ok((list, size)) = self.dec.decode_limited(&block, limit) else {
             return self.conn_error(c, err::COMPRESSION, "bad header block");
         };
         if let Some(pid) = promised {
+            if pid % 2 == 1 || pid == 0 || self.streams.contains_key(&pid) {
+                return self.conn_error(c, err::PROTOCOL, "bad promised stream");
+            }
+            let refuse = !self.opts.enable_push
+                || size > limit
+                || self
+                    .streams
+                    .get(&sid)
+                    .is_none_or(|p| p.pending_pushes >= MAX_PUSHES_PER_STREAM);
             // A pushed request: remember which path it is for.
             let path = list
                 .iter()
                 .find(|(n, _)| n == b":path")
                 .map(|(_, v)| String::from_utf8_lossy(v).into_owned())
                 .unwrap_or_default();
-            if !self.opts.enable_push {
+            if refuse {
                 let mut out = Vec::new();
                 frame(
                     &mut out,
@@ -717,6 +812,7 @@ impl H2Conn {
             self.streams.insert(
                 pid,
                 CStream {
+                    url: path.clone(),
                     cb: None,
                     status: 0,
                     headers: Headers::new(),
@@ -737,6 +833,18 @@ impl H2Conn {
                     pushed: Vec::new(),
                 },
             );
+            return;
+        }
+        if size > limit {
+            let mut out = Vec::new();
+            self.abort_stream(
+                &mut out,
+                sid,
+                ClientError::TooLarge("response header list too large"),
+            );
+            if !out.is_empty() {
+                let _ = c.send_owned(out);
+            }
             return;
         }
         let Some(st) = self.streams.get_mut(&sid) else {
@@ -779,6 +887,10 @@ impl H2Conn {
 
     fn handle(&mut self, c: &Conn<Self>, ty_: u8, flags: u8, sid: u32, mut p: Vec<u8>) {
         let mut out = Vec::new();
+        if self.cont.is_some() && ty_ != ty::CONTINUATION {
+            // RFC 9113 §6.10: a header block is contiguous.
+            return self.conn_error(c, err::PROTOCOL, "frame inside a header block");
+        }
         match ty_ {
             ty::SETTINGS => {
                 if flags & flag::ACK != 0 {
@@ -888,10 +1000,13 @@ impl H2Conn {
                 self.conn_recv -= i64::from(total);
                 window_update(&mut out, 0, total);
                 self.conn_recv += i64::from(total);
+                let max_body = self.opts.max_body_bytes;
+                let mut too_large = false;
                 if let Some(st) = self.streams.get_mut(&sid) {
                     if !st.head_only && start <= end {
                         match st.events.as_mut() {
                             Some(ev) => ev(H2Event::Data(&p[start..end])),
+                            None if st.body.len() + (end - start) > max_body => too_large = true,
                             None => st.body.extend_from_slice(&p[start..end]),
                         }
                     }
@@ -903,6 +1018,15 @@ impl H2Conn {
                     if flags & flag::END_STREAM != 0 {
                         st.ended = true;
                     }
+                }
+                if too_large {
+                    self.abort_stream(
+                        &mut out,
+                        sid,
+                        ClientError::TooLarge("response body too large"),
+                    );
+                    let _ = c.send_owned(out);
+                    return;
                 }
                 if !out.is_empty() {
                     let _ = c.send_owned(out);
@@ -943,7 +1067,17 @@ impl H2Conn {
                 let Some((s, promised, mut block, end_stream)) = self.cont.take() else {
                     return self.conn_error(c, err::PROTOCOL, "stray CONTINUATION");
                 };
+                if s != sid {
+                    return self.conn_error(c, err::PROTOCOL, "CONTINUATION on another stream");
+                }
                 block.append(&mut p);
+                // Bounded like the server: what a CONTINUATION flood may make us buffer.
+                let cap = (self.opts.max_header_list as usize)
+                    .saturating_mul(2)
+                    .max(1 << 16);
+                if block.len() > cap {
+                    return self.conn_error(c, err::ENHANCE, "header block too large");
+                }
                 if flags & flag::END_HEADERS == 0 {
                     self.cont = Some((s, promised, block, end_stream));
                 } else {
@@ -966,6 +1100,12 @@ impl Handler for H2Conn {
                 return;
             }
             let len = u32::from_be_bytes([0, self.rbuf[0], self.rbuf[1], self.rbuf[2]]) as usize;
+            // We never raise SETTINGS_MAX_FRAME_SIZE, so the default is the limit (§4.2); this
+            // also bounds `rbuf` before a frame is buffered whole.
+            if len > DEFAULT_FRAME as usize {
+                self.rbuf.clear();
+                return self.conn_error(c, err::FRAME_SIZE, "frame too large");
+            }
             if self.rbuf.len() < 9 + len {
                 return;
             }

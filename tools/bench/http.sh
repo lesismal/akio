@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HTTP and WebSocket benchmarks.
 #
-#   tools/bench/http.sh [plaintext,pipelined,json,h2,h2many,h2tls,ws]   (default: all but h2many,h2tls)
+#   tools/bench/http.sh [plaintext,pipelined,json,h2,h2many,h2tls,ws,wsz]   (default: all but h2many,h2tls)
 #
 # HTTP/1.1 with wrk (pipelined: 16 requests per write via a Lua script), HTTP/2 (h2c, prior
 # knowledge) with h2load, WebSocket echo with echo-bench. See lib.sh for the knobs.
@@ -82,6 +82,19 @@ for r in $(seq "$RUNS"); do
         v=$(cli "$ECHO_BENCH" "127.0.0.1:$PORT" "$2" "$1" "$SECS" "$CLI_THREADS" ws 2>/dev/null | field req/s)
         stop_server
         record ws "${1}B x $2" "$kind" "$r" "${v:-FAILED}"
+      done
+    done
+  fi
+  if want wsz; then
+    # permessage-deflate (no context takeover): compressed requests, the server inflates them
+    # and compresses replies of 128 bytes and more.
+    for kind in $(kinds_for ws); do
+      for spec in "64 256" "1024 256"; do
+        set -- $spec
+        start_server "$kind" ws
+        v=$(cli "$ECHO_BENCH" "127.0.0.1:$PORT" "$2" "$1" "$SECS" "$CLI_THREADS" wsz 2>/dev/null | field req/s)
+        stop_server
+        record wsz "${1}B x $2" "$kind" "$r" "${v:-FAILED}"
       done
     done
   fi

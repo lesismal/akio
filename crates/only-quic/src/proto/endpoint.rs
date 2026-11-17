@@ -35,6 +35,8 @@ pub(crate) struct ServerSetup {
     pub cfg: ConnConfig,
     /// Always validate client addresses with a Retry first.
     pub retry: bool,
+    /// Connections held at once; new ones beyond it are refused (CONNECTION_REFUSED).
+    pub max_connections: usize,
 }
 
 pub(crate) enum DatagramEvent {
@@ -56,6 +58,8 @@ pub(crate) struct Endpoint {
     handshaking: KeyedSet<ConnHandle>,
     next: ConnHandle,
     resets: (Instant, u32),
+    /// Connections refused (over `max_connections`) since the endpoint started.
+    refused: u64,
 }
 
 impl Endpoint {
@@ -94,7 +98,13 @@ impl Endpoint {
             handshaking: KeyedSet::default(),
             next: 1,
             resets: (Instant::now(), 0),
+            refused: 0,
         }
+    }
+
+    /// New connections refused since the endpoint started (over `max_connections`).
+    pub fn refused(&self) -> u64 {
+        self.refused
     }
 
     /// The server's TLS configuration (tests: a second server sharing its tickets).
@@ -200,6 +210,14 @@ impl Endpoint {
             return None;
         }
         let version = h.version;
+        if self
+            .server
+            .as_ref()
+            .is_some_and(|s| self.ids.len() >= s.max_connections)
+        {
+            self.refused += 1;
+            return self.refuse(now, version, from, &h.dcid, &h.scid);
+        }
         let (orig, retry_scid, validated) = match self.check_token(from, h.token, &h.dcid) {
             TokenCheck::Retry(odcid) => (odcid, Some(h.dcid), true),
             TokenCheck::New => (h.dcid, None, true),
@@ -339,6 +357,62 @@ impl Endpoint {
         }
     }
 
+    /// Answers a client's first Initial with CONNECTION_CLOSE (CONNECTION_REFUSED) in an Initial
+    /// packet, keeping no state (RFC 9000 section 5.2.2); within the stateless reset budget,
+    /// silence beyond it.
+    fn refuse(
+        &mut self,
+        now: Instant,
+        version: u32,
+        from: SocketAddr,
+        odcid: &ConnectionId,
+        client_scid: &ConnectionId,
+    ) -> Option<DatagramEvent> {
+        if !self.reply_budget(now) {
+            return None;
+        }
+        let keys = super::crypto::initial_keys(odcid, false, version);
+        let scid = ConnectionId::random(&mut self.rng, LOCAL_CID_LEN);
+        let mut data = Vec::with_capacity(64);
+        let b = packet::PacketBuilder::long(
+            &mut data,
+            version,
+            PacketType::Initial,
+            client_scid,
+            &scid,
+            &[],
+            0,
+            1,
+        );
+        super::frame::put_close(
+            &mut data,
+            false,
+            super::frame::code::CONNECTION_REFUSED,
+            0,
+            b"server busy",
+        );
+        b.finish(&mut data, &keys.local.packet, &keys.local.header);
+        Some(DatagramEvent::Respond(Transmit {
+            dest: from,
+            segment_size: None,
+            data,
+            ecn: 0,
+            probe: false,
+        }))
+    }
+
+    /// Whether one more stateless answer (reset, refusal) fits this second's budget.
+    fn reply_budget(&mut self, now: Instant) -> bool {
+        if now.duration_since(self.resets.0) >= Duration::from_secs(1) {
+            self.resets = (now, 0);
+        }
+        if self.resets.1 >= RESETS_PER_SECOND {
+            return false;
+        }
+        self.resets.1 += 1;
+        true
+    }
+
     fn stateless_reset(
         &mut self,
         now: Instant,
@@ -350,13 +424,9 @@ impl Endpoint {
         if len <= 22 {
             return None;
         }
-        if now.duration_since(self.resets.0) >= Duration::from_secs(1) {
-            self.resets = (now, 0);
-        }
-        if self.resets.1 >= RESETS_PER_SECOND {
+        if !self.reply_budget(now) {
             return None;
         }
-        self.resets.1 += 1;
         let size = (len - 1).min(43);
         let mut out = vec![0u8; size];
         self.rng.fill(&mut out[..size - 16]);

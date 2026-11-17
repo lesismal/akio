@@ -158,3 +158,108 @@ fn mismatched_crypt_is_dropped_and_dead_link_closes() {
     );
     e.shutdown();
 }
+
+/// Counts what arrives (messages and bytes) without answering.
+struct Count(Arc<std::sync::atomic::AtomicUsize>);
+impl KcpHandler for Count {
+    fn on_message(&mut self, _s: &Session, msg: Vec<u8>) {
+        self.0
+            .fetch_add(msg.len(), std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Reports `on_writable` calls.
+struct Writable(mpsc::Sender<()>);
+impl KcpHandler for Writable {
+    fn on_message(&mut self, _s: &Session, _msg: Vec<u8>) {}
+    fn on_writable(&mut self, _s: &Session) {
+        let _ = self.0.send(());
+    }
+}
+
+#[test]
+fn full_queue_then_writable() {
+    let got = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let g = got.clone();
+    let server = KcpServer::new(KcpConfig::fast(), move |_s: &Session| Count(g.clone())).unwrap();
+    let e = Engine::builder()
+        .listen(Listener::udp("127.0.0.1:0".parse().unwrap()).serve(server))
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let mut cfg = KcpConfig::fast();
+    cfg.write_queue = 16;
+    let (tx, rx) = mpsc::channel();
+    let s = only_kcp::dial(&e, addr, cfg, Writable(tx)).unwrap();
+    let msg = vec![7u8; 1000];
+    let (mut sent, mut fulls, mut wakes) = (0, 0, 0);
+    while sent < 2000 {
+        match s.send(&msg) {
+            Ok(()) => sent += 1,
+            Err(only_kcp::KcpError::Full) => {
+                fulls += 1;
+                // `send` saw 16 waiting under the session lock; acknowledgements may have
+                // drained some since, so the count is not checked here.
+                // No polling: the session says when to go on.
+                rx.recv_timeout(Duration::from_secs(10))
+                    .expect("on_writable after Full");
+                wakes += 1;
+                assert!(s.wait_send() <= 8, "woken early: {}", s.wait_send());
+            }
+            Err(e) => panic!("send: {e}"),
+        }
+    }
+    assert!(fulls > 0 && wakes == fulls);
+    let end = std::time::Instant::now() + Duration::from_secs(10);
+    while got.load(std::sync::atomic::Ordering::Relaxed) < 2000 * 1000 {
+        assert!(std::time::Instant::now() < end, "not all delivered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // One wake per refusal: nothing more arrives.
+    assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+    e.shutdown();
+}
+
+#[test]
+fn sessions_beyond_the_limit_get_none() {
+    assert_eq!(only_kcp::DEFAULT_MAX_SESSIONS, 4096);
+    let got = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let g = got.clone();
+    let server = KcpServer::new(KcpConfig::fast(), move |_s: &Session| Count(g.clone()))
+        .unwrap()
+        .max_sessions(2);
+    let e = Engine::builder()
+        .listen(Listener::udp("127.0.0.1:0".parse().unwrap()).serve(server))
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    let addr = e.local_addrs()[0];
+    let dial = || {
+        let (tx, _rx) = mpsc::channel();
+        only_kcp::dial(&e, addr, KcpConfig::fast(), Collect(tx, None)).unwrap()
+    };
+    let wait_got = |n: usize| {
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        while got.load(std::sync::atomic::Ordering::Relaxed) < n {
+            assert!(std::time::Instant::now() < end, "message not delivered");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    };
+    // Under and at the limit: served.
+    let a = dial();
+    a.send(b"1").unwrap();
+    wait_got(1);
+    let b = dial();
+    b.send(b"2").unwrap();
+    wait_got(2);
+    // Over it: dropped.
+    let c = dial();
+    c.send(b"3").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(got.load(std::sync::atomic::Ordering::Relaxed), 2);
+    assert!(c.wait_send() > 0, "never acknowledged");
+    e.shutdown();
+}

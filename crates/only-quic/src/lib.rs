@@ -10,13 +10,18 @@
 //! datagram or on the shared timer thread; they must not block.
 //!
 //! Writes never block: [`Connection::send`] queues the bytes, and they go out as flow and
-//! congestion control allow ([`Connection::queued_bytes`] paces a producer).
+//! congestion control allow. Send buffers are bounded per stream and per connection
+//! ([`TransportConfig::stream_send_buffer`], [`TransportConfig::send_buffer`]): past them `send`
+//! fails with [`Error::Overloaded`] and [`QuicHandler::on_stream_writable`] says when to go on.
+//! A server holds at most [`ServerConfig::max_connections`] connections.
 //!
 //! The protocol core is sans-io (no sockets, threads or clocks of its own): packets and
 //! header protection, all RFC 9000 frames, streams with flow control, loss detection and
 //! congestion control (NewReno, CUBIC) with pacing, connection IDs, Retry and NEW_TOKEN
-//! address validation, path validation and migration, key updates, stateless resets and
-//! version negotiation. Full-size datagrams leave in batches for one GSO send.
+//! address validation, path validation and migration, key updates, stateless resets, QUIC
+//! version 2 and version negotiation (Version Negotiation packets, and compatible negotiation
+//! within the handshake with [`ServerConfig::prefer_version`], RFC 9368). Full-size datagrams
+//! leave in batches for one GSO send.
 //!
 //! ```no_run
 //! use only::{Engine, Listener};
@@ -61,17 +66,20 @@ pub mod fuzzing;
 use std::collections::VecDeque;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Instant;
 
 use only::tls;
-use only_core::{Acceptor, Conn, Handler};
+use only_core::{
+    Acceptor, Conn, Handler,
+    metrics::{Collector, Families},
+};
 
 pub use crate::bytes::Bytes;
 pub use types::{
-    ClientConfig, Congestion, ConnectionError, ConnectionStats, Dir, ServerConfig, Side, StreamId,
-    TransportConfig, UdpStats, Version,
+    ClientConfig, Congestion, ConnectionError, ConnectionStats, DEFAULT_MAX_CONNECTIONS, Dir,
+    ServerConfig, Side, StreamId, TransportConfig, UdpStats, Version,
 };
 use types::{TokenStore, config_err};
 
@@ -93,6 +101,11 @@ pub enum Error {
     Migration(String),
     /// A TLS or QUIC configuration problem.
     Config(String),
+    /// The stream's or the connection's send buffer is full
+    /// ([`TransportConfig::stream_send_buffer`], [`TransportConfig::send_buffer`]): wait for
+    /// [`QuicHandler::on_stream_writable`]. For [`Connection::spawn_blocking`]: the engine's
+    /// logical pool is full.
+    Overloaded,
 }
 
 impl fmt::Display for Error {
@@ -105,6 +118,7 @@ impl fmt::Display for Error {
             Error::Connect(e) => write!(f, "quic: connect: {e}"),
             Error::Migration(e) => write!(f, "quic: migration: {e}"),
             Error::Config(e) => write!(f, "quic: config: {e}"),
+            Error::Overloaded => f.write_str("quic: overloaded"),
         }
     }
 }
@@ -125,6 +139,10 @@ pub trait QuicHandler: Send + 'static {
     fn on_stream_stopped(&mut self, _c: &Connection, _id: StreamId, _code: u64) {}
     /// More streams of `dir` may be opened (after `open_*` returned `None`).
     fn on_streams_available(&mut self, _c: &Connection, _dir: Dir) {}
+    /// A stream whose write was refused with [`Error::Overloaded`] (or whose
+    /// [`send_capacity`](Connection::send_capacity) was zero) has room again: its send buffer
+    /// and the connection's are down to three quarters of their limits. Called once per refusal.
+    fn on_stream_writable(&mut self, _c: &Connection, _id: StreamId) {}
     /// An unreliable datagram (RFC 9221).
     fn on_datagram(&mut self, _c: &Connection, _data: Bytes) {}
     /// The connection is over; called once, last.
@@ -239,11 +257,48 @@ impl Connection {
         lock(&self.0.state).conn.open(Dir::Uni)
     }
 
-    /// Queues bytes on a stream; they go out as flow and congestion control allow.
+    /// Queues bytes on a stream; they go out as flow and congestion control allow. Fails with
+    /// [`Error::Overloaded`] while the stream's or the connection's send buffer is full
+    /// ([`TransportConfig::stream_send_buffer`], [`TransportConfig::send_buffer`]): the data
+    /// is not queued, and [`QuicHandler::on_stream_writable`] follows once there is room.
     pub fn send(&self, id: StreamId, data: impl Into<Bytes>) -> Result<(), Error> {
         let r = lock(&self.0.state).conn.write(id, data.into());
-        self.kick();
+        if r.is_ok() {
+            self.kick();
+        }
         r
+    }
+
+    /// Bytes [`send`](Self::send) would take on a stream now before refusing writes (the
+    /// smaller of the stream's and the connection's room). When it is zero,
+    /// [`QuicHandler::on_stream_writable`] follows once there is room, so a producer can check
+    /// before it reads or builds the next piece.
+    pub fn send_capacity(&self, id: StreamId) -> Result<usize, Error> {
+        lock(&self.0.state)
+            .conn
+            .send_capacity(id)
+            .map(|n| usize::try_from(n).unwrap_or(usize::MAX))
+    }
+
+    /// Runs `work` on the engine's logical pool, off the I/O threads: for what may block (disk
+    /// reads, DNS) on behalf of this connection. `work` may use the connection (it is usable
+    /// from any thread). Fails with [`Error::Overloaded`] when the pool's queue is full and
+    /// [`Error::Closed`] when the connection or its socket is gone.
+    pub fn spawn_blocking(&self, work: impl FnOnce() + Send + 'static) -> Result<(), Error> {
+        let addr = self.remote_addr();
+        let sock = {
+            let socks = lock(&self.0.ep.socks);
+            socks
+                .get(&addr)
+                .cloned()
+                .or_else(|| socks.values().next().cloned())
+        };
+        let sock = sock.ok_or(Error::Closed)?;
+        sock.spawn_blocking(work, |_: &mut Udp, _, ()| {})
+            .map_err(|e| match e {
+                only_core::Error::Overloaded => Error::Overloaded,
+                _ => Error::Closed,
+            })
     }
 
     /// Ends a stream once its queued bytes are out.
@@ -394,6 +449,7 @@ impl Connection {
         let ep = &self.0.ep;
         let mut ep_events = Vec::new();
         let drained;
+        let mut final_stats = None;
         let mut queued = false;
         {
             // Everything that must keep its order (datagrams on the wire, events for the
@@ -429,6 +485,9 @@ impl Connection {
                 }
             }
             drained = conn.is_drained();
+            if drained {
+                final_stats = Some(conn.stats());
+            }
             if drained && !std::mem::replace(lost, true) {
                 evs.push_back(proto::Event::Closed(ConnectionError::LocallyClosed));
                 queued = true;
@@ -459,7 +518,12 @@ impl Connection {
         if drained {
             let empty = {
                 let mut conns = lock(&ep.conns);
-                conns.remove(&self.0.h);
+                if conns.remove(&self.0.h).is_some() {
+                    if let Some(st) = final_stats {
+                        ep.closed.fetch_add(1, Ordering::Relaxed);
+                        add_stats(&mut lock(&ep.closed_stats), &st);
+                    }
+                }
                 conns.is_empty()
             };
             if empty && ep.factory.is_none() {
@@ -523,6 +587,7 @@ impl Connection {
                     proto::Event::StreamReset(id, c) => h.on_stream_reset(self, id, c),
                     proto::Event::StreamStopped(id, c) => h.on_stream_stopped(self, id, c),
                     proto::Event::StreamsAvailable(d) => h.on_streams_available(self, d),
+                    proto::Event::StreamWritable(id) => h.on_stream_writable(self, id),
                     proto::Event::Datagram(d) => h.on_datagram(self, d),
                     proto::Event::Closed(r) => {
                         self.0.done.store(true, Ordering::Release);
@@ -584,6 +649,25 @@ struct Ep {
     factory: Option<Box<Factory>>,
     /// A client's token store and the server name its tokens are kept under.
     tokens: Option<(TokenStore, String)>,
+    /// Connections accepted and closed, and the summed statistics of the closed ones (so the
+    /// totals a scrape reports never go down).
+    accepted: AtomicU64,
+    closed: AtomicU64,
+    closed_stats: Mutex<ConnectionStats>,
+}
+
+/// Adds the counters of `b` to `a` (gauges such as RTT and the window are left alone).
+fn add_stats(a: &mut ConnectionStats, b: &ConnectionStats) {
+    for (x, y) in [(&mut a.udp_tx, &b.udp_tx), (&mut a.udp_rx, &b.udp_rx)] {
+        x.datagrams = x.datagrams.wrapping_add(y.datagrams);
+        x.bytes = x.bytes.wrapping_add(y.bytes);
+        x.ios = x.ios.wrapping_add(y.ios);
+    }
+    a.sent_packets = a.sent_packets.wrapping_add(b.sent_packets);
+    a.lost_packets = a.lost_packets.wrapping_add(b.lost_packets);
+    a.lost_bytes = a.lost_bytes.wrapping_add(b.lost_bytes);
+    a.congestion_events = a.congestion_events.wrapping_add(b.congestion_events);
+    a.ecn_ce_events = a.ecn_ce_events.wrapping_add(b.ecn_ce_events);
 }
 
 impl Ep {
@@ -601,6 +685,9 @@ impl Ep {
             probe_backlog: Mutex::new(Vec::new()),
             factory,
             tokens,
+            accepted: AtomicU64::new(0),
+            closed: AtomicU64::new(0),
+            closed_stats: Mutex::new(ConnectionStats::default()),
         }
     }
 
@@ -700,6 +787,7 @@ impl Ep {
             Some(proto::DatagramEvent::New(h, conn)) => {
                 let c = Connection::new(h, *conn, self.clone());
                 lock(&self.conns).insert(h, c.clone());
+                self.accepted.fetch_add(1, Ordering::Relaxed);
                 if let Some(f) = &self.factory {
                     let handler = f(&c);
                     *lock(&c.0.handler) = Some(handler);
@@ -735,11 +823,13 @@ impl QuicServer {
         cfg.ecn_io = ecn_platform();
         cfg.preferred_address = config.preferred;
         cfg.versions = config.versions;
+        cfg.prefer_version = config.prefer_version;
         cfg.zero_rtt = config.zero_rtt;
         let setup = proto::ServerSetup {
             tls: config.tls,
             cfg,
             retry: config.retry,
+            max_connections: config.max_connections,
         };
         QuicServer(Arc::new(Ep::new(
             proto::Endpoint::new(Some(setup)),
@@ -753,11 +843,113 @@ impl QuicServer {
         lock(&self.0.conns).len()
     }
 
+    /// New connections refused since the server started because it held
+    /// [`max_connections`](ServerConfig::max_connections).
+    pub fn refused_connections(&self) -> u64 {
+        lock(&self.0.endpoint).refused()
+    }
+
     /// Closes every connection with `code` and `reason`.
     pub fn close_all(&self, code: u32, reason: &[u8]) {
         let all: Vec<Connection> = lock(&self.0.conns).values().cloned().collect();
         for c in all {
             c.close(code, reason);
+        }
+    }
+}
+
+/// Reports the server's connections (ADR-015): `only_quic_connections_open` (gauge),
+/// `only_quic_connections_accepted_total`, `only_quic_connections_closed_total`,
+/// `only_quic_datagrams_total{dir}`, `only_quic_bytes_total{dir}`, `only_quic_packets_sent_total`,
+/// `only_quic_packets_lost_total`, `only_quic_lost_bytes_total`,
+/// `only_quic_congestion_events_total` and `only_quic_ecn_ce_events_total`. Totals cover open
+/// connections and the ones that already closed. Register it with
+/// `Telemetry::register_collector` (with a label telling servers apart if there are several).
+impl Collector for QuicServer {
+    fn collect(&self, out: &mut Families) {
+        let ep = &self.0;
+        let open: Vec<Connection> = lock(&ep.conns).values().cloned().collect();
+        let mut t = *lock(&ep.closed_stats);
+        for c in &open {
+            add_stats(&mut t, &c.stats());
+        }
+        out.gauge(
+            "only_quic_connections_open",
+            "QUIC connections open now.",
+            &[],
+            open.len() as f64,
+        );
+        type Row<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], u64);
+        let counters: [Row<'_>; 11] = [
+            (
+                "only_quic_connections_accepted_total",
+                "QUIC connections accepted.",
+                &[],
+                ep.accepted.load(Ordering::Relaxed),
+            ),
+            (
+                "only_quic_connections_closed_total",
+                "QUIC connections closed.",
+                &[],
+                ep.closed.load(Ordering::Relaxed),
+            ),
+            (
+                "only_quic_datagrams_total",
+                "UDP datagrams of QUIC connections.",
+                &[("dir", "rx")],
+                t.udp_rx.datagrams,
+            ),
+            (
+                "only_quic_datagrams_total",
+                "UDP datagrams of QUIC connections.",
+                &[("dir", "tx")],
+                t.udp_tx.datagrams,
+            ),
+            (
+                "only_quic_bytes_total",
+                "UDP payload bytes of QUIC connections.",
+                &[("dir", "rx")],
+                t.udp_rx.bytes,
+            ),
+            (
+                "only_quic_bytes_total",
+                "UDP payload bytes of QUIC connections.",
+                &[("dir", "tx")],
+                t.udp_tx.bytes,
+            ),
+            (
+                "only_quic_packets_sent_total",
+                "QUIC packets sent.",
+                &[],
+                t.sent_packets,
+            ),
+            (
+                "only_quic_packets_lost_total",
+                "QUIC packets declared lost.",
+                &[],
+                t.lost_packets,
+            ),
+            (
+                "only_quic_lost_bytes_total",
+                "Bytes in QUIC packets declared lost.",
+                &[],
+                t.lost_bytes,
+            ),
+            (
+                "only_quic_congestion_events_total",
+                "QUIC congestion events.",
+                &[],
+                t.congestion_events,
+            ),
+            (
+                "only_quic_ecn_ce_events_total",
+                "QUIC congestion events signalled by ECN-CE.",
+                &[],
+                t.ecn_ce_events,
+            ),
+        ];
+        for (name, help, labels, v) in counters {
+            out.counter(name, help, labels, v as f64);
         }
     }
 }

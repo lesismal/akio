@@ -12,7 +12,7 @@ use std::{
 };
 
 use only::{Engine, EngineRef, Listener};
-use only_socks::{Socks, connect_proxy};
+use only_socks::{Destinations, ProxyConfig, Socks, connect_proxy_with};
 
 fn echo_server() -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -39,14 +39,20 @@ fn main() -> std::io::Result<()> {
     // The proxies dial upstream through the engine, which does not exist yet: hand them an
     // EngineRef and point it at the engine once it is built.
     let engine_ref = EngineRef::new();
-    let socks =
-        Socks::new(engine_ref.clone()).auth(|user, pass| user == "ada" && pass == "lovelace");
+    // Only public destinations are dialled by default; this demo relays to a loopback echo
+    // server, so it allows any (do that only for a proxy nobody untrusted can reach).
+    let socks = Socks::new(engine_ref.clone())
+        .auth(|user, pass| user == "ada" && pass == "lovelace")
+        .destinations(Destinations::Any);
+    let mut http_cfg = ProxyConfig::default();
+    http_cfg.destinations = Destinations::Any;
     let engine = Arc::new(
         Engine::builder()
             .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(socks))
             .listen(
-                Listener::tcp("127.0.0.1:0".parse().unwrap())
-                    .serve(only_http::serve(connect_proxy(engine_ref.clone()))),
+                Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(only_http::serve(
+                    connect_proxy_with(engine_ref.clone(), http_cfg),
+                )),
             )
             .client_threads(2) // upstream connections
             .build()?,

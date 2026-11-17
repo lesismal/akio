@@ -141,7 +141,7 @@ fn bulk(mb: usize) {
     let (tx, rx) = mpsc::channel();
     let c = only_quic::dial(&e, addr, "localhost", cfg, Up(tx)).expect("dial");
     rx.recv_timeout(Duration::from_secs(5)).expect("handshake");
-    let chunk = vec![0x5au8; 1 << 20];
+    let chunk = B::from(vec![0x5au8; 1 << 20]);
     let start = Instant::now();
     let id = c.open_bi().expect("stream");
     for _ in 0..mb {
@@ -149,7 +149,12 @@ fn bulk(mb: usize) {
         while c.queued_bytes(id) > 8 << 20 {
             std::thread::sleep(Duration::from_micros(200));
         }
-        c.send(id, chunk.clone()).expect("send");
+        // A send buffer that is full refuses the write (`Overloaded`, in versions that bound
+        // it): try again shortly.
+        while c.send(id, chunk.clone()).is_err() {
+            assert!(!c.is_closed(), "connection closed");
+            std::thread::sleep(Duration::from_micros(100));
+        }
     }
     c.finish(id).expect("finish");
     rx.recv_timeout(Duration::from_secs(600)).expect("ack");
@@ -200,8 +205,10 @@ fn h3(secs: u64, conc: usize) {
     let addr = s.local_addrs()[0];
     let e = client_engine(1);
     let cfg = only_quic::client_config_insecure(&[b"h3"]).expect("config");
-    h3cfg.max_field_section_bytes = 1 << 20;
-    let c = Arc::new(H3Client::dial_with(&e, addr, "localhost", cfg, &h3cfg).expect("dial"));
+    let mut opts = only_h3::H3ClientOptions::default();
+    opts.qpack_encoder_capacity = h3cfg.qpack_encoder_capacity;
+    opts.qpack_max_table_capacity = h3cfg.qpack_max_table_capacity;
+    let c = Arc::new(H3Client::dial_with(&e, addr, "localhost", cfg, opts).expect("dial"));
     c.get("/", Duration::from_secs(5)).expect("first request");
     let done = Arc::new(AtomicUsize::new(0));
     let errors = Arc::new(AtomicUsize::new(0));

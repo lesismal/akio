@@ -37,6 +37,8 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
   推流（RTMP 在序列头之前、SRT 在首个 PMT 和参数集之前）会先**预留**路径，因此拒绝发生在握手阶段。
 - **鉴权钩子。** `on_publish` 和 `on_subscribe` 一次性为所有协议做鉴权；`on_unpublish` 观察推流者离开。
   钩子运行时不持有 hub 的任何锁。
+- **上限。** `max_streams`（1024）和 `max_subscribers`（每路径 1000）约束客户端能增长的表；超出后推流和
+  播放以 `HubError::Limit` 失败（HTTP 为 503，SRT 为 OVERLOAD）。设为 0 表示不限。
 - **GOP 缓存，秒开。** 每路流保存自最近一个视频关键帧以来的所有包（纯音频流保存最近一秒），上限为
   `gop_cache_bytes`。新订阅者先收到轨道和缓存，再收到更新的包，所以播放立即从一幅完整画面开始。
 - **背压。** 分发在推流者的 I/O 线程上同步进行：sink 把数据排入自己的连接队列，从不阻塞。每个输出都用
@@ -72,7 +74,10 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 `closeStream`。推流者的 FLV tag 经 `flv::Decoder` 解析（传统 codec id，包括以 12 表示的 H.265，以及
 Enhanced RTMP 的 FourCC `hvc1`、`Opus`、`mp4a`）；播放者先收到 onMetaData 和序列头，然后是 GOP 缓存，
 由 `flv::Encoder` 写出（H.265 写作 `hvc1`，或在 `EncoderConfig::legacy_hevc` 时写作 codec id 12）。
-`RtmpConfig::on_connect` 可按 app 和 tcUrl 拒绝连接。RTMPS 就是放在 only-tls 之后的 RTMP。
+`RtmpConfig::on_connect` 可按 app 和 tcUrl 拒绝连接。RTMPS 就是放在 only-tls 之后的 RTMP。客户端须在
+`handshake_timeout`（10 s）内完成握手；连接 `idle_timeout`（60 s）内什么都没发送则被关闭（播放者除外：
+不再读取的播放者由引擎的写超时约束）。单条消息上限 16 MiB，一个连接所有 chunk 流中未完成的消息合计上限
+32 MiB。
 
 ## HTTP-FLV、WS-FLV 与 HLS
 
@@ -87,7 +92,7 @@ Enhanced RTMP 的 FourCC `hvc1`、`Opus`、`mp4a`）；播放者先收到 onMeta
   即 **WS-FLV**：第一个二进制消息是 FLV 头，之后每个 tag 一条消息，符合 flv.js 与 mpegts.js 的预期。
 - **`Hls`**：`GET /app/name/index.m3u8` 在首次请求时启动一个 muxer（它订阅 hub，在 `idle_timeout`
   内无请求后停止），在超过 `target_duration` 后的关键帧处于内存中切出 MPEG-TS 分段，保留
-  `playlist_size` 个分段的滑动窗口以及供迟到读者使用的 `keep_segments` 个，总量受 `max_bytes` 约束，
+  `playlist_size` 个分段的滑动窗口以及供迟到读者使用的 `keep_segments` 个，总量受 `max_bytes` 约束（达到该值仍没有关键帧可切的分段在此处切开），
   并以 `EXT-X-DISCONTINUITY` 标记重新推流。设置 `part_duration` 后加入低延迟 HLS 标签：
   `EXT-X-PART`、`EXT-X-PRELOAD-HINT`、`EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`，以及阻塞式播放列表
   刷新（`?_HLS_msn=&_HLS_part=`）。需要等待的请求被挂起（不占线程），在分段或分片切出时由推流者线程应答。

@@ -10,6 +10,7 @@
 //!
 //! * [`client`]: dial `ws://` / `wss://` URLs on a `only::Engine` and serve them with the same
 //!   handler model.
+//! * [`proxy`]: HTTP proxies (`CONNECT` tunnels) for this client and only-http's.
 //!
 //! The server-side HTTP upgrade lives in `only-http` (`Context::upgrade_websocket`).
 //!
@@ -26,8 +27,12 @@ pub mod fuzzing;
 #[doc(hidden)]
 pub mod http1;
 pub mod protocol;
+pub mod proxy;
 mod session;
 mod timer;
+// Resolving redirect targets, shared with only-http: `#[doc(hidden)]`, outside the semver promise.
+#[doc(hidden)]
+pub mod url;
 
 pub use session::{
     Message, PreparedMessage, WsConfig, WsHandler, WsLink, WsSender, WsSession, accept_key,
