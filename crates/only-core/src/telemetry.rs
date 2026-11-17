@@ -889,6 +889,19 @@ impl Telemetry {
         out
     }
 
+    /// The engine's series ([`Metrics::collect_into`]) followed by the registered collectors':
+    /// everything [`render_prometheus`](Self::render_prometheus) serves, as [`Families`] (for
+    /// push exporters).
+    pub fn collect_all(&self) -> Families {
+        let mut out = Families::new();
+        self.metrics().collect_into(&mut out);
+        let regs: Vec<Registration> = lock(&self.collectors).clone();
+        for (_, c, labels) in &regs {
+            out.collect_from(&**c, labels);
+        }
+        out
+    }
+
     /// The engine's series ([`Metrics::to_prometheus`]) followed by the registered collectors',
     /// in the Prometheus text format (version 0.0.4).
     pub fn render_prometheus(&self) -> String {
@@ -996,6 +1009,14 @@ pub fn prometheus_header(out: &mut String, name: &str, kind: &str, help: &str) {
     let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} {kind}");
 }
 
+fn as_refs(l: &[(String, String); 3]) -> [(&str, &str); 3] {
+    [
+        (l[0].0.as_str(), l[0].1.as_str()),
+        (l[1].0.as_str(), l[1].1.as_str()),
+        (l[2].0.as_str(), l[2].1.as_str()),
+    ]
+}
+
 impl Metrics {
     /// Renders the snapshot in the Prometheus text exposition format (version 0.0.4), one series
     /// per I/O thread labelled `listener`, `backend` and `thread`.
@@ -1093,6 +1114,98 @@ impl Metrics {
             "Seconds since the engine was created.",
         );
         let _ = writeln!(out, "only_uptime_seconds {}", self.uptime.as_secs_f64());
+    }
+
+    /// Adds the snapshot's series to `out`: the same names, labels and values as
+    /// [`write_prometheus`](Self::write_prometheus).
+    pub fn collect_into(&self, out: &mut Families) {
+        let labels: Vec<[(String, String); 3]> = self
+            .loops
+            .iter()
+            .map(|l| {
+                let m = &l.owner;
+                [
+                    (
+                        "listener".to_owned(),
+                        m.listener
+                            .map_or_else(|| "client".to_owned(), |a| a.to_string()),
+                    ),
+                    ("backend".to_owned(), m.backend.to_owned()),
+                    ("thread".to_owned(), m.thread.to_string()),
+                ]
+            })
+            .collect();
+        let values: Vec<Vec<u64>> = self.loops.iter().map(|l| l.counters.values()).collect();
+        for (i, (name, kind, help)) in LoopCounters::FIELDS.iter().enumerate() {
+            for (l, v) in labels.iter().zip(&values) {
+                let ls = as_refs(l);
+                match *kind {
+                    "nanos" => out.counter(name, help, &ls, v[i] as f64 / 1e9),
+                    "gauge" => out.gauge(name, help, &ls, v[i] as f64),
+                    _ => out.counter(name, help, &ls, v[i] as f64),
+                }
+            }
+        }
+        for (l, lm) in labels.iter().zip(&self.loops) {
+            out.gauge(
+                "only_connections_open",
+                "Connections open now.",
+                &as_refs(l),
+                lm.open() as f64,
+            );
+        }
+        for (l, lm) in labels.iter().zip(&self.loops) {
+            out.gauge(
+                "only_loop_running",
+                "Whether the I/O thread is running.",
+                &as_refs(l),
+                f64::from(u8::from(lm.running)),
+            );
+        }
+        if let Some(p) = &self.pool {
+            out.gauge(
+                "only_pool_threads",
+                "Logical pool threads.",
+                &[],
+                p.threads as f64,
+            );
+            out.gauge(
+                "only_pool_active",
+                "Logical pool threads running a job.",
+                &[],
+                p.threads.saturating_sub(p.idle) as f64,
+            );
+            out.gauge(
+                "only_pool_queued",
+                "Jobs waiting in the logical pool queue.",
+                &[],
+                p.queued as f64,
+            );
+            out.counter(
+                "only_pool_completed_total",
+                "Jobs the logical pool completed.",
+                &[],
+                p.completed as f64,
+            );
+            out.counter(
+                "only_pool_panicked_total",
+                "Jobs that panicked.",
+                &[],
+                p.panicked as f64,
+            );
+            out.counter(
+                "only_pool_rejected_total",
+                "Jobs refused because the queue was full.",
+                &[],
+                p.rejected as f64,
+            );
+        }
+        out.gauge(
+            "only_uptime_seconds",
+            "Seconds since the engine was created.",
+            &[],
+            self.uptime.as_secs_f64(),
+        );
     }
 
     /// Renders the snapshot as JSON (threads with their counters, totals, pool).

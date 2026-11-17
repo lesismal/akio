@@ -34,7 +34,9 @@ pub trait BodySink: Send + 'static {
 #[inline(always)]
 pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn ResponseSink>) {
     let mut ctx = Context::new_ext(req, sink);
+    let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
+    drop(g);
     finalize(&mut ctx);
 }
 
@@ -54,7 +56,9 @@ pub fn start<S: Service + ?Sized>(
     sink: Box<dyn ResponseSink>,
 ) -> Started {
     let mut ctx = Box::new(Context::new_ext(req, sink));
+    let g = crate::trace::begin(&mut ctx);
     service.call(&mut ctx);
+    drop(g);
     Started { ctx }
 }
 

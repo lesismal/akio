@@ -259,6 +259,14 @@ impl FmtLogger {
             record.target(),
             record.args()
         );
+        if let Some(c) = crate::span::current() {
+            let _ = write!(
+                s,
+                " trace_id={:032x} span_id={:016x}",
+                c.trace_id(),
+                c.span_id()
+            );
+        }
         for (k, v) in record.key_values().iter() {
             let start = s.len() + k.len() + 2;
             let _ = write!(s, " {k}={v}");
