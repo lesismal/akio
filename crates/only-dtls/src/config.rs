@@ -8,7 +8,49 @@ use only_crypto::hash::{Sha1, Sha256, Sha384, Sha512};
 use only_crypto::pkey::PrivateKey;
 use only_x509::{Certificate, CertificateParams};
 
+use crate::session::{Psk, SessionCache, TicketKey};
 use crate::{CipherSuite, Error};
+
+/// A DTLS protocol version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum Version {
+    /// DTLS 1.2 (RFC 6347).
+    Dtls12,
+    /// DTLS 1.3 (RFC 9147).
+    Dtls13,
+}
+
+impl Version {
+    pub(crate) fn wire(self) -> u16 {
+        match self {
+            Version::Dtls12 => crate::record::DTLS12,
+            Version::Dtls13 => crate::record::DTLS13,
+        }
+    }
+
+    pub(crate) fn from_wire(v: u16) -> Option<Version> {
+        match v {
+            crate::record::DTLS12 => Some(Version::Dtls12),
+            crate::record::DTLS13 => Some(Version::Dtls13),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for Version {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Version::Dtls12 => "DTLS 1.2",
+            Version::Dtls13 => "DTLS 1.3",
+        })
+    }
+}
+
+/// Session-ID cache entries a DTLS 1.2 server keeps with resumption on.
+const SESSION_CACHE: usize = 1024;
+/// Longest ticket lifetime (RFC 8446 §4.6.1).
+const MAX_TICKET_LIFETIME: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// A certificate (DER) with its private key: what this endpoint authenticates with.
 #[derive(Clone)]
@@ -388,15 +430,23 @@ pub struct Config {
     pub(crate) initial_retransmit: Duration,
     pub(crate) max_retransmit: Duration,
     pub(crate) handshake_timeout: Duration,
+    pub(crate) versions: Vec<Version>,
+    pub(crate) psks: Vec<Psk>,
+    pub(crate) resumption: bool,
+    pub(crate) ticket_key: Option<TicketKey>,
+    pub(crate) session_cache: Option<Arc<SessionCache>>,
+    pub(crate) ticket_lifetime: Duration,
+    pub(crate) connection_id: Option<u8>,
 }
 
 impl Config {
-    /// A configuration authenticating with `identity` (required for servers; clients send it
-    /// when the server asks). Defaults: every [`CipherSuite`] (a server uses those that fit its
-    /// key), no SRTP,
-    /// [`PeerVerifier::AcceptAny`], client certificates required, extended master secret
-    /// required, HelloVerifyRequest cookies on, MTU 1200, retransmission 1 s doubling to 60 s,
-    /// handshake timeout 30 s.
+    /// A configuration authenticating with `identity` (required for servers without a
+    /// [`Psk`]; clients send it when the server asks). Defaults: DTLS 1.2 only, every
+    /// [`CipherSuite`] (DTLS 1.3 suites first; a server uses those that fit its key, PSK
+    /// suites only with a PSK), no SRTP, [`PeerVerifier::AcceptAny`], client certificates
+    /// required, extended master secret required, HelloVerifyRequest / HelloRetryRequest
+    /// cookies on, MTU 1200, retransmission 1 s doubling to 60 s, handshake timeout 30 s, no
+    /// PSK, no session resumption, no connection IDs.
     #[must_use]
     pub fn new(identity: Identity) -> Config {
         let mut c = Config::without_identity();
@@ -410,7 +460,11 @@ impl Config {
     pub fn without_identity() -> Config {
         Config {
             identity: None,
-            cipher_suites: CipherSuite::ALL.to_vec(),
+            cipher_suites: CipherSuite::TLS13
+                .into_iter()
+                .chain(CipherSuite::PSK)
+                .chain(CipherSuite::ALL)
+                .collect(),
             srtp_profiles: Vec::new(),
             verifier: PeerVerifier::AcceptAny,
             require_client_certificate: true,
@@ -420,12 +474,20 @@ impl Config {
             initial_retransmit: Duration::from_secs(1),
             max_retransmit: Duration::from_secs(60),
             handshake_timeout: Duration::from_secs(30),
+            versions: vec![Version::Dtls12],
+            psks: Vec::new(),
+            resumption: false,
+            ticket_key: None,
+            session_cache: None,
+            ticket_lifetime: Duration::from_secs(2 * 3600),
+            connection_id: None,
         }
     }
 
-    /// The WebRTC profile (RFC 8827): `identity`, the SRTP profiles AEAD-AES-128-GCM,
-    /// AEAD-AES-256-GCM and AES128-CM-HMAC-SHA1-80, mutual authentication by `verifier`, no
-    /// HelloVerifyRequest (ICE already proved return routability).
+    /// The WebRTC profile (RFC 8827): DTLS 1.2, `identity`, the SRTP profiles
+    /// AEAD-AES-128-GCM, AEAD-AES-256-GCM and AES128-CM-HMAC-SHA1-80, mutual authentication by
+    /// `verifier`, no HelloVerifyRequest (ICE already proved return routability). DTLS 1.3
+    /// stays off here: browsers and pion negotiate DTLS 1.2 for WebRTC (see ADR-021).
     #[must_use]
     pub fn webrtc(identity: Identity, verifier: PeerVerifier) -> Config {
         Config::new(identity)
@@ -507,6 +569,69 @@ impl Config {
         self
     }
 
+    /// The protocol versions this endpoint speaks. A client offering both starts with a
+    /// DTLS 1.3 ClientHello that DTLS 1.2 servers understand (and falls back, with the
+    /// RFC 8446 downgrade check); a server picks the highest both support. Default: DTLS 1.2
+    /// only.
+    #[must_use]
+    pub fn with_versions(mut self, versions: Vec<Version>) -> Config {
+        self.versions = versions;
+        self
+    }
+
+    /// External pre-shared keys. A client offers the first (DTLS 1.2 PSK / ECDHE-PSK suites,
+    /// DTLS 1.3 `psk_dhe_ke`); a server accepts any of them, and needs no certificate when it
+    /// only does PSK.
+    #[must_use]
+    pub fn with_psks(mut self, psks: Vec<Psk>) -> Config {
+        self.psks = psks;
+        self
+    }
+
+    /// Session resumption (default off). Client: asks for DTLS 1.2 tickets and reports
+    /// resumable sessions as [`Event::NewSession`](crate::Event::NewSession). Server: issues
+    /// DTLS 1.2 tickets (or session IDs, in a bounded cache of 1024) and one DTLS 1.3
+    /// NewSessionTicket per handshake, sealed with a random [`TicketKey`] unless
+    /// [`with_ticket_key`](Config::with_ticket_key) sets one.
+    #[must_use]
+    pub fn with_session_resumption(mut self, on: bool) -> Config {
+        self.resumption = on;
+        if on {
+            if self.ticket_key.is_none() {
+                self.ticket_key = TicketKey::generate().ok();
+            }
+            if self.session_cache.is_none() {
+                self.session_cache = Some(Arc::new(SessionCache::new(SESSION_CACHE)));
+            }
+        }
+        self
+    }
+
+    /// The key that seals session tickets (share it between servers that should resume each
+    /// other's sessions).
+    #[must_use]
+    pub fn with_ticket_key(mut self, key: TicketKey) -> Config {
+        self.ticket_key = Some(key);
+        self
+    }
+
+    /// How long a session can be resumed (default 2 hours, at most 7 days).
+    #[must_use]
+    pub fn with_ticket_lifetime(mut self, lifetime: Duration) -> Config {
+        self.ticket_lifetime = lifetime.min(MAX_TICKET_LIFETIME);
+        self
+    }
+
+    /// Connection IDs (RFC 9146 for DTLS 1.2, RFC 9147 §9 for DTLS 1.3; default off): each
+    /// connection asks the peer to put a random CID of `len` bytes (0: none, but send one if
+    /// the peer asks) in the records it sends, so a listener can route them by
+    /// [`connection_id`](crate::connection_id) when the peer's address changes.
+    #[must_use]
+    pub fn with_connection_id(mut self, len: Option<u8>) -> Config {
+        self.connection_id = len;
+        self
+    }
+
     /// The identity, if any.
     #[must_use]
     pub fn identity(&self) -> Option<&Identity> {
@@ -556,7 +681,8 @@ mod tests {
         .unwrap();
         assert_eq!(pem.fingerprint(), id.fingerprint());
         let c = Config::new(id);
-        assert_eq!(c.cipher_suites.len(), CipherSuite::ALL.len());
+        assert_eq!(c.cipher_suites.len(), 15);
+        assert_eq!(c.versions, vec![Version::Dtls12]);
     }
 
     #[test]

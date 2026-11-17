@@ -15,6 +15,12 @@ pub(crate) const SERVER_HELLO_DONE: u8 = 14;
 pub(crate) const CERTIFICATE_VERIFY: u8 = 15;
 pub(crate) const CLIENT_KEY_EXCHANGE: u8 = 16;
 pub(crate) const FINISHED: u8 = 20;
+pub(crate) const NEW_SESSION_TICKET: u8 = 4;
+pub(crate) const ENCRYPTED_EXTENSIONS: u8 = 8;
+pub(crate) const KEY_UPDATE: u8 = 24;
+/// The synthetic `message_hash` that replaces ClientHello1 in the transcript after a
+/// HelloRetryRequest (RFC 8446 §4.4.1).
+pub(crate) const MESSAGE_HASH: u8 = 254;
 
 /// Handshake header: type, length, message_seq, fragment_offset, fragment_length.
 pub(crate) const HEADER_LEN: usize = 12;
@@ -30,7 +36,26 @@ pub(crate) const EXT_EC_POINT_FORMATS: u16 = 11;
 pub(crate) const EXT_SIGNATURE_ALGORITHMS: u16 = 13;
 pub(crate) const EXT_USE_SRTP: u16 = 14;
 pub(crate) const EXT_EXTENDED_MASTER_SECRET: u16 = 23;
+pub(crate) const EXT_SESSION_TICKET: u16 = 35;
+pub(crate) const EXT_PRE_SHARED_KEY: u16 = 41;
+pub(crate) const EXT_EARLY_DATA: u16 = 42;
+pub(crate) const EXT_SUPPORTED_VERSIONS: u16 = 43;
+pub(crate) const EXT_COOKIE: u16 = 44;
+pub(crate) const EXT_PSK_KEY_EXCHANGE_MODES: u16 = 45;
+pub(crate) const EXT_KEY_SHARE: u16 = 51;
+pub(crate) const EXT_CONNECTION_ID: u16 = 54;
 pub(crate) const EXT_RENEGOTIATION_INFO: u16 = 0xff01;
+
+/// The ServerHello.random of a HelloRetryRequest: SHA-256("HelloRetryRequest").
+pub(crate) const HRR_RANDOM: [u8; 32] = [
+    0xcf, 0x21, 0xad, 0x74, 0xe5, 0x9a, 0x61, 0x11, 0xbe, 0x1d, 0x8c, 0x02, 0x1e, 0x65, 0xb8, 0x91,
+    0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
+];
+/// The last eight bytes of a DTLS 1.2 ServerHello.random from a server that supports
+/// DTLS 1.3 (RFC 8446 §4.1.3 downgrade protection).
+pub(crate) const DOWNGRADE_12: [u8; 8] = *b"DOWNGRD\x01";
+/// `psk_dhe_ke`, the only PSK key exchange mode used (no `psk_ke`: always forward secret).
+pub(crate) const PSK_DHE_KE: u8 = 1;
 
 /// `TLS_EMPTY_RENEGOTIATION_INFO_SCSV` (RFC 5746).
 pub(crate) const SCSV_RENEGOTIATION: u16 = 0x00ff;
@@ -143,6 +168,14 @@ impl Partial {
         self.ranges = merged;
     }
 
+    /// End of the bytes received contiguously from the start.
+    pub(crate) fn prefix(&self) -> usize {
+        match self.ranges.first() {
+            Some(&(0, e)) => e,
+            _ => 0,
+        }
+    }
+
     pub(crate) fn is_complete(&self) -> bool {
         self.length == 0 || self.ranges.first() == Some(&(0, self.length))
     }
@@ -154,7 +187,35 @@ impl Partial {
     }
 }
 
-/// Hello extensions we understand.
+/// Where an extension block appears: some extensions have a different shape per message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    ClientHello,
+    ServerHello,
+    HelloRetryRequest,
+    EncryptedExtensions,
+    CertificateRequest,
+    NewSessionTicket,
+}
+
+/// The `pre_shared_key` offer of a ClientHello: identities with their obfuscated ages, and the
+/// binders (same count).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PskOffer {
+    pub(crate) identities: Vec<(Vec<u8>, u32)>,
+    pub(crate) binders: Vec<Vec<u8>>,
+}
+
+impl PskOffer {
+    /// Encoded length of the binders list (with its 2-byte length), which a binder's
+    /// truncated ClientHello leaves out.
+    pub(crate) fn binders_len(&self) -> usize {
+        2 + self.binders.iter().map(|b| 1 + b.len()).sum::<usize>()
+    }
+}
+
+/// Hello (and DTLS 1.3 EncryptedExtensions / CertificateRequest / NewSessionTicket)
+/// extensions we understand.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Extensions {
     pub(crate) groups: Option<Vec<u16>>,
@@ -164,6 +225,22 @@ pub(crate) struct Extensions {
     pub(crate) srtp: Option<(Vec<u16>, Vec<u8>)>,
     pub(crate) extended_master_secret: bool,
     pub(crate) renegotiation_info: Option<Vec<u8>>,
+    /// RFC 5077 `session_ticket` (DTLS 1.2): empty asks for or acknowledges a ticket.
+    pub(crate) session_ticket: Option<Vec<u8>>,
+    /// RFC 9146 `connection_id`: the CID the sender wants to receive.
+    pub(crate) connection_id: Option<Vec<u8>>,
+    /// `supported_versions`: the offered list (ClientHello) or the one selected.
+    pub(crate) supported_versions: Option<Vec<u16>>,
+    /// `key_share`: the client's shares, or the server's one.
+    pub(crate) key_shares: Option<Vec<(u16, Vec<u8>)>>,
+    /// `key_share` of a HelloRetryRequest: the group the server asks for.
+    pub(crate) hrr_group: Option<u16>,
+    /// DTLS 1.3 `cookie`.
+    pub(crate) cookie: Option<Vec<u8>>,
+    pub(crate) psk_modes: Option<Vec<u8>>,
+    pub(crate) psk_offer: Option<PskOffer>,
+    pub(crate) psk_selected: Option<u16>,
+    pub(crate) early_data: bool,
     /// Types of extensions we ignored.
     pub(crate) unknown: Vec<u16>,
 }
@@ -181,10 +258,36 @@ fn u16_list(data: &[u8], min: usize) -> Result<Vec<u16>, Error> {
         .collect())
 }
 
+fn put_u16_list16(out: &mut Vec<u8>, v: &[u16]) {
+    put_vec16(
+        out,
+        &v.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>(),
+    );
+}
+
+fn key_share_entry(r: &mut Reader<'_>) -> Result<(u16, Vec<u8>), Error> {
+    let g = r.u16()?;
+    let k = r.vec16()?;
+    if k.is_empty() {
+        return Err(Error::decode("empty key share"));
+    }
+    Ok((g, k.to_vec()))
+}
+
 impl Extensions {
     pub(crate) fn parse(r: &mut Reader<'_>) -> Result<Extensions, Error> {
+        Extensions::parse_kind(r, Kind::ClientHello, false)
+    }
+
+    /// Parses an extension block of `kind`; `required` blocks (DTLS 1.3 messages) carry the
+    /// length even when empty, hello blocks may be absent.
+    pub(crate) fn parse_kind(
+        r: &mut Reader<'_>,
+        kind: Kind,
+        required: bool,
+    ) -> Result<Extensions, Error> {
         let mut e = Extensions::default();
-        if r.is_empty() {
+        if r.is_empty() && !required {
             return Ok(e);
         }
         let mut list = Reader::new(r.vec16()?);
@@ -195,12 +298,18 @@ impl Extensions {
             if seen.contains(&ty) {
                 return Err(Error::decode("duplicate extension"));
             }
+            if e.psk_offer.is_some() {
+                return Err(Error::protocol(
+                    AlertDescription::IllegalParameter,
+                    "pre_shared_key is not the last extension",
+                ));
+            }
             seen.push(ty);
+            let mut d = Reader::new(data);
             match ty {
                 EXT_SUPPORTED_GROUPS => e.groups = Some(u16_list(data, 2)?),
                 EXT_SIGNATURE_ALGORITHMS => e.signature_algorithms = Some(u16_list(data, 2)?),
                 EXT_EC_POINT_FORMATS => {
-                    let mut d = Reader::new(data);
                     let f = d.vec8()?;
                     d.finish()?;
                     if f.is_empty() {
@@ -209,7 +318,6 @@ impl Extensions {
                     e.point_formats = Some(f.to_vec());
                 }
                 EXT_USE_SRTP => {
-                    let mut d = Reader::new(data);
                     let p = d.vec16()?;
                     let mki = d.vec8()?;
                     d.finish()?;
@@ -229,11 +337,103 @@ impl Extensions {
                     e.extended_master_secret = true;
                 }
                 EXT_RENEGOTIATION_INFO => {
-                    let mut d = Reader::new(data);
                     let v = d.vec8()?;
                     d.finish()?;
                     e.renegotiation_info = Some(v.to_vec());
                 }
+                EXT_SESSION_TICKET => e.session_ticket = Some(data.to_vec()),
+                EXT_CONNECTION_ID => {
+                    let v = d.vec8()?;
+                    d.finish()?;
+                    e.connection_id = Some(v.to_vec());
+                }
+                EXT_SUPPORTED_VERSIONS => {
+                    if kind == Kind::ClientHello {
+                        let v = d.vec8()?;
+                        if v.is_empty() || v.len() % 2 != 0 {
+                            return Err(Error::decode("bad supported_versions"));
+                        }
+                        e.supported_versions = Some(
+                            v.chunks(2)
+                                .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                                .collect(),
+                        );
+                    } else {
+                        e.supported_versions = Some(vec![d.u16()?]);
+                    }
+                    d.finish()?;
+                }
+                EXT_KEY_SHARE => {
+                    match kind {
+                        Kind::ClientHello => {
+                            let mut l = Reader::new(d.vec16()?);
+                            let mut shares = Vec::new();
+                            while !l.is_empty() {
+                                let s = key_share_entry(&mut l)?;
+                                if shares.iter().any(|(g, _)| *g == s.0) {
+                                    return Err(Error::protocol(
+                                        AlertDescription::IllegalParameter,
+                                        "duplicate key share group",
+                                    ));
+                                }
+                                shares.push(s);
+                            }
+                            e.key_shares = Some(shares);
+                        }
+                        Kind::HelloRetryRequest => e.hrr_group = Some(d.u16()?),
+                        _ => e.key_shares = Some(vec![key_share_entry(&mut d)?]),
+                    }
+                    d.finish()?;
+                }
+                EXT_COOKIE => {
+                    let c = d.vec16()?;
+                    d.finish()?;
+                    if c.is_empty() {
+                        return Err(Error::decode("empty cookie"));
+                    }
+                    e.cookie = Some(c.to_vec());
+                }
+                EXT_PSK_KEY_EXCHANGE_MODES => {
+                    let m = d.vec8()?;
+                    d.finish()?;
+                    if m.is_empty() {
+                        return Err(Error::decode("empty psk_key_exchange_modes"));
+                    }
+                    e.psk_modes = Some(m.to_vec());
+                }
+                EXT_PRE_SHARED_KEY => {
+                    if kind == Kind::ClientHello {
+                        let mut ids = Reader::new(d.vec16()?);
+                        let mut binders = Reader::new(d.vec16()?);
+                        d.finish()?;
+                        let mut offer = PskOffer::default();
+                        while !ids.is_empty() {
+                            let id = ids.vec16()?;
+                            let age = ids.u32()?;
+                            if id.is_empty() {
+                                return Err(Error::decode("empty PSK identity"));
+                            }
+                            offer.identities.push((id.to_vec(), age));
+                        }
+                        while !binders.is_empty() {
+                            let b = binders.vec8()?;
+                            if b.len() < 32 {
+                                return Err(Error::decode("short PSK binder"));
+                            }
+                            offer.binders.push(b.to_vec());
+                        }
+                        if offer.identities.is_empty()
+                            || offer.identities.len() != offer.binders.len()
+                        {
+                            return Err(Error::decode("bad pre_shared_key"));
+                        }
+                        e.psk_offer = Some(offer);
+                    } else {
+                        e.psk_selected = Some(d.u16()?);
+                        d.finish()?;
+                    }
+                }
+                EXT_EARLY_DATA => e.early_data = true,
                 other => e.unknown.push(other),
             }
         }
@@ -241,6 +441,12 @@ impl Extensions {
     }
 
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
+        self.encode_kind(out, Kind::ClientHello, false);
+    }
+
+    /// Encodes the block (`required`: with the length even when empty). `pre_shared_key`
+    /// goes last, as RFC 8446 requires.
+    pub(crate) fn encode_kind(&self, out: &mut Vec<u8>, kind: Kind, required: bool) {
         let mut body = Vec::new();
         let mut ext = |ty: u16, data: &[u8]| {
             put_u16(&mut body, ty);
@@ -248,10 +454,7 @@ impl Extensions {
         };
         if let Some(g) = &self.groups {
             let mut d = Vec::new();
-            put_vec16(
-                &mut d,
-                &g.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>(),
-            );
+            put_u16_list16(&mut d, g);
             ext(EXT_SUPPORTED_GROUPS, &d);
         }
         if let Some(f) = &self.point_formats {
@@ -261,30 +464,92 @@ impl Extensions {
         }
         if let Some(s) = &self.signature_algorithms {
             let mut d = Vec::new();
-            put_vec16(
-                &mut d,
-                &s.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>(),
-            );
+            put_u16_list16(&mut d, s);
             ext(EXT_SIGNATURE_ALGORITHMS, &d);
         }
         if let Some((p, mki)) = &self.srtp {
             let mut d = Vec::new();
-            put_vec16(
-                &mut d,
-                &p.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>(),
-            );
+            put_u16_list16(&mut d, p);
             put_vec8(&mut d, mki);
             ext(EXT_USE_SRTP, &d);
         }
         if self.extended_master_secret {
             ext(EXT_EXTENDED_MASTER_SECRET, &[]);
         }
+        if let Some(t) = &self.session_ticket {
+            ext(EXT_SESSION_TICKET, t);
+        }
+        if let Some(v) = &self.supported_versions {
+            let mut d = Vec::new();
+            if kind == Kind::ClientHello {
+                put_vec8(
+                    &mut d,
+                    &v.iter().flat_map(|x| x.to_be_bytes()).collect::<Vec<u8>>(),
+                );
+            } else if let Some(x) = v.first() {
+                put_u16(&mut d, *x);
+            }
+            ext(EXT_SUPPORTED_VERSIONS, &d);
+        }
+        if let Some(c) = &self.cookie {
+            let mut d = Vec::new();
+            put_vec16(&mut d, c);
+            ext(EXT_COOKIE, &d);
+        }
+        if let Some(m) = &self.psk_modes {
+            let mut d = Vec::new();
+            put_vec8(&mut d, m);
+            ext(EXT_PSK_KEY_EXCHANGE_MODES, &d);
+        }
+        if let Some(g) = self.hrr_group {
+            ext(EXT_KEY_SHARE, &g.to_be_bytes());
+        }
+        if let Some(shares) = &self.key_shares {
+            let mut entries = Vec::new();
+            for (g, k) in shares {
+                put_u16(&mut entries, *g);
+                put_vec16(&mut entries, k);
+            }
+            if kind == Kind::ClientHello {
+                let mut d = Vec::new();
+                put_vec16(&mut d, &entries);
+                ext(EXT_KEY_SHARE, &d);
+            } else {
+                ext(EXT_KEY_SHARE, &entries);
+            }
+        }
+        if let Some(c) = &self.connection_id {
+            let mut d = Vec::new();
+            put_vec8(&mut d, c);
+            ext(EXT_CONNECTION_ID, &d);
+        }
         if let Some(r) = &self.renegotiation_info {
             let mut d = Vec::new();
             put_vec8(&mut d, r);
             ext(EXT_RENEGOTIATION_INFO, &d);
         }
-        if !body.is_empty() {
+        if self.early_data {
+            ext(EXT_EARLY_DATA, &[]);
+        }
+        if let Some(i) = self.psk_selected {
+            ext(EXT_PRE_SHARED_KEY, &i.to_be_bytes());
+        }
+        if let Some(o) = &self.psk_offer {
+            let mut ids = Vec::new();
+            for (id, age) in &o.identities {
+                put_vec16(&mut ids, id);
+                ids.extend_from_slice(&age.to_be_bytes());
+            }
+            let mut binders = Vec::new();
+            for b in &o.binders {
+                put_vec8(&mut binders, b);
+            }
+            let mut d = Vec::new();
+            put_vec16(&mut d, &ids);
+            put_vec16(&mut d, &binders);
+            ext(EXT_PRE_SHARED_KEY, &d);
+        }
+        if !body.is_empty() || required {
             put_vec16(out, &body);
         }
     }
@@ -380,7 +645,12 @@ impl ServerHello {
         if session_id.len() > 32 {
             return Err(Error::decode("bad ServerHello"));
         }
-        let extensions = Extensions::parse(&mut r)?;
+        let kind = if random == HRR_RANDOM {
+            Kind::HelloRetryRequest
+        } else {
+            Kind::ServerHello
+        };
+        let extensions = Extensions::parse_kind(&mut r, kind, false)?;
         r.finish()?;
         Ok(ServerHello {
             version,
@@ -399,8 +669,17 @@ impl ServerHello {
         put_vec8(&mut out, &self.session_id);
         put_u16(&mut out, self.cipher_suite);
         out.push(self.compression);
-        self.extensions.encode(&mut out);
+        let kind = if self.random == HRR_RANDOM {
+            Kind::HelloRetryRequest
+        } else {
+            Kind::ServerHello
+        };
+        self.extensions.encode_kind(&mut out, kind, false);
         out
+    }
+
+    pub(crate) fn is_hrr(&self) -> bool {
+        self.random == HRR_RANDOM
     }
 }
 
@@ -567,6 +846,174 @@ pub(crate) fn parse_client_key_exchange(body: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(p.to_vec())
 }
 
+/// The TLS 1.3-style transcript form of a message: type and 24-bit length, no DTLS fields
+/// (RFC 9147 §5.2).
+pub(crate) fn transcript13(msg_type: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + body.len());
+    out.push(msg_type);
+    put_u24(&mut out, body.len());
+    out.extend_from_slice(body);
+    out
+}
+
+/// DTLS 1.2 NewSessionTicket (RFC 5077 §3.3): lifetime hint and ticket.
+pub(crate) fn encode_ticket12(lifetime: u32, ticket: &[u8]) -> Vec<u8> {
+    let mut out = lifetime.to_be_bytes().to_vec();
+    put_vec16(&mut out, ticket);
+    out
+}
+
+pub(crate) fn parse_ticket12(body: &[u8]) -> Result<(u32, Vec<u8>), Error> {
+    let mut r = Reader::new(body);
+    let lifetime = r.u32()?;
+    let t = r.vec16()?;
+    r.finish()?;
+    Ok((lifetime, t.to_vec()))
+}
+
+/// DTLS 1.3 NewSessionTicket (RFC 8446 §4.6.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Ticket13 {
+    pub(crate) lifetime: u32,
+    pub(crate) age_add: u32,
+    pub(crate) nonce: Vec<u8>,
+    pub(crate) ticket: Vec<u8>,
+}
+
+impl Ticket13 {
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut out = self.lifetime.to_be_bytes().to_vec();
+        out.extend_from_slice(&self.age_add.to_be_bytes());
+        put_vec8(&mut out, &self.nonce);
+        put_vec16(&mut out, &self.ticket);
+        put_u16(&mut out, 0);
+        out
+    }
+
+    pub(crate) fn parse(body: &[u8]) -> Result<Ticket13, Error> {
+        let mut r = Reader::new(body);
+        let lifetime = r.u32()?;
+        let age_add = r.u32()?;
+        let nonce = r.vec8()?.to_vec();
+        let ticket = r.vec16()?.to_vec();
+        let _ = Extensions::parse_kind(&mut r, Kind::NewSessionTicket, true)?;
+        r.finish()?;
+        if ticket.is_empty() {
+            return Err(Error::decode("empty ticket"));
+        }
+        Ok(Ticket13 {
+            lifetime,
+            age_add,
+            nonce,
+            ticket,
+        })
+    }
+}
+
+/// DTLS 1.3 Certificate: request context and the DER chain (per-entry extensions empty).
+pub(crate) fn encode_certificate13(context: &[u8], chain: &[Vec<u8>]) -> Vec<u8> {
+    let mut list = Vec::new();
+    for c in chain {
+        crate::codec::put_vec24(&mut list, c);
+        put_u16(&mut list, 0);
+    }
+    let mut out = Vec::new();
+    put_vec8(&mut out, context);
+    crate::codec::put_vec24(&mut out, &list);
+    out
+}
+
+pub(crate) fn parse_certificate13(body: &[u8]) -> Result<(Vec<u8>, Vec<Vec<u8>>), Error> {
+    let mut r = Reader::new(body);
+    let context = r.vec8()?.to_vec();
+    let mut list = Reader::new(r.vec24()?);
+    r.finish()?;
+    let mut out = Vec::new();
+    while !list.is_empty() {
+        let c = list.vec24()?;
+        let _exts = list.vec16()?;
+        if c.is_empty() {
+            return Err(Error::decode("empty certificate"));
+        }
+        out.push(c.to_vec());
+    }
+    Ok((context, out))
+}
+
+/// DTLS 1.3 CertificateRequest: context and extensions (signature_algorithms).
+pub(crate) fn encode_certificate_request13(context: &[u8], schemes: &[u16]) -> Vec<u8> {
+    let mut out = Vec::new();
+    put_vec8(&mut out, context);
+    Extensions {
+        signature_algorithms: Some(schemes.to_vec()),
+        ..Extensions::default()
+    }
+    .encode_kind(&mut out, Kind::CertificateRequest, true);
+    out
+}
+
+pub(crate) fn parse_certificate_request13(body: &[u8]) -> Result<(Vec<u8>, Vec<u16>), Error> {
+    let mut r = Reader::new(body);
+    let context = r.vec8()?.to_vec();
+    let e = Extensions::parse_kind(&mut r, Kind::CertificateRequest, true)?;
+    r.finish()?;
+    let schemes = e.signature_algorithms.ok_or_else(|| {
+        Error::protocol(
+            AlertDescription::MissingExtension,
+            "CertificateRequest without signature_algorithms",
+        )
+    })?;
+    Ok((context, schemes))
+}
+
+pub(crate) fn encode_encrypted_extensions(e: &Extensions) -> Vec<u8> {
+    let mut out = Vec::new();
+    e.encode_kind(&mut out, Kind::EncryptedExtensions, true);
+    out
+}
+
+pub(crate) fn parse_encrypted_extensions(body: &[u8]) -> Result<Extensions, Error> {
+    let mut r = Reader::new(body);
+    let e = Extensions::parse_kind(&mut r, Kind::EncryptedExtensions, true)?;
+    r.finish()?;
+    Ok(e)
+}
+
+/// KeyUpdate: `update_requested`.
+pub(crate) fn parse_key_update(body: &[u8]) -> Result<bool, Error> {
+    match body {
+        [0] => Ok(false),
+        [1] => Ok(true),
+        _ => Err(Error::protocol(
+            AlertDescription::IllegalParameter,
+            "bad KeyUpdate",
+        )),
+    }
+}
+
+/// An ACK record body (RFC 9147 §7): record numbers as (epoch, sequence number).
+pub(crate) fn encode_ack(records: &[(u64, u64)]) -> Vec<u8> {
+    let mut list = Vec::with_capacity(records.len() * 16);
+    for (e, s) in records {
+        list.extend_from_slice(&e.to_be_bytes());
+        list.extend_from_slice(&s.to_be_bytes());
+    }
+    let mut out = Vec::new();
+    put_vec16(&mut out, &list);
+    out
+}
+
+pub(crate) fn parse_ack(body: &[u8]) -> Result<Vec<(u64, u64)>, Error> {
+    let mut r = Reader::new(body);
+    let mut list = Reader::new(r.vec16()?);
+    r.finish()?;
+    let mut out = Vec::new();
+    while !list.is_empty() {
+        out.push((list.u64()?, list.u64()?));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -587,7 +1034,7 @@ mod tests {
                 srtp: Some((vec![7, 1], vec![])),
                 extended_master_secret: true,
                 renegotiation_info: Some(vec![]),
-                unknown: vec![],
+                ..Extensions::default()
             },
         };
         assert_eq!(ClientHello::parse(&ch.encode()).unwrap(), ch);

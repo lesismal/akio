@@ -1,4 +1,6 @@
-//! The DTLS 1.2 connection state machine (client and server), sans-io.
+//! The DTLS 1.2 connection state machine (client and server), sans-io: full ECDHE and PSK
+//! handshakes, abbreviated handshakes (session IDs, RFC 5077 tickets) and RFC 9146 connection
+//! IDs. [`Connection`](crate::Connection) wraps it (and the DTLS 1.3 machine).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
@@ -7,16 +9,17 @@ use std::time::{Duration, Instant};
 use only_crypto::pkey::PublicKey;
 use only_x509::Certificate;
 
-use crate::config::{Config, Fingerprint, FingerprintAlgorithm, SrtpKeys, SrtpProfile};
+use crate::config::{Config, Fingerprint, FingerprintAlgorithm, SrtpKeys, SrtpProfile, Version};
 use crate::cookie::{self, HelloVerifier};
 use crate::crypto::{self, CipherSuite, KeyShare, NamedGroup, RecordProtection, SIGNATURE_SCHEMES};
 use crate::handshake::{
     self as hs, ClientHello, Extensions, Partial, ServerHello, ServerKeyExchange,
 };
 use crate::record::{
-    self, CT_ALERT, CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, DTLS12, Header,
-    MAX_PLAINTEXT, ReplayWindow,
+    self, CT_ALERT, CT_APPLICATION_DATA, CT_CHANGE_CIPHER_SPEC, CT_HANDSHAKE, CT_TLS12_CID, DTLS12,
+    Header, MAX_PLAINTEXT, ReplayWindow, Wire,
 };
+use crate::session::{Session, SessionState};
 use crate::{AlertDescription, Error};
 
 /// Which side of the handshake this endpoint plays (in WebRTC: `a=setup:active` is the
@@ -44,11 +47,23 @@ pub struct HandshakeInfo {
     pub srtp_profile: Option<SrtpProfile>,
     /// The SRTP master keys and salts for that profile (RFC 5764 §4.2).
     pub srtp_keys: Option<SrtpKeys>,
-    /// Whether the extended master secret (RFC 7627) is in use.
+    /// Whether the extended master secret (RFC 7627) is in use (always true in DTLS 1.3,
+    /// whose key schedule binds the transcript).
     pub extended_master_secret: bool,
+    /// The negotiated protocol version.
+    pub version: Version,
+    /// Whether this was an abbreviated handshake resuming an earlier session.
+    pub resumed: bool,
+    /// The identity of the external pre-shared key used, if any.
+    pub psk_identity: Option<Vec<u8>>,
+    /// The connection ID the peer puts in the records it sends us (RFC 9146), once
+    /// negotiated.
+    pub local_connection_id: Option<Vec<u8>>,
+    /// The connection ID we put in the records we send.
+    pub peer_connection_id: Option<Vec<u8>>,
 }
 
-/// What [`Connection::poll_event`] reports.
+/// What [`Connection::poll_event`](crate::Connection::poll_event) reports.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Event {
@@ -58,6 +73,10 @@ pub enum Event {
     ApplicationData(Vec<u8>),
     /// The peer closed the connection with close_notify (ours was sent in reply).
     Closed,
+    /// Client with [`Config::with_session_resumption`]: a session that
+    /// [`Connection::client_resume`](crate::Connection::client_resume) can resume later (a
+    /// DTLS 1.2 session ID or ticket at connect, each DTLS 1.3 NewSessionTicket).
+    NewSession(Session),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +97,8 @@ enum Expect {
     CertificateRequestOrDone,
     ServerHelloDone,
     ServerFinished,
+    /// Abbreviated handshake: the server's (NewSessionTicket,) ChangeCipherSpec and Finished.
+    ServerFinishedResumed,
     // server
     ClientHello,
     ClientCertificate,
@@ -104,13 +125,29 @@ const REASSEMBLY_WINDOW: u16 = 16;
 /// HelloVerifyRequests a client follows before giving up.
 const MAX_HELLO_VERIFY: u32 = 3;
 
-/// A DTLS 1.2 connection: a sans-io state machine. Feed it datagrams
-/// ([`handle_datagram`](Connection::handle_datagram)) and timer expiries
-/// ([`handle_timeout`](Connection::handle_timeout) at [`poll_timeout`](Connection::poll_timeout));
-/// send what [`poll_transmit`](Connection::poll_transmit) returns and act on
-/// [`poll_event`](Connection::poll_event).
+/// State a DTLS 1.3 connection hands over when the peer turns out to speak only DTLS 1.2
+/// (`Conn13::into_handoff`): its first flight and what it received of the peer's.
 #[derive(Debug)]
-pub struct Connection {
+pub(crate) struct Handoff {
+    pub(crate) config: Arc<Config>,
+    pub(crate) role: Role,
+    pub(crate) peer_addr: Vec<u8>,
+    pub(crate) deadline: Instant,
+    pub(crate) partials: BTreeMap<u16, (u16, Partial)>,
+    pub(crate) recv_seq: u16,
+    pub(crate) send_seq: u16,
+    pub(crate) epoch0_seq: u64,
+    pub(crate) last_record_seq: u64,
+    /// Client: the ClientHello sent, with its message sequence number.
+    pub(crate) client_hello: Option<(ClientHello, u16)>,
+    pub(crate) retransmit_at: Option<Instant>,
+    pub(crate) rto: Duration,
+    pub(crate) local_cid: Option<Vec<u8>>,
+}
+
+/// A DTLS 1.2 connection: a sans-io state machine.
+#[derive(Debug)]
+pub(crate) struct Conn12 {
     config: Arc<Config>,
     role: Role,
     state: State,
@@ -159,6 +196,24 @@ pub struct Connection {
     events: VecDeque<Event>,
     info: Option<HandshakeInfo>,
     sent_close: bool,
+    // PSK, resumption, connection IDs
+    /// The PSK in use (identity, key).
+    psk: Option<(Vec<u8>, Vec<u8>)>,
+    /// Client: the session offered.
+    resume: Option<Session>,
+    /// Abbreviated handshake.
+    resumed: bool,
+    /// Server: issue a ticket in the final flight; client: the server will send one.
+    send_ticket: bool,
+    /// Client: the ticket received.
+    new_ticket: Option<(u32, Vec<u8>)>,
+    /// Session ID of this session (server: assigned; client: echoed).
+    session_id: Vec<u8>,
+    /// The CID the peer puts in records to us; the CID we put in records to the peer.
+    local_cid: Option<Vec<u8>>,
+    peer_cid: Option<Vec<u8>>,
+    /// Client: the ClientHello also offered DTLS 1.3 (check the downgrade sentinel).
+    offered13: bool,
 }
 
 fn random32() -> Result<[u8; 32], Error> {
@@ -180,50 +235,74 @@ fn illegal(reason: &'static str) -> Error {
     Error::protocol(AlertDescription::IllegalParameter, reason)
 }
 
-impl Connection {
-    /// A client connection; its first flight (the ClientHello) is ready in
-    /// [`poll_transmit`](Connection::poll_transmit).
-    pub fn client(config: Arc<Config>, now: Instant) -> Result<Connection, Error> {
-        let mut c = Connection::new(config, Role::Client, now, &[])?;
+/// A fresh connection ID of `len` bytes, if CIDs are configured.
+pub(crate) fn new_cid(config: &Config) -> Result<Option<Vec<u8>>, Error> {
+    let Some(len) = config.connection_id else {
+        return Ok(None);
+    };
+    let mut cid = vec![0u8; usize::from(len)];
+    only_crypto::rand::fill_random(&mut cid)
+        .map_err(|_| Error::Crypto(only_crypto::Error::Random))?;
+    Ok(Some(cid))
+}
+
+/// Checks that `config` can run `role` with DTLS 1.2.
+pub(crate) fn check_config12(config: &Config, role: Role) -> Result<(), Error> {
+    let suites: Vec<CipherSuite> = config
+        .cipher_suites
+        .iter()
+        .copied()
+        .filter(|s| !s.is_tls13() && (!s.is_psk() || !config.psks.is_empty()))
+        .collect();
+    if suites.is_empty() {
+        return Err(Error::Config("no DTLS 1.2 cipher suites"));
+    }
+    if role == Role::Server {
+        let cert_ok = config
+            .identity
+            .as_ref()
+            .is_some_and(|id| suites.iter().any(|s| s.fits_key(id.private_key())));
+        let psk_ok = !config.psks.is_empty() && suites.iter().any(|s| s.is_psk());
+        if !cert_ok && !psk_ok {
+            return Err(if config.identity.is_none() {
+                Error::Config("a server needs an identity")
+            } else {
+                Error::Config("no cipher suite fits the server key")
+            });
+        }
+    }
+    Ok(())
+}
+
+impl Conn12 {
+    /// A client connection (resuming `resume` when given); its first flight (the ClientHello)
+    /// is ready in `poll_transmit`.
+    pub(crate) fn client(
+        config: Arc<Config>,
+        now: Instant,
+        resume: Option<Session>,
+    ) -> Result<Conn12, Error> {
+        let mut c = Conn12::new(config, Role::Client, now, &[])?;
+        c.resume = resume.filter(|s| s.state.version == Version::Dtls12);
         c.start_client(now)?;
         Ok(c)
     }
 
-    /// A server connection for the peer at `peer` (any stable encoding of its transport
-    /// address; it is bound into HelloVerifyRequest cookies). It waits for a ClientHello.
-    pub fn server(config: Arc<Config>, now: Instant, peer: &[u8]) -> Result<Connection, Error> {
-        Connection::new(config, Role::Server, now, peer)
-    }
-
-    /// A connection for `role` (WebRTC decides the role from `a=setup`).
-    pub fn new(
+    /// A connection for `role`; a server waits for a ClientHello.
+    pub(crate) fn new(
         config: Arc<Config>,
         role: Role,
         now: Instant,
         peer: &[u8],
-    ) -> Result<Connection, Error> {
-        if config.cipher_suites.is_empty() {
-            return Err(Error::Config("no cipher suites"));
-        }
-        if role == Role::Server {
-            let id = config
-                .identity
-                .as_ref()
-                .ok_or(Error::Config("a server needs an identity"))?;
-            if !config
-                .cipher_suites
-                .iter()
-                .any(|s| s.fits_key(id.private_key()))
-            {
-                return Err(Error::Config("no cipher suite fits the server key"));
-            }
-        }
+    ) -> Result<Conn12, Error> {
+        check_config12(&config, role)?;
         let hello_verifier = if role == Role::Server && config.hello_verify {
             Some(HelloVerifier::new(now)?)
         } else {
             None
         };
-        let mut c = Connection {
+        let local_cid = new_cid(&config)?;
+        let mut c = Conn12 {
             role,
             state: State::Handshake,
             expect: match role {
@@ -268,50 +347,92 @@ impl Connection {
             events: VecDeque::new(),
             info: None,
             sent_close: false,
+            psk: None,
+            resume: None,
+            resumed: false,
+            send_ticket: false,
+            new_ticket: None,
+            session_id: Vec::new(),
+            local_cid,
+            peer_cid: None,
+            offered13: false,
             config,
         };
         c.client_random = random32()?;
         Ok(c)
     }
 
+    /// Continues a handshake a DTLS 1.3 connection started with a peer that only speaks
+    /// DTLS 1.2. The caller feeds the datagram that revealed it again.
+    pub(crate) fn from_handoff(h: Handoff, now: Instant) -> Result<Conn12, Error> {
+        let mut c = Conn12::new(h.config, h.role, now, &h.peer_addr)?;
+        c.deadline = h.deadline;
+        c.partials = h.partials;
+        c.recv_seq = h.recv_seq;
+        c.send_seq = h.send_seq;
+        c.write_seq[0] = h.epoch0_seq;
+        c.last_record_seq = h.last_record_seq;
+        c.local_cid = h.local_cid;
+        c.cur_peer_flight_start = h.recv_seq;
+        if let Some((ch, seq)) = h.client_hello {
+            c.offered13 = true;
+            c.client_random = ch.random;
+            let body = ch.encode();
+            c.transcript = hs::encode_message(hs::CLIENT_HELLO, seq, &body);
+            c.flight = vec![FlightMsg {
+                epoch: 0,
+                msg: Some((hs::CLIENT_HELLO, seq, body)),
+            }];
+            c.client_hello = Some(ch);
+            c.retransmit_at = h.retransmit_at;
+            c.rto = h.rto;
+        }
+        Ok(c)
+    }
+
     /// This endpoint's role.
     #[must_use]
-    pub fn role(&self) -> Role {
+    pub(crate) fn role(&self) -> Role {
         self.role
     }
 
     /// Whether the handshake completed and the connection is open.
     #[must_use]
-    pub fn is_connected(&self) -> bool {
+    pub(crate) fn is_connected(&self) -> bool {
         self.state == State::Connected
     }
 
     /// Whether the connection is closed or failed (nothing more will be sent or received).
     #[must_use]
-    pub fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         matches!(self.state, State::Closed | State::Failed)
     }
 
     /// What the handshake established, once connected.
     #[must_use]
-    pub fn handshake_info(&self) -> Option<&HandshakeInfo> {
+    pub(crate) fn handshake_info(&self) -> Option<&HandshakeInfo> {
         self.info.as_ref()
     }
 
+    /// The CID the peer puts in records to us, once negotiated.
+    pub(crate) fn local_cid(&self) -> Option<&[u8]> {
+        self.peer_cid.as_ref().and(self.local_cid.as_deref())
+    }
+
     /// The next datagram to send.
-    pub fn poll_transmit(&mut self) -> Option<Vec<u8>> {
+    pub(crate) fn poll_transmit(&mut self) -> Option<Vec<u8>> {
         self.transmits.pop_front()
     }
 
     /// The next event.
-    pub fn poll_event(&mut self) -> Option<Event> {
+    pub(crate) fn poll_event(&mut self) -> Option<Event> {
         self.events.pop_front()
     }
 
-    /// When [`handle_timeout`](Connection::handle_timeout) must be called next (retransmission
+    /// When `handle_timeout` must be called next (retransmission
     /// or handshake deadline); `None` once connected or closed.
     #[must_use]
-    pub fn poll_timeout(&self) -> Option<Instant> {
+    pub(crate) fn poll_timeout(&self) -> Option<Instant> {
         if self.state != State::Handshake {
             return None;
         }
@@ -323,7 +444,7 @@ impl Connection {
 
     /// Advances the timers: retransmits the current flight with exponential backoff
     /// (RFC 6347 §4.2.4) and fails the handshake with [`Error::Timeout`] at its deadline.
-    pub fn handle_timeout(&mut self, now: Instant) -> Result<(), Error> {
+    pub(crate) fn handle_timeout(&mut self, now: Instant) -> Result<(), Error> {
         if self.state != State::Handshake {
             return Ok(());
         }
@@ -342,13 +463,21 @@ impl Connection {
     }
 
     /// Processes one received datagram. A fatal error sends the matching alert (in
-    /// [`poll_transmit`](Connection::poll_transmit)) and closes the connection. Records that do
+    /// `poll_transmit`) and closes the connection. Records that do
     /// not authenticate, replays and stray retransmissions are dropped silently.
-    pub fn handle_datagram(&mut self, now: Instant, datagram: &[u8]) -> Result<(), Error> {
+    pub(crate) fn handle_datagram(&mut self, now: Instant, datagram: &[u8]) -> Result<(), Error> {
         if self.is_closed() {
             return Err(Error::Closed);
         }
-        for (h, fragment) in record::split(datagram) {
+        let cid_len = self.local_cid.as_ref().map_or(0, Vec::len);
+        for w in record::split_cid(datagram, cid_len) {
+            let Wire::Plain { h, cid, fragment } = w else {
+                // A DTLS 1.3 record: not ours.
+                break;
+            };
+            if cid.is_some_and(|c| Some(c) != self.local_cid.as_deref()) {
+                continue;
+            }
             let had_keys = self.read_keys.is_some();
             if let Err(e) = self.handle_record(now, h, fragment) {
                 self.fail(&e);
@@ -371,7 +500,7 @@ impl Connection {
 
     /// Sends one record of application data (at most 16384 bytes; it goes out as one
     /// datagram).
-    pub fn send_application_data(&mut self, data: &[u8]) -> Result<(), Error> {
+    pub(crate) fn send_application_data(&mut self, data: &[u8]) -> Result<(), Error> {
         match self.state {
             State::Connected => {}
             State::Handshake => return Err(Error::NotConnected),
@@ -387,7 +516,7 @@ impl Connection {
 
     /// Keying material from the RFC 5705 exporter (`label`, optional `context`), e.g.
     /// `EXTRACTOR-dtls_srtp` for DTLS-SRTP. Only after the handshake completed.
-    pub fn export_keying_material(
+    pub(crate) fn export_keying_material(
         &self,
         label: &str,
         context: Option<&[u8]>,
@@ -427,7 +556,7 @@ impl Connection {
     }
 
     /// Sends close_notify and closes the connection.
-    pub fn close(&mut self) {
+    pub(crate) fn close(&mut self) {
         if matches!(self.state, State::Handshake | State::Connected) {
             self.send_alert(1, AlertDescription::CloseNotify);
             self.sent_close = true;
@@ -453,9 +582,32 @@ impl Connection {
             h.encode(payload.len(), &mut out);
             out.extend_from_slice(payload);
         } else if let Some(k) = &self.write_keys {
-            let f = k.seal(&h, payload);
-            h.encode(f.len(), &mut out);
-            out.extend_from_slice(&f);
+            match self.peer_cid.as_deref().filter(|c| !c.is_empty()) {
+                Some(cid) => {
+                    // RFC 9146: tls12_cid record, DTLSInnerPlaintext = content || real type.
+                    let h = Header {
+                        content_type: CT_TLS12_CID,
+                        ..h
+                    };
+                    let mut inner = Vec::with_capacity(payload.len() + 1);
+                    inner.extend_from_slice(payload);
+                    inner.push(content_type);
+                    let f =
+                        k.seal_aad(&h, &RecordProtection::cid_aad(&h, cid, inner.len()), &inner);
+                    out.push(CT_TLS12_CID);
+                    out.extend_from_slice(&DTLS12.to_be_bytes());
+                    out.extend_from_slice(&epoch.to_be_bytes());
+                    out.extend_from_slice(&seq.to_be_bytes()[2..]);
+                    out.extend_from_slice(cid);
+                    out.extend_from_slice(&(f.len() as u16).to_be_bytes());
+                    out.extend_from_slice(&f);
+                }
+                None => {
+                    let f = k.seal(&h, payload);
+                    h.encode(f.len(), &mut out);
+                    out.extend_from_slice(&f);
+                }
+            }
         }
         out
     }
@@ -479,6 +631,7 @@ impl Connection {
 
     fn handle_record(&mut self, now: Instant, h: Header, fragment: &[u8]) -> Result<(), Error> {
         let plaintext;
+        let mut content_type = h.content_type;
         let payload: &[u8] = match h.epoch {
             0 => {
                 // After the handshake only retransmitted handshake records are meaningful in
@@ -486,7 +639,7 @@ impl Connection {
                 if self.state == State::Connected && h.content_type != CT_HANDSHAKE {
                     return Ok(());
                 }
-                if h.content_type == CT_APPLICATION_DATA {
+                if matches!(h.content_type, CT_APPLICATION_DATA | CT_TLS12_CID) {
                     return Ok(());
                 }
                 self.last_record_seq = h.seq;
@@ -504,7 +657,22 @@ impl Connection {
                 if h.version != DTLS12 || !self.replay.check(h.seq) {
                     return Ok(());
                 }
-                let Some(p) = keys.open(&h, fragment) else {
+                let opened = if h.content_type == CT_TLS12_CID {
+                    let cid = self.local_cid.clone().unwrap_or_default();
+                    keys.open_aad(&h, fragment, |n| RecordProtection::cid_aad(&h, &cid, n))
+                        .and_then(|mut inner| {
+                            // Strip the zero padding, then the real content type.
+                            while inner.last() == Some(&0) {
+                                inner.pop();
+                            }
+                            let ct = inner.pop()?;
+                            content_type = ct;
+                            Some(inner)
+                        })
+                } else {
+                    keys.open(&h, fragment)
+                };
+                let Some(p) = opened else {
                     return Ok(());
                 };
                 self.replay.accept(h.seq);
@@ -519,7 +687,7 @@ impl Connection {
                 "record too large",
             ));
         }
-        match h.content_type {
+        match content_type {
             CT_HANDSHAKE => self.handle_handshake(now, h.epoch, payload),
             CT_CHANGE_CIPHER_SPEC => {
                 if payload != [1] {
@@ -528,7 +696,7 @@ impl Connection {
                 Ok(())
             }
             CT_ALERT => self.handle_alert(payload),
-            _ => {
+            CT_APPLICATION_DATA => {
                 match self.state {
                     State::Connected => {
                         self.events
@@ -541,6 +709,7 @@ impl Connection {
                 }
                 Ok(())
             }
+            _ => Ok(()),
         }
     }
 
@@ -659,10 +828,14 @@ impl Connection {
             match &m.msg {
                 None => records.push(self.seal_record(m.epoch, CT_CHANGE_CIPHER_SPEC, &[1])),
                 Some((ty, seq, body)) => {
+                    let cid = self
+                        .peer_cid
+                        .as_ref()
+                        .map_or(0, |c| if c.is_empty() { 0 } else { c.len() + 1 });
                     let room = mtu
                         - record::HEADER_LEN
                         - hs::HEADER_LEN
-                        - if m.epoch == 1 { overhead } else { 0 };
+                        - if m.epoch == 1 { overhead + cid } else { 0 };
                     let mut off = 0;
                     loop {
                         let n = (body.len() - off).min(room);
@@ -731,20 +904,27 @@ impl Connection {
         let suite = self
             .suite
             .ok_or_else(|| handshake_failure("no cipher suite"))?;
-        let pms = self
-            .premaster
-            .take()
-            .ok_or_else(|| handshake_failure("no premaster secret"))?;
         let h = suite.prf_hash();
-        let mut ms = vec![0u8; 48];
-        if self.ems {
-            let session_hash = h.digest(&self.transcript);
-            crypto::prf(h, &pms, b"extended master secret", &session_hash, &mut ms);
-        } else {
-            let mut seed = self.client_random.to_vec();
-            seed.extend_from_slice(&self.server_random);
-            crypto::prf(h, &pms, b"master secret", &seed, &mut ms);
-        }
+        let ms = match self.master_secret.take() {
+            // Abbreviated handshake: the session's master secret.
+            Some(ms) => ms,
+            None => {
+                let pms = self
+                    .premaster
+                    .take()
+                    .ok_or_else(|| handshake_failure("no premaster secret"))?;
+                let mut ms = vec![0u8; 48];
+                if self.ems {
+                    let session_hash = h.digest(&self.transcript);
+                    crypto::prf(h, &pms, b"extended master secret", &session_hash, &mut ms);
+                } else {
+                    let mut seed = self.client_random.to_vec();
+                    seed.extend_from_slice(&self.server_random);
+                    crypto::prf(h, &pms, b"master secret", &seed, &mut ms);
+                }
+                ms
+            }
+        };
         let (k, iv) = (suite.key_len(), suite.fixed_iv_len());
         let mut block = vec![0u8; 2 * (k + iv)];
         let mut seed = self.server_random.to_vec();
@@ -762,7 +942,7 @@ impl Connection {
         Ok(())
     }
 
-    fn connected(&mut self) -> Result<(), Error> {
+    fn connected(&mut self, now: Instant) -> Result<(), Error> {
         self.state = State::Connected;
         self.expect = Expect::Done;
         self.retransmit_at = None;
@@ -791,13 +971,77 @@ impl Connection {
             srtp_profile: self.srtp_profile,
             srtp_keys,
             extended_master_secret: self.ems,
+            version: Version::Dtls12,
+            resumed: self.resumed,
+            psk_identity: self.psk.as_ref().map(|(id, _)| id.clone()),
+            local_connection_id: self.peer_cid.as_ref().and_then(|_| self.local_cid.clone()),
+            peer_connection_id: self.peer_cid.clone(),
         };
         self.info = Some(info.clone());
         self.events.push_back(Event::Connected(Box::new(info)));
+        self.remember_session(now);
         for d in std::mem::take(&mut self.early_app) {
             self.events.push_back(Event::ApplicationData(d));
         }
         Ok(())
+    }
+
+    /// The resumable state of this session (DTLS 1.2: the master secret).
+    fn session_state(&self) -> Option<SessionState> {
+        Some(SessionState {
+            version: Version::Dtls12,
+            suite: self.suite?,
+            secret: self.master_secret.clone()?,
+            ems: self.ems,
+            issued: crate::session::unix_now(),
+            lifetime: u32::try_from(self.config.ticket_lifetime.as_secs()).unwrap_or(u32::MAX),
+            age_add: 0,
+            peer_chain: self.peer_chain.clone(),
+        })
+    }
+
+    /// After a handshake with resumption on: the server caches a session ID; the client
+    /// reports the session it can resume.
+    fn remember_session(&mut self, now: Instant) {
+        if !self.config.resumption || self.psk.is_some() {
+            return;
+        }
+        let Some(mut state) = self.session_state() else {
+            return;
+        };
+        match self.role {
+            Role::Server => {
+                if !self.resumed && !self.send_ticket && !self.session_id.is_empty() {
+                    if let Some(c) = &self.config.session_cache {
+                        let expires = now + self.config.ticket_lifetime;
+                        c.insert(self.session_id.clone(), state, expires);
+                    }
+                }
+            }
+            Role::Client => {
+                let (ticket, session_id) = match self.new_ticket.take() {
+                    Some((lifetime, t)) => {
+                        if lifetime != 0 {
+                            state.lifetime = state.lifetime.min(lifetime);
+                        }
+                        let mut id = vec![0u8; 32];
+                        if only_crypto::rand::fill_random(&mut id).is_err() {
+                            return;
+                        }
+                        (t, id)
+                    }
+                    None if self.resumed => return,
+                    None if !self.session_id.is_empty() => (Vec::new(), self.session_id.clone()),
+                    None => return,
+                };
+                self.events.push_back(Event::NewSession(Session {
+                    state,
+                    session_id,
+                    ticket,
+                    received: now,
+                }));
+            }
+        }
     }
 
     /// Checks and stores the peer's certificate chain.
@@ -854,7 +1098,16 @@ impl Connection {
             (Expect::ServerHello, hs::SERVER_HELLO) => {
                 self.client_server_hello(body)?;
                 self.transcript.extend_from_slice(&raw);
-                self.expect = Expect::ServerCertificate;
+                self.expect = if self.resumed {
+                    self.derive_keys()?;
+                    Expect::ServerFinishedResumed
+                } else if self.suite.is_some_and(CipherSuite::is_ecdhe_psk) {
+                    Expect::ServerKeyExchange
+                } else if self.suite.is_some_and(CipherSuite::is_psk) {
+                    Expect::CertificateRequestOrDone
+                } else {
+                    Expect::ServerCertificate
+                };
             }
             (Expect::ServerCertificate, hs::CERTIFICATE) => {
                 self.accept_certificate(hs::parse_certificate(body)?)?;
@@ -873,11 +1126,24 @@ impl Connection {
                 self.expect = Expect::ServerKeyExchange;
             }
             (Expect::ServerKeyExchange, hs::SERVER_KEY_EXCHANGE) => {
-                self.client_server_key_exchange(body)?;
+                if self.suite.is_some_and(CipherSuite::is_psk) {
+                    self.client_psk_key_exchange(body)?;
+                } else {
+                    self.client_server_key_exchange(body)?;
+                }
                 self.transcript.extend_from_slice(&raw);
                 self.expect = Expect::CertificateRequestOrDone;
             }
-            (Expect::CertificateRequestOrDone, hs::CERTIFICATE_REQUEST) => {
+            // Plain PSK: a ServerKeyExchange only carries an identity hint.
+            (Expect::CertificateRequestOrDone, hs::SERVER_KEY_EXCHANGE)
+                if self.suite.is_some_and(CipherSuite::is_psk) && self.key_share.is_none() =>
+            {
+                self.client_psk_key_exchange(body)?;
+                self.transcript.extend_from_slice(&raw);
+            }
+            (Expect::CertificateRequestOrDone, hs::CERTIFICATE_REQUEST)
+                if !self.suite.is_some_and(CipherSuite::is_psk) =>
+            {
                 self.peer_schemes = Some(hs::parse_certificate_request(body)?);
                 self.cert_requested = true;
                 self.transcript.extend_from_slice(&raw);
@@ -891,16 +1157,29 @@ impl Connection {
                 self.client_flight5(now)?;
                 self.expect = Expect::ServerFinished;
             }
-            (Expect::ServerFinished, hs::FINISHED) => {
-                let expected = self.verify_data(b"server finished", &self.transcript);
-                if !only_crypto::ct_eq(&expected, body) {
-                    return Err(Error::protocol(
-                        AlertDescription::DecryptError,
-                        "bad Finished",
-                    ));
-                }
+            (Expect::ServerFinished | Expect::ServerFinishedResumed, hs::NEW_SESSION_TICKET)
+                if self.send_ticket && self.new_ticket.is_none() =>
+            {
+                self.new_ticket = Some(hs::parse_ticket12(body)?);
                 self.transcript.extend_from_slice(&raw);
-                self.connected()?;
+            }
+            (Expect::ServerFinished, hs::FINISHED) => {
+                self.check_finished(b"server finished", body)?;
+                self.transcript.extend_from_slice(&raw);
+                self.connected(now)?;
+            }
+            (Expect::ServerFinishedResumed, hs::FINISHED) => {
+                self.check_finished(b"server finished", body)?;
+                self.transcript.extend_from_slice(&raw);
+                let ccs = FlightMsg {
+                    epoch: 0,
+                    msg: None,
+                };
+                let vd = self.verify_data(b"client finished", &self.transcript);
+                let fin = self.message(1, hs::FINISHED, vd);
+                // The last flight: resent only when the server repeats its own.
+                self.send_flight(now, vec![ccs, fin], false);
+                self.connected(now)?;
             }
             // ---- server ----
             (Expect::ClientHello, hs::CLIENT_HELLO) => {
@@ -920,12 +1199,16 @@ impl Connection {
                 self.expect = Expect::ClientKeyExchange;
             }
             (Expect::ClientKeyExchange, hs::CLIENT_KEY_EXCHANGE) => {
-                let public = hs::parse_client_key_exchange(body)?;
-                let share = self
-                    .key_share
-                    .take()
-                    .ok_or_else(|| unexpected("no key share"))?;
-                self.premaster = Some(share.agree(&public)?);
+                if self.suite.is_some_and(CipherSuite::is_psk) {
+                    self.server_psk_client_key_exchange(body)?;
+                } else {
+                    let public = hs::parse_client_key_exchange(body)?;
+                    let share = self
+                        .key_share
+                        .take()
+                        .ok_or_else(|| unexpected("no key share"))?;
+                    self.premaster = Some(share.agree(&public)?);
+                }
                 self.transcript.extend_from_slice(&raw);
                 self.derive_keys()?;
                 self.expect = if self.client_sent_cert {
@@ -948,35 +1231,93 @@ impl Connection {
                 self.expect = Expect::ClientFinished;
             }
             (Expect::ClientFinished, hs::FINISHED) => {
-                let expected = self.verify_data(b"client finished", &self.transcript);
-                if !only_crypto::ct_eq(&expected, body) {
-                    return Err(Error::protocol(
-                        AlertDescription::DecryptError,
-                        "bad Finished",
-                    ));
-                }
+                self.check_finished(b"client finished", body)?;
                 self.transcript.extend_from_slice(&raw);
-                let ccs = FlightMsg {
-                    epoch: 0,
-                    msg: None,
-                };
-                let vd = self.verify_data(b"server finished", &self.transcript);
-                let fin = self.message(1, hs::FINISHED, vd);
-                self.send_flight(now, vec![ccs, fin], false);
-                self.connected()?;
+                if !self.resumed {
+                    let mut msgs = Vec::new();
+                    if self.send_ticket {
+                        let ticket = self
+                            .session_state()
+                            .and_then(|st| self.config.ticket_key.as_ref()?.seal(&st))
+                            .unwrap_or_default();
+                        let lifetime = u32::try_from(self.config.ticket_lifetime.as_secs())
+                            .unwrap_or(u32::MAX);
+                        msgs.push(self.message(
+                            0,
+                            hs::NEW_SESSION_TICKET,
+                            hs::encode_ticket12(lifetime, &ticket),
+                        ));
+                    }
+                    msgs.push(FlightMsg {
+                        epoch: 0,
+                        msg: None,
+                    });
+                    let vd = self.verify_data(b"server finished", &self.transcript);
+                    msgs.push(self.message(1, hs::FINISHED, vd));
+                    self.send_flight(now, msgs, false);
+                }
+                self.connected(now)?;
             }
             _ => return Err(unexpected("unexpected handshake message")),
         }
         Ok(())
     }
 
+    fn check_finished(&self, label: &[u8], body: &[u8]) -> Result<(), Error> {
+        let expected = self.verify_data(label, &self.transcript);
+        if only_crypto::ct_eq(&expected, body) {
+            Ok(())
+        } else {
+            Err(Error::protocol(
+                AlertDescription::DecryptError,
+                "bad Finished",
+            ))
+        }
+    }
+
+    /// The external PSK for `identity` (server), or ours (client).
+    fn find_psk(&self, identity: Option<&[u8]>) -> Option<(Vec<u8>, Vec<u8>)> {
+        let p = match identity {
+            Some(id) => self.config.psks.iter().find(|p| p.identity == id)?,
+            None => self.config.psks.first()?,
+        };
+        Some((p.identity.clone(), p.key.clone()))
+    }
+
+    /// The RFC 4279 / RFC 5489 premaster secret: `other_secret` (zeros for plain PSK, the
+    /// ECDHE secret for ECDHE-PSK) and the PSK, each with a 2-byte length.
+    fn psk_premaster(other: Option<Vec<u8>>, psk: &[u8]) -> Vec<u8> {
+        let other = other.unwrap_or_else(|| vec![0; psk.len()]);
+        let mut pms = Vec::with_capacity(4 + other.len() + psk.len());
+        pms.extend_from_slice(&(other.len() as u16).to_be_bytes());
+        pms.extend_from_slice(&other);
+        pms.extend_from_slice(&(psk.len() as u16).to_be_bytes());
+        pms.extend_from_slice(psk);
+        pms
+    }
+
     // ---- client ----
 
-    fn start_client(&mut self, now: Instant) -> Result<(), Error> {
-        let cfg = &self.config;
-        let mut suites: Vec<u16> = cfg.cipher_suites.iter().map(|s| s.id()).collect();
-        suites.push(hs::SCSV_RENEGOTIATION);
-        let extensions = Extensions {
+    /// The DTLS 1.2 cipher suites a client offers: PSK suites first when it has a PSK.
+    fn client_suites(cfg: &Config) -> Vec<u16> {
+        let psk = cfg
+            .cipher_suites
+            .iter()
+            .filter(|s| s.is_psk() && !cfg.psks.is_empty());
+        let cert = cfg
+            .cipher_suites
+            .iter()
+            .filter(|s| !s.is_psk() && !s.is_tls13());
+        psk.chain(cert).map(|s| s.id()).collect()
+    }
+
+    /// The DTLS 1.2 part of a client's hello extensions (DTLS 1.3 clients include it too).
+    pub(crate) fn client_extensions(
+        cfg: &Config,
+        local_cid: Option<&[u8]>,
+        ticket: Option<&[u8]>,
+    ) -> Extensions {
+        Extensions {
             groups: Some(NamedGroup::ALL.iter().map(|g| g.id()).collect()),
             point_formats: Some(vec![0]),
             signature_algorithms: Some(SIGNATURE_SCHEMES.to_vec()),
@@ -987,18 +1328,46 @@ impl Connection {
                 )
             }),
             extended_master_secret: true,
-            renegotiation_info: None,
-            unknown: Vec::new(),
-        };
-        let ch = ClientHello {
+            session_ticket: if cfg.resumption {
+                Some(ticket.unwrap_or_default().to_vec())
+            } else {
+                None
+            },
+            connection_id: local_cid.map(<[u8]>::to_vec),
+            ..Extensions::default()
+        }
+    }
+
+    /// A DTLS 1.2 ClientHello for `cfg` (DTLS 1.3 clients extend it).
+    pub(crate) fn client_hello12(
+        cfg: &Config,
+        random: [u8; 32],
+        local_cid: Option<&[u8]>,
+        resume: Option<&Session>,
+    ) -> ClientHello {
+        let mut suites = Conn12::client_suites(cfg);
+        suites.push(hs::SCSV_RENEGOTIATION);
+        let ticket = resume
+            .map(|s| s.ticket.as_slice())
+            .filter(|t| !t.is_empty());
+        ClientHello {
             version: DTLS12,
-            random: self.client_random,
-            session_id: Vec::new(),
+            random,
+            session_id: resume.map(|s| s.session_id.clone()).unwrap_or_default(),
             cookie: Vec::new(),
             cipher_suites: suites,
             compression: vec![0],
-            extensions,
-        };
+            extensions: Conn12::client_extensions(cfg, local_cid, ticket),
+        }
+    }
+
+    fn start_client(&mut self, now: Instant) -> Result<(), Error> {
+        let ch = Conn12::client_hello12(
+            &self.config,
+            self.client_random,
+            self.local_cid.as_deref(),
+            self.resume.as_ref(),
+        );
         let m = self.message(0, hs::CLIENT_HELLO, ch.encode());
         self.client_hello = Some(ch);
         self.flight = vec![m];
@@ -1010,24 +1379,45 @@ impl Connection {
 
     fn client_server_hello(&mut self, body: &[u8]) -> Result<(), Error> {
         let sh = ServerHello::parse(body)?;
-        if sh.version != DTLS12 {
+        if sh.version != DTLS12 || sh.extensions.supported_versions.is_some() || sh.is_hrr() {
             return Err(Error::protocol(
                 AlertDescription::ProtocolVersion,
                 "not DTLS 1.2",
             ));
         }
+        if self.offered13 && sh.random[24..] == hs::DOWNGRADE_12 {
+            // RFC 8446 §4.1.3: a DTLS 1.3 server negotiated DTLS 1.2 with a client that
+            // offered 1.3: an attacker stripped it.
+            return Err(illegal("downgrade to DTLS 1.2 detected"));
+        }
         let suite = CipherSuite::from_id(sh.cipher_suite)
-            .filter(|s| self.config.cipher_suites.contains(s))
+            .filter(|s| Conn12::client_suites(&self.config).contains(&s.id()))
             .ok_or_else(|| illegal("cipher suite not offered"))?;
         if sh.compression != 0 {
             return Err(illegal("compression not offered"));
         }
         let e = &sh.extensions;
-        if !e.unknown.is_empty() || e.groups.is_some() || e.signature_algorithms.is_some() {
+        let offered = self
+            .client_hello
+            .as_ref()
+            .map(|c| c.extensions.clone())
+            .unwrap_or_default();
+        if !e.unknown.is_empty()
+            || e.groups.is_some()
+            || e.signature_algorithms.is_some()
+            || e.key_shares.is_some()
+            || e.cookie.is_some()
+            || e.psk_selected.is_some()
+            || (e.session_ticket.is_some() && offered.session_ticket.is_none())
+            || (e.connection_id.is_some() && offered.connection_id.is_none())
+        {
             return Err(Error::protocol(
                 AlertDescription::UnsupportedExtension,
                 "extension not offered",
             ));
+        }
+        if e.session_ticket.as_ref().is_some_and(|t| !t.is_empty()) {
+            return Err(illegal("non-empty session_ticket in ServerHello"));
         }
         if e.renegotiation_info.as_ref().is_some_and(|r| !r.is_empty()) {
             return Err(handshake_failure("bad renegotiation_info"));
@@ -1050,7 +1440,39 @@ impl Connection {
         if !e.extended_master_secret && self.config.require_extended_master_secret {
             return Err(handshake_failure("extended master secret required"));
         }
+        self.peer_cid = e.connection_id.clone();
+        if self.peer_cid.is_none() {
+            // Not negotiated: our CID is not used either.
+            self.local_cid = None;
+        }
         self.ems = e.extended_master_secret;
+        self.send_ticket = e.session_ticket.is_some();
+        self.session_id.clone_from(&sh.session_id);
+        // Resumption: the server echoed the session ID we offered.
+        if let Some(sess) = self.resume.take() {
+            if !sh.session_id.is_empty() && sh.session_id == sess.session_id {
+                if sess.state.suite != suite {
+                    return Err(illegal("resumed session with another cipher suite"));
+                }
+                if sess.state.ems != self.ems {
+                    return Err(handshake_failure(
+                        "extended master secret changed on resumption",
+                    ));
+                }
+                if !sess.state.peer_chain.is_empty() {
+                    self.config.verifier.verify(&sess.state.peer_chain)?;
+                    self.peer_chain = sess.state.peer_chain.clone();
+                }
+                self.master_secret = Some(sess.state.secret);
+                self.resumed = true;
+            }
+        }
+        if suite.is_psk() {
+            self.psk = Some(
+                self.find_psk(None)
+                    .ok_or_else(|| illegal("PSK suite without a PSK"))?,
+            );
+        }
         self.suite = Some(suite);
         self.server_random = sh.random;
         Ok(())
@@ -1073,6 +1495,32 @@ impl Connection {
         Ok(())
     }
 
+    /// A PSK ServerKeyExchange: the identity hint (ignored), and for ECDHE-PSK the unsigned
+    /// ECDHE parameters.
+    fn client_psk_key_exchange(&mut self, body: &[u8]) -> Result<(), Error> {
+        let mut r = crate::codec::Reader::new(body);
+        let _hint = r.vec16()?;
+        let psk = self
+            .psk
+            .as_ref()
+            .map(|(_, k)| k.clone())
+            .ok_or_else(|| unexpected("no PSK"))?;
+        if self.suite.is_some_and(CipherSuite::is_ecdhe_psk) {
+            if r.u8()? != 3 {
+                return Err(handshake_failure("not a named curve"));
+            }
+            let group =
+                NamedGroup::from_id(r.u16()?).ok_or_else(|| illegal("group not offered"))?;
+            let public = r.vec8()?.to_vec();
+            let share = KeyShare::generate(group)?;
+            let other = share.agree(&public)?;
+            self.premaster = Some(Conn12::psk_premaster(Some(other), &psk));
+            self.key_share = Some(share);
+        }
+        r.finish()?;
+        Ok(())
+    }
+
     fn client_flight5(&mut self, now: Instant) -> Result<(), Error> {
         let mut msgs = Vec::new();
         let identity = self.config.identity.clone();
@@ -1091,16 +1539,23 @@ impl Connection {
             }
             msgs.push(self.message(0, hs::CERTIFICATE, hs::encode_certificate(&chain)));
         }
-        let public = self
-            .key_share
-            .take()
-            .ok_or_else(|| unexpected("no key share"))?
-            .public();
-        msgs.push(self.message(
-            0,
-            hs::CLIENT_KEY_EXCHANGE,
-            hs::encode_client_key_exchange(&public),
-        ));
+        let cke = if let Some((id, psk)) = self.psk.clone() {
+            let mut b = Vec::new();
+            crate::codec::put_vec16(&mut b, &id);
+            match self.key_share.take() {
+                Some(share) => crate::codec::put_vec8(&mut b, &share.public()),
+                None => self.premaster = Some(Conn12::psk_premaster(None, &psk)),
+            }
+            b
+        } else {
+            let public = self
+                .key_share
+                .take()
+                .ok_or_else(|| unexpected("no key share"))?
+                .public();
+            hs::encode_client_key_exchange(&public)
+        };
+        msgs.push(self.message(0, hs::CLIENT_KEY_EXCHANGE, cke));
         self.derive_keys()?;
         if let Some((key, scheme)) = sign_with {
             let sig = crypto::sign(&key, scheme, &self.transcript)?;
@@ -1120,6 +1575,29 @@ impl Connection {
 
     fn server_cert_request_schemes(&self) -> Vec<u16> {
         SIGNATURE_SCHEMES.to_vec()
+    }
+
+    /// The session a ClientHello asks to resume, if we have it and it still fits.
+    fn server_find_session(&self, ch: &ClientHello, now: Instant) -> Option<SessionState> {
+        if !self.config.resumption {
+            return None;
+        }
+        let state = match ch.extensions.session_ticket.as_deref() {
+            Some(t) if !t.is_empty() => self.config.ticket_key.as_ref()?.open(t)?,
+            _ if !ch.session_id.is_empty() => self
+                .config
+                .session_cache
+                .as_ref()?
+                .get(&ch.session_id, now)?,
+            _ => return None,
+        };
+        let usable = state.version == Version::Dtls12
+            && ch.cipher_suites.contains(&state.suite.id())
+            && self.config.cipher_suites.contains(&state.suite)
+            && state.ems == ch.extensions.extended_master_secret
+            && (state.peer_chain.is_empty()
+                || self.config.verifier.verify(&state.peer_chain).is_ok());
+        usable.then_some(state)
     }
 
     fn server_client_hello(
@@ -1162,29 +1640,37 @@ impl Connection {
         if e.point_formats.as_ref().is_some_and(|f| !f.contains(&0)) {
             return Err(illegal("uncompressed points not offered"));
         }
-        let identity = self
+        let resumed = self.server_find_session(&ch, now);
+        let key = self
             .config
             .identity
-            .clone()
-            .ok_or(Error::Config("a server needs an identity"))?;
-        let key = identity.private_key();
-        let suite = self
-            .config
-            .cipher_suites
-            .iter()
-            .copied()
-            .find(|s| s.fits_key(key) && ch.cipher_suites.contains(&s.id()))
-            .ok_or_else(|| handshake_failure("no shared cipher suite"))?;
+            .as_ref()
+            .map(|i| i.private_key().clone());
+        let has_psk = !self.config.psks.is_empty();
+        let suite = match &resumed {
+            Some(st) => st.suite,
+            None => self
+                .config
+                .cipher_suites
+                .iter()
+                .copied()
+                .filter(|s| !s.is_tls13() && ch.cipher_suites.contains(&s.id()))
+                .find(|s| {
+                    if s.is_psk() {
+                        has_psk
+                    } else {
+                        key.as_ref().is_some_and(|k| s.fits_key(k))
+                    }
+                })
+                .ok_or_else(|| handshake_failure("no shared cipher suite"))?,
+        };
         let client_groups = e
             .groups
             .clone()
             .unwrap_or_else(|| vec![NamedGroup::Secp256r1.id()]);
         let group = NamedGroup::ALL
             .into_iter()
-            .find(|g| client_groups.contains(&g.id()))
-            .ok_or_else(|| handshake_failure("no shared group"))?;
-        let scheme = crypto::choose_scheme(key, e.signature_algorithms.as_deref())
-            .ok_or_else(|| handshake_failure("no shared signature scheme"))?;
+            .find(|g| client_groups.contains(&g.id()));
         if !e.extended_master_secret && self.config.require_extended_master_secret {
             return Err(handshake_failure("extended master secret required"));
         }
@@ -1200,12 +1686,24 @@ impl Connection {
         self.peer_schemes = e.signature_algorithms.clone();
         self.client_random = ch.random;
         self.server_random = random32()?;
+        if self.config.versions.contains(&Version::Dtls13) {
+            // RFC 8446 §4.1.3: a DTLS 1.3 server negotiating DTLS 1.2 says so.
+            self.server_random[24..].copy_from_slice(&hs::DOWNGRADE_12);
+        }
         self.suite = Some(suite);
         self.transcript.clear();
         self.transcript.extend_from_slice(raw);
         self.send_seq = seq;
-
-        let sh = ServerHello {
+        // Connection IDs (RFC 9146): only when the client asked.
+        match (&e.connection_id, &self.local_cid) {
+            (Some(peer), Some(_)) => self.peer_cid = Some(peer.clone()),
+            _ => self.local_cid = None,
+        }
+        let ticket_ext = self.config.resumption
+            && self.config.ticket_key.is_some()
+            && e.session_ticket.is_some()
+            && !suite.is_psk();
+        let mut sh = ServerHello {
             version: DTLS12,
             random: self.server_random,
             session_id: Vec::new(),
@@ -1216,10 +1714,66 @@ impl Connection {
                 srtp: srtp.map(|p| (vec![p.id()], Vec::new())),
                 extended_master_secret: self.ems,
                 renegotiation_info: secure_renegotiation.then(Vec::new),
+                connection_id: self.peer_cid.as_ref().and_then(|_| self.local_cid.clone()),
                 ..Extensions::default()
             },
         };
+
+        if let Some(st) = resumed {
+            // Abbreviated handshake (RFC 5246 §7.3, RFC 5077 §3.1): ServerHello echoing the
+            // session ID, ChangeCipherSpec, Finished.
+            sh.session_id.clone_from(&ch.session_id);
+            self.session_id.clone_from(&ch.session_id);
+            if !st.peer_chain.is_empty() {
+                self.peer_chain.clone_from(&st.peer_chain);
+            }
+            self.master_secret = Some(st.secret);
+            self.resumed = true;
+            let mut msgs = vec![self.message(0, hs::SERVER_HELLO, sh.encode())];
+            self.derive_keys()?;
+            msgs.push(FlightMsg {
+                epoch: 0,
+                msg: None,
+            });
+            let vd = self.verify_data(b"server finished", &self.transcript);
+            msgs.push(self.message(1, hs::FINISHED, vd));
+            self.send_flight(now, msgs, true);
+            self.expect = Expect::ClientFinished;
+            return Ok(());
+        }
+
+        if ticket_ext {
+            sh.extensions.session_ticket = Some(Vec::new());
+            self.send_ticket = true;
+        } else if self.config.resumption && !suite.is_psk() {
+            self.session_id = random32()?.to_vec();
+            sh.session_id.clone_from(&self.session_id);
+        }
         let mut msgs = vec![self.message(0, hs::SERVER_HELLO, sh.encode())];
+        if suite.is_psk() {
+            if suite.is_ecdhe_psk() {
+                let group = group.ok_or_else(|| handshake_failure("no shared group"))?;
+                let share = KeyShare::generate(group)?;
+                let mut ske = Vec::new();
+                crate::codec::put_vec16(&mut ske, &[]);
+                ske.extend_from_slice(&ServerKeyExchange::params(group.id(), &share.public()));
+                self.key_share = Some(share);
+                msgs.push(self.message(0, hs::SERVER_KEY_EXCHANGE, ske));
+            }
+            msgs.push(self.message(0, hs::SERVER_HELLO_DONE, Vec::new()));
+            self.send_flight(now, msgs, true);
+            self.expect = Expect::ClientKeyExchange;
+            return Ok(());
+        }
+        let identity = self
+            .config
+            .identity
+            .clone()
+            .ok_or(Error::Config("a server needs an identity"))?;
+        let key = identity.private_key();
+        let group = group.ok_or_else(|| handshake_failure("no shared group"))?;
+        let scheme = crypto::choose_scheme(key, e.signature_algorithms.as_deref())
+            .ok_or_else(|| handshake_failure("no shared signature scheme"))?;
         msgs.push(self.message(0, hs::CERTIFICATE, hs::encode_certificate(identity.chain())));
         let share = KeyShare::generate(group)?;
         let public = share.public();
@@ -1247,6 +1801,29 @@ impl Connection {
         } else {
             Expect::ClientKeyExchange
         };
+        Ok(())
+    }
+
+    /// A PSK ClientKeyExchange: identity (and the ECDHE public value for ECDHE-PSK).
+    fn server_psk_client_key_exchange(&mut self, body: &[u8]) -> Result<(), Error> {
+        let mut r = crate::codec::Reader::new(body);
+        let id = r.vec16()?.to_vec();
+        let (id, psk) = self.find_psk(Some(&id)).ok_or_else(|| {
+            Error::protocol(AlertDescription::UnknownPskIdentity, "unknown PSK identity")
+        })?;
+        let other = match self.key_share.take() {
+            Some(share) => {
+                let public = r.vec8()?;
+                if public.is_empty() {
+                    return Err(Error::decode("empty ECDHE key"));
+                }
+                Some(share.agree(public)?)
+            }
+            None => None,
+        };
+        r.finish()?;
+        self.premaster = Some(Conn12::psk_premaster(other, &psk));
+        self.psk = Some((id, psk));
         Ok(())
     }
 }
@@ -1278,7 +1855,8 @@ mod tests {
     fn pre_cookie_reassembly_is_bounded() {
         let id = Identity::generate_self_signed().unwrap();
         let now = Instant::now();
-        let mut s = Connection::server(Arc::new(Config::new(id)), now, b"10.0.0.1:1").unwrap();
+        let mut s =
+            Conn12::new(Arc::new(Config::new(id)), Role::Server, now, b"10.0.0.1:1").unwrap();
         // Over the cap: dropped, nothing held.
         s.handle_datagram(now, &hello_fragment(0, hs::MAX_CLIENT_HELLO + 1, &[1; 16]))
             .unwrap();

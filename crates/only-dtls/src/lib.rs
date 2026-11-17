@@ -70,11 +70,15 @@
 mod codec;
 mod config;
 mod conn;
+mod conn13;
+mod connection;
 mod cookie;
 mod crypto;
 mod error;
 mod handshake;
+mod ks13;
 mod record;
+mod session;
 
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -82,12 +86,15 @@ pub mod fuzzing;
 
 pub use config::{
     Config, Fingerprint, FingerprintAlgorithm, Identity, PeerVerifier, SrtpKeys, SrtpProfile,
-    VerifyFn,
+    VerifyFn, Version,
 };
-pub use conn::{Connection, Event, HandshakeInfo, Role};
+pub use conn::{Event, HandshakeInfo, Role};
+pub use connection::Connection;
 pub use cookie::{HelloCheck, HelloVerifier};
 pub use crypto::CipherSuite;
 pub use error::{AlertDescription, Error};
+pub use record::connection_id;
+pub use session::{Psk, Session, TicketKey};
 
 /// The RFC 5764 exporter label for DTLS-SRTP keys.
 pub const SRTP_EXPORTER_LABEL: &str = "EXTRACTOR-dtls_srtp";
