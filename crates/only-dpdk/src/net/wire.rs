@@ -665,7 +665,9 @@ mod tests {
                 IpAddr::V4(x) => sum(&x.octets(), 0),
                 IpAddr::V6(x) => sum(&x.octets(), 0),
             };
-            assert_eq!(addr_sum(a), bytes, "{a}");
+            // `sum` adds 32-bit words: the accumulators differ, the folded checksums do not.
+            assert_eq!(fold(addr_sum(a)), fold(bytes), "{a}");
+            assert_eq!(fold(addr_sum(a) + 0x1234), fold(bytes + 0x1234), "{a}");
         }
     }
 
