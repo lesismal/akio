@@ -19,3 +19,17 @@ for t in *.txtpb; do
     protoc -I ../proto -I ../conformance/proto --encode="$type" "$file" <"$t" >"${t%.txtpb}.bin"
 done
 protoc --version
+# Descriptor sets (with imports, without source info) for tests/descriptors.rs.
+for p in proto/all_types.proto proto/proto2.proto proto/route_guide.proto proto/options.proto \
+    conformance/proto/conformance/conformance.proto \
+    conformance/proto/google/protobuf/test_messages_proto2.proto \
+    conformance/proto/google/protobuf/test_messages_proto3.proto \
+    conformance/proto/conformance/test_protos/test_messages_edition2023.proto \
+    conformance/proto/editions/golden/test_messages_proto2_editions.proto \
+    conformance/proto/editions/golden/test_messages_proto3_editions.proto; do
+    rel=${p#proto/}
+    rel=${rel#conformance/proto/}
+    base=$(basename "$p" .proto)
+    protoc -I ../proto -I ../conformance/proto --include_imports \
+        --descriptor_set_out="descriptors/$base.pb" "$rel"
+done

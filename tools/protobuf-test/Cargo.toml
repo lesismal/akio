@@ -16,6 +16,8 @@ only-protobuf = { workspace = true }
 only-protobuf-build = { workspace = true }
 
 [dev-dependencies]
+# Descriptor sets compared with protoc's.
+only-protobuf-build = { workspace = true }
 # Differential tests and the benchmark compare against prost (test-only).
 prost = "0.13"
 

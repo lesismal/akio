@@ -6,7 +6,7 @@ use std::{
 };
 
 use crate::{
-    Config, features,
+    Config, descriptor, features,
     parse::{
         Constant, EnumDef, Field, File, Label, MessageDef, Options as _, Presence, Scalar, Service,
         TypeRef,
@@ -33,7 +33,16 @@ struct Sym {
 
 type GResult<T> = Result<T, String>;
 
-pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(String, String)>> {
+pub(crate) fn generate(cfg: &Config, files: Vec<File>) -> GResult<Vec<(String, String)>> {
+    generate_all(cfg, files).map(|(code, _)| code)
+}
+
+/// The code per package, and the `FileDescriptorSet` of every file (for
+/// `Config::file_descriptor_set_path`).
+pub(crate) fn generate_all(
+    cfg: &Config,
+    mut files: Vec<File>,
+) -> GResult<(Vec<(String, String)>, Vec<u8>)> {
     // Symbols.
     let mut syms: HashMap<String, Sym> = HashMap::new();
     for f in &files {
@@ -282,8 +291,26 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
             }
         }
     }
+    // Descriptors (source-retention options stripped, as protoc does).
+    let index = descriptor::Index::new(&files);
+    let mut protos = HashMap::new();
+    for f in files.iter().filter(|f| !f.implicit) {
+        protos.insert(f.name.as_str(), descriptor::file_descriptor(f, &index)?);
+    }
+    let all_names: Vec<&str> = files
+        .iter()
+        .filter(|f| !f.implicit)
+        .map(|f| f.name.as_str())
+        .collect();
+    let full_set = if cfg.descriptor_set_path.is_some() {
+        descriptor::file_descriptor_set(&files, &protos, &all_names)
+    } else {
+        Vec::new()
+    };
+
     let gen_files: Vec<&File> = files
         .iter()
+        .filter(|f| !f.implicit)
         .filter(|f| {
             let p = format!(".{}", f.package);
             !externs.iter().any(|(e, _)| covers(e, &p))
@@ -330,9 +357,14 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
             }
         }
     }
-    Ok(by_pkg
+    let code = by_pkg
         .into_iter()
-        .map(|(pkg, (names, code))| {
+        .map(|(pkg, (names, mut code))| {
+            if cfg.descriptors {
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let set = descriptor::file_descriptor_set(&files, &protos, &refs);
+                code.push_str(&descriptor_items(&set));
+            }
             let file = if pkg.is_empty() {
                 "_.rs".to_owned()
             } else {
@@ -344,7 +376,32 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
             );
             (file, head + code.trim_end() + "\n")
         })
-        .collect())
+        .collect();
+    Ok((code, full_set))
+}
+
+/// The package-level descriptor items: the encoded set as a byte string, split in lines.
+fn descriptor_items(set: &[u8]) -> String {
+    let mut out = String::from(
+        "/// The descriptors of this package's files and of the files they import: an encoded\n/// `google.protobuf.FileDescriptorSet`.\npub const FILE_DESCRIPTOR_SET: &[u8] = b\"\\\n",
+    );
+    for chunk in set.chunks(48) {
+        out.push_str("    ");
+        for (i, &b) in chunk.iter().enumerate() {
+            match b {
+                b' ' if i == 0 => out.push_str("\\x20"),
+                b'"' => out.push_str("\\\""),
+                b'\\' => out.push_str("\\\\"),
+                0x20..=0x7e => out.push(b as char),
+                _ => {
+                    let _ = write!(out, "\\x{b:02x}");
+                }
+            }
+        }
+        out.push_str("\\\n");
+    }
+    out.push_str("\";\n\n");
+    out
 }
 
 /// The extensions declared in `m` and its nested messages.

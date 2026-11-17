@@ -207,8 +207,6 @@ pub(crate) struct Oneof {
     pub(crate) name: String,
     pub(crate) doc: String,
     pub(crate) options: Vec<OptionDef>,
-    /// The synthetic oneof of a proto3 `optional` field.
-    pub(crate) synthetic: bool,
 }
 
 /// An extension range or a reserved range: `start ..= end`.
@@ -217,6 +215,8 @@ pub(crate) struct Range {
     pub(crate) start: u32,
     pub(crate) end: u32,
     pub(crate) options: Vec<OptionDef>,
+    /// Written `to max`.
+    pub(crate) max: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -235,6 +235,15 @@ pub(crate) struct MessageDef {
     pub(crate) options: Vec<OptionDef>,
     /// 2024 `export` / `local`.
     pub(crate) visibility: Option<bool>,
+    /// Nested messages (by index in `messages`) and map fields (by index in `fields`, their
+    /// entry types) in source order, as protoc lists nested types.
+    pub(crate) nested_order: Vec<Nested>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Nested {
+    Message(usize),
+    MapEntry(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -267,6 +276,8 @@ pub(crate) struct Method {
     pub(crate) client_streaming: bool,
     pub(crate) server_streaming: bool,
     pub(crate) options: Vec<OptionDef>,
+    /// Declared with a `{ ... }` body (protoc then always writes `options`, maybe empty).
+    pub(crate) body: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -300,6 +311,8 @@ pub(crate) struct File {
     /// Fields of the top-level `extend` blocks.
     pub(crate) extensions: Vec<Field>,
     pub(crate) options: Vec<OptionDef>,
+    /// Loaded only to interpret options (`descriptor.proto`): no code, not in descriptor sets.
+    pub(crate) implicit: bool,
 }
 
 // ---- lexer -----------------------------------------------------------------------------------
@@ -798,11 +811,18 @@ impl Parser<'_> {
 
     /// `1, 2 to 5, 9 to max` (`max` is `max`); the keyword already consumed.
     fn ranges(&mut self, max: i64) -> PResult<Vec<(i64, i64)>> {
+        Ok(self.ranges_max(max)?.into_iter().map(|(a, b, _)| (a, b)).collect())
+    }
+
+    /// [`ranges`](Self::ranges), telling which end was `max`.
+    fn ranges_max(&mut self, max: i64) -> PResult<Vec<(i64, i64, bool)>> {
         let mut out = Vec::new();
         loop {
             let a = self.int()?;
+            let mut to_max = false;
             let b = if self.eat_ident("to") {
                 if self.eat_ident("max") {
+                    to_max = true;
                     max
                 } else {
                     self.int()?
@@ -813,7 +833,7 @@ impl Parser<'_> {
             if b < a {
                 return self.err(format!("range {a} to {b} is empty"));
             }
-            out.push((a, b));
+            out.push((a, b, to_max));
             if !self.eat_sym(',') {
                 return Ok(out);
             }
@@ -864,6 +884,7 @@ impl Parser<'_> {
             services: Vec::new(),
             extensions: Vec::new(),
             options: Vec::new(),
+            implicit: false,
         };
         if self.eat_ident("edition") {
             self.expect_sym('=')?;
@@ -1000,12 +1021,14 @@ impl Parser<'_> {
             reserved_names: Vec::new(),
             options: Vec::new(),
             visibility,
+            nested_order: Vec::new(),
         };
         while !self.eat_sym('}') {
             if self.eat_sym(';') {
                 continue;
             }
             let doc = self.doc();
+            let (n_msgs, n_fields) = (m.messages.len(), m.fields.len());
             let next_ident = matches!(self.peek_at(1), Some(Tok::Ident(_)));
             match self.peek() {
                 Some(Tok::Ident(k)) => match k.as_str() {
@@ -1043,16 +1066,17 @@ impl Parser<'_> {
                                 start: a as u32,
                                 end: b as u32,
                                 options: Vec::new(),
+                                max: false,
                             });
                         }
                         m.reserved_names.extend(names);
                     }
                     "extensions" if !matches!(self.peek_at(1), Some(Tok::Sym('.'))) && !self.is_field_decl() => {
                         self.pos += 1;
-                        let ranges = self.ranges(MAX_FIELD)?;
+                        let ranges = self.ranges_max(MAX_FIELD)?;
                         let options = self.field_options()?;
                         self.expect_sym(';')?;
-                        for (a, b) in ranges {
+                        for (a, b, to_max) in ranges {
                             if a < 1 || b > MAX_FIELD {
                                 return self.err("extension range out of bounds");
                             }
@@ -1060,6 +1084,7 @@ impl Parser<'_> {
                                 start: a as u32,
                                 end: b as u32,
                                 options: options.clone(),
+                                max: to_max,
                             });
                         }
                     }
@@ -1080,7 +1105,6 @@ impl Parser<'_> {
                             name,
                             doc,
                             options: Vec::new(),
-                            synthetic: false,
                         };
                         self.expect_sym('{')?;
                         while !self.eat_sym('}') {
@@ -1113,6 +1137,23 @@ impl Parser<'_> {
                 _ => {
                     let got = self.peek().cloned();
                     return self.err(format!("unexpected {}", describe(got.as_ref())));
+                }
+            }
+            // Group types come before their field's (absent) entry; maps add an entry type.
+            for i in n_msgs..m.messages.len() {
+                m.nested_order.push(Nested::Message(i));
+            }
+            for i in n_fields..m.fields.len() {
+                if m.fields[i].map_key.is_some() {
+                    m.nested_order.push(Nested::MapEntry(i));
+                }
+            }
+        }
+        // In a MessageSet, `max` is the largest int32 (type ids are not field numbers).
+        if m.options.flag("message_set_wire_format") == Some(true) {
+            for r in &mut m.extension_ranges {
+                if r.max {
+                    r.end = i32::MAX as u32 - 1;
                 }
             }
         }
@@ -1378,6 +1419,7 @@ impl Parser<'_> {
                     let output = TypeRef::Named(self.full_ident(true)?);
                     self.expect_sym(')')?;
                     let mut options = Vec::new();
+                    let body = self.is_sym('{');
                     if self.eat_sym('{') {
                         while !self.eat_sym('}') {
                             if self.eat_sym(';') {
@@ -1400,6 +1442,7 @@ impl Parser<'_> {
                         client_streaming,
                         server_streaming,
                         options,
+                        body,
                     });
                 }
                 _ => return self.err(format!("unexpected `{kw}` in service")),

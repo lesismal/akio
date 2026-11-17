@@ -13,7 +13,12 @@
 //! * Services become `only-grpc` stubs: a `<service>_server` module with a trait and a
 //!   `register` function, and a `<service>_client` module with a typed client. Messages then
 //!   also implement `only_grpc::codec::Message`.
-//! * Not supported: groups, extensions (parsed and ignored), editions, custom options (ignored).
+//! * proto2 groups and extensions (`extend` blocks become typed `Extension` constants, extension
+//!   fields are kept in an `ExtensionSet`), MessageSet, closed enums (unknown numbers become
+//!   unknown fields); editions 2023 and 2024 with their features (presence, enum openness,
+//!   packed, delimited encoding, UTF-8, JSON, naming style, symbol visibility).
+//! * Descriptors: every package embeds its `FileDescriptorSet`, with options (custom ones too)
+//!   encoded as protoc does, for runtime reflection, JSON and gRPC server reflection.
 //!
 //! One `<package>.rs` file is written per protobuf package (`_.rs` for files without one);
 //! include it with `only_protobuf::include_proto!("<package>")`. Types of another package are
@@ -36,6 +41,7 @@
 //! (中文: [gRPC](https://lesismal.github.io/only/zh-CN/protocols/grpc.html)).
 #![warn(clippy::unwrap_used)]
 
+mod descriptor;
 mod features;
 mod generate;
 mod parse;
@@ -56,6 +62,8 @@ pub struct Config {
     unknown_fields: bool,
     extern_paths: Vec<(String, String)>,
     compile_well_known_types: bool,
+    descriptors: bool,
+    descriptor_set_path: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -67,6 +75,8 @@ impl Default for Config {
             unknown_fields: true,
             extern_paths: Vec::new(),
             compile_well_known_types: false,
+            descriptors: true,
+            descriptor_set_path: None,
         }
     }
 }
@@ -135,6 +145,24 @@ impl Config {
         self
     }
 
+    /// Embeds each package's descriptors (`FILE_DESCRIPTOR_SET`, the package's files and their
+    /// imports, as protoc would write them) and implements `only_protobuf::reflect::ReflectMessage`
+    /// for its messages, which JSON (`only_protobuf::json`) and gRPC server reflection
+    /// (`only_grpc::reflection`) use. Default on.
+    #[must_use]
+    pub fn descriptors(mut self, on: bool) -> Config {
+        self.descriptors = on;
+        self
+    }
+
+    /// Also writes a `FileDescriptorSet` of every compiled file and its imports to `path` (what
+    /// `protoc --include_imports --descriptor_set_out` writes, without source info).
+    #[must_use]
+    pub fn file_descriptor_set_path(mut self, path: impl Into<PathBuf>) -> Config {
+        self.descriptor_set_path = Some(path.into());
+        self
+    }
+
     /// Generates the code without writing it: `(file name, Rust source)` per package, sorted by
     /// file name.
     pub fn generate(&self, protos: &[impl AsRef<Path>]) -> io::Result<Vec<(String, String)>> {
@@ -151,7 +179,12 @@ impl Config {
         out_dir: impl AsRef<Path>,
     ) -> io::Result<()> {
         let (files, read) = self.load(protos)?;
-        let out = generate::generate(self, files).map_err(invalid)?;
+        let (out, set) = generate::generate_all(self, files).map_err(invalid)?;
+        if let Some(p) = &self.descriptor_set_path {
+            if std::fs::read(p).ok().as_deref() != Some(set.as_slice()) {
+                std::fs::write(p, &set)?;
+            }
+        }
         let dir = out_dir.as_ref();
         std::fs::create_dir_all(dir)?;
         for (name, code) in out {
@@ -232,6 +265,14 @@ impl Config {
             for i in &f.imports {
                 queue.push((i.clone(), None));
             }
+            files.push(f);
+        }
+        // Options are interpreted against descriptor.proto, imported or not.
+        const DESCRIPTOR: &str = "google/protobuf/descriptor.proto";
+        if !seen.contains(DESCRIPTOR) {
+            let mut f = parse::parse(wkt::source(DESCRIPTOR).unwrap_or_default(), DESCRIPTOR)
+                .map_err(invalid)?;
+            f.implicit = true;
             files.push(f);
         }
         Ok((files, read))
