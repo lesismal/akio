@@ -33,16 +33,16 @@ struct Sym {
 
 type GResult<T> = Result<T, String>;
 
+/// A generated file: its name and its Rust source.
+type Output = (String, String);
+
 pub(crate) fn generate(cfg: &Config, files: Vec<File>) -> GResult<Vec<(String, String)>> {
     generate_all(cfg, files).map(|(code, _)| code)
 }
 
 /// The code per package, and the `FileDescriptorSet` of every file (for
 /// `Config::file_descriptor_set_path`).
-pub(crate) fn generate_all(
-    cfg: &Config,
-    mut files: Vec<File>,
-) -> GResult<(Vec<(String, String)>, Vec<u8>)> {
+pub(crate) fn generate_all(cfg: &Config, mut files: Vec<File>) -> GResult<(Vec<Output>, Vec<u8>)> {
     // Symbols.
     let mut syms: HashMap<String, Sym> = HashMap::new();
     for f in &files {
@@ -319,6 +319,22 @@ pub(crate) fn generate_all(
     let grpc = cfg
         .grpc
         .unwrap_or_else(|| gen_files.iter().any(|f| !f.services.is_empty()));
+    let mut utf8_exts: HashMap<String, Vec<u32>> = HashMap::new();
+    for f in &files {
+        for x in f
+            .extensions
+            .iter()
+            .chain(f.messages.iter().flat_map(all_extensions))
+        {
+            if let (Some(TypeRef::Message(e)), TypeRef::Scalar(Scalar::String)) =
+                (&x.extendee, &x.ty)
+            {
+                if x.resolved.verify_utf8 {
+                    utf8_exts.entry(e.clone()).or_default().push(x.number);
+                }
+            }
+        }
+    }
     let g = Gen {
         cfg,
         syms: &syms,
@@ -326,6 +342,7 @@ pub(crate) fn generate_all(
         enums,
         externs,
         grpc,
+        utf8_exts,
     };
     let mut by_pkg: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
     let mut sorted = gen_files;
@@ -662,6 +679,8 @@ struct Gen<'a> {
     enums: HashMap<String, &'a EnumDef>,
     externs: Vec<(String, String)>,
     grpc: bool,
+    /// String extensions that must be UTF-8, by extendee: their numbers.
+    utf8_exts: HashMap<String, Vec<u32>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1116,7 +1135,7 @@ impl Gen<'_> {
             out.push_str("}\n\n");
         }
 
-        self.message_impl(out, m, &name, &inner_mod, &plans);
+        self.message_impl(out, m, fqn, &name, &inner_mod, &plans);
         if extendable {
             let _ = writeln!(
                 out,
@@ -1239,6 +1258,7 @@ impl Gen<'_> {
         &self,
         out: &mut String,
         m: &MessageDef,
+        fqn: &str,
         name: &str,
         inner_mod: &str,
         plans: &[Plan<'_>],
@@ -1408,7 +1428,13 @@ impl Gen<'_> {
             // MessageSet: extensions travel as `repeated group Item = 1 { type_id = 2; message = 3 }`.
             let _ = writeln!(
                 out,
-                "        match field {{\n            1 if wire_type == ::only_protobuf::encoding::WireType::StartGroup => self.extensions.merge_message_set_item(r),\n            _ => {fallback},\n        }}"
+                "        match field {{\n            1 if wire_type == ::only_protobuf::encoding::WireType::StartGroup => self.extensions.merge_message_set_item(r),"
+            );
+            // Extensions encoded as plain submessages are accepted too.
+            let _ = writeln!(
+                out,
+                "            2..={} => self.extensions.merge_field(field, wire_type, r),\n            _ => {fallback},\n        }}",
+                (1u32 << 29) - 1
             );
         } else if plans.is_empty() && !ext {
             let _ = writeln!(out, "        {fallback}");
@@ -1467,6 +1493,14 @@ impl Gen<'_> {
                     _ => format!("__pb::accepts::<{c}>(wire_type)"),
                 };
                 let _ = writeln!(out, "            {n} if {guard} => {arm},");
+            }
+            if let Some(nums) = self.utf8_exts.get(fqn) {
+                for n in nums {
+                    let _ = writeln!(
+                        out,
+                        "            {n} if wire_type == __pb::WireType::Len => self.extensions.merge_utf8_field(field, wire_type, r),"
+                    );
+                }
             }
             for &(a, b) in &ranges {
                 let _ = writeln!(

@@ -239,7 +239,12 @@ impl<'a> Reader<'a> {
     /// Reads a tag: the field number (1 ..= [`MAX_FIELD_NUMBER`]) and the wire type.
     #[inline]
     pub fn read_tag(&mut self) -> Result<(u32, WireType), DecodeError> {
+        let before = self.buf.len();
         let v = self.read_varint()?;
+        // A tag is at most 5 bytes (32 bits), even when its value is small.
+        if before - self.buf.len() > 5 {
+            return Err(err(DecodeErrorKind::InvalidTag));
+        }
         let field = v >> 3;
         let wt = WireType::from_u8((v & 7) as u8);
         match wt {

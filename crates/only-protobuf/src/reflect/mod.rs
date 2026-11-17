@@ -1104,10 +1104,10 @@ impl Features {
         if let Some(p) = fs.field_presence {
             match p {
                 feature_set::FieldPresence::EXPLICIT => {
-                    (self.explicit, self.required) = (true, false)
+                    (self.explicit, self.required) = (true, false);
                 }
                 feature_set::FieldPresence::IMPLICIT => {
-                    (self.explicit, self.required) = (false, false)
+                    (self.explicit, self.required) = (false, false);
                 }
                 feature_set::FieldPresence::LEGACY_REQUIRED => {
                     (self.explicit, self.required) = (true, true);
@@ -1176,7 +1176,7 @@ mod build {
                 add_symbol(inner, p.clone(), Symbol::Other(fi))?;
             }
         }
-        inner.file_by_name.insert(name.clone(), fi);
+        inner.file_by_name.insert(name, fi);
         let syntax3 = f.syntax.as_deref() == Some("proto3");
         let proto2 = matches!(f.syntax.as_deref(), None | Some("" | "proto2"));
         let ctx = Ctx {
@@ -1422,9 +1422,7 @@ mod build {
             for v in &e.value {
                 // Enum values are siblings of their enum.
                 let vn = join(scope, v.name.as_deref().unwrap_or_default());
-                if !inner.symbols.contains_key(&vn) {
-                    inner.symbols.insert(vn, Symbol::Other(self.file));
-                }
+                inner.symbols.entry(vn).or_insert(Symbol::Other(self.file));
             }
             inner.enums.push(EnumInfo {
                 name,

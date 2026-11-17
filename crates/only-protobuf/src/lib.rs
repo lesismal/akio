@@ -70,6 +70,7 @@ extern crate self as only_protobuf;
 pub mod encoding;
 mod error;
 mod extension;
+pub mod json;
 mod message;
 pub mod reflect;
 pub mod well_known;

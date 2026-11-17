@@ -554,3 +554,10 @@ path = "fuzz_targets/quic_conn.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "protobuf_json"
+path = "fuzz_targets/protobuf_json.rs"
+test = false
+doc = false
+bench = false

@@ -544,6 +544,9 @@ struct Parser<'a> {
 
 type PResult<T> = Result<T, String>;
 
+/// Reserved ranges and names.
+type Reserved = (Vec<(i64, i64)>, Vec<String>);
+
 const MAX_FIELD: i64 = (1 << 29) - 1;
 
 impl Parser<'_> {
@@ -845,7 +848,7 @@ impl Parser<'_> {
     }
 
     /// `reserved` (keyword consumed): ranges, or names (strings, identifiers in editions).
-    fn reserved(&mut self, max: i64) -> PResult<(Vec<(i64, i64)>, Vec<String>)> {
+    fn reserved(&mut self, max: i64) -> PResult<Reserved> {
         let mut names = Vec::new();
         if matches!(self.peek(), Some(Tok::Str(_) | Tok::Ident(_))) {
             loop {
