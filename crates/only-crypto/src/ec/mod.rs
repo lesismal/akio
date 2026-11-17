@@ -127,6 +127,13 @@ pub(crate) trait Curve<const L: usize>: Copy + Send + Sync + 'static {
         Jac::lookup_scan(table, d)
     }
 
+    /// `[k]p` for a secret `k`, constant time (the contract of [`Jac::mul_ct`], which is the
+    /// default).
+    #[inline]
+    fn jac_mul(p: &Point<Self, L>, k: &Scalar<Self, L>) -> Jac<Self, L> {
+        Jac::mul_ct(p, k)
+    }
+
     /// `[k]G` for a secret `k`, constant time (the contract of [`Jac::mul_base_ct`], which is
     /// the default).
     #[inline]
@@ -685,6 +692,21 @@ pub(crate) fn booth<const L: usize, const W: usize>(k: &[u64; L], i: usize) -> (
     ((d >> 1) + (d & 1), s)
 }
 
+/// `table[j] = (j + 1)·p` for `0 ≤ j < 16`, the window table of [`Jac::mul_ct`]: no addition
+/// here meets equal operands (`jP ≠ ±P` for `2 ≤ j ≤ 15`).
+pub(crate) fn jac_table<C: Curve<L>, const L: usize>(p: &Point<C, L>) -> [Jac<C, L>; 16] {
+    let p1 = Jac::from_point(p);
+    let mut table = [p1; 16];
+    for j in 1..16 {
+        table[j] = if j % 2 == 1 {
+            table[j / 2].double()
+        } else {
+            table[j - 1].add_core(&p1)
+        };
+    }
+    table
+}
+
 /// A point in Jacobian coordinates `(X:Y:Z)`, affine `(X/Z², Y/Z³)`, `Z = 0` for the identity.
 /// The `*_ct` operations and the doubling are constant time (secret scalars); the others branch
 /// on their inputs (verification: public points and scalars).
@@ -828,16 +850,7 @@ impl<C: Curve<L>, const L: usize> Jac<C, L> {
     /// yields as `Z = 0` (and `j = 0` would need `k ≡ 0`).
     pub(crate) fn mul_ct(p: &Point<C, L>, k: &Scalar<C, L>) -> Self {
         let k = k.to_limbs();
-        let p1 = Self::from_point(p);
-        // table[j] = (j + 1)·p: no addition here meets equal operands (jP ≠ ±P for 2 ≤ j ≤ 15).
-        let mut table = [p1; 16];
-        for j in 1..16 {
-            table[j] = if j % 2 == 1 {
-                table[j / 2].double()
-            } else {
-                table[j - 1].add_core(&p1)
-            };
-        }
+        let table = jac_table(p);
         let w = booth_windows(L, 5);
         let mut r = Self::identity();
         for i in (0..w).rev() {
@@ -1253,7 +1266,7 @@ pub(crate) fn ecdh_x_impl<C: Curve<L>, const L: usize>(
     q: &Point<C, L>,
     out: &mut [u8],
 ) -> bool {
-    match Jac::<C, L>::mul_ct(q, d).to_affine_x() {
+    match C::jac_mul(q, d).to_affine_x() {
         Some(x) => {
             x.write_be(out);
             true

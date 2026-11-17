@@ -1574,19 +1574,88 @@ pub(crate) fn mul_base(k: &Scalar<P256X, 4>) -> Jac<P256X, 4> {
         return Jac::mul_base_ct(k);
     }
     let k = k.to_limbs();
-    let mut r = Jac::<P256X, 4>::identity();
+    // The mixed-addition frame (limbs 0..56: the accumulator at 4, the entry at 16) plus the
+    // previous accumulator at 56; the accumulator starts as the identity (Z = 0).
+    let mut f = [0u64; 68];
     for (i, row) in comb().iter().enumerate() {
         let (d, neg) = super::booth::<4, COMB_W>(&k, i);
         // SAFETY: the CPU has AVX2 (checked above).
         let e = unsafe { lookup_affine_avx2(row, d) };
-        let x = Fe::from_mont(e[0]);
-        let y = Fe::from_mont(e[1]);
-        let y = Fe::select(neg, &y.neg(), &y);
-        // d = 0 selected (0, 0), off the curve: the sum is discarded.
-        let sum = r.madd_ct(&x, &y);
-        r = Jac::select(ct::is_zero(d) ^ u64::MAX, &sum, &r);
+        f[16..20].copy_from_slice(&e[0]);
+        set_y(&mut f[20..24], &e[1], neg);
+        madd_step(&mut f, ct::is_zero(d));
     }
-    r
+    Jac::from_raw(store_point(&f))
+}
+
+/// `y` or, under the mask `neg`, `p - y` (for `0 < y < p`; `y = 0` gives `p`, which only a
+/// discarded zero digit selects).
+#[inline(always)]
+fn set_y(out: &mut [u64], y: &[u64; 4], neg: u64) {
+    let mut n = [0u64; 4];
+    ct::sub_limbs(&mut n, &P256Px::P, y);
+    for ((o, &a), &b) in out.iter_mut().zip(&n).zip(y) {
+        *o = ct::select(neg, a, b);
+    }
+}
+
+/// One mixed addition of the entry `(x₂, y₂)` at limb 16 of `f` into the accumulator at limb 4,
+/// in place, with [`Jac::madd_ct`]'s special cases as masked selects: an accumulator at the
+/// identity takes `(x₂, y₂, 1)`, and under the mask `zero` (a zero digit, whose entry is not a
+/// point) the accumulator stays as it was. Constant time.
+#[inline(always)]
+fn madd_step(f: &mut [u64; 68], zero: u64) {
+    let mut prev = [0u64; 12];
+    prev.copy_from_slice(&f[4..16]);
+    let was_id = ct::is_zero_limbs(&prev[8..12]);
+    point_asm!(&mut f[..], madd_body!());
+    let mut entry = [0u64; 12];
+    entry[..8].copy_from_slice(&f[16..24]);
+    entry[8..].copy_from_slice(&Fe::<P256Px, 4>::ONE.l);
+    ct::assign(was_id, &mut f[4..16], &entry);
+    ct::assign(zero, &mut f[4..16], &prev);
+}
+
+/// `[k]p` for a secret `k` in constant time ([`Jac::mul_ct`]'s Booth-recoded 5-bit windows and
+/// its argument against equal operands), with the accumulator kept in one frame for the whole
+/// multiplication: five [`point_double`] bodies and one [`point_add`] body per window on the
+/// same frame, the table entry scanned with AVX2 and negated by masks straight into it, and
+/// `Jac::add_ct`'s special cases as masked selects on the frame. Without AVX2 this is
+/// [`Jac::mul_ct`].
+pub(crate) fn mul_var(p: &Point<P256X, 4>, k: &Scalar<P256X, 4>) -> Jac<P256X, 4> {
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    if !cpu::cpu_has(Feature::Avx2) {
+        return Jac::mul_ct(p, k);
+    }
+    let table = super::jac_table(p);
+    let k = k.to_limbs();
+    let w = super::booth_windows(4, 5);
+    // The addition frame (limbs 0..76: the accumulator at 4, the entry at 16) plus the previous
+    // accumulator at 76; the doubling frame is its prefix. The accumulator starts as the
+    // identity (Z = 0), which the doublings keep.
+    let mut f = [0u64; 88];
+    for i in (0..w).rev() {
+        if i != w - 1 {
+            for _ in 0..5 {
+                point_asm!(&mut f[..48], dbl_body!());
+            }
+        }
+        let (d, neg) = super::booth::<4, 5>(&k, i);
+        // SAFETY: the CPU has AVX2 (checked above).
+        let e = unsafe { lookup_jac_avx2(&table, d) };
+        f[16..20].copy_from_slice(&e[0]);
+        set_y(&mut f[20..24], &e[1], neg);
+        f[24..28].copy_from_slice(&e[2]);
+        let mut prev = [0u64; 12];
+        prev.copy_from_slice(&f[4..16]);
+        let was_id = ct::is_zero_limbs(&prev[8..12]);
+        let mut entry = [0u64; 12];
+        entry.copy_from_slice(&f[16..28]);
+        point_asm!(&mut f[..], add_body!());
+        ct::assign(was_id, &mut f[4..16], &entry);
+        ct::assign(ct::is_zero(d), &mut f[4..16], &prev);
+    }
+    Jac::from_raw(store_point(&f))
 }
 
 #[cfg(test)]

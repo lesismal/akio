@@ -333,6 +333,11 @@ impl Curve<4> for P256X {
     fn jac_mul_base(k: &Scalar<Self, 4>) -> Jac<Self, 4> {
         super::hw::mul_base(k)
     }
+
+    #[inline]
+    fn jac_mul(p: &Point<Self, 4>, k: &Scalar<Self, 4>) -> Jac<Self, 4> {
+        super::hw::mul_var(p, k)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -475,6 +480,7 @@ mod tests {
         assert_eq!(enc(Jac::<C, L>::mul_base_ct(&nm1)).unwrap(), c);
         assert_eq!(enc(C::jac_mul_base(&nm1)).unwrap(), c);
         assert_eq!(enc(Jac::<C, L>::mul_ct(&g, &nm1)).unwrap(), c);
+        assert_eq!(enc(C::jac_mul(&g, &nm1)).unwrap(), c);
         // G + (n-1)G = identity, 2G = G + G.
         assert!(g.add(&g.neg()).to_affine().is_none());
         assert_eq!(g.double().to_uncompressed(), g.add(&g).to_uncompressed());
@@ -517,6 +523,7 @@ mod tests {
                 enc(Jac::<C, L>::mul_ct(&q, &a)),
                 q.mul_ref(&a).to_uncompressed()
             );
+            assert_eq!(enc(C::jac_mul(&q, &a)), q.mul_ref(&a).to_uncompressed());
             let want = Point::<C, L>::mul_base_ref(&a).add(&q.mul_ref(&k));
             assert_eq!(
                 q.mul_add_base_vartime(&a, &k).to_uncompressed(),
@@ -529,10 +536,12 @@ mod tests {
             assert_eq!(enc(Jac::<C, L>::mul_base_ct(&k)), want);
             assert_eq!(enc(C::jac_mul_base(&k)), want);
             assert_eq!(enc(Jac::<C, L>::mul_ct(&g, &k)), want);
+            assert_eq!(enc(C::jac_mul(&g, &k)), want);
             assert_eq!(
                 enc(Jac::<C, L>::mul_ct(&q, &k)),
                 q.mul_ref(&k).to_uncompressed()
             );
+            assert_eq!(enc(C::jac_mul(&q, &k)), q.mul_ref(&k).to_uncompressed());
         }
         // A point with Z ≠ 1 enters the variable-base multiplication correctly.
         let q3 = q.double().add(&q);
@@ -541,6 +550,7 @@ mod tests {
             enc(Jac::<C, L>::mul_ct(&q3, &k)),
             q3.mul_ref(&k).to_uncompressed()
         );
+        assert_eq!(enc(C::jac_mul(&q3, &k)), q3.mul_ref(&k).to_uncompressed());
         // Digits that carry into the top row: n - 2 has top nibble f.
         let top =
             Scalar::<C, L>::from_limbs_canonical(&sub_small(&<C::Fq as Modulus<L>>::P, 2)).unwrap();
