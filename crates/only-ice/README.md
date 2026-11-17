@@ -3,7 +3,7 @@
 [中文](README.zh-CN.md)
 
 Sans-io ICE (RFC 8445) for [`only`](https://github.com/lesismal/only): full and lite agents,
-consent freshness (RFC 7675), trickle (RFC 8838) and ICE restarts, for one component over UDP
+consent freshness (RFC 7675), trickle (RFC 8838) and ICE restarts, for one component over UDP and passive TCP
 (RTP/RTCP muxed, BUNDLE), on [`only-turn`](../only-turn)'s STUN codec and
 [`only-crypto`](../only-crypto), in safe Rust (`#![forbid(unsafe_code)]`) with no other
 dependencies. It is the ICE layer of the in-house WebRTC stack, replacing str0m's. An internal
@@ -44,8 +44,12 @@ loop {
   values restart ICE; the old selected pair keeps working until the new generation nominates.
 - `set_remote_lite(true)` for an `a=ice-lite` remote; `end_of_remote_candidates()` lets the
   agent reach `Failed`; `close()` stops it.
-- `Candidate::parse` reports TCP, mDNS (`*.local`) and FQDN candidates as distinct
-  `ParseError` variants (`is_unsupported()`) so they can be skipped.
+- `Candidate::parse` reports mDNS (`*.local`) and FQDN candidates as distinct `ParseError`
+  variants (`is_unsupported()`) so they can be skipped.
+- TCP candidates (RFC 6544): `TcpType`, `Candidate::host_tcp`, `tcp ... tcptype` in SDP, RFC 6544
+  priorities below UDP's, pairing within a transport and between compatible types. A passive
+  local candidate only answers: a check arriving over an accepted connection makes the pair, and
+  the caller frames the connection with `tcp::FrameReader` / `tcp::frame` (RFC 4571).
 
 ## Protocol coverage
 
@@ -66,7 +70,7 @@ loop {
   `Disconnected` after 30 s without responses (lite: without valid checks), recovery when
   they resume. `Failed` once every pair failed after end-of-candidates or 30 s.
 
-Not implemented: several components, TCP candidates, gathering (STUN/TURN clients are the
+Not implemented: several components, local active and simultaneous-open TCP candidates, gathering (STUN/TURN clients are the
 caller's), mDNS resolution, aggressive nomination and renomination as the controlling side,
 re-nominating a better pair found after nomination.
 

@@ -517,7 +517,8 @@ impl IceConnectionState {
     }
 }
 
-/// A local ICE candidate (UDP).
+/// An ICE candidate: UDP, or TCP ([`Endpoint::listen_tcp`](crate::Endpoint::listen_tcp) adds a
+/// passive one; parsed remote TCP candidates are kept as they are).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Candidate(pub(crate) only_ice::Candidate);
 

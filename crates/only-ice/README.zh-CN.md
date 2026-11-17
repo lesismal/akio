@@ -44,8 +44,11 @@ loop {
   会重启 ICE；在新一代完成提名之前，旧的选定候选对继续工作。
 - 对端是 `a=ice-lite` 时调用 `set_remote_lite(true)`；`end_of_remote_candidates()` 使代理能进入
   `Failed`；`close()` 停止代理。
-- `Candidate::parse` 把 TCP、mDNS（`*.local`）和 FQDN 候选报告为不同的 `ParseError` 变体
+- `Candidate::parse` 把 mDNS（`*.local`）和 FQDN 候选报告为不同的 `ParseError` 变体
   （`is_unsupported()`），便于跳过。
+- TCP 候选（RFC 6544）：`TcpType`、`Candidate::host_tcp`、SDP 中的 `tcp ... tcptype`、低于 UDP 的
+  RFC 6544 优先级、只在同一传输内且类型兼容时配对。被动本地候选只应答：经接受的连接到达的检查形成候选对，
+  调用方用 `tcp::FrameReader` / `tcp::frame`（RFC 4571）对连接分帧。
 
 ## 协议覆盖
 
@@ -64,7 +67,7 @@ loop {
   进入 `Disconnected`，恢复后回到原状态。end-of-candidates 之后或 30 s 后所有候选对都失败则为
   `Failed`。
 
-未实现：多组件、TCP 候选、候选收集（STUN/TURN 客户端由调用方负责）、mDNS 解析、作为控制方的
+未实现：多组件、本地主动与同时打开的 TCP 候选、候选收集（STUN/TURN 客户端由调用方负责）、mDNS 解析、作为控制方的
 激进提名与重新提名、在提名之后改选更好的候选对。
 
 ## 测试

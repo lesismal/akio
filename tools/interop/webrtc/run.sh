@@ -1,21 +1,33 @@
 #!/usr/bin/env bash
 # only-webrtc / only-turn <-> pion (webrtc v4, turn v5): data channels and RTP media in both
-# offer directions, PLI, WebRTC through a only TURN relay, and the pion/turn client against
-# only-turn; and fib's Go WebRTC (data channels, both directions) when the fib checkout is
-# next to this repository (or at $FIB_DIR). Needs Go. With COTURN=1 also runs coturn's turnutils_uclient
+# offer directions, PLI, WebRTC through a only TURN relay, the pion/turn client against
+# only-turn over UDP, TCP and TLS, the only_turn client against pion/turn and only-turn over
+# UDP, TCP and TLS, Endpoint relayed candidates (on only-turn and pion/turn), passive ICE-TCP
+# (pion with active TCP candidates only) and simulcast sending (pion receives the three RIDs);
+# and fib's Go WebRTC (data channels, both directions) when the fib checkout is next to this
+# repository (or at $FIB_DIR). Needs Go. With COTURN=1 also runs coturn's turnutils_uclient
 # against only-turn, both in Docker (the only TURN server is built for Linux in rust:1).
+# linux.sh runs all of it in Linux containers, coturn over TCP/TLS included.
+# RS / GO: prebuilt binaries (skips the builds).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
-cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop
-RS=$ROOT/target/release/examples/webrtc-interop
-cd "$ROOT/tools/interop/webrtc" && GOFLAGS=-mod=mod go build -o /tmp/webrtc-pion .
-GO=/tmp/webrtc-pion
+if [ -z "${RS:-}" ]; then
+  (cd "$ROOT" && cargo build -q --release -p only-webrtc --example webrtc-interop)
+  RS=$ROOT/target/release/examples/webrtc-interop
+fi
+if [ -z "${GO:-}" ]; then
+  (cd "$ROOT/tools/interop/webrtc" && GOFLAGS=-mod=mod go build -o /tmp/webrtc-pion .)
+  GO=/tmp/webrtc-pion
+fi
 PIDS=""
 trap 'kill $PIDS 2>/dev/null || true' EXIT
 
 $RS server 127.0.0.1:9500 127.0.0.1:9501 2>/tmp/webrtc-only-server.log & PIDS="$PIDS $!"
 $GO server 127.0.0.1:9502 & PIDS="$PIDS $!"
-$RS turn 127.0.0.1:9503 127.0.0.1 alice wonderland 2>/dev/null & PIDS="$PIDS $!"
+$RS turn 127.0.0.1:9503 127.0.0.1 alice wonderland 127.0.0.1:9513 127.0.0.1:9514 2>/dev/null & PIDS="$PIDS $!"
+$GO turn-server 127.0.0.1:9520 127.0.0.1:9521 127.0.0.1:9522 alice wonderland 2>/dev/null & PIDS="$PIDS $!"
+$GO server-tcp 127.0.0.1:9505 2>/tmp/webrtc-pion-tcp.log & PIDS="$PIDS $!"
+$GO server-simulcast 127.0.0.1:9506 2>/dev/null & PIDS="$PIDS $!"
 sleep 1
 
 echo "== pion offers to the only ICE-lite server"
@@ -26,8 +38,22 @@ $RS client 127.0.0.1:9502 dc
 $RS client 127.0.0.1:9502 media
 echo "== pion over a only TURN relay (relay-only policy) to the only server"
 $GO client-turn 127.0.0.1:9501 127.0.0.1:9503 alice wonderland
-echo "== pion/turn client against only-turn"
+echo "== pion/turn client against only-turn (UDP, TCP, TLS)"
 $GO turn-raw 127.0.0.1:9503 alice wonderland
+$GO turn-raw-tcp 127.0.0.1:9513 alice wonderland
+$GO turn-raw-tls 127.0.0.1:9514 alice wonderland
+echo "== only_turn client against pion/turn and only-turn (UDP, TCP, TLS)"
+for s in "udp 9520" "tcp 9521" "tls 9522" "udp 9503" "tcp 9513" "tls 9514"; do
+  set -- $s
+  $RS turn-client "$1" "127.0.0.1:$2" alice wonderland
+done
+echo "== only Endpoint with relayed candidates only (on only-turn, on pion/turn) to pion"
+$RS client 127.0.0.1:9502 dc-relay 127.0.0.1:9503 alice wonderland
+$RS client 127.0.0.1:9502 dc-relay 127.0.0.1:9520 alice wonderland
+echo "== only Endpoint with its passive ICE-TCP candidate only to pion (active TCP only)"
+$RS client 127.0.0.1:9505 dc-tcp
+echo "== only simulcast (h/m/l) to pion"
+$RS client 127.0.0.1:9506 simulcast
 
 FIB_DIR=${FIB_DIR:-$ROOT/../fib}
 if [ -d "$FIB_DIR/webrtc" ]; then
@@ -56,7 +82,8 @@ if [ "${COTURN:-0}" = 1 ]; then
   docker run --rm --network container:only-turn-it coturn/coturn:4.6 turnutils_uclient -y -n 20 \
     -m 2 -l 100 -u alice -w wonderland -r only -p 3478 127.0.0.1 2>&1 | tee /tmp/uclient.log | tail -4
   docker rm -f only-turn-it >/dev/null
-  grep -q "tot_send_msgs=20, tot_recv_msgs=20" /tmp/uclient.log
+  awk -F'tot_send_msgs=|, tot_recv_msgs=' '/start_mclient: tot_send_msgs=/ { s = $2; r = $3 }
+    END { exit !(s + 0 > 0 && s + 0 == r + 0) }' /tmp/uclient.log
   grep -q "Total lost packets 0 " /tmp/uclient.log
 fi
 echo "webrtc interop: all passed"

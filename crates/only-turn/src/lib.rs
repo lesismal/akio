@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! STUN and TURN servers for `only`, over `only` UDP sockets.
+//! STUN and TURN for `only`: servers over `only` UDP, TCP and TLS listeners, and a sans-io client.
 //!
 //! - [`stun`]: the STUN message codec (RFC 8489) with the TURN (RFC 8656) and ICE attributes,
 //!   `MESSAGE-INTEGRITY` and `FINGERPRINT`; also used by `only-webrtc`.

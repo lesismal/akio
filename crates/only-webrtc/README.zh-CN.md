@@ -24,7 +24,10 @@
   （TWCC 头扩展与反馈）及基于时延和丢包的带宽估计。
 - **SDP** offer/answer（JSEP）：BUNDLE、rtcp-mux、mid/msid、ssrc/FID、extmap、
   rtpmap/fmtp/rtcp-fb 协商、setup/fingerprint、ice-ufrag/pwd/options/lite、候选、
-  sctp-port/max-message-size；重新协商（新增媒体、方向、ICE 重启）。
+  sctp-port/max-message-size；重新协商（新增媒体、方向、ICE 重启）；simulcast 发送（`a=rid`、
+  `a=simulcast`、RID/MID 头扩展）与接收。
+- **`Endpoint` 的候选**：host、server-reflexive（`gather_srflx`）、经 TURN 分配的 relay（`gather_relay`）
+  以及被动 ICE-TCP（`listen_tcp`，RFC 6544）。
 - **自有类型**：API 全部是本 crate 自己的类型；`unstable` cargo feature 目前不增加任何内容。
 
 ```rust,no_run
@@ -53,7 +56,7 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：TURN 客户端（relay 本地候选需在别处获得）、simulcast 发送与分层选择、FEC、RTCP XR、
+未实现：`Endpoint` 经 TCP/TLS 使用 TURN、主动 ICE-TCP 候选、simulcast 分层选择、FEC、RTCP XR、
 SDES-SRTP、DTLS 1.3。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

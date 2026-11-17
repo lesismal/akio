@@ -12,12 +12,14 @@
   NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告）。`only-webrtc` 本身负责 SDP
   offer/answer（BUNDLE、rtcp-mux、编解码器与头扩展协商、重新协商），并用 only 的 I/O 线程和一个
   共享定时器线程驱动各个 peer。
-- `only-turn` 提供 STUN 编解码、STUN 服务器和 TURN 服务器（UDP 上的 RFC 8656）。
+- `only-turn` 提供 STUN 编解码、STUN 服务器、TURN 服务器（UDP、TCP 与 TLS 上的 RFC 8656）以及
+  sans-io 的 TURN 客户端。
 
-互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 only TURN 中继；还有 fib
-的 Go 版 WebRTC（数据通道，双向）；TURN
-服务器则与 pion/turn 客户端和 coturn 的 `turnutils_uclient` 互通（`tools/interop/webrtc/run.sh`，
-`COTURN=1` 时包括 coturn）。无头 Chrome 在两个 offer 方向上均经过测试：数据通道，以及 Chrome
+互通测试对象是 pion（Go）：两种 offer 方向、数据通道与媒体、直连以及经 only TURN 中继，`Endpoint`
+只提供中继候选（来自 only、pion/turn 与 coturn 的 TURN 服务器）或只提供被动 ICE-TCP 候选，以及向 pion
+发送 simulcast；还有 fib 的 Go 版 WebRTC（数据通道，双向）；TURN 服务器经 UDP、TCP 与 TLS 与 pion/turn
+客户端和 coturn 的 `turnutils_uclient` 互通；TURN 客户端经 UDP、TCP 与 TLS 与 pion/turn、coturn 和 only
+互通（`tools/interop/webrtc/run.sh`，`COTURN=1` 时包括 coturn，`linux.sh` 在 Linux 容器中全部运行）。无头 Chrome 在两个 offer 方向上均经过测试：数据通道，以及 Chrome
 的虚拟摄像头与麦克风媒体由 `RtcServer` 回显后再由 Chrome 解码（`tools/interop/webrtc/browser.sh`）。
 
 ## 一个引擎上的服务器、TURN 服务器与客户端
@@ -65,6 +67,7 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 | `send(channel, data, binary)` | 发送数据通道消息（`Ok(false)`：缓冲已满） |
 | `open_channel(cfg)` | 新建通道；已有通道时无需重新协商 |
 | `write_media(mid, pt, wallclock, rtp_time, data)` | 写一个样本（自动打包） |
+| `write_simulcast(mid, rid, pt, wallclock, rtp_time, data)` | 写 simulcast 某一编码的样本 |
 | `payload_type(mid, codec)` | 某编解码器协商得到的 payload type |
 | `request_keyframe(mid, kind)` | 向远端发送方发 PLI 或 FIR |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | 首次交换之后的 SDP 变更 |
@@ -88,6 +91,37 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 不要在回调中调用）。`create_offer(handler, |sdp| ...)` 通过 `SdpChanges` 添加通道与媒体；
 `accept_offer` 应答远端 offer。`Endpoint` 可与 ICE-lite 服务器、浏览器和 pion 以及其他
 `Endpoint` 通信。
+
+### 中继候选
+
+`gather_relay(turn_server, username, password, timeout)` 通过 endpoint 的 UDP socket 在 TURN 服务器上
+分配一个中继地址，加为 relay 候选（服务器看到的 server-reflexive 地址若是新的也一并加入）；与
+`gather_srflx` 一样会阻塞。该分配由 endpoint 的所有 peer 共享，并持续维持（刷新、权限与 channel，在
+WebRTC 定时器线程上）直到 `Endpoint::close` 将其删除。每个 endpoint 最多 4 个分配；被拒或超过上限返回
+`Error::Turn`，无应答返回 `Error::Timeout`。
+
+```rust,ignore
+let ep = Endpoint::bind(&engine, "0.0.0.0:0".parse()?)?;
+let relayed = ep.gather_relay("203.0.113.7:3478".parse()?, "alice", "secret", Duration::from_secs(5))?;
+```
+
+### TCP 上的 ICE
+
+`listen_tcp(&engine, addr)` 在单独的 TCP 端口上加入被动 ICE-TCP 候选（RFC 6544）：位于屏蔽 UDP 的网络后
+的浏览器或 pion 以主动候选连上来，在该连接上运行 ICE、DTLS、SCTP 与 SRTP（RFC 4571 分帧）。引擎需要
+TCP I/O 线程（`client_threads(n)` 或一个 TCP listener）。由专用线程接受连接，同时最多 256 条；10 秒内
+第一帧不是指向该 endpoint 某个 peer 的连通性检查的连接被关闭，peer 关闭时其连接也被关闭。TCP 候选的
+优先级低于 UDP，能用 UDP 的 peer 仍然用 UDP。`Endpoint` 没有主动 TCP 候选：只有 TCP 可用的客户端应使用
+TCP 或 TLS 上的 TURN。
+
+### Simulcast
+
+`SdpChanges::add_simulcast_media(kind, dir, &["h", "m", "l"], stream_id, track_id)` 添加一条按 RID 各发
+一个 RTP 流的媒体行（RFC 8853，与浏览器一样按质量从高到低排列），`Peer::write_simulcast(mid, rid, pt,
+wallclock, rtp_time, data)` 写某一编码的样本：由应用以各自的分辨率与码率编码每一层。offer 列出这些 RID
+（`a=rid`、`a=simulcast:send`）；由 answer 的 `a=simulcast:recv` 决定发送哪些（没有它时只发第一个）。每个
+编码有自己的 SSRC 与 RTX 流，包带 MID 与 RID 头扩展，关键帧请求带上其 RID（`KeyframeRequest::rid`）。
+作为应答方，本栈也接受远端发来的 simulcast（用 `MediaData::rid` 区分各层）；选择转发哪一层由应用决定。
 
 ## TURN
 
@@ -115,8 +149,42 @@ feature 保留给不在 semver 承诺内的 API，目前不增加任何内容（
 不同分配的数据报不会在 I/O 线程之间争用，过期清扫每次只持有一个分片，已认证的 Allocate 的中继
 socket 在获取任何锁之前绑定。配额仍是整个服务器范围的。
 
+### TCP 与 TLS 上的 TURN
+
+`turn.stream()` 是 TCP listener 的 acceptor，用 `only::tls::Tls` 包装后用于 TLS listener（`turns:`，通常
+为 5349 或 443 端口）：与 UDP listener 共享分配、配额与凭据。中继仍走 UDP；不提供 TCP 中继（RFC 6062，
+回 `442`）。
+
+```rust,ignore
+let engine = Arc::new(
+    Engine::builder()
+        .listen(Listener::udp("0.0.0.0:3478".parse()?).serve(turn.clone()))
+        .listen(Listener::tcp("0.0.0.0:3478".parse()?).serve(turn.stream()))
+        .listen(Listener::tcp("0.0.0.0:5349".parse()?).serve(Tls::server(tls_cfg, turn.stream())))
+        .build()?,
+);
+turn.set_engine(&engine);
+```
+
+| 字段 | 默认值 | 含义 |
+|---|---|---|
+| `stream_allocate_timeout` | 30 秒 | 到时仍未分配的连接被关闭 |
+| `max_stream_queue` | 256 KiB | 排队超过该值的连接，发给它的中继数据被丢弃（保持数据报语义；响应总会发送） |
+
+经连接建立的分配随连接结束。STUN 与 ChannelData 在流上按各自的长度分帧
+（`only_turn::framing::FrameReader`），ChannelData 填充到 4 字节。
+
+### TURN 客户端
+
+`only_turn::client::Client` 是单个分配的 sans-io 客户端，跑在 UDP 或 TCP/TLS 流上
+（`ClientConfig::stream(true)`）：用长期凭据应答 401 质询、更新过期 nonce、刷新分配、在首次 `send_to` 时为
+每个对端绑定 channel（失败时退回到权限与 Send 指示）、在对端使用期间刷新这些绑定，并在 UDP 上重传。由调用者
+搬运字节：`poll_transmit` 发往服务器，把收到的内容交给 `handle_input`（中继数据以 `(peer, payload)` 返回），
+在 `poll_timeout` 时调用 `handle_timeout`。上限：64 个对端、等待绑定的数据 64 KiB。`Endpoint::gather_relay`
+在 UDP 上驱动一个客户端。
+
 ## 尚未完成
 
-TCP/TLS 上的 TURN，以及 `only-webrtc` 中的 TURN 客户端（`Endpoint` 的 relay 候选）；TCP 上的
-ICE；解析 mDNS 候选（使用它们的对端仍可通过 peer-reflexive 候选连通）；simulcast 发送与分层
-选择；FEC；RTCP XR；DTLS 1.3。
+TCP 中继（RFC 6062）；`Endpoint` 经 TCP/TLS 使用 TURN（客户端支持，endpoint 只通过 UDP 分配）；主动
+ICE-TCP 候选与 `RtcServer` 上的 ICE-TCP；解析 mDNS 候选（使用它们的对端仍可通过 peer-reflexive 候选
+连通）；simulcast 分层选择；FEC；RTCP XR；DTLS 1.3。新增内容的细节见 ADR-017。

@@ -10,6 +10,45 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: TURN over TCP and TLS, a TURN client, ICE-TCP and simulcast sending
+
+Additive (ADR-017, docs/adr/017-webrtc-turn-gaps.md):
+
+- **TURN over TCP and TLS** (`only-turn`): `TurnServer::stream()` returns a `TurnStream`
+  acceptor for TCP listeners, and for TLS ones wrapped in `only::tls::Tls` (`turns:`), with the
+  UDP listener's allocations, quotas and credentials. An allocation made over a connection ends
+  with it (`TurnCore::remove_client`); new `TurnConfig::stream_allocate_timeout` (30 s: a
+  connection that has not allocated is closed) and `max_stream_queue` (256 KiB: relayed data for
+  a connection with more queued is dropped). `TurnServer::stream_relay_of`. STUN and ChannelData
+  framing in `only_turn::framing` (`FrameReader`, `frame_len`, `MAX_FRAME`); `TurnEnv` gains the
+  provided method `pads_channel_data`. RFC 6062 TCP relays are not implemented (`442`).
+- **TURN client** `only_turn::client::{Client, ClientConfig, ClientEvent, ClientState,
+  ClientError}`: sans-io, one allocation over UDP or a stream; long-term credentials, stale
+  nonces, refreshes, channels with a permission fallback, binding refreshes while a peer is in
+  use, UDP retransmissions; at most 64 peers and 64 KiB waiting for bindings by default.
+- **Relayed candidates for `Endpoint`**: `Endpoint::gather_relay(server, username, password,
+  timeout)` allocates over the endpoint's UDP socket and adds the relayed candidate (and the
+  server-reflexive address the server saw); the allocation is shared by the endpoint's peers,
+  refreshed on the WebRTC timer thread and deleted by `Endpoint::close`. At most 4 per
+  endpoint. New `Error::Turn`.
+- **ICE-TCP** (RFC 6544): `Endpoint::listen_tcp(&engine, addr)` adds a passive TCP host
+  candidate on a port of its own; connections are accepted on a dedicated thread (at most 256),
+  must send a check for one of the endpoint's peers within 10 seconds, and carry RFC 4571
+  frames. TCP candidates rank below UDP ones. `only-ice` (internal tier) gains `TcpType`,
+  `Candidate::host_tcp`, `Candidate::tcp_type` and `only_ice::tcp`; `ParseError::Tcp` is gone.
+- **Simulcast sending** (RFC 8853): `SdpChanges::add_simulcast_media(kind, dir, rids, ..)` and
+  `Peer::write_simulcast(mid, rid, ..)`: one RTP stream and RTX stream per RID, `a=rid` /
+  `a=simulcast` in the SDP, MID and RID header extensions (repaired RID on retransmissions),
+  per-encoding sender reports, NACKs and PLI/FIR (`KeyframeRequest::rid`); the answer's
+  `a=simulcast:recv` picks the encodings sent. As an answerer the stack accepts simulcast offers
+  (`a=simulcast:recv` in its answer, RTX mapped by repaired RID).
+- Interop (`tools/interop/webrtc/run.sh`, new `linux.sh` running everything in Linux
+  containers): pion/turn and coturn clients against `only-turn` over UDP, TCP and TLS; the
+  `only_turn` client against pion/turn, coturn and `only-turn` over UDP, TCP and TLS; an
+  `Endpoint` with only relayed candidates (from `only-turn`, pion/turn, coturn) and with only its
+  passive TCP candidate to pion; simulcast h/m/l received by pion. New fuzz targets
+  `turn_stream` and `ice_tcp`.
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):

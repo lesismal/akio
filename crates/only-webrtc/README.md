@@ -26,7 +26,10 @@ third-party dependencies, driven over `only` UDP sockets. Every layer is safe Ru
   loss-based bandwidth estimator.
 - **SDP** offer/answer (JSEP): BUNDLE, rtcp-mux, mid/msid, ssrc/FID, extmap,
   rtpmap/fmtp/rtcp-fb negotiation, setup/fingerprint, ice-ufrag/pwd/options/lite, candidates,
-  sctp-port/max-message-size; renegotiation (media added, directions, ICE restart).
+  sctp-port/max-message-size; renegotiation (media added, directions, ICE restart);
+  simulcast sending (`a=rid`, `a=simulcast`, RID/MID header extensions) and receiving.
+- **Candidates** for an `Endpoint`: host, server-reflexive (`gather_srflx`), relayed through a
+  TURN allocation (`gather_relay`) and passive ICE-TCP (`listen_tcp`, RFC 6544).
 - **Own types**: the API is this crate's own; the `unstable` cargo feature currently adds
   nothing.
 
@@ -57,7 +60,7 @@ in both offer directions (data channels, the fake camera and microphone echoed b
 by Chrome): `tools/interop/webrtc/browser.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
-Not implemented: a TURN client (relayed local candidates must be learnt elsewhere), simulcast
-sending and layer selection, FEC, RTCP XR, SDES-SRTP, DTLS 1.3.
+Not implemented: TURN over TCP/TLS from an `Endpoint`, active ICE-TCP candidates, simulcast
+layer selection, FEC, RTCP XR, SDES-SRTP, DTLS 1.3.
 
 Guide: [WebRTC, STUN and TURN](https://lesismal.github.io/only/en/protocols/webrtc.html).

@@ -10,6 +10,38 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：TCP 与 TLS 上的 TURN、TURN 客户端、ICE-TCP 与 simulcast 发送
+
+新增（ADR-017，docs/adr/017-webrtc-turn-gaps.zh-CN.md）：
+
+- **TCP 与 TLS 上的 TURN**（`only-turn`）：`TurnServer::stream()` 返回用于 TCP 监听器的 `TurnStream`
+  acceptor，用 `only::tls::Tls` 包装后用于 TLS 监听器（`turns:`），与 UDP 监听器共享分配、配额与凭据。经
+  连接建立的分配随连接结束（`TurnCore::remove_client`）；新增 `TurnConfig::stream_allocate_timeout`（30 秒：
+  未分配的连接被关闭）与 `max_stream_queue`（256 KiB：排队超过该值的连接，发给它的中继数据被丢弃）。
+  `TurnServer::stream_relay_of`。STUN 与 ChannelData 分帧在 `only_turn::framing`（`FrameReader`、
+  `frame_len`、`MAX_FRAME`）；`TurnEnv` 新增带默认实现的方法 `pads_channel_data`。不实现 RFC 6062 TCP
+  中继（`442`）。
+- **TURN 客户端** `only_turn::client::{Client, ClientConfig, ClientEvent, ClientState, ClientError}`：
+  sans-io，在 UDP 或流上维护一个分配；长期凭据、过期 nonce、刷新、channel 及权限回退、对端使用期间的绑定
+  刷新、UDP 重传；默认最多 64 个对端、等待绑定的数据 64 KiB。
+- **`Endpoint` 的 relay 候选**：`Endpoint::gather_relay(server, username, password, timeout)` 通过
+  endpoint 的 UDP socket 分配，加入 relay 候选（以及服务器看到的 server-reflexive 地址）；该分配由
+  endpoint 的 peer 共享，在 WebRTC 定时器线程上刷新，由 `Endpoint::close` 删除。每个 endpoint 最多 4 个。
+  新增 `Error::Turn`。
+- **ICE-TCP**（RFC 6544）：`Endpoint::listen_tcp(&engine, addr)` 在独立端口上加入被动 TCP host 候选；连接
+  由专用线程接受（最多 256 条），须在 10 秒内发来指向该 endpoint 某个 peer 的检查，并承载 RFC 4571 帧。
+  TCP 候选优先级低于 UDP。`only-ice`（内部层级）新增 `TcpType`、`Candidate::host_tcp`、
+  `Candidate::tcp_type` 与 `only_ice::tcp`；`ParseError::Tcp` 删除。
+- **simulcast 发送**（RFC 8853）：`SdpChanges::add_simulcast_media(kind, dir, rids, ..)` 与
+  `Peer::write_simulcast(mid, rid, ..)`：每个 RID 一条 RTP 流与 RTX 流，SDP 中的 `a=rid` / `a=simulcast`，
+  MID 与 RID 头扩展（重传带 repaired RID），按编码的发送者报告、NACK 与 PLI/FIR（`KeyframeRequest::rid`）；
+  由 answer 的 `a=simulcast:recv` 选择发送的编码。作为应答方，本栈接受 simulcast offer（answer 中带
+  `a=simulcast:recv`，RTX 按 repaired RID 映射）。
+- 互通（`tools/interop/webrtc/run.sh`，新增在 Linux 容器中运行全部检查的 `linux.sh`）：pion/turn 与 coturn
+  客户端经 UDP、TCP、TLS 对 `only-turn`；`only_turn` 客户端经 UDP、TCP、TLS 对 pion/turn、coturn 与
+  `only-turn`；只带 relay 候选（来自 `only-turn`、pion/turn、coturn）以及只带被动 TCP 候选的 `Endpoint`
+  对 pion；pion 收到 h/m/l 三层 simulcast。新增 fuzz 目标 `turn_stream` 与 `ice_tcp`。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：
