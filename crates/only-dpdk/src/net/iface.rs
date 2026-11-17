@@ -19,7 +19,7 @@ use std::{
 use super::{
     arp::{ArpCache, Lookup, NdpCache},
     frag::Reassembler,
-    tcp::{Clock, IcmpError, Notes, Params, SegOut, State, SynOpts, Tcb, TcpError},
+    tcp::{Clock, Endpoints, IcmpError, Notes, Params, SegOut, State, SynOpts, Tcb, TcpError},
     wire::{
         self, ACK, ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST, ECN_MASK, ECT0, ETH_HDR,
         ETHERTYPE_ARP, ETHERTYPE_IPV4, ETHERTYPE_IPV6, Eth, ICMP_HDR, IP_DF, IP_MF, IPV4_HDR, Icmp,
@@ -247,6 +247,8 @@ struct Pkt<'a> {
     hdr: usize,
     /// The sender's MAC (NDP answers to a solicitation without a link-layer option).
     src_mac: Mac,
+    /// The pseudo-header's address sum (TCP / UDP checksums).
+    ps: wire::Pseudo,
 }
 
 /// What an ICMP error about a received packet says, in both families' terms.
@@ -283,6 +285,26 @@ struct IpOut {
     /// Never fragment (TCP: segments are sized to the path MTU instead).
     df: bool,
     /// TOS / traffic class byte.
+    tos: u8,
+}
+
+impl IpOut {
+    fn body(&self) -> Body {
+        Body {
+            proto: self.proto,
+            len: self.len,
+            df: self.df,
+            tos: self.tos,
+        }
+    }
+}
+
+/// The family-independent part of [`IpOut`] (what the per-family senders take, in registers).
+#[derive(Clone, Copy, Debug)]
+struct Body {
+    proto: u8,
+    len: usize,
+    df: bool,
     tos: u8,
 }
 
@@ -452,8 +474,8 @@ impl Net {
         write: &mut dyn FnMut(&mut [u8]),
     ) -> bool {
         match (o.src, o.dst) {
-            (IpAddr::V4(src), IpAddr::V4(dst)) => self.send_ip4(now, tx, src, dst, o, write),
-            (IpAddr::V6(src), IpAddr::V6(dst)) => self.send_ip6(now, tx, src, dst, o, write),
+            (IpAddr::V4(src), IpAddr::V4(dst)) => self.send_ip4(now, tx, src, dst, o.body(), write),
+            (IpAddr::V6(src), IpAddr::V6(dst)) => self.send_ip6(now, tx, src, dst, o.body(), write),
             _ => false,
         }
     }
@@ -464,7 +486,7 @@ impl Net {
         tx: &mut dyn Tx,
         src: Ipv4Addr,
         dst: Ipv4Addr,
-        o: IpOut,
+        o: Body,
         write: &mut dyn FnMut(&mut [u8]),
     ) -> bool {
         let Some(hop) = self.next_hop(dst) else {
@@ -649,7 +671,7 @@ impl Net {
         tx: &mut dyn Tx,
         src: Ipv6Addr,
         dst: Ipv6Addr,
-        o: IpOut,
+        o: Body,
         write: &mut dyn FnMut(&mut [u8]),
     ) -> bool {
         let Some(v6) = &self.v6 else { return false };
@@ -849,29 +871,42 @@ struct NetOut<'a> {
 
 impl SegOut for NetOut<'_> {
     #[inline]
-    fn segment(
-        &mut self,
-        local: SocketAddr,
-        remote: SocketAddr,
-        hdr: &TcpOut,
-        payload: (&[u8], &[u8]),
-    ) {
+    fn segment(&mut self, ep: &Endpoints, hdr: &TcpOut, payload: (&[u8], &[u8])) {
         let hl = hdr.header_len();
         let len = hl + payload.0.len() + payload.1.len();
-        let (src, dst) = (local.ip(), remote.ip());
-        let o = IpOut {
-            src,
-            dst,
-            proto: PROTO_TCP,
-            len,
-            df: true,
-            tos: if hdr.ect { ECT0 } else { 0 },
-        };
-        self.net.send_ip(self.now, self.tx, o, &mut |b| {
+        let tos = if hdr.ect { ECT0 } else { 0 };
+        let fill = |b: &mut [u8], ps: wire::Pseudo| {
             b[hl..hl + payload.0.len()].copy_from_slice(payload.0);
             b[hl + payload.0.len()..].copy_from_slice(payload.1);
-            hdr.write(b, src, dst);
-        });
+            hdr.write_with(b, ps);
+        };
+        match ep {
+            // IPv4 first and without the family dispatch of `send_ip`.
+            Endpoints::V4(l, r) => {
+                let (src, dst) = (*l.ip(), *r.ip());
+                let o = Body {
+                    proto: PROTO_TCP,
+                    len,
+                    df: true,
+                    tos,
+                };
+                let ps = wire::Pseudo::v4(src, dst);
+                self.net
+                    .send_ip4(self.now, self.tx, src, dst, o, &mut |b| fill(b, ps));
+            }
+            Endpoints::V6(a) => {
+                let (src, dst) = (*a.0.ip(), *a.1.ip());
+                let o = Body {
+                    proto: PROTO_TCP,
+                    len,
+                    df: true,
+                    tos,
+                };
+                let ps = wire::Pseudo::of(IpAddr::V6(src), IpAddr::V6(dst));
+                self.net
+                    .send_ip6(self.now, self.tx, src, dst, o, &mut |b| fill(b, ps));
+            }
+        }
     }
 }
 
@@ -1537,7 +1572,12 @@ impl Iface {
             return;
         }
         let raw = &b[..ip.hdr_len + ip.payload.len()];
-        self.on_packet(now, &Self::pkt4(&ip, raw, bcast, src_mac), verify, tx);
+        let p = Self::pkt4(&ip, raw, bcast, src_mac);
+        if ip.proto == PROTO_TCP && !bcast {
+            // The common case, without the protocol dispatch.
+            return self.on_tcp(now, &p, verify, tx);
+        }
+        self.on_packet(now, &p, verify, tx);
     }
 
     fn pkt4<'a>(ip: &Ipv4<'a>, raw: &'a [u8], bcast: bool, src_mac: Mac) -> Pkt<'a> {
@@ -1552,6 +1592,7 @@ impl Iface {
             raw,
             hdr: ip.hdr_len,
             src_mac,
+            ps: wire::Pseudo::v4(ip.src, ip.dst),
         }
     }
 
@@ -1687,6 +1728,7 @@ impl Iface {
             raw,
             hdr: nh_field,
             src_mac,
+            ps: wire::Pseudo::of(IpAddr::V6(ip.src), IpAddr::V6(ip.dst)),
         }
     }
 
@@ -1914,7 +1956,7 @@ impl Iface {
     }
 
     fn on_udp(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
-        let Some(u) = Udp::parse(p.payload, p.src, p.dst, verify) else {
+        let Some(u) = Udp::parse_with(p.payload, p.ps, p.src.is_ipv6(), verify) else {
             return;
         };
         if !self.udp_ports.contains(&u.dst_port) {
@@ -1968,16 +2010,15 @@ impl Iface {
             tx,
             now,
         };
-        out.segment(
+        let ep = Endpoints::new(
             SocketAddr::new(p.dst, seg.dst_port),
             SocketAddr::new(p.src, seg.src_port),
-            &hdr,
-            (&[], &[]),
         );
+        out.segment(&ep, &hdr, (&[], &[]));
     }
 
     fn on_tcp(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
-        let Some(mut seg) = Tcp::parse(p.payload, p.src, p.dst, verify) else {
+        let Some(mut seg) = Tcp::parse_with(p.payload, p.ps, verify) else {
             return;
         };
         seg.ecn = p.ecn;
@@ -2178,7 +2219,7 @@ impl Iface {
             tx,
             now,
         };
-        out.segment(local, remote, &hdr, (&[], &[]));
+        out.segment(&Endpoints::new(local, remote), &hdr, (&[], &[]));
     }
 
     fn check_cookie(

@@ -153,16 +153,10 @@ impl Notes {
     }
 }
 
-/// Where a connection's segments go: the interface wraps them in IPv4 and Ethernet.
+/// Where a connection's segments go: the interface wraps them in IP and Ethernet.
 pub(crate) trait SegOut {
-    /// Sends one segment; `payload` is the concatenation of the two slices.
-    fn segment(
-        &mut self,
-        local: SocketAddr,
-        remote: SocketAddr,
-        hdr: &TcpOut,
-        payload: (&[u8], &[u8]),
-    );
+    /// Sends one segment between `ep`; `payload` is the concatenation of the two slices.
+    fn segment(&mut self, ep: &Endpoints, hdr: &TcpOut, payload: (&[u8], &[u8]));
 }
 
 /// The clock a connection runs on.
@@ -194,24 +188,25 @@ impl SynOpts {
     }
 }
 
-/// A connection's addresses: IPv4 inline (16 bytes), IPv6 boxed, so the common case keeps the
-/// connection as small as it was before IPv6.
+/// A connection's (local, remote) addresses: IPv4 inline (16 bytes), IPv6 boxed, so the common
+/// case keeps the connection as small as it was before IPv6 and segments go out through a
+/// monomorphic IPv4 path.
 #[derive(Debug)]
-enum Addrs {
+pub(crate) enum Endpoints {
     V4(SocketAddrV4, SocketAddrV4),
     V6(Box<(SocketAddrV6, SocketAddrV6)>),
 }
 
-impl Addrs {
-    fn new(local: SocketAddr, remote: SocketAddr) -> Addrs {
+impl Endpoints {
+    pub(crate) fn new(local: SocketAddr, remote: SocketAddr) -> Endpoints {
         match (local, remote) {
-            (SocketAddr::V4(l), SocketAddr::V4(r)) => Addrs::V4(l, r),
+            (SocketAddr::V4(l), SocketAddr::V4(r)) => Endpoints::V4(l, r),
             (l, r) => {
                 let v6 = |a: SocketAddr| match a {
                     SocketAddr::V6(a) => a,
                     SocketAddr::V4(a) => SocketAddrV6::new(a.ip().to_ipv6_mapped(), a.port(), 0, 0),
                 };
-                Addrs::V6(Box::new((v6(l), v6(r))))
+                Endpoints::V6(Box::new((v6(l), v6(r))))
             }
         }
     }
@@ -230,7 +225,7 @@ struct Pace {
 #[derive(Debug)]
 pub(crate) struct Tcb {
     pub(crate) state: State,
-    addrs: Addrs,
+    addrs: Endpoints,
     /// Port of the listener that accepted it (passive open).
     pub(crate) listener: Option<u16>,
     p: Params,
@@ -342,7 +337,7 @@ impl Tcb {
         let mss = u32::from(p.mss);
         Tcb {
             state: State::Closed,
-            addrs: Addrs::new(local, remote),
+            addrs: Endpoints::new(local, remote),
             listener: None,
             p,
             iss,
@@ -514,16 +509,16 @@ impl Tcb {
     #[inline]
     pub(crate) fn local(&self) -> SocketAddr {
         match &self.addrs {
-            Addrs::V4(l, _) => SocketAddr::V4(*l),
-            Addrs::V6(b) => SocketAddr::V6(b.0),
+            Endpoints::V4(l, _) => SocketAddr::V4(*l),
+            Endpoints::V6(b) => SocketAddr::V6(b.0),
         }
     }
 
     #[inline]
     pub(crate) fn remote(&self) -> SocketAddr {
         match &self.addrs {
-            Addrs::V4(_, r) => SocketAddr::V4(*r),
-            Addrs::V6(b) => SocketAddr::V6(b.1),
+            Endpoints::V4(_, r) => SocketAddr::V4(*r),
+            Endpoints::V6(b) => SocketAddr::V6(b.1),
         }
     }
 
@@ -664,7 +659,7 @@ impl Tcb {
                 opts: TcpOpts::default(),
                 ect: false,
             };
-            out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
+            out.segment(&self.addrs, &hdr, (&[], &[]));
         }
         self.state = State::Closed;
     }
@@ -703,7 +698,7 @@ impl Tcb {
                 ..TcpOut::default()
             }
         };
-        out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
+        out.segment(&self.addrs, &hdr, (&[], &[]));
     }
 
     fn on_syn_sent(&mut self, seg: &Tcp<'_>, clock: Clock, out: &mut dyn SegOut) {
@@ -1325,17 +1320,21 @@ impl Tcb {
 
     /// The earliest timer of this connection.
     pub(crate) fn next_timer(&self) -> Option<Instant> {
-        [
-            self.rto_at,
-            self.delack_at,
-            self.persist_at,
-            self.keepalive_at,
-            self.close_at,
-            self.pace.as_ref().and_then(|p| p.at),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
+        fn min(a: Option<Instant>, b: Option<Instant>) -> Option<Instant> {
+            match (a, b) {
+                (Some(x), Some(y)) => Some(x.min(y)),
+                (x, None) => x,
+                (None, y) => y,
+            }
+        }
+        let t = min(
+            min(self.rto_at, self.delack_at),
+            min(min(self.persist_at, self.keepalive_at), self.close_at),
+        );
+        match &self.pace {
+            None => t,
+            Some(p) => min(t, p.at),
+        }
     }
 
     fn arm_keepalive(&mut self, now: Instant) {
@@ -1458,7 +1457,7 @@ impl Tcb {
             }
         } else {
             let hdr = self.header(self.snd_una.wrapping_sub(1), ACK, clock, false);
-            out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
+            out.segment(&self.addrs, &hdr, (&[], &[]));
         }
     }
 
@@ -1568,7 +1567,8 @@ impl Tcb {
             } else if self.ecn_ok && self.state == State::SynReceived {
                 flags |= ECE;
             }
-        } else if self.ecn_ok && self.ece_pending && flags & RST == 0 {
+        } else if self.ece_pending {
+            // (Set only once ECN was negotiated; RSTs are not built here.)
             flags |= ECE;
         }
         if flags & ACK != 0 || !syn {
@@ -1601,6 +1601,7 @@ impl Tcb {
     /// FIN when `fin`). `fresh`: new data (not a retransmission or a probe), which is what
     /// ECN marks ECN-capable (RFC 3168 6.1.5) and carries CWR.
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn emit(
         &mut self,
         seq: u32,
@@ -1624,7 +1625,7 @@ impl Tcb {
         let mut hdr = self.header(seq, flags, clock, true);
         hdr.ect = fresh && len > 0 && self.ecn_ok;
         let payload = self.tx.slices(off, len);
-        out.segment(self.local(), self.remote(), &hdr, payload);
+        out.segment(&self.addrs, &hdr, payload);
         self.last_send = clock.now;
         if self.pace.is_some() {
             self.pace_sent(len, clock.now);
@@ -1652,6 +1653,7 @@ impl Tcb {
         ))
     }
 
+    #[inline(never)]
     fn pace_sent(&mut self, len: usize, now: Instant) {
         if let (Some(gap), Some(p)) = (self.pace_gap(len), self.pace.as_deref()) {
             let next = p.next.max(now) + gap;
@@ -1662,10 +1664,20 @@ impl Tcb {
     }
 
     /// Pacing lets a segment go now; otherwise arms the pacing timer.
+    #[inline]
     fn pace_ok(&mut self, now: Instant) -> bool {
-        let Some(next) = self.pace.as_ref().map(|p| p.next) else {
-            return true;
-        };
+        match &self.pace {
+            None => true,
+            Some(p) => {
+                let next = p.next;
+                self.pace_wait(next, now)
+            }
+        }
+    }
+
+    /// The paced case of `pace_ok` (out of line: unpaced connections only test `pace`).
+    #[inline(never)]
+    fn pace_wait(&mut self, next: Instant, now: Instant) -> bool {
         let slack = self
             .pace_gap(self.mss() as usize)
             .map_or(PACE_SLACK, |g| (g * 2).max(PACE_SLACK));
@@ -1693,7 +1705,7 @@ impl Tcb {
                     SYN | ACK
                 };
                 let hdr = self.header(self.iss, flags, clock, false);
-                out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
+                out.segment(&self.addrs, &hdr, (&[], &[]));
                 self.snd_max = self.iss.wrapping_add(1);
                 if self.retries == 0 && self.rtt_seq.is_none() {
                     self.rtt_seq = Some((self.iss, clock.now));
@@ -1708,7 +1720,7 @@ impl Tcb {
         if self.state == State::TimeWait {
             if self.ack_now {
                 let hdr = self.header(self.snd_max, ACK, clock, false);
-                out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
+                out.segment(&self.addrs, &hdr, (&[], &[]));
             }
             return;
         }
@@ -1815,7 +1827,7 @@ impl Tcb {
         // 3. A bare ACK if one is due and nothing carried it.
         if self.ack_now && !sent_any {
             let hdr = self.header(self.snd_max, ACK, clock, true);
-            out.segment(self.local(), self.remote(), &hdr, (&[], &[]));
+            out.segment(&self.addrs, &hdr, (&[], &[]));
         }
     }
 

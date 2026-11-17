@@ -51,6 +51,7 @@ pub(crate) fn mac_at(b: &[u8], at: usize) -> Mac {
 
 /// Adds `data` to a running one's-complement sum (not yet folded). `data` is summed as
 /// big-endian 16-bit words, a trailing odd byte padded with zero.
+#[inline]
 pub(crate) fn sum(data: &[u8], mut acc: u64) -> u64 {
     let mut chunks = data.chunks_exact(8);
     for c in &mut chunks {
@@ -69,6 +70,7 @@ pub(crate) fn sum(data: &[u8], mut acc: u64) -> u64 {
 }
 
 /// Folds a running sum into the 16-bit one's-complement checksum field value.
+#[inline]
 pub(crate) fn fold(mut acc: u64) -> u16 {
     while acc >> 16 != 0 {
         acc = (acc & 0xffff) + (acc >> 16);
@@ -80,7 +82,32 @@ pub(crate) fn fold(mut acc: u64) -> u16 {
 /// by the family of the addresses (mixed families never occur: both come from one packet).
 #[inline]
 pub(crate) fn pseudo(src: IpAddr, dst: IpAddr, proto: u8, len: usize) -> u64 {
-    addr_sum(src) + addr_sum(dst) + u64::from(proto) + len as u64
+    Pseudo::of(src, dst).with(proto, len)
+}
+
+/// The address part of a pseudo-header sum, computed once per packet (an IPv4 pair is four
+/// 16-bit words, without a dispatch on the address family per checksum).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Pseudo(u64);
+
+impl Pseudo {
+    #[inline]
+    pub(crate) fn of(src: IpAddr, dst: IpAddr) -> Pseudo {
+        Pseudo(addr_sum(src) + addr_sum(dst))
+    }
+
+    #[inline]
+    pub(crate) fn v4(src: Ipv4Addr, dst: Ipv4Addr) -> Pseudo {
+        let (s, d) = (u32::from(src), u32::from(dst));
+        Pseudo(
+            u64::from(s >> 16) + u64::from(s & 0xffff) + u64::from(d >> 16) + u64::from(d & 0xffff),
+        )
+    }
+
+    #[inline]
+    pub(crate) fn with(self, proto: u8, len: usize) -> u64 {
+        self.0 + u64::from(proto) + len as u64
+    }
 }
 
 /// An address's 16-bit words, summed (an IPv4 address: its two words, without loading 16
@@ -368,7 +395,15 @@ pub(crate) struct Udp<'a> {
 impl Udp<'_> {
     /// Parses a UDP datagram carried in an IP packet from `src` to `dst`; `verify` checks a
     /// non-zero checksum. Over IPv6 a zero checksum is invalid (RFC 8200 8.1) and refused.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) fn parse(b: &[u8], src: IpAddr, dst: IpAddr, verify: bool) -> Option<Udp<'_>> {
+        Udp::parse_with(b, Pseudo::of(src, dst), src.is_ipv6(), verify)
+    }
+
+    /// [`Udp::parse`] with the pseudo-header's address sum already computed (`v6`: carried by
+    /// IPv6, where a zero checksum is invalid).
+    #[inline]
+    pub(crate) fn parse_with(b: &[u8], ps: Pseudo, v6: bool, verify: bool) -> Option<Udp<'_>> {
         if b.len() < UDP_HDR {
             return None;
         }
@@ -378,10 +413,10 @@ impl Udp<'_> {
         }
         let b = &b[..len];
         if be16(b, 6) == 0 {
-            if src.is_ipv6() {
+            if v6 {
                 return None;
             }
-        } else if verify && fold(sum(b, pseudo(src, dst, PROTO_UDP, len))) != 0 {
+        } else if verify && fold(sum(b, ps.with(PROTO_UDP, len))) != 0 {
             return None;
         }
         Some(Udp {
@@ -559,7 +594,14 @@ pub(crate) struct Tcp<'a> {
 
 impl Tcp<'_> {
     /// Parses a TCP segment carried from `src` to `dst`; `verify` checks the checksum.
+    #[cfg(any(test, feature = "fuzzing"))]
     pub(crate) fn parse(b: &[u8], src: IpAddr, dst: IpAddr, verify: bool) -> Option<Tcp<'_>> {
+        Tcp::parse_with(b, Pseudo::of(src, dst), verify)
+    }
+
+    /// [`Tcp::parse`] with the pseudo-header's address sum already computed.
+    #[inline]
+    pub(crate) fn parse_with(b: &[u8], ps: Pseudo, verify: bool) -> Option<Tcp<'_>> {
         if b.len() < TCP_HDR {
             return None;
         }
@@ -567,7 +609,7 @@ impl Tcp<'_> {
         if off < TCP_HDR || off > b.len() {
             return None;
         }
-        if verify && fold(sum(b, pseudo(src, dst, PROTO_TCP, b.len()))) != 0 {
+        if verify && fold(sum(b, ps.with(PROTO_TCP, b.len()))) != 0 {
             return None;
         }
         Some(Tcp {
@@ -612,7 +654,14 @@ impl TcpOut {
 
     /// Writes the header into `b` (whose length is header + payload, the payload already in
     /// place after the header) and the checksum over everything.
+    #[cfg(test)]
     pub(crate) fn write(&self, b: &mut [u8], src: IpAddr, dst: IpAddr) {
+        self.write_with(b, Pseudo::of(src, dst));
+    }
+
+    /// [`TcpOut::write`] with the pseudo-header's address sum already computed.
+    #[inline]
+    pub(crate) fn write_with(&self, b: &mut [u8], ps: Pseudo) {
         let hl = self.header_len();
         b[0..2].copy_from_slice(&self.src_port.to_be_bytes());
         b[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
@@ -623,7 +672,7 @@ impl TcpOut {
         b[14..16].copy_from_slice(&self.window.to_be_bytes());
         b[16..20].copy_from_slice(&[0, 0, 0, 0]);
         self.opts.write(&mut b[TCP_HDR..hl]);
-        let c = fold(sum(b, pseudo(src, dst, PROTO_TCP, b.len())));
+        let c = fold(sum(b, ps.with(PROTO_TCP, b.len())));
         b[16..18].copy_from_slice(&c.to_be_bytes());
     }
 }

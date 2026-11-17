@@ -1677,3 +1677,55 @@ fn ecn_and_pacing_through_loss_and_cookies() {
     let (ha, hb) = s.connect_to(IpAddr::V6(B6), 80, 50000);
     s.transfer(ha, hb, &pattern(500_000), Duration::from_secs(60));
 }
+
+/// Stack-only cost of a small request/response (64 bytes each way plus the ACK) between two
+/// interfaces, without threads or a link model: `cargo test --release -p only-dpdk --lib
+/// bench_request_response -- --ignored --nocapture`. `ONLY_RR_N` sets the round trips.
+#[test]
+#[ignore]
+fn bench_request_response() {
+    let link = LinkCfg {
+        delay: Duration::ZERO,
+        ..LinkCfg::default()
+    };
+    let mut s = Sim::new(link, params(), params());
+    let (ha, hb) = s.connect(80, 50000);
+    let n: u32 = std::env::var("ONLY_RR_N")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300_000);
+    let req = [7u8; 64];
+    let mut buf = [0u8; 4096];
+    let mut now = s.now;
+    let (mut ca, mut cb) = (Cap::default(), Cap::default());
+    let mut ev = Vec::new();
+    let t0 = Instant::now();
+    for _ in 0..n {
+        s.a.tcp_send(ha, &req);
+        s.a.poll(now, &mut ca);
+        for f in ca.0.drain(..) {
+            s.b.receive(now, &f, &mut cb);
+        }
+        while s.b.tcp_recv(hb, &mut buf) > 0 {}
+        s.b.tcp_send(hb, &req);
+        s.b.poll(now, &mut cb);
+        for f in cb.0.drain(..) {
+            s.a.receive(now, &f, &mut ca);
+        }
+        while s.a.tcp_recv(ha, &mut buf) > 0 {}
+        s.a.poll(now, &mut ca);
+        for f in ca.0.drain(..) {
+            s.b.receive(now, &f, &mut cb);
+        }
+        cb.0.clear();
+        s.a.take_events(&mut ev);
+        s.b.take_events(&mut ev);
+        ev.clear();
+        now += Duration::from_micros(10);
+    }
+    let el = t0.elapsed();
+    eprintln!(
+        "RR {n} round trips: {:.1} ns each",
+        el.as_nanos() as f64 / f64::from(n)
+    );
+}
