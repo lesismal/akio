@@ -208,7 +208,11 @@ fn random_messages_agree_with_prost() {
             assert_eq!(ours, theirs, "encodings differ for {m:?}");
         }
         mirror::differential(&ours);
+        mirror::differential_groups(&ours);
+        mirror::differential_dynamic(&ours);
         mirror::differential(&theirs);
+        mirror::differential_groups(&theirs);
+        mirror::differential_dynamic(&theirs);
         let back = AllTypes::decode(&theirs).unwrap();
         assert!(mirror::to_prost(&back) == p, "{back:?}");
     }
@@ -244,6 +248,8 @@ fn mutated_encodings_are_accepted_or_rejected_alike() {
             }
         }
         mirror::differential(&b);
+        mirror::differential_groups(&b);
+        mirror::differential_dynamic(&b);
     }
 }
 
@@ -282,6 +288,8 @@ fn edge_inputs_agree_with_prost() {
     ];
     for c in cases {
         mirror::differential(c);
+        mirror::differential_groups(c);
+        mirror::differential_dynamic(c);
     }
     // Recursion: both stop at 100 levels.
     for depth in [99usize, 100, 101, 150] {
@@ -294,5 +302,39 @@ fn edge_inputs_agree_with_prost() {
             b = outer;
         }
         mirror::differential(&b);
+        mirror::differential_groups(&b);
+        mirror::differential_dynamic(&b);
+    }
+}
+
+#[test]
+fn groups_and_closed_enums_agree_with_prost() {
+    use protobuf_test::test::ext::{Base, Level, base};
+    let mut r = Rng(0x9e37_79b9_7f4a_7c15);
+    for _ in 0..3000 {
+        let b = Base {
+            id: r.chance(50).then(|| r.int()),
+            meta: r.chance(50).then(|| base::Meta {
+                note: r.chance(50).then(|| r.string()),
+                ..Default::default()
+            }),
+            levels: (0..r.below(4))
+                .map(|_| Level([1, 2, 3, -1][r.below(4) as usize]))
+                .collect(),
+            ..Default::default()
+        };
+        let mut bytes = b.encode_to_vec();
+        // Mutate: flip, cut or splice an extension or a group.
+        match r.below(4) {
+            0 if !bytes.is_empty() => {
+                let i = r.below(bytes.len() as u64) as usize;
+                bytes[i] ^= 1 << r.below(8);
+            }
+            1 if !bytes.is_empty() => bytes.truncate(r.below(bytes.len() as u64) as usize),
+            2 => bytes.extend_from_slice(&[0xa0, 0x06, r.below(5) as u8]), // extension 100
+            _ => bytes.extend_from_slice(&[0x13, 0x1a, 0x01, b'x', 0x14]), // group 2 { note: "x" }
+        }
+        mirror::differential_groups(&bytes);
+        mirror::differential_dynamic(&bytes);
     }
 }

@@ -327,7 +327,11 @@ impl DynamicMessage {
             )));
         }
         self.clear_oneof_siblings(fd);
-        self.fields.insert(fd.number(), v);
+        if !fd.has_presence() && fd.cardinality() != Cardinality::Repeated && is_zero(&v) {
+            self.fields.remove(&fd.number());
+        } else {
+            self.fields.insert(fd.number(), v);
+        }
         Ok(())
     }
 
@@ -480,7 +484,12 @@ impl DynamicMessage {
             self.push(fd, v);
         } else {
             self.clear_oneof_siblings(fd);
-            self.fields.insert(n, v);
+            if !fd.has_presence() && is_zero(&v) {
+                // Implicit presence: a default value read is the field unset.
+                self.fields.remove(&n);
+            } else {
+                self.fields.insert(n, v);
+            }
         }
         Ok(())
     }

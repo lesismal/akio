@@ -521,3 +521,146 @@ pub fn differential(data: &[u8]) {
         }
     }
 }
+
+// ---- groups and closed enums: test.ext.Base ------------------------------------------------
+
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PMeta {
+    #[prost(string, optional, tag = "3")]
+    pub note: Option<String>,
+}
+
+/// prost's view of `test.ext.Base`: the group, and the closed enum as plain numbers (prost
+/// enums are open); the extension range is unknown to prost.
+#[derive(Clone, PartialEq, prost::Message)]
+pub struct PBase {
+    #[prost(int32, optional, tag = "1")]
+    pub id: Option<i32>,
+    #[prost(group, optional, tag = "2")]
+    pub meta: Option<PMeta>,
+    #[prost(int32, repeated, packed = "false", tag = "4")]
+    pub levels: Vec<i32>,
+}
+
+fn base_to_prost(b: &protobuf_test::test::ext::Base) -> PBase {
+    PBase {
+        id: b.id,
+        meta: b.meta.as_ref().map(|m| PMeta {
+            note: m.note.clone(),
+        }),
+        levels: b.levels.iter().map(|l| l.0).collect(),
+    }
+}
+
+/// A field of `Base` (or of its group) that arrives with another wire type than declared: we
+/// keep it as an unknown field, prost rejects the message.
+fn base_mismatch(data: &[u8], in_group: bool, depth: u32) -> bool {
+    let mut r = Reader::new(data);
+    while !r.is_empty() {
+        let Ok((f, wt)) = r.read_tag() else {
+            return false;
+        };
+        if wt == WireType::EndGroup {
+            return false;
+        }
+        let wrong = match (in_group, f) {
+            (false, 1) => wt != WireType::Varint,
+            (false, 2) => wt != WireType::StartGroup,
+            (false, 4) => wt != WireType::Varint && wt != WireType::Len,
+            (true, 3) => wt != WireType::Len,
+            _ => false,
+        };
+        if wrong {
+            return true;
+        }
+        if !in_group && f == 2 {
+            if depth >= 100 || base_mismatch(r.remaining(), true, depth + 1) {
+                return true;
+            }
+        }
+        if r.skip_field(f, wt).is_err() {
+            return false;
+        }
+    }
+    false
+}
+
+/// [`differential`] for `test.ext.Base` (proto2 group, closed enum, extension range): the same
+/// acceptance and the same values, except that a closed enum's unknown numbers are dropped by
+/// us (kept as unknown fields) where prost keeps them.
+pub fn differential_groups(data: &[u8]) {
+    use protobuf_test::test::ext::Base;
+    let ours = Base::decode(data);
+    let theirs = <PBase as prost::Message>::decode(data);
+    let mm = base_mismatch(data, false, 0);
+    if let Ok(o) = &ours {
+        let re = o.encode_to_vec();
+        assert_eq!(re.len(), o.encoded_len());
+        let again = Base::decode(&re).expect("ours decodes ours");
+        assert_eq!(&again, o, "our round trip");
+        if !mm {
+            let mut back =
+                <PBase as prost::Message>::decode(re.as_slice()).expect("prost decodes ours");
+            // Our unknown closed enum numbers come back after the known fields.
+            back.levels.retain(|l| *l == 1 || *l == 2);
+            assert_eq!(back, base_to_prost(o), "prost reading our encoding");
+        }
+    }
+    if mm {
+        return;
+    }
+    match (&ours, &theirs) {
+        (Ok(o), Ok(t)) => {
+            let mut t = t.clone();
+            t.levels.retain(|l| *l == 1 || *l == 2);
+            assert_eq!(base_to_prost(o), t, "decoded values differ\ninput: {data:02x?}");
+        }
+        (Err(_), Err(_)) => {}
+        (Ok(o), Err(e)) => {
+            panic!("only-protobuf accepted what prost rejects ({e}): {o:?}\ninput: {data:02x?}");
+        }
+        (Err(e), Ok(t)) => {
+            panic!("only-protobuf rejected what prost accepts ({e}): {t:?}\ninput: {data:02x?}");
+        }
+    }
+}
+
+/// Reflection against generated code: a `DynamicMessage` of `AllTypes` and of `test.ext.Base`
+/// accepts exactly what the generated decoder accepts, and both re-encode to the same bytes.
+pub fn differential_dynamic(data: &[u8]) {
+    use only_protobuf::reflect::{DynamicMessage, ReflectMessage};
+    fn one<M: ReflectMessage + PartialEq + std::fmt::Debug>(data: &[u8]) {
+        let typed = M::decode(data);
+        let dynamic = DynamicMessage::decode(M::descriptor(), data);
+        match (&typed, &dynamic) {
+            (Ok(t), Ok(d)) => {
+                let tb = t.encode_to_vec();
+                let db = d.encode_to_vec();
+                // Same values: the dynamic encoding decodes to the typed message. Compared in
+                // the dynamic message's canonical encoding (maps sorted; NaN is unequal to
+                // itself as a value).
+                let canon = |b: &[u8]| {
+                    DynamicMessage::decode(M::descriptor(), b)
+                        .expect("dynamic decodes typed")
+                        .encode_to_vec()
+                };
+                let t2 = M::decode(&db).expect("typed decodes dynamic");
+                assert_eq!(canon(&t2.encode_to_vec()), canon(&tb), "values\n{t2:?}\n{t:?}");
+                // Known values equal (unknown fields may come in another order: a closed enum's
+                // unknown number in an extension is an unknown field to the dynamic message, an
+                // extension record to the generated one).
+                let mut back =
+                    DynamicMessage::decode(M::descriptor(), &tb).expect("dynamic decodes typed");
+                let mut d = d.clone();
+                back.clear_unknown_fields();
+                d.clear_unknown_fields();
+                assert_eq!(back.encode_to_vec(), d.encode_to_vec(), "dynamic values");
+            }
+            (Err(_), Err(_)) => {}
+            (t, d) => panic!("typed {t:?} vs dynamic {d:?}\ninput: {data:02x?}"),
+        }
+    }
+    one::<all::AllTypes>(data);
+    one::<protobuf_test::test::ext::Base>(data);
+    one::<protobuf_test::test::ed::Item>(data);
+}

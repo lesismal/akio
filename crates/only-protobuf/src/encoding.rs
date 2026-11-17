@@ -917,7 +917,8 @@ pub fn read_closed_enum<E: Enumeration>(
     if v.is_known() {
         Ok(Some(v))
     } else {
-        unknown.push_varint(field, n);
+        // As C++: the number as an int32, sign-extended.
+        unknown.push_varint(field, i64::from(n as i32) as u64);
         Ok(None)
     }
 }
@@ -940,7 +941,8 @@ pub fn merge_closed_enum_repeated<E: Enumeration>(
             if e.is_known() {
                 v.push(e);
             } else {
-                unknown.push_varint(field, n);
+                // As C++: the number as an int32, sign-extended.
+        unknown.push_varint(field, i64::from(n as i32) as u64);
             }
         }
         return Ok(());
