@@ -48,12 +48,16 @@ only-dpdk 自带的协议栈（`crates/only-dpdk/src/net`）只支持 IPv4：IPv
 ## 影响
 
 - 新增公共 API：`DpdkConfig` 的五个字段（快照 `api/only-dpdk.txt`）。
-- 连接表的键对两种地址族都是 20 字节（IPv4 地址取其 IPv4 映射的 IPv6 形式），按两个字哈希；
-  ISN 与 SYN cookie 对完整的 16 字节地址做哈希。连接内 IPv4 地址内联保存、IPv6 地址装箱，pacing
-  状态也装箱，因此纯 IPv4 连接与之前一样小。
-- IPv4 上的开销（gpu51，内存链路上的 `stack-bench`，10 轮交替运行取中位数，新/main）：大块 echo
-  0.99，顺序建连 1.00，UDP 请求/响应 1.01，100 与 1000 条连接上的小请求/响应 0.96。profile 中没有
-  单一的新热点（每个报文段上的地址族分派），此残余开销如实记录。
+- IPv4 路径保持单态：连接内联保存 IPv4 端点（IPv6 装箱），以引用交给输出路径，IPv4 发送不经过
+  地址族分派；伪首部的地址和每个报文只计算一次；pacing 状态与 UDP 对端装箱，未开启 pacing 的 TCP
+  连接与 main 一样大；ISN 与 SYN cookie 对 IPv4 仍只哈希四个字。连接表的键对两种地址族都是 20 字节
+  （IPv4 取其映射形式），按两个字哈希；邻居缓存改用协议栈带密钥的乘法混合哈希而非 SipHash（每个
+  发出的报文段查一次）。
+- IPv4 上的开销实测：在只含协议栈的循环上用 callgrind 统计指令数（被忽略的测试
+  `bench_request_response`、`bench_connection_cycle`），相对 main：请求/响应 -1.5%，建连与关闭
+  +0.9%。gpu51，内存链路上的 `stack-bench`，12 轮交替运行取中位数，新/main：100 条连接请求/响应
+  1.04，1000 条连接 1.02，UDP 1.01，大块 echo 1.01（64 KiB 缓冲）与 0.94（1 MiB 缓冲，两侧逐轮呈双峰
+  分布：十次运行在 0.88-1.16 之间），顺序建连 0.99。
 - 新增模糊测试目标 `dpdk_ipv6`、`dpdk_icmpv6`、`dpdk_ndp`；`dpdk_stack` 运行双栈协议栈。
 - 未完成：SLAAC / 路由器通告、DAD、IPv6 巨型帧、MLDv1、RFC 8899 PLPMTUD、Accurate ECN
   （RFC 9768）与 L4S，以及校验和 / TSO / LRO offload。
