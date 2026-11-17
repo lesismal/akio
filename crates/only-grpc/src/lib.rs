@@ -18,8 +18,8 @@
 #![warn(clippy::unwrap_used)]
 
 pub mod codec;
-pub mod reflection;
 mod deadline;
+pub mod reflection;
 
 /// The header map of metadata and trailers (re-exported from `only-http`).
 pub use only_http::Headers;

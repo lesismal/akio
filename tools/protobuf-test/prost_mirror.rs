@@ -573,10 +573,8 @@ fn base_mismatch(data: &[u8], in_group: bool, depth: u32) -> bool {
         if wrong {
             return true;
         }
-        if !in_group && f == 2 {
-            if depth >= 100 || base_mismatch(r.remaining(), true, depth + 1) {
-                return true;
-            }
+        if !in_group && f == 2 && (depth >= 100 || base_mismatch(r.remaining(), true, depth + 1)) {
+            return true;
         }
         if r.skip_field(f, wt).is_err() {
             return false;
@@ -613,7 +611,11 @@ pub fn differential_groups(data: &[u8]) {
         (Ok(o), Ok(t)) => {
             let mut t = t.clone();
             t.levels.retain(|l| *l == 1 || *l == 2);
-            assert_eq!(base_to_prost(o), t, "decoded values differ\ninput: {data:02x?}");
+            assert_eq!(
+                base_to_prost(o),
+                t,
+                "decoded values differ\ninput: {data:02x?}"
+            );
         }
         (Err(_), Err(_)) => {}
         (Ok(o), Err(e)) => {
@@ -645,7 +647,11 @@ pub fn differential_dynamic(data: &[u8]) {
                         .encode_to_vec()
                 };
                 let t2 = M::decode(&db).expect("typed decodes dynamic");
-                assert_eq!(canon(&t2.encode_to_vec()), canon(&tb), "values\n{t2:?}\n{t:?}");
+                assert_eq!(
+                    canon(&t2.encode_to_vec()),
+                    canon(&tb),
+                    "values\n{t2:?}\n{t:?}"
+                );
                 // Known values equal (unknown fields may come in another order: a closed enum's
                 // unknown number in an extension is an unknown field to the dynamic message, an
                 // extension record to the generated one).

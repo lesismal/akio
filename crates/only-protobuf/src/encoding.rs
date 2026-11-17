@@ -947,7 +947,7 @@ pub fn merge_closed_enum_repeated<E: Enumeration>(
                 v.push(e);
             } else {
                 // As C++: the number as an int32, sign-extended.
-        unknown.push_varint(field, i64::from(n as i32) as u64);
+                unknown.push_varint(field, i64::from(n as i32) as u64);
             }
         }
         return Ok(());

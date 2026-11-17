@@ -450,7 +450,10 @@ fn proto2_extensions_of_every_kind() {
     assert_eq!(got.repeated_extension(&ext::TAGS).unwrap(), [1, 2, 300]);
     assert_eq!(
         got.extension(&ext::AT).unwrap(),
-        Some(well_known::Timestamp { seconds: 5, nanos: 6 })
+        Some(well_known::Timestamp {
+            seconds: 5,
+            nanos: 6
+        })
     );
     assert_eq!(got.extension(&ext::EXTRA).unwrap().unwrap().x, Some(-1));
     assert_eq!(
@@ -469,7 +472,13 @@ fn proto2_extensions_of_every_kind() {
     };
     b.set_extension(&ext::LEVEL, &Level::LOW);
     b.set_repeated_extension(&ext::TAGS, &[1, 2, 300]);
-    b.set_extension(&ext::AT, &well_known::Timestamp { seconds: 5, nanos: 6 });
+    b.set_extension(
+        &ext::AT,
+        &well_known::Timestamp {
+            seconds: 5,
+            nanos: 6,
+        },
+    );
     b.set_extension(
         &ext::EXTRA,
         &Extra {
@@ -489,7 +498,11 @@ fn edition_2024() {
     use protobuf_test::test::ed::{Item, Kind, item};
     let got: Item = roundtrip("ed2024");
     assert_eq!(got.id, 1, "implicit presence from the file default");
-    assert_eq!(got.name.as_deref(), Some(""), "explicit presence on the field");
+    assert_eq!(
+        got.name.as_deref(),
+        Some(""),
+        "explicit presence on the field"
+    );
     assert_eq!(got.inner.as_ref().unwrap().v, 2, "delimited");
     assert_eq!(got.codes, [1, 2], "expanded");
     assert_eq!(got.kind, Some(Kind::A));

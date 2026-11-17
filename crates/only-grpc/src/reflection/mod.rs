@@ -65,20 +65,23 @@ pub fn register(server: GrpcServer, pool: &DescriptorPool) -> GrpcServer {
     let mut server = server;
     for name in SERVICE_NAMES {
         let pool = pool.clone();
-        server = server.bidi(&format!("/{name}/ServerReflectionInfo"), move |_md, sink| {
-            let pool = pool.clone();
-            let mut sent: HashSet<String> = HashSet::new();
-            Box::new(move |m| match m {
-                Some(b) => match ServerReflectionRequest::decode(&b) {
-                    Ok(req) => {
-                        let resp = answer(&pool, req, &mut sent);
-                        sink.send(&resp.encode_to_vec());
-                    }
-                    Err(e) => sink.finish(Status::new(Code::InvalidArgument, e.to_string())),
-                },
-                None => sink.finish(Status::ok()),
-            })
-        });
+        server = server.bidi(
+            &format!("/{name}/ServerReflectionInfo"),
+            move |_md, sink| {
+                let pool = pool.clone();
+                let mut sent: HashSet<String> = HashSet::new();
+                Box::new(move |m| match m {
+                    Some(b) => match ServerReflectionRequest::decode(&b) {
+                        Ok(req) => {
+                            let resp = answer(&pool, req, &mut sent);
+                            sink.send(&resp.encode_to_vec());
+                        }
+                        Err(e) => sink.finish(Status::new(Code::InvalidArgument, e.to_string())),
+                    },
+                    None => sink.finish(Status::ok()),
+                })
+            },
+        );
     }
     server
 }
@@ -156,7 +159,8 @@ fn answer(
             None => not_found(format!("type not found: {t}")),
         },
         Some(MessageRequest::ListServices(_)) => {
-            let mut names: Vec<String> = pool.services().map(|s| s.full_name().to_owned()).collect();
+            let mut names: Vec<String> =
+                pool.services().map(|s| s.full_name().to_owned()).collect();
             names.sort();
             names.dedup();
             MessageResponse::ListServicesResponse(ListServiceResponse {
@@ -184,7 +188,11 @@ mod tests {
 
     use super::*;
 
-    fn ask(pool: &DescriptorPool, r: MessageRequest, sent: &mut HashSet<String>) -> MessageResponse {
+    fn ask(
+        pool: &DescriptorPool,
+        r: MessageRequest,
+        sent: &mut HashSet<String>,
+    ) -> MessageResponse {
         answer(
             pool,
             ServerReflectionRequest {
@@ -200,11 +208,14 @@ mod tests {
     #[test]
     fn answers() {
         let mut pool = well_known::descriptor_pool().clone();
-        pool.add_file_descriptor_set(v1::FILE_DESCRIPTOR_SET).unwrap();
+        pool.add_file_descriptor_set(v1::FILE_DESCRIPTOR_SET)
+            .unwrap();
         let mut sent = HashSet::new();
-        let MessageResponse::ListServicesResponse(l) =
-            ask(&pool, MessageRequest::ListServices(String::new()), &mut sent)
-        else {
+        let MessageResponse::ListServicesResponse(l) = ask(
+            &pool,
+            MessageRequest::ListServices(String::new()),
+            &mut sent,
+        ) else {
             panic!()
         };
         assert_eq!(l.service[0].name, "grpc.reflection.v1.ServerReflection");
@@ -218,7 +229,10 @@ mod tests {
             panic!()
         };
         let fd = well_known::FileDescriptorProto::decode(&f.file_descriptor_proto[0]).unwrap();
-        assert_eq!(fd.name.as_deref(), Some("grpc/reflection/v1/reflection.proto"));
+        assert_eq!(
+            fd.name.as_deref(),
+            Some("grpc/reflection/v1/reflection.proto")
+        );
         let MessageResponse::ErrorResponse(e) = ask(
             &pool,
             MessageRequest::FileContainingSymbol("no.Such".into()),

@@ -46,13 +46,21 @@ pub fn summarize(points: &[Point]) -> RouteSummary {
 pub struct Impl;
 
 impl crate::test::ext::ext_server::Ext for Impl {
-    fn echo(&self, _md: &Metadata, request: crate::test::ext::Base) -> Result<crate::test::ext::Base, Status> {
+    fn echo(
+        &self,
+        _md: &Metadata,
+        request: crate::test::ext::Base,
+    ) -> Result<crate::test::ext::Base, Status> {
         Ok(request)
     }
 }
 
 impl crate::test::ed::items_server::Items for Impl {
-    fn get(&self, _md: &Metadata, request: crate::test::ed::Item) -> Result<crate::test::ed::Item, Status> {
+    fn get(
+        &self,
+        _md: &Metadata,
+        request: crate::test::ed::Item,
+    ) -> Result<crate::test::ed::Item, Status> {
         Ok(request)
     }
 }
