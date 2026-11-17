@@ -19,6 +19,7 @@ use std::{
 use super::{
     arp::{ArpCache, Lookup, NdpCache},
     frag::Reassembler,
+    hash::KeyedHash,
     tcp::{Clock, Endpoints, IcmpError, Notes, Params, SegOut, State, SynOpts, Tcb, TcpError},
     wire::{
         self, ACK, ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST, ECN_MASK, ECT0, ETH_HDR,
@@ -140,49 +141,6 @@ pub(crate) enum CallError {
     AddrInUse,
     TooBig,
     Unreachable,
-}
-
-/// A keyed, fast hasher for the connection table (randomized per interface so remote peers
-/// cannot aim collisions).
-#[derive(Clone, Debug)]
-struct KeyedHash(u64);
-
-impl BuildHasher for KeyedHash {
-    type Hasher = MixHasher;
-    fn build_hasher(&self) -> MixHasher {
-        MixHasher(self.0)
-    }
-}
-
-#[derive(Debug)]
-struct MixHasher(u64);
-
-impl Hasher for MixHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u64(u64::from(b));
-        }
-    }
-    fn write_u16(&mut self, n: u16) {
-        self.write_u64(u64::from(n));
-    }
-    fn write_u32(&mut self, n: u32) {
-        self.write_u64(u64::from(n));
-    }
-    fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n)
-            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-            .rotate_left(29);
-    }
-    fn write_usize(&mut self, n: usize) {
-        self.write_u64(n as u64);
-    }
-    fn finish(&self) -> u64 {
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
 }
 
 /// A connection-table key: (local port, remote address), packed in 20 bytes whatever the

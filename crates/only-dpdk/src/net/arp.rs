@@ -13,7 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::wire::Mac;
+use super::{hash::KeyedHash, wire::Mac};
 
 /// A resolved entry is trusted this long after it was learned or confirmed.
 pub(crate) const REACHABLE: Duration = Duration::from_secs(60);
@@ -74,7 +74,7 @@ impl NeighborAddr for Ipv6Addr {
 
 #[derive(Debug)]
 pub(crate) struct NeighborCache<A> {
-    entries: HashMap<A, Entry>,
+    entries: HashMap<A, Entry, KeyedHash>,
     /// Earliest retry among pending entries (None: no pending entry).
     next_retry: Option<Instant>,
     /// Bytes in all pending queues.
@@ -84,7 +84,7 @@ pub(crate) struct NeighborCache<A> {
 impl<A> Default for NeighborCache<A> {
     fn default() -> Self {
         NeighborCache {
-            entries: HashMap::new(),
+            entries: HashMap::with_hasher(KeyedHash::random()),
             next_retry: None,
             queued: 0,
         }

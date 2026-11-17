@@ -15,6 +15,7 @@ pub(crate) mod arp;
 pub(crate) mod buf;
 pub(crate) mod cc;
 pub(crate) mod frag;
+pub(crate) mod hash;
 pub(crate) mod iface;
 pub(crate) mod tcp;
 pub(crate) mod wire;
