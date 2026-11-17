@@ -249,6 +249,60 @@ fn zero_rtt_over_quic() {
 }
 
 #[test]
+fn tickets_bound_to_the_quic_version() {
+    const V1: u32 = 1;
+    const V2: u32 = 0x6b33_43cf;
+    let (scfg, ccfg) = configs(&["h3"]);
+    let ctx = Some(b"limits".to_vec());
+    let client = |v: u32| QuicTls::client_versioned(&ccfg, "localhost", vec![1], true, v).unwrap();
+    let server = |v: u32| QuicTls::server_versioned(&scfg, b"p".to_vec(), ctx.clone(), v);
+    assert_eq!(ticket_version(&ccfg, "localhost"), None);
+    // A version 1 connection: its tickets are version 1's.
+    let (mut c, mut s) = (client(V1), server(V1));
+    run(&mut c, &mut s).unwrap();
+    assert!(!c.resumed());
+    assert_eq!(ticket_version(&ccfg, "localhost"), Some(V1));
+    // A client starting in version 2 offers none of them (RFC 9369 section 5).
+    let (mut c, mut s) = (client(V2), server(V2));
+    assert!(c.early_params().is_none());
+    run(&mut c, &mut s).unwrap();
+    assert!(!c.resumed() && !s.resumed());
+    assert_eq!(ticket_version(&ccfg, "localhost"), Some(V2));
+    // A server rejects a ticket issued in another version than the client started in: a full
+    // handshake, without 0-RTT.
+    let (mut c, mut s) = (client(V1), server(V2));
+    assert!(c.early_params().is_some());
+    // (The connection is in version 2: the new tickets are version 2's.)
+    c.set_ticket_version(V2);
+    run(&mut c, &mut s).unwrap();
+    assert!(!c.resumed() && !s.resumed());
+    assert_eq!(c.early_data(), EarlyData::Rejected);
+    assert!(!s.early_data_accepted());
+    // The other version 1 ticket resumes in version 1, with 0-RTT.
+    let (mut c, mut s) = (client(V1), server(V1));
+    // Compatible negotiation moved the connection to version 2: the tickets issued on it are
+    // version 2's, on both sides.
+    c.set_ticket_version(V2);
+    s.set_ticket_version(V2);
+    run(&mut c, &mut s).unwrap();
+    assert!(c.resumed() && s.resumed());
+    assert!(c.early_data_accepted() && s.early_data_accepted());
+    assert_eq!(ticket_version(&ccfg, "localhost"), Some(V2));
+    let (mut c, mut s) = (client(V2), server(V2));
+    run(&mut c, &mut s).unwrap();
+    assert!(c.resumed() && s.resumed());
+    // Unbound handshakes (version 0) neither take nor accept bound tickets.
+    let mut c = QuicTls::client_early(&ccfg, "localhost", vec![1], true).unwrap();
+    assert!(c.early_params().is_none());
+    let mut s = QuicTls::server_early(&scfg, b"p".to_vec(), ctx.clone());
+    run(&mut c, &mut s).unwrap();
+    assert!(!c.resumed());
+    let (mut c, mut s) = (client(V1), QuicTls::server(&scfg, b"p".to_vec()));
+    run(&mut c, &mut s).unwrap();
+    assert!(!c.resumed() && !s.resumed());
+}
+
+#[test]
 fn client_hello_transport_params_peek() {
     let p = pki(Kind::P256, &["localhost"]);
     let ccfg = ClientConfig::builder()

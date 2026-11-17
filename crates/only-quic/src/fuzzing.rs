@@ -168,7 +168,7 @@ impl Pair {
                 ctls,
                 "localhost",
                 saddr,
-                Vec::new(),
+                None,
             )
             .expect("connect");
         Pair {

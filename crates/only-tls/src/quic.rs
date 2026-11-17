@@ -93,7 +93,22 @@ impl QuicTls {
         params: Vec<u8>,
         early: bool,
     ) -> Result<QuicTls, Fatal> {
-        let mut c = Client::new(cfg.inner.clone(), server_name, Some(params), early)?;
+        QuicTls::client_versioned(cfg, server_name, params, early, 0)
+    }
+
+    /// [`QuicTls::client_early`] for a connection starting in QUIC version `version`
+    /// (RFC 9369 section 5): only a ticket issued in that version is offered, and tickets
+    /// the server sends are kept under it (or the version given to
+    /// [`set_ticket_version`](Self::set_ticket_version)). Version 0 is "not bound", what
+    /// the unversioned constructors use.
+    pub fn client_versioned(
+        cfg: &ClientConfig,
+        server_name: &str,
+        params: Vec<u8>,
+        early: bool,
+        version: u32,
+    ) -> Result<QuicTls, Fatal> {
+        let mut c = Client::new(cfg.inner.clone(), server_name, Some(params), early, version)?;
         let mut acts = Vec::new();
         c.start(&mut acts)?;
         let mut q = QuicTls::new(Machine::Client(Box::new(c)));
@@ -116,11 +131,34 @@ impl QuicTls {
         params: Vec<u8>,
         early_ctx: Option<Vec<u8>>,
     ) -> QuicTls {
-        QuicTls::new(Machine::Server(Box::new(Server::new(
-            cfg.inner.clone(),
-            Some(params),
-            early_ctx,
-        ))))
+        QuicTls::server_versioned(cfg, params, early_ctx, 0)
+    }
+
+    /// [`QuicTls::server_early`] for a connection the client started in QUIC version
+    /// `version` (RFC 9369 section 5): only a ticket issued in that version resumes (another
+    /// one falls back to a full handshake, without 0-RTT), and tickets issued carry it (or
+    /// the version given to [`set_ticket_version`](Self::set_ticket_version)).
+    pub fn server_versioned(
+        cfg: &ServerConfig,
+        params: Vec<u8>,
+        early_ctx: Option<Vec<u8>>,
+        version: u32,
+    ) -> QuicTls {
+        let mut s = Server::new(cfg.inner.clone(), Some(params), early_ctx);
+        s.quic_accept_version = version;
+        s.quic_ticket_version = version;
+        QuicTls::new(Machine::Server(Box::new(s)))
+    }
+
+    /// The QUIC version tickets issued (server) or received (client) from now on belong to:
+    /// the negotiated one after compatible version negotiation moved the connection away
+    /// from the version it started in (RFC 9369 section 5). The ticket the handshake offers
+    /// or accepts stays bound to the starting version.
+    pub fn set_ticket_version(&mut self, version: u32) {
+        match &mut self.m {
+            Machine::Client(c) => c.quic_ticket_version = version,
+            Machine::Server(s) => s.quic_ticket_version = version,
+        }
     }
 
     fn new(m: Machine) -> QuicTls {
@@ -267,6 +305,16 @@ impl QuicTls {
             Machine::Server(_) => None,
         }
     }
+}
+
+/// The QUIC version of the newest usable session ticket `cfg` holds for `server_name`, if
+/// it holds one issued on a QUIC connection bound to a version: a client starts in that
+/// version so the ticket can be used (RFC 9369 section 5).
+pub fn ticket_version(cfg: &ClientConfig, server_name: &str) -> Option<u32> {
+    cfg.inner
+        .cache
+        .as_ref()?
+        .quic_ticket_version(server_name, crate::proto::common::now_secs())
 }
 
 /// How much of a ClientHello handshake message (header included) `hs`, the start of the

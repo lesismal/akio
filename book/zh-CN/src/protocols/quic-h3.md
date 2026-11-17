@@ -102,6 +102,12 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
   let cfg = only_quic::server_config(certs, key, &[b"h3"])?
       .prefer_version(only_quic::Version::V2);
   ```
+- **票据与令牌按版本区分**（RFC 9369 第 5 节，[ADR-014](https://github.com/lesismal/only/blob/main/docs/adr/014-quic-version-bound-resumption.zh-CN.md)）：
+  会话票据或 NEW_TOKEN 令牌属于签发它的连接所用的版本，兼容切换后即协商出的版本。服务端只用客户端起始
+  版本的票据恢复会话（其他版本的票据走完整握手，没有 0-RTT），也只用该版本的令牌验证地址（Retry 令牌
+  同样如此）。客户端绝不在 v2 中出示 v1 的票据或令牌，反之亦然：只要自己支持，它就以该服务端最新票据
+  （没有票据时看令牌）的版本开始连接，而不是 `ClientConfig::version`。因此配置为 v1、被偏好 v2 的服务端
+  切到 v2 的客户端，下次直接以 v2 开始，带 0-RTT 恢复会话，无需切换。
 - **ECN**（`TransportConfig::ecn`，默认开启）：Linux 上以 ECT(0) 发送，逐个数据报读取收到的码点并在
   ACK_ECN 帧中报告，验证路径（RFC 9000 第 13.4 节），CE 标记视为拥塞；清除或丢弃标记的路径回退为不带
   标记发送。其他平台不打标记（Linux 上也可用 `ONLY_UDP_ECN=0` 关闭）。`stats().ecn_capable` /

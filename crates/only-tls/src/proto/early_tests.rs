@@ -197,7 +197,7 @@ fn replayed_client_hello_with_early_data_is_rejected() {
     prime(&scfg, &ccfg, "localhost");
     let cache = ccfg.inner.cache.as_ref().unwrap();
     let mut t = cache
-        .take_ticket13("localhost", super::common::now_secs())
+        .take_ticket13("localhost", super::common::now_secs(), 0)
         .unwrap();
     t.received_ms -= 60_000;
     cache.add_ticket13("localhost", t);
@@ -359,7 +359,7 @@ fn early_data_bound_to_alpn_and_sni() {
     let take = |from: &ClientConfig, to: &ClientConfig, name_from: &str, name_to: &str| {
         let cache = from.inner.cache.as_ref().unwrap();
         let t = cache
-            .take_ticket13(name_from, super::common::now_secs())
+            .take_ticket13(name_from, super::common::now_secs(), 0)
             .unwrap();
         to.inner.cache.as_ref().unwrap().add_ticket13(name_to, t);
     };

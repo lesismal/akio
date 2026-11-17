@@ -111,7 +111,7 @@ with a switch that makes it fail.
   not the service.
 - The ClientHello peek costs a copy of the client's Initial CRYPTO data, only on servers with a
   preference. Sending a v1 Initial and continuing in v2 is visible on the wire (by design).
-- Not done: an asynchronous store interface; ticket key rotation with several live keys; binding
-  session tickets and NEW_TOKEN tokens to the QUIC version that issued them (RFC 9369 section 5
-  asks for it; it predates this decision, and compatible negotiation makes a v1 resumption with a
-  ticket from a connection moved to v2 routine).
+- Not done: an asynchronous store interface; ticket key rotation with several live keys. Binding
+  session tickets and NEW_TOKEN tokens to the QUIC version that issued them (RFC 9369 section 5),
+  which compatible negotiation made routine to get wrong, is done in
+  [ADR-014](014-quic-version-bound-resumption.md).

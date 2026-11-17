@@ -5,8 +5,12 @@
 # once, into the volume `ngtcp2-cvn-build`:
 #   - ngtcp2 client starting in v1 (listing v1 and v2) -> only-h3 server preferring v2: the
 #     connection moves to v2 within the handshake (ngtcp2 logs v2 Handshake packets), the GET
-#     succeeds; again with 0-RTT (a resumed request sent early, in v1 packets); a server
-#     without the preference keeps v1;
+#     succeeds; again with 0-RTT and a ticket from a v1 connection (to a twin port without the
+#     preference, same ticket key): the early request goes in v1 packets, then the connection
+#     moves to v2; that connection's ticket is a v2 one (RFC 9369 section 5), so ngtcp2
+#     reusing it to start in v1 (which the RFC forbids clients) gets a full handshake without
+#     0-RTT, and starting in v2 with it resumes with 0-RTT in v2; a server without the
+#     preference keeps v1;
 #   - only-quic client starting in v1 -> ngtcp2 server preferring v2: moved to v2; starting in
 #     v2 -> ngtcp2 server preferring v1: moved to v1.
 #
@@ -42,7 +46,7 @@ cd /tmp
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj /CN=localhost \
     -keyout key.pem -out cert.pem >/dev/null 2>&1
 mkdir -p htdocs && echo "hello from ngtcp2" > htdocs/index.html
-$H3 server 127.0.0.1:9401 prefer-v2 0rtt > h3-prefer.log 2>&1 &
+$H3 server 127.0.0.1:9401 prefer-v2 0rtt twin 127.0.0.1:9404 > h3-prefer.log 2>&1 &
 $H3 server 127.0.0.1:9403 > h3-plain.log 2>&1 &
 $SRV 127.0.0.1 9411 key.pem cert.pem -d htdocs --preferred-versions v2,v1 > ng-prefer-v2.log 2>&1 &
 $SRV 127.0.0.1 9413 key.pem cert.pem -d htdocs --preferred-versions v1,v2 > ng-prefer-v1.log 2>&1 &
@@ -62,18 +66,34 @@ grep -q "hello h3" ng-cli-1.log || { echo "FAIL: no response"; tail -20 ng-cli-1
 v=$(hs_versions ng-cli-1.log); echo "handshake packets: $v"
 [ "$v" = "version=0x$V2 " ] || { echo "FAIL: not moved to v2"; exit 1; }
 grep -q "the negotiated version is 0x$V2" ng-cli-*.log
-echo "== ngtcp2 client (v1, lists v2) -> only-h3 server preferring v2, 0-RTT"
-ngget ng-cli-0.log 9401 --session-file=sess --tp-file=tp --wait-for-ticket
-ngget ng-cli-0rtt.log 9401 --session-file=sess --tp-file=tp
+early() { grep -c "early request" h3-prefer.log || true; }
+echo "== ngtcp2 client (v1, lists v2) -> only-h3 server preferring v2, 0-RTT with a v1 ticket"
+ngget ng-cli-0.log 9404 --session-file=sess --tp-file=tp --wait-for-ticket
+v=$(hs_versions ng-cli-0.log); echo "ticket from a connection in: $v"
+[ "$v" = "version=0x00000001 " ] || { echo "FAIL: twin moved off v1"; exit 1; }
+ngget ng-cli-0rtt.log 9401 --session-file=sess --tp-file=tp --wait-for-ticket
 grep -q "hello h3" ng-cli-0rtt.log || { echo "FAIL: no 0-RTT response"; exit 1; }
 grep -q "type=0RTT" ng-cli-0rtt.log || { echo "FAIL: no 0-RTT sent"; exit 1; }
 ! grep -q "Early data was rejected" ng-cli-0rtt.log || { echo "FAIL: 0-RTT rejected"; exit 1; }
-grep -q "early request" h3-prefer.log || { echo "FAIL: no early request on only-h3"; exit 1; }
+[ "$(early)" = 1 ] || { echo "FAIL: no early request on only-h3"; exit 1; }
 # ngtcp2 sent its 0-RTT packets in v1, as RFC 9369 section 4.1 requires.
 ! grep -E "pkt tx .*type=0RTT" ng-cli-0rtt.log | grep -qv "version=0x00000001" || { echo "FAIL: 0-RTT not in v1"; exit 1; }
 v=$(hs_versions ng-cli-0rtt.log); echo "handshake packets: $v"
 [ "$v" = "version=0x$V2 " ] || { echo "FAIL: not moved to v2"; exit 1; }
 grep -q "the negotiated version is 0x$V2" ng-cli-*.log
+echo "== ngtcp2 client starting in v1 with the ticket of that v2 connection: not resumed"
+ngget ng-cli-cross.log 9401 --session-file=sess --tp-file=tp --wait-for-ticket
+grep -q "hello h3" ng-cli-cross.log || { echo "FAIL: no response"; exit 1; }
+grep -q "Early data was rejected" ng-cli-cross.log || { echo "FAIL: v2 ticket accepted in v1"; exit 1; }
+[ "$(early)" = 1 ] || { echo "FAIL: early request with a v2 ticket in v1"; exit 1; }
+echo "== ngtcp2 client starting in v2 with a v2 ticket: 0-RTT in v2, no switch"
+ngget ng-cli-0rtt2.log 9401 --session-file=sess --tp-file=tp -v v2
+grep -q "hello h3" ng-cli-0rtt2.log || { echo "FAIL: no 0-RTT response"; exit 1; }
+! grep -q "Early data was rejected" ng-cli-0rtt2.log || { echo "FAIL: 0-RTT rejected"; exit 1; }
+[ "$(early)" = 2 ] || { echo "FAIL: no early request in v2"; exit 1; }
+grep -E "pkt tx .*type=0RTT" ng-cli-0rtt2.log | grep -q "version=0x$V2" || { echo "FAIL: 0-RTT not in v2"; exit 1; }
+v=$(hs_versions ng-cli-0rtt2.log); echo "handshake packets: $v"
+[ "$v" = "version=0x$V2 " ] || { echo "FAIL: not in v2"; exit 1; }
 echo "== ngtcp2 client (v1, lists v2) -> only-h3 server without a preference: stays v1"
 ngget ng-cli-plain.log 9403
 v=$(hs_versions ng-cli-plain.log); echo "handshake packets: $v"

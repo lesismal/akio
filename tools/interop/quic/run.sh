@@ -83,7 +83,7 @@ grep -q "connected in V1" "$LOG/quic-rust-server-prefer-v2.log" || { echo "FAIL:
 echo "== quic-go client (v2 only) -> only-quic server preferring v1: stays in v2"
 "$GO" client 127.0.0.1:9513 v2 small
 grep -q "connected in V2" "$LOG/quic-rust-server-prefer-v1.log" || { echo "FAIL: quic-go v2 client not in v2"; exit 1; }
-echo "== only-quic client (v1) -> only-quic server preferring v2: moved to v2, 0-RTT across the switch"
+echo "== only-quic client (v1) -> only-quic server preferring v2: moved to v2; resumed in v2 with the v2 ticket, 0-RTT"
 "$RS" client 127.0.0.1:9511 expect-v2 bulk 20
 "$RS" client 127.0.0.1:9511 expect-v2 0rtt small
 echo "== only-quic client (v2) -> only-quic server preferring v1: moved to v1"

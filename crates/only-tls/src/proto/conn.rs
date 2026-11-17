@@ -202,7 +202,7 @@ impl std::fmt::Debug for Connection {
 impl Connection {
     pub(crate) fn client(cfg: Arc<ClientSettings>, name: &str) -> Result<Connection, Fatal> {
         let early = cfg.early_data;
-        let mut c = Client::new(cfg, name, None, early)?;
+        let mut c = Client::new(cfg, name, None, early, 0)?;
         let mut actions = Vec::new();
         c.start(&mut actions)?;
         let mut conn = Connection::new(Machine::Client(Box::new(c)));

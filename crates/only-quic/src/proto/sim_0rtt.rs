@@ -55,7 +55,7 @@ pub(super) fn request(
     req: &[u8],
 ) -> Outcome {
     let start = sim.now;
-    let h = sim.connect(tls, cfg, Vec::new());
+    let h = sim.connect(tls, cfg, None);
     let mut id = sim.cconn(h).open(Dir::Bi);
     if let Some(id) = id {
         sim.cconn(h)

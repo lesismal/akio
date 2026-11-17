@@ -114,6 +114,15 @@ Above 4096 handshakes in progress, new clients must also prove their address wit
   let cfg = only_quic::server_config(certs, key, &[b"h3"])?
       .prefer_version(only_quic::Version::V2);
   ```
+- **Tickets and tokens are per version** (RFC 9369 section 5, [ADR-014](https://github.com/lesismal/only/blob/main/docs/adr/014-quic-version-bound-resumption.md)):
+  a session ticket or NEW_TOKEN token belongs to the version of the connection that issued it,
+  the negotiated one after a compatible switch. A server resumes only a ticket from the version
+  the client started in (another one gets a full handshake, without 0-RTT) and validates the
+  address only with a token from it (Retry tokens too). A client never presents a v1 ticket or
+  token in v2 or the other way round: it starts in the version of its newest ticket for the
+  server (else of its token) when it speaks it, rather than `ClientConfig::version`. So a client
+  configured for v1 that a server preferring v2 moved to v2 starts its next connection in v2 and
+  resumes, with 0-RTT, without a switch.
 - **ECN** (`TransportConfig::ecn`, on by default): on Linux packets go out ECT(0), received
   codepoints are read per datagram and reported in ACK_ECN frames, the path is validated (RFC 9000
   section 13.4) and CE marks count as congestion; a path that bleaches or drops marks falls back

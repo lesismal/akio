@@ -331,8 +331,8 @@ impl Default for TransportConfig {
 // ---- endpoint configurations ----
 
 /// Address-validation tokens (NEW_TOKEN) a client keeps per server name for later
-/// connections.
-pub(crate) type TokenStore = Arc<Mutex<HashMap<String, Vec<u8>>>>;
+/// connections, each with the QUIC version it was issued in.
+pub(crate) type TokenStore = Arc<Mutex<HashMap<String, crate::proto::ClientToken>>>;
 
 /// A QUIC server configuration: TLS (see [`server_config`](crate::server_config)) plus
 /// transport settings. Cheap to clone.
@@ -536,6 +536,11 @@ impl ClientConfig {
     /// (RFC 9368). A server preferring the other version may also move the connection to it
     /// within the handshake (compatible negotiation, RFC 9368 section 4), which the client
     /// follows.
+    ///
+    /// Session tickets and address-validation tokens belong to the version of the connection
+    /// that issued them (RFC 9369 section 5): when this configuration holds one for the server
+    /// name, the connection starts in its version instead, so it can be used (a server that
+    /// moved the last connection to version 2 gets the next one in version 2 directly).
     #[must_use]
     pub fn version(mut self, version: Version) -> Self {
         self.0.version = version;
