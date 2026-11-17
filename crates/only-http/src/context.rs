@@ -123,30 +123,19 @@ enum Out {
     Ext(ExtOut),
 }
 
-/// A response for a transport outside this crate (HTTP/3).
-pub(crate) enum ExtOut {
-    /// One boxed sink per request (the older [`ResponseSink`](crate::transport::ResponseSink)).
-    #[allow(deprecated)]
-    Boxed(Box<dyn crate::transport::ResponseSink>),
-    /// The connection's sink, shared by its requests, and the transport's tag for this one.
-    Conn(Arc<dyn crate::transport::ConnSink>, u64),
-}
+/// A response for a transport outside this crate (HTTP/3): the connection's sink (a thin
+/// pointer) and the transport's tag for this request. 16 bytes, so `Out` (and `Context`, boxed
+/// per request on HTTP/2) stays as small as with the boxed sink it replaces.
+pub(crate) struct ExtOut(pub(crate) crate::transport::SharedSink, pub(crate) u64);
 
-#[allow(deprecated)]
 impl ExtOut {
     #[inline]
     fn send(self, resp: Response) {
-        match self {
-            ExtOut::Boxed(s) => s.send(resp),
-            ExtOut::Conn(s, tag) => s.send(tag, resp),
-        }
+        self.0.get().send(self.1, resp);
     }
 
     fn start_stream(self, resp: Response) -> Option<Box<dyn crate::transport::BodySink>> {
-        match self {
-            ExtOut::Boxed(s) => s.start_stream(resp),
-            ExtOut::Conn(s, tag) => s.start_stream(tag, resp),
-        }
+        self.0.get().start_stream(self.1, resp)
     }
 }
 
@@ -1010,4 +999,11 @@ mod tests {
             assert_eq!(out, format!("{n:x}\r\n").into_bytes(), "{n}");
         }
     }
+}
+#[cfg(test)]
+#[test]
+fn responders_stay_small() {
+    // `Context` is boxed per request on HTTP/2: a larger `Out` measurably costs (ADR-025).
+    assert_eq!(size_of::<Option<Out>>(), 24);
+    assert_eq!(size_of::<ExtOut>(), 16);
 }

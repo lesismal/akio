@@ -15,7 +15,7 @@ use crate::message::{Headers, Request, Response};
 
 /// Where a connection's responses go: one sink per connection, shared by its requests, each
 /// request told apart by a `tag` the transport chooses (a stream id, flags) when it dispatches
-/// it with [`dispatch_conn`] or [`start_conn`]. Unlike a boxed [`ResponseSink`] per request,
+/// it with [`dispatch_conn`] or [`start_conn`] (shared through a [`SharedSink`]). Unlike a boxed [`ResponseSink`] per request,
 /// nothing is allocated for a request's way back.
 ///
 /// Responses may be sent from any thread (a [`Detached`](crate::Detached) request), hence
@@ -27,6 +27,31 @@ pub trait ConnSink: Send + Sync + 'static {
     /// Sends the head of the response to the request tagged `tag`; its body follows through
     /// the returned sink. `None` if the stream is gone.
     fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>>;
+}
+
+/// A connection's [`ConnSink`], shared by its requests: cloning it is one reference count
+/// increment, and a request holds it in 8 bytes (a thin pointer), which keeps
+/// [`Context`] as small as it was with a boxed sink per request.
+#[derive(Clone)]
+pub struct SharedSink(Arc<Box<dyn ConnSink>>);
+
+impl SharedSink {
+    /// Shares `sink` among a connection's requests.
+    pub fn new(sink: impl ConnSink) -> SharedSink {
+        SharedSink(Arc::new(Box::new(sink)))
+    }
+
+    /// The sink.
+    #[inline]
+    pub fn get(&self) -> &dyn ConnSink {
+        &**self.0
+    }
+}
+
+impl std::fmt::Debug for SharedSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedSink").finish_non_exhaustive()
+    }
 }
 
 /// Where a transport's response goes: one boxed sink per request.
@@ -52,6 +77,35 @@ pub trait BodySink: Send + 'static {
     fn finish(self: Box<Self>, trailers: Option<Headers>);
 }
 
+/// A per-request [`ResponseSink`] served as a [`ConnSink`] (the deprecated path allocates for
+/// it; the responder stays one shape for everything else).
+#[allow(deprecated)]
+struct Boxed(std::sync::Mutex<Option<Box<dyn ResponseSink>>>);
+
+#[allow(deprecated)]
+impl Boxed {
+    fn new(sink: Box<dyn ResponseSink>) -> Boxed {
+        Boxed(std::sync::Mutex::new(Some(sink)))
+    }
+
+    fn take(&self) -> Option<Box<dyn ResponseSink>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+}
+
+#[allow(deprecated)]
+impl ConnSink for Boxed {
+    fn send(&self, _tag: u64, resp: Response) {
+        if let Some(s) = self.take() {
+            s.send(resp);
+        }
+    }
+
+    fn start_stream(&self, _tag: u64, resp: Response) -> Option<Box<dyn BodySink>> {
+        self.take()?.start_stream(resp)
+    }
+}
+
 /// Runs `service` for `req`, answering through `sink`. A handler that neither responds nor
 /// detaches gets a 500 sent for it. The request body is `req.body` (`Context::on_body` is not
 /// called); see [`start`] for a body that arrives later.
@@ -62,7 +116,7 @@ pub trait BodySink: Send + 'static {
 #[allow(deprecated)]
 #[inline(always)]
 pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn ResponseSink>) {
-    let mut ctx = Context::new_ext(req, ExtOut::Boxed(sink));
+    let mut ctx = Context::new_ext(req, ExtOut(SharedSink::new(Boxed::new(sink)), 0));
     service.call(&mut ctx);
     finalize(&mut ctx);
 }
@@ -80,10 +134,10 @@ pub fn dispatch<S: Service + ?Sized>(service: &S, req: Request, sink: Box<dyn Re
 pub fn dispatch_conn<S: Service + ?Sized>(
     service: &S,
     req: Request,
-    sink: Arc<dyn ConnSink>,
+    sink: &SharedSink,
     tag: u64,
 ) -> String {
-    let mut ctx = Context::new_ext(req, ExtOut::Conn(sink, tag));
+    let mut ctx = Context::new_ext(req, ExtOut(sink.clone(), tag));
     service.call(&mut ctx);
     finalize(&mut ctx);
     ctx.take_target()
@@ -110,7 +164,7 @@ pub fn start<S: Service + ?Sized>(
     req: Request,
     sink: Box<dyn ResponseSink>,
 ) -> Started {
-    let mut ctx = Box::new(Context::new_ext(req, ExtOut::Boxed(sink)));
+    let mut ctx = Box::new(Context::new_ext(req, ExtOut(SharedSink::new(Boxed::new(sink)), 0)));
     service.call(&mut ctx);
     Started { ctx }
 }
@@ -120,10 +174,10 @@ pub fn start<S: Service + ?Sized>(
 pub fn start_conn<S: Service + ?Sized>(
     service: &S,
     req: Request,
-    sink: Arc<dyn ConnSink>,
+    sink: &SharedSink,
     tag: u64,
 ) -> Started {
-    let mut ctx = Box::new(Context::new_ext(req, ExtOut::Conn(sink, tag)));
+    let mut ctx = Box::new(Context::new_ext(req, ExtOut(sink.clone(), tag)));
     service.call(&mut ctx);
     Started { ctx }
 }
@@ -190,6 +244,17 @@ mod tests {
         }
     }
 
+    struct ArcSink(Arc<Collect>);
+
+    impl ConnSink for ArcSink {
+        fn send(&self, tag: u64, resp: Response) {
+            self.0.send(tag, resp);
+        }
+        fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>> {
+            self.0.start_stream(tag, resp)
+        }
+    }
+
     #[test]
     fn conn_sink_answers_by_tag_and_hands_the_target_back() {
         let kept = Arc::new(Mutex::new(Vec::new()));
@@ -204,7 +269,8 @@ mod tests {
             })
             .get("/none", |_ctx: &mut Context| {});
         let sink = Arc::new(Collect::default());
-        let s = || -> Arc<dyn ConnSink> { sink.clone() };
+        let shared = SharedSink::new(ArcSink(sink.clone()));
+        let s = || &shared;
 
         // Answered right away: the target comes back emptied, with its capacity.
         let t = dispatch_conn(&svc, Request::new(Method::Get, "/a/first"), s(), 7);

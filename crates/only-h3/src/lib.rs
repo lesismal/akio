@@ -60,7 +60,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use only_http::Service;
 use only_http::message::{Headers, Method, Request, Response, Version};
-use only_http::transport::{BodySink, ConnSink, Started};
+use only_http::transport::{BodySink, ConnSink, SharedSink, Started};
 use only_http::ws::{WsLink, WsSession};
 use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
@@ -153,20 +153,24 @@ pub fn serve_with<S: Service>(
 ) -> QuicServer {
     let svc = Arc::new(service);
     let cfg = Arc::new(cfg);
-    QuicServer::new(quic, move |c: &Connection| ServerConn {
-        svc: svc.clone(),
-        peer: c.remote_addr(),
-        conn: Peer::new(&cfg),
-        cfg: cfg.clone(),
-        uni: StreamMap::default(),
-        reqs: StreamMap::default(),
-        fields: FieldBuf::default(),
-        out: Arc::new(H3Out {
+    QuicServer::new(quic, move |c: &Connection| {
+        let out = H3Out {
             c: c.clone(),
             outs: Arc::default(),
             enc: None,
-        }),
-        spare: String::new(),
+        };
+        ServerConn {
+            svc: svc.clone(),
+            peer: c.remote_addr(),
+            conn: Peer::new(&cfg),
+            cfg: cfg.clone(),
+            uni: StreamMap::default(),
+            reqs: StreamMap::default(),
+            fields: FieldBuf::default(),
+            sink: SharedSink::new(out.clone()),
+            out,
+            spare: String::new(),
+        }
     })
 }
 
@@ -572,7 +576,9 @@ struct ServerConn<S> {
     fields: FieldBuf,
     /// Where responses go (and those waiting for room in their stream's send buffer), shared by
     /// the connection's requests.
-    out: Arc<H3Out>,
+    out: H3Out,
+    /// `out` as the connection's response sink, shared by its requests.
+    sink: SharedSink,
     /// The last request's target buffer, for the next one's.
     spare: String,
 }
@@ -589,7 +595,7 @@ struct ServerHost<'a, S> {
     svc: &'a S,
     c: &'a Connection,
     id: StreamId,
-    out: &'a Arc<H3Out>,
+    sink: &'a SharedSink,
 }
 
 impl<S: Service> Host for ServerHost<'_, S> {
@@ -602,9 +608,8 @@ impl<S: Service> Host for ServerHost<'_, S> {
             request.headers.append("early-data", "1");
         }
         let ws = request.protocol.as_deref() == Some("websocket");
-        let out: Arc<dyn ConnSink> = self.out.clone();
         let mut st =
-            only_http::transport::start_conn(self.svc, request, out, tag(self.id, head_only));
+            only_http::transport::start_conn(self.svc, request, self.sink, tag(self.id, head_only));
         if ws {
             let link = Arc::new(StreamLink::new(self.c.clone(), self.id));
             if let Some(mut w) = st.take_websocket(link) {
@@ -649,7 +654,7 @@ impl<S: Service> ServerConn<S> {
             svc: &*self.svc,
             c,
             id,
-            out: &self.out,
+            sink: &self.sink,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -730,9 +735,12 @@ impl<S: Service> ServerConn<S> {
             // the application can answer 425 Too Early to what is not safe to repeat.
             request.headers.append("early-data", "1");
         }
-        let out: Arc<dyn ConnSink> = self.out.clone();
-        self.spare =
-            only_http::transport::dispatch_conn(&*self.svc, request, out, tag(id, head_only));
+        self.spare = only_http::transport::dispatch_conn(
+            &*self.svc,
+            request,
+            &self.sink,
+            tag(id, head_only),
+        );
     }
 
     /// Streams whose field sections the last inserts made decodable go on.
@@ -771,7 +779,7 @@ impl<S: Service> ServerConn<S> {
             svc: &*self.svc,
             c,
             id,
-            out: &self.out,
+            sink: &self.sink,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -1220,11 +1228,8 @@ impl<S: Service> QuicHandler for ServerConn<S> {
                 self.conn.after(c);
                 if self.conn.enc.is_some() && self.out.enc.is_none() {
                     // Our encoder started: responses from now on may use its table.
-                    self.out = Arc::new(H3Out {
-                        c: c.clone(),
-                        outs: self.out.outs.clone(),
-                        enc: self.conn.enc.clone(),
-                    });
+                    self.out.enc = self.conn.enc.clone();
+                    self.sink = SharedSink::new(self.out.clone());
                 }
             }
             return;
