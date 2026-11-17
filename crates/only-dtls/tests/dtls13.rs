@@ -36,7 +36,7 @@ fn version(c: &Connection) -> Option<Version> {
 fn sessions(evs: &[Event]) -> Vec<Session> {
     evs.iter()
         .filter_map(|e| match e {
-            Event::NewSession(s) => Some(s.clone()),
+            Event::NewSession(s) => Some((**s).clone()),
             _ => None,
         })
         .collect()

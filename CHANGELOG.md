@@ -30,7 +30,7 @@ Internal-tier crate):
 - **Session resumption**: DTLS 1.2 session IDs (a bounded 1024-entry cache) and RFC 5077
   tickets, DTLS 1.3 NewSessionTicket (`psk_dhe_ke`), with `Config::with_session_resumption`,
   `with_ticket_key` (`TicketKey`), `with_ticket_lifetime` (2 h default, 7 days at most),
-  `Event::NewSession(Session)`, `Connection::client_resume` and `HandshakeInfo::resumed`.
+  `Event::NewSession(Box<Session>)`, `Connection::client_resume` and `HandshakeInfo::resumed`.
 - **External PSKs**: `Psk`, `Config::with_psks`, the DTLS 1.2 PSK / ECDHE-PSK AEAD suites
   (`CipherSuite::PSK`, `is_psk`) and DTLS 1.3 external PSKs; PSK-only servers need no
   certificate. `HandshakeInfo::psk_identity`; alerts `MissingExtension`, `UnknownPskIdentity`.

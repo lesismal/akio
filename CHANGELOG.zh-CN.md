@@ -27,7 +27,7 @@ only 的所有重要变更都记录在这里。格式遵循
   `only_dtls::connection_id`。
 - **会话恢复**：DTLS 1.2 会话 ID（上限 1024 条的缓存）与 RFC 5077 票据，DTLS 1.3 NewSessionTicket
   （`psk_dhe_ke`），配合 `Config::with_session_resumption`、`with_ticket_key`（`TicketKey`）、
-  `with_ticket_lifetime`（默认 2 小时，最长 7 天）、`Event::NewSession(Session)`、
+  `with_ticket_lifetime`（默认 2 小时，最长 7 天）、`Event::NewSession(Box<Session>)`、
   `Connection::client_resume` 与 `HandshakeInfo::resumed`。
 - **外部 PSK**：`Psk`、`Config::with_psks`、DTLS 1.2 的 PSK / ECDHE-PSK AEAD 套件（`CipherSuite::PSK`、
   `is_psk`）以及 DTLS 1.3 外部 PSK；只做 PSK 的服务端无需证书。`HandshakeInfo::psk_identity`；告警

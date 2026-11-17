@@ -368,7 +368,7 @@ fn run(
                 }
                 Event::NewSession(s) => {
                     println!("NEW_SESSION ticket={}", s.has_ticket());
-                    session = Some(s);
+                    session = Some(*s);
                 }
                 Event::Closed => {
                     println!("CLOSED");

@@ -76,7 +76,7 @@ pub enum Event {
     /// Client with [`Config::with_session_resumption`]: a session that
     /// [`Connection::client_resume`](crate::Connection::client_resume) can resume later (a
     /// DTLS 1.2 session ID or ticket at connect, each DTLS 1.3 NewSessionTicket).
-    NewSession(Session),
+    NewSession(Box<Session>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1034,12 +1034,12 @@ impl Conn12 {
                     None if !self.session_id.is_empty() => (Vec::new(), self.session_id.clone()),
                     None => return,
                 };
-                self.events.push_back(Event::NewSession(Session {
+                self.events.push_back(Event::NewSession(Box::new(Session {
                     state,
                     session_id,
                     ticket,
                     received: now,
-                }));
+                })));
             }
         }
     }

@@ -123,7 +123,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_dtls::Error
 pub only_dtls::Event::ApplicationData(alloc::vec::Vec<u8>)
 pub only_dtls::Event::Closed
 pub only_dtls::Event::Connected(alloc::boxed::Box<only_dtls::HandshakeInfo>)
-pub only_dtls::Event::NewSession(only_dtls::Session)
+pub only_dtls::Event::NewSession(alloc::boxed::Box<only_dtls::Session>)
 impl core::clone::Clone for only_dtls::Event
 pub fn only_dtls::Event::clone(&self) -> Self
 impl core::fmt::Debug for only_dtls::Event

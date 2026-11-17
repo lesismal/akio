@@ -44,7 +44,7 @@ Internal 层（docs/api-stability.md），API 可经 ADR 变更；工作区内�
    DTLS 1.3 在 ClientHello / ServerHello 中协商 CID（与 wolfSSL 一致）并放进统一头。
    `Connection::local_connection_id` 和自由函数 `connection_id(datagram, len)` 让监听方按 CID 分发数据报。
    未做：NewConnectionId / RequestConnectionId。
-7. **客户端的会话恢复是 sans-io 的**：客户端收到 `Event::NewSession(Session)`（DTLS 1.2 连接时的会话 ID
+7. **客户端的会话恢复是 sans-io 的**：客户端收到 `Event::NewSession(Box<Session>)`（DTLS 1.2 连接时的会话 ID
    或票据、每个 DTLS 1.3 NewSessionTicket），用 `Connection::client_resume(config, now, &session)` 恢复。
    `Config::with_session_resumption(true)` 两端都开启：服务端向请求的客户端签发 RFC 5077 票据（否则用
    上限 1024 的会话 ID 缓存），并发一个 DTLS 1.3 NewSessionTicket，用 `TicketKey` 以 AES-256-GCM 封装

@@ -59,7 +59,7 @@ its only user in the workspace.
    CID in ClientHello / ServerHello (as wolfSSL does) and puts it in the unified header.
    `Connection::local_connection_id` and the free function `connection_id(datagram, len)` let
    a listener route datagrams by CID. Not done: NewConnectionId / RequestConnectionId.
-7. **Resumption is sans-io on the client**: the client gets `Event::NewSession(Session)`
+7. **Resumption is sans-io on the client**: the client gets `Event::NewSession(Box<Session>)`
    (a DTLS 1.2 session ID or ticket at connect, each DTLS 1.3 NewSessionTicket) and resumes with
    `Connection::client_resume(config, now, &session)`. `Config::with_session_resumption(true)`
    turns it on for both sides: servers issue RFC 5077 tickets to clients that ask (session IDs

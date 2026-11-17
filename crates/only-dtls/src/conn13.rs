@@ -1817,12 +1817,12 @@ impl Conn13 {
             age_add: t.age_add,
             peer_chain: self.peer_chain.clone(),
         };
-        self.events.push_back(Event::NewSession(Session {
+        self.events.push_back(Event::NewSession(Box::new(Session {
             state,
             session_id: Vec::new(),
             ticket: t.ticket,
             received: now,
-        }));
+        })));
     }
 
     // ---- server ----
