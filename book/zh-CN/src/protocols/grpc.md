@@ -134,6 +134,44 @@ sink.close_send();
 `tools/interop/grpc/run.sh` 让这些桩代码与 grpc-go 自带的 route_guide、helloworld 生成代码以及
 `google.golang.org/protobuf` 的 well-known 类型双向互通。
 
+### proto2 extension、group 与 edition
+
+proto2 的 `group` 字段和 `extend` 块会生成代码；edition 2023 与 2024 文件也一样，并遵循其
+`features.*`（字段存在性、封闭枚举、packed 或 expanded、`DELIMITED`）。有扩展范围的消息带
+`pub extensions: ExtensionSet` 并实现 `only_protobuf::Extendable`；每个扩展是一个带类型的常量：
+
+```rust,ignore
+use only_protobuf::Extendable;
+let mut b = ext::Base::default();
+b.set_extension(&ext::LEVEL, &ext::Level::LOW);          // extend Base { optional Level level = 100; }
+b.set_repeated_extension(&ext::TAGS, &[1, 2]);
+assert_eq!(b.extension(&ext::LEVEL)?, Some(ext::Level::LOW));
+```
+
+封闭枚举（proto2，或 `enum_type = CLOSED`）把未知数值保存为未知字段。
+
+### 反射与 JSON
+
+每个生成的包内嵌自己的描述符（`FILE_DESCRIPTOR_SET`、`descriptor_pool()`；
+`Config::descriptors(false)` 可关闭），其消息实现 `only_protobuf::reflect::ReflectMessage`。
+`only_protobuf::reflect` 提供描述符池与 `DynamicMessage`（运行时才知道类型的消息）；
+`only_protobuf::json` 提供标准 proto3 JSON 映射，含 well-known 类型：
+
+```rust,ignore
+let text = only_protobuf::json::to_string(&feature)?;    // {"name":"...","location":{...}}
+let back: Feature = only_protobuf::json::from_str(&text)?;
+```
+
+gRPC 服务端反射让 grpcurl、grpcui 不需要 `.proto` 文件就能列出并调用服务：
+
+```rust,ignore
+{{#include ../../../../tools/protobuf-test/src/service.rs:reflection}}
+{{#include ../../../../tools/protobuf-test/src/service.rs:reflection_register}}
+```
+
+`tools/interop/grpc/grpcurl.sh` 用 grpcurl 验证它，`tools/protobuf-test/conformance/run.sh` 对生成代码
+运行 protobuf 一致性测试套件（二进制与 JSON）。
+
 ### prost（已弃用）
 
 启用 `prost` feature 后，所有 prost 生成的消息都实现 `codec::Message`。它仍然可用，但已弃用，

@@ -16,6 +16,8 @@
   （与 C++、Go 一致）。
 - 编码结果与 protoc 的 C++ 运行时一致（按字段号顺序，写出 `-0.0` 以及 map 条目中的默认 key 和
   value），并用 protoc 生成的黄金编码做了校验。
+- `reflect`：描述符池与 `DynamicMessage`（运行时才知道类型的消息）；`json`：标准 proto3 JSON 映射；
+  `Extendable` / `Extension` 用于 proto2 extension，另支持封闭枚举、group 与 edition（ADR-022）。
 
 ```rust,ignore
 // build.rs:  only_protobuf_build::compile(&["proto/route_guide.proto"], std::env::var("OUT_DIR")?)?;

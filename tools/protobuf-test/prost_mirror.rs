@@ -454,11 +454,17 @@ fn s_value(f: u32) -> Option<S> {
 
 /// Whether `data` has a known field with an unexpected wire type anywhere (decoders differ
 /// there: C++, Go and only-protobuf keep it as an unknown field, prost fails or misreads it).
+/// A tag written in more than 5 bytes: C++ (and we) reject it, prost accepts it.
+fn overlong_tag(b: &[u8]) -> bool {
+    b.iter().take(5).all(|&x| x & 0x80 != 0) && b.len() > 5
+}
+
 fn mismatch(data: &[u8], schema: fn(u32) -> Option<S>, depth: u32) -> bool {
     let mut r = Reader::new(data);
     while !r.is_empty() {
+        let rest = r.remaining();
         let Ok((f, wt)) = r.read_tag() else {
-            return false;
+            return overlong_tag(rest);
         };
         let wrong = match schema(f) {
             None => false,
@@ -557,8 +563,9 @@ fn base_to_prost(b: &protobuf_test::test::ext::Base) -> PBase {
 fn base_mismatch(data: &[u8], in_group: bool, depth: u32) -> bool {
     let mut r = Reader::new(data);
     while !r.is_empty() {
+        let rest = r.remaining();
         let Ok((f, wt)) = r.read_tag() else {
-            return false;
+            return overlong_tag(rest);
         };
         if wt == WireType::EndGroup {
             return false;

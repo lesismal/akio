@@ -18,6 +18,9 @@ dependencies. Messages are generated from `.proto` files by
   field with an unexpected wire type is kept as an unknown field (as in C++ and Go).
 - Encodes as protoc's C++ runtime does (fields in number order, `-0.0` and map entries'
   default keys and values written), checked against golden encodings made by protoc.
+- `reflect`: descriptor pools and `DynamicMessage` (messages of types known at run time);
+  `json`: the canonical proto3 JSON mapping; `Extendable` / `Extension` for proto2 extensions,
+  closed enums, groups and editions (ADR-022).
 
 ```rust,ignore
 // build.rs:  only_protobuf_build::compile(&["proto/route_guide.proto"], std::env::var("OUT_DIR")?)?;

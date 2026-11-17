@@ -140,6 +140,47 @@ decode are answered with `INVALID_ARGUMENT`. Interop: `tools/interop/grpc/run.sh
 stubs against grpc-go's own generated route_guide and helloworld code and the well-known types
 of `google.golang.org/protobuf`, in both directions.
 
+### proto2 extensions, groups and editions
+
+proto2 `group` fields and `extend` blocks are generated; edition 2023 and 2024 files too, with
+their `features.*` (presence, closed enums, packed or expanded, `DELIMITED`). A message with
+extension ranges has `pub extensions: ExtensionSet` and implements `only_protobuf::Extendable`;
+each extension is a typed constant:
+
+```rust,ignore
+use only_protobuf::Extendable;
+let mut b = ext::Base::default();
+b.set_extension(&ext::LEVEL, &ext::Level::LOW);          // extend Base { optional Level level = 100; }
+b.set_repeated_extension(&ext::TAGS, &[1, 2]);
+assert_eq!(b.extension(&ext::LEVEL)?, Some(ext::Level::LOW));
+```
+
+Closed enums (proto2, or `enum_type = CLOSED`) keep unknown numbers as unknown fields.
+
+### Reflection and JSON
+
+Each generated package embeds its descriptors (`FILE_DESCRIPTOR_SET`, `descriptor_pool()`;
+`Config::descriptors(false)` turns this off) and its messages implement
+`only_protobuf::reflect::ReflectMessage`. `only_protobuf::reflect` has the descriptor pool and
+`DynamicMessage` (any message type, known at run time); `only_protobuf::json` the canonical
+proto3 JSON mapping, well-known types included:
+
+```rust,ignore
+let text = only_protobuf::json::to_string(&feature)?;    // {"name":"...","location":{...}}
+let back: Feature = only_protobuf::json::from_str(&text)?;
+```
+
+gRPC server reflection lets grpcurl and grpcui list and call the services without the `.proto`
+files:
+
+```rust,ignore
+{{#include ../../../../tools/protobuf-test/src/service.rs:reflection}}
+{{#include ../../../../tools/protobuf-test/src/service.rs:reflection_register}}
+```
+
+`tools/interop/grpc/grpcurl.sh` checks it with grpcurl, `tools/protobuf-test/conformance/run.sh`
+runs the protobuf conformance suite (binary and JSON) against the generated code.
+
 ### prost (deprecated)
 
 With the `prost` feature every prost-generated message implements `codec::Message`. It still

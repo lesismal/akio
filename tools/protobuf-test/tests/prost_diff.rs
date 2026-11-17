@@ -338,3 +338,11 @@ fn groups_and_closed_enums_agree_with_prost() {
         mirror::differential_dynamic(&bytes);
     }
 }
+
+#[test]
+fn overlong_tags_are_rejected_as_in_cpp() {
+    // Field 1 as a 6-byte tag: C++ rejects it, so do we (prost accepts it).
+    let b = [0x88, 0x80, 0x80, 0x80, 0x80, 0x00, 0x01];
+    assert!(AllTypes::decode(&b).is_err());
+    mirror::differential(&b);
+}
