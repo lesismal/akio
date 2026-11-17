@@ -46,8 +46,8 @@ const RTCP_INTERVAL: Duration = Duration::from_millis(1000);
 pub(crate) enum Output {
     /// Call [`Rtc::handle_timeout`] then.
     Timeout(Instant),
-    /// Send `1` to `0`.
-    Transmit(SocketAddr, Vec<u8>),
+    /// Send `2` from the local address `0` to `1`.
+    Transmit(SocketAddr, SocketAddr, Vec<u8>),
     /// Something happened.
     Event(RtcEvent),
 }
@@ -430,12 +430,16 @@ pub(crate) struct Rtc {
     next_rtcp: Option<Instant>,
     next_stats: Option<Instant>,
     cname: String,
-    transmits: VecDeque<(SocketAddr, Vec<u8>)>,
+    /// (local address to send from, destination, datagram).
+    transmits: VecDeque<(SocketAddr, SocketAddr, Vec<u8>)>,
     events: VecDeque<RtcEvent>,
     alive: bool,
     closed_emitted: bool,
     stats: Stats,
     remote_addr: Option<SocketAddr>,
+    /// The local address the first DTLS datagram arrived on (where DTLS answers go before ICE
+    /// has a pair).
+    remote_local: Option<SocketAddr>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -504,6 +508,7 @@ impl Rtc {
             closed_emitted: false,
             stats: Stats::default(),
             remote_addr: None,
+            remote_local: None,
             cfg,
         })
     }
@@ -1167,7 +1172,7 @@ impl Rtc {
                 pt.get()
             )));
         };
-        let (Some(tx), Some((_, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
+        let (Some(tx), Some((src, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
             return Ok(true); // not connected yet: dropped
         };
         line.last_pt = Some(codec.pt);
@@ -1199,7 +1204,7 @@ impl Rtc {
             if let Ok(out) = tx.protect_rtp(&raw) {
                 self.stats.bytes_sent += out.len() as u64;
                 self.stats.packets_sent += 1;
-                self.transmits.push_back((dest, out));
+                self.transmits.push_back((src, dest, out));
             }
         }
         if self.next_rtcp.is_none() {
@@ -1251,13 +1256,13 @@ impl Rtc {
     }
 
     fn send_rtcp(&mut self, pkts: &[Rtcp]) {
-        let (Some(tx), Some((_, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
+        let (Some(tx), Some((src, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
             return;
         };
         let raw = only_rtp::write_compound(pkts);
         if let Ok(out) = tx.protect_rtcp(&raw) {
             self.stats.bytes_sent += out.len() as u64;
-            self.transmits.push_back((dest, out));
+            self.transmits.push_back((src, dest, out));
         }
     }
 
@@ -1280,7 +1285,10 @@ impl Rtc {
                 self.ice.handle_receive(now, source, destination, data);
             }
             20..=63 => {
-                self.remote_addr.get_or_insert(source);
+                if self.remote_addr.is_none() {
+                    self.remote_addr = Some(source);
+                    self.remote_local = Some(destination);
+                }
                 self.handle_dtls(now, Some(data));
             }
             128..=191 => {
@@ -1635,7 +1643,7 @@ impl Rtc {
         let Some(line) = self.media.iter_mut().find(|l| l.send.ssrc() == media_ssrc) else {
             return;
         };
-        let (Some(tx), Some((_, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
+        let (Some(tx), Some((src, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
             return;
         };
         let rtx_pt = line.last_pt.and_then(|p| line.codec(p)).and_then(|c| c.rtx);
@@ -1655,7 +1663,7 @@ impl Rtc {
             }
             if let Ok(out) = tx.protect_rtp(&raw) {
                 self.stats.bytes_sent += out.len() as u64;
-                self.transmits.push_back((dest, out));
+                self.transmits.push_back((src, dest, out));
             }
         }
     }
@@ -1757,7 +1765,8 @@ impl Rtc {
         for _ in 0..8 {
             let mut progress = false;
             while let Some(t) = self.ice.poll_transmit() {
-                self.transmits.push_back((t.destination, t.contents));
+                self.transmits
+                    .push_back((t.source, t.destination, t.contents));
             }
             while let Some(e) = self.ice.poll_event() {
                 progress = true;
@@ -1805,10 +1814,13 @@ impl Rtc {
             return false;
         };
         let mut progress = false;
-        let dest = self.ice.send_pair().map(|p| p.1).or(self.remote_addr);
+        let path = self
+            .ice
+            .send_pair()
+            .or_else(|| self.remote_local.zip(self.remote_addr));
         while let Some(t) = d.poll_transmit() {
-            if let Some(dest) = dest {
-                self.transmits.push_back((dest, t));
+            if let Some((src, dest)) = path {
+                self.transmits.push_back((src, dest, t));
             }
         }
         let mut evs = Vec::new();
@@ -1925,8 +1937,8 @@ impl Rtc {
         if self.transmits.is_empty() && self.events.is_empty() {
             self.pump(now);
         }
-        if let Some((d, t)) = self.transmits.pop_front() {
-            return Output::Transmit(d, t);
+        if let Some((s, d, t)) = self.transmits.pop_front() {
+            return Output::Transmit(s, d, t);
         }
         if let Some(e) = self.events.pop_front() {
             return Output::Event(e);

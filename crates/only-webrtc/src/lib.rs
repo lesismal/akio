@@ -61,6 +61,7 @@
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+mod relay;
 mod rtc;
 mod sdp;
 mod timer;
@@ -130,6 +131,9 @@ pub enum Error {
     /// The server or endpoint already has its maximum of peers
     /// ([`RtcServer::max_peers`], [`Endpoint::max_peers`]).
     TooManyPeers,
+    /// A TURN server refused the allocation, or the endpoint has its maximum of TURN
+    /// allocations ([`Endpoint::gather_relay`]).
+    Turn(String),
 }
 
 impl fmt::Display for Error {
@@ -145,6 +149,7 @@ impl fmt::Display for Error {
             Error::Timeout => f.write_str("webrtc: timed out"),
             Error::InvalidCandidate(e) => write!(f, "webrtc: invalid candidate: {e}"),
             Error::TooManyPeers => f.write_str("webrtc: too many peers"),
+            Error::Turn(e) => write!(f, "webrtc: {e}"),
         }
     }
 }
@@ -488,9 +493,9 @@ impl Peer {
                         }
                         break;
                     }
-                    Output::Transmit(dest, contents) => {
+                    Output::Transmit(src, dest, contents) => {
                         if let Some(hub) = &hub {
-                            hub.transmit(self.0.id, dest, &contents);
+                            hub.transmit(self.0.id, src, dest, &contents);
                         }
                     }
                     Output::Event(e) => {
@@ -628,7 +633,12 @@ struct Hub {
     by_ufrag: Mutex<HashMap<String, u64>>,
     by_addr: Mutex<HashMap<SocketAddr, u64>>,
     stun_waiters: Mutex<HashMap<[u8; 12], mpsc::Sender<SocketAddr>>>,
+    /// TURN allocations ([`Endpoint::gather_relay`]), at most [`MAX_RELAYS`].
+    relays: Mutex<Vec<Arc<relay::Relay>>>,
 }
+
+/// Most TURN allocations of one [`Endpoint`].
+const MAX_RELAYS: usize = 4;
 
 impl Hub {
     fn new(tx: Tx, ice_lite: bool, candidates: Vec<only_ice::Candidate>) -> Hub {
@@ -644,7 +654,36 @@ impl Hub {
             by_ufrag: Mutex::new(HashMap::new()),
             by_addr: Mutex::new(HashMap::new()),
             stun_waiters: Mutex::new(HashMap::new()),
+            relays: Mutex::new(Vec::new()),
         }
+    }
+
+    fn binding(&self) -> Option<&UdpBinding> {
+        match &self.tx {
+            Tx::Bound(b) => b.get(),
+            Tx::Listener(_) => None,
+        }
+    }
+
+    /// The relay whose allocation has the relayed address `addr`.
+    fn relay_at(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
+        let relays = lock(&self.relays);
+        if relays.is_empty() {
+            return None;
+        }
+        relays
+            .iter()
+            .find(|r| r.relayed.get() == Some(&addr))
+            .cloned()
+    }
+
+    /// The relay whose TURN server is at `addr`.
+    fn relay_of_server(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
+        let relays = lock(&self.relays);
+        if relays.is_empty() {
+            return None;
+        }
+        relays.iter().find(|r| r.server == addr).cloned()
     }
 
     fn new_rtc(&self) -> Result<Rtc, Error> {
@@ -717,9 +756,13 @@ impl Hub {
         lock(&self.by_addr).retain(|_, v| *v != id);
     }
 
-    fn transmit(&self, id: u64, dest: SocketAddr, data: &[u8]) {
+    fn transmit(&self, id: u64, src: SocketAddr, dest: SocketAddr, data: &[u8]) {
         // Replies from where we send belong to this peer (full ICE agents send first).
         lock(&self.by_addr).entry(dest).or_insert(id);
+        if let Some(r) = self.relay_at(src) {
+            r.send(dest, data);
+            return;
+        }
         match &self.tx {
             Tx::Listener(conns) => {
                 let c = lock(conns).get(&dest).cloned();
@@ -761,6 +804,18 @@ impl Hub {
                 }
             }
         }
+        if let Some(r) = self.relay_of_server(source) {
+            if let Some((peer, relayed, data)) = r.input(data) {
+                self.route(peer, relayed, &data);
+            }
+            return;
+        }
+        self.route(source, self.destination(local), data);
+    }
+
+    /// A datagram from `source` that arrived on the local address `destination`, for a peer.
+    fn route(&self, source: SocketAddr, destination: SocketAddr, data: &[u8]) {
+        let is_stun = stun::is_stun(data);
         let mut id = lock(&self.by_addr).get(&source).copied();
         if id.is_none() && is_stun {
             // A connectivity check: USERNAME is "<our ufrag>:<their ufrag>".
@@ -783,7 +838,7 @@ impl Hub {
         let Some(id) = id else { return };
         let p = lock(&self.peers).get(&id).cloned();
         if let Some(p) = p {
-            p.input(source, self.destination(local), data);
+            p.input(source, destination, data);
         }
     }
 
@@ -1032,10 +1087,7 @@ impl Endpoint {
     }
 
     fn binding(&self) -> Option<&UdpBinding> {
-        match &self.0.tx {
-            Tx::Bound(b) => b.get(),
-            Tx::Listener(_) => None,
-        }
+        self.0.binding()
     }
 
     /// The bound address.
@@ -1099,6 +1151,66 @@ impl Endpoint {
         Ok(mapped)
     }
 
+    /// Allocates a relayed address on the TURN server at `turn_server` (over UDP from this
+    /// endpoint's socket, long-term credentials `username` / `password`), waiting up to
+    /// `timeout`, and adds it as a relayed candidate for new peers; the server-reflexive
+    /// address the server saw is added too when it differs from the host candidates. The
+    /// allocation, its permissions and channels are refreshed while the endpoint lives, and
+    /// shared by every peer. At most 4 allocations per endpoint. Blocks: do not call it from a
+    /// `only` I/O thread or a callback.
+    pub fn gather_relay(
+        &self,
+        turn_server: SocketAddr,
+        username: &str,
+        password: &str,
+        timeout: Duration,
+    ) -> Result<SocketAddr, Error> {
+        let b = self.binding().ok_or(Error::Closed)?.clone();
+        let (tx, rx) = mpsc::channel();
+        let cfg = only_turn::client::ClientConfig::new(turn_server, username, password);
+        let r = {
+            let mut relays = lock(&self.0.relays);
+            relays.retain(|r| !r.is_dead());
+            if relays.len() >= MAX_RELAYS {
+                return Err(Error::Turn("too many TURN allocations".into()));
+            }
+            if relays.iter().any(|r| r.server == turn_server) {
+                return Err(Error::Turn(format!(
+                    "an allocation on {turn_server} exists already"
+                )));
+            }
+            let r = relay::Relay::new(&self.0, cfg, tx);
+            relays.push(r.clone());
+            r
+        };
+        // The first Allocate goes out on this kick.
+        r.send_nothing();
+        let res = match rx.recv_timeout(timeout) {
+            Ok(Ok(a)) => Ok(a),
+            Ok(Err(e)) => Err(Error::Turn(e)),
+            Err(_) => Err(Error::Timeout),
+        };
+        let (relayed, mapped) = match res {
+            Ok(a) => a,
+            Err(e) => {
+                r.close();
+                lock(&self.0.relays).retain(|x| !Arc::ptr_eq(x, &r));
+                return Err(e);
+            }
+        };
+        let base = lock(&self.0.candidates)
+            .first()
+            .map_or_else(|| b.local_addr(), only_ice::Candidate::addr);
+        let mut cs = lock(&self.0.candidates);
+        if let Some(m) = mapped.filter(|m| !cs.iter().any(|x| x.addr() == *m)) {
+            cs.push(only_ice::Candidate::server_reflexive(m, base));
+        }
+        if !cs.iter().any(|x| x.addr() == relayed) {
+            cs.push(only_ice::Candidate::relayed(relayed, base));
+        }
+        Ok(relayed)
+    }
+
     fn hub_mut(&mut self) -> &mut Hub {
         Arc::get_mut(&mut self.0).expect("configure the endpoint before cloning it")
     }
@@ -1159,9 +1271,13 @@ impl Endpoint {
         lock(&self.0.peers).len()
     }
 
-    /// Closes every peer and the socket.
+    /// Closes every peer, deletes the TURN allocations and closes the socket.
     pub fn close(&self) {
         self.0.close_all();
+        let relays = std::mem::take(&mut *lock(&self.0.relays));
+        for r in relays {
+            r.close();
+        }
         if let Some(b) = self.binding() {
             b.close();
         }

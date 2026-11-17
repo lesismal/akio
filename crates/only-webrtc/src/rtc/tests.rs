@@ -44,7 +44,7 @@ fn drain(s: &mut Side, now: Instant, net: &mut Net) {
                 s.wake = t;
                 break;
             }
-            Output::Transmit(to, d) => net.send(now, s.addr, to, d),
+            Output::Transmit(_, to, d) => net.send(now, s.addr, to, d),
             Output::Event(e) => s.events.push(e),
         }
     }
