@@ -586,9 +586,7 @@ impl std::fmt::Debug for UdpAssociation {
 
 /// Appends the UDP request header for `to` (`RSV FRAG=0 ATYP DST.ADDR DST.PORT`).
 fn udp_header(out: &mut Vec<u8>, to: &Dest) -> io::Result<()> {
-    if let Dest::Name(h, _) = to
-        && (h.is_empty() || h.len() > 255)
-    {
+    if matches!(to, Dest::Name(h, _) if h.is_empty() || h.len() > 255) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "SOCKS5 host names are 1 to 255 bytes",

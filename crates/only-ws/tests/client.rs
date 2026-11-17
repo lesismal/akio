@@ -757,7 +757,10 @@ fn through_a_proxy_with_connect() {
 
 /// A minimal SOCKS5 proxy (no authentication, CONNECT) relaying with threads; records each
 /// request's address type and host.
-fn socks5_proxy() -> (std::net::SocketAddr, Arc<Mutex<Vec<(u8, String)>>>) {
+/// What the test SOCKS5 proxy saw: address type and host of each request.
+type Seen = Arc<Mutex<Vec<(u8, String)>>>;
+
+fn socks5_proxy() -> (std::net::SocketAddr, Seen) {
     use std::io::{Read, Write};
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -789,7 +792,11 @@ fn socks5_proxy() -> (std::net::SocketAddr, Arc<Mutex<Vec<(u8, String)>>>) {
                 c.read_exact(&mut b[..2]).unwrap();
                 let port = u16::from_be_bytes([b[0], b[1]]);
                 seen.lock().unwrap().push((atyp, host.clone()));
-                let h = if host == "localhost" { "127.0.0.1".into() } else { host };
+                let h = if host == "localhost" {
+                    "127.0.0.1".into()
+                } else {
+                    host
+                };
                 let up = std::net::TcpStream::connect((h.as_str(), port)).unwrap();
                 c.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
                 let (mut c2, mut up2) = (c.try_clone().unwrap(), up.try_clone().unwrap());

@@ -3,9 +3,14 @@
 #   curl          --socks5, --socks5-hostname, --socks4, --socks4a and socks5://user:pass@
 #                 (CONNECT regressions), a 4 MiB download checked by hash;
 #   PySocks       (python3-socks) UDP ASSOCIATE: echo through the relay, a name destination;
-#   clients.py    hand-written BIND and UDP ASSOCIATE edge cases (declared port, fragments).
+#   clients.py    hand-written BIND and UDP ASSOCIATE edge cases (declared port, fragments),
+#                 and against only-socks: UDP fragment reassembly and SOCKS4 BIND;
+#   only-socks' own client (socks-client-interop): SOCKS5 CONNECT / BIND / UDP ASSOCIATE,
+#                 SOCKS4 and 4a CONNECT / BIND, blocking and on the engine, with and without
+#                 username/password.
 # Every client also runs against Dante (danted), the reference server, so a failure points
-# at only-socks rather than at the test. Needs Docker; runs `rust:1-bookworm` (Debian 12: 13
+# at only-socks rather than at the test (and our client is checked against a server that is
+# not ours). Needs Docker; runs `rust:1-bookworm` (Debian 12: 13
 # has neither Dante nor PySocks) and installs
 # curl, python3-socks and dante-server in it.
 #
@@ -22,8 +27,9 @@ if ! command -v curl >/dev/null || ! command -v danted >/dev/null || ! python3 -
   export DEBIAN_FRONTEND=noninteractive
   { apt-get update -qq && apt-get install -y -qq curl python3-socks dante-server; } >/dev/null 2>&1 || { echo "apt-get failed"; exit 1; }
 fi
-cargo build -q --release -p only-socks --example socks-interop || exit 1
+cargo build -q --release -p only-socks --example socks-interop --example socks-client-interop || exit 1
 SRV=${CARGO_TARGET_DIR:-$ROOT/target}/release/examples/socks-interop
+CLI=${CARGO_TARGET_DIR:-$ROOT/target}/release/examples/socks-client-interop
 W=$(mktemp -d)
 PIDS=""
 trap 'kill $PIDS 2>/dev/null; rm -rf "$W"' EXIT
@@ -79,13 +85,25 @@ for p in "only 1080" "dante 1081"; do
     check "curl --socks4" fetch --socks4 127.0.0.1:$2
     check "curl --socks4a" fetch --socks4a 127.0.0.1:$2
   fi
-  check "PySocks UDP + BIND + raw UDP (clients.py)" python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 $2
+  if [ "$1" = only ]; then
+    check "PySocks UDP + BIND + raw UDP + fragments + SOCKS4 BIND (clients.py)" \
+      python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 $2 --fragments --socks4-bind
+  else
+    check "PySocks UDP + BIND + raw UDP (clients.py)" python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 $2
+  fi
+  if [ "$1" = only ]; then
+    check "only-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" "$CLI" 127.0.0.1:$2
+  else # Dante 1.4 refuses SOCKS4a host names (curl --socks4a too)
+    check "only-socks client: SOCKS5/4/4a CONNECT, BIND, UDP (socks-client-interop)" \
+      "$CLI" 127.0.0.1:$2 --no-socks4a-names
+  fi
 done
 echo "== only with username/password (127.0.0.1:1082)"
 check "curl socks5://user:pass@" fetch -x socks5://alice:s3cret@127.0.0.1:1082
 check "curl socks5h://user:pass@" fetch -x socks5h://alice:s3cret@127.0.0.1:1082
 check "curl wrong password refused" bash -c '! curl -sS --max-time 5 -x socks5://alice:nope@127.0.0.1:1082 http://localhost:8000/blob -o /dev/null'
-check "clients.py with authentication" python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 1082 alice s3cret
+check "clients.py with authentication" python3 "$ROOT/tools/interop/socks/clients.py" 127.0.0.1 1082 alice s3cret --fragments
+check "only-socks client with authentication" "$CLI" 127.0.0.1:1082 alice:s3cret --no-socks4
 
 echo "socks interop: $pass passed, $fail failed"
 [ "$fail" = 0 ]

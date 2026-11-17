@@ -1088,12 +1088,11 @@ mod tests {
     fn socks_tunnel_holds_bytes_until_the_proxy_answers() {
         let s = ProxyServer::parse("socks5h://u:p@proxy").unwrap();
         assert_eq!((s.port, s.authorization.as_deref()), (1080, None));
-        let refusal = Refusal::default();
         let c = Connect::new(
             "example.com",
             443,
             &s,
-            refusal.clone(),
+            Refusal::default(),
             only::fn_acceptor(|_c: &Conn<Nop>| Nop),
         )
         .handshake_timeout(Some(std::time::Duration::from_secs(3)));

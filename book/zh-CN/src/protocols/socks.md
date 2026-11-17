@@ -54,11 +54,12 @@
 
 ## BIND 与 UDP ASSOCIATE
 
-这两个 SOCKS5 命令默认关闭（它们会应客户端请求在代理主机上打开端口），需要在服务器上开启：
+这两个命令默认关闭（它们会应客户端请求在代理主机上打开端口），需要在服务器上开启（`bind` 同时覆盖
+SOCKS5 与 SOCKS4 的 `BIND`）：
 
 ```rust,ignore
 let socks = Socks::new(er.clone())
-    .bind(true)                                   // SOCKS5 BIND
+    .bind(true)                                   // SOCKS5 与 SOCKS4 BIND
     .bind_timeout(Duration::from_secs(30))        // 默认 60 秒
     .udp_associate(true)                          // SOCKS5 UDP ASSOCIATE
     .udp_idle_timeout(Duration::from_secs(60));   // 默认 120 秒
@@ -72,10 +73,15 @@ let engine = Engine::builder()
   回复该地址，接受一个连接（除非请求中的地址未指定，否则只接受来自请求 IP 的连接），再回复一次对端
   地址，然后像 `CONNECT` 一样转发。`bind_timeout` 内无人连接：回复 1 并关闭。接受到的流通过
   `Engine::adopt_tcp` 加入 engine；它把任何在 engine 之外 accept 的 TCP 流当作拨号连接来服务。
+  SOCKS4（及 4a）的 `BIND` 方式相同，只是使用 SOCKS4 应答（成功 `0x5a` 带端口和 IPv4 地址，失败
+  `0x5b`）；只接受来自 `DSTIP` 的连接（为 `0.0.0.0` 或 4a 主机名时接受任意来源），等待期间其他连接被
+  丢弃。经 IPv6 到达的代理拒绝 SOCKS4 `BIND`（无法表达监听地址）。
 - **UDP ASSOCIATE**：每个关联在客户端连到代理的地址上拥有自己的 UDP socket（`Engine::bind_udp`），
   因此 engine 需要 UDP I/O 线程（`udp_client_threads` 或一个 UDP listener；没有时回复 1）。只有来自
-  控制连接 IP 的数据报才算客户端的，并且端口一旦由请求或第一个数据报确定就只认这一个。分片号不为 0
-  的数据报被丢弃（RFC 1928 允许未实现分片的实现这样做）。只转发来自客户端发送过的地址的应答，因此关联
+  控制连接 IP 的数据报才算客户端的，并且端口一旦由请求或第一个数据报确定就只认这一个。分片数据报
+  （`FRAG` 不为 0，RFC 1928）会被重组后作为一个数据报转发：每个关联同时只有一个序列，只按顺序接收
+  （1、2、3……；分片没有序列号，所以出现缺口、重复、换了目标或中途来了一个完整数据报都会丢弃该序列），
+  最多 65,507 字节，自第一个分片起 5 秒后丢弃。只转发来自客户端发送过的地址的应答，因此关联
   不是一个开放的入站端口。主机名在逻辑线程池上解析并按关联缓存。控制连接关闭时关联结束；或者在
   `udp_idle_timeout` 内双向都没有数据报时结束（服务器随后关闭控制连接）。若设置了
   `Config::idle_timeout`，它也作用于控制连接，而 UDP 流动期间控制连接是静默的：两者同时使用时请调大它。
@@ -104,8 +110,57 @@ let socks = Socks::new(er.clone())
 SOCKS4 回复 0x5b，或丢弃数据报。
 
 `tools/interop/socks/run.sh` 用 curl（`--socks5`、`--socks5-hostname`、`--socks4`、`--socks4a`，有无
-密码）、PySocks 的 UDP ASSOCIATE 以及手写的 BIND 与 UDP 边界用例客户端检查上述全部行为，并用同样的客户端
-测试作为参考的 Dante。
+密码）、PySocks 的 UDP ASSOCIATE 以及手写的 BIND、SOCKS4 BIND、分片与 UDP 边界用例客户端检查上述全部
+行为，并用同样的客户端测试作为参考的 Dante；它还让 `SocksClient`（见下文）分别对 Dante 和 only-socks
+运行。
+
+## SOCKS 客户端
+
+`SocksClient` 支持 SOCKS5（`CONNECT`、`BIND`、`UDP ASSOCIATE`；无认证或用户名/密码）、SOCKS4 和
+SOCKS4a（`CONNECT`、`BIND`），可以运行在 engine 上（回调在 I/O 线程上执行，不阻塞），也可以基于
+`std::net` 阻塞使用：
+
+```rust,ignore
+use only_socks::{Dest, SocksClient, Version};
+let client = SocksClient::from_url("socks5h://alice:secret@proxy.internal:1080")?;
+// 或者 SocksClient::new(Version::Socks5, addr).auth("alice", "secret")
+
+// 阻塞：经代理连到目标的 TcpStream。
+let stream = client.dial_blocking(&Dest::Name("example.com".into(), 443))?;
+
+// 在 engine 上：`acceptor` 服务这条隧道（`Tls` acceptor 会在隧道内运行 TLS）。
+client.dial(&engine, Dest::Name("example.com".into(), 80), acceptor, |e| eprintln!("{e}"));
+
+// BIND：告诉对端连到哪里，然后服务它的连接。
+client.bind(&engine, peer_ip.into(), |bound| announce(bound), acceptor, |e| eprintln!("{e}"));
+
+// UDP ASSOCIATE（SOCKS5）：经中继收发数据报。
+client.udp_associate(
+    &engine,
+    |assoc, from, payload| { /* 来自 `from` 的数据报 */ },
+    |r| { let assoc = r.expect("associated"); assoc.send_to(b"query", &dns_server.into()).ok(); },
+);
+```
+
+- 在 engine 上，到代理的 TCP 连接建立后就会调用 `acceptor.on_open`（与 TLS 拨号相同）：handler 发送
+  的数据会等待隧道建立，`on_data` 只看到目标的字节。**隧道打开前的所有失败都交给 `on_error`**：
+  解析或连接代理（依次尝试它的每个地址）、拒绝（携带 `only_socks::ProxyRefused` 的 `io::Error`：
+  `status()` 是最接近的 HTTP 状态码，`socks_reply()` 是 SOCKS 应答码）、不是 SOCKS 的应答、握手
+  超时。随后连接关闭。
+- `bind` 的 `on_bound` 在 I/O 线程上、握手进行中收到代理的第一个应答（未指定地址会被替换为代理的
+  地址）：把它交给对端，不要在其中使用这条 BIND 连接。阻塞方式：`bind_blocking` 在代理开始监听时
+  返回（`bound_addr()`），`accept()` 等待对端。
+- `udp_associate` 在 engine 上绑定一个 UDP socket（需要 `udp_client_threads`），告知代理，并把
+  `UdpAssociation` 交给 `done`（`send_to`、`relay_addr`、`close`）。不是来自中继的数据报被丢弃；分片
+  数据报先重组。阻塞方式：`udp_associate_blocking()` 返回 `BlockingUdp`（`send_to`、`recv_from`），
+  drop 即结束。
+- 限制：`handshake_timeout`（默认 10 秒）限制连接代理及其应答；`bind_timeout`（默认 60 秒）限制
+  BIND 等待对端的时间。阻塞方式逐字节读取应答，所以返回的流正好从隧道的第一个字节开始。
+- 主机名：`Dest::Name` 以主机名形式交给 SOCKS5 和 SOCKS4a 代理；SOCKS4 下由客户端解析（只用 IPv4）。
+
+HTTP 与 WebSocket 客户端的 `socks5://` / `socks4a://` 代理使用同一个握手实现
+（[HTTP 客户端](http-clients.md#代理)）。见
+[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md)。
 
 ## 内核内转发
 
@@ -115,4 +170,5 @@ Linux 6.15+（发现 6.12 在目标发送缓冲区满时会丢数据）。它尚
 
 ## 不支持
 
-UDP 分片重组（分片会被丢弃）、SOCKS4 `BIND`、GSSAPI 认证、SOCKS 客户端、Linux `splice(2)` 路径。
+GSSAPI 认证；Linux `splice(2)` 转发路径（没有尝试：保留 engine 上带双向背压的转发，内核内转发由
+`only::ebpf::Relay` 提供）；发送分片的 UDP 数据报（只做重组）；客户端到代理的 TLS。

@@ -10,6 +10,32 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：SOCKS 客户端、HTTP/WebSocket 客户端的 SOCKS 代理、UDP 分片重组、SOCKS4 BIND
+
+增量（ADR-019，docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md）：
+
+- **`only_socks::SocksClient`**：SOCKS5 `CONNECT`、`BIND` 与 `UDP ASSOCIATE`（无认证或用户名/
+  密码），SOCKS4 与 SOCKS4a `CONNECT` 与 `BIND`。在 engine 上：`dial`（一个 acceptor；若是 `Tls`
+  acceptor 则在隧道内运行 TLS）、`bind`（`on_bound` 得到代理的监听地址）、`udp_associate`（一个
+  `UdpAssociation`：`send_to`、`close`；数据报交给 `on_datagram`）；隧道打开前的所有失败（代理不可达、
+  拒绝、乱码、超时）都交给 `on_error`。阻塞方式：`dial_blocking`（一个 `TcpStream`）、`bind_blocking`
+  （`BlockingBind::accept`）、`udp_associate_blocking`（`BlockingUdp`）。
+  `from_url("socks5h://user:pass@host")`、`handshake_timeout`（10 秒）、`bind_timeout`（60 秒）、
+  `Version`、`impl From<SocketAddr> for Dest`，并重新导出 `ProxyRefused`。
+- **`only_http::client::Client` 与 `only_ws::client::dial` 支持 SOCKS 代理**：`Proxy` 接受
+  `socks5://`、`socks5h://`、`socks4://` 与 `socks4a://` URL（默认端口 1080，URL 凭据作为 RFC 1929
+  凭据或 SOCKS4 user id）；所有请求（包括 `http://`）都走隧道；`socks5`/`socks4` 先解析目标（优先
+  IPv4），`socks5h`/`socks4a` 由代理解析。拒绝是 `ProxyRefused`，带最接近的 HTTP 状态码以及新增的
+  `ProxyRefused::socks_reply()`。
+- **UDP 分片重组**（RFC 1928 `FRAG`），用于 SOCKS5 服务端中继和客户端关联：按序的序列，最多
+  65,507 字节，每个关联一个，5 秒计时。
+- 服务端支持 **SOCKS4 `BIND`**，与 SOCKS5 共用 `Socks::bind(true)` 开关和 `allow` 钩子。
+- 行为变化：`Proxy::from_env` 也读取 `all_proxy` / `ALL_PROXY`；原来丢弃分片数据报的中继现在会重组；
+  设置 `bind(true)` 时会处理 SOCKS4 `BIND` 请求。
+- 互通（`tools/interop/socks/run.sh`，15/15）：我们的客户端对 Dante 和 only-socks，curl/PySocks/
+  手写客户端对服务端（分片、SOCKS4 BIND）。新增模糊测试目标 `socks_client`（客户端握手、隧道
+  transport、重组）。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

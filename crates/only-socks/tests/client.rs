@@ -200,10 +200,9 @@ fn handshake_timeout_and_garbage() {
     let http = TcpListener::bind("127.0.0.1:0").unwrap();
     let http_addr = http.local_addr().unwrap();
     thread::spawn(move || {
-        let mut keep = Vec::new();
-        for s in silent.incoming().flatten() {
-            keep.push(s);
-        }
+        // Accepted and held open, never answered.
+        let held: Vec<TcpStream> = silent.incoming().flatten().collect();
+        drop(held);
     });
     thread::spawn(move || {
         for mut s in http.incoming().flatten() {
@@ -269,13 +268,11 @@ impl Handler for Collect {
     }
 }
 
+/// What a `Collect` handler reports: the bytes and the close error.
+type Collected = mpsc::Receiver<(Vec<u8>, Option<String>)>;
+
 /// Sends `msg` on open (held until the tunnel is up) and collects the echo.
-fn echo_acceptor(
-    msg: &'static [u8],
-) -> (
-    impl only::Acceptor<Handler = Collect>,
-    mpsc::Receiver<(Vec<u8>, Option<String>)>,
-) {
+fn echo_acceptor(msg: &'static [u8]) -> (impl only::Acceptor<Handler = Collect>, Collected) {
     let (tx, rx) = mpsc::channel();
     let tx = Mutex::new(tx);
     (
@@ -636,7 +633,7 @@ fn http_client_through_socks() {
                 Listener::tcp("127.0.0.1:0".parse().unwrap())
                     .backend(backend())
                     .serve(only_http::serve(|ctx: &mut only_http::Context| {
-                        ctx.text(200, "via socks")
+                        ctx.text(200, "via socks");
                     })),
             )
             .build()

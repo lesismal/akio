@@ -73,7 +73,8 @@ pub trait WsHandler: Send + 'static {
   系统 CA；ALPN 中不要提供 `h2`）、`server_name`、`handshake_timeout`（10 s，含重定向）、
   `close_timeout`（3 s）、`proxy`（默认无；`only_ws::proxy::Proxy::from_env()` 显式启用环境变量）
   和 `max_redirects`（0）。
-- 代理：代理适用的每个连接（`ws://` 和 `wss://`）都经 `CONNECT host:port` 隧道；被拒绝时是携带
+- 代理：代理适用的每个连接（`ws://` 和 `wss://`）都经 `CONNECT host:port` 隧道，`socks5://` /
+  `socks5h://` / `socks4://` / `socks4a://` 代理则经 SOCKS 隧道；被拒绝时是携带
   `only_ws::proxy::ProxyRefused` 的 `WsClientError::Io`。`Proxy` 类型和规则与
   [HTTP 客户端](http-clients.md#代理)相同。
 - 重定向（`max_redirects > 0`）：带 `Location` 的 301、302、303、307 和 308；`http`/`https` 的
@@ -87,4 +88,4 @@ pub trait WsHandler: Send + 'static {
 
 ## 尚未完成
 
-客户端：TLS 或 SOCKS 代理、跨重定向携带 cookie。服务端：基于 HTTP/2 或 HTTP/3 的 WebSocket（extended CONNECT）。
+客户端：到代理的 TLS、跨重定向携带 cookie。服务端：基于 HTTP/2 或 HTTP/3 的 WebSocket（extended CONNECT）。

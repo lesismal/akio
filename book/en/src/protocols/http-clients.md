@@ -69,8 +69,11 @@ or retried). `ResponseFuture::wait_timeout` only stops waiting; the request goes
 use only_http::client::{Client, Proxy};
 let client = Client::new(engine)
     .with_proxy(Proxy::all("http://user:pass@proxy.internal:3128")?.no_proxy("localhost,.corp"));
-// or, opting in to the environment (http_proxy, https_proxy, no_proxy, upper case too):
+// or, opting in to the environment (http_proxy, https_proxy, all_proxy, no_proxy, upper case
+// too):
 let client = Client::new(engine).with_proxy(Proxy::from_env()?);
+// or a SOCKS proxy (host names resolved by the proxy):
+let client = Client::new(engine).with_proxy(Proxy::all("socks5h://user:pass@proxy.internal")?);
 ```
 
 `http://` requests go to the proxy in absolute form (`GET http://host/path HTTP/1.1`);
@@ -78,11 +81,22 @@ let client = Client::new(engine).with_proxy(Proxy::from_env()?);
 Credentials in the proxy URL become `Proxy-Authorization: Basic`. A proxy that refuses the
 tunnel fails the request with `ClientError::Io` whose error is an `only_http::client::ProxyRefused`
 (`status()`, `reason()`). `NO_PROXY` entries: `*`, host names (and their subdomains), IP
-addresses, CIDR blocks, each optionally with `:port`. Only plain-HTTP proxies are supported (not
-TLS to the proxy, not SOCKS). Nothing reads the environment unless you call `Proxy::from_env()`.
+addresses, CIDR blocks, each optionally with `:port`. TLS to the proxy itself is not supported.
+Nothing reads the environment unless you call `Proxy::from_env()`; `all_proxy` / `ALL_PROXY`
+covers the schemes the specific variables leave unset.
 
-See [ADR-010](https://github.com/lesismal/only/blob/main/docs/adr/010-http-client-gaps.md) for
-the reasoning behind these rules.
+SOCKS proxies (`socks5://`, `socks5h://`, `socks4://`, `socks4a://`, port 1080 by default):
+every request, `http://` too, goes through a SOCKS tunnel to the target. `socks5h` and
+`socks4a` send host names to the proxy; `socks5` and `socks4` resolve the target first and ask
+for its first IPv4 address (curl's convention). Credentials in the URL are SOCKS5
+username/password (RFC 1929), or the SOCKS4 user id. A refusal is the same `ProxyRefused`, with
+the closest HTTP status (407 for authentication, 403 for "not allowed", 502 for an unreachable
+target) and `socks_reply()` giving the SOCKS code. For SOCKS beyond these clients (BIND, UDP,
+blocking sockets) see the [SOCKS client](socks.md#socks-client).
+
+See [ADR-010](https://github.com/lesismal/only/blob/main/docs/adr/010-http-client-gaps.md) and
+[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.md)
+for the reasoning behind these rules.
 
 ## HTTP/2: `h2client::H2Client`
 

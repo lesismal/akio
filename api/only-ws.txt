@@ -255,6 +255,7 @@ impl core::panic::unwind_safe::UnwindSafe for only_ws::proxy::Proxy
 pub struct only_ws::proxy::ProxyRefused
 impl only_ws::proxy::ProxyRefused
 pub fn only_ws::proxy::ProxyRefused::reason(&self) -> &str
+pub fn only_ws::proxy::ProxyRefused::socks_reply(&self) -> core::option::Option<u8>
 pub fn only_ws::proxy::ProxyRefused::status(&self) -> u16
 impl core::clone::Clone for only_ws::proxy::ProxyRefused
 pub fn only_ws::proxy::ProxyRefused::clone(&self) -> Self
