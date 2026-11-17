@@ -7,15 +7,17 @@
 //! | Module | What it is |
 //! |---|---|
 //! | [`bencode`] | Bencoding: a `Value` tree, strict decoding, canonical encoding, raw spans |
-//! | [`metainfo`] | .torrent files (v1), info hashes, piece/file layout, a `Builder` |
-//! | [`magnet`] | Magnet links (BEP 9) |
-//! | [`wire`] | The peer wire protocol (BEP 3, 5, 6, 10, 9, 11) as a codec |
+//! | [`metainfo`] | .torrent files (v1, v2 and hybrid, BEP 52), info hashes, piece/file layout, piece layers, a `Builder` |
+//! | [`merkle`] | BEP 52 SHA-256 merkle trees: roots, piece layers, hash request proofs |
+//! | [`magnet`] | Magnet links (BEP 9; `btih` and `btmh`) |
+//! | [`wire`] | The peer wire protocol (BEP 3, 5, 6, 10, 9, 11, 52) as a codec |
 //! | [`mse`] | Message Stream Encryption (MSE/PE): DH-768 and RC4, both roles |
 //! | [`tracker`] | HTTP and UDP trackers (BEP 3, 15, 23, 48): codecs, a client, a server |
 //! | [`utp`] | uTP (BEP 29) with LEDBAT, one connection without I/O |
-//! | [`dht`] | The mainline DHT (BEP 5) as a node without I/O |
+//! | [`dht`] | The mainline DHT (BEP 5, IPv6 per BEP 32) as a node without I/O |
+//! | [`lsd`] | Local Service Discovery (BEP 14) announcements |
 //! | [`port`] | One UDP port for uTP, the DHT and more, on a `only` UDP listener |
-//! | [`client`] | The client: torrents and magnets, picker, choking, storage on the logical pool |
+//! | [`client`] | The client: torrents and magnets (v1, v2, hybrid), web seeds (BEP 19), LSD, rate and seed limits, picker, choking, storage on the logical pool |
 //!
 //! ```no_run
 //! use only_bittorrent::client::{AddOptions, Client, ClientConfig};
@@ -36,7 +38,9 @@ pub mod dht;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+pub mod lsd;
 pub mod magnet;
+pub mod merkle;
 pub mod metainfo;
 pub mod mse;
 pub mod port;

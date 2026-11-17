@@ -1,8 +1,9 @@
 //! One torrent's state and protocol logic: peers, the piece picker (rarest first, pieces in
 //! progress first, random first pieces, endgame), request pipelining, choking, metadata
-//! exchange, PEX, verification and storage through the logical pool.
+//! exchange, PEX, v2 piece layers (hash requests both ways), web seeds, rate and seed limits,
+//! verification and storage through the logical pool.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -10,14 +11,19 @@ use std::time::{Duration, Instant};
 use only_core::ConnInner;
 use only_pool::Pool;
 
+use super::rate::{Bucket, GlobalRates};
 use super::storage::Storage;
-use super::{ClientInner, PeerInfo, TorrentEvent, TorrentStats, TorrentStatus};
-use crate::metainfo::{Info, InfoHash, MetaInfo, sha1};
+use super::webseed::{self, Fetch, MAX_WEB_SEEDS};
+use super::{
+    ClientInner, PeerInfo, RateLimits, SeedLimits, TorrentEvent, TorrentStats, TorrentStatus,
+};
+use crate::merkle::{self, Hash, MerkleTree};
+use crate::metainfo::{Info, InfoHash, InfoHashV2, MetaInfo, PieceLayers, sha1};
 use crate::mse::Rc4;
 use crate::port::UtpStream;
 use crate::wire::{
-    BLOCK_SIZE, Bitfield, ExtendedHandshake, Handshake, METADATA_PIECE, Message, MetadataMsg,
-    PeerId, Pex, allowed_fast_set,
+    BLOCK_SIZE, Bitfield, ExtendedHandshake, Handshake, HashRequest, METADATA_PIECE, Message,
+    MetadataMsg, PeerId, Pex, allowed_fast_set,
 };
 
 /// Our extended message IDs.
@@ -36,6 +42,16 @@ const META_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_METADATA: u32 = 16 << 20;
 const RANDOM_FIRST: usize = 4;
 const ALLOWED_FAST: usize = 10;
+/// Piece-layer hashes asked for in one hash request (libtorrent's chunk).
+const LAYER_CHUNK: u64 = 512;
+const HASH_TIMEOUT: Duration = Duration::from_secs(10);
+/// Hash requests in flight to one peer.
+const MAX_HASH_ASKED: usize = 4;
+/// Block-layer hash requests of one peer being served (each reads a piece).
+const MAX_HASH_SERVING: usize = 8;
+/// Merkle trees kept to answer hash requests.
+const MAX_TREES: usize = 64;
+const WEB_SEED_BACKOFF_MAX: Duration = Duration::from_secs(600);
 
 /// Makes a torrent's storage once its info dictionary is known.
 pub(crate) type StorageFactory = Box<dyn FnOnce(&Info) -> Arc<dyn Storage> + Send>;
@@ -92,6 +108,10 @@ pub(crate) struct Peer {
     am_interested: bool,
     peer_choking: bool,
     peer_interested: bool,
+    v2: bool,
+    hash_asked: usize,
+    hash_serving: usize,
+    hash_rejects: u32,
     have: Bitfield,
     /// A bitfield, have-all or haves that arrived before the info dictionary.
     early_bits: Option<Vec<u8>>,
@@ -155,6 +175,27 @@ struct MetaDl {
     asked: HashMap<u32, (u64, Instant)>,
 }
 
+/// A piece layer being fetched with hash requests, 512 hashes at a time.
+#[derive(Debug)]
+struct LayerDl {
+    root: Hash,
+    file: usize,
+    file_len: u64,
+    pieces: u64,
+    /// The chunks' hashes once proven.
+    chunks: Vec<Option<Vec<Hash>>>,
+    /// Chunk -> (peer, request, sent).
+    asked: HashMap<usize, (u64, HashRequest, Instant)>,
+}
+
+#[derive(Debug)]
+struct WebSeed {
+    url: String,
+    piece: Option<u32>,
+    fails: u32,
+    next_try: Instant,
+}
+
 #[derive(Debug, Clone)]
 struct Known {
     failures: u32,
@@ -182,11 +223,15 @@ pub(crate) struct Cx {
     pub(crate) dht_ping: Vec<SocketAddr>,
     pub(crate) announce: Option<crate::tracker::Event>,
     pub(crate) close: Vec<Link>,
+    pub(crate) web: Vec<Fetch>,
+    pub(crate) aliases: Vec<InfoHash>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct TrackerSlot {
     pub(crate) url: String,
+    /// The hash announced (a hybrid torrent has a slot per hash).
+    pub(crate) info_hash: InfoHash,
     pub(crate) next: Instant,
     pub(crate) interval: Duration,
     pub(crate) fails: u32,
@@ -199,6 +244,28 @@ pub(crate) struct TrackerSlot {
 pub(crate) struct TorrentState {
     pub(crate) me: Weak<TorrentShared>,
     pub(crate) info_hash: InfoHash,
+    /// Every hash the torrent goes by: the key first, then a hybrid's truncated v2 hash.
+    pub(crate) hashes: Vec<InfoHash>,
+    pub(crate) info_hash_v2: Option<InfoHashV2>,
+    pub(crate) layers: PieceLayers,
+    layer_dl: HashMap<Hash, LayerDl>,
+    trees: HashMap<Hash, Arc<MerkleTree>>,
+    /// Pieces that cannot be checked yet (a v2 piece layer is missing); empty when none.
+    blocked: Bitfield,
+    web_seeds: Vec<WebSeed>,
+    /// Pieces from web seeds being checked -> the seed.
+    ws_verifying: HashMap<u32, String>,
+    up: Bucket,
+    down: Bucket,
+    rates: Arc<GlobalRates>,
+    upload_wait: VecDeque<(u64, Req)>,
+    pub(crate) seed_limits: SeedLimits,
+    seeding_since: Option<Instant>,
+    seeding_before: Duration,
+    pub(crate) last_lsd: Option<Instant>,
+    pub(crate) lsd_now: bool,
+    pub(crate) lsd_wanted: bool,
+    web_wanted: bool,
     pub(crate) name: Option<String>,
     pub(crate) info: Option<Arc<Info>>,
     pub(crate) private: bool,
@@ -244,8 +311,12 @@ pub(crate) struct TorrentShared {
 /// Settings a torrent starts with.
 pub(crate) struct NewTorrent {
     pub(crate) info_hash: InfoHash,
+    pub(crate) info_hash_v2: Option<InfoHashV2>,
     pub(crate) name: Option<String>,
     pub(crate) info: Option<Info>,
+    pub(crate) layers: PieceLayers,
+    pub(crate) rate_limits: RateLimits,
+    pub(crate) seed_limits: SeedLimits,
     pub(crate) trackers: Vec<Vec<String>>,
     pub(crate) url_list: Vec<String>,
     pub(crate) peers: Vec<SocketAddr>,
@@ -259,6 +330,42 @@ impl TorrentShared {
     pub(crate) fn new(client: &Arc<ClientInner>, n: NewTorrent) -> Arc<TorrentShared> {
         let cfg = &client.cfg;
         let now = Instant::now();
+        let mut hashes = vec![n.info_hash];
+        if let Some(v2) = n.info_hash_v2 {
+            if v2.truncated() != n.info_hash {
+                hashes.push(v2.truncated());
+            }
+        }
+        let slots = |hashes: &[InfoHash]| -> Vec<TrackerSlot> {
+            hashes
+                .iter()
+                .flat_map(|h| {
+                    n.trackers.iter().flatten().map(|u| TrackerSlot {
+                        url: u.clone(),
+                        info_hash: *h,
+                        next: now,
+                        interval: Duration::from_secs(1800),
+                        fails: 0,
+                        busy: false,
+                        started: false,
+                        last_error: None,
+                        peers: 0,
+                    })
+                })
+                .collect()
+        };
+        let trackers = slots(&hashes);
+        let mut web_seeds: Vec<WebSeed> = Vec::new();
+        for u in &n.url_list {
+            if web_seeds.len() < MAX_WEB_SEEDS && !web_seeds.iter().any(|w| w.url == *u) {
+                web_seeds.push(WebSeed {
+                    url: u.clone(),
+                    piece: None,
+                    fails: 0,
+                    next_try: now,
+                });
+            }
+        }
         let ts = Arc::new_cyclic(|me| TorrentShared {
             info_hash: n.info_hash,
             client: Arc::downgrade(client),
@@ -266,6 +373,25 @@ impl TorrentShared {
             st: Mutex::new(TorrentState {
                 me: me.clone(),
                 info_hash: n.info_hash,
+                hashes,
+                info_hash_v2: n.info_hash_v2,
+                layers: n.layers,
+                layer_dl: HashMap::new(),
+                trees: HashMap::new(),
+                blocked: Bitfield::new(0),
+                web_seeds,
+                ws_verifying: HashMap::new(),
+                up: Bucket::new(n.rate_limits.upload),
+                down: Bucket::new(n.rate_limits.download),
+                rates: client.rates.clone(),
+                upload_wait: VecDeque::new(),
+                seed_limits: n.seed_limits,
+                seeding_since: None,
+                seeding_before: Duration::ZERO,
+                last_lsd: None,
+                lsd_now: true,
+                lsd_wanted: cfg.lsd,
+                web_wanted: cfg.web_seeds,
                 name: n.name,
                 info: None,
                 private: false,
@@ -282,21 +408,7 @@ impl TorrentShared {
                 next_key: 1,
                 known: HashMap::new(),
                 meta: None,
-                trackers: n
-                    .trackers
-                    .iter()
-                    .flatten()
-                    .map(|u| TrackerSlot {
-                        url: u.clone(),
-                        next: now,
-                        interval: Duration::from_secs(1800),
-                        fails: 0,
-                        busy: false,
-                        started: false,
-                        last_error: None,
-                        peers: 0,
-                    })
-                    .collect(),
+                trackers,
                 url_list: n.url_list,
                 downloaded: 0,
                 uploaded: 0,
@@ -364,6 +476,12 @@ impl TorrentShared {
         for a in cx.dht_ping {
             client.dht_ping(a);
         }
+        for a in cx.aliases {
+            client.add_alias(a, self.info_hash);
+        }
+        for f in cx.web {
+            webseed::start(&client, self, f);
+        }
         if let Some(e) = cx.announce {
             super::announce(&client, self, e, true);
         }
@@ -404,7 +522,50 @@ impl TorrentState {
                 .values()
                 .filter(|p| p.have.is_full() && !p.have.is_empty())
                 .count(),
+            seeding_time: self.seeding_time(Instant::now()),
+            web_seeds_active: self.web_seeds.iter().filter(|w| w.piece.is_some()).count(),
         }
+    }
+
+    fn seeding_time(&self, now: Instant) -> Duration {
+        self.seeding_before
+            + self
+                .seeding_since
+                .map_or(Duration::ZERO, |s| now.duration_since(s))
+    }
+
+    pub(crate) fn set_rate_limits(&mut self, l: RateLimits) {
+        self.up.set_rate(l.upload);
+        self.down.set_rate(l.download);
+    }
+
+    pub(crate) fn rate_limits(&self) -> RateLimits {
+        RateLimits::new(self.up.rate(), self.down.rate())
+    }
+
+    pub(crate) fn add_web_seed(&mut self, url: &str) {
+        if self.web_seeds.len() < MAX_WEB_SEEDS && !self.web_seeds.iter().any(|w| w.url == url) {
+            self.web_seeds.push(WebSeed {
+                url: url.to_owned(),
+                piece: None,
+                fails: 0,
+                next_try: Instant::now(),
+            });
+            self.url_list.push(url.to_owned());
+        }
+    }
+
+    fn may_download(&mut self, now: Instant) -> bool {
+        self.down.ready(now) && self.rates.down_ready(now)
+    }
+
+    fn took_download(&mut self, n: u64) {
+        self.down.take(n);
+        self.rates.down_take(n);
+    }
+
+    fn may_upload(&mut self, now: Instant) -> bool {
+        self.up.ready(now) && self.rates.up_ready(now)
     }
 
     pub(crate) fn peer_infos(&self) -> Vec<PeerInfo> {
@@ -429,7 +590,13 @@ impl TorrentState {
     pub(crate) fn metainfo(&self) -> Option<MetaInfo> {
         let info = self.info.as_ref()?;
         let mut mi = MetaInfo::from_info((**info).clone());
-        let urls: Vec<Vec<String>> = self.trackers.iter().map(|t| vec![t.url.clone()]).collect();
+        mi.piece_layers = self.layers.clone();
+        let mut urls: Vec<Vec<String>> = Vec::new();
+        for t in &self.trackers {
+            if !urls.iter().any(|u| u[0] == t.url) {
+                urls.push(vec![t.url.clone()]);
+            }
+        }
         if let Some(first) = urls.first() {
             mi.announce = first.first().cloned();
         }
@@ -493,6 +660,50 @@ impl TorrentState {
         if self.name.is_none() {
             self.name = Some(info.name.clone());
         }
+        // A magnet link names one hash; the dictionary may carry the other one too.
+        if let Some(v2) = info.info_hash_v2() {
+            self.info_hash_v2 = Some(v2);
+        }
+        let more: Vec<InfoHash> = info
+            .info_hash_v1()
+            .into_iter()
+            .chain(info.info_hash_v2().map(|v| v.truncated()))
+            .filter(|h| !self.hashes.contains(h))
+            .collect();
+        for h in more {
+            self.hashes.push(h);
+            cx.aliases.push(h);
+            let urls: Vec<String> = self
+                .trackers
+                .iter()
+                .filter(|t| t.info_hash == self.info_hash)
+                .map(|t| t.url.clone())
+                .collect();
+            let now = Instant::now();
+            for url in urls {
+                self.trackers.push(TrackerSlot {
+                    url,
+                    info_hash: h,
+                    next: now,
+                    interval: Duration::from_secs(1800),
+                    fails: 0,
+                    busy: false,
+                    started: false,
+                    last_error: None,
+                    peers: 0,
+                });
+            }
+        }
+        // Layers that came with a .torrent of a different dictionary do not count.
+        let stale: Vec<Hash> = self
+            .layers
+            .iter()
+            .filter(|(r, l)| !info.check_piece_layer(r, l))
+            .map(|(r, _)| *r)
+            .collect();
+        if !stale.is_empty() {
+            self.layers = PieceLayers::new();
+        }
         if self.storage.is_none() {
             if let Some(f) = self.storage_factory.take() {
                 self.storage = Some(f(&info));
@@ -503,6 +714,7 @@ impl TorrentState {
         let info = Arc::new(info);
         self.info = Some(info);
         self.meta = None;
+        self.update_blocked();
         // Peers that told us their pieces before we knew how many there are.
         let keys: Vec<u64> = self.peers.keys().copied().collect();
         for k in keys {
@@ -553,12 +765,13 @@ impl TorrentState {
             self.status = TorrentStatus::Checking;
         }
         let me = self.me.clone();
+        let layers = self.layers.clone();
         let job = Box::new(move || {
             let mut bf = Bitfield::new(info.num_pieces());
             for i in 0..info.num_pieces() {
                 let len = info.piece_size(i) as usize;
                 if let Ok(d) = storage.read(info.piece_offset(i), len) {
-                    if info.verify_piece(i, &d) {
+                    if info.verify_piece_with(&layers, i, &d) {
                         bf.set(i, true);
                     }
                 }
@@ -666,6 +879,10 @@ impl TorrentState {
             ext: hs.extended(),
             fast: hs.fast(),
             dht: hs.dht(),
+            v2: hs.v2(),
+            hash_asked: 0,
+            hash_serving: 0,
+            hash_rejects: 0,
             am_choking: true,
             am_interested: false,
             peer_choking: true,
@@ -768,6 +985,10 @@ impl TorrentState {
         if let Some(m) = &mut self.meta {
             m.asked.retain(|_, (k, _)| *k != key);
         }
+        for l in self.layer_dl.values_mut() {
+            l.asked.retain(|_, (k, ..)| *k != key);
+        }
+        self.upload_wait.retain(|(k, _)| *k != key);
         if self.optimistic == Some(key) {
             self.optimistic = None;
         }
@@ -860,9 +1081,31 @@ impl TorrentState {
     fn wants_from(&self, p: &Peer) -> bool {
         self.info.is_some()
             && self.status != TorrentStatus::Checking
-            && p.have
-                .ones()
-                .any(|i| !self.have.get(i) && !self.verifying.contains(&(i as u32)))
+            && p.have.ones().any(|i| {
+                !self.have.get(i) && !self.verifying.contains(&(i as u32)) && !self.blocked.get(i)
+            })
+    }
+
+    /// Recomputes the pieces a missing piece layer keeps from being checked.
+    fn update_blocked(&mut self) {
+        let Some(info) = self.info.clone() else {
+            return;
+        };
+        if info.has_v1() || self.layers.is_complete(&info) {
+            self.blocked = Bitfield::new(0);
+            return;
+        }
+        let mut b = Bitfield::new(info.num_pieces());
+        for f in self.layers.missing(&info) {
+            for i in info.file_pieces(f) {
+                b.set(i, true);
+            }
+        }
+        self.blocked = b;
+    }
+
+    fn web_busy(&self, i: u32) -> bool {
+        self.web_seeds.iter().any(|w| w.piece == Some(i))
     }
 
     fn update_interest(&mut self, key: u64) {
@@ -931,7 +1174,9 @@ impl TorrentState {
                     && p.have.get(i as usize)
                     && !self.downloading.contains_key(&i)
                     && !self.verifying.contains(&i)
+                    && !self.blocked.get(i as usize)
                     && ok_piece(i)
+                    && !self.web_busy(i)
             })
             .collect();
         if !cands.is_empty() {
@@ -1012,20 +1257,26 @@ impl TorrentState {
             return; // refill once half the pipeline is answered
         }
         let mut batch = Vec::new();
+        let now = Instant::now();
         while self
             .peers
             .get(&key)
             .is_some_and(|p| p.requests.len() + batch.len() < target)
         {
+            if !self.may_download(now) {
+                break; // the next tick refills
+            }
             match self.pick_block(key) {
-                Some(r) => batch.push(r),
+                Some(r) => {
+                    self.took_download(u64::from(r.length));
+                    batch.push(r);
+                }
                 None => break,
             }
         }
         let Some(p) = self.peers.get_mut(&key) else {
             return;
         };
-        let now = Instant::now();
         for r in batch {
             p.send(&Message::Request {
                 index: r.index,
@@ -1066,11 +1317,13 @@ impl TorrentState {
         if let Some(o) = self.optimistic {
             unchoke.insert(o);
         }
+        let mut choked = Vec::new();
         for (k, p) in &mut self.peers {
             let choke = !unchoke.contains(k);
             if choke != p.am_choking {
                 p.am_choking = choke;
                 if choke {
+                    choked.push(*k);
                     p.send(&Message::Choke);
                     if p.fast {
                         for r in p.serving.drain().collect::<Vec<_>>() {
@@ -1090,6 +1343,9 @@ impl TorrentState {
             }
             p.dl_round = 0;
             p.ul_round = 0;
+        }
+        if !choked.is_empty() && !self.upload_wait.is_empty() {
+            self.upload_wait.retain(|(k, _)| !choked.contains(k));
         }
     }
 
@@ -1239,12 +1495,16 @@ impl TorrentState {
                 begin,
                 length,
             } => {
+                let r = Req {
+                    index,
+                    begin,
+                    length,
+                };
                 if let Some(p) = self.peers.get_mut(&key) {
-                    p.serving.remove(&Req {
-                        index,
-                        begin,
-                        length,
-                    });
+                    p.serving.remove(&r);
+                }
+                if !self.upload_wait.is_empty() {
+                    self.upload_wait.retain(|x| *x != (key, r));
                 }
             }
             Message::Reject {
@@ -1284,6 +1544,9 @@ impl TorrentState {
                     }
                 }
             }
+            Message::HashRequest(r) => self.on_hash_request(key, r),
+            Message::Hashes { req, hashes } => self.on_hashes(key, req, &hashes),
+            Message::HashReject(r) => self.on_hash_reject(key, r),
             Message::Suggest(_) | Message::Unknown { .. } => {}
             Message::Extended { id, payload } => self.on_extended(key, id, &payload, cx),
         }
@@ -1293,9 +1556,9 @@ impl TorrentState {
         let Some(info) = self.info.clone() else {
             return;
         };
-        let Some(storage) = self.storage.clone() else {
+        if self.storage.is_none() {
             return;
-        };
+        }
         let Some(p) = self.peers.get_mut(&key) else {
             return;
         };
@@ -1320,17 +1583,39 @@ impl TorrentState {
         if !p.serving.insert(r) {
             return;
         }
-        let me = self.me.clone();
-        let off = info.piece_offset(r.index as usize) + u64::from(r.begin);
-        let job = Box::new(move || {
-            let data = storage.read(off, r.length as usize);
-            if let Some(t) = me.upgrade() {
-                t.with(|st, _| st.send_block(key, r, data));
+        self.upload_wait.push_back((key, r));
+        self.pump_uploads();
+    }
+
+    /// Starts the reads of queued requests while the upload limits allow.
+    fn pump_uploads(&mut self) {
+        let (Some(info), Some(storage)) = (self.info.clone(), self.storage.clone()) else {
+            return;
+        };
+        let now = Instant::now();
+        while let Some(&(key, r)) = self.upload_wait.front() {
+            if !self.may_upload(now) {
+                return; // the next tick refills
             }
-        });
-        if self.pool.try_execute(job).is_err() {
-            if let Some(p) = self.peers.get_mut(&key) {
-                p.serving.remove(&r);
+            self.upload_wait.pop_front();
+            if !self.peers.get(&key).is_some_and(|p| p.serving.contains(&r)) {
+                continue; // cancelled or choked meanwhile
+            }
+            self.up.take(u64::from(r.length));
+            self.rates.up_take(u64::from(r.length));
+            let me = self.me.clone();
+            let storage = storage.clone();
+            let off = info.piece_offset(r.index as usize) + u64::from(r.begin);
+            let job = Box::new(move || {
+                let data = storage.read(off, r.length as usize);
+                if let Some(t) = me.upgrade() {
+                    t.with(|st, _| st.send_block(key, r, data));
+                }
+            });
+            if self.pool.try_execute(job).is_err() {
+                if let Some(p) = self.peers.get_mut(&key) {
+                    p.serving.remove(&r);
+                }
             }
         }
     }
@@ -1441,8 +1726,9 @@ impl TorrentState {
         };
         self.verifying.insert(index);
         let me = self.me.clone();
+        let layers = self.layers.clone();
         let job = Box::new(move || {
-            let ok = info.verify_piece(index as usize, &buf);
+            let ok = info.verify_piece_with(&layers, index as usize, &buf);
             let res = if ok {
                 storage
                     .write(info.piece_offset(index as usize), &buf)
@@ -1463,6 +1749,11 @@ impl TorrentState {
 
     fn piece_done(&mut self, index: u32, res: std::io::Result<bool>, cx: &mut Cx) {
         self.verifying.remove(&index);
+        if let Some(url) = self.ws_verifying.remove(&index) {
+            if matches!(res, Ok(false)) {
+                self.web_seed_failed(&url, format!("piece {index} failed its hash check"), cx);
+            }
+        }
         match res {
             Ok(true) => {
                 if self.have.get(index as usize) {
@@ -1616,7 +1907,14 @@ impl TorrentState {
                 meta.asked.remove(&piece);
                 if meta.pieces.iter().all(Option::is_some) {
                     let raw: Vec<u8> = meta.pieces.iter().flatten().flatten().copied().collect();
-                    if sha1(&raw) == self.info_hash.0 {
+                    let ok = match self.info_hash_v2 {
+                        // A v2-only link: the dictionary's SHA-256 is the hash.
+                        Some(v2) if v2.truncated() == self.info_hash => {
+                            merkle::sha256(&raw) == v2.0
+                        }
+                        _ => sha1(&raw) == self.info_hash.0,
+                    };
+                    if ok {
                         match Info::parse(&raw) {
                             Ok(info) => {
                                 self.set_info(info, cx);
@@ -1745,7 +2043,404 @@ impl TorrentState {
         if self.pex && !self.private {
             self.send_pex(now);
         }
+        self.pump_uploads();
+        self.request_layers(now);
+        self.web_seed_work(now, cx);
+        self.check_seed_limits(now, cx);
+        if !self.running() {
+            return;
+        }
         self.connect_more(now, cx);
+    }
+
+    fn check_seed_limits(&mut self, now: Instant, cx: &mut Cx) {
+        let seeding = self.status == TorrentStatus::Seeding && self.is_complete();
+        if !seeding {
+            if let Some(s) = self.seeding_since.take() {
+                self.seeding_before += now.duration_since(s);
+            }
+            return;
+        }
+        self.seeding_since.get_or_insert(now);
+        let SeedLimits { ratio, time } = self.seed_limits;
+        let total = self.info.as_ref().map_or(0, |i| i.total_length);
+        let denom = if self.downloaded > 0 {
+            self.downloaded
+        } else {
+            total
+        };
+        let ratio_hit =
+            ratio.is_some_and(|r| denom > 0 && self.uploaded as f64 / denom as f64 >= r);
+        let time_hit = time.is_some_and(|t| self.seeding_time(now) >= t);
+        if ratio_hit || time_hit {
+            cx.events.push(TorrentEvent::SeedLimitReached);
+            self.pause(cx);
+        }
+    }
+
+    // ---- v2 piece layers ----------------------------------------------------------------
+
+    /// The merkle tree of `file` from its piece layer (cached), to answer hash requests.
+    fn tree(&mut self, info: &Info, file: usize) -> Option<Arc<MerkleTree>> {
+        let f = info.files.get(file)?;
+        let root = f.pieces_root?;
+        if let Some(t) = self.trees.get(&root) {
+            return Some(t.clone());
+        }
+        let layer = self.layers.get(&root)?;
+        let t = Arc::new(MerkleTree::from_layer(
+            layer,
+            merkle::piece_height(info.piece_length),
+            merkle::root_height(f.length),
+        ));
+        if self.trees.len() >= MAX_TREES {
+            self.trees.clear();
+        }
+        self.trees.insert(root, t.clone());
+        Some(t)
+    }
+
+    fn reject_hashes(&mut self, key: u64, r: HashRequest) {
+        if let Some(p) = self.peers.get_mut(&key) {
+            p.send(&Message::HashReject(r));
+        }
+    }
+
+    /// Answers a hash request: piece-layer hashes from the layer, block hashes of a piece we
+    /// have from storage (on the pool). Anything else is rejected.
+    fn on_hash_request(&mut self, key: u64, r: HashRequest) {
+        let Some(info) = self.info.clone() else {
+            return self.reject_hashes(key, r);
+        };
+        let Some(file) = info.file_of_root(&r.pieces_root) else {
+            return self.reject_hashes(key, r);
+        };
+        let len = info.files[file].length;
+        let rh = merkle::root_height(len);
+        let ph = merkle::piece_height(info.piece_length);
+        let bpp = merkle::blocks_per_piece(info.piece_length);
+        let index = u64::from(r.index);
+        if r.base_layer >= rh
+            || r.proof_layers >= rh - r.base_layer
+            || !merkle::valid_range(rh - r.base_layer, index, r.length)
+        {
+            return self.reject_hashes(key, r);
+        }
+        let Some(tree) = self.tree(&info, file) else {
+            return self.reject_hashes(key, r);
+        };
+        if r.base_layer == ph {
+            match tree.hashes(index, r.length, r.proof_layers) {
+                Some(hashes) => {
+                    if let Some(p) = self.peers.get_mut(&key) {
+                        p.send(&Message::Hashes { req: r, hashes });
+                    }
+                }
+                None => self.reject_hashes(key, r),
+            }
+            return;
+        }
+        let piece = info.file_pieces(file).start as u64 + index / u64::from(bpp);
+        let busy = self
+            .peers
+            .get(&key)
+            .is_none_or(|p| p.hash_serving >= MAX_HASH_SERVING);
+        if r.base_layer != 0
+            || r.length != bpp
+            || busy
+            || !self.have.get(piece as usize)
+            || self.storage.is_none()
+        {
+            return self.reject_hashes(key, r);
+        }
+        let Some(storage) = self.storage.clone() else {
+            return;
+        };
+        let Some(uncles) = tree.uncles(0, index, r.length, r.proof_layers) else {
+            return self.reject_hashes(key, r);
+        };
+        // The file's bytes of that piece (its tail is padding in the piece space).
+        let pl = u64::from(info.piece_length);
+        let local = index / u64::from(bpp);
+        let n = (len - local * pl).min(pl) as usize;
+        let off = info.files[file].offset + local * pl;
+        if let Some(p) = self.peers.get_mut(&key) {
+            p.hash_serving += 1;
+        }
+        let me = self.me.clone();
+        let job = Box::new(move || {
+            let res = storage.read(off, n).map(|d| {
+                let mut h = merkle::block_hashes(&d);
+                h.resize(bpp as usize, [0; 32]);
+                h.extend(uncles);
+                h
+            });
+            if let Some(t) = me.upgrade() {
+                t.with(|st, _| st.send_hashes(key, r, res.ok()));
+            }
+        });
+        if self.pool.try_execute(job).is_err() {
+            if let Some(p) = self.peers.get_mut(&key) {
+                p.hash_serving -= 1;
+            }
+            self.reject_hashes(key, r);
+        }
+    }
+
+    fn send_hashes(&mut self, key: u64, r: HashRequest, hashes: Option<Vec<Hash>>) {
+        let Some(p) = self.peers.get_mut(&key) else {
+            return;
+        };
+        p.hash_serving = p.hash_serving.saturating_sub(1);
+        p.send(&match hashes {
+            Some(hashes) => Message::Hashes { req: r, hashes },
+            None => Message::HashReject(r),
+        });
+    }
+
+    /// A chunk of a piece layer asked of `key`, matching `r`: removes it from the asked set.
+    fn take_asked(&mut self, key: u64, r: &HashRequest) -> Option<usize> {
+        let dl = self.layer_dl.get_mut(&r.pieces_root)?;
+        let c = dl
+            .asked
+            .iter()
+            .find(|(_, (k, q, _))| *k == key && q == r)
+            .map(|(c, _)| *c)?;
+        dl.asked.remove(&c);
+        if let Some(p) = self.peers.get_mut(&key) {
+            p.hash_asked = p.hash_asked.saturating_sub(1);
+        }
+        Some(c)
+    }
+
+    fn on_hashes(&mut self, key: u64, r: HashRequest, hashes: &[Hash]) {
+        let Some(c) = self.take_asked(key, &r) else {
+            return; // not asked for: ignored
+        };
+        let Some(info) = self.info.clone() else {
+            return;
+        };
+        let Some(dl) = self.layer_dl.get_mut(&r.pieces_root) else {
+            return;
+        };
+        let count = r.length as usize;
+        if hashes.len() != count + merkle::uncle_count(r.length, r.proof_layers) {
+            return;
+        }
+        let ph = merkle::piece_height(info.piece_length);
+        let rh = merkle::root_height(dl.file_len);
+        let (nodes, uncles) = hashes.split_at(count);
+        if !merkle::verify_hashes(nodes, ph, u64::from(r.index), uncles, &dl.root, rh) {
+            if let Some(p) = self.peers.get_mut(&key) {
+                p.hash_rejects += 1;
+            }
+            return;
+        }
+        let real = (dl.pieces - u64::from(r.index)).min(count as u64) as usize;
+        dl.chunks[c] = Some(nodes[..real].to_vec());
+        if dl.chunks.iter().all(Option::is_some) {
+            let layer: Vec<Hash> = dl.chunks.iter().flatten().flatten().copied().collect();
+            let root = dl.root;
+            self.layer_dl.remove(&root);
+            if self.layers.insert(&info, root, layer) {
+                self.update_blocked();
+                let keys: Vec<u64> = self.peers.keys().copied().collect();
+                for k in keys {
+                    self.update_interest(k);
+                    self.fill_requests(k);
+                }
+            }
+        }
+        self.request_layers(Instant::now());
+    }
+
+    fn on_hash_reject(&mut self, key: u64, r: HashRequest) {
+        if self.take_asked(key, &r).is_some() {
+            if let Some(p) = self.peers.get_mut(&key) {
+                p.hash_rejects += 1;
+            }
+        }
+    }
+
+    /// Asks v2 peers for the piece layers still missing, a chunk of 512 hashes at a time.
+    fn request_layers(&mut self, now: Instant) {
+        let Some(info) = self.info.clone() else {
+            return;
+        };
+        if !info.has_v2() || self.status == TorrentStatus::Checking {
+            return;
+        }
+        let missing = self.layers.missing(&info);
+        if missing.is_empty() {
+            self.layer_dl.clear();
+            return;
+        }
+        let pl = u64::from(info.piece_length);
+        for f in missing {
+            let Some(root) = info.files[f].pieces_root else {
+                continue;
+            };
+            let len = info.files[f].length;
+            self.layer_dl.entry(root).or_insert_with(|| {
+                let pieces = len.div_ceil(pl);
+                LayerDl {
+                    root,
+                    file: f,
+                    file_len: len,
+                    pieces,
+                    chunks: vec![None; pieces.div_ceil(LAYER_CHUNK) as usize],
+                    asked: HashMap::new(),
+                }
+            });
+        }
+        // Requests that timed out.
+        let mut expired = Vec::new();
+        for dl in self.layer_dl.values_mut() {
+            dl.asked.retain(|_, (k, _, at)| {
+                let keep = now.duration_since(*at) < HASH_TIMEOUT;
+                if !keep {
+                    expired.push(*k);
+                }
+                keep
+            });
+        }
+        for k in expired {
+            if let Some(p) = self.peers.get_mut(&k) {
+                p.hash_asked = p.hash_asked.saturating_sub(1);
+                p.hash_rejects += 1;
+            }
+        }
+        let ph = merkle::piece_height(info.piece_length);
+        let mut sends: Vec<(u64, HashRequest, Hash, usize)> = Vec::new();
+        let mut asked: HashMap<u64, usize> = HashMap::new();
+        for dl in self.layer_dl.values() {
+            let rh = merkle::root_height(dl.file_len);
+            let first = info.file_pieces(dl.file).start;
+            for (c, got) in dl.chunks.iter().enumerate() {
+                if got.is_some() || dl.asked.contains_key(&c) {
+                    continue;
+                }
+                let index = c as u64 * LAYER_CHUNK;
+                let left = dl.pieces - index;
+                let count = left.min(LAYER_CHUNK).next_power_of_two() as u32;
+                let span = first + index as usize..first + (index + left.min(LAYER_CHUNK)) as usize;
+                let mut cands: Vec<u64> = self
+                    .peers
+                    .iter()
+                    .filter(|(k, p)| {
+                        p.v2 && p.hash_rejects < 3
+                            && p.hash_asked + asked.get(*k).copied().unwrap_or(0) < MAX_HASH_ASKED
+                            && span.clone().any(|i| p.have.get(i))
+                    })
+                    .map(|(k, _)| *k)
+                    .collect();
+                if cands.is_empty() {
+                    continue;
+                }
+                cands.sort_unstable();
+                let k = cands[crate::rand_u32() as usize % cands.len()];
+                *asked.entry(k).or_default() += 1;
+                let req = HashRequest::new(dl.root, ph, index as u32, count, rh - ph - 1);
+                sends.push((k, req, dl.root, c));
+            }
+        }
+        for (k, req, root, c) in sends {
+            if let Some(p) = self.peers.get_mut(&k) {
+                p.hash_asked += 1;
+                p.send(&Message::HashRequest(req));
+            }
+            if let Some(dl) = self.layer_dl.get_mut(&root) {
+                dl.asked.insert(c, (k, req, now));
+            }
+        }
+    }
+
+    // ---- web seeds ----------------------------------------------------------------------
+
+    /// Gives idle web seeds a piece each: one no connected peer has if any, else the first
+    /// missing one nobody is fetching.
+    fn web_seed_work(&mut self, now: Instant, cx: &mut Cx) {
+        if !self.web_wanted
+            || self.web_seeds.is_empty()
+            || !self.running()
+            || self.status != TorrentStatus::Downloading
+        {
+            return;
+        }
+        let Some(info) = self.info.clone() else {
+            return;
+        };
+        for w in 0..self.web_seeds.len() {
+            if self.web_seeds[w].piece.is_some() || self.web_seeds[w].next_try > now {
+                continue;
+            }
+            if !self.may_download(now) {
+                return;
+            }
+            let free = |st: &Self, i: u32| {
+                !st.have.get(i as usize)
+                    && !st.downloading.contains_key(&i)
+                    && !st.verifying.contains(&i)
+                    && !st.blocked.get(i as usize)
+                    && !st.web_busy(i)
+                    && !st.ws_verifying.contains_key(&i)
+            };
+            let n = info.num_pieces() as u32;
+            let pick = (0..n)
+                .find(|&i| free(self, i) && self.availability.get(i as usize) == Some(&0))
+                .or_else(|| (0..n).find(|&i| free(self, i)));
+            let Some(i) = pick else { return };
+            let ws = &mut self.web_seeds[w];
+            ws.piece = Some(i);
+            let fetch = webseed::plan(&ws.url, &info, i);
+            self.took_download(u64::from(info.piece_size(i as usize)));
+            cx.web.push(fetch);
+        }
+    }
+
+    pub(crate) fn web_seed_done(
+        &mut self,
+        url: &str,
+        piece: u32,
+        res: Result<Vec<u8>, String>,
+        cx: &mut Cx,
+    ) {
+        let Some(ws) = self.web_seeds.iter_mut().find(|w| w.url == url) else {
+            return;
+        };
+        if ws.piece == Some(piece) {
+            ws.piece = None;
+        }
+        match res {
+            Ok(buf) => {
+                ws.fails = 0;
+                self.downloaded += buf.len() as u64;
+                if self.running()
+                    && !self.have.get(piece as usize)
+                    && !self.verifying.contains(&piece)
+                {
+                    self.ws_verifying.insert(piece, url.to_owned());
+                    self.verify_and_write(piece, buf, cx);
+                }
+            }
+            Err(e) => self.web_seed_failed(url, e, cx),
+        }
+        self.web_seed_work(Instant::now(), cx);
+    }
+
+    fn web_seed_failed(&mut self, url: &str, error: String, cx: &mut Cx) {
+        let Some(ws) = self.web_seeds.iter_mut().find(|w| w.url == url) else {
+            return;
+        };
+        ws.fails += 1;
+        let backoff = Duration::from_secs(5)
+            .saturating_mul(1 << ws.fails.min(8))
+            .min(WEB_SEED_BACKOFF_MAX);
+        ws.next_try = Instant::now() + backoff;
+        cx.events.push(TorrentEvent::WebSeedError {
+            url: url.to_owned(),
+            error,
+        });
     }
 
     fn send_pex(&mut self, now: Instant) {
@@ -1796,7 +2491,11 @@ impl TorrentState {
         if self.status == TorrentStatus::Paused {
             return;
         }
+        if let Some(s) = self.seeding_since.take() {
+            self.seeding_before += Instant::now().duration_since(s);
+        }
         self.status = TorrentStatus::Paused;
+        self.upload_wait.clear();
         let keys: Vec<u64> = self.peers.keys().copied().collect();
         for k in keys {
             self.remove_peer(k, cx);

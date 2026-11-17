@@ -221,12 +221,16 @@ impl Session {
         let Some(client) = self.client.upgrade() else {
             return self.fail();
         };
-        if self.expected.is_some_and(|e| e != hs.info_hash) {
-            return self.fail();
-        }
         let Some(t) = client.torrent(&hs.info_hash) else {
             return self.fail();
         };
+        // The hash we sent (or MSE named), or another of the same torrent: a hybrid torrent's
+        // peer may answer a v1 handshake with the v2 hash (BEP 52's upgrade).
+        if let Some(e) = self.expected {
+            if e != hs.info_hash && client.torrent(&e).is_none_or(|x| !Arc::ptr_eq(&x, &t)) {
+                return self.fail();
+            }
+        }
         if !self.sent_handshake {
             self.sent_handshake = true;
             let ours = Handshake::new(hs.info_hash, client.peer_id)
@@ -322,7 +326,7 @@ impl Acceptor for TcpAcceptor {
     type Handler = TcpPeer;
     fn on_open(&self, c: &Conn<TcpPeer>) -> TcpPeer {
         let client = self.client.get().cloned().unwrap_or_default();
-        let mut s = Session::new(client, c.peer_addr(), None);
+        let mut s = Session::new(client, crate::port::canonical(c.peer_addr()), None);
         s.start(Link::Tcp(c.inner().clone()));
         TcpPeer { s }
     }

@@ -5,6 +5,9 @@
 //! peer on the listener socket ([`only::Engine::dial_udp_from`]) for an address that has not
 //! written first, so a DHT node and uTP connections are reachable at the port they announce.
 //!
+//! On a dual-stack listener (`[::]:port`) IPv4 peers are reported by their plain IPv4 address
+//! (not `::ffff:a.b.c.d`), and datagrams to an IPv4 address leave mapped.
+//!
 //! ```no_run
 //! use std::sync::Arc;
 //! use only::{Engine, Listener};
@@ -214,6 +217,7 @@ impl UdpPort {
     /// Starts a uTP connection to `to`; `handler` hears `on_connect` once it is up, or
     /// `on_close` with an error.
     pub fn connect(&self, to: SocketAddr, handler: impl StreamHandler) -> UtpStream {
+        let to = canonical(to);
         let now = micros(&self.inner);
         let mut out = Vec::new();
         let id;
@@ -248,6 +252,24 @@ impl UdpPort {
     }
 }
 
+/// `::ffff:a.b.c.d` as `a.b.c.d`.
+pub(crate) fn canonical(a: SocketAddr) -> SocketAddr {
+    SocketAddr::new(a.ip().to_canonical(), a.port())
+}
+
+/// The address to send to `to` at from a socket bound at `local`: IPv4 mapped on a dual-stack
+/// socket; `None` for IPv6 from an IPv4 socket.
+fn wire_addr(local: SocketAddr, to: SocketAddr) -> Option<SocketAddr> {
+    match (local, to) {
+        (SocketAddr::V6(_), SocketAddr::V4(v4)) => Some(SocketAddr::new(
+            std::net::IpAddr::V6(v4.ip().to_ipv6_mapped()),
+            v4.port(),
+        )),
+        (SocketAddr::V4(_), SocketAddr::V6(_)) => None,
+        _ => Some(to),
+    }
+}
+
 fn micros(inner: &Inner) -> u64 {
     inner.epoch.elapsed().as_micros() as u64
 }
@@ -257,6 +279,7 @@ fn send_all(inner: &Arc<Inner>, to: SocketAddr, pkts: Vec<Vec<u8>>) {
     if pkts.is_empty() {
         return;
     }
+    let to = canonical(to);
     let open = {
         let mut st = lock(&inner.state);
         let r = st.routes.entry(to).or_default();
@@ -280,9 +303,13 @@ fn send_all(inner: &Arc<Inner>, to: SocketAddr, pkts: Vec<Vec<u8>>) {
         lock(&inner.state).routes.remove(&to);
         return;
     };
+    let Some(dest) = wire_addr(local, to) else {
+        lock(&inner.state).routes.remove(&to);
+        return;
+    };
     let weak = Arc::downgrade(inner);
     let weak2 = weak.clone();
-    engine.dial_udp_from(local, to, PortAcceptor { inner: weak }, move |e| {
+    engine.dial_udp_from(local, dest, PortAcceptor { inner: weak }, move |e| {
         if e.kind() == io::ErrorKind::AlreadyExists {
             return; // the listener's own peer registers and flushes
         }
@@ -502,7 +529,7 @@ impl Acceptor for PortAcceptor {
     fn on_open(&self, c: &Conn<PortPeer>) -> PortPeer {
         if let Some(inner) = self.inner.upgrade() {
             let mut st = lock(&inner.state);
-            let r = st.routes.entry(c.peer_addr()).or_default();
+            let r = st.routes.entry(canonical(c.peer_addr())).or_default();
             r.conn = Some(c.inner().clone());
             r.opening = false;
             for p in std::mem::take(&mut r.pending) {
@@ -521,7 +548,7 @@ impl Handler for PortPeer {
         let Some(inner) = self.inner.upgrade() else {
             return;
         };
-        let peer = c.peer_addr();
+        let peer = canonical(c.peer_addr());
         if utp::is_utp(data) {
             on_utp(&inner, peer, data);
         } else {
@@ -537,7 +564,7 @@ impl Handler for PortPeer {
             return;
         };
         let mut st = lock(&inner.state);
-        let peer = c.peer_addr();
+        let peer = canonical(c.peer_addr());
         if st
             .routes
             .get(&peer)

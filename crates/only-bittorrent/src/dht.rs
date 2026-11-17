@@ -6,11 +6,16 @@
 //!
 //! A [`Node`] takes datagrams ([`Node::handle`]) and the clock ([`Node::tick`]), and queues the
 //! datagrams it wants sent ([`Node::take_outgoing`]) and what it learned ([`Node::take_events`]).
-//! Only nodes that answered a query of ours enter the routing table. IPv4 only (no BEP 32).
+//! Only nodes that answered a query of ours enter the routing table.
+//!
+//! IPv6 (BEP 32): IPv4 and IPv6 nodes live in separate routing tables; queries are answered with
+//! `nodes` and/or `nodes6` as the asker's `want` says (by default its own family), and stored
+//! peers of the asker's family. A node on a dual-stack socket ([`Node::set_ipv6`]) also asks for
+//! `n6` and walks lookups through nodes of both families.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::{Duration, Instant};
 
 use crate::bencode::{self, Value};
@@ -102,6 +107,40 @@ pub fn parse_compact_nodes(b: &[u8]) -> Vec<NodeInfo> {
                 addr: SocketAddr::V4(SocketAddrV4::new(
                     Ipv4Addr::new(c[20], c[21], c[22], c[23]),
                     u16::from_be_bytes([c[24], c[25]]),
+                )),
+            }
+        })
+        .collect()
+}
+
+/// Compact IPv6 node info (BEP 32): 38 bytes per node.
+pub fn compact_nodes6(nodes: &[NodeInfo]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(nodes.len() * 38);
+    for n in nodes {
+        if let SocketAddr::V6(a) = n.addr {
+            out.extend_from_slice(&n.id.0);
+            out.extend_from_slice(&a.ip().octets());
+            out.extend_from_slice(&a.port().to_be_bytes());
+        }
+    }
+    out
+}
+
+/// Decodes compact IPv6 node info.
+pub fn parse_compact_nodes6(b: &[u8]) -> Vec<NodeInfo> {
+    b.chunks_exact(38)
+        .map(|c| {
+            let mut id = [0u8; 20];
+            id.copy_from_slice(&c[..20]);
+            let mut ip = [0u8; 16];
+            ip.copy_from_slice(&c[20..36]);
+            NodeInfo {
+                id: NodeId(id),
+                addr: SocketAddr::V6(SocketAddrV6::new(
+                    Ipv6Addr::from(ip),
+                    u16::from_be_bytes([c[36], c[37]]),
+                    0,
+                    0,
                 )),
             }
         })
@@ -329,7 +368,7 @@ pub enum DhtEvent {
     Peers {
         /// The torrent.
         info_hash: InfoHash,
-        /// Peers (compact IPv4 values).
+        /// Peers (compact values, IPv4 and, from IPv6 nodes, IPv6).
         peers: Vec<SocketAddr>,
     },
     /// A lookup ended.
@@ -355,6 +394,8 @@ pub enum DhtEvent {
 pub struct Node {
     id: NodeId,
     table: Table,
+    table6: Table,
+    ipv6: bool,
     secrets: [[u8; 16]; 2],
     rotated: Instant,
     refreshed: Instant,
@@ -383,6 +424,8 @@ impl Node {
         Node {
             id,
             table: Table::new(id),
+            table6: Table::new(id),
+            ipv6: false,
             secrets,
             rotated: t,
             refreshed: t,
@@ -398,6 +441,39 @@ impl Node {
         }
     }
 
+    /// Reaches IPv6 nodes too (a dual-stack socket): queries ask for `nodes6` as well as
+    /// `nodes`, and lookups walk nodes of both families (BEP 32). Off by default.
+    pub fn set_ipv6(&mut self, on: bool) {
+        self.ipv6 = on;
+    }
+
+    fn table_for(&mut self, addr: &SocketAddr) -> &mut Table {
+        if addr.is_ipv6() {
+            &mut self.table6
+        } else {
+            &mut self.table
+        }
+    }
+
+    /// The `n` closest of both tables (IPv6 only with [`Node::set_ipv6`]).
+    fn closest_any(&self, target: &[u8; 20], n: usize) -> Vec<NodeInfo> {
+        let mut all = self.table.closest(target, n);
+        if self.ipv6 {
+            all.extend(self.table6.closest(target, n));
+            all.sort_by_key(|i| NodeId(*target).distance(&i.id.0));
+            all.truncate(n);
+        }
+        all
+    }
+
+    fn want_both(&self, a: Value) -> Value {
+        if self.ipv6 {
+            a.with("want", vec![Value::from("n4"), Value::from("n6")])
+        } else {
+            a
+        }
+    }
+
     /// Queries without answering (BEP 43): other nodes leave us out of their tables.
     pub fn set_read_only(&mut self, ro: bool) {
         self.read_only = ro;
@@ -408,14 +484,23 @@ impl Node {
         self.id
     }
 
-    /// Nodes in the routing table.
+    /// Nodes in the routing tables (IPv4 and IPv6).
     pub fn table_len(&self) -> usize {
-        self.table.len()
+        self.table.len() + self.table6.len()
     }
 
-    /// The `n` known nodes closest to `target`.
+    /// IPv6 nodes in the routing table.
+    pub fn table6_len(&self) -> usize {
+        self.table6.len()
+    }
+
+    /// The `n` known nodes closest to `target`, of both families.
     pub fn closest(&self, target: &[u8; 20], n: usize) -> Vec<NodeInfo> {
-        self.table.closest(target, n)
+        let mut all = self.table.closest(target, n);
+        all.extend(self.table6.closest(target, n));
+        all.sort_by_key(|i| NodeId(*target).distance(&i.id.0));
+        all.truncate(n);
+        all
     }
 
     /// Datagrams to send.
@@ -508,7 +593,7 @@ impl Node {
             in_flight: 0,
             peers_found: 0,
         };
-        for n in self.table.closest(&target, K * 2) {
+        for n in self.closest_any(&target, K * 2) {
             l.candidates.insert(
                 NodeId(target).distance(&n.id.0),
                 Candidate {
@@ -521,11 +606,14 @@ impl Node {
         self.lookups.insert(id, l);
         // Routers have no known ID: ask them directly, outside the candidate set.
         for &r in extra {
-            let a = if get_peers {
+            if r.is_ipv6() && !self.ipv6 {
+                continue;
+            }
+            let a = self.want_both(if get_peers {
                 Value::dict().with("info_hash", target.to_vec())
             } else {
                 Value::dict().with("target", target.to_vec())
-            };
+            });
             self.query(
                 r,
                 if get_peers { "get_peers" } else { "find_node" },
@@ -565,11 +653,11 @@ impl Node {
         l.in_flight += to_ask.len();
         let done = l.in_flight == 0;
         for addr in to_ask {
-            let a = if gp {
+            let a = self.want_both(if gp {
                 Value::dict().with("info_hash", target.to_vec())
             } else {
                 Value::dict().with("target", target.to_vec())
-            };
+            });
             self.query(
                 addr,
                 if gp { "get_peers" } else { "find_node" },
@@ -627,7 +715,8 @@ impl Node {
                     if let Some(id) = a.bytes_at("id").and_then(|b| <[u8; 20]>::try_from(b).ok()) {
                         let id = NodeId(id);
                         if !ro
-                            && self.table.wants(&id)
+                            && (from.is_ipv4() || self.ipv6)
+                            && self.table_for(&from).wants(&id)
                             && !self.pending.values().any(|p| p.to == from)
                         {
                             self.ping(from);
@@ -661,6 +750,23 @@ impl Node {
             return;
         }
         let mut r = Value::dict().with("id", self.id.0.to_vec());
+        // BEP 32: `want` lists the families to return nodes of; by default the asker's own.
+        let want = a.get("want").and_then(Value::as_list);
+        let (n4, n6) = match want {
+            Some(w) => (
+                w.iter().any(|x| x.as_bytes() == Some(b"n4")),
+                w.iter().any(|x| x.as_bytes() == Some(b"n6")),
+            ),
+            None => (from.is_ipv4(), from.is_ipv6()),
+        };
+        let nodes = |me: &Node, r: &mut Value, target: &[u8; 20]| {
+            if n4 {
+                r.insert("nodes", compact_nodes(&me.table.closest(target, K)));
+            }
+            if n6 {
+                r.insert("nodes6", compact_nodes6(&me.table6.closest(target, K)));
+            }
+        };
         match q {
             "ping" => {}
             "find_node" => {
@@ -671,7 +777,7 @@ impl Node {
                     self.out.push((from, err(203, "bad target")));
                     return;
                 };
-                r.insert("nodes", compact_nodes(&self.table.closest(&target, K)));
+                nodes(self, &mut r, &target);
             }
             "get_peers" => {
                 let Some(ih) = a
@@ -682,19 +788,19 @@ impl Node {
                     return;
                 };
                 r.insert("token", self.token(from.ip(), 0));
-                let peers = self.stored_peers(&InfoHash(ih));
-                if peers.is_empty() {
-                    r.insert("nodes", compact_nodes(&self.table.closest(&ih, K)));
-                } else {
-                    let values: Vec<Value> = peers
-                        .iter()
-                        .take(50)
-                        .map(|p| Value::Bytes(compact_peers(std::slice::from_ref(p), false)))
-                        .filter(|v| v.as_bytes().is_some_and(|b| !b.is_empty()))
-                        .collect();
+                // Peers of the asker's family (BEP 32).
+                let v6 = from.is_ipv6();
+                let values: Vec<Value> = self
+                    .stored_peers(&InfoHash(ih))
+                    .iter()
+                    .filter(|p| p.is_ipv6() == v6)
+                    .take(50)
+                    .map(|p| Value::Bytes(compact_peers(std::slice::from_ref(p), v6)))
+                    .collect();
+                if !values.is_empty() {
                     r.insert("values", values);
-                    r.insert("nodes", compact_nodes(&self.table.closest(&ih, K)));
                 }
+                nodes(self, &mut r, &ih);
             }
             "announce_peer" => {
                 let Some(ih) = a
@@ -759,7 +865,11 @@ impl Node {
         else {
             return;
         };
-        self.table.heard(NodeInfo { id, addr: from }, now());
+        if from.is_ipv4() || self.ipv6 {
+            self.table_for(&from)
+                .heard(NodeInfo { id, addr: from }, now());
+        }
+        let ipv6 = self.ipv6;
         let Some(lid) = p.lookup else { return };
         let Some(l) = self.lookups.get_mut(&lid) else {
             return;
@@ -785,7 +895,13 @@ impl Node {
                 );
             }
         }
-        for n in parse_compact_nodes(r.bytes_at("nodes").unwrap_or_default()) {
+        let mut found = parse_compact_nodes(r.bytes_at("nodes").unwrap_or_default());
+        if ipv6 {
+            found.extend(parse_compact_nodes6(
+                r.bytes_at("nodes6").unwrap_or_default(),
+            ));
+        }
+        for n in found {
             if n.id == self.id || n.addr.port() == 0 {
                 continue;
             }
@@ -806,7 +922,11 @@ impl Node {
             let mut peers = Vec::new();
             for v in r.get("values").and_then(Value::as_list).unwrap_or_default() {
                 if let Some(b) = v.as_bytes() {
-                    peers.extend(parse_compact_peers(b, false));
+                    match b.len() {
+                        6 => peers.extend(parse_compact_peers(b, false)),
+                        18 => peers.extend(parse_compact_peers(b, true)),
+                        _ => {}
+                    }
                 }
             }
             if !peers.is_empty() {
@@ -844,7 +964,7 @@ impl Node {
             .collect();
         for k in expired {
             if let Some(p) = self.pending.remove(&k) {
-                self.table.failed(p.to);
+                self.table_for(&p.to).failed(p.to);
                 if let Some(id) = p.lookup {
                     self.lookup_failed(id, p.to);
                 }
@@ -859,7 +979,7 @@ impl Node {
             list.retain(|(_, at)| t.duration_since(*at) < PEER_TTL);
         }
         self.storage.retain(|_, l| !l.is_empty());
-        let empty = self.table.len() < K && !self.routers.is_empty();
+        let empty = self.table_len() < K && !self.routers.is_empty();
         if t.duration_since(self.refreshed) > REFRESH
             || (empty && t.duration_since(self.refreshed) > Duration::from_secs(30))
         {
@@ -881,6 +1001,18 @@ mod tests {
 
     /// An in-memory network of nodes on 127.0.0.1:(base + i).
     fn deliver(nodes: &mut [Node], base: u16, rounds: usize) -> Vec<Vec<DhtEvent>> {
+        deliver_at(nodes, base, rounds, |p| {
+            SocketAddr::from(([127, 0, 0, 1], p))
+        })
+    }
+
+    /// The same on any address family: node `i` is at `at(base + i)`.
+    fn deliver_at(
+        nodes: &mut [Node],
+        base: u16,
+        rounds: usize,
+        at: impl Fn(u16) -> SocketAddr,
+    ) -> Vec<Vec<DhtEvent>> {
         let mut events = vec![Vec::new(); nodes.len()];
         for _ in 0..rounds {
             let mut moved = false;
@@ -894,7 +1026,7 @@ mod tests {
                 let j = usize::from(to.port() - base);
                 if j < nodes.len() {
                     moved = true;
-                    let from = SocketAddr::from(([127, 0, 0, 1], base + from as u16));
+                    let from = at(base + from as u16);
                     assert!(nodes[j].handle(from, &b));
                 }
             }
@@ -973,6 +1105,103 @@ mod tests {
             found.contains(&SocketAddr::from(([127, 0, 0, 1], 6881))),
             "{:?}",
             ev[23]
+        );
+    }
+
+    #[test]
+    fn ipv6_network() {
+        let base = 41000;
+        let v6 = |p: u16| SocketAddr::from((Ipv6Addr::LOCALHOST, p));
+        let mut nodes: Vec<Node> = (0..20)
+            .map(|_| {
+                let mut n = Node::new(NodeId::random());
+                n.set_ipv6(true);
+                n
+            })
+            .collect();
+        for n in nodes.iter_mut().skip(1) {
+            n.bootstrap(&[v6(base)]);
+        }
+        deliver_at(&mut nodes, base, 200, v6);
+        for n in nodes.iter_mut().skip(1) {
+            n.bootstrap(&[]);
+        }
+        deliver_at(&mut nodes, base, 200, v6);
+        assert!(
+            nodes
+                .iter()
+                .skip(1)
+                .all(|n| n.table6_len() >= 5 && n.table_len() == n.table6_len())
+        );
+        let ih = InfoHash::of(b"v6 torrent");
+        nodes[3].get_peers(ih, Some(6881));
+        deliver_at(&mut nodes, base, 200, v6);
+        nodes[11].get_peers(ih, None);
+        let ev = deliver_at(&mut nodes, base, 200, v6);
+        let found: Vec<SocketAddr> = ev[11]
+            .iter()
+            .filter_map(|e| match e {
+                DhtEvent::Peers { peers, .. } => Some(peers.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(found.contains(&v6(6881)), "{:?}", ev[11]);
+        let n6 = vec![NodeInfo {
+            id: NodeId([4; 20]),
+            addr: v6(9),
+        }];
+        assert_eq!(parse_compact_nodes6(&compact_nodes6(&n6)), n6);
+    }
+
+    #[test]
+    fn want_and_families() {
+        let mut n = Node::new(NodeId::random());
+        n.set_ipv6(true);
+        let a4: SocketAddr = "10.0.0.2:1000".parse().unwrap();
+        let a6: SocketAddr = "[2001:db8::2]:1000".parse().unwrap();
+        // Fill both tables through answered pings.
+        for (i, a) in [a4, a6].into_iter().enumerate() {
+            n.ping(a);
+            let (_, q) = n.take_outgoing().pop().unwrap();
+            let Some(Msg::Query { t, .. }) = Msg::parse(&q) else {
+                panic!()
+            };
+            let r = Msg::Response {
+                t,
+                r: Value::dict().with("id", vec![i as u8 + 1; 20]),
+            };
+            n.handle(a, &r.encode());
+        }
+        assert_eq!((n.table_len(), n.table6_len()), (2, 1));
+        let ask = |n: &mut Node, from: SocketAddr, want: Option<Vec<&str>>| {
+            let mut a = Value::dict()
+                .with("id", vec![9u8; 20])
+                .with("target", vec![0u8; 20]);
+            if let Some(w) = want {
+                a.insert("want", w.into_iter().map(Value::from).collect::<Vec<_>>());
+            }
+            let q = Msg::Query {
+                t: b"x".to_vec(),
+                q: "find_node".into(),
+                a,
+                ro: true,
+            };
+            n.handle(from, &q.encode());
+            let out = n.take_outgoing();
+            let Some(Msg::Response { r, .. }) = Msg::parse(&out[0].1) else {
+                panic!()
+            };
+            (
+                r.bytes_at("nodes").map(<[u8]>::len),
+                r.bytes_at("nodes6").map(<[u8]>::len),
+            )
+        };
+        assert_eq!(ask(&mut n, a4, None), (Some(26), None));
+        assert_eq!(ask(&mut n, a6, None), (None, Some(38)));
+        assert_eq!(
+            ask(&mut n, a4, Some(vec!["n4", "n6"])),
+            (Some(26), Some(38))
         );
     }
 

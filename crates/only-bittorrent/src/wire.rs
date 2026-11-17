@@ -1,6 +1,6 @@
 //! The peer wire protocol as a codec without I/O: the [`Handshake`] with its reserved bits,
-//! [`Message`]s of BEP 3 (plus `port`, BEP 5), the Fast extension (BEP 6) and the extension
-//! protocol (BEP 10), an incremental [`Parser`], [`Bitfield`], the extension handshake, the
+//! [`Message`]s of BEP 3 (plus `port`, BEP 5), the Fast extension (BEP 6), the extension
+//! protocol (BEP 10) and BEP 52's hash request, hashes and hash reject, an incremental [`Parser`], [`Bitfield`], the extension handshake, the
 //! ut_metadata (BEP 9) and ut_pex (BEP 11) payloads, and BEP 6's allowed-fast set.
 
 use std::collections::BTreeMap;
@@ -44,11 +44,12 @@ pub struct Handshake {
 }
 
 impl Handshake {
-    /// A handshake announcing the extension protocol, the DHT and the Fast extension.
+    /// A handshake announcing the extension protocol, the DHT, the Fast extension and v2
+    /// (BEP 52).
     pub fn new(info_hash: InfoHash, peer_id: PeerId) -> Handshake {
         let mut reserved = [0u8; 8];
         reserved[5] |= 0x10; // BEP 10
-        reserved[7] |= 0x01 | 0x04; // BEP 5 DHT, BEP 6 Fast
+        reserved[7] |= 0x01 | 0x04 | 0x10; // BEP 5 DHT, BEP 6 Fast, BEP 52 v2
         Handshake {
             reserved,
             info_hash,
@@ -95,6 +96,67 @@ impl Handshake {
     /// The peer speaks the Fast extension (BEP 6).
     pub fn fast(&self) -> bool {
         self.reserved[7] & 0x04 != 0
+    }
+
+    /// The peer supports v2 torrents (BEP 52: hash requests, upgrading hybrid connections).
+    pub fn v2(&self) -> bool {
+        self.reserved[7] & 0x10 != 0
+    }
+}
+
+/// The payload of a hash request or hash reject (BEP 52), and the head of a hashes message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct HashRequest {
+    /// The file's merkle root.
+    pub pieces_root: [u8; 32],
+    /// The lowest layer asked for (0 = 16 KiB blocks).
+    pub base_layer: u32,
+    /// First node asked for in that layer (a multiple of `length`).
+    pub index: u32,
+    /// Nodes asked for (a power of two, at least 2).
+    pub length: u32,
+    /// Ancestor layers to prove them with.
+    pub proof_layers: u32,
+}
+
+impl HashRequest {
+    /// A request.
+    pub fn new(
+        pieces_root: [u8; 32],
+        base_layer: u32,
+        index: u32,
+        length: u32,
+        proof_layers: u32,
+    ) -> HashRequest {
+        HashRequest {
+            pieces_root,
+            base_layer,
+            index,
+            length,
+            proof_layers,
+        }
+    }
+
+    fn put(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.pieces_root);
+        put_u32(out, self.base_layer);
+        put_u32(out, self.index);
+        put_u32(out, self.length);
+        put_u32(out, self.proof_layers);
+    }
+
+    fn take(p: &[u8]) -> HashRequest {
+        let u = |i: usize| u32::from_be_bytes([p[i], p[i + 1], p[i + 2], p[i + 3]]);
+        let mut pieces_root = [0u8; 32];
+        pieces_root.copy_from_slice(&p[..32]);
+        HashRequest {
+            pieces_root,
+            base_layer: u(32),
+            index: u(36),
+            length: u(40),
+            proof_layers: u(44),
+        }
     }
 }
 
@@ -162,6 +224,17 @@ pub enum Message {
     },
     /// 0x11 (BEP 6)
     AllowedFast(u32),
+    /// 21 (BEP 52): asks for merkle hashes.
+    HashRequest(HashRequest),
+    /// 22 (BEP 52): the hashes asked for, then the uncle hashes proving them, leaf to root.
+    Hashes {
+        /// The request answered.
+        req: HashRequest,
+        /// The hashes.
+        hashes: Vec<[u8; 32]>,
+    },
+    /// 23 (BEP 52): refuses a hash request.
+    HashReject(HashRequest),
     /// 20 (BEP 10): extended message `id` (0 = the extension handshake).
     Extended {
         /// Extended message ID as the receiver assigned it.
@@ -223,6 +296,11 @@ impl fmt::Debug for Message {
             Message::HaveAll => f.write_str("HaveAll"),
             Message::HaveNone => f.write_str("HaveNone"),
             Message::AllowedFast(i) => write!(f, "AllowedFast({i})"),
+            Message::HashRequest(r) => write!(f, "HashRequest({r:?})"),
+            Message::Hashes { req, hashes } => {
+                write!(f, "Hashes {{ {req:?}, {} hashes }}", hashes.len())
+            }
+            Message::HashReject(r) => write!(f, "HashReject({r:?})"),
         }
     }
 }
@@ -293,6 +371,23 @@ impl Message {
                 length,
             } => three(out, 0x10, *index, *begin, *length),
             Message::AllowedFast(i) => one(out, 0x11, *i),
+            Message::HashRequest(r) | Message::HashReject(r) => {
+                put_u32(out, 49);
+                out.push(if matches!(self, Message::HashRequest(_)) {
+                    21
+                } else {
+                    23
+                });
+                r.put(out);
+            }
+            Message::Hashes { req, hashes } => {
+                put_u32(out, 49 + 32 * hashes.len() as u32);
+                out.push(22);
+                req.put(out);
+                for h in hashes {
+                    out.extend_from_slice(h);
+                }
+            }
             Message::Extended { id, payload } => {
                 put_u32(out, 2 + payload.len() as u32);
                 out.push(20);
@@ -370,6 +465,20 @@ impl Message {
             0x0E => want(0).map(|()| Message::HaveAll)?,
             0x0F => want(0).map(|()| Message::HaveNone)?,
             0x11 => want(4).map(|()| Message::AllowedFast(u(0)))?,
+            21 => want(48).map(|()| Message::HashRequest(HashRequest::take(p)))?,
+            23 => want(48).map(|()| Message::HashReject(HashRequest::take(p)))?,
+            22 => {
+                if p.len() < 48 || (p.len() - 48) % 32 != 0 {
+                    return Err(WireError::BadLength(id));
+                }
+                Message::Hashes {
+                    req: HashRequest::take(p),
+                    hashes: p[48..]
+                        .chunks_exact(32)
+                        .map(|c| c.try_into().unwrap_or([0; 32]))
+                        .collect(),
+                }
+            }
             20 => {
                 let Some((&eid, rest)) = p.split_first() else {
                     return Err(WireError::BadLength(id));
@@ -849,7 +958,7 @@ mod tests {
         let b = h.encode();
         let p = Handshake::parse(&b).unwrap();
         assert_eq!(p, h);
-        assert!(p.extended() && p.dht() && p.fast());
+        assert!(p.extended() && p.dht() && p.fast() && p.v2());
         assert!(Handshake::parse(&b[..60]).is_none());
     }
 
@@ -888,6 +997,12 @@ mod tests {
                 length: 5,
             },
             Message::AllowedFast(4),
+            Message::HashRequest(HashRequest::new([7; 32], 2, 512, 512, 9)),
+            Message::Hashes {
+                req: HashRequest::new([7; 32], 0, 4, 2, 0),
+                hashes: vec![[1; 32], [2; 32]],
+            },
+            Message::HashReject(HashRequest::new([8; 32], 1, 0, 2, 3)),
             Message::Extended {
                 id: 0,
                 payload: b"de".to_vec(),
