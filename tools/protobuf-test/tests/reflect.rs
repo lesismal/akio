@@ -30,6 +30,8 @@ fn dynamic_messages_match_generated_code() {
     same::<protobuf_test::test::all::AllTypes>("repeated");
     same::<protobuf_test::test::all::AllTypes>("maps");
     same::<protobuf_test::test::p2::P2>("p2");
+    same::<protobuf_test::test::ext::Base>("ext");
+    same::<protobuf_test::test::ed::Item>("ed2024");
 }
 
 #[test]

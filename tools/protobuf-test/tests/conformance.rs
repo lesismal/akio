@@ -439,3 +439,70 @@ fn editions_features() {
     assert_eq!(got.map_recursive[&1].optional_int32, Some(11));
     assert_eq!(got.repeated_int32, [1, 2, 3], "packed by default in 2023");
 }
+
+#[test]
+fn proto2_extensions_of_every_kind() {
+    use protobuf_test::test::ext::{self, Base, Extra, Level, base, holder};
+    let got: Base = roundtrip("ext");
+    assert_eq!(got.meta.as_ref().unwrap().note.as_deref(), Some("n"));
+    assert_eq!(got.levels, [Level::HIGH, Level::LOW]);
+    assert_eq!(got.extension(&ext::LEVEL).unwrap(), Some(Level::LOW));
+    assert_eq!(got.repeated_extension(&ext::TAGS).unwrap(), [1, 2, 300]);
+    assert_eq!(
+        got.extension(&ext::AT).unwrap(),
+        Some(well_known::Timestamp { seconds: 5, nanos: 6 })
+    );
+    assert_eq!(got.extension(&ext::EXTRA).unwrap().unwrap().x, Some(-1));
+    assert_eq!(
+        got.extension(&holder::LABEL).unwrap().as_deref(),
+        Some("lbl")
+    );
+    // Built through the typed API: protoc's bytes.
+    let mut b = Base {
+        id: Some(7),
+        meta: Some(base::Meta {
+            note: Some("n".into()),
+            ..Default::default()
+        }),
+        levels: vec![Level::HIGH, Level::LOW],
+        ..Default::default()
+    };
+    b.set_extension(&ext::LEVEL, &Level::LOW);
+    b.set_repeated_extension(&ext::TAGS, &[1, 2, 300]);
+    b.set_extension(&ext::AT, &well_known::Timestamp { seconds: 5, nanos: 6 });
+    b.set_extension(
+        &ext::EXTRA,
+        &Extra {
+            x: Some(-1),
+            ..Default::default()
+        },
+    );
+    b.set_extension(&holder::LABEL, &"lbl".to_string());
+    assert_eq!(b.encode_to_vec(), golden("ext"));
+    assert!(b.has_extension(&ext::LEVEL));
+    b.clear_extension(&ext::LEVEL);
+    assert_eq!(b.extension(&ext::LEVEL).unwrap(), None);
+}
+
+#[test]
+fn edition_2024() {
+    use protobuf_test::test::ed::{Item, Kind, item};
+    let got: Item = roundtrip("ed2024");
+    assert_eq!(got.id, 1, "implicit presence from the file default");
+    assert_eq!(got.name.as_deref(), Some(""), "explicit presence on the field");
+    assert_eq!(got.inner.as_ref().unwrap().v, 2, "delimited");
+    assert_eq!(got.codes, [1, 2], "expanded");
+    assert_eq!(got.kind, Some(Kind::A));
+    assert_eq!(got.kinds, [Kind::A, Kind::UNSPECIFIED]);
+    assert_eq!(
+        got.choice,
+        Some(item::Choice::Nested(item::Inner {
+            v: 4,
+            ..Default::default()
+        }))
+    );
+    // A closed enum: an unknown number is an unknown field.
+    let m = Item::decode(&[0x28, 0x09]).unwrap();
+    assert_eq!(m.kind, None);
+    assert_eq!(m.unknown_fields.as_bytes(), [0x28, 0x09]);
+}

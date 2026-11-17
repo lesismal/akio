@@ -16,6 +16,14 @@ pub mod test {
     pub mod p2 {
         only_protobuf::include_proto!("test.p2");
     }
+    /// `test.ext` (proto2 groups and extensions).
+    pub mod ext {
+        only_protobuf::include_proto!("test.ext");
+    }
+    /// `test.ed` (edition 2024).
+    pub mod ed {
+        only_protobuf::include_proto!("test.ed");
+    }
     /// `test.btree` (BTreeMap maps, no unknown fields).
     pub mod btree {
         only_protobuf::include_proto!("test.btree");

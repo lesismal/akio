@@ -603,6 +603,8 @@ dependencies = [
  "only-core",
  "only-deflate",
  "only-http",
+ "only-protobuf",
+ "only-protobuf-build",
  "only-x509",
  "prost",
 ]

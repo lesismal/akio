@@ -1,0 +1,36 @@
+// Edition 2024: features at file, field and enum level, delimited and expanded encodings,
+// closed enums, symbol visibility.
+edition = "2024";
+
+package test.ed;
+
+option features.field_presence = IMPLICIT;
+
+export message Item {
+  int32 id = 1;
+  string name = 2 [features.field_presence = EXPLICIT];
+  Inner inner = 3 [features.message_encoding = DELIMITED];
+  repeated int32 codes = 4 [features.repeated_field_encoding = EXPANDED];
+  Kind kind = 5 [features.field_presence = EXPLICIT];
+  map<string, Inner> by_name = 6;
+  repeated Kind kinds = 7;
+  oneof choice {
+    int32 number = 8;
+    Inner nested = 9;
+  }
+
+  local message Inner {
+    int32 v = 1;
+  }
+}
+
+export enum Kind {
+  option features.enum_type = CLOSED;
+
+  KIND_UNSPECIFIED = 0;
+  KIND_A = 1;
+}
+
+service Items {
+  rpc Get(Item) returns (Item);
+}

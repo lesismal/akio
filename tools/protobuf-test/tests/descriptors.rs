@@ -66,6 +66,8 @@ fn test_files() {
     // Custom options, aggregates, option paths; descriptor.proto itself (edition defaults,
     // retention, targets) comes along as an import.
     compare("options.pb", &["proto/options.proto"]);
+    compare("ext.pb", &["proto/ext.proto"]);
+    compare("ed2024.pb", &["proto/ed2024.proto"]);
 }
 
 #[test]

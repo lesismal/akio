@@ -9,6 +9,8 @@ fn main() {
             "proto/proto2.proto",
             "proto/route_guide.proto",
             "proto/helloworld.proto",
+            "proto/ext.proto",
+            "proto/ed2024.proto",
         ],
         &out,
     )
