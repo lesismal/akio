@@ -10,6 +10,11 @@
 //!    each row added into `t[i + N]` with a running top bit;
 //! 3. the final conditional subtraction of `m`, selected with `cmovnz` on a mask.
 //!
+//! Squaring at 48 and 64 limbs (3072- and 4096-bit moduli, whose fully unrolled squaring would
+//! be too large) is one level of Karatsuba ([`mont_sqr_kara`]): three half-size squarings
+//! ([`sqr_wide`], phase 1 alone), the middle term combined in Rust with masked carries, then the
+//! reduction ([`redc`], phases 2 and 3 alone): about 30% fewer `mulx` than a multiplication.
+//!
 //! Every product row is two carry chains at once: `mulx` leaves the flags alone, `adcx` adds the
 //! low halves (and the row being accumulated) on the carry flag and `adox` the high halves of the
 //! previous column on the overflow flag. The rows are unrolled with the assembler's `.rept`
@@ -23,7 +28,8 @@
 //!
 //! One of the crate's hardware modules (docs/unsafe-review.md): `unsafe` only for the `asm!`
 //! blocks, which read the `N`-limb arrays behind `a`, `b` and `m`, write the `N`-limb output and
-//! the `2N`-limb scratch buffer (a local), and nothing else. Their instructions need BMI2 and
+//! the `2N`-limb scratch buffer (a local), and nothing else (the Karatsuba pieces: the `N`- or
+//! `2N`-limb arrays behind their references). Their instructions need BMI2 and
 //! ADX: they are reached only from `Mont::mul_into` / `Mont::sqr_into` after
 //! [`enabled`] (`cpu::has(Feature::Adx)`), and every function here debug-asserts it.
 #![allow(unsafe_code)]
@@ -36,6 +42,7 @@ use std::arch::x86_64::{
 use std::mem::MaybeUninit;
 
 use crate::cpu::{self, Feature};
+use crate::ct;
 
 /// Whether to use this module: the CPU has BMI2 and ADX, and the portable code is not forced.
 #[inline]
@@ -309,7 +316,7 @@ pub(crate) fn mont_mul<const N: usize, const W: usize>(
 
 /// `out = a²·2^(-64N) mod m`, fully reduced, for `a < m`; `n0 = -m⁻¹ mod 2⁶⁴`. `W` must be
 /// `2N`, `N` even and at least 4. The cross products are unrolled completely (`N(N-1)/2`
-/// of them), so [`super::Mont`] uses this up to 32 limbs and [`mont_mul`] above that.
+/// of them), so [`super::Mont`] uses this up to 32 limbs and [`mont_sqr_kara`] above that.
 #[inline]
 pub(crate) fn mont_sqr<const N: usize, const W: usize>(
     out: &mut [u64; N],
@@ -388,4 +395,174 @@ pub(crate) fn mont_sqr<const N: usize, const W: usize>(
             options(nostack),
         );
     }
+}
+
+/// `t = a²` (all `2N` limbs): the product phase of [`mont_sqr`] alone, for [`mont_sqr_kara`].
+/// `W` must be `2N`, `N` even and at least 4.
+#[inline]
+fn sqr_wide<const N: usize, const W: usize>(t: &mut [u64; W], a: &[u64; N]) {
+    const { assert!(W == 2 * N && N % 2 == 0 && N >= 4) };
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    // SAFETY: reads the N limbs behind `a` (a live array) and writes the 2N limbs of `t` (an
+    // exclusive borrow), zeroed first, as in `mont_sqr`; every displacement is below 8·2N. No
+    // stack use; `rbx`/`rbp` untouched. BMI2 and ADX: reached only after `enabled()`.
+    unsafe {
+        asm!(
+            "xor eax, eax",
+            ".set only_oj, 0",
+            ".rept 2 * {n}",
+            "mov qword ptr [{t} + only_oj], rax",
+            ".set only_oj, only_oj + 8",
+            ".endr",
+            ".set only_oi, 0",
+            ".rept {n} - 1",
+            "mov rdx, qword ptr [{a} + 8 * only_oi]",
+            "xor r9d, r9d",
+            ".set only_oj, only_oi + 1",
+            ".rept {n} - 1 - only_oi",
+            "mulx r11, r10, qword ptr [{a} + 8 * only_oj]",
+            "adcx r10, qword ptr [{t} + 8 * (only_oi + only_oj)]",
+            "adox r10, r9",
+            "mov qword ptr [{t} + 8 * (only_oi + only_oj)], r10",
+            "mov r9, r11",
+            ".set only_oj, only_oj + 1",
+            ".endr",
+            "mov eax, 0",
+            "adcx r9, rax",
+            "adox r9, rax",
+            "mov qword ptr [{t} + 8 * (only_oi + {n})], r9",
+            ".set only_oi, only_oi + 1",
+            ".endr",
+            "xor eax, eax",
+            ".set only_oi, 0",
+            ".rept {n}",
+            "mov rdx, qword ptr [{a} + 8 * only_oi]",
+            "mulx r9, r8, rdx",
+            "mov r10, qword ptr [{t} + 16 * only_oi]",
+            "mov r11, qword ptr [{t} + 16 * only_oi + 8]",
+            "adcx r10, r10",
+            "adox r10, r8",
+            "adcx r11, r11",
+            "adox r11, r9",
+            "mov qword ptr [{t} + 16 * only_oi], r10",
+            "mov qword ptr [{t} + 16 * only_oi + 8], r11",
+            ".set only_oi, only_oi + 1",
+            ".endr",
+            a = in(reg) a.as_ptr(),
+            t = in(reg) t.as_mut_ptr(),
+            n = const N,
+            out("rax") _,
+            out("rdx") _,
+            out("r8") _,
+            out("r9") _,
+            out("r10") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+}
+
+/// `out = t·2^(-64N) mod m`, fully reduced, for `t < m·2^(64N)` (`2N` limbs, used as scratch):
+/// the reduction and final subtraction of [`mont_mul`] alone. `W` must be `2N`, `N` even and at
+/// least 4.
+#[inline]
+fn redc<const N: usize, const W: usize>(
+    out: &mut [u64; N],
+    t: &mut [u64; W],
+    m: &[u64; N],
+    n0: u64,
+) {
+    const { assert!(W == 2 * N && N % 2 == 0 && N >= 4) };
+    debug_assert!(cpu::cpu_has(Feature::Adx));
+    // SAFETY: reads the N limbs behind `m` (a live array), reads and writes the 2N limbs of `t`
+    // (an exclusive borrow) and writes the N limbs behind `out` (an exclusive borrow, aliasing
+    // neither), as the reduction phase of `mont_mul` does; every displacement is below 8·2N.
+    // No stack use; `rbx`/`rbp` untouched. BMI2 and ADX: reached only after `enabled()`.
+    unsafe {
+        asm!(
+            redc_final!("{top}", "{top:e}", "{q}"),
+            t = inout(reg) t.as_mut_ptr() => _,
+            m = in(reg) m.as_ptr(),
+            out = in(reg) out.as_mut_ptr(),
+            n0 = in(reg) n0,
+            top = out(reg) _,
+            q = out(reg) _,
+            n = const N,
+            half = const N / 2,
+            out("rax") _,
+            out("rcx") _,
+            out("rdx") _,
+            out("r8") _,
+            out("r9") _,
+            out("r10") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+}
+
+/// `|x - y|` into `d` and a mask set when `x < y`, in constant time.
+#[inline(always)]
+fn abs_diff(d: &mut [u64], x: &[u64], y: &[u64]) -> u64 {
+    let neg = ct::mask(ct::sub_limbs(d, x, y));
+    let mut c = neg & 1;
+    for l in d.iter_mut() {
+        let (v, o) = (*l ^ neg).overflowing_add(c);
+        *l = v;
+        c = u64::from(o);
+    }
+    neg
+}
+
+/// Adds `x` (`N + 1` limbs: `N` plus a top word) into `t` at limb `H`, carrying to the end of
+/// `t`, in constant time (every limb is visited).
+#[inline(always)]
+fn add_middle(t: &mut [u64], at: usize, x: &[u64], top: u64) {
+    let mut c = 0u64;
+    for (i, l) in t[at..].iter_mut().enumerate() {
+        let v = if i < x.len() {
+            x[i]
+        } else if i == x.len() {
+            top
+        } else {
+            0
+        };
+        let (s, c1) = l.overflowing_add(v);
+        let (s, c2) = s.overflowing_add(c);
+        *l = s;
+        c = u64::from(c1 | c2);
+    }
+}
+
+/// [`mont_sqr`] for `N = 2H` limbs by one level of Karatsuba: with `a = a₁·B + a₀`
+/// (`B = 2^(64H)`), `a² = a₁²·B² + (a₀² + a₁² - (a₀ - a₁)²)·B + a₀²`, three `H`-limb squarings
+/// ([`sqr_wide`]) instead of the `N²` products of [`mont_mul`]`(a, a)`, then [`redc`]. For
+/// `a < m`; constant time (the sign of `a₀ - a₁` only selects by masks). `W` must be `2N`.
+pub(crate) fn mont_sqr_kara<const N: usize, const H: usize, const W: usize>(
+    out: &mut [u64; N],
+    a: &[u64; N],
+    m: &[u64; N],
+    n0: u64,
+) {
+    const { assert!(N == 2 * H && W == 2 * N && H % 2 == 0 && H >= 4) };
+    let mut t = [0u64; W];
+    let (a0, a1) = a.split_at(H);
+    let (a0, a1): (&[u64; H], &[u64; H]) =
+        (a0.try_into().expect("half"), a1.try_into().expect("half"));
+    {
+        let (lo, hi) = t.split_at_mut(N);
+        sqr_wide::<H, N>(lo.try_into().expect("half"), a0);
+        sqr_wide::<H, N>(hi.try_into().expect("half"), a1);
+    }
+    let mut d = [0u64; H];
+    abs_diff(&mut d, a0, a1);
+    let mut dd = [0u64; N];
+    sqr_wide::<H, N>(&mut dd, &d);
+    // mid = a₀² + a₁² - d² = 2·a₀·a₁ ≥ 0, below 2^(64N + 1).
+    let mut mid = [0u64; N];
+    let c = ct::add_limbs(&mut mid, &t[..N], &t[N..]);
+    let mut mid2 = [0u64; N];
+    let b = ct::sub_limbs(&mut mid2, &mid, &dd);
+    add_middle(&mut t, H, &mid2, c.wrapping_sub(b));
+    redc::<N, W>(out, &mut t, m, n0);
 }
