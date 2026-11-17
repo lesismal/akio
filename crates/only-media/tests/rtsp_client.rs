@@ -336,3 +336,231 @@ fn sessions_end_with_their_source() {
     );
     engine.shutdown();
 }
+
+// ---- interop: mediamtx and ffmpeg ---------------------------------------------------------
+
+fn have(tool: &str) -> bool {
+    std::process::Command::new(tool)
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// A client-only engine (TCP dials and UDP sockets).
+fn client_engine() -> Engine {
+    let e = Engine::builder()
+        .client_threads(1)
+        .udp_client_threads(1)
+        .build()
+        .unwrap();
+    e.start().unwrap();
+    e
+}
+
+/// The codec names ffprobe reports for the RTSP URL `input` (read over TCP), sorted.
+fn ffprobe(input: &str) -> Vec<String> {
+    let out = std::process::Command::new("ffprobe")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-rtsp_transport",
+            "tcp",
+        ])
+        .args([
+            "-show_entries",
+            "stream=codec_name",
+            "-of",
+            "csv=p=0",
+            input,
+        ])
+        .output()
+        .expect("ffprobe");
+    let mut v: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|l| l.trim().trim_end_matches(',').to_owned())
+        .filter(|l| !l.is_empty())
+        .collect();
+    v.sort();
+    v
+}
+
+/// ffprobe's names of `t`'s codecs, sorted.
+fn ff_names(t: &Tracks) -> Vec<String> {
+    let mut v: Vec<String> = t
+        .iter()
+        .map(|t| {
+            match t.codec {
+                Codec::H264 => "h264",
+                Codec::H265 => "hevc",
+                Codec::Aac => "aac",
+                Codec::Opus => "opus",
+                _ => "?",
+            }
+            .to_owned()
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+/// The transports `var` lists (`tcp,udp` by default).
+fn transports(var: &str) -> Vec<(RtspTransport, &'static str)> {
+    let want = std::env::var(var).unwrap_or_else(|_| "tcp,udp".into());
+    [(RtspTransport::Tcp, "tcp"), (RtspTransport::Udp, "udp")]
+        .into_iter()
+        .filter(|(_, n)| want.split(',').any(|w| w.trim() == *n))
+        .collect()
+}
+
+/// mediamtx (`ONLY_MEDIAMTX=host:port` of its RTSP listener, as
+/// `tools/interop/media/rtsp-client.sh` starts it): our client records each sample to it,
+/// ffprobe (when installed) reads it back from mediamtx over TCP, and our client plays it back
+/// into the hub. Transports from `ONLY_MEDIAMTX_TRANSPORTS` (default `tcp,udp`);
+/// `ONLY_MEDIAMTX_HOLD=<seconds>` keeps both sessions that long (past mediamtx's 60 s session
+/// timeout, to exercise the keep-alives) and checks they still carry media. Skipped without
+/// `ONLY_MEDIAMTX`.
+#[test]
+fn mediamtx_record_and_play() {
+    let Ok(mtx) = std::env::var("ONLY_MEDIAMTX") else {
+        eprintln!("ONLY_MEDIAMTX not set: skipped (see tools/interop/media/rtsp-client.sh)");
+        return;
+    };
+    let probe = have("ffprobe");
+    let engine = client_engine();
+    for file in ["h264_aac.flv", "h265_opus.ts"] {
+        let hub = Hub::default();
+        let (tracks, stop) = feed(&hub, "src", file);
+        wait("src live", 5, || {
+            hub.stream_info("src").is_some_and(|i| i.publishing)
+        });
+        for (t, name) in transports("ONLY_MEDIAMTX_TRANSPORTS") {
+            let stem = file.split('.').next().unwrap();
+            let url = format!("rtsp://{mtx}/only_{stem}_{name}");
+            let push = client::push(&engine, &url, &hub, "src", cfg(t))
+                .unwrap_or_else(|e| panic!("push {url} over {name}: {e}"));
+            std::thread::sleep(Duration::from_millis(1500));
+            if probe {
+                let got = ffprobe(&url);
+                assert_eq!(got, ff_names(&tracks), "ffprobe {url} (pushed over {name})");
+                eprintln!("ffprobe {url} (pushed over {name}): {got:?}");
+            }
+            let back = format!("back_{name}");
+            let pull = client::pull(&engine, &url, &hub, &back, cfg(t))
+                .unwrap_or_else(|e| panic!("pull {url} over {name}: {e}"));
+            check_live(&hub, &back, &tracks);
+            let hold: u64 = std::env::var("ONLY_MEDIAMTX_HOLD")
+                .ok()
+                .and_then(|h| h.parse().ok())
+                .unwrap_or(0);
+            if hold > 0 {
+                let before = hub.stream_info(&back).unwrap().packets_in;
+                std::thread::sleep(Duration::from_secs(hold));
+                let after = hub.stream_info(&back).map_or(0, |i| i.packets_in);
+                assert!(after > before + 100, "{name}: {before} -> {after} packets");
+                eprintln!("{file}: held {hold} s over {name}, {before} -> {after} packets");
+            }
+            eprintln!("{file}: pushed to and pulled from mediamtx over {name}");
+            assert!(push.error().is_none(), "{:?}", push.error());
+            assert!(pull.error().is_none(), "{:?}", pull.error());
+            drop(pull);
+            drop(push);
+        }
+        stop.store(true, Ordering::Relaxed);
+    }
+    engine.shutdown();
+}
+
+/// ffmpeg as the server of a record (`-rtsp_flags listen`): our client pushes each sample over
+/// each transport (`ONLY_FFMPEG_TRANSPORTS`, default `tcp,udp`) and ffmpeg demuxes three
+/// seconds of it into `framecrc` (codecs, timestamps and checksums of every packet): every
+/// track must be there with its codec and packets. (ffmpeg's listen mode cannot `-c copy` into
+/// Matroska or MPEG-TS, not even from ffmpeg's own push: its first packets carry no pts.)
+/// Skipped without ffmpeg.
+#[test]
+fn ffmpeg_listen_receives_push() {
+    if !have("ffmpeg") {
+        eprintln!("ffmpeg not found: skipped");
+        return;
+    }
+    let engine = client_engine();
+    let dir = std::env::temp_dir().join(format!("only-rtsp-client-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for file in ["h264_aac.flv", "h265_opus.ts"] {
+        let hub = Hub::default();
+        let (tracks, stop) = feed(&hub, "src", file);
+        wait("src live", 5, || {
+            hub.stream_info("src").is_some_and(|i| i.publishing)
+        });
+        for (t, name) in transports("ONLY_FFMPEG_TRANSPORTS") {
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let url = format!("rtsp://127.0.0.1:{port}/s");
+            let out = dir.join(format!("{file}.{name}.crc"));
+            let mut ff = std::process::Command::new("ffmpeg")
+                .args(["-hide_banner", "-loglevel", "error", "-y"])
+                .args(["-rtsp_flags", "listen", "-listen_timeout", "20", "-i", &url])
+                .args(["-t", "3", "-c", "copy", "-f", "framecrc"])
+                .arg(&out)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let push = loop {
+                match client::push(&engine, &url, &hub, "src", cfg(t)) {
+                    Ok(p) => break p,
+                    Err(ClientError::Connect(_)) if Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                    Err(e) => panic!("push to ffmpeg over {name}: {e}"),
+                }
+            };
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let status = loop {
+                if let Some(s) = ff.try_wait().unwrap() {
+                    break s;
+                }
+                if Instant::now() > deadline {
+                    let _ = ff.kill();
+                    panic!("ffmpeg did not finish over {name}");
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            };
+            let mut log = String::new();
+            if let Some(mut e) = ff.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut e, &mut log);
+            }
+            assert!(status.success(), "ffmpeg over {name}: {log}");
+            let crc = std::fs::read_to_string(&out).unwrap();
+            let mut got = Vec::new();
+            for (i, _) in tracks.iter().enumerate() {
+                let codec = crc
+                    .lines()
+                    .find_map(|l| l.strip_prefix(&format!("#codec_id {i}: ")))
+                    .unwrap_or_else(|| panic!("{file} over {name}: no stream {i}: {log}"));
+                let packets = crc
+                    .lines()
+                    .filter(|l| l.starts_with(&format!("{i},")))
+                    .count();
+                assert!(
+                    packets >= 20,
+                    "{file} over {name}: stream {i} has {packets} packets"
+                );
+                got.push(codec.trim().to_owned());
+            }
+            got.sort();
+            assert_eq!(got, ff_names(&tracks), "{file} over {name}: {log}");
+            eprintln!("{file}: ffmpeg received our push over {name}: {got:?}");
+            drop(push);
+        }
+        stop.store(true, Ordering::Relaxed);
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+    engine.shutdown();
+}
