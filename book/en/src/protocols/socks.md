@@ -130,9 +130,33 @@ client for BIND and the UDP edge cases, running the same clients against Dante a
 For pure TCP relays on Linux, `only::ebpf::Relay` can splice two TCP connections in the kernel
 with a sockmap (`SOCKHASH` + `sk_skb` verdict), so payload bytes never reach user space. It needs
 privileges and, by default, Linux 6.15+ (6.12 was found to lose data when the destination's send
-buffer fills). It is not wired into only-socks yet.
+buffer fills).
+
+The proxies use it when asked: `ProxyConfig::sockmap = Some(Relay::new(0)?)` (or
+`Socks::sockmap(relay)`) splices every SOCKS and HTTP `CONNECT` tunnel in the kernel as its
+success reply is written. The reply goes out before any relayed byte, and bytes that were
+already waiting (a server that greets first) follow it in order.
+
+```rust,ignore
+let socks = Socks::new(engine_ref.clone()).sockmap(only::ebpf::Relay::new(0)?);
+```
+
+Some tunnels are relayed in userspace instead:
+
+- when the relay cannot be created (no privileges, older kernel), or splicing fails;
+- when the client connection has TLS;
+- when the client sent data behind its request that the proxy already holds.
+
+Spliced bytes bypass the engine's write watermarks. Timeouts and closing still work:
+
+- The idle timeout reads the sockets' TCP counters (`only::ebpf::byte_counts`).
+- When one side closes, the other is closed only after everything relayed has reached its send
+  queue, since closing a socket drops the kernel's relay backlog.
+
+With io_uring, if a read that completed before the splice delivers payload while both ends are
+open, the tunnel is closed rather than risk reordering. Throughput: see [the benchmark](https://github.com/lesismal/only/blob/main/docs/BENCHMARKS.md#ebpf-acceleration).
 
 ## Not supported
 
 UDP fragment reassembly (fragments are dropped), SOCKS4 `BIND`, GSSAPI authentication, a SOCKS
-client, a Linux `splice(2)` path.
+client.

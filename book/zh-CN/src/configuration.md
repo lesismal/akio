@@ -66,7 +66,7 @@
 
 `EbpfConfig`：`steering`（默认 `Steering::Cpu`，或按源 IP、源 IP 加端口的 `Steering::Hash`）、
 `ebpf_programs`（有特权时优先用 eBPF，true；否则用经典 BPF）、`strict`（失败而不是降级，
-false）。
+false）、`pin_threads`（把 n 个 I/O 线程中的线程 `i` 绑到 `cpu % n == i` 的 CPU 上，false）。
 
 ## `PoolConfig`（逻辑线程池）
 

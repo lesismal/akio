@@ -10,6 +10,28 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: XDP rate limiting, I/O-thread pinning, eBPF hash steering, spliced SOCKS tunnels
+
+Additive (ADR-027, docs/adr/027-ebpf-xdp-pinning-socks-splice.md):
+
+- **`only::ebpf::xdp::RateLimiter`**: per-source token buckets in XDP. It counts TCP SYNs
+  (connection-flood protection) or every packet, keeps sources in a bounded per-CPU LRU map, and
+  attaches natively or generically with a BPF link or netlink. It never replaces another
+  program, detaches on drop, and exposes `stats()` and `forget()`.
+- **`EbpfConfig::pin_threads`**: pins I/O thread `i` of `n` to the CPUs `c % n == i`, so
+  `Steering::Cpu` lands on the thread running on the receiving CPU. Also adds
+  `ebpf::cpu_pinning`, `SteerInfo::pinned_threads` and
+  `only_sys::process::{allowed_cpus, pin_current_thread}`.
+- **eBPF tier for `Steering::Hash`** (privileged): same hash and thread as the classic tier, with
+  sockets named in a `REUSEPORT_SOCKARRAY`, independent of the order they joined the group.
+- **Sockmap relay**: bytes queued before a splice are relayed instead of waiting for more data.
+  New `Relay::splice_inner`, `Relay::splice_inner_with` (write a last handshake message before
+  anything is relayed) and `ebpf::byte_counts`.
+- **only-socks**: `ProxyConfig::sockmap` / `Socks::sockmap` splices SOCKS and HTTP `CONNECT`
+  tunnels in the kernel (opt-in), falling back to userspace relaying when that is not possible.
+- `ONLY_ACCEL` knob in `bench-server`, `ebpf-bench` example, `tools/bench/ebpf.sh`; fuzz target
+  `xdp_rate_limit`.
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):

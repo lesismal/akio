@@ -21,8 +21,10 @@ pub const only_sys::process::SIGQUIT: i32
 pub const only_sys::process::SIGTERM: i32
 pub const only_sys::process::SIGUSR1: i32
 pub const only_sys::process::SIGUSR2: i32
+pub fn only_sys::process::allowed_cpus() -> core::io::error::Result<alloc::vec::Vec<usize>>
 pub fn only_sys::process::configure_child(&mut std::process::Command, &only_sys::process::ChildSetup)
 pub fn only_sys::process::kill(u32, i32) -> core::io::error::Result<()>
+pub fn only_sys::process::pin_current_thread(&[usize]) -> core::io::error::Result<()>
 pub fn only_sys::process::reserve_reuseport(core::net::socket_addr::SocketAddr) -> core::io::error::Result<std::net::tcp::TcpListener>
 pub fn only_sys::process::signal_pipe(&[i32]) -> core::io::error::Result<std::os::unix::net::stream::UnixStream>
 pub fn only_sys::process::take_inherited_fd(std::os::fd::raw::RawFd) -> core::io::error::Result<std::os::fd::owned::OwnedFd>

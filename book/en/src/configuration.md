@@ -67,7 +67,8 @@ built.
 
 `EbpfConfig`: `steering` (`Steering::Cpu` by default, or `Steering::Hash` by source IP or IP and
 port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise), `strict`
-(fail instead of degrading, false).
+(fail instead of degrading, false), `pin_threads` (pin I/O thread `i` of `n` to the CPUs with
+`cpu % n == i`, false).
 
 ## `PoolConfig` (logical pool)
 

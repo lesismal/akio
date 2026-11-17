@@ -65,6 +65,36 @@ io_uring 与 epoll 相差几个百分点之内，服务端是瓶颈时 io_uring 
 `Engine::accel_status()` 按 listener 报告 `Off`、`Steering(info)` 或 `Degraded(reason)`。
 分流需要一组 `SO_REUSEPORT` socket，因此只在 Linux 上可用；macOS 上总是降级。
 
+进程有特权时，两种策略都有 eBPF 层。它在 `REUSEPORT_SOCKARRAY` 中写明每个线程的 socket，因此
+无论 socket 以什么顺序加入组，线程 `i` 都服务 `fds[i]`。哈希与经典层相同，
+`ebpf::expected_index` 对两层都成立。`pin_threads: true` 把 n 个 I/O 线程中的线程 `i` 绑到满足
+`c % n == i` 的 CPU 上；配合 `Steering::Cpu`，流被分到的线程就运行在收到该流的 CPU 上。
+`SteerInfo::pinned_threads` 给出实际绑核的线程数。
+
+## 加速层：XDP 限速
+
+`only::ebpf::xdp::RateLimiter` 在网卡上挂一个 XDP 程序：每个源地址一个令牌桶（每秒 `rate`
+个包，突发 `burst` 个），超出的包在内核为它分配任何东西之前就被丢弃。默认只计 TCP SYN（防连接
+洪泛）；`Count::AllPackets` 计所有 IPv4/IPv6 包。
+
+```rust,ignore
+use only::ebpf::xdp::{RateLimiter, XdpLimit};
+let mut cfg = XdpLimit::default(); // 每源 100 SYN/s，突发 200，16384 个源
+cfg.rate = 50;
+let limiter = RateLimiter::attach("eth0", &cfg)?; // drop 时卸载
+println!("{:?} {:?}", limiter.mode(), limiter.stats()?);
+```
+
+需要 `CAP_NET_ADMIN` 与 `CAP_BPF`。驱动支持时以 native（驱动）模式运行，否则用 generic 模式。
+挂载优先用 BPF link（进程退出时由内核移除），5.9 以前的内核改用 netlink；他人已挂载的程序永不
+替换。
+
+限制：
+
+- 令牌桶按接收 CPU 划分：一个源的多个流若落在多个 RX 队列上，每个队列各有 `rate` 的额度。
+- 伪造且不断变化的源地址各自拿到新桶，这种情况靠 SYN cookies 应对。
+- 源表是有上限的 LRU（`max_sources`）。
+
 ## 每核一线程
 
 每个连接从 accept 到关闭都只由一个 I/O 线程拥有（ADR-001）。这个线程读 socket、执行你的
