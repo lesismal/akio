@@ -162,6 +162,7 @@ pub fn serve_with<S: Service>(
         reqs: StreamMap::default(),
         fields: FieldBuf::default(),
         outs: Arc::default(),
+        span: only_http::trace::connection_span(c.remote_addr(), "3"),
     })
 }
 
@@ -567,6 +568,8 @@ struct ServerConn<S> {
     fields: FieldBuf,
     /// Responses waiting for room in their stream's send buffer.
     outs: Arc<Outs>,
+    /// The connection span (`only_http::trace`), ended on close.
+    span: only::log::span::Span,
 }
 
 /// Why a request stream stopped being read.
@@ -1244,12 +1247,16 @@ impl<S: Service> QuicHandler for ServerConn<S> {
         pump(c, &self.outs, id);
     }
 
-    fn on_close(&mut self, _c: &Connection, _reason: ConnectionError) {
+    fn on_close(&mut self, _c: &Connection, reason: ConnectionError) {
         for (_, mut r) in self.reqs.drain() {
             r.finish_sink(None);
         }
         self.uni.clear();
         lock(&self.outs).clear();
+        if self.span.is_recording() {
+            self.span.record("quic.close_reason", format!("{reason:?}"));
+            drop(std::mem::take(&mut self.span));
+        }
     }
 }
 

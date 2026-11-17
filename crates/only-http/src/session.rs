@@ -124,7 +124,7 @@ impl<S: Service> Acceptor for HttpAcceptor<S> {
             early_probe: true,
             early_len: 0,
             consumed: 0,
-            span: crate::trace::connection(c.peer_addr(), "1.1"),
+            span: crate::trace::connection_span(c.peer_addr(), "1.1"),
         }
     }
 

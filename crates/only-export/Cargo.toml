@@ -1,0 +1,25 @@
+[package]
+name = "only-export"
+description = "only push export: metrics and spans to an OpenTelemetry collector (OTLP/HTTP, protobuf or JSON) and StatsD/DogStatsD, from a background thread, without dependencies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-export"
+keywords = ["opentelemetry", "otlp", "statsd", "metrics", "tracing"]
+categories = ["development-tools::debugging", "network-programming"]
+
+[dependencies]
+only-core = { workspace = true }
+only-log = { workspace = true }
+only-protobuf = { workspace = true }
+
+[dev-dependencies]
+only = { workspace = true }
+only-http = { workspace = true }
+
+[lints]
+workspace = true

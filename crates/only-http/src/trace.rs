@@ -91,9 +91,11 @@ pub(crate) fn responded(s: Span, resp: &Response) {
     }
 }
 
-/// A connection span (level `debug`), or none.
+/// Starts a connection span (level `debug`, target [`CONNECTION_TARGET`], one atomic load when
+/// off) for a connection from `peer` speaking HTTP version `proto` (`"1.1"`, `"2"`, `"3"`);
+/// drop it when the connection closes. Used by this crate's server and by only-h3.
 #[inline(always)]
-pub(crate) fn connection(peer: std::net::SocketAddr, proto: &'static str) -> Span {
+pub fn connection_span(peer: std::net::SocketAddr, proto: &'static str) -> Span {
     if !span::enabled(Level::Debug) {
         return Span::none();
     }

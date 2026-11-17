@@ -215,6 +215,7 @@ pub fn current() -> Option<SpanContext> {
 
 /// An owned span field value.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub enum FieldValue {
     /// A string.
     Str(Cow<'static, str>),
@@ -305,6 +306,7 @@ field_int!(I64 as i64: i8, i16, i32, i64, isize);
 
 /// What a span represents (OpenTelemetry's `SpanKind`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum SpanKind {
     /// Work inside the process.
     #[default]
@@ -321,6 +323,7 @@ pub enum SpanKind {
 
 /// The outcome of a span.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SpanStatus {
     /// Not set (the default: neither success nor failure was recorded).
     #[default]
