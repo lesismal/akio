@@ -333,6 +333,7 @@ pub only_http::message::Request::body: alloc::vec::Vec<u8>
 pub only_http::message::Request::headers: only_http::message::Headers
 pub only_http::message::Request::method: only_http::message::Method
 pub only_http::message::Request::peer: core::net::socket_addr::SocketAddr
+pub only_http::message::Request::protocol: core::option::Option<alloc::string::String>
 pub only_http::message::Request::target: alloc::string::String
 pub only_http::message::Request::trailers: only_http::message::Headers
 pub only_http::message::Request::version: only_http::message::Version
@@ -740,6 +741,7 @@ pub only_http::Request::body: alloc::vec::Vec<u8>
 pub only_http::Request::headers: only_http::message::Headers
 pub only_http::Request::method: only_http::message::Method
 pub only_http::Request::peer: core::net::socket_addr::SocketAddr
+pub only_http::Request::protocol: core::option::Option<alloc::string::String>
 pub only_http::Request::target: alloc::string::String
 pub only_http::Request::trailers: only_http::message::Headers
 pub only_http::Request::version: only_http::message::Version

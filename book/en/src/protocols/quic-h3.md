@@ -168,9 +168,10 @@ TLS chapter) and is not forward secret.
 `only_h3::serve(quic_cfg, service)` (or `serve_with(.., H3Config)`) returns a `QuicServer`
 serving the service over HTTP/3. `only_h3::server_config(certs, key)` is `server_config` with
 ALPN `h3`. Handlers get the same `Context` as on HTTP/1.1 and HTTP/2, including `detach`,
-`stream_response` and trailers; `ctx.req().version` is `Version::Http3`. Request bodies arrive
-buffered. `H3Config`: `max_body` (8 MiB, larger gets 413) and `max_field_section` (64 KiB, sent
-as `SETTINGS_MAX_FIELD_SECTION_SIZE`; larger gets 431).
+`stream_response`, trailers, streamed request bodies and WebSocket upgrades (below);
+`ctx.req().version` is `Version::Http3`. `H3Config`: `max_body_bytes` (8 MiB, a larger buffered
+body gets 413), `max_field_section_bytes` (64 KiB, sent as `SETTINGS_MAX_FIELD_SECTION_SIZE`;
+larger gets 431) and the QPACK settings described below.
 
 Responses follow the QUIC send buffers: what a stream cannot take yet waits with the response
 and goes out as `on_stream_writable` reports room, so a client that grants no flow-control credit
@@ -190,13 +191,70 @@ share one: `let app = Arc::new(router);` and serve `move |ctx: &mut Context| app
 {{#include ../../../../crates/only-h3/examples/guide-h3.rs:client}}
 ```
 
-`H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`); requests sent before
+`H3Client::dial(&engine, addr, server_name, client_cfg)` (ALPN `h3`), or `dial_with(.., H3ClientOptions)`
+for limits and QPACK settings; requests sent before
 the handshake completes wait for it (unless the client resumes with 0-RTT, see above). `request(method, path, headers, body, callback)`,
-`request_blocking(..)`, `get(path, timeout)`, `close()`, `connection()`.
+`request_blocking(..)`, `get(path, timeout)`, `upload(..)`, `websocket(..)`, `close()`,
+`connection()`. Responses arrive buffered.
 `H3Client::dial_with(.., H3ClientOptions)` sets the limits: `max_body_bytes` (8 MiB) and
 `max_field_section_bytes` (64 KiB, advertised) stop the response stream and fail the request
-with `H3Error::TooLarge`; `request_timeout` (30 s, from `request` to the complete response)
-resets the stream and fails it with `H3Error::Timeout` (that callback runs on a timer thread).
+with `H3Error::TooLarge`; `request_timeout` (30 s, from `request` or `websocket` to the
+complete response, a WebSocket's head; uploads have none) resets the stream and fails it with
+`H3Error::Timeout` (that callback runs on a timer thread). It also takes the QPACK settings
+(below).
+
+### Streamed request bodies
+
+A service whose `body_mode` is `BodyMode::Stream` (wrap it in `Streaming`) is called at the
+request's first body bytes and receives the body through `ctx.on_body`, piece by piece as QUIC
+delivers it, exactly as on HTTP/1.1 and HTTP/2; `max_body_bytes` does not apply to it, and the
+reader never holds a DATA frame (only an incomplete frame header or HEADERS frame), so a
+multi-gigabyte upload passes through in constant memory. A `content-length` that does not match
+the body resets the stream (`H3_MESSAGE_ERROR`). Buffered services are unchanged.
+
+On the client, `upload(method, path, &headers, callback)` sends the head at once and returns an
+`H3Upload`: `write(&[u8])` from any thread, `finish()`, and `queued_bytes()` to pace the writer;
+the response goes to the callback.
+
+```rust,ignore
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:upload}}
+```
+
+### WebSocket over HTTP/3
+
+Servers advertise extended CONNECT (RFC 9220), and `ctx.upgrade_websocket(handler, &WsOptions)`
+accepts one: subprotocols, the origin check and `permessage-deflate` work as on HTTP/1.1, the
+answer is `200`, and the request stream then carries the WebSocket, framed by only-ws, with the
+same `WsHandler` callbacks and `WsSender`. `Router` routes an extended CONNECT for `websocket`
+to the path's GET route, so a single `.get("/ws", ...)` serves both HTTP/1.1 upgrades and
+HTTP/3. `ctx.req().protocol` is `Some("websocket")` for such a request. WebSocket over HTTP/2
+(RFC 8441) is not supported.
+
+`H3Client::websocket(path, &H3WsOptions, handler, done)` (or `websocket_blocking`) opens one on
+the client's connection, next to its requests: it waits for the server's SETTINGS, and `done`
+gets the `WsSender` once the server answered `200` (`H3Error::Status` otherwise).
+
+```rust,ignore
+{{#include ../../../../crates/only-h3/examples/guide-h3.rs:websocket}}
+```
+
+### QPACK dynamic table
+
+QPACK (RFC 9204) compresses repeated header fields with a table each side's encoder fills
+through an encoder stream. In `H3Config` (servers) and `H3ClientOptions` (clients):
+
+- `qpack_max_table_capacity` (4096) and `qpack_blocked_streams` (16): what the peer's encoder
+  may use against our decoder. A field section that refers to inserts not received yet waits
+  for them, up to the blocked-streams limit; acknowledgements go back on our decoder stream.
+  Peers such as nghttp3 (curl) and OpenSSL's QUIC use the table as soon as it is offered.
+  Set the capacity to 0 to allow static references and literals only.
+- `qpack_encoder_capacity` (0, off): this side's encoder table, at most what the peer allows.
+  It only references entries the peer has acknowledged, so it never makes the peer wait; it
+  inserts fields that repeat (not paths, dates, lengths, validators, credentials or cookies).
+  It saves bytes on connections that carry many messages with the same custom fields, at the
+  cost of a lock per message; quic-go and fib advertise no table, so it does nothing with them.
+  [ADR-011](https://github.com/lesismal/only/blob/main/docs/adr/011-h3-websocket-qpack-streaming.md)
+  explains the defaults.
 
 ## How HTTP/3 reuses `only-http`
 
@@ -215,5 +273,5 @@ Ryzen 7 7800X3D ([benchmarks](https://github.com/lesismal/only/blob/main/docs/BE
 
 ## Not done
 
-curl/quiche interop runs, WebSocket over HTTP/3 (extended CONNECT), the QPACK dynamic table
-(capacity 0 is advertised), server push, streamed request bodies.
+Server push; WebSocket over HTTP/2 (RFC 8441); streamed responses on the client (`H3Client`
+buffers them); the Duplicate instruction and dynamic name references in our QPACK encoder.

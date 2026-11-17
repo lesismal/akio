@@ -17,6 +17,8 @@ pub(crate) const STREAM_QPACK_DECODER: u64 = 0x3;
 pub(crate) const SETTINGS_QPACK_MAX_TABLE_CAPACITY: u64 = 0x1;
 pub(crate) const SETTINGS_MAX_FIELD_SECTION_SIZE: u64 = 0x6;
 pub(crate) const SETTINGS_QPACK_BLOCKED_STREAMS: u64 = 0x7;
+/// RFC 8441 / RFC 9220: extended CONNECT allowed.
+pub(crate) const SETTINGS_ENABLE_CONNECT_PROTOCOL: u64 = 0x8;
 
 /// HTTP/3 error codes.
 pub mod code {
@@ -52,6 +54,10 @@ pub mod code {
     pub const MESSAGE_ERROR: u32 = 0x10e;
     /// QPACK could not decode a field section.
     pub const QPACK_DECOMPRESSION_FAILED: u32 = 0x200;
+    /// Bad QPACK encoder stream instructions.
+    pub const QPACK_ENCODER_STREAM_ERROR: u32 = 0x201;
+    /// Bad QPACK decoder stream instructions.
+    pub const QPACK_DECODER_STREAM_ERROR: u32 = 0x202;
 }
 
 pub(crate) fn put_varint(out: &mut Vec<u8>, v: u64) {
@@ -67,6 +73,7 @@ pub(crate) fn put_varint(out: &mut Vec<u8>, v: u64) {
 }
 
 /// A varint at the start of `b` and its length; `None` if incomplete.
+#[inline]
 pub(crate) fn get_varint(b: &[u8]) -> Option<(u64, usize)> {
     let first = *b.first()?;
     let n = 1usize << (first >> 6);
@@ -76,6 +83,19 @@ pub(crate) fn get_varint(b: &[u8]) -> Option<(u64, usize)> {
         v = (v << 8) | u64::from(x);
     }
     Some((v, n))
+}
+
+/// A whole frame of type `ty` at the start of `b`: its payload and the bytes after it.
+#[inline]
+pub(crate) fn frame_at(b: &[u8], ty: u64) -> Option<(&[u8], &[u8])> {
+    let (t, n) = get_varint(b)?;
+    if t != ty {
+        return None;
+    }
+    let (len, m) = get_varint(&b[n..])?;
+    let rest = &b[n + m..];
+    let len = usize::try_from(len).ok().filter(|&l| l <= rest.len())?;
+    Some(rest.split_at(len))
 }
 
 /// Appends a frame.
@@ -136,6 +156,18 @@ fn next_frame(r: &[u8], max: u64) -> Result<Option<(u64, usize, usize)>, u64> {
     Ok(Some((ty, a + b, end)))
 }
 
+/// A piece of a request stream read by [`StreamReader::feed_stream`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Piece<'a> {
+    /// A whole HEADERS frame's payload.
+    Headers(&'a [u8]),
+    /// DATA payload bytes as they arrive: a frame may come in several pieces, an empty one in
+    /// none.
+    Data(&'a [u8]),
+    /// The header of a frame of another type; its payload is skipped.
+    Skip(u64),
+}
+
 /// Bytes of a stream, split into frames as they complete.
 #[derive(Default)]
 pub(crate) struct Reader {
@@ -143,7 +175,90 @@ pub(crate) struct Reader {
     pos: usize,
 }
 
+/// A [`Reader`] that streams DATA payloads ([`StreamReader::feed_stream`]); a separate type so
+/// streams read whole frames only (responses, control streams) stay small.
+#[derive(Default)]
+pub(crate) struct StreamReader {
+    r: Reader,
+    /// Payload bytes left of the current DATA (or skipped) frame.
+    left: u64,
+    skip: bool,
+}
+
+impl From<Reader> for StreamReader {
+    /// Continues where `r` stopped (at a frame boundary).
+    fn from(r: Reader) -> StreamReader {
+        StreamReader {
+            r,
+            left: 0,
+            skip: false,
+        }
+    }
+}
+
+/// Splits `b` into pieces for [`StreamReader::feed_stream`]; the bytes taken (an incomplete frame
+/// header or HEADERS frame is left).
+#[inline]
+fn pieces<E, T: FnMut() -> E, F: FnMut(Piece<'_>) -> Result<(), E>>(
+    left: &mut u64,
+    skip: &mut bool,
+    b: &[u8],
+    max: u64,
+    too_large: &mut T,
+    f: &mut F,
+) -> Result<usize, E> {
+    let mut pos = 0;
+    loop {
+        if *left > 0 {
+            let n = (*left).min((b.len() - pos) as u64) as usize;
+            if n == 0 {
+                return Ok(pos);
+            }
+            if !*skip {
+                f(Piece::Data(&b[pos..pos + n]))?;
+            }
+            pos += n;
+            *left -= n as u64;
+            continue;
+        }
+        let r = &b[pos..];
+        let Some((ty, a)) = get_varint(r) else {
+            return Ok(pos);
+        };
+        let Some((len, c)) = get_varint(&r[a..]) else {
+            return Ok(pos);
+        };
+        match ty {
+            DATA => {
+                pos += a + c;
+                (*left, *skip) = (len, false);
+            }
+            HEADERS => {
+                if len > max {
+                    return Err(too_large());
+                }
+                let end = a + c + len as usize;
+                let Some(p) = r.get(a + c..end) else {
+                    return Ok(pos);
+                };
+                f(Piece::Headers(p))?;
+                pos += end;
+            }
+            _ => {
+                f(Piece::Skip(ty))?;
+                pos += a + c;
+                (*left, *skip) = (len, true);
+            }
+        }
+    }
+}
+
 impl Reader {
+    /// Nothing buffered.
+    pub(crate) fn idle(&self) -> bool {
+        self.pos == self.buf.len()
+    }
+
     pub(crate) fn push(&mut self, data: &[u8]) {
         if self.pos > 0 && self.pos == self.buf.len() {
             self.buf.clear();
@@ -222,6 +337,49 @@ impl Reader {
     }
 }
 
+impl StreamReader {
+    /// Nothing buffered and no frame in progress.
+    pub(crate) fn idle(&self) -> bool {
+        self.r.pos == self.r.buf.len() && self.left == 0
+    }
+
+    /// Takes `data` and calls `f` with its pieces: whole HEADERS frames (`Err(too_large)` for one
+    /// over `max` bytes), DATA payloads as they arrive (never buffered), and the types of other
+    /// frames (skipped). Only an incomplete frame header or HEADERS frame is kept for the next
+    /// call, so a large body streams through without being held.
+    pub(crate) fn feed_stream<E>(
+        &mut self,
+        data: &[u8],
+        max: u64,
+        mut too_large: impl FnMut() -> E,
+        mut f: impl FnMut(Piece<'_>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let StreamReader { r, left, skip } = self;
+        if r.pos == r.buf.len() {
+            r.buf.clear();
+            r.pos = 0;
+            let n = pieces(left, skip, data, max, &mut too_large, &mut f)?;
+            r.buf.extend_from_slice(&data[n..]);
+            return Ok(());
+        }
+        r.push(data);
+        let n = pieces(left, skip, &r.buf[r.pos..], max, &mut too_large, &mut f)?;
+        r.pos += n;
+        Ok(())
+    }
+
+    /// [`Reader::feed`] (whole frames), when nothing is streaming.
+    pub(crate) fn feed<E>(
+        &mut self,
+        data: &[u8],
+        max: u64,
+        too_large: impl FnOnce() -> E,
+        f: impl FnMut(u64, &[u8]) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.r.feed(data, max, too_large, f)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +443,53 @@ mod tests {
         }
         let mut r = Reader::default();
         assert_eq!(r.feed(&big, 1000, || 1, |_, _| Ok(())), Err(1));
+        // `feed_stream`: the same HEADERS, DATA bytes and skipped types whatever the splits,
+        // and a large DATA frame is never buffered.
+        let mut wire = Vec::new();
+        put_frame(&mut wire, HEADERS, b"head");
+        put_frame(&mut wire, 0x21, &[1; 100]);
+        put_frame(&mut wire, DATA, &[]);
+        put_frame(&mut wire, DATA, &[7; 5000]);
+        put_frame(&mut wire, HEADERS, b"trailers");
+        let run = |size: usize| {
+            let mut r = StreamReader::default();
+            let (mut heads, mut data, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
+            for ch in wire.chunks(size) {
+                r.feed_stream(
+                    ch,
+                    100,
+                    || (),
+                    |p| {
+                        match p {
+                            Piece::Headers(h) => heads.push(h.to_vec()),
+                            Piece::Data(d) => data.extend_from_slice(d),
+                            Piece::Skip(t) => skipped.push(t),
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                assert!(
+                    r.r.buf.len() - r.r.pos < 64,
+                    "buffered {}",
+                    r.r.buf.len() - r.r.pos
+                );
+            }
+            (heads, data, skipped)
+        };
+        let whole = run(wire.len());
+        assert_eq!(whole.0, [b"head".to_vec(), b"trailers".to_vec()]);
+        assert_eq!((whole.1.len(), &whole.2[..]), (5000, &[0x21][..]));
+        for size in [1, 2, 3, 7, 100, 1000] {
+            assert_eq!(run(size), whole, "{size}");
+        }
+        let mut big = Vec::new();
+        put_varint(&mut big, HEADERS);
+        put_varint(&mut big, 101);
+        assert_eq!(
+            StreamReader::default().feed_stream(&big, 100, || 1, |_| Ok(())),
+            Err(1)
+        );
         // Lengths of every varint size are filled in by `end_frame`.
         for n in [0usize, 63, 64, 16383, 16384] {
             let mut out = vec![9];

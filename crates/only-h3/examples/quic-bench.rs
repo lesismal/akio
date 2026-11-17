@@ -172,13 +172,32 @@ fn bulk(mb: usize) {
     );
 }
 
+/// `QB_H3_QPACK=N` (versions with a QPACK dynamic table): both encoders use an N-byte table;
+/// `QB_H3_DTABLE=N`: both decoders allow an N-byte table (4096 by default).
 fn h3(secs: u64, conc: usize) {
     let (certs, key) = certs();
     let app = Router::new().get("/", |ctx: &mut Context| ctx.text(200, "hello h3"));
     let quic = only_h3::server_config(certs, key).expect("config");
+    let mut h3cfg = only_h3::H3Config::default();
+    if let Some(n) = std::env::var("QB_H3_QPACK")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        h3cfg.qpack_encoder_capacity = n;
+    }
+    if let Some(n) = std::env::var("QB_H3_DTABLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        h3cfg.qpack_max_table_capacity = n;
+    }
     let s = Engine::builder()
         .listen(
-            Listener::udp("127.0.0.1:0".parse().expect("addr")).serve(only_h3::serve(quic, app)),
+            Listener::udp("127.0.0.1:0".parse().expect("addr")).serve(only_h3::serve_with(
+                quic,
+                h3cfg.clone(),
+                app,
+            )),
         )
         .build()
         .expect("engine");
@@ -186,7 +205,10 @@ fn h3(secs: u64, conc: usize) {
     let addr = s.local_addrs()[0];
     let e = client_engine(1);
     let cfg = only_quic::client_config_insecure(&[b"h3"]).expect("config");
-    let c = Arc::new(H3Client::dial(&e, addr, "localhost", cfg).expect("dial"));
+    let mut opts = only_h3::H3ClientOptions::default();
+    opts.qpack_encoder_capacity = h3cfg.qpack_encoder_capacity;
+    opts.qpack_max_table_capacity = h3cfg.qpack_max_table_capacity;
+    let c = Arc::new(H3Client::dial_with(&e, addr, "localhost", cfg, opts).expect("dial"));
     c.get("/", Duration::from_secs(5)).expect("first request");
     let done = Arc::new(AtomicUsize::new(0));
     let errors = Arc::new(AtomicUsize::new(0));

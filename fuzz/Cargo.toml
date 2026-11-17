@@ -199,6 +199,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "qpack_dynamic"
+path = "fuzz_targets/qpack_dynamic.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "h3_request"
 path = "fuzz_targets/h3_request.rs"
 test = false

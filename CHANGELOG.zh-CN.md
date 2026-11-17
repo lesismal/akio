@@ -10,6 +10,35 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
+
+均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：
+
+- **HTTP/3 上的 WebSocket**（RFC 9220）。服务端宣告 extended CONNECT；
+  `Context::upgrade_websocket` 以与 HTTP/1.1 相同的检查、子协议和 `permessage-deflate` 接受它，
+  应答 `200`，并在请求流上承载 WebSocket，`WsHandler` / `WsSender` 不变。`Router` 把
+  `websocket` 的 extended CONNECT 路由到该路径的 GET 路由，所以一个 `.get("/ws", ...)` 同时服务
+  HTTP/1.1 和 HTTP/3。新增 `Request::protocol`（`:protocol`）。客户端：`H3Client::websocket` /
+  `websocket_blocking` 与 `H3WsOptions`；被拒绝时返回 `H3Error::Status`。
+- **QPACK 动态表**（RFC 9204），服务端在 `H3Config`、客户端在 `H3ClientOptions`（`H3Client::dial_with`）中配置：
+  `qpack_max_table_capacity`（4096）和 `qpack_blocked_streams`（16）用于我方解码器（encoder/decoder
+  stream、按顺序暂存被阻塞的字段段、确认、增量和取消），`qpack_encoder_capacity`（0，关闭）用于我方
+  编码器，它只引用已确认的条目，因此从不阻塞对端。新增错误码 `code::QPACK_ENCODER_STREAM_ERROR` /
+  `QPACK_DECODER_STREAM_ERROR`。服务端现在宣告 4 KiB 动态表：nghttp3（curl）和 OpenSSL QUIC 会立即
+  使用。
+- **HTTP/3 流式请求 body**：`BodyMode::Stream` 的 service 与 HTTP/1、HTTP/2 一样通过
+  `Context::on_body` 随到随收，不受 `max_body_bytes` 限制；请求读取器从不暂存 DATA 负载。客户端：
+  `H3Client::upload` 返回 `H3Upload`（`write`、`finish`、`queued_bytes`）。
+- 互通：quic-go（双向 HTTP/3 WebSocket 与流式上传），Docker 中通过 libcurl 的 ngtcp2/nghttp3 和
+  OpenSSL QUIC（nghttp3 会填充我方解码器的表）。新增 fuzz 目标 `qpack_dynamic`；`h3_frame` 和
+  `h3_request` 覆盖 QPACK 流、被阻塞的字段段、extended CONNECT 和流式读取器。
+- 编码器关闭时的 HTTP/3 吞吐：`quic-bench h3` 同轮 A/B 为不含这些功能的版本的 1.025 倍（gpu51 上
+  88.13 万 vs 85.96 万 请求/秒，两次各 7 轮交替：1.024 倍和 1.027 倍，14 轮全部更快），每请求少约
+  300 条指令（x86 callgrind）。完整到达的请求或响应（一个 HEADERS 帧、至多一个 DATA 帧）不经帧读取器
+  和每流状态直接读取，客户端在加锁前解码；请求截止时间按 token 下标索引队列而不再哈希；请求在已持有的
+  锁下直接打开流。两端都开启 QPACK 编码器时在该
+  基准上慢 18%（请求很小，每个都要确认一次），这正是编码器默认关闭的原因。
+
 ### 变更：处处安全默认值、不阻塞事件循环的 I/O、更精简的热路径（ADR-009，docs/rules.zh-CN.md）
 
 新的开发规则（docs/rules.zh-CN.md，改编自 fit）：绝不阻塞 I/O 线程、消息体流式且有界、背压联动、处处有超时和

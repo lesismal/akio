@@ -14,6 +14,7 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-008: TLS record_size_limit, certificate compression and OCSP stapling](008-tls-extensions.md)
 - [ADR-009: Safe defaults for engine limits and timeouts](009-safe-defaults.md)
 - [ADR-010: HTTP and WebSocket client: redirects, timeouts, resolution, system roots, proxies](010-http-client-gaps.md)
+- [ADR-011: HTTP/3 WebSocket (RFC 9220), QPACK dynamic table and streamed request bodies](011-h3-websocket-qpack-streaming.md)
 - [ADR-012: SOCKS5 BIND / UDP ASSOCIATE, `Engine::adopt_tcp`, and only-log filters](012-socks-commands-and-log-filters.md)
 - [ADR-013: Shared 0-RTT anti-replay store and QUIC compatible version negotiation](013-shared-anti-replay-and-compatible-vn.md)
 - [ADR-014: QUIC session tickets and tokens bound to the QUIC version](014-quic-version-bound-resumption.md)

@@ -24,7 +24,7 @@ API reference: `cargo doc --workspace --no-deps --open`
 | TLS | in-house TLS 1.3 / 1.2 (`only-tls`, no third-party code) as a connection transport: server and client, ALPN, SNI, client certificates, resumption |
 | HTTP | HTTP/1.1 and HTTP/2 (h2spec 147/147) on one port, pipelining, streaming both ways, Router (static/regexp/param/wildcard), 9 middlewares, static files with `sendfile`, HTTP/1 and HTTP/2 clients |
 | WebSocket | server and client, permessage-deflate, Autobahn 100% (server and client) |
-| HTTP/3 and QUIC | own QUIC v1 (RFC 9000/9001/9002, datagrams, migration, Retry, key updates, GSO), HTTP/3 serving the same `Router`, H3 client; interop with quic-go and fib |
+| HTTP/3 and QUIC | own QUIC v1 (RFC 9000/9001/9002, datagrams, migration, Retry, key updates, GSO), HTTP/3 serving the same `Router` (QPACK dynamic table, WebSocket over HTTP/3, streamed request bodies), H3 client; interop with quic-go, fib, curl (ngtcp2, OpenSSL) |
 | RPC | gRPC (unary and streaming, interop with grpc-go), arpc (wire-compatible with lesismal/arpc and fib) |
 | Proxies | SOCKS5/4/4a, HTTP CONNECT, port sharing by first-byte sniffing (only-mux) |
 | KCP | wire-compatible with skywind3000/kcp and kcp-go (FEC, crypts) |

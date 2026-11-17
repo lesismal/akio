@@ -303,6 +303,9 @@ pub(crate) struct PendingUpgrade {
     pub handler: Box<dyn WsHandler>,
     pub cfg: WsConfig,
     pub pmd: Option<PmdParams>,
+    /// The `200` already sent on a transport outside this crate (HTTP/3), kept until the
+    /// transport takes the stream over.
+    pub ext: Option<Box<dyn crate::transport::BodySink>>,
 }
 
 /// Options for [`Context::upgrade_websocket`].
@@ -555,14 +558,22 @@ impl Context {
 
     /// Turns this request into a WebSocket connection served by `handler`.
     ///
-    /// Validates the handshake (`GET`, HTTP/1.1, `Upgrade`/`Connection` tokens, version 13, a
+    /// HTTP/1.1: validates the handshake (`GET`, `Upgrade`/`Connection` tokens, version 13, a
     /// well-formed key, the origin policy), answers `101 Switching Protocols` and switches the
     /// connection to WebSocket; the handler's `on_open` runs right away. Returns `false` after
     /// answering a bad handshake itself (400, 403 or 426), in which case the connection stays
     /// HTTP. Do not pipeline requests behind an upgrade request.
+    ///
+    /// HTTP/3 (RFC 9220): the request is an extended CONNECT with `:protocol` `websocket`
+    /// (which [`Router`](crate::Router) routes to the path's GET route); it is answered `200` and
+    /// its stream carries the WebSocket connection, with the same checks (version 13, origin),
+    /// subprotocol selection and `permessage-deflate`. HTTP/2 is not supported (400).
     pub fn upgrade_websocket(&mut self, handler: impl WsHandler, opts: &WsOptions) -> bool {
         if self.responder.is_none() {
             return false;
+        }
+        if matches!(self.responder, Some(Out::Ext(_))) {
+            return self.upgrade_websocket_ext(Box::new(handler), opts);
         }
         let r = self.req.share();
         let h = &r.headers;
@@ -570,7 +581,7 @@ impl Context {
             self.text(400, "WebSocket upgrade needs GET over HTTP/1.1");
             return false;
         }
-        if matches!(self.responder, Some(Out::H2(_) | Out::Ext(_))) {
+        if matches!(self.responder, Some(Out::H2(_))) {
             self.text(400, "WebSocket over HTTP/2 is not supported");
             return false;
         }
@@ -622,6 +633,70 @@ impl Context {
             handler: Box::new(handler),
             cfg: opts.config.clone(),
             pmd,
+            ext: None,
+        });
+        true
+    }
+
+    /// [`upgrade_websocket`](Self::upgrade_websocket) on a transport outside this crate
+    /// (HTTP/3): an extended CONNECT answered `200` with the head only, the stream left open.
+    fn upgrade_websocket_ext(&mut self, handler: Box<dyn WsHandler>, opts: &WsOptions) -> bool {
+        let r = self.req.share();
+        let h = &r.headers;
+        if r.method != Method::Connect || r.protocol.as_deref() != Some("websocket") {
+            self.text(
+                400,
+                "WebSocket over HTTP/3 needs an extended CONNECT (RFC 9220)",
+            );
+            return false;
+        }
+        if h.get("sec-websocket-version") != Some("13") {
+            self.respond(
+                Response::text(426, "unsupported WebSocket version")
+                    .header("Sec-WebSocket-Version", "13"),
+            );
+            return false;
+        }
+        if let (Some(allowed), Some(origin)) = (opts.origin_allowed, h.get("origin")) {
+            if !allowed(origin) {
+                self.text(403, "origin not allowed");
+                return false;
+            }
+        }
+        let mut headers = Headers::new();
+        if let Some(p) =
+            only_ws::select_subprotocol(h.get_all("sec-websocket-protocol"), &opts.protocols)
+        {
+            headers.append("sec-websocket-protocol", p);
+        }
+        let mut pmd = None;
+        if opts.config.permessage_deflate {
+            if let Some((params, header)) =
+                only_ws::deflate::negotiate(h.get_all("sec-websocket-extensions"))
+            {
+                headers.append("sec-websocket-extensions", header);
+                pmd = Some(params);
+            }
+        }
+        // The head goes out as a streamed response's (no content length, the stream stays
+        // open); the transport carries the WebSocket bytes on it from now on.
+        let Some(Out::Ext(out)) = self.responder.take() else {
+            return false;
+        };
+        let mut resp = Response::new(200);
+        resp.headers = headers;
+        resp.streaming = true;
+        self.fin.apply(&mut resp, &r);
+        self.status = Some(200);
+        let Some(body) = out.start_stream(resp) else {
+            return false;
+        };
+        self.detached = true;
+        self.upgrade = Some(PendingUpgrade {
+            handler,
+            cfg: opts.config.clone(),
+            pmd,
+            ext: Some(body),
         });
         true
     }

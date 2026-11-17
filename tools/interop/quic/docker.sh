@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # only-quic / only-h3 servers against two more QUIC stacks, in Docker (Debian's rust:1 image, which
 # ships them; nothing is downloaded or built besides this workspace):
-#   - ngtcp2 1.11 + GnuTLS, through libcurl-gnutls (HTTP/3: GET, POST 300 KB echo, streaming);
+#   - ngtcp2 1.11 + GnuTLS, through libcurl-gnutls (HTTP/3: GET, POST 300 KB echo, streaming,
+#     a streamed request body, many requests on one connection: nghttp3's QPACK encoder uses the
+#     dynamic table the server allows; then again with the server's own encoder table on);
 #   - OpenSSL 3.5's own QUIC stack, through libcurl (HTTP/3, same checks) and `openssl s_client
 #     -quic` (raw QUIC: a stream echoed by quic-interop).
 # Only the client side of those stacks is packaged there, so this covers our servers.
@@ -15,12 +17,17 @@ docker run --rm -v "$ROOT":/w -w /w -v flash-cargo-reg:/usr/local/cargo/registry
 set -eu
 cargo build -q --release -p only-h3 --example h3-interop -p only-quic --example quic-interop
 /tmp/t/release/examples/h3-interop server 127.0.0.1:9401 > /tmp/h3.log 2>&1 &
+/tmp/t/release/examples/h3-interop server 127.0.0.1:9403 qpack > /tmp/h3q.log 2>&1 &
 /tmp/t/release/examples/quic-interop server 127.0.0.1:9501 > /tmp/q.log 2>&1 &
 sleep 1
 echo "== ngtcp2 (libcurl-gnutls) client -> only-h3 server"
 python3 tools/interop/h3/libcurl-h3.py libcurl-gnutls.so.4 https://127.0.0.1:9401
 echo "== OpenSSL QUIC (libcurl) client -> only-h3 server"
 python3 tools/interop/h3/libcurl-h3.py libcurl.so.4 https://127.0.0.1:9401
+echo "== ngtcp2 (libcurl-gnutls) client -> only-h3 server with a QPACK encoder table"
+python3 tools/interop/h3/libcurl-h3.py libcurl-gnutls.so.4 https://127.0.0.1:9403
+echo "== OpenSSL QUIC (libcurl) client -> only-h3 server with a QPACK encoder table"
+python3 tools/interop/h3/libcurl-h3.py libcurl.so.4 https://127.0.0.1:9403
 echo "== curl --http3-only (OpenSSL QUIC) -> only-h3 server"
 out=$(curl -sk --http3-only https://127.0.0.1:9401/)
 [ "$out" = "hello h3" ] || { echo "FAIL: curl got: $out"; exit 1; }

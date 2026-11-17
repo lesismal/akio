@@ -781,14 +781,23 @@ impl Router {
         })
     }
 
-    fn resolve<'a>(&'a self, path: &str, method: &Method, out: &mut Ranges) -> Resolved<'a> {
+    /// `ws`: an extended CONNECT for `websocket` (RFC 9220), which a GET route answers as it
+    /// answers an HTTP/1.1 upgrade unless the path has a CONNECT route.
+    fn resolve<'a>(
+        &'a self,
+        path: &str,
+        method: &Method,
+        ws: bool,
+        out: &mut Ranges,
+    ) -> Resolved<'a> {
         let Some(leaf) = Router::find(&self.root, path, 0, out) else {
             return Resolved::NotFound;
         };
         let routes = &leaf.routes;
         let route = routes.iter().find(|r| &r.method == method).or_else(|| {
-            // HEAD is answered by the GET route (the body is dropped when encoding).
-            (*method == Method::Head)
+            // HEAD is answered by the GET route (the body is dropped when encoding), and so is
+            // WebSocket over HTTP/3.
+            (*method == Method::Head || ws)
                 .then(|| routes.iter().find(|r| r.method == Method::Get))
                 .flatten()
         });
@@ -802,7 +811,7 @@ impl Router {
     /// without allocating. `None` when no route matches (a 404 or 405). Parameter values are raw.
     pub fn lookup<'r, 'p>(&'r self, method: &Method, path: &'p str) -> Option<RouteMatch<'r, 'p>> {
         let mut ranges = Ranges::default();
-        match self.resolve(path, method, &mut ranges) {
+        match self.resolve(path, method, false, &mut ranges) {
             Resolved::Route(_, names) => Some(RouteMatch {
                 names,
                 ranges,
@@ -856,10 +865,16 @@ fn allow(leaf: &Leaf) -> String {
     allow.join(", ")
 }
 
+/// An extended CONNECT for `websocket` (RFC 9220).
+fn is_ws_connect(req: &Request) -> bool {
+    req.method == Method::Connect && req.protocol.as_deref() == Some("websocket")
+}
+
 impl Service for Router {
     fn call(&self, ctx: &mut Context) {
         let mut ranges = Ranges::default();
-        match self.resolve(ctx.path(), ctx.method(), &mut ranges) {
+        let ws = is_ws_connect(ctx.req());
+        match self.resolve(ctx.path(), ctx.method(), ws, &mut ranges) {
             Resolved::Route(r, names) => {
                 if !names.is_empty() {
                     ctx.set_params(Params::new(names, ranges, ctx.path()));
@@ -879,7 +894,7 @@ impl Service for Router {
             return BodyMode::Buffered;
         }
         let mut ranges = Ranges::default();
-        match self.resolve(req.path(), &req.method, &mut ranges) {
+        match self.resolve(req.path(), &req.method, is_ws_connect(req), &mut ranges) {
             Resolved::Route(r, _) => r.svc.body_mode(req),
             _ => self.fallback.body_mode(req),
         }

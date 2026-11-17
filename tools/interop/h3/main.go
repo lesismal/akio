@@ -1,11 +1,14 @@
 // HTTP/3 interop peer (github.com/quic-go/quic-go) for only-h3:
 //
-//	go run . server 127.0.0.1:9400    serves /, /echo, /trailers, /big
+//	go run . server 127.0.0.1:9400    serves /, /echo, /trailers, /big, /ws (WebSocket, RFC 9220)
 //	go run . client 127.0.0.1:9401    checks a only-h3 server (crates/only-h3/examples/h3-interop.rs)
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
+	"encoding/binary"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -21,8 +24,178 @@ import (
 	"sync"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
+
+// A minimal WebSocket framing (RFC 6455) over an HTTP/3 stream: unfragmented messages only.
+func wsWrite(w io.Writer, op byte, payload []byte, mask bool) error {
+	h := []byte{0x80 | op}
+	m := byte(0)
+	if mask {
+		m = 0x80
+	}
+	switch n := len(payload); {
+	case n < 126:
+		h = append(h, m|byte(n))
+	case n < 1<<16:
+		h = append(h, m|126, byte(n>>8), byte(n))
+	default:
+		h = append(h, m|127)
+		h = binary.BigEndian.AppendUint64(h, uint64(n))
+	}
+	body := payload
+	if mask {
+		key := []byte{0x12, 0x34, 0x56, 0x78}
+		h = append(h, key...)
+		body = make([]byte, len(payload))
+		for i := range payload {
+			body[i] = payload[i] ^ key[i%4]
+		}
+	}
+	_, err := w.Write(append(h, body...))
+	return err
+}
+
+func wsRead(r *bufio.Reader) (byte, []byte, error) {
+	var h [2]byte
+	if _, err := io.ReadFull(r, h[:]); err != nil {
+		return 0, nil, err
+	}
+	if h[0]&0x80 == 0 {
+		return 0, nil, fmt.Errorf("fragmented frame")
+	}
+	n := uint64(h[1] & 0x7f)
+	switch n {
+	case 126:
+		var b [2]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return 0, nil, err
+		}
+		n = uint64(binary.BigEndian.Uint16(b[:]))
+	case 127:
+		var b [8]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return 0, nil, err
+		}
+		n = binary.BigEndian.Uint64(b[:])
+	}
+	var key []byte
+	if h[1]&0x80 != 0 {
+		key = make([]byte, 4)
+		if _, err := io.ReadFull(r, key); err != nil {
+			return 0, nil, err
+		}
+	}
+	p := make([]byte, n)
+	if _, err := io.ReadFull(r, p); err != nil {
+		return 0, nil, err
+	}
+	if key != nil {
+		for i := range p {
+			p[i] ^= key[i%4]
+		}
+	}
+	return h[0] & 0x0f, p, nil
+}
+
+// wsEcho serves an RFC 9220 WebSocket: echoes messages, answers pings and the close.
+func wsEcho(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodConnect || r.Proto != "websocket" || r.Header.Get("Sec-Websocket-Version") != "13" {
+		w.WriteHeader(400)
+		return
+	}
+	if p := r.Header.Get("Sec-Websocket-Protocol"); strings.Contains(p, "chat") {
+		w.Header().Set("Sec-Websocket-Protocol", "chat")
+	}
+	w.WriteHeader(200)
+	str := w.(http3.HTTPStreamer).HTTPStream()
+	defer str.Close()
+	br := bufio.NewReader(str)
+	for {
+		op, p, err := wsRead(br)
+		if err != nil {
+			return
+		}
+		switch op {
+		case 1, 2:
+			if wsWrite(str, op, p, false) != nil {
+				return
+			}
+		case 9:
+			_ = wsWrite(str, 10, p, false)
+		case 8:
+			_ = wsWrite(str, 8, p, false)
+			return
+		}
+	}
+}
+
+// wsCheck opens a WebSocket over HTTP/3 on a only-h3 server's /ws and checks the echo.
+func wsCheck(addr string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	tlsConf := &tls.Config{InsecureSkipVerify: true, ServerName: "localhost", NextProtos: []string{http3.NextProtoH3}}
+	qc, err := quic.DialAddr(ctx, addr, tlsConf, &quic.Config{})
+	if err != nil {
+		fail("ws dial: %v", err)
+	}
+	tr := &http3.Transport{}
+	cc := tr.NewClientConn(qc)
+	select {
+	case <-cc.ReceivedSettings():
+	case <-ctx.Done():
+		fail("ws: no SETTINGS")
+	}
+	if !cc.Settings().EnableExtendedConnect {
+		fail("ws: server did not enable extended CONNECT")
+	}
+	rs, err := cc.OpenRequestStream(ctx)
+	if err != nil {
+		fail("ws stream: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodConnect, "https://"+addr+"/ws", nil)
+	req.Proto = "websocket"
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Protocol", "v0, chat")
+	if err := rs.SendRequestHeader(req); err != nil {
+		fail("ws request: %v", err)
+	}
+	resp, err := rs.ReadResponse()
+	if err != nil || resp.StatusCode != 200 {
+		fail("ws response: %v %v", err, resp)
+	}
+	if resp.Header.Get("Sec-Websocket-Protocol") != "chat" {
+		fail("ws subprotocol: %q", resp.Header.Get("Sec-Websocket-Protocol"))
+	}
+	br := bufio.NewReader(rs)
+	for _, m := range [][]byte{[]byte("hello from quic-go"), pattern(200 << 10)} {
+		op := byte(2)
+		if len(m) < 100 {
+			op = 1
+		}
+		if err := wsWrite(rs, op, m, true); err != nil {
+			fail("ws write: %v", err)
+		}
+		gop, got, err := wsRead(br)
+		if err != nil || gop != op || !bytes.Equal(got, m) {
+			fail("ws echo: %v op %d, %d bytes", err, gop, len(got))
+		}
+	}
+	if err := wsWrite(rs, 8, []byte{0x03, 0xe8}, true); err != nil {
+		fail("ws close: %v", err)
+	}
+	op, p, err := wsRead(br)
+	if err != nil || op != 8 || !bytes.Equal(p, []byte{0x03, 0xe8}) {
+		fail("ws close echo: %v %d %v", err, op, p)
+	}
+	_ = rs.Close()
+	// The server ends its side after the close handshake.
+	if _, err := br.ReadByte(); err != io.EOF {
+		fail("ws: stream not ended: %v", err)
+	}
+	_ = qc.CloseWithError(0, "")
+}
 
 func fail(format string, args ...any) {
 	fmt.Printf("FAIL: "+format+"\n", args...)
@@ -72,6 +245,11 @@ func main() {
 		})
 		mux.HandleFunc("/big", func(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write(pattern(4 << 20))
+		})
+		mux.HandleFunc("/ws", wsEcho)
+		mux.HandleFunc("/count", func(w http.ResponseWriter, r *http.Request) {
+			n, _ := io.Copy(io.Discard, r.Body)
+			fmt.Fprintf(w, "%d", n)
 		})
 		s := &http3.Server{
 			Addr:      addr,
@@ -142,5 +320,27 @@ func main() {
 		}(i)
 	}
 	wg.Wait()
-	fmt.Println("ok: quic-go client -> only-h3 server")
+	// A streamed upload of unknown length (no content-length) to a streaming handler.
+	pr, pw := io.Pipe()
+	go func() {
+		chunk := pattern(64 << 10)
+		for i := 0; i < 256; i++ {
+			if _, err := pw.Write(chunk); err != nil {
+				return
+			}
+		}
+		pw.Close()
+	}()
+	req, _ = http.NewRequest("POST", base+"/count", pr)
+	resp, err = c.Do(req)
+	if err != nil {
+		fail("streamed POST: %v", err)
+	}
+	got, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(got) != fmt.Sprint(256<<16) {
+		fail("streamed POST: %q", got)
+	}
+	wsCheck(addr)
+	fmt.Println("ok: quic-go client -> only-h3 server (incl. WebSocket over HTTP/3, streamed upload)")
 }

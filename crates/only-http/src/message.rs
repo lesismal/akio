@@ -312,6 +312,9 @@ pub struct Request {
     pub body: Vec<u8>,
     /// The peer's address.
     pub peer: SocketAddr,
+    /// The `:protocol` of an extended CONNECT request (RFC 8441 / RFC 9220: `websocket` for
+    /// WebSocket over HTTP/3); `None` for every other request.
+    pub protocol: Option<String>,
 }
 
 impl Request {
@@ -327,6 +330,7 @@ impl Request {
             trailers: Headers::new(),
             body: Vec::new(),
             peer: SocketAddr::from(([0, 0, 0, 0], 0)),
+            protocol: None,
         }
     }
 
@@ -714,6 +718,7 @@ mod tests {
             trailers: Headers::new(),
             body: vec![],
             peer: "127.0.0.1:1".parse().unwrap(),
+            protocol: None,
         };
         assert_eq!(r.path(), "/a/b");
         assert_eq!(r.query_param("x"), Some("1"));

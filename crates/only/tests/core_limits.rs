@@ -170,7 +170,10 @@ fn pipelined_behind_slow_response_is_bounded() {
     let read = seen.read_while_slow.load(Ordering::SeqCst);
     let max = seen.max_pending.load(Ordering::SeqCst);
     // Paused at 32 pending; a read already in progress is still parsed (up to 1024 bytes).
-    assert!(read <= 32 + 2 * 1024, "read {read} requests behind the slow one");
+    assert!(
+        read <= 32 + 2 * 1024,
+        "read {read} requests behind the slow one"
+    );
     assert!(max <= 32 + 1024, "{max} responses pending at once");
     assert!(seen.paused.load(Ordering::SeqCst));
     assert!(resumed(&seen));
@@ -192,7 +195,11 @@ fn pending_limit_under_and_at() {
         let got = exchange(&mut s, req, behind + 1);
         assert_eq!(got[0], b'D');
         assert_eq!(seen.max_pending.load(Ordering::SeqCst), behind + 1);
-        assert_eq!(seen.paused.load(Ordering::SeqCst), pauses, "{behind} behind");
+        assert_eq!(
+            seen.paused.load(Ordering::SeqCst),
+            pauses,
+            "{behind} behind"
+        );
         assert!(resumed(&seen));
         e.shutdown();
         e.wait();
@@ -240,7 +247,10 @@ fn held_bytes_pause_at_watermark() {
     // Paused once 64 KiB (4 responses) were held: what one read already carried may add to it.
     assert!(held <= (64 << 10) + 8 * BIG, "held {held}");
     let read = seen.read_while_slow.load(Ordering::SeqCst);
-    assert!(read <= 4 + 2 * 8, "read {read} requests behind the slow one");
+    assert!(
+        read <= 4 + 2 * 8,
+        "read {read} requests behind the slow one"
+    );
     e.shutdown();
     e.wait();
 }

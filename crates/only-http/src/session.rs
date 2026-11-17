@@ -665,6 +665,7 @@ impl<S: Service> Session<S> {
             trailers: Headers::new(),
             body: Vec::new(),
             peer: c.peer_addr(),
+            protocol: None,
         };
         let Some(kind) = kind else {
             return self.dispatch(c, req, keep_alive);

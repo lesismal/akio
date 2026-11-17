@@ -10,7 +10,9 @@ pub const only_h3::code::INTERNAL_ERROR: u32
 pub const only_h3::code::MESSAGE_ERROR: u32
 pub const only_h3::code::MISSING_SETTINGS: u32
 pub const only_h3::code::NO_ERROR: u32
+pub const only_h3::code::QPACK_DECODER_STREAM_ERROR: u32
 pub const only_h3::code::QPACK_DECOMPRESSION_FAILED: u32
+pub const only_h3::code::QPACK_ENCODER_STREAM_ERROR: u32
 pub const only_h3::code::REQUEST_CANCELLED: u32
 pub const only_h3::code::REQUEST_INCOMPLETE: u32
 pub const only_h3::code::REQUEST_REJECTED: u32
@@ -41,6 +43,7 @@ pub type only_h3::qpack::Fields = alloc::vec::Vec<(alloc::vec::Vec<u8>, alloc::v
 pub only_h3::H3Error::Closed(alloc::string::String)
 pub only_h3::H3Error::Protocol(&'static str)
 pub only_h3::H3Error::Reset(u64)
+pub only_h3::H3Error::Status(u16)
 pub only_h3::H3Error::Timeout
 pub only_h3::H3Error::TooLarge(&'static str)
 impl core::clone::Clone for only_h3::H3Error
@@ -68,6 +71,9 @@ pub fn only_h3::H3Client::dial_with(&only::Engine, core::net::socket_addr::Socke
 pub fn only_h3::H3Client::get(&self, &str, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
 pub fn only_h3::H3Client::request(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, impl core::ops::function::FnOnce(core::result::Result<only_http::message::Response, only_h3::H3Error>) + core::marker::Send + 'static)
 pub fn only_h3::H3Client::request_blocking(&self, only_http::message::Method, &str, &only_http::message::Headers, alloc::vec::Vec<u8>, core::time::Duration) -> core::result::Result<only_http::message::Response, only_h3::H3Error>
+pub fn only_h3::H3Client::upload(&self, only_http::message::Method, &str, &only_http::message::Headers, impl core::ops::function::FnOnce(core::result::Result<only_http::message::Response, only_h3::H3Error>) + core::marker::Send + 'static) -> only_h3::H3Upload
+pub fn only_h3::H3Client::websocket(&self, &str, &only_h3::H3WsOptions, impl only_ws::session::WsHandler, impl core::ops::function::FnOnce(core::result::Result<only_ws::session::WsSender, only_h3::H3Error>) + core::marker::Send + 'static)
+pub fn only_h3::H3Client::websocket_blocking(&self, &str, &only_h3::H3WsOptions, impl only_ws::session::WsHandler, core::time::Duration) -> core::result::Result<only_ws::session::WsSender, only_h3::H3Error>
 impl core::clone::Clone for only_h3::H3Client
 pub fn only_h3::H3Client::clone(&self) -> Self
 impl core::fmt::Debug for only_h3::H3Client
@@ -80,6 +86,9 @@ impl !core::panic::unwind_safe::UnwindSafe for only_h3::H3Client
 #[non_exhaustive] pub struct only_h3::H3ClientOptions
 pub only_h3::H3ClientOptions::max_body_bytes: usize
 pub only_h3::H3ClientOptions::max_field_section_bytes: usize
+pub only_h3::H3ClientOptions::qpack_blocked_streams: usize
+pub only_h3::H3ClientOptions::qpack_encoder_capacity: usize
+pub only_h3::H3ClientOptions::qpack_max_table_capacity: usize
 pub only_h3::H3ClientOptions::request_timeout: core::option::Option<core::time::Duration>
 impl core::clone::Clone for only_h3::H3ClientOptions
 pub fn only_h3::H3ClientOptions::clone(&self) -> Self
@@ -95,6 +104,9 @@ impl core::panic::unwind_safe::UnwindSafe for only_h3::H3ClientOptions
 #[non_exhaustive] pub struct only_h3::H3Config
 pub only_h3::H3Config::max_body_bytes: usize
 pub only_h3::H3Config::max_field_section_bytes: usize
+pub only_h3::H3Config::qpack_blocked_streams: usize
+pub only_h3::H3Config::qpack_encoder_capacity: usize
+pub only_h3::H3Config::qpack_max_table_capacity: usize
 impl core::clone::Clone for only_h3::H3Config
 pub fn only_h3::H3Config::clone(&self) -> Self
 impl core::default::Default for only_h3::H3Config
@@ -106,6 +118,36 @@ impl core::marker::Sync for only_h3::H3Config
 impl core::marker::Unpin for only_h3::H3Config
 impl core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Config
 impl core::panic::unwind_safe::UnwindSafe for only_h3::H3Config
+pub struct only_h3::H3Upload
+impl only_h3::H3Upload
+pub fn only_h3::H3Upload::finish(&self) -> bool
+pub fn only_h3::H3Upload::queued_bytes(&self) -> usize
+pub fn only_h3::H3Upload::write(&self, &[u8]) -> bool
+impl core::fmt::Debug for only_h3::H3Upload
+pub fn only_h3::H3Upload::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_h3::H3Upload
+impl core::marker::Sync for only_h3::H3Upload
+impl core::marker::Unpin for only_h3::H3Upload
+impl !core::panic::unwind_safe::RefUnwindSafe for only_h3::H3Upload
+impl !core::panic::unwind_safe::UnwindSafe for only_h3::H3Upload
+#[non_exhaustive] pub struct only_h3::H3WsOptions
+pub only_h3::H3WsOptions::close_timeout: core::time::Duration
+pub only_h3::H3WsOptions::config: only_ws::session::WsConfig
+pub only_h3::H3WsOptions::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_h3::H3WsOptions::origin: core::option::Option<alloc::string::String>
+pub only_h3::H3WsOptions::pmd: only_ws::deflate::PmdOffer
+pub only_h3::H3WsOptions::protocols: alloc::vec::Vec<alloc::string::String>
+impl core::clone::Clone for only_h3::H3WsOptions
+pub fn only_h3::H3WsOptions::clone(&self) -> Self
+impl core::default::Default for only_h3::H3WsOptions
+pub fn only_h3::H3WsOptions::default() -> only_h3::H3WsOptions
+impl core::fmt::Debug for only_h3::H3WsOptions
+pub fn only_h3::H3WsOptions::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_h3::H3WsOptions
+impl core::marker::Sync for only_h3::H3WsOptions
+impl core::marker::Unpin for only_h3::H3WsOptions
+impl core::panic::unwind_safe::RefUnwindSafe for only_h3::H3WsOptions
+impl core::panic::unwind_safe::UnwindSafe for only_h3::H3WsOptions
 pub fn only_h3::serve<S: only_http::context::Service>(only_quic::types::ServerConfig, S) -> only_quic::QuicServer
 pub fn only_h3::serve_with<S: only_http::context::Service>(only_quic::types::ServerConfig, only_h3::H3Config, S) -> only_quic::QuicServer
 pub fn only_h3::server_config(alloc::vec::Vec<only_tls::config::Certificate>, only_tls::config::PrivateKey) -> core::result::Result<only_quic::types::ServerConfig, only_quic::Error>
