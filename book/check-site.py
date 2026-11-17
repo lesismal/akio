@@ -23,14 +23,13 @@ import argparse
 import concurrent.futures
 import functools
 import html.parser
+import http.client
 import http.server
 import pathlib
 import re
 import sys
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 
 PUBLISHED = "https://lesismal.github.io/only/"
 LANGS = ("en", "zh-CN")
@@ -40,6 +39,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     """Serves `directory` at `base`; everything else, and missing files, get 404.html."""
 
     base = "/"
+    protocol_version = "HTTP/1.1"  # keep-alive
 
     def log_message(self, *args):
         pass
@@ -118,25 +118,32 @@ def main():
     cache = {}  # url without fragment -> (status, Page or None)
     lock = threading.Lock()
 
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    local = threading.local()  # one keep-alive connection per thread: no port exhaustion
+    port = srv.server_address[1]
+
+    def get(url):
+        path = urllib.parse.urlsplit(url)
+        target = path.path + (f"?{path.query}" if path.query else "")
+        for attempt in range(5):
+            conn = getattr(local, "conn", None)
+            if conn is None:
+                conn = local.conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+            try:
+                conn.request("GET", target)
+                r = conn.getresponse()
+                return r.status, r.getheader("Content-Type", ""), r.read()
+            except (OSError, http.client.HTTPException):
+                conn.close()
+                local.conn = None
+                if attempt == 4:
+                    raise
+        raise AssertionError
 
     def fetch(url):
         with lock:
             if url in cache:
                 return cache[url]
-        for attempt in range(5):
-            try:
-                with opener.open(url, timeout=30) as r:
-                    status, ctype, body = r.status, r.headers.get("Content-Type", ""), r.read()
-                break
-            except urllib.error.HTTPError as e:
-                status, ctype, body = e.code, "", e.read()
-                if e.code == 404 and "html" in e.headers.get("Content-Type", ""):
-                    ctype = e.headers["Content-Type"]
-                break
-            except urllib.error.URLError:
-                if attempt == 4:
-                    raise
+        status, ctype, body = get(url)
         page = None
         if status in (200, 404) and "html" in ctype and body:
             page = Page()

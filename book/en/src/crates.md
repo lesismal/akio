@@ -31,7 +31,7 @@ changes: [CHANGELOG.md](https://github.com/lesismal/only/blob/main/CHANGELOG.md)
 | `only-tls` (`only::tls`) | TLS 1.3 / 1.2 (in-house) as a connection transport | [TLS](protocols/tls.md) |
 | `only-http` | HTTP/1.1, HTTP/2, Router, middleware, static files, clients, observability | [HTTP servers](protocols/http-server.md) |
 | `only-ws` | WebSocket server session and client | [WebSocket](protocols/websocket.md) |
-| `only-quic` | QUIC v1 (own implementation) | [QUIC and HTTP/3](protocols/quic-h3.md) |
+| `only-quic` | QUIC v1 and v2 (own implementation) | [QUIC and HTTP/3](protocols/quic-h3.md) |
 | `only-h3` | HTTP/3 and QPACK | [QUIC and HTTP/3](protocols/quic-h3.md) |
 | `only-grpc` | gRPC server and client | [gRPC](protocols/grpc.md) |
 | `only-protobuf`, `only-protobuf-build` | protobuf runtime, and the `.proto` code generator for `build.rs` (no protoc, gRPC stubs) | [gRPC](protocols/grpc.md) |

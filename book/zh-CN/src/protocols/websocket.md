@@ -1,7 +1,7 @@
 # WebSocket
 
 `only-ws` 实现了 RFC 6455 以及 `permessage-deflate`（RFC 7692）。服务端通过 only-http 的
-升级进入；客户端拨号 `ws://` 和 `wss://` URL。两端使用同一个 handler trait。一致性：
+升级进入（HTTP/1.1，或 HTTP/3 上的 extended CONNECT）；客户端拨号 `ws://` 和 `wss://` URL。两端使用同一个 handler trait。一致性：
 Autobahn|Testsuite 服务端 298 OK + 3 informational（核心）以及 216/216（permessage-deflate）；
 客户端 517 项中 514 OK + 3 informational；CI 中由 `tools/autobahn/run.sh` 运行。
 
@@ -40,7 +40,8 @@ pub trait WsHandler: Send + 'static {
 `ctx.upgrade_websocket(handler, &WsOptions)` 校验握手（GET、HTTP/1.1、`Upgrade`/`Connection`
 令牌、版本 13、key、origin 策略），应答 `101 Switching Protocols` 并切换连接；`on_open` 立即
 执行。握手不合法时它自己应答 400、403 或 426，返回 `false`，连接保持为 HTTP。不要在升级请求
-之后流水线发送其他请求。
+之后流水线发送其他请求。在 HTTP/3 上，同一个调用接受 extended CONNECT（RFC 9220）并应答 `200`，见
+[HTTP/3 上的 WebSocket](quic-h3.md#http3-上的-websocket)。
 
 `WsOptions`：
 
@@ -87,4 +88,6 @@ pub trait WsHandler: Send + 'static {
 
 ## 尚未完成
 
-客户端：TLS 或 SOCKS 代理、跨重定向携带 cookie。服务端：基于 HTTP/2 或 HTTP/3 的 WebSocket（extended CONNECT）。
+客户端：TLS 或 SOCKS 代理、跨重定向携带 cookie。服务端：基于 HTTP/2 的 WebSocket（RFC 8441，
+应答 400）；基于 HTTP/3 的 WebSocket（RFC 9220）已完成，见
+[QUIC 与 HTTP/3](quic-h3.md#http3-上的-websocket)。

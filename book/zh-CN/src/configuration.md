@@ -90,7 +90,7 @@ false）。
 | `only_http::h2client::H2Options` | `initial_window`：1 MiB，`conn_window`：16 MiB，`enable_push`：false，`max_header_list`：64 KiB，`max_body_bytes`：64 MiB（缓冲式响应） |
 | `only_ws::WsConfig` | `max_message_bytes`：16 MiB，`permessage_deflate`：true，`compress_min_bytes`：128 |
 | `only_http::WsOptions` | `config`：`WsConfig::default()`，`protocols`：无，`origin_allowed`：无 |
-| `only_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s |
+| `only_ws::client::DialOptions` | `config`、`pmd`、`protocols`、`origin`、`headers`、`tls`：无，`server_name`：URL 中的主机，`handshake_timeout`：10 s，`close_timeout`：3 s，`proxy`：无，`max_redirects`：0 |
 | `only_media::HubConfig` | `gop_cache_bytes`：16 MiB，`max_streams`：1024，`max_subscribers`：每路径 1000（0：不限） |
 | `only_media::rtmp::RtmpConfig` | `chunk_size`：4096，`write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`handshake_timeout`：10 s，`idle_timeout`：60 s（播放者除外）；消息 16 MiB，每连接未完成消息合计 32 MiB |
 | `only_media::rtsp::RtspConfig` | `write_queue_limit`：2 MiB，`max_write_queue`：16 MiB，`request_timeout`：10 s，`session_timeout`：60 s（通告并强制执行） |
@@ -98,8 +98,8 @@ false）。
 | `only_media::whip::WhipConfig` | `max_sessions`：256（0：不限） |
 | `only_media::hls::HlsConfig` | `target_duration`：2 s，`playlist_size`：6，`keep_segments`：3，`max_bytes`：64 MiB（也约束正在写的分段），`idle_timeout`：30 s |
 | `only_webrtc::RtcServer` / `Endpoint` | `max_peers`：1024（0：不限），`connect_timeout`：30 s |
-| `only_h3::H3Config` | `max_body`：8 MiB，`max_field_section`：64 KiB |
-| `only_h3::H3ClientOptions` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`request_timeout`：30 s |
+| `only_h3::H3Config` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`qpack_max_table_capacity`：4096，`qpack_blocked_streams`：16，`qpack_encoder_capacity`：0（关闭） |
+| `only_h3::H3ClientOptions` | `max_body_bytes`：8 MiB，`max_field_section_bytes`：64 KiB，`request_timeout`：30 s，`qpack_max_table_capacity`：4096，`qpack_blocked_streams`：16，`qpack_encoder_capacity`：0（关闭） |
 | `only_grpc::GrpcServer` | `max_message`：4 MiB，`max_collect_bytes`：64 MiB，`max_deadline`：24 小时，`compress`：false |
 | `only_grpc::GrpcClient` | `max_message_bytes`：4 MiB，`max_collect_bytes`：64 MiB，`default_timeout`：30 秒（`unary` / `collect`） |
 | `only_arpc::Routes` | `max_body`：64 MiB，`max_streams_per_conn`：1024，`call_timeout`：30 秒 |
@@ -111,6 +111,8 @@ false）。
 |---|---|
 | `ONLY_UDP_GSO=0` | 在 Linux 上关闭 UDP GSO（Linux 4.18+；否则每个进程探测一次） |
 | `ONLY_UDP_GRO=0` | 无论 `Config::udp_gro` 如何都不启用 UDP GRO（Linux 5.0+） |
+| `ONLY_UDP_ECN=0` | 发出的 UDP 数据报一律不带 ECN 码点（否则 QUIC 在 Linux 上标记 ECT(0)） |
+| `ONLY_LOG=...` | 日志过滤指令（`info,only_http=debug`），仅当应用调用 `only::log::init_from_env` 时读取 |
 
 测试套件还会读取 `ONLY_TEST_BACKEND=uring`（在 io_uring 上运行 engine 测试）和
 `ONLY_TEST_EXPECT_EBPF=1`（eBPF 不可用时失败而不是跳过）。

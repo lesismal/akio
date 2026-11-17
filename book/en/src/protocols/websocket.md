@@ -1,7 +1,7 @@
 # WebSocket
 
 `only-ws` implements RFC 6455 with `permessage-deflate` (RFC 7692). The server side is reached
-through a only-http upgrade; the client dials `ws://` and `wss://` URLs. Both use the same
+through a only-http upgrade (HTTP/1.1, or an extended CONNECT on HTTP/3); the client dials `ws://` and `wss://` URLs. Both use the same
 handler trait. Conformance: Autobahn|Testsuite server 298 OK + 3 informational (core) and 216/216
 (permessage-deflate); client 514 OK + 3 informational of 517; run in CI by
 `tools/autobahn/run.sh`.
@@ -44,7 +44,8 @@ different threads never interleave):
 `Upgrade`/`Connection` tokens, version 13, key, origin policy), answers `101 Switching
 Protocols` and switches the connection; `on_open` runs right away. On a bad handshake it answers
 400, 403 or 426 itself, returns `false`, and the connection stays HTTP. Do not pipeline requests
-behind an upgrade request.
+behind an upgrade request. On HTTP/3 the same call accepts an extended CONNECT (RFC 9220) and
+answers `200`; see [WebSocket over HTTP/3](quic-h3.md#websocket-over-http3).
 
 `WsOptions`:
 
@@ -97,5 +98,6 @@ Run `cargo run -p only-ws --example guide-ws` for a chat room with two clients, 
 
 ## Not done
 
-Client: TLS or SOCKS proxies, cookies across redirects. Server: WebSocket over HTTP/2 or HTTP/3
-(extended CONNECT).
+Client: TLS or SOCKS proxies, cookies across redirects. Server: WebSocket over HTTP/2 (RFC 8441,
+answered 400); WebSocket over HTTP/3 (RFC 9220) is done, see
+[QUIC and HTTP/3](quic-h3.md#websocket-over-http3).

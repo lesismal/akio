@@ -30,7 +30,7 @@ $ cargo doc --workspace --no-deps --open
 | `only-tls`（`only::tls`） | 作为连接 transport 的 TLS 1.3 / 1.2（自研） | [TLS](protocols/tls.md) |
 | `only-http` | HTTP/1.1、HTTP/2、Router、中间件、静态文件、客户端、可观测性 | [HTTP 服务端](protocols/http-server.md) |
 | `only-ws` | WebSocket 服务端会话与客户端 | [WebSocket](protocols/websocket.md) |
-| `only-quic` | QUIC v1（自研实现） | [QUIC 与 HTTP/3](protocols/quic-h3.md) |
+| `only-quic` | QUIC v1 与 v2（自研实现） | [QUIC 与 HTTP/3](protocols/quic-h3.md) |
 | `only-h3` | HTTP/3 与 QPACK | [QUIC 与 HTTP/3](protocols/quic-h3.md) |
 | `only-grpc` | gRPC 服务端与客户端 | [gRPC](protocols/grpc.md) |
 | `only-protobuf`、`only-protobuf-build` | protobuf 运行时，以及供 `build.rs` 使用的 `.proto` 代码生成器（无需 protoc，生成 gRPC 桩代码） | [gRPC](protocols/grpc.md) |

@@ -30,6 +30,7 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   B 帧的视频推算解码时间（估计重排深度，不缓存帧）。
 - 编解码：H.264（单 NAL、STAP-A、FU-A）、H.265（单 NAL、AP、FU）、AAC（`mpeg4-generic`
   `AAC-hbr`）、Opus、G.711。
+- 认证：`RtspConfig::credentials` 开启 Digest（MD5）与 Basic。
 - 超时：首个请求，以及任何已开始的请求，须在 `request_timeout`（10 s）内收齐。`Session: <id>;timeout=<s>`
   通告 `session_timeout`（60 s）并强制执行：客户端这么久什么都没发送（请求、交织的 RTCP，UDP 传输时来自其
   端口的数据报）的会话被拆除。
