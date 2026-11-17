@@ -542,6 +542,7 @@ fn netem_loss(name: &str, local: IpAddr, kernel: IpAddr, ecn_pacing: bool) {
     t.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
     let data = pattern(8 << 20, 3);
     let sack0 = kernel_sack_counters();
+    let ect0 = kernel_ect0_received(local.is_ipv6());
     let t0 = Instant::now();
     tcp_echo(&mut t, &data);
     let took = t0.elapsed();
@@ -558,7 +559,13 @@ fn netem_loss(name: &str, local: IpAddr, kernel: IpAddr, ecn_pacing: bool) {
             std::fs::read_to_string("/proc/sys/net/ipv4/tcp_ecn").is_ok_and(|v| v.trim() == "1");
         eprintln!("netem {name}: kernel tcp_ecn asks: {asks}");
         if asks {
-            assert!(info.contains("ecn"), "ECN not negotiated: {info}");
+            // (`ss` does not show option flags on every kernel: count ECT(0) packets instead.)
+            let marked = kernel_ect0_received(local.is_ipv6()) - ect0;
+            eprintln!("netem {name}: kernel received {marked} ECT(0) packets from the stack");
+            assert!(
+                marked > 500,
+                "ECN not negotiated with the kernel's SYN ({marked})"
+            );
         }
         // The stack dials the kernel with an ECN-setup SYN: its data arrives ECT(0).
         ecn_dial(&engine, kernel);
