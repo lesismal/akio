@@ -221,6 +221,29 @@ against 903–908 ns). A first version kept four field positions inline: `Header
 bytes, and the extra copying of requests and responses cost HTTP/2 about 3% of server CPU per
 request; two positions packed into the vector's niche keep it at 48 bytes.
 
+**After the UDP owned receive buffers** (2026-11-18, ADR-024, same host and pinning, quiet host,
+`ab65d376` → after, medians of alternating rounds; HTTP/3 and handshakes from five rounds, bulk
+and UDP echo from a separate eleven-round run with 10-second echo runs; UDP echo is
+`bench-server udp` on CPUs 0–3 with `echo-bench` 64 connections × 64 bytes on CPUs 4–11):
+
+| Case | before | after | after / before |
+|---|---:|---:|---:|
+| bulk, one stream, 2 GiB | 18,637 Mbit/s (17,826–18,784) | 18,589 Mbit/s (17,397–18,649) | 1.00 |
+| HTTP/3 GET, one connection, 64 in flight | 875,157 req/s (853,738–881,995) | 884,727 req/s (856,582–885,431) | 1.01 |
+| full handshakes, 8 in flight | 3,926/s (3,869–3,930) | 3,924/s (3,896–3,941) | 1.00 |
+| UDP echo, 64 B | 800,397 req/s (721,007–877,768) | 799,617 req/s (751,826–858,771) | 1.00 |
+| UDP echo, server CPU per request (11 rounds) | 4,445 ns | 4,443 ns | 1.00 |
+
+Datagrams now reach only-quic in the receive slab the kernel wrote them into and are decrypted
+there, so the one copy left out of the `recvmmsg` slot is gone; the UDP loop's peer table uses the
+keyed multiply hasher instead of SipHash. On loopback neither shows up beyond noise: bulk was
+0.98–1.005 over four runs and HTTP/3 1.001–1.011 over three. The first version cost the UDP echo
+server 3.4% more CPU per request (round-robin slabs went cold in cache, and every slot was reset
+after each `recvmmsg`); slots now reuse their own slab once it is free and only the slots the last
+call could have written are reset. The handshake rate is lower than in the tables above because
+of the host state in this window (192 failed handshakes on both sides, every run); the ratio is
+the figure to read.
+
 ### TLS 1.3 in memory (`crates/only-tls/examples/tls-bench.rs`, CPU 2)
 
 Both ends in one thread, the same self-signed ECDSA P-256 certificate verified by the client, no

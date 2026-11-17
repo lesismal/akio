@@ -10,6 +10,15 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 变更：UDP 数据报以拥有所有权的接收缓冲区交付（only-sys、only-epoll、only-quic；ADR-024）
+
+UDP 循环（epoll、io_uring 与 macOS；服务端与拨号 socket）接收进池化的接收 slab，并可把每个数据报作为拥有所有权的
+缓冲区交给 handler（隐藏的 `Handler::OWNED_DATA` / `on_data_owned`），GRO 批次切分不复制。only-quic 使用它并原地
+解密，从内核到解密后的负载之间不再有复制。UDP 对端表用带密钥的乘法折叠哈希（作为隐藏的 `only_core::hash` 与
+only-quic 共用）代替 SipHash。`only-buf` 现在只在一个模块（`slab`，经 Miri 与 loom 检查；docs/unsafe-review.zh-CN.md）
+中允许 unsafe 代码。回环上的同轮 A/B：QUIC 批量、HTTP/3、握手与 UDP echo 都在 1% 以内（HTTP/3 1.01，其余 1.00；
+docs/BENCHMARKS.zh-CN.md）。不选择启用的 handler（包括加密的 handler）没有变化。公开 API 无变化。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

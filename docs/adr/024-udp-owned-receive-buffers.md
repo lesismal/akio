@@ -80,4 +80,6 @@ differs per table.
   the defaults, untouched pages cost nothing) plus up to half as many for reuse, where it kept one
   32 × `read_buffer` buffer before. Application code that keeps received QUIC `Bytes` for long
   pins the slab they came from; copy them (`Bytes::copy_from_slice`) to keep them indefinitely.
-- Benchmarks (gpu51, same-run A/B): see docs/BENCHMARKS.md, "UDP owned receive buffers".
+- Benchmarks (gpu51, same-run A/B against `ab65d376`, docs/BENCHMARKS.md, "After the UDP owned
+  receive buffers"): bulk 1.00, HTTP/3 1.01, handshakes 1.00, UDP echo 1.00 req/s and server CPU
+  per request. On loopback the saved copy and hash are within noise; nothing regressed.

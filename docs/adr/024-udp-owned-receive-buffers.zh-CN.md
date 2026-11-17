@@ -69,4 +69,5 @@ GRO 分段）以所有权方式交出。其它 handler 与以前完全一样原�
   未写入的页不占内存），另加至多一半数量用于复用；以前是一块 32 × `read_buffer` 的缓冲区。应用代码
   若长期保留收到的 QUIC `Bytes`，会占住它们来自的 slab；要无限期保留请复制
   （`Bytes::copy_from_slice`）。
-- 基准（gpu51，同轮 A/B）：见 docs/BENCHMARKS.zh-CN.md 的“UDP 接收缓冲区所有权交付”。
+- 基准（gpu51，对 `ab65d376` 的同轮 A/B，docs/BENCHMARKS.zh-CN.md 的“UDP 接收缓冲区所有权交付之后”）：批量 1.00，
+  HTTP/3 1.01，握手 1.00，UDP echo 请求/秒与服务端每请求 CPU 均为 1.00。在回环上省下的复制与哈希都在噪声之内；没有退步。

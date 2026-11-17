@@ -10,6 +10,18 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: UDP datagrams delivered in owned receive buffers (only-sys, only-epoll, only-quic; ADR-024)
+
+The UDP loop (epoll, io_uring and macOS; servers and dialed sockets) receives into pooled receive
+slabs and can hand each datagram to the handler as an owned buffer (hidden
+`Handler::OWNED_DATA` / `on_data_owned`), GRO batches split without a copy. only-quic uses it and
+decrypts packets in place, so no copy is left between the kernel and the decrypted payload. The
+UDP peer table hashes with the keyed folded-multiply hasher (shared with only-quic as the hidden
+`only_core::hash`) instead of SipHash. `only-buf` now allows unsafe code in one module (`slab`,
+Miri- and loom-checked; docs/unsafe-review.md). Same-run A/B on loopback: QUIC bulk, HTTP/3,
+handshakes and UDP echo within 1% (HTTP/3 1.01, the rest 1.00; docs/BENCHMARKS.md). Handlers that
+do not opt in, including secured ones, see no change. No public API change.
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):
