@@ -16,6 +16,7 @@ categories = ["network-programming"]
 only = { workspace = true }
 only-core = { workspace = true }
 only-buf = { workspace = true }
+only-deflate = { workspace = true }
 
 [features]
 # Fuzz entry points for `fuzz/` (`only_arpc::fuzzing`); not a public API.
@@ -23,6 +24,7 @@ fuzzing = ["only-core/fuzzing"]
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }
+only-deflate = { workspace = true }
 
 [lints]
 workspace = true

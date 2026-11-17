@@ -16,13 +16,14 @@ pub const MAX_METHOD_LEN: usize = 127;
 /// Longest body accepted unless configured otherwise (as in Go: 64 MiB - 16).
 pub const DEFAULT_MAX_BODY: usize = 64 * 1024 * 1024 - 16;
 
+pub(crate) const IDX_RESERVED: usize = 4;
 pub(crate) const IDX_CMD: usize = 5;
 pub(crate) const IDX_FLAG: usize = 6;
 pub(crate) const FLAG_ERROR: u8 = 0x01;
 pub(crate) const FLAG_ASYNC: u8 = 0x02;
 const STREAM_LOCAL: u8 = 0x80;
 const STREAM_EOF: u8 = 0x40;
-const CMD_MASK: u8 = !(STREAM_LOCAL | STREAM_EOF);
+pub(crate) const CMD_MASK: u8 = !(STREAM_LOCAL | STREAM_EOF);
 
 /// Message commands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,8 +169,18 @@ impl Decoder {
     /// and keeps the incomplete tail.
     pub(crate) fn feed_with(
         &mut self,
-        mut data: &[u8],
+        data: &[u8],
         mut f: impl FnMut(Message),
+    ) -> Result<(), FrameError> {
+        self.feed_frames(data, |frame| decode_frame(frame, &mut f))
+    }
+
+    /// Calls `f` with every complete frame (header and body, not parsed further) in what was
+    /// buffered plus `data`, and keeps the incomplete tail. Only the body length is checked.
+    pub(crate) fn feed_frames(
+        &mut self,
+        mut data: &[u8],
+        mut f: impl FnMut(&[u8]) -> Result<(), FrameError>,
     ) -> Result<(), FrameError> {
         if !self.buf.is_empty() {
             // Finish the message split across reads, copying only its bytes.
@@ -189,7 +200,7 @@ impl Decoder {
             if self.buf.len() < total {
                 return Ok(());
             }
-            decode_one(&self.buf, &mut f)?;
+            f(&self.buf)?;
             self.buf.clear();
             if self.buf.capacity() > KEEP_BUF {
                 self.buf = Vec::new();
@@ -201,11 +212,16 @@ impl Decoder {
             if data.len() - pos < total {
                 break;
             }
-            decode_one(&data[pos..pos + total], &mut f)?;
+            f(&data[pos..pos + total])?;
             pos += total;
         }
         self.buf.extend_from_slice(&data[pos..]);
         Ok(())
+    }
+
+    /// The body limit.
+    pub(crate) fn max_body(&self) -> usize {
+        self.max_body
     }
 
     /// The body length in the header at the start of `b`, checked against the limit.
@@ -218,8 +234,14 @@ impl Decoder {
     }
 }
 
+/// Whether a whole frame is a ping or a pong (never coded), by its cmd bits alone as in Go.
+pub(crate) fn is_heartbeat(frame: &[u8]) -> bool {
+    let c = frame[IDX_CMD] & CMD_MASK;
+    c == Cmd::Ping as u8 || c == Cmd::Pong as u8
+}
+
 /// Decodes one complete message (`frame` is its header and body).
-fn decode_one(frame: &[u8], f: &mut impl FnMut(Message)) -> Result<(), FrameError> {
+pub(crate) fn decode_frame(frame: &[u8], f: &mut impl FnMut(Message)) -> Result<(), FrameError> {
     let h = &frame[..HEAD_LEN];
     let b = &frame[HEAD_LEN..];
     let raw_cmd = h[IDX_CMD];
