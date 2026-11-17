@@ -1,7 +1,7 @@
 # SOCKS 与 HTTP CONNECT 代理
 
-`only-socks` 提供 SOCKS5 / SOCKS4 / SOCKS4a 服务端（`Socks`）和 HTTP `CONNECT` 代理
-（`connect_proxy`）。两者都在回调之间转发，并且**两个方向都有背压**：一侧跟不上时，暂停读取
+`only-socks` 提供 SOCKS5 / SOCKS4 / SOCKS4a 服务端（`Socks`）、HTTP `CONNECT` 代理
+（`connect_proxy`）以及 SOCKS 客户端（`SocksClient`，[见下文](#socks-客户端)）。服务端和代理都在回调之间转发，并且**两个方向都有背压**：一侧跟不上时，暂停读取
 另一侧，直到它排空（`hold_reads` + `on_drain`，见[背压](../concepts/backpressure.md)）。
 
 ```rust,ignore

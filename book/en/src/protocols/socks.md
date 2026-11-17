@@ -1,7 +1,8 @@
 # SOCKS and HTTP CONNECT proxies
 
 `only-socks` provides a SOCKS5 / SOCKS4 / SOCKS4a server (`Socks`), an HTTP `CONNECT` proxy
-(`connect_proxy`) and a SOCKS client (`SocksClient`, [below](#socks-client)). Both relay callback to callback with **backpressure in both directions**:
+(`connect_proxy`) and a SOCKS client (`SocksClient`, [below](#socks-client)). The server and
+the proxy relay callback to callback with **backpressure in both directions**:
 when one side cannot keep up, reading from the other side pauses until it drains
 (`hold_reads` + `on_drain`, see [Backpressure](../concepts/backpressure.md)).
 
