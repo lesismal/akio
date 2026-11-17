@@ -25,6 +25,7 @@ pub mod av;
 mod bits;
 pub mod codec;
 pub mod flv;
+pub mod fmp4;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
