@@ -53,9 +53,12 @@ fn num(out: &mut String, v: f64) {
 
 impl Renderer {
     pub(crate) fn new(flavor: Flavor, prefix: String, max_series: usize) -> Renderer {
+        // The prefix is part of every name: the same characters are replaced.
+        let mut clean_prefix = String::with_capacity(prefix.len());
+        clean(&mut clean_prefix, &prefix, &[], false);
         Renderer {
             flavor,
-            prefix,
+            prefix: clean_prefix,
             last: HashMap::new(),
             max_series,
             dropped: 0,

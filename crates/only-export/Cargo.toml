@@ -17,6 +17,10 @@ only-core = { workspace = true }
 only-log = { workspace = true }
 only-protobuf = { workspace = true }
 
+[features]
+# Fuzz entry points for `fuzz/` (`only_export::fuzzing`); not a public API.
+fuzzing = []
+
 [dev-dependencies]
 only = { workspace = true }
 only-http = { workspace = true }

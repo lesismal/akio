@@ -169,3 +169,31 @@ fn builder_root_and_threads() {
     assert_eq!(spans[1].parent, None);
     assert_eq!(spans[1].kind, SpanKind::Server);
 }
+
+#[test]
+fn traceparent_mutations_round_trip_or_fail() {
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let seed = b"00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01".to_vec();
+    for _ in 0..200_000 {
+        let mut v = seed.clone();
+        for _ in 0..(x % 4) {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            let i = (x as usize >> 8) % v.len();
+            v[i] = b"0f-aF9xz \x00"[x as usize % 10];
+        }
+        x = x.wrapping_add(1);
+        let Ok(s) = std::str::from_utf8(&v) else {
+            continue;
+        };
+        if let Some(c) = SpanContext::from_traceparent(s) {
+            assert!(c.trace_id() != 0 && c.span_id() != 0);
+            assert_eq!(
+                SpanContext::from_traceparent(&c.to_traceparent()),
+                Some(c),
+                "{s}"
+            );
+        }
+    }
+}

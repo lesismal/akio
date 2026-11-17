@@ -45,6 +45,9 @@
 //! push, and spans are not retried (the queue stays bounded).
 #![warn(clippy::unwrap_used)]
 
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
 mod http;
 mod otlp;
 mod statsd;

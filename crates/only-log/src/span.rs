@@ -361,6 +361,23 @@ pub struct SpanData {
 }
 
 impl SpanData {
+    /// An empty finished span with this context, for tests and fuzzing; not a public API.
+    #[doc(hidden)]
+    pub fn __fuzz(context: SpanContext) -> SpanData {
+        SpanData {
+            name: Cow::Borrowed(""),
+            target: "",
+            level: Level::Info,
+            kind: SpanKind::Internal,
+            context,
+            parent: None,
+            start: SystemTime::UNIX_EPOCH,
+            end: SystemTime::UNIX_EPOCH,
+            fields: Vec::new(),
+            status: SpanStatus::Unset,
+        }
+    }
+
     /// The value of the field `key`.
     pub fn field(&self, key: &str) -> Option<&FieldValue> {
         self.fields.iter().find(|(k, _)| k == key).map(|(_, v)| v)

@@ -59,8 +59,7 @@ fn blackhole() -> std::io::Result<String> {
                         }
                     }
                     buf.drain(..end + 4 + len);
-                    if s
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    if s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                         .is_err()
                     {
                         return;
@@ -75,7 +74,9 @@ fn blackhole() -> std::io::Result<String> {
 fn main() -> std::io::Result<()> {
     let a: Vec<String> = std::env::args().skip(1).collect();
     if a.len() < 4 {
-        eprintln!("usage: obs-bench <addr> <threads> <epoll|uring> <off|metrics|routes|h2stats|spans|push>[,...]");
+        eprintln!(
+            "usage: obs-bench <addr> <threads> <epoll|uring> <off|metrics|routes|h2stats|spans|push>[,...]"
+        );
         std::process::exit(2);
     }
     let addr = a[0].parse().expect("address");
