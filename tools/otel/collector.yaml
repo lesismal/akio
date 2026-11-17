@@ -1,0 +1,26 @@
+# OpenTelemetry Collector (contrib) for tools/otel/e2e.sh: OTLP/HTTP and StatsD in, every
+# signal written to /out as OTLP/JSON lines.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+  statsd:
+    endpoint: 0.0.0.0:8125
+    aggregation_interval: 1s
+    enable_metric_type: true
+exporters:
+  file/traces:
+    path: /out/traces.jsonl
+    flush_interval: 100ms
+  file/metrics:
+    path: /out/metrics.jsonl
+    flush_interval: 100ms
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [file/traces]
+    metrics:
+      receivers: [otlp, statsd]
+      exporters: [file/metrics]

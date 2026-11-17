@@ -37,7 +37,7 @@ fn otlp_receiver() -> (SocketAddr, Arc<Mutex<Vec<Post>>>) {
             let g = g.clone();
             thread::spawn(move || {
                 let mut buf = Vec::new();
-                let mut chunk = [0u8; 65536];
+                let mut chunk = vec![0u8; 65536];
                 loop {
                     let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
                         match s.read(&mut chunk) {
@@ -87,7 +87,7 @@ fn statsd_receiver() -> (SocketAddr, Arc<Mutex<Vec<String>>>) {
     let got = Arc::new(Mutex::new(Vec::new()));
     let g = got.clone();
     thread::spawn(move || {
-        let mut buf = [0u8; 65536];
+        let mut buf = vec![0u8; 65536];
         while let Ok(n) = s.recv(&mut buf) {
             let text = String::from_utf8_lossy(&buf[..n]).into_owned();
             g.lock().unwrap().extend(text.lines().map(str::to_owned));
@@ -132,7 +132,18 @@ fn strs(v: Vec<&[u8]>) -> Vec<String> {
 }
 
 fn get(addr: SocketAddr, path: &str, extra: &str) {
-    let mut s = TcpStream::connect(addr).unwrap();
+    // A busy host may be short of ephemeral ports for a moment.
+    let t0 = Instant::now();
+    let mut s = loop {
+        match TcpStream::connect(addr) {
+            Ok(s) => break s,
+            Err(e) if t0.elapsed() < Duration::from_secs(10) => {
+                eprintln!("connect: {e}, retrying");
+                thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => panic!("connect: {e}"),
+        }
+    };
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     write!(
         s,
@@ -276,7 +287,7 @@ fn metrics_and_spans_reach_otlp_and_statsd() {
 
     // A second exporter (metrics only) in OTLP/JSON.
     let json = Exporter::builder()
-        .telemetry(tel.clone())
+        .telemetry(tel)
         .otlp_http_with(
             &format!("http://{otlp_addr}/prefix"),
             Encoding::Json,

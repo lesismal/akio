@@ -178,7 +178,7 @@ thread_local! {
 }
 
 /// A random non-zero `u64` (splitmix64 over a per-thread state seeded from the process'
-/// random hash keys, the time and the thread). Fast and unique enough for ids; not for secrets.
+/// random hash keys, the time and the thread id). Fast and unique enough for ids; not for secrets.
 fn random_u64() -> u64 {
     RNG.with(|s| {
         let mut x = s.get();
@@ -189,7 +189,7 @@ fn random_u64() -> u64 {
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .map_or(0, |d| d.as_nanos()),
             );
-            h.write_usize(&x as *const u64 as usize);
+            std::hash::Hash::hash(&std::thread::current().id(), &mut h);
             x = h.finish() | 1;
         }
         loop {
@@ -839,7 +839,7 @@ mod tests {
         s.set_name("y");
         let _g = s.enter();
         assert!(current().is_none());
-        assert_eq!(std::mem::size_of::<Span>(), std::mem::size_of::<usize>());
+        assert_eq!(size_of::<Span>(), size_of::<usize>());
     }
 
     #[test]

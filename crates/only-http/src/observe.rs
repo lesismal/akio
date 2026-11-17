@@ -451,7 +451,7 @@ impl HttpMetrics {
                 ..RouteSnapshot::default()
             };
             let mut sum = 0u64;
-            for s in self.0.shards.iter() {
+            for s in &self.0.shards {
                 let c = &s.routes[slot];
                 for (o, v) in row.by_class.iter_mut().zip(&c.classes) {
                     *o += v.load(Ordering::Relaxed);
