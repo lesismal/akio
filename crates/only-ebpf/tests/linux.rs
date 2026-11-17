@@ -112,7 +112,12 @@ fn cbpf_hash_steering_matches_expected_index() {
     for key in [HashKey::SrcIp, HashKey::SrcIpPort] {
         let g = group(4);
         let fds: Vec<i32> = g.iter().map(|l| l.as_raw_fd()).collect();
-        let info = attach_reuseport(&fds, Steering::Hash(key), AttachOptions::default()).unwrap();
+        let info = attach_reuseport(&fds, Steering::Hash(key), {
+            let mut o = AttachOptions::default();
+            o.ebpf = false;
+            o
+        })
+        .unwrap();
         assert_eq!(info.tier, Tier::Cbpf);
         let local = g[0].local_addr().unwrap();
         let mut seen = [0usize; 4];
@@ -149,6 +154,46 @@ fn ebpf_cpu_steering_with_a_socket_array() {
         privileged::<()>("eBPF reuseport", Err(std::io::Error::other(why)));
     }
     check_cpu_steering(&g);
+}
+
+#[test]
+fn ebpf_hash_steering_names_sockets_explicitly() {
+    for key in [HashKey::SrcIp, HashKey::SrcIpPort] {
+        let g = group(4);
+        // Thread i owns fds[i] whatever the order the sockets joined the group in: hand them
+        // over reversed, which the classic BPF tier (group position) could not honour.
+        let order = [3usize, 2, 1, 0];
+        let fds: Vec<i32> = order.iter().map(|&i| g[i].as_raw_fd()).collect();
+        let info = attach_reuseport(&fds, Steering::Hash(key), AttachOptions::default()).unwrap();
+        if info.tier != Tier::Ebpf {
+            let why = info.ebpf_unavailable.unwrap_or_default();
+            privileged::<()>("eBPF hash reuseport", Err(std::io::Error::other(why)));
+            return;
+        }
+        let local = g[0].local_addr().unwrap();
+        for _ in 0..48 {
+            let s = TcpStream::connect(local).unwrap();
+            let peer = s.local_addr().unwrap();
+            let got = accepted_by(&g, peer);
+            let want = only_ebpf::expected_index(Steering::Hash(key), 4, peer, local).unwrap();
+            assert_eq!(got, order[want], "{key:?} peer {peer}");
+        }
+    }
+}
+
+#[test]
+fn cpu_pinning_sets_cover_the_allowed_cpus() {
+    let sets = only_ebpf::cpu_pinning(3).unwrap();
+    assert_eq!(sets.len(), 3);
+    let all: Vec<usize> = {
+        let mut v: Vec<usize> = sets.iter().flatten().copied().collect();
+        v.sort_unstable();
+        v
+    };
+    assert_eq!(all.len(), cpus().min(all.len()).max(all.len()));
+    for (i, s) in sets.iter().enumerate() {
+        assert!(s.iter().all(|c| c % 3 == i), "{sets:?}");
+    }
 }
 
 fn read_exact_loop(s: &mut TcpStream, n: usize) -> Vec<u8> {

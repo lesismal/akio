@@ -40,8 +40,10 @@ pub enum Tier {
     /// socket's position in the reuseport group, i.e. the order the sockets were bound in.
     Cbpf,
     /// eBPF (`SO_ATTACH_REUSEPORT_EBPF`, `BPF_PROG_TYPE_SK_REUSEPORT`) selecting from a
-    /// `REUSEPORT_SOCKARRAY` map that names every thread's socket explicitly. Needs
-    /// `CAP_BPF`/`CAP_SYS_ADMIN`; used for [`Steering::Cpu`].
+    /// `REUSEPORT_SOCKARRAY` map that names every thread's socket explicitly, so the choice
+    /// does not depend on the order the sockets joined the group (and survives sockets leaving
+    /// it: an empty slot falls back to the kernel's hash). Needs `CAP_BPF`/`CAP_SYS_ADMIN`.
+    /// [`Steering::Hash`] computes the same hash as the classic BPF tier.
     Ebpf,
 }
 
@@ -57,6 +59,9 @@ pub struct SteerInfo {
     pub sockets: usize,
     /// Why the eBPF tier was not used, when it was wanted but classic BPF was attached instead.
     pub ebpf_unavailable: Option<String>,
+    /// I/O threads pinned to the CPUs [`cpu_pinning`] gives them (set by the engine when its
+    /// configuration asks for pinning; 0 otherwise).
+    pub pinned_threads: usize,
 }
 
 impl fmt::Display for SteerInfo {
@@ -200,6 +205,33 @@ pub fn attach_reuseport(
     imp::attach(fds, steering, opts)
 }
 
+/// The CPU set of each of `threads` I/O threads that makes [`Steering::Cpu`] local: thread `i`
+/// gets the CPUs `c` this process may run on with `c % threads == i`, so a flow steered to
+/// thread `cpu % threads` is served on the CPU that received it (or a sibling in the same
+/// residue class). Threads with no such CPU get an empty set (no pinning). Linux only;
+/// `Unsupported` elsewhere.
+pub fn cpu_pinning(threads: usize) -> io::Result<Vec<Vec<usize>>> {
+    #[cfg(target_os = "linux")]
+    return only_sys::process::allowed_cpus().map(|cpus| cpu_sets(threads, &cpus));
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = threads;
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "CPU pinning is Linux-only",
+        ))
+    }
+}
+
+/// [`cpu_pinning`] for the CPUs `allowed`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn cpu_sets(threads: usize, allowed: &[usize]) -> Vec<Vec<usize>> {
+    let n = threads.max(1);
+    (0..threads)
+        .map(|i| allowed.iter().copied().filter(|c| c % n == i).collect())
+        .collect()
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     use super::*;
@@ -212,20 +244,21 @@ mod imp {
     ) -> io::Result<SteerInfo> {
         let mut ebpf_unavailable = None;
         if opts.ebpf {
-            if steering == Steering::Cpu {
-                match crate::ebpf::attach_cpu_reuseport(fds) {
-                    Ok(()) => {
-                        return Ok(SteerInfo {
-                            tier: Tier::Ebpf,
-                            steering,
-                            sockets: fds.len(),
-                            ebpf_unavailable: None,
-                        });
-                    }
-                    Err(e) => ebpf_unavailable = Some(e.to_string()),
+            let r = match steering {
+                Steering::Hash(key) => crate::ebpf::attach_hash_reuseport(fds, key),
+                _ => crate::ebpf::attach_cpu_reuseport(fds),
+            };
+            match r {
+                Ok(()) => {
+                    return Ok(SteerInfo {
+                        tier: Tier::Ebpf,
+                        steering,
+                        sockets: fds.len(),
+                        ebpf_unavailable: None,
+                        pinned_threads: 0,
+                    });
                 }
-            } else {
-                ebpf_unavailable = Some("hash steering uses classic BPF".into());
+                Err(e) => ebpf_unavailable = Some(e.to_string()),
             }
         }
         sys::attach_reuseport_cbpf(fds[0], &cbpf::program(steering, fds.len()))?;
@@ -234,6 +267,7 @@ mod imp {
             steering,
             sockets: fds.len(),
             ebpf_unavailable,
+            pinned_threads: 0,
         })
     }
 }
@@ -280,6 +314,19 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn cpu_sets_follow_the_steering_residue() {
+        assert_eq!(cpu_sets(2, &[0, 1, 2, 3]), vec![vec![0, 2], vec![1, 3]]);
+        // A cgroup with CPUs 2..6 only: thread 0 gets 4, thread 1 gets 3 and 5, ...
+        assert_eq!(
+            cpu_sets(4, &[2, 3, 4, 5]),
+            vec![vec![4], vec![5], vec![2], vec![3]]
+        );
+        // More threads than CPUs: the extra threads are not pinned.
+        assert_eq!(cpu_sets(3, &[0, 1]), vec![vec![0], vec![1], vec![]]);
+        assert!(cpu_sets(0, &[0, 1]).is_empty());
     }
 
     #[test]
