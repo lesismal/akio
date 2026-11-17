@@ -656,7 +656,10 @@ impl Engine {
     ///   connections still open after it are shut down gracefully, as by
     ///   [`shutdown`](Self::shutdown).
     ///
-    /// Returns once the change is posted to the I/O threads; it never waits for them.
+    /// Returns once the change is posted to the I/O threads, without waiting for it to take
+    /// effect. The one wait: growing into the index of a retired thread that is just exiting
+    /// (it has no connection left) joins that thread first, so it is safe but not ideal to call
+    /// from an I/O thread's callback.
     /// [`Metrics::loops`] shows retiring threads (`retiring`). Errors: `Unsupported` for UDP
     /// listeners (a socket added or removed from a UDP `SO_REUSEPORT` group would move peers
     /// between threads), DPDK groups and listeners with BPF steering (`Accel::Ebpf`); `NotFound`

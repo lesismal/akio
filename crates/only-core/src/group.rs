@@ -28,8 +28,8 @@ pub trait Group: Send + Sync {
     /// Grows or shrinks the group to `n` active I/O threads (ADR-028): growing starts loops (or
     /// revives retiring ones) and gives them listening sockets; shrinking retires the highest
     /// loops, which hand their listening sockets to the others and exit once their connections
-    /// are closed. Connections never move. Never blocks an I/O thread; returns once the change
-    /// is posted.
+    /// are closed. Connections never move. Returns once the change is posted (growing into
+    /// the index of a loop that is just exiting joins it first).
     fn set_threads(&self, _n: usize) -> io::Result<()> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
