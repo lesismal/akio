@@ -100,7 +100,9 @@ impl Session {
         let Some(t) = self.dial.as_ref().and_then(|(_, t)| t.upgrade()) else {
             return self.fail();
         };
+        let v2 = t.lock().info_hash_v2.is_some();
         let hs = Handshake::new(t.info_hash, client.peer_id)
+            .with_v2(v2)
             .encode()
             .to_vec();
         self.expected = Some(t.info_hash);
@@ -233,7 +235,9 @@ impl Session {
         }
         if !self.sent_handshake {
             self.sent_handshake = true;
+            let v2 = t.lock().info_hash_v2.is_some();
             let ours = Handshake::new(hs.info_hash, client.peer_id)
+                .with_v2(v2)
                 .encode()
                 .to_vec();
             self.write(ours);

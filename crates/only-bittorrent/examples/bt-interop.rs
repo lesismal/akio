@@ -125,10 +125,32 @@ fn client(dir: &str, listen: &str, o: &Opts) -> Client {
     c.rate_limits = RateLimits::new(o.up_limit, o.down_limit);
     c.on_event = Some(Arc::new(|ih, e| match e {
         TorrentEvent::PieceVerified(_) => {}
+        TorrentEvent::PeerConnected(_) => {
+            // Recorded here: a leecher drops a seeder once complete, which may come before
+            // the main loop looks at the peers.
+            if let Some(t) = CLIENT.get().and_then(|c| c.torrent(&ih)) {
+                let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+                for p in t.peers() {
+                    if !seen.iter().any(|(a, ..)| *a == p.addr) {
+                        eprintln!(
+                            "peer {} client {:?} utp {} encrypted {}",
+                            p.addr, p.client, p.utp, p.encrypted
+                        );
+                        seen.push((p.addr, p.utp, p.encrypted));
+                    }
+                }
+            }
+        }
         e => eprintln!("[{}] {e:?}", &ih.to_hex()[..8]),
     }));
-    Client::new(c).unwrap_or_else(|e| die(e))
+    let c = Client::new(c).unwrap_or_else(|e| die(e));
+    let _ = CLIENT.set(c.clone());
+    c
 }
+
+type Seen = Vec<(SocketAddr, bool, bool)>;
+static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+static SEEN: std::sync::Mutex<Seen> = std::sync::Mutex::new(Vec::new());
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -237,19 +259,9 @@ fn main() {
                 }
             }
             let start = Instant::now();
-            let mut seen: Vec<(SocketAddr, bool, bool)> = Vec::new();
             while !t.is_complete() {
                 if start.elapsed() > Duration::from_secs(o.timeout) {
                     die(format!("timed out: {:?}", t.stats()));
-                }
-                for p in t.peers() {
-                    if !seen.iter().any(|(a, ..)| *a == p.addr) {
-                        eprintln!(
-                            "peer {} client {:?} utp {} encrypted {}",
-                            p.addr, p.client, p.utp, p.encrypted
-                        );
-                        seen.push((p.addr, p.utp, p.encrypted));
-                    }
                 }
                 std::thread::sleep(Duration::from_millis(20));
                 let ms = start.elapsed().as_millis();
@@ -260,6 +272,7 @@ fn main() {
                     }
                 }
             }
+            let seen = SEEN.lock().unwrap_or_else(|p| p.into_inner()).clone();
             let s = t.stats();
             let secs = start.elapsed().as_secs_f64();
             println!(

@@ -44,7 +44,11 @@ modules.
      and pads hybrid files with BEP 47 padding files.
 2. **Magnets**: `urn:btmh:1220<hex>` (`Magnet::info_hash_v2`, `is_v2_only`); a v2-only link's
    `info_hash` is the truncated hash.
-3. **Peer wire**: `Handshake::new` sets the v2 bit (reserved byte 7, `0x10`), `Handshake::v2`;
+3. **Peer wire**: `Handshake::with_v2` sets the v2 bit (reserved byte 7, `0x10`) and
+   `Handshake::v2` reads it; the client sets it for v2 and hybrid torrents only (libtorrent
+   closes a plaintext connection whose handshake has the bit for a v1 torrent, "invalid
+   info-hash"), and asks any peer of a v2 torrent for hashes (libtorrent's answering handshake
+   has no v2 bit);
    `Message::{HashRequest, Hashes, HashReject}` with `HashRequest`.
 4. **Client and v2.** A hybrid torrent is one torrent under two hashes: trackers and the DHT get
    both, incoming handshakes and MSE are accepted under either, and a peer that answers our v1
@@ -102,11 +106,14 @@ modules.
 - v2-only torrents and magnets now load instead of failing with `Unsupported`; hybrid torrents
   are checked as both. A torrent whose piece layers are missing or wrong is refused, as BEP 52
   says.
-- `Handshake::new` advertises v2 support; v1-only peers ignore the bit.
+- `Handshake::new` is unchanged (no v2 bit); `PeerInfo::v2` reports the peer's bit.
+- A v2-only torrent's last file is padded to a whole piece too (libtorrent asks for whole
+  blocks of the last piece), and `FileStorage` creates empty files.
 - `ClientConfig::lsd` and `web_seeds` default to on, as in libtorrent; tests that run many
   clients on one host turn LSD off.
-- Interop (`tools/interop/bittorrent/run.sh`, suites `v2`, `webseed`, `lsd`): v2 and hybrid
-  torrents made by either side, by .torrent and by magnet, both directions with libtorrent 2.0;
+- Interop (`tools/interop/bittorrent/run.sh`, suites `v2`, `webseed`, `lsd`; 32/32 with the
+  older suites): v2 and hybrid torrents made by either side, by .torrent and by magnet, both
+  directions with libtorrent 2.0.11;
   aria2 1.37 (no v2) with hybrid torrents both ways; web seeds from nginx; LSD between two
   containers on a Docker network.
 - New fuzz targets `bt_lsd` and `bt_merkle`; `bt_bencode`, `bt_peer_wire` and `bt_krpc` cover

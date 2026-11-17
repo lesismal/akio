@@ -44,12 +44,11 @@ pub struct Handshake {
 }
 
 impl Handshake {
-    /// A handshake announcing the extension protocol, the DHT, the Fast extension and v2
-    /// (BEP 52).
+    /// A handshake announcing the extension protocol, the DHT and the Fast extension.
     pub fn new(info_hash: InfoHash, peer_id: PeerId) -> Handshake {
         let mut reserved = [0u8; 8];
         reserved[5] |= 0x10; // BEP 10
-        reserved[7] |= 0x01 | 0x04 | 0x10; // BEP 5 DHT, BEP 6 Fast, BEP 52 v2
+        reserved[7] |= 0x01 | 0x04; // BEP 5 DHT, BEP 6 Fast
         Handshake {
             reserved,
             info_hash,
@@ -101,6 +100,19 @@ impl Handshake {
     /// The peer supports v2 torrents (BEP 52: hash requests, upgrading hybrid connections).
     pub fn v2(&self) -> bool {
         self.reserved[7] & 0x10 != 0
+    }
+
+    /// Sets or clears the v2 bit. Set it for v2 and hybrid torrents only: libtorrent takes a
+    /// plaintext handshake with the bit for a v1 torrent as naming an unknown v2 hash and
+    /// closes the connection.
+    #[must_use]
+    pub fn with_v2(mut self, v2: bool) -> Handshake {
+        if v2 {
+            self.reserved[7] |= 0x10;
+        } else {
+            self.reserved[7] &= !0x10;
+        }
+        self
     }
 }
 
@@ -954,7 +966,7 @@ mod tests {
 
     #[test]
     fn handshake() {
-        let h = Handshake::new(InfoHash::of(b"x"), new_peer_id());
+        let h = Handshake::new(InfoHash::of(b"x"), new_peer_id()).with_v2(true);
         let b = h.encode();
         let p = Handshake::parse(&b).unwrap();
         assert_eq!(p, h);

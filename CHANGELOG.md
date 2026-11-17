@@ -21,7 +21,8 @@ All notable changes to `only` are documented here. The format follows
   `Builder::version`. v2 files are laid out on piece boundaries (padding files synthesized for
   v2-only torrents), so one piece space serves all three kinds. `MetaInfo::info_hash` is the
   hash peers use (truncated SHA-256 for v2-only torrents). Magnet `urn:btmh:`. Peer wire: the v2
-  handshake bit, hash request / hashes / hash reject. The client announces and accepts hybrid
+  handshake bit, hash request / hashes / hash reject (`Handshake::with_v2`; the client sets the bit for v2 and
+  hybrid torrents only). The client announces and accepts hybrid
   torrents under both hashes, fetches missing piece layers of magnet links with hash requests
   and answers them. Parsing refuses piece layers that do not match their roots and hybrid
   torrents whose two parts disagree.

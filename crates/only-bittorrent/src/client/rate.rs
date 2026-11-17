@@ -34,6 +34,10 @@ impl Bucket {
         self.last = Instant::now();
     }
 
+    pub(crate) fn limited(&self) -> bool {
+        self.rate > 0
+    }
+
     pub(crate) fn rate(&self) -> Option<u64> {
         (self.rate > 0).then_some(self.rate)
     }
@@ -106,6 +110,14 @@ impl GlobalRates {
 
     pub(crate) fn get(&self) -> (Option<u64>, Option<u64>) {
         (lock(&self.up).rate(), lock(&self.down).rate())
+    }
+
+    pub(crate) fn up_limited(&self) -> bool {
+        self.up_limited.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn down_limited(&self) -> bool {
+        self.down_limited.load(Ordering::Relaxed)
     }
 
     pub(crate) fn up_ready(&self, now: Instant) -> bool {

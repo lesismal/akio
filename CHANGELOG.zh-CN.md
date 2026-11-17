@@ -20,7 +20,7 @@ only 的所有重要变更都记录在这里。格式遵循
   `Info::{verify_piece_with, piece_file, file_pieces, ...}`、`Builder::version`。v2 文件按分片
   边界排布（纯 v2 种子由解析器合成填充文件），三种种子共用一个分片空间。`MetaInfo::info_hash` 为
   对等方使用的哈希（纯 v2 种子为截断的 SHA-256）。磁力链接 `urn:btmh:`。peer wire：v2 握手位，
-  hash request / hashes / hash reject。客户端以两个哈希公告并接受混合种子，为磁力链接用哈希请求
+  hash request / hashes / hash reject（`Handshake::with_v2`；客户端只为 v2 与混合种子设置该位）。客户端以两个哈希公告并接受混合种子，为磁力链接用哈希请求
   获取缺失的分片层，并应答对方的哈希请求。解析时拒绝与根不符的分片层，以及两部分不一致的混合种子。
 - **Web seed（BEP 19）**，经 only-http 客户端：`ClientConfig::web_seeds`（默认开启）、
   `AddOptions::web_seeds`、`Torrent::add_web_seed`、`TorrentEvent::WebSeedError`；每个范围请求

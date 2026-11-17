@@ -194,7 +194,18 @@ case " $SUITES " in *" v2 "*)
   rund "only leeches by v2 magnet from libtorrent (piece layers by hash requests)" "$W/v8" $BT leech "$($LT magnet "$W/l-v2.torrent")" "$W/v8" 127.0.0.1:7532 --peer 127.0.0.1:7520 --no-dht
   rund "only leeches by hybrid magnet from libtorrent" "$W/v9" $BT leech "$($LT magnet "$W/l-hybrid.torrent")" "$W/v9" 127.0.0.1:7533 --peer 127.0.0.1:7521 --no-dht
   stop $L2 $LH
-  bg AS aria2c --seed-ratio=0.0 -V --enable-dht=false --bt-enable-lpd=false --listen-port=7540 --dir="$W/src" "$W/l-hybrid.torrent"
+  # aria2 knows nothing of BEP 47: it seeds padding files as files, so they must exist.
+  cp -r "$W/src" "$W/asrc"
+  python3 - "$W/l-hybrid.torrent" "$W/asrc" <<'PY'
+import os, sys, libtorrent as lt
+info = lt.bdecode(open(sys.argv[1], "rb").read())[b"info"]
+for f in info[b"files"]:
+    if b"p" in f.get(b"attr", b""):
+        p = os.path.join(sys.argv[2], info[b"name"].decode(), *[c.decode() for c in f[b"path"]])
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(bytes(f[b"length"]))
+PY
+  bg AS aria2c --seed-ratio=0.0 -V --enable-dht=false --bt-enable-lpd=false --listen-port=7540 --dir="$W/asrc" "$W/l-hybrid.torrent"
   sleep 3
   rund "only leeches a hybrid torrent (made by libtorrent) from aria2" "$W/v10" $BT leech "$W/l-hybrid.torrent" "$W/v10" 127.0.0.1:7541 --peer 127.0.0.1:7540 --no-dht
   stop $AS

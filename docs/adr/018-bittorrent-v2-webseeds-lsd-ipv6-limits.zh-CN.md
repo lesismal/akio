@@ -39,7 +39,9 @@
      对齐。
 2. **磁力链接**：`urn:btmh:1220<hex>`（`Magnet::info_hash_v2`、`is_v2_only`）；纯 v2 链接的
    `info_hash` 为截断哈希。
-3. **对等协议**：`Handshake::new` 设置 v2 位（保留字节 7 的 `0x10`），新增 `Handshake::v2`；
+3. **对等协议**：`Handshake::with_v2` 设置 v2 位（保留字节 7 的 `0x10`），`Handshake::v2` 读取它；
+   客户端只为 v2 与混合种子设置该位（libtorrent 对 v1 种子收到带该位的明文握手会以 "invalid
+   info-hash" 关闭连接），并向 v2 种子的任何对等方请求哈希（libtorrent 应答的握手不带 v2 位）；
    新增 `Message::{HashRequest, Hashes, HashReject}` 与 `HashRequest`。
 4. **客户端与 v2。** 混合种子是同一个种子的两个哈希：tracker 与 DHT 都会用两个哈希公告和查找，
    传入握手与 MSE 接受任一哈希；对方用 v2 哈希回应我们的 v1 握手（BEP 52 的升级）时保留连接。
@@ -83,10 +85,12 @@
 
 - 纯 v2 种子与磁力链接现在可以加载，不再报 `Unsupported`；混合种子按两种格式校验。分片层缺失或
   错误的种子按 BEP 52 要求被拒绝。
-- `Handshake::new` 声明支持 v2；只支持 v1 的对等方忽略该位。
+- `Handshake::new` 不变（不带 v2 位）；`PeerInfo::v2` 报告对方的 v2 位。
+- 纯 v2 种子的最后一个文件也补齐到整分片（libtorrent 会请求最后一个分片的整块），`FileStorage`
+  会创建空文件。
 - `ClientConfig::lsd` 与 `web_seeds` 默认开启（与 libtorrent 相同）；在同一主机上运行多个客户端的
   测试会关闭 LSD。
-- 互操作（`tools/interop/bittorrent/run.sh`，套件 `v2`、`webseed`、`lsd`）：双方各自生成的 v2 与
+- 互操作（`tools/interop/bittorrent/run.sh`，套件 `v2`、`webseed`、`lsd`；连同原有套件 32/32）：双方各自生成的 v2 与
   混合种子，通过 .torrent 和磁力链接，与 libtorrent 2.0 双向互通；与 aria2 1.37（不支持 v2）双向
   互通混合种子；从 nginx 获取 Web 种子；Docker 网络上两个容器之间的 LSD。
 - 新增模糊测试目标 `bt_lsd` 与 `bt_merkle`；`bt_bencode`、`bt_peer_wire` 与 `bt_krpc` 覆盖 v2

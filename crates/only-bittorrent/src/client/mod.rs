@@ -214,6 +214,8 @@ pub struct PeerInfo {
     pub am_choking: bool,
     /// It chokes us.
     pub peer_choking: bool,
+    /// Its handshake announced v2 support (BEP 52; libtorrent sets it only when it dials).
+    pub v2: bool,
 }
 
 /// Callback for torrent events: `(info_hash, event)`, called in order after the torrent's

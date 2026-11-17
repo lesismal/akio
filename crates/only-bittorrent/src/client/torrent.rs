@@ -555,7 +555,12 @@ impl TorrentState {
         }
     }
 
-    fn may_download(&mut self, now: Instant) -> bool {
+    /// Whether a request may go out now (no clock read without a download limit).
+    fn may_download(&mut self) -> bool {
+        if !self.down.limited() && !self.rates.down_limited() {
+            return true;
+        }
+        let now = Instant::now();
         self.down.ready(now) && self.rates.down_ready(now)
     }
 
@@ -564,7 +569,15 @@ impl TorrentState {
         self.rates.down_take(n);
     }
 
-    fn may_upload(&mut self, now: Instant) -> bool {
+    fn upload_limited(&self) -> bool {
+        self.up.limited() || self.rates.up_limited()
+    }
+
+    fn may_upload(&mut self) -> bool {
+        if !self.upload_limited() {
+            return true;
+        }
+        let now = Instant::now();
         self.up.ready(now) && self.rates.up_ready(now)
     }
 
@@ -583,6 +596,7 @@ impl TorrentState {
                 uploaded: p.uploaded,
                 am_choking: p.am_choking,
                 peer_choking: p.peer_choking,
+                v2: p.v2,
             })
             .collect()
     }
@@ -1257,13 +1271,12 @@ impl TorrentState {
             return; // refill once half the pipeline is answered
         }
         let mut batch = Vec::new();
-        let now = Instant::now();
         while self
             .peers
             .get(&key)
             .is_some_and(|p| p.requests.len() + batch.len() < target)
         {
-            if !self.may_download(now) {
+            if !self.may_download() {
                 break; // the next tick refills
             }
             match self.pick_block(key) {
@@ -1274,9 +1287,13 @@ impl TorrentState {
                 None => break,
             }
         }
+        if batch.is_empty() {
+            return;
+        }
         let Some(p) = self.peers.get_mut(&key) else {
             return;
         };
+        let now = Instant::now();
         for r in batch {
             p.send(&Message::Request {
                 index: r.index,
@@ -1583,39 +1600,46 @@ impl TorrentState {
         if !p.serving.insert(r) {
             return;
         }
-        self.upload_wait.push_back((key, r));
-        self.pump_uploads();
+        if self.upload_wait.is_empty() && !self.upload_limited() {
+            self.start_read(key, r); // no limit: no queue
+        } else {
+            self.upload_wait.push_back((key, r));
+            self.pump_uploads();
+        }
     }
 
     /// Starts the reads of queued requests while the upload limits allow.
     fn pump_uploads(&mut self) {
-        let (Some(info), Some(storage)) = (self.info.clone(), self.storage.clone()) else {
-            return;
-        };
-        let now = Instant::now();
         while let Some(&(key, r)) = self.upload_wait.front() {
-            if !self.may_upload(now) {
+            if !self.may_upload() {
                 return; // the next tick refills
             }
             self.upload_wait.pop_front();
             if !self.peers.get(&key).is_some_and(|p| p.serving.contains(&r)) {
                 continue; // cancelled or choked meanwhile
             }
-            self.up.take(u64::from(r.length));
-            self.rates.up_take(u64::from(r.length));
-            let me = self.me.clone();
-            let storage = storage.clone();
-            let off = info.piece_offset(r.index as usize) + u64::from(r.begin);
-            let job = Box::new(move || {
-                let data = storage.read(off, r.length as usize);
-                if let Some(t) = me.upgrade() {
-                    t.with(|st, _| st.send_block(key, r, data));
-                }
-            });
-            if self.pool.try_execute(job).is_err() {
-                if let Some(p) = self.peers.get_mut(&key) {
-                    p.serving.remove(&r);
-                }
+            self.start_read(key, r);
+        }
+    }
+
+    /// Reads a requested block on the pool; it is sent from there.
+    fn start_read(&mut self, key: u64, r: Req) {
+        let (Some(info), Some(storage)) = (self.info.as_ref(), self.storage.clone()) else {
+            return;
+        };
+        self.up.take(u64::from(r.length));
+        self.rates.up_take(u64::from(r.length));
+        let me = self.me.clone();
+        let off = info.piece_offset(r.index as usize) + u64::from(r.begin);
+        let job = Box::new(move || {
+            let data = storage.read(off, r.length as usize);
+            if let Some(t) = me.upgrade() {
+                t.with(|st, _| st.send_block(key, r, data));
+            }
+        });
+        if self.pool.try_execute(job).is_err() {
+            if let Some(p) = self.peers.get_mut(&key) {
+                p.serving.remove(&r);
             }
         }
     }
@@ -2376,7 +2400,7 @@ impl TorrentState {
             if self.web_seeds[w].piece.is_some() || self.web_seeds[w].next_try > now {
                 continue;
             }
-            if !self.may_download(now) {
+            if !self.may_download() {
                 return;
             }
             let free = |st: &Self, i: u32| {

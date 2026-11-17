@@ -305,6 +305,7 @@ pub only_bittorrent::client::PeerInfo::peer_choking: bool
 pub only_bittorrent::client::PeerInfo::pieces: usize
 pub only_bittorrent::client::PeerInfo::uploaded: u64
 pub only_bittorrent::client::PeerInfo::utp: bool
+pub only_bittorrent::client::PeerInfo::v2: bool
 impl core::clone::Clone for only_bittorrent::client::PeerInfo
 pub fn only_bittorrent::client::PeerInfo::clone(&self) -> Self
 impl core::cmp::Eq for only_bittorrent::client::PeerInfo
@@ -1630,6 +1631,7 @@ pub fn only_bittorrent::wire::Handshake::fast(&self) -> bool
 pub fn only_bittorrent::wire::Handshake::new(only_bittorrent::metainfo::InfoHash, only_bittorrent::wire::PeerId) -> only_bittorrent::wire::Handshake
 pub fn only_bittorrent::wire::Handshake::parse(&[u8]) -> core::option::Option<only_bittorrent::wire::Handshake>
 pub fn only_bittorrent::wire::Handshake::v2(&self) -> bool
+pub fn only_bittorrent::wire::Handshake::with_v2(self, bool) -> only_bittorrent::wire::Handshake
 impl core::clone::Clone for only_bittorrent::wire::Handshake
 pub fn only_bittorrent::wire::Handshake::clone(&self) -> Self
 impl core::cmp::Eq for only_bittorrent::wire::Handshake
