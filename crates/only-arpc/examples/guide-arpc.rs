@@ -1,5 +1,5 @@
 //! Companion of the book's "arpc" chapter: a server with calls, notifies, a detached answer and
-//! broadcast; a client that also serves the server's notifies.
+//! broadcast; a client that also serves the server's notifies; middleware, coders and a pool.
 //!
 //! `cargo run -p only-arpc --example guide-arpc`
 
@@ -10,7 +10,11 @@ use std::{
 };
 
 use only::{Engine, Listener};
-use only_arpc::{CallError, Routes, Server, dial_blocking};
+use only_arpc::{
+    Balance, CallError, Pool, Routes, Server, Values,
+    coder::{Appender, FLAG_BIT_TRACING, Gzip},
+    dial_blocking,
+};
 
 fn main() -> std::io::Result<()> {
     // ANCHOR: server
@@ -62,6 +66,80 @@ fn main() -> std::io::Result<()> {
     // ANCHOR_END: client
 
     peer.close();
+
+    // ANCHOR: middleware
+    let coded = |r: Routes| {
+        // The same chain on both ends; Go peers use arpcex's appender and gzip coders.
+        r.coder(Appender::new("trace", FLAG_BIT_TRACING))
+            .coder(Gzip::new(1024))
+    };
+    let routes = coded(Routes::new())
+        .middleware(|ctx, next| {
+            // Before the handler: refuse calls without a trace id (abort = no `next.run`).
+            if ctx.values().get("trace").is_none() {
+                return ctx.error("no trace");
+            }
+            let t = std::time::Instant::now();
+            next.run(ctx);
+            // After it: the answer has been sent.
+            println!("{} took {:?}", ctx.method(), t.elapsed());
+        })
+        .method_middleware("/admin", |ctx, next| {
+            if ctx.values().get("trace") == Some(b"root") {
+                next.run(ctx);
+            } else {
+                ctx.error("forbidden");
+            }
+        })
+        .handle("/admin", |ctx| ctx.write(b"welcome"))
+        .handle("/echo", |ctx| {
+            let body = ctx.body().to_vec();
+            ctx.write(&body);
+        });
+    let coded_server = Server::new(Arc::new(routes));
+    let engine2 = Arc::new(
+        Engine::builder()
+            .listen(Listener::tcp("127.0.0.1:0".parse().unwrap()).serve(coded_server))
+            .client_threads(1)
+            .build()?,
+    );
+    engine2.start()?;
+    // ANCHOR_END: middleware
+
+    // ANCHOR: pool
+    let pool = Pool::builder()
+        .size(4)
+        .balance(Balance::LeastPending)
+        .heartbeat(Some(Duration::from_secs(15)))
+        .dial(
+            &engine2,
+            engine2.local_addrs()[0],
+            Arc::new(coded(Routes::new())),
+        )?;
+    let trace = Values::new().with("trace", "req-42");
+    let big = vec![b'x'; 64 * 1024]; // sent gzip-compressed
+    assert_eq!(
+        pool.call_with("/echo", &big, t, &trace).wait().unwrap(),
+        big
+    );
+    assert_eq!(
+        pool.call("/echo", b"", t).wait(),
+        Err(CallError::Remote("no trace".into()))
+    );
+    assert_eq!(
+        pool.call_with("/admin", b"", t, &trace).wait(),
+        Err(CallError::Remote("forbidden".into()))
+    );
+    println!(
+        "{} of {} connections up",
+        pool.connected(),
+        pool.peers().len()
+    );
+    pool.close();
+    // ANCHOR_END: pool
+
+    engine2.shutdown();
+    engine2.wait();
     engine.shutdown();
     engine.wait();
     Ok(())

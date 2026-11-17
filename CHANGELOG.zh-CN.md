@@ -10,6 +10,27 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：arpc 中间件、coder 与客户端连接池（only-arpc）
+
+均为新增（ADR-023，docs/adr/023-arpc-middleware-coders-pools.zh-CN.md）：
+
+- **中间件**：`Routes::middleware`（所有请求和通知）与 `Routes::method_middleware(method, ..)`
+  接受 `Fn(&mut Context, Next)`；`next.run(ctx)` 执行调用链的其余部分（其后的代码在 handler 之后
+  执行），不调用它直接返回即中止。顺序固定（全局、方法、handler），与注册先后无关。新增
+  `Context::values` / `values_mut` / `responded`。没有中间件的路由直接调用 handler。
+- **Coder**（`only_arpc::coder`）：作用于整帧的 `Coder` trait，`Routes::coder`，按添加顺序编码、
+  逆序解码，与 Go 的 `MessageCoder` 相同。`Gzip::new(threshold)`（保留位第 7 位，解压量受
+  `max_body_bytes` 限制）与 `Appender::new(name, bit)`（tracing 用第 0 位）与
+  `arpcex/extension/middleware/coder` 线路兼容。`Values` 通过 `Peer::call_with` /
+  `call_async_with` / `notify_with` 携带，应答用请求的值编码。已与 fib 的 Go arpc 双向验证
+  （`tools/interop/arpc/run.sh`）；新增模糊测试目标 `arpc_coders`。
+- **连接池**：`Pool::builder()`（`size`、`balance`：`Balance::RoundRobin` / `LeastPending`、
+  `heartbeat`、`reconnect_interval`、`connect_timeout`）`.dial(..)`；调用发往在线的连接，心跳会
+  关闭并替换沉默的连接。
+- **等待应答的调用有上限**：`Routes::max_pending_calls`（默认每连接
+  `DEFAULT_MAX_PENDING_CALLS` = 65536）；超出时调用以新增的 `CallError::Overloaded` 失败。新增
+  `Peer::pending_calls`、`Peer::ping`。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：

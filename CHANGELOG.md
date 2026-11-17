@@ -10,6 +10,30 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: arpc middleware, coders and client pools (only-arpc)
+
+Additive (ADR-023, docs/adr/023-arpc-middleware-coders-pools.md):
+
+- **Middleware**: `Routes::middleware` (every request and notify) and
+  `Routes::method_middleware(method, ..)` take `Fn(&mut Context, Next)`; `next.run(ctx)` runs the
+  rest of the chain (code after it runs after the handler), returning without it aborts. Fixed
+  order (global, then per method, then the handler) whatever the registration order. New
+  `Context::values` / `values_mut` / `responded`. Routes without middleware call the handler
+  directly.
+- **Coders** (`only_arpc::coder`): `Coder` trait over whole frames, `Routes::coder`, encode in
+  the order added and decode in reverse, as Go's `MessageCoder`. `Gzip::new(threshold)`
+  (reserved bit 7, inflation bounded by `max_body_bytes`) and `Appender::new(name, bit)` (bit 0
+  for tracing) are wire-compatible with `arpcex/extension/middleware/coder`. `Values` travel with
+  `Peer::call_with` / `call_async_with` / `notify_with` and answers are coded with the request's
+  values. Checked against fib's Go arpc both ways (`tools/interop/arpc/run.sh`); new fuzz target
+  `arpc_coders`.
+- **Pools**: `Pool::builder()` (`size`, `balance`: `Balance::RoundRobin` / `LeastPending`,
+  `heartbeat`, `reconnect_interval`, `connect_timeout`) `.dial(..)`; calls go to a connection that
+  is up, silent connections are closed and replaced by the heartbeat.
+- **Bounded pending calls**: `Routes::max_pending_calls` (default
+  `DEFAULT_MAX_PENDING_CALLS` = 65536 per connection); past it a call fails with the new
+  `CallError::Overloaded`. New `Peer::pending_calls`, `Peer::ping`.
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):

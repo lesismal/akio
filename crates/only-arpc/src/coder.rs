@@ -151,10 +151,11 @@ impl Gzip {
         }
     }
 
-    /// The compression level (default [`Level::DEFAULT`], as Go's `gzip.NewWriter`).
+    /// The compression level, 0 (stored) to 9 (smallest), clamped; default 6, as Go's
+    /// `gzip.NewWriter`.
     #[must_use]
-    pub fn level(mut self, level: Level) -> Gzip {
-        self.level = level;
+    pub fn level(mut self, level: u32) -> Gzip {
+        self.level = Level::new(level);
         self
     }
 }
