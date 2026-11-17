@@ -629,7 +629,7 @@ pub fn differential_groups(data: &[u8]) {
 /// accepts exactly what the generated decoder accepts, and both re-encode to the same bytes.
 pub fn differential_dynamic(data: &[u8]) {
     use only_protobuf::reflect::{DynamicMessage, ReflectMessage};
-    fn one<M: ReflectMessage + PartialEq + std::fmt::Debug>(data: &[u8]) {
+    fn one<M: ReflectMessage + PartialEq + std::fmt::Debug>(data: &[u8], lazy: fn(&M) -> bool) {
         let typed = M::decode(data);
         let dynamic = DynamicMessage::decode(M::descriptor(), data);
         match (&typed, &dynamic) {
@@ -657,10 +657,13 @@ pub fn differential_dynamic(data: &[u8]) {
                 assert_eq!(back.encode_to_vec(), d.encode_to_vec(), "dynamic values");
             }
             (Err(_), Err(_)) => {}
+            // Generated code keeps extension fields undecoded (an error inside one surfaces
+            // when it is read); the dynamic message decodes them eagerly.
+            (Ok(t), Err(_)) if lazy(t) => {}
             (t, d) => panic!("typed {t:?} vs dynamic {d:?}\ninput: {data:02x?}"),
         }
     }
-    one::<all::AllTypes>(data);
-    one::<protobuf_test::test::ext::Base>(data);
-    one::<protobuf_test::test::ed::Item>(data);
+    one::<all::AllTypes>(data, |_| false);
+    one::<protobuf_test::test::ext::Base>(data, |b| !b.extensions.is_empty());
+    one::<protobuf_test::test::ed::Item>(data, |_| false);
 }

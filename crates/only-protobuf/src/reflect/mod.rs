@@ -1356,6 +1356,12 @@ mod build {
             };
             let label = f.label.unwrap_or(fdp::Label::OPTIONAL);
             let repeated = label == fdp::Label::REPEATED;
+            if f.oneof_index.is_some() && (repeated || label == fdp::Label::REQUIRED) {
+                return err(format!("{scope}.{name}: oneof members must be singular"));
+            }
+            if f.proto3_optional == Some(true) && f.oneof_index.is_none() {
+                return err(format!("{scope}.{name}: proto3_optional without a oneof"));
+            }
             let is_msg_type = matches!(ty, fdp::Type::GROUP | fdp::Type::MESSAGE);
             let required = label == fdp::Label::REQUIRED || (!repeated && ft.required);
             let explicit = !repeated

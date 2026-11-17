@@ -385,6 +385,10 @@ impl DynamicMessage {
             }
             match self.field_descriptor(n) {
                 Some(fd) if accepts(&fd, wt) => self.merge_field(&fd, wt, r)?,
+                // As the generated code: a map key or value with another wire type is an error.
+                Some(_) if self.desc.is_map_entry() => {
+                    return Err(DecodeError::new(DecodeErrorKind::WireTypeMismatch).in_field(n));
+                }
                 _ => self.unknown.merge_field(n, wt, r)?,
             }
         }
