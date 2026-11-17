@@ -10,6 +10,31 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：protobuf 的 group、extension、edition、JSON 与反射；gRPC 服务端反射
+
+ADR-022（docs/adr/022-protobuf-gaps.zh-CN.md）：
+
+- **only-protobuf-build**：proto2 `group` 字段、`extend` 块（带类型的 `Extension` /
+  `RepeatedExtension` 常量）、扩展范围、MessageSet；edition 2023 与 2024 及特性解析（字段存在性、
+  封闭枚举、packed / expanded、`DELIMITED`、命名风格、`export` / `local`）；自定义 option 与文本格式
+  聚合值；与 protoc 一致的描述符，按包内嵌（`FILE_DESCRIPTOR_SET`、`descriptor_pool()`），
+  `Config::descriptors`、`Config::file_descriptor_set_path`；内置 `descriptor.proto`、`type.proto`、
+  `api.proto`、`source_context.proto`。
+- **only-protobuf**：`ExtensionSet`、`Extendable`、`Extension`、`RepeatedExtension`；
+  `encoding::GroupCodec`、封闭枚举解码函数；`Enumeration::is_known`；`reflect`（`DescriptorPool`、
+  各描述符、`DynamicMessage`、`Value`、`ReflectMessage`）；`json`（标准 proto3 JSON、well-known
+  类型、`ignore_unknown_fields`）；`well_known` 中的描述符类型。
+- **only-grpc**：`reflection::register`（gRPC 服务端反射 v1 与 v1alpha，供 grpcurl / grpcui
+  使用），反射消息位于 `reflection::v1` / `v1alpha`；现在依赖 only-protobuf。
+- 验证：protobuf 一致性运行器 v35.1，二进制 + JSON 通过 5627 项、失败 0 项
+  （`tools/protobuf-test/conformance/run.sh`）；描述符集与 protoc 一致；grpcurl
+  （`tools/interop/grpc/grpcurl.sh`）；fuzz 目标 `protobuf_json`、`protobuf_descriptor`。
+
+行为变化：proto2（封闭）枚举字段遇到未知数值时放入未知字段，不再存入字段；proto2 消息的扩展字段现在
+位于 `extensions`，不再在 `unknown_fields` 中；超过 5 字节的 tag 被拒绝（与 C++ 一致）。编解码开销不变：在 gpu51 上与上一提交同轮 A/B
+（交替 5 轮取中位数，prost 作对照）：Point 12/18 ns → 12/18 ns，Feature 19/47 ns → 18/45 ns，
+AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 1448 ns（−11%，prost 1788 → 1749）。
+
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
 均为新增（ADR-011，docs/adr/011-h3-websocket-qpack-streaming.zh-CN.md）：
