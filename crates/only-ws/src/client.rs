@@ -260,6 +260,9 @@ struct Plan {
     addrs: OnceLock<Vec<SocketAddr>>,
     /// The proxy this dial goes through, if any.
     proxy: Option<crate::proxy::ProxyServer>,
+    /// The target as the tunnel names it: the host, or its address when the proxy wants
+    /// addresses (`socks5://`, `socks4://`); set before dialling.
+    tunnel_host: OnceLock<String>,
     /// Where the current attempt's tunnel records a refusal.
     refusal: Mutex<Option<Refusal>>,
     tls: Option<(TlsClientConfig, String)>,
@@ -374,6 +377,7 @@ fn start(
         redirects_left,
         deadline,
         addrs: OnceLock::new(),
+        tunnel_host: OnceLock::new(),
         proxy,
         refusal: Mutex::new(None),
         tls,
@@ -412,12 +416,31 @@ fn start(
             }
         },
     );
-    only::dns::resolve(&dial_host, dial_port, move |r| match r {
-        Ok(addrs) => {
-            let _ = plan.addrs.set(addrs);
-            dial_addr(plan, 0);
+    let resolve_dial = move |plan: Arc<Plan>| {
+        only::dns::resolve(&dial_host, dial_port, move |r| match r {
+            Ok(addrs) => {
+                let _ = plan.addrs.set(addrs);
+                dial_addr(plan, 0);
+            }
+            Err(e) => plan.fail(WsClientError::Io(e)),
+        });
+    };
+    let local = plan.proxy.as_ref().is_some_and(|p| p.resolves_locally())
+        && plan.host.parse::<std::net::IpAddr>().is_err();
+    if !local {
+        let _ = plan.tunnel_host.set(plan.host.clone());
+        return resolve_dial(plan);
+    }
+    // A SOCKS proxy that takes addresses only: resolve the target here first.
+    only::dns::resolve(&plan.host.clone(), plan.port, move |r| {
+        let socks4 = plan.proxy.as_ref().is_some_and(|p| p.is_socks4());
+        match r.and_then(|a| crate::proxy::pick_target(a, socks4)) {
+            Ok(a) => {
+                let _ = plan.tunnel_host.set(a.ip().to_string());
+                resolve_dial(plan);
+            }
+            Err(e) => plan.fail(WsClientError::Io(e)),
         }
-        Err(e) => plan.fail(WsClientError::Io(e)),
     });
 }
 
@@ -444,6 +467,7 @@ fn dial_addr(plan: Arc<Plan>, i: usize) {
         }
     };
     let engine = plan.engine.clone();
+    let tunnel_host = plan.tunnel_host.get().unwrap_or(&plan.host).clone();
     let tunnel = || {
         let r = Refusal::default();
         *plan.refusal.lock().unwrap_or_else(|p| p.into_inner()) = Some(r.clone());
@@ -453,7 +477,7 @@ fn dial_addr(plan: Arc<Plan>, i: usize) {
         (Some((cfg, name)), proxy) => match Tls::client(cfg.clone(), name, acceptor) {
             Ok(a) => match proxy {
                 Some(p) => {
-                    let a = Connect::new(&plan.host, plan.port, p, tunnel(), a);
+                    let a = Connect::new(&tunnel_host, plan.port, p, tunnel(), a);
                     engine.dial(addr, a, on_err);
                 }
                 None => engine.dial(addr, a, on_err),
@@ -461,7 +485,7 @@ fn dial_addr(plan: Arc<Plan>, i: usize) {
             Err(e) => plan.fail(WsClientError::Io(e)),
         },
         (None, Some(p)) => {
-            let a = Connect::new(&plan.host, plan.port, p, tunnel(), acceptor);
+            let a = Connect::new(&tunnel_host, plan.port, p, tunnel(), acceptor);
             engine.dial(addr, a, on_err);
         }
         (None, None) => engine.dial(addr, acceptor, on_err),

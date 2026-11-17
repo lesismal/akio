@@ -5,9 +5,8 @@
 //! - only datagrams from the client's IP (the control connection's peer) count as the client's,
 //!   and once its first datagram fixes the source port (or the request named one), only that
 //!   address; anything else from that IP is a remote host;
-//! - datagrams with a non-zero FRAG field are dropped (fragmentation is optional; RFC 1928:
-//!   an implementation that does not support it "MUST drop any datagram whose FRAG field is
-//!   other than X'00'");
+//! - fragmented datagrams (non-zero FRAG) are reassembled in order, one sequence at a time,
+//!   bounded in size and time ([`crate::frag`]), and relayed as one datagram once complete;
 //! - every destination goes through the access-control hook ([`Command::UdpDatagram`]),
 //!   decided once per destination and association;
 //! - datagrams from remote hosts are relayed to the client only from addresses the client has
@@ -28,7 +27,10 @@ use std::{
 use only::{Acceptor, Conn, Handler, UdpBinding};
 use only_core::ConnInner;
 
-use crate::{Allow, Command, Dest, Destinations, Request};
+use crate::{
+    Allow, Command, Dest, Destinations, Request,
+    frag::{Frag, Reassembly},
+};
 
 /// Remote addresses remembered per association (for filtering their answers).
 const MAX_SENT_TO: usize = 4096;
@@ -269,14 +271,25 @@ impl Assoc {
         let _ = b.send_to(payload, wire);
     }
 
-    fn relay_from_client(&self, c: &Conn<RelayPeer>, data: &[u8]) {
+    fn relay_from_client(&self, c: &Conn<RelayPeer>, reasm: &mut Reassembly, data: &[u8]) {
         let Some((frag, dest, n)) = parse_header(data) else {
             return;
         };
-        if frag != 0 || !self.allowed(&dest) {
+        if !self.allowed(&dest) {
             return;
         }
         let payload = &data[n..];
+        if frag == 0 {
+            reasm.reset();
+            return self.relay_to(c, dest, payload);
+        }
+        if let Frag::Complete(dest, whole) = reasm.push(Instant::now(), frag, &dest, payload) {
+            self.relay_to(c, dest, &whole);
+        }
+    }
+
+    /// Relays one (whole or reassembled) datagram from the client to `dest`.
+    fn relay_to(&self, c: &Conn<RelayPeer>, dest: Dest, payload: &[u8]) {
         match dest {
             Dest::Addr(a) => self.send_out(a, payload),
             Dest::Name(host, port) => {
@@ -331,12 +344,13 @@ struct RelayAcceptor(Arc<Assoc>);
 impl Acceptor for RelayAcceptor {
     type Handler = RelayPeer;
     fn on_open(&self, _c: &Conn<RelayPeer>) -> RelayPeer {
-        RelayPeer(self.0.clone())
+        RelayPeer(self.0.clone(), Reassembly::default())
     }
 }
 
-/// One peer address of an association's relay socket.
-pub(crate) struct RelayPeer(Arc<Assoc>);
+/// One peer address of an association's relay socket (the client's peer reassembles its
+/// fragments: the client sends from one address).
+pub(crate) struct RelayPeer(Arc<Assoc>, Reassembly);
 
 impl std::fmt::Debug for RelayPeer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -353,7 +367,7 @@ impl Handler for RelayPeer {
         let peer = canon(c.peer_addr());
         if a.is_client(peer) {
             a.touch();
-            a.relay_from_client(c, data);
+            a.relay_from_client(c, &mut self.1, data);
         } else if a.relay_from_remote(peer, data) {
             a.touch();
         }

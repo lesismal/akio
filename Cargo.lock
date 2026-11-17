@@ -736,6 +736,7 @@ dependencies = [
  "only",
  "only-core",
  "only-http",
+ "only-ws",
 ]
 
 [[package]]

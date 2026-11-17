@@ -29,6 +29,8 @@ pub mod http1;
 pub mod protocol;
 pub mod proxy;
 mod session;
+#[doc(hidden)]
+pub mod socks;
 mod timer;
 // Resolving redirect targets, shared with only-http: `#[doc(hidden)]`, outside the semver promise.
 #[doc(hidden)]

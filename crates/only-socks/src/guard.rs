@@ -105,6 +105,8 @@ pub(crate) struct Watch {
     active: AtomicBool,
     relaying: AtomicBool,
     disarmed: AtomicBool,
+    /// Runs (on the watchdog thread) when a timeout closes the session.
+    on_fire: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// 0 when off.
     handshake_ms: u64,
     idle_ms: u64,
@@ -162,6 +164,7 @@ impl Watch {
             active: AtomicBool::new(false),
             relaying: AtomicBool::new(false),
             disarmed: AtomicBool::new(false),
+            on_fire: Mutex::new(None),
             handshake_ms,
             idle_ms,
         });
@@ -187,6 +190,11 @@ impl Watch {
         self.relaying.store(true, Ordering::Relaxed);
     }
 
+    /// Runs `f` when a timeout closes the session.
+    pub(crate) fn on_fire(&self, f: Box<dyn FnOnce() + Send>) {
+        *self.on_fire.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+    }
+
     /// Neither timeout applies any more (the session is governed by something else).
     pub(crate) fn disarm(&self) {
         self.disarmed.store(true, Ordering::Relaxed);
@@ -206,6 +214,14 @@ impl Watch {
 
     fn fire(&self) {
         self.client.close();
+        let f = self
+            .on_fire
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(f) = f {
+            f();
+        }
         let up = self
             .upstream
             .lock()

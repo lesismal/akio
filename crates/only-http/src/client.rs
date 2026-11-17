@@ -513,6 +513,8 @@ struct Pending {
     proxy: Option<ProxyServer>,
     /// Every resolved address, tried in order until one connects (empty until resolved).
     addrs: Vec<SocketAddr>,
+    /// The target's address when a SOCKS proxy wants addresses (`socks5://`, `socks4://`).
+    tunnel_host: Option<String>,
     ex: Arc<Exchange>,
     cb: Callback,
 }
@@ -687,7 +689,8 @@ impl Client {
             .proxy
             .select(pu.key.tls, &pu.key.host, pu.key.port)
             .cloned();
-        let absolute = proxy.as_ref().filter(|_| !pu.key.tls);
+        // HTTP proxies take `http://` requests in absolute form; SOCKS proxies tunnel them.
+        let absolute = proxy.as_ref().filter(|p| !pu.key.tls && p.is_http());
         let mut bytes = Vec::with_capacity(160 + req.body.len());
         let scheme_host = match absolute {
             Some(_) => format!("http://{}", pu.host_header),
@@ -761,6 +764,7 @@ impl Client {
             key,
             proxy,
             addrs: Vec::new(),
+            tunnel_host: None,
             ex,
             cb,
         });
@@ -918,6 +922,25 @@ impl Client {
         if p.ex.expired() {
             return;
         }
+        let local = p.proxy.as_ref().is_some_and(|s| s.resolves_locally())
+            && p.tunnel_host.is_none()
+            && p.key.host.parse::<std::net::IpAddr>().is_err();
+        if local {
+            // A SOCKS proxy that takes addresses only: resolve the target first.
+            let socks4 = p.proxy.as_ref().is_some_and(|s| s.is_socks4());
+            let (host, port) = (p.key.host.clone(), p.key.port);
+            let me = self.clone();
+            return only::dns::resolve(&host, port, move |r| {
+                let r = r.and_then(|a| only_ws::proxy::pick_target(a, socks4));
+                match r {
+                    Ok(a) => {
+                        p.tunnel_host = Some(a.ip().to_string());
+                        me.dial(p);
+                    }
+                    Err(e) => (p.cb)(Err(ClientError::Io(e))),
+                }
+            });
+        }
         if p.addrs.is_empty() {
             // Resolve the proxy (when there is one) or the target, off this thread.
             let (host, port) = match &p.proxy {
@@ -935,7 +958,8 @@ impl Client {
         }
         let key = p.key.clone();
         let addr = p.addrs[0];
-        let tunnel = key.tls.then(|| p.proxy.clone()).flatten();
+        let tunnel = p.proxy.clone().filter(|s| key.tls || !s.is_http());
+        let tunnel_host = p.tunnel_host.clone().unwrap_or_else(|| key.host.clone());
         let slot = Arc::new(Mutex::new(Some(p)));
         let refusal = tunnel.as_ref().map(|_| Refusal::default());
         let acceptor = DialAcceptor {
@@ -965,12 +989,15 @@ impl Client {
             };
             match (Tls::client(cfg, &key.host, acceptor), tunnel, refusal) {
                 (Ok(a), Some(proxy), Some(r)) => {
-                    let a = Connect::new(&key.host, key.port, &proxy, r, a);
+                    let a = Connect::new(&tunnel_host, key.port, &proxy, r, a);
                     self.inner.engine.dial(addr, a, fail);
                 }
                 (Ok(a), _, _) => self.inner.engine.dial(addr, a, fail),
                 (Err(e), _, _) => fail(e),
             }
+        } else if let (Some(proxy), Some(r)) = (tunnel, refusal) {
+            let a = Connect::new(&tunnel_host, key.port, &proxy, r, acceptor);
+            self.inner.engine.dial(addr, a, fail);
         } else {
             self.inner.engine.dial(addr, acceptor, fail);
         }
@@ -1086,6 +1113,7 @@ impl ClientConn {
             key,
             proxy,
             addrs,
+            tunnel_host,
             ex,
             cb,
         } = p;
@@ -1107,6 +1135,7 @@ impl ClientConn {
             key: key.clone(),
             proxy,
             addrs,
+            tunnel_host,
             ex: ex.clone(),
             cb: Box::new(|_| {}),
         });
