@@ -429,6 +429,31 @@ only-uring ring 的最小 HTTP/1.1 应答程序上测量（被忽略的 `eval_se
 状态码分类、延迟总和与第一个延迟桶位于同一缓存行。中间件本身在 0.75 M req/s 时约占 2%，在 4.5 M req/s
 pipelined 时约占 10%，`main` 与本分支相同。
 
+### 热更新（引擎 A/B，`tools/bench`）
+
+2026-11-18 在 gpu51 上测量。问题（ADR-028）：可热更新的读缓冲区和 backlog、可扩缩容的线程组是否改变了
+稳态热路径？那里的改动是：poll token 改为测试一个 listener 位（原来是与一个常量比较）、每轮循环对退役
+loop 的几个检查，以及 io_uring 从完成事件的操作码选择缓冲区组。`base` 为 `main` 的 `ab65d376`，`new`
+为该分支；两者在同一会话中构建，并在 `quiet.sh` 下交错运行（每次 5 秒，取中位数，每次启动新服务器；
+服务器在 CPU 0–3 上运行 4 个线程，`h2load` / `echo-bench` 在 CPU 4–7 与 12–15 上运行 8 个线程）。
+比值为 new / base；`±` 为各轮最大最小值差的一半。
+
+| 负载 | 后端 | base | new / base |
+|---|---|---:|---:|
+| HTTP/1.1 plaintext，256 连接（11 轮） | epoll | 715,480 | 1.004 |
+| HTTP/1.1 plaintext，256 连接（11 轮） | io_uring | 770,331 | 1.005 |
+| HTTP/1.1 pipelined ×16，256 连接（11 轮） | epoll | 4,509,363 | 0.996 |
+| HTTP/1.1 pipelined ×16，256 连接（11 轮） | io_uring | 4,658,051 | 0.999 |
+| TCP echo 64 B × 1024 连接（5 轮，±2–4%） | epoll | 739,312 | 1.007 |
+| TCP echo 64 B × 1024 连接（5 轮，±2–4%） | io_uring | 805,131 | 0.973 |
+| TCP echo 64 B × 64 连接（5 轮，±3–15%） | epoll | 766,225 | 0.956 |
+| TCP echo 64 B × 64 连接（5 轮，±3–15%） | io_uring | 746,246 | 0.933 |
+
+**结论：不变。** 第一次 5 轮测量中 pipelined 为 0.983（epoll）和 0.991（io_uring），波动 1%；对 HTTP
+各行重测 11 轮得到 0.996 和 0.999（逐轮比值的中位数均为 0.998）；在这台机器上，同一构建的多次运行在
+这一行上相差约 1%。echo 各行在轮间噪声之内上下浮动（瓶颈是闭环 echo 客户端，见
+“TCP、UDP 与 TLS echo”）。
+
 ### 密码学（`only-crypto`，`--example bench` 与 `--example pk_bench`，CPU 2）
 
 运行时检测到的硬件路径：AES-NI、PCLMULQDQ、SHA-NI、SSE4.2 CRC32、AVX2、VAES + VPCLMULQDQ +
