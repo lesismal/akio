@@ -4,8 +4,8 @@
 # Ed25519 certificates, client authentication, resumption (tickets and session IDs),
 # HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none),
 # OCSP stapling (OpenSSL, Go, GnuTLS; only's client validating it, and CRLs, against OpenSSL),
-# certificate compression (RFC 8879 zlib: OpenSSL 3.2+ built
-# with zlib, e.g. Debian's; skipped otherwise) and record_size_limit (RFC 8449: GnuTLS when
+# certificate compression (RFC 8879 zlib, brotli and zstd: OpenSSL 3.2+ built with them, e.g.
+# Debian's for zlib and zstd; skipped otherwise) and record_size_limit (RFC 8449: GnuTLS when
 # gnutls-cli is installed; OpenSSL and Go have none, so their cases check it is not applied, and
 # OpenSSL's max_fragment_length offer is ignored).
 #
@@ -359,22 +359,35 @@ done
 s_client_case "1.3 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_3 -status $OCSP_CHECK" \
     "Cert Status: good"
 s_client_case "1.2 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_2 -status" "Cert Status: good"
-# Certificate compression (zlib), both ways, server and client certificates.
-if openssl version -a | grep -q -- '-DZLIB'; then
-    s_client_case "1.3 compressed certificate (zlib)" "$S" "-tls1_3 -trace" "Compression type=zlib"
-    s_client_case "1.3 compressed client certificate (zlib)" "$S --ca $P/ca.pem --require" \
+# Certificate compression, both ways, server and client certificates, one algorithm at a time
+# (only's side takes only that one): zlib, brotli and zstd where OpenSSL (3.2+) was built with
+# them (Debian's has zlib and zstd; brotli needs `enable-brotli`, e.g. the image of
+# tools/interop/tls/certcomp.Dockerfile). Then OpenSSL's client offering all it has, only's
+# server picking the smallest.
+for alg in zlib brotli zstd; do
+    flag=$(printf '%s' "$alg" | tr '[:lower:]' '[:upper:]')
+    if ! openssl version -a | grep -q -- "-D$flag"; then
+        echo "SKIP $alg certificate compression with OpenSSL (built without $alg)"
+        continue
+    fi
+    s_client_case "1.3 compressed certificate ($alg)" "$S --cert-comp $alg" "-tls1_3 -trace" \
+        "Compression type=$alg"
+    s_client_case "1.3 compressed client certificate ($alg)" \
+        "$S --ca $P/ca.pem --require --cert-comp $alg" \
         "-tls1_3 -cert $P/client.pem -key $P/client.key" "hello only"
-    if grep -q "cert_comp=true" "$OUT/srv.log"; then :; else
-        ko "openssl -> only server: client certificate was not compressed" "$OUT/srv.log"
+    if grep -q "cert_comp_alg=$alg" "$OUT/srv.log"; then :; else
+        ko "openssl -> only server: client certificate was not compressed with $alg" "$OUT/srv.log"
     fi
-    s_server_case "1.3 compressed certificate (zlib)" \
+    s_server_case "1.3 compressed certificate ($alg)" \
         "-cert $P/p256.pem -key $P/p256.key -tls1_3 -cert_comp -Verify 1" \
-        "--cert $P/client.pem --key $P/client.key"
-    if grep -q "cert_comp=true" "$OUT/cli.log"; then :; else
-        ko "only client -> openssl: certificate was not compressed" "$OUT/cli.log"
+        "--cert $P/client.pem --key $P/client.key --cert-comp $alg"
+    if grep -q "cert_comp_alg=$alg" "$OUT/cli.log"; then :; else
+        ko "only client -> openssl: certificate was not compressed with $alg" "$OUT/cli.log"
     fi
-else
-    echo "SKIP certificate compression with OpenSSL (built without zlib)"
+done
+if openssl version -a | grep -q -- '-DZLIB'; then
+    s_client_case "1.3 compressed certificate (smallest offered)" "$S" "-tls1_3 -trace" \
+        "CompressedCertificate"
 fi
 # record_size_limit: OpenSSL has none, so nothing is applied (our 512 is not enforced on its
 # 16 KiB records); its max_fragment_length offer (RFC 6066, not implemented) is ignored, and

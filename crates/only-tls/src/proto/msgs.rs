@@ -54,9 +54,58 @@ pub(crate) const PSK_DHE_KE: u8 = 1;
 /// CertificateStatusType ocsp (RFC 6066 section 8).
 pub(crate) const STATUS_OCSP: u8 = 1;
 
-/// CertificateCompressionAlgorithm zlib (RFC 8879 section 3), the only one implemented (no
-/// in-house brotli or zstd).
+/// CertificateCompressionAlgorithm zlib (RFC 8879 section 3).
 pub(crate) const CERT_COMP_ZLIB: u16 = 1;
+/// CertificateCompressionAlgorithm brotli (RFC 8879 section 3).
+pub(crate) const CERT_COMP_BROTLI: u16 = 2;
+/// CertificateCompressionAlgorithm zstd (RFC 8879 section 3).
+pub(crate) const CERT_COMP_ZSTD: u16 = 3;
+
+/// A set of certificate compression algorithms (RFC 8879): bit `n - 1` for code point `n`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CompAlgs(u8);
+
+impl CompAlgs {
+    /// None: compression off.
+    pub(crate) const NONE: CompAlgs = CompAlgs(0);
+    /// zlib, brotli and zstd.
+    pub(crate) const ALL: CompAlgs = CompAlgs(0b111);
+    /// The order offered in: brotli and zstd (smaller) first.
+    const ORDER: [u16; 3] = [CERT_COMP_BROTLI, CERT_COMP_ZSTD, CERT_COMP_ZLIB];
+
+    /// The algorithms of `ids` this crate implements (others are ignored).
+    pub(crate) fn from_ids(ids: &[u16]) -> CompAlgs {
+        ids.iter().fold(CompAlgs::NONE, |a, &id| a.with(id))
+    }
+
+    /// This set and `id`, when implemented.
+    pub(crate) fn with(self, id: u16) -> CompAlgs {
+        match id {
+            1..=3 => CompAlgs(self.0 | 1 << (id - 1)),
+            _ => self,
+        }
+    }
+
+    pub(crate) fn contains(self, id: u16) -> bool {
+        matches!(id, 1..=3) && self.0 & 1 << (id - 1) != 0
+    }
+
+    pub(crate) fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// The algorithms in both sets.
+    pub(crate) fn and(self, other: CompAlgs) -> CompAlgs {
+        CompAlgs(self.0 & other.0)
+    }
+
+    /// The code points, in the order offered.
+    pub(crate) fn ids(self) -> impl Iterator<Item = u16> {
+        CompAlgs::ORDER
+            .into_iter()
+            .filter(move |&id| self.contains(id))
+    }
+}
 
 /// The smallest RecordSizeLimit (RFC 8449 section 4).
 pub(crate) const MIN_RECORD_LIMIT: u16 = 64;
@@ -321,9 +370,13 @@ pub(crate) fn parse_cert_comp(x: &mut Reader<'_>) -> DResult<Vec<u16>> {
     Ok(v)
 }
 
-/// Writes a compress_certificate extension body offering zlib.
-pub(crate) fn cert_comp_body(out: &mut Vec<u8>) {
-    put_vec(out, 1, |o| put_u16(o, CERT_COMP_ZLIB));
+/// Writes a compress_certificate extension body offering `algs` (not empty).
+pub(crate) fn cert_comp_body(out: &mut Vec<u8>, algs: CompAlgs) {
+    put_vec(out, 1, |o| {
+        for id in algs.ids() {
+            put_u16(o, id);
+        }
+    });
 }
 
 /// A host name of a server_name extension: ASCII, no trailing dot, lowercased.
@@ -542,30 +595,43 @@ pub(crate) fn parse_certificate_status(r: &mut Reader<'_>) -> DResult<Vec<u8>> {
 }
 
 /// Encodes a CompressedCertificate message (RFC 8879 section 4) carrying `body`, a Certificate
-/// body, compressed with zlib; `None` when that would not be smaller than the Certificate.
-pub(crate) fn compressed_certificate(body: &[u8]) -> Option<Vec<u8>> {
-    let z = only_deflate::compress(only_deflate::Format::Zlib, only_deflate::Level::BEST, body);
+/// body, compressed with algorithm `alg` (zlib, brotli or zstd, each at its best level); `None`
+/// when that would not be smaller than the Certificate.
+pub(crate) fn compressed_certificate(body: &[u8], alg: u16) -> Option<Vec<u8>> {
+    let z = match alg {
+        CERT_COMP_ZLIB => {
+            only_deflate::compress(only_deflate::Format::Zlib, only_deflate::Level::BEST, body)
+        }
+        CERT_COMP_BROTLI => only_brotli::compress(only_brotli::Level::BEST, body),
+        CERT_COMP_ZSTD => only_zstd::compress(only_zstd::Level::BEST, body),
+        _ => return None,
+    };
     // Algorithm, uncompressed length and the compressed data's length take 8 bytes.
     if z.len() + 8 >= body.len() {
         return None;
     }
     Some(message(COMPRESSED_CERTIFICATE, |o| {
-        put_u16(o, CERT_COMP_ZLIB);
+        put_u16(o, alg);
         put_u24(o, body.len());
         put_vec24(o, &z);
     }))
 }
 
-/// Decompresses a CompressedCertificate body into the Certificate body it carries
-/// (RFC 8879 section 4): the algorithm must be one we offered (zlib), the result exactly the
-/// announced length, at most `max` bytes; anything else is bad_certificate.
-pub(crate) fn decompress_certificate(body: &[u8], max: usize) -> DResult<Vec<u8>> {
+/// Decompresses a CompressedCertificate body into the Certificate body it carries and the
+/// algorithm used (RFC 8879 section 4): the algorithm must be one of `offered`, the result
+/// exactly the announced length, at most `max` bytes (the decoders stop there: a decompression
+/// bomb costs no more than that); anything else is bad_certificate.
+pub(crate) fn decompress_certificate(
+    body: &[u8],
+    max: usize,
+    offered: CompAlgs,
+) -> DResult<(Vec<u8>, u16)> {
     let mut r = Reader::new(body);
     let alg = r.u16()?;
     let len = r.u24()?;
     let data = r.vec24()?;
     r.finish()?;
-    if alg != CERT_COMP_ZLIB {
+    if !offered.contains(alg) {
         return fatal(
             Alert::IllegalParameter,
             "certificate compressed with an algorithm not offered",
@@ -577,8 +643,13 @@ pub(crate) fn decompress_certificate(body: &[u8], max: usize) -> DResult<Vec<u8>
     if len > max {
         return fatal(Alert::BadCertificate, "compressed certificate too large");
     }
-    match only_deflate::decompress(only_deflate::Format::Zlib, data, len) {
-        Ok(c) if c.len() == len => Ok(c),
+    let plain = match alg {
+        CERT_COMP_ZLIB => only_deflate::decompress(only_deflate::Format::Zlib, data, len).ok(),
+        CERT_COMP_BROTLI => only_brotli::decompress(data, len).ok(),
+        _ => only_zstd::decompress(data, len).ok(),
+    };
+    match plain {
+        Some(c) if c.len() == len => Ok((c, alg)),
         _ => fatal(
             Alert::BadCertificate,
             "compressed certificate does not decompress",

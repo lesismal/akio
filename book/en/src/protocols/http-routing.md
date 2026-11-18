@@ -100,15 +100,17 @@ Built-in middleware (`only_http::middleware` and `only_http::observe`):
 | `cors(Cors { allow_origin, allow_methods, allow_headers, max_age })` | answers preflights with 204, adds `Access-Control-Allow-Origin` |
 | `logger(fn(&LogRecord))` | calls your function after each request (method, target, peer, status, elapsed) |
 | `response_time()` | adds an `X-Response-Time` header |
-| `compress(Compress { min_bytes, level })` | gzip/deflate for text-like bodies the client accepts |
+| `compress(Compress { min_bytes, level, brotli, zstd })` | br/zstd (when set)/gzip/deflate for text-like bodies the client accepts |
 | `etag()` | adds an `ETag`, answers `If-None-Match` with 304 |
 | `csrf()` | double-submit cookie: `csrf_token` cookie, checked against the `X-CSRF-Token` header on unsafe methods |
 | `limiter(rate, burst)` | per-client-IP token bucket, 429 with `Retry-After` |
 | `observe::HttpMetrics::middleware()` | request counters and latency histogram ([Observability](../observability.md)) |
 | `observe::access_log()` | structured access log through `only::log` |
 
-Brotli compression is not offered (no brotli dependency yet); pre-compressed `.br` files are
-served by `Files`.
+`br` and `zstd` (the in-house `only-brotli` and `only-zstd`, ADR-041) are off by default: set
+`Compress::brotli` / `Compress::zstd` to a level to answer clients that accept them, preferred in
+the order br, zstd, gzip, deflate. Pre-compressed `.br`, `.zst` and `.gz` files are served by
+`Files`.
 
 ## Static files
 
@@ -125,7 +127,7 @@ served by `Files`.
 
 Features: `GET`/`HEAD`; `ETag` and `Last-Modified`; `If-None-Match` / `If-Modified-Since` (304),
 `If-Match` / `If-Unmodified-Since` (412); `Range` requests (206/416) guarded by `If-Range`;
-`..` and other escapes refused (symlinks are followed); `file.ext.br` / `file.ext.gz` served to
+`..` and other escapes refused (symlinks are followed); `file.ext.br` / `file.ext.zst` / `file.ext.gz` served to
 clients that accept them; large files sent with `sendfile(2)` on plain TCP (read through memory
 under TLS).
 
@@ -149,7 +151,7 @@ Only a cache hit inside its trust window is answered on the I/O thread. A miss, 
 anything else that touches the disk (`stat`, `open`, reading a small file into the cache, the
 parts of a multi-range response from a large file) is detached to a small disk pool shared by
 every `Files` (up to 16 threads and 4096 queued requests; past that the answer is `503` with
-`Retry-After: 1`), and the response is sent from there. Whether `file.br` / `file.gz` exist is
+`Retry-After: 1`), and the response is sent from there. Whether `file.br` / `file.zst` / `file.gz` exist is
 cached with the file, and the validators and fixed headers are formatted once per entry. Not
 done: inotify-based invalidation (the stat interval is used instead); the
 in-memory cache of small files is bounded by the files that exist, not by a byte budget.

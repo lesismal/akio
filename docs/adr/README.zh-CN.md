@@ -44,5 +44,6 @@
 - [ADR-038：证书吊销：CRL、OCSP 与装订响应的校验](038-x509-revocation.zh-CN.md)（2026-11-18 采纳）
 - [ADR-039：only-webrtc 对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈](039-webrtc-fec-xr-tmmbr-ccfb.zh-CN.md)（2026-11-19 采纳）
 - [ADR-040：SRTP 的 MKI、密钥派生率、更多保护配置、头部扩展加密与 cryptex](040-srtp-mki-cryptex.zh-CN.md)（2026-11-19 采纳）
+- [ADR-041：自研 brotli 与 Zstandard，用于证书压缩和 HTTP](041-brotli-zstd.zh-CN.md)（2026-11-19 采纳）
 - [ADR-042：SCTP HEARTBEAT、对端重启、零校验和与入向重置请求](042-sctp-heartbeat-restart-zero-checksum.zh-CN.md)（2026-11-19 采纳）
 - [ADR-043：SRT rendezvous、MPEG-TS 中的 AV1、录制为 MPEG-TS、HLS SAMPLE-AES](043-media-srt-rendezvous-av1-ts-sample-aes.zh-CN.md)（2026-11-19 采纳）

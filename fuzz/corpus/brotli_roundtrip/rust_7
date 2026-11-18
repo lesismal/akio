@@ -1,0 +1,147 @@
+//! One-shot brotli decompression (RFC 7932).
+//!
+//! The output vector is the sliding window: back-references read the bytes already written,
+//! and distances beyond `min(output so far, window - 16)` address the static dictionary. Every
+//! length declared by the stream is checked against the meta-block length and the caller's
+//! limit before any byte is produced or any space is reserved for it, so memory stays within
+//! the limit plus the prefix code tables (a few megabytes at most, whatever the stream says).
+//! Reading past the end of the input yields zero bits that are counted, and the decoder checks
+//! at least once per command and per literal that none of them was consumed, so a truncated
+//! stream costs no more than its own length plus the output limit.
+
+use crate::Error;
+use crate::bits::BitReader;
+use crate::dictionary::{DICTIONARY, OFFSETS_BY_LENGTH, SIZE_BITS_BY_LENGTH, transform_word};
+use crate::huffman::{build, decode, single};
+use crate::tables::{
+    BLOCK_LEN, CODE_LENGTH_ORDER, CONTEXT_LUT, COPY_BASE, COPY_EXTRA, INS_BASE, INS_EXTRA,
+    split_command,
+};
+
+/// Decompresses the brotli stream `data`, which must be exactly one complete stream, into at
+/// most `limit` bytes.
+///
+/// Fails with [`Error::TooLarge`] as soon as the output would exceed `limit` (before reserving
+/// memory for it), with [`Error::Truncated`] if `data` ends early and with
+/// [`Error::TrailingData`] if bytes follow the end of the stream.
+pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>, Error> {
+    let mut d = Decoder {
+        br: BitReader::new(data),
+        out: Vec::new(),
+        limit,
+        last: [4, 11, 15, 16],
+        lens: Vec::new(),
+    };
+    d.stream(data.len())?;
+    Ok(d.out)
+}
+
+/// The largest distance the reference decoder accepts (`BROTLI_MAX_ALLOWED_DISTANCE`).
+const MAX_ALLOWED_DISTANCE: usize = 0x7fff_fffc;
+
+/// Code lengths of the code length code: bit length and symbol for each value of the next four
+/// bits (RFC 7932 section 3.5).
+const CL_CODE_LEN: [u8; 16] = [2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4];
+const CL_CODE_VAL: [u8; 16] = [0, 4, 3, 2, 0, 4, 3, 1, 0, 4, 3, 2, 0, 4, 3, 5];
+
+struct Decoder<'a> {
+    br: BitReader<'a>,
+    out: Vec<u8>,
+    limit: usize,
+    /// The last four distances, most recent first.
+    last: [usize; 4],
+    /// Scratch space for code lengths.
+    lens: Vec<u8>,
+}
+
+/// A group of prefix codes (the trees of one category), stored back to back.
+#[derive(Default)]
+struct Group {
+    tables: Vec<u32>,
+    starts: Vec<usize>,
+}
+
+impl Group {
+    #[inline(always)]
+    fn tree(&self, i: usize) -> &[u32] {
+        let s = self.starts.get(i).copied().unwrap_or(usize::MAX);
+        self.tables.get(s..).unwrap_or(&[])
+    }
+}
+
+/// Block switching state of one category (literals, commands or distances).
+struct Blocks {
+    types: usize,
+    type_code: Vec<u32>,
+    len_code: Vec<u32>,
+    /// The second last and the last block type.
+    ring: [usize; 2],
+    /// Items left in the current block.
+    left: u32,
+}
+
+impl Blocks {
+    fn current(&self) -> usize {
+        self.ring[1]
+    }
+}
+
+impl Decoder<'_> {
+    fn check(&self) -> Result<(), Error> {
+        if self.br.overrun() {
+            Err(Error::Truncated)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Makes room for `n` more output bytes (the caller has checked them against the limit),
+    /// growing geometrically but never past the limit.
+    fn reserve(&mut self, n: usize) {
+        let len = self.out.len();
+        if self.out.capacity() - len < n {
+            let want = len
+                .saturating_mul(2)
+                .max(len + n)
+                .max(1024)
+                .min(self.limit)
+                .max(len + n);
+            self.out.reserve_exact(want - len);
+        }
+    }
+
+    fn room(&self, n: usize) -> Result<(), Error> {
+        if n > self.limit - self.out.len() {
+            Err(Error::TooLarge)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn stream(&mut self, input_len: usize) -> Result<(), Error> {
+        let wbits = self.window_bits()?;
+        let max_backward = (1usize << wbits) - 16;
+        loop {
+            let is_last = self.br.read(1) == 1;
+            if is_last && self.br.read(1) == 1 {
+                break; // ISLASTEMPTY
+            }
+            let mnibbles = self.br.read(2);
+            if mnibbles == 3 {
+                // Metadata: skipped.
+                if self.br.read(1) != 0 {
+                    return Err(Error::BadHeader);
+                }
+                let nbytes = self.br.read(2);
+                let mut len = 0usize;
+                for i in 0..nbytes {
+                    let b = self.br.read(8) as usize;
+                    if i + 1 == nbytes && nbytes > 1 && b == 0 {
+                        return Err(Error::BadHeader);
+                    }
+                    len |= b << (8 * i);
+                }
+                if nbytes > 0 {
+                    len += 1;
+                }
+                s

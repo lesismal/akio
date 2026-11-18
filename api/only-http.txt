@@ -379,8 +379,10 @@ pub fn only_http::message::percent_decode(&str) -> core::option::Option<alloc::s
 pub fn only_http::message::reason(u16) -> &'static str
 pub mod only_http::middleware
 #[non_exhaustive] pub struct only_http::middleware::Compress
+pub only_http::middleware::Compress::brotli: core::option::Option<u32>
 pub only_http::middleware::Compress::level: u32
 pub only_http::middleware::Compress::min_bytes: usize
+pub only_http::middleware::Compress::zstd: core::option::Option<u32>
 impl core::clone::Clone for only_http::middleware::Compress
 pub fn only_http::middleware::Compress::clone(&self) -> Self
 impl core::default::Default for only_http::middleware::Compress

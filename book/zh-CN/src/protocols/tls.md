@@ -46,7 +46,7 @@
 | 密码套件 | AES-128-GCM-SHA256、AES-256-GCM-SHA384、CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA 搭配 AES-128/256-GCM 与 CHACHA20-POLY1305（无 CBC） |
 | 证书 | ECDSA P-256/P-384、Ed25519、RSA（PSS 签名） | 同上，RSA 也可用 PKCS#1 v1.5 |
 | 会话恢复 | 票据 + PSK（`psk_dhe_ke`）：`.session_tickets(true)` 为无状态票据，会话缓存为一次性缓存票据 | 会话 ID（缓存）与 RFC 5077 票据 |
-| 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；双方开启时支持早期数据（0-RTT），否则拒绝并跳过；证书压缩（RFC 8879，zlib） | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
+| 其他 | KeyUpdate（应答，并在达到 AES-GCM 记录上限前主动发送）、客户端证书、中间设备兼容模式；双方开启时支持早期数据（0-RTT），否则拒绝并跳过；证书压缩（RFC 8879：zlib、brotli、zstd） | 扩展主密钥（RFC 7627）、重协商指示（RFC 5746），拒绝重协商 |
 | record_size_limit（RFC 8449） | 支持 | 支持 |
 
 两者共有：SNI、ALPN、close_notify、16 KiB 记录（对端设有 record_size_limit 时更小）、OCSP stapling、
@@ -181,10 +181,12 @@ QUIC 服务端通过 `only_quic::server_config_from(&cfg)` 获得这两项。
 let cfg = ClientConfig::builder().roots(roots).record_size_limit(1024).build()?;
 ```
 
-**证书压缩**（RFC 8879，TLS 1.3）。服务端默认开启：对提供 zlib 的客户端，在压缩后更小时发送压缩的证书链
-（每条链只压缩一次并复用，握手没有额外开销），其 CertificateRequest 也为客户端证书提供它。客户端默认关闭：
-解压收到的证书链约需 1–2 µs，约为内存中完整握手的 1%，换来几十到几百字节的节省；更在意线路字节数时用
-`.certificate_compression(true)` 开启。只有 zlib（由自研的 `only-deflate` 提供；没有自研的 brotli 或 zstd）。
+**证书压缩**（RFC 8879，TLS 1.3）。服务端默认开启：对提供 zlib、brotli 或 zstd 的客户端，用其提供的算法中
+压得最小的那种，在压缩后更小时发送压缩的证书链（每条链每种算法只压缩一次并复用，握手没有额外开销），其
+CertificateRequest 也为客户端证书提供这三种。客户端默认关闭：解压收到的证书链需要几微秒，约为内存中完整握手的
+百分之一到二，换来几十到几百字节的节省；更在意线路字节数时用 `.certificate_compression(true)` 开启（提供
+brotli、zstd 和 zlib；`.certificate_compression_algorithms(&[CertCompression::Brotli])` 只选其中几种）。三者都是
+自研的：`only-deflate`、`only-brotli` 与 `only-zstd`（[ADR-041](https://github.com/lesismal/only/blob/main/docs/adr/041-brotli-zstd.zh-CN.md)）。
 收到的证书最多解压到 128 KiB，长度必须与声明的完全一致。
 
 ### OCSP stapling
@@ -241,7 +243,7 @@ let cfg = ClientConfig::builder()
 
 ## 尚未完成
 
-获取 OCSP 响应或 CRL、中间证书的 OCSP（`status_request_v2`）、间接 CRL、brotli/zstd 证书压缩；RSA-PSS 密钥
+获取 OCSP 响应或 CRL、中间证书的 OCSP（`status_request_v2`）、间接 CRL；RSA-PSS 密钥
 （`rsa_pss_pss_*`）；P-521；
 Windows 证书库与 macOS 信任设置。
 

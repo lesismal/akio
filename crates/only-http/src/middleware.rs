@@ -162,8 +162,14 @@ pub fn response_time() -> impl Middleware {
 pub struct Compress {
     /// Bodies shorter than this are left alone.
     pub min_bytes: usize,
-    /// zlib level 0..=9.
+    /// zlib level 0..=9 (`gzip`, `deflate`).
     pub level: u32,
+    /// brotli quality 0..=11 for clients accepting `br`, preferred over the others (`None`, the
+    /// default: `br` is not used).
+    pub brotli: Option<u32>,
+    /// zstd level 1..=22 for clients accepting `zstd`, preferred over `gzip` and `deflate`
+    /// (`None`, the default: `zstd` is not used).
+    pub zstd: Option<u32>,
 }
 
 impl Default for Compress {
@@ -171,6 +177,8 @@ impl Default for Compress {
         Compress {
             min_bytes: 1024,
             level: 6,
+            brotli: None,
+            zstd: None,
         }
     }
 }
@@ -185,8 +193,8 @@ fn compressible(content_type: &str) -> bool {
         || t == "application/wasm"
 }
 
-/// Which of `gzip` / `deflate` the client accepts (honouring `q=0`), gzip preferred.
-fn accepted_encoding(accept: &str) -> Option<&'static str> {
+/// The first of `encodings` the client accepts (honouring `q=0`).
+fn accepted_encoding(accept: &str, encodings: &[&'static str]) -> Option<&'static str> {
     let ok = |name: &str| {
         accept.split(',').any(|t| {
             let mut p = t.trim().split(';');
@@ -194,21 +202,28 @@ fn accepted_encoding(accept: &str) -> Option<&'static str> {
                 && !p.any(|q| matches!(q.trim().strip_prefix("q="), Some(v) if v.parse::<f32>() == Ok(0.0)))
         })
     };
-    ["gzip", "deflate"].into_iter().find(|n| ok(n))
+    encodings.iter().copied().find(|n| ok(n))
 }
 
-/// Compresses text-like response bodies with gzip or deflate when the client accepts it.
+/// Compresses text-like response bodies with `br` or `zstd` when configured, else `gzip` or
+/// `deflate`, whichever the client accepts first in that order.
 pub fn compress(cfg: Compress) -> impl Middleware {
-    // Decided once: the level, and the format of each encoding.
+    // Decided once: the levels, and the encodings on offer in order of preference.
     let level = only_deflate::Level::new(cfg.level);
+    let brotli = cfg.brotli.map(only_brotli::Level::new);
+    let zstd = cfg.zstd.map(only_zstd::Level::new);
+    let encodings: &'static [&'static str] = match (brotli.is_some(), zstd.is_some()) {
+        (true, true) => &["br", "zstd", "gzip", "deflate"],
+        (true, false) => &["br", "gzip", "deflate"],
+        (false, true) => &["zstd", "gzip", "deflate"],
+        (false, false) => &["gzip", "deflate"],
+    };
     let min_bytes = cfg.min_bytes;
     move |ctx: &mut Context, next: &dyn Service| {
-        if let Some(enc) = ctx.header("accept-encoding").and_then(accepted_encoding) {
-            let format = if enc == "gzip" {
-                only_deflate::Format::Gzip
-            } else {
-                only_deflate::Format::Zlib
-            };
+        if let Some(enc) = ctx
+            .header("accept-encoding")
+            .and_then(|a| accepted_encoding(a, encodings))
+        {
             ctx.add_response_filter(move |resp: &mut Response, _req: &Request| {
                 if resp.status != 200
                     || resp.file.is_some()
@@ -218,7 +233,14 @@ pub fn compress(cfg: Compress) -> impl Middleware {
                 {
                     return;
                 }
-                let body = only_deflate::compress(format, level, &resp.body);
+                let body = match (enc, brotli, zstd) {
+                    ("br", Some(l), _) => only_brotli::compress(l, &resp.body),
+                    ("zstd", _, Some(l)) => only_zstd::compress(l, &resp.body),
+                    ("gzip", ..) => {
+                        only_deflate::compress(only_deflate::Format::Gzip, level, &resp.body)
+                    }
+                    _ => only_deflate::compress(only_deflate::Format::Zlib, level, &resp.body),
+                };
                 if body.len() < resp.body.len() {
                     resp.body = body;
                     resp.headers.set("Content-Encoding", enc);

@@ -120,6 +120,37 @@ ADR-043 (docs/adr/043-media-srt-rendezvous-av1-ts-sample-aes.md), additive:
   only (others left out of the segments). ffmpeg decodes both frame for frame.
 - Fuzz targets `srt_rendezvous` and `h264_sample_encryption`; AV1 seeds for `mpegts_demux`.
 
+### Added: in-house brotli and Zstandard (only-brotli, only-zstd), in certificate compression (only-tls) and HTTP (only-http)
+
+ADR-041 (docs/adr/041-brotli-zstd.md), additive:
+
+- **`only-brotli`** (new internal crate, RFC 7932) and **`only-zstd`** (new internal crate,
+  RFC 8878): pure safe Rust, no dependencies, one-shot `decompress(data, limit)` and
+  `compress(Level, data)`. The decoders cover the whole formats (brotli: every window size,
+  metadata and uncompressed meta-blocks, block switching, context modes and maps, the static
+  dictionary and its 121 transforms; zstd: concatenated and skippable frames, Huffman and
+  treeless literals, predefined / RLE / FSE / repeat tables, repeat offsets, content size and
+  XXH64 checksum) and accept and reject what the reference decoders do; output and memory stop
+  at `limit` (`Error::TooLarge`), so a decompression bomb costs no more than that. The encoders
+  (LZ77 over hash chains, Huffman / FSE coding) compress certificate chains at least as well as
+  zlib level 9. `only_zstd::xxh64` is public. Tested with the official test vectors (all 44
+  brotli `testdata` streams; zstd's golden decompression, error and compression files, 1000
+  `decodecorpus` frames), the `brotli` and `zstd` CLIs in both directions, and differential
+  fuzz targets against Google's brotli decoder (`brotli-decompressor`) and libzstd
+  (`brotli_decompress`, `brotli_roundtrip`, `zstd_decompress`, `zstd_roundtrip`).
+- **only-tls**: certificate compression (RFC 8879) with brotli and zstd besides zlib. The
+  client offers brotli, zstd, zlib; a server sends the smallest of the algorithms the client
+  offers (each compressed once per certificate and cached), and the same for client
+  certificates. New: `CertCompression { Zlib, Brotli, Zstd }` and
+  `certificate_compression_algorithms(&[CertCompression])` on both builders;
+  `certificate_compression(true)` now means all three (defaults unchanged: on for servers, off
+  for clients). Interop with OpenSSL 3.5 built with brotli, zstd and zlib in both directions
+  (`tools/interop/tls/certcomp.Dockerfile`, `tools/interop/tls/run.sh`; `tls-interop
+  --cert-comp`).
+- **only-http**: `Compress::brotli` and `Compress::zstd` (levels, default `None`) make
+  `middleware::compress` answer `br` / `zstd` to clients that accept them (preference br, zstd,
+  gzip, deflate); `Files` also serves `.zst` twins (`Content-Encoding: zstd`).
+
 ### Added: HLS encryption and recording (only-media), AES-CBC (only-crypto)
 
 ADR-034 (docs/adr/034-media-hls-encryption-recording.md), additive:

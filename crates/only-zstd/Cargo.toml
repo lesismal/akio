@@ -1,0 +1,26 @@
+[package]
+name = "only-zstd"
+description = "only internals: Zstandard (RFC 8878) compression and decompression in pure safe Rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-zstd"
+keywords = ["zstd", "zstandard", "compression", "decompression"]
+categories = ["compression"]
+
+[dependencies]
+
+[dev-dependencies]
+# The benchmark compares ratios with only-deflate (zlib level 9) on the same data.
+only-deflate = { workspace = true }
+
+[features]
+# Fuzz entry points for `fuzz/` (`only_zstd::fuzzing`); not a public API.
+fuzzing = []
+
+[lints]
+workspace = true

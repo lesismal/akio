@@ -4,7 +4,8 @@
 
 TLS 1.3 and 1.2 for [`only`](https://github.com/lesismal/only), implemented in this crate from
 the RFCs on [`only-crypto`](../only-crypto) and [`only-x509`](../only-x509) (and
-[`only-deflate`](../only-deflate) for certificate compression): sans-io, safe Rust
+[`only-deflate`](../only-deflate), [`only-brotli`](../only-brotli) and
+[`only-zstd`](../only-zstd) for certificate compression): sans-io, safe Rust
 (`#![forbid(unsafe_code)]`), no third-party dependencies. It replaced rustls and ring (DEV-PLAN
 wave C) behind an unchanged API.
 
@@ -47,7 +48,7 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   records and never across key changes, alerts and close_notify, constant-time Finished / binder
   checks.
 - Certificates are verified with `only-x509` (chain, validity, EKU, DNS names and IP addresses).
-- Extensions: record_size_limit (RFC 8449), certificate compression (RFC 8879, zlib) and OCSP
+- Extensions: record_size_limit (RFC 8449), certificate compression (RFC 8879: zlib, brotli, zstd) and OCSP
   stapling (RFC 6066 / RFC 8446 4.4.2.1), below.
 
 ### record_size_limit, certificate compression, OCSP stapling
@@ -64,13 +65,17 @@ Decided in [ADR-008](../../docs/adr/008-tls-extensions.md).
   extension (OpenSSL, Go) gets and applies no limit. OpenSSL's max_fragment_length (RFC 6066) is
   not implemented: the offer is ignored, as RFC 8449 recommends when record_size_limit is
   supported.
-- **Certificate compression** (RFC 8879, TLS 1.3): zlib only, through `only-deflate` (no
-  in-house brotli or zstd). On by default on the server, which sends its chain compressed to
-  clients that offer it when that is smaller (compressed once per certificate, then reused: no
-  cost per handshake) and offers it in its CertificateRequest for client certificates. Off by
-  default on the client (`certificate_compression(true)` offers it): each compressed chain
-  received costs an inflate of about 1–2 µs, about 1% of an in-memory full handshake. Received compressed certificates are inflated into at most 128 KiB and must
-  have exactly the announced length (`bad_certificate`); another algorithm is
+- **Certificate compression** (RFC 8879, TLS 1.3): zlib, brotli and zstd, through the in-house
+  `only-deflate`, `only-brotli` and `only-zstd` ([ADR-041](../../docs/adr/041-brotli-zstd.md)).
+  On by default on the server, which sends its chain compressed to clients that offer it, with
+  whichever offered algorithm makes it smallest, when that is smaller than the plain chain
+  (compressed once per certificate and algorithm, then reused: no cost per handshake), and
+  offers all three in its CertificateRequest for client certificates. Off by default on the
+  client (`certificate_compression(true)` offers brotli, zstd and zlib): each compressed chain
+  received costs a decompression of a few microseconds, a percent or two of an in-memory full
+  handshake. `certificate_compression_algorithms(&[CertCompression])` on either builder takes
+  only some algorithms. Received compressed certificates are decompressed into at most 128 KiB
+  and must have exactly the announced length (`bad_certificate`); an algorithm not offered is
   `illegal_parameter`.
 - **OCSP stapling**: `ServerConfigBuilder::ocsp_response(der)` (and `sni_ocsp_response` for an
   SNI chain) staples a DER OCSP response for clients that ask (TLS 1.3: in the leaf's
@@ -123,7 +128,7 @@ same request in a new ClientHello by an attacker who can make the client retry. 
 for requests that are safe to repeat (idempotent reads), check `TlsInfo::early_data` /
 `Early-Data: 1` before acting on anything else, and answer `425 Too Early` to the rest.
 
-Not implemented: brotli/zstd certificate compression, a client's OCSP response in TLS 1.3
+Not implemented: a client's OCSP response in TLS 1.3
 client authentication, `status_request_v2` (OCSP for intermediates), fetching OCSP responses or
 CRLs (the application does; `only-x509` gives the URLs), RSA-PSS keys, P-521. Kernel TLS offload was evaluated and
 is not used: it was slower than this crate's record layer in every case measured, `sendfile`
@@ -160,8 +165,9 @@ promise).
   opaque and missing staples in both versions, CRLs for server and client chains.
 - Interop (`tools/interop/tls/run.sh`): OpenSSL `s_server` / `s_client` and Go `crypto/tls` in
   both directions over every suite, group, key type, client authentication, resumption, HRR,
-  ALPN, KeyUpdate, early data and OCSP stapling (verified by `s_client`), zlib certificate
-  compression with OpenSSL 3.2+ built with zlib (Debian's), only's client validating
+  ALPN, KeyUpdate, early data and OCSP stapling (verified by `s_client`), zlib, brotli and zstd
+  certificate compression with OpenSSL 3.2+ built with them (Debian's has zlib and zstd;
+  `tools/interop/tls/certcomp.Dockerfile` builds one with all three), only's client validating
   `s_server -status_file` staples (good, revoked, missing; soft and hard fail) and checking
   OpenSSL-made CRLs, record_size_limit and OCSP with
   GnuTLS when installed, plus curl against only-http (HTTP/1.1 and HTTP/2); needs

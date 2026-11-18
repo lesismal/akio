@@ -90,14 +90,16 @@
 | `cors(Cors { allow_origin, allow_methods, allow_headers, max_age })` | 以 204 应答预检请求，添加 `Access-Control-Allow-Origin` |
 | `logger(fn(&LogRecord))` | 每个请求结束后调用你的函数（方法、target、peer、状态、耗时） |
 | `response_time()` | 添加 `X-Response-Time` 头 |
-| `compress(Compress { min_bytes, level })` | 对客户端接受的文本类 body 做 gzip/deflate |
+| `compress(Compress { min_bytes, level, brotli, zstd })` | 对客户端接受的文本类 body 做 br/zstd（设置时）/gzip/deflate |
 | `etag()` | 添加 `ETag`，对 `If-None-Match` 返回 304 |
 | `csrf()` | double-submit cookie：`csrf_token` cookie，非安全方法须在 `X-CSRF-Token` 头中带上同样的值 |
 | `limiter(rate, burst)` | 按客户端 IP 的令牌桶，超出返回 429 和 `Retry-After` |
 | `observe::HttpMetrics::middleware()` | 请求计数与延迟直方图（[可观测性](../observability.md)） |
 | `observe::access_log()` | 通过 `only::log` 输出结构化访问日志 |
 
-不提供 Brotli 压缩（暂无 brotli 依赖）；预压缩的 `.br` 文件由 `Files` 提供。
+`br` 和 `zstd`（自研的 `only-brotli` 与 `only-zstd`，ADR-041）默认关闭：把 `Compress::brotli` /
+`Compress::zstd` 设为某个级别，即对接受它们的客户端使用，优先顺序为 br、zstd、gzip、deflate。预压缩的
+`.br`、`.zst` 和 `.gz` 文件由 `Files` 提供。
 
 ## 静态文件
 
@@ -114,7 +116,7 @@
 
 功能：`GET`/`HEAD`；`ETag` 与 `Last-Modified`；`If-None-Match` / `If-Modified-Since`（304），
 `If-Match` / `If-Unmodified-Since`（412）；由 `If-Range` 保护的 `Range` 请求（206/416）；拒绝 `..`
-等越界路径（跟随符号链接）；向接受的客户端提供 `file.ext.br` / `file.ext.gz`；明文 TCP 上大文件用
+等越界路径（跟随符号链接）；向接受的客户端提供 `file.ext.br` / `file.ext.zst` / `file.ext.gz`；明文 TCP 上大文件用
 `sendfile(2)` 发送（TLS 下经内存读取）。
 
 多个区间（`Range: bytes=0-9,500-599,-10`）返回 `206` 与 `multipart/byteranges` 响应体（RFC 9110
@@ -132,5 +134,5 @@
 只有仍在信任期内的缓存命中在 I/O 线程上应答。未命中、重新检查以及其他任何要碰磁盘的工作（`stat`、
 `open`、把小文件读进缓存、从大文件读取多 range 响应的各部分）都被分离到所有 `Files` 共用的一个小型
 磁盘线程池（最多 16 个线程、4096 个排队请求；超出时返回 `503` 和 `Retry-After: 1`），响应也从那里
-发出。`file.br` / `file.gz` 是否存在随文件一起缓存，校验值和固定的头部每个条目只格式化一次。尚未完成：基于 inotify 的失效
+发出。`file.br` / `file.zst` / `file.gz` 是否存在随文件一起缓存，校验值和固定的头部每个条目只格式化一次。尚未完成：基于 inotify 的失效
 （目前用 stat 间隔代替）；小文件的内存缓存只受现有文件数量限制，没有字节预算。

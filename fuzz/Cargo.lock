@@ -47,6 +47,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-no-stdlib"
+version = "2.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+
+[[package]]
+name = "alloc-stdlib"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e76a019e91224d279006ff972f1e984179a6e9feb050adba6ce8274aef23195"
+dependencies = [
+ "alloc-no-stdlib",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -71,6 +86,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
+]
+
+[[package]]
+name = "brotli-decompressor"
+version = "5.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a32acac15fe1967bc3986b2a6347dffc965602354ea6f450ad07e8bfd253583"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
 ]
 
 [[package]]
@@ -402,6 +427,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "only"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-buf",
  "only-core",
  "only-ebpf",
  "only-epoll",
@@ -417,6 +443,7 @@ dependencies = [
  "only",
  "only-buf",
  "only-core",
+ "only-deflate",
 ]
 
 [[package]]
@@ -432,8 +459,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-brotli"
+version = "1.0.0-rc.1"
+
+[[package]]
 name = "only-buf"
 version = "1.0.0-rc.1"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "only-core"
@@ -485,6 +519,7 @@ dependencies = [
 name = "only-epoll"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-buf",
  "only-core",
  "only-log",
  "only-sys",
@@ -507,6 +542,7 @@ dependencies = [
  "aes",
  "aes-gcm",
  "base64",
+ "brotli-decompressor",
  "chacha20poly1305",
  "crc32fast",
  "ctr",
@@ -518,6 +554,7 @@ dependencies = [
  "md-5",
  "only-arpc",
  "only-bittorrent",
+ "only-brotli",
  "only-crypto",
  "only-deflate",
  "only-dpdk",
@@ -543,6 +580,7 @@ dependencies = [
  "only-webrtc",
  "only-ws",
  "only-x509",
+ "only-zstd",
  "prost",
  "protobuf-test",
  "regex",
@@ -550,6 +588,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "zstd",
 ]
 
 [[package]]
@@ -578,11 +617,13 @@ name = "only-http"
 version = "1.0.0-rc.1"
 dependencies = [
  "only",
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
  "only-ws",
+ "only-zstd",
 ]
 
 [[package]]
@@ -614,6 +655,7 @@ dependencies = [
  "only-core",
  "only-crypto",
  "only-http",
+ "only-rtp",
 ]
 
 [[package]]
@@ -643,6 +685,7 @@ name = "only-quic"
 version = "1.0.0-rc.1"
 dependencies = [
  "only",
+ "only-buf",
  "only-core",
  "only-crypto",
  "only-tls",
@@ -680,6 +723,9 @@ dependencies = [
 [[package]]
 name = "only-sys"
 version = "1.0.0-rc.1"
+dependencies = [
+ "only-buf",
+]
 
 [[package]]
 name = "only-timer"
@@ -689,11 +735,13 @@ version = "1.0.0-rc.1"
 name = "only-tls"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
  "only-x509",
+ "only-zstd",
 ]
 
 [[package]]
@@ -748,6 +796,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-zstd"
+version = "1.0.0-rc.1"
+
+[[package]]
 name = "opaque-debug"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -758,6 +810,12 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pkg-config"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "poly1305"
@@ -1317,3 +1375,31 @@ name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
+
+[[package]]
+name = "zstd"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "50adf04cf3ec914b0b9905c9dde90c80fe74bfd701e331fc80a39c512c525278"
+dependencies = [
+ "zstd-safe",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498d94ad68720c89b4fbe41b9090850651e68cb2dd9210ce7ffbff3a94653819"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.1.3+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f729a06d0257428fd9d997ac8db7e1407bd0262ab016b085b36bc52957c0052d"
+dependencies = [
+ "cc",
+ "pkg-config",
+]

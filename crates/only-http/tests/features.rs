@@ -691,6 +691,55 @@ fn compress_etag_and_response_time() {
     stop(&e);
 }
 
+#[test]
+fn compress_with_brotli_and_zstd() {
+    let text = "all work and no play makes jack a dull boy. ".repeat(100);
+    let t = text.clone();
+    let mut both = Compress::default();
+    both.brotli = Some(5);
+    both.zstd = Some(3);
+    let mut zstd_only = Compress::default();
+    zstd_only.zstd = Some(3);
+    let t2 = text.clone();
+    let app = Router::new()
+        .get("/text", move |ctx: &mut Context| ctx.text(200, t.clone()))
+        .layer(middleware::compress(both));
+    let app2 = Router::new()
+        .get("/text", move |ctx: &mut Context| ctx.text(200, t2.clone()))
+        .layer(middleware::compress(zstd_only));
+    let (e, e2) = (start(app), start(app2));
+    let (a, a2) = (e.local_addrs()[0], e2.local_addrs()[0]);
+    let body = |r: &Resp| -> Vec<u8> {
+        match r.header("content-encoding") {
+            Some("br") => only_brotli::decompress(&r.body, 1 << 20).unwrap(),
+            Some("zstd") => only_zstd::decompress(&r.body, 1 << 20).unwrap(),
+            Some("gzip") => {
+                let mut v = Vec::new();
+                flate2_gunzip(&r.body).read_to_end(&mut v).unwrap();
+                v
+            }
+            _ => r.body.clone(),
+        }
+    };
+    // Chrome's and Firefox's Accept-Encoding: br first, then zstd, then gzip.
+    for (addr, accept, want) in [
+        (a, "gzip, deflate, br, zstd", "br"),
+        (a, "gzip, zstd", "zstd"),
+        (a, "gzip, deflate, br;q=0, zstd", "zstd"),
+        (a, "gzip", "gzip"),
+        (a2, "gzip, deflate, br, zstd", "zstd"),
+        (a2, "gzip, br", "gzip"),
+    ] {
+        let r = get(addr, "/text", &format!("Accept-Encoding: {accept}\r\n"));
+        assert_eq!(r.header("content-encoding"), Some(want), "{accept}");
+        assert_eq!(r.header("vary"), Some("Accept-Encoding"));
+        assert!(r.body.len() < text.len() / 5, "{want}: {}", r.body.len());
+        assert_eq!(body(&r), text.as_bytes(), "{accept}");
+    }
+    stop(&e);
+    stop(&e2);
+}
+
 fn flate2_gunzip(data: &[u8]) -> impl Read + '_ {
     flate2::read::GzDecoder::new(data)
 }

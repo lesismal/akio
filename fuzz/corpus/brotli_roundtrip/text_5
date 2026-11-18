@@ -1,0 +1,21 @@
+# only-brotli
+
+[中文](README.zh-CN.md)
+
+Brotli (RFC 7932) for [`only`](https://github.com/lesismal/only), in pure safe Rust
+(`#![forbid(unsafe_code)]`) without dependencies. It is the `br` content coding of the
+compression middleware in `only-http` and the brotli algorithm of TLS certificate compression
+(RFC 8879) in `only-tls`. An internal crate (docs/api-stability.md): use it through those crates.
+
+- `decompress(data, limit)`: one-shot decompression of one complete brotli stream into at most
+  `limit` bytes. The whole format is implemented: window sizes 2^10..2^24 (the non-standard
+  large-window extension is refused), empty, metadata (skipped) and uncompressed meta-blocks,
+  simple and complex prefix codes, block types and block counts for literals, commands and
+  distances, the four literal context modes, context maps with run lengths and inverse
+  move-to-front, `NPOSTFIX` / `NDIRECT` distance codes, the four-entry distance ring with its 16
+  short codes, and the static dictionary (122,784 bytes, Google's `dictionary.bin` of v1.1.0,
+  checked against RFC 7932 Appendix A) with all 121 transforms. It accepts and rejects the same
+  streams as `brotli-decompressor`, the Rust port of Google's decoder (padding bits that must be
+  zero, superfluous length nibbles, reserved bits, over-subscribed or incomplete prefix codes,
+  repeated simple-code symbols, context map runs and repeats past the end, invalid distances and
+  dictionary references); data after the end of the stream 

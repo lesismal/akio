@@ -1,0 +1,68 @@
+pub mod only_zstd
+#[non_exhaustive] pub enum only_zstd::Error
+pub only_zstd::Error::BadBlock
+pub only_zstd::Error::BadFrameHeader
+pub only_zstd::Error::BadFseTable
+pub only_zstd::Error::BadHuffmanStream
+pub only_zstd::Error::BadHuffmanTable
+pub only_zstd::Error::BadLiterals
+pub only_zstd::Error::BadMagic
+pub only_zstd::Error::BadOffset
+pub only_zstd::Error::BadSequences
+pub only_zstd::Error::ChecksumMismatch
+pub only_zstd::Error::ContentSizeMismatch
+pub only_zstd::Error::DictionaryRequired
+pub only_zstd::Error::TooLarge
+pub only_zstd::Error::Truncated
+pub only_zstd::Error::WindowTooLarge
+impl core::clone::Clone for only_zstd::Error
+pub fn only_zstd::Error::clone(&self) -> Self
+impl core::cmp::Eq for only_zstd::Error
+impl core::cmp::PartialEq for only_zstd::Error
+pub fn only_zstd::Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_zstd::Error
+impl core::fmt::Debug for only_zstd::Error
+pub fn only_zstd::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_zstd::Error
+pub fn only_zstd::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_zstd::Error
+pub fn only_zstd::Error::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_zstd::Error
+impl core::marker::StructuralPartialEq for only_zstd::Error
+impl core::marker::Send for only_zstd::Error
+impl core::marker::Sync for only_zstd::Error
+impl core::marker::Unpin for only_zstd::Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_zstd::Error
+impl core::panic::unwind_safe::UnwindSafe for only_zstd::Error
+pub struct only_zstd::Level(_)
+impl only_zstd::Level
+pub const only_zstd::Level::BEST: only_zstd::Level
+pub const only_zstd::Level::DEFAULT: only_zstd::Level
+pub const only_zstd::Level::FASTEST: only_zstd::Level
+pub const fn only_zstd::Level::get(self) -> u8
+pub const fn only_zstd::Level::new(u32) -> only_zstd::Level
+impl core::clone::Clone for only_zstd::Level
+pub fn only_zstd::Level::clone(&self) -> Self
+impl core::cmp::Eq for only_zstd::Level
+impl core::cmp::Ord for only_zstd::Level
+pub fn only_zstd::Level::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for only_zstd::Level
+pub fn only_zstd::Level::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for only_zstd::Level
+pub fn only_zstd::Level::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::default::Default for only_zstd::Level
+pub fn only_zstd::Level::default() -> Self
+impl core::fmt::Debug for only_zstd::Level
+pub fn only_zstd::Level::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_zstd::Level
+pub fn only_zstd::Level::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_zstd::Level
+impl core::marker::StructuralPartialEq for only_zstd::Level
+impl core::marker::Send for only_zstd::Level
+impl core::marker::Sync for only_zstd::Level
+impl core::marker::Unpin for only_zstd::Level
+impl core::panic::unwind_safe::RefUnwindSafe for only_zstd::Level
+impl core::panic::unwind_safe::UnwindSafe for only_zstd::Level
+pub fn only_zstd::compress(only_zstd::Level, &[u8]) -> alloc::vec::Vec<u8>
+pub fn only_zstd::decompress(&[u8], usize) -> core::result::Result<alloc::vec::Vec<u8>, only_zstd::Error>
+pub fn only_zstd::xxh64(&[u8], u64) -> u64

@@ -1,0 +1,146 @@
+#![forbid(unsafe_code)]
+//! Zstandard (RFC 8878) in pure, safe Rust, without dependencies: the `zstd` algorithm of TLS
+//! certificate compression (RFC 8879) in `only-tls` and the `zstd` content coding of `only-http`.
+//!
+//! - [`decompress`]: one-shot decompression of one or more concatenated frames (skippable frames
+//!   included) under an output limit, the decompression-bomb defence. Raw, RLE and compressed
+//!   blocks; raw, RLE, Huffman (one or four streams) and treeless literals; predefined, RLE,
+//!   FSE-compressed and repeated sequence tables; repeat offsets; Frame_Content_Size and the
+//!   XXH64 content checksum are verified.
+//! - [`compress`]: one frame with Frame_Content_Size and a content checksum. LZ77 over hash
+//!   chains (greedy, lazy or lazy2 matching by level, repeat offsets tried first), Huffman-coded
+//!   literals and FSE-coded sequences with tables chosen per block by size, raw or RLE blocks
+//!   when those are smaller. Levels follow zstd's 1..=22 scale.
+//! - [`xxh64`]: the XXH64 hash behind the content checksum.
+//!
+//! ```
+//! use only_zstd::{Level, compress, decompress};
+//!
+//! let data = b"the quick brown fox jumps over the lazy dog; ".repeat(100);
+//! let packed = compress(Level::DEFAULT, &data);
+//! assert!(packed.len() < data.len() / 20);
+//! assert_eq!(decompress(&packed, data.len()).unwrap(), data);
+//! // One byte less than the content is refused.
+//! assert_eq!(decompress(&packed, data.len() - 1), Err(only_zstd::Error::TooLarge));
+//! ```
+//!
+//! The decoder accepts and rejects what libzstd does, with one intentional difference: it
+//! requires every Huffman-coded literal stream to end exactly where its symbols do
+//! ([`Error::BadHuffmanStream`]), which libzstd's fast four-stream decoder does not check.
+//! Frames that need a dictionary are refused ([`Error::DictionaryRequired`]), as by libzstd
+//! without one. There is no streaming decoder: the whole input is decoded at once.
+#![warn(clippy::unwrap_used)]
+
+mod bits;
+mod decode;
+mod encode;
+mod fse;
+mod huffman;
+mod tables;
+mod xxhash;
+
+#[cfg(any(test, feature = "fuzzing"))]
+#[doc(hidden)]
+pub mod fuzzing;
+
+pub use decode::decompress;
+pub use encode::compress;
+pub use xxhash::xxh64;
+
+/// Compression level on zstd's scale, 1 (fastest) to 22 (smallest output).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Level(u8);
+
+impl Level {
+    /// The fastest compression (1).
+    pub const FASTEST: Level = Level(1);
+    /// zstd's default trade-off (3).
+    pub const DEFAULT: Level = Level(3);
+    /// The smallest output (22).
+    pub const BEST: Level = Level(22);
+
+    /// Level `n`, clamped to 1..=22 (0 gives 1).
+    pub const fn new(n: u32) -> Level {
+        Level(if n == 0 {
+            1
+        } else if n > 22 {
+            22
+        } else {
+            n as u8
+        })
+    }
+
+    /// The level as a number, 1..=22.
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl Default for Level {
+    fn default() -> Self {
+        Level::DEFAULT
+    }
+}
+
+/// Why decompression failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Error {
+    /// A frame starts with neither the Zstandard nor a skippable-frame magic number.
+    BadMagic,
+    /// The frame header sets its reserved bit, or a skippable frame's size overflows.
+    BadFrameHeader,
+    /// The frame announces a window larger than 2³¹ + 2³⁰ · 7/8 bytes (libzstd's limit).
+    WindowTooLarge,
+    /// The frame names a dictionary (not supported).
+    DictionaryRequired,
+    /// A block of the reserved type, or larger than the frame's maximum block size.
+    BadBlock,
+    /// The literals section header is invalid, or repeats a Huffman table that does not exist.
+    BadLiterals,
+    /// The Huffman tree description of the literals is invalid.
+    BadHuffmanTable,
+    /// A Huffman-coded literal stream lacks its end mark, or does not end exactly where its
+    /// symbols do.
+    BadHuffmanStream,
+    /// An FSE table description of the sequences is invalid, or repeats a table that does not
+    /// exist.
+    BadFseTable,
+    /// The sequences section is invalid: its header, its bit stream (which must end exactly
+    /// after the last sequence), or literal lengths beyond the block's literals.
+    BadSequences,
+    /// A match offset of zero or reaching before the start of the frame.
+    BadOffset,
+    /// The frame's content differs in size from its Frame_Content_Size.
+    ContentSizeMismatch,
+    /// The content checksum does not match the data.
+    ChecksumMismatch,
+    /// The input ended before the frame did, or 1 to 4 bytes follow the last frame.
+    Truncated,
+    /// The output would exceed the limit.
+    TooLarge,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Error::BadMagic => "unknown frame magic number",
+            Error::BadFrameHeader => "invalid frame header",
+            Error::WindowTooLarge => "window size too large",
+            Error::DictionaryRequired => "frame needs a dictionary",
+            Error::BadBlock => "invalid block",
+            Error::BadLiterals => "invalid literals section",
+            Error::BadHuffmanTable => "invalid Huffman tree description",
+            Error::BadHuffmanStream => "corrupt Huffman-coded literals",
+            Error::BadFseTable => "invalid FSE table description",
+            Error::BadSequences => "invalid sequences section",
+            Error::BadOffset => "invalid match offset",
+            Error::ContentSizeMismatch => "frame content size mismatch",
+            Error::ChecksumMismatch => "checksum mismatch",
+            Error::Truncated => "truncated input",
+            Error::TooLarge => "decompressed data too large",
+        })
+    }
+}
+
+impl std::error::Error for Error {}

@@ -194,7 +194,8 @@ jobs:
         run: cargo test -p only-http --no-default-features -- --test-threads=1
 
   miri:
-    # Pure-Rust code only (Miri cannot run syscalls): the core crates, only-deflate, the
+    # Pure-Rust code only (Miri cannot run syscalls): the core crates, only-deflate,
+    # only-brotli, only-zstd, the
     # protocol crates' unit tests and the syscall-free io_uring buffer-ring tests. Skipped: tests
     # too slow under Miri (only-ws's large deflate round trips, exhaustive split loops,
     # only-ebpf's interpreter sweeps).
@@ -220,6 +221,7 @@ jobs:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
         run: "cargo miri test -p only-socks --lib -- --skip fuzzing::"
       - run: "cargo miri test -p only-deflate --lib -- --skip fuzzing::"
+      - run: "cargo miri test -p only-brotli -p only-zstd --lib -- --skip fuzzing::"
       - run: "cargo miri test -p only-grpc --lib -- --skip fuzzing::"
       - run: >-
           cargo miri test -p only-ws --lib --
