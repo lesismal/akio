@@ -32,6 +32,7 @@ only-log = { workspace = true }
 
 [dev-dependencies]
 only-core = { workspace = true, features = ["fuzzing"] }
+only-x509 = { workspace = true }
 
 [lints]
 workspace = true

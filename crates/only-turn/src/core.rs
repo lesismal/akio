@@ -33,6 +33,12 @@ pub trait TurnEnv {
     fn adopt_relay(&mut self, relay: SocketAddr) {
         let _ = relay;
     }
+    /// Whether ChannelData to `client` must be padded to a multiple of four bytes: a client on a
+    /// TCP or TLS stream (RFC 8656 section 12.5). Default: no (UDP).
+    fn pads_channel_data(&self, client: SocketAddr) -> bool {
+        let _ = client;
+        false
+    }
 }
 
 /// Decides which peers clients may relay to (see [`TurnConfig::peer_allowed`]).
@@ -79,6 +85,13 @@ pub struct TurnConfig {
     pub peer_allowed: Option<PeerFilter>,
     /// Allows every peer address under the default policy (tests, private deployments).
     pub allow_private_peers: bool,
+    /// A TCP or TLS client connection that has not created an allocation this long after it
+    /// was accepted is closed (30s).
+    pub stream_allocate_timeout: Duration,
+    /// Relayed data (ChannelData, Data indications) for a TCP or TLS client is dropped while
+    /// that connection has more than this many bytes queued (256 KiB): relayed traffic keeps
+    /// its datagram semantics instead of piling up behind a slow reader.
+    pub max_stream_queue: usize,
 }
 
 impl fmt::Debug for TurnConfig {
@@ -113,6 +126,8 @@ impl TurnConfig {
             max_channels: 256,
             peer_allowed: None,
             allow_private_peers: false,
+            stream_allocate_timeout: Duration::from_secs(30),
+            max_stream_queue: 256 * 1024,
         }
     }
 
@@ -531,7 +546,12 @@ impl TurnCore {
                 out.extend_from_slice(&ch.to_be_bytes());
                 out.extend_from_slice(&(data.len() as u16).to_be_bytes());
                 out.extend_from_slice(data);
-                // UDP: padding is optional; it is not sent (RFC 8656 section 12.5).
+                // UDP: padding is optional; it is not sent. Streams need it (RFC 8656 section
+                // 12.5).
+                if env.pads_channel_data(client) {
+                    let pad = crate::framing::channel_data_padding(out.len());
+                    out.resize(out.len() + pad, 0);
+                }
                 env.send_to_client(client, &out);
             }
             None => {
@@ -605,6 +625,13 @@ impl TurnCore {
         for c in all {
             self.remove(c, env);
         }
+    }
+
+    /// Frees `client`'s allocation, if any (closing its relay): the client's TCP or TLS
+    /// connection closed (RFC 8656 section 3.1: an allocation over a stream lives as long as
+    /// the connection).
+    pub fn remove_client(&mut self, client: SocketAddr, env: &mut dyn TurnEnv) {
+        self.remove(client, env);
     }
 
     fn remove(&mut self, client: SocketAddr, env: &mut dyn TurnEnv) {

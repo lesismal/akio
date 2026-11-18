@@ -5,7 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
-use only_ice::{Candidate, Credentials, IceAgent, IceConfig, IceEvent, IceState, Transmit};
+use only_ice::{
+    Candidate, Credentials, IceAgent, IceConfig, IceEvent, IceState, TcpType, Transmit,
+};
 use only_turn::stun::{self, Class, Message, MessageBuilder, Method, attr};
 
 fn a(s: &str) -> SocketAddr {
@@ -1252,4 +1254,92 @@ fn rfc5769_vectors() {
     assert!(m.check_integrity(RFC5769_KEY));
     assert!(m.check_fingerprint());
     assert_eq!(y.remote_candidates()[0].priority(), 0x6e00_01ff);
+}
+
+// ---- ICE-TCP (RFC 6544) ----
+
+/// A peer with UDP host candidates and TCP host candidates of the given types. The simulated
+/// network carries TCP checks like datagrams (as an RFC 4571 framed connection would deliver
+/// them); an active candidate's address stands for its connection's local address.
+fn tcp_peer(cfg: IceConfig, now: Instant, udp: &[&str], tcp: &[(&str, TcpType)]) -> Peer {
+    let mut p = Peer::new(cfg, now, udp);
+    for (ad, t) in tcp {
+        assert!(p.agent.add_local_candidate(Candidate::host_tcp(a(ad), *t)));
+        p.addrs.push(a(ad));
+    }
+    p
+}
+
+#[test]
+fn ice_tcp_passive_with_an_active_remote() {
+    for (seed, controlling, loss) in [(1, true, 0), (2, false, 0), (3, true, 20), (4, false, 20)] {
+        let now = Instant::now();
+        // A: UDP and passive TCP. B: active TCP only (no UDP path).
+        let pa = tcp_peer(
+            full(controlling),
+            now,
+            &["10.0.0.1:1000"],
+            &[("10.0.0.1:1001", TcpType::Passive)],
+        );
+        let pb = tcp_peer(
+            full(!controlling),
+            now,
+            &[],
+            &[("10.0.0.2:50000", TcpType::Active)],
+        );
+        let mut sim = Sim::new(seed, pa, pb, now);
+        sim.net.loss_pct = loss;
+        sim.signal();
+        // A signals the passive port; B signals port 9 and A never checks it.
+        assert!(sim.peers[0].agent.remote_candidates()[0].addr().port() == 9);
+        assert!(sim.run_until(Duration::from_secs(20), |s| s.both(IceState::Completed)));
+        sim.assert_connected_pair();
+        assert_eq!(
+            sim.peers[0].agent.selected_pair(),
+            Some((a("10.0.0.1:1001"), a("10.0.0.2:50000")))
+        );
+        sim.app_data = true;
+        sim.run_for(Duration::from_secs(60));
+        assert!(sim.both(IceState::Completed), "seed {seed}");
+        assert!(sim.peers.iter().all(|p| p.app > 100));
+    }
+}
+
+#[test]
+fn ice_tcp_loses_to_udp() {
+    let now = Instant::now();
+    let pa = tcp_peer(
+        full(true),
+        now,
+        &["10.0.0.1:1000"],
+        &[("10.0.0.1:1001", TcpType::Passive)],
+    );
+    let pb = tcp_peer(
+        full(false),
+        now,
+        &["10.0.0.2:2000"],
+        &[("10.0.0.2:50000", TcpType::Active)],
+    );
+    let mut sim = Sim::new(5, pa, pb, now);
+    sim.signal();
+    assert!(sim.run_until(Duration::from_secs(10), |s| s.both(IceState::Completed)));
+    assert_eq!(
+        sim.peers[0].agent.selected_pair(),
+        Some((a("10.0.0.1:1000"), a("10.0.0.2:2000")))
+    );
+}
+
+#[test]
+fn ice_tcp_passive_alone_never_checks() {
+    // Only passive TCP on one side and UDP on the other: nothing pairs, nothing is sent.
+    let now = Instant::now();
+    let pa = tcp_peer(full(true), now, &[], &[("10.0.0.1:1001", TcpType::Passive)]);
+    let pb = Peer::new(full(false), now, &["10.0.0.2:2000"]);
+    let mut sim = Sim::new(6, pa, pb, now);
+    sim.signal();
+    sim.peers[0].agent.end_of_remote_candidates();
+    sim.peers[1].agent.end_of_remote_candidates();
+    sim.run_for(Duration::from_secs(5));
+    assert!(sim.net.queue.is_empty());
+    assert_ne!(sim.peers[0].agent.state(), IceState::Connected);
 }

@@ -45,6 +45,14 @@ pub fn webrtc_sdp(data: &[u8]) {
             None,
             None,
         );
+        // Simulcast: the answer's `a=simulcast:recv` picks the encodings.
+        let _ = api.add_simulcast_media(
+            crate::MediaKind::Video,
+            crate::Direction::SendOnly,
+            &["h", "m", "l"],
+            None,
+            None,
+        );
     }
     if offerer.apply(now, ch).is_ok() {
         let _ = offerer.accept_answer(now, s);
@@ -63,18 +71,31 @@ pub(crate) mod seeds {
     pub(crate) fn webrtc_sdp() -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         let now = Instant::now();
-        for media in [false, true] {
+        for media in [0, 1, 2] {
             let mut rtc = Rtc::new(ConfigInner::default(), false, now).expect("rtc");
             rtc.add_local_candidate(only_ice::Candidate::host(
                 "192.0.2.1:5000".parse().expect("addr"),
+            ));
+            rtc.add_local_candidate(only_ice::Candidate::host_tcp(
+                "192.0.2.1:5001".parse().expect("addr"),
+                only_ice::TcpType::Passive,
             ));
             let mut ch = rtc.changes();
             {
                 let mut api = SdpChanges(&mut ch);
                 api.add_channel("seed");
-                if media {
+                if media == 1 {
                     api.add_media(MediaKind::Audio, Direction::SendRecv, None, None);
                     api.add_media(MediaKind::Video, Direction::SendOnly, None, None);
+                }
+                if media == 2 {
+                    let _ = api.add_simulcast_media(
+                        MediaKind::Video,
+                        Direction::SendOnly,
+                        &["q", "h", "f"],
+                        None,
+                        None,
+                    );
                 }
             }
             let offer = rtc.apply(now, ch).expect("apply").expect("offer");

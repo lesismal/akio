@@ -4,7 +4,8 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
-use crate::{Candidate, Credentials, IceAgent, IceConfig};
+use crate::tcp::FrameReader;
+use crate::{Candidate, Credentials, IceAgent, IceConfig, TcpType};
 
 /// Local credentials of the fuzzed agents (the seeds' requests authenticate against them).
 const LOCAL: (&str, &str) = ("fuzz", "fuzzfuzzfuzzfuzzfuzzfuzz");
@@ -64,6 +65,50 @@ pub fn stun(data: &[u8]) {
     }
 }
 
+const PASSIVE_ADDR: &str = "10.0.0.1:1001";
+const ACTIVE_ADDR: &str = "10.0.0.2:50000";
+
+fn tcp_agent(controlling: bool, now: Instant) -> IceAgent {
+    let mut c = IceConfig::new(false, controlling);
+    c.local = Credentials::new(LOCAL.0, LOCAL.1);
+    let mut a = IceAgent::new(c, now);
+    a.add_local_candidate(Candidate::host(addr(LOCAL_ADDR)));
+    a.add_local_candidate(Candidate::host_tcp(addr(PASSIVE_ADDR), TcpType::Passive));
+    a.set_remote_credentials(Credentials::new(REMOTE.0, REMOTE.1));
+    a
+}
+
+/// `ice_tcp`: an ICE-TCP connection's bytes (the first byte picks the role and a split
+/// step), cut into RFC 4571 frames that go to an agent with a passive candidate as if they
+/// arrived over that connection; its answers are framed back.
+pub fn ice_tcp(data: &[u8]) {
+    let Some((&sel, rest)) = data.split_first() else {
+        return;
+    };
+    let now = Instant::now();
+    let mut a = tcp_agent(sel & 1 == 1, now);
+    let mut r = FrameReader::new();
+    let step = usize::from(sel >> 1).max(1);
+    let mut t = now;
+    for chunk in rest.chunks(step) {
+        r.push(chunk, |f| {
+            let _ = a.handle_receive(t, addr(ACTIVE_ADDR), addr(PASSIVE_ADDR), f);
+            true
+        });
+        assert!(r.buffered() < 2 + crate::tcp::MAX_FRAME);
+        t += Duration::from_millis(5);
+        a.handle_timeout(t);
+        while let Some(x) = a.poll_transmit() {
+            // Nothing leaves a passive candidate but answers and triggered checks to the
+            // connection's remote end.
+            if x.source == addr(PASSIVE_ADDR) {
+                assert_eq!(x.destination, addr(ACTIVE_ADDR));
+            }
+            let _ = crate::tcp::frame(&x.contents);
+        }
+    }
+}
+
 #[cfg(test)]
 mod seeds {
     use super::*;
@@ -112,6 +157,40 @@ mod seeds {
         }
         out
     }
+
+    /// A real active agent's checks over the connection, framed, both roles.
+    pub(super) fn ice_tcp() -> Vec<Vec<u8>> {
+        let now = Instant::now();
+        let mut out = Vec::new();
+        for controlling in [false, true] {
+            let mut me = tcp_agent(controlling, now);
+            let mut pc = IceConfig::new(false, !controlling);
+            pc.local = Credentials::new(REMOTE.0, REMOTE.1);
+            let mut peer = IceAgent::new(pc, now);
+            peer.add_local_candidate(Candidate::host_tcp(addr(ACTIVE_ADDR), TcpType::Active));
+            peer.set_remote_credentials(Credentials::new(LOCAL.0, LOCAL.1));
+            peer.add_remote_candidate(Candidate::host_tcp(addr(PASSIVE_ADDR), TcpType::Passive));
+            let mut stream = Vec::new();
+            let mut t = now;
+            for _ in 0..40 {
+                me.handle_timeout(t);
+                peer.handle_timeout(t);
+                while let Some(x) = peer.poll_transmit() {
+                    stream.extend(crate::tcp::frame(&x.contents).unwrap_or_default());
+                    me.handle_receive(t, x.source, x.destination, &x.contents);
+                }
+                while let Some(x) = me.poll_transmit() {
+                    peer.handle_receive(t, x.source, x.destination, &x.contents);
+                }
+                t += Duration::from_millis(5);
+            }
+            for step in [1u8, 7, 255] {
+                let sel = (step << 1) | u8::from(controlling);
+                out.push([&[sel][..], &stream].concat());
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +203,15 @@ mod tests {
     #[test]
     fn replay_corpora() {
         assert!(replay(DIR, "ice_stun", stun) > 0);
+        assert!(replay(DIR, "ice_tcp", ice_tcp) > 0);
+    }
+
+    #[test]
+    fn tcp_seeds_run_clean() {
+        for s in &seeds::ice_tcp() {
+            ice_tcp(s);
+            ice_tcp(&s[..s.len() / 2]);
+        }
     }
 
     #[test]
@@ -151,5 +239,6 @@ mod tests {
     #[ignore]
     fn write_fuzz_seeds() {
         write_target_seeds(DIR, "ice_stun", &seeds::ice_stun());
+        write_target_seeds(DIR, "ice_tcp", &seeds::ice_tcp());
     }
 }

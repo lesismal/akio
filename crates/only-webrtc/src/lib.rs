@@ -61,8 +61,10 @@
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+mod relay;
 mod rtc;
 mod sdp;
+mod tcp;
 mod timer;
 mod types;
 
@@ -130,6 +132,9 @@ pub enum Error {
     /// The server or endpoint already has its maximum of peers
     /// ([`RtcServer::max_peers`], [`Endpoint::max_peers`]).
     TooManyPeers,
+    /// A TURN server refused the allocation, or the endpoint has its maximum of TURN
+    /// allocations ([`Endpoint::gather_relay`]).
+    Turn(String),
 }
 
 impl fmt::Display for Error {
@@ -145,6 +150,7 @@ impl fmt::Display for Error {
             Error::Timeout => f.write_str("webrtc: timed out"),
             Error::InvalidCandidate(e) => write!(f, "webrtc: invalid candidate: {e}"),
             Error::TooManyPeers => f.write_str("webrtc: too many peers"),
+            Error::Turn(e) => write!(f, "webrtc: {e}"),
         }
     }
 }
@@ -389,14 +395,42 @@ impl Peer {
         rtp_time: MediaTime,
         data: &[u8],
     ) -> Result<(), Error> {
+        self.write_rid(mid, None, pt, wallclock, rtp_time, data)
+    }
+
+    /// [`write_media`](Self::write_media) for the simulcast encoding `rid` of a line added
+    /// with [`SdpChanges::add_simulcast_media`]: each encoding is its own RTP stream (the
+    /// application encodes each at its own resolution and bitrate). Samples for an encoding
+    /// the answer did not accept are dropped; an unknown `rid` is [`Error::UnknownMedia`].
+    pub fn write_simulcast(
+        &self,
+        mid: Mid,
+        rid: &str,
+        pt: Pt,
+        wallclock: Instant,
+        rtp_time: MediaTime,
+        data: &[u8],
+    ) -> Result<(), Error> {
+        self.write_rid(mid, Some(rid), pt, wallclock, rtp_time, data)
+    }
+
+    fn write_rid(
+        &self,
+        mid: Mid,
+        rid: Option<&str>,
+        pt: Pt,
+        wallclock: Instant,
+        rtp_time: MediaTime,
+        data: &[u8],
+    ) -> Result<(), Error> {
         let _ = wallclock;
-        self.with_rtc_inner(
-            |rtc| match rtc.write_media(Instant::now(), mid, pt, rtp_time, data) {
+        self.with_rtc_inner(|rtc| {
+            match rtc.write_media(Instant::now(), mid, rid, pt, rtp_time, data) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err(Error::UnknownMedia),
                 Err(e) => Err(rtc_err(e)),
-            },
-        )?
+            }
+        })?
     }
 
     /// The payload type negotiated on `mid` for a codec, e.g. [`Codec::Vp8`].
@@ -488,9 +522,9 @@ impl Peer {
                         }
                         break;
                     }
-                    Output::Transmit(dest, contents) => {
+                    Output::Transmit(src, dest, contents) => {
                         if let Some(hub) = &hub {
-                            hub.transmit(self.0.id, dest, &contents);
+                            hub.transmit(self.0.id, src, dest, &contents);
                         }
                     }
                     Output::Event(e) => {
@@ -628,7 +662,17 @@ struct Hub {
     by_ufrag: Mutex<HashMap<String, u64>>,
     by_addr: Mutex<HashMap<SocketAddr, u64>>,
     stun_waiters: Mutex<HashMap<[u8; 12], mpsc::Sender<SocketAddr>>>,
+    /// TURN allocations ([`Endpoint::gather_relay`]), at most [`MAX_RELAYS`].
+    relays: Mutex<Vec<Arc<relay::Relay>>>,
+    /// `relays.len()`, read without the lock on every datagram (endpoints without TURN
+    /// allocations never take it).
+    relay_count: AtomicUsize,
+    /// The passive ICE-TCP candidate's listener ([`Endpoint::listen_tcp`]).
+    tcp: OnceLock<Arc<tcp::TcpSide>>,
 }
+
+/// Most TURN allocations of one [`Endpoint`].
+const MAX_RELAYS: usize = 4;
 
 impl Hub {
     fn new(tx: Tx, ice_lite: bool, candidates: Vec<only_ice::Candidate>) -> Hub {
@@ -644,7 +688,69 @@ impl Hub {
             by_ufrag: Mutex::new(HashMap::new()),
             by_addr: Mutex::new(HashMap::new()),
             stun_waiters: Mutex::new(HashMap::new()),
+            relays: Mutex::new(Vec::new()),
+            relay_count: AtomicUsize::new(0),
+            tcp: OnceLock::new(),
         }
+    }
+
+    fn peer_by_ufrag(&self, ufrag: &str) -> Option<u64> {
+        lock(&self.by_ufrag).get(ufrag).copied()
+    }
+
+    /// Hands a datagram to peer `id`; `false` if it is gone.
+    fn input_peer(
+        &self,
+        id: u64,
+        source: SocketAddr,
+        destination: SocketAddr,
+        data: &[u8],
+    ) -> bool {
+        let p = lock(&self.peers).get(&id).cloned();
+        match p {
+            Some(p) => {
+                p.input(source, destination, data);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn binding(&self) -> Option<&UdpBinding> {
+        match &self.tx {
+            Tx::Bound(b) => b.get(),
+            Tx::Listener(_) => None,
+        }
+    }
+
+    /// The relay whose allocation has the relayed address `addr`.
+    fn relay_at(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
+        if self.relay_count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        lock(&self.relays)
+            .iter()
+            .find(|r| r.relayed.get() == Some(&addr))
+            .cloned()
+    }
+
+    /// The relay whose TURN server is at `addr`.
+    fn relay_of_server(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
+        if self.relay_count.load(Ordering::Acquire) == 0 {
+            return None;
+        }
+        lock(&self.relays)
+            .iter()
+            .find(|r| r.server == addr)
+            .cloned()
+    }
+
+    /// Changes the relay list, keeping `relay_count` in step.
+    fn with_relays<R>(&self, f: impl FnOnce(&mut Vec<Arc<relay::Relay>>) -> R) -> R {
+        let mut relays = lock(&self.relays);
+        let r = f(&mut relays);
+        self.relay_count.store(relays.len(), Ordering::Release);
+        r
     }
 
     fn new_rtc(&self) -> Result<Rtc, Error> {
@@ -715,11 +821,22 @@ impl Hub {
             lock(&self.by_ufrag).remove(&p.0.ufrag);
         }
         lock(&self.by_addr).retain(|_, v| *v != id);
+        if let Some(t) = self.tcp.get() {
+            t.close_peer(id);
+        }
     }
 
-    fn transmit(&self, id: u64, dest: SocketAddr, data: &[u8]) {
+    fn transmit(&self, id: u64, src: SocketAddr, dest: SocketAddr, data: &[u8]) {
         // Replies from where we send belong to this peer (full ICE agents send first).
+        if let Some(t) = self.tcp.get().filter(|t| t.local == src) {
+            t.send(dest, data);
+            return;
+        }
         lock(&self.by_addr).entry(dest).or_insert(id);
+        if let Some(r) = self.relay_at(src) {
+            r.send(dest, data);
+            return;
+        }
         match &self.tx {
             Tx::Listener(conns) => {
                 let c = lock(conns).get(&dest).cloned();
@@ -761,6 +878,18 @@ impl Hub {
                 }
             }
         }
+        if let Some(r) = self.relay_of_server(source) {
+            if let Some((peer, relayed, data)) = r.input(data) {
+                self.route(peer, relayed, &data);
+            }
+            return;
+        }
+        self.route(source, self.destination(local), data);
+    }
+
+    /// A datagram from `source` that arrived on the local address `destination`, for a peer.
+    fn route(&self, source: SocketAddr, destination: SocketAddr, data: &[u8]) {
+        let is_stun = stun::is_stun(data);
         let mut id = lock(&self.by_addr).get(&source).copied();
         if id.is_none() && is_stun {
             // A connectivity check: USERNAME is "<our ufrag>:<their ufrag>".
@@ -783,7 +912,7 @@ impl Hub {
         let Some(id) = id else { return };
         let p = lock(&self.peers).get(&id).cloned();
         if let Some(p) = p {
-            p.input(source, self.destination(local), data);
+            p.input(source, destination, data);
         }
     }
 
@@ -1032,10 +1161,7 @@ impl Endpoint {
     }
 
     fn binding(&self) -> Option<&UdpBinding> {
-        match &self.0.tx {
-            Tx::Bound(b) => b.get(),
-            Tx::Listener(_) => None,
-        }
+        self.0.binding()
     }
 
     /// The bound address.
@@ -1099,6 +1225,114 @@ impl Endpoint {
         Ok(mapped)
     }
 
+    /// Allocates a relayed address on the TURN server at `turn_server` (over UDP from this
+    /// endpoint's socket, long-term credentials `username` / `password`), waiting up to
+    /// `timeout`, and adds it as a relayed candidate for new peers; the server-reflexive
+    /// address the server saw is added too when it differs from the host candidates. The
+    /// allocation, its permissions and channels are refreshed while the endpoint lives, and
+    /// shared by every peer. At most 4 allocations per endpoint. Blocks: do not call it from a
+    /// `only` I/O thread or a callback.
+    pub fn gather_relay(
+        &self,
+        turn_server: SocketAddr,
+        username: &str,
+        password: &str,
+        timeout: Duration,
+    ) -> Result<SocketAddr, Error> {
+        let b = self.binding().ok_or(Error::Closed)?.clone();
+        let (tx, rx) = mpsc::channel();
+        let cfg = only_turn::client::ClientConfig::new(turn_server, username, password);
+        let r = self.0.with_relays(|relays| {
+            relays.retain(|r| !r.is_dead());
+            if relays.len() >= MAX_RELAYS {
+                return Err(Error::Turn("too many TURN allocations".into()));
+            }
+            if relays.iter().any(|r| r.server == turn_server) {
+                return Err(Error::Turn(format!(
+                    "an allocation on {turn_server} exists already"
+                )));
+            }
+            let r = relay::Relay::new(&self.0, cfg, tx);
+            relays.push(r.clone());
+            Ok(r)
+        })?;
+        // The first Allocate goes out on this kick.
+        r.send_nothing();
+        let res = match rx.recv_timeout(timeout) {
+            Ok(Ok(a)) => Ok(a),
+            Ok(Err(e)) => Err(Error::Turn(e)),
+            Err(_) => Err(Error::Timeout),
+        };
+        let (relayed, mapped) = match res {
+            Ok(a) => a,
+            Err(e) => {
+                r.close();
+                self.0
+                    .with_relays(|relays| relays.retain(|x| !Arc::ptr_eq(x, &r)));
+                return Err(e);
+            }
+        };
+        let base = lock(&self.0.candidates)
+            .first()
+            .map_or_else(|| b.local_addr(), only_ice::Candidate::addr);
+        let mut cs = lock(&self.0.candidates);
+        if let Some(m) = mapped.filter(|m| !cs.iter().any(|x| x.addr() == *m)) {
+            cs.push(only_ice::Candidate::server_reflexive(m, base));
+        }
+        if !cs.iter().any(|x| x.addr() == relayed) {
+            cs.push(only_ice::Candidate::relayed(relayed, base));
+        }
+        Ok(relayed)
+    }
+
+    /// Listens for ICE-TCP connections (RFC 6544) on `addr` and adds a passive TCP host
+    /// candidate for new peers: remote agents with active TCP candidates (browsers, pion)
+    /// connect to it and run checks, DTLS and media over the connection (RFC 4571 framing).
+    /// The candidate is `addr`, or with the unspecified address the endpoint's primary
+    /// address, with the bound port, which must differ from the UDP port (port 0 picks one).
+    /// Returns the candidate's address. A dedicated thread accepts (at most 256 connections at
+    /// once); a connection whose first frame is not a check for one of this endpoint's peers
+    /// within 10 seconds is closed, and so are a peer's connections when it closes. Once per
+    /// endpoint; needs an engine with TCP I/O threads ([`only::EngineBuilder::client_threads`]
+    /// or a TCP listener).
+    pub fn listen_tcp(&self, engine: &Arc<Engine>, addr: SocketAddr) -> Result<SocketAddr, Error> {
+        if self.0.tcp.get().is_some() {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the endpoint listens on TCP already",
+            )));
+        }
+        let udp = self.local_addr().ok_or(Error::Closed)?;
+        let mut l = std::net::TcpListener::bind(addr).map_err(Error::Io)?;
+        if l.local_addr().map_err(Error::Io)?.port() == udp.port() {
+            if addr.port() != 0 {
+                return Err(Error::InvalidCandidate(format!(
+                    "{addr}: the TCP port must differ from the UDP port"
+                )));
+            }
+            l = std::net::TcpListener::bind(addr).map_err(Error::Io)?;
+        }
+        let bound = l.local_addr().map_err(Error::Io)?;
+        let local = if bound.ip().is_unspecified() {
+            SocketAddr::new(primary_ip(bound.is_ipv6()), bound.port())
+        } else {
+            bound
+        };
+        let side = tcp::TcpSide::start(&self.0, engine, l, local).map_err(Error::Io)?;
+        if self.0.tcp.set(side.clone()).is_err() {
+            side.close();
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the endpoint listens on TCP already",
+            )));
+        }
+        lock(&self.0.candidates).push(only_ice::Candidate::host_tcp(
+            local,
+            only_ice::TcpType::Passive,
+        ));
+        Ok(local)
+    }
+
     fn hub_mut(&mut self) -> &mut Hub {
         Arc::get_mut(&mut self.0).expect("configure the endpoint before cloning it")
     }
@@ -1159,9 +1393,16 @@ impl Endpoint {
         lock(&self.0.peers).len()
     }
 
-    /// Closes every peer and the socket.
+    /// Closes every peer, deletes the TURN allocations and closes the socket.
     pub fn close(&self) {
         self.0.close_all();
+        let relays = self.0.with_relays(std::mem::take);
+        for r in relays {
+            r.close();
+        }
+        if let Some(t) = self.0.tcp.get() {
+            t.close();
+        }
         if let Some(b) = self.binding() {
             b.close();
         }

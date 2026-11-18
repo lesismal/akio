@@ -44,7 +44,7 @@ fn drain(s: &mut Side, now: Instant, net: &mut Net) {
                 s.wake = t;
                 break;
             }
-            Output::Transmit(to, d) => net.send(now, s.addr, to, d),
+            Output::Transmit(_, to, d) => net.send(now, s.addr, to, d),
             Output::Event(e) => s.events.push(e),
         }
     }
@@ -132,14 +132,14 @@ fn run(lite: bool, loss: u32, seed: u64) {
         }
         let t = MediaTime::new(i * 960, Frequency::FORTY_EIGHT_KHZ);
         a.rtc
-            .write_media(now, audio, opus, t, &[0xfc, i as u8, 7])
+            .write_media(now, audio, None, opus, t, &[0xfc, i as u8, 7])
             .unwrap();
         if i % 2 == 0 {
             let mut f = frame.clone();
             f[0] = if i == 0 { 0x10 } else { 0x11 };
             f[1] = i as u8;
             let t = MediaTime::new(i * 1800, Frequency::NINETY_KHZ);
-            a.rtc.write_media(now, video, vp8, t, &f).unwrap();
+            a.rtc.write_media(now, video, None, vp8, t, &f).unwrap();
         }
         for _ in 0..4 {
             now += tick;
@@ -276,4 +276,168 @@ a=max-message-size:262144\r\n";
     // Garbage and an answer without a pending offer are errors.
     assert!(rtc.accept_offer(now, "v=0\r\n").is_err());
     assert!(rtc.accept_answer(now, offer).is_err());
+}
+
+/// A simulcast sender (three encodings) and a receiver of this stack: the answer accepts the
+/// RIDs, each arrives as its own stream with its RID, survives loss through RTX (repaired RID),
+/// and keyframe requests name the encoding.
+fn simulcast(strip_answer: bool, loss: u32) -> (Vec<Option<String>>, Vec<RtcEvent>) {
+    let now = Instant::now();
+    let mut a = Rtc::new(ConfigInner::default(), false, now).unwrap();
+    let mut b = Rtc::new(ConfigInner::default(), false, now).unwrap();
+    let (aa, ba): (SocketAddr, SocketAddr) = (
+        "10.0.0.1:1000".parse().unwrap(),
+        "10.0.0.2:2000".parse().unwrap(),
+    );
+    a.add_local_candidate(IceCandidate::host(aa));
+    b.add_local_candidate(IceCandidate::host(ba));
+    let mut ch = a.changes();
+    let video = SdpChanges(&mut ch)
+        .add_simulcast_media(
+            MediaKind::Video,
+            Direction::SendOnly,
+            &["h", "m", "l"],
+            None,
+            None,
+        )
+        .unwrap();
+    let offer = a.apply(now, ch).unwrap().unwrap();
+    assert!(
+        offer.contains("a=rid:h send\r\na=rid:m send\r\na=rid:l send\r\n"),
+        "{offer}"
+    );
+    assert!(offer.contains("a=simulcast:send h;m;l"));
+    assert!(offer.contains("urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id"));
+    assert!(!offer.contains("a=ssrc:"));
+    let mut answer = b.accept_offer(now, &offer).unwrap();
+    assert!(answer.contains("a=rid:h recv"), "{answer}");
+    assert!(answer.contains("a=simulcast:recv h;m;l"));
+    if strip_answer {
+        answer = answer
+            .lines()
+            .filter(|l| !l.starts_with("a=simulcast") && !l.starts_with("a=rid"))
+            .map(|l| format!("{l}\r\n"))
+            .collect();
+    }
+    a.accept_answer(now, &answer).unwrap();
+    let side = |rtc, addr| Side {
+        rtc,
+        addr,
+        events: Vec::new(),
+        wake: now,
+    };
+    let (mut a, mut b) = (side(a, aa), side(b, ba));
+    let mut net = Net {
+        rng: 7,
+        loss,
+        jitter_ms: 20,
+        queue: Vec::new(),
+    };
+    let mut t = now;
+    while !(a.rtc.is_connected() && b.rtc.is_connected()) {
+        t += Duration::from_millis(5);
+        step(&mut a, &mut b, t, &mut net);
+        assert!(t - now < Duration::from_secs(60), "no connection");
+    }
+    let vp8 = a.rtc.payload_type(video, Codec::Vp8).unwrap();
+    for i in 0..100u64 {
+        let ts = MediaTime::new(i * 3000, Frequency::NINETY_KHZ);
+        for (rid, size) in [("h", 3000usize), ("m", 1500), ("l", 400)] {
+            let frame: Vec<u8> = (0..size).map(|k| (k as u8) ^ (i as u8)).collect();
+            assert!(
+                a.rtc
+                    .write_media(t, video, Some(rid), vp8, ts, &frame)
+                    .unwrap()
+            );
+        }
+        assert!(
+            !a.rtc
+                .write_media(t, video, Some("x"), vp8, ts, &[1])
+                .unwrap()
+        );
+        for _ in 0..6 {
+            t += Duration::from_millis(5);
+            step(&mut a, &mut b, t, &mut net);
+        }
+    }
+    assert!(b.rtc.request_keyframe(video, KeyframeRequestKind::Pli));
+    for _ in 0..400 {
+        t += Duration::from_millis(5);
+        step(&mut a, &mut b, t, &mut net);
+    }
+    let rids = b
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            RtcEvent::MediaData(d) => Some(d.rid.clone()),
+            _ => None,
+        })
+        .collect();
+    (rids, a.events)
+}
+
+#[test]
+fn simulcast_three_encodings() {
+    for loss in [0, 10] {
+        let (rids, a_events) = simulcast(false, loss);
+        for r in ["h", "m", "l"] {
+            let n = rids.iter().filter(|x| x.as_deref() == Some(r)).count();
+            // Under loss NACK/RTX (with the repaired RID) fills the gaps.
+            assert!(n >= 95, "rid {r}: {n} frames at {loss}% loss");
+        }
+        let mut kf: Vec<Option<String>> = a_events
+            .iter()
+            .filter_map(|e| match e {
+                RtcEvent::Keyframe(k) => Some(k.rid.clone()),
+                _ => None,
+            })
+            .collect();
+        kf.sort();
+        kf.dedup();
+        assert_eq!(
+            kf,
+            vec![Some("h".into()), Some("l".into()), Some("m".into())]
+        );
+    }
+}
+
+#[test]
+fn simulcast_without_answer_support_sends_the_first() {
+    let (rids, _) = simulcast(true, 0);
+    assert!(rids.len() >= 95);
+    assert!(rids.iter().all(|r| r.as_deref() == Some("h")), "{rids:?}");
+}
+
+#[test]
+fn simulcast_api_checks() {
+    let now = Instant::now();
+    let a = Rtc::new(ConfigInner::default(), false, now).unwrap();
+    let mut ch = a.changes();
+    let mut api = SdpChanges(&mut ch);
+    let v = MediaKind::Video;
+    assert!(
+        api.add_simulcast_media(v, Direction::RecvOnly, &["a"], None, None)
+            .is_err()
+    );
+    assert!(
+        api.add_simulcast_media(v, Direction::SendOnly, &[], None, None)
+            .is_err()
+    );
+    assert!(
+        api.add_simulcast_media(v, Direction::SendOnly, &["a", "a"], None, None)
+            .is_err()
+    );
+    assert!(
+        api.add_simulcast_media(v, Direction::SendOnly, &["a b"], None, None)
+            .is_err()
+    );
+    let nine = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    assert!(
+        api.add_simulcast_media(v, Direction::SendOnly, &nine, None, None)
+            .is_err()
+    );
+    assert!(
+        api.add_simulcast_media(v, Direction::SendRecv, &nine[..8], None, None)
+            .is_ok()
+    );
 }

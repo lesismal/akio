@@ -24,3 +24,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-018: BitTorrent v2 and hybrid torrents, web seeds, LSD, IPv6 DHT, rate and seed limits](018-bittorrent-v2-webseeds-lsd-ipv6-limits.md) (accepted 2026-11-17)
 - [ADR-022: protobuf groups, extensions, editions, JSON and reflection](022-protobuf-gaps.md) (accepted 2026-11-18)
 - [ADR-021: DTLS 1.3, connection IDs, PSKs and session resumption in only-dtls](021-dtls13-cid-resumption.md)
+- [ADR-017: TURN over TCP and TLS, a TURN client, ICE-TCP and simulcast sending](017-webrtc-turn-gaps.md) (accepted 2026-11-17)

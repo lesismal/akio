@@ -2,7 +2,8 @@
 
 [English](README.md)
 
-[only](https://github.com/lesismal/only) 的 STUN 与 TURN 服务器，运行在 only UDP socket 上。
+[only](https://github.com/lesismal/only) 的 STUN 与 TURN：运行在 only UDP、TCP 与 TLS 监听器上的服务器，
+以及 sans-io 的 TURN 客户端。
 
 - `stun`：STUN 消息编解码（RFC 8489），含 TURN（RFC 8656）与 ICE（RFC 8445）属性、
   `MESSAGE-INTEGRITY`（HMAC-SHA1）、`FINGERPRINT`、长期凭据密钥。
@@ -11,6 +12,10 @@
   `ephemeral_auth`）、权限、通道、Send/Data 指示、刷新与生存期、`EVEN-PORT`/`RESERVATION-TOKEN`、
   无状态 nonce、配额，以及默认拒绝中继到回环与私有网络的对端策略。它也应答 STUN Binding 请求。
   中继 socket 通过 `only::Engine::bind_udp` 在运行时绑定。
+- `TurnServer::stream()`：用于 TCP 监听器与 TLS 监听器（`only::tls::Tls`）的同一服务器：STUN 与
+  ChannelData 在流上分帧（`framing`），中继走 UDP，分配随连接存在。不提供 TCP 中继（RFC 6062）。
+- `client::Client`：UDP 或流上的 sans-io TURN 客户端（分配、刷新、channel、权限）；`only-webrtc` 的
+  `Endpoint::gather_relay` 驱动它。
 - `TurnCore`：同一服务器的 sans-io 状态机。
 
 ```rust,no_run

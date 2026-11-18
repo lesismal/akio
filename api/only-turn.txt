@@ -1,4 +1,152 @@
 pub mod only_turn
+pub mod only_turn::client
+#[non_exhaustive] pub enum only_turn::client::ClientError
+pub only_turn::client::ClientError::Protocol(&'static str)
+pub only_turn::client::ClientError::Rejected(u16, alloc::string::String)
+pub only_turn::client::ClientError::Timeout
+impl core::clone::Clone for only_turn::client::ClientError
+pub fn only_turn::client::ClientError::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::client::ClientError
+impl core::cmp::PartialEq for only_turn::client::ClientError
+pub fn only_turn::client::ClientError::eq(&self, &Self) -> bool
+impl core::error::Error for only_turn::client::ClientError
+impl core::fmt::Debug for only_turn::client::ClientError
+pub fn only_turn::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_turn::client::ClientError
+pub fn only_turn::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_turn::client::ClientError
+impl core::marker::Send for only_turn::client::ClientError
+impl core::marker::Sync for only_turn::client::ClientError
+impl core::marker::Unpin for only_turn::client::ClientError
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::client::ClientError
+impl core::panic::unwind_safe::UnwindSafe for only_turn::client::ClientError
+#[non_exhaustive] pub enum only_turn::client::ClientEvent
+pub only_turn::client::ClientEvent::Allocated
+pub only_turn::client::ClientEvent::Allocated::lifetime: core::time::Duration
+pub only_turn::client::ClientEvent::Allocated::mapped: core::option::Option<core::net::socket_addr::SocketAddr>
+pub only_turn::client::ClientEvent::Allocated::relayed: core::net::socket_addr::SocketAddr
+pub only_turn::client::ClientEvent::Closed
+pub only_turn::client::ClientEvent::Failed(only_turn::client::ClientError)
+pub only_turn::client::ClientEvent::PeerFailed(core::net::socket_addr::SocketAddr, only_turn::client::ClientError)
+impl core::clone::Clone for only_turn::client::ClientEvent
+pub fn only_turn::client::ClientEvent::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::client::ClientEvent
+impl core::cmp::PartialEq for only_turn::client::ClientEvent
+pub fn only_turn::client::ClientEvent::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_turn::client::ClientEvent
+pub fn only_turn::client::ClientEvent::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_turn::client::ClientEvent
+impl core::marker::Send for only_turn::client::ClientEvent
+impl core::marker::Sync for only_turn::client::ClientEvent
+impl core::marker::Unpin for only_turn::client::ClientEvent
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::client::ClientEvent
+impl core::panic::unwind_safe::UnwindSafe for only_turn::client::ClientEvent
+pub enum only_turn::client::ClientState
+pub only_turn::client::ClientState::Allocated
+pub only_turn::client::ClientState::Allocating
+pub only_turn::client::ClientState::Closed
+pub only_turn::client::ClientState::Closing
+pub only_turn::client::ClientState::Failed
+impl core::clone::Clone for only_turn::client::ClientState
+pub fn only_turn::client::ClientState::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::client::ClientState
+impl core::cmp::PartialEq for only_turn::client::ClientState
+pub fn only_turn::client::ClientState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_turn::client::ClientState
+pub fn only_turn::client::ClientState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_turn::client::ClientState
+impl core::marker::StructuralPartialEq for only_turn::client::ClientState
+impl core::marker::Send for only_turn::client::ClientState
+impl core::marker::Sync for only_turn::client::ClientState
+impl core::marker::Unpin for only_turn::client::ClientState
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::client::ClientState
+impl core::panic::unwind_safe::UnwindSafe for only_turn::client::ClientState
+pub struct only_turn::client::Client
+impl only_turn::client::Client
+pub fn only_turn::client::Client::close(&mut self, std::time::Instant)
+pub fn only_turn::client::Client::config(&self) -> &only_turn::client::ClientConfig
+pub fn only_turn::client::Client::handle_input<'a>(&mut self, std::time::Instant, &'a [u8]) -> core::option::Option<(core::net::socket_addr::SocketAddr, &'a [u8])>
+pub fn only_turn::client::Client::handle_timeout(&mut self, std::time::Instant)
+pub fn only_turn::client::Client::mapped_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::client::Client::new(only_turn::client::ClientConfig, std::time::Instant) -> only_turn::client::Client
+pub fn only_turn::client::Client::pending_bytes(&self) -> usize
+pub fn only_turn::client::Client::poll_event(&mut self) -> core::option::Option<only_turn::client::ClientEvent>
+pub fn only_turn::client::Client::poll_timeout(&self) -> core::option::Option<std::time::Instant>
+pub fn only_turn::client::Client::poll_transmit(&mut self) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_turn::client::Client::relayed_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::client::Client::send_to(&mut self, std::time::Instant, core::net::socket_addr::SocketAddr, &[u8]) -> bool
+pub fn only_turn::client::Client::state(&self) -> only_turn::client::ClientState
+impl core::fmt::Debug for only_turn::client::Client
+pub fn only_turn::client::Client::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_turn::client::Client
+impl core::marker::Sync for only_turn::client::Client
+impl core::marker::Unpin for only_turn::client::Client
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::client::Client
+impl core::panic::unwind_safe::UnwindSafe for only_turn::client::Client
+#[non_exhaustive] pub struct only_turn::client::ClientConfig
+pub only_turn::client::ClientConfig::lifetime: core::time::Duration
+pub only_turn::client::ClientConfig::max_peers: usize
+pub only_turn::client::ClientConfig::max_pending: usize
+pub only_turn::client::ClientConfig::max_sends: u32
+pub only_turn::client::ClientConfig::password: alloc::string::String
+pub only_turn::client::ClientConfig::rto: core::time::Duration
+pub only_turn::client::ClientConfig::server: core::net::socket_addr::SocketAddr
+pub only_turn::client::ClientConfig::software: core::option::Option<alloc::string::String>
+pub only_turn::client::ClientConfig::stream: bool
+pub only_turn::client::ClientConfig::timeout: core::time::Duration
+pub only_turn::client::ClientConfig::use_channels: bool
+pub only_turn::client::ClientConfig::username: alloc::string::String
+impl only_turn::client::ClientConfig
+pub fn only_turn::client::ClientConfig::lifetime(self, core::time::Duration) -> Self
+pub fn only_turn::client::ClientConfig::new(core::net::socket_addr::SocketAddr, &str, &str) -> only_turn::client::ClientConfig
+pub fn only_turn::client::ClientConfig::stream(self, bool) -> Self
+pub fn only_turn::client::ClientConfig::use_channels(self, bool) -> Self
+impl core::clone::Clone for only_turn::client::ClientConfig
+pub fn only_turn::client::ClientConfig::clone(&self) -> Self
+impl core::fmt::Debug for only_turn::client::ClientConfig
+pub fn only_turn::client::ClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_turn::client::ClientConfig
+impl core::marker::Sync for only_turn::client::ClientConfig
+impl core::marker::Unpin for only_turn::client::ClientConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::client::ClientConfig
+impl core::panic::unwind_safe::UnwindSafe for only_turn::client::ClientConfig
+pub mod only_turn::framing
+#[non_exhaustive] pub enum only_turn::framing::FrameError
+pub only_turn::framing::FrameError::NotTurn
+impl core::clone::Clone for only_turn::framing::FrameError
+pub fn only_turn::framing::FrameError::clone(&self) -> Self
+impl core::cmp::Eq for only_turn::framing::FrameError
+impl core::cmp::PartialEq for only_turn::framing::FrameError
+pub fn only_turn::framing::FrameError::eq(&self, &Self) -> bool
+impl core::error::Error for only_turn::framing::FrameError
+impl core::fmt::Debug for only_turn::framing::FrameError
+pub fn only_turn::framing::FrameError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_turn::framing::FrameError
+pub fn only_turn::framing::FrameError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_turn::framing::FrameError
+impl core::marker::StructuralPartialEq for only_turn::framing::FrameError
+impl core::marker::Send for only_turn::framing::FrameError
+impl core::marker::Sync for only_turn::framing::FrameError
+impl core::marker::Unpin for only_turn::framing::FrameError
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::framing::FrameError
+impl core::panic::unwind_safe::UnwindSafe for only_turn::framing::FrameError
+pub struct only_turn::framing::FrameReader
+impl only_turn::framing::FrameReader
+pub fn only_turn::framing::FrameReader::buffered(&self) -> usize
+pub fn only_turn::framing::FrameReader::new() -> only_turn::framing::FrameReader
+pub fn only_turn::framing::FrameReader::push(&mut self, &[u8], impl core::ops::function::FnMut(&[u8])) -> core::result::Result<(), only_turn::framing::FrameError>
+impl core::default::Default for only_turn::framing::FrameReader
+pub fn only_turn::framing::FrameReader::default() -> Self
+impl core::fmt::Debug for only_turn::framing::FrameReader
+pub fn only_turn::framing::FrameReader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_turn::framing::FrameReader
+impl core::marker::Sync for only_turn::framing::FrameReader
+impl core::marker::Unpin for only_turn::framing::FrameReader
+impl core::panic::unwind_safe::RefUnwindSafe for only_turn::framing::FrameReader
+impl core::panic::unwind_safe::UnwindSafe for only_turn::framing::FrameReader
+pub const only_turn::framing::MAX_FRAME: usize
+pub fn only_turn::framing::channel_data_padding(usize) -> usize
+pub fn only_turn::framing::frame_len(&[u8]) -> core::result::Result<core::option::Option<usize>, only_turn::framing::FrameError>
 pub mod only_turn::stun
 pub mod only_turn::stun::attr
 pub const only_turn::stun::attr::ADDITIONAL_ADDRESS_FAMILY: u16
@@ -185,6 +333,7 @@ pub only_turn::TurnConfig::max_allocations_per_user: usize
 pub only_turn::TurnConfig::max_channels: usize
 pub only_turn::TurnConfig::max_lifetime: core::time::Duration
 pub only_turn::TurnConfig::max_permissions: usize
+pub only_turn::TurnConfig::max_stream_queue: usize
 pub only_turn::TurnConfig::nonce_lifetime: core::time::Duration
 pub only_turn::TurnConfig::peer_allowed: core::option::Option<only_turn::PeerFilter>
 pub only_turn::TurnConfig::permission_lifetime: core::time::Duration
@@ -192,6 +341,7 @@ pub only_turn::TurnConfig::public_ip: core::option::Option<core::net::ip_addr::I
 pub only_turn::TurnConfig::realm: alloc::string::String
 pub only_turn::TurnConfig::relay_ip: core::net::ip_addr::IpAddr
 pub only_turn::TurnConfig::software: core::option::Option<alloc::string::String>
+pub only_turn::TurnConfig::stream_allocate_timeout: core::time::Duration
 impl only_turn::TurnConfig
 pub fn only_turn::TurnConfig::allow_private_peers(self, bool) -> Self
 pub fn only_turn::TurnConfig::lifetimes(self, core::time::Duration, core::time::Duration) -> Self
@@ -216,6 +366,7 @@ pub fn only_turn::TurnCore::handle_peer(&mut self, std::time::Instant, core::net
 pub fn only_turn::TurnCore::handle_timeout(&mut self, std::time::Instant, &mut dyn only_turn::TurnEnv)
 pub fn only_turn::TurnCore::new(only_turn::TurnConfig) -> only_turn::TurnCore
 pub fn only_turn::TurnCore::relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnCore::remove_client(&mut self, core::net::socket_addr::SocketAddr, &mut dyn only_turn::TurnEnv)
 pub fn only_turn::TurnCore::stats(&self) -> only_turn::TurnStats
 impl core::fmt::Debug for only_turn::TurnCore
 pub fn only_turn::TurnCore::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -231,6 +382,8 @@ pub fn only_turn::TurnServer::new(only_turn::TurnConfig) -> only_turn::TurnServe
 pub fn only_turn::TurnServer::relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn only_turn::TurnServer::set_engine(&self, &alloc::rcs::arc::Arc<only::Engine>)
 pub fn only_turn::TurnServer::stats(&self) -> only_turn::TurnStats
+pub fn only_turn::TurnServer::stream(&self) -> only_turn::TurnStream
+pub fn only_turn::TurnServer::stream_relay_of(&self, core::net::socket_addr::SocketAddr) -> core::option::Option<core::net::socket_addr::SocketAddr>
 impl core::clone::Clone for only_turn::TurnServer
 pub fn only_turn::TurnServer::clone(&self) -> Self
 impl core::fmt::Debug for only_turn::TurnServer
@@ -265,10 +418,25 @@ impl core::marker::Sync for only_turn::TurnStats
 impl core::marker::Unpin for only_turn::TurnStats
 impl core::panic::unwind_safe::RefUnwindSafe for only_turn::TurnStats
 impl core::panic::unwind_safe::UnwindSafe for only_turn::TurnStats
+pub struct only_turn::TurnStream(_)
+impl core::clone::Clone for only_turn::TurnStream
+pub fn only_turn::TurnStream::clone(&self) -> Self
+impl core::fmt::Debug for only_turn::TurnStream
+pub fn only_turn::TurnStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_turn::TurnStream
+pub type only_turn::TurnStream::Handler = TurnStreamClient
+pub fn only_turn::TurnStream::on_open(&self, &only_core::conn::Conn<TurnStreamClient>) -> TurnStreamClient
+pub fn only_turn::TurnStream::on_shutdown(&self, &only_core::conn::Conn<TurnStreamClient>)
+impl core::marker::Send for only_turn::TurnStream
+impl core::marker::Sync for only_turn::TurnStream
+impl core::marker::Unpin for only_turn::TurnStream
+impl !core::panic::unwind_safe::RefUnwindSafe for only_turn::TurnStream
+impl !core::panic::unwind_safe::UnwindSafe for only_turn::TurnStream
 pub trait only_turn::TurnEnv
 pub fn only_turn::TurnEnv::adopt_relay(&mut self, core::net::socket_addr::SocketAddr)
 pub fn only_turn::TurnEnv::close_relay(&mut self, core::net::socket_addr::SocketAddr)
 pub fn only_turn::TurnEnv::open_relay(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::io::error::Result<core::net::socket_addr::SocketAddr>
+pub fn only_turn::TurnEnv::pads_channel_data(&self, core::net::socket_addr::SocketAddr) -> bool
 pub fn only_turn::TurnEnv::send_to_client(&mut self, core::net::socket_addr::SocketAddr, &[u8])
 pub fn only_turn::TurnEnv::send_to_peer(&mut self, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, &[u8])
 pub fn only_turn::denied_by_default(core::net::ip_addr::IpAddr) -> bool

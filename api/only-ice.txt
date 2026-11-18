@@ -1,4 +1,21 @@
 pub mod only_ice
+pub mod only_ice::tcp
+pub struct only_ice::tcp::FrameReader
+impl only_ice::tcp::FrameReader
+pub fn only_ice::tcp::FrameReader::buffered(&self) -> usize
+pub fn only_ice::tcp::FrameReader::new() -> only_ice::tcp::FrameReader
+pub fn only_ice::tcp::FrameReader::push(&mut self, &[u8], impl core::ops::function::FnMut(&[u8]) -> bool)
+impl core::default::Default for only_ice::tcp::FrameReader
+pub fn only_ice::tcp::FrameReader::default() -> Self
+impl core::fmt::Debug for only_ice::tcp::FrameReader
+pub fn only_ice::tcp::FrameReader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_ice::tcp::FrameReader
+impl core::marker::Sync for only_ice::tcp::FrameReader
+impl core::marker::Unpin for only_ice::tcp::FrameReader
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::tcp::FrameReader
+impl core::panic::unwind_safe::UnwindSafe for only_ice::tcp::FrameReader
+pub const only_ice::tcp::MAX_FRAME: usize
+pub fn only_ice::tcp::frame(&[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub enum only_ice::CandidateKind
 pub only_ice::CandidateKind::Host
 pub only_ice::CandidateKind::PeerReflexive
@@ -68,7 +85,6 @@ impl core::panic::unwind_safe::UnwindSafe for only_ice::IceState
 pub only_ice::ParseError::Fqdn
 pub only_ice::ParseError::Mdns
 pub only_ice::ParseError::Syntax(&'static str)
-pub only_ice::ParseError::Tcp
 impl only_ice::ParseError
 pub fn only_ice::ParseError::is_unsupported(&self) -> bool
 impl core::clone::Clone for only_ice::ParseError
@@ -88,6 +104,29 @@ impl core::marker::Sync for only_ice::ParseError
 impl core::marker::Unpin for only_ice::ParseError
 impl core::panic::unwind_safe::RefUnwindSafe for only_ice::ParseError
 impl core::panic::unwind_safe::UnwindSafe for only_ice::ParseError
+pub enum only_ice::TcpType
+pub only_ice::TcpType::Active
+pub only_ice::TcpType::Passive
+pub only_ice::TcpType::So
+impl only_ice::TcpType
+pub fn only_ice::TcpType::as_str(self) -> &'static str
+pub fn only_ice::TcpType::pairs_with(self, only_ice::TcpType) -> bool
+impl core::clone::Clone for only_ice::TcpType
+pub fn only_ice::TcpType::clone(&self) -> Self
+impl core::cmp::Eq for only_ice::TcpType
+impl core::cmp::PartialEq for only_ice::TcpType
+pub fn only_ice::TcpType::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_ice::TcpType
+pub fn only_ice::TcpType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_ice::TcpType
+pub fn only_ice::TcpType::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_ice::TcpType
+impl core::marker::StructuralPartialEq for only_ice::TcpType
+impl core::marker::Send for only_ice::TcpType
+impl core::marker::Sync for only_ice::TcpType
+impl core::marker::Unpin for only_ice::TcpType
+impl core::panic::unwind_safe::RefUnwindSafe for only_ice::TcpType
+impl core::panic::unwind_safe::UnwindSafe for only_ice::TcpType
 pub struct only_ice::Candidate
 impl only_ice::Candidate
 pub fn only_ice::Candidate::addr(&self) -> core::net::socket_addr::SocketAddr
@@ -96,6 +135,7 @@ pub fn only_ice::Candidate::component(&self) -> u16
 pub fn only_ice::Candidate::foundation(&self) -> &str
 pub fn only_ice::Candidate::generation(&self) -> core::option::Option<u32>
 pub fn only_ice::Candidate::host(core::net::socket_addr::SocketAddr) -> only_ice::Candidate
+pub fn only_ice::Candidate::host_tcp(core::net::socket_addr::SocketAddr, only_ice::TcpType) -> only_ice::Candidate
 pub fn only_ice::Candidate::kind(&self) -> only_ice::CandidateKind
 pub fn only_ice::Candidate::parse(&str) -> core::result::Result<only_ice::Candidate, only_ice::ParseError>
 pub fn only_ice::Candidate::peer_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, u32) -> only_ice::Candidate
@@ -103,6 +143,7 @@ pub fn only_ice::Candidate::priority(&self) -> u32
 pub fn only_ice::Candidate::related(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
 pub fn only_ice::Candidate::relayed(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> only_ice::Candidate
 pub fn only_ice::Candidate::server_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> only_ice::Candidate
+pub fn only_ice::Candidate::tcp_type(&self) -> core::option::Option<only_ice::TcpType>
 pub fn only_ice::Candidate::to_sdp(&self) -> alloc::string::String
 pub fn only_ice::Candidate::ufrag(&self) -> core::option::Option<&str>
 impl core::clone::Clone for only_ice::Candidate

@@ -24,3 +24,4 @@
 - [ADR-018：BitTorrent v2 与混合种子、Web 种子、LSD、IPv6 DHT、速率与做种限制](018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md)（2026-11-17 采纳）
 - [ADR-022：protobuf 的 group、extension、edition、JSON 与反射](022-protobuf-gaps.zh-CN.md)（2026-11-18 采纳）
 - [ADR-021：only-dtls 的 DTLS 1.3、连接 ID、PSK 与会话恢复](021-dtls13-cid-resumption.zh-CN.md)
+- [ADR-017：TCP/TLS 上的 TURN、TURN 客户端、ICE-TCP 与 simulcast 发送](017-webrtc-turn-gaps.zh-CN.md)（2026-11-17 采纳）

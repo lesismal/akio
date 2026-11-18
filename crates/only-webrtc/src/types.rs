@@ -517,7 +517,8 @@ impl IceConnectionState {
     }
 }
 
-/// A local ICE candidate (UDP).
+/// An ICE candidate: UDP, or TCP ([`Endpoint::listen_tcp`](crate::Endpoint::listen_tcp) adds a
+/// passive one; parsed remote TCP candidates are kept as they are).
 #[derive(Clone, PartialEq, Eq)]
 pub struct Candidate(pub(crate) only_ice::Candidate);
 
@@ -771,6 +772,8 @@ pub(crate) enum Change {
         dir: Direction,
         stream_id: Option<String>,
         track_id: Option<String>,
+        /// Simulcast RIDs (empty: no simulcast).
+        rids: Vec<String>,
     },
     SetDirection(Mid, Direction),
     StopMedia(Mid),
@@ -829,8 +832,48 @@ impl SdpChanges<'_, '_> {
             dir,
             stream_id,
             track_id,
+            rids: Vec::new(),
         });
         mid
+    }
+
+    /// Adds a media line that sends simulcast (RFC 8853): one RTP stream per RID in `rids`
+    /// (highest quality first, as browsers order them; 1 to 8 RIDs of letters, digits, `-`
+    /// and `_`, at most 16 characters each), identified by the RTP stream id header extension
+    /// and each with its own RTX stream. The offer lists them with `a=rid:<id> send` and
+    /// `a=simulcast:send`; the answer's `a=simulcast:recv` decides which are sent (only the
+    /// first when it has none). Write each encoding's samples with
+    /// [`Peer::write_simulcast`](crate::Peer::write_simulcast). `dir` must send.
+    pub fn add_simulcast_media(
+        &mut self,
+        kind: MediaKind,
+        dir: Direction,
+        rids: &[&str],
+        stream_id: Option<String>,
+        track_id: Option<String>,
+    ) -> Result<Mid, Error> {
+        if !dir.sends() {
+            return Err(Error::Sdp("simulcast needs a sending direction".into()));
+        }
+        if rids.is_empty() || rids.len() > crate::rtc::MAX_SIMULCAST {
+            return Err(Error::Sdp("simulcast needs 1 to 8 RIDs".into()));
+        }
+        for (i, r) in rids.iter().enumerate() {
+            if !crate::rtc::valid_rid(r) || rids[..i].contains(r) {
+                return Err(Error::Sdp(format!("bad or repeated RID {r:?}")));
+            }
+        }
+        let mid = Mid::new(&self.0.next_mid.to_string());
+        self.0.next_mid += 1;
+        self.0.ops.push(Change::AddMedia {
+            mid,
+            kind,
+            dir,
+            stream_id,
+            track_id,
+            rids: rids.iter().map(|r| (*r).to_owned()).collect(),
+        });
+        Ok(mid)
     }
 
     /// Changes the direction of a media line.

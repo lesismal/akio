@@ -8,19 +8,38 @@
 //	                                                 client-dc over a TURN relay only
 //	webrtc-pion turn-raw <turn> <user> <pass>        pion/turn client: allocate, permission,
 //	                                                 send and receive through the relay
+//	webrtc-pion turn-raw-tcp <turn> <user> <pass>    the same over TCP
+//	webrtc-pion turn-raw-tls <turn> <user> <pass>    the same over TLS (certificate not checked)
+//	webrtc-pion server-tcp <http-addr>               answerer with ICE-TCP only (active candidates)
+//	webrtc-pion server-simulcast <http-addr>         answerer receiving simulcast: reports RTP
+//	                                                 packets per RID on the "stats" data channel
+//	webrtc-pion turn-server <udp> <tcp> <tls> <user> <pass>
+//	                                                 pion/turn server (realm "only") on UDP, TCP
+//	                                                 and TLS, relaying from 127.0.0.1
 //
 // Signalling is one HTTP POST: the offer as the body, the answer as the response body.
 package main
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/pion/interceptor"
+	"github.com/pion/sdp/v3"
 
 	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
@@ -227,10 +246,31 @@ func clientMedia(addr string) {
 	pc.Close()
 }
 
-func server(addr string) {
+func server(addr string) { serverWith(addr, nil, nil) }
+
+// tcpOnlyAPI gathers no UDP candidates: pion's agent then dials the passive TCP candidates of
+// the offer from active ones (loopback included).
+func tcpOnlyAPI() *webrtc.API {
+	se := webrtc.SettingEngine{}
+	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeTCP4})
+	se.SetIncludeLoopbackCandidate(true)
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se))
+}
+
+func serverWith(addr string, api *webrtc.API, _ any) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		pc := newPC(nil, false)
+		var pc *webrtc.PeerConnection
+		if api != nil {
+			var err error
+			pc, err = api.NewPeerConnection(webrtc.Configuration{})
+			check(err)
+			pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+				fmt.Fprintf(os.Stderr, "pion server: ICE %s\n", s)
+			})
+		} else {
+			pc = newPC(nil, false)
+		}
 		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
 			dc.OnMessage(func(m webrtc.DataChannelMessage) {
 				if m.IsString {
@@ -274,9 +314,24 @@ func server(addr string) {
 	check(http.ListenAndServe(addr, nil))
 }
 
-func turnRaw(server, user, pass string) {
-	conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
-	check(err)
+func turnRaw(server, user, pass, transport string) {
+	var conn net.PacketConn
+	var err error
+	switch transport {
+	case "tcp":
+		var c net.Conn
+		c, err = net.Dial("tcp4", server)
+		check(err)
+		conn = turn.NewSTUNConn(c)
+	case "tls":
+		var c net.Conn
+		c, err = tls.Dial("tcp4", server, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+		check(err)
+		conn = turn.NewSTUNConn(c)
+	default:
+		conn, err = net.ListenPacket("udp4", "127.0.0.1:0")
+		check(err)
+	}
 	c, err := turn.NewClient(&turn.ClientConfig{
 		STUNServerAddr: server, TURNServerAddr: server, Conn: conn,
 		Username: user, Password: pass, Realm: "only",
@@ -312,7 +367,7 @@ func turnRaw(server, user, pass string) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	fmt.Printf("ok: pion/turn: binding (mapped %v), allocation %v, permission, 20 datagrams relayed both ways\n", mapped, relay.LocalAddr())
+	fmt.Printf("ok: pion/turn over %s: binding (mapped %v), allocation %v, permission, 20 datagrams relayed both ways\n", transport, mapped, relay.LocalAddr())
 	relay.Close()
 	c.Close()
 }
@@ -332,8 +387,133 @@ func main() {
 		ice := []webrtc.ICEServer{{URLs: []string{"turn:" + os.Args[3] + "?transport=udp"}, Username: os.Args[4], Credential: os.Args[5]}}
 		dcEcho(newPC(ice, true), os.Args[2], "over a only TURN relay")
 	case "turn-raw":
-		turnRaw(os.Args[2], os.Args[3], os.Args[4])
+		turnRaw(os.Args[2], os.Args[3], os.Args[4], "udp")
+	case "turn-raw-tcp":
+		turnRaw(os.Args[2], os.Args[3], os.Args[4], "tcp")
+	case "turn-raw-tls":
+		turnRaw(os.Args[2], os.Args[3], os.Args[4], "tls")
+	case "server-tcp":
+		serverWith(os.Args[2], tcpOnlyAPI(), nil)
+	case "server-simulcast":
+		serverSimulcast(os.Args[2])
+	case "turn-server":
+		turnServer(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6])
 	default:
 		fail("unknown mode %s", os.Args[1])
 	}
+}
+
+// serverSimulcast answers offers that send simulcast video: it counts RTP packets per RID
+// and reports them every 300 ms on the "stats" data channel as "h=N m=N l=N".
+func serverSimulcast(addr string) {
+	m := &webrtc.MediaEngine{}
+	check(m.RegisterDefaultCodecs())
+	for _, uri := range []string{sdp.SDESMidURI, sdp.SDESRTPStreamIDURI, sdp.SDESRepairRTPStreamIDURI} {
+		check(m.RegisterHeaderExtension(webrtc.RTPHeaderExtensionCapability{URI: uri}, webrtc.RTPCodecTypeVideo))
+	}
+	ir := &interceptor.Registry{}
+	check(webrtc.RegisterDefaultInterceptors(m, ir))
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(ir))
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		pc, err := api.NewPeerConnection(webrtc.Configuration{})
+		check(err)
+		var mu sync.Mutex
+		counts := map[string]int{}
+		ssrcs := map[string]webrtc.SSRC{}
+		pc.OnTrack(func(t *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+			rid := t.RID()
+			mu.Lock()
+			ssrcs[rid] = t.SSRC()
+			mu.Unlock()
+			// Ask each encoding for a keyframe once.
+			_ = pc.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: uint32(t.SSRC())}})
+			for {
+				if _, _, err := t.ReadRTP(); err != nil {
+					return
+				}
+				mu.Lock()
+				counts[rid]++
+				mu.Unlock()
+			}
+		})
+		pc.OnDataChannel(func(dc *webrtc.DataChannel) {
+			dc.OnOpen(func() {
+				go func() {
+					for dc.ReadyState() == webrtc.DataChannelStateOpen {
+						mu.Lock()
+						msg := fmt.Sprintf("h=%d m=%d l=%d", counts["h"], counts["m"], counts["l"])
+						distinct := len(ssrcs) == 3 && ssrcs["h"] != ssrcs["m"] && ssrcs["m"] != ssrcs["l"]
+						mu.Unlock()
+						if distinct {
+							msg += " ssrcs=3"
+						}
+						_ = dc.SendText(msg)
+						time.Sleep(300 * time.Millisecond)
+					}
+				}()
+			})
+		})
+		if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: string(body)}); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		answer, err := pc.CreateAnswer(nil)
+		check(err)
+		gathered := webrtc.GatheringCompletePromise(pc)
+		check(pc.SetLocalDescription(answer))
+		<-gathered
+		out := pc.LocalDescription().SDP
+		w.Header().Set("Content-Type", "application/sdp")
+		w.Header().Set("Content-Length", fmt.Sprint(len(out)))
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(out))
+	})
+	check(http.ListenAndServe(addr, nil))
+}
+
+func selfSigned() tls.Certificate {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	check(err)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		DNSNames:     []string{"localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	check(err)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// turnServer runs pion/turn on UDP, TCP and TLS for the only TURN client.
+func turnServer(udpAddr, tcpAddr, tlsAddr, user, pass string) {
+	key := turn.GenerateAuthKey(user, "only", pass)
+	gen := func() turn.RelayAddressGenerator {
+		return &turn.RelayAddressGeneratorStatic{RelayAddress: net.ParseIP("127.0.0.1"), Address: "127.0.0.1"}
+	}
+	udp, err := net.ListenPacket("udp4", udpAddr)
+	check(err)
+	tcp, err := net.Listen("tcp4", tcpAddr)
+	check(err)
+	tl, err := tls.Listen("tcp4", tlsAddr, &tls.Config{Certificates: []tls.Certificate{selfSigned()}})
+	check(err)
+	_, err = turn.NewServer(turn.ServerConfig{
+		Realm: "only",
+		AuthHandler: func(ra *turn.RequestAttributes) (string, []byte, bool) {
+			if ra.Username == user {
+				return ra.Username, key, true
+			}
+			return "", nil, false
+		},
+		PacketConnConfigs: []turn.PacketConnConfig{{PacketConn: udp, RelayAddressGenerator: gen()}},
+		ListenerConfigs: []turn.ListenerConfig{
+			{Listener: tcp, RelayAddressGenerator: gen()},
+			{Listener: tl, RelayAddressGenerator: gen()},
+		},
+	})
+	check(err)
+	fmt.Fprintf(os.Stderr, "pion turn: udp %s tcp %s tls %s\n", udpAddr, tcpAddr, tlsAddr)
+	select {}
 }

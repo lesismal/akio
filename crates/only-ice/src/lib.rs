@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::unwrap_used)]
 //! Sans-io ICE (RFC 8445) for the `only` WebRTC stack: one component (RTP/RTCP muxed,
-//! BUNDLE) over UDP, full and lite agents.
+//! BUNDLE) over UDP and passive TCP (RFC 6544), full and lite agents.
 //!
 //! An [`IceAgent`] owns no sockets, threads or clocks. The caller gathers local candidates
 //! (host addresses of its sockets, server-reflexive and relayed ones from its STUN/TURN
@@ -48,8 +48,15 @@
 //! - Candidates (RFC 8445 §5.1): priorities (type preferences host 126, prflx 110, srflx 100,
 //!   relay 0; local preference IPv6 > IPv4 > IPv6 link-local; component 1), foundations from
 //!   type and base IP, the SDP `candidate` attribute (RFC 8839 §5.1, with the `generation`,
-//!   `ufrag`, `network-id`, `network-cost` extensions). TCP, mDNS (`*.local`) and other FQDN
+//!   `ufrag`, `network-id`, `network-cost` extensions). mDNS (`*.local`) and other FQDN
 //!   candidates parse to distinct [`ParseError`] variants so callers can skip them.
+//! - TCP candidates (RFC 6544): `tcp` transport with `tcptype` (active, passive, so), TCP
+//!   type and local preferences below UDP's (§4.2), pairs only within a transport and between
+//!   compatible types (§6.2). A local passive candidate ([`Candidate::host_tcp`]) never starts
+//!   checks: a check arriving over an accepted connection makes a peer-reflexive remote
+//!   (active) candidate whose pair gets the triggered checks, nomination and consent. The
+//!   caller frames STUN and data on the connection (RFC 4571) and passes the connection's
+//!   remote address and the candidate's address as for UDP.
 //! - Checklist (§6.1): pairs of the same IP family, pair priority formula, redundant pairs
 //!   (same base and remote) pruned to the highest priority, Frozen/Waiting/InProgress/
 //!   Succeeded/Failed with per-foundation unfreezing, at most 100 pairs.
@@ -78,7 +85,8 @@
 //!
 //! # Not implemented
 //!
-//! Several components, TCP candidates (RFC 6544), aggressive nomination (requests carrying
+//! Several components, local active and simultaneous-open TCP candidates (remote ones are
+//! parsed and kept; active ones pair with our passive candidates), aggressive nomination (requests carrying
 //! USE-CANDIDATE are honoured, but this agent never sends them outside regular nomination),
 //! renomination, gathering (the caller's STUN/TURN clients do it), mDNS resolution, cancelling
 //! an in-progress check when a triggered check is due on its pair (§7.3.1.4: the
@@ -91,10 +99,11 @@
 
 mod agent;
 mod candidate;
+pub mod tcp;
 
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
 
 pub use crate::agent::{IceAgent, IceConfig, IceEvent, IceState, Transmit};
-pub use crate::candidate::{Candidate, CandidateKind, Credentials, ParseError};
+pub use crate::candidate::{Candidate, CandidateKind, Credentials, ParseError, TcpType};

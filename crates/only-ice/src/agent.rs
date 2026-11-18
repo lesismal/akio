@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 
 use only_turn::stun::{Class, Message, MessageBuilder, Method, attr};
 
-use crate::candidate::{self, Candidate, CandidateKind, Credentials, random_bytes, random_u64};
+use crate::candidate::{
+    self, Candidate, CandidateKind, Credentials, TcpType, random_bytes, random_u64,
+};
 
 /// Most remote candidates kept (signaled plus peer-reflexive).
 const MAX_REMOTE_CANDIDATES: usize = 100;
@@ -157,6 +159,9 @@ struct Pair {
     remote_nominated: bool,
     /// Controlling: the next check carries USE-CANDIDATE.
     nominate: bool,
+    /// The local candidate is passive TCP: this side never opens the connection, so the pair
+    /// only gets checks triggered by the remote's (over its connection).
+    passive: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -191,8 +196,11 @@ fn pair_priority(controlling: bool, local: u32, remote: u32) -> u64 {
     (u64::from(g.min(d)) << 32) + 2 * u64::from(g.max(d)) + u64::from(g > d)
 }
 
-fn same_family(a: &SocketAddr, b: &SocketAddr) -> bool {
-    a.is_ipv4() == b.is_ipv4()
+/// Whether a local candidate takes part in ordinary pairing: a passive TCP candidate only
+/// pairs with the peer-reflexive remote of a connection that arrived (RFC 6544 §6.2: the
+/// signaled active candidates name no port to check).
+fn pairs_on_signal(c: &Candidate) -> bool {
+    c.kind() != CandidateKind::PeerReflexive && c.tcp_type() != Some(TcpType::Passive)
 }
 
 /// A sans-io ICE agent for one component over UDP. See the crate docs for how to drive it.
@@ -334,7 +342,7 @@ impl IceAgent {
             return false;
         }
         self.local_cands.push(c.clone());
-        if c.kind() != CandidateKind::PeerReflexive {
+        if pairs_on_signal(&c) {
             for i in 0..self.remote_cands.len() {
                 let r = self.remote_cands[i].clone();
                 self.add_pair(&c, &r);
@@ -384,7 +392,7 @@ impl IceAgent {
         self.remote_cands.push(c.clone());
         for i in 0..self.local_cands.len() {
             let l = self.local_cands[i].clone();
-            if l.kind() != CandidateKind::PeerReflexive {
+            if pairs_on_signal(&l) {
                 self.add_pair(&l, &c);
             }
         }
@@ -423,6 +431,9 @@ impl IceAgent {
         self.end_of_candidates = false;
         self.lite_valid = None;
         for l in self.local_cands.clone() {
+            if !pairs_on_signal(&l) {
+                continue;
+            }
             for r in self.remote_cands.clone() {
                 self.add_pair(&l, &r);
             }
@@ -581,13 +592,23 @@ impl IceAgent {
         else {
             return true;
         };
-        let remote = if let Some(r) = self.remote_cands.iter().find(|r| r.addr() == source) {
+        // Over TCP the remote end is of the opposite type (RFC 6544 §7.2).
+        let remote_tcp = local.tcp_type().map(|t| match t {
+            TcpType::Passive => TcpType::Active,
+            TcpType::Active => TcpType::Passive,
+            TcpType::So => TcpType::So,
+        });
+        let known = self
+            .remote_cands
+            .iter()
+            .find(|r| r.addr() == source && r.tcp_type() == remote_tcp);
+        let remote = if let Some(r) = known {
             r.clone()
         } else {
             if self.remote_cands.len() >= MAX_REMOTE_CANDIDATES {
                 return true;
             }
-            let r = Candidate::remote_prflx(source, priority);
+            let r = Candidate::remote_prflx(source, priority, remote_tcp);
             self.remote_cands.push(r.clone());
             r
         };
@@ -789,7 +810,7 @@ impl IceAgent {
     fn add_pair(&mut self, local: &Candidate, remote: &Candidate) {
         let la = local.send_addr();
         let ra = remote.addr();
-        if !same_family(&la, &ra) {
+        if !local.pairs_with(remote) {
             return;
         }
         let prio = pair_priority(self.controlling, local.priority(), remote.priority());
@@ -838,6 +859,7 @@ impl IceAgent {
             tx: None,
             remote_nominated: false,
             nominate: false,
+            passive: local.tcp_type() == Some(TcpType::Passive),
         });
         self.checking_since.get_or_insert(self.now);
     }
@@ -966,7 +988,9 @@ impl IceAgent {
         !self.triggered.is_empty()
             || (self.ordinary_checks_allowed()
                 && self.pairs.iter().any(|p| {
-                    p.tx.is_none() && matches!(p.state, PairState::Waiting | PairState::Frozen)
+                    p.tx.is_none()
+                        && !p.passive
+                        && matches!(p.state, PairState::Waiting | PairState::Frozen)
                 }))
     }
 
@@ -994,7 +1018,7 @@ impl IceAgent {
             self.pairs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.tx.is_none() && p.state == st)
+                .filter(|(_, p)| p.tx.is_none() && !p.passive && p.state == st)
                 .max_by_key(|(_, p)| p.prio)
                 .map(|(i, _)| i)
         };

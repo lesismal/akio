@@ -15,12 +15,17 @@ Two crates:
   and bandwidth estimation, sender/receiver reports). `only-webrtc` itself does SDP
   offer/answer (BUNDLE, rtcp-mux, codec and header-extension negotiation, renegotiation) and
   drives the peers with `only`'s I/O threads and one shared timer thread.
-- `only-turn` has the STUN codec, a STUN server and a TURN server (RFC 8656 over UDP).
+- `only-turn` has the STUN codec, a STUN server, a TURN server (RFC 8656 over UDP, TCP and TLS)
+  and a sans-io TURN client.
 
 Interop is tested against pion (Go) in both offer directions, for data channels and media,
-directly and through a `only` TURN relay, against fib's Go WebRTC (data channels, both
-directions), and the TURN server against the pion/turn client and
-coturn's `turnutils_uclient` (`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn). Headless
+directly and through a `only` TURN relay, with an `Endpoint` offering only relayed candidates
+(on `only`, pion/turn and coturn TURN servers) or only its passive ICE-TCP candidate, and with
+simulcast sent to pion; against fib's Go WebRTC (data channels, both directions); the TURN
+server against the pion/turn client and coturn's `turnutils_uclient` over UDP, TCP and TLS; the
+TURN client against pion/turn, coturn and `only` over UDP, TCP and TLS
+(`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn, `linux.sh` for all of it in Linux
+containers). Headless
 Chrome is tested in both offer directions: data channels, and its fake camera and microphone
 echoed back by an `RtcServer` and decoded by Chrome (`tools/interop/webrtc/browser.sh`).
 
@@ -75,6 +80,7 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 | `send(channel, data, binary)` | a data channel message (`Ok(false)`: buffer full) |
 | `open_channel(cfg)` | a new channel; no renegotiation once one channel exists |
 | `write_media(mid, pt, wallclock, rtp_time, data)` | one sample (packetized for you) |
+| `write_simulcast(mid, rid, pt, wallclock, rtp_time, data)` | one sample of a simulcast encoding |
 | `payload_type(mid, codec)` | the negotiated payload type of a codec |
 | `request_keyframe(mid, kind)` | PLI or FIR to the remote sender |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | SDP changes after the first exchange |
@@ -99,6 +105,43 @@ asks a STUN server for the public address and adds it as a server-reflexive cand
 blocks: never call it from a callback). `create_offer(handler, |sdp| ...)` gets an
 `SdpChanges` to add channels and media; `accept_offer` answers a remote offer. An `Endpoint` talks
 to ICE-lite servers, to browsers and pion, and to other `Endpoint`s.
+
+### Relayed candidates
+
+`gather_relay(turn_server, username, password, timeout)` allocates a relayed address on a TURN
+server over the endpoint's UDP socket and adds it as a relayed candidate (and the
+server-reflexive address the server saw, when it is new); like `gather_srflx` it blocks. The
+allocation is shared by every peer of the endpoint and kept alive (refreshes, permissions and
+channels, on the WebRTC timer thread) until `Endpoint::close`, which deletes it. At most 4
+allocations per endpoint; a refusal or the limit is `Error::Turn`, no answer `Error::Timeout`.
+
+```rust,ignore
+let ep = Endpoint::bind(&engine, "0.0.0.0:0".parse()?)?;
+let relayed = ep.gather_relay("203.0.113.7:3478".parse()?, "alice", "secret", Duration::from_secs(5))?;
+```
+
+### ICE over TCP
+
+`listen_tcp(&engine, addr)` adds a passive ICE-TCP candidate (RFC 6544) on its own TCP port: a
+browser or pion behind a network that blocks UDP connects to it with an active candidate and runs
+ICE, DTLS, SCTP and SRTP over the connection (RFC 4571 framing). The engine needs TCP I/O threads
+(`client_threads(n)` or a TCP listener). A dedicated thread accepts, at most 256 connections at
+once; a connection whose first frame is not a connectivity check for one of the endpoint's peers
+within 10 seconds is closed, and so are a peer's connections when it closes. TCP candidates rank
+below UDP ones, so a peer that can use UDP still does. An `Endpoint` has no active TCP
+candidates: clients that only have TCP use TURN over TCP or TLS.
+
+### Simulcast
+
+`SdpChanges::add_simulcast_media(kind, dir, &["h", "m", "l"], stream_id, track_id)` adds a line
+that sends one RTP stream per RID (RFC 8853, highest quality first, as browsers order them), and
+`Peer::write_simulcast(mid, rid, pt, wallclock, rtp_time, data)` writes one encoding's samples:
+the application encodes each layer at its own resolution and bitrate. The offer lists the RIDs
+(`a=rid`, `a=simulcast:send`); the answer's `a=simulcast:recv` decides which are sent (only the
+first without it). Every encoding has its own SSRC and RTX stream, its packets carry the MID and
+RID header extensions, and a keyframe request names its RID (`KeyframeRequest::rid`). As an
+answerer the stack also accepts simulcast from the remote (`MediaData::rid` tells the layers
+apart); picking which layer to forward is the application's job.
 
 ## TURN
 
@@ -127,6 +170,42 @@ sending), for embedding or testing. `StunServer` alone answers Binding requests.
 each with its own lock: datagrams of different allocations do not contend across I/O threads,
 the expiry sweep takes one shard at a time, and the relay socket of an authenticated Allocate
 is bound before any lock is taken. The quotas stay server-wide.
+
+### TURN over TCP and TLS
+
+`turn.stream()` is the acceptor for TCP listeners, and wrapped in `only::tls::Tls` for TLS ones
+(`turns:`, usually port 5349 or 443): the same allocations, quotas and credentials as the UDP
+listener. Relays stay UDP; TCP relays (RFC 6062) are not offered (`442`).
+
+```rust,ignore
+let engine = Arc::new(
+    Engine::builder()
+        .listen(Listener::udp("0.0.0.0:3478".parse()?).serve(turn.clone()))
+        .listen(Listener::tcp("0.0.0.0:3478".parse()?).serve(turn.stream()))
+        .listen(Listener::tcp("0.0.0.0:5349".parse()?).serve(Tls::server(tls_cfg, turn.stream())))
+        .build()?,
+);
+turn.set_engine(&engine);
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `stream_allocate_timeout` | 30 s | a connection that has not allocated by then is closed |
+| `max_stream_queue` | 256 KiB | relayed data for a connection with more queued is dropped (it keeps datagram semantics; responses always go) |
+
+An allocation made over a connection ends with it. STUN and ChannelData are framed on the stream
+by their own lengths (`only_turn::framing::FrameReader`), ChannelData padded to four bytes.
+
+### The TURN client
+
+`only_turn::client::Client` is a sans-io client of one allocation, over UDP or a TCP/TLS stream
+(`ClientConfig::stream(true)`): it answers the 401 challenge with long-term credentials, renews
+stale nonces, refreshes the allocation, binds a channel to each peer on first `send_to` (falling
+back to permissions and Send indications), refreshes those bindings while a peer is in use, and
+retransmits over UDP. The caller moves bytes: `poll_transmit` to the server, `handle_input`
+with what comes back (it returns relayed data as `(peer, payload)`), `handle_timeout` at
+`poll_timeout`. Bounds: 64 peers, 64 KiB waiting for bindings. `Endpoint::gather_relay` drives
+one over UDP.
 
 ## The DTLS layer: DTLS 1.2 for WebRTC, DTLS 1.3 when asked
 
@@ -158,7 +237,8 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TURN over TCP/TLS and a TURN client in `only-webrtc` (relay candidates for an `Endpoint`); ICE
-over TCP; resolving mDNS candidates (peers using them are still reached through peer-reflexive
-candidates); simulcast sending and layer selection; FEC; RTCP XR; DTLS 1.3 for WebRTC by
-default; DTLS 1.3 0-RTT and NewConnectionId.
+TCP relays (RFC 6062); TURN over TCP/TLS from an `Endpoint` (the client supports it, the
+endpoint allocates over UDP); active ICE-TCP candidates and ICE-TCP on `RtcServer`; resolving
+mDNS candidates (peers using them are still reached through peer-reflexive candidates);
+simulcast layer selection; FEC; RTCP XR; DTLS 1.3 for WebRTC by default; DTLS 1.3 0-RTT and
+NewConnectionId. ADR-017 has the details of what was added.

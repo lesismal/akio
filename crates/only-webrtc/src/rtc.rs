@@ -46,8 +46,8 @@ const RTCP_INTERVAL: Duration = Duration::from_millis(1000);
 pub(crate) enum Output {
     /// Call [`Rtc::handle_timeout`] then.
     Timeout(Instant),
-    /// Send `1` to `0`.
-    Transmit(SocketAddr, Vec<u8>),
+    /// Send `2` from the local address `0` to `1`.
+    Transmit(SocketAddr, SocketAddr, Vec<u8>),
     /// Something happened.
     Event(RtcEvent),
 }
@@ -317,6 +317,50 @@ struct Route {
     repairs: Option<u32>,
 }
 
+/// One simulcast encoding this side sends (RFC 8853): its RID, RTP stream (with its own RTX
+/// SSRC) and packetizers.
+#[derive(Debug)]
+struct SimEnc {
+    rid: String,
+    send: SendStream,
+    packetizers: HashMap<u8, Box<dyn Packetizer>>,
+    /// The answer accepted it (`a=simulcast:recv`); before an answer, every encoding is.
+    active: bool,
+}
+
+/// Most simulcast encodings of one line (and RIDs accepted from a remote offer).
+pub(crate) const MAX_SIMULCAST: usize = 8;
+
+/// The RIDs of `a=simulcast:<dir> ...` in `m` (RFC 8853 §5.1): the first alternative of each
+/// stream, paused ones (`~`) left out.
+fn simulcast_rids(m: &Media, dir: &str) -> Option<Vec<String>> {
+    let v = m.get("simulcast")?;
+    let mut it = v.split_whitespace();
+    while let Some(d) = it.next() {
+        let list = it.next()?;
+        if d != dir {
+            continue;
+        }
+        let rids = list
+            .split(';')
+            .filter_map(|alt| alt.split(',').next())
+            .filter(|r| !r.starts_with('~') && valid_rid(r))
+            .take(MAX_SIMULCAST)
+            .map(str::to_owned)
+            .collect();
+        return Some(rids);
+    }
+    None
+}
+
+/// RFC 8851 `rid-id`: letters, digits, `-` and `_` (at most 16 here, as browsers).
+pub(crate) fn valid_rid(r: &str) -> bool {
+    !r.is_empty()
+        && r.len() <= 16
+        && r.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[derive(Debug)]
 struct MediaLine {
     mid: Mid,
@@ -337,6 +381,10 @@ struct MediaLine {
     remote_ssrcs: Vec<u32>,
     remote_rtx: HashMap<u32, u32>,
     fir_seq: u8,
+    /// Simulcast encodings this side sends; empty without simulcast.
+    sim: Vec<SimEnc>,
+    /// RIDs the remote's offer sends (`a=simulcast:send`): the answer receives them.
+    recv_rids: Vec<String>,
 }
 
 impl MediaLine {
@@ -346,9 +394,25 @@ impl MediaLine {
         want: Direction,
         stream_id: Option<String>,
         track_id: Option<String>,
+        rids: &[String],
     ) -> MediaLine {
         let ssrc = random_u32();
         let rtx = random_u32();
+        let sim = rids
+            .iter()
+            .take(MAX_SIMULCAST)
+            .map(|r| SimEnc {
+                rid: r.clone(),
+                send: SendStream::new(
+                    random_u32(),
+                    90_000,
+                    Some(random_u32()),
+                    random_u32() as u16,
+                ),
+                packetizers: HashMap::new(),
+                active: true,
+            })
+            .collect();
         MediaLine {
             mid,
             kind,
@@ -366,7 +430,34 @@ impl MediaLine {
             remote_ssrcs: Vec::new(),
             remote_rtx: HashMap::new(),
             fir_seq: 0,
+            sim,
+            recv_rids: Vec::new(),
         }
+    }
+
+    /// The send stream with SSRC `ssrc`: `None` for the main one, else the encoding's index.
+    fn send_of(&self, ssrc: u32) -> Option<Option<usize>> {
+        if self.sim.is_empty() && self.send.ssrc() == ssrc {
+            return Some(None);
+        }
+        self.sim
+            .iter()
+            .position(|e| e.send.ssrc() == ssrc)
+            .map(Some)
+    }
+
+    fn send_mut(&mut self, enc: Option<usize>) -> &mut SendStream {
+        match enc {
+            Some(i) => &mut self.sim[i].send,
+            None => &mut self.send,
+        }
+    }
+
+    /// The round-trip time of the first stream that has one.
+    fn rtt(&self) -> Option<Duration> {
+        self.send
+            .rtt()
+            .or_else(|| self.sim.iter().find_map(|e| e.send.rtt()))
     }
 
     fn codec(&self, pt: u8) -> Option<&CodecParams> {
@@ -430,12 +521,16 @@ pub(crate) struct Rtc {
     next_rtcp: Option<Instant>,
     next_stats: Option<Instant>,
     cname: String,
-    transmits: VecDeque<(SocketAddr, Vec<u8>)>,
+    /// (local address to send from, destination, datagram).
+    transmits: VecDeque<(SocketAddr, SocketAddr, Vec<u8>)>,
     events: VecDeque<RtcEvent>,
     alive: bool,
     closed_emitted: bool,
     stats: Stats,
     remote_addr: Option<SocketAddr>,
+    /// The local address the first DTLS datagram arrived on (where DTLS answers go before ICE
+    /// has a pair).
+    remote_local: Option<SocketAddr>,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -504,6 +599,7 @@ impl Rtc {
             closed_emitted: false,
             stats: Stats::default(),
             remote_addr: None,
+            remote_local: None,
             cfg,
         })
     }
@@ -578,13 +674,14 @@ impl Rtc {
                     dir,
                     stream_id,
                     track_id,
+                    rids,
                 } => {
                     let mid = if self.mid_free(&mid) {
                         mid
                     } else {
                         self.alloc_mid()
                     };
-                    let mut line = MediaLine::new(mid, kind, dir, stream_id, track_id);
+                    let mut line = MediaLine::new(mid, kind, dir, stream_id, track_id, &rids);
                     line.codecs = local_codecs(&self.cfg, kind);
                     self.media.push(line);
                     new_lines.push(mid);
@@ -668,6 +765,16 @@ impl Rtc {
             line.ext = remote_extmap(m);
             line.negotiated = true;
             read_ssrcs(line, m);
+            if !line.sim.is_empty() {
+                // The encodings the answer receives; without `a=simulcast`, only the first.
+                let accepted = simulcast_rids(m, "recv");
+                for (i, e) in line.sim.iter_mut().enumerate() {
+                    e.active = match &accepted {
+                        Some(list) => list.contains(&e.rid),
+                        None => i == 0,
+                    };
+                }
+            }
             if pending.new_lines.contains(&mid) {
                 self.events.push_back(RtcEvent::MediaAdded(MediaAdded {
                     mid,
@@ -738,7 +845,7 @@ impl Rtc {
             let idx = match self.media.iter().position(|l| l.mid == mid) {
                 Some(i) => i,
                 None => {
-                    let line = MediaLine::new(mid, kind, Direction::SendRecv, None, None);
+                    let line = MediaLine::new(mid, kind, Direction::SendRecv, None, None, &[]);
                     self.media.push(line);
                     if let Ok(n) = mid.as_str().parse::<usize>() {
                         self.next_mid = self.next_mid.max(n + 1);
@@ -760,6 +867,15 @@ impl Rtc {
             };
             line.negotiated = true;
             read_ssrcs(line, m);
+            // A simulcast sender: receive the RIDs it declares (`a=rid:<id> send`).
+            line.recv_rids = simulcast_rids(m, "send")
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| {
+                    m.all("rid")
+                        .any(|v| v.split_whitespace().take(2).eq([r.as_str(), "send"]))
+                })
+                .collect();
             if was_new && !line.codecs.is_empty() && !line.stopped {
                 self.events.push_back(RtcEvent::MediaAdded(MediaAdded {
                     mid,
@@ -1033,7 +1149,19 @@ impl Rtc {
                 attrs.push(Attr::kv("fmtp", format!("{r} apt={}", c.pt)));
             }
         }
-        if dir.sends() {
+        if dir.sends() && !l.sim.is_empty() {
+            // RFC 8853: the encodings by RID (no SSRCs are signaled, as browsers do).
+            let rids: Vec<&str> = l
+                .sim
+                .iter()
+                .filter(|e| offer || e.active)
+                .map(|e| e.rid.as_str())
+                .collect();
+            for r in &rids {
+                attrs.push(Attr::kv("rid", format!("{r} send")));
+            }
+            attrs.push(Attr::kv("simulcast", format!("send {}", rids.join(";"))));
+        } else if dir.sends() {
             let ssrc = l.send.ssrc();
             let rtx = l
                 .send
@@ -1051,6 +1179,15 @@ impl Rtc {
                     format!("{s} msid:{} {}", l.stream_id, l.track_id),
                 ));
             }
+        }
+        if !offer && dir.receives() && !l.recv_rids.is_empty() {
+            for r in &l.recv_rids {
+                attrs.push(Attr::kv("rid", format!("{r} recv")));
+            }
+            attrs.push(Attr::kv(
+                "simulcast",
+                format!("recv {}", l.recv_rids.join(";")),
+            ));
         }
         if fmts.is_empty() {
             fmts.push("0".into());
@@ -1145,11 +1282,14 @@ impl Rtc {
             .map(|c| Pt::from(c.pt))
     }
 
-    /// Packetizes and sends one sample. `Ok(false)`: no such sending line.
+    /// Packetizes and sends one sample, on simulcast encoding `rid` of a simulcast line.
+    /// `Ok(false)`: no such sending line or encoding. On a simulcast line `rid` `None` is the
+    /// first encoding; an encoding the answer did not accept drops the sample.
     pub(crate) fn write_media(
         &mut self,
         now: Instant,
         mid: Mid,
+        rid: Option<&str>,
         pt: Pt,
         time: MediaTime,
         data: &[u8],
@@ -1161,45 +1301,72 @@ impl Rtc {
         if line.stopped || !(line.dir.sends() || !line.negotiated && line.want.sends()) {
             return Ok(false);
         }
+        let enc = match (line.sim.is_empty(), rid) {
+            (true, None) => None,
+            (true, Some(_)) => return Ok(false),
+            (false, None) => Some(0),
+            (false, Some(r)) => match line.sim.iter().position(|e| e.rid == r) {
+                Some(i) => Some(i),
+                None => return Ok(false),
+            },
+        };
         let Some(codec) = line.codec(pt.get()).cloned() else {
             return Err(err(format!(
                 "payload type {} not negotiated on {mid}",
                 pt.get()
             )));
         };
-        let (Some(tx), Some((_, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
+        if enc.is_some_and(|i| !line.sim[i].active) {
+            return Ok(true); // not accepted by the answer: dropped
+        }
+        let (Some(tx), Some((src, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
             return Ok(true); // not connected yet: dropped
         };
         line.last_pt = Some(codec.pt);
         let ts = time.ticks_at(codec.clock) as u32;
-        let pk = line
-            .packetizers
+        let has_mid = line.ext.id_of(Extension::Mid).is_some();
+        let has_rid = line.ext.id_of(Extension::RtpStreamId).is_some();
+        let has_twcc = line.ext.id_of(Extension::TransportCc).is_some();
+        let has_ast = line.ext.id_of(Extension::AbsSendTime).is_some();
+        let MediaLine {
+            ext: map,
+            send,
+            packetizers,
+            sim,
+            ..
+        } = line;
+        let (send, packetizers, rid) = match enc {
+            Some(i) => {
+                let e = &mut sim[i];
+                (&mut e.send, &mut e.packetizers, Some(e.rid.as_str()))
+            }
+            None => (send, packetizers, None),
+        };
+        let pk = packetizers
             .entry(codec.pt)
             .or_insert_with(|| only_rtp::codec::packetizer(codec.codec.rtp()));
         let payloads = pk.packetize(RTP_PAYLOAD_MTU, data);
-        let has_mid = line.ext.id_of(Extension::Mid).is_some();
-        let has_twcc = line.ext.id_of(Extension::TransportCc).is_some();
-        let has_ast = line.ext.id_of(Extension::AbsSendTime).is_some();
         for (p, marker) in payloads {
             let mut ext = ExtensionValues::default();
             if has_mid {
                 ext.mid = Some(mid.as_str().to_owned());
+            }
+            if has_rid {
+                ext.rid = rid.map(str::to_owned);
             }
             if has_ast {
                 ext.abs_send_time = Some(abs_send_time_now());
             }
             let tw = has_twcc.then(|| self.twcc_tx.next_seq());
             ext.transport_cc = tw;
-            let raw = line
-                .send
-                .write(now, codec.pt, marker, ts, &p, &ext, &line.ext);
+            let raw = send.write(now, codec.pt, marker, ts, &p, &ext, map);
             if let Some(s) = tw {
                 self.twcc_tx.on_sent(s, now, raw.len());
             }
             if let Ok(out) = tx.protect_rtp(&raw) {
                 self.stats.bytes_sent += out.len() as u64;
                 self.stats.packets_sent += 1;
-                self.transmits.push_back((dest, out));
+                self.transmits.push_back((src, dest, out));
             }
         }
         if self.next_rtcp.is_none() {
@@ -1251,13 +1418,13 @@ impl Rtc {
     }
 
     fn send_rtcp(&mut self, pkts: &[Rtcp]) {
-        let (Some(tx), Some((_, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
+        let (Some(tx), Some((src, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
             return;
         };
         let raw = only_rtp::write_compound(pkts);
         if let Ok(out) = tx.protect_rtcp(&raw) {
             self.stats.bytes_sent += out.len() as u64;
-            self.transmits.push_back((dest, out));
+            self.transmits.push_back((src, dest, out));
         }
     }
 
@@ -1280,7 +1447,10 @@ impl Rtc {
                 self.ice.handle_receive(now, source, destination, data);
             }
             20..=63 => {
-                self.remote_addr.get_or_insert(source);
+                if self.remote_addr.is_none() {
+                    self.remote_addr = Some(source);
+                    self.remote_local = Some(destination);
+                }
                 self.handle_dtls(now, Some(data));
             }
             128..=191 => {
@@ -1517,12 +1687,26 @@ impl Rtc {
                 })?;
             let l = &self.media[line];
             let repairs = if l.rtx_of(h.payload_type).is_some() {
-                // Unsignalled RTX: repairs the line's (first) media stream.
-                let main = self
-                    .routes
-                    .iter()
-                    .find(|(_, r)| r.line == line && r.repairs.is_none())
-                    .map(|(s, _)| *s)?;
+                // Unsignalled RTX: repairs the stream of its repaired RID (simulcast), else the
+                // line's (first) media stream.
+                let by_rid = h.ext.rrid.as_deref().and_then(|rr| {
+                    self.recv
+                        .iter()
+                        .find(|(s, r)| {
+                            r.line == line
+                                && r.rid.as_deref() == Some(rr)
+                                && self.routes.get(s).is_some_and(|x| x.repairs.is_none())
+                        })
+                        .map(|(s, _)| *s)
+                });
+                let main = match by_rid {
+                    Some(m) => m,
+                    None => self
+                        .routes
+                        .iter()
+                        .find(|(_, r)| r.line == line && r.repairs.is_none())
+                        .map(|(s, _)| *s)?,
+                };
                 Some(main)
             } else {
                 None
@@ -1610,9 +1794,15 @@ impl Rtc {
 
     fn report_blocks(&mut self, now: Instant, ntp: u64, blocks: &[only_rtp::ReportBlock]) {
         for b in blocks {
-            if let Some(l) = self.media.iter_mut().find(|l| l.send.ssrc() == b.ssrc) {
-                l.send.handle_report_block(now, ntp, b);
-                if let Some(rtt) = l.send.rtt() {
+            let found = self
+                .media
+                .iter()
+                .enumerate()
+                .find_map(|(i, l)| l.send_of(b.ssrc).map(|e| (i, e)));
+            if let Some((li, enc)) = found {
+                let l = &mut self.media[li];
+                l.send_mut(enc).handle_report_block(now, ntp, b);
+                if let Some(rtt) = l.rtt() {
                     for r in self.recv.values_mut() {
                         r.stream.set_rtt(rtt);
                     }
@@ -1622,40 +1812,59 @@ impl Rtc {
     }
 
     fn keyframe_request(&mut self, media_ssrc: u32, kind: KeyframeRequestKind) {
-        if let Some(l) = self.media.iter().find(|l| l.send.ssrc() == media_ssrc) {
+        let found = self
+            .media
+            .iter()
+            .find_map(|l| l.send_of(media_ssrc).map(|e| (l, e)));
+        if let Some((l, enc)) = found {
             self.events.push_back(RtcEvent::Keyframe(KeyframeRequest {
                 mid: l.mid,
-                rid: None,
+                rid: enc.map(|i| l.sim[i].rid.clone()),
                 kind,
             }));
         }
     }
 
     fn resend(&mut self, now: Instant, media_ssrc: u32, lost: &[u16]) {
-        let Some(line) = self.media.iter_mut().find(|l| l.send.ssrc() == media_ssrc) else {
+        let Some((line, enc)) = self
+            .media
+            .iter_mut()
+            .find_map(|l| l.send_of(media_ssrc).map(|e| (l, e)))
+        else {
             return;
         };
-        let (Some(tx), Some((_, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
+        let (Some(tx), Some((src, dest))) = (self.srtp_tx.as_mut(), self.ice.send_pair()) else {
             return;
         };
         let rtx_pt = line.last_pt.and_then(|p| line.codec(p)).and_then(|c| c.rtx);
         let twcc = &mut self.twcc_tx;
         let has_twcc = line.ext.id_of(Extension::TransportCc).is_some();
+        let has_rrid = line.ext.id_of(Extension::RepairedRtpStreamId).is_some();
         let mut seqs = Vec::new();
-        let pkts = line.send.resend_with(now, lost, rtx_pt, &line.ext, |e| {
-            if has_twcc {
-                let s = twcc.next_seq();
-                e.transport_cc = Some(s);
-                seqs.push(s);
-            }
-        });
+        let map = line.ext.clone();
+        let pkts = line
+            .send_mut(enc)
+            .resend_with(now, lost, rtx_pt, &map, |e| {
+                if has_twcc {
+                    let s = twcc.next_seq();
+                    e.transport_cc = Some(s);
+                    seqs.push(s);
+                }
+                // An RTX stream names the encoding it repairs (RFC 8852).
+                if rtx_pt.is_some() {
+                    let rid = e.rid.take();
+                    if has_rrid {
+                        e.rrid = rid;
+                    }
+                }
+            });
         for (i, raw) in pkts.into_iter().enumerate() {
             if let Some(s) = seqs.get(i) {
                 twcc.on_sent(*s, now, raw.len());
             }
             if let Ok(out) = tx.protect_rtp(&raw) {
                 self.stats.bytes_sent += out.len() as u64;
-                self.transmits.push_back((dest, out));
+                self.transmits.push_back((src, dest, out));
             }
         }
     }
@@ -1699,7 +1908,7 @@ impl Rtc {
         if let (Some(t), Some(d)) = (self.next_stats, self.cfg.stats_interval) {
             if t <= now {
                 self.next_stats = Some(now + d);
-                let rtt = self.media.iter().find_map(|l| l.send.rtt());
+                let rtt = self.media.iter().find_map(MediaLine::rtt);
                 self.events.push_back(RtcEvent::Other(Other::PeerStats {
                     bytes_sent: self.stats.bytes_sent,
                     bytes_received: self.stats.bytes_received,
@@ -1737,12 +1946,26 @@ impl Rtc {
                     ssrc,
                     reports: blocks,
                 }),
-                None => continue,
+                None if l.sim.is_empty() => continue,
+                None => {}
             }
-            pkts.push(Rtcp::SourceDescription(vec![(
-                ssrc,
-                vec![(1, self.cname.clone())],
-            )]));
+            let mut sdes = vec![(ssrc, vec![(1, self.cname.clone())])];
+            // One SR per simulcast encoding that sent something.
+            for e in &l.sim {
+                if let Some(info) = e.send.sender_report(now, ntp) {
+                    let s = e.send.ssrc();
+                    pkts.push(Rtcp::SenderReport {
+                        ssrc: s,
+                        info,
+                        reports: Vec::new(),
+                    });
+                    sdes.push((s, vec![(1, self.cname.clone())]));
+                }
+            }
+            if pkts.is_empty() {
+                continue;
+            }
+            pkts.push(Rtcp::SourceDescription(sdes));
             compounds.push(pkts);
         }
         for c in compounds {
@@ -1757,7 +1980,8 @@ impl Rtc {
         for _ in 0..8 {
             let mut progress = false;
             while let Some(t) = self.ice.poll_transmit() {
-                self.transmits.push_back((t.destination, t.contents));
+                self.transmits
+                    .push_back((t.source, t.destination, t.contents));
             }
             while let Some(e) = self.ice.poll_event() {
                 progress = true;
@@ -1805,10 +2029,13 @@ impl Rtc {
             return false;
         };
         let mut progress = false;
-        let dest = self.ice.send_pair().map(|p| p.1).or(self.remote_addr);
+        let path = self
+            .ice
+            .send_pair()
+            .or_else(|| self.remote_local.zip(self.remote_addr));
         while let Some(t) = d.poll_transmit() {
-            if let Some(dest) = dest {
-                self.transmits.push_back((dest, t));
+            if let Some((src, dest)) = path {
+                self.transmits.push_back((src, dest, t));
             }
         }
         let mut evs = Vec::new();
@@ -1925,8 +2152,8 @@ impl Rtc {
         if self.transmits.is_empty() && self.events.is_empty() {
             self.pump(now);
         }
-        if let Some((d, t)) = self.transmits.pop_front() {
-            return Output::Transmit(d, t);
+        if let Some((s, d, t)) = self.transmits.pop_front() {
+            return Output::Transmit(s, d, t);
         }
         if let Some(e) = self.events.pop_front() {
             return Output::Event(e);

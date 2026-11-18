@@ -782,6 +782,7 @@ dependencies = [
  "only",
  "only-core",
  "only-crypto",
+ "only-x509",
 ]
 
 [[package]]
@@ -808,6 +809,7 @@ dependencies = [
  "only-sctp",
  "only-srtp",
  "only-turn",
+ "only-x509",
 ]
 
 [[package]]
