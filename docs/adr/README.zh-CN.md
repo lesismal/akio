@@ -28,3 +28,4 @@
 - [ADR-016：fMP4 HLS、RTMP 与 RTSP 客户端、媒体 hub 中的 WebRTC 媒体](016-media-fmp4-clients-webrtc.zh-CN.md)（2026-11-17 采纳）
 - [ADR-027：XDP 限速、线程绑核、eBPF 哈希层与内核拼接的 SOCKS 隧道](027-ebpf-xdp-pinning-socks-splice.zh-CN.md)（2026-11-18 采纳）
 - [ADR-026：用户态 TCP/IP 协议栈的 IPv6、ECN 与 pacing](026-userspace-ipv6-ecn-pacing.zh-CN.md)（2026-11-17 采纳）
+- [ADR-024：UDP 接收缓冲区的所有权交付与带密钥的对端表](024-udp-owned-receive-buffers.zh-CN.md)（2026-11-17 采纳）

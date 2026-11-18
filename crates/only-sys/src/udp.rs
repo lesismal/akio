@@ -149,9 +149,19 @@ pub fn enable_ecn(fd: RawFd) -> bool {
     v4 || v6
 }
 
-/// Receives up to `slots` datagrams per syscall into pre-allocated buffers.
+/// Receives up to `slots` datagrams per syscall into pooled receive slabs (ADR-024).
+///
+/// Each slot receives into the free tail of its own slab (`only_buf::slab`, two slot sizes
+/// long). A datagram is either read in place ([`get`](Self::get)) or cut off the slab and handed
+/// out ([`take`](Self::take)), after which the slot goes on receiving into what is left of its
+/// slab, and into a fresh (or freed) one once less than a slot size is left. Small datagrams
+/// thus pack densely: a handed-out datagram keeps only its slab, not a whole batch, alive.
 pub struct RecvBatch {
-    bufs: Vec<u8>,
+    /// The free tail of each slot's slab; at least `size` bytes at each `recv`.
+    free: Vec<only_buf::slab::ChunkMut>,
+    pool: only_buf::slab::SlabPool,
+    /// Datagram `i` of the last `recv` was handed out with `take`.
+    taken: Vec<bool>,
     size: usize,
     iov: Vec<ffi::iovec>,
     names: Vec<ffi::sockaddr_storage>,
@@ -159,6 +169,9 @@ pub struct RecvBatch {
     gro: bool,
     msgs: Vec<ffi::mmsghdr>,
     got: usize,
+    /// Slots the last `recvmmsg` may have written (`got` plus the one it stopped at): only
+    /// these need their header, iovec and slab looked at again before the next one.
+    dirty: usize,
 }
 
 impl std::fmt::Debug for RecvBatch {
@@ -167,8 +180,9 @@ impl std::fmt::Debug for RecvBatch {
     }
 }
 
-// SAFETY: the raw pointers inside `iov`/`msgs` point into the heap buffers owned by this same
-// struct, which move with it; nothing is shared with another thread.
+// SAFETY: the raw pointers inside `iov`/`msgs` point into memory owned by this same struct (the
+// `names`/`ctrl` vectors and the slabs of `free`), which moves with it; they are rewritten before
+// every `recvmmsg` and nothing else reads them.
 unsafe impl Send for RecvBatch {}
 
 impl RecvBatch {
@@ -176,7 +190,8 @@ impl RecvBatch {
     ///
     /// # Panics
     ///
-    /// If `slots * size` overflows `usize` or `slots` exceeds `u32::MAX`.
+    /// If `slots * 2 * size` overflows `usize`, `2 * size` exceeds `u32::MAX` or `slots` exceeds
+    /// `u32::MAX`.
     pub fn new(slots: usize, size: usize) -> RecvBatch {
         Self::with_gro(slots, size, false)
     }
@@ -184,19 +199,29 @@ impl RecvBatch {
     /// As [`new`](Self::new); with `gro`, coalesced receives (see [`enable_gro`]) report their
     /// segment size through [`get`](Self::get). `size` should then be at least 64 KiB.
     pub fn with_gro(slots: usize, size: usize, gro: bool) -> RecvBatch {
-        // An unchecked product could wrap in release builds and leave iovecs that claim more
-        // memory than `bufs` holds, letting the kernel write past the allocation.
-        let total = slots
-            .checked_mul(size)
+        let slab = size
+            .checked_mul(2)
+            .filter(|s| slots.checked_mul(*s).is_some())
             .expect("RecvBatch: slots * size overflows usize");
         assert!(
             u32::try_from(slots).is_ok(),
             "RecvBatch: too many slots for recvmmsg"
         );
-        let mut b = RecvBatch {
-            bufs: vec![0; total],
+        // One slab per slot, plus half as many again kept for reuse while datagrams cut from a
+        // slot's previous slab are still held (zeroed pages cost no memory until written).
+        let mut pool = only_buf::slab::SlabPool::new(slab, slots.saturating_add(slots.div_ceil(2)));
+        RecvBatch {
+            free: (0..slots).map(|_| pool.take()).collect(),
+            pool,
+            taken: vec![false; slots],
             size,
-            iov: Vec::with_capacity(slots),
+            iov: vec![
+                ffi::iovec {
+                    iov_base: std::ptr::null_mut(),
+                    iov_len: 0,
+                };
+                slots
+            ],
             // SAFETY: sockaddr_storage and mmsghdr are plain-old-data; all-zero is valid.
             names: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
             ctrl: vec![[0; 8]; slots],
@@ -204,23 +229,25 @@ impl RecvBatch {
             // SAFETY: as above.
             msgs: (0..slots).map(|_| unsafe { mem::zeroed() }).collect(),
             got: 0,
-        };
-        // One base pointer for all slots: re-borrowing `bufs` mutably per slot would, under
-        // Rust's aliasing model, invalidate the pointers taken for the earlier slots.
-        let base = b.bufs.as_mut_ptr();
-        for i in 0..slots {
-            b.iov.push(ffi::iovec {
-                // SAFETY: `i * size + size <= total == bufs.len()` (checked above), so the slot
-                // lies inside the allocation; `bufs` is never resized, so the pointer stays valid.
-                iov_base: unsafe { base.add(i * size) }.cast(),
-                iov_len: size,
-            });
+            dirty: slots,
         }
-        b
     }
 
     fn reset(&mut self) {
-        for i in 0..self.msgs.len() {
+        // The kernel writes only the headers of the datagrams it returns, so the others still
+        // hold what an earlier `reset` put there; a request/response peer that gets one or two
+        // datagrams per call thus costs one or two slots here, not all of them.
+        for i in 0..self.dirty.min(self.msgs.len()) {
+            // A slot whose slab has less than a datagram's room left starts over: in the same
+            // slab when the datagrams cut from it have dropped (still in cache), else in another.
+            if self.free[i].len() < self.size {
+                self.pool.renew(&mut self.free[i]);
+            }
+            self.taken[i] = false;
+            self.iov[i] = ffi::iovec {
+                iov_base: self.free[i].as_mut_ptr().cast(),
+                iov_len: self.size,
+            };
             // A stale family from an earlier receive must not survive a header the kernel does
             // not fill in (`parse_addr` trusts it).
             self.names[i].ss_family = 0;
@@ -242,7 +269,10 @@ impl RecvBatch {
         self.got = 0;
         self.reset();
         // SAFETY: `msgs` holds `msgs.len()` initialised headers whose name/iov/control pointers
-        // refer to buffers owned by `self` that are live for the duration of the call.
+        // refer to buffers owned by `self` that are live for the duration of the call. Each iovec
+        // covers the first `size` bytes of `free[i]`, an exclusive slab range (`ChunkMut`) at
+        // least `size` long (`reset`), so the kernel's writes alias nothing else; `&mut self`
+        // keeps every `free[i]` borrowed until the call returns.
         let n = unsafe {
             ffi::recvmmsg(
                 fd,
@@ -255,25 +285,64 @@ impl RecvBatch {
         if n < 0 {
             let e = io::Error::last_os_error();
             return if e.kind() == io::ErrorKind::WouldBlock {
+                self.dirty = 1;
                 Ok(0)
             } else {
+                // Unknown how far the kernel got: start over on every slot.
+                self.dirty = self.msgs.len();
                 Err(e)
             };
         }
         self.got = n as usize;
+        self.dirty = self.got + 1;
         Ok(self.got)
+    }
+
+    fn len_of(&self, i: usize) -> usize {
+        (self.msgs[i].msg_len as usize).min(self.size)
     }
 
     /// Datagram `i` of the last `recv` and its sender. The last element is the GRO segment size
     /// when the kernel coalesced several datagrams into this one (split it into pieces of that
-    /// size, the last possibly shorter), else 0.
+    /// size, the last possibly shorter), else 0. `None` past the last datagram, for one that has
+    /// no readable sender, and for one already handed out by [`take`](Self::take).
     pub fn get(&self, i: usize) -> Option<(&[u8], SocketAddr, usize)> {
-        if i >= self.got {
+        if i >= self.got || self.taken[i] {
             return None;
         }
-        let len = (self.msgs[i].msg_len as usize).min(self.size);
-        let data = &self.bufs[i * self.size..i * self.size + len];
+        let data = &self.free[i][..self.len_of(i)];
         Some((data, parse_addr(&self.names[i])?, self.gro_size(i)))
+    }
+
+    /// As [`get`](Self::get) without the sender (already read with [`addr`](Self::addr)):
+    /// the datagram, read in place, and its GRO segment size. Backend-facing.
+    #[doc(hidden)]
+    pub fn data(&self, i: usize) -> Option<(&[u8], usize)> {
+        if i >= self.got || self.taken[i] {
+            return None;
+        }
+        Some((&self.free[i][..self.len_of(i)], self.gro_size(i)))
+    }
+
+    /// The sender of datagram `i` of the last `recv` (`None` as for [`get`](Self::get)).
+    #[doc(hidden)]
+    pub fn addr(&self, i: usize) -> Option<SocketAddr> {
+        if i >= self.got || self.taken[i] {
+            return None;
+        }
+        parse_addr(&self.names[i])
+    }
+
+    /// As [`get`](Self::get), but hands the datagram out as an owned, writable slab range
+    /// (no copy); the slot goes on receiving into the rest of its slab. Backend-facing (the
+    /// slab types are `#[doc(hidden)]`, ADR-024).
+    #[doc(hidden)]
+    pub fn take(&mut self, i: usize) -> Option<(only_buf::slab::ChunkMut, SocketAddr, usize)> {
+        let addr = self.addr(i)?;
+        let seg = self.gro_size(i);
+        let len = self.len_of(i);
+        self.taken[i] = true;
+        Some((self.free[i].split_to(len), addr, seg))
     }
 
     fn gro_size(&self, i: usize) -> usize {
@@ -689,5 +758,143 @@ mod tests {
             }
         }
         assert_eq!(got, vec![a.to_vec(), b.to_vec(), c.to_vec()]);
+    }
+
+    /// Receives until nothing more arrives (a few empty rounds), calling `f` per datagram index.
+    fn drain(rb: &mut RecvBatch, fd: RawFd, mut f: impl FnMut(&mut RecvBatch, usize)) {
+        let mut idle = 0;
+        while idle < 20 {
+            let k = rb.recv(fd).unwrap();
+            if k == 0 {
+                idle += 1;
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+            idle = 0;
+            for i in 0..k {
+                f(rb, i);
+            }
+        }
+    }
+
+    #[test]
+    fn take_hands_out_a_coalesced_batch_to_split() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_nonblocking(true).unwrap();
+        let gro = enable_gro(rx.as_raw_fd());
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let dest = rx.local_addr().unwrap();
+        let parts: Vec<Vec<u8>> = (0..5u8)
+            .map(|i| vec![i + 1; if i == 4 { 40 } else { 100 }])
+            .collect();
+        let refs: Vec<&[u8]> = parts.iter().map(|p| &p[..]).collect();
+        let mut sb = SendBatch::new();
+        let mut batch = sb.batch();
+        if gso_enabled() {
+            assert!(batch.push(Some(&dest), &refs, 100));
+        } else {
+            for p in &refs {
+                assert!(batch.push(Some(&dest), &[p], 0));
+            }
+        }
+        let n = batch.len();
+        assert_eq!(batch.send(tx.as_raw_fd(), 0).unwrap(), n);
+        let mut rb = RecvBatch::with_gro(4, 65536, gro);
+        let mut got = Vec::new();
+        drain(&mut rb, rx.as_raw_fd(), |rb, i| {
+            let (mut d, from, seg) = rb.take(i).unwrap();
+            assert_eq!(from, tx.local_addr().unwrap());
+            // Handed out once: neither readable in place nor takeable again.
+            assert!(rb.get(i).is_none());
+            assert!(rb.take(i).is_none());
+            let seg = if seg > 0 { seg } else { d.len() };
+            while !d.is_empty() {
+                let mut x = d.split_to(seg.min(d.len()));
+                // Owned and writable: as a decrypt in place would.
+                x[0] ^= 0x80;
+                got.push(x.freeze());
+            }
+        });
+        let got: Vec<Vec<u8>> = got
+            .iter()
+            .map(|c| {
+                let mut v = c.to_vec();
+                v[0] ^= 0x80;
+                v
+            })
+            .collect();
+        assert_eq!(got, parts);
+    }
+
+    #[test]
+    fn truncated_datagrams_are_cut_at_the_slot_size() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_nonblocking(true).unwrap();
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let dest = rx.local_addr().unwrap();
+        let big: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+        tx.send_to(&big, dest).unwrap();
+        tx.send_to(&[7; 100], dest).unwrap();
+        tx.send_to(&big, dest).unwrap();
+        let mut rb = RecvBatch::new(4, 512);
+        let mut got = Vec::new();
+        drain(&mut rb, rx.as_raw_fd(), |rb, i| {
+            // Alternate the two ways out of the batch.
+            if got.len() % 2 == 0 {
+                got.push(rb.take(i).unwrap().0.to_vec());
+            } else {
+                got.push(rb.get(i).unwrap().0.to_vec());
+            }
+        });
+        assert_eq!(
+            got,
+            vec![big[..512].to_vec(), vec![7; 100], big[..512].to_vec()]
+        );
+    }
+
+    #[test]
+    fn taken_datagrams_outlive_later_receives() {
+        let rx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_nonblocking(true).unwrap();
+        let tx = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let dest = rx.local_addr().unwrap();
+        // Two slots of 2 KiB: slabs of 4 KiB, so the slots move to new slabs every few
+        // datagrams while the earlier ones are still held.
+        let mut rb = RecvBatch::new(2, 2048);
+        let pattern = |seq: u32, len: usize| -> Vec<u8> {
+            (0..len).map(|i| (seq as usize * 31 + i) as u8).collect()
+        };
+        let mut kept = Vec::new();
+        let mut seq = 0u32;
+        for round in 0..300u32 {
+            let len = 1 + (round as usize * 97) % 1500;
+            tx.send_to(&pattern(round, len), dest).unwrap();
+            if round % 3 == 2 {
+                drain(&mut rb, rx.as_raw_fd(), |rb, i| {
+                    let (d, _, _) = rb.take(i).unwrap();
+                    kept.push((seq, d.freeze()));
+                    seq += 1;
+                });
+                // Every other one dropped: the slabs they lived in come back once their
+                // neighbours drop too.
+                if round % 6 == 5 {
+                    kept.retain(|(s, _)| s % 2 == 0);
+                }
+            }
+        }
+        assert!(kept.len() > 100, "{}", kept.len());
+        for (s, c) in &kept {
+            let len = 1 + (*s as usize * 97) % 1500;
+            assert_eq!(&c[..], &pattern(*s, len)[..], "datagram {s}");
+        }
+        // Everything dropped: receiving goes on in reused slabs.
+        drop(kept);
+        assert!(rb.pool.kept() <= 3);
+        tx.send_to(b"after", dest).unwrap();
+        let mut last = Vec::new();
+        drain(&mut rb, rx.as_raw_fd(), |rb, i| {
+            last.push(rb.get(i).unwrap().0.to_vec());
+        });
+        assert_eq!(last, vec![b"after".to_vec()]);
     }
 }

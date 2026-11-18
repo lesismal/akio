@@ -21,6 +21,8 @@ mod error;
 pub mod fuzzing;
 mod group;
 mod handler;
+#[doc(hidden)]
+pub mod hash;
 pub mod metrics;
 mod sync;
 pub mod telemetry;

@@ -14,7 +14,7 @@ use super::super::packet::{
 };
 use super::super::recovery::{GRANULARITY, PACKET_THRESHOLD, PERSISTENT_CONGESTION_THRESHOLD, Rtt};
 use super::*;
-use crate::bytes::pool;
+use crate::bytes::{PktBuf, pool};
 use crate::types::ConnectionError;
 
 /// The owned parts of a packet header.
@@ -58,17 +58,12 @@ impl Connection {
     /// [`Connection::handle_datagram`] on a buffer from [`crate::bytes::pool`] (or any buffer
     /// not shared yet), which goes back to the pool afterwards.
     pub fn handle_shared(&mut self, now: Instant, from: SocketAddr, data: Arc<Vec<u8>>) {
-        self.handle_shared_ecn(now, from, 0, data);
+        self.handle_shared_ecn(now, from, 0, data.into());
     }
 
-    /// [`Connection::handle_shared`] for a datagram that arrived with ECN codepoint `ecn`.
-    pub fn handle_shared_ecn(
-        &mut self,
-        now: Instant,
-        from: SocketAddr,
-        ecn: u8,
-        data: Arc<Vec<u8>>,
-    ) {
+    /// [`Connection::handle_shared`] for a datagram that arrived with ECN codepoint `ecn`, in
+    /// a pooled buffer or in its own range of the UDP receive slab (decrypted in place there).
+    pub fn handle_shared_ecn(&mut self, now: Instant, from: SocketAddr, ecn: u8, data: PktBuf) {
         if matches!(self.state, State::Drained) {
             return;
         }
@@ -91,7 +86,7 @@ impl Connection {
         }
     }
 
-    fn datagram(&mut self, now: Instant, from: SocketAddr, data: Arc<Vec<u8>>, fresh: bool) {
+    fn datagram(&mut self, now: Instant, from: SocketAddr, data: PktBuf, fresh: bool) {
         self.rx_late = !fresh;
         let total = data.len();
         let mut off = 0;
@@ -138,14 +133,14 @@ impl Connection {
             let mut pkt = if off == 0 && h.len == total {
                 data.take().unwrap_or_default()
             } else {
-                pool::copy(&buf[..h.len])
+                PktBuf::Vec(pool::copy(&buf[..h.len]))
             };
             off += h.len;
             let outcome = self.packet(now, from, &mut pkt, &h, total);
             if switched && matches!(outcome, Outcome::Undecryptable) {
                 self.unswitch_version();
             }
-            pool::recycle(pkt);
+            pkt.recycle();
             if let Outcome::Processed = outcome {
                 any = true;
             }
@@ -158,7 +153,7 @@ impl Connection {
             if !any && fresh && self.is_stateless_reset(&d) {
                 self.drain_now(ConnectionError::Reset);
             }
-            pool::recycle(d);
+            d.recycle();
         }
     }
 
@@ -207,7 +202,7 @@ impl Connection {
         &mut self,
         now: Instant,
         from: SocketAddr,
-        pkt: &mut Arc<Vec<u8>>,
+        pkt: &mut PktBuf,
         h: &Pkt,
         dgram_len: usize,
     ) -> Outcome {
@@ -227,7 +222,7 @@ impl Connection {
         &mut self,
         now: Instant,
         from: SocketAddr,
-        pkt: &mut Arc<Vec<u8>>,
+        pkt: &mut PktBuf,
         h: &Pkt,
         dgram_len: usize,
     ) -> Outcome {
@@ -265,7 +260,8 @@ impl Connection {
         }
         if !have_keys {
             if self.buffered.len() < MAX_BUFFERED_PACKETS && !self.is_closed() {
-                self.buffered.push((from, self.rx_ecn, pkt.clone()));
+                // Kept whole until the keys arrive (`pkt` is not used again).
+                self.buffered.push((from, self.rx_ecn, std::mem::take(pkt)));
             }
             return Outcome::Undecryptable;
         }
@@ -282,8 +278,8 @@ impl Connection {
             let Some(hk) = hk else {
                 return Outcome::Undecryptable;
             };
-            // Unshared (fresh from the pool), so this does not copy.
-            unprotect_header(hk, &mut Arc::make_mut(pkt)[..h.len], h.pn_offset)
+            // Unshared (fresh from the pool, or the datagram's own slab range): no copy.
+            unprotect_header(hk, &mut pkt.make_mut()[..h.len], h.pn_offset)
         };
         let Some((pn_len, tpn)) = unprot else {
             return Outcome::Undecryptable;
@@ -297,7 +293,7 @@ impl Connection {
         // Decrypt with the right key (and phase, for 1-RTT).
         let mut used = KeyUse::Current;
         let ok = {
-            let (head, rest) = Arc::make_mut(pkt).split_at_mut(header_len);
+            let (head, rest) = pkt.make_mut().split_at_mut(header_len);
             let body = &mut rest[..h.len - header_len];
             let (ct, tag) = body.split_at_mut(body.len() - TAG_LEN);
             match sid {
@@ -407,7 +403,7 @@ impl Connection {
             }
             self.peer_initial_scid = Some(h.scid);
         }
-        let payload = Bytes::from_shared(pkt.clone()).slice(header_len..h.len - TAG_LEN);
+        let payload = pkt.share().slice(header_len..h.len - TAG_LEN);
         if payload.is_empty() {
             self.close_transport(
                 now,

@@ -252,7 +252,8 @@ jobs:
         run: cargo miri test -p only-uring --lib -- buf_ring kernel_buf
 
   loom:
-    # Model-checks the cork/send/close protocols of only-core::conn (see loom_tests).
+    # Model-checks the cork/send/close protocols of only-core::conn and the reuse of only-buf's
+    # receive slabs (see loom_tests).
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -262,7 +263,7 @@ jobs:
         with:
           shared-key: loom
           save-if: true
-      - run: cargo test -p only-core --lib --release -- loom
+      - run: cargo test -p only-core -p only-buf --lib --release -- loom
         env:
           RUSTFLAGS: --cfg loom
 

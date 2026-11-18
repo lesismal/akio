@@ -1,16 +1,22 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 //! Size-class buffer pool and shared read-only buffers.
 //!
 //! * [`get`] / [`put`] use a small **thread-local** cache of `Vec<u8>`s grouped by size class, so
 //!   the hot path takes no lock. Buffers freed on another thread simply join that thread's cache
 //!   (bounded), which is fine for the producer/consumer split of send queues.
 //! * [`SharedBuf`] is a cheaply clonable, immutable buffer for broadcast (`send_shared`).
+//! * `slab` (`#[doc(hidden)]`, backend-facing): receive slabs viewed through disjoint owned
+//!   handles, so a received datagram reaches a protocol layer without a copy (ADR-024). The
+//!   crate's only `unsafe` lives there.
 //!
 //! Guide: [Architecture: memory and buffers](https://lesismal.github.io/only/en/architecture.html#5-memory-and-buffers)
 //! (中文: [架构：内存与缓冲区](https://lesismal.github.io/only/zh-CN/architecture.html)).
 #![warn(clippy::unwrap_used)]
 
 use std::{cell::RefCell, ops::Deref, sync::Arc};
+
+#[doc(hidden)]
+pub mod slab;
 
 /// Capacities handed out by the pool, ascending.
 pub const CLASSES: [usize; 5] = [512, 4 << 10, 16 << 10, 64 << 10, 256 << 10];

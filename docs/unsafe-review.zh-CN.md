@@ -2,7 +2,7 @@
 
 [English](unsafe-review.md) | 简体中文
 
-状态：1.0 稳定化审查，2026-11-14；2026-11-16 新增 `only-crypto` 的 `fill` 模块（AEAD 输出写入未初始化的空闲容量）。每当新增、删除 `unsafe` 或其不变式发生变化时，重新生成清单并更新本页。
+状态：1.0 稳定化审查，2026-11-14；2026-11-16 新增 `only-crypto` 的 `fill` 模块（AEAD 输出写入未初始化的空闲容量）；2026-11-17 新增 `only-buf` 的 `slab` 模块（UDP 接收 slab，ADR-024）。每当新增、删除 `unsafe` 或其不变式发生变化时，重新生成清单并更新本页。
 
 only 是网络库：它的内存安全缺陷就是其使用者的远程代码执行漏洞。本页是 `unsafe` 代码的规范：每个 `unsafe` 位置必须满足的检查清单、新增 `unsafe` 的流程、清单统计，以及 1.0 审查的结论。
 
@@ -14,9 +14,10 @@ only 是网络库：它的内存安全缺陷就是其使用者的远程代码执
 | `only-uring` | `#![deny(unsafe_code)]`，仅 `group`、`reactor` 与 `ring` 模块允许（以及仅测试用的 `eval` 测量工具） | io_uring 提交项指向内核异步写入的内存；`ring` 是自有的 io_uring 绑定（setup/enter/register、mmap 映射的 SQ/CQ ring；不再使用 `io-uring` crate） |
 | `only-ebpf` | `#![deny(unsafe_code)]`，仅 `sys` 模块允许 | 原始 `bpf(2)` 调用与 socket 选项（不用 libbpf/aya） |
 | `only-dpdk` | `#![deny(unsafe_code)]`，仅 `pmd` 与 `sys` 模块允许；TCP/IP 协议栈（`net`）为 `#![forbid(unsafe_code)]` | 通过 C shim `csrc/shim.c` 调用 DPDK 的 FFI（EAL、端口、mbuf 收发 burst）；通过 `only_sys::ffi` 使用 TAP（`/dev/net/tun`、`TUNSETIFF`）与 AF_PACKET socket |
+| `only-buf` | `#![deny(unsafe_code)]`，仅 `slab` 模块允许 | 接收 slab（ADR-024）：一块分配通过互不相交、带所有权的句柄访问（`ChunkMut` 独占可写，`Chunk` 共享只读），使收到的数据报能从 `recvmmsg` 槽位交给 only-quic 并原地解密而无需复制；`Arc` 引用计数、指向该分配的裸指针，以及该分配的 `Send`/`Sync` 实现；尺寸分级池与 `SharedBuf` 仍是安全 Rust |
 | `only-crypto` | `#![deny(unsafe_code)]`，仅十二个 CPU 指令模块 `aes::hw`、`gcm::hw`（含 `gcm::hw::vaes`）、`hash::hw`、`crc::hw`、`chacha::hw`（含 `chacha::hw::avx512` 与 `chacha::hw::ifma`）、`cpu::hw`、`ec::hw`、`ec::hw_aarch64`、`curve25519::hw`、`curve25519::hw_aarch64`、`bignum::hw`、`bignum::ifma`，以及 `fill`（基于向量未初始化空闲容量的 AEAD 输出缓冲区）允许 | AES-NI / ARMv8 AES、PCLMULQDQ / PMULL、SHA-NI / ARMv8 SHA、SSE4.2 / ARMv8 CRC32 与 AVX2 intrinsic（`#[target_feature]` 函数），基于 VAES / VPCLMULQDQ 搭配 AVX-512 或 AVX2 的 `asm!` AES-GCM 内核，以及基于 VAES / VPCLMULQDQ + AVX-512 的 CRC 折叠（这些 intrinsic 比 MSRV 新），P-256 与 Curve25519 域运算以及 RSA 的 Montgomery 乘法与平方中使用 BMI2 `mulx` 与 ADX `adcx`/`adox` 的 `asm!` 块，RSA 模幂与 Poly1305 中使用 AVX-512 IFMA 的 `asm!` 块以及 AVX-512 上的 ChaCha20 `asm!` 块（同样在 MSRV 上不稳定），aarch64 上 P-256 与 Curve25519 域运算中使用 `MUL`/`UMULH` 与 `ADDS`/`ADCS` 进位链的 `asm!` 块，以及检测 VAES、AVX-512、IFMA、BMI2 与 ADX 所用的 CPUID / XGETBV；每次调用前都经过 `cpu.rs` 的运行时检测；`fill` 让 TLS 记录层（`#![forbid(unsafe_code)]`）直接在 `Vec` 的空闲容量中加密和解密，不必先清零（16 KiB AES-GCM 记录约 10%），其 `unsafe` 只用于在每个字节都写入后把缓冲区视为字节切片以及 `Vec::set_len`；可移植回退实现与其余公钥代码（可移植的大数运算、点运算公式、RSA 协议代码、DER）均为安全 Rust |
 | `tools/ct-dudect` | `#![deny(unsafe_code)]`，仅 `timer` 模块允许 | 统计计时测试（docs/constant-time.zh-CN.md）：两处读取周期计数器的 `asm!`（x86_64 为 `lfence; rdtsc; lfence`，aarch64 为 `isb; mrs cntvct_el0`），只用寄存器、不访问内存；不发布 |
-| 其它所有 crate（`only`、`only-core`、`only-x509`、`only-buf`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
+| 其它所有 crate（`only`、`only-core`、`only-x509`、`only-timer`、`only-pool`、`only-epoll`、`only-tls`、`only-http`、`only-ws`、`only-mux`、`only-socks`、`only-arpc`、`only-grpc`、`only-protobuf`、`only-protobuf-build`、`only-kcp`、`only-quic`、`only-h3`、`only-turn`、`only-dtls`、`only-srtp`、`only-rtp`、`only-sctp`、`only-ice`、`only-webrtc`、`only-media`、`tools/echo-bench`、`tools/protobuf-test`） | `#![forbid(unsafe_code)]` | 构建在上述 crate 之上的纯 Rust 代码 |
 
 测试、示例和基准是独立的 crate，可以为仅测试用的 libc 调用（`setrlimit`、`SO_LINGER`、CPU 亲和性、计数分配器）使用 `unsafe`，同样必须写注释。
 
@@ -59,7 +60,7 @@ Clippy 只检查为当前主机编译的代码，因此 CI 在 Linux 和 macOS �
 | Clippy lint | 注释存在性（当前主机平台） | `cargo clippy --workspace --all-targets -- -D warnings` |
 | 清单脚本 | 计数与注释检查，覆盖所有平台 | `python3 tools/unsafe-inventory.py [--markdown] [--check]` |
 | Miri | 纯 Rust 代码中的 UB：别名（Stacked Borrows）、越界、未初始化读取、数据竞争 | `cargo +nightly miri test -p <crate> --lib`（Linux nightly 镜像；`MIRIFLAGS=-Zmiri-disable-isolation`） |
-| loom | `only-core` 无锁原语的交错执行 | `RUSTFLAGS="--cfg loom" cargo test -p only-core --lib --release -- loom` |
+| loom | `only-core` 无锁原语与 `only-buf` slab 复用的交错执行 | `RUSTFLAGS="--cfg loom" cargo test -p only-core -p only-buf --lib --release -- loom` |
 | AddressSanitizer | 跨 FFI 的越界 / 释放后使用 / 泄漏，包括 Miri 无法运行的系统调用路径 | `tools/sanitizers/run.sh [--docker] address [crate...]`（见该目录 README） |
 | ThreadSanitizer | I/O 线程、唤醒器与发送方之间的数据竞争 | `tools/sanitizers/run.sh [--docker] thread [crate...]` |
 | 模糊测试 | 解析器与协议状态机（远端输入） | `cargo fuzz` 目标（独立工作项） |
@@ -80,10 +81,11 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
-| only-sys | 90 | 3 | 3 | 0 |
+| only-sys | 89 | 3 | 3 | 0 |
+| only-buf | 5 | 0 | 2 | 0 |
 | only-uring | 41 | 4 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **329** | **83** | **5** | **22** |
+| **合计** | **333** | **83** | **7** | **22** |
 
 按用途：
 
@@ -95,7 +97,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `only-sys/src/ktls.rs` | 9 | 内核 TLS（实验性，only-tls 的 `experimental-ktls`）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥 | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg |
-| `only-sys/src/udp.rs` | 14 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | iovec 位于同一分配内（大小经检查）；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
+| `only-sys/src/udp.rs` | 13 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | 每个接收 iovec 覆盖某槽位独占 slab 区间（`only_buf::slab::ChunkMut`，长度至少 `size`，每次调用前检查，并在调用期间被可变借用）的前 `size` 字节；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
 | `only-crypto/src/aes/hw.rs` | 26 个块、26 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 6 个桩函数，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密，CTR 每次 8 个分组（轮数为常量泛型，完全展开） | 只有在 `cpu::cpu_has(Feature::Aes)`（`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`）之后才会构造 `hw::Keys`；加载与存储不要求对齐，且不越出 16 字节数组或 `&mut [u8; 128]` 块中的 16 字节片段；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |
 | `only-crypto/src/gcm/hw.rs` | 25 个块、17 个 `unsafe fn`（其他平台 2 个桩函数） | 基于 PCLMULQDQ / PMULL 的 GHASH（每次归约聚合 8 个分组，Karatsuba），以及单趟融合的 AES-GCM 加解密（同一循环里执行 AES-NI / ARMv8 AES 轮函数与无进位乘法）；对 `vaes` 的调用（AVX-512 内核处理完整分组组与整条消息，AVX2 内核处理完整分组组） | 只有在 `cpu_has(Feature::Clmul)`（PCLMULQDQ + SSSE3 + SSE4.1 / aarch64 AES 扩展）之后才会构造 `Powers`；安全包装函数每次调用前都重新检查 `cpu_has`（融合内核还检查 `Feature::Aes`，AVX2 内核检查 `Aes`、`Clmul` 与 `Vaes`，AVX-512 内核另加 `Avx512`）；每次加载读取的 16 字节都位于长度已被包装函数截为 16（GHASH）或 128（融合）整数倍的切片内；宽内核只拿到同时位于输入与输出切片内的完整 256 字节组，只有原地处理时两个指针才相同；处理整条消息时，AVX-512 内核还拿到 AAD（至多 256 字节，来自存活的切片）与分组组之后的尾部（不足 256 字节，从输入切片紧跟分组组之处读取，写到输出中紧跟分组组之处），字节掩码与幂次指针由 `vaes::Args` 按这些长度推导；输入分散在 `src` 与输出两处时（TLS 1.3 记录层）分两次调用：先非原地处理 `src` 中的完整分组组，再原地处理其余部分；非原地时输出是可能未初始化的 `fill::Fill`：内核拿到 `Fill::next_ptr(n)`（指向接下来 `n` 个未写字节，带边界检查），只往那里写（AVX2 内核只回读自己写入的密文用于 GHASH），每次这样的调用之后紧跟 `Fill::assume_written(n)`（4 个块），`n` 恰为内核写入的字节数（完整分组组，整条消息时再加掩码尾部） |
 | `only-crypto/src/gcm/hw/vaes.rs` | 4 个块、2 个 `unsafe fn` | AES-GCM 加密 / 解密，每个内核每个方向一个 `asm!` 块（这些 intrinsic 在 MSRV 下未稳定）：VAES + VPCLMULQDQ + AVX-512 上每次迭代用 4 个 zmm 寄存器处理 16 个分组，GHASH 与 AES 轮函数交织，每组一次 Montgomery 归约，另外处理 AAD、以 AVX-512 字节掩码处理最后一个不完整的组、长度块与 `E(J0)`（短消息的 AAD、数据与长度块只做一次归约）；VAES + VPCLMULQDQ + AVX2 上每次迭代用 8 个 ymm 寄存器处理 16 个分组（轮密钥与常量取自内存），只处理完整分组组 | 只有 `Powers` 带对应种类的宽内核幂次时才进入（幂次只在 `cpu::has` 确认 AES 与 VAES——zmm 内核另加 AVX-512——后生成），且 `avx2_available()` / `wide_available()` 在调用前再次确认 AES-NI、PCLMULQDQ、VAES、VPCLMULQDQ、AVX2 与操作系统保存 YMM 状态（以及 AVX-512 F/BW/VL 与 ZMM、opmask 状态）；读取轮密钥 `rk[0]` 与 `rk[r-13..=r]`（下标 >= 1，r <= 14）、512 字节的幂次表（16 个幂次加 16 个零项：`n` 个分组的幂次指针从第 `16 - n` 项开始，从它读 4 个向量仍在表内）、320 字节常量、`Args` 块、`n * 256` 字节输入，以及掩码选中的 AAD 与尾部字节；写入 `n * 256` 字节输出与其后掩码选中的尾部（每组与尾部都先加载再存储，因此可原地处理）、GHASH 状态与标签；被掩掉的字节既不读也不写（AVX-512 掩码加载会抑制故障）；输出使用显式寄存器，所有向量寄存器、掩码寄存器与标志位声明为被破坏（`clobber_abi("C")`），不使用栈，结尾执行 `vzeroupper`；掩码只取决于长度 |
@@ -112,6 +114,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-crypto/src/curve25519/hw_aarch64.rs` | 5 个块（仅 aarch64） | `curve25519/hw.rs` 的 aarch64 对应实现：X25519 阶梯在四个 limb 上模 `2²⁵⁵ - 19` 的 `asm!` 运算（乘法、平方、`121665·a`、加法、减法；用 `CSEL` 按 `2²⁵⁶ ≡ 38` 折叠） | 只在 `hw_aarch64::enabled()`（`cpu::has(Feature::Umulh)`）之后调用 `ladder`；与 `ec/hw_aarch64.rs` 相同的纯寄存器约束，没有分支 |
 | `only-crypto/src/bignum/hw.rs` | 7 个块、1 个 `unsafe fn`（仅 x86_64） | RSA 在 16、24、32、48 与 64 个 limb 上的 Montgomery 乘法与平方 `asm!`（BMI2 `mulx` 加 ADX 进位链，行用 `.rept` 展开，最后的减法用 `cmovnz`；48 与 64 个 limb 的平方为一层 Karatsuba：乘积阶段 `sqr_wide` 与约简阶段 `redc` 各自成块）；模幂查表的 AVX2 扫描（`#[target_feature]` 函数） | 汇编块只经 `Mont::mul_into` / `sqr_into` 在 `hw::enabled()`（`cpu::has(Feature::Adx)`）之后进入，每个函数都有 debug 断言；读取 `a`、`b`、`m` 指向的 `N` 个 limb，写入 `N` 个 limb 的输出（独占借用）与局部的 `2N` 个 limb 暂存区（`MaybeUninit`，每个 limb 先写后读），所有位移都小于 `16N` 字节，不使用栈；扫描只在 `cpu_has(Feature::Avx2)`（有断言）之后调用，从存活表项的每个 4-limb 块读取 32 字节；除行计数器外没有分支 |
 | `only-crypto/src/bignum/ifma.rs` | 4 个块（仅 x86_64；每个宏一个，各三或四个实例，另加 `amm80`） | 基于 AVX-512 IFMA 的 RSA 模幂：在 `ymm` / `zmm` 寄存器中对 20、32、40、64（走 60 步）与 80 个 52 位数字做几乎 Montgomery 乘法，各一个 `asm!` 块，另有同时处理两组操作数的版本（`amm*_x2`，CRT 两半交错）（`vpmadd52luq`/`vpmadd52huq`、`valignq`、opmask 进位；这些 intrinsic 在 MSRV 上不稳定） | 只经 `Mont::pow`（20–40 个数字）与 `Mont::pow_public`（40、64、80 个数字，经 `ifma::pow_public`）在 `ifma::enabled()`（`cpu::has(Feature::Ifma)`：AVX-512 F/BW/VL、IFMA 以及操作系统保存 ZMM 与 opmask 状态）之后进入，有 debug 断言；读取 `a`、`b`、`m` 指向的 `D` 个数字，写入 `D` 个数字的输出，非对齐访问，不使用栈；全部向量与掩码寄存器声明为被破坏（`clobber_abi("C")`），循环期间输出指针暂存在 `xmm31`，结尾执行 `vzeroupper`；除数字计数器外没有分支。`amm*_x2`（经 `ifma::pow_x2` 从 `Mont::pow2` 进入，检查相同）：读取 `a`、`b` 指向的 `2D` 个数字与 `m` 指向的 `2D + 2` 个字（两个模数，然后两个 `k0`），写入 `2D` 个数字的输出；输出指针暂存在 `k7`（`kmovq`，AVX-512 BW）。`amm64` 只读取 `b` 的前 60 个数字（步数；每个操作数的最高四个数字为零）。`amm80`（操作数占用 32 个向量寄存器中的 30 个）：输出指针暂存在 `k7`，最高通道靠零掩码（`k3`）移入零，常量在循环结束后设置；其进位传播使用 rsi 与 rdi，二者作为被破坏的 `inout` 操作数声明 |
+| `only-buf/src/slab.rs` | 5，`impl Send`/`Sync for Mem` | 接收 slab：`Mem`（泄漏出来的 `Box<[u8]>`，在 `Drop` 中释放）、某个区间的 `ChunkMut` / `Chunk` 视图（`deref`、`deref_mut`、`as_mut_ptr`）、`SlabPool` 复用 | 存活的 `ChunkMut` 区间彼此不相交，且与存活的 `Chunk` 区间不相交：`ChunkMut` 只在无人引用的整块 slab 上创建（`Arc::get_mut`，它同时与其它线程上的释放同步），或由另一个 `ChunkMut` 的 `split_to` 得到，`Chunk` 只由 `freeze` 得到；字节只经由分配的裸指针访问，偏移满足 `start <= end <= len`（u32，slab 大小经断言）；内存分配时清零，读到的每个字节都已初始化；内核只通过 `RecvBatch` 的 iovec 写 slab，该 iovec 覆盖一个在调用期间被可变持有的 `ChunkMut`。Miri（`cargo +nightly miri test -p only-buf`，包括数据竞争检测下的跨线程释放）与 loom（`RUSTFLAGS="--cfg loom" cargo test -p only-buf --lib --release -- loom`） |
 | `only-sys/src/random.rs` | 2（每个系统一个） | 供 `only-crypto` 使用的 `getrandom(2)`（Linux）、`getentropy(2)`（macOS） | 内核最多向存活的 `&mut [u8]` 写入 `buf.len()` 字节（`getentropy` 每次最多 256 字节）；`getrandom` 读到的字节不足时按返回值前移 |
 | `only-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
 | `only-uring/src/ring.rs` | 18（其中 2 个只在测试中编译：稀疏 `REGISTER_FILES`、`REGISTER_SEND_MSG_RING`），`unsafe fn push`、`register`、`register_buf_ring` | 自有 io_uring 绑定：经 `syscall(2)` 调用 `io_uring_setup`/`enter`/`register`，`mmap` 映射 SQ/CQ ring 与 SQE 数组，SQ/CQ 的 head/tail 原子量，probe、enable-rings、buffer ring 注册；为 io_uring 特性评估提供稀疏的注册文件表和无需自有 ring 的 `MSG_RING` | 内核给出的偏移在使用前对照各自映射做边界检查；仅在队列未满时写入 SQE 槽位，tail 以 `Release` 发布；在自身 head 与以 `Acquire` 读取的 tail 之间读取 CQE，head 以 `Release` 发布；读取 `SQ_NEED_WAKEUP` 前有 `SeqCst` 栅栏（SQPOLL）；映射与 `Ring` 同生命周期 |
@@ -172,6 +175,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | Crate（`--lib`） | 结果 |
 |---|---|
 | only-buf、only-timer、only-pool | 通过（4 / 5 / 5 个测试） |
+| only-buf（含 `slab`；2026-11-17） | 通过（9 个测试，13 秒；nightly，aarch64 macOS）：切分、冻结、不相交写入、池只复用空闲 slab、上限，以及在另一线程上写入并释放的部分（数据竞争检测下） |
 | only-http | 通过（27 个测试，35 秒） |
 | only-mux、only-socks、only-arpc、only-h3 | 通过（1 / 1 / 3 / 2） |
 | only-kcp | 通过（5 个测试，4-6 分钟） |

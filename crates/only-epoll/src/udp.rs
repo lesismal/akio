@@ -19,13 +19,21 @@
 //! `recv_from` calls elsewhere) gets one `on_batch_end` after the batch's last `on_data`, before
 //! the batch's replies are flushed (only-quic acknowledges and sends once per batch).
 //!
+//! Receive buffers are pooled slabs (`only_buf::slab`, ADR-024). A handler that asks for owned
+//! datagrams (`Handler::OWNED_DATA`, only-quic) gets each one as a writable range cut off the
+//! slab it was received into (`on_data_owned`), with no copy, and may keep it; the slot goes on
+//! receiving into the rest of the slab. Other handlers read datagrams in place, as before.
+//! Peer tables are keyed by addresses the peer chooses, so they hash with the keyed folded
+//! multiply of `only_core::hash` (not SipHash); tables of our own ids with `IdHasher`.
+//!
 //! io_uring: a UDP listener on the io_uring backend is served here. With `recvmmsg`/`sendmmsg`/GSO
 //! the syscall cost is already one per batch, so a ring buys little; a multishot `recvmsg` with
 //! provided buffers (per-datagram headers in the buffer, GRO control data) would be a second
 //! implementation of the same batching for no measurable gain, so it is not done for now.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
+    hash::BuildHasherDefault,
     io,
     net::{SocketAddr, UdpSocket},
     os::fd::AsRawFd,
@@ -38,9 +46,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use only_buf::slab::ChunkMut;
 use only_core::{
-    Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, Group, LoopMeta, Pool, Task,
-    UdpStats, telemetry::LoopCmd,
+    Config, ConnInfo, ConnInner, DynAcceptor, DynHandler, Error, Group, IdHasher, IdMap, LoopMeta,
+    Pool, Task, UdpStats, hash::KeyedMap, telemetry::LoopCmd,
 };
 use only_sys::{Event, Poller};
 use only_timer::{TimerId, Wheel};
@@ -54,6 +63,40 @@ const BATCH: usize = 32;
 const MAX_BATCHES_PER_EVENT: usize = 8;
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1 << 40);
+
+/// A set of our own connection ids or poll tokens.
+type IdSet = HashSet<u64, BuildHasherDefault<IdHasher>>;
+
+/// One received datagram on its way to a handler: read in place, or cut off its receive slab.
+enum Rx<'a> {
+    Slice(&'a [u8]),
+    Owned(ChunkMut),
+}
+
+impl Rx<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Rx::Slice(d) => d.len(),
+            Rx::Owned(c) => c.len(),
+        }
+    }
+
+    /// Hands the datagram to `h` the way it asked for (`owned`): an owned datagram is lent to a
+    /// handler that reads in place, a borrowed one copied for a handler that wants ownership
+    /// (only when a peer reopened under another acceptor in the middle of a GRO batch).
+    fn deliver(self, h: &mut dyn DynHandler, owned: bool) {
+        match self {
+            Rx::Owned(c) if owned => h.on_data_owned(c),
+            Rx::Owned(c) => h.on_data(&c),
+            Rx::Slice(d) if owned => {
+                let mut c = ChunkMut::new(d.len());
+                c.copy_from_slice(d);
+                h.on_data_owned(c);
+            }
+            Rx::Slice(d) => h.on_data(d),
+        }
+    }
+}
 
 struct Peer {
     /// The connection's own connected socket (dialed clients); `None` for peers of the shared
@@ -72,6 +115,8 @@ struct Peer {
     bytes_in: u64,
     /// Corked for the receive batch being processed (its replies leave together at the end).
     in_batch: bool,
+    /// The handler takes datagrams owned (`DynHandler::wants_owned`, asked at open).
+    owned: bool,
     /// The run-time bound socket (`Cmd::BindUdp`) this peer belongs to, if any.
     bind: Option<u64>,
 }
@@ -82,9 +127,9 @@ struct Bound {
     sock: Arc<UdpSocket>,
     local: SocketAddr,
     acceptor: Arc<dyn DynAcceptor>,
-    peers: HashMap<SocketAddr, u64>,
+    peers: KeyedMap<SocketAddr, u64>,
     /// Peers with datagrams waiting for socket space.
-    blocked: HashSet<u64>,
+    blocked: IdSet,
     write_reg: bool,
 }
 
@@ -102,20 +147,20 @@ struct UdpLoop {
     sock: Option<Arc<UdpSocket>>,
     local: Option<SocketAddr>,
     acceptor: Option<Arc<dyn DynAcceptor>>,
-    peers: HashMap<SocketAddr, u64>,
-    conns: only_core::IdMap<Peer>,
+    peers: KeyedMap<SocketAddr, u64>,
+    conns: IdMap<Peer>,
     /// Sockets bound at run time, by poll token.
-    binds: HashMap<u64, Bound>,
+    binds: IdMap<Bound>,
     /// Server-socket peers with datagrams waiting for socket space.
-    blocked: HashSet<u64>,
+    blocked: IdSet,
     /// Dialed connections with datagrams waiting for socket space.
-    blocked_own: HashSet<u64>,
+    blocked_own: IdSet,
     want_write: bool,
     /// Receive buffers, shared by the server socket and dialed sockets (created on first use).
     #[cfg(target_os = "linux")]
     batch: Option<only_sys::RecvBatch>,
     #[cfg(not(target_os = "linux"))]
-    scratch: Option<Vec<u8>>,
+    scratch: Option<Scratch>,
     /// Server-socket peers corked while the current receive batch is processed.
     touched: Vec<u64>,
     flush_out: Vec<io::Result<bool>>,
@@ -142,6 +187,36 @@ fn gro_ok(cfg: &Config) -> bool {
 #[cfg(target_os = "linux")]
 fn new_batch(cfg: &Config) -> only_sys::RecvBatch {
     only_sys::RecvBatch::with_gro(BATCH, cfg.read_buffer, gro_ok(cfg))
+}
+
+/// The receive buffer of the loops without `recvmmsg` (one datagram per `recv_from`): the free
+/// tail of a pooled slab, so that a datagram can be cut off and handed out owned (see the module
+/// docs) while the next one is received behind it.
+#[cfg(not(target_os = "linux"))]
+struct Scratch {
+    free: ChunkMut,
+    pool: only_buf::slab::SlabPool,
+    size: usize,
+}
+
+#[cfg(not(target_os = "linux"))]
+impl Scratch {
+    fn new(size: usize) -> Scratch {
+        let mut pool = only_buf::slab::SlabPool::new(size.saturating_mul(2), 4);
+        Scratch {
+            free: pool.take(),
+            pool,
+            size,
+        }
+    }
+
+    /// Room for one datagram.
+    fn buf(&mut self) -> &mut [u8] {
+        if self.free.len() < self.size {
+            self.pool.renew(&mut self.free);
+        }
+        &mut self.free[..self.size]
+    }
 }
 
 fn panic_error() -> Error {
@@ -178,16 +253,16 @@ impl UdpLoop {
             sock,
             local,
             acceptor,
-            peers: HashMap::new(),
+            peers: KeyedMap::default(),
             conns: Default::default(),
-            binds: HashMap::new(),
-            blocked: HashSet::new(),
-            blocked_own: HashSet::new(),
+            binds: IdMap::default(),
+            blocked: IdSet::default(),
+            blocked_own: IdSet::default(),
             want_write: false,
             #[cfg(target_os = "linux")]
             batch: sock_present.then(|| new_batch(&cfg)),
             #[cfg(not(target_os = "linux"))]
-            scratch: sock_present.then(|| vec![0; cfg.read_buffer]),
+            scratch: sock_present.then(|| Scratch::new(cfg.read_buffer)),
             touched: Vec::new(),
             flush_out: Vec::new(),
             stats,
@@ -342,15 +417,36 @@ impl UdpLoop {
             };
             self.clock = Instant::now();
             for i in 0..n {
-                if let Some((data, peer, seg)) = batch.get(i) {
-                    let ecn = batch.ecn(i);
+                let Some(peer) = batch.addr(i) else {
+                    continue;
+                };
+                let ecn = batch.ecn(i);
+                let Some(id) = self.admit(src, peer) else {
+                    continue;
+                };
+                if self.conns.get(&id).is_some_and(|p| p.owned) {
+                    let Some((mut data, _, seg)) = batch.take(i) else {
+                        continue;
+                    };
                     if seg > 0 && seg < data.len() {
                         // GRO coalesced several datagrams of this peer: restore the boundaries.
-                        for d in data.chunks(seg) {
-                            self.on_datagram(src, peer, d, ecn);
+                        let mut first = Some(id);
+                        while !data.is_empty() {
+                            let d = data.split_to(seg.min(data.len()));
+                            self.on_datagram(src, peer, first.take(), Rx::Owned(d), ecn);
                         }
                     } else {
-                        self.on_datagram(src, peer, data, ecn);
+                        self.on_datagram(src, peer, Some(id), Rx::Owned(data), ecn);
+                    }
+                } else if let Some((data, seg)) = batch.data(i) {
+                    if seg > 0 && seg < data.len() {
+                        // GRO coalesced several datagrams of this peer: restore the boundaries.
+                        let mut first = Some(id);
+                        for d in data.chunks(seg) {
+                            self.on_datagram(src, peer, first.take(), Rx::Slice(d), ecn);
+                        }
+                    } else {
+                        self.on_datagram(src, peer, Some(id), Rx::Slice(data), ecn);
                     }
                 }
             }
@@ -416,14 +512,22 @@ impl UdpLoop {
         let mut buf = self
             .scratch
             .take()
-            .unwrap_or_else(|| vec![0u8; self.cfg.read_buffer]);
+            .unwrap_or_else(|| Scratch::new(self.cfg.read_buffer));
         'event: for _ in 0..MAX_BATCHES_PER_EVENT {
             // A batch is up to BATCH datagrams, as with recvmmsg.
             for _ in 0..BATCH {
-                match sock.recv_from(&mut buf) {
+                match sock.recv_from(buf.buf()) {
                     Ok((n, peer)) => {
                         self.clock = Instant::now();
-                        self.on_datagram(src, peer, &buf[..n], 0);
+                        let Some(id) = self.admit(src, peer) else {
+                            continue;
+                        };
+                        let rx = if self.conns.get(&id).is_some_and(|p| p.owned) {
+                            Rx::Owned(buf.free.split_to(n))
+                        } else {
+                            Rx::Slice(&buf.free[..n])
+                        };
+                        self.on_datagram(src, peer, Some(id), rx, 0);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break 'event,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -439,30 +543,44 @@ impl UdpLoop {
         self.flush_touched();
     }
 
-    /// One datagram from `peer` with ECN codepoint `ecn` (0 when not reported).
-    fn on_datagram(&mut self, src: Option<u64>, peer: SocketAddr, data: &[u8], ecn: u8) {
+    /// The connection of `peer` on the server socket (`src` = `None`) or a bound one, opened on
+    /// its first datagram. `None` while draining or when it cannot be opened.
+    fn admit(&mut self, src: Option<u64>, peer: SocketAddr) -> Option<u64> {
         if self.draining.is_some() {
-            return;
+            return None;
         }
         let known = match src {
             None => self.peers.get(&peer).copied(),
             Some(b) => self.binds.get(&b).and_then(|b| b.peers.get(&peer).copied()),
         };
-        let id = match known {
-            Some(id) => id,
-            None => match self.open(src, peer) {
-                Some(id) => id,
-                None => return,
-            },
+        match known {
+            Some(id) => Some(id),
+            None => self.open(src, peer),
+        }
+    }
+
+    /// One datagram from `peer` with ECN codepoint `ecn` (0 when not reported), for connection
+    /// `id` when the caller has just admitted it, else looked up (or opened) again.
+    fn on_datagram(
+        &mut self,
+        src: Option<u64>,
+        peer: SocketAddr,
+        id: Option<u64>,
+        data: Rx<'_>,
+        ecn: u8,
+    ) {
+        let Some(id) = id.or_else(|| self.admit(src, peer)) else {
+            return;
         };
         let t0 = self.timed_start();
         let now = self.clock_tick();
         let Some(p) = self.conns.get_mut(&id) else {
             return;
         };
+        let len = data.len();
         p.last_active = now;
-        p.bytes_in += data.len() as u64;
-        self.shared.stats.datagram_in(data.len());
+        p.bytes_in += len as u64;
+        self.shared.stats.datagram_in(len);
         if !p.in_batch {
             // `on_batch_end` follows at the end of the receive batch (see `flush_touched`), and
             // on Linux the replies wait for it, to leave together in few `sendmmsg` calls.
@@ -473,7 +591,9 @@ impl UdpLoop {
             self.touched.push(id);
         }
         p.inner.set_rx_ecn(ecn);
-        let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
+        let owned = p.owned;
+        let h = &mut *p.handler;
+        let r = catch_unwind(AssertUnwindSafe(|| data.deliver(h, owned)));
         self.timed_end("on_data", id, t0);
         if r.is_err() {
             self.finalize(id, Some(panic_error()));
@@ -545,6 +665,7 @@ impl UdpLoop {
                 self.peers.insert(peer, id);
             }
         }
+        let owned = handler.wants_owned();
         self.conns.insert(
             id,
             Peer {
@@ -553,6 +674,7 @@ impl UdpLoop {
                 acceptor,
                 inner,
                 handler,
+                owned,
                 addr: peer,
                 last_active: now,
                 timer,
@@ -609,6 +731,7 @@ impl UdpLoop {
             self.wheel.advance(now, drop);
         }
         let timer = Some(self.wheel.schedule(now + self.idle_ms(), id));
+        let owned = handler.wants_owned();
         self.conns.insert(
             id,
             Peer {
@@ -617,6 +740,7 @@ impl UdpLoop {
                 acceptor,
                 inner,
                 handler,
+                owned,
                 addr: peer,
                 last_active: now,
                 timer,
@@ -655,15 +779,29 @@ impl UdpLoop {
             };
             self.clock = Instant::now();
             for i in 0..n {
-                let Some((data, _, seg)) = batch.get(i) else {
-                    continue;
-                };
                 let ecn = batch.ecn(i);
-                // GRO coalesced several datagrams: restore the boundaries.
-                let seg = if seg > 0 { seg } else { data.len().max(1) };
-                for d in data.chunks(seg) {
-                    if !self.deliver(id, d, ecn) {
-                        break 'recv;
+                if self.conns.get(&id).is_some_and(|p| p.owned) {
+                    let Some((mut data, _, seg)) = batch.take(i) else {
+                        continue;
+                    };
+                    // GRO coalesced several datagrams: restore the boundaries.
+                    let seg = if seg > 0 { seg } else { data.len().max(1) };
+                    while !data.is_empty() {
+                        let d = data.split_to(seg.min(data.len()));
+                        if !self.deliver(id, Rx::Owned(d), ecn) {
+                            break 'recv;
+                        }
+                    }
+                } else {
+                    let Some((data, seg)) = batch.data(i) else {
+                        continue;
+                    };
+                    // GRO coalesced several datagrams: restore the boundaries.
+                    let seg = if seg > 0 { seg } else { data.len().max(1) };
+                    for d in data.chunks(seg) {
+                        if !self.deliver(id, Rx::Slice(d), ecn) {
+                            break 'recv;
+                        }
                     }
                 }
             }
@@ -700,13 +838,19 @@ impl UdpLoop {
         let mut buf = self
             .scratch
             .take()
-            .unwrap_or_else(|| vec![0u8; self.cfg.read_buffer]);
+            .unwrap_or_else(|| Scratch::new(self.cfg.read_buffer));
+        let owned = self.conns.get(&id).is_some_and(|p| p.owned);
         let mut got = 0;
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
-            match sock.recv(&mut buf) {
+            match sock.recv(buf.buf()) {
                 Ok(n) => {
                     self.clock = Instant::now();
-                    if !self.deliver(id, &buf[..n], 0) {
+                    let rx = if owned {
+                        Rx::Owned(buf.free.split_to(n))
+                    } else {
+                        Rx::Slice(&buf.free[..n])
+                    };
+                    if !self.deliver(id, rx, 0) {
                         self.scratch = Some(buf);
                         return;
                     }
@@ -732,17 +876,20 @@ impl UdpLoop {
     }
 
     /// One datagram for dialed connection `id`. `false` when the connection is gone.
-    fn deliver(&mut self, id: u64, data: &[u8], ecn: u8) -> bool {
+    fn deliver(&mut self, id: u64, data: Rx<'_>, ecn: u8) -> bool {
         let t0 = self.timed_start();
         let now = self.clock_tick();
         let Some(p) = self.conns.get_mut(&id) else {
             return false;
         };
+        let len = data.len();
         p.last_active = now;
-        p.bytes_in += data.len() as u64;
-        self.shared.stats.datagram_in(data.len());
+        p.bytes_in += len as u64;
+        self.shared.stats.datagram_in(len);
         p.inner.set_rx_ecn(ecn);
-        let r = catch_unwind(AssertUnwindSafe(|| p.handler.on_data(data)));
+        let owned = p.owned;
+        let h = &mut *p.handler;
+        let r = catch_unwind(AssertUnwindSafe(|| data.deliver(h, owned)));
         self.timed_end("on_data", id, t0);
         if r.is_err() {
             self.finalize(id, Some(panic_error()));
@@ -858,8 +1005,8 @@ impl UdpLoop {
                 sock,
                 local,
                 acceptor,
-                peers: HashMap::new(),
-                blocked: HashSet::new(),
+                peers: KeyedMap::default(),
+                blocked: IdSet::default(),
                 write_reg: false,
             },
         );

@@ -294,6 +294,11 @@ flowchart TD
   peers;
   equal-size runs to one peer become one GSO message (`UDP_SEGMENT`, probed once, disabled for
   good on `EIO`/`EINVAL`).
+- Receive slots are pooled slabs (`only_buf::slab`, ADR-024): a handler that asks for owned
+  datagrams (the hidden `Handler::OWNED_DATA`, only-quic) gets each one as a writable range cut off
+  the slab it arrived in (`on_data_owned`) and may keep it; only-quic decrypts it there, so a
+  1-RTT datagram is not copied between the kernel and the application. Other handlers read in
+  place. Peer tables hash addresses with the keyed folded multiply of `only_core::hash`.
 - `dial_udp` creates a `connect`ed socket per dialed connection, so ICMP errors are reported to
   it (`ConnectionRefused` closes it).
 - QUIC and KCP sit on top of this: their acceptors receive datagrams through `on_data`, run their
