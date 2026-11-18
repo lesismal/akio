@@ -754,6 +754,22 @@ request head is checked as UTF-8 once. Zen 4, same-run A/B on a quiet host: HTTP
 connection, 64 in flight 820,741 → 883,127 req/s (1.08×); HTTP/1.1 and h2c unchanged within
 noise (docs/BENCHMARKS.md). No public API change.
 
+### Fixed: building an io_uring engine no longer exposes that thread to spurious `EINTR`
+
+`io_uring_setup` attaches the calling thread to the new ring, and when a ring is torn down the
+kernel's exit work sends every attached thread a signal-like task_work (`TIF_NOTIFY_SIGNAL`). The
+backend probe and every I/O thread's ring were created on the thread that called
+`EngineBuilder::build` (or `Engine::set_threads`). So when the probe's ring, or later the
+engine's rings, were torn down, that thread could be interrupted. A blocking call the kernel
+does not restart, such as a socket read with a timeout, then failed with `EINTR`. That happened
+long after the build, in code that has nothing to do with io_uring. Rings are now created, and
+the probe runs, on a short-lived thread of their own, which the kernel detaches when it exits;
+each I/O thread still attaches itself when it enables its ring. This was the occasional failure
+of only-socks' `udp_blocking_and_on_the_engine` on io_uring (about 3 runs in 100 under load):
+its blocking `recv_from` returned `EINTR` although every hop of the relay had delivered the
+datagram. The new test `uring_engine_teardown_does_not_interrupt_the_building_thread` (only's
+`engine` tests) failed every run before. No public API change; the I/O path is unchanged.
+
 ### Fixed: a QUIC client's 0-RTT no longer goes out ahead of its Initial
 
 `only_quic::dial` opens the client's UDP socket on an engine thread and keeps the datagrams sent

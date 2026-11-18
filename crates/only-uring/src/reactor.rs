@@ -65,11 +65,34 @@ fn ud(id: u64, op: u64) -> u64 {
     (id << 4) | op
 }
 
+/// Runs `f` on a short-lived thread of its own and returns its result.
+///
+/// `io_uring_setup` (and enabling a ring) attaches the calling thread to the ring: when the ring
+/// is torn down, the kernel's exit work sends every such thread a signal-like task_work
+/// (`TIF_NOTIFY_SIGNAL`). A thread blocked in a call the kernel cannot restart then gets `EINTR`
+/// (a socket read with `SO_RCVTIMEO`, for one), long after it built the engine. Rings are
+/// therefore never created on the caller's thread: the scratch thread is detached from them when
+/// it exits, and the I/O thread that drives a ring attaches itself when it enables it.
+pub(crate) fn on_scratch_thread<T: Send>(f: impl FnOnce() -> T + Send) -> io::Result<T> {
+    std::thread::scope(|s| {
+        let h = std::thread::Builder::new()
+            .name("only-uring-setup".into())
+            .spawn_scoped(s, f)?;
+        Ok(h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+    })
+}
+
+/// Creates a ring (see [`make_ring_here`]) on a scratch thread ([`on_scratch_thread`]).
+pub(crate) fn make_ring(entries: u32, sqpoll: bool) -> io::Result<(Ring, bool)> {
+    on_scratch_thread(move || make_ring_here(entries, sqpoll))?
+}
+
 /// Creates a ring with the cheapest setup the kernel accepts: cooperative task-run, a single
 /// issuer and deferred task-run (6.1+); anything less if that is refused. The returned flag says
 /// the ring starts disabled and must be enabled by the thread that will drive it (single-issuer
-/// rings belong to the thread that enables them, and rings are built on another thread).
-pub(crate) fn make_ring(entries: u32, sqpoll: bool) -> io::Result<(Ring, bool)> {
+/// rings belong to the thread that enables them, and rings are built on another thread). Call it
+/// only on a thread that exits soon (see [`on_scratch_thread`]).
+pub(crate) fn make_ring_here(entries: u32, sqpoll: bool) -> io::Result<(Ring, bool)> {
     let cq = entries.saturating_mul(4);
     if sqpoll {
         let r = Ring::new(entries, ring::SETUP_CQSIZE | ring::SETUP_SQPOLL, cq, 1000)?;

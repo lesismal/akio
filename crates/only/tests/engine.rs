@@ -933,6 +933,49 @@ fn listeners_can_use_different_backends_in_one_engine() {
     stop(&e);
 }
 
+/// Building an io_uring engine leaves the building thread alone: when the engine's rings (or the
+/// backend probe's) are torn down, the kernel signals the threads attached to them, which made a
+/// blocking call that cannot be restarted (a socket read with a timeout) fail with `EINTR` on
+/// the thread that had built the engine.
+#[cfg(target_os = "linux")]
+#[test]
+fn uring_engine_teardown_does_not_interrupt_the_building_thread() {
+    use only::{Backend, UringConfig};
+    // A thread of its own: nothing else of this process is attached to its rings.
+    thread::spawn(|| {
+        let sock = std::net::UdpSocket::bind(localhost()).unwrap();
+        sock.set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let mut b = [0u8; 16];
+        for _ in 0..5 {
+            let e = Engine::builder()
+                .config(cfg())
+                .listen(
+                    Listener::tcp(localhost())
+                        .backend(Backend::IoUring(UringConfig::default()))
+                        .threads(2)
+                        .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+                )
+                .build()
+                .unwrap();
+            e.start().unwrap();
+            stop(&e);
+            drop(e);
+            // The rings' exit work runs now, asynchronously: block across it.
+            let err = sock.recv_from(&mut b).unwrap_err();
+            assert!(
+                matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ),
+                "{err:?}"
+            );
+        }
+    })
+    .join()
+    .unwrap();
+}
+
 #[test]
 fn serves_an_inherited_listener_and_keeps_it_listening_after_shutdown() {
     // A socket bound elsewhere (a supervisor, systemd): the engine serves a clone of it.

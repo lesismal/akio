@@ -623,6 +623,19 @@ WebSocket 升级需要共享它，`Headers` 内联保存前两个字段的位置
 运行的 A/B 对比：HTTP/3 GET，单连接，64 个并发 820,741 → 883,127 请求/秒（1.08 倍）；HTTP/1.1 与 h2c 在噪声
 范围内不变（docs/BENCHMARKS.zh-CN.md）。没有公共 API 变化。
 
+### 修复：构建 io_uring 引擎的线程不再遭遇无端的 `EINTR`
+
+`io_uring_setup` 会把调用线程挂到新 ring 上；ring 销毁时，内核的退出工作会向所有挂在上面的线程发送
+类似信号的 task_work（`TIF_NOTIFY_SIGNAL`）。后端探测与每个 I/O 线程的 ring 原先都在调用
+`EngineBuilder::build`（或 `Engine::set_threads`）的线程上创建，于是探测用的 ring 或之后引擎的 ring
+销毁时，该线程可能被打断：内核不会重启的阻塞调用（例如带超时的 socket 读）随即以 `EINTR` 失败，
+而这发生在构建之后很久、与 io_uring 毫无关系的代码里。现在 ring 的创建与探测都在一个短命的专用线程上进行，
+该线程退出时内核即解除挂接；每个 I/O 线程仍在启用自己的 ring 时挂上。这正是 only-socks 的
+`udp_blocking_and_on_the_engine` 在 io_uring 下偶发失败的原因（负载下约每 100 次 3 次）：
+中继各跳都已送达数据报，阻塞的 `recv_from` 却返回了 `EINTR`。新测试
+`uring_engine_teardown_does_not_interrupt_the_building_thread`（only 的 `engine` 测试）在修复前每次都失败。
+公共 API 不变；I/O 路径不变。
+
 ### 修复：QUIC 客户端的 0-RTT 不再先于 Initial 发出
 
 `only_quic::dial` 在引擎线程上打开客户端的 UDP 套接字，在此之前发送的数据报暂存于积压队列。
