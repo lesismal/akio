@@ -10,7 +10,7 @@ use std::{
     io,
     marker::PhantomData,
     mem,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    net::SocketAddr,
     os::fd::RawFd,
     sync::atomic::{AtomicU8, Ordering},
 };
@@ -19,6 +19,7 @@ use crate::ffi::{
     self, IP_RECVTOS, IP_TOS, IPPROTO_IP, IPPROTO_IPV6, IPV6_RECVTCLASS, IPV6_TCLASS, SOL_UDP,
     UDP_GRO, UDP_SEGMENT,
 };
+use crate::net::parse_addr;
 
 /// Most datagrams one GSO send may carry (the kernel's `UDP_MAX_SEGMENTS` is 64 before 6.x).
 pub const MAX_GSO_SEGMENTS: usize = 64;
@@ -602,38 +603,6 @@ impl<'d> Batch<'_, 'd> {
             Ok(r as usize)
         }
     }
-}
-
-fn parse_addr(ss: &ffi::sockaddr_storage) -> Option<SocketAddr> {
-    match ffi::c_int::from(ss.ss_family) {
-        ffi::AF_INET => {
-            // SAFETY: the family says the kernel stored a sockaddr_in here.
-            let a = unsafe { &*std::ptr::from_ref(ss).cast::<ffi::sockaddr_in>() };
-            Some(SocketAddr::V4(SocketAddrV4::new(
-                Ipv4Addr::from(a.sin_addr.s_addr.to_ne_bytes()),
-                u16::from_be(a.sin_port),
-            )))
-        }
-        ffi::AF_INET6 => {
-            // SAFETY: the family says the kernel stored a sockaddr_in6 here.
-            let a = unsafe { &*std::ptr::from_ref(ss).cast::<ffi::sockaddr_in6>() };
-            Some(SocketAddr::V6(SocketAddrV6::new(
-                Ipv6Addr::from(a.sin6_addr.s6_addr),
-                u16::from_be(a.sin6_port),
-                a.sin6_flowinfo,
-                a.sin6_scope_id,
-            )))
-        }
-        _ => None,
-    }
-    .map(|a| match a.ip() {
-        // Report IPv4-mapped IPv6 peers as plain IPv4 so they match `SocketAddr`s users compare.
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => SocketAddr::new(IpAddr::V4(v4), a.port()),
-            None => a,
-        },
-        _ => a,
-    })
 }
 
 #[cfg(test)]

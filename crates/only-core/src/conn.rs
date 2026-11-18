@@ -326,11 +326,6 @@ impl WriteState {
         }
     }
 
-    /// UDP: the datagrams queued, in order.
-    fn datagrams(&self) -> impl Iterator<Item = &[u8]> {
-        self.datagrams_ecn().map(|(d, _)| d)
-    }
-
     /// UDP: the datagrams queued, in order, with their ECN codepoints.
     fn datagrams_ecn(&self) -> impl Iterator<Item = (&[u8], u8)> {
         self.queue.iter().flat_map(|c| {
@@ -756,6 +751,12 @@ impl ConnInner {
     /// for a stream, `sink` returns how many bytes it took. A return of 0 means "full, try
     /// later" and stops. `Ok(true)` once the queue is empty.
     pub fn drain_output(&self, sink: &mut dyn FnMut(&[u8]) -> usize) -> io::Result<bool> {
+        self.drain_output_ecn(&mut |d, _| sink(d))
+    }
+
+    /// [`drain_output`](Self::drain_output), with each datagram's ECN codepoint (0 = not
+    /// ECN-capable; always 0 for a stream).
+    pub fn drain_output_ecn(&self, sink: &mut dyn FnMut(&[u8], u8) -> usize) -> io::Result<bool> {
         let mut w = self.lock();
         let r = Self::drain_virtual(&mut w, sink);
         if matches!(r, Ok(true)) {
@@ -768,13 +769,16 @@ impl ConnInner {
 
     /// File chunks are read here, on the owning loop, 16 KiB per step (a userspace stack has no
     /// `sendfile`): a page-cache miss waits for the disk on that loop.
-    fn drain_virtual(w: &mut WriteState, sink: &mut dyn FnMut(&[u8]) -> usize) -> io::Result<bool> {
+    fn drain_virtual(
+        w: &mut WriteState,
+        sink: &mut dyn FnMut(&[u8], u8) -> usize,
+    ) -> io::Result<bool> {
         if w.datagram {
             loop {
-                let Some(d) = w.datagrams().next() else {
+                let Some((d, ecn)) = w.datagrams_ecn().next() else {
                     return Ok(true);
                 };
-                if sink(d) == 0 {
+                if sink(d, ecn) == 0 {
                     return Ok(false);
                 }
                 w.sent_datagrams(1);
@@ -790,7 +794,7 @@ impl ConnInner {
                 if n == 0 {
                     return Err(io::ErrorKind::UnexpectedEof.into()); // file shrank
                 }
-                let took = sink(&buf[..n]);
+                let took = sink(&buf[..n], 0);
                 if took == 0 {
                     return Ok(false);
                 }
@@ -798,7 +802,7 @@ impl ConnInner {
                 w.consume(took);
                 continue;
             }
-            let took = sink(front.rest());
+            let took = sink(front.rest(), 0);
             if took == 0 {
                 return Ok(false);
             }
@@ -851,6 +855,27 @@ impl ConnInner {
             }
             // The loop moves the bytes into the userspace stack (`drain_output`).
             Sock::Virtual { .. } => Err(io::ErrorKind::WouldBlock.into()),
+        }
+    }
+
+    /// A UDP datagram with ECN codepoint `ecn` (one `sendmsg` with an `IP_TOS` / `IPV6_TCLASS`
+    /// control message).
+    #[cfg(target_os = "macos")]
+    fn raw_write_ecn(&self, data: &[u8], ecn: u8) -> io::Result<usize> {
+        use std::os::fd::AsRawFd;
+        match &self.sock {
+            Sock::Udp {
+                sock,
+                peer,
+                connected,
+            } => only_sys::send_to_ecn(
+                sock.as_raw_fd(),
+                data,
+                (!connected).then_some(peer),
+                ecn,
+                self.local.is_ipv6(),
+            ),
+            _ => self.raw_write(data),
         }
     }
 
@@ -1042,10 +1067,21 @@ impl ConnInner {
             }
             #[cfg(not(target_os = "linux"))]
             loop {
-                let Some(d) = w.datagrams().next() else {
+                let Some((d, ecn)) = w.datagrams_ecn().next() else {
                     return Ok(true);
                 };
-                match self.raw_write(d) {
+                #[cfg(target_os = "macos")]
+                let r = if ecn == 0 {
+                    self.raw_write(d)
+                } else {
+                    self.raw_write_ecn(d, ecn)
+                };
+                #[cfg(not(target_os = "macos"))]
+                let r = {
+                    let _ = ecn;
+                    self.raw_write(d)
+                };
+                match r {
                     Ok(_) => {
                         w.sent_datagrams(1);
                         continue;
@@ -1145,13 +1181,14 @@ impl ConnInner {
 
     /// [`send_segments`](Self::send_segments) with ECN codepoint `ecn` on every datagram (its
     /// low two bits, RFC 3168; 0 = not ECN-capable). `seg` 0 sends `data` as one datagram. The
-    /// codepoint is set on Linux kernel UDP sockets (unless `ONLY_UDP_ECN=0`), else dropped.
+    /// codepoint is set on kernel UDP sockets on Linux and macOS (unless `ONLY_UDP_ECN=0`) and
+    /// on a userspace stack's UDP (only-dpdk), else dropped.
     pub fn send_segments_ecn(&self, data: Vec<u8>, seg: usize, ecn: u8) -> Result<()> {
         if data.is_empty() {
             return Ok(());
         }
         let mut w = self.lock();
-        let (seg, ecn) = if ecn & 3 != 0 && w.datagram && matches!(self.sock, Sock::Udp { .. }) {
+        let (seg, ecn) = if ecn & 3 != 0 && w.datagram && self.is_datagram_sock() {
             // A datagram with a codepoint is queued as one segment of its own length.
             let seg = if seg == 0 {
                 data.len()
@@ -1996,7 +2033,8 @@ impl<H> Conn<H> {
     /// UDP (internal, outside the stability promise): [`send_segments`](Self::send_segments)
     /// with ECN codepoint `ecn` on every datagram (RFC 3168: 2 = ECT(0), 1 = ECT(1), 3 = CE,
     /// 0 = not ECN-capable); `segment_size` 0 sends `data` as one datagram. The codepoint is set
-    /// on Linux kernel sockets (unless `ONLY_UDP_ECN=0`); elsewhere datagrams go out unmarked.
+    /// on Linux and macOS kernel sockets (unless `ONLY_UDP_ECN=0`) and on only-dpdk's UDP;
+    /// elsewhere datagrams go out unmarked.
     #[doc(hidden)]
     pub fn send_segments_ecn(&self, data: Vec<u8>, segment_size: usize, ecn: u8) -> Result<()> {
         self.inner.send_segments_ecn(data, segment_size, ecn)

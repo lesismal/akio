@@ -363,7 +363,7 @@ pub fn dpdk_stack(data: &[u8]) {
                 _ => {}
             }
         }
-        while s.udp_recv(&mut buf).is_some() {}
+        while s.udp_recv_ecn(&mut buf).is_some() {}
         let _ = s.take_forward();
         now += step;
         s.poll(now, &mut tx);

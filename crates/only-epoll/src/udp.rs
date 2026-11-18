@@ -16,7 +16,7 @@
 //! control message. `Config::udp_max_peers` caps the peers of a listener.
 //!
 //! Every connection that got datagrams in a receive batch (one `recvmmsg`, or up to `BATCH`
-//! `recv_from` calls elsewhere) gets one `on_batch_end` after the batch's last `on_data`, before
+//! `recvmsg` calls elsewhere) gets one `on_batch_end` after the batch's last `on_data`, before
 //! the batch's replies are flushed (only-quic acknowledges and sends once per batch).
 //!
 //! Receive buffers are pooled slabs (`only_buf::slab`, ADR-024). A handler that asks for owned
@@ -246,7 +246,6 @@ impl UdpLoop {
                 if gro_ok(&cfg) {
                     only_sys::enable_gro(sock.as_raw_fd());
                 }
-                #[cfg(target_os = "linux")]
                 only_sys::enable_ecn(sock.as_raw_fd());
                 poller.add(sock.as_raw_fd(), SOCK, true, false)?;
                 let local = sock.local_addr()?;
@@ -556,8 +555,8 @@ impl UdpLoop {
         'event: for _ in 0..MAX_BATCHES_PER_EVENT {
             // A batch is up to BATCH datagrams, as with recvmmsg.
             for _ in 0..BATCH {
-                match sock.recv_from(buf.buf()) {
-                    Ok((n, peer)) => {
+                match only_sys::recv_from_ecn(sock.as_raw_fd(), buf.buf()) {
+                    Ok((n, peer, ecn)) => {
                         self.clock = Instant::now();
                         let Some(id) = self.admit(src, peer) else {
                             continue;
@@ -567,7 +566,7 @@ impl UdpLoop {
                         } else {
                             Rx::Slice(&buf.free[..n])
                         };
-                        self.on_datagram(src, peer, Some(id), rx, 0);
+                        self.on_datagram(src, peer, Some(id), rx, ecn);
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break 'event,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
@@ -743,7 +742,6 @@ impl UdpLoop {
         if gro_ok(&self.cfg) {
             only_sys::enable_gro(sock.as_raw_fd());
         }
-        #[cfg(target_os = "linux")]
         only_sys::enable_ecn(sock.as_raw_fd());
         if self.poller.add(sock.as_raw_fd(), id, true, false).is_err() {
             return;
@@ -879,15 +877,15 @@ impl UdpLoop {
         let owned = self.conns.get(&id).is_some_and(|p| p.owned);
         let mut got = 0;
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
-            match sock.recv(buf.buf()) {
-                Ok(n) => {
+            match only_sys::recv_from_ecn(sock.as_raw_fd(), buf.buf()) {
+                Ok((n, _, ecn)) => {
                     self.clock = Instant::now();
                     let rx = if owned {
                         Rx::Owned(buf.free.split_to(n))
                     } else {
                         Rx::Slice(&buf.free[..n])
                     };
-                    if !self.deliver(id, rx, 0) {
+                    if !self.deliver(id, rx, ecn) {
                         self.scratch = Some(buf);
                         return;
                     }
@@ -1031,7 +1029,6 @@ impl UdpLoop {
         if gro_ok(&self.cfg) {
             only_sys::enable_gro(sock.as_raw_fd());
         }
-        #[cfg(target_os = "linux")]
         only_sys::enable_ecn(sock.as_raw_fd());
         if self.poller.add(sock.as_raw_fd(), id, true, false).is_err() {
             return;

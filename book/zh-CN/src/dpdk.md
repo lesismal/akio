@@ -154,7 +154,8 @@ IPv4 地址、`::`、`address6` 或链路本地地址）。`dial` 与 `dial_udp`
   每两个段、连接开始时快速 ACK）；关闭 Nagle；零窗口探测；keepalive；监听 backlog 与 SYN cookie
   （窗口缩放与 SACK 编码在时间戳中）；可选的 ECN（RFC 3168：只给新数据标记 ECT(0)，收到 CWR 前
   持续回显 ECE，每个往返最多降一次窗口）与 pacing（定时器堆中的每连接定时器，突发最多两个报文段或
-  100 µs）。
+  100 µs）。UDP 数据报双向携带 ECN 码点（与内核套接字一样经 `Conn::send_segments_ecn` /
+  `Conn::rx_ecn`），因此 QUIC 在该协议栈上可通过 ECN 校验（ADR-035）。
 - 校验和由软件计算（无卸载）；收到的校验和都会校验，AF_PACKET 除外（来自本机内核的帧携带的是部分
   校验和）。
 

@@ -125,6 +125,16 @@ fn tls() -> &'static (only_tls::ServerConfig, only_tls::ClientConfig) {
     })
 }
 
+/// What a path in mode `path` (see `Pair::ecn_path`) does to codepoint `ecn`.
+fn path_ecn(path: u8, ecn: u8) -> u8 {
+    match (path, ecn) {
+        (_, 0) | (1, _) => 0,
+        (2, _) => 3,
+        (3, _) => 1,
+        _ => ecn,
+    }
+}
+
 struct Pair {
     now: Instant,
     server: Endpoint,
@@ -132,6 +142,9 @@ struct Pair {
     client: Connection,
     caddr: SocketAddr,
     saddr: SocketAddr,
+    /// What the path does to the ECN codepoints of the datagrams `pump` carries: 0 keeps them,
+    /// 1 bleaches them, 2 marks ECN-capable ones CE, 3 re-marks them ECT(1).
+    ecn_path: u8,
 }
 
 impl Pair {
@@ -178,14 +191,24 @@ impl Pair {
             client,
             caddr: "10.0.0.1:5000".parse().expect("addr"),
             saddr,
+            ecn_path: 0,
         }
     }
 
     fn send_to_server(&mut self, from: SocketAddr, d: Vec<u8>) {
-        match self.server.handle(self.now, from, &d) {
+        self.send_to_server_ecn(from, 0, d);
+    }
+
+    /// The codepoint a datagram sent with `ecn` arrives with on the fuzzed path.
+    fn path_ecn(&self, ecn: u8) -> u8 {
+        path_ecn(self.ecn_path, ecn)
+    }
+
+    fn send_to_server_ecn(&mut self, from: SocketAddr, ecn: u8, d: Vec<u8>) {
+        match self.server.handle_ecn(self.now, from, ecn, &d) {
             Some(DatagramEvent::Conn(h)) => {
                 if let Some(c) = self.sconns.get_mut(&h) {
-                    c.handle_datagram(self.now, from, d);
+                    c.handle_shared_ecn(self.now, from, ecn, std::sync::Arc::new(d).into());
                 }
             }
             Some(DatagramEvent::New(h, c)) => {
@@ -205,15 +228,17 @@ impl Pair {
                     Some(s) => t.data.chunks(s).map(<[u8]>::to_vec).collect(),
                     None => vec![t.data],
                 };
+                let ecn = self.path_ecn(t.ecn);
                 for p in parts {
-                    self.send_to_server(self.caddr, p);
+                    self.send_to_server_ecn(self.caddr, ecn, p);
                 }
             }
             let mut back = Vec::new();
+            let path = self.ecn_path;
             for c in self.sconns.values_mut() {
                 while let Some(t) = c.poll_transmit(self.now, 4) {
                     moved = true;
-                    back.push(t.data);
+                    back.push((path_ecn(path, t.ecn), t.data));
                 }
                 while let Some(e) = c.poll_event() {
                     if let Event::StreamData(id, d, fin) = e {
@@ -225,8 +250,10 @@ impl Pair {
                 }
                 while c.poll_endpoint_event().is_some() {}
             }
-            for d in back {
-                self.client.handle_datagram(self.now, self.saddr, d);
+            for (ecn, d) in back {
+                let from = self.saddr;
+                self.client
+                    .handle_shared_ecn(self.now, from, ecn, std::sync::Arc::new(d).into());
             }
             while self.client.poll_event().is_some() {}
             while self.client.poll_endpoint_event().is_some() {}
@@ -286,7 +313,7 @@ pub fn connection(data: &[u8]) {
         let Some(b) = r.bytes(usize::from(n).min(1400)) else {
             break;
         };
-        match op % 6 {
+        match op % 7 {
             0 => p.send_to_server(p.caddr, b.to_vec()),
             1 => {
                 let from = p.saddr;
@@ -312,7 +339,20 @@ pub fn connection(data: &[u8]) {
                 let from: SocketAddr = "10.0.0.9:9".parse().expect("addr");
                 p.send_to_server(from, forged_initial(&dcid, b));
             }
-            _ => p.tick(u64::from(n % 2000)),
+            5 => p.tick(u64::from(n % 2000)),
+            _ => {
+                // The path starts treating ECN differently: validation, fallback and CE
+                // responses run on what the fuzzer picks. The datagram is also delivered with
+                // a fuzzed codepoint.
+                p.ecn_path = (n % 4) as u8;
+                let from = p.saddr;
+                p.client.handle_shared_ecn(
+                    p.now,
+                    from,
+                    (n >> 2) as u8 & 3,
+                    std::sync::Arc::new(b.to_vec()).into(),
+                );
+            }
         }
         p.pump(4);
     }
@@ -367,6 +407,42 @@ mod tests {
     #[test]
     fn replay_quic_frame() {
         replay("quic_frame", frames, 1);
+    }
+
+    /// The fuzzed ECN path modes reach the connection's ECN logic: a clean path validates, CE
+    /// marks become congestion events, a bleaching path fails validation.
+    #[test]
+    fn ecn_path_modes() {
+        let mut keep = Pair::new();
+        keep.pump(16);
+        let mut ce = Pair::new();
+        ce.pump(16);
+        ce.ecn_path = 2;
+        let mut bleach = Pair::new();
+        bleach.pump(16);
+        bleach.ecn_path = 1;
+        for p in [&mut keep, &mut ce, &mut bleach] {
+            for _ in 0..20 {
+                if let Some(id) = p.client.open(crate::Dir::Bi) {
+                    let _ = p.client.write(id, crate::Bytes::from(vec![7u8; 3000]));
+                    let _ = p.client.finish(id);
+                }
+                p.pump(8);
+                p.tick(20);
+            }
+        }
+        assert!(keep.client.stats().ecn_capable, "{:?}", keep.client.stats());
+        assert_eq!(keep.client.stats().ecn_ce_events, 0);
+        assert!(
+            ce.client.stats().ecn_ce_events > 0,
+            "{:?}",
+            ce.client.stats()
+        );
+        assert!(
+            !bleach.client.stats().ecn_capable,
+            "{:?}",
+            bleach.client.stats()
+        );
     }
 
     #[test]
@@ -515,5 +591,19 @@ mod tests {
         op(&mut s, 1, &[0xc0, 0, 0, 0, 1, 8, 1, 2, 3, 4, 5, 6, 7, 8, 0]);
         op(&mut s, 5, &[0; 1999]);
         write("quic_conn", "mixed".into(), &s);
+        // ECN on the path: kept, bleached, CE-marked, re-marked ECT(1), with stream data.
+        let stream = &frames.iter().find(|f| f.0 == "stream").expect("stream").1;
+        let ack_ecn = &frames.iter().find(|f| f.0 == "ack_ecn").expect("ack").1;
+        for (mode, name) in ["keep", "bleach", "ce", "ect1"].into_iter().enumerate() {
+            let mut s = Vec::new();
+            op(&mut s, 6, &vec![0; mode + 4 * 3]);
+            for _ in 0..4 {
+                op(&mut s, 2, stream);
+                op(&mut s, 5, &[0; 30]);
+            }
+            op(&mut s, 3, ack_ecn);
+            op(&mut s, 5, &[0; 300]);
+            write("quic_conn", format!("ecn_path_{name}"), &s);
+        }
     }
 }

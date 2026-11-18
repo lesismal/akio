@@ -73,9 +73,11 @@ engine.run().unwrap();
   and replaced, routed by the endpoint; the peer's IDs and reset tokens tracked with
   retire_prior_to.
 - **ECN** (RFC 9000 section 13.4, RFC 9002 section 7.1; `TransportConfig::ecn`, on by default):
-  packets go out ECT(0) where the UDP layer sets the codepoint (Linux, through an `IP_TOS` /
-  `IPV6_TCLASS` control message per `sendmmsg` message; `ONLY_UDP_ECN=0` turns it off), received
-  codepoints are read from `IP_RECVTOS` / `IPV6_RECVTCLASS` control messages and reported in
+  packets go out ECT(0) where the UDP layer sets the codepoint (an `IP_TOS` / `IPV6_TCLASS`
+  control message per `sendmmsg` message on Linux, per `sendmsg` on macOS, the IP header itself
+  under only-dpdk's userspace stack; `ONLY_UDP_ECN=0` turns it off on the kernel sockets),
+  received codepoints are read from `IP_RECVTOS` / `IPV6_RECVTCLASS` control messages (or the IP
+  header under only-dpdk) and reported in
   ACK_ECN frames, the path is validated with a ten-packet testing period (cut short by a probe
   timeout, so a path that drops marked packets costs one PTO) and the peer's counts, CE marks are
   congestion events, and a path that bleaches, re-marks or drops marks falls back to unmarked
@@ -119,9 +121,11 @@ such requests `Early-Data: 1` (RFC 8470). **0-RTT data can be replayed** (to ano
 sharing tickets, or within the window by an attacker who can make the client retry) and is not
 forward secret: only act on requests that are safe to repeat, answer the others `425 Too Early`.
 
-Not implemented: compatible version negotiation (RFC 9368 section 4: switching versions inside one handshake), ECN marks on
-platforms other than Linux and under userspace stacks (validation then fails and connections
-send unmarked packets).
+Compatible version negotiation (RFC 9368 section 4, ADR-013 and ADR-014) moves a version 1
+client to version 2 inside one handshake when the server prefers it (`ServerConfig::prefer_version`),
+with the version_information downgrade checks; interop with ngtcp2 in
+`tools/interop/quic/ngtcp2-cvn.sh` (quic-go does not implement RFC 9368). ECN marks are set and
+read on Linux, macOS and over only-dpdk (ADR-035); elsewhere connections do not mark.
 
 quic-go (v0.62) derives version 2 key update secrets with the v1 label `quic ku` where RFC 9369
 section 3.3.2 (and its test vector A.5) says `quicv2 ku`; it starts its first key update after
@@ -159,7 +163,9 @@ section 3.3.2 (and its test vector A.5) says `quicv2 ku`; it starts its first ke
   new port (twice), a failed probe staying put, refusal by disable_active_migration, the move to
   a preferred address; version 2 with Retry and key updates, a client starting over in version 2
   after Version Negotiation, a forged one detected as a downgrade. Over loopback: migration to the
-  preferred address and to a new port, version 2, and on Linux the ECN validation.
+  preferred address and to a new port, version 2, and on Linux and macOS the ECN validation.
+  The `quic_conn` fuzz target also chooses what the path does to ECN (kept, bleached, CE-marked,
+  re-marked ECT(1)).
 - Interop: `tools/interop/quic/run.sh` (quic-go raw QUIC echo of streams and datagrams, both
   directions, with Retry, key updates and 150 MB; version 2 both ways; client migration both
   ways, ours with BBR; on Linux, ECN validated against quic-go), `tools/interop/h3/run.sh` (HTTP/3 with

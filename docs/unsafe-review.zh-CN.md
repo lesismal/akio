@@ -81,23 +81,24 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
-| only-sys | 91 | 3 | 3 | 0 |
+| only-sys | 97 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
 | only-uring | 43 | 5 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **337** | **84** | **7** | **22** |
+| **合计** | **343** | **84** | **8** | **22** |
 
 按用途：
 
 | 位置 | 数量 | 用途 | 主要不变式 |
 |---|---:|---|---|
-| `only-sys/src/ffi/` | 5 + 布局测试中 7 个，`unsafe fn errno_location`、`cmsg_firsthdr`、`cmsg_nxthdr` | 自有的操作系统绑定：C 库（Linux）/ libSystem（macOS）的 `extern "C"` 声明、常量、`#[repr(C)]` 结构体、`CMSG_*` 辅助函数、`cpu_set_t`、errno | 见下文“自有系统调用层” |
-| `only-sys/src/net.rs` | 17 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage`、对活的监听套接字再次 `listen`（backlog 热更新）、读取监听套接字 backlog 的 `TCP_INFO`（测试用） | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
+| `only-sys/src/ffi/` | 5 + 布局测试中 8 个，`unsafe fn errno_location`、`cmsg_firsthdr`、`cmsg_nxthdr` | 自有的操作系统绑定：C 库（Linux）/ libSystem（macOS）的 `extern "C"` 声明、常量、`#[repr(C)]` 结构体、`CMSG_*` 辅助函数、`cpu_set_t`、errno | 见下文“自有系统调用层” |
+| `only-sys/src/net.rs` | 19 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` <-> `sockaddr_storage`、对活的监听套接字再次 `listen`（backlog 热更新）、读取监听套接字 backlog 的 `TCP_INFO`（测试用） | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
 | `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
 | `only-sys/src/ktls.rs` | 9 | 内核 TLS（实验性，only-tls 的 `experimental-ktls`）：`TCP_ULP` 与 `SOL_TLS` 的 `setsockopt`、带记录类型 cmsg 的 `sendmsg`/`recvmsg`、`uname`、擦除复制出的密钥 | crypto-info 结构体在栈上整体构造，并在布局测试中与 `libc` 对照；cmsg 缓冲区 8 字节对齐、长度为 `CMSG_SPACE(1)`；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg |
-| `only-sys/src/udp.rs` | 13 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO cmsg、sockaddr 解析 | 每个接收 iovec 覆盖某槽位独占 slab 区间（`only_buf::slab::ChunkMut`，长度至少 `size`，每次调用前检查，并在调用期间被可变借用）的前 `size` 字节；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
+| `only-sys/src/udp.rs` | 12 + 2 个 `impl Send` | `recvmmsg`/`sendmmsg`、UDP GSO（`UDP_SEGMENT`）/ GRO / ECN cmsg | 每个接收 iovec 覆盖某槽位独占 slab 区间（`only_buf::slab::ChunkMut`，长度至少 `size`，每次调用前检查，并在调用期间被可变借用）的前 `size` 字节；每次调用前重建消息头；用 `CMSG_*` 在 `msg_controllen` 范围内遍历 cmsg；`Batch<'d>` 在调用期间借用待发送数据 |
+| `only-sys/src/udp_mac.rs` | 5 | macOS：每次 `sendmsg` / `recvmsg` 一个数据报及其 ECN 码点（`IP_TOS` / `IPV6_TCLASS` cmsg），`IP_RECVTOS` / `IPV6_RECVTCLASS` 的 `setsockopt` | `msghdr` 只指向存活的局部变量（`sockaddr_storage`、覆盖调用方切片的一个 iovec、64 字节 8 对齐的控制缓冲区）并带其长度，或为空指针且长度为 0；控制数据按字节构造与解析，以 `msg_controllen` 为界（不做 `CMSG_*` 指针遍历） |
 | `only-crypto/src/aes/hw.rs` | 26 个块、26 个 `unsafe fn`（x86_64 与 aarch64 两套；其他平台 6 个桩函数，永不调用） | AES-NI / ARMv8 AES 的密钥扩展、分组加密与解密，CTR 每次 8 个分组（轮数为常量泛型，完全展开） | 只有在 `cpu::cpu_has(Feature::Aes)`（`is_x86_feature_detected!("aes")` + `sse2` / `is_aarch64_feature_detected!("aes")`）之后才会构造 `hw::Keys`；加载与存储不要求对齐，且不越出 16 字节数组或 `&mut [u8; 128]` 块中的 16 字节片段；密钥扩展中的 `SubWord` 用 AES 指令计算，没有以密钥为下标的查表 |
 | `only-crypto/src/gcm/hw.rs` | 25 个块、17 个 `unsafe fn`（其他平台 2 个桩函数） | 基于 PCLMULQDQ / PMULL 的 GHASH（每次归约聚合 8 个分组，Karatsuba），以及单趟融合的 AES-GCM 加解密（同一循环里执行 AES-NI / ARMv8 AES 轮函数与无进位乘法）；对 `vaes` 的调用（AVX-512 内核处理完整分组组与整条消息，AVX2 内核处理完整分组组） | 只有在 `cpu_has(Feature::Clmul)`（PCLMULQDQ + SSSE3 + SSE4.1 / aarch64 AES 扩展）之后才会构造 `Powers`；安全包装函数每次调用前都重新检查 `cpu_has`（融合内核还检查 `Feature::Aes`，AVX2 内核检查 `Aes`、`Clmul` 与 `Vaes`，AVX-512 内核另加 `Avx512`）；每次加载读取的 16 字节都位于长度已被包装函数截为 16（GHASH）或 128（融合）整数倍的切片内；宽内核只拿到同时位于输入与输出切片内的完整 256 字节组，只有原地处理时两个指针才相同；处理整条消息时，AVX-512 内核还拿到 AAD（至多 256 字节，来自存活的切片）与分组组之后的尾部（不足 256 字节，从输入切片紧跟分组组之处读取，写到输出中紧跟分组组之处），字节掩码与幂次指针由 `vaes::Args` 按这些长度推导；输入分散在 `src` 与输出两处时（TLS 1.3 记录层）分两次调用：先非原地处理 `src` 中的完整分组组，再原地处理其余部分；非原地时输出是可能未初始化的 `fill::Fill`：内核拿到 `Fill::next_ptr(n)`（指向接下来 `n` 个未写字节，带边界检查），只往那里写（AVX2 内核只回读自己写入的密文用于 GHASH），每次这样的调用之后紧跟 `Fill::assume_written(n)`（4 个块），`n` 恰为内核写入的字节数（完整分组组，整条消息时再加掩码尾部） |
 | `only-crypto/src/gcm/hw/vaes.rs` | 4 个块、2 个 `unsafe fn` | AES-GCM 加密 / 解密，每个内核每个方向一个 `asm!` 块（这些 intrinsic 在 MSRV 下未稳定）：VAES + VPCLMULQDQ + AVX-512 上每次迭代用 4 个 zmm 寄存器处理 16 个分组，GHASH 与 AES 轮函数交织，每组一次 Montgomery 归约，另外处理 AAD、以 AVX-512 字节掩码处理最后一个不完整的组、长度块与 `E(J0)`（短消息的 AAD、数据与长度块只做一次归约）；VAES + VPCLMULQDQ + AVX2 上每次迭代用 8 个 ymm 寄存器处理 16 个分组（轮密钥与常量取自内存），只处理完整分组组 | 只有 `Powers` 带对应种类的宽内核幂次时才进入（幂次只在 `cpu::has` 确认 AES 与 VAES——zmm 内核另加 AVX-512——后生成），且 `avx2_available()` / `wide_available()` 在调用前再次确认 AES-NI、PCLMULQDQ、VAES、VPCLMULQDQ、AVX2 与操作系统保存 YMM 状态（以及 AVX-512 F/BW/VL 与 ZMM、opmask 状态）；读取轮密钥 `rk[0]` 与 `rk[r-13..=r]`（下标 >= 1，r <= 14）、512 字节的幂次表（16 个幂次加 16 个零项：`n` 个分组的幂次指针从第 `16 - n` 项开始，从它读 4 个向量仍在表内）、320 字节常量、`Args` 块、`n * 256` 字节输入，以及掩码选中的 AAD 与尾部字节；写入 `n * 256` 字节输出与其后掩码选中的尾部（每组与尾部都先加载再存储，因此可原地处理）、GHASH 状态与标签；被掩掉的字节既不读也不写（AVX-512 掩码加载会抑制故障）；输出使用显式寄存器，所有向量寄存器、掩码寄存器与标志位声明为被破坏（`clobber_abi("C")`），不使用栈，结尾执行 `vzeroupper`；掩码只取决于长度 |

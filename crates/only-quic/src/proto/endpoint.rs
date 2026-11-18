@@ -158,7 +158,7 @@ impl Endpoint {
     }
 
     /// Routes a datagram from `from`.
-    #[cfg(any(test, feature = "fuzzing"))]
+    #[cfg(test)]
     pub fn handle(&mut self, now: Instant, from: SocketAddr, data: &[u8]) -> Option<DatagramEvent> {
         self.handle_ecn(now, from, 0, data)
     }

@@ -33,6 +33,21 @@ ADR-034 (docs/adr/034-media-hls-encryption-recording.md), additive:
 - **only-crypto**: `Aes::{encrypt_cbc, decrypt_cbc, encrypt_cbc_padded, decrypt_cbc_padded}`
   (SP 800-38A vectors, PKCS #7 checked against OpenSSL).
 
+### Added: ECN on macOS and over only-dpdk's UDP (only-sys, only-quic, only-dpdk)
+
+ADR-035 (docs/adr/035-ecn-macos-and-userspace-udp.md). QUIC connections now mark ECT(0), read
+received codepoints and validate ECN on macOS and over the userspace stack, not only on Linux.
+only-sys gains, on macOS only, `enable_ecn`, `ecn_available`, `recv_from_ecn` and `send_to_ecn`
+(one `sendmsg` / `recvmsg` per datagram with an `IP_TOS` / `IPV6_TCLASS` control message;
+`ONLY_UDP_ECN=0` turns it off), used by the kqueue UDP loop and only-core's macOS datagram
+writes. only-dpdk's UDP writes the codepoint into the IP header and reports the one it received
+(`Conn::rx_ecn`); only-core keeps codepoints for virtual datagram sockets (hidden
+`ConnInner::drain_output_ecn`). The `quic_conn` fuzz target now picks what the path does to
+ECN (kept, bleached, CE, ECT(1)); before, its datagrams were never marked. The quic-go interop
+script checks ECN validation on macOS too. The only-quic README
+no longer lists compatible version negotiation as missing (done in ADR-013 and ADR-014). No
+change to the Linux API snapshots; unsafe inventory: only-sys 91 → 97 blocks.
+
 ### Added: protobuf text format (only-protobuf)
 
 ADR-030 (docs/adr/030-protobuf-text-format.md), additive: `only_protobuf::text` parses and prints

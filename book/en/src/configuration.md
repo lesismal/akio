@@ -115,7 +115,7 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 |---|---|
 | `ONLY_UDP_GSO=0` | disable UDP GSO on Linux (Linux 4.18+; probed once per process otherwise) |
 | `ONLY_UDP_GRO=0` | never enable UDP GRO, whatever `Config::udp_gro` says (Linux 5.0+) |
-| `ONLY_UDP_ECN=0` | never set an ECN codepoint on outgoing UDP datagrams (QUIC marks ECT(0) on Linux otherwise) |
+| `ONLY_UDP_ECN=0` | never set an ECN codepoint on outgoing UDP datagrams (QUIC marks ECT(0) on Linux and macOS otherwise) |
 | `ONLY_LOG=...` | log filter directives (`info,only_http=debug`), read only when the application calls `only::log::init_from_env` |
 
 Test and diagnostic knob (ADR-029), not a tuning setting: `ONLY_DEFAULT_BACKEND=uring` (Linux)

@@ -108,9 +108,9 @@ HTTP/3（RFC 9114）和 QPACK，可以提供任意 only-http `Service`。与 qui
   同样如此）。客户端绝不在 v2 中出示 v1 的票据或令牌，反之亦然：只要自己支持，它就以该服务端最新票据
   （没有票据时看令牌）的版本开始连接，而不是 `ClientConfig::version`。因此配置为 v1、被偏好 v2 的服务端
   切到 v2 的客户端，下次直接以 v2 开始，带 0-RTT 恢复会话，无需切换。
-- **ECN**（`TransportConfig::ecn`，默认开启）：Linux 上以 ECT(0) 发送，逐个数据报读取收到的码点并在
+- **ECN**（`TransportConfig::ecn`，默认开启）：Linux、macOS 与 only-dpdk 上以 ECT(0) 发送，逐个数据报读取收到的码点并在
   ACK_ECN 帧中报告，验证路径（RFC 9000 第 13.4 节），CE 标记视为拥塞；清除或丢弃标记的路径回退为不带
-  标记发送。其他平台不打标记（Linux 上也可用 `ONLY_UDP_ECN=0` 关闭）。`stats().ecn_capable` /
+  标记发送。其他平台不打标记（Linux 与 macOS 上也可用 `ONLY_UDP_ECN=0` 关闭）。`stats().ecn_capable` /
   `ecn_ce_events`。
 - **拥塞控制**：`TransportConfig::congestion` 可选 CUBIC（默认）、NewReno 或实验性的
   `Congestion::Bbr`：基于投递速率采样的 BBRv1 模型（Startup、Drain、ProbeBW、ProbeRTT），加上 BBRv2/v3

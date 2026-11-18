@@ -8,6 +8,9 @@
 //! recovery tests; `ss -tin` on the kernel side shows what was negotiated (SACK, window
 //! scaling, timestamps) and that segments were retransmitted.
 //!
+//! UDP carries ECN codepoints both ways (the kernel sets and reads them with control messages,
+//! an echo on :7002 answers with the codepoint it was given).
+//!
 //! The same runs over IPv6 (`*_ipv6`): the kernel side gets a `fd00:…/64` address (`nodad`), the
 //! stack `DpdkConfig::address6`; neighbor discovery both ways, `ping -6`, UDP with fragments,
 //! TCP both ways, and the netem loss run.
@@ -37,6 +40,14 @@ struct Echo;
 impl Handler for Echo {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
         let _ = c.send(data);
+    }
+}
+
+/// UDP echo that answers with the ECN codepoint the datagram arrived with.
+struct EcnEcho;
+impl Handler for EcnEcho {
+    fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
+        let _ = c.send_segments_ecn(data.to_vec(), 0, c.rx_ecn());
     }
 }
 
@@ -98,11 +109,55 @@ fn echo_engine(dcfg: DpdkConfig) -> Engine {
         )
         .listen(
             Listener::tcp(SocketAddr::from((local, 7001)))
-                .backend(backend)
+                .backend(backend.clone())
                 .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .listen(
+            Listener::udp(SocketAddr::from((local, 7002)))
+                .backend(backend)
+                .serve(fn_acceptor(|_c: &Conn<EcnEcho>| EcnEcho)),
         )
         .build()
         .expect("build")
+}
+
+/// ECN through the userspace stack's UDP: the kernel sends each codepoint (`IP_TOS` /
+/// `IPV6_TCLASS` control message), the stack reports it to the handler, which echoes it back
+/// with the same codepoint, and the kernel reads it (`IP_RECVTOS` / `IPV6_RECVTCLASS`).
+fn ecn_echo(local: IpAddr, kernel: IpAddr) {
+    use std::os::fd::AsRawFd;
+    let u = UdpSocket::bind((kernel, 0)).unwrap();
+    u.set_nonblocking(true).unwrap();
+    assert!(only_sys::enable_ecn(u.as_raw_fd()));
+    let dest = SocketAddr::from((local, 7002));
+    let mut rb = only_sys::RecvBatch::new(8, 2048);
+    let mut sb = only_sys::SendBatch::new();
+    for ecn in [2u8, 1, 3, 0] {
+        let msg = [ecn + 10; 64];
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let got = 'resend: loop {
+            assert!(Instant::now() < deadline, "no ECN echo for codepoint {ecn}");
+            {
+                let mut b = sb.batch();
+                assert!(b.push_ecn(Some(&dest), &[&msg], 0, ecn, kernel.is_ipv6()));
+                let _ = b.send(u.as_raw_fd(), 0);
+            }
+            let wait = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < wait {
+                let k = rb.recv(u.as_raw_fd()).unwrap_or(0);
+                for i in 0..k {
+                    if rb.get(i).is_some_and(|(d, _, _)| d == msg) {
+                        break 'resend rb.ecn(i);
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        };
+        assert_eq!(
+            got, ecn,
+            "codepoint {ecn} through the userspace stack and back"
+        );
+    }
 }
 
 /// Writes `data` and reads its echo concurrently; checks it.
@@ -215,6 +270,7 @@ fn kernel_peer(dev: Device, ifname: &str, local: IpAddr, kernel: IpAddr) {
         let n = retry(|| u.recv(&mut buf)).expect("udp echo");
         assert_eq!(&buf[..n], &msg[..], "datagram {i}");
     }
+    ecn_echo(local, kernel);
     // Datagrams larger than the MTU: IP fragmentation both ways.
     for len in [2000usize, 8000, 30_000] {
         let msg = pattern(len, len);

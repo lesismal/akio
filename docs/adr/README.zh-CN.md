@@ -38,3 +38,4 @@
 - [ADR-032：`Endpoint` 经 TCP 与 TLS 使用 TURN、主动及服务器端 ICE-TCP、与 Chrome 的 simulcast](032-webrtc-turn-streams-ice-tcp-simulcast.zh-CN.md)（2026-11-18 采纳）
 - [ADR-033：BitTorrent 快速续传](033-bittorrent-fast-resume.zh-CN.md)（2026-11-18 采纳）
 - [ADR-034：流媒体 Hub 的 HLS 加密与录制](034-media-hls-encryption-recording.zh-CN.md)（2026-11-18 采纳）
+- [ADR-035：macOS 上与用户态协议栈 UDP 上的 ECN](035-ecn-macos-and-userspace-udp.zh-CN.md)（2026-11-18 采纳）

@@ -1108,10 +1108,10 @@ fn send_out(sock: &Conn<Udp>, seg: Option<usize>, data: Vec<u8>, ecn: u8) {
     };
 }
 
-/// Whether the UDP layer can mark datagrams ECT(0) (Linux, unless `ONLY_UDP_ECN=0`); elsewhere
-/// connections do not try (validation would only fail).
+/// Whether the UDP layer can mark datagrams ECT(0) (Linux and macOS, unless `ONLY_UDP_ECN=0`);
+/// elsewhere connections do not try (validation would only fail).
 fn ecn_platform() -> bool {
-    cfg!(target_os = "linux")
+    cfg!(any(target_os = "linux", target_os = "macos"))
         && std::env::var("ONLY_UDP_ECN")
             .map_or(true, |v| v != "0" && !v.eq_ignore_ascii_case("off"))
 }

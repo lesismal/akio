@@ -293,6 +293,14 @@ impl Sim {
         }
     }
 
+    /// Puts frames B transmitted outside `poll` on the link.
+    fn out_b(&mut self, cap: Cap) {
+        for f in cap.0 {
+            self.seq += 1;
+            self.ba.push(self.now, f, &mut self.rng, self.seq);
+        }
+    }
+
     /// Runs `poll` on both sides and moves their frames onto the link.
     fn flush(&mut self) {
         let mut cap = Cap::default();
@@ -885,6 +893,54 @@ fn many_connections_with_timers() {
     // Idle connections hold no timers that keep firing: the heap drains.
     s.run_until(Duration::from_secs(5), |_| false);
     assert!(s.a.next_deadline().is_none(), "{:?}", s.a.next_deadline());
+}
+
+#[test]
+fn udp_ecn_codepoints_both_ways() {
+    for v6 in [false, true] {
+        let (mut s, a, b) = if v6 {
+            (
+                Sim::new6(LinkCfg::default(), params(), params()),
+                IpAddr::from(A6),
+                IpAddr::from(B6),
+            )
+        } else {
+            (
+                Sim::new(LinkCfg::default(), params(), params()),
+                IpAddr::from(A),
+                IpAddr::from(B),
+            )
+        };
+        s.a.udp_bind(5000);
+        s.b.udp_bind(6000);
+        let mut cap = Cap::default();
+        for (i, ecn) in [2u8, 1, 3, 0, 0b110].into_iter().enumerate() {
+            s.a.udp_send_ecn(s.now, &mut cap, 5000, sa(b, 6000), &[i as u8; 100], ecn)
+                .unwrap();
+        }
+        s.out_a(std::mem::take(&mut cap));
+        let mut buf = vec![0u8; 2048];
+        let mut got = Vec::new();
+        s.run_until(Duration::from_secs(1), |s| {
+            while let Some((port, from, n, ecn)) = s.b.udp_recv_ecn(&mut buf) {
+                assert_eq!((port, from, n), (6000, sa(a, 5000), 100));
+                got.push((buf[0], ecn));
+            }
+            got.len() == 5
+        });
+        // Only the low two bits are sent.
+        assert_eq!(got, [(0, 2), (1, 1), (2, 3), (3, 0), (4, 2)], "v6={v6}");
+        // And back, through the plain call: not ECN-capable.
+        s.b.udp_send(s.now, &mut cap, 6000, sa(a, 5000), b"x")
+            .unwrap();
+        s.out_b(std::mem::take(&mut cap));
+        let mut back = None;
+        s.run_until(Duration::from_secs(1), |s| {
+            back = s.a.udp_recv_ecn(&mut buf).map(|r| r.3);
+            back.is_some()
+        });
+        assert_eq!(back, Some(0));
+    }
 }
 
 #[test]
