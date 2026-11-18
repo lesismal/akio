@@ -11,7 +11,7 @@ use only_core::{Config, DynAcceptor, Group, LoopMeta, LoopStats, Pool, UdpStats}
 
 use crate::{
     DpdkConfig,
-    stack::{Cmd, GroupLink, GroupSpec, Listen, Stack},
+    stack::{Cmd, GroupLink, GroupSpec, Listen, Stack, StackCtl},
 };
 
 static NEXT_GID: AtomicU64 = AtomicU64::new(1);
@@ -60,18 +60,48 @@ impl DpdkGroup {
                         format!("{ip} is not the stack's address ({})", dcfg.address),
                     ));
                 }
-                IpAddr::V6(_) => {
+                IpAddr::V6(_) if dcfg.address6.is_none() => {
                     return Err(io::Error::new(
                         io::ErrorKind::Unsupported,
-                        "the userspace stack is IPv4-only",
+                        "the userspace stack has no IPv6 address (set DpdkConfig::address6)",
                     ));
                 }
+                IpAddr::V6(_) => {}
             }
         }
+        // An IPv6 listener address must be one of the stack's (the link-local one depends on
+        // the device's MAC, known once the stack is open).
+        let want6 = match listen.as_ref().map(|(a, _)| a.ip()) {
+            Some(IpAddr::V6(a)) => Some(a),
+            _ => None,
+        };
+        let check = |ctl: &StackCtl| match want6 {
+            Some(ip)
+                if !(ip.is_unspecified()
+                    || Some(ip) == dcfg.address6
+                    || ip == crate::net::link_local(ctl.mac)) =>
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("{ip} is not one of the stack's IPv6 addresses"),
+                ))
+            }
+            _ => Ok(()),
+        };
         cfg.telemetry.bind(&cfg);
         let cfg = Arc::new(cfg);
-        let (stack, port) = Stack::acquire(dcfg, listen.as_ref().map(|(a, _)| (udp, a.port())))?;
-        let addr = SocketAddr::new(IpAddr::V4(stack.ctl.ip), port);
+        let (stack, port) =
+            Stack::acquire(dcfg, listen.as_ref().map(|(a, _)| (udp, a.port())), check)?;
+        // Listeners are dual-stack; one bound to an IPv6 address reports that address.
+        let ip = match want6 {
+            Some(a) if !a.is_unspecified() => IpAddr::V6(a),
+            Some(_) => IpAddr::V6(
+                dcfg.address6
+                    .unwrap_or_else(|| crate::net::link_local(stack.ctl.mac)),
+            ),
+            None => IpAddr::V4(stack.ctl.ip),
+        };
+        let addr = SocketAddr::new(ip, port);
         let listener = listen.as_ref().map(|_| addr);
         let gid = NEXT_GID.fetch_add(1, Ordering::Relaxed);
         let links: Vec<Arc<GroupLink>> = stack

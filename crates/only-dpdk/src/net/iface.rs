@@ -1,6 +1,7 @@
-//! One stack instance (one per device queue): Ethernet / ARP / IPv4 / ICMP / UDP demultiplexing,
-//! the TCP connection table and listeners, timers, and the IPv4 output path (routing, ARP
-//! resolution with a pending queue, fragmentation).
+//! One stack instance (one per device queue): Ethernet / ARP / IPv4 / ICMP and IPv6 / ICMPv6 /
+//! NDP demultiplexing, UDP and TCP over both families, the TCP connection table and listeners
+//! (dual-stack: a listener on a port accepts IPv4 and IPv6), timers, and the output path
+//! (routing, ARP / NDP resolution with a pending queue, fragmentation, IPv6 path MTU).
 //!
 //! The interface never reads a clock or touches a device: the caller passes `now`, hands it
 //! received frames ([`Iface::receive`]), runs [`Iface::poll`] for timers and queued output, and
@@ -11,19 +12,22 @@ use std::{
     cmp::Reverse,
     collections::{BinaryHeap, HashMap, HashSet, VecDeque},
     hash::{BuildHasher, Hash, Hasher, RandomState},
-    net::{Ipv4Addr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::{Duration, Instant},
 };
 
 use super::{
-    arp::{ArpCache, Lookup},
+    arp::{ArpCache, Lookup, NdpCache},
     frag::Reassembler,
-    tcp::{Clock, Notes, Params, SegOut, State, SynOpts, Tcb, TcpError},
+    hash::KeyedHash,
+    tcp::{Clock, Endpoints, IcmpError, Notes, Params, SegOut, State, SynOpts, Tcb, TcpError},
     wire::{
-        self, ACK, ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST, ETH_HDR, ETHERTYPE_ARP,
-        ETHERTYPE_IPV4, Eth, ICMP_HDR, IP_DF, IP_MF, IPV4_HDR, Icmp, Ipv4, Mac, PROTO_ICMP,
-        PROTO_TCP, PROTO_UDP, RST, SYN, Tcp, TcpOpts, TcpOut, UDP_HDR, Udp,
+        self, ACK, ARP_LEN, ARP_REPLY, ARP_REQUEST, Arp, BROADCAST, ECN_MASK, ECT0, ETH_HDR,
+        ETHERTYPE_ARP, ETHERTYPE_IPV4, ETHERTYPE_IPV6, Eth, ICMP_HDR, IP_DF, IP_MF, IPV4_HDR, Icmp,
+        Ipv4, Mac, PROTO_ICMP, PROTO_ICMPV6, PROTO_TCP, PROTO_UDP, RST, SYN, Tcp, TcpOpts, TcpOut,
+        UDP_HDR, Udp,
     },
+    wire6::{self, ExtError, FRAG_HDR, ICMP6_HDR, IPV6_HDR, Icmp6, Ipv6, ND_MSG, Nd},
 };
 
 /// Where frames go: a device queue. A frame is built in the buffer `buffer` returns and sent by
@@ -42,6 +46,12 @@ pub(crate) struct Config {
     pub(crate) ip: Ipv4Addr,
     pub(crate) prefix_len: u8,
     pub(crate) gateway: Option<Ipv4Addr>,
+    /// The global (or unique local) IPv6 address: IPv6 is on when set (with a link-local
+    /// address derived from the MAC next to it).
+    pub(crate) ip6: Option<Ipv6Addr>,
+    pub(crate) prefix_len6: u8,
+    /// IPv6 default router (often a link-local address).
+    pub(crate) gateway6: Option<Ipv6Addr>,
     /// IP MTU.
     pub(crate) mtu: usize,
     pub(crate) tcp: Params,
@@ -72,7 +82,7 @@ pub(crate) struct TcpHandle {
 }
 
 /// What the interface tells its owner.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Event {
     /// A connection to listener `port` completed its handshake.
     Accepted {
@@ -88,10 +98,11 @@ pub(crate) enum Event {
     /// A connection the owner holds ended without the owner closing it (reset, timeout, or
     /// the closing exchange finished). The handle is stale afterwards.
     Closed(TcpHandle, Option<TcpError>),
-    /// ICMP port / host unreachable for a datagram sent from `port` to `remote`.
+    /// ICMP port / host unreachable for a datagram sent from `port` to `remote` (boxed: the
+    /// address would triple the size of every event).
     UdpUnreachable {
         port: u16,
-        remote: SocketAddrV4,
+        remote: Box<SocketAddr>,
     },
 }
 
@@ -120,7 +131,7 @@ struct Listener {
 #[derive(Debug)]
 struct Datagram {
     port: u16,
-    from: SocketAddrV4,
+    from: SocketAddr,
     data: Vec<u8>,
 }
 
@@ -132,50 +143,79 @@ pub(crate) enum CallError {
     Unreachable,
 }
 
-/// A keyed, fast hasher for the connection table (randomized per interface so remote peers
-/// cannot aim collisions).
-#[derive(Clone, Debug)]
-struct KeyedHash(u64);
+/// A connection-table key: (local port, remote address), packed in 20 bytes whatever the
+/// family (an IPv4 address as its IPv4-mapped IPv6 form): the remote address's four words, then
+/// both ports. Hashed as two words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Key([u32; 5]);
 
-impl BuildHasher for KeyedHash {
-    type Hasher = MixHasher;
-    fn build_hasher(&self) -> MixHasher {
-        MixHasher(self.0)
+impl Key {
+    fn new(local_port: u16, remote: SocketAddr) -> Key {
+        let ip = match remote.ip() {
+            IpAddr::V4(a) => [0, 0, 0xffff, u32::from(a)],
+            IpAddr::V6(a) => words(IpAddr::V6(a)),
+        };
+        let ports = (u32::from(local_port) << 16) | u32::from(remote.port());
+        Key([ip[0], ip[1], ip[2], ip[3], ports])
     }
 }
 
-#[derive(Debug)]
-struct MixHasher(u64);
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, h: &mut H) {
+        let w = &self.0;
+        h.write_u64((u64::from(w[3]) << 32 | u64::from(w[4])) ^ u64::from(w[2]));
+        h.write_u64(u64::from(w[0]) << 32 | u64::from(w[1]));
+    }
+}
 
-impl Hasher for MixHasher {
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.write_u64(u64::from(b));
+/// An address as words for the keyed hashes (ISNs, SYN cookies).
+fn words(a: IpAddr) -> [u32; 4] {
+    match a {
+        IpAddr::V4(a) => [u32::from(a), 0, 0, 0],
+        IpAddr::V6(a) => {
+            let o = u128::from(a);
+            [
+                (o >> 96) as u32,
+                (o >> 64) as u32,
+                (o >> 32) as u32,
+                o as u32,
+            ]
         }
     }
-    fn write_u16(&mut self, n: u16) {
-        self.write_u64(u64::from(n));
-    }
-    fn write_u32(&mut self, n: u32) {
-        self.write_u64(u64::from(n));
-    }
-    fn write_u64(&mut self, n: u64) {
-        self.0 = (self.0 ^ n)
-            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-            .rotate_left(29);
-    }
-    fn write_usize(&mut self, n: usize) {
-        self.write_u64(n as u64);
-    }
-    fn finish(&self) -> u64 {
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
 }
 
-type Key = (u16, SocketAddrV4);
+/// A received IP packet, either family, as the transport layer sees it.
+#[derive(Clone, Copy, Debug)]
+struct Pkt<'a> {
+    src: IpAddr,
+    dst: IpAddr,
+    /// Upper-layer protocol.
+    proto: u8,
+    /// ECN codepoint.
+    ecn: u8,
+    /// Hop limit / TTL.
+    hops: u8,
+    /// Sent to a broadcast or multicast address.
+    bcast: bool,
+    /// The upper-layer data.
+    payload: &'a [u8],
+    /// The whole packet from its IP header (what an ICMP error quotes).
+    raw: &'a [u8],
+    /// IPv4: the header length. IPv6: offset of the Next Header field naming `proto`.
+    hdr: usize,
+    /// The sender's MAC (NDP answers to a solicitation without a link-layer option).
+    src_mac: Mac,
+    /// The pseudo-header's address sum (TCP / UDP checksums).
+    ps: wire::Pseudo,
+}
+
+/// What an ICMP error about a received packet says, in both families' terms.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Unreach {
+    Port,
+    /// Unknown protocol (IPv6: parameter problem "next header", pointing at it).
+    Proto,
+}
 
 /// How long a SYN cookie stays valid (two 64 s counter periods).
 const COOKIE_LIFE: Duration = Duration::from_secs(128);
@@ -185,8 +225,138 @@ const COOKIE_MSS: [u16; 8] = [536, 1200, 1360, 1400, 1440, 1460, 4312, 8960];
 const ICMP_BURST: u32 = 50;
 const ICMP_REFILL: Duration = Duration::from_millis(10);
 const TTL: u8 = 64;
+/// Most destinations with a learned path MTU (IPv6 packet-too-big); the oldest goes first.
+const PMTU_ENTRIES: usize = 1024;
+/// A learned path MTU is forgotten after this (RFC 8201 4: at least 5 minutes, 10 suggested).
+const PMTU_LIFE: Duration = Duration::from_secs(600);
+/// Bytes of the invoking packet an ICMPv6 error quotes: as much as fits in the minimum MTU.
+const ICMP6_QUOTE: usize = wire6::MIN_MTU - IPV6_HDR - ICMP6_HDR;
 
-/// IPv4 output: addresses, routing, ARP, fragmentation.
+/// What one IP packet to send looks like (the payload is written by a callback).
+#[derive(Clone, Copy, Debug)]
+struct IpOut {
+    src: IpAddr,
+    dst: IpAddr,
+    proto: u8,
+    /// Payload bytes.
+    len: usize,
+    /// Never fragment (TCP: segments are sized to the path MTU instead).
+    df: bool,
+    /// TOS / traffic class byte.
+    tos: u8,
+}
+
+impl IpOut {
+    fn body(&self) -> Body {
+        Body {
+            proto: self.proto,
+            len: self.len,
+            df: self.df,
+            tos: self.tos,
+        }
+    }
+}
+
+/// The family-independent part of [`IpOut`] (what the per-family senders take, in registers).
+#[derive(Clone, Copy, Debug)]
+struct Body {
+    proto: u8,
+    len: usize,
+    df: bool,
+    tos: u8,
+}
+
+/// IPv6 addressing and neighbour state.
+#[derive(Debug)]
+struct Net6 {
+    /// Link-local address (from the MAC).
+    ll: Ipv6Addr,
+    global: Option<Ipv6Addr>,
+    /// Prefix of `global`'s subnet, as a mask.
+    mask: u128,
+    gateway: Option<Ipv6Addr>,
+    ndp: NdpCache,
+    frag_id: u32,
+    /// Path MTUs learned from packet-too-big messages: destination -> (MTU, expiry).
+    pmtu: HashMap<Ipv6Addr, (usize, Instant)>,
+    /// Ethernet multicast addresses we receive (all-nodes, our solicited-node groups).
+    mcast_macs: Vec<Mac>,
+    /// When to send an MLDv2 report (at start, and after a query).
+    mld_at: Option<Instant>,
+}
+
+impl Net6 {
+    fn ours(&self, a: Ipv6Addr) -> bool {
+        a == self.ll || Some(a) == self.global
+    }
+
+    /// A multicast group we listen to.
+    fn listening(&self, a: Ipv6Addr) -> bool {
+        a == wire6::ALL_NODES
+            || a == wire6::solicited_node(self.ll)
+            || self.global.is_some_and(|g| a == wire6::solicited_node(g))
+    }
+
+    fn on_link(&self, dst: Ipv6Addr) -> bool {
+        wire6::is_link_local(dst)
+            || self
+                .global
+                .is_some_and(|g| u128::from(dst) & self.mask == u128::from(g) & self.mask)
+    }
+
+    fn next_hop(&self, dst: Ipv6Addr) -> Option<Ipv6Addr> {
+        if self.on_link(dst) || dst.is_multicast() {
+            Some(dst)
+        } else {
+            self.gateway
+        }
+    }
+
+    /// Source address for a packet to `dst` (RFC 6724, reduced to two candidates: the
+    /// link-local address for link-local and multicast-link-scope destinations, the global one
+    /// otherwise).
+    fn src_for(&self, dst: Ipv6Addr) -> Ipv6Addr {
+        let link_scope =
+            wire6::is_link_local(dst) || (dst.is_multicast() && dst.segments()[0] & 0x000f <= 2);
+        match self.global {
+            Some(g) if !link_scope => g,
+            _ => self.ll,
+        }
+    }
+
+    fn path_mtu(&self, dst: Ipv6Addr, link: usize, now: Instant) -> usize {
+        match self.pmtu.get(&dst) {
+            Some(&(m, exp)) if now < exp => m.min(link),
+            _ => link,
+        }
+    }
+
+    fn learn_pmtu(&mut self, dst: Ipv6Addr, mtu: usize, link: usize, now: Instant) {
+        let mtu = mtu.clamp(wire6::MIN_MTU, link);
+        if mtu >= link {
+            return;
+        }
+        if self.pmtu.len() >= PMTU_ENTRIES && !self.pmtu.contains_key(&dst) {
+            self.pmtu.retain(|_, (_, exp)| *exp > now);
+            if self.pmtu.len() >= PMTU_ENTRIES {
+                let oldest = self
+                    .pmtu
+                    .iter()
+                    .min_by_key(|(_, (_, e))| *e)
+                    .map(|(a, _)| *a);
+                if let Some(a) = oldest {
+                    self.pmtu.remove(&a);
+                }
+            }
+        }
+        let e = self.pmtu.entry(dst).or_insert((mtu, now + PMTU_LIFE));
+        if mtu <= e.0 {
+            *e = (mtu, now + PMTU_LIFE);
+        }
+    }
+}
+
+/// IP output: addresses, routing, ARP / NDP, fragmentation.
 #[derive(Debug)]
 struct Net {
     mac: Mac,
@@ -196,6 +366,7 @@ struct Net {
     mtu: usize,
     ip_id: u16,
     arp: ArpCache,
+    v6: Option<Net6>,
     scratch: Vec<u8>,
     icmp_tokens: u32,
     icmp_refill: Instant,
@@ -218,6 +389,23 @@ impl Net {
         }
     }
 
+    /// `dst` can be routed (a dial's precondition).
+    fn routable(&self, dst: IpAddr) -> bool {
+        match dst {
+            IpAddr::V4(d) => self.next_hop(d).is_some(),
+            IpAddr::V6(d) => self.v6.as_ref().is_some_and(|v| v.next_hop(d).is_some()),
+        }
+    }
+
+    /// Our source address for a packet to `dst`.
+    fn src_for(&self, dst: IpAddr) -> IpAddr {
+        match (dst, &self.v6) {
+            (IpAddr::V6(d), Some(v)) => IpAddr::V6(v.src_for(d)),
+            (IpAddr::V6(_), None) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+            (IpAddr::V4(_), _) => IpAddr::V4(self.ip),
+        }
+    }
+
     fn send_arp(&self, tx: &mut dyn Tx, op: u16, dst_mac: Mac, tha: Mac, tpa: Ipv4Addr) {
         let b = tx.buffer(ETH_HDR + ARP_LEN);
         wire::write_eth(b, dst_mac, self.mac, ETHERTYPE_ARP);
@@ -232,23 +420,37 @@ impl Net {
         tx.commit();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    /// Sends an IPv4 packet to `dst` whose `len`-byte payload `write` fills in. Packets larger
-    /// than the MTU are fragmented (unless `df`, then dropped). Returns `false` if the packet
-    /// could not be sent or queued.
+    /// Sends an IP packet whose `o.len`-byte payload `write` fills in (over IPv4 or IPv6, by
+    /// the destination). Packets larger than the (path) MTU are fragmented (unless `o.df`, then
+    /// dropped). Returns `false` if the packet could not be sent or queued.
+    #[inline]
     fn send_ip(
         &mut self,
         now: Instant,
         tx: &mut dyn Tx,
+        o: IpOut,
+        write: &mut dyn FnMut(&mut [u8]),
+    ) -> bool {
+        match (o.src, o.dst) {
+            (IpAddr::V4(src), IpAddr::V4(dst)) => self.send_ip4(now, tx, src, dst, o.body(), write),
+            (IpAddr::V6(src), IpAddr::V6(dst)) => self.send_ip6(now, tx, src, dst, o.body(), write),
+            _ => false,
+        }
+    }
+
+    fn send_ip4(
+        &mut self,
+        now: Instant,
+        tx: &mut dyn Tx,
+        src: Ipv4Addr,
         dst: Ipv4Addr,
-        proto: u8,
-        len: usize,
-        df: bool,
+        o: Body,
         write: &mut dyn FnMut(&mut [u8]),
     ) -> bool {
         let Some(hop) = self.next_hop(dst) else {
             return false;
         };
+        let (proto, len, tos) = (o.proto, o.len, o.tos);
         let mac = if dst.is_broadcast() || dst == self.broadcast() {
             Some(BROADCAST)
         } else {
@@ -270,25 +472,25 @@ impl Net {
         self.ip_id = self.ip_id.wrapping_add(1);
         let id = self.ip_id;
         if IPV4_HDR + len <= self.mtu {
-            let frag = if df { IP_DF } else { 0 };
+            let frag = if o.df { IP_DF } else { 0 };
             match mac {
                 Some(mac) => {
                     let b = tx.buffer(ETH_HDR + IPV4_HDR + len);
                     wire::write_eth(b, mac, self.mac, ETHERTYPE_IPV4);
                     write(&mut b[ETH_HDR + IPV4_HDR..]);
-                    wire::write_ipv4(&mut b[ETH_HDR..], self.ip, dst, proto, id, frag, TTL, len);
+                    wire::write_ipv4(&mut b[ETH_HDR..], src, dst, proto, id, frag, TTL, tos, len);
                     tx.commit();
                     true
                 }
                 None => {
                     let mut p = vec![0u8; IPV4_HDR + len];
                     write(&mut p[IPV4_HDR..]);
-                    wire::write_ipv4(&mut p, self.ip, dst, proto, id, frag, TTL, len);
+                    wire::write_ipv4(&mut p, src, dst, proto, id, frag, TTL, tos, len);
                     self.arp.queue_packet(hop, p)
                 }
             }
         } else {
-            if df {
+            if o.df {
                 return false;
             }
             // Fragment: payload into scratch, then 8-byte aligned pieces.
@@ -309,13 +511,13 @@ impl Net {
                         let b = tx.buffer(ETH_HDR + IPV4_HDR + n);
                         wire::write_eth(b, mac, self.mac, ETHERTYPE_IPV4);
                         b[ETH_HDR + IPV4_HDR..].copy_from_slice(piece);
-                        wire::write_ipv4(&mut b[ETH_HDR..], self.ip, dst, proto, id, frag, TTL, n);
+                        wire::write_ipv4(&mut b[ETH_HDR..], src, dst, proto, id, frag, TTL, tos, n);
                         tx.commit();
                     }
                     None => {
                         let mut p = vec![0u8; IPV4_HDR + n];
                         p[IPV4_HDR..].copy_from_slice(piece);
-                        wire::write_ipv4(&mut p, self.ip, dst, proto, id, frag, TTL, n);
+                        wire::write_ipv4(&mut p, src, dst, proto, id, frag, TTL, tos, n);
                         ok &= self.arp.queue_packet(hop, p);
                     }
                 }
@@ -326,11 +528,186 @@ impl Net {
         }
     }
 
+    /// Resolves an IPv6 next hop: its MAC, or `None` with the packet to be queued (a neighbor
+    /// solicitation went out when needed).
+    fn resolve6(&mut self, now: Instant, tx: &mut dyn Tx, hop: Ipv6Addr) -> Option<Mac> {
+        if hop.is_multicast() {
+            return Some(wire6::multicast_mac(hop));
+        }
+        let v6 = self.v6.as_mut()?;
+        match v6.ndp.lookup(hop, now) {
+            Lookup::Mac { mac, refresh } => {
+                if refresh {
+                    // NUD probe: unicast solicitation (RFC 4861 7.3.3, PROBE).
+                    self.send_ns(tx, hop, Some(mac));
+                }
+                Some(mac)
+            }
+            Lookup::Pending { request } => {
+                if request {
+                    self.send_ns(tx, hop, None);
+                }
+                None
+            }
+        }
+    }
+
+    /// A neighbor solicitation for `target`: to its solicited-node group, or unicast to
+    /// `known` (reachability confirmation).
+    fn send_ns(&self, tx: &mut dyn Tx, target: Ipv6Addr, known: Option<Mac>) {
+        let Some(v6) = &self.v6 else { return };
+        let src = v6.src_for(target);
+        let (dst, dmac) = match known {
+            Some(m) => (target, m),
+            None => {
+                let sn = wire6::solicited_node(target);
+                (sn, wire6::multicast_mac(sn))
+            }
+        };
+        let b = tx.buffer(ETH_HDR + IPV6_HDR + ND_MSG);
+        wire::write_eth(b, dmac, self.mac, ETHERTYPE_IPV6);
+        wire6::write_ipv6(&mut b[ETH_HDR..], src, dst, PROTO_ICMPV6, 255, 0, ND_MSG);
+        wire6::write_ns(
+            &mut b[ETH_HDR + IPV6_HDR..],
+            src,
+            dst,
+            target,
+            Some(self.mac),
+        );
+        tx.commit();
+    }
+
+    /// A neighbor advertisement for our `target`, to `dst` at `dmac`.
+    fn send_na(&self, tx: &mut dyn Tx, target: Ipv6Addr, dst: Ipv6Addr, dmac: Mac, flags: u8) {
+        let b = tx.buffer(ETH_HDR + IPV6_HDR + ND_MSG);
+        wire::write_eth(b, dmac, self.mac, ETHERTYPE_IPV6);
+        wire6::write_ipv6(&mut b[ETH_HDR..], target, dst, PROTO_ICMPV6, 255, 0, ND_MSG);
+        wire6::write_na(
+            &mut b[ETH_HDR + IPV6_HDR..],
+            target,
+            dst,
+            flags,
+            target,
+            self.mac,
+        );
+        tx.commit();
+    }
+
+    /// An MLDv2 report joining our solicited-node groups (RFC 3810 5.2: from the link-local
+    /// address, hop limit 1, with a router alert).
+    fn send_mld_report(&self, tx: &mut dyn Tx) {
+        let Some(v6) = &self.v6 else { return };
+        let mut groups = vec![wire6::solicited_node(v6.ll)];
+        if let Some(g) = v6.global.map(wire6::solicited_node) {
+            if !groups.contains(&g) {
+                groups.push(g);
+            }
+        }
+        let mlen = wire6::mld2_report_len(groups.len());
+        let hbh = wire6::HBH_ROUTER_ALERT.len();
+        let dst = wire6::ALL_MLDV2_ROUTERS;
+        let b = tx.buffer(ETH_HDR + IPV6_HDR + hbh + mlen);
+        wire::write_eth(b, wire6::multicast_mac(dst), self.mac, ETHERTYPE_IPV6);
+        wire6::write_ipv6(
+            &mut b[ETH_HDR..],
+            v6.ll,
+            dst,
+            wire6::NH_HOPOPT,
+            1,
+            0,
+            hbh + mlen,
+        );
+        let at = ETH_HDR + IPV6_HDR;
+        b[at..at + hbh].copy_from_slice(&wire6::HBH_ROUTER_ALERT);
+        wire6::write_mld2_report(&mut b[at + hbh..], v6.ll, &groups);
+        tx.commit();
+    }
+
+    fn send_ip6(
+        &mut self,
+        now: Instant,
+        tx: &mut dyn Tx,
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        o: Body,
+        write: &mut dyn FnMut(&mut [u8]),
+    ) -> bool {
+        let Some(v6) = &self.v6 else { return false };
+        let Some(hop) = v6.next_hop(dst) else {
+            return false;
+        };
+        let mtu = v6.path_mtu(dst, self.mtu, now);
+        let mac = self.resolve6(now, tx, hop);
+        let (proto, len, tos) = (o.proto, o.len, o.tos);
+        if IPV6_HDR + len <= mtu {
+            match mac {
+                Some(mac) => {
+                    let b = tx.buffer(ETH_HDR + IPV6_HDR + len);
+                    wire::write_eth(b, mac, self.mac, ETHERTYPE_IPV6);
+                    write(&mut b[ETH_HDR + IPV6_HDR..]);
+                    wire6::write_ipv6(&mut b[ETH_HDR..], src, dst, proto, TTL, tos, len);
+                    tx.commit();
+                    true
+                }
+                None => {
+                    let mut p = vec![0u8; IPV6_HDR + len];
+                    write(&mut p[IPV6_HDR..]);
+                    wire6::write_ipv6(&mut p, src, dst, proto, TTL, tos, len);
+                    self.v6.as_mut().is_some_and(|v| v.ndp.queue_packet(hop, p))
+                }
+            }
+        } else {
+            // Only the source fragments in IPv6 (RFC 8200 4.5); TCP sizes its segments instead.
+            if o.df || len + FRAG_HDR > 65535 {
+                return false;
+            }
+            let Some(v6) = self.v6.as_mut() else {
+                return false;
+            };
+            v6.frag_id = v6.frag_id.wrapping_add(1);
+            let id = v6.frag_id;
+            let mut payload = std::mem::take(&mut self.scratch);
+            payload.clear();
+            payload.resize(len, 0);
+            write(&mut payload);
+            let max = (mtu - IPV6_HDR - FRAG_HDR) & !7;
+            let mut ok = true;
+            let mut off = 0;
+            while off < len {
+                let n = max.min(len - off);
+                let more = off + n < len;
+                let piece = &payload[off..off + n];
+                let plen = FRAG_HDR + n;
+                let fill = |p: &mut [u8]| {
+                    wire6::write_ipv6(p, src, dst, wire6::NH_FRAGMENT, TTL, tos, plen);
+                    wire6::write_frag(&mut p[IPV6_HDR..], proto, off, more, id);
+                    p[IPV6_HDR + FRAG_HDR..].copy_from_slice(piece);
+                };
+                match mac {
+                    Some(mac) => {
+                        let b = tx.buffer(ETH_HDR + IPV6_HDR + plen);
+                        wire::write_eth(b, mac, self.mac, ETHERTYPE_IPV6);
+                        fill(&mut b[ETH_HDR..]);
+                        tx.commit();
+                    }
+                    None => {
+                        let mut p = vec![0u8; IPV6_HDR + plen];
+                        fill(&mut p);
+                        ok &= self.v6.as_mut().is_some_and(|v| v.ndp.queue_packet(hop, p));
+                    }
+                }
+                off += n;
+            }
+            self.scratch = payload;
+            ok
+        }
+    }
+
     /// Sends the IP packets that waited for `mac`.
-    fn release(&self, tx: &mut dyn Tx, mac: Mac, packets: VecDeque<Vec<u8>>) {
+    fn release(&self, tx: &mut dyn Tx, mac: Mac, ethertype: u16, packets: VecDeque<Vec<u8>>) {
         for p in packets {
             let b = tx.buffer(ETH_HDR + p.len());
-            wire::write_eth(b, mac, self.mac, ETHERTYPE_IPV4);
+            wire::write_eth(b, mac, self.mac, ethertype);
             b[ETH_HDR..].copy_from_slice(&p);
             tx.commit();
         }
@@ -350,43 +727,100 @@ impl Net {
         true
     }
 
-    /// ICMP error about a received datagram (`ip_header` + its payload), rate limited.
-    fn send_icmp_error(
+    /// ICMP / ICMPv6 error about a received packet, rate limited.
+    fn send_unreach(&mut self, now: Instant, tx: &mut dyn Tx, why: Unreach, p: &Pkt<'_>) {
+        match p.src {
+            IpAddr::V4(_) => {
+                let code = match why {
+                    Unreach::Port => wire::UNREACH_PORT,
+                    Unreach::Proto => wire::UNREACH_PROTO,
+                };
+                self.send_icmp4_error(now, tx, wire::ICMP_UNREACHABLE, code, p);
+            }
+            IpAddr::V6(_) => {
+                let (kind, code, rest) = match why {
+                    Unreach::Port => (wire6::ICMP6_UNREACHABLE, wire6::UNREACH6_PORT, 0),
+                    Unreach::Proto => (
+                        wire6::ICMP6_PARAM_PROBLEM,
+                        wire6::PARAM_NEXT_HEADER,
+                        p.hdr as u32,
+                    ),
+                };
+                self.send_icmp6_error(now, tx, kind, code, rest, p.raw, p.bcast);
+            }
+        }
+    }
+
+    /// ICMPv4 error about a received datagram, rate limited.
+    fn send_icmp4_error(&mut self, now: Instant, tx: &mut dyn Tx, kind: u8, code: u8, p: &Pkt<'_>) {
+        let IpAddr::V4(src) = p.src else { return };
+        if !self.icmp_allowed(now) {
+            return;
+        }
+        // RFC 1812 4.3.2.3: quote as much as fits in 576 bytes.
+        let hl = p.hdr;
+        let quote = (p.raw.len() - hl).min(576 - IPV4_HDR - ICMP_HDR - hl);
+        let body = &p.raw[..hl + quote];
+        let o = IpOut {
+            src: IpAddr::V4(self.ip),
+            dst: IpAddr::V4(src),
+            proto: PROTO_ICMP,
+            len: ICMP_HDR + body.len(),
+            df: false,
+            tos: 0,
+        };
+        self.send_ip(now, tx, o, &mut |b| {
+            wire::write_icmp(b, kind, code, [0; 4], body);
+        });
+    }
+
+    /// ICMPv6 error (RFC 4443 2.4): rate limited, never about a packet from an unspecified or
+    /// multicast source, nor (except `always`) about one sent to a multicast address.
+    #[allow(clippy::too_many_arguments)]
+    fn send_icmp6_error(
         &mut self,
         now: Instant,
         tx: &mut dyn Tx,
         kind: u8,
         code: u8,
-        ip: &Ipv4<'_>,
+        rest: u32,
+        raw: &[u8],
+        to_multicast: bool,
     ) {
+        let Some(ip) = Ipv6::parse(raw) else {
+            return;
+        };
+        let always = kind == wire6::ICMP6_PACKET_TOO_BIG
+            || (kind == wire6::ICMP6_PARAM_PROBLEM && code == wire6::PARAM_OPTION);
+        if ip.src.is_unspecified() || ip.src.is_multicast() || (to_multicast && !always) {
+            return;
+        }
+        let Some(v6) = &self.v6 else { return };
+        let src = if v6.ours(ip.dst) {
+            ip.dst
+        } else {
+            v6.src_for(ip.src)
+        };
         if !self.icmp_allowed(now) {
             return;
         }
-        // RFC 1812 4.3.2.3: quote as much as fits in 576 bytes.
-        let quote = (ip.payload.len()).min(576 - IPV4_HDR - ICMP_HDR - ip.hdr_len);
-        let body_len = ip.hdr_len + quote;
-        let (hdr, payload) = (ip.header, &ip.payload[..quote]);
-        self.send_ip(
-            now,
-            tx,
-            ip.src,
-            PROTO_ICMP,
-            ICMP_HDR + body_len,
-            false,
-            &mut |b| {
-                b[ICMP_HDR..ICMP_HDR + hdr.len()].copy_from_slice(hdr);
-                b[ICMP_HDR + hdr.len()..ICMP_HDR + body_len].copy_from_slice(payload);
-                b[0] = kind;
-                b[1] = code;
-                b[2..8].copy_from_slice(&[0; 6]);
-                let c = wire::checksum(b);
-                b[2..4].copy_from_slice(&c.to_be_bytes());
-            },
-        );
+        let body = &raw[..raw.len().min(ICMP6_QUOTE)];
+        let (s, d) = (src, ip.src);
+        let o = IpOut {
+            src: IpAddr::V6(s),
+            dst: IpAddr::V6(d),
+            proto: PROTO_ICMPV6,
+            len: ICMP6_HDR + body.len(),
+            df: false,
+            tos: 0,
+        };
+        self.send_ip(now, tx, o, &mut |b| {
+            wire6::write_icmp6(b, s, d, kind, code, rest.to_be_bytes(), body);
+        });
     }
 }
 
-/// `SegOut` over the IPv4 output path.
+/// `SegOut` over the IP output path.
 struct NetOut<'a> {
     net: &'a mut Net,
     tx: &'a mut dyn Tx,
@@ -394,22 +828,43 @@ struct NetOut<'a> {
 }
 
 impl SegOut for NetOut<'_> {
-    fn segment(
-        &mut self,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
-        hdr: &TcpOut,
-        payload: (&[u8], &[u8]),
-    ) {
+    #[inline]
+    fn segment(&mut self, ep: &Endpoints, hdr: &TcpOut, payload: (&[u8], &[u8])) {
         let hl = hdr.header_len();
         let len = hl + payload.0.len() + payload.1.len();
-        let (src, dst) = (*local.ip(), *remote.ip());
-        self.net
-            .send_ip(self.now, self.tx, dst, PROTO_TCP, len, true, &mut |b| {
-                b[hl..hl + payload.0.len()].copy_from_slice(payload.0);
-                b[hl + payload.0.len()..].copy_from_slice(payload.1);
-                hdr.write(b, src, dst);
-            });
+        let tos = if hdr.ect { ECT0 } else { 0 };
+        let fill = |b: &mut [u8], ps: wire::Pseudo| {
+            b[hl..hl + payload.0.len()].copy_from_slice(payload.0);
+            b[hl + payload.0.len()..].copy_from_slice(payload.1);
+            hdr.write_with(b, ps);
+        };
+        match ep {
+            // IPv4 first and without the family dispatch of `send_ip`.
+            Endpoints::V4(l, r) => {
+                let (src, dst) = (*l.ip(), *r.ip());
+                let o = Body {
+                    proto: PROTO_TCP,
+                    len,
+                    df: true,
+                    tos,
+                };
+                let ps = wire::Pseudo::v4(src, dst);
+                self.net
+                    .send_ip4(self.now, self.tx, src, dst, o, &mut |b| fill(b, ps));
+            }
+            Endpoints::V6(a) => {
+                let (src, dst) = (*a.0.ip(), *a.1.ip());
+                let o = Body {
+                    proto: PROTO_TCP,
+                    len,
+                    df: true,
+                    tos,
+                };
+                let ps = wire::Pseudo::of(IpAddr::V6(src), IpAddr::V6(dst));
+                self.net
+                    .send_ip6(self.now, self.tx, src, dst, o, &mut |b| fill(b, ps));
+            }
+        }
     }
 }
 
@@ -438,6 +893,8 @@ pub(crate) struct Iface {
     seed: u64,
     arp_retry: Vec<Ipv4Addr>,
     arp_failed: Vec<Ipv4Addr>,
+    nd_retry: Vec<Ipv6Addr>,
+    nd_failed: Vec<Ipv6Addr>,
     /// When a SYN cookie was last sent.
     cookie_sent: Option<Instant>,
 }
@@ -452,14 +909,45 @@ impl Iface {
         } else {
             u32::MAX << (32 - u32::from(cfg.prefix_len.min(32)))
         };
+        let mtu = cfg.mtu.clamp(576, 65535);
+        let v6 = cfg.ip6.filter(|_| mtu >= wire6::MIN_MTU).map(|global| {
+            let ll = wire6::link_local(cfg.mac);
+            let plen = u32::from(cfg.prefix_len6.min(128));
+            let mask = if plen == 0 {
+                0
+            } else {
+                u128::MAX << (128 - plen)
+            };
+            let global = (!global.is_unspecified() && global != ll).then_some(global);
+            let mut mcast_macs = vec![wire6::multicast_mac(wire6::ALL_NODES)];
+            for a in std::iter::once(ll).chain(global) {
+                let m = wire6::multicast_mac(wire6::solicited_node(a));
+                if !mcast_macs.contains(&m) {
+                    mcast_macs.push(m);
+                }
+            }
+            Net6 {
+                ll,
+                global,
+                mask,
+                gateway: cfg.gateway6,
+                ndp: NdpCache::default(),
+                frag_id: (seed >> 16) as u32,
+                pmtu: HashMap::new(),
+                mcast_macs,
+                // One report for the device (queue 0); any queue answers a query.
+                mld_at: (cfg.queue == 0).then_some(now),
+            }
+        });
         let net = Net {
             mac: cfg.mac,
             ip: cfg.ip,
             mask,
             gateway: cfg.gateway,
-            mtu: cfg.mtu.clamp(576, 65535),
+            mtu,
             ip_id: seed as u16,
             arp: ArpCache::default(),
+            v6,
             scratch: Vec::new(),
             icmp_tokens: ICMP_BURST,
             icmp_refill: now,
@@ -485,6 +973,8 @@ impl Iface {
             seed,
             arp_retry: Vec::new(),
             arp_failed: Vec::new(),
+            nd_retry: Vec::new(),
+            nd_failed: Vec::new(),
             cookie_sent: None,
             cfg,
         }
@@ -506,15 +996,18 @@ impl Iface {
     }
 
     /// RFC 6528 initial sequence number: a keyed hash of the connection plus a 4 µs clock.
-    fn isn(&self, local: SocketAddrV4, remote: SocketAddrV4, now: Instant) -> u32 {
+    fn isn(&self, local: SocketAddr, remote: SocketAddr, now: Instant) -> u32 {
         let t = (now.saturating_duration_since(self.epoch).as_micros() / 4) as u32;
-        self.keyed(&[
-            u32::from(*local.ip()),
-            u32::from(local.port()),
-            u32::from(*remote.ip()),
-            u32::from(remote.port()),
-        ])
-        .wrapping_add(t)
+        let (lp, rp) = (u32::from(local.port()), u32::from(remote.port()));
+        let h = match (local.ip(), remote.ip()) {
+            // IPv4 hashes the four words it always did.
+            (IpAddr::V4(l), IpAddr::V4(r)) => self.keyed(&[u32::from(l), lp, u32::from(r), rp]),
+            (l, r) => {
+                let (l, r) = (words(l), words(r));
+                self.keyed(&[l[0], l[1], l[2], l[3], lp, r[0], r[1], r[2], r[3], rp])
+            }
+        };
+        h.wrapping_add(t)
     }
 
     /// Frames waiting to be handed to other queues.
@@ -533,10 +1026,21 @@ impl Iface {
     /// The earliest time `poll` has work (timers, ARP retries, reassembly expiry).
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         let t = self.timers.peek().map(|Reverse((t, _, _))| *t);
-        [t, self.net.arp.next_deadline(), self.reasm.next_deadline()]
-            .into_iter()
-            .flatten()
-            .min()
+        let (nd, mld) = self
+            .net
+            .v6
+            .as_ref()
+            .map_or((None, None), |v| (v.ndp.next_deadline(), v.mld_at));
+        [
+            t,
+            self.net.arp.next_deadline(),
+            self.reasm.next_deadline(),
+            nd,
+            mld,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     /// Output is queued (`poll` should run now).
@@ -547,7 +1051,7 @@ impl Iface {
     // ---- slots ----------------------------------------------------------------------------
 
     fn alloc(&mut self, tcb: Tcb) -> u32 {
-        let key = (tcb.local.port(), tcb.remote);
+        let key = Key::new(tcb.local().port(), tcb.remote());
         let idx = match self.free.pop() {
             Some(i) => {
                 let s = &mut self.slots[i as usize];
@@ -672,7 +1176,7 @@ impl Iface {
             }
         }
         if tcb.is_dead() {
-            let key = (tcb.local.port(), tcb.remote);
+            let key = Key::new(tcb.local().port(), tcb.remote());
             if let Some(p) = slot.half_open.take() {
                 if let Some(l) = self.listeners.get_mut(&p) {
                     l.half_open = l.half_open.saturating_sub(1);
@@ -707,30 +1211,32 @@ impl Iface {
         self.listeners.remove(&port);
     }
 
-    /// Opens a connection from local `port` to `remote`; the SYN goes out with the next `poll`.
+    /// Opens a connection from local `port` to `remote` (IPv4 or IPv6); the SYN goes out with
+    /// the next `poll`.
     pub(crate) fn tcp_connect(
         &mut self,
         port: u16,
-        remote: SocketAddrV4,
+        remote: SocketAddr,
         now: Instant,
     ) -> Result<TcpHandle, CallError> {
-        if self.net.next_hop(*remote.ip()).is_none() {
+        let remote = SocketAddr::new(remote.ip(), remote.port()); // no scope id / flow label
+        if !self.net.routable(remote.ip()) {
             return Err(CallError::Unreachable);
         }
-        if let Some(&idx) = self.table.get(&(port, remote)) {
+        if let Some(&idx) = self.table.get(&Key::new(port, remote)) {
             // TIME-WAIT reuse for a new connection (its ISN is larger: the clock moved on).
             match self.slots[idx as usize].tcb.as_deref() {
                 Some(t) if t.state == State::TimeWait => {
                     let s = &mut self.slots[idx as usize];
                     s.tcb = None;
                     s.ver = s.ver.wrapping_add(1);
-                    self.table.remove(&(port, remote));
+                    self.table.remove(&Key::new(port, remote));
                     self.free.push(idx);
                 }
                 _ => return Err(CallError::AddrInUse),
             }
         }
-        let local = SocketAddrV4::new(self.cfg.ip, port);
+        let local = SocketAddr::new(self.net.src_for(remote.ip()), port);
         let iss = self.isn(local, remote, now);
         let tcb = Tcb::connect(self.cfg.tcp, local, remote, iss, self.clock(now));
         let idx = self.alloc(tcb);
@@ -740,19 +1246,30 @@ impl Iface {
     }
 
     /// Whether a connection exists for `(port, remote)` (dial port selection).
-    pub(crate) fn tcp_in_use(&self, port: u16, remote: SocketAddrV4) -> bool {
+    pub(crate) fn tcp_in_use(&self, port: u16, remote: SocketAddr) -> bool {
+        let remote = SocketAddr::new(remote.ip(), remote.port());
         self.table
-            .get(&(port, remote))
+            .get(&Key::new(port, remote))
             .and_then(|&i| self.slots[i as usize].tcb.as_deref())
             .is_some_and(|t| t.state != State::TimeWait)
     }
 
-    pub(crate) fn tcp_peer(&self, h: TcpHandle) -> Option<SocketAddrV4> {
-        self.slot(h).map(|t| t.remote)
+    pub(crate) fn tcp_peer(&self, h: TcpHandle) -> Option<SocketAddr> {
+        self.slot(h).map(|t| t.remote())
     }
 
-    pub(crate) fn tcp_local_port(&self, h: TcpHandle) -> Option<u16> {
-        self.slot(h).map(|t| t.local.port())
+    pub(crate) fn tcp_local(&self, h: TcpHandle) -> Option<SocketAddr> {
+        self.slot(h).map(|t| t.local())
+    }
+
+    /// The stack has an address of `a`'s family.
+    pub(crate) fn has_family(&self, a: IpAddr) -> bool {
+        a.is_ipv4() || self.net.v6.is_some()
+    }
+
+    /// Our address for traffic with `remote`.
+    pub(crate) fn local_for(&self, remote: IpAddr) -> IpAddr {
+        self.net.src_for(remote)
     }
 
     /// Queues data; returns the bytes taken (sent with the next `poll`).
@@ -839,26 +1356,37 @@ impl Iface {
         self.udp_bytes -= freed;
     }
 
-    /// Sends a datagram from local `port` (fragmented if larger than the MTU).
+    /// Sends a datagram from local `port` (fragmented if larger than the (path) MTU).
     pub(crate) fn udp_send(
         &mut self,
         now: Instant,
         tx: &mut dyn Tx,
         port: u16,
-        remote: SocketAddrV4,
+        remote: SocketAddr,
         data: &[u8],
     ) -> Result<(), CallError> {
-        if data.len() > 65535 - IPV4_HDR - UDP_HDR {
+        let max = if remote.is_ipv6() {
+            65535 - FRAG_HDR - UDP_HDR
+        } else {
+            65535 - IPV4_HDR - UDP_HDR
+        };
+        if data.len() > max {
             return Err(CallError::TooBig);
         }
-        let (src, dst) = (self.cfg.ip, *remote.ip());
-        let len = UDP_HDR + data.len();
-        let ok = self
-            .net
-            .send_ip(now, tx, dst, PROTO_UDP, len, false, &mut |b| {
-                b[UDP_HDR..].copy_from_slice(data);
-                wire::write_udp(b, src, dst, port, remote.port(), data.len());
-            });
+        let dst = remote.ip();
+        let src = self.net.src_for(dst);
+        let o = IpOut {
+            src,
+            dst,
+            proto: PROTO_UDP,
+            len: UDP_HDR + data.len(),
+            df: false,
+            tos: 0,
+        };
+        let ok = self.net.send_ip(now, tx, o, &mut |b| {
+            b[UDP_HDR..].copy_from_slice(data);
+            wire::write_udp(b, src, dst, port, remote.port(), data.len());
+        });
         if ok {
             Ok(())
         } else {
@@ -867,7 +1395,7 @@ impl Iface {
     }
 
     /// The next received datagram: (local port, sender, length copied into `out`).
-    pub(crate) fn udp_recv(&mut self, out: &mut [u8]) -> Option<(u16, SocketAddrV4, usize)> {
+    pub(crate) fn udp_recv(&mut self, out: &mut [u8]) -> Option<(u16, SocketAddr, usize)> {
         let d = self.udp_q.pop_front()?;
         self.udp_bytes -= d.data.len();
         let n = d.data.len().min(out.len());
@@ -901,12 +1429,22 @@ impl Iface {
     /// Processes one received Ethernet frame.
     pub(crate) fn receive(&mut self, now: Instant, frame: &[u8], tx: &mut dyn Tx) {
         let Some(eth) = Eth::parse(frame) else { return };
-        if eth.dst != self.cfg.mac && eth.dst != BROADCAST {
+        if eth.dst != self.cfg.mac
+            && eth.dst != BROADCAST
+            && !self
+                .net
+                .v6
+                .as_ref()
+                .is_some_and(|v| v.mcast_macs.contains(&eth.dst))
+        {
             return;
         }
         match eth.ethertype {
             ETHERTYPE_ARP => self.on_arp(now, eth.payload, tx),
             ETHERTYPE_IPV4 => self.on_ipv4(now, frame, eth.payload, tx),
+            ETHERTYPE_IPV6 if self.net.v6.is_some() => {
+                self.on_ipv6(now, frame, eth.src, eth.payload, tx);
+            }
             _ => {}
         }
     }
@@ -919,7 +1457,7 @@ impl Iface {
         let for_us = a.tpa == self.cfg.ip;
         // RFC 826: update an existing entry; create one when the packet is aimed at us.
         if let Some(q) = self.net.arp.learn(a.spa, a.sha, now, for_us) {
-            self.net.release(tx, a.sha, q);
+            self.net.release(tx, a.sha, ETHERTYPE_IPV4, q);
         }
         if for_us && a.op == ARP_REQUEST {
             self.net.send_arp(tx, ARP_REPLY, a.sha, a.sha, a.spa);
@@ -935,12 +1473,13 @@ impl Iface {
         if ip.dst != self.cfg.ip && !bcast {
             return;
         }
+        let src_mac = wire::mac_at(frame, 6);
         if ip.is_fragment() {
             let Some(d) = self.reasm.add(
-                ip.src,
-                ip.dst,
+                IpAddr::V4(ip.src),
+                IpAddr::V4(ip.dst),
                 ip.proto,
-                ip.id,
+                u32::from(ip.id),
                 ip.frag_offset(),
                 ip.more_fragments(),
                 ip.payload,
@@ -956,12 +1495,13 @@ impl Iface {
             }
             wire::write_ipv4(
                 &mut pkt,
-                d.src,
-                d.dst,
+                ip.src,
+                ip.dst,
                 d.proto,
                 ip.id,
                 0,
                 ip.ttl,
+                ip.tos,
                 d.payload.len(),
             );
             if let Some(q) =
@@ -976,7 +1516,7 @@ impl Iface {
             let Some(whole) = Ipv4::parse(&pkt, false) else {
                 return;
             };
-            self.on_packet(now, &whole, bcast, false, tx);
+            self.on_packet(now, &Self::pkt4(&whole, &pkt, bcast, src_mac), false, tx);
             return;
         }
         if let Some(q) =
@@ -985,7 +1525,165 @@ impl Iface {
             self.forward.push((q, frame.to_vec()));
             return;
         }
-        self.on_packet(now, &ip, bcast, verify, tx);
+        let raw = &b[..ip.hdr_len + ip.payload.len()];
+        let p = Self::pkt4(&ip, raw, bcast, src_mac);
+        if ip.proto == PROTO_TCP && !bcast {
+            // The common case, without the protocol dispatch.
+            return self.on_tcp(now, &p, verify, tx);
+        }
+        self.on_packet(now, &p, verify, tx);
+    }
+
+    fn pkt4<'a>(ip: &Ipv4<'a>, raw: &'a [u8], bcast: bool, src_mac: Mac) -> Pkt<'a> {
+        Pkt {
+            src: IpAddr::V4(ip.src),
+            dst: IpAddr::V4(ip.dst),
+            proto: ip.proto,
+            ecn: ip.tos & ECN_MASK,
+            hops: ip.ttl,
+            bcast,
+            payload: ip.payload,
+            raw,
+            hdr: ip.hdr_len,
+            src_mac,
+            ps: wire::Pseudo::v4(ip.src, ip.dst),
+        }
+    }
+
+    fn on_ipv6(&mut self, now: Instant, frame: &[u8], src_mac: Mac, b: &[u8], tx: &mut dyn Tx) {
+        let Some(ip) = Ipv6::parse(b) else { return };
+        let Some(v6) = &self.net.v6 else { return };
+        let mcast = ip.dst.is_multicast();
+        if !(v6.ours(ip.dst) || (mcast && v6.listening(ip.dst))) || ip.src.is_multicast() {
+            return;
+        }
+        let raw = &b[..IPV6_HDR + ip.payload.len()];
+        let up = match wire6::walk(ip.next, ip.payload, IPV6_HDR, true) {
+            Ok(up) => up,
+            Err(ExtError::Drop) => return,
+            Err(ExtError::Problem {
+                code,
+                pointer,
+                always,
+            }) => {
+                if !mcast || always {
+                    self.net.send_icmp6_error(
+                        now,
+                        tx,
+                        wire6::ICMP6_PARAM_PROBLEM,
+                        code,
+                        pointer as u32,
+                        raw,
+                        mcast,
+                    );
+                }
+                return;
+            }
+        };
+        let verify = self.cfg.verify_checksums;
+        let Some(f) = up.frag else {
+            let p = Self::pkt6(
+                &ip,
+                up.proto,
+                &ip.payload[up.offset..],
+                raw,
+                up.nh_field,
+                src_mac,
+            );
+            if let Some(q) = Self::dst_port(p.proto, p.payload)
+                .and_then(|port| self.dial_port_owner(p.proto, port))
+            {
+                self.forward.push((q, frame.to_vec()));
+                return;
+            }
+            return self.on_packet(now, &p, verify, tx);
+        };
+        let data = &ip.payload[f.data..];
+        if f.offset == 0 && !f.more {
+            // An atomic fragment (RFC 6946): processed as is, never reassembled.
+            let base = IPV6_HDR + f.data;
+            match wire6::walk(f.next, data, base, false) {
+                Ok(u) if u.frag.is_none() => {
+                    let p = Self::pkt6(&ip, u.proto, &data[u.offset..], raw, u.nh_field, src_mac);
+                    self.on_packet(now, &p, verify, tx);
+                }
+                _ => {}
+            }
+            return;
+        }
+        let Some(d) = self.reasm.add(
+            IpAddr::V6(ip.src),
+            IpAddr::V6(ip.dst),
+            f.next,
+            f.id,
+            f.offset,
+            f.more,
+            data,
+            now,
+        ) else {
+            return;
+        };
+        // The rest of the chain follows the fragment header in the reassembled part.
+        let Ok(u) = wire6::walk(d.proto, &d.payload, IPV6_HDR, false) else {
+            return;
+        };
+        if u.frag.is_some() {
+            return; // a fragment inside a fragment
+        }
+        let upper = &d.payload[u.offset..];
+        // Rebuild a whole packet without extension headers so the rest of the path (and
+        // steering) sees one.
+        let mut pkt = vec![0u8; IPV6_HDR + upper.len()];
+        if upper.len() > 65535 {
+            return;
+        }
+        wire6::write_ipv6(
+            &mut pkt,
+            ip.src,
+            ip.dst,
+            u.proto,
+            ip.hop_limit,
+            ip.tclass,
+            upper.len(),
+        );
+        pkt[IPV6_HDR..].copy_from_slice(upper);
+        if let Some(q) =
+            Self::dst_port(u.proto, upper).and_then(|p| self.dial_port_owner(u.proto, p))
+        {
+            let mut fr = Vec::with_capacity(ETH_HDR + pkt.len());
+            fr.extend_from_slice(&frame[..ETH_HDR]);
+            fr.extend_from_slice(&pkt);
+            self.forward.push((q, fr));
+            return;
+        }
+        let Some(whole) = Ipv6::parse(&pkt) else {
+            return;
+        };
+        let p = Self::pkt6(&whole, u.proto, whole.payload, &pkt, 6, src_mac);
+        self.on_packet(now, &p, verify, tx);
+    }
+
+    fn pkt6<'a>(
+        ip: &Ipv6<'a>,
+        proto: u8,
+        payload: &'a [u8],
+        raw: &'a [u8],
+        nh_field: usize,
+        src_mac: Mac,
+    ) -> Pkt<'a> {
+        Pkt {
+            src: IpAddr::V6(ip.src),
+            dst: IpAddr::V6(ip.dst),
+            proto,
+            ecn: ip.tclass & ECN_MASK,
+            hops: ip.hop_limit,
+            bcast: ip.dst.is_multicast(),
+            payload,
+            raw,
+            hdr: nh_field,
+            src_mac,
+            ps: wire::Pseudo::of(IpAddr::V6(ip.src), IpAddr::V6(ip.dst)),
+        }
     }
 
     fn dst_port(proto: u8, payload: &[u8]) -> Option<u16> {
@@ -995,94 +1693,229 @@ impl Iface {
         Some(u16::from_be_bytes([payload[2], payload[3]]))
     }
 
-    fn on_packet(
-        &mut self,
-        now: Instant,
-        ip: &Ipv4<'_>,
-        bcast: bool,
-        verify: bool,
-        tx: &mut dyn Tx,
-    ) {
-        match ip.proto {
-            PROTO_ICMP if !bcast => self.on_icmp(now, ip, verify, tx),
-            PROTO_UDP => self.on_udp(now, ip, bcast, verify, tx),
-            PROTO_TCP if !bcast => self.on_tcp(now, ip, verify, tx),
-            PROTO_ICMP | PROTO_TCP => {}
-            _ if !bcast => {
-                self.net
-                    .send_icmp_error(now, tx, wire::ICMP_UNREACHABLE, wire::UNREACH_PROTO, ip);
+    fn on_packet(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
+        match p.proto {
+            PROTO_ICMP if p.src.is_ipv4() && !p.bcast => self.on_icmp(now, p, verify, tx),
+            PROTO_ICMPV6 if p.src.is_ipv6() => self.on_icmp6(now, p, verify, tx),
+            PROTO_UDP => self.on_udp(now, p, verify, tx),
+            PROTO_TCP if !p.bcast => self.on_tcp(now, p, verify, tx),
+            PROTO_ICMP | PROTO_ICMPV6 | PROTO_TCP => {}
+            _ if !p.bcast => self.net.send_unreach(now, tx, Unreach::Proto, p),
+            _ => {}
+        }
+    }
+
+    /// An ICMP / ICMPv6 error quoting one of our datagrams or segments.
+    fn on_icmp_error(&mut self, q: wire::Quoted, err: IcmpError, udp_hard: bool) {
+        if q.src != self.net.src_for(q.dst) && !self.is_ours(q.src) {
+            return;
+        }
+        let remote = SocketAddr::new(q.dst, q.dst_port);
+        match q.proto {
+            PROTO_UDP => {
+                if udp_hard && self.udp_ports.contains(&q.src_port) {
+                    self.events.push(Event::UdpUnreachable {
+                        port: q.src_port,
+                        remote: Box::new(remote),
+                    });
+                }
+            }
+            PROTO_TCP => {
+                let Some(&idx) = self.table.get(&Key::new(q.src_port, remote)) else {
+                    return;
+                };
+                if let Some(t) = self.slots[idx as usize].tcb.as_deref_mut() {
+                    t.on_icmp_error(err, q.seq);
+                }
+                self.mark_dirty(idx);
+                self.settle(idx);
             }
             _ => {}
         }
     }
 
-    fn on_icmp(&mut self, now: Instant, ip: &Ipv4<'_>, verify: bool, tx: &mut dyn Tx) {
-        let Some(m) = Icmp::parse(ip.payload, verify) else {
+    fn is_ours(&self, a: IpAddr) -> bool {
+        match a {
+            IpAddr::V4(a) => a == self.cfg.ip,
+            IpAddr::V6(a) => self.net.v6.as_ref().is_some_and(|v| v.ours(a)),
+        }
+    }
+
+    fn on_icmp(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
+        let Some(m) = Icmp::parse(p.payload, verify) else {
             return;
         };
         match m.kind {
             wire::ICMP_ECHO_REQUEST if m.code == 0 => {
                 let (rest, body) = (m.rest, m.body);
-                self.net.send_ip(
-                    now,
-                    tx,
-                    ip.src,
-                    PROTO_ICMP,
-                    ICMP_HDR + body.len(),
-                    false,
-                    &mut |b| {
-                        wire::write_icmp(b, wire::ICMP_ECHO_REPLY, 0, rest, body);
-                    },
-                );
+                let o = IpOut {
+                    src: p.dst,
+                    dst: p.src,
+                    proto: PROTO_ICMP,
+                    len: ICMP_HDR + body.len(),
+                    df: false,
+                    tos: 0,
+                };
+                self.net.send_ip(now, tx, o, &mut |b| {
+                    wire::write_icmp(b, wire::ICMP_ECHO_REPLY, 0, rest, body);
+                });
             }
             wire::ICMP_UNREACHABLE => {
                 let Some(q) = m.quoted() else { return };
-                if q.src != self.cfg.ip {
+                let err = if m.code == wire::UNREACH_FRAG_NEEDED {
+                    IcmpError::TooBig(u32::from(u16::from_be_bytes([m.rest[2], m.rest[3]])))
+                } else {
+                    IcmpError::Unreachable
+                };
+                let hard = matches!(
+                    m.code,
+                    wire::UNREACH_NET
+                        | wire::UNREACH_HOST
+                        | wire::UNREACH_PROTO
+                        | wire::UNREACH_PORT
+                );
+                self.on_icmp_error(q, err, hard);
+            }
+            _ => {}
+        }
+    }
+
+    fn on_icmp6(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
+        let (IpAddr::V6(src), IpAddr::V6(dst)) = (p.src, p.dst) else {
+            return;
+        };
+        // ICMPv6 checksums are always verified: unlike TCP / UDP, the kernel next to an
+        // AF_PACKET socket fills them in before the frame reaches us.
+        let _ = verify;
+        let Some(m) = Icmp6::parse(p.payload, src, dst, true) else {
+            return;
+        };
+        match m.kind {
+            wire6::ICMP6_ECHO_REQUEST if m.code == 0 => {
+                if p.bcast && !self.net.icmp_allowed(now) {
                     return;
                 }
-                let remote = SocketAddrV4::new(q.dst, q.dst_port);
-                match q.proto {
-                    PROTO_UDP => {
-                        if matches!(
-                            m.code,
-                            wire::UNREACH_NET
-                                | wire::UNREACH_HOST
-                                | wire::UNREACH_PROTO
-                                | wire::UNREACH_PORT
-                        ) && self.udp_ports.contains(&q.src_port)
-                        {
-                            self.events.push(Event::UdpUnreachable {
-                                port: q.src_port,
-                                remote,
-                            });
-                        }
+                let Some(v6) = &self.net.v6 else { return };
+                let from = if p.bcast { v6.src_for(src) } else { dst };
+                let (rest, body) = (m.rest, m.body);
+                let o = IpOut {
+                    src: IpAddr::V6(from),
+                    dst: IpAddr::V6(src),
+                    proto: PROTO_ICMPV6,
+                    len: ICMP6_HDR + body.len(),
+                    df: false,
+                    tos: 0,
+                };
+                self.net.send_ip(now, tx, o, &mut |b| {
+                    wire6::write_icmp6(b, from, src, wire6::ICMP6_ECHO_REPLY, 0, rest, body);
+                });
+            }
+            wire6::ND_NEIGHBOR_SOLICIT => self.on_ns(now, p, src, dst, &m, tx),
+            wire6::ND_NEIGHBOR_ADVERT => {
+                let Some(nd) = Nd::parse(&m, src, dst, p.hops) else {
+                    return;
+                };
+                let Some(v6) = self.net.v6.as_mut() else {
+                    return;
+                };
+                if v6.ours(nd.target) {
+                    return; // someone else claims our address: we keep it (no DAD)
+                }
+                // RFC 4861 7.2.5: only updates an entry that exists (pending or resolved).
+                if let Some(mac) = nd.lla {
+                    if let Some(q) = v6.ndp.learn(nd.target, mac, now, false) {
+                        self.net.release(tx, mac, ETHERTYPE_IPV6, q);
                     }
-                    PROTO_TCP => {
-                        let Some(&idx) = self.table.get(&(q.src_port, remote)) else {
-                            return;
-                        };
-                        let next_mtu = u16::from_be_bytes([m.rest[2], m.rest[3]]);
-                        if let Some(t) = self.slots[idx as usize].tcb.as_deref_mut() {
-                            t.on_icmp_unreachable(m.code, next_mtu, q.seq);
-                        }
-                        self.mark_dirty(idx);
-                        self.settle(idx);
-                    }
-                    _ => {}
+                }
+            }
+            wire6::ICMP6_PACKET_TOO_BIG => {
+                let mtu = u32::from_be_bytes(m.rest);
+                let Some(q) = m.quoted() else { return };
+                let link = self.net.mtu;
+                if let (Some(v6), IpAddr::V6(d)) = (self.net.v6.as_mut(), q.dst) {
+                    v6.learn_pmtu(d, mtu as usize, link, now);
+                }
+                let mtu = mtu.max(wire6::MIN_MTU as u32);
+                self.on_icmp_error(q, IcmpError::TooBig(mtu), false);
+            }
+            wire6::ICMP6_UNREACHABLE => {
+                let Some(q) = m.quoted() else { return };
+                let hard = matches!(
+                    m.code,
+                    wire6::UNREACH6_NO_ROUTE
+                        | wire6::UNREACH6_ADMIN
+                        | wire6::UNREACH6_ADDR
+                        | wire6::UNREACH6_PORT
+                );
+                self.on_icmp_error(q, IcmpError::Unreachable, hard);
+            }
+            wire6::ICMP6_PARAM_PROBLEM if m.code == wire6::PARAM_NEXT_HEADER => {
+                // The peer does not know the protocol: like IPv4's protocol unreachable.
+                let Some(q) = m.quoted() else { return };
+                self.on_icmp_error(q, IcmpError::Unreachable, true);
+            }
+            wire6::MLD_QUERY => {
+                // Answer queries for all groups or ours (RFC 3810 6.2; no random delay: one
+                // host, few groups).
+                if let Some(v6) = self.net.v6.as_mut() {
+                    v6.mld_at = Some(now);
                 }
             }
             _ => {}
         }
     }
 
-    fn on_udp(&mut self, now: Instant, ip: &Ipv4<'_>, bcast: bool, verify: bool, tx: &mut dyn Tx) {
-        let Some(u) = Udp::parse(ip.payload, ip.src, ip.dst, verify) else {
+    /// Neighbor solicitation (RFC 4861 7.2.3): learn the sender, advertise our address.
+    fn on_ns(
+        &mut self,
+        now: Instant,
+        p: &Pkt<'_>,
+        src: Ipv6Addr,
+        dst: Ipv6Addr,
+        m: &Icmp6<'_>,
+        tx: &mut dyn Tx,
+    ) {
+        let Some(nd) = Nd::parse(m, src, dst, p.hops) else {
+            return;
+        };
+        let Some(v6) = self.net.v6.as_mut() else {
+            return;
+        };
+        if !v6.ours(nd.target) {
+            return;
+        }
+        if src.is_unspecified() {
+            // Another node's duplicate address detection for our address: defend it with an
+            // advertisement to all nodes (RFC 4862 5.4.3).
+            let dmac = wire6::multicast_mac(wire6::ALL_NODES);
+            self.net
+                .send_na(tx, nd.target, wire6::ALL_NODES, dmac, wire6::NA_OVERRIDE);
+            return;
+        }
+        if let Some(mac) = nd.lla {
+            if let Some(q) = v6.ndp.learn(src, mac, now, true) {
+                self.net.release(tx, mac, ETHERTYPE_IPV6, q);
+            }
+        }
+        // Unicast reply to the sender (its link-layer option, or the frame's source for a
+        // reachability probe without one).
+        let dmac = nd.lla.unwrap_or(p.src_mac);
+        self.net.send_na(
+            tx,
+            nd.target,
+            src,
+            dmac,
+            wire6::NA_SOLICITED | wire6::NA_OVERRIDE,
+        );
+    }
+
+    fn on_udp(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
+        let Some(u) = Udp::parse_with(p.payload, p.ps, p.src.is_ipv6(), verify) else {
             return;
         };
         if !self.udp_ports.contains(&u.dst_port) {
-            if !bcast {
-                self.net
-                    .send_icmp_error(now, tx, wire::ICMP_UNREACHABLE, wire::UNREACH_PORT, ip);
+            if !p.bcast {
+                self.net.send_unreach(now, tx, Unreach::Port, p);
             }
             return;
         }
@@ -1099,12 +1932,12 @@ impl Iface {
         self.udp_bytes += data.len();
         self.udp_q.push_back(Datagram {
             port: u.dst_port,
-            from: SocketAddrV4::new(ip.src, u.src_port),
+            from: SocketAddr::new(p.src, u.src_port),
             data,
         });
     }
 
-    fn send_rst_for(&mut self, now: Instant, tx: &mut dyn Tx, ip: &Ipv4<'_>, seg: &Tcp<'_>) {
+    fn send_rst_for(&mut self, now: Instant, tx: &mut dyn Tx, p: &Pkt<'_>, seg: &Tcp<'_>) {
         if seg.flags & RST != 0 {
             return;
         }
@@ -1131,21 +1964,21 @@ impl Iface {
             tx,
             now,
         };
-        out.segment(
-            SocketAddrV4::new(ip.dst, seg.dst_port),
-            SocketAddrV4::new(ip.src, seg.src_port),
-            &hdr,
-            (&[], &[]),
+        let ep = Endpoints::new(
+            SocketAddr::new(p.dst, seg.dst_port),
+            SocketAddr::new(p.src, seg.src_port),
         );
+        out.segment(&ep, &hdr, (&[], &[]));
     }
 
-    fn on_tcp(&mut self, now: Instant, ip: &Ipv4<'_>, verify: bool, tx: &mut dyn Tx) {
-        let Some(seg) = Tcp::parse(ip.payload, ip.src, ip.dst, verify) else {
+    fn on_tcp(&mut self, now: Instant, p: &Pkt<'_>, verify: bool, tx: &mut dyn Tx) {
+        let Some(mut seg) = Tcp::parse_with(p.payload, p.ps, verify) else {
             return;
         };
+        seg.ecn = p.ecn;
 
-        let remote = SocketAddrV4::new(ip.src, seg.src_port);
-        let key = (seg.dst_port, remote);
+        let remote = SocketAddr::new(p.src, seg.src_port);
+        let key = Key::new(seg.dst_port, remote);
         let clock = self.clock(now);
         if let Some(&idx) = self.table.get(&key) {
             let slot = &mut self.slots[idx as usize];
@@ -1176,10 +2009,10 @@ impl Iface {
             }
         }
         let Some(listener) = self.listeners.get(&seg.dst_port) else {
-            self.send_rst_for(now, tx, ip, &seg);
+            self.send_rst_for(now, tx, p, &seg);
             return;
         };
-        let local = SocketAddrV4::new(self.cfg.ip, seg.dst_port);
+        let local = SocketAddr::new(p.dst, seg.dst_port);
         if seg.flags & RST != 0 {
             return;
         }
@@ -1215,7 +2048,7 @@ impl Iface {
                 .cookie_sent
                 .is_some_and(|t| now.saturating_duration_since(t) < COOKIE_LIFE);
             if !(cookies_recent && !seg.payload.is_empty()) {
-                self.send_rst_for(now, tx, ip, &seg);
+                self.send_rst_for(now, tx, p, &seg);
             }
             return;
         }
@@ -1244,22 +2077,45 @@ impl Iface {
 
     fn cookie_hash(
         &self,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
+        local: SocketAddr,
+        remote: SocketAddr,
         client_isn: u32,
         count: u32,
         mss_idx: u32,
     ) -> u32 {
-        self.keyed(&[
-            u32::from(*local.ip()),
-            u32::from(local.port()),
-            u32::from(*remote.ip()),
-            u32::from(remote.port()),
-            client_isn,
-            count,
-            mss_idx,
-            0x0c00_c1e5,
-        ]) & 0x00ff_ffff
+        let (lp, rp) = (u32::from(local.port()), u32::from(remote.port()));
+        let h = match (local.ip(), remote.ip()) {
+            (IpAddr::V4(l), IpAddr::V4(r)) => self.keyed(&[
+                u32::from(l),
+                lp,
+                u32::from(r),
+                rp,
+                client_isn,
+                count,
+                mss_idx,
+                0x0c00_c1e5,
+            ]),
+            (l, r) => {
+                let (l, r) = (words(l), words(r));
+                self.keyed(&[
+                    l[0],
+                    l[1],
+                    l[2],
+                    l[3],
+                    lp,
+                    r[0],
+                    r[1],
+                    r[2],
+                    r[3],
+                    rp,
+                    client_isn,
+                    count,
+                    mss_idx,
+                    0x0c00_c1e5,
+                ])
+            }
+        };
+        h & 0x00ff_ffff
     }
 
     fn cookie_count(&self, now: Instant) -> u32 {
@@ -1273,8 +2129,8 @@ impl Iface {
         &mut self,
         now: Instant,
         tx: &mut dyn Tx,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
+        local: SocketAddr,
+        remote: SocketAddr,
         syn: &Tcp<'_>,
         clock: Clock,
     ) {
@@ -1285,8 +2141,13 @@ impl Iface {
         let iss = (count << 27) | (mss_idx << 24) | h;
         self.cookie_sent = Some(now);
         let p = self.cfg.tcp;
+        let mss = if remote.is_ipv6() {
+            p.mss.saturating_sub(20)
+        } else {
+            p.mss
+        };
         let mut opts = TcpOpts {
-            mss: Some(p.mss),
+            mss: Some(mss),
             ..TcpOpts::default()
         };
         let mut window = 0xffffu32.min(p.rx_buf as u32);
@@ -1321,19 +2182,20 @@ impl Iface {
             flags: SYN | ACK,
             window: window as u16,
             opts,
+            ect: false,
         };
         let mut out = NetOut {
             net: &mut self.net,
             tx,
             now,
         };
-        out.segment(local, remote, &hdr, (&[], &[]));
+        out.segment(&Endpoints::new(local, remote), &hdr, (&[], &[]));
     }
 
     fn check_cookie(
         &self,
-        local: SocketAddrV4,
-        remote: SocketAddrV4,
+        local: SocketAddr,
+        remote: SocketAddr,
         ack: &Tcp<'_>,
         clock: Clock,
     ) -> Option<SynOpts> {
@@ -1437,7 +2299,34 @@ impl Iface {
             self.arp_retry = retry;
             self.arp_failed = failed;
         }
+        if self.net.v6.is_some() {
+            self.poll6(now, tx);
+        }
         self.reasm.expire(now);
+    }
+
+    /// The IPv6 part of `poll`: neighbor solicitation retries, the MLD report.
+    #[inline(never)]
+    fn poll6(&mut self, now: Instant, tx: &mut dyn Tx) {
+        if let Some(v6) = self.net.v6.as_mut() {
+            if v6.ndp.next_deadline().is_some_and(|t| now >= t) {
+                let mut retry = std::mem::take(&mut self.nd_retry);
+                let mut failed = std::mem::take(&mut self.nd_failed);
+                v6.ndp.poll(now, &mut retry, &mut failed);
+                for ip in retry.drain(..) {
+                    self.net.send_ns(tx, ip, None);
+                }
+                failed.clear();
+                self.nd_retry = retry;
+                self.nd_failed = failed;
+            }
+        }
+        if let Some(v6) = self.net.v6.as_mut() {
+            if v6.mld_at.is_some_and(|t| now >= t) {
+                v6.mld_at = None;
+                self.net.send_mld_report(tx);
+            }
+        }
     }
 
     /// Connections in the table (tests, stats).

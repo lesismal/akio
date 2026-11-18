@@ -34,17 +34,22 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_dpdk::Device
 impl core::panic::unwind_safe::UnwindSafe for only_dpdk::Device
 #[non_exhaustive] pub struct only_dpdk::DpdkConfig
 pub only_dpdk::DpdkConfig::address: core::net::ip_addr::Ipv4Addr
+pub only_dpdk::DpdkConfig::address6: core::option::Option<core::net::ip_addr::Ipv6Addr>
 pub only_dpdk::DpdkConfig::busy_poll: bool
 pub only_dpdk::DpdkConfig::congestion: only_dpdk::Congestion
 pub only_dpdk::DpdkConfig::device: only_dpdk::Device
 pub only_dpdk::DpdkConfig::gateway: core::option::Option<core::net::ip_addr::Ipv4Addr>
+pub only_dpdk::DpdkConfig::gateway6: core::option::Option<core::net::ip_addr::Ipv6Addr>
 pub only_dpdk::DpdkConfig::mac: core::option::Option<[u8; 6]>
 pub only_dpdk::DpdkConfig::mtu: usize
 pub only_dpdk::DpdkConfig::prefix_len: u8
+pub only_dpdk::DpdkConfig::prefix_len6: u8
 pub only_dpdk::DpdkConfig::syn_cookies: bool
 pub only_dpdk::DpdkConfig::tcp_backlog: usize
 pub only_dpdk::DpdkConfig::tcp_buffer: usize
+pub only_dpdk::DpdkConfig::tcp_ecn: bool
 pub only_dpdk::DpdkConfig::tcp_keepalive: core::option::Option<core::time::Duration>
+pub only_dpdk::DpdkConfig::tcp_pacing: bool
 pub only_dpdk::DpdkConfig::udp_buffer: usize
 impl only_dpdk::DpdkConfig
 pub fn only_dpdk::DpdkConfig::new(only_dpdk::Device, core::net::ip_addr::Ipv4Addr) -> only_dpdk::DpdkConfig

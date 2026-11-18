@@ -4,7 +4,7 @@
 #![allow(missing_docs)]
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -317,6 +317,181 @@ fn kcp_over_the_userspace_stack() {
         );
     }
     s.close();
+    stop(&client);
+    stop(&server);
+}
+
+const A6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
+const B6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+
+fn backend6(dev: Device, ip: Ipv4Addr, ip6: Ipv6Addr, ecn_pacing: bool) -> Backend {
+    let mut c = DpdkConfig::new(dev, ip);
+    c.address6 = Some(ip6);
+    c.tcp_ecn = ecn_pacing;
+    c.tcp_pacing = ecn_pacing;
+    Backend::Dpdk(c)
+}
+
+/// The dual-stack version of [`pair`]: the server listens on `[fd00::1]` (UDP 7000, TCP 7001),
+/// the client stack has `fd00::2`.
+fn pair6(ecn_pacing: bool) -> (Engine, Engine) {
+    let (a, b) = MemoryWire::new();
+    let server = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::udp(SocketAddr::from((A6, 7000)))
+                .backend(backend6(Device::Memory(a.clone()), A, A6, ecn_pacing))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .listen(
+            Listener::tcp(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 7001)))
+                .backend(backend6(Device::Memory(a), A, A6, ecn_pacing))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    let client = Engine::builder()
+        .config(cfg())
+        .listen(
+            Listener::udp(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))
+                .backend(backend6(Device::Memory(b.clone()), B, B6, ecn_pacing))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .listen(
+            Listener::tcp(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))
+                .backend(backend6(Device::Memory(b), B, B6, ecn_pacing))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    server.start().unwrap();
+    client.start().unwrap();
+    (server, client)
+}
+
+/// Dials `to` over TCP from `client`, echoes `n` bytes, returns the connection's addresses.
+fn tcp_echo_through(client: &Engine, to: SocketAddr, n: usize) -> (SocketAddr, SocketAddr) {
+    let (tx, rx) = mpsc::channel();
+    let (otx, orx) = mpsc::channel();
+    client.dial(
+        to,
+        fn_acceptor(move |c: &Conn<Sink>| {
+            let _ = otx.send(c.clone());
+            Sink(tx.clone())
+        }),
+        move |e| panic!("dial {to}: {e}"),
+    );
+    let c = orx.recv_timeout(Duration::from_secs(5)).expect("connected");
+    let data: Vec<u8> = (0..n).map(|i| (i % 253) as u8).collect();
+    let mut got = Vec::new();
+    let mut sent = 0;
+    for chunk in data.chunks(32 << 10) {
+        c.send(chunk).unwrap();
+        sent += chunk.len();
+        while got.len() < sent {
+            got.extend(rx.recv_timeout(Duration::from_secs(10)).expect("echo"));
+        }
+    }
+    while got.len() < data.len() {
+        got.extend(rx.recv_timeout(Duration::from_secs(10)).expect("echo"));
+    }
+    assert_eq!(got, data);
+    (c.local_addr(), c.peer_addr())
+}
+
+#[test]
+fn ipv6_tcp_and_udp_echo() {
+    for ecn_pacing in [false, true] {
+        let (server, client) = pair6(ecn_pacing);
+        assert_eq!(server.local_addrs()[0], SocketAddr::from((A6, 7000)));
+        assert_eq!(server.local_addrs()[1], SocketAddr::from((A6, 7001)));
+        let (local, peer) = tcp_echo_through(&client, SocketAddr::from((A6, 7001)), 1 << 20);
+        assert_eq!(
+            (local.ip(), peer),
+            (B6.into(), SocketAddr::from((A6, 7001)))
+        );
+        // The same listener over IPv4 (dual-stack).
+        let (local, _) = tcp_echo_through(&client, SocketAddr::from((A, 7001)), 64 << 10);
+        assert_eq!(local.ip(), std::net::IpAddr::V4(B));
+        // UDP over IPv6, datagrams above the MTU included (fragmented and reassembled).
+        let (tx, rx) = mpsc::channel();
+        let (otx, orx) = mpsc::channel();
+        client.dial_udp(
+            SocketAddr::from((A6, 7000)),
+            fn_acceptor(move |c: &Conn<Sink>| {
+                let _ = otx.send(c.clone());
+                Sink(tx.clone())
+            }),
+            |e| panic!("dial_udp: {e}"),
+        );
+        let c = orx.recv_timeout(Duration::from_secs(5)).expect("opened");
+        for size in [1, 1200, 1452, 1453, 4000, 9000] {
+            let msg: Vec<u8> = (0..size).map(|i| (i * 31 % 256) as u8).collect();
+            c.send(&msg).unwrap();
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)).expect("echo"), msg);
+        }
+        stop(&client);
+        stop(&server);
+    }
+}
+
+#[test]
+fn ipv6_link_local_dial_and_listener_checks() {
+    let (server, client) = pair6(false);
+    // The server's link-local address: fe80:: + the MAC derived from 10.0.0.1.
+    let ll: Ipv6Addr = "fe80::f1:aff:fe00:1".parse().unwrap();
+    let (local, _) = tcp_echo_through(&client, SocketAddr::from((ll, 7001)), 10_000);
+    assert!(matches!(local.ip(), std::net::IpAddr::V6(a) if a.segments()[0] == 0xfe80));
+    stop(&client);
+    stop(&server);
+    // IPv6 listener on a stack without an IPv6 address.
+    let (a, _b) = MemoryWire::new();
+    let r = Engine::builder()
+        .listen(
+            Listener::tcp(SocketAddr::from((A6, 1)))
+                .backend(backend(Device::Memory(a), A))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build();
+    assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+    // An address that is not the stack's.
+    let (a, _b) = MemoryWire::new();
+    let r = Engine::builder()
+        .listen(
+            Listener::tcp(SocketAddr::from((B6, 1)))
+                .backend(backend6(Device::Memory(a), A, A6, false))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build();
+    assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::AddrNotAvailable);
+    // The stack's link-local address is accepted.
+    let (a, _b) = MemoryWire::new();
+    let e = Engine::builder()
+        .listen(
+            Listener::tcp(SocketAddr::from((ll, 1)))
+                .backend(backend6(Device::Memory(a), A, A6, false))
+                .serve(fn_acceptor(|_c: &Conn<Echo>| Echo)),
+        )
+        .build()
+        .unwrap();
+    assert_eq!(e.local_addrs()[0], SocketAddr::from((ll, 1)));
+}
+
+#[test]
+fn ipv6_dial_without_an_ipv6_address_fails() {
+    let (server, client) = pair();
+    let (tx, rx) = mpsc::channel();
+    client.dial(
+        SocketAddr::from((A6, 7001)),
+        fn_acceptor(|_c: &Conn<Echo>| Echo),
+        move |e| {
+            let _ = tx.send(e.kind());
+        },
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+        std::io::ErrorKind::Unsupported
+    );
     stop(&client);
     stop(&server);
 }

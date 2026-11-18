@@ -2,7 +2,8 @@
 # only-dpdk end-to-end tests against the Linux kernel stack
 # (crates/only-dpdk/tests/kernel_peer.rs): the userspace stack over a TAP device, over AF_PACKET
 # on veth pairs (also with `tc netem` loss / delay / reordering, large windows, 500 concurrent
-# connections) and over DPDK's net_tap poll-mode driver (1 and 2 queues), with std UdpSocket /
+# connections) and over DPDK's net_tap poll-mode driver (1 and 2 queues), over IPv4 and IPv6
+# (ping -6, ECN and pacing on a lossy link), with std UdpSocket /
 # TcpStream on the kernel side, and dials from the stack to the kernel. Also runs the
 # memory-wire tests and clippy with DPDK linked.
 #
@@ -19,6 +20,8 @@ cd "$(dirname "$0")/../.."
 if [ "${1:-}" != "--inside" ]; then
     docker build -t only-dpdk-dev tools/dpdk
     exec docker run --rm --cap-add NET_ADMIN --device /dev/net/tun \
+        --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv6.conf.default.disable_ipv6=0 \
+        --sysctl net.ipv4.tcp_ecn=1 \
         -v "$PWD":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
         -e CARGO_TARGET_DIR=/tmp/t only-dpdk-dev tools/dpdk/test.sh --inside
 fi

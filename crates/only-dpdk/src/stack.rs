@@ -173,6 +173,8 @@ pub(crate) struct StackCtl {
     state: Mutex<CtlState>,
     next_ephemeral: AtomicU16,
     pub(crate) ip: Ipv4Addr,
+    /// The device's MAC (the IPv6 link-local address derives from it).
+    pub(crate) mac: [u8; 6],
 }
 
 struct CtlState {
@@ -270,9 +272,11 @@ fn device_key(d: &Device) -> String {
 impl Stack {
     /// The live stack for `cfg.device`, or a new one; registers a group on it and reserves
     /// `listen` (`(udp, port)`, port 0 = an ephemeral one). Returns the stack and the port.
+    /// `check` vets the request against the stack (before anything is reserved).
     pub(crate) fn acquire(
         cfg: &DpdkConfig,
         listen: Option<(bool, u16)>,
+        check: impl FnOnce(&StackCtl) -> io::Result<()>,
     ) -> io::Result<(Arc<Stack>, u16)> {
         let key = device_key(&cfg.device);
         let mut reg = REGISTRY.lock().unwrap_or_else(|p| p.into_inner());
@@ -292,6 +296,7 @@ impl Stack {
             }
         };
         drop(reg);
+        check(&stack.ctl)?;
         let port = match listen {
             Some((udp, 0)) => stack.ctl.ephemeral(udp),
             Some((_, p)) => p,
@@ -350,6 +355,7 @@ impl Stack {
             }),
             next_ephemeral: AtomicU16::new(EPHEMERAL_FIRST),
             ip: cfg.address,
+            mac,
         });
         let queues = links.len();
         let mut loops = Vec::with_capacity(queues);

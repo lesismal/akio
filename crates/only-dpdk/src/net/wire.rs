@@ -1,8 +1,10 @@
 //! Frame formats: parsing (bounds-checked views over received bytes) and writing (into a
 //! caller-provided buffer) of Ethernet II, ARP, IPv4, ICMPv4, UDP and TCP, plus the Internet
-//! checksum. Parsers never panic on any input (fuzzed: `fuzz/fuzz_targets/net_*.rs`).
+//! checksum. UDP and TCP are carried over IPv4 or IPv6 (the pseudo-header follows the address
+//! family); IPv6, ICMPv6 and NDP are in `wire6`. Parsers never panic on any input (fuzzed:
+//! `fuzz/fuzz_targets/dpdk_*.rs`).
 
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 
 pub(crate) type Mac = [u8; 6];
 
@@ -10,6 +12,7 @@ pub(crate) const BROADCAST: Mac = [0xff; 6];
 pub(crate) const ETH_HDR: usize = 14;
 pub(crate) const ETHERTYPE_IPV4: u16 = 0x0800;
 pub(crate) const ETHERTYPE_ARP: u16 = 0x0806;
+pub(crate) const ETHERTYPE_IPV6: u16 = 0x86dd;
 pub(crate) const IPV4_HDR: usize = 20;
 pub(crate) const UDP_HDR: usize = 8;
 pub(crate) const TCP_HDR: usize = 20;
@@ -19,12 +22,18 @@ pub(crate) const ARP_LEN: usize = 28;
 pub(crate) const PROTO_ICMP: u8 = 1;
 pub(crate) const PROTO_TCP: u8 = 6;
 pub(crate) const PROTO_UDP: u8 = 17;
+pub(crate) const PROTO_ICMPV6: u8 = 58;
 
-fn be16(b: &[u8], at: usize) -> u16 {
+/// ECN codepoints (RFC 3168 5), the low two bits of the IPv4 TOS / IPv6 traffic class.
+pub(crate) const ECN_MASK: u8 = 0x03;
+pub(crate) const ECT0: u8 = 0x02;
+pub(crate) const ECN_CE: u8 = 0x03;
+
+pub(crate) fn be16(b: &[u8], at: usize) -> u16 {
     u16::from_be_bytes([b[at], b[at + 1]])
 }
 
-fn be32(b: &[u8], at: usize) -> u32 {
+pub(crate) fn be32(b: &[u8], at: usize) -> u32 {
     u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
 }
 
@@ -32,7 +41,7 @@ fn ip_at(b: &[u8], at: usize) -> Ipv4Addr {
     Ipv4Addr::new(b[at], b[at + 1], b[at + 2], b[at + 3])
 }
 
-fn mac_at(b: &[u8], at: usize) -> Mac {
+pub(crate) fn mac_at(b: &[u8], at: usize) -> Mac {
     let mut m = [0u8; 6];
     m.copy_from_slice(&b[at..at + 6]);
     m
@@ -42,6 +51,7 @@ fn mac_at(b: &[u8], at: usize) -> Mac {
 
 /// Adds `data` to a running one's-complement sum (not yet folded). `data` is summed as
 /// big-endian 16-bit words, a trailing odd byte padded with zero.
+#[inline]
 pub(crate) fn sum(data: &[u8], mut acc: u64) -> u64 {
     let mut chunks = data.chunks_exact(8);
     for c in &mut chunks {
@@ -60,6 +70,7 @@ pub(crate) fn sum(data: &[u8], mut acc: u64) -> u64 {
 }
 
 /// Folds a running sum into the 16-bit one's-complement checksum field value.
+#[inline]
 pub(crate) fn fold(mut acc: u64) -> u16 {
     while acc >> 16 != 0 {
         acc = (acc & 0xffff) + (acc >> 16);
@@ -67,11 +78,55 @@ pub(crate) fn fold(mut acc: u64) -> u16 {
     !(acc as u16)
 }
 
-/// The IPv4 pseudo-header sum for an upper-layer checksum.
-pub(crate) fn pseudo(src: Ipv4Addr, dst: Ipv4Addr, proto: u8, len: usize) -> u64 {
-    let s = src.octets();
-    let d = dst.octets();
-    sum(&s, 0) + sum(&d, 0) + u64::from(proto) + len as u64
+/// The pseudo-header sum for an upper-layer checksum: IPv4 (RFC 793) or IPv6 (RFC 8200 8.1),
+/// by the family of the addresses (mixed families never occur: both come from one packet).
+#[inline]
+pub(crate) fn pseudo(src: IpAddr, dst: IpAddr, proto: u8, len: usize) -> u64 {
+    Pseudo::of(src, dst).with(proto, len)
+}
+
+/// The address part of a pseudo-header sum, computed once per packet (an IPv4 pair is four
+/// 16-bit words, without a dispatch on the address family per checksum).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Pseudo(u64);
+
+impl Pseudo {
+    #[inline]
+    pub(crate) fn of(src: IpAddr, dst: IpAddr) -> Pseudo {
+        Pseudo(addr_sum(src) + addr_sum(dst))
+    }
+
+    #[inline]
+    pub(crate) fn v4(src: Ipv4Addr, dst: Ipv4Addr) -> Pseudo {
+        let (s, d) = (u32::from(src), u32::from(dst));
+        Pseudo(
+            u64::from(s >> 16) + u64::from(s & 0xffff) + u64::from(d >> 16) + u64::from(d & 0xffff),
+        )
+    }
+
+    #[inline]
+    pub(crate) fn with(self, proto: u8, len: usize) -> u64 {
+        self.0 + u64::from(proto) + len as u64
+    }
+}
+
+/// An address's 16-bit words, summed (an IPv4 address: its two words, without loading 16
+/// bytes).
+#[inline]
+fn addr_sum(a: IpAddr) -> u64 {
+    match a {
+        IpAddr::V4(a) => {
+            let x = u32::from(a);
+            u64::from(x >> 16) + u64::from(x & 0xffff)
+        }
+        IpAddr::V6(a) => {
+            let x = u128::from(a);
+            let hi = (x >> 64) as u64;
+            let lo = x as u64;
+            let words = |w: u64| (w & 0xffff) + (w >> 16 & 0xffff) + (w >> 32 & 0xffff) + (w >> 48);
+            words(hi) + words(lo)
+        }
+    }
 }
 
 /// Checksum of `data` (a header or a whole ICMP message).
@@ -165,6 +220,8 @@ pub(crate) struct Ipv4<'a> {
     pub(crate) dst: Ipv4Addr,
     pub(crate) proto: u8,
     pub(crate) ttl: u8,
+    /// TOS byte (DSCP and ECN).
+    pub(crate) tos: u8,
     pub(crate) id: u16,
     /// Flags (DF, MF) and the fragment offset in 8-byte units, as on the wire.
     pub(crate) frag: u16,
@@ -194,6 +251,7 @@ impl Ipv4<'_> {
             dst: ip_at(b, 16),
             proto: b[9],
             ttl: b[8],
+            tos: b[1],
             id: be16(b, 4),
             frag: be16(b, 6),
             hdr_len,
@@ -216,7 +274,8 @@ impl Ipv4<'_> {
     }
 }
 
-/// Writes a 20-byte IPv4 header (no options) for a `payload_len`-byte payload.
+/// Writes a 20-byte IPv4 header (no options) for a `payload_len`-byte payload; `tos` is the
+/// whole TOS byte (DSCP and ECN).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_ipv4(
     b: &mut [u8],
@@ -226,10 +285,11 @@ pub(crate) fn write_ipv4(
     id: u16,
     frag: u16,
     ttl: u8,
+    tos: u8,
     payload_len: usize,
 ) {
     b[0] = 0x45;
-    b[1] = 0;
+    b[1] = tos;
     let total = (IPV4_HDR + payload_len) as u16;
     b[2..4].copy_from_slice(&total.to_be_bytes());
     b[4..6].copy_from_slice(&id.to_be_bytes());
@@ -289,8 +349,8 @@ impl Icmp<'_> {
             return None;
         }
         Some(Quoted {
-            src: ip_at(b, 12),
-            dst: ip_at(b, 16),
+            src: IpAddr::V4(ip_at(b, 12)),
+            dst: IpAddr::V4(ip_at(b, 16)),
             proto: b[9],
             src_port: be16(b, hl),
             dst_port: be16(b, hl + 2),
@@ -302,8 +362,8 @@ impl Icmp<'_> {
 /// What an ICMP error quotes of the datagram that caused it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Quoted {
-    pub(crate) src: Ipv4Addr,
-    pub(crate) dst: Ipv4Addr,
+    pub(crate) src: IpAddr,
+    pub(crate) dst: IpAddr,
     pub(crate) proto: u8,
     pub(crate) src_port: u16,
     pub(crate) dst_port: u16,
@@ -333,9 +393,17 @@ pub(crate) struct Udp<'a> {
 }
 
 impl Udp<'_> {
-    /// Parses a UDP datagram carried in an IPv4 packet from `src` to `dst`; `verify` checks a
-    /// non-zero checksum.
-    pub(crate) fn parse(b: &[u8], src: Ipv4Addr, dst: Ipv4Addr, verify: bool) -> Option<Udp<'_>> {
+    /// Parses a UDP datagram carried in an IP packet from `src` to `dst`; `verify` checks a
+    /// non-zero checksum. Over IPv6 a zero checksum is invalid (RFC 8200 8.1) and refused.
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn parse(b: &[u8], src: IpAddr, dst: IpAddr, verify: bool) -> Option<Udp<'_>> {
+        Udp::parse_with(b, Pseudo::of(src, dst), src.is_ipv6(), verify)
+    }
+
+    /// [`Udp::parse`] with the pseudo-header's address sum already computed (`v6`: carried by
+    /// IPv6, where a zero checksum is invalid).
+    #[inline]
+    pub(crate) fn parse_with(b: &[u8], ps: Pseudo, v6: bool, verify: bool) -> Option<Udp<'_>> {
         if b.len() < UDP_HDR {
             return None;
         }
@@ -344,7 +412,11 @@ impl Udp<'_> {
             return None;
         }
         let b = &b[..len];
-        if verify && be16(b, 6) != 0 && fold(sum(b, pseudo(src, dst, PROTO_UDP, len))) != 0 {
+        if be16(b, 6) == 0 {
+            if v6 {
+                return None;
+            }
+        } else if verify && fold(sum(b, ps.with(PROTO_UDP, len))) != 0 {
             return None;
         }
         Some(Udp {
@@ -358,8 +430,8 @@ impl Udp<'_> {
 /// Writes a UDP header for `payload_len` bytes already at `b[UDP_HDR..]`, with its checksum.
 pub(crate) fn write_udp(
     b: &mut [u8],
-    src: Ipv4Addr,
-    dst: Ipv4Addr,
+    src: IpAddr,
+    dst: IpAddr,
     src_port: u16,
     dst_port: u16,
     payload_len: usize,
@@ -383,6 +455,9 @@ pub(crate) const SYN: u8 = 0x02;
 pub(crate) const RST: u8 = 0x04;
 pub(crate) const PSH: u8 = 0x08;
 pub(crate) const ACK: u8 = 0x10;
+/// ECN-Echo and Congestion Window Reduced (RFC 3168 6.1).
+pub(crate) const ECE: u8 = 0x40;
+pub(crate) const CWR: u8 = 0x80;
 
 /// Most SACK blocks carried (4 without timestamps, 3 with).
 pub(crate) const MAX_SACK: usize = 4;
@@ -513,11 +588,20 @@ pub(crate) struct Tcp<'a> {
     pub(crate) window: u16,
     pub(crate) opts: TcpOpts,
     pub(crate) payload: &'a [u8],
+    /// ECN codepoint of the IP packet that carried it (set by the interface).
+    pub(crate) ecn: u8,
 }
 
 impl Tcp<'_> {
     /// Parses a TCP segment carried from `src` to `dst`; `verify` checks the checksum.
-    pub(crate) fn parse(b: &[u8], src: Ipv4Addr, dst: Ipv4Addr, verify: bool) -> Option<Tcp<'_>> {
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn parse(b: &[u8], src: IpAddr, dst: IpAddr, verify: bool) -> Option<Tcp<'_>> {
+        Tcp::parse_with(b, Pseudo::of(src, dst), verify)
+    }
+
+    /// [`Tcp::parse`] with the pseudo-header's address sum already computed.
+    #[inline]
+    pub(crate) fn parse_with(b: &[u8], ps: Pseudo, verify: bool) -> Option<Tcp<'_>> {
         if b.len() < TCP_HDR {
             return None;
         }
@@ -525,7 +609,7 @@ impl Tcp<'_> {
         if off < TCP_HDR || off > b.len() {
             return None;
         }
-        if verify && fold(sum(b, pseudo(src, dst, PROTO_TCP, b.len()))) != 0 {
+        if verify && fold(sum(b, ps.with(PROTO_TCP, b.len()))) != 0 {
             return None;
         }
         Some(Tcp {
@@ -537,6 +621,7 @@ impl Tcp<'_> {
             window: be16(b, 14),
             opts: TcpOpts::parse(&b[TCP_HDR..off]),
             payload: &b[off..],
+            ecn: 0,
         })
     }
 
@@ -558,6 +643,8 @@ pub(crate) struct TcpOut {
     pub(crate) flags: u8,
     pub(crate) window: u16,
     pub(crate) opts: TcpOpts,
+    /// Send the segment ECN-capable (ECT(0) in the IP header).
+    pub(crate) ect: bool,
 }
 
 impl TcpOut {
@@ -567,7 +654,14 @@ impl TcpOut {
 
     /// Writes the header into `b` (whose length is header + payload, the payload already in
     /// place after the header) and the checksum over everything.
-    pub(crate) fn write(&self, b: &mut [u8], src: Ipv4Addr, dst: Ipv4Addr) {
+    #[cfg(test)]
+    pub(crate) fn write(&self, b: &mut [u8], src: IpAddr, dst: IpAddr) {
+        self.write_with(b, Pseudo::of(src, dst));
+    }
+
+    /// [`TcpOut::write`] with the pseudo-header's address sum already computed.
+    #[inline]
+    pub(crate) fn write_with(&self, b: &mut [u8], ps: Pseudo) {
         let hl = self.header_len();
         b[0..2].copy_from_slice(&self.src_port.to_be_bytes());
         b[2..4].copy_from_slice(&self.dst_port.to_be_bytes());
@@ -578,7 +672,7 @@ impl TcpOut {
         b[14..16].copy_from_slice(&self.window.to_be_bytes());
         b[16..20].copy_from_slice(&[0, 0, 0, 0]);
         self.opts.write(&mut b[TCP_HDR..hl]);
-        let c = fold(sum(b, pseudo(src, dst, PROTO_TCP, b.len())));
+        let c = fold(sum(b, ps.with(PROTO_TCP, b.len())));
         b[16..18].copy_from_slice(&c.to_be_bytes());
     }
 }
@@ -587,8 +681,10 @@ impl TcpOut {
 mod tests {
     use super::*;
 
-    const A: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
-    const B: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 2);
+    const A4: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 1);
+    const B4: Ipv4Addr = Ipv4Addr::new(10, 0, 0, 2);
+    const A: IpAddr = IpAddr::V4(A4);
+    const B: IpAddr = IpAddr::V4(B4);
 
     #[test]
     fn checksum_known_answer() {
@@ -606,13 +702,32 @@ mod tests {
     }
 
     #[test]
+    fn pseudo_header_sums_match_bytewise() {
+        let addrs: [IpAddr; 4] = [
+            A,
+            IpAddr::V4(Ipv4Addr::new(255, 254, 1, 0)),
+            "fd00::1:ffff:fe12:3456".parse().unwrap(),
+            "ffff:fffe:fdfc:8000:1:2:3:ffff".parse().unwrap(),
+        ];
+        for a in addrs {
+            let bytes = match a {
+                IpAddr::V4(x) => sum(&x.octets(), 0),
+                IpAddr::V6(x) => sum(&x.octets(), 0),
+            };
+            // `sum` adds 32-bit words: the accumulators differ, the folded checksums do not.
+            assert_eq!(fold(addr_sum(a)), fold(bytes), "{a}");
+            assert_eq!(fold(addr_sum(a) + 0x1234), fold(bytes + 0x1234), "{a}");
+        }
+    }
+
+    #[test]
     fn arp_roundtrip() {
         let a = Arp {
             op: ARP_REQUEST,
             sha: [2, 0, 0, 0, 0, 1],
-            spa: A,
+            spa: A4,
             tha: [0; 6],
-            tpa: B,
+            tpa: B4,
         };
         let mut b = [0u8; ARP_LEN];
         a.write(&mut b);
@@ -625,9 +740,10 @@ mod tests {
         let mut b = vec![0u8; IPV4_HDR + UDP_HDR + 5];
         b[IPV4_HDR + UDP_HDR..].copy_from_slice(b"hello");
         write_udp(&mut b[IPV4_HDR..], A, B, 1000, 2000, 5);
-        write_ipv4(&mut b, A, B, PROTO_UDP, 7, IP_DF, 64, UDP_HDR + 5);
+        write_ipv4(&mut b, A4, B4, PROTO_UDP, 7, IP_DF, 64, ECT0, UDP_HDR + 5);
         let ip = Ipv4::parse(&b, true).unwrap();
-        assert_eq!((ip.src, ip.dst, ip.proto, ip.id), (A, B, PROTO_UDP, 7));
+        assert_eq!((ip.src, ip.dst, ip.proto, ip.id), (A4, B4, PROTO_UDP, 7));
+        assert_eq!(ip.tos & ECN_MASK, ECT0);
         assert!(!ip.is_fragment());
         let u = Udp::parse(ip.payload, A, B, true).unwrap();
         assert_eq!(
@@ -662,6 +778,7 @@ mod tests {
             flags: SYN | ACK,
             window: 5,
             opts: o,
+            ect: false,
         };
         let hl = out.header_len();
         assert_eq!(hl % 4, 0);
@@ -698,7 +815,7 @@ mod tests {
     fn icmp_quote() {
         let mut dgram = vec![0u8; IPV4_HDR + UDP_HDR];
         write_udp(&mut dgram[IPV4_HDR..], A, B, 1111, 2222, 0);
-        write_ipv4(&mut dgram, A, B, PROTO_UDP, 1, 0, 64, UDP_HDR);
+        write_ipv4(&mut dgram, A4, B4, PROTO_UDP, 1, 0, 64, 0, UDP_HDR);
         let mut m = vec![0u8; ICMP_HDR + dgram.len()];
         write_icmp(&mut m, ICMP_UNREACHABLE, UNREACH_PORT, [0; 4], &dgram);
         let i = Icmp::parse(&m, true).unwrap();

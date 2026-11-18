@@ -143,10 +143,11 @@ impl Port {
         Some(rx)
     }
 
-    /// Copies an ARP frame to the sibling queues: replies and requests land on one queue (RSS
-    /// does not hash ARP), but every queue's stack needs the neighbour.
+    /// Copies an ARP or NDP frame to the sibling queues: replies and requests land on one queue
+    /// (RSS does not hash ARP, and puts a neighbor advertisement wherever its addresses hash),
+    /// but every queue's stack needs the neighbour.
     fn fan_out(inboxes: &[Inbox], me: usize, loops: &[Arc<LoopShared>], frame: &[u8]) {
-        if inboxes.len() > 1 && frame.len() >= 14 && frame[12..14] == [0x08, 0x06] {
+        if inboxes.len() > 1 && net::is_neighbor_frame(frame) {
             for (i, b) in inboxes.iter().enumerate() {
                 if i != me {
                     Self::hand_to(b, &loops[i], frame.to_vec());

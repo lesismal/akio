@@ -76,14 +76,14 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | Crate | 块 | `unsafe fn` | `unsafe impl` | 测试/示例/基准 |
 |---|---:|---:|---:|---:|
 | only | 0 | 0 | 0 | 13 |
-| only-dpdk | 31 | 0 | 1 | 0 |
+| only-dpdk | 32 | 0 | 1 | 0 |
 | only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
 | only-sys | 90 | 3 | 3 | 0 |
 | only-uring | 41 | 4 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **328** | **83** | **5** | **22** |
+| **合计** | **329** | **83** | **5** | **22** |
 
 按用途：
 
@@ -118,7 +118,7 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-uring/src/eval.rs`（`#[cfg(test)]`） | 5 | io_uring 特性评估的测量工具（一个 ignored 测试）：SQE 提交、provided buffer 读取、对自己 socket 的 `write`/`close`、`setsockopt(TCP_NODELAY)` | 提交项只指向泄漏的静态响应缓冲区或 provided buffers，二者都不释放（工具随后结束进程）；缓冲区只在其完成事件与归还 ring 之间被借用；只有在没有提交项引用描述符后才关闭它 |
 | `only-uring/src/group.rs` | 3 | 探测内核版本用的 `uname` | `utsname` 置零；内核以 NUL 结尾 `release` |
 | `only-dpdk/src/pmd.rs` | 17、`impl Send for Queue` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；就地写入暂存的发送 mbuf | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 同一时刻只被一个线程使用（一次性移交给其 I/O 线程）；未提交的暂存发送 mbuf 会被释放 |
-| `only-dpdk/src/sys.rs` | 14 | TAP（`open`、`TUNSETIFF`）、AF_PACKET（`socket`、`bind`、`setsockopt`）、`read` / `recvfrom` / `write`、`ppoll` | fd 立即归 `OwnedFd` 所有；`#[repr(C)]` 的 `ifreq` 与 UAPI 大小一致；缓冲区与地址结构在每次调用期间有效，传入的长度就是它们的大小 |
+| `only-dpdk/src/sys.rs` | 15 | TAP（`open`、`TUNSETIFF`）、AF_PACKET（`socket`、`bind`、`setsockopt`，含加入 all-multicast 的 `PACKET_ADD_MEMBERSHIP`）、`read` / `recvfrom` / `write`、`ppoll` | fd 立即归 `OwnedFd` 所有；`#[repr(C)]` 的 `ifreq` 与 `packet_mreq` 与 UAPI 大小一致（编译期断言）；缓冲区与地址结构在每次调用期间有效，传入的长度就是它们的大小 |
 | `only-ebpf/src/sys.rs` | 20，4 个 `unsafe fn` | `bpf(2)`（`MAP_CREATE`、`MAP_LOOKUP/UPDATE/DELETE_ELEM`、`PROG_LOAD`、`PROG_ATTACH`、`LINK_CREATE`）、`SO_ATTACH_REUSEPORT_[CE]BPF`、`SO_COOKIE`、`SO_RCVLOWAT`、`TCP_INFO`、`SIOCOUTQ`、`NETLINK_ROUTE` socket（`socket`/`write`/`read`）、`if_nametoindex` | `#[repr(C)]` 的 attr 前缀与 UAPI 一致；指针字段在调用期间存活；键/值大小由 `Map<K, V>` 固定；按 CPU 的查询写入每个可能 CPU 8 字节的缓冲区（仅 `Map<K, u64>`）；getsockopt/ioctl 的输出大小由传入长度限定 |
 
 ### 自有系统调用层（`only_sys::ffi`、`only-uring` 的 `ring`）

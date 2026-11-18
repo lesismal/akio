@@ -11,7 +11,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::SocketAddr,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc,
@@ -59,12 +59,13 @@ struct GroupRt {
     conns: usize,
 }
 
-#[derive(Clone, Copy)]
 enum Kind {
     /// A UDP peer: of a listener (`own == false`), or a dialed connection with its own port.
+    /// The peer is boxed: a `SocketAddr` would make every connection's `Kind` (TCP ones
+    /// included) 36 bytes instead of 16.
     Udp {
         port: u16,
-        peer: SocketAddrV4,
+        peer: Box<SocketAddr>,
         own: bool,
     },
     Tcp {
@@ -100,14 +101,13 @@ pub(crate) struct Loop {
     ctl: Arc<StackCtl>,
     port: Port,
     iface: Iface,
-    ip: Ipv4Addr,
     queues: usize,
     set: Settings,
     groups: IdMap<GroupRt>,
     conns: IdMap<LConn>,
     tcp_ids: HashMap<TcpHandle, u64>,
     /// UDP listener peers: (listener port, peer) -> connection.
-    udp_peers: HashMap<(u16, SocketAddrV4), u64>,
+    udp_peers: HashMap<(u16, SocketAddr), u64>,
     /// Dialed UDP connections by their local port.
     udp_dialed: HashMap<u16, u64>,
     /// Listener ports: (udp, port) -> group.
@@ -163,12 +163,17 @@ impl Loop {
             wscale: true,
             timestamps: true,
             sack: true,
+            ecn: cfg.tcp_ecn,
+            pacing: cfg.tcp_pacing,
         };
         let icfg = net::Config {
             mac,
             ip: cfg.address,
             prefix_len: cfg.prefix_len,
             gateway: cfg.gateway,
+            ip6: cfg.address6,
+            prefix_len6: cfg.prefix_len6,
+            gateway6: cfg.gateway6,
             mtu,
             tcp,
             backlog: cfg.tcp_backlog.max(1),
@@ -186,7 +191,6 @@ impl Loop {
             ctl,
             port,
             iface: Iface::new(icfg, Instant::now()),
-            ip: cfg.address,
             queues,
             set: Settings {
                 busy_poll: cfg.busy_poll,
@@ -388,12 +392,14 @@ impl Loop {
         acceptor: Arc<dyn DynAcceptor>,
         on_error: Box<dyn FnOnce(io::Error) + Send>,
     ) {
-        let SocketAddr::V4(remote) = addr else {
+        // The stack has one interface: a scope id (or flow label) means nothing to it.
+        let remote = SocketAddr::new(addr.ip(), addr.port());
+        if !self.iface.has_family(remote.ip()) {
             return on_error(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "the userspace stack is IPv4-only",
+                "the userspace stack has no IPv6 address (set DpdkConfig::address6)",
             ));
-        };
+        }
         if self.groups.get(&gid).is_none_or(|rt| rt.draining.is_some()) {
             return on_error(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -408,14 +414,15 @@ impl Loop {
                 }
                 let kind = Kind::Udp {
                     port: local,
-                    peer: remote,
+                    peer: Box::new(remote),
                     own: true,
                 };
-                match self.open(gid, acceptor, kind, local, addr, true) {
+                let local = SocketAddr::new(self.iface.local_for(remote.ip()), local);
+                match self.open(gid, acceptor, kind, local, remote, true) {
                     Some(id) => {
-                        self.udp_dialed.insert(local, id);
+                        self.udp_dialed.insert(local.port(), id);
                     }
-                    None => self.iface.udp_unbind(local),
+                    None => self.iface.udp_unbind(local.port()),
                 }
                 return;
             }
@@ -458,7 +465,7 @@ impl Loop {
         gid: u64,
         acceptor: Arc<dyn DynAcceptor>,
         kind: Kind,
-        local_port: u16,
+        local: SocketAddr,
         peer: SocketAddr,
         dialed: bool,
     ) -> Option<u64> {
@@ -471,7 +478,6 @@ impl Loop {
             return None;
         }
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let local = SocketAddr::new(IpAddr::V4(self.ip), local_port);
         let inner = ConnInner::new_virtual(id, udp, local, peer, link.clone(), cfg.clone());
         let Ok(handler) = catch_unwind(AssertUnwindSafe(|| acceptor.on_open(&inner))) else {
             inner.mark_closed();
@@ -485,16 +491,16 @@ impl Loop {
         }
         rt.conns += 1;
         let now = Instant::now();
-        match kind {
+        match &kind {
             Kind::Udp {
                 port,
                 peer,
                 own: false,
             } => {
-                self.udp_peers.insert((port, peer), id);
+                self.udp_peers.insert((*port, **peer), id);
             }
             Kind::Tcp { h } => {
-                self.tcp_ids.insert(h, id);
+                self.tcp_ids.insert(*h, id);
             }
             Kind::Udp { .. } => {}
         }
@@ -588,7 +594,7 @@ impl Loop {
                 Event::UdpUnreachable { port, remote } => {
                     if let Some(&id) = self.udp_dialed.get(&port) {
                         let matches = self.conns.get(&id).is_some_and(
-                            |c| matches!(c.kind, Kind::Udp { peer, .. } if peer == remote),
+                            |c| matches!(&c.kind, Kind::Udp { peer, .. } if **peer == *remote),
                         );
                         if matches {
                             let e = io::Error::new(
@@ -608,7 +614,7 @@ impl Loop {
                 let ok = self
                     .conns
                     .get(&id)
-                    .is_some_and(|c| matches!(c.kind, Kind::Udp { peer, .. } if peer == from));
+                    .is_some_and(|c| matches!(&c.kind, Kind::Udp { peer, .. } if **peer == from));
                 if ok {
                     self.deliver(id, n);
                 }
@@ -633,19 +639,12 @@ impl Loop {
                 }
                 Some((gid, rt.spec.listen.as_ref()?.acceptor.clone()))
             });
-        let peer = self.iface.tcp_peer(h);
-        let (Some((gid, acceptor)), Some(peer)) = (target, peer) else {
+        let addrs = self.iface.tcp_local(h).zip(self.iface.tcp_peer(h));
+        let (Some((gid, acceptor)), Some((local, peer))) = (target, addrs) else {
             self.iface.tcp_abort(h, now, &mut self.port);
             return;
         };
-        match self.open(
-            gid,
-            acceptor,
-            Kind::Tcp { h },
-            port,
-            SocketAddr::V4(peer),
-            false,
-        ) {
+        match self.open(gid, acceptor, Kind::Tcp { h }, local, peer, false) {
             Some(id) => self.read_tcp(id),
             None => self.iface.tcp_abort(h, now, &mut self.port),
         }
@@ -657,19 +656,11 @@ impl Loop {
             self.iface.tcp_abort(h, Instant::now(), &mut self.port);
             return;
         };
-        let (Some(local), Some(peer)) = (self.iface.tcp_local_port(h), self.iface.tcp_peer(h))
-        else {
+        let (Some(local), Some(peer)) = (self.iface.tcp_local(h), self.iface.tcp_peer(h)) else {
             (d.on_error)(io::ErrorKind::ConnectionReset.into());
             return;
         };
-        match self.open(
-            d.gid,
-            d.acceptor,
-            Kind::Tcp { h },
-            local,
-            SocketAddr::V4(peer),
-            true,
-        ) {
+        match self.open(d.gid, d.acceptor, Kind::Tcp { h }, local, peer, true) {
             Some(id) => self.read_tcp(id),
             None => {
                 self.iface.tcp_abort(h, Instant::now(), &mut self.port);
@@ -678,7 +669,7 @@ impl Loop {
         }
     }
 
-    fn on_datagram(&mut self, gid: u64, port: u16, from: SocketAddrV4, n: usize) {
+    fn on_datagram(&mut self, gid: u64, port: u16, from: SocketAddr, n: usize) {
         let id = match self.udp_peers.get(&(port, from)) {
             Some(&id) => id,
             None => {
@@ -701,10 +692,11 @@ impl Loop {
                 };
                 let kind = Kind::Udp {
                     port,
-                    peer: from,
+                    peer: Box::new(from),
                     own: false,
                 };
-                match self.open(gid, acceptor, kind, port, SocketAddr::V4(from), false) {
+                let local = SocketAddr::new(self.iface.local_for(from.ip()), port);
+                match self.open(gid, acceptor, kind, local, from, false) {
                     Some(id) => id,
                     None => {
                         spec.peers.fetch_sub(1, Ordering::Relaxed);
@@ -809,7 +801,8 @@ impl Loop {
         let now = Instant::now();
         let iface = &mut self.iface;
         let r = match c.kind {
-            Kind::Udp { port, peer, .. } => {
+            Kind::Udp { port, ref peer, .. } => {
+                let peer = **peer;
                 let tx = &mut self.port;
                 c.inner.drain_output(&mut |d| {
                     // A datagram that cannot be sent is dropped, as UDP does.
@@ -839,12 +832,16 @@ impl Loop {
         self.paused.remove(&id);
         let now = Instant::now();
         match c.kind {
-            Kind::Udp { port, peer, own } => {
+            Kind::Udp {
+                port,
+                ref peer,
+                own,
+            } => {
                 if own {
                     self.iface.udp_unbind(port);
                     self.udp_dialed.remove(&port);
                 } else {
-                    self.udp_peers.remove(&(port, peer));
+                    self.udp_peers.remove(&(port, **peer));
                     if let Some(rt) = self.groups.get(&c.gid) {
                         rt.spec.peers.fetch_sub(1, Ordering::Relaxed);
                     }
