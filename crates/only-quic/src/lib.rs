@@ -693,27 +693,41 @@ impl Ep {
 
     fn transmit(&self, dest: SocketAddr, seg: Option<usize>, data: Vec<u8>, ecn: u8) {
         let sock = lock(&self.socks).get(&dest).cloned();
-        let Some(sock) = sock else {
-            if self.factory.is_none() {
-                lock(&self.backlog).push((dest, seg, data, ecn));
+        let sock = match sock {
+            Some(sock) => sock,
+            None => {
+                // The socket is not up: the datagram waits in the backlog, unless the socket
+                // came up meanwhile. `ClientAcceptor::on_open` flushes the backlog and then
+                // publishes the socket under the backlog's lock, so nothing is sent ahead of
+                // what waits there (a resumed client's 0-RTT ahead of its Initial, which the
+                // server drops) and nothing is queued after the last flush.
+                let mut backlog = lock(&self.backlog);
+                let Some(sock) = lock(&self.socks).get(&dest).cloned() else {
+                    if self.factory.is_none() {
+                        backlog.push((dest, seg, data, ecn));
+                    }
+                    return;
+                };
+                sock
             }
-            return;
         };
-        // Several datagrams of `s` bytes: one GSO send where Linux supports it (else one
-        // sendmmsg, else one by one); the boundaries survive either way.
-        let _ = match (seg, ecn) {
-            (Some(s), _) => sock.send_segments_ecn(data, s, ecn),
-            (None, 0) => sock.send_owned(data),
-            (None, _) => sock.send_segments_ecn(data, 0, ecn),
-        };
+        send_out(&sock, seg, data, ecn);
     }
 
     /// A datagram of the path a migration probes (client).
     fn transmit_probe(&self, t: Outgoing) {
         let sock = lock(&self.probe).clone();
-        let Some(sock) = sock else {
-            lock(&self.probe_backlog).push(t);
-            return;
+        let sock = match sock {
+            Some(sock) => sock,
+            None => {
+                // As in `transmit`: `ProbeAcceptor::on_open` flushes, then publishes.
+                let mut backlog = lock(&self.probe_backlog);
+                let Some(sock) = lock(&self.probe).clone() else {
+                    backlog.push(t);
+                    return;
+                };
+                sock
+            }
         };
         let (_, seg, data, ecn) = t;
         let _ = sock.send_segments_ecn(data, seg.unwrap_or(0), ecn);
@@ -1084,6 +1098,16 @@ impl Handler for Udp {
 /// A transmit: destination, segment size (several datagrams), bytes, ECN codepoint.
 type Outgoing = (SocketAddr, Option<usize>, Vec<u8>, u8);
 
+/// Sends `data` on `sock`: several datagrams of `seg` bytes as one GSO send where Linux
+/// supports it (else one sendmmsg, else one by one); the boundaries survive either way.
+fn send_out(sock: &Conn<Udp>, seg: Option<usize>, data: Vec<u8>, ecn: u8) {
+    let _ = match (seg, ecn) {
+        (Some(s), _) => sock.send_segments_ecn(data, s, ecn),
+        (None, 0) => sock.send_owned(data),
+        (None, _) => sock.send_segments_ecn(data, 0, ecn),
+    };
+}
+
 /// Whether the UDP layer can mark datagrams ECT(0) (Linux, unless `ONLY_UDP_ECN=0`); elsewhere
 /// connections do not try (validation would only fail).
 fn ecn_platform() -> bool {
@@ -1103,11 +1127,13 @@ struct ProbeAcceptor(Arc<Ep>);
 impl Acceptor for ProbeAcceptor {
     type Handler = Udp;
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
-        *lock(&self.0.probe) = Some(c.clone());
-        let backlog = std::mem::take(&mut *lock(&self.0.probe_backlog));
-        for t in backlog {
-            self.0.transmit_probe(t);
+        // The waiting datagrams first, then the socket is published (see `Ep::transmit`).
+        let mut backlog = lock(&self.0.probe_backlog);
+        for (_, seg, data, ecn) in backlog.drain(..) {
+            let _ = c.send_segments_ecn(data, seg.unwrap_or(0), ecn);
         }
+        *lock(&self.0.probe) = Some(c.clone());
+        drop(backlog);
         Udp::new(self.0.clone(), true)
     }
 }
@@ -1115,11 +1141,17 @@ impl Acceptor for ProbeAcceptor {
 impl Acceptor for ClientAcceptor {
     type Handler = Udp;
     fn on_open(&self, c: &Conn<Udp>) -> Udp {
-        lock(&self.0.socks).insert(c.peer_addr(), c.clone());
-        let backlog = std::mem::take(&mut *lock(&self.0.backlog));
-        for (dest, seg, d, ecn) in backlog {
-            self.0.transmit(dest, seg, d, ecn);
+        // The waiting datagrams first, in order, then the socket is published: under the
+        // backlog's lock, so no other thread sends ahead of them (see `Ep::transmit`).
+        let peer = c.peer_addr();
+        let mut backlog = lock(&self.0.backlog);
+        for (dest, seg, data, ecn) in backlog.drain(..) {
+            if dest == peer {
+                send_out(c, seg, data, ecn);
+            }
         }
+        lock(&self.0.socks).insert(peer, c.clone());
+        drop(backlog);
         Udp::new(self.0.clone(), true)
     }
 }

@@ -754,6 +754,19 @@ request head is checked as UTF-8 once. Zen 4, same-run A/B on a quiet host: HTTP
 connection, 64 in flight 820,741 → 883,127 req/s (1.08×); HTTP/1.1 and h2c unchanged within
 noise (docs/BENCHMARKS.md). No public API change.
 
+### Fixed: a QUIC client's 0-RTT no longer goes out ahead of its Initial
+
+`only_quic::dial` opens the client's UDP socket on an engine thread and keeps the datagrams sent
+before that in a backlog. The socket was published before the backlog was flushed, so another
+thread sending in between (a request right after an `H3Client::dial` resuming with 0-RTT) put its
+0-RTT packets on the wire ahead of the Initial. The server, without 0-RTT keys yet, dropped them,
+and the requests went again in 1-RTT after the handshake, unmarked, although the server had
+accepted 0-RTT. A datagram queued just as the backlog was flushed could also stay there, unsent.
+The backlog is now flushed, and the socket published, under the backlog's lock (the same for a
+migration probe's socket). This was the occasional failure of only-h3's `zero_rtt` test (about 2
+runs in 100 under load), which now holds the server's handshake flight in a relay until its
+requests are sent, and waits for session tickets instead of sleeping. No public API change.
+
 ### Fixed: `only_bittorrent::Client::close` waits for its threads
 
 TSan's first run (below) reported a thread leak: `close` shut the engine and the disk pool down
