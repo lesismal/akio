@@ -26,8 +26,15 @@ pub struct UringOptions {
 }
 
 /// Checks that this kernel can run the backend: io_uring present, Linux 5.19+ (multishot accept
-/// and recv with provided buffers) and the opcodes used. `Err` says what is missing.
+/// and recv with provided buffers) and the opcodes used. `Err` says what is missing. The probe
+/// ring lives on a scratch thread, never the caller's (see `reactor::on_scratch_thread`).
 pub fn probe() -> Result<(), String> {
+    crate::reactor::on_scratch_thread(probe_here)
+        .map_err(|e| format!("probe thread: {e}"))
+        .and_then(|r| r)
+}
+
+fn probe_here() -> Result<(), String> {
     // SAFETY: `uname` fills the zeroed struct it is given.
     let mut u: ffi::utsname = unsafe { std::mem::zeroed() };
     // SAFETY: as above; `u` is valid for writes.
@@ -47,7 +54,7 @@ pub fn probe() -> Result<(), String> {
         return Err(format!("kernel {rel} is older than 5.19"));
     }
     let (ring, _) =
-        crate::reactor::make_ring(8, false).map_err(|e| format!("io_uring_setup: {e}"))?;
+        crate::reactor::make_ring_here(8, false).map_err(|e| format!("io_uring_setup: {e}"))?;
     if ring.features() & ring::FEAT_EXT_ARG == 0 {
         return Err("IORING_FEAT_EXT_ARG unsupported".into());
     }

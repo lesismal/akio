@@ -507,6 +507,11 @@ impl std::fmt::Debug for Ring {
     }
 }
 
+// SAFETY: the raw pointers point into the ring's own mappings, which are process-wide and live
+// as long as the `Ring`; nothing ties them to the thread that created it. A ring is created on a
+// scratch thread (`reactor::make_ring`) and then used by one I/O thread at a time.
+unsafe impl Send for Ring {}
+
 impl Ring {
     /// `io_uring_setup(entries)` with setup `flags` (`SETUP_*`), a CQ of `cq_entries` when
     /// `SETUP_CQSIZE` is set and an SQPOLL idle time of `sq_thread_idle` ms, then maps the rings.
