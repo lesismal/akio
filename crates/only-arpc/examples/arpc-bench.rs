@@ -1,11 +1,12 @@
 //! Loopback throughput of arpc calls: one process serves `/echo` and drives it from `conns`
 //! client connections, each keeping `depth` calls in flight, for `secs` seconds.
 //!
-//! `cargo run --release -p only-arpc --example arpc-bench -- [conns] [depth] [secs] [payload] [timeout_ms]`
-//! (defaults 8 64 5 64 0; `timeout_ms` 0 calls with `timeout: None`).
+//! `cargo run --release -p only-arpc --example arpc-bench -- [conns] [depth] [secs] [payload] [timeout_ms] [middleware]`
+//! (defaults 8 64 5 64 0 0; `timeout_ms` 0 calls with `timeout: None`; `middleware` wraps
+//! `/echo` in that many pass-through middleware).
 //!
-//! Uses only the API that predates the hardening, so the same file measures both sides of an
-//! A/B.
+//! Without `middleware` it uses only the API that predates the hardening, so the file of an
+//! older version measures the other side of an A/B.
 
 use std::{
     sync::{
@@ -55,10 +56,14 @@ fn main() -> std::io::Result<()> {
         0 => None,
         ms => Some(Duration::from_millis(ms)),
     };
-    let routes = Routes::new().handle("/echo", |ctx| {
+    let mut routes = Routes::new().handle("/echo", |ctx| {
         let b = ctx.body().to_vec();
         ctx.write(&b);
     });
+    let middleware = arg(6, 0);
+    for _ in 0..middleware {
+        routes = routes.middleware(|ctx, next| next.run(ctx));
+    }
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
     let e = Arc::new(
         Engine::builder()
@@ -101,7 +106,7 @@ fn main() -> std::io::Result<()> {
     let (c1, el) = (count(), t0.elapsed());
     stop.store(true, Ordering::Relaxed);
     println!(
-        "arpc conns={conns} depth={depth} payload={} timeout={timeout:?}: {:.0} calls/s",
+        "arpc conns={conns} depth={depth} payload={} timeout={timeout:?} middleware={middleware}: {:.0} calls/s",
         payload.len(),
         (c1 - c0) as f64 / el.as_secs_f64()
     );

@@ -47,6 +47,32 @@ Additive (ADR-019, docs/adr/019-socks-client-fragments-socks4-bind.md):
 - Interop (`tools/interop/socks/run.sh`, 15/15): our client against Dante and against
   only-socks, curl/PySocks/hand-written clients against the server (fragments, SOCKS4 BIND).
   New fuzz target `socks_client` (client handshake, tunnel transport, reassembly).
+### Added: arpc middleware, coders and client pools (only-arpc)
+
+Additive (ADR-023, docs/adr/023-arpc-middleware-coders-pools.md):
+
+- **Middleware**: `Routes::middleware` (every request and notify) and
+  `Routes::method_middleware(method, ..)` take `Fn(&mut Context, Next)`; `next.run(ctx)` runs the
+  rest of the chain (code after it runs after the handler), returning without it aborts. Fixed
+  order (global, then per method, then the handler) whatever the registration order. New
+  `Context::values` / `values_mut` / `responded`. Routes without middleware call the handler
+  directly.
+- **Coders** (`only_arpc::coder`): `Coder` trait over whole frames, `Routes::coder`, encode in
+  the order added and decode in reverse, as Go's `MessageCoder`. `Gzip::new(threshold)`
+  (reserved bit 7, inflation bounded by `max_body_bytes`) and `Appender::new(name, bit)` (bit 0
+  for tracing) are wire-compatible with `arpcex/extension/middleware/coder`. `Values` travel with
+  `Peer::call_with` / `call_async_with` / `notify_with` and answers are coded with the request's
+  values. Checked against fib's Go arpc both ways (`tools/interop/arpc/run.sh`); new fuzz target
+  `arpc_coders`.
+- **Pools**: `Pool::builder()` (`size`, `balance`: `Balance::RoundRobin` / `LeastPending`,
+  `heartbeat`, `reconnect_interval`, `connect_timeout`) `.dial(..)`; calls go to a connection that
+  is up, silent connections are closed and replaced by the heartbeat.
+- **Bounded pending calls**: `Routes::max_pending_calls` (default
+  `DEFAULT_MAX_PENDING_CALLS` = 65536 per connection); past it a call fails with the new
+  `CallError::Overloaded`. New `Peer::pending_calls`, `Peer::ping`.
+- Measured (gpu51, same-run A/B, medians of 10 rounds): calls without middleware 0.98x of
+  before and one middleware 1.00x of none, both within the ~4% noise; +1.5% user instructions
+  per call, cycles per call unchanged.
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 

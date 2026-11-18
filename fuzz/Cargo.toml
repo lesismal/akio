@@ -129,6 +129,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "arpc_coders"
+path = "fuzz_targets/arpc_coders.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "grpc_framing"
 path = "fuzz_targets/grpc_framing.rs"
 test = false

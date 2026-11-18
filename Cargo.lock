@@ -499,6 +499,7 @@ dependencies = [
  "only",
  "only-buf",
  "only-core",
+ "only-deflate",
 ]
 
 [[package]]

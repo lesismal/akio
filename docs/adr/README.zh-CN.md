@@ -20,3 +20,4 @@
 - [ADR-014：QUIC 会话票据与令牌绑定到 QUIC 版本](014-quic-version-bound-resumption.zh-CN.md)
 - [ADR-015：可插拔的指标收集器](015-metrics-collectors.zh-CN.md)（2026-11-16 采纳）
 - [ADR-019：SOCKS 客户端、HTTP/WebSocket 客户端的 SOCKS 代理、UDP 分片重组与 SOCKS4 BIND](019-socks-client-fragments-socks4-bind.zh-CN.md)（2026-11-17 采纳）
+- [ADR-023：arpc 中间件、coder 与客户端连接池](023-arpc-middleware-coders-pools.zh-CN.md)（2026-11-17 采纳）

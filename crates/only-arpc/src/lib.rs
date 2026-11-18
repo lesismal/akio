@@ -10,6 +10,11 @@
 //! Handlers run inline on the connection's I/O thread and must not block; [`Context::detach`]
 //! answers later from any thread.
 //!
+//! Middleware ([`Routes::middleware`], [`Routes::method_middleware`]) wraps the handlers of
+//! requests and notifies; [coders](coder) transform whole frames on the wire (gzip, appended
+//! [`Values`]) with the same reserved-header bits as Go arpc's; a [`Pool`] spreads calls over
+//! several connections.
+//!
 //! ```no_run
 //! # use std::sync::Arc; use only::{Engine, EngineRef, Listener}; use only_arpc::{Routes, Server};
 //! let routes = Routes::new().handle("/echo", |ctx| {
@@ -28,11 +33,16 @@
 //! (中文: [arpc](https://lesismal.github.io/only/zh-CN/protocols/arpc.html)).
 #![warn(clippy::unwrap_used)]
 
+pub mod coder;
 mod deadline;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+mod pool;
 pub mod proto;
+
+pub use coder::{Coder, Values};
+pub use pool::{Balance, Pool, PoolBuilder};
 
 use std::{
     collections::HashMap,
@@ -43,7 +53,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc, Condvar, Mutex, Weak,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     task::{Context as TaskContext, Poll, Waker},
     time::{Duration, Instant},
@@ -55,7 +65,7 @@ use only_core::ConnInner;
 
 use crate::{
     deadline::Timer,
-    proto::{Cmd, Decoder, Message, encode},
+    proto::{Cmd, Decoder, FrameError, Message, encode},
 };
 
 /// Error text of a call to a method the peer does not serve (the same as Go's).
@@ -67,6 +77,10 @@ pub const DEFAULT_MAX_STREAMS_PER_CONN: usize = 1024;
 
 /// Default timeout of calls made without one ([`Routes::call_timeout`]).
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default most calls waiting for their answer on one connection
+/// ([`Routes::max_pending_calls`]).
+pub const DEFAULT_MAX_PENDING_CALLS: usize = 65_536;
 
 /// The hash of the route tables: they are built once and peers only look names up in them
 /// (they cannot insert), so a fast unkeyed hash is safe here and cheaper than SipHash.
@@ -109,6 +123,7 @@ impl Hasher for RouteHasher {
 type RouteMap<V> = HashMap<String, V, BuildHasherDefault<RouteHasher>>;
 
 type HandlerFn = Arc<dyn Fn(&mut Context) + Send + Sync>;
+type MiddlewareFn = Arc<dyn Fn(&mut Context, Next<'_>) + Send + Sync>;
 type StreamFn =
     Arc<dyn Fn(&Stream) -> Box<dyn FnMut(&Stream, StreamEvent<'_>) + Send> + Send + Sync>;
 type PeerFn = Arc<dyn Fn(&Peer) + Send + Sync>;
@@ -131,14 +146,28 @@ impl Streams {
     }
 }
 
-/// Methods served to the peer, connection hooks and limits.
+/// A method's own middleware and handler (`None`: served by the fallback).
+#[derive(Default)]
+struct Route {
+    middleware: Vec<MiddlewareFn>,
+    handler: Option<HandlerFn>,
+}
+
+/// Methods served to the peer, their middleware, coders, connection hooks and limits.
+///
+/// Built once and shared ([`Arc`]) by every connection that uses it, on servers and clients
+/// alike: a client's routes serve the calls and notifies its server sends it, and their
+/// coders and middleware apply there too.
 pub struct Routes {
-    handlers: RouteMap<HandlerFn>,
+    handlers: RouteMap<Route>,
     streams: RouteMap<StreamFn>,
+    middleware: Vec<MiddlewareFn>,
+    coders: Vec<Arc<dyn Coder>>,
     on_connected: Option<PeerFn>,
     on_disconnected: Option<PeerFn>,
     max_body: Option<usize>,
     max_streams: usize,
+    max_pending: usize,
     call_timeout: Option<Duration>,
 }
 
@@ -147,10 +176,13 @@ impl Default for Routes {
         Routes {
             handlers: RouteMap::default(),
             streams: RouteMap::default(),
+            middleware: Vec::new(),
+            coders: Vec::new(),
             on_connected: None,
             on_disconnected: None,
             max_body: None,
             max_streams: DEFAULT_MAX_STREAMS_PER_CONN,
+            max_pending: DEFAULT_MAX_PENDING_CALLS,
             call_timeout: Some(DEFAULT_CALL_TIMEOUT),
         }
     }
@@ -176,7 +208,63 @@ impl Routes {
         method: &str,
         f: impl Fn(&mut Context) + Send + Sync + 'static,
     ) -> Routes {
-        self.handlers.insert(method.to_owned(), Arc::new(f));
+        self.handlers.entry(method.to_owned()).or_default().handler = Some(Arc::new(f));
+        self
+    }
+
+    /// Adds middleware that wraps the handler of every request and notify (those of unknown
+    /// methods too), in the order added and before any method's own
+    /// ([`method_middleware`](Self::method_middleware)), whenever the methods are registered.
+    ///
+    /// Middleware runs the rest of the chain with [`Next::run`]: what it does before is
+    /// "before the handler", what it does after is "after" (the answer, if any, has been
+    /// sent by then; [`Context::responded`] tells). Returning without calling it aborts the
+    /// chain: answer with [`Context::error`] first, or the caller gets no answer and times
+    /// out. Middleware runs on the I/O thread like handlers and must not block. Streams have
+    /// no middleware (as in Go).
+    ///
+    /// ```
+    /// # use only_arpc::Routes;
+    /// let routes = Routes::new()
+    ///     .middleware(|ctx, next| {
+    ///         if ctx.values().get("token").is_none() && ctx.method() != "/login" {
+    ///             return ctx.error("unauthorized"); // abort
+    ///         }
+    ///         next.run(ctx);
+    ///     })
+    ///     .handle("/login", |ctx| ctx.write(b"ok"));
+    /// ```
+    #[must_use]
+    pub fn middleware(
+        mut self,
+        f: impl Fn(&mut Context, Next<'_>) + Send + Sync + 'static,
+    ) -> Routes {
+        self.middleware.push(Arc::new(f));
+        self
+    }
+
+    /// Adds middleware for `method` alone, after the global middleware and before its handler
+    /// (or the fallback, if `method` has no handler of its own).
+    #[must_use]
+    pub fn method_middleware(
+        mut self,
+        method: &str,
+        f: impl Fn(&mut Context, Next<'_>) + Send + Sync + 'static,
+    ) -> Routes {
+        self.handlers
+            .entry(method.to_owned())
+            .or_default()
+            .middleware
+            .push(Arc::new(f));
+        self
+    }
+
+    /// Adds a [`Coder`]: frames sent are encoded by the coders in the order added, frames
+    /// received decoded in the opposite order. Both ends need the same chain (as with Go's
+    /// `Handler.UseCoder`); a peer without it cannot read coded frames.
+    #[must_use]
+    pub fn coder(mut self, c: impl Coder) -> Routes {
+        self.coders.push(Arc::new(c));
         self
     }
 
@@ -227,6 +315,15 @@ impl Routes {
         self
     }
 
+    /// Most calls one connection may have waiting for their answer (default
+    /// [`DEFAULT_MAX_PENDING_CALLS`], 65536). A call made past it fails at once with
+    /// [`CallError::Overloaded`] and is not sent.
+    #[must_use]
+    pub fn max_pending_calls(mut self, n: usize) -> Routes {
+        self.max_pending = n;
+        self
+    }
+
     /// Timeout of calls on connections using these routes that are made without one
     /// ([`Peer::call`] / [`Peer::call_async`] with `None`). Default
     /// [`DEFAULT_CALL_TIMEOUT`] (30 s), so a peer that never answers cannot grow the table of
@@ -248,6 +345,9 @@ pub enum CallError {
     Closed,
     /// No answer in time.
     Timeout,
+    /// Too many calls already wait for their answer on the connection
+    /// ([`Routes::max_pending_calls`]); this one was not sent.
+    Overloaded,
 }
 
 impl std::fmt::Display for CallError {
@@ -256,6 +356,7 @@ impl std::fmt::Display for CallError {
             CallError::Remote(s) => write!(f, "{s}"),
             CallError::Closed => f.write_str("connection closed"),
             CallError::Timeout => f.write_str("timeout"),
+            CallError::Overloaded => f.write_str("too many pending calls"),
         }
     }
 }
@@ -290,10 +391,79 @@ struct PeerInner {
     seq: AtomicU64,
     /// Calls waiting for their answer, with their timeout.
     pending: Mutex<HashMap<u64, (CallCb, Option<Timer>)>>,
+    /// The length of `pending`, stored under its lock (read without it by pools).
+    pending_len: AtomicUsize,
     streams: Mutex<Streams>,
     /// For clients: how to reconnect.
-    redial: Option<(EngineRef, SocketAddr)>,
-    stopped: std::sync::atomic::AtomicBool,
+    redial: Option<Redial>,
+    stopped: AtomicBool,
+    /// Whether a connection is attached (read without the lock by pools).
+    connected: AtomicBool,
+    /// Ping interval of a client with a heartbeat.
+    heartbeat: Option<Duration>,
+    /// When the connection last received anything, in [`now_ms`] (heartbeat only).
+    last_rx: AtomicU64,
+    /// When the heartbeat last sent a ping, in [`now_ms`] (0: none since connecting).
+    last_ping: AtomicU64,
+}
+
+/// How a client reconnects.
+#[derive(Clone)]
+struct Redial {
+    engine: EngineRef,
+    addr: SocketAddr,
+    interval: Duration,
+}
+
+impl PeerInner {
+    fn new(
+        routes: Arc<Routes>,
+        conn: Option<Arc<ConnInner>>,
+        redial: Option<Redial>,
+        heartbeat: Option<Duration>,
+    ) -> PeerInner {
+        PeerInner {
+            connected: AtomicBool::new(conn.is_some()),
+            conn: Mutex::new(conn),
+            routes,
+            seq: AtomicU64::new(0),
+            pending: Mutex::new(HashMap::new()),
+            pending_len: AtomicUsize::new(0),
+            streams: Mutex::new(Streams::default()),
+            redial,
+            stopped: AtomicBool::new(false),
+            heartbeat,
+            last_rx: AtomicU64::new(now_ms()),
+            last_ping: AtomicU64::new(0),
+        }
+    }
+
+    /// Encodes a message and runs the coders over it.
+    #[inline]
+    #[allow(clippy::too_many_arguments)]
+    fn frame(
+        &self,
+        cmd: Cmd,
+        flags: u8,
+        local: bool,
+        eof: bool,
+        method: &str,
+        seq: u64,
+        payload: &[u8],
+        values: &Values,
+    ) -> Vec<u8> {
+        let mut f = encode(cmd, flags, local, eof, method, seq, payload);
+        if !self.routes.coders.is_empty() {
+            coder::encode_frame(&self.routes.coders, &mut f, values);
+        }
+        f
+    }
+}
+
+/// Milliseconds since the first call in this process.
+fn now_ms() -> u64 {
+    static BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
 /// One end of an arpc connection: call, notify and stream to the peer. Cheap to clone.
@@ -341,13 +511,33 @@ impl Peer {
         timeout: Option<Duration>,
         done: impl FnOnce(CallResult) + Send + 'static,
     ) {
+        self.call_async_with(method, payload, timeout, &Values::new(), done);
+    }
+
+    /// [`call_async`](Self::call_async) with values for the coders (an [`Appender`](
+    /// coder::Appender) sends them to the peer's middleware and handler).
+    pub fn call_async_with(
+        &self,
+        method: &str,
+        payload: &[u8],
+        timeout: Option<Duration>,
+        values: &Values,
+        done: impl FnOnce(CallResult) + Send + 'static,
+    ) {
         let seq = self.0.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let frame = encode(Cmd::Request, 0, false, false, method, seq, payload);
+        let frame = self
+            .0
+            .frame(Cmd::Request, 0, false, false, method, seq, payload, values);
         let deadline = timeout
             .or(self.0.routes.call_timeout)
             .and_then(|t| Instant::now().checked_add(t));
         {
             let mut pending = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
+            if pending.len() >= self.0.routes.max_pending {
+                drop(pending);
+                done(Err(CallError::Overloaded));
+                return;
+            }
             // Armed under the lock: a timer that fires at once waits for the entry.
             let timer = deadline.map(|at| {
                 let me = Arc::downgrade(&self.0);
@@ -358,6 +548,7 @@ impl Peer {
                 })
             });
             pending.insert(seq, (Box::new(done), timer));
+            self.0.pending_len.store(pending.len(), Ordering::Relaxed);
         }
         if !self.send(frame) {
             self.complete(seq, Err(CallError::Closed));
@@ -373,10 +564,42 @@ impl Peer {
         CallFuture(shared)
     }
 
+    /// [`call`](Self::call) with values for the coders.
+    pub fn call_with(
+        &self,
+        method: &str,
+        payload: &[u8],
+        timeout: Option<Duration>,
+        values: &Values,
+    ) -> CallFuture {
+        let shared = Arc::new(Shared::default());
+        let s = shared.clone();
+        self.call_async_with(method, payload, timeout, values, move |r| s.done(r));
+        CallFuture(shared)
+    }
+
     /// Sends a one-way notify. `false` if the connection is down.
     pub fn notify(&self, method: &str, payload: &[u8]) -> bool {
+        self.notify_with(method, payload, &Values::new())
+    }
+
+    /// [`notify`](Self::notify) with values for the coders.
+    pub fn notify_with(&self, method: &str, payload: &[u8], values: &Values) -> bool {
         let seq = self.0.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        self.send(encode(Cmd::Notify, 0, false, false, method, seq, payload))
+        self.send(
+            self.0
+                .frame(Cmd::Notify, 0, false, false, method, seq, payload, values),
+        )
+    }
+
+    /// Calls waiting for their answer on this connection.
+    pub fn pending_calls(&self) -> usize {
+        self.0.pending_len.load(Ordering::Relaxed)
+    }
+
+    /// Sends a ping (answered with a pong, which only refreshes the heartbeat).
+    pub fn ping(&self) -> bool {
+        self.send(proto::ping())
     }
 
     /// Opens a stream for `method`; `on_event` receives the peer's messages and end.
@@ -415,12 +638,12 @@ impl Peer {
     }
 
     fn complete(&self, seq: u64, r: CallResult) {
-        let entry = self
-            .0
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&seq);
+        let entry = {
+            let mut g = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
+            let e = g.remove(&seq);
+            self.0.pending_len.store(g.len(), Ordering::Relaxed);
+            e
+        };
         if let Some((cb, timer)) = entry {
             if let Some(t) = timer {
                 t.cancel();
@@ -429,25 +652,12 @@ impl Peer {
         }
     }
 
-    /// Calls waiting for an answer.
-    #[cfg(test)]
-    fn pending_calls(&self) -> usize {
-        self.0
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .len()
-    }
-
     fn fail_all(&self) {
-        let pending: Vec<_> = self
-            .0
-            .pending
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .drain()
-            .map(|(_, c)| c)
-            .collect();
+        let pending: Vec<_> = {
+            let mut g = self.0.pending.lock().unwrap_or_else(|p| p.into_inner());
+            self.0.pending_len.store(0, Ordering::Relaxed);
+            g.drain().map(|(_, c)| c).collect()
+        };
         for (cb, timer) in pending {
             if let Some(t) = timer {
                 t.cancel();
@@ -471,7 +681,7 @@ impl Peer {
     }
 
     /// Dispatches one message received on `conn`.
-    fn on_message(&self, conn: &Arc<ConnInner>, m: Message) {
+    fn on_message(&self, conn: &Arc<ConnInner>, m: Message, values: Values) {
         match m.cmd {
             Cmd::Ping => {
                 let _ = conn.send_owned(proto::pong());
@@ -479,19 +689,31 @@ impl Peer {
             Cmd::Pong => {}
             Cmd::Request | Cmd::Notify => {
                 let routes = &self.0.routes;
-                let h = routes
-                    .handlers
-                    .get(m.method.as_str())
-                    .or_else(|| routes.handlers.get(""));
+                let route = routes.handlers.get(m.method.as_str());
+                let handler = match route.and_then(|r| r.handler.as_ref()) {
+                    Some(h) => Some(h),
+                    None => routes.handlers.get("").and_then(|r| r.handler.as_ref()),
+                };
+                let local = route.map_or(&[][..], |r| r.middleware.as_slice());
                 let mut ctx = Context {
                     peer: self.clone(),
                     conn: conn.clone(),
                     msg: m,
                     responded: false,
+                    values,
                 };
-                match h {
-                    Some(h) => h(&mut ctx),
-                    None => ctx.error(METHOD_NOT_FOUND),
+                if routes.middleware.is_empty() && local.is_empty() {
+                    match handler {
+                        Some(h) => h(&mut ctx),
+                        None => ctx.error(METHOD_NOT_FOUND),
+                    }
+                } else {
+                    Next {
+                        global: &routes.middleware,
+                        local,
+                        handler,
+                    }
+                    .run(&mut ctx);
                 }
             }
             Cmd::Response => {
@@ -544,7 +766,7 @@ impl Peer {
                     if !ours {
                         // Not served, or too many open: end the opener's receiving half so it
                         // does not wait for good.
-                        self.send(encode(
+                        self.send(self.0.frame(
                             Cmd::Stream,
                             0,
                             false,
@@ -552,6 +774,7 @@ impl Peer {
                             &stream.method,
                             seq,
                             &[],
+                            &Values::new(),
                         ));
                     }
                     return;
@@ -614,7 +837,7 @@ impl Stream {
 
     /// Sends a message.
     pub fn send(&self, payload: &[u8]) -> bool {
-        self.peer.send(encode(
+        self.peer.send(self.peer.0.frame(
             Cmd::Stream,
             0,
             self.local,
@@ -622,12 +845,13 @@ impl Stream {
             &self.method,
             self.id,
             payload,
+            &Values::new(),
         ))
     }
 
     /// Closes the sending half (the peer gets its end).
     pub fn close_send(&self) -> bool {
-        self.peer.send(encode(
+        self.peer.send(self.peer.0.frame(
             Cmd::Stream,
             0,
             self.local,
@@ -635,6 +859,7 @@ impl Stream {
             &self.method,
             self.id,
             &[],
+            &Values::new(),
         ))
     }
 
@@ -653,6 +878,7 @@ pub struct Context {
     conn: Arc<ConnInner>,
     msg: Message,
     responded: bool,
+    values: Values,
 }
 
 impl Context {
@@ -676,6 +902,23 @@ impl Context {
         &self.peer
     }
 
+    /// The message's values: those the coders decoded (such as an [`Appender`](
+    /// coder::Appender)'s) and those middleware set. The answer is encoded with them, so an
+    /// appender echoes them back, as in Go.
+    pub fn values(&self) -> &Values {
+        &self.values
+    }
+
+    /// The message's values, to set some for later middleware, the handler or the answer.
+    pub fn values_mut(&mut self) -> &mut Values {
+        &mut self.values
+    }
+
+    /// Whether the request has been answered (or detached), or is a notify.
+    pub fn responded(&self) -> bool {
+        self.responded || self.msg.cmd != Cmd::Request
+    }
+
     /// Answers with `payload` (ignored for notifies and after the first answer).
     pub fn write(&mut self, payload: &[u8]) {
         self.answer(payload, false);
@@ -691,23 +934,15 @@ impl Context {
             return;
         }
         self.responded = true;
-        let flags = if self.msg.async_flag {
-            proto::FLAG_ASYNC
-        } else {
-            0
-        };
-        let mut frame = encode(
-            Cmd::Response,
-            flags,
-            false,
-            false,
+        let frame = response(
+            &self.peer,
             &self.msg.method,
             self.msg.seq,
+            self.msg.async_flag,
             payload,
+            err,
+            &self.values,
         );
-        if err {
-            frame[proto::IDX_FLAG] |= proto::FLAG_ERROR;
-        }
         let _ = self.conn.send_owned(frame);
     }
 
@@ -719,9 +954,80 @@ impl Context {
             seq: self.msg.seq,
             async_flag: self.msg.async_flag,
             request: self.msg.cmd == Cmd::Request && !self.responded,
+            values: self.values.clone(),
         };
         self.responded = true;
         r
+    }
+}
+
+/// A response frame, coded with `values`.
+fn response(
+    peer: &Peer,
+    method: &str,
+    seq: u64,
+    async_flag: bool,
+    payload: &[u8],
+    err: bool,
+    values: &Values,
+) -> Vec<u8> {
+    let mut flags = if async_flag { proto::FLAG_ASYNC } else { 0 };
+    if err {
+        flags |= proto::FLAG_ERROR;
+    }
+    peer.0.frame(
+        Cmd::Response,
+        flags,
+        false,
+        false,
+        method,
+        seq,
+        payload,
+        values,
+    )
+}
+
+/// The rest of a middleware chain; see [`Routes::middleware`].
+pub struct Next<'a> {
+    global: &'a [MiddlewareFn],
+    local: &'a [MiddlewareFn],
+    handler: Option<&'a HandlerFn>,
+}
+
+impl std::fmt::Debug for Next<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Next")
+            .field("remaining", &(self.global.len() + self.local.len()))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Next<'_> {
+    /// Runs the rest of the chain: the next middleware, or the handler (the
+    /// [`METHOD_NOT_FOUND`] error when the method has none).
+    pub fn run(self, ctx: &mut Context) {
+        if let Some((f, rest)) = self.global.split_first() {
+            f(
+                ctx,
+                Next {
+                    global: rest,
+                    ..self
+                },
+            );
+        } else if let Some((f, rest)) = self.local.split_first() {
+            f(
+                ctx,
+                Next {
+                    local: rest,
+                    ..self
+                },
+            );
+        } else {
+            match self.handler {
+                Some(h) => h(ctx),
+                None => ctx.error(METHOD_NOT_FOUND),
+            }
+        }
     }
 }
 
@@ -733,6 +1039,7 @@ pub struct Responder {
     seq: u64,
     async_flag: bool,
     request: bool,
+    values: Values,
 }
 
 impl Responder {
@@ -750,23 +1057,15 @@ impl Responder {
         if !self.request {
             return;
         }
-        let flags = if self.async_flag {
-            proto::FLAG_ASYNC
-        } else {
-            0
-        };
-        let mut frame = encode(
-            Cmd::Response,
-            flags,
-            false,
-            false,
+        let frame = response(
+            &self.peer,
             &self.method,
             self.seq,
+            self.async_flag,
             payload,
+            err,
+            &self.values,
         );
-        if err {
-            frame[proto::IDX_FLAG] |= proto::FLAG_ERROR;
-        }
         self.peer.send(frame);
     }
 }
@@ -835,38 +1134,68 @@ pub struct ArpcConn {
     dec: Decoder,
 }
 
+/// Decodes what a connection read and dispatches each message; an error closes it.
+fn feed(
+    peer: &Peer,
+    dec: &mut Decoder,
+    conn: &Arc<ConnInner>,
+    data: &[u8],
+) -> Result<(), FrameError> {
+    if peer.0.heartbeat.is_some() {
+        peer.0.last_rx.store(now_ms(), Ordering::Relaxed);
+    }
+    let routes = &peer.0.routes;
+    if routes.coders.is_empty() {
+        return dec.feed_with(data, |m| peer.on_message(conn, m, Values::new()));
+    }
+    let max = dec.max_body();
+    dec.feed_frames(data, |frame| {
+        let mut values = Values::new();
+        if proto::is_heartbeat(frame) {
+            return proto::decode_frame(frame, &mut |m| {
+                peer.on_message(conn, m, std::mem::take(&mut values));
+            });
+        }
+        let mut buf = frame.to_vec();
+        coder::decode_frame(&routes.coders, &mut buf, &mut values, max)
+            .map_err(|e| FrameError(e.0))?;
+        proto::decode_frame(&buf, &mut |m| {
+            peer.on_message(conn, m, std::mem::take(&mut values));
+        })
+    })
+}
+
+/// Detaches a closed connection from its peer and fails what waited on it.
+fn detach(peer: &Peer) {
+    peer.0.connected.store(false, Ordering::Release);
+    *peer.0.conn.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    peer.fail_all();
+    if let Some(f) = &peer.0.routes.on_disconnected {
+        f(peer);
+    }
+}
+
 impl Handler for ArpcConn {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        let (peer, conn) = (&self.peer, c.inner());
-        if self
-            .dec
-            .feed_with(data, |m| peer.on_message(conn, m))
-            .is_err()
-        {
+        if feed(&self.peer, &mut self.dec, c.inner(), data).is_err() {
             c.close();
         }
     }
 
     fn on_close(&mut self, _c: &Conn<Self>, _err: Option<only::Error>) {
-        *self.peer.0.conn.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        self.peer.fail_all();
-        if let Some(f) = &self.peer.0.routes.on_disconnected {
-            f(&self.peer);
-        }
+        detach(&self.peer);
         // Clients reconnect on their own.
-        if let Some((engine, addr)) = self.peer.0.redial.clone() {
+        if let Some(r) = self.peer.0.redial.clone() {
             if !self.peer.0.stopped.load(Ordering::Acquire) {
                 let weak = Arc::downgrade(&self.peer.0);
-                Timer::at(Instant::now() + Duration::from_secs(1), move || {
-                    redial(weak, engine, addr);
-                });
+                Timer::at(Instant::now() + r.interval, move || redial(weak, r));
             }
         }
     }
 }
 
-fn redial(weak: Weak<PeerInner>, engine: EngineRef, addr: SocketAddr) {
-    let (Some(inner), Some(e)) = (weak.upgrade(), engine.get()) else {
+fn redial(weak: Weak<PeerInner>, r: Redial) {
+    let (Some(inner), Some(e)) = (weak.upgrade(), r.engine.get()) else {
         return;
     };
     if inner.stopped.load(Ordering::Acquire) {
@@ -874,7 +1203,7 @@ fn redial(weak: Weak<PeerInner>, engine: EngineRef, addr: SocketAddr) {
     }
     let peer = Peer(inner);
     let w2 = Arc::downgrade(&peer.0);
-    let e2 = engine;
+    let addr = r.addr;
     e.dial(
         addr,
         Attach {
@@ -882,9 +1211,7 @@ fn redial(weak: Weak<PeerInner>, engine: EngineRef, addr: SocketAddr) {
             ready: Mutex::new(None),
         },
         move |_err| {
-            Timer::at(Instant::now() + Duration::from_secs(1), move || {
-                redial(w2, e2, addr);
-            });
+            Timer::at(Instant::now() + r.interval, move || redial(w2, r));
         },
     );
 }
@@ -899,6 +1226,9 @@ impl Acceptor for Attach {
     type Handler = ArpcConn;
     fn on_open(&self, c: &Conn<ArpcConn>) -> ArpcConn {
         *self.peer.0.conn.lock().unwrap_or_else(|p| p.into_inner()) = Some(c.inner().clone());
+        self.peer.0.last_rx.store(now_ms(), Ordering::Relaxed);
+        self.peer.0.last_ping.store(0, Ordering::Relaxed);
+        self.peer.0.connected.store(true, Ordering::Release);
         if let Some(f) = &self.peer.0.routes.on_connected {
             f(&self.peer);
         }
@@ -926,17 +1256,32 @@ pub fn dial_blocking(
     addr: SocketAddr,
     routes: Arc<Routes>,
 ) -> io::Result<Peer> {
+    start_dial(engine, addr, routes, Duration::from_secs(1), None)
+        .recv_timeout(Duration::from_secs(10))
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "arpc dial timed out"))?
+}
+
+/// Starts dialing a client peer; the receiver gets it once connected, or the dial error.
+fn start_dial(
+    engine: &Arc<Engine>,
+    addr: SocketAddr,
+    routes: Arc<Routes>,
+    reconnect: Duration,
+    heartbeat: Option<Duration>,
+) -> std::sync::mpsc::Receiver<io::Result<Peer>> {
     let er = EngineRef::new();
     er.set(engine);
-    let peer = Peer(Arc::new(PeerInner {
-        conn: Mutex::new(None),
+    let redial = Redial {
+        engine: er,
+        addr,
+        interval: reconnect,
+    };
+    let peer = Peer(Arc::new(PeerInner::new(
         routes,
-        seq: AtomicU64::new(0),
-        pending: Mutex::new(HashMap::new()),
-        streams: Mutex::new(Streams::default()),
-        redial: Some((er, addr)),
-        stopped: std::sync::atomic::AtomicBool::new(false),
-    }));
+        None,
+        Some(redial),
+        heartbeat,
+    )));
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
     engine.dial(
@@ -951,8 +1296,7 @@ pub fn dial_blocking(
             let _ = tx2.send(Err(e));
         },
     );
-    rx.recv_timeout(Duration::from_secs(10))
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "arpc dial timed out"))?
+    rx
 }
 
 /// An arpc server: serve it on a listener. Every accepted connection is a [`Peer`].
@@ -973,7 +1317,11 @@ impl Server {
 
     /// Sends a notify to every connected client. The frame is encoded once and shared.
     pub fn broadcast(&self, method: &str, payload: &[u8]) {
-        let frame = SharedBuf::from(encode(Cmd::Notify, 0, false, false, method, 0, payload));
+        let mut frame = encode(Cmd::Notify, 0, false, false, method, 0, payload);
+        if !self.routes.coders.is_empty() {
+            coder::encode_frame(&self.routes.coders, &mut frame, &Values::new());
+        }
+        let frame = SharedBuf::from(frame);
         for p in self
             .peers
             .lock()
@@ -1007,13 +1355,7 @@ pub struct ServerConn {
 
 impl Handler for ServerConn {
     fn on_data(&mut self, c: &Conn<Self>, data: &[u8]) {
-        let (peer, conn) = (&self.conn.peer, c.inner());
-        if self
-            .conn
-            .dec
-            .feed_with(data, |m| peer.on_message(conn, m))
-            .is_err()
-        {
+        if feed(&self.conn.peer, &mut self.conn.dec, c.inner(), data).is_err() {
             c.close();
         }
     }
@@ -1023,32 +1365,19 @@ impl Handler for ServerConn {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&self.id);
-        *self
-            .conn
-            .peer
-            .0
-            .conn
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = None;
-        self.conn.peer.fail_all();
-        if let Some(f) = &self.conn.peer.0.routes.on_disconnected {
-            f(&self.conn.peer);
-        }
+        detach(&self.conn.peer);
     }
 }
 
 impl Acceptor for Server {
     type Handler = ServerConn;
     fn on_open(&self, c: &Conn<ServerConn>) -> ServerConn {
-        let peer = Peer(Arc::new(PeerInner {
-            conn: Mutex::new(Some(c.inner().clone())),
-            routes: self.routes.clone(),
-            seq: AtomicU64::new(0),
-            pending: Mutex::new(HashMap::new()),
-            streams: Mutex::new(Streams::default()),
-            redial: None,
-            stopped: std::sync::atomic::AtomicBool::new(false),
-        }));
+        let peer = Peer(Arc::new(PeerInner::new(
+            self.routes.clone(),
+            Some(c.inner().clone()),
+            None,
+            None,
+        )));
         self.peers
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -1220,7 +1549,7 @@ mod tests {
             .handle("/abcdefgh", |_| {})
             .handle("/abcdefgh1", |_| {});
         for k in ["/a", "/abcdefgh", "/abcdefgh1"] {
-            assert!(r.handlers.contains_key(k), "{k}");
+            assert!(r.handlers[k].handler.is_some(), "{k}");
         }
         assert!(!r.handlers.contains_key("/abcdefgh2"));
         assert!(!r.handlers.contains_key(""));

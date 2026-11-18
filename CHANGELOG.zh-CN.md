@@ -38,6 +38,28 @@ only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表
 - 互通（`tools/interop/socks/run.sh`，15/15）：我们的客户端对 Dante 和 only-socks，curl/PySocks/
   手写客户端对服务端（分片、SOCKS4 BIND）。新增模糊测试目标 `socks_client`（客户端握手、隧道
   transport、重组）。
+### 新增：arpc 中间件、coder 与客户端连接池（only-arpc）
+
+均为新增（ADR-023，docs/adr/023-arpc-middleware-coders-pools.zh-CN.md）：
+
+- **中间件**：`Routes::middleware`（所有请求和通知）与 `Routes::method_middleware(method, ..)`
+  接受 `Fn(&mut Context, Next)`；`next.run(ctx)` 执行调用链的其余部分（其后的代码在 handler 之后
+  执行），不调用它直接返回即中止。顺序固定（全局、方法、handler），与注册先后无关。新增
+  `Context::values` / `values_mut` / `responded`。没有中间件的路由直接调用 handler。
+- **Coder**（`only_arpc::coder`）：作用于整帧的 `Coder` trait，`Routes::coder`，按添加顺序编码、
+  逆序解码，与 Go 的 `MessageCoder` 相同。`Gzip::new(threshold)`（保留位第 7 位，解压量受
+  `max_body_bytes` 限制）与 `Appender::new(name, bit)`（tracing 用第 0 位）与
+  `arpcex/extension/middleware/coder` 线路兼容。`Values` 通过 `Peer::call_with` /
+  `call_async_with` / `notify_with` 携带，应答用请求的值编码。已与 fib 的 Go arpc 双向验证
+  （`tools/interop/arpc/run.sh`）；新增模糊测试目标 `arpc_coders`。
+- **连接池**：`Pool::builder()`（`size`、`balance`：`Balance::RoundRobin` / `LeastPending`、
+  `heartbeat`、`reconnect_interval`、`connect_timeout`）`.dial(..)`；调用发往在线的连接，心跳会
+  关闭并替换沉默的连接。
+- **等待应答的调用有上限**：`Routes::max_pending_calls`（默认每连接
+  `DEFAULT_MAX_PENDING_CALLS` = 65536）；超出时调用以新增的 `CallError::Overloaded` 失败。新增
+  `Peer::pending_calls`、`Peer::ping`。
+- 实测（gpu51，同轮 A/B，10 轮中位数）：无中间件的调用为之前的 0.98 倍，一个中间件为无中间件的
+  1.00 倍，均在约 4% 的噪声内；每次调用的用户态指令 +1.5%，周期数不变。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
