@@ -1701,7 +1701,7 @@ impl Loop {
         let old_bgid = old.bgid;
         self.old_bufs = Some(old);
         let mut cancels = Vec::new();
-        for (&id, slot) in self.slots.iter_mut() {
+        for (&id, slot) in &mut self.slots {
             if let Slot::Conn(lc) = slot {
                 if lc.recv_armed && !lc.cancel_sent && lc.recv_bgid == old_bgid {
                     lc.cancel_sent = true;

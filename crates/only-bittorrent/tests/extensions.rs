@@ -102,7 +102,7 @@ fn v2_and_hybrid_torrents_by_metainfo() {
         let (s, _) = seed(&mi, &payload, cfg());
         let c = Client::new(cfg()).unwrap();
         let (o, store) = leech_opts(&mi, vec![s.listen_addr()]);
-        let t = c.add_torrent(mi.clone(), o).unwrap();
+        let t = c.add_torrent(mi, o).unwrap();
         assert!(
             t.wait_complete(Duration::from_secs(30)),
             "{v:?} {:?}",
@@ -205,7 +205,7 @@ fn web_seed_alone() {
         let payload = piece_space(&mi.info, &f);
         let c = Client::new(cfg()).unwrap();
         let (o, store) = leech_opts(&mi, Vec::new());
-        let t = c.add_torrent(mi.clone(), o).unwrap();
+        let t = c.add_torrent(mi, o).unwrap();
         assert!(
             t.wait_complete(Duration::from_secs(30)),
             "{v:?} {:?}",
