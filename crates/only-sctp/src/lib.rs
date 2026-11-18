@@ -17,13 +17,20 @@
 //!   collisions (both sides calling [`Association::connect`]) converge on one association
 //!   because each side uses a single verification tag; duplicate COOKIE ECHOs are
 //!   acknowledged. Supported Extensions advertise RE-CONFIG, FORWARD TSN and (with
-//!   [`Config::message_interleaving`]) I-DATA and I-FORWARD-TSN; no AUTH or ASCONF.
+//!   [`Config::message_interleaving`]) I-DATA and I-FORWARD-TSN; no AUTH or ASCONF. A peer
+//!   that restarts (§5.2.2, §5.2.4 case A: a new INIT and COOKIE ECHO with matching Tie-Tags)
+//!   gets a fresh association: our channels close and [`Event::Restarted`] follows.
+//! - Zero checksum (RFC 9653, [`Config::zero_checksum`]): "SCTP over DTLS" announced in INIT /
+//!   INIT ACK, zero checksums accepted, and sent once the peer announced it too.
 //! - Data transfer (§6-7): DATA fragmentation to the MTU and reassembly, ordered delivery per
 //!   stream SSN and unordered delivery, SACK with gap blocks and duplicate TSNs (delayed:
 //!   every second packet or 200 ms; immediate on gaps and duplicates), slow start /
 //!   congestion avoidance, the peer's receiver window, T3-rtx with RTO from SRTT / RTTVAR,
 //!   fast retransmit on three miss indications and fast recovery; association failure after
 //!   `max_retransmissions` consecutive timeouts.
+//! - HEARTBEAT (§8.3, [`Config::heartbeat_interval`]): sent on an idle association, measuring
+//!   the RTT ([`Association::rtt`]); unanswered ones count as errors towards the same limit, so
+//!   an idle association also notices a vanished peer.
 //! - Message interleaving (RFC 8260 §2): when both sides offer I-DATA, messages travel in
 //!   I-DATA chunks (32-bit message identifiers, fragment sequence numbers) and fragments of
 //!   messages on different streams interleave, so a large message no longer blocks small
@@ -36,18 +43,17 @@
 //!   stream / MID entries under I-DATA), both directions. Only used when the peer offers it;
 //!   otherwise such channels are reliable.
 //! - Stream reset (RFC 6525): Outgoing SSN Reset Requests and Re-configuration Responses
-//!   ("performed", "in progress" with retry). Add-streams requests are accepted; incoming and
-//!   SSN/TSN reset requests are denied.
-//! - HEARTBEAT is answered; ABORT, graceful SHUTDOWN in both roles (§9).
+//!   ("performed", "in progress" with retry). Add-streams requests are accepted; an Incoming
+//!   SSN Reset Request is answered with our Outgoing one; an SSN/TSN Reset Request is
+//!   performed once none of our data is in flight.
+//! - ABORT, graceful SHUTDOWN in both roles (§9).
 //! - Data channels (RFC 8831 / 8832): DCEP DATA_CHANNEL_OPEN / ACK, all channel types,
 //!   negotiated channels, PPIDs 51 / 53 and the empty-message PPIDs 56 / 57, deprecated
 //!   partial PPIDs 52 / 54 accepted, stream id parity from the DTLS role, closing by stream
 //!   reset in both directions, per-channel buffered amount with a low-water event.
 //!
-//! Not implemented: multi-homing and path management,
-//! sending HEARTBEATs, peer restart (an INIT with a new tag on a live association is
-//! ignored), AUTH (RFC 4895), ASCONF, ECN, zero checksum (RFC 9653), incoming SSN reset and
-//! SSN/TSN reset requests.
+//! Not implemented (WebRTC uses none of them): multi-homing, AUTH (RFC 4895), ASCONF, ECN;
+//! sending Incoming or SSN/TSN Reset Requests.
 //!
 //! ```
 //! use std::time::Instant;
@@ -141,6 +147,18 @@ pub struct Config {
     /// How streams with queued messages share the association (RFC 8260 §3; default
     /// [`Scheduler::WeightedFairQueueing`] by channel priority).
     pub scheduler: Scheduler,
+    /// HB.interval (RFC 9260 §8.3, default 30 s): an idle association sends a HEARTBEAT
+    /// after this plus the RTO without data in flight, which measures the RTT and finds a
+    /// vanished peer: every HEARTBEAT unanswered within the RTO counts as an error (the
+    /// next one follows at once, with the RTO doubled), and after `max_retransmissions`
+    /// consecutive errors the association fails (Path.Max.Retrans equals
+    /// Association.Max.Retrans with a single path). `None`: no HEARTBEATs.
+    pub heartbeat_interval: Option<Duration>,
+    /// Announce Zero Checksum Acceptable for SCTP over DTLS (RFC 9653, default `true`):
+    /// packets with a zero checksum field are accepted, and when the peer announces it
+    /// too, packets after the handshake are sent without computing the CRC-32C (DTLS
+    /// already protects them). Turn it off when the packets do not travel over DTLS.
+    pub zero_checksum: bool,
 }
 
 /// Stream schedulers (RFC 8260 §3): which channel's queued message the next chunk comes
@@ -191,6 +209,8 @@ impl Config {
             rto_max: Duration::from_secs(10),
             message_interleaving: true,
             scheduler: Scheduler::WeightedFairQueueing,
+            heartbeat_interval: Some(Duration::from_secs(30)),
+            zero_checksum: true,
         }
     }
 
@@ -248,6 +268,20 @@ impl Config {
     #[must_use]
     pub fn with_scheduler(mut self, scheduler: Scheduler) -> Config {
         self.scheduler = scheduler;
+        self
+    }
+
+    /// Sets [`Config::heartbeat_interval`].
+    #[must_use]
+    pub fn with_heartbeat_interval(mut self, interval: Option<Duration>) -> Config {
+        self.heartbeat_interval = interval;
+        self
+    }
+
+    /// Sets [`Config::zero_checksum`].
+    #[must_use]
+    pub fn with_zero_checksum(mut self, on: bool) -> Config {
+        self.zero_checksum = on;
         self
     }
 }
@@ -368,6 +402,7 @@ pub struct ChannelInfo {
 
 /// Something that happened on the association.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Event {
     /// The association is established.
     Connected,
@@ -402,6 +437,12 @@ pub enum Event {
         /// Stream id.
         stream: u16,
     },
+    /// The peer restarted the association (RFC 9260 §5.2.4 case A: a new INIT and COOKIE
+    /// ECHO from the same peer while established). The peer lost its state, so every
+    /// channel got [`Event::ChannelClose`] just before and queued or unacknowledged data
+    /// was dropped; the association is up again with new tags and TSNs, every stream id is
+    /// free, and new channels may be opened.
+    Restarted,
     /// The association shut down, was aborted or failed. Always the last event.
     Closed,
 }

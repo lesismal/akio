@@ -11,6 +11,9 @@
 //! (including 100 kB and empty ones) and expects them echoed back; it reads every channel the
 //! peer opens and closes "from-pion" after a "pion-end" message; then it closes its own
 //! channels, waits for both directions to be reset and shuts the association down.
+//!
+//! Plain UDP has no DTLS, so zero checksums (RFC 9653) are off unless `SCTP_ZERO_CHECKSUM=1`
+//! (to check the negotiation against a peer that offers them too).
 
 use std::collections::BTreeMap;
 use std::net::UdpSocket;
@@ -52,7 +55,8 @@ fn run(active: bool, local: &str, remote: &str, loss: u64) -> Result<(), String>
     let sock = UdpSocket::bind(local).map_err(|e| e.to_string())?;
     sock.connect(remote).map_err(|e| e.to_string())?;
     let start = Instant::now();
-    let mut a = Association::new(Config::new(active), start);
+    let zero = std::env::var("SCTP_ZERO_CHECKSUM").is_ok_and(|v| v == "1");
+    let mut a = Association::new(Config::new(active).with_zero_checksum(zero), start);
     if active {
         a.connect(start);
     }
@@ -98,7 +102,9 @@ fn run(active: bool, local: &str, remote: &str, loss: u64) -> Result<(), String>
         }
         while let Some(ev) = a.poll_event() {
             match ev {
-                Event::Connected => println!("rust: connected"),
+                Event::Connected => {
+                    println!("rust: connected (zero checksum: {})", a.zero_checksum());
+                }
                 Event::ChannelOpen {
                     stream,
                     label,
@@ -128,6 +134,7 @@ fn run(active: bool, local: &str, remote: &str, loss: u64) -> Result<(), String>
                     closed.push(stream);
                 }
                 Event::BufferedAmountLow { .. } => {}
+                Event::Restarted => return Err("peer restarted".into()),
                 Event::Closed => {
                     println!(
                         "rust: association closed after {:?}",
@@ -135,6 +142,7 @@ fn run(active: bool, local: &str, remote: &str, loss: u64) -> Result<(), String>
                     );
                     return check(&echoes, &labels, &closed, ordered, unordered, n);
                 }
+                _ => {}
             }
         }
         let got = |s: u16| echoes.get(&s).map_or(0, Vec::len);

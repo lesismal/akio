@@ -2,7 +2,8 @@
 # only-sctp (examples/udp_peer.rs) <-> pion/sctp v1.12.0 + pion/datachannel over plain UDP:
 # both roles, with pion's RFC 8260 interleaving on (I-DATA / I-FORWARD-TSN negotiated) and off
 # (DATA / FORWARD TSN), without loss and with every 10th packet dropped each way (at every 4th,
-# 25 %, pion often needs longer than the Rust side's 60 s limit, with DATA as with I-DATA). Needs Go.
+# 25 %, pion often needs longer than the Rust side's 60 s limit, with DATA as with I-DATA); then
+# both roles with zero checksums (RFC 9653) offered on both sides. Needs Go.
 # RS / GO: prebuilt binaries (skips the builds).
 set -eu
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -48,4 +49,32 @@ for interleave in 1 0; do
     done
   done
 done
+# Zero checksums (RFC 9653) offered by both sides: negotiated, and packets without CRC-32C
+# taken both ways (pion drops them unless it offered the method too).
+export SCTP_ZERO_CHECKSUM=1
+for loss in 0 10; do
+  for rust in connect accept; do
+    pion=accept
+    [ "$rust" = accept ] && pion=connect
+    echo "== zero checksum: rust $rust, pion $pion, drop every ${loss}th packet"
+    if [ "$rust" = connect ]; then
+      $GO "$pion" "$P" "$R" "$loss" 1 >/tmp/only-sctp-pion.log 2>&1 & GP=$!
+      PIDS="$PIDS $GP"
+      sleep 0.3
+      $RS "$rust" "$R" "$P" "$loss" >/tmp/only-sctp-rust.log 2>&1
+    else
+      ($RS "$rust" "$R" "$P" "$loss" >/tmp/only-sctp-rust.log 2>&1; echo $? >>/tmp/only-sctp-rust.log) & RP=$!
+      sleep 0.3
+      $GO "$pion" "$P" "$R" "$loss" 1 >/tmp/only-sctp-pion.log 2>&1 & GP=$!
+      PIDS="$PIDS $GP"
+      wait $RP
+      [ "$(tail -1 /tmp/only-sctp-rust.log)" = 0 ]
+    fi
+    tail -3 /tmp/only-sctp-rust.log
+    grep -q "zero checksum: true" /tmp/only-sctp-rust.log
+    kill $GP 2>/dev/null || true
+    wait $GP 2>/dev/null || true
+  done
+done
+unset SCTP_ZERO_CHECKSUM
 echo "sctp interop: all passed"

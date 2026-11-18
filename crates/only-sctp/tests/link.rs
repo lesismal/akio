@@ -77,6 +77,8 @@ struct Sim {
     seen: [bool; 256],
     /// Packets from `a` whose DATA / I-DATA chunks belong to more than one stream.
     mixed: usize,
+    /// Packets from `a` with a zero checksum field (RFC 9653).
+    zero_sums: usize,
 }
 
 impl Sim {
@@ -99,6 +101,7 @@ impl Sim {
             packets: 0,
             seen: [false; 256],
             mixed: 0,
+            zero_sums: 0,
         }
     }
 
@@ -152,6 +155,7 @@ impl Sim {
         self.packets += 1;
         if to_b {
             self.inspect(&p);
+            self.zero_sums += usize::from(p[8..12] == [0; 4]);
         }
         if self.blackhole || self.rng.chance(self.link.loss) {
             return;
@@ -1213,4 +1217,199 @@ fn many_concurrent_large_messages() {
             }
         }
     }
+}
+
+/// RFC 9260 §8.3: an idle association sends HEARTBEATs, which measure the RTT; with data
+/// flowing it does not need them.
+#[test]
+fn heartbeats_measure_rtt_when_idle() {
+    let mut s = Sim::pair(CLEAN, 71, 1200);
+    s.connect();
+    assert_eq!(s.a.rtt(), None);
+    s.run(Duration::from_secs(20), |_| false);
+    assert!(!s.seen[4], "HEARTBEAT before HB.interval");
+    s.run(Duration::from_secs(100), |_| false);
+    assert!(s.seen[4], "no HEARTBEAT from a");
+    let rtt = s.a.rtt().unwrap();
+    // 20 ms each way.
+    assert!(
+        rtt >= Duration::from_millis(40) && rtt < Duration::from_millis(45),
+        "{rtt:?}"
+    );
+    assert!(s.b.rtt().is_some());
+    assert!(s.a.is_established() && s.b.is_established());
+    // Both sides send one per 30 s + RTO (about 3 in 120 s), each answered, plus the
+    // handshake.
+    assert!(s.packets <= 24, "{} packets", s.packets);
+}
+
+/// An idle association notices a vanished peer through unanswered HEARTBEATs:
+/// Path.Max.Retrans (= max_retransmissions) errors, then failure.
+#[test]
+fn heartbeats_detect_vanished_peer() {
+    let mut s = Sim::pair(CLEAN, 72, 1200);
+    s.connect();
+    let ch =
+        s.a.open_channel(s.now, ChannelOptions::new("idle"))
+            .unwrap();
+    s.run(Duration::from_secs(1), |_| false);
+    s.blackhole = true;
+    let t0 = s.now;
+    assert!(s.run(Duration::from_secs(600), |s| s.a.is_closed()));
+    let took = s.now.duration_since(t0);
+    // 30 s + RTO of idleness, then 11 HEARTBEATs with a doubling RTO capped at 10 s.
+    assert!(
+        took > Duration::from_secs(60) && took < Duration::from_secs(150),
+        "{took:?}"
+    );
+    assert_eq!(s.ev_a.last(), Some(&Event::Closed));
+    assert!(s.ev_a.contains(&Event::ChannelClose { stream: ch }));
+
+    // Without HEARTBEATs an idle association never notices.
+    let cfg = |c| Config::new(c).with_heartbeat_interval(None);
+    let mut s = Sim::new(cfg(true), cfg(false), CLEAN, 73);
+    s.connect();
+    s.blackhole = true;
+    s.run(Duration::from_secs(600), |_| false);
+    assert!(s.a.is_established() && !s.seen[4]);
+}
+
+/// A lost HEARTBEAT ACK costs one error, not the association: the next HEARTBEAT answered
+/// clears the count.
+#[test]
+fn heartbeats_survive_loss() {
+    for seed in seeds(4) {
+        // 15 % each way: about 28 % of HEARTBEATs go unanswered.
+        let link = Link {
+            loss: 150,
+            dup: 0,
+            delay_ms: 20,
+            jitter_ms: 10,
+        };
+        let mut s = Sim::pair(link, 80 + seed, 1200);
+        s.connect();
+        s.run(Duration::from_secs(1800), |_| false);
+        assert!(s.a.is_established() && s.b.is_established(), "seed {seed}");
+        assert!(s.a.rtt().is_some());
+    }
+}
+
+/// RFC 9653: both sides announce SCTP over DTLS by default and send zero checksums after
+/// the handshake; when one side does not, every packet carries the CRC-32C.
+#[test]
+fn zero_checksum_negotiation() {
+    for (za, zb) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mut s = Sim::new(
+            Config::new(true).with_zero_checksum(za),
+            Config::new(false).with_zero_checksum(zb),
+            LOSSY,
+            90,
+        );
+        assert!(!s.a.zero_checksum());
+        s.connect();
+        let on = za && zb;
+        assert_eq!((s.a.zero_checksum(), s.b.zero_checksum()), (on, on));
+        let ch = s.a.open_channel(s.now, ChannelOptions::new("z")).unwrap();
+        for i in 0..50 {
+            s.a.send(s.now, ch, &msg(i, 3000), true).unwrap();
+        }
+        assert!(s.run(Duration::from_secs(120), |s| s.data_b(ch).len() == 50));
+        if on {
+            // All but the INIT and COOKIE ECHO (and their retransmissions).
+            assert!(s.zero_sums > 40, "{za} {zb}: {}", s.zero_sums);
+        } else {
+            assert_eq!(s.zero_sums, 0, "{za} {zb}");
+        }
+    }
+}
+
+/// RFC 9260 §5.2.2 / §5.2.4 case A: the peer restarts (a new association from the same
+/// peer while established). Its channels are gone: ours close, `Restarted` follows, and the
+/// association works again with new tags and TSNs.
+#[test]
+fn peer_restart() {
+    for seed in seeds(4) {
+        let link = if seed == 1 { CLEAN } else { LOSSY };
+        let mut s = Sim::pair(link, 100 + seed, 1200);
+        s.connect();
+        let ch =
+            s.a.open_channel(s.now, ChannelOptions::new("before"))
+                .unwrap();
+        for i in 0..20 {
+            s.a.send(s.now, ch, &msg(i, 2000), true).unwrap();
+        }
+        assert!(s.run(Duration::from_secs(60), |s| s.data_b(ch).len() == 20));
+        // b has data of its own queued when a restarts: it is dropped.
+        let back =
+            s.b.open_channel(s.now, ChannelOptions::new("back"))
+                .unwrap();
+        s.b.send(s.now, back, &msg(0, 50_000), true).unwrap();
+        s.run(Duration::from_millis(30), |_| false);
+
+        let idata = seed % 2 == 1;
+        let cfg = Config::new(true).with_message_interleaving(idata);
+        s.a = Association::with_random(cfg, s.now, ids(seed + 1000, 3));
+        s.ev_a.clear();
+        s.a.connect(s.now);
+        assert!(s.run(Duration::from_secs(120), |s| s.a.is_established()
+            && s.ev_b.contains(&Event::Restarted)));
+        let i = s.ev_b.iter().position(|e| *e == Event::Restarted).unwrap();
+        for stream in [ch, back] {
+            let c = s.ev_b[..i]
+                .iter()
+                .position(|e| *e == Event::ChannelClose { stream });
+            assert!(
+                c.is_some(),
+                "seed {seed}: no ChannelClose {stream} before Restarted"
+            );
+        }
+        assert!(s.b.channel(ch).is_none() && s.b.channel(back).is_none());
+        assert_eq!(s.b.buffered_amount(back), 0);
+        assert_eq!(count(&s.ev_b, |e| *e == Event::Connected), 1);
+        assert!(s.b.is_established());
+
+        // Both directions work again, on reused stream ids.
+        let a2 =
+            s.a.open_channel(s.now, ChannelOptions::new("after"))
+                .unwrap();
+        let b2 =
+            s.b.open_channel(s.now, ChannelOptions::new("after-b"))
+                .unwrap();
+        assert_eq!((a2, b2), (ch, back));
+        let before = s.data_b(a2).len();
+        for i in 0..20 {
+            s.a.send(s.now, a2, &msg(i, 2000), true).unwrap();
+            s.b.send(s.now, b2, &msg(i, 2000), true).unwrap();
+        }
+        assert!(s.run(Duration::from_secs(120), |s| s.data_b(a2).len()
+            == before + 20
+            && data_of(&s.ev_a, b2).len() == 20));
+        assert_eq!(
+            &s.data_b(a2)[before..],
+            (0..20).map(|i| msg(i, 2000)).collect::<Vec<_>>()
+        );
+        assert_eq!(s.a.message_interleaving(), idata);
+        // And it still shuts down cleanly.
+        s.a.shutdown(s.now);
+        assert!(s.run(Duration::from_secs(120), |s| s.a.is_closed()
+            && s.b.is_closed()));
+    }
+}
+
+/// A retransmitted INIT from the original handshake arriving late does not disturb the
+/// association, and neither does an INIT from a peer that then goes away.
+#[test]
+fn stray_init_on_live_association() {
+    let mut s = Sim::pair(CLEAN, 110, 1200);
+    s.connect();
+    let ch = s.a.open_channel(s.now, ChannelOptions::new("x")).unwrap();
+    // A second association that sends INIT but never completes.
+    let mut ghost = Association::with_random(Config::new(true), s.now, ids(111, 9));
+    ghost.connect(s.now);
+    let init = ghost.poll_transmit(s.now).unwrap();
+    s.b.handle_packet(s.now, &init);
+    s.flush();
+    s.a.send(s.now, ch, b"still here", false).unwrap();
+    assert!(s.run(Duration::from_secs(10), |s| s.data_b(ch).len() == 1));
+    assert!(!s.ev_b.contains(&Event::Restarted));
 }

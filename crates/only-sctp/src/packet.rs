@@ -1,6 +1,7 @@
 //! SCTP packet and chunk codec: the common header with its CRC-32C (RFC 9260 §3.1, appendix
 //! A), the chunks this crate speaks (RFC 9260 §3.3, RFC 3758 §3.2, RFC 6525 §3-4, RFC 8260
-//! §2.1 and §2.3.1) and their parameters. Parsers are bounds-checked and return `None` on anything malformed.
+//! §2.1 and §2.3.1, RFC 9653) and their parameters. Parsers are bounds-checked and return
+//! `None` on anything malformed.
 
 use only_crypto::crc::crc32c;
 
@@ -39,6 +40,10 @@ const PARAM_HEARTBEAT_INFO: u16 = 1;
 const PARAM_STATE_COOKIE: u16 = 7;
 const PARAM_SUPPORTED_EXTENSIONS: u16 = 0x8008;
 const PARAM_FORWARD_TSN_SUPPORTED: u16 = 0xC000;
+/// Zero Checksum Acceptable (RFC 9653 §4).
+const PARAM_ZERO_CHECKSUM: u16 = 0x8001;
+/// Error detection method "SCTP over DTLS" (RFC 9653 §7).
+pub(crate) const EDMID_DTLS: u32 = 1;
 
 pub(crate) const PARAM_OUTGOING_RESET: u16 = 13;
 pub(crate) const PARAM_INCOMING_RESET: u16 = 14;
@@ -48,6 +53,7 @@ pub(crate) const PARAM_ADD_OUTGOING: u16 = 17;
 pub(crate) const PARAM_ADD_INCOMING: u16 = 18;
 
 /// Re-configuration response results (RFC 6525 §4.4).
+pub(crate) const RESULT_NOTHING_TO_DO: u32 = 0;
 pub(crate) const RESULT_PERFORMED: u32 = 1;
 pub(crate) const RESULT_DENIED: u32 = 2;
 pub(crate) const RESULT_BAD_SEQUENCE: u32 = 5;
@@ -55,6 +61,7 @@ pub(crate) const RESULT_IN_PROGRESS: u32 = 6;
 
 /// Error causes we send (RFC 9260 §3.3.10).
 pub(crate) const CAUSE_UNRECOGNIZED_CHUNK: u16 = 6;
+pub(crate) const CAUSE_COOKIE_WHILE_SHUTTING_DOWN: u16 = 10;
 pub(crate) const CAUSE_PROTOCOL_VIOLATION: u16 = 13;
 pub(crate) const CAUSE_USER_ABORT: u16 = 12;
 
@@ -90,18 +97,22 @@ pub(crate) struct RawChunk<'a> {
 }
 
 /// Checks the CRC-32C and splits a packet into its header and chunks. A malformed chunk
-/// length ends the chunk list (the chunks before it are kept).
-pub(crate) fn parse_packet(buf: &[u8]) -> Option<(Header, Vec<RawChunk<'_>>)> {
+/// length ends the chunk list (the chunks before it are kept). With `accept_zero` (we
+/// announced Zero Checksum Acceptable, RFC 9653 §5.3) a checksum field of 0 is taken
+/// without computing the CRC.
+pub(crate) fn parse_packet(buf: &[u8], accept_zero: bool) -> Option<(Header, Vec<RawChunk<'_>>)> {
     if buf.len() < COMMON_HEADER_LEN {
         return None;
     }
     let want = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-    let mut c = only_crypto::crc::Crc32c::new();
-    c.update(&buf[..8]);
-    c.update(&[0; 4]);
-    c.update(&buf[12..]);
-    if c.finalize() != want {
-        return None;
+    if !(accept_zero && want == 0) {
+        let mut c = only_crypto::crc::Crc32c::new();
+        c.update(&buf[..8]);
+        c.update(&[0; 4]);
+        c.update(&buf[12..]);
+        if c.finalize() != want {
+            return None;
+        }
     }
     let header = Header {
         src_port: be16(buf, 0)?,
@@ -194,9 +205,18 @@ impl PacketWriter {
         self.buf.resize(pad4(self.buf.len()), 0);
     }
 
-    pub(crate) fn finish(mut self) -> Vec<u8> {
-        let crc = crc32c(&self.buf);
-        self.buf[8..12].copy_from_slice(&crc.to_le_bytes());
+    /// The packet with its CRC-32C.
+    pub(crate) fn finish(self) -> Vec<u8> {
+        self.finish_with(false)
+    }
+
+    /// The packet with its CRC-32C, or with a zero checksum field when `zero` (RFC 9653:
+    /// the peer accepts it because DTLS protects the packet).
+    pub(crate) fn finish_with(mut self, zero: bool) -> Vec<u8> {
+        if !zero {
+            let crc = crc32c(&self.buf);
+            self.buf[8..12].copy_from_slice(&crc.to_le_bytes());
+        }
         self.buf
     }
 }
@@ -305,6 +325,8 @@ pub(crate) struct Init {
     /// I-DATA (RFC 8260) offered: 0x40 in Supported Extensions. We list I-FORWARD-TSN (0xC2)
     /// with it; with partial reliability it replaces FORWARD TSN (RFC 8260 §2.3).
     pub(crate) i_data: bool,
+    /// Zero Checksum Acceptable (RFC 9653): the error detection method identifier.
+    pub(crate) zero_checksum: Option<u32>,
 }
 
 impl Init {
@@ -321,6 +343,7 @@ impl Init {
             match typ {
                 PARAM_STATE_COOKIE => init.cookie = Some(value.to_vec()),
                 PARAM_FORWARD_TSN_SUPPORTED => init.forward_tsn = true,
+                PARAM_ZERO_CHECKSUM => init.zero_checksum = be32(value, 0),
                 PARAM_SUPPORTED_EXTENSIONS => {
                     for &t in value {
                         match t {
@@ -366,6 +389,9 @@ impl Init {
         }
         if self.forward_tsn {
             put_param(&mut v, PARAM_FORWARD_TSN_SUPPORTED, &[]);
+        }
+        if let Some(edmid) = self.zero_checksum {
+            put_param(&mut v, PARAM_ZERO_CHECKSUM, &edmid.to_be_bytes());
         }
         chunk(if ack { CT_INIT_ACK } else { CT_INIT }, 0, &v)
     }
@@ -510,9 +536,18 @@ pub(crate) enum ReconfigParam {
         last_tsn: u32,
         streams: Vec<u16>,
     },
-    /// Re-configuration Response (16).
-    Response { resp_seq: u32, result: u32 },
-    /// Any other request (14, 15, 17, 18) with its request sequence number.
+    /// Incoming SSN Reset Request (14): the peer asks us to reset our outgoing streams.
+    IncomingReset { req_seq: u32, streams: Vec<u16> },
+    /// SSN/TSN Reset Request (15).
+    SsnTsnReset { req_seq: u32 },
+    /// Re-configuration Response (16); `tsns` (Sender's, Receiver's Next TSN) answer an
+    /// SSN/TSN Reset Request.
+    Response {
+        resp_seq: u32,
+        result: u32,
+        tsns: Option<(u32, u32)>,
+    },
+    /// An Add Outgoing / Incoming Streams Request (17, 18) with its request sequence number.
     OtherRequest { typ: u16, req_seq: u32 },
 }
 
@@ -537,10 +572,23 @@ impl ReconfigParam {
                     Some(ReconfigParam::Response {
                         resp_seq: be32(p, 0)?,
                         result: be32(p, 4)?,
+                        tsns: be32(p, 8).zip(be32(p, 12)),
                     })
                 })(),
-                PARAM_INCOMING_RESET | PARAM_SSN_TSN_RESET | PARAM_ADD_OUTGOING
-                | PARAM_ADD_INCOMING => {
+                PARAM_INCOMING_RESET => (|| {
+                    Some(ReconfigParam::IncomingReset {
+                        req_seq: be32(p, 0)?,
+                        streams: p
+                            .get(4..)?
+                            .chunks_exact(2)
+                            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                            .collect(),
+                    })
+                })(),
+                PARAM_SSN_TSN_RESET => {
+                    be32(p, 0).map(|req_seq| ReconfigParam::SsnTsnReset { req_seq })
+                }
+                PARAM_ADD_OUTGOING | PARAM_ADD_INCOMING => {
                     be32(p, 0).map(|req_seq| ReconfigParam::OtherRequest { typ, req_seq })
                 }
                 _ => None,
@@ -569,9 +617,28 @@ impl ReconfigParam {
                 }
                 PARAM_OUTGOING_RESET
             }
-            ReconfigParam::Response { resp_seq, result } => {
+            ReconfigParam::IncomingReset { req_seq, streams } => {
+                v.extend_from_slice(&req_seq.to_be_bytes());
+                for s in streams {
+                    v.extend_from_slice(&s.to_be_bytes());
+                }
+                PARAM_INCOMING_RESET
+            }
+            ReconfigParam::SsnTsnReset { req_seq } => {
+                v.extend_from_slice(&req_seq.to_be_bytes());
+                PARAM_SSN_TSN_RESET
+            }
+            ReconfigParam::Response {
+                resp_seq,
+                result,
+                tsns,
+            } => {
                 v.extend_from_slice(&resp_seq.to_be_bytes());
                 v.extend_from_slice(&result.to_be_bytes());
+                if let Some((s, r)) = tsns {
+                    v.extend_from_slice(&s.to_be_bytes());
+                    v.extend_from_slice(&r.to_be_bytes());
+                }
                 PARAM_RECONFIG_RESPONSE
             }
             ReconfigParam::OtherRequest { typ, req_seq } => {
@@ -604,6 +671,19 @@ pub(crate) fn heartbeat_ack(heartbeat_value: &[u8]) -> Option<Vec<u8>> {
     let mut v = Vec::with_capacity(4 + info.len());
     put_param(&mut v, PARAM_HEARTBEAT_INFO, info);
     Some(chunk(CT_HEARTBEAT_ACK, 0, &v))
+}
+
+/// A HEARTBEAT carrying `info` as its Heartbeat Information (RFC 9260 §3.3.5).
+pub(crate) fn heartbeat(info: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(4 + info.len());
+    put_param(&mut v, PARAM_HEARTBEAT_INFO, info);
+    chunk(CT_HEARTBEAT, 0, &v)
+}
+
+/// The Heartbeat Information of a HEARTBEAT ACK.
+pub(crate) fn parse_heartbeat_ack(v: &[u8]) -> Option<&[u8]> {
+    let (typ, info) = params(v).next()?;
+    (typ == PARAM_HEARTBEAT_INFO).then_some(info)
 }
 
 /// An error cause TLV (RFC 9260 §3.3.10).
@@ -647,7 +727,7 @@ mod tests {
         });
         let pkt = w.finish();
         assert_eq!(pkt.len(), 12 + 4 + pad4(19));
-        let (h, chunks) = parse_packet(&pkt).unwrap();
+        let (h, chunks) = parse_packet(&pkt, false).unwrap();
         assert_eq!(h, header());
         assert_eq!(chunks.len(), 2);
         assert_eq!(chunks[0].typ, CT_COOKIE_ACK);
@@ -660,7 +740,7 @@ mod tests {
         for i in 0..pkt.len() {
             let mut bad = pkt.clone();
             bad[i] ^= 0x10;
-            assert!(parse_packet(&bad).is_none(), "byte {i}");
+            assert!(parse_packet(&bad, false).is_none(), "byte {i}");
         }
     }
 
@@ -668,7 +748,7 @@ mod tests {
     /// v1.12.0 (ports 5000/5000, tag 0x2a821de9) during the UDP interop run.
     #[test]
     fn checksum_little_endian_as_pion() {
-        let (h, chunks) = parse_packet(&PION_COOKIE_ACK).unwrap();
+        let (h, chunks) = parse_packet(&PION_COOKIE_ACK, false).unwrap();
         assert_eq!(h.vtag, 0x2a82_1de9);
         assert_eq!(chunks[0].typ, CT_COOKIE_ACK);
         let mut w = PacketWriter::new(h, 1200);
@@ -677,7 +757,7 @@ mod tests {
         // Big-endian would not verify.
         let mut be = PION_COOKIE_ACK;
         be[8..12].reverse();
-        assert!(parse_packet(&be).is_none());
+        assert!(parse_packet(&be, false).is_none());
     }
 
     const PION_COOKIE_ACK: [u8; 16] = [
@@ -697,6 +777,7 @@ mod tests {
             forward_tsn: true,
             reconfig: true,
             i_data: true,
+            zero_checksum: Some(EDMID_DTLS),
         };
         let enc = init.encode(true);
         assert_eq!(enc[0], CT_INIT_ACK);
@@ -736,6 +817,21 @@ mod tests {
             ReconfigParam::Response {
                 resp_seq: 9,
                 result: RESULT_PERFORMED,
+                tsns: None,
+            },
+            ReconfigParam::IncomingReset {
+                req_seq: 10,
+                streams: vec![1, 3],
+            },
+            ReconfigParam::IncomingReset {
+                req_seq: 12,
+                streams: vec![],
+            },
+            ReconfigParam::SsnTsnReset { req_seq: 13 },
+            ReconfigParam::Response {
+                resp_seq: 14,
+                result: RESULT_PERFORMED,
+                tsns: Some((0xffff_0000, 7)),
             },
             ReconfigParam::OtherRequest {
                 typ: PARAM_ADD_OUTGOING,
@@ -772,7 +868,7 @@ mod tests {
             w.push_idata(&d);
         }
         let pkt = w.finish();
-        let (_, chunks) = parse_packet(&pkt).unwrap();
+        let (_, chunks) = parse_packet(&pkt, false).unwrap();
         assert_eq!(chunks.len(), 2);
         assert!(chunks.iter().all(|c| c.typ == CT_IDATA));
         // RFC 8260 §2.1: the 16-byte I-DATA header after the chunk header, reserved field 0.
@@ -808,6 +904,49 @@ mod tests {
         assert!(!Init::parse(&enc[4..]).unwrap().i_data);
     }
 
+    /// RFC 9653: a zero checksum field passes only when we accept it; anything else still
+    /// needs the right CRC.
+    #[test]
+    fn zero_checksum() {
+        let mut w = PacketWriter::new(header(), 1200);
+        w.push_raw(&chunk(CT_COOKIE_ACK, 0, &[]));
+        let pkt = w.finish_with(true);
+        assert_eq!(&pkt[8..12], &[0; 4]);
+        assert!(parse_packet(&pkt, false).is_none());
+        let (h, chunks) = parse_packet(&pkt, true).unwrap();
+        assert_eq!((h, chunks[0].typ), (header(), CT_COOKIE_ACK));
+        let mut bad = pkt.clone();
+        bad[8] = 1;
+        assert!(parse_packet(&bad, true).is_none());
+        let mut w = PacketWriter::new(header(), 1200);
+        w.push_raw(&chunk(CT_COOKIE_ACK, 0, &[]));
+        assert!(parse_packet(&w.finish(), true).is_some());
+        // The INIT parameter: type 0x8001, length 8, EDMID 1.
+        let init = Init {
+            initiate_tag: 1,
+            a_rwnd: 1,
+            outbound_streams: 1,
+            inbound_streams: 1,
+            zero_checksum: Some(EDMID_DTLS),
+            ..Init::default()
+        };
+        let enc = init.encode(false);
+        assert_eq!(&enc[enc.len() - 8..], &[0x80, 0x01, 0, 8, 0, 0, 0, 1]);
+        assert_eq!(Init::parse(&enc[4..]).unwrap().zero_checksum, Some(1));
+    }
+
+    #[test]
+    fn heartbeat_round_trip() {
+        let hb = heartbeat(b"0123456789abcdef");
+        assert_eq!(hb[0], CT_HEARTBEAT);
+        let ack = heartbeat_ack(&hb[4..]).unwrap();
+        assert_eq!(
+            parse_heartbeat_ack(&ack[4..]),
+            Some(&b"0123456789abcdef"[..])
+        );
+        assert_eq!(parse_heartbeat_ack(&[0, 2, 0, 4]), None);
+    }
+
     #[test]
     fn heartbeat_ack_echoes_info() {
         let mut v = Vec::new();
@@ -822,7 +961,7 @@ mod tests {
     fn garbage_never_panics() {
         for len in 0..64 {
             let b: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
-            let _ = parse_packet(&b);
+            let _ = parse_packet(&b, false);
             let _ = Init::parse(&b);
             let _ = Sack::parse(&b);
             let _ = ForwardTsn::parse(&b);
@@ -832,6 +971,8 @@ mod tests {
             let _ = IData::parse(FLAG_BEGIN, &b);
             let _ = IForwardTsn::parse(&b);
             let _ = heartbeat_ack(&b);
+            let _ = parse_heartbeat_ack(&b);
+            let _ = parse_packet(&b, true);
         }
     }
 }

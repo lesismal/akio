@@ -44,3 +44,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-038: Certificate revocation: CRLs, OCSP and stapled-response validation](038-x509-revocation.md) (accepted 2026-11-18)
 - [ADR-039: FEC, RTCP XR, TMMBR and RFC 8888 feedback in only-webrtc peers](039-webrtc-fec-xr-tmmbr-ccfb.md) (accepted 2026-11-19)
 - [ADR-040: SRTP MKIs, key derivation rates, more profiles, header extension encryption and cryptex](040-srtp-mki-cryptex.md) (accepted 2026-11-19)
+- [ADR-042: SCTP HEARTBEATs, peer restart, zero checksum and incoming reset requests](042-sctp-heartbeat-restart-zero-checksum.md) (accepted 2026-11-19)

@@ -67,7 +67,8 @@ Interop: pion (data channels, Opus/VP8 echo and PLI in both offer directions, al
 `only` TURN relay) and fib's Go WebRTC both ways: `tools/interop/webrtc/run.sh`; headless Chrome
 in both offer directions (data channels, the fake camera and microphone echoed back and decoded
 by Chrome): `tools/interop/webrtc/browser.sh`; FEC under loss (Chrome's and ours), RFC 8888 both
-ways, XR and TMMBR with headless Chrome: `tools/interop/webrtc/fec.sh`. STUN and TURN servers are in
+ways, XR and TMMBR with headless Chrome: `tools/interop/webrtc/fec.sh`; headless Firefox in both
+offer directions (data channels against usrsctp): `tools/interop/webrtc/firefox.sh`. STUN and TURN servers are in
 [`only-turn`](../only-turn/README.md).
 
 Not implemented: TURN over DTLS, simultaneous-open ICE-TCP, FEC on simulcast lines and for audio
