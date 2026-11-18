@@ -34,5 +34,6 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-028: Hot reload of read buffer, backlog, UDP idle timeout and I/O thread count](028-hot-reload-buffers-backlog-threads.md) (accepted 2026-11-17)
 - [ADR-029: `ONLY_DEFAULT_BACKEND` selects io_uring for listeners without a backend](029-default-backend-env.md) (accepted 2026-11-17)
 - [ADR-030: protobuf text format](030-protobuf-text-format.md) (accepted 2026-11-18)
+- [ADR-031: VP8, VP9 and AV1 in the media hub, multivariant HLS playlists](031-media-vp8-vp9-av1-multivariant-hls.md) (accepted 2026-11-18)
 - [ADR-032: TURN over TCP and TLS from an `Endpoint`, active and server ICE-TCP, simulcast with Chrome](032-webrtc-turn-streams-ice-tcp-simulcast.md) (accepted 2026-11-18)
 - [ADR-033: BitTorrent fast resume](033-bittorrent-fast-resume.md) (accepted 2026-11-18)

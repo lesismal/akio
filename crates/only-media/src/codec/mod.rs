@@ -1,9 +1,13 @@
-//! Codec helpers: H.264, H.265, AAC and Opus configuration records and framing.
+//! Codec helpers: H.264, H.265, VP8, VP9, AV1, AAC and Opus configuration records, framing
+//! and keyframe detection.
 
 pub mod aac;
+pub mod av1;
 pub mod h264;
 pub mod h265;
 pub mod opus;
+pub mod vp8;
+pub mod vp9;
 
 use std::fmt;
 

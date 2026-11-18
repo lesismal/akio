@@ -9,12 +9,12 @@ HTTP-FLV、WS-FLV、HLS 以及 WHIP/WHEP。每个协议都与 `only_media::av` �
 | 模块 | 功能 |
 |---|---|
 | `hub` | 按路径区分的流，一个推流者多个订阅者，GOP 缓存（秒开），慢播放者丢帧至下一个关键帧，推流 / 播放鉴权钩子，等待推流者与重新推流，时间戳规整（`Timeline`），统计 |
-| `rtmp` | 服务端与客户端（`rtmp::client::{push, pull}`）：简单握手与 Flash digest 握手、chunk 流、推流 / 播放、Enhanced RTMP（H.265 `hvc1`、Opus） |
-| `rtsp`、`rtp`、`sdp` | RTSP 1.0 服务端与客户端（`rtsp::client::{pull, push}`）：基于 TCP 交织与 UDP 的 ANNOUNCE/RECORD 和 DESCRIBE/SETUP/PLAY，Digest/Basic 鉴权；H.264、H.265、AAC、Opus、G.711 的 RTP |
+| `rtmp` | 服务端与客户端（`rtmp::client::{push, pull}`）：简单握手与 Flash digest 握手、chunk 流、推流 / 播放、Enhanced RTMP（H.265 `hvc1`、VP9 `vp09`、AV1 `av01`、VP8 `vp08`、Opus） |
+| `rtsp`、`rtp`、`sdp` | RTSP 1.0 服务端与客户端（`rtsp::client::{pull, push}`）：基于 TCP 交织与 UDP 的 ANNOUNCE/RECORD 和 DESCRIBE/SETUP/PLAY，Digest/Basic 鉴权；H.264、H.265、VP8、VP9、AV1、AAC、Opus、G.711 的 RTP |
 | `srt` | SRT live 模式：HSv5 主叫与监听、ARQ、TSBPD 延迟、基于密码的 AES-CTR、stream ID 访问控制；`push` / `pull` |
-| `httpflv`、`hls`、`http` | HTTP-FLV 与 WS-FLV；MPEG-TS 或 fMP4（CMAF）分段的 HLS，LL-HLS 分片、预加载提示与阻塞式刷新；同时分发二者的 `MediaHttp` |
-| `whip`、`webrtc` | WHIP / WHEP HTTP 信令与 `WebRtcEngine` trait；开启 `webrtc` feature 后，`webrtc::RtcMedia` 经 only-webrtc 承载 H.264 / H.265 / Opus / G.711，观众的 PLI 会到达推流者 |
-| `flv`、`mpegts`、`fmp4`、`amf`、`codec` | FLV 封装/解封装（传统与 Enhanced RTMP tag）、MPEG-TS 封装/解封装、分片 MP4 封装/解封装、AMF0/AMF3、H.264 / H.265 / AAC / Opus 工具 |
+| `httpflv`、`hls`、`http` | HTTP-FLV 与 WS-FLV；MPEG-TS 或 fMP4（CMAF）分段的 HLS，LL-HLS 分片、预加载提示与阻塞式刷新，以及由分别发布的多路流组成的多码率播放列表；同时分发二者的 `MediaHttp` |
+| `whip`、`webrtc` | WHIP / WHEP HTTP 信令与 `WebRtcEngine` trait；开启 `webrtc` feature 后，`webrtc::RtcMedia` 经 only-webrtc 承载 H.264 / H.265 / VP8 / VP9 / AV1 / Opus / G.711，观众的 PLI 会到达推流者 |
+| `flv`、`mpegts`、`fmp4`、`amf`、`codec` | FLV 封装/解封装（传统与 Enhanced RTMP tag）、MPEG-TS 封装/解封装、分片 MP4 封装/解封装、AMF0/AMF3、H.264 / H.265 / VP8 / VP9 / AV1 / AAC / Opus 工具 |
 
 ```rust,no_run
 use only::{Engine, Listener};
@@ -43,6 +43,6 @@ engine.run().unwrap();
 [RTSP 与 WHIP/WHEP](https://lesismal.github.io/only/zh-CN/protocols/media-rtsp.html)、
 [SRT](https://lesismal.github.io/only/zh-CN/protocols/media-srt.html)。
 
-暂不支持：HLS 加密与多码率主播放列表、SRT rendezvous、hub 中的 AV1 / VP9 / VP8、录制、转码。
+暂不支持：HLS 加密、SRT rendezvous、MPEG-TS 中的 VP8 / VP9 / AV1、录制、转码。
 
 许可证：MIT。

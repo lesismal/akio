@@ -34,5 +34,6 @@
 - [ADR-028：读缓冲区、backlog、UDP 空闲超时与 I/O 线程数的热更新](028-hot-reload-buffers-backlog-threads.zh-CN.md)（2026-11-17 采纳）
 - [ADR-029：`ONLY_DEFAULT_BACKEND` 为未选择后端的 listener 选用 io_uring](029-default-backend-env.zh-CN.md)（2026-11-17 采纳）
 - [ADR-030：protobuf 文本格式](030-protobuf-text-format.zh-CN.md)（2026-11-18 采纳）
+- [ADR-031：媒体 hub 中的 VP8、VP9 与 AV1，多码率（multivariant）HLS 播放列表](031-media-vp8-vp9-av1-multivariant-hls.zh-CN.md)（2026-11-18 采纳）
 - [ADR-032：`Endpoint` 经 TCP 与 TLS 使用 TURN、主动及服务器端 ICE-TCP、与 Chrome 的 simulcast](032-webrtc-turn-streams-ice-tcp-simulcast.zh-CN.md)（2026-11-18 采纳）
 - [ADR-033：BitTorrent 快速续传](033-bittorrent-fast-resume.zh-CN.md)（2026-11-18 采纳）

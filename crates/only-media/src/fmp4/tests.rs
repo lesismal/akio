@@ -87,6 +87,58 @@ fn round_trip_h264_aac() {
     assert!(got.iter().any(|p| p.pts != p.dts));
 }
 
+/// VP9 (`vp09` + `vpcC`) and AV1 (`av01` + `av1C`) with Opus; a VP8 track; a VP9 track
+/// without a configuration that parses is left out.
+#[test]
+fn round_trip_vp9_av1_vp8() {
+    for (name, data) in [
+        ("vp9", &include_bytes!("../../testdata/vp9_opus.flv")[..]),
+        ("av1", &include_bytes!("../../testdata/av1_opus.flv")[..]),
+    ] {
+        let (tracks, pkts) = flv_sample(data);
+        let out = mux(&tracks, &pkts, 20);
+        let (t, got) = parse_all(&out).expect(name);
+        let t = t.expect("tracks");
+        assert_eq!(t[0], tracks[0], "{name}");
+        assert_round_trip(&tracks, &pkts, &t, &got);
+        let entry: &[u8] = if name == "vp9" { b"vp09" } else { b"av01" };
+        assert!(out.windows(4).any(|w| w == entry), "{name}");
+    }
+    let vp8 = Track::video_from_keyframe(
+        Codec::Vp8,
+        &[0x50, 0x2d, 0x00, 0x9d, 0x01, 0x2a, 0x40, 0x01, 0xf0, 0x00],
+    )
+    .expect("vp8");
+    let pkts: Vec<Packet> = (0..10)
+        .map(|i| {
+            let key = i % 5 == 0;
+            let data = if key {
+                vec![0x50, 0x2d, 0, 0x9d, 1, 0x2a, 0x40, 1, 0xf0, 0]
+            } else {
+                vec![0x31, i]
+            };
+            Packet::new(
+                0,
+                i64::from(i) * 40 * MILLISECOND,
+                i64::from(i) * 40 * MILLISECOND,
+                key,
+                data,
+            )
+        })
+        .collect();
+    let out = mux(std::slice::from_ref(&vp8), &pkts, 5);
+    let (t, got) = parse_all(&out).expect("vp8");
+    assert_eq!(t.expect("tracks")[0], vp8);
+    assert_round_trip(
+        std::slice::from_ref(&vp8),
+        &pkts,
+        std::slice::from_ref(&vp8),
+        &got,
+    );
+    let bad = Track::new(Codec::Vp9, vec![1, 2]);
+    assert!(!Muxer::new(&[bad]).has_tracks());
+}
+
 #[test]
 fn round_trip_h265_aac_and_opus() {
     let (tracks, pkts) = flv_sample(include_bytes!("../../testdata/h265_aac.flv"));

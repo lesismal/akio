@@ -1,5 +1,6 @@
 //! RTMP (Adobe "Real-Time Messaging Protocol" 2012) with Enhanced RTMP codecs (H.265 `hvc1`,
-//! Opus), as a server publishing into and playing from a [`Hub`].
+//! VP9 `vp09`, AV1 `av01`, VP8 `vp08`, Opus), as a server publishing into and playing from a
+//! [`Hub`].
 //!
 //! * [`handshake`]: the simple handshake and the Flash digest ("complex") one.
 //! * [`chunk`]: the sans-IO chunk stream (all four header formats, extended timestamps, chunk

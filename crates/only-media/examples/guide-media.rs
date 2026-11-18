@@ -19,7 +19,7 @@ use only_http::{Router, serve};
 use only_media::{
     Hub, HubConfig, PeerInfo, Sink, SubscribeOptions, Tracks,
     av::Packet,
-    hls::{Hls, HlsConfig},
+    hls::{AudioRendition, Hls, HlsConfig, Multivariant, Variant},
     http::MediaHttp,
     httpflv::{HttpFlv, HttpFlvConfig},
     rtmp::{RtmpConfig, RtmpServer},
@@ -70,9 +70,25 @@ fn main() -> std::io::Result<()> {
     let mut hls_cfg = HlsConfig::default();
     hls_cfg.target_duration = Duration::from_secs(2);
     hls_cfg.part_duration = Some(Duration::from_millis(500)); // LL-HLS parts
+    let hls = Hls::new(hub.clone(), hls_cfg);
+    // ANCHOR: multivariant
+    // Renditions published as separate streams, tied together at /live/show.m3u8.
+    let mut show = Multivariant::new();
+    for (path, bps) in [("live/show_720", None), ("live/show_360", Some(800_000))] {
+        let mut v = Variant::new(path);
+        v.bandwidth = bps; // None: measured from the segments
+        v.audio_group = Some("aud".into());
+        show.variants.push(v);
+    }
+    let mut english = AudioRendition::new("aud", "English", "live/show_en");
+    english.language = Some("en".into());
+    english.default = true;
+    show.audio.push(english);
+    hls.add_multivariant("live/show", show);
+    // ANCHOR_END: multivariant
     let media = MediaHttp::new()
         .flv(HttpFlv::new(hub.clone(), HttpFlvConfig::default()))
-        .hls(Hls::new(hub.clone(), hls_cfg));
+        .hls(hls);
     // GET /live/cam.flv (HTTP-FLV, or WS-FLV on a WebSocket upgrade), /live/cam/index.m3u8 (HLS)
     let app = Router::new()
         .get("/streams", {

@@ -238,7 +238,15 @@ mod tests {
 
     fn flv_seeds() -> Vec<Vec<u8>> {
         let body = &SAMPLE[13..];
-        vec![body[..body.len().min(4096)].to_vec()]
+        let mut v = vec![body[..body.len().min(4096)].to_vec()];
+        // Enhanced RTMP `vp09` and `av01`: metadata, sequence starts and the first keyframe.
+        for f in [
+            &include_bytes!("../../testdata/vp9_opus.flv")[13..],
+            &include_bytes!("../../testdata/av1_opus.flv")[13..],
+        ] {
+            v.push(f[..f.len().min(8192)].to_vec());
+        }
+        v
     }
 
     fn amf_seeds() -> Vec<Vec<u8>> {

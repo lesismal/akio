@@ -8,7 +8,8 @@
 //! * push: `connect`, `releaseStream`, `FCPublish`, `createStream`, `publish(name, "live")`;
 //!   once the server answers `NetStream.Publish.Start` the client subscribes to the hub path
 //!   and sends `@setDataFrame` onMetaData, the sequence headers and the media, written by
-//!   [`flv::Encoder`] (Enhanced RTMP `hvc1` / `Opus` unless [`EncoderConfig::legacy_hevc`]).
+//!   [`flv::Encoder`] (Enhanced RTMP `hvc1` / `vp09` / `av01` / `vp08` / `Opus`; H.265 with
+//!   the legacy codec id under [`EncoderConfig::legacy_hevc`]).
 //!   A server that reads too slowly has packets dropped ([`Dropper`], video to the next
 //!   keyframe) and is disconnected past [`RtmpClientConfig::max_write_queue`].
 //! * pull: the hub path is reserved at once (a busy path fails [`pull`] right away), then
@@ -845,7 +846,12 @@ impl Session {
         // Enhanced RTMP: the FourCCs the client takes (pull) or may send (push).
         props.push((
             "fourCcList",
-            Value::Array(vec![Value::from("hvc1"), Value::from("Opus")]),
+            Value::Array(
+                ["hvc1", "vp09", "av01", "vp08", "Opus"]
+                    .into_iter()
+                    .map(Value::from)
+                    .collect(),
+            ),
         ));
         let vals = [
             Value::from("connect"),

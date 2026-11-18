@@ -1,8 +1,11 @@
 //! RTP (RFC 3550) packetization and depacketization of the canonical packets of
 //! [`crate::av`]: H.264 (RFC 6184: single NAL unit, STAP-A, FU-A), H.265 (RFC 7798: single
-//! NAL unit, aggregation packets, fragmentation units), AAC (RFC 3640 `mpeg4-generic`,
-//! `AAC-hbr`), Opus (RFC 7587) and G.711, plus the RTCP sender report the RTSP server sends
-//! its players.
+//! NAL unit, aggregation packets, fragmentation units), VP8 (RFC 7741), VP9 (RFC 9628), AV1
+//! (the AOM RTP payload format), AAC (RFC 3640 `mpeg4-generic`, `AAC-hbr`), Opus (RFC 7587)
+//! and G.711, plus the RTCP sender report the RTSP server sends its players. VP8, VP9 and AV1
+//! use the payload formats of `only-rtp`; a frame missing a packet is dropped, and their
+//! configuration and picture size come from the keyframes ([`Depacketizer::take_config`],
+//! [`Depacketizer::picture_size`]).
 //!
 //! A [`Packetizer`] turns one [`Packet`] into RTP packets; a [`Depacketizer`] turns RTP
 //! packets back into packets, with times taken from the RTP timestamps (unwrapped, relative to
@@ -13,8 +16,76 @@ use std::{cmp::Reverse, collections::BinaryHeap, fmt};
 
 use crate::{
     av::{Codec, Packet, Time, Track, from_ticks, to_ticks},
-    codec::{h264, h265},
+    codec::{av1, h264, h265, vp8, vp9},
 };
+use only_rtp::codec as rtpc;
+
+/// The `only-rtp` packetizer of a VP8, VP9 or AV1 track (concrete types, so that
+/// [`Packetizer`] stays `Sync` and unwind-safe).
+#[derive(Debug)]
+enum FramePacketizer {
+    Vp8(rtpc::Vp8Packetizer),
+    Vp9(rtpc::Vp9Packetizer),
+    Av1(rtpc::Av1Packetizer),
+}
+
+impl FramePacketizer {
+    fn new(codec: Codec) -> Option<FramePacketizer> {
+        // VP8 and VP9 start their 15-bit PictureID at a random value.
+        let picture_id = (random_u32() & 0x7fff) as u16;
+        Some(match codec {
+            Codec::Vp8 => FramePacketizer::Vp8(rtpc::Vp8Packetizer::new(picture_id)),
+            Codec::Vp9 => FramePacketizer::Vp9(rtpc::Vp9Packetizer::new(picture_id)),
+            Codec::Av1 => FramePacketizer::Av1(rtpc::Av1Packetizer::new()),
+            _ => return None,
+        })
+    }
+
+    fn get(&mut self) -> &mut dyn rtpc::Packetizer {
+        match self {
+            FramePacketizer::Vp8(p) => p,
+            FramePacketizer::Vp9(p) => p,
+            FramePacketizer::Av1(p) => p,
+        }
+    }
+}
+
+/// The `only-rtp` depacketizer of a VP8, VP9 or AV1 track.
+#[derive(Debug)]
+enum FrameDepacketizer {
+    Vp8(rtpc::Vp8Depacketizer),
+    Vp9(rtpc::Vp9Depacketizer),
+    Av1(rtpc::Av1Depacketizer),
+}
+
+impl FrameDepacketizer {
+    fn new(codec: Codec) -> Option<FrameDepacketizer> {
+        Some(match codec {
+            Codec::Vp8 => FrameDepacketizer::Vp8(rtpc::Vp8Depacketizer::new()),
+            Codec::Vp9 => FrameDepacketizer::Vp9(rtpc::Vp9Depacketizer::new()),
+            Codec::Av1 => FrameDepacketizer::Av1(rtpc::Av1Depacketizer::new()),
+            _ => return None,
+        })
+    }
+
+    fn get(&mut self) -> &mut dyn rtpc::Depacketizer {
+        match self {
+            FrameDepacketizer::Vp8(d) => d,
+            FrameDepacketizer::Vp9(d) => d,
+            FrameDepacketizer::Av1(d) => d,
+        }
+    }
+}
+
+/// Whether a VP8, VP9 or AV1 frame starts with a keyframe.
+fn vpx_keyframe(codec: Codec, frame: &[u8]) -> bool {
+    match codec {
+        Codec::Vp8 => vp8::is_keyframe(frame),
+        Codec::Vp9 => vp9::is_keyframe(frame),
+        Codec::Av1 => av1::is_keyframe(frame),
+        _ => false,
+    }
+}
 
 /// The largest RTP payload a [`Packetizer`] makes by default (fits a 1500-byte MTU with IP,
 /// UDP and the RTSP interleaving header to spare).
@@ -138,7 +209,15 @@ pub fn ntp_now() -> u64 {
 pub fn supported(codec: Codec) -> bool {
     matches!(
         codec,
-        Codec::H264 | Codec::H265 | Codec::Aac | Codec::Opus | Codec::Pcmu | Codec::Pcma
+        Codec::H264
+            | Codec::H265
+            | Codec::Vp8
+            | Codec::Vp9
+            | Codec::Av1
+            | Codec::Aac
+            | Codec::Opus
+            | Codec::Pcmu
+            | Codec::Pcma
     )
 }
 
@@ -154,6 +233,8 @@ pub struct Packetizer {
     mtu: usize,
     /// Parameter sets (H.264 SPS/PPS, H.265 VPS/SPS/PPS) sent before keyframes that lack them.
     params: Vec<Vec<u8>>,
+    /// The `only-rtp` packetizer of VP8, VP9 and AV1.
+    frames: Option<FramePacketizer>,
     packets: u32,
     octets: u32,
     last_ts: u32,
@@ -188,6 +269,7 @@ impl Packetizer {
             base,
             mtu: DEFAULT_MTU,
             params,
+            frames: FramePacketizer::new(track.codec),
             packets: 0,
             octets: 0,
             last_ts: base,
@@ -260,6 +342,12 @@ impl Packetizer {
     pub fn packetize(&mut self, pkt: &Packet, out: &mut Vec<Vec<u8>>) {
         let ts = self.timestamp(pkt.pts);
         self.last_ts = ts;
+        if let Some(f) = self.frames.as_mut() {
+            for (payload, marker) in f.get().packetize(self.mtu, &pkt.data) {
+                self.emit(out, ts, marker, &[&payload]);
+            }
+            return;
+        }
         match self.codec {
             Codec::H264 | Codec::H265 => self.video(pkt, ts, out),
             Codec::Aac => {
@@ -359,6 +447,11 @@ pub struct Depacketizer {
     params_changed: bool,
     max_au: usize,
     dts: DtsGen,
+    /// VP8 / VP9 / AV1: the `only-rtp` depacketizer, whether the frame being assembled lost a
+    /// packet, and the track its last keyframe describes.
+    frames: Option<FrameDepacketizer>,
+    broken: bool,
+    keyframe_track: Option<Track>,
 }
 
 impl Depacketizer {
@@ -382,6 +475,9 @@ impl Depacketizer {
             params_changed: false,
             max_au: 8 << 20,
             dts: DtsGen::default(),
+            frames: FrameDepacketizer::new(track.codec),
+            broken: false,
+            keyframe_track: None,
         }
     }
 
@@ -392,13 +488,16 @@ impl Depacketizer {
         self
     }
 
-    /// The codec configuration built from the parameter sets seen in band, if they changed
-    /// since the last call (H.264 and H.265 only).
+    /// The codec configuration built from the parameter sets seen in band (H.264, H.265) or
+    /// from the last keyframe (VP8, VP9: a `VPCodecConfigurationRecord`; AV1: an
+    /// `AV1CodecConfigurationRecord` from its sequence header), if it changed since the last
+    /// call.
     pub fn take_config(&mut self) -> Option<Vec<u8>> {
         if !self.params_changed {
             return None;
         }
         let c = match self.codec {
+            Codec::Vp8 | Codec::Vp9 | Codec::Av1 => self.keyframe_track.as_ref()?.config.clone(),
             Codec::H264 => {
                 let (s, p) = (self.sps.as_ref()?, self.pps.as_ref()?);
                 h264::Config::from_sets(s, p).encode()
@@ -411,6 +510,12 @@ impl Depacketizer {
         };
         self.params_changed = false;
         Some(c)
+    }
+
+    /// The picture size of the last keyframe (VP8, VP9, AV1), which their configuration does
+    /// not carry (VP8, VP9).
+    pub fn picture_size(&self) -> Option<(u32, u32)> {
+        self.keyframe_track.as_ref().map(|t| (t.width, t.height))
     }
 
     fn time(&mut self, ts: u32) -> (Time, i64) {
@@ -438,6 +543,10 @@ impl Depacketizer {
             .is_some_and(|s| h.sequence != s.wrapping_add(1));
         self.last_seq = Some(h.sequence);
         let (t, ext) = self.time(h.timestamp);
+        if self.frames.is_some() {
+            self.frame_packet(payload, ext, t, h.marker, lost, out);
+            return Ok(());
+        }
         match self.codec {
             Codec::H264 | Codec::H265 => {
                 if self.au_ts.is_some_and(|a| a != ext) {
@@ -470,8 +579,67 @@ impl Depacketizer {
         if let Some(ext) = self.au_ts {
             let rel = ext - self.base.unwrap_or(ext);
             let t = from_ticks(rel, self.clock) + self.offset;
-            self.flush_at(t, out);
+            if self.frames.is_some() {
+                self.flush_frame(t, out);
+            } else {
+                self.flush_at(t, out);
+            }
         }
+    }
+
+    /// One packet of a VP8 / VP9 / AV1 frame. A frame ends at the marker bit or when the
+    /// timestamp changes; a frame that lost a packet (or does not depacketize) is dropped.
+    fn frame_packet(
+        &mut self,
+        payload: &[u8],
+        ext: i64,
+        t: Time,
+        marker: bool,
+        lost: bool,
+        out: &mut Vec<Packet>,
+    ) {
+        if self.au_ts.is_some_and(|a| a != ext) {
+            // The frame ended without its marker: complete only if nothing went missing.
+            self.broken |= lost;
+            self.flush(out);
+        }
+        let Some(d) = self.frames.as_mut().map(FrameDepacketizer::get) else {
+            return;
+        };
+        if self.au_ts.is_none() {
+            // A new frame: it is whole if it starts here, whatever came before.
+            d.reset();
+            self.broken = !d.is_frame_start(payload);
+        } else if lost {
+            self.broken = true;
+        }
+        self.au_ts = Some(ext);
+        if !self.broken
+            && (d.depacketize(payload, &mut self.au).is_err() || self.au.len() > self.max_au)
+        {
+            self.broken = true;
+        }
+        if marker {
+            self.flush_frame(t, out);
+        }
+    }
+
+    fn flush_frame(&mut self, t: Time, out: &mut Vec<Packet>) {
+        self.au_ts = None;
+        let data = std::mem::take(&mut self.au);
+        if std::mem::take(&mut self.broken) || data.is_empty() {
+            return;
+        }
+        let key = vpx_keyframe(self.codec, &data);
+        if key {
+            if let Some(track) = Track::video_from_keyframe(self.codec, &data) {
+                if self.keyframe_track.as_ref() != Some(&track) {
+                    self.keyframe_track = Some(track);
+                    self.params_changed = true;
+                }
+            }
+        }
+        out.push(Packet::new(0, t, t, key, data));
     }
 
     fn flush_at(&mut self, t: Time, out: &mut Vec<Packet>) {
@@ -616,7 +784,11 @@ impl Depacketizer {
         };
         let mut data = &p[2 + hdr_bytes..];
         if n == 1 {
-            let size = usize::from(u16::from_be_bytes([headers[0], headers[1]]) >> 3);
+            // A 16-bit AU-header in fewer bits (1 to 8) is malformed.
+            let Some(&[h0, h1]) = headers.get(..2) else {
+                return;
+            };
+            let size = usize::from(u16::from_be_bytes([h0, h1]) >> 3);
             if size > data.len() || !self.frag.is_empty() {
                 // A fragment of an AU larger than the packet.
                 if self.frag.len() + data.len() > self.max_au {
@@ -912,5 +1084,71 @@ mod tests {
             d.push(&r, &mut o).unwrap();
         }
         assert_eq!(o[1].dts, 20 * MILLISECOND);
+    }
+
+    fn flv_video(data: &[u8]) -> (Track, Vec<Packet>) {
+        use crate::flv::{Decoder, Demuxer, Event};
+        let mut dec = Decoder::new();
+        let (mut tracks, mut pkts) = (None, Vec::new());
+        for t in Demuxer::new().feed(data).unwrap() {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    Event::Tracks(t) => tracks = Some(t),
+                    Event::Packet(p) if p.track == 0 => pkts.push(p),
+                    Event::Packet(_) => {}
+                }
+            }
+        }
+        (tracks.unwrap()[0].clone(), pkts)
+    }
+
+    /// VP9 and AV1 over RTP (`only-rtp` payload formats): frames come back byte for byte with
+    /// their keyframes; the configuration and size come from the first keyframe; a lost packet
+    /// drops its frame only.
+    #[test]
+    fn vp9_and_av1_round_trip() {
+        for data in [
+            &include_bytes!("../testdata/vp9_opus.flv")[..],
+            &include_bytes!("../testdata/av1_opus.flv")[..],
+        ] {
+            let (track, pkts) = flv_video(data);
+            assert!(supported(track.codec));
+            let bare = Track::new(track.codec, Vec::new());
+            let mut d = Depacketizer::new(&bare);
+            let mut p = Packetizer::new(&track, 96).mtu(300);
+            let mut out = Vec::new();
+            let mut dropped = 0;
+            for (i, pkt) in pkts.iter().enumerate() {
+                let mut rtp = Vec::new();
+                p.packetize(pkt, &mut rtp);
+                if i == 10 && rtp.len() > 1 {
+                    rtp.remove(rtp.len() / 2); // frame 10 loses a packet
+                    dropped = 1;
+                }
+                for r in rtp {
+                    d.push(&r, &mut out).unwrap();
+                }
+            }
+            assert_eq!(out.len(), pkts.len() - dropped);
+            let kept: Vec<&Packet> = pkts
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != 10 || dropped == 0)
+                .map(|(_, p)| p)
+                .collect();
+            for (a, b) in kept.iter().zip(&out) {
+                assert_eq!(a.data, b.data);
+                assert_eq!(a.keyframe, b.keyframe);
+                assert_eq!(a.pts - kept[0].pts, b.pts - out[0].pts);
+            }
+            let cfg = d.take_config().expect("config from the keyframe");
+            assert!(d.take_config().is_none());
+            let mut t = Track::video(track.codec, cfg);
+            if t.width == 0 {
+                (t.width, t.height) = d.picture_size().unwrap();
+            }
+            assert_eq!((t.width, t.height), (320, 240));
+            assert_eq!(t.codec_string(), track.codec_string());
+        }
     }
 }

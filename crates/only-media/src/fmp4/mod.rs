@@ -9,11 +9,13 @@
 //! flags and composition offsets) followed by its `mdat`. A media segment can start with a
 //! `styp` ([`write_styp`]).
 //!
-//! Codecs: H.264 (`avc1` + `avcC`), H.265 (`hvc1` + `hvcC`), AAC (`mp4a` + `esds`) and Opus
-//! (`Opus` + `dOps`, built from the track's `OpusHead` when it has one). Other tracks (G.711,
-//! MP3, unknown) are left out. Timescales are 90 kHz for video and the sample rate for audio
-//! (48 kHz for Opus). The canonical packets are already in ISO BMFF form (AVCC with 4-byte
-//! lengths, raw AAC access units, Opus packets), so samples are copied as they are.
+//! Codecs: H.264 (`avc1` + `avcC`), H.265 (`hvc1` + `hvcC`), VP8 and VP9 (`vp08` / `vp09` +
+//! `vpcC`, version 1), AV1 (`av01` + `av1C`), AAC (`mp4a` + `esds`) and Opus (`Opus` + `dOps`,
+//! built from the track's `OpusHead` when it has one). Other tracks (G.711, MP3, unknown) are
+//! left out. Timescales are 90 kHz for video and the sample rate for audio (48 kHz for Opus).
+//! The canonical packets are already in ISO BMFF form (AVCC with 4-byte lengths, VP8 / VP9
+//! frames, AV1 temporal units with sized OBUs and no temporal delimiter, raw AAC access units,
+//! Opus packets), so samples are copied as they are.
 //!
 //! Sample durations come from the next sample's decode time; the last sample of a track in a
 //! fragment ends at the fragment end given to [`Muxer::flush`] (video) or lasts as long as the

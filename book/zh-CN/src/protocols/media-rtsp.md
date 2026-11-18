@@ -26,10 +26,11 @@ HLS、SRT 共用：摄像头用 RTSP 推流后可以用其他任何协议播放�
   `SET_PARAMETER` 保活。播放从 hub 缓存的 GOP 开始，并收到 RTCP 发送者报告；TCP 播放端跟不上时
   退化为只发关键帧（`hub::Dropper`），超过 `RtspConfig::max_write_queue` 则断开。
 - 推流端：`ANNOUNCE` 预占路径（第二个推流者立即收到 453），带 `mode=record` 的 `SETUP`，然后
-  `RECORD`。参数集一旦已知（来自 SDP 或码流内）流即上线。RTP 只携带显示时间，因此服务端为带
+  `RECORD`。参数集一旦已知（来自 SDP 或码流内；VP8、VP9、AV1 来自第一个关键帧）流即上线。RTP 只携带显示时间，因此服务端为带
   B 帧的视频推算解码时间（估计重排深度，不缓存帧）。
-- 编解码：H.264（单 NAL、STAP-A、FU-A）、H.265（单 NAL、AP、FU）、AAC（`mpeg4-generic`
-  `AAC-hbr`）、Opus、G.711。
+- 编解码：H.264（单 NAL、STAP-A、FU-A）、H.265（单 NAL、AP、FU）、VP8（RFC 7741）、VP9（RFC 9628）、
+  AV1（AOM 的 RTP 负载格式；这三种经 only-rtp 处理，缺包的帧被丢弃）、AAC（`mpeg4-generic` `AAC-hbr`）、
+  Opus、G.711。
 - 认证：`RtspConfig::credentials` 开启 Digest（MD5）与 Basic。
 - 超时：首个请求，以及任何已开始的请求，须在 `request_timeout`（10 s）内收齐。`Session: <id>;timeout=<s>`
   通告 `session_timeout`（60 s）并强制执行：客户端这么久什么都没发送（请求、交织的 RTCP，UDP 传输时来自其
@@ -82,19 +83,21 @@ let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
 // 在 Listener::udp("0.0.0.0:8189") 上服务 `rtc`，并通过 HTTP 提供 `whip.routes(router)`
 ```
 
-- **WHIP 推入**：H.264 与 H.265（RTP 上的 Annex B）转为 AVCC，配置记录由带内参数集构建；Opus、PCMU
-  与 PCMA 原样透传。所有媒体行就绪后流上线（或在 `track_timeout`，5 s 后以已就绪的行上线）；此前到达的
-  数据保存在 `max_pending_packets` / `max_pending_bytes` 之内。VP8、VP9、AV1 与 G.722 不为 hub 所承载：
-  只含这些编码的 offer 得到 406。
+- **WHIP 推入**：H.264 与 H.265（RTP 上的 Annex B）转为 AVCC，配置记录由带内参数集构建；VP8 与 VP9 帧以及
+  AV1 temporal unit 原样透传，配置记录与尺寸取自每个关键帧；Opus、PCMU 与 PCMA 原样透传。所有媒体行就绪后
+  流上线（或在 `track_timeout`，5 s 后以已就绪的行上线）；此前到达的数据保存在 `max_pending_packets` /
+  `max_pending_bytes` 之内。G.722 不为 hub 所承载：只含它的 offer 得到 406。
 - **WHEP 播出**：ICE 与 DTLS 建立后才为观众订阅，从下一个关键帧开始（设置 `play_gop_cache` 则从缓存的
-  GOP 开始），H.264/H.265 在每个关键帧前带上参数集，Opus 与 G.711 原样发送。AAC 与 MP3 不发送（不转码）：
+  GOP 开始），H.264/H.265 在每个关键帧前带上参数集，VP8、VP9、AV1、Opus 与 G.711 原样发送。AAC 与 MP3 不发送（不转码）：
   面向 WebRTC 观众请推 Opus，并且视频不要 B 帧（`-bf 0`）。
 - **关键帧**：观众的 PLI 或 FIR 交给 hub（`Subscription::request_keyframe`），hub 每
   `HubConfig::keyframe_request_interval`（500 ms）至多转给推流者一次；WHIP 推流者再把它变成发给其发送端的
   PLI。观众加入时若没有缓存的关键帧，会立即请求。
 
 `crates/only-media/examples/whip-server.rs` 可直接运行；`tools/interop/webrtc/media.sh` 用 ffmpeg 的 WHIP
-封装器与 pion 验证它（WHIP 推入、WHEP 播出、PLI 往返、RTMP 推入到 WHEP 播出）。
+封装器与 pion 验证它（WHIP 推入、WHEP 播出、PLI 往返、RTMP 推入到 WHEP 播出），
+`tools/interop/media/browser.sh` 用 headless Chrome 验证（通过 WHIP 推 VP8、VP9、AV1 与 H.264 并通过 WHEP
+解码，再播放一个多码率 fMP4 LL-HLS 阶梯）。
 
 ## RTSP 客户端
 
@@ -131,4 +134,4 @@ OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp
 ## 不支持
 
 RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话；不向推流端发送
-RTCP 接收者报告。客户端：重定向、重连与基于 RTCP 的音视频同步。WebRTC：VP8 / VP9 / AV1、simulcast、转码。
+RTCP 接收者报告。客户端：重定向、重连与基于 RTCP 的音视频同步。WebRTC：simulcast、转码。

@@ -8,7 +8,7 @@
 //! SET_PARAMETER (keep-alives), and ANNOUNCE, SETUP with `mode=record` and RECORD for
 //! publishers. ANNOUNCE reserves the path ([`Hub::reserve`]): a second publisher is refused at
 //! once and the stream goes live when the parameter sets are known (from the SDP's
-//! `sprop-*`, or in band).
+//! `sprop-*`, or in band; for VP8, VP9 and AV1, from the first keyframe).
 //!
 //! A player starts with the hub's cached GOP and gets RTCP sender reports; over TCP it is cut
 //! back to keyframes ([`Dropper`]) when it falls behind and closed when it falls further.
@@ -372,8 +372,14 @@ impl Recorder {
             return;
         }
         if let Some(cfg) = depack.take_config() {
-            if self.tracks[index].config != cfg {
-                let t = Track::video(self.tracks[index].codec, cfg);
+            let mut t = Track::video(self.tracks[index].codec, cfg);
+            if t.width == 0 {
+                // VP8 / VP9: the size comes from the keyframe, not the configuration.
+                if let Some((w, h)) = depack.picture_size() {
+                    (t.width, t.height) = (w, h);
+                }
+            }
+            if self.tracks[index] != t {
                 self.tracks[index] = t;
                 if self.live {
                     self.publisher.set_tracks(Arc::from(self.tracks.clone()));

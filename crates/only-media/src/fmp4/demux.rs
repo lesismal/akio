@@ -390,6 +390,30 @@ fn sample_entry(stsd: &[u8]) -> Result<Track, Fmp4Error> {
             }
             Ok(t)
         }
+        b"vp08" | b"vp09" | b"av01" => {
+            let (w, h) = (u32::from(be16(b, 24)?), u32::from(be16(b, 26)?));
+            let kids = b.get(78..).ok_or(Fmp4Error::Truncated)?;
+            let (codec, cfg) = if &e.typ == b"av01" {
+                let c = child(kids, b"av1C")?.ok_or(Fmp4Error::Invalid("av01 (no av1C)"))?;
+                (Codec::Av1, c)
+            } else {
+                let c = child(kids, b"vpcC")?.ok_or(Fmp4Error::Invalid("vp09 (no vpcC)"))?;
+                // A full box: version 1 and flags.
+                let c = c.get(4..).ok_or(Fmp4Error::Truncated)?;
+                let codec = if &e.typ == b"vp08" {
+                    Codec::Vp8
+                } else {
+                    Codec::Vp9
+                };
+                (codec, c)
+            };
+            let mut t = Track::video(codec, cfg.to_vec());
+            if t.width == 0 && t.height == 0 {
+                t.width = w;
+                t.height = h;
+            }
+            Ok(t)
+        }
         b"mp4a" | b"Opus" => {
             let version = be16(b, 8)?;
             let channels = be16(b, 16)?;

@@ -25,8 +25,21 @@
 //! answered by the publisher's thread when what they wait for is cut (or after three target
 //! durations with 503).
 //!
-//! Not supported: encryption, delta updates (`_HLS_skip`), rendition reports,
-//! multivariant playlists.
+//! **Multivariant playlists**: renditions of one source published as separate hub streams
+//! (`live/cam_1080`, `live/cam_720`, an audio-only `live/cam_audio`...) are tied together by
+//! [`Hls::add_multivariant`], which serves `/<name>.m3u8` (a [`Multivariant`]): one
+//! `EXT-X-STREAM-INF` per [`Variant`] with `BANDWIDTH` (configured, or the peak bitrate of the
+//! variant's segments plus its audio group's, with `AVERAGE-BANDWIDTH`), `CODECS` (RFC 6381
+//! strings of the tracks the segment format carries), `RESOLUTION` and `AUDIO`, and one
+//! `EXT-X-MEDIA:TYPE=AUDIO` per [`AudioRendition`] of a group. URIs are relative to the
+//! multivariant playlist and carry its query string (for the hub's `on_subscribe` hook). A
+//! request starts the muxers of every rendition and is answered once each has its tracks and,
+//! when its bandwidth is measured, a segment (or after three target durations plus
+//! [`HlsConfig::play_wait`] with the renditions that are ready; 503 with none). It works with
+//! both segment formats and with LL-HLS (the media playlists carry the parts).
+//!
+//! Not supported: encryption, delta updates (`_HLS_skip`), rendition reports, `I-FRAME`
+//! playlists, subtitles and closed captions.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -119,6 +132,127 @@ impl Default for HlsConfig {
     }
 }
 
+/// One rendition of a [`Multivariant`] playlist: a hub stream, listed with
+/// `EXT-X-STREAM-INF`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Variant {
+    /// The hub path of the stream; its media playlist is `/<path>/index.m3u8`.
+    pub path: String,
+    /// `BANDWIDTH` in bits per second; `None` measures it: the peak bitrate of the stream's
+    /// segments (and of its audio group's), with `AVERAGE-BANDWIDTH` their mean.
+    pub bandwidth: Option<u64>,
+    /// The `GROUP-ID` of the [`AudioRendition`]s that play with this variant (`AUDIO`).
+    pub audio_group: Option<String>,
+}
+
+impl Variant {
+    /// The variant playing hub stream `path`, its bandwidth measured, no audio group.
+    pub fn new(path: impl Into<String>) -> Variant {
+        Variant {
+            path: path.into(),
+            bandwidth: None,
+            audio_group: None,
+        }
+    }
+}
+
+/// An alternative audio rendition of a [`Multivariant`] playlist: an audio-only hub stream,
+/// listed with `EXT-X-MEDIA:TYPE=AUDIO`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AudioRendition {
+    /// `GROUP-ID`.
+    pub group: String,
+    /// `NAME`, unique in the group.
+    pub name: String,
+    /// The hub path of the stream; its media playlist is `/<path>/index.m3u8`.
+    pub path: String,
+    /// `LANGUAGE` (RFC 5646), if any.
+    pub language: Option<String>,
+    /// `DEFAULT=YES`: played unless the user picks another.
+    pub default: bool,
+}
+
+impl AudioRendition {
+    /// A rendition of group `group` named `name` playing hub stream `path`.
+    pub fn new(
+        group: impl Into<String>,
+        name: impl Into<String>,
+        path: impl Into<String>,
+    ) -> AudioRendition {
+        AudioRendition {
+            group: group.into(),
+            name: name.into(),
+            path: path.into(),
+            language: None,
+            default: false,
+        }
+    }
+}
+
+/// A multivariant (master) playlist over renditions published as separate streams, served
+/// by [`Hls::add_multivariant`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Multivariant {
+    /// The variants, in the order listed (players start with the first).
+    pub variants: Vec<Variant>,
+    /// The alternative audio renditions.
+    pub audio: Vec<AudioRendition>,
+}
+
+impl Multivariant {
+    /// A playlist with no rendition yet.
+    pub fn new() -> Multivariant {
+        Multivariant::default()
+    }
+
+    /// Every hub path it refers to.
+    fn paths(&self) -> impl Iterator<Item = &str> {
+        self.variants
+            .iter()
+            .map(|v| v.path.as_str())
+            .chain(self.audio.iter().map(|a| a.path.as_str()))
+    }
+}
+
+/// What a master playlist needs of a rendition, known once its muxer has its tracks.
+#[derive(Debug, Clone, Default)]
+struct Desc {
+    /// RFC 6381 strings of the carried tracks.
+    codecs: Vec<String>,
+    /// The picture size of the first carried video track.
+    resolution: Option<(u32, u32)>,
+    /// Channels of the first carried audio track.
+    channels: Option<u8>,
+}
+
+/// A rendition's description and bitrates (peak, average; 0 without segments).
+struct Rendition {
+    desc: Desc,
+    peak: u64,
+    average: u64,
+}
+
+/// The URI of `target` relative to the directory of `from` (both hub-style paths).
+fn relative(from: &str, target: &str) -> String {
+    let base: Vec<&str> = from.split('/').filter(|c| !c.is_empty()).collect();
+    let base = &base[..base.len().saturating_sub(1)];
+    let to: Vec<&str> = target.split('/').filter(|c| !c.is_empty()).collect();
+    let common = base.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    let mut out = "../".repeat(base.len() - common);
+    out.push_str(&to[common..].join("/"));
+    out
+}
+
+/// Quotes an attribute value (a quoted-string has no `"` nor line breaks).
+fn quoted(v: &str) -> String {
+    v.chars()
+        .filter(|c| !matches!(c, '"' | '\r' | '\n'))
+        .collect()
+}
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
@@ -131,6 +265,8 @@ struct Inner {
     hub: Hub,
     cfg: HlsConfig,
     muxers: Mutex<HashMap<String, Arc<Stream>>>,
+    /// Multivariant playlists by name (served at `/<name>.m3u8`).
+    masters: Mutex<HashMap<String, Arc<Multivariant>>>,
 }
 
 /// The HLS service. Cheap to clone.
@@ -219,6 +355,12 @@ struct State {
     init: u64,
     /// The number the next new init segment gets.
     next_init: u64,
+    /// The rendition's description for multivariant playlists (set with the tracks; boxed to
+    /// keep the state the segmenting path touches small).
+    desc: Option<Box<Desc>>,
+    /// The longest segment cut so far, in seconds rounded to the nearest (RFC 8216 4.3.3.1
+    /// compares rounded durations with the target duration, which must not change).
+    longest: u64,
 }
 
 impl State {
@@ -249,7 +391,168 @@ impl Hls {
             hub,
             cfg,
             muxers: Mutex::new(HashMap::new()),
+            masters: Mutex::new(HashMap::new()),
         }))
+    }
+
+    /// Serves `playlist` at `/<name>.m3u8` (`name` like a hub path, `live/cam`), replacing
+    /// the playlist of that name if there was one. The renditions' streams need not be
+    /// published yet: those that are not are left out of the answers until they are.
+    pub fn add_multivariant(&self, name: &str, playlist: Multivariant) {
+        let name = name.trim_matches('/').to_owned();
+        lock(&self.0.masters).insert(name, Arc::new(playlist));
+    }
+
+    /// Stops serving the multivariant playlist `name`; whether there was one.
+    pub fn remove_multivariant(&self, name: &str) -> bool {
+        lock(&self.0.masters)
+            .remove(name.trim_matches('/'))
+            .is_some()
+    }
+
+    /// The description and bitrates of the rendition at `path`, once its muxer knows its
+    /// tracks; `None` before (or when no muxer runs).
+    fn rendition(&self, path: &str) -> Option<Rendition> {
+        let st = lock(&self.0.muxers).get(path).cloned()?;
+        let g = lock(&st.state);
+        let desc = (**g.desc.as_ref()?).clone();
+        let (mut peak, mut bytes, mut dur) = (0u64, 0u128, 0u128);
+        for seg in &g.segments {
+            let d = seg.duration.max(1) as u128;
+            let b = seg.data.len() as u128 * 8;
+            peak = peak.max(u64::try_from(b * SECOND as u128 / d).unwrap_or(u64::MAX));
+            bytes += b;
+            dur += d;
+        }
+        let average = (bytes * SECOND as u128)
+            .checked_div(dur)
+            .map_or(0, |v| u64::try_from(v).unwrap_or(u64::MAX));
+        Some(Rendition {
+            desc,
+            peak,
+            average,
+        })
+    }
+
+    /// The multivariant playlist `name` of `m`; `None` while a rendition is not ready (all of
+    /// them, unless `late`: then those ready, `None` with none).
+    fn master_playlist(
+        &self,
+        name: &str,
+        m: &Multivariant,
+        query: &str,
+        late: bool,
+    ) -> Option<String> {
+        let suffix = if query.is_empty() {
+            String::new()
+        } else {
+            format!("?{query}")
+        };
+        let uri = |path: &str| format!("{}{suffix}", relative(name, &format!("{path}/index.m3u8")));
+        let audio: Vec<(&AudioRendition, Rendition)> = m
+            .audio
+            .iter()
+            .filter_map(|a| self.rendition(&a.path).map(|r| (a, r)))
+            .collect();
+        let variants: Vec<(&Variant, Rendition)> = m
+            .variants
+            .iter()
+            .filter_map(|v| self.rendition(&v.path).map(|r| (v, r)))
+            .filter(|(v, r)| v.bandwidth.is_some() || r.peak > 0)
+            .collect();
+        let ready = variants.len() == m.variants.len()
+            && audio.len() == m.audio.len()
+            && audio.iter().all(|(_, r)| r.peak > 0);
+        if variants.is_empty() || !(ready || late) {
+            return None;
+        }
+        let fmp4 = self.0.cfg.format == SegmentFormat::Fmp4;
+        let mut s = String::with_capacity(512);
+        s.push_str("#EXTM3U\n");
+        let _ = writeln!(s, "#EXT-X-VERSION:{}", if fmp4 { 7 } else { 3 });
+        for (a, r) in &audio {
+            let _ = write!(
+                s,
+                "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"{}\",NAME=\"{}\"",
+                quoted(&a.group),
+                quoted(&a.name)
+            );
+            if let Some(l) = &a.language {
+                let _ = write!(s, ",LANGUAGE=\"{}\"", quoted(l));
+            }
+            let default = if a.default { "YES" } else { "NO" };
+            let _ = write!(s, ",DEFAULT={default},AUTOSELECT=YES");
+            if let Some(ch) = r.desc.channels {
+                let _ = write!(s, ",CHANNELS=\"{ch}\"");
+            }
+            let _ = writeln!(s, ",URI=\"{}\"", uri(&a.path));
+        }
+        for (v, r) in &variants {
+            let group: Vec<&(&AudioRendition, Rendition)> = audio
+                .iter()
+                .filter(|(a, _)| Some(&a.group) == v.audio_group.as_ref())
+                .collect();
+            let mut codecs = r.desc.codecs.clone();
+            for (_, ar) in &group {
+                for c in &ar.desc.codecs {
+                    if !codecs.contains(c) {
+                        codecs.push(c.clone());
+                    }
+                }
+            }
+            let audio_peak = group.iter().map(|(_, a)| a.peak).max().unwrap_or(0);
+            let audio_avg = group.iter().map(|(_, a)| a.average).max().unwrap_or(0);
+            let bandwidth = v.bandwidth.unwrap_or(r.peak + audio_peak).max(1);
+            let _ = write!(s, "#EXT-X-STREAM-INF:BANDWIDTH={bandwidth}");
+            if v.bandwidth.is_none() && r.average > 0 {
+                let _ = write!(s, ",AVERAGE-BANDWIDTH={}", r.average + audio_avg);
+            }
+            if !codecs.is_empty() {
+                let _ = write!(s, ",CODECS=\"{}\"", codecs.join(","));
+            }
+            if let Some((w, h)) = r.desc.resolution {
+                let _ = write!(s, ",RESOLUTION={w}x{h}");
+            }
+            if let Some(g) = v.audio_group.as_ref().filter(|_| !group.is_empty()) {
+                let _ = write!(s, ",AUDIO=\"{}\"", quoted(g));
+            }
+            let _ = writeln!(s, "\n{}", uri(&v.path));
+        }
+        Some(s)
+    }
+
+    /// Answers a multivariant playlist request: starts the renditions' muxers, then answers
+    /// at once if every rendition is ready, else parks the request (checked every 50 ms).
+    fn master(&self, name: &str, m: Arc<Multivariant>, ctx: &mut Context) {
+        for path in m.paths() {
+            if let Ok(st) = self.stream(path, ctx) {
+                lock(&st.state).last_access = Some(Instant::now());
+            }
+        }
+        let query = ctx.req().query().unwrap_or("").to_owned();
+        if let Some(body) = self.master_playlist(name, &m, &query, false) {
+            return ctx.respond(self.master_response(body));
+        }
+        let Some(d) = ctx.detach() else { return };
+        let cfg = &self.0.cfg;
+        let deadline = Instant::now() + 3 * cfg.target_duration + cfg.play_wait.unwrap_or_default();
+        master_wait(
+            Arc::downgrade(&self.0),
+            name.to_owned(),
+            m,
+            query,
+            d,
+            deadline,
+        );
+    }
+
+    fn master_response(&self, body: String) -> Response {
+        let mut r = Response::with_body(200, "application/vnd.apple.mpegurl", body.into_bytes())
+            .header("Cache-Control", "no-cache");
+        if let Some(o) = &self.0.cfg.cors_origin {
+            r = r.header("Access-Control-Allow-Origin", o);
+        }
+        r
     }
 
     /// Paths with a running muxer.
@@ -305,6 +608,31 @@ impl Hls {
     }
 }
 
+/// Checks a parked multivariant playlist request every 50 ms until it can be answered or its
+/// deadline passes.
+fn master_wait(
+    hls: Weak<Inner>,
+    name: String,
+    m: Arc<Multivariant>,
+    query: String,
+    d: Detached,
+    deadline: Instant,
+) {
+    crate::timer::after(Duration::from_millis(50), move || {
+        let Some(inner) = hls.upgrade() else {
+            d.respond(Response::text(503, "stopped"));
+            return;
+        };
+        let h = Hls(inner);
+        let late = Instant::now() >= deadline;
+        match h.master_playlist(&name, &m, &query, late) {
+            Some(body) => d.respond(h.master_response(body)),
+            None if late => d.respond(Response::text(503, "no rendition is ready")),
+            None => master_wait(hls, name, m, query, d, deadline),
+        }
+    });
+}
+
 fn idle_check(hls: &Weak<Inner>, st: &Weak<Stream>) {
     let (Some(hls), Some(st)) = (hls.upgrade(), st.upgrade()) else {
         return;
@@ -343,6 +671,12 @@ fn blocking_params(q: Option<&str>) -> (Option<u64>, Option<usize>) {
 impl Service for Hls {
     fn call(&self, ctx: &mut Context) {
         let p = ctx.path().trim_start_matches('/').to_owned();
+        if let Some(name) = p.strip_suffix(".m3u8") {
+            let m = lock(&self.0.masters).get(name).cloned();
+            if let Some(m) = m {
+                return self.master(name, m, ctx);
+            }
+        }
         let Some((path, file)) = p.rsplit_once('/') else {
             return ctx.text(404, "not found");
         };
@@ -523,13 +857,11 @@ impl Stream {
         let parts = self.cfg.part_duration.map(dur_ns);
         let first = g.segments.len().saturating_sub(self.cfg.playlist_size);
         let listed: Vec<&Segment> = g.segments.iter().skip(first).collect();
-        let max_dur = listed
-            .iter()
-            .map(|s| s.duration)
-            .max()
-            .unwrap_or(0)
-            .max(g.target);
-        let target = (max_dur + SECOND - 1) / SECOND;
+        // The configured target (rounded up) or the longest segment so far (rounded to the
+        // nearest second): it only grows, so reloads see the same value unless a segment
+        // outgrows it.
+        let target = (g.target.max(1) + SECOND - 1) / SECOND;
+        let target = (target as u64).max(g.longest);
         let mut s = String::with_capacity(512);
         s.push_str("#EXTM3U\n");
         let fmp4 = self.cfg.format == SegmentFormat::Fmp4;
@@ -627,6 +959,10 @@ impl Stream {
 
     /// Answers the waiters that can be answered (after a part or segment was cut).
     fn wake(&self, g: &mut State) -> Vec<(Detached, Response)> {
+        if g.waiters.is_empty() {
+            // The common case on the publisher's thread: nothing to build or answer.
+            return Vec::new();
+        }
         let mut out = Vec::new();
         let waiters = std::mem::take(&mut g.waiters);
         for w in waiters {
@@ -726,9 +1062,11 @@ impl HlsSink {
         Self::close_part(st, &mut b, end, None);
         let data = Arc::new(b.data);
         g.bytes += data.len() + b.parts.iter().map(|p| p.data.len()).sum::<usize>();
+        let duration = (end - b.start).max(1);
+        g.longest = g.longest.max(((duration + SECOND / 2) / SECOND) as u64);
         g.segments.push_back(Segment {
             seq: b.seq,
-            duration: (end - b.start).max(1),
+            duration,
             discontinuity: b.discontinuity,
             init: b.init,
             data,
@@ -798,8 +1136,30 @@ impl Sink for HlsSink {
                 }
                 _ => SegMuxer::Ts(Muxer::new(tracks)),
             });
-            self.video = tracks.iter().map(|t| t.codec.is_video()).collect();
+            // Only carried video counts: a stream whose video the format cannot carry (VP9 or
+            // AV1 in MPEG-TS) is cut like an audio-only one.
+            let m = self.muxer.as_ref();
+            self.video = tracks
+                .iter()
+                .enumerate()
+                .map(|(i, t)| t.codec.is_video() && m.is_some_and(|m| m.carries(i)))
+                .collect();
             self.has_video = self.video.iter().any(|&v| v);
+            let carried = |i: usize| m.is_some_and(|m| m.carries(i));
+            let mut desc = Desc::default();
+            let kept = tracks.iter().enumerate().filter(|&(i, _)| carried(i));
+            for t in kept.map(|(_, t)| t) {
+                if let Some(c) = t.codec_string().filter(|c| !desc.codecs.contains(c)) {
+                    desc.codecs.push(c);
+                }
+                if t.is_video() && t.width > 0 && desc.resolution.is_none() {
+                    desc.resolution = Some((t.width, t.height));
+                }
+                if t.codec.is_audio() && desc.channels.is_none() && t.channels > 0 {
+                    desc.channels = Some(t.channels);
+                }
+            }
+            g.desc = Some(Box::new(desc));
             self.st.wake(&mut g)
         };
         for (d, r) in respond {
@@ -1236,5 +1596,263 @@ mod tests {
         let g = lock(&s.st.state);
         assert!(g.next_seq > 5, "segments cut: {}", g.next_seq);
         assert_eq!(g.inits.len(), 1);
+    }
+
+    #[test]
+    fn relative_uris() {
+        assert_eq!(
+            relative("live/cam", "live/cam_720/index.m3u8"),
+            "cam_720/index.m3u8"
+        );
+        assert_eq!(relative("cam", "a/b/index.m3u8"), "a/b/index.m3u8");
+        assert_eq!(relative("x/y/m", "x/z/index.m3u8"), "../z/index.m3u8");
+        assert_eq!(relative("a/b/c", "d/index.m3u8"), "../../d/index.m3u8");
+        assert_eq!(quoted("a\"b\nc"), "abc");
+    }
+
+    /// Feeds `pkts` of `tracks` into a sink registered in `hls` under `path`.
+    fn rendition(hls: &Hls, path: &str, tracks: &Tracks, pkts: &[Packet], rounds: i64) {
+        let mut s = sink(hls.0.cfg.clone());
+        s.on_tracks(tracks);
+        feed(&mut s, pkts, rounds, 2 * SECOND);
+        lock(&hls.0.muxers).insert(path.to_owned(), s.st.clone());
+    }
+
+    /// Only the audio track of the sample, as track 0.
+    fn audio_only(tracks: &Tracks, pkts: &[Packet]) -> (Tracks, Vec<Packet>) {
+        let a = tracks
+            .iter()
+            .position(|t| t.codec.is_audio())
+            .expect("audio");
+        let t: Tracks = Arc::from(vec![tracks[a].clone()]);
+        let p = pkts
+            .iter()
+            .filter(|p| p.track == a)
+            .map(|p| Packet::new(0, p.dts, p.pts, true, p.data.clone()))
+            .collect();
+        (t, p)
+    }
+
+    /// Variants with measured and configured bandwidth, an audio group, codecs per format,
+    /// readiness and the late answer.
+    #[test]
+    fn multivariant_playlist() {
+        for format in [SegmentFormat::MpegTs, SegmentFormat::Fmp4] {
+            let mut cfg = fmp4_cfg(true);
+            cfg.format = format;
+            let hls = Hls::new(Hub::default(), cfg);
+            let (tracks, pkts) = sample();
+            let (htracks, hpkts) = sample_h265();
+            let (atracks, apkts) = audio_only(&tracks, &pkts);
+            let mut m = Multivariant::new();
+            let mut hi = Variant::new("live/cam_hi");
+            hi.audio_group = Some("aud".into());
+            let mut lo = Variant::new("live/cam_lo");
+            lo.bandwidth = Some(150_000);
+            lo.audio_group = Some("aud".into());
+            m.variants = vec![hi, lo];
+            let mut en = AudioRendition::new("aud", "English", "live/cam_en");
+            en.language = Some("en".into());
+            en.default = true;
+            m.audio = vec![en];
+            // Nothing published yet: not ready, and late with nothing is still nothing.
+            assert!(hls.master_playlist("live/cam", &m, "", false).is_none());
+            assert!(hls.master_playlist("live/cam", &m, "", true).is_none());
+            rendition(&hls, "live/cam_hi", &htracks, &hpkts, 2);
+            assert!(hls.master_playlist("live/cam", &m, "", false).is_none());
+            let late = hls.master_playlist("live/cam", &m, "", true).expect("late");
+            assert_eq!(late.matches("#EXT-X-STREAM-INF").count(), 1, "{late}");
+            assert!(
+                !late.contains("AUDIO=") && !late.contains("EXT-X-MEDIA"),
+                "{late}"
+            );
+            rendition(&hls, "live/cam_lo", &tracks, &pkts, 2);
+            rendition(&hls, "live/cam_en", &atracks, &apkts, 2);
+            let pl = hls
+                .master_playlist("live/cam", &m, "token=1", false)
+                .expect("ready");
+            let fmp4 = format == SegmentFormat::Fmp4;
+            let version = if fmp4 { 7 } else { 3 };
+            assert!(
+                pl.starts_with(&format!("#EXTM3U\n#EXT-X-VERSION:{version}\n")),
+                "{pl}"
+            );
+            assert!(
+                pl.contains(
+                    "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aud\",NAME=\"English\",LANGUAGE=\"en\",\
+                     DEFAULT=YES,AUTOSELECT=YES,CHANNELS=\"2\",URI=\"cam_en/index.m3u8?token=1\"\n"
+                ),
+                "{pl}"
+            );
+            let lines: Vec<&str> = pl.lines().collect();
+            let inf: Vec<usize> = (0..lines.len())
+                .filter(|&i| lines[i].starts_with("#EXT-X-STREAM-INF:"))
+                .collect();
+            assert_eq!(inf.len(), 2, "{pl}");
+            let (hi, lo) = (lines[inf[0]], lines[inf[1]]);
+            assert_eq!(lines[inf[0] + 1], "cam_hi/index.m3u8?token=1");
+            assert_eq!(lines[inf[1] + 1], "cam_lo/index.m3u8?token=1");
+            let bw: u64 = hi["#EXT-X-STREAM-INF:BANDWIDTH=".len()..]
+                .split(',')
+                .next()
+                .and_then(|v| v.parse().ok())
+                .expect("bandwidth");
+            // About 140 kb/s of video plus the audio group, in segments with overhead.
+            assert!((100_000..2_000_000).contains(&bw), "{hi}");
+            assert!(hi.contains(",AVERAGE-BANDWIDTH="), "{hi}");
+            assert!(hi.contains(",RESOLUTION=320x240,AUDIO=\"aud\""), "{hi}");
+            assert!(hi.contains(",CODECS=\"hvc1.1.6.L60.90,mp4a.40.2\""), "{hi}");
+            assert!(
+                lo.starts_with(
+                    "#EXT-X-STREAM-INF:BANDWIDTH=150000,CODECS=\"avc1.64000D,mp4a.40.2\""
+                ),
+                "{lo}"
+            );
+            assert!(!lo.contains("AVERAGE-BANDWIDTH"), "{lo}");
+        }
+    }
+
+    /// VP9 is listed in fMP4; in MPEG-TS (which cannot carry it) the variant is audio only.
+    #[test]
+    fn multivariant_codecs_follow_the_format() {
+        use crate::flv::{Decoder, Demuxer, Event};
+        let mut dec = Decoder::new();
+        let (mut tracks, mut pkts) = (None, Vec::new());
+        for t in Demuxer::new()
+            .feed(include_bytes!("../testdata/vp9_opus.flv"))
+            .expect("flv")
+        {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    Event::Tracks(t) => tracks = Some(t),
+                    Event::Packet(p) => pkts.push(p),
+                }
+            }
+        }
+        let tracks = tracks.expect("tracks");
+        for (format, want) in [
+            (
+                SegmentFormat::Fmp4,
+                "CODECS=\"vp09.00.20.08,opus\",RESOLUTION=320x240\n",
+            ),
+            (SegmentFormat::MpegTs, "CODECS=\"opus\"\n"),
+        ] {
+            let mut cfg = fmp4_cfg(false);
+            cfg.format = format;
+            let hls = Hls::new(Hub::default(), cfg);
+            rendition(&hls, "v", &tracks, &pkts, 3);
+            let mut m = Multivariant::new();
+            m.variants.push(Variant::new("v"));
+            let pl = hls.master_playlist("m", &m, "", false).expect("ready");
+            assert!(pl.contains(want), "{format:?}: {pl}");
+            // Audio-only TS segments are still cut (the uncarried VP9 does not hold them).
+            assert!(!lock(&lock(&hls.0.muxers)["v"].state).segments.is_empty());
+        }
+    }
+
+    fn target_of(pl: &str) -> u64 {
+        pl.lines()
+            .find_map(|l| l.strip_prefix("#EXT-X-TARGETDURATION:"))
+            .and_then(|v| v.parse().ok())
+            .expect("target duration")
+    }
+
+    /// `EXT-X-TARGETDURATION` does not change between reloads of a live playlist (RFC 8216
+    /// 6.2.1; Chrome's player refuses a change): segments of a little over the target round
+    /// to it, and only a longer one raises it, for good.
+    #[test]
+    fn target_duration_is_stable() {
+        let (tracks, pkts) = sample(); // keyframes every second
+        let mut s = sink(HlsConfig {
+            target_duration: Duration::from_secs(1),
+            ..HlsConfig::default()
+        });
+        s.on_tracks(&tracks);
+        let mut seen = Vec::new();
+        for round in 0..6i64 {
+            feed_round(&mut s, &pkts, round);
+            let g = lock(&s.st.state);
+            if !g.segments.is_empty() {
+                seen.push(target_of(&s.st.playlist(&g)));
+            }
+        }
+        assert!(seen.len() >= 5 && seen.iter().all(|&t| t == 1), "{seen:?}");
+        // A 2.6 s segment (a keyframe lost) raises it to 3, and it stays.
+        let mut g = lock(&s.st.state);
+        g.longest = g.longest.max(3);
+        assert_eq!(target_of(&s.st.playlist(&g)), 3);
+    }
+
+    fn feed_round(s: &mut HlsSink, pkts: &[Packet], round: i64) {
+        let span = 2 * SECOND + 80 * crate::av::MILLISECOND;
+        for p in pkts {
+            let q = Packet::new(
+                p.track,
+                p.dts + round * span,
+                p.pts + round * span,
+                p.keyframe,
+                p.data.clone(),
+            );
+            s.on_packet(&Arc::new(q));
+        }
+    }
+
+    /// Segmenting cost in ns per packet (best of seven runs) for MPEG-TS and fMP4, with and
+    /// without LL-HLS parts, H.264 + AAC; for same-run A/B comparisons:
+    /// `cargo test -p only-media --release --lib bench_segmenting -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_segmenting() {
+        let (tracks, pkts) = sample();
+        let span = pkts.iter().map(|p| p.dts).max().unwrap_or(0) + 40 * crate::av::MILLISECOND;
+        let rounds = 60i64;
+        let all: Vec<Arc<Packet>> = (0..rounds)
+            .flat_map(|r| {
+                pkts.iter().map(move |p| {
+                    Arc::new(Packet::new(
+                        p.track,
+                        p.dts + r * span,
+                        p.pts + r * span,
+                        p.keyframe,
+                        p.data.clone(),
+                    ))
+                })
+            })
+            .collect();
+        for (name, format, parts) in [
+            ("ts", SegmentFormat::MpegTs, None),
+            (
+                "ts-ll",
+                SegmentFormat::MpegTs,
+                Some(Duration::from_millis(200)),
+            ),
+            ("fmp4", SegmentFormat::Fmp4, None),
+            (
+                "fmp4-ll",
+                SegmentFormat::Fmp4,
+                Some(Duration::from_millis(200)),
+            ),
+        ] {
+            if std::env::var("BENCH_ONLY").is_ok_and(|o| o != name) {
+                continue;
+            }
+            let ns = (0..7)
+                .map(|_| {
+                    let mut s = sink(HlsConfig {
+                        format,
+                        part_duration: parts,
+                        target_duration: Duration::from_secs(1),
+                        ..HlsConfig::default()
+                    });
+                    s.on_tracks(&tracks);
+                    let t = Instant::now();
+                    for p in &all {
+                        s.on_packet(p);
+                    }
+                    t.elapsed().as_nanos() as f64 / all.len() as f64
+                })
+                .fold(f64::MAX, f64::min);
+            println!("BENCH {name} {ns:.1}");
+        }
     }
 }

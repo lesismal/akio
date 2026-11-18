@@ -6,23 +6,29 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 
 | 协议 | 推流 | 播放 | 章节 |
 |---|---|---|---|
-| RTMP（digest 握手、Enhanced RTMP 的 H.265 / Opus），服务端与客户端 | 支持 | 支持 | 本章 |
+| RTMP（digest 握手、Enhanced RTMP 的 H.265 / VP9 / AV1 / VP8 / Opus），服务端与客户端 | 支持 | 支持 | 本章 |
 | HTTP-FLV、WS-FLV | – | 支持 | 本章 |
-| HLS（MPEG-TS 或 fMP4/CMAF、LL-HLS 分片、阻塞式刷新） | – | 支持 | 本章 |
+| HLS（MPEG-TS 或 fMP4/CMAF、LL-HLS 分片、阻塞式刷新、多码率播放列表） | – | 支持 | 本章 |
 | RTSP（TCP 交织与 UDP），服务端与客户端 | 支持 | 支持 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
 | SRT live（ARQ、TSBPD、AES） | 支持 | 支持 | [SRT](media-srt.md) |
 | WHIP / WHEP（媒体需 `webrtc` feature） | 支持 | 支持 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
 
-编码：H.264、H.265、AAC 和 Opus，凡容器能承载之处都支持（容器允许时还有 G.711 与 MP3）。下面的代码片段
-来自 `crates/only-media/examples/guide-media.rs`。
+编码：H.264、H.265、AAC 和 Opus，凡容器能承载之处都支持；VP8、VP9 与 AV1 支持 Enhanced RTMP / FLV、RTSP、
+WHIP / WHEP 与 fMP4 HLS（不支持 MPEG-TS）；容器允许时还有 G.711 与 MP3。下面的代码片段来自 `crates/only-media/examples/guide-media.rs`。
 
 ## 规范形式
 
 `av::Track` 描述一路基本流：`Codec` 及其 ISO BMFF 形式的配置（带参数集的
-`AVCDecoderConfigurationRecord` / `HEVCDecoderConfigurationRecord`、AAC 的 `AudioSpecificConfig`、
-`OpusHead`），以及画面尺寸或采样率。`av::Packet` 是一个访问单元：AVCC 视频（4 字节 NAL 长度，不含访问
-单元分隔符）、不带 ADTS 的 AAC 原始帧、Opus 包；解码时间与显示时间以纳秒计。`only_media::codec`
-提供 AVCC 与 Annex B 互转、解析配置记录与 SPS（画面尺寸）以及 ADTS 分帧的工具。
+`AVCDecoderConfigurationRecord` / `HEVCDecoderConfigurationRecord`、VP8 与 VP9 的
+`VPCodecConfigurationRecord`、带 sequence header 的 `AV1CodecConfigurationRecord`、AAC 的
+`AudioSpecificConfig`、`OpusHead`），以及画面尺寸或采样率。`av::Packet` 是一个访问单元：AVCC 视频（4 字节
+NAL 长度，不含访问单元分隔符）、VP8 / VP9 帧、AV1 temporal unit（带长度、不含 temporal delimiter 的
+OBU）、不带 ADTS 的 AAC 原始帧、Opus 包；解码时间与显示时间以纳秒计。包的 `keyframe` 由码流判定（IDR /
+IRAP、VP8 / VP9 关键帧、AV1 显示的 `KEY_FRAME`）：GOP 缓存、HLS 分段与慢播放器丢包都从这些包开始。
+`only_media::codec` 提供 AVCC 与 Annex B 互转、解析配置记录、SPS、VP9 关键帧头与 AV1 sequence header
+（画面尺寸）以及 ADTS 分帧的工具；`Track::video_from_keyframe` 由关键帧构造 VP8 / VP9 / AV1 轨道，
+`Track::codec_string` 给出 RFC 6381 字符串（`avc1.64001F`、`vp09.00.31.08`、`av01.0.04M.08`、
+`mp4a.40.2`……）。
 
 ## Hub
 
@@ -72,7 +78,7 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 头格式、扩展时间戳、chunk 大小变更、abort、聚合消息、确认），并应答 `connect`、`releaseStream`、
 `FCPublish`、`createStream`、`publish`、`play`、`getStreamLength`、`FCUnpublish`、`deleteStream`、
 `closeStream`。推流者的 FLV tag 经 `flv::Decoder` 解析（传统 codec id，包括以 12 表示的 H.265，以及
-Enhanced RTMP 的 FourCC `hvc1`、`Opus`、`mp4a`）；播放者先收到 onMetaData 和序列头，然后是 GOP 缓存，
+Enhanced RTMP 的 FourCC `hvc1`、`vp09`、`av01`、`vp08`、`Opus`、`mp4a`）；播放者先收到 onMetaData 和序列头，然后是 GOP 缓存，
 由 `flv::Encoder` 写出（H.265 写作 `hvc1`，或在 `EncoderConfig::legacy_hevc` 时写作 codec id 12）。
 `RtmpConfig::on_connect` 可按 app 和 tcUrl 拒绝连接。RTMPS 就是放在 only-tls 之后的 RTMP。客户端须在
 `handshake_timeout`（10 s）内完成握手；连接 `idle_timeout`（60 s）内什么都没发送则被关闭（播放者除外：
@@ -97,9 +103,21 @@ Enhanced RTMP 的 FourCC `hvc1`、`Opus`、`mp4a`）；播放者先收到 onMeta
   `EXT-X-PART`、`EXT-X-PRELOAD-HINT`、`EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`，以及阻塞式播放列表
   刷新（`?_HLS_msn=&_HLS_part=`）。需要等待的请求被挂起（不占线程），在分段或分片切出时由推流者线程应答。
 - **fMP4 / CMAF 分段**：`HlsConfig::format = SegmentFormat::Fmp4` 切出分片 MP4 而非 MPEG-TS（H.264、
-  H.265、AAC 与 Opus）。播放列表用 `#EXT-X-MAP:URI="init-<n>.mp4"` 指向初始化分段（仅当编码配置变化时换新），
+  H.265、VP8、VP9、AV1、AAC 与 Opus；MPEG-TS 不承载 VP8 / VP9 / AV1，视频无法承载的流按纯音频流切片）。播放列表用 `#EXT-X-MAP:URI="init-<n>.mp4"` 指向初始化分段（仅当编码配置变化时换新），
   分段为 `seg-<n>.m4s`，LL-HLS 分片为 `part-<n>.<m>.m4s`，每个分片由一个或多个完整的 `moof`+`mdat`
   组成。`only_media::fmp4`（`Muxer`、`Demuxer`）也可单独使用。
+- **多码率播放列表**：同一来源的各个 rendition 作为单独的流发布（编码器阶梯、多个 WHIP 推流者），由
+  `Hls::add_multivariant` 组合在一起：
+
+```rust,ignore
+{{#include ../../../../crates/only-media/examples/guide-media.rs:multivariant}}
+```
+
+  `GET /live/show.m3u8` 为每个 `Variant` 列出一条 `EXT-X-STREAM-INF`：`BANDWIDTH`（配置值，或其分段与其
+  音频组分段的峰值码率之和，此时还有 `AVERAGE-BANDWIDTH`）、`CODECS`（分段格式所承载轨道的 RFC 6381 字符串）、
+  `RESOLUTION` 与 `AUDIO`，并为每个 `AudioRendition` 列出一条 `EXT-X-MEDIA:TYPE=AUDIO`。URI 是相对路径，并带上
+  请求的 query string。首个请求会启动每个 rendition 的 muxer，在每个 rendition 都已知轨道且有一个分段后作答
+  （尚未发布的 rendition 在三个目标时长后被略去）。两种分段格式与 LL-HLS 都适用。
 
 ## 转发：RTMP 客户端
 
@@ -150,7 +168,10 @@ ffprobe / ffmpeg 作为播放端：
 | `ffmpeg -f rtsp rtsp://…` | RTMP、HTTP-FLV、HLS、RTSP（UDP） | H.264 + AAC |
 | `ffmpeg -f flv rtmp://…` | RTSP（TCP） | H.264 + AAC |
 | hub 推流者 | 手写的 HTTP-FLV、WS-FLV 与 HLS 客户端 | H.264 + AAC |
-| hub 推流者 | `ffprobe` / `ffmpeg -i …/index.m3u8`，fMP4，普通与 LL-HLS | H.264 + AAC、H.265 + AAC、H.265 + Opus |
+| hub 推流者 | `ffprobe` / `ffmpeg -i …/index.m3u8`，fMP4，普通与 LL-HLS | H.264 + AAC、H.265 + AAC、H.265 + Opus、VP9 + Opus、AV1 + Opus |
+| `ffmpeg -f flv rtmp://…`（Enhanced RTMP） | `ffprobe` / `ffmpeg -i rtmp://…` | VP9 + Opus、AV1 + Opus |
+| hub 推流者（3 个 rendition） | `ffprobe` / `ffmpeg -i …/show.m3u8`，MPEG-TS 与 fMP4 LL-HLS | H.265 + H.264 两个 variant，AAC 音频组 |
+| 经 WHIP 推流的 Chrome（`tools/interop/media/browser.sh`） | hls.js、Chrome 自带播放器：多码率 fMP4 LL-HLS | AV1 阶梯 + Opus |
 | RTMP 客户端推流 | `ffmpeg -listen 1 -i rtmp://…`、mediamtx（`--ignored`） | H.264 + AAC、H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`、mediamtx | RTMP 客户端拉流 | H.264 + AAC、H.265 + AAC |
 
@@ -159,5 +180,5 @@ FLV（`flv_demux`）、fMP4（`fmp4_demux`）、AMF（`amf_decode`）以及 RTSP
 
 ## 不支持
 
-HLS 加密与多码率主播放列表、RTMPS 客户端、RTMPE / RTMPT、AMF3 应答、Enhanced RTMP 多轨、hub 中的
-AV1 / VP9 / VP8、录制到文件、转码。
+HLS 加密、I-frame 播放列表与 rendition report、MPEG-TS 中的 VP8 / VP9 / AV1、RTMPS 客户端、RTMPE / RTMPT、
+AMF3 应答、Enhanced RTMP 多轨、录制到文件、转码。
