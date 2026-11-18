@@ -10,8 +10,9 @@ use only_crypto::pkey::PublicKey;
 use super::alert::{Alert, Fatal, fatal};
 use super::codec::{Reader, put_u8, put_u16, put_vec, put_vec8, put_vec16};
 use super::common::{
-    Action, CertKey, ClientSettings, EarlyData, Keys, Level, Schedule, Transcript, finished_mac,
-    leaf_key, next_secret, now_millis, now_secs, random, verify_chain,
+    Action, CertKey, ClientSettings, EarlyData, Keys, Level, Schedule, Transcript,
+    check_stapled_ocsp, finished_mac, leaf_key, next_secret, now_millis, now_secs, random,
+    verify_chain,
 };
 use super::conn::MAX_HANDSHAKE;
 use super::kx::{Group, KeyShare};
@@ -96,6 +97,8 @@ pub(crate) struct Client {
     peer_cert_comp: bool,
     /// TLS 1.2: the ServerHello announced a CertificateStatus.
     status12: bool,
+    /// The verified leaf and its issuer, kept for the stapled OCSP check (policy not off).
+    ocsp_certs: Option<Box<(only_x509::Certificate, only_x509::Certificate)>>,
     /// The record_size_limit the server advertised (0: none), kept with tickets for the early
     /// data of a later connection.
     peer_record_limit: u16,
@@ -204,6 +207,7 @@ impl Client {
             cert_compressed: false,
             peer_cert_comp: false,
             status12: false,
+            ocsp_certs: None,
             peer_record_limit: 0,
             cfg,
         })
@@ -823,7 +827,16 @@ impl Client {
         let key = if self.cfg.insecure {
             leaf_key(&chain)?
         } else {
-            verify_chain(&self.cfg.roots, &chain, Some(&self.name))?
+            let v = verify_chain(
+                &self.cfg.roots,
+                &chain,
+                Some(&self.name),
+                self.cfg.crls.as_ref(),
+            )?;
+            if self.cfg.ocsp_policy != crate::RevocationPolicy::Off {
+                self.ocsp_certs = Some(Box::new((v.leaf, v.issuer)));
+            }
+            v.key
         };
         self.peer_key = Some(key);
         self.peer_chain = chain;
@@ -841,6 +854,7 @@ impl Client {
         if self.cfg.ocsp {
             self.ocsp = c.ocsp;
         }
+        self.check_ocsp()?;
         self.t.add(msg);
         self.st = St::WaitCertVerify;
         Ok(())
@@ -1075,7 +1089,17 @@ impl Client {
         Ok(())
     }
 
+    /// The stapled OCSP check, once the response had its chance to arrive (TLS 1.3: in the
+    /// Certificate; TLS 1.2: in a CertificateStatus before the ServerKeyExchange).
+    fn check_ocsp(&mut self) -> Result<(), Fatal> {
+        match self.ocsp_certs.take() {
+            Some(c) => check_stapled_ocsp(self.cfg.ocsp_policy, self.ocsp.as_deref(), &c.0, &c.1),
+            None => Ok(()),
+        }
+    }
+
     fn server_key_exchange(&mut self, msg: &[u8], body: &[u8]) -> Result<(), Fatal> {
+        self.check_ocsp()?;
         let suite = self.suite_or_err()?;
         let mut r = Reader::new(body);
         if r.u8()? != 3 {

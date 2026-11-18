@@ -12,7 +12,7 @@
 明文；握手在连接所属的 I/O 线程上进行，从不阻塞。用 `ServerConfig::builder(chain, key)`（SNI 证书、
 ALPN、客户端认证、会话缓存与票据、`tls13_only`、记录大小限制、证书压缩、装订的 OCSP 响应）与
 `ClientConfig::builder()`（根证书、ALPN、客户端证书、SNI、会话恢复、记录大小限制、证书压缩、OCSP
-stapling、仅供测试的 `insecure_skip_verify`）配置；`tls_info` 读取协商结果。
+stapling 及其校验、CRL、仅供测试的 `insecure_skip_verify`）配置；`tls_info` 读取协商结果。
 
 ```rust,no_run
 use only_tls::{Certificate, PrivateKey, ServerConfig, Tls};
@@ -64,8 +64,16 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
   为请求它的客户端装订一个 DER 格式的 OCSP 响应（TLS 1.3：放在叶证书的 CertificateEntry 中；TLS 1.2：
   ServerHello 中的 `status_request` 加 CertificateStatus 消息；会话恢复时不发送）。该响应只检查是否像一个
   成功的 `OCSPResponse`；按时刷新由调用方负责。`ClientConfigBuilder::ocsp_stapling(true)` 请求响应，
-  `TlsInfo::ocsp_response` 保存收到的内容。**客户端不验证它**：`only-x509` 还不支持 OCSP（响应者签名、
-  有效期、证书 ID），因此用它检查吊销状态由应用负责。
+  `TlsInfo::ocsp_response` 保存收到的内容。
+- **吊销检查**（ADR-038；不访问网络：响应与 CRL 由应用获取）：
+  `ClientConfigBuilder::ocsp_policy(RevocationPolicy::{Off, SoftFail, HardFail})` 校验服务器为叶证书
+  装订的响应（通过 `only-x509` 按 RFC 6960：由签发者或带 id-kp-OCSPSigning 的委托响应者签名、针对该证书、
+  thisUpdate / nextUpdate 在 5 分钟偏差内有效；TLS 1.3 与 1.2），策略不为 Off 时自动请求装订。软失败只拒绝
+  有效的“revoked”（`certificate_revoked`）；硬失败要求有效的“good”，否则以
+  `bad_certificate_status_response` 失败。`ClientConfigBuilder::crls(Crls, policy)` 与
+  `ServerConfigBuilder::client_crls(Crls, policy)` 用 CRL（完整与 delta，RFC 5280）检查对端证书链中根以下的
+  每张证书；硬失败下没有当前 CRL 覆盖的证书会失败（`certificate_unknown`）。恢复的会话不再检查；刷新 CRL
+  需要构建新的配置。默认全部关闭，没有开销。
 
 ### 早期数据（0-RTT）
 
@@ -92,8 +100,8 @@ let acceptor = Tls::server(cfg, only_core::fn_acceptor(|_c: &only_core::Conn<Ech
 ClientHello 中再次发送同一请求。只为可安全重复的请求（幂等读取）开启它，其他操作前先检查
 `TlsInfo::early_data` / `Early-Data: 1`，对其余请求回 `425 Too Early`。
 
-未实现：OCSP 响应验证、brotli/zstd 证书压缩、TLS 1.3 客户端认证中客户端的 OCSP 响应、
-`status_request_v2`、RSA-PSS 密钥、P-521。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
+未实现：brotli/zstd 证书压缩、TLS 1.3 客户端认证中客户端的 OCSP 响应、`status_request_v2`（中间证书的
+OCSP）、获取 OCSP 响应或 CRL（由应用负责；`only-x509` 给出 URL）、RSA-PSS 密钥、P-521。内核 TLS 卸载已评估、未采用：在所有测试情形下都比本 crate 的记录层慢，`sendfile`
 也不例外（docs/BENCHMARKS.zh-CN.md，“内核 TLS（kTLS）评估”）；代码保留在实验性的 `experimental-ktls`
 feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
 
@@ -115,10 +123,12 @@ feature 之后（只用于测试流与基准，不在 semver 承诺之内）。
 - 覆盖所有套件、组、证书类型与版本的内存握手，会话恢复、客户端认证、SNI / ALPN、KeyUpdate、低至单字节
   的分片、close_notify、降级检测、篡改、意外记录与垃圾数据；record_size_limit（两个版本、双向低至 64 字节的
   限制、超限记录、遵循票据限制的早期数据）、证书压缩（服务端与客户端证书、任一方关闭、格式错误的消息）与
-  OCSP stapling（两个版本、SNI、会话恢复），单独及组合测试。
+  OCSP stapling（两个版本、SNI、会话恢复），单独及组合测试；吊销检查：每种策略对正常、委托、吊销、未知、过期、
+  伪造、针对其他证书、内容不透明与缺失的装订响应（两个版本），以及服务器与客户端证书链的 CRL。
 - 互通（`tools/interop/tls/run.sh`）：与 OpenSSL `s_server` / `s_client` 及 Go `crypto/tls` 双向互通，
   覆盖所有套件、组、密钥类型、客户端认证、会话恢复、HRR、ALPN、KeyUpdate、early data 与 OCSP stapling（由
-  `s_client` 验证），与以 zlib 构建的 OpenSSL 3.2+（如 Debian 的）测试 zlib 证书压缩，安装了 GnuTLS 时测试
+  `s_client` 验证），本库客户端校验 `s_server -status_file` 的装订响应（正常、吊销、缺失；软/硬失败）并检查
+  OpenSSL 生成的 CRL，与以 zlib 构建的 OpenSSL 3.2+（如 Debian 的）测试 zlib 证书压缩，安装了 GnuTLS 时测试
   record_size_limit 与 OCSP，另有 curl 对
   only-http（HTTP/1.1 与 HTTP/2）；需要 OpenSSL 3.0 或更新版本（early data 用例以不带 `-www` 的
   `s_server` 运行，因为 3.0 拒绝 `-www` 与 `-early_data` 同用；客户端发送后关闭连接，再检查 `s_server`

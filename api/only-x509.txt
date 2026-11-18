@@ -7,19 +7,53 @@ pub const only_x509::attr::ORGANIZATION: &[u8]
 pub const only_x509::attr::ORGANIZATIONAL_UNIT: &[u8]
 pub const only_x509::attr::STATE: &[u8]
 pub mod only_x509::ext
+pub const only_x509::ext::AD_CA_ISSUERS: &[u8]
+pub const only_x509::ext::AD_OCSP: &[u8]
 pub const only_x509::ext::ANY_EXTENDED_KEY_USAGE: &[u8]
+pub const only_x509::ext::AUTHORITY_INFO_ACCESS: &[u8]
 pub const only_x509::ext::AUTHORITY_KEY_ID: &[u8]
 pub const only_x509::ext::BASIC_CONSTRAINTS: &[u8]
+pub const only_x509::ext::CERTIFICATE_ISSUER: &[u8]
 pub const only_x509::ext::CERTIFICATE_POLICIES: &[u8]
 pub const only_x509::ext::CLIENT_AUTH: &[u8]
 pub const only_x509::ext::CRL_DISTRIBUTION_POINTS: &[u8]
+pub const only_x509::ext::CRL_NUMBER: &[u8]
+pub const only_x509::ext::DELTA_CRL_INDICATOR: &[u8]
 pub const only_x509::ext::EXT_KEY_USAGE: &[u8]
+pub const only_x509::ext::FRESHEST_CRL: &[u8]
+pub const only_x509::ext::HOLD_INSTRUCTION_CODE: &[u8]
+pub const only_x509::ext::INVALIDITY_DATE: &[u8]
 pub const only_x509::ext::ISSUER_ALT_NAME: &[u8]
+pub const only_x509::ext::ISSUING_DISTRIBUTION_POINT: &[u8]
 pub const only_x509::ext::KEY_USAGE: &[u8]
 pub const only_x509::ext::NAME_CONSTRAINTS: &[u8]
+pub const only_x509::ext::OCSP_NO_CHECK: &[u8]
+pub const only_x509::ext::OCSP_SIGNING: &[u8]
+pub const only_x509::ext::REASON_CODE: &[u8]
 pub const only_x509::ext::SERVER_AUTH: &[u8]
 pub const only_x509::ext::SUBJECT_ALT_NAME: &[u8]
 pub const only_x509::ext::SUBJECT_KEY_ID: &[u8]
+#[non_exhaustive] pub enum only_x509::CertIdHash
+pub only_x509::CertIdHash::Sha1
+pub only_x509::CertIdHash::Sha256
+pub only_x509::CertIdHash::Sha384
+pub only_x509::CertIdHash::Sha512
+impl core::clone::Clone for only_x509::CertIdHash
+pub fn only_x509::CertIdHash::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::CertIdHash
+impl core::cmp::PartialEq for only_x509::CertIdHash
+pub fn only_x509::CertIdHash::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::CertIdHash
+pub fn only_x509::CertIdHash::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_x509::CertIdHash
+pub fn only_x509::CertIdHash::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_x509::CertIdHash
+impl core::marker::StructuralPartialEq for only_x509::CertIdHash
+impl core::marker::Send for only_x509::CertIdHash
+impl core::marker::Sync for only_x509::CertIdHash
+impl core::marker::Unpin for only_x509::CertIdHash
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::CertIdHash
+impl core::panic::unwind_safe::UnwindSafe for only_x509::CertIdHash
 #[non_exhaustive] pub enum only_x509::Error
 pub only_x509::Error::BadSignature
 pub only_x509::Error::CaUsedAsEndEntity
@@ -32,12 +66,20 @@ pub only_x509::Error::InvalidServerName
 pub only_x509::Error::KeyUsage
 pub only_x509::Error::NameConstraintViolation
 pub only_x509::Error::NameMismatch
+pub only_x509::Error::NoMatchingResponse
+pub only_x509::Error::NonceMismatch
 pub only_x509::Error::NotCa
 pub only_x509::Error::NotYetValid
+pub only_x509::Error::OcspStatus(only_x509::OcspResponseStatus)
 pub only_x509::Error::PathLenExceeded
 pub only_x509::Error::PathTooLong
+pub only_x509::Error::RevocationInfoExpired
+pub only_x509::Error::RevocationInfoNotYetValid
+pub only_x509::Error::RevocationUnknown
+pub only_x509::Error::Revoked(core::option::Option<only_x509::RevocationReason>)
 pub only_x509::Error::SignatureAlgorithmMismatch
 pub only_x509::Error::TooManySignatures
+pub only_x509::Error::UnauthorizedResponder
 pub only_x509::Error::UnknownIssuer
 pub only_x509::Error::UnsupportedCriticalExtension(alloc::vec::Vec<u8>)
 pub only_x509::Error::UnsupportedVersion
@@ -98,6 +140,119 @@ impl core::marker::Sync for only_x509::IsCa
 impl core::marker::Unpin for only_x509::IsCa
 impl core::panic::unwind_safe::RefUnwindSafe for only_x509::IsCa
 impl core::panic::unwind_safe::UnwindSafe for only_x509::IsCa
+#[non_exhaustive] pub enum only_x509::OcspResponseStatus
+pub only_x509::OcspResponseStatus::InternalError
+pub only_x509::OcspResponseStatus::MalformedRequest
+pub only_x509::OcspResponseStatus::SigRequired
+pub only_x509::OcspResponseStatus::Successful
+pub only_x509::OcspResponseStatus::TryLater
+pub only_x509::OcspResponseStatus::Unauthorized
+impl core::clone::Clone for only_x509::OcspResponseStatus
+pub fn only_x509::OcspResponseStatus::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::OcspResponseStatus
+impl core::cmp::PartialEq for only_x509::OcspResponseStatus
+pub fn only_x509::OcspResponseStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::OcspResponseStatus
+pub fn only_x509::OcspResponseStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_x509::OcspResponseStatus
+pub fn only_x509::OcspResponseStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_x509::OcspResponseStatus
+pub fn only_x509::OcspResponseStatus::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_x509::OcspResponseStatus
+impl core::marker::StructuralPartialEq for only_x509::OcspResponseStatus
+impl core::marker::Send for only_x509::OcspResponseStatus
+impl core::marker::Sync for only_x509::OcspResponseStatus
+impl core::marker::Unpin for only_x509::OcspResponseStatus
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::OcspResponseStatus
+impl core::panic::unwind_safe::UnwindSafe for only_x509::OcspResponseStatus
+pub enum only_x509::ResponderId
+pub only_x509::ResponderId::ByKey(alloc::vec::Vec<u8>)
+pub only_x509::ResponderId::ByName(only_x509::Name)
+impl core::clone::Clone for only_x509::ResponderId
+pub fn only_x509::ResponderId::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::ResponderId
+impl core::cmp::PartialEq for only_x509::ResponderId
+pub fn only_x509::ResponderId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::ResponderId
+pub fn only_x509::ResponderId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_x509::ResponderId
+impl core::marker::Send for only_x509::ResponderId
+impl core::marker::Sync for only_x509::ResponderId
+impl core::marker::Unpin for only_x509::ResponderId
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::ResponderId
+impl core::panic::unwind_safe::UnwindSafe for only_x509::ResponderId
+#[non_exhaustive] pub enum only_x509::RevocationMode
+pub only_x509::RevocationMode::HardFail
+pub only_x509::RevocationMode::SoftFail
+impl core::clone::Clone for only_x509::RevocationMode
+pub fn only_x509::RevocationMode::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::RevocationMode
+impl core::cmp::PartialEq for only_x509::RevocationMode
+pub fn only_x509::RevocationMode::eq(&self, &Self) -> bool
+impl core::default::Default for only_x509::RevocationMode
+pub fn only_x509::RevocationMode::default() -> Self
+impl core::fmt::Debug for only_x509::RevocationMode
+pub fn only_x509::RevocationMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_x509::RevocationMode
+impl core::marker::StructuralPartialEq for only_x509::RevocationMode
+impl core::marker::Send for only_x509::RevocationMode
+impl core::marker::Sync for only_x509::RevocationMode
+impl core::marker::Unpin for only_x509::RevocationMode
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::RevocationMode
+impl core::panic::unwind_safe::UnwindSafe for only_x509::RevocationMode
+#[non_exhaustive] pub enum only_x509::RevocationReason
+pub only_x509::RevocationReason::AaCompromise
+pub only_x509::RevocationReason::AffiliationChanged
+pub only_x509::RevocationReason::CaCompromise
+pub only_x509::RevocationReason::CertificateHold
+pub only_x509::RevocationReason::CessationOfOperation
+pub only_x509::RevocationReason::KeyCompromise
+pub only_x509::RevocationReason::PrivilegeWithdrawn
+pub only_x509::RevocationReason::RemoveFromCrl
+pub only_x509::RevocationReason::Superseded
+pub only_x509::RevocationReason::Unspecified
+impl only_x509::RevocationReason
+pub fn only_x509::RevocationReason::code(self) -> u8
+pub fn only_x509::RevocationReason::flag(self) -> core::option::Option<only_x509::ReasonFlags>
+pub fn only_x509::RevocationReason::from_code(u64) -> core::result::Result<only_x509::RevocationReason, only_x509::Error>
+impl core::clone::Clone for only_x509::RevocationReason
+pub fn only_x509::RevocationReason::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::RevocationReason
+impl core::cmp::PartialEq for only_x509::RevocationReason
+pub fn only_x509::RevocationReason::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::RevocationReason
+pub fn only_x509::RevocationReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_x509::RevocationReason
+pub fn only_x509::RevocationReason::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_x509::RevocationReason
+pub fn only_x509::RevocationReason::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_x509::RevocationReason
+impl core::marker::StructuralPartialEq for only_x509::RevocationReason
+impl core::marker::Send for only_x509::RevocationReason
+impl core::marker::Sync for only_x509::RevocationReason
+impl core::marker::Unpin for only_x509::RevocationReason
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::RevocationReason
+impl core::panic::unwind_safe::UnwindSafe for only_x509::RevocationReason
+pub enum only_x509::RevocationStatus
+pub only_x509::RevocationStatus::Good
+pub only_x509::RevocationStatus::Revoked
+pub only_x509::RevocationStatus::Revoked::reason: core::option::Option<only_x509::RevocationReason>
+pub only_x509::RevocationStatus::Revoked::time: i64
+pub only_x509::RevocationStatus::Unknown
+impl core::clone::Clone for only_x509::RevocationStatus
+pub fn only_x509::RevocationStatus::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::RevocationStatus
+impl core::cmp::PartialEq for only_x509::RevocationStatus
+pub fn only_x509::RevocationStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::RevocationStatus
+pub fn only_x509::RevocationStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_x509::RevocationStatus
+impl core::marker::StructuralPartialEq for only_x509::RevocationStatus
+impl core::marker::Send for only_x509::RevocationStatus
+impl core::marker::Sync for only_x509::RevocationStatus
+impl core::marker::Unpin for only_x509::RevocationStatus
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::RevocationStatus
+impl core::panic::unwind_safe::UnwindSafe for only_x509::RevocationStatus
 #[non_exhaustive] pub enum only_x509::ServerName
 pub only_x509::ServerName::Dns(alloc::string::String)
 pub only_x509::ServerName::Ip(core::net::ip_addr::IpAddr)
@@ -170,11 +325,54 @@ impl core::marker::Sync for only_x509::BasicConstraints
 impl core::marker::Unpin for only_x509::BasicConstraints
 impl core::panic::unwind_safe::RefUnwindSafe for only_x509::BasicConstraints
 impl core::panic::unwind_safe::UnwindSafe for only_x509::BasicConstraints
+pub struct only_x509::BasicOcspResponse
+impl only_x509::BasicOcspResponse
+pub fn only_x509::BasicOcspResponse::certs(&self) -> &[only_x509::Certificate]
+pub fn only_x509::BasicOcspResponse::extensions(&self) -> &[only_x509::Extension]
+pub fn only_x509::BasicOcspResponse::nonce(&self) -> core::option::Option<&[u8]>
+pub fn only_x509::BasicOcspResponse::produced_at(&self) -> i64
+pub fn only_x509::BasicOcspResponse::responder_id(&self) -> &only_x509::ResponderId
+pub fn only_x509::BasicOcspResponse::responses(&self) -> &[only_x509::SingleResponse]
+pub fn only_x509::BasicOcspResponse::signature(&self) -> &[u8]
+pub fn only_x509::BasicOcspResponse::signature_algorithm(&self) -> core::result::Result<only_crypto::pkey::SignatureAlgorithm, only_x509::Error>
+pub fn only_x509::BasicOcspResponse::tbs_der(&self) -> &[u8]
+impl core::clone::Clone for only_x509::BasicOcspResponse
+pub fn only_x509::BasicOcspResponse::clone(&self) -> Self
+impl core::fmt::Debug for only_x509::BasicOcspResponse
+pub fn only_x509::BasicOcspResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::BasicOcspResponse
+impl core::marker::Sync for only_x509::BasicOcspResponse
+impl core::marker::Unpin for only_x509::BasicOcspResponse
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::BasicOcspResponse
+impl core::panic::unwind_safe::UnwindSafe for only_x509::BasicOcspResponse
+pub struct only_x509::CertId
+pub only_x509::CertId::hash: core::option::Option<only_x509::CertIdHash>
+pub only_x509::CertId::issuer_key_hash: alloc::vec::Vec<u8>
+pub only_x509::CertId::issuer_name_hash: alloc::vec::Vec<u8>
+pub only_x509::CertId::serial: alloc::vec::Vec<u8>
+impl only_x509::CertId
+pub fn only_x509::CertId::matches(&self, &only_x509::Certificate, &only_x509::Certificate) -> bool
+pub fn only_x509::CertId::new(&only_x509::Certificate, &only_x509::Certificate, only_x509::CertIdHash) -> core::result::Result<only_x509::CertId, only_x509::Error>
+impl core::clone::Clone for only_x509::CertId
+pub fn only_x509::CertId::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::CertId
+impl core::cmp::PartialEq for only_x509::CertId
+pub fn only_x509::CertId::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::CertId
+pub fn only_x509::CertId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_x509::CertId
+impl core::marker::Send for only_x509::CertId
+impl core::marker::Sync for only_x509::CertId
+impl core::marker::Unpin for only_x509::CertId
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::CertId
+impl core::panic::unwind_safe::UnwindSafe for only_x509::CertId
 pub struct only_x509::Certificate
 impl only_x509::Certificate
 pub fn only_x509::Certificate::as_der(&self) -> &[u8]
 pub fn only_x509::Certificate::authority_key_id(&self) -> core::option::Option<&[u8]>
 pub fn only_x509::Certificate::basic_constraints(&self) -> core::option::Option<only_x509::BasicConstraints>
+pub fn only_x509::Certificate::ca_issuer_urls(&self) -> &[alloc::string::String]
+pub fn only_x509::Certificate::crl_distribution_points(&self) -> &[only_x509::DistributionPoint]
 pub fn only_x509::Certificate::ext_key_usage(&self) -> core::option::Option<&[alloc::vec::Vec<u8>]>
 pub fn only_x509::Certificate::extensions(&self) -> &[only_x509::Extension]
 pub fn only_x509::Certificate::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<only_x509::Certificate, only_x509::Error>
@@ -185,6 +383,7 @@ pub fn only_x509::Certificate::key_usage(&self) -> core::option::Option<only_x50
 pub fn only_x509::Certificate::name_constraints(&self) -> core::option::Option<&only_x509::NameConstraints>
 pub fn only_x509::Certificate::not_after(&self) -> i64
 pub fn only_x509::Certificate::not_before(&self) -> i64
+pub fn only_x509::Certificate::ocsp_urls(&self) -> &[alloc::string::String]
 pub fn only_x509::Certificate::public_key(&self) -> core::result::Result<only_crypto::pkey::PublicKey, only_x509::Error>
 pub fn only_x509::Certificate::serial(&self) -> &[u8]
 pub fn only_x509::Certificate::signature(&self) -> &[u8]
@@ -235,6 +434,104 @@ impl core::marker::Sync for only_x509::CertificateParams
 impl core::marker::Unpin for only_x509::CertificateParams
 impl core::panic::unwind_safe::RefUnwindSafe for only_x509::CertificateParams
 impl core::panic::unwind_safe::UnwindSafe for only_x509::CertificateParams
+pub struct only_x509::Crl
+impl only_x509::Crl
+pub fn only_x509::Crl::as_der(&self) -> &[u8]
+pub fn only_x509::Crl::authority_key_id(&self) -> core::option::Option<&[u8]>
+pub fn only_x509::Crl::crl_number(&self) -> core::option::Option<&[u8]>
+pub fn only_x509::Crl::delta_base(&self) -> core::option::Option<&[u8]>
+pub fn only_x509::Crl::extensions(&self) -> &[only_x509::Extension]
+pub fn only_x509::Crl::find(&self, &[u8]) -> core::option::Option<&only_x509::RevokedCertificate>
+pub fn only_x509::Crl::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<only_x509::Crl, only_x509::Error>
+pub fn only_x509::Crl::from_pem(&[u8]) -> core::result::Result<alloc::vec::Vec<only_x509::Crl>, only_x509::Error>
+pub fn only_x509::Crl::is_current(&self, i64, u32) -> bool
+pub fn only_x509::Crl::is_delta(&self) -> bool
+pub fn only_x509::Crl::issuer(&self) -> &only_x509::Name
+pub fn only_x509::Crl::issuing_distribution_point(&self) -> core::option::Option<&only_x509::IssuingDistributionPoint>
+pub fn only_x509::Crl::next_update(&self) -> core::option::Option<i64>
+pub fn only_x509::Crl::revoked(&self) -> &[only_x509::RevokedCertificate]
+pub fn only_x509::Crl::signature(&self) -> &[u8]
+pub fn only_x509::Crl::signature_algorithm(&self) -> core::result::Result<only_crypto::pkey::SignatureAlgorithm, only_x509::Error>
+pub fn only_x509::Crl::tbs_der(&self) -> &[u8]
+pub fn only_x509::Crl::this_update(&self) -> i64
+pub fn only_x509::Crl::to_pem(&self) -> alloc::string::String
+pub fn only_x509::Crl::unsupported_critical_extension(&self) -> core::option::Option<&[u8]>
+pub fn only_x509::Crl::verify_signed_by(&self, &only_x509::Certificate) -> core::result::Result<(), only_x509::Error>
+pub fn only_x509::Crl::version(&self) -> u8
+impl core::clone::Clone for only_x509::Crl
+pub fn only_x509::Crl::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::Crl
+impl core::cmp::PartialEq for only_x509::Crl
+pub fn only_x509::Crl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::Crl
+pub fn only_x509::Crl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::Crl
+impl core::marker::Sync for only_x509::Crl
+impl core::marker::Unpin for only_x509::Crl
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::Crl
+impl core::panic::unwind_safe::UnwindSafe for only_x509::Crl
+pub struct only_x509::CrlParams
+pub only_x509::CrlParams::crl_number: u64
+pub only_x509::CrlParams::delta_base: core::option::Option<u64>
+pub only_x509::CrlParams::issuing_distribution_point: core::option::Option<only_x509::IssuingDistributionPoint>
+pub only_x509::CrlParams::next_update: core::option::Option<i64>
+pub only_x509::CrlParams::revoked: alloc::vec::Vec<only_x509::RevokedCertificate>
+pub only_x509::CrlParams::this_update: i64
+impl only_x509::CrlParams
+pub fn only_x509::CrlParams::new() -> only_x509::CrlParams
+pub fn only_x509::CrlParams::revoke(self, &only_x509::Certificate, core::option::Option<only_x509::RevocationReason>) -> Self
+pub fn only_x509::CrlParams::sign(&self, &only_x509::Certificate, &only_crypto::pkey::PrivateKey) -> core::result::Result<only_x509::Crl, only_x509::Error>
+impl core::clone::Clone for only_x509::CrlParams
+pub fn only_x509::CrlParams::clone(&self) -> Self
+impl core::default::Default for only_x509::CrlParams
+pub fn only_x509::CrlParams::default() -> Self
+impl core::fmt::Debug for only_x509::CrlParams
+pub fn only_x509::CrlParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::CrlParams
+impl core::marker::Sync for only_x509::CrlParams
+impl core::marker::Unpin for only_x509::CrlParams
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::CrlParams
+impl core::panic::unwind_safe::UnwindSafe for only_x509::CrlParams
+pub struct only_x509::CrlSet
+impl only_x509::CrlSet
+pub fn only_x509::CrlSet::add(&mut self, only_x509::Crl)
+pub fn only_x509::CrlSet::add_der(&mut self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<(), only_x509::Error>
+pub fn only_x509::CrlSet::add_pem(&mut self, &[u8]) -> core::result::Result<usize, only_x509::Error>
+pub fn only_x509::CrlSet::crls(&self) -> &[only_x509::Crl]
+pub fn only_x509::CrlSet::is_empty(&self) -> bool
+pub fn only_x509::CrlSet::len(&self) -> usize
+pub fn only_x509::CrlSet::new() -> only_x509::CrlSet
+pub fn only_x509::CrlSet::status(&self, &only_x509::Certificate, &only_x509::Certificate, i64, u32) -> only_x509::RevocationStatus
+impl core::clone::Clone for only_x509::CrlSet
+pub fn only_x509::CrlSet::clone(&self) -> Self
+impl core::default::Default for only_x509::CrlSet
+pub fn only_x509::CrlSet::default() -> Self
+impl core::fmt::Debug for only_x509::CrlSet
+pub fn only_x509::CrlSet::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::CrlSet
+impl core::marker::Sync for only_x509::CrlSet
+impl core::marker::Unpin for only_x509::CrlSet
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::CrlSet
+impl core::panic::unwind_safe::UnwindSafe for only_x509::CrlSet
+pub struct only_x509::DistributionPoint
+pub only_x509::DistributionPoint::crl_issuer: alloc::vec::Vec<only_x509::GeneralName>
+pub only_x509::DistributionPoint::full_name: alloc::vec::Vec<only_x509::GeneralName>
+pub only_x509::DistributionPoint::reasons: core::option::Option<only_x509::ReasonFlags>
+impl core::clone::Clone for only_x509::DistributionPoint
+pub fn only_x509::DistributionPoint::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::DistributionPoint
+impl core::cmp::PartialEq for only_x509::DistributionPoint
+pub fn only_x509::DistributionPoint::eq(&self, &Self) -> bool
+impl core::default::Default for only_x509::DistributionPoint
+pub fn only_x509::DistributionPoint::default() -> Self
+impl core::fmt::Debug for only_x509::DistributionPoint
+pub fn only_x509::DistributionPoint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_x509::DistributionPoint
+impl core::marker::Send for only_x509::DistributionPoint
+impl core::marker::Sync for only_x509::DistributionPoint
+impl core::marker::Unpin for only_x509::DistributionPoint
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::DistributionPoint
+impl core::panic::unwind_safe::UnwindSafe for only_x509::DistributionPoint
 pub struct only_x509::Extension
 pub only_x509::Extension::critical: bool
 pub only_x509::Extension::oid: alloc::vec::Vec<u8>
@@ -266,6 +563,28 @@ impl core::marker::Sync for only_x509::GeneralSubtree
 impl core::marker::Unpin for only_x509::GeneralSubtree
 impl core::panic::unwind_safe::RefUnwindSafe for only_x509::GeneralSubtree
 impl core::panic::unwind_safe::UnwindSafe for only_x509::GeneralSubtree
+pub struct only_x509::IssuingDistributionPoint
+pub only_x509::IssuingDistributionPoint::full_name: alloc::vec::Vec<only_x509::GeneralName>
+pub only_x509::IssuingDistributionPoint::indirect_crl: bool
+pub only_x509::IssuingDistributionPoint::only_attribute_certs: bool
+pub only_x509::IssuingDistributionPoint::only_ca_certs: bool
+pub only_x509::IssuingDistributionPoint::only_some_reasons: core::option::Option<only_x509::ReasonFlags>
+pub only_x509::IssuingDistributionPoint::only_user_certs: bool
+impl core::clone::Clone for only_x509::IssuingDistributionPoint
+pub fn only_x509::IssuingDistributionPoint::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::IssuingDistributionPoint
+impl core::cmp::PartialEq for only_x509::IssuingDistributionPoint
+pub fn only_x509::IssuingDistributionPoint::eq(&self, &Self) -> bool
+impl core::default::Default for only_x509::IssuingDistributionPoint
+pub fn only_x509::IssuingDistributionPoint::default() -> Self
+impl core::fmt::Debug for only_x509::IssuingDistributionPoint
+pub fn only_x509::IssuingDistributionPoint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_x509::IssuingDistributionPoint
+impl core::marker::Send for only_x509::IssuingDistributionPoint
+impl core::marker::Sync for only_x509::IssuingDistributionPoint
+impl core::marker::Unpin for only_x509::IssuingDistributionPoint
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::IssuingDistributionPoint
+impl core::panic::unwind_safe::UnwindSafe for only_x509::IssuingDistributionPoint
 pub struct only_x509::KeyUsage(pub u16)
 impl only_x509::KeyUsage
 pub const only_x509::KeyUsage::CONTENT_COMMITMENT: only_x509::KeyUsage
@@ -335,6 +654,122 @@ impl core::marker::Sync for only_x509::NameConstraints
 impl core::marker::Unpin for only_x509::NameConstraints
 impl core::panic::unwind_safe::RefUnwindSafe for only_x509::NameConstraints
 impl core::panic::unwind_safe::UnwindSafe for only_x509::NameConstraints
+pub struct only_x509::OcspRequest
+impl only_x509::OcspRequest
+pub fn only_x509::OcspRequest::add(self, only_x509::CertId) -> Self
+pub fn only_x509::OcspRequest::cert_ids(&self) -> &[only_x509::CertId]
+pub fn only_x509::OcspRequest::new(&only_x509::Certificate, &only_x509::Certificate) -> core::result::Result<only_x509::OcspRequest, only_x509::Error>
+pub fn only_x509::OcspRequest::nonce(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
+pub fn only_x509::OcspRequest::to_der(&self) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for only_x509::OcspRequest
+pub fn only_x509::OcspRequest::clone(&self) -> Self
+impl core::default::Default for only_x509::OcspRequest
+pub fn only_x509::OcspRequest::default() -> Self
+impl core::fmt::Debug for only_x509::OcspRequest
+pub fn only_x509::OcspRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::OcspRequest
+impl core::marker::Sync for only_x509::OcspRequest
+impl core::marker::Unpin for only_x509::OcspRequest
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::OcspRequest
+impl core::panic::unwind_safe::UnwindSafe for only_x509::OcspRequest
+pub struct only_x509::OcspResponse
+impl only_x509::OcspResponse
+pub fn only_x509::OcspResponse::as_der(&self) -> &[u8]
+pub fn only_x509::OcspResponse::basic(&self) -> core::option::Option<&only_x509::BasicOcspResponse>
+pub fn only_x509::OcspResponse::from_der(impl core::convert::Into<alloc::vec::Vec<u8>>) -> core::result::Result<only_x509::OcspResponse, only_x509::Error>
+pub fn only_x509::OcspResponse::status(&self) -> only_x509::OcspResponseStatus
+pub fn only_x509::OcspResponse::verify(&self, &only_x509::Certificate, &only_x509::Certificate, &only_x509::OcspValidation) -> core::result::Result<only_x509::RevocationStatus, only_x509::Error>
+impl core::clone::Clone for only_x509::OcspResponse
+pub fn only_x509::OcspResponse::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::OcspResponse
+impl core::cmp::PartialEq for only_x509::OcspResponse
+pub fn only_x509::OcspResponse::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::OcspResponse
+pub fn only_x509::OcspResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::OcspResponse
+impl core::marker::Sync for only_x509::OcspResponse
+impl core::marker::Unpin for only_x509::OcspResponse
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::OcspResponse
+impl core::panic::unwind_safe::UnwindSafe for only_x509::OcspResponse
+pub struct only_x509::OcspResponseParams
+pub only_x509::OcspResponseParams::hash: only_x509::CertIdHash
+pub only_x509::OcspResponseParams::include_signer: bool
+pub only_x509::OcspResponseParams::next_update: core::option::Option<i64>
+pub only_x509::OcspResponseParams::nonce: core::option::Option<alloc::vec::Vec<u8>>
+pub only_x509::OcspResponseParams::responder_by_key: bool
+pub only_x509::OcspResponseParams::status: only_x509::RevocationStatus
+pub only_x509::OcspResponseParams::this_update: i64
+impl only_x509::OcspResponseParams
+pub fn only_x509::OcspResponseParams::new(only_x509::RevocationStatus) -> only_x509::OcspResponseParams
+pub fn only_x509::OcspResponseParams::sign(&self, &only_x509::Certificate, &only_x509::Certificate, &only_x509::Certificate, &only_crypto::pkey::PrivateKey) -> core::result::Result<alloc::vec::Vec<u8>, only_x509::Error>
+impl core::clone::Clone for only_x509::OcspResponseParams
+pub fn only_x509::OcspResponseParams::clone(&self) -> Self
+impl core::fmt::Debug for only_x509::OcspResponseParams
+pub fn only_x509::OcspResponseParams::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::OcspResponseParams
+impl core::marker::Sync for only_x509::OcspResponseParams
+impl core::marker::Unpin for only_x509::OcspResponseParams
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::OcspResponseParams
+impl core::panic::unwind_safe::UnwindSafe for only_x509::OcspResponseParams
+pub struct only_x509::OcspValidation
+impl only_x509::OcspValidation
+pub fn only_x509::OcspValidation::at_time(self, i64) -> Self
+pub fn only_x509::OcspValidation::clock_skew(self, u32) -> Self
+pub fn only_x509::OcspValidation::max_age(self, u32) -> Self
+pub fn only_x509::OcspValidation::new() -> only_x509::OcspValidation
+pub fn only_x509::OcspValidation::nonce(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
+impl core::clone::Clone for only_x509::OcspValidation
+pub fn only_x509::OcspValidation::clone(&self) -> Self
+impl core::default::Default for only_x509::OcspValidation
+pub fn only_x509::OcspValidation::default() -> Self
+impl core::fmt::Debug for only_x509::OcspValidation
+pub fn only_x509::OcspValidation::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_x509::OcspValidation
+impl core::marker::Sync for only_x509::OcspValidation
+impl core::marker::Unpin for only_x509::OcspValidation
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::OcspValidation
+impl core::panic::unwind_safe::UnwindSafe for only_x509::OcspValidation
+pub struct only_x509::ReasonFlags(pub u16)
+impl only_x509::ReasonFlags
+pub const only_x509::ReasonFlags::ALL: only_x509::ReasonFlags
+pub fn only_x509::ReasonFlags::contains(self, only_x509::ReasonFlags) -> bool
+pub fn only_x509::ReasonFlags::union(self, only_x509::ReasonFlags) -> only_x509::ReasonFlags
+impl core::clone::Clone for only_x509::ReasonFlags
+pub fn only_x509::ReasonFlags::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::ReasonFlags
+impl core::cmp::PartialEq for only_x509::ReasonFlags
+pub fn only_x509::ReasonFlags::eq(&self, &Self) -> bool
+impl core::default::Default for only_x509::ReasonFlags
+pub fn only_x509::ReasonFlags::default() -> Self
+impl core::fmt::Debug for only_x509::ReasonFlags
+pub fn only_x509::ReasonFlags::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_x509::ReasonFlags
+pub fn only_x509::ReasonFlags::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_x509::ReasonFlags
+impl core::marker::StructuralPartialEq for only_x509::ReasonFlags
+impl core::marker::Send for only_x509::ReasonFlags
+impl core::marker::Sync for only_x509::ReasonFlags
+impl core::marker::Unpin for only_x509::ReasonFlags
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::ReasonFlags
+impl core::panic::unwind_safe::UnwindSafe for only_x509::ReasonFlags
+pub struct only_x509::RevokedCertificate
+pub only_x509::RevokedCertificate::invalidity_date: core::option::Option<i64>
+pub only_x509::RevokedCertificate::reason: core::option::Option<only_x509::RevocationReason>
+pub only_x509::RevokedCertificate::revocation_date: i64
+pub only_x509::RevokedCertificate::serial: alloc::vec::Vec<u8>
+impl core::clone::Clone for only_x509::RevokedCertificate
+pub fn only_x509::RevokedCertificate::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::RevokedCertificate
+impl core::cmp::PartialEq for only_x509::RevokedCertificate
+pub fn only_x509::RevokedCertificate::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::RevokedCertificate
+pub fn only_x509::RevokedCertificate::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_x509::RevokedCertificate
+impl core::marker::Send for only_x509::RevokedCertificate
+impl core::marker::Sync for only_x509::RevokedCertificate
+impl core::marker::Unpin for only_x509::RevokedCertificate
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::RevokedCertificate
+impl core::panic::unwind_safe::UnwindSafe for only_x509::RevokedCertificate
 pub struct only_x509::RootStore
 impl only_x509::RootStore
 pub fn only_x509::RootStore::add(&mut self, only_x509::Certificate)
@@ -354,10 +789,32 @@ impl core::marker::Sync for only_x509::RootStore
 impl core::marker::Unpin for only_x509::RootStore
 impl core::panic::unwind_safe::RefUnwindSafe for only_x509::RootStore
 impl core::panic::unwind_safe::UnwindSafe for only_x509::RootStore
+pub struct only_x509::SingleResponse
+pub only_x509::SingleResponse::cert_id: only_x509::CertId
+pub only_x509::SingleResponse::next_update: core::option::Option<i64>
+pub only_x509::SingleResponse::status: only_x509::RevocationStatus
+pub only_x509::SingleResponse::this_update: i64
+pub only_x509::SingleResponse::unsupported_critical: core::option::Option<alloc::vec::Vec<u8>>
+impl core::clone::Clone for only_x509::SingleResponse
+pub fn only_x509::SingleResponse::clone(&self) -> Self
+impl core::cmp::Eq for only_x509::SingleResponse
+impl core::cmp::PartialEq for only_x509::SingleResponse
+pub fn only_x509::SingleResponse::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_x509::SingleResponse
+pub fn only_x509::SingleResponse::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_x509::SingleResponse
+impl core::marker::Send for only_x509::SingleResponse
+impl core::marker::Sync for only_x509::SingleResponse
+impl core::marker::Unpin for only_x509::SingleResponse
+impl core::panic::unwind_safe::RefUnwindSafe for only_x509::SingleResponse
+impl core::panic::unwind_safe::UnwindSafe for only_x509::SingleResponse
 pub struct only_x509::Verifier<'a>
 impl<'a> only_x509::Verifier<'a>
 pub fn only_x509::Verifier<'a>::at_time(self, i64) -> Self
+pub fn only_x509::Verifier<'a>::clock_skew(self, u32) -> Self
+pub fn only_x509::Verifier<'a>::crls(self, &'a only_x509::CrlSet) -> Self
 pub fn only_x509::Verifier<'a>::new(&'a only_x509::RootStore) -> only_x509::Verifier<'a>
+pub fn only_x509::Verifier<'a>::revocation_mode(self, only_x509::RevocationMode) -> Self
 pub fn only_x509::Verifier<'a>::usage(self, only_x509::Usage) -> Self
 pub fn only_x509::Verifier<'a>::verify(&self, &only_x509::Certificate, &[only_x509::Certificate], core::option::Option<&only_x509::ServerName>) -> core::result::Result<alloc::vec::Vec<only_x509::Certificate>, only_x509::Error>
 pub fn only_x509::Verifier<'a>::verify_client(&self, &only_x509::Certificate, &[only_x509::Certificate]) -> core::result::Result<alloc::vec::Vec<only_x509::Certificate>, only_x509::Error>
@@ -371,6 +828,7 @@ impl<'a> core::marker::Sync for only_x509::Verifier<'a>
 impl<'a> core::marker::Unpin for only_x509::Verifier<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_x509::Verifier<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for only_x509::Verifier<'a>
+pub const only_x509::DEFAULT_CLOCK_SKEW: u32
 pub const only_x509::MAX_INTERMEDIATES: usize
 pub const only_x509::MAX_SIGNATURE_CHECKS: usize
 pub fn only_x509::dns_name_matches(&str, &str) -> bool

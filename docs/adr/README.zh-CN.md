@@ -41,3 +41,4 @@
 - [ADR-035：macOS 上与用户态协议栈 UDP 上的 ECN](035-ecn-macos-and-userspace-udp.zh-CN.md)（2026-11-18 采纳）
 - [ADR-036：only-rtp 中的 RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC](036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md)（2026-11-18 采纳）
 - [ADR-037：SCTP 消息交错（I-DATA）与流调度器](037-sctp-idata-schedulers.zh-CN.md)（2026-11-18 采纳）
+- [ADR-038：证书吊销：CRL、OCSP 与装订响应的校验](038-x509-revocation.zh-CN.md)（2026-11-18 采纳）

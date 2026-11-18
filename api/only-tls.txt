@@ -22,6 +22,26 @@ impl core::marker::Sync for only_tls::EarlyData
 impl core::marker::Unpin for only_tls::EarlyData
 impl core::panic::unwind_safe::RefUnwindSafe for only_tls::EarlyData
 impl core::panic::unwind_safe::UnwindSafe for only_tls::EarlyData
+#[non_exhaustive] pub enum only_tls::RevocationPolicy
+pub only_tls::RevocationPolicy::HardFail
+pub only_tls::RevocationPolicy::Off
+pub only_tls::RevocationPolicy::SoftFail
+impl core::clone::Clone for only_tls::RevocationPolicy
+pub fn only_tls::RevocationPolicy::clone(&self) -> Self
+impl core::cmp::Eq for only_tls::RevocationPolicy
+impl core::cmp::PartialEq for only_tls::RevocationPolicy
+pub fn only_tls::RevocationPolicy::eq(&self, &Self) -> bool
+impl core::default::Default for only_tls::RevocationPolicy
+pub fn only_tls::RevocationPolicy::default() -> Self
+impl core::fmt::Debug for only_tls::RevocationPolicy
+pub fn only_tls::RevocationPolicy::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_tls::RevocationPolicy
+impl core::marker::StructuralPartialEq for only_tls::RevocationPolicy
+impl core::marker::Send for only_tls::RevocationPolicy
+impl core::marker::Sync for only_tls::RevocationPolicy
+impl core::marker::Unpin for only_tls::RevocationPolicy
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::RevocationPolicy
+impl core::panic::unwind_safe::UnwindSafe for only_tls::RevocationPolicy
 pub struct only_tls::Certificate(_)
 impl only_tls::Certificate
 pub fn only_tls::Certificate::as_der(&self) -> &[u8]
@@ -59,9 +79,11 @@ pub fn only_tls::ClientConfigBuilder::alpn<I, P>(self, I) -> Self where I: core:
 pub fn only_tls::ClientConfigBuilder::build(self) -> core::result::Result<only_tls::ClientConfig, only_tls::Error>
 pub fn only_tls::ClientConfigBuilder::certificate_compression(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::client_cert(self, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
+pub fn only_tls::ClientConfigBuilder::crls(self, only_tls::Crls, only_tls::RevocationPolicy) -> Self
 pub fn only_tls::ClientConfigBuilder::early_data(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_tls::ClientConfigBuilder::insecure_skip_verify(self) -> Self
+pub fn only_tls::ClientConfigBuilder::ocsp_policy(self, only_tls::RevocationPolicy) -> Self
 pub fn only_tls::ClientConfigBuilder::ocsp_stapling(self, bool) -> Self
 pub fn only_tls::ClientConfigBuilder::record_size_limit(self, u16) -> Self
 pub fn only_tls::ClientConfigBuilder::resumption(self, bool) -> Self
@@ -75,6 +97,24 @@ impl core::marker::Sync for only_tls::ClientConfigBuilder
 impl core::marker::Unpin for only_tls::ClientConfigBuilder
 impl core::panic::unwind_safe::RefUnwindSafe for only_tls::ClientConfigBuilder
 impl core::panic::unwind_safe::UnwindSafe for only_tls::ClientConfigBuilder
+pub struct only_tls::Crls(_)
+impl only_tls::Crls
+pub fn only_tls::Crls::add_der(&mut self, &[u8]) -> core::result::Result<(), only_tls::Error>
+pub fn only_tls::Crls::add_pem(&mut self, &[u8]) -> core::result::Result<usize, only_tls::Error>
+pub fn only_tls::Crls::is_empty(&self) -> bool
+pub fn only_tls::Crls::len(&self) -> usize
+pub fn only_tls::Crls::new() -> only_tls::Crls
+impl core::clone::Clone for only_tls::Crls
+pub fn only_tls::Crls::clone(&self) -> Self
+impl core::default::Default for only_tls::Crls
+pub fn only_tls::Crls::default() -> Self
+impl core::fmt::Debug for only_tls::Crls
+pub fn only_tls::Crls::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_tls::Crls
+impl core::marker::Sync for only_tls::Crls
+impl core::marker::Unpin for only_tls::Crls
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::Crls
+impl core::panic::unwind_safe::UnwindSafe for only_tls::Crls
 pub struct only_tls::Error
 impl core::convert::From<only_tls::Error> for core::io::error::Error
 pub fn core::io::error::Error::from(only_tls::Error) -> core::io::error::Error
@@ -155,6 +195,7 @@ pub fn only_tls::ServerConfigBuilder::build(self) -> core::result::Result<only_t
 pub fn only_tls::ServerConfigBuilder::certificate_compression(self, bool) -> Self
 pub fn only_tls::ServerConfigBuilder::client_auth_optional(self, only_tls::RootCerts) -> Self
 pub fn only_tls::ServerConfigBuilder::client_auth_required(self, only_tls::RootCerts) -> Self
+pub fn only_tls::ServerConfigBuilder::client_crls(self, only_tls::Crls, only_tls::RevocationPolicy) -> Self
 pub fn only_tls::ServerConfigBuilder::early_data(self, u32) -> Self
 pub fn only_tls::ServerConfigBuilder::handshake_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_tls::ServerConfigBuilder::ocsp_response(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self

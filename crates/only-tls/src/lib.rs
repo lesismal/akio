@@ -21,7 +21,9 @@
 //! suites only, extended master secret, renegotiation indication with renegotiation refused,
 //! session IDs and tickets); AES-128/256-GCM and ChaCha20-Poly1305; X25519, P-256, P-384;
 //! ECDSA, Ed25519 and RSA (PSS; PKCS#1 v1.5 in TLS 1.2) certificates verified with
-//! `only-x509`; SNI and ALPN.
+//! `only-x509`; SNI and ALPN; revocation checking, off by default ([`RevocationPolicy`]: the
+//! stapled OCSP response with [`ClientConfigBuilder::ocsp_policy`], application-supplied
+//! [`Crls`] for server and client chains).
 //!
 //! ```no_run
 //! use only_tls::{Certificate, PrivateKey, ServerConfig, Tls};
@@ -70,8 +72,8 @@ pub mod stream;
 mod system;
 
 pub use config::{
-    Certificate, ClientConfig, ClientConfigBuilder, Error, PrivateKey, RootCerts, ServerConfig,
-    ServerConfigBuilder,
+    Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, PrivateKey, RevocationPolicy,
+    RootCerts, ServerConfig, ServerConfigBuilder,
 };
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};

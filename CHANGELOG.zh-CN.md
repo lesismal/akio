@@ -84,6 +84,24 @@ ADR-037（docs/adr/037-sctp-idata-schedulers.zh-CN.md），仅新增（only-sctp
   新增的 `CHROME_ARGS` 打开其 `WebRTC-DataChannelMessageInterleaving` field trial）。fuzz 目标
   `sctp_packet` 驱动一对 I-DATA 关联和一对 DATA 关联。only-webrtc 不改 API，沿用新的默认值。
 
+### 新增：证书吊销：CRL、OCSP、装订响应校验（only-x509、only-tls）
+
+ADR-038（docs/adr/038-x509-revocation.zh-CN.md），均为新增。库内不访问网络：CRL 与 OCSP 响应由应用获取。
+
+- **only-tls**：`RevocationPolicy::{Off, SoftFail, HardFail}`（默认关闭，关闭时无开销）；
+  `ClientConfigBuilder::ocsp_policy` 在 TLS 1.3 与 1.2 中校验服务器为叶证书装订的 OCSP 响应（由签发者或带
+  id-kp-OCSPSigning 的委托响应者签名、针对该叶证书、在 5 分钟偏差内有效）并自动请求装订：软失败只拒绝有效的
+  “revoked”（`certificate_revoked`），硬失败要求有效的“good”（否则 `bad_certificate_status_response`）。
+  `Crls` 配合 `ClientConfigBuilder::crls` 与 `ServerConfigBuilder::client_crls` 检查对端证书链中根以下的每张
+  证书。
+- **only-x509**（内部 crate）：`Crl`、`CrlSet`（完整与 delta CRL、原因码、issuingDistributionPoint 范围、
+  removeFromCRL）、`Verifier::{crls, revocation_mode, clock_skew}`、`RevocationMode`、`OcspResponse` /
+  `OcspValidation` / `OcspRequest`（RFC 6960、nonce、SHA-1/256/384/512 的 CertID）、
+  `Certificate::{crl_distribution_points, ocsp_urls, ca_issuer_urls}`、生成器 `CrlParams` 与
+  `OcspResponseParams`、新的 `Error` 变体。
+- 测试使用 OpenSSL 生成的 CRL 与 OCSP 响应（`tests/data/revocation/gen.sh`），内存中的 TLS 覆盖每种策略，与
+  `openssl s_server -status_file` 及 OpenSSL CRL 互通；新的模糊测试目标 `x509_crl` 与 `x509_ocsp`。
+
 ### 新增：protobuf 文本格式（only-protobuf）
 
 ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_protobuf::text` 为生成消息

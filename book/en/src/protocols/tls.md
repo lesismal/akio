@@ -88,7 +88,8 @@ WebSocket clients use it when no `ClientConfig` is given (ADR-010).
 | record size limit (RFC 8449) | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
 | handshake timeout (default 10 s: a connection still negotiating after it is closed with `TimedOut` and counted in `only_tls_handshake_failures_total`) | `.handshake_timeout(Some(d))`, `None` for no limit | `.handshake_timeout(Some(d))` |
 | certificate compression | on by default; `.certificate_compression(false)` to disable | `.certificate_compression(true)` to offer it |
-| OCSP stapling | `.ocsp_response(der)`, `.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)` |
+| OCSP stapling | `.ocsp_response(der)`, `.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`; `.ocsp_policy(RevocationPolicy::HardFail)` to validate it |
+| CRLs ([revocation](#revocation-checking)) | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
 | tests only | | `.insecure_skip_verify()` |
 
 `.build()` checks the certificates and key (including that the key belongs to the leaf
@@ -225,9 +226,40 @@ let cfg = ServerConfig::builder(chain, key).ocsp_response(ocsp).build()?;
 within days): fetch a new one and build a new configuration before then.
 
 A client with `.ocsp_stapling(true)` asks for one, and `tls_info(&conn).ocsp_response` holds the
-DER bytes. **They are not verified**: `only-x509` does not check OCSP yet (the responder's
-signature, validity, the certificate ID), so an application that cares about revocation must
-verify the response itself.
+DER bytes; they are validated only under an OCSP policy (next section).
+
+### Revocation checking
+
+Off by default, and free when off. The library never fetches anything (no blocking I/O on the
+I/O threads): stapled responses come from the server, CRLs from your application.
+
+```rust,ignore
+use only::tls::{ClientConfig, Crls, RevocationPolicy};
+
+let mut crls = Crls::new();
+crls.add_pem(&std::fs::read("ca.crl.pem")?)?; // downloaded and refreshed by you
+let cfg = ClientConfig::builder()
+    .roots(roots)
+    .ocsp_policy(RevocationPolicy::HardFail) // requires a valid "good" staple
+    .crls(crls, RevocationPolicy::SoftFail)  // fails only on a listed revocation
+    .build()?;
+```
+
+- **Stapled OCSP** (`.ocsp_policy`, asks for stapling when not `Off`): the response must be
+  signed by the leaf's issuer or a responder it delegated (id-kp-OCSPSigning), name the leaf,
+  and be current (thisUpdate / nextUpdate within 5 minutes of clock skew). `SoftFail` rejects
+  only a valid "revoked" (alert `certificate_revoked`); `HardFail` also rejects a missing,
+  invalid, stale or "unknown" response (`bad_certificate_status_response`). Only the leaf is
+  covered; resumed sessions are not checked again.
+- **CRLs** (`.crls` on the client, `.client_crls` on the server for client certificates): every
+  certificate below the root is checked against current CRLs of its issuer (complete and delta,
+  issuingDistributionPoint scopes, signatures checked once). A listed certificate fails with
+  `certificate_revoked`; under `HardFail` one with no current CRL fails with
+  `certificate_unknown`. To refresh, build a new configuration.
+
+Where to fetch, and querying a responder yourself: the internal `only-x509` crate (no semver
+promise) has `Certificate::crl_distribution_points()` and `ocsp_urls()`, `OcspRequest` and
+`OcspResponse::verify` (ADR-038).
 
 ## Kernel TLS
 
@@ -241,7 +273,8 @@ on a NIC with TLS offload.
 
 ## Not done
 
-OCSP response validation, brotli/zstd certificate compression, `status_request_v2`; RSA-PSS keys
+Fetching OCSP responses or CRLs, OCSP for intermediates (`status_request_v2`), indirect CRLs,
+brotli/zstd certificate compression; RSA-PSS keys
 (`rsa_pss_pss_*`); P-521; the Windows certificate store and macOS trust settings.
 
 ## Writing your own transport

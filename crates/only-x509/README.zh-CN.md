@@ -20,10 +20,18 @@ TLS 1.2/1.3、DTLS 与 QUIC 协议栈的证书层（也将替代测试证书用�
 - `CertificateParams` 与 `generate_simple_self_signed`：生成自签名或 CA 签发的证书，签名密钥可以是
   ECDSA P-256（生成密钥时的默认值）或 P-384、Ed25519、RSA；支持 SAN、有效期、序列号、CA/pathLen、密钥用途、
   EKU、名称约束、自定义扩展、密钥标识符。
+- 吊销检查（ADR-038），不访问网络（由应用获取；`Certificate::crl_distribution_points`、`ocsp_urls` 与
+  `ca_issuer_urls` 给出地址）：`Crl`（RFC 5280 第 5 节：严格的 DER/PEM、cRLNumber、delta CRL、原因码、
+  invalidityDate、issuingDistributionPoint 范围；签名对签发者只验证一次并记住）与 `CrlSet::status`（带时钟
+  偏差的正常 / 吊销 / 未知、delta 与 removeFromCRL、原因覆盖），由 `Verifier::crls` 配合
+  `RevocationMode::{SoftFail, HardFail}` 应用于整条路径；`OcspResponse::verify`（RFC 6960：签发者或带
+  id-kp-OCSPSigning 的委托响应者、SHA-1/256/384/512 的 CertID、常数时间比较 nonce、带时钟偏差的
+  thisUpdate / nextUpdate）与 `OcspRequest`；`CrlParams` 与 `OcspResponseParams` 为测试和开发用 CA 生成
+  已签名的 CRL 与响应。
 
 支持的签名算法：ECDSA 配 SHA-256/384/512（P-256、P-384 密钥）、Ed25519、RSA PKCS#1 v1.5 配
-SHA-256/384/512（SHA-1 仅用于验证旧证书）、RSA-PSS 配 SHA-256/384/512。未实现：吊销检查（CRL、OCSP）、
-证书策略、Ed448、DSA。
+SHA-256/384/512（SHA-1 仅用于验证旧证书）、RSA-PSS 配 SHA-256/384/512。未实现：间接 CRL（以及由 CA
+其他密钥签发的 CRL）、签名的 OCSP 请求、任何网络获取、证书策略、Ed448、DSA。
 
 ```rust
 use only_crypto::pkey::PrivateKey;
@@ -58,5 +66,10 @@ Verifier::new(&roots).verify_server(&cert, &[], "localhost").unwrap();
 - 参照 BetterTLS / x509-limbo 构造的反例：超过 pathLen、颁发者不是 CA、CA 证书当作终端实体、缺少
   keyCertSign、中间证书的 EKU 不含 serverAuth、中间证书过期、未知关键扩展、签名密钥错误、违反名称约束
   （DNS、排除子树、IP 范围、形似后缀）、通配符边界情况、证书的每一种截断和大量字节篡改。
-- 模糊测试：`fuzz/` 中的目标 `x509_parse`（证书/PEM/SPKI/PKCS#8 解析、往返、自验证）；
-  `fuzzing::tests` 在 stable 上回放 `fuzz/corpus/x509_parse`。
+- 吊销（`tests/revocation.rs`）：OpenSSL 生成的 CRL（完整、delta、IDP、根）与 OCSP 响应
+  （`tests/data/revocation/gen.sh`：委托响应者、CA 签名、byKey、SHA-256、无 nextUpdate、nonce、吊销、暂停、
+  未知、多个单个响应；反例：没有 OCSPSigning EKU、其他 CA 的响应者、未附带签名者证书、证书不符、偏差边界两侧的
+  过期与尚未生效、损坏的签名、每一种截断）；请求与 `openssl ocsp` 生成的逐字节相同；生成的 CRL 与响应覆盖
+  delta 解除暂停、范围、部分原因、被吊销的中间证书与过期的响应者。
+- 模糊测试：`fuzz/` 中的目标 `x509_parse`（证书/PEM/SPKI/PKCS#8 解析、往返、自验证）、`x509_crl` 与
+  `x509_ocsp`（解析、往返、状态查询与校验）；`fuzzing::tests` 在 stable 上回放它们的语料。

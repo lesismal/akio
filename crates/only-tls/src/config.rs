@@ -274,6 +274,80 @@ impl RootCerts {
     }
 }
 
+/// What to do about revocation: for a stapled OCSP response
+/// ([`ClientConfigBuilder::ocsp_policy`]) or CRLs ([`ClientConfigBuilder::crls`],
+/// [`ServerConfigBuilder::client_crls`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum RevocationPolicy {
+    /// No check (the default).
+    #[default]
+    Off,
+    /// Only authentic, current proof of revocation fails the handshake: missing, stale,
+    /// unverifiable or "unknown" information is accepted.
+    SoftFail,
+    /// Authentic, current proof of good standing is required: anything else fails the
+    /// handshake.
+    HardFail,
+}
+
+/// Certificate revocation lists (RFC 5280 section 5, complete and delta) for checking peer
+/// chains. The application fetches and refreshes them (no network access in this crate; a
+/// certificate's cRLDistributionPoints give the URLs) and rebuilds the configuration with a
+/// new set. Signatures are checked on first use against the issuer in the verified chain.
+#[derive(Clone, Default)]
+pub struct Crls(only_x509::CrlSet);
+
+impl fmt::Debug for Crls {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Crls").field("len", &self.len()).finish()
+    }
+}
+
+impl Crls {
+    /// No CRLs.
+    pub fn new() -> Crls {
+        Crls::default()
+    }
+
+    /// Adds a DER CRL.
+    pub fn add_der(&mut self, der: &[u8]) -> Result<(), Error> {
+        self.0.add_der(der).map_err(|e| Error::wrap("bad CRL", e))
+    }
+
+    /// Adds every `X509 CRL` block of a PEM text; returns how many.
+    pub fn add_pem(&mut self, pem: &[u8]) -> Result<usize, Error> {
+        self.0.add_pem(pem).map_err(|e| Error::wrap("bad CRL", e))
+    }
+
+    /// Number of CRLs.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// The internal form of a CRL check (`None` when off).
+fn crl_check(
+    crls: Option<(Crls, RevocationPolicy)>,
+) -> Option<(Arc<only_x509::CrlSet>, only_x509::RevocationMode)> {
+    match crls {
+        None | Some((_, RevocationPolicy::Off)) => None,
+        Some((c, p)) => Some((
+            Arc::new(c.0),
+            if p == RevocationPolicy::HardFail {
+                only_x509::RevocationMode::HardFail
+            } else {
+                only_x509::RevocationMode::SoftFail
+            },
+        )),
+    }
+}
+
 fn suites_from_ids(ids: &[u16]) -> Result<Vec<&'static Suite>, Error> {
     ids.iter()
         .map(|id| suites::by_id(*id).ok_or_else(|| Error::new(format!("unknown suite {id:#06x}"))))
@@ -416,6 +490,7 @@ impl ServerConfig {
             sni: Vec::new(),
             alpn: Vec::new(),
             client_auth: None,
+            client_crls: None,
             session_cache: 256,
             tickets: false,
             tls13_only: false,
@@ -456,6 +531,7 @@ pub struct ServerConfigBuilder {
     sni: Vec<(String, Vec<Certificate>, PrivateKey)>,
     alpn: Vec<Vec<u8>>,
     client_auth: Option<(RootCerts, bool)>,
+    client_crls: Option<(Crls, RevocationPolicy)>,
     session_cache: usize,
     tickets: bool,
     tls13_only: bool,
@@ -545,6 +621,16 @@ impl ServerConfigBuilder {
     /// accepts clients without a certificate.
     pub fn client_auth_optional(mut self, roots: RootCerts) -> Self {
         self.client_auth = Some((roots, false));
+        self
+    }
+
+    /// Checks client certificate chains against `crls` (every certificate below the root,
+    /// RFC 5280 section 6.3): a revoked certificate fails the handshake
+    /// (`certificate_revoked`); with [`RevocationPolicy::HardFail`], so does one no current
+    /// CRL covers. Needs [`client_auth_required`](Self::client_auth_required) or
+    /// [`client_auth_optional`](Self::client_auth_optional).
+    pub fn client_crls(mut self, crls: Crls, policy: RevocationPolicy) -> Self {
+        self.client_crls = Some((crls, policy));
         self
     }
 
@@ -800,6 +886,7 @@ impl ServerConfigBuilder {
             sni: by_name,
             alpn: self.alpn,
             client_auth: self.client_auth.map(|(r, req)| (Arc::new(r.0), req)),
+            client_crls: crl_check(self.client_crls),
             cache: (self.session_cache > 0).then(|| SessionCache::new(self.session_cache)),
             ticketer,
             tls12: suites.iter().any(|s| !s.is_tls13()),
@@ -871,6 +958,8 @@ impl ClientConfig {
             record_limit: MAX_RECORD_LIMIT13,
             cert_compression: false,
             ocsp: false,
+            ocsp_policy: RevocationPolicy::Off,
+            crls: None,
             handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
         }
     }
@@ -904,6 +993,8 @@ pub struct ClientConfigBuilder {
     record_limit: u16,
     cert_compression: bool,
     ocsp: bool,
+    ocsp_policy: RevocationPolicy,
+    crls: Option<(Crls, RevocationPolicy)>,
     handshake_timeout: Option<Duration>,
 }
 
@@ -921,6 +1012,8 @@ impl fmt::Debug for ClientConfigBuilder {
             .field("record_size_limit", &self.record_limit)
             .field("certificate_compression", &self.cert_compression)
             .field("ocsp_stapling", &self.ocsp)
+            .field("ocsp_policy", &self.ocsp_policy)
+            .field("crls", &self.crls)
             .field("handshake_timeout", &self.handshake_timeout)
             .finish_non_exhaustive()
     }
@@ -1003,10 +1096,41 @@ impl ClientConfigBuilder {
 
     /// Asks the server for a stapled OCSP response (status_request, RFC 6066 section 8 /
     /// RFC 8446 section 4.4.2.1; default off). What the server sends is available as
-    /// [`TlsInfo::ocsp_response`](crate::TlsInfo) (DER); **it is not verified** (no OCSP in
-    /// `only-x509` yet): check it yourself if revocation matters.
+    /// [`TlsInfo::ocsp_response`](crate::TlsInfo) (DER); it is only validated with an
+    /// [`ocsp_policy`](Self::ocsp_policy) other than off.
     pub fn ocsp_stapling(mut self, yes: bool) -> Self {
         self.ocsp = yes;
+        self
+    }
+
+    /// Validates the OCSP response the server staples for its certificate (RFC 6960: signed
+    /// by the leaf's issuer or a responder it delegated with id-kp-OCSPSigning, about this
+    /// certificate, thisUpdate / nextUpdate current within 5 minutes of clock skew), asking
+    /// for one (implies [`ocsp_stapling`](Self::ocsp_stapling)) in TLS 1.3 and 1.2. Default
+    /// [`RevocationPolicy::Off`].
+    ///
+    /// - [`SoftFail`](RevocationPolicy::SoftFail): a valid response saying "revoked" fails the
+    ///   handshake (`certificate_revoked`); no response, an invalid or stale one, or
+    ///   "unknown" are accepted.
+    /// - [`HardFail`](RevocationPolicy::HardFail): a valid, current "good" response is
+    ///   required; anything else fails (`bad_certificate_status_response`, or
+    ///   `certificate_revoked`).
+    ///
+    /// Only the leaf is checked (stapling covers it alone; use [`crls`](Self::crls) for the
+    /// rest of the chain). A resumed session is not checked again. Not applied with
+    /// [`insecure_skip_verify`](Self::insecure_skip_verify). No OCSP request is sent by this
+    /// crate: an application that wants to query a responder itself can use the leaf's
+    /// responder URL and the response with `only-x509`.
+    pub fn ocsp_policy(mut self, policy: RevocationPolicy) -> Self {
+        self.ocsp_policy = policy;
+        self
+    }
+
+    /// Checks the server's chain against `crls` (every certificate below the root, RFC 5280
+    /// section 6.3): a revoked certificate fails the handshake (`certificate_revoked`); with
+    /// [`RevocationPolicy::HardFail`], so does one no current CRL covers.
+    pub fn crls(mut self, crls: Crls, policy: RevocationPolicy) -> Self {
+        self.crls = Some((crls, policy));
         self
     }
 
@@ -1108,7 +1232,9 @@ impl ClientConfigBuilder {
             early_data: self.early_data,
             record_limit: check_record_limit(self.record_limit)?,
             cert_compression: self.cert_compression,
-            ocsp: self.ocsp,
+            ocsp: self.ocsp || self.ocsp_policy != RevocationPolicy::Off,
+            ocsp_policy: self.ocsp_policy,
+            crls: crl_check(self.crls),
         };
         Ok(ClientConfig {
             inner: Arc::new(settings),
