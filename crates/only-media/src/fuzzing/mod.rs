@@ -2,6 +2,7 @@
 //! calls them; the unit tests in each module replay `fuzz/corpus/<target>` on stable.
 
 pub mod fmp4;
+pub mod hls;
 pub mod rtmp;
 pub mod rtsp;
 pub mod srt;

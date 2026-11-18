@@ -719,3 +719,17 @@ path = "fuzz_targets/export_otlp.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "srt_rendezvous"
+path = "fuzz_targets/srt_rendezvous.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h264_sample_encryption"
+path = "fuzz_targets/h264_sample_encryption.rs"
+test = false
+doc = false
+bench = false

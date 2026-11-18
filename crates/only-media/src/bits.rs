@@ -63,6 +63,11 @@ impl<'a> BitReader<'a> {
         i32::try_from(v).ok()
     }
 
+    /// Bits read so far.
+    pub(crate) fn pos(&self) -> usize {
+        self.pos
+    }
+
     #[allow(dead_code)]
     pub(crate) fn bits_left(&self) -> usize {
         (self.data.len() * 8).saturating_sub(self.pos)

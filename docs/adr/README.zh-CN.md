@@ -42,3 +42,4 @@
 - [ADR-036：only-rtp 中的 RTCP XR、TMMBR / TMMBN、RFC 8888 反馈与 FEC](036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md)（2026-11-18 采纳）
 - [ADR-037：SCTP 消息交错（I-DATA）与流调度器](037-sctp-idata-schedulers.zh-CN.md)（2026-11-18 采纳）
 - [ADR-038：证书吊销：CRL、OCSP 与装订响应的校验](038-x509-revocation.zh-CN.md)（2026-11-18 采纳）
+- [ADR-043：SRT rendezvous、MPEG-TS 中的 AV1、录制为 MPEG-TS、HLS SAMPLE-AES](043-media-srt-rendezvous-av1-ts-sample-aes.zh-CN.md)（2026-11-19 采纳）

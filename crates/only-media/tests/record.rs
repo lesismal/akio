@@ -1,4 +1,4 @@
-//! Recording hub streams to files (`only_media::record`): fMP4 and FLV, cut by duration and by
+//! Recording hub streams to files (`only_media::record`): fMP4, FLV and MPEG-TS, cut by duration and by
 //! size, rotation, hooks, a republish with other codecs, a writer that does not keep up, and
 //! file names. With ffprobe every file must parse and decode, start with a keyframe and hold
 //! the media its hook reported; without it the ffmpeg checks are skipped.
@@ -155,11 +155,15 @@ fn check_file(f: &RecordFile, codecs: &[&str]) {
             p,
         ],
     );
-    let got: Vec<&str> = streams
+    let mut got: Vec<&str> = streams
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .collect();
+    // MPEG-TS: ffprobe lists the program's streams, then the streams again.
+    if got.len() == 2 * codecs.len() && got[..codecs.len()] == got[codecs.len()..] {
+        got.truncate(codecs.len());
+    }
     assert_eq!(got, codecs, "{p}");
     let pkts = run(
         "ffprobe",
@@ -276,11 +280,16 @@ fn flv_by_duration() {
     check_format(RecordFormat::Flv);
 }
 
+#[test]
+fn mpegts_by_duration() {
+    check_format(RecordFormat::MpegTs);
+}
+
 /// Cut by size, rotated to the newest two files; a republish with H.265 starts a new file.
 #[test]
 fn size_rotation_and_republish() {
     let ff = ffprobe();
-    for format in [RecordFormat::Fmp4, RecordFormat::Flv] {
+    for format in [RecordFormat::Fmp4, RecordFormat::Flv, RecordFormat::MpegTs] {
         let hub = Hub::default();
         let (tx, rx) = channel();
         let hooks = Hooks {

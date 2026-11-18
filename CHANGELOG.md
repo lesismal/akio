@@ -10,6 +10,30 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: SRT rendezvous, AV1 in MPEG-TS, recording to MPEG-TS, HLS SAMPLE-AES (only-media)
+
+ADR-043 (docs/adr/043-media-srt-rendezvous-av1-ts-sample-aes.md), additive:
+
+- **SRT rendezvous** (HSv5): `srt::Conn::rendezvous` / `Conn::is_rendezvous` and
+  `srt::{rendezvous, push_rendezvous, pull_rendezvous}(engine, local, remote, ..)` on a UDP
+  socket bound at `local`. Both sides wave, libsrt's cookie contest picks the initiator (HSREQ,
+  KMREQ with its key), the responder answers HSRSP / KMRSP and connects on AGREEMENT (or the
+  initiator's next packet). Ten times `handshake_timeout`. Tested against libsrt 1.5.4
+  (`srt-live-transmit`) pushing and pulling, clear and encrypted.
+- **AV1 in MPEG-TS** (AOM "Carriage of AV1 in MPEG-2 TS"): stream type 0x06 with the `AV01`
+  registration and AV1 video descriptors, OBUs after start codes with emulation prevention, a
+  temporal delimiter per PES; the demuxer also reads GStreamer's `AV1G`. AV1 now goes over SRT,
+  HLS MPEG-TS and MPEG-TS recordings. VP8 / VP9 have no MPEG-TS mapping (documented).
+- **Recording to MPEG-TS**: `RecordFormat::MpegTs` (`.ts`), tables repeated before every video
+  keyframe.
+- **HLS SAMPLE-AES**: `hls::EncryptionMethod::{Aes128, SampleAes}`, `HlsEncryption::method`
+  (field and builder). MPEG-TS: Apple's sample encryption (stream types 0xdb / 0xcf, `zavc` /
+  `aacd` / `apad`; H.264 slices 1:9 after 32 clear bytes, AAC frames), one random IV per key in
+  the `IV` attribute. fMP4: `cbcs` (`encv` / `enca` with `sinf` / `tenc` and a constant IV,
+  `senc` / `saiz` / `saio`; H.264 slice headers parsed and kept clear). H.264 and AAC tracks
+  only (others left out of the segments). ffmpeg decodes both frame for frame.
+- Fuzz targets `srt_rendezvous` and `h264_sample_encryption`; AV1 seeds for `mpegts_demux`.
+
 ### Added: HLS encryption and recording (only-media), AES-CBC (only-crypto)
 
 ADR-034 (docs/adr/034-media-hls-encryption-recording.md), additive:

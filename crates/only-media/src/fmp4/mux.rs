@@ -1,6 +1,8 @@
+use only_crypto::aes::Aes;
+
 use crate::{
     av::{Codec, Packet, Time, Track, to_ticks},
-    codec::{aac, av1, opus, vp9},
+    codec::{aac, av1, h264, opus, vp9},
 };
 
 use super::{
@@ -46,6 +48,122 @@ struct Out {
     natural: u32,
     /// Duration used when nothing else is known.
     fallback: u32,
+    /// `cbcs` encryption of the track's samples.
+    enc: Option<Box<TrackEnc>>,
+}
+
+/// `cbcs` (ISO/IEC 23001-7 10.4) state of an encrypted track.
+#[derive(Debug, Default)]
+struct TrackEnc {
+    /// Video: subsamples (NAL unit and slice headers clear, slice data in a 1:9 pattern);
+    /// audio: whole samples, every whole block encrypted.
+    video: bool,
+    /// The H.264 parameter sets seen (configuration record and in band).
+    sps: Vec<h264::SpsInfo>,
+    pps: Vec<h264::PpsInfo>,
+    /// `senc` entries of the fragment's samples (video), and their sizes (`saiz`).
+    aux: Vec<u8>,
+    aux_sizes: Vec<u8>,
+}
+
+/// Encrypts a sample just written (`cbcs`), returning the `senc` bytes it added.
+#[cold]
+#[inline(never)]
+fn encrypt_sample(e: &mut TrackEnc, c: &Cbcs, data: &mut [u8]) -> usize {
+    let Some(aes) = &c.key else { return 0 };
+    let before = e.aux.len();
+    if e.video {
+        e.video_sample(aes, &c.iv, data);
+    } else {
+        cbcs_range(aes, &c.iv, data, false);
+    }
+    e.aux.len() - before + 1
+}
+
+/// The pattern of `cbcs` video: one encrypted 16-byte block, nine clear.
+const CBCS_CRYPT: u8 = 1;
+const CBCS_SKIP: u8 = 9;
+
+/// Encrypts a `cbcs` protected range from the constant IV: video in the 1:9 pattern (every
+/// block that is whole), audio every whole block.
+fn cbcs_range(aes: &Aes, iv: &[u8; 16], data: &mut [u8], pattern: bool) {
+    let mut iv = *iv;
+    if !pattern {
+        let n = data.len() / 16 * 16;
+        let _ = aes.encrypt_cbc(&mut iv, &mut data[..n]);
+        return;
+    }
+    let mut at = 0;
+    while data.len() - at >= 16 {
+        let _ = aes.encrypt_cbc(&mut iv, &mut data[at..at + 16]);
+        at += 16;
+        at += (data.len() - at).min(16 * usize::from(CBCS_SKIP));
+    }
+}
+
+impl TrackEnc {
+    /// Encrypts an H.264 sample (AVCC, 4-byte lengths) in place and appends its `senc`
+    /// entry: every coded slice is a subsample whose clear bytes end with its slice header.
+    /// NAL units of other types (and slices whose header does not parse) stay clear.
+    fn video_sample(&mut self, aes: &Aes, iv: &[u8; 16], data: &mut [u8]) {
+        let mut subs: Vec<(usize, usize)> = Vec::new();
+        let mut clear = 0usize;
+        let mut pos = 0;
+        while data.len() - pos >= 4 {
+            let n = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                as usize;
+            if n == 0 || n > data.len() - pos - 4 {
+                break;
+            }
+            let nal = &data[pos + 4..pos + 4 + n];
+            match h264::nal_type(nal[0]) {
+                h264::NAL_SPS => {
+                    if let Some(i) = h264::sps_info(nal) {
+                        self.sps.retain(|x| x != &i);
+                        self.sps.push(i);
+                    }
+                }
+                h264::NAL_PPS => {
+                    if let Some(i) = h264::pps_info(nal) {
+                        self.pps.retain(|x| x != &i);
+                        self.pps.push(i);
+                    }
+                }
+                _ => {}
+            }
+            let header = h264::slice_header_len(nal, &self.sps, &self.pps).filter(|&h| h < n);
+            match header {
+                Some(h) => {
+                    subs.push((clear + 4 + h, n - h));
+                    clear = 0;
+                    cbcs_range(aes, iv, &mut data[pos + 4 + h..pos + 4 + n], true);
+                }
+                None => clear += 4 + n,
+            }
+            pos += 4 + n;
+        }
+        clear += data.len() - pos;
+        if clear > 0 || subs.is_empty() {
+            subs.push((clear, 0));
+        }
+        // BytesOfClearData is 16 bits: a longer clear run is split over subsamples.
+        let mut entries: Vec<(u16, u32)> = Vec::with_capacity(subs.len());
+        for (mut c, p) in subs {
+            while c > 0xffff {
+                entries.push((0xffff, 0));
+                c -= 0xffff;
+            }
+            entries.push((c as u16, u32::try_from(p).unwrap_or(u32::MAX)));
+        }
+        let count = entries.len().min(0xffff);
+        self.aux.extend_from_slice(&(count as u16).to_be_bytes());
+        for (c, p) in &entries[..count] {
+            self.aux.extend_from_slice(&c.to_be_bytes());
+            self.aux.extend_from_slice(&p.to_be_bytes());
+        }
+        self.aux_sizes
+            .push(u8::try_from(2 + 6 * count).unwrap_or(0));
+    }
 }
 
 /// Muxes canonical packets into fragmented MP4: [`init_segment`](Self::init_segment) once per
@@ -64,6 +182,21 @@ pub struct Muxer {
     pending: usize,
     /// Positions of the `trun` data offsets being patched during a flush (reused).
     offsets: Vec<(usize, usize)>,
+    /// `cbcs`: the constant IV and the current key.
+    cbcs: Option<Box<Cbcs>>,
+}
+
+/// The `cbcs` keying of a muxer.
+#[derive(Clone)]
+struct Cbcs {
+    iv: [u8; 16],
+    key: Option<Aes>,
+}
+
+impl std::fmt::Debug for Cbcs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Cbcs").finish_non_exhaustive()
+    }
 }
 
 impl Muxer {
@@ -71,13 +204,52 @@ impl Muxer {
     /// fMP4 here (G.711, MP3, unknown, a VP8 / VP9 / AV1 track without a configuration record
     /// that parses) are left out.
     pub fn new(tracks: &[Track]) -> Muxer {
+        Muxer::build(tracks, None)
+    }
+
+    /// A muxer encrypting with the `cbcs` scheme (ISO/IEC 23001-7) for HLS `SAMPLE-AES`:
+    /// H.264 and AAC tracks only (`encv` / `enca` with a `tenc` holding a random constant
+    /// IV); samples are encrypted with the key [`set_sample_key`](Self::set_sample_key) sets
+    /// (none are taken before).
+    pub(crate) fn cbcs(tracks: &[Track]) -> Muxer {
+        let mut iv = [0u8; 16];
+        if only_crypto::rand::fill_random(&mut iv).is_err() {
+            // The IV need not be secret nor unpredictable for cbcs; vary it anyway.
+            let t = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos());
+            iv = t.to_be_bytes();
+        }
+        Muxer::build(tracks, Some(Box::new(Cbcs { iv, key: None })))
+    }
+
+    /// Sets the key samples are encrypted with from now on (a `cbcs` muxer).
+    pub(crate) fn set_sample_key(&mut self, key: Aes) {
+        if let Some(c) = &mut self.cbcs {
+            c.key = Some(key);
+        }
+    }
+
+    fn build(tracks: &[Track], cbcs: Option<Box<Cbcs>>) -> Muxer {
         let mut outs = Vec::with_capacity(tracks.len());
         let mut id = 0u32;
         for t in tracks {
-            if !carried(t) {
+            let encrypted = matches!(t.codec, Codec::H264 | Codec::Aac);
+            if !carried(t) || cbcs.is_some() && !encrypted {
                 outs.push(None);
                 continue;
             }
+            let enc = cbcs.as_ref().map(|_| {
+                let mut e = TrackEnc {
+                    video: t.codec == Codec::H264,
+                    ..TrackEnc::default()
+                };
+                if let Some(c) = h264::Config::parse(&t.config).ok().filter(|_| e.video) {
+                    e.sps = c.sps.iter().filter_map(|s| h264::sps_info(s)).collect();
+                    e.pps = c.pps.iter().filter_map(|s| h264::pps_info(s)).collect();
+                }
+                Box::new(e)
+            });
             id += 1;
             let timescale = t.clock_rate();
             let fallback = match t.codec {
@@ -94,6 +266,7 @@ impl Muxer {
                 last_duration: 0,
                 natural: 0,
                 fallback,
+                enc,
             }));
         }
         let mut m = Muxer {
@@ -102,6 +275,7 @@ impl Muxer {
             seq: 0,
             pending: 0,
             offsets: Vec::new(),
+            cbcs,
         };
         m.init = m.build_init(tracks);
         m
@@ -152,6 +326,9 @@ impl Muxer {
         let Some(Some(t)) = self.tracks.get_mut(track) else {
             return false;
         };
+        if t.enc.is_some() && self.cbcs.as_ref().is_none_or(|c| c.key.is_none()) {
+            return false; // no key yet
+        }
         let add = data.len() + SAMPLE_OVERHEAD;
         if self.pending + add > MAX_FRAGMENT_BYTES || t.samples.len() >= MAX_FRAGMENT_SAMPLES {
             return false;
@@ -167,7 +344,11 @@ impl Muxer {
             size,
             sync: keyframe || !t.codec.is_video(),
         });
+        let at = t.data.len();
         t.data.extend_from_slice(data);
+        if let (Some(e), Some(c)) = (&mut t.enc, &self.cbcs) {
+            self.pending += encrypt_sample(e, c, &mut t.data[at..]);
+        }
         t.natural = match t.codec {
             Codec::Aac => aac::FRAME_SAMPLES,
             Codec::Opus => opus::packet_samples(data),
@@ -247,6 +428,9 @@ impl Muxer {
                 }
             }
             close(out, trun);
+            if let Some(e) = t.enc.as_deref_mut().filter(|e| e.video) {
+                write_senc(out, moof, e);
+            }
             close(out, traf);
         }
         close(out, moof);
@@ -305,7 +489,7 @@ impl Muxer {
 
         for (t, o) in tracks.iter().zip(&self.tracks) {
             if let Some(o) = o {
-                write_trak(&mut out, t, o);
+                write_trak(&mut out, t, o, self.cbcs.as_ref().map(|c| &c.iv));
             }
         }
 
@@ -360,7 +544,67 @@ pub fn write_styp(out: &mut Vec<u8>) {
     close(out, s);
 }
 
-fn write_trak(out: &mut Vec<u8>, t: &Track, o: &Out) {
+/// The `saiz`, `saio` and `senc` boxes of an encrypted video track's fragment (`moof` starts
+/// at `moof` in `out`); the entries are taken.
+fn write_senc(out: &mut Vec<u8>, moof: usize, e: &mut TrackEnc) {
+    let n = e.aux_sizes.len() as u32;
+    // `saiz` sizes are 8-bit: with a sample of more than 42 subsamples only `senc` is written.
+    let sized = e.aux_sizes.iter().all(|&s| s > 0);
+    let mut saio_at = None;
+    if sized {
+        let saiz = open_full(out, b"saiz", 0, 0);
+        out.push(0); // default_sample_info_size: per sample
+        put32(out, n);
+        out.extend_from_slice(&e.aux_sizes);
+        close(out, saiz);
+        let saio = open_full(out, b"saio", 0, 0);
+        put32(out, 1);
+        saio_at = Some(out.len());
+        put32(out, 0);
+        close(out, saio);
+    }
+    let senc = open_full(out, b"senc", 0, 0x2); // subsample information
+    put32(out, n);
+    if let Some(at) = saio_at {
+        let off = u32::try_from(out.len() - moof).unwrap_or(u32::MAX);
+        out[at..at + 4].copy_from_slice(&off.to_be_bytes());
+    }
+    out.extend_from_slice(&e.aux);
+    close(out, senc);
+    e.aux.clear();
+    e.aux_sizes.clear();
+}
+
+/// The `sinf` of an encrypted sample entry: the original format, the `cbcs` scheme and its
+/// `tenc` (protected, constant IV `iv`, a zero KID: keys come from the playlist).
+fn write_sinf(out: &mut Vec<u8>, original: &[u8; 4], video: bool, iv: &[u8; 16]) {
+    let sinf = open(out, b"sinf");
+    let frma = open(out, b"frma");
+    out.extend_from_slice(original);
+    close(out, frma);
+    let schm = open_full(out, b"schm", 0, 0);
+    out.extend_from_slice(b"cbcs");
+    put32(out, 0x0001_0000);
+    close(out, schm);
+    let schi = open(out, b"schi");
+    let tenc = open_full(out, b"tenc", 1, 0);
+    out.push(0);
+    out.push(if video {
+        (CBCS_CRYPT << 4) | CBCS_SKIP
+    } else {
+        0
+    });
+    out.push(1); // default_isProtected
+    out.push(0); // default_Per_Sample_IV_Size: constant IV
+    out.extend_from_slice(&[0; 16]); // default_KID
+    out.push(16);
+    out.extend_from_slice(iv);
+    close(out, tenc);
+    close(out, schi);
+    close(out, sinf);
+}
+
+fn write_trak(out: &mut Vec<u8>, t: &Track, o: &Out, cbcs_iv: Option<&[u8; 16]>) {
     let video = t.codec.is_video();
     let trak = open(out, b"trak");
     let tkhd = open_full(out, b"tkhd", 0, 3); // enabled, in movie
@@ -448,7 +692,8 @@ fn write_trak(out: &mut Vec<u8>, t: &Track, o: &Out) {
         }
         Codec::H264 | Codec::H265 => {
             let h265 = t.codec == Codec::H265;
-            let e = open(out, if h265 { b"hvc1" } else { b"avc1" });
+            let fourcc = if h265 { b"hvc1" } else { b"avc1" };
+            let e = open(out, if cbcs_iv.is_some() { b"encv" } else { fourcc });
             visual_entry(out, t);
             let c = open(out, if h265 { b"hvcC" } else { b"avcC" });
             let at = out.len();
@@ -462,6 +707,9 @@ fn write_trak(out: &mut Vec<u8>, t: &Track, o: &Out) {
                 *b |= 3;
             }
             close(out, c);
+            if let Some(iv) = cbcs_iv {
+                write_sinf(out, fourcc, true, iv);
+            }
             close(out, e);
         }
         Codec::Aac => {
@@ -473,7 +721,7 @@ fn write_trak(out: &mut Vec<u8>, t: &Track, o: &Out) {
                 .map_or(0, |c| c.channels)
                 .max(t.channels)
                 .max(1);
-            let e = open(out, b"mp4a");
+            let e = open(out, if cbcs_iv.is_some() { b"enca" } else { b"mp4a" });
             audio_entry(out, u16::from(channels), o.timescale);
             let esds = open_full(out, b"esds", 0, 0);
             let dsi = desc_size(asc.len());
@@ -493,6 +741,9 @@ fn write_trak(out: &mut Vec<u8>, t: &Track, o: &Out) {
             desc_header(out, 0x06, 1);
             out.push(0x02);
             close(out, esds);
+            if let Some(iv) = cbcs_iv {
+                write_sinf(out, b"mp4a", false, iv);
+            }
             close(out, e);
         }
         Codec::Opus => {

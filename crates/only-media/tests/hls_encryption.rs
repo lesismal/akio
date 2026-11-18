@@ -4,6 +4,11 @@
 //! valid media; with ffmpeg / ffprobe the live playlist itself plays (ffmpeg fetches and
 //! applies the keys) and each decrypted segment decodes. Without ffmpeg / ffprobe the ffmpeg
 //! parts are skipped; the playlist, key and decryption checks always run.
+//!
+//! SAMPLE-AES (MPEG-TS with Apple's sample encryption, fMP4 with `cbcs`): ffmpeg plays the
+//! live playlist and every video frame it decodes is one of the source's (frame MD5s), while
+//! the segments read as plain media do not decode to them; the TS segments carry the
+//! SAMPLE-AES stream types and the fMP4 init segment `encv` / `enca` with `cbcs`.
 
 use std::{
     io::{Read, Write},
@@ -21,7 +26,7 @@ use only_media::{
     Hub, Packet, PeerInfo, Tracks,
     av::MILLISECOND,
     flv,
-    hls::{Hls, HlsConfig, HlsEncryption, HlsKey, KeyProvider, SegmentFormat},
+    hls::{EncryptionMethod, Hls, HlsConfig, HlsEncryption, HlsKey, KeyProvider, SegmentFormat},
     http::MediaHttp,
 };
 
@@ -318,4 +323,306 @@ fn encrypted_fmp4() {
 #[test]
 fn encrypted_fmp4_ll() {
     check(SegmentFormat::Fmp4, true, ffmpeg_present());
+}
+
+/// The MD5s of the video frames ffmpeg decodes from `input`.
+fn frame_md5s(input_opts: &[&str], input: &str, out_opts: &[&str]) -> Vec<String> {
+    let out = Command::new("ffmpeg")
+        .args(["-nostdin", "-v", "error"])
+        .args(input_opts)
+        .args(["-i", input])
+        .args(out_opts)
+        .args(["-map", "0:v:0", "-f", "framemd5", "-"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.rsplit(',').next().map(|m| m.trim().to_owned()))
+        .collect()
+}
+
+/// Removes emulation prevention bytes.
+fn unescape(n: &[u8]) -> Vec<u8> {
+    let (mut out, mut zeros) = (Vec::with_capacity(n.len()), 0);
+    for &b in n {
+        if zeros >= 2 && b == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+        out.push(b);
+    }
+    out
+}
+
+fn escape(n: &[u8]) -> Vec<u8> {
+    let (mut out, mut zeros) = (Vec::with_capacity(n.len() + 8), 0);
+    for &b in n {
+        if zeros >= 2 && b <= 3 {
+            out.push(3);
+            zeros = 0;
+        }
+        out.push(b);
+        zeros = if b == 0 { zeros + 1 } else { 0 };
+    }
+    out
+}
+
+/// Decrypts the H.264 slices and AAC frames of a SAMPLE-AES MPEG-TS segment (Apple's
+/// format, implemented here on its own): (slices, AAC payloads).
+fn decrypt_sample_aes_ts(ts: &[u8], aes: &Aes, iv: [u8; 16]) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    // PES payloads of the video (0x100) and audio (0x101) PIDs.
+    let (mut video, mut audio): (Vec<Vec<u8>>, Vec<Vec<u8>>) = (Vec::new(), Vec::new());
+    for p in ts.chunks(188) {
+        let pid = (u16::from(p[1] & 0x1f) << 8) | u16::from(p[2]);
+        let es = match pid {
+            0x100 => &mut video,
+            0x101 => &mut audio,
+            _ => continue,
+        };
+        let mut off = 4;
+        if p[3] & 0x20 != 0 {
+            off += 1 + usize::from(p[4]);
+        }
+        let mut payload = &p[off..];
+        if p[1] & 0x40 != 0 {
+            payload = &payload[9 + usize::from(payload[8])..];
+            es.push(Vec::new());
+        }
+        if let Some(cur) = es.last_mut() {
+            cur.extend_from_slice(payload);
+        }
+    }
+    let mut slices = Vec::new();
+    for pes in &video {
+        let mut starts = Vec::new();
+        for i in 0..pes.len().saturating_sub(2) {
+            if pes[i..i + 3] == [0, 0, 1] {
+                starts.push(i + 3);
+            }
+        }
+        for (k, &s) in starts.iter().enumerate() {
+            let mut e = starts.get(k + 1).map_or(pes.len(), |&n| n - 3);
+            while e > s && pes[e - 1] == 0 {
+                e -= 1;
+            }
+            let n = &pes[s..e];
+            if !matches!(n[0] & 0x1f, 1 | 5) {
+                continue;
+            }
+            if n.len() <= 48 {
+                slices.push(n.to_vec());
+                continue;
+            }
+            let mut r = unescape(n);
+            let mut at = 32;
+            let mut v = iv;
+            while r.len().saturating_sub(at) > 16 {
+                aes.decrypt_cbc(&mut v, &mut r[at..at + 16]).unwrap();
+                at += 160;
+            }
+            slices.push(escape(&r));
+        }
+    }
+    let mut frames = Vec::new();
+    for pes in &audio {
+        let mut b = &pes[..];
+        while b.len() >= 7 && b[0] == 0xff {
+            let len =
+                (usize::from(b[3] & 3) << 11) | (usize::from(b[4]) << 3) | usize::from(b[5] >> 5);
+            let mut f = b[7..len].to_vec();
+            if f.len() >= 32 {
+                let end = 16 + (f.len() - 16) / 16 * 16;
+                let mut v = iv;
+                aes.decrypt_cbc(&mut v, &mut f[16..end]).unwrap();
+            }
+            frames.push(f);
+            b = &b[len..];
+        }
+    }
+    (slices, frames)
+}
+
+fn check_sample_aes(format: SegmentFormat, parts: bool, ff: bool) {
+    let fmp4 = format == SegmentFormat::Fmp4;
+    let sample = flv_sample(include_bytes!("../testdata/h264_aac.flv"));
+    let src_slices: Vec<Vec<u8>> = sample
+        .1
+        .iter()
+        .filter(|p| p.track == 0)
+        .flat_map(|p| {
+            let mut v = Vec::new();
+            let mut d = &p.data[..];
+            while d.len() >= 4 {
+                let n = u32::from_be_bytes([d[0], d[1], d[2], d[3]]) as usize;
+                if matches!(d[4] & 0x1f, 1 | 5) {
+                    v.push(d[4..4 + n].to_vec());
+                }
+                d = &d[4 + n..];
+            }
+            v
+        })
+        .collect();
+    let src_audio: Vec<Vec<u8>> = sample
+        .1
+        .iter()
+        .filter(|p| p.track == 1)
+        .map(|p| p.data.clone())
+        .collect();
+    let dir = env!("CARGO_TARGET_TMPDIR");
+    let path = "live/e";
+    let source = if ff {
+        frame_md5s(
+            &[],
+            concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/h264_aac.flv"),
+            &[],
+        )
+    } else {
+        Vec::new()
+    };
+    // With keys rotating every 2 segments; then (for ffmpeg, which cannot follow a key
+    // change at the packets it reads ahead) with one key.
+    for rotate in [2, 0] {
+        if rotate == 0 && !ff {
+            break;
+        }
+        let mut cfg = HlsConfig::default();
+        cfg.format = format;
+        cfg.target_duration = Duration::from_secs(1);
+        cfg.part_duration = parts.then(|| Duration::from_millis(250));
+        cfg.play_wait = Some(Duration::from_secs(5));
+        cfg.encryption = Some(
+            HlsEncryption::new(Keys)
+                .rotate_every(rotate)
+                .method(EncryptionMethod::SampleAes),
+        );
+        let srv = start(cfg);
+        let publisher = publish(&srv.hub, path, sample.clone(), 6);
+        let (status, head, _) = get(srv.http, &format!("/{path}/index.m3u8"), "");
+        assert_eq!(status, 200, "{head}");
+        std::thread::sleep(Duration::from_secs(5));
+        let (status, _, body) = get(srv.http, &format!("/{path}/index.m3u8"), "");
+        assert_eq!(status, 200);
+        let pl = String::from_utf8(body).unwrap();
+        assert!(!pl.contains("AES-128"), "{pl}");
+        // (key number, IV) of each segment.
+        let mut cur: Option<(u64, Option<[u8; 16]>)> = None;
+        let mut segs = Vec::new();
+        for l in pl.lines() {
+            if let Some(rest) = l.strip_prefix("#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"key-") {
+                let n: u64 = rest.split('.').next().unwrap().parse().unwrap();
+                let iv = rest
+                    .split(",IV=0x")
+                    .nth(1)
+                    .map(|h| u128::from_str_radix(h, 16).unwrap().to_be_bytes());
+                assert_eq!(iv.is_some(), !fmp4, "{l}");
+                cur = Some((n, iv));
+            } else if l == "#EXT-X-KEY:METHOD=NONE" {
+                cur = None;
+            } else if l.starts_with("seg-") {
+                segs.push((l.to_owned(), cur));
+            }
+        }
+        assert!(segs.len() >= 3, "{pl}");
+        let init = fmp4.then(|| {
+            let m = pl
+                .lines()
+                .find_map(|l| l.strip_prefix("#EXT-X-MAP:URI=\""))
+                .unwrap()
+                .trim_end_matches('"');
+            let (status, _, data) = get(srv.http, &format!("/{path}/{m}"), "");
+            assert_eq!(status, 200);
+            for b in [&b"encv"[..], b"enca", b"sinf", b"frma", b"cbcs", b"tenc"] {
+                assert!(data.windows(4).any(|w| w == b), "init lacks {b:?}");
+            }
+            data
+        });
+        for (i, (uri, key)) in segs.iter().enumerate() {
+            let (n, iv) = key.unwrap_or_else(|| panic!("{uri} is not under a key: {pl}"));
+            let seq: u64 = uri.split(['-', '.']).nth(1).unwrap().parse().unwrap();
+            if rotate > 0 {
+                assert_eq!(n, seq / 2, "{uri}: {pl}");
+            }
+            let (status, _, data) = get(srv.http, &format!("/{path}/{uri}"), "");
+            assert_eq!(status, 200, "{uri}");
+            if fmp4 {
+                assert!(data.windows(4).any(|w| w == b"senc"), "{uri}");
+            } else {
+                // The PMT names the SAMPLE-AES stream types and descriptors.
+                let pmt = &data[188..376];
+                assert!(
+                    pmt.windows(5).any(|w| w == [0xdb, 0xe1, 0x00, 0xf0, 6]),
+                    "{pmt:x?}"
+                );
+                for tag in [b"zavc", b"aacd", b"apad"] {
+                    assert!(pmt.windows(4).any(|w| w == tag));
+                }
+                // Decrypted here, every slice and AAC frame is the source's.
+                let (slices, frames) =
+                    decrypt_sample_aes_ts(&data, &Aes::new128(&key_of(n)), iv.unwrap());
+                assert!(slices.len() > 10 && frames.len() > 20, "{uri}");
+                for s in &slices {
+                    assert!(src_slices.contains(s), "{uri}: a slice not in the source");
+                }
+                for f in &frames {
+                    assert!(
+                        src_audio.contains(f),
+                        "{uri}: an AAC frame not in the source"
+                    );
+                }
+            }
+            if ff && i == 1 {
+                // Read as plain media (no key), the frames are not the source's.
+                let ext = if fmp4 { "mp4" } else { "ts" };
+                let file = format!("{dir}/hlssaes-{}-{i}.{ext}", u8::from(parts));
+                let mut all = init.clone().unwrap_or_default();
+                all.extend_from_slice(&data);
+                std::fs::write(&file, &all).unwrap();
+                let got = frame_md5s(&[], &file, &[]);
+                let known = got.iter().filter(|m| source.contains(m)).count();
+                assert!(
+                    known < got.len() / 2 || got.is_empty(),
+                    "{uri} is not encrypted"
+                );
+                let _ = std::fs::remove_file(&file);
+            }
+        }
+        if ff && rotate == 0 {
+            let url = format!("http://{}/{path}/index.m3u8", srv.http);
+            let headers = ["-headers", "X-Key-Token: secret\r\n"];
+            let codecs = probe_codecs(&headers, &url);
+            assert!(codecs.lines().any(|l| l.trim() == "h264"), "{codecs}");
+            assert!(codecs.lines().any(|l| l.trim() == "aac"), "{codecs}");
+            let err = decode(&headers, &url, &["-t", "3"]);
+            assert!(err.trim().is_empty(), "{url}: {err}");
+            let got = frame_md5s(&headers, &url, &["-t", "3"]);
+            assert!(got.len() > 30, "{got:?}");
+            for m in &got {
+                assert!(source.contains(m), "a frame not in the source: {m}");
+            }
+        }
+        publisher.join().unwrap();
+        srv.engine.shutdown();
+    }
+}
+
+#[test]
+fn sample_aes_ts() {
+    check_sample_aes(SegmentFormat::MpegTs, false, ffmpeg_present());
+}
+
+#[test]
+fn sample_aes_ts_ll() {
+    check_sample_aes(SegmentFormat::MpegTs, true, ffmpeg_present());
+}
+
+#[test]
+fn sample_aes_fmp4() {
+    check_sample_aes(SegmentFormat::Fmp4, false, ffmpeg_present());
+}
+
+#[test]
+fn sample_aes_fmp4_ll() {
+    check_sample_aes(SegmentFormat::Fmp4, true, ffmpeg_present());
 }

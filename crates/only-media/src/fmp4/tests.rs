@@ -540,3 +540,153 @@ fn styp_shape() {
     assert_eq!(s.len(), 28);
     assert_eq!(&s[4..8], b"styp");
 }
+
+/// The boxes of `b`: (type, payload).
+fn boxes(mut b: &[u8]) -> Vec<([u8; 4], &[u8])> {
+    let mut out = Vec::new();
+    while b.len() >= 8 {
+        let n = u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize;
+        let t = [b[4], b[5], b[6], b[7]];
+        out.push((t, &b[8..n]));
+        b = &b[n..];
+    }
+    out
+}
+
+fn child<'a>(b: &'a [u8], t: &[u8; 4]) -> Option<&'a [u8]> {
+    boxes(b).into_iter().find(|(x, _)| x == t).map(|(_, p)| p)
+}
+
+/// `cbcs`: H.264 and AAC in `encv` / `enca` with a constant IV; fragments under two keys
+/// decrypt (from `senc` subsamples for video, whole blocks for audio) to the source samples.
+#[test]
+fn cbcs_encryption() {
+    use only_crypto::aes::Aes;
+    let (tracks, pkts) = flv_sample(include_bytes!("../../testdata/h264_aac.flv"));
+    let mut m = Muxer::cbcs(&tracks);
+    let init = m.init_segment().to_vec();
+    // The tenc of each track: pattern and constant IV.
+    let moov = child(&init, b"moov").unwrap();
+    let mut ivs = Vec::new();
+    for (_, trak) in boxes(moov).into_iter().filter(|(t, _)| t == b"trak") {
+        let stsd = child(
+            child(
+                child(child(trak, b"mdia").unwrap(), b"minf").unwrap(),
+                b"stbl",
+            )
+            .unwrap(),
+            b"stsd",
+        )
+        .unwrap();
+        let entry = &stsd[8..];
+        let fourcc = &entry[4..8];
+        let skip = if fourcc == b"encv" { 8 + 78 } else { 8 + 28 };
+        let kids = &entry[skip..];
+        let sinf = child(kids, b"sinf").unwrap();
+        assert_eq!(
+            child(sinf, b"frma").unwrap(),
+            if fourcc == b"encv" { b"avc1" } else { b"mp4a" }
+        );
+        assert_eq!(&child(sinf, b"schm").unwrap()[4..8], b"cbcs");
+        let tenc = child(child(sinf, b"schi").unwrap(), b"tenc").unwrap();
+        assert_eq!(tenc[0], 1, "tenc version 1");
+        assert_eq!(tenc[5], if fourcc == b"encv" { 0x19 } else { 0 });
+        assert_eq!((tenc[6], tenc[7], tenc[24]), (1, 0, 16));
+        ivs.push(<[u8; 16]>::try_from(&tenc[25..41]).unwrap());
+    }
+    assert_eq!(ivs.len(), 2);
+    assert_eq!(ivs[0], ivs[1]);
+    // No key yet: nothing is taken.
+    assert!(!m.write_packet(&pkts[0]));
+    let keys = [Aes::new128(&[1; 16]), Aes::new128(&[2; 16])];
+    let half = pkts.len() / 2;
+    let mut frags = Vec::new();
+    for (k, chunk) in [&pkts[..half], &pkts[half..]].into_iter().enumerate() {
+        m.set_sample_key(keys[k].clone());
+        for p in chunk {
+            assert!(m.write_packet(p));
+        }
+        let mut out = Vec::new();
+        assert!(m.flush(None, &mut out));
+        frags.push(out);
+    }
+    let mut got: Vec<Vec<Vec<u8>>> = vec![Vec::new(), Vec::new()];
+    for (k, frag) in frags.iter().enumerate() {
+        let moof_box = boxes(frag);
+        let moof = moof_box[0].1;
+        for (_, traf) in boxes(moof).into_iter().filter(|(t, _)| t == b"traf") {
+            let id = u32::from_be_bytes(child(traf, b"tfhd").unwrap()[4..8].try_into().unwrap());
+            let trun = child(traf, b"trun").unwrap();
+            let flags = u32::from_be_bytes([0, trun[1], trun[2], trun[3]]);
+            let n = u32::from_be_bytes(trun[4..8].try_into().unwrap()) as usize;
+            let off = u32::from_be_bytes(trun[8..12].try_into().unwrap()) as usize;
+            let per = 12 + if flags & TRUN_CTS != 0 { 4 } else { 0 };
+            let senc = child(traf, b"senc");
+            assert_eq!(senc.is_some(), id == 1);
+            if id == 1 {
+                // saio points at the first sample's entry in senc.
+                let saio = child(traf, b"saio").unwrap();
+                let at = u32::from_be_bytes(saio[8..12].try_into().unwrap()) as usize;
+                let s = senc.unwrap();
+                assert_eq!(&frag[at..at + 6], &s[8..14]);
+                assert_eq!(child(traf, b"saiz").unwrap()[4], 0);
+            }
+            let mut aux = senc.map(|s| &s[8..]);
+            let mut pos = off;
+            for i in 0..n {
+                let size = u32::from_be_bytes(
+                    trun[12 + i * per + 4..12 + i * per + 8].try_into().unwrap(),
+                ) as usize;
+                let mut d = frag[pos..pos + size].to_vec();
+                pos += size;
+                let iv = ivs[0];
+                if let Some(a) = aux.as_mut() {
+                    let subs = usize::from(u16::from_be_bytes([a[0], a[1]]));
+                    let mut at = 0;
+                    for j in 0..subs {
+                        let e = &a[2 + 6 * j..];
+                        let clear = usize::from(u16::from_be_bytes([e[0], e[1]]));
+                        let prot = u32::from_be_bytes([e[2], e[3], e[4], e[5]]) as usize;
+                        at += clear;
+                        let mut v = iv;
+                        let mut x = 0;
+                        while prot - x >= 16 {
+                            keys[k]
+                                .decrypt_cbc(&mut v, &mut d[at + x..at + x + 16])
+                                .unwrap();
+                            x += 16;
+                            x += (prot - x).min(144);
+                        }
+                        // The slice header (and NAL length) is clear.
+                        if prot > 0 {
+                            assert!(clear >= 4 + 6, "{clear}");
+                        }
+                        at += prot;
+                    }
+                    assert_eq!(at, size);
+                    *a = &a[2 + 6 * subs..];
+                } else {
+                    let mut v = iv;
+                    let end = size / 16 * 16;
+                    keys[k].decrypt_cbc(&mut v, &mut d[..end]).unwrap();
+                }
+                got[(id - 1) as usize].push(d);
+            }
+        }
+    }
+    for (t, got) in got.iter().enumerate() {
+        let want: Vec<&Vec<u8>> = pkts
+            .iter()
+            .filter(|p| p.track == t)
+            .map(|p| &p.data)
+            .collect();
+        assert_eq!(got.len(), want.len());
+        for (a, b) in got.iter().zip(&want) {
+            assert_eq!(&a, b);
+        }
+    }
+    // A track cbcs does not carry is left out.
+    let opus = Track::audio(Codec::Opus, opus::Head::new(2).encode(), 48_000, 2);
+    let m = Muxer::cbcs(&[tracks[0].clone(), opus]);
+    assert!(m.carries(0) && !m.carries(1));
+}

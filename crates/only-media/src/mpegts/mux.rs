@@ -1,11 +1,12 @@
 use crate::{
     av::{Codec, Packet, Track, to_ticks},
-    codec::{aac, h264, h265},
+    codec::{aac, av1, h264, h265},
 };
 
 use super::{
     PACKET_SIZE, PID_FIRST_ES, PID_PAT, PID_PMT, STREAM_AAC, STREAM_H264, STREAM_H265, STREAM_MP3,
     STREAM_PRIVATE, crc32,
+    sample_aes::{self, STREAM_AAC_SAMPLE_AES, STREAM_H264_SAMPLE_AES, SampleKey},
 };
 
 /// The 33-bit wrap of MPEG timestamps.
@@ -21,7 +22,8 @@ struct Es {
     /// Parameter sets in Annex B, inserted before keyframes.
     params: Vec<u8>,
     aac: Option<aac::Config>,
-    channels: u8,
+    /// Descriptors of the PMT entry.
+    desc: Vec<u8>,
 }
 
 /// Muxes canonical packets into a transport stream: one program, PMT at PID 0x1000, the
@@ -33,20 +35,44 @@ pub struct Muxer {
     pcr_pid: u16,
     pat_cc: u8,
     pmt_cc: u8,
+    /// HLS SAMPLE-AES: the key and IV of the segment being written (boxed: the key schedule
+    /// would make every muxer large).
+    sample_key: Option<Box<SampleKey>>,
 }
 
 impl Muxer {
     /// A muxer for `tracks`; tracks of codecs MPEG-TS cannot carry here are left out.
     pub fn new(tracks: &[Track]) -> Muxer {
+        Muxer::build(tracks, false)
+    }
+
+    /// A muxer for HLS `SAMPLE-AES` ([`sample_aes`]): H.264 and AAC only (the codecs the
+    /// format defines), encrypted with the key [`set_sample_key`](Self::set_sample_key) sets.
+    pub(crate) fn sample_aes(tracks: &[Track]) -> Muxer {
+        Muxer::build(tracks, true)
+    }
+
+    /// Sets the key and IV samples are encrypted with from now on (a SAMPLE-AES muxer).
+    pub(crate) fn set_sample_key(&mut self, key: SampleKey) {
+        self.sample_key = Some(Box::new(key));
+    }
+
+    fn build(tracks: &[Track], sample_aes: bool) -> Muxer {
         let mut es = Vec::with_capacity(tracks.len());
         let mut pid = PID_FIRST_ES;
         for t in tracks {
             let (stream_type, stream_id) = match t.codec {
+                Codec::H264 if sample_aes => (STREAM_H264_SAMPLE_AES, 0xe0),
+                Codec::Aac if sample_aes => (STREAM_AAC_SAMPLE_AES, 0xc0),
+                _ if sample_aes => {
+                    es.push(None);
+                    continue;
+                }
                 Codec::H264 => (STREAM_H264, 0xe0),
                 Codec::H265 => (STREAM_H265, 0xe0),
                 Codec::Aac => (STREAM_AAC, 0xc0),
                 Codec::Mp3 => (STREAM_MP3, 0xc0),
-                Codec::Opus => (STREAM_PRIVATE, 0xbd),
+                Codec::Opus | Codec::Av1 => (STREAM_PRIVATE, 0xbd),
                 _ => {
                     es.push(None);
                     continue;
@@ -59,8 +85,34 @@ impl Muxer {
                 Codec::H265 => h265::Config::parse(&t.config)
                     .map(|c| annexb(c.vps.iter().chain(c.sps.iter()).chain(c.pps.iter())))
                     .unwrap_or_default(),
+                Codec::Av1 => av1::Config::parse(&t.config)
+                    .map(|c| c.config_obus)
+                    .unwrap_or_default(),
                 _ => Vec::new(),
             };
+            let mut desc = Vec::new();
+            match t.codec {
+                Codec::Opus => {
+                    desc.extend_from_slice(&[0x05, 4, b'O', b'p', b'u', b's']);
+                    desc.extend_from_slice(&[0x7f, 2, 0x80, t.channels.max(1)]);
+                }
+                Codec::Av1 => {
+                    // AOM "Carriage of AV1 in MPEG-2 TS" 2.3: the registration descriptor
+                    // first, then the AV1 video descriptor.
+                    desc.extend_from_slice(&[0x05, 4, b'A', b'V', b'0', b'1']);
+                    if let Ok(c) = av1::Config::parse(&t.config) {
+                        desc.extend_from_slice(&[0x80, 4]);
+                        desc.extend_from_slice(&av1::ts_descriptor(&c));
+                    }
+                }
+                Codec::H264 if sample_aes => sample_aes::h264_descriptors(&mut desc),
+                Codec::Aac if sample_aes => {
+                    let asc = aac::Config::parse(&t.config)
+                        .map_or_else(|_| t.config.clone(), |c| c.encode());
+                    sample_aes::aac_descriptors(&mut desc, &asc);
+                }
+                _ => {}
+            }
             let aac = (t.codec == Codec::Aac)
                 .then(|| aac::Config::parse(&t.config).ok())
                 .flatten()
@@ -76,7 +128,7 @@ impl Muxer {
                 cc: 0,
                 params,
                 aac,
-                channels: t.channels.max(1),
+                desc,
             }));
             pid += 1;
         }
@@ -91,6 +143,7 @@ impl Muxer {
             pcr_pid,
             pat_cc: 0,
             pmt_cc: 0,
+            sample_key: None,
         }
     }
 
@@ -119,15 +172,11 @@ impl Muxer {
             0x00,
         ]);
         for e in self.es.iter().flatten() {
-            let mut desc = Vec::new();
-            if e.codec == Codec::Opus {
-                desc.extend_from_slice(&[0x05, 4, b'O', b'p', b'u', b's']);
-                desc.extend_from_slice(&[0x7f, 2, 0x80, e.channels]);
-            }
+            let desc = &e.desc;
             pmt.push(e.stream_type);
             pmt.extend_from_slice(&[0xe0 | (e.pid >> 8) as u8, e.pid as u8]);
             pmt.extend_from_slice(&[0xf0 | (desc.len() >> 8) as u8, desc.len() as u8]);
-            pmt.extend_from_slice(&desc);
+            pmt.extend_from_slice(desc);
         }
         finish_section(&mut pmt);
         self.pmt_cc = write_section(out, PID_PMT, self.pmt_cc, &pmt);
@@ -161,15 +210,20 @@ impl Muxer {
                 if pkt.keyframe && !has_params {
                     payload.extend_from_slice(&e.params);
                 }
-                for n in nalus {
-                    let aud = if h265 {
-                        h265::nal_type(n[0]) == h265::NAL_AUD
-                    } else {
-                        h264::nal_type(n[0]) == h264::NAL_AUD
-                    };
-                    if !aud {
-                        payload.extend_from_slice(&[0, 0, 0, 1]);
-                        payload.extend_from_slice(n);
+                match &self.sample_key {
+                    Some(k) if !h265 => sample_aes_nalus(&mut payload, k, &nalus),
+                    _ => {
+                        for n in nalus {
+                            let aud = if h265 {
+                                h265::nal_type(n[0]) == h265::NAL_AUD
+                            } else {
+                                h264::nal_type(n[0]) == h264::NAL_AUD
+                            };
+                            if !aud {
+                                payload.extend_from_slice(&[0, 0, 0, 1]);
+                                payload.extend_from_slice(n);
+                            }
+                        }
                     }
                 }
             }
@@ -177,7 +231,10 @@ impl Muxer {
                 if let Some(c) = &e.aac {
                     payload.extend_from_slice(&c.adts_header(pkt.data.len()));
                 }
-                payload.extend_from_slice(&pkt.data);
+                match &self.sample_key {
+                    Some(k) => sample_aes_audio(&mut payload, k, &pkt.data),
+                    None => payload.extend_from_slice(&pkt.data),
+                }
             }
             Codec::Opus => {
                 payload.extend_from_slice(&[0x7f, 0xe0]);
@@ -188,6 +245,14 @@ impl Muxer {
                 }
                 payload.push(n as u8);
                 payload.extend_from_slice(&pkt.data);
+            }
+            Codec::Av1 => {
+                let seq: &[u8] = if pkt.keyframe && av1::sequence_header_obu(&pkt.data).is_none() {
+                    &e.params
+                } else {
+                    &[]
+                };
+                av1::write_start_codes(&mut payload, seq, &pkt.data);
             }
             _ => payload.extend_from_slice(&pkt.data),
         }
@@ -205,7 +270,8 @@ impl Muxer {
             pes_len as u16
         };
         pes.extend_from_slice(&len_field.to_be_bytes());
-        pes.push(0x80);
+        // data_alignment_indicator for AV1 (AOM AV1 in MPEG-2 TS 2.4: one access unit per PES).
+        pes.push(if e.codec == Codec::Av1 { 0x84 } else { 0x80 });
         pes.push(if with_dts { 0xc0 } else { 0x80 });
         pes.push(hdr_len as u8);
         put_ts(&mut pes, if with_dts { 0x3 } else { 0x2 }, pts);
@@ -218,6 +284,28 @@ impl Muxer {
         e.cc = write_pes(out, e.pid, e.cc, &pes, pcr, random_access);
         true
     }
+}
+
+/// SAMPLE-AES H.264 access unit: the NAL units after start codes, slices encrypted (kept out
+/// of the clear path).
+#[cold]
+#[inline(never)]
+fn sample_aes_nalus(payload: &mut Vec<u8>, key: &SampleKey, nalus: &[&[u8]]) {
+    for n in nalus {
+        if h264::nal_type(n[0]) != h264::NAL_AUD {
+            payload.extend_from_slice(&[0, 0, 0, 1]);
+            sample_aes::push_nal(payload, key, n);
+        }
+    }
+}
+
+/// A SAMPLE-AES AAC frame after its ADTS header.
+#[cold]
+#[inline(never)]
+fn sample_aes_audio(payload: &mut Vec<u8>, key: &SampleKey, frame: &[u8]) {
+    let at = payload.len();
+    payload.extend_from_slice(frame);
+    sample_aes::audio_frame(key, &mut payload[at..], false);
 }
 
 fn annexb<'a>(sets: impl Iterator<Item = &'a Vec<u8>>) -> Vec<u8> {
@@ -329,6 +417,11 @@ fn write_pes(
         first = false;
     }
     cc
+}
+
+#[cfg(test)]
+pub(super) fn write_pes_for_test(out: &mut Vec<u8>, pid: u16, pes: &[u8]) {
+    write_pes(out, pid, 0, pes, None, true);
 }
 
 #[cfg(test)]

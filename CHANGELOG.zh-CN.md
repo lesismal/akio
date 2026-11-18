@@ -10,6 +10,26 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：SRT rendezvous、MPEG-TS 中的 AV1、录制为 MPEG-TS、HLS SAMPLE-AES（only-media）
+
+ADR-043（docs/adr/043-media-srt-rendezvous-av1-ts-sample-aes.zh-CN.md），均为新增：
+
+- **SRT rendezvous**（HSv5）：`srt::Conn::rendezvous` / `Conn::is_rendezvous`，以及在绑定于 `local` 的 UDP
+  socket 上运行的 `srt::{rendezvous, push_rendezvous, pull_rendezvous}(engine, local, remote, ..)`。双方挥手，
+  与 libsrt 相同的 cookie 竞争选出发起方（HSREQ，带其密钥的 KMREQ），应答方回复 HSRSP / KMRSP，收到 AGREEMENT
+  （或发起方的下一个包）后连接。等待 `handshake_timeout` 的十倍。已与 libsrt 1.5.4（`srt-live-transmit`）
+  测试推流与拉流，明文与加密。
+- **MPEG-TS 中的 AV1**（AOM "Carriage of AV1 in MPEG-2 TS"）：流类型 0x06，带 `AV01` 注册描述符与 AV1 视频
+  描述符，OBU 位于起始码之后并加防竞争字节，每个 PES 一个时间分隔符；解封装器也读取 GStreamer 的 `AV1G`。AV1 现可
+  经 SRT、HLS MPEG-TS 与 MPEG-TS 录制传输。VP8 / VP9 没有 MPEG-TS 映射（写入文档）。
+- **录制为 MPEG-TS**：`RecordFormat::MpegTs`（`.ts`），每个视频关键帧前重复 PAT / PMT。
+- **HLS SAMPLE-AES**：`hls::EncryptionMethod::{Aes128, SampleAes}`、`HlsEncryption::method`（字段与构造方法）。
+  MPEG-TS：Apple 的样本加密（流类型 0xdb / 0xcf，`zavc` / `aacd` / `apad`；H.264 slice 前 32 字节明文后 1:9，
+  AAC 帧），每个密钥一个随机 IV 写入 `IV` 属性。fMP4：`cbcs`（带 `sinf` / `tenc` 与常量 IV 的 `encv` / `enca`，
+  `senc` / `saiz` / `saio`；解析 H.264 slice 头并保持明文）。只承载 H.264 与 AAC 轨道（其它轨道不进入分段）。
+  ffmpeg 能逐帧正确解码两者。
+- 模糊测试目标 `srt_rendezvous` 与 `h264_sample_encryption`；`mpegts_demux` 增加 AV1 种子。
+
 ### 新增：HLS 加密与录制（only-media），AES-CBC（only-crypto）
 
 ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增：

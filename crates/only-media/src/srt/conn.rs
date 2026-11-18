@@ -4,6 +4,7 @@
 use std::{
     collections::VecDeque,
     fmt,
+    net::SocketAddr,
     time::{Duration, Instant},
 };
 
@@ -30,6 +31,8 @@ const ACK_HISTORY: usize = 64;
 const SND_DROP_MIN: i64 = 1_000_000;
 const DRIFT_WINDOW: u32 = 1000;
 const DRIFT_STEP: i64 = 1_000;
+/// A rendezvous waits this many times `handshake_timeout` for its peer (as libsrt does).
+const RENDEZVOUS_TIMEOUT_FACTOR: i64 = 10;
 
 /// A connection's lifecycle state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -370,6 +373,29 @@ pub struct Conn {
     stats: Stats,
     out: Vec<Vec<u8>>,
     events: VecDeque<Event>,
+    /// The rendezvous handshake in progress.
+    rdv: Option<Box<Rendezvous>>,
+}
+
+/// Who completes a rendezvous handshake, decided by the cookie contest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RdvRole {
+    /// No handshake from the peer yet (or the cookies drew).
+    Waving,
+    /// The larger cookie: sends HSREQ (and KMREQ), answers HSRSP with AGREEMENT.
+    Initiator,
+    /// The smaller cookie: answers HSREQ with HSRSP (and KMRSP), connects on AGREEMENT.
+    Responder,
+}
+
+/// The state of a rendezvous handshake (draft-sharabayko-srt-01 4.3.2, HSv5 only).
+#[derive(Debug)]
+struct Rendezvous {
+    cookie: u32,
+    role: RdvRole,
+    peer_ip: [u8; 16],
+    /// The responder's HSRSP conclusion, once it answered an HSREQ.
+    hsrsp: Option<Vec<u8>>,
 }
 
 impl fmt::Debug for Conn {
@@ -458,6 +484,7 @@ impl Conn {
             stats: Stats::default(),
             out: Vec::new(),
             events: VecDeque::new(),
+            rdv: None,
         }
     }
 
@@ -480,6 +507,313 @@ impl Conn {
         c.hs_start = 0;
         c.send_induction(0);
         Ok(c)
+    }
+
+    /// One side of a rendezvous with the peer at `remote` (both sides connect to each other
+    /// from the port the other targets; draft-sharabayko-srt-01 4.3.2, version 5 only): waves
+    /// at once (the first handshake is in the output), and the cookie contest decides which
+    /// side sends the HSREQ (and, with a passphrase, generates the key: both sides need the
+    /// same passphrase). The stream ID is not sent. The handshake gives up after ten times
+    /// `handshake_timeout`, as libsrt waits for a rendezvous peer.
+    pub fn rendezvous(mut cfg: Config, remote: SocketAddr, now: Instant) -> Result<Conn, SrtError> {
+        cfg.check()?;
+        let mut c = Conn::new(cfg, now);
+        c.socket_id = socket_id_of(rand_u32());
+        c.isn = rand_u32() & (MAX_SEQ - 1);
+        c.snd_base = c.isn;
+        c.snd_next = c.isn;
+        if let Some(p) = &c.cfg.passphrase {
+            let km = KeyMaterial::generate(c.cfg.pbkeylen, p);
+            c.km_msg = Some(km.encode());
+            c.crypt = Cryptor::new(&km);
+            c.km = Some(km);
+            c.kk = KK_EVEN;
+        }
+        let mut cookie = rand_u32();
+        if cookie == 0 {
+            cookie = 1;
+        }
+        c.rdv = Some(Box::new(Rendezvous {
+            cookie,
+            role: RdvRole::Waving,
+            peer_ip: super::listener::peer_ip(remote),
+            hsrsp: None,
+        }));
+        c.hs_start = 0;
+        c.rdv_send(0);
+        Ok(c)
+    }
+
+    /// Sets the rendezvous cookie (fuzzing: a fixed role against a recorded peer).
+    #[cfg(any(test, feature = "fuzzing"))]
+    pub(crate) fn set_rendezvous_cookie(&mut self, cookie: u32) {
+        if let Some(r) = &mut self.rdv {
+            r.cookie = cookie;
+            // The wave already queued carried the old cookie.
+            self.out.clear();
+            self.rdv_send(self.hs_start);
+        }
+    }
+
+    /// Whether this is a rendezvous connection.
+    pub fn is_rendezvous(&self) -> bool {
+        self.rdv.is_some()
+    }
+
+    fn handshake_deadline(&self) -> i64 {
+        let t = self.cfg.handshake_timeout.as_micros() as i64;
+        self.hs_start
+            + if self.rdv.is_some() {
+                t * RENDEZVOUS_TIMEOUT_FACTOR
+            } else {
+                t
+            }
+    }
+
+    /// A rendezvous handshake of `typ` with this side's fields.
+    fn rdv_handshake(&self, typ: u32) -> Handshake {
+        let (cookie, peer_ip) = self
+            .rdv
+            .as_ref()
+            .map_or((0, [0; 16]), |r| (r.cookie, r.peer_ip));
+        Handshake {
+            version: 5,
+            isn: self.isn,
+            mtu: MTU,
+            flow_window: self.cfg.flow_window as u32,
+            typ,
+            socket_id: self.socket_id,
+            cookie,
+            peer_ip,
+            ..Handshake::default()
+        }
+    }
+
+    /// Sends what the rendezvous state calls for: a wave, the initiator's HSREQ conclusion,
+    /// the responder's empty conclusion or its HSRSP.
+    fn rdv_send(&mut self, now: i64) {
+        let Some(r) = &self.rdv else { return };
+        self.hs_next = now + HANDSHAKE_RETRY;
+        match r.role {
+            RdvRole::Waving => {
+                let mut hs = self.rdv_handshake(HS_WAVEAHAND);
+                if self.km_msg.is_some() {
+                    hs.encryption = (self.cfg.pbkeylen / 8) as u16;
+                }
+                self.send_handshake(now, 0, &hs);
+            }
+            RdvRole::Initiator => {
+                let lat = self.cfg.latency.as_millis().min(u128::from(u16::MAX)) as u16;
+                let mut hs = self.rdv_handshake(HS_CONCLUSION);
+                hs.ext_field = EXT_FLAG_HSREQ;
+                hs.hs = Some(HsExt {
+                    version: SRT_VERSION,
+                    flags: Conn::srt_flags(),
+                    rcv_delay: lat,
+                    snd_delay: lat,
+                });
+                if let Some(km) = &self.km_msg {
+                    hs.encryption = (self.cfg.pbkeylen / 8) as u16;
+                    hs.ext_field |= EXT_FLAG_KMREQ;
+                    hs.km = Some(km.clone());
+                }
+                self.send_handshake(now, self.peer_id, &hs);
+            }
+            RdvRole::Responder => match r.hsrsp.clone() {
+                Some(b) => self.output(b, now),
+                None => {
+                    let hs = self.rdv_handshake(HS_CONCLUSION);
+                    self.send_handshake(now, self.peer_id, &hs);
+                }
+            },
+        }
+    }
+
+    /// A handshake from the rendezvous peer.
+    fn handle_rdv_handshake(&mut self, h: &Header, cif: &[u8], now: i64) {
+        let Some(hs) = Handshake::parse(cif) else {
+            return;
+        };
+        if (HS_REJECT_BASE..HS_DONE).contains(&hs.typ) {
+            self.close_with(Some(SrtError::Rejected(RejectReason(
+                hs.typ - HS_REJECT_BASE,
+            ))));
+            return;
+        }
+        if hs.version < 5 {
+            // An HSv4 (SRT before 1.3) rendezvous peer.
+            self.close_with(Some(SrtError::Rejected(RejectReason::VERSION)));
+            return;
+        }
+        if hs.socket_id == 0 || !matches!(hs.typ, HS_WAVEAHAND | HS_CONCLUSION | HS_AGREEMENT) {
+            return;
+        }
+        let Some(r) = self.rdv.as_mut() else { return };
+        if r.role == RdvRole::Waving {
+            // The cookie contest, in 32-bit arithmetic as libsrt: the larger cookie initiates.
+            let d = r.cookie.wrapping_sub(hs.cookie);
+            if d == 0 {
+                // A draw (or our own packet looped back): pick another cookie, wave again.
+                r.cookie = match rand_u32() {
+                    0 => 1,
+                    c => c,
+                };
+                return;
+            }
+            r.role = if d & 0x8000_0000 != 0 {
+                RdvRole::Responder
+            } else {
+                RdvRole::Initiator
+            };
+            self.peer_id = hs.socket_id;
+            if r.role == RdvRole::Responder {
+                // The initiator's key material is the session's.
+                self.km_msg = None;
+                self.km = None;
+                self.crypt = None;
+                self.kk = KK_NONE;
+            }
+        }
+        if hs.socket_id != self.peer_id {
+            return;
+        }
+        let role = r.role;
+        match (role, hs.typ) {
+            (RdvRole::Initiator, HS_CONCLUSION) if hs.hs_rsp && hs.hs.is_some() => {
+                self.rdv_initiator_done(h, &hs, now);
+            }
+            (RdvRole::Responder, HS_CONCLUSION) if !hs.hs_rsp && hs.hs.is_some() => {
+                self.rdv_responder_answer(&hs, now);
+            }
+            (RdvRole::Responder, HS_AGREEMENT) => {
+                if self.rdv.as_ref().is_some_and(|r| r.hsrsp.is_some()) {
+                    self.rdv_connected(h.ts, now);
+                }
+            }
+            (_, HS_AGREEMENT) => {}
+            _ => self.rdv_send(now),
+        }
+    }
+
+    /// The initiator got the responder's HSRSP: connected, AGREEMENT out.
+    fn rdv_initiator_done(&mut self, h: &Header, hs: &Handshake, now: i64) {
+        let Some(ext) = hs.hs else { return };
+        if self.km_msg.is_some() {
+            match &hs.km {
+                None => {
+                    self.close_with(Some(SrtError::Rejected(RejectReason::UNSECURE)));
+                    return;
+                }
+                Some(km) if km.len() < KM_HEADER_SIZE => {
+                    self.close_with(Some(SrtError::Rejected(RejectReason::BAD_SECRET)));
+                    return;
+                }
+                _ => {}
+            }
+        } else if hs.km.is_some() {
+            self.close_with(Some(SrtError::Rejected(RejectReason::UNSECURE)));
+            return;
+        }
+        self.set_peer(hs, ext);
+        let agreement = self.rdv_handshake(HS_AGREEMENT);
+        let mut b = Vec::with_capacity(HEADER_SIZE + HANDSHAKE_SIZE);
+        Header {
+            ctrl: true,
+            typ: CTRL_HANDSHAKE,
+            ts: self.timestamp(now),
+            dst: self.peer_id,
+            ..Header::default()
+        }
+        .write(&mut b);
+        agreement.write(&mut b);
+        // A responder that missed it sends its HSRSP again: answered from `hs_resp`.
+        self.hs_resp = Some(b.clone());
+        self.output(b, now);
+        self.rdv = None;
+        self.connected(now, h.ts);
+    }
+
+    /// The responder got the initiator's HSREQ: takes its key material and latencies, answers
+    /// HSRSP (and KMRSP), and waits for the AGREEMENT.
+    fn rdv_responder_answer(&mut self, hs: &Handshake, now: i64) {
+        let Some(ext) = hs.hs else { return };
+        if self.rdv.as_ref().is_some_and(|r| r.hsrsp.is_some()) {
+            return self.rdv_send(now);
+        }
+        let reject = |c: &mut Conn, r: RejectReason| {
+            let mut resp = c.rdv_handshake(HS_REJECT_BASE + r.0);
+            resp.version = 5;
+            c.send_handshake(now, c.peer_id, &resp);
+            c.close_with(Some(SrtError::Rejected(r)));
+        };
+        match (self.cfg.passphrase.clone(), &hs.km) {
+            (None, Some(_)) | (Some(_), None) => return reject(self, RejectReason::UNSECURE),
+            (Some(pass), Some(km)) => {
+                let Ok(km) = KeyMaterial::decode(km, |s, l| derive_kek(&pass, s, l)) else {
+                    return reject(self, RejectReason::BAD_SECRET);
+                };
+                let Some(crypt) = Cryptor::new(&km) else {
+                    return reject(self, RejectReason::BAD_SECRET);
+                };
+                self.kk = if km.even.is_some() { KK_EVEN } else { KK_ODD };
+                self.cfg.pbkeylen = km.key_len;
+                self.crypt = Some(crypt);
+                self.km = Some(km);
+            }
+            (None, None) => {}
+        }
+        self.set_peer(hs, ext);
+        let mut resp = self.rdv_handshake(HS_CONCLUSION);
+        resp.ext_field = EXT_FLAG_HSREQ;
+        resp.hs = Some(HsExt {
+            version: SRT_VERSION,
+            flags: Conn::srt_flags(),
+            rcv_delay: (self.rcv_latency / 1000).min(i64::from(u16::MAX)) as u16,
+            snd_delay: (self.snd_latency / 1000).min(i64::from(u16::MAX)) as u16,
+        });
+        resp.hs_rsp = true;
+        if let Some(km) = &hs.km {
+            resp.encryption = hs.encryption;
+            resp.ext_field |= EXT_FLAG_KMREQ;
+            resp.km = Some(km.clone());
+            resp.km_rsp = true;
+        }
+        let mut b = Vec::new();
+        Header {
+            ctrl: true,
+            typ: CTRL_HANDSHAKE,
+            ts: self.timestamp(now),
+            dst: self.peer_id,
+            ..Header::default()
+        }
+        .write(&mut b);
+        resp.write(&mut b);
+        self.hs_resp = Some(b.clone());
+        if let Some(r) = self.rdv.as_mut() {
+            r.hsrsp = Some(b);
+        }
+        self.rdv_send(now);
+    }
+
+    /// The responder is connected (the AGREEMENT, or anything else from the initiator once
+    /// it answered).
+    fn rdv_connected(&mut self, peer_ts: u32, now: i64) {
+        self.rdv = None;
+        self.connected(now, peer_ts);
+    }
+
+    /// Takes the peer's handshake parameters (latencies, flow window, initial sequence).
+    fn set_peer(&mut self, hs: &Handshake, ext: HsExt) {
+        let mine = self.cfg.latency.as_micros() as i64;
+        self.rcv_latency = (i64::from(ext.snd_delay) * 1000).max(mine);
+        self.snd_latency = (i64::from(ext.rcv_delay) * 1000).max(mine);
+        if hs.flow_window > 0 {
+            self.peer_flow_window = hs.flow_window.min(1 << 20) as usize;
+            self.peer_avail = self.peer_flow_window;
+        }
+        self.rcv_base = hs.isn;
+        self.rcv_max = hs.isn;
+        self.ack_acked = hs.isn;
     }
 
     fn us(&self, now: Instant) -> i64 {
@@ -675,11 +1009,7 @@ impl Conn {
     pub fn next_timeout(&self) -> Option<Instant> {
         match self.state {
             State::Closed => None,
-            State::Handshake => Some(
-                self.at(self
-                    .hs_next
-                    .min(self.hs_start + self.cfg.handshake_timeout.as_micros() as i64)),
-            ),
+            State::Handshake => Some(self.at(self.hs_next.min(self.handshake_deadline()))),
             State::Connected => {
                 let mut t = (self.last_send + KEEPALIVE)
                     .min(self.last_recv + self.cfg.peer_idle_timeout.as_micros() as i64);
@@ -706,12 +1036,14 @@ impl Conn {
         match self.state {
             State::Closed => {}
             State::Handshake => {
-                if now >= self.hs_start + self.cfg.handshake_timeout.as_micros() as i64 {
+                if now >= self.handshake_deadline() {
                     self.close_with(Some(SrtError::HandshakeTimeout));
                     return;
                 }
                 if now >= self.hs_next {
-                    if self.cookie == 0 {
+                    if self.rdv.is_some() {
+                        self.rdv_send(now);
+                    } else if self.cookie == 0 {
                         self.send_induction(now);
                     } else {
                         self.send_conclusion(now);
@@ -753,9 +1085,19 @@ impl Conn {
         let Some(h) = Header::parse(b) else { return };
         if self.state == State::Handshake {
             if h.ctrl && h.typ == CTRL_HANDSHAKE {
-                self.handle_caller_handshake(&h, &b[HEADER_SIZE..], now);
+                if self.rdv.is_some() {
+                    self.handle_rdv_handshake(&h, &b[HEADER_SIZE..], now);
+                } else {
+                    self.handle_caller_handshake(&h, &b[HEADER_SIZE..], now);
+                }
+                return;
             }
-            return;
+            // A responder whose AGREEMENT was lost connects on the initiator's next packet.
+            let answered = self.rdv.as_ref().is_some_and(|r| r.hsrsp.is_some());
+            if !(answered && h.dst == self.socket_id) {
+                return;
+            }
+            self.rdv_connected(h.ts, now);
         }
         if h.dst != self.socket_id && !(h.ctrl && h.typ == CTRL_HANDSHAKE) {
             return;

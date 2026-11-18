@@ -62,7 +62,7 @@ pub(crate) fn is_handshake(b: &[u8]) -> Option<(u32, bool)> {
     Some((hs.socket_id, hs.typ == HS_INDUCTION))
 }
 
-fn peer_ip(a: SocketAddr) -> [u8; 16] {
+pub(crate) fn peer_ip(a: SocketAddr) -> [u8; 16] {
     let mut ip = [0u8; 16];
     match a {
         SocketAddr::V4(v) => {

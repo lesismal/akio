@@ -2,11 +2,16 @@
 //! playback) and a demuxer back to them ([`demux`], for SRT ingest).
 //!
 //! Codecs: H.264 (stream type 0x1b), H.265 (0x24), AAC in ADTS (0x0f), Opus (private data
-//! with the `Opus` registration descriptor, ETSI TS 102 366 style framing as ffmpeg writes it)
-//! and MP3 (0x03).
+//! with the `Opus` registration descriptor, ETSI TS 102 366 style framing as ffmpeg writes it),
+//! AV1 (private data with the `AV01` registration descriptor and the AV1 video descriptor, OBUs
+//! in the start-code format of AOM "Carriage of AV1 in MPEG-2 TS") and MP3 (0x03).
+//!
+//! VP8 and VP9 have no MPEG-TS mapping (no stream type, registration or descriptor is
+//! specified anywhere, and no demuxer reads one), so they are left out.
 
 pub mod demux;
 mod mux;
+pub(crate) mod sample_aes;
 
 pub use mux::Muxer;
 

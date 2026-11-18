@@ -762,6 +762,27 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_media::fmp4::Muxer
 impl core::panic::unwind_safe::UnwindSafe for only_media::fmp4::Muxer
 pub fn only_media::fmp4::write_styp(&mut alloc::vec::Vec<u8>)
 pub mod only_media::hls
+#[non_exhaustive] pub enum only_media::hls::EncryptionMethod
+pub only_media::hls::EncryptionMethod::Aes128
+pub only_media::hls::EncryptionMethod::SampleAes
+impl core::clone::Clone for only_media::hls::EncryptionMethod
+pub fn only_media::hls::EncryptionMethod::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hls::EncryptionMethod
+impl core::cmp::PartialEq for only_media::hls::EncryptionMethod
+pub fn only_media::hls::EncryptionMethod::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::hls::EncryptionMethod
+pub fn only_media::hls::EncryptionMethod::default() -> Self
+impl core::fmt::Debug for only_media::hls::EncryptionMethod
+pub fn only_media::hls::EncryptionMethod::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_media::hls::EncryptionMethod
+pub fn only_media::hls::EncryptionMethod::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_media::hls::EncryptionMethod
+impl core::marker::StructuralPartialEq for only_media::hls::EncryptionMethod
+impl core::marker::Send for only_media::hls::EncryptionMethod
+impl core::marker::Sync for only_media::hls::EncryptionMethod
+impl core::marker::Unpin for only_media::hls::EncryptionMethod
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::EncryptionMethod
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::EncryptionMethod
 #[non_exhaustive] pub enum only_media::hls::SegmentFormat
 pub only_media::hls::SegmentFormat::Fmp4
 pub only_media::hls::SegmentFormat::MpegTs
@@ -848,8 +869,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::HlsConfig
 impl core::panic::unwind_safe::UnwindSafe for only_media::hls::HlsConfig
 #[non_exhaustive] pub struct only_media::hls::HlsEncryption
 pub only_media::hls::HlsEncryption::keys: alloc::rcs::arc::Arc<dyn only_media::hls::KeyProvider>
+pub only_media::hls::HlsEncryption::method: only_media::hls::EncryptionMethod
 pub only_media::hls::HlsEncryption::rotate_every: u32
 impl only_media::hls::HlsEncryption
+pub fn only_media::hls::HlsEncryption::method(self, only_media::hls::EncryptionMethod) -> only_media::hls::HlsEncryption
 pub fn only_media::hls::HlsEncryption::new(impl only_media::hls::KeyProvider) -> only_media::hls::HlsEncryption
 pub fn only_media::hls::HlsEncryption::rotate_every(self, u32) -> only_media::hls::HlsEncryption
 impl core::clone::Clone for only_media::hls::HlsEncryption
@@ -1279,6 +1302,7 @@ pub mod only_media::record
 #[non_exhaustive] pub enum only_media::record::RecordFormat
 pub only_media::record::RecordFormat::Flv
 pub only_media::record::RecordFormat::Fmp4
+pub only_media::record::RecordFormat::MpegTs
 impl only_media::record::RecordFormat
 pub fn only_media::record::RecordFormat::extension(self) -> &'static str
 impl core::clone::Clone for only_media::record::RecordFormat
@@ -2505,9 +2529,11 @@ pub fn only_media::srt::Conn::close(&mut self, std::time::Instant)
 pub fn only_media::srt::Conn::encrypted(&self) -> bool
 pub fn only_media::srt::Conn::handle(&mut self, &[u8], std::time::Instant)
 pub fn only_media::srt::Conn::handle_timeout(&mut self, std::time::Instant)
+pub fn only_media::srt::Conn::is_rendezvous(&self) -> bool
 pub fn only_media::srt::Conn::latency(&self) -> core::time::Duration
 pub fn only_media::srt::Conn::next_timeout(&self) -> core::option::Option<std::time::Instant>
 pub fn only_media::srt::Conn::poll_event(&mut self) -> core::option::Option<only_media::srt::Event>
+pub fn only_media::srt::Conn::rendezvous(only_media::srt::Config, core::net::socket_addr::SocketAddr, std::time::Instant) -> core::result::Result<only_media::srt::Conn, only_media::srt::SrtError>
 pub fn only_media::srt::Conn::send_backlog(&self) -> usize
 pub fn only_media::srt::Conn::state(&self) -> only_media::srt::State
 pub fn only_media::srt::Conn::stats(&self) -> only_media::srt::Stats
@@ -2723,7 +2749,10 @@ pub fn only_media::srt::SrtHandler::on_connect(&mut self, &only_media::srt::SrtS
 pub fn only_media::srt::SrtHandler::on_data(&mut self, alloc::vec::Vec<u8>)
 pub fn only_media::srt::dial(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, impl only_media::srt::SrtHandler) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
 pub fn only_media::srt::pull(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
+pub fn only_media::srt::pull_rendezvous(&only::Engine, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
 pub fn only_media::srt::push(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
+pub fn only_media::srt::push_rendezvous(&only::Engine, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
+pub fn only_media::srt::rendezvous(&only::Engine, core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr, only_media::srt::Config, impl only_media::srt::SrtHandler) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
 pub type only_media::srt::ConnectHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&only_media::srt::Request, &only_media::srt::StreamId) -> core::result::Result<(), only_media::srt::RejectReason> + core::marker::Send + core::marker::Sync)>
 pub mod only_media::webrtc
 pub struct only_media::webrtc::RtcMedia

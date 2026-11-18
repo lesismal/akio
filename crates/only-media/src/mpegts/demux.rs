@@ -10,6 +10,10 @@
 //! * AAC: ADTS frames to raw access units, the `AudioSpecificConfig` built from the header;
 //! * Opus: the TS framing (control header, trim fields) removed, `OpusHead` from the
 //!   descriptor's channel count;
+//! * AV1 (stream type 0x06 with the `AV01` registration descriptor): the start-code format of
+//!   AOM "Carriage of AV1 in MPEG-2 TS" back to canonical temporal units (sized OBUs, no
+//!   temporal delimiter); the configuration record from the first sequence header. GStreamer's
+//!   provisional `AV1G` mapping (plain OBUs, no start codes) is read too;
 //! * MP3: frames as they are.
 //!
 //! Tracks come out ([`Event::Tracks`]) once every supported stream of the PMT has its
@@ -21,7 +25,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 
 use crate::{
     av::{Codec, Packet, SECOND, Time, Track, Tracks, from_ticks},
-    codec::{aac, h264, h265, opus},
+    codec::{aac, av1, h264, h265, opus},
 };
 
 use super::{
@@ -72,6 +76,8 @@ enum Kind {
     Aac,
     Opus,
     Mp3,
+    /// AV1; `true` in the start-code format, `false` as plain OBUs (GStreamer's `AV1G`).
+    Av1(bool),
 }
 
 #[derive(Debug)]
@@ -256,6 +262,7 @@ impl Demuxer {
             };
             rest = &rest[5 + es_len..];
             let mut opus = false;
+            let mut av1 = None;
             let mut channels = 2;
             let mut d = desc;
             while d.len() >= 2 {
@@ -263,6 +270,12 @@ impl Demuxer {
                 let Some(body) = d.get(2..2 + n) else { break };
                 if tag == 0x05 && body == b"Opus" {
                     opus = true;
+                }
+                if tag == 0x05 && body == b"AV01" {
+                    av1 = Some(true);
+                }
+                if tag == 0x05 && body == b"AV1G" {
+                    av1 = Some(false);
                 }
                 if tag == 0x7f && body.len() >= 2 && body[0] == 0x80 {
                     channels = body[1].max(1);
@@ -275,6 +288,7 @@ impl Demuxer {
                 STREAM_AAC => Kind::Aac,
                 STREAM_MP3 | STREAM_MP2_AUDIO => Kind::Mp3,
                 STREAM_PRIVATE if opus => Kind::Opus,
+                STREAM_PRIVATE if av1.is_some() => Kind::Av1(av1 == Some(true)),
                 _ => continue,
             };
             let track = (kind == Kind::Opus).then(|| {
@@ -393,6 +407,7 @@ impl Demuxer {
             Kind::Aac => self.aac(i, pts_ns, body, emit),
             Kind::Opus => self.opus(i, pts_ns, body, emit),
             Kind::Mp3 => self.mp3(i, pts_ns, body, emit),
+            Kind::Av1(start_codes) => self.av1(i, start_codes, dts_ns, pts_ns, body, emit),
         }
         self.streams[i].pes = pes;
         self.streams[i].pes.clear();
@@ -477,6 +492,39 @@ impl Demuxer {
             return;
         }
         self.out(i, Packet::new(0, dts, pts, key, au), emit);
+    }
+
+    fn av1(
+        &mut self,
+        i: usize,
+        start_codes: bool,
+        dts: Time,
+        pts: Time,
+        body: &[u8],
+        emit: &mut dyn FnMut(Event),
+    ) {
+        let tu = if start_codes {
+            av1::read_start_codes(body)
+        } else {
+            av1::to_sample(body).into_owned()
+        };
+        if tu.is_empty() {
+            return;
+        }
+        let key = av1::is_keyframe(&tu);
+        if key {
+            let s = &mut self.streams[i];
+            if let Some(t) = Track::video_from_keyframe(Codec::Av1, &tu) {
+                if s.track.as_ref() != Some(&t) {
+                    let had = s.track.is_some();
+                    s.track = Some(t);
+                    if had && self.announced.is_some() {
+                        self.announce(false, emit);
+                    }
+                }
+            }
+        }
+        self.out(i, Packet::new(0, dts, pts, key, tu), emit);
     }
 
     fn aac(&mut self, i: usize, pts: Time, body: &[u8], emit: &mut dyn FnMut(Event)) {
@@ -663,7 +711,7 @@ mod tests {
     use super::*;
     use crate::{
         av::{MILLISECOND, to_ticks},
-        mpegts::Muxer,
+        mpegts::{Muxer, STREAM_PRIVATE},
     };
 
     fn demux_all(data: &[u8], chunk: usize) -> (Vec<Tracks>, Vec<Packet>) {
@@ -762,6 +810,81 @@ mod tests {
                 assert_eq!((x.keyframe, &x.data), (y.keyframe, &y.data));
             }
         }
+    }
+
+    #[test]
+    fn av1_opus_round_trip() {
+        use crate::flv::{Decoder, Demuxer as FlvDemuxer, Event as FlvEvent};
+        let data = include_bytes!("../../testdata/av1_opus.flv");
+        let mut dec = Decoder::new();
+        let (mut tracks, mut pkts) = (None, Vec::new());
+        for t in FlvDemuxer::new().feed(data).unwrap() {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    FlvEvent::Tracks(t) => tracks = Some(t),
+                    FlvEvent::Packet(p) => pkts.push(p),
+                }
+            }
+        }
+        let mut tracks = tracks.unwrap().to_vec();
+        assert_eq!(tracks[0].codec, Codec::Av1);
+        // The in-band sequence header (ffmpeg's av1C carries a slightly different one).
+        let key = pkts.iter().find(|p| p.track == 0 && p.keyframe).unwrap();
+        tracks[0] = Track::video_from_keyframe(Codec::Av1, &key.data).unwrap();
+        let mut m = Muxer::new(&tracks);
+        assert!(m.carries(0) && m.carries(1));
+        let mut ts = Vec::new();
+        m.write_tables(&mut ts);
+        // The PMT entry: private data, the AV01 registration descriptor, then the AV1 video
+        // descriptor.
+        let pmt = &ts[188..2 * 188];
+        let at = pmt.windows(6).position(|w| w == b"\x05\x04AV01").unwrap();
+        assert_eq!(pmt[at - 5], STREAM_PRIVATE);
+        assert_eq!(&pmt[at + 6..at + 9], &[0x80, 4, 0x81]);
+        // Keyframes without a sequence header get the configuration's.
+        let mut stripped = 0;
+        for p in &pkts {
+            let mut p = p.clone();
+            if p.track == 0 && p.keyframe && stripped == 0 {
+                let seq = av1::sequence_header_obu(&p.data).unwrap().to_vec();
+                let at = p.data.windows(seq.len()).position(|w| w == seq).unwrap();
+                p.data.drain(at..at + seq.len());
+                stripped += 1;
+            }
+            m.write_packet(&p, &mut ts);
+        }
+        assert_eq!(stripped, 1);
+        let (t2, p2) = demux_all(&ts, 1316);
+        assert_eq!(t2.len(), 1);
+        assert_eq!(t2[0][0], tracks[0]);
+        assert_eq!(t2[0][1].codec, Codec::Opus);
+        let a: Vec<_> = pkts.iter().filter(|p| p.track == 0).collect();
+        let b: Vec<_> = p2.iter().filter(|p| p.track == 0).collect();
+        assert_eq!(a.len(), b.len());
+        assert!(b[0].keyframe);
+        for (x, y) in a.iter().zip(&b) {
+            assert_eq!((x.keyframe, &x.data), (y.keyframe, &y.data));
+            assert_eq!(to_ticks(x.pts, 90_000), to_ticks(y.pts, 90_000));
+        }
+        // GStreamer's provisional mapping: plain OBUs under `AV1G`.
+        let mut g = Vec::new();
+        Muxer::new(&tracks[..1]).write_tables(&mut g);
+        let pmt = &mut g[188..2 * 188];
+        let at = pmt.windows(4).position(|w| w == b"AV01").unwrap();
+        pmt[at + 3] = b'G';
+        pmt[at + 2] = b'1';
+        // Recompute the PMT's CRC.
+        let len = (usize::from(pmt[6] & 0x0f) << 8) | usize::from(pmt[7]);
+        let crc = crc32(&pmt[5..5 + 3 + len - 4]).to_be_bytes();
+        pmt[5 + 3 + len - 4..5 + 3 + len].copy_from_slice(&crc);
+        let mut pes = vec![0, 0, 1, 0xbd, 0, 0, 0x84, 0x80, 5];
+        pes.extend_from_slice(&[0x21, 0, 1, 0, 1]);
+        pes.extend_from_slice(&[0x12, 0x00]);
+        pes.extend_from_slice(&a[0].data);
+        super::super::mux::write_pes_for_test(&mut g, 0x100, &pes);
+        let (t3, p3) = demux_all(&g, 188);
+        assert_eq!(t3[0][0], tracks[0]);
+        assert_eq!(p3[0].data, a[0].data);
     }
 
     #[test]

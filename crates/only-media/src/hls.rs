@@ -49,9 +49,18 @@
 //! `/<path>/key-<n>.key` unless the provider names another URI. Segments of a key are only
 //! served while the key is (they leave the window together).
 //!
-//! Not supported: `SAMPLE-AES` and CBCS (they need per-codec subsample layout, and for H.264 /
-//! H.265 slice header parsing), delta updates (`_HLS_skip`), rendition reports, `I-FRAME`
-//! playlists, subtitles and closed captions.
+//! With [`EncryptionMethod::SampleAes`] the samples are encrypted inside the container instead
+//! (`#EXT-X-KEY:METHOD=SAMPLE-AES`), H.264 and AAC tracks only (others are left out of the
+//! segments): in MPEG-TS Apple's sample encryption (stream types 0xdb / 0xcf, slices in a 1:9
+//! pattern after 32 clear bytes, AAC frames after the header and 16 bytes), one random IV per
+//! key written as the `IV` attribute; in fMP4 the `cbcs` scheme (`encv` / `enca`, a constant
+//! IV in `tenc`, `senc` / `saiz` / `saio` with each slice's NAL and slice headers clear, AAC
+//! frames whole). Init segments and LL-HLS parts need nothing more: they are plain slices of
+//! the encrypted stream.
+//!
+//! Not supported: SAMPLE-AES for H.265 and other codecs (H.265 `cbcs` needs its slice segment
+//! header parsed), `EXT-X-SESSION-KEY`, delta updates (`_HLS_skip`), rendition reports,
+//! `I-FRAME` playlists, subtitles and closed captions.
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -68,7 +77,7 @@ use crate::{
     av::{Packet, SECOND, Time, Tracks},
     fmp4,
     hub::{Hub, HubError, PeerInfo, Sink, SubscribeOptions, Subscription, Timeline},
-    mpegts::Muxer,
+    mpegts::{Muxer, sample_aes::SampleKey},
 };
 
 /// The container of HLS media segments.
@@ -128,7 +137,8 @@ pub struct HlsConfig {
     pub cors_origin: Option<String>,
     /// The segment container: MPEG-TS (the default) or fragmented MP4.
     pub format: SegmentFormat,
-    /// When set, segments and parts are encrypted with AES-128 (`EXT-X-KEY`).
+    /// When set, segments and parts are encrypted (`EXT-X-KEY`): whole with AES-128, or
+    /// sample by sample with SAMPLE-AES ([`HlsEncryption::method`]).
     pub encryption: Option<HlsEncryption>,
 }
 
@@ -233,6 +243,23 @@ impl KeyProvider for RandomKeys {
     }
 }
 
+/// How [`Hls`] encrypts segments (`METHOD` of `EXT-X-KEY`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
+pub enum EncryptionMethod {
+    /// `AES-128`: every segment and part encrypted whole (AES-128-CBC, PKCS #7), MPEG-TS and
+    /// fMP4 alike; every player supports it.
+    #[default]
+    Aes128,
+    /// `SAMPLE-AES`: the samples encrypted inside the container, its structure and the codec
+    /// headers clear. MPEG-TS: Apple's MPEG-2 stream encryption format (H.264 slices with a
+    /// 1:9 pattern after 32 clear bytes, AAC frames after 16), stream types 0xdb / 0xcf. fMP4:
+    /// the `cbcs` scheme of ISO/IEC 23001-7 (`encv` / `enca`, a constant IV, H.264 slice
+    /// headers clear and the slice data in a 1:9 pattern, AAC frames whole). Only H.264 and
+    /// AAC tracks are carried: others are left out of the segments rather than sent clear.
+    SampleAes,
+}
+
 /// Configures encryption of [`Hls`] segments ([`HlsConfig::encryption`]).
 #[derive(Clone)]
 #[non_exhaustive]
@@ -242,6 +269,8 @@ pub struct HlsEncryption {
     /// A new key every this many segments; 0 (the default) keeps one key for as long as the
     /// stream's muxer runs.
     pub rotate_every: u32,
+    /// The method (AES-128 by default).
+    pub method: EncryptionMethod,
 }
 
 impl HlsEncryption {
@@ -250,7 +279,15 @@ impl HlsEncryption {
         HlsEncryption {
             keys: Arc::new(keys),
             rotate_every: 0,
+            method: EncryptionMethod::Aes128,
         }
+    }
+
+    /// Sets [`method`](Self::method).
+    #[must_use]
+    pub fn method(mut self, method: EncryptionMethod) -> HlsEncryption {
+        self.method = method;
+        self
     }
 
     /// Sets [`rotate_every`](Self::rotate_every).
@@ -271,6 +308,7 @@ impl fmt::Debug for HlsEncryption {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HlsEncryption")
             .field("rotate_every", &self.rotate_every)
+            .field("method", &self.method)
             .finish_non_exhaustive()
     }
 }
@@ -281,6 +319,20 @@ struct Key {
     aes: Aes,
     uri: Option<String>,
     raw: [u8; 16],
+    /// SAMPLE-AES in MPEG-TS: the IV of every segment of the key (the `IV` attribute).
+    iv: [u8; 16],
+}
+
+/// A random IV (the time when the system has no random source: an IV only has to differ).
+fn random_iv() -> [u8; 16] {
+    let mut iv = [0u8; 16];
+    if only_crypto::rand::fill_random(&mut iv).is_err() {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        iv = t.to_be_bytes();
+    }
+    iv
 }
 
 /// The IV of segment `seq` (and its parts): its media sequence number, big-endian.
@@ -292,9 +344,12 @@ fn iv_of(seq: u64) -> [u8; 16] {
 /// segment rather than paying it all at its end).
 const ENCRYPT_CHUNK: usize = 64 << 10;
 
-/// The ciphertext of the segment being written, encrypted as its bytes come.
+/// The ciphertext of the segment being written, encrypted as its bytes come (AES-128); with
+/// SAMPLE-AES, which the muxer applies, only the key.
 struct Encrypting {
     key: Arc<Key>,
+    /// AES-128: the segment is encrypted whole.
+    whole: bool,
     /// The CBC chaining value.
     iv: [u8; 16],
     /// Plaintext bytes encrypted so far (a whole number of blocks).
@@ -316,7 +371,7 @@ impl Encrypting {
     /// packet path of unencrypted streams).
     #[inline(never)]
     fn step(&mut self, data: &[u8]) {
-        if data.len() - self.done >= ENCRYPT_CHUNK {
+        if self.whole && data.len() - self.done >= ENCRYPT_CHUNK {
             self.more(data);
         }
     }
@@ -538,8 +593,8 @@ struct Building {
     part_offset: usize,
     part_independent: bool,
     last: Time,
-    /// The segment's ciphertext so far, when encrypted (boxed: the building segment is moved
-    /// in and out of the state for every packet).
+    /// The key it is encrypted with and, with AES-128, its ciphertext so far (boxed: the
+    /// building segment is moved in and out of the state for every packet).
     enc: Option<Box<Encrypting>>,
 }
 
@@ -634,11 +689,14 @@ impl State {
         if self.keys.is_empty() || rotate {
             let n = self.keys.back().map_or(0, |k| k.n + 1);
             let k = enc.keys.key(&st.path, n);
+            let sample_ts =
+                enc.method == EncryptionMethod::SampleAes && st.cfg.format == SegmentFormat::MpegTs;
             self.keys.push_back(Arc::new(Key {
                 n,
                 aes: Aes::new128(&k.key),
                 uri: k.uri,
                 raw: k.key,
+                iv: if sample_ts { random_iv() } else { [0; 16] },
             }));
             self.key_segments = 0;
             self.prune_keys();
@@ -655,6 +713,15 @@ struct Stream {
     cors: Option<String>,
     state: Mutex<State>,
     sub: Mutex<Option<Subscription>>,
+}
+
+impl Stream {
+    fn sample_aes(&self) -> bool {
+        self.cfg
+            .encryption
+            .as_ref()
+            .is_some_and(|e| e.method == EncryptionMethod::SampleAes)
+    }
 }
 
 impl Hls {
@@ -1213,6 +1280,12 @@ impl Stream {
         // key is preceded by METHOD=NONE).
         let mut map: Option<u64> = None;
         let mut key: Option<u64> = None;
+        let sample_ts = self.sample_aes() && !fmp4;
+        let method = if self.sample_aes() {
+            "SAMPLE-AES"
+        } else {
+            "AES-128"
+        };
         let mut write_media = |s: &mut String, init: u64, k: Option<u64>| {
             if fmp4 && map != Some(init) {
                 if key.take().is_some() {
@@ -1226,12 +1299,17 @@ impl Stream {
                     Some(x) => {
                         let _ = match &x.uri {
                             Some(u) => {
-                                writeln!(s, "#EXT-X-KEY:METHOD=AES-128,URI=\"{}\"", quoted(u))
+                                write!(s, "#EXT-X-KEY:METHOD={method},URI=\"{}\"", quoted(u))
                             }
-                            None => {
-                                writeln!(s, "#EXT-X-KEY:METHOD=AES-128,URI=\"key-{}.key\"", x.n)
-                            }
+                            None => write!(s, "#EXT-X-KEY:METHOD={method},URI=\"key-{}.key\"", x.n),
                         };
+                        if sample_ts {
+                            s.push_str(",IV=0x");
+                            for b in x.iv {
+                                let _ = write!(s, "{b:02X}");
+                            }
+                        }
+                        s.push('\n');
                     }
                     None => s.push_str("#EXT-X-KEY:METHOD=NONE\n"),
                 }
@@ -1355,6 +1433,18 @@ impl SegMuxer {
         }
     }
 
+    /// SAMPLE-AES: the key (and IV) of the next segment.
+    #[inline(never)]
+    fn set_sample_key(&mut self, key: &Key) {
+        match self {
+            SegMuxer::Ts(m) => m.set_sample_key(SampleKey {
+                aes: key.aes.clone(),
+                iv: key.iv,
+            }),
+            SegMuxer::Mp4(m) => m.set_sample_key(key.aes.clone()),
+        }
+    }
+
     /// Moves what is pending into `out` as a fragment ending at `end`.
     fn flush(&mut self, end: Time, out: &mut Vec<u8>) {
         if let SegMuxer::Mp4(m) = self {
@@ -1392,8 +1482,8 @@ impl HlsSink {
         Self::close_part(st, &mut b, end, None);
         let key = b.key();
         let data = Arc::new(match b.enc.take() {
-            Some(e) => (*e).finish(&b.data),
-            None => b.data,
+            Some(e) if e.whole => (*e).finish(&b.data),
+            _ => b.data,
         });
         g.bytes += data.len() + b.parts.iter().map(|p| p.data.len()).sum::<usize>();
         let duration = (end - b.start).max(1);
@@ -1434,8 +1524,8 @@ impl HlsSink {
         }
         let plain = &b.data[b.part_offset..];
         let data = match &b.enc {
-            Some(e) => e.part(b.seq, plain),
-            None => plain.to_vec(),
+            Some(e) if e.whole => e.part(b.seq, plain),
+            _ => plain.to_vec(),
         };
         b.parts.push(Part {
             duration: (end - b.part_start).max(1),
@@ -1460,7 +1550,11 @@ impl Sink for HlsSink {
             self.started = true;
             self.muxer = Some(match self.st.cfg.format {
                 SegmentFormat::Fmp4 => {
-                    let m = fmp4::Muxer::new(tracks);
+                    let m = if self.st.sample_aes() {
+                        fmp4::Muxer::cbcs(tracks)
+                    } else {
+                        fmp4::Muxer::new(tracks)
+                    };
                     let same = g
                         .inits
                         .iter()
@@ -1475,6 +1569,7 @@ impl Sink for HlsSink {
                     }
                     SegMuxer::Mp4(m)
                 }
+                _ if self.st.sample_aes() => SegMuxer::Ts(Muxer::sample_aes(tracks)),
                 _ => SegMuxer::Ts(Muxer::new(tracks)),
             });
             // Only carried video counts: a stream whose video the format cannot carry (VP9 or
@@ -1548,8 +1643,13 @@ impl Sink for HlsSink {
                     fmp4::write_styp(&mut data);
                 }
                 let enc = g.key_for_segment(&self.st).map(|key| {
+                    let whole = !self.st.sample_aes();
+                    if !whole {
+                        m.set_sample_key(&key);
+                    }
                     Box::new(Encrypting {
                         key,
+                        whole,
                         iv: iv_of(seq),
                         done: 0,
                         out: Vec::new(),
@@ -2173,15 +2273,21 @@ mod tests {
             })
             .collect();
         let ll = Some(Duration::from_millis(200));
-        for (name, format, parts, aes) in [
-            ("ts", SegmentFormat::MpegTs, None, false),
-            ("ts-ll", SegmentFormat::MpegTs, ll, false),
-            ("fmp4", SegmentFormat::Fmp4, None, false),
-            ("fmp4-ll", SegmentFormat::Fmp4, ll, false),
-            // AES-128 (not in the baseline: the cost of encryption).
-            ("ts-aes", SegmentFormat::MpegTs, None, true),
-            ("ts-ll-aes", SegmentFormat::MpegTs, ll, true),
-            ("fmp4-ll-aes", SegmentFormat::Fmp4, ll, true),
+        let (aes, saes) = (
+            Some(EncryptionMethod::Aes128),
+            Some(EncryptionMethod::SampleAes),
+        );
+        for (name, format, parts, method) in [
+            ("ts", SegmentFormat::MpegTs, None, None),
+            ("ts-ll", SegmentFormat::MpegTs, ll, None),
+            ("fmp4", SegmentFormat::Fmp4, None, None),
+            ("fmp4-ll", SegmentFormat::Fmp4, ll, None),
+            // Encryption (not in the baseline: its cost).
+            ("ts-aes", SegmentFormat::MpegTs, None, aes),
+            ("ts-ll-aes", SegmentFormat::MpegTs, ll, aes),
+            ("fmp4-ll-aes", SegmentFormat::Fmp4, ll, aes),
+            ("ts-sample-aes", SegmentFormat::MpegTs, None, saes),
+            ("fmp4-cbcs", SegmentFormat::Fmp4, None, saes),
         ] {
             if std::env::var("BENCH_ONLY").is_ok_and(|o| o != name) {
                 continue;
@@ -2192,7 +2298,7 @@ mod tests {
                         format,
                         part_duration: parts,
                         target_duration: Duration::from_secs(1),
-                        encryption: aes.then(|| HlsEncryption::new(TestKeys)),
+                        encryption: method.map(|m| HlsEncryption::new(TestKeys).method(m)),
                         ..HlsConfig::default()
                     });
                     s.on_tracks(&tracks);
@@ -2383,11 +2489,13 @@ mod tests {
             aes: Aes::new128(&[3; 16]),
             uri: None,
             raw: [3; 16],
+            iv: [0; 16],
         });
         for n in [0usize, 1, 15, 16, 17, 100, 188 * 700 + 5] {
             let data: Vec<u8> = (0..n).map(|i| (i * 7 + i / 255) as u8).collect();
             let mut e = Encrypting {
                 key: key.clone(),
+                whole: true,
                 iv: iv_of(9),
                 done: 0,
                 out: Vec::new(),
