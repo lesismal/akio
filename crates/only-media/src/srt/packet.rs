@@ -15,6 +15,8 @@ pub(crate) const CTRL_USER: u16 = 0x7fff;
 pub(crate) const HS_CONCLUSION: u32 = 0xffff_ffff;
 pub(crate) const HS_INDUCTION: u32 = 0x0000_0001;
 pub(crate) const HS_DONE: u32 = 0xffff_fffd;
+pub(crate) const HS_AGREEMENT: u32 = 0xffff_fffe;
+pub(crate) const HS_WAVEAHAND: u32 = 0x0000_0000;
 pub(crate) const HS_REJECT_BASE: u32 = 1000;
 
 pub(crate) const EXT_HSREQ: u16 = 1;

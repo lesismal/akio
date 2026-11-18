@@ -147,7 +147,22 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // 每 10 个�
   `#EXT-X-KEY:METHOD=NONE`）。只要仍有保留的分段使用某个密钥，就在 `key-<n>.key` 以
   `Cache-Control: private, no-store` 提供它，或由播放器从 `HlsKey::with_uri` 给出的 URI 获取。播放器
   请求密钥 URI 时带 cookie 和请求头，不带播放列表的 query string。`RandomKeys` 向所有人发放随机密钥
-  （用于测试，或链接本身保密的场景）。不支持 SAMPLE-AES / CBCS。
+  （用于测试，或链接本身保密的场景）。
+
+- **SAMPLE-AES**：`HlsEncryption::new(keys).method(EncryptionMethod::SampleAes)` 在容器内部加密样本，
+  容器结构保持明文，密钥提供者、轮换与密钥 URI 都不变（`#EXT-X-KEY:METHOD=SAMPLE-AES`）。只承载 H.264 与
+  AAC；其它轨道不进入分段，而不是以明文发出。
+  - MPEG-TS：Apple 的样本加密。长于 48 字节的编码 slice 保留前 32 字节明文，之后每十个 16 字节块加密一个
+    （AES-128-CBC，每个 NAL 单元从 IV 重新开始，作用于去除防竞争字节后的 NAL，加密后重新加入防竞争字节）；
+    AAC 帧保留 ADTS 头和其后 16 字节明文，加密其余完整的块。PMT 会标明（流类型 0xdb 与 0xcf、`zavc` /
+    `aacd`、`apad` 音频设置信息）。每个密钥一个随机 IV，写为 `IV` 属性（每个分段一个 IV 会让跨分段边界预读的
+    播放器解错，ffmpeg 就是如此）。
+  - fMP4：ISO/IEC 23001-7 的 `cbcs` 方案。初始化分段使用 `encv` / `enca` 条目及 `sinf`（`frma`、`schm`
+    `cbcs`、带常量 IV 的 `tenc`）；分片带 `senc`、`saiz` 与 `saio`。每个 slice 的 NAL 头与 slice 头保持明文
+    （解析 H.264 slice 头：参考列表修改、加权预测、参考帧标记），slice 数据按 1:9 模式加密；AAC 样本整体加密。
+
+  ffmpeg 能播放两者，逐帧解密正确。它对已预读的所有数据使用同一把密钥（fMP4 则一直使用打开时的密钥），
+  因此在密钥轮换处会解出错误数据；Safari 与 hls.js 按分段获取密钥。
 
 ## 转发：RTMP 客户端
 
@@ -173,7 +188,7 @@ Enhanced RTMP 发送。
 
 ## 录制
 
-`only_media::record::Recorder` 把 hub 中的流写成分片 MP4 或 FLV 文件：
+`only_media::record::Recorder` 把 hub 中的流写成分片 MP4、FLV 或 MPEG-TS 文件：
 
 ```rust,ignore
 use std::time::Duration;
@@ -188,7 +203,7 @@ impl RecordHooks for Hooks {
 }
 
 let mut cfg = RecordConfig::new("/var/lib/only/rec");
-cfg.format = RecordFormat::Fmp4; // 或 Flv
+cfg.format = RecordFormat::Fmp4; // 或 Flv、MpegTs
 cfg.segment_duration = Some(Duration::from_secs(600));
 cfg.max_files = 144; // 保留最近一天的十分钟文件
 let rec = Recorder::with_hooks(hub.clone(), cfg, Hooks);
@@ -201,7 +216,17 @@ rec.start("live/cam")?; // 最多等待 `cfg.wait`（10 秒）推流者出现，
 有界（`max_queued_bytes`，32 MiB）：磁盘跟不上时关闭当前文件并丢包（`Recorder::dropped`），直到队列降到一半、
 关键帧开始下一个文件，所以慢磁盘只会在文件之间留下空档，不会产生损坏的文件。`RecordHooks::file_name` 为文件
 命名（相对 `dir`），`on_start`、`on_stop` 与 `on_remove`（轮换）跟踪文件。要录制所有流，在 hub 的
-`on_publish` 钩子中调用 `start`。
+`on_publish` 钩子中调用 `start`。MPEG-TS 文件在每个视频关键帧前（以及至少每秒）重复 PAT 与 PMT，因此被截断
+的文件也能从任一关键帧播放。
+
+## MPEG-TS 中的 AV1
+
+MPEG-TS 封装器与解封装器按开放媒体联盟的规范（"Carriage of AV1 in MPEG-2 TS"）承载 AV1：流类型 0x06，
+带 `AV01` 注册描述符与 AV1 视频描述符（0x80），每个 PES 一个时间单元（置 `data_alignment_indicator`），
+每个 OBU 前有 `00 00 01` 起始码并加入防竞争字节，开头是时间分隔符，缺少序列头的关键帧前补上序列头。解封装器也
+读取 GStreamer 的临时映射 `AV1G`（裸 OBU）。因此 AV1 现在可以经 SRT 与 HLS MPEG-TS 发出，也能录制为 MPEG-TS。
+ffmpeg 目前还不能解封装 MPEG-TS 中的 AV1（其支持仍在评审中）；格式按规范核对，通过封装器与解封装器的往返验证，
+并把 ffmpeg 提取的 PES 负载交给另一个独立实现的起始码格式读回后用 dav1d 解码：每一帧都与源相同。VP8 与 VP9 根本没有 MPEG-TS 映射：仍只用于 fMP4、FLV、RTP 与 WebRTC。
 
 ## 运行
 
@@ -237,12 +262,15 @@ ffprobe / ffmpeg 作为播放端：
 | RTMP 客户端推流 | `ffmpeg -listen 1 -i rtmp://…`、mediamtx（`--ignored`） | H.264 + AAC、H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`、mediamtx | RTMP 客户端拉流 | H.264 + AAC、H.265 + AAC |
 | hub 推流者，AES-128 加密并轮换密钥 | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`，MPEG-TS 与 fMP4，普通与 LL-HLS | H.264 + AAC |
-| hub 推流者，`Recorder` | 对每个 fMP4 与 FLV 文件执行 `ffprobe` / `ffmpeg -i` | H.264 + AAC、H.265 + AAC |
+| hub 推流者，SAMPLE-AES（MPEG-TS）与 `cbcs`（fMP4） | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`：每一帧都与源相同，普通与 LL-HLS | H.264 + AAC |
+| hub 推流者，`Recorder` | 对每个 fMP4、FLV 与 MPEG-TS 文件执行 `ffprobe` / `ffmpeg -i` | H.264 + AAC、H.265 + AAC |
 
 RTSP 与 SRT 的互通表在各自章节中。模糊测试覆盖 RTMP 会话（`rtmp_server`）与客户端（`rtmp_client`）、
-FLV（`flv_demux`）、fMP4（`fmp4_demux`）、AMF（`amf_decode`）以及 RTSP、SDP、RTP、MPEG-TS 和 SRT 的解析器。
+FLV（`flv_demux`）、fMP4（`fmp4_demux`）、AMF（`amf_decode`）以及 RTSP、SDP、RTP、MPEG-TS（含 AV1）和 SRT
+（含 rendezvous 握手，`srt_rendezvous`）的解析器，还有 H.264 slice 头解析器与两种样本加密
+（`h264_sample_encryption`）。
 
 ## 不支持
 
-HLS SAMPLE-AES / CBCS、I-frame 播放列表与 rendition report、MPEG-TS 中的 VP8 / VP9 / AV1、RTMPS 客户端、
-RTMPE / RTMPT、AMF3 应答、Enhanced RTMP 多轨、录制为 MPEG-TS、转码。
+H.265 及 H.264 / AAC 以外编码的 SAMPLE-AES、`EXT-X-SESSION-KEY`、I-frame 播放列表与 rendition report、
+MPEG-TS 中的 VP8 / VP9（无规范）、RTMPS 客户端、RTMPE / RTMPT、AMF3 应答、Enhanced RTMP 多轨、转码。

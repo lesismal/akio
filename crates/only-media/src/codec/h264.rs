@@ -205,11 +205,46 @@ pub(crate) fn read_set(b: &[u8], p: usize) -> Result<(Vec<u8>, usize), CodecErro
 
 /// The picture size (width, height) a sequence parameter set (NAL header included) declares.
 pub fn sps_size(sps: &[u8]) -> Option<(u32, u32)> {
+    sps_fields(sps).map(|(_, size)| size)
+}
+
+/// The fields of a sequence parameter set a slice header's syntax depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SpsInfo {
+    id: u32,
+    /// `ChromaArrayType`.
+    chroma_array_type: u32,
+    separate_colour_plane: bool,
+    log2_max_frame_num: u32,
+    poc_type: u32,
+    log2_max_poc_lsb: u32,
+    delta_pic_order_always_zero: bool,
+    frame_mbs_only: bool,
+}
+
+/// The fields of a picture parameter set a slice header's syntax depends on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PpsInfo {
+    id: u32,
+    sps_id: u32,
+    cabac: bool,
+    bottom_field_pic_order_in_frame_present: bool,
+    num_ref_idx_l0_default: u32,
+    num_ref_idx_l1_default: u32,
+    weighted_pred: bool,
+    weighted_bipred_idc: u32,
+    deblocking_filter_control_present: bool,
+    redundant_pic_cnt_present: bool,
+}
+
+/// Parses a sequence parameter set (NAL header included): the fields slices need and the
+/// picture size.
+fn sps_fields(sps: &[u8]) -> Option<(SpsInfo, (u32, u32))> {
     let rbsp = unescape_rbsp(sps.get(1..)?);
     let mut r = BitReader::new(&rbsp);
     let profile = r.bits(8)?;
     r.skip(16)?; // constraint flags + level
-    r.ue()?; // seq_parameter_set_id
+    let id = r.ue()?;
     let mut chroma_format_idc = 1;
     let mut separate_colour_plane = false;
     if matches!(
@@ -242,13 +277,16 @@ pub fn sps_size(sps: &[u8]) -> Option<(u32, u32)> {
             }
         }
     }
-    r.ue()?; // log2_max_frame_num_minus4
-    match r.ue()? {
+    let log2_max_frame_num = r.ue()?.checked_add(4).filter(|&v| v <= 16)?;
+    let poc_type = r.ue()?;
+    let mut log2_max_poc_lsb = 0;
+    let mut delta_pic_order_always_zero = false;
+    match poc_type {
         0 => {
-            r.ue()?;
+            log2_max_poc_lsb = r.ue()?.checked_add(4).filter(|&v| v <= 16)?;
         }
         1 => {
-            r.flag()?;
+            delta_pic_order_always_zero = r.flag()?;
             r.se()?;
             r.se()?;
             let n = r.ue()?;
@@ -290,7 +328,230 @@ pub fn sps_size(sps: &[u8]) -> Option<(u32, u32)> {
     let h = h_units
         .checked_mul(16 * field)?
         .checked_sub(ct.checked_add(cb)?.checked_mul(sub_h)?)?;
-    Some((w, h))
+    let info = SpsInfo {
+        id,
+        chroma_array_type: if separate_colour_plane {
+            0
+        } else {
+            chroma_format_idc
+        },
+        separate_colour_plane,
+        log2_max_frame_num,
+        poc_type,
+        log2_max_poc_lsb,
+        delta_pic_order_always_zero,
+        frame_mbs_only,
+    };
+    Some((info, (w, h)))
+}
+
+/// The slice-relevant fields of a sequence parameter set (NAL header included).
+pub(crate) fn sps_info(sps: &[u8]) -> Option<SpsInfo> {
+    sps_fields(sps).map(|(i, _)| i)
+}
+
+/// The slice-relevant fields of a picture parameter set (NAL header included); `None` for
+/// one with slice groups (FMO, Baseline only), which this does not follow.
+pub(crate) fn pps_info(pps: &[u8]) -> Option<PpsInfo> {
+    let rbsp = unescape_rbsp(pps.get(1..)?);
+    let mut r = BitReader::new(&rbsp);
+    let id = r.ue()?;
+    let sps_id = r.ue()?;
+    let cabac = r.flag()?;
+    let bottom_field_pic_order_in_frame_present = r.flag()?;
+    if r.ue()? != 0 {
+        return None; // num_slice_groups_minus1
+    }
+    let num_ref_idx_l0_default = r.ue()?.checked_add(1).filter(|&n| n <= 32)?;
+    let num_ref_idx_l1_default = r.ue()?.checked_add(1).filter(|&n| n <= 32)?;
+    let weighted_pred = r.flag()?;
+    let weighted_bipred_idc = r.bits(2)?;
+    r.se()?; // pic_init_qp_minus26
+    r.se()?; // pic_init_qs_minus26
+    r.se()?; // chroma_qp_index_offset
+    let deblocking_filter_control_present = r.flag()?;
+    r.flag()?; // constrained_intra_pred_flag
+    let redundant_pic_cnt_present = r.flag()?;
+    Some(PpsInfo {
+        id,
+        sps_id,
+        cabac,
+        bottom_field_pic_order_in_frame_present,
+        num_ref_idx_l0_default,
+        num_ref_idx_l1_default,
+        weighted_pred,
+        weighted_bipred_idc,
+        deblocking_filter_control_present,
+        redundant_pic_cnt_present,
+    })
+}
+
+/// The length of a coded slice NAL unit's NAL header and slice header (H.264 7.3.3), in bytes
+/// of the NAL unit as stored (emulation prevention bytes counted), rounded up to a whole byte:
+/// what `cbcs` leaves clear before the slice data. `None` when the slice's parameter sets are
+/// not among `sps` / `pps` or the header does not parse.
+pub(crate) fn slice_header_len(nal: &[u8], sps: &[SpsInfo], pps: &[PpsInfo]) -> Option<usize> {
+    let header = *nal.first()?;
+    let nal_type = header & 0x1f;
+    if nal_type != NAL_SLICE && nal_type != NAL_IDR {
+        return None;
+    }
+    let idr = nal_type == NAL_IDR;
+    let nal_ref_idc = (header >> 5) & 3;
+    let rbsp = unescape_rbsp(&nal[1..]);
+    let mut r = BitReader::new(&rbsp);
+    r.ue()?; // first_mb_in_slice
+    let slice_type = r.ue()? % 5;
+    let (p, b, i, sp, si) = (
+        slice_type == 0,
+        slice_type == 1,
+        slice_type == 2,
+        slice_type == 3,
+        slice_type == 4,
+    );
+    let pps_id = r.ue()?;
+    let pps = pps.iter().find(|x| x.id == pps_id)?;
+    let sps = sps.iter().find(|x| x.id == pps.sps_id)?;
+    if sps.separate_colour_plane {
+        r.skip(2)?; // colour_plane_id
+    }
+    r.skip(sps.log2_max_frame_num as usize)?; // frame_num
+    let mut field_pic = false;
+    if !sps.frame_mbs_only {
+        field_pic = r.flag()?;
+        if field_pic {
+            r.flag()?; // bottom_field_flag
+        }
+    }
+    if idr {
+        r.ue()?; // idr_pic_id
+    }
+    if sps.poc_type == 0 {
+        r.skip(sps.log2_max_poc_lsb as usize)?;
+        if pps.bottom_field_pic_order_in_frame_present && !field_pic {
+            r.se()?;
+        }
+    }
+    if sps.poc_type == 1 && !sps.delta_pic_order_always_zero {
+        r.se()?;
+        if pps.bottom_field_pic_order_in_frame_present && !field_pic {
+            r.se()?;
+        }
+    }
+    if pps.redundant_pic_cnt_present {
+        r.ue()?;
+    }
+    if b {
+        r.flag()?; // direct_spatial_mv_pred_flag
+    }
+    let (mut l0, mut l1) = (pps.num_ref_idx_l0_default, pps.num_ref_idx_l1_default);
+    if (p || sp || b) && r.flag()? {
+        l0 = r.ue()?.checked_add(1).filter(|&n| n <= 32)?;
+        if b {
+            l1 = r.ue()?.checked_add(1).filter(|&n| n <= 32)?;
+        }
+    }
+    // ref_pic_list_modification()
+    let lists = if b { 2 } else { usize::from(!(i || si)) };
+    for _ in 0..lists {
+        if r.flag()? {
+            let mut n = 0;
+            loop {
+                let idc = r.ue()?;
+                match idc {
+                    0..=2 => {
+                        r.ue()?;
+                    }
+                    3 => break,
+                    _ => return None,
+                }
+                n += 1;
+                if n > 66 {
+                    return None;
+                }
+            }
+        }
+    }
+    if (pps.weighted_pred && (p || sp)) || (pps.weighted_bipred_idc == 1 && b) {
+        // pred_weight_table()
+        r.ue()?; // luma_log2_weight_denom
+        if sps.chroma_array_type != 0 {
+            r.ue()?;
+        }
+        for count in [l0, if b { l1 } else { 0 }] {
+            for _ in 0..count {
+                if r.flag()? {
+                    r.se()?;
+                    r.se()?;
+                }
+                if sps.chroma_array_type != 0 && r.flag()? {
+                    for _ in 0..4 {
+                        r.se()?;
+                    }
+                }
+            }
+        }
+    }
+    if nal_ref_idc != 0 {
+        // dec_ref_pic_marking()
+        if idr {
+            r.skip(2)?;
+        } else if r.flag()? {
+            let mut n = 0;
+            loop {
+                let op = r.ue()?;
+                match op {
+                    0 => break,
+                    1 | 3 => {
+                        r.ue()?;
+                        if op == 3 {
+                            r.ue()?;
+                        }
+                    }
+                    2 | 4 | 6 => {
+                        r.ue()?;
+                    }
+                    5 => {}
+                    _ => return None,
+                }
+                n += 1;
+                if n > 100 {
+                    return None;
+                }
+            }
+        }
+    }
+    if pps.cabac && !i && !si {
+        r.ue()?; // cabac_init_idc
+    }
+    r.se()?; // slice_qp_delta
+    if sp || si {
+        if sp {
+            r.flag()?; // sp_for_switch_flag
+        }
+        r.se()?; // slice_qs_delta
+    }
+    if pps.deblocking_filter_control_present && r.ue()? != 1 {
+        r.se()?;
+        r.se()?;
+    }
+    // The header ends inside the RBSP at `pos` bits (after the NAL header byte).
+    let rbsp_bytes = 1 + r.pos().div_ceil(8);
+    // Map RBSP bytes to stored bytes (each `00 00 03` adds the 03).
+    let (mut stored, mut seen, mut zeros) = (1usize, 1usize, 0);
+    for &v in &nal[1..] {
+        if seen == rbsp_bytes {
+            break;
+        }
+        stored += 1;
+        if zeros >= 2 && v == 3 {
+            zeros = 0;
+            continue;
+        }
+        zeros = if v == 0 { zeros + 1 } else { 0 };
+        seen += 1;
+    }
+    (seen == rbsp_bytes).then_some(stored)
 }
 
 #[cfg(test)]
@@ -303,6 +564,45 @@ mod tests {
         0x10, 0x00, 0x00, 0x03, 0x03, 0x20, 0xf1, 0x42, 0x99, 0x60,
     ];
     pub(crate) const PPS: &[u8] = &[0x68, 0xeb, 0xe3, 0xcb, 0x22, 0xc0];
+
+    /// Slice header lengths match what ffmpeg's `trace_headers` bitstream filter reports for
+    /// every slice of the sample (x264 with B-frames, weighted prediction and CABAC): the
+    /// position after `slice_beta_offset_div2`, rounded up to a byte.
+    #[test]
+    fn slice_headers_against_ffmpeg() {
+        use crate::flv::{Decoder, Demuxer, Event};
+        const WANT: [usize; 50] = [
+            6, 6, 6, 6, 12, 7, 6, 11, 7, 6, 12, 7, 6, 12, 8, 6, 12, 8, 6, 12, 8, 6, 12, 8, 6, 6, 6,
+            6, 6, 12, 8, 6, 12, 8, 6, 12, 8, 6, 12, 8, 6, 12, 8, 6, 12, 8, 6, 12, 8, 6,
+        ];
+        let data = include_bytes!("../../testdata/h264_aac.flv");
+        let mut dec = Decoder::new();
+        let (mut sps, mut pps, mut got) = (Vec::new(), Vec::new(), Vec::new());
+        for t in Demuxer::new().feed(data).unwrap() {
+            for e in dec.write(t.tag_type, t.ts, &t.body) {
+                match e {
+                    Event::Tracks(t) => {
+                        let c = Config::parse(&t[0].config).unwrap();
+                        sps = c.sps.iter().filter_map(|s| sps_info(s)).collect();
+                        pps = c.pps.iter().filter_map(|s| pps_info(s)).collect();
+                    }
+                    Event::Packet(p) if p.track == 0 => {
+                        for n in avcc_nalus(&p.data) {
+                            if matches!(nal_type(n[0]), NAL_SLICE | NAL_IDR) {
+                                got.push(slice_header_len(n, &sps, &pps).unwrap());
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(got, WANT);
+        // Emulation prevention bytes inside the header count; missing parameter sets fail.
+        assert_eq!(slice_header_len(&[0x65, 0x88], &sps, &pps), None);
+        assert_eq!(slice_header_len(&[0x65, 0x88, 0x84], &[], &pps), None);
+        assert_eq!(slice_header_len(&[0x67, 0x88], &sps, &pps), None);
+    }
 
     #[test]
     fn sps_picture_size() {

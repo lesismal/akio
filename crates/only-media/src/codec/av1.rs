@@ -130,6 +130,87 @@ pub fn to_sample(tu: &[u8]) -> Cow<'_, [u8]> {
     Cow::Owned(out)
 }
 
+/// Appends a temporal unit (canonical: sized OBUs) in the start-code format of AOM "Carriage
+/// of AV1 in MPEG-2 TS" 2.1: a temporal delimiter, `seq` (sequence header OBUs, for a keyframe
+/// that lacks its own), then every OBU after `00 00 01`, with emulation prevention bytes so no
+/// `00 00 0x` (x <= 3) appears inside. OBUs keep `obu_size`, so a reader cuts them exactly.
+pub(crate) fn write_start_codes(out: &mut Vec<u8>, seq: &[u8], tu: &[u8]) {
+    out.extend_from_slice(&[0, 0, 1, 0x12, 0x00]);
+    for o in obus(seq).into_iter().chain(obus(tu)) {
+        if o.obu_type == OBU_TEMPORAL_DELIMITER || o.obu_type == OBU_TILE_LIST {
+            continue;
+        }
+        out.extend_from_slice(&[0, 0, 1]);
+        let mut zeros = 0;
+        let mut push = |b: u8| {
+            if zeros >= 2 && b <= 3 {
+                out.push(3);
+                zeros = 0;
+            }
+            out.push(b);
+            zeros = if b == 0 { zeros + 1 } else { 0 };
+        };
+        if o.sized {
+            o.data.iter().for_each(|&b| push(b));
+        } else {
+            let mut h = Vec::with_capacity(o.header.len() + 4);
+            h.push(o.header[0] | 0x02);
+            h.extend_from_slice(&o.header[1..]);
+            write_leb128(&mut h, o.payload.len());
+            h.iter().chain(o.payload).for_each(|&b| push(b));
+        }
+    }
+}
+
+/// Reads a temporal unit back from the start-code format ([`write_start_codes`]) into the
+/// canonical form ([`to_sample`]): each `00 00 01` starts one OBU, emulation prevention bytes
+/// are removed, a sized OBU is cut at its `obu_size` and an unsized one loses trailing zero
+/// bytes (the zero byte of a 4-byte start code). Bytes before the first start code are dropped.
+pub(crate) fn read_start_codes(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len());
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i + 2 < data.len() {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            starts.push(i + 3);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    for (k, &begin) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).map_or(data.len(), |&s| s - 3);
+        let raw = crate::bits::unescape_rbsp(&data[begin..end]);
+        let Some(o) = obus(&raw).into_iter().next() else {
+            continue;
+        };
+        if o.obu_type == OBU_TEMPORAL_DELIMITER || o.obu_type == OBU_TILE_LIST || o.obu_type == 0 {
+            continue;
+        }
+        if o.sized {
+            out.extend_from_slice(o.data);
+        } else {
+            let mut payload = o.payload;
+            while let [rest @ .., 0] = payload {
+                payload = rest;
+            }
+            out.push(o.header[0] | 0x02);
+            out.extend_from_slice(&o.header[1..]);
+            write_leb128(&mut out, payload.len());
+            out.extend_from_slice(payload);
+        }
+    }
+    out
+}
+
+/// The 4-byte body of the AV1 video descriptor (tag 0x80) of AOM "Carriage of AV1 in MPEG-2
+/// TS" 2.3.2 for an `av1C` record: marker and version 1, the record's profile, level, tier and
+/// colour fields, `hdr_wcg_idc` 3 (no indication), no initial presentation delay.
+pub(crate) fn ts_descriptor(c: &Config) -> [u8; 4] {
+    let e = c.encode();
+    [0x81, e[1], e[2], 0xc0]
+}
+
 /// The fields of a sequence header the stack uses.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
@@ -485,6 +566,23 @@ mod tests {
         let s = to_sample(&[0x30, 0x10, 0xaa]);
         assert_eq!(&*s, &[0x32, 0x02, 0x10, 0xaa]);
         assert!(!is_keyframe(&[]));
+        // The start-code format of MPEG-TS: a temporal delimiter, the sequence header asked
+        // for, emulation prevention inside OBUs, unsized OBUs given a size, and back.
+        let frame = [0x32, 0x06, 0x10, 0x00, 0x00, 0x01, 0x00, 0x00];
+        let mut sc = Vec::new();
+        write_start_codes(&mut sc, seq, &frame);
+        assert_eq!(&sc[..8], &[0, 0, 1, 0x12, 0, 0, 0, 1]);
+        assert!(sc.ends_with(&[0, 0, 1, 0x32, 0x06, 0x10, 0, 0, 3, 1, 0, 0]));
+        let mut want = seq.to_vec();
+        want.extend_from_slice(&frame);
+        assert_eq!(read_start_codes(&sc), want);
+        // Trailing zeros of a 4-byte start code, an unsized OBU, junk before the first code.
+        let r = read_start_codes(&[9, 9, 0, 0, 1, 0x32, 0x01, 0x10, 0, 0, 0, 1, 0x30, 0xaa, 0]);
+        assert_eq!(r, vec![0x32, 0x01, 0x10, 0x32, 0x01, 0xaa]);
+        // A size past the end drops the OBU.
+        assert!(read_start_codes(&[0, 0, 1, 0x32, 0x09, 0x10]).is_empty());
+        let c = Config::parse(AV1C_320X240).unwrap();
+        assert_eq!(ts_descriptor(&c), [0x81, 0x00, 0x0c, 0xc0]);
         // Truncated: what parses is kept.
         assert_eq!(&*to_sample(&[0x32, 0x05, 0x10]), &[] as &[u8]);
     }

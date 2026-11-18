@@ -8,7 +8,12 @@ publishers in and plays streams out; `dial`, `push` and `pull` are the caller si
 Interop with ffmpeg's libsrt is tested (`crates/only-media/tests/srt_ffmpeg.rs`, run in Linux
 Docker with Debian's ffmpeg; the test skips when ffmpeg has no SRT, as Homebrew's): ffmpeg
 publishing in and ffprobe / ffmpeg playing out, with and without a passphrase, and `only`
-pushing to and pulling from ffmpeg in `mode=listener`.
+pushing to and pulling from ffmpeg in `mode=listener`. Rendezvous is tested against libsrt
+1.5.4's `srt-live-transmit` (`tests/srt_rendezvous.rs`, Debian's `srt-tools` in Docker:
+`SRT_LIVE_TRANSMIT="docker run --rm -i --network host <image> srt-live-transmit"`): `only`
+pulls what it relays from ffmpeg and pushes a hub stream it writes out for ffprobe, in the
+clear and encrypted, in both cookie-contest roles. (ffmpeg's own `mode=rendezvous` binds to the
+URL's address and connects to the same one, so it cannot meet a peer elsewhere.)
 
 ## Server
 
@@ -68,6 +73,19 @@ pushing to and pulling from ffmpeg in `mode=listener`.
 - `srt::push(&engine, addr, Config, &hub, path)` sends a hub stream to a listener (an SRT
   server with `m=publish` in the stream ID, or `ffmpeg -i 'srt://:port?mode=listener'`);
   `srt::pull` plays from a listener into a hub path, which it reserves right away.
+- `srt::rendezvous(&engine, local, remote, Config, handler)`, `srt::push_rendezvous` and
+  `srt::pull_rendezvous` do the same over a rendezvous: both sides connect to each other at
+  about the same time (through NATs each side opens), from a UDP socket bound at `local` to
+  the peer's `remote`. The cookie contest picks the initiator, which sends the HSREQ and, with
+  a passphrase (both sides need the same), the key; the responder answers HSRSP and connects
+  on the initiator's AGREEMENT (or its next packet when that is lost). No stream ID is sent.
+  The handshake waits ten times `handshake_timeout`, as libsrt waits for a rendezvous peer.
+
+  ```rust,ignore
+  // This side at 0.0.0.0:5000, the peer at 198.51.100.7:5000 (same port on both, typically).
+  let s = srt::pull_rendezvous(&engine, "0.0.0.0:5000".parse()?, "198.51.100.7:5000".parse()?,
+                               Config::default().passphrase("shared secret"), &hub, "live/peer")?;
+  ```
 - `Config`: `latency` (both sides use the larger of the two; default 120 ms), `passphrase` and
   `pbkeylen`, `stream_id`, `flow_window` / `send_buffer_packets` (8192 packets each),
   `handshake_timeout` (3 s), `peer_idle_timeout` (5 s).
@@ -92,6 +110,6 @@ what the unit tests run over a simulated lossy link. They implement:
 - keepalives, SHUTDOWN, a peer idle timeout; key refreshes (KMREQ control packets) from the
   peer are installed.
 
-Not implemented: rendezvous mode, file mode and its congestion control, AES-GCM, packet
-filters (FEC), socket groups (bonding), the HSv4 handshake of SRT before 1.3, and starting a
+Not implemented: file mode and its congestion control, AES-GCM, packet filters (FEC), socket
+groups (bonding), the HSv4 handshakes of SRT before 1.3 (caller and rendezvous), and starting a
 key refresh (a connection keeps its key, about 2^31 packets).

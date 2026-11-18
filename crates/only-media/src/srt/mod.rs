@@ -33,7 +33,12 @@
 //! dropped while the peer acknowledges too little. [`dial`], [`push`] and [`pull`] are the
 //! caller side.
 //!
-//! Left out: rendezvous mode, file mode and its congestion control, AES-GCM, packet filters
+//! [`Conn::rendezvous`] is the HSv5 rendezvous: both sides wave, the larger cookie becomes
+//! the initiator and sends the HSREQ (and the KMREQ: the key is the initiator's), the
+//! responder answers HSRSP (KMRSP), the initiator's AGREEMENT connects it; [`rendezvous`],
+//! [`push_rendezvous`] and [`pull_rendezvous`] run it on a UDP socket bound to a local port.
+//!
+//! Left out: the HSv4 rendezvous of SRT before 1.3, file mode and its congestion control, AES-GCM, packet filters
 //! (FEC), socket groups, the HSv4 handshake of SRT before 1.3, and starting a key refresh.
 
 mod conn;
@@ -49,7 +54,7 @@ pub use conn::{
 pub use listener::{Listener, Mode, Request, StreamId};
 pub use server::{
     ConnectHook, DEFAULT_MAX_SEND_BACKLOG, SrtConfig, SrtHandler, SrtPeer, SrtServer, SrtSession,
-    dial, pull, push,
+    dial, pull, pull_rendezvous, push, push_rendezvous, rendezvous,
 };
 
 #[cfg(test)]
@@ -310,6 +315,142 @@ mod tests {
                 ))))
         );
         assert!(Conn::caller(Config::default().passphrase("short"), Instant::now()).is_err());
+    }
+
+    /// Two rendezvous sides through a link that drops what `drop` says (by direction and
+    /// handshake type), driven by a simulated clock; returns them after `ms` and what each
+    /// received.
+    fn rdv(
+        a: Config,
+        b: Config,
+        mut drop: impl FnMut(bool, &[u8]) -> bool,
+        ms: u64,
+    ) -> (Conn, Conn, Vec<Event>, Vec<Event>) {
+        let mut now = Instant::now();
+        let aa: SocketAddr = "10.0.0.1:7000".parse().unwrap();
+        let ba: SocketAddr = "10.0.0.2:7000".parse().unwrap();
+        let mut x = Conn::rendezvous(a, ba, now).unwrap();
+        // The second side starts a little later.
+        now += Duration::from_millis(30);
+        let mut y = Conn::rendezvous(b, aa, now).unwrap();
+        assert!(x.is_rendezvous());
+        let (mut ex, mut ey) = (Vec::new(), Vec::new());
+        let mut wire: Vec<(Instant, bool, Vec<u8>)> = Vec::new();
+        let mut sent = 0u32;
+        for _ in 0..ms {
+            now += Duration::from_millis(1);
+            let (due, rest): (Vec<_>, Vec<_>) = wire.drain(..).partition(|w| w.0 <= now);
+            wire = rest;
+            for (_, to_y, d) in due {
+                if to_y {
+                    y.handle(&d, now);
+                } else {
+                    x.handle(&d, now);
+                }
+            }
+            x.handle_timeout(now);
+            y.handle_timeout(now);
+            if x.state() == State::Connected
+                && sent < 50
+                && x.write(&sent.to_be_bytes(), now).is_ok()
+            {
+                sent += 1;
+            }
+            for (to_y, out) in [(true, x.take_output()), (false, y.take_output())] {
+                for d in out {
+                    if !drop(to_y, &d) {
+                        wire.push((now + Duration::from_millis(3), to_y, d));
+                    }
+                }
+            }
+            while let Some(e) = x.poll_event() {
+                ex.push(e);
+            }
+            while let Some(e) = y.poll_event() {
+                ey.push(e);
+            }
+        }
+        (x, y, ex, ey)
+    }
+
+    fn hs_type(d: &[u8]) -> Option<u32> {
+        (d[0] & 0x80 != 0 && d[1] == 0).then(|| u32::from_be_bytes([d[36], d[37], d[38], d[39]]))
+    }
+
+    #[test]
+    fn rendezvous_handshake() {
+        for round in 0..8 {
+            let pass = (round % 2 == 1).then_some("rendezvous-secret");
+            let mut a = Config::default().latency(Duration::from_millis(80));
+            let mut b = Config::default().latency(Duration::from_millis(200));
+            a.passphrase = pass.map(str::to_owned);
+            b.passphrase = pass.map(str::to_owned);
+            // Lose the first AGREEMENT on even rounds above 3, and a few early waves.
+            let mut agreements = 0;
+            let mut waves = 0;
+            let (x, y, ex, ey) = rdv(
+                a,
+                b,
+                |_, d| match hs_type(d) {
+                    Some(packet::HS_AGREEMENT) if round >= 4 && round % 2 == 0 => {
+                        agreements += 1;
+                        agreements == 1
+                    }
+                    Some(packet::HS_WAVEAHAND) => {
+                        waves += 1;
+                        waves <= 2
+                    }
+                    _ => false,
+                },
+                1500,
+            );
+            assert_eq!(x.state(), State::Connected, "round {round}: {ex:?}");
+            assert_eq!(y.state(), State::Connected, "round {round}: {ey:?}");
+            assert!(!x.is_rendezvous() && !y.is_rendezvous());
+            assert_eq!(x.latency(), Duration::from_millis(200));
+            assert_eq!(y.latency(), Duration::from_millis(200));
+            assert_eq!(x.encrypted(), pass.is_some());
+            assert_eq!(y.encrypted(), pass.is_some());
+            let got: Vec<u32> = ey
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Data(d) => Some(u32::from_be_bytes([d[0], d[1], d[2], d[3]])),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(got, (0..50).collect::<Vec<_>>(), "round {round}");
+            assert_eq!(y.stats().packets_undecrypt, 0);
+        }
+    }
+
+    #[test]
+    fn rendezvous_rejections_and_timeout() {
+        let a = Config::default().passphrase("one passphrase");
+        let b = Config::default().passphrase("another passphrase");
+        let (x, y, ex, ey) = rdv(a, b, |_, _| false, 500);
+        assert_eq!(x.state(), State::Closed);
+        assert_eq!(y.state(), State::Closed);
+        let rejected = |evs: &[Event]| {
+            evs.contains(&Event::Closed(Some(SrtError::Rejected(
+                RejectReason::BAD_SECRET,
+            ))))
+        };
+        assert!(rejected(&ex) && rejected(&ey), "{ex:?} {ey:?}");
+        let a = Config::default().passphrase("one passphrase");
+        let (x, y, _, _) = rdv(a, Config::default(), |_, _| false, 500);
+        assert_eq!((x.state(), y.state()), (State::Closed, State::Closed));
+        // Nobody answers: ten times the handshake timeout.
+        let t0 = Instant::now();
+        let mut lone =
+            Conn::rendezvous(Config::default(), "10.0.0.9:1".parse().unwrap(), t0).unwrap();
+        lone.handle_timeout(t0 + Duration::from_secs(29));
+        assert_eq!(lone.state(), State::Handshake);
+        assert_eq!(hs_type(&lone.take_output()[0]), Some(packet::HS_WAVEAHAND));
+        lone.handle_timeout(t0 + Duration::from_secs(31));
+        assert_eq!(
+            lone.poll_event(),
+            Some(Event::Closed(Some(SrtError::HandshakeTimeout)))
+        );
     }
 
     #[test]

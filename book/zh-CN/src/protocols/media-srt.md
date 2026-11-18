@@ -6,7 +6,11 @@
 
 与 ffmpeg 的 libsrt 互通已测试（`crates/only-media/tests/srt_ffmpeg.rs`，在 Linux Docker 里用 Debian
 的 ffmpeg 运行；ffmpeg 不带 SRT 时（如 Homebrew 版）测试自动跳过）：ffmpeg 推流进来、ffprobe / ffmpeg
-播放出去，带或不带密码；以及 only 向 `mode=listener` 的 ffmpeg 推流和从它拉流。
+播放出去，带或不带密码；以及 only 向 `mode=listener` 的 ffmpeg 推流和从它拉流。rendezvous 与 libsrt 1.5.4
+的 `srt-live-transmit` 做了测试（`tests/srt_rendezvous.rs`，Docker 中 Debian 的 `srt-tools`：
+`SRT_LIVE_TRANSMIT="docker run --rm -i --network host <image> srt-live-transmit"`）：only 拉取它从 ffmpeg
+转发的流，并推送一路 hub 流由它写出给 ffprobe 检查，明文与加密、cookie 竞争的两种角色都覆盖。（ffmpeg 自身的
+`mode=rendezvous` 绑定到 URL 中的地址并连接同一地址，无法与别处的对端会合。）
 
 ## 服务端
 
@@ -57,6 +61,17 @@
 - `srt::push(&engine, addr, Config, &hub, path)` 把 hub 中的流发给监听方（stream ID 带 `m=publish` 的 SRT
   服务器，或 `ffmpeg -i 'srt://:port?mode=listener'`）；`srt::pull` 从监听方播放并发布到 hub 路径，
   该路径会立即被预留。
+- `srt::rendezvous(&engine, local, remote, Config, handler)`、`srt::push_rendezvous` 与
+  `srt::pull_rendezvous` 经 rendezvous 完成同样的事：双方几乎同时互相连接（例如穿过各自打开的 NAT），从绑定在
+  `local` 的 UDP socket 连向对端 `remote`。cookie 竞争决定发起方（initiator），它发送 HSREQ，有密码时（双方需
+  相同）也由它生成密钥；应答方（responder）回复 HSRSP，收到发起方的 AGREEMENT（丢失时则是其下一个包）后连接。
+  不发送 stream ID。握手等待 `handshake_timeout` 的十倍，与 libsrt 等待 rendezvous 对端的时间一致。
+
+  ```rust,ignore
+  // 本端 0.0.0.0:5000，对端 198.51.100.7:5000（通常两端端口相同）。
+  let s = srt::pull_rendezvous(&engine, "0.0.0.0:5000".parse()?, "198.51.100.7:5000".parse()?,
+                               Config::default().passphrase("shared secret"), &hub, "live/peer")?;
+  ```
 - `Config`：`latency`（双方取较大者，默认 120 ms）、`passphrase` 和 `pbkeylen`、`stream_id`、
   `flow_window` / `send_buffer_packets`（各 8192 包）、`handshake_timeout`（3 秒）、`peer_idle_timeout`（5 秒）。
 
@@ -74,5 +89,5 @@ induction，并把接受的 conclusion 变成已连接的 `Conn`。上面的服�
 - 基于时间戳的投递（TSBPD），时间基准跟随所见最小延迟和漂移的发送端时钟；后续包到期时仍缺失的包作为过晚丢弃；
 - keepalive、SHUTDOWN、对端空闲超时；安装对端发来的密钥更新（KMREQ 控制包）。
 
-未实现：rendezvous 模式、文件模式及其拥塞控制、AES-GCM、包过滤（FEC）、socket 组（bonding）、
-SRT 1.3 之前的 HSv4 握手，以及主动发起密钥更新（一个连接沿用其密钥，约 2^31 个包）。
+未实现：文件模式及其拥塞控制、AES-GCM、包过滤（FEC）、socket 组（bonding）、SRT 1.3 之前的 HSv4 握手
+（主叫与 rendezvous），以及主动发起密钥更新（一个连接沿用其密钥，约 2^31 个包）。

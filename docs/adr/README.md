@@ -45,3 +45,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-039: FEC, RTCP XR, TMMBR and RFC 8888 feedback in only-webrtc peers](039-webrtc-fec-xr-tmmbr-ccfb.md) (accepted 2026-11-19)
 - [ADR-040: SRTP MKIs, key derivation rates, more profiles, header extension encryption and cryptex](040-srtp-mki-cryptex.md) (accepted 2026-11-19)
 - [ADR-042: SCTP HEARTBEATs, peer restart, zero checksum and incoming reset requests](042-sctp-heartbeat-restart-zero-checksum.md) (accepted 2026-11-19)
+- [ADR-043: SRT rendezvous, AV1 in MPEG-TS, recording to MPEG-TS, HLS SAMPLE-AES](043-media-srt-rendezvous-av1-ts-sample-aes.md) (accepted 2026-11-19)

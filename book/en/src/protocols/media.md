@@ -176,7 +176,28 @@ cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // a new key e
   no-store` while a kept segment uses them, or players fetch them from the URI given with
   `HlsKey::with_uri`. Players send cookies and headers to key URIs, not the playlist's query
   string. `RandomKeys` issues random keys to everyone (for tests and links that are secret
-  themselves). SAMPLE-AES / CBCS are not supported.
+  themselves).
+
+- **SAMPLE-AES**: `HlsEncryption::new(keys).method(EncryptionMethod::SampleAes)` encrypts the
+  samples inside the container and leaves its structure clear, with the same key provider,
+  rotation and key URIs (`#EXT-X-KEY:METHOD=SAMPLE-AES`). It carries H.264 and AAC only; other
+  tracks are left out of the segments rather than sent in the clear.
+  - MPEG-TS: Apple's sample encryption. Coded slices longer than 48 bytes keep 32 bytes clear,
+    then one 16-byte block in ten is encrypted (AES-128-CBC from the IV in every NAL unit, on
+    the unescaped NAL unit, emulation prevention applied again); AAC frames keep the ADTS
+    header and 16 bytes clear and encrypt their whole blocks. The PMT says so (stream types
+    0xdb and 0xcf, `zavc` / `aacd`, the `apad` audio setup). Each key has a random IV, written
+    as the `IV` attribute (an IV per segment would break players that read ahead across a
+    segment boundary, as ffmpeg does).
+  - fMP4: the `cbcs` scheme of ISO/IEC 23001-7. The init segment has `encv` / `enca` entries
+    with `sinf` (`frma`, `schm` `cbcs`, `tenc` with a constant IV); fragments have `senc`,
+    `saiz` and `saio`. Each slice's NAL header and slice header stay clear (the H.264 slice
+    header is parsed: reference list changes, weighted prediction, reference marking) and its
+    slice data is encrypted in a 1:9 pattern; AAC samples are encrypted whole.
+
+  ffmpeg plays both, decrypted frame for frame. It applies one key to everything it has read
+  ahead (and, for fMP4, the key it opened with), so with key rotation it decodes garbage
+  around a key change; Safari and hls.js fetch keys per segment.
 
 ## Relaying: the RTMP client
 
@@ -204,7 +225,7 @@ server. H.265 and Opus go out as Enhanced RTMP.
 
 ## Recording
 
-`only_media::record::Recorder` writes hub streams to fragmented MP4 or FLV files:
+`only_media::record::Recorder` writes hub streams to fragmented MP4, FLV or MPEG-TS files:
 
 ```rust,ignore
 use std::time::Duration;
@@ -219,7 +240,7 @@ impl RecordHooks for Hooks {
 }
 
 let mut cfg = RecordConfig::new("/var/lib/only/rec");
-cfg.format = RecordFormat::Fmp4; // or Flv
+cfg.format = RecordFormat::Fmp4; // or Flv, or MpegTs
 cfg.segment_duration = Some(Duration::from_secs(600));
 cfg.max_files = 144; // keep the last day of ten-minute files
 let rec = Recorder::with_hooks(hub.clone(), cfg, Hooks);
@@ -235,7 +256,23 @@ behind, the current file is closed and packets are dropped (`Recorder::dropped`)
 queue is half empty and a keyframe starts the next file, so a slow disk leaves a gap between
 files, never a broken one. `RecordHooks::file_name` names files (relative to `dir`), and
 `on_start`, `on_stop` and `on_remove` (rotation) follow them. To record every stream, call
-`start` from the hub's `on_publish` hook.
+`start` from the hub's `on_publish` hook. MPEG-TS files repeat the PAT and PMT before every
+video keyframe (and every second), so a cut or truncated file still plays from any keyframe.
+
+## AV1 in MPEG-TS
+
+The MPEG-TS muxer and demuxer carry AV1 as the Alliance for Open Media specifies ("Carriage
+of AV1 in MPEG-2 TS"): stream type 0x06 with the `AV01` registration descriptor and the AV1
+video descriptor (0x80), one temporal unit per PES (`data_alignment_indicator` set), each OBU
+after a `00 00 01` start code with emulation prevention bytes, a temporal delimiter first and
+the sequence header before keyframes that lack one. The demuxer also reads GStreamer's
+provisional `AV1G` mapping (plain OBUs). So AV1 now goes out over SRT and HLS MPEG-TS and is
+recorded to MPEG-TS. ffmpeg cannot demux AV1 in MPEG-TS yet (its support is under review);
+the format is checked against the specification, by remuxing a stream through the muxer and
+the demuxer, and by decoding (dav1d) what ffmpeg extracts from the PES payloads after a
+separate implementation of the start-code format reads it back: every frame equals the
+source's. VP8 and VP9 have no MPEG-TS mapping at all: they stay fMP4, FLV, RTP and
+WebRTC only.
 
 ## Running it
 
@@ -271,14 +308,17 @@ installed) run ffmpeg 9 as publisher and ffprobe / ffmpeg as player:
 | RTMP client push | `ffmpeg -listen 1 -i rtmp://…`, mediamtx (`--ignored`) | H.264 + AAC, H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`, mediamtx | RTMP client pull | H.264 + AAC, H.265 + AAC |
 | hub publisher, AES-128 with key rotation | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`, MPEG-TS and fMP4, plain and LL-HLS | H.264 + AAC |
-| hub publisher, `Recorder` | `ffprobe` / `ffmpeg -i` of each fMP4 and FLV file | H.264 + AAC, H.265 + AAC |
+| hub publisher, SAMPLE-AES (MPEG-TS) and `cbcs` (fMP4) | `ffmpeg -headers … -i …/index.m3u8 -f framemd5`: every frame equals the source's, plain and LL-HLS | H.264 + AAC |
+| hub publisher, `Recorder` | `ffprobe` / `ffmpeg -i` of each fMP4, FLV and MPEG-TS file | H.264 + AAC, H.265 + AAC |
 
 RTSP and SRT have their own tables in their chapters. Fuzz targets cover the RTMP session
 (`rtmp_server`) and client (`rtmp_client`), FLV (`flv_demux`), fMP4 (`fmp4_demux`), AMF
-(`amf_decode`), RTSP, SDP, RTP, MPEG-TS and SRT parsers.
+(`amf_decode`), RTSP, SDP, RTP, MPEG-TS (with AV1) and SRT parsers (with the rendezvous
+handshake, `srt_rendezvous`), and the H.264 slice header parser with both sample encryptions
+(`h264_sample_encryption`).
 
 ## Not supported
 
-HLS SAMPLE-AES / CBCS, I-frame playlists and rendition reports, VP8 / VP9 / AV1 in MPEG-TS,
-RTMPS client, RTMPE / RTMPT, AMF3 replies, Enhanced RTMP multitrack, recording to MPEG-TS,
-transcoding.
+SAMPLE-AES for H.265 and other codecs than H.264 / AAC, `EXT-X-SESSION-KEY`, I-frame
+playlists and rendition reports, VP8 / VP9 in MPEG-TS (unspecified), RTMPS client, RTMPE /
+RTMPT, AMF3 replies, Enhanced RTMP multitrack, transcoding.

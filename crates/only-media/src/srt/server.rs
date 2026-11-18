@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use only::{Acceptor, Conn as OnlyConn, Engine, Handler};
+use only::{Acceptor, Conn as OnlyConn, Engine, Handler, UdpBinding};
 use only_core::ConnInner;
 
 use super::{
@@ -165,9 +165,44 @@ enum Role {
     None,
 }
 
+/// Where a session's datagrams go.
+enum Udp {
+    /// A UDP connection of the engine (listener peer, caller).
+    Conn(Arc<ConnInner>),
+    /// A socket bound to a local port (rendezvous), sending to the peer.
+    Bound(UdpBinding, SocketAddr),
+}
+
+impl Udp {
+    fn send(&self, b: &[u8]) {
+        match self {
+            Udp::Conn(c) => {
+                let _ = c.send(b);
+            }
+            Udp::Bound(u, to) => {
+                let _ = u.send_to(b, *to);
+            }
+        }
+    }
+
+    fn peer_addr(&self) -> SocketAddr {
+        match self {
+            Udp::Conn(c) => c.peer_addr(),
+            Udp::Bound(_, to) => *to,
+        }
+    }
+
+    fn close(&self) {
+        match self {
+            Udp::Conn(c) => c.close_after_send(),
+            Udp::Bound(u, _) => u.close(),
+        }
+    }
+}
+
 struct Inner {
     conn: Conn,
-    udp: Arc<ConnInner>,
+    udp: Udp,
     role: Role,
     scheduled: Option<Instant>,
     closed: bool,
@@ -196,7 +231,7 @@ impl fmt::Debug for SrtSession {
 }
 
 impl SrtSession {
-    fn new(conn: Conn, udp: Arc<ConnInner>, role: Role) -> SrtSession {
+    fn new(conn: Conn, udp: Udp, role: Role) -> SrtSession {
         let remote = udp.peer_addr();
         let stream_id = conn.stream_id().to_owned();
         SrtSession(Arc::new(SessionShared {
@@ -276,7 +311,7 @@ impl SrtSession {
     fn pump(&self, g: &mut Inner) {
         loop {
             for b in g.conn.take_output() {
-                let _ = g.udp.send(&b);
+                g.udp.send(&b);
             }
             let Some(ev) = g.conn.poll_event() else { break };
             match ev {
@@ -361,7 +396,7 @@ impl SrtSession {
             }
             Role::None => {}
         }
-        g.udp.close_after_send();
+        g.udp.close();
         let f = lock(&self.0.on_closed).take();
         if let Some(f) = f {
             f();
@@ -659,7 +694,7 @@ impl Handler for SrtPeer {
             ),
             Accepted::Play(path, info) => (play_role(), Some((path, info))),
         };
-        let s = SrtSession::new(conn, c.inner().clone(), role);
+        let s = SrtSession::new(conn, Udp::Conn(c.inner().clone()), role);
         srv.conns.fetch_add(1, Ordering::Relaxed);
         let conns = srv.conns.clone();
         *lock(&s.0.on_closed) = Some(Box::new(move || {
@@ -731,7 +766,7 @@ impl Acceptor for CallerAcceptor {
             c.close();
             return CallerPeer(None);
         };
-        let s = SrtSession::new(conn, c.inner().clone(), role);
+        let s = SrtSession::new(conn, Udp::Conn(c.inner().clone()), role);
         {
             let mut g = lock(&s.0.inner);
             s.pump(&mut g);
@@ -841,4 +876,149 @@ pub fn pull(
         publisher: Some(publisher),
     };
     dial_role(engine, addr, cfg, role, None)
+}
+
+// ---- rendezvous ----------------------------------------------------------------------------
+
+/// The acceptor of a rendezvous socket: datagrams from the peer go to the session, others are
+/// ignored.
+struct RdvAcceptor {
+    remote: SocketAddr,
+    slot: Arc<Mutex<Option<SrtSession>>>,
+}
+
+struct RdvPeer {
+    from_peer: bool,
+    slot: Arc<Mutex<Option<SrtSession>>>,
+}
+
+impl Acceptor for RdvAcceptor {
+    type Handler = RdvPeer;
+    fn on_open(&self, c: &OnlyConn<RdvPeer>) -> RdvPeer {
+        let from_peer = c.peer_addr() == self.remote;
+        if !from_peer {
+            c.close();
+        }
+        RdvPeer {
+            from_peer,
+            slot: self.slot.clone(),
+        }
+    }
+}
+
+impl Handler for RdvPeer {
+    fn on_data(&mut self, _c: &OnlyConn<Self>, data: &[u8]) {
+        if !self.from_peer {
+            return;
+        }
+        let s = lock(&self.slot).clone();
+        if let Some(s) = s {
+            s.handle(data);
+        }
+    }
+    fn on_close(&mut self, _c: &OnlyConn<Self>, err: Option<only::Error>) {
+        if !self.from_peer {
+            return;
+        }
+        let s = lock(&self.slot).take();
+        if let Some(s) = s {
+            let mut g = lock(&s.0.inner);
+            g.conn.close_with(Some(SrtError::Transport(
+                err.map_or_else(|| "closed".to_owned(), |e| e.to_string()),
+            )));
+            s.pump(&mut g);
+        }
+    }
+}
+
+fn rendezvous_role(
+    engine: &Engine,
+    local: SocketAddr,
+    remote: SocketAddr,
+    cfg: Config,
+    role: Role,
+) -> Result<SrtSession, SrtError> {
+    let conn = Conn::rendezvous(cfg, remote, Instant::now())?;
+    let slot = Arc::new(Mutex::new(None));
+    let binding = engine
+        .bind_udp(
+            local,
+            RdvAcceptor {
+                remote,
+                slot: slot.clone(),
+            },
+        )
+        .map_err(|e| SrtError::Transport(e.to_string()))?;
+    let s = SrtSession::new(conn, Udp::Bound(binding, remote), role);
+    *lock(&slot) = Some(s.clone());
+    {
+        let mut g = lock(&s.0.inner);
+        s.pump(&mut g);
+    }
+    Ok(s)
+}
+
+/// Starts a rendezvous with the peer at `remote` from a UDP socket bound at `local` (the port
+/// the peer sends to; both sides start at about the same time, e.g. through NATs that each
+/// side punches); `handler` hears the session's events. The engine needs UDP client threads
+/// (`EngineBuilder::udp_client_threads`). Returns once the socket is bound; the handshake goes
+/// on in the background ([`SrtSession::is_connected`]) and gives up after ten times
+/// [`Config::handshake_timeout`]. See [`Conn::rendezvous`] for the protocol.
+pub fn rendezvous(
+    engine: &Engine,
+    local: SocketAddr,
+    remote: SocketAddr,
+    cfg: Config,
+    handler: impl SrtHandler,
+) -> Result<SrtSession, SrtError> {
+    rendezvous_role(engine, local, remote, cfg, Role::Raw(Box::new(handler)))
+}
+
+/// [`push`] over a [`rendezvous`]: the hub stream at `path` goes to the peer at `remote` as
+/// MPEG-TS once the handshake completes.
+pub fn push_rendezvous(
+    engine: &Engine,
+    local: SocketAddr,
+    remote: SocketAddr,
+    cfg: Config,
+    hub: &Hub,
+    path: &str,
+) -> Result<SrtSession, SrtError> {
+    let s = rendezvous_role(engine, local, remote, cfg, play_role())?;
+    let hub = hub.clone();
+    let path = path.to_owned();
+    let s2 = s.clone();
+    // Subscribe off the caller's thread's session lock (the hub calls back right away).
+    std::thread::spawn(move || {
+        let mut o = SubscribeOptions::new(PeerInfo::new("srt", Some(s2.remote()), ""));
+        o.wait = Some(Duration::from_secs(10));
+        if start_play(&s2, &hub, &path, o, DEFAULT_MAX_SEND_BACKLOG).is_err() {
+            s2.close();
+        }
+    });
+    Ok(s)
+}
+
+/// [`pull`] over a [`rendezvous`]: MPEG-TS from the peer at `remote` is published in `hub` at
+/// `path`, which is reserved right away.
+pub fn pull_rendezvous(
+    engine: &Engine,
+    local: SocketAddr,
+    remote: SocketAddr,
+    cfg: Config,
+    hub: &Hub,
+    path: &str,
+) -> Result<SrtSession, SrtError> {
+    let info = PeerInfo::new("srt", Some(remote), "");
+    let publisher = hub
+        .reserve(path, info.clone())
+        .map_err(|e| SrtError::Rejected(hub_reject(&e)))?;
+    let role = Role::Ingest {
+        hub: hub.clone(),
+        path: path.to_owned(),
+        info,
+        demux: Demuxer::new(),
+        publisher: Some(publisher),
+    };
+    rendezvous_role(engine, local, remote, cfg, role)
 }

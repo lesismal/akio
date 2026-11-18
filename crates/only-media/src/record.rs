@@ -1,4 +1,5 @@
-//! Recording hub streams to files: fragmented MP4 or FLV, cut into files by duration and size,
+//! Recording hub streams to files: fragmented MP4, FLV or MPEG-TS, cut into files by duration
+//! and size,
 //! with rotation and start / stop hooks.
 //!
 //! [`Recorder::start`] subscribes to a stream; packets are muxed on the publisher's thread,
@@ -17,7 +18,9 @@
 //! [`RecordConfig::segment_bytes`]; a republish or a codec change also starts a new file.
 //! Timestamps start at 0 in each file. fMP4 files are an init segment (`ftyp` + `moov`) and
 //! fragments of up to a second, each starting at a keyframe when there is one; FLV files are
-//! the FLV header, `onMetaData`, the sequence headers and the tags. With
+//! the FLV header, `onMetaData`, the sequence headers and the tags; MPEG-TS files are the
+//! [`mpegts::Muxer`](crate::mpegts::Muxer)'s stream, with the PAT and PMT at the start, again
+//! before every video keyframe and at least every second. With
 //! [`RecordConfig::max_files`] only the newest files of each recording are kept.
 //!
 //! ```no_run
@@ -56,6 +59,7 @@ use crate::{
     flv::{self, Encoder, EncoderConfig},
     fmp4,
     hub::{Hub, HubError, PeerInfo, Sink, SubscribeOptions, Subscription, Timeline},
+    mpegts,
 };
 
 /// The container of recorded files.
@@ -68,6 +72,8 @@ pub enum RecordFormat {
     /// FLV (`.flv`, Enhanced RTMP tags for H.265, VP8, VP9, AV1 and Opus): one video and one
     /// audio track.
     Flv,
+    /// MPEG-TS (`.ts`): H.264, H.265, AV1, AAC, Opus, MP3.
+    MpegTs,
 }
 
 impl RecordFormat {
@@ -76,6 +82,7 @@ impl RecordFormat {
         match self {
             RecordFormat::Fmp4 => "mp4",
             RecordFormat::Flv => "flv",
+            RecordFormat::MpegTs => "ts",
         }
     }
 }
@@ -386,6 +393,11 @@ enum Mux {
         frag_start: Time,
     },
     Flv(Encoder),
+    Ts {
+        m: mpegts::Muxer,
+        /// When the tables were written last.
+        tables: Time,
+    },
 }
 
 /// The file being written.
@@ -508,6 +520,11 @@ impl RecordSink {
                 }
                 Mux::Flv(e)
             }
+            RecordFormat::MpegTs => {
+                let mut m = mpegts::Muxer::new(tracks);
+                m.write_tables(&mut self.buf);
+                Mux::Ts { m, tables: 0 }
+            }
         };
         self.mux = Some(Current {
             mux,
@@ -531,6 +548,10 @@ impl RecordSink {
                 (0..tracks.len())
                     .map(|i| v == Some(i) || a == Some(i))
                     .collect()
+            }
+            RecordFormat::MpegTs => {
+                let m = mpegts::Muxer::new(tracks);
+                (0..tracks.len()).map(|i| m.carries(i)).collect()
             }
         }
     }
@@ -616,6 +637,14 @@ impl Sink for RecordSink {
                     let ms = u32::try_from(flv::ms(rel)).unwrap_or(u32::MAX);
                     flv::write_tag(&mut self.buf, t, ms, &body);
                 }
+            }
+            Mux::Ts { m, tables } => {
+                if rel > 0 && (video && pkt.keyframe || rel - *tables >= SECOND) {
+                    m.write_tables(&mut self.buf);
+                    *tables = rel;
+                }
+                let q = Packet::new(pkt.track, rel, rel_pts, pkt.keyframe, pkt.data.clone());
+                m.write_packet(&q, &mut self.buf);
             }
         }
         if self.buf.len() >= SEND_CHUNK || cut_point && !self.buf.is_empty() && video {
