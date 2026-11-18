@@ -121,6 +121,42 @@ fn connect(e: &Engine, opts: H2Options) -> (H2Client, String) {
     (c, format!("http://{addr}"))
 }
 
+/// Requests on one HTTP/2 connection reuse a finished request's target buffer (ADR-025):
+/// each still sees exactly its own target, long or short, detached or not.
+#[test]
+fn targets_reuse_the_buffer_and_stay_exact() {
+    let app = Router::new()
+        .get("/t/*rest", |ctx: &mut Context| {
+            let t = ctx.req().target.clone();
+            ctx.text(200, t);
+        })
+        .get("/d/*rest", |ctx: &mut Context| {
+            let d = ctx.detach().unwrap();
+            thread::spawn(move || {
+                let t = d.req().target.clone();
+                d.respond(only_http::Response::text(200, t));
+            });
+        });
+    let e = start(serve(app));
+    let (c, base) = connect(&e, H2Options::default());
+    let long = format!("/t/{}", "y".repeat(1500));
+    for t in [
+        "/t/a-fairly-long-first-target?q=1",
+        "/t/b",
+        "/d/detached",
+        "/t/c?q",
+        &long,
+        "/t/d",
+    ] {
+        let r = c
+            .send(ClientRequest::get(&format!("{base}{t}")))
+            .wait()
+            .unwrap();
+        assert_eq!(String::from_utf8(r.body).unwrap(), t);
+    }
+    stop(&e);
+}
+
 #[test]
 fn basic_requests_headers_and_bodies() {
     let e = start(serve(app()));

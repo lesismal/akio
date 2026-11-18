@@ -120,7 +120,23 @@ struct Responder {
 enum Out {
     H1(Responder),
     H2(H2Responder),
-    Ext(Box<dyn crate::transport::ResponseSink>),
+    Ext(ExtOut),
+}
+
+/// A response for a transport outside this crate (HTTP/3): the connection's sink (a thin
+/// pointer) and the transport's tag for this request. 16 bytes, so `Out` (and `Context`, boxed
+/// per request on HTTP/2) stays as small as with the boxed sink it replaces.
+pub(crate) struct ExtOut(pub(crate) crate::transport::SharedSink, pub(crate) u64);
+
+impl ExtOut {
+    #[inline]
+    fn send(self, resp: Response) {
+        self.0.get().send(self.1, resp);
+    }
+
+    fn start_stream(self, resp: Response) -> Option<Box<dyn crate::transport::BodySink>> {
+        self.0.get().start_stream(self.1, resp)
+    }
 }
 
 impl Out {
@@ -278,6 +294,27 @@ impl std::ops::Deref for ReqCell {
     }
 }
 
+/// A target buffer larger than this is not kept for the next request (an occasional long
+/// target should not pin its memory to the thread).
+pub(crate) const SPARE_TARGET_MAX: usize = 1024;
+
+thread_local! {
+    /// The target buffer of the last request this thread finished with, emptied, for the next
+    /// request's target. Per thread rather than per connection: the next request parsed on
+    /// this thread finds it still in cache, as the allocator's own free list would (a buffer
+    /// kept per connection is cold when that connection's turn comes again; measured on h2c).
+    static SPARE_TARGET: std::cell::Cell<String> = const { std::cell::Cell::new(String::new()) };
+}
+
+/// A new request's target: `target` written into this thread's spare buffer (see
+/// [`Context::recycle_target`]), so requests do not allocate one each.
+#[inline]
+pub(crate) fn new_target(target: &str) -> String {
+    let mut t = SPARE_TARGET.take();
+    t.push_str(target);
+    t
+}
+
 /// One request being handled, and the means to answer it.
 pub struct Context {
     req: ReqCell,
@@ -345,10 +382,25 @@ impl Context {
     }
 
     /// A context whose response goes to a transport outside this crate.
-    pub(crate) fn new_ext(req: Request, sink: Box<dyn crate::transport::ResponseSink>) -> Context {
+    #[inline(always)]
+    pub(crate) fn new_ext(req: Request, sink: ExtOut) -> Context {
         let mut c = Context::new_h2_like(req);
         c.responder = Some(Out::Ext(sink));
         c
+    }
+
+    /// Once the handler is done: if this context still owns the request (the handler neither
+    /// detached nor upgraded it), its target buffer becomes the thread's spare for the next
+    /// request's target (see [`new_target`]), unless it grew past what is worth keeping.
+    #[inline]
+    pub(crate) fn recycle_target(&mut self) {
+        if let ReqCell::Own(r) = &mut self.req {
+            if r.target.capacity() <= SPARE_TARGET_MAX {
+                let mut t = std::mem::take(&mut r.target);
+                t.clear();
+                SPARE_TARGET.set(t);
+            }
+        }
     }
 
     fn new_h2_like(req: Request) -> Context {
@@ -953,4 +1005,11 @@ mod tests {
             assert_eq!(out, format!("{n:x}\r\n").into_bytes(), "{n}");
         }
     }
+}
+#[cfg(test)]
+#[test]
+fn responders_stay_small() {
+    // `Context` is boxed per request on HTTP/2: a larger `Out` measurably costs (ADR-025).
+    assert_eq!(size_of::<Option<Out>>(), 24);
+    assert_eq!(size_of::<ExtOut>(), 16);
 }

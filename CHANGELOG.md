@@ -286,6 +286,43 @@ UDP peer table hashes with the keyed folded-multiply hasher (shared with only-qu
 Miri- and loom-checked; docs/unsafe-review.md). Same-run A/B on loopback: QUIC bulk, HTTP/3,
 handshakes and UDP echo within 1% (HTTP/3 1.01, the rest 1.00; docs/BENCHMARKS.md). Handlers that
 do not opt in, including secured ones, see no change. No public API change.
+### Changed: no boxed response sink and no target allocation per HTTP request (ADR-025)
+
+The last two per-request allocations named after the HTTP/3 allocation pass are gone
+(docs/adr/025-per-connection-response-sink.md):
+
+- **Target buffers are reused.** When a handler is done with a request it did not detach or
+  upgrade, its target buffer (up to 1 KiB) becomes the thread's spare. The next request parsed
+  on that thread writes its target into it, on HTTP/1.1, HTTP/2 and HTTP/3. Per thread rather
+  than per connection: a per-connection buffer is cold when that connection's turn comes again,
+  and cost h2c about 100 cycles per request in a first version. `Request::target` stays a
+  `String`, so handlers, routers and middleware are unchanged.
+- **One response sink per connection.** only-http's transport hook (`only_http::transport`,
+  `#[doc(hidden)]`, outside the semver promise) gets:
+  - `ConnSink`: `send` / `start_stream`, each with a per-request `u64` tag;
+  - `SharedSink`: a thin handle to it;
+  - `dispatch_conn` / `start_conn`, and `request_target` for transports building requests.
+
+  only-h3 answers every request of a connection through one sink (tag: stream index and HEAD
+  flag), instead of boxing a sink and cloning three `Arc`s per request. Because the handle is a
+  thin pointer, `Context`'s responder stays at 16 bytes. A fat `Arc<dyn ConnSink>` plus the tag
+  grew `Context` by 8 bytes, which cost h2c about 1% of cycles, since HTTP/2 boxes a `Context`
+  per request.
+- Allocator calls per request (bpftrace on x86_64): `quic-bench h3` both ends 11.0 → 9.0;
+  HTTP/1.1 server 6.0 → 5.0, pipelined 6.0 → 5.0, h2c 6.5 → 5.5. The earlier HTTP/3 entry's 8.6
+  was counted another way; with this method, 776f001e (before ADR-011) makes 10.8.
+- Same-run A/B on gpu51 (Zen 4, quiet host):
+  - HTTP/3 GET, one connection, 64 in flight: 1.0059× (runs of 7 alternating rounds: 1.0087×
+    and 1.0032×).
+  - Server user-space cycles per request (`perf stat`, medians of 7): HTTP/1.1 0.951×,
+    pipelined 0.968×, h2c 0.973×; instructions −1.2% to −1.4%.
+
+| Before (deprecated, still compiles) | After |
+|---|---|
+| `impl ResponseSink for S` (`send(self: Box<Self>, resp)`) | `impl ConnSink for C` (`send(&self, tag, resp)`), one per connection |
+| `transport::dispatch(&svc, req, Box::new(s))` | `let sink = SharedSink::new(c);` per connection, then `transport::dispatch_conn(&svc, req, &sink, tag)` |
+| `transport::start(&svc, req, Box::new(s))` | `transport::start_conn(&svc, req, &sink, tag)` |
+| `Request::new(m, path.to_owned())` | `Request::new(m, transport::request_target(path))` (optional) |
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 

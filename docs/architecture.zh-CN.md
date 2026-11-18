@@ -321,7 +321,7 @@ flowchart TB
     subgraph UDP["UDP listener"]
       udp["UDP 对端"] --> quic["only-quic Endpoint，然后 QuicHandler"]
       quic --> h3["only-h3 ServerConn"]
-      h3 -- "transport::dispatch + ResponseSink" --> svc2["同一个 Service：Context"]
+      h3 -- "transport::dispatch_conn + ConnSink" --> svc2["同一个 Service：Context"]
       udp --> kcp["only-kcp 会话，然后 KcpHandler"]
     end
 ```
@@ -337,9 +337,11 @@ flowchart TB
   `h2c` 升级或 ALPN `h2` 时切换到 `H2Session`。两者构建的 `Context` 的响应端要么是有序的
   `ResponseSlot`（HTTP/1，因此即使 detach，流水线响应也保持顺序），要么是 HTTP/2 stream。
 - **HTTP/3 的 transport 钩子。** `only_http::transport` 让 crate 之外的 transport 也能提供
-  `Service`：它解析出请求后调用 `dispatch(service, request, sink)`，sink 实现 `ResponseSink`
-  （`send`，以及返回 `BodySink` 的 `start_stream`）。only-h3 在 QUIC stream 上实现了这些，所以
-  router、中间件、`detach` 和 `stream_response` 在 HTTP/3 上表现一致。
+  `Service`：它解析出请求后调用 `dispatch_conn(service, request, sink, tag)`，sink 是连接的
+  `ConnSink`（`send`，以及返回 `BodySink` 的 `start_stream`，都会带上请求的 tag），经瘦句柄
+  `SharedSink` 共享；target 用 `request_target` 构造，复用按线程保留的已完成请求的缓冲（ADR-025）。only-h3 在 QUIC stream 上实现了这些，所以 router、
+  中间件、`detach` 和 `stream_response` 在 HTTP/3 上表现一致。旧的按请求 `ResponseSink`
+  （`dispatch`、`start`）已弃用。
 - **升级。** `Context::upgrade_websocket` 应答 101，并在同一连接上用 `WsSession` 替换 HTTP 状态
   机；`Context::upgrade_raw` 把原始字节流交给 `RawHandler`（HTTP CONNECT 代理）。WebSocket 会话
   保留类型擦除的 `ConnInner`，所以 `WsSender` 的生命周期可以超过 HTTP handler 类型。

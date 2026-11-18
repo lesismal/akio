@@ -60,7 +60,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use only_http::Service;
 use only_http::message::{Headers, Method, Request, Response, Version};
-use only_http::transport::{BodySink, ResponseSink, Started};
+use only_http::transport::{BodySink, ConnSink, SharedSink, Started};
 use only_http::ws::{WsLink, WsSession};
 use only_quic::Bytes;
 use only_quic::{Connection, ConnectionError, Dir, QuicHandler, QuicServer, StreamId};
@@ -153,15 +153,23 @@ pub fn serve_with<S: Service>(
 ) -> QuicServer {
     let svc = Arc::new(service);
     let cfg = Arc::new(cfg);
-    QuicServer::new(quic, move |c: &Connection| ServerConn {
-        svc: svc.clone(),
-        peer: c.remote_addr(),
-        conn: Peer::new(&cfg),
-        cfg: cfg.clone(),
-        uni: StreamMap::default(),
-        reqs: StreamMap::default(),
-        fields: FieldBuf::default(),
-        outs: Arc::default(),
+    QuicServer::new(quic, move |c: &Connection| {
+        let out = H3Out {
+            c: c.clone(),
+            outs: Arc::default(),
+            enc: None,
+        };
+        ServerConn {
+            svc: svc.clone(),
+            peer: c.remote_addr(),
+            conn: Peer::new(&cfg),
+            cfg: cfg.clone(),
+            uni: StreamMap::default(),
+            reqs: StreamMap::default(),
+            fields: FieldBuf::default(),
+            sink: SharedSink::new(out.clone()),
+            out,
+        }
     })
 }
 
@@ -565,8 +573,11 @@ struct ServerConn<S> {
     reqs: StreamMap<Req>,
     /// Field sections are decoded here, then copied once into the request's `Headers`.
     fields: FieldBuf,
-    /// Responses waiting for room in their stream's send buffer.
-    outs: Arc<Outs>,
+    /// Where responses go (and those waiting for room in their stream's send buffer), shared by
+    /// the connection's requests.
+    out: H3Out,
+    /// `out` as the connection's response sink, shared by its requests.
+    sink: SharedSink,
 }
 
 /// Why a request stream stopped being read.
@@ -581,8 +592,7 @@ struct ServerHost<'a, S> {
     svc: &'a S,
     c: &'a Connection,
     id: StreamId,
-    enc: &'a Option<Arc<EncShared>>,
-    outs: &'a Arc<Outs>,
+    sink: &'a SharedSink,
 }
 
 impl<S: Service> Host for ServerHost<'_, S> {
@@ -595,14 +605,8 @@ impl<S: Service> Host for ServerHost<'_, S> {
             request.headers.append("early-data", "1");
         }
         let ws = request.protocol.as_deref() == Some("websocket");
-        let sink = Box::new(Sink {
-            c: self.c.clone(),
-            outs: self.outs.clone(),
-            id: self.id,
-            head_only,
-            enc: self.enc.clone(),
-        });
-        let mut st = only_http::transport::start(self.svc, request, sink);
+        let mut st =
+            only_http::transport::start_conn(self.svc, request, self.sink, tag(self.id, head_only));
         if ws {
             let link = Arc::new(StreamLink::new(self.c.clone(), self.id));
             if let Some(mut w) = st.take_websocket(link) {
@@ -647,8 +651,7 @@ impl<S: Service> ServerConn<S> {
             svc: &*self.svc,
             c,
             id,
-            enc: &self.conn.enc,
-            outs: &self.outs,
+            sink: &self.sink,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -729,14 +732,7 @@ impl<S: Service> ServerConn<S> {
             // the application can answer 425 Too Early to what is not safe to repeat.
             request.headers.append("early-data", "1");
         }
-        let sink = Box::new(Sink {
-            c: c.clone(),
-            outs: self.outs.clone(),
-            id,
-            head_only,
-            enc: self.conn.enc.clone(),
-        });
-        only_http::transport::dispatch(&*self.svc, request, sink);
+        only_http::transport::dispatch_conn(&*self.svc, request, &self.sink, tag(id, head_only));
     }
 
     /// Streams whose field sections the last inserts made decodable go on.
@@ -775,8 +771,7 @@ impl<S: Service> ServerConn<S> {
             svc: &*self.svc,
             c,
             id,
-            enc: &self.conn.enc,
-            outs: &self.outs,
+            sink: &self.sink,
         };
         let mut q = Qd {
             dec: &mut self.conn.dec,
@@ -846,13 +841,11 @@ impl<S: Service> ServerConn<S> {
                 } else {
                     "request header fields too large"
                 };
-                Box::new(Sink {
-                    c: c.clone(),
-                    outs: self.outs.clone(),
+                Sink {
+                    o: &self.out,
                     id,
                     head_only: false,
-                    enc: None,
-                })
+                }
                 .send(Response::text(s, msg));
             }
         }
@@ -1163,7 +1156,7 @@ fn request_head(fields: &FieldBuf, peer: SocketAddr) -> Option<(Request, bool)> 
     }
     let head_only = method == Method::Head;
     let target = path.or(authority).unwrap_or_default();
-    let mut r = Request::new(method, target);
+    let mut r = Request::new(method, only_http::transport::request_target(target));
     r.version = Version::Http3;
     r.headers = headers;
     r.peer = peer;
@@ -1217,6 +1210,11 @@ impl<S: Service> QuicHandler for ServerConn<S> {
                 self.unblock(c);
                 self.conn.dec.increment();
                 self.conn.after(c);
+                if self.conn.enc.is_some() && self.out.enc.is_none() {
+                    // Our encoder started: responses from now on may use its table.
+                    self.out.enc = self.conn.enc.clone();
+                    self.sink = SharedSink::new(self.out.clone());
+                }
             }
             return;
         }
@@ -1237,11 +1235,11 @@ impl<S: Service> QuicHandler for ServerConn<S> {
 
     fn on_stream_stopped(&mut self, _c: &Connection, id: StreamId, _code: u64) {
         // The response is not wanted any more: what waits for it is dropped.
-        lock(&self.outs).remove(&id);
+        lock(&self.out.outs).remove(&id);
     }
 
     fn on_stream_writable(&mut self, c: &Connection, id: StreamId) {
-        pump(c, &self.outs, id);
+        pump(c, &self.out.outs, id);
     }
 
     fn on_close(&mut self, _c: &Connection, _reason: ConnectionError) {
@@ -1249,7 +1247,7 @@ impl<S: Service> QuicHandler for ServerConn<S> {
             r.finish_sink(None);
         }
         self.uni.clear();
-        lock(&self.outs).clear();
+        lock(&self.out.outs).clear();
     }
 }
 
@@ -1663,22 +1661,59 @@ fn park(outs: &Outs, id: StreamId) -> bool {
     true
 }
 
-/// Answers a request stream.
-struct Sink {
+/// Where a server connection's responses go: one per connection, shared by its requests
+/// (each tagged with [`tag`]), so answering a request allocates nothing for its way back.
+#[derive(Clone)]
+struct H3Out {
     c: Connection,
+    /// Responses waiting for room in their stream's send buffer.
     outs: Arc<Outs>,
-    id: StreamId,
-    head_only: bool,
     /// The connection's QPACK encoder, when it has a dynamic table.
     enc: Option<Arc<EncShared>>,
 }
 
-impl Sink {
+/// A request's [`ConnSink`] tag: its stream's index (request streams are client-initiated
+/// bidirectional ones) and whether it is a HEAD request.
+#[inline(always)]
+fn tag(id: StreamId, head_only: bool) -> u64 {
+    debug_assert!(id.initiator() == only_quic::Side::Client && id.dir() == Dir::Bi);
+    // Indexes are below 2^60.
+    (id.index() << 1) | u64::from(head_only)
+}
+
+impl ConnSink for H3Out {
+    #[inline]
+    fn send(&self, tag: u64, resp: Response) {
+        Sink::of(self, tag).send(resp);
+    }
+
+    fn start_stream(&self, tag: u64, resp: Response) -> Option<Box<dyn BodySink>> {
+        Sink::of(self, tag).start_stream(resp)
+    }
+}
+
+/// Answers one request stream.
+struct Sink<'a> {
+    o: &'a H3Out,
+    id: StreamId,
+    head_only: bool,
+}
+
+impl<'a> Sink<'a> {
+    #[inline(always)]
+    fn of(o: &'a H3Out, tag: u64) -> Sink<'a> {
+        Sink {
+            o,
+            id: StreamId::new(only_quic::Side::Client, Dir::Bi, tag >> 1),
+            head_only: tag & 1 == 1,
+        }
+    }
+
     /// Appends the HEADERS frame of `resp` to `out`; whether a body may follow.
     fn head(&self, out: &mut Vec<u8>, resp: &Response, streaming: bool) -> bool {
         let bodyless = resp.status < 200 || resp.status == 204 || resp.status == 304;
         let len = (!bodyless && !streaming).then(|| resp.body_len());
-        let enc = self.enc.as_deref().map(|e| (e, self.id));
+        let enc = self.o.enc.as_deref().map(|e| (e, self.id));
         put_head(out, Some(resp.status), &[], &resp.headers, true, len, enc);
         !(bodyless || self.head_only)
     }
@@ -1691,7 +1726,7 @@ impl Sink {
     /// Appends the trailers' HEADERS frame, if any, to `out`.
     fn put_trailers(&self, out: &mut Vec<u8>, trailers: Option<&Headers>) {
         if let Some(t) = trailers.filter(|t| !t.is_empty() && !self.head_only) {
-            let enc = self.enc.as_deref().map(|e| (e, self.id));
+            let enc = self.o.enc.as_deref().map(|e| (e, self.id));
             put_head(out, None, &[], t, false, None, enc);
         }
     }
@@ -1701,7 +1736,7 @@ impl Sink {
     fn send_and_finish(&self, out: impl Into<Bytes>) {
         let out = out.into();
         if !out.is_empty() {
-            match self.c.send(self.id, out.clone()) {
+            match self.o.c.send(self.id, out.clone()) {
                 Ok(()) => {}
                 Err(only_quic::Error::Overloaded) => {
                     let mut o = Out {
@@ -1714,12 +1749,12 @@ impl Sink {
                 Err(_) => return,
             }
         }
-        let _ = self.c.finish(self.id);
+        let _ = self.o.c.finish(self.id);
     }
 
     /// Hands `o` to the stream's pump (after what already waits there).
     fn queue(&self, o: Out) {
-        queue(&self.c, &self.outs, self.id, o);
+        queue(&self.o.c, &self.o.outs, self.id, o);
     }
 }
 
@@ -1747,8 +1782,8 @@ pub(crate) fn head_hint(headers: &Headers) -> usize {
     headers.iter().map(|(n, v)| n.len() + v.len() + 4).sum()
 }
 
-impl ResponseSink for Sink {
-    fn send(self: Box<Self>, mut resp: Response) {
+impl Sink<'_> {
+    fn send(self, mut resp: Response) {
         let trailers = resp.trailers.take();
         if resp.file.is_none() && resp.body.len() <= POOLED_BODY_MAX {
             // The usual small response: head, body and trailers in one pooled buffer.
@@ -1760,9 +1795,6 @@ impl ResponseSink for Sink {
                 self.put_trailers(out, trailers.as_ref());
             });
             self.send_and_finish(out);
-            // Dropped field by field: no out-of-line drop of the box.
-            let Sink { c, outs, enc, .. } = *self;
-            drop((c, outs, enc));
             return;
         }
         let small = resp.file.is_none() && resp.body.len() <= COPY_BODY_MAX;
@@ -1811,14 +1843,14 @@ impl ResponseSink for Sink {
         self.send_and_finish(out);
     }
 
-    fn start_stream(self: Box<Self>, resp: Response) -> Option<Box<dyn BodySink>> {
-        if self.c.is_closed() {
+    fn start_stream(self, resp: Response) -> Option<Box<dyn BodySink>> {
+        if self.o.c.is_closed() {
             return None;
         }
         let mut out = Sink::head_buf(&resp, 0);
         let body = self.head(&mut out, &resp, true);
         let out = Bytes::from(out);
-        let queued = match self.c.send(self.id, out.clone()) {
+        let queued = match self.o.c.send(self.id, out.clone()) {
             Ok(()) => false,
             Err(only_quic::Error::Overloaded) => {
                 let mut o = Out::default();
@@ -1829,7 +1861,9 @@ impl ResponseSink for Sink {
             Err(_) => return None,
         };
         Some(Box::new(StreamBody {
-            s: *self,
+            o: self.o.clone(),
+            id: self.id,
+            head_only: self.head_only,
             body,
             queued: AtomicBool::new(queued),
         }))
@@ -1837,19 +1871,29 @@ impl ResponseSink for Sink {
 }
 
 struct StreamBody {
-    s: Sink,
+    o: H3Out,
+    id: StreamId,
+    head_only: bool,
     body: bool,
     /// Part of the response (its head) waited for room; writes are refused until it is out.
     queued: AtomicBool,
 }
 
 impl StreamBody {
+    fn sink(&self) -> Sink<'_> {
+        Sink {
+            o: &self.o,
+            id: self.id,
+            head_only: self.head_only,
+        }
+    }
+
     /// Whether earlier parts of the response still wait for room.
     fn waiting(&self) -> bool {
         if !self.queued.load(Ordering::Acquire) {
             return false;
         }
-        if lock(&self.s.outs).contains_key(&self.s.id) {
+        if lock(&self.o.outs).contains_key(&self.id) {
             return true;
         }
         self.queued.store(false, Ordering::Release);
@@ -1869,9 +1913,9 @@ impl BodySink for StreamBody {
         if self.waiting() {
             return Err(only_core::Error::Overloaded);
         }
-        self.s
+        self.o
             .c
-            .send(self.s.id, data_frame(data))
+            .send(self.id, data_frame(data))
             .map_err(|e| match e {
                 only_quic::Error::Overloaded => only_core::Error::Overloaded,
                 _ => only_core::Error::Closed,
@@ -1880,25 +1924,25 @@ impl BodySink for StreamBody {
 
     fn queued_bytes(&self) -> usize {
         let waiting = if self.queued.load(Ordering::Acquire) {
-            lock(&self.s.outs).get(&self.s.id).map_or(0, |o| o.bytes)
+            lock(&self.o.outs).get(&self.id).map_or(0, |o| o.bytes)
         } else {
             0
         };
-        self.s.c.queued_bytes(self.s.id) + waiting
+        self.o.c.queued_bytes(self.id) + waiting
     }
 
     fn finish(self: Box<Self>, trailers: Option<Headers>) {
         let mut out = Vec::new();
-        self.s.put_trailers(&mut out, trailers.as_ref());
+        self.sink().put_trailers(&mut out, trailers.as_ref());
         if self.waiting() {
             let mut o = Out {
                 finish: true,
                 ..Out::default()
             };
             o.push(Bytes::from(out));
-            return self.s.queue(o);
+            return self.sink().queue(o);
         }
-        self.s.send_and_finish(out);
+        self.sink().send_and_finish(out);
     }
 }
 

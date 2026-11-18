@@ -1559,7 +1559,7 @@ impl Core {
         }
         Ok(Request {
             method: Method::parse(method),
-            target: path.to_owned(),
+            target: crate::context::new_target(path),
             version: Version::Http2,
             headers,
             trailers: Headers::new(),
@@ -1982,6 +1982,7 @@ impl<S: Service> H2Session<S> {
             Action::Dispatch(mut ctx) => {
                 self.service.call(&mut ctx);
                 finalize(&mut ctx);
+                ctx.recycle_target();
             }
             Action::Start(sid, mut ctx) => {
                 self.service.call(&mut ctx);

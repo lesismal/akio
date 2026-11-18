@@ -16,6 +16,17 @@ fn setup(cfg: H3Config) -> (Arc<Engine>, H3Client) {
     let key = only::tls::PrivateKey::from_pkcs8_der(ck.1.to_pkcs8_der());
     let app = Router::new()
         .get("/", |ctx: &mut Context| ctx.text(200, "hello h3"))
+        .get("/t/*rest", |ctx: &mut Context| {
+            let t = ctx.req().target.clone();
+            ctx.text(200, t);
+        })
+        .get("/d/*rest", |ctx: &mut Context| {
+            let d = ctx.detach().unwrap();
+            std::thread::spawn(move || {
+                let t = d.req().target.clone();
+                d.respond(only_http::Response::text(200, t));
+            });
+        })
         .get("/user/:id", |ctx: &mut Context| {
             let id = ctx.param("id").unwrap_or("?").to_owned();
             let v = format!("{:?}", ctx.req().version);
@@ -60,6 +71,36 @@ fn setup(cfg: H3Config) -> (Arc<Engine>, H3Client) {
     let cc = only_quic::client_config_insecure(&[b"h3"]).unwrap();
     let client = H3Client::dial(&e, addr, "localhost", cc).unwrap();
     (Arc::new(e), client)
+}
+
+/// Requests on one connection reuse a finished request's target buffer and answer through the
+/// connection's shared sink (ADR-025): each still sees exactly its own target, and HEAD still
+/// gets no body.
+#[test]
+fn targets_reuse_the_buffer_and_stay_exact() {
+    let (_e, c) = setup(H3Config::default());
+    let long = format!("/t/{}", "w".repeat(1500));
+    for t in [
+        "/t/a-fairly-long-first-target?q=1",
+        "/t/b",
+        "/d/detached",
+        "/t/c?q",
+        &long,
+        "/t/d",
+    ] {
+        let r = c.get(t, T).unwrap();
+        assert_eq!(
+            (r.status, String::from_utf8(r.body).unwrap().as_str()),
+            (200, t)
+        );
+    }
+    let r = c
+        .request_blocking(Method::Head, "/t/head", &Headers::new(), Vec::new(), T)
+        .unwrap();
+    assert_eq!((r.status, r.body.len()), (200, 0));
+    assert_eq!(r.headers.get("content-length"), Some("7"));
+    let r = c.get("/t/after-head", T).unwrap();
+    assert_eq!(r.body, b"/t/after-head");
 }
 
 #[test]

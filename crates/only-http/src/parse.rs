@@ -77,7 +77,7 @@ fn head(req: http1::Request<'_, '_>) -> Result<Option<(Head, usize)>, ParseError
     Ok(Some((
         Head {
             method: Method::parse(req.method),
-            target: req.target.to_owned(),
+            target: crate::context::new_target(req.target),
             version,
             headers,
         },
