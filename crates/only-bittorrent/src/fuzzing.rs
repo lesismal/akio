@@ -8,6 +8,8 @@
 use std::net::SocketAddr;
 
 use crate::bencode;
+use crate::client::FileStamp;
+use crate::client::resume::{self, ResumeData};
 use crate::dht::{Msg, Node, NodeId};
 use crate::lsd::Announce;
 use crate::magnet::Magnet;
@@ -16,6 +18,7 @@ use crate::metainfo::{Info, InfoHash, MetaInfo};
 use crate::mse::{CRYPTO_PLAINTEXT, CRYPTO_RC4, Initiator, Receiver};
 use crate::tracker::{http, udp};
 use crate::utp::{Connection, Header};
+use crate::wire::Bitfield;
 use crate::wire::{ExtendedHandshake, Handshake, MetadataMsg, Parser, Pex};
 
 /// Splits `data` into reads: `data[0]` seeds the sizes (0: one read), the rest is the stream.
@@ -205,6 +208,62 @@ pub fn bt_merkle(data: &[u8]) {
     let _ = merkle::verify_hashes(&layer, height, index, &[], &t.root(), root_height);
 }
 
+/// Fast-resume data (ADR-033): decoding never panics; what decodes re-encodes to the same
+/// data, fits its own torrent, and plans a check that trusts only claimed pieces. With a first
+/// byte other than 0, the rest is given a correct checksum first, so mutations reach the
+/// fields behind it.
+pub fn bt_resume(data: &[u8]) {
+    let Some((&mode, rest)) = data.split_first() else {
+        return;
+    };
+    let sealed;
+    let input = if mode == 0 {
+        rest
+    } else {
+        match bencode::decode(rest).ok().and_then(resume::seal) {
+            Some(b) => {
+                sealed = b;
+                &sealed
+            }
+            None => return,
+        }
+    };
+    let Ok(r) = ResumeData::decode(input) else {
+        return;
+    };
+    let again = ResumeData::decode(&r.encode()).expect("re-encoded resume data decodes");
+    assert_eq!(again.info_hash, r.info_hash);
+    assert_eq!(again.info_hash_v2, r.info_hash_v2);
+    assert_eq!(again.pieces, r.pieces);
+    assert_eq!(again.files, r.files);
+    assert_eq!(again.peers, r.peers);
+    assert_eq!(again.trackers, r.trackers);
+    assert_eq!(again.encode(), r.encode());
+    assert!(r.check(&r.info_hash, r.info.as_deref()).is_ok());
+    let Some(info) = &r.info else {
+        return;
+    };
+    let layers = r.layers_for(info);
+    assert!(layers.len() <= r.layers.len());
+    let n = info.num_pieces();
+    let claimed = match &r.pieces {
+        Some(p) => Bitfield::from_bytes(p, n).expect("decode checked the bitfield"),
+        None => Bitfield::new(n),
+    };
+    let saved = r.files.as_deref();
+    let same = resume::plan(info, &claimed, saved, saved, r.clean, true);
+    if saved.is_some() {
+        assert!(same.recheck.is_empty());
+        assert_eq!(same.trusted, claimed);
+    }
+    let gone: Vec<Option<FileStamp>> = vec![None; info.files.len()];
+    let p = resume::plan(info, &claimed, saved, Some(&gone), r.clean, true);
+    for i in p.trusted.ones() {
+        assert!(claimed.get(i) && !p.recheck.contains(&i));
+    }
+    assert!(p.recheck.iter().all(|&i| i < n));
+}
+
 /// uTP: header parsing, and a connection accepted from the first SYN taking the rest.
 pub fn bt_utp(data: &[u8]) {
     let mut conn: Option<Connection> = None;
@@ -290,6 +349,79 @@ pub(crate) mod seeds {
             )
             .into_bytes(),
         ]
+    }
+
+    pub(crate) fn bt_resume() -> Vec<Vec<u8>> {
+        use crate::client::{RateLimits, SeedLimits};
+        use crate::metainfo::TorrentVersion;
+        use std::time::{Duration, SystemTime};
+        let files = vec![
+            (vec!["a".to_owned()], vec![1u8; 20_000]),
+            (vec!["b".to_owned()], vec![2u8; 40_000]),
+        ];
+        let mut out = Vec::new();
+        for (i, v) in [
+            TorrentVersion::V1,
+            TorrentVersion::V2,
+            TorrentVersion::Hybrid,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mi = Builder::new("t")
+                .piece_length(16 * 1024)
+                .version(v)
+                .build_files(&files)
+                .unwrap();
+            let info = mi.info;
+            let mut bf = Bitfield::new(info.num_pieces());
+            bf.set(1, true);
+            let r = ResumeData {
+                info_hash: info.info_hash(),
+                info_hash_v2: info.info_hash_v2(),
+                name: Some("t".into()),
+                pieces: Some(bf.as_bytes().to_vec()),
+                files: Some(
+                    info.files
+                        .iter()
+                        .map(|f| {
+                            (!f.padding).then(|| {
+                                FileStamp::new(
+                                    f.length,
+                                    SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000),
+                                )
+                            })
+                        })
+                        .collect(),
+                ),
+                held: mi.piece_layers.clone(),
+                info: Some(std::sync::Arc::new(info)),
+                clean: i == 0,
+                paused: i == 1,
+                peers: vec![
+                    SocketAddr::from(([10, 0, 0, 1], 6881)),
+                    SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 6881)),
+                ],
+                trackers: vec!["udp://t:1/announce".into()],
+                url_list: vec!["http://w/".into()],
+                uploaded: 5,
+                downloaded: 7,
+                rate_limits: RateLimits::new(Some(100), None),
+                seed_limits: SeedLimits::new(Some(2.0), Some(Duration::from_secs(9))),
+                ..ResumeData::default()
+            };
+            let b = r.encode();
+            out.push([&[0u8][..], &b].concat());
+            out.push([&[1u8][..], &b].concat());
+        }
+        // Before the info dictionary (a magnet link).
+        let r = ResumeData {
+            info_hash: InfoHash([4; 20]),
+            peers: vec![SocketAddr::from(([1, 2, 3, 4], 5))],
+            ..ResumeData::default()
+        };
+        out.push([&[1u8][..], &r.encode()].concat());
+        out
     }
 
     pub(crate) fn bt_merkle() -> Vec<Vec<u8>> {
@@ -485,7 +617,8 @@ mod tests {
             + replay(DIR, "bt_tracker", bt_tracker)
             + replay(DIR, "bt_mse", bt_mse)
             + replay(DIR, "bt_lsd", bt_lsd)
-            + replay(DIR, "bt_merkle", bt_merkle);
+            + replay(DIR, "bt_merkle", bt_merkle)
+            + replay(DIR, "bt_resume", bt_resume);
         assert!(n > 0);
     }
 
@@ -500,6 +633,7 @@ mod tests {
             (bt_mse, seeds::bt_mse()),
             (bt_lsd, seeds::bt_lsd()),
             (bt_merkle, seeds::bt_merkle()),
+            (bt_resume, seeds::bt_resume()),
         ] {
             for x in &s {
                 f(x);
@@ -519,5 +653,6 @@ mod tests {
         write_target_seeds(DIR, "bt_mse", &seeds::bt_mse());
         write_target_seeds(DIR, "bt_lsd", &seeds::bt_lsd());
         write_target_seeds(DIR, "bt_merkle", &seeds::bt_merkle());
+        write_target_seeds(DIR, "bt_resume", &seeds::bt_resume());
     }
 }

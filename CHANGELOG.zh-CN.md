@@ -22,6 +22,29 @@ ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_p
 一致性运行器 v35.1：文本格式通过 909 项、失败 0 项（此前跳过 909 项）；二进制 + JSON 仍为通过
 5627 项。新增 fuzz 目标 `protobuf_text`（解析 → 输出 → 再解析）。
 
+### 新增：BitTorrent 快速续传
+
+`only-bittorrent`（ADR-033，docs/adr/033-bittorrent-fast-resume.zh-CN.md），增量：
+
+- **`ClientConfig::resume_dir`**（默认无）与 **`resume_interval`**（30 秒）：每个种子的状态保存为
+  `<info hash 十六进制>.resume`，有改动时定时保存、暂停后不久保存、`Client::close` 时（最后一次写入
+  之后）保存，均为原子写入（临时文件、fsync、rename）；`Client::remove` 删除它。再次添加的种子从中
+  恢复，不对数据做哈希检查。
+- **格式**：带版本、以 SHA-256 校验和收尾的 bencode：已有分片位图、info 字典、v2 分片层、每个文件
+  的大小与修改时间、对等方、tracker、web seed、跨会话的上传/下载累计与做种时间、速率与做种限制。
+  损坏、截断、属于其他种子或更高版本的数据会被拒绝（`TorrentEvent::ResumeRejected`，随后完整检查）；
+  绝不会 panic（fuzz 目标 `bt_resume`）。
+- **校验**：大小或修改时间变化的文件，其分片重新检查（`TorrentEvent::ResumeAccepted { pieces,
+  rechecking }`、`TorrentStats::pieces_checked`）。崩溃后，客户端仍在下载的文件按大小信任（客户端
+  自己之后的写入让它们更新）；最后一个保存间隔内的分片会重新下载。
+- **字节形式**：`Torrent::resume_data`、`AddOptions::resume_data`、`Client::add_resume`（仅凭续传
+  数据添加种子；`AddError::Resume`、`ResumeError`）、`Torrent::save_resume_data`。自定义存储通过
+  `Storage::file_stamps`（`FileStamp`）报告文件。
+- `TorrentStats` 新增 `total_uploaded` 与 `total_downloaded`；续传时 `seeding_time` 与做种限制跨会话
+  累计。
+- 测试：`close` 后与下载中途 `SIGKILL` 后重启且没有分片被重新哈希、改动的文件单独重新检查、v1/v2/
+  混合种子、恢复 v2 磁力链接的分片层。gpu51 上 bt-bench 512 MiB TCP 为改动前的 1.01 倍（噪声）。fuzz `bt_resume` 11 分钟无问题。
+
 ### 变更：P-256 生成密钥、签名与 ECDH 更快；无 IFMA 时 RSA 平方用 Karatsuba
 
 only-crypto 在带 BMI2 + ADX 与 AVX2 的 x86_64 上：P-256 固定基梳形表与 ECDH 乘法在整个标量乘法中把累加点留在同一个汇编帧里。Zen 4 上对比 ring：生成密钥 1.40 倍 → 1.57 倍，签名 1.38 倍 → 1.49 倍，ECDH 1.12 倍 → 1.15 倍，secp256r1 TLS 握手为 rustls+ring 的 1.07 倍 → 1.08 倍。在没有 AVX-512 IFMA 的 x86_64 CPU 上，3072 与 4096 位 RSA 的平方改为一层 Karatsuba：验签 +5% / +9%。常数时间性质不变（`tools/ct-dudect`：无泄漏）。无公开 API 变更（docs/BENCHMARKS.zh-CN.md）。

@@ -37,6 +37,6 @@ println!("{:?}", t.stats());
 | `dht` | DHT `Node` without I/O: routing tables (IPv4, IPv6), tokens, iterative lookups | 5, 32, 43 |
 | `lsd` | Local Service Discovery announcements | 14 |
 | `port` | `UdpPort`: uTP + DHT on one `only` UDP listener, sending from its port | – |
-| `client` | `Client`, `Torrent`, rarest-first picker, endgame, choking, storage on the pool, web seeds, LSD, rate and seed limits | 19, 14 |
+| `client` | `Client`, `Torrent`, rarest-first picker, endgame, choking, storage on the pool, web seeds, LSD, rate and seed limits, fast resume (ADR-033) | 19, 14 |
 
-Not done: fast-resume files; BEP 44 is left out on purpose (ADR-018). Guide: [BitTorrent](https://lesismal.github.io/only/en/protocols/bittorrent.html).
+BEP 44 is left out on purpose (ADR-018). Guide: [BitTorrent](https://lesismal.github.io/only/en/protocols/bittorrent.html).

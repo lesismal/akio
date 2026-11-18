@@ -36,7 +36,7 @@ println!("{:?}", t.stats());
 | `dht` | 不含 I/O 的 DHT `Node`：路由表（IPv4、IPv6）、token、迭代查找 | 5、32、43 |
 | `lsd` | 本地服务发现公告 | 14 |
 | `port` | `UdpPort`：uTP 与 DHT 共享一个 only UDP listener，并从它的端口发送 | – |
-| `client` | `Client`、`Torrent`、最稀有优先选片、残局模式、choke、在逻辑池上读写存储、web seed、LSD、速率与做种限制 | 19、14 |
+| `client` | `Client`、`Torrent`、最稀有优先选片、残局模式、choke、在逻辑池上读写存储、web seed、LSD、速率与做种限制、快速续传（ADR-033） | 19、14 |
 
-尚未实现：快速续传文件；有意不实现 BEP 44（ADR-018）。
+有意不实现 BEP 44（ADR-018）。
 指南：[BitTorrent](https://lesismal.github.io/only/zh-CN/protocols/bittorrent.html)。

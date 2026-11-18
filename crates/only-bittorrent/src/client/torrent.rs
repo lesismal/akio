@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
@@ -12,6 +13,7 @@ use only_core::ConnInner;
 use only_pool::Pool;
 
 use super::rate::{Bucket, GlobalRates};
+use super::resume::{self, ResumeData};
 use super::storage::Storage;
 use super::webseed::{self, Fetch, MAX_WEB_SEEDS};
 use super::{
@@ -52,6 +54,9 @@ const MAX_HASH_SERVING: usize = 8;
 /// Merkle trees kept to answer hash requests.
 const MAX_TREES: usize = 64;
 const WEB_SEED_BACKOFF_MAX: Duration = Duration::from_secs(600);
+
+/// Resume data without file stamps, the storage to stamp them from, and its generation.
+pub(crate) type ResumeSnapshot = (ResumeData, Option<Arc<dyn Storage>>, u64);
 
 /// Makes a torrent's storage once its info dictionary is known.
 pub(crate) type StorageFactory = Box<dyn FnOnce(&Info) -> Arc<dyn Storage> + Send>;
@@ -299,6 +304,22 @@ pub(crate) struct TorrentState {
     pub(crate) use_utp: bool,
     pub(crate) mse: crate::mse::Policy,
     pub(crate) pex: bool,
+    /// Resume data waiting for the check (ADR-033).
+    resume: Option<ResumeData>,
+    /// A hash check of the storage is running (resume data must not be saved meanwhile).
+    checking: bool,
+    /// Pieces read back from storage and hash-checked by start-up checks.
+    pieces_checked: u64,
+    /// Totals of earlier sessions, from resume data.
+    prior_uploaded: u64,
+    prior_downloaded: u64,
+    /// Bumped by every change resume data records; `saved_gen` is the one last saved.
+    pub(crate) resume_gen: u64,
+    pub(crate) saved_gen: u64,
+    pub(crate) saved_stats: (u64, u64),
+    pub(crate) last_save: Instant,
+    /// Save as soon as no write is in flight (after a pause or a check).
+    pub(crate) save_now: Option<Instant>,
 }
 
 pub(crate) struct TorrentShared {
@@ -306,6 +327,12 @@ pub(crate) struct TorrentShared {
     pub(crate) client: Weak<ClientInner>,
     pub(crate) st: Mutex<TorrentState>,
     pub(crate) cv: Condvar,
+    /// Held while resume data is written.
+    pub(crate) save_lock: Mutex<()>,
+    /// A save job is queued on the pool.
+    pub(crate) save_queued: AtomicBool,
+    /// Removed from the client: its resume file is gone and stays gone.
+    pub(crate) removed: AtomicBool,
 }
 
 /// Settings a torrent starts with.
@@ -324,6 +351,8 @@ pub(crate) struct NewTorrent {
     pub(crate) storage_factory: StorageFactory,
     pub(crate) paused: bool,
     pub(crate) seed: bool,
+    /// Resume data that fits the torrent, or why it was refused.
+    pub(crate) resume: Option<Result<ResumeData, String>>,
 }
 
 impl TorrentShared {
@@ -370,6 +399,9 @@ impl TorrentShared {
             info_hash: n.info_hash,
             client: Arc::downgrade(client),
             cv: Condvar::new(),
+            save_lock: Mutex::new(()),
+            save_queued: AtomicBool::new(false),
+            removed: AtomicBool::new(false),
             st: Mutex::new(TorrentState {
                 me: me.clone(),
                 info_hash: n.info_hash,
@@ -425,6 +457,16 @@ impl TorrentShared {
                 use_utp: cfg.utp,
                 mse: cfg.encryption,
                 pex: cfg.pex,
+                resume: None,
+                checking: false,
+                pieces_checked: 0,
+                prior_uploaded: 0,
+                prior_downloaded: 0,
+                resume_gen: 1,
+                saved_gen: 0,
+                saved_stats: (0, 0),
+                last_save: now,
+                save_now: None,
             }),
         });
         let mut cx = Cx::default();
@@ -432,6 +474,16 @@ impl TorrentShared {
             let mut st = ts.lock();
             if n.paused {
                 st.status = TorrentStatus::Paused;
+            }
+            match n.resume {
+                Some(Ok(r)) => {
+                    st.prior_uploaded = r.uploaded;
+                    st.prior_downloaded = r.downloaded;
+                    st.seeding_before = r.seeding_time;
+                    st.resume = Some(r);
+                }
+                Some(Err(e)) => cx.events.push(TorrentEvent::ResumeRejected(e)),
+                None => {}
             }
             if let Some(info) = n.info {
                 st.set_info(info, &mut cx);
@@ -524,6 +576,9 @@ impl TorrentState {
                 .count(),
             seeding_time: self.seeding_time(Instant::now()),
             web_seeds_active: self.web_seeds.iter().filter(|w| w.piece.is_some()).count(),
+            pieces_checked: self.pieces_checked,
+            total_uploaded: self.prior_uploaded + self.uploaded,
+            total_downloaded: self.prior_downloaded + self.downloaded,
         }
     }
 
@@ -535,6 +590,7 @@ impl TorrentState {
     }
 
     pub(crate) fn set_rate_limits(&mut self, l: RateLimits) {
+        self.resume_gen += 1;
         self.up.set_rate(l.upload);
         self.down.set_rate(l.download);
     }
@@ -552,6 +608,7 @@ impl TorrentState {
                 next_try: Instant::now(),
             });
             self.url_list.push(url.to_owned());
+            self.resume_gen += 1;
         }
     }
 
@@ -725,6 +782,14 @@ impl TorrentState {
         }
         self.have = Bitfield::new(n);
         self.availability = vec![0; n];
+        if let Some(r) = &self.resume {
+            for (root, layer) in r.layers_for(&info).iter() {
+                if self.layers.get(root).is_none() {
+                    self.layers.insert(&info, *root, layer.to_vec());
+                }
+            }
+        }
+        self.resume_gen += 1;
         let info = Arc::new(info);
         self.info = Some(info);
         self.meta = None;
@@ -766,23 +831,58 @@ impl TorrentState {
         let (Some(info), Some(storage)) = (self.info.clone(), self.storage.clone()) else {
             return;
         };
+        let resume = self.resume.take();
         if self.seed_mode {
             self.have = Bitfield::full(info.num_pieces());
             self.checked(cx);
             return;
         }
         if !storage.may_have_data() {
+            if resume.as_ref().is_some_and(|r| r.pieces.is_some()) {
+                cx.events.push(TorrentEvent::ResumeAccepted {
+                    pieces: 0,
+                    rechecking: 0,
+                });
+            }
             self.checked(cx);
             return;
         }
+        // Claimed pieces, with what the files looked like when they were claimed.
+        let claimed = resume.and_then(|r| {
+            let bf = Bitfield::from_bytes(r.pieces.as_deref()?, info.num_pieces())?;
+            Some((bf, r.files, r.clean))
+        });
         if self.status != TorrentStatus::Paused {
             self.status = TorrentStatus::Checking;
         }
+        self.checking = true;
         let me = self.me.clone();
         let layers = self.layers.clone();
         let job = Box::new(move || {
-            let mut bf = Bitfield::new(info.num_pieces());
-            for i in 0..info.num_pieces() {
+            let (mut bf, todo, accepted) = match claimed {
+                Some((bf, saved, clean)) => {
+                    let now = storage.file_stamps();
+                    let p = resume::plan(
+                        &info,
+                        &bf,
+                        saved.as_deref(),
+                        now.as_deref(),
+                        clean,
+                        storage.may_have_data(),
+                    );
+                    let ev = TorrentEvent::ResumeAccepted {
+                        pieces: p.trusted.count(),
+                        rechecking: p.recheck.len(),
+                    };
+                    (p.trusted, p.recheck, Some(ev))
+                }
+                None => (
+                    Bitfield::new(info.num_pieces()),
+                    (0..info.num_pieces()).collect(),
+                    None,
+                ),
+            };
+            for &i in &todo {
                 let len = info.piece_size(i) as usize;
                 if let Ok(d) = storage.read(info.piece_offset(i), len) {
                     if info.verify_piece_with(&layers, i, &d) {
@@ -792,12 +892,16 @@ impl TorrentState {
             }
             if let Some(t) = me.upgrade() {
                 t.with(|st, cx| {
+                    st.checking = false;
+                    st.pieces_checked += todo.len() as u64;
                     st.have = bf;
+                    cx.events.extend(accepted);
                     st.checked(cx);
                 });
             }
         });
         if self.pool.try_execute(job).is_err() {
+            self.checking = false;
             self.status = TorrentStatus::Error;
             cx.events
                 .push(TorrentEvent::Error("disk pool refused the check".into()));
@@ -805,6 +909,8 @@ impl TorrentState {
     }
 
     fn checked(&mut self, cx: &mut Cx) {
+        self.resume_gen += 1;
+        self.save_now = Some(Instant::now());
         let complete = self.have.is_full();
         if self.status != TorrentStatus::Paused {
             self.status = if complete {
@@ -1784,6 +1890,7 @@ impl TorrentState {
                     return;
                 }
                 self.have.set(index as usize, true);
+                self.resume_gen += 1;
                 cx.events.push(TorrentEvent::PieceVerified(index));
                 let keys: Vec<u64> = self.peers.keys().copied().collect();
                 for k in &keys {
@@ -2088,13 +2195,13 @@ impl TorrentState {
         self.seeding_since.get_or_insert(now);
         let SeedLimits { ratio, time } = self.seed_limits;
         let total = self.info.as_ref().map_or(0, |i| i.total_length);
-        let denom = if self.downloaded > 0 {
-            self.downloaded
-        } else {
-            total
-        };
-        let ratio_hit =
-            ratio.is_some_and(|r| denom > 0 && self.uploaded as f64 / denom as f64 >= r);
+        // Totals across sessions: resume data carries the earlier ones.
+        let (up, down) = (
+            self.prior_uploaded + self.uploaded,
+            self.prior_downloaded + self.downloaded,
+        );
+        let denom = if down > 0 { down } else { total };
+        let ratio_hit = ratio.is_some_and(|r| denom > 0 && up as f64 / denom as f64 >= r);
         let time_hit = time.is_some_and(|t| self.seeding_time(now) >= t);
         if ratio_hit || time_hit {
             cx.events.push(TorrentEvent::SeedLimitReached);
@@ -2267,6 +2374,7 @@ impl TorrentState {
             let root = dl.root;
             self.layer_dl.remove(&root);
             if self.layers.insert(&info, root, layer) {
+                self.resume_gen += 1;
                 self.update_blocked();
                 let keys: Vec<u64> = self.peers.keys().copied().collect();
                 for k in keys {
@@ -2530,6 +2638,8 @@ impl TorrentState {
             k.connecting = None;
         }
         cx.announce = Some(crate::tracker::Event::Stopped);
+        self.resume_gen += 1;
+        self.save_now = Some(Instant::now());
         cx.events
             .push(TorrentEvent::StateChanged(TorrentStatus::Paused));
     }
@@ -2553,8 +2663,77 @@ impl TorrentState {
         for k in self.known.values_mut() {
             k.next_try = Instant::now();
         }
+        self.resume_gen += 1;
+        self.save_now = Some(Instant::now());
         cx.events.push(TorrentEvent::StateChanged(self.status));
         self.connect_more(Instant::now(), cx);
+    }
+
+    // ---- fast resume ----------------------------------------------------------------------
+
+    /// A verified piece is being written.
+    pub(crate) fn writes_in_flight(&self) -> bool {
+        !self.verifying.is_empty()
+    }
+
+    /// Bytes uploaded and downloaded across sessions.
+    pub(crate) fn totals(&self) -> (u64, u64) {
+        (
+            self.prior_uploaded + self.uploaded,
+            self.prior_downloaded + self.downloaded,
+        )
+    }
+
+    /// What resume data records now, without the file stamps (`None` while a check runs: the
+    /// bitfield is not known yet), with the storage to stamp the files from and the
+    /// generation saved. `paused`: the state to record instead of the current one.
+    pub(crate) fn resume_snapshot(&self, paused: Option<bool>) -> Option<ResumeSnapshot> {
+        if self.checking {
+            return None;
+        }
+        // No write can follow (until resumed): every file is as the bitfield says.
+        let clean = !self.running() && self.verifying.is_empty();
+        let mut peers: Vec<SocketAddr> = self
+            .peers
+            .values()
+            .map(Peer::listen_addr)
+            .filter(|a| a.port() != 0)
+            .collect();
+        for (a, k) in &self.known {
+            if peers.len() >= resume::MAX_PEERS {
+                break;
+            }
+            if !k.banned && k.failures < 3 && !peers.contains(a) {
+                peers.push(*a);
+            }
+        }
+        let mut trackers: Vec<String> = Vec::new();
+        for t in &self.trackers {
+            if !trackers.contains(&t.url) {
+                trackers.push(t.url.clone());
+            }
+        }
+        let r = ResumeData {
+            info_hash: self.info_hash,
+            info_hash_v2: self.info_hash_v2,
+            name: self.name.clone(),
+            info: self.info.clone(),
+            pieces: self.info.as_ref().map(|_| self.have.as_bytes().to_vec()),
+            layers: Vec::new(),
+            held: self.layers.clone(),
+            files: None,
+            clean,
+            paused: paused.unwrap_or(self.status == TorrentStatus::Paused),
+            peers,
+            trackers,
+            url_list: self.url_list.clone(),
+            uploaded: self.prior_uploaded + self.uploaded,
+            downloaded: self.prior_downloaded + self.downloaded,
+            seeding_time: self.seeding_time(Instant::now()),
+            rate_limits: self.rate_limits(),
+            seed_limits: self.seed_limits,
+        };
+        Some((r, self.storage.clone(), self.resume_gen))
     }
 }
 

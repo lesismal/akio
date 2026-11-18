@@ -7,6 +7,7 @@ use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use crate::metainfo::Info;
 
@@ -19,6 +20,40 @@ pub trait Storage: Send + Sync + 'static {
     /// Whether any data may be present already (worth hash-checking when the torrent starts).
     fn may_have_data(&self) -> bool {
         true
+    }
+    /// The size and modification time of each of the torrent's files, in [`Info::files`]
+    /// order (`None` for a file that does not exist, and for padding), so fast-resume data can
+    /// be checked against what is on disk (ADR-033). The default, `None`, is storage without
+    /// files: resume data is then trusted if [`may_have_data`](Self::may_have_data), and
+    /// dropped if not.
+    fn file_stamps(&self) -> Option<Vec<Option<FileStamp>>> {
+        None
+    }
+}
+
+/// A file's size and modification time, as fast-resume data records them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct FileStamp {
+    /// Size in bytes.
+    pub size: u64,
+    /// Last modification (the Unix epoch where the platform has none).
+    pub mtime: SystemTime,
+}
+
+impl FileStamp {
+    /// A file of `size` bytes modified at `mtime`.
+    pub fn new(size: u64, mtime: SystemTime) -> FileStamp {
+        FileStamp { size, mtime }
+    }
+
+    /// The stamp of the file at `path` (`None` if there is none).
+    pub fn of(path: &Path) -> Option<FileStamp> {
+        let m = std::fs::metadata(path).ok()?;
+        m.is_file().then(|| FileStamp {
+            size: m.len(),
+            mtime: m.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        })
     }
 }
 
@@ -153,6 +188,17 @@ impl Storage for FileStorage {
 
     fn may_have_data(&self) -> bool {
         self.paths.iter().any(|p| p.exists())
+    }
+
+    fn file_stamps(&self) -> Option<Vec<Option<FileStamp>>> {
+        Some(
+            self.info
+                .files
+                .iter()
+                .zip(&self.paths)
+                .map(|(f, p)| if f.padding { None } else { FileStamp::of(p) })
+                .collect(),
+        )
     }
 }
 

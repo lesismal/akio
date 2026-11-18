@@ -23,6 +23,34 @@ both forms, maps, oneofs, groups, extensions (`[pkg.ext]`), `Any` expansion
 Protobuf conformance runner v35.1: text format 909 passed, 0 failed (was 909 skipped); binary +
 JSON unchanged at 5627. New fuzz target `protobuf_text` (parse → print → parse).
 
+### Added: BitTorrent fast resume
+
+`only-bittorrent` (ADR-033, docs/adr/033-bittorrent-fast-resume.md), additive:
+
+- **`ClientConfig::resume_dir`** (default none) and **`resume_interval`** (30 s): each torrent's
+  state is saved as `<info hash hex>.resume` on a timer when it changed, soon after a pause, and
+  at `Client::close` (after the last write), atomically (temporary file, fsync, rename);
+  `Client::remove` deletes it. A torrent added again starts from it without hash-checking its
+  data.
+- **Format**: versioned bencode closed by a SHA-256 checksum: the have-bitfield, the info
+  dictionary, v2 piece layers, each file's size and modification time, peers, trackers, web
+  seeds, upload/download totals and seeding time across sessions, rate and seed limits.
+  Damaged, truncated, foreign or newer-version data is refused
+  (`TorrentEvent::ResumeRejected`, then a full check); it never panics (fuzz target
+  `bt_resume`).
+- **Validation**: files whose size or time changed have their pieces checked again
+  (`TorrentEvent::ResumeAccepted { pieces, rechecking }`, `TorrentStats::pieces_checked`). After
+  a crash, files the client was still downloading are trusted on their size (the client's own
+  later writes made them newer); the pieces of the last save interval are downloaded again.
+- **Bytes**: `Torrent::resume_data`, `AddOptions::resume_data`, `Client::add_resume` (a torrent
+  from resume data alone; `AddError::Resume`, `ResumeError`), `Torrent::save_resume_data`.
+  Custom storage reports files through `Storage::file_stamps` (`FileStamp`).
+- `TorrentStats` gains `total_uploaded` and `total_downloaded`; `seeding_time` and seed limits
+  count across sessions when resumed.
+- Tests: restart after `close` and after `SIGKILL` mid-download with no piece hashed again, a
+  changed file checked again alone, v1, v2 and hybrid torrents, a v2 magnet's piece layers
+  restored. bt-bench 512 MiB TCP on gpu51: 1.01x of before (noise). Fuzz `bt_resume` 11 min clean.
+
 ### Changed: faster P-256 key generation, signing and ECDH; RSA squaring by Karatsuba without IFMA
 
 only-crypto on x86_64 with BMI2 + ADX and AVX2: the P-256 fixed-base comb and the ECDH
