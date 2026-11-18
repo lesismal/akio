@@ -6,19 +6,22 @@
 //!                           [--http-server [--http-body N]]
 //!                           [--tls12|--tls13] [--suites 0x1301,..] [--groups 0x1d,..]
 //!                           [--tickets] [--count N] [--hrr] [--early-data [--early-max N]]
-//!                           [--record-limit N] [--no-cert-comp] [--ocsp-file resp.der]
+//!                           [--record-limit N] [--no-cert-comp | --cert-comp zlib,brotli,zstd]
+//!                           [--ocsp-file resp.der]
 //! tls-interop client <addr> <name> [--ca ca.pem | --insecure] [--cert c.pem --key k.pem]
 //!                           [--alpn ..] [--tls12|--tls13] [--suites ..] [--groups ..]
 //!                           [--count N] [--expect-resume] [--key-update] [--bytes N] [--http]
 //!                           [--early-data] [--expect-early accepted|rejected] [--no-reply]
-//!                           [--record-limit N] [--expect-record-limit N] [--no-cert-comp]
+//!                           [--record-limit N] [--expect-record-limit N]
+//!                           [--no-cert-comp | --cert-comp zlib,brotli,zstd]
 //!                           [--ocsp] [--expect-ocsp resp.der] [--ocsp-policy soft|hard]
 //!                           [--crl file.pem [--crl-policy soft|hard]]
 //! ```
 //!
 //! `--record-limit` sets the record_size_limit sent (RFC 8449), `--expect-record-limit` checks
 //! the peer's (0: none negotiated); `--no-cert-comp` turns certificate compression (RFC 8879)
-//! off; `--ocsp-file` staples a DER OCSP response, `--ocsp` asks for one and
+//! off and `--cert-comp` takes only the algorithms listed (the client offers them; on by
+//! default on both sides here); `--ocsp-file` staples a DER OCSP response, `--ocsp` asks for one and
 //! `--expect-ocsp` checks it is exactly that file; `--ocsp-policy` validates the stapled
 //! response (soft or hard fail) and `--crl` checks the server's chain against a CRL file
 //! (PEM or DER).
@@ -43,7 +46,8 @@ use std::time::Duration;
 
 use only_tls::stream::Stream;
 use only_tls::{
-    Certificate, ClientConfig, Crls, PrivateKey, RevocationPolicy, RootCerts, ServerConfig,
+    CertCompression, Certificate, ClientConfig, Crls, PrivateKey, RevocationPolicy, RootCerts,
+    ServerConfig,
 };
 
 struct Opts {
@@ -75,6 +79,7 @@ struct Opts {
     record_limit: Option<u16>,
     expect_record_limit: Option<u16>,
     no_cert_comp: bool,
+    cert_comp: Option<Vec<CertCompression>>,
     ocsp_file: Option<String>,
     ocsp: bool,
     expect_ocsp: Option<String>,
@@ -128,6 +133,7 @@ fn parse() -> Opts {
         record_limit: None,
         expect_record_limit: None,
         no_cert_comp: false,
+        cert_comp: None,
         ocsp_file: None,
         ocsp: false,
         expect_ocsp: None,
@@ -174,6 +180,18 @@ fn parse() -> Opts {
                 o.expect_record_limit = Some(val().parse().expect("expect-record-limit"));
             }
             "--no-cert-comp" => o.no_cert_comp = true,
+            "--cert-comp" => {
+                let algs = val()
+                    .split(',')
+                    .map(|a| match a {
+                        "zlib" => CertCompression::Zlib,
+                        "brotli" => CertCompression::Brotli,
+                        "zstd" => CertCompression::Zstd,
+                        _ => panic!("--cert-comp: unknown algorithm {a}"),
+                    })
+                    .collect();
+                o.cert_comp = Some(algs);
+            }
             "--ocsp-file" => o.ocsp_file = Some(val()),
             "--ocsp" => o.ocsp = true,
             "--expect-ocsp" => (o.ocsp, o.expect_ocsp) = (true, Some(val())),
@@ -198,7 +216,7 @@ fn roots(p: &str) -> RootCerts {
 
 fn describe(c: &only_tls::__proto::Connection) -> String {
     format!(
-        "version={} suite={} alpn={} resumed={} sni={} peer_certs={} early={:?}/{} rsl={}/{} ocsp={} cert_comp={}",
+        "version={} suite={} alpn={} resumed={} sni={} peer_certs={} early={:?}/{} rsl={}/{} ocsp={} cert_comp={} cert_comp_alg={}",
         c.version_name().unwrap_or("-"),
         c.suite().map_or("-", |s| s.name),
         c.alpn().map_or_else(
@@ -214,6 +232,12 @@ fn describe(c: &only_tls::__proto::Connection) -> String {
         c.record_size_limits().1,
         c.ocsp_response().map_or(0, <[u8]>::len),
         c.peer_certificate_compressed(),
+        match c.peer_certificate_compression() {
+            Some(CertCompression::Zlib) => "zlib",
+            Some(CertCompression::Brotli) => "brotli",
+            Some(CertCompression::Zstd) => "zstd",
+            _ => "-",
+        },
     )
 }
 
@@ -267,6 +291,9 @@ fn server(o: &Opts) {
         .__force_hello_retry(o.hrr)
         .early_data(o.early_data.unwrap_or(0))
         .certificate_compression(!o.no_cert_comp);
+    if let Some(a) = &o.cert_comp {
+        b = b.certificate_compression_algorithms(a);
+    }
     if let Some(l) = o.record_limit {
         b = b.record_size_limit(l);
     }
@@ -350,6 +377,9 @@ fn client(o: &Opts) {
         .certificate_compression(!o.no_cert_comp)
         .ocsp_stapling(o.ocsp)
         .ocsp_policy(o.ocsp_policy);
+    if let Some(a) = &o.cert_comp {
+        b = b.certificate_compression_algorithms(a);
+    }
     if let Some(f) = &o.crl {
         let data = read(f);
         let mut crls = Crls::new();

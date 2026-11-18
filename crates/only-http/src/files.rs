@@ -33,7 +33,8 @@ use crate::{
 ///   (RFC 9110 section 14.2); a header with more than 32 ranges, or whose parts would exceed
 ///   1 MiB, is ignored and the whole file is sent. A multipart body is built in memory.
 /// * `index.html` for directories; `..` and other escapes are refused. Symlinks are followed.
-/// * `file.ext.br` / `file.ext.gz` next to `file.ext` are served to clients that accept them;
+/// * `file.ext.br` / `file.ext.zst` / `file.ext.gz` next to `file.ext` are served to clients
+///   that accept them (`br`, `zstd`, `gzip`; tried in that order);
 ///   whether they exist is cached with the file, so a hit costs no `stat` per variant.
 /// * Files up to [`max_cached_bytes`](Files::max_cached_bytes) are cached in memory and
 ///   re-checked against the disk at most every [`check_interval`](Files::check_interval);
@@ -67,8 +68,9 @@ struct Inner {
 
 const SHARDS: usize = 16;
 
-/// The `.br` and `.gz` twins of a file: `Content-Encoding` token and file extension.
-const TWINS: [(&str, &str); 2] = [("br", "br"), ("gzip", "gz")];
+/// The `.br`, `.zst` and `.gz` twins of a file: `Content-Encoding` token and file extension,
+/// in order of preference.
+const TWINS: [(&str, &str); 3] = [("br", "br"), ("zstd", "zst"), ("gzip", "gz")];
 
 enum Entry {
     File(Arc<Cached>),
@@ -146,7 +148,7 @@ struct Cached {
     full: Headers,
     /// The compressed twins (see [`TWINS`]); `None` when there is no such file. Checked with
     /// the entry itself.
-    twins: [Option<Arc<Cached>>; 2],
+    twins: [Option<Arc<Cached>>; 3],
 }
 
 impl Cached {
@@ -159,7 +161,7 @@ impl Cached {
         mime: &'static str,
         encoding: Option<&str>,
         cache_control: Option<&str>,
-        twins: [Option<Arc<Cached>>; 2],
+        twins: [Option<Arc<Cached>>; 3],
     ) -> Cached {
         let secs = unix_secs(mtime);
         let etag = match encoding {
@@ -431,7 +433,7 @@ impl Inner {
             _ => None,
         };
         let mime = Files::mime(path);
-        let twins: [Option<Arc<Cached>>; 2] = std::array::from_fn(|i| {
+        let twins: [Option<Arc<Cached>>; 3] = std::array::from_fn(|i| {
             let (enc, ext) = TWINS[i];
             let mut p = path.as_os_str().to_owned();
             p.push(".");
@@ -440,7 +442,7 @@ impl Inner {
             let m = fs::metadata(&p).ok().filter(fs::Metadata::is_file)?;
             match old.as_ref().and_then(|o| o.twins[i].clone()) {
                 Some(t) if t.matches(&m) => Some(t),
-                _ => self.read(&p, &m, mime, Some(enc), [None, None]),
+                _ => self.read(&p, &m, mime, Some(enc), [None, None, None]),
             }
         });
         let c = match old {
@@ -502,7 +504,7 @@ impl Inner {
         md: &fs::Metadata,
         mime: &'static str,
         encoding: Option<&str>,
-        twins: [Option<Arc<Cached>>; 2],
+        twins: [Option<Arc<Cached>>; 3],
     ) -> Option<Arc<Cached>> {
         let mtime = md.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let id = (md.dev(), md.ino());
@@ -1191,7 +1193,8 @@ mod tests {
         let f = Files::new(&dir);
         let c = open_cached(&f, &p);
         assert!(c.twins[0].is_none(), "no .br");
-        let gz = c.twins[1].as_ref().expect("the .gz twin");
+        assert!(c.twins[1].is_none(), "no .zst");
+        let gz = c.twins[2].as_ref().expect("the .gz twin");
         assert_eq!(gz.mime, "text/javascript; charset=utf-8");
         assert_eq!(gz.meta.get("content-encoding"), Some("gzip"));
         assert!(gz.etag.ends_with("-gzip\""));
@@ -1211,6 +1214,11 @@ mod tests {
         let renewed = open_cached(&f, &p);
         assert!(!Arc::ptr_eq(&c, &renewed));
         assert_eq!(enc(&renewed, "gzip, br").as_deref(), Some("br"));
+        fs::write(dir.join("app.js.zst"), b"zstd-bytes").unwrap();
+        let renewed = open_cached(&f, &p);
+        assert_eq!(enc(&renewed, "gzip, zstd").as_deref(), Some("zstd"));
+        assert_eq!(enc(&renewed, "gzip, zstd, br").as_deref(), Some("br"));
+        assert_eq!(enc(&renewed, "gzip").as_deref(), Some("gzip"));
         let _ = fs::remove_dir_all(&dir);
     }
 

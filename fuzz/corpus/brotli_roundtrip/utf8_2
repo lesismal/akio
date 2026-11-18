@@ -1,0 +1,31 @@
+# only-brotli
+
+[English](README.md)
+
+[`only`](https://github.com/lesismal/only) 的 Brotli（RFC 7932）实现，纯安全 Rust
+（`#![forbid(unsafe_code)]`），无依赖。它是 `only-http` 压缩中间件的 `br` 内容编码，也是
+`only-tls` 中 TLS 证书压缩（RFC 8879）的 brotli 算法。这是内部 crate（docs/api-stability.md）：
+请通过上述 crate 使用。
+
+- `decompress(data, limit)`：把一个完整的 brotli 流一次性解压为至多 `limit` 字节。实现了完整
+  格式：窗口 2^10..2^24（拒绝非标准的 large-window 扩展）；空、元数据（跳过）与未压缩
+  meta-block；简单与复杂前缀码；字面量、命令和距离三类的块类型与块计数；四种字面量上下文
+  模式；带游程与逆 move-to-front 的上下文映射；`NPOSTFIX` / `NDIRECT` 距离码；四项距离环及其
+  16 个短码；静态字典（122,784 字节，Google v1.1.0 的 `dictionary.bin`，已与 RFC 7932 附录 A
+  核对）及全部 121 种变换。它与 `brotli-decompressor`（Google 解码器的 Rust 移植）接受和拒绝
+  相同的流（必须为零的填充位、多余的长度半字节、保留位、过满或不完整的前缀码、简单码中重复
+  的符号、越过末尾的上下文映射游程与重复、无效距离和字典引用）；流结束后还有数据视为错误
+  （`TrailingData`）。恶意输入无法让它 panic，也无法让它分配超过 `limit` 的内存：每次插入、
+  复制和字典词在写入前都对照 meta-block 长度与上限检查；输出向量（同时也是窗口）按几何级数
+  增长但绝不超过上限；前缀码表的大小受格式约束（至多几 MB）。读到输入末尾之后得到的零位会被
+  计数，并且每个字面量、每条命令至少检查一次，因此截断的输入代价不超过其长度加输出。解码使用
+  64 位位读取器和两级前缀码表（根表 8 位）。
+- `compress(level, data)`：0..=11 级，即 brotli 的质量刻度（`Level::FASTEST` = 1，
+  `Level::DEFAULT` = 6，`Level::BEST` = 11）。在后续四字节的哈希链上做 LZ77：0..=3 级贪心，
+  4..=9 级惰性匹配（Google 的反向引用评分，最多向前看四步），10 和 11 级在全部候选匹配上做
+  最短路径解析，用上一遍的符号代价定价（10 级一遍，11 级两遍），长匹配整体采用。距离环中的
+  四个距离始终是候选（用短码代替额外位）。meta-block 为 1 MiB（10、11 级为 256 KiB），每类
+  一个块类型，`NPOSTFIX` = `NDIRECT` = 0；从 5 级起字面量使用上下文映射：对每种上下文模式
+  （5..=6 级为 UTF-8 与 signed，7 级起四种都试）的 64 个上下文，按其直方图的估计代价贪心聚类，
+  且只有当映射使 meta-block 更小时才保留。前缀码长度限制为 15 位，至多四个符号时用简单形式
+  写出，码长序列采用 Google 的游程编码；上下文映射尝试 move-to-front 与�

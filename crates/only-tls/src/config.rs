@@ -13,10 +13,50 @@ use only_crypto::pkey;
 
 use crate::proto::common::{CertKey, ClientSettings, ServerSettings};
 use crate::proto::kx::{DEFAULT_GROUPS, Group};
-use crate::proto::msgs::{MAX_RECORD_LIMIT13, MIN_RECORD_LIMIT};
+use crate::proto::msgs::{
+    CERT_COMP_BROTLI, CERT_COMP_ZLIB, CERT_COMP_ZSTD, CompAlgs, MAX_RECORD_LIMIT13,
+    MIN_RECORD_LIMIT,
+};
 use crate::proto::session::{AntiReplay, ClientCache, SessionCache, Ticketer};
 use crate::proto::suites::{self, Suite};
 use crate::replay::{AntiReplayStore, MemoryAntiReplay};
+
+/// A certificate compression algorithm (RFC 8879), all implemented in-house: zlib through
+/// `only-deflate`, brotli through `only-brotli`, zstd through `only-zstd`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CertCompression {
+    /// zlib (RFC 1950), code point 1.
+    Zlib,
+    /// brotli (RFC 7932), code point 2.
+    Brotli,
+    /// Zstandard (RFC 8878), code point 3.
+    Zstd,
+}
+
+impl CertCompression {
+    /// The algorithm's code point (CertificateCompressionAlgorithm).
+    pub const fn id(self) -> u16 {
+        match self {
+            CertCompression::Zlib => CERT_COMP_ZLIB,
+            CertCompression::Brotli => CERT_COMP_BROTLI,
+            CertCompression::Zstd => CERT_COMP_ZSTD,
+        }
+    }
+
+    pub(crate) fn from_id(id: u16) -> Option<CertCompression> {
+        match id {
+            CERT_COMP_ZLIB => Some(CertCompression::Zlib),
+            CERT_COMP_BROTLI => Some(CertCompression::Brotli),
+            CERT_COMP_ZSTD => Some(CertCompression::Zstd),
+            _ => None,
+        }
+    }
+
+    fn set(algs: &[CertCompression]) -> CompAlgs {
+        algs.iter().fold(CompAlgs::NONE, |a, c| a.with(c.id()))
+    }
+}
 
 /// A TLS configuration or certificate problem.
 pub struct Error {
@@ -504,7 +544,7 @@ impl ServerConfig {
             anti_replay_store: None,
             ticket_key: None,
             record_limit: MAX_RECORD_LIMIT13,
-            cert_compression: true,
+            cert_compression: CompAlgs::ALL,
             ocsp: None,
             sni_ocsp: Vec::new(),
             handshake_timeout: Some(DEFAULT_HANDSHAKE_TIMEOUT),
@@ -546,7 +586,7 @@ pub struct ServerConfigBuilder {
     anti_replay_store: Option<std::panic::AssertUnwindSafe<Arc<dyn AntiReplayStore>>>,
     ticket_key: Option<[u8; 48]>,
     record_limit: u16,
-    cert_compression: bool,
+    cert_compression: CompAlgs,
     ocsp: Option<Vec<u8>>,
     sni_ocsp: Vec<(String, Vec<u8>)>,
     handshake_timeout: Option<Duration>,
@@ -695,13 +735,22 @@ impl ServerConfigBuilder {
         self
     }
 
-    /// Sends the certificate chain compressed with zlib (RFC 8879, TLS 1.3) to clients that
-    /// accept it, and accepts compressed client certificates (default on). The compressed
-    /// chain is computed once per certificate and reused, so a handshake costs nothing more;
-    /// a chain that does not get smaller is sent as it is. zlib is the only algorithm (no
-    /// in-house brotli or zstd).
+    /// Sends the certificate chain compressed (RFC 8879, TLS 1.3) to clients that accept it,
+    /// and accepts compressed client certificates (default on), with zlib, brotli and zstd:
+    /// of the algorithms the client offers, the one that makes the chain smallest. Each
+    /// compressed chain is computed once per certificate and algorithm and reused, so a
+    /// handshake costs nothing more; a chain that does not get smaller is sent as it is.
+    /// `false` turns compression off; see also
+    /// [`certificate_compression_algorithms`](Self::certificate_compression_algorithms).
     pub fn certificate_compression(mut self, yes: bool) -> Self {
-        self.cert_compression = yes;
+        self.cert_compression = if yes { CompAlgs::ALL } else { CompAlgs::NONE };
+        self
+    }
+
+    /// Like [`certificate_compression`](Self::certificate_compression), with only these
+    /// algorithms (empty: off). Replaces what an earlier call set.
+    pub fn certificate_compression_algorithms(mut self, algs: &[CertCompression]) -> Self {
+        self.cert_compression = CertCompression::set(algs);
         self
     }
 
@@ -956,7 +1005,7 @@ impl ClientConfig {
             groups: None,
             early_data: false,
             record_limit: MAX_RECORD_LIMIT13,
-            cert_compression: false,
+            cert_compression: CompAlgs::NONE,
             ocsp: false,
             ocsp_policy: RevocationPolicy::Off,
             crls: None,
@@ -991,7 +1040,7 @@ pub struct ClientConfigBuilder {
     groups: Option<Vec<u16>>,
     early_data: bool,
     record_limit: u16,
-    cert_compression: bool,
+    cert_compression: CompAlgs,
     ocsp: bool,
     ocsp_policy: RevocationPolicy,
     crls: Option<(Crls, RevocationPolicy)>,
@@ -1084,13 +1133,21 @@ impl ClientConfigBuilder {
         self
     }
 
-    /// Accepts certificate chains compressed with zlib (RFC 8879, TLS 1.3), and compresses the
-    /// client certificate for servers that accept it (default off: inflating a received chain
-    /// costs about 1–2 µs per full handshake, a percent of an in-memory one, for a few hundred
-    /// bytes to a kilobyte or two less on the wire). zlib is the only algorithm offered (no
-    /// in-house brotli or zstd).
+    /// Accepts certificate chains compressed (RFC 8879, TLS 1.3) with brotli, zstd or zlib,
+    /// and compresses the client certificate for servers that accept one of them, with the
+    /// algorithm that makes it smallest (default off: decompressing a received chain costs a
+    /// few microseconds per full handshake, a percent or two of an in-memory one, for a few
+    /// hundred bytes to a kilobyte or two less on the wire). See also
+    /// [`certificate_compression_algorithms`](Self::certificate_compression_algorithms).
     pub fn certificate_compression(mut self, yes: bool) -> Self {
-        self.cert_compression = yes;
+        self.cert_compression = if yes { CompAlgs::ALL } else { CompAlgs::NONE };
+        self
+    }
+
+    /// Like [`certificate_compression`](Self::certificate_compression), offering only these
+    /// algorithms (empty: off). Replaces what an earlier call set.
+    pub fn certificate_compression_algorithms(mut self, algs: &[CertCompression]) -> Self {
+        self.cert_compression = CertCompression::set(algs);
         self
     }
 

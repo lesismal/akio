@@ -307,43 +307,108 @@ fn compressed_client_certificates() {
     let on = flight(true, true);
     let off = flight(false, false);
     assert!(on + cert_len < off, "compressed {on}, plain {off}");
-    // Either side off: plain (the client's offer alone adds 7 bytes to its ClientHello).
-    assert_eq!(flight(false, true), off + 7);
+    // Either side off: plain (the client's offer of three algorithms alone adds 11 bytes to
+    // its ClientHello).
+    assert_eq!(flight(false, true), off + 11);
     assert_eq!(flight(true, false), off);
+}
+
+#[test]
+fn certificate_compression_algorithms() {
+    use crate::CertCompression::{Brotli, Zlib, Zstd};
+    let p = pki(Kind::Rsa, &["localhost"]);
+    // What each algorithm alone makes of the chain; with all of them on both sides the server
+    // picks the smallest.
+    let flight = |server: &[crate::CertCompression], client_algs: &[crate::CertCompression]| {
+        let scfg = ServerConfig::builder(padded(&p), p.key.clone())
+            .certificate_compression_algorithms(server)
+            .build()
+            .unwrap();
+        let ccfg = client(&p)
+            .certificate_compression_algorithms(client_algs)
+            .build()
+            .unwrap();
+        let (mut c, mut s, _, s2c) = connect_wire(&scfg, &ccfg, "localhost").unwrap();
+        assert_eq!(c.peer_certificates().len(), 3);
+        let alg = c.peer_certificate_compression();
+        assert_eq!(c.peer_certificate_compressed(), alg.is_some());
+        exchange(&mut c, &mut s);
+        (alg, s2c.len())
+    };
+    let mut sizes = Vec::new();
+    for a in [Zlib, Brotli, Zstd] {
+        let (got, n) = flight(&[Zlib, Brotli, Zstd], &[a]);
+        assert_eq!(got, Some(a));
+        assert_eq!(flight(&[a], &[Zlib, Brotli, Zstd]), (Some(a), n));
+        sizes.push((n, a));
+    }
+    let smallest = sizes.iter().map(|x| x.0).min().unwrap();
+    let (got, n) = flight(&[Zlib, Brotli, Zstd], &[Zlib, Brotli, Zstd]);
+    assert_eq!(n, smallest, "{sizes:?}");
+    assert!(sizes.contains(&(n, got.unwrap())), "{sizes:?}");
+    // No algorithm in common, or none at all: plain.
+    let (plain, _) = flight(&[Brotli], &[Zstd]);
+    assert_eq!(plain, None);
+    assert_eq!(flight(&[], &[Zstd]).0, None);
+    assert_eq!(flight(&[Zstd], &[]).0, None);
+    // certificate_compression(true) is all three; the client offers brotli, zstd, zlib.
+    let scfg = server(&p).build().unwrap();
+    let ccfg = client(&p).certificate_compression(true).build().unwrap();
+    let (_, _, c2s, _) = connect_wire(&scfg, &ccfg, "localhost").unwrap();
+    let n = RecordLayer::frame(&c2s).unwrap().unwrap();
+    assert_eq!(
+        ClientHello::parse(&c2s[9..n]).unwrap().cert_comp,
+        Some(vec![2, 3, 1])
+    );
 }
 
 #[test]
 fn compressed_certificate_decoding() {
     let body = msgs::certificate13(&[], &[vec![0x41; 3000], vec![0x42; 100]]);
     let body = &body[4..];
-    let m = msgs::compressed_certificate(body).unwrap();
-    assert_eq!(m[0], msgs::COMPRESSED_CERTIFICATE);
+    for alg in [1u16, 2, 3] {
+        let all = msgs::CompAlgs::ALL;
+        let m = msgs::compressed_certificate(body, alg).unwrap();
+        assert_eq!(m[0], msgs::COMPRESSED_CERTIFICATE);
+        assert_eq!(u16::from_be_bytes([m[4], m[5]]), alg);
+        assert_eq!(
+            msgs::decompress_certificate(&m[4..], 1 << 17, all).unwrap(),
+            (body.to_vec(), alg)
+        );
+        // Over the size we take.
+        let e = msgs::decompress_certificate(&m[4..], 1000, all).unwrap_err();
+        assert_eq!(e.alert, Alert::BadCertificate);
+        // An algorithm we did not offer.
+        let only = msgs::CompAlgs::NONE.with(alg % 3 + 1);
+        let e = msgs::decompress_certificate(&m[4..], 1 << 17, only).unwrap_err();
+        assert_eq!(e.alert, Alert::IllegalParameter);
+        let mut bad = m[4..].to_vec();
+        bad[1] = 4;
+        let e = msgs::decompress_certificate(&bad, 1 << 17, all).unwrap_err();
+        assert_eq!(e.alert, Alert::IllegalParameter);
+        // Announced length wrong, either way.
+        for d in [1u8, 0xff] {
+            let mut bad = m[4..].to_vec();
+            bad[4] = bad[4].wrapping_add(d);
+            let e = msgs::decompress_certificate(&bad, 1 << 17, all).unwrap_err();
+            assert_eq!(e.alert, Alert::BadCertificate, "alg {alg} delta {d}");
+        }
+        // Corrupt data: an error, never a panic, at every byte.
+        for i in 9..m.len() {
+            let mut bad = m[4..].to_vec();
+            bad[i - 4] ^= 0x55;
+            if let Ok((c, _)) = msgs::decompress_certificate(&bad, 1 << 17, all) {
+                assert_eq!(c.len(), body.len());
+            }
+        }
+        // Truncated at every length.
+        for l in 0..m.len() - 4 {
+            assert!(msgs::decompress_certificate(&m[4..4 + l], 1 << 17, all).is_err());
+        }
+    }
+    // Empty compressed data.
     assert_eq!(
-        msgs::decompress_certificate(&m[4..], 1 << 17).unwrap(),
-        body
-    );
-    // Over the size we take.
-    let e = msgs::decompress_certificate(&m[4..], 1000).unwrap_err();
-    assert_eq!(e.alert, Alert::BadCertificate);
-    // An algorithm we did not offer (brotli).
-    let mut bad = m[4..].to_vec();
-    bad[1] = 2;
-    let e = msgs::decompress_certificate(&bad, 1 << 17).unwrap_err();
-    assert_eq!(e.alert, Alert::IllegalParameter);
-    // Announced length wrong.
-    let mut bad = m[4..].to_vec();
-    bad[4] ^= 1;
-    let e = msgs::decompress_certificate(&bad, 1 << 17).unwrap_err();
-    assert_eq!(e.alert, Alert::BadCertificate);
-    // Corrupt data.
-    let mut bad = m[4..].to_vec();
-    let l = bad.len();
-    bad[l - 6] ^= 0x55;
-    assert!(msgs::decompress_certificate(&bad, 1 << 17).is_err());
-    // Truncated, empty.
-    assert!(msgs::decompress_certificate(&m[4..m.len() - 1], 1 << 17).is_err());
-    assert_eq!(
-        msgs::decompress_certificate(&[0, 1, 0, 0, 5, 0, 0, 0], 1 << 17)
+        msgs::decompress_certificate(&[0, 1, 0, 0, 5, 0, 0, 0], 1 << 17, msgs::CompAlgs::ALL)
             .unwrap_err()
             .alert,
         Alert::DecodeError
@@ -352,7 +417,9 @@ fn compressed_certificate_decoding() {
     let noise: Vec<u8> = (0..200u32)
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
-    assert!(msgs::compressed_certificate(&noise).is_none());
+    for alg in [1, 2, 3] {
+        assert!(msgs::compressed_certificate(&noise, alg).is_none());
+    }
     // An empty algorithm list.
     let mut r = super::codec::Reader::new(&[0]);
     assert_eq!(

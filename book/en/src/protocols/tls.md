@@ -50,7 +50,7 @@ connection.
 | cipher suites | AES-128-GCM-SHA256, AES-256-GCM-SHA384, CHACHA20-POLY1305-SHA256 | ECDHE-ECDSA / ECDHE-RSA with AES-128/256-GCM and CHACHA20-POLY1305 (no CBC) |
 | certificates | ECDSA P-256/P-384, Ed25519, RSA (PSS signatures) | the same, RSA also with PKCS#1 v1.5 |
 | resumption | tickets + PSK (`psk_dhe_ke`): stateless with `.session_tickets(true)`, single-use cached tickets with the session cache | session IDs (cache) and RFC 5077 tickets |
-| other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, early data (0-RTT) when both sides enable it (else rejected and skipped), certificate compression (RFC 8879, zlib) | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
+| other | KeyUpdate (answered, and sent before the AES-GCM record limit), client certificates, middlebox compatibility mode, early data (0-RTT) when both sides enable it (else rejected and skipped), certificate compression (RFC 8879: zlib, brotli, zstd) | extended master secret (RFC 7627), renegotiation indication (RFC 5746), renegotiation refused |
 | record_size_limit (RFC 8449) | yes | yes |
 
 Both: SNI, ALPN, close_notify, 16 KiB records (smaller under a peer's record_size_limit), OCSP
@@ -204,12 +204,15 @@ let cfg = ClientConfig::builder().roots(roots).record_size_limit(1024).build()?;
 ```
 
 **Certificate compression** (RFC 8879, TLS 1.3). On by default on the server: it sends its chain
-compressed to clients that offer zlib, when that is smaller (each chain is compressed once and
-reused, so handshakes cost nothing more), and its CertificateRequest offers it for client
-certificates. Off by default on the client: inflating a received chain costs about 1–2 µs, about
-1% of an in-memory full handshake, for tens to hundreds of bytes saved; turn it on with
-`.certificate_compression(true)` when bytes on the wire matter more. zlib only (through the
-in-house `only-deflate`; there is no in-house brotli or zstd). Received certificates are inflated
+compressed to clients that offer zlib, brotli or zstd, with whichever offered algorithm makes it
+smallest, when that is smaller (each chain is compressed once per algorithm and reused, so
+handshakes cost nothing more), and its CertificateRequest offers all three for client
+certificates. Off by default on the client: decompressing a received chain costs a few
+microseconds, a percent or two of an in-memory full handshake, for tens to hundreds of bytes
+saved; turn it on with `.certificate_compression(true)` when bytes on the wire matter more (it
+offers brotli, zstd and zlib; `.certificate_compression_algorithms(&[CertCompression::Brotli])`
+picks some). All three are in-house: `only-deflate`, `only-brotli` and `only-zstd`
+([ADR-041](https://github.com/lesismal/only/blob/main/docs/adr/041-brotli-zstd.md)). Received certificates are decompressed
 into at most 128 KiB and must have exactly the announced length.
 
 ### OCSP stapling
@@ -273,8 +276,8 @@ on a NIC with TLS offload.
 
 ## Not done
 
-Fetching OCSP responses or CRLs, OCSP for intermediates (`status_request_v2`), indirect CRLs,
-brotli/zstd certificate compression; RSA-PSS keys
+Fetching OCSP responses or CRLs, OCSP for intermediates (`status_request_v2`), indirect CRLs;
+RSA-PSS keys
 (`rsa_pss_pss_*`); P-521; the Windows certificate store and macOS trust settings.
 
 ## Writing your own transport

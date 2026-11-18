@@ -72,8 +72,8 @@ pub mod stream;
 mod system;
 
 pub use config::{
-    Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, PrivateKey, RevocationPolicy,
-    RootCerts, ServerConfig, ServerConfigBuilder,
+    CertCompression, Certificate, ClientConfig, ClientConfigBuilder, Crls, Error, PrivateKey,
+    RevocationPolicy, RootCerts, ServerConfig, ServerConfigBuilder,
 };
 #[doc(hidden)]
 pub use config::{ClientParts, ServerParts};

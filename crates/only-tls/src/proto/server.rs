@@ -65,8 +65,8 @@ pub(crate) struct Server {
     pub(crate) peer_chain: Vec<Vec<u8>>,
     peer_key: Option<PublicKey>,
     pub(crate) peer_quic: Option<Vec<u8>>,
-    /// The client's certificate came compressed (RFC 8879).
-    pub(crate) cert_compressed: bool,
+    /// The algorithm the client's certificate came compressed with (RFC 8879).
+    pub(crate) cert_compressed: Option<u16>,
     // TLS 1.2
     ems: bool,
     master: Vec<u8>,
@@ -157,7 +157,7 @@ impl Server {
             peer_chain: Vec::new(),
             peer_key: None,
             peer_quic: None,
-            cert_compressed: false,
+            cert_compressed: None,
             ems: false,
             master: Vec::new(),
             share: None,
@@ -224,9 +224,10 @@ impl Server {
             (St::WaitEndOfEarlyData, END_OF_EARLY_DATA) => self.end_of_early_data(msg, body, out),
             (St::WaitCert13, CERTIFICATE) => self.certificate13(msg, body),
             // Offered in our CertificateRequest when compression is on (RFC 8879).
-            (St::WaitCert13, COMPRESSED_CERTIFICATE) if self.cfg.cert_compression => {
-                let plain = decompress_certificate(body, MAX_HANDSHAKE)?;
-                self.cert_compressed = true;
+            (St::WaitCert13, COMPRESSED_CERTIFICATE) if !self.cfg.cert_compression.is_empty() => {
+                let (plain, alg) =
+                    decompress_certificate(body, MAX_HANDSHAKE, self.cfg.cert_compression)?;
+                self.cert_compressed = Some(alg);
                 self.certificate13(msg, &plain)
             }
             (St::WaitCertVerify13, CERTIFICATE_VERIFY) => self.certificate_verify13(msg, body),
@@ -594,8 +595,9 @@ impl Server {
                         ext(o, EXT_SIGNATURE_ALGORITHMS, |o| {
                             sig_algs_body(o, sig::SUPPORTED);
                         });
-                        if self.cfg.cert_compression {
-                            ext(o, EXT_COMPRESS_CERTIFICATE, cert_comp_body);
+                        let algs = self.cfg.cert_compression;
+                        if !algs.is_empty() {
+                            ext(o, EXT_COMPRESS_CERTIFICATE, |o| cert_comp_body(o, algs));
                         }
                     });
                 });
@@ -603,13 +605,14 @@ impl Server {
                 out.push(Action::Msg(Level::Handshake, cr));
                 self.cert_requested = true;
             }
-            // OCSP stapled to the leaf when asked for; compressed when the client takes zlib.
-            let compress = self.cfg.cert_compression
-                && ch
-                    .cert_comp
-                    .as_ref()
-                    .is_some_and(|a| a.contains(&CERT_COMP_ZLIB));
-            let c = cert.certificate13(&[], ch.status_request, compress);
+            // OCSP stapled to the leaf when asked for; compressed with the algorithm, of those
+            // both sides take, that makes it smallest.
+            let algs = ch
+                .cert_comp
+                .as_deref()
+                .map_or(CompAlgs::NONE, CompAlgs::from_ids)
+                .and(self.cfg.cert_compression);
+            let c = cert.certificate13(&[], ch.status_request, algs);
             self.t.add(&c);
             out.push(Action::Msg(Level::Handshake, c));
             let content = sig::tls13_content(true, &self.t.hash());

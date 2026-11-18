@@ -1,4 +1,26 @@
 pub mod only_tls
+#[non_exhaustive] pub enum only_tls::CertCompression
+pub only_tls::CertCompression::Brotli
+pub only_tls::CertCompression::Zlib
+pub only_tls::CertCompression::Zstd
+impl only_tls::CertCompression
+pub const fn only_tls::CertCompression::id(self) -> u16
+impl core::clone::Clone for only_tls::CertCompression
+pub fn only_tls::CertCompression::clone(&self) -> Self
+impl core::cmp::Eq for only_tls::CertCompression
+impl core::cmp::PartialEq for only_tls::CertCompression
+pub fn only_tls::CertCompression::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_tls::CertCompression
+pub fn only_tls::CertCompression::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_tls::CertCompression
+pub fn only_tls::CertCompression::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_tls::CertCompression
+impl core::marker::StructuralPartialEq for only_tls::CertCompression
+impl core::marker::Send for only_tls::CertCompression
+impl core::marker::Sync for only_tls::CertCompression
+impl core::marker::Unpin for only_tls::CertCompression
+impl core::panic::unwind_safe::RefUnwindSafe for only_tls::CertCompression
+impl core::panic::unwind_safe::UnwindSafe for only_tls::CertCompression
 #[non_exhaustive] pub enum only_tls::EarlyData
 pub only_tls::EarlyData::Accepted
 pub only_tls::EarlyData::NotAttempted
@@ -78,6 +100,7 @@ impl only_tls::ClientConfigBuilder
 pub fn only_tls::ClientConfigBuilder::alpn<I, P>(self, I) -> Self where I: core::iter::traits::collect::IntoIterator<Item = P>, P: core::convert::AsRef<[u8]>
 pub fn only_tls::ClientConfigBuilder::build(self) -> core::result::Result<only_tls::ClientConfig, only_tls::Error>
 pub fn only_tls::ClientConfigBuilder::certificate_compression(self, bool) -> Self
+pub fn only_tls::ClientConfigBuilder::certificate_compression_algorithms(self, &[only_tls::CertCompression]) -> Self
 pub fn only_tls::ClientConfigBuilder::client_cert(self, alloc::vec::Vec<only_tls::Certificate>, only_tls::PrivateKey) -> Self
 pub fn only_tls::ClientConfigBuilder::crls(self, only_tls::Crls, only_tls::RevocationPolicy) -> Self
 pub fn only_tls::ClientConfigBuilder::early_data(self, bool) -> Self
@@ -193,6 +216,7 @@ pub fn only_tls::ServerConfigBuilder::alpn<I, P>(self, I) -> Self where I: core:
 pub fn only_tls::ServerConfigBuilder::anti_replay_store(self, alloc::rcs::arc::Arc<dyn only_tls::AntiReplayStore>) -> Self
 pub fn only_tls::ServerConfigBuilder::build(self) -> core::result::Result<only_tls::ServerConfig, only_tls::Error>
 pub fn only_tls::ServerConfigBuilder::certificate_compression(self, bool) -> Self
+pub fn only_tls::ServerConfigBuilder::certificate_compression_algorithms(self, &[only_tls::CertCompression]) -> Self
 pub fn only_tls::ServerConfigBuilder::client_auth_optional(self, only_tls::RootCerts) -> Self
 pub fn only_tls::ServerConfigBuilder::client_auth_required(self, only_tls::RootCerts) -> Self
 pub fn only_tls::ServerConfigBuilder::client_crls(self, only_tls::Crls, only_tls::RevocationPolicy) -> Self

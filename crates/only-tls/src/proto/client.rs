@@ -91,10 +91,11 @@ pub(crate) struct Client {
     deferred_write: Option<Keys>,
     /// The OCSP response stapled to the server's certificate (when asked for).
     pub(crate) ocsp: Option<Vec<u8>>,
-    /// The server's certificate came compressed (RFC 8879).
-    pub(crate) cert_compressed: bool,
-    /// The server's CertificateRequest accepts zlib-compressed certificates (RFC 8879).
-    peer_cert_comp: bool,
+    /// The algorithm the server's certificate came compressed with (RFC 8879).
+    pub(crate) cert_compressed: Option<u16>,
+    /// The certificate compression algorithms the server's CertificateRequest accepts and we
+    /// have on (RFC 8879).
+    peer_cert_comp: CompAlgs,
     /// TLS 1.2: the ServerHello announced a CertificateStatus.
     status12: bool,
     /// The verified leaf and its issuer, kept for the stapled OCSP check (policy not off).
@@ -204,8 +205,8 @@ impl Client {
             },
             deferred_write: None,
             ocsp: None,
-            cert_compressed: false,
-            peer_cert_comp: false,
+            cert_compressed: None,
+            peer_cert_comp: CompAlgs::NONE,
             status12: false,
             ocsp_certs: None,
             peer_record_limit: 0,
@@ -370,8 +371,10 @@ impl Client {
                     // QUIC has no records (RFC 9001 section 4).
                     e(EXT_RECORD_SIZE_LIMIT, o, &|o| put_u16(o, cfg.record_limit));
                 }
-                if cfg.tls13 && cfg.cert_compression {
-                    e(EXT_COMPRESS_CERTIFICATE, o, &|o| cert_comp_body(o));
+                if cfg.tls13 && !cfg.cert_compression.is_empty() {
+                    e(EXT_COMPRESS_CERTIFICATE, o, &|o| {
+                        cert_comp_body(o, cfg.cert_compression);
+                    });
                 }
                 if cfg.tls13 {
                     e(EXT_SUPPORTED_VERSIONS, o, &|o| {
@@ -450,8 +453,9 @@ impl Client {
             (St::WaitCertOrRequest | St::WaitCert, COMPRESSED_CERTIFICATE)
                 if self.sent_exts.contains(&EXT_COMPRESS_CERTIFICATE) =>
             {
-                let plain = decompress_certificate(body, MAX_HANDSHAKE)?;
-                self.cert_compressed = true;
+                let (plain, alg) =
+                    decompress_certificate(body, MAX_HANDSHAKE, self.cfg.cert_compression)?;
+                self.cert_compressed = Some(alg);
                 self.certificate13(msg, &plain)
             }
             (St::WaitCertVerify, CERTIFICATE_VERIFY) => self.certificate_verify13(msg, body),
@@ -800,7 +804,8 @@ impl Client {
             match t {
                 EXT_SIGNATURE_ALGORITHMS => algs = Some(x.u16_list()?),
                 EXT_COMPRESS_CERTIFICATE => {
-                    self.peer_cert_comp = parse_cert_comp(&mut x)?.contains(&CERT_COMP_ZLIB);
+                    self.peer_cert_comp = CompAlgs::from_ids(&parse_cert_comp(&mut x)?)
+                        .and(self.cfg.cert_compression);
                 }
                 _ => {
                     x.rest();
@@ -918,11 +923,7 @@ impl Client {
                 .and_then(|c| sig::choose(&c.key, &algs, true).map(|s| (c.clone(), s)));
             match chosen {
                 Some((ck, scheme)) => {
-                    let m = ck.certificate13(
-                        &ctx,
-                        false,
-                        self.cfg.cert_compression && self.peer_cert_comp,
-                    );
+                    let m = ck.certificate13(&ctx, false, self.peer_cert_comp);
                     self.t.add(&m);
                     out.push(Action::Msg(Level::Handshake, m));
                     let content = sig::tls13_content(false, &self.t.hash());

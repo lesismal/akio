@@ -121,7 +121,7 @@ impl Machine {
         }
     }
 
-    pub(crate) fn cert_compressed(&self) -> bool {
+    pub(crate) fn cert_compressed(&self) -> Option<u16> {
         match self {
             Machine::Client(c) => c.cert_compressed,
             Machine::Server(s) => s.cert_compressed,
@@ -309,7 +309,14 @@ impl Connection {
 
     /// The peer's certificate came compressed (RFC 8879).
     pub fn peer_certificate_compressed(&self) -> bool {
-        self.m.cert_compressed()
+        self.m.cert_compressed().is_some()
+    }
+
+    /// The algorithm the peer's certificate came compressed with (RFC 8879), if it did.
+    pub fn peer_certificate_compression(&self) -> Option<crate::CertCompression> {
+        self.m
+            .cert_compressed()
+            .and_then(crate::CertCompression::from_id)
     }
 
     /// The record_size_limit values in force (RFC 8449): `(read, write)`, what we advertised

@@ -13,6 +13,8 @@ members = [
     "crates/only-ice",
     "crates/only-buf",
     "crates/only-deflate",
+    "crates/only-brotli",
+    "crates/only-zstd",
     "crates/only-timer",
     "crates/only-pool",
     "crates/only-core",
@@ -71,6 +73,8 @@ only-sctp = { path = "crates/only-sctp", version = "=1.0.0-rc.1" }
 only-ice = { path = "crates/only-ice", version = "=1.0.0-rc.1" }
 only-buf = { path = "crates/only-buf", version = "=1.0.0-rc.1" }
 only-deflate = { path = "crates/only-deflate", version = "=1.0.0-rc.1" }
+only-brotli = { path = "crates/only-brotli", version = "=1.0.0-rc.1" }
+only-zstd = { path = "crates/only-zstd", version = "=1.0.0-rc.1" }
 only-timer = { path = "crates/only-timer", version = "=1.0.0-rc.1" }
 only-pool = { path = "crates/only-pool", version = "=1.0.0-rc.1" }
 only-core = { path = "crates/only-core", version = "=1.0.0-rc.1" }

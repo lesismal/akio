@@ -42,3 +42,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-036: RTCP XR, TMMBR / TMMBN, RFC 8888 feedback and FEC in only-rtp](036-rtp-xr-tmmbr-ccfb-fec.md) (accepted 2026-11-18)
 - [ADR-037: SCTP message interleaving (I-DATA) and stream schedulers](037-sctp-idata-schedulers.md) (accepted 2026-11-18)
 - [ADR-038: Certificate revocation: CRLs, OCSP and stapled-response validation](038-x509-revocation.md) (accepted 2026-11-18)
+- [ADR-041: In-house brotli and Zstandard, in certificate compression and HTTP](041-brotli-zstd.md) (accepted 2026-11-19)

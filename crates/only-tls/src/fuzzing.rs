@@ -7,7 +7,7 @@ use crate::proto::Connection;
 use crate::proto::codec::Reader;
 use crate::proto::common::Keys;
 use crate::proto::msgs::{
-    ClientHello, ServerHello, compressed_certificate, decompress_certificate,
+    ClientHello, CompAlgs, ServerHello, compressed_certificate, decompress_certificate,
     parse_certificate_status, parse_certificate12, parse_certificate13,
 };
 use crate::proto::record::RecordLayer;
@@ -114,12 +114,14 @@ pub fn server(data: &[u8]) {
     let _ = crate::quic::client_hello_transport_params(data);
     let _ = parse_certificate13(data);
     let _ = parse_certificate12(data);
-    let _ = decompress_certificate(data, 1 << 17);
+    let _ = decompress_certificate(data, 1 << 17, CompAlgs::ALL);
     if data.len() <= 4096 {
-        if let Some(m) = compressed_certificate(data) {
-            let back = decompress_certificate(&m[4..], data.len())
+        // zlib, brotli, zstd by the first byte.
+        let alg = 1 + u16::from(data.first().map_or(0, |b| b >> 1) % 3);
+        if let Some(m) = compressed_certificate(data, alg) {
+            let back = decompress_certificate(&m[4..], data.len(), CompAlgs::ALL)
                 .unwrap_or_else(|e| panic!("own compressed certificate: {e}"));
-            assert_eq!(back, data);
+            assert_eq!(back, (data.to_vec(), alg));
         }
     }
 }
@@ -139,7 +141,7 @@ pub fn client(data: &[u8]) {
     feed(&mut c, data);
     let _ = ServerHello::parse(data);
     let _ = parse_certificate_status(&mut Reader::new(data));
-    let _ = decompress_certificate(data, 1 << 17);
+    let _ = decompress_certificate(data, 1 << 17, CompAlgs::ALL);
 }
 
 /// `tls_record`: arbitrary records decrypted under fixed keys of every suite (TLS 1.3 and 1.2
@@ -290,9 +292,15 @@ mod tests {
         let chain = vec![leaf.clone(), leaf.clone()];
         let mut body = Vec::new();
         crate::proto::msgs::certificate13_body(&mut body, &[], &chain, None);
-        let m = compressed_certificate(&body).unwrap();
-        write("tls_server", "compressed_certificate", &m[4..]);
-        write("tls_client", "compressed_certificate", &m[4..]);
+        for (alg, file) in [
+            (1, "compressed_certificate"),
+            (2, "compressed_certificate_brotli"),
+            (3, "compressed_certificate_zstd"),
+        ] {
+            let m = compressed_certificate(&body, alg).unwrap();
+            write("tls_server", file, &m[4..]);
+            write("tls_client", file, &m[4..]);
+        }
         let mut cs = Vec::new();
         crate::proto::msgs::certificate_status_body(&mut cs, &[0x30, 3, 0x0a, 1, 0]);
         write("tls_client", "certificate_status", &cs);

@@ -10,6 +10,28 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：自研 brotli 与 Zstandard（only-brotli、only-zstd），用于证书压缩（only-tls）和 HTTP（only-http）
+
+ADR-041（docs/adr/041-brotli-zstd.zh-CN.md），新增 API：
+
+- **`only-brotli`**（新的内部 crate，RFC 7932）与 **`only-zstd`**（新的内部 crate，RFC 8878）：纯安全
+  Rust、无依赖，一次性的 `decompress(data, limit)` 和 `compress(Level, data)`。解码器覆盖完整格式（brotli：
+  所有窗口大小、元数据与未压缩 meta-block、块切换、上下文模式与映射、静态字典及其 121 种变换；zstd：拼接帧与
+  可跳过帧、Huffman 与 treeless 字面量、predefined / RLE / FSE / repeat 表、重复偏移、内容大小与 XXH64 校验和），
+  接受与拒绝的输入与参考解码器一致；输出和内存止于 `limit`（`Error::TooLarge`），解压炸弹的代价不超过它。
+  编码器（基于哈希链的 LZ77、Huffman / FSE 编码）对证书链的压缩率不差于 zlib 9 级。`only_zstd::xxh64` 公开。
+  测试：官方测试向量（brotli `testdata` 的全部 44 个流；zstd 的 golden 解压、错误与压缩文件，1000 个
+  `decodecorpus` 帧）、`brotli` 与 `zstd` 命令行双向互通，以及对照 Google brotli 解码器（`brotli-decompressor`）
+  和 libzstd 的差分模糊测试目标（`brotli_decompress`、`brotli_roundtrip`、`zstd_decompress`、`zstd_roundtrip`）。
+- **only-tls**：证书压缩（RFC 8879）在 zlib 之外支持 brotli 和 zstd。客户端提供 brotli、zstd、zlib；服务器在
+  客户端提供的算法中发送最小的结果（每张证书每种算法只压缩一次并缓存），客户端证书同理。新增
+  `CertCompression { Zlib, Brotli, Zstd }` 与两个 builder 上的 `certificate_compression_algorithms(&[CertCompression])`；
+  `certificate_compression(true)` 现在表示三种全开（默认值不变：服务器开、客户端关）。与以 brotli、zstd、zlib
+  构建的 OpenSSL 3.5 双向互通（`tools/interop/tls/certcomp.Dockerfile`、`tools/interop/tls/run.sh`；
+  `tls-interop --cert-comp`）。
+- **only-http**：`Compress::brotli` 与 `Compress::zstd`（级别，默认 `None`）让 `middleware::compress` 对接受它们的
+  客户端回应 `br` / `zstd`（优先顺序 br、zstd、gzip、deflate）；`Files` 也服务 `.zst` 副本（`Content-Encoding: zstd`）。
+
 ### 新增：HLS 加密与录制（only-media），AES-CBC（only-crypto）
 
 ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增：

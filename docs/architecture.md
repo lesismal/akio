@@ -23,6 +23,8 @@ flowchart BT
     buf["only-buf<br/>size-class pool, SharedBuf"]
     timer["only-timer<br/>timer wheel"]
     deflate["only-deflate<br/>DEFLATE, zlib, gzip"]
+    brotli["only-brotli<br/>brotli"]
+    zstd["only-zstd<br/>Zstandard"]
     logc["only-log<br/>logging facade"]
     pool["only-pool<br/>logical pool"]
     core["only-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
@@ -68,6 +70,10 @@ flowchart BT
     deflate --> http
     deflate --> grpc
     deflate --> tls
+    brotli --> tls
+    brotli --> http
+    zstd --> tls
+    zstd --> http
     facade --> http
     ws --> http
     http --> grpc

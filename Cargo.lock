@@ -517,6 +517,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "only-brotli"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only-deflate",
+]
+
+[[package]]
 name = "only-buf"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -646,12 +653,14 @@ dependencies = [
  "flate2",
  "libc",
  "only",
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
  "only-ws",
  "only-x509",
+ "only-zstd",
 ]
 
 [[package]]
@@ -787,12 +796,14 @@ version = "1.0.0-rc.1"
 name = "only-tls"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-brotli",
  "only-core",
  "only-crypto",
  "only-deflate",
  "only-log",
  "only-sys",
  "only-x509",
+ "only-zstd",
  "rustls",
 ]
 
@@ -854,6 +865,13 @@ dependencies = [
  "rcgen",
  "rustls-pki-types",
  "rustls-webpki",
+]
+
+[[package]]
+name = "only-zstd"
+version = "1.0.0-rc.1"
+dependencies = [
+ "only-deflate",
 ]
 
 [[package]]

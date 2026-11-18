@@ -65,6 +65,11 @@ only-dpdk = { path = "../crates/only-dpdk", features = ["fuzzing"] }
 only-deflate = { path = "../crates/only-deflate", features = ["fuzzing"] }
 # Differential oracle for the deflate targets only (zlib-rs).
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
+only-brotli = { path = "../crates/only-brotli", features = ["fuzzing"] }
+only-zstd = { path = "../crates/only-zstd", features = ["fuzzing"] }
+# Differential oracles for the brotli and zstd targets only (Google's brotli in Rust, libzstd).
+brotli-decompressor = "5"
+zstd = { version = "0.13", default-features = false }
 
 [profile.release]
 debug = 1
@@ -716,6 +721,34 @@ bench = false
 [[bin]]
 name = "export_otlp"
 path = "fuzz_targets/export_otlp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "brotli_decompress"
+path = "fuzz_targets/brotli_decompress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "brotli_roundtrip"
+path = "fuzz_targets/brotli_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zstd_decompress"
+path = "fuzz_targets/zstd_decompress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zstd_roundtrip"
+path = "fuzz_targets/zstd_roundtrip.rs"
 test = false
 doc = false
 bench = false
