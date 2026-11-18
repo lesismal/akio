@@ -48,6 +48,28 @@ script checks ECN validation on macOS too. The only-quic README
 no longer lists compatible version negotiation as missing (done in ADR-013 and ADR-014). No
 change to the Linux API snapshots; unsafe inventory: only-sys 91 → 97 blocks.
 
+### Added: RTCP XR, TMMBR / TMMBN, RFC 8888 feedback and FEC (only-rtp)
+
+ADR-036 (docs/adr/036-rtp-xr-tmmbr-ccfb-fec.md). `only-rtp` is Internal-tier; `Rtcp` gains four
+variants (PT 207 and RTPFB 3 / 4 / 11 no longer parse as `Rtcp::Unknown`), everything else is
+additive:
+
+- **RTCP XR** (RFC 3611): `Rtcp::ExtendedReport` with `XrBlock` for every block (loss /
+  duplicate RLE, receipt times, RRTR, DLRR, statistics summary, VoIP metrics, unknown).
+  `RrtrResponder` answers RRTRs with DLRR; `rtt_from_dlrr` and `RecvStream::{handle_dlrr, rtt}`
+  give a receiver without sender reports its RTT; `RecvStream::{statistics_summary,
+  duplicates}`; `BurstLossModel` (Appendix A.2, reproducing the §4.7.2 example) for VoIP metrics.
+- **TMMBR / TMMBN** (RFC 5104): `Rtcp::{Tmmbr, Tmmbn}` with `TmmbItem`; `bounding_set`,
+  `bounded_bitrate`, `TmmbrHandler` (requests per requester, 25 s timeout, TMMBN).
+- **RFC 8888**: `Rtcp::CongestionControl(CcfbFeedback)` (`CcfbStream`, `CcfbMetric`, ATO
+  constants); `CcfbReceiver` generates feedback per media SSRC with ECN (50 ms / 100 packets);
+  `CcfbSender` maps it onto `PacketResult`s for `BandwidthEstimator`.
+- **FEC** (`only_rtp::fec`): `FecEncoder` / `FecDecoder` / `FecHeader` for ULPFEC (RFC 5109),
+  FlexFEC as libwebrtc's `flexfec-03` and as RFC 8627; interleaved masks per frame, iterative
+  byte-identical recovery; `fec::red` (RFC 2198 parse / write / wrap / unwrap).
+- Tests against libwebrtc's unit-test vectors, the RFC 3611 example and simulated loss; new fuzz
+  target `rtp_fec`, `rtp_rtcp` extended. Not wired into `only-webrtc` yet.
+
 ### Added: protobuf text format (only-protobuf)
 
 ADR-030 (docs/adr/030-protobuf-text-format.md), additive: `only_protobuf::text` parses and prints

@@ -4,8 +4,9 @@
 
 RTP and RTCP for [`only`](https://github.com/lesismal/only) in safe Rust
 (`#![forbid(unsafe_code)]`) with no dependencies: packets, RTCP feedback, per-stream send /
-receive state with NACK and RTX, transport-wide congestion control and bandwidth estimation,
-and codec payload formats. It is the media layer of the in-house WebRTC stack (below it,
+receive state with NACK and RTX, transport-wide and RFC 8888 congestion control feedback and
+bandwidth estimation, RTCP extended reports, TMMBR / TMMBN, forward error correction (ULPFEC,
+FlexFEC, RED), and codec payload formats. It is the media layer of the in-house WebRTC stack (below it,
 [`only-srtp`](../only-srtp) encrypts). An internal crate (docs/api-stability.md): its API
 follows that stack and may change in any release.
 
@@ -61,17 +62,45 @@ let rb = recv.report_block(now);                                   // for an RR 
   <2 % increase), REMB cap, bounds.
 - `codec`: packetizers / depacketizers (Opus and other audio, VP8, VP9, H.264, H.265, AV1)
   and frame assembly.
+- RTCP XR (RFC 3611): `RrtrResponder` answers receiver reference times with DLRR, and
+  `RecvStream::handle_dlrr` / `rtt_from_dlrr` give a receiver without sender reports its RTT;
+  `RecvStream::statistics_summary` builds statistics summary blocks; `BurstLossModel` (RFC 3611
+  A.2) fills the loss / burst / gap fields of VoIP metrics.
+- TMMBR / TMMBN (RFC 5104): `TmmbrHandler` keeps each receiver's request for a media SSRC,
+  computes the bounding set (`bounding_set`, `bounded_bitrate`) and builds the TMMBN.
+- RFC 8888: `CcfbReceiver` builds congestion control feedback per media SSRC (with ECN), every
+  50 ms or 100 packets; `CcfbSender` turns it into `PacketResult`s for the estimator, like TWCC.
+- `fec`: `FecEncoder` / `FecDecoder` for ULPFEC (RFC 5109), FlexFEC as Chrome sends it
+  (`flexfec-03`) and RFC 8627 FlexFEC: interleaved masks per frame (rate in 1/256), recovery of
+  every packet that is the only one missing from some FEC packet, byte-identical; `fec::red`
+  for RFC 2198 (ULPFEC in WebRTC travels in RED).
+
+```rust,ignore
+// FlexFEC: protect each frame with ~30 % FEC, recover on the other side.
+let mut enc = FecEncoder::new(FecScheme::Flexfec03, media_ssrc, 77);
+for payload in enc.push(&rtp_packet, marker) { /* send on the FEC SSRC */ }
+let mut dec = FecDecoder::new(FecScheme::Flexfec03, media_ssrc);
+for p in dec.on_media(&received) { /* a recovered RTP packet */ }
+for p in dec.on_fec(fec_payload) { /* ... */ }
+```
 
 ## Protocol coverage
 
 - Header extensions: mid, rtp-stream-id, repaired-rtp-stream-id, abs-send-time,
   transport-wide-cc, ssrc-audio-level, video-orientation, toffset, playout-delay.
 - RTCP: SR, RR, SDES, BYE, generic NACK, transport-wide CC feedback (run-length and both
-  status-vector chunk kinds, small and large deltas), PLI, FIR, REMB; other packets are kept
-  as `Rtcp::Unknown`. Parsing is strict about lengths and never panics.
+  status-vector chunk kinds, small and large deltas), RFC 8888 congestion control feedback,
+  PLI, FIR, REMB, TMMBR, TMMBN, and extended reports with every RFC 3611 block (loss and
+  duplicate RLE, receipt times, RRTR, DLRR, statistics summary, VoIP metrics); other packets
+  are kept as `Rtcp::Unknown` (and unknown XR blocks as `XrBlock::Unknown`). Parsing is strict
+  about lengths and never panics.
+- FEC: ULPFEC (one protection level), FlexFEC `flexfec-03` (libwebrtc's header) and RFC 8627
+  (flexible masks, one protected SSRC), RED. ADR-036 has the details.
 
-Not implemented: RTCP XR, TMMBR / TMMBN, FEC (ULPFEC, FlexFEC), RFC 8888 feedback, probing in
-the estimator, SDES items beyond type / text pairs.
+Not implemented: wiring XR, TMMBR, RFC 8888 and FEC into `only-webrtc` (SDP negotiation, FEC
+rate policy); FlexFEC retransmission and fixed L/D packets, several protected SSRCs, ULPFEC
+level 1, libwebrtc's mask tables; generating RLE / receipt-time XR blocks and VoIP quality
+fields; probing in the estimator; SDES items beyond type / text pairs.
 
 ## Testing
 
@@ -88,6 +117,14 @@ the estimator, SDES items beyond type / text pairs.
   packet.
 - TWCC end to end over 70 000 packets with loss; the estimator on simulated links grows on a
   clean link, settles below a 1 Mbps bottleneck and backs off under 25 % loss.
-- Fuzzing: target `rtp_rtcp` (header parse / write / parse, compound RTCP round trips,
-  feeding streams and the TWCC sender) in `fuzz/`; `fuzzing::tests` replays its corpus on
-  stable.
+- libwebrtc unit-test vectors: TMMBR, TMMBN, RRTR, DLRR and the empty XR byte for byte; the
+  FlexFEC-03 masks its writer produces and its reader accepts; its ULPFEC header reader cases.
+  The RFC 3611 §4.7.2 burst example (loss, discard, burst / gap density and duration); RFC 8888
+  packets assembled from §3.1; round trips of every XR block; bounding sets.
+- RFC 8888 feedback driving the estimator on a simulated two-stream link with loss; FEC
+  recovery for every scheme (bursts within a group, 5 % random loss over 5000 packets, ULPFEC
+  through RED), each recovered packet compared byte for byte.
+- Fuzzing: targets `rtp_rtcp` (header parse / write / parse, compound RTCP round trips,
+  feeding streams, the TWCC and RFC 8888 senders, the RRTR responder and the TMMBR handler) and
+  `rtp_fec` (FEC headers and RED parse / rewrite, decoder on arbitrary input, encoder → lossy
+  decoder recovery) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.

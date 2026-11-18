@@ -9,7 +9,8 @@
   `only-srtp`（AES-CM-HMAC-SHA1-80/32 与 AEAD-AES-128/256-GCM 的 SRTP/SRTCP，防重放）、
   `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
   无序）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
-  NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告）。`only-webrtc` 本身负责 SDP
+  NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告；还有 RTCP XR、TMMBR / TMMBN、
+  RFC 8888 反馈与 ULPFEC / FlexFEC / RED，peer 尚未使用）。`only-webrtc` 本身负责 SDP
   offer/answer（BUNDLE、rtcp-mux、编解码器与头扩展协商、重新协商），并用 only 的 I/O 线程和一个
   共享定时器线程驱动各个 peer。
 - `only-turn` 提供 STUN 编解码、STUN 服务器、TURN 服务器（UDP、TCP 与 TLS 上的 RFC 8656）以及
@@ -251,5 +252,7 @@ WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 
 ## 尚未完成
 
 TCP 中继（RFC 6062）；DTLS 上的 TURN；同时打开的 ICE-TCP（`tcptype so`）；解析 mDNS 候选（使用它们的
-对端仍可通过 peer-reflexive 候选连通）；FEC；RTCP XR；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与
+对端仍可通过 peer-reflexive 候选连通）；对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（自 ADR-036 起
+`only-rtp` 已实现：ULPFEC、FlexFEC `flexfec-03` 与 RFC 8627、RED、全部 XR 报告块、TMMBR 边界集、RFC 8888
+的生成与匹配；`only-webrtc` 尚未协商它们）；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与
 NewConnectionId。新增内容的细节见 ADR-017 与 ADR-032。

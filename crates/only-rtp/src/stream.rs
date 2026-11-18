@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::packet::{ExtensionMap, ExtensionValues, RtpHeader};
 use crate::rtcp::{ReportBlock, SenderInfo, compact_ntp};
+use crate::xr::{DlrrItem, JitterStats, StatisticsSummary, rtt_from_dlrr};
 
 /// Packets kept for retransmission.
 pub const SEND_HISTORY_PACKETS: usize = 1024;
@@ -302,6 +303,19 @@ const NACK_GIVE_UP: Duration = Duration::from_secs(1);
 const MAX_DROPOUT: u64 = 3000;
 const DEFAULT_RTT: Duration = Duration::from_millis(100);
 
+/// Per-interval counters of the XR statistics summary.
+#[derive(Debug, Clone, Copy, Default)]
+struct Summary {
+    begin: Option<u64>,
+    received: u64,
+    dups: u64,
+    jitter_n: u64,
+    jitter_min: f64,
+    jitter_max: f64,
+    jitter_sum: f64,
+    jitter_sq: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Missing {
     since: Instant,
@@ -328,6 +342,8 @@ pub struct RecvStream {
     last_sr: Option<(SenderInfo, Instant)>,
     rtt: Option<Duration>,
     missing: BTreeMap<u64, Missing>,
+    duplicates: u64,
+    summary: Summary,
 }
 
 impl RecvStream {
@@ -351,6 +367,8 @@ impl RecvStream {
             last_sr: None,
             rtt: None,
             missing: BTreeMap::new(),
+            duplicates: 0,
+            summary: Summary::default(),
         }
     }
 
@@ -363,6 +381,29 @@ impl RecvStream {
     /// Sets the round-trip time used to pace NACKs (default 100 ms).
     pub fn set_rtt(&mut self, rtt: Duration) {
         self.rtt = Some(rtt);
+    }
+
+    /// The round-trip time set with [`set_rtt`](Self::set_rtt) or measured by
+    /// [`handle_dlrr`](Self::handle_dlrr).
+    #[must_use]
+    pub fn rtt(&self) -> Option<Duration> {
+        self.rtt
+    }
+
+    /// Handles a DLRR sub-block answering this receiver's receiver reference time (RFC
+    /// 3611 §4.5; the caller checks that `item.ssrc` is its own SSRC) received at NTP time
+    /// `ntp_now`: the RTT it gives (see [`rtt_from_dlrr`](crate::rtt_from_dlrr)) also paces
+    /// NACKs.
+    pub fn handle_dlrr(&mut self, ntp_now: u64, item: &DlrrItem) -> Option<Duration> {
+        let rtt = rtt_from_dlrr(ntp_now, item)?;
+        self.rtt = Some(rtt);
+        Some(rtt)
+    }
+
+    /// Duplicate packets received.
+    #[must_use]
+    pub fn duplicates(&self) -> u64 {
+        self.duplicates
     }
 
     /// Distinct packets received.
@@ -427,6 +468,7 @@ impl RecvStream {
             self.max = Some(ext);
             self.mark(ext, true);
             self.received = 1;
+            self.summary.received += 1;
             self.update_jitter(now, epoch, timestamp);
             return Some(ext);
         };
@@ -464,14 +506,21 @@ impl RecvStream {
                 self.received = 0;
                 self.expected_prior = 0;
                 self.received_prior = 0;
+                self.summary = Summary::default();
             }
             self.max = Some(ext);
             self.mark(ext, true);
             self.received += 1;
+            self.summary.received += 1;
             self.update_jitter(now, epoch, timestamp);
             return Some(ext);
         }
-        if max - ext >= RECV_WINDOW || self.is_seen(ext) {
+        if max - ext >= RECV_WINDOW {
+            return None;
+        }
+        if self.is_seen(ext) {
+            self.duplicates += 1;
+            self.summary.dups += 1;
             return None;
         }
         self.mark(ext, true);
@@ -480,6 +529,7 @@ impl RecvStream {
             self.base = ext;
         }
         self.received += 1;
+        self.summary.received += 1;
         Some(ext)
     }
 
@@ -491,6 +541,16 @@ impl RecvStream {
         if let Some(last) = self.last_transit {
             let d = f64::from(transit.wrapping_sub(last as i32)).abs();
             self.jitter += (d - self.jitter) / 16.0;
+            let s = &mut self.summary;
+            if s.jitter_n == 0 {
+                (s.jitter_min, s.jitter_max) = (d, d);
+            } else {
+                s.jitter_min = s.jitter_min.min(d);
+                s.jitter_max = s.jitter_max.max(d);
+            }
+            s.jitter_n += 1;
+            s.jitter_sum += d;
+            s.jitter_sq += d * d;
         }
         self.last_transit = Some(i64::from(transit));
     }
@@ -536,6 +596,46 @@ impl RecvStream {
             jitter: self.jitter as u32,
             last_sr,
             delay_since_last_sr,
+        })
+    }
+
+    /// An XR statistics summary (RFC 3611 §4.6) of the packets since the previous call (or
+    /// the first packet): the sequence interval up to the highest received, packets lost
+    /// and duplicated in it, and the minimum / maximum / mean / standard deviation of the
+    /// per-packet transit time differences (timestamp units). TTLs are not known at this
+    /// layer. `None` before the first packet or when nothing new arrived.
+    pub fn statistics_summary(&mut self) -> Option<StatisticsSummary> {
+        let max = self.max?;
+        let s = self.summary;
+        let begin = s.begin.unwrap_or(self.base).max(self.base);
+        if begin > max && s.dups == 0 {
+            return None;
+        }
+        let expected = (max + 1).saturating_sub(begin);
+        let lost = expected.saturating_sub(s.received);
+        let jitter = (s.jitter_n > 0).then(|| {
+            let n = s.jitter_n as f64;
+            let mean = s.jitter_sum / n;
+            let dev = (s.jitter_sq / n - mean * mean).max(0.0).sqrt();
+            JitterStats {
+                min: s.jitter_min as u32,
+                max: s.jitter_max as u32,
+                mean: mean.round() as u32,
+                dev: dev.round() as u32,
+            }
+        });
+        self.summary = Summary {
+            begin: Some(max + 1),
+            ..Summary::default()
+        };
+        Some(StatisticsSummary {
+            ssrc: self.ssrc,
+            begin_seq: begin as u16,
+            end_seq: (max + 1) as u16,
+            lost_packets: Some(lost.min(u64::from(u32::MAX)) as u32),
+            dup_packets: Some(s.dups.min(u64::from(u32::MAX)) as u32),
+            jitter,
+            ttl: None,
         })
     }
 

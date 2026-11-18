@@ -362,6 +362,106 @@ impl only_rtp::codec::Packetizer for only_rtp::codec::Vp9Packetizer
 pub fn only_rtp::codec::Vp9Packetizer::packetize(&mut self, usize, &[u8]) -> alloc::vec::Vec<(alloc::vec::Vec<u8>, bool)>
 pub fn only_rtp::codec::depacketizer(only_rtp::codec::CodecKind) -> alloc::boxed::Box<dyn only_rtp::codec::Depacketizer>
 pub fn only_rtp::codec::packetizer(only_rtp::codec::CodecKind) -> alloc::boxed::Box<dyn only_rtp::codec::Packetizer>
+pub mod only_rtp::fec
+pub mod only_rtp::fec::red
+pub struct only_rtp::fec::red::RedBlock<'a>
+pub only_rtp::fec::red::RedBlock::data: &'a [u8]
+pub only_rtp::fec::red::RedBlock::pt: u8
+pub only_rtp::fec::red::RedBlock::timestamp_offset: u16
+impl<'a> core::clone::Clone for only_rtp::fec::red::RedBlock<'a>
+pub fn only_rtp::fec::red::RedBlock<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for only_rtp::fec::red::RedBlock<'a>
+impl<'a> core::cmp::PartialEq for only_rtp::fec::red::RedBlock<'a>
+pub fn only_rtp::fec::red::RedBlock<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for only_rtp::fec::red::RedBlock<'a>
+pub fn only_rtp::fec::red::RedBlock<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for only_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::StructuralPartialEq for only_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::Send for only_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::Sync for only_rtp::fec::red::RedBlock<'a>
+impl<'a> core::marker::Unpin for only_rtp::fec::red::RedBlock<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::red::RedBlock<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for only_rtp::fec::red::RedBlock<'a>
+pub fn only_rtp::fec::red::parse(&[u8]) -> core::option::Option<alloc::vec::Vec<only_rtp::fec::red::RedBlock<'_>>>
+pub fn only_rtp::fec::red::unwrap_primary(&[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::red::wrap(&[u8], u8) -> core::option::Option<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::red::write(&[only_rtp::fec::red::RedBlock<'_>]) -> alloc::vec::Vec<u8>
+pub enum only_rtp::fec::FecScheme
+pub only_rtp::fec::FecScheme::Flexfec
+pub only_rtp::fec::FecScheme::Flexfec03
+pub only_rtp::fec::FecScheme::Ulpfec
+impl core::clone::Clone for only_rtp::fec::FecScheme
+pub fn only_rtp::fec::FecScheme::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::fec::FecScheme
+impl core::cmp::PartialEq for only_rtp::fec::FecScheme
+pub fn only_rtp::fec::FecScheme::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::fec::FecScheme
+pub fn only_rtp::fec::FecScheme::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_rtp::fec::FecScheme
+pub fn only_rtp::fec::FecScheme::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_rtp::fec::FecScheme
+impl core::marker::StructuralPartialEq for only_rtp::fec::FecScheme
+impl core::marker::Send for only_rtp::fec::FecScheme
+impl core::marker::Sync for only_rtp::fec::FecScheme
+impl core::marker::Unpin for only_rtp::fec::FecScheme
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecScheme
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecScheme
+pub struct only_rtp::fec::FecDecoder
+impl only_rtp::fec::FecDecoder
+pub fn only_rtp::fec::FecDecoder::new(only_rtp::fec::FecScheme, u32) -> only_rtp::fec::FecDecoder
+pub fn only_rtp::fec::FecDecoder::on_fec(&mut self, &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::FecDecoder::on_media(&mut self, &[u8]) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::FecDecoder::recovered(&self) -> u64
+impl core::fmt::Debug for only_rtp::fec::FecDecoder
+pub fn only_rtp::fec::FecDecoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::fec::FecDecoder
+impl core::marker::Sync for only_rtp::fec::FecDecoder
+impl core::marker::Unpin for only_rtp::fec::FecDecoder
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecDecoder
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecDecoder
+pub struct only_rtp::fec::FecEncoder
+impl only_rtp::fec::FecEncoder
+pub fn only_rtp::fec::FecEncoder::encode(&self, &[&[u8]], &[alloc::vec::Vec<usize>]) -> core::option::Option<alloc::vec::Vec<alloc::vec::Vec<u8>>>
+pub fn only_rtp::fec::FecEncoder::flush(&mut self) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::FecEncoder::new(only_rtp::fec::FecScheme, u32, u8) -> only_rtp::fec::FecEncoder
+pub fn only_rtp::fec::FecEncoder::push(&mut self, &[u8], bool) -> alloc::vec::Vec<alloc::vec::Vec<u8>>
+pub fn only_rtp::fec::FecEncoder::rate(&self) -> u8
+pub fn only_rtp::fec::FecEncoder::set_rate(&mut self, u8)
+impl core::fmt::Debug for only_rtp::fec::FecEncoder
+pub fn only_rtp::fec::FecEncoder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::fec::FecEncoder
+impl core::marker::Sync for only_rtp::fec::FecEncoder
+impl core::marker::Unpin for only_rtp::fec::FecEncoder
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecEncoder
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecEncoder
+pub struct only_rtp::fec::FecHeader
+pub only_rtp::fec::FecHeader::base_seq: u16
+pub only_rtp::fec::FecHeader::header_len: usize
+pub only_rtp::fec::FecHeader::length_recovery: u16
+pub only_rtp::fec::FecHeader::mpt_recovery: u8
+pub only_rtp::fec::FecHeader::offsets: alloc::vec::Vec<u16>
+pub only_rtp::fec::FecHeader::protection_len: usize
+pub only_rtp::fec::FecHeader::pxcc_recovery: u8
+pub only_rtp::fec::FecHeader::ssrc: core::option::Option<u32>
+pub only_rtp::fec::FecHeader::ts_recovery: u32
+impl only_rtp::fec::FecHeader
+pub fn only_rtp::fec::FecHeader::parse(only_rtp::fec::FecScheme, &[u8]) -> core::option::Option<only_rtp::fec::FecHeader>
+pub fn only_rtp::fec::FecHeader::write(&self, only_rtp::fec::FecScheme) -> alloc::vec::Vec<u8>
+impl core::clone::Clone for only_rtp::fec::FecHeader
+pub fn only_rtp::fec::FecHeader::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::fec::FecHeader
+impl core::cmp::PartialEq for only_rtp::fec::FecHeader
+pub fn only_rtp::fec::FecHeader::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::fec::FecHeader
+pub fn only_rtp::fec::FecHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::fec::FecHeader
+impl core::marker::Send for only_rtp::fec::FecHeader
+impl core::marker::Sync for only_rtp::fec::FecHeader
+impl core::marker::Unpin for only_rtp::fec::FecHeader
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::fec::FecHeader
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::fec::FecHeader
+pub const only_rtp::fec::MAX_FEC_GROUP: usize
+pub fn only_rtp::fec::interleaved_masks(usize, usize) -> alloc::vec::Vec<alloc::vec::Vec<usize>>
 pub enum only_rtp::BandwidthUsage
 pub only_rtp::BandwidthUsage::Normal
 pub only_rtp::BandwidthUsage::Overusing
@@ -433,6 +533,10 @@ impl core::marker::Unpin for only_rtp::Extension
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Extension
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::Extension
 pub enum only_rtp::Rtcp
+pub only_rtp::Rtcp::CongestionControl(only_rtp::CcfbFeedback)
+pub only_rtp::Rtcp::ExtendedReport
+pub only_rtp::Rtcp::ExtendedReport::blocks: alloc::vec::Vec<only_rtp::XrBlock>
+pub only_rtp::Rtcp::ExtendedReport::ssrc: u32
 pub only_rtp::Rtcp::Fir
 pub only_rtp::Rtcp::Fir::entries: alloc::vec::Vec<(u32, u8)>
 pub only_rtp::Rtcp::Fir::sender_ssrc: u32
@@ -458,6 +562,12 @@ pub only_rtp::Rtcp::SenderReport::info: only_rtp::SenderInfo
 pub only_rtp::Rtcp::SenderReport::reports: alloc::vec::Vec<only_rtp::ReportBlock>
 pub only_rtp::Rtcp::SenderReport::ssrc: u32
 pub only_rtp::Rtcp::SourceDescription(alloc::vec::Vec<(u32, alloc::vec::Vec<(u8, alloc::string::String)>)>)
+pub only_rtp::Rtcp::Tmmbn
+pub only_rtp::Rtcp::Tmmbn::entries: alloc::vec::Vec<only_rtp::TmmbItem>
+pub only_rtp::Rtcp::Tmmbn::sender_ssrc: u32
+pub only_rtp::Rtcp::Tmmbr
+pub only_rtp::Rtcp::Tmmbr::entries: alloc::vec::Vec<only_rtp::TmmbItem>
+pub only_rtp::Rtcp::Tmmbr::sender_ssrc: u32
 pub only_rtp::Rtcp::TransportCc(only_rtp::TwccFeedback)
 pub only_rtp::Rtcp::Unknown
 pub only_rtp::Rtcp::Unknown::data: alloc::vec::Vec<u8>
@@ -476,6 +586,37 @@ impl core::marker::Sync for only_rtp::Rtcp
 impl core::marker::Unpin for only_rtp::Rtcp
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::Rtcp
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::Rtcp
+pub enum only_rtp::XrBlock
+pub only_rtp::XrBlock::Dlrr(alloc::vec::Vec<only_rtp::DlrrItem>)
+pub only_rtp::XrBlock::DuplicateRle(only_rtp::RleReport)
+pub only_rtp::XrBlock::LossRle(only_rtp::RleReport)
+pub only_rtp::XrBlock::PacketReceiptTimes
+pub only_rtp::XrBlock::PacketReceiptTimes::begin_seq: u16
+pub only_rtp::XrBlock::PacketReceiptTimes::end_seq: u16
+pub only_rtp::XrBlock::PacketReceiptTimes::ssrc: u32
+pub only_rtp::XrBlock::PacketReceiptTimes::thinning: u8
+pub only_rtp::XrBlock::PacketReceiptTimes::times: alloc::vec::Vec<u32>
+pub only_rtp::XrBlock::ReceiverReferenceTime
+pub only_rtp::XrBlock::ReceiverReferenceTime::ntp: u64
+pub only_rtp::XrBlock::StatisticsSummary(only_rtp::StatisticsSummary)
+pub only_rtp::XrBlock::Unknown
+pub only_rtp::XrBlock::Unknown::block_type: u8
+pub only_rtp::XrBlock::Unknown::data: alloc::vec::Vec<u8>
+pub only_rtp::XrBlock::Unknown::type_specific: u8
+pub only_rtp::XrBlock::VoipMetrics(only_rtp::VoipMetrics)
+impl core::clone::Clone for only_rtp::XrBlock
+pub fn only_rtp::XrBlock::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::XrBlock
+impl core::cmp::PartialEq for only_rtp::XrBlock
+pub fn only_rtp::XrBlock::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_rtp::XrBlock
+pub fn only_rtp::XrBlock::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::XrBlock
+impl core::marker::Send for only_rtp::XrBlock
+impl core::marker::Sync for only_rtp::XrBlock
+impl core::marker::Unpin for only_rtp::XrBlock
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::XrBlock
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::XrBlock
 pub struct only_rtp::BandwidthEstimator
 impl only_rtp::BandwidthEstimator
 pub fn only_rtp::BandwidthEstimator::acknowledged_bitrate(&self) -> core::option::Option<u64>
@@ -492,6 +633,128 @@ impl core::marker::Sync for only_rtp::BandwidthEstimator
 impl core::marker::Unpin for only_rtp::BandwidthEstimator
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::BandwidthEstimator
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::BandwidthEstimator
+pub struct only_rtp::BurstLossModel
+impl only_rtp::BurstLossModel
+pub fn only_rtp::BurstLossModel::metrics(&self, u32, u16) -> only_rtp::VoipMetrics
+pub fn only_rtp::BurstLossModel::new(u8) -> only_rtp::BurstLossModel
+pub fn only_rtp::BurstLossModel::on_packet(&mut self, bool, bool)
+impl core::clone::Clone for only_rtp::BurstLossModel
+pub fn only_rtp::BurstLossModel::clone(&self) -> Self
+impl core::default::Default for only_rtp::BurstLossModel
+pub fn only_rtp::BurstLossModel::default() -> only_rtp::BurstLossModel
+impl core::fmt::Debug for only_rtp::BurstLossModel
+pub fn only_rtp::BurstLossModel::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::BurstLossModel
+impl core::marker::Sync for only_rtp::BurstLossModel
+impl core::marker::Unpin for only_rtp::BurstLossModel
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::BurstLossModel
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::BurstLossModel
+pub struct only_rtp::CcfbFeedback
+pub only_rtp::CcfbFeedback::report_timestamp: u32
+pub only_rtp::CcfbFeedback::sender_ssrc: u32
+pub only_rtp::CcfbFeedback::streams: alloc::vec::Vec<only_rtp::CcfbStream>
+impl core::clone::Clone for only_rtp::CcfbFeedback
+pub fn only_rtp::CcfbFeedback::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::CcfbFeedback
+impl core::cmp::PartialEq for only_rtp::CcfbFeedback
+pub fn only_rtp::CcfbFeedback::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::CcfbFeedback
+pub fn only_rtp::CcfbFeedback::default() -> Self
+impl core::fmt::Debug for only_rtp::CcfbFeedback
+pub fn only_rtp::CcfbFeedback::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::CcfbFeedback
+impl core::marker::Send for only_rtp::CcfbFeedback
+impl core::marker::Sync for only_rtp::CcfbFeedback
+impl core::marker::Unpin for only_rtp::CcfbFeedback
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::CcfbFeedback
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::CcfbFeedback
+pub struct only_rtp::CcfbMetric
+pub only_rtp::CcfbMetric::arrival_offset: u16
+pub only_rtp::CcfbMetric::ecn: u8
+impl core::clone::Clone for only_rtp::CcfbMetric
+pub fn only_rtp::CcfbMetric::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::CcfbMetric
+impl core::cmp::PartialEq for only_rtp::CcfbMetric
+pub fn only_rtp::CcfbMetric::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::CcfbMetric
+pub fn only_rtp::CcfbMetric::default() -> Self
+impl core::fmt::Debug for only_rtp::CcfbMetric
+pub fn only_rtp::CcfbMetric::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::CcfbMetric
+impl core::marker::StructuralPartialEq for only_rtp::CcfbMetric
+impl core::marker::Send for only_rtp::CcfbMetric
+impl core::marker::Sync for only_rtp::CcfbMetric
+impl core::marker::Unpin for only_rtp::CcfbMetric
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::CcfbMetric
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::CcfbMetric
+pub struct only_rtp::CcfbReceiver
+impl only_rtp::CcfbReceiver
+pub fn only_rtp::CcfbReceiver::new() -> only_rtp::CcfbReceiver
+pub fn only_rtp::CcfbReceiver::on_received(&mut self, u32, u16, std::time::Instant, u8)
+pub fn only_rtp::CcfbReceiver::poll_feedback(&mut self, std::time::Instant, u64, u32) -> core::option::Option<only_rtp::Rtcp>
+pub fn only_rtp::CcfbReceiver::set_interval(&mut self, core::time::Duration)
+impl core::default::Default for only_rtp::CcfbReceiver
+pub fn only_rtp::CcfbReceiver::default() -> only_rtp::CcfbReceiver
+impl core::fmt::Debug for only_rtp::CcfbReceiver
+pub fn only_rtp::CcfbReceiver::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::CcfbReceiver
+impl core::marker::Sync for only_rtp::CcfbReceiver
+impl core::marker::Unpin for only_rtp::CcfbReceiver
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::CcfbReceiver
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::CcfbReceiver
+pub struct only_rtp::CcfbSender
+impl only_rtp::CcfbSender
+pub fn only_rtp::CcfbSender::new() -> only_rtp::CcfbSender
+pub fn only_rtp::CcfbSender::on_feedback(&mut self, std::time::Instant, &only_rtp::CcfbFeedback) -> alloc::vec::Vec<only_rtp::PacketResult>
+pub fn only_rtp::CcfbSender::on_sent(&mut self, u32, u16, std::time::Instant, usize)
+impl core::default::Default for only_rtp::CcfbSender
+pub fn only_rtp::CcfbSender::default() -> Self
+impl core::fmt::Debug for only_rtp::CcfbSender
+pub fn only_rtp::CcfbSender::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::CcfbSender
+impl core::marker::Sync for only_rtp::CcfbSender
+impl core::marker::Unpin for only_rtp::CcfbSender
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::CcfbSender
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::CcfbSender
+pub struct only_rtp::CcfbStream
+pub only_rtp::CcfbStream::begin_seq: u16
+pub only_rtp::CcfbStream::reports: alloc::vec::Vec<core::option::Option<only_rtp::CcfbMetric>>
+pub only_rtp::CcfbStream::ssrc: u32
+impl core::clone::Clone for only_rtp::CcfbStream
+pub fn only_rtp::CcfbStream::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::CcfbStream
+impl core::cmp::PartialEq for only_rtp::CcfbStream
+pub fn only_rtp::CcfbStream::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::CcfbStream
+pub fn only_rtp::CcfbStream::default() -> Self
+impl core::fmt::Debug for only_rtp::CcfbStream
+pub fn only_rtp::CcfbStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::CcfbStream
+impl core::marker::Send for only_rtp::CcfbStream
+impl core::marker::Sync for only_rtp::CcfbStream
+impl core::marker::Unpin for only_rtp::CcfbStream
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::CcfbStream
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::CcfbStream
+pub struct only_rtp::DlrrItem
+pub only_rtp::DlrrItem::delay_since_last_rr: u32
+pub only_rtp::DlrrItem::last_rr: u32
+pub only_rtp::DlrrItem::ssrc: u32
+impl core::clone::Clone for only_rtp::DlrrItem
+pub fn only_rtp::DlrrItem::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::DlrrItem
+impl core::cmp::PartialEq for only_rtp::DlrrItem
+pub fn only_rtp::DlrrItem::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::DlrrItem
+pub fn only_rtp::DlrrItem::default() -> Self
+impl core::fmt::Debug for only_rtp::DlrrItem
+pub fn only_rtp::DlrrItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::DlrrItem
+impl core::marker::StructuralPartialEq for only_rtp::DlrrItem
+impl core::marker::Send for only_rtp::DlrrItem
+impl core::marker::Sync for only_rtp::DlrrItem
+impl core::marker::Unpin for only_rtp::DlrrItem
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::DlrrItem
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::DlrrItem
 pub struct only_rtp::ExtensionMap
 impl only_rtp::ExtensionMap
 pub fn only_rtp::ExtensionMap::default_audio() -> only_rtp::ExtensionMap
@@ -543,6 +806,27 @@ impl core::marker::Sync for only_rtp::ExtensionValues
 impl core::marker::Unpin for only_rtp::ExtensionValues
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ExtensionValues
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::ExtensionValues
+pub struct only_rtp::JitterStats
+pub only_rtp::JitterStats::dev: u32
+pub only_rtp::JitterStats::max: u32
+pub only_rtp::JitterStats::mean: u32
+pub only_rtp::JitterStats::min: u32
+impl core::clone::Clone for only_rtp::JitterStats
+pub fn only_rtp::JitterStats::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::JitterStats
+impl core::cmp::PartialEq for only_rtp::JitterStats
+pub fn only_rtp::JitterStats::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::JitterStats
+pub fn only_rtp::JitterStats::default() -> Self
+impl core::fmt::Debug for only_rtp::JitterStats
+pub fn only_rtp::JitterStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::JitterStats
+impl core::marker::StructuralPartialEq for only_rtp::JitterStats
+impl core::marker::Send for only_rtp::JitterStats
+impl core::marker::Sync for only_rtp::JitterStats
+impl core::marker::Unpin for only_rtp::JitterStats
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::JitterStats
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::JitterStats
 pub struct only_rtp::PacketResult
 pub only_rtp::PacketResult::received: core::option::Option<std::time::Instant>
 pub only_rtp::PacketResult::sent: std::time::Instant
@@ -564,7 +848,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::PacketResult
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::PacketResult
 pub struct only_rtp::RecvStream
 impl only_rtp::RecvStream
+pub fn only_rtp::RecvStream::duplicates(&self) -> u64
 pub fn only_rtp::RecvStream::extended_highest_seq(&self) -> core::option::Option<u64>
+pub fn only_rtp::RecvStream::handle_dlrr(&mut self, u64, &only_rtp::DlrrItem) -> core::option::Option<core::time::Duration>
 pub fn only_rtp::RecvStream::handle_sender_report(&mut self, std::time::Instant, &only_rtp::SenderInfo)
 pub fn only_rtp::RecvStream::jitter(&self) -> u32
 pub fn only_rtp::RecvStream::last_sender_report(&self) -> core::option::Option<(only_rtp::SenderInfo, std::time::Instant)>
@@ -575,8 +861,10 @@ pub fn only_rtp::RecvStream::poll_nack(&mut self, std::time::Instant) -> core::o
 pub fn only_rtp::RecvStream::poll_timeout(&self) -> core::option::Option<std::time::Instant>
 pub fn only_rtp::RecvStream::receive(&mut self, std::time::Instant, u16, u32) -> core::option::Option<u64>
 pub fn only_rtp::RecvStream::report_block(&mut self, std::time::Instant) -> core::option::Option<only_rtp::ReportBlock>
+pub fn only_rtp::RecvStream::rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn only_rtp::RecvStream::set_rtt(&mut self, core::time::Duration)
 pub fn only_rtp::RecvStream::ssrc(&self) -> u32
+pub fn only_rtp::RecvStream::statistics_summary(&mut self) -> core::option::Option<only_rtp::StatisticsSummary>
 impl core::fmt::Debug for only_rtp::RecvStream
 pub fn only_rtp::RecvStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_rtp::RecvStream
@@ -608,6 +896,41 @@ impl core::marker::Sync for only_rtp::ReportBlock
 impl core::marker::Unpin for only_rtp::ReportBlock
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::ReportBlock
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::ReportBlock
+pub struct only_rtp::RleReport
+pub only_rtp::RleReport::begin_seq: u16
+pub only_rtp::RleReport::chunks: alloc::vec::Vec<u16>
+pub only_rtp::RleReport::end_seq: u16
+pub only_rtp::RleReport::ssrc: u32
+pub only_rtp::RleReport::thinning: u8
+impl core::clone::Clone for only_rtp::RleReport
+pub fn only_rtp::RleReport::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::RleReport
+impl core::cmp::PartialEq for only_rtp::RleReport
+pub fn only_rtp::RleReport::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::RleReport
+pub fn only_rtp::RleReport::default() -> Self
+impl core::fmt::Debug for only_rtp::RleReport
+pub fn only_rtp::RleReport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_rtp::RleReport
+impl core::marker::Send for only_rtp::RleReport
+impl core::marker::Sync for only_rtp::RleReport
+impl core::marker::Unpin for only_rtp::RleReport
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::RleReport
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::RleReport
+pub struct only_rtp::RrtrResponder
+impl only_rtp::RrtrResponder
+pub fn only_rtp::RrtrResponder::dlrr(&mut self, std::time::Instant) -> core::option::Option<only_rtp::XrBlock>
+pub fn only_rtp::RrtrResponder::new() -> only_rtp::RrtrResponder
+pub fn only_rtp::RrtrResponder::on_rrtr(&mut self, std::time::Instant, u32, u64)
+impl core::default::Default for only_rtp::RrtrResponder
+pub fn only_rtp::RrtrResponder::default() -> Self
+impl core::fmt::Debug for only_rtp::RrtrResponder
+pub fn only_rtp::RrtrResponder::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::RrtrResponder
+impl core::marker::Sync for only_rtp::RrtrResponder
+impl core::marker::Unpin for only_rtp::RrtrResponder
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::RrtrResponder
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::RrtrResponder
 pub struct only_rtp::RtpHeader
 pub only_rtp::RtpHeader::csrc: alloc::vec::Vec<u32>
 pub only_rtp::RtpHeader::ext: only_rtp::ExtensionValues
@@ -682,6 +1005,88 @@ impl core::marker::Sync for only_rtp::SenderInfo
 impl core::marker::Unpin for only_rtp::SenderInfo
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::SenderInfo
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::SenderInfo
+pub struct only_rtp::StatisticsSummary
+pub only_rtp::StatisticsSummary::begin_seq: u16
+pub only_rtp::StatisticsSummary::dup_packets: core::option::Option<u32>
+pub only_rtp::StatisticsSummary::end_seq: u16
+pub only_rtp::StatisticsSummary::jitter: core::option::Option<only_rtp::JitterStats>
+pub only_rtp::StatisticsSummary::lost_packets: core::option::Option<u32>
+pub only_rtp::StatisticsSummary::ssrc: u32
+pub only_rtp::StatisticsSummary::ttl: core::option::Option<only_rtp::TtlStats>
+impl core::clone::Clone for only_rtp::StatisticsSummary
+pub fn only_rtp::StatisticsSummary::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::StatisticsSummary
+impl core::cmp::PartialEq for only_rtp::StatisticsSummary
+pub fn only_rtp::StatisticsSummary::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::StatisticsSummary
+pub fn only_rtp::StatisticsSummary::default() -> Self
+impl core::fmt::Debug for only_rtp::StatisticsSummary
+pub fn only_rtp::StatisticsSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::StatisticsSummary
+impl core::marker::StructuralPartialEq for only_rtp::StatisticsSummary
+impl core::marker::Send for only_rtp::StatisticsSummary
+impl core::marker::Sync for only_rtp::StatisticsSummary
+impl core::marker::Unpin for only_rtp::StatisticsSummary
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::StatisticsSummary
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::StatisticsSummary
+pub struct only_rtp::TmmbItem
+pub only_rtp::TmmbItem::bitrate: u64
+pub only_rtp::TmmbItem::overhead: u16
+pub only_rtp::TmmbItem::ssrc: u32
+impl core::clone::Clone for only_rtp::TmmbItem
+pub fn only_rtp::TmmbItem::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::TmmbItem
+impl core::cmp::PartialEq for only_rtp::TmmbItem
+pub fn only_rtp::TmmbItem::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::TmmbItem
+pub fn only_rtp::TmmbItem::default() -> Self
+impl core::fmt::Debug for only_rtp::TmmbItem
+pub fn only_rtp::TmmbItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_rtp::TmmbItem
+pub fn only_rtp::TmmbItem::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_rtp::TmmbItem
+impl core::marker::StructuralPartialEq for only_rtp::TmmbItem
+impl core::marker::Send for only_rtp::TmmbItem
+impl core::marker::Sync for only_rtp::TmmbItem
+impl core::marker::Unpin for only_rtp::TmmbItem
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::TmmbItem
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::TmmbItem
+pub struct only_rtp::TmmbrHandler
+impl only_rtp::TmmbrHandler
+pub fn only_rtp::TmmbrHandler::bounding_set(&mut self, std::time::Instant) -> alloc::vec::Vec<only_rtp::TmmbItem>
+pub fn only_rtp::TmmbrHandler::max_bitrate(&mut self, std::time::Instant, f64) -> core::option::Option<u64>
+pub fn only_rtp::TmmbrHandler::new(u32) -> only_rtp::TmmbrHandler
+pub fn only_rtp::TmmbrHandler::on_tmmbr(&mut self, std::time::Instant, u32, &[only_rtp::TmmbItem]) -> bool
+pub fn only_rtp::TmmbrHandler::tmmbn(&mut self, std::time::Instant) -> only_rtp::Rtcp
+impl core::fmt::Debug for only_rtp::TmmbrHandler
+pub fn only_rtp::TmmbrHandler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_rtp::TmmbrHandler
+impl core::marker::Sync for only_rtp::TmmbrHandler
+impl core::marker::Unpin for only_rtp::TmmbrHandler
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::TmmbrHandler
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::TmmbrHandler
+pub struct only_rtp::TtlStats
+pub only_rtp::TtlStats::dev: u8
+pub only_rtp::TtlStats::hop_limit: bool
+pub only_rtp::TtlStats::max: u8
+pub only_rtp::TtlStats::mean: u8
+pub only_rtp::TtlStats::min: u8
+impl core::clone::Clone for only_rtp::TtlStats
+pub fn only_rtp::TtlStats::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::TtlStats
+impl core::cmp::PartialEq for only_rtp::TtlStats
+pub fn only_rtp::TtlStats::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::TtlStats
+pub fn only_rtp::TtlStats::default() -> Self
+impl core::fmt::Debug for only_rtp::TtlStats
+pub fn only_rtp::TtlStats::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::TtlStats
+impl core::marker::StructuralPartialEq for only_rtp::TtlStats
+impl core::marker::Send for only_rtp::TtlStats
+impl core::marker::Sync for only_rtp::TtlStats
+impl core::marker::Unpin for only_rtp::TtlStats
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::TtlStats
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::TtlStats
 pub struct only_rtp::TwccFeedback
 pub only_rtp::TwccFeedback::base_seq: u16
 pub only_rtp::TwccFeedback::fb_count: u8
@@ -733,15 +1138,62 @@ impl core::marker::Sync for only_rtp::TwccSender
 impl core::marker::Unpin for only_rtp::TwccSender
 impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::TwccSender
 impl core::panic::unwind_safe::UnwindSafe for only_rtp::TwccSender
+pub struct only_rtp::VoipMetrics
+pub only_rtp::VoipMetrics::burst_density: u8
+pub only_rtp::VoipMetrics::burst_duration: u16
+pub only_rtp::VoipMetrics::discard_rate: u8
+pub only_rtp::VoipMetrics::end_system_delay: u16
+pub only_rtp::VoipMetrics::ext_r_factor: u8
+pub only_rtp::VoipMetrics::gap_density: u8
+pub only_rtp::VoipMetrics::gap_duration: u16
+pub only_rtp::VoipMetrics::gmin: u8
+pub only_rtp::VoipMetrics::jb_abs_max: u16
+pub only_rtp::VoipMetrics::jb_maximum: u16
+pub only_rtp::VoipMetrics::jb_nominal: u16
+pub only_rtp::VoipMetrics::loss_rate: u8
+pub only_rtp::VoipMetrics::mos_cq: u8
+pub only_rtp::VoipMetrics::mos_lq: u8
+pub only_rtp::VoipMetrics::noise_level: u8
+pub only_rtp::VoipMetrics::r_factor: u8
+pub only_rtp::VoipMetrics::rerl: u8
+pub only_rtp::VoipMetrics::round_trip_delay: u16
+pub only_rtp::VoipMetrics::rx_config: u8
+pub only_rtp::VoipMetrics::signal_level: u8
+pub only_rtp::VoipMetrics::ssrc: u32
+impl core::clone::Clone for only_rtp::VoipMetrics
+pub fn only_rtp::VoipMetrics::clone(&self) -> Self
+impl core::cmp::Eq for only_rtp::VoipMetrics
+impl core::cmp::PartialEq for only_rtp::VoipMetrics
+pub fn only_rtp::VoipMetrics::eq(&self, &Self) -> bool
+impl core::default::Default for only_rtp::VoipMetrics
+pub fn only_rtp::VoipMetrics::default() -> Self
+impl core::fmt::Debug for only_rtp::VoipMetrics
+pub fn only_rtp::VoipMetrics::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_rtp::VoipMetrics
+impl core::marker::StructuralPartialEq for only_rtp::VoipMetrics
+impl core::marker::Send for only_rtp::VoipMetrics
+impl core::marker::Sync for only_rtp::VoipMetrics
+impl core::marker::Unpin for only_rtp::VoipMetrics
+impl core::panic::unwind_safe::RefUnwindSafe for only_rtp::VoipMetrics
+impl core::panic::unwind_safe::UnwindSafe for only_rtp::VoipMetrics
+pub const only_rtp::CCFB_ATO_OVERRANGE: u16
+pub const only_rtp::CCFB_ATO_UNAVAILABLE: u16
+pub const only_rtp::CCFB_FEEDBACK_INTERVAL: core::time::Duration
+pub const only_rtp::CCFB_MAX_REPORTS: usize
 pub const only_rtp::DEFAULT_MAX_BITRATE: u64
 pub const only_rtp::DEFAULT_MIN_BITRATE: u64
 pub const only_rtp::MAX_TWCC_STATUSES: usize
 pub const only_rtp::SEND_HISTORY_AGE: core::time::Duration
 pub const only_rtp::SEND_HISTORY_PACKETS: usize
+pub const only_rtp::TMMBR_TIMEOUT: core::time::Duration
 pub const only_rtp::TWCC_FEEDBACK_INTERVAL: core::time::Duration
+pub const only_rtp::VOIP_UNAVAILABLE: u8
 pub fn only_rtp::abs_send_time(core::time::Duration) -> u32
+pub fn only_rtp::bounded_bitrate(&[only_rtp::TmmbItem], f64) -> core::option::Option<u64>
+pub fn only_rtp::bounding_set(&[only_rtp::TmmbItem]) -> alloc::vec::Vec<only_rtp::TmmbItem>
 pub fn only_rtp::compact_ntp(u64) -> u32
 pub fn only_rtp::is_rtcp(&[u8]) -> bool
 pub fn only_rtp::ntp_time(std::time::SystemTime) -> u64
 pub fn only_rtp::parse_compound(&[u8]) -> core::result::Result<alloc::vec::Vec<only_rtp::Rtcp>, only_rtp::Error>
+pub fn only_rtp::rtt_from_dlrr(u64, &only_rtp::DlrrItem) -> core::option::Option<core::time::Duration>
 pub fn only_rtp::write_compound(&[only_rtp::Rtcp]) -> alloc::vec::Vec<u8>

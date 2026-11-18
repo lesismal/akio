@@ -13,21 +13,28 @@
 //! - [`Rtcp`] / [`parse_compound`] / [`write_compound`]: SR, RR, SDES, BYE (RFC 3550 §6),
 //!   generic NACK (RFC 4585 §6.2.1), PLI (§6.3.1), FIR (RFC 5104 §4.3.1), REMB
 //!   (draft-alvestrand-rmcat-remb), transport-wide CC feedback
-//!   (draft-holmer-rmcat-transport-wide-cc-extensions-01), anything else as
-//!   [`Rtcp::Unknown`].
+//!   (draft-holmer-rmcat-transport-wide-cc-extensions-01), TMMBR / TMMBN (RFC 5104 §4.2),
+//!   RTP congestion control feedback (RFC 8888), extended reports with every RFC 3611 block
+//!   ([`XrBlock`]), anything else as [`Rtcp::Unknown`].
 //! - [`SendStream`]: sequence numbering, a retransmission history (1024 packets / 2 s),
 //!   NACK responses as RTX (RFC 4588) or plain resends, sender reports, RTT from report
 //!   blocks. [`RecvStream`]: sequence unwrapping, duplicate detection, loss and jitter
 //!   (RFC 3550 A.3, A.8) for report blocks, NACK scheduling with reordering wait, RTT-paced
 //!   repeats and give-up.
 //! - [`TwccSender`] / [`TwccReceiver`]: transport-wide sequence numbers, feedback
-//!   generation (libwebrtc's packing) and matching; [`BandwidthEstimator`]: a GCC-like
-//!   delay-gradient + loss-based estimator.
+//!   generation (libwebrtc's packing) and matching; [`CcfbSender`] / [`CcfbReceiver`]: the
+//!   same for RFC 8888; [`BandwidthEstimator`]: a GCC-like delay-gradient + loss-based
+//!   estimator fed by either.
+//! - [`RrtrResponder`], [`RecvStream::handle_dlrr`], [`RecvStream::statistics_summary`],
+//!   [`BurstLossModel`]: the XR receiver RTT exchange, statistics summaries and VoIP burst
+//!   metrics. [`TmmbrHandler`] / [`bounding_set`]: TMMBR handling for a media sender.
+//! - [`fec`]: ULPFEC (RFC 5109), FlexFEC (`flexfec-03` and RFC 8627) encoding and recovery,
+//!   RED (RFC 2198).
 //! - [`codec`]: payload packetizers / depacketizers and frame assembly.
 //!
-//! Not implemented: RTCP XR, SDES items beyond type/text pairs, TMMBR/TMMBN, FEC (ULPFEC /
-//! FlexFEC), RFC 8888 congestion control feedback, SRTP (see `only-srtp`), probing in the
-//! estimator, RTP header extension encryption.
+//! Not implemented: SDES items beyond type/text pairs, SRTP (see `only-srtp`), probing in the
+//! estimator, RTP header extension encryption; see ADR-036 for what the FEC and XR support
+//! leaves out.
 //!
 //! ```
 //! use std::time::{Duration, Instant};
@@ -61,11 +68,15 @@
 //! follows the needs of the WebRTC stack and may change in any release.
 
 mod bwe;
+mod ccfb;
 pub mod codec;
+pub mod fec;
 mod packet;
 mod rtcp;
 mod stream;
+mod tmmbr;
 mod twcc;
+mod xr;
 
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
@@ -73,12 +84,21 @@ pub mod fuzzing;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_ext;
 
 pub use bwe::{BandwidthEstimator, BandwidthUsage, DEFAULT_MAX_BITRATE, DEFAULT_MIN_BITRATE};
+pub use ccfb::{CCFB_FEEDBACK_INTERVAL, CcfbReceiver, CcfbSender};
 pub use packet::{Extension, ExtensionMap, ExtensionValues, RtpHeader, abs_send_time, is_rtcp};
 pub use rtcp::{
-    Error, MAX_TWCC_STATUSES, ReportBlock, Rtcp, SenderInfo, TwccFeedback, compact_ntp, ntp_time,
-    parse_compound, write_compound,
+    CCFB_ATO_OVERRANGE, CCFB_ATO_UNAVAILABLE, CCFB_MAX_REPORTS, CcfbFeedback, CcfbMetric,
+    CcfbStream, Error, MAX_TWCC_STATUSES, ReportBlock, Rtcp, SenderInfo, TmmbItem, TwccFeedback,
+    compact_ntp, ntp_time, parse_compound, write_compound,
 };
 pub use stream::{RecvStream, SEND_HISTORY_AGE, SEND_HISTORY_PACKETS, SendStream};
+pub use tmmbr::{TMMBR_TIMEOUT, TmmbrHandler, bounded_bitrate, bounding_set};
 pub use twcc::{PacketResult, TWCC_FEEDBACK_INTERVAL, TwccReceiver, TwccSender};
+pub use xr::{
+    BurstLossModel, DlrrItem, JitterStats, RleReport, RrtrResponder, StatisticsSummary, TtlStats,
+    VOIP_UNAVAILABLE, VoipMetrics, XrBlock, rtt_from_dlrr,
+};
