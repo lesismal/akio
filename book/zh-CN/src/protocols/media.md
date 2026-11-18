@@ -6,12 +6,12 @@ SRT 推上来的流，可以用 RTMP、RTSP、SRT、HTTP-FLV、WS-FLV 和 HLS �
 
 | 协议 | 推流 | 播放 | 章节 |
 |---|---|---|---|
-| RTMP（digest 握手、Enhanced RTMP 的 H.265 / Opus） | 支持 | 支持 | 本章 |
+| RTMP（digest 握手、Enhanced RTMP 的 H.265 / Opus），服务端与客户端 | 支持 | 支持 | 本章 |
 | HTTP-FLV、WS-FLV | – | 支持 | 本章 |
-| HLS（MPEG-TS、LL-HLS 分片、阻塞式刷新） | – | 支持 | 本章 |
-| RTSP（TCP 交织与 UDP） | 支持 | 支持 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
+| HLS（MPEG-TS 或 fMP4/CMAF、LL-HLS 分片、阻塞式刷新） | – | 支持 | 本章 |
+| RTSP（TCP 交织与 UDP），服务端与客户端 | 支持 | 支持 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
 | SRT live（ARQ、TSBPD、AES） | 支持 | 支持 | [SRT](media-srt.md) |
-| WHIP / WHEP | 信令（媒体可插入） | 信令 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
+| WHIP / WHEP（媒体需 `webrtc` feature） | 支持 | 支持 | [RTSP 与 WHIP/WHEP](media-rtsp.md) |
 
 编码：H.264、H.265、AAC 和 Opus，凡容器能承载之处都支持（容器允许时还有 G.711 与 MP3）。下面的代码片段
 来自 `crates/only-media/examples/guide-media.rs`。
@@ -96,6 +96,32 @@ Enhanced RTMP 的 FourCC `hvc1`、`Opus`、`mp4a`）；播放者先收到 onMeta
   并以 `EXT-X-DISCONTINUITY` 标记重新推流。设置 `part_duration` 后加入低延迟 HLS 标签：
   `EXT-X-PART`、`EXT-X-PRELOAD-HINT`、`EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES`，以及阻塞式播放列表
   刷新（`?_HLS_msn=&_HLS_part=`）。需要等待的请求被挂起（不占线程），在分段或分片切出时由推流者线程应答。
+- **fMP4 / CMAF 分段**：`HlsConfig::format = SegmentFormat::Fmp4` 切出分片 MP4 而非 MPEG-TS（H.264、
+  H.265、AAC 与 Opus）。播放列表用 `#EXT-X-MAP:URI="init-<n>.mp4"` 指向初始化分段（仅当编码配置变化时换新），
+  分段为 `seg-<n>.m4s`，LL-HLS 分片为 `part-<n>.<m>.m4s`，每个分片由一个或多个完整的 `moof`+`mdat`
+  组成。`only_media::fmp4`（`Muxer`、`Demuxer`）也可单独使用。
+
+## 转发：RTMP 客户端
+
+`only_media::rtmp::client` 把 hub 中的流推到另一台 RTMP 服务器，或从它拉流进 hub，使 `only-media`
+的 hub 可以喂给 CDN 或转发上游编码器：
+
+```rust,ignore
+use only_media::rtmp::client::{self, RtmpClientConfig};
+
+// hub 路径 live/cam -> rtmp://cdn.example/live/cam
+let push = client::push(&engine, "rtmp://203.0.113.9/live/cam", &hub, "live/cam",
+                        RtmpClientConfig::default())?;
+// rtmp://origin/live/in -> hub 路径 relay/in（立即预占）
+let pull = client::pull(&engine, "rtmp://203.0.113.10/live/in", &hub, "relay/in",
+                        RtmpClientConfig::default())?;
+```
+
+两者都立即返回；会话运行在 I/O 线程上（`Engine::dial`）。`state()` 与 `error()` 反映进展，`close()`
+（或丢弃句柄）结束会话。IP 字面量无需 DNS；主机名在调用线程上解析，所以请在 I/O 线程之外调用，或设置
+`RtmpClientConfig::addr`。每一步都有超时（连接、握手、每条命令的应答各 10 s；拉流 30 s 收不到数据即结束），
+收到的消息有上限（16 MiB），推流落后时先削减到关键帧再断开，与服务端的播放者相同。H.265 与 Opus 以
+Enhanced RTMP 发送。
 
 ## 运行
 
@@ -124,11 +150,14 @@ ffprobe / ffmpeg 作为播放端：
 | `ffmpeg -f rtsp rtsp://…` | RTMP、HTTP-FLV、HLS、RTSP（UDP） | H.264 + AAC |
 | `ffmpeg -f flv rtmp://…` | RTSP（TCP） | H.264 + AAC |
 | hub 推流者 | 手写的 HTTP-FLV、WS-FLV 与 HLS 客户端 | H.264 + AAC |
+| hub 推流者 | `ffprobe` / `ffmpeg -i …/index.m3u8`，fMP4，普通与 LL-HLS | H.264 + AAC、H.265 + AAC、H.265 + Opus |
+| RTMP 客户端推流 | `ffmpeg -listen 1 -i rtmp://…`、mediamtx（`--ignored`） | H.264 + AAC、H.265 + AAC |
+| `ffmpeg -listen 1 -f flv rtmp://…`、mediamtx | RTMP 客户端拉流 | H.264 + AAC、H.265 + AAC |
 
-RTSP 与 SRT 的互通表在各自章节中。模糊测试覆盖 RTMP 会话（`rtmp_server`）、FLV（`flv_demux`）、
-AMF（`amf_decode`）以及 RTSP、SDP、RTP、MPEG-TS 和 SRT 的解析器。
+RTSP 与 SRT 的互通表在各自章节中。模糊测试覆盖 RTMP 会话（`rtmp_server`）与客户端（`rtmp_client`）、
+FLV（`flv_demux`）、fMP4（`fmp4_demux`）、AMF（`amf_decode`）以及 RTSP、SDP、RTP、MPEG-TS 和 SRT 的解析器。
 
 ## 不支持
 
-fMP4 HLS 分段与 HLS 加密、RTMP 客户端（推 / 拉转发）、RTMPE / RTMPT、AMF3 应答、Enhanced RTMP
-多轨、AV1 / VP9、录制到文件、转码。
+HLS 加密与多码率主播放列表、RTMPS 客户端、RTMPE / RTMPT、AMF3 应答、Enhanced RTMP 多轨、hub 中的
+AV1 / VP9 / VP8、录制到文件、转码。

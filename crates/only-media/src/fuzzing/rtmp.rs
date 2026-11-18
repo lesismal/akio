@@ -7,7 +7,7 @@ use crate::{
     amf,
     flv::{Decoder, Demuxer},
     hub::Hub,
-    rtmp::{RtmpConfig, RtmpServer, handshake},
+    rtmp::{RtmpConfig, RtmpServer, client, handshake},
 };
 
 /// `rtmp_server`: an RTMP server session fed a valid simple handshake and then the fuzz
@@ -26,6 +26,34 @@ pub fn rtmp_server(data: &[u8]) {
         s.on_data(&c, p);
     }
     s.on_close(&c, None);
+}
+
+/// `rtmp_client`: an RTMP client session (push when `data[0]` is odd, pull otherwise) fed a
+/// valid S0 S1 S2 and then the fuzz input as the server's chunk stream (connect and
+/// createStream results, statuses, control messages, media into the hub). `data[0]` also
+/// splits the reads.
+pub fn rtmp_client(data: &[u8]) {
+    let _ = client_session(data);
+}
+
+/// Runs [`rtmp_client`]; the error that ended the client.
+fn client_session(data: &[u8]) -> Option<client::ClientError> {
+    let &first = data.first()?;
+    let hub = Hub::default();
+    let (acceptor, handle) = client::detached(first & 1 == 1, &hub);
+    let c = conn();
+    let mut s = acceptor.on_open(&c);
+    let s0s1s2 = handshake::server_reply(&handshake::client_hello(true)).unwrap_or_default();
+    s.on_data(&c, &s0s1s2);
+    for p in split(data) {
+        if !c.is_open() {
+            break;
+        }
+        s.on_data(&c, p);
+    }
+    let err = handle.error();
+    s.on_close(&c, None);
+    err
 }
 
 /// `flv_demux`: the FLV file demuxer and the tag decoder (legacy and Enhanced RTMP headers,
@@ -134,6 +162,80 @@ mod tests {
         v
     }
 
+    fn result(tx: f64, vals: Vec<Value>) -> Vec<u8> {
+        let mut v = vec![Value::from("_result"), Value::Number(tx)];
+        v.extend(vals);
+        cmd(&v, 0)
+    }
+
+    fn on_status(code: &str) -> Vec<u8> {
+        cmd(
+            &[
+                Value::from("onStatus"),
+                Value::Number(0.0),
+                Value::Null,
+                Value::object([
+                    ("level", Value::from("status")),
+                    ("code", Value::from(code)),
+                ]),
+            ],
+            1,
+        )
+    }
+
+    /// What a server says to a client: push (odd first byte) or pull (even).
+    fn rtmp_client_seeds() -> Vec<Vec<u8>> {
+        let mut connected = Vec::new();
+        chunk::write_message(
+            &mut connected,
+            &chunk::control_u32(chunk::WINDOW_ACK_SIZE, 4096),
+            128,
+        );
+        connected.extend(result(
+            1.0,
+            vec![
+                Value::object([("fmsVer", Value::from("FMS/3,0,1,123"))]),
+                Value::object([("code", Value::from("NetConnection.Connect.Success"))]),
+            ],
+        ));
+        let mut push = connected.clone();
+        push.extend(result(4.0, vec![Value::Null, Value::Number(1.0)]));
+        push.extend(on_status("NetStream.Publish.Start"));
+        chunk::write_message(&mut push, &chunk::user_control(6, 7), 128);
+        let mut pull = connected;
+        pull.extend(result(2.0, vec![Value::Null, Value::Number(1.0)]));
+        pull.extend(on_status("NetStream.Play.Start"));
+        let tags = Demuxer::new().feed(SAMPLE).unwrap_or_default();
+        for t in tags.iter().take(6) {
+            let mt = match t.tag_type {
+                8 => chunk::AUDIO,
+                9 => chunk::VIDEO,
+                _ => chunk::DATA_AMF0,
+            };
+            chunk::write_message(
+                &mut pull,
+                &Message::new(4, mt, 1, t.ts, t.body.clone()),
+                128,
+            );
+        }
+        let mut agg = Vec::new();
+        for t in tags.iter().skip(6).take(4) {
+            crate::flv::write_tag(&mut agg, t.tag_type, t.ts, &t.body);
+        }
+        chunk::write_message(
+            &mut pull,
+            &Message::new(4, chunk::AGGREGATE, 1, 500, agg),
+            128,
+        );
+        pull.extend(on_status("NetStream.Play.Stop"));
+        let mut v = Vec::new();
+        for (w, odd) in [(push, 1u8), (pull, 0)] {
+            v.push([&[odd][..], &w].concat());
+            v.push([&[6 + odd][..], &w].concat());
+        }
+        v
+    }
+
     fn flv_seeds() -> Vec<Vec<u8>> {
         let body = &SAMPLE[13..];
         vec![body[..body.len().min(4096)].to_vec()]
@@ -153,6 +255,7 @@ mod tests {
     #[test]
     fn replay_corpora() {
         assert!(replay(DIR, "rtmp_server", rtmp_server) > 0);
+        assert!(replay(DIR, "rtmp_client", rtmp_client) > 0);
         assert!(replay(DIR, "flv_demux", flv_demux) > 0);
         assert!(replay(DIR, "amf_decode", amf_decode) > 0);
     }
@@ -161,6 +264,16 @@ mod tests {
     fn seeds_run_clean() {
         for s in rtmp_seeds() {
             rtmp_server(&s);
+        }
+        // The seeds go all the way: a push to its hub subscription (no source: NotFound), a
+        // pull through its media to the server's Play.Stop.
+        for s in rtmp_client_seeds() {
+            let want = if s[0] & 1 == 1 {
+                client::ClientError::Hub(crate::hub::HubError::NotFound)
+            } else {
+                client::ClientError::Ended("NetStream.Play.Stop".into())
+            };
+            assert_eq!(client_session(&s), Some(want));
         }
         for s in flv_seeds() {
             flv_demux(&s);
@@ -175,6 +288,7 @@ mod tests {
     #[ignore]
     fn write_rtmp_fuzz_seeds() {
         write_target_seeds(DIR, "rtmp_server", &rtmp_seeds());
+        write_target_seeds(DIR, "rtmp_client", &rtmp_client_seeds());
         write_target_seeds(DIR, "flv_demux", &flv_seeds());
         write_target_seeds(DIR, "amf_decode", &amf_seeds());
     }

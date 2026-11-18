@@ -110,6 +110,12 @@ impl PeerInfo {
 pub type AuthHook = Arc<dyn Fn(&str, &PeerInfo) -> Result<(), String> + Send + Sync>;
 /// A hook observing a path's publisher leaving.
 pub type PathHook = Arc<dyn Fn(&str) + Send + Sync>;
+/// A publisher's answer to a keyframe request ([`Publisher::on_keyframe_request`]): a WebRTC
+/// ingest sends a PLI, an encoder it controls forces an IDR.
+pub type KeyframeHook = Arc<dyn Fn() + Send + Sync>;
+
+/// Default [`HubConfig::keyframe_request_interval`].
+pub const DEFAULT_KEYFRAME_REQUEST_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Default [`HubConfig::max_streams`]: bounds the stream table a client can grow by publishing
 /// or waiting on new paths.
@@ -136,6 +142,10 @@ pub struct HubConfig {
     pub on_unpublish: Option<PathHook>,
     /// Authorizes a play (every egress).
     pub on_subscribe: Option<AuthHook>,
+    /// Keyframe requests of one stream reach its publisher at most once per this interval
+    /// (the rest are dropped), so many players asking at once cost the publisher one
+    /// keyframe. Default 500 ms.
+    pub keyframe_request_interval: Duration,
 }
 
 impl Default for HubConfig {
@@ -147,6 +157,7 @@ impl Default for HubConfig {
             on_publish: None,
             on_unpublish: None,
             on_subscribe: None,
+            keyframe_request_interval: DEFAULT_KEYFRAME_REQUEST_INTERVAL,
         }
     }
 }
@@ -157,6 +168,7 @@ impl fmt::Debug for HubConfig {
             .field("gop_cache_bytes", &self.gop_cache_bytes)
             .field("max_streams", &self.max_streams)
             .field("max_subscribers", &self.max_subscribers)
+            .field("keyframe_request_interval", &self.keyframe_request_interval)
             .finish_non_exhaustive()
     }
 }
@@ -269,6 +281,16 @@ struct Stream {
     sweep: AtomicBool,
     dropped: Arc<AtomicU64>,
     state: Mutex<State>,
+    /// Kept apart from `state` so that a sink (which runs under `state`) may ask too.
+    keyframe: Mutex<KeyframeReq>,
+}
+
+#[derive(Default)]
+struct KeyframeReq {
+    /// The publisher the hook belongs to.
+    owner: u64,
+    hook: Option<KeyframeHook>,
+    last: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -377,6 +399,30 @@ impl State {
 }
 
 impl Stream {
+    /// Passes a keyframe request to the publisher's hook, at most once per interval.
+    fn request_keyframe(&self) -> bool {
+        let interval = self
+            .hub
+            .upgrade()
+            .map_or(DEFAULT_KEYFRAME_REQUEST_INTERVAL, |h| {
+                h.cfg.keyframe_request_interval
+            });
+        let hook = {
+            let mut k = lock(&self.keyframe);
+            let Some(hook) = k.hook.clone() else {
+                return false;
+            };
+            let now = Instant::now();
+            if k.last.is_some_and(|t| now.duration_since(t) < interval) {
+                return false;
+            }
+            k.last = Some(now);
+            hook
+        };
+        hook();
+        true
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         lock(&self.state)
     }
@@ -520,6 +566,7 @@ impl Hub {
             sweep: AtomicBool::new(false),
             dropped: Arc::new(AtomicU64::new(0)),
             state: Mutex::new(State::default()),
+            keyframe: Mutex::new(KeyframeReq::default()),
         });
         map.insert(path.to_owned(), st.clone());
         Ok(st)
@@ -621,6 +668,7 @@ impl Hub {
         }
         let waits = opts.wait.is_some() || opts.start_wait.is_some();
         loop {
+            let mut need_key = false;
             let st = self.stream(path, waits)?;
             let mut g = st.lock();
             if g.removed {
@@ -660,12 +708,17 @@ impl Hub {
                     }
                     s.wait_key = false;
                 }
+                need_key = s.wait_key;
             } else {
                 State::arm_timer(&st, &mut s);
             }
             s.sink = sink;
             g.subs.push(s);
             st.release(g);
+            if need_key {
+                // Video starts at the next keyframe: ask for one now rather than waiting a GOP.
+                st.request_keyframe();
+            }
             return Ok(Subscription {
                 st,
                 closed,
@@ -686,6 +739,14 @@ impl Hub {
     pub fn stream_info(&self, path: &str) -> Option<StreamInfo> {
         let st = self.lock_map().get(path).cloned()?;
         st.info()
+    }
+
+    /// Asks the publisher of `path` for a keyframe (see [`Publisher::on_keyframe_request`]).
+    /// `true` when the request reached a hook; requests closer together than
+    /// [`HubConfig::keyframe_request_interval`] are dropped.
+    pub fn request_keyframe(&self, path: &str) -> bool {
+        let st = self.lock_map().get(path).cloned();
+        st.is_some_and(|st| st.request_keyframe())
     }
 
     /// Closes the hub: every subscription hears `on_close(Closed)`, publishers' packets are
@@ -771,6 +832,18 @@ impl Publisher {
         self.st.lock().publisher == Some(self.id)
     }
 
+    /// Sets what to do when a subscriber asks for a keyframe ([`Subscription::request_keyframe`],
+    /// [`Hub::request_keyframe`], or a subscriber joining video with no keyframe cached). The
+    /// hook runs on the requester's thread, possibly under another stream's lock: it must not
+    /// block or call into the hub. A WebRTC ingest maps it to a PLI. Replaces an earlier hook;
+    /// cleared when the publisher closes.
+    pub fn on_keyframe_request(&self, hook: impl Fn() + Send + Sync + 'static) {
+        let mut k = lock(&self.st.keyframe);
+        k.owner = self.id;
+        k.hook = Some(Arc::new(hook));
+        k.last = None;
+    }
+
     /// Hands `pkt` to the stream: it goes into the GOP cache and to every subscriber before
     /// this returns. Packets of a closed or reserved publisher, or of a track index the stream
     /// does not have, are dropped.
@@ -849,6 +922,12 @@ impl Publisher {
             return;
         }
         let was_reserved = g.reserved;
+        {
+            let mut k = lock(&self.st.keyframe);
+            if k.owner == self.id {
+                *k = KeyframeReq::default();
+            }
+        }
         g.publisher = None;
         g.reserved = false;
         g.pub_info = PeerInfo::default();
@@ -918,6 +997,14 @@ impl Subscription {
     /// Whether the subscription is over (closed, or ended by the hub).
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Asks the stream's publisher for a keyframe (a player lost video: a WebRTC viewer's PLI
+    /// or FIR). Never blocks and may be called from a sink's callbacks. `true` when the
+    /// request reached the publisher's hook ([`Publisher::on_keyframe_request`]); requests
+    /// closer together than [`HubConfig::keyframe_request_interval`] are dropped.
+    pub fn request_keyframe(&self) -> bool {
+        !self.is_closed() && self.st.request_keyframe()
     }
 
     /// Ends the subscription; its sink hears no `on_close`. Never blocks, so it may be called
@@ -1479,5 +1566,46 @@ mod tests {
             .subscribe("s0", Rec::default(), SubscribeOptions::default())
             .unwrap();
         hub.close();
+    }
+
+    #[test]
+    fn keyframe_requests_reach_the_publisher_throttled() {
+        let hub = Hub::new(HubConfig {
+            gop_cache_bytes: 0,
+            keyframe_request_interval: Duration::from_millis(100),
+            ..HubConfig::default()
+        });
+        let p = hub.publish("k", av_tracks(), PeerInfo::default()).unwrap();
+        // No hook yet: nothing to reach.
+        assert!(!hub.request_keyframe("k"));
+        let n = Arc::new(AtomicU64::new(0));
+        let n2 = n.clone();
+        p.on_keyframe_request(move || {
+            n2.fetch_add(1, Ordering::SeqCst);
+        });
+        // A video subscriber without a cached keyframe asks at once.
+        let (r, _log) = rec();
+        let sub = hub.subscribe("k", r, SubscribeOptions::default()).unwrap();
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        // Throttled within the interval, through either entry point.
+        assert!(!sub.request_keyframe());
+        assert!(!hub.request_keyframe("k"));
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(sub.request_keyframe());
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        assert!(!hub.request_keyframe("missing"));
+        // Closing the publisher clears the hook.
+        p.close();
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(!hub.request_keyframe("k"));
+        drop(sub);
+        assert!(!Subscription::is_closed(
+            &hub.subscribe(
+                "k",
+                Rec::default(),
+                SubscribeOptions::default().wait(Duration::from_millis(10))
+            )
+            .unwrap()
+        ));
     }
 }

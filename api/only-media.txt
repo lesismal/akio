@@ -533,7 +533,96 @@ pub fn only_media::flv::parse_audio(&[u8]) -> core::result::Result<only_media::f
 pub fn only_media::flv::parse_video(&[u8]) -> core::result::Result<only_media::flv::VideoTag<'_>, only_media::flv::FlvError>
 pub fn only_media::flv::write_header(&mut alloc::vec::Vec<u8>, bool, bool)
 pub fn only_media::flv::write_tag(&mut alloc::vec::Vec<u8>, u8, u32, &[u8])
+pub mod only_media::fmp4
+#[non_exhaustive] pub enum only_media::fmp4::Event
+pub only_media::fmp4::Event::Packet(only_media::av::Packet)
+pub only_media::fmp4::Event::Tracks(only_media::av::Tracks)
+impl core::clone::Clone for only_media::fmp4::Event
+pub fn only_media::fmp4::Event::clone(&self) -> Self
+impl core::fmt::Debug for only_media::fmp4::Event
+pub fn only_media::fmp4::Event::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::fmp4::Event
+impl core::marker::Sync for only_media::fmp4::Event
+impl core::marker::Unpin for only_media::fmp4::Event
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::fmp4::Event
+impl core::panic::unwind_safe::UnwindSafe for only_media::fmp4::Event
+#[non_exhaustive] pub enum only_media::fmp4::Fmp4Error
+pub only_media::fmp4::Fmp4Error::Invalid(&'static str)
+pub only_media::fmp4::Fmp4Error::Limit(&'static str)
+pub only_media::fmp4::Fmp4Error::Truncated
+impl core::clone::Clone for only_media::fmp4::Fmp4Error
+pub fn only_media::fmp4::Fmp4Error::clone(&self) -> Self
+impl core::cmp::Eq for only_media::fmp4::Fmp4Error
+impl core::cmp::PartialEq for only_media::fmp4::Fmp4Error
+pub fn only_media::fmp4::Fmp4Error::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::fmp4::Fmp4Error
+impl core::fmt::Debug for only_media::fmp4::Fmp4Error
+pub fn only_media::fmp4::Fmp4Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::fmp4::Fmp4Error
+pub fn only_media::fmp4::Fmp4Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::fmp4::Fmp4Error
+impl core::marker::Send for only_media::fmp4::Fmp4Error
+impl core::marker::Sync for only_media::fmp4::Fmp4Error
+impl core::marker::Unpin for only_media::fmp4::Fmp4Error
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::fmp4::Fmp4Error
+impl core::panic::unwind_safe::UnwindSafe for only_media::fmp4::Fmp4Error
+pub struct only_media::fmp4::Demuxer
+impl only_media::fmp4::Demuxer
+pub fn only_media::fmp4::Demuxer::feed(&mut self, &[u8], &mut impl core::ops::function::FnMut(only_media::fmp4::Event)) -> core::result::Result<(), only_media::fmp4::Fmp4Error>
+pub fn only_media::fmp4::Demuxer::new() -> only_media::fmp4::Demuxer
+pub fn only_media::fmp4::Demuxer::tracks(&self) -> core::option::Option<&only_media::av::Tracks>
+impl core::default::Default for only_media::fmp4::Demuxer
+pub fn only_media::fmp4::Demuxer::default() -> Self
+impl core::fmt::Debug for only_media::fmp4::Demuxer
+pub fn only_media::fmp4::Demuxer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::fmp4::Demuxer
+impl core::marker::Sync for only_media::fmp4::Demuxer
+impl core::marker::Unpin for only_media::fmp4::Demuxer
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::fmp4::Demuxer
+impl core::panic::unwind_safe::UnwindSafe for only_media::fmp4::Demuxer
+pub struct only_media::fmp4::Muxer
+impl only_media::fmp4::Muxer
+pub fn only_media::fmp4::Muxer::carries(&self, usize) -> bool
+pub fn only_media::fmp4::Muxer::flush(&mut self, core::option::Option<only_media::av::Time>, &mut alloc::vec::Vec<u8>) -> bool
+pub fn only_media::fmp4::Muxer::has_pending(&self) -> bool
+pub fn only_media::fmp4::Muxer::has_tracks(&self) -> bool
+pub fn only_media::fmp4::Muxer::init_segment(&self) -> &[u8]
+pub fn only_media::fmp4::Muxer::new(&[only_media::av::Track]) -> only_media::fmp4::Muxer
+pub fn only_media::fmp4::Muxer::pending_bytes(&self) -> usize
+pub fn only_media::fmp4::Muxer::write_packet(&mut self, &only_media::av::Packet) -> bool
+impl core::fmt::Debug for only_media::fmp4::Muxer
+pub fn only_media::fmp4::Muxer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::fmp4::Muxer
+impl core::marker::Sync for only_media::fmp4::Muxer
+impl core::marker::Unpin for only_media::fmp4::Muxer
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::fmp4::Muxer
+impl core::panic::unwind_safe::UnwindSafe for only_media::fmp4::Muxer
+pub fn only_media::fmp4::write_styp(&mut alloc::vec::Vec<u8>)
 pub mod only_media::hls
+#[non_exhaustive] pub enum only_media::hls::SegmentFormat
+pub only_media::hls::SegmentFormat::Fmp4
+pub only_media::hls::SegmentFormat::MpegTs
+impl only_media::hls::SegmentFormat
+pub fn only_media::hls::SegmentFormat::content_type(self) -> &'static str
+pub fn only_media::hls::SegmentFormat::extension(self) -> &'static str
+impl core::clone::Clone for only_media::hls::SegmentFormat
+pub fn only_media::hls::SegmentFormat::clone(&self) -> Self
+impl core::cmp::Eq for only_media::hls::SegmentFormat
+impl core::cmp::PartialEq for only_media::hls::SegmentFormat
+pub fn only_media::hls::SegmentFormat::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::hls::SegmentFormat
+pub fn only_media::hls::SegmentFormat::default() -> Self
+impl core::fmt::Debug for only_media::hls::SegmentFormat
+pub fn only_media::hls::SegmentFormat::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_media::hls::SegmentFormat
+pub fn only_media::hls::SegmentFormat::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_media::hls::SegmentFormat
+impl core::marker::StructuralPartialEq for only_media::hls::SegmentFormat
+impl core::marker::Send for only_media::hls::SegmentFormat
+impl core::marker::Sync for only_media::hls::SegmentFormat
+impl core::marker::Unpin for only_media::hls::SegmentFormat
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::hls::SegmentFormat
+impl core::panic::unwind_safe::UnwindSafe for only_media::hls::SegmentFormat
 pub struct only_media::hls::Hls(_)
 impl only_media::hls::Hls
 pub fn only_media::hls::Hls::active(&self) -> alloc::vec::Vec<alloc::string::String>
@@ -551,6 +640,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hls::Hls
 impl !core::panic::unwind_safe::UnwindSafe for only_media::hls::Hls
 #[non_exhaustive] pub struct only_media::hls::HlsConfig
 pub only_media::hls::HlsConfig::cors_origin: core::option::Option<alloc::string::String>
+pub only_media::hls::HlsConfig::format: only_media::hls::SegmentFormat
 pub only_media::hls::HlsConfig::idle_timeout: core::time::Duration
 pub only_media::hls::HlsConfig::keep_segments: usize
 pub only_media::hls::HlsConfig::max_bytes: usize
@@ -666,6 +756,7 @@ impl only_media::hub::Hub
 pub fn only_media::hub::Hub::close(&self)
 pub fn only_media::hub::Hub::new(only_media::hub::HubConfig) -> only_media::hub::Hub
 pub fn only_media::hub::Hub::publish(&self, &str, only_media::av::Tracks, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
+pub fn only_media::hub::Hub::request_keyframe(&self, &str) -> bool
 pub fn only_media::hub::Hub::reserve(&self, &str, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
 pub fn only_media::hub::Hub::stream_info(&self, &str) -> core::option::Option<only_media::hub::StreamInfo>
 pub fn only_media::hub::Hub::streams(&self) -> alloc::vec::Vec<only_media::hub::StreamInfo>
@@ -684,6 +775,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Hub
 impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Hub
 #[non_exhaustive] pub struct only_media::hub::HubConfig
 pub only_media::hub::HubConfig::gop_cache_bytes: usize
+pub only_media::hub::HubConfig::keyframe_request_interval: core::time::Duration
 pub only_media::hub::HubConfig::max_streams: usize
 pub only_media::hub::HubConfig::max_subscribers: usize
 pub only_media::hub::HubConfig::on_publish: core::option::Option<only_media::hub::AuthHook>
@@ -725,6 +817,7 @@ pub struct only_media::hub::Publisher
 impl only_media::hub::Publisher
 pub fn only_media::hub::Publisher::close(&self)
 pub fn only_media::hub::Publisher::is_active(&self) -> bool
+pub fn only_media::hub::Publisher::on_keyframe_request(&self, impl core::ops::function::Fn() + core::marker::Send + core::marker::Sync + 'static)
 pub fn only_media::hub::Publisher::path(&self) -> &str
 pub fn only_media::hub::Publisher::set_tracks(&self, only_media::av::Tracks)
 pub fn only_media::hub::Publisher::tracks(&self) -> core::option::Option<only_media::av::Tracks>
@@ -784,6 +877,7 @@ pub fn only_media::hub::Subscription::close(&self)
 pub fn only_media::hub::Subscription::drop_counter(&mut self) -> alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>
 pub fn only_media::hub::Subscription::is_closed(&self) -> bool
 pub fn only_media::hub::Subscription::path(&self) -> &str
+pub fn only_media::hub::Subscription::request_keyframe(&self) -> bool
 impl core::fmt::Debug for only_media::hub::Subscription
 pub fn only_media::hub::Subscription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for only_media::hub::Subscription
@@ -814,6 +908,7 @@ impl core::marker::Unpin for only_media::hub::Timeline
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Timeline
 impl core::panic::unwind_safe::UnwindSafe for only_media::hub::Timeline
 pub const only_media::hub::DEFAULT_GOP_CACHE_BYTES: usize
+pub const only_media::hub::DEFAULT_KEYFRAME_REQUEST_INTERVAL: core::time::Duration
 pub const only_media::hub::DEFAULT_MAX_STREAMS: usize
 pub const only_media::hub::DEFAULT_MAX_SUBSCRIBERS: usize
 pub trait only_media::hub::Sink: core::marker::Send + 'static
@@ -827,6 +922,7 @@ pub fn only_media::hub::Dropper<S>::on_close(&mut self, only_media::hub::HubErro
 pub fn only_media::hub::Dropper<S>::on_packet(&mut self, &alloc::rcs::arc::Arc<only_media::av::Packet>)
 pub fn only_media::hub::Dropper<S>::on_tracks(&mut self, &only_media::av::Tracks)
 pub type only_media::hub::AuthHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str, &only_media::hub::PeerInfo) -> core::result::Result<(), alloc::string::String> + core::marker::Send + core::marker::Sync)>
+pub type only_media::hub::KeyframeHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn() + core::marker::Send + core::marker::Sync)>
 pub type only_media::hub::PathHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&str) + core::marker::Send + core::marker::Sync)>
 pub mod only_media::mpegts
 pub mod only_media::mpegts::demux
@@ -979,6 +1075,127 @@ pub fn only_media::rtmp::chunk::peer_bandwidth(u32) -> only_media::rtmp::chunk::
 pub fn only_media::rtmp::chunk::split_aggregate(&only_media::rtmp::chunk::Message) -> alloc::vec::Vec<only_media::rtmp::chunk::Message>
 pub fn only_media::rtmp::chunk::user_control(u16, u32) -> only_media::rtmp::chunk::Message
 pub fn only_media::rtmp::chunk::write_message(&mut alloc::vec::Vec<u8>, &only_media::rtmp::chunk::Message, usize)
+pub mod only_media::rtmp::client
+#[non_exhaustive] pub enum only_media::rtmp::client::ClientError
+pub only_media::rtmp::client::ClientError::BadUrl(alloc::string::String)
+pub only_media::rtmp::client::ClientError::Connect(alloc::string::String)
+pub only_media::rtmp::client::ClientError::Disconnected(alloc::string::String)
+pub only_media::rtmp::client::ClientError::Ended(alloc::string::String)
+pub only_media::rtmp::client::ClientError::Handshake
+pub only_media::rtmp::client::ClientError::Hub(only_media::hub::HubError)
+pub only_media::rtmp::client::ClientError::Protocol(alloc::string::String)
+pub only_media::rtmp::client::ClientError::Rejected
+pub only_media::rtmp::client::ClientError::Rejected::code: alloc::string::String
+pub only_media::rtmp::client::ClientError::Rejected::description: alloc::string::String
+pub only_media::rtmp::client::ClientError::Resolve(alloc::string::String)
+pub only_media::rtmp::client::ClientError::TimedOut(&'static str)
+pub only_media::rtmp::client::ClientError::WriteQueueFull
+impl core::clone::Clone for only_media::rtmp::client::ClientError
+pub fn only_media::rtmp::client::ClientError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtmp::client::ClientError
+impl core::cmp::PartialEq for only_media::rtmp::client::ClientError
+pub fn only_media::rtmp::client::ClientError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtmp::client::ClientError
+impl core::fmt::Debug for only_media::rtmp::client::ClientError
+pub fn only_media::rtmp::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtmp::client::ClientError
+pub fn only_media::rtmp::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtmp::client::ClientError
+impl core::marker::Send for only_media::rtmp::client::ClientError
+impl core::marker::Sync for only_media::rtmp::client::ClientError
+impl core::marker::Unpin for only_media::rtmp::client::ClientError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::client::ClientError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::client::ClientError
+#[non_exhaustive] pub enum only_media::rtmp::client::ClientState
+pub only_media::rtmp::client::ClientState::Closed
+pub only_media::rtmp::client::ClientState::Connecting
+pub only_media::rtmp::client::ClientState::Handshaking
+pub only_media::rtmp::client::ClientState::Negotiating
+pub only_media::rtmp::client::ClientState::Streaming
+impl core::clone::Clone for only_media::rtmp::client::ClientState
+pub fn only_media::rtmp::client::ClientState::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtmp::client::ClientState
+impl core::cmp::PartialEq for only_media::rtmp::client::ClientState
+pub fn only_media::rtmp::client::ClientState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtmp::client::ClientState
+pub fn only_media::rtmp::client::ClientState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::rtmp::client::ClientState
+impl core::marker::StructuralPartialEq for only_media::rtmp::client::ClientState
+impl core::marker::Send for only_media::rtmp::client::ClientState
+impl core::marker::Sync for only_media::rtmp::client::ClientState
+impl core::marker::Unpin for only_media::rtmp::client::ClientState
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::client::ClientState
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::client::ClientState
+pub struct only_media::rtmp::client::RtmpClient
+impl only_media::rtmp::client::RtmpClient
+pub fn only_media::rtmp::client::RtmpClient::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_media::rtmp::client::RtmpClient::close(&self)
+pub fn only_media::rtmp::client::RtmpClient::error(&self) -> core::option::Option<only_media::rtmp::client::ClientError>
+pub fn only_media::rtmp::client::RtmpClient::is_closed(&self) -> bool
+pub fn only_media::rtmp::client::RtmpClient::state(&self) -> only_media::rtmp::client::ClientState
+pub fn only_media::rtmp::client::RtmpClient::url(&self) -> &only_media::rtmp::client::RtmpUrl
+impl core::fmt::Debug for only_media::rtmp::client::RtmpClient
+pub fn only_media::rtmp::client::RtmpClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_media::rtmp::client::RtmpClient
+pub fn only_media::rtmp::client::RtmpClient::drop(&mut self)
+impl core::marker::Send for only_media::rtmp::client::RtmpClient
+impl core::marker::Sync for only_media::rtmp::client::RtmpClient
+impl core::marker::Unpin for only_media::rtmp::client::RtmpClient
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::client::RtmpClient
+impl !core::panic::unwind_safe::UnwindSafe for only_media::rtmp::client::RtmpClient
+#[non_exhaustive] pub struct only_media::rtmp::client::RtmpClientConfig
+pub only_media::rtmp::client::RtmpClientConfig::addr: core::option::Option<core::net::socket_addr::SocketAddr>
+pub only_media::rtmp::client::RtmpClientConfig::buffer_length: core::time::Duration
+pub only_media::rtmp::client::RtmpClientConfig::chunk_size: u32
+pub only_media::rtmp::client::RtmpClientConfig::connect_timeout: core::time::Duration
+pub only_media::rtmp::client::RtmpClientConfig::encoder: only_media::flv::EncoderConfig
+pub only_media::rtmp::client::RtmpClientConfig::flash_ver: core::option::Option<alloc::string::String>
+pub only_media::rtmp::client::RtmpClientConfig::handshake_timeout: core::time::Duration
+pub only_media::rtmp::client::RtmpClientConfig::idle_timeout: core::time::Duration
+pub only_media::rtmp::client::RtmpClientConfig::max_message_size: usize
+pub only_media::rtmp::client::RtmpClientConfig::max_write_queue: usize
+pub only_media::rtmp::client::RtmpClientConfig::response_timeout: core::time::Duration
+pub only_media::rtmp::client::RtmpClientConfig::simple_handshake: bool
+pub only_media::rtmp::client::RtmpClientConfig::source_wait: core::option::Option<core::time::Duration>
+pub only_media::rtmp::client::RtmpClientConfig::window_ack_size: u32
+pub only_media::rtmp::client::RtmpClientConfig::write_queue_limit: usize
+impl core::clone::Clone for only_media::rtmp::client::RtmpClientConfig
+pub fn only_media::rtmp::client::RtmpClientConfig::clone(&self) -> Self
+impl core::default::Default for only_media::rtmp::client::RtmpClientConfig
+pub fn only_media::rtmp::client::RtmpClientConfig::default() -> Self
+impl core::fmt::Debug for only_media::rtmp::client::RtmpClientConfig
+pub fn only_media::rtmp::client::RtmpClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtmp::client::RtmpClientConfig
+impl core::marker::Sync for only_media::rtmp::client::RtmpClientConfig
+impl core::marker::Unpin for only_media::rtmp::client::RtmpClientConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::client::RtmpClientConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::client::RtmpClientConfig
+#[non_exhaustive] pub struct only_media::rtmp::client::RtmpUrl
+pub only_media::rtmp::client::RtmpUrl::app: alloc::string::String
+pub only_media::rtmp::client::RtmpUrl::host: alloc::string::String
+pub only_media::rtmp::client::RtmpUrl::port: u16
+pub only_media::rtmp::client::RtmpUrl::stream: alloc::string::String
+pub only_media::rtmp::client::RtmpUrl::tc_url: alloc::string::String
+impl only_media::rtmp::client::RtmpUrl
+pub fn only_media::rtmp::client::RtmpUrl::parse(&str) -> core::result::Result<only_media::rtmp::client::RtmpUrl, only_media::rtmp::client::ClientError>
+pub fn only_media::rtmp::client::RtmpUrl::query(&self) -> &str
+pub fn only_media::rtmp::client::RtmpUrl::resolve(&self) -> core::result::Result<core::net::socket_addr::SocketAddr, only_media::rtmp::client::ClientError>
+impl core::clone::Clone for only_media::rtmp::client::RtmpUrl
+pub fn only_media::rtmp::client::RtmpUrl::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtmp::client::RtmpUrl
+impl core::cmp::PartialEq for only_media::rtmp::client::RtmpUrl
+pub fn only_media::rtmp::client::RtmpUrl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_media::rtmp::client::RtmpUrl
+pub fn only_media::rtmp::client::RtmpUrl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtmp::client::RtmpUrl
+impl core::marker::Send for only_media::rtmp::client::RtmpUrl
+impl core::marker::Sync for only_media::rtmp::client::RtmpUrl
+impl core::marker::Unpin for only_media::rtmp::client::RtmpUrl
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtmp::client::RtmpUrl
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtmp::client::RtmpUrl
+pub const only_media::rtmp::client::DEFAULT_PORT: u16
+pub fn only_media::rtmp::client::pull(&only::Engine, &str, &only_media::hub::Hub, &str, only_media::rtmp::client::RtmpClientConfig) -> core::result::Result<only_media::rtmp::client::RtmpClient, only_media::rtmp::client::ClientError>
+pub fn only_media::rtmp::client::push(&only::Engine, &str, &only_media::hub::Hub, &str, only_media::rtmp::client::RtmpClientConfig) -> core::result::Result<only_media::rtmp::client::RtmpClient, only_media::rtmp::client::ClientError>
 pub mod only_media::rtmp::handshake
 pub struct only_media::rtmp::handshake::HandshakeError
 impl core::clone::Clone for only_media::rtmp::handshake::HandshakeError
@@ -1136,11 +1353,106 @@ pub fn only_media::rtp::ntp_now() -> u64
 pub fn only_media::rtp::sender_report(u32, u64, u32, u32, u32) -> alloc::vec::Vec<u8>
 pub fn only_media::rtp::supported(only_media::av::Codec) -> bool
 pub mod only_media::rtsp
+pub mod only_media::rtsp::client
+#[non_exhaustive] pub enum only_media::rtsp::client::ClientError
+pub only_media::rtsp::client::ClientError::Closed
+pub only_media::rtsp::client::ClientError::Connect(alloc::string::String)
+pub only_media::rtsp::client::ClientError::Hub(only_media::hub::HubError)
+pub only_media::rtsp::client::ClientError::Io(alloc::string::String)
+pub only_media::rtsp::client::ClientError::NoTracks
+pub only_media::rtsp::client::ClientError::Protocol(alloc::string::String)
+pub only_media::rtsp::client::ClientError::Resolve(alloc::string::String)
+pub only_media::rtsp::client::ClientError::Status
+pub only_media::rtsp::client::ClientError::Status::method: &'static str
+pub only_media::rtsp::client::ClientError::Status::reason: alloc::string::String
+pub only_media::rtsp::client::ClientError::Status::status: u16
+pub only_media::rtsp::client::ClientError::Timeout(&'static str)
+pub only_media::rtsp::client::ClientError::Unauthorized
+pub only_media::rtsp::client::ClientError::Url(alloc::string::String)
+pub only_media::rtsp::client::ClientError::WriteQueueFull
+impl core::clone::Clone for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::client::ClientError
+impl core::cmp::PartialEq for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtsp::client::ClientError
+impl core::fmt::Debug for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::client::ClientError
+impl core::marker::Send for only_media::rtsp::client::ClientError
+impl core::marker::Sync for only_media::rtsp::client::ClientError
+impl core::marker::Unpin for only_media::rtsp::client::ClientError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::ClientError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::ClientError
+#[non_exhaustive] pub enum only_media::rtsp::client::RtspTransport
+pub only_media::rtsp::client::RtspTransport::Tcp
+pub only_media::rtsp::client::RtspTransport::Udp
+impl core::clone::Clone for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::client::RtspTransport
+impl core::cmp::PartialEq for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::rtsp::client::RtspTransport
+impl core::marker::StructuralPartialEq for only_media::rtsp::client::RtspTransport
+impl core::marker::Send for only_media::rtsp::client::RtspTransport
+impl core::marker::Sync for only_media::rtsp::client::RtspTransport
+impl core::marker::Unpin for only_media::rtsp::client::RtspTransport
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::RtspTransport
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::RtspTransport
+pub struct only_media::rtsp::client::RtspClient(_)
+impl only_media::rtsp::client::RtspClient
+pub fn only_media::rtsp::client::RtspClient::close(&self)
+pub fn only_media::rtsp::client::RtspClient::error(&self) -> core::option::Option<only_media::rtsp::client::ClientError>
+pub fn only_media::rtsp::client::RtspClient::is_closed(&self) -> bool
+pub fn only_media::rtsp::client::RtspClient::path(&self) -> &str
+impl core::fmt::Debug for only_media::rtsp::client::RtspClient
+pub fn only_media::rtsp::client::RtspClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_media::rtsp::client::RtspClient
+pub fn only_media::rtsp::client::RtspClient::drop(&mut self)
+impl core::marker::Send for only_media::rtsp::client::RtspClient
+impl core::marker::Sync for only_media::rtsp::client::RtspClient
+impl core::marker::Unpin for only_media::rtsp::client::RtspClient
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::RtspClient
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::RtspClient
+#[non_exhaustive] pub struct only_media::rtsp::client::RtspClientConfig
+pub only_media::rtsp::client::RtspClientConfig::addr: core::option::Option<core::net::socket_addr::SocketAddr>
+pub only_media::rtsp::client::RtspClientConfig::connect_timeout: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::idle_timeout: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::keepalive: core::option::Option<core::time::Duration>
+pub only_media::rtsp::client::RtspClientConfig::max_body: usize
+pub only_media::rtsp::client::RtspClientConfig::max_head: usize
+pub only_media::rtsp::client::RtspClientConfig::max_write_queue: usize
+pub only_media::rtsp::client::RtspClientConfig::push_wait: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::response_timeout: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::sender_report_interval: core::time::Duration
+pub only_media::rtsp::client::RtspClientConfig::transport: only_media::rtsp::client::RtspTransport
+pub only_media::rtsp::client::RtspClientConfig::user_agent: alloc::string::String
+pub only_media::rtsp::client::RtspClientConfig::write_queue_limit: usize
+impl core::clone::Clone for only_media::rtsp::client::RtspClientConfig
+pub fn only_media::rtsp::client::RtspClientConfig::clone(&self) -> Self
+impl core::default::Default for only_media::rtsp::client::RtspClientConfig
+pub fn only_media::rtsp::client::RtspClientConfig::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::client::RtspClientConfig
+pub fn only_media::rtsp::client::RtspClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtsp::client::RtspClientConfig
+impl core::marker::Sync for only_media::rtsp::client::RtspClientConfig
+impl core::marker::Unpin for only_media::rtsp::client::RtspClientConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::RtspClientConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::RtspClientConfig
+pub fn only_media::rtsp::client::pull(&only::Engine, &str, &only_media::hub::Hub, &str, only_media::rtsp::client::RtspClientConfig) -> core::result::Result<only_media::rtsp::client::RtspClient, only_media::rtsp::client::ClientError>
+pub fn only_media::rtsp::client::push(&only::Engine, &str, &only_media::hub::Hub, &str, only_media::rtsp::client::RtspClientConfig) -> core::result::Result<only_media::rtsp::client::RtspClient, only_media::rtsp::client::ClientError>
 pub mod only_media::rtsp::message
 #[non_exhaustive] pub enum only_media::rtsp::message::Frame
 pub only_media::rtsp::message::Frame::Interleaved
 pub only_media::rtsp::message::Frame::Interleaved::channel: u8
 pub only_media::rtsp::message::Frame::Interleaved::data: alloc::vec::Vec<u8>
+pub only_media::rtsp::message::Frame::Reply(only_media::rtsp::message::Reply)
 pub only_media::rtsp::message::Frame::Request(only_media::rtsp::message::Request)
 pub only_media::rtsp::message::Frame::Response(u16)
 impl core::clone::Clone for only_media::rtsp::message::Frame
@@ -1178,6 +1490,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Rtsp
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::RtspError
 pub struct only_media::rtsp::message::Parser
 impl only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::client(usize, usize) -> only_media::rtsp::message::Parser
 pub fn only_media::rtsp::message::Parser::feed(&mut self, &[u8], &mut alloc::vec::Vec<only_media::rtsp::message::Frame>) -> core::result::Result<(), only_media::rtsp::message::RtspError>
 pub fn only_media::rtsp::message::Parser::new(usize, usize) -> only_media::rtsp::message::Parser
 impl core::default::Default for only_media::rtsp::message::Parser
@@ -1189,6 +1502,30 @@ impl core::marker::Sync for only_media::rtsp::message::Parser
 impl core::marker::Unpin for only_media::rtsp::message::Parser
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Parser
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Parser
+#[non_exhaustive] pub struct only_media::rtsp::message::Reply
+pub only_media::rtsp::message::Reply::body: alloc::vec::Vec<u8>
+pub only_media::rtsp::message::Reply::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_media::rtsp::message::Reply::reason: alloc::string::String
+pub only_media::rtsp::message::Reply::status: u16
+impl only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::cseq(&self) -> core::option::Option<&str>
+pub fn only_media::rtsp::message::Reply::header(&self, &str) -> core::option::Option<&str>
+pub fn only_media::rtsp::message::Reply::headers_named<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a str> + 'a
+impl core::clone::Clone for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Reply
+impl core::cmp::PartialEq for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Reply
+impl core::marker::Send for only_media::rtsp::message::Reply
+impl core::marker::Sync for only_media::rtsp::message::Reply
+impl core::marker::Unpin for only_media::rtsp::message::Reply
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Reply
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Reply
 #[non_exhaustive] pub struct only_media::rtsp::message::Request
 pub only_media::rtsp::message::Request::body: alloc::vec::Vec<u8>
 pub only_media::rtsp::message::Request::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
@@ -1265,10 +1602,43 @@ pub const only_media::rtsp::message::MAX_BODY: usize
 pub const only_media::rtsp::message::MAX_HEAD: usize
 pub fn only_media::rtsp::message::interleaved(u8, &[u8], &mut alloc::vec::Vec<u8>)
 pub fn only_media::rtsp::message::reason(u16) -> &'static str
+#[non_exhaustive] pub enum only_media::rtsp::ClientError
+pub only_media::rtsp::ClientError::Closed
+pub only_media::rtsp::ClientError::Connect(alloc::string::String)
+pub only_media::rtsp::ClientError::Hub(only_media::hub::HubError)
+pub only_media::rtsp::ClientError::Io(alloc::string::String)
+pub only_media::rtsp::ClientError::NoTracks
+pub only_media::rtsp::ClientError::Protocol(alloc::string::String)
+pub only_media::rtsp::ClientError::Resolve(alloc::string::String)
+pub only_media::rtsp::ClientError::Status
+pub only_media::rtsp::ClientError::Status::method: &'static str
+pub only_media::rtsp::ClientError::Status::reason: alloc::string::String
+pub only_media::rtsp::ClientError::Status::status: u16
+pub only_media::rtsp::ClientError::Timeout(&'static str)
+pub only_media::rtsp::ClientError::Unauthorized
+pub only_media::rtsp::ClientError::Url(alloc::string::String)
+pub only_media::rtsp::ClientError::WriteQueueFull
+impl core::clone::Clone for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::client::ClientError
+impl core::cmp::PartialEq for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::eq(&self, &Self) -> bool
+impl core::error::Error for only_media::rtsp::client::ClientError
+impl core::fmt::Debug for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for only_media::rtsp::client::ClientError
+pub fn only_media::rtsp::client::ClientError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::client::ClientError
+impl core::marker::Send for only_media::rtsp::client::ClientError
+impl core::marker::Sync for only_media::rtsp::client::ClientError
+impl core::marker::Unpin for only_media::rtsp::client::ClientError
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::ClientError
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::ClientError
 #[non_exhaustive] pub enum only_media::rtsp::Frame
 pub only_media::rtsp::Frame::Interleaved
 pub only_media::rtsp::Frame::Interleaved::channel: u8
 pub only_media::rtsp::Frame::Interleaved::data: alloc::vec::Vec<u8>
+pub only_media::rtsp::Frame::Reply(only_media::rtsp::message::Reply)
 pub only_media::rtsp::Frame::Request(only_media::rtsp::message::Request)
 pub only_media::rtsp::Frame::Response(u16)
 impl core::clone::Clone for only_media::rtsp::message::Frame
@@ -1304,8 +1674,28 @@ impl core::marker::Sync for only_media::rtsp::message::RtspError
 impl core::marker::Unpin for only_media::rtsp::message::RtspError
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::RtspError
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::RtspError
+#[non_exhaustive] pub enum only_media::rtsp::RtspTransport
+pub only_media::rtsp::RtspTransport::Tcp
+pub only_media::rtsp::RtspTransport::Udp
+impl core::clone::Clone for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::client::RtspTransport
+impl core::cmp::PartialEq for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::client::RtspTransport
+pub fn only_media::rtsp::client::RtspTransport::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for only_media::rtsp::client::RtspTransport
+impl core::marker::StructuralPartialEq for only_media::rtsp::client::RtspTransport
+impl core::marker::Send for only_media::rtsp::client::RtspTransport
+impl core::marker::Sync for only_media::rtsp::client::RtspTransport
+impl core::marker::Unpin for only_media::rtsp::client::RtspTransport
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::RtspTransport
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::RtspTransport
 pub struct only_media::rtsp::Parser
 impl only_media::rtsp::message::Parser
+pub fn only_media::rtsp::message::Parser::client(usize, usize) -> only_media::rtsp::message::Parser
 pub fn only_media::rtsp::message::Parser::feed(&mut self, &[u8], &mut alloc::vec::Vec<only_media::rtsp::message::Frame>) -> core::result::Result<(), only_media::rtsp::message::RtspError>
 pub fn only_media::rtsp::message::Parser::new(usize, usize) -> only_media::rtsp::message::Parser
 impl core::default::Default for only_media::rtsp::message::Parser
@@ -1317,6 +1707,30 @@ impl core::marker::Sync for only_media::rtsp::message::Parser
 impl core::marker::Unpin for only_media::rtsp::message::Parser
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Parser
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Parser
+#[non_exhaustive] pub struct only_media::rtsp::Reply
+pub only_media::rtsp::Reply::body: alloc::vec::Vec<u8>
+pub only_media::rtsp::Reply::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub only_media::rtsp::Reply::reason: alloc::string::String
+pub only_media::rtsp::Reply::status: u16
+impl only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::cseq(&self) -> core::option::Option<&str>
+pub fn only_media::rtsp::message::Reply::header(&self, &str) -> core::option::Option<&str>
+pub fn only_media::rtsp::message::Reply::headers_named<'a>(&'a self, &'a str) -> impl core::iter::traits::iterator::Iterator<Item = &'a str> + 'a
+impl core::clone::Clone for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::clone(&self) -> Self
+impl core::cmp::Eq for only_media::rtsp::message::Reply
+impl core::cmp::PartialEq for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::eq(&self, &Self) -> bool
+impl core::default::Default for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::message::Reply
+pub fn only_media::rtsp::message::Reply::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for only_media::rtsp::message::Reply
+impl core::marker::Send for only_media::rtsp::message::Reply
+impl core::marker::Sync for only_media::rtsp::message::Reply
+impl core::marker::Unpin for only_media::rtsp::message::Reply
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Reply
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Reply
 #[non_exhaustive] pub struct only_media::rtsp::Request
 pub only_media::rtsp::Request::body: alloc::vec::Vec<u8>
 pub only_media::rtsp::Request::headers: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
@@ -1362,6 +1776,46 @@ impl core::marker::Sync for only_media::rtsp::message::Response
 impl core::marker::Unpin for only_media::rtsp::message::Response
 impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::message::Response
 impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::message::Response
+pub struct only_media::rtsp::RtspClient(_)
+impl only_media::rtsp::client::RtspClient
+pub fn only_media::rtsp::client::RtspClient::close(&self)
+pub fn only_media::rtsp::client::RtspClient::error(&self) -> core::option::Option<only_media::rtsp::client::ClientError>
+pub fn only_media::rtsp::client::RtspClient::is_closed(&self) -> bool
+pub fn only_media::rtsp::client::RtspClient::path(&self) -> &str
+impl core::fmt::Debug for only_media::rtsp::client::RtspClient
+pub fn only_media::rtsp::client::RtspClient::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for only_media::rtsp::client::RtspClient
+pub fn only_media::rtsp::client::RtspClient::drop(&mut self)
+impl core::marker::Send for only_media::rtsp::client::RtspClient
+impl core::marker::Sync for only_media::rtsp::client::RtspClient
+impl core::marker::Unpin for only_media::rtsp::client::RtspClient
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::RtspClient
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::RtspClient
+#[non_exhaustive] pub struct only_media::rtsp::RtspClientConfig
+pub only_media::rtsp::RtspClientConfig::addr: core::option::Option<core::net::socket_addr::SocketAddr>
+pub only_media::rtsp::RtspClientConfig::connect_timeout: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::idle_timeout: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::keepalive: core::option::Option<core::time::Duration>
+pub only_media::rtsp::RtspClientConfig::max_body: usize
+pub only_media::rtsp::RtspClientConfig::max_head: usize
+pub only_media::rtsp::RtspClientConfig::max_write_queue: usize
+pub only_media::rtsp::RtspClientConfig::push_wait: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::response_timeout: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::sender_report_interval: core::time::Duration
+pub only_media::rtsp::RtspClientConfig::transport: only_media::rtsp::client::RtspTransport
+pub only_media::rtsp::RtspClientConfig::user_agent: alloc::string::String
+pub only_media::rtsp::RtspClientConfig::write_queue_limit: usize
+impl core::clone::Clone for only_media::rtsp::client::RtspClientConfig
+pub fn only_media::rtsp::client::RtspClientConfig::clone(&self) -> Self
+impl core::default::Default for only_media::rtsp::client::RtspClientConfig
+pub fn only_media::rtsp::client::RtspClientConfig::default() -> Self
+impl core::fmt::Debug for only_media::rtsp::client::RtspClientConfig
+pub fn only_media::rtsp::client::RtspClientConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::rtsp::client::RtspClientConfig
+impl core::marker::Sync for only_media::rtsp::client::RtspClientConfig
+impl core::marker::Unpin for only_media::rtsp::client::RtspClientConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::rtsp::client::RtspClientConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::rtsp::client::RtspClientConfig
 #[non_exhaustive] pub struct only_media::rtsp::RtspConfig
 pub only_media::rtsp::RtspConfig::credentials: core::option::Option<only_media::rtsp::Credentials>
 pub only_media::rtsp::RtspConfig::max_write_queue: usize
@@ -1879,6 +2333,41 @@ pub fn only_media::srt::dial(&only::Engine, core::net::socket_addr::SocketAddr, 
 pub fn only_media::srt::pull(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
 pub fn only_media::srt::push(&only::Engine, core::net::socket_addr::SocketAddr, only_media::srt::Config, &only_media::hub::Hub, &str) -> core::result::Result<only_media::srt::SrtSession, only_media::srt::SrtError>
 pub type only_media::srt::ConnectHook = alloc::rcs::arc::Arc<(dyn core::ops::function::Fn(&only_media::srt::Request, &only_media::srt::StreamId) -> core::result::Result<(), only_media::srt::RejectReason> + core::marker::Send + core::marker::Sync)>
+pub mod only_media::webrtc
+pub struct only_media::webrtc::RtcMedia
+impl only_media::webrtc::RtcMedia
+pub fn only_media::webrtc::RtcMedia::new(only_webrtc::RtcServer, only_media::webrtc::RtcMediaConfig) -> only_media::webrtc::RtcMedia
+pub fn only_media::webrtc::RtcMedia::rtc_server(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> only_webrtc::RtcServer
+pub fn only_media::webrtc::RtcMedia::server(&self) -> &only_webrtc::RtcServer
+impl core::clone::Clone for only_media::webrtc::RtcMedia
+pub fn only_media::webrtc::RtcMedia::clone(&self) -> Self
+impl core::fmt::Debug for only_media::webrtc::RtcMedia
+pub fn only_media::webrtc::RtcMedia::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_media::whip::WebRtcEngine for only_media::webrtc::RtcMedia
+pub fn only_media::webrtc::RtcMedia::play(&self, &only_media::whip::OfferInfo, &only_media::hub::Hub) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+pub fn only_media::webrtc::RtcMedia::publish(&self, &only_media::whip::OfferInfo, only_media::hub::Publisher) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+impl core::marker::Send for only_media::webrtc::RtcMedia
+impl core::marker::Sync for only_media::webrtc::RtcMedia
+impl core::marker::Unpin for only_media::webrtc::RtcMedia
+impl !core::panic::unwind_safe::RefUnwindSafe for only_media::webrtc::RtcMedia
+impl !core::panic::unwind_safe::UnwindSafe for only_media::webrtc::RtcMedia
+#[non_exhaustive] pub struct only_media::webrtc::RtcMediaConfig
+pub only_media::webrtc::RtcMediaConfig::max_pending_bytes: usize
+pub only_media::webrtc::RtcMediaConfig::max_pending_packets: usize
+pub only_media::webrtc::RtcMediaConfig::play_gop_cache: bool
+pub only_media::webrtc::RtcMediaConfig::track_timeout: core::time::Duration
+impl core::clone::Clone for only_media::webrtc::RtcMediaConfig
+pub fn only_media::webrtc::RtcMediaConfig::clone(&self) -> Self
+impl core::default::Default for only_media::webrtc::RtcMediaConfig
+pub fn only_media::webrtc::RtcMediaConfig::default() -> Self
+impl core::fmt::Debug for only_media::webrtc::RtcMediaConfig
+pub fn only_media::webrtc::RtcMediaConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_media::webrtc::RtcMediaConfig
+impl core::marker::Sync for only_media::webrtc::RtcMediaConfig
+impl core::marker::Unpin for only_media::webrtc::RtcMediaConfig
+impl core::panic::unwind_safe::RefUnwindSafe for only_media::webrtc::RtcMediaConfig
+impl core::panic::unwind_safe::UnwindSafe for only_media::webrtc::RtcMediaConfig
+pub fn only_media::webrtc::rtc_config() -> only_webrtc::types::RtcConfig
 pub mod only_media::whip
 #[non_exhaustive] pub enum only_media::whip::WhipError
 pub only_media::whip::WhipError::BadOffer(alloc::string::String)
@@ -1981,11 +2470,15 @@ impl !core::panic::unwind_safe::UnwindSafe for only_media::whip::WhipServer
 pub trait only_media::whip::WebRtcEngine: core::marker::Send + core::marker::Sync + 'static
 pub fn only_media::whip::WebRtcEngine::play(&self, &only_media::whip::OfferInfo, &only_media::hub::Hub) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
 pub fn only_media::whip::WebRtcEngine::publish(&self, &only_media::whip::OfferInfo, only_media::hub::Publisher) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+impl only_media::whip::WebRtcEngine for only_media::webrtc::RtcMedia
+pub fn only_media::webrtc::RtcMedia::play(&self, &only_media::whip::OfferInfo, &only_media::hub::Hub) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
+pub fn only_media::webrtc::RtcMedia::publish(&self, &only_media::whip::OfferInfo, only_media::hub::Publisher) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
 impl only_media::whip::WebRtcEngine for only_media::whip::NoMedia
 pub fn only_media::whip::NoMedia::play(&self, &only_media::whip::OfferInfo, &only_media::hub::Hub) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
 pub fn only_media::whip::NoMedia::publish(&self, &only_media::whip::OfferInfo, only_media::hub::Publisher) -> core::result::Result<only_media::whip::Answer, only_media::whip::WhipError>
 pub trait only_media::whip::WebRtcSession: core::marker::Send + 'static
 pub fn only_media::whip::WebRtcSession::close(&mut self)
+pub fn only_media::whip::WebRtcSession::is_closed(&self) -> bool
 pub fn only_media::whip::WebRtcSession::trickle(&mut self, &str) -> core::result::Result<(), only_media::whip::WhipError>
 pub fn only_media::whip::handles(&only_http::message::Method) -> bool
 #[non_exhaustive] pub enum only_media::Codec
@@ -2049,6 +2542,7 @@ impl only_media::hub::Hub
 pub fn only_media::hub::Hub::close(&self)
 pub fn only_media::hub::Hub::new(only_media::hub::HubConfig) -> only_media::hub::Hub
 pub fn only_media::hub::Hub::publish(&self, &str, only_media::av::Tracks, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
+pub fn only_media::hub::Hub::request_keyframe(&self, &str) -> bool
 pub fn only_media::hub::Hub::reserve(&self, &str, only_media::hub::PeerInfo) -> core::result::Result<only_media::hub::Publisher, only_media::hub::HubError>
 pub fn only_media::hub::Hub::stream_info(&self, &str) -> core::option::Option<only_media::hub::StreamInfo>
 pub fn only_media::hub::Hub::streams(&self) -> alloc::vec::Vec<only_media::hub::StreamInfo>
@@ -2067,6 +2561,7 @@ impl !core::panic::unwind_safe::RefUnwindSafe for only_media::hub::Hub
 impl !core::panic::unwind_safe::UnwindSafe for only_media::hub::Hub
 #[non_exhaustive] pub struct only_media::HubConfig
 pub only_media::HubConfig::gop_cache_bytes: usize
+pub only_media::HubConfig::keyframe_request_interval: core::time::Duration
 pub only_media::HubConfig::max_streams: usize
 pub only_media::HubConfig::max_subscribers: usize
 pub only_media::HubConfig::on_publish: core::option::Option<only_media::hub::AuthHook>
@@ -2132,6 +2627,7 @@ pub struct only_media::Publisher
 impl only_media::hub::Publisher
 pub fn only_media::hub::Publisher::close(&self)
 pub fn only_media::hub::Publisher::is_active(&self) -> bool
+pub fn only_media::hub::Publisher::on_keyframe_request(&self, impl core::ops::function::Fn() + core::marker::Send + core::marker::Sync + 'static)
 pub fn only_media::hub::Publisher::path(&self) -> &str
 pub fn only_media::hub::Publisher::set_tracks(&self, only_media::av::Tracks)
 pub fn only_media::hub::Publisher::tracks(&self) -> core::option::Option<only_media::av::Tracks>
@@ -2171,6 +2667,7 @@ pub fn only_media::hub::Subscription::close(&self)
 pub fn only_media::hub::Subscription::drop_counter(&mut self) -> alloc::rcs::arc::Arc<core::sync::atomic::AtomicU64>
 pub fn only_media::hub::Subscription::is_closed(&self) -> bool
 pub fn only_media::hub::Subscription::path(&self) -> &str
+pub fn only_media::hub::Subscription::request_keyframe(&self) -> bool
 impl core::fmt::Debug for only_media::hub::Subscription
 pub fn only_media::hub::Subscription::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for only_media::hub::Subscription

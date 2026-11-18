@@ -1,5 +1,6 @@
 //! One only-http [`Service`] for every HTTP playback format: requests ending in `.flv` go to
-//! [`HttpFlv`] (HTTP-FLV, or WS-FLV on a WebSocket upgrade), `.m3u8` and `.ts` to [`Hls`].
+//! [`HttpFlv`] (HTTP-FLV, or WS-FLV on a WebSocket upgrade), `.m3u8`, `.ts`, `.m4s` and `.mp4`
+//! to [`Hls`].
 //!
 //! ```no_run
 //! use only::{Engine, Listener};
@@ -42,7 +43,8 @@ impl MediaHttp {
         self
     }
 
-    /// Serves `.m3u8` and `.ts` requests with `hls`.
+    /// Serves `.m3u8`, `.ts`, `.m4s` and `.mp4` requests (playlists, MPEG-TS or fMP4 segments,
+    /// fMP4 init segments) with `hls`.
     #[must_use]
     pub fn hls(mut self, hls: Hls) -> MediaHttp {
         self.hls = Some(hls);
@@ -57,7 +59,10 @@ impl Service for MediaHttp {
             if let Some(f) = &self.flv {
                 return f.call(ctx);
             }
-        } else if p.ends_with(".m3u8") || p.ends_with(".ts") {
+        } else if [".m3u8", ".ts", ".m4s", ".mp4"]
+            .iter()
+            .any(|e| p.ends_with(e))
+        {
             if let Some(h) = &self.hls {
                 return h.call(ctx);
             }

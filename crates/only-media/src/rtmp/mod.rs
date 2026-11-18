@@ -13,11 +13,15 @@
 //!   headers first; a player that falls behind has packets dropped ([`Dropper`], video to the
 //!   next keyframe) and is disconnected past a second limit.
 //!
+//! * [`client`]: the RTMP client, [`client::push`] (publish a hub stream to a server) and
+//!   [`client::pull`] (play a stream from a server into the hub).
+//!
 //! RTMPS: put only-tls in front of the server (an `Acceptor` with a TLS transport).
 //! Not supported: RTMPE/RTMPT, shared objects, AMF3 replies (an AMF3 client gets AMF0 ones,
 //! which every client takes), recorded streams, Enhanced RTMP multitrack.
 
 pub mod chunk;
+pub mod client;
 pub mod handshake;
 
 use std::{fmt, sync::Arc, time::Duration};

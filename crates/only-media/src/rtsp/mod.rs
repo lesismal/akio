@@ -29,11 +29,15 @@
 //! engine.run().unwrap();
 //! ```
 //!
+//! The [`client`] plays remote RTSP streams into the hub ([`client::pull`]) and records hub
+//! streams to remote servers ([`client::push`]).
+//!
 //! Left out: RTSP 2.0, RTSPS and HTTP tunnelling, multicast, seeking (every stream is live),
 //! sessions that outlive their connection, and decode times for B-frame video recorded over
 //! RTP (RTP carries presentation times only).
 
 mod auth;
+pub mod client;
 pub mod message;
 
 use std::{
@@ -55,7 +59,8 @@ use crate::{
     sdp,
 };
 
-pub use message::{Frame, Parser, Request, Response, RtspError, Transport};
+pub use client::{ClientError, RtspClient, RtspClientConfig, RtspTransport};
+pub use message::{Frame, Parser, Reply, Request, Response, RtspError, Transport};
 
 /// Looks up the password of a user.
 pub type Credentials = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -291,8 +296,10 @@ enum Path {
     Udp { rtp: SocketAddr, rtcp: SocketAddr },
 }
 
-/// The ingest of a recording session.
-struct Recorder {
+/// The ingest of a recording session (and of the RTSP client's play): depacketizes each
+/// media's RTP into the publisher; the stream goes live once every video track's parameter
+/// sets are known.
+pub(crate) struct Recorder {
     publisher: Publisher,
     /// Per announced media: its track, whether the hub carries it, its hub index.
     media: Vec<RecMedia>,
@@ -309,7 +316,45 @@ struct RecMedia {
 }
 
 impl Recorder {
-    fn push(&mut self, media: usize, data: &[u8]) {
+    /// The ingest of `media` (an SDP's media descriptions, in order) into `publisher`, or
+    /// `None` when no media maps to a track. Media that map to none are ignored.
+    pub(crate) fn new(publisher: Publisher, medias: &[sdp::Media]) -> Option<Recorder> {
+        let mut media = Vec::new();
+        let mut tracks = Vec::new();
+        for m in medias {
+            let t = sdp::media_track(m)
+                .map(|(t, _)| t)
+                .filter(|t| rtp::supported(t.codec));
+            let hub_index = t.as_ref().map(|t| {
+                tracks.push(t.clone());
+                tracks.len() - 1
+            });
+            media.push(RecMedia {
+                track: t,
+                hub_index,
+                depack: None,
+            });
+        }
+        if tracks.is_empty() {
+            return None;
+        }
+        Some(Recorder {
+            publisher,
+            media,
+            tracks,
+            live: false,
+            start: Instant::now(),
+            scratch: Vec::new(),
+        })
+    }
+
+    /// Closes the publisher.
+    pub(crate) fn close(&self) {
+        self.publisher.close();
+    }
+
+    /// Feeds one RTP packet of media `media`.
+    pub(crate) fn push(&mut self, media: usize, data: &[u8]) {
         let start = self.start;
         let Some(m) = self.media.get_mut(media) else {
             return;
@@ -422,7 +467,7 @@ impl Handler for RtspSession {
         self.watch.set_partial(self.parser.pending());
         if frames
             .iter()
-            .any(|f| matches!(f, Frame::Request(_) | Frame::Response(_)))
+            .any(|f| matches!(f, Frame::Request(_) | Frame::Response(_) | Frame::Reply(_)))
         {
             self.watch.ready();
         }
@@ -436,7 +481,7 @@ impl Handler for RtspSession {
                     }
                 }
                 Frame::Interleaved { channel, data } => self.interleaved(channel, &data),
-                Frame::Response(_) => {}
+                Frame::Response(_) | Frame::Reply(_) => {}
             }
         }
     }
@@ -566,21 +611,11 @@ impl RtspSession {
         if path.is_empty() {
             return Response::new(400);
         }
-        let mut media = Vec::new();
-        let mut tracks = Vec::new();
-        for m in &s.media {
-            let t = sdp::media_track(m).map(|(t, _)| t);
-            let hub_index = t.as_ref().map(|t| {
-                tracks.push(t.clone());
-                tracks.len() - 1
-            });
-            media.push(RecMedia {
-                track: t,
-                hub_index,
-                depack: None,
-            });
-        }
-        if tracks.is_empty() {
+        if !s
+            .media
+            .iter()
+            .any(|m| sdp::media_track(m).is_some_and(|(t, _)| rtp::supported(t.codec)))
+        {
             return Response::new(415);
         }
         self.query = query;
@@ -588,16 +623,12 @@ impl RtspSession {
             Ok(p) => p,
             Err(e) => return Response::new(hub_status(&e)),
         };
+        let Some(rec) = Recorder::new(publisher, &s.media) else {
+            return Response::new(415);
+        };
         self.announced = s.media;
         self.path = Some(path);
-        self.recorder = Some(Arc::new(Mutex::new(Recorder {
-            publisher,
-            media,
-            tracks,
-            live: false,
-            start: Instant::now(),
-            scratch: Vec::new(),
-        })));
+        self.recorder = Some(Arc::new(Mutex::new(rec)));
         Response::new(200)
     }
 

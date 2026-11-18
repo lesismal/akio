@@ -1,0 +1,29 @@
+	RTSP/1.0 200 OK
+CSeq: 1
+Content-Length: 0
+
+RTSP/1.0 401 Unauthorized
+WWW-Authenticate: Digest realm="only", nonce="abc", qop="auth"
+CSeq: 2
+Content-Length: 0
+
+RTSP/1.0 200 OK
+CSeq: 3
+Content-Length: 0
+
+RTSP/1.0 200 OK
+Session: 12345678;timeout=60
+Transport: RTP/AVP/TCP;unicast;interleaved=0-1
+CSeq: 4
+Content-Length: 0
+
+RTSP/1.0 200 OK
+Session: 12345678;timeout=60
+Transport: RTP/AVP/TCP;unicast;interleaved=2-3
+CSeq: 5
+Content-Length: 0
+
+RTSP/1.0 200 OK
+CSeq: 6
+Content-Length: 0
+

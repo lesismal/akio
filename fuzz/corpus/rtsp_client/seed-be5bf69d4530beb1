@@ -1,0 +1,24 @@
+	RTSP/1.0 200 OK
+CSeq: 1
+Content-Length: 0
+
+RTSP/1.0 200 OK
+CSeq: 2
+Content-Length: 0
+
+RTSP/1.0 200 OK
+Session: 12345678;timeout=60
+Transport: RTP/AVP;unicast;client_port=5000-5001;server_port=8000-8001
+CSeq: 3
+Content-Length: 0
+
+RTSP/1.0 200 OK
+Session: 12345678;timeout=60
+Transport: RTP/AVP;unicast;client_port=5002-5003;server_port=8000-8001
+CSeq: 4
+Content-Length: 0
+
+RTSP/1.0 200 OK
+CSeq: 5
+Content-Length: 0
+

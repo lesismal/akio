@@ -63,8 +63,63 @@ ffmpeg -rtsp_transport udp -i rtsp://127.0.0.1:8554/live/cam -f null -
 WHIP 推流通过 hub 预占路径，因此 `on_publish` 同样生效；URL 没有查询串时，
 `Authorization: Bearer <token>` 以 `token=<token>` 的形式传给钩子。媒体本身（ICE、DTLS-SRTP、
 RTP）由 `WebRtcEngine` 负责：其 `publish` 拿到预占的 `Publisher`，`play` 自行订阅 hub。占位实现
-`NoMedia` 对所有 offer 返回 `501 Not Implemented`，直到接入 WebRTC 引擎。`WhipConfig::max_sessions`
-（256）限制并发会话，超出后的 offer 得到 503。
+`NoMedia` 对所有 offer 返回 `501 Not Implemented`。`WhipConfig::max_sessions`（256）限制并发会话，
+超出后的 offer 得到 503；对端未经 `DELETE` 就结束的会话会释放其名额。
+
+### WebRTC 媒体（`webrtc` feature）
+
+开启 cargo feature `webrtc` 后，`only_media::webrtc::RtcMedia` 即为引擎，运行在 `only-webrtc` 的
+`RtcServer` 上（单个 UDP 端口上的 ICE-lite）：
+
+```rust,ignore
+use only_media::webrtc::{RtcMedia, RtcMediaConfig};
+
+// 浏览器访问 UDP 监听器所用的地址，写入每个 answer。
+let rtc = RtcMedia::rtc_server(vec!["203.0.113.7:8189".parse()?]);
+let media = RtcMedia::new(rtc.clone(), RtcMediaConfig::default());
+let whip = WhipServer::new(hub.clone(), Arc::new(media), WhipConfig::default());
+// 在 Listener::udp("0.0.0.0:8189") 上服务 `rtc`，并通过 HTTP 提供 `whip.routes(router)`
+```
+
+- **WHIP 推入**：H.264 与 H.265（RTP 上的 Annex B）转为 AVCC，配置记录由带内参数集构建；Opus、PCMU
+  与 PCMA 原样透传。所有媒体行就绪后流上线（或在 `track_timeout`，5 s 后以已就绪的行上线）；此前到达的
+  数据保存在 `max_pending_packets` / `max_pending_bytes` 之内。VP8、VP9、AV1 与 G.722 不为 hub 所承载：
+  只含这些编码的 offer 得到 406。
+- **WHEP 播出**：ICE 与 DTLS 建立后才为观众订阅，从下一个关键帧开始（设置 `play_gop_cache` 则从缓存的
+  GOP 开始），H.264/H.265 在每个关键帧前带上参数集，Opus 与 G.711 原样发送。AAC 与 MP3 不发送（不转码）：
+  面向 WebRTC 观众请推 Opus，并且视频不要 B 帧（`-bf 0`）。
+- **关键帧**：观众的 PLI 或 FIR 交给 hub（`Subscription::request_keyframe`），hub 每
+  `HubConfig::keyframe_request_interval`（500 ms）至多转给推流者一次；WHIP 推流者再把它变成发给其发送端的
+  PLI。观众加入时若没有缓存的关键帧，会立即请求。
+
+`crates/only-media/examples/whip-server.rs` 可直接运行；`tools/interop/webrtc/media.sh` 用 ffmpeg 的 WHIP
+封装器与 pion 验证它（WHIP 推入、WHEP 播出、PLI 往返、RTMP 推入到 WHEP 播出）。
+
+## RTSP 客户端
+
+`only_media::rtsp::client` 从 RTSP 服务器拉流进 hub（`pull`），或把 hub 中的流录制到服务器（`push`），
+走 TCP 交织（默认）或 UDP：
+
+```rust,ignore
+use only_media::rtsp::{RtspClientConfig, RtspTransport, client};
+
+let cam = client::pull(&engine, "rtsp://admin:secret@192.0.2.20/stream1", &hub, "cams/door",
+                       RtspClientConfig::default())?;
+let mut udp = RtspClientConfig::default();
+udp.transport = RtspTransport::Udp;
+let out = client::push(&engine, "rtsp://198.51.100.4:8554/live/door", &hub, "cams/door", udp)?;
+```
+
+`pull` 与 `push` 在 PLAY 或 RECORD 得到应答后才返回：它们等待握手完成，因此请在 I/O 线程之外调用（主机名
+也在此解析；`RtspClientConfig::addr` 可免去解析）。之后会话运行在引擎上；`error()` 说明结束原因，`close()`
+（或丢弃句柄）发送 TEARDOWN。URL 中的凭据用于应答 Digest 或 Basic 质询。保活（GET_PARAMETER，否则
+OPTIONS）以服务器会话超时的一半为间隔。UDP 用 `Engine::bind_udp` 为每条轨道绑定一对 RTP/RTCP 端口，因此
+引擎需要 `udp_client_threads` 或一个 UDP 监听器。上限：连接与每次应答 10 s，拉流 10 s 无媒体即结束，
+应答受解析器的头部与 body 上限约束，TCP 推流落后时先削减到关键帧再断开。
+
+互通：ffmpeg 的监听模式接收我们的推流（TCP 与 UDP）；mediamtx 接收我们的推流并供我们拉流，TCP 与 UDP 均测
+（`tools/interop/media/rtsp-client.sh`；由于 Docker Desktop 的 NAT 会丢弃 UDP，UDP 在 mediamtx 所在网络的
+容器中运行）。
 
 ## 统计
 
@@ -75,4 +130,4 @@ RTP）由 `WebRtcEngine` 负责：其 `publish` 拿到预占的 `Publisher`，`p
 ## 不支持
 
 RTSP 2.0、RTSPS 与 HTTP 隧道、组播、拖动（流都是直播）、比连接存活更久的会话；不向推流端发送
-RTCP 接收者报告。
+RTCP 接收者报告。客户端：重定向、重连与基于 RTCP 的音视频同步。WebRTC：VP8 / VP9 / AV1、simulcast、转码。

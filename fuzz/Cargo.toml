@@ -255,6 +255,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "rtsp_client"
+path = "fuzz_targets/rtsp_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "bt_peer_wire"
 path = "fuzz_targets/bt_peer_wire.rs"
 test = false
@@ -318,6 +325,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "fmp4_demux"
+path = "fuzz_targets/fmp4_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "srt_listener"
 path = "fuzz_targets/srt_listener.rs"
 test = false
@@ -334,6 +348,13 @@ bench = false
 [[bin]]
 name = "rtmp_server"
 path = "fuzz_targets/rtmp_server.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rtmp_client"
+path = "fuzz_targets/rtmp_client.rs"
 test = false
 doc = false
 bench = false

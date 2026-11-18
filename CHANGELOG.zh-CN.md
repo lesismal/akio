@@ -173,6 +173,25 @@ AllTypes 编码 309 → 312 ns（+1%，prost 509 → 505），解码 1629 → 14
   客户端经 UDP、TCP、TLS 对 `only-turn`；`only_turn` 客户端经 UDP、TCP、TLS 对 pion/turn、coturn 与
   `only-turn`；只带 relay 候选（来自 `only-turn`、pion/turn、coturn）以及只带被动 TCP 候选的 `Endpoint`
   对 pion；pion 收到 h/m/l 三层 simulcast。新增 fuzz 目标 `turn_stream` 与 `ice_tcp`。
+### 新增：only-media 的 fMP4 HLS、RTMP 与 RTSP 客户端、WebRTC 媒体
+
+新增（ADR-016，docs/adr/016-media-fmp4-clients-webrtc.zh-CN.md）：
+
+- **fMP4 / CMAF HLS**：`HlsConfig::format = SegmentFormat::Fmp4` 提供 `init-<n>.mp4`、`seg-<n>.m4s` 与
+  LL-HLS 分片 `part-<n>.<m>.m4s`（H.264、H.265、AAC、Opus），与 MPEG-TS 并存，后者仍为默认。新模块
+  `fmp4`（`Muxer`、`Demuxer`、`write_styp`）。
+- **RTMP 客户端** `rtmp::client::{push, pull}`：把 hub 中的流转推到 RTMP 服务器，或拉流进 hub（Enhanced RTMP
+  H.265/Opus），连接、握手、每条命令与空闲均有超时，消息与发送队列有上限。
+- **RTSP 客户端** `rtsp::client::{pull, push}`（播放与录制，TCP 交织或 UDP，Digest 与 Basic 认证，保活，
+  RTCP 报告）；`rtsp::message::Reply` 与 `Parser::client`。
+- **WHIP/WHEP 媒体**：开启新的 cargo feature `webrtc` 后，`webrtc::RtcMedia` 经 only-webrtc 承载 H.264、
+  H.265、Opus 与 G.711：WHIP 推入 hub，WHEP 从 hub 播出。`WhipServer` 会丢弃对端未经 `DELETE` 就结束的会话。
+- **关键帧请求**：`Publisher::on_keyframe_request`、`Subscription::request_keyframe`、`Hub::request_keyframe`，
+  按 `HubConfig::keyframe_request_interval`（500 ms）节流；WebRTC 观众的 PLI/FIR 以 PLI 形式到达 WHIP 推流者。
+- 互通：ffmpeg/ffprobe（fMP4 HLS 普通与 LL-HLS、RTMP 与 RTSP 监听模式）、mediamtx（RTMP，RTSP 走 TCP 与
+  UDP）、ffmpeg 的 WHIP 封装器与 pion（WHIP、WHEP、PLI 往返）。新 fuzz 目标 `fmp4_demux`、`rtmp_client`、
+  `rtsp_client`。
+- 修复：only-webrtc 的 `Endpoint::config`、`close_on_disconnect` 与 `connect_timeout` 在 `bind` 之后会 panic。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
