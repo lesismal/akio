@@ -656,11 +656,11 @@ impl core::panic::unwind_safe::RefUnwindSafe for only_x509::NameConstraints
 impl core::panic::unwind_safe::UnwindSafe for only_x509::NameConstraints
 pub struct only_x509::OcspRequest
 impl only_x509::OcspRequest
-pub fn only_x509::OcspRequest::add(self, only_x509::CertId) -> Self
 pub fn only_x509::OcspRequest::cert_ids(&self) -> &[only_x509::CertId]
 pub fn only_x509::OcspRequest::new(&only_x509::Certificate, &only_x509::Certificate) -> core::result::Result<only_x509::OcspRequest, only_x509::Error>
 pub fn only_x509::OcspRequest::nonce(self, impl core::convert::Into<alloc::vec::Vec<u8>>) -> Self
 pub fn only_x509::OcspRequest::to_der(&self) -> alloc::vec::Vec<u8>
+pub fn only_x509::OcspRequest::with_cert_id(self, only_x509::CertId) -> Self
 impl core::clone::Clone for only_x509::OcspRequest
 pub fn only_x509::OcspRequest::clone(&self) -> Self
 impl core::default::Default for only_x509::OcspRequest
