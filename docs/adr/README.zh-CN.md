@@ -31,3 +31,4 @@
 - [ADR-024：UDP 接收缓冲区的所有权交付与带密钥的对端表](024-udp-owned-receive-buffers.zh-CN.md)（2026-11-17 采纳）
 - [ADR-025：按连接的响应 sink 与复用的请求 target](025-per-connection-response-sink.zh-CN.md)（2026-11-17 采纳）
 - [ADR-020：Span、推送导出（OTLP、StatsD）、HTTP 按路由标签与 HTTP/2 gauge](020-spans-and-push-export.zh-CN.md)（2026-11-17 采纳）
+- [ADR-028：读缓冲区、backlog、UDP 空闲超时与 I/O 线程数的热更新](028-hot-reload-buffers-backlog-threads.zh-CN.md)（2026-11-17 采纳）

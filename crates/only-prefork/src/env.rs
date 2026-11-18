@@ -26,6 +26,8 @@ pub(crate) const ALL: [&str; 8] = [WORKER, WORKERS, GENERATION, MODE, ADDRS, FDS
 /// The control protocol: single bytes on the control socket.
 pub(crate) const MSG_READY: u8 = b'R';
 pub(crate) const MSG_STOP: u8 = b'S';
+/// Supervisor to worker: reload in place (`Controller::reload_in_place`).
+pub(crate) const MSG_RELOAD: u8 = b'L';
 
 fn bad(var: &str, v: &str) -> io::Error {
     io::Error::new(

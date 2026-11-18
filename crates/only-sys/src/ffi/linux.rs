@@ -85,6 +85,7 @@ pub const MSG_TRUNC: c_int = 0x20;
 pub const MSG_DONTWAIT: c_int = 0x40;
 pub const IFNAMSIZ: usize = 16;
 pub const IPPROTO_TCP: c_int = 6;
+pub const TCP_INFO: c_int = 11;
 pub const TCP_ULP: c_int = 31;
 
 // ---- kernel TLS (linux/tls.h) --------------------------------------------------------------

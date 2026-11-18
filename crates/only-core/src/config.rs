@@ -10,6 +10,9 @@ pub(crate) const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DEFAULT_UDP_MAX_PEERS: usize = 65536;
 pub(crate) const DEFAULT_MAX_PENDING_RESPONSES: usize = 32;
+pub(crate) const DEFAULT_READ_BUFFER: usize = 64 << 10;
+pub(crate) const DEFAULT_BACKLOG: i32 = 1024;
+pub(crate) const DEFAULT_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the slow-callback detector reports.
 #[derive(Clone, Copy, Debug)]
@@ -46,6 +49,7 @@ impl std::fmt::Debug for SlowHook {
 #[non_exhaustive]
 pub struct Config {
     /// Size of each I/O thread's read buffer; `on_data` never sees more than this at once.
+    /// Reloadable: open connections read with the new size from their next read on.
     pub read_buffer: usize,
     /// Reads pause while a connection has at least this many bytes queued for sending, and resume
     /// at a quarter of it (backpressure).
@@ -61,7 +65,7 @@ pub struct Config {
     /// answered, so a connection can go past the limit by the requests of one read
     /// (`read_buffer`).
     pub max_pending_responses: Option<usize>,
-    /// `listen(2)` backlog.
+    /// `listen(2)` backlog. Reloadable: listening sockets are `listen`ed again with it.
     pub backlog: i32,
     /// Close a connection (with `ErrorKind::TimedOut`) when the peer has sent nothing for this
     /// long. `None` (the default) disables it. Resolution is about a millisecond; only inbound
@@ -80,7 +84,8 @@ pub struct Config {
     /// Where slow callbacks are reported (default: stderr).
     pub slow_hook: Option<SlowHook>,
     /// UDP: a peer that sent nothing for this long is dropped (its `on_close` runs) so idle peers
-    /// do not accumulate. `idle_timeout`, when set and shorter, wins.
+    /// do not accumulate. `idle_timeout`, when set and shorter, wins. Reloadable (open peers'
+    /// timers are re-armed).
     pub udp_idle_timeout: Duration,
     /// UDP: most peers one listener keeps open at once (default 65536; `None`: no limit). Every
     /// datagram from a new source address creates a peer, so without a limit spoofed sources
@@ -101,6 +106,12 @@ pub struct Config {
     pub connect_timeout: Option<Duration>,
     /// After `shutdown`, connections still open after this long are closed forcibly.
     pub shutdown_timeout: Duration,
+    /// An I/O thread retired by `Engine::set_threads` (a smaller thread count) takes no new
+    /// connections and serves its own until they close. With a timeout, the ones still open
+    /// after it are shut down gracefully, as by `Engine::shutdown` (`on_shutdown`, then closed
+    /// after `shutdown_timeout`), so the thread exits in bounded time. `None` (the default): they
+    /// run until they close by themselves.
+    pub retire_timeout: Option<Duration>,
     /// Accepted connections beyond this many open ones (engine-wide, dialed connections and UDP
     /// peers included in the count) are closed right after `accept`. 0 (the default) = no limit
     /// beyond the process's open-file limit: `accept` failing with `EMFILE` backs the listener
@@ -118,28 +129,31 @@ pub struct Config {
     ///
     /// Reloadable at runtime (`Engine::reload` / [`Telemetry::reload`]): `idle_timeout`,
     /// `slow_callback_threshold`, `slow_hook`, `max_queued_bytes`, `write_high_watermark`,
-    /// `max_connections`, `shutdown_timeout`, `log_level`. Fixed at build time: `read_buffer`,
-    /// `max_pending_responses`, `backlog`, `udp_idle_timeout`, `write_timeout`, `connect_timeout`.
+    /// `max_connections`, `shutdown_timeout`, `retire_timeout`, `log_level`, `read_buffer`,
+    /// `backlog` and `udp_idle_timeout` (see [`Live`](crate::Live) for when each applies). Fixed at
+    /// build time: `max_pending_responses`, `write_timeout`, `connect_timeout`, `udp_max_peers`,
+    /// `udp_gro`. Thread counts change with `Engine::set_threads`.
     pub telemetry: Arc<Telemetry>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
-            read_buffer: 64 << 10,
+            read_buffer: DEFAULT_READ_BUFFER,
             write_high_watermark: DEFAULT_WRITE_HIGH_WATERMARK,
             max_queued_bytes: DEFAULT_MAX_QUEUED_BYTES,
             max_pending_responses: Some(DEFAULT_MAX_PENDING_RESPONSES),
-            backlog: 1024,
+            backlog: DEFAULT_BACKLOG,
             idle_timeout: None,
             write_timeout: Some(DEFAULT_WRITE_TIMEOUT),
             slow_callback_threshold: Some(DEFAULT_SLOW_CALLBACK),
             slow_hook: None,
-            udp_idle_timeout: Duration::from_secs(60),
+            udp_idle_timeout: DEFAULT_UDP_IDLE_TIMEOUT,
             udp_max_peers: Some(DEFAULT_UDP_MAX_PEERS),
             udp_gro: true,
             connect_timeout: Some(DEFAULT_CONNECT_TIMEOUT),
             shutdown_timeout: DEFAULT_SHUTDOWN_TIMEOUT,
+            retire_timeout: None,
             max_connections: 0,
             log_level: None,
             telemetry: Telemetry::new(),

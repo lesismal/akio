@@ -328,7 +328,7 @@ fn serve_thread(
     }
     let bufs = KernelBuf::new(BUF_SIZE * BUF_COUNT as usize)?;
     let mut buf_ring = BufRing::new()?;
-    buf_ring.register(&ring)?;
+    buf_ring.register(&ring, BGID)?;
     for bid in 0..BUF_COUNT {
         buf_ring.give(&bufs, BUF_SIZE, bid);
     }

@@ -548,6 +548,34 @@ enter (about 12% at 4.6M requests/s, 3% at 0.7M); at 100% every request also all
 and the exporter thread encodes and sends ~2.5M spans/s on the same four CPUs. Sample in
 production (`sample_ratio`), or give the exporter thread its own CPU.
 
+### Hot reload (engine A/B, `tools/bench`)
+
+Measured 2026-11-18 on gpu51. Question (ADR-028): does the reloadable read buffer and backlog and
+the resizable thread groups change the steady-state hot path? The changes there are a listener
+bit tested in the poll token instead of one constant compared, a few per-iteration checks for a
+retiring loop, and on io_uring the buffer group chosen from the completion's operation code.
+`base` is `main` at `ab65d376`, `new` the branch; both built in one session and run interleaved
+under `quiet.sh` (5 s runs, medians, a fresh server per run; server on CPUs 0–3 with 4 threads,
+`h2load` / `echo-bench` with 8 threads on CPUs 4–7 and 12–15). Ratios are new / base; `±` is
+half the min–max spread of the rounds.
+
+| Load | backend | base | new / base |
+|---|---|---:|---:|
+| HTTP/1.1 plaintext, 256 conns (11 rounds) | epoll | 715,480 | 1.004 |
+| HTTP/1.1 plaintext, 256 conns (11 rounds) | io_uring | 770,331 | 1.005 |
+| HTTP/1.1 pipelined ×16, 256 conns (11 rounds) | epoll | 4,509,363 | 0.996 |
+| HTTP/1.1 pipelined ×16, 256 conns (11 rounds) | io_uring | 4,658,051 | 0.999 |
+| TCP echo 64 B × 1024 conns (5 rounds, ±2–4%) | epoll | 739,312 | 1.007 |
+| TCP echo 64 B × 1024 conns (5 rounds, ±2–4%) | io_uring | 805,131 | 0.973 |
+| TCP echo 64 B × 64 conns (5 rounds, ±3–15%) | epoll | 766,225 | 0.956 |
+| TCP echo 64 B × 64 conns (5 rounds, ±3–15%) | io_uring | 746,246 | 0.933 |
+
+**Answer: unchanged.** A first 5-round run put pipelined at 0.983 (epoll) and 0.991 (io_uring)
+with a 1% spread; the 11-round rerun of the HTTP rows gives 0.996 and 0.999 (per-round ratio
+medians 0.998 for both); this row moves by about 1% between runs of the same build on this
+host. The echo rows move both ways inside their round-to-round noise (the closed-loop echo
+client is the bottleneck, see "TCP, UDP and TLS echo").
+
 ### Cryptography (`only-crypto`, `--example bench` and `--example pk_bench`, CPU 2)
 
 Hardware paths detected at run time: AES-NI, PCLMULQDQ, SHA-NI, SSE4.2 CRC32, AVX2, VAES +

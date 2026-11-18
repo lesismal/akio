@@ -46,6 +46,7 @@ accept 往往拿走所有连接。
 |---|---|
 | 向 supervisor 发送 SIGTERM / SIGINT，或 `Supervisor::shutdown` | 要求每个 worker 停止：`Worker::serve` 调用 `Engine::shutdown`（停止 accept，完成进行中的请求）后返回；超过 `shutdown_timeout` 仍在运行的 worker 被杀掉；第二次信号立即杀掉 |
 | SIGHUP，或 `Supervisor::reload` | 启动新一代；每个旧 worker 在其替代者报告就绪后停止；在 `ready_timeout` 内未就绪的替代者被杀掉，旧 worker 保留 |
+| SIGUSR1，或 `Supervisor::reload_in_place` | 每个运行中的 worker 执行它的 `Worker::on_reload` 钩子；不替换任何进程（[见下](#原地重载)） |
 | worker 自行退出 | 按 `restart_backoff`（100 ms 翻倍到 10 s）以相同序号重启 |
 | supervisor 退出 | worker 发现控制套接字关闭（Linux 上还会通过 `PR_SET_PDEATHSIG` 收到 SIGTERM），于是排空 |
 | 向 worker 发送 SIGTERM / SIGINT | 像收到停止请求一样排空 |
@@ -60,6 +61,40 @@ worker 运行在自己的进程组中，所以终端的 Ctrl-C 只到达 supervi
 使用 `Inherit` 时，重载不会拒绝或重置任何连接。还剩一个缺口：旧 worker 在开始排空前刚 accept、但请求尚未
 到达的连接，会被 only-http 的优雅关闭关掉（它关闭没有进行中请求的连接；测试中持续负载下重载期间约每 5000 个
 请求出现一次）。
+
+## 原地重载
+
+代际替换会替换进程：新代码、新 listener 以及构建时固定的设置都要靠它生效。而 `Engine::reload` 和
+`Engine::set_threads` 能在运行时修改的设置（空闲超时、各种上限、读缓冲区、backlog、I/O 线程数；
+见[可观测性与热更新](observability.md#热更新)）可以直接在运行中的 worker 里应用：
+
+```rust,ignore
+let engine = Arc::new(Engine::builder().config(load_config()?.engine).listen(..).build()?);
+let e = engine.clone();
+worker.on_reload(move || {
+    // 运行在 worker 的控制线程上，不是 I/O 线程：可以读文件。
+    if let Ok(c) = load_config() {
+        e.reload(&c.engine);
+        let _ = e.set_threads(0, c.threads);
+    }
+});
+worker.serve(&engine)
+```
+
+`Supervisor::reload_in_place()`（或向 supervisor 发送 SIGUSR1）向每个运行中的 worker 发送重载请求，
+worker 执行它的钩子（直接向某个 worker 发送 SIGUSR1 只重载那一个）。不重启任何东西，也不动任何连接：
+缩容时线程把监听套接字交给本 worker 的其他线程而不是关闭，所以 Linux 上使用 `ReusePort` 时不会重置
+任何连接（而没有 `tcp_migrate_req` 的代际替换会）。`Status::in_place_reloads` 和 `Worker::reloads()`
+记录次数。
+
+两者如何相互作用：
+
+- 之后启动的 worker（崩溃重启或下一代）按它启动代码加载的内容构建引擎。原地重载时要同时更新配置源，
+  否则下次重启时改动会丢失。
+- 使用 `Inherit` 时所有 worker 共享一个监听套接字：任一 worker 里的 `backlog` 热更新会对所有 worker
+  生效（下一代继承同一个套接字，也一样）。
+- 使用 `ReusePort` 时每个 worker 的 I/O 线程各自拥有共享 `SO_REUSEPORT` 组中的套接字，内核按套接字
+  而不是按进程分配新连接：线程更多的 worker 分到更大的份额。
 
 ## CPU 绑核
 

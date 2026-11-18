@@ -137,3 +137,4 @@ pub fn only_sys::gso_enabled() -> bool
 pub fn only_sys::listen(core::net::socket_addr::SocketAddr, bool, i32) -> core::io::error::Result<std::net::tcp::TcpListener>
 pub fn only_sys::listen_udp(core::net::socket_addr::SocketAddr, bool) -> core::io::error::Result<std::net::udp::UdpSocket>
 pub fn only_sys::sendfile(std::os::fd::raw::RawFd, std::os::fd::raw::RawFd, u64, usize) -> core::io::error::Result<usize>
+pub fn only_sys::set_backlog(&std::net::tcp::TcpListener, i32) -> core::io::error::Result<()>

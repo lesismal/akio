@@ -20,20 +20,21 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 
 | Field | Default | Reloadable | Meaning |
 |---|---|---|---|
-| `read_buffer` | 64 KiB | no | read buffer per I/O thread; the most `on_data` receives at once (io_uring: buffers of `min(read_buffer, 16 KiB)`) |
+| `read_buffer` | 64 KiB | yes | read buffer per I/O thread; the most `on_data` receives at once (io_uring: buffers of `min(read_buffer, 16 KiB)`); a reload applies from each connection's next read |
 | `write_high_watermark` | 256 KiB | yes | reads pause while a connection has this much queued, resume at a quarter |
 | `max_queued_bytes` | 64 MiB | yes | `send` fails with `Overloaded` beyond this per connection |
 | `max_pending_responses` | 32 | no | ordered (pipelined) responses: reads pause while this many reserved responses are not yet written, and resume at half; responses held back behind a slow one also pause reads at `write_high_watermark` bytes and close the connection past `max_queued_bytes`; `None` = no count limit |
-| `backlog` | 1024 | no | `listen(2)` backlog |
+| `backlog` | 1024 | yes | `listen(2)` backlog; a reload `listen`s the live sockets again |
 | `idle_timeout` | `None` | yes | close (with `TimedOut`) when the peer sent nothing for this long |
 | `write_timeout` | 60 s | no | close (with `TimedOut`) when queued output made no progress for this long: a peer that stopped reading; `None` disables it |
 | `slow_callback_threshold` | `Some(100 ms)` | yes | report callbacks running longer; `None` disables timing |
 | `slow_hook` | `None` | yes | `SlowHook(Arc<dyn Fn(&SlowCallback)>)` receiving reports (else log/stderr) |
-| `udp_idle_timeout` | 60 s | no | drop a silent UDP peer (`idle_timeout` wins when set and shorter) |
+| `udp_idle_timeout` | 60 s | yes | drop a silent UDP peer (`idle_timeout` wins when set and shorter) |
 | `udp_max_peers` | 65536 | no | most peers per UDP listener; new peers beyond are dropped and counted; `None` = no limit |
 | `udp_gro` | true | no | Linux UDP GRO where the kernel supports it; needs `read_buffer` >= 64 KiB |
 | `connect_timeout` | 10 s | no | `Engine::dial` gives up (`TimedOut` to `on_error`) when not connected after this long; `None` leaves it to the OS |
 | `shutdown_timeout` | 10 s | yes | after `shutdown`, force-close what is still open after this long |
+| `retire_timeout` | `None` | yes | an I/O thread retired by `Engine::set_threads` serves its connections this long, then shuts the rest down gracefully (`on_shutdown`, force-closed after `shutdown_timeout`); `None`: until they close |
 | `max_connections` | 0 (none) | yes | accepted connections beyond this many open ones are closed right away (engine-wide count, dialed and UDP peers included) |
 | `log_level` | `None` | yes | `only::log::LevelFilter`; calls `only::log::set_max_level` with it |
 | `telemetry` | new hub | – | the engine's `Arc<Telemetry>`; clone it before `build` to wire endpoints |
@@ -59,8 +60,9 @@ Passed with `EngineBuilder::config(cfg)`; shared by every listener of the engine
 | `backend(Backend)` | `Epoll` | `Epoll` (kqueue on macOS) or `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | `Ebpf(EbpfConfig)` for steering |
 
-None of these are reloadable: listeners, backends and thread counts are fixed when the engine is
-built.
+Listeners and backends are fixed when the engine is built. Thread counts change at runtime with
+`Engine::set_threads(index, n)` (TCP listeners and client groups; see
+[Observability and hot reload](observability.md#io-thread-counts)).
 
 `UringConfig`: `entries` (SQ depth, 0 = default), `sqpoll` (kernel SQ polling thread, false),
 `strict` (fail instead of falling back to epoll, false).

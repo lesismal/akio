@@ -487,6 +487,7 @@ dependencies = [
  "only-ebpf",
  "only-epoll",
  "only-log",
+ "only-sys",
  "only-tls",
  "only-uring",
  "only-x509",

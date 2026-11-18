@@ -20,20 +20,21 @@
 
 | 字段 | 默认值 | 可热更新 | 含义 |
 |---|---|---|---|
-| `read_buffer` | 64 KiB | 否 | 每个 I/O 线程的读缓冲区；`on_data` 一次最多收到的字节数（io_uring：缓冲区大小为 `min(read_buffer, 16 KiB)`） |
+| `read_buffer` | 64 KiB | 是 | 每个 I/O 线程的读缓冲区；`on_data` 一次最多收到的字节数（io_uring：缓冲区大小为 `min(read_buffer, 16 KiB)`）；热更新从每个连接的下一次读开始生效 |
 | `write_high_watermark` | 256 KiB | 是 | 连接排队达到此值时暂停读，降到四分之一时恢复 |
 | `max_queued_bytes` | 64 MiB | 是 | 每连接排队超过此值后 `send` 返回 `Overloaded` |
 | `max_pending_responses` | 32 | 否 | 有序（流水线）响应：已预留但尚未写出的响应达到此数时暂停读，降到一半时恢复；排在慢响应之后的响应字节达到 `write_high_watermark` 时同样暂停读，超过 `max_queued_bytes` 时关闭连接；`None` = 不限数量 |
-| `backlog` | 1024 | 否 | `listen(2)` 的 backlog |
+| `backlog` | 1024 | 是 | `listen(2)` 的 backlog；热更新会对活的监听套接字重新 `listen` |
 | `idle_timeout` | `None` | 是 | 对端这么久没有发来数据时关闭（`TimedOut`） |
 | `write_timeout` | 60 s | 否 | 排队的输出这么久没有任何进展（对端不再读取）时关闭（`TimedOut`）；`None` 关闭此检查 |
 | `slow_callback_threshold` | `Some(100 ms)` | 是 | 报告运行超过此时长的回调；`None` 关闭计时 |
 | `slow_hook` | `None` | 是 | 接收报告的 `SlowHook(Arc<dyn Fn(&SlowCallback)>)`（否则写日志/stderr） |
-| `udp_idle_timeout` | 60 s | 否 | 丢弃静默的 UDP 对端（设置了更短的 `idle_timeout` 时以它为准） |
+| `udp_idle_timeout` | 60 s | 是 | 丢弃静默的 UDP 对端（设置了更短的 `idle_timeout` 时以它为准） |
 | `udp_max_peers` | 65536 | 否 | 每个 UDP listener 的最大对端数；超出后新对端被丢弃并计数；`None` 为不限 |
 | `udp_gro` | true | 否 | 内核支持时启用 Linux UDP GRO；需要 `read_buffer` >= 64 KiB |
 | `connect_timeout` | 10 s | 否 | `Engine::dial` 这么久仍未连上时放弃（`on_error` 收到 `TimedOut`）；`None` 交给操作系统 |
 | `shutdown_timeout` | 10 s | 是 | `shutdown` 之后，超过这么久仍未关闭的连接被强制关闭 |
+| `retire_timeout` | `None` | 是 | 被 `Engine::set_threads` 退役的 I/O 线程继续服务其连接这么久，然后优雅关闭剩下的（`on_shutdown`，`shutdown_timeout` 后强制关闭）；`None`：直到它们自己关闭 |
 | `max_connections` | 0（不限） | 是 | 打开的连接数达到此值后，新 accept 的连接立即关闭（全 engine 计数，含 dial 的连接和 UDP 对端） |
 | `log_level` | `None` | 是 | `only::log::LevelFilter`；用它调用 `only::log::set_max_level` |
 | `telemetry` | 新的 hub | – | engine 的 `Arc<Telemetry>`；在 `build` 前克隆它来接入端点 |
@@ -59,7 +60,8 @@
 | `backend(Backend)` | `Epoll` | `Epoll`（macOS 上为 kqueue）或 `IoUring(UringConfig)` |
 | `accel(Accel)` | `None` | 用于分流的 `Ebpf(EbpfConfig)` |
 
-这些都不可热更新：listener、后端和线程数在构建 engine 时就固定了。
+listener 和后端在构建 engine 时就固定了。线程数可以在运行时用 `Engine::set_threads(index, n)`
+修改（TCP listener 和 client 组；见[可观测性与热更新](observability.md#io-线程数)）。
 
 `UringConfig`：`entries`（SQ 深度，0 = 默认）、`sqpoll`（内核 SQ 轮询线程，false）、`strict`
 （失败而不是回退到 epoll，false）。

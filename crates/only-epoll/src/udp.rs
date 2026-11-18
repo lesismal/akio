@@ -175,6 +175,8 @@ struct UdpLoop {
     clock: Instant,
     /// The command vector traded with `shared` (see `LoopShared::take_into`).
     spare_cmds: Vec<Cmd>,
+    /// Size of each receive slot (`Config::read_buffer`, reloadable; see `slot_size`).
+    rb: usize,
 }
 
 /// GRO (`Config::udp_gro`, on by default) coalesces up to 64 KiB into one receive: only safe
@@ -184,9 +186,15 @@ fn gro_ok(cfg: &Config) -> bool {
     cfg.udp_gro && cfg.read_buffer >= 65535 && only_sys::gro_available()
 }
 
-#[cfg(target_os = "linux")]
-fn new_batch(cfg: &Config) -> only_sys::RecvBatch {
-    only_sys::RecvBatch::with_gro(BATCH, cfg.read_buffer, gro_ok(cfg))
+/// Size of one receive slot for a read buffer of `rb` bytes: sockets with GRO on (decided once,
+/// from the configuration the engine was built with) need room for 64 KiB.
+fn slot_size(cfg: &Config, rb: usize) -> usize {
+    #[cfg(target_os = "linux")]
+    if gro_ok(cfg) {
+        return rb.max(65535);
+    }
+    let _ = cfg;
+    rb
 }
 
 /// The receive buffer of the loops without `recvmmsg` (one datagram per `recv_from`): the free
@@ -247,6 +255,7 @@ impl UdpLoop {
             None => (None, None, None),
         };
         let sock_present = sock.is_some();
+        let rb = slot_size(&cfg, cfg.telemetry.live().read_buffer());
         Ok(UdpLoop {
             poller,
             shared,
@@ -260,9 +269,9 @@ impl UdpLoop {
             blocked_own: IdSet::default(),
             want_write: false,
             #[cfg(target_os = "linux")]
-            batch: sock_present.then(|| new_batch(&cfg)),
+            batch: sock_present.then(|| only_sys::RecvBatch::with_gro(BATCH, rb, gro_ok(&cfg))),
             #[cfg(not(target_os = "linux"))]
-            scratch: sock_present.then(|| Scratch::new(cfg.read_buffer)),
+            scratch: sock_present.then(|| Scratch::new(rb)),
             touched: Vec::new(),
             flush_out: Vec::new(),
             stats,
@@ -272,7 +281,40 @@ impl UdpLoop {
             epoch: Instant::now(),
             clock: Instant::now(),
             spare_cmds: Vec::new(),
+            rb,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn new_batch(&self) -> only_sys::RecvBatch {
+        only_sys::RecvBatch::with_gro(BATCH, self.rb, gro_ok(&self.cfg))
+    }
+
+    /// Live settings changed: the receive buffers take the new `read_buffer` (between two
+    /// batches, so nothing borrows them), and peers' idle timers follow the new idle timeout.
+    fn on_reload(&mut self) {
+        let rb = slot_size(&self.cfg, self.cfg.telemetry.live().read_buffer());
+        if rb != self.rb {
+            self.rb = rb;
+            #[cfg(target_os = "linux")]
+            if self.batch.is_some() {
+                self.batch = Some(self.new_batch());
+            }
+            #[cfg(not(target_os = "linux"))]
+            if self.scratch.is_some() {
+                self.scratch = Some(Scratch::new(rb));
+            }
+        }
+        let idle = self.idle_ms();
+        let ids: Vec<u64> = self.conns.keys().copied().collect();
+        for id in ids {
+            if let Some(p) = self.conns.get_mut(&id) {
+                if let Some(t) = p.timer.take() {
+                    self.wheel.cancel(t);
+                }
+                p.timer = Some(self.wheel.schedule(p.last_active + idle, id));
+            }
+        }
     }
 
     fn tick(&self) -> u64 {
@@ -303,14 +345,15 @@ impl UdpLoop {
         }
     }
 
+    /// The peer idle timeout in force: `udp_idle_timeout`, or `idle_timeout` when set and
+    /// shorter (both reloadable).
     fn idle_ms(&self) -> u64 {
-        let d = self
-            .cfg
-            .idle_timeout
-            .map_or(self.cfg.udp_idle_timeout, |i| {
-                i.min(self.cfg.udp_idle_timeout)
-            });
-        d.as_millis().max(1) as u64
+        let live = self.cfg.telemetry.live();
+        let udp = live.udp_idle_ms().max(1);
+        match live.idle_ms() {
+            0 => udp,
+            i => i.min(udp),
+        }
     }
 
     fn run(&mut self) {
@@ -403,7 +446,7 @@ impl UdpLoop {
         let Some(sock) = self.src_sock(src) else {
             return;
         };
-        let mut batch = self.batch.take().unwrap_or_else(|| new_batch(&self.cfg));
+        let mut batch = self.batch.take().unwrap_or_else(|| self.new_batch());
         let fd = sock.as_raw_fd();
         for _ in 0..MAX_BATCHES_PER_EVENT {
             let n = match batch.recv(fd) {
@@ -509,10 +552,7 @@ impl UdpLoop {
         let Some(sock) = self.src_sock(src) else {
             return;
         };
-        let mut buf = self
-            .scratch
-            .take()
-            .unwrap_or_else(|| Scratch::new(self.cfg.read_buffer));
+        let mut buf = self.scratch.take().unwrap_or_else(|| Scratch::new(self.rb));
         'event: for _ in 0..MAX_BATCHES_PER_EVENT {
             // A batch is up to BATCH datagrams, as with recvmmsg.
             for _ in 0..BATCH {
@@ -764,7 +804,7 @@ impl UdpLoop {
         };
         // Replies to the whole batch leave together, in one sendmmsg (see `on_wake`).
         p.inner.set_corked(true);
-        let mut batch = self.batch.take().unwrap_or_else(|| new_batch(&self.cfg));
+        let mut batch = self.batch.take().unwrap_or_else(|| self.new_batch());
         let mut err = None;
         'recv: for _ in 0..MAX_BATCHES_PER_EVENT {
             let n = match batch.recv(sock.as_raw_fd()) {
@@ -835,10 +875,7 @@ impl UdpLoop {
         let Some(sock) = self.conns.get(&id).and_then(|p| p.own.clone()) else {
             return;
         };
-        let mut buf = self
-            .scratch
-            .take()
-            .unwrap_or_else(|| Scratch::new(self.cfg.read_buffer));
+        let mut buf = self.scratch.take().unwrap_or_else(|| Scratch::new(self.rb));
         let owned = self.conns.get(&id).is_some_and(|p| p.owned);
         let mut got = 0;
         for _ in 0..MAX_BATCHES_PER_EVENT * BATCH {
@@ -1094,7 +1131,12 @@ impl UdpLoop {
                     Cmd::Task(id, task) => self.on_task(id, task),
                     Cmd::Shutdown => self.begin_shutdown(),
                     Cmd::Core(LoopCmd::Inspect(reply)) => reply(self.inspect()),
-                    Cmd::Core(LoopCmd::Reload) => {}
+                    Cmd::Core(LoopCmd::Reload) => self.on_reload(),
+                    // Thread resizing is not offered for UDP groups (ADR-028).
+                    Cmd::AddListener(..)
+                    | Cmd::GiveListener { .. }
+                    | Cmd::Retire { .. }
+                    | Cmd::Revive => {}
                     Cmd::DialUdp { sock, acceptor } => self.open_client(sock, acceptor),
                     Cmd::BindUdp { id, sock, acceptor } => self.open_bound(id, sock, acceptor),
                     Cmd::Unbind(id) => self.unbind(id),
@@ -1316,6 +1358,10 @@ impl UdpGroup {
 impl Group for UdpGroup {
     fn local_addr(&self) -> SocketAddr {
         self.addr
+    }
+
+    fn threads(&self) -> usize {
+        self.shared.len()
     }
 
     fn listener_fds(&self) -> Vec<i32> {

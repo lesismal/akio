@@ -270,12 +270,47 @@ env_logger 不同，`only=debug` 不匹配 `only_http`（target 按 `::` 边界�
 
 | 可热更新 | 构建时固定 |
 |---|---|
-| `idle_timeout`、`slow_callback_threshold`、`slow_hook`、`max_queued_bytes`、`write_high_watermark`、`max_connections`、`shutdown_timeout`、`log_level` | `read_buffer`、`backlog`、`udp_idle_timeout`、listener、后端、线程数、线程池大小 |
+| `idle_timeout`、`slow_callback_threshold`、`slow_hook`、`max_queued_bytes`、`write_high_watermark`、`max_connections`、`shutdown_timeout`、`retire_timeout`、`log_level`、`read_buffer`、`backlog`、`udp_idle_timeout` | `max_pending_responses`、`write_timeout`、`connect_timeout`、`udp_max_peers`、`udp_gro`、listener、后端、线程池大小 |
 
-已打开的连接会立即采用新的空闲超时和水位线（重新设置定时器、重新评估背压）。UDP listener
-保持构建时的空闲超时。I/O 线程每次使用实时设置时只做一次 relaxed 读，所以热更新不给热路径
-带来任何开销。也可以通过 `Telemetry::live()` 上的 setter 单独修改某个值，然后调用
+对已经打开的连接和套接字：
+
+- **空闲超时**（`idle_timeout`、`udp_idle_timeout`）：已打开连接和 UDP 对端的定时器按新值重新设置；
+  UDP 对端取两者中较短的一个。
+- **`write_high_watermark`**：对每个连接重新评估背压。
+- **`read_buffer`**：每个 I/O 线程在两批事件之间（此时没有 `on_data` 借用它）替换读缓冲区，
+  所以已打开的连接从下一次读开始使用新大小。io_uring 下线程会注册一个新大小的第二个
+  provided-buffer 组（仍以 16 KiB 为上限），每个连接在其 multishot 接收重新挂起时转到新组；
+  没有接收再使用旧组后，旧组被释放。开启 GRO 的 UDP 线程保持至少 64 KiB 的槽。
+- **`backlog`**：每个监听套接字重新调用一次 `listen(2)`；内核就地更新这个活套接字的队列上限
+  （受 `net.core.somaxconn` / `kern.ipc.somaxconn` 限制）。
+
+I/O 线程对大多数实时设置每次使用时只做一次 relaxed 读，其余的在处理重载通知时应用，所以热更新
+不给热路径带来任何开销。也可以通过 `Telemetry::live()` 上的 setter 单独修改某个值，然后调用
 `Telemetry::notify_reload()`。
+
+### I/O 线程数
+
+`Engine::threads()` 按 `local_addrs()` 的顺序列出每个 listener 和 client 组当前活跃的 I/O
+线程数；`Engine::set_threads(index, n)` 在 engine 运行时修改其中一个（ADR-028）。它在变更投递给
+I/O 线程后即返回，不等待它生效（扩容到一个正在退出的退役线程的编号时会先 join 它）。
+
+- **扩容**启动新线程（或让正在退役的线程重新活跃）。Linux 上每个新线程在该 listener 的组里绑定
+  自己的 `SO_REUSEPORT` 套接字，内核把新连接按份额分给它；macOS 上以及继承来的 listener，
+  新线程在共享套接字的克隆上 accept。dial 分摊到所有活跃线程。
+- **缩容**让编号最大的线程退役。退役线程立即停止 accept，并把监听套接字交给留下的线程；
+  套接字全程保持打开，所以 accept 队列中等待的连接不会被重置。**连接从不在线程之间迁移**：
+  退役线程继续服务它拥有的连接，最后一个关闭后退出。设置了 `Config::retire_timeout` 时，
+  到期仍打开的连接会收到 `on_shutdown`（HTTP 写完进行中的响应后关闭，WebSocket 发送 1001），
+  再过 `shutdown_timeout` 仍未关闭的被关闭；客户端会重连到活跃线程。
+- 退役中的线程显示在 `Metrics::loops`（`retiring: true`）、Prometheus 指标 `only_loop_retiring`
+  和 JSON（`"retiring"`）中；已退出的线程报告 `running: false`，在同一编号上重新启动的线程延续
+  它的计数器。
+- UDP listener（在 UDP `SO_REUSEPORT` 组里增删套接字会把对端挪到别的线程）、DPDK 以及设置了
+  `Accel::Ebpf` 分流的 listener 不支持，返回 `Unsupported`。
+
+在 only-prefork 下，`Controller::reload_in_place()`（或向 supervisor 发送 SIGUSR1）会运行每个
+worker 的 `Worker::on_reload` 钩子，worker 在其中重新读取配置并调用 `Engine::reload` 和
+`Engine::set_threads`：见 [prefork](prefork.md#原地重载)。
 
 only 自己不监视配置文件：从你使用的机制触发 `reload`（`SIGHUP` 处理器、文件监视器、或者像
 上例那样的管理路由）。

@@ -31,3 +31,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-024: Owned UDP receive buffers and keyed peer tables](024-udp-owned-receive-buffers.md) (accepted 2026-11-17)
 - [ADR-025: Per-connection response sinks and reused request targets](025-per-connection-response-sink.md) (accepted 2026-11-17)
 - [ADR-020: Spans, push export (OTLP, StatsD), per-route HTTP labels and HTTP/2 gauges](020-spans-and-push-export.md) (accepted 2026-11-17)
+- [ADR-028: Hot reload of read buffer, backlog, UDP idle timeout and I/O thread count](028-hot-reload-buffers-backlog-threads.md) (accepted 2026-11-17)

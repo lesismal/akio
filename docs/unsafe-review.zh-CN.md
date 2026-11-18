@@ -81,18 +81,18 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | only-ebpf | 20 | 4 | 0 | 1 |
 | only-http | 0 | 0 | 0 | 8 |
 | only-crypto | 144 | 72 | 0 | 0 |
-| only-sys | 89 | 3 | 3 | 0 |
+| only-sys | 91 | 3 | 3 | 0 |
 | only-buf | 5 | 0 | 2 | 0 |
-| only-uring | 41 | 4 | 1 | 0 |
+| only-uring | 43 | 5 | 1 | 0 |
 | ct-dudect | 2 | 0 | 0 | 0 |
-| **合计** | **333** | **83** | **7** | **22** |
+| **合计** | **337** | **84** | **7** | **22** |
 
 按用途：
 
 | 位置 | 数量 | 用途 | 主要不变式 |
 |---|---:|---|---|
 | `only-sys/src/ffi/` | 5 + 布局测试中 7 个，`unsafe fn errno_location`、`cmsg_firsthdr`、`cmsg_nxthdr` | 自有的操作系统绑定：C 库（Linux）/ libSystem（macOS）的 `extern "C"` 声明、常量、`#[repr(C)]` 结构体、`CMSG_*` 辅助函数、`cpu_set_t`、errno | 见下文“自有系统调用层” |
-| `only-sys/src/net.rs` | 15 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage` | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
+| `only-sys/src/net.rs` | 17 | `socket`/`bind`/`listen`/`connect`、`setsockopt`、`sendfile`、`SocketAddr` -> `sockaddr_storage`、对活的监听套接字再次 `listen`（backlog 热更新）、读取监听套接字 backlog 的 `TCP_INFO`（测试用） | sockaddr 长度与地址族一致；fd 在任何可失败步骤前即被拥有 |
 | `only-sys/src/poller.rs` | 12 + `impl Send` | epoll / kqueue 的创建、控制、等待 | 事件缓冲区有 `BATCH` 个已初始化条目；kevent 的 `udata` 只是不透明的 token |
 | `only-sys/src/process.rs` | 14 | `allowed_cpus` / `pin_current_thread`（对调用线程的 `sched_getaffinity` / `sched_setaffinity`，`cpu_set_t` 大小与传入长度一致）；prefork 相关：`pre_exec` 钩子（`fcntl` 清除 `FD_CLOEXEC`、`PR_SET_PDEATHSIG`、`sched_setaffinity`）、`take_inherited_fd`、self-pipe 信号处理器（`sigaction`，处理器中 `write`）、`kill` | 钩子只做异步信号安全的调用且不分配内存（所有数据在 `fork` 前准备好）；继承来的 fd 在每个进程中最多被拥有一次（`TAKEN` 集合）；处理器保存并恢复 `errno` |
 | `only-sys/src/waker.rs` | 10 | eventfd（Linux）/ pipe（macOS）唤醒器，io_uring 用的 `EventFd` | fd 立即被拥有；eventfd 写入的 8 字节来自存活的 `u64` |
@@ -116,8 +116,8 @@ Miri 同样不解释 SIMD intrinsic，也无法执行 `asm!`：在 Miri 下 `onl
 | `only-crypto/src/bignum/ifma.rs` | 4 个块（仅 x86_64；每个宏一个，各三或四个实例，另加 `amm80`） | 基于 AVX-512 IFMA 的 RSA 模幂：在 `ymm` / `zmm` 寄存器中对 20、32、40、64（走 60 步）与 80 个 52 位数字做几乎 Montgomery 乘法，各一个 `asm!` 块，另有同时处理两组操作数的版本（`amm*_x2`，CRT 两半交错）（`vpmadd52luq`/`vpmadd52huq`、`valignq`、opmask 进位；这些 intrinsic 在 MSRV 上不稳定） | 只经 `Mont::pow`（20–40 个数字）与 `Mont::pow_public`（40、64、80 个数字，经 `ifma::pow_public`）在 `ifma::enabled()`（`cpu::has(Feature::Ifma)`：AVX-512 F/BW/VL、IFMA 以及操作系统保存 ZMM 与 opmask 状态）之后进入，有 debug 断言；读取 `a`、`b`、`m` 指向的 `D` 个数字，写入 `D` 个数字的输出，非对齐访问，不使用栈；全部向量与掩码寄存器声明为被破坏（`clobber_abi("C")`），循环期间输出指针暂存在 `xmm31`，结尾执行 `vzeroupper`；除数字计数器外没有分支。`amm*_x2`（经 `ifma::pow_x2` 从 `Mont::pow2` 进入，检查相同）：读取 `a`、`b` 指向的 `2D` 个数字与 `m` 指向的 `2D + 2` 个字（两个模数，然后两个 `k0`），写入 `2D` 个数字的输出；输出指针暂存在 `k7`（`kmovq`，AVX-512 BW）。`amm64` 只读取 `b` 的前 60 个数字（步数；每个操作数的最高四个数字为零）。`amm80`（操作数占用 32 个向量寄存器中的 30 个）：输出指针暂存在 `k7`，最高通道靠零掩码（`k3`）移入零，常量在循环结束后设置；其进位传播使用 rsi 与 rdi，二者作为被破坏的 `inout` 操作数声明 |
 | `only-buf/src/slab.rs` | 5，`impl Send`/`Sync for Mem` | 接收 slab：`Mem`（泄漏出来的 `Box<[u8]>`，在 `Drop` 中释放）、某个区间的 `ChunkMut` / `Chunk` 视图（`deref`、`deref_mut`、`as_mut_ptr`）、`SlabPool` 复用 | 存活的 `ChunkMut` 区间彼此不相交，且与存活的 `Chunk` 区间不相交：`ChunkMut` 只在无人引用的整块 slab 上创建（`Arc::get_mut`，它同时与其它线程上的释放同步），或由另一个 `ChunkMut` 的 `split_to` 得到，`Chunk` 只由 `freeze` 得到；字节只经由分配的裸指针访问，偏移满足 `start <= end <= len`（u32，slab 大小经断言）；内存分配时清零，读到的每个字节都已初始化；内核只通过 `RecvBatch` 的 iovec 写 slab，该 iovec 覆盖一个在调用期间被可变持有的 `ChunkMut`。Miri（`cargo +nightly miri test -p only-buf`，包括数据竞争检测下的跨线程释放）与 loom（`RUSTFLAGS="--cfg loom" cargo test -p only-buf --lib --release -- loom`） |
 | `only-sys/src/random.rs` | 2（每个系统一个） | 供 `only-crypto` 使用的 `getrandom(2)`（Linux）、`getentropy(2)`（macOS） | 内核最多向存活的 `&mut [u8]` 写入 `buf.len()` 字节（`getentropy` 每次最多 256 字节）；`getrandom` 读到的字节不足时按返回值前移 |
-| `only-uring/src/reactor.rs` | 12 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
-| `only-uring/src/ring.rs` | 18（其中 2 个只在测试中编译：稀疏 `REGISTER_FILES`、`REGISTER_SEND_MSG_RING`），`unsafe fn push`、`register`、`register_buf_ring` | 自有 io_uring 绑定：经 `syscall(2)` 调用 `io_uring_setup`/`enter`/`register`，`mmap` 映射 SQ/CQ ring 与 SQE 数组，SQ/CQ 的 head/tail 原子量，probe、enable-rings、buffer ring 注册；为 io_uring 特性评估提供稀疏的注册文件表和无需自有 ring 的 `MSG_RING` | 内核给出的偏移在使用前对照各自映射做边界检查；仅在队列未满时写入 SQE 槽位，tail 以 `Release` 发布；在自身 head 与以 `Acquire` 读取的 tail 之间读取 CQE，head 以 `Release` 发布；读取 `SQ_NEED_WAKEUP` 前有 `SeqCst` 栅栏（SQPOLL）；映射与 `Ring` 同生命周期 |
+| `only-uring/src/reactor.rs` | 13 + 测试中 3 个、`unsafe fn slice`、`impl Send for Loop` | SQE 提交、provided-buffer ring（`BufRing`，读缓冲区热更新替换时还有第二个 `BufGroup`）、内核写入的缓冲区（`KernelBuf`）、accept 得到的 fd | 释放缓冲区时没有在途操作（全部取消并收割完成事件，否则泄漏而不释放）；被替换的缓冲区组只在挂在它上面的接收都已结束（`armed == 0`）后才注销，内核拒绝时泄漏；内核持有的缓冲区绝不被借用；ring 条目通过裸字段指针写入；tail 以 `Release` 存储 |
+| `only-uring/src/ring.rs` | 19（其中 2 个只在测试中编译：稀疏 `REGISTER_FILES`、`REGISTER_SEND_MSG_RING`），`unsafe fn push`、`register`、`register_buf_ring`、`unregister_buf_ring` | 自有 io_uring 绑定：经 `syscall(2)` 调用 `io_uring_setup`/`enter`/`register`，`mmap` 映射 SQ/CQ ring 与 SQE 数组，SQ/CQ 的 head/tail 原子量，probe、enable-rings、buffer ring 注册；为 io_uring 特性评估提供稀疏的注册文件表和无需自有 ring 的 `MSG_RING` | 内核给出的偏移在使用前对照各自映射做边界检查；仅在队列未满时写入 SQE 槽位，tail 以 `Release` 发布；在自身 head 与以 `Acquire` 读取的 tail 之间读取 CQE，head 以 `Release` 发布；读取 `SQ_NEED_WAKEUP` 前有 `SeqCst` 栅栏（SQPOLL）；映射与 `Ring` 同生命周期 |
 | `only-uring/src/eval.rs`（`#[cfg(test)]`） | 5 | io_uring 特性评估的测量工具（一个 ignored 测试）：SQE 提交、provided buffer 读取、对自己 socket 的 `write`/`close`、`setsockopt(TCP_NODELAY)` | 提交项只指向泄漏的静态响应缓冲区或 provided buffers，二者都不释放（工具随后结束进程）；缓冲区只在其完成事件与归还 ring 之间被借用；只有在没有提交项引用描述符后才关闭它 |
 | `only-uring/src/group.rs` | 3 | 探测内核版本用的 `uname` | `utsname` 置零；内核以 NUL 结尾 `release` |
 | `only-dpdk/src/pmd.rs` | 17、`impl Send for Queue` | 调用 C shim（`rte_eal_init`、端口配置、`rte_eth_rx_burst`/`tx_burst`、mbuf 分配/释放）；从 mbuf 借出帧数据；就地写入暂存的发送 mbuf | shim 的 ABI 只有整数和不透明指针（Rust 侧不涉及 DPDK 结构体布局）；EAL argv 故意泄漏（比 EAL 活得久），只初始化一次（`OnceLock`）；每个 mbuf 只归一个 `Queue`/`Mbuf` 所有、只释放一次（`tx_burst` 未取走的帧被释放，收到的帧在 drop 时释放）；切片只覆盖 shim 返回的单个数据段，且不超过 mbuf 的生命周期；`Queue` 同一时刻只被一个线程使用（一次性移交给其 I/O 线程）；未提交的暂存发送 mbuf 会被释放 |

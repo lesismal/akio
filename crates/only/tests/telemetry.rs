@@ -274,10 +274,10 @@ fn reload_enables_and_disables_the_idle_timeout_for_open_connections() {
     // Enable: the already open connection is closed for idleness.
     let mut cfg = quick();
     cfg.idle_timeout = Some(Duration::from_millis(150));
-    cfg.read_buffer = 1234; // not reloadable
+    cfg.udp_gro = !cfg.udp_gro; // not reloadable
     let r = e.reload(&cfg);
     assert!(r.applied.contains(&"idle_timeout"), "{r:?}");
-    assert_eq!(r.ignored, vec!["read_buffer"]);
+    assert_eq!(r.ignored, vec!["udp_gro"]);
     assert!(closed_within(&mut a, Duration::from_secs(3)));
     assert!(wait_until(Duration::from_secs(2), || e
         .metrics()

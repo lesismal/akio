@@ -54,6 +54,7 @@ itself, from systemd socket activation for instance.
 |---|---|
 | SIGTERM / SIGINT to the supervisor, `Supervisor::shutdown` | every worker is asked to stop: `Worker::serve` calls `Engine::shutdown` (stop accepting, finish in-flight requests) and returns; workers still running after `shutdown_timeout` are killed; a second signal kills at once |
 | SIGHUP, `Supervisor::reload` | a new generation starts; each old worker is stopped once its replacement reported ready; a replacement not ready within `ready_timeout` is killed and the old worker kept |
+| SIGUSR1, `Supervisor::reload_in_place` | every running worker runs its `Worker::on_reload` hook; no process is replaced ([below](#reload-in-place)) |
 | a worker exits on its own | restarted with the same index after `restart_backoff` (100 ms doubling to 10 s) |
 | the supervisor dies | workers see their control socket close (on Linux they also get SIGTERM via `PR_SET_PDEATHSIG`) and drain |
 | SIGTERM / SIGINT to a worker | it drains like a stop request |
@@ -71,6 +72,45 @@ With `Inherit`, a reload refuses or resets no connection. One gap remains: a con
 worker accepted just before it began draining, whose request had not arrived yet, is closed by
 only-http's graceful shutdown, which closes connections with no request in flight (about 1 in
 5,000 requests during a reload under continuous load in the tests).
+
+## Reload in place
+
+A generation swap replaces processes: it is how new code, new listeners and settings fixed at
+build time take effect. Settings that `Engine::reload` and `Engine::set_threads` change at runtime
+(idle timeouts, limits, read buffer, backlog, I/O thread counts; see
+[Observability and hot reload](observability.md#hot-reload)) can instead be applied inside the
+running workers:
+
+```rust,ignore
+let engine = Arc::new(Engine::builder().config(load_config()?.engine).listen(..).build()?);
+let e = engine.clone();
+worker.on_reload(move || {
+    // On the worker's control thread, not an I/O thread: reading a file is fine.
+    if let Ok(c) = load_config() {
+        e.reload(&c.engine);
+        let _ = e.set_threads(0, c.threads);
+    }
+});
+worker.serve(&engine)
+```
+
+`Supervisor::reload_in_place()` (or SIGUSR1 to the supervisor) sends every running worker a
+reload request; the worker runs its hook (SIGUSR1 sent to one worker runs only that one). Nothing
+restarts and no connection is touched: shrinking hands a thread's listening sockets to the
+worker's other threads instead of closing them, so on Linux with `ReusePort` it resets nothing,
+unlike a generation swap without `tcp_migrate_req`. `Status::in_place_reloads` and
+`Worker::reloads()` count them.
+
+How the two interact:
+
+- A worker started later (a crash restart, or the next generation) builds its engine from what its
+  start-up code loads. Update the configuration source along with the in-place reload, or the
+  change is lost at the next restart.
+- With `Inherit` all workers share one listening socket: a `backlog` reload in any worker changes
+  it for all of them (and for the next generation, which inherits the same socket).
+- With `ReusePort` each worker's I/O threads own sockets of the shared `SO_REUSEPORT` group, so
+  the kernel spreads new connections by socket, not by process: a worker with more threads gets a
+  larger share.
 
 ## CPU pinning
 
