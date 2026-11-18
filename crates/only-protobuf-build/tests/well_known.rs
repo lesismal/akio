@@ -10,11 +10,15 @@ fn well_known_types_are_up_to_date() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../only-protobuf/src/well_known/generated.rs");
     let names = [
         "google/protobuf/any.proto",
+        "google/protobuf/api.proto",
+        "google/protobuf/descriptor.proto",
         "google/protobuf/duration.proto",
         "google/protobuf/empty.proto",
         "google/protobuf/field_mask.proto",
         "google/protobuf/struct.proto",
+        "google/protobuf/source_context.proto",
         "google/protobuf/timestamp.proto",
+        "google/protobuf/type.proto",
         "google/protobuf/wrappers.proto",
     ];
     // The empty include directory names the inputs by their full import path; the built-in

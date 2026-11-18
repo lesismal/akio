@@ -6,8 +6,11 @@ use std::{
 };
 
 use crate::{
-    Config,
-    parse::{Constant, EnumDef, Field, File, Label, MessageDef, Scalar, Service, Syntax, TypeRef},
+    Config, descriptor, features,
+    parse::{
+        Constant, EnumDef, Field, File, Label, MessageDef, Options as _, Presence, Scalar, Service,
+        TypeRef,
+    },
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -22,55 +25,84 @@ struct Sym {
     package: String,
     /// Proto names from the outermost message to the type itself.
     nesting: Vec<String>,
+    /// The file declaring it.
+    file: String,
+    /// 2024 visibility: not usable from other files.
+    local: bool,
 }
 
 type GResult<T> = Result<T, String>;
 
-pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(String, String)>> {
+/// A generated file: its name and its Rust source.
+type Output = (String, String);
+
+pub(crate) fn generate(cfg: &Config, files: Vec<File>) -> GResult<Vec<(String, String)>> {
+    generate_all(cfg, files).map(|(code, _)| code)
+}
+
+/// The code per package, and the `FileDescriptorSet` of every file (for
+/// `Config::file_descriptor_set_path`).
+pub(crate) fn generate_all(cfg: &Config, mut files: Vec<File>) -> GResult<(Vec<Output>, Vec<u8>)> {
     // Symbols.
     let mut syms: HashMap<String, Sym> = HashMap::new();
     for f in &files {
+        let ff = features::file_features(f)?;
         let mut add = |fqn: String, s: Sym| -> GResult<()> {
             if syms.insert(fqn.clone(), s).is_some() {
                 return Err(format!("{}: {} is defined twice", f.name, &fqn[1..]));
             }
             Ok(())
         };
+        struct W<'a> {
+            pkg: &'a str,
+            file: &'a str,
+            ff: features::Features,
+        }
         fn walk(
+            w: &W<'_>,
             m: &MessageDef,
-            pkg: &str,
             nesting: &mut Vec<String>,
             add: &mut dyn FnMut(String, Sym) -> GResult<()>,
         ) -> GResult<()> {
+            let nested = !nesting.is_empty();
             nesting.push(m.name.clone());
             add(
-                fqn(pkg, nesting),
+                fqn(w.pkg, nesting),
                 Sym {
                     kind: Kind::Message,
-                    package: pkg.to_owned(),
+                    package: w.pkg.to_owned(),
                     nesting: nesting.clone(),
+                    file: w.file.to_owned(),
+                    local: features::is_local(w.ff, m.visibility, nested),
                 },
             )?;
             for e in &m.enums {
                 nesting.push(e.name.clone());
                 add(
-                    fqn(pkg, nesting),
+                    fqn(w.pkg, nesting),
                     Sym {
                         kind: Kind::Enum,
-                        package: pkg.to_owned(),
+                        package: w.pkg.to_owned(),
                         nesting: nesting.clone(),
+                        file: w.file.to_owned(),
+                        local: features::is_local(w.ff, e.visibility, true),
                     },
                 )?;
                 nesting.pop();
             }
             for n in &m.messages {
-                walk(n, pkg, nesting, add)?;
+                walk(w, n, nesting, add)?;
             }
             nesting.pop();
             Ok(())
         }
+        let w = W {
+            pkg: &f.package,
+            file: &f.name,
+            ff,
+        };
         for m in &f.messages {
-            walk(m, &f.package, &mut Vec::new(), &mut add)?;
+            walk(&w, m, &mut Vec::new(), &mut add)?;
         }
         for e in &f.enums {
             add(
@@ -79,6 +111,8 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
                     kind: Kind::Enum,
                     package: f.package.clone(),
                     nesting: vec![e.name.clone()],
+                    file: f.name.clone(),
+                    local: features::is_local(ff, e.visibility, false),
                 },
             )?;
         }
@@ -92,6 +126,34 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
         } else {
             format!(".{}", f.package)
         };
+        fn field(
+            fl: &mut Field,
+            scope: &str,
+            syms: &HashMap<String, Sym>,
+            file: &str,
+        ) -> GResult<()> {
+            if let TypeRef::Named(n) = &fl.ty {
+                fl.ty = resolve(n, scope, syms)
+                    .ok_or_else(|| format!("{file}:{}: unknown type {n}", fl.line))?;
+                visible(&fl.ty, syms, file).map_err(|e| format!("{file}:{}: {e}", fl.line))?;
+            }
+            if let Some(TypeRef::Named(n)) = &fl.extendee {
+                match resolve(n, scope, syms) {
+                    Some(t @ TypeRef::Message(_)) => {
+                        visible(&t, syms, file).map_err(|e| format!("{file}:{}: {e}", fl.line))?;
+                        fl.extendee = Some(t);
+                    }
+                    _ => return Err(format!("{file}:{}: {n} is not a message", fl.line)),
+                }
+            }
+            if fl.packed == Some(true) && matches!(fl.ty, TypeRef::Message(_)) {
+                return Err(format!(
+                    "{file}:{}: [packed = true] on a message field",
+                    fl.line
+                ));
+            }
+            Ok(())
+        }
         fn walk(
             m: &mut MessageDef,
             scope: &str,
@@ -99,17 +161,8 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
             file: &str,
         ) -> GResult<()> {
             let scope = format!("{scope}.{}", m.name);
-            for fl in &mut m.fields {
-                if let TypeRef::Named(n) = &fl.ty {
-                    fl.ty = resolve(n, &scope, syms)
-                        .ok_or_else(|| format!("{file}:{}: unknown type {n}", fl.line))?;
-                }
-                if fl.packed == Some(true) && matches!(fl.ty, TypeRef::Message(_)) {
-                    return Err(format!(
-                        "{file}:{}: [packed = true] on a message field",
-                        fl.line
-                    ));
-                }
+            for fl in m.fields.iter_mut().chain(&mut m.extensions) {
+                field(fl, &scope, syms, file)?;
             }
             for n in &mut m.messages {
                 walk(n, &scope, syms, file)?;
@@ -119,12 +172,19 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
         for m in &mut f.messages {
             walk(m, &pkg_scope, &syms, &fname)?;
         }
+        for fl in &mut f.extensions {
+            field(fl, &pkg_scope, &syms, &fname)?;
+        }
         for s in &mut f.services {
             for m in &mut s.methods {
                 for t in [&mut m.input, &mut m.output] {
                     if let TypeRef::Named(n) = t {
                         match resolve(n, &pkg_scope, &syms) {
-                            Some(r @ TypeRef::Message(_)) => *t = r,
+                            Some(r @ TypeRef::Message(_)) => {
+                                visible(&r, &syms, &fname)
+                                    .map_err(|e| format!("{fname}: {}.{}: {e}", s.name, m.name))?;
+                                *t = r;
+                            }
                             _ => {
                                 return Err(format!(
                                     "{fname}: {}.{}: {n} is not a message",
@@ -136,6 +196,35 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
                 }
             }
         }
+    }
+
+    // Features: enums first (whether each is closed), then fields.
+    let mut closed: HashMap<String, bool> = HashMap::new();
+    for f in &mut files {
+        features::resolve_file(f, &mut |_| None)?;
+        let prefix = if f.package.is_empty() {
+            String::new()
+        } else {
+            format!(".{}", f.package)
+        };
+        fn walk(m: &MessageDef, prefix: &str, out: &mut HashMap<String, bool>) {
+            let name = format!("{prefix}.{}", m.name);
+            for e in &m.enums {
+                out.insert(format!("{name}.{}", e.name), e.closed);
+            }
+            for n in &m.messages {
+                walk(n, &name, out);
+            }
+        }
+        for m in &f.messages {
+            walk(m, &prefix, &mut closed);
+        }
+        for e in &f.enums {
+            closed.insert(format!("{prefix}.{}", e.name), e.closed);
+        }
+    }
+    for f in &mut files {
+        features::resolve_file(f, &mut |e| closed.get(e).copied())?;
     }
 
     let mut externs = cfg.extern_paths.clone();
@@ -175,8 +264,53 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
             enums.insert(format!("{prefix}.{}", e.name), e);
         }
     }
+    // Extensions must use a number of one of the extendee's extension ranges.
+    for f in &files {
+        let all = f
+            .extensions
+            .iter()
+            .chain(f.messages.iter().flat_map(all_extensions));
+        for x in all {
+            let Some(TypeRef::Message(e)) = &x.extendee else {
+                continue;
+            };
+            let ok = msgs.get(e).is_some_and(|m| {
+                m.extension_ranges
+                    .iter()
+                    .any(|r| (r.start..=r.end).contains(&x.number))
+            });
+            if !ok {
+                return Err(format!(
+                    "{}:{}: {} = {} is not in an extension range of {}",
+                    f.name,
+                    x.line,
+                    x.name,
+                    x.number,
+                    &e[1..]
+                ));
+            }
+        }
+    }
+    // Descriptors (source-retention options stripped, as protoc does).
+    let index = descriptor::Index::new(&files);
+    let mut protos = HashMap::new();
+    for f in files.iter().filter(|f| !f.implicit) {
+        protos.insert(f.name.as_str(), descriptor::file_descriptor(f, &index)?);
+    }
+    let all_names: Vec<&str> = files
+        .iter()
+        .filter(|f| !f.implicit)
+        .map(|f| f.name.as_str())
+        .collect();
+    let full_set = if cfg.descriptor_set_path.is_some() {
+        descriptor::file_descriptor_set(&files, &protos, &all_names)
+    } else {
+        Vec::new()
+    };
+
     let gen_files: Vec<&File> = files
         .iter()
+        .filter(|f| !f.implicit)
         .filter(|f| {
             let p = format!(".{}", f.package);
             !externs.iter().any(|(e, _)| covers(e, &p))
@@ -185,6 +319,22 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
     let grpc = cfg
         .grpc
         .unwrap_or_else(|| gen_files.iter().any(|f| !f.services.is_empty()));
+    let mut utf8_exts: HashMap<String, Vec<u32>> = HashMap::new();
+    for f in &files {
+        for x in f
+            .extensions
+            .iter()
+            .chain(f.messages.iter().flat_map(all_extensions))
+        {
+            if let (Some(TypeRef::Message(e)), TypeRef::Scalar(Scalar::String)) =
+                (&x.extendee, &x.ty)
+            {
+                if x.resolved.verify_utf8 {
+                    utf8_exts.entry(e.clone()).or_default().push(x.number);
+                }
+            }
+        }
+    }
     let g = Gen {
         cfg,
         syms: &syms,
@@ -192,6 +342,7 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
         enums,
         externs,
         grpc,
+        utf8_exts,
     };
     let mut by_pkg: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
     let mut sorted = gen_files;
@@ -211,20 +362,26 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
             format!(".{}", f.package)
         };
         for m in &f.messages {
-            g.message(out, m, &format!("{prefix}.{}", m.name), &module, f.syntax)?;
+            g.message(out, m, &format!("{prefix}.{}", m.name), &module)?;
         }
         for e in &f.enums {
             g.enumeration(out, e);
         }
+        g.extensions(out, &f.extensions, &f.package, &module);
         if g.grpc {
             for s in &f.services {
                 g.service(out, s, &f.package, &module);
             }
         }
     }
-    Ok(by_pkg
+    let code = by_pkg
         .into_iter()
-        .map(|(pkg, (names, code))| {
+        .map(|(pkg, (names, mut code))| {
+            if cfg.descriptors {
+                let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+                let set = descriptor::file_descriptor_set(&files, &protos, &refs);
+                code.push_str(&descriptor_items(&set));
+            }
             let file = if pkg.is_empty() {
                 "_.rs".to_owned()
             } else {
@@ -236,7 +393,57 @@ pub(crate) fn generate(cfg: &Config, mut files: Vec<File>) -> GResult<Vec<(Strin
             );
             (file, head + code.trim_end() + "\n")
         })
-        .collect())
+        .collect();
+    Ok((code, full_set))
+}
+
+/// The package-level descriptor items: the encoded set as a byte string, split in lines, and
+/// the pool built from it.
+fn descriptor_items(set: &[u8]) -> String {
+    let mut out = String::from(
+        "/// The descriptor pool of this package's files and the files they import (built from\n/// [`FILE_DESCRIPTOR_SET`] on first use).\npub fn descriptor_pool() -> &'static ::only_protobuf::reflect::DescriptorPool {\n    static POOL: ::std::sync::OnceLock<::only_protobuf::reflect::DescriptorPool> =\n        ::std::sync::OnceLock::new();\n    POOL.get_or_init(|| {\n        ::only_protobuf::reflect::DescriptorPool::decode(FILE_DESCRIPTOR_SET)\n            .unwrap_or_else(|e| ::core::panic!(\"{e}\"))\n    })\n}\n\n",
+    );
+    out.push_str(
+        "/// The descriptors of this package's files and of the files they import: an encoded\n/// `google.protobuf.FileDescriptorSet`.\npub const FILE_DESCRIPTOR_SET: &[u8] = b\"\\\n",
+    );
+    for chunk in set.chunks(48) {
+        out.push_str("    ");
+        for (i, &b) in chunk.iter().enumerate() {
+            match b {
+                b' ' if i == 0 => out.push_str("\\x20"),
+                b'"' => out.push_str("\\\""),
+                b'\\' => out.push_str("\\\\"),
+                0x20..=0x7e => out.push(b as char),
+                _ => {
+                    let _ = write!(out, "\\x{b:02x}");
+                }
+            }
+        }
+        out.push_str("\\\n");
+    }
+    out.push_str("\";\n\n");
+    out
+}
+
+/// The extensions declared in `m` and its nested messages.
+fn all_extensions(m: &MessageDef) -> Vec<&Field> {
+    let mut v: Vec<&Field> = m.extensions.iter().collect();
+    for n in &m.messages {
+        v.extend(all_extensions(n));
+    }
+    v
+}
+
+/// Fails when `t` is a 2024 `local` type of another file.
+fn visible(t: &TypeRef, syms: &HashMap<String, Sym>, file: &str) -> Result<(), String> {
+    if let TypeRef::Message(n) | TypeRef::Enum(n) = t {
+        if let Some(s) = syms.get(n) {
+            if s.local && s.file != file {
+                return Err(format!("{} is local to {} (not exported)", &n[1..], s.file));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn fqn(pkg: &str, nesting: &[String]) -> String {
@@ -472,6 +679,8 @@ struct Gen<'a> {
     enums: HashMap<String, &'a EnumDef>,
     externs: Vec<(String, String)>,
     grpc: bool,
+    /// String extensions that must be UTF-8, by extendee: their numbers.
+    utf8_exts: HashMap<String, Vec<u32>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -491,6 +700,8 @@ struct Plan<'f> {
     codec: String,
     ty: String,
     key: Option<(String, String)>,
+    /// A closed enum (or a map of them): unknown numbers go to the unknown fields.
+    closed: bool,
 }
 
 fn scalar_ty(s: Scalar) -> (&'static str, &'static str) {
@@ -658,17 +869,26 @@ impl Gen<'_> {
         })
     }
 
-    fn plans<'f>(
-        &self,
-        m: &'f MessageDef,
-        fqn: &str,
-        module: &[String],
-        syntax: Syntax,
-    ) -> Vec<Plan<'f>> {
+    /// The Rust type and codec of a field's values, seen from module `from` (a delimited message
+    /// field uses the group codec).
+    fn field_value(&self, f: &Field, from: &[String]) -> (String, String) {
+        let (ty, codec) = self.value(&f.ty, from);
+        if f.resolved.delimited {
+            let codec = format!("__pb::GroupCodec<{ty}, {}>", f.number);
+            return (ty, codec);
+        }
+        (ty, codec)
+    }
+
+    fn is_closed(&self, t: &TypeRef) -> bool {
+        matches!(t, TypeRef::Enum(e) if self.enums.get(e).is_some_and(|e| e.closed))
+    }
+
+    fn plans<'f>(&self, m: &'f MessageDef, fqn: &str, module: &[String]) -> Vec<Plan<'f>> {
         m.fields
             .iter()
             .map(|f| {
-                let (ty, codec) = self.value(&f.ty, module);
+                let (ty, codec) = self.field_value(f, module);
                 let msg = match &f.ty {
                     TypeRef::Message(t) => Some(t.as_str()),
                     _ => None,
@@ -678,20 +898,17 @@ impl Gen<'_> {
                     Shape::Map
                 } else if f.oneof.is_some() {
                     Shape::Oneof { boxed }
+                } else if f.label == Label::Repeated {
+                    Shape::Repeated {
+                        packed: f.resolved.packed,
+                    }
+                } else if msg.is_some() {
+                    Shape::Optional { boxed }
                 } else {
-                    match (f.label, msg.is_some()) {
-                        (Label::Repeated, _) => Shape::Repeated {
-                            packed: match f.ty {
-                                TypeRef::Scalar(s) if s.is_len() => false,
-                                TypeRef::Scalar(_) | TypeRef::Enum(_) => {
-                                    f.packed.unwrap_or(syntax == Syntax::Proto3)
-                                }
-                                _ => false,
-                            },
-                        },
-                        (_, true) | (Label::Optional, false) => Shape::Optional { boxed },
-                        (Label::Required, false) => Shape::Required,
-                        (Label::Implicit, false) => Shape::Implicit,
+                    match f.resolved.presence {
+                        Presence::Explicit => Shape::Optional { boxed },
+                        Presence::Required => Shape::Required,
+                        Presence::Implicit => Shape::Implicit,
                     }
                 };
                 let key = f.map_key.map(|k| {
@@ -705,6 +922,7 @@ impl Gen<'_> {
                     codec,
                     ty,
                     key,
+                    closed: self.is_closed(&f.ty),
                 }
             })
             .collect()
@@ -724,17 +942,23 @@ impl Gen<'_> {
         m: &MessageDef,
         fqn: &str,
         module: &[String],
-        syntax: Syntax,
     ) -> GResult<()> {
         let name = camel(&m.name);
         let inner_mod = ident(&snake(&m.name));
         let mut inner: Vec<String> = module.to_vec();
         inner.push(inner_mod.clone());
-        let plans = self.plans(m, fqn, module, syntax);
+        let plans = self.plans(m, fqn, module);
         if self.cfg.unknown_fields && plans.iter().any(|p| p.name == "unknown_fields") {
             return Err(format!(
                 "{}: a field named unknown_fields clashes with the unknown-field member; turn \
                  Config::unknown_fields off",
+                &fqn[1..]
+            ));
+        }
+        let extendable = !m.extension_ranges.is_empty();
+        if extendable && plans.iter().any(|p| p.name == "extensions") {
+            return Err(format!(
+                "{}: a field named extensions clashes with the extension member",
                 &fqn[1..]
             ));
         }
@@ -795,6 +1019,10 @@ impl Gen<'_> {
                 camel(&o.name)
             );
         }
+        if extendable {
+            out.push_str("    /// Extension fields (see `only_protobuf::Extendable`).\n");
+            out.push_str("    pub extensions: ::only_protobuf::ExtensionSet,\n");
+        }
         if self.cfg.unknown_fields {
             out.push_str("    /// Fields this version does not know, kept to be written back.\n");
             out.push_str("    pub unknown_fields: ::only_protobuf::UnknownFields,\n");
@@ -818,6 +1046,9 @@ impl Gen<'_> {
                     "            {}: ::core::option::Option::None,",
                     ident(&snake(&o.name))
                 );
+            }
+            if extendable {
+                out.push_str("            extensions: ::only_protobuf::ExtensionSet::new(),\n");
             }
             if self.cfg.unknown_fields {
                 out.push_str(
@@ -904,12 +1135,47 @@ impl Gen<'_> {
             out.push_str("}\n\n");
         }
 
-        self.message_impl(out, m, &name, &inner_mod, &plans);
+        self.message_impl(out, m, fqn, &name, &inner_mod, &plans);
+        if extendable {
+            let _ = writeln!(
+                out,
+                "impl ::only_protobuf::Extendable for {name} {{
+    fn extension_set(&self) -> &::only_protobuf::ExtensionSet {{
+        &self.extensions
+    }}
+    fn extension_set_mut(&mut self) -> &mut ::only_protobuf::ExtensionSet {{
+        &mut self.extensions
+    }}
+}}
+"
+            );
+        }
         let _ = writeln!(
             out,
             "impl ::only_protobuf::Name for {name} {{\n    const FULL_NAME: &'static str = \"{}\";\n}}\n",
             &fqn[1..]
         );
+        if self.cfg.descriptors {
+            let sym = &self.syms[fqn];
+            let pkg: Vec<String> = if sym.package.is_empty() {
+                Vec::new()
+            } else {
+                sym.package.split('.').map(ident).collect()
+            };
+            let pool = rel(module, &pkg, "descriptor_pool");
+            let _ = writeln!(
+                out,
+                "impl ::only_protobuf::reflect::ReflectMessage for {name} {{
+    fn descriptor() -> ::only_protobuf::reflect::MessageDescriptor {{
+        {pool}()
+            .get_message_by_name(<Self as ::only_protobuf::Name>::FULL_NAME)
+            .unwrap_or_else(|| ::core::panic!(\"{} is not in the descriptor pool\"))
+    }}
+}}
+",
+                &fqn[1..]
+            );
+        }
         if self.grpc {
             let _ = writeln!(
                 out,
@@ -927,7 +1193,11 @@ impl Gen<'_> {
         }
 
         // Nested types and oneof enums.
-        if !m.messages.is_empty() || !m.enums.is_empty() || !m.oneofs.is_empty() {
+        if !m.messages.is_empty()
+            || !m.enums.is_empty()
+            || !m.oneofs.is_empty()
+            || !m.extensions.is_empty()
+        {
             let mut body = String::new();
             for (i, o) in m.oneofs.iter().enumerate() {
                 let members: Vec<&Plan<'_>> =
@@ -967,11 +1237,12 @@ impl Gen<'_> {
                 body.push_str("}\n\n");
             }
             for n in &m.messages {
-                self.message(&mut body, n, &format!("{fqn}.{}", n.name), &inner, syntax)?;
+                self.message(&mut body, n, &format!("{fqn}.{}", n.name), &inner)?;
             }
             for e in &m.enums {
                 self.enumeration(&mut body, e);
             }
+            self.extensions(&mut body, &m.extensions, &fqn[1..], &inner);
             let _ = writeln!(
                 out,
                 "/// Nested types of `{}`.\npub mod {inner_mod} {{",
@@ -987,13 +1258,22 @@ impl Gen<'_> {
         &self,
         out: &mut String,
         m: &MessageDef,
+        fqn: &str,
         name: &str,
         inner_mod: &str,
         plans: &[Plan<'_>],
     ) {
         let mut sorted: Vec<&Plan<'_>> = plans.iter().collect();
         sorted.sort_by_key(|p| p.f.number);
+        let mut ranges: Vec<(u32, u32)> = m
+            .extension_ranges
+            .iter()
+            .map(|r| (r.start, r.end))
+            .collect();
+        ranges.sort_unstable();
         let uf = self.cfg.unknown_fields;
+        let ext = !ranges.is_empty();
+        let message_set = m.options.flag("message_set_wire_format") == Some(true);
         let use_pb = "        use ::only_protobuf::encoding as __pb;\n";
         let _ = writeln!(out, "impl ::only_protobuf::Message for {name} {{");
 
@@ -1001,7 +1281,7 @@ impl Gen<'_> {
         let _ = writeln!(
             out,
             "    fn encode_raw(&self, {}: &mut ::std::vec::Vec<u8>) {{",
-            if plans.is_empty() && !uf {
+            if plans.is_empty() && !uf && !ext {
                 "_buf"
             } else {
                 "buf"
@@ -1010,7 +1290,13 @@ impl Gen<'_> {
         if !plans.is_empty() {
             out.push_str(use_pb);
         }
+        let mut next_range = 0;
         for p in &sorted {
+            while next_range < ranges.len() && ranges[next_range].0 < p.f.number {
+                let (a, b) = ranges[next_range];
+                let _ = writeln!(out, "        self.extensions.encode_range({a}, {b}, buf);");
+                next_range += 1;
+            }
             let (n, c, f) = (p.f.number, &p.codec, &p.name);
             let line = match p.shape {
                 Shape::Implicit => format!("__pb::encode_implicit::<{c}>({n}, &self.{f}, buf);"),
@@ -1041,6 +1327,13 @@ impl Gen<'_> {
                 }
             };
             let _ = writeln!(out, "        {line}");
+        }
+        for &(a, b) in &ranges[next_range..] {
+            if message_set {
+                out.push_str("        self.extensions.encode_message_set(buf);\n");
+            } else {
+                let _ = writeln!(out, "        self.extensions.encode_range({a}, {b}, buf);");
+            }
         }
         if uf {
             out.push_str("        self.unknown_fields.encode(buf);\n");
@@ -1092,11 +1385,22 @@ impl Gen<'_> {
             t.push_str("            ::core::option::Option::None => 0,\n        }");
             terms.push(t);
         }
+        if ext {
+            terms.push(if message_set {
+                "self.extensions.message_set_len()".into()
+            } else {
+                "self.extensions.encoded_len()".into()
+            });
+        }
         if uf {
             terms.push("self.unknown_fields.encoded_len()".into());
         }
         if terms.is_empty() {
             terms.push("0".into());
+        }
+        if terms.len() > 1 && terms[0].starts_with("match") {
+            // A leading `match` would be a statement, not the sum's first operand.
+            terms[0] = format!("({})", terms[0]);
         }
         let _ = writeln!(out, "        {}", terms.join("\n            + "));
         out.push_str("    }\n\n");
@@ -1115,13 +1419,37 @@ impl Gen<'_> {
         } else {
             "r.skip_field(field, wire_type).map(drop)"
         };
-        if plans.is_empty() {
+        let unknown = if uf {
+            "&mut self.unknown_fields"
+        } else {
+            "&mut ::only_protobuf::UnknownFields::new()"
+        };
+        if message_set {
+            // MessageSet: extensions travel as `repeated group Item = 1 { type_id = 2; message = 3 }`.
+            let _ = writeln!(
+                out,
+                "        match field {{\n            1 if wire_type == ::only_protobuf::encoding::WireType::StartGroup => self.extensions.merge_message_set_item(r),"
+            );
+            // Extensions encoded as plain submessages are accepted too.
+            let _ = writeln!(
+                out,
+                "            2..={} => self.extensions.merge_field(field, wire_type, r),\n            _ => {fallback},\n        }}",
+                (1u32 << 29) - 1
+            );
+        } else if plans.is_empty() && !ext {
             let _ = writeln!(out, "        {fallback}");
         } else {
-            out.push_str(use_pb);
+            if !plans.is_empty() {
+                out.push_str(use_pb);
+            }
             out.push_str("        match field {\n");
             for p in &sorted {
                 let (n, c, f) = (p.f.number, &p.codec, &p.name);
+                if p.closed {
+                    let (arm, guard) = self.closed_arm(m, p, inner_mod, unknown);
+                    let _ = writeln!(out, "            {n} if {guard} => {arm},");
+                    continue;
+                }
                 let arm = match p.shape {
                     Shape::Implicit | Shape::Required => {
                         format!("__pb::merge_value::<{c}>({n}, wire_type, r, &mut self.{f})")
@@ -1166,10 +1494,114 @@ impl Gen<'_> {
                 };
                 let _ = writeln!(out, "            {n} if {guard} => {arm},");
             }
+            if let Some(nums) = self.utf8_exts.get(fqn) {
+                for n in nums {
+                    let _ = writeln!(
+                        out,
+                        "            {n} if wire_type == __pb::WireType::Len => self.extensions.merge_utf8_field(field, wire_type, r),"
+                    );
+                }
+            }
+            for &(a, b) in &ranges {
+                let _ = writeln!(
+                    out,
+                    "            {a}..={b} => self.extensions.merge_field(field, wire_type, r),"
+                );
+            }
             let _ = writeln!(out, "            _ => {fallback},");
             out.push_str("        }\n");
         }
         out.push_str("    }\n}\n\n");
+    }
+
+    /// The merge arm and its guard for a closed enum field.
+    fn closed_arm(
+        &self,
+        m: &MessageDef,
+        p: &Plan<'_>,
+        inner_mod: &str,
+        unknown: &str,
+    ) -> (String, String) {
+        let (n, f, e) = (p.f.number, &p.name, &p.ty);
+        let read = format!("__pb::read_closed_enum::<{e}>({n}, wire_type, r, {unknown})?");
+        let single = format!("__pb::accepts::<{}>(wire_type)", p.codec);
+        match p.shape {
+            Shape::Implicit | Shape::Required => (
+                format!(
+                    "{{\n                if let ::core::option::Option::Some(v) = {read} {{\n                    self.{f} = v;\n                }}\n                ::core::result::Result::Ok(())\n            }}"
+                ),
+                single,
+            ),
+            Shape::Optional { .. } => (
+                format!(
+                    "{{\n                if let ::core::option::Option::Some(v) = {read} {{\n                    self.{f} = ::core::option::Option::Some(v);\n                }}\n                ::core::result::Result::Ok(())\n            }}"
+                ),
+                single,
+            ),
+            Shape::Repeated { .. } => (
+                format!(
+                    "__pb::merge_closed_enum_repeated::<{e}>({n}, wire_type, r, &mut self.{f}, {unknown})"
+                ),
+                format!("__pb::accepts_repeated::<{}>(wire_type)", p.codec),
+            ),
+            Shape::Map => (
+                format!(
+                    "__pb::merge_closed_enum_map::<{}, {e}>({n}, wire_type, r, &mut self.{f}, {unknown})",
+                    p.key.as_ref().map_or("", |k| k.0.as_str())
+                ),
+                "wire_type == __pb::WireType::Len".to_owned(),
+            ),
+            Shape::Oneof { .. } => {
+                let o = &m.oneofs[p.f.oneof.unwrap_or(0)];
+                (
+                    format!(
+                        "{{\n                if let ::core::option::Option::Some(v) = {read} {{\n                    self.{} = ::core::option::Option::Some({inner_mod}::{}::{}(v));\n                }}\n                ::core::result::Result::Ok(())\n            }}",
+                        ident(&snake(&o.name)),
+                        camel(&o.name),
+                        camel(&p.f.name)
+                    ),
+                    single,
+                )
+            }
+        }
+    }
+
+    /// Constants for the extensions declared in one scope (`scope`: the package or the message's
+    /// full name, for the names).
+    fn extensions(&self, out: &mut String, exts: &[Field], scope: &str, module: &[String]) {
+        for x in exts {
+            let Some(TypeRef::Message(e)) = &x.extendee else {
+                continue;
+            };
+            let extendee = self.type_path(e, module);
+            let (_, codec) = self.field_value(x, module);
+            let codec = codec.replace("__pb::", "::only_protobuf::encoding::");
+            let full = if scope.is_empty() {
+                x.name.clone()
+            } else {
+                format!("{scope}.{}", x.name)
+            };
+            doc(
+                out,
+                "",
+                &x.doc,
+                &format!("Extension `{full}` of `{}` (field {}).", &e[1..], x.number),
+            );
+            let cname = ident(&screaming(&x.name));
+            if x.label == Label::Repeated {
+                let _ = writeln!(
+                    out,
+                    "pub const {cname}: ::only_protobuf::RepeatedExtension<{extendee}, {codec}> =\n    ::only_protobuf::RepeatedExtension::new({}, {full:?}, {});\n",
+                    x.number, x.resolved.packed
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "pub const {cname}: ::only_protobuf::Extension<{extendee}, {codec}> =\n    ::only_protobuf::Extension::new({}, {full:?});\n",
+                    x.number
+                );
+            }
+        }
     }
 
     /// A Rust expression for a declared `[default = ...]`; `owned` for a struct field value
@@ -1260,6 +1692,9 @@ impl Gen<'_> {
                 &v.doc,
                 &format!("`{}` = {}.", v.name, v.number),
             );
+            if c.chars().any(|ch| ch.is_ascii_lowercase()) {
+                out.push_str("    #[allow(non_upper_case_globals)]\n");
+            }
             let _ = writeln!(out, "    pub const {c}: {name} = {name}({});", v.number);
         }
         out.push_str("\n    /// The value with this name in the `.proto` file.\n");
@@ -1614,9 +2049,26 @@ fn const_names(e: &EnumDef) -> Vec<String> {
         .all(|s| !s.is_empty() && !s.starts_with(|c: char| c.is_ascii_digit()))
         && stripped.iter().collect::<HashSet<_>>().len() == stripped.len();
     let names = if ok { stripped } else { plain };
+    // Aliases whose names differ only in case (`MOO`, `moo`) keep their own spelling.
+    let mut seen = HashSet::new();
     names
         .into_iter()
-        .map(|n| if n == "SELF" { "SELF_".into() } else { n })
+        .zip(&e.values)
+        .enumerate()
+        .map(|(i, (n, v))| {
+            let n = if n == "SELF" { "SELF_".to_owned() } else { n };
+            if seen.insert(n.clone()) {
+                return n;
+            }
+            let own = ident(&v.name);
+            if seen.insert(own.clone()) {
+                own
+            } else {
+                let n = format!("{n}_{i}");
+                seen.insert(n.clone());
+                n
+            }
+        })
         .collect()
 }
 

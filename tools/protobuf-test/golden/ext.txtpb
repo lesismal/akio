@@ -1,0 +1,9 @@
+# test.ext.Base
+id: 7
+meta { note: "n" }
+levels: [HIGH, LOW]
+[test.ext.level]: LOW
+[test.ext.tags]: [1, 2, 300]
+[test.ext.at] { seconds: 5 nanos: 6 }
+[test.ext.extra] { x: -1 }
+[test.ext.Holder.label]: "lbl"

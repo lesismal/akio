@@ -1,0 +1,64 @@
+// Custom options (extensions of descriptor.proto's options messages), standard options and
+// text-format aggregates: the descriptors must hold them as protoc encodes them.
+syntax = "proto2";
+
+package test.opts;
+
+import "google/protobuf/descriptor.proto";
+
+message Rule {
+  optional string pattern = 1;
+  repeated int32 codes = 2;
+  optional Rule sub = 3;
+  optional Kind kind = 4;
+  enum Kind {
+    PLAIN = 0;
+    REGEX = 1;
+  }
+}
+
+extend google.protobuf.FieldOptions {
+  optional Rule rule = 50001;
+  optional sint32 weight = 50002;
+}
+
+extend google.protobuf.MessageOptions {
+  optional string tag = 50003;
+  repeated string labels = 50004;
+  optional double ratio = 50006;
+}
+
+extend google.protobuf.FileOptions {
+  optional bool flag = 50005;
+}
+
+option (flag) = true;
+option java_package = "x.y";
+option optimize_for = CODE_SIZE;
+
+message M {
+  option (tag) = "m";
+  option (labels) = "a";
+  option (labels) = "b";
+  option (ratio) = -2.5e-3;
+  optional string s = 1 [
+    (rule) = { pattern: "x*" codes: [1, 2] sub { pattern: "y" kind: REGEX } },
+    (weight) = -3,
+    deprecated = true
+  ];
+  optional int32 t = 2 [(rule).pattern = "z", (rule).codes = 7, (rule).sub.kind = REGEX];
+  repeated int32 u = 3 [packed = true, (weight) = 0x10];
+}
+
+enum E {
+  option allow_alias = true;
+  A = 0;
+  B = 0 [deprecated = true];
+}
+
+service S {
+  option deprecated = true;
+  rpc Call(M) returns (M) {
+    option idempotency_level = NO_SIDE_EFFECTS;
+  }
+}

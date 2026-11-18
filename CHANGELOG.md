@@ -105,6 +105,34 @@ Additive (ADR-023, docs/adr/023-arpc-middleware-coders-pools.md):
   hybrid torrents with aria2 1.37, web seeds from nginx, LSD on a Docker network. Fuzz targets
   `bt_lsd` and `bt_merkle`; `bt_bencode`, `bt_peer_wire`, `bt_krpc` extended.
 - BEP 44 is not implemented, on purpose (ADR-018).
+### Added: protobuf groups, extensions, editions, JSON and reflection; gRPC server reflection
+
+ADR-022 (docs/adr/022-protobuf-gaps.md):
+
+- **only-protobuf-build**: proto2 `group` fields, `extend` blocks (typed `Extension` /
+  `RepeatedExtension` constants), extension ranges, MessageSet; editions 2023 and 2024 with
+  feature resolution (presence, closed enums, packed / expanded, `DELIMITED`, naming style,
+  `export` / `local`); custom options and text-format aggregates; descriptors as protoc writes
+  them, embedded per package (`FILE_DESCRIPTOR_SET`, `descriptor_pool()`), `Config::descriptors`,
+  `Config::file_descriptor_set_path`; `descriptor.proto`, `type.proto`, `api.proto`,
+  `source_context.proto` built in.
+- **only-protobuf**: `ExtensionSet`, `Extendable`, `Extension`, `RepeatedExtension`;
+  `encoding::GroupCodec`, closed-enum decoders; `Enumeration::is_known`; `reflect`
+  (`DescriptorPool`, descriptors, `DynamicMessage`, `Value`, `ReflectMessage`); `json`
+  (canonical proto3 JSON, well-known types, `ignore_unknown_fields`); the descriptor well-known
+  types in `well_known`.
+- **only-grpc**: `reflection::register` (gRPC server reflection v1 and v1alpha, for grpcurl /
+  grpcui), the reflection messages in `reflection::v1` / `v1alpha`; depends on only-protobuf.
+- Verified: protobuf conformance runner v35.1, binary + JSON, 5627 passed, 0 failed
+  (`tools/protobuf-test/conformance/run.sh`); descriptor sets equal protoc's; grpcurl
+  (`tools/interop/grpc/grpcurl.sh`); fuzz targets `protobuf_json`, `protobuf_descriptor`.
+
+Behaviour changes: proto2 (closed) enum fields keep unknown numbers as unknown fields instead of
+storing them; extension fields of proto2 messages are now in `extensions`, not
+`unknown_fields`; tags longer than 5 bytes are rejected (as C++ does). Encode/decode
+cost is unchanged: same-run A/B against the previous commit on gpu51 (5 alternating runs, medians,
+prost as control) gives Point 12/18 ns → 12/18 ns, Feature 19/47 ns → 18/45 ns, AllTypes
+encode 309 → 312 ns (+1%, prost 509 → 505) and decode 1629 → 1448 ns (−11%, prost 1788 → 1749).
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 

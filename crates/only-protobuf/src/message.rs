@@ -108,6 +108,10 @@ pub trait Enumeration: Copy + Default {
     fn value(self) -> i32;
     /// The value's name in the `.proto` file, when it is a known one.
     fn name(self) -> Option<&'static str>;
+    /// Whether the number is one the `.proto` file declares.
+    fn is_known(self) -> bool {
+        self.name().is_some()
+    }
 }
 
 /// Fields a message did not recognize while decoding, kept in their encoded form and written
@@ -151,6 +155,22 @@ impl UnknownFields {
         encoding::put_tag(&mut self.raw, field, wire_type);
         self.raw.extend_from_slice(raw);
         Ok(())
+    }
+
+    /// Keeps a varint field (a closed enum's unknown number).
+    pub(crate) fn push_varint(&mut self, field: u32, v: u64) {
+        encoding::put_tag(&mut self.raw, field, WireType::Varint);
+        encoding::put_varint(&mut self.raw, v);
+    }
+
+    /// Keeps a field given its raw value (a length-delimited one gets its length prefix).
+    pub(crate) fn push_raw(&mut self, field: u32, wire_type: WireType, value: &[u8]) {
+        encoding::put_tag(&mut self.raw, field, wire_type);
+        if wire_type == WireType::Len {
+            encoding::put_bytes(&mut self.raw, value);
+        } else {
+            self.raw.extend_from_slice(value);
+        }
     }
 
     /// Appends them, as read.

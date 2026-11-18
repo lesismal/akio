@@ -1,0 +1,12 @@
+# protobuf_test_messages.editions.TestAllTypesEdition2023
+optional_int32: 7
+optional_nested_message { a: 1 }
+recursive_message { optional_int32: 2 }
+repeated_int32: [1, 2, 3]
+packed_int32: [4, 5]
+map_string_nested_message { key: "k" value { a: 3 } }
+groupliketype { group_int32: 6 group_uint32: 7 }
+delimited_field { group_int32: 8 }
+[protobuf_test_messages.editions.groupliketype] { c: 9 }
+[protobuf_test_messages.editions.delimited_ext] { c: 10 }
+map_recursive { key: 1 value { optional_int32: 11 } }

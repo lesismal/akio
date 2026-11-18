@@ -45,6 +45,26 @@ pub fn summarize(points: &[Point]) -> RouteSummary {
 #[derive(Debug, Default)]
 pub struct Impl;
 
+impl crate::test::ext::ext_server::Ext for Impl {
+    fn echo(
+        &self,
+        _md: &Metadata,
+        request: crate::test::ext::Base,
+    ) -> Result<crate::test::ext::Base, Status> {
+        Ok(request)
+    }
+}
+
+impl crate::test::ed::items_server::Items for Impl {
+    fn get(
+        &self,
+        _md: &Metadata,
+        request: crate::test::ed::Item,
+    ) -> Result<crate::test::ed::Item, Status> {
+        Ok(request)
+    }
+}
+
 // ANCHOR: server
 impl RouteGuide for Impl {
     fn get_feature(&self, _md: &Metadata, request: Point) -> Result<Feature, Status> {
@@ -335,6 +355,25 @@ pub fn server(name: &'static str) -> only_grpc::GrpcServer {
     let s = crate::routeguide::route_guide_server::register(only_grpc::GrpcServer::new(), Impl);
     let s = crate::helloworld::greeter_server::register(s, Impl);
     // ANCHOR_END: register
+    // ANCHOR: reflection
+    // Server reflection (grpcurl, grpcui): the descriptors of both packages in one pool.
+    let mut pool = crate::routeguide::descriptor_pool().clone();
+    pool.add_file_descriptor_set(crate::helloworld::FILE_DESCRIPTOR_SET)
+        .expect("descriptors");
+    // ANCHOR_END: reflection
+    // proto2 groups and extensions, edition 2024, proto3 test messages (with the WKTs).
+    for set in [
+        crate::test::ext::FILE_DESCRIPTOR_SET,
+        crate::test::ed::FILE_DESCRIPTOR_SET,
+        crate::protobuf_test_messages::proto3::FILE_DESCRIPTOR_SET,
+    ] {
+        pool.add_file_descriptor_set(set).expect("descriptors");
+    }
+    let s = crate::test::ext::ext_server::register(s, Impl);
+    let s = crate::test::ed::items_server::register(s, Impl);
+    // ANCHOR: reflection_register
+    let s = only_grpc::reflection::register(s, &pool);
+    // ANCHOR_END: reflection_register
     s.unary("/test.Echo/Struct", move |_md, req, sink| {
         match <well_known::Struct as only_protobuf::Message>::decode(&req) {
             Ok(st) => {

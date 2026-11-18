@@ -22,3 +22,4 @@
 - [ADR-019：SOCKS 客户端、HTTP/WebSocket 客户端的 SOCKS 代理、UDP 分片重组与 SOCKS4 BIND](019-socks-client-fragments-socks4-bind.zh-CN.md)（2026-11-17 采纳）
 - [ADR-023：arpc 中间件、coder 与客户端连接池](023-arpc-middleware-coders-pools.zh-CN.md)（2026-11-17 采纳）
 - [ADR-018：BitTorrent v2 与混合种子、Web 种子、LSD、IPv6 DHT、速率与做种限制](018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md)（2026-11-17 采纳）
+- [ADR-022：protobuf 的 group、extension、edition、JSON 与反射](022-protobuf-gaps.zh-CN.md)（2026-11-18 采纳）

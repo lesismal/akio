@@ -128,7 +128,7 @@ impl Any {
     }
 
     /// The `M` inside, `None` when it holds another type.
-    pub fn unpack<M: Message + Name>(&self) -> Result<Option<M>, DecodeError> {
+    pub fn unpack<M: Message + Name>(&self) -> Result<std::option::Option<M>, DecodeError> {
         if !self.is::<M>() {
             return Ok(None);
         }

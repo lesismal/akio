@@ -1,0 +1,40 @@
+// proto2 groups, extensions (top-level and scoped, scalar, repeated, message and group typed),
+// closed enums and defaults.
+syntax = "proto2";
+
+package test.ext;
+
+import "google/protobuf/timestamp.proto";
+
+message Base {
+  optional int32 id = 1;
+  optional group Meta = 2 {
+    optional string note = 3;
+  }
+  repeated Level levels = 4;
+  extensions 100 to 199;
+}
+
+enum Level {
+  LOW = 1;
+  HIGH = 2;
+}
+
+extend Base {
+  optional Level level = 100 [default = HIGH];
+  repeated int32 tags = 101 [packed = true];
+  optional google.protobuf.Timestamp at = 102;
+  optional group Extra = 103 {
+    optional int32 x = 1;
+  }
+}
+
+message Holder {
+  extend Base {
+    optional string label = 150 [default = "none"];
+  }
+}
+
+service Ext {
+  rpc Echo(Base) returns (Base);
+}

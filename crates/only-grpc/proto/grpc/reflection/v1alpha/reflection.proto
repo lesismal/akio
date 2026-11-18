@@ -1,0 +1,96 @@
+// gRPC server reflection (the definitions of grpc/reflection/v1alpha/reflection.proto in the grpc
+// repository): a client asks which services a server has and for the descriptors of their files.
+syntax = "proto3";
+
+package grpc.reflection.v1alpha;
+
+option go_package = "google.golang.org/grpc/reflection/grpc_reflection_v1alpha";
+option java_multiple_files = true;
+option java_package = "io.grpc.reflection.v1alpha";
+option java_outer_classname = "ServerReflectionProto";
+
+// The reflection service.
+service ServerReflection {
+  // One response per request, on one stream.
+  rpc ServerReflectionInfo(stream ServerReflectionRequest) returns (stream ServerReflectionResponse);
+}
+
+// A question about the server.
+message ServerReflectionRequest {
+  // The host the client called.
+  string host = 1;
+  // What is asked.
+  oneof message_request {
+    // The file with this name (with its imports).
+    string file_by_filename = 3;
+    // The file declaring this fully-qualified symbol (with its imports).
+    string file_containing_symbol = 4;
+    // The file declaring this extension (with its imports).
+    ExtensionRequest file_containing_extension = 5;
+    // The extension numbers of this message type.
+    string all_extension_numbers_of_type = 6;
+    // The services (the content is ignored).
+    string list_services = 7;
+  }
+}
+
+// An extension: the message it extends and its number.
+message ExtensionRequest {
+  // The full name of the extended message.
+  string containing_type = 1;
+  // The field number.
+  int32 extension_number = 2;
+}
+
+// The answer to one request.
+message ServerReflectionResponse {
+  // The host, as asked.
+  string valid_host = 1;
+  // The request answered.
+  ServerReflectionRequest original_request = 2;
+  // The answer.
+  oneof message_response {
+    // Encoded FileDescriptorProtos.
+    FileDescriptorResponse file_descriptor_response = 4;
+    // Extension numbers.
+    ExtensionNumberResponse all_extension_numbers_response = 5;
+    // Services.
+    ListServiceResponse list_services_response = 6;
+    // Why the request failed.
+    ErrorResponse error_response = 7;
+  }
+}
+
+// Files, each an encoded google.protobuf.FileDescriptorProto.
+message FileDescriptorResponse {
+  // The files.
+  repeated bytes file_descriptor_proto = 1;
+}
+
+// The extension numbers of a message type.
+message ExtensionNumberResponse {
+  // The full name of the message.
+  string base_type_name = 1;
+  // The numbers.
+  repeated int32 extension_number = 2;
+}
+
+// The services of the server.
+message ListServiceResponse {
+  // The services.
+  repeated ServiceResponse service = 1;
+}
+
+// A service.
+message ServiceResponse {
+  // Its full name.
+  string name = 1;
+}
+
+// A failed request: a gRPC status code and a message.
+message ErrorResponse {
+  // The status code.
+  int32 error_code = 1;
+  // The message.
+  string error_message = 2;
+}

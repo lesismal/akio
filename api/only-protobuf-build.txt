@@ -4,7 +4,9 @@ impl only_protobuf_build::Config
 pub fn only_protobuf_build::Config::btree_maps(self, bool) -> only_protobuf_build::Config
 pub fn only_protobuf_build::Config::compile(&self, &[impl core::convert::AsRef<std::path::Path>], impl core::convert::AsRef<std::path::Path>) -> core::io::error::Result<()>
 pub fn only_protobuf_build::Config::compile_well_known_types(self, bool) -> only_protobuf_build::Config
+pub fn only_protobuf_build::Config::descriptors(self, bool) -> only_protobuf_build::Config
 pub fn only_protobuf_build::Config::extern_path(self, &str, &str) -> only_protobuf_build::Config
+pub fn only_protobuf_build::Config::file_descriptor_set_path(self, impl core::convert::Into<std::path::PathBuf>) -> only_protobuf_build::Config
 pub fn only_protobuf_build::Config::generate(&self, &[impl core::convert::AsRef<std::path::Path>]) -> core::io::error::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>>
 pub fn only_protobuf_build::Config::grpc(self, bool) -> only_protobuf_build::Config
 pub fn only_protobuf_build::Config::include(self, impl core::convert::Into<std::path::PathBuf>) -> only_protobuf_build::Config

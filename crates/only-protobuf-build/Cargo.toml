@@ -13,9 +13,9 @@ keywords = ["protobuf", "protocol-buffers", "codegen", "grpc", "build"]
 categories = ["encoding", "development-tools::build-utils"]
 
 [dependencies]
-
-[dev-dependencies]
+# The descriptor types (well_known) and the wire format, to write descriptor sets.
 only-protobuf = { workspace = true }
+
 
 [lints]
 workspace = true

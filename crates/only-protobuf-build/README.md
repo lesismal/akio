@@ -18,7 +18,11 @@ built in: no `protoc`, no `syn` / `quote`, no third-party crates.
 - Services become `only-grpc` code: `<service>_server::{<Service> trait, register}` and
   `<service>_client::<Service>Client`, for unary, server-streaming, client-streaming and
   bidirectional methods; every message then implements `only_grpc::codec::Message`.
-- Not supported: groups, extensions (parsed and ignored), editions, custom options (ignored).
+- proto2 groups, extensions (typed `Extension` constants, `ExtensionSet` member), MessageSet,
+  closed enums; editions 2023 and 2024 with their features; custom options and aggregates are
+  encoded into the descriptors. Every package embeds `FILE_DESCRIPTOR_SET` and `descriptor_pool()`
+  (reflection, JSON, gRPC server reflection), equal to protoc's; `descriptor.proto` is built in.
+- Not supported: text format.
 
 ```rust,ignore
 // build.rs

@@ -16,6 +16,14 @@ pub mod test {
     pub mod p2 {
         only_protobuf::include_proto!("test.p2");
     }
+    /// `test.ext` (proto2 groups and extensions).
+    pub mod ext {
+        only_protobuf::include_proto!("test.ext");
+    }
+    /// `test.ed` (edition 2024).
+    pub mod ed {
+        only_protobuf::include_proto!("test.ed");
+    }
     /// `test.btree` (BTreeMap maps, no unknown fields).
     pub mod btree {
         only_protobuf::include_proto!("test.btree");
@@ -30,6 +38,35 @@ pub mod routeguide {
 /// grpc-go's helloworld example.
 pub mod helloworld {
     only_protobuf::include_proto!("helloworld");
+}
+
+/// The conformance suite's messages.
+pub mod conformance {
+    only_protobuf::include_proto!("conformance");
+}
+
+/// The conformance suite's test messages.
+pub mod protobuf_test_messages {
+    /// proto2.
+    pub mod proto2 {
+        only_protobuf::include_proto!("protobuf_test_messages.proto2");
+    }
+    /// proto3.
+    pub mod proto3 {
+        only_protobuf::include_proto!("protobuf_test_messages.proto3");
+    }
+    /// Edition 2023.
+    pub mod editions {
+        only_protobuf::include_proto!("protobuf_test_messages.editions");
+        /// proto2 semantics in edition 2023.
+        pub mod proto2 {
+            only_protobuf::include_proto!("protobuf_test_messages.editions.proto2");
+        }
+        /// proto3 semantics in edition 2023.
+        pub mod proto3 {
+            only_protobuf::include_proto!("protobuf_test_messages.editions.proto3");
+        }
+    }
 }
 
 pub mod service;

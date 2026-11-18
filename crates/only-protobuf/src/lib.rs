@@ -69,10 +69,14 @@ extern crate self as only_protobuf;
 
 pub mod encoding;
 mod error;
+mod extension;
+pub mod json;
 mod message;
+pub mod reflect;
 pub mod well_known;
 
 pub use error::{DecodeError, DecodeErrorKind};
+pub use extension::{Extendable, Extension, ExtensionSet, RepeatedExtension};
 pub use message::{Enumeration, Message, Name, UnknownFields};
 
 /// Includes the code `only-protobuf-build` generated for a protobuf package:

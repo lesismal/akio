@@ -22,3 +22,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-019: SOCKS client, SOCKS proxies for the HTTP/WebSocket clients, UDP fragment reassembly and SOCKS4 BIND](019-socks-client-fragments-socks4-bind.md) (accepted 2026-11-17)
 - [ADR-023: arpc middleware, coders and client pools](023-arpc-middleware-coders-pools.md) (accepted 2026-11-17)
 - [ADR-018: BitTorrent v2 and hybrid torrents, web seeds, LSD, IPv6 DHT, rate and seed limits](018-bittorrent-v2-webseeds-lsd-ipv6-limits.md) (accepted 2026-11-17)
+- [ADR-022: protobuf groups, extensions, editions, JSON and reflection](022-protobuf-gaps.md) (accepted 2026-11-18)

@@ -1,0 +1,9 @@
+# test.ed.Item
+id: 1
+name: ""
+inner { v: 2 }
+codes: [1, 2]
+kind: KIND_A
+by_name { key: "k" value { v: 3 } }
+kinds: [KIND_A, KIND_UNSPECIFIED]
+nested { v: 4 }

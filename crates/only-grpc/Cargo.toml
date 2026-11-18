@@ -16,6 +16,8 @@ categories = ["network-programming", "web-programming"]
 only = { workspace = true }
 only-http = { workspace = true }
 only-deflate = { workspace = true }
+# Server reflection: the descriptor pool and the reflection messages.
+only-protobuf = { workspace = true }
 prost = { version = "0.13", optional = true }
 only-core = { workspace = true, optional = true }
 
@@ -27,6 +29,8 @@ prost = ["dep:prost"]
 fuzzing = ["dep:only-core", "only-core/fuzzing", "only-http/fuzzing"]
 
 [dev-dependencies]
+# Regenerates src/reflection/*.rs in a test (tests/reflection.rs).
+only-protobuf-build = { workspace = true }
 only-core = { workspace = true, features = ["fuzzing"] }
 only-http = { workspace = true, features = ["fuzzing"] }
 only-x509 = { workspace = true }

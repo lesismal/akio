@@ -1,0 +1,17 @@
+# protobuf_test_messages.proto2.TestAllTypesProto2
+optional_int32: 1
+optional_nested_enum: BAZ
+repeated_nested_enum: [FOO, BAR]
+packed_nested_enum: [BAZ, FOO]
+data { group_int32: -2 group_uint32: 3 }
+multiwordgroupfield { group_int32: 4 }
+default_int32: 0
+[protobuf_test_messages.proto2.extension_int32]: 77
+[protobuf_test_messages.proto2.extension_string]: "ext"
+[protobuf_test_messages.proto2.groupfield] { group_int32: 5 group_uint32: 6 }
+message_set_correct {
+  [protobuf_test_messages.proto2.TestAllTypesProto2.MessageSetCorrectExtension1.message_set_extension] { str: "in a set" }
+  [protobuf_test_messages.proto2.TestAllTypesProto2.MessageSetCorrectExtension2.message_set_extension] { i: 9 }
+}
+map_string_nested_enum { key: "k" value: BAR }
+oneof_uint32: 8

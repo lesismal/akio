@@ -1,14 +1,33 @@
-//! A `.proto` parser: proto2 and proto3 files (messages, nested types, enums, fields with every
-//! label, `map<K, V>`, `oneof`, options, `reserved`, services). Extensions, `extend` blocks and
-//! options other than `packed` and `default` are parsed and ignored; groups and editions are
-//! rejected with an error.
+//! A `.proto` parser: proto2, proto3 and editions (2023, 2024) files: messages, nested types,
+//! enums, fields with every label, groups, `map<K, V>`, `oneof`, `extend` blocks, extension
+//! ranges, `reserved`, options (with text-format aggregate values), services.
 
-use std::fmt::Write as _;
+use std::{collections::HashMap, fmt::Write as _};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Syntax {
+/// The edition of a file; proto2 and proto3 are the legacy ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Edition {
     Proto2,
     Proto3,
+    E2023,
+    E2024,
+}
+
+impl Edition {
+    /// The `google.protobuf.Edition` number.
+    pub(crate) fn number(self) -> i32 {
+        match self {
+            Edition::Proto2 => 998,
+            Edition::Proto3 => 999,
+            Edition::E2023 => 1000,
+            Edition::E2024 => 1001,
+        }
+    }
+
+    /// An editions file (not `syntax = "proto2"` / `"proto3"`).
+    pub(crate) fn is_editions(self) -> bool {
+        self >= Edition::E2023
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +80,27 @@ impl Scalar {
     pub(crate) fn is_len(self) -> bool {
         matches!(self, Scalar::String | Scalar::Bytes)
     }
+
+    /// The `FieldDescriptorProto.Type` number.
+    pub(crate) fn type_number(self) -> i32 {
+        match self {
+            Scalar::Double => 1,
+            Scalar::Float => 2,
+            Scalar::Int64 => 3,
+            Scalar::Uint64 => 4,
+            Scalar::Int32 => 5,
+            Scalar::Fixed64 => 6,
+            Scalar::Fixed32 => 7,
+            Scalar::Bool => 8,
+            Scalar::String => 9,
+            Scalar::Bytes => 12,
+            Scalar::Uint32 => 13,
+            Scalar::Sfixed32 => 15,
+            Scalar::Sfixed64 => 16,
+            Scalar::Sint32 => 17,
+            Scalar::Sint64 => 18,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,13 +114,14 @@ pub(crate) enum TypeRef {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Label {
-    /// proto3 singular field without `optional`.
+    /// No label: proto3 implicit presence, or presence from the features in editions.
     Implicit,
     Optional,
     Required,
     Repeated,
 }
 
+/// A value in an option or a text-format aggregate.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Constant {
     Ident(String),
@@ -88,7 +129,34 @@ pub(crate) enum Constant {
     Int(String),
     Float(String),
     Str(Vec<u8>),
-    Aggregate,
+    /// `{ name: value ... }` (text format).
+    Aggregate(Vec<(String, Constant)>),
+    /// `[a, b]` inside an aggregate.
+    List(Vec<Constant>),
+}
+
+/// `name = value` (`name` as written: `java_package`, `(my.ext).sub`, `features.enum_type`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct OptionDef {
+    pub(crate) name: String,
+    pub(crate) value: Constant,
+}
+
+/// Option lookup helpers.
+pub(crate) trait Options {
+    fn get_opt(&self, name: &str) -> Option<&Constant>;
+    fn flag(&self, name: &str) -> Option<bool> {
+        match self.get_opt(name) {
+            Some(Constant::Ident(b)) => Some(b == "true"),
+            _ => None,
+        }
+    }
+}
+
+impl Options for [OptionDef] {
+    fn get_opt(&self, name: &str) -> Option<&Constant> {
+        self.iter().rev().find(|o| o.name == name).map(|o| &o.value)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -103,13 +171,52 @@ pub(crate) struct Field {
     pub(crate) oneof: Option<usize>,
     pub(crate) packed: Option<bool>,
     pub(crate) default: Option<Constant>,
+    pub(crate) json_name: Option<String>,
+    /// A proto2 `group` (its type is the nested message of the same name).
+    pub(crate) group: bool,
+    /// For an extension: the message it extends.
+    pub(crate) extendee: Option<TypeRef>,
+    pub(crate) options: Vec<OptionDef>,
     pub(crate) line: usize,
+    /// Filled by feature resolution.
+    pub(crate) resolved: Resolved,
+}
+
+/// What the features (or the legacy syntax rules) make of a field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub(crate) presence: Presence,
+    /// Repeated scalars: written packed.
+    pub(crate) packed: bool,
+    /// Message fields: encoded as a group.
+    pub(crate) delimited: bool,
+    /// String fields: UTF-8 is checked (always done in Rust; recorded for reflection).
+    pub(crate) verify_utf8: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Presence {
+    #[default]
+    Implicit,
+    Explicit,
+    Required,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Oneof {
     pub(crate) name: String,
     pub(crate) doc: String,
+    pub(crate) options: Vec<OptionDef>,
+}
+
+/// An extension range or a reserved range: `start ..= end`.
+#[derive(Clone, Debug)]
+pub(crate) struct Range {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+    pub(crate) options: Vec<OptionDef>,
+    /// Written `to max`.
+    pub(crate) max: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -120,6 +227,23 @@ pub(crate) struct MessageDef {
     pub(crate) oneofs: Vec<Oneof>,
     pub(crate) messages: Vec<MessageDef>,
     pub(crate) enums: Vec<EnumDef>,
+    /// Fields of the `extend` blocks inside this message.
+    pub(crate) extensions: Vec<Field>,
+    pub(crate) extension_ranges: Vec<Range>,
+    pub(crate) reserved_ranges: Vec<Range>,
+    pub(crate) reserved_names: Vec<String>,
+    pub(crate) options: Vec<OptionDef>,
+    /// 2024 `export` / `local`.
+    pub(crate) visibility: Option<bool>,
+    /// Nested messages (by index in `messages`) and map fields (by index in `fields`, their
+    /// entry types) in source order, as protoc lists nested types.
+    pub(crate) nested_order: Vec<Nested>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Nested {
+    Message(usize),
+    MapEntry(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -127,6 +251,7 @@ pub(crate) struct EnumValue {
     pub(crate) name: String,
     pub(crate) doc: String,
     pub(crate) number: i32,
+    pub(crate) options: Vec<OptionDef>,
 }
 
 #[derive(Clone, Debug)]
@@ -134,6 +259,12 @@ pub(crate) struct EnumDef {
     pub(crate) name: String,
     pub(crate) doc: String,
     pub(crate) values: Vec<EnumValue>,
+    pub(crate) reserved_ranges: Vec<(i32, i32)>,
+    pub(crate) reserved_names: Vec<String>,
+    pub(crate) options: Vec<OptionDef>,
+    pub(crate) visibility: Option<bool>,
+    /// Filled by feature resolution: unknown numbers are kept as unknown fields, not stored.
+    pub(crate) closed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +275,9 @@ pub(crate) struct Method {
     pub(crate) output: TypeRef,
     pub(crate) client_streaming: bool,
     pub(crate) server_streaming: bool,
+    pub(crate) options: Vec<OptionDef>,
+    /// Declared with a `{ ... }` body (protoc then always writes `options`, maybe empty).
+    pub(crate) body: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -151,18 +285,34 @@ pub(crate) struct Service {
     pub(crate) name: String,
     pub(crate) doc: String,
     pub(crate) methods: Vec<Method>,
+    pub(crate) options: Vec<OptionDef>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ImportKind {
+    Plain,
+    Public,
+    Weak,
+    /// 2024 `import option`: for options only, not a dependency.
+    Option,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct File {
     /// The import name (`dir/x.proto`).
     pub(crate) name: String,
-    pub(crate) syntax: Syntax,
+    pub(crate) edition: Edition,
     pub(crate) package: String,
     pub(crate) imports: Vec<String>,
+    pub(crate) import_kinds: Vec<ImportKind>,
     pub(crate) messages: Vec<MessageDef>,
     pub(crate) enums: Vec<EnumDef>,
     pub(crate) services: Vec<Service>,
+    /// Fields of the top-level `extend` blocks.
+    pub(crate) extensions: Vec<Field>,
+    pub(crate) options: Vec<OptionDef>,
+    /// Loaded only to interpret options (`descriptor.proto`): no code, not in descriptor sets.
+    pub(crate) implicit: bool,
 }
 
 // ---- lexer -----------------------------------------------------------------------------------
@@ -389,10 +539,15 @@ struct Parser<'a> {
     toks: Vec<Token>,
     pos: usize,
     file: &'a str,
-    syntax: Syntax,
+    edition: Edition,
 }
 
 type PResult<T> = Result<T, String>;
+
+/// Reserved ranges and names.
+type Reserved = (Vec<(i64, i64)>, Vec<String>);
+
+const MAX_FIELD: i64 = (1 << 29) - 1;
 
 impl Parser<'_> {
     fn err<T>(&self, m: impl std::fmt::Display) -> PResult<T> {
@@ -525,9 +680,8 @@ impl Parser<'_> {
     }
 
     fn constant(&mut self) -> PResult<Constant> {
-        if self.is_sym('{') {
-            self.skip_braces()?;
-            return Ok(Constant::Aggregate);
+        if self.is_sym('{') || self.is_sym('<') {
+            return self.aggregate();
         }
         let sign = if self.eat_sym('-') {
             "-"
@@ -538,6 +692,9 @@ impl Parser<'_> {
         Ok(match self.next()? {
             Tok::Int(s) => Constant::Int(format!("{sign}{s}")),
             Tok::Float(s) => Constant::Float(format!("{sign}{s}")),
+            Tok::Ident(s) if s == "inf" || s == "nan" || s == "infinity" => {
+                Constant::Float(format!("{sign}{s}"))
+            }
             Tok::Ident(s) if sign.is_empty() => {
                 let mut s = s;
                 while self.is_sym('.') {
@@ -547,7 +704,6 @@ impl Parser<'_> {
                 }
                 Constant::Ident(s)
             }
-            Tok::Ident(s) if s == "inf" || s == "nan" => Constant::Float(format!("{sign}{s}")),
             Tok::Str(mut s) => {
                 while let Some(Tok::Str(more)) = self.peek() {
                     s.extend_from_slice(more);
@@ -559,18 +715,53 @@ impl Parser<'_> {
         })
     }
 
-    /// Skips a balanced `{ ... }` block (aggregate option values, `extend` blocks).
-    fn skip_braces(&mut self) -> PResult<()> {
-        self.expect_sym('{')?;
-        let mut depth = 1;
-        while depth > 0 {
-            match self.next()? {
-                Tok::Sym('{') => depth += 1,
-                Tok::Sym('}') => depth -= 1,
-                _ => {}
+    /// A text-format message: `{ a: 1 b { c: "x" } d: [1, 2] [ext.name]: 3 }` (or `< ... >`).
+    fn aggregate(&mut self) -> PResult<Constant> {
+        let close = if self.eat_sym('{') {
+            '}'
+        } else {
+            self.expect_sym('<')?;
+            '>'
+        };
+        let mut fields = Vec::new();
+        while !self.eat_sym(close) {
+            if self.eat_sym(',') || self.eat_sym(';') {
+                continue;
             }
+            let name = if self.eat_sym('[') {
+                let mut n = String::from("[");
+                // `[pkg.ext]` or `[type.googleapis.com/pkg.Msg]`.
+                while !self.eat_sym(']') {
+                    match self.next()? {
+                        Tok::Ident(s) => n.push_str(&s),
+                        Tok::Sym(c @ ('.' | '/')) => n.push(c),
+                        t => return self.err(format!("unexpected {}", describe(Some(&t)))),
+                    }
+                }
+                n.push(']');
+                n
+            } else {
+                self.ident()?
+            };
+            let colon = self.eat_sym(':');
+            let v = if self.is_sym('[') {
+                self.pos += 1;
+                let mut items = Vec::new();
+                while !self.eat_sym(']') {
+                    if self.eat_sym(',') {
+                        continue;
+                    }
+                    items.push(self.constant()?);
+                }
+                Constant::List(items)
+            } else if !colon && !(self.is_sym('{') || self.is_sym('<')) {
+                return self.err("expected `:` in an aggregate value");
+            } else {
+                self.constant()?
+            };
+            fields.push((name, v));
         }
-        Ok(())
+        Ok(Constant::Aggregate(fields))
     }
 
     /// `name` or `(ext.name).sub` in an option.
@@ -593,16 +784,16 @@ impl Parser<'_> {
     }
 
     /// `option name = value;` (the keyword already consumed).
-    fn option_statement(&mut self) -> PResult<(String, Constant)> {
+    fn option_statement(&mut self) -> PResult<OptionDef> {
         let name = self.option_name()?;
         self.expect_sym('=')?;
-        let v = self.constant()?;
+        let value = self.constant()?;
         self.expect_sym(';')?;
-        Ok((name, v))
+        Ok(OptionDef { name, value })
     }
 
     /// `[a = 1, b = 2]`.
-    fn field_options(&mut self) -> PResult<Vec<(String, Constant)>> {
+    fn field_options(&mut self) -> PResult<Vec<OptionDef>> {
         let mut out = Vec::new();
         if !self.eat_sym('[') {
             return Ok(out);
@@ -610,7 +801,10 @@ impl Parser<'_> {
         loop {
             let name = self.option_name()?;
             self.expect_sym('=')?;
-            out.push((name, self.constant()?));
+            out.push(OptionDef {
+                name,
+                value: self.constant()?,
+            });
             if self.eat_sym(']') {
                 return Ok(out);
             }
@@ -618,38 +812,112 @@ impl Parser<'_> {
         }
     }
 
-    /// Skips to the end of a statement (`reserved`, `extensions`).
-    fn skip_statement(&mut self) -> PResult<()> {
-        while !self.eat_sym(';') {
-            self.next()?;
+    /// `1, 2 to 5, 9 to max` (`max` is `max`); the keyword already consumed.
+    fn ranges(&mut self, max: i64) -> PResult<Vec<(i64, i64)>> {
+        Ok(self
+            .ranges_max(max)?
+            .into_iter()
+            .map(|(a, b, _)| (a, b))
+            .collect())
+    }
+
+    /// [`ranges`](Self::ranges), telling which end was `max`.
+    fn ranges_max(&mut self, max: i64) -> PResult<Vec<(i64, i64, bool)>> {
+        let mut out = Vec::new();
+        loop {
+            let a = self.int()?;
+            let mut to_max = false;
+            let b = if self.eat_ident("to") {
+                if self.eat_ident("max") {
+                    to_max = true;
+                    max
+                } else {
+                    self.int()?
+                }
+            } else {
+                a
+            };
+            if b < a {
+                return self.err(format!("range {a} to {b} is empty"));
+            }
+            out.push((a, b, to_max));
+            if !self.eat_sym(',') {
+                return Ok(out);
+            }
         }
-        Ok(())
+    }
+
+    /// `reserved` (keyword consumed): ranges, or names (strings, identifiers in editions).
+    fn reserved(&mut self, max: i64) -> PResult<Reserved> {
+        let mut names = Vec::new();
+        if matches!(self.peek(), Some(Tok::Str(_) | Tok::Ident(_))) {
+            loop {
+                match self.next()? {
+                    Tok::Str(s) => {
+                        if self.edition.is_editions() {
+                            return self.err("reserved names are identifiers in editions");
+                        }
+                        names.push(String::from_utf8_lossy(&s).into_owned());
+                    }
+                    Tok::Ident(s) => {
+                        if !self.edition.is_editions() {
+                            return self.err("reserved names are strings before editions");
+                        }
+                        names.push(s);
+                    }
+                    t => return self.err(format!("unexpected {}", describe(Some(&t)))),
+                }
+                if !self.eat_sym(',') {
+                    break;
+                }
+            }
+            self.expect_sym(';')?;
+            return Ok((Vec::new(), names));
+        }
+        let r = self.ranges(max)?;
+        self.expect_sym(';')?;
+        Ok((r, names))
     }
 
     fn file(&mut self, name: &str) -> PResult<File> {
         let mut f = File {
             name: name.to_owned(),
-            syntax: Syntax::Proto2,
+            edition: Edition::Proto2,
             package: String::new(),
             imports: Vec::new(),
+            import_kinds: Vec::new(),
             messages: Vec::new(),
             enums: Vec::new(),
             services: Vec::new(),
+            extensions: Vec::new(),
+            options: Vec::new(),
+            implicit: false,
         };
         if self.eat_ident("edition") {
-            return self.err("editions are not supported (use syntax = \"proto3\" or \"proto2\")");
-        }
-        if self.eat_ident("syntax") {
             self.expect_sym('=')?;
             let s = self.string()?;
-            f.syntax = match s.as_slice() {
-                b"proto3" => Syntax::Proto3,
-                b"proto2" => Syntax::Proto2,
+            f.edition = match s.as_slice() {
+                b"2023" => Edition::E2023,
+                b"2024" => Edition::E2024,
+                _ => {
+                    return self.err(format!(
+                        "edition {:?} is not supported (2023 and 2024 are)",
+                        String::from_utf8_lossy(&s)
+                    ));
+                }
+            };
+            self.expect_sym(';')?;
+        } else if self.eat_ident("syntax") {
+            self.expect_sym('=')?;
+            let s = self.string()?;
+            f.edition = match s.as_slice() {
+                b"proto3" => Edition::Proto3,
+                b"proto2" => Edition::Proto2,
                 _ => return self.err(format!("unknown syntax {:?}", String::from_utf8_lossy(&s))),
             };
             self.expect_sym(';')?;
         }
-        self.syntax = f.syntax;
+        self.edition = f.edition;
         while self.peek().is_some() {
             if self.eat_sym(';') {
                 continue;
@@ -664,24 +932,44 @@ impl Parser<'_> {
                     self.expect_sym(';')?;
                 }
                 "import" => {
-                    if !self.eat_ident("public") {
-                        self.eat_ident("weak");
-                    }
+                    let kind = if self.eat_ident("public") {
+                        ImportKind::Public
+                    } else if self.eat_ident("weak") {
+                        ImportKind::Weak
+                    } else if self.edition >= Edition::E2024
+                        && self.is_ident("option")
+                        && matches!(self.peek_at(1), Some(Tok::Str(_)))
+                    {
+                        self.pos += 1;
+                        ImportKind::Option
+                    } else {
+                        ImportKind::Plain
+                    };
                     let s = self.string()?;
                     self.expect_sym(';')?;
                     f.imports.push(
                         String::from_utf8(s).or_else(|_| self.err("import path is not UTF-8"))?,
                     );
+                    f.import_kinds.push(kind);
                 }
-                "option" => {
-                    self.option_statement()?;
+                "option" => f.options.push(self.option_statement()?),
+                "message" => f.messages.push(self.message(None)?),
+                "enum" => f.enums.push(self.enumeration(None)?),
+                "export" | "local" if self.edition >= Edition::E2024 => {
+                    let vis = Some(kw == "export");
+                    if self.eat_ident("message") {
+                        f.messages.push(self.message(vis)?);
+                    } else if self.eat_ident("enum") {
+                        f.enums.push(self.enumeration(vis)?);
+                    } else {
+                        return self.err(format!("expected `message` or `enum` after `{kw}`"));
+                    }
                 }
-                "message" => f.messages.push(self.message()?),
-                "enum" => f.enums.push(self.enumeration()?),
                 "service" => f.services.push(self.service()?),
                 "extend" => {
-                    self.full_ident(true)?;
-                    self.skip_braces()?;
+                    let (fields, groups) = self.extend()?;
+                    f.extensions.extend(fields);
+                    f.messages.extend(groups);
                 }
                 _ => return self.err(format!("unexpected `{kw}`")),
             }
@@ -689,9 +977,44 @@ impl Parser<'_> {
         Ok(f)
     }
 
-    fn message(&mut self) -> PResult<MessageDef> {
+    /// `extend Type { fields }` (keyword consumed): the fields, and the messages of their groups
+    /// (declared in the enclosing scope).
+    fn extend(&mut self) -> PResult<(Vec<Field>, Vec<MessageDef>)> {
+        let extendee = TypeRef::Named(self.full_ident(true)?);
+        self.expect_sym('{')?;
+        let mut fields = Vec::new();
+        let mut groups = Vec::new();
+        while !self.eat_sym('}') {
+            if self.eat_sym(';') {
+                continue;
+            }
+            let (mut fl, g) = self.field(None)?;
+            if fl.map_key.is_some() {
+                return self.err("extensions cannot be maps");
+            }
+            if fl.label == Label::Required {
+                return self.err("extensions cannot be required");
+            }
+            fl.extendee = Some(extendee.clone());
+            fields.push(fl);
+            groups.extend(g);
+        }
+        Ok((fields, groups))
+    }
+
+    fn message(&mut self, visibility: Option<bool>) -> PResult<MessageDef> {
         let doc = self.toks[self.pos.saturating_sub(1)].doc.clone();
         let name = self.ident()?;
+        self.expect_sym('{')?;
+        self.message_body(name, doc, visibility)
+    }
+
+    fn message_body(
+        &mut self,
+        name: String,
+        doc: String,
+        visibility: Option<bool>,
+    ) -> PResult<MessageDef> {
         let mut m = MessageDef {
             name,
             doc,
@@ -699,46 +1022,103 @@ impl Parser<'_> {
             oneofs: Vec::new(),
             messages: Vec::new(),
             enums: Vec::new(),
+            extensions: Vec::new(),
+            extension_ranges: Vec::new(),
+            reserved_ranges: Vec::new(),
+            reserved_names: Vec::new(),
+            options: Vec::new(),
+            visibility,
+            nested_order: Vec::new(),
         };
-        self.expect_sym('{')?;
         while !self.eat_sym('}') {
             if self.eat_sym(';') {
                 continue;
             }
             let doc = self.doc();
+            let (n_msgs, n_fields) = (m.messages.len(), m.fields.len());
+            let next_ident = matches!(self.peek_at(1), Some(Tok::Ident(_)));
             match self.peek() {
                 Some(Tok::Ident(k)) => match k.as_str() {
-                    "message" if !matches!(self.peek_at(1), Some(Tok::Sym('.'))) => {
+                    "message" if next_ident && matches!(self.peek_at(2), Some(Tok::Sym('{'))) => {
                         self.pos += 1;
-                        m.messages.push(self.message()?);
+                        m.messages.push(self.message(None)?);
                     }
-                    "enum" if matches!(self.peek_at(1), Some(Tok::Ident(_))) => {
+                    "enum" if next_ident && matches!(self.peek_at(2), Some(Tok::Sym('{'))) => {
                         self.pos += 1;
-                        m.enums.push(self.enumeration()?);
+                        m.enums.push(self.enumeration(None)?);
+                    }
+                    "export" | "local"
+                        if self.edition >= Edition::E2024
+                            && matches!(self.peek_at(1), Some(Tok::Ident(k)) if k == "message" || k == "enum")
+                            && matches!(self.peek_at(2), Some(Tok::Ident(_))) =>
+                    {
+                        let vis = Some(k == "export");
+                        self.pos += 1;
+                        if self.eat_ident("message") {
+                            m.messages.push(self.message(vis)?);
+                        } else {
+                            self.pos += 1;
+                            m.enums.push(self.enumeration(vis)?);
+                        }
                     }
                     "option" if matches!(self.peek_at(1), Some(Tok::Ident(_) | Tok::Sym('('))) => {
                         self.pos += 1;
-                        self.option_statement()?;
+                        m.options.push(self.option_statement()?);
                     }
-                    "reserved" | "extensions"
-                        if !matches!(self.peek_at(1), Some(Tok::Ident(_) | Tok::Sym('.'))) =>
+                    "reserved"
+                        if !matches!(self.peek_at(1), Some(Tok::Sym('.')))
+                            && !self.is_field_decl() =>
                     {
                         self.pos += 1;
-                        self.skip_statement()?;
+                        let (ranges, names) = self.reserved(MAX_FIELD)?;
+                        for (a, b) in ranges {
+                            m.reserved_ranges.push(Range {
+                                start: a as u32,
+                                end: b as u32,
+                                options: Vec::new(),
+                                max: false,
+                            });
+                        }
+                        m.reserved_names.extend(names);
+                    }
+                    "extensions"
+                        if !matches!(self.peek_at(1), Some(Tok::Sym('.')))
+                            && !self.is_field_decl() =>
+                    {
+                        self.pos += 1;
+                        let ranges = self.ranges_max(MAX_FIELD)?;
+                        let options = self.field_options()?;
+                        self.expect_sym(';')?;
+                        for (a, b, to_max) in ranges {
+                            if a < 1 || b > MAX_FIELD {
+                                return self.err("extension range out of bounds");
+                            }
+                            m.extension_ranges.push(Range {
+                                start: a as u32,
+                                end: b as u32,
+                                options: options.clone(),
+                                max: to_max,
+                            });
+                        }
                     }
                     "extend"
-                        if matches!(self.peek_at(1), Some(Tok::Sym('.')))
-                            || matches!(self.peek_at(2), Some(Tok::Sym('{' | '.'))) =>
+                        if (matches!(self.peek_at(1), Some(Tok::Sym('.'))) || next_ident)
+                            && !self.is_field_decl() =>
                     {
                         self.pos += 1;
-                        self.full_ident(true)?;
-                        self.skip_braces()?;
+                        let (fields, groups) = self.extend()?;
+                        m.extensions.extend(fields);
+                        m.messages.extend(groups);
                     }
-                    "oneof" if matches!(self.peek_at(2), Some(Tok::Sym('{'))) => {
+                    "oneof" if next_ident && matches!(self.peek_at(2), Some(Tok::Sym('{'))) => {
                         self.pos += 1;
                         let name = self.ident()?;
                         let idx = m.oneofs.len();
-                        m.oneofs.push(Oneof { name, doc });
+                        let mut o = Oneof {
+                            name,
+                            doc,
+                            options: Vec::new(),
+                        };
                         self.expect_sym('{')?;
                         while !self.eat_sym('}') {
                             if self.eat_sym(';') {
@@ -748,32 +1128,64 @@ impl Parser<'_> {
                                 && matches!(self.peek_at(1), Some(Tok::Ident(_) | Tok::Sym('(')))
                             {
                                 self.pos += 1;
-                                self.option_statement()?;
+                                o.options.push(self.option_statement()?);
                                 continue;
                             }
-                            let mut fld = self.field(Some(Label::Optional))?;
+                            let (mut fld, g) = self.field(Some(Label::Optional))?;
                             if fld.label == Label::Repeated || fld.map_key.is_some() {
                                 return self.err("oneof members cannot be repeated or maps");
                             }
                             fld.oneof = Some(idx);
                             m.fields.push(fld);
+                            m.messages.extend(g);
                         }
+                        m.oneofs.push(o);
                     }
-                    _ => m.fields.push(self.field(None)?),
+                    _ => {
+                        let (f, g) = self.field(None)?;
+                        m.fields.push(f);
+                        m.messages.extend(g);
+                    }
                 },
                 _ => {
                     let got = self.peek().cloned();
                     return self.err(format!("unexpected {}", describe(got.as_ref())));
                 }
             }
+            // Group types come before their field's (absent) entry; maps add an entry type.
+            for i in n_msgs..m.messages.len() {
+                m.nested_order.push(Nested::Message(i));
+            }
+            for i in n_fields..m.fields.len() {
+                if m.fields[i].map_key.is_some() {
+                    m.nested_order.push(Nested::MapEntry(i));
+                }
+            }
+        }
+        // In a MessageSet, `max` is the largest int32 (type ids are not field numbers).
+        if m.options.flag("message_set_wire_format") == Some(true) {
+            for r in &mut m.extension_ranges {
+                if r.max {
+                    r.end = i32::MAX as u32 - 1;
+                }
+            }
         }
         Ok(m)
     }
 
-    /// A field; `forced` is the label of oneof members (no label written).
-    fn field(&mut self, forced: Option<Label>) -> PResult<Field> {
+    /// Whether the tokens ahead are a field declaration whose type is a keyword-like name
+    /// (`reserved r = 1;`, `extensions e = 2;`): `<ident> <ident> =`.
+    fn is_field_decl(&self) -> bool {
+        matches!(self.peek_at(1), Some(Tok::Ident(_)))
+            && matches!(self.peek_at(2), Some(Tok::Sym('=')))
+    }
+
+    /// A field; `forced` is the label of oneof members (no label written). Returns the message
+    /// a group defines.
+    fn field(&mut self, forced: Option<Label>) -> PResult<(Field, Option<MessageDef>)> {
         let doc = self.doc();
         let line = self.line();
+        let editions = self.edition.is_editions();
         let label = match forced {
             Some(l) => l,
             None => {
@@ -786,11 +1198,20 @@ impl Parser<'_> {
                 // `optional` could itself be a message type name: a label is followed by a type.
                 match l {
                     Some(l) if !matches!(self.peek_at(1), Some(Tok::Sym('='))) => {
+                        if editions && l != Label::Repeated {
+                            return self.err(format!(
+                                "label `{}` is not allowed in editions (use features.field_presence)",
+                                if l == Label::Optional { "optional" } else { "required" }
+                            ));
+                        }
                         self.pos += 1;
                         l
                     }
                     _ => {
-                        if self.syntax == Syntax::Proto2 && !self.is_ident("map") {
+                        if self.edition == Edition::Proto2
+                            && !self.is_ident("map")
+                            && !self.is_ident("group")
+                        {
                             return self.err(
                                 "proto2 fields need a label (optional, required or repeated)",
                             );
@@ -800,10 +1221,11 @@ impl Parser<'_> {
                 }
             }
         };
-        if label == Label::Required && self.syntax == Syntax::Proto3 {
+        if label == Label::Required && self.edition == Edition::Proto3 {
             return self.err("required fields are not allowed in proto3");
         }
         let mut map_key = None;
+        let mut group = None;
         let ty = if self.is_ident("map") && self.peek_at(1) == Some(&Tok::Sym('<')) {
             self.pos += 2;
             let k = self.ident()?;
@@ -818,16 +1240,35 @@ impl Parser<'_> {
             }
             map_key = Some(key);
             v
-        } else {
-            if self.is_ident("group") {
-                return self.err("groups are not supported");
+        } else if self.is_ident("group")
+            && matches!(self.peek_at(1), Some(Tok::Ident(_)))
+            && matches!(self.peek_at(2), Some(Tok::Sym('=')))
+        {
+            if self.edition != Edition::Proto2 {
+                return self.err(
+                    "groups are only allowed in proto2 (use features.message_encoding = DELIMITED)",
+                );
             }
+            if label == Label::Implicit && forced.is_none() {
+                return self.err("proto2 fields need a label (optional, required or repeated)");
+            }
+            self.pos += 1;
+            let gname = self.ident()?;
+            if !gname.starts_with(|c: char| c.is_ascii_uppercase()) {
+                return self.err("group names must start with a capital letter");
+            }
+            group = Some(gname.clone());
+            TypeRef::Named(gname)
+        } else {
             self.type_ref()?
         };
-        let name = self.ident()?;
+        let name = match &group {
+            Some(g) => g.to_ascii_lowercase(),
+            None => self.ident()?,
+        };
         self.expect_sym('=')?;
         let n = self.int()?;
-        if !(1..=i64::from((1u32 << 29) - 1)).contains(&n) {
+        if !(1..=MAX_FIELD).contains(&n) {
             return self.err(format!("field number {n} out of range"));
         }
         if (19_000..=19_999).contains(&n) {
@@ -849,22 +1290,49 @@ impl Parser<'_> {
             oneof: None,
             packed: None,
             default: None,
+            json_name: None,
+            group: group.is_some(),
+            extendee: None,
+            options: Vec::new(),
             line,
+            resolved: Resolved::default(),
         };
-        for (k, v) in self.field_options()? {
-            match (k.as_str(), v) {
-                ("packed", Constant::Ident(b)) => f.packed = Some(b == "true"),
+        let options = self.field_options()?;
+        for o in &options {
+            match (o.name.as_str(), &o.value) {
+                ("packed", Constant::Ident(b)) => {
+                    if editions {
+                        return self.err(
+                            "[packed] is not allowed in editions (use features.repeated_field_encoding)",
+                        );
+                    }
+                    f.packed = Some(b == "true");
+                }
                 ("default", v) => {
-                    if self.syntax == Syntax::Proto3 {
+                    if self.edition == Edition::Proto3 {
                         return self.err("default values are not allowed in proto3");
                     }
-                    f.default = Some(v);
+                    f.default = Some(v.clone());
                 }
+                ("json_name", Constant::Str(s)) => {
+                    f.json_name = Some(String::from_utf8_lossy(s).into_owned());
+                }
+                ("json_name", _) => return self.err("json_name must be a string"),
                 _ => {}
             }
         }
-        self.expect_sym(';')?;
-        Ok(f)
+        f.options = options;
+        let msg = match group {
+            Some(g) => {
+                self.expect_sym('{')?;
+                Some(self.message_body(g, String::new(), None)?)
+            }
+            None => {
+                self.expect_sym(';')?;
+                None
+            }
+        };
+        Ok((f, msg))
     }
 
     fn type_ref(&mut self) -> PResult<TypeRef> {
@@ -875,13 +1343,18 @@ impl Parser<'_> {
         })
     }
 
-    fn enumeration(&mut self) -> PResult<EnumDef> {
+    fn enumeration(&mut self, visibility: Option<bool>) -> PResult<EnumDef> {
         let doc = self.toks[self.pos.saturating_sub(1)].doc.clone();
         let name = self.ident()?;
         let mut e = EnumDef {
             name,
             doc,
             values: Vec::new(),
+            reserved_ranges: Vec::new(),
+            reserved_names: Vec::new(),
+            options: Vec::new(),
+            visibility,
+            closed: false,
         };
         self.expect_sym('{')?;
         while !self.eat_sym('}') {
@@ -891,30 +1364,36 @@ impl Parser<'_> {
             let doc = self.doc();
             if self.is_ident("option") && !matches!(self.peek_at(1), Some(Tok::Sym('='))) {
                 self.pos += 1;
-                self.option_statement()?;
+                e.options.push(self.option_statement()?);
                 continue;
             }
             if self.is_ident("reserved") && !matches!(self.peek_at(1), Some(Tok::Sym('='))) {
                 self.pos += 1;
-                self.skip_statement()?;
+                let (ranges, names) = self.reserved(i64::from(i32::MAX))?;
+                for (a, b) in ranges {
+                    let (Ok(a), Ok(b)) = (i32::try_from(a), i32::try_from(b)) else {
+                        return self.err("enum reserved range out of range");
+                    };
+                    e.reserved_ranges.push((a, b));
+                }
+                e.reserved_names.extend(names);
                 continue;
             }
             let name = self.ident()?;
             self.expect_sym('=')?;
             let n = self.int()?;
             let number = i32::try_from(n).or_else(|_| self.err("enum value out of range"))?;
-            self.field_options()?;
+            let options = self.field_options()?;
             self.expect_sym(';')?;
-            e.values.push(EnumValue { name, doc, number });
+            e.values.push(EnumValue {
+                name,
+                doc,
+                number,
+                options,
+            });
         }
         if e.values.is_empty() {
             return self.err(format!("enum {} has no values", e.name));
-        }
-        if self.syntax == Syntax::Proto3 && e.values[0].number != 0 {
-            return self.err(format!(
-                "the first value of proto3 enum {} must be 0",
-                e.name
-            ));
         }
         Ok(e)
     }
@@ -926,6 +1405,7 @@ impl Parser<'_> {
             name,
             doc,
             methods: Vec::new(),
+            options: Vec::new(),
         };
         self.expect_sym('{')?;
         while !self.eat_sym('}') {
@@ -935,9 +1415,7 @@ impl Parser<'_> {
             let doc = self.doc();
             let kw = self.ident()?;
             match kw.as_str() {
-                "option" => {
-                    self.option_statement()?;
-                }
+                "option" => s.options.push(self.option_statement()?),
                 "rpc" => {
                     let name = self.ident()?;
                     self.expect_sym('(')?;
@@ -959,8 +1437,19 @@ impl Parser<'_> {
                     }
                     let output = TypeRef::Named(self.full_ident(true)?);
                     self.expect_sym(')')?;
-                    if self.is_sym('{') {
-                        self.skip_braces()?;
+                    let mut options = Vec::new();
+                    let body = self.is_sym('{');
+                    if self.eat_sym('{') {
+                        while !self.eat_sym('}') {
+                            if self.eat_sym(';') {
+                                continue;
+                            }
+                            if !self.eat_ident("option") {
+                                let got = self.peek().cloned();
+                                return self.err(format!("unexpected {}", describe(got.as_ref())));
+                            }
+                            options.push(self.option_statement()?);
+                        }
                     } else {
                         self.expect_sym(';')?;
                     }
@@ -971,6 +1460,8 @@ impl Parser<'_> {
                         output,
                         client_streaming,
                         server_streaming,
+                        options,
+                        body,
                     });
                 }
                 _ => return self.err(format!("unexpected `{kw}` in service")),
@@ -1008,20 +1499,60 @@ pub(crate) fn parse(src: &str, name: &str) -> Result<File, String> {
         toks,
         pos: 0,
         file: name,
-        syntax: Syntax::Proto2,
+        edition: Edition::Proto2,
     };
     let f = p.file(name)?;
     check(&f).map_err(|m| format!("{name}: {m}"))?;
     Ok(f)
 }
 
+/// protoc's default JSON name: underscores dropped, the letter after one capitalized.
+pub(crate) fn json_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let mut up = false;
+    for c in name.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            out.push(c.to_ascii_uppercase());
+            up = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 fn check(f: &File) -> Result<(), String> {
-    fn msg(m: &MessageDef, syntax: Syntax) -> Result<(), String> {
-        let mut seen = std::collections::HashMap::new();
+    fn msg(m: &MessageDef, edition: Edition) -> Result<(), String> {
+        let mut seen = HashMap::new();
+        let mut json: HashMap<String, &str> = HashMap::new();
         for fl in &m.fields {
             if let Some(prev) = seen.insert(fl.number, &fl.name) {
                 return Err(format!(
                     "{}: fields {prev} and {} share number {}",
+                    m.name, fl.name, fl.number
+                ));
+            }
+            if let Some(r) = m
+                .reserved_ranges
+                .iter()
+                .find(|r| (r.start..=r.end).contains(&fl.number))
+            {
+                return Err(format!(
+                    "{}: field {} uses reserved number {} ({} to {})",
+                    m.name, fl.name, fl.number, r.start, r.end
+                ));
+            }
+            if m.reserved_names.contains(&fl.name) {
+                return Err(format!("{}: field name {} is reserved", m.name, fl.name));
+            }
+            if m.extension_ranges
+                .iter()
+                .any(|r| (r.start..=r.end).contains(&fl.number))
+            {
+                return Err(format!(
+                    "{}: field {} uses number {} of an extension range",
                     m.name, fl.name, fl.number
                 ));
             }
@@ -1039,17 +1570,67 @@ fn check(f: &File) -> Result<(), String> {
                 );
                 return Err(e);
             }
-            if syntax == Syntax::Proto3 && fl.label == Label::Required {
+            if edition == Edition::Proto3 && fl.label == Label::Required {
                 return Err(format!("{}: required field in proto3", fl.name));
+            }
+            // proto3 and editions reject JSON name conflicts (default or custom).
+            if edition != Edition::Proto2 {
+                let j = fl.json_name.clone().unwrap_or_else(|| json_name(&fl.name));
+                if let Some(prev) = json.insert(j.clone(), &fl.name) {
+                    return Err(format!(
+                        "{}: fields {prev} and {} have the same JSON name {j:?}",
+                        m.name, fl.name
+                    ));
+                }
             }
         }
         for n in &m.messages {
-            msg(n, syntax)?;
+            msg(n, edition)?;
+        }
+        for e in &m.enums {
+            enumeration(e, edition)?;
+        }
+        Ok(())
+    }
+    fn enumeration(e: &EnumDef, edition: Edition) -> Result<(), String> {
+        if edition == Edition::Proto3 && e.values[0].number != 0 {
+            return Err(format!(
+                "the first value of proto3 enum {} must be 0",
+                e.name
+            ));
+        }
+        for v in &e.values {
+            if e.reserved_ranges
+                .iter()
+                .any(|&(a, b)| (a..=b).contains(&v.number))
+            {
+                return Err(format!(
+                    "{}: value {} uses a reserved number",
+                    e.name, v.name
+                ));
+            }
+            if e.reserved_names.contains(&v.name) {
+                return Err(format!("{}: value name {} is reserved", e.name, v.name));
+            }
+        }
+        if e.options.flag("allow_alias") != Some(true) {
+            let mut seen = HashMap::new();
+            for v in &e.values {
+                if let Some(prev) = seen.insert(v.number, &v.name) {
+                    return Err(format!(
+                        "{}: {prev} and {} share number {} (set option allow_alias = true)",
+                        e.name, v.name, v.number
+                    ));
+                }
+            }
         }
         Ok(())
     }
     for m in &f.messages {
-        msg(m, f.syntax)?;
+        msg(m, f.edition)?;
+    }
+    for e in &f.enums {
+        enumeration(e, f.edition)?;
     }
     Ok(())
 }
@@ -1094,7 +1675,7 @@ mod tests {
             }
         "#;
         let f = parse(src, "t.proto").unwrap();
-        assert_eq!((f.syntax, f.package.as_str()), (Syntax::Proto3, "a.b"));
+        assert_eq!((f.edition, f.package.as_str()), (Edition::Proto3, "a.b"));
         assert_eq!(f.imports, ["other.proto"]);
         let m = &f.messages[0];
         assert_eq!(m.doc, "A message.\nTwo lines.\n");
@@ -1149,10 +1730,34 @@ mod tests {
     #[test]
     fn rejects_what_it_does_not_support() {
         for (src, want) in [
-            ("edition = \"2023\";", "editions"),
+            ("edition = \"2022\";", "not supported"),
             (
-                "syntax = \"proto2\"; message M { optional group G = 1 { } }",
+                "syntax = \"proto3\"; message M { optional group G = 1 { } }",
                 "groups",
+            ),
+            (
+                "edition = \"2023\"; message M { optional int32 a = 1; }",
+                "not allowed in editions",
+            ),
+            (
+                "edition = \"2023\"; message M { repeated int32 a = 1 [packed = true]; }",
+                "not allowed in editions",
+            ),
+            (
+                "syntax = \"proto2\"; message M { optional int32 a = 1; reserved 1; }",
+                "reserved",
+            ),
+            (
+                "syntax = \"proto2\"; message M { optional int32 a = 5; extensions 1 to 10; }",
+                "extension range",
+            ),
+            (
+                "syntax = \"proto3\"; message M { int32 a_b = 1; int32 aB = 2; }",
+                "same JSON name",
+            ),
+            (
+                "syntax = \"proto3\"; enum E { A = 0; B = 0; }",
+                "allow_alias",
             ),
             (
                 "syntax = \"proto3\"; message M { required int32 a = 1; }",
@@ -1174,7 +1779,6 @@ mod tests {
                 "syntax = \"proto3\"; message M { map<float, int32> a = 1; }",
                 "map key",
             ),
-            ("syntax = \"proto3\"; enum E { A = 1; }", "must be 0"),
             ("syntax = \"proto2\"; message M { int32 a = 1; }", "label"),
             (
                 "syntax = \"proto3\"; message M { int32 a = 1 }",
@@ -1193,5 +1797,72 @@ mod tests {
             let e = parse(src, "x.proto").unwrap_err();
             assert!(e.contains(want), "{src}: {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn parses_groups_extensions_and_editions() {
+        let src = r#"
+            syntax = "proto2";
+            package p;
+            message M {
+              optional group Data = 1 { optional int32 a = 2; }
+              repeated group Item = 3 { required string s = 4; }
+              oneof o { group Choice = 5 { optional int32 c = 6; } }
+              extensions 100 to 199, 300 to max [declaration = { number: 100 full_name: ".p.x" type: "int32" }];
+              extend M { optional int32 inner = 101; }
+              reserved 10, 20 to 30;
+              reserved "old";
+            }
+            extend M { repeated group G = 150 { optional int32 g = 1; } }
+            option (custom) = { a: 1 b: [2, 3] c { d: "x" } [p.ext]: -inf };
+        "#;
+        let f = parse(src, "g.proto").unwrap();
+        let m = &f.messages[0];
+        assert_eq!(m.fields.len(), 3);
+        assert!(m.fields.iter().all(|f| f.group));
+        assert_eq!(m.fields[0].name, "data");
+        assert_eq!(m.fields[2].oneof, Some(0));
+        assert_eq!(
+            m.messages
+                .iter()
+                .map(|m| m.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Data", "Item", "Choice"]
+        );
+        assert_eq!(m.extension_ranges.len(), 2);
+        assert_eq!(m.extension_ranges[1].end, (1 << 29) - 1);
+        assert_eq!(m.extension_ranges[0].options[0].name, "declaration");
+        assert_eq!(m.extensions[0].name, "inner");
+        assert_eq!(m.reserved_ranges.len(), 2);
+        assert_eq!(m.reserved_names, ["old"]);
+        assert_eq!(f.extensions[0].name, "g");
+        assert_eq!(f.messages[1].name, "G");
+        let Constant::Aggregate(a) = &f.options[0].value else {
+            panic!()
+        };
+        assert_eq!(a.len(), 4);
+        assert_eq!(a[3], ("[p.ext]".into(), Constant::Float("-inf".into())));
+
+        let src = r#"
+            edition = "2024";
+            package q;
+            import option "opt.proto";
+            option features.field_presence = IMPLICIT;
+            export message A { int32 a = 1 [features.field_presence = EXPLICIT]; local enum E { E_ZERO = 0; } }
+            local message B { reserved r1, r2; }
+        "#;
+        let f = parse(src, "e.proto").unwrap();
+        assert_eq!(f.edition, Edition::E2024);
+        assert_eq!(f.import_kinds, [ImportKind::Option]);
+        assert_eq!(f.messages[0].visibility, Some(true));
+        assert_eq!(f.messages[0].enums[0].visibility, Some(false));
+        assert_eq!(f.messages[1].reserved_names, ["r1", "r2"]);
+        assert_eq!(json_name("foo_bar_baz"), "fooBarBaz");
+        assert_eq!(json_name("_a__b"), "AB");
     }
 }

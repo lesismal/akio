@@ -37,7 +37,7 @@
 
 use std::marker::PhantomData;
 
-use crate::{DecodeError, DecodeErrorKind, Enumeration, Message};
+use crate::{DecodeError, DecodeErrorKind, Enumeration, Message, UnknownFields};
 
 /// How deep messages and groups may nest while decoding (as in the C++ and Go runtimes).
 pub const RECURSION_LIMIT: u32 = 100;
@@ -239,7 +239,12 @@ impl<'a> Reader<'a> {
     /// Reads a tag: the field number (1 ..= [`MAX_FIELD_NUMBER`]) and the wire type.
     #[inline]
     pub fn read_tag(&mut self) -> Result<(u32, WireType), DecodeError> {
+        let before = self.buf.len();
         let v = self.read_varint()?;
+        // A tag is at most 5 bytes (32 bits), even when its value is small.
+        if before - self.buf.len() > 5 {
+            return Err(err(DecodeErrorKind::InvalidTag));
+        }
         let field = v >> 3;
         let wt = WireType::from_u8((v & 7) as u8);
         match wt {
@@ -284,6 +289,50 @@ impl<'a> Reader<'a> {
             WireType::EndGroup => return Err(err(DecodeErrorKind::UnbalancedGroup)),
         }
         Ok(&start[..start.len() - self.buf.len()])
+    }
+
+    /// Decodes the fields of a group whose start tag (field `field`) was just read into `m`, up
+    /// to and including the matching end-group tag. Groups count towards [`RECURSION_LIMIT`].
+    pub fn merge_group<M: Message>(&mut self, field: u32, m: &mut M) -> Result<(), DecodeError> {
+        if self.depth >= RECURSION_LIMIT {
+            return Err(err(DecodeErrorKind::RecursionLimit));
+        }
+        self.depth += 1;
+        let r = loop {
+            if self.buf.is_empty() {
+                break Err(err(DecodeErrorKind::UnbalancedGroup));
+            }
+            let (f, wt) = match self.read_tag() {
+                Ok(t) => t,
+                Err(e) => break Err(e),
+            };
+            if wt == WireType::EndGroup {
+                break if f == field {
+                    Ok(())
+                } else {
+                    Err(err(DecodeErrorKind::UnbalancedGroup))
+                };
+            }
+            if let Err(e) = m.merge_field(f, wt, self) {
+                break Err(e);
+            }
+        };
+        self.depth -= 1;
+        r
+    }
+
+    /// One level deeper, in the same buffer (a group).
+    pub(crate) fn enter(&mut self) -> Result<(), DecodeError> {
+        if self.depth >= RECURSION_LIMIT {
+            return Err(err(DecodeErrorKind::RecursionLimit));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Back out of [`enter`](Self::enter).
+    pub(crate) fn leave(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
     }
 
     fn skip_group(&mut self, field: u32) -> Result<(), DecodeError> {
@@ -516,6 +565,33 @@ impl<M: Message> Codec for MessageCodec<M> {
     }
 }
 
+/// A message encoded as a group (proto2 `group`, or `features.message_encoding = DELIMITED`):
+/// the fields between a start-group and an end-group tag of field `N`, no length prefix.
+#[derive(Debug)]
+pub struct GroupCodec<M, const N: u32>(PhantomData<M>);
+
+impl<M: Message, const N: u32> Codec for GroupCodec<M, N> {
+    type Value = M;
+    const WIRE_TYPE: WireType = WireType::StartGroup;
+    #[inline]
+    fn encode(v: &M, buf: &mut Vec<u8>) {
+        v.encode_raw(buf);
+        put_tag(buf, N, WireType::EndGroup);
+    }
+    #[inline]
+    fn len(v: &M) -> usize {
+        v.encoded_len() + tag_len(N)
+    }
+    #[inline]
+    fn merge(v: &mut M, r: &mut Reader<'_>) -> Result<(), DecodeError> {
+        r.merge_group(N, v)
+    }
+    #[inline]
+    fn is_default(_v: &M) -> bool {
+        false
+    }
+}
+
 /// An enum (open: unknown numbers are kept).
 #[derive(Debug)]
 pub struct EnumCodec<E>(PhantomData<E>);
@@ -697,7 +773,13 @@ pub fn accepts<C: Codec>(wire_type: WireType) -> bool {
 /// length-delimited (packed) for scalars.
 #[inline]
 pub fn accepts_repeated<C: Codec>(wire_type: WireType) -> bool {
-    wire_type == C::WIRE_TYPE || (wire_type == WireType::Len && C::WIRE_TYPE != WireType::Len)
+    wire_type == C::WIRE_TYPE || (wire_type == WireType::Len && packable(C::WIRE_TYPE))
+}
+
+/// Whether values of this wire type can be packed (varints and fixed-width values).
+#[inline]
+const fn packable(wt: WireType) -> bool {
+    matches!(wt, WireType::Varint | WireType::Fixed32 | WireType::Fixed64)
 }
 
 /// Fails unless `wire_type` is the codec's.
@@ -761,7 +843,7 @@ pub fn merge_repeated<C: Codec>(
 where
     C::Value: Default,
 {
-    if wire_type == WireType::Len && C::WIRE_TYPE != WireType::Len {
+    if wire_type == WireType::Len && packable(C::WIRE_TYPE) {
         let b = r.read_bytes().map_err(|e| e.in_field(field))?;
         match C::WIRE_TYPE {
             WireType::Fixed32 => v.reserve(b.len() / 4),
@@ -819,6 +901,113 @@ where
     })();
     res.map_err(|e| e.in_field(field))?;
     map.extend(std::iter::once((k, v)));
+    Ok(())
+}
+
+// ---- closed enums ----------------------------------------------------------------------------
+
+/// Reads one value of a closed enum field (proto2 enums, `features.enum_type = CLOSED`): the
+/// value when it is a known one, otherwise `None` after keeping the number in `unknown` as an
+/// unknown field (the specification's behaviour for closed enums).
+#[inline]
+pub fn read_closed_enum<E: Enumeration>(
+    field: u32,
+    wire_type: WireType,
+    r: &mut Reader<'_>,
+    unknown: &mut UnknownFields,
+) -> Result<Option<E>, DecodeError> {
+    check_wire_type::<EnumCodec<E>>(field, wire_type)?;
+    let n = r.read_varint().map_err(|e| e.in_field(field))?;
+    let v = E::from_i32(n as i32);
+    if v.is_known() {
+        Ok(Some(v))
+    } else {
+        // As C++: the number as an int32, sign-extended.
+        unknown.push_varint(field, i64::from(n as i32) as u64);
+        Ok(None)
+    }
+}
+
+/// [`merge_repeated`] for a closed enum: unknown numbers (packed or not) go to `unknown`, one
+/// unpacked varint each.
+pub fn merge_closed_enum_repeated<E: Enumeration>(
+    field: u32,
+    wire_type: WireType,
+    r: &mut Reader<'_>,
+    v: &mut Vec<E>,
+    unknown: &mut UnknownFields,
+) -> Result<(), DecodeError> {
+    if wire_type == WireType::Len {
+        let b = r.read_bytes().map_err(|e| e.in_field(field))?;
+        let mut sub = Reader::new(b);
+        while !sub.is_empty() {
+            let n = sub.read_varint().map_err(|e| e.in_field(field))?;
+            let e = E::from_i32(n as i32);
+            if e.is_known() {
+                v.push(e);
+            } else {
+                // As C++: the number as an int32, sign-extended.
+                unknown.push_varint(field, i64::from(n as i32) as u64);
+            }
+        }
+        return Ok(());
+    }
+    if let Some(e) = read_closed_enum::<E>(field, wire_type, r, unknown)? {
+        v.push(e);
+    }
+    Ok(())
+}
+
+/// [`merge_map`] for a map whose values are a closed enum: an entry with an unknown value goes
+/// to `unknown` whole.
+pub fn merge_closed_enum_map<K, E>(
+    field: u32,
+    wire_type: WireType,
+    r: &mut Reader<'_>,
+    map: &mut impl Extend<(K::Value, E)>,
+    unknown: &mut UnknownFields,
+) -> Result<(), DecodeError>
+where
+    K: Codec,
+    K::Value: Default,
+    E: Enumeration,
+{
+    if wire_type != WireType::Len {
+        return Err(err(DecodeErrorKind::WireTypeMismatch).in_field(field));
+    }
+    if r.depth >= RECURSION_LIMIT {
+        return Err(err(DecodeErrorKind::RecursionLimit).in_field(field));
+    }
+    let raw = r.read_bytes().map_err(|e| e.in_field(field))?;
+    let mut sub = Reader {
+        buf: raw,
+        depth: r.depth + 1,
+    };
+    let mut k = K::Value::default();
+    let mut n = 0u64;
+    let res: Result<(), DecodeError> = (|| {
+        while !sub.is_empty() {
+            let (f, wt) = sub.read_tag()?;
+            match f {
+                1 => merge_value::<K>(1, wt, &mut sub, &mut k)?,
+                2 => {
+                    check_wire_type::<EnumCodec<E>>(2, wt)?;
+                    n = sub.read_varint()?;
+                }
+                _ => {
+                    sub.skip_field(f, wt)?;
+                }
+            }
+        }
+        Ok(())
+    })();
+    res.map_err(|e| e.in_field(field))?;
+    let e = E::from_i32(n as i32);
+    if e.is_known() {
+        map.extend(std::iter::once((k, e)));
+    } else {
+        unknown.push_raw(field, WireType::Len, raw);
+    }
     Ok(())
 }
 
