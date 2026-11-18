@@ -43,7 +43,8 @@ impl Logger for StderrLogger {
 /// Writes each record with one `write` to stderr (or stdout). The global
 /// [`max_level`](crate::max_level) is its level; per-target ceilings can lower it, and a
 /// [`Filter`] (`ONLY_LOG=info,only_http=debug`, see [`init_from_env`]) sets the level per
-/// target.
+/// target, optionally with a message regex (`ONLY_LOG=info/timed out`) that the formatted
+/// message must match.
 ///
 /// By default the write happens on the thread that logs, under the standard stream's lock:
 /// when stderr is a pipe nobody drains (a stalled log collector), that thread blocks, and an
@@ -248,18 +249,20 @@ impl FmtLogger {
 
     /// Renders `record` as one line (with the trailing newline).
     pub fn format(&self, record: &Record<'_>) -> String {
+        self.format_line(record).0
+    }
+
+    /// The line and where the message is in it.
+    fn format_line(&self, record: &Record<'_>) -> (String, std::ops::Range<usize>) {
         let mut s = String::with_capacity(128);
         if !self.no_timestamps {
             push_timestamp(&mut s, SystemTime::now());
             s.push(' ');
         }
-        let _ = write!(
-            s,
-            "{:<5} {}: {}",
-            record.level(),
-            record.target(),
-            record.args()
-        );
+        let _ = write!(s, "{:<5} {}: ", record.level(), record.target());
+        let start = s.len();
+        let _ = write!(s, "{}", record.args());
+        let msg = start..s.len();
         if let Some(c) = crate::span::current() {
             let _ = write!(
                 s,
@@ -281,7 +284,7 @@ impl FmtLogger {
             }
         }
         s.push('\n');
-        s
+        (s, msg)
     }
 }
 
@@ -291,7 +294,15 @@ impl Logger for FmtLogger {
     }
 
     fn log(&self, record: &Record<'_>) {
-        let line = self.format(record);
+        let (line, msg) = self.format_line(record);
+        // The message filter (`/regex`) runs on the message as formatted for the line.
+        if self
+            .filter
+            .message_filter()
+            .is_some_and(|re| !re.is_match(&line[msg]))
+        {
+            return;
+        }
         if let Some(sink) = &self.sink {
             return sink.push(line);
         }

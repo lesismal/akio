@@ -105,6 +105,27 @@ fn env_directives() {
         ]
     );
 
+    // A message regex: matched against the message only (not the target, level or key-values).
+    let (out, lines) = run(Some("info,only_http=debug/(?i)HTTP|app warn"));
+    assert!(out.contains("max=DEBUG"), "{out}");
+    assert_eq!(
+        lines,
+        [
+            "DEBUG only_http::server: http debug k=1",
+            "WARN  app: app warn"
+        ]
+    );
+    let (_, lines) = run(Some("trace/k=1|only_quic|TRACE"));
+    assert!(lines.is_empty(), "{lines:?}");
+
+    // An invalid message regex: said on stderr, the default is used.
+    let (_, lines) = run(Some("info/conn (reset"));
+    assert_eq!(
+        lines[0],
+        "only-log: ignoring ONLY_LOG: invalid log directive `/conn (reset`: invalid message regex: unclosed group at byte 11"
+    );
+    assert_eq!(lines.len(), 3, "{lines:?}");
+
     // Invalid: said on stderr, the default is used.
     let (_, lines) = run(Some("info,only_http=loud"));
     assert_eq!(

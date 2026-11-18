@@ -33,3 +33,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-027: XDP rate limiting, thread pinning, the eBPF hash tier and spliced SOCKS tunnels](027-ebpf-xdp-pinning-socks-splice.md) (accepted 2026-11-18)
 - [ADR-028: Hot reload of read buffer, backlog, UDP idle timeout and I/O thread count](028-hot-reload-buffers-backlog-threads.md) (accepted 2026-11-17)
 - [ADR-029: `ONLY_DEFAULT_BACKEND` selects io_uring for listeners without a backend](029-default-backend-env.md) (accepted 2026-11-17)
+- [ADR-047: `/regex` message filters in only-log, on a new internal crate `only-regex`](047-log-regex-filters.md) (accepted 2026-11-19)

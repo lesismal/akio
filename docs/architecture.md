@@ -24,6 +24,7 @@ flowchart BT
     timer["only-timer<br/>timer wheel"]
     deflate["only-deflate<br/>DEFLATE, zlib, gzip"]
     logc["only-log<br/>logging facade"]
+    regexc["only-regex<br/>linear-time regex"]
     pool["only-pool<br/>logical pool"]
     core["only-core<br/>Conn, ConnInner, Handler, Acceptor,<br/>Transport, Telemetry, Group trait"]
     epoll["only-epoll<br/>epoll / kqueue groups, UDP groups"]
@@ -48,6 +49,7 @@ flowchart BT
     buf --> core
     pool --> core
     logc --> core
+    regexc --> logc
     core --> epoll
     sys --> epoll
     timer --> epoll

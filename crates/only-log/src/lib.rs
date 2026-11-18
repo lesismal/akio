@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! The logging facade of [`only`](https://docs.rs/only), without dependencies.
+//! The logging facade of [`only`](https://docs.rs/only), without third-party dependencies.
 //!
 //! Libraries log through the macros ([`error!`], [`warn!`], [`info!`], [`debug!`], [`trace!`],
 //! [`log!`]); the application installs one [`Logger`] for the whole process with
@@ -34,7 +34,10 @@
 //!
 //! A [`Filter`] gives each target its own level, from env_logger-style directives:
 //! [`init_from_env`] reads `ONLY_LOG=info,only_http=debug,only_quic::conn=trace` once and
-//! installs a [`FmtLogger`] with it. Nothing reads the environment unless it is called.
+//! installs a [`FmtLogger`] with it. Nothing reads the environment unless it is called. A
+//! trailing `/regex` (`ONLY_LOG=info/connection (reset|refused)`) keeps only the records whose
+//! message matches it, as env_logger does; the in-house `only-regex` engine matches in time
+//! linear in the message, and a filter without a pattern costs nothing extra.
 //!
 //! # No logger installed
 //!

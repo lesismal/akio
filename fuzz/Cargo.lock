@@ -402,6 +402,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "only"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-buf",
  "only-core",
  "only-ebpf",
  "only-epoll",
@@ -417,6 +418,7 @@ dependencies = [
  "only",
  "only-buf",
  "only-core",
+ "only-deflate",
 ]
 
 [[package]]
@@ -434,6 +436,9 @@ dependencies = [
 [[package]]
 name = "only-buf"
 version = "1.0.0-rc.1"
+dependencies = [
+ "loom",
+]
 
 [[package]]
 name = "only-core"
@@ -485,6 +490,7 @@ dependencies = [
 name = "only-epoll"
 version = "1.0.0-rc.1"
 dependencies = [
+ "only-buf",
  "only-core",
  "only-log",
  "only-sys",
@@ -534,6 +540,7 @@ dependencies = [
  "only-mux",
  "only-protobuf",
  "only-quic",
+ "only-regex",
  "only-rtp",
  "only-sctp",
  "only-socks",
@@ -643,11 +650,16 @@ name = "only-quic"
 version = "1.0.0-rc.1"
 dependencies = [
  "only",
+ "only-buf",
  "only-core",
  "only-crypto",
  "only-tls",
  "only-x509",
 ]
+
+[[package]]
+name = "only-regex"
+version = "1.0.0-rc.1"
 
 [[package]]
 name = "only-rtp"
@@ -680,6 +692,9 @@ dependencies = [
 [[package]]
 name = "only-sys"
 version = "1.0.0-rc.1"
+dependencies = [
+ "only-buf",
+]
 
 [[package]]
 name = "only-timer"

@@ -10,6 +10,27 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: `/regex` message filters in only-log, on the new internal crate only-regex
+
+Additive (ADR-047, docs/adr/047-log-regex-filters.md):
+
+- **only-log**: `ONLY_LOG=info,only_http=debug/connection (reset|refused)` keeps only the
+  records whose formatted message matches the pattern, as env_logger does (everything after the
+  first `/` is the pattern; an empty one filters nothing). `Filter::message_regex`,
+  `Filter::message_pattern` and `Filter::matches(&Record)` (levels and message; the message is
+  streamed into the matcher, no string built); `Filter`'s `Display` writes the pattern back.
+  `FmtLogger` matches the message it already formatted for the line. A filter without a pattern
+  costs nothing extra. `"info/x".parse::<Filter>()`, an error before, now succeeds; an invalid
+  pattern is a `ParseFilterError` naming `/pattern` and the byte where it fails.
+- **only-regex** (new internal crate, no dependencies, `#![forbid(unsafe_code)]`): `Regex::new`,
+  `is_match(&str)`, `is_match_fmt(fmt::Arguments)` (no allocation). The `regex` crate's syntax
+  without captures, look-around and Unicode classes: Unicode-aware `\d \w \s`, classes, greedy
+  and lazy repetition, alternation, groups, `^ $ \A \z \b \B`, flags `i` `m` `s` `U`. A Thompson
+  NFA with a DFA built at compile time over character classes (ASCII table, intervals for the
+  rest) and a Pike VM fallback: linear time on any pattern, about 1 ns per character.
+  Unicode tables generated from regex-syntax by `tools/regex-tables`; differential fuzz target
+  `regex_search` against the `regex` crate; `tools/codec-bench logregex` compares the two.
+
 ### Changed: faster P-256 key generation, signing and ECDH; RSA squaring by Karatsuba without IFMA
 
 only-crypto on x86_64 with BMI2 + ADX and AVX2: the P-256 fixed-base comb and the ECDH

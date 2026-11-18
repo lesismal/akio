@@ -227,7 +227,23 @@ ONLY_LOG=info,only_http=debug,only_quic::conn=trace,only_http::access=off ./serv
 所有 target；无法解析时 stderr 上会有一行说明原因，并使用 `default`。不调用 `init_from_env` 就没有代码
 读取该变量。同样的语法可以在代码中构造过滤器：`"info,only_http=debug".parse::<only::log::Filter>()`，再
 `FmtLogger::new().init_filtered(filter)`，或在自己的 `Logger` 中调用 `filter.enabled(metadata)`。与
-env_logger 不同，`only=debug` 不匹配 `only_http`（target 按 `::` 边界匹配），也不支持 `/regex` 消息过滤。
+env_logger 不同，`only=debug` 不匹配 `only_http`（target 按 `::` 边界匹配）。
+
+**消息过滤。** 与 env_logger 相同，指令后面的 `/regex` 只保留格式化后的消息（不含 target、级别和键值对）
+中某处与模式匹配的记录：
+
+```text
+ONLY_LOG='info,only_http=debug/(?i)conn(ection)? (reset|refused)|timed out' ./server
+```
+
+第一个 `/` 之后的全部内容都是模式，包括空格和逗号（因此模式里可以有 `/`，env_logger 则会拒绝）；空模式
+不过滤任何记录，无效的模式与其他指令错误一样在 stderr 上报告。语法是去掉捕获、环视和 Unicode 类之后的
+`regex` crate 语法：字符类与范围、支持 Unicode 的 `\d \w \s`、`* + ? {m,n}`（贪婪或惰性）、分支、分组、
+`^ $ \A \z`、单词边界 `\b \B`，以及标志 `(?i)`（Unicode 大小写折叠）、`(?m)`、`(?s)`。引擎是工作区内的
+`only-regex`：Thompson NFA，并在解析过滤器时构建 DFA，因此匹配从不回溯（任何模式都不会让一次日志调用
+变慢），代价约为消息每字符一纳秒。`FmtLogger` 直接匹配它本来就要为这一行格式化的消息；在自己的
+`Logger` 中，`filter.matches(record)` 同时检查级别和消息，把消息逐段送入匹配器而不拼接字符串。没有模式的
+过滤器完全不付出这些开销。代码中的写法：`Filter::new(LevelFilter::Info).message_regex("timed out")?`。
 
 **编译期上限。** only-log 的 feature `max_level_off` …… `max_level_trace` 以及 `release_max_level_*`
 （后者用于没有 debug assertions 的构建）在编译期移除超出上限的语句，与 `log` crate 相同；结果是

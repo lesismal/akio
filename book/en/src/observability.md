@@ -263,8 +263,27 @@ specific target wins. Unset, `default` applies to everything; unparsable, a line
 why and `default` applies. Nothing reads the variable unless `init_from_env` is called. The same
 syntax builds a filter in code: `"info,only_http=debug".parse::<only::log::Filter>()`, then
 `FmtLogger::new().init_filtered(filter)`, or `filter.enabled(metadata)` in your own `Logger`.
-Unlike env_logger, `only=debug` does not match `only_http` (targets match on `::` boundaries) and
-`/regex` message filters are not supported.
+Unlike env_logger, `only=debug` does not match `only_http` (targets match on `::` boundaries).
+
+**Message filters.** As with env_logger, a `/regex` after the directives keeps only the records
+whose formatted message (not the target, level or key-values) matches the pattern somewhere:
+
+```text
+ONLY_LOG='info,only_http=debug/(?i)conn(ection)? (reset|refused)|timed out' ./server
+```
+
+Everything after the first `/` is the pattern, spaces and commas included (so it may contain
+`/`, which env_logger rejects); an empty pattern filters nothing, and an invalid one is reported
+on stderr like any other directive error. The syntax is the `regex` crate's without captures,
+look-around and Unicode classes: classes and ranges, Unicode-aware `\d \w \s`, `* + ? {m,n}`
+(greedy or lazy), alternation, groups, `^ $ \A \z`, word boundaries `\b \B`, and the flags
+`(?i)` (Unicode case folding), `(?m)`, `(?s)`. The engine is `only-regex`, part of the workspace:
+a Thompson NFA with a DFA built when the filter is parsed, so matching never backtracks (no
+pattern can make a log call slow) and costs about a nanosecond per character of the message.
+`FmtLogger` matches the message it formatted for the line anyway; in your own `Logger`,
+`filter.matches(record)` checks the level and the message, streaming the message into the
+matcher without building a string. A filter without a pattern does not pay for any of this.
+In code: `Filter::new(LevelFilter::Info).message_regex("timed out")?`.
 
 **Compile-time caps.** The only-log features `max_level_off` ... `max_level_trace` and
 `release_max_level_*` (the latter for builds without debug assertions) remove statements above

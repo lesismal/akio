@@ -1,0 +1,22 @@
+[package]
+name = "only-regex"
+description = "only internals: a linear-time regular expression engine (Thompson NFA, Pike VM and an ASCII DFA) without dependencies"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+homepage.workspace = true
+documentation = "https://docs.rs/only-regex"
+keywords = ["regex", "regexp", "nfa", "dfa"]
+categories = ["text-processing"]
+
+[dependencies]
+
+[features]
+# Entry points for `fuzz/` (`Regex::nfa_is_match`); not a public API.
+fuzzing = []
+
+[lints]
+workspace = true

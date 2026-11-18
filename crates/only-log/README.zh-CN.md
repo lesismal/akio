@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-[`only`](https://github.com/lesismal/only) 的日志门面，无任何依赖（`#![forbid(unsafe_code)]`）。
+[`only`](https://github.com/lesismal/only) 的日志门面，无第三方依赖（`#![forbid(unsafe_code)]`）。
 `only` 以 `only::log` 重新导出它。它在 `only` 的所有库中取代了 `log` crate；可选的桥接让基于
 `log` 的配置（env_logger、`tracing-log` ……）继续可用。
 
@@ -21,7 +21,11 @@
   可按 target 设上限，输出到 stderr 或 stdout）；`StderrLogger` 打印 `target: message`。
 - `Filter`：从 env_logger 风格的指令得到按 target 的级别；`init_from_env(default)` 只读取一次
   `ONLY_LOG=info,only_http=debug,only_quic::conn=trace` 并据此安装 `FmtLogger`（需显式调用：否则没有
-  代码读取环境变量）。target 按 `::` 边界匹配，最具体者胜出，不支持 `/regex` 过滤。
+  代码读取环境变量）。target 按 `::` 边界匹配，最具体者胜出。末尾的 `/regex` 只保留消息与之匹配的记录
+  （`ONLY_LOG=info,only_http=debug/connection (reset|refused)`，与 env_logger 语法相同；第一个 `/` 之后
+  的全部内容都是模式）。引擎是自研的 `only-regex`（Unicode `\d \w \s`、`(?i)`、`\b`，无回溯，时间与消息
+  长度成线性关系）；`FmtLogger` 直接匹配它为这一行已经格式化好的消息，`Filter::matches` 把消息逐段送入
+  匹配器而不拼接字符串，没有模式的过滤器不增加任何开销。
 - 编译期上限，与 `log` crate 相同：feature `max_level_off` .. `max_level_trace` 与
   `release_max_level_*` 把超出上限的语句编译掉（`STATIC_MAX_LEVEL`）。只应由应用开启（cargo 会在整个
   依赖图中合并 feature）。
@@ -63,6 +67,8 @@ warn!("{} retries left", 3);
 | 带 2 个键值对的 `trace!`，级别被禁用 | 0.25-0.29 | 0.36-0.37 |
 | `log_enabled!`，被禁用 | 0.25 | 0.25 |
 | 带 2 个键值对的 `info!`，启用，logger 丢弃 | 2.3 | 3.0 |
+| `Filter::matches`，无消息正则 | 4.9 | |
+| `Filter::matches`，带 `/connection (reset\|refused)`，72 字节消息（含格式化） | 120 | |
 
 启用 `log` feature 且未安装 only-log logger 时，禁用检查还会读取 `log::max_level()`（约 0.5 ns）。
 未开启上限 feature 时编译期上限没有任何开销（macOS 上基准二进制逐字节相同；x86_64 上同一轮测得禁用的
