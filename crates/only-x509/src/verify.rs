@@ -5,7 +5,9 @@ use std::net::IpAddr;
 
 use crate::Error;
 use crate::cert::{Certificate, KeyUsage, ext};
+use crate::crl::CrlSet;
 use crate::name::GeneralName;
+use crate::revocation::{DEFAULT_CLOCK_SKEW, RevocationStatus};
 
 /// The most intermediates a path may contain.
 pub const MAX_INTERMEDIATES: usize = 6;
@@ -175,6 +177,21 @@ pub struct Verifier<'a> {
     roots: &'a RootStore,
     time: Option<i64>,
     usage: Usage,
+    crls: Option<&'a CrlSet>,
+    mode: RevocationMode,
+    skew: u32,
+}
+
+/// What [`Verifier::crls`] does with a certificate no current CRL covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum RevocationMode {
+    /// Accept it (only a listed revocation fails the path).
+    #[default]
+    SoftFail,
+    /// Reject it ([`Error::RevocationUnknown`]): every certificate of the path below the
+    /// root needs a current CRL from its issuer.
+    HardFail,
 }
 
 impl<'a> Verifier<'a> {
@@ -185,7 +202,35 @@ impl<'a> Verifier<'a> {
             roots,
             time: None,
             usage: Usage::ServerAuth,
+            crls: None,
+            mode: RevocationMode::SoftFail,
+            skew: DEFAULT_CLOCK_SKEW,
         }
+    }
+
+    /// Checks every certificate of the path below the root against `crls`
+    /// ([`CrlSet::status`]) while building it: a revoked certificate fails that path
+    /// ([`Error::Revoked`]; another path may still succeed), and one no CRL covers is handled
+    /// by the [`revocation_mode`](Self::revocation_mode).
+    #[must_use]
+    pub fn crls(mut self, crls: &'a CrlSet) -> Self {
+        self.crls = Some(crls);
+        self
+    }
+
+    /// What to do with certificates no current CRL covers (default: soft fail).
+    #[must_use]
+    pub fn revocation_mode(mut self, mode: RevocationMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// The clock skew tolerated for CRL validity, in seconds (default
+    /// [`DEFAULT_CLOCK_SKEW`]).
+    #[must_use]
+    pub fn clock_skew(mut self, secs: u32) -> Self {
+        self.skew = secs;
+        self
     }
 
     /// Verifies at `unix_seconds` instead of now.
@@ -310,7 +355,22 @@ impl<'s> Search<'s, '_> {
             return Err(Error::TooManySignatures);
         }
         *self.budget -= 1;
-        child.verify_signed_by(&issuer.public_key()?)
+        child.verify_signed_by(&issuer.public_key()?)?;
+        self.check_revocation(child, issuer)
+    }
+
+    fn check_revocation(&self, child: &Certificate, issuer: &Certificate) -> Result<(), Error> {
+        let Some(crls) = self.v.crls else {
+            return Ok(());
+        };
+        match crls.status(child, issuer, self.now, self.v.skew) {
+            RevocationStatus::Good => Ok(()),
+            RevocationStatus::Revoked { reason, .. } => Err(Error::Revoked(reason)),
+            RevocationStatus::Unknown => match self.v.mode {
+                RevocationMode::SoftFail => Ok(()),
+                RevocationMode::HardFail => Err(Error::RevocationUnknown),
+            },
+        }
     }
 
     /// Extends `path` (whose last element still needs an issuer) to a root.

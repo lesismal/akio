@@ -94,6 +94,24 @@ pub(crate) fn write_time(w: &mut Writer, t: i64) {
     }
 }
 
+/// Reads a GeneralizedTime (`YYYYMMDDHHMMSSZ`, as RFC 5280 and RFC 6960 require).
+pub(crate) fn read_generalized_time(r: &mut Reader<'_>) -> Result<i64, Error> {
+    if r.peek_tag() != Some(tag::GENERALIZED_TIME) {
+        return Err(Error::Encoding);
+    }
+    read_time(r)
+}
+
+/// Writes a GeneralizedTime.
+pub(crate) fn write_generalized_time(w: &mut Writer, t: i64) {
+    let days = t.div_euclid(86_400);
+    let secs = t.rem_euclid(86_400);
+    let (y, m, d) = civil_from_days(days);
+    let (h, mi, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
+    let v = format!("{y:04}{m:02}{d:02}{h:02}{mi:02}{s:02}Z");
+    w.tlv(tag::GENERALIZED_TIME, v.as_bytes());
+}
+
 /// The current time as Unix seconds.
 pub(crate) fn now() -> i64 {
     match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {

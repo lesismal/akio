@@ -11,13 +11,20 @@
 //!   constraints, server names (DNS with leftmost-label wildcards, IP addresses).
 //! - [`CertificateParams`] and [`generate_simple_self_signed`]: generation with ECDSA
 //!   P-256/P-384, Ed25519 or RSA keys.
+//! - Revocation, without network access (the application fetches CRLs and OCSP responses;
+//!   [`Certificate::crl_distribution_points`] and [`Certificate::ocsp_urls`] say where):
+//!   [`Crl`] and [`CrlSet`] (RFC 5280 §5: complete and delta CRLs, reason codes,
+//!   issuingDistributionPoint scopes), checked by [`Verifier::crls`] or
+//!   [`CrlSet::status`]; [`OcspResponse`] (RFC 6960: issuer or delegated responder
+//!   signatures, nonce, thisUpdate / nextUpdate with clock skew) and [`OcspRequest`].
 //!
 //! Supported signature algorithms are those of [`only_crypto::pkey::SignatureAlgorithm`]:
 //! ECDSA P-256/P-384 with SHA-256/384/512, Ed25519, RSA PKCS#1 v1.5 (SHA-1 verification only
 //! for legacy chains) and RSA-PSS with SHA-256/384/512.
 //!
-//! Not implemented: revocation (CRL, OCSP), certificate policies, and name-constraint forms
-//! other than DNS, IP and directoryName (others fail closed).
+//! Not implemented: indirect CRLs and CRLs signed by a key other than the issuer's, signed
+//! OCSP requests, certificate policies, and name-constraint forms other than DNS, IP and
+//! directoryName (others fail closed).
 //!
 //! ```
 //! use only_x509::{CertificateParams, RootStore, Verifier, generate_simple_self_signed};
@@ -42,8 +49,11 @@
 //! (the TLS and QUIC stacks) and may change in any release (docs/api-stability.md).
 
 mod cert;
+mod crl;
 mod generate;
 mod name;
+mod ocsp;
+mod revocation;
 mod time;
 mod verify;
 
@@ -52,13 +62,20 @@ mod verify;
 pub mod fuzzing;
 
 pub use cert::{
-    BasicConstraints, Certificate, Extension, GeneralSubtree, KeyUsage, NameConstraints, ext,
+    BasicConstraints, Certificate, DistributionPoint, Extension, GeneralSubtree, KeyUsage,
+    NameConstraints, ext,
 };
+pub use crl::{Crl, CrlParams, CrlSet, IssuingDistributionPoint, RevokedCertificate};
 pub use generate::{CertificateParams, IsCa, generate_simple_self_signed};
 pub use name::{Attribute, GeneralName, Name, attr};
+pub use ocsp::{
+    BasicOcspResponse, CertId, CertIdHash, OcspRequest, OcspResponse, OcspResponseParams,
+    OcspResponseStatus, OcspValidation, ResponderId, SingleResponse,
+};
+pub use revocation::{DEFAULT_CLOCK_SKEW, ReasonFlags, RevocationReason, RevocationStatus};
 pub use verify::{
-    MAX_INTERMEDIATES, MAX_SIGNATURE_CHECKS, RootStore, ServerName, Usage, Verifier,
-    dns_name_matches, matches_server_name,
+    MAX_INTERMEDIATES, MAX_SIGNATURE_CHECKS, RevocationMode, RootStore, ServerName, Usage,
+    Verifier, dns_name_matches, matches_server_name,
 };
 
 /// Why parsing or verification failed.
@@ -103,6 +120,24 @@ pub enum Error {
     InvalidServerName,
     /// A name violates a CA's name constraints.
     NameConstraintViolation,
+    /// A certificate is revoked (by a CRL or an OCSP response), with the reason if given.
+    Revoked(Option<RevocationReason>),
+    /// No current, authentic revocation information covers a certificate, and the
+    /// [`RevocationMode`] requires it.
+    RevocationUnknown,
+    /// An OCSP response is not successful (its status).
+    OcspStatus(OcspResponseStatus),
+    /// An OCSP response is signed by neither the issuer nor a responder it authorized
+    /// (id-kp-OCSPSigning).
+    UnauthorizedResponder,
+    /// An OCSP response does not echo the request's nonce.
+    NonceMismatch,
+    /// An OCSP response has no single response for the certificate.
+    NoMatchingResponse,
+    /// Revocation information is not valid yet (thisUpdate after now plus the clock skew).
+    RevocationInfoNotYetValid,
+    /// Revocation information has expired (nextUpdate before now minus the clock skew).
+    RevocationInfoExpired,
     /// A key or signature operation failed (unsupported algorithm or key, bad key).
     Crypto(only_crypto::Error),
 }
@@ -142,6 +177,17 @@ impl std::fmt::Display for Error {
             Error::NameMismatch => f.write_str("certificate not valid for this name"),
             Error::InvalidServerName => f.write_str("invalid server name"),
             Error::NameConstraintViolation => f.write_str("name constraint violation"),
+            Error::Revoked(Some(r)) => write!(f, "certificate revoked ({r})"),
+            Error::Revoked(None) => f.write_str("certificate revoked"),
+            Error::RevocationUnknown => f.write_str("revocation status unknown"),
+            Error::OcspStatus(s) => write!(f, "OCSP response status {s}"),
+            Error::UnauthorizedResponder => {
+                f.write_str("OCSP response from an unauthorized responder")
+            }
+            Error::NonceMismatch => f.write_str("OCSP nonce mismatch"),
+            Error::NoMatchingResponse => f.write_str("OCSP response is not about this certificate"),
+            Error::RevocationInfoNotYetValid => f.write_str("revocation information not yet valid"),
+            Error::RevocationInfoExpired => f.write_str("revocation information expired"),
             Error::Crypto(e) => write!(f, "crypto: {e}"),
         }
     }

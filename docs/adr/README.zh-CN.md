@@ -37,3 +37,4 @@
 - [ADR-031：媒体 hub 中的 VP8、VP9 与 AV1，多码率（multivariant）HLS 播放列表](031-media-vp8-vp9-av1-multivariant-hls.zh-CN.md)（2026-11-18 采纳）
 - [ADR-032：`Endpoint` 经 TCP 与 TLS 使用 TURN、主动及服务器端 ICE-TCP、与 Chrome 的 simulcast](032-webrtc-turn-streams-ice-tcp-simulcast.zh-CN.md)（2026-11-18 采纳）
 - [ADR-033：BitTorrent 快速续传](033-bittorrent-fast-resume.zh-CN.md)（2026-11-18 采纳）
+- [ADR-036：证书吊销：CRL、OCSP 与装订响应的校验](036-x509-revocation.zh-CN.md)（2026-11-18 采纳）

@@ -23,6 +23,8 @@ mod early_tests;
 #[cfg(test)]
 mod ext_tests;
 #[cfg(test)]
+mod revocation_tests;
+#[cfg(test)]
 mod rfc8448;
 #[cfg(test)]
 pub(crate) mod tests;

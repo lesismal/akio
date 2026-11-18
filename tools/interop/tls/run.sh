@@ -3,7 +3,8 @@
 # TLS 1.3 and 1.2, every implemented cipher suite and group, RSA / ECDSA P-256 / P-384 /
 # Ed25519 certificates, client authentication, resumption (tickets and session IDs),
 # HelloRetryRequest, ALPN, SNI, KeyUpdate, early data (0-RTT, OpenSSL only: Go has none),
-# OCSP stapling (OpenSSL, Go, GnuTLS), certificate compression (RFC 8879 zlib: OpenSSL 3.2+ built
+# OCSP stapling (OpenSSL, Go, GnuTLS; only's client validating it, and CRLs, against OpenSSL),
+# certificate compression (RFC 8879 zlib: OpenSSL 3.2+ built
 # with zlib, e.g. Debian's; skipped otherwise) and record_size_limit (RFC 8449: GnuTLS when
 # gnutls-cli is installed; OpenSSL and Go have none, so their cases check it is not applied, and
 # OpenSSL's max_fragment_length offer is ignored).
@@ -57,6 +58,18 @@ printf 'V\t491231235959Z\t\t%s\tunknown\t/CN=p256\n' \
 openssl ocsp -issuer ca.pem -cert p256.pem -reqout ocsp-req.der -no_nonce >/dev/null 2>&1
 openssl ocsp -index index.txt -CA ca.pem -rsigner ca.pem -rkey ca.key -reqin ocsp-req.der \
     -respout ocsp.der -ndays 1 >/dev/null 2>&1
+# The same leaf revoked: an OCSP response and a CRL saying so, and a CRL listing nothing.
+printf 'R\t491231235959Z\t%s,keyCompromise\t%s\tunknown\t/CN=p256\n' "$(date -u +%y%m%d%H%M%SZ)" \
+    "$(openssl x509 -in p256.pem -noout -serial | cut -d= -f2)" > index-revoked.txt
+openssl ocsp -index index-revoked.txt -CA ca.pem -rsigner ca.pem -rkey ca.key -reqin ocsp-req.der \
+    -respout ocsp-revoked.der -ndays 1 >/dev/null 2>&1
+: > index-empty.txt
+for db in revoked empty; do
+    printf '[ca]\ndefault_ca = c\n[c]\ndatabase = index-%s.txt\ncrlnumber = crlnumber\ndefault_md = sha256\ndefault_crl_days = 1\n' \
+        "$db" > "crl-$db.cnf"
+    echo 01 > crlnumber
+    openssl ca -config "crl-$db.cnf" -gencrl -cert ca.pem -keyfile ca.key -out "crl-$db.pem" >/dev/null 2>&1
+done
 cd "$OUT" || exit 1
 
 pass=0
@@ -94,6 +107,26 @@ s_server_case() { # name "s_server args" "only client args" [expect-resume]
         ok "only client -> openssl: $name ($(grep -m1 'client\[0\]' "$OUT/cli.log" | cut -d' ' -f2-3))"
     else
         ko "only client -> openssl: $name" "$OUT/cli.log"
+    fi
+    kill $sp 2>/dev/null
+    wait $sp 2>/dev/null
+}
+
+# The only client must fail, saying `pattern`.
+s_server_fail_case() { # name "s_server args" "only client args" pattern
+    local name=$1 sargs=$2 cargs=$3 pat=$4
+    next_port
+    # shellcheck disable=SC2086
+    openssl s_server -accept "$PORT" -www -CAfile "$P/ca.pem" $sargs > "$OUT/srv.log" 2>&1 &
+    local sp=$!
+    wait_port "$PORT"
+    # shellcheck disable=SC2086
+    if "$ONLY" client "127.0.0.1:$PORT" localhost --ca "$P/ca.pem" --http $cargs > "$OUT/cli.log" 2>&1; then
+        ko "only client -> openssl: $name (handshake succeeded)" "$OUT/cli.log"
+    elif grep -q "$pat" "$OUT/cli.log"; then
+        ok "only client -> openssl: $name (refused: $pat)"
+    else
+        ko "only client -> openssl: $name (no \"$pat\")" "$OUT/cli.log"
     fi
     kill $sp 2>/dev/null
     wait $sp 2>/dev/null
@@ -306,6 +339,23 @@ s_server_case "1.3 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -tls1_3 -s
     "--expect-ocsp $P/ocsp.der"
 s_server_case "1.2 OCSP stapling" "-cert $P/p256.pem -key $P/p256.key -tls1_2 -status_file $P/ocsp.der" \
     "--expect-ocsp $P/ocsp.der"
+# Revocation checks of only's client: stapled OCSP under each policy, CRLs.
+for v in 1.3 1.2; do
+    sv="-tls${v/./_}"
+    s_server_case "$v OCSP hard-fail, good response" \
+        "-cert $P/p256.pem -key $P/p256.key $sv -status_file $P/ocsp.der" "--ocsp-policy hard"
+    s_server_fail_case "$v OCSP soft-fail, revoked response" \
+        "-cert $P/p256.pem -key $P/p256.key $sv -status_file $P/ocsp-revoked.der" \
+        "--ocsp-policy soft" "revoked"
+    s_server_fail_case "$v OCSP hard-fail, no response" "-cert $P/p256.pem -key $P/p256.key $sv" \
+        "--ocsp-policy hard" "no stapled OCSP response"
+    s_server_case "$v OCSP soft-fail, no response" "-cert $P/p256.pem -key $P/p256.key $sv" \
+        "--ocsp-policy soft"
+    s_server_fail_case "$v CRL, revoked" "-cert $P/p256.pem -key $P/p256.key $sv" \
+        "--crl $P/crl-revoked.pem" "revoked"
+    s_server_case "$v CRL hard-fail, not revoked" "-cert $P/p256.pem -key $P/p256.key $sv" \
+        "--crl $P/crl-empty.pem --crl-policy hard"
+done
 s_client_case "1.3 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_3 -status $OCSP_CHECK" \
     "Cert Status: good"
 s_client_case "1.2 OCSP stapling" "$S --ocsp-file $P/ocsp.der" "-tls1_2 -status" "Cert Status: good"

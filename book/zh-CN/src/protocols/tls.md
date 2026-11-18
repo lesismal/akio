@@ -81,7 +81,8 @@ ring 相比的速度（`tls-bench`，带 VAES 的 x86_64）：X25519 完整握�
 | 记录大小限制（RFC 8449） | `.record_size_limit(bytes)` | `.record_size_limit(bytes)` |
 | 握手超时（默认 10 s：超时仍在握手的连接以 `TimedOut` 关闭，并计入 `only_tls_handshake_failures_total`） | `.handshake_timeout(Some(d))`，`None` 为不限 | `.handshake_timeout(Some(d))` |
 | 证书压缩 | 默认开启；`.certificate_compression(false)` 关闭 | `.certificate_compression(true)` 开启 |
-| OCSP stapling | `.ocsp_response(der)`、`.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)` |
+| OCSP stapling | `.ocsp_response(der)`、`.sni_ocsp_response(name, der)` | `.ocsp_stapling(true)`；`.ocsp_policy(RevocationPolicy::HardFail)` 校验它 |
+| CRL（[吊销检查](#吊销检查)） | `.client_crls(crls, policy)` | `.crls(crls, policy)` |
 | 仅限测试 | | `.insecure_skip_verify()` |
 
 `.build()` 检查证书与私钥（包括私钥是否属于叶子证书），返回配置或 `only::tls::Error`；配置克隆开销
@@ -199,8 +200,36 @@ let cfg = ServerConfig::builder(chain, key).ocsp_response(ocsp).build()?;
 `.build()` 只检查它是否像一个成功的 `OCSPResponse`。响应会过期（通常几天内）：在那之前获取新的响应并构建
 新的配置。
 
-客户端用 `.ocsp_stapling(true)` 请求响应，`tls_info(&conn).ocsp_response` 保存收到的 DER 字节。**它们未经
-验证**：`only-x509` 尚不检查 OCSP（响应者签名、有效期、证书 ID），关心吊销状态的应用必须自己验证该响应。
+客户端用 `.ocsp_stapling(true)` 请求响应，`tls_info(&conn).ocsp_response` 保存收到的 DER 字节；只有设置了
+OCSP 策略时才会校验（见下一节）。
+
+### 吊销检查
+
+默认关闭，关闭时没有开销。本库从不获取任何东西（I/O 线程上没有阻塞 I/O）：装订响应来自服务器，CRL 来自你的
+应用。
+
+```rust,ignore
+use only::tls::{ClientConfig, Crls, RevocationPolicy};
+
+let mut crls = Crls::new();
+crls.add_pem(&std::fs::read("ca.crl.pem")?)?; // 由你下载并刷新
+let cfg = ClientConfig::builder()
+    .roots(roots)
+    .ocsp_policy(RevocationPolicy::HardFail) // 要求有效的 "good" 装订响应
+    .crls(crls, RevocationPolicy::SoftFail)  // 只有列出吊销时才失败
+    .build()?;
+```
+
+- **装订的 OCSP**（`.ocsp_policy`，不为 `Off` 时自动请求装订）：响应必须由叶证书的签发者或其委托的响应者
+  （id-kp-OCSPSigning）签名、指向该叶证书且当前有效（thisUpdate / nextUpdate 在 5 分钟时钟偏差内）。`SoftFail`
+  只拒绝有效的“revoked”（告警 `certificate_revoked`）；`HardFail` 还拒绝缺失、无效、过期或“unknown”的响应
+  （`bad_certificate_status_response`）。只覆盖叶证书；恢复的会话不再检查。
+- **CRL**（客户端用 `.crls`，服务端检查客户端证书用 `.client_crls`）：根以下的每张证书都用其签发者当前的 CRL
+  检查（完整与 delta、issuingDistributionPoint 范围，签名只验证一次）。被列出的证书以 `certificate_revoked`
+  失败；`HardFail` 下没有当前 CRL 的证书以 `certificate_unknown` 失败。刷新时构建新的配置。
+
+去哪里获取，以及自己查询响应者：内部 crate `only-x509`（无 semver 承诺）提供
+`Certificate::crl_distribution_points()` 与 `ocsp_urls()`、`OcspRequest` 与 `OcspResponse::verify`（ADR-036）。
 
 ## 内核 TLS
 
@@ -212,7 +241,8 @@ let cfg = ServerConfig::builder(chain, key).ocsp_response(ocsp).build()?;
 
 ## 尚未完成
 
-OCSP 响应验证、brotli/zstd 证书压缩、`status_request_v2`；RSA-PSS 密钥（`rsa_pss_pss_*`）；P-521；
+获取 OCSP 响应或 CRL、中间证书的 OCSP（`status_request_v2`）、间接 CRL、brotli/zstd 证书压缩；RSA-PSS 密钥
+（`rsa_pss_pss_*`）；P-521；
 Windows 证书库与 macOS 信任设置。
 
 ## 编写自己的 transport

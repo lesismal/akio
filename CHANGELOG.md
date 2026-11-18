@@ -10,6 +10,27 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added: certificate revocation: CRLs, OCSP, stapled-response validation (only-x509, only-tls)
+
+ADR-036 (docs/adr/036-x509-revocation.md), additive. No network access in the library: the
+application fetches CRLs and OCSP responses.
+
+- **only-tls**: `RevocationPolicy::{Off, SoftFail, HardFail}` (default off, no cost when off);
+  `ClientConfigBuilder::ocsp_policy` validates the OCSP response stapled for the server's leaf
+  in TLS 1.3 and 1.2 (signed by the issuer or a delegated id-kp-OCSPSigning responder, about the
+  leaf, current within 5 minutes of skew) and asks for stapling: soft fail rejects only a valid
+  "revoked" (`certificate_revoked`), hard fail requires a valid "good"
+  (`bad_certificate_status_response` otherwise). `Crls` with `ClientConfigBuilder::crls` and
+  `ServerConfigBuilder::client_crls` check every certificate of the peer chain below the root.
+- **only-x509** (internal crate): `Crl`, `CrlSet` (complete and delta CRLs, reason codes,
+  issuingDistributionPoint scopes, removeFromCRL), `Verifier::{crls, revocation_mode,
+  clock_skew}`, `RevocationMode`, `OcspResponse` / `OcspValidation` / `OcspRequest` (RFC 6960,
+  nonce, CertID SHA-1/256/384/512), `Certificate::{crl_distribution_points, ocsp_urls,
+  ca_issuer_urls}`, builders `CrlParams` and `OcspResponseParams`, new `Error` variants.
+- Tests with OpenSSL-made CRLs and OCSP responses (`tests/data/revocation/gen.sh`), in-memory TLS
+  for every policy, interop against `openssl s_server -status_file` and OpenSSL CRLs; new fuzz
+  targets `x509_crl` and `x509_ocsp`.
+
 ### Added: protobuf text format (only-protobuf)
 
 ADR-030 (docs/adr/030-protobuf-text-format.md), additive: `only_protobuf::text` parses and prints

@@ -35,6 +35,32 @@ pub mod ext {
     pub const SERVER_AUTH: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
     /// id-kp-clientAuth, 1.3.6.1.5.5.7.3.2.
     pub const CLIENT_AUTH: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02];
+    /// id-kp-OCSPSigning, 1.3.6.1.5.5.7.3.9: a delegated OCSP responder (RFC 6960 §4.2.2.2).
+    pub const OCSP_SIGNING: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x09];
+    /// authorityInfoAccess, 1.3.6.1.5.5.7.1.1.
+    pub const AUTHORITY_INFO_ACCESS: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x01, 0x01];
+    /// id-ad-ocsp, 1.3.6.1.5.5.7.48.1 (an access method of authorityInfoAccess).
+    pub const AD_OCSP: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01];
+    /// id-ad-caIssuers, 1.3.6.1.5.5.7.48.2.
+    pub const AD_CA_ISSUERS: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x02];
+    /// id-pkix-ocsp-nocheck, 1.3.6.1.5.5.7.48.1.5 (RFC 6960 §4.2.2.2.1).
+    pub const OCSP_NO_CHECK: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x30, 0x01, 0x05];
+    /// cRLNumber, 2.5.29.20 (a CRL extension).
+    pub const CRL_NUMBER: &[u8] = &[0x55, 0x1d, 0x14];
+    /// reasonCode, 2.5.29.21 (a CRL entry extension).
+    pub const REASON_CODE: &[u8] = &[0x55, 0x1d, 0x15];
+    /// holdInstructionCode, 2.5.29.23 (a CRL entry extension).
+    pub const HOLD_INSTRUCTION_CODE: &[u8] = &[0x55, 0x1d, 0x17];
+    /// invalidityDate, 2.5.29.24 (a CRL entry extension).
+    pub const INVALIDITY_DATE: &[u8] = &[0x55, 0x1d, 0x18];
+    /// deltaCRLIndicator, 2.5.29.27 (a CRL extension).
+    pub const DELTA_CRL_INDICATOR: &[u8] = &[0x55, 0x1d, 0x1b];
+    /// issuingDistributionPoint, 2.5.29.28 (a CRL extension).
+    pub const ISSUING_DISTRIBUTION_POINT: &[u8] = &[0x55, 0x1d, 0x1c];
+    /// certificateIssuer, 2.5.29.29 (a CRL entry extension of indirect CRLs).
+    pub const CERTIFICATE_ISSUER: &[u8] = &[0x55, 0x1d, 0x1d];
+    /// freshestCRL, 2.5.29.46.
+    pub const FRESHEST_CRL: &[u8] = &[0x55, 0x1d, 0x2e];
 }
 
 /// The keyUsage bits (RFC 5280 §4.2.1.3), bit `i` for named bit `i`.
@@ -93,6 +119,18 @@ pub struct NameConstraints {
     pub excluded: Vec<GeneralSubtree>,
 }
 
+/// One cRLDistributionPoints entry (RFC 5280 §4.2.1.13): where to fetch a CRL. Only the
+/// `fullName` form of the name is kept (`nameRelativeToCRLIssuer` leaves it empty).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DistributionPoint {
+    /// `distributionPoint` as `fullName` (usually one URI).
+    pub full_name: Vec<GeneralName>,
+    /// `reasons`, if the point only serves some revocation reasons.
+    pub reasons: Option<crate::ReasonFlags>,
+    /// `cRLIssuer`, if the CRL is signed by someone other than the certificate's issuer.
+    pub crl_issuer: Vec<GeneralName>,
+}
+
 /// A raw extension.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extension {
@@ -127,6 +165,9 @@ pub struct Certificate {
     name_constraints: Option<NameConstraints>,
     subject_key_id: Option<Vec<u8>>,
     authority_key_id: Option<Vec<u8>>,
+    crl_distribution_points: Vec<DistributionPoint>,
+    ocsp_urls: Vec<String>,
+    ca_issuer_urls: Vec<String>,
     unsupported_critical: Option<Vec<u8>>,
     signature: Vec<u8>,
 }
@@ -169,6 +210,9 @@ impl Certificate {
             name_constraints: p.nc,
             subject_key_id: p.ski,
             authority_key_id: p.aki,
+            crl_distribution_points: p.cdp,
+            ocsp_urls: p.ocsp,
+            ca_issuer_urls: p.ca_issuers,
             unsupported_critical: p.unsupported_critical,
             signature: p.signature.to_vec(),
             der,
@@ -313,6 +357,28 @@ impl Certificate {
         self.authority_key_id.as_deref()
     }
 
+    /// cRLDistributionPoints: where the issuer publishes CRLs (fetching them is up to the
+    /// application). Empty when absent or unparsable (a malformed entry here does not make
+    /// the certificate unparsable).
+    #[must_use]
+    pub fn crl_distribution_points(&self) -> &[DistributionPoint] {
+        &self.crl_distribution_points
+    }
+
+    /// The OCSP responder URIs of authorityInfoAccess (id-ad-ocsp); empty when absent or
+    /// unparsable.
+    #[must_use]
+    pub fn ocsp_urls(&self) -> &[String] {
+        &self.ocsp_urls
+    }
+
+    /// The caIssuers URIs of authorityInfoAccess (where the issuer's certificate can be
+    /// fetched); empty when absent or unparsable.
+    #[must_use]
+    pub fn ca_issuer_urls(&self) -> &[String] {
+        &self.ca_issuer_urls
+    }
+
     /// The OID of the first critical extension this crate does not process, if any (such a
     /// certificate fails verification, RFC 5280 §4.2).
     #[must_use]
@@ -352,6 +418,9 @@ struct Parsed<'a> {
     nc: Option<NameConstraints>,
     ski: Option<Vec<u8>>,
     aki: Option<Vec<u8>>,
+    cdp: Vec<DistributionPoint>,
+    ocsp: Vec<String>,
+    ca_issuers: Vec<String>,
     unsupported_critical: Option<Vec<u8>>,
 }
 
@@ -418,38 +487,16 @@ impl<'a> Parsed<'a> {
             nc: None,
             ski: None,
             aki: None,
+            cdp: Vec::new(),
+            ocsp: Vec::new(),
+            ca_issuers: Vec::new(),
             unsupported_critical: None,
         };
         if version == 3 {
             if let Some(exts) = t.read_optional(tag::explicit(3))? {
-                let mut er = Reader::new(exts);
-                let mut seq = er.sequence()?;
-                er.finish()?;
-                if seq.is_empty() {
-                    return Err(Error::Encoding);
-                }
-                while !seq.is_empty() {
-                    let mut e = seq.sequence()?;
-                    let oid = e.read_oid()?;
-                    let critical = if e.peek_tag() == Some(tag::BOOLEAN) {
-                        if !e.read_bool()? {
-                            return Err(Error::Encoding); // DEFAULT FALSE must be omitted
-                        }
-                        true
-                    } else {
-                        false
-                    };
-                    let value = e.read_octet_string()?;
-                    e.finish()?;
-                    if p.extensions.iter().any(|x| x.oid == oid) {
-                        return Err(Error::DuplicateExtension);
-                    }
-                    p.extension(oid, critical, value)?;
-                    p.extensions.push(Extension {
-                        oid: oid.to_vec(),
-                        critical,
-                        value: value.to_vec(),
-                    });
+                for e in read_extensions(exts)? {
+                    p.extension(&e.oid, e.critical, &e.value)?;
+                    p.extensions.push(e);
                 }
             }
         }
@@ -551,8 +598,21 @@ impl<'a> Parsed<'a> {
                 // authorityCertIssuer [1], authorityCertSerialNumber [2]: ignored.
                 return Ok(());
             }
-            // Understood and deliberately not acted on (no policy processing, no CRLs).
-            ext::CERTIFICATE_POLICIES | ext::CRL_DISTRIBUTION_POINTS | ext::ISSUER_ALT_NAME => {
+            // Kept for applications that fetch CRLs or OCSP responses; lenient (a malformed
+            // pointer only loses the pointer). Non-critical in practice; a critical one is
+            // processed as far as this crate goes, like certificatePolicies.
+            ext::CRL_DISTRIBUTION_POINTS => {
+                self.cdp = read_distribution_points(v).unwrap_or_default();
+                return Ok(());
+            }
+            ext::AUTHORITY_INFO_ACCESS => {
+                if let Ok((ocsp, ca)) = read_aia(v) {
+                    (self.ocsp, self.ca_issuers) = (ocsp, ca);
+                }
+                return Ok(());
+            }
+            // Understood and deliberately not acted on (no policy processing).
+            ext::CERTIFICATE_POLICIES | ext::ISSUER_ALT_NAME => {
                 return Ok(());
             }
             _ => {
@@ -565,4 +625,115 @@ impl<'a> Parsed<'a> {
         r.finish()?;
         Ok(())
     }
+}
+
+/// Reads the contents of an `[n] EXPLICIT Extensions` wrapper: a non-empty SEQUENCE of
+/// extensions, no duplicates, `critical` DEFAULT FALSE omitted (RFC 5280 §4.1).
+pub(crate) fn read_extensions(wrapper: &[u8]) -> Result<Vec<Extension>, Error> {
+    let mut er = Reader::new(wrapper);
+    let mut seq = er.sequence()?;
+    er.finish()?;
+    read_extension_list(&mut seq)
+}
+
+/// Reads the extensions of a SEQUENCE OF Extension (already entered).
+pub(crate) fn read_extension_list(seq: &mut Reader<'_>) -> Result<Vec<Extension>, Error> {
+    if seq.is_empty() {
+        return Err(Error::Encoding);
+    }
+    let mut out: Vec<Extension> = Vec::new();
+    while !seq.is_empty() {
+        let mut e = seq.sequence()?;
+        let oid = e.read_oid()?;
+        let critical = if e.peek_tag() == Some(tag::BOOLEAN) {
+            if !e.read_bool()? {
+                return Err(Error::Encoding); // DEFAULT FALSE must be omitted
+            }
+            true
+        } else {
+            false
+        };
+        let value = e.read_octet_string()?;
+        e.finish()?;
+        if out.iter().any(|x| x.oid == oid) {
+            return Err(Error::DuplicateExtension);
+        }
+        out.push(Extension {
+            oid: oid.to_vec(),
+            critical,
+            value: value.to_vec(),
+        });
+    }
+    Ok(out)
+}
+
+/// Reads `GeneralNames` (a non-empty sequence) from `r` until it is empty.
+pub(crate) fn read_general_names(mut r: Reader<'_>) -> Result<Vec<GeneralName>, Error> {
+    if r.is_empty() {
+        return Err(Error::Encoding);
+    }
+    let mut v = Vec::new();
+    while !r.is_empty() {
+        v.push(GeneralName::read(&mut r)?);
+    }
+    Ok(v)
+}
+
+/// A `DistributionPointName` inside its `[0]` wrapper: the fullName, or an empty list for
+/// nameRelativeToCRLIssuer.
+pub(crate) fn read_dp_name(c: &[u8]) -> Result<Vec<GeneralName>, Error> {
+    let mut r = Reader::new(c);
+    let (t, inner, _) = r.read_tlv()?;
+    r.finish()?;
+    match t {
+        0xa0 => read_general_names(Reader::new(inner)),
+        0xa1 => Ok(Vec::new()),
+        _ => Err(Error::Encoding),
+    }
+}
+
+/// cRLDistributionPoints (RFC 5280 §4.2.1.13).
+fn read_distribution_points(v: &[u8]) -> Result<Vec<DistributionPoint>, Error> {
+    let mut r = Reader::new(v);
+    let mut s = r.sequence()?;
+    r.finish()?;
+    let mut out = Vec::new();
+    while !s.is_empty() {
+        let mut d = s.sequence()?;
+        let mut dp = DistributionPoint::default();
+        if let Some(c) = d.read_optional(tag::explicit(0))? {
+            dp.full_name = read_dp_name(c)?;
+        }
+        if let Some(b) = d.read_optional(tag::implicit(1))? {
+            dp.reasons = Some(crate::ReasonFlags::from_bit_string(b)?);
+        }
+        if let Some(c) = d.read_optional(tag::explicit(2))? {
+            dp.crl_issuer = read_general_names(Reader::new(c))?;
+        }
+        d.finish()?;
+        out.push(dp);
+    }
+    Ok(out)
+}
+
+/// authorityInfoAccess (RFC 5280 §4.2.2.1): the OCSP and caIssuers URIs.
+fn read_aia(v: &[u8]) -> Result<(Vec<String>, Vec<String>), Error> {
+    let mut r = Reader::new(v);
+    let mut s = r.sequence()?;
+    r.finish()?;
+    let (mut ocsp, mut ca) = (Vec::new(), Vec::new());
+    while !s.is_empty() {
+        let mut a = s.sequence()?;
+        let method = a.read_oid()?;
+        let loc = GeneralName::read(&mut a)?;
+        a.finish()?;
+        if let GeneralName::Uri(u) = loc {
+            match method {
+                ext::AD_OCSP => ocsp.push(u),
+                ext::AD_CA_ISSUERS => ca.push(u),
+                _ => {}
+            }
+        }
+    }
+    Ok((ocsp, ca))
 }

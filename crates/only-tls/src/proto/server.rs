@@ -740,7 +740,8 @@ impl Server {
             .as_ref()
             .map(|c| c.0.clone())
             .ok_or_else(|| Fatal::new(Alert::InternalError, "no client roots"))?;
-        self.peer_key = Some(verify_chain(&roots, &chain, None)?);
+        self.peer_key =
+            Some(verify_chain(&roots, &chain, None, self.cfg.client_crls.as_ref())?.key);
         self.peer_chain = chain;
         Ok(())
     }

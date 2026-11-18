@@ -273,6 +273,8 @@ pub(crate) struct ServerSettings {
     pub(crate) sni: HashMap<String, Arc<CertKey>>,
     pub(crate) alpn: Vec<Vec<u8>>,
     pub(crate) client_auth: Option<(Arc<RootStore>, bool)>,
+    /// CRLs for client chains (None: no check).
+    pub(crate) client_crls: Option<CrlCheck>,
     pub(crate) cache: Option<SessionCache>,
     pub(crate) ticketer: Option<Ticketer>,
     pub(crate) tls12: bool,
@@ -325,6 +327,20 @@ pub(crate) struct ClientSettings {
     pub(crate) cert_compression: bool,
     /// Ask for a stapled OCSP response (status_request, RFC 6066 / RFC 8446 section 4.4.2.1).
     pub(crate) ocsp: bool,
+    /// Validate the stapled OCSP response.
+    pub(crate) ocsp_policy: crate::RevocationPolicy,
+    /// CRLs for the server's chain (None: no check).
+    pub(crate) crls: Option<CrlCheck>,
+}
+
+/// CRLs and what to do when none covers a certificate.
+pub(crate) type CrlCheck = (Arc<only_x509::CrlSet>, only_x509::RevocationMode);
+
+/// A verified peer chain: the leaf's key, and the leaf and its issuer (for OCSP).
+pub(crate) struct Verified {
+    pub(crate) key: only_crypto::pkey::PublicKey,
+    pub(crate) leaf: only_x509::Certificate,
+    pub(crate) issuer: only_x509::Certificate,
 }
 
 /// Unix time in seconds.
@@ -349,12 +365,14 @@ pub(crate) fn random<const N: usize>() -> Result<[u8; N], Fatal> {
     Ok(b)
 }
 
-/// Verifies a peer chain with `only-x509`: the server's for `server_name`, or a client's.
+/// Verifies a peer chain with `only-x509`: the server's for `server_name`, or a client's;
+/// against `crls` when given.
 pub(crate) fn verify_chain(
     roots: &RootStore,
     chain: &[Vec<u8>],
     server_name: Option<&str>,
-) -> Result<only_crypto::pkey::PublicKey, Fatal> {
+    crls: Option<&CrlCheck>,
+) -> Result<Verified, Fatal> {
     let leaf_der = chain
         .first()
         .ok_or_else(|| Fatal::new(Alert::DecodeError, "empty certificate chain"))?;
@@ -367,28 +385,82 @@ pub(crate) fn verify_chain(
                 .map_err(|_| Fatal::new(Alert::BadCertificate, "unparsable certificate"))?,
         );
     }
-    let v = only_x509::Verifier::new(roots);
+    let mut v = only_x509::Verifier::new(roots);
+    if let Some((set, mode)) = crls {
+        v = v.crls(set).revocation_mode(*mode);
+    }
     let r = match server_name {
         Some(n) => v.verify_server(&leaf, &inter, n),
         None => v.verify_client(&leaf, &inter),
     };
-    if let Err(e) = r {
-        use only_x509::Error as E;
-        let alert = match e {
-            E::Expired | E::NotYetValid => Alert::CertificateExpired,
-            E::UnknownIssuer => Alert::UnknownCa,
-            E::NameMismatch | E::ExtendedKeyUsage | E::KeyUsage | E::CaUsedAsEndEntity => {
-                Alert::BadCertificate
-            }
-            _ => Alert::BadCertificate,
-        };
-        return Err(Fatal::new(
-            alert,
-            format!("certificate verification failed: {e}"),
-        ));
+    let path = match r {
+        Ok(p) => p,
+        Err(e) => {
+            use only_x509::Error as E;
+            let alert = match e {
+                E::Expired | E::NotYetValid => Alert::CertificateExpired,
+                E::UnknownIssuer => Alert::UnknownCa,
+                E::Revoked(_) => Alert::CertificateRevoked,
+                E::RevocationUnknown => Alert::CertificateUnknown,
+                _ => Alert::BadCertificate,
+            };
+            return Err(Fatal::new(
+                alert,
+                format!("certificate verification failed: {e}"),
+            ));
+        }
+    };
+    let key = leaf
+        .public_key()
+        .map_err(|_| Fatal::new(Alert::UnsupportedCertificate, "unsupported public key"))?;
+    let issuer = path
+        .into_iter()
+        .nth(1)
+        .ok_or_else(|| Fatal::new(Alert::InternalError, "path without an issuer"))?;
+    Ok(Verified { key, leaf, issuer })
+}
+
+/// Checks the OCSP response stapled for `leaf` (issued by `issuer`) under `policy`.
+pub(crate) fn check_stapled_ocsp(
+    policy: crate::RevocationPolicy,
+    response: Option<&[u8]>,
+    leaf: &only_x509::Certificate,
+    issuer: &only_x509::Certificate,
+) -> Result<(), Fatal> {
+    use crate::RevocationPolicy as P;
+    use only_x509::RevocationStatus as S;
+    if policy == P::Off {
+        return Ok(());
     }
-    leaf.public_key()
-        .map_err(|_| Fatal::new(Alert::UnsupportedCertificate, "unsupported public key"))
+    let r = match response {
+        None => Err(None),
+        Some(der) => only_x509::OcspResponse::from_der(der)
+            .and_then(|r| r.verify(leaf, issuer, &only_x509::OcspValidation::new()))
+            .map_err(Some),
+    };
+    match r {
+        Ok(S::Revoked { reason, .. }) => Err(Fatal::new(
+            Alert::CertificateRevoked,
+            match reason {
+                Some(r) => format!("server certificate revoked (stapled OCSP: {r})"),
+                None => "server certificate revoked (stapled OCSP)".to_string(),
+            },
+        )),
+        Ok(S::Good) => Ok(()),
+        _ if policy == P::SoftFail => Ok(()),
+        Ok(_) => Err(Fatal::new(
+            Alert::BadCertificateStatusResponse,
+            "stapled OCSP response: status unknown",
+        )),
+        Err(None) => Err(Fatal::new(
+            Alert::BadCertificateStatusResponse,
+            "no stapled OCSP response",
+        )),
+        Err(Some(e)) => Err(Fatal::new(
+            Alert::BadCertificateStatusResponse,
+            format!("invalid stapled OCSP response: {e}"),
+        )),
+    }
 }
 
 /// The leaf's public key without verifying anything (insecure mode).

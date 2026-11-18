@@ -25,10 +25,21 @@ crate (docs/api-stability.md): its API follows those stacks and may change in an
   signed with ECDSA P-256 (default for generated keys) or P-384, Ed25519 or RSA keys; SANs,
   validity, serial, CA/pathLen, key usage, EKU, name constraints, custom extensions, key
   identifiers.
+- Revocation (ADR-036), without network access (the application fetches;
+  `Certificate::crl_distribution_points`, `ocsp_urls` and `ca_issuer_urls` say where):
+  `Crl` (RFC 5280 section 5: strict DER/PEM, cRLNumber, delta CRLs, reason codes,
+  invalidityDate, issuingDistributionPoint scopes; signature checked against the issuer once and
+  remembered) and `CrlSet::status` (good / revoked / unknown with clock skew, deltas and
+  removeFromCRL, reason coverage), applied to whole paths by `Verifier::crls` with
+  `RevocationMode::{SoftFail, HardFail}`; `OcspResponse::verify` (RFC 6960: the issuer or a
+  delegated responder with id-kp-OCSPSigning, CertID with SHA-1/256/384/512, nonce compared in
+  constant time, thisUpdate / nextUpdate with clock skew) and `OcspRequest`; `CrlParams` and
+  `OcspResponseParams` build signed CRLs and responses for tests and development CAs.
 
 Supported signature algorithms: ECDSA with SHA-256/384/512 (P-256, P-384 keys), Ed25519, RSA
 PKCS#1 v1.5 with SHA-256/384/512 (SHA-1 for verifying legacy certificates) and RSA-PSS with
-SHA-256/384/512. Not implemented: revocation (CRL, OCSP), certificate policies, Ed448, DSA.
+SHA-256/384/512. Not implemented: indirect CRLs (and CRLs signed by another key of the CA),
+signed OCSP requests, fetching anything over the network, certificate policies, Ed448, DSA.
 
 ```rust
 use only_crypto::pkey::PrivateKey;
@@ -66,5 +77,13 @@ Verifier::new(&roots).verify_server(&cert, &[], "localhost").unwrap();
   intermediate, unknown critical extension, wrong signing key, name-constraint violations
   (DNS, excluded subtrees, IP ranges, look-alike suffixes), wildcard edge cases, every
   truncation and many corruptions of a certificate.
-- Fuzzing: target `x509_parse` (certificate/PEM/SPKI/PKCS#8 parsing, round trips,
-  self-verification) in `fuzz/`; `fuzzing::tests` replays `fuzz/corpus/x509_parse` on stable.
+- Revocation (`tests/revocation.rs`): OpenSSL-made CRLs (complete, delta, IDP, root) and OCSP
+  responses (`tests/data/revocation/gen.sh`: delegated, by the CA, byKey, SHA-256, no
+  nextUpdate, nonce, revoked, hold, unknown, multiple; negatives: no OCSPSigning EKU, a responder
+  of another CA, signer not included, wrong certificate, expired and not yet valid around the
+  skew, corrupted signatures, every truncation); requests byte-identical to `openssl ocsp`'s;
+  generated CRLs and responses for deltas lifting holds, scopes, partial reasons, revoked
+  intermediates and expired responders.
+- Fuzzing: targets `x509_parse` (certificate/PEM/SPKI/PKCS#8 parsing, round trips,
+  self-verification), `x509_crl` and `x509_ocsp` (parsing, round trips, status lookups and
+  validation) in `fuzz/`; `fuzzing::tests` replays their corpora on stable.

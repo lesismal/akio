@@ -532,6 +532,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "x509_crl"
+path = "fuzz_targets/x509_crl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "x509_ocsp"
+path = "fuzz_targets/x509_ocsp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "crypto_sig_verify"
 path = "fuzz_targets/crypto_sig_verify.rs"
 test = false

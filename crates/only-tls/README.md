@@ -13,8 +13,8 @@ plaintext; the handshake runs on the connection's I/O thread and never blocks. C
 `ServerConfig::builder(chain, key)` (SNI certificates, ALPN, client authentication, session cache
 and tickets, `tls13_only`, record size limit, certificate compression, stapled OCSP responses)
 and `ClientConfig::builder()` (roots, ALPN, client certificate, SNI, resumption, record size
-limit, certificate compression, OCSP stapling, `insecure_skip_verify` for tests); `tls_info`
-reads what was negotiated.
+limit, certificate compression, OCSP stapling and its validation, CRLs, `insecure_skip_verify`
+for tests); `tls_info` reads what was negotiated.
 
 ```rust,no_run
 use only_tls::{Certificate, PrivateKey, ServerConfig, Tls};
@@ -77,9 +77,18 @@ Decided in [ADR-008](../../docs/adr/008-tls-extensions.md).
   CertificateEntry; TLS 1.2: `status_request` in the ServerHello plus a CertificateStatus
   message; not on resumption). The response is only checked to look like a successful
   `OCSPResponse`; refreshing it is the caller's job. `ClientConfigBuilder::ocsp_stapling(true)`
-  asks for one and `TlsInfo::ocsp_response` holds what came. **The client does not validate it**:
-  `only-x509` has no OCSP support yet (responder signature, validity, certificate ID), so
-  checking revocation with it is up to the application.
+  asks for one and `TlsInfo::ocsp_response` holds what came.
+- **Revocation** (ADR-036; no network access: the application fetches responses and CRLs):
+  `ClientConfigBuilder::ocsp_policy(RevocationPolicy::{Off, SoftFail, HardFail})` validates the
+  stapled response for the leaf (RFC 6960 via `only-x509`: signed by the issuer or a delegated
+  responder with id-kp-OCSPSigning, about this certificate, thisUpdate / nextUpdate current
+  within 5 minutes; TLS 1.3 and 1.2) and asks for stapling when not off. Soft fail rejects only
+  a valid "revoked" (`certificate_revoked`); hard fail requires a valid "good" and otherwise
+  fails with `bad_certificate_status_response`. `ClientConfigBuilder::crls(Crls, policy)` and
+  `ServerConfigBuilder::client_crls(Crls, policy)` check every certificate of the peer's chain
+  below the root against CRLs (complete and delta, RFC 5280); under hard fail a certificate no
+  current CRL covers fails (`certificate_unknown`). Resumed sessions are not re-checked;
+  refreshing CRLs means building a new configuration. All off by default, at no cost.
 
 ### Early data (0-RTT)
 
@@ -114,8 +123,9 @@ same request in a new ClientHello by an attacker who can make the client retry. 
 for requests that are safe to repeat (idempotent reads), check `TlsInfo::early_data` /
 `Early-Data: 1` before acting on anything else, and answer `425 Too Early` to the rest.
 
-Not implemented: OCSP response validation, brotli/zstd certificate compression, a client's OCSP
-response in TLS 1.3 client authentication, `status_request_v2`, RSA-PSS keys, P-521. Kernel TLS offload was evaluated and
+Not implemented: brotli/zstd certificate compression, a client's OCSP response in TLS 1.3
+client authentication, `status_request_v2` (OCSP for intermediates), fetching OCSP responses or
+CRLs (the application does; `only-x509` gives the URLs), RSA-PSS keys, P-521. Kernel TLS offload was evaluated and
 is not used: it was slower than this crate's record layer in every case measured, `sendfile`
 included (docs/BENCHMARKS.md, "Kernel TLS (kTLS) evaluation"); the code stays behind the
 experimental `experimental-ktls` feature (test stream and benchmark only, outside the semver
@@ -145,11 +155,15 @@ promise).
   downgrade detection, tampering, unexpected and garbage records; record_size_limit (both
   versions, limits from 64 bytes both ways, records over the limit, early data under the
   ticket's limit), certificate compression (server and client certificates, either side off,
-  malformed messages) and OCSP stapling (both versions, SNI, resumption), alone and together.
+  malformed messages) and OCSP stapling (both versions, SNI, resumption), alone and together;
+  revocation: every policy against good, delegated, revoked, unknown, expired, forged, foreign,
+  opaque and missing staples in both versions, CRLs for server and client chains.
 - Interop (`tools/interop/tls/run.sh`): OpenSSL `s_server` / `s_client` and Go `crypto/tls` in
   both directions over every suite, group, key type, client authentication, resumption, HRR,
   ALPN, KeyUpdate, early data and OCSP stapling (verified by `s_client`), zlib certificate
-  compression with OpenSSL 3.2+ built with zlib (Debian's), record_size_limit and OCSP with
+  compression with OpenSSL 3.2+ built with zlib (Debian's), only's client validating
+  `s_server -status_file` staples (good, revoked, missing; soft and hard fail) and checking
+  OpenSSL-made CRLs, record_size_limit and OCSP with
   GnuTLS when installed, plus curl against only-http (HTTP/1.1 and HTTP/2); needs
   OpenSSL 3.0 or later (the early-data cases run `s_server` without `-www`, which 3.0 refuses
   with `-early_data`; the client sends, closes and checks `s_server`'s log); gRPC over TLS with

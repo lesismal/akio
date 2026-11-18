@@ -12,13 +12,16 @@
 //!                           [--count N] [--expect-resume] [--key-update] [--bytes N] [--http]
 //!                           [--early-data] [--expect-early accepted|rejected] [--no-reply]
 //!                           [--record-limit N] [--expect-record-limit N] [--no-cert-comp]
-//!                           [--ocsp] [--expect-ocsp resp.der]
+//!                           [--ocsp] [--expect-ocsp resp.der] [--ocsp-policy soft|hard]
+//!                           [--crl file.pem [--crl-policy soft|hard]]
 //! ```
 //!
 //! `--record-limit` sets the record_size_limit sent (RFC 8449), `--expect-record-limit` checks
 //! the peer's (0: none negotiated); `--no-cert-comp` turns certificate compression (RFC 8879)
 //! off; `--ocsp-file` staples a DER OCSP response, `--ocsp` asks for one and
-//! `--expect-ocsp` checks it is exactly that file.
+//! `--expect-ocsp` checks it is exactly that file; `--ocsp-policy` validates the stapled
+//! response (soft or hard fail) and `--crl` checks the server's chain against a CRL file
+//! (PEM or DER).
 //!
 //! The server echoes what it reads (`--count` connections, then exits); the client sends a line,
 //! checks the echo and prints what was negotiated, one line per connection. With
@@ -39,7 +42,9 @@ use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
 use only_tls::stream::Stream;
-use only_tls::{Certificate, ClientConfig, PrivateKey, RootCerts, ServerConfig};
+use only_tls::{
+    Certificate, ClientConfig, Crls, PrivateKey, RevocationPolicy, RootCerts, ServerConfig,
+};
 
 struct Opts {
     pos: Vec<String>,
@@ -73,6 +78,18 @@ struct Opts {
     ocsp_file: Option<String>,
     ocsp: bool,
     expect_ocsp: Option<String>,
+    ocsp_policy: RevocationPolicy,
+    crl: Option<String>,
+    crl_policy: RevocationPolicy,
+}
+
+fn policy(s: &str) -> RevocationPolicy {
+    match s {
+        "off" => RevocationPolicy::Off,
+        "soft" => RevocationPolicy::SoftFail,
+        "hard" => RevocationPolicy::HardFail,
+        _ => panic!("policy: off, soft or hard"),
+    }
 }
 
 fn hex_list(s: &str) -> Vec<u16> {
@@ -114,6 +131,9 @@ fn parse() -> Opts {
         ocsp_file: None,
         ocsp: false,
         expect_ocsp: None,
+        ocsp_policy: RevocationPolicy::Off,
+        crl: None,
+        crl_policy: RevocationPolicy::SoftFail,
     };
     match std::env::var("ONLY_INTEROP_KTLS").as_deref() {
         Ok("1") => o.ktls = true,
@@ -157,6 +177,9 @@ fn parse() -> Opts {
             "--ocsp-file" => o.ocsp_file = Some(val()),
             "--ocsp" => o.ocsp = true,
             "--expect-ocsp" => (o.ocsp, o.expect_ocsp) = (true, Some(val())),
+            "--ocsp-policy" => o.ocsp_policy = policy(&val()),
+            "--crl" => o.crl = Some(val()),
+            "--crl-policy" => o.crl_policy = policy(&val()),
             _ => o.pos.push(x),
         }
     }
@@ -325,7 +348,16 @@ fn client(o: &Opts) {
         .__tls12_only(o.tls12)
         .early_data(o.early_data.is_some())
         .certificate_compression(!o.no_cert_comp)
-        .ocsp_stapling(o.ocsp);
+        .ocsp_stapling(o.ocsp)
+        .ocsp_policy(o.ocsp_policy);
+    if let Some(f) = &o.crl {
+        let data = read(f);
+        let mut crls = Crls::new();
+        if crls.add_pem(&data).unwrap_or(0) == 0 {
+            crls.add_der(&data).expect("CRL");
+        }
+        b = b.crls(crls, o.crl_policy);
+    }
     if let Some(l) = o.record_limit {
         b = b.record_size_limit(l);
     }
