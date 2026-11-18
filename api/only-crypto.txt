@@ -5,8 +5,12 @@ impl only_crypto::aes::Aes
 pub fn only_crypto::aes::Aes::apply_ctr(&self, &[u8; 16], &mut [u8])
 pub fn only_crypto::aes::Aes::decrypt_block(&self, &mut [u8; 16])
 pub fn only_crypto::aes::Aes::decrypt_blocks(&self, &mut [[u8; 16]])
+pub fn only_crypto::aes::Aes::decrypt_cbc(&self, &mut [u8; 16], &mut [u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::aes::Aes::decrypt_cbc_padded(&self, &[u8; 16], &mut alloc::vec::Vec<u8>) -> core::result::Result<(), only_crypto::Error>
 pub fn only_crypto::aes::Aes::encrypt_block(&self, &mut [u8; 16])
 pub fn only_crypto::aes::Aes::encrypt_blocks(&self, &mut [[u8; 16]])
+pub fn only_crypto::aes::Aes::encrypt_cbc(&self, &mut [u8; 16], &mut [u8]) -> core::result::Result<(), only_crypto::Error>
+pub fn only_crypto::aes::Aes::encrypt_cbc_padded(&self, &[u8; 16], &[u8], &mut alloc::vec::Vec<u8>)
 pub fn only_crypto::aes::Aes::key_len(&self) -> usize
 pub fn only_crypto::aes::Aes::new(&[u8]) -> core::result::Result<only_crypto::aes::Aes, only_crypto::Error>
 pub fn only_crypto::aes::Aes::new128(&[u8; 16]) -> only_crypto::aes::Aes

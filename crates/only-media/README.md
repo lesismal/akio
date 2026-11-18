@@ -13,7 +13,8 @@ plays with every other.
 | `rtmp` | server and client (`rtmp::client::{push, pull}`): simple and Flash digest handshake, chunk stream, publish / play, Enhanced RTMP (H.265 `hvc1`, VP9 `vp09`, AV1 `av01`, VP8 `vp08`, Opus) |
 | `rtsp`, `rtp`, `sdp` | RTSP 1.0 server and client (`rtsp::client::{pull, push}`): ANNOUNCE/RECORD and DESCRIBE/SETUP/PLAY over TCP interleaved and UDP, Digest/Basic auth; RTP for H.264, H.265, VP8, VP9, AV1, AAC, Opus, G.711 |
 | `srt` | SRT live mode: HSv5 caller and listener, ARQ, TSBPD latency, AES-CTR with passphrase, stream ID access control; `push` / `pull` |
-| `httpflv`, `hls`, `http` | HTTP-FLV and WS-FLV; HLS with MPEG-TS or fMP4 (CMAF) segments, LL-HLS parts, preload hints and blocking reload, multivariant playlists over renditions published as separate streams; `MediaHttp` dispatching both |
+| `httpflv`, `hls`, `http` | HTTP-FLV and WS-FLV; HLS with MPEG-TS or fMP4 (CMAF) segments, LL-HLS parts, preload hints and blocking reload, multivariant playlists over renditions published as separate streams, AES-128 encryption with key rotation and a key provider hook; `MediaHttp` dispatching both |
+| `record` | recording hub streams to fMP4 or FLV files: cut by duration or size at keyframes, rotation, start / stop hooks, written by a thread of its own (never an I/O thread) behind a bounded queue |
 | `whip`, `webrtc` | WHIP / WHEP HTTP signalling with a `WebRtcEngine` trait; with the `webrtc` feature, `webrtc::RtcMedia` carries H.264 / H.265 / VP8 / VP9 / AV1 / Opus / G.711 through only-webrtc, viewer PLIs reaching the publisher |
 | `flv`, `mpegts`, `fmp4`, `amf`, `codec` | FLV mux/demux (legacy and Enhanced RTMP tags), MPEG-TS mux/demux, fragmented MP4 mux/demux, AMF0/AMF3, H.264 / H.265 / VP8 / VP9 / AV1 / AAC / Opus helpers |
 
@@ -45,7 +46,7 @@ Interoperability is tested with ffmpeg / ffprobe as publisher and player for eve
 [RTSP and WHIP/WHEP](https://lesismal.github.io/only/en/protocols/media-rtsp.html),
 [SRT](https://lesismal.github.io/only/en/protocols/media-srt.html).
 
-Not supported yet: HLS encryption, SRT rendezvous, VP8 / VP9 / AV1 in MPEG-TS, recording,
-transcoding.
+Not supported yet: HLS SAMPLE-AES / CBCS, SRT rendezvous, VP8 / VP9 / AV1 in MPEG-TS,
+recording to MPEG-TS, transcoding.
 
 License: MIT.

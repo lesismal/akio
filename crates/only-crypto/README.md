@@ -28,7 +28,7 @@ known-answer vector with and without it. Under Miri nothing is detected.
 | `mac` | HMAC over any `Hash` (constant-time `verify`) |
 | `kdf` | HKDF (RFC 5869), PBKDF2-HMAC (RFC 8018) |
 | `crc` | CRC-32 (IEEE, as `crc32fast`), CRC-32C (Castagnoli): CPU instructions, else slicing-by-8 |
-| `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR |
+| `aes` | AES-128/192/256: AES-NI / ARMv8 AES when the CPU has them (detected at run time), else constant-time fixsliced software (no secret-indexed tables); ECB blocks, CTR, CBC (with PKCS #7 padding, for HLS `AES-128`) |
 | `gcm` | AES-GCM: on VAES + VPCLMULQDQ + AVX-512 the whole message in one 512-bit call (16 blocks per iteration and reduction, the last partial group under byte masks), on VAES + VPCLMULQDQ + AVX2 whole 256-byte groups on 256-bit registers, else PCLMULQDQ / PMULL GHASH fused with the AES-NI / ARMv8 CTR pass, else constant-time GHASH (BearSSL `ctmul64`); `encrypt_append` / `decrypt_append` (hidden, for the TLS record layer) write straight into a vector's spare capacity, without zero-filling it first |
 | `chacha` | ChaCha20 (16 / 8 / 4 blocks with AVX-512, 8 with AVX2, else 4-block lanes), Poly1305 (IFMA eight blocks per step, AVX2 four, else radix 2⁶⁴), ChaCha20-Poly1305 (RFC 8439; out-of-place `*_detached_from` and `*_append` for the TLS record layer) |
 | `base64` | standard / URL-safe, padded / unpadded, strict decoding |

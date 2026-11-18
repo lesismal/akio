@@ -11,7 +11,9 @@
 //!   [`srt::SrtServer`] (and the [`srt`] caller), [`httpflv::HttpFlv`] (HTTP-FLV and WS-FLV),
 //!   [`hls::Hls`] (MPEG-TS or fMP4 segments, with LL-HLS), [`http::MediaHttp`] dispatching the
 //!   HTTP formats, [`whip::WhipServer`] (signalling), and with the `webrtc` cargo feature
-//!   `webrtc::RtcMedia` (WHIP/WHEP media over `only-webrtc`).
+//!   `webrtc::RtcMedia` (WHIP/WHEP media over `only-webrtc`). HLS segments can be encrypted
+//!   (AES-128, [`hls::KeyProvider`]).
+//! * [`record`]: hub streams recorded to fMP4 or FLV files, off the I/O threads.
 //! * Formats and codecs: [`flv`], [`mpegts`], [`fmp4`], [`rtp`], [`sdp`], [`amf`], [`codec`].
 //!
 //! Guide: [Streaming media](https://lesismal.github.io/only/en/protocols/media.html),
@@ -36,6 +38,7 @@ pub mod http;
 pub mod httpflv;
 pub mod hub;
 pub mod mpegts;
+pub mod record;
 pub mod rtmp;
 pub mod rtp;
 pub mod rtsp;

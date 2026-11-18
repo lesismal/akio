@@ -38,7 +38,19 @@
 //! [`HlsConfig::play_wait`] with the renditions that are ready; 503 with none). It works with
 //! both segment formats and with LL-HLS (the media playlists carry the parts).
 //!
-//! Not supported: encryption, delta updates (`_HLS_skip`), rendition reports, `I-FRAME`
+//! **Encryption**: with [`HlsConfig::encryption`] every segment and part is encrypted whole
+//! with AES-128 in CBC mode with PKCS #7 padding (`#EXT-X-KEY:METHOD=AES-128`), MPEG-TS and fMP4
+//! alike. The IV is the segment's media sequence number (no `IV` attribute: RFC 8216 5.2), and a
+//! part, which is a resource of its own, is encrypted separately with the IV of its segment.
+//! fMP4 init segments stay clear: an `EXT-X-MAP` that follows a key is preceded by
+//! `#EXT-X-KEY:METHOD=NONE`, and the key is named again before the next segment. A
+//! [`KeyProvider`] issues the keys (key `n` of a stream, a new one every
+//! [`HlsEncryption::rotate_every`] segments) and authorizes key requests, answered at
+//! `/<path>/key-<n>.key` unless the provider names another URI. Segments of a key are only
+//! served while the key is (they leave the window together).
+//!
+//! Not supported: `SAMPLE-AES` and CBCS (they need per-codec subsample layout, and for H.264 /
+//! H.265 slice header parsing), delta updates (`_HLS_skip`), rendition reports, `I-FRAME`
 //! playlists, subtitles and closed captions.
 
 use std::{
@@ -49,6 +61,8 @@ use std::{
 };
 
 use only_http::{Context, Detached, Response, Service};
+
+use only_crypto::aes::Aes;
 
 use crate::{
     av::{Packet, SECOND, Time, Tracks},
@@ -114,6 +128,8 @@ pub struct HlsConfig {
     pub cors_origin: Option<String>,
     /// The segment container: MPEG-TS (the default) or fragmented MP4.
     pub format: SegmentFormat,
+    /// When set, segments and parts are encrypted with AES-128 (`EXT-X-KEY`).
+    pub encryption: Option<HlsEncryption>,
 }
 
 impl Default for HlsConfig {
@@ -128,7 +144,215 @@ impl Default for HlsConfig {
             play_wait: None,
             cors_origin: Some("*".to_owned()),
             format: SegmentFormat::MpegTs,
+            encryption: None,
         }
+    }
+}
+
+/// An AES-128 key of a stream, as a [`KeyProvider`] issues it.
+#[derive(Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct HlsKey {
+    /// The key.
+    pub key: [u8; 16],
+    /// The key's URI in the playlist (`URI` of `EXT-X-KEY`); `None` names the key Hls serves
+    /// itself, `key-<n>.key` next to the media playlist.
+    pub uri: Option<String>,
+}
+
+impl HlsKey {
+    /// `key`, served by Hls.
+    pub fn new(key: [u8; 16]) -> HlsKey {
+        HlsKey { key, uri: None }
+    }
+
+    /// `key`, which players fetch from `uri` (absolute, or relative to the media playlist):
+    /// for a key server of the application's own.
+    pub fn with_uri(key: [u8; 16], uri: impl Into<String>) -> HlsKey {
+        HlsKey {
+            key,
+            uri: Some(uri.into()),
+        }
+    }
+}
+
+impl fmt::Debug for HlsKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HlsKey")
+            .field("uri", &self.uri)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Issues the keys of encrypted streams and authorizes requests for them.
+pub trait KeyProvider: Send + Sync + 'static {
+    /// Key number `n` (0, 1, ...) of stream `path`, for the segments from the next one on.
+    /// Called on the publisher's I/O thread with the stream's muxer locked: it must not block
+    /// (no key server round trip; fetch or derive keys ahead of time) nor call into [`Hls`].
+    /// A muxer that stops and starts again (idle, a republish after it ended) starts again at
+    /// 0, and so do its media sequence numbers, which are the IVs: return a fresh key for every
+    /// call, never one derived from `path` and `n` alone, or a restarted stream reuses key and
+    /// IV pairs.
+    fn key(&self, path: &str, n: u64) -> HlsKey;
+
+    /// Whether the request in `ctx` may have key `n` of `path` (`key-<n>.key`); refused
+    /// requests get 403. Runs on the requester's I/O thread: it must not block. Players send
+    /// the cookies and headers of the playlist's origin; a token in the playlist's query string
+    /// does not reach key URIs, so check cookies or headers, or name keys with
+    /// [`HlsKey::with_uri`] and authorize them elsewhere. Default: every request.
+    fn authorize(&self, path: &str, n: u64, ctx: &Context) -> bool {
+        let _ = (path, n, ctx);
+        true
+    }
+}
+
+/// A [`KeyProvider`] issuing random keys (from a ChaCha20 generator seeded by the operating
+/// system), served by Hls to every request.
+pub struct RandomKeys(Mutex<only_crypto::rand::ChaChaRng>);
+
+impl RandomKeys {
+    /// A provider seeded from the operating system's generator.
+    pub fn new() -> std::io::Result<RandomKeys> {
+        Ok(RandomKeys(Mutex::new(
+            only_crypto::rand::ChaChaRng::from_os()?,
+        )))
+    }
+}
+
+impl fmt::Debug for RandomKeys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RandomKeys")
+    }
+}
+
+impl KeyProvider for RandomKeys {
+    fn key(&self, _path: &str, _n: u64) -> HlsKey {
+        let mut key = [0u8; 16];
+        lock(&self.0).fill(&mut key);
+        HlsKey::new(key)
+    }
+}
+
+/// Configures encryption of [`Hls`] segments ([`HlsConfig::encryption`]).
+#[derive(Clone)]
+#[non_exhaustive]
+pub struct HlsEncryption {
+    /// Issues and authorizes the keys.
+    pub keys: Arc<dyn KeyProvider>,
+    /// A new key every this many segments; 0 (the default) keeps one key for as long as the
+    /// stream's muxer runs.
+    pub rotate_every: u32,
+}
+
+impl HlsEncryption {
+    /// Encryption with keys from `keys`, not rotated.
+    pub fn new(keys: impl KeyProvider) -> HlsEncryption {
+        HlsEncryption {
+            keys: Arc::new(keys),
+            rotate_every: 0,
+        }
+    }
+
+    /// Sets [`rotate_every`](Self::rotate_every).
+    #[must_use]
+    pub fn rotate_every(mut self, segments: u32) -> HlsEncryption {
+        self.rotate_every = segments;
+        self
+    }
+}
+
+// `HlsConfig` stays unwind safe with a provider in it: a provider that panics does so before
+// the muxer's state changes (the key is stored after `key` returns, and every lock ignores
+// poisoning), so nothing observes a half-made update.
+impl std::panic::UnwindSafe for HlsEncryption {}
+impl std::panic::RefUnwindSafe for HlsEncryption {}
+
+impl fmt::Debug for HlsEncryption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HlsEncryption")
+            .field("rotate_every", &self.rotate_every)
+            .finish_non_exhaustive()
+    }
+}
+
+/// A key in use: its number, schedule and URI.
+struct Key {
+    n: u64,
+    aes: Aes,
+    uri: Option<String>,
+    raw: [u8; 16],
+}
+
+/// The IV of segment `seq` (and its parts): its media sequence number, big-endian.
+fn iv_of(seq: u64) -> [u8; 16] {
+    u128::from(seq).to_be_bytes()
+}
+
+/// Bytes of a segment encrypted at a time while it is written (spreads the cost over the
+/// segment rather than paying it all at its end).
+const ENCRYPT_CHUNK: usize = 64 << 10;
+
+/// The ciphertext of the segment being written, encrypted as its bytes come.
+struct Encrypting {
+    key: Arc<Key>,
+    /// The CBC chaining value.
+    iv: [u8; 16],
+    /// Plaintext bytes encrypted so far (a whole number of blocks).
+    done: usize,
+    out: Vec<u8>,
+}
+
+impl fmt::Debug for Encrypting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Encrypting")
+            .field("key", &self.key.n)
+            .field("done", &self.done)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Encrypting {
+    /// Encrypts what was added to `data` once it is [`ENCRYPT_CHUNK`] or more (kept out of the
+    /// packet path of unencrypted streams).
+    #[inline(never)]
+    fn step(&mut self, data: &[u8]) {
+        if data.len() - self.done >= ENCRYPT_CHUNK {
+            self.more(data);
+        }
+    }
+
+    /// The ciphertext of a part of segment `seq`: a resource of its own, encrypted from the
+    /// segment's IV.
+    #[inline(never)]
+    fn part(&self, seq: u64, plain: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(plain.len() + 16);
+        self.key
+            .aes
+            .encrypt_cbc_padded(&iv_of(seq), plain, &mut out);
+        out
+    }
+
+    /// Encrypts the whole blocks of `data` not encrypted yet.
+    fn more(&mut self, data: &[u8]) {
+        let end = data.len() - (data.len() - self.done) % 16;
+        if end > self.done {
+            let at = self.out.len();
+            self.out.extend_from_slice(&data[self.done..end]);
+            let _ = self.key.aes.encrypt_cbc(&mut self.iv, &mut self.out[at..]);
+            self.done = end;
+        }
+    }
+
+    /// Encrypts the rest of `data` with its padding and returns the ciphertext.
+    fn finish(mut self, data: &[u8]) -> Vec<u8> {
+        self.more(data);
+        let rest = &data[self.done..];
+        let pad = 16 - rest.len();
+        let at = self.out.len();
+        self.out.extend_from_slice(rest);
+        self.out.resize(at + 16, pad as u8);
+        let _ = self.key.aes.encrypt_cbc(&mut self.iv, &mut self.out[at..]);
+        self.out
     }
 }
 
@@ -295,6 +519,8 @@ struct Segment {
     discontinuity: bool,
     /// The init segment it needs (fMP4).
     init: u64,
+    /// The key it is encrypted with.
+    key: Option<u64>,
     data: Arc<Vec<u8>>,
     parts: Vec<Part>,
 }
@@ -312,12 +538,22 @@ struct Building {
     part_offset: usize,
     part_independent: bool,
     last: Time,
+    /// The segment's ciphertext so far, when encrypted (boxed: the building segment is moved
+    /// in and out of the state for every packet).
+    enc: Option<Box<Encrypting>>,
 }
 
 impl Building {
-    /// Memory held: the segment and its parts (which copy the segment's bytes).
+    /// Memory held: the segment, its ciphertext and its parts (which copy the segment's
+    /// bytes).
     fn bytes(&self) -> usize {
-        self.data.len() + self.parts.iter().map(|p| p.data.len()).sum::<usize>()
+        self.data.len()
+            + self.enc.as_ref().map_or(0, |e| e.out.len())
+            + self.parts.iter().map(|p| p.data.len()).sum::<usize>()
+    }
+
+    fn key(&self) -> Option<u64> {
+        self.enc.as_ref().map(|e| e.key.n)
     }
 }
 
@@ -361,6 +597,10 @@ struct State {
     /// The longest segment cut so far, in seconds rounded to the nearest (RFC 8216 4.3.3.1
     /// compares rounded durations with the target duration, which must not change).
     longest: u64,
+    /// Encryption keys: the current one and those kept segments use.
+    keys: VecDeque<Arc<Key>>,
+    /// Segments started with the current key (the last of `keys`).
+    key_segments: u32,
 }
 
 impl State {
@@ -372,6 +612,39 @@ impl State {
                 || building.as_ref().is_some_and(|b| b.init == *n)
                 || segments.iter().any(|s| s.init == *n)
         });
+    }
+
+    /// Drops the keys nothing refers to any more (the last one is current).
+    fn prune_keys(&mut self) {
+        let (segments, building) = (&self.segments, &self.building);
+        let last = self.keys.back().map(|k| k.n);
+        self.keys.retain(|k| {
+            Some(k.n) == last
+                || building.as_ref().is_some_and(|b| b.key() == Some(k.n))
+                || segments.iter().any(|s| s.key == Some(k.n))
+        });
+    }
+
+    /// The key a new segment of `st` is encrypted with: the current one, or a new one when
+    /// there is none yet or it was used for `rotate_every` segments.
+    #[inline(never)]
+    fn key_for_segment(&mut self, st: &Stream) -> Option<Arc<Key>> {
+        let enc = st.cfg.encryption.as_ref()?;
+        let rotate = enc.rotate_every > 0 && self.key_segments >= enc.rotate_every;
+        if self.keys.is_empty() || rotate {
+            let n = self.keys.back().map_or(0, |k| k.n + 1);
+            let k = enc.keys.key(&st.path, n);
+            self.keys.push_back(Arc::new(Key {
+                n,
+                aes: Aes::new128(&k.key),
+                uri: k.uri,
+                raw: k.key,
+            }));
+            self.key_segments = 0;
+            self.prune_keys();
+        }
+        self.key_segments += 1;
+        self.keys.back().cloned()
     }
 }
 
@@ -600,6 +873,33 @@ impl Hls {
         Ok(st)
     }
 
+    /// Answers a request for key `n` of `path` (`key-<n>.key`).
+    fn serve_key(&self, path: &str, n: &str, ctx: &mut Context) {
+        let (Some(enc), Ok(n)) = (&self.0.cfg.encryption, n.parse::<u64>()) else {
+            return ctx.text(404, "not found");
+        };
+        let Some(st) = lock(&self.0.muxers).get(path).cloned() else {
+            return ctx.text(404, "not found");
+        };
+        let raw = {
+            let mut g = lock(&st.state);
+            g.last_access = Some(Instant::now());
+            g.keys.iter().find(|k| k.n == n).map(|k| k.raw)
+        };
+        let Some(raw) = raw else {
+            return ctx.text(404, "not found");
+        };
+        if !enc.keys.authorize(path, n, ctx) {
+            return ctx.text(403, "forbidden");
+        }
+        let mut r = Response::with_body(200, "application/octet-stream", raw.to_vec())
+            .header("Cache-Control", "private, no-store");
+        if let Some(o) = &st.cors {
+            r = r.header("Access-Control-Allow-Origin", o);
+        }
+        ctx.respond(r);
+    }
+
     fn arm_idle(&self, st: &Arc<Stream>) {
         let weak_hls = Arc::downgrade(&self.0);
         let weak = Arc::downgrade(st);
@@ -682,6 +982,12 @@ impl Service for Hls {
         };
         if path.is_empty() || path.contains("..") {
             return ctx.text(404, "not found");
+        }
+        if let Some(n) = file
+            .strip_prefix("key-")
+            .and_then(|f| f.strip_suffix(".key"))
+        {
+            return self.serve_key(path, n, ctx);
         }
         let format = self.0.cfg.format;
         let ext = format.extension();
@@ -903,19 +1209,40 @@ impl Stream {
             show_parts[i] = parts.is_some() && tail < part_window;
             tail += seg.duration;
         }
-        // The init segment the media listed so far needs (fMP4).
+        // The init segment and the key in effect (fMP4 init segments are clear: a map after a
+        // key is preceded by METHOD=NONE).
         let mut map: Option<u64> = None;
-        let mut write_map = |s: &mut String, init: u64| {
+        let mut key: Option<u64> = None;
+        let mut write_media = |s: &mut String, init: u64, k: Option<u64>| {
             if fmp4 && map != Some(init) {
+                if key.take().is_some() {
+                    s.push_str("#EXT-X-KEY:METHOD=NONE\n");
+                }
                 let _ = writeln!(s, "#EXT-X-MAP:URI=\"init-{init}.mp4\"");
                 map = Some(init);
+            }
+            if k != key {
+                match k.and_then(|n| g.keys.iter().find(|x| x.n == n)) {
+                    Some(x) => {
+                        let _ = match &x.uri {
+                            Some(u) => {
+                                writeln!(s, "#EXT-X-KEY:METHOD=AES-128,URI=\"{}\"", quoted(u))
+                            }
+                            None => {
+                                writeln!(s, "#EXT-X-KEY:METHOD=AES-128,URI=\"key-{}.key\"", x.n)
+                            }
+                        };
+                    }
+                    None => s.push_str("#EXT-X-KEY:METHOD=NONE\n"),
+                }
+                key = k;
             }
         };
         for (i, seg) in listed.iter().enumerate() {
             if seg.discontinuity {
                 s.push_str("#EXT-X-DISCONTINUITY\n");
             }
-            write_map(&mut s, seg.init);
+            write_media(&mut s, seg.init, seg.key);
             if show_parts[i] {
                 for (k, p) in seg.parts.iter().enumerate() {
                     write_part(&mut s, seg.seq, k, p, ext);
@@ -931,17 +1258,20 @@ impl Stream {
         if parts.is_some() {
             if let Some(b) = &g.building {
                 if b.parts.is_empty() {
-                    // The hinted part would need a discontinuity or a new map, which only go
-                    // before listed media: no hint until the first part is out.
+                    // The hinted part would need a discontinuity, a new map or a new key,
+                    // which only go before listed media: no hint until the first part is out.
                     let new_map = fmp4 && listed.last().is_none_or(|l| l.init != b.init);
-                    if b.discontinuity || new_map {
+                    let new_key = listed
+                        .last()
+                        .map_or_else(|| b.key().is_some(), |l| l.key != b.key());
+                    if b.discontinuity || new_map || new_key {
                         return s;
                     }
                 } else {
                     if b.discontinuity {
                         s.push_str("#EXT-X-DISCONTINUITY\n");
                     }
-                    write_map(&mut s, b.init);
+                    write_media(&mut s, b.init, b.key());
                 }
                 for (k, p) in b.parts.iter().enumerate() {
                     write_part(&mut s, b.seq, k, p, ext);
@@ -1060,7 +1390,11 @@ impl HlsSink {
             return;
         }
         Self::close_part(st, &mut b, end, None);
-        let data = Arc::new(b.data);
+        let key = b.key();
+        let data = Arc::new(match b.enc.take() {
+            Some(e) => (*e).finish(&b.data),
+            None => b.data,
+        });
         g.bytes += data.len() + b.parts.iter().map(|p| p.data.len()).sum::<usize>();
         let duration = (end - b.start).max(1);
         g.longest = g.longest.max(((duration + SECOND / 2) / SECOND) as u64);
@@ -1069,6 +1403,7 @@ impl HlsSink {
             duration,
             discontinuity: b.discontinuity,
             init: b.init,
+            key,
             data,
             parts: b.parts,
         });
@@ -1084,6 +1419,7 @@ impl HlsSink {
             }
         }
         g.prune_inits();
+        g.prune_keys();
     }
 
     fn close_part(st: &Stream, b: &mut Building, end: Time, mux: Option<&mut SegMuxer>) {
@@ -1096,10 +1432,15 @@ impl HlsSink {
         if b.data.len() == b.part_offset {
             return;
         }
+        let plain = &b.data[b.part_offset..];
+        let data = match &b.enc {
+            Some(e) => e.part(b.seq, plain),
+            None => plain.to_vec(),
+        };
         b.parts.push(Part {
             duration: (end - b.part_start).max(1),
             independent: b.part_independent,
-            data: Arc::new(b.data[b.part_offset..].to_vec()),
+            data: Arc::new(data),
         });
         b.part_offset = b.data.len();
         b.part_start = end;
@@ -1206,6 +1547,14 @@ impl Sink for HlsSink {
                 if let SegMuxer::Mp4(_) = m {
                     fmp4::write_styp(&mut data);
                 }
+                let enc = g.key_for_segment(&self.st).map(|key| {
+                    Box::new(Encrypting {
+                        key,
+                        iv: iv_of(seq),
+                        done: 0,
+                        out: Vec::new(),
+                    })
+                });
                 g.building = Some(Building {
                     seq,
                     start: dts,
@@ -1217,6 +1566,7 @@ impl Sink for HlsSink {
                     part_offset: 0,
                     part_independent: true,
                     last: dts,
+                    enc,
                 });
             }
             let Some(mut b) = g.building.take() else {
@@ -1245,6 +1595,9 @@ impl Sink for HlsSink {
                 }
             }
             b.last = b.last.max(dts);
+            if let Some(e) = &mut b.enc {
+                e.step(&b.data);
+            }
             g.building = Some(b);
             if woke {
                 self.st.wake(&mut g)
@@ -1819,19 +2172,16 @@ mod tests {
                 })
             })
             .collect();
-        for (name, format, parts) in [
-            ("ts", SegmentFormat::MpegTs, None),
-            (
-                "ts-ll",
-                SegmentFormat::MpegTs,
-                Some(Duration::from_millis(200)),
-            ),
-            ("fmp4", SegmentFormat::Fmp4, None),
-            (
-                "fmp4-ll",
-                SegmentFormat::Fmp4,
-                Some(Duration::from_millis(200)),
-            ),
+        let ll = Some(Duration::from_millis(200));
+        for (name, format, parts, aes) in [
+            ("ts", SegmentFormat::MpegTs, None, false),
+            ("ts-ll", SegmentFormat::MpegTs, ll, false),
+            ("fmp4", SegmentFormat::Fmp4, None, false),
+            ("fmp4-ll", SegmentFormat::Fmp4, ll, false),
+            // AES-128 (not in the baseline: the cost of encryption).
+            ("ts-aes", SegmentFormat::MpegTs, None, true),
+            ("ts-ll-aes", SegmentFormat::MpegTs, ll, true),
+            ("fmp4-ll-aes", SegmentFormat::Fmp4, ll, true),
         ] {
             if std::env::var("BENCH_ONLY").is_ok_and(|o| o != name) {
                 continue;
@@ -1842,6 +2192,7 @@ mod tests {
                         format,
                         part_duration: parts,
                         target_duration: Duration::from_secs(1),
+                        encryption: aes.then(|| HlsEncryption::new(TestKeys)),
                         ..HlsConfig::default()
                     });
                     s.on_tracks(&tracks);
@@ -1853,6 +2204,205 @@ mod tests {
                 })
                 .fold(f64::MAX, f64::min);
             println!("BENCH {name} {ns:.1}");
+        }
+    }
+
+    /// Keys 0, 1, ... derived from the number (deterministic for tests).
+    struct TestKeys;
+
+    impl KeyProvider for TestKeys {
+        fn key(&self, path: &str, n: u64) -> HlsKey {
+            assert_eq!(path, "t");
+            HlsKey::new([n as u8 + 1; 16])
+        }
+    }
+
+    fn decrypt(key: u64, seq: u64, data: &[u8]) -> Vec<u8> {
+        let aes = Aes::new128(&[key as u8 + 1; 16]);
+        let mut d = data.to_vec();
+        aes.decrypt_cbc_padded(&iv_of(seq), &mut d)
+            .expect("padding");
+        d
+    }
+
+    /// Encrypted segments and parts decrypt (IV = media sequence number, parts separately) to
+    /// what the same stream gives unencrypted; the playlist names each key once, before the
+    /// first media it applies to, rotates every `rotate_every` segments, keeps fMP4 init
+    /// segments clear (METHOD=NONE before a map that follows a key), and keys leave with the
+    /// segments that use them.
+    #[test]
+    fn encrypted_segments_and_parts() {
+        let (tracks, pkts) = sample();
+        for format in [SegmentFormat::MpegTs, SegmentFormat::Fmp4] {
+            for parts in [false, true] {
+                let mut cfg = fmp4_cfg(parts);
+                cfg.format = format;
+                cfg.playlist_size = 4;
+                cfg.keep_segments = 1;
+                let mut plain = sink(cfg.clone());
+                cfg.encryption = Some(HlsEncryption::new(TestKeys).rotate_every(3));
+                let mut enc = sink(cfg);
+                for s in [&mut plain, &mut enc] {
+                    s.on_tracks(&tracks);
+                    feed(s, &pkts, 2, 2 * SECOND);
+                    // A republish with the same tracks: a discontinuity (fMP4: same map).
+                    s.on_tracks(&tracks);
+                    feed(s, &pkts, 2, 2 * SECOND);
+                }
+                let gp = lock(&plain.st.state);
+                let ge = lock(&enc.st.state);
+                assert_eq!(gp.segments.len(), ge.segments.len());
+                assert!(ge.segments.len() >= 4, "{}", ge.segments.len());
+                for (p, e) in gp.segments.iter().zip(&ge.segments) {
+                    assert_eq!(p.seq, e.seq);
+                    let k = e.key.expect("encrypted");
+                    assert_eq!(k, e.seq / 3, "rotation every 3 segments");
+                    assert_ne!(*p.data, *e.data);
+                    assert_eq!(e.data.len() % 16, 0);
+                    assert_eq!(decrypt(k, e.seq, &e.data), *p.data);
+                    assert_eq!(p.parts.len(), e.parts.len());
+                    assert_eq!(parts, !e.parts.is_empty());
+                    for (pp, ep) in p.parts.iter().zip(&e.parts) {
+                        assert_eq!(decrypt(k, e.seq, &ep.data), *pp.data);
+                    }
+                }
+                // Only the keys of kept segments (and the current one) stay.
+                let first = ge.segments.front().map(|s| s.seq / 3).expect("segments");
+                assert!(ge.keys.iter().all(|k| k.n >= first), "{:?}", ge.keys.len());
+                let pl = enc.st.playlist(&ge);
+                // The keys of the listed segments, each once.
+                let mut want: Vec<u64> = ge
+                    .segments
+                    .iter()
+                    .skip(ge.segments.len().saturating_sub(4))
+                    .map(|s| s.seq / 3)
+                    .collect();
+                want.dedup();
+                let keys: Vec<u64> = pl
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("#EXT-X-KEY:METHOD=AES-128,URI=\"key-"))
+                    .map(|l| l.trim_end_matches(".key\"").parse().expect("key number"))
+                    .collect();
+                if format == SegmentFormat::Fmp4 {
+                    // The map comes first, before any key; the republish (same tracks)
+                    // keeps the map, so no METHOD=NONE.
+                    let map = pl.find("#EXT-X-MAP:").expect("map");
+                    assert!(map < pl.find("#EXT-X-KEY:").expect("key"), "{pl}");
+                    assert!(!pl.contains("METHOD=NONE"), "{pl}");
+                }
+                assert_eq!(keys, want, "{pl}");
+                // Each key tag comes before the first media line of its segments.
+                let first_media = pl
+                    .lines()
+                    .position(|l| l.starts_with("#EXT-X-PART:") || l.starts_with("#EXTINF:"))
+                    .expect("media");
+                let first_key = pl
+                    .lines()
+                    .position(|l| l.starts_with("#EXT-X-KEY:"))
+                    .expect("key");
+                assert!(first_key < first_media, "{pl}");
+            }
+        }
+    }
+
+    /// fMP4 with a new init segment after a key: METHOD=NONE keeps the map clear, then the
+    /// key is named again before the next segment.
+    #[test]
+    fn encrypted_fmp4_new_map_is_clear() {
+        let (tracks, pkts) = sample();
+        let mut cfg = fmp4_cfg(false);
+        cfg.encryption = Some(HlsEncryption::new(TestKeys));
+        let mut s = sink(cfg);
+        s.on_tracks(&tracks);
+        feed(&mut s, &pkts, 1, 2 * SECOND);
+        // A republish with other tracks (audio only): a new init segment.
+        let (atracks, apkts) = (
+            tracks
+                .iter()
+                .filter(|t| t.codec.is_audio())
+                .cloned()
+                .collect::<Tracks>(),
+            pkts.iter()
+                .filter(|p| tracks[p.track].codec.is_audio())
+                .map(|p| Packet::new(0, p.dts, p.pts, p.keyframe, p.data.clone()))
+                .collect::<Vec<_>>(),
+        );
+        s.on_tracks(&atracks);
+        feed(&mut s, &apkts, 1, 2 * SECOND);
+        let g = lock(&s.st.state);
+        let pl = s.st.playlist(&g);
+        let seq: Vec<&str> = pl
+            .lines()
+            .filter(|l| l.starts_with("#EXT-X-KEY") || l.starts_with("#EXT-X-MAP"))
+            .collect();
+        assert_eq!(
+            seq,
+            [
+                "#EXT-X-MAP:URI=\"init-0.mp4\"",
+                "#EXT-X-KEY:METHOD=AES-128,URI=\"key-0.key\"",
+                "#EXT-X-KEY:METHOD=NONE",
+                "#EXT-X-MAP:URI=\"init-1.mp4\"",
+                "#EXT-X-KEY:METHOD=AES-128,URI=\"key-0.key\"",
+            ],
+            "{pl}"
+        );
+    }
+
+    /// A provider's URI is written as given (quoted), in place of `key-<n>.key`.
+    #[test]
+    fn key_uri_from_the_provider() {
+        struct Remote;
+        impl KeyProvider for Remote {
+            fn key(&self, _path: &str, n: u64) -> HlsKey {
+                HlsKey::with_uri([7; 16], format!("https://keys.example/k\"{n}"))
+            }
+        }
+        let (tracks, pkts) = sample();
+        let cfg = HlsConfig {
+            encryption: Some(HlsEncryption::new(Remote)),
+            ..HlsConfig::default()
+        };
+        let mut s = sink(cfg);
+        s.on_tracks(&tracks);
+        feed(&mut s, &pkts, 2, 2 * SECOND);
+        let g = lock(&s.st.state);
+        let pl = s.st.playlist(&g);
+        assert!(
+            pl.contains("#EXT-X-KEY:METHOD=AES-128,URI=\"https://keys.example/k0\"\n"),
+            "{pl}"
+        );
+        assert_eq!(pl.matches("#EXT-X-KEY").count(), 1, "{pl}");
+        assert!(format!("{:?}", HlsKey::new([9; 16])).find("9").is_none());
+    }
+
+    /// Encrypting a segment in pieces as it grows gives the one-shot padded ciphertext.
+    #[test]
+    fn incremental_encryption() {
+        let key = Arc::new(Key {
+            n: 0,
+            aes: Aes::new128(&[3; 16]),
+            uri: None,
+            raw: [3; 16],
+        });
+        for n in [0usize, 1, 15, 16, 17, 100, 188 * 700 + 5] {
+            let data: Vec<u8> = (0..n).map(|i| (i * 7 + i / 255) as u8).collect();
+            let mut e = Encrypting {
+                key: key.clone(),
+                iv: iv_of(9),
+                done: 0,
+                out: Vec::new(),
+            };
+            let mut at = 0;
+            while at < n {
+                at = (at + 1 + at / 3).min(n);
+                e.more(&data[..at]);
+                assert_eq!(e.done % 16, 0);
+                assert_eq!(e.out.len(), e.done);
+            }
+            let got = e.finish(&data);
+            let mut want = Vec::new();
+            key.aes.encrypt_cbc_padded(&iv_of(9), &data, &mut want);
+            assert_eq!(got, want, "{n}");
         }
     }
 }

@@ -37,3 +37,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-031: VP8, VP9 and AV1 in the media hub, multivariant HLS playlists](031-media-vp8-vp9-av1-multivariant-hls.md) (accepted 2026-11-18)
 - [ADR-032: TURN over TCP and TLS from an `Endpoint`, active and server ICE-TCP, simulcast with Chrome](032-webrtc-turn-streams-ice-tcp-simulcast.md) (accepted 2026-11-18)
 - [ADR-033: BitTorrent fast resume](033-bittorrent-fast-resume.md) (accepted 2026-11-18)
+- [ADR-034: HLS encryption and recording in the media hub](034-media-hls-encryption-recording.md) (accepted 2026-11-18)

@@ -145,6 +145,38 @@ chunk streams of a connection to 32 MiB.
   request's query string. The first request starts every rendition's muxer and is answered
   once each has its tracks and a segment (renditions not published yet are left out after
   three target durations). It works with both formats and with LL-HLS.
+- **Encryption**: `HlsConfig::encryption` encrypts every segment and LL-HLS part with
+  AES-128 (`#EXT-X-KEY:METHOD=AES-128`, CBC with PKCS #7), MPEG-TS and fMP4 alike:
+
+```rust,ignore
+use only_media::hls::{HlsConfig, HlsEncryption, HlsKey, KeyProvider};
+use only_http::Context;
+
+struct Keys; // the application's keys and entitlement check
+impl KeyProvider for Keys {
+    // On the publisher's thread when a segment needs key `n`: must not block. A fresh random
+    // key each call (a restarted stream counts keys and IVs from 0 again).
+    fn key(&self, path: &str, n: u64) -> HlsKey {
+        HlsKey::new(new_random_key(path, n)) // and remember it for the application's own use
+    }
+    // For each GET /<path>/key-<n>.key, on the requester's I/O thread (403 when false).
+    fn authorize(&self, path: &str, _n: u64, ctx: &Context) -> bool {
+        ctx.header("cookie").is_some_and(|c| entitled(c, path))
+    }
+}
+
+let mut cfg = HlsConfig::default();
+cfg.encryption = Some(HlsEncryption::new(Keys).rotate_every(10)); // a new key every 10 segments
+```
+
+  The IV is the media sequence number (no `IV` attribute), and a part is encrypted on its own
+  from its segment's IV, as players decrypt parts. The playlist names a key before the first
+  media it applies to; fMP4 init segments stay clear (`#EXT-X-KEY:METHOD=NONE` before a map
+  that follows a key). Keys are served at `key-<n>.key` with `Cache-Control: private,
+  no-store` while a kept segment uses them, or players fetch them from the URI given with
+  `HlsKey::with_uri`. Players send cookies and headers to key URIs, not the playlist's query
+  string. `RandomKeys` issues random keys to everyone (for tests and links that are secret
+  themselves). SAMPLE-AES / CBCS are not supported.
 
 ## Relaying: the RTMP client
 
@@ -169,6 +201,41 @@ name is resolved on the calling thread, so call them off the I/O threads or set
 10 s; a pull that receives nothing for 30 s ends), received messages are bounded (16 MiB), and a
 push that falls behind is cut back to keyframes and then disconnected, like a player of the
 server. H.265 and Opus go out as Enhanced RTMP.
+
+## Recording
+
+`only_media::record::Recorder` writes hub streams to fragmented MP4 or FLV files:
+
+```rust,ignore
+use std::time::Duration;
+use only_media::record::{RecordConfig, RecordFile, RecordFormat, RecordHooks, Recorder};
+
+struct Hooks;
+impl RecordHooks for Hooks {
+    // On the recorder's writer thread: may block (upload, database).
+    fn on_stop(&self, f: &RecordFile, result: Result<(), &std::io::Error>) {
+        println!("{} {:?} {} bytes {:?}", f.stream, f.duration, f.bytes, result);
+    }
+}
+
+let mut cfg = RecordConfig::new("/var/lib/only/rec");
+cfg.format = RecordFormat::Fmp4; // or Flv
+cfg.segment_duration = Some(Duration::from_secs(600));
+cfg.max_files = 144; // keep the last day of ten-minute files
+let rec = Recorder::with_hooks(hub.clone(), cfg, Hooks);
+rec.start("live/cam")?; // waits up to `cfg.wait` (10 s) for a publisher, and across republishes
+```
+
+Packets are muxed on the publisher's thread like for any player; the files are created,
+written, synced (`sync_all` before `on_stop`) and rotated by the recorder's own writer thread,
+never by an I/O thread. Files start at a video keyframe with timestamps from 0 and are cut at
+the first keyframe after `segment_duration` or `segment_bytes`, and at a republish or codec
+change. The queue to the writer is bounded (`max_queued_bytes`, 32 MiB): when the disk falls
+behind, the current file is closed and packets are dropped (`Recorder::dropped`) until the
+queue is half empty and a keyframe starts the next file, so a slow disk leaves a gap between
+files, never a broken one. `RecordHooks::file_name` names files (relative to `dir`), and
+`on_start`, `on_stop` and `on_remove` (rotation) follow them. To record every stream, call
+`start` from the hub's `on_publish` hook.
 
 ## Running it
 
@@ -203,6 +270,8 @@ installed) run ffmpeg 9 as publisher and ffprobe / ffmpeg as player:
 | Chrome over WHIP (`tools/interop/media/browser.sh`) | hls.js, Chrome's own player: multivariant fMP4 LL-HLS | AV1 ladder + Opus |
 | RTMP client push | `ffmpeg -listen 1 -i rtmp://…`, mediamtx (`--ignored`) | H.264 + AAC, H.265 + AAC |
 | `ffmpeg -listen 1 -f flv rtmp://…`, mediamtx | RTMP client pull | H.264 + AAC, H.265 + AAC |
+| hub publisher, AES-128 with key rotation | `ffprobe` / `ffmpeg -headers … -i …/index.m3u8`, MPEG-TS and fMP4, plain and LL-HLS | H.264 + AAC |
+| hub publisher, `Recorder` | `ffprobe` / `ffmpeg -i` of each fMP4 and FLV file | H.264 + AAC, H.265 + AAC |
 
 RTSP and SRT have their own tables in their chapters. Fuzz targets cover the RTMP session
 (`rtmp_server`) and client (`rtmp_client`), FLV (`flv_demux`), fMP4 (`fmp4_demux`), AMF
@@ -210,5 +279,6 @@ RTSP and SRT have their own tables in their chapters. Fuzz targets cover the RTM
 
 ## Not supported
 
-HLS encryption, I-frame playlists and rendition reports, VP8 / VP9 / AV1 in MPEG-TS, RTMPS
-client, RTMPE / RTMPT, AMF3 replies, Enhanced RTMP multitrack, recording to files, transcoding.
+HLS SAMPLE-AES / CBCS, I-frame playlists and rendition reports, VP8 / VP9 / AV1 in MPEG-TS,
+RTMPS client, RTMPE / RTMPT, AMF3 replies, Enhanced RTMP multitrack, recording to MPEG-TS,
+transcoding.

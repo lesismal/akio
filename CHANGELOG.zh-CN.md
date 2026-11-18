@@ -10,6 +10,27 @@ only 的所有重要变更都记录在这里。格式遵循
 
 ## [Unreleased]
 
+### 新增：HLS 加密与录制（only-media），AES-CBC（only-crypto）
+
+ADR-034（docs/adr/034-media-hls-encryption-recording.zh-CN.md），均为新增：
+
+- **HLS AES-128**：`HlsConfig::encryption`（`HlsEncryption { keys, rotate_every }`）用
+  AES-128-CBC + PKCS #7 加密每个分片和 LL-HLS part（MPEG-TS 与 fMP4），IV 为媒体序列号（part
+  单独加密，使用其分片的 IV），每个密钥的第一条媒体之前写 `#EXT-X-KEY:METHOD=AES-128`；fMP4 初始化
+  分片保持明文（出现在密钥之后的 map 前写 `METHOD=NONE`）。`KeyProvider`（`key(path, n) -> HlsKey`、
+  `authorize(path, n, &Context)`）发放密钥并决定 `/<path>/key-<n>.key` 请求（拒绝时 403）；
+  `HlsKey::with_uri` 指向外部密钥服务器；`RandomKeys` 发放随机密钥。密钥每 `rotate_every` 个分片
+  轮换，只在仍有保留的分片使用它时提供。`MediaHttp` 把 `.key` 交给 `Hls`。用 ffmpeg 播放加密的
+  直播播放列表测试。
+- **录制**：`only_media::record::{Recorder, RecordConfig, RecordFormat, RecordHooks,
+  RecordFile, NoHooks}` 把 Hub 中的流录制为 fMP4 或 FLV 文件，按 `segment_duration` /
+  `segment_bytes` 在关键帧处切换文件，重新推流时也切换，用 `max_files` 轮换，提供 `file_name`、
+  `on_start`、`on_stop`（在 `sync_all` 之后）与 `on_remove` 钩子。文件由录制器自己的写线程写入，
+  从不在 I/O 线程上；队列受 `max_queued_bytes`（32 MiB）约束，超过时关闭当前文件并丢包直到下一个
+  关键帧（`Recorder::dropped`）。录制的文件用 ffprobe / ffmpeg 检查。
+- **only-crypto**：`Aes::{encrypt_cbc, decrypt_cbc, encrypt_cbc_padded, decrypt_cbc_padded}`
+  （SP 800-38A 向量，PKCS #7 与 OpenSSL 对照）。
+
 ### 新增：protobuf 文本格式（only-protobuf）
 
 ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_protobuf::text` 为生成消息
