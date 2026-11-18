@@ -44,7 +44,15 @@ loop {
 - `Config::new(dtls_client)`: ports 5000, MTU 1200, 256 KiB message limits both ways
   (`max_message_size` is the remote `a=max-message-size`; a larger incoming message aborts the
   association), 1 MiB receive window and per-channel buffer, 10 retransmissions; RTO 1 s
-  initial, 200 ms minimum, 10 s maximum.
+  initial, 200 ms minimum, 10 s maximum; I-DATA offered (`message_interleaving`) and the
+  weighted fair queueing scheduler (`scheduler`).
+- Channels share the association through the `Scheduler` (RFC 8260 §3): first come first
+  served, round robin, round robin per packet, priority, fair capacity, or weighted fair
+  queueing (the default) by channel priority (`ChannelOptions::with_priority`, the peer's
+  DATA_CHANNEL_OPEN value, `set_channel_priority`; higher is more important, as in RFC 8832).
+  With I-DATA (both sides offer it; `message_interleaving()` tells) the unit is a chunk, so a
+  large message no longer holds up small ones on other channels (new messages start only while
+  the started ones fit in half the peer's window); with DATA a started message goes out whole.
 - `open_channel` picks the lowest free stream id of our parity (DTLS client even, server odd)
   or `ChannelOptions::negotiated`; it may be called before the association is up.
   `send` returns `Ok(false)` when the channel already buffers more than `max_buffered_amount`;
@@ -61,14 +69,19 @@ loop {
   bundling up to the MTU, unknown chunks and parameters handled by their high-order bits;
   INIT / INIT ACK / COOKIE ECHO / COOKIE ACK with a self-contained HMAC-SHA-256 cookie, INIT
   and COOKIE ECHO retransmission (8 tries), INIT collision and duplicate COOKIE ECHO; Supported
-  Extensions RE-CONFIG and FORWARD TSN.
+  Extensions RE-CONFIG, FORWARD TSN, I-DATA and I-FORWARD-TSN.
 - Data transfer: fragmentation and reassembly (bounded by the receive limits), ordered and
   unordered delivery, SACK with gap blocks and duplicate TSNs (delayed every second packet or
   200 ms, immediate on gaps), slow start and congestion avoidance, the peer's window, T3-rtx
   with RTO from SRTT / RTTVAR (Karn), fast retransmit and fast recovery, association failure
   after `max_retransmissions` timeouts; HEARTBEAT answered; SHUTDOWN in both roles; ABORT.
+- Message interleaving (RFC 8260 §2): I-DATA chunks (32-bit MIDs, FSNs) when both sides offer
+  them, fragments of different streams interleaved, reassembly per stream and message; DATA
+  otherwise, and an ABORT for the chunk kind not negotiated. Stream schedulers and priorities
+  (RFC 8260 §3) as above.
 - Partial reliability (RFC 3758): per-message retransmission limits and lifetimes, FORWARD
-  TSN with stream / SSN pairs both ways, only when the peer supports it.
+  TSN with stream / SSN pairs both ways (I-FORWARD-TSN with stream / MID entries under I-DATA),
+  only when the peer supports it.
 - Stream reset (RFC 6525): Outgoing SSN Reset Request / Response with "in progress" and retry;
   several outstanding peer requests are accepted in any order; add-streams requests are
   accepted.
@@ -76,25 +89,36 @@ loop {
   PPIDs 50, 51, 53, 56, 57 (and the deprecated partial 52, 54 on receive), messages ordered
   until the peer's ACK.
 
-Not implemented: I-DATA and message interleaving (RFC 8260), stream schedulers and priorities
-(first come, first served), multi-homing, sending HEARTBEATs, peer restart, AUTH, ASCONF, ECN,
-zero checksum (RFC 9653), incoming SSN reset and SSN/TSN reset requests (refused).
+Not implemented: multi-homing, sending HEARTBEATs, peer restart, AUTH, ASCONF, ECN, zero
+checksum (RFC 9653), incoming SSN reset and SSN/TSN reset requests (refused). Interop with
+usrsctp (Firefox) is not checked.
 
 ## Testing
 
-- Unit tests: codec round trips and checksum placement, reassembly with TSN wrap-around,
-  FORWARD TSN, DCEP.
+- Unit tests: codec round trips and checksum placement (DATA, I-DATA, I-FORWARD-TSN),
+  reassembly with TSN wrap-around, interleaved and out-of-order I-DATA reassembly, FORWARD TSN
+  and I-FORWARD-TSN, DCEP, DATA / I-DATA mismatch aborts.
 - Simulated link (`tests/link.rs`, simulated time): 15 % loss, 5 % duplication and up to 40 ms
   of reordering at MTUs down to 300 bytes; ordered, unordered, both directions, 60 kB to
   256 KiB messages, retransmission-limited and lifetime channels with FORWARD TSN, empty
   messages, backpressure and `BufferedAmountLow`, channel close from either side and stream id
   reuse, simultaneous INIT, sending before the association is up, negotiated channels,
   shutdown, abort, failure when the peer vanishes, INIT giving up, 10 MB through a lossless
-  link, oversized incoming messages, garbage packets. `SCTP_SEEDS=<n>` runs more seeds.
-- Interop over UDP (`examples/udp_peer.rs`) against pion/sctp v1.12.0 and v1.8.33 with
-  pion/datachannel, both roles, up to 25 % loss each way: echoes on ordered and unordered
-  channels, pion-opened reliable and partially reliable channels, closing from both sides,
-  shutdown.
+  link, oversized incoming messages, garbage packets; I-DATA negotiation in every combination,
+  head-of-line blocking (a 200 kB message and a 4-byte one on two channels), scheduler shares
+  (equal, 3:1 weighted, strict priority, FCFS order, one stream per packet), priorities changed
+  at runtime, partial reliability with interleaved reliable and partially reliable channels,
+  many large messages on many channels at once.
+  DATA and I-DATA run on alternate seeds; `SCTP_SEEDS=<n>` runs more seeds.
+- Interop over UDP (`examples/udp_peer.rs`, `tools/interop/sctp/run.sh`) against pion/sctp
+  v1.12.0 with pion/datachannel, both roles, pion's interleaving on (I-DATA / I-FORWARD-TSN)
+  and off (DATA), without loss and with every 10th packet dropped each way: echoes on ordered
+  and unordered channels, pion-opened reliable and partially reliable channels, closing from
+  both sides, shutdown (earlier also v1.8.33, and up to 25 % loss, where pion may take longer
+  than the 60 s limit). Through only-webrtc (`tools/interop/webrtc`): pion negotiates I-DATA;
+  Chrome 157 uses DATA unless started with
+  `--force-fieldtrials=WebRTC-DataChannelMessageInterleaving/Enabled/`, which passes too.
 - Fuzzing: target `sctp_packet` (arbitrary packets, raw and with a fixed-up checksum, into
-  fresh, handshaking and established associations) in `fuzz/`; `fuzzing::tests` replays its
+  fresh, handshaking and established associations, one pair on I-DATA and one on DATA) in
+  `fuzz/`; `fuzzing::tests` replays its
   corpus on stable.

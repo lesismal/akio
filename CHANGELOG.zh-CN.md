@@ -63,6 +63,27 @@ ADR-036（docs/adr/036-rtp-xr-tmmbr-ccfb-fec.zh-CN.md）。`only-rtp` 属于 Int
 - 测试对照 libwebrtc 单元测试向量、RFC 3611 示例与模拟丢包；新增 fuzz 目标 `rtp_fec`，扩充
   `rtp_rtcp`。尚未接入 `only-webrtc`。
 
+### 新增：SCTP 消息交错（I-DATA）与流调度器（only-sctp）
+
+ADR-037（docs/adr/037-sctp-idata-schedulers.zh-CN.md），仅新增（only-sctp 属于 Internal 层级）：
+
+- **I-DATA / I-FORWARD-TSN（RFC 8260 §2）**，默认提供（`Config::message_interleaving`），对端也提供时
+  使用（`Association::message_interleaving`）：不同通道上消息的分片交错发送，大消息不再阻塞其他通道上的
+  小消息（在另一通道上排在 200 kB 消息之后的 4 字节消息，现在在第一个往返内到达，而不是在它之后）。
+  否则照旧使用 DATA 与 FORWARD TSN；收到未协商的那种数据 chunk 时中止关联（protocol violation）。
+- **流调度器（RFC 8260 §3）**：`Config::scheduler`，可选 `Scheduler::{FirstComeFirstServed,
+  RoundRobin, RoundRobinPerPacket, Priority, FairCapacity, WeightedFairQueueing}`（默认加权公平排队），
+  依据通道优先级：`ChannelOptions::with_priority`、对端 DATA_CHANNEL_OPEN 中的值、
+  `Association::set_channel_priority`（RFC 8832 语义，越大越重要；0 按 256 处理）。此前消息按先到先服务
+  发送。
+- 发送端按流排队，分片在获得 TSN 时从每条消息的一块共享缓冲区切出；使用 I-DATA 时，只有在已开始的
+  消息不超过对端窗口一半时才开始新消息，因此同时发送许多大消息不会让对端窗口被不完整消息占满；单 chunk 消息跳过重组，按序到达的
+  I-DATA 分片直接追加。gpu51 上与 59d41cc2 同轮 A/B（`quiet.sh`，CPU 2-9，7 轮交替，取中位数）：内存中的 SCTP（`examples/sctp_bench.rs`）1 KiB 消息 1.19 倍（DATA 回退 1.21 倍）、64 KiB 1.33 倍（1.14 倍）、16 KiB 无序 1.12 倍（1.08 倍）、四个通道 1.20 倍（1.07 倍）；两个回环 `Endpoint` 之间含 DTLS 的数据通道吞吐 0.986 倍（189.0 对 191.7 MB/s；此前一次为 1.009 倍，各轮相差 ±5%）：无回退。
+- 互通：经 UDP 与 pion/sctp v1.12.0（新增 `tools/interop/sctp/run.sh`：两种角色，pion 的交错开与关，
+  有无丢包）；pion WebRTC 协商 I-DATA；无头 Chrome 157 双向，默认走 DATA，也走 I-DATA（`browser.sh`
+  新增的 `CHROME_ARGS` 打开其 `WebRTC-DataChannelMessageInterleaving` field trial）。fuzz 目标
+  `sctp_packet` 驱动一对 I-DATA 关联和一对 DATA 关联。only-webrtc 不改 API，沿用新的默认值。
+
 ### 新增：protobuf 文本格式（only-protobuf）
 
 ADR-030（docs/adr/030-protobuf-text-format.zh-CN.md），均为新增：`only_protobuf::text` 为生成消息

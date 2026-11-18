@@ -16,17 +16,25 @@
 //!   self-contained state cookie; INIT and COOKIE ECHO retransmission with backoff; INIT
 //!   collisions (both sides calling [`Association::connect`]) converge on one association
 //!   because each side uses a single verification tag; duplicate COOKIE ECHOs are
-//!   acknowledged. Supported Extensions advertise RE-CONFIG and FORWARD TSN; no AUTH,
-//!   ASCONF or I-DATA.
+//!   acknowledged. Supported Extensions advertise RE-CONFIG, FORWARD TSN and (with
+//!   [`Config::message_interleaving`]) I-DATA and I-FORWARD-TSN; no AUTH or ASCONF.
 //! - Data transfer (§6-7): DATA fragmentation to the MTU and reassembly, ordered delivery per
 //!   stream SSN and unordered delivery, SACK with gap blocks and duplicate TSNs (delayed:
 //!   every second packet or 200 ms; immediate on gaps and duplicates), slow start /
 //!   congestion avoidance, the peer's receiver window, T3-rtx with RTO from SRTT / RTTVAR,
 //!   fast retransmit on three miss indications and fast recovery; association failure after
 //!   `max_retransmissions` consecutive timeouts.
+//! - Message interleaving (RFC 8260 §2): when both sides offer I-DATA, messages travel in
+//!   I-DATA chunks (32-bit message identifiers, fragment sequence numbers) and fragments of
+//!   messages on different streams interleave, so a large message no longer blocks small
+//!   ones on other channels. Otherwise DATA chunks as before.
+//! - Stream schedulers (RFC 8260 §3, [`Scheduler`]): first come first served, round robin,
+//!   round robin per packet, priority, fair capacity and weighted fair queueing (the
+//!   default) by channel priority, chosen per association.
 //! - Partial reliability (RFC 3758): per-message retransmission limit or lifetime (from the
-//!   [`Association::send`] call), FORWARD TSN with stream / SSN pairs, both directions. Only
-//!   used when the peer offers it; otherwise such channels are reliable.
+//!   [`Association::send`] call), FORWARD TSN with stream / SSN pairs (I-FORWARD-TSN with
+//!   stream / MID entries under I-DATA), both directions. Only used when the peer offers it;
+//!   otherwise such channels are reliable.
 //! - Stream reset (RFC 6525): Outgoing SSN Reset Requests and Re-configuration Responses
 //!   ("performed", "in progress" with retry). Add-streams requests are accepted; incoming and
 //!   SSN/TSN reset requests are denied.
@@ -36,8 +44,7 @@
 //!   partial PPIDs 52 / 54 accepted, stream id parity from the DTLS role, closing by stream
 //!   reset in both directions, per-channel buffered amount with a low-water event.
 //!
-//! Not implemented: I-DATA / message interleaving (RFC 8260), stream schedulers and
-//! priorities (messages go out first come, first served), multi-homing and path management,
+//! Not implemented: multi-homing and path management,
 //! sending HEARTBEATs, peer restart (an INIT with a new tag on a live association is
 //! ignored), AUTH (RFC 4895), ASCONF, ECN, zero checksum (RFC 9653), incoming SSN reset and
 //! SSN/TSN reset requests.
@@ -80,6 +87,7 @@ mod assoc;
 mod dcep;
 mod packet;
 mod recv;
+mod sched;
 mod send;
 
 #[cfg(any(test, feature = "fuzzing"))]
@@ -124,6 +132,43 @@ pub struct Config {
     /// RTO.Max (default 10 s, lower than RFC 9260's 60 s so that a vanished peer is noticed
     /// within about 85 s).
     pub rto_max: Duration,
+    /// Offer I-DATA / I-FORWARD-TSN (RFC 8260, default `true`). When the peer offers them
+    /// too, messages are sent as I-DATA chunks and the scheduler interleaves fragments of
+    /// messages on different streams, so that a large message does not hold up small ones
+    /// on other channels; otherwise DATA chunks are used and a message, once started, goes
+    /// out whole. [`Association::message_interleaving`] tells which.
+    pub message_interleaving: bool,
+    /// How streams with queued messages share the association (RFC 8260 §3; default
+    /// [`Scheduler::WeightedFairQueueing`] by channel priority).
+    pub scheduler: Scheduler,
+}
+
+/// Stream schedulers (RFC 8260 §3): which channel's queued message the next chunk comes
+/// from. The unit served is a chunk when I-DATA is in use and a whole message otherwise.
+/// Retransmissions always go first. Priorities are the channels'
+/// ([`ChannelOptions::priority`], [`Association::set_channel_priority`]): as in RFC 8832,
+/// higher values are more important (WebRTC: very-low 128, low 256, medium 512, high 1024;
+/// 0, which some stacks send when no priority is set, counts as 256).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Scheduler {
+    /// First come, first served (§3.1): messages in the order they were queued, across
+    /// channels.
+    FirstComeFirstServed,
+    /// Round robin (§3.2): channels with queued data take turns, one unit each.
+    RoundRobin,
+    /// Round robin per packet (§3.3): like round robin, but a packet is filled from one
+    /// channel and the turn passes with each packet.
+    RoundRobinPerPacket,
+    /// Priority (§3.4): the channels with the highest priority are served first (round robin
+    /// among equals); lower ones only when those have nothing queued.
+    Priority,
+    /// Fair capacity (§3.5): every channel with queued data gets the same share of bytes.
+    FairCapacity,
+    /// Weighted fair queueing (§3.6): channels get shares of bytes in proportion to their
+    /// priorities (a channel with priority 512 gets twice the share of one with 256).
+    #[default]
+    WeightedFairQueueing,
 }
 
 impl Config {
@@ -144,6 +189,8 @@ impl Config {
             rto_initial: Duration::from_secs(1),
             rto_min: Duration::from_millis(200),
             rto_max: Duration::from_secs(10),
+            message_interleaving: true,
+            scheduler: Scheduler::WeightedFairQueueing,
         }
     }
 
@@ -189,6 +236,20 @@ impl Config {
         self.receive_window = bytes;
         self
     }
+
+    /// Sets [`Config::message_interleaving`].
+    #[must_use]
+    pub fn with_message_interleaving(mut self, on: bool) -> Config {
+        self.message_interleaving = on;
+        self
+    }
+
+    /// Sets [`Config::scheduler`].
+    #[must_use]
+    pub fn with_scheduler(mut self, scheduler: Scheduler) -> Config {
+        self.scheduler = scheduler;
+        self
+    }
 }
 
 impl Default for Config {
@@ -223,7 +284,8 @@ pub struct ChannelOptions {
     pub reliability: Reliability,
     /// `Some(id)`: a negotiated channel on stream `id` (no DCEP; both sides open it).
     pub negotiated: Option<u16>,
-    /// Priority sent in DATA_CHANNEL_OPEN (not used for scheduling).
+    /// Priority (default 256): sent in DATA_CHANNEL_OPEN and used by the
+    /// [`Scheduler`] for our side of the channel. Higher is more important.
     pub priority: u16,
 }
 
@@ -264,6 +326,13 @@ impl ChannelOptions {
         protocol.clone_into(&mut self.protocol);
         self
     }
+
+    /// Sets [`ChannelOptions::priority`].
+    #[must_use]
+    pub fn with_priority(mut self, priority: u16) -> ChannelOptions {
+        self.priority = priority;
+        self
+    }
 }
 
 impl Default for ChannelOptions {
@@ -292,7 +361,8 @@ pub struct ChannelInfo {
     pub reliability: Reliability,
     /// Negotiated out of band (no DCEP).
     pub negotiated: bool,
-    /// Priority from DATA_CHANNEL_OPEN.
+    /// Priority: from DATA_CHANNEL_OPEN, or as last set with
+    /// [`Association::set_channel_priority`]; the scheduler uses it for our sending side.
     pub priority: u16,
 }
 

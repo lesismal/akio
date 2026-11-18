@@ -1,5 +1,6 @@
-//! The association state machine: handshake (RFC 9260 §5), shutdown and abort (§9), chunk
-//! dispatch, stream reset (RFC 6525) and the data channel layer (RFC 8831 / 8832).
+//! The association state machine: handshake (RFC 9260 §5) with the I-DATA negotiation (RFC
+//! 8260 §2.2), shutdown and abort (§9), chunk dispatch, stream reset (RFC 6525) and the data
+//! channel layer (RFC 8831 / 8832).
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -10,9 +11,9 @@ use only_crypto::mac::Hmac;
 use crate::dcep::{self, Open};
 use crate::packet::{
     self, CT_ABORT, CT_COOKIE_ACK, CT_COOKIE_ECHO, CT_DATA, CT_ERROR, CT_FORWARD_TSN, CT_HEARTBEAT,
-    CT_HEARTBEAT_ACK, CT_INIT, CT_INIT_ACK, CT_RECONFIG, CT_SACK, CT_SHUTDOWN, CT_SHUTDOWN_ACK,
-    CT_SHUTDOWN_COMPLETE, Data, FLAG_T, ForwardTsn, Header, Init, PacketWriter, RawChunk,
-    ReconfigParam, Sack,
+    CT_HEARTBEAT_ACK, CT_IDATA, CT_IFORWARD_TSN, CT_INIT, CT_INIT_ACK, CT_RECONFIG, CT_SACK,
+    CT_SHUTDOWN, CT_SHUTDOWN_ACK, CT_SHUTDOWN_COMPLETE, Data, FLAG_T, ForwardTsn, Header, IData,
+    IForwardTsn, Init, PacketWriter, RawChunk, ReconfigParam, Sack,
 };
 use crate::recv::{Message, Receiver};
 use crate::send::{Policy, Sender, Timing, le32, lt32};
@@ -95,6 +96,8 @@ struct Peer {
     initial_tsn: u32,
     a_rwnd: u32,
     forward_tsn: bool,
+    /// The peer offered I-DATA (RFC 8260).
+    i_data: bool,
 }
 
 #[derive(Debug)]
@@ -195,8 +198,8 @@ impl Association {
             rto_max: config.rto_max.max(config.rto_min),
         };
         Association {
-            tx: Sender::new(config.mtu, timing, my_initial_tsn),
-            rx: Receiver::new(0, 0, 0, config.mtu),
+            tx: Sender::new(config.mtu, timing, my_initial_tsn, config.scheduler),
+            rx: Receiver::new(0, 0, 0, config.mtu, false),
             state: State::Closed,
             my_tag,
             my_initial_tsn,
@@ -245,6 +248,7 @@ impl Association {
             cookie: None,
             forward_tsn: true,
             reconfig: true,
+            i_data: self.cfg.message_interleaving,
         }
     }
 
@@ -367,7 +371,7 @@ impl Association {
         c.extend_from_slice(&init.a_rwnd.to_be_bytes());
         c.extend_from_slice(&init.outbound_streams.to_be_bytes());
         c.extend_from_slice(&init.inbound_streams.to_be_bytes());
-        c.push(u8::from(init.forward_tsn));
+        c.push(u8::from(init.forward_tsn) | (u8::from(init.i_data) << 1));
         c.extend_from_slice(&self.my_tag.to_be_bytes());
         let mac = Hmac::<Sha256>::mac(&self.cookie_secret, &c);
         c.extend_from_slice(&mac[..COOKIE_MAC_LEN]);
@@ -394,7 +398,8 @@ impl Association {
             tag: u32_at(0),
             initial_tsn: u32_at(4),
             a_rwnd: u32_at(8),
-            forward_tsn: data[16] != 0,
+            forward_tsn: data[16] & 1 != 0,
+            i_data: data[16] & 2 != 0,
         })
     }
 
@@ -432,6 +437,7 @@ impl Association {
             initial_tsn: init.initial_tsn,
             a_rwnd: init.a_rwnd,
             forward_tsn: init.forward_tsn,
+            i_data: init.i_data,
         });
         let echo = packet::chunk(CT_COOKIE_ECHO, 0, cookie);
         self.ctrl.push_back((init.initiate_tag, echo.clone()));
@@ -469,12 +475,15 @@ impl Association {
         self.state = State::Established;
         self.t1 = None;
         self.t1_chunk = None;
-        self.tx.start(p.a_rwnd, p.forward_tsn);
+        // RFC 8260 §2.2: I-DATA only when both sides offered it.
+        let idata = self.cfg.message_interleaving && p.i_data;
+        self.tx.start(p.a_rwnd, p.forward_tsn, idata);
         self.rx = Receiver::new(
             p.initial_tsn,
             self.cfg.receive_window,
             self.cfg.max_receive_message_size,
             self.cfg.mtu,
+            idata,
         );
         self.peer_req_expected = p.initial_tsn;
         self.events.push_back(Event::Connected);
@@ -633,20 +642,31 @@ impl Association {
     ) -> bool {
         let connected = self.state.connected();
         match c.typ {
-            CT_DATA => {
+            CT_DATA | CT_IDATA => {
                 if !matches!(
                     self.state,
                     State::Established | State::ShutdownPending | State::ShutdownSent
                 ) {
                     return true;
                 }
-                let Some(d) = Data::parse(c.flags, c.value) else {
+                if (c.typ == CT_IDATA) != self.tx.idata {
+                    // RFC 8260 §2.2.3: DATA when I-DATA was negotiated, or the other way
+                    // round, is a protocol violation.
+                    self.flush_delivered();
+                    self.abort_with(packet::CAUSE_PROTOCOL_VIOLATION);
+                    return false;
+                }
+                let mut out = std::mem::take(&mut self.delivered);
+                let r = if c.typ == CT_IDATA {
+                    IData::parse(c.flags, c.value).map(|d| self.rx.on_idata(&d, &mut out))
+                } else {
+                    Data::parse(c.flags, c.value).map(|d| self.rx.on_data(&d, &mut out))
+                };
+                self.delivered = out;
+                let Some(r) = r else {
                     return true;
                 };
                 *had_data = true;
-                let mut out = std::mem::take(&mut self.delivered);
-                let r = self.rx.on_data(&d, &mut out);
-                self.delivered = out;
                 if r.is_err() {
                     self.flush_delivered();
                     self.abort_with(packet::CAUSE_PROTOCOL_VIOLATION);
@@ -721,7 +741,19 @@ impl Association {
                     return false;
                 }
             }
-            CT_FORWARD_TSN if connected => {
+            CT_IFORWARD_TSN if connected && self.tx.idata => {
+                if let Some(f) = IForwardTsn::parse(c.value) {
+                    let mut out = std::mem::take(&mut self.delivered);
+                    self.rx.on_iforward_tsn(f.new_cum_tsn, &f.streams, &mut out);
+                    self.delivered = out;
+                    for &(s, _, _) in &f.streams {
+                        if let Some(ch) = self.channels.get_mut(&s) {
+                            ch.partial.clear();
+                        }
+                    }
+                }
+            }
+            CT_FORWARD_TSN if connected && !self.tx.idata => {
                 if let Some(f) = ForwardTsn::parse(c.value) {
                     let mut out = std::mem::take(&mut self.delivered);
                     self.rx.on_forward_tsn(f.new_cum_tsn, &f.streams, &mut out);
@@ -738,7 +770,9 @@ impl Association {
                     self.on_reconfig_param(now, p);
                 }
             }
-            CT_SACK | CT_SHUTDOWN | CT_FORWARD_TSN | CT_RECONFIG => {}
+            // Out of state, or the forward kind that does not match the data chunks in use
+            // (RFC 8260 §2.3.1): ignored.
+            CT_SACK | CT_SHUTDOWN | CT_FORWARD_TSN | CT_IFORWARD_TSN | CT_RECONFIG => {}
             t => {
                 // RFC 9260 §3.2: the two high bits say whether to go on and whether to report.
                 if t & 0x40 != 0 {
@@ -844,6 +878,7 @@ impl Association {
                         partial: Vec::new(),
                     },
                 );
+                self.tx.set_priority(stream, open.priority);
                 self.tx.enqueue(
                     stream,
                     PPID_DCEP,
@@ -910,6 +945,7 @@ impl Association {
         // A previous channel on this id may still have state; start clean.
         self.tx.forget_stream(stream);
         self.rx.reset_stream(stream);
+        self.tx.set_priority(stream, opts.priority);
         if !negotiated {
             let open = Open {
                 ordered: opts.ordered,
@@ -1015,6 +1051,25 @@ impl Association {
     /// the buffered amount drops to or below it after having been above it.
     pub fn set_buffered_amount_low_threshold(&mut self, stream: u16, bytes: usize) {
         self.tx.set_threshold(stream, bytes);
+    }
+
+    /// Changes a channel's priority for the [`Scheduler`](crate::Scheduler) (our sending side
+    /// only: the peer was told the priority at open time). Takes effect for the next chunk.
+    pub fn set_channel_priority(&mut self, stream: u16, priority: u16) -> Result<(), Error> {
+        let ch = self
+            .channels
+            .get_mut(&stream)
+            .ok_or(Error::UnknownChannel(stream))?;
+        ch.priority = priority;
+        self.tx.set_priority(stream, priority);
+        Ok(())
+    }
+
+    /// Whether I-DATA (RFC 8260 message interleaving) is in use: both sides offered it.
+    /// `false` until the association is established.
+    #[must_use]
+    pub fn message_interleaving(&self) -> bool {
+        self.tx.idata
     }
 
     /// The channel on `stream`, if open (or closing).
@@ -1313,9 +1368,14 @@ impl Association {
             w.push_raw(&sack.encode());
         }
         if self.tx.fwd_tsn_needed {
-            let max_streams = self.cfg.mtu.saturating_sub(12 + 8) / 4;
-            if let Some(f) = self.tx.forward_tsn(max_streams) {
-                let enc = f.encode();
+            let enc = if self.tx.idata {
+                let max_entries = self.cfg.mtu.saturating_sub(12 + 8) / 8;
+                self.tx.iforward_tsn(max_entries).map(|f| f.encode())
+            } else {
+                let max_streams = self.cfg.mtu.saturating_sub(12 + 8) / 4;
+                self.tx.forward_tsn(max_streams).map(|f| f.encode())
+            };
+            if let Some(enc) = enc {
                 if packet::pad4(enc.len()) <= w.remaining() {
                     w.push_raw(&enc);
                     self.tx.fwd_tsn_needed = false;

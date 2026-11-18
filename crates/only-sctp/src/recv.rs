@@ -1,11 +1,14 @@
-//! The receiving half: TSN tracking, SACK generation (RFC 9260 §6.2), reassembly and
-//! per-stream ordered delivery, FORWARD TSN (RFC 3758 §3.6) and incoming stream resets.
+//! The receiving half: TSN tracking, SACK generation (RFC 9260 §6.2), reassembly of DATA
+//! (by TSN) or I-DATA (by stream, MID and FSN, RFC 8260 §2.1) chunks, per-stream ordered
+//! delivery, FORWARD TSN (RFC 3758 §3.6) or I-FORWARD-TSN (RFC 8260 §2.3) and incoming stream
+//! resets.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use crate::packet::{Data, FLAG_BEGIN, FLAG_END, FLAG_IMMEDIATE, FLAG_UNORDERED, Sack};
-use crate::send::le16;
+use crate::packet::{Data, FLAG_BEGIN, FLAG_END, FLAG_IMMEDIATE, FLAG_UNORDERED, IData, Sack};
+use crate::sched::StreamMap;
+use crate::send::{le16, le32};
 
 /// Delayed SACK timer (RFC 9260 §6.2: at most 500 ms; 200 ms is customary).
 pub(crate) const SACK_DELAY: Duration = Duration::from_millis(200);
@@ -48,8 +51,24 @@ impl RChunk {
 
 #[derive(Debug, Default)]
 struct InStream {
-    next_ssn: u16,
-    ready: BTreeMap<u16, Message>,
+    /// Next SSN (DATA, 16 bits) or MID (I-DATA) to deliver.
+    next: u32,
+    ready: BTreeMap<u32, Message>,
+}
+
+/// An I-DATA message being reassembled: fragments that arrive in FSN order are appended to
+/// `data` directly, the others wait in `later`.
+#[derive(Debug, Default)]
+struct Partial {
+    /// Fragments 0 .. `next`, concatenated.
+    data: Vec<u8>,
+    next: u32,
+    later: BTreeMap<u32, Vec<u8>>,
+    ppid: u32,
+    last: Option<u32>,
+    /// Payload bytes and fragments held (charged).
+    size: usize,
+    frags: usize,
 }
 
 /// The message exceeded the receive limit.
@@ -62,9 +81,13 @@ pub(crate) struct Receiver {
     cum: u64,
     /// Received TSNs above `cum`.
     received: BTreeSet<u64>,
-    /// Received fragments not yet assembled, by extended TSN.
+    /// Received DATA fragments not yet assembled, by extended TSN.
     chunks: BTreeMap<u64, RChunk>,
-    streams: HashMap<u16, InStream>,
+    /// I-DATA mode (RFC 8260): fragments are reassembled by message instead.
+    idata: bool,
+    /// Received I-DATA fragments by (stream, unordered, MID).
+    reasm: BTreeMap<(u16, bool, u32), Partial>,
+    streams: StreamMap<InStream>,
     /// Payload bytes held (fragments plus complete messages waiting for their SSN).
     held: usize,
     /// `held` plus per-chunk overhead, checked against the caps.
@@ -85,6 +108,7 @@ impl Receiver {
         window: u32,
         max_message: usize,
         mtu: usize,
+        idata: bool,
     ) -> Receiver {
         let window = window as usize;
         let soft_cap = window.max(max_message).saturating_add(4 * mtu);
@@ -92,7 +116,9 @@ impl Receiver {
             cum: (1u64 << 32) + u64::from(peer_initial_tsn) - 1,
             received: BTreeSet::new(),
             chunks: BTreeMap::new(),
-            streams: HashMap::new(),
+            idata,
+            reasm: BTreeMap::new(),
+            streams: StreamMap::default(),
             held: 0,
             charged: 0,
             dups: Vec::new(),
@@ -194,38 +220,53 @@ impl Receiver {
         }
     }
 
-    /// Takes one DATA chunk; complete messages are appended to `out`.
-    pub(crate) fn on_data(&mut self, d: &Data<'_>, out: &mut Vec<Message>) -> Result<(), TooLarge> {
-        if d.flags & FLAG_IMMEDIATE != 0 {
+    /// Whether a chunk with this TSN and payload size is taken: not a duplicate, not too far
+    /// ahead and within the memory caps. Records the TSN as received when it is.
+    /// `continues`: an I-DATA fragment of a message already started, which gets the larger
+    /// cap so that started messages can always complete.
+    fn accept(&mut self, flags: u8, tsn: u32, len: usize, continues: bool) -> Option<u64> {
+        if flags & FLAG_IMMEDIATE != 0 {
             self.sack_now = true;
         }
-        if d.payload.is_empty() {
-            return Ok(()); // RFC 9260 §6.2: no user data; ignored
+        if len == 0 {
+            return None; // RFC 9260 §6.2: no user data; ignored
         }
-        let t = self.extend(d.tsn);
+        let t = self.extend(tsn);
         if t <= self.cum || self.received.contains(&t) {
             if self.dups.len() < MAX_DUPS {
-                self.dups.push(d.tsn);
+                self.dups.push(tsn);
             }
             self.sack_now = true;
-            return Ok(());
+            return None;
         }
         if t - self.cum > MAX_TSN_AHEAD {
-            return Ok(());
+            return None;
         }
-        let cost = d.payload.len() + CHUNK_OVERHEAD;
-        let limit = if t == self.cum + 1 {
+        let cost = len + CHUNK_OVERHEAD;
+        let limit = if t == self.cum + 1 || continues {
             self.hard_cap
         } else {
             self.soft_cap
         };
         if self.charged + cost > limit {
-            return Ok(()); // no room: the peer retransmits
+            return None; // no room: the peer retransmits
         }
         self.received.insert(t);
         self.advance_cum();
+        Some(t)
+    }
+
+    /// Takes one DATA chunk; complete messages are appended to `out`.
+    pub(crate) fn on_data(&mut self, d: &Data<'_>, out: &mut Vec<Message>) -> Result<(), TooLarge> {
+        let Some(t) = self.accept(d.flags, d.tsn, d.payload.len(), false) else {
+            return Ok(());
+        };
+        if d.flags & (FLAG_BEGIN | FLAG_END) == FLAG_BEGIN | FLAG_END {
+            // A whole message in one chunk: no reassembly.
+            return self.whole(d.stream, d.ppid, d.flags, u32::from(d.ssn), d.payload, out);
+        }
         self.held += d.payload.len();
-        self.charged += cost;
+        self.charged += d.payload.len() + CHUNK_OVERHEAD;
         let end = d.flags & FLAG_END != 0;
         self.chunks.insert(
             t,
@@ -294,21 +335,171 @@ impl Receiver {
         let msg = Message { stream, ppid, data };
         if unordered {
             self.deliver(msg, out);
-            return Ok(());
+        } else {
+            self.in_order(u32::from(ssn), msg, out);
         }
-        let st = self.streams.entry(stream).or_default();
-        if ssn == st.next_ssn {
-            st.next_ssn = st.next_ssn.wrapping_add(1);
+        Ok(())
+    }
+
+    /// A message in a single chunk (B and E set): delivered or held without reassembly.
+    fn whole(
+        &mut self,
+        stream: u16,
+        ppid: u32,
+        flags: u8,
+        seq: u32,
+        payload: &[u8],
+        out: &mut Vec<Message>,
+    ) -> Result<(), TooLarge> {
+        if payload.len() > self.max_message {
+            return Err(TooLarge);
+        }
+        // Charged as a complete message waiting for delivery (see `try_assemble`).
+        self.held += payload.len();
+        self.charged += CHUNK_OVERHEAD;
+        let msg = Message {
+            stream,
+            ppid,
+            data: payload.to_vec(),
+        };
+        if flags & FLAG_UNORDERED != 0 {
+            self.deliver(msg, out);
+        } else {
+            self.in_order(seq, msg, out);
+        }
+        Ok(())
+    }
+
+    /// `a` is at or before `b` in the sequence space of SSNs (16 bits) or MIDs (32 bits).
+    fn seq_le(&self, a: u32, b: u32) -> bool {
+        if self.idata {
+            le32(a, b)
+        } else {
+            le16(a as u16, b as u16)
+        }
+    }
+
+    fn seq_next(&self, a: u32) -> u32 {
+        if self.idata {
+            a.wrapping_add(1)
+        } else {
+            u32::from((a as u16).wrapping_add(1))
+        }
+    }
+
+    /// A complete ordered message (charged as one buffered item): delivered now if it is
+    /// the stream's next, else held until it is.
+    fn in_order(&mut self, seq: u32, msg: Message, out: &mut Vec<Message>) {
+        let stream = msg.stream;
+        let next = self.streams.entry(stream).or_default().next;
+        if seq == next {
+            let n = self.seq_next(seq);
+            if let Some(st) = self.streams.get_mut(&stream) {
+                st.next = n;
+            }
             self.deliver(msg, out);
             self.drain_stream(stream, out);
-        } else if le16(st.next_ssn, ssn) {
-            st.ready.insert(ssn, msg);
+        } else if self.seq_le(next, seq) {
+            if let Some(st) = self.streams.get_mut(&stream) {
+                st.ready.insert(seq, msg);
+            }
         } else {
-            // An old SSN (duplicate after a reset or forward): drop.
+            // An old SSN / MID (duplicate after a reset or forward): drop.
             self.held -= msg.data.len();
             self.charged -= CHUNK_OVERHEAD;
         }
+    }
+
+    /// Takes one I-DATA chunk (RFC 8260 §2.1); complete messages are appended to `out`.
+    pub(crate) fn on_idata(
+        &mut self,
+        d: &IData<'_>,
+        out: &mut Vec<Message>,
+    ) -> Result<(), TooLarge> {
+        let continues = d.flags & FLAG_BEGIN == 0
+            && self
+                .reasm
+                .contains_key(&(d.stream, d.flags & FLAG_UNORDERED != 0, d.mid));
+        if self
+            .accept(d.flags, d.tsn, d.payload.len(), continues)
+            .is_none()
+        {
+            return Ok(());
+        }
+        let begin = d.flags & FLAG_BEGIN != 0;
+        let unordered = d.flags & FLAG_UNORDERED != 0;
+        if !begin && d.fsn == 0 {
+            return Ok(()); // FSN 0 is the first fragment's: malformed, dropped (but acked)
+        }
+        if !unordered {
+            let next = self.streams.get(&d.stream).map_or(0, |s| s.next);
+            if !le32(next, d.mid) {
+                return Ok(()); // a message already delivered or skipped
+            }
+        }
+        if begin && d.flags & FLAG_END != 0 {
+            return self.whole(d.stream, d.ppid, d.flags, d.mid, d.payload, out);
+        }
+        let key = (d.stream, unordered, d.mid);
+        let p = self.reasm.entry(key).or_default();
+        if d.fsn < p.next || p.later.contains_key(&d.fsn) {
+            return Ok(()); // the same fragment under another TSN
+        }
+        if begin {
+            p.ppid = d.ppid;
+        }
+        if d.flags & FLAG_END != 0 && p.last.is_none() {
+            p.last = Some(d.fsn);
+        }
+        if d.fsn == p.next {
+            p.data.extend_from_slice(d.payload);
+            p.next = p.next.wrapping_add(1);
+            while let Some(f) = p.later.remove(&p.next) {
+                p.data.extend_from_slice(&f);
+                p.next = p.next.wrapping_add(1);
+            }
+        } else {
+            p.later.insert(d.fsn, d.payload.to_vec());
+        }
+        p.size += d.payload.len();
+        p.frags += 1;
+        let size = p.size;
+        let complete = p.last.is_some_and(|l| p.next == l.wrapping_add(1));
+        self.held += d.payload.len();
+        self.charged += d.payload.len() + CHUNK_OVERHEAD;
+        if size > self.max_message {
+            return Err(TooLarge);
+        }
+        if !complete {
+            return Ok(());
+        }
+        let Some(p) = self.reasm.remove(&key) else {
+            return Ok(());
+        };
+        // Fragments past the last one (malformed) are dropped with it.
+        let stray: usize = p.later.values().map(Vec::len).sum();
+        self.held -= stray;
+        self.charged -= p.size + p.frags * CHUNK_OVERHEAD;
+        self.charged += CHUNK_OVERHEAD;
+        let msg = Message {
+            stream: d.stream,
+            ppid: p.ppid,
+            data: p.data,
+        };
+        if unordered {
+            self.deliver(msg, out);
+        } else {
+            self.in_order(d.mid, msg, out);
+        }
         Ok(())
+    }
+
+    /// Drops an I-DATA message being reassembled.
+    fn drop_partial(&mut self, key: (u16, bool, u32)) {
+        if let Some(p) = self.reasm.remove(&key) {
+            self.held -= p.size;
+            self.charged -= p.size + p.frags * CHUNK_OVERHEAD;
+        }
     }
 
     fn deliver(&mut self, msg: Message, out: &mut Vec<Message>) {
@@ -322,11 +513,15 @@ impl Receiver {
             let Some(st) = self.streams.get_mut(&stream) else {
                 return;
             };
-            let next = st.next_ssn;
+            let next = st.next;
             let Some(m) = st.ready.remove(&next) else {
                 return;
             };
-            st.next_ssn = next.wrapping_add(1);
+            st.next = if self.idata {
+                next.wrapping_add(1)
+            } else {
+                u32::from((next as u16).wrapping_add(1))
+            };
             self.deliver(m, out);
         }
     }
@@ -365,28 +560,90 @@ impl Receiver {
             }
         }
         for &(stream, ssn) in streams {
-            let st = self.streams.entry(stream).or_default();
-            if !le16(st.next_ssn, ssn) {
+            self.skip_to(stream, u32::from(ssn), out);
+        }
+    }
+
+    /// Delivers what is complete on `stream` up to `seq` in order, then moves past it.
+    fn skip_to(&mut self, stream: u16, seq: u32, out: &mut Vec<Message>) {
+        let idata = self.idata;
+        let le = move |a: u32, b: u32| {
+            if idata {
+                le32(a, b)
+            } else {
+                le16(a as u16, b as u16)
+            }
+        };
+        let after = self.seq_next(seq);
+        let st = self.streams.entry(stream).or_default();
+        if !le(st.next, seq) {
+            return;
+        }
+        let base = st.next;
+        let ready: Vec<u32> = st
+            .ready
+            .keys()
+            .copied()
+            .filter(|&s| le(s, seq) && le(base, s))
+            .collect();
+        let mut msgs: Vec<(u32, Message)> = ready
+            .into_iter()
+            .filter_map(|s| st.ready.remove(&s).map(|m| (s, m)))
+            .collect();
+        msgs.sort_by_key(|(s, _)| s.wrapping_sub(base) & if idata { u32::MAX } else { 0xffff });
+        st.next = after;
+        for (_, m) in msgs {
+            self.deliver(m, out);
+        }
+        self.drain_stream(stream, out);
+    }
+
+    /// I-FORWARD-TSN (RFC 8260 §2.3.1): skips to `new_cum`; for each ordered entry drops
+    /// the partial messages up to its MID and moves the stream past it, for each unordered
+    /// one drops that message. Fragments are not dropped by TSN: with interleaving, those
+    /// below `new_cum` may belong to messages that still complete.
+    pub(crate) fn on_iforward_tsn(
+        &mut self,
+        new_cum: u32,
+        entries: &[(u16, bool, u32)],
+        out: &mut Vec<Message>,
+    ) {
+        self.sack_now = true;
+        let t = self.extend(new_cum);
+        if t > self.cum && t - self.cum <= MAX_TSN_AHEAD {
+            self.received = self.received.split_off(&(t + 1));
+            self.cum = t;
+            self.advance_cum();
+        }
+        for &(stream, unordered, mid) in entries {
+            if unordered {
+                self.drop_partial((stream, true, mid));
                 continue;
             }
-            // Deliver what is complete up to `ssn` in order, then skip past it.
-            let ready: Vec<u16> = st
-                .ready
-                .keys()
-                .copied()
-                .filter(|&s| le16(s, ssn) && le16(st.next_ssn, s))
-                .collect();
-            let mut msgs: Vec<(u16, Message)> = ready
-                .into_iter()
-                .filter_map(|s| st.ready.remove(&s).map(|m| (s, m)))
-                .collect();
-            let base = st.next_ssn;
-            msgs.sort_by_key(|(s, _)| s.wrapping_sub(base));
-            st.next_ssn = ssn.wrapping_add(1);
-            for (_, m) in msgs {
-                self.deliver(m, out);
+            let next = self.streams.get(&stream).map_or(0, |s| s.next);
+            if !le32(next, mid) {
+                continue;
             }
-            self.drain_stream(stream, out);
+            // Partial messages next ..= mid (serial order: one or two key ranges).
+            let ranges = if next <= mid {
+                [(next, mid), (1, 0)]
+            } else {
+                [(next, u32::MAX), (0, mid)]
+            };
+            let mut stale: Vec<(u16, bool, u32)> = Vec::new();
+            for (lo, hi) in ranges {
+                if lo <= hi {
+                    stale.extend(
+                        self.reasm
+                            .range((stream, false, lo)..=(stream, false, hi))
+                            .map(|(k, _)| *k),
+                    );
+                }
+            }
+            for k in stale {
+                self.drop_partial(k);
+            }
+            self.skip_to(stream, mid, out);
         }
     }
 
@@ -433,7 +690,7 @@ mod tests {
 
     #[test]
     fn ordered_out_of_order_and_gaps() {
-        let mut r = Receiver::new(u32::MAX - 1, 1 << 20, 1 << 20, 1200);
+        let mut r = Receiver::new(u32::MAX - 1, 1 << 20, 1 << 20, 1200, false);
         let mut out = Vec::new();
         // TSNs wrap: MAX-1, MAX, 0, 1.
         r.on_data(&data(0, 1, 2, BE, b"c"), &mut out).unwrap();
@@ -456,7 +713,7 @@ mod tests {
 
     #[test]
     fn fragments_and_limit() {
-        let mut r = Receiver::new(1, 1 << 20, 5, 1200);
+        let mut r = Receiver::new(1, 1 << 20, 5, 1200, false);
         let mut out = Vec::new();
         r.on_data(&data(3, 0, 0, FLAG_END, b"cc"), &mut out)
             .unwrap();
@@ -476,7 +733,7 @@ mod tests {
 
     #[test]
     fn forward_tsn_skips() {
-        let mut r = Receiver::new(10, 1 << 20, 1 << 20, 1200);
+        let mut r = Receiver::new(10, 1 << 20, 1 << 20, 1200, false);
         let mut out = Vec::new();
         // SSN 0 lost (TSN 10), SSN 1 partial (TSN 11 begin, 12 lost), SSN 2 complete (13).
         r.on_data(&data(11, 0, 1, FLAG_BEGIN, b"x"), &mut out)
@@ -487,6 +744,116 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].data, b"z");
         assert_eq!(r.cum_tsn(), 13);
+        assert_eq!(r.held(), 0);
+    }
+
+    fn idata(tsn: u32, stream: u16, mid: u32, fsn: u32, flags: u8, payload: &[u8]) -> IData<'_> {
+        IData {
+            flags,
+            tsn,
+            stream,
+            mid,
+            ppid: if flags & FLAG_BEGIN != 0 { 53 } else { 0 },
+            fsn,
+            payload,
+        }
+    }
+
+    #[test]
+    fn idata_interleaved_reassembly() {
+        let mut r = Receiver::new(u32::MAX - 2, 1 << 20, 1 << 20, 1200, true);
+        let mut out = Vec::new();
+        // Stream 1 MID 0 "abc" (3 fragments) interleaved with stream 2 MID 0 "xy" and stream
+        // 1 MID 1 "z"; fragments arrive out of order across the TSN wrap.
+        let t = |i: u32| (u32::MAX - 2).wrapping_add(i);
+        r.on_idata(&idata(t(4), 1, 1, 0, BE, b"z"), &mut out)
+            .unwrap();
+        r.on_idata(&idata(t(3), 1, 0, 2, FLAG_END, b"c"), &mut out)
+            .unwrap();
+        r.on_idata(&idata(t(1), 2, 0, 0, FLAG_BEGIN, b"x"), &mut out)
+            .unwrap();
+        r.on_idata(&idata(t(0), 1, 0, 0, FLAG_BEGIN, b"a"), &mut out)
+            .unwrap();
+        assert!(out.is_empty());
+        r.on_idata(&idata(t(5), 2, 0, 1, FLAG_END, b"y"), &mut out)
+            .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            (out[0].stream, out[0].ppid, &out[0].data[..]),
+            (2, 53, &b"xy"[..])
+        );
+        r.on_idata(&idata(t(2), 1, 0, 1, 0, b"b"), &mut out)
+            .unwrap();
+        let got: Vec<(u16, &[u8])> = out.iter().map(|m| (m.stream, &m.data[..])).collect();
+        assert_eq!(got, vec![(2, &b"xy"[..]), (1, b"abc"), (1, b"z")]);
+        assert_eq!(r.cum_tsn(), t(5));
+        // Duplicates and an old MID are dropped.
+        r.on_idata(&idata(t(5), 2, 0, 1, FLAG_END, b"y"), &mut out)
+            .unwrap();
+        r.on_idata(&idata(t(6), 1, 0, 0, BE, b"old"), &mut out)
+            .unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(r.held(), 0);
+        assert_eq!(r.make_sack(1000).dups, vec![t(5)]);
+    }
+
+    #[test]
+    fn idata_malformed_and_limit() {
+        let mut r = Receiver::new(1, 1 << 20, 6, 1200, true);
+        let mut out = Vec::new();
+        // FSN 0 without the B bit is malformed: acked, dropped.
+        r.on_idata(&idata(1, 0, 0, 0, FLAG_END, b"bad"), &mut out)
+            .unwrap();
+        assert_eq!((r.cum_tsn(), r.held()), (1, 0));
+        // The same fragment under another TSN is ignored.
+        r.on_idata(&idata(2, 0, 0, 0, FLAG_BEGIN, b"ab"), &mut out)
+            .unwrap();
+        r.on_idata(&idata(3, 0, 0, 0, FLAG_BEGIN, b"ab"), &mut out)
+            .unwrap();
+        assert_eq!(r.held(), 2);
+        assert_eq!(
+            r.on_idata(&idata(4, 0, 0, 1, 0, b"cdefg"), &mut out),
+            Err(TooLarge)
+        );
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn iforward_tsn_skips_by_mid() {
+        let mut r = Receiver::new(10, 1 << 20, 1 << 20, 1200, true);
+        let mut out = Vec::new();
+        // Stream 0: MID 0 partial (TSN 10), MID 1 lost, MID 2 complete (13). Stream 3,
+        // unordered: MID 5 partial (12) and MID 6 partial (14).
+        r.on_idata(&idata(10, 0, 0, 0, FLAG_BEGIN, b"p"), &mut out)
+            .unwrap();
+        r.on_idata(
+            &idata(12, 3, 5, 0, FLAG_BEGIN | FLAG_UNORDERED, b"u"),
+            &mut out,
+        )
+        .unwrap();
+        r.on_idata(&idata(13, 0, 2, 0, BE, b"two"), &mut out)
+            .unwrap();
+        r.on_idata(
+            &idata(14, 3, 6, 0, FLAG_BEGIN | FLAG_UNORDERED, b"v"),
+            &mut out,
+        )
+        .unwrap();
+        assert!(out.is_empty());
+        r.on_iforward_tsn(11, &[(0, false, 1), (3, true, 5)], &mut out);
+        let got: Vec<&[u8]> = out.iter().map(|m| &m.data[..]).collect();
+        assert_eq!(got, vec![&b"two"[..]]);
+        assert_eq!(r.cum_tsn(), 14);
+        // Only the unordered message named is dropped; MID 6 still completes.
+        assert_eq!(r.held(), 1);
+        r.on_idata(
+            &idata(15, 3, 6, 1, FLAG_END | FLAG_UNORDERED, b"w"),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(out[1].data, b"vw");
+        // Stale or far-off forwards change nothing.
+        r.on_iforward_tsn(3, &[(0, false, 0)], &mut out);
+        assert_eq!((r.cum_tsn(), out.len()), (15, 2));
         assert_eq!(r.held(), 0);
     }
 }

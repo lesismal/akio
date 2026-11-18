@@ -70,6 +70,33 @@ additive:
 - Tests against libwebrtc's unit-test vectors, the RFC 3611 example and simulated loss; new fuzz
   target `rtp_fec`, `rtp_rtcp` extended. Not wired into `only-webrtc` yet.
 
+### Added: SCTP message interleaving (I-DATA) and stream schedulers (only-sctp)
+
+ADR-037 (docs/adr/037-sctp-idata-schedulers.md), additive (only-sctp is Internal tier):
+
+- **I-DATA / I-FORWARD-TSN (RFC 8260 §2)**, offered by default (`Config::message_interleaving`)
+  and used when the peer offers them too (`Association::message_interleaving`): fragments of
+  messages on different channels interleave, so a large message no longer holds up small ones
+  on other channels (a 4-byte message queued after a 200 kB one on another channel now arrives
+  in the first round trip instead of after it). DATA and FORWARD TSN otherwise, as before; the
+  chunk kind not negotiated aborts the association (protocol violation).
+- **Stream schedulers (RFC 8260 §3)**: `Config::scheduler` with `Scheduler::{FirstComeFirstServed,
+  RoundRobin, RoundRobinPerPacket, Priority, FairCapacity, WeightedFairQueueing}` (default
+  weighted fair queueing), by channel priority: `ChannelOptions::with_priority`, the peer's
+  DATA_CHANNEL_OPEN value, `Association::set_channel_priority` (RFC 8832 semantics, higher is
+  more important; 0 counts as 256). Previously messages went out first come, first served.
+- Sender queues per stream with fragments cut as they get TSNs from one shared buffer per
+  message; with I-DATA a new message starts only while the started ones fit in half the peer's
+  window, so many large messages at once cannot fill it with partial messages; single-chunk
+  messages skip reassembly and in-order I-DATA fragments are appended
+  directly. Same-run A/B against 59d41cc2 on gpu51 (`quiet.sh`, CPUs 2-9, 7 alternating rounds, medians): in-memory SCTP (`examples/sctp_bench.rs`) 1 KiB messages 1.19x (DATA fallback 1.21x), 64 KiB 1.33x (1.14x), 16 KiB unordered 1.12x (1.08x), four channels 1.20x (1.07x); data-channel throughput between two loopback `Endpoint`s, DTLS included, 0.986x (189.0 vs 191.7 MB/s; 1.009x in an earlier run, rounds vary by ±5%): no regression.
+- Interop: pion/sctp v1.12.0 over UDP (new `tools/interop/sctp/run.sh`: both roles, pion's
+  interleaving on and off, with and without loss); pion WebRTC negotiates I-DATA; headless
+  Chrome 157 both directions on DATA (default) and on I-DATA (`CHROME_ARGS` with its
+  `WebRTC-DataChannelMessageInterleaving` field trial, new in `browser.sh`). Fuzz target
+  `sctp_packet` drives an I-DATA and a DATA pair. only-webrtc gets the new defaults without an
+  API change.
+
 ### Added: protobuf text format (only-protobuf)
 
 ADR-030 (docs/adr/030-protobuf-text-format.md), additive: `only_protobuf::text` parses and prints

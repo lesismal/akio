@@ -1,9 +1,10 @@
 //! Two associations over a simulated link (loss, reordering, duplication, small MTU) in
-//! simulated time.
+//! simulated time. `Sim::pair` uses I-DATA (RFC 8260) for odd seeds and DATA for even ones,
+//! so the seed loops cover both.
 
 use std::time::{Duration, Instant};
 
-use only_sctp::{Association, ChannelOptions, Config, Error, Event, Reliability};
+use only_sctp::{Association, ChannelOptions, Config, Error, Event, Reliability, Scheduler};
 
 /// Reproducible tags, initial TSNs and cookie keys; every third seed starts the TSNs just
 /// below the 2^32 wrap.
@@ -72,6 +73,10 @@ struct Sim {
     /// Drop everything (the peer vanished).
     blackhole: bool,
     packets: u64,
+    /// Chunk types seen in packets from `a`.
+    seen: [bool; 256],
+    /// Packets from `a` whose DATA / I-DATA chunks belong to more than one stream.
+    mixed: usize,
 }
 
 impl Sim {
@@ -92,16 +97,45 @@ impl Sim {
             ev_b: Vec::new(),
             blackhole: false,
             packets: 0,
+            seen: [false; 256],
+            mixed: 0,
         }
     }
 
     fn pair(link: Link, seed: u64, mtu: usize) -> Sim {
+        let idata = seed % 2 == 1;
         Sim::new(
-            Config::new(true).with_mtu(mtu),
-            Config::new(false).with_mtu(mtu),
+            Config::new(true)
+                .with_mtu(mtu)
+                .with_message_interleaving(idata),
+            Config::new(false)
+                .with_mtu(mtu)
+                .with_message_interleaving(idata),
             link,
             seed,
         )
+    }
+
+    /// Records the chunk types of a packet from `a` and whether its data chunks mix streams.
+    fn inspect(&mut self, p: &[u8]) {
+        let mut at = 12;
+        let mut stream: Option<u16> = None;
+        let mut mixed = false;
+        while at + 4 <= p.len() {
+            let typ = p[at];
+            let len = usize::from(u16::from_be_bytes([p[at + 2], p[at + 3]]));
+            self.seen[usize::from(typ)] = true;
+            if (typ == 0 || typ == 64) && at + 10 <= p.len() {
+                let s = u16::from_be_bytes([p[at + 8], p[at + 9]]);
+                mixed |= stream.is_some_and(|x| x != s);
+                stream = Some(s);
+            }
+            if len < 4 {
+                break;
+            }
+            at += (len + 3) & !3;
+        }
+        self.mixed += usize::from(mixed);
     }
 
     fn elapsed(&self) -> Duration {
@@ -116,6 +150,9 @@ impl Sim {
             self.mtu
         );
         self.packets += 1;
+        if to_b {
+            self.inspect(&p);
+        }
         if self.blackhole || self.rng.chance(self.link.loss) {
             return;
         }
@@ -783,4 +820,397 @@ fn garbage_is_ignored() {
     let ch = s.a.open_channel(s.now, ChannelOptions::new("ok")).unwrap();
     s.a.send(s.now, ch, b"still fine", false).unwrap();
     assert!(s.run(Duration::from_secs(5), |s| s.data_b(ch).len() == 1));
+}
+
+fn idata_config(client: bool, interleave: bool, scheduler: Scheduler) -> Config {
+    Config::new(client)
+        .with_message_interleaving(interleave)
+        .with_scheduler(scheduler)
+}
+
+/// Opens channels from `a` and waits until `b` has them all and they are acknowledged.
+fn open_all(s: &mut Sim, opts: &[ChannelOptions]) -> Vec<u16> {
+    let ids: Vec<u16> = opts
+        .iter()
+        .map(|o| s.a.open_channel(s.now, o.clone()).unwrap())
+        .collect();
+    let n = ids.len();
+    assert!(
+        s.run(Duration::from_secs(60), |s| count(&s.ev_b, |e| matches!(
+            e,
+            Event::ChannelOpen { .. }
+        )) == n)
+    );
+    s.run(Duration::from_secs(2), |_| false);
+    ids
+}
+
+#[test]
+fn message_interleaving_negotiation() {
+    for (ia, ib, b_connects) in [
+        (true, true, false),
+        (true, true, true),
+        (true, false, false),
+        (false, true, true),
+        (false, false, false),
+    ] {
+        let mut s = Sim::new(
+            Config::new(true).with_message_interleaving(ia),
+            Config::new(false).with_message_interleaving(ib),
+            CLEAN,
+            3,
+        );
+        assert!(!s.a.message_interleaving());
+        if b_connects {
+            s.b.connect(s.now);
+            assert!(s.run(Duration::from_secs(60), |s| s.a.is_established()
+                && s.b.is_established()));
+        } else {
+            s.connect();
+        }
+        let on = ia && ib;
+        assert_eq!(
+            (s.a.message_interleaving(), s.b.message_interleaving()),
+            (on, on),
+            "{ia} {ib}"
+        );
+        let ch = s.a.open_channel(s.now, ChannelOptions::new("x")).unwrap();
+        let m = msg(1, 5000);
+        s.a.send(s.now, ch, &m, true).unwrap();
+        assert!(s.run(Duration::from_secs(5), |s| s.data_b(ch).len() == 1));
+        assert_eq!(s.data_b(ch)[0], m);
+        // RFC 8260 §2.2: I-DATA only, or DATA only, on the wire.
+        assert_eq!((s.seen[64], s.seen[0]), (on, !on), "{ia} {ib}");
+    }
+}
+
+/// Simulated time from queueing a 200 kB message on one channel and then 4 bytes on
+/// another until each arrives: (small, big).
+fn head_of_line(interleave: bool, scheduler: Scheduler) -> (Duration, Duration) {
+    let mut s = Sim::new(
+        idata_config(true, interleave, scheduler),
+        idata_config(false, interleave, scheduler),
+        CLEAN,
+        11,
+    );
+    s.connect();
+    let ids = open_all(
+        &mut s,
+        &[ChannelOptions::new("big"), ChannelOptions::new("small")],
+    );
+    let big = msg(7, 200_000);
+    s.a.send(s.now, ids[0], &big, true).unwrap();
+    s.a.send(s.now, ids[1], b"ping", false).unwrap();
+    let t0 = s.now;
+    assert!(s.run(Duration::from_secs(30), |s| s.data_b(ids[1]).len() == 1));
+    let small = s.now - t0;
+    assert!(s.run(Duration::from_secs(30), |s| s.data_b(ids[0]).len() == 1));
+    assert_eq!(s.data_b(ids[0])[0], big);
+    (small, s.now - t0)
+}
+
+#[test]
+fn head_of_line_blocking() {
+    // I-DATA with a scheduler that alternates: the small message overtakes the big one.
+    for sched in [
+        Scheduler::RoundRobin,
+        Scheduler::RoundRobinPerPacket,
+        Scheduler::FairCapacity,
+        Scheduler::WeightedFairQueueing,
+        Scheduler::Priority,
+    ] {
+        let (small, big) = head_of_line(true, sched);
+        assert!(
+            small < Duration::from_millis(60) && small * 4 < big,
+            "{sched:?}: small {small:?} big {big:?}"
+        );
+    }
+    // First come, first served keeps queueing order even with I-DATA, and without I-DATA a
+    // started message always goes out whole.
+    for (interleave, sched) in [
+        (true, Scheduler::FirstComeFirstServed),
+        (false, Scheduler::FirstComeFirstServed),
+        (false, Scheduler::RoundRobin),
+        (false, Scheduler::WeightedFairQueueing),
+    ] {
+        let (small, big) = head_of_line(interleave, sched);
+        assert!(
+            small >= big,
+            "{interleave} {sched:?}: small {small:?} big {big:?}"
+        );
+    }
+}
+
+/// Queues 512 KiB in 8 KiB messages on each of two channels (all of the first, then all of
+/// the second) and returns the bytes of each delivered once 256 KiB have arrived.
+fn shares(interleave: bool, scheduler: Scheduler, prio: [u16; 2]) -> [usize; 2] {
+    let mut s = Sim::new(
+        idata_config(true, interleave, scheduler),
+        idata_config(false, interleave, scheduler),
+        CLEAN,
+        13,
+    );
+    s.connect();
+    let ids = open_all(
+        &mut s,
+        &[
+            ChannelOptions::new("a").with_priority(prio[0]),
+            ChannelOptions::new("b").with_priority(prio[1]),
+        ],
+    );
+    for &c in &ids {
+        for i in 0..64 {
+            assert_eq!(s.a.send(s.now, c, &msg(i, 8192), true), Ok(true));
+        }
+    }
+    let got = |s: &Sim, c: u16| s.data_b(c).iter().map(Vec::len).sum::<usize>();
+    assert!(
+        s.run(Duration::from_secs(60), |s| got(s, ids[0]) + got(s, ids[1])
+            >= 256 << 10)
+    );
+    let r = [got(&s, ids[0]), got(&s, ids[1])];
+    // Everything still arrives, in order.
+    assert!(
+        s.run(Duration::from_secs(60), |s| s.data_b(ids[0]).len() == 64
+            && s.data_b(ids[1]).len() == 64)
+    );
+    for &c in &ids {
+        assert!(
+            s.data_b(c)
+                .iter()
+                .enumerate()
+                .all(|(i, m)| *m == msg(i, 8192))
+        );
+    }
+    r
+}
+
+#[test]
+fn scheduler_fairness() {
+    for interleave in [true, false] {
+        // FCFS: the first channel's queue goes first.
+        let [a, b] = shares(interleave, Scheduler::FirstComeFirstServed, [256, 256]);
+        assert_eq!(b, 0, "fcfs {interleave}: {a} {b}");
+        // Equal shares.
+        for sched in [
+            Scheduler::RoundRobin,
+            Scheduler::RoundRobinPerPacket,
+            Scheduler::FairCapacity,
+            Scheduler::WeightedFairQueueing,
+        ] {
+            let [a, b] = shares(interleave, sched, [256, 256]);
+            let r = b as f64 / a as f64;
+            assert!(
+                (0.75..=1.34).contains(&r),
+                "{sched:?} {interleave}: {a} {b}"
+            );
+        }
+        // Fair capacity ignores priorities.
+        let [a, b] = shares(interleave, Scheduler::FairCapacity, [256, 1024]);
+        let r = b as f64 / a as f64;
+        assert!((0.75..=1.34).contains(&r), "fc {interleave}: {a} {b}");
+        // Weighted fair queueing: 3:1.
+        let [a, b] = shares(interleave, Scheduler::WeightedFairQueueing, [256, 768]);
+        let r = b as f64 / a as f64;
+        assert!((2.4..=3.6).contains(&r), "wfq {interleave}: {a} {b} ({r})");
+        // Strict priority: the higher channel (the second one) first.
+        let [a, b] = shares(interleave, Scheduler::Priority, [256, 1024]);
+        assert_eq!(a, 0, "priority {interleave}: {a} {b}");
+    }
+}
+
+#[test]
+fn priority_changes_take_effect() {
+    let mut s = Sim::new(
+        idata_config(true, true, Scheduler::Priority),
+        Config::new(false),
+        CLEAN,
+        17,
+    );
+    s.connect();
+    let ids = open_all(
+        &mut s,
+        &[ChannelOptions::new("a"), ChannelOptions::new("b")],
+    );
+    assert_eq!(s.a.channel(ids[0]).map(|c| c.priority), Some(256));
+    s.a.set_channel_priority(ids[1], 1024).unwrap();
+    assert_eq!(s.a.channel(ids[1]).map(|c| c.priority), Some(1024));
+    assert_eq!(
+        s.a.set_channel_priority(99, 1),
+        Err(Error::UnknownChannel(99))
+    );
+    for &c in &ids {
+        for i in 0..16 {
+            s.a.send(s.now, c, &msg(i, 4000), true).unwrap();
+        }
+    }
+    assert!(
+        s.run(Duration::from_secs(60), |s| s.data_b(ids[0]).len() == 16
+            && s.data_b(ids[1]).len() == 16)
+    );
+    // Every message of the raised channel arrived before any of the other.
+    let order: Vec<u16> = s
+        .ev_b
+        .iter()
+        .filter_map(|e| match e {
+            Event::ChannelData { stream, .. } => Some(*stream),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(order[..16], [ids[1]; 16], "{order:?}");
+}
+
+#[test]
+fn round_robin_per_packet_fills_packets_from_one_stream() {
+    for (sched, per_packet) in [
+        (Scheduler::RoundRobinPerPacket, true),
+        (Scheduler::RoundRobin, false),
+    ] {
+        let mut s = Sim::new(
+            idata_config(true, true, sched),
+            Config::new(false),
+            CLEAN,
+            19,
+        );
+        s.connect();
+        let ids = open_all(
+            &mut s,
+            &[ChannelOptions::new("a"), ChannelOptions::new("b")],
+        );
+        s.mixed = 0;
+        for i in 0..300 {
+            for &c in &ids {
+                s.a.send(s.now, c, &msg(i, 100), true).unwrap();
+            }
+        }
+        assert!(
+            s.run(Duration::from_secs(60), |s| s.data_b(ids[0]).len() == 300
+                && s.data_b(ids[1]).len() == 300)
+        );
+        if per_packet {
+            assert!(s.mixed <= 2, "{sched:?}: {} mixed packets", s.mixed);
+        } else {
+            assert!(s.mixed > 20, "{sched:?}: {} mixed packets", s.mixed);
+        }
+    }
+}
+
+/// I-DATA over a lossy, reordering link with a reliable channel interleaved with partially
+/// reliable ones: abandoned messages are skipped with I-FORWARD-TSN (ordered: by MID per
+/// stream; unordered: by message), the reliable channel is intact and nothing stays blocked.
+#[test]
+fn interleaved_partial_reliability() {
+    for seed in seeds(3) {
+        let link = Link {
+            loss: 150,
+            dup: 30,
+            delay_ms: 20,
+            jitter_ms: 40,
+        };
+        let cfg = |c| idata_config(c, true, Scheduler::RoundRobin).with_mtu(500);
+        let mut s = Sim::new(cfg(true), cfg(false), link, 200 + seed);
+        s.connect();
+        assert!(s.a.message_interleaving());
+        let ids = open_all(
+            &mut s,
+            &[
+                ChannelOptions::new("rel"),
+                ChannelOptions::new("pr-o").with_reliability(Reliability::MaxRetransmits(1)),
+                ChannelOptions::new("pr-u")
+                    .with_ordered(false)
+                    .with_reliability(Reliability::MaxLifetime(150)),
+            ],
+        );
+        for i in 0..100 {
+            if i % 5 == 0 {
+                s.a.send(s.now, ids[0], &msg(i / 5, 3000), true).unwrap();
+            }
+            s.a.send(s.now, ids[1], &msg(i, 1500), true).unwrap();
+            s.a.send(s.now, ids[2], &msg(i, 1500), true).unwrap();
+            if i % 10 == 0 {
+                s.run(Duration::from_millis(20), |_| false);
+            }
+        }
+        assert!(
+            s.run(Duration::from_secs(300), |s| s.data_b(ids[0]).len() == 20
+                && ids.iter().all(|&c| s.a.buffered_amount(c) == 0)),
+            "seed {seed}"
+        );
+        assert!(s.seen[194], "seed {seed}: no I-FORWARD-TSN");
+        let rel = s.data_b(ids[0]);
+        assert!(rel.iter().enumerate().all(|(i, m)| *m == msg(i, 3000)));
+        let check = |got: Vec<Vec<u8>>, ordered: bool| {
+            let ids: Vec<u32> = got
+                .iter()
+                .map(|m| u32::from_be_bytes([m[0], m[1], m[2], m[3]]))
+                .collect();
+            for (m, &i) in got.iter().zip(&ids) {
+                assert_eq!(*m, msg(i as usize, 1500));
+            }
+            if ordered {
+                assert!(ids.windows(2).all(|w| w[0] < w[1]), "{ids:?}");
+            }
+            got.len()
+        };
+        let n = check(s.data_b(ids[1]), true) + check(s.data_b(ids[2]), false);
+        assert!(n < 200, "seed {seed}: nothing was abandoned");
+        // Nothing is blocked afterwards.
+        s.link = CLEAN;
+        s.a.send(s.now, ids[1], b"last", true).unwrap();
+        s.a.send(s.now, ids[2], b"last", true).unwrap();
+        assert!(
+            s.run(Duration::from_secs(30), |s| [ids[1], ids[2]].iter().all(
+                |&c| s.data_b(c).last().map(Vec::as_slice) == Some(&b"last"[..])
+            )),
+            "seed {seed}"
+        );
+    }
+}
+
+/// Many large messages queued on many channels at once: with I-DATA the sender must not
+/// start more of them than the peer can hold, or the peer's window fills with messages none of
+/// which can complete (each channel's message is only partly there) and nothing moves.
+#[test]
+fn many_concurrent_large_messages() {
+    for (channels, size, window) in [
+        (8, 250_000, 1 << 20),
+        (40, 64_000, 1 << 20),
+        (6, 200_000, 256 << 10),
+    ] {
+        for (interleave, sched) in [
+            (true, Scheduler::WeightedFairQueueing),
+            (true, Scheduler::RoundRobin),
+            (false, Scheduler::WeightedFairQueueing),
+        ] {
+            let ca = idata_config(true, interleave, sched);
+            let cb = idata_config(false, interleave, sched)
+                .with_receive_window(window)
+                .with_max_buffered_amount(4 << 20);
+            let mut s = Sim::new(ca, cb, CLEAN, 23);
+            s.connect();
+            let opts: Vec<ChannelOptions> = (0..channels)
+                .map(|i| ChannelOptions::new(&format!("c{i}")))
+                .collect();
+            let ids = open_all(&mut s, &opts);
+            for (i, &c) in ids.iter().enumerate() {
+                s.a.send(s.now, c, &msg(i, size), true).unwrap();
+            }
+            let t0 = s.now;
+            assert!(
+                s.run(Duration::from_secs(60), |s| ids
+                    .iter()
+                    .all(|&c| s.data_b(c).len() == 1)),
+                "{channels} x {size} window {window} {interleave} {sched:?}: {} delivered",
+                ids.iter().filter(|&&c| s.data_b(c).len() == 1).count()
+            );
+            let took = s.now - t0;
+            assert!(
+                took < Duration::from_secs(5),
+                "{channels} x {size} window {window} {interleave} {sched:?}: {took:?}"
+            );
+            for (i, &c) in ids.iter().enumerate() {
+                assert_eq!(s.data_b(c)[0], msg(i, size));
+            }
+        }
+    }
 }

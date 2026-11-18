@@ -40,3 +40,4 @@ Status of all records: **accepted** (ADR-001 to 006 on 2026-11-13, ADR-007 to 00
 - [ADR-034: HLS encryption and recording in the media hub](034-media-hls-encryption-recording.md) (accepted 2026-11-18)
 - [ADR-035: ECN on macOS and over the userspace stack's UDP](035-ecn-macos-and-userspace-udp.md) (accepted 2026-11-18)
 - [ADR-036: RTCP XR, TMMBR / TMMBN, RFC 8888 feedback and FEC in only-rtp](036-rtp-xr-tmmbr-ccfb-fec.md) (accepted 2026-11-18)
+- [ADR-037: SCTP message interleaving (I-DATA) and stream schedulers](037-sctp-idata-schedulers.md) (accepted 2026-11-18)
