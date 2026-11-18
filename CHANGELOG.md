@@ -374,6 +374,32 @@ ADR-028 (docs/adr/028-hot-reload-buffers-backlog-threads.md):
   and SIGUSR1 run each worker's `Worker::on_reload` hook (apply a new configuration and thread
   count without replacing processes); `Worker::reloads`, `Status::in_place_reloads`.
 - Hot path unchanged (same-run A/B in docs/BENCHMARKS.md, "Hot reload").
+### Added: documentation site for GitHub Pages, a runner for the book's examples
+
+- `book/site.sh` builds the site published at `lesismal.github.io/only`: both books, a language
+  switch and an API link on every page, localized 404 pages and a site-wide `404.html`, and the
+  rustdoc of every published crate under `/api/`. `book/check-site.py` serves it under the same
+  base path and checks every internal link, resource and fragment (also the crates' rustdoc
+  links back to the book), that both books have the same pages, and the 404 handling.
+  `.github/workflows/pages.yml` runs both and deploys on a published release or by hand; the
+  release-only `book-deploy` job left `ci.yml`. Enabling Pages is a one-time repository setting.
+- `book/check-guides.sh` runs every program the books include code from: the 21 `guide-*`
+  examples (each exits 0 or fails), the serve-only ones (`guide-media`, `guide-media-rtsp`,
+  `echo`, `udp-echo`, `hello`, `prefork-http`, probed from outside) and the gRPC chapter's
+  generated stubs; on Linux in a private network namespace. Passes on macOS, Linux arm64 and
+  Linux x86_64, on epoll and (`ONLY_DEFAULT_BACKEND=uring`) on io_uring.
+- `ONLY_DEFAULT_BACKEND=uring` (ADR-029, Linux): TCP listeners that do not call
+  `Listener::backend` are served by io_uring (non-strict: falls back to epoll with a warning).
+  An explicit backend always wins; UDP listeners and client threads are not affected; read once
+  per `Engine::build`. A test and diagnostic knob, so unchanged programs (the guide examples) can
+  run on io_uring. No public API change.
+- `book/check-includes.py` also checks that `book/en` and `book/zh-CN` have the same chapters
+  with the same headings, includes, code blocks, table rows and list items.
+- Docs brought in line with the code: WebSocket over HTTP/3 is no longer listed as missing;
+  `H3Config` / `H3ClientOptions` field names and QPACK defaults, `DialOptions::proxy` /
+  `max_redirects`, `ONLY_UDP_ECN` and `ONLY_LOG` in the configuration reference; only-quic is
+  v1 and v2; the guide-example table lists all of them; the Chinese RTSP chapter gained the
+  authentication bullet. Three broken rustdoc links fixed (only-log, only-h3, only-bittorrent).
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
@@ -447,7 +473,7 @@ against them; every limit below has a safe default, and 0 / `None` stays the exp
 timeout 30 s, idle pool 32 per host / 256 in all, 90 s idle expiry; HTTP/2 frame size checked
 before buffering, header blocks 2 × `max_header_list`, body 64 MiB, at most 32 pushes per
 request; HTTP/3 body 8 MiB, field sections 64 KiB, request timeout 30 s. New
-`ClientError::TimedOut` / `TooLarge`, `H3Error::TooLarge`.
+`ClientError::Timeout` / `TooLarge`, `H3Error::TooLarge`.
 
 **gRPC and arpc**: the global `Mutex<Vec>` deadline threads are replaced by a cancellable,
 sharded deadline service (calls with a deadline: gRPC ×17, arpc ×278 calls/s; without: +1%).
@@ -462,11 +488,12 @@ reader parses in place (was O(n²) copying) with a 32 MiB partial cap; HLS segme
 SRT 1024 connections, RTMP handshake 10 s / idle 60 s, RTSP session timeout enforced (60 s) and
 request timeout 10 s; `RtcServer` / `Endpoint::max_peers` (1024).
 
-**QUIC, HTTP/3, KCP**: per-stream (4 MiB) and per-connection (16 MiB) QUIC send buffers with
+**QUIC, HTTP/3, KCP**: per-stream and per-connection QUIC send buffers (16 MiB each) with
 `Error::Overloaded` and `QuicHandler::on_stream_writable`; `receive_window` 10 MB (was
 unlimited); `ServerConfig::max_connections` (10,000, stateless CONNECTION_REFUSED). HTTP/3 file
 bodies are read on the pool only as the stream has room. KCP `max_sessions` 4096 and
-`KcpHandler::on_writable`. QUIC single-stream bulk −2.7% under the 4 MiB stream default.
+`KcpHandler::on_writable`. A 4 MiB per-stream default cost QUIC single-stream bulk about 2.5%, so the stream default
+equals the connection's (16 MiB matched the baseline on gpu51).
 
 **SOCKS, mux, TURN, BitTorrent, log, DTLS**
 - SOCKS / HTTP CONNECT: **destinations default to public addresses only** (loopback, private,

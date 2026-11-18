@@ -94,7 +94,7 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `only_http::h2client::H2Options` | `initial_window`: 1 MiB, `conn_window`: 16 MiB, `enable_push`: false, `max_header_list`: 64 KiB, `max_body_bytes`: 64 MiB (buffered responses) |
 | `only_ws::WsConfig` | `max_message_bytes`: 16 MiB, `permessage_deflate`: true, `compress_min_bytes`: 128 |
 | `only_http::WsOptions` | `config`: `WsConfig::default()`, `protocols`: none, `origin_allowed`: none |
-| `only_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s |
+| `only_ws::client::DialOptions` | `config`, `pmd`, `protocols`, `origin`, `headers`, `tls`: none, `server_name`: URL host, `handshake_timeout`: 10 s, `close_timeout`: 3 s, `proxy`: none, `max_redirects`: 0 |
 | `only_media::HubConfig` | `gop_cache_bytes`: 16 MiB, `max_streams`: 1024, `max_subscribers`: 1000 per path (0: no limit) |
 | `only_media::rtmp::RtmpConfig` | `chunk_size`: 4096, `write_queue_limit`: 2 MiB, `max_write_queue`: 16 MiB, `handshake_timeout`: 10 s, `idle_timeout`: 60 s (players exempt); messages 16 MiB, unfinished messages 32 MiB per connection |
 | `only_media::rtsp::RtspConfig` | `write_queue_limit`: 2 MiB, `max_write_queue`: 16 MiB, `request_timeout`: 10 s, `session_timeout`: 60 s (advertised and enforced) |
@@ -102,8 +102,8 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 | `only_media::whip::WhipConfig` | `max_sessions`: 256 (0: no limit) |
 | `only_media::hls::HlsConfig` | `target_duration`: 2 s, `playlist_size`: 6, `keep_segments`: 3, `max_bytes`: 64 MiB (bounds the segment being written too), `idle_timeout`: 30 s |
 | `only_webrtc::RtcServer` / `Endpoint` | `max_peers`: 1024 (0: no limit), `connect_timeout`: 30 s |
-| `only_h3::H3Config` | `max_body`: 8 MiB, `max_field_section`: 64 KiB |
-| `only_h3::H3ClientOptions` | `max_body_bytes`: 8 MiB, `max_field_section_bytes`: 64 KiB, `request_timeout`: 30 s |
+| `only_h3::H3Config` | `max_body_bytes`: 8 MiB, `max_field_section_bytes`: 64 KiB, `qpack_max_table_capacity`: 4096, `qpack_blocked_streams`: 16, `qpack_encoder_capacity`: 0 (off) |
+| `only_h3::H3ClientOptions` | `max_body_bytes`: 8 MiB, `max_field_section_bytes`: 64 KiB, `request_timeout`: 30 s, `qpack_max_table_capacity`: 4096, `qpack_blocked_streams`: 16, `qpack_encoder_capacity`: 0 (off) |
 | `only_grpc::GrpcServer` | `max_message`: 4 MiB, `max_collect_bytes`: 64 MiB, `max_deadline`: 24 h, `compress`: false |
 | `only_grpc::GrpcClient` | `max_message_bytes`: 4 MiB, `max_collect_bytes`: 64 MiB, `default_timeout`: 30 s (`unary` / `collect`) |
 | `only_arpc::Routes` | `max_body`: 64 MiB, `max_streams_per_conn`: 1024, `call_timeout`: 30 s |
@@ -115,6 +115,14 @@ port), `ebpf_programs` (prefer eBPF when privileged, true; classic BPF otherwise
 |---|---|
 | `ONLY_UDP_GSO=0` | disable UDP GSO on Linux (Linux 4.18+; probed once per process otherwise) |
 | `ONLY_UDP_GRO=0` | never enable UDP GRO, whatever `Config::udp_gro` says (Linux 5.0+) |
+| `ONLY_UDP_ECN=0` | never set an ECN codepoint on outgoing UDP datagrams (QUIC marks ECT(0) on Linux otherwise) |
+| `ONLY_LOG=...` | log filter directives (`info,only_http=debug`), read only when the application calls `only::log::init_from_env` |
+
+Test and diagnostic knob (ADR-029), not a tuning setting: `ONLY_DEFAULT_BACKEND=uring` (Linux)
+serves every TCP listener that does not call `Listener::backend` with io_uring (non-strict: it falls
+back to epoll with a warning where io_uring is unavailable), so an unchanged program can be run
+on io_uring; `book/check-guides.sh` uses it. An explicit `Listener::backend` always wins; UDP
+listeners and client threads are not affected; it is read once per `Engine::build`.
 
 The test suite also reads `ONLY_TEST_BACKEND=uring` (run the engine tests on io_uring) and
 `ONLY_TEST_EXPECT_EBPF=1` (fail instead of skip when eBPF is unavailable).

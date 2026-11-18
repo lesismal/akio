@@ -19,7 +19,8 @@ name: CI
 #   Informational (`continue-on-error`, not in ci-ok):
 #                  ct-dudect (statistical timing test of only-crypto's secret-dependent paths,
 #                  t-values kept as an artifact; docs/constant-time.md)
-#   Deploy:        book-deploy (GitHub Pages), on a pre-release only
+#   Deploy:        not here: .github/workflows/pages.yml builds and deploys the site (books +
+#                  rustdoc) to GitHub Pages on a release or by hand
 #   ci-ok:         one status to look at.
 #
 # Adding a job: copy the closest job, keep `timeout-minutes`, use Swatinem/rust-cache with its
@@ -78,7 +79,7 @@ jobs:
 
   book:
     # The English and Chinese guides: every included snippet exists and compiles, both books
-    # build. On a pre-release the result is deployed to GitHub Pages by book-deploy.
+    # build. Deployment is .github/workflows/pages.yml.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -98,29 +99,6 @@ jobs:
         if: steps.mdbook-cache.outputs.cache-hit != 'true'
         run: cargo install mdbook --locked --version 0.4.52
       - run: book/build.sh
-      - name: Upload the site for GitHub Pages
-        if: github.event_name == 'release'
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: target/book
-
-  book-deploy:
-    if: github.event_name == 'release'
-    needs: book
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    concurrency:
-      group: pages
-      cancel-in-progress: false
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
 
   test-linux:
     strategy:

@@ -317,6 +317,28 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
   SIGUSR1 让每个 worker 执行 `Worker::on_reload` 钩子（不替换进程即应用新配置和线程数）；
   `Worker::reloads`、`Status::in_place_reloads`。
 - 热路径不变（同轮 A/B 见 docs/BENCHMARKS.zh-CN.md 的“热更新”）。
+### 新增：GitHub Pages 文档站点、书中示例的运行脚本
+
+- `book/site.sh` 构建发布在 `lesismal.github.io/only` 的站点：两本书、每页的语言切换与 API 链接、
+  本地化的 404 页与全站 `404.html`，以及 `/api/` 下每个已发布 crate 的 rustdoc。
+  `book/check-site.py` 在相同的基础路径下服务该站点，检查每个内部链接、资源与片段（包括各 crate
+  rustdoc 指回手册的链接）、两本书页面一致，以及 404 处理。`.github/workflows/pages.yml` 运行这两者，
+  并在发布 release 时或手动触发时部署；只在 release 时运行的 `book-deploy` 任务已移出 `ci.yml`。
+  启用 Pages 是一次性的仓库设置。
+- `book/check-guides.sh` 运行书中引用代码的每个程序：21 个 `guide-*` 示例（各自以 0 退出或失败）、
+  只提供服务的示例（`guide-media`、`guide-media-rtsp`、`echo`、`udp-echo`、`hello`、`prefork-http`，
+  从外部探测）以及 gRPC 一章生成的桩代码；在 Linux 上于私有网络命名空间中运行。在 macOS、Linux arm64
+  与 Linux x86_64 上通过，epoll 与 io_uring（`ONLY_DEFAULT_BACKEND=uring`）均通过。
+- `ONLY_DEFAULT_BACKEND=uring`（ADR-029，Linux）：未调用 `Listener::backend` 的 TCP listener 由 io_uring
+  服务（非 strict：不可用时回退到 epoll 并给出警告）。显式选择的后端总是优先；UDP listener 与客户端线程
+  不受影响；每次 `Engine::build` 读取一次。这是测试与诊断开关，使不改代码的程序（指南示例）也能在 io_uring
+  上运行。没有公共 API 变化。
+- `book/check-includes.py` 还会检查 `book/en` 与 `book/zh-CN` 章节相同，且各章的标题、引用、代码块、
+  表格行与列表项一致。
+- 文档与代码对齐：HTTP/3 上的 WebSocket 不再列为未完成；配置参考中的 `H3Config` / `H3ClientOptions`
+  字段名与 QPACK 默认值、`DialOptions::proxy` / `max_redirects`、`ONLY_UDP_ECN` 与 `ONLY_LOG`；
+  only-quic 支持 v1 与 v2；示例表列出全部示例；中文 RTSP 一章补上认证一条。修复三处失效的 rustdoc
+  链接（only-log、only-h3、only-bittorrent）。
 
 ### 新增：HTTP/3 上的 WebSocket、QPACK 动态表、流式 HTTP/3 请求 body
 
@@ -377,7 +399,7 @@ ADR-028（docs/adr/028-hot-reload-buffers-backlog-threads.zh-CN.md）：
 
 **HTTP 客户端（only-http、only-h3）**：HTTP/1 响应头 64 KiB、消息体 64 MiB、请求超时 30 s、空闲连接池每主机
 32 个 / 总计 256 个、空闲 90 s 过期；HTTP/2 在缓冲前检查帧大小，头块上限 2 × `max_header_list`，消息体 64 MiB，
-每个请求最多 32 个 push；HTTP/3 消息体 8 MiB、字段段 64 KiB、请求超时 30 s。新增 `ClientError::TimedOut` /
+每个请求最多 32 个 push；HTTP/3 消息体 8 MiB、字段段 64 KiB、请求超时 30 s。新增 `ClientError::Timeout` /
 `TooLarge`、`H3Error::TooLarge`。
 
 **gRPC 与 arpc**：全局 `Mutex<Vec>` 截止时间线程被可取消、分片的截止时间服务取代（带截止时间的调用：gRPC ×17、
@@ -390,10 +412,10 @@ arpc ×278 调用/秒；不带：+1%）。`grpc-timeout` 限制在 `GrpcServer::
 HLS 分段在 `max_bytes` 处切分；hub 每路径 1024 个流 / 1000 个订阅者，WHIP 256 个会话，SRT 1024 个连接，RTMP
 握手 10 s / 空闲 60 s，RTSP 会话超时被执行（60 s）且请求超时 10 s；`RtcServer` / `Endpoint::max_peers`（1024）。
 
-**QUIC、HTTP/3、KCP**：每流（4 MiB）和每连接（16 MiB）的 QUIC 发送缓冲区上限，配合 `Error::Overloaded` 和
+**QUIC、HTTP/3、KCP**：每流和每连接的 QUIC 发送缓冲区上限（均为 16 MiB），配合 `Error::Overloaded` 和
 `QuicHandler::on_stream_writable`；`receive_window` 10 MB（原为不限）；`ServerConfig::max_connections`
 （10,000，无状态 CONNECTION_REFUSED）。HTTP/3 文件消息体只在流有空间时在线程池上读取。KCP `max_sessions` 4096
-和 `KcpHandler::on_writable`。在 4 MiB 每流默认值下 QUIC 单流批量传输 −2.7%。
+和 `KcpHandler::on_writable`。4 MiB 的每流默认值让 QUIC 单流批量传输慢约 2.5%，因此每流默认值与每连接相同（16 MiB 在 gpu51 上与基线持平）。
 
 **SOCKS、mux、TURN、BitTorrent、log、DTLS**
 - SOCKS / HTTP CONNECT：**目标地址默认只允许公网**（解析后拒绝回环、私网、链路本地、CGNAT、组播和保留地址，

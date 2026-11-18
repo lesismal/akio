@@ -14,7 +14,9 @@ create-missing = false
 git-repository-url = "https://github.com/lesismal/only"
 edit-url-template = "https://github.com/lesismal/only/edit/main/book/en/{path}"
 site-url = "/only/en/"
-additional-js = ["mermaid-init.js"]
+additional-js = ["mermaid-init.js", "lang-switch.js"]
+# Shown for missing pages; the site-wide 404.html is the English one (book/site.sh).
+input-404 = "404.md"
 
 [output.html.playground]
 runnable = false

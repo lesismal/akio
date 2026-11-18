@@ -32,7 +32,7 @@
 //! references entries the peer has acknowledged, so it never blocks the peer.
 //!
 //! WebSocket over HTTP/3 (RFC 9220): servers advertise extended CONNECT, and
-//! `Context::upgrade_websocket` accepts it (a [`Router`](only_http::Router) GET route answers
+//! `Context::upgrade_websocket` accepts it (a [`Router`][only_http::Router] GET route answers
 //! it as it answers an HTTP/1.1 upgrade); [`H3Client::websocket`] opens one.
 //!
 //! Request bodies stream: a service whose `body_mode` is `Stream` gets the body through

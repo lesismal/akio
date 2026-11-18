@@ -72,6 +72,7 @@ $ curl --http2-prior-knowledge localhost:8080/   # 同一端口上的 HTTP/2
 | `cargo run -p only --example guide-tls` | TLS 服务端与客户端 |
 | `cargo run -p only-http --example guide-http` | 路由、中间件、静态文件、流式、客户端 |
 | `cargo run -p only-http --example guide-observe` | Prometheus、调试端点、访问日志、热更新 |
+| `cargo run -p only-http --example guide-metrics` | 自定义计数器、仪表、直方图与 collector |
 | `cargo run -p only-http --example guide-bridge` | 与其他运行时和线程衔接 |
 | `cargo run -p only-ws --example guide-ws` | WebSocket 服务端与客户端 |
 | `cargo run -p only-grpc --example guide-grpc` | gRPC 服务端与客户端 |
@@ -79,7 +80,16 @@ $ curl --http2-prior-knowledge localhost:8080/   # 同一端口上的 HTTP/2
 | `cargo run -p only-socks --example guide-socks` | SOCKS5 与 HTTP CONNECT |
 | `cargo run -p only-mux --example guide-mux` | 一个端口上的多种协议 |
 | `cargo run -p only-quic --example guide-quic` | QUIC 服务端与客户端 |
-| `cargo run -p only-h3 --example guide-h3` | HTTP/3 服务端与客户端 |
+| `cargo run -p only-h3 --example guide-h3` | HTTP/3 服务端与客户端、HTTP/3 上的 WebSocket、上传 |
 | `cargo run -p only-kcp --example guide-kcp` | 带 FEC 与加密的 KCP |
+| `cargo run -p only-webrtc --example guide-webrtc` | WebRTC 数据通道、STUN、TURN |
+| `cargo run -p only-media --example guide-media-srt` | SRT 推流、播放与转推 |
+| `cargo run -p only-bittorrent --example guide-bittorrent` | tracker、做种方与磁力链接下载方 |
+| `cargo run -p only-dpdk --example guide-dpdk` | 用户态 TCP/IP 协议栈（内存线路） |
+
+有两个媒体示例则一直服务到被停止，供 ffmpeg 连接：
+`cargo run -p only-media --example guide-media`（RTMP、HTTP-FLV、HLS；`ONLY_MEDIA_SECS=n` 在 n 秒后
+停止）和 `--example guide-media-rtsp`（RTSP、WHIP/WHEP；`ONLY_RTSP_SECS=n`）。
+`book/check-guides.sh` 会运行全部示例，对服务型示例从外部探测，并报告通过或失败。
 
 下一步：[核心概念](concepts/index.md)。

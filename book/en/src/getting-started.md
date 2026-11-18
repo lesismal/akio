@@ -75,6 +75,7 @@ exercise it with a client and exit:
 | `cargo run -p only --example guide-tls` | TLS server and client |
 | `cargo run -p only-http --example guide-http` | router, middleware, files, streaming, clients |
 | `cargo run -p only-http --example guide-observe` | Prometheus, debug endpoint, access log, reload |
+| `cargo run -p only-http --example guide-metrics` | your own counters, gauges, histograms, collectors |
 | `cargo run -p only-http --example guide-bridge` | bridging to other runtimes and threads |
 | `cargo run -p only-ws --example guide-ws` | WebSocket server and client |
 | `cargo run -p only-grpc --example guide-grpc` | gRPC server and client |
@@ -82,7 +83,16 @@ exercise it with a client and exit:
 | `cargo run -p only-socks --example guide-socks` | SOCKS5 and HTTP CONNECT |
 | `cargo run -p only-mux --example guide-mux` | several protocols on one port |
 | `cargo run -p only-quic --example guide-quic` | QUIC server and client |
-| `cargo run -p only-h3 --example guide-h3` | HTTP/3 server and client |
+| `cargo run -p only-h3 --example guide-h3` | HTTP/3 server and client, WebSocket over HTTP/3, uploads |
 | `cargo run -p only-kcp --example guide-kcp` | KCP with FEC and encryption |
+| `cargo run -p only-webrtc --example guide-webrtc` | WebRTC data channel, STUN, TURN |
+| `cargo run -p only-media --example guide-media-srt` | SRT publish, play and relay |
+| `cargo run -p only-bittorrent --example guide-bittorrent` | tracker, seeder and magnet leecher |
+| `cargo run -p only-dpdk --example guide-dpdk` | the userspace TCP/IP stack (in-memory wire) |
+
+Two media examples serve until stopped instead, for ffmpeg to talk to:
+`cargo run -p only-media --example guide-media` (RTMP, HTTP-FLV, HLS; `ONLY_MEDIA_SECS=n` stops
+after n seconds) and `--example guide-media-rtsp` (RTSP, WHIP/WHEP; `ONLY_RTSP_SECS=n`).
+`book/check-guides.sh` runs all of them, probes the serving ones and reports pass or fail.
 
 Next: [Concepts](concepts/index.md).
