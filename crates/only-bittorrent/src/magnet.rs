@@ -1,17 +1,22 @@
-//! Magnet links (BEP 9): `magnet:?xt=urn:btih:<hash>` with the hash in hex or base32, plus
-//! `dn` (name), `tr` (trackers), `x.pe` (peers), `ws` (web seeds) and `xl` (length).
+//! Magnet links (BEP 9): `magnet:?xt=urn:btih:<hash>` with the hash in hex or base32, and
+//! `xt=urn:btmh:1220<hash>` for a v2 torrent (BEP 52: a SHA-256 multihash in hex; a hybrid
+//! torrent's link carries both), plus `dn` (name), `tr` (trackers), `x.pe` (peers), `ws` (web
+//! seeds) and `xl` (length).
 
 use std::fmt;
 use std::net::SocketAddr;
 
-use crate::metainfo::{InfoHash, hexval};
+use crate::metainfo::{InfoHash, InfoHashV2, hexval};
 
 /// A parsed magnet link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Magnet {
-    /// The v1 info hash.
+    /// The hash peers name the torrent by: the v1 info hash, or for a v2-only link (no
+    /// `btih`) the truncated v2 hash.
     pub info_hash: InfoHash,
+    /// `urn:btmh:`: the v2 info hash.
+    pub info_hash_v2: Option<InfoHashV2>,
     /// `dn`: display name.
     pub name: Option<String>,
     /// `tr`: tracker URLs.
@@ -41,6 +46,7 @@ impl Magnet {
     pub fn new(info_hash: InfoHash) -> Magnet {
         Magnet {
             info_hash,
+            info_hash_v2: None,
             name: None,
             trackers: Vec::new(),
             peers: Vec::new(),
@@ -65,6 +71,13 @@ impl Magnet {
                 ("xt", _) => {
                     if let Some(h) = v.strip_prefix("urn:btih:") {
                         hash = Some(parse_btih(h).ok_or(MagnetError("bad btih hash"))?);
+                    } else if let Some(h) = v.strip_prefix("urn:btmh:") {
+                        // Multihash: 0x12 (SHA2-256), 0x20 (32 bytes), the digest.
+                        let d = h
+                            .strip_prefix("1220")
+                            .and_then(InfoHashV2::from_hex)
+                            .ok_or(MagnetError("bad btmh hash"))?;
+                        m.info_hash_v2 = Some(d);
                     }
                 }
                 ("dn", _) => m.name = Some(v),
@@ -79,14 +92,33 @@ impl Magnet {
                 _ => {}
             }
         }
-        m.info_hash = hash.ok_or(MagnetError("no urn:btih: exact topic"))?;
+        m.info_hash = match (hash, m.info_hash_v2) {
+            (Some(h), _) => h,
+            (None, Some(v2)) => v2.truncated(),
+            (None, None) => return Err(MagnetError("no urn:btih: or urn:btmh: exact topic")),
+        };
         Ok(m)
+    }
+
+    /// A link of a v2-only torrent (no v1 hash).
+    pub fn is_v2_only(&self) -> bool {
+        self.info_hash_v2
+            .is_some_and(|v2| v2.truncated() == self.info_hash)
     }
 }
 
 impl fmt::Display for Magnet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "magnet:?xt=urn:btih:{}", self.info_hash.to_hex())?;
+        let mut sep = "?";
+        if !self.is_v2_only() {
+            write!(f, "magnet:?xt=urn:btih:{}", self.info_hash.to_hex())?;
+            sep = "&";
+        } else {
+            f.write_str("magnet:")?;
+        }
+        if let Some(v2) = self.info_hash_v2 {
+            write!(f, "{sep}xt=urn:btmh:1220{}", v2.to_hex())?;
+        }
         if let Some(n) = &self.name {
             write!(f, "&dn={}", encode_component(n))?;
         }
@@ -201,5 +233,26 @@ mod tests {
         assert_eq!(m.info_hash.0, want);
         assert!(Magnet::parse("magnet:?dn=x").is_err());
         assert!(Magnet::parse("http://x").is_err());
+    }
+
+    #[test]
+    fn v2_and_hybrid() {
+        let v2 = InfoHashV2::of(b"info");
+        let s = format!("magnet:?xt=urn:btmh:1220{}&dn=x", v2.to_hex());
+        let m = Magnet::parse(&s).unwrap();
+        assert!(m.is_v2_only());
+        assert_eq!(m.info_hash, v2.truncated());
+        assert_eq!(Magnet::parse(&m.to_string()).unwrap(), m);
+        let v1 = InfoHash::of(b"info");
+        let s = format!(
+            "magnet:?xt=urn:btih:{}&xt=urn:btmh:1220{}",
+            v1.to_hex(),
+            v2.to_hex()
+        );
+        let m = Magnet::parse(&s).unwrap();
+        assert!(!m.is_v2_only());
+        assert_eq!((m.info_hash, m.info_hash_v2), (v1, Some(v2)));
+        assert_eq!(Magnet::parse(&m.to_string()).unwrap(), m);
+        assert!(Magnet::parse("magnet:?xt=urn:btmh:1114aa").is_err());
     }
 }

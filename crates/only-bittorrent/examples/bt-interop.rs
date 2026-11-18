@@ -2,13 +2,16 @@
 //! leech against other clients (aria2, libtorrent).
 //!
 //! ```text
-//! bt-interop make <file-or-dir> <out.torrent> <tracker-url|-> [piece-length]
+//! bt-interop make <file-or-dir> <out.torrent> <tracker-url|-> [piece-length] [v1|v2|hybrid]
+//!            [--web-seed url]...                   (prints the info hash)
+//! bt-interop magnet <torrent>                       (prints its magnet link: btih and/or btmh)
 //! bt-interop tracker <addr>
 //! bt-interop seed <torrent> <data-dir> <listen> [options]
 //! bt-interop leech <torrent|magnet> <data-dir> <listen> [options]
 //! bt-interop dht <listen> [--bootstrap addr]...      (a DHT node that stays up)
 //! options: --peer addr  --mse prefer|require|off  --no-utp  --no-dht  --bootstrap addr
-//!          --timeout secs  --expect-utp  --expect-tcp  --expect-encrypted
+//!          --timeout secs  --expect-utp  --expect-tcp  --expect-encrypted  --lsd
+//!          --web-seed url  --up-limit bytes/s  --down-limit bytes/s
 //! ```
 
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -17,8 +20,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use only::{Engine, Listener};
-use only_bittorrent::client::{AddOptions, Client, ClientConfig, TorrentEvent};
-use only_bittorrent::metainfo::{Builder, MetaInfo};
+use only_bittorrent::client::{AddOptions, Client, ClientConfig, RateLimits, TorrentEvent};
+use only_bittorrent::metainfo::{Builder, MetaInfo, TorrentVersion};
 use only_bittorrent::mse::Policy;
 use only_bittorrent::tracker::{TrackerConfig, TrackerServer};
 
@@ -45,6 +48,10 @@ struct Opts {
     expect_utp: bool,
     expect_tcp: bool,
     expect_encrypted: bool,
+    lsd: bool,
+    web_seeds: Vec<String>,
+    up_limit: Option<u64>,
+    down_limit: Option<u64>,
 }
 
 fn opts(args: &[String]) -> Opts {
@@ -81,6 +88,19 @@ fn opts(args: &[String]) -> Opts {
                 o.timeout = v().parse().unwrap_or_else(|_| die("bad --timeout"));
                 i += 1;
             }
+            "--web-seed" => {
+                o.web_seeds.push(v());
+                i += 1;
+            }
+            "--up-limit" => {
+                o.up_limit = Some(v().parse().unwrap_or_else(|_| die("bad --up-limit")));
+                i += 1;
+            }
+            "--down-limit" => {
+                o.down_limit = Some(v().parse().unwrap_or_else(|_| die("bad --down-limit")));
+                i += 1;
+            }
+            "--lsd" => o.lsd = true,
             "--no-utp" => o.no_utp = true,
             "--no-dht" => o.no_dht = true,
             "--expect-utp" => o.expect_utp = true,
@@ -101,12 +121,36 @@ fn client(dir: &str, listen: &str, o: &Opts) -> Client {
     c.utp = !o.no_utp;
     c.dht = !o.no_dht;
     c.dht_bootstrap = o.bootstrap.clone();
+    c.lsd = o.lsd;
+    c.rate_limits = RateLimits::new(o.up_limit, o.down_limit);
     c.on_event = Some(Arc::new(|ih, e| match e {
         TorrentEvent::PieceVerified(_) => {}
+        TorrentEvent::PeerConnected(_) => {
+            // Recorded here: a leecher drops a seeder once complete, which may come before
+            // the main loop looks at the peers.
+            if let Some(t) = CLIENT.get().and_then(|c| c.torrent(&ih)) {
+                let mut seen = SEEN.lock().unwrap_or_else(|p| p.into_inner());
+                for p in t.peers() {
+                    if !seen.iter().any(|(a, ..)| *a == p.addr) {
+                        eprintln!(
+                            "peer {} client {:?} utp {} encrypted {}",
+                            p.addr, p.client, p.utp, p.encrypted
+                        );
+                        seen.push((p.addr, p.utp, p.encrypted));
+                    }
+                }
+            }
+        }
         e => eprintln!("[{}] {e:?}", &ih.to_hex()[..8]),
     }));
-    Client::new(c).unwrap_or_else(|e| die(e))
+    let c = Client::new(c).unwrap_or_else(|e| die(e));
+    let _ = CLIENT.set(c.clone());
+    c
 }
+
+type Seen = Vec<(SocketAddr, bool, bool)>;
+static CLIENT: std::sync::OnceLock<Client> = std::sync::OnceLock::new();
+static SEEN: std::sync::Mutex<Seen> = std::sync::Mutex::new(Vec::new());
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -130,9 +174,27 @@ fn main() {
             if tracker != "-" {
                 b = b.tracker(tracker);
             }
+            let mut i = 6;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "v1" => b = b.version(TorrentVersion::V1),
+                    "v2" => b = b.version(TorrentVersion::V2),
+                    "hybrid" => b = b.version(TorrentVersion::Hybrid),
+                    "--web-seed" => {
+                        b = b.web_seed(arg(i + 1));
+                        i += 1;
+                    }
+                    x => die(format!("bad make option {x}")),
+                }
+                i += 1;
+            }
             let mi = b.build_path(&path).unwrap_or_else(|e| die(e));
             std::fs::write(arg(3), mi.to_bytes()).unwrap_or_else(|e| die(e));
             println!("{}", mi.info_hash);
+        }
+        "magnet" => {
+            let mi = MetaInfo::load(arg(2)).unwrap_or_else(|e| die(e));
+            println!("{}", mi.magnet());
         }
         "tracker" => {
             let a = addr(&arg(2));
@@ -163,6 +225,7 @@ fn main() {
             let c = client(&arg(3), &arg(4), &o);
             let mut add = AddOptions::default();
             add.peers = o.peers.clone();
+            add.web_seeds = o.web_seeds.clone();
             let t = if src.starts_with("magnet:") {
                 c.add_magnet(&src, add)
             } else {
@@ -196,19 +259,9 @@ fn main() {
                 }
             }
             let start = Instant::now();
-            let mut seen: Vec<(SocketAddr, bool, bool)> = Vec::new();
             while !t.is_complete() {
                 if start.elapsed() > Duration::from_secs(o.timeout) {
                     die(format!("timed out: {:?}", t.stats()));
-                }
-                for p in t.peers() {
-                    if !seen.iter().any(|(a, ..)| *a == p.addr) {
-                        eprintln!(
-                            "peer {} client {:?} utp {} encrypted {}",
-                            p.addr, p.client, p.utp, p.encrypted
-                        );
-                        seen.push((p.addr, p.utp, p.encrypted));
-                    }
                 }
                 std::thread::sleep(Duration::from_millis(20));
                 let ms = start.elapsed().as_millis();
@@ -219,6 +272,7 @@ fn main() {
                     }
                 }
             }
+            let seen = SEEN.lock().unwrap_or_else(|p| p.into_inner()).clone();
             let s = t.stats();
             let secs = start.elapsed().as_secs_f64();
             println!(

@@ -6,22 +6,40 @@
 #                     magnet; seeding to only over uTP+RC4, TCP, and by magnet; and the DHT:
 #                     a only DHT node bootstraps libtorrent, only finds libtorrent's seed by
 #                     DHT + magnet, and libtorrent finds only's seed the same way.
-# Trackers are only's own (HTTP and UDP). Needs Docker; runs `rust:1` (Debian trixie) and
-# installs aria2 and python3-libtorrent in it.
+#   v2 (BEP 52)       v2-only and hybrid multi-file torrents made by only and by libtorrent,
+#                     each side leeching from the other by .torrent and by magnet link (a v2
+#                     magnet makes the leecher fetch the piece layers with hash requests);
+#                     aria2 (no v2 support) leeching a hybrid torrent from only and seeding one.
+#   webseed (BEP 19)  only downloads v1, hybrid and v2 torrents from nginx alone (no peer), and
+#                     libtorrent downloads only's hybrid torrent from the same web seed.
+#   lsd (BEP 14)      two containers on a Docker bridge network, no tracker, DHT or peer
+#                     address: libtorrent finds only's seed by LSD, and only finds libtorrent's.
+# Trackers are only's own (HTTP and UDP). Needs Docker; runs the image of ./Dockerfile
+# (`rust:1`, Debian trixie, with aria2, python3-libtorrent and nginx), built on first use.
 #
 #   tools/interop/bittorrent/run.sh            # everything
-#   tools/interop/bittorrent/run.sh aria2 lt   # some suites (aria2, lt, dht)
+#   tools/interop/bittorrent/run.sh aria2 lt   # some suites (aria2, lt, dht, v2, webseed, lsd)
 set -u
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
+IMAGE=only-bt-interop:latest
 if [ ! -f /.dockerenv ] && [ "${BT_INTEROP_INSIDE:-}" != 1 ]; then
-  exec docker run --rm -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
-    -v only-bt-interop-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t -e BT_INTEROP_INSIDE=1 rust:1 bash tools/interop/bittorrent/run.sh "$@"
+  docker image inspect $IMAGE >/dev/null 2>&1 || docker build -q -t $IMAGE "$ROOT/tools/interop/bittorrent" >/dev/null || exit 1
+  ALL=${*:-aria2 lt dht v2 webseed lsd}
+  INSIDE=$(echo " $ALL " | sed 's/ lsd / /')
+  rc=0
+  if [ -n "$(echo $INSIDE)" ]; then
+    docker run --rm -v "$ROOT":/w -w /w -v only-cargo-reg:/usr/local/cargo/registry \
+      -v only-bt-interop-target:/tmp/t -e CARGO_TARGET_DIR=/tmp/t -e BT_INTEROP_INSIDE=1 $IMAGE \
+      bash tools/interop/bittorrent/run.sh $INSIDE || rc=1
+  fi
+  case " $ALL " in *" lsd "*) bash "$ROOT/tools/interop/bittorrent/lsd.sh" || rc=1 ;; esac
+  exit $rc
 fi
 
-SUITES=${*:-aria2 lt dht}
-if ! command -v aria2c >/dev/null || ! python3 -c 'import libtorrent' 2>/dev/null; then
+SUITES=${*:-aria2 lt dht v2 webseed}
+if ! command -v aria2c >/dev/null || ! python3 -c 'import libtorrent' 2>/dev/null || ! command -v nginx >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
-  { apt-get update -qq && apt-get install -y -qq aria2 python3-libtorrent; } >/dev/null 2>&1 || exit 1
+  { apt-get update -qq && apt-get install -y -qq aria2 python3-libtorrent nginx; } >/dev/null 2>&1 || exit 1
 fi
 cargo build -q --release -p only-bittorrent --example bt-interop || exit 1
 BT=${CARGO_TARGET_DIR:-$ROOT/target}/release/examples/bt-interop
@@ -54,6 +72,25 @@ run() { # name, data dir, command...
   if timeout 90 "$@" >"$W/out" 2>&1; then
     grep -E "complete|peer" "$W/out" | tail -3 | sed 's/^/    /'
     check "$name" "$dir"
+  else
+    echo "FAIL $name (exit $?)"; tail -15 "$W/out" | sed 's/^/    /'
+    fail=$((fail + 1)); FAILED="$FAILED|$name"
+  fi
+}
+checkdir() { # name, data dir: the tree must match the source tree
+  # Padding files (BEP 47) that v1-only clients write are not part of the data.
+  if diff -r -x .pad "$W/src/tree" "$2/tree" >/dev/null 2>&1; then
+    echo "PASS $1"; pass=$((pass + 1))
+  else
+    echo "FAIL $1"; fail=$((fail + 1)); FAILED="$FAILED|$1"
+  fi
+}
+rund() { # name, data dir, command...: like run, comparing the tree
+  local name=$1 dir=$2
+  shift 2
+  if timeout 90 "$@" >"$W/out" 2>&1; then
+    grep -E "complete|peer" "$W/out" | tail -3 | sed 's/^/    /'
+    checkdir "$name" "$dir"
   else
     echo "FAIL $name (exit $?)"; tail -15 "$W/out" | sed 's/^/    /'
     fail=$((fail + 1)); FAILED="$FAILED|$name"
@@ -123,6 +160,79 @@ case " $SUITES " in *" dht "*)
   sleep 4
   run "libtorrent finds only's seed by DHT (magnet, no tracker, no peer)" "$W/l4" $LT leech "magnet:?xt=urn:btih:$IH" "$W/l4" 7413 --dht 127.0.0.1:7400
   stop $FSEED $ROUTER
+  ;;
+esac
+
+# A multi-file tree with odd sizes and an empty file: v2 aligns files to pieces (padding).
+mkdir -p "$W/src/tree/sub"
+head -c $((3 * 1024 * 1024 + 4321)) /dev/urandom >"$W/src/tree/big.bin"
+: >"$W/src/tree/empty"
+head -c 5000 /dev/urandom >"$W/src/tree/sub/small.txt"
+head -c 700001 /dev/urandom >"$W/src/tree/sub/mid.bin"
+
+case " $SUITES " in *" v2 "*)
+  echo "== v2 and hybrid torrents (BEP 52): libtorrent $(python3 -c 'import libtorrent; print(libtorrent.__version__)'), aria2"
+  for kind in v2 hybrid; do
+    $BT make "$W/src/tree" "$W/o-$kind.torrent" "http://$TR/announce" 65536 $kind >/dev/null
+    $LT make "$W/src/tree" "$W/l-$kind.torrent" $kind 65536 >/dev/null
+  done
+  bg S2 $BT seed "$W/o-v2.torrent" "$W/src" 127.0.0.1:7500 --no-dht
+  bg SH $BT seed "$W/o-hybrid.torrent" "$W/src" 127.0.0.1:7501 --no-dht
+  sleep 1
+  rund "libtorrent leeches a v2 torrent made by only from only" "$W/v1" $LT leech "$W/o-v2.torrent" "$W/v1" 7510 --peer 127.0.0.1:7500
+  rund "libtorrent leeches a hybrid torrent made by only from only" "$W/v2" $LT leech "$W/o-hybrid.torrent" "$W/v2" 7511 --peer 127.0.0.1:7501
+  rund "libtorrent leeches by v2 magnet from only (piece layers from only)" "$W/v3" $LT leech "$($BT magnet "$W/o-v2.torrent")" "$W/v3" 7512 --peer 127.0.0.1:7500
+  rund "libtorrent leeches by hybrid magnet from only" "$W/v4" $LT leech "$($BT magnet "$W/o-hybrid.torrent")" "$W/v4" 7513 --peer 127.0.0.1:7501
+  A="aria2c -q --seed-time=0 --enable-dht=false --enable-dht6=false --bt-enable-lpd=false --enable-peer-exchange=false --allow-overwrite=true"
+  rund "aria2 leeches a hybrid torrent made by only from only (its v1 part)" "$W/v5" $A --listen-port=7514 --dir="$W/v5" "$W/o-hybrid.torrent"
+  stop $S2 $SH
+  bg L2 $LT seed "$W/l-v2.torrent" "$W/src" 7520
+  bg LH $LT seed "$W/l-hybrid.torrent" "$W/src" 7521
+  sleep 2
+  rund "only leeches a v2 torrent made by libtorrent from libtorrent" "$W/v6" $BT leech "$W/l-v2.torrent" "$W/v6" 127.0.0.1:7530 --peer 127.0.0.1:7520 --no-dht
+  rund "only leeches a hybrid torrent made by libtorrent from libtorrent" "$W/v7" $BT leech "$W/l-hybrid.torrent" "$W/v7" 127.0.0.1:7531 --peer 127.0.0.1:7521 --no-dht
+  rund "only leeches by v2 magnet from libtorrent (piece layers by hash requests)" "$W/v8" $BT leech "$($LT magnet "$W/l-v2.torrent")" "$W/v8" 127.0.0.1:7532 --peer 127.0.0.1:7520 --no-dht
+  rund "only leeches by hybrid magnet from libtorrent" "$W/v9" $BT leech "$($LT magnet "$W/l-hybrid.torrent")" "$W/v9" 127.0.0.1:7533 --peer 127.0.0.1:7521 --no-dht
+  stop $L2 $LH
+  # aria2 knows nothing of BEP 47: it seeds padding files as files, so they must exist.
+  cp -r "$W/src" "$W/asrc"
+  python3 - "$W/l-hybrid.torrent" "$W/asrc" <<'PY'
+import os, sys, libtorrent as lt
+info = lt.bdecode(open(sys.argv[1], "rb").read())[b"info"]
+for f in info[b"files"]:
+    if b"p" in f.get(b"attr", b""):
+        p = os.path.join(sys.argv[2], info[b"name"].decode(), *[c.decode() for c in f[b"path"]])
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "wb").write(bytes(f[b"length"]))
+PY
+  bg AS aria2c --seed-ratio=0.0 -V --enable-dht=false --bt-enable-lpd=false --listen-port=7540 --dir="$W/asrc" "$W/l-hybrid.torrent"
+  sleep 3
+  rund "only leeches a hybrid torrent (made by libtorrent) from aria2" "$W/v10" $BT leech "$W/l-hybrid.torrent" "$W/v10" 127.0.0.1:7541 --peer 127.0.0.1:7540 --no-dht
+  stop $AS
+  ;;
+esac
+
+case " $SUITES " in *" webseed "*)
+  echo "== web seeds (BEP 19) from nginx $(nginx -v 2>&1 | sed 's/.*\///')"
+  mkdir -p "$W/www" && cp -r "$W/src/tree" "$W/src/data.bin" "$W/www/"
+  chmod 755 "$W" && chmod -R a+rX "$W/www" # nginx's workers run as www-data
+  cat >"$W/nginx.conf" <<NGINX
+daemon off;
+pid $W/nginx.pid;
+error_log $W/nginx.err;
+events {}
+http { access_log off; server { listen 127.0.0.1:7600; root $W/www; } }
+NGINX
+  bg NGINX nginx -c "$W/nginx.conf"
+  sleep 1
+  $BT make "$W/src/data.bin" "$W/ws-single.torrent" - 262144 v1 --web-seed "http://127.0.0.1:7600/data.bin" >/dev/null
+  run "only downloads a single-file v1 torrent from a web seed alone" "$W/w0" $BT leech "$W/ws-single.torrent" "$W/w0" 127.0.0.1:7610 --no-dht
+  for kind in v1 hybrid v2; do
+    $BT make "$W/src/tree" "$W/ws-$kind.torrent" - 65536 $kind --web-seed "http://127.0.0.1:7600/" >/dev/null
+    rund "only downloads a $kind torrent from a web seed alone" "$W/w-$kind" $BT leech "$W/ws-$kind.torrent" "$W/w-$kind" 127.0.0.1:7611 --no-dht
+  done
+  rund "libtorrent downloads only's hybrid torrent from the same web seed" "$W/w-lt" $LT leech "$W/ws-hybrid.torrent" "$W/w-lt" 7612
+  stop $NGINX
   ;;
 esac
 

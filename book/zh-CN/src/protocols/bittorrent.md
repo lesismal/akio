@@ -1,10 +1,12 @@
 # BitTorrent
 
-`only-bittorrent` 是运行在 only 上的 BitTorrent：bencode 编码、.torrent 文件与磁力链接、HTTP
-和 UDP tracker（客户端与服务端）、带扩展和消息流加密（MSE）的 peer wire 协议、uTP、主线 DHT，
-以及一个用上述全部能力下载和做种的客户端。它移植自 fib 的 `bittorrent` 包，与主流客户端线路兼容：
+`only-bittorrent` 是运行在 only 上的 BitTorrent：bencode 编码、v1、v2 与混合 .torrent 文件及磁力
+链接、HTTP 和 UDP tracker（客户端与服务端）、带扩展和消息流加密（MSE）的 peer wire 协议、uTP、
+支持 IPv4 与 IPv6 的主线 DHT、本地服务发现、web seed，以及一个用上述全部能力下载和做种、支持速率
+与做种限制的客户端。它移植自 fib 的 `bittorrent` 包，与主流客户端线路兼容：
 `tools/interop/bittorrent/run.sh` 针对 **libtorrent 2.0**（RC4 加密的 uTP、TCP、双向磁力链接、
-双向 DHT）和 **aria2 1.37**（双向传输、MSE、磁力链接、HTTP 与 UDP tracker）做了互通测试。
+双向 DHT、双向 v2 与混合种子、Docker 网络上的双向 LSD）和 **aria2 1.37**（双向传输、MSE、磁力
+链接、HTTP 与 UDP tracker、混合种子）做了互通测试，并以 nginx 测试 web seed。
 
 ## 一个 tracker、一个做种者和一个下载者
 
@@ -26,10 +28,10 @@ announce 得到失败原因 `tracker full`；`max_peers_per_swarm`（1000）限�
 {{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:torrent}}
 ```
 
-`metainfo::Builder` 把字节、内存中的文件或一个路径（流式读取）哈希成 v1 种子，可设置 tracker
-（BEP 12 分层）、DHT 节点、web seed 和私有标志。`MetaInfo::parse` 拒绝客户端不应信任的内容：
-可能逃出下载目录的路径、相互冲突的路径、与总长度不符的分片哈希。仅 v2 的种子会被拒绝；混合
-种子按其 v1 部分读取。
+`metainfo::Builder` 把字节、内存中的文件或一个路径（流式读取）哈希成 v1、v2 或混合种子
+（`Builder::version`），可设置 tracker（BEP 12 分层）、DHT 节点、web seed 和私有标志。
+`MetaInfo::parse` 拒绝客户端不应信任的内容：可能逃出下载目录的路径、相互冲突的路径、与总长度不符
+的分片哈希、与文件根不符的 v2 分片层，以及两部分描述不同文件的混合种子。
 
 ```rust,ignore
 {{#include ../../../../crates/only-bittorrent/examples/guide-bittorrent.rs:seeder}}
@@ -72,6 +74,48 @@ tracker 主机名在调用线程之外解析（UDP tracker 用 `only::dns`，HTT
   PEX（BEP 11，每个 peer 每分钟一条消息）、磁力链接的 `x.pe` 以及 `add_peers`。私有种子
   （BEP 27）只使用其 tracker。
 
+## v2 与混合种子（BEP 52）
+
+v2 种子把每个文件单独哈希成以 16 KiB 块为叶子的 SHA-256 默克尔树：info 字典带有每个文件的根
+（`FileEntry::pieces_root`），.torrent 的 `piece layers` 带有树中每个哈希恰好覆盖一个分片的那一层
+（`MetaInfo::piece_layers`，按根校验）。混合种子为同一组文件同时携带两种格式。
+
+- **一个分片空间。** v2 让每个文件从分片边界开始。混合种子在 v1 文件列表中用 BEP 47 填充文件
+  实现这一点；对纯 v2 种子，解析器补上填充文件（`.pad/<大小>`，`padding: true`）。于是第 `i` 个
+  分片在各视图中是相同的字节，存储从不写填充，`Info::verify_piece_with(layers, i, data)` 在同一
+  缓冲区上同时校验 SHA-1 与默克尔哈希。
+- **哈希。** `InfoHashV2` 是 info 字典的 SHA-256；`MetaInfo::info_hash` 是对等方使用的哈希：v1 与
+  混合种子为 SHA-1，纯 v2 种子为截断的 v2 哈希。磁力链接携带 `urn:btmh:1220<hex>`
+  （`Magnet::info_hash_v2`）。
+- **客户端** 用两个哈希公告混合种子（tracker、DHT、LSD），并接受以任一哈希发起的连接，包括用 v2
+  哈希回应我们 v1 握手的对等方。磁力链接得到的种子用哈希请求向支持 v2 的对等方获取缺失的分片层
+  （每次 512 个哈希，证明到文件根；每个对等方 4 个在途，超时 10 秒），在纯 v2 文件的分片层已知前
+  不选取其分片。客户端为已有的分片层和已有分片的块哈希（在池上读取）应答哈希请求。
+- `merkle` 提供树运算：`file_root`、`piece_root`、`root_from_piece_layer`、`MerkleTree`（按
+  libtorrent 期望的方式应答 `hashes`/`uncles`）和 `verify_hashes`。
+
+## Web seed、LSD、IPv6 与限制
+
+- **Web seed（BEP 19）**：种子的 `url-list`、`AddOptions::web_seeds` 与 `Torrent::add_web_seed`
+  （最多 16 个）。空闲的 web seed 取一个缺失分片（优先没有已连接对等方拥有的分片），经 only-http
+  客户端用不超过 4 MiB 的 `Range` 请求获取，跳过填充；之后像来自对等方的分片一样校验并写入。失败或
+  校验失败会让该 web seed 退避（10 秒起翻倍，最多 10 分钟）并上报 `TorrentEvent::WebSeedError`。
+  单文件种子的 URL 指向文件本身（以 `/` 结尾时为目录）；多文件种子的 URL 是包含 `<name>/<path>`
+  的目录。
+- **LSD（BEP 14）**：`ClientConfig::lsd`（默认开启，私有种子从不使用）在独立线程上向
+  239.192.152.143:6771（双栈时还有 `[ff15::efc0:988f]:6771`）多播 `BT-SEARCH` 公告：种子加入时
+  一次、之后每 5 分钟一次，并添加听到的对等方（每秒最多 50 条公告，每条 16 个哈希；用 cookie 识别
+  自己的公告）。`lsd` 模块是其编解码。
+- **IPv6**：监听 `[::]:port` 时，一对双栈 TCP 与 UDP 套接字同时服务 IPv4 和 IPv6；IPv4 对等方保持
+  普通地址。此时 DHT 还维护一张 IPv6 路由表（BEP 32：`nodes6`、`want`；`Client::dht_nodes6`）。
+  PEX 与 tracker 传递 IPv6 对等方。
+- **速率限制**：`RateLimits { upload, download }`，单位字节每秒，客户端级
+  （`ClientConfig::rate_limits`、`Client::set_rate_limits`）与单种子级（`AddOptions::rate_limits`、
+  `Torrent::set_rate_limits`）。请求发出前消耗下载令牌；上传在读取存储前等待上传令牌。
+- **做种限制**：`SeedLimits { ratio, time }`（`ClientConfig::seed_limits`、
+  `AddOptions::seed_limits`、`Torrent::set_seed_limits`）：完成的种子达到分享率（本次会话上传量
+  除以下载量，若未下载则除以种子大小）或做种时间后暂停，并上报 `TorrentEvent::SeedLimitReached`。
+
 ## 一个 UDP 端口：`UdpPort`
 
 ```text
@@ -94,7 +138,8 @@ uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发�
 - `bencode`：`Value`、`decode`（严格：不允许前导零和 `-0`，深度上限 256）、`decode_prefix`
   （ut_metadata 消息中字典之后跟随的数据）、`encode`（键排序）、`raw_value`（info 字典的原始
   字节，用于计算 info hash）。
-- `wire`：`Handshake`（BEP 10、DHT 和 Fast 扩展的保留位）、`Message`（BEP 3、`port`、BEP 6）、
+- `wire`：`Handshake`（BEP 10、DHT、Fast 扩展和 v2 的保留位）、`Message`（BEP 3、`port`、
+  BEP 6、BEP 52 的 hash request、hashes 与 hash reject）、
   增量 `Parser`、`Bitfield`、`ExtendedHandshake`、`MetadataMsg`、`Pex`、`allowed_fast_set`
   （BEP 6 的算法，已用其测试向量验证）。
 - `mse`：`Initiator` 和 `Receiver` 接收字节、返回要写出的字节，直到 `Established`（基于
@@ -105,7 +150,9 @@ uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发�
   500 ms，指数退避）、带慢启动的 LEDBAT（目标延迟 100 ms）、保活、FIN 和空闲超时。
 - `dht`：`Node` 接收数据报和时钟，排队待发数据报和 `DhtEvent`：K = 8 的 k-bucket 路由表（只有
   回应过的节点才进入；新的查询方先被 ping）、带 `implied_port` 的 ping/find_node/get_peers/
-  announce_peer、绑定请求方 IP 并每 5 分钟轮换的 token、3 个并发查询的迭代查找、BEP 43 只读模式。
+  announce_peer、绑定请求方 IP 并每 5 分钟轮换的 token、3 个并发查询的迭代查找、BEP 43 只读模式，
+  以及 BEP 32（`set_ipv6`：IPv6 节点的第二张路由表、`nodes6`、`want`）。
+- `merkle`：BEP 52 默克尔树（见上）。`lsd`：BEP 14 公告。
 - `tracker`：`http` 与 `udp` 编解码、`TrackerClient`、`TrackerServer`。
 
 ## 测试与互通
@@ -118,9 +165,15 @@ uTP 对端看到的也是被告知的端口。`port.connect(addr, handler)` 发�
   only 下载（明文、强制 MSE、磁力链接）以及向 only 做种（UDP tracker，明文与 MSE）；libtorrent
   经 RC4 加密的 uTP 和经 TCP 从 only 下载，以及通过磁力链接下载；libtorrent 以同样三种方式向
   only 做种；以及双向 DHT（only 节点为 libtorrent 引导；双方都只凭磁力链接通过 DHT 找到对方的
-  做种者）。
-- 模糊测试目标：`bt_bencode`（bencode、metainfo、磁力链接）、`bt_peer_wire`、`bt_krpc`、
-  `bt_utp`、`bt_tracker`、`bt_mse`，其种子语料由 `cargo test` 回放。
+  做种者）。套件 `v2`：only 与 libtorrent 各自生成的纯 v2 与混合多文件种子，双方通过 .torrent 和
+  磁力链接互相下载（v2 磁力链接双向检验哈希请求），以及 aria2 下载并做种混合种子。套件 `webseed`：
+  只从 nginx 下载 v1、混合与 v2 种子。套件 `lsd`：Docker 网络上的两个容器通过 LSD 双向发现彼此。
+- `tests/extensions.rs`：v2 与混合 swarm、v2 磁力链接获取分片层、通过 v2 哈希访问混合种子、从
+  only-http 文件服务器获取 web seed、LSD、双栈做种者与 IPv4/IPv6 下载者、仅 IPv6 的 DHT、速率
+  限制、做种限制。
+- 模糊测试目标：`bt_bencode`（bencode、v1/v2/混合 metainfo、磁力链接）、`bt_peer_wire`（含哈希
+  消息）、`bt_krpc`（IPv4 与双栈节点）、`bt_utp`、`bt_tracker`、`bt_mse`、`bt_lsd`、`bt_merkle`，
+  其种子语料由 `cargo test` 回放。
 
-尚未实现：BitTorrent v2 与混合种子（BEP 52）、web seed（BEP 19，已解析但未使用）、本地服务发现
-（BEP 14）、BEP 44 DHT 数据项、IPv6 DHT（BEP 32）、快速续传文件、分享率上限、限速。
+尚未实现：快速续传文件。有意不实现 BEP 44（DHT 任意数据）：下载与做种从不需要它，而它会给 DHT 增加
+按远端输入索引、需签名校验的条目存储（[ADR-018](https://github.com/lesismal/only/blob/main/docs/adr/018-bittorrent-v2-webseeds-lsd-ipv6-limits.zh-CN.md)）。

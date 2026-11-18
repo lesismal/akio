@@ -50,6 +50,7 @@ fn cfg(utp: bool, enc: Policy) -> ClientConfig {
     c.utp = utp;
     c.encryption = enc;
     c.dht = false;
+    c.lsd = false;
     c.tracker_timeout = Duration::from_millis(500);
     c
 }

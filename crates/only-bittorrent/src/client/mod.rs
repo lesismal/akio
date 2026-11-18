@@ -1,7 +1,16 @@
 //! A BitTorrent client on one `only` engine and one port number: TCP for the peer wire protocol
 //! and UDP shared by uTP and the DHT ([`UdpPort`]); HTTP and UDP trackers go through a
-//! [`TrackerClient`] on the same engine, and storage reads, writes and SHA-1 checks run on a
-//! logical pool, never on an I/O thread.
+//! [`TrackerClient`] on the same engine, web seeds (BEP 19) through only-http's client, and
+//! storage reads, writes and hash checks run on a logical pool, never on an I/O thread.
+//!
+//! - v1, v2 and hybrid torrents (BEP 52): a hybrid torrent is announced, looked up and accepted
+//!   under both of its hashes; v2 piece layers missing from a magnet's metadata are fetched from
+//!   peers with hash requests, and the client answers hash requests for the layers it has.
+//! - IPv6: listening on `[::]:port` serves IPv4 and IPv6 on one dual-stack socket pair; the
+//!   DHT then keeps an IPv6 routing table too (BEP 32), and PEX and trackers carry IPv6 peers.
+//! - Local Service Discovery (BEP 14, [`ClientConfig::lsd`]) on a thread of its own.
+//! - Rate limits ([`RateLimits`]) for the client and per torrent, and seed limits
+//!   ([`SeedLimits`]): a torrent that reaches its ratio or seeding time pauses.
 //!
 //! ```no_run
 //! use only_bittorrent::client::{AddOptions, Client, ClientConfig};
@@ -17,9 +26,12 @@
 //! println!("{:?}", t.stats());
 //! ```
 
+mod lsd;
 mod peer;
+mod rate;
 pub mod storage;
 mod torrent;
+mod webseed;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -35,7 +47,7 @@ use only_pool::{Pool, PoolConfig};
 
 use crate::dht::{self, DhtEvent, NodeId};
 use crate::magnet::Magnet;
-use crate::metainfo::{Info, InfoHash, MetaInfo};
+use crate::metainfo::{Info, InfoHash, InfoHashV2, MetaInfo, PieceLayers};
 use crate::mse::Policy;
 use crate::port::UdpPort;
 use crate::tracker::{AnnounceRequest, Event, TrackerClient};
@@ -77,6 +89,53 @@ pub enum TorrentEvent {
     },
     /// Something went wrong (storage, metadata).
     Error(String),
+    /// The torrent reached its seed ratio or seeding time ([`SeedLimits`]) and was paused.
+    SeedLimitReached,
+    /// A web seed failed (it is retried later, backing off).
+    WebSeedError {
+        /// The web seed.
+        url: String,
+        /// Why.
+        error: String,
+    },
+}
+
+/// Upload and download rate limits in bytes per second (`None`: unlimited, the default).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RateLimits {
+    /// Upload limit.
+    pub upload: Option<u64>,
+    /// Download limit.
+    pub download: Option<u64>,
+}
+
+impl RateLimits {
+    /// Limits of `upload` and `download` bytes per second.
+    pub fn new(upload: Option<u64>, download: Option<u64>) -> RateLimits {
+        RateLimits { upload, download }
+    }
+}
+
+/// When a complete torrent stops seeding (`None`: never, the default). The ratio is bytes
+/// uploaded over bytes downloaded in this session (over the torrent's size if nothing was
+/// downloaded); seeding time counts from completion (or from the start for a torrent added
+/// complete). The torrent is paused and reports [`TorrentEvent::SeedLimitReached`]; resuming it
+/// with the limit still reached pauses it again, so raise or clear the limit first.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[non_exhaustive]
+pub struct SeedLimits {
+    /// Stop at this ratio.
+    pub ratio: Option<f64>,
+    /// Stop after seeding this long.
+    pub time: Option<Duration>,
+}
+
+impl SeedLimits {
+    /// Stop at `ratio` or after `time`, whichever comes first.
+    pub fn new(ratio: Option<f64>, time: Option<Duration>) -> SeedLimits {
+        SeedLimits { ratio, time }
+    }
 }
 
 /// Where a torrent is.
@@ -123,6 +182,10 @@ pub struct TorrentStats {
     pub hash_fails: u64,
     /// Connected peers that have every piece.
     pub seeders: usize,
+    /// Time spent seeding (complete and running) in this session.
+    pub seeding_time: Duration,
+    /// Web seeds fetching a piece right now.
+    pub web_seeds_active: usize,
 }
 
 /// One connected peer.
@@ -151,6 +214,8 @@ pub struct PeerInfo {
     pub am_choking: bool,
     /// It chokes us.
     pub peer_choking: bool,
+    /// Its handshake announced v2 support (BEP 52; libtorrent sets it only when it dials).
+    pub v2: bool,
 }
 
 /// Callback for torrent events: `(info_hash, event)`, called in order after the torrent's
@@ -162,6 +227,7 @@ pub type EventFn = Arc<dyn Fn(InfoHash, &TorrentEvent) + Send + Sync>;
 #[non_exhaustive]
 pub struct ClientConfig {
     /// Address for TCP and UDP (default `0.0.0.0:6881`; port 0 picks a port free for both).
+    /// `[::]:port` listens dual-stack: IPv4 and IPv6 peers, and an IPv6 DHT table (BEP 32).
     pub listen: SocketAddr,
     /// Directory torrents are stored below (default: the working directory).
     pub data_dir: PathBuf,
@@ -189,6 +255,15 @@ pub struct ClientConfig {
     pub disk_threads: usize,
     /// Tracker request timeout before the first UDP retransmission (default 5 s).
     pub tracker_timeout: Duration,
+    /// Local Service Discovery, BEP 14 (default true; never for private torrents). If port
+    /// 6771 or the multicast group cannot be used, the client runs without it.
+    pub lsd: bool,
+    /// Download from the torrents' web seeds, BEP 19 (default true).
+    pub web_seeds: bool,
+    /// Rate limits for the whole client (default: none).
+    pub rate_limits: RateLimits,
+    /// Seed limits torrents start with (default: none; [`AddOptions::seed_limits`] overrides).
+    pub seed_limits: SeedLimits,
     /// Torrent events.
     pub on_event: Option<EventFn>,
 }
@@ -201,6 +276,9 @@ impl fmt::Debug for ClientConfig {
             .field("encryption", &self.encryption)
             .field("utp", &self.utp)
             .field("dht", &self.dht)
+            .field("lsd", &self.lsd)
+            .field("rate_limits", &self.rate_limits)
+            .field("seed_limits", &self.seed_limits)
             .finish_non_exhaustive()
     }
 }
@@ -222,6 +300,10 @@ impl Default for ClientConfig {
             threads: 2,
             disk_threads: 4,
             tracker_timeout: Duration::from_secs(5),
+            lsd: true,
+            web_seeds: true,
+            rate_limits: RateLimits::default(),
+            seed_limits: SeedLimits::default(),
             on_event: None,
         }
     }
@@ -241,6 +323,12 @@ pub struct AddOptions {
     pub peers: Vec<SocketAddr>,
     /// Trackers besides the torrent's own.
     pub trackers: Vec<String>,
+    /// Web seeds besides the torrent's own (BEP 19).
+    pub web_seeds: Vec<String>,
+    /// The torrent's own rate limits (default: none; the client's apply as well).
+    pub rate_limits: RateLimits,
+    /// Seed limits (default: [`ClientConfig::seed_limits`]).
+    pub seed_limits: Option<SeedLimits>,
 }
 
 impl fmt::Debug for AddOptions {
@@ -250,6 +338,9 @@ impl fmt::Debug for AddOptions {
             .field("seed", &self.seed)
             .field("peers", &self.peers)
             .field("trackers", &self.trackers)
+            .field("web_seeds", &self.web_seeds)
+            .field("rate_limits", &self.rate_limits)
+            .field("seed_limits", &self.seed_limits)
             .finish_non_exhaustive()
     }
 }
@@ -287,21 +378,48 @@ pub(crate) struct ClientInner {
     pub(crate) pool: Arc<Pool>,
     pub(crate) dht: Option<Mutex<dht::Node>>,
     pub(crate) listen: SocketAddr,
+    pub(crate) http: only_http::client::Client,
+    pub(crate) rates: Arc<rate::GlobalRates>,
     torrents: Mutex<HashMap<InfoHash, Arc<TorrentShared>>>,
+    /// Other hashes of torrents (a hybrid torrent's truncated v2 hash) to their key.
+    aliases: Mutex<HashMap<InfoHash, InfoHash>>,
     req2: Mutex<HashMap<[u8; 20], InfoHash>>,
     lookups: Mutex<HashMap<u64, InfoHash>>,
-    closed: AtomicBool,
-    /// The maintenance thread, joined by [`Client::close`].
-    maintenance: Mutex<Option<std::thread::JoinHandle<()>>>,
+    pub(crate) closed: AtomicBool,
+    /// The maintenance and LSD threads, joined by [`Client::close`].
+    maintenance: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
 impl ClientInner {
+    /// The torrent of `ih`, by its key or another of its hashes.
     pub(crate) fn torrent(&self, ih: &InfoHash) -> Option<Arc<TorrentShared>> {
-        self.torrents
+        let key = self
+            .aliases
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(ih)
+            .copied()
+            .unwrap_or(*ih);
+        self.torrents
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&key)
             .cloned()
+    }
+
+    /// Makes `alias` another name of the torrent keyed `key` (handshakes, MSE, LSD).
+    pub(crate) fn add_alias(&self, alias: InfoHash, key: InfoHash) {
+        if alias == key {
+            return;
+        }
+        self.aliases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(alias, key);
+        self.req2
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(peer::req2(&alias), key);
     }
 
     pub(crate) fn lookup_req2(&self, h: &[u8; 20]) -> Option<InfoHash> {
@@ -325,7 +443,7 @@ impl ClientInner {
         }
     }
 
-    fn all(&self) -> Vec<Arc<TorrentShared>> {
+    pub(crate) fn all(&self) -> Vec<Arc<TorrentShared>> {
         self.torrents
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -412,9 +530,23 @@ impl Client {
         pc.max_threads = cfg.disk_threads.max(1);
         let pool = Pool::new(pc);
         let trackers = TrackerClient::new(engine.clone(), cfg.tracker_timeout, 3);
-        let dht = cfg
-            .dht
-            .then(|| Mutex::new(dht::Node::new(NodeId::random())));
+        let dht = cfg.dht.then(|| {
+            let mut n = dht::Node::new(NodeId::random());
+            n.set_ipv6(listen.is_ipv6());
+            Mutex::new(n)
+        });
+        let http = only_http::client::Client::new(engine.clone())
+            .with_redirects(only_http::client::RedirectPolicy::limit(5))
+            .with_options({
+                let mut o = only_http::client::ClientOptions::default();
+                o.max_body_bytes = webseed::MAX_RANGE as usize;
+                o.max_idle_per_host = 4;
+                o
+            });
+        let rates = Arc::new(rate::GlobalRates::new(
+            cfg.rate_limits.upload,
+            cfg.rate_limits.download,
+        ));
         let inner = Arc::new(ClientInner {
             peer_id: cfg.peer_id.unwrap_or_else(new_peer_id),
             cfg,
@@ -423,6 +555,8 @@ impl Client {
             trackers,
             pool,
             dht,
+            http,
+            rates,
             listen: SocketAddr::new(
                 listen.ip(),
                 addrs
@@ -430,10 +564,11 @@ impl Client {
                     .map_or_else(|| listen.port(), SocketAddr::port),
             ),
             torrents: Mutex::new(HashMap::new()),
+            aliases: Mutex::new(HashMap::new()),
             req2: Mutex::new(HashMap::new()),
             lookups: Mutex::new(HashMap::new()),
             closed: AtomicBool::new(false),
-            maintenance: Mutex::new(None),
+            maintenance: Mutex::new(Vec::new()),
         });
         let _ = cell.set(Arc::downgrade(&inner));
         let w = Arc::downgrade(&inner);
@@ -460,7 +595,19 @@ impl Client {
         let h = std::thread::Builder::new()
             .name("only-bt-client".into())
             .spawn(move || maintenance(&w))?;
-        *inner.maintenance.lock().unwrap_or_else(|p| p.into_inner()) = Some(h);
+        let mut threads = vec![h];
+        if inner.cfg.lsd {
+            if let Some(socks) = lsd::open(listen.is_ipv6()) {
+                let w = Arc::downgrade(&inner);
+                if let Ok(h) = std::thread::Builder::new()
+                    .name("only-bt-lsd".into())
+                    .spawn(move || lsd::run(&w, socks))
+                {
+                    threads.push(h);
+                }
+            }
+        }
+        *inner.maintenance.lock().unwrap_or_else(|p| p.into_inner()) = threads;
         Ok(Client { inner })
     }
 
@@ -486,6 +633,24 @@ impl Client {
         })
     }
 
+    /// IPv6 nodes in the DHT routing table (0 unless listening dual-stack).
+    pub fn dht_nodes6(&self) -> usize {
+        self.inner.dht.as_ref().map_or(0, |d| {
+            d.lock().unwrap_or_else(|p| p.into_inner()).table6_len()
+        })
+    }
+
+    /// Changes the client-wide rate limits.
+    pub fn set_rate_limits(&self, limits: RateLimits) {
+        self.inner.rates.set(limits.upload, limits.download);
+    }
+
+    /// The client-wide rate limits.
+    pub fn rate_limits(&self) -> RateLimits {
+        let (upload, download) = self.inner.rates.get();
+        RateLimits { upload, download }
+    }
+
     /// Bootstraps the DHT from more nodes.
     pub fn dht_bootstrap(&self, nodes: &[SocketAddr]) {
         if let Some(d) = &self.inner.dht {
@@ -505,8 +670,11 @@ impl Client {
             return Err(AddError::Closed);
         }
         let ih = n.info_hash;
-        if self.inner.torrent(&ih).is_some() {
-            return Err(AddError::Duplicate(ih));
+        let alias = n.info_hash_v2.map(|v| v.truncated());
+        for h in std::iter::once(ih).chain(alias) {
+            if self.inner.torrent(&h).is_some() {
+                return Err(AddError::Duplicate(h));
+            }
         }
         let shared = TorrentShared::new(&self.inner, n);
         self.inner
@@ -519,6 +687,10 @@ impl Client {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(peer::req2(&ih), ih);
+        let hashes = shared.lock().hashes.clone();
+        for h in hashes {
+            self.inner.add_alias(h, ih);
+        }
         let running = shared.lock().running();
         if running {
             announce(&self.inner, &shared, Event::Started, false);
@@ -537,17 +709,23 @@ impl Client {
     pub fn add_torrent(&self, mi: MetaInfo, opts: AddOptions) -> Result<Torrent, AddError> {
         let mut trackers = mi.trackers();
         trackers.extend(opts.trackers.iter().map(|t| vec![t.clone()]));
+        let mut url_list = mi.url_list;
+        url_list.extend(opts.web_seeds.iter().cloned());
         self.add(NewTorrent {
             info_hash: mi.info_hash,
+            info_hash_v2: mi.info_hash_v2,
             name: Some(mi.info.name.clone()),
             info: Some(mi.info),
+            layers: mi.piece_layers,
             trackers,
-            url_list: mi.url_list,
+            url_list,
             peers: opts.peers,
             storage: opts.storage,
             storage_factory: self.factory(),
             paused: opts.paused,
             seed: opts.seed,
+            rate_limits: opts.rate_limits,
+            seed_limits: opts.seed_limits.unwrap_or(self.inner.cfg.seed_limits),
         })
     }
 
@@ -558,21 +736,28 @@ impl Client {
         trackers.extend(opts.trackers.iter().map(|t| vec![t.clone()]));
         let mut peers = m.peers.clone();
         peers.extend(opts.peers);
+        let mut url_list = m.web_seeds;
+        url_list.extend(opts.web_seeds.iter().cloned());
         self.add(NewTorrent {
             info_hash: m.info_hash,
+            info_hash_v2: m.info_hash_v2,
             name: m.name,
             info: None,
+            layers: PieceLayers::new(),
             trackers,
-            url_list: m.web_seeds,
+            url_list,
             peers,
             storage: opts.storage,
             storage_factory: self.factory(),
             paused: opts.paused,
             seed: opts.seed,
+            rate_limits: opts.rate_limits,
+            seed_limits: opts.seed_limits.unwrap_or(self.inner.cfg.seed_limits),
         })
     }
 
-    /// The torrent of `info_hash`.
+    /// The torrent of `info_hash` (any of its hashes: a hybrid torrent's truncated v2 hash
+    /// finds it too).
     pub fn torrent(&self, info_hash: &InfoHash) -> Option<Torrent> {
         self.inner
             .torrent(info_hash)
@@ -590,17 +775,26 @@ impl Client {
 
     /// Removes a torrent (its connections close; its data stays).
     pub fn remove(&self, info_hash: &InfoHash) -> Option<Torrent> {
+        let key = self.inner.torrent(info_hash)?.info_hash;
         let t = self
             .inner
             .torrents
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .remove(info_hash)?;
-        self.inner
-            .req2
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&peer::req2(info_hash));
+            .remove(&key)?;
+        let hashes = t.lock().hashes.clone();
+        for h in std::iter::once(key).chain(hashes) {
+            self.inner
+                .req2
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&peer::req2(&h));
+            self.inner
+                .aliases
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(&h);
+        }
         t.with(|st, cx| st.pause(cx));
         Some(Torrent { shared: t })
     }
@@ -627,13 +821,14 @@ impl Client {
         self.inner.engine.wait();
         self.inner.pool.shutdown();
         self.inner.pool.join();
-        let maintenance = self
-            .inner
-            .maintenance
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .take();
-        if let Some(h) = maintenance {
+        let threads = std::mem::take(
+            &mut *self
+                .inner
+                .maintenance
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()),
+        );
+        for h in threads {
             let _ = h.join();
         }
     }
@@ -643,6 +838,41 @@ impl Torrent {
     /// The info hash.
     pub fn info_hash(&self) -> InfoHash {
         self.shared.info_hash
+    }
+
+    /// The v2 info hash (v2 and hybrid torrents, once known).
+    pub fn info_hash_v2(&self) -> Option<InfoHashV2> {
+        self.shared.lock().info_hash_v2
+    }
+
+    /// The v2 piece layers held (from the .torrent, or fetched from peers for a magnet link).
+    pub fn piece_layers(&self) -> PieceLayers {
+        self.shared.lock().layers.clone()
+    }
+
+    /// Changes this torrent's rate limits (the client's apply as well).
+    pub fn set_rate_limits(&self, limits: RateLimits) {
+        self.shared.lock().set_rate_limits(limits);
+    }
+
+    /// This torrent's rate limits.
+    pub fn rate_limits(&self) -> RateLimits {
+        self.shared.lock().rate_limits()
+    }
+
+    /// Changes this torrent's seed limits.
+    pub fn set_seed_limits(&self, limits: SeedLimits) {
+        self.shared.lock().seed_limits = limits;
+    }
+
+    /// This torrent's seed limits.
+    pub fn seed_limits(&self) -> SeedLimits {
+        self.shared.lock().seed_limits
+    }
+
+    /// Adds a web seed (BEP 19; at most 16 per torrent, duplicates ignored).
+    pub fn add_web_seed(&self, url: &str) {
+        self.shared.lock().add_web_seed(url);
     }
 
     /// The name (from the info dictionary or the magnet link).
@@ -769,12 +999,12 @@ pub(crate) fn announce(
             if ev == Event::Stopped {
                 slot.started = false;
             }
-            urls.push((slot.url.clone(), ev));
+            urls.push((slot.url.clone(), slot.info_hash, ev));
         }
         (urls, left, up, down)
     };
-    for (url, ev) in urls {
-        let mut req = AnnounceRequest::new(t.info_hash, client.peer_id, client.listen.port(), left);
+    for (url, ih, ev) in urls {
+        let mut req = AnnounceRequest::new(ih, client.peer_id, client.listen.port(), left);
         req.event = ev;
         req.uploaded = up;
         req.downloaded = down;
@@ -791,7 +1021,11 @@ pub(crate) fn announce(
             let Some(t) = weak.upgrade() else { return };
             t.with(|st, cx| {
                 let now = Instant::now();
-                let Some(slot) = st.trackers.iter_mut().find(|s| s.url == u) else {
+                let Some(slot) = st
+                    .trackers
+                    .iter_mut()
+                    .find(|s| s.url == u && s.info_hash == ih)
+                else {
                     return;
                 };
                 slot.busy = false;
@@ -831,14 +1065,17 @@ fn dht_lookup(client: &Arc<ClientInner>, t: &Arc<TorrentShared>) {
         }
         st.last_dht = Some(Instant::now());
     }
+    let hashes = t.lock().hashes.clone();
     let out = {
         let mut n = d.lock().unwrap_or_else(|p| p.into_inner());
-        let id = n.get_peers(t.info_hash, Some(client.listen.port()));
-        client
-            .lookups
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, t.info_hash);
+        for h in hashes {
+            let id = n.get_peers(h, Some(client.listen.port()));
+            client
+                .lookups
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(id, t.info_hash);
+        }
         n.take_outgoing()
     };
     for (to, b) in out {

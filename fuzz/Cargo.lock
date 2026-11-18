@@ -422,6 +422,7 @@ dependencies = [
  "only-crypto",
  "only-http",
  "only-pool",
+ "only-sys",
 ]
 
 [[package]]
