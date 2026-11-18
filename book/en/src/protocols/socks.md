@@ -1,7 +1,8 @@
 # SOCKS and HTTP CONNECT proxies
 
-`only-socks` provides a SOCKS5 / SOCKS4 / SOCKS4a server (`Socks`) and an HTTP `CONNECT` proxy
-(`connect_proxy`). Both relay callback to callback with **backpressure in both directions**:
+`only-socks` provides a SOCKS5 / SOCKS4 / SOCKS4a server (`Socks`), an HTTP `CONNECT` proxy
+(`connect_proxy`) and a SOCKS client (`SocksClient`, [below](#socks-client)). The server and
+the proxy relay callback to callback with **backpressure in both directions**:
 when one side cannot keep up, reading from the other side pauses until it drains
 (`hold_reads` + `on_drain`, see [Backpressure](../concepts/backpressure.md)).
 
@@ -63,12 +64,12 @@ that sets nothing is still bounded:
 
 ## BIND and UDP ASSOCIATE
 
-Both SOCKS5 commands are off by default (they open ports on the proxy host on a client's
-request); turn them on per server:
+Both commands are off by default (they open ports on the proxy host on a client's request); turn
+them on per server (`bind` covers SOCKS5 and SOCKS4 `BIND`):
 
 ```rust,ignore
 let socks = Socks::new(er.clone())
-    .bind(true)                                   // SOCKS5 BIND
+    .bind(true)                                   // SOCKS5 and SOCKS4 BIND
     .bind_timeout(Duration::from_secs(30))        // default 60 s
     .udp_associate(true)                          // SOCKS5 UDP ASSOCIATE
     .udp_idle_timeout(Duration::from_secs(60));   // default 120 s
@@ -83,13 +84,19 @@ let engine = Engine::builder()
   (only from the requested IP, unless the request's address is unspecified), replies again with
   the peer's address, then relays like `CONNECT`. Nobody within `bind_timeout`: reply 1, closed.
   The accepted stream joins the engine through `Engine::adopt_tcp`, which serves any TCP stream
-  accepted outside the engine like a dialed connection.
+  accepted outside the engine like a dialed connection. SOCKS4 (and 4a) `BIND` works the same
+  way with SOCKS4 replies (`0x5a` with port and IPv4 address, `0x5b` on failure); only a
+  connection from `DSTIP` is taken (any when it is `0.0.0.0` or a 4a host name), others are
+  dropped while waiting. A proxy reached over IPv6 refuses SOCKS4 `BIND` (no way to say where).
 - **UDP ASSOCIATE**: each association gets its own UDP socket (`Engine::bind_udp`) on the
   address the client reached the proxy on, so the engine needs UDP I/O threads
   (`udp_client_threads` or a UDP listener; without them the reply is 1). Datagrams count as the
   client's only from the control connection's IP, and from one port once the request or the
-  first datagram fixed it. Datagrams with a non-zero fragment number are dropped (RFC 1928 allows
-  that when fragmentation is not implemented). Answers are relayed only from addresses the client
+  first datagram fixed it. Fragmented datagrams (non-zero `FRAG`, RFC 1928) are reassembled and
+  relayed as one datagram: one sequence at a time per association, taken only in order (1, 2, 3,
+  …; fragments carry no sequence number, so a gap, a repeat, another destination or a whole
+  datagram in the middle drops the sequence), at most 65,507 bytes, dropped 5 s after its first
+  fragment. Answers are relayed only from addresses the client
   has sent to, so an association is not an open inbound port. Host names are resolved on the
   logical pool and cached per association. The association ends when its control connection
   closes, or after `udp_idle_timeout` without a datagram either way (the server then closes the
@@ -123,7 +130,61 @@ allowed by ruleset"), 0x5b for SOCKS4, or drops the datagram.
 
 `tools/interop/socks/run.sh` checks all of this against curl (`--socks5`, `--socks5-hostname`,
 `--socks4`, `--socks4a`, with and without a password), PySocks's UDP ASSOCIATE and a hand-written
-client for BIND and the UDP edge cases, running the same clients against Dante as a reference.
+client for BIND, SOCKS4 BIND, fragments and the UDP edge cases, running the same clients against
+Dante as a reference; it also runs `SocksClient` (below) against Dante and against only-socks.
+
+## SOCKS client
+
+`SocksClient` speaks SOCKS5 (`CONNECT`, `BIND`, `UDP ASSOCIATE`; no authentication or
+username/password), SOCKS4 and SOCKS4a (`CONNECT`, `BIND`), either on the engine (callbacks on
+the I/O threads, nothing blocks) or blocking over `std::net`:
+
+```rust,ignore
+use only_socks::{Dest, SocksClient, Version};
+let client = SocksClient::from_url("socks5h://alice:secret@proxy.internal:1080")?;
+// or SocksClient::new(Version::Socks5, addr).auth("alice", "secret")
+
+// Blocking: a TcpStream connected to the target through the proxy.
+let stream = client.dial_blocking(&Dest::Name("example.com".into(), 443))?;
+
+// On the engine: `acceptor` serves the tunnel (a `Tls` acceptor runs TLS inside it).
+client.dial(&engine, Dest::Name("example.com".into(), 80), acceptor, |e| eprintln!("{e}"));
+
+// BIND: tell the peer where to connect, then serve its connection.
+client.bind(&engine, peer_ip.into(), |bound| announce(bound), acceptor, |e| eprintln!("{e}"));
+
+// UDP ASSOCIATE (SOCKS5): datagrams through the relay.
+client.udp_associate(
+    &engine,
+    |assoc, from, payload| { /* a datagram from `from` */ },
+    |r| { let assoc = r.expect("associated"); assoc.send_to(b"query", &dns_server.into()).ok(); },
+);
+```
+
+- On the engine, `acceptor.on_open` runs once the TCP connection to the proxy is up (as for a
+  TLS dial): what the handler sends waits for the tunnel, and `on_data` sees the target's bytes
+  only. **Every failure before the tunnel opens goes to `on_error`**: resolving or reaching the
+  proxy (each of its addresses in turn), a refusal (an `io::Error` carrying
+  `only_socks::ProxyRefused`: `status()` is the closest HTTP status, `socks_reply()` the SOCKS
+  code), a reply that is not SOCKS, the handshake timeout. The connection then closes.
+- `bind`'s `on_bound` gets the proxy's first reply (an unspecified address is replaced by the
+  proxy's) on the I/O thread, mid-handshake: hand it to the peer, do not use the BIND
+  connection from it. Blocking: `bind_blocking` returns once the proxy listens
+  (`bound_addr()`), `accept()` waits for the peer.
+- `udp_associate` binds a UDP socket on the engine (it needs `udp_client_threads`), announces
+  it and hands a `UdpAssociation` to `done` (`send_to`, `relay_addr`, `close`). Datagrams from
+  anything but the relay are dropped; fragmented ones are reassembled first. Blocking:
+  `udp_associate_blocking()` returns a `BlockingUdp` (`send_to`, `recv_from`), ended by dropping
+  it.
+- Limits: `handshake_timeout` (default 10 s) bounds connecting to the proxy and its reply;
+  `bind_timeout` (default 60 s) bounds a BIND's wait for the peer. Blocking replies are read a
+  byte at a time, so the stream you get back starts exactly at the tunnel's first byte.
+- Host names: a `Dest::Name` goes to SOCKS5 and SOCKS4a proxies as a name; over SOCKS4 the
+  client resolves it (IPv4 only).
+
+The HTTP and WebSocket clients use the same handshake for their `socks5://` / `socks4a://`
+proxies ([HTTP clients](http-clients.md#proxies)). See
+[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.md).
 
 ## In-kernel relaying
 
@@ -134,5 +195,6 @@ buffer fills). It is not wired into only-socks yet.
 
 ## Not supported
 
-UDP fragment reassembly (fragments are dropped), SOCKS4 `BIND`, GSSAPI authentication, a SOCKS
-client, a Linux `splice(2)` path.
+GSSAPI authentication; a Linux `splice(2)` relay path (not attempted: the engine's relay with
+two-way backpressure stays, and `only::ebpf::Relay` covers in-kernel relaying); sending
+fragmented UDP datagrams (they are only reassembled); TLS to the proxy in the clients.

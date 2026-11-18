@@ -6,7 +6,7 @@
 use std::{
     net::TcpListener,
     sync::{
-        Arc,
+        Arc, Mutex,
         mpsc::{self, Receiver, Sender},
     },
     time::Duration,
@@ -752,6 +752,83 @@ fn through_a_proxy_with_connect() {
         .and_then(|e| e.downcast_ref::<only_ws::proxy::ProxyRefused>())
         .unwrap();
     assert_eq!(r.status(), 407);
+    stop(&e);
+}
+
+/// A minimal SOCKS5 proxy (no authentication, CONNECT) relaying with threads; records each
+/// request's address type and host.
+/// What the test SOCKS5 proxy saw: address type and host of each request.
+type Seen = Arc<Mutex<Vec<(u8, String)>>>;
+
+fn socks5_proxy() -> (std::net::SocketAddr, Seen) {
+    use std::io::{Read, Write};
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    std::thread::spawn(move || {
+        for c in l.incoming().flatten() {
+            let seen = seen2.clone();
+            std::thread::spawn(move || {
+                let mut c = c;
+                let mut b = [0u8; 512];
+                c.read_exact(&mut b[..3]).unwrap();
+                c.write_all(&[5, 0]).unwrap();
+                c.read_exact(&mut b[..4]).unwrap();
+                let atyp = b[3];
+                let host = match atyp {
+                    1 => {
+                        c.read_exact(&mut b[..4]).unwrap();
+                        std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string()
+                    }
+                    3 => {
+                        c.read_exact(&mut b[..1]).unwrap();
+                        let n = usize::from(b[0]);
+                        c.read_exact(&mut b[..n]).unwrap();
+                        String::from_utf8_lossy(&b[..n]).into_owned()
+                    }
+                    _ => return,
+                };
+                c.read_exact(&mut b[..2]).unwrap();
+                let port = u16::from_be_bytes([b[0], b[1]]);
+                seen.lock().unwrap().push((atyp, host.clone()));
+                let h = if host == "localhost" {
+                    "127.0.0.1".into()
+                } else {
+                    host
+                };
+                let up = std::net::TcpStream::connect((h.as_str(), port)).unwrap();
+                c.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).unwrap();
+                let (mut c2, mut up2) = (c.try_clone().unwrap(), up.try_clone().unwrap());
+                std::thread::spawn(move || {
+                    let _ = std::io::copy(&mut up2, &mut c2);
+                    let _ = c2.shutdown(std::net::Shutdown::Write);
+                });
+                let mut up = up;
+                let _ = std::io::copy(&mut c, &mut up);
+                let _ = up.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    (addr, seen)
+}
+
+#[test]
+fn through_a_socks5_proxy() {
+    let (e, port) = start(echo_router(WsOptions::default(), None));
+    let (proxy, seen) = socks5_proxy();
+    let mut opts = DialOptions::default();
+    // socks5h: the name goes to the proxy; socks5: resolved here (IPv4 first).
+    for (url, want) in [
+        (format!("socks5h://{proxy}"), (3, "localhost")),
+        (format!("socks5://{proxy}"), (1, "127.0.0.1")),
+    ] {
+        opts.proxy = only_ws::proxy::Proxy::all(&url).unwrap();
+        let (ws, rx, _, _) = open(&e, &format!("ws://localhost:{port}/ws"), &opts);
+        roundtrips(&ws, &rx);
+        let last = seen.lock().unwrap().last().cloned().unwrap();
+        assert_eq!((last.0, last.1.as_str()), want, "{url}");
+    }
     stop(&e);
 }
 

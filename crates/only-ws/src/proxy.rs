@@ -1,5 +1,5 @@
-//! HTTP proxies for the clients (ADR-010): which proxy a URL goes through, and the `CONNECT`
-//! tunnel.
+//! Proxies for the clients (ADR-010, SOCKS in ADR-019): which proxy a URL goes through, and the
+//! tunnel through it.
 //!
 //! A [`Proxy`] holds one proxy for `http://` / `ws://` targets and one for `https://` /
 //! `wss://` targets, plus `NO_PROXY`-style exceptions. Nothing reads the environment unless
@@ -7,8 +7,18 @@
 //! `CONNECT host:port`; only-http's client tunnels `https://` the same way and sends `http://`
 //! requests to the proxy in absolute form.
 //!
-//! Only plain-HTTP proxies are supported (`http://proxy:port`, credentials in the URL become
-//! `Proxy-Authorization: Basic`); TLS to the proxy itself and SOCKS (see `only-socks`) are not.
+//! Proxy URLs:
+//! - `http://[user:password@]host[:port]` (port 80): an HTTP proxy; credentials become
+//!   `Proxy-Authorization: Basic`. TLS to the proxy itself (`https://`) is not supported.
+//! - `socks5://` and `socks5h://` (port 1080): SOCKS5 (RFC 1928), with username/password
+//!   authentication (RFC 1929) when the URL has credentials. `socks5h` sends host names to the
+//!   proxy, `socks5` resolves them first (curl's convention); every request, `http://` ones
+//!   included, goes through a tunnel to the target.
+//! - `socks4://` and `socks4a://` (port 1080): SOCKS4 (IPv4 targets, resolved here) and SOCKS4a
+//!   (host names resolved by the proxy); the URL's user name is the SOCKS4 user id.
+//!
+//! A SOCKS refusal is reported like an HTTP one, as a [`ProxyRefused`] with the closest HTTP
+//! status ([`ProxyRefused::socks_reply`] has the SOCKS code).
 //!
 //! ```
 //! use only_ws::proxy::Proxy;
@@ -55,7 +65,7 @@ impl Proxy {
     }
 
     /// `url` (`http://[user:password@]host[:port]`, port 80 by default; `host:port` alone also
-    /// works) for every target.
+    /// works; or a SOCKS URL, see the [module docs](self)) for every target.
     pub fn all(url: &str) -> io::Result<Proxy> {
         let s = ProxyServer::parse(url)?;
         Ok(Proxy {
@@ -92,7 +102,8 @@ impl Proxy {
     }
 
     /// The proxies the environment names: `http_proxy` / `HTTP_PROXY`, `https_proxy` /
-    /// `HTTPS_PROXY` and `no_proxy` / `NO_PROXY` (lower case first). `HTTP_PROXY` is ignored
+    /// `HTTPS_PROXY`, `all_proxy` / `ALL_PROXY` for targets neither names (typically
+    /// `socks5h://…`) and `no_proxy` / `NO_PROXY` (lower case first). `HTTP_PROXY` is ignored
     /// when `REQUEST_METHOD` is set (a CGI request could set it through a `Proxy:` header,
     /// "httpoxy"). Empty when none is set; an error when a value is not a usable proxy URL, so
     /// that a misconfigured proxy is not silently bypassed.
@@ -110,6 +121,11 @@ impl Proxy {
         }
         if let Some(u) = get("https_proxy").or_else(|| get("HTTPS_PROXY")) {
             p = p.https(u.trim())?;
+        }
+        if let Some(u) = get("all_proxy").or_else(|| get("ALL_PROXY")) {
+            let s = ProxyServer::parse(u.trim())?;
+            p.http.get_or_insert_with(|| s.clone());
+            p.https.get_or_insert(s);
         }
         if let Some(l) = get("no_proxy").or_else(|| get("NO_PROXY")) {
             p = p.no_proxy(&l);
@@ -153,13 +169,37 @@ pub struct ProxyServer {
     pub host: String,
     /// Port.
     pub port: u16,
-    /// `Proxy-Authorization` value, from credentials in the URL.
+    /// `Proxy-Authorization` value, from credentials in the URL (HTTP proxies).
     pub authorization: Option<String>,
+    /// What the proxy speaks.
+    pub kind: ProxyKind,
+    /// User name and password from the URL (SOCKS proxies; SOCKS4 uses the name as user id).
+    pub credentials: Option<(String, String)>,
+}
+
+/// What a proxy speaks. Not public API.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyKind {
+    /// HTTP: `CONNECT`, or absolute-form requests.
+    Http,
+    /// SOCKS; `remote_dns`: host names go to the proxy (`socks5h`, `socks4a`), else the client
+    /// resolves them first (`socks5`, `socks4`).
+    Socks {
+        /// The protocol.
+        version: crate::socks::Version,
+        /// Whether the proxy resolves host names.
+        remote_dns: bool,
+    },
 }
 
 impl std::fmt::Debug for ProxyServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ProxyServer({}:{})", self.host, self.port)
+        write!(
+            f,
+            "ProxyServer({:?} {}:{})",
+            self.kind, self.host, self.port
+        )
     }
 }
 
@@ -182,18 +222,63 @@ fn percent_decode(s: &str) -> String {
 }
 
 impl ProxyServer {
-    fn parse(url: &str) -> io::Result<ProxyServer> {
+    /// Whether this is an HTTP proxy (`http://` requests go to it in absolute form).
+    pub fn is_http(&self) -> bool {
+        self.kind == ProxyKind::Http
+    }
+
+    /// Whether a target's host name must be resolved before the tunnel is asked for
+    /// (`socks5://`, `socks4://`).
+    pub fn resolves_locally(&self) -> bool {
+        matches!(
+            self.kind,
+            ProxyKind::Socks {
+                remote_dns: false,
+                ..
+            }
+        )
+    }
+
+    /// Whether this is a SOCKS4 proxy (IPv4 targets only).
+    pub fn is_socks4(&self) -> bool {
+        matches!(
+            self.kind,
+            ProxyKind::Socks {
+                version: crate::socks::Version::Socks4,
+                ..
+            }
+        )
+    }
+
+    /// Parses a proxy URL (see the [module docs](self)).
+    pub fn parse(url: &str) -> io::Result<ProxyServer> {
         let bad = |why: &str| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("unusable proxy url ({why})"),
             )
         };
-        let rest = match url.split_once("://") {
-            Some((scheme, rest)) if scheme.eq_ignore_ascii_case("http") => rest,
-            Some(_) => return Err(bad("only http:// proxies are supported")),
-            None => url,
+        use crate::socks::Version;
+        let socks = |version, remote_dns| ProxyKind::Socks {
+            version,
+            remote_dns,
         };
+        let (kind, rest) = match url.split_once("://") {
+            Some((scheme, rest)) => match scheme.to_ascii_lowercase().as_str() {
+                "http" => (ProxyKind::Http, rest),
+                "socks5" => (socks(Version::Socks5, false), rest),
+                "socks5h" => (socks(Version::Socks5, true), rest),
+                "socks4" => (socks(Version::Socks4, false), rest),
+                "socks4a" => (socks(Version::Socks4a, true), rest),
+                _ => {
+                    return Err(bad(
+                        "supported proxies: http://, socks5://, socks5h://, socks4://, socks4a://",
+                    ));
+                }
+            },
+            None => (ProxyKind::Http, url),
+        };
+        let default_port = if kind == ProxyKind::Http { 80 } else { 1080 };
         let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
         let (userinfo, hostport) = match authority.rsplit_once('@') {
             Some((u, h)) => (Some(u), h),
@@ -202,7 +287,7 @@ impl ProxyServer {
         let (host, port) = if let Some(after) = hostport.strip_prefix('[') {
             let (h, tail) = after.split_once(']').ok_or_else(|| bad("bad IPv6 host"))?;
             let port = match tail {
-                "" => 80,
+                "" => default_port,
                 t => t
                     .strip_prefix(':')
                     .and_then(|p| p.parse().ok())
@@ -212,21 +297,32 @@ impl ProxyServer {
         } else {
             match hostport.rsplit_once(':') {
                 Some((h, p)) => (h, p.parse().map_err(|_| bad("bad port"))?),
-                None => (hostport, 80),
+                None => (hostport, default_port),
             }
         };
         if host.is_empty() || host.contains(|c: char| c.is_whitespace() || c.is_control()) {
             return Err(bad("no host"));
         }
-        let authorization = userinfo.map(|u| {
+        let credentials = userinfo.map(|u| {
             let (user, pass) = u.split_once(':').unwrap_or((u, ""));
-            let cred = format!("{}:{}", percent_decode(user), percent_decode(pass));
-            format!("Basic {}", only_crypto::base64::STANDARD.encode(cred))
+            (percent_decode(user), percent_decode(pass))
         });
+        let (authorization, credentials) = match kind {
+            ProxyKind::Http => (
+                credentials.map(|(u, p)| {
+                    let cred = format!("{u}:{p}");
+                    format!("Basic {}", only_crypto::base64::STANDARD.encode(cred))
+                }),
+                None,
+            ),
+            ProxyKind::Socks { .. } => (None, credentials),
+        };
         Ok(ProxyServer {
             host: host.to_owned(),
             port,
             authorization,
+            kind,
+            credentials,
         })
     }
 }
@@ -312,23 +408,65 @@ fn prefix_eq(a: &[u8], b: &[u8], bits: u8) -> bool {
     a[whole] & mask == b[whole] & mask
 }
 
+/// The address a SOCKS proxy that takes addresses only (`socks5://`, `socks4://`) is asked
+/// for, from a target's resolved addresses: the first IPv4 one (the tunnel gets one address,
+/// and `localhost` and dual-stack names often list `::1` or an IPv6 address first that the
+/// target does not listen on), else the first; IPv4 only for SOCKS4. Not public API.
+#[doc(hidden)]
+pub fn pick_target(
+    addrs: Vec<std::net::SocketAddr>,
+    socks4: bool,
+) -> io::Result<std::net::SocketAddr> {
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or_else(|| if socks4 { None } else { addrs.first() })
+        .copied()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no usable address for the proxy"))
+}
+
 /// The proxy answered `CONNECT` with something other than 2xx. Carried inside the
 /// `io::Error` a client reports (`std::io::Error::get_ref` + `downcast_ref`).
+///
+/// A SOCKS proxy's refusal is reported the same way: [`status`](Self::status) is the closest
+/// HTTP status (407 for failed or missing authentication, 403 for "not allowed", 502 for
+/// failures to reach the target, 501 for unsupported requests, 504 for an expired TTL),
+/// [`reason`](Self::reason) the SOCKS meaning and [`socks_reply`](Self::socks_reply) the code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyRefused {
     status: u16,
     reason: String,
+    /// SOCKS version label and reply code.
+    socks: Option<(&'static str, u8)>,
 }
 
 impl ProxyRefused {
-    /// The proxy's status code (`407`: it wants credentials).
+    /// A SOCKS refusal. Not public API.
+    #[doc(hidden)]
+    pub fn socks(version: &'static str, code: u8, status: u16, reason: &str) -> ProxyRefused {
+        ProxyRefused {
+            status,
+            reason: reason.to_owned(),
+            socks: Some((version, code)),
+        }
+    }
+
+    /// The proxy's status code (`407`: it wants credentials); for a SOCKS proxy the closest
+    /// HTTP status.
     pub fn status(&self) -> u16 {
         self.status
     }
 
-    /// The proxy's reason phrase.
+    /// The proxy's reason phrase (for a SOCKS proxy, what its reply code means).
     pub fn reason(&self) -> &str {
         &self.reason
+    }
+
+    /// For a SOCKS proxy, its reply code (SOCKS5 `REP`, SOCKS4 `CD`; 0xff when no
+    /// authentication method was acceptable or authentication failed); `None` for an HTTP
+    /// proxy.
+    pub fn socks_reply(&self) -> Option<u8> {
+        self.socks.map(|(_, c)| c)
     }
 
     /// As an `io::Error` (`PermissionDenied` for 401/403/407, `ConnectionRefused` otherwise).
@@ -345,7 +483,10 @@ impl ProxyRefused {
 
 impl std::fmt::Display for ProxyRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "proxy refused CONNECT: {} {}", self.status, self.reason)
+        match self.socks {
+            Some((v, code)) => write!(f, "{v} proxy refused: {} (reply {code:#04x})", self.reason),
+            None => write!(f, "proxy refused CONNECT: {} {}", self.status, self.reason),
+        }
     }
 }
 
@@ -355,13 +496,49 @@ impl std::error::Error for ProxyRefused {}
 #[doc(hidden)]
 pub type Refusal = Arc<Mutex<Option<ProxyRefused>>>;
 
+/// Called with a `BIND`'s first reply (where the proxy listens), on the I/O thread in the
+/// middle of the handshake: it must not use the connection being set up.
+#[doc(hidden)]
+pub type OnBound = Box<dyn FnOnce(&crate::socks::Reply) + Send>;
+
+/// Called once when the tunnel fails before it opens (the proxy refused, answered garbage, or
+/// the request could not be expressed), on the I/O thread: it must not use the connection.
+#[doc(hidden)]
+pub type OnFail = Box<dyn FnOnce(io::Error) + Send>;
+
+/// Called once when the tunnel opens, on the I/O thread: it must not use the connection.
+#[doc(hidden)]
+pub type OnOpen = Box<dyn FnOnce() + Send>;
+
+/// The callbacks of one tunnel.
+#[derive(Default)]
+struct Hooks {
+    bound: Mutex<Option<OnBound>>,
+    fail: Mutex<Option<OnFail>>,
+    open: Mutex<Option<OnOpen>>,
+}
+
+fn take<T>(m: &Mutex<Option<T>>) -> Option<T> {
+    m.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+enum Mode {
+    /// The `CONNECT` request.
+    Http(Vec<u8>),
+    /// The SOCKS handshake to run (cloned per connection; an error to report instead when the
+    /// request cannot be expressed).
+    Socks(Result<crate::socks::Handshake, (io::ErrorKind, String)>),
+}
+
 /// Wraps an acceptor (plain, or `Tls<A>`) so that its connection, dialed to the proxy, first
-/// opens a `CONNECT` tunnel to `authority`; the inner acceptor's transport (TLS) runs inside it.
-/// Not public API.
+/// opens a tunnel to `host:port` (HTTP `CONNECT`, or a SOCKS handshake); the inner acceptor's
+/// transport (TLS) runs inside it. Not public API.
 #[doc(hidden)]
 pub struct Connect<A> {
-    request: Vec<u8>,
+    mode: Mode,
     refusal: Refusal,
+    hooks: Arc<Hooks>,
+    timeout: Option<std::time::Duration>,
     inner: A,
 }
 
@@ -372,7 +549,9 @@ impl<A> std::fmt::Debug for Connect<A> {
 }
 
 impl<A: Acceptor> Connect<A> {
-    /// A tunnel to `host:port` through `proxy`; a refusal is recorded in `refusal`.
+    /// A tunnel to `host:port` through `proxy`; a refusal is recorded in `refusal`. For a
+    /// SOCKS proxy that does not resolve names (`socks5://`, `socks4://`), `host` should
+    /// already be an address.
     pub fn new(
         host: &str,
         port: u16,
@@ -380,6 +559,15 @@ impl<A: Acceptor> Connect<A> {
         refusal: Refusal,
         inner: A,
     ) -> Connect<A> {
+        use crate::socks::{Cmd, Handshake, Target};
+        if let ProxyKind::Socks { version, .. } = proxy.kind {
+            let auth = proxy
+                .credentials
+                .as_ref()
+                .map(|(u, p)| (u.as_str(), p.as_str()));
+            let hs = Handshake::new(version, Cmd::Connect, Target::parse(host, port), auth);
+            return Connect::socks(hs, refusal, inner);
+        }
         let authority = if host.contains(':') {
             format!("[{host}]:{port}")
         } else {
@@ -391,10 +579,59 @@ impl<A: Acceptor> Connect<A> {
         }
         r.push_str("\r\n");
         Connect {
-            request: r.into_bytes(),
+            mode: Mode::Http(r.into_bytes()),
             refusal,
+            hooks: Arc::default(),
+            timeout: None,
             inner,
         }
+    }
+
+    /// A tunnel opened by the SOCKS handshake `hs` (an error from building it is reported when
+    /// the connection opens); a refusal is recorded in `refusal`.
+    pub fn socks(
+        hs: io::Result<crate::socks::Handshake>,
+        refusal: Refusal,
+        inner: A,
+    ) -> Connect<A> {
+        Connect {
+            mode: Mode::Socks(hs.map_err(|e| (e.kind(), e.to_string()))),
+            refusal,
+            hooks: Arc::default(),
+            timeout: None,
+            inner,
+        }
+    }
+
+    /// Runs `f` with a `BIND`'s first reply.
+    #[must_use]
+    pub fn on_bound(self, f: OnBound) -> Connect<A> {
+        *self.hooks.bound.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+        self
+    }
+
+    /// Runs `f` with the error when the tunnel fails before it opens (the connection then
+    /// closes; its handler's `on_close` gets no error, the engine does not pass transport
+    /// errors on).
+    #[must_use]
+    pub fn on_fail(self, f: OnFail) -> Connect<A> {
+        *self.hooks.fail.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+        self
+    }
+
+    /// Runs `f` when the tunnel opens.
+    #[must_use]
+    pub fn on_open(self, f: OnOpen) -> Connect<A> {
+        *self.hooks.open.lock().unwrap_or_else(|p| p.into_inner()) = Some(f);
+        self
+    }
+
+    /// Closes the connection when the tunnel (and the inner transport's handshake) is not up
+    /// within `d` ([`Transport::handshake_timeout`]).
+    #[must_use]
+    pub fn handshake_timeout(mut self, d: Option<std::time::Duration>) -> Connect<A> {
+        self.timeout = d;
+        self
     }
 }
 
@@ -410,12 +647,21 @@ impl<A: Acceptor> Acceptor for Connect<A> {
     }
 
     fn transport(&self) -> Option<Box<dyn Transport>> {
+        let inner = self.inner.transport();
+        let (request, socks) = match &self.mode {
+            Mode::Http(r) => (Some(r.clone()), None),
+            Mode::Socks(hs) => (None, Some(hs.clone())),
+        };
         Some(Box::new(Tunnel {
-            request: Some(self.request.clone()),
+            request,
+            socks,
+            hooks: self.hooks.clone(),
+            timeout: self.timeout,
+            started: false,
             head: Vec::new(),
             open: false,
             held: Vec::new(),
-            inner: self.inner.transport(),
+            inner,
             refusal: self.refusal.clone(),
         }))
     }
@@ -427,6 +673,12 @@ const MAX_HEAD: usize = 16 << 10;
 struct Tunnel {
     /// The `CONNECT` request, until sent.
     request: Option<Vec<u8>>,
+    /// The SOCKS handshake instead, if this is a SOCKS proxy.
+    socks: Option<Result<crate::socks::Handshake, (io::ErrorKind, String)>>,
+    hooks: Arc<Hooks>,
+    timeout: Option<std::time::Duration>,
+    /// Whether the SOCKS greeting has been sent.
+    started: bool,
     /// The proxy's answer so far.
     head: Vec<u8>,
     open: bool,
@@ -449,11 +701,79 @@ impl Tunnel {
     }
 }
 
-impl Transport for Tunnel {
-    fn recv(&mut self, cipher: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()> {
-        if self.open {
-            return self.pass(cipher, plain, out);
+impl Tunnel {
+    /// Lets the inner transport produce its first flight; it waits in `held`.
+    fn first_flight(&mut self) -> io::Result<()> {
+        if let Some(t) = &mut self.inner {
+            let mut early = Vec::new();
+            t.recv(&[], &mut early, &mut self.held)?;
         }
+        Ok(())
+    }
+
+    fn recv_socks(
+        &mut self,
+        mut data: &[u8],
+        plain: &mut Vec<u8>,
+        out: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let hs = match self.socks.as_mut() {
+            Some(Ok(hs)) => hs,
+            Some(Err((kind, msg))) => return Err(io::Error::new(*kind, msg.clone())),
+            None => return Ok(()),
+        };
+        if !self.started {
+            self.started = true;
+            hs.start(out);
+            self.first_flight()?;
+        }
+        if data.is_empty() {
+            return Ok(());
+        }
+        loop {
+            let Some(Ok(hs)) = self.socks.as_mut() else {
+                return Ok(());
+            };
+            let (used, reply) = match hs.feed(data, out) {
+                Ok(v) => v,
+                Err(e) => {
+                    if let Some(r) = e.get_ref().and_then(|r| r.downcast_ref::<ProxyRefused>()) {
+                        *self.refusal.lock().unwrap_or_else(|p| p.into_inner()) = Some(r.clone());
+                    }
+                    return Err(e);
+                }
+            };
+            data = &data[used..];
+            let done = hs.is_done();
+            if let Some(r) = reply {
+                if !done {
+                    if let Some(f) = take(&self.hooks.bound) {
+                        f(&r);
+                    }
+                    continue;
+                }
+            }
+            if !done {
+                return Ok(());
+            }
+            self.opened();
+            out.append(&mut self.held);
+            return if data.is_empty() {
+                Ok(())
+            } else {
+                self.pass(data, plain, out)
+            };
+        }
+    }
+}
+
+impl Tunnel {
+    fn recv_http(
+        &mut self,
+        cipher: &[u8],
+        plain: &mut Vec<u8>,
+        out: &mut Vec<u8>,
+    ) -> io::Result<()> {
         if let Some(r) = self.request.take() {
             out.extend_from_slice(&r);
             // Let the inner transport produce its first flight now; it waits in `held`.
@@ -488,12 +808,13 @@ impl Transport for Tunnel {
                 let refused = ProxyRefused {
                     status: code,
                     reason: r.reason.to_owned(),
+                    socks: None,
                 };
                 let e = refused.to_io();
                 *self.refusal.lock().unwrap_or_else(|p| p.into_inner()) = Some(refused);
                 return Err(e);
             }
-            self.open = true;
+            self.opened();
             let rest = self.head.split_off(len);
             self.head = Vec::new();
             out.append(&mut self.held);
@@ -503,6 +824,47 @@ impl Transport for Tunnel {
                 self.pass(&rest, plain, out)
             };
         }
+    }
+
+    fn opened(&mut self) {
+        self.open = true;
+        if let Some(f) = take(&self.hooks.open) {
+            f();
+        }
+    }
+
+    /// Reports a failure before the tunnel opened to the `on_fail` hook, once.
+    fn failed(&self, e: io::Error) -> io::Error {
+        if self.open {
+            return e;
+        }
+        if let Some(f) = take(&self.hooks.fail) {
+            f(copy_err(&e));
+        }
+        e
+    }
+}
+
+/// Copies an `io::Error`: its kind, and its `ProxyRefused` payload or its message.
+fn copy_err(e: &io::Error) -> io::Error {
+    match e.get_ref().and_then(|r| r.downcast_ref::<ProxyRefused>()) {
+        Some(r) => io::Error::new(e.kind(), r.clone()),
+        None => io::Error::new(e.kind(), e.to_string()),
+    }
+}
+
+impl Transport for Tunnel {
+    fn recv(&mut self, cipher: &[u8], plain: &mut Vec<u8>, out: &mut Vec<u8>) -> io::Result<()> {
+        if self.open {
+            return self.pass(cipher, plain, out);
+        }
+        if self.socks.is_some() {
+            return self
+                .recv_socks(cipher, plain, out)
+                .map_err(|e| self.failed(e));
+        }
+        self.recv_http(cipher, plain, out)
+            .map_err(|e| self.failed(e))
     }
 
     fn seal(&mut self, plain: &[u8], out: &mut Vec<u8>) -> io::Result<()> {
@@ -535,12 +897,18 @@ impl Transport for Tunnel {
     fn name(&self) -> &'static str {
         match &self.inner {
             Some(t) if self.open => t.name(),
+            _ if self.socks.is_some() => "socks",
             _ => "connect",
         }
     }
 
     fn handshaking(&self) -> bool {
         !self.open || self.inner.as_ref().is_some_and(|t| t.handshaking())
+    }
+
+    fn handshake_timeout(&self) -> Option<std::time::Duration> {
+        self.timeout
+            .or_else(|| self.inner.as_ref().and_then(|t| t.handshake_timeout()))
     }
 }
 
@@ -574,7 +942,7 @@ mod tests {
         assert_eq!((s.host.as_str(), s.port), ("::1", 80));
         for bad in [
             "https://p:1",
-            "socks5://p:1",
+            "ftp://p:1",
             "http://:1",
             "http://p:x",
             "http://[::1",
@@ -635,7 +1003,21 @@ mod tests {
         ]))
         .unwrap();
         assert!(p.is_empty());
-        assert!(Proxy::from_lookup(env(&[("http_proxy", "socks5://x:1")])).is_err());
+        assert!(Proxy::from_lookup(env(&[("http_proxy", "ftp://x:1")])).is_err());
+        // ALL_PROXY fills in what the others leave out.
+        let p = Proxy::from_lookup(env(&[
+            ("https_proxy", "s:2"),
+            ("ALL_PROXY", "socks5h://u:p%40w@sock"),
+        ]))
+        .unwrap();
+        let s = p.select(false, "a", 80).unwrap();
+        assert_eq!(
+            (s.host.as_str(), s.port, s.is_http()),
+            ("sock", 1080, false)
+        );
+        assert_eq!(s.credentials, Some(("u".into(), "p@w".into())));
+        assert!(!s.resolves_locally());
+        assert_eq!(p.select(true, "a", 443).map(|s| s.port), Some(2));
         assert!(
             Proxy::from_lookup(env(&[("http_proxy", "  ")]))
                 .unwrap()
@@ -700,6 +1082,84 @@ mod tests {
         let r = e.get_ref().unwrap().downcast_ref::<ProxyRefused>().unwrap();
         assert_eq!(r.status(), 407);
         assert_eq!(refusal.lock().unwrap().as_ref(), Some(r));
+    }
+
+    #[test]
+    fn socks_tunnel_holds_bytes_until_the_proxy_answers() {
+        let s = ProxyServer::parse("socks5h://u:p@proxy").unwrap();
+        assert_eq!((s.port, s.authorization.as_deref()), (1080, None));
+        let c = Connect::new(
+            "example.com",
+            443,
+            &s,
+            Refusal::default(),
+            only::fn_acceptor(|_c: &Conn<Nop>| Nop),
+        )
+        .handshake_timeout(Some(std::time::Duration::from_secs(3)));
+        let mut t = c.transport().unwrap();
+        assert_eq!(
+            t.handshake_timeout(),
+            Some(std::time::Duration::from_secs(3))
+        );
+        let (mut plain, mut out) = (Vec::new(), Vec::new());
+        t.recv(&[], &mut plain, &mut out).unwrap();
+        assert_eq!(out, [5, 2, 0, 2]);
+        assert_eq!(t.name(), "socks");
+        out.clear();
+        t.seal(b"early", &mut out).unwrap();
+        assert!(out.is_empty());
+        t.recv(&[5, 2], &mut plain, &mut out).unwrap();
+        assert_eq!(out, b"\x01\x01u\x01p");
+        out.clear();
+        t.recv(&[1, 0], &mut plain, &mut out).unwrap();
+        assert_eq!(&out[..5], &[5, 1, 0, 3, 11]);
+        out.clear();
+        // Reply and the target's first bytes in one read.
+        t.recv(
+            &[5, 0, 0, 1, 1, 2, 3, 4, 0, 1, b'h', b'i'],
+            &mut plain,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(
+            (out.as_slice(), plain.as_slice()),
+            (&b"early"[..], &b"hi"[..])
+        );
+        assert!(!t.handshaking());
+
+        // A refusal is recorded for the client to report.
+        let s = ProxyServer::parse("socks4a://ident@proxy:9").unwrap();
+        assert_eq!(s.credentials, Some(("ident".into(), String::new())));
+        let refusal = Refusal::default();
+        let c = Connect::new(
+            "h",
+            80,
+            &s,
+            refusal.clone(),
+            only::fn_acceptor(|_c: &Conn<Nop>| Nop),
+        );
+        let mut t = c.transport().unwrap();
+        out.clear();
+        t.recv(&[], &mut plain, &mut out).unwrap();
+        assert_eq!(out, b"\x04\x01\x00\x50\x00\x00\x00\x01ident\x00h\x00");
+        let e = t
+            .recv(&[0, 0x5b, 0, 0, 0, 0, 0, 0], &mut plain, &mut out)
+            .unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::ConnectionRefused);
+        let r = refusal.lock().unwrap().clone().unwrap();
+        assert_eq!((r.status(), r.socks_reply()), (502, Some(0x5b)));
+        // socks4:// with a host name cannot be expressed: reported on open.
+        let s = ProxyServer::parse("socks4://proxy").unwrap();
+        assert!(s.resolves_locally() && s.is_socks4());
+        let c = Connect::new(
+            "h",
+            80,
+            &s,
+            Refusal::default(),
+            only::fn_acceptor(|_c: &Conn<Nop>| Nop),
+        );
+        let mut t = c.transport().unwrap();
+        assert!(t.recv(&[], &mut plain, &mut out).is_err());
     }
 
     struct Nop;

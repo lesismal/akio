@@ -150,6 +150,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "socks_client"
+path = "fuzz_targets/socks_client.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mux_sniff"
 path = "fuzz_targets/mux_sniff.rs"
 test = false

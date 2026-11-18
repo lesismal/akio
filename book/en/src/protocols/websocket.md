@@ -80,7 +80,8 @@ authentication, rate limiting, logging) applies to the handshake request.
   `handshake_timeout` (10 s, redirects included), `close_timeout` (3 s), `proxy` (none;
   `only_ws::proxy::Proxy::from_env()` opts in to the environment) and `max_redirects` (0).
 - Proxies: every connection a proxy applies to (`ws://` and `wss://`) goes through a
-  `CONNECT host:port` tunnel; a refusal is `WsClientError::Io` carrying a
+  `CONNECT host:port` tunnel, or a SOCKS tunnel for `socks5://` / `socks5h://` / `socks4://` /
+  `socks4a://` proxies; a refusal is `WsClientError::Io` carrying a
   `only_ws::proxy::ProxyRefused`. Same `Proxy` type and rules as the
   [HTTP client](http-clients.md#proxies).
 - Redirects (`max_redirects > 0`): 301, 302, 303, 307 and 308 with a `Location`; `http`/`https`
@@ -97,5 +98,5 @@ Run `cargo run -p only-ws --example guide-ws` for a chat room with two clients, 
 
 ## Not done
 
-Client: TLS or SOCKS proxies, cookies across redirects. Server: WebSocket over HTTP/2 or HTTP/3
+Client: TLS to the proxy, cookies across redirects. Server: WebSocket over HTTP/2 or HTTP/3
 (extended CONNECT).

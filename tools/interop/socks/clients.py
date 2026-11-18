@@ -1,9 +1,11 @@
-"""SOCKS5 checks against a server: UDP ASSOCIATE through PySocks (a widely used client,
+"""SOCKS checks against a server: UDP ASSOCIATE through PySocks (a widely used client,
 Debian's python3-socks), and BIND and UDP edge cases with a hand-written client.
 
-    python3 clients.py PROXY_HOST PROXY_PORT [user pass]
+    python3 clients.py PROXY_HOST PROXY_PORT [user pass] [--fragments] [--socks4-bind]
 
-Starts its own TCP and UDP echo servers on 127.0.0.1. Exits non-zero on the first failure.
+`--fragments`: the server reassembles fragmented UDP datagrams (RFC 1928 FRAG; Dante, like
+most servers, drops them). `--socks4-bind`: check SOCKS4 BIND too. Starts its own TCP and
+UDP echo servers on 127.0.0.1. Exits non-zero on the first failure.
 """
 
 import socket
@@ -13,8 +15,10 @@ import threading
 
 import socks  # PySocks
 
-HOST, PORT = sys.argv[1], int(sys.argv[2])
-AUTH = tuple(sys.argv[3:5]) if len(sys.argv) >= 5 else None
+FLAGS = {a for a in sys.argv[1:] if a.startswith("--")}
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+HOST, PORT = ARGS[0], int(ARGS[1])
+AUTH = tuple(ARGS[2:4]) if len(ARGS) >= 4 else None
 
 
 def udp_echo():
@@ -108,14 +112,28 @@ def raw_udp(echo):
     u.sendto(b"\x00\x00\x00" + v4(echo) + b"hello", relay)
     d = u.recv(65535)
     assert d == b"\x00\x00\x00" + v4(echo) + b"hello", d
+    # A first fragment alone is never relayed: dropped, or held for the rest.
     u.sendto(b"\x00\x00\x01" + v4(echo) + b"fragment", relay)
     try:
         u.recv(65535)
         raise AssertionError("fragment relayed")
     except socket.timeout:
         pass
+    if "--fragments" in FLAGS:
+        # Three fragments (positions 1, 2, 3 with the end bit) arrive as one datagram.
+        for frag, part in [(1, b"frag"), (2, b"mented "), (0x83, b"datagram")]:
+            u.sendto(b"\x00\x00" + bytes([frag]) + v4(echo) + part, relay)
+        d = u.recv(65535)
+        assert d == b"\x00\x00\x00" + v4(echo) + b"fragmented datagram", d
+        # A gap drops the sequence; a whole datagram still passes.
+        for frag, part in [(1, b"a"), (3, b"c"), (0x84, b"d")]:
+            u.sendto(b"\x00\x00" + bytes([frag]) + v4(echo) + part, relay)
+        u.sendto(b"\x00\x00\x00" + v4(echo) + b"whole", relay)
+        d = u.recv(65535)
+        assert d.endswith(b"whole"), d
+        ok("raw UDP ASSOCIATE: fragments reassembled, a gap drops the sequence")
     c.close()
-    ok("raw UDP ASSOCIATE: declared port, header, fragment dropped")
+    ok("raw UDP ASSOCIATE: declared port, header, lone fragment not relayed")
 
 
 def bind():
@@ -137,8 +155,31 @@ def bind():
     ok("BIND: two replies, relay both ways, close propagates")
 
 
+def socks4_bind():
+    c = socket.create_connection((HOST, PORT), timeout=5)
+    # VN=4 CD=2 DSTPORT DSTIP=0.0.0.0 (any peer) USERID NUL
+    c.sendall(b"\x04\x02\x00\x00\x00\x00\x00\x00" + (AUTH[0].encode() if AUTH else b"") + b"\x00")
+    r = recv_exact(c, 8)
+    assert r[1] == 0x5A, r
+    ip = socket.inet_ntoa(r[4:8])
+    if ip == "0.0.0.0":
+        ip = HOST
+    p = socket.create_connection((ip, struct.unpack("!H", r[2:4])[0]), timeout=5)
+    r = recv_exact(c, 8)
+    assert r[1] == 0x5A, r
+    p.sendall(b"from peer")
+    assert recv_exact(c, 9) == b"from peer"
+    c.sendall(b"from client")
+    assert recv_exact(p, 11) == b"from client"
+    p.close()
+    c.close()
+    ok("SOCKS4 BIND: two replies, relay both ways")
+
+
 echo_u = udp_echo()
 for name, f in [("pysocks", pysocks_udp), ("raw", raw_udp)]:
     f(echo_u)
 bind()
+if "--socks4-bind" in FLAGS:
+    socks4_bind()
 print("clients.py: all passed")

@@ -18,6 +18,35 @@ against ring: key generation 1.40x → 1.57x, signing 1.38x → 1.49x, ECDH 1.12
 secp256r1 TLS handshakes 1.07x → 1.08x rustls+ring. On x86_64 CPUs without AVX-512 IFMA, RSA
 squaring at 3072 and 4096 bits is one level of Karatsuba: verification +5% / +9%. Constant-time
 properties unchanged (`tools/ct-dudect`: no leak). No public API change (docs/BENCHMARKS.md).
+### Added: SOCKS client, SOCKS proxies for the HTTP/WebSocket clients, UDP fragment reassembly, SOCKS4 BIND
+
+Additive (ADR-019, docs/adr/019-socks-client-fragments-socks4-bind.md):
+
+- **`only_socks::SocksClient`**: SOCKS5 `CONNECT`, `BIND` and `UDP ASSOCIATE` (no
+  authentication or username/password), SOCKS4 and SOCKS4a `CONNECT` and `BIND`. On the engine:
+  `dial` (an acceptor, TLS inside the tunnel if it is a `Tls` acceptor), `bind` (`on_bound`
+  gets where the proxy listens), `udp_associate` (a `UdpAssociation`: `send_to`, `close`;
+  datagrams to `on_datagram`); every failure before the tunnel opens (unreachable proxy,
+  refusal, garbage, timeout) goes to `on_error`. Blocking: `dial_blocking` (a `TcpStream`),
+  `bind_blocking` (`BlockingBind::accept`), `udp_associate_blocking` (`BlockingUdp`).
+  `from_url("socks5h://user:pass@host")`, `handshake_timeout` (10 s), `bind_timeout` (60 s),
+  `Version`, `impl From<SocketAddr> for Dest`, `ProxyRefused` re-exported.
+- **SOCKS proxies for `only_http::client::Client` and `only_ws::client::dial`**: `Proxy` takes
+  `socks5://`, `socks5h://`, `socks4://` and `socks4a://` URLs (port 1080 by default, URL
+  credentials as RFC 1929 credentials or the SOCKS4 user id); every request, `http://` too, is
+  tunnelled; `socks5`/`socks4` resolve the target first (IPv4 first), `socks5h`/`socks4a` let
+  the proxy resolve it. A refusal is a `ProxyRefused` with the closest HTTP status and the new
+  `ProxyRefused::socks_reply()`.
+- **UDP fragment reassembly** (RFC 1928 `FRAG`) in the SOCKS5 server's relay and the client's
+  associations: in-order sequences up to 65,507 bytes, one per association, 5 s timer.
+- **SOCKS4 `BIND`** on the server, under the same `Socks::bind(true)` switch and `allow` hook as
+  SOCKS5's.
+- Behaviour changes: `Proxy::from_env` also reads `all_proxy` / `ALL_PROXY`; a relay that
+  dropped fragmented datagrams now reassembles them; SOCKS4 `BIND` requests are served when
+  `bind(true)` is set.
+- Interop (`tools/interop/socks/run.sh`, 15/15): our client against Dante and against
+  only-socks, curl/PySocks/hand-written clients against the server (fragments, SOCKS4 BIND).
+  New fuzz target `socks_client` (client handshake, tunnel transport, reassembly).
 
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 

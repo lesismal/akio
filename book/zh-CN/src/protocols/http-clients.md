@@ -65,19 +65,29 @@
 use only_http::client::{Client, Proxy};
 let client = Client::new(engine)
     .with_proxy(Proxy::all("http://user:pass@proxy.internal:3128")?.no_proxy("localhost,.corp"));
-// 或者显式启用环境变量（http_proxy、https_proxy、no_proxy，也认大写）：
+// 或者显式启用环境变量（http_proxy、https_proxy、all_proxy、no_proxy，也认大写）：
 let client = Client::new(engine).with_proxy(Proxy::from_env()?);
+// 或者 SOCKS 代理（主机名由代理解析）：
+let client = Client::new(engine).with_proxy(Proxy::all("socks5h://user:pass@proxy.internal")?);
 ```
 
 `http://` 请求以绝对形式发给代理（`GET http://host/path HTTP/1.1`）；`https://` 经
 `CONNECT host:port` 隧道，在隧道内与目标建立 TLS。代理 URL 中的凭据变成
 `Proxy-Authorization: Basic`。代理拒绝建立隧道时，请求以 `ClientError::Io` 失败，其内部错误是
 `only_http::client::ProxyRefused`（`status()`、`reason()`）。`NO_PROXY` 条目：`*`、主机名（及其
-子域）、IP 地址、CIDR 网段，均可带 `:port`。只支持明文 HTTP 代理（不支持到代理的 TLS，也不支持
-SOCKS）。除非调用 `Proxy::from_env()`，否则不会读取环境变量。
+子域）、IP 地址、CIDR 网段，均可带 `:port`。不支持到代理本身的 TLS。除非调用
+`Proxy::from_env()`，否则不会读取环境变量；`all_proxy` / `ALL_PROXY` 用于专门变量没有设置的协议。
+
+SOCKS 代理（`socks5://`、`socks5h://`、`socks4://`、`socks4a://`，默认端口 1080）：所有请求，包括
+`http://`，都经 SOCKS 隧道到达目标。`socks5h` 和 `socks4a` 把主机名交给代理；`socks5` 和 `socks4`
+先解析目标并请求它的第一个 IPv4 地址（curl 的约定）。URL 中的凭据是 SOCKS5 用户名/密码（RFC
+1929），或 SOCKS4 的 user id。拒绝同样是 `ProxyRefused`，带最接近的 HTTP 状态码（认证 407、“不允许”
+403、目标不可达 502），`socks_reply()` 给出 SOCKS 应答码。这些客户端之外的 SOCKS 用法（BIND、UDP、
+阻塞 socket）见 [SOCKS 客户端](socks.md#socks-客户端)。
 
 这些规则背后的考虑见
-[ADR-010](https://github.com/lesismal/only/blob/main/docs/adr/010-http-client-gaps.zh-CN.md)。
+[ADR-010](https://github.com/lesismal/only/blob/main/docs/adr/010-http-client-gaps.zh-CN.md) 与
+[ADR-019](https://github.com/lesismal/only/blob/main/docs/adr/019-socks-client-fragments-socks4-bind.zh-CN.md)。
 
 ## HTTP/2：`h2client::H2Client`
 

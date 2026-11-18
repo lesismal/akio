@@ -6,6 +6,103 @@ use only_core::fuzzing::{conn, split};
 
 use crate::{Destinations, Socks};
 
+/// `socks_client`: the client side: the SOCKS5/4/4a handshake parsing the proxy's replies
+/// (method choice, RFC 1929 status, one or two replies with every address type) both bare and
+/// as the proxy tunnel transport the HTTP/WebSocket clients and `SocksClient::dial` use, the
+/// UDP datagram header, and UDP fragment reassembly. `data[0]`: bits 0-1 the version (5, 4,
+/// 4a), bits 2-3 the command (CONNECT, BIND, UDP ASSOCIATE), bit 4 credentials; `data[1]`
+/// splits the proxy's bytes. The bytes after `data[0]` are also read as datagrams (a length
+/// byte, a clock step byte, then the datagram) fed to one reassembly queue.
+pub fn socks_client(data: &[u8]) {
+    use only_ws::{
+        proxy::{Connect, Refusal},
+        socks::{Cmd, Handshake, Target, Version},
+    };
+    let Some((&cfg, rest)) = data.split_first() else {
+        return;
+    };
+    let version = match cfg & 3 {
+        1 => Version::Socks4,
+        2 => Version::Socks4a,
+        _ => Version::Socks5,
+    };
+    let cmd = match (cfg >> 2) & 3 {
+        0 => Cmd::Connect,
+        1 => Cmd::Bind,
+        _ => Cmd::UdpAssociate,
+    };
+    let auth = (cfg & 16 != 0).then_some(("u", "p"));
+    let target = if version == Version::Socks4 {
+        Target::Addr(([1, 2, 3, 4], 80).into())
+    } else {
+        Target::Name("example.com".into(), 80)
+    };
+    if let Ok(h) = Handshake::new(version, cmd, target, auth) {
+        // Bare: consumed counts stay within what was given, tunnel bytes only after the end.
+        let mut bare = h.clone();
+        let mut out = Vec::new();
+        bare.start(&mut out);
+        'feed: for p in split(rest) {
+            let mut p = p;
+            loop {
+                if bare.is_done() {
+                    break 'feed;
+                }
+                match bare.feed(p, &mut out) {
+                    Ok((n, reply)) => {
+                        assert!(n <= p.len());
+                        p = &p[n..];
+                        if reply.is_none() || p.is_empty() {
+                            break;
+                        }
+                    }
+                    Err(_) => break 'feed,
+                }
+            }
+        }
+        // As the tunnel transport: nothing reaches the application before the tunnel opens.
+        let c = Connect::socks(
+            Ok(h),
+            Refusal::default(),
+            only::fn_acceptor(|_c: &only::Conn<Nop>| Nop),
+        );
+        if let Some(mut t) = c.transport() {
+            let (mut plain, mut wire) = (Vec::new(), Vec::new());
+            let _ = t.recv(&[], &mut plain, &mut wire);
+            for p in split(rest) {
+                let was_open = !t.handshaking();
+                if t.recv(p, &mut plain, &mut wire).is_err() {
+                    break;
+                }
+                if !was_open && t.handshaking() {
+                    assert!(plain.is_empty());
+                }
+            }
+        }
+    }
+    // Datagrams through one reassembly queue.
+    let mut r = crate::frag::Reassembly::default();
+    let mut now = std::time::Instant::now();
+    let mut d = rest;
+    while let [len, step, tail @ ..] = d {
+        let n = usize::from(*len).min(tail.len());
+        let (dgram, next) = tail.split_at(n);
+        d = next;
+        now += std::time::Duration::from_millis(u64::from(*step) * 40);
+        if let Some((frag, dest, h)) = crate::udp::parse_header(dgram) {
+            if let crate::frag::Frag::Complete(_, whole) = r.push(now, frag, &dest, &dgram[h..]) {
+                assert!(whole.len() <= crate::frag::MAX_DATAGRAM);
+            }
+        }
+    }
+}
+
+struct Nop;
+
+impl Handler for Nop {
+    fn on_data(&mut self, _c: &only::Conn<Self>, _d: &[u8]) {}
+}
+
 /// `socks_request`: a SOCKS5/4/4a server session's handshake parser (greeting, RFC 1929
 /// authentication, CONNECT / BIND / UDP ASSOCIATE requests with IPv4, IPv6 and domain targets,
 /// the access-control hook) and the UDP ASSOCIATE datagram header parser. There is no engine,
@@ -88,9 +185,61 @@ mod tests {
         v
     }
 
+    /// `socks_client` seeds: a configuration byte, a split byte, the proxy's bytes.
+    fn client_seeds() -> Vec<Vec<u8>> {
+        let wires: [(u8, &[u8]); 9] = [
+            // SOCKS5 CONNECT: method, reply with IPv4, tunnel bytes.
+            (0, &[5, 0, 5, 0, 0, 1, 10, 0, 0, 1, 0, 80, b'h', b'i']),
+            // With authentication, an IPv6 reply.
+            (
+                16,
+                &[
+                    5, 2, 1, 0, 5, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 187,
+                ],
+            ),
+            // BIND: two replies, the second with a name.
+            (
+                4,
+                b"\x05\x00\x05\x00\x00\x01\x0a\x00\x00\x01\x04\x00\x05\x00\x00\x03\x04peer\x00\x15",
+            ),
+            // UDP ASSOCIATE.
+            (8, &[5, 0, 5, 0, 0, 1, 127, 0, 0, 1, 4, 56]),
+            // Refusals: no method, failed authentication, reply 5.
+            (0, &[5, 0xff]),
+            (16, &[5, 2, 1, 1]),
+            (0, &[5, 0, 5, 5, 0, 1, 0, 0, 0, 0, 0, 0]),
+            // SOCKS4 and 4a BIND.
+            (1, &[0, 0x5a, 0, 0, 0, 0, 0, 0, b'x']),
+            (6, &[0, 0x5a, 4, 0, 1, 2, 3, 4, 0, 0x5a, 4, 1, 1, 2, 3, 5]),
+        ];
+        let mut v = Vec::new();
+        for (cfg, w) in wires {
+            v.push([&[cfg, 0][..], w].concat());
+            v.push([&[cfg, 3][..], w].concat());
+        }
+        // Fragments as datagrams (length, clock step, datagram): 1, 2, end; then a gap.
+        let mut frags = vec![0u8];
+        for (f, step, p) in [
+            (1u8, 0u8, &b"ab"[..]),
+            (2, 1, b"cd"),
+            (0x83, 1, b"e"),
+            (1, 200, b"x"),
+            (0x83, 0, b"z"),
+        ] {
+            let mut d = vec![0, 0, f, 1, 10, 0, 0, 1, 0, 53];
+            d.extend_from_slice(p);
+            frags.push(d.len() as u8);
+            frags.push(step);
+            frags.extend_from_slice(&d);
+        }
+        v.push(frags);
+        v
+    }
+
     #[test]
     fn replay_corpora() {
         assert!(replay(DIR, "socks_request", socks_request) > 0);
+        assert!(replay(DIR, "socks_client", socks_client) > 0);
     }
 
     #[test]
@@ -98,6 +247,17 @@ mod tests {
         for s in &seeds() {
             socks_request(s);
         }
+        for s in &client_seeds() {
+            socks_client(s);
+        }
+    }
+
+    /// Regenerates the `socks_client` seeds:
+    /// `cargo test -p only-socks --lib write_client_fuzz_seeds -- --ignored`.
+    #[test]
+    #[ignore]
+    fn write_client_fuzz_seeds() {
+        write_target_seeds(DIR, "socks_client", &client_seeds());
     }
 
     /// Regenerates the seed files: `cargo test -p only-socks --lib write_fuzz_seeds -- --ignored`.
