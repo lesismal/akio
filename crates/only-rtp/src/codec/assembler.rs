@@ -1,6 +1,6 @@
 //! Jitter-free frame assembly: reorder by sequence number, emit complete frames in order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use super::{CodecKind, Depacketizer, MAX_FRAME_SIZE, depacketizer};
@@ -10,6 +10,8 @@ use super::{CodecKind, Depacketizer, MAX_FRAME_SIZE, depacketizer};
 const MAX_EXTRA_PACKETS: usize = 8192;
 /// Buffered payload bytes before the oldest packets are evicted.
 const MAX_BUFFERED_BYTES: usize = 2 * MAX_FRAME_SIZE;
+/// Sequence numbers marked with [`FrameAssembler::skip`] kept at most.
+const MAX_SKIPPED: usize = 1024;
 
 /// One reassembled media frame.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +104,8 @@ pub struct FrameAssembler {
     /// `(ext_seq, ext_ts)` of the highest sequence number seen, the rollover reference.
     ts_ref: Option<(u64, u64)>,
     scan: Option<Scan>,
+    /// Sequence numbers without media (FEC, padding) that are not gaps.
+    skipped: BTreeSet<u64>,
 }
 
 enum Step {
@@ -127,6 +131,7 @@ impl FrameAssembler {
             last_ts: None,
             ts_ref: None,
             scan: None,
+            skipped: BTreeSet::new(),
         }
     }
 
@@ -184,6 +189,22 @@ impl FrameAssembler {
         }
     }
 
+    /// Marks `ext_seq` as a sequence number of this stream that carries no media (a ULPFEC
+    /// packet in RED, a padding-only packet): frames on either side of it are not separated
+    /// by a gap. At most 1024 pending ones are kept.
+    pub fn skip(&mut self, ext_seq: u64) {
+        if self.next.is_some_and(|n| ext_seq < n)
+            || ext_seq > u64::MAX / 2
+            || self.buf.contains_key(&ext_seq)
+        {
+            return;
+        }
+        self.skipped.insert(ext_seq);
+        while self.skipped.len() > MAX_SKIPPED {
+            self.skipped.pop_first();
+        }
+    }
+
     fn extend_ts(&mut self, ext_seq: u64, ts: u32) -> u64 {
         let ext = match self.ts_ref {
             None => u64::from(ts),
@@ -210,9 +231,18 @@ impl FrameAssembler {
     /// The next complete frame in order, if any.
     pub fn pop(&mut self) -> Option<Frame> {
         loop {
+            if let Some(n) = self.next {
+                while self.skipped.first().is_some_and(|&s| s < n) {
+                    self.skipped.pop_first();
+                }
+            }
             let (&first, _) = self.buf.first_key_value()?;
             let head = self.next.unwrap_or(first);
             let Some(p) = self.buf.get(&head) else {
+                if self.skipped.remove(&head) {
+                    self.next = Some(head + 1);
+                    continue;
+                }
                 // Lost (or not yet arrived) head.
                 if self.buf.len() > self.max_packets {
                     self.give_up(head, head);
@@ -267,6 +297,10 @@ impl FrameAssembler {
         };
         loop {
             let Some(q) = self.buf.get(&seq) else {
+                if self.skipped.contains(&seq) {
+                    seq += 1;
+                    continue;
+                }
                 self.scan = Some(Scan { head, seq, bytes });
                 if self.over_capacity(head, seq) {
                     self.give_up(head, seq);

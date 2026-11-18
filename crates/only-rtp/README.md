@@ -97,8 +97,12 @@ for p in dec.on_fec(fec_payload) { /* ... */ }
 - FEC: ULPFEC (one protection level), FlexFEC `flexfec-03` (libwebrtc's header) and RFC 8627
   (flexible masks, one protected SSRC), RED. ADR-036 has the details.
 
-Not implemented: wiring XR, TMMBR, RFC 8888 and FEC into `only-webrtc` (SDP negotiation, FEC
-rate policy); FlexFEC retransmission and fixed L/D packets, several protected SSRCs, ULPFEC
+`only-webrtc` negotiates and uses all of these when configured to (ADR-039); for it
+`RecvStream::receive_recovered` records FEC-rebuilt packets (not NACKed, still lost in reports)
+and `FrameAssembler::skip` marks sequence numbers without media (ULPFEC, padding) so they are not
+gaps.
+
+Not implemented: FlexFEC retransmission and fixed L/D packets, several protected SSRCs, ULPFEC
 level 1, libwebrtc's mask tables; generating RLE / receipt-time XR blocks and VoIP quality
 fields; probing in the estimator; SDES items beyond type / text pairs.
 

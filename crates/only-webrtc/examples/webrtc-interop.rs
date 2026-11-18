@@ -33,6 +33,17 @@
 //!                                                      datagrams through a channel to a local
 //!                                                      echo peer and back
 //! ```
+//! webrtc-interop fec-server <udp-addr> <proxy-addr> <http-addr> [fec=ulpfec|flexfec]
+//!     [min=<n>] [loss-out=<%>] [loss-in=<%>] [periodic] [ccfb] [xr] [tmmbr=<bps>] [bwe]
+//!                                                      the server with FEC (protection factor at
+//!                                                      least <n>/256), RFC 8888, RTCP XR and
+//!                                                      TMMBR (a request for <bps> after 3 s);
+//!                                                      the answer's candidate is <proxy-addr>,
+//!                                                      a UDP proxy to <udp-addr> that drops
+//!                                                      that share of the RTP it forwards
+//!                                                      (out: to the browser; at random, or
+//!                                                      one in 100/<%> with periodic); prints the
+//!                                                      statistics every second
 //! Signalling is one HTTP POST: the offer as the body, the answer as the response body.
 #![allow(missing_docs)]
 
@@ -48,8 +59,9 @@ use only_turn::client::{Client, ClientConfig, ClientEvent, ClientState};
 use only_turn::framing::FrameReader;
 use only_turn::{TurnConfig, TurnServer, static_auth};
 use only_webrtc::{
-    ChannelId, Codec, Direction, Endpoint, Frequency, KeyframeRequest, KeyframeRequestKind,
-    MediaData, MediaKind, MediaTime, Mid, Peer, PeerHandler, RelayServer, RtcServer,
+    ChannelId, Codec, Direction, Endpoint, Event, FecMechanism, Frequency, KeyframeRequest,
+    KeyframeRequestKind, MediaData, MediaKind, MediaTime, Mid, Peer, PeerHandler, RelayServer,
+    RtcServer,
 };
 
 /// Echoes data channel messages and media samples; answers a keyframe request with a text
@@ -588,6 +600,12 @@ fn main() {
             a.get(4).map(|t| t.parse().expect("tcp")),
         ),
         Some("sfu") => sfu(a[2].parse().expect("udp"), a[3].parse().expect("http")),
+        Some("fec-server") => fec_server(
+            a[2].parse().expect("udp"),
+            a[3].parse().expect("proxy"),
+            a[4].parse().expect("http"),
+            &a[5..],
+        ),
         Some("client") => client(&a[2], &a[3], &a[4..]),
         Some("turn") => turn(a[2].parse().expect("udp"), &a[3], &a[4], &a[5], &a[6..]),
         Some("turn-client") => turn_client(&a[2], &a[3], &a[4], &a[5]),
@@ -803,5 +821,176 @@ fn sfu(udp: SocketAddr, http: SocketAddr) {
             _ => Err(format!("unknown path {path}")),
         };
         respond(&mut s, r);
+    }
+}
+
+// ---- fec-server: FEC, RFC 8888, XR and TMMBR against a browser over a lossy proxy ----
+
+/// Echoes media; asks for a maximum bitrate 3 s after connecting; prints events.
+struct FecEcho {
+    tmmbr: Option<u64>,
+    connected: Option<Instant>,
+    asked: bool,
+    media: u64,
+    keyframes: u64,
+}
+
+impl PeerHandler for FecEcho {
+    fn on_connected(&mut self, _p: &Peer) {
+        self.connected = Some(Instant::now());
+        eprintln!("server: connected");
+    }
+    fn on_media_data(&mut self, p: &Peer, d: &MediaData) {
+        self.media += 1;
+        let _ = p.write_media(d.mid, d.pt, Instant::now(), d.time, &d.data);
+        if let (Some(b), Some(t), false) = (self.tmmbr, self.connected, self.asked) {
+            if t.elapsed() > Duration::from_secs(3) && d.codec.is_some_and(|c| c == Codec::Vp8) {
+                self.asked = true;
+                eprintln!("server: TMMBR {b} bps on {}", d.mid);
+                let _ = p.request_max_bitrate(d.mid, Some(b));
+            }
+        }
+    }
+    fn on_keyframe_request(&mut self, p: &Peer, r: &KeyframeRequest) {
+        // The echoed stream is the browser's: ask it for the keyframe.
+        self.keyframes += 1;
+        let _ = p.request_keyframe(r.mid, r.kind);
+    }
+    fn on_event(&mut self, _p: &Peer, e: &Event) {
+        eprintln!("server: event {e:?}");
+    }
+    fn on_close(&mut self, _p: &Peer) {
+        eprintln!(
+            "server: peer closed after {} media samples, {} keyframe requests forwarded",
+            self.media, self.keyframes
+        );
+    }
+}
+
+/// Forwards UDP between the browser (at `public`) and the server (`inner`), dropping
+/// `loss_in` / `loss_out` percent of the RTP (not RTCP, STUN or DTLS) towards each: at random,
+/// or with `periodic` exactly one packet in every `100 / loss`.
+fn lossy_proxy(public: SocketAddr, inner: SocketAddr, loss_in: u64, loss_out: u64, periodic: bool) {
+    let outer = std::net::UdpSocket::bind(public).expect("proxy bind");
+    let up = std::net::UdpSocket::bind("127.0.0.1:0").expect("proxy upstream");
+    let client = Arc::new(Mutex::new(None::<SocketAddr>));
+    let is_rtp =
+        |d: &[u8]| d.len() > 12 && (128..192).contains(&d[0]) && !(192..224).contains(&d[1]);
+    let rng = move |x: &mut u64, loss: u64| {
+        if periodic {
+            *x += 1;
+            return loss > 0 && *x % (100 / loss.clamp(1, 100)) == 0;
+        }
+        *x ^= *x << 13;
+        *x ^= *x >> 7;
+        *x ^= *x << 17;
+        *x % 100 < loss
+    };
+    {
+        let (outer, up, client) = (
+            outer.try_clone().expect("clone"),
+            up.try_clone().expect("clone"),
+            client.clone(),
+        );
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 2048];
+            let mut x = 0x1234_5678_9abc_def1u64;
+            let (mut fwd, mut drop) = (0u64, 0u64);
+            while let Ok((n, from)) = outer.recv_from(&mut buf) {
+                *client.lock().unwrap() = Some(from);
+                if is_rtp(&buf[..n]) && rng(&mut x, loss_in) {
+                    drop += 1;
+                    continue;
+                }
+                fwd += 1;
+                if (fwd + drop) % 2000 == 0 {
+                    eprintln!("proxy: in {fwd} forwarded, {drop} RTP dropped");
+                }
+                let _ = up.send_to(&buf[..n], inner);
+            }
+        });
+    }
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 2048];
+        let mut x = 0x0fed_cba9_8765_4321u64;
+        let (mut fwd, mut drop) = (0u64, 0u64);
+        while let Ok((n, _)) = up.recv_from(&mut buf) {
+            if is_rtp(&buf[..n]) && rng(&mut x, loss_out) {
+                drop += 1;
+                continue;
+            }
+            fwd += 1;
+            if (fwd + drop) % 2000 == 0 {
+                eprintln!("proxy: out {fwd} forwarded, {drop} RTP dropped");
+            }
+            let to = *client.lock().unwrap();
+            if let Some(c) = to {
+                let _ = outer.send_to(&buf[..n], c);
+            }
+        }
+    });
+}
+
+fn fec_server(udp: SocketAddr, public: SocketAddr, http: SocketAddr, opts: &[String]) {
+    let opt = |k: &str| {
+        opts.iter().find_map(|o| match o.split_once('=') {
+            Some((a, b)) if a == k => Some(b.to_owned()),
+            None if o == k => Some(String::new()),
+            _ => None,
+        })
+    };
+    let num = |k: &str| opt(k).and_then(|v| v.parse::<u64>().ok()).unwrap_or(0);
+    let fec = match opt("fec").as_deref() {
+        Some("ulpfec") => Some(FecMechanism::Ulpfec),
+        Some("flexfec") => Some(FecMechanism::FlexFec),
+        _ => None,
+    };
+    let min = num("min").min(255) as u8;
+    let (ccfb, xr, bwe) = (
+        opt("ccfb").is_some(),
+        opt("xr").is_some(),
+        opt("bwe").is_some(),
+    );
+    let tmmbr = opt("tmmbr").and_then(|v| v.parse::<u64>().ok());
+    let periodic = opt("periodic").is_some();
+    lossy_proxy(public, udp, num("loss-in"), num("loss-out"), periodic);
+    let rtc = RtcServer::new(vec![public]).config(move || {
+        let mut c = only_webrtc::rtc_config()
+            .enable_fec(fec)
+            .set_fec_protection(min, 128.max(min))
+            .enable_ccfb(ccfb)
+            .enable_rtcp_xr(xr)
+            .enable_tmmbr(tmmbr.is_some())
+            .set_stats_interval(Some(Duration::from_secs(1)));
+        if bwe {
+            c = c.enable_bwe(Some(1_000_000));
+        }
+        c
+    });
+    let engine = Engine::builder()
+        .listen(Listener::udp(udp).threads(1).serve(rtc.clone()))
+        .build()
+        .expect("engine");
+    engine.start().expect("start");
+    let l = TcpListener::bind(http).expect("http bind");
+    eprintln!(
+        "server: fec {fec:?} min {min} ccfb {ccfb} xr {xr} tmmbr {tmmbr:?}; udp {udp} via proxy {public}, signalling http://{http}/"
+    );
+    for s in l.incoming() {
+        let Ok(mut s) = s else { continue };
+        let (_, offer) = read_http(&mut s);
+        let h = FecEcho {
+            tmmbr,
+            connected: None,
+            asked: false,
+            media: 0,
+            keyframes: 0,
+        };
+        respond(
+            &mut s,
+            rtc.accept_offer(&offer, h)
+                .map(|(_, a)| a)
+                .map_err(|e| e.to_string()),
+        );
     }
 }

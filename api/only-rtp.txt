@@ -118,6 +118,7 @@ pub fn only_rtp::codec::FrameAssembler::kind(&self) -> only_rtp::codec::CodecKin
 pub fn only_rtp::codec::FrameAssembler::new(only_rtp::codec::CodecKind, usize) -> only_rtp::codec::FrameAssembler
 pub fn only_rtp::codec::FrameAssembler::pop(&mut self) -> core::option::Option<only_rtp::codec::Frame>
 pub fn only_rtp::codec::FrameAssembler::push(&mut self, u64, u32, bool, &[u8], std::time::Instant)
+pub fn only_rtp::codec::FrameAssembler::skip(&mut self, u64)
 impl core::fmt::Debug for only_rtp::codec::FrameAssembler
 pub fn only_rtp::codec::FrameAssembler::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::Send for only_rtp::codec::FrameAssembler
@@ -860,6 +861,7 @@ pub fn only_rtp::RecvStream::packets_received(&self) -> u64
 pub fn only_rtp::RecvStream::poll_nack(&mut self, std::time::Instant) -> core::option::Option<alloc::vec::Vec<u16>>
 pub fn only_rtp::RecvStream::poll_timeout(&self) -> core::option::Option<std::time::Instant>
 pub fn only_rtp::RecvStream::receive(&mut self, std::time::Instant, u16, u32) -> core::option::Option<u64>
+pub fn only_rtp::RecvStream::receive_recovered(&mut self, std::time::Instant, u16) -> core::option::Option<u64>
 pub fn only_rtp::RecvStream::report_block(&mut self, std::time::Instant) -> core::option::Option<only_rtp::ReportBlock>
 pub fn only_rtp::RecvStream::rtt(&self) -> core::option::Option<core::time::Duration>
 pub fn only_rtp::RecvStream::set_rtt(&mut self, core::time::Duration)

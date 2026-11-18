@@ -79,6 +79,25 @@ impl core::marker::Sync for only_webrtc::Event
 impl core::marker::Unpin for only_webrtc::Event
 impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::Event
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::Event
+#[non_exhaustive] pub enum only_webrtc::FecMechanism
+pub only_webrtc::FecMechanism::FlexFec
+pub only_webrtc::FecMechanism::Ulpfec
+impl core::clone::Clone for only_webrtc::FecMechanism
+pub fn only_webrtc::FecMechanism::clone(&self) -> Self
+impl core::cmp::Eq for only_webrtc::FecMechanism
+impl core::cmp::PartialEq for only_webrtc::FecMechanism
+pub fn only_webrtc::FecMechanism::eq(&self, &Self) -> bool
+impl core::fmt::Debug for only_webrtc::FecMechanism
+pub fn only_webrtc::FecMechanism::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for only_webrtc::FecMechanism
+pub fn only_webrtc::FecMechanism::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for only_webrtc::FecMechanism
+impl core::marker::StructuralPartialEq for only_webrtc::FecMechanism
+impl core::marker::Send for only_webrtc::FecMechanism
+impl core::marker::Sync for only_webrtc::FecMechanism
+impl core::marker::Unpin for only_webrtc::FecMechanism
+impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::FecMechanism
+impl core::panic::unwind_safe::UnwindSafe for only_webrtc::FecMechanism
 #[non_exhaustive] pub enum only_webrtc::IceConnectionState
 pub only_webrtc::IceConnectionState::Checking
 pub only_webrtc::IceConnectionState::Completed
@@ -406,6 +425,7 @@ pub fn only_webrtc::Peer::payload_type(&self, only_webrtc::Mid, only_webrtc::Cod
 pub fn only_webrtc::Peer::renegotiate(&self, impl core::ops::function::FnOnce(&mut only_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<core::option::Option<alloc::string::String>, only_webrtc::Error>
 pub fn only_webrtc::Peer::request_keyframe(&self, only_webrtc::Mid, only_webrtc::KeyframeRequestKind) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::request_layer_keyframe(&self, only_webrtc::Mid, &str, only_webrtc::KeyframeRequestKind) -> core::result::Result<(), only_webrtc::Error>
+pub fn only_webrtc::Peer::request_max_bitrate(&self, only_webrtc::Mid, core::option::Option<u64>) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::send(&self, only_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, only_webrtc::Error>
 pub fn only_webrtc::Peer::write_media(&self, only_webrtc::Mid, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::write_simulcast(&self, only_webrtc::Mid, &str, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
@@ -468,13 +488,18 @@ impl only_webrtc::RtcConfig
 pub fn only_webrtc::RtcConfig::clear_codecs(self) -> Self
 pub fn only_webrtc::RtcConfig::enable_av1(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_bwe(self, core::option::Option<u64>) -> Self
+pub fn only_webrtc::RtcConfig::enable_ccfb(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_fec(self, core::option::Option<only_webrtc::FecMechanism>) -> Self
 pub fn only_webrtc::RtcConfig::enable_h264(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_h265(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_opus(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcma(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_pcmu(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_rtcp_xr(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::enable_tmmbr(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp8(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::enable_vp9(self, bool) -> Self
+pub fn only_webrtc::RtcConfig::set_fec_protection(self, u8, u8) -> Self
 pub fn only_webrtc::RtcConfig::set_reordering_size(self, usize, usize) -> Self
 pub fn only_webrtc::RtcConfig::set_rtp_mode(self, bool) -> Self
 pub fn only_webrtc::RtcConfig::set_sctp_max_buffered_amount(self, usize) -> Self

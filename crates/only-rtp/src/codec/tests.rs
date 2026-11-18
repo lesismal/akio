@@ -971,3 +971,39 @@ fn random_streams_never_panic() {
         fuzz::rtp_codec(&data);
     }
 }
+
+#[test]
+fn assembler_skips_sequence_numbers_without_media() {
+    // A FEC packet after each frame (ULPFEC in RED takes media sequence numbers): with the
+    // numbers skipped, every frame is emitted at once and contiguous.
+    let frames = vp8_frames(6, 50, 120);
+    let pkts = flatten(&frames, 100, 0, 3000);
+    let mut a = FrameAssembler::new(CodecKind::Vp8, 30);
+    let mut got = Vec::new();
+    let mut shift = 0;
+    for (s, ts, m, p) in &pkts {
+        a.push(*s + shift, *ts, *m, p, t(0));
+        if *m {
+            shift += 1;
+            // Skipped before or after its neighbours arrive: both work.
+            if shift % 2 == 0 {
+                a.skip(*s + shift);
+                got.extend(drain(&mut a));
+            } else {
+                got.extend(drain(&mut a));
+                a.skip(*s + shift);
+            }
+        }
+        got.extend(drain(&mut a));
+    }
+    assert_eq!(got.len(), 6);
+    assert!(got.iter().all(|f| f.contiguous));
+    assert_eq!(a.buffered(), 0);
+    // Old and already received numbers are ignored; a real gap still waits.
+    a.skip(0);
+    let mut b = FrameAssembler::new(CodecKind::Vp8, 30);
+    let (s0, ts0, m0, p0) = &pkts[0];
+    b.push(*s0, *ts0, *m0, p0, t(0));
+    b.skip(*s0);
+    assert_eq!(b.buffered(), 1);
+}

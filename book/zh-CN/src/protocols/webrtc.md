@@ -10,8 +10,9 @@
   `only-sctp`（基于 DTLS 的 SCTP，拥塞控制、PR-SCTP、流重置、DCEP 数据通道：可靠或不可靠、有序或
   无序；对端提供时使用 I-DATA 消息交错，大消息不再阻塞其他通道上的小消息，各通道按优先级以加权公平
   排队共享关联，ADR-037）以及 `only-rtp`（RTP/RTCP，Opus、G.711、G.722、VP8、VP9、H.264、H.265 与 AV1 打包，组帧器，
-  NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告；还有 RTCP XR、TMMBR / TMMBN、
-  RFC 8888 反馈与 ULPFEC / FlexFEC / RED，peer 尚未使用）。`only-webrtc` 本身负责 SDP
+  NACK 与 RTX、PLI/FIR、REMB、TWCC 与带宽估计、发送/接收报告、RTCP XR、TMMBR / TMMBN、
+  RFC 8888 反馈与 ULPFEC / FlexFEC / RED，配置后由 peer 协商使用，见下文“FEC 与更多 RTCP”）。
+  `only-webrtc` 本身负责 SDP
   offer/answer（BUNDLE、rtcp-mux、编解码器与头扩展协商、重新协商），并用 only 的 I/O 线程和一个
   共享定时器线程驱动各个 peer。
 - `only-turn` 提供 STUN 编解码、STUN 服务器、TURN 服务器（UDP、TCP 与 TLS 上的 RFC 8656）以及
@@ -170,6 +171,35 @@ kind)` 只向发布者请求该层的关键帧（`crates/only-webrtc/examples/we
 切换时改写 RTP 时间戳）。Chrome 不接收 simulcast：它的 answer 去掉了 `a=simulcast`，因此只向它发送第一个
 编码。
 
+### FEC 与更多 RTCP
+
+默认全部关闭（默认 peer 的 offer 与 answer 与以前完全相同），在 `RtcConfig` 中逐项打开（ADR-039）：
+
+```rust,ignore
+let cfg = only_webrtc::rtc_config()
+    .enable_fec(Some(FecMechanism::FlexFec)) // 或 FecMechanism::Ulpfec（red + ulpfec）
+    .set_fec_protection(0, 128)              // 每 256 个媒体包的 FEC 包数：上下界
+    .enable_ccfb(true)                       // 用 RFC 8888 反馈代替传输层反馈
+    .enable_rtcp_xr(true)                    // XR 接收方参考时间 / DLRR：接收方 RTT
+    .enable_tmmbr(true)                      // a=rtcp-fb ccm tmmbr
+    .enable_bwe(None);
+```
+
+- **FEC** 用于非 simulcast 的视频行。FlexFEC 即 libwebrtc 的 `flexfec-03`，是用
+  `a=ssrc-group:FEC-FR` 声明的独立 FEC 流（Chrome 需要 field trial
+  `WebRTC-FlexFEC-03-Advertised/Enabled/WebRTC-FlexFEC-03/Enabled/`）；ULPFEC 在媒体流上经 RED 承载，
+  浏览器默认就会提供。收到的 FEC 在帧组装器和 NACK 之前修复包（修复的包不会被 NACK，但接收报告仍把它们
+  算作丢失，与 Chrome 一致）。发送的视频按修复前丢包率（报告的丢包，或接收方要求重传的包所占比例）的
+  三倍保护，并限制在 `set_fec_protection` 的上下界内；`min` 大于 0 时从一开始就保护。
+- **RFC 8888**：双方都提供 `ack ccfb` 时，收到的媒体用 RFC 8888 反馈确认，替代传输层反馈，带宽估计器
+  也基于它运行；Chrome 需要 `WebRTC-RFC8888CongestionControlFeedback/Enabled,offer:true/`。
+- **RTCP XR**（`a=rtcp-xr:rcvr-rtt=all`）：只接收的行也能（从发送方的 DLRR）得到 RTT，用于 NACK 节奏。
+- **TMMBR**：`Peer::request_max_bitrate(mid, Some(bps))` 请求远端发送方最多发送 `bps`（随每轮报告重复，
+  直到传入 `None`）；Chrome 会遵守。关于我方流的请求以 TMMBN 应答，并像 REMB 一样限制带宽估计。
+
+`tools/interop/webrtc/fec.sh` 用 headless Chrome 检查以上全部：每个方向每 20 个 RTP 包丢 1 个且去掉
+NACK 时，有 FEC 时 Chrome 解码回显的 400 帧中的 381–392 帧，没有 FEC 时只有 8 帧。
+
 ## TURN
 
 `TurnConfig` 字段（均为公开字段，`TurnConfig::new` 设置默认值）：
@@ -256,7 +286,6 @@ WebRTC 之外，`Config::with_versions(vec![Version::Dtls13, Version::Dtls12])` 
 ## 尚未完成
 
 TCP 中继（RFC 6062）；DTLS 上的 TURN；同时打开的 ICE-TCP（`tcptype so`）；解析 mDNS 候选（使用它们的
-对端仍可通过 peer-reflexive 候选连通）；对端中的 FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（自 ADR-036 起
-`only-rtp` 已实现：ULPFEC、FlexFEC `flexfec-03` 与 RFC 8627、RED、全部 XR 报告块、TMMBR 边界集、RFC 8888
-的生成与匹配；`only-webrtc` 尚未协商它们）；WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与
-NewConnectionId。新增内容的细节见 ADR-017 与 ADR-032。
+对端仍可通过 peer-reflexive 候选连通）；simulcast 行与音频（Opus RED）上的 FEC、libwebrtc 的 FEC 掩码表；
+WebRTC 默认使用 DTLS 1.3；DTLS 1.3 的 0-RTT 与 NewConnectionId。新增内容的细节见 ADR-017、ADR-032 与
+ADR-039。

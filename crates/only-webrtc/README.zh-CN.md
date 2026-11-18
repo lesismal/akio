@@ -21,7 +21,10 @@
 - **媒体**（[`only-rtp`](../only-rtp/README.zh-CN.md)）：RTP/RTCP，Opus、G.711、G.722、VP8、
   VP9、H.264、H.265 与 AV1 打包；无抖动缓冲延迟的组帧器（`on_media_data`）或 RTP 模式
   （`on_rtp`）；发送/接收报告，通用 NACK 与 RTX（RFC 4588），PLI/FIR，REMB，传输层拥塞控制
-  （TWCC 头扩展与反馈）及基于时延和丢包的带宽估计。
+  （TWCC 头扩展与反馈）及基于时延和丢包的带宽估计。可选开启（`RtcConfig`，ADR-039）：视频 FEC
+  （带 `a=ssrc-group:FEC-FR` 流的 FlexFEC `flexfec-03`，或 RED 中的 ULPFEC），在帧组装器和 NACK 之前
+  修复包，按修复前丢包率调节发送的保护率；用 RFC 8888 拥塞控制反馈代替 TWCC；RTCP XR 接收方参考时间
+  （接收方 RTT）；TMMBR / TMMBN（`Peer::request_max_bitrate`，收到的请求会限制估计值）。
 - **SDP** offer/answer（JSEP）：BUNDLE、rtcp-mux、mid/msid、ssrc/FID、extmap、
   rtpmap/fmtp/rtcp-fb 协商、setup/fingerprint、ice-ufrag/pwd/options/lite、候选、
   sctp-port/max-message-size；重新协商（新增媒体、方向、ICE 重启）；simulcast 发送（`a=rid`、
@@ -56,10 +59,11 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 
 互通：与 pion（两个 offer 方向的数据通道、Opus/VP8 回显与 PLI，也经过 `only` TURN 中继）以及 fib
 的 Go WebRTC 双向互通：`tools/interop/webrtc/run.sh`；与无头 Chrome 双向互通（数据通道，Chrome
-的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`。STUN 与 TURN
+的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`；与无头 Chrome
+的丢包下 FEC（双方的 FEC）、双向 RFC 8888、XR 与 TMMBR：`tools/interop/webrtc/fec.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：DTLS 上的 TURN、同时打开的 ICE-TCP、FEC、RTCP XR、TMMBR 与 RFC 8888 反馈（自 ADR-036 起都已在
-`only-rtp` 中实现，但这里尚未协商和使用）、SDES-SRTP、DTLS 1.3。
+未实现：DTLS 上的 TURN、同时打开的 ICE-TCP、simulcast 行与音频（Opus RED）上的 FEC、SDES-SRTP、
+DTLS 1.3。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

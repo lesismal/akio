@@ -461,15 +461,37 @@ impl RecvStream {
     /// or `None` for a duplicate or a packet more than 2048 sequence numbers older than the
     /// highest one (or from before the first packet's cycle).
     pub fn receive(&mut self, now: Instant, seq: u16, timestamp: u32) -> Option<u64> {
+        self.receive_inner(now, seq, timestamp, true)
+    }
+
+    /// Records a packet rebuilt by forward error correction: like [`receive`](Self::receive)
+    /// (it is no longer missing, so it is not NACKed, and a later copy is a duplicate) but
+    /// not counted as received and left out of the jitter, so receiver reports give the loss
+    /// before FEC repair, which the sender's FEC rate depends on (as libwebrtc reports it).
+    /// `None` if the packet was already received or is too old.
+    pub fn receive_recovered(&mut self, now: Instant, seq: u16) -> Option<u64> {
+        self.receive_inner(now, seq, 0, false)
+    }
+
+    fn receive_inner(
+        &mut self,
+        now: Instant,
+        seq: u16,
+        timestamp: u32,
+        count: bool,
+    ) -> Option<u64> {
+        let n = u64::from(count);
         let epoch = *self.epoch.get_or_insert(now);
         let Some(max) = self.max else {
             let ext = u64::from(seq);
             self.base = ext;
             self.max = Some(ext);
             self.mark(ext, true);
-            self.received = 1;
-            self.summary.received += 1;
-            self.update_jitter(now, epoch, timestamp);
+            self.received = n;
+            self.summary.received += n;
+            if count {
+                self.update_jitter(now, epoch, timestamp);
+            }
             return Some(ext);
         };
         // The candidate in the cycle of `max` closest to it.
@@ -510,17 +532,19 @@ impl RecvStream {
             }
             self.max = Some(ext);
             self.mark(ext, true);
-            self.received += 1;
-            self.summary.received += 1;
-            self.update_jitter(now, epoch, timestamp);
+            self.received += n;
+            self.summary.received += n;
+            if count {
+                self.update_jitter(now, epoch, timestamp);
+            }
             return Some(ext);
         }
         if max - ext >= RECV_WINDOW {
             return None;
         }
         if self.is_seen(ext) {
-            self.duplicates += 1;
-            self.summary.dups += 1;
+            self.duplicates += n;
+            self.summary.dups += n;
             return None;
         }
         self.mark(ext, true);
@@ -528,8 +552,8 @@ impl RecvStream {
         if ext < self.base {
             self.base = ext;
         }
-        self.received += 1;
-        self.summary.received += 1;
+        self.received += n;
+        self.summary.received += n;
         Some(ext)
     }
 

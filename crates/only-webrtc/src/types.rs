@@ -627,6 +627,16 @@ pub(crate) enum Other {
         packets_sent: u64,
         packets_received: u64,
         rtt_ms: Option<u64>,
+        /// Round-trip time measured as a receiver (RTCP XR DLRR).
+        xr_rtt_ms: Option<u64>,
+        /// FEC packets sent.
+        fec_sent: u64,
+        /// FEC packets received.
+        fec_received: u64,
+        /// Media packets rebuilt from FEC.
+        fec_recovered: u64,
+        /// RFC 8888 congestion control feedback is in use instead of transport-wide feedback.
+        ccfb: bool,
     },
     /// A sender report arrived for a received stream.
     SenderReport {
@@ -640,6 +650,16 @@ pub(crate) enum Other {
         local: SocketAddr,
         remote: SocketAddr,
     },
+    /// The remote receivers' TMMBR bounding set limits a sent stream (bits per second;
+    /// `None`: no limit any more).
+    MaxBitrateRequest {
+        mid: Mid,
+        ssrc: u32,
+        bitrate: Option<u64>,
+    },
+    /// The remote sender acknowledged a TMMBR with this bounding set (bits per second per
+    /// owner SSRC).
+    MaxBitrateNotification { ssrc: u32, entries: Vec<(u32, u64)> },
 }
 
 // ---- configuration ----
@@ -654,6 +674,12 @@ pub(crate) struct ConfigInner {
     pub(crate) reorder_audio: usize,
     pub(crate) reorder_video: usize,
     pub(crate) sctp_max_buffered: usize,
+    pub(crate) fec: Option<FecMechanism>,
+    pub(crate) fec_min: u8,
+    pub(crate) fec_max: u8,
+    pub(crate) ccfb: bool,
+    pub(crate) xr: bool,
+    pub(crate) tmmbr: bool,
 }
 
 impl Default for ConfigInner {
@@ -674,6 +700,12 @@ impl Default for ConfigInner {
             reorder_audio: 15,
             reorder_video: 30,
             sctp_max_buffered: 1 << 20,
+            fec: None,
+            fec_min: 0,
+            fec_max: 128,
+            ccfb: false,
+            xr: false,
+            tmmbr: false,
         }
     }
 }
@@ -688,6 +720,10 @@ impl fmt::Debug for RtcConfig {
             .field("codecs", &self.0.codecs)
             .field("rtp_mode", &self.0.rtp_mode)
             .field("stats_interval", &self.0.stats_interval)
+            .field("fec", &self.0.fec)
+            .field("ccfb", &self.0.ccfb)
+            .field("rtcp_xr", &self.0.xr)
+            .field("tmmbr", &self.0.tmmbr)
             .finish_non_exhaustive()
     }
 }
@@ -775,6 +811,74 @@ impl RtcConfig {
         self.0.sctp_max_buffered = bytes;
         self
     }
+
+    /// Forward error correction on video lines (`None`, the default, offers and accepts
+    /// none). [`FecMechanism::FlexFec`] negotiates `flexfec-03` with an
+    /// `a=ssrc-group:FEC-FR` FEC stream, [`FecMechanism::Ulpfec`] negotiates `red` (with its
+    /// RTX) and `ulpfec`; either way received FEC repairs lost packets before the
+    /// jitter buffer and NACK, and sent video is protected at a rate that follows the loss
+    /// the remote receiver reports (see [`set_fec_protection`](Self::set_fec_protection)).
+    /// Simulcast lines are not protected.
+    #[must_use]
+    pub fn enable_fec(mut self, mechanism: Option<FecMechanism>) -> Self {
+        self.0.fec = mechanism;
+        self
+    }
+
+    /// Bounds of the FEC protection factor, in FEC packets per 256 media packets (at least
+    /// one FEC packet protects each frame while the factor is not 0). Within them the
+    /// factor is three times the loss fraction the remote's receiver reports give (smoothed),
+    /// 0 below 1 % loss. Defaults: 0 and 128 (at most 50 % overhead).
+    #[must_use]
+    pub fn set_fec_protection(mut self, min: u8, max: u8) -> Self {
+        self.0.fec_min = min.min(max);
+        self.0.fec_max = max.max(min);
+        self
+    }
+
+    /// RTP congestion control feedback (RFC 8888): offers and accepts `a=rtcp-fb:* ack
+    /// ccfb`. Once negotiated, received media is acknowledged with RFC 8888 feedback instead
+    /// of transport-wide feedback, and the bandwidth estimator ([`enable_bwe`](Self::enable_bwe))
+    /// runs on the feedback of that kind. Default off.
+    #[must_use]
+    pub fn enable_ccfb(mut self, enabled: bool) -> Self {
+        self.0.ccfb = enabled;
+        self
+    }
+
+    /// RTCP extended reports for a receiver's round-trip time (RFC 3611): offers and accepts
+    /// `a=rtcp-xr:rcvr-rtt=all` (and libwebrtc's `rrtr` feedback on video); once negotiated
+    /// the receiver reports carry a receiver reference time, the sender's DLRR answer gives
+    /// the RTT that paces NACKs even on lines that send nothing. A received reference time
+    /// is always answered. Default off.
+    #[must_use]
+    pub fn enable_rtcp_xr(mut self, enabled: bool) -> Self {
+        self.0.xr = enabled;
+        self
+    }
+
+    /// TMMBR / TMMBN (RFC 5104): offers and accepts `a=rtcp-fb:<pt> ccm tmmbr` on video.
+    /// Received requests are always answered with a TMMBN and cap the bandwidth estimate;
+    /// [`Peer::request_max_bitrate`](crate::Peer::request_max_bitrate) sends them. Default
+    /// off.
+    #[must_use]
+    pub fn enable_tmmbr(mut self, enabled: bool) -> Self {
+        self.0.tmmbr = enabled;
+        self
+    }
+}
+
+/// A forward error correction scheme for video ([`RtcConfig::enable_fec`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FecMechanism {
+    /// FlexFEC as libwebrtc sends it (`flexfec-03`): a separate FEC stream signaled with
+    /// `a=ssrc-group:FEC-FR`. Chrome needs the field trials `WebRTC-FlexFEC-03-Advertised`
+    /// (to offer it) and `WebRTC-FlexFEC-03` (to send it).
+    FlexFec,
+    /// ULPFEC (RFC 5109) carried in RED (RFC 2198) on the media stream; browsers offer it
+    /// by default.
+    Ulpfec,
 }
 
 /// One change requested through [`SdpChanges`].
