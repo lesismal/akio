@@ -149,3 +149,161 @@ fn unidentified_connections_are_closed() {
     );
     e.shutdown();
 }
+
+mod dc {
+    use std::sync::Mutex;
+    use std::sync::mpsc::{Receiver, Sender, channel};
+
+    use only::Listener;
+    use only_webrtc::{ChannelId, RtcServer};
+
+    use super::*;
+
+    struct Echo;
+    impl PeerHandler for Echo {
+        fn on_channel_data(&mut self, p: &Peer, id: ChannelId, data: &[u8], binary: bool) {
+            let _ = p.send(id, data, binary);
+        }
+    }
+
+    #[derive(Debug)]
+    pub(super) enum Got {
+        Open,
+        Data(Vec<u8>),
+    }
+
+    struct Probe(Mutex<Sender<Got>>);
+    impl PeerHandler for Probe {
+        fn on_channel_open(&mut self, _p: &Peer, _id: ChannelId, _label: &str) {
+            let _ = self.0.lock().unwrap().send(Got::Open);
+        }
+        fn on_channel_data(&mut self, _p: &Peer, _id: ChannelId, data: &[u8], _b: bool) {
+            let _ = self.0.lock().unwrap().send(Got::Data(data.to_vec()));
+        }
+    }
+
+    fn wait(rx: &Receiver<Got>, what: &str, f: impl Fn(&Got) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let g = rx
+                .recv_timeout(left)
+                .unwrap_or_else(|_| panic!("timed out waiting for {what}"));
+            if f(&g) {
+                return;
+            }
+        }
+    }
+
+    fn tcp_only(sdp: &str) -> String {
+        sdp.lines()
+            .filter(|l| !l.starts_with("a=candidate") || l.contains(" tcp "))
+            .map(|l| format!("{l}\r\n"))
+            .collect()
+    }
+
+    /// `a` (active TCP candidate) offers to `answer`, both signalling TCP candidates only.
+    fn echo_over_tcp(a: &Endpoint, answer: impl FnOnce(&str) -> String) -> Peer {
+        let (tx, rx) = channel();
+        let mut ch = None;
+        let (pa, offer) = a
+            .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("c")))
+            .unwrap();
+        let offer = tcp_only(&offer);
+        assert!(offer.contains(" 9 typ host tcptype active"), "{offer}");
+        pa.accept_answer(&tcp_only(&answer(&offer))).unwrap();
+        wait(&rx, "open", |g| matches!(g, Got::Open));
+        for i in 0..50u16 {
+            // Up to 60 kB messages: several frames each.
+            let m = vec![i as u8; 1200 * usize::from(i + 1)];
+            pa.send(ch.unwrap(), &m, true).unwrap();
+            wait(&rx, "echo", |g| matches!(g, Got::Data(d) if *d == m));
+        }
+        pa
+    }
+
+    #[test]
+    fn active_endpoint_to_passive_endpoint() {
+        let e = engine();
+        let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+        assert_eq!(a.dial_tcp(&e).unwrap(), "127.0.0.1:9".parse().unwrap());
+        assert!(a.dial_tcp(&e).is_err());
+        b.listen_tcp(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let pa = echo_over_tcp(&a, |offer| b.accept_offer(offer, Echo).unwrap().1);
+        // Closing the peer closes its connection: the other side's peer goes too.
+        pa.close();
+        let t = Instant::now();
+        while b.peers() != 0 {
+            assert!(t.elapsed() < Duration::from_secs(40), "b still has a peer");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        a.close();
+        b.close();
+        e.shutdown();
+    }
+
+    #[test]
+    fn active_endpoint_to_ice_lite_server_over_tcp() {
+        let any: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        // Ports first, so that the candidates name them: TCP and UDP on the same port, so
+        // that the server's TCP and UDP candidates share one address.
+        let (udp, tcp) = loop {
+            let t = std::net::TcpListener::bind(any)
+                .unwrap()
+                .local_addr()
+                .unwrap();
+            if std::net::UdpSocket::bind(t).is_ok() {
+                break (t, t);
+            }
+        };
+        let server =
+            RtcServer::new(vec![udp]).tcp_candidates(vec![tcp, "0.0.0.0:0".parse().unwrap()]);
+        let se = Engine::builder()
+            .listen(Listener::udp(udp).threads(1).serve(server.clone()))
+            .listen(Listener::tcp(tcp).threads(1).serve(server.tcp()))
+            .build()
+            .unwrap();
+        se.start().unwrap();
+        let e = engine();
+        let a = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+        a.dial_tcp(&e).unwrap();
+        let _p = echo_over_tcp(&a, |offer| {
+            let answer = server.accept_offer(offer, Echo).unwrap().1;
+            assert!(
+                answer.contains(" tcp ")
+                    && answer.contains(&format!(
+                        "{} {} typ host tcptype passive",
+                        tcp.ip(),
+                        tcp.port()
+                    )),
+                "{answer}"
+            );
+            assert_eq!(answer.matches("tcptype passive").count(), 1, "{answer}");
+            answer
+        });
+        assert_eq!(server.peers(), 1);
+        // A UDP peer of the same server is not taken for a TCP one.
+        let b = Endpoint::bind(&e, "127.0.0.1:0".parse().unwrap()).unwrap();
+        let (tx, rx) = channel();
+        let mut ch = None;
+        let (pb, offer) = b
+            .create_offer(Probe(Mutex::new(tx)), |api| ch = Some(api.add_channel("u")))
+            .unwrap();
+        let answer = server.accept_offer(&offer, Echo).unwrap().1;
+        pb.accept_answer(&answer).unwrap();
+        wait(&rx, "udp open", |g| matches!(g, Got::Open));
+        pb.send(ch.unwrap(), b"over udp", true).unwrap();
+        wait(
+            &rx,
+            "udp echo",
+            |g| matches!(g, Got::Data(d) if d == b"over udp"),
+        );
+        assert_eq!(server.peers(), 2);
+        b.close();
+        server.close_all();
+        a.close();
+        e.shutdown();
+        se.shutdown();
+    }
+}

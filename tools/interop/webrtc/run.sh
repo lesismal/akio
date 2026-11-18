@@ -2,8 +2,10 @@
 # only-webrtc / only-turn <-> pion (webrtc v4, turn v5): data channels and RTP media in both
 # offer directions, PLI, WebRTC through a only TURN relay, the pion/turn client against
 # only-turn over UDP, TCP and TLS, the only_turn client against pion/turn and only-turn over
-# UDP, TCP and TLS, Endpoint relayed candidates (on only-turn and pion/turn), passive ICE-TCP
-# (pion with active TCP candidates only) and simulcast sending (pion receives the three RIDs);
+# UDP, TCP and TLS, Endpoint relayed candidates (on only-turn and pion/turn, allocated over UDP,
+# TCP and TLS), ICE-TCP both ways (only passive with pion active, only active with pion passive,
+# pion active to the ICE-lite server's passive candidate) and simulcast sending (pion receives
+# the three RIDs);
 # and fib's Go WebRTC (data channels, both directions) when the fib checkout is next to this
 # repository (or at $FIB_DIR). Needs Go. With COTURN=1 also runs coturn's turnutils_uclient
 # against only-turn, both in Docker (the only TURN server is built for Linux in rust:1).
@@ -27,6 +29,8 @@ $GO server 127.0.0.1:9502 & PIDS="$PIDS $!"
 $RS turn 127.0.0.1:9503 127.0.0.1 alice wonderland 127.0.0.1:9513 127.0.0.1:9514 2>/dev/null & PIDS="$PIDS $!"
 $GO turn-server 127.0.0.1:9520 127.0.0.1:9521 127.0.0.1:9522 alice wonderland 2>/dev/null & PIDS="$PIDS $!"
 $GO server-tcp 127.0.0.1:9505 2>/tmp/webrtc-pion-tcp.log & PIDS="$PIDS $!"
+$GO server-tcp-passive 127.0.0.1:9507 127.0.0.1:9508 2>/tmp/webrtc-pion-tcp-passive.log & PIDS="$PIDS $!"
+$RS server 127.0.0.1:9509 127.0.0.1:9510 127.0.0.1:9511 2>/tmp/webrtc-only-server-tcp.log & PIDS="$PIDS $!"
 $GO server-simulcast 127.0.0.1:9506 2>/dev/null & PIDS="$PIDS $!"
 sleep 1
 
@@ -50,8 +54,17 @@ done
 echo "== only Endpoint with relayed candidates only (on only-turn, on pion/turn) to pion"
 $RS client 127.0.0.1:9502 dc-relay 127.0.0.1:9503 alice wonderland
 $RS client 127.0.0.1:9502 dc-relay 127.0.0.1:9520 alice wonderland
+echo "== only Endpoint with relayed candidates allocated over TCP and TLS (only-turn, pion/turn)"
+for u in "turn:127.0.0.1:9513?transport=tcp" "turns:127.0.0.1:9514" \
+  "turn:127.0.0.1:9521?transport=tcp" "turns:127.0.0.1:9522"; do
+  $RS client 127.0.0.1:9502 dc-relay-url "$u" alice wonderland
+done
 echo "== only Endpoint with its passive ICE-TCP candidate only to pion (active TCP only)"
 $RS client 127.0.0.1:9505 dc-tcp
+echo "== only Endpoint with its active ICE-TCP candidate only to pion (passive TCP only)"
+$RS client 127.0.0.1:9507 dc-active
+echo "== pion (active TCP only) to the only ICE-lite server's passive ICE-TCP candidate"
+$GO client-dc-tcp 127.0.0.1:9510
 echo "== only simulcast (h/m/l) to pion"
 $RS client 127.0.0.1:9506 simulcast
 

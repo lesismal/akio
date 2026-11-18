@@ -10,6 +10,36 @@ fn fresh(lite: bool) -> Option<Rtc> {
     Rtc::new(ConfigInner::default(), lite, Instant::now()).ok()
 }
 
+/// `webrtc_turn_url`: a `turn:` / `turns:` URL as [`RelayServer::from_url`] takes it (the host
+/// is not resolved: an IP address makes a server, a name is only checked).
+///
+/// [`RelayServer::from_url`]: crate::RelayServer::from_url
+pub fn webrtc_turn_url(data: &[u8]) {
+    let Ok(s) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(u) = crate::relay::parse_url(s) else {
+        return;
+    };
+    assert!(!u.host.is_empty());
+    assert!(u.secure <= u.tcp, "turns: is always over TCP");
+    if let Ok(ip) = u.host.parse::<std::net::IpAddr>() {
+        let r = crate::RelayServer::from_parts(&u, (ip, u.port).into(), "u", "p");
+        let t = r.transport();
+        assert_eq!(
+            t,
+            if u.secure {
+                "tls"
+            } else if u.tcp {
+                "tcp"
+            } else {
+                "udp"
+            }
+        );
+        assert_eq!(r.addr().port(), u.port);
+    }
+}
+
 /// `webrtc_sdp`: an SDP offer (or answer) from the signalling, as [`RtcServer::accept_offer`]
 /// takes it: accepted by a fresh peer; the answer is parsed back by another peer as the answer
 /// to an offer of its own.
@@ -80,6 +110,15 @@ pub(crate) mod seeds {
                 "192.0.2.1:5001".parse().expect("addr"),
                 only_ice::TcpType::Passive,
             ));
+            rtc.add_local_candidate(only_ice::Candidate::host_tcp(
+                "192.0.2.1:9".parse().expect("addr"),
+                only_ice::TcpType::Active,
+            ));
+            rtc.add_local_candidate(only_ice::Candidate::relayed_over_stream(
+                "198.51.100.1:50000".parse().expect("addr"),
+                "192.0.2.1:40000".parse().expect("addr"),
+                true,
+            ));
             let mut ch = rtc.changes();
             {
                 let mut api = SdpChanges(&mut ch);
@@ -106,6 +145,25 @@ pub(crate) mod seeds {
         }
         out
     }
+
+    /// TURN URLs of every form, and broken ones.
+    pub(crate) fn webrtc_turn_url() -> Vec<Vec<u8>> {
+        [
+            "turn:192.0.2.1",
+            "turn:192.0.2.1:3479?transport=udp",
+            "turn:192.0.2.1?transport=tcp",
+            "turns:192.0.2.1:443?transport=tcp",
+            "turns:turn.example.com",
+            "turn:[2001:db8::1]:3478",
+            "turn:[2001:db8::1]",
+            "turns:[2001:db8::1]?transport=udp",
+            "turn:host:99999",
+            "stun:192.0.2.1",
+        ]
+        .iter()
+        .map(|s| s.as_bytes().to_vec())
+        .collect()
+    }
 }
 
 #[cfg(test)]
@@ -118,12 +176,16 @@ mod tests {
     #[test]
     fn replay_corpora() {
         assert!(replay(DIR, "webrtc_sdp", webrtc_sdp) > 0);
+        assert!(replay(DIR, "webrtc_turn_url", webrtc_turn_url) > 0);
     }
 
     #[test]
     fn seeds_run_clean() {
         for s in &seeds::webrtc_sdp() {
             webrtc_sdp(s);
+        }
+        for s in &seeds::webrtc_turn_url() {
+            webrtc_turn_url(s);
         }
     }
 
@@ -132,5 +194,6 @@ mod tests {
     #[ignore]
     fn write_fuzz_seeds() {
         write_target_seeds(DIR, "webrtc_sdp", &seeds::webrtc_sdp());
+        write_target_seeds(DIR, "webrtc_turn_url", &seeds::webrtc_turn_url());
     }
 }

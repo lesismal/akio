@@ -77,7 +77,9 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
+pub use crate::relay::RelayServer;
 use crate::rtc::{Output, Rtc, RtcErr, RtcEvent};
+pub use crate::tcp::{IceTcp, RtcTcp};
 use crate::types::ConfigInner;
 pub use crate::types::{
     Candidate, ChannelConfig, ChannelId, Codec, Direction, Event, Frequency, IceConnectionState,
@@ -223,6 +225,10 @@ struct State {
     closed: bool,
     /// Closed if not connected by then (cleared once connected).
     connect_by: Option<Instant>,
+    /// Remote addresses this peer was reached at over ICE-TCP: transmits to them go over the
+    /// connection (at most [`ADDRS_PER_PEER`]). Kept here, under the peer's own lock, so that
+    /// the UDP path of a hub with TCP candidates takes no shared lock.
+    tcp_remotes: Vec<SocketAddr>,
 }
 
 struct Shared {
@@ -268,6 +274,7 @@ impl Peer {
                 armed: None,
                 closed: false,
                 connect_by: (*lock(&hub.connect_timeout)).map(|d| Instant::now() + d),
+                tcp_remotes: Vec::new(),
             }),
             events: Mutex::new(VecDeque::new()),
             handler: Mutex::new(Some(handler)),
@@ -449,6 +456,24 @@ impl Peer {
         })?
     }
 
+    /// Asks the remote sender of the simulcast encoding `rid` received on `mid` for a
+    /// keyframe: what an SFU switching a viewer to that layer needs (the other encodings are
+    /// left alone). [`Error::UnknownMedia`] when no stream of that RID has arrived on `mid`.
+    pub fn request_layer_keyframe(
+        &self,
+        mid: Mid,
+        rid: &str,
+        kind: KeyframeRequestKind,
+    ) -> Result<(), Error> {
+        self.with_rtc_inner(|rtc| {
+            if rtc.request_keyframe_of(mid, Some(rid), kind) {
+                Ok(())
+            } else {
+                Err(Error::UnknownMedia)
+            }
+        })?
+    }
+
     /// Closes the peer (DTLS close notify, SCTP shutdown where possible); `on_close` follows.
     pub fn close(&self) {
         {
@@ -476,12 +501,15 @@ impl Peer {
         self.deliver();
     }
 
-    /// One datagram for this peer.
-    fn input(&self, source: SocketAddr, destination: SocketAddr, data: &[u8]) {
+    /// One datagram for this peer (`tcp`: a frame from an ICE-TCP connection).
+    fn input(&self, source: SocketAddr, destination: SocketAddr, data: &[u8], tcp: bool) {
         {
             let mut st = lock(&self.0.state);
             if st.closed {
                 return;
+            }
+            if tcp && !st.tcp_remotes.contains(&source) && st.tcp_remotes.len() < ADDRS_PER_PEER {
+                st.tcp_remotes.push(source);
             }
             st.rtc
                 .handle_receive(Instant::now(), source, destination, data);
@@ -526,7 +554,8 @@ impl Peer {
                     }
                     Output::Transmit(src, dest, contents) => {
                         if let Some(hub) = &hub {
-                            hub.transmit(self.0.id, src, dest, &contents);
+                            let tcp = !st.tcp_remotes.is_empty() && st.tcp_remotes.contains(&dest);
+                            hub.transmit(self.0.id, src, dest, &contents, tcp);
                         }
                     }
                     Output::Event(e) => {
@@ -671,9 +700,14 @@ struct Hub {
     /// `relays.len()`, read without the lock on every datagram (endpoints without TURN
     /// allocations never take it).
     relay_count: AtomicUsize,
-    /// The passive ICE-TCP candidate's listener ([`Endpoint::listen_tcp`]).
+    /// The ICE-TCP side: passive and active candidates ([`Endpoint::listen_tcp`],
+    /// [`Endpoint::dial_tcp`], [`RtcServer::tcp`]).
     tcp: OnceLock<Arc<tcp::TcpSide>>,
+    /// Which local candidates new peers use ([`Endpoint::candidate_filter`]).
+    filter: Mutex<Option<Arc<CandidateFilter>>>,
 }
+
+type CandidateFilter = dyn Fn(&Candidate) -> bool + Send + Sync;
 
 /// Most TURN allocations of one [`Endpoint`].
 const MAX_RELAYS: usize = 4;
@@ -695,29 +729,23 @@ impl Hub {
             relays: Mutex::new(Vec::new()),
             relay_count: AtomicUsize::new(0),
             tcp: OnceLock::new(),
+            filter: Mutex::new(None),
         }
+    }
+
+    /// Whether new peers use local candidate `c`.
+    fn uses(&self, c: &only_ice::Candidate) -> bool {
+        let f = lock(&self.filter).clone();
+        f.is_none_or(|f| f(&Candidate(c.clone())))
     }
 
     fn peer_by_ufrag(&self, ufrag: &str) -> Option<u64> {
         lock(&self.by_ufrag).get(ufrag).copied()
     }
 
-    /// Hands a datagram to peer `id`; `false` if it is gone.
-    fn input_peer(
-        &self,
-        id: u64,
-        source: SocketAddr,
-        destination: SocketAddr,
-        data: &[u8],
-    ) -> bool {
-        let p = lock(&self.peers).get(&id).cloned();
-        match p {
-            Some(p) => {
-                p.input(source, destination, data);
-                true
-            }
-            None => false,
-        }
+    /// Peer `id`, if open.
+    fn peer(&self, id: u64) -> Option<Peer> {
+        lock(&self.peers).get(&id).cloned()
     }
 
     fn binding(&self) -> Option<&UdpBinding> {
@@ -727,26 +755,50 @@ impl Hub {
         }
     }
 
-    /// The relay whose allocation has the relayed address `addr`.
-    fn relay_at(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
+    /// The relay whose allocation has, or had, the relayed address `addr`, and whether it is
+    /// the current one.
+    fn relay_at(&self, addr: SocketAddr) -> Option<(Arc<relay::Relay>, bool)> {
         if self.relay_count.load(Ordering::Acquire) == 0 {
             return None;
         }
         lock(&self.relays)
             .iter()
-            .find(|r| r.relayed.get() == Some(&addr))
-            .cloned()
+            .find_map(|r| r.owns(addr).map(|cur| (r.clone(), cur)))
     }
 
-    /// The relay whose TURN server is at `addr`.
+    /// The UDP relay whose TURN server is at `addr`.
     fn relay_of_server(&self, addr: SocketAddr) -> Option<Arc<relay::Relay>> {
         if self.relay_count.load(Ordering::Acquire) == 0 {
             return None;
         }
         lock(&self.relays)
             .iter()
-            .find(|r| r.server == addr)
+            .find(|r| r.server == addr && !r.wire.is_stream())
             .cloned()
+    }
+
+    /// A relayed allocation is gone: new peers no longer get its candidate.
+    fn relay_lost(&self, relayed: SocketAddr) {
+        lock(&self.candidates)
+            .retain(|c| c.kind() != only_ice::CandidateKind::Relayed || c.addr() != relayed);
+    }
+
+    /// A lost allocation was made again: new peers get the new candidate, and so do the open
+    /// ones (their agents check it against the remote candidates they know).
+    fn relay_reallocated(&self, c: only_ice::Candidate) {
+        {
+            let mut cs = lock(&self.candidates);
+            if !cs.iter().any(|x| x.addr() == c.addr()) {
+                cs.push(c.clone());
+            }
+        }
+        if !self.uses(&c) {
+            return;
+        }
+        let peers: Vec<Peer> = lock(&self.peers).values().cloned().collect();
+        for p in peers {
+            let _ = p.with_rtc_inner(|rtc| rtc.add_local_candidate(c.clone()));
+        }
     }
 
     /// Changes the relay list, keeping `relay_count` in step.
@@ -757,11 +809,22 @@ impl Hub {
         r
     }
 
+    /// The TCP side, made on first use.
+    fn tcp_side(self: &Arc<Hub>) -> Arc<tcp::TcpSide> {
+        let server = matches!(self.tx, Tx::Listener(_));
+        self.tcp
+            .get_or_init(|| tcp::TcpSide::new(self, server))
+            .clone()
+    }
+
     fn new_rtc(&self) -> Result<Rtc, Error> {
         let config = lock(&self.config).clone();
         let mut rtc = Rtc::new(config().0, self.ice_lite, Instant::now()).map_err(rtc_err)?;
-        for c in lock(&self.candidates).iter() {
-            rtc.add_local_candidate(c.clone());
+        let cs = lock(&self.candidates).clone();
+        for c in cs {
+            if self.uses(&c) {
+                rtc.add_local_candidate(c);
+            }
         }
         Ok(rtc)
     }
@@ -830,15 +893,22 @@ impl Hub {
         }
     }
 
-    fn transmit(&self, id: u64, src: SocketAddr, dest: SocketAddr, data: &[u8]) {
-        // Replies from where we send belong to this peer (full ICE agents send first).
-        if let Some(t) = self.tcp.get().filter(|t| t.local == src) {
-            t.send(dest, data);
-            return;
+    /// Sends a datagram of peer `id`; `tcp` when `dest` reached the peer over ICE-TCP.
+    fn transmit(&self, id: u64, src: SocketAddr, dest: SocketAddr, data: &[u8], tcp: bool) {
+        // ICE-TCP: to a remote that came over a connection, or from the active candidate (a
+        // server's TCP and UDP candidates may share an address, so `src` alone does not tell).
+        if let Some(t) = self.tcp.get() {
+            if tcp || t.is_active(src) {
+                t.send(id, src, dest, data);
+                return;
+            }
         }
+        // Replies from where we send belong to this peer (full ICE agents send first).
         lock(&self.by_addr).entry(dest).or_insert(id);
-        if let Some(r) = self.relay_at(src) {
-            r.send(dest, data);
+        if let Some((r, current)) = self.relay_at(src) {
+            if current {
+                r.send(dest, data);
+            }
             return;
         }
         match &self.tx {
@@ -916,7 +986,7 @@ impl Hub {
         let Some(id) = id else { return };
         let p = lock(&self.peers).get(&id).cloned();
         if let Some(p) = p {
-            p.input(source, destination, data);
+            p.input(source, destination, data, false);
         }
     }
 
@@ -1040,6 +1110,36 @@ impl RtcServer {
     pub fn max_peers(self, n: usize) -> Self {
         self.0.max_peers.store(n, Ordering::Relaxed);
         self
+    }
+
+    /// Passive ICE-TCP (RFC 6544): adds passive TCP host candidates `addrs` (the addresses
+    /// remote peers reach the server's TCP listener at) to every answer and offer. Serve
+    /// that listener with [`tcp`](Self::tcp). Remote agents with active TCP candidates
+    /// (browsers, pion) connect and run checks, DTLS and media over the connection (RFC 4571
+    /// framing); with ICE-lite the server only answers, as over UDP. A connection whose first
+    /// frame is not a check for one of the server's peers within 10 seconds is closed, and so
+    /// are a peer's connections when it closes; at most twice [`max_peers`](Self::max_peers)
+    /// connections at once (at least 256; 4096 without a peer limit). Call before cloning the
+    /// server.
+    #[must_use]
+    pub fn tcp_candidates(self, addrs: Vec<SocketAddr>) -> Self {
+        let addrs: Vec<SocketAddr> = addrs
+            .into_iter()
+            .filter(|a| !a.ip().is_unspecified() && a.port() != 0)
+            .collect();
+        self.0.tcp_side().add_passive(&addrs);
+        lock(&self.0.candidates).extend(
+            addrs
+                .iter()
+                .map(|a| only_ice::Candidate::host_tcp(*a, only_ice::TcpType::Passive)),
+        );
+        self
+    }
+
+    /// The acceptor for the server's TCP listener (`Listener::tcp(addr).serve(server.tcp())`),
+    /// whose addresses were given to [`tcp_candidates`](Self::tcp_candidates).
+    pub fn tcp(&self) -> RtcTcp {
+        RtcTcp(Arc::downgrade(&self.0.tcp_side()))
     }
 
     /// Accepts a remote SDP offer for a new peer served by `handler`; returns the peer and
@@ -1234,8 +1334,9 @@ impl Endpoint {
     /// `timeout`, and adds it as a relayed candidate for new peers; the server-reflexive
     /// address the server saw is added too when it differs from the host candidates. The
     /// allocation, its permissions and channels are refreshed while the endpoint lives, and
-    /// shared by every peer. At most 4 allocations per endpoint. Blocks: do not call it from a
-    /// `only` I/O thread or a callback.
+    /// shared by every peer; one that is lost is made again (see
+    /// [`gather_relay_via`](Self::gather_relay_via)). At most 4 allocations per endpoint.
+    /// Blocks: do not call it from a `only` I/O thread or a callback.
     pub fn gather_relay(
         &self,
         turn_server: SocketAddr,
@@ -1243,25 +1344,72 @@ impl Endpoint {
         password: &str,
         timeout: Duration,
     ) -> Result<SocketAddr, Error> {
+        self.gather(
+            Weak::new(),
+            &RelayServer::udp(turn_server, username, password),
+            timeout,
+        )
+    }
+
+    /// [`gather_relay`](Self::gather_relay) on `server`, over UDP, TCP or TLS
+    /// ([`RelayServer`]): over a stream, `engine` (which needs TCP I/O threads:
+    /// [`only::EngineBuilder::client_threads`] or a TCP listener) dials the connection the
+    /// allocation lives on, and the candidate ranks below a UDP-allocated one; no
+    /// server-reflexive candidate comes from it (the server saw a TCP address). One allocation
+    /// per server and transport.
+    ///
+    /// An allocation lost after it was made (the connection closed, a refresh failed) is made
+    /// again, after 1 second and then doubling waits up to a minute, while the endpoint lives:
+    /// its new relayed candidate replaces the old one for new peers and is added to the open
+    /// ones, whose agents check it against the remote candidates they know (a peer that
+    /// reached the other side only through the old relayed address needs an ICE restart,
+    /// [`SdpChanges::ice_restart`], whose offer carries the new candidate). Blocks: do not
+    /// call it from a `only` I/O thread or a callback.
+    pub fn gather_relay_via(
+        &self,
+        engine: &Arc<Engine>,
+        server: &RelayServer,
+        timeout: Duration,
+    ) -> Result<SocketAddr, Error> {
+        self.gather(Arc::downgrade(engine), server, timeout)
+    }
+
+    fn gather(
+        &self,
+        engine: Weak<Engine>,
+        server: &RelayServer,
+        timeout: Duration,
+    ) -> Result<SocketAddr, Error> {
+        if server.needs_tls_config() {
+            return Err(Error::Turn(
+                "a turns: server needs RelayServer::tls_config".into(),
+            ));
+        }
         let b = self.binding().ok_or(Error::Closed)?.clone();
         let (tx, rx) = mpsc::channel();
-        let cfg = only_turn::client::ClientConfig::new(turn_server, username, password);
+        let cfg =
+            only_turn::client::ClientConfig::new(server.addr, &server.username, &server.password);
         let r = self.0.with_relays(|relays| {
             relays.retain(|r| !r.is_dead());
             if relays.len() >= MAX_RELAYS {
                 return Err(Error::Turn("too many TURN allocations".into()));
             }
-            if relays.iter().any(|r| r.server == turn_server) {
+            if relays
+                .iter()
+                .any(|r| r.server == server.addr && r.wire.code() == server.wire.code())
+            {
                 return Err(Error::Turn(format!(
-                    "an allocation on {turn_server} exists already"
+                    "an allocation on {} over {} exists already",
+                    server.addr,
+                    server.transport()
                 )));
             }
-            let r = relay::Relay::new(&self.0, cfg, tx);
+            let r = relay::Relay::new(&self.0, engine, server.wire.clone(), cfg, tx);
             relays.push(r.clone());
             Ok(r)
         })?;
-        // The first Allocate goes out on this kick.
-        r.send_nothing();
+        // The first Allocate goes out (or the connection is dialed) here.
+        r.start();
         let res = match rx.recv_timeout(timeout) {
             Ok(Ok(a)) => Ok(a),
             Ok(Err(e)) => Err(Error::Turn(e)),
@@ -1276,15 +1424,15 @@ impl Endpoint {
                 return Err(e);
             }
         };
-        let base = lock(&self.0.candidates)
-            .first()
-            .map_or_else(|| b.local_addr(), only_ice::Candidate::addr);
+        let base = r.base().unwrap_or_else(|| b.local_addr());
         let mut cs = lock(&self.0.candidates);
-        if let Some(m) = mapped.filter(|m| !cs.iter().any(|x| x.addr() == *m)) {
-            cs.push(only_ice::Candidate::server_reflexive(m, base));
+        if !server.wire.is_stream() {
+            if let Some(m) = mapped.filter(|m| !cs.iter().any(|x| x.addr() == *m)) {
+                cs.push(only_ice::Candidate::server_reflexive(m, base));
+            }
         }
         if !cs.iter().any(|x| x.addr() == relayed) {
-            cs.push(only_ice::Candidate::relayed(relayed, base));
+            cs.push(r.candidate(relayed, base));
         }
         Ok(relayed)
     }
@@ -1300,7 +1448,7 @@ impl Endpoint {
     /// endpoint; needs an engine with TCP I/O threads ([`only::EngineBuilder::client_threads`]
     /// or a TCP listener).
     pub fn listen_tcp(&self, engine: &Arc<Engine>, addr: SocketAddr) -> Result<SocketAddr, Error> {
-        if self.0.tcp.get().is_some() {
+        if self.0.tcp.get().is_some_and(|t| t.is_listening()) {
             return Err(Error::Io(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 "the endpoint listens on TCP already",
@@ -1322,14 +1470,10 @@ impl Endpoint {
         } else {
             bound
         };
-        let side = tcp::TcpSide::start(&self.0, engine, l, local).map_err(Error::Io)?;
-        if self.0.tcp.set(side.clone()).is_err() {
-            side.close();
-            return Err(Error::Io(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "the endpoint listens on TCP already",
-            )));
-        }
+        self.0
+            .tcp_side()
+            .listen(engine, l, local)
+            .map_err(Error::Io)?;
         lock(&self.0.candidates).push(only_ice::Candidate::host_tcp(
             local,
             only_ice::TcpType::Passive,
@@ -1337,11 +1481,53 @@ impl Endpoint {
         Ok(local)
     }
 
+    /// Adds an active ICE-TCP host candidate (RFC 6544) for new peers: their agents pair it
+    /// with the remote passive TCP candidates (an [`RtcServer`] or an endpoint listening on
+    /// TCP, pion, a TCP-only media server) and `engine` (which needs TCP I/O threads:
+    /// [`only::EngineBuilder::client_threads`] or a TCP listener) dials one connection per
+    /// pair when its first check goes out; checks, DTLS and media then run over it (RFC 4571
+    /// framing). The candidate's address is the endpoint's primary host address with port 9,
+    /// as the SDP writes an active candidate; it is returned. A connection that fails or
+    /// closes is dialed again by the agent's next check; a peer's connections close with it.
+    /// Connections of the endpoint (active and passive) are bounded together (256). Once per
+    /// endpoint.
+    pub fn dial_tcp(&self, engine: &Arc<Engine>) -> Result<SocketAddr, Error> {
+        let host = lock(&self.0.candidates)
+            .iter()
+            .find(|c| c.kind() == only_ice::CandidateKind::Host && c.tcp_type().is_none())
+            .map(only_ice::Candidate::addr)
+            .or_else(|| self.local_addr())
+            .ok_or(Error::Closed)?;
+        let addr = SocketAddr::new(host.ip(), 9);
+        if !self.0.tcp_side().set_active(engine, addr) {
+            return Err(Error::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "the endpoint has an active TCP candidate already",
+            )));
+        }
+        lock(&self.0.candidates).push(only_ice::Candidate::host_tcp(
+            addr,
+            only_ice::TcpType::Active,
+        ));
+        Ok(addr)
+    }
+
     /// Builds every peer's configuration with `f` (start from [`rtc_config`]); applies to the
     /// peers created after the call.
     #[must_use]
     pub fn config(self, f: impl Fn() -> RtcConfig + Send + Sync + 'static) -> Self {
         *lock(&self.0.config) = Arc::new(f);
+        self
+    }
+
+    /// Which local candidates new peers use, as a browser's `iceTransportPolicy`: only those
+    /// `f` accepts go into their agents and their offers and answers (`|c| c.kind() ==
+    /// "relay"` for a relay-only policy, `|c| c.transport() == "tcp"` for ICE-TCP only).
+    /// [`candidates`](Self::candidates) still lists them all. Applies to the peers created
+    /// after the call.
+    #[must_use]
+    pub fn candidate_filter(self, f: impl Fn(&Candidate) -> bool + Send + Sync + 'static) -> Self {
+        *lock(&self.0.filter) = Some(Arc::new(f));
         self
     }
 

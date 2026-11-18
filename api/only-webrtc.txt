@@ -165,10 +165,12 @@ pub struct only_webrtc::Candidate(_)
 impl only_webrtc::Candidate
 pub fn only_webrtc::Candidate::addr(&self) -> core::net::socket_addr::SocketAddr
 pub fn only_webrtc::Candidate::host(core::net::socket_addr::SocketAddr) -> core::result::Result<only_webrtc::Candidate, only_webrtc::Error>
+pub fn only_webrtc::Candidate::kind(&self) -> &'static str
 pub fn only_webrtc::Candidate::parse(&str) -> core::result::Result<only_webrtc::Candidate, only_webrtc::Error>
 pub fn only_webrtc::Candidate::relayed(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::result::Result<only_webrtc::Candidate, only_webrtc::Error>
 pub fn only_webrtc::Candidate::server_reflexive(core::net::socket_addr::SocketAddr, core::net::socket_addr::SocketAddr) -> core::result::Result<only_webrtc::Candidate, only_webrtc::Error>
 pub fn only_webrtc::Candidate::to_sdp(&self) -> alloc::string::String
+pub fn only_webrtc::Candidate::transport(&self) -> &'static str
 impl core::clone::Clone for only_webrtc::Candidate
 pub fn only_webrtc::Candidate::clone(&self) -> Self
 impl core::cmp::Eq for only_webrtc::Candidate
@@ -227,13 +229,16 @@ impl only_webrtc::Endpoint
 pub fn only_webrtc::Endpoint::accept_offer<H: only_webrtc::PeerHandler>(&self, &str, H) -> core::result::Result<(only_webrtc::Peer, alloc::string::String), only_webrtc::Error>
 pub fn only_webrtc::Endpoint::add_candidate(&self, only_webrtc::Candidate)
 pub fn only_webrtc::Endpoint::bind(&only::Engine, core::net::socket_addr::SocketAddr) -> core::result::Result<only_webrtc::Endpoint, only_webrtc::Error>
+pub fn only_webrtc::Endpoint::candidate_filter(self, impl core::ops::function::Fn(&only_webrtc::Candidate) -> bool + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn only_webrtc::Endpoint::candidates(&self) -> alloc::vec::Vec<only_webrtc::Candidate>
 pub fn only_webrtc::Endpoint::close(&self)
 pub fn only_webrtc::Endpoint::close_on_disconnect(self, bool) -> Self
 pub fn only_webrtc::Endpoint::config(self, impl core::ops::function::Fn() -> only_webrtc::RtcConfig + core::marker::Send + core::marker::Sync + 'static) -> Self
 pub fn only_webrtc::Endpoint::connect_timeout(self, core::option::Option<core::time::Duration>) -> Self
 pub fn only_webrtc::Endpoint::create_offer<H: only_webrtc::PeerHandler>(&self, H, impl core::ops::function::FnOnce(&mut only_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<(only_webrtc::Peer, alloc::string::String), only_webrtc::Error>
+pub fn only_webrtc::Endpoint::dial_tcp(&self, &alloc::rcs::arc::Arc<only::Engine>) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::gather_relay(&self, core::net::socket_addr::SocketAddr, &str, &str, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
+pub fn only_webrtc::Endpoint::gather_relay_via(&self, &alloc::rcs::arc::Arc<only::Engine>, &only_webrtc::RelayServer, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::gather_srflx(&self, core::net::socket_addr::SocketAddr, core::time::Duration) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::listen_tcp(&self, &alloc::rcs::arc::Arc<only::Engine>, core::net::socket_addr::SocketAddr) -> core::result::Result<core::net::socket_addr::SocketAddr, only_webrtc::Error>
 pub fn only_webrtc::Endpoint::local_addr(&self) -> core::option::Option<core::net::socket_addr::SocketAddr>
@@ -400,6 +405,7 @@ pub fn only_webrtc::Peer::open_channel(&self, &only_webrtc::ChannelConfig) -> co
 pub fn only_webrtc::Peer::payload_type(&self, only_webrtc::Mid, only_webrtc::Codec) -> core::option::Option<only_webrtc::Pt>
 pub fn only_webrtc::Peer::renegotiate(&self, impl core::ops::function::FnOnce(&mut only_webrtc::SdpChanges<'_, '_>)) -> core::result::Result<core::option::Option<alloc::string::String>, only_webrtc::Error>
 pub fn only_webrtc::Peer::request_keyframe(&self, only_webrtc::Mid, only_webrtc::KeyframeRequestKind) -> core::result::Result<(), only_webrtc::Error>
+pub fn only_webrtc::Peer::request_layer_keyframe(&self, only_webrtc::Mid, &str, only_webrtc::KeyframeRequestKind) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::send(&self, only_webrtc::ChannelId, &[u8], bool) -> core::result::Result<bool, only_webrtc::Error>
 pub fn only_webrtc::Peer::write_media(&self, only_webrtc::Mid, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
 pub fn only_webrtc::Peer::write_simulcast(&self, only_webrtc::Mid, &str, only_webrtc::Pt, std::time::Instant, only_webrtc::MediaTime, &[u8]) -> core::result::Result<(), only_webrtc::Error>
@@ -439,6 +445,24 @@ impl core::marker::Sync for only_webrtc::Pt
 impl core::marker::Unpin for only_webrtc::Pt
 impl core::panic::unwind_safe::RefUnwindSafe for only_webrtc::Pt
 impl core::panic::unwind_safe::UnwindSafe for only_webrtc::Pt
+pub struct only_webrtc::RelayServer
+impl only_webrtc::RelayServer
+pub fn only_webrtc::RelayServer::addr(&self) -> core::net::socket_addr::SocketAddr
+pub fn only_webrtc::RelayServer::from_url(&str, &str, &str) -> core::result::Result<only_webrtc::RelayServer, only_webrtc::Error>
+pub fn only_webrtc::RelayServer::tcp(core::net::socket_addr::SocketAddr, &str, &str) -> only_webrtc::RelayServer
+pub fn only_webrtc::RelayServer::tls(core::net::socket_addr::SocketAddr, &str, only_tls::config::ClientConfig, &str, &str) -> only_webrtc::RelayServer
+pub fn only_webrtc::RelayServer::tls_config(self, only_tls::config::ClientConfig) -> Self
+pub fn only_webrtc::RelayServer::transport(&self) -> &'static str
+pub fn only_webrtc::RelayServer::udp(core::net::socket_addr::SocketAddr, &str, &str) -> only_webrtc::RelayServer
+impl core::clone::Clone for only_webrtc::RelayServer
+pub fn only_webrtc::RelayServer::clone(&self) -> Self
+impl core::fmt::Debug for only_webrtc::RelayServer
+pub fn only_webrtc::RelayServer::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Send for only_webrtc::RelayServer
+impl core::marker::Sync for only_webrtc::RelayServer
+impl core::marker::Unpin for only_webrtc::RelayServer
+impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RelayServer
+impl !core::panic::unwind_safe::UnwindSafe for only_webrtc::RelayServer
 pub struct only_webrtc::RtcConfig(_)
 impl only_webrtc::RtcConfig
 pub fn only_webrtc::RtcConfig::clear_codecs(self) -> Self
@@ -485,6 +509,8 @@ pub fn only_webrtc::RtcServer::ice_lite(self, bool) -> Self
 pub fn only_webrtc::RtcServer::max_peers(self, usize) -> Self
 pub fn only_webrtc::RtcServer::new(alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> only_webrtc::RtcServer
 pub fn only_webrtc::RtcServer::peers(&self) -> usize
+pub fn only_webrtc::RtcServer::tcp(&self) -> only_webrtc::RtcTcp
+pub fn only_webrtc::RtcServer::tcp_candidates(self, alloc::vec::Vec<core::net::socket_addr::SocketAddr>) -> Self
 impl core::clone::Clone for only_webrtc::RtcServer
 pub fn only_webrtc::RtcServer::clone(&self) -> Self
 impl core::fmt::Debug for only_webrtc::RtcServer
@@ -498,6 +524,19 @@ impl core::marker::Sync for only_webrtc::RtcServer
 impl core::marker::Unpin for only_webrtc::RtcServer
 impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcServer
 impl !core::panic::unwind_safe::UnwindSafe for only_webrtc::RtcServer
+pub struct only_webrtc::RtcTcp(_)
+impl core::clone::Clone for only_webrtc::RtcTcp
+pub fn only_webrtc::RtcTcp::clone(&self) -> Self
+impl core::fmt::Debug for only_webrtc::RtcTcp
+pub fn only_webrtc::RtcTcp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl only_core::handler::Acceptor for only_webrtc::RtcTcp
+pub type only_webrtc::RtcTcp::Handler = IceTcp
+pub fn only_webrtc::RtcTcp::on_open(&self, &only_core::conn::Conn<IceTcp>) -> IceTcp
+impl core::marker::Send for only_webrtc::RtcTcp
+impl core::marker::Sync for only_webrtc::RtcTcp
+impl core::marker::Unpin for only_webrtc::RtcTcp
+impl !core::panic::unwind_safe::RefUnwindSafe for only_webrtc::RtcTcp
+impl !core::panic::unwind_safe::UnwindSafe for only_webrtc::RtcTcp
 #[non_exhaustive] pub struct only_webrtc::RtpPacket
 pub only_webrtc::RtpPacket::marker: bool
 pub only_webrtc::RtpPacket::payload: alloc::rcs::arc::Arc<[u8]>

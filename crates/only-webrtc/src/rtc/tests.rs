@@ -281,7 +281,10 @@ a=max-message-size:262144\r\n";
 /// A simulcast sender (three encodings) and a receiver of this stack: the answer accepts the
 /// RIDs, each arrives as its own stream with its RID, survives loss through RTX (repaired RID),
 /// and keyframe requests name the encoding.
-fn simulcast(strip_answer: bool, loss: u32) -> (Vec<Option<String>>, Vec<RtcEvent>) {
+fn simulcast(
+    strip_answer: bool,
+    loss: u32,
+) -> (Vec<Option<String>>, Vec<RtcEvent>, Vec<Option<String>>) {
     let now = Instant::now();
     let mut a = Rtc::new(ConfigInner::default(), false, now).unwrap();
     let mut b = Rtc::new(ConfigInner::default(), false, now).unwrap();
@@ -365,6 +368,28 @@ fn simulcast(strip_answer: bool, loss: u32) -> (Vec<Option<String>>, Vec<RtcEven
         t += Duration::from_millis(5);
         step(&mut a, &mut b, t, &mut net);
     }
+    // A keyframe request for one layer reaches that encoding only.
+    let mark = a.events.len();
+    assert!(
+        !b.rtc
+            .request_keyframe_of(video, Some("x"), KeyframeRequestKind::Pli)
+    );
+    assert_eq!(
+        b.rtc
+            .request_keyframe_of(video, Some("m"), KeyframeRequestKind::Pli),
+        !strip_answer
+    );
+    for _ in 0..400 {
+        t += Duration::from_millis(5);
+        step(&mut a, &mut b, t, &mut net);
+    }
+    let layer_kf = a.events[mark..]
+        .iter()
+        .filter_map(|e| match e {
+            RtcEvent::Keyframe(k) => Some(k.rid.clone()),
+            _ => None,
+        })
+        .collect();
     let rids = b
         .events
         .iter()
@@ -373,13 +398,18 @@ fn simulcast(strip_answer: bool, loss: u32) -> (Vec<Option<String>>, Vec<RtcEven
             _ => None,
         })
         .collect();
-    (rids, a.events)
+    (rids, a.events, layer_kf)
 }
 
 #[test]
 fn simulcast_three_encodings() {
     for loss in [0, 10] {
-        let (rids, a_events) = simulcast(false, loss);
+        let (rids, a_events, layer_kf) = simulcast(false, loss);
+        assert!(!layer_kf.is_empty(), "no keyframe request for layer m");
+        assert!(
+            layer_kf.iter().all(|r| r.as_deref() == Some("m")),
+            "{layer_kf:?}"
+        );
         for r in ["h", "m", "l"] {
             let n = rids.iter().filter(|x| x.as_deref() == Some(r)).count();
             // Under loss NACK/RTX (with the repaired RID) fills the gaps.
@@ -403,7 +433,7 @@ fn simulcast_three_encodings() {
 
 #[test]
 fn simulcast_without_answer_support_sends_the_first() {
-    let (rids, _) = simulcast(true, 0);
+    let (rids, _, _) = simulcast(true, 0);
     assert!(rids.len() >= 95);
     assert!(rids.iter().all(|r| r.as_deref() == Some("h")), "{rids:?}");
 }

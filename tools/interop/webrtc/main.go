@@ -11,6 +11,10 @@
 //	webrtc-pion turn-raw-tcp <turn> <user> <pass>    the same over TCP
 //	webrtc-pion turn-raw-tls <turn> <user> <pass>    the same over TLS (certificate not checked)
 //	webrtc-pion server-tcp <http-addr>               answerer with ICE-TCP only (active candidates)
+//	webrtc-pion server-tcp-passive <http-addr> <tcp-addr>
+//	                                                 answerer with ICE-TCP only, passive
+//	                                                 candidates on <tcp-addr> (an ICE TCP mux)
+//	webrtc-pion client-dc-tcp <http-addr>            client-dc with ICE-TCP only (active)
 //	webrtc-pion server-simulcast <http-addr>         answerer receiving simulcast: reports RTP
 //	                                                 packets per RID on the "stats" data channel
 //	webrtc-pion turn-server <udp> <tcp> <tls> <user> <pass>
@@ -257,6 +261,17 @@ func tcpOnlyAPI() *webrtc.API {
 	return webrtc.NewAPI(webrtc.WithSettingEngine(se))
 }
 
+// passiveTCPAPI gathers passive TCP candidates on a listener (no UDP).
+func passiveTCPAPI(tcpAddr string) *webrtc.API {
+	l, err := net.Listen("tcp4", tcpAddr)
+	check(err)
+	se := webrtc.SettingEngine{}
+	se.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeTCP4})
+	se.SetIncludeLoopbackCandidate(true)
+	se.SetICETCPMux(webrtc.NewICETCPMux(nil, l, 32))
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se))
+}
+
 func serverWith(addr string, api *webrtc.API, _ any) {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -394,6 +409,12 @@ func main() {
 		turnRaw(os.Args[2], os.Args[3], os.Args[4], "tls")
 	case "server-tcp":
 		serverWith(os.Args[2], tcpOnlyAPI(), nil)
+	case "server-tcp-passive":
+		serverWith(os.Args[2], passiveTCPAPI(os.Args[3]), nil)
+	case "client-dc-tcp":
+		pc, err := tcpOnlyAPI().NewPeerConnection(webrtc.Configuration{})
+		check(err)
+		dcEcho(pc, os.Args[2], "data channels over ICE-TCP (active)")
 	case "server-simulcast":
 		serverSimulcast(os.Args[2])
 	case "turn-server":

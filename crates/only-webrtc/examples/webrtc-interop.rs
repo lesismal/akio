@@ -7,8 +7,22 @@
 //! webrtc-interop client <http-addr> dc-relay <turn> <user> <password>
 //!                                                      the same offering relayed candidates only
 //!                                                      (an allocation on the TURN server at <turn>)
+//! webrtc-interop server <udp-addr> <http-addr> <tcp-addr>
+//!                                                      the same, also with a passive ICE-TCP
+//!                                                      candidate on <tcp-addr>
+//! webrtc-interop sfu <udp-addr> <http-addr>            ICE-lite simulcast forwarding: POST /publish
+//!                                                      a simulcast offer; POST /view gets an
+//!                                                      offer (a simulcast line relaying every
+//!                                                      layer, a plain line with the selected
+//!                                                      layer, a "ctl" channel taking "layer
+//!                                                      <rid>"), POST /view-answer its answer
 //! webrtc-interop client <http-addr> dc-tcp             the same offering its passive ICE-TCP
 //!                                                      candidate only
+//! webrtc-interop client <http-addr> dc-active          the same offering its active ICE-TCP
+//!                                                      candidate only
+//! webrtc-interop client <http-addr> dc-relay-url <turn:|turns: URL> <user> <password>
+//!                                                      relayed candidates only, allocated over
+//!                                                      UDP, TCP or TLS
 //! webrtc-interop client <http-addr> simulcast          offers VP8 simulcast h/m/l and a "stats"
 //!                                                      channel; checks the answerer got all three
 //! webrtc-interop turn <udp-addr> <relay-ip> <user> <password> [<tcp-addr> [<tls-addr>]]
@@ -34,8 +48,8 @@ use only_turn::client::{Client, ClientConfig, ClientEvent, ClientState};
 use only_turn::framing::FrameReader;
 use only_turn::{TurnConfig, TurnServer, static_auth};
 use only_webrtc::{
-    ChannelId, Codec, Direction, Endpoint, Frequency, KeyframeRequest, MediaData, MediaKind,
-    MediaTime, Peer, PeerHandler, RtcServer,
+    ChannelId, Codec, Direction, Endpoint, Frequency, KeyframeRequest, KeyframeRequestKind,
+    MediaData, MediaKind, MediaTime, Mid, Peer, PeerHandler, RelayServer, RtcServer,
 };
 
 /// Echoes data channel messages and media samples; answers a keyframe request with a text
@@ -99,15 +113,19 @@ fn read_http(s: &mut TcpStream) -> (String, String) {
     )
 }
 
-fn server(udp: SocketAddr, http: SocketAddr) {
-    let rtc = RtcServer::new(vec![udp]);
-    let engine = Engine::builder()
-        .listen(Listener::udp(udp).threads(1).serve(rtc.clone()))
-        .build()
-        .expect("engine");
+fn server(udp: SocketAddr, http: SocketAddr, tcp: Option<SocketAddr>) {
+    let mut rtc = RtcServer::new(vec![udp]);
+    if let Some(t) = tcp {
+        rtc = rtc.tcp_candidates(vec![t]);
+    }
+    let mut b = Engine::builder().listen(Listener::udp(udp).threads(1).serve(rtc.clone()));
+    if let Some(t) = tcp {
+        b = b.listen(Listener::tcp(t).threads(1).serve(rtc.tcp()));
+    }
+    let engine = b.build().expect("engine");
     engine.start().expect("start");
     let l = TcpListener::bind(http).expect("http bind");
-    eprintln!("server: udp {udp}, signalling http://{http}/");
+    eprintln!("server: udp {udp}, tcp {tcp:?}, signalling http://{http}/");
     for s in l.incoming() {
         let Ok(mut s) = s else { continue };
         let (_, offer) = read_http(&mut s);
@@ -196,12 +214,40 @@ fn client(http: &str, what: &str, args: &[String]) {
     );
     engine.start().expect("start");
     let ep = Endpoint::bind(&engine, "127.0.0.1:0".parse().expect("addr")).expect("bind");
+    // Force the transport, as a browser's iceTransportPolicy: only the candidates offered.
+    let ep = match what {
+        "dc-relay" | "dc-relay-url" => ep.candidate_filter(|c| c.kind() == "relay"),
+        "dc-tcp" => ep.candidate_filter(|c| c.to_sdp().contains("tcptype passive")),
+        "dc-active" => ep.candidate_filter(|c| c.to_sdp().contains("tcptype active")),
+        _ => ep,
+    };
     if what == "dc-relay" {
         let turn: SocketAddr = args[0].parse().expect("turn addr");
         let r = ep
             .gather_relay(turn, &args[1], &args[2], Duration::from_secs(10))
             .expect("allocate");
         eprintln!("client: relayed candidate {r}");
+    }
+    if what == "dc-relay-url" {
+        // A turn:/turns: URL; TLS without verification (the interop servers' certificates
+        // are self-signed).
+        let mut s = RelayServer::from_url(&args[0], &args[1], &args[2]).expect("url");
+        if s.transport() == "tls" {
+            s = s.tls_config(
+                tls::ClientConfig::builder()
+                    .insecure_skip_verify()
+                    .build()
+                    .expect("tls config"),
+            );
+        }
+        let r = ep
+            .gather_relay_via(&engine, &s, Duration::from_secs(10))
+            .expect("allocate");
+        eprintln!("client: relayed candidate {r} over {}", s.transport());
+    }
+    if what == "dc-active" {
+        let a = ep.dial_tcp(&engine).expect("active tcp");
+        eprintln!("client: active ICE-TCP candidate {a}");
     }
     if what == "dc-tcp" {
         let p = ep
@@ -237,8 +283,9 @@ fn client(http: &str, what: &str, args: &[String]) {
         })
         .expect("offer");
     let offer = match what {
-        "dc-relay" => filter_candidates(&offer, |l| l.contains(" typ relay")),
-        "dc-tcp" => filter_candidates(&offer, |l| l.contains(" tcp ")),
+        "dc-relay" | "dc-relay-url" => filter_candidates(&offer, |l| l.contains(" typ relay")),
+        "dc-tcp" => filter_candidates(&offer, |l| l.contains("tcptype passive")),
+        "dc-active" => filter_candidates(&offer, |l| l.contains("tcptype active")),
         _ => offer,
     };
     let answer = post(http, &offer);
@@ -535,10 +582,226 @@ fn turn_client(transport: &str, server: &str, user: &str, pass: &str) {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     match a.get(1).map(String::as_str) {
-        Some("server") => server(a[2].parse().expect("udp"), a[3].parse().expect("http")),
+        Some("server") => server(
+            a[2].parse().expect("udp"),
+            a[3].parse().expect("http"),
+            a.get(4).map(|t| t.parse().expect("tcp")),
+        ),
+        Some("sfu") => sfu(a[2].parse().expect("udp"), a[3].parse().expect("http")),
         Some("client") => client(&a[2], &a[3], &a[4..]),
         Some("turn") => turn(a[2].parse().expect("udp"), &a[3], &a[4], &a[5], &a[6..]),
         Some("turn-client") => turn_client(&a[2], &a[3], &a[4], &a[5]),
         _ => eprintln!("usage: webrtc-interop server|client|turn|turn-client ..."),
+    }
+}
+
+// ---- sfu: simulcast in from a browser, simulcast and a selected layer out ----
+
+#[derive(Default)]
+struct Sfu {
+    publisher: Option<(Peer, Mid)>,
+    viewers: Vec<Viewer>,
+    /// Frames received per RID.
+    counts: std::collections::BTreeMap<String, u64>,
+}
+
+struct Viewer {
+    peer: Peer,
+    /// The simulcast line (every layer, as received).
+    sim: Mid,
+    /// The plain line: the selected layer only.
+    plain: Mid,
+    /// The layer forwarded on `plain`, and the one asked for (switched at its next keyframe).
+    current: Option<String>,
+    wanted: String,
+    /// RTP time rewriting of the plain line: output = input + offset.
+    offset: u64,
+    last_out: u64,
+}
+
+type SfuState = Arc<Mutex<Sfu>>;
+
+struct Publisher(SfuState);
+
+/// A VP8 key frame: the frame tag's P bit is 0.
+fn vp8_key(frame: &[u8]) -> bool {
+    frame.first().is_some_and(|b| b & 1 == 0)
+}
+
+impl PeerHandler for Publisher {
+    fn on_media_added(&mut self, p: &Peer, m: &only_webrtc::MediaAdded) {
+        if m.kind == MediaKind::Video {
+            self.0.lock().expect("lock").publisher = Some((p.clone(), m.mid));
+        }
+    }
+    fn on_media_data(&mut self, _p: &Peer, d: &MediaData) {
+        let Some(rid) = d.rid.clone() else { return };
+        let mut st = self.0.lock().expect("lock");
+        *st.counts.entry(rid.clone()).or_default() += 1;
+        let key = vp8_key(&d.data);
+        for v in &mut st.viewers {
+            if let Some(pt) = v.peer.payload_type(v.sim, Codec::Vp8) {
+                let _ = v
+                    .peer
+                    .write_simulcast(v.sim, &rid, pt, Instant::now(), d.time, &d.data);
+            }
+            // Layer selection: switch at a key frame of the wanted layer.
+            if v.current.as_deref() != Some(rid.as_str()) {
+                if rid != v.wanted || !key {
+                    continue;
+                }
+                let input = d.time.ticks();
+                v.offset = v.last_out.wrapping_add(3000).wrapping_sub(input);
+                eprintln!("sfu: viewer {} now gets layer {rid}", v.peer.id());
+                v.current = Some(rid.clone());
+            }
+            let out = d.time.ticks().wrapping_add(v.offset) & 0xffff_ffff;
+            v.last_out = out;
+            if let Some(pt) = v.peer.payload_type(v.plain, Codec::Vp8) {
+                let t = MediaTime::new(out, Frequency::NINETY_KHZ);
+                let _ = v.peer.write_media(v.plain, pt, Instant::now(), t, &d.data);
+            }
+        }
+    }
+    fn on_close(&mut self, _p: &Peer) {
+        eprintln!(
+            "sfu: publisher closed: {:?}",
+            self.0.lock().expect("lock").counts
+        );
+    }
+}
+
+struct ViewerHandler(SfuState);
+
+impl PeerHandler for ViewerHandler {
+    fn on_channel_data(&mut self, p: &Peer, id: ChannelId, data: &[u8], _binary: bool) {
+        let msg = String::from_utf8_lossy(data).to_string();
+        let mut st = self.0.lock().expect("lock");
+        if let Some(rid) = msg.strip_prefix("layer ") {
+            if let Some(v) = st.viewers.iter_mut().find(|v| v.peer.id() == p.id()) {
+                v.wanted = rid.to_owned();
+            }
+            let pubp = st.publisher.clone();
+            drop(st);
+            if let Some((pp, mid)) = pubp {
+                let r = pp.request_layer_keyframe(mid, rid, KeyframeRequestKind::Pli);
+                eprintln!("sfu: layer {rid} asked: keyframe request {r:?}");
+            }
+            let _ = p.send(id, format!("ok {rid}").as_bytes(), false);
+        } else if msg == "stats" {
+            let s = st
+                .counts
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            drop(st);
+            let _ = p.send(id, s.as_bytes(), false);
+        }
+    }
+    fn on_keyframe_request(&mut self, p: &Peer, r: &KeyframeRequest) {
+        let st = self.0.lock().expect("lock");
+        let rid = st
+            .viewers
+            .iter()
+            .find(|v| v.peer.id() == p.id())
+            .and_then(|v| {
+                if r.mid == v.plain {
+                    v.current.clone()
+                } else {
+                    r.rid.clone()
+                }
+            });
+        let pubp = st.publisher.clone();
+        drop(st);
+        if let (Some((pp, mid)), Some(rid)) = (pubp, rid) {
+            let _ = pp.request_layer_keyframe(mid, &rid, r.kind);
+        }
+    }
+    fn on_close(&mut self, p: &Peer) {
+        self.0
+            .lock()
+            .expect("lock")
+            .viewers
+            .retain(|v| v.peer.id() != p.id());
+    }
+}
+
+fn respond(s: &mut TcpStream, r: Result<String, String>) {
+    let resp = match r {
+        Ok(body) => format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/sdp\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        ),
+        Err(m) => format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\n\r\n{m}",
+            m.len()
+        ),
+    };
+    let _ = s.write_all(resp.as_bytes());
+}
+
+fn sfu(udp: SocketAddr, http: SocketAddr) {
+    let rtc = RtcServer::new(vec![udp]);
+    let engine = Engine::builder()
+        .listen(Listener::udp(udp).threads(1).serve(rtc.clone()))
+        .build()
+        .expect("engine");
+    engine.start().expect("start");
+    let st: SfuState = Arc::default();
+    let l = TcpListener::bind(http).expect("http bind");
+    eprintln!("sfu: udp {udp}, signalling http://{http}/");
+    let mut pending: Option<Peer> = None;
+    for s in l.incoming() {
+        let Ok(mut s) = s else { continue };
+        let (head, body) = read_http(&mut s);
+        let path = head.split_whitespace().nth(1).unwrap_or("/").to_owned();
+        let r = match path.as_str() {
+            "/publish" => rtc
+                .accept_offer(&body, Publisher(st.clone()))
+                .map(|(_, answer)| answer)
+                .map_err(|e| e.to_string()),
+            "/view" => {
+                let (mut sim, mut plain) = (None, None);
+                rtc.create_offer(ViewerHandler(st.clone()), |api| {
+                    sim = api
+                        .add_simulcast_media(
+                            MediaKind::Video,
+                            Direction::SendOnly,
+                            &["h", "m", "l"],
+                            None,
+                            None,
+                        )
+                        .ok();
+                    plain = Some(api.add_media(MediaKind::Video, Direction::SendOnly, None, None));
+                    api.add_channel("ctl");
+                })
+                .map(|(p, offer)| {
+                    if let (Some(sim), Some(plain)) = (sim, plain) {
+                        st.lock().expect("lock").viewers.push(Viewer {
+                            peer: p.clone(),
+                            sim,
+                            plain,
+                            current: None,
+                            wanted: "l".into(),
+                            offset: 0,
+                            last_out: 0,
+                        });
+                    }
+                    pending = Some(p);
+                    offer
+                })
+                .map_err(|e| e.to_string())
+            }
+            "/view-answer" => match pending.take() {
+                Some(p) => p
+                    .accept_answer(&body)
+                    .map(|()| String::new())
+                    .map_err(|e| e.to_string()),
+                None => Err("no viewer offer pending".into()),
+            },
+            _ => Err(format!("unknown path {path}")),
+        };
+        respond(&mut s, r);
     }
 }

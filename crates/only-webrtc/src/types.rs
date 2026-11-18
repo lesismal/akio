@@ -568,6 +568,21 @@ impl Candidate {
     pub fn to_sdp(&self) -> String {
         self.0.to_sdp()
     }
+
+    /// The type as the SDP writes it: `"host"`, `"srflx"`, `"prflx"` or `"relay"`.
+    pub fn kind(&self) -> &'static str {
+        self.0.kind().as_str()
+    }
+
+    /// `"udp"`, or `"tcp"` for an ICE-TCP candidate (a relayed candidate is UDP whatever
+    /// the transport to its TURN server).
+    pub fn transport(&self) -> &'static str {
+        if self.0.tcp_type().is_some() {
+            "tcp"
+        } else {
+            "udp"
+        }
+    }
 }
 
 impl fmt::Debug for Candidate {

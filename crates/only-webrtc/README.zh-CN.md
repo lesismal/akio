@@ -25,9 +25,12 @@
 - **SDP** offer/answer（JSEP）：BUNDLE、rtcp-mux、mid/msid、ssrc/FID、extmap、
   rtpmap/fmtp/rtcp-fb 协商、setup/fingerprint、ice-ufrag/pwd/options/lite、候选、
   sctp-port/max-message-size；重新协商（新增媒体、方向、ICE 重启）；simulcast 发送（`a=rid`、
-  `a=simulcast`、RID/MID 头扩展）与接收。
-- **`Endpoint` 的候选**：host、server-reflexive（`gather_srflx`）、经 TURN 分配的 relay（`gather_relay`）
-  以及被动 ICE-TCP（`listen_tcp`，RFC 6544）。
+  `a=simulcast`、RID/MID 头扩展）与接收，以及用于层选择的按层关键帧请求（`request_layer_keyframe`）。
+- **`Endpoint` 的候选**：host、server-reflexive（`gather_srflx`）、经 UDP、TCP 或 TLS 的 TURN 分配得到的
+  relay（`gather_relay`，以及用 `RelayServer` 或 `turn:`/`turns:` URL 的 `gather_relay_via`；丢失的分配会
+  重新建立）、被动与主动 ICE-TCP（`listen_tcp`、`dial_tcp`，RFC 6544），以及候选策略（`candidate_filter`，
+  相当于 `iceTransportPolicy`）。`RtcServer` 可在 engine 的 TCP 监听器上提供被动 ICE-TCP
+  （`tcp_candidates`、`tcp`）。
 - **自有类型**：API 全部是本 crate 自己的类型；`unstable` cargo feature 目前不增加任何内容。
 
 ```rust,no_run
@@ -56,7 +59,6 @@ let (_peer, answer) = server.accept_offer(&offer, Echo).unwrap(); // 来自 WHIP
 的虚拟摄像头与麦克风媒体回显后由 Chrome 解码）：`tools/interop/webrtc/browser.sh`。STUN 与 TURN
 服务端在 [`only-turn`](../only-turn/README.zh-CN.md) 中。
 
-未实现：`Endpoint` 经 TCP/TLS 使用 TURN、主动 ICE-TCP 候选、simulcast 分层选择、FEC、RTCP XR、
-SDES-SRTP、DTLS 1.3。
+未实现：DTLS 上的 TURN、同时打开的 ICE-TCP、FEC、RTCP XR、SDES-SRTP、DTLS 1.3。
 
 指南：[WebRTC、STUN 与 TURN](https://lesismal.github.io/only/zh-CN/protocols/webrtc.html)。

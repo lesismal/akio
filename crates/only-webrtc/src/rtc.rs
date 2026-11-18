@@ -1377,6 +1377,17 @@ impl Rtc {
 
     /// Asks the remote sender of `mid` for a keyframe. `false`: no such line.
     pub(crate) fn request_keyframe(&mut self, mid: Mid, kind: KeyframeRequestKind) -> bool {
+        self.request_keyframe_of(mid, None, kind)
+    }
+
+    /// A keyframe request for the streams of `mid`, or with `rid` only for the simulcast
+    /// encoding `rid` (`false` if no stream of that RID has arrived yet).
+    pub(crate) fn request_keyframe_of(
+        &mut self,
+        mid: Mid,
+        rid: Option<&str>,
+        kind: KeyframeRequestKind,
+    ) -> bool {
         let Some(idx) = self.media.iter().position(|l| l.mid == mid) else {
             return false;
         };
@@ -1384,10 +1395,15 @@ impl Rtc {
             .recv
             .iter()
             .filter(|(s, r)| {
-                r.line == idx && self.routes.get(s).is_none_or(|x| x.repairs.is_none())
+                r.line == idx
+                    && self.routes.get(s).is_none_or(|x| x.repairs.is_none())
+                    && rid.is_none_or(|w| r.rid.as_deref() == Some(w))
             })
             .map(|(s, _)| *s)
             .collect();
+        if rid.is_some() && targets.is_empty() {
+            return false;
+        }
         if targets.is_empty() {
             targets = self.media[idx].remote_ssrcs.clone();
             let rtx: Vec<u32> = self.media[idx].remote_rtx.keys().copied().collect();

@@ -20,14 +20,19 @@ Two crates:
 
 Interop is tested against pion (Go) in both offer directions, for data channels and media,
 directly and through a `only` TURN relay, with an `Endpoint` offering only relayed candidates
-(on `only`, pion/turn and coturn TURN servers) or only its passive ICE-TCP candidate, and with
+(on `only`, pion/turn and coturn TURN servers, allocated over UDP, TCP and TLS), only its passive
+or only its active ICE-TCP candidate, pion reaching an `RtcServer` over ICE-TCP, and with
 simulcast sent to pion; against fib's Go WebRTC (data channels, both directions); the TURN
 server against the pion/turn client and coturn's `turnutils_uclient` over UDP, TCP and TLS; the
 TURN client against pion/turn, coturn and `only` over UDP, TCP and TLS
 (`tools/interop/webrtc/run.sh`, `COTURN=1` for coturn, `linux.sh` for all of it in Linux
 containers). Headless
 Chrome is tested in both offer directions: data channels, and its fake camera and microphone
-echoed back by an `RtcServer` and decoded by Chrome (`tools/interop/webrtc/browser.sh`).
+echoed back by an `RtcServer` and decoded by Chrome; ICE-TCP only (Chrome to an `RtcServer`, an
+`Endpoint` to Chrome); relay only (Chrome with `iceTransportPolicy: "relay"` through `only-turn`
+over UDP, TCP and TLS, an `Endpoint` whose only candidates were allocated over TCP or TLS); and
+simulcast: three VP8 layers from Chrome into an SFU, sent back as simulcast and as one selected
+layer switched while Chrome decodes it (`tools/interop/webrtc/browser.sh`).
 
 ## A server, a TURN server and a client on one engine
 
@@ -83,6 +88,7 @@ the I/O thread that read the datagram, on the timer thread, or on the thread tha
 | `write_simulcast(mid, rid, pt, wallclock, rtp_time, data)` | one sample of a simulcast encoding |
 | `payload_type(mid, codec)` | the negotiated payload type of a codec |
 | `request_keyframe(mid, kind)` | PLI or FIR to the remote sender |
+| `request_layer_keyframe(mid, rid, kind)` | PLI or FIR to one received simulcast layer |
 | `renegotiate(f)` / `accept_answer` / `accept_offer` | SDP changes after the first exchange |
 | `add_remote_candidate(line)` | trickle ICE |
 | `close()` | DTLS close notify, then `on_close` |
@@ -120,6 +126,29 @@ let ep = Endpoint::bind(&engine, "0.0.0.0:0".parse()?)?;
 let relayed = ep.gather_relay("203.0.113.7:3478".parse()?, "alice", "secret", Duration::from_secs(5))?;
 ```
 
+Networks that block UDP reach a TURN server over TCP, or TLS on port 443:
+`gather_relay_via(&engine, &server, timeout)` takes a `RelayServer`, made with
+`RelayServer::udp`, `tcp` or `tls(addr, server_name, tls_config, ..)`, or parsed from a URL as
+browsers take it in `iceServers` (`turn:host[:port][?transport=udp|tcp]`,
+`turns:host[:port]`; a `turns:` server then needs `tls_config`, since there are no default
+roots). The engine dials the connection (it needs `client_threads(n)` or a TCP listener); the
+allocation lives on it. A TCP- or TLS-allocated candidate ranks below a UDP-allocated one, and
+gives no server-reflexive candidate. An allocation lost after it was made (the connection
+closed, a refresh failed) is made again after 1 second, then doubling waits up to a minute:
+the new relayed candidate replaces the old one for new peers and is added to the open ones,
+which keep going if the other side is reachable from the relay (otherwise an ICE restart offers
+it).
+
+```rust,ignore
+let turns = RelayServer::from_url("turns:turn.example.com:443", "alice", "secret")?
+    .tls_config(tls_client_config);
+let relayed = ep.gather_relay_via(&engine, &turns, Duration::from_secs(5))?;
+```
+
+`candidate_filter(f)` is the endpoint's `iceTransportPolicy`: new peers use, and signal, only
+the local candidates `f` accepts, for example `|c| c.kind() == "relay"` (relay only) or
+`|c| c.transport() == "tcp"` (ICE-TCP only).
+
 ### ICE over TCP
 
 `listen_tcp(&engine, addr)` adds a passive ICE-TCP candidate (RFC 6544) on its own TCP port: a
@@ -128,8 +157,28 @@ ICE, DTLS, SCTP and SRTP over the connection (RFC 4571 framing). The engine need
 (`client_threads(n)` or a TCP listener). A dedicated thread accepts, at most 256 connections at
 once; a connection whose first frame is not a connectivity check for one of the endpoint's peers
 within 10 seconds is closed, and so are a peer's connections when it closes. TCP candidates rank
-below UDP ones, so a peer that can use UDP still does. An `Endpoint` has no active TCP
-candidates: clients that only have TCP use TURN over TCP or TLS.
+below UDP ones, so a peer that can use UDP still does.
+
+`dial_tcp(&engine)` adds an active ICE-TCP candidate (the primary host address, port 9 as the
+SDP writes it): to reach a server that only listens on TCP, the endpoint dials one connection per
+candidate pair when the pair's first check goes out, and runs everything over it. A connection
+that fails is dialed again by the next check; active and passive connections are bounded
+together (256).
+
+An `RtcServer` takes passive ICE-TCP too: `tcp_candidates(addrs)` puts passive TCP candidates in
+its answers and offers, and `server.tcp()` is the acceptor for the engine's TCP listener at
+those addresses, so browsers whose UDP is blocked connect to the server directly:
+
+```rust,ignore
+let server = RtcServer::new(vec![public_udp]).tcp_candidates(vec![public_tcp]);
+let engine = Engine::builder()
+    .listen(Listener::udp(udp_addr).serve(server.clone()))
+    .listen(Listener::tcp(tcp_addr).serve(server.tcp()))
+    .build()?;
+```
+
+The same rules hold (first check within 10 seconds, a peer's connections close with it); at most
+twice `max_peers` connections.
 
 ### Simulcast
 
@@ -141,7 +190,12 @@ the application encodes each layer at its own resolution and bitrate. The offer 
 first without it). Every encoding has its own SSRC and RTX stream, its packets carry the MID and
 RID header extensions, and a keyframe request names its RID (`KeyframeRequest::rid`). As an
 answerer the stack also accepts simulcast from the remote (`MediaData::rid` tells the layers
-apart); picking which layer to forward is the application's job.
+apart), as browsers publish it. An SFU forwarding one layer to a viewer picks it from
+`MediaData::rid`, switches at a keyframe of the new layer, and asks the publisher for exactly
+that one with `Peer::request_layer_keyframe(mid, rid, kind)` (the `sfu` mode of
+`crates/only-webrtc/examples/webrtc-interop.rs` does this, rewriting RTP timestamps at a
+switch). Chrome does not receive simulcast: its answer drops `a=simulcast`, and only the first
+encoding is sent to it.
 
 ## TURN
 
@@ -237,8 +291,7 @@ Interop is checked against OpenSSL 3.5 / 4.1, wolfSSL 5.8 and pion/dtls
 
 ## Not done yet
 
-TCP relays (RFC 6062); TURN over TCP/TLS from an `Endpoint` (the client supports it, the
-endpoint allocates over UDP); active ICE-TCP candidates and ICE-TCP on `RtcServer`; resolving
-mDNS candidates (peers using them are still reached through peer-reflexive candidates);
-simulcast layer selection; FEC; RTCP XR; DTLS 1.3 for WebRTC by default; DTLS 1.3 0-RTT and
-NewConnectionId. ADR-017 has the details of what was added.
+TCP relays (RFC 6062); TURN over DTLS; simultaneous-open ICE-TCP (`tcptype so`); resolving
+mDNS candidates (peers using them are still reached through peer-reflexive candidates); FEC;
+RTCP XR; DTLS 1.3 for WebRTC by default; DTLS 1.3 0-RTT and NewConnectionId. ADR-017 and ADR-032
+have the details of what was added.
