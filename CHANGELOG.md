@@ -10,6 +10,15 @@ All notable changes to `only` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed: faster P-256 key generation, signing and ECDH; RSA squaring by Karatsuba without IFMA
+
+only-crypto on x86_64 with BMI2 + ADX and AVX2: the P-256 fixed-base comb and the ECDH
+multiplication keep the accumulator in one assembly frame for the whole multiplication. On Zen 4
+against ring: key generation 1.40x → 1.57x, signing 1.38x → 1.49x, ECDH 1.12x → 1.15x,
+secp256r1 TLS handshakes 1.07x → 1.08x rustls+ring. On x86_64 CPUs without AVX-512 IFMA, RSA
+squaring at 3072 and 4096 bits is one level of Karatsuba: verification +5% / +9%. Constant-time
+properties unchanged (`tools/ct-dudect`: no leak). No public API change (docs/BENCHMARKS.md).
+
 ### Added: WebSocket over HTTP/3, QPACK dynamic table, streamed HTTP/3 request bodies
 
 Additive (ADR-011, docs/adr/011-h3-websocket-qpack-streaming.md):

@@ -1,5 +1,6 @@
 //! Public-key operations per second, only-crypto vs ring:
-//! `cargo run --release -p only-crypto --example pk_bench [rsa]` (`rsa`: the RSA rows only).
+//! `cargo run --release -p only-crypto --example pk_bench [rsa|p256]` (`rsa`, `p256`: those rows
+//! only).
 
 use std::hint::black_box;
 use std::time::{Duration, Instant};
@@ -33,13 +34,25 @@ fn main() {
         "{:<28} {:>10} {:>10} {:>9}",
         "op/s", "only", "ring", "ratio"
     );
-    // `pk_bench rsa`: the RSA rows only.
-    if std::env::args().nth(1).as_deref() == Some("rsa") {
+    // `pk_bench rsa` / `pk_bench p256`: those rows only.
+    let only = std::env::args().nth(1);
+    if only.as_deref() == Some("rsa") {
         rsa_all(&msg, &rand);
         return;
     }
+    let all = only.is_none();
 
     // Ed25519.
+    if all {
+        ed_x25519(msg, &rand);
+    }
+    ec_all(msg, &rand, all);
+    if all {
+        rsa_all(&msg, &rand);
+    }
+}
+
+fn ed_x25519(msg: [u8; 64], rand: &ring::rand::SystemRandom) {
     let ek = ed25519::SigningKey::from_seed(&[1; 32]);
     let rk = rs::Ed25519KeyPair::from_seed_unchecked(&[1; 32]).expect("ring key");
     let sig = ek.sign(&msg);
@@ -69,19 +82,21 @@ fn main() {
             black_box(xk.diffie_hellman(black_box(&peer)).expect("dh"));
         }),
         rate(|| {
-            let e = ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::X25519, &rand)
+            let e = ring::agreement::EphemeralPrivateKey::generate(&ring::agreement::X25519, rand)
                 .expect("key");
             let p = ring::agreement::UnparsedPublicKey::new(&ring::agreement::X25519, peer);
             ring::agreement::agree_ephemeral(e, &p, |s| black_box(s[0])).expect("dh");
         }),
     );
+}
 
+fn ec_all(msg: [u8; 64], rand: &ring::rand::SystemRandom, all: bool) {
     macro_rules! ec {
         ($label:literal, $m:ident, $wrap:ident, $len:literal, $ring_sign:expr, $ring_verify:expr, $ag:expr) => {{
             let k = $m::SecretKey::from_bytes(&[7; $len]).expect("key");
             let pk = k.public_key();
             let der = PrivateKey::$wrap(k.clone()).to_pkcs8_der();
-            let rk = rs::EcdsaKeyPair::from_pkcs8($ring_sign, &der, &rand).expect("ring key");
+            let rk = rs::EcdsaKeyPair::from_pkcs8($ring_sign, &der, rand).expect("ring key");
             let sig = k.sign(&msg);
             let sig_der = sig.to_der();
             let rpk = rs::UnparsedPublicKey::new($ring_verify, pk.to_uncompressed());
@@ -91,7 +106,7 @@ fn main() {
                     black_box(k.sign(black_box(&msg)));
                 }),
                 rate(|| {
-                    black_box(rk.sign(&rand, black_box(&msg)).expect("sign"));
+                    black_box(rk.sign(rand, black_box(&msg)).expect("sign"));
                 }),
             );
             row(
@@ -111,8 +126,7 @@ fn main() {
                     black_box(k.diffie_hellman(&p));
                 }),
                 rate(|| {
-                    let e =
-                        ring::agreement::EphemeralPrivateKey::generate($ag, &rand).expect("key");
+                    let e = ring::agreement::EphemeralPrivateKey::generate($ag, rand).expect("key");
                     let p = ring::agreement::UnparsedPublicKey::new($ag, &peer_bytes);
                     ring::agreement::agree_ephemeral(e, &p, |s| black_box(s[0])).expect("dh");
                 }),
@@ -124,7 +138,7 @@ fn main() {
                 }),
                 rate(|| {
                     black_box(
-                        ring::agreement::EphemeralPrivateKey::generate($ag, &rand)
+                        ring::agreement::EphemeralPrivateKey::generate($ag, rand)
                             .expect("key")
                             .compute_public_key()
                             .expect("pk"),
@@ -142,6 +156,9 @@ fn main() {
         &rs::ECDSA_P256_SHA256_ASN1,
         &ring::agreement::ECDH_P256
     );
+    if !all {
+        return;
+    }
     ec!(
         "p384",
         p384,
@@ -151,8 +168,6 @@ fn main() {
         &rs::ECDSA_P384_SHA384_ASN1,
         &ring::agreement::ECDH_P384
     );
-
-    rsa_all(&msg, &rand);
 }
 
 fn rsa_all(msg: &[u8], rand: &ring::rand::SystemRandom) {

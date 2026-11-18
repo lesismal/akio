@@ -380,9 +380,16 @@ impl Mont {
                 };
             }
             asm_sizes!((16, 32), (24, 48), (32, 64));
-            if matches!(self.m.len(), 48 | 64) {
-                self.mul_into(out, a, a);
-                return;
+            match self.m.len() {
+                48 => {
+                    hw::mont_sqr_kara::<48, 24, 96>(arr_mut(out), arr(a), arr(&self.m), self.n0);
+                    return;
+                }
+                64 => {
+                    hw::mont_sqr_kara::<64, 32, 128>(arr_mut(out), arr(a), arr(&self.m), self.n0);
+                    return;
+                }
+                _ => {}
             }
         }
         macro_rules! fixed {
@@ -729,6 +736,30 @@ mod tests {
                     mont.mul_into_generic(&mut g, a, a);
                     assert_eq!(f, g, "sqr k={k} top={top:x}");
                 }
+                // The Karatsuba squaring at every size, whether `Mont` uses it or not.
+                macro_rules! kara {
+                    ($(($n:literal, $h:literal, $w:literal)),*) => {
+                        match k {
+                            $($n => {
+                                for a in &below {
+                                    hw::mont_sqr_kara::<$n, $h, $w>(
+                                        arr_mut(&mut f), arr(a), arr(&m), mont.n0,
+                                    );
+                                    mont.mul_into_generic(&mut g, a, a);
+                                    assert_eq!(f, g, "sqr_kara k={k} top={top:x}");
+                                }
+                            })*
+                            _ => unreachable!(),
+                        }
+                    };
+                }
+                kara!(
+                    (16, 8, 32),
+                    (24, 12, 48),
+                    (32, 16, 64),
+                    (48, 24, 96),
+                    (64, 32, 128)
+                );
                 // A chain of squarings and products, as in an exponentiation.
                 let mut x = below[5].clone();
                 let mut y = x.clone();
@@ -1051,6 +1082,54 @@ mod tests {
             let sqr = t.elapsed().as_nanos() as f64 / (2 * iters) as f64;
             std::hint::black_box(&x);
             println!("{:>5} bits: mul {mul:8.1} ns  sqr {sqr:8.1} ns", 64 * k);
+        }
+    }
+
+    /// Nanoseconds for the parts of an RSA public operation with a fresh key: `new_public`,
+    /// `new` and `pow_public` (`e = 65537`), plus the Montgomery multiplication and squaring:
+    /// `cargo test --release -p only-crypto --lib bignum::tests::public_timing -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore = "timing, run by hand"]
+    fn public_timing() {
+        use std::hint::black_box;
+        let mut rng = crate::rand::ChaChaRng::from_seed([20; 32]);
+        let time = |name: &str, k: usize, n: u32, f: &mut dyn FnMut()| {
+            for _ in 0..n / 10 {
+                f();
+            }
+            let mut best = f64::MAX;
+            for _ in 0..5 {
+                let t = std::time::Instant::now();
+                for _ in 0..n {
+                    f();
+                }
+                best = best.min(t.elapsed().as_nanos() as f64 / f64::from(n));
+            }
+            println!("{:>5} bits {name:<12} {best:>10.1} ns", 64 * k);
+        };
+        for k in [32usize, 48, 64] {
+            let mut m: Vec<u64> = (0..k).map(|_| rng.next_u64()).collect();
+            m[0] |= 1;
+            m[k - 1] |= 1 << 63;
+            let mont = Mont::new_public(&m).unwrap();
+            let s = mont.reduce(&(0..k).map(|_| rng.next_u64()).collect::<Vec<u64>>());
+            let mut y = vec![0u64; k];
+            time("new_public", k, 20_000, &mut || {
+                black_box(Mont::new_public(black_box(&m)));
+            });
+            time("new", k, 2_000, &mut || {
+                black_box(Mont::new(black_box(&m)));
+            });
+            time("pow_public", k, 20_000, &mut || {
+                black_box(mont.pow_public(black_box(&s), 65537));
+            });
+            time("mul", k, 200_000, &mut || {
+                mont.mul_into(&mut y, black_box(&s), &s);
+            });
+            time("sqr", k, 200_000, &mut || {
+                mont.sqr_into(&mut y, black_box(&s));
+            });
         }
     }
 
